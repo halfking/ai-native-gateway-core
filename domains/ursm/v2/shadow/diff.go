@@ -4,13 +4,13 @@
 // diff is purely observational: it never influences the production
 // decision.
 //
-// Note: the package-level constructor is exported as Diff(...) per the
-// plan spec, so the value type it returns is named PlanDiff to avoid
-// colliding with the constructor symbol within the same package.
+// Note: the value type is named Diff per the plan spec, so the
+// package-level constructor is exported as Compute(...) to avoid
+// colliding with the type symbol within the same package.
 package shadow
 
 // Result captures the inputs that produced a diff. It is preserved on
-// the PlanDiff value so callers can attach metadata (request id,
+// the Diff value so callers can attach metadata (request id,
 // tenant, canonical model) when the diff is recorded as a metric or log
 // line.
 type Result struct {
@@ -21,7 +21,7 @@ type Result struct {
 	NewOrderedIDs []string
 }
 
-// PlanDiff is the outcome of comparing two candidate orderings. It
+// Diff is the outcome of comparing two candidate orderings. It
 // exposes only the two questions operators care about during a v2
 // rollout:
 //
@@ -33,7 +33,7 @@ type Result struct {
 // Both flags can be true (an availability mismatch subsumes the order
 // question); HasOrderMismatch is therefore meaningful only when
 // HasAvailabilityMismatch is false.
-type PlanDiff struct {
+type Diff struct {
 	r     Result
 	avail bool
 	order bool
@@ -41,18 +41,18 @@ type PlanDiff struct {
 
 // HasAvailabilityMismatch reports whether the two orderings disagree
 // on which candidates are available.
-func (d PlanDiff) HasAvailabilityMismatch() bool { return d.avail }
+func (d Diff) HasAvailabilityMismatch() bool { return d.avail }
 
 // HasOrderMismatch reports whether the two orderings disagree on
 // priority, given the same availability set.
-func (d PlanDiff) HasOrderMismatch() bool { return d.order }
+func (d Diff) HasOrderMismatch() bool { return d.order }
 
 // Result returns the captured inputs (request id, tenant, canonical,
 // both orderings) for logging / metric labels.
-func (d PlanDiff) Result() Result { return d.r }
+func (d Diff) Result() Result { return d.r }
 
-// Diff compares two candidate orderings identified by credential id
-// strings. The orderings are expected to be already-stable sequences
+// Compute compares two candidate orderings identified by credential
+// id strings. The orderings are expected to be already-stable sequences
 // as produced by the respective planners; this function does not
 // resort them.
 //
@@ -60,8 +60,8 @@ func (d PlanDiff) Result() Result { return d.r }
 // sets of ids differ. Otherwise, when the sets are equal, an order
 // mismatch is reported whenever the two sequences disagree position by
 // position.
-func Diff(reqID, tenant, canonical string, oldOrder, newOrder []string) PlanDiff {
-	d := PlanDiff{r: Result{
+func Compute(reqID, tenant, canonical string, oldOrder, newOrder []string) Diff {
+	d := Diff{r: Result{
 		RequestID:     reqID,
 		TenantID:      tenant,
 		Canonical:     canonical,
