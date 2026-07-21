@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"math"
 	"time"
 
 	"github.com/shirou/gopsutil/v3/cpu"
@@ -104,10 +105,10 @@ func BuildRuntimeMetrics(cfg Config, traffic TrafficSnapshot, dbSizeMB int64, di
 		UptimeSecs:     int64(time.Since(cfg.StartTime).Seconds()),
 		DBSizeMB:       dbSizeMB,
 		CurrentConcurrency: traffic.CurrentConcurrency,
-		Last5MinTPS:        traffic.Last5MinTPS,
-		Last5MinP50Ms:      traffic.Last5MinP50Ms,
-		Last5MinP99Ms:      traffic.Last5MinP99Ms,
-		Last5MinSuccessPct:  traffic.Last5MinSuccessPct,
+		Last5MinTPS:        sanitizeFloat(traffic.Last5MinTPS),
+		Last5MinP50Ms:      sanitizeFloat(traffic.Last5MinP50Ms),
+		Last5MinP99Ms:      sanitizeFloat(traffic.Last5MinP99Ms),
+		Last5MinSuccessPct:  sanitizeFloat(traffic.Last5MinSuccessPct),
 		ModelUsage:         traffic.ModelUsage,
 		TenantCount:        traffic.TenantCount,
 		LicenseType:        licenseType,
@@ -125,10 +126,19 @@ func BuildRuntimeMetrics(cfg Config, traffic TrafficSnapshot, dbSizeMB int64, di
 
 func applySystemMetrics(m *RuntimeMetrics) {
 	if cpuPct, err := cpu.Percent(0, false); err == nil && len(cpuPct) > 0 {
-		m.CPUUsagePct = cpuPct[0]
+		m.CPUUsagePct = sanitizeFloat(cpuPct[0])
 	}
 	if vm, err := mem.VirtualMemory(); err == nil {
 		m.MemUsedMB = int64(vm.Used) / 1024 / 1024
 		m.MemTotalMB = int64(vm.Total) / 1024 / 1024
 	}
+}
+
+// sanitizeFloat replaces NaN and Inf with 0.0 to prevent JSON marshal errors.
+// json.Marshal accepts NaN/Inf but produces invalid JSON that fails Unmarshal.
+func sanitizeFloat(v float64) float64 {
+	if math.IsNaN(v) || math.IsInf(v, 0) {
+		return 0.0
+	}
+	return v
 }

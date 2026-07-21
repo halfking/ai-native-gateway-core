@@ -47,7 +47,7 @@ func (r *LocalDBReporter) Report(ctx context.Context, payload []byte) error {
 			$4, $5, $6, $7, $8,
 			$9, $10,
 			$11, $12, $13, $14,
-			$15, $16::jsonb, $17
+			$15, $16::text::jsonb, $17
 		)
 	`, metrics.InstanceID, r.LicenseID, metrics.Timestamp,
 		metrics.CPUUsagePct, metrics.MemUsedMB, metrics.MemTotalMB, metrics.DiskUsedGB, metrics.DiskTotalGB,
