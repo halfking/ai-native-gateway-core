@@ -1,0 +1,8 @@
+{
+  "id": "T-02",
+  "name": "openai-vision-url",
+  "model": "gpt-4o-mini",
+  "endpoint": "/v1/chat/completions",
+  "provider": "openai",
+  "format": "openai-image-url"
+}

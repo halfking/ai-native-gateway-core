@@ -1,0 +1,8 @@
+{
+  "id": "T-05",
+  "name": "openai-audio",
+  "model": "whisper-1",
+  "endpoint": "/v1/audio/transcriptions",
+  "provider": "openai",
+  "format": "multipart-audio"
+}
