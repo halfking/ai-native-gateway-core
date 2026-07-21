@@ -60,6 +60,19 @@ func Open(ctx context.Context, databaseURL string) (*DB, error) {
 	}
 	slog.Info("postgres connected")
 	db := &DB{pool: pool}
+	if err := db.ApplyMigrations(ctx); err != nil {
+		return nil, err
+	}
+	success = true // Mark success to prevent defer from closing pool
+	return db, nil
+}
+
+// ApplyMigrations runs all idempotent schema migrations.
+// Idempotent: safe to run repeatedly. Auto-called by Open() at startup.
+// Also called by `gateway migrate` subcommand so launcher can run
+// migrations while old version still serves traffic.
+// Timeout: 3 minutes (production PG under disk pressure can exceed 60s for ensure*).
+func (db *DB) ApplyMigrations(ctx context.Context) error {
 	// Use the parent ctx (no 3s timeout) for schema migrations. The
 	// pingCtx above is only for the initial Ping() check; reusing it
 	// for the migrations makes a real DB with many tables (15+ ALTER/
@@ -70,55 +83,43 @@ func Open(ctx context.Context, databaseURL string) (*DB, error) {
 	migCtx, migCancel := context.WithTimeout(ctx, 3*time.Minute)
 	defer migCancel()
 	if err := db.ensureRequestLogSchema(migCtx); err != nil {
-		return nil, err
+		return err
 	}
 	if err := db.ensureQualityFixModeSchema(migCtx); err != nil {
-		// pool.Close() removed - handled by defer
-		return nil, err
+		return err
 	}
 	if err := db.ensureApplicationsTable(migCtx); err != nil {
-		// pool.Close() removed - handled by defer
-		return nil, err
+		return err
 	}
 	if err := db.ensureCredentialColumns(migCtx); err != nil {
-		// pool.Close() removed - handled by defer
-		return nil, err
+		return err
 	}
 	if err := db.ensureFpSlotLimit(migCtx); err != nil {
-		// pool.Close() removed - handled by defer
-		return nil, err
+		return err
 	}
 	if err := db.ensureRoutingRecentSuccessRate(migCtx); err != nil {
-		// pool.Close() removed - handled by defer
-		return nil, err
+		return err
 	}
 	if err := db.ensureUnavailableRecoverAtSchema(migCtx); err != nil {
-		// pool.Close() removed - handled by defer
-		return nil, err
+		return err
 	}
 	if err := db.ensureWorkTypeSchema(migCtx); err != nil {
-		// pool.Close() removed - handled by defer
-		return nil, err
+		return err
 	}
 	if err := db.EnsureTenantsTable(migCtx); err != nil {
-		// pool.Close() removed - handled by defer
-		return nil, err
+		return err
 	}
 	if err := db.ensureTuningSignalsStrategyColumn(migCtx); err != nil {
-		// pool.Close() removed - handled by defer
-		return nil, err
+		return err
 	}
 	if err := db.ensureSessionMemoraExtractionLog(migCtx); err != nil {
-		// pool.Close() removed - handled by defer
-		return nil, err
+		return err
 	}
 	if err := db.ensureSessionTitles(migCtx); err != nil {
-		// pool.Close() removed - handled by defer
-		return nil, err
+		return err
 	}
 	if err := db.ensureTuningSignalsViews(migCtx); err != nil {
-		// pool.Close() removed - handled by defer
-		return nil, err
+		return err
 	}
 	// Ensure get_current_tenant() function exists before MaaS schema
 	// (007_maas_billing.sql / 008_billing_orders.sql depend on it for RLS policies).
@@ -133,87 +134,78 @@ func Open(ctx context.Context, databaseURL string) (*DB, error) {
 		STABLE
 		AS $$ SELECT COALESCE(NULLIF(current_setting('app.current_tenant', true), ''), 'default'); $$;
 	`); err != nil {
-		// pool.Close() removed - handled by defer
-		return nil, err
+		return err
 	}
 	if err := db.EnsureMaasSchema(migCtx); err != nil {
-		// pool.Close() removed - handled by defer
-		return nil, err
+		return err
 	}
 	if err := db.ensureRoutingOverridesTable(migCtx); err != nil {
-		// pool.Close() removed - handled by defer
-		return nil, err
+		return err
 	}
 	if err := db.ensureRoutingOverridesAudit(migCtx); err != nil {
-		// pool.Close() removed - handled by defer
-		return nil, err
+		return err
 	}
 	if err := db.ensurePassiveProbeStateSchema(migCtx); err != nil {
-		// pool.Close() removed - handled by defer
-		return nil, err
+		return err
 	}
 	if err := db.ensureProbeStateFunctionFixes(migCtx); err != nil {
-		return nil, err
+		return err
 	}
 	if err := db.ensureTenantModelPoliciesSchema(migCtx); err != nil {
-		// pool.Close() removed - handled by defer
-		return nil, err
+		return err
 	}
 	if err := db.ensureResponseFormatAnomaliesSchema(migCtx); err != nil {
-		return nil, err
+		return err
 	}
 	if err := db.ensureSupplementalRLS(migCtx); err != nil {
-		// pool.Close() removed - handled by defer
-		return nil, err
+		return err
 	}
 	if err := db.ensureAnalysisEventsRLS(migCtx); err != nil {
-		// pool.Close() removed - handled by defer
-		return nil, err
+		return err
 	}
 	// Product modules, license modules, and VibeCoding schema (Phase 1).
 	// These are startup-level equivalents of 371-373 migration files.
 	if err := db.ensureProductModulesSchema(migCtx); err != nil {
-		return nil, err
+		return err
 	}
 	if err := db.ensureLicenseModulesSchema(migCtx); err != nil {
-		return nil, err
+		return err
 	}
 	if err := db.ensureLicenseDevicesSchema(migCtx); err != nil {
-		return nil, err
+		return err
 	}
 	if err := db.ensureFaultManagementSchema(migCtx); err != nil {
-		return nil, err
+		return err
 	}
 	if err := db.ensureAutoUpdateSchema(migCtx); err != nil {
-		return nil, err
+		return err
 	}
 	if err := db.ensureCenterOpsSchema(migCtx); err != nil {
-		return nil, err
+		return err
 	}
 	if err := db.ensureRuntimeMetricsSchema(migCtx); err != nil {
-		return nil, err
+		return err
 	}
 	if err := db.ensureRouteIncidentSchema(migCtx); err != nil {
-		return nil, err
+		return err
 	}
 	if err := db.ensureRouteIncidentPhase2Schema(migCtx); err != nil {
-		return nil, err
+		return err
 	}
 	if err := db.ensureVibeCodingSchema(migCtx); err != nil {
-		return nil, err
+		return err
 	}
 	if err := db.ensureDistributionSchema(migCtx); err != nil {
-		return nil, err
+		return err
 	}
 	if err := db.ensurePartitionAutovacuumSchema(migCtx); err != nil {
-		return nil, err
+		return err
 	}
 	// Dashboard views are derived data for the admin UI, not critical-path.
 	// A failure here logs a warning but does NOT block startup — the gateway
 	// must still serve traffic even if /probe-health renders empty.
 	db.ensureProbeHealthDashboardViews(migCtx)
-	success = true // Mark success to prevent defer from closing pool
-	return db, nil
+	return nil
 }
 
 func (d *DB) ensureRequestLogSchema(ctx context.Context) error {
