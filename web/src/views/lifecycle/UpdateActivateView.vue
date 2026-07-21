@@ -266,9 +266,9 @@ void usePolling
               <el-input v-model="deviceName" maxlength="64" placeholder="例如：华东机房-网关-01" />
             </el-form-item>
             <el-form-item>
-              <el-button type="primary" :loading="activating" @click="onActivateClick">
+              <button type="button" class="btn btn-primary" :disabled="activating" @click="onActivateClick">
                 同意协议并激活
-              </el-button>
+              </button>
             </el-form-item>
           </el-form>
         </template>
