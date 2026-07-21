@@ -38,3 +38,24 @@ func TestEnterRecoveryClosesGate(t *testing.T) {
 		t.Fatalf("EnterRecovery must close gate")
 	}
 }
+
+func TestEnterRecoveryWritesEpochMetadata(t *testing.T) {
+	m := New(newMini(t), "ursm:v2:")
+	if err := m.EnterRecovery(context.Background(), "manual-restart"); err != nil {
+		t.Fatalf("enter: %v", err)
+	}
+	rdb := m.rdb
+	epoch, err := rdb.HGetAll(context.Background(), "ursm:v2:meta:epoch").Result()
+	if err != nil {
+		t.Fatalf("hgetall: %v", err)
+	}
+	if epoch["reason"] != "manual-restart" {
+		t.Fatalf("reason missing: %v", epoch)
+	}
+	if epoch["counter"] != "1" {
+		t.Fatalf("counter not incremented: %v", epoch)
+	}
+	if _, ok := epoch["started_at"]; !ok {
+		t.Fatalf("started_at missing: %v", epoch)
+	}
+}
