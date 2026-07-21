@@ -467,7 +467,7 @@ function getRiskLevelLabel(level: string): string {
 
 .condition-item code {
   padding: 2px 6px;
-  background: rgba(99, 102, 241, 0.1);
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
   border-radius: 3px;
   font-size: 11px;
   font-family: ui-monospace, monospace;

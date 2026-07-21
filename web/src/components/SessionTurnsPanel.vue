@@ -231,7 +231,7 @@ const loadingText = computed(() => {
   display: flex;
   gap: 8px;
   padding: 8px 10px;
-  background: var(--bg-subtle, rgba(99,102,241,.05));
+  background: var(--bg-subtle, color-mix(in srgb, var(--accent) 05%, transparent));
   border-radius: 6px;
   font-size: 12px;
   line-height: 1.5;
@@ -288,7 +288,7 @@ const loadingText = computed(() => {
 .col-tags { display: flex; flex-wrap: wrap; gap: 3px; }
 .mini-tag {
   padding: 0 5px; border-radius: 4px; font-size: 10px;
-  background: rgba(99,102,241,.12); color: var(--accent-h);
+  background: color-mix(in srgb, var(--accent) 12%, transparent); color: var(--accent-h);
 }
 .text-muted { color: var(--text-muted); font-size: 11px; }
 

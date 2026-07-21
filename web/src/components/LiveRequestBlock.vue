@@ -286,7 +286,7 @@ function onClick() {
 .live-block--clickable:focus-visible {
   transform: translateY(-2px) scale(1.1);
   z-index: 2;
-  box-shadow: 0 4px 14px rgba(99, 102, 241, 0.45);
+  box-shadow: 0 4px 14px color-mix(in srgb, var(--accent) 45%, transparent);
   outline: none;
 }
 

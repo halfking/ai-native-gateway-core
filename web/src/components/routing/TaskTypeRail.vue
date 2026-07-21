@@ -86,7 +86,7 @@ onMounted(() => {
   background: var(--bg-subtle);
 }
 .rail-item.active {
-  background: rgba(99, 102, 241, 0.18);
+  background: color-mix(in srgb, var(--accent) 18%, transparent);
   border-color: var(--accent);
 }
 .rail-icon {
