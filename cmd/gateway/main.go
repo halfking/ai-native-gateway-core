@@ -2919,17 +2919,20 @@ func main() {
 	// pluginsDir is unset (sup == nil).
 	maintainURL := os.Getenv("LLM_GATEWAY_MAINTAIN_URL")
 	var installer pluginInstaller
+	var catalogClient *pluginruntime.MaintainCatalogClient // P12+poll: hoisted so PollLoop can reuse it
+	var concreteInstaller *pluginruntime.Installer         // poll: concrete type for PluginUpgrader interface
 	if maintainURL != "" && sup != nil {
-		catalogClient := pluginruntime.NewMaintainCatalogClient(
+		catalogClient = pluginruntime.NewMaintainCatalogClient(
 			maintainURL, runtime.GOOS, runtime.GOARCH, Version(),
 		)
-		installer = pluginruntime.NewInstaller(pluginruntime.InstallerConfig{
+		concreteInstaller = pluginruntime.NewInstaller(pluginruntime.InstallerConfig{
 			PluginsDir:    pluginsDir,
 			Client:        catalogClient,
 			Supervisor:    sup,
 			Registry:      pluginRegistry,
 			SigningPubkey: os.Getenv("LLM_GATEWAY_PLUGIN_SIGNING_PUBKEY"),
 		})
+		installer = concreteInstaller
 		slog.Info("plugin installer enabled", "maintain_url", maintainURL, "platform", runtime.GOOS, "arch", runtime.GOARCH)
 	} else {
 		slog.Info("plugin installer disabled", "maintain_url_set", maintainURL != "", "supervisor_set", sup != nil)
@@ -2938,6 +2941,14 @@ func main() {
 		makePluginInstallHandler(installer),
 		dbConn.Pool(), cfg.SecretKey,
 	))
+
+	// Plugin poll loop: auto-upgrade installed plugins when maintain publishes
+	// a newer compatible version. Env-gated (default off); only starts when
+	// LLM_GATEWAY_PLUGIN_POLL_INTERVAL is a positive duration AND the installer
+	// is wired (maintainURL + pluginsDir set). Stops on gateway shutdown.
+	if pollLoop := wirePluginPollLoop(catalogClient, concreteInstaller, sup, Version()); pollLoop != nil {
+		defer pollLoop.Stop()
+	}
 
 	// canonical API for plugin processes (signed context, not admin cookie).
 	// Reuses admin.HandleSessionAnalyticsList under a tenant-scoped AuthContext.
