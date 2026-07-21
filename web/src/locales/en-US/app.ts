@@ -26,4 +26,10 @@ export default {
   nav: {
     mainAria: 'Main navigation',
   },
+  // 2026-07-21: lifecycle shell footer strings.
+  footer: {
+    left: 'Qigui AI Native',
+    right: '© 2026 Qigui · ',
+    feedbackLink: 'Feedback',
+  },
 }
