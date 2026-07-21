@@ -2,9 +2,11 @@ package recovery
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"github.com/alicebob/miniredis/v2"
+	"github.com/prometheus/client_golang/prometheus/testutil"
 	"github.com/redis/go-redis/v9"
 )
 
@@ -57,5 +59,57 @@ func TestEnterRecoveryWritesEpochMetadata(t *testing.T) {
 	}
 	if _, ok := epoch["started_at"]; !ok {
 		t.Fatalf("started_at missing: %v", epoch)
+	}
+}
+
+func TestReadyGaugeSyncsWithRedis(t *testing.T) {
+	m := New(newMini(t), "ursm:v2:")
+	ctx := context.Background()
+
+	// Set ready to true
+	if err := m.SetReady(ctx, true); err != nil {
+		t.Fatalf("SetReady(true): %v", err)
+	}
+
+	// Check gauge value is 1
+	expected := `
+# HELP ursm_v2_ready URSM v2 recovery gate state (1=ready, 0=not ready)
+# TYPE ursm_v2_ready gauge
+ursm_v2_ready 1
+`
+	if err := testutil.CollectAndCompare(ursmV2ReadyGauge, strings.NewReader(expected)); err != nil {
+		t.Fatalf("gauge not 1 after SetReady(true): %v", err)
+	}
+
+	// Set ready to false
+	if err := m.SetReady(ctx, false); err != nil {
+		t.Fatalf("SetReady(false): %v", err)
+	}
+
+	// Check gauge value is 0
+	expected = `
+# HELP ursm_v2_ready URSM v2 recovery gate state (1=ready, 0=not ready)
+# TYPE ursm_v2_ready gauge
+ursm_v2_ready 0
+`
+	if err := testutil.CollectAndCompare(ursmV2ReadyGauge, strings.NewReader(expected)); err != nil {
+		t.Fatalf("gauge not 0 after SetReady(false): %v", err)
+	}
+
+	// Call Ready() and ensure it syncs the gauge
+	_ = m.SetReady(ctx, true)
+	isReady := m.Ready(ctx)
+	if !isReady {
+		t.Fatalf("Ready() should return true")
+	}
+
+	// Check gauge is back to 1
+	expected = `
+# HELP ursm_v2_ready URSM v2 recovery gate state (1=ready, 0=not ready)
+# TYPE ursm_v2_ready gauge
+ursm_v2_ready 1
+`
+	if err := testutil.CollectAndCompare(ursmV2ReadyGauge, strings.NewReader(expected)); err != nil {
+		t.Fatalf("gauge not 1 after Ready(): %v", err)
 	}
 }
