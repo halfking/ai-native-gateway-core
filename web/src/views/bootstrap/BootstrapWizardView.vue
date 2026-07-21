@@ -467,15 +467,17 @@ onMounted(async () => {
             获取激活响应。
           </p>
           
-          <el-form-item label="激活申请码（复制到公网站点）">
-            <el-input
-              :model-value="offlineActivationRequest"
-              type="textarea"
-              :rows="8"
-              readonly
-              class="mono-input"
-            />
-          </el-form-item>
+          <el-form label-position="top">
+            <el-form-item label="激活申请码（复制到公网站点）">
+              <el-input
+                :model-value="offlineActivationRequest"
+                type="textarea"
+                :rows="8"
+                readonly
+                class="mono-input"
+              />
+            </el-form-item>
+          </el-form>
           <div class="mb">
             <button type="button" class="btn btn-secondary" @click="copyOfflineRequest">
               {{ offlineRequestCopied ? '✓ 已复制' : '复制激活申请码' }}
