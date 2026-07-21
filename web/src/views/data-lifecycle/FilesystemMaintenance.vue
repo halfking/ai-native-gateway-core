@@ -312,12 +312,12 @@ defineExpose({ load })
   margin: 0;
   font-size: 20px;
   font-weight: 600;
-  color: var(--text, #e6edf3);
+  color: var(--text);
 }
 
 .btn-refresh {
   padding: 8px 16px;
-  background: var(--accent, #6366f1);
+  background: var(--accent);
   color: #fff;
   border: none;
   border-radius: var(--radius, 8px);
@@ -331,7 +331,7 @@ defineExpose({ load })
 
 .btn-refresh:disabled {
   background: #30363d;
-  color: var(--muted, #8b949e);
+  color: var(--muted);
   cursor: not-allowed;
   opacity: .6;
 }
@@ -341,7 +341,7 @@ defineExpose({ load })
   background: rgba(248,81,73,.1);
   border: 1px solid rgba(248,81,73,.3);
   border-radius: var(--radius, 8px);
-  color: var(--danger, #f85149);
+  color: var(--danger);
   margin-bottom: 20px;
 }
 
@@ -354,33 +354,33 @@ defineExpose({ load })
 
 .stat-card {
   padding: 16px;
-  background: var(--card, #1c2128);
-  border: 1px solid var(--border, #30363d);
+  background: var(--card);
+  border: 1px solid var(--border);
   border-radius: var(--radius, 8px);
 }
 
 .stat-label {
   font-size: 14px;
-  color: var(--muted, #8b949e);
+  color: var(--muted);
   margin-bottom: 8px;
 }
 
 .stat-value {
   font-size: 24px;
   font-weight: 600;
-  color: var(--text, #e6edf3);
+  color: var(--text);
 }
 
 .stat-value-small {
   font-size: 14px;
-  color: var(--text, #e6edf3);
+  color: var(--text);
   word-break: break-all;
   font-family: ui-monospace, SFMono-Regular, monospace;
 }
 
 .stat-hint {
   font-size: 12px;
-  color: var(--muted, #8b949e);
+  color: var(--muted);
   margin-top: 4px;
 }
 
@@ -411,8 +411,8 @@ defineExpose({ load })
 }
 
 .cleanup-section {
-  background: var(--card, #1c2128);
-  border: 1px solid var(--border, #30363d);
+  background: var(--card);
+  border: 1px solid var(--border);
   border-radius: var(--radius, 8px);
   padding: 20px;
 }
@@ -421,7 +421,7 @@ defineExpose({ load })
   margin: 0 0 16px 0;
   font-size: 16px;
   font-weight: 600;
-  color: var(--text, #e6edf3);
+  color: var(--text);
 }
 
 .cleanup-form {
@@ -439,24 +439,24 @@ defineExpose({ load })
 .form-row label {
   min-width: 100px;
   font-weight: 500;
-  color: var(--text, #e6edf3);
+  color: var(--text);
 }
 
 .form-row input[type="number"],
 .form-row input[type="text"] {
   padding: 8px 12px;
   background: #0f1117;
-  border: 1px solid var(--border, #30363d);
+  border: 1px solid var(--border);
   border-radius: 4px;
   font-size: 14px;
-  color: var(--text, #e6edf3);
+  color: var(--text);
   transition: border-color .15s;
 }
 
 .form-row input[type="number"]:focus,
 .form-row input[type="text"]:focus {
   outline: none;
-  border-color: var(--accent, #6366f1);
+  border-color: var(--accent);
 }
 
 .form-row input[type="number"] {
@@ -464,7 +464,7 @@ defineExpose({ load })
 }
 
 .hint {
-  color: var(--muted, #8b949e);
+  color: var(--muted);
   font-size: 14px;
 }
 
@@ -488,7 +488,7 @@ defineExpose({ load })
 }
 
 .btn-preview {
-  background: var(--accent, #6366f1);
+  background: var(--accent);
   color: #fff;
 }
 
@@ -497,7 +497,7 @@ defineExpose({ load })
 }
 
 .btn-execute {
-  background: var(--danger, #f85149);
+  background: var(--danger);
   color: #fff;
 }
 
@@ -508,24 +508,24 @@ defineExpose({ load })
 .btn-preview:disabled,
 .btn-execute:disabled {
   background: #30363d;
-  color: var(--muted, #8b949e);
+  color: var(--muted);
   cursor: not-allowed;
   opacity: .6;
 }
 
 .btn-cancel {
-  background: var(--card, #1c2128);
-  color: var(--text, #e6edf3);
-  border: 1px solid var(--border, #30363d);
+  background: var(--card);
+  color: var(--text);
+  border: 1px solid var(--border);
 }
 
 .btn-cancel:hover {
-  border-color: var(--accent, #6366f1);
-  color: var(--accent-h, #818cf8);
+  border-color: var(--accent);
+  color: var(--accent-h);
 }
 
 .btn-danger {
-  background: var(--danger, #f85149);
+  background: var(--danger);
   color: #fff;
 }
 
@@ -535,7 +535,7 @@ defineExpose({ load })
 
 .btn-danger:disabled {
   background: #30363d;
-  color: var(--muted, #8b949e);
+  color: var(--muted);
   cursor: not-allowed;
   opacity: .6;
 }
@@ -554,8 +554,8 @@ defineExpose({ load })
 }
 
 .modal-content {
-  background: var(--card, #1c2128);
-  border: 1px solid var(--border, #30363d);
+  background: var(--card);
+  border: 1px solid var(--border);
   border-radius: var(--radius, 8px);
   padding: 24px;
   max-width: 600px;
@@ -569,20 +569,20 @@ defineExpose({ load })
   margin: 0 0 16px 0;
   font-size: 18px;
   font-weight: 600;
-  color: var(--text, #e6edf3);
+  color: var(--text);
 }
 
 .modal-danger {
-  border: 2px solid var(--danger, #f85149);
+  border: 2px solid var(--danger);
 }
 
 .modal-danger p {
   margin: 12px 0;
-  color: var(--text, #e6edf3);
+  color: var(--text);
 }
 
 .modal-danger p strong {
-  color: var(--text, #e6edf3);
+  color: var(--text);
 }
 
 .preview-stats {
@@ -593,12 +593,12 @@ defineExpose({ load })
   display: flex;
   justify-content: space-between;
   padding: 8px 0;
-  border-bottom: 1px solid var(--border, #30363d);
-  color: var(--text, #e6edf3);
+  border-bottom: 1px solid var(--border);
+  color: var(--text);
 }
 
 .preview-item strong {
-  color: var(--muted, #8b949e);
+  color: var(--muted);
   font-weight: 500;
 }
 
@@ -607,7 +607,7 @@ defineExpose({ load })
 }
 
 .preview-paths strong {
-  color: var(--text, #e6edf3);
+  color: var(--text);
 }
 
 .preview-paths ul {
@@ -617,20 +617,20 @@ defineExpose({ load })
   max-height: 300px;
   overflow-y: auto;
   background: #0f1117;
-  border: 1px solid var(--border, #30363d);
+  border: 1px solid var(--border);
   border-radius: 4px;
 }
 
 .preview-paths li {
   font-size: 12px;
   font-family: monospace;
-  color: var(--muted, #8b949e);
+  color: var(--muted);
   padding: 4px 0;
 }
 
 .preview-more {
   font-size: 12px;
-  color: var(--muted, #8b949e);
+  color: var(--muted);
   margin-top: 8px;
 }
 
