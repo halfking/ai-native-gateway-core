@@ -1,7 +1,8 @@
 // Package orchestrator runs the blue-green state machine.
 //
 // State flow: NOTIFIED → PREPARING → PREPARED → ACTIVATING → DRAINING → DONE
-//                       ↘ FAILED   ↘  FAILED        ↘ FAILED
+//
+//	↘ FAILED   ↘  FAILED        ↘ FAILED
 //
 // The human approval gate is the PREPARED state — nothing crosses
 // ACTIVATING without an explicit Apply call.
@@ -34,7 +35,7 @@ type Config struct {
 	Backend        backend.Backend
 	Migrator       Migrator
 	ActiveSwitcher ActiveSwitcher
-	GatewayBinary  string        // systemd backend uses (compose ignores)
+	GatewayBinary  string // systemd backend uses (compose ignores)
 	CurrentVersion string
 	CurrentAddr    string
 	HealthRetries  int           // spec: 5
@@ -43,7 +44,8 @@ type Config struct {
 }
 
 type Orchestrator struct {
-	cfg Config
+	cfg  Config
+	done chan struct{}
 }
 
 func New(cfg Config) *Orchestrator {
@@ -56,7 +58,12 @@ func New(cfg Config) *Orchestrator {
 	if cfg.RetainDuration == 0 {
 		cfg.RetainDuration = 1 * time.Hour
 	}
-	return &Orchestrator{cfg: cfg}
+	return &Orchestrator{cfg: cfg, done: make(chan struct{})}
+}
+
+// Stop signals all background goroutines (scheduleRetainedRemove) to exit.
+func (o *Orchestrator) Stop() {
+	close(o.done)
 }
 
 // Prepare runs: Stage green → Migrate → Health gate → PREPARED.
@@ -203,7 +210,11 @@ func (o *Orchestrator) save(plan *store.Plan) {
 }
 
 func (o *Orchestrator) scheduleRetainedRemove(plan *store.Plan) {
-	time.Sleep(o.cfg.RetainDuration)
+	select {
+	case <-o.done:
+		return
+	case <-time.After(o.cfg.RetainDuration):
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	if err := o.cfg.Backend.Remove(ctx, plan.BlueAddr); err != nil {
@@ -212,7 +223,12 @@ func (o *Orchestrator) scheduleRetainedRemove(plan *store.Plan) {
 }
 
 func toBackendRelease(r store.Release) backend.Release {
-	return backend.Release{Version: r.Version, DownloadURL: r.DownloadURL, SHA256: r.SHA256}
+	return backend.Release{
+		Version:     r.Version,
+		Image:       r.Image,
+		DownloadURL: r.DownloadURL,
+		SHA256:      r.SHA256,
+	}
 }
 
 func newPlanID() string {

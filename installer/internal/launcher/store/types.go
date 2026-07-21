@@ -5,6 +5,7 @@ import "time"
 // Release describes a Gateway version available for upgrade.
 type Release struct {
 	Version     string `json:"version"`
+	Image       string `json:"image,omitempty"`
 	DownloadURL string `json:"download_url"`
 	SHA256      string `json:"sha256"`
 	Changelog   string `json:"changelog,omitempty"`
