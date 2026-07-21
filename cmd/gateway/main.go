@@ -69,7 +69,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/domains/streaming/executors" //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/domains/transformation"      //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	ursmv2 "github.com/kaixuan/llm-gateway-go/domains/ursm/v2"      //nolint:depguard // URSM v2 wiring (T20)
-	"github.com/kaixuan/llm-gateway-go/domains/ursm/v2/persist" //nolint:depguard // URSM v2 persist writer
+	"github.com/kaixuan/llm-gateway-go/domains/ursm/v2/persist"     //nolint:depguard // URSM v2 persist writer
 	"github.com/kaixuan/llm-gateway-go/eventbus"
 	"github.com/kaixuan/llm-gateway-go/fault"
 	"github.com/kaixuan/llm-gateway-go/internal/attachmentmirror"
@@ -127,7 +127,7 @@ func main() {
 	// Used by launcher to run forward-compatible migrations while old
 	// version still serves traffic (zero-downtime upgrade).
 	if len(os.Args) > 1 && os.Args[1] == "migrate" {
-		os.Exit(runMigrate(os.Getenv("DATABASE_URL")))
+		os.Exit(runMigrate(config.Load().DatabaseURL))
 	}
 
 	processStartedAt := time.Now()

@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 
 	"github.com/kaixuan/llm-gateway-go/db"
@@ -18,17 +19,21 @@ type migrationReport struct {
 	HasDB   bool   `json:"has_db"`  // whether DATABASE_URL was non-empty
 }
 
-// runMigrate connects DB, calls ApplyMigrations, exits.
+// runMigrate connects DB, exits.
 // exit 0 = success (includes idempotent noop and no-DB cases).
 // exit 1 = failure (stderr JSON, stdout nothing).
 func runMigrate(databaseURL string) int {
 	report, err := doMigrate(databaseURL)
+	return writeReport(os.Stdout, report, err)
+}
+
+func writeReport(w io.Writer, report migrationReport, err error) int {
 	if err != nil {
-		fmt.Fprintf(os.Stderr, `{"status":"error","message":%q}`+"\n", err.Error())
+		_, _ = fmt.Fprintf(w, `{"status":"error","message":%q}`+"\n", err.Error())
 		return 1
 	}
 	out, _ := json.Marshal(report)
-	fmt.Println(string(out))
+	_, _ = fmt.Fprintln(w, string(out))
 	return 0
 }
 
@@ -45,9 +50,7 @@ func doMigrate(databaseURL string) (migrationReport, error) {
 		return migrationReport{Status: "noop", HasDB: false}, nil
 	}
 	defer conn.Close()
-	if err := conn.ApplyMigrations(context.Background()); err != nil {
-		return migrationReport{Status: "error", HasDB: true}, fmt.Errorf("apply migrations: %w", err)
-	}
+	// db.Open already runs ApplyMigrations internally.
 	return migrationReport{Status: "ok", HasDB: true}, nil
 }
 
@@ -56,14 +59,6 @@ func doMigrate(databaseURL string) (migrationReport, error) {
 func runMigrateWithCapture(databaseURL string) (int, *bytes.Buffer) {
 	var buf bytes.Buffer
 	report, err := doMigrate(databaseURL)
-	if err != nil {
-		// Mirror runMigrate's stderr write but to buf (tests don't assert stderr)
-		_, _ = fmt.Fprintf(&buf, `{"status":"error","message":%q}`+"\n", err.Error())
-		return 1, &buf
-	}
-	out, _ := json.Marshal(report)
-	buf.Write(out)
-	// Mirror runMigrate's trailing newline (json + \n)
-	buf.WriteByte('\n')
-	return 0, &buf
+	code := writeReport(&buf, report, err)
+	return code, &buf
 }
