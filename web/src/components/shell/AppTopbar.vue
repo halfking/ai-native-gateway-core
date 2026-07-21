@@ -441,7 +441,7 @@ function navLabel(labelKey: string | undefined, fallback: string): string {
   gap: 8px;
   padding: 4px 10px;
   border-radius: 8px;
-  background: rgba(99, 102, 241, 0.06);
+  background: color-mix(in srgb, var(--accent) 6%, transparent);
   flex-shrink: 0;
 }
 

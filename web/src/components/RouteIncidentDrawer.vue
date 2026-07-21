@@ -1626,7 +1626,7 @@ function hasRunValues(values: Record<string, unknown>): boolean {
 }
 
 .action-grid__btn--test {
-  border-color: rgba(99, 102, 241, 0.4);
+  border-color: color-mix(in srgb, var(--accent) 40%, transparent);
   color: var(--accent);
 }
 

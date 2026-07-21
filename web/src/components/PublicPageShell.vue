@@ -165,9 +165,9 @@ const { t } = useI18n()
 :deep(.pub-git-box) {
   margin: 1rem 0;
   padding: 14px 16px;
-  border: 1px solid rgba(99, 102, 241, 0.35);
+  border: 1px solid color-mix(in srgb, var(--accent) 35%, transparent);
   border-radius: 10px;
-  background: rgba(99, 102, 241, 0.08);
+  background: color-mix(in srgb, var(--accent) 8%, transparent);
   text-align: left;
 }
 
