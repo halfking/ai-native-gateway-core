@@ -229,13 +229,13 @@ watch(() => props.avgScore, () => {
 }
 
 :deep(.el-card) {
-  background: var(--card, #1c2128);
-  border-color: var(--border, #30363d);
-  color: var(--text, #e6edf3);
+  background: var(--card);
+  border-color: var(--border);
+  color: var(--text);
 }
 
 :deep(.el-card__header) {
   padding: 12px 20px;
-  border-bottom-color: var(--border, #30363d);
+  border-bottom-color: var(--border);
 }
 </style>

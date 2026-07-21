@@ -77,8 +77,8 @@ function close() {
 
 .user-info-dialog {
   width: min(100%, 420px);
-  background: var(--card, #161b22);
-  border: 1px solid var(--border, #30363d);
+  background: var(--card);
+  border: 1px solid var(--border);
   border-radius: 12px;
   box-shadow: 0 24px 48px rgba(0, 0, 0, 0.25);
 }

@@ -153,13 +153,13 @@ onMounted(load)
   margin-bottom: 16px;
 }
 .ops-downloads__head h2 { margin: 0 0 4px; }
-.ops-downloads__head p { margin: 0; color: var(--text-secondary, #8b949e); font-size: 14px; }
+.ops-downloads__head p { margin: 0; color: var(--text-secondary); font-size: 14px; }
 .ops-downloads__stats { margin-bottom: 16px; }
 .ops-downloads__card { margin-bottom: 16px; }
 .ops-downloads__hint {
   margin: 8px 0 0;
   font-size: 13px;
-  color: var(--text-secondary, #8b949e);
+  color: var(--text-secondary);
 }
 .ops-downloads__links {
   display: flex;

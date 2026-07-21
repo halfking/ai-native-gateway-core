@@ -220,7 +220,7 @@ onBeforeUnmount(() => {
   align-items: center;
   gap: 12px;
 }
-.muted { color: var(--muted, #5b6b82); font-size: 12px; margin-left: 8px; }
+.muted { color: var(--muted); font-size: 12px; margin-left: 8px; }
 .mb { margin-bottom: 12px; }
 .ent-tabs :deep(.el-tabs__header) { margin-bottom: 12px; }
 </style>

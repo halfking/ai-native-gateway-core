@@ -69,11 +69,11 @@ const canUpgrade = computed(() => {
   white-space: pre-wrap;
   font-size: 12px;
   line-height: 1.5;
-  color: var(--muted, #5b6b82);
+  color: var(--muted);
   max-height: 180px;
   overflow: auto;
 }
 .actions { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; margin-top: 12px; }
-.muted { color: var(--muted, #5b6b82); font-size: 12px; }
+.muted { color: var(--muted); font-size: 12px; }
 code { font-size: 12px; }
 </style>
