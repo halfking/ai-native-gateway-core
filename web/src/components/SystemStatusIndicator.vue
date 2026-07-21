@@ -289,9 +289,9 @@ onUnmounted(() => {
   border-radius: 3px;
   font-size: 10px;
   font-weight: bold;
-  background: var(--bg-hover, #21262d);
+  background: var(--bg-hover);
   color: #8b949e;
-  border: 1px solid var(--border, #30363d);
+  border: 1px solid var(--border);
   cursor: help;
   flex-shrink: 0;
 }
@@ -304,8 +304,8 @@ onUnmounted(() => {
 
 .status-dropdown {
   position: fixed;
-  background: var(--bg-card, #161b22);
-  border: 1px solid var(--border, #30363d);
+  background: var(--bg-card);
+  border: 1px solid var(--border);
   border-radius: 8px;
   box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
   z-index: 2000;
@@ -330,7 +330,7 @@ onUnmounted(() => {
 .status-loading {
   padding: 16px;
   text-align: center;
-  color: var(--text-secondary, #8b949e);
+  color: var(--text-secondary);
 }
 
 .status-error {
@@ -372,24 +372,24 @@ onUnmounted(() => {
 
 .status-name {
   font-weight: 500;
-  color: var(--text-primary, #e6edf3);
+  color: var(--text-primary);
   min-width: 70px;
 }
 
 .status-value {
-  color: var(--text-secondary, #8b949e);
+  color: var(--text-secondary);
   font-size: 12px;
   flex: 1;
   text-align: right;
 }
 
 .latency {
-  color: var(--text-tertiary, #6e7681);
+  color: var(--text-tertiary);
   margin-left: 4px;
 }
 
 .version-build {
-  color: var(--text-tertiary, #6e7681);
+  color: var(--text-tertiary);
   margin-left: 4px;
 }
 
@@ -412,14 +412,14 @@ onUnmounted(() => {
 
 .summary-label {
   font-weight: 500;
-  color: var(--text-primary, #e6edf3);
+  color: var(--text-primary);
   font-size: 13px;
 }
 
 .expand-btn {
   background: transparent;
   border: none;
-  color: var(--text-secondary, #8b949e);
+  color: var(--text-secondary);
   cursor: pointer;
   font-size: 10px;
   padding: 2px;
@@ -440,9 +440,9 @@ onUnmounted(() => {
   border-radius: 4px;
   font-size: 10px;
   font-weight: bold;
-  background: var(--bg-hover, #21262d);
+  background: var(--bg-hover);
   color: #8b949e;
-  border: 1px solid var(--border, #30363d);
+  border: 1px solid var(--border);
   cursor: help;
 }
 
@@ -453,7 +453,7 @@ onUnmounted(() => {
 }
 
 .detail-view {
-  border-top: 1px solid var(--border, #30363d);
+  border-top: 1px solid var(--border);
   padding-top: 4px;
   margin-top: 4px;
 }
@@ -464,18 +464,18 @@ onUnmounted(() => {
   justify-content: space-between;
   padding: 8px 12px 4px;
   margin-top: 4px;
-  border-top: 1px solid var(--border, #30363d);
+  border-top: 1px solid var(--border);
 }
 
 .last-checked {
   font-size: 11px;
-  color: var(--text-tertiary, #6e7681);
+  color: var(--text-tertiary);
 }
 
 .refresh-btn {
   background: transparent;
   border: none;
-  color: var(--text-secondary, #8b949e);
+  color: var(--text-secondary);
   cursor: pointer;
   font-size: 16px;
   padding: 2px;
@@ -483,7 +483,7 @@ onUnmounted(() => {
 }
 
 .refresh-btn:hover:not(:disabled) {
-  color: var(--text-primary, #e6edf3);
+  color: var(--text-primary);
 }
 
 .refresh-btn:disabled {

@@ -340,8 +340,8 @@ function getRiskLevelLabel(level: string): string {
 <style scoped>
 .approval-rules {
   padding: 16px;
-  background: var(--bg-card, #161b22);
-  border: 1px solid var(--border, #30363d);
+  background: var(--bg-card);
+  border: 1px solid var(--border);
   border-radius: 8px;
 }
 
@@ -355,13 +355,13 @@ function getRiskLevelLabel(level: string): string {
 .header h3 {
   margin: 0;
   font-size: 16px;
-  color: var(--text-primary, #e6edf3);
+  color: var(--text-primary);
 }
 
 .empty {
   text-align: center;
   padding: 32px;
-  color: var(--text-secondary, #8b949e);
+  color: var(--text-secondary);
   font-size: 14px;
 }
 
@@ -373,8 +373,8 @@ function getRiskLevelLabel(level: string): string {
 
 .rule-card {
   padding: 12px;
-  background: var(--bg, #0f1117);
-  border: 1px solid var(--border, #30363d);
+  background: var(--bg);
+  border: 1px solid var(--border);
   border-radius: 6px;
   cursor: move;
   transition: all 0.2s;
@@ -385,7 +385,7 @@ function getRiskLevelLabel(level: string): string {
 }
 
 .rule-card:hover {
-  border-color: var(--accent, #6366f1);
+  border-color: var(--accent);
 }
 
 .rule-card.dragging {
@@ -400,7 +400,7 @@ function getRiskLevelLabel(level: string): string {
 
 .rule-drag-handle {
   font-size: 16px;
-  color: var(--text-secondary, #8b949e);
+  color: var(--text-secondary);
   cursor: move;
   padding-top: 2px;
 }
@@ -412,7 +412,7 @@ function getRiskLevelLabel(level: string): string {
 .rule-name {
   font-size: 14px;
   font-weight: 600;
-  color: var(--text-primary, #e6edf3);
+  color: var(--text-primary);
   margin-bottom: 4px;
 }
 
@@ -438,7 +438,7 @@ function getRiskLevelLabel(level: string): string {
 .rule-description {
   margin-top: 8px;
   font-size: 12px;
-  color: var(--text-secondary, #8b949e);
+  color: var(--text-secondary);
   padding-left: 28px;
 }
 
@@ -449,7 +449,7 @@ function getRiskLevelLabel(level: string): string {
 }
 
 .conditions-label {
-  color: var(--text-secondary, #8b949e);
+  color: var(--text-secondary);
   margin-bottom: 4px;
 }
 
@@ -471,11 +471,11 @@ function getRiskLevelLabel(level: string): string {
   border-radius: 3px;
   font-size: 11px;
   font-family: ui-monospace, monospace;
-  color: var(--accent-h, #818cf8);
+  color: var(--accent-h);
 }
 
 .condition-item .operator {
-  color: var(--text-secondary, #8b949e);
+  color: var(--text-secondary);
   font-size: 11px;
 }
 
@@ -491,9 +491,9 @@ function getRiskLevelLabel(level: string): string {
 
 .btn-icon {
   padding: 6px 10px;
-  border: 1px solid var(--border, #30363d);
+  border: 1px solid var(--border);
   background: transparent;
-  color: var(--text-secondary, #8b949e);
+  color: var(--text-secondary);
   border-radius: 4px;
   cursor: pointer;
   font-size: 14px;
@@ -501,8 +501,8 @@ function getRiskLevelLabel(level: string): string {
 }
 
 .btn-icon:hover:not(:disabled) {
-  background: var(--bg-hover, #21262d);
-  color: var(--text-primary, #e6edf3);
+  background: var(--bg-hover);
+  color: var(--text-primary);
 }
 
 .btn-icon.active {
@@ -539,8 +539,8 @@ function getRiskLevelLabel(level: string): string {
 .dialog {
   width: 90%;
   max-width: 500px;
-  background: var(--bg-card, #161b22);
-  border: 1px solid var(--border, #30363d);
+  background: var(--bg-card);
+  border: 1px solid var(--border);
   border-radius: 8px;
   box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
   max-height: 90vh;
@@ -557,26 +557,26 @@ function getRiskLevelLabel(level: string): string {
   justify-content: space-between;
   align-items: center;
   padding: 16px 20px;
-  border-bottom: 1px solid var(--border, #30363d);
+  border-bottom: 1px solid var(--border);
 }
 
 .dialog-header h3 {
   margin: 0;
   font-size: 16px;
-  color: var(--text-primary, #e6edf3);
+  color: var(--text-primary);
 }
 
 .btn-close {
   padding: 4px 8px;
   border: none;
   background: transparent;
-  color: var(--text-secondary, #8b949e);
+  color: var(--text-secondary);
   cursor: pointer;
   font-size: 20px;
 }
 
 .btn-close:hover {
-  color: var(--text-primary, #e6edf3);
+  color: var(--text-primary);
 }
 
 .dialog-body {
@@ -598,7 +598,7 @@ function getRiskLevelLabel(level: string): string {
   display: block;
   margin-bottom: 6px;
   font-size: 13px;
-  color: var(--text-secondary, #8b949e);
+  color: var(--text-secondary);
 }
 
 .required {
@@ -610,10 +610,10 @@ function getRiskLevelLabel(level: string): string {
 .form-textarea {
   width: 100%;
   padding: 8px 12px;
-  background: var(--bg, #0f1117);
-  border: 1px solid var(--border, #30363d);
+  background: var(--bg);
+  border: 1px solid var(--border);
   border-radius: 6px;
-  color: var(--text-primary, #e6edf3);
+  color: var(--text-primary);
   font-size: 14px;
 }
 
@@ -627,7 +627,7 @@ function getRiskLevelLabel(level: string): string {
 .form-select:focus,
 .form-textarea:focus {
   outline: none;
-  border-color: var(--accent, #6366f1);
+  border-color: var(--accent);
 }
 
 .form-textarea {
@@ -666,7 +666,7 @@ function getRiskLevelLabel(level: string): string {
   justify-content: flex-end;
   gap: 8px;
   padding: 16px 20px;
-  border-top: 1px solid var(--border, #30363d);
+  border-top: 1px solid var(--border);
 }
 
 .btn {
@@ -684,7 +684,7 @@ function getRiskLevelLabel(level: string): string {
 }
 
 .btn-primary {
-  background: var(--accent, #6366f1);
+  background: var(--accent);
   color: #fff;
 }
 
@@ -694,11 +694,11 @@ function getRiskLevelLabel(level: string): string {
 
 .btn-ghost {
   background: transparent;
-  color: var(--text-primary, #e6edf3);
-  border: 1px solid var(--border, #30363d);
+  color: var(--text-primary);
+  border: 1px solid var(--border);
 }
 
 .btn-ghost:hover {
-  background: var(--bg-hover, #21262d);
+  background: var(--bg-hover);
 }
 </style>
