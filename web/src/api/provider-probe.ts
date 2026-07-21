@@ -129,6 +129,26 @@ export function triggerProviderProbeAll(providerId: number) {
   }>('POST', `/api/providers/${providerId}/probe-history/trigger-all`)
 }
 
+// 2026-07-21 P0 fix: clear failed node_probe_state rows so the
+// routing view v_routable_credential_models immediately re-admits
+// bindings that were blocked by NodeProbeWorker's backoff ladder
+// (5s/30s/60s/5m/1h/2h/24h). Without this, a single failed probe
+// can keep a credential out of routing for up to 24h even when
+// "全面探测" (TriggerAllSync) reports it as healthy.
+//
+// Companion to TriggerAllSync: when the probe run returns ok, the
+// server now also writes node_probe_state automatically, so this
+// endpoint is only needed when an operator wants to clear stale
+// state without re-probing. Body: { credential_id?: number }.
+export function resetNodeProbeState(
+  providerId: number,
+  credentialId?: number,
+): Promise<{ message: string; rows_updated: number; credential_id: number }> {
+  return req('POST', `/api/providers/${providerId}/node-probe-state/reset`, {
+    credential_id: credentialId ?? 0,
+  })
+}
+
 export interface ProbeAllResult {
   credential_id: number
   raw_model_name: string
