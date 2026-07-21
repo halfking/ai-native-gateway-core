@@ -31,7 +31,7 @@ const links = computed(() =>
 
 <template>
   <div class="app-shell">
-    <a class="skip-link" href="#main-content">{{ t('nav.skip', 'Skip to main content') }}</a>
+    <a class="skip-link" href="#main-content">{{ t('app.nav.skip') }}</a>
     <header class="topbar">
       <a class="brand" href="/maintain/home" :title="SITE_TITLE">
         <img
@@ -44,7 +44,7 @@ const links = computed(() =>
         <span class="brand-title">{{ SITE_TITLE }}</span>
       </a>
       <div class="topbar-right">
-        <nav class="topnav" :aria-label="t('nav.mainAria', '主导航')">
+        <nav class="topnav" :aria-label="t('app.nav.mainAria')">
           <a
             v-for="link in links"
             :key="link.path"
@@ -61,8 +61,8 @@ const links = computed(() =>
       <slot />
     </main>
     <footer class="footer">
-      <span>{{ t('footer.left', '开轩启圭 AI Native') }}</span>
-      <span>{{ t('footer.right', '© 2026 开轩启圭 · ') }}<a href="/maintain/feedback">{{ t('footer.feedbackLink', '反馈') }}</a></span>
+      <span>{{ t('app.footer.left') }}</span>
+      <span>{{ t('app.footer.right') }}<a href="/maintain/feedback">{{ t('app.footer.feedbackLink') }}</a></span>
     </footer>
   </div>
 </template>
