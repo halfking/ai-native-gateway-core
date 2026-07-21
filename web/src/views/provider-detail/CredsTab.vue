@@ -1060,7 +1060,7 @@ function onTagsInput(ev: Event) {
 .drawer-key {
   margin-top: 6px;
   padding: 8px;
-  background: var(--bg-subtle, #161b22);
+  background: var(--bg-subtle);
   border-radius: 4px;
 }
 .drawer-sub {
@@ -1152,14 +1152,14 @@ function onTagsInput(ev: Event) {
   font-size: 12px;
 }
 .probe-status--loading {
-  color: var(--accent, #6366f1);
+  color: var(--accent);
 }
 .probe-spinner {
   display: inline-block;
   width: 10px;
   height: 10px;
   border: 2px solid rgba(99, 102, 241, 0.3);
-  border-top-color: var(--accent, #6366f1);
+  border-top-color: var(--accent);
   border-radius: 50%;
   animation: probe-spin 0.8s linear infinite;
 }
