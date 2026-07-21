@@ -115,6 +115,33 @@ src_dump_schema() {
   fi
 }
 
+tgt_dump_schema() {
+  PGPASSWORD="$TARGET_PASS" pg_dump -h localhost -p "$TUNNEL_PORT" \
+    -U llm_gateway -d llm_gateway \
+    --schema-only --no-owner --no-privileges --format=plain
+}
+
+tgt_dump_data() {
+  PGPASSWORD="$TARGET_PASS" pg_dump -h localhost -p "$TUNNEL_PORT" \
+    -U llm_gateway -d llm_gateway \
+    --data-only --no-owner --no-privileges --format=plain "$@"
+}
+
+# ── Detect tables that should skip data backup ────────────────────────────
+detect_hot_tables() {
+  tgt_psql "
+  SELECT tablename
+  FROM pg_tables WHERE schemaname='public'
+    AND (tablename LIKE '%_hot' OR tablename LIKE '%_default'
+         OR tablename IN (
+           SELECT c.relname FROM pg_inherits i
+           JOIN pg_class c ON i.inhrelid = c.oid
+           JOIN pg_namespace n ON c.relnamespace = n.oid
+           WHERE n.nspname = 'public'
+         ))
+  ORDER BY 1"
+}
+
 # ── Target (252) helpers ─────────────────────────────────────────────────
 tgt_psql() {
   PGPASSWORD="$TARGET_PASS" psql -h localhost -p "$TUNNEL_PORT" \
@@ -179,6 +206,73 @@ if [[ "$MODE" == "check" ]]; then
   fi
   exit 0
 fi
+
+# ============================================================================
+# PHASE 0.5: BACKUP 252 (before any DDL changes)
+# ============================================================================
+phase "PHASE 0.5: BACKUP 252"
+
+BACKUP_BASE="${BACKUP_BASE:-$HOME/backups/sync-schema-to-252}"
+BACKUP_TS=$(date +%Y%m%d-%H%M%S)
+BACKUP_DIR="$BACKUP_BASE/$BACKUP_TS"
+mkdir -p "$BACKUP_DIR/tables"
+info "Backup path: $BACKUP_DIR"
+
+# Full schema dump of 252 (safety net for all tables)
+info "Dumping full schema from 252..."
+tgt_dump_schema > "$BACKUP_DIR/252-predump-schema.sql" 2>/dev/null
+ok "$(wc -l < "$BACKUP_DIR/252-predump-schema.sql") lines schema dump done"
+
+# Detect and exclude hot/partition tables from data backup
+hot_tables=$(detect_hot_tables || true)
+skip_table_count=$(echo "$hot_tables" | wc -l | tr -d ' ')
+info "Tables skipped for data backup (hot/default/inherit): $skip_table_count"
+
+# Data backup for regular tables via pg_dump --table
+regular_tables=$(comm -23 \
+  <(tgt_psql "SELECT tablename FROM pg_tables WHERE schemaname='public' ORDER BY 1") \
+  <(echo "$hot_tables") || true)
+regular_count=$(echo "$regular_tables" | wc -l | tr -d ' ')
+if [[ "$regular_count" -gt 0 ]]; then
+  info "Backing up data for $regular_count regular tables..."
+  pg_dump_args=()
+  while IFS= read -r tbl; do
+    [[ -n "$tbl" ]] && pg_dump_args+=(--table="public.$tbl")
+  done <<< "$regular_tables"
+  PGPASSWORD="$TARGET_PASS" pg_dump -h localhost -p "$TUNNEL_PORT" \
+    -U llm_gateway -d llm_gateway \
+    --data-only --no-owner --no-privileges --format=plain \
+    "${pg_dump_args[@]}" > "$BACKUP_DIR/252-predump-data.sql" 2>/dev/null || \
+    warn "data dump had errors (some tables may be empty)"
+  ok "$(wc -l < "$BACKUP_DIR/252-predump-data.sql") lines data dump done"
+else
+  info "No regular tables detected — skipping data backup"
+fi
+
+# Per-table schema snapshot for quick individual restore
+while IFS= read -r tbl; do
+  [[ -n "$tbl" ]] || continue
+  PGPASSWORD="$TARGET_PASS" pg_dump -h localhost -p "$TUNNEL_PORT" \
+    -U llm_gateway -d llm_gateway \
+    --schema-only --no-owner --no-privileges --format=plain \
+    --table="public.$tbl" > "$BACKUP_DIR/tables/${tbl}.sql" 2>/dev/null
+done < <(tgt_psql "SELECT tablename FROM pg_tables WHERE schemaname='public' ORDER BY 1")
+ok "Per-table schema snapshots done"
+
+# Backup manifest
+cat > "$BACKUP_DIR/backup-manifest.txt" <<EOF
+sync-schema-to-252 backup
+timestamp: $BACKUP_TS
+source_from: $FROM
+target: 252 (localhost:$TUNNEL_PORT)
+regular_tables_with_data: $regular_count
+hot_tables_skipped_data: $skip_table_count
+contents:
+  252-predump-schema.sql   — full schema of all public tables
+  252-predump-data.sql     — data for regular tables only (no hot/default/partition children)
+  tables/*.sql             — per-table schema snapshots
+EOF
+ok "Backup complete"
 
 # ============================================================================
 # PHASE 1: DDL SYNC (additive only — no drops, no data)
