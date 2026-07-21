@@ -145,4 +145,17 @@ export default {
       '激活向导路径：/activate · 与安装器 CLI 命令互通',
     ],
   },
+  // 2026-07-21: guest-nav aria + 顶部 7 个下载/激活链接（App.vue L197-203）。
+  guestNavAria: '产品导航',
+  navDownload: '下载',
+  navSetup: '安装激活',
+  navActivate: '在线激活',
+  navLicense: '许可状态',
+  navAgreement: '用户协议',
+  navSupport: '技术支持',
+  // 2026-07-21: 落地页主 CTA（LandingView.vue L109-119）。
+  ctaLogin: '登录控制面',
+  ctaDownload: '下载安装包',
+  ctaActivate: '激活 License',
+  ctaAgreement: '查看用户协议',
 }

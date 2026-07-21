@@ -7,7 +7,7 @@
  *
  * 2026-07-21: 统一三项目导航规范（llm-gateway-go / ai-native-maintain / ai-session-manager）。
  */
-import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useRoute } from 'vue-router'
 import LanguageSelector from '../LanguageSelector.vue'
@@ -29,10 +29,14 @@ onMounted(() => {
   logoObserver = new MutationObserver(() => { brandLogo.value = logoSrc(detectTheme()) })
   logoObserver.observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] })
   document.addEventListener('click', handleOutside)
+  window.addEventListener('resize', onWindowChange)
+  window.addEventListener('scroll', onWindowChange, true)
 })
 onBeforeUnmount(() => {
   logoObserver?.disconnect()
   document.removeEventListener('click', handleOutside)
+  window.removeEventListener('resize', onWindowChange)
+  window.removeEventListener('scroll', onWindowChange, true)
 })
 
 const isSuperAdmin = computed(() => checkSuperAdmin())
@@ -52,9 +56,40 @@ const navGroups = computed(() => visibleNavGroups(NAV_GROUPS, {
 }))
 
 const openGroupId = ref<string | null>(null)
+const dropdownStyle = ref<Record<string, string>>({})
+const groupTriggerRefs = ref<Record<string, HTMLElement | null>>({})
+let leaveTimer: number | null = null
+
+function setGroupTriggerRef(id: string, el: Element | null) {
+  if (el instanceof HTMLElement) {
+    groupTriggerRefs.value[id] = el
+  }
+}
+
+function syncDropdownPosition(id: string) {
+  const el = groupTriggerRefs.value[id]
+  if (!el || typeof window === 'undefined') return
+  const rect = el.getBoundingClientRect()
+  dropdownStyle.value = {
+    position: 'fixed',
+    top: `${rect.bottom + 6}px`,
+    left: `${Math.max(8, rect.left)}px`,
+    zIndex: '1000',
+  }
+}
+
+function openGroupMenu(id: string) {
+  cancelLeave()
+  openGroupId.value = id
+  nextTick(() => syncDropdownPosition(id))
+}
 
 function toggleGroup(id: string) {
-  openGroupId.value = openGroupId.value === id ? null : id
+  if (openGroupId.value === id) {
+    closeAll()
+    return
+  }
+  openGroupMenu(id)
 }
 
 function closeAll() {
@@ -62,9 +97,18 @@ function closeAll() {
 }
 
 function leaveGroup(id: string) {
-  // Only close when the cursor leaves the group that was opened by hover;
-  // click-opened groups stay open until the user clicks again or outside.
-  if (openGroupId.value === id) closeAll()
+  if (leaveTimer) clearTimeout(leaveTimer)
+  leaveTimer = window.setTimeout(() => {
+    if (openGroupId.value === id) closeAll()
+    leaveTimer = null
+  }, 120)
+}
+
+function cancelLeave() {
+  if (leaveTimer) {
+    clearTimeout(leaveTimer)
+    leaveTimer = null
+  }
 }
 
 function handleOutside(event: MouseEvent) {
@@ -73,6 +117,18 @@ function handleOutside(event: MouseEvent) {
   if (target.closest('.app-topbar__nav') || target.closest('.app-topbar__dropdown')) return
   closeAll()
 }
+
+function onWindowChange() {
+  if (openGroupId.value) syncDropdownPosition(openGroupId.value)
+}
+
+watch(openGroupId, (id) => {
+  if (id) nextTick(() => syncDropdownPosition(id))
+})
+
+const activeGroup = computed(() =>
+  navGroups.value.find((g) => g.id === openGroupId.value) ?? null,
+)
 
 function groupActive(id: string): boolean {
   return navGroups.value
@@ -87,7 +143,8 @@ function navLabel(labelKey: string | undefined, fallback: string): string {
 
 <template>
   <header class="app-topbar">
-    <router-link to="/" class="app-topbar__brand" :title="SITE_TITLE">
+    <!-- 品牌区跳产品首页（ai-native-maintain /maintain/home），不是总览 /dashboard -->
+    <a href="/maintain/home" class="app-topbar__brand" :title="SITE_TITLE">
       <img
         :src="brandLogo"
         :width="SITE_LOGO_SIZE"
@@ -96,7 +153,7 @@ function navLabel(labelKey: string | undefined, fallback: string): string {
         class="app-topbar__brand-img"
       />
       <span class="app-topbar__brand-text">{{ SITE_TITLE }}</span>
-    </router-link>
+    </a>
 
     <nav class="app-topbar__nav" :aria-label="t('nav.mainAria', '主导航')">
       <template v-for="item in navPrimaryItems" :key="item.path + item.label">
@@ -119,51 +176,58 @@ function navLabel(labelKey: string | undefined, fallback: string): string {
         :key="group.id"
         class="app-topbar__group"
         :class="{ 'app-topbar__group--open': openGroupId === group.id, 'app-topbar__group--active': groupActive(group.id) }"
-        @mouseenter="openGroupId = group.id"
+        @mouseenter="openGroupMenu(group.id)"
         @mouseleave="leaveGroup(group.id)"
       >
         <button
           type="button"
           class="app-topbar__link app-topbar__group-trigger"
+          :ref="(el) => setGroupTriggerRef(group.id, el as Element | null)"
           :aria-expanded="openGroupId === group.id"
           @click="toggleGroup(group.id)"
         >
           {{ navLabel(group.labelKey, group.label) }}
           <span class="app-topbar__chevron" aria-hidden="true">▾</span>
         </button>
-        <div
-          v-show="openGroupId === group.id"
-          class="app-topbar__dropdown"
-          role="menu"
-        >
-          <template v-for="item in group.items" :key="item.path + item.label">
-            <a
-              v-if="item.external"
-              :href="item.path"
-              class="app-topbar__dropdown-item"
-              role="menuitem"
-              :target="item.path.startsWith('http') ? '_blank' : undefined"
-              :rel="item.path.startsWith('http') ? 'noopener' : undefined"
-              @click="closeAll()"
-            >
-              <span class="app-topbar__dropdown-icon" aria-hidden="true">{{ item.icon }}</span>
-              <span>{{ navLabel(item.labelKey, item.label) }}</span>
-            </a>
-            <router-link
-              v-else
-              :to="item.path"
-              class="app-topbar__dropdown-item"
-              :class="{ active: isNavItemActive(item.path, route.path, item.exact) }"
-              role="menuitem"
-              @click="closeAll()"
-            >
-              <span class="app-topbar__dropdown-icon" aria-hidden="true">{{ item.icon }}</span>
-              <span>{{ navLabel(item.labelKey, item.label) }}</span>
-            </router-link>
-          </template>
-        </div>
       </div>
     </nav>
+
+    <Teleport to="body">
+      <div
+        v-if="activeGroup && openGroupId"
+        class="app-topbar__dropdown"
+        :style="dropdownStyle"
+        role="menu"
+        @mouseenter="cancelLeave"
+        @mouseleave="closeAll()"
+      >
+        <template v-for="item in activeGroup.items" :key="item.path + item.label">
+          <a
+            v-if="item.external"
+            :href="item.path"
+            class="app-topbar__dropdown-item"
+            role="menuitem"
+            :target="item.path.startsWith('http') ? '_blank' : undefined"
+            :rel="item.path.startsWith('http') ? 'noopener' : undefined"
+            @click="closeAll()"
+          >
+            <span class="app-topbar__dropdown-icon" aria-hidden="true">{{ item.icon }}</span>
+            <span>{{ navLabel(item.labelKey, item.label) }}</span>
+          </a>
+          <router-link
+            v-else
+            :to="item.path"
+            class="app-topbar__dropdown-item"
+            :class="{ active: isNavItemActive(item.path, route.path, item.exact) }"
+            role="menuitem"
+            @click="closeAll()"
+          >
+            <span class="app-topbar__dropdown-icon" aria-hidden="true">{{ item.icon }}</span>
+            <span>{{ navLabel(item.labelKey, item.label) }}</span>
+          </router-link>
+        </template>
+      </div>
+    </Teleport>
 
     <div class="app-topbar__actions">
       <SystemStatusIndicator />
@@ -193,6 +257,8 @@ function navLabel(labelKey: string | undefined, fallback: string): string {
   width: 100%;
   box-sizing: border-box;
   min-height: 64px;
+  /* 必须 visible，否则二级下拉会被 header 裁切 */
+  overflow: visible;
 }
 
 .app-topbar__brand {
@@ -230,8 +296,8 @@ function navLabel(labelKey: string | undefined, fallback: string): string {
   gap: 4px;
   flex: 1;
   min-width: 0;
-  overflow-x: auto;
-  scrollbar-width: thin;
+  /* 禁止 overflow:auto — 会裁切绝对定位的二级下拉，导致菜单在窄条内滚动看不见 */
+  overflow: visible;
 }
 
 .app-topbar__link {
@@ -285,11 +351,10 @@ function navLabel(labelKey: string | undefined, fallback: string): string {
 }
 
 .app-topbar__dropdown {
-  position: absolute;
-  top: calc(100% + 6px);
-  left: 0;
-  z-index: 40;
   min-width: 220px;
+  max-height: min(70vh, 480px);
+  overflow-x: hidden;
+  overflow-y: auto;
   padding: 6px;
   margin: 0;
   background: var(--kx-surface, var(--card));

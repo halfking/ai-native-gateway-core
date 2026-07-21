@@ -79,4 +79,6 @@ export default {
   publicLicense: '许可状态',
   publicAgreement: '用户协议',
   publicSupport: '技术支持',
+  // 2026-07-21: a11y skip-link target, used by LifecycleShell.vue.
+  skip: '跳到主要内容',
 }
