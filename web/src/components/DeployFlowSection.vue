@@ -114,9 +114,9 @@ function handleSecondary(path?: string) {
 
 .deploy-flow__inner {
   padding: 28px 24px;
-  border: 1px solid rgba(99, 102, 241, 0.35);
+  border: 1px solid color-mix(in srgb, var(--accent) 35%, transparent);
   border-radius: 14px;
-  background: linear-gradient(135deg, rgba(99, 102, 241, 0.1), rgba(15, 17, 23, 0.55));
+  background: linear-gradient(135deg, color-mix(in srgb, var(--accent) 10%, transparent), rgba(15, 17, 23, 0.55));
 }
 
 .deploy-flow__head {
@@ -165,7 +165,7 @@ function handleSecondary(path?: string) {
   font-size: 15px;
   font-weight: 700;
   color: var(--accent-h);
-  background: rgba(99, 102, 241, 0.16);
+  background: color-mix(in srgb, var(--accent) 16%, transparent);
 }
 
 .deploy-flow__body h3 {

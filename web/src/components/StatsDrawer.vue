@@ -192,7 +192,7 @@ defineExpose({ open, close })
 }
 
 .drawer-tab--active {
-  background: rgba(99, 102, 241, 0.15);
+  background: color-mix(in srgb, var(--accent) 15%, transparent);
   border-color: var(--accent);
   color: var(--accent);
 }

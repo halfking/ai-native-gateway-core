@@ -319,8 +319,8 @@ function handleClick() {
 
 .request-tile--highlighted {
   box-shadow:
-    0 0 0 2px rgba(99, 102, 241, 0.55),
-    0 4px 14px rgba(99, 102, 241, 0.2);
+    0 0 0 2px color-mix(in srgb, var(--accent) 55%, transparent),
+    0 4px 14px color-mix(in srgb, var(--accent) 20%, transparent);
   z-index: 5;
 }
 

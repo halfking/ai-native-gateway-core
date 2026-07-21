@@ -342,7 +342,7 @@ function onTenantChange(row: RoutingDefault, value: string) {
   cursor: pointer;
 }
 .seg.active {
-  background: rgba(99, 102, 241, 0.2);
+  background: color-mix(in srgb, var(--accent) 20%, transparent);
   color: var(--accent-h);
   font-weight: 600;
 }
