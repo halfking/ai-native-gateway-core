@@ -328,7 +328,7 @@ watch(activeTab, loadAll)
       </div>
       <div class="stat-card">
         <div class="stat-label">{{ t('compression.stats.compressed') }}</div>
-        <div class="stat-value" style="color:var(--success,#22c55e)">{{ fmtNum(stats.compressed_total) }}</div>
+        <div class="stat-value" style="color:var(--success)">{{ fmtNum(stats.compressed_total) }}</div>
       </div>
       <div class="stat-card">
         <div class="stat-label">{{ t('compression.stats.compressionRate') }}</div>
@@ -336,7 +336,7 @@ watch(activeTab, loadAll)
       </div>
       <div class="stat-card">
         <div class="stat-label">{{ t('compression.stats.estimatedSaved') }}</div>
-        <div class="stat-value" style="color:var(--warning,#f59e0b)">
+        <div class="stat-value" style="color:var(--warning)">
           {{ stats.estimated_tokens_saved != null ? fmtNum(stats.estimated_tokens_saved) : '—' }}
         </div>
       </div>
