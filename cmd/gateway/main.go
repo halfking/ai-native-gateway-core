@@ -259,92 +259,86 @@ func main() {
 	// ── License enforcement (2026-07-12) ─────────────────────────────
 	// Verify license at startup. Failure enters restricted mode (warn only).
 	//
-	// LICENSE_DISABLED=true bypasses all license checks (for internal deploys)
 	// LICENSE_MODE controls offline vs online verification:
 	//   - "offline" (M1): runs OfflineVerificationDaemon (6h cron), no heartbeat
 	//   - "online" (default): runs StartTokenRefreshDaemon for token refresh
 
-	if os.Getenv("LICENSE_DISABLED") == "true" {
-		slog.Warn("license enforcement DISABLED via LICENSE_DISABLED=true")
-		// Skip all license checks, gRestrictedMode stays false
-	} else {
-		licenseMode := os.Getenv("LICENSE_MODE")
-		if licenseMode == "" {
-			licenseMode = "online"
+	licenseMode := os.Getenv("LICENSE_MODE")
+	if licenseMode == "" {
+		licenseMode = "online"
+	}
+
+	if licenseMode == "offline" {
+		// M1 offline mode: verify license.dat locally, no network calls
+		slog.Info("license mode: offline (M1)", "interval", "6h", "heartbeat", "disabled")
+
+		// Initial verification at startup
+		if err := licensing.EnforceAtStartup(
+			"/var/lib/kx-gateway/license.dat",
+			"/var/lib/kx-gateway/server.pub",
+			"/var/lib/kx-gateway",
+		); err != nil {
+			slog.Warn("license verification failed, entering community mode", "error", err)
+			if enterErr := licensing.EnterCommunityMode(); enterErr != nil {
+				slog.Error("failed to enter community mode", "error", enterErr)
+			}
+		} else {
+			slog.Info("license verification successful")
 		}
 
-		if licenseMode == "offline" {
-			// M1 offline mode: verify license.dat locally, no network calls
-			slog.Info("license mode: offline (M1)", "interval", "6h", "heartbeat", "disabled")
-
-			// Initial verification at startup
-			if err := licensing.EnforceAtStartup(
-				"/var/lib/kx-gateway/license.dat",
-				"/var/lib/kx-gateway/server.pub",
-				"/var/lib/kx-gateway",
-			); err != nil {
-				slog.Warn("license verification failed, entering community mode", "error", err)
-				if enterErr := licensing.EnterCommunityMode(); enterErr != nil {
-					slog.Error("failed to enter community mode", "error", enterErr)
-				}
-			} else {
-				slog.Info("license verification successful")
-			}
-
-			// Start offline verification daemon (6h interval)
-			go licensing.OfflineVerificationDaemon(
-				context.Background(),
-				licensing.DefaultOfflineVerificationInterval,
-				"/var/lib/kx-gateway/license.dat",
-				"/var/lib/kx-gateway/server.pub",
-				"/var/lib/kx-gateway",
-			)
-			slog.Info("offline verification daemon started", "interval", "6h")
+		// Start offline verification daemon (6h interval)
+		go licensing.OfflineVerificationDaemon(
+			context.Background(),
+			licensing.DefaultOfflineVerificationInterval,
+			"/var/lib/kx-gateway/license.dat",
+			"/var/lib/kx-gateway/server.pub",
+			"/var/lib/kx-gateway",
+		)
+		slog.Info("offline verification daemon started", "interval", "6h")
+	} else {
+		// Online mode: verify and start token refresh daemon
+		if err := licensing.EnforceAtStartup(
+			"/var/lib/kx-gateway/license.dat",
+			"/var/lib/kx-gateway/server.pub",
+			"/var/lib/kx-gateway",
+		); err != nil {
+			slog.Warn("license enforcement failed, entering restricted mode", "error", err)
+			// 2026-07-21: 设置全局受限模式标志，router 注册阶段会据此
+			// 启用 licensing.RestrictedModeMiddleware 阻止非白名单请求。
+			gRestrictedMode = true
 		} else {
-			// Online mode: verify and start token refresh daemon
-			if err := licensing.EnforceAtStartup(
-				"/var/lib/kx-gateway/license.dat",
-				"/var/lib/kx-gateway/server.pub",
-				"/var/lib/kx-gateway",
-			); err != nil {
-				slog.Warn("license enforcement failed, entering restricted mode", "error", err)
-				// 2026-07-21: 设置全局受限模式标志，router 注册阶段会据此
-				// 启用 licensing.RestrictedModeMiddleware 阻止非白名单请求。
-				gRestrictedMode = true
-			} else {
-				slog.Info("license verification successful")
-			}
+			slog.Info("license verification successful")
+		}
 
-			// Token refresh daemon (online mode only)
-			if masterURL := os.Getenv("LICENSE_AUTHORITY_URL"); masterURL != "" {
-				homeDir, _ := os.UserHomeDir()
-				tokenDir := filepath.Join(homeDir, ".kx-gateway")
-				_ = tokenDir // 保留以兼容后续逻辑
+		// Token refresh daemon (online mode only)
+		if masterURL := os.Getenv("LICENSE_AUTHORITY_URL"); masterURL != "" {
+			homeDir, _ := os.UserHomeDir()
+			tokenDir := filepath.Join(homeDir, ".kx-gateway")
+			_ = tokenDir // 保留以兼容后续逻辑
 
-				// 2026-07-21: 启用 token 自动续期守护进程。
-				// - 首次延迟 1 小时（避免启动风暴）
-				// - 之后每 6 天执行一次刷新
-				// - 失败不中断，自动按 BackoffConfig 退避
-				// - 守护进程使用独立 context，与主进程生命周期解耦
-				//   （关闭时由 daemon 内部的 ticker.Stop 自动回收）。
-				refreshTokenPath := filepath.Join(tokenDir, "refresh_token")
-				instanceTokenPath := filepath.Join(tokenDir, "instance_token")
-				daemonCtx, daemonCancel := context.WithCancel(context.Background())
-				defer daemonCancel() // 进程退出时通知守护进程退出
-				go licensing.StartTokenRefreshDaemon(
-					daemonCtx,
-					masterURL,
-					refreshTokenPath,
-					instanceTokenPath,
-					6*24*time.Hour, // 518400 秒 = 6 天
-				)
-				slog.Info("token refresh daemon started",
-					"master_url", masterURL,
-					"interval", "6d",
-					"initial_delay", "1h")
-			} else {
-				slog.Info("token refresh daemon disabled (LICENSE_AUTHORITY_URL not set)")
-			}
+			// 2026-07-21: 启用 token 自动续期守护进程。
+			// - 首次延迟 1 小时（避免启动风暴）
+			// - 之后每 6 天执行一次刷新
+			// - 失败不中断，自动按 BackoffConfig 退避
+			// - 守护进程使用独立 context，与主进程生命周期解耦
+			//   （关闭时由 daemon 内部的 ticker.Stop 自动回收）。
+			refreshTokenPath := filepath.Join(tokenDir, "refresh_token")
+			instanceTokenPath := filepath.Join(tokenDir, "instance_token")
+			daemonCtx, daemonCancel := context.WithCancel(context.Background())
+			defer daemonCancel() // 进程退出时通知守护进程退出
+			go licensing.StartTokenRefreshDaemon(
+				daemonCtx,
+				masterURL,
+				refreshTokenPath,
+				instanceTokenPath,
+				6*24*time.Hour, // 518400 秒 = 6 天
+			)
+			slog.Info("token refresh daemon started",
+				"master_url", masterURL,
+				"interval", "6d",
+				"initial_delay", "1h")
+		} else {
+			slog.Info("token refresh daemon disabled (LICENSE_AUTHORITY_URL not set)")
 		}
 	}
 
