@@ -248,7 +248,7 @@ onMounted(async () => {
         <p>本机通过 IP:端口访问即可激活；可完全离线完成。联网时将自动向中心注册，不阻塞本地使用。</p>
       </div>
       <div class="lifecycle-page__actions">
-        <RouterLink class="btn btn-ghost" to="/customer/activate">高级激活页</RouterLink>
+        <RouterLink class="btn btn-ghost" to="/customer/update-activate">高级激活页</RouterLink>
         <button type="button" class="btn btn-ghost" @click="skipToLogin">稍后再说</button>
       </div>
     </header>

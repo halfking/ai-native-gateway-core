@@ -190,9 +190,9 @@ function handleChangePasswordSuccess() {
       <nav class="guest-nav" :aria-label="t('landing.guestNavAria') || '产品导航'">
         <a href="/maintain/download">{{ t('landing.navDownload') }}</a>
         <a href="/bootstrap">{{ t('landing.navSetup') || '安装激活' }}</a>
-        <a href="/customer/activate">{{ t('landing.navActivate') }}</a>
-        <a href="/customer/license">{{ t('landing.navLicense') }}</a>
-        <a href="/customer/agreement">{{ t('landing.navAgreement') }}</a>
+        <a href="/customer/update-activate">{{ t('landing.navActivate') }}</a>
+        <a href="/customer/update-activate">{{ t('landing.navLicense') }}</a>
+        <a href="/customer/update-activate">{{ t('landing.navAgreement') }}</a>
         <a href="/maintain/support">{{ t('landing.navSupport') }}</a>
       </nav>
       <div class="guest-header-right">

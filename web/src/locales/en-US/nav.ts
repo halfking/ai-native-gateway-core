@@ -52,6 +52,7 @@ export default {
     promptInjection: 'Prompt Injection Detection',
     examples: 'Examples',
     chat: 'Chat',
+    updateActivate: 'Update & Activate',
     licenseActivate: 'License Activation',
     siteInfo: 'Site Info',
     licenseStatus: 'License Status',

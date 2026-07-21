@@ -53,6 +53,7 @@ export default {
     promptInjection: '提示词注入检测',
     examples: '接入示例',
     chat: '对话',
+    updateActivate: '更新与激活',
     licenseActivate: '许可激活',
     siteInfo: '站点信息',
     licenseStatus: '许可状态',

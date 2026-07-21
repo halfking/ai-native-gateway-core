@@ -14,6 +14,7 @@ import {
 import { listSettings, type SettingItem } from '../api'
 import { useRouter } from 'vue-router'
 import PromptInjectionConfigPanel from '../components/PromptInjectionConfigPanel.vue'
+import ModuleEntitlementsPanel from '../components/ModuleEntitlementsPanel.vue'
 
 const { t } = useI18n()
 const router = useRouter()
@@ -377,6 +378,7 @@ onMounted(() => {
 
 <template>
   <div class="modules-view">
+    <ModuleEntitlementsPanel />
     <!-- 三段硬约束提示（31 §2.3 + 31 §6 验收硬清单） -->
     <div class="modules-mode-banner" role="note">
       <strong>{{ t('modulesView.modeBannerTitle') }}</strong>
