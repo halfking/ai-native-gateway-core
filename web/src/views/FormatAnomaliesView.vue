@@ -451,8 +451,8 @@ textarea {
   transition: background 0.15s ease, border-color 0.15s ease, color 0.15s ease;
 }
 .btn:hover:not(:disabled) {
-  background: rgba(99, 102, 241, 0.12);
-  border-color: rgba(99, 102, 241, 0.4);
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  border-color: color-mix(in srgb, var(--accent) 40%, transparent);
 }
 .btn:disabled {
   cursor: not-allowed;
@@ -534,9 +534,9 @@ textarea {
   border: 1px solid transparent;
 }
 .badge-low {
-  background: rgba(99, 102, 241, 0.12);
-  border-color: rgba(99, 102, 241, 0.22);
-  color: #c7d2fe;
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  border-color: color-mix(in srgb, var(--accent) 22%, transparent);
+  color: var(--accent-h);
 }
 .badge-medium {
   background: rgba(210, 153, 34, 0.14);

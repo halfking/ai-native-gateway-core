@@ -72,8 +72,8 @@ function goKeys(action?: string) {
 .key-picker {
   padding: 16px 18px;
   margin-bottom: 12px;
-  border: 1px solid rgba(99, 102, 241, 0.35);
-  background: rgba(99, 102, 241, 0.08);
+  border: 1px solid color-mix(in srgb, var(--accent) 35%, transparent);
+  background: color-mix(in srgb, var(--accent) 8%, transparent);
 }
 
 .key-picker__title {

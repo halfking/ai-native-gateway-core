@@ -234,10 +234,10 @@ function onTenantChange(row: RoutingDefault, value: string) {
   gap: 16px;
 }
 .tier-group {
-  border: 1px solid var(--border, #30363d);
+  border: 1px solid var(--border);
   border-radius: 10px;
   padding: 12px;
-  background: var(--card, #1c2128);
+  background: var(--card);
 }
 .tier-head {
   display: flex;
@@ -266,7 +266,7 @@ function onTenantChange(row: RoutingDefault, value: string) {
   margin-bottom: 12px;
   padding: 10px;
   border-radius: 8px;
-  background: var(--bg-subtle, #161b22);
+  background: var(--bg-subtle);
 }
 .add-title { font-size: 13px; margin-bottom: 8px; font-weight: 600; }
 .add-grid {
@@ -279,11 +279,11 @@ function onTenantChange(row: RoutingDefault, value: string) {
   flex-direction: column;
   gap: 4px;
   font-size: 12px;
-  color: var(--muted, #8b949e);
+  color: var(--muted);
 }
 .add-grid input, .add-grid select, .row-meta input {
   padding: 6px 8px;
-  border: 1px solid var(--border, #30363d);
+  border: 1px solid var(--border);
   border-radius: 6px;
   font-size: 13px;
 }
@@ -299,7 +299,7 @@ function onTenantChange(row: RoutingDefault, value: string) {
   flex-shrink: 0;
 }
 .empty {
-  color: var(--muted, #8b949e);
+  color: var(--muted);
   font-size: 13px;
   padding: 8px 0;
 }
@@ -312,7 +312,7 @@ function onTenantChange(row: RoutingDefault, value: string) {
   gap: 10px;
 }
 .row-item {
-  border: 1px solid var(--border, #30363d);
+  border: 1px solid var(--border);
   border-radius: 8px;
   padding: 10px;
 }
@@ -330,7 +330,7 @@ function onTenantChange(row: RoutingDefault, value: string) {
 }
 .profile-seg {
   display: inline-flex;
-  border: 1px solid var(--border, #30363d);
+  border: 1px solid var(--border);
   border-radius: 8px;
   overflow: hidden;
 }
@@ -342,8 +342,8 @@ function onTenantChange(row: RoutingDefault, value: string) {
   cursor: pointer;
 }
 .seg.active {
-  background: rgba(99, 102, 241, 0.2);
-  color: var(--accent-h, #818cf8);
+  background: color-mix(in srgb, var(--accent) 20%, transparent);
+  color: var(--accent-h);
   font-weight: 600;
 }
 .row-meta {
@@ -363,7 +363,7 @@ function onTenantChange(row: RoutingDefault, value: string) {
   font-size: 11px;
   padding: 4px 8px;
   border-radius: 999px;
-  background: var(--bg-subtle, #161b22);
+  background: var(--bg-subtle);
   align-self: center;
 }
 .error { color: #b91c1c; font-size: 12px; margin: 6px 0 0; }
@@ -377,7 +377,7 @@ function onTenantChange(row: RoutingDefault, value: string) {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  color: var(--text, #e6edf3);
+  color: var(--text);
 }
 .icon-svg {
   width: 16px;
@@ -386,7 +386,7 @@ function onTenantChange(row: RoutingDefault, value: string) {
   flex-shrink: 0;
 }
 .icon-btn-danger {
-  color: var(--danger, #f85149);
+  color: var(--danger);
 }
 .icon-btn-danger:hover { opacity: .85; }
 

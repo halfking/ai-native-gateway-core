@@ -154,7 +154,7 @@ const renderPieChart = () => {
   const labels = data.map(e => e.dimension_value)
   const values = data.map(e => e.total_cost_usd)
   const colors = [
-    '#6366f1', '#8b5cf6', '#ec4899', '#f43f5e', '#f97316',
+    '#3b82f6', '#3b82f6', '#ec4899', '#f43f5e', '#f97316',
     '#f59e0b', '#84cc16', '#22c55e', '#14b8a6', '#06b6d4',
   ]
 
@@ -230,13 +230,13 @@ const renderTrendChart = () => {
         {
           label: t('dataLifecycle.usageCost.charts.inputCost'),
           data: inputCosts,
-          backgroundColor: '#6366f1',
+          backgroundColor: '#3b82f6',
           stack: 'stack1',
         },
         {
           label: t('dataLifecycle.usageCost.charts.outputCost'),
           data: outputCosts,
-          backgroundColor: '#8b5cf6',
+          backgroundColor: '#3b82f6',
           stack: 'stack1',
         },
       ],
@@ -795,7 +795,7 @@ onMounted(() => {
 }
 
 .cache-value--highlight {
-  color: #6366f1;
+  color: var(--accent);
 }
 
 .cache-hint {

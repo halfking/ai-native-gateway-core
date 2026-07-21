@@ -156,13 +156,13 @@ onMounted(load)
   cursor: pointer;
 }
 .tenants-table .tenant-row:hover {
-  background: rgba(99, 102, 241, 0.06);
+  background: color-mix(in srgb, var(--accent) 6%, transparent);
 }
 .tenants-table .tenant-row:focus-visible {
   outline: 2px solid var(--accent-h);
   outline-offset: -2px;
 }
-.badge-purple { background: rgba(139,92,246,.15); color: #a78bfa; }
+.badge-purple { background: color-mix(in srgb, var(--accent) 15%, transparent); color: var(--accent-h); }
 .badge-blue { background: rgba(59,130,246,.15); color: #60a5fa; }
 .badge-red { background: rgba(239,68,68,.15); color: #f87171; }
 .badge-green { background: rgba(34,197,94,.15); color: #4ade80; }

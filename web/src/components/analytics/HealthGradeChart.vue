@@ -31,7 +31,7 @@ const isDestroyed = ref(false)
 
 const gradeColors: Record<string, string> = {
   A: '#3fb950',
-  B: '#6366f1',
+  B: '#3b82f6',
   C: '#d29922',
   D: '#f85149',
   F: '#8b949e',
@@ -229,13 +229,13 @@ watch(() => props.avgScore, () => {
 }
 
 :deep(.el-card) {
-  background: var(--card, #1c2128);
-  border-color: var(--border, #30363d);
-  color: var(--text, #e6edf3);
+  background: var(--card);
+  border-color: var(--border);
+  color: var(--text);
 }
 
 :deep(.el-card__header) {
   padding: 12px 20px;
-  border-bottom-color: var(--border, #30363d);
+  border-bottom-color: var(--border);
 }
 </style>

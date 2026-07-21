@@ -120,16 +120,16 @@ p { margin: 0; color: #8b949e; font-size: 13px; line-height: 1.6; }
 .grid strong { color: #e6edf3; font-size: 16px; }
 .actions, .file-actions { display: flex; gap: 8px; flex-wrap: wrap; }
 .btn { border: 1px solid #30363d; border-radius: 6px; padding: 7px 12px; color: #fff; background: #21262d; cursor: pointer; }
-.btn-primary { background: #6366f1; border-color: #6366f1; }
+.btn-primary { background: var(--accent); border-color: var(--accent); }
 .btn-danger { background: #b42318; border-color: #b42318; }
 .btn:disabled { opacity: .45; cursor: not-allowed; }
 .btn-sm { padding: 5px 9px; font-size: 12px; }
 .hint, .empty { color: #8b949e; margin-bottom: 12px; }
 .file-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 12px 0; border-top: 1px solid #30363d; }
-.file-row code { display: block; color: #818cf8; }
+.file-row code { display: block; color: var(--accent-h); }
 .file-row small { display: block; color: #8b949e; margin-top: 4px; }
 .progress { height: 8px; background: #21262d; border-radius: 4px; overflow: hidden; margin: 12px 0; }
-.progress div { height: 100%; background: #6366f1; transition: width .2s; }
+.progress div { height: 100%; background: var(--accent); transition: width .2s; }
 .error { color: #f87171; }
 @media (max-width: 800px) { .grid { grid-template-columns: repeat(2, 1fr); } .file-row { align-items: flex-start; flex-direction: column; } }
 </style>

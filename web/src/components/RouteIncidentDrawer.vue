@@ -1154,9 +1154,9 @@ function hasRunValues(values: Record<string, unknown>): boolean {
   flex-direction: column;
   width: min(720px, 100vw);
   height: 100%;
-  background: var(--bg, #0f1117);
-  color: var(--text, #e6edf3);
-  border-left: 1px solid var(--border, #30363d);
+  background: var(--bg);
+  color: var(--text);
+  border-left: 1px solid var(--border);
   box-shadow: -8px 0 24px rgba(0, 0, 0, 0.4);
 }
 
@@ -1166,8 +1166,8 @@ function hasRunValues(values: Record<string, unknown>): boolean {
   justify-content: space-between;
   gap: 12px;
   padding: 12px 16px;
-  border-bottom: 1px solid var(--border, #30363d);
-  background: var(--bg-subtle, #161b22);
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-subtle);
   position: sticky;
   top: 0;
   z-index: 2;
@@ -1191,7 +1191,7 @@ function hasRunValues(values: Record<string, unknown>): boolean {
 
 .route-incident-drawer__sub {
   font-size: 12px;
-  color: var(--text-secondary, #8b949e);
+  color: var(--text-secondary);
   display: flex;
   align-items: center;
   gap: 8px;
@@ -1202,8 +1202,8 @@ function hasRunValues(values: Record<string, unknown>): boolean {
   display: inline-block;
   padding: 1px 6px;
   border-radius: 3px;
-  background: var(--bg, #0f1117);
-  border: 1px solid var(--border, #30363d);
+  background: var(--bg);
+  border: 1px solid var(--border);
   font-size: 10px;
   font-family: ui-monospace, monospace;
 }
@@ -1219,16 +1219,16 @@ function hasRunValues(values: Record<string, unknown>): boolean {
   font-size: 12px;
   padding: 5px 10px;
   border-radius: 4px;
-  border: 1px solid var(--border, #30363d);
-  background: var(--bg, #0f1117);
-  color: var(--text, #e6edf3);
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--text);
   cursor: pointer;
   font-weight: 500;
 }
 
 .route-incident-drawer__btn:hover:not(:disabled) {
-  border-color: var(--accent, #6366f1);
-  background: var(--bg-subtle, #161b22);
+  border-color: var(--accent);
+  background: var(--bg-subtle);
 }
 
 .route-incident-drawer__btn:disabled {
@@ -1256,43 +1256,43 @@ function hasRunValues(values: Record<string, unknown>): boolean {
 }
 
 .route-incident-drawer__section {
-  border: 1px solid var(--border, #30363d);
+  border: 1px solid var(--border);
   border-radius: 6px;
   padding: 12px 14px;
-  background: var(--bg-subtle, #161b22);
+  background: var(--bg-subtle);
 }
 
 .route-incident-drawer__section-title {
   margin: 0 0 8px 0;
   font-size: 13px;
   font-weight: 600;
-  color: var(--text, #e6edf3);
+  color: var(--text);
   letter-spacing: 0.02em;
 }
 
 .route-incident-drawer__empty {
   font-size: 12px;
-  color: var(--text-secondary, #8b949e);
+  color: var(--text-secondary);
   margin: 0;
 }
 
 .route-incident-drawer__error {
   font-size: 12px;
-  color: var(--danger, #f85149);
+  color: var(--danger);
   margin: 0;
 }
 
 .route-incident-drawer__note {
   font-size: 11px;
-  color: var(--text-secondary, #8b949e);
+  color: var(--text-secondary);
   margin: 8px 0 0 0;
   line-height: 1.5;
 }
 
 .route-incident-drawer__note code {
   font-family: ui-monospace, monospace;
-  background: var(--bg, #0f1117);
-  border: 1px solid var(--border, #30363d);
+  background: var(--bg);
+  border: 1px solid var(--border);
   padding: 1px 4px;
   border-radius: 3px;
 }
@@ -1307,9 +1307,9 @@ function hasRunValues(values: Record<string, unknown>): boolean {
 
 .diagnostic-run-row {
   padding: 10px;
-  border: 1px solid var(--border, #30363d);
+  border: 1px solid var(--border);
   border-radius: 6px;
-  background: var(--bg, #0f1117);
+  background: var(--bg);
 }
 
 .diagnostic-run-row__summary {
@@ -1325,18 +1325,18 @@ function hasRunValues(values: Record<string, unknown>): boolean {
 .diagnostic-run-row__state {
   padding: 1px 6px;
   border-radius: 999px;
-  background: var(--bg-subtle, #161b22);
-  color: var(--text-secondary, #8b949e);
+  background: var(--bg-subtle);
+  color: var(--text-secondary);
 }
 
-.diagnostic-run-row__state--succeeded { color: var(--success, #3fb950); }
+.diagnostic-run-row__state--succeeded { color: var(--success); }
 .diagnostic-run-row__state--failed,
-.diagnostic-run-row__state--cancelled { color: var(--danger, #f85149); }
+.diagnostic-run-row__state--cancelled { color: var(--danger); }
 .diagnostic-run-row__state--running,
-.diagnostic-run-row__state--pending { color: var(--warning, #d29922); }
+.diagnostic-run-row__state--pending { color: var(--warning); }
 
 .diagnostic-run-row__time {
-  color: var(--text-secondary, #8b949e);
+  color: var(--text-secondary);
   font-variant-numeric: tabular-nums;
 }
 
@@ -1348,7 +1348,7 @@ function hasRunValues(values: Record<string, unknown>): boolean {
   font-size: 11px;
 }
 
-.diagnostic-run-row__data dt { color: var(--text-secondary, #8b949e); }
+.diagnostic-run-row__data dt { color: var(--text-secondary); }
 
 .diagnostic-run-row__data dd {
   min-width: 0;
@@ -1361,21 +1361,21 @@ function hasRunValues(values: Record<string, unknown>): boolean {
   font-family: ui-monospace, monospace;
   font-size: 11px;
   background: transparent;
-  border: 1px solid var(--border, #30363d);
-  color: var(--accent, #6366f1);
+  border: 1px solid var(--border);
+  color: var(--accent);
   padding: 1px 6px;
   border-radius: 3px;
   cursor: pointer;
 }
 
 .route-incident-drawer__link:hover {
-  background: var(--bg, #0f1117);
-  border-color: var(--accent, #6366f1);
+  background: var(--bg);
+  border-color: var(--accent);
 }
 
 .route-incident-drawer__footnote {
   font-size: 10px;
-  color: var(--text-secondary, #8b949e);
+  color: var(--text-secondary);
   margin: 0;
   text-align: right;
 }
@@ -1387,15 +1387,15 @@ function hasRunValues(values: Record<string, unknown>): boolean {
 }
 
 .status-grid__cell {
-  background: var(--bg, #0f1117);
-  border: 1px solid var(--border, #30363d);
+  background: var(--bg);
+  border: 1px solid var(--border);
   border-radius: 4px;
   padding: 6px 8px;
 }
 
 .status-grid__label {
   font-size: 10px;
-  color: var(--text-secondary, #8b949e);
+  color: var(--text-secondary);
   text-transform: uppercase;
   letter-spacing: 0.04em;
 }
@@ -1407,16 +1407,16 @@ function hasRunValues(values: Record<string, unknown>): boolean {
 }
 
 .status-grid__value--danger {
-  color: var(--danger, #f85149);
+  color: var(--danger);
 }
 .status-grid__value--warning {
-  color: var(--warning, #d29922);
+  color: var(--warning);
 }
 .status-grid__value--success {
-  color: var(--success, #3fb950);
+  color: var(--success);
 }
 .status-grid__value--muted {
-  color: var(--text-secondary, #8b949e);
+  color: var(--text-secondary);
 }
 
 .kv {
@@ -1434,7 +1434,7 @@ function hasRunValues(values: Record<string, unknown>): boolean {
 
 .kv__key {
   flex: 0 0 96px;
-  color: var(--text-secondary, #8b949e);
+  color: var(--text-secondary);
 }
 
 .kv__val {
@@ -1450,8 +1450,8 @@ function hasRunValues(values: Record<string, unknown>): boolean {
 }
 
 .finding {
-  background: var(--bg, #0f1117);
-  border: 1px solid var(--border, #30363d);
+  background: var(--bg);
+  border: 1px solid var(--border);
   border-radius: 4px;
   padding: 8px;
 }
@@ -1470,12 +1470,12 @@ function hasRunValues(values: Record<string, unknown>): boolean {
 
 .finding__samples {
   font-size: 10px;
-  color: var(--text-secondary, #8b949e);
+  color: var(--text-secondary);
 }
 
 .finding__note {
   font-size: 11px;
-  color: var(--text-secondary, #8b949e);
+  color: var(--text-secondary);
   margin: 4px 0;
 }
 
@@ -1507,7 +1507,7 @@ function hasRunValues(values: Record<string, unknown>): boolean {
 
 .timeline-row__time {
   font-family: ui-monospace, monospace;
-  color: var(--text-secondary, #8b949e);
+  color: var(--text-secondary);
 }
 
 .timeline-row__counts {
@@ -1517,14 +1517,14 @@ function hasRunValues(values: Record<string, unknown>): boolean {
 .timeline-row__bar {
   height: 6px;
   border-radius: 3px;
-  background: var(--accent, #6366f1);
+  background: var(--accent);
   min-width: 2px;
 }
 
-.timeline-bar--ok { background: var(--success, #3fb950); }
-.timeline-bar--warn { background: var(--warning, #d29922); }
+.timeline-bar--ok { background: var(--success); }
+.timeline-bar--warn { background: var(--warning); }
 .timeline-bar--slow { background: #f97316; }
-.timeline-bar--critical { background: var(--danger, #f85149); }
+.timeline-bar--critical { background: var(--danger); }
 
 .timeline-row__p99 {
   text-align: right;
@@ -1559,12 +1559,12 @@ function hasRunValues(values: Record<string, unknown>): boolean {
   font-size: 11px;
   flex-wrap: wrap;
   padding: 2px 0;
-  border-bottom: 1px dashed var(--border, #30363d);
+  border-bottom: 1px dashed var(--border);
 }
 
 .event-row__time {
   font-family: ui-monospace, monospace;
-  color: var(--text-secondary, #8b949e);
+  color: var(--text-secondary);
   min-width: 130px;
 }
 
@@ -1574,20 +1574,20 @@ function hasRunValues(values: Record<string, unknown>): boolean {
   border-radius: 3px;
   text-transform: uppercase;
   letter-spacing: 0.04em;
-  background: var(--bg, #0f1117);
-  border: 1px solid var(--border, #30363d);
+  background: var(--bg);
+  border: 1px solid var(--border);
 }
 
-.event-row__type--opened { color: var(--danger, #f85149); border-color: rgba(248, 81, 73, 0.4); }
-.event-row__type--failure_observed { color: var(--danger, #f85149); border-color: rgba(248, 81, 73, 0.4); }
-.event-row__type--recovery_progress { color: var(--warning, #d29922); border-color: rgba(210, 153, 34, 0.4); }
-.event-row__type--recovered { color: var(--success, #3fb950); border-color: rgba(63, 185, 80, 0.4); }
+.event-row__type--opened { color: var(--danger); border-color: rgba(248, 81, 73, 0.4); }
+.event-row__type--failure_observed { color: var(--danger); border-color: rgba(248, 81, 73, 0.4); }
+.event-row__type--recovery_progress { color: var(--warning); border-color: rgba(210, 153, 34, 0.4); }
+.event-row__type--recovered { color: var(--success); border-color: rgba(63, 185, 80, 0.4); }
 
 .event-row__kind,
 .event-row__status,
 .event-row__streak {
   font-family: ui-monospace, monospace;
-  color: var(--text-secondary, #8b949e);
+  color: var(--text-secondary);
 }
 
 /* ─── Phase 2: action grid ─────────────────────────────────────── */
@@ -1599,9 +1599,9 @@ function hasRunValues(values: Record<string, unknown>): boolean {
 }
 
 .action-grid__btn {
-  background: var(--bg, #0f1117);
-  border: 1px solid var(--border, #30363d);
-  color: var(--text, #e6edf3);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  color: var(--text);
   border-radius: 4px;
   padding: 6px 10px;
   font-size: 12px;
@@ -1612,7 +1612,7 @@ function hasRunValues(values: Record<string, unknown>): boolean {
 }
 
 .action-grid__btn:hover:not(:disabled) {
-  border-color: var(--accent, #6366f1);
+  border-color: var(--accent);
 }
 
 .action-grid__btn:disabled {
@@ -1622,17 +1622,17 @@ function hasRunValues(values: Record<string, unknown>): boolean {
 
 .action-grid__btn--destructive {
   border-color: rgba(248, 81, 73, 0.5);
-  color: var(--danger, #f85149);
+  color: var(--danger);
 }
 
 .action-grid__btn--test {
-  border-color: rgba(99, 102, 241, 0.4);
-  color: var(--accent, #6366f1);
+  border-color: color-mix(in srgb, var(--accent) 40%, transparent);
+  color: var(--accent);
 }
 
 .action-grid__btn--slot {
   border-color: rgba(210, 153, 34, 0.4);
-  color: var(--warning, #d29922);
+  color: var(--warning);
 }
 
 .action-result {
@@ -1642,9 +1642,9 @@ function hasRunValues(values: Record<string, unknown>): boolean {
   margin-top: 8px;
   font-size: 11px;
   padding: 6px 10px;
-  background: var(--bg, #0f1117);
+  background: var(--bg);
   border-radius: 4px;
-  border: 1px solid var(--border, #30363d);
+  border: 1px solid var(--border);
 }
 
 .action-result__pill {
@@ -1658,23 +1658,23 @@ function hasRunValues(values: Record<string, unknown>): boolean {
 
 .action-result__pill--success {
   background: rgba(63, 185, 80, 0.18);
-  color: var(--success, #3fb950);
+  color: var(--success);
 }
 
 .action-result__pill--failed {
   background: rgba(248, 81, 73, 0.18);
-  color: var(--danger, #f85149);
+  color: var(--danger);
 }
 
 .action-result__pill--muted,
 .action-result__pill--noop {
   background: rgba(139, 148, 158, 0.18);
-  color: var(--text-secondary, #8b949e);
+  color: var(--text-secondary);
 }
 
 .action-result__text {
   font-family: ui-monospace, monospace;
-  color: var(--text-secondary, #8b949e);
+  color: var(--text-secondary);
 }
 
 /* ─── Phase 2: audit log ───────────────────────────────────────── */
@@ -1696,12 +1696,12 @@ function hasRunValues(values: Record<string, unknown>): boolean {
   font-size: 11px;
   flex-wrap: wrap;
   padding: 2px 0;
-  border-bottom: 1px dashed var(--border, #30363d);
+  border-bottom: 1px dashed var(--border);
 }
 
 .audit-row__time {
   font-family: ui-monospace, monospace;
-  color: var(--text-secondary, #8b949e);
+  color: var(--text-secondary);
   min-width: 130px;
 }
 
@@ -1716,34 +1716,34 @@ function hasRunValues(values: Record<string, unknown>): boolean {
 
 .audit-row__pill--success {
   background: rgba(63, 185, 80, 0.18);
-  color: var(--success, #3fb950);
+  color: var(--success);
 }
 
 .audit-row__pill--failed {
   background: rgba(248, 81, 73, 0.18);
-  color: var(--danger, #f85149);
+  color: var(--danger);
 }
 
 .audit-row__pill--muted,
 .audit-row__pill--noop {
   background: rgba(139, 148, 158, 0.18);
-  color: var(--text-secondary, #8b949e);
+  color: var(--text-secondary);
 }
 
 .audit-row__action {
   font-family: ui-monospace, monospace;
-  color: var(--accent, #6366f1);
+  color: var(--accent);
   font-size: 11px;
 }
 
 .audit-row__actor {
   font-size: 10px;
-  color: var(--text-secondary, #8b949e);
+  color: var(--text-secondary);
 }
 
 .audit-row__reason {
   font-size: 11px;
-  color: var(--text, #e6edf3);
+  color: var(--text);
   flex: 1;
   min-width: 120px;
 }
@@ -1769,9 +1769,9 @@ function hasRunValues(values: Record<string, unknown>): boolean {
   width: min(520px, 100vw);
   max-height: 90vh;
   overflow-y: auto;
-  background: var(--bg, #0f1117);
-  color: var(--text, #e6edf3);
-  border: 1px solid var(--border, #30363d);
+  background: var(--bg);
+  color: var(--text);
+  border: 1px solid var(--border);
   border-radius: 8px;
   box-shadow: 0 8px 32px rgba(0, 0, 0, 0.5);
   display: flex;
@@ -1783,8 +1783,8 @@ function hasRunValues(values: Record<string, unknown>): boolean {
   align-items: center;
   justify-content: space-between;
   padding: 10px 14px;
-  border-bottom: 1px solid var(--border, #30363d);
-  background: var(--bg-subtle, #161b22);
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-subtle);
 }
 
 .action-modal__header h3 {
@@ -1802,13 +1802,13 @@ function hasRunValues(values: Record<string, unknown>): boolean {
 
 .action-modal__hint {
   font-size: 12px;
-  color: var(--text-secondary, #8b949e);
+  color: var(--text-secondary);
   margin: 0;
 }
 
 .action-modal__hint-small {
   font-size: 10px;
-  color: var(--text-secondary, #8b949e);
+  color: var(--text-secondary);
   display: block;
   margin-top: 2px;
 }
@@ -1817,7 +1817,7 @@ function hasRunValues(values: Record<string, unknown>): boolean {
   font-size: 12px;
   background: rgba(248, 81, 73, 0.12);
   border: 1px solid rgba(248, 81, 73, 0.4);
-  color: var(--danger, #f85149);
+  color: var(--danger);
   padding: 6px 8px;
   border-radius: 4px;
   margin: 0;
@@ -1828,19 +1828,19 @@ function hasRunValues(values: Record<string, unknown>): boolean {
   flex-direction: column;
   gap: 4px;
   font-size: 11px;
-  color: var(--text-secondary, #8b949e);
+  color: var(--text-secondary);
   font-weight: 500;
 }
 
 .action-modal__required {
-  color: var(--danger, #f85149);
+  color: var(--danger);
 }
 
 .action-modal__textarea,
 .action-modal__input {
-  background: var(--bg, #0f1117);
-  color: var(--text, #e6edf3);
-  border: 1px solid var(--border, #30363d);
+  background: var(--bg);
+  color: var(--text);
+  border: 1px solid var(--border);
   border-radius: 4px;
   padding: 6px 8px;
   font-size: 12px;
@@ -1855,13 +1855,13 @@ function hasRunValues(values: Record<string, unknown>): boolean {
 
 .action-modal__counter {
   font-size: 10px;
-  color: var(--text-secondary, #8b949e);
+  color: var(--text-secondary);
   text-align: right;
 }
 
 .action-modal__params {
   font-size: 11px;
-  color: var(--text-secondary, #8b949e);
+  color: var(--text-secondary);
 }
 
 .action-modal__params summary {
@@ -1874,14 +1874,14 @@ function hasRunValues(values: Record<string, unknown>): boolean {
   justify-content: flex-end;
   gap: 8px;
   padding: 10px 14px;
-  border-top: 1px solid var(--border, #30363d);
-  background: var(--bg-subtle, #161b22);
+  border-top: 1px solid var(--border);
+  background: var(--bg-subtle);
 }
 
 .route-incident-drawer__btn--primary {
-  background: var(--accent, #6366f1);
+  background: var(--accent);
   color: white;
-  border-color: var(--accent, #6366f1);
+  border-color: var(--accent);
 }
 
 .route-incident-drawer__btn--primary:hover:not(:disabled) {
@@ -1889,9 +1889,9 @@ function hasRunValues(values: Record<string, unknown>): boolean {
 }
 
 .route-incident-drawer__btn--destructive {
-  background: var(--danger, #f85149);
+  background: var(--danger);
   color: white;
-  border-color: var(--danger, #f85149);
+  border-color: var(--danger);
 }
 
 .route-incident-drawer__btn--destructive:hover:not(:disabled) {
@@ -1910,8 +1910,8 @@ function hasRunValues(values: Record<string, unknown>): boolean {
 }
 
 .export-banner__panel {
-  background: var(--bg-subtle, #161b22);
-  border: 1px solid var(--success, #3fb950);
+  background: var(--bg-subtle);
+  border: 1px solid var(--success);
   border-radius: 6px;
   padding: 16px;
   width: min(420px, 100vw);
@@ -1921,18 +1921,18 @@ function hasRunValues(values: Record<string, unknown>): boolean {
 .export-banner__panel h4 {
   margin: 0 0 6px 0;
   font-size: 13px;
-  color: var(--success, #3fb950);
+  color: var(--success);
 }
 
 .export-banner__detail {
   font-size: 11px;
   margin: 4px 0;
-  color: var(--text-secondary, #8b949e);
+  color: var(--text-secondary);
 }
 
 .export-banner__detail code {
   font-family: ui-monospace, monospace;
-  background: var(--bg, #0f1117);
+  background: var(--bg);
   padding: 1px 4px;
   border-radius: 2px;
 }

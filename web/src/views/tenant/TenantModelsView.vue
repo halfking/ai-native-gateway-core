@@ -267,7 +267,7 @@ onMounted(load)
 .card-title {
   padding: 14px 16px 10px;
   border-bottom: 1px solid var(--border);
-  background: rgba(99, 102, 241, 0.04);
+  background: color-mix(in srgb, var(--accent) 4%, transparent);
   font-size: 15px;
   font-weight: 600;
 }

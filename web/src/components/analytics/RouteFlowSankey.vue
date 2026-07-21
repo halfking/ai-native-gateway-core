@@ -26,7 +26,7 @@ const gap = SANKEY_GAP
 
 // ── Task-type color palette ──────────────────────────
 const TASK_COLORS: Record<string, string> = {
-  chat:          '#6366f1', // indigo
+  chat:          '#3b82f6', // indigo
   reasoning:     '#a855f7', // purple
   code:          '#22c55e', // green
   agent:         '#f97316', // orange
@@ -126,7 +126,7 @@ const layerLabels = ['任务类型', '标准模型', '供应商']
 const layerColors = [
   'color-mix(in srgb, var(--accent) 25%, var(--bg-subtle))',
   'color-mix(in srgb, var(--success) 20%, var(--bg-subtle))',
-  'color-mix(in srgb, var(--warning, #d29922) 18%, var(--bg-subtle))',
+  'color-mix(in srgb, var(--warning) 18%, var(--bg-subtle))',
 ]
 
 // Collect which task types actually appear in the data (for legend)
@@ -270,7 +270,7 @@ const TASK_LABELS: Record<string, string> = {
 }
 .flow-node.layer-0 { fill: color-mix(in srgb, var(--accent) 25%, var(--bg-subtle)); }
 .flow-node.layer-1 { fill: color-mix(in srgb, var(--success) 20%, var(--bg-subtle)); }
-.flow-node.layer-2 { fill: color-mix(in srgb, var(--warning, #d29922) 18%, var(--bg-subtle)); }
+.flow-node.layer-2 { fill: color-mix(in srgb, var(--warning) 18%, var(--bg-subtle)); }
 /* "specified model" task node: muted gray tint, dashed border to distinguish
    from the colored task-type nodes in the same column. Uses theme tokens so
    it adapts to both light and dark themes (the previous hardcoded #f3f4f6

@@ -263,7 +263,7 @@ function statusTitle(row: RequestLogRow): string {
 }
 
 function statusColor(row: RequestLogRow): string {
-  if (row.request_status === 'in_progress') return 'var(--warning, #f59e0b)'
+  if (row.request_status === 'in_progress') return 'var(--warning)'
   if (row.request_status === 'success' || row.success) return 'var(--success)'
   return 'var(--error)'
 }
@@ -915,10 +915,10 @@ function compressExplainText(row: any): string {
 
 function roleColor(role: string): string {
   switch (role) {
-    case 'user': return 'var(--info, #3b82f6)'
-    case 'assistant': return 'var(--success, #22c55e)'
-    case 'system': return 'var(--warning, #f59e0b)'
-    case 'tool': return 'var(--muted, #94a3b8)'
+    case 'user': return 'var(--info)'
+    case 'assistant': return 'var(--success)'
+    case 'system': return 'var(--warning)'
+    case 'tool': return 'var(--muted)'
     default: return 'inherit'
   }
 }
@@ -1131,7 +1131,7 @@ onMounted(async () => {
       <span>共 {{ total }} 步（本页 {{ taskSummary.total }}）</span>
       <span style="color:var(--success)">成功 {{ taskSummary.ok }}</span>
       <span style="color:var(--danger)">失败 {{ taskSummary.fail }}</span>
-      <span v-if="taskSummary.pending" style="color:var(--warning, #f59e0b)">进行中 {{ taskSummary.pending }}</span>
+      <span v-if="taskSummary.pending" style="color:var(--warning)">进行中 {{ taskSummary.pending }}</span>
       <span v-if="gwTaskFilter" style="color:var(--muted)">任务: {{ gwTaskFilter }}</span>
       <span v-if="gwSessionFilter" style="color:var(--muted)">会话: {{ shortHash(gwSessionFilter) }}</span>
       <button class="btn btn-ghost btn-sm" style="margin-left:auto" @click="clearTraceFilter">清除脉络筛选</button>
@@ -1162,7 +1162,7 @@ onMounted(async () => {
       </div>
       <p v-if="summaryError" style="margin:8px 0 0;color:var(--danger)">{{ summaryError }}</p>
       <p v-if="memoraError" style="margin:8px 0 0;color:var(--danger)">Memora: {{ memoraError }}</p>
-      <p v-if="memoraResult" style="margin:8px 0 0;color:var(--success, #22c55e)">
+      <p v-if="memoraResult" style="margin:8px 0 0;color:var(--success)">
         已写入 Memora：{{ memoraResult.written }} 条（{{ memoraResult.status }}）
       </p>
       <div v-if="summaryResult" style="margin-top:10px;font-size:12px">
@@ -1448,7 +1448,7 @@ onMounted(async () => {
             </div>
           </div>
 
-          <div class="drawer-section" style="flex:1;overflow:auto;border:1px solid var(--border, #333);border-radius:6px;padding:12px;background:var(--surface-secondary, #1a1a2e);font-size:12px">
+          <div class="drawer-section" style="flex:1;overflow:auto;border:1px solid var(--border);border-radius:6px;padding:12px;background:var(--surface-secondary);font-size:12px">
             <template v-if="detailTab === 'request'">
               <template v-if="extractMessagesFromBody(detail.request_body).length">
                 <div v-for="(msg, i) in extractMessagesFromBody(detail.request_body)" :key="i" style="margin-bottom:12px">
@@ -1458,7 +1458,7 @@ onMounted(async () => {
                   <pre style="margin:0;white-space:pre-wrap;word-break:break-all;max-height:300px;overflow:auto;font-size:11px;line-height:1.5">{{ formatJson(msg.content ?? msg) }}</pre>
                   <div v-if="msg.tool_calls" style="margin-top:6px">
                     <div style="color:var(--muted);font-size:11px;margin-bottom:4px">工具调用:</div>
-                    <pre v-for="(tc, j) in msg.tool_calls" :key="j" style="margin:0 0 4px;white-space:pre-wrap;word-break:break-all;font-size:11px;padding:4px;background:var(--surface-primary, #16213e);border-radius:4px">{{ formatJson(tc) }}</pre>
+                    <pre v-for="(tc, j) in msg.tool_calls" :key="j" style="margin:0 0 4px;white-space:pre-wrap;word-break:break-all;font-size:11px;padding:4px;background:var(--surface-primary);border-radius:4px">{{ formatJson(tc) }}</pre>
                   </div>
                 </div>
               </template>
@@ -1468,7 +1468,7 @@ onMounted(async () => {
             <template v-else-if="detailTab === 'outbound'">
               <!-- v3 outbound body: shows what was actually forwarded to the
                    upstream LLM after delta-append / sliding-window summary. -->
-              <div v-if="detail.outbound_body" style="margin-bottom:8px;padding:6px 10px;background:var(--surface-primary, #16213e);border-radius:4px;color:var(--text-secondary);font-size:11px">
+              <div v-if="detail.outbound_body" style="margin-bottom:8px;padding:6px 10px;background:var(--surface-primary);border-radius:4px;color:var(--text-secondary);font-size:11px">
                 <strong>v3 转发体</strong> · 消息数 {{ detail.outbound_msg_count }} · 估算 {{ detail.outbound_token_est }} tokens
                 <span v-if="outboundSummaryMarker(detail)" style="margin-left:8px">
                   <span class="summary-marker-badge">{{ truncate(outboundSummaryMarker(detail), 24) }}</span>
@@ -1484,7 +1484,7 @@ onMounted(async () => {
                   <pre style="margin:0;white-space:pre-wrap;word-break:break-all;max-height:300px;overflow:auto;font-size:11px;line-height:1.5">{{ formatJson(msg.content ?? msg) }}</pre>
                   <div v-if="msg.tool_calls" style="margin-top:6px">
                     <div style="color:var(--muted);font-size:11px;margin-bottom:4px">工具调用:</div>
-                    <pre v-for="(tc, j) in msg.tool_calls" :key="j" style="margin:0 0 4px;white-space:pre-wrap;word-break:break-all;font-size:11px;padding:4px;background:var(--surface-primary, #16213e);border-radius:4px">{{ formatJson(tc) }}</pre>
+                    <pre v-for="(tc, j) in msg.tool_calls" :key="j" style="margin:0 0 4px;white-space:pre-wrap;word-break:break-all;font-size:11px;padding:4px;background:var(--surface-primary);border-radius:4px">{{ formatJson(tc) }}</pre>
                   </div>
                 </div>
               </template>
@@ -1549,11 +1549,11 @@ onMounted(async () => {
                       <pre v-if="choice.message.content" style="margin:4px 0;white-space:pre-wrap;word-break:break-all;max-height:300px;overflow:auto;font-size:11px;line-height:1.5">{{ choice.message.content }}</pre>
                       <div v-if="choice.message.tool_calls" style="margin-top:6px">
                         <div style="color:var(--muted);font-size:11px;margin-bottom:4px">工具调用:</div>
-                        <pre v-for="(tc, j) in choice.message.tool_calls" :key="j" style="margin:0 0 4px;white-space:pre-wrap;word-break:break-all;font-size:11px;padding:4px;background:var(--surface-primary, #16213e);border-radius:4px">{{ formatJson(tc) }}</pre>
+                        <pre v-for="(tc, j) in choice.message.tool_calls" :key="j" style="margin:0 0 4px;white-space:pre-wrap;word-break:break-all;font-size:11px;padding:4px;background:var(--surface-primary);border-radius:4px">{{ formatJson(tc) }}</pre>
                       </div>
                     </div>
                   </div>
-                  <div v-if="detail.response_body.usage" style="margin-top:8px;padding:8px;background:var(--surface-primary, #16213e);border-radius:4px">
+                  <div v-if="detail.response_body.usage" style="margin-top:8px;padding:8px;background:var(--surface-primary);border-radius:4px">
                     <strong>Usage:</strong> prompt={{ detail.response_body.usage.prompt_tokens }} completion={{ detail.response_body.usage.completion_tokens }} total={{ detail.response_body.usage.total_tokens }}
                   </div>
                 </template>
@@ -1588,10 +1588,10 @@ onMounted(async () => {
   cursor: pointer;
 }
 .request-log-row:hover td {
-  background: color-mix(in srgb, var(--accent, #3b82f6) 8%, transparent);
+  background: color-mix(in srgb, var(--accent) 8%, transparent);
 }
 .request-log-row.row-failure td {
-  background: color-mix(in srgb, var(--danger, #ef4444) 4%, transparent);
+  background: color-mix(in srgb, var(--danger) 4%, transparent);
 }
 .request-log-table th,
 .request-log-table td {
@@ -1656,7 +1656,7 @@ onMounted(async () => {
   max-width: 100%;
 }
 .trace-link {
-  color: var(--accent, #3b82f6);
+  color: var(--accent);
   cursor: pointer;
   font-size: 11px;
 }
@@ -1670,7 +1670,7 @@ onMounted(async () => {
   cursor: pointer;
 }
 .trace-sub:hover {
-  color: var(--accent, #3b82f6);
+  color: var(--accent);
   text-decoration: underline;
 }
 .trace-full {
@@ -1679,7 +1679,7 @@ onMounted(async () => {
   overflow-wrap: anywhere;
 }
 .trace-summary {
-  border-left: 3px solid var(--accent, #3b82f6);
+  border-left: 3px solid var(--accent);
 }
 .col-trace-action {
   white-space: nowrap;
@@ -1689,30 +1689,30 @@ onMounted(async () => {
   font-size: 11px;
   padding: 2px 8px;
   border-radius: 4px;
-  border: 1px solid var(--border, #30363d);
-  background: rgba(99, 102, 241, 0.08);
-  color: var(--accent, #6366f1);
+  border: 1px solid var(--border);
+  background: color-mix(in srgb, var(--accent) 8%, transparent);
+  color: var(--accent);
   cursor: pointer;
 }
 .trace-action-btn:hover {
-  background: rgba(99, 102, 241, 0.18);
-  border-color: var(--accent, #6366f1);
+  background: color-mix(in srgb, var(--accent) 18%, transparent);
+  border-color: var(--accent);
 }
 
 /* 2026-07-17: 详情抽屉内的流程详情按钮 — 暗色调, 与 btn-trace 一致。 */
 .btn-trace {
   margin-left: auto;
   background: transparent;
-  border: 1px solid var(--border, #30363d);
-  color: var(--text, #e6edf3);
+  border: 1px solid var(--border);
+  color: var(--text);
   display: inline-flex;
   align-items: center;
   gap: 4px;
 }
 .btn-trace:hover,
 .btn-trace-active {
-  border-color: var(--accent, #6366f1);
-  color: var(--accent-h, #818cf8);
+  border-color: var(--accent);
+  color: var(--accent-h);
 }
 .tenant-badge {
   display: inline-flex;
@@ -1721,8 +1721,8 @@ onMounted(async () => {
   border-radius: 12px;
   font-size: 12px;
   font-weight: 500;
-  background: var(--surface-secondary, #f3f4f6);
-  color: var(--text-secondary, #6b7280);
+  background: var(--surface-secondary);
+  color: var(--text-secondary);
 }
 .tenant-badge--admin {
   background: rgba(59, 130, 246, 0.1);
@@ -1743,18 +1743,18 @@ onMounted(async () => {
   font-size: 11px;
   font-weight: 500;
   white-space: nowrap;
-  background: var(--surface-secondary, #f3f4f6);
-  color: var(--text-primary, #111827);
+  background: var(--surface-secondary);
+  color: var(--text-primary);
 }
 .compression-badge .badge-sep {
-  color: var(--text-secondary, #9ca3af);
+  color: var(--text-secondary);
 }
 .compression-badge.strategy-mechanical_trim {
   background: rgba(245, 158, 11, 0.1);
   color: #b45309;
 }
 .compression-badge.strategy-memora_l1_inject {
-  background: rgba(139, 92, 246, 0.1);
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
   color: #6d28d9;
 }
 .compression-badge.strategy-llm_summary {
@@ -1776,9 +1776,9 @@ onMounted(async () => {
 .compression-badge.strategy-sliding_window_token,
 .compression-badge.strategy-sliding_window_count,
 .compression-badge.strategy-sliding_window_idle {
-  background: rgba(168, 85, 247, 0.12);
+  background: color-mix(in srgb, #d946ef 12%, transparent);
   color: #7e22ce;
-  border: 1px solid rgba(168, 85, 247, 0.3);
+  border: 1px solid color-mix(in srgb, #d946ef 30%, transparent);
 }
 .col-compress {
   max-width: 180px;
@@ -1795,7 +1795,7 @@ onMounted(async () => {
   border-radius: 8px;
   font-size: 10px;
   font-weight: 600;
-  background: rgba(168, 85, 247, 0.12);
+  background: color-mix(in srgb, #d946ef 12%, transparent);
   color: #c084fc;
 }
 /* v3 Outbound tab — highlight when outbound differs from request. */
@@ -1825,20 +1825,20 @@ onMounted(async () => {
   font-family: var(--mono-font, ui-monospace, monospace);
 }
 .parent-id {
-  color: var(--text-secondary, #6b7280);
+  color: var(--text-secondary);
   font-size: 10px;
   margin-top: 2px;
   font-family: var(--mono-font, ui-monospace, monospace);
 }
 .parent-id-clickable {
   cursor: pointer;
-  color: var(--accent, #3b82f6);
+  color: var(--accent);
 }
 .parent-id-clickable:hover {
   text-decoration: underline;
 }
 .cell-line1.muted {
-  color: var(--text-secondary, #9ca3af);
+  color: var(--text-secondary);
 }
 .pagination-bar {
   display: flex;
@@ -1902,13 +1902,13 @@ onMounted(async () => {
 /* v3 compression savings text in the table compression column */
 .cell-line2.saving-text {
   font-size: 10px;
-  color: var(--success, #22c55e);
+  color: var(--success);
   margin-top: 2px;
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
 }
 .cell-line2.saving-text .saving-token {
-  color: var(--warning, #f59e0b);
+  color: var(--warning);
 }
 
 /* Compression guide card in-page styling */
@@ -1926,7 +1926,7 @@ onMounted(async () => {
   gap: 12px;
 }
 .attachment-card {
-  border: 1px solid var(--border, #333);
+  border: 1px solid var(--border);
   border-radius: 6px;
   overflow: hidden;
   background: var(--surface-primary, var(--bg-card));
@@ -1956,7 +1956,7 @@ onMounted(async () => {
   font-weight: 700;
   color: var(--muted);
   padding: 16px 20px;
-  border: 1px dashed var(--border, #333);
+  border: 1px dashed var(--border);
   border-radius: 6px;
 }
 .attachment-meta {
@@ -1970,7 +1970,7 @@ onMounted(async () => {
   margin-bottom: 4px;
 }
 .attachment-type {
-  color: var(--text-secondary, #6b7280);
+  color: var(--text-secondary);
   font-family: var(--mono-font, ui-monospace, monospace);
 }
 .attachment-size {

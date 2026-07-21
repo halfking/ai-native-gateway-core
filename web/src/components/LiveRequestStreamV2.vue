@@ -453,9 +453,9 @@ const isColdStart = computed(() => {
 
 <style scoped>
 .live-stream-v2 {
-  border: 1px solid var(--border, #30363d);
+  border: 1px solid var(--border);
   border-radius: var(--radius, 8px);
-  background: var(--card, #1c2128);
+  background: var(--card);
   padding: 12px 16px;
   margin-bottom: 20px;
   /* min-width:0 让组件在 flex/grid 父容器中能正确收缩 */
@@ -477,7 +477,7 @@ const isColdStart = computed(() => {
   font-size: 14px;
   font-weight: 600;
   margin: 0;
-  color: var(--text, #e6edf3);
+  color: var(--text);
   flex-shrink: 0;
 }
 
@@ -499,9 +499,9 @@ const isColdStart = computed(() => {
   font-size: 12px;
   padding: 5px 12px;
   border-radius: 4px;
-  border: 1px solid var(--border, #30363d);
-  background: var(--bg, #0f1117);
-  color: var(--text, #e6edf3);
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--text);
   cursor: pointer;
   transition: all 0.15s ease;
   white-space: nowrap;
@@ -509,14 +509,14 @@ const isColdStart = computed(() => {
 }
 
 .control-btn:hover {
-  background: var(--bg-subtle, #161b22);
-  border-color: var(--accent, #6366f1);
+  background: var(--bg-subtle);
+  border-color: var(--accent);
 }
 
 .control-btn--active {
-  background: rgba(99, 102, 241, 0.15);
-  border-color: var(--accent, #6366f1);
-  color: var(--accent, #6366f1);
+  background: color-mix(in srgb, var(--accent) 15%, transparent);
+  border-color: var(--accent);
+  color: var(--accent);
 }
 
 /* 2026-07-13: 探测过滤器按钮专用样式 */
@@ -536,9 +536,9 @@ const isColdStart = computed(() => {
   gap: 6px;
   padding: 5px 12px;
   border-radius: 4px;
-  border: 1px solid var(--border, #30363d);
-  background: var(--bg, #0f1117);
-  color: var(--text, #e6edf3);
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--text);
   font-size: 12px;
   cursor: pointer;
   transition: all 0.15s ease;
@@ -546,25 +546,25 @@ const isColdStart = computed(() => {
 }
 
 .connection-status:hover {
-  background: var(--bg-subtle, #161b22);
-  border-color: var(--accent, #6366f1);
+  background: var(--bg-subtle);
+  border-color: var(--accent);
 }
 
 .status-dot {
   width: 8px;
   height: 8px;
   border-radius: 50%;
-  background: var(--muted, #8b949e);
+  background: var(--muted);
   flex-shrink: 0;
 }
 
 .status--ok .status-dot {
-  background: var(--success, #3fb950);
+  background: var(--success);
   box-shadow: 0 0 0 3px rgba(63, 185, 80, 0.18);
 }
 
 .status--warn .status-dot {
-  background: var(--warning, #d29922);
+  background: var(--warning);
   animation: pulse-dot 1.4s ease-in-out infinite;
 }
 
@@ -579,8 +579,8 @@ const isColdStart = computed(() => {
   top: calc(100% + 8px);
   left: 0;
   min-width: 400px;
-  background: var(--bg, #0f1117);
-  border: 1px solid var(--border, #30363d);
+  background: var(--bg);
+  border: 1px solid var(--border);
   border-radius: 8px;
   box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
   z-index: 1000;
@@ -592,21 +592,21 @@ const isColdStart = computed(() => {
   justify-content: space-between;
   align-items: center;
   padding: 12px 16px;
-  background: var(--bg-subtle, #161b22);
-  border-bottom: 1px solid var(--border, #30363d);
+  background: var(--bg-subtle);
+  border-bottom: 1px solid var(--border);
 }
 
 .popup-header h4 {
   margin: 0;
   font-size: 14px;
   font-weight: 600;
-  color: var(--text, #e6edf3);
+  color: var(--text);
 }
 
 .popup-close {
   background: none;
   border: none;
-  color: var(--text-secondary, #8b949e);
+  color: var(--text-secondary);
   font-size: 18px;
   cursor: pointer;
   padding: 0;
@@ -620,8 +620,8 @@ const isColdStart = computed(() => {
 }
 
 .popup-close:hover {
-  background: var(--bg, #0f1117);
-  color: var(--text, #e6edf3);
+  background: var(--bg);
+  color: var(--text);
 }
 
 .popup-body {
@@ -641,23 +641,23 @@ const isColdStart = computed(() => {
 
 .detail-label {
   font-size: 12px;
-  color: var(--text-secondary, #8b949e);
+  color: var(--text-secondary);
   min-width: 90px;
 }
 
 .detail-value {
   font-size: 12px;
-  color: var(--text, #e6edf3);
+  color: var(--text);
   flex: 1;
 }
 
 .detail-value code {
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  background: var(--bg-subtle, #161b22);
+  background: var(--bg-subtle);
   padding: 4px 8px;
   border-radius: 4px;
   display: inline-block;
-  border: 1px solid var(--border, #30363d);
+  border: 1px solid var(--border);
 }
 
 .url-edit-group {
@@ -669,10 +669,10 @@ const isColdStart = computed(() => {
 
 .url-display {
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  background: var(--bg-subtle, #161b22);
+  background: var(--bg-subtle);
   padding: 4px 8px;
   border-radius: 4px;
-  border: 1px solid var(--border, #30363d);
+  border: 1px solid var(--border);
   word-break: break-all;
   flex: 1;
   font-size: 12px;
@@ -682,17 +682,17 @@ const isColdStart = computed(() => {
   flex: 1;
   padding: 4px 8px;
   border-radius: 4px;
-  border: 1px solid var(--accent, #6366f1);
-  background: var(--bg, #0f1117);
-  color: var(--text, #e6edf3);
+  border: 1px solid var(--accent);
+  background: var(--bg);
+  color: var(--text);
   font-size: 12px;
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   outline: none;
 }
 
 .url-input:focus {
-  border-color: var(--accent, #6366f1);
-  box-shadow: 0 0 0 2px rgba(99, 102, 241, 0.2);
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 20%, transparent);
 }
 
 .url-edit-actions {
@@ -703,9 +703,9 @@ const isColdStart = computed(() => {
 .edit-btn {
   padding: 3px 8px;
   border-radius: 4px;
-  border: 1px solid var(--border, #30363d);
-  background: var(--bg-subtle, #161b22);
-  color: var(--text-secondary, #8b949e);
+  border: 1px solid var(--border);
+  background: var(--bg-subtle);
+  color: var(--text-secondary);
   font-size: 11px;
   cursor: pointer;
   transition: all 0.15s ease;
@@ -713,9 +713,9 @@ const isColdStart = computed(() => {
 }
 
 .edit-btn:hover {
-  background: var(--bg, #0f1117);
-  border-color: var(--accent, #6366f1);
-  color: var(--text, #e6edf3);
+  background: var(--bg);
+  border-color: var(--accent);
+  color: var(--text);
 }
 
 .save-btn,
@@ -723,7 +723,7 @@ const isColdStart = computed(() => {
 .cancel-btn {
   padding: 3px 8px;
   border-radius: 4px;
-  border: 1px solid var(--border, #30363d);
+  border: 1px solid var(--border);
   font-size: 11px;
   cursor: pointer;
   transition: all 0.15s ease;
@@ -731,9 +731,9 @@ const isColdStart = computed(() => {
 }
 
 .save-btn {
-  background: var(--accent, #6366f1);
+  background: var(--accent);
   color: white;
-  border-color: var(--accent, #6366f1);
+  border-color: var(--accent);
 }
 
 .save-btn:hover {
@@ -741,23 +741,23 @@ const isColdStart = computed(() => {
 }
 
 .reset-btn {
-  background: var(--bg-subtle, #161b22);
-  color: var(--text-secondary, #8b949e);
+  background: var(--bg-subtle);
+  color: var(--text-secondary);
 }
 
 .reset-btn:hover {
-  background: var(--bg, #0f1117);
-  color: var(--text, #e6edf3);
+  background: var(--bg);
+  color: var(--text);
 }
 
 .cancel-btn {
-  background: var(--bg-subtle, #161b22);
-  color: var(--text-secondary, #8b949e);
+  background: var(--bg-subtle);
+  color: var(--text-secondary);
 }
 
 .cancel-btn:hover {
-  background: var(--bg, #0f1117);
-  color: var(--text, #e6edf3);
+  background: var(--bg);
+  color: var(--text);
 }
 
 .popup-actions {
@@ -765,7 +765,7 @@ const isColdStart = computed(() => {
   gap: 8px;
   margin-top: 16px;
   padding-top: 16px;
-  border-top: 1px solid var(--border, #30363d);
+  border-top: 1px solid var(--border);
 }
 
 .test-btn,
@@ -776,13 +776,13 @@ const isColdStart = computed(() => {
   font-size: 12px;
   cursor: pointer;
   transition: all 0.15s ease;
-  border: 1px solid var(--border, #30363d);
+  border: 1px solid var(--border);
 }
 
 .test-btn {
-  background: var(--accent, #6366f1);
+  background: var(--accent);
   color: white;
-  border-color: var(--accent, #6366f1);
+  border-color: var(--accent);
 }
 
 .test-btn:hover {
@@ -791,12 +791,12 @@ const isColdStart = computed(() => {
 }
 
 .close-btn {
-  background: var(--bg-subtle, #161b22);
-  color: var(--text, #e6edf3);
+  background: var(--bg-subtle);
+  color: var(--text);
 }
 
 .close-btn:hover {
-  background: var(--bg, #0f1117);
+  background: var(--bg);
 }
 
 .cache-stats {
@@ -804,19 +804,19 @@ const isColdStart = computed(() => {
   align-items: center;
   gap: 6px;
   padding: 5px 12px;
-  border: 1px solid var(--border, #30363d);
+  border: 1px solid var(--border);
   border-radius: 4px;
-  background: var(--bg, #0f1117);
+  background: var(--bg);
   font-size: 12px;
   white-space: nowrap;
 }
 
 .cache-stats__label {
-  color: var(--text-secondary, #8b949e);
+  color: var(--text-secondary);
 }
 
 .cache-stats__value {
-  color: var(--text, #e6edf3);
+  color: var(--text);
   font-weight: 600;
   font-variant-numeric: tabular-nums;
 }
@@ -861,9 +861,9 @@ const isColdStart = computed(() => {
   gap: 10px;
   padding: 48px 20px;
   text-align: center;
-  color: var(--muted, #8b949e);
+  color: var(--muted);
   font-size: 13px;
-  border: 1px dashed color-mix(in srgb, var(--border, #30363d) 80%, transparent);
+  border: 1px dashed color-mix(in srgb, var(--border) 80%, transparent);
   border-radius: 8px;
   background: linear-gradient(180deg, rgba(22, 27, 34, 0.6) 0%, rgba(15, 17, 23, 0.4) 100%);
 }
@@ -876,7 +876,7 @@ const isColdStart = computed(() => {
 
 .swim-lanes__empty-text {
   letter-spacing: 0.2px;
-  color: var(--text-secondary, #8b949e);
+  color: var(--text-secondary);
 }
 
 @keyframes empty-pulse {

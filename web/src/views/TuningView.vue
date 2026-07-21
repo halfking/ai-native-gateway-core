@@ -481,7 +481,7 @@ onMounted(async () => {
   padding: 24px;
   max-width: 1200px;
   margin: 0 auto;
-  color: var(--text, #e6e6e6);
+  color: var(--text);
 }
 h1 {
   margin: 0 0 8px;
@@ -493,8 +493,8 @@ h1 {
   font-size: 14px;
 }
 .card {
-  background: var(--card-bg, #1a1a1a);
-  border: 1px solid var(--border, #2a2a2a);
+  background: var(--card-bg);
+  border: 1px solid var(--border);
   border-radius: 8px;
   padding: 20px;
   margin-bottom: 24px;
@@ -502,7 +502,7 @@ h1 {
 .card h2 {
   margin: 0 0 16px;
   font-size: 18px;
-  border-bottom: 1px solid var(--border, #2a2a2a);
+  border-bottom: 1px solid var(--border);
   padding-bottom: 8px;
 }
 .filter-bar {
@@ -608,7 +608,7 @@ h1 {
 }
 .btn-approve { background: #16a34a; color: #fff; }
 .btn-reject { background: #6b7280; color: #fff; }
-.btn-trigger { background: #7c3aed; color: #fff; padding: 8px 16px; }
+.btn-trigger { background: var(--accent); color: #fff; padding: 8px 16px; }
 .reject-row {
   background: #1a0e0e;
 }

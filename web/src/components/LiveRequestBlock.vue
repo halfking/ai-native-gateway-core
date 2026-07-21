@@ -266,7 +266,7 @@ function onClick() {
   height: 76px;
   border-radius: 4px;
   border: 2px solid rgba(139, 148, 158, 0.4);
-  color: var(--text, #e6edf3);
+  color: var(--text);
   flex-shrink: 0;
   display: flex;
   flex-direction: column;
@@ -286,7 +286,7 @@ function onClick() {
 .live-block--clickable:focus-visible {
   transform: translateY(-2px) scale(1.1);
   z-index: 2;
-  box-shadow: 0 4px 14px rgba(99, 102, 241, 0.45);
+  box-shadow: 0 4px 14px color-mix(in srgb, var(--accent) 45%, transparent);
   outline: none;
 }
 
@@ -308,7 +308,7 @@ function onClick() {
 .live-block__time {
   font-size: 9px;
   line-height: 1.1;
-  color: var(--muted, #8b949e);
+  color: var(--muted);
   letter-spacing: 0.3px;
   text-align: center;
   width: 100%;
@@ -367,7 +367,7 @@ function onClick() {
   line-height: 1.1;
   font-weight: 600;
   letter-spacing: 0.3px;
-  color: var(--muted, #8b949e);
+  color: var(--muted);
   text-transform: uppercase;
   width: 100%;
   text-align: left;
@@ -381,7 +381,7 @@ function onClick() {
 .live-block__latency {
   font-size: 9px;
   line-height: 1.1;
-  color: var(--muted, #8b949e);
+  color: var(--muted);
   font-variant-numeric: tabular-nums;
   text-align: center;
   width: 100%;
@@ -390,9 +390,9 @@ function onClick() {
 .live-block--idle {
   width: 120px;
   height: 60px;
-  border: 2px dashed var(--border, #30363d);
+  border: 2px dashed var(--border);
   background: transparent;
-  color: var(--muted, #8b949e);
+  color: var(--muted);
   cursor: default;
   justify-content: center;
 }

@@ -270,7 +270,7 @@ onMounted(load)
 }
 .btn { padding: 6px 12px; border: 1px solid var(--border); background: var(--card);
   border-radius: 4px; cursor: pointer; font-size: 13px; }
-.btn:hover { background: rgba(99,102,241,.06); }
+.btn:hover { background: color-mix(in srgb, var(--accent) 06%, transparent); }
 .btn-primary { background: var(--accent); color: white; border-color: var(--accent); }
 .btn-sm { padding: 3px 8px; font-size: 12px; }
 .btn-danger { background: rgba(239,68,68,.12); color: #f87171; border-color: rgba(239,68,68,.3); }

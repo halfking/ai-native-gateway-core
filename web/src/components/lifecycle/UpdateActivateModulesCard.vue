@@ -55,5 +55,5 @@ defineProps<{
 .ua-card__title { font-weight: 600; }
 .hint { font-size: 13px; }
 .mb { margin-bottom: 12px; }
-.muted { margin: 12px 0 0; color: var(--muted, #5b6b82); font-size: 12px; line-height: 1.5; }
+.muted { margin: 12px 0 0; color: var(--muted); font-size: 12px; line-height: 1.5; }
 </style>

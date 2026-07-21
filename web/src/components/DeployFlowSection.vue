@@ -114,9 +114,9 @@ function handleSecondary(path?: string) {
 
 .deploy-flow__inner {
   padding: 28px 24px;
-  border: 1px solid rgba(99, 102, 241, 0.35);
+  border: 1px solid color-mix(in srgb, var(--accent) 35%, transparent);
   border-radius: 14px;
-  background: linear-gradient(135deg, rgba(99, 102, 241, 0.1), rgba(15, 17, 23, 0.55));
+  background: linear-gradient(135deg, color-mix(in srgb, var(--accent) 10%, transparent), rgba(15, 17, 23, 0.55));
 }
 
 .deploy-flow__head {
@@ -150,9 +150,9 @@ function handleSecondary(path?: string) {
   grid-template-columns: 36px 1fr;
   gap: 14px;
   padding: 16px;
-  border: 1px solid var(--border, #2a2d3a);
+  border: 1px solid var(--border);
   border-radius: 12px;
-  background: var(--panel, #1a1d27);
+  background: var(--panel);
 }
 
 .deploy-flow__num {
@@ -164,8 +164,8 @@ function handleSecondary(path?: string) {
   border-radius: 10px;
   font-size: 15px;
   font-weight: 700;
-  color: #a5b4fc;
-  background: rgba(99, 102, 241, 0.16);
+  color: var(--accent-h);
+  background: color-mix(in srgb, var(--accent) 16%, transparent);
 }
 
 .deploy-flow__body h3 {
@@ -220,7 +220,7 @@ function handleSecondary(path?: string) {
   content: '·';
   position: absolute;
   left: 4px;
-  color: #6366f1;
+  color: var(--accent);
 }
 
 @media (max-width: 600px) {

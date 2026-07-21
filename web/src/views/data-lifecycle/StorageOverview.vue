@@ -608,8 +608,8 @@ function fmtNum(n: number) {
   border-radius: 10px;
   font-size: 11px;
   font-weight: 500;
-  background: rgba(99, 102, 241, 0.15);
-  color: #818cf8;
+  background: color-mix(in srgb, var(--accent) 15%, transparent);
+  color: var(--accent-h);
 }
 .badge.warn { background: rgba(251, 191, 36, 0.15); color: #fbbf24; }
 .badge.danger { background: rgba(248, 113, 113, 0.15); color: #f87171; }
@@ -651,7 +651,7 @@ function fmtNum(n: number) {
 .metric-val.mono {
   font-family: ui-monospace, SFMono-Regular, monospace;
   font-size: 11px;
-  color: #818cf8;
+  color: var(--accent-h);
   max-width: 70%;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -672,7 +672,7 @@ function fmtNum(n: number) {
   height: 100%;
   transition: width 0.3s;
 }
-.bar-seg.tables { background: #6366f1; }
+.bar-seg.tables { background: var(--accent); }
 .bar-seg.indexes { background: #34d399; }
 .bar-seg.toast { background: #fbbf24; }
 .bar-seg.ok { background: #34d399; }
@@ -694,7 +694,7 @@ function fmtNum(n: number) {
   margin-right: 4px;
   vertical-align: middle;
 }
-.legend i.dot.tables { background: #6366f1; }
+.legend i.dot.tables { background: var(--accent); }
 .legend i.dot.indexes { background: #34d399; }
 .legend i.dot.toast { background: #fbbf24; }
 
@@ -735,7 +735,7 @@ function fmtNum(n: number) {
   padding: 2px 6px;
   background: #0f1117;
   border-radius: 4px;
-  color: #818cf8;
+  color: var(--accent-h);
 }
 
 .pct-track {
@@ -749,7 +749,7 @@ function fmtNum(n: number) {
 .pct-fill {
   position: absolute;
   top: 0; left: 0; height: 100%;
-  background: linear-gradient(90deg, rgba(99, 102, 241, 0.5), rgba(99, 102, 241, 0.8));
+  background: linear-gradient(90deg, color-mix(in srgb, var(--accent) 50%, transparent), color-mix(in srgb, var(--accent) 80%, transparent));
   transition: width 0.3s;
 }
 .pct-text {
@@ -778,7 +778,7 @@ function fmtNum(n: number) {
 
 /* ── 列存 (citus_columnar) ── */
 .columnar-card {
-  border-left: 3px solid rgba(99, 102, 241, 0.5);
+  border-left: 3px solid color-mix(in srgb, var(--accent) 50%, transparent);
 }
 .columnar-grid {
   display: grid;
@@ -814,11 +814,11 @@ function fmtNum(n: number) {
 .columnar-note {
   margin: 12px 0 0;
   padding: 8px 12px;
-  background: rgba(99, 102, 241, 0.08);
-  border-left: 2px solid #6366f1;
+  background: color-mix(in srgb, var(--accent) 8%, transparent);
+  border-left: 2px solid var(--accent);
   border-radius: 4px;
   font-size: 12px;
-  color: #818cf8;
+  color: var(--accent-h);
 }
 
 @media (max-width: 800px) {
@@ -975,7 +975,7 @@ function fmtNum(n: number) {
 .modal-section-title {
   font-size: 12px;
   font-weight: 600;
-  color: #818cf8;
+  color: var(--accent-h);
   margin-bottom: 6px;
   letter-spacing: 0.02em;
 }

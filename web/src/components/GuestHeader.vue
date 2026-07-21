@@ -67,8 +67,8 @@ function isNavActive(path: string) {
   align-items: center;
   gap: 20px;
   padding: 14px 24px;
-  border-bottom: 1px solid var(--border, #2a2d3a);
-  background: var(--sidebar, #161b22);
+  border-bottom: 1px solid var(--border);
+  background: var(--sidebar);
   position: sticky;
   top: 0;
   z-index: 20;
@@ -102,7 +102,7 @@ function isNavActive(path: string) {
   font-size: 15px;
   font-weight: 700;
   line-height: 1.25;
-  color: var(--text, #e8eaed);
+  color: var(--text);
   white-space: nowrap;
 }
 
@@ -110,7 +110,7 @@ function isNavActive(path: string) {
   font-size: 11px;
   font-weight: 500;
   line-height: 1.3;
-  color: var(--text-secondary, #8b949e);
+  color: var(--text-secondary);
   white-space: nowrap;
 }
 
@@ -134,19 +134,19 @@ function isNavActive(path: string) {
   border-radius: 8px;
   font-size: 13px;
   font-weight: 500;
-  color: var(--text-secondary, #8b949e);
+  color: var(--text-secondary);
   text-decoration: none;
   transition: color 0.15s ease, background 0.15s ease;
 }
 
 .guest-nav__link:hover {
-  color: var(--text, #e8eaed);
+  color: var(--text);
   background: rgba(255, 255, 255, 0.06);
 }
 
 .guest-nav__link--active {
-  color: var(--accent, #6366f1);
-  background: rgba(99, 102, 241, 0.12);
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
 }
 
 .guest-header-right {

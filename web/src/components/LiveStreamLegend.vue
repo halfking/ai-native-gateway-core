@@ -95,8 +95,8 @@ function handleClick(key: string) {
 .legend-container {
   margin-top: 12px;
   padding: 10px 12px;
-  background: var(--bg-subtle, #161b22);
-  border: 1px solid var(--border, #30363d);
+  background: var(--bg-subtle);
+  border: 1px solid var(--border);
   border-radius: 6px;
 }
 
@@ -127,7 +127,7 @@ function handleClick(key: string) {
 .legend-heading {
   font-size: 12px;
   font-weight: 600;
-  color: var(--text, #e6edf3);
+  color: var(--text);
   margin-right: 4px;
   white-space: nowrap;
 }
@@ -139,7 +139,7 @@ function handleClick(key: string) {
   padding: 4px 8px;
   border-radius: 4px;
   font-size: 12px;
-  color: var(--text-secondary, #8b949e);
+  color: var(--text-secondary);
   border: 1px solid transparent;
   background: transparent;
   cursor: pointer;
@@ -148,15 +148,15 @@ function handleClick(key: string) {
 }
 
 .legend-item:not(.legend-item--status):hover {
-  background: var(--bg, #0f1117);
-  border-color: var(--border, #30363d);
-  color: var(--text, #e6edf3);
+  background: var(--bg);
+  border-color: var(--border);
+  color: var(--text);
 }
 
 .legend-item--selected {
-  background: rgba(99, 102, 241, 0.12);
-  border-color: var(--accent, #6366f1);
-  color: var(--accent, #6366f1);
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  border-color: var(--accent);
+  color: var(--accent);
 }
 
 .legend-item--dimmed {
@@ -214,12 +214,12 @@ function handleClick(key: string) {
 
 .legend-count {
   font-size: 11px;
-  color: var(--text-tertiary, #6e7681);
+  color: var(--text-tertiary);
   font-variant-numeric: tabular-nums;
 }
 
 .legend-item--selected .legend-count {
-  color: var(--accent, #6366f1);
+  color: var(--accent);
 }
 
 @media (max-width: 1024px) {
@@ -229,7 +229,7 @@ function handleClick(key: string) {
   }
   
   .legend-section--right {
-    border-top: 1px solid var(--border, #30363d);
+    border-top: 1px solid var(--border);
     padding-top: 8px;
     margin-top: 4px;
   }

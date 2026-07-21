@@ -133,25 +133,167 @@ input[type="radio"], input[type="checkbox"] {
 }
 
 .btn {
+  /* 基础布局：稍大尺寸（高于常规 Web 默认 8/12），细边框，箭头尾部。
+   * 鼠标移到上方：箭头由 → 变 ⇢（轻微位移）+ 背景色反显，未禁用时永远 cursor:pointer。 */
   display: inline-flex;
   align-items: center;
-  gap: 6px;
-  padding: 6px 14px;
+  justify-content: center;
+  gap: 8px;
+  padding: 9px 18px;
+  min-height: 36px;
   border-radius: var(--radius);
-  border: 1px solid transparent;
-  font-size: 13px;
+  border: 1px solid var(--border);
+  font-size: 13.5px;
+  font-weight: 500;
+  line-height: 1.2;
+  letter-spacing: 0.01em;
   cursor: pointer;
-  transition: opacity .15s;
+  user-select: none;
+  background: var(--card);
+  color: var(--text);
+  box-shadow: 0 1px 0 rgba(15, 23, 42, 0.02);
+  transition:
+    background-color .18s ease,
+    border-color .18s ease,
+    color .18s ease,
+    box-shadow .18s ease,
+    transform .12s ease;
 }
-.btn:hover { opacity: .85; }
-.btn-primary  { background: var(--accent);  color: #fff; }
-.btn-danger   { background: var(--danger);  color: #fff; }
-.btn-ghost    { background: transparent; border-color: var(--border); color: var(--text); }
-.btn-warning  { background: var(--warning, #d97706); color: #fff; }
-.btn-success  { background: var(--success, #16a34a); color: #fff; }
-.btn-secondary{ background: var(--card); border-color: var(--border); color: var(--text); }
-.btn-sm { padding: 4px 10px; font-size: 12px; }
-.btn:disabled { opacity: .4; cursor: not-allowed; }
+/* 主色按钮：accent 填充 + 白字 + 强调细边框 */
+.btn-primary {
+  background: var(--accent);
+  color: #fff;
+  border-color: color-mix(in srgb, var(--accent) 70%, transparent);
+  box-shadow: 0 1px 0 rgba(15, 23, 42, 0.04), 0 2px 6px color-mix(in srgb, var(--accent) 24%, transparent);
+}
+.btn-primary:hover:not(:disabled) {
+  background: var(--accent-h);
+  border-color: color-mix(in srgb, var(--accent-h) 75%, transparent);
+  box-shadow: 0 2px 8px color-mix(in srgb, var(--accent) 30%, transparent);
+  transform: translateY(-1px);
+}
+/* 危险：danger 填充 */
+.btn-danger {
+  background: var(--danger);
+  color: #fff;
+  border-color: color-mix(in srgb, var(--danger) 80%, transparent);
+  box-shadow: 0 1px 0 rgba(15, 23, 42, 0.04), 0 2px 6px color-mix(in srgb, var(--danger) 24%, transparent);
+}
+.btn-danger:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--danger) 88%, #000);
+  border-color: color-mix(in srgb, var(--danger) 90%, transparent);
+  transform: translateY(-1px);
+}
+/* 幽灵：透明底 + 边框，按 hover 反显 */
+.btn-ghost {
+  background: transparent;
+  color: var(--text);
+  border-color: var(--border);
+}
+.btn-ghost:hover:not(:disabled) {
+  background: var(--bg-hover);
+  border-color: color-mix(in srgb, var(--accent) 35%, var(--border));
+  color: var(--accent-h);
+}
+/* 警告：warning 填充 */
+.btn-warning {
+  background: var(--warning, #d97706);
+  color: #fff;
+  border-color: color-mix(in srgb, var(--warning, #d97706) 80%, transparent);
+}
+.btn-warning:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--warning, #d97706) 88%, #000);
+  transform: translateY(-1px);
+}
+/* 成功：success 填充 */
+.btn-success {
+  background: var(--success, #16a34a);
+  color: #fff;
+  border-color: color-mix(in srgb, var(--success, #16a34a) 80%, transparent);
+}
+.btn-success:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--success, #16a34a) 88%, #000);
+  transform: translateY(-1px);
+}
+/* 次要：卡片色 + 边框 + 文字 */
+.btn-secondary {
+  background: var(--card);
+  color: var(--text);
+  border-color: var(--border);
+}
+.btn-secondary:hover:not(:disabled) {
+  background: var(--bg-hover);
+  border-color: color-mix(in srgb, var(--accent) 35%, var(--border));
+  color: var(--accent-h);
+}
+/* 小尺寸：用于表格行内 / 工具栏；保留细边框与箭头 */
+.btn-sm {
+  padding: 5px 12px;
+  min-height: 28px;
+  font-size: 12px;
+  border-radius: calc(var(--radius) - 2px);
+}
+/* 文本按钮：无背景无边框，但仍展示箭头与 hover 反显 */
+.btn-link,
+.btn-text {
+  background: transparent;
+  border-color: transparent;
+  color: var(--accent-h);
+  padding: 4px 6px;
+  min-height: auto;
+  box-shadow: none;
+}
+.btn-link:hover:not(:disabled),
+.btn-text:hover:not(:disabled) {
+  color: var(--accent);
+  background: var(--bg-hover);
+}
+/* 箭头：可点时尾部带 → ，hover 时变成 ⇢ 推进 4px；disabled 时仍渲染但显灰 */
+.btn::after {
+  content: '→';
+  display: inline-block;
+  font-size: 1.05em;
+  line-height: 1;
+  margin-left: 2px;
+  transition: transform .18s ease, opacity .18s ease;
+  opacity: 0.92;
+}
+.btn:not(:disabled):hover::after {
+  transform: translateX(4px);
+  opacity: 1;
+}
+/* 不带箭头的按钮（文本/链接/图标按钮） */
+.btn-no-arrow::after,
+.btn-icon::after { content: none; margin: 0; }
+/* 禁用态：显灰 + 鼠标变 not-allowed + 箭头淡出 */
+.btn:disabled,
+.btn[disabled] {
+  background: color-mix(in srgb, var(--card) 70%, var(--bg) 30%);
+  color: color-mix(in srgb, var(--text) 40%, var(--muted));
+  border-color: color-mix(in srgb, var(--border) 60%, transparent);
+  cursor: not-allowed;
+  box-shadow: none;
+  transform: none;
+}
+.btn:disabled::after,
+.btn[disabled]::after { opacity: 0.35; }
+/* 加载态：箭头变旋转指示，但保持可读 */
+.btn.is-loading,
+.btn[aria-busy='true'] {
+  cursor: progress;
+  opacity: 0.92;
+}
+.btn.is-loading::after,
+.btn[aria-busy='true']::after {
+  content: '⟳';
+  animation: btn-spin 0.9s linear infinite;
+}
+@keyframes btn-spin { to { transform: rotate(360deg); } }
+/* 焦点环：键盘可达性 */
+.btn:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 28%, transparent);
+}
 
 .card {
   background: var(--card);

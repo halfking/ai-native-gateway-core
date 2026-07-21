@@ -133,8 +133,8 @@ function goKeys(action?: string) {
   max-height: min(85vh, 640px);
   overflow-y: auto;
   padding: 18px 20px;
-  border: 1px solid rgba(99, 102, 241, 0.45);
-  background: var(--card, #1a1d27);
+  border: 1px solid color-mix(in srgb, var(--accent) 45%, transparent);
+  background: var(--card);
   box-shadow: 0 16px 48px rgba(0, 0, 0, 0.45);
 }
 

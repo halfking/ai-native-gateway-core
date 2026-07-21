@@ -654,7 +654,7 @@ load()
       </div>
     </div>
 
-    <div v-if="routable" class="card" style="margin-bottom:12px;background:rgba(99,102,241,0.04)">
+    <div v-if="routable" class="card" style="margin-bottom:12px;background:color-mix(in srgb, var(--accent) 4%, transparent)">
       <h5 style="margin:0 0 8px 0">可路由性摘要 (v_routable_credential_models)</h5>
       <div class="metric-grid" style="grid-template-columns:repeat(4,1fr);gap:8px">
         <div class="metric">
@@ -924,14 +924,14 @@ load()
   color: var(--muted);
   padding: 2px 10px;
   border-radius: 999px;
-  background: rgba(99, 102, 241, 0.08);
-  border: 1px solid rgba(99, 102, 241, 0.2);
+  background: color-mix(in srgb, var(--accent) 8%, transparent);
+  border: 1px solid color-mix(in srgb, var(--accent) 20%, transparent);
   white-space: nowrap;
 }
 .refresh-hint--loading {
-  color: var(--accent, #6366f1);
-  border-color: rgba(99, 102, 241, 0.4);
-  background: rgba(99, 102, 241, 0.12);
+  color: var(--accent);
+  border-color: color-mix(in srgb, var(--accent) 40%, transparent);
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
 }
 .refresh-hint--success {
   color: #16a34a;
@@ -950,8 +950,8 @@ load()
   display: inline-block;
   width: 10px;
   height: 10px;
-  border: 2px solid rgba(99, 102, 241, 0.3);
-  border-top-color: var(--accent, #6366f1);
+  border: 2px solid color-mix(in srgb, var(--accent) 30%, transparent);
+  border-top-color: var(--accent);
   border-radius: 50%;
   animation: refresh-spin 0.8s linear infinite;
 }
@@ -964,7 +964,7 @@ load()
   cursor: pointer;
 }
 .model-row:hover td {
-  background: rgba(99, 102, 241, 0.06);
+  background: color-mix(in srgb, var(--accent) 6%, transparent);
 }
 .model-row:focus-visible {
   outline: 2px solid var(--accent);
@@ -1030,8 +1030,8 @@ load()
   gap: 8px;
   padding: 10px 12px;
   margin-top: 10px;
-  background: var(--bg-subtle, #161b22);
-  border: 1px solid var(--border, #30363d);
+  background: var(--bg-subtle);
+  border: 1px solid var(--border);
   border-radius: 6px;
 }
 .suggest-row {
@@ -1046,9 +1046,9 @@ load()
   min-width: 110px;
 }
 .suggest-chip {
-  border: 1px solid var(--accent, #6366f1);
-  background: rgba(99,102,241,0.12);
-  color: var(--text, #e6edf3);
+  border: 1px solid var(--accent);
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  color: var(--text);
   border-radius: 999px;
   padding: 4px 12px;
   font-size: 12px;
@@ -1056,7 +1056,7 @@ load()
   cursor: pointer;
 }
 .suggest-chip:hover {
-  background: var(--accent, #6366f1);
+  background: var(--accent);
   color: #fff;
 }
 .suggest-loading,
@@ -1065,7 +1065,7 @@ load()
   font-size: 11px;
 }
 .suggest-err {
-  color: var(--danger, #f85149);
+  color: var(--danger);
   font-size: 11px;
 }
 .metric-row {
@@ -1088,12 +1088,12 @@ load()
   gap: 8px;
   margin-top: 8px;
   font-size: 12px;
-  color: var(--accent, #6366f1);
+  color: var(--accent);
 }
 .probe-all-summary {
   margin-top: 8px;
   padding: 10px 12px;
-  background: var(--bg-subtle, #161b22);
+  background: var(--bg-subtle);
   border: 1px solid var(--border);
   border-radius: 8px;
 }
@@ -1101,8 +1101,8 @@ load()
   margin-top: 8px;
   padding: 6px 10px;
   background: rgba(34, 197, 94, 0.12);
-  border-left: 3px solid var(--ok, #22c55e);
-  color: var(--ok, #22c55e);
+  border-left: 3px solid var(--ok);
+  color: var(--ok);
   font-size: 12px;
   border-radius: 4px;
 }

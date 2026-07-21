@@ -630,7 +630,7 @@ function toggleGuide(id: ClientGuideId) {
   font-size: 12px;
   line-height: 1.6;
   color: var(--muted);
-  background: rgba(99, 102, 241, 0.08);
+  background: color-mix(in srgb, var(--accent) 8%, transparent);
   border-radius: 6px;
 }
 </style>
