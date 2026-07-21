@@ -308,10 +308,12 @@ function renderChart() {
     options: {
       responsive: true, maintainAspectRatio: false,
       plugins: {
-        legend: { position: 'bottom', labels: { color: '#e6edf3', font: { size: 12 }, padding: 12 } },
+        legend: { position: 'bottom', labels: { color: getComputedStyle(document.documentElement).getPropertyValue('--text-primary').trim() || '#152033', font: { size: 12 }, padding: 12 } },
         tooltip: {
-          backgroundColor: 'rgba(15, 17, 23, 0.95)', titleColor: '#e6edf3', bodyColor: '#e6edf3',
-          borderColor: 'rgba(99, 102, 241, 0.5)', borderWidth: 1,
+          backgroundColor: getComputedStyle(document.documentElement).getPropertyValue('--bg-card').trim() || '#ffffff',
+          titleColor: getComputedStyle(document.documentElement).getPropertyValue('--text-primary').trim() || '#152033',
+          bodyColor: getComputedStyle(document.documentElement).getPropertyValue('--text-primary').trim() || '#152033',
+          borderColor: getComputedStyle(document.documentElement).getPropertyValue('--border').trim() || '#dce3ee', borderWidth: 1,
           callbacks: {
             label: (c) => {
               const v = c.parsed

@@ -3267,22 +3267,6 @@ func (h *ChatHandler) emitTelemetry(evt audit.Event, result *executors.ExecuteRe
 		if v, ok := m["cache_write_tokens"].(int); ok && v > 0 {
 			reqLog.CacheWriteTokens = &v
 		}
-		if v, ok := m["reasoning_tokens"].(int); ok && v > 0 {
-			reqLog.ReasoningTokens = &v
-		}
-		if v, ok := m["image_tokens"].(int); ok && v > 0 {
-			reqLog.ImageTokens = &v
-		}
-		if v, ok := m["audio_tokens"].(int); ok && v > 0 {
-			reqLog.AudioTokens = &v
-		}
-		if v, ok := m["video_tokens"].(int); ok && v > 0 {
-			reqLog.VideoTokens = &v
-		}
-		if v, ok := m["provider_tokens"].(int); ok && v > 0 {
-			reqLog.ProviderTokens = &v
-		}
-
 		if v, ok := m["stream_first_chunk_ms"].(int); ok {
 			reqLog.StreamFirstChunkMs = &v
 		}
@@ -3412,9 +3396,9 @@ func (h *ChatHandler) emitTelemetry(evt audit.Event, result *executors.ExecuteRe
 	// This caused request_logs to show NULL for completion_tokens and cache_*_tokens even
 	// when the upstream response contained a complete usage block.
 	if len(result.ResponseBody) > 0 {
-		pt, ct, crt, cwt, rt, it, at, vt, pvt := extractUsageFromResponseBody(result.ResponseBody)
-
-		if pt > 0 || ct > 0 || crt > 0 || cwt > 0 || rt > 0 || it > 0 || at > 0 || vt > 0 || pvt > 0 {
+		pt, ct, crt, cwt := extractTokensFromResponseBody(result.ResponseBody)
+		if pt > 0 || ct > 0 {
+			// Only overwrite if not already set from streaming capture
 			if reqLog.PromptTokens == nil || *reqLog.PromptTokens == 0 {
 				reqLog.PromptTokens = &pt
 			}
@@ -3424,20 +3408,8 @@ func (h *ChatHandler) emitTelemetry(evt audit.Event, result *executors.ExecuteRe
 			if crt > 0 && (reqLog.CacheReadTokens == nil || *reqLog.CacheReadTokens == 0) {
 				reqLog.CacheReadTokens = &crt
 			}
-			if rt > 0 && (reqLog.ReasoningTokens == nil || *reqLog.ReasoningTokens == 0) {
-				reqLog.ReasoningTokens = &rt
-			}
-			if it > 0 && (reqLog.ImageTokens == nil || *reqLog.ImageTokens == 0) {
-				reqLog.ImageTokens = &it
-			}
-			if at > 0 && (reqLog.AudioTokens == nil || *reqLog.AudioTokens == 0) {
-				reqLog.AudioTokens = &at
-			}
-			if vt > 0 && (reqLog.VideoTokens == nil || *reqLog.VideoTokens == 0) {
-				reqLog.VideoTokens = &vt
-			}
-			if pvt > 0 && (reqLog.ProviderTokens == nil || *reqLog.ProviderTokens == 0) {
-				reqLog.ProviderTokens = &pvt
+			if cwt > 0 && (reqLog.CacheWriteTokens == nil || *reqLog.CacheWriteTokens == 0) {
+				reqLog.CacheWriteTokens = &cwt
 			}
 		}
 	}
@@ -3559,9 +3531,7 @@ func (h *ChatHandler) emitTelemetry(evt audit.Event, result *executors.ExecuteRe
 
 	if h.maasSvc != nil && keyInfo != nil && keyInfo.TenantID != "" && keyInfo.TenantID != "default" {
 		pt, ct, crt, cwt := 0, 0, 0, 0
-		it, at, vt := 0, 0, 0
 		streamChunkCount := 0
-
 		if reqLog.PromptTokens != nil {
 			pt = *reqLog.PromptTokens
 		}
@@ -3574,15 +3544,6 @@ func (h *ChatHandler) emitTelemetry(evt audit.Event, result *executors.ExecuteRe
 		if reqLog.CacheWriteTokens != nil {
 			cwt = *reqLog.CacheWriteTokens
 		}
-		if reqLog.ImageTokens != nil {
-			it = *reqLog.ImageTokens
-		}
-		if reqLog.AudioTokens != nil {
-			at = *reqLog.AudioTokens
-		}
-		if reqLog.VideoTokens != nil {
-			vt = *reqLog.VideoTokens
-		}
 		if reqLog.StreamChunkCount != nil {
 			streamChunkCount = *reqLog.StreamChunkCount
 		}
@@ -3592,11 +3553,7 @@ func (h *ChatHandler) emitTelemetry(evt audit.Event, result *executors.ExecuteRe
 				canonical = evt.ClientModel
 			}
 			chargeCtx, chargeCancel := context.WithTimeout(context.Background(), 5*time.Second)
-			charged, err := h.maasSvc.ChargeRequestMultimodal(chargeCtx, keyInfo.TenantID, evt.RequestID, canonical, maas.TokenUsage{
-				PromptTokens: pt, CompletionTokens: ct, CacheReadTokens: crt, CacheWriteTokens: cwt,
-				ImageTokens: it, AudioTokens: at, VideoTokens: vt,
-			})
-
+			charged, err := h.maasSvc.ChargeRequest(chargeCtx, keyInfo.TenantID, evt.RequestID, canonical, pt, ct, crt, cwt)
 			chargeCancel()
 			if err == nil && charged > 0 {
 				reqLog.CreditsCharged = &charged
@@ -4448,17 +4405,12 @@ func resolveEndUser(bodyUser string, r *http.Request) string {
 }
 
 func extractTokensFromResponseBody(body []byte) (promptTokens, completionTokens, cacheRead, cacheWrite int) {
-	promptTokens, completionTokens, cacheRead, cacheWrite, _, _, _, _, _ = extractUsageFromResponseBody(body)
-	return
-}
-
-func extractUsageFromResponseBody(body []byte) (promptTokens, completionTokens, cacheRead, cacheWrite, reasoning, image, audio, video, provider int) {
 	if len(body) == 0 {
-		return 0, 0, 0, 0, 0, 0, 0, 0, 0
+		return 0, 0, 0, 0
 	}
 	var data map[string]any
 	if err := json.Unmarshal(body, &data); err != nil {
-		return 0, 0, 0, 0, 0, 0, 0, 0, 0
+		return 0, 0, 0, 0
 	}
 	usageRaw, ok := data["usage"]
 	if !ok {
@@ -4467,7 +4419,7 @@ func extractUsageFromResponseBody(body []byte) (promptTokens, completionTokens, 
 	}
 	usage, ok := usageRaw.(map[string]any)
 	if !ok {
-		return 0, 0, 0, 0, 0, 0, 0, 0, 0
+		return 0, 0, 0, 0
 	}
 	// prompt_tokens / input_tokens (Anthropic native)
 	if v, ok := usage["prompt_tokens"].(float64); ok {
@@ -4511,32 +4463,7 @@ func extractUsageFromResponseBody(body []byte) (promptTokens, completionTokens, 
 			}
 		}
 	}
-	if v, ok := usage["reasoning_tokens"].(float64); ok {
-		reasoning = int(v)
-	}
-	if v, ok := usage["prompt_tokens_details"].(map[string]any); ok {
-		if value, ok := v["image_tokens"].(float64); ok {
-			image = int(value)
-		}
-		if value, ok := v["audio_tokens"].(float64); ok {
-			audio = int(value)
-		}
-		if value, ok := v["video_tokens"].(float64); ok {
-			video = int(value)
-		}
-	}
-	if v, ok := usage["completion_tokens_details"].(map[string]any); ok {
-		if value, ok := v["reasoning_tokens"].(float64); ok && reasoning == 0 {
-			reasoning = int(value)
-		}
-		if value, ok := v["audio_tokens"].(float64); ok {
-			audio += int(value)
-		}
-	}
-	if v, ok := usage["provider_tokens"].(float64); ok {
-		provider = int(v)
-	}
-
+	// total_tokens fallback: if we have total but missing prompt/completion, infer them
 	if promptTokens == 0 || completionTokens == 0 {
 		if total, ok := usage["total_tokens"].(float64); ok && int(total) > 0 {
 			totalInt := int(total)

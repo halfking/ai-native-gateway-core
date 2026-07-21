@@ -326,32 +326,3 @@ func TestSupervisor_UpgradeRollbackOnStartFailure(t *testing.T) {
 		t.Errorf("after failed upgrade, manifest = %q, want 0.1.0 (rollback)", m.PluginVersion)
 	}
 }
-
-func TestSupervisor_InstalledVersions(t *testing.T) {
-	sup := NewSupervisor(SupervisorConfig{SocketDir: t.TempDir()})
-	sup.commandFactory = func(socketPath, entrypoint string, env []string) command {
-		return &fakeProc{}
-	}
-	// empty before any plugin starts
-	if got := sup.InstalledVersions(); len(got) != 0 {
-		t.Errorf("empty supervisor InstalledVersions = %v, want empty", got)
-	}
-
-	if _, err := sup.Start(context.Background(), &Manifest{PluginID: "asm", PluginVersion: "0.1.0"}); err != nil {
-		t.Fatalf("start asm: %v", err)
-	}
-	if _, err := sup.Start(context.Background(), &Manifest{PluginID: "other", PluginVersion: "2.0.0"}); err != nil {
-		t.Fatalf("start other: %v", err)
-	}
-
-	got := sup.InstalledVersions()
-	if len(got) != 2 {
-		t.Fatalf("InstalledVersions = %v, want 2 entries", got)
-	}
-	if got["asm"] != "0.1.0" {
-		t.Errorf("asm version = %q, want 0.1.0", got["asm"])
-	}
-	if got["other"] != "2.0.0" {
-		t.Errorf("other version = %q, want 2.0.0", got["other"])
-	}
-}

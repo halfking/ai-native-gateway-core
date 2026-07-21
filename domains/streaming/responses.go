@@ -233,13 +233,7 @@ func (h *ResponsesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	chatBody, err := convertResponsesToChatBodyWithError(&reqBody)
-	if err != nil {
-		attemptErrCode = "unsupported_modality"
-		attemptErrMsg = err.Error()
-		writeResponsesError(w, http.StatusBadRequest, attemptErrMsg, "invalid_request", attemptErrCode)
-		return
-	}
+	chatBody := convertResponsesToChatBody(&reqBody)
 	chatBodyBytes, err := json.Marshal(chatBody)
 	if err != nil {
 		attemptErrCode = "conversion_error"
@@ -556,14 +550,6 @@ func (h *ResponsesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 func convertResponsesToChatBody(req *responsesRequestBody) map[string]any {
-	body, err := convertResponsesToChatBodyWithError(req)
-	if err != nil {
-		return map[string]any{"model": req.Model, "stream": req.Stream, "messages": []any{}}
-	}
-	return body
-}
-
-func convertResponsesToChatBodyWithError(req *responsesRequestBody) (map[string]any, error) {
 	chatBody := map[string]any{
 		"model":  req.Model,
 		"stream": req.Stream,
@@ -579,34 +565,28 @@ func convertResponsesToChatBodyWithError(req *responsesRequestBody) (map[string]
 		switch rawInput[0] {
 		case '"':
 			var s string
-			if err := json.Unmarshal(rawInput, &s); err != nil {
-				return nil, fmt.Errorf("invalid input string: %w", err)
+			if json.Unmarshal(rawInput, &s) == nil {
+				messages = append(messages, map[string]any{"role": "user", "content": s})
 			}
-			messages = append(messages, map[string]any{"role": "user", "content": s})
 		case '[':
 			var items []map[string]any
-			if err := json.Unmarshal(rawInput, &items); err != nil {
-				return nil, fmt.Errorf("invalid input array: %w", err)
+			if json.Unmarshal(rawInput, &items) == nil {
+				for _, item := range items {
+					if message, ok := convertResponsesInputItem(item); ok {
+						messages = append(messages, message)
+						continue
+					}
+					role, _ := item["role"].(string)
+					if role == "" {
+						role = "user"
+					}
+					content := item["content"]
+					if content == nil {
+						content = ""
+					}
+					messages = append(messages, map[string]any{"role": role, "content": content})
+				}
 			}
-			for _, item := range items {
-				if message, ok, err := convertResponsesInputItemWithError(item); err != nil {
-					return nil, err
-				} else if ok {
-					messages = append(messages, message)
-					continue
-				}
-				role, _ := item["role"].(string)
-				if role == "" {
-					role = "user"
-				}
-				content := item["content"]
-				if content == nil {
-					content = ""
-				}
-				messages = append(messages, map[string]any{"role": role, "content": content})
-			}
-		default:
-			return nil, fmt.Errorf("unsupported_modality: input must be a string or array")
 		}
 	}
 	chatBody["messages"] = messages
@@ -635,54 +615,15 @@ func convertResponsesToChatBodyWithError(req *responsesRequestBody) (map[string]
 		chatBody[key] = value
 	}
 
-	return chatBody, nil
+	return chatBody
 }
 
 // convertResponsesInputItem preserves the tool-call chain when translating
 // Responses API input items to Chat Completions messages. Dropping these
 // fields leaves function_call_output without a matching function_call.
 func convertResponsesInputItem(item map[string]any) (map[string]any, bool) {
-	message, ok, _ := convertResponsesInputItemWithError(item)
-	return message, ok
-}
-
-func convertResponsesInputItemWithError(item map[string]any) (map[string]any, bool, error) {
 	typ, _ := item["type"].(string)
 	switch typ {
-	case "input_text":
-		text, _ := item["text"].(string)
-		return map[string]any{"role": "user", "content": []any{map[string]any{"type": "text", "text": text}}}, true, nil
-	case "input_image":
-		if imageURL, ok := item["image_url"].(string); ok && imageURL != "" {
-			return map[string]any{"role": "user", "content": []any{map[string]any{
-				"type": "image_url", "image_url": map[string]any{"url": imageURL},
-			}}}, true, nil
-		}
-		if fileID, ok := item["file_id"].(string); ok && fileID != "" {
-			return map[string]any{"role": "user", "content": []any{map[string]any{
-				"type": "file", "file": map[string]any{"file_id": fileID},
-			}}}, true, nil
-		}
-		return nil, false, fmt.Errorf("unsupported_modality: input_image has no image_url or file_id")
-	case "input_audio":
-		audio, ok := item["input_audio"].(map[string]any)
-		if !ok {
-			return nil, false, fmt.Errorf("unsupported_modality: input_audio payload is invalid")
-		}
-		return map[string]any{"role": "user", "content": []any{map[string]any{
-			"type": "input_audio", "input_audio": audio,
-		}}}, true, nil
-	case "input_file":
-		file := item["input_file"]
-		if file == nil {
-			file = item["file"]
-		}
-		if file == nil {
-			return nil, false, fmt.Errorf("unsupported_modality: input_file payload is missing")
-		}
-		return map[string]any{"role": "user", "content": []any{map[string]any{
-			"type": "file", "file": file,
-		}}}, true, nil
 	case "function_call":
 		id, _ := item["call_id"].(string)
 		if id == "" {
@@ -691,7 +632,7 @@ func convertResponsesInputItemWithError(item map[string]any) (map[string]any, bo
 		name, _ := item["name"].(string)
 		arguments, _ := item["arguments"].(string)
 		if id == "" || name == "" {
-			return nil, false, nil
+			return nil, false
 		}
 		return map[string]any{
 			"role":    "assistant",
@@ -700,24 +641,27 @@ func convertResponsesInputItemWithError(item map[string]any) (map[string]any, bo
 				"id":   id,
 				"type": "function",
 				"function": map[string]any{
-					"name": name, "arguments": arguments,
+					"name":      name,
+					"arguments": arguments,
 				},
 			}},
-		}, true, nil
+		}, true
 	case "function_call_output":
 		id, _ := item["call_id"].(string)
 		if id == "" {
-			return nil, false, nil
+			return nil, false
 		}
 		output := item["output"]
 		if output == nil {
 			output = ""
 		}
 		return map[string]any{
-			"role": "tool", "tool_call_id": id, "content": output,
-		}, true, nil
+			"role":         "tool",
+			"tool_call_id": id,
+			"content":      output,
+		}, true
 	default:
-		return nil, false, nil
+		return nil, false
 	}
 }
 

@@ -89,7 +89,7 @@ func TestRouterPlanCandidatesV2CanaryGate(t *testing.T) {
 		}
 		r := NewRouter(nil, nil)
 		r.URSMv2 = mgr
-		out, _ := r.PlanCandidates(candidates, ctx, nil, &provider.Policy{}, nil)
+		out := r.PlanCandidates(candidates, ctx, nil, &provider.Policy{}, nil)
 		if len(out) == 0 {
 			t.Fatalf("PlanCandidates returned 0 candidates")
 		}

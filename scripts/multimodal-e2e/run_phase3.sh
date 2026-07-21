@@ -13,9 +13,6 @@
 # Usage:
 #   export LLM_GATEWAY_API_KEY=...      # any valid client key
 #   export GATEWAY_URL=http://localhost:8781
-#   export ONLY_IDS=T-02,T-04        # optional case selection
-#   export SKIP_IDS=T-05             # optional ad-hoc skips
-#   export MODEL_OVERRIDE_T_02=gpt-4o # optional per-case model override
 #   bash scripts/multimodal-e2e/run_phase3.sh           # execute
 #   bash scripts/multimodal-e2e/run_phase3.sh --dry-run # print curl, no send
 #
@@ -28,14 +25,6 @@
 #   - ≤2 calls per case, ≤15 total
 #   - single-call timeout 30s
 #   - no retries on 5xx (treat as fail)
-#
-# CLI:
-#   --dry-run          print curl, no send
-#   --id T-02,T-04     restrict to listed case IDs (alias for ONLY_IDS)
-#   --id-file PATH     read case IDs from PATH (whitespace/comma separated,
-#                      comments via '#'); alias for ONLY_IDS
-#   --skip T-05        skip listed case IDs (alias for SKIP_IDS)
-#   --skip-file PATH   read case IDs from PATH; alias for SKIP_IDS
 
 set -uo pipefail
 
@@ -44,46 +33,13 @@ API_KEY="${LLM_GATEWAY_API_KEY:-}"
 SAMPLES_DIR="$(cd "$(dirname "$0")/../../docs/multimodal-testing/samples" && pwd)"
 CASES_DIR="$(cd "$(dirname "$0")" && pwd)/cases"
 LOG_FILE="${LOG_FILE:-/tmp/multimodal-e2e-phase3.log}"
-ONLY_IDS="${ONLY_IDS:-}"
-SKIP_IDS="${SKIP_IDS:-}"
 
 DRY_RUN=0
+[[ "${1:-}" == "--dry-run" ]] && DRY_RUN=1
 
 red()   { printf '\033[31m%s\033[0m\n' "$*"; }
 green() { printf '\033[32m%s\033[0m\n' "$*"; }
 yel()   { printf '\033[33m%s\033[0m\n' "$*"; }
-
-read_id_file() {
-  local file="$1"
-  [[ -f "$file" ]] || { red "id file not found: $file"; return 1; }
-  python3 - "$file" <<'PY'
-import re,sys
-ids=[]
-for line in open(sys.argv[1]):
-  line=line.split('#',1)[0]
-  for m in re.findall(r'T-\d{2,4}', line):
-    if m not in ids: ids.append(m)
-print(','.join(ids))
-PY
-}
-
-while [[ $# -gt 0 ]]; do
-  case "$1" in
-    --) shift; while [[ $# -gt 0 ]]; do shift; done ;;  # swallow separators
-    --dry-run) DRY_RUN=1; shift ;;
-    --id) [[ $# -ge 2 ]] || { red "--id needs a value"; exit 2; }; ONLY_IDS="${ONLY_IDS:+${ONLY_IDS},}$2"; shift 2 ;;
-    --id=*) ONLY_IDS="${ONLY_IDS:+${ONLY_IDS},}${1#--id=}"; shift ;;
-    --id-file) [[ $# -ge 2 ]] || { red "--id-file needs a path"; exit 2; }; ONLY_IDS="${ONLY_IDS:+${ONLY_IDS},}$(read_id_file "$2")"; shift 2 ;;
-    --id-file=*) ONLY_IDS="${ONLY_IDS:+${ONLY_IDS},}$(read_id_file "${1#--id-file=}")"; shift ;;
-    --skip) [[ $# -ge 2 ]] || { red "--skip needs a value"; exit 2; }; SKIP_IDS="${SKIP_IDS:+${SKIP_IDS},}$2"; shift 2 ;;
-    --skip=*) SKIP_IDS="${SKIP_IDS:+${SKIP_IDS},}${1#--skip=}"; shift ;;
-    --skip-file) [[ $# -ge 2 ]] || { red "--skip-file needs a path"; exit 2; }; SKIP_IDS="${SKIP_IDS:+${SKIP_IDS},}$(read_id_file "$2")"; shift 2 ;;
-    --skip-file=*) SKIP_IDS="${SKIP_IDS:+${SKIP_IDS},}$(read_id_file "${1#--skip-file=}")"; shift ;;
-    -h|--help) sed -n '1,30p' "$0"; exit 0 ;;
-    --*) red "unknown arg: $1"; exit 2 ;;
-    *) red "unknown arg: $1"; exit 2 ;;
-  esac
-done
 
 if [[ -z "$API_KEY" && $DRY_RUN -eq 0 ]]; then
   red "LLM_GATEWAY_API_KEY not set. Refusing to run real model tests."
@@ -101,23 +57,10 @@ run_case() {
   model=$(jq -r '.model' "$case_json")
   endpoint=$(jq -r '.endpoint' "$case_json")
   expected=$(jq -r '.expected // "accept"' "$case_json")
-  local env_id="${id//-/_}" override_var="MODEL_OVERRIDE_${id//-/_}"
-  local override_model="${!override_var:-}"
-  [[ -n "$override_model" ]] && model="$override_model"
   TOTAL=$((TOTAL+1))
 
-  if [[ -n "$ONLY_IDS" && ",$ONLY_IDS," != *",$id,"* ]]; then
-    yel "  [$id] SKIP (not selected by ONLY_IDS)"
-    SKIP=$((SKIP+1)); return
-  fi
-  if [[ -n "$SKIP_IDS" && ",$SKIP_IDS," == *",$id,"* ]]; then
-    yel "  [$id] SKIP (selected by SKIP_IDS)"
-    SKIP=$((SKIP+1)); return
-  fi
   if [[ "$expected" == "skip" ]]; then
-    local skip_reason
-    skip_reason=$(jq -r '.skip_reason // "no reason given"' "$case_json")
-    yel "  [$id] SKIP ($skip_reason)"
+    yel "  [$id] SKIP (declared in case.expected)"
     SKIP=$((SKIP+1)); return
   fi
 
@@ -199,7 +142,6 @@ run_case() {
   fi
 
   local code
-  : > /tmp/case.out
   code=$( "${cmd[@]}" 2>>"$LOG_FILE" )
   case "$expected" in
     accept)
@@ -211,13 +153,8 @@ run_case() {
         FAIL=$((FAIL+1))
       fi ;;
     reject)
-      local error_code
-      error_code=$(jq -r '.error.code // empty' /tmp/case.out 2>/dev/null || true)
       if [[ "$code" =~ ^(400|422|404)$ ]]; then
         green "  [$id] PASS (expected reject, http=$code)"
-        PASS=$((PASS+1))
-      elif [[ "$code" == "503" && "$error_code" == "no_candidate" ]]; then
-        green "  [$id] PASS (expected reject, http=$code, code=$error_code)"
         PASS=$((PASS+1))
       else
         red "  [$id] FAIL (expected reject, got http=$code): $(head -c 200 /tmp/case.out)"
@@ -231,12 +168,6 @@ echo "  gateway: $GATEWAY_URL"
 echo "  cases:   $CASES_DIR"
 echo "  samples: $SAMPLES_DIR"
 echo "  mode:    $([[ $DRY_RUN -eq 1 ]] && echo 'dry-run' || echo 'live')"
-echo "  git:     $(git -C "$CASES_DIR/../.." rev-parse --short HEAD 2>/dev/null || echo unknown)"
-echo "  only:    ${ONLY_IDS:-all}"
-echo "  skip:    ${SKIP_IDS:-none}"
-for override_var in ${!MODEL_OVERRIDE_T_@}; do
-  echo "  override: $override_var=${!override_var}"
-done
 echo
 
 for case_json in "$CASES_DIR"/T-*.json; do

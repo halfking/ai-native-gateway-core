@@ -27,13 +27,13 @@
 **内容**:
 - 双写逻辑审计（事务边界、列映射、错误处理）
 - 查询适配审计（JOIN 逻辑、向后兼容）
-- 审计结果：0 P0 问题，3 P1 建议
+- 审计结果：发现核心 telemetry client 未执行双写；已修复并通过 Docker PostgreSQL 17 live test
 
 **关键发现**:
-- ✅ 事务边界正确
-- ✅ 列映射完整
+- ✅ admin 导入路径事务边界正确
+- ✅ telemetry client 在同一事务写入 metadata 与 bodies
 - ✅ 向后兼容逻辑正确
-- ⚠️ P1 建议：性能监控、批量写入优化、磁盘空间监控
+- ⚠️ 245 环境仍需产生真实请求后运行受保护的 API E2E
 
 ---
 
@@ -58,14 +58,12 @@
 
 ### Phase 2C: 本地集成测试
 **验证项**:
-- ✅ 编译检查（`go build ./admin`）
-- ✅ 测试代码结构（`go test -run='^$' ./admin`）
-- ✅ 数据库表结构（PostgreSQL 17 Docker）
-- ✅ 双写逻辑 SQL 验证
+- ✅ Docker PostgreSQL 17 telemetry client live test（insert + update）
+- ✅ metadata 表 body 为 NULL，sibling 表保留完整 JSON
+- ✅ Go 编译与测试代码结构检查
 
 **限制**:
-- ⚠️ Docker PostgreSQL 连接问题（pgx SASL 认证）
-- ✅ 已通过编译和 SQL 手动验证
+- 旧 Docker 测试容器的 init-script mount 已失效；本轮使用隔离 PG17 容器完成 live test
 
 ---
 
@@ -78,16 +76,16 @@
 **测试结果**:
 | Test Suite | 状态 | 说明 |
 |-----------|------|------|
-| TC-E2E-001 | ✅ PASS | 双写验证通过 |
+| TC-E2E-001 | ❌ 未完成 | 当时 bodies 热表为 0 行，旧脚本错误地将其判为通过 |
 | TC-E2E-002 | ⏭️ SKIP | 无 null bodies 记录 |
 | TC-E2E-003 | ✅ PASS | 向后兼容验证通过 |
-| TC-PERF-001 | ⏭️ SKIP | 无 bodies 记录 |
+| TC-PERF-001 | ❌ 未完成 | 无 bodies 记录，无法测试配对查询 |
 | TC-DISK-001 | ✅ PASS | 表大小查询成功 |
 
-**总计**: 4 通过 / 0 失败 / 2 跳过
+**总计**: 245 E2E 未完成；Docker PostgreSQL 17 live test 已通过
 
 **关键验证**:
-- ✅ SQL 手动双写测试通过
+- ✅ Docker PostgreSQL 17 上真实 telemetry client 双写通过
 - ✅ 向后兼容旧记录
 - ✅ 表结构正确
 - ✅ 代码已部署到 245
@@ -120,7 +118,8 @@ export DB_HOST="172.16.2.210"
 export DB_PORT="5432"
 export DB_NAME="llm_gateway"
 export DB_USER="llm_gateway"
-export DB_PASS="<password>"
+export DB_PASS="<env:DB_PASS>"
+export ADMIN_API_KEY="<env:LLM_GATEWAY_ADMIN_API_KEY>"
 
 bash /tmp/test-e2e-bodies.sh
 ```

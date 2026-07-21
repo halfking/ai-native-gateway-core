@@ -15,9 +15,6 @@ func ConvertChatRequestToAnthropic(in []byte) ([]byte, error) {
 	if err := json.Unmarshal(in, &src); err != nil {
 		return nil, fmt.Errorf("unmarshal: %w", err)
 	}
-	if err := validateChatMediaForAnthropic(src); err != nil {
-		return nil, err
-	}
 	out := map[string]any{
 		"model": src["model"],
 	}
@@ -84,25 +81,6 @@ func ConvertChatRequestToAnthropic(in []byte) ([]byte, error) {
 		out["tool_choice"] = convertChatToolChoiceToAnthropic(toolChoice)
 	}
 	return json.Marshal(out)
-}
-
-func validateChatMediaForAnthropic(src map[string]any) error {
-	messages, _ := src["messages"].([]any)
-	for _, raw := range messages {
-		message, _ := raw.(map[string]any)
-		blocks, _ := message["content"].([]any)
-		for _, rawBlock := range blocks {
-			block, _ := rawBlock.(map[string]any)
-			typ, _ := block["type"].(string)
-			switch typ {
-			case "input_audio", "audio", "video", "video_url":
-				return fmt.Errorf("unsupported_modality: Anthropic Messages cannot represent %s content", typ)
-			case "file", "input_file":
-				return fmt.Errorf("unsupported_modality: Anthropic Messages cannot represent %s content", typ)
-			}
-		}
-	}
-	return nil
 }
 
 func convertChatMessageToAnthropic(msg map[string]any) map[string]any {
@@ -360,3 +338,4 @@ func sanitizeInputSchema(schema any) any {
 
 	return schemaMap
 }
+

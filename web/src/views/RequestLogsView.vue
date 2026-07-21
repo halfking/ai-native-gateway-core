@@ -1916,7 +1916,7 @@ onMounted(async () => {
   font-size: 10px;
   padding: 1px 4px;
   border-radius: 3px;
-  background: var(--surface-primary, #16213e);
+  background: var(--surface-primary, var(--bg-card));
 }
 
 /* ── 2026-07-01 (migration 325): 附件详情面板 + 大图预览 ─────────── */
@@ -1929,7 +1929,7 @@ onMounted(async () => {
   border: 1px solid var(--border, #333);
   border-radius: 6px;
   overflow: hidden;
-  background: var(--surface-primary, #16213e);
+  background: var(--surface-primary, var(--bg-card));
   display: flex;
   flex-direction: column;
 }
@@ -1939,12 +1939,12 @@ onMounted(async () => {
   display: flex;
   align-items: center;
   justify-content: center;
-  background: #0d1b2a;
+  background: var(--surface-secondary, var(--bg-subtle));
   cursor: pointer;
   overflow: hidden;
 }
 .attachment-thumb:hover {
-  background: #122438;
+  background: color-mix(in srgb, var(--accent) 8%, var(--surface-secondary, var(--bg-subtle)));
 }
 .attachment-img {
   max-width: 100%;

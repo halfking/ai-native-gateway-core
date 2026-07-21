@@ -1052,9 +1052,6 @@ type Trace struct {
 	// model when the executor fell back to an equivalent model from a different
 	// provider. Empty means no fallback occurred.
 	FallbackFromModel string `json:"fallback_from_model,omitempty"`
-	// RoutingSource (L7, 2026-07-21) tracks which routing path was taken:
-	// "v1-legacy", "v2-shadow", "v2-canary", or "v2-authoritative".
-	RoutingSource string `json:"routing_source,omitempty"`
 }
 
 type TraceCandidate struct {
@@ -1333,13 +1330,8 @@ func (e *Executor) Execute(params *ExecParams) (*ExecuteResult, error) {
 		)
 	}
 
-	candidates, routingSource := e.Router.PlanCandidates(
+	candidates := e.Router.PlanCandidates(
 		params.Candidates,
-		PlanContext{
-			TenantID:       params.TenantID,
-			CanonicalModel: params.Model,
-			RequestID:      params.RequestID,
-		},
 		stickyCredID,
 		params.Policy,
 		egressPref(params.Transform),
@@ -1347,7 +1339,6 @@ func (e *Executor) Execute(params *ExecParams) (*ExecuteResult, error) {
 	trace := &Trace{
 		PlannedCandidates: make([]TraceCandidate, 0, len(params.Candidates)),
 		BlockedCandidates: []TraceCandidate{},
-		RoutingSource:     routingSource,
 	}
 	for _, c := range params.Candidates {
 		trace.PlannedCandidates = append(trace.PlannedCandidates, TraceCandidate{
@@ -1506,13 +1497,8 @@ func (e *Executor) Execute(params *ExecParams) (*ExecuteResult, error) {
 					if ratelimit.IsRateLimitEnabled() {
 						retrySticky = stickyCredID
 					}
-					subCandidates, subRoutingSource := e.Router.PlanCandidates(
+					subCandidates := e.Router.PlanCandidates(
 						retryCandidates,
-						PlanContext{
-							TenantID:       params.TenantID,
-							CanonicalModel: params.Model,
-							RequestID:      params.RequestID,
-						},
 						retrySticky,
 						params.Policy,
 						egressPref(params.Transform),
@@ -1529,7 +1515,6 @@ func (e *Executor) Execute(params *ExecParams) (*ExecuteResult, error) {
 								"request_id", params.RequestID,
 								"hold_ms", time.Since(holdStart).Milliseconds(),
 								"candidates", len(subCandidates),
-								"routing_source", subRoutingSource,
 							)
 							return result, nil
 						}
@@ -2606,13 +2591,8 @@ func (e *Executor) Execute(params *ExecParams) (*ExecuteResult, error) {
 			} else {
 				retryStickyID = e.pickStickyCredentialID(params) // 保留（与首次 Execute() 同口径：L1→L2→L3）
 			}
-			subCandidates, _ := e.Router.PlanCandidates(
+			subCandidates := e.Router.PlanCandidates(
 				params.Candidates,
-				PlanContext{
-					TenantID:       params.TenantID,
-					CanonicalModel: params.Model,
-					RequestID:      params.RequestID,
-				},
 				retryStickyID,
 				params.Policy,
 				egressPref(params.Transform),
@@ -3595,16 +3575,8 @@ func (e *Executor) runAsyncRetry(
 	if asyncParams.R != nil {
 		asyncParams.R = asyncParams.R.WithContext(ctx)
 	}
-	candidates, _ := e.Router.PlanCandidates(
+	candidates := e.Router.PlanCandidates(
 		params.Candidates,
-		PlanContext{
-			TenantID:       params.TenantID,
-			CanonicalModel: params.Model,
-			// RequestID may be empty on the async walk — that's fine; the v2
-			// canary gate accepts the zero value (rollout.ShouldUseV2 returns
-			// deterministically for empty strings).
-			RequestID: params.RequestID,
-		},
 		nil, // no sticky: the async walk is its own attempt
 		params.Policy,
 		egressPref(params.Transform),

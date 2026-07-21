@@ -45,7 +45,7 @@ func (h *ModelsHandler) serveFromDB(w http.ResponseWriter, r *http.Request) {
 		SELECT DISTINCT
 			mc.canonical_name,
 			COALESCE(mc.family, 'unknown') AS family,
-			COALESCE(mc.modality, mo.provider_modality, 'text') AS modality,
+			COALESCE(mc.modality, 'text') AS modality,
 			mc.context_window
 		FROM models_canonical mc
 		JOIN model_offers mo ON mo.canonical_id = mc.id

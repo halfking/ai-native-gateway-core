@@ -1037,8 +1037,8 @@ func (c *Client) loadCandidatesByModalityDB(ctx context.Context, clientModel, te
 			  AND (
 			      $3 = ''
 			      OR $3 = 'text'
-			      OR ($3 IN ('vision', 'audio') AND COALESCE(mc.modality, mo.provider_modality, 'text') IN ($3, 'multimodal'))
-			      OR COALESCE(mc.modality, mo.provider_modality, 'text') = $3
+			      OR ($3 IN ('vision', 'audio') AND COALESCE(mc.modality, 'text') IN ($3, 'multimodal'))
+			      OR COALESCE(mc.modality, 'text') = $3
 			  )
 			  AND COALESCE(mc.status, 'active') != 'disabled'
 		  AND COALESCE(c.status, 'active') NOT IN ('disabled')
