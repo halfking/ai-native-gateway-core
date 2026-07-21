@@ -96,10 +96,17 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   })
   const body = await response.json().catch(() => null)
   if (!response.ok) {
-    const msg =
-      (body && typeof body === 'object' && (body.error || body.message)) ||
-      `请求失败（${response.status}）`
-    throw new Error(String(msg))
+    let msg = `请求失败（${response.status}）`
+    if (body && typeof body === 'object') {
+      if (body.message && typeof body.message === 'string') {
+        msg = body.message
+      } else if (body.error && typeof body.error === 'string') {
+        msg = body.error
+      } else if (body.body && body.body.message) {
+        msg = String(body.body.message)
+      }
+    }
+    throw new Error(msg)
   }
   return body as T
 }

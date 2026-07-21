@@ -118,6 +118,14 @@ func (d *ErrorDetector) OnError(event ErrorEvent) DetectionResult {
 	return result
 }
 
+// IsUnhealthy returns true when the credential has hit the fail threshold.
+// Use this as a routing short-circuit: when true, exclude from selection.
+func (d *ErrorDetector) IsUnhealthy(credentialID string) bool {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+	return d.consecutiveFails[credentialID] >= d.failThreshold
+}
+
 // OnSuccess resets consecutive failure count.
 func (d *ErrorDetector) OnSuccess(credentialID string) {
 	d.mu.Lock()
