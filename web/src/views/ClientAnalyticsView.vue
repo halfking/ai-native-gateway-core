@@ -119,7 +119,8 @@ function handleTaskClick(taskId: string) {
 }
 
 function handleSessionClick(sessionId: string) {
-  router.push(`/admin/session-analytics/${sessionId}/panorama`)
+  // SessionPanoramaView 已迁移至 ai-session-manager plugin，全页面跳转插件会话详情。
+  window.location.assign(`/plugins/ai-session-manager/sessions/${encodeURIComponent(sessionId)}`)
 }
 
 function goBack() {
