@@ -294,8 +294,8 @@ onMounted(load)
   padding: 4px 10px;
   border-radius: 12px;
   font-size: 12px;
-  background: var(--surface-secondary, #f3f4f6);
-  color: var(--text-secondary, #6b7280);
+  background: var(--surface-secondary);
+  color: var(--text-secondary);
 }
 .alert-danger { padding: 8px 12px; border-radius: 4px; background: rgba(239,68,68,.1); color: #f87171; margin-bottom: 12px; }
 </style>

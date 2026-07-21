@@ -301,8 +301,8 @@ onMounted(load)
   border-radius: 12px;
   font-size: 12px;
   font-weight: 500;
-  background: var(--surface-secondary, #f3f4f6);
-  color: var(--text-secondary, #6b7280);
+  background: var(--surface-secondary);
+  color: var(--text-secondary);
 }
 .tenant-badge--admin {
   background: rgba(59, 130, 246, 0.1);
