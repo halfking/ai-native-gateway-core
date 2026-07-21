@@ -106,7 +106,7 @@ onMounted(async () => {
         <h1>离线激活</h1>
         <p>提交离线请求，审批通过后复制响应到隔离环境完成激活。</p>
       </div>
-      <RouterLink class="btn btn-ghost" to="/customer/activate">返回在线激活</RouterLink>
+      <RouterLink class="btn btn-ghost" to="/customer/update-activate">返回更新与激活</RouterLink>
     </header>
 
     <el-alert v-if="error" type="error" :title="error" show-icon class="mb" closable @close="error = ''" />

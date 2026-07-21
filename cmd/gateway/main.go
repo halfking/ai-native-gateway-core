@@ -3266,6 +3266,13 @@ func main() {
 		licensingCustomerAPI.RegisterRoutes(customerLicenseGroup)
 		licensingCustomerAPI.RegisterTelemetryPreferenceRoutes(e.Group("/api/tenant/telemetry-preference"))
 
+		// First-boot bootstrap: status / fingerprint / activate / activate-quick (issue+import).
+		licensingBootstrap := licensing.NewBootstrapHandler(licensingValidator, licensingActivator, licensingOffline, licensingStore)
+		customerBootstrapGroup := customerEcho.Group("/api/system/bootstrap")
+		customerBootstrapGroup.Use(noAuthCustomerMiddleware())
+		licensingBootstrap.RegisterRoutes(customerBootstrapGroup)
+		slog.Info("Bootstrap API enabled (/api/system/bootstrap/*)")
+
 		// v2 Phase 3B-1: License health endpoints for ops dashboards
 		// (DaemonHealth snapshot + grace state). No auth — these
 		// expose only metadata about the licensing subsystem itself.
@@ -3336,6 +3343,7 @@ func main() {
 		// activation and status checks remain reachable before login.
 		mux.Handle("/api/system/license/", customerEcho)
 		mux.Handle("/api/system/upgrade/", customerEcho)
+		mux.Handle("/api/system/bootstrap/", customerEcho)
 		slog.Info("运维平台 API 已注册 (4 modules via Echo bridge; distribution → maintain)")
 	}
 

@@ -104,11 +104,8 @@ export const NAV_GROUPS: NavGroup[] = [
       { path: '/admin/compression', label: '压缩管理', labelKey: 'nav.item.compression', icon: '📦', platformOps: true, hideForTenant: true },
       { path: '/admin/modules?module=wechat_bot', label: '微信机器人', labelKey: 'nav.item.wechatBot', icon: '💬', super: true, hideForTenant: true },
       { path: '/admin/agents', label: 'Agent Registry', labelKey: 'nav.item.agents', icon: '🤖', super: true, hideForTenant: true },
-      // 用户许可与激活 — 下载安装客户用于许可、激活、数据采集范围
-      { path: '/customer/site', label: '站点信息', labelKey: 'nav.item.siteInfo', icon: '🏠' },
-      { path: '/customer/activate', label: '许可激活', labelKey: 'nav.item.licenseActivate', icon: '🔑' },
-      { path: '/customer/license', label: '许可状态', labelKey: 'nav.item.licenseStatus', icon: '📄' },
-      { path: '/customer/agreement', label: '用户许可协议', labelKey: 'nav.item.licenseAgreement', icon: '📜' },
+      // 非核心节点：合并站点/激活/许可/协议 →「更新与激活」
+      { path: '/customer/update-activate', label: '更新与激活', labelKey: 'nav.item.updateActivate', icon: '🔄' },
       { path: '/customer/offline-activation', label: '离线激活', labelKey: 'nav.item.licenseOffline', icon: '🔌' },
       { path: '/maintain/tenant/telemetry', label: '数据采集范围', labelKey: 'nav.item.telemetryScope', icon: '📡', external: true },
     ],

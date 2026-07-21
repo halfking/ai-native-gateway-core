@@ -31,6 +31,14 @@ export function showOpsPlatform(): boolean {
   return maintainState === 'available'
 }
 
+/**
+ * Core node = ai-native-maintain co-deployed (same-origin healthz OK).
+ * Super-admin + core node → full「运维中心」; otherwise customer「更新与激活」.
+ */
+export function isCoreNode(): boolean {
+  return showOpsPlatform()
+}
+
 export function isMaintainProbed(): boolean {
   return maintainState !== 'unknown' || envOpsOverride() !== null
 }

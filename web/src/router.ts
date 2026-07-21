@@ -58,11 +58,8 @@ const TaskAnalyticsView = () => import('./views/TaskAnalyticsView.vue')
 const UserProfileListView = () => import('./views/UserProfileListView.vue')
 const UserProfileView = () => import('./views/UserProfileView.vue')
 
-// Customer lifecycle (activation / agreement) — available for download installs
-const CustomerActivateView = () => import('./views/lifecycle/ActivateView.vue')
-const CustomerLicenseView = () => import('./views/lifecycle/LicenseStatusView.vue')
-const CustomerSiteView = () => import('./views/lifecycle/SiteInfoView.vue')
-const CustomerAgreementView = () => import('./views/lifecycle/AgreementView.vue')
+// Customer lifecycle — merged「更新与激活」+ offline fallback
+const CustomerUpdateActivateView = () => import('./views/lifecycle/UpdateActivateView.vue')
 const CustomerOfflineActivationView = () => import('./views/lifecycle/OfflineActivationView.vue')
 const BootstrapWizardView = () => import('./views/bootstrap/BootstrapWizardView.vue')
 
@@ -209,11 +206,12 @@ export const router = createRouter({
     // Local first-boot bootstrap (public; works offline)
     { path: '/bootstrap', component: BootstrapWizardView, meta: { public: true } },
 
-    // Customer lifecycle — activation + agreement (public for guest homepage flow)
-    { path: '/customer/site', component: CustomerSiteView, meta: { public: true } },
-    { path: '/customer/activate', component: CustomerActivateView, meta: { public: true } },
-    { path: '/customer/license', component: CustomerLicenseView, meta: { public: true } },
-    { path: '/customer/agreement', component: CustomerAgreementView, meta: { public: true } },
+    // Customer lifecycle — merged update & activate (public for guest homepage flow)
+    { path: '/customer/update-activate', component: CustomerUpdateActivateView, meta: { public: true } },
+    { path: '/customer/site', redirect: '/customer/update-activate' },
+    { path: '/customer/activate', redirect: '/customer/update-activate' },
+    { path: '/customer/license', redirect: '/customer/update-activate' },
+    { path: '/customer/agreement', redirect: '/customer/update-activate' },
     { path: '/customer/offline-activation', component: CustomerOfflineActivationView, meta: { public: true } },
 
     // Operations Platform — legacy /ops/* bookmarks → maintain SPA (full page)
@@ -320,10 +318,10 @@ router.beforeEach(async (to) => {
   }
   // 3b. Ops-center routes only when Maintain is available (or forced on)
   if (to.meta.requiresOpsPlatform && !showOpsPlatform()) {
-    return { path: '/customer/activate' }
+    return { path: '/customer/update-activate' }
   }
   if (to.path.startsWith('/ops') && !showOpsPlatform()) {
-    return { path: '/customer/activate' }
+    return { path: '/customer/update-activate' }
   }
   // 4. Platform ops (super_admin on default tenant) for运维向页面
   if (to.meta.requiresPlatformOps && !isPlatformOpsView()) {

@@ -8,8 +8,18 @@ export type BootstrapStatus = {
   instance_id?: string
   hardware_hash?: string
   license_key?: string
+  device_name?: string
+  primary_ip?: string
+  service_version?: string
+  activated_at?: string
   admin_bootstrap_required?: boolean
   message?: string
+}
+
+export type ActivateQuickRequest = {
+  instance_id: string
+  hardware_hash: string
+  device_name?: string
 }
 
 export type FingerprintInfo = {
@@ -106,6 +116,13 @@ export const bootstrapApi = {
 
   activate: (payload: BootstrapActivateRequest) =>
     request<BootstrapActivateResult>('/api/system/bootstrap/activate', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }),
+
+  /** One-click: agree → center issue license → local import. No license_key needed. */
+  activateQuick: (payload: ActivateQuickRequest) =>
+    request<BootstrapActivateResult>('/api/system/bootstrap/activate-quick', {
       method: 'POST',
       body: JSON.stringify(payload),
     }),
