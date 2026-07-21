@@ -357,7 +357,7 @@ onUnmounted(() => {
   margin-bottom: 16px;
 }
 .row-clickable { cursor: pointer; }
-.row-clickable:hover td { background: rgba(var(--accent-rgb, 99,102,241), .06); }
+.row-clickable:hover td { background: rgba(var(--accent-rgb), .06); }
 
 .detail-body {
   flex: 1;

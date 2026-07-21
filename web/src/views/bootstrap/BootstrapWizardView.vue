@@ -8,7 +8,7 @@ import {
   type FingerprintInfo,
 } from '../../api/bootstrap'
 import { maintainLifecycleApi } from '../../api/maintainLifecycle'
-import OperationAgreementDialog from '../../components/OperationAgreementDialog.vue'
+import OperationAgreementDialog from '../../components/lifecycle/OperationAgreementDialog.vue'
 import {
   collectClientFingerprint,
   ensureInstanceId,
