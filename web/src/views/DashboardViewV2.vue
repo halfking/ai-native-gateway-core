@@ -368,8 +368,8 @@ async function onRefresh() {
   margin-bottom: 16px;
   border-radius: var(--radius, 6px);
   font-size: 13px;
-  background: rgba(99, 102, 241, 0.08);
-  border: 1px solid rgba(99, 102, 241, 0.30);
+  background: color-mix(in srgb, var(--accent) 8%, transparent);
+  border: 1px solid color-mix(in srgb, var(--accent) 30%, transparent);
   color: var(--text);
 }
 

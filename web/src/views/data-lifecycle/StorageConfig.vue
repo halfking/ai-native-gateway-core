@@ -428,7 +428,7 @@ function fmtNum(n?: number) {
 
 /* ── 目录迁移进度卡片 ── */
 .migration-box { margin-top: 12px; padding: 12px 14px; border-radius: 6px; border: 1px solid var(--border); background: #0f1117; font-size: 13px; }
-.migration-box.running { border-color: rgba(99,102,241,.45); background: rgba(99,102,241,.08); }
+.migration-box.running { border-color: color-mix(in srgb, var(--accent) 45%, transparent); background: color-mix(in srgb, var(--accent) 08%, transparent); }
 .migration-box.done { border-color: rgba(63,185,80,.45); background: rgba(63,185,80,.08); }
 .migration-box.failed { border-color: rgba(248,81,73,.45); background: rgba(248,81,73,.08); }
 .migration-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; }

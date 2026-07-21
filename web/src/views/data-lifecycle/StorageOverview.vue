@@ -749,7 +749,7 @@ function fmtNum(n: number) {
 .pct-fill {
   position: absolute;
   top: 0; left: 0; height: 100%;
-  background: linear-gradient(90deg, rgba(99, 102, 241, 0.5), rgba(99, 102, 241, 0.8));
+  background: linear-gradient(90deg, color-mix(in srgb, var(--accent) 50%, transparent), color-mix(in srgb, var(--accent) 80%, transparent));
   transition: width 0.3s;
 }
 .pct-text {
@@ -778,7 +778,7 @@ function fmtNum(n: number) {
 
 /* ── 列存 (citus_columnar) ── */
 .columnar-card {
-  border-left: 3px solid rgba(99, 102, 241, 0.5);
+  border-left: 3px solid color-mix(in srgb, var(--accent) 50%, transparent);
 }
 .columnar-grid {
   display: grid;
@@ -814,7 +814,7 @@ function fmtNum(n: number) {
 .columnar-note {
   margin: 12px 0 0;
   padding: 8px 12px;
-  background: rgba(99, 102, 241, 0.08);
+  background: color-mix(in srgb, var(--accent) 8%, transparent);
   border-left: 2px solid var(--accent);
   border-radius: 4px;
   font-size: 12px;

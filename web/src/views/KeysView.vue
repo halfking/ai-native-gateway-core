@@ -1004,7 +1004,7 @@ onBeforeUnmount(() => {
 }
 
 .status-tab.active {
-  background: rgba(99, 102, 241, 0.14);
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
   border-color: var(--accent);
   color: var(--text);
 }
@@ -1026,11 +1026,11 @@ onBeforeUnmount(() => {
 }
 
 .key-row:hover {
-  background: rgba(99, 102, 241, 0.06);
+  background: color-mix(in srgb, var(--accent) 6%, transparent);
 }
 
 .key-row.selected {
-  background: rgba(99, 102, 241, 0.1);
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
 }
 
 .key-cell {
