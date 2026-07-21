@@ -1,5 +1,11 @@
 #!/usr/bin/env bash
 # ============================================================================
+# ╔══════════════════════════════════════════════════════════════════════════╗
+# ║  DEPRECATED — Use scripts/sync-from-252.sh instead                     ║
+# ║  This script synced to kaixuan-1 via pre-generated dumps. The           ║
+# ║  replacement handles 252→local sync with inline schema+data handling.  ║
+# ║  For kaixuan-1 sync, run pg-table-copy.sh with appropriate configs.    ║
+# ╚══════════════════════════════════════════════════════════════════════════╝
 # sync-kaixuan1-schema.sh — Apply 252's llm-gateway structure to kaixuan-1
 #
 # This script imports the pre-generated schema + data dumps into kaixuan-1's
