@@ -126,6 +126,10 @@ export default {
       noCreds: '認証情報なし',
       sixDimScore: '6次元評価',
       emptyHint: 'インデックスのデータがありません — ↻ 更新をクリック',
+
+      smartConfig: '智能路由配置',
+
+      smartConfigHint: '按任务类型配置主要 / 次级 / 托底模型',
     },
     policy: {
       fields: {
@@ -306,6 +310,8 @@ export default {
   weightsDirty: '系数有变更，未保存',
     },
     weightsDirty: '係数に変更あり、未保存',
+
+    backLink: '← 路由全景',
   },
   test: {
     title: 'ルーティングテスト',

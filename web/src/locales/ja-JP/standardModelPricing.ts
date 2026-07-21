@@ -47,6 +47,24 @@ export default {
     statusPartialCustom: '{n}/4 手動',
     manualTagTitle: '手動価格',
     manualTag: '手',
+
+    colModality: '模态',
+
+    modalityText: '文本',
+
+    modalityVision: '视觉',
+
+    modalityAudio: '音频',
+
+    modalityVideo: '视频',
+
+    modalityMultimodal: '多模态',
+
+    modalityEmbedding: '向量',
+
+    modalityOther: '其他',
+
+    hasMultimodal: '含多模态定价',
   },
   editModal: {
     title: '手動価格 · {name}',
@@ -62,12 +80,28 @@ export default {
     resetConfirm: '{name} のすべてのディメンションをグローバル基準に戻しますか？',
     resetSuccess: '復元しました',
     resetFailed: '復元失敗',
+
+    sectionText: '文本 Token 维度',
+
+    sectionMultimodal: '多模态 Token 维度（视觉 / 音频 / 视频）',
+
+    fieldImage: '视觉 Token',
+
+    fieldAudio: '音频 Token',
+
+    fieldVideo: '视频 Token',
   },
   field: {
     input: '入力',
     output: '出力',
     cacheRead: 'キャッシュ読み取り',
     cacheWrite: 'キャッシュ書き込み',
+
+    image: '视觉',
+
+    audio: '音频',
+
+    video: '视频',
   },
   error: {
     loadFailed: '読み込み失敗',
@@ -105,5 +139,7 @@ export default {
     msgReset: '已恢复 {n} 个模型',
     msgFilled: '已写入 {n} 个模型',
     msgFailed: '批量操作失败',
+
+    fillGlobal: '填入当前全局',
   },
 }

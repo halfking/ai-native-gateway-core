@@ -164,4 +164,8 @@ export default {
     lightTitle: 'ライトモード',
     darkTitle: 'ダークモード',
   },
+
+  copied: '已复制',
+
+  add: '添加',
 }

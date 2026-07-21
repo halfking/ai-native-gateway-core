@@ -7,6 +7,7 @@
 // 策略：
 //   - zh-TW：从 zh-CN 复制（同属 CJK 表意文字族，符合现有惯例）
 //   - de-DE / fr-FR / es-ES / ar-SA：从 en-US 复制（英文 placeholder，便于人工翻译）
+//   - ja-JP：从 zh-CN 复制（保留现有日语翻译，仅补缺失 key）
 //   - 已经存在的 key 跳过，不覆盖
 //
 // 完成后请人工用更准确的翻译替换 [DE/FR/ES/AR] 占位（前缀标识）
@@ -24,7 +25,7 @@ const LOCALES_DIR = join(ROOT, 'src', 'locales')
 
 const DRY_RUN = process.argv.includes('--dry-run')
 
-const TARGET_LOCALES = ['zh-TW', 'de-DE', 'fr-FR', 'es-ES', 'ar-SA']
+const TARGET_LOCALES = ['zh-TW', 'de-DE', 'fr-FR', 'es-ES', 'ar-SA', 'ja-JP']
 
 const SOURCE_BY_LOCALE = {
   'zh-TW': 'zh-CN',
@@ -32,6 +33,7 @@ const SOURCE_BY_LOCALE = {
   'fr-FR': 'en-US',
   'es-ES': 'en-US',
   'ar-SA': 'en-US',
+  'ja-JP': 'zh-CN',
 }
 
 function evalAsCjs(code, absPath) {

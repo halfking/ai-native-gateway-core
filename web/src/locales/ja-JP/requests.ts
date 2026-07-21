@@ -89,6 +89,8 @@ export default {
       taskLabel: 'タスク ID',
       taskPlaceholder: 'タスク ID を入力…',
       totalMeta: '全 {n} 件',
+
+      resultRateLimited: '限流',
     },
     trace: {
       title: 'タスクトレース',

@@ -59,6 +59,16 @@ tabs: {
     trendCost: 'コスト (USD)',
     filterProvider: 'プロバイダー ID',
     allProviders: 'すべて',
+
+    rangeCustomTab: '自定义',
+
+    rangeFrom: '起始',
+
+    rangeTo: '截止',
+
+    rangePicker: '统计时间范围',
+
+    rangeCustom: '{start} 至 {end}',
   },
   proxyWarning: {
     title: "⚠ 出口プロキシに到達できません",
@@ -157,6 +167,8 @@ tabs: {
       success: "成功",
       inProgress: "処理中",
       failure: "失敗"
+,
+      cancelled: '已取消',
     },
     tooltip: {
       model: "モデル",
@@ -167,6 +179,24 @@ tabs: {
       cost: "コスト",
       error: "エラー",
       time: "時間"
+,
+      vendor: '原厂',
+
+      requestId: 'ID',
+
+      errorKind: '错误类型',
+
+      errorRawCode: '原始代码',
+
+      statusValue: {
+        success: '成功',
+        inProgress: '处理中',
+        cancelled: '用户取消',
+        idle: '空闲（心跳占位）',
+        failure: '请求失败',
+      },
+
+      tokenFormat: '{p} + {c}',
     },
     connecting: "接続中…",
     reconnecting: "再接続中…",
@@ -188,6 +218,38 @@ tabs: {
     sseTestFail: 'SSE not connected\nStatus: {status}\nURL: {url}',
     redisWarning: 'Redis unavailable: {error}. Live data falls back to DB queries.',
     redisFallbackError: 'Cache service connection failed',
+
+    probeDirect: '主动探测 (直连上游)',
+
+    probeGateway: '主动探测 (网关路径)',
+
+    probeScheduled: '周期探测 (scheduler)',
+
+    probeGeneric: '探测请求',
+
+    probeOriginLabel: '来源: {origin}',
+
+    probeAttempt: '轮次: 第 {n} 轮',
+
+    originGateway: '网关路径',
+
+    originScheduled: '定时探测',
+
+    originDirect: '直连上游',
+
+    idleHeartbeat: '心跳占位',
+
+    tileIdle: '空闲',
+
+    idleUnderOneMin: '空闲 < 1 分钟',
+
+    idleMinutes: '空闲 {n} 分钟',
+
+    idleHours: '空闲 {h} 小时',
+
+    idleHoursMinutes: '空闲 {h} 小时 {m} 分钟',
+
+    idleReasonNoTraffic: '无流量（5 分钟无请求）',
   },
   charts: {
     gradeA: "Grade A",
@@ -214,6 +276,10 @@ tabs: {
     totalExecutions: '総実行回数',
     avgCacheHitRate: '平均キャッシュヒット率',
     avgDuration: '平均所要時間',
+
+    title: '模块执行统计',
+
+    successRate: '成功率',
   },
 
   errors: {
@@ -225,6 +291,12 @@ tabs: {
     rate: '比率',
     totalErrors: '総エラー数',
     topErrors: '上位エラー',
+
+    title: '错误统计',
+
+    totalRequests: '总请求数',
+
+    avgLatency: '平均错误延迟',
   },
 
   performance: {
@@ -235,5 +307,37 @@ tabs: {
     p99: 'P99 レイテンシ',
     latencyDist: 'レイテンシ分布',
     slowQueries: 'スロークエリ',
+
+    title: '性能指标',
+
+    avgLatency: '平均延迟',
+
+    latency: '延迟',
+  },
+
+  providerUsage: {
+    title: '供应商用量',
+    subtitle: '{period} 全站供应商消耗汇总（可用于对账）',
+    periodHint: '当前周期：{period}',
+    more: '更多',
+    search: '搜索供应商名称、代码或 ID…',
+    back: '返回列表',
+    exportAll: '导出全部 Excel',
+    exportDetail: '导出明细 Excel',
+    colName: '供应商',
+    colCode: '代码',
+    colRequests: '请求数',
+    colTokens: 'Token',
+    colCost: '成本 (USD)',
+    colSuccess: '成功率',
+    colModel: '模型',
+    colDate: '日期',
+    periodDay: '按天',
+    periodWeek: '按周',
+    periodMonth: '按月',
+    periodLabel: '统计周期：{period}',
+    periodRange: '{start} 至 {end}',
+    modelBreakdown: '模型聚合',
+    dailyBreakdown: '每日模型明细',
   },
 }

@@ -20,6 +20,8 @@ export default {
     window: 'Window',
     totalSamples: 'Total samples',
     needSamples: 'Need ≥ 30 samples for insights',
+
+    windowDays: '{n} 天',
   },
   breakdown: {
     title: 'Breakdown by {by}',
@@ -39,5 +41,9 @@ export default {
     empty: 'Not enough samples for insights.',
     buckets: '{n} buckets',
     samples: '{n} samples',
+
+    emptyInsufficient: '至少需要 30 个样本才能计算有意义的相关性。',
+
+    emptyUnexpected: '无洞察（异常）。请检查服务端日志。',
   },
 }

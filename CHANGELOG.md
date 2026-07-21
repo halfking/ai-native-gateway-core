@@ -15,6 +15,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **i18n locale key parity audit** (2026-07-22): completed the missing `ja-JP` locale entries, changed the parity gate to require explicit source-key coverage in every locale, and fixed strict audit report truncation on the large SPA catalog. See [docs/changelogs/2026-07-22-i18n-locale-key-parity.md](docs/changelogs/2026-07-22-i18n-locale-key-parity.md).
+
 - **Live stream audit follow-up** (2026-07-22): kept Redis pub/sub as the single success-path delivery mechanism to avoid duplicate broadcasts; exposed queue drops and scope-delta diagnostics; added a Minimax request-body diagnostic warning. See [docs/changelogs/2026-07-22-live-stream-audit-follow-up.md](docs/changelogs/2026-07-22-live-stream-audit-follow-up.md).
 
 - **Smart 页空图标 + 左侧工作类型 DB 同源** (2026-07-21): `TierGroupList` 去掉未注册的 `<el-icon>`，直接渲染 16px SVG 图标并收到行首右侧；`TaskTypeRail` / `RoutingDefaultsView` 改用 `useWorkTypes()` 拉取 `work_type_config`（20+），不再误用 L1 八分类。详见 [docs/changelogs/2026-07-21-smart-worktypes-icons.md](docs/changelogs/2026-07-21-smart-worktypes-icons.md).
