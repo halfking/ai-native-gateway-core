@@ -542,7 +542,7 @@ function goManageFeatured() {
 .step-label {
   font-weight: 600;
   font-size: 13px;
-  color: var(--text, #e6edf3);
+  color: var(--text);
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -553,16 +553,16 @@ function goManageFeatured() {
   font-weight: 400;
   font-size: 11px;
   padding: 2px 8px;
-  color: var(--muted, #8b949e);
+  color: var(--muted);
 }
 
 .select-field {
   width: 100%;
   padding: 8px 12px;
   background: rgba(255, 255, 255, 0.04);
-  border: 1px solid var(--border, #30363d);
+  border: 1px solid var(--border);
   border-radius: 8px;
-  color: var(--text, #e6edf3);
+  color: var(--text);
   font-size: 13px;
   outline: none;
 }
@@ -576,7 +576,7 @@ function goManageFeatured() {
   align-items: center;
   gap: 8px;
   font-size: 12px;
-  color: var(--muted, #8b949e);
+  color: var(--muted);
 }
 
 .badge {
@@ -603,9 +603,9 @@ function goManageFeatured() {
 .os-tab {
   padding: 5px 14px;
   border-radius: 6px;
-  border: 1px solid var(--border, #30363d);
+  border: 1px solid var(--border);
   background: none;
-  color: var(--muted, #8b949e);
+  color: var(--muted);
   font-size: 13px;
   cursor: pointer;
   transition: all 0.15s;
@@ -619,7 +619,7 @@ function goManageFeatured() {
 
 .path-hint {
   font-size: 12px;
-  color: var(--muted, #8b949e);
+  color: var(--muted);
 }
 
 .scope-radios {
@@ -633,7 +633,7 @@ function goManageFeatured() {
   align-items: center;
   gap: 8px;
   font-size: 13px;
-  color: var(--text, #e6edf3);
+  color: var(--text);
   cursor: pointer;
 }
 
@@ -658,7 +658,7 @@ function goManageFeatured() {
 
 .empty-mini-title {
   font-size: 12px;
-  color: var(--muted, #8b949e);
+  color: var(--muted);
 }
 
 .manage-link {
@@ -679,7 +679,7 @@ function goManageFeatured() {
   display: flex;
   flex-direction: column;
   gap: 0;
-  border: 1px solid var(--border, #30363d);
+  border: 1px solid var(--border);
   border-radius: 8px;
   overflow: hidden;
   background: rgba(0, 0, 0, 0.15);
@@ -691,22 +691,22 @@ function goManageFeatured() {
   gap: 6px;
   padding: 8px 12px;
   background: rgba(255, 255, 255, 0.04);
-  border-bottom: 1px solid var(--border, #30363d);
+  border-bottom: 1px solid var(--border);
 }
 
 .model-count-label {
   font-size: 12px;
-  color: var(--muted, #8b949e);
+  color: var(--muted);
   margin-left: auto;
 }
 
 .model-count-label strong {
-  color: var(--accent-h, #818cf8);
+  color: var(--accent-h);
   font-size: 13px;
 }
 
 .filter-hint {
-  color: var(--muted, #8b949e);
+  color: var(--muted);
   font-size: 11px;
 }
 
@@ -715,8 +715,8 @@ function goManageFeatured() {
   padding: 8px 12px;
   background: rgba(255, 255, 255, 0.03);
   border: none;
-  border-bottom: 1px solid var(--border, #30363d);
-  color: var(--text, #e6edf3);
+  border-bottom: 1px solid var(--border);
+  color: var(--text);
   font-size: 13px;
   outline: none;
   box-sizing: border-box;
@@ -724,18 +724,18 @@ function goManageFeatured() {
 
 .model-search-input:focus {
   background: rgba(99, 102, 241, 0.08);
-  border-bottom-color: var(--accent, #6366f1);
+  border-bottom-color: var(--accent);
 }
 
 .model-search-input::placeholder {
-  color: var(--muted, #8b949e);
+  color: var(--muted);
 }
 
 .models-loading {
   padding: 20px;
   text-align: center;
   font-size: 13px;
-  color: var(--muted, #8b949e);
+  color: var(--muted);
 }
 
 .models-grouped {
@@ -754,8 +754,8 @@ function goManageFeatured() {
   justify-content: space-between;
   padding: 6px 12px;
   background: rgba(255, 255, 255, 0.03);
-  border-top: 1px solid var(--border, #30363d);
-  border-bottom: 1px solid var(--border, #30363d);
+  border-top: 1px solid var(--border);
+  border-bottom: 1px solid var(--border);
   position: sticky;
   top: 0;
   z-index: 1;
@@ -768,14 +768,14 @@ function goManageFeatured() {
 .model-family-name {
   font-size: 11px;
   font-weight: 600;
-  color: var(--muted, #8b949e);
+  color: var(--muted);
   text-transform: uppercase;
   letter-spacing: 0.05em;
 }
 
 .model-family-count {
   font-size: 11px;
-  color: var(--muted, #8b949e);
+  color: var(--muted);
   background: rgba(255, 255, 255, 0.05);
   padding: 1px 6px;
   border-radius: 8px;
@@ -810,7 +810,7 @@ function goManageFeatured() {
 }
 
 .model-check-name {
-  color: var(--text, #e6edf3);
+  color: var(--text);
   font-family: ui-monospace, 'SF Mono', Menlo, monospace;
   font-size: 11.5px;
   white-space: nowrap;
@@ -827,8 +827,8 @@ function goManageFeatured() {
   justify-content: flex-end;
   gap: 12px;
   padding: 12px 0;
-  background: var(--card, #1c2128);
-  border-top: 1px solid var(--border, #30363d);
+  background: var(--card);
+  border-top: 1px solid var(--border);
   margin: 8px -20px -16px -20px;
   padding-left: 20px;
   padding-right: 20px;
@@ -841,7 +841,7 @@ function goManageFeatured() {
 
 .footer-hint {
   font-size: 12px;
-  color: var(--muted, #8b949e);
+  color: var(--muted);
 }
 
 .footer-generate,
@@ -855,7 +855,7 @@ function goManageFeatured() {
 }
 
 .results-section {
-  border-top: 1px solid var(--border, #30363d);
+  border-top: 1px solid var(--border);
   padding-top: 16px;
   display: flex;
   flex-direction: column;
@@ -865,7 +865,7 @@ function goManageFeatured() {
 .result-tabs {
   display: flex;
   gap: 4px;
-  border-bottom: 1px solid var(--border, #30363d);
+  border-bottom: 1px solid var(--border);
   padding-bottom: 0;
 }
 
@@ -873,7 +873,7 @@ function goManageFeatured() {
   padding: 6px 14px;
   border: none;
   background: none;
-  color: var(--muted, #8b949e);
+  color: var(--muted);
   font-size: 13px;
   cursor: pointer;
   border-bottom: 2px solid transparent;
@@ -895,7 +895,7 @@ function goManageFeatured() {
 .code-preview {
   background: #0d1117;
   color: #e6edf3;
-  border: 1px solid var(--border, #30363d);
+  border: 1px solid var(--border);
   border-radius: 8px;
   padding: 14px;
   font-size: 12px;
@@ -923,14 +923,14 @@ function goManageFeatured() {
 
 .action-hint {
   font-size: 12px;
-  color: var(--muted, #8b949e);
+  color: var(--muted);
 }
 
 /* ── Empty state (no keys) ─────────────────────────────────────────── */
 .state-row {
   padding: 8px 12px;
   font-size: 12px;
-  color: var(--muted, #8b949e);
+  color: var(--muted);
   background: rgba(255, 255, 255, 0.03);
   border-radius: 6px;
 }
@@ -955,12 +955,12 @@ function goManageFeatured() {
 .empty-state-title {
   font-weight: 600;
   font-size: 14px;
-  color: var(--text, #e6edf3);
+  color: var(--text);
 }
 
 .empty-state-desc {
   font-size: 12px;
-  color: var(--muted, #8b949e);
+  color: var(--muted);
   line-height: 1.5;
   max-width: 320px;
 }
@@ -972,8 +972,8 @@ function goManageFeatured() {
   gap: 8px;
   padding: 6px 12px;
   background: rgba(255, 255, 255, 0.04);
-  border-top: 1px solid var(--border, #30363d);
-  border-bottom: 1px solid var(--border, #30363d);
+  border-top: 1px solid var(--border);
+  border-bottom: 1px solid var(--border);
   position: sticky;
   top: 0;
   z-index: 1;
@@ -991,11 +991,11 @@ function goManageFeatured() {
   cursor: pointer;
   width: 14px;
   height: 14px;
-  accent-color: var(--accent, #6366f1);
+  accent-color: var(--accent);
 }
 
 .group-master-checkbox:indeterminate {
-  accent-color: var(--accent, #6366f1);
+  accent-color: var(--accent);
 }
 
 /* ── Modal (apply key) ──────────────────────────────────────────────── */
@@ -1013,8 +1013,8 @@ function goManageFeatured() {
 .modal-panel {
   width: 100%;
   max-width: 480px;
-  background: var(--card, #1c2128);
-  border: 1px solid var(--border, #30363d);
+  background: var(--card);
+  border: 1px solid var(--border);
   border-radius: 12px;
   box-shadow: 0 24px 60px rgba(0, 0, 0, 0.5);
   display: flex;
@@ -1026,7 +1026,7 @@ function goManageFeatured() {
   align-items: center;
   justify-content: space-between;
   padding: 14px 18px;
-  border-bottom: 1px solid var(--border, #30363d);
+  border-bottom: 1px solid var(--border);
 }
 
 .modal-body {
@@ -1042,7 +1042,7 @@ function goManageFeatured() {
   justify-content: flex-end;
   gap: 8px;
   padding: 12px 18px;
-  border-top: 1px solid var(--border, #30363d);
+  border-top: 1px solid var(--border);
 }
 
 .form-group {
@@ -1053,7 +1053,7 @@ function goManageFeatured() {
 
 .form-group label {
   font-size: 12px;
-  color: var(--muted, #8b949e);
+  color: var(--muted);
   font-weight: 500;
 }
 
@@ -1061,9 +1061,9 @@ function goManageFeatured() {
   width: 100%;
   padding: 8px 10px;
   background: rgba(255, 255, 255, 0.04);
-  border: 1px solid var(--border, #30363d);
+  border: 1px solid var(--border);
   border-radius: 6px;
-  color: var(--text, #e6edf3);
+  color: var(--text);
   font-size: 13px;
   outline: none;
   font-family: inherit;
