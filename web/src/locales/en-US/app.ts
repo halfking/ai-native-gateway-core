@@ -15,4 +15,15 @@ export default {
     switch: 'Switch language',
     label: 'Language',
   },
+  // 2026-07-21: theme strings aligned with ai-native-maintain / ai-session-manager.
+  theme: {
+    switchToLight: 'Switch to light',
+    switchToDark: 'Switch to dark',
+    lightTitle: 'Light mode',
+    darkTitle: 'Dark mode',
+  },
+  // 2026-07-21: top-bar accessibility strings.
+  nav: {
+    mainAria: 'Main navigation',
+  },
 }

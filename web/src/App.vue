@@ -157,10 +157,6 @@ function handleChangePasswordSuccess() {
   <div v-else-if="isLoggedIn" class="app-layout app-layout--topbar">
     <AppTopbar>
       <template #actions>
-        <span v-if="store.userInfo" class="topbar-user-badge">
-          <span class="topbar-user-name">{{ store.userInfo.display_name || store.userInfo.username }}</span>
-          <span v-if="store.userInfo.role" class="topbar-user-role">{{ t(`app.role.${store.userInfo.role}`) }}</span>
-        </span>
         <button v-if="store.jwtToken" class="btn btn-ghost btn-sm" @click="openChangePassword">{{ t('login.changePassword') }}</button>
         <button class="btn btn-ghost btn-sm" @click="logout">{{ t('app.logout') }}</button>
       </template>
@@ -188,7 +184,7 @@ function handleChangePasswordSuccess() {
   </div>
   <div v-else class="guest-layout">
     <header class="guest-header">
-      <RouterLink to="/" class="guest-brand" :aria-label="SITE_TITLE">
+      <a href="/maintain/home" class="guest-brand" :aria-label="SITE_TITLE">
         <img
           :src="brandLogo"
           :width="SITE_LOGO_SIZE"
@@ -197,7 +193,7 @@ function handleChangePasswordSuccess() {
           class="guest-brand-img"
         />
         <span class="guest-brand-text">{{ SITE_TITLE }}</span>
-      </RouterLink>
+      </a>
       <nav class="guest-nav" :aria-label="t('landing.guestNavAria') || '产品导航'">
         <a href="/maintain/download">{{ t('landing.navDownload') }}</a>
         <a href="/bootstrap">{{ t('landing.navSetup') || '安装激活' }}</a>
@@ -256,14 +252,18 @@ function handleChangePasswordSuccess() {
 }
 
 /* 2026-07-21: topbar 模式下，.app-layout 改为纵向 flex（topbar 在上 + main-content 在下）。
- * 旧 sidebar 模式仍然保留 class 兼容，但已不在 DOM 里渲染。 */
+ * overflow 必须 visible，否则绝对定位二级下拉会被裁切成「窄条内滚动」。
+ * 滚动约束下放到 .main-content / .main-body。 */
 .app-layout--topbar {
   flex-direction: column;
+  overflow: visible;
 }
 .app-layout--topbar .main-content {
   flex: 1 1 auto;
   min-width: 0;
+  min-height: 0;
   border-inline-start: 0;
+  overflow: hidden;
 }
 
 .sidebar {

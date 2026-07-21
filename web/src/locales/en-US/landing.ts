@@ -144,4 +144,17 @@ export default {
       'Activation wizard: /activate · interoperates with installer CLI commands',
     ],
   },
+  // 2026-07-21: guest-nav aria + top download/activation links (App.vue L197-203).
+  guestNavAria: 'Product navigation',
+  navDownload: 'Download',
+  navSetup: 'Install & Activate',
+  navActivate: 'Activate',
+  navLicense: 'License',
+  navAgreement: 'User Agreement',
+  navSupport: 'Support',
+  // 2026-07-21: landing primary CTAs (LandingView.vue L109-119).
+  ctaLogin: 'Sign in',
+  ctaDownload: 'Download',
+  ctaActivate: 'Activate License',
+  ctaAgreement: 'View Agreement',
 }
