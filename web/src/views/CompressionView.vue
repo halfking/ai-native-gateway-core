@@ -189,15 +189,15 @@ const strategyLabels: Record<string, string> = {
 }
 
 const strategyColors: Record<string, string> = {
-  delta_append: '#22c55e',
-  sliding_window_token: '#3b82f6',
-  sliding_window_count: '#8b5cf6',
-  sliding_window_idle: '#06b6d4',
-  mechanical_trim: '#f59e0b',
-  memora_l1_inject: '#ec4899',
-  llm_summary: '#ef4444',
-  noop: '#6b7280',
-  none: '#374151',
+  delta_append: 'var(--success)',
+  sliding_window_token: 'var(--info)',
+  sliding_window_count: 'var(--accent)',
+  sliding_window_idle: 'var(--cyan)',
+  mechanical_trim: 'var(--warning)',
+  memora_l1_inject: 'var(--pink)',
+  llm_summary: 'var(--danger)',
+  noop: 'var(--text-secondary)',
+  none: 'var(--text-muted)',
 }
 
 const strategyEntries = computed(() => {
@@ -244,7 +244,7 @@ function strategyLabel(s: string): string {
 }
 
 function strategyColor(s: string): string {
-  return strategyColors[s] || '#6b7280'
+  return strategyColors[s] || 'var(--text-secondary)'
 }
 
 onMounted(() => {
@@ -482,10 +482,10 @@ watch(activeTab, loadAll)
 .time-range-tabs {
   display: flex;
   gap: 4px;
-  background: var(--bg-card, #1e1e2e);
+  background: var(--bg-card);
   border-radius: 8px;
   padding: 3px;
-  border: 1px solid var(--border, #333);
+  border: 1px solid var(--border);
 }
 
 .tab-btn {
@@ -493,17 +493,17 @@ watch(activeTab, loadAll)
   border: none;
   border-radius: 6px;
   background: transparent;
-  color: var(--text-secondary, #6b7280);
+  color: var(--text-secondary);
   font-size: 13px;
   cursor: pointer;
   transition: all 0.15s;
 }
 .tab-btn.active {
-  background: var(--primary, #6366f1);
-  color: #fff;
+  background: var(--accent);
+  color: var(--bg);
 }
 .tab-btn:hover:not(.active) {
-  background: var(--bg-hover, #2a2a3e);
+  background: var(--bg-hover);
 }
 
 .custom-range {
@@ -513,14 +513,14 @@ watch(activeTab, loadAll)
 }
 .custom-range .input-sm {
   padding: 4px 8px;
-  border: 1px solid var(--border, #333);
+  border: 1px solid var(--border);
   border-radius: 6px;
-  background: var(--bg-card, #1e1e2e);
-  color: var(--text-primary, #e5e7eb);
+  background: var(--bg-card);
+  color: var(--text-primary);
   font-size: 12px;
 }
 .range-sep {
-  color: var(--text-secondary, #6b7280);
+  color: var(--text-secondary);
   font-size: 12px;
 }
 
@@ -540,20 +540,20 @@ watch(activeTab, loadAll)
 }
 
 .stat-card {
-  background: var(--bg-card, #1e1e2e);
-  border: 1px solid var(--border, #333);
+  background: var(--bg-card);
+  border: 1px solid var(--border);
   border-radius: 10px;
   padding: 16px;
 }
 .stat-label {
   font-size: 12px;
-  color: var(--text-secondary, #6b7280);
+  color: var(--text-secondary);
   margin-bottom: 6px;
 }
 .stat-value {
   font-size: 22px;
   font-weight: 700;
-  color: var(--text-primary, #e5e7eb);
+  color: var(--text-primary);
   font-variant-numeric: tabular-nums;
 }
 
@@ -565,8 +565,8 @@ watch(activeTab, loadAll)
 }
 
 .card {
-  background: var(--bg-card, #1e1e2e);
-  border: 1px solid var(--border, #333);
+  background: var(--bg-card);
+  border: 1px solid var(--border);
   border-radius: 10px;
   padding: 16px;
 }
@@ -582,8 +582,8 @@ watch(activeTab, loadAll)
   font-size: 10px;
   padding: 1px 6px;
   border-radius: 4px;
-  background: var(--bg-hover, #2a2a3e);
-  color: var(--text-secondary, #6b7280);
+  background: var(--bg-hover);
+  color: var(--text-secondary);
   font-weight: 400;
 }
 .card-header {
@@ -594,7 +594,7 @@ watch(activeTab, loadAll)
 }
 .count-badge {
   font-size: 12px;
-  color: var(--text-secondary, #6b7280);
+  color: var(--text-secondary);
 }
 
 /* Strategy bars */
@@ -612,7 +612,7 @@ watch(activeTab, loadAll)
 .strategy-label {
   width: 120px;
   flex-shrink: 0;
-  color: var(--text-primary, #e5e7eb);
+  color: var(--text-primary);
   text-align: right;
   overflow: hidden;
   text-overflow: ellipsis;
