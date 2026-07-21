@@ -174,6 +174,21 @@ func (s *Supervisor) ManifestOf(pluginID string) *Manifest {
 	return s.manifests[pluginID]
 }
 
+// InstalledVersions returns {pluginID: pluginVersion} for every plugin the
+// supervisor has ever started (from its manifest index). The PollLoop uses
+// this to decide which plugins are eligible for auto-upgrade: only plugins
+// already present locally are upgraded; brand-new plugin types are not
+// auto-installed by the loop.
+func (s *Supervisor) InstalledVersions() map[string]string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make(map[string]string, len(s.manifests))
+	for id, m := range s.manifests {
+		out[id] = m.PluginVersion
+	}
+	return out
+}
+
 // execCommand 用 os/exec 启动插件 entrypoint。
 type execCommand struct {
 	mu         sync.Mutex
