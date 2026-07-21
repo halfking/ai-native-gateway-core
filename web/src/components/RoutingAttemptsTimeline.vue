@@ -79,7 +79,7 @@ function resultClass(result: string): string {
 }
 .attempt-marker {
   z-index: 1; display: grid; place-items: center; width: 26px; height: 26px;
-  border-radius: 50%; color: var(--kx-text-inverse, #fff); font-size: 12px; font-weight: 600;
+  border-radius: 50%; color: var(--kx-text-inverse); font-size: 12px; font-weight: 600;
 }
 .attempt-marker.success { background: var(--success, var(--kx-color-success)); }
 .attempt-marker.warning { background: var(--warning, var(--kx-color-warning)); }
