@@ -26,7 +26,7 @@ const gap = SANKEY_GAP
 
 // ── Task-type color palette ──────────────────────────
 const TASK_COLORS: Record<string, string> = {
-  chat:          '#6366f1', // indigo
+  chat:          '#3b82f6', // indigo
   reasoning:     '#a855f7', // purple
   code:          '#22c55e', // green
   agent:         '#f97316', // orange
