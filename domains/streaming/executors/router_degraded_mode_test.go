@@ -116,7 +116,7 @@ func TestPlanCandidates_DegradedMode(t *testing.T) {
 			},
 		}
 
-		result := r.PlanCandidates(candidates, nil, nil, nil)
+		result := r.PlanCandidates(candidates, PlanContext{}, nil, nil, nil)
 
 		if len(result) != 1 {
 			t.Errorf("PlanCandidates() with single cooling candidate returned %d candidates, want 1",
@@ -139,7 +139,7 @@ func TestPlanCandidates_DegradedMode(t *testing.T) {
 			},
 		}
 
-		result := r.PlanCandidates(candidates, nil, nil, nil)
+		result := r.PlanCandidates(candidates, PlanContext{}, nil, nil, nil)
 
 		if len(result) != 0 {
 			t.Errorf("PlanCandidates() with single auth_failed candidate returned %d candidates, want 0",
@@ -165,7 +165,7 @@ func TestPlanCandidates_DegradedMode(t *testing.T) {
 			},
 		}
 
-		result := r.PlanCandidates(candidates, nil, nil, nil)
+		result := r.PlanCandidates(candidates, PlanContext{}, nil, nil, nil)
 
 		if len(result) != 2 {
 			t.Errorf("PlanCandidates() with two transient unavailable candidates returned %d candidates, want 2",
@@ -198,7 +198,7 @@ func TestPlanCandidates_DegradedMode(t *testing.T) {
 			},
 		}
 
-		result := r.PlanCandidates(candidates, nil, nil, nil)
+		result := r.PlanCandidates(candidates, PlanContext{}, nil, nil, nil)
 
 		if len(result) != 0 {
 			t.Errorf("PlanCandidates() with 3 candidates should not trigger degraded mode, got %d candidates, want 0",
@@ -398,7 +398,7 @@ func TestPlanCandidates_DegradedMode_StateManagerTimeout(t *testing.T) {
 		},
 	}
 
-	result := r.PlanCandidates(candidates, nil, nil, nil)
+	result := r.PlanCandidates(candidates, PlanContext{}, nil, nil, nil)
 	if len(result) != 1 {
 		t.Fatalf("PlanCandidates() with single state:timeout candidate returned %d, want 1 (degraded mode). "+
 			"This is the ba9fc64f regression: single-point candidate rejected by transient SM state must degrade, not 503.",
@@ -425,7 +425,7 @@ func TestPlanCandidates_DegradedMode_StateManagerPermanent(t *testing.T) {
 		},
 	}
 
-	result := r.PlanCandidates(candidates, nil, nil, nil)
+	result := r.PlanCandidates(candidates, PlanContext{}, nil, nil, nil)
 	if len(result) != 0 {
 		t.Errorf("PlanCandidates() with single state:auth candidate returned %d, want 0 (permanent error must not degrade)",
 			len(result))

@@ -18,6 +18,7 @@ func TestPlanCandidatesReturnsEmptyWhenV2MarksUnavailable(t *testing.T) {
 		[]provider.Candidate{
 			{CredentialID: 1, ProviderID: 1, RawModel: "m", Tier: 1, Routable: true},
 		},
+		PlanContext{},
 		nil,
 		&provider.Policy{},
 		nil,

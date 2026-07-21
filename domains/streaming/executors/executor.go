@@ -1332,6 +1332,11 @@ func (e *Executor) Execute(params *ExecParams) (*ExecuteResult, error) {
 
 	candidates := e.Router.PlanCandidates(
 		params.Candidates,
+		PlanContext{
+			TenantID:       params.TenantID,
+			CanonicalModel: params.Model,
+			RequestID:      params.RequestID,
+		},
 		stickyCredID,
 		params.Policy,
 		egressPref(params.Transform),
@@ -1499,6 +1504,11 @@ func (e *Executor) Execute(params *ExecParams) (*ExecuteResult, error) {
 					}
 					subCandidates := e.Router.PlanCandidates(
 						retryCandidates,
+						PlanContext{
+							TenantID:       params.TenantID,
+							CanonicalModel: params.Model,
+							RequestID:      params.RequestID,
+						},
 						retrySticky,
 						params.Policy,
 						egressPref(params.Transform),
@@ -2593,6 +2603,11 @@ func (e *Executor) Execute(params *ExecParams) (*ExecuteResult, error) {
 			}
 			subCandidates := e.Router.PlanCandidates(
 				params.Candidates,
+				PlanContext{
+					TenantID:       params.TenantID,
+					CanonicalModel: params.Model,
+					RequestID:      params.RequestID,
+				},
 				retryStickyID,
 				params.Policy,
 				egressPref(params.Transform),
@@ -3577,6 +3592,14 @@ func (e *Executor) runAsyncRetry(
 	}
 	candidates := e.Router.PlanCandidates(
 		params.Candidates,
+		PlanContext{
+			TenantID:       params.TenantID,
+			CanonicalModel: params.Model,
+			// RequestID may be empty on the async walk — that's fine; the v2
+			// canary gate accepts the zero value (rollout.ShouldUseV2 returns
+			// deterministically for empty strings).
+			RequestID: params.RequestID,
+		},
 		nil, // no sticky: the async walk is its own attempt
 		params.Policy,
 		egressPref(params.Transform),
