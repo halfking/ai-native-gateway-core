@@ -187,7 +187,8 @@ func (m *Manager) FilterAndScore(ctx context.Context, seeds []CandidateSeed) ([]
 		if lat == 0 {
 			lat = s.BaseURLMs
 		}
-		v.Score = 0.4*price + 0.4*float64(lat) + 0.2*v.SR5m*1000
+		weights := m.cfg.ScoringWeights
+		v.Score = weights.Price*price + weights.Latency*float64(lat) + weights.Stability*v.SR5m*1000
 	}
 	sort.SliceStable(views, func(i, j int) bool { return views[i].Score < views[j].Score })
 	return views, nil
