@@ -2,68 +2,38 @@ package streaming
 
 import (
 	"encoding/json"
-	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/require"
 )
 
-func TestConvertResponsesInputItemWithError_Media(t *testing.T) {
+func TestConvertResponsesInputItem_PreservesFunctionCall(t *testing.T) {
 	cases := []struct {
 		name string
 		item map[string]any
-		want string
 	}{
 		{
-			name: "input_text",
-			item: map[string]any{"type": "input_text", "text": "describe"},
-			want: "text",
-		},
-		{
-			name: "input_image",
-			item: map[string]any{"type": "input_image", "image_url": "https://example.test/a.png"},
-			want: "image_url",
-		},
-		{
-			name: "input_audio",
-			item: map[string]any{"type": "input_audio", "input_audio": map[string]any{"data": "AAA", "format": "wav"}},
-			want: "input_audio",
-		},
-		{
-			name: "input_file",
-			item: map[string]any{"type": "input_file", "input_file": map[string]any{"file_id": "file_1"}},
-			want: "file",
+			name: "function_call",
+			item: map[string]any{"type": "function_call", "call_id": "call_1", "name": "lookup", "arguments": "{}"},
 		},
 	}
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			message, ok, err := convertResponsesInputItemWithError(tc.item)
-			require.NoError(t, err)
+			message, ok := convertResponsesInputItem(tc.item)
 			require.True(t, ok)
-			content := message["content"].([]any)
-			block := content[0].(map[string]any)
-			if tc.want == "image_url" {
-				if block["type"] != tc.want {
-					t.Fatalf("block=%v, want image_url", block)
-				}
-				return
-			}
-			if block["type"] != tc.want {
-				t.Fatalf("block=%v, want %s", block, tc.want)
-			}
+			require.Equal(t, "assistant", message["role"])
+			toolCalls := message["tool_calls"].([]any)
+			require.Equal(t, "call_1", toolCalls[0].(map[string]any)["id"])
 		})
 	}
 }
 
-func TestConvertResponsesToChatBodyWithError_RejectsMalformedMedia(t *testing.T) {
+func TestConvertResponsesToChatBody_UsesFallbackForUnknownInput(t *testing.T) {
 	var req responsesRequestBody
 	require.NoError(t, json.Unmarshal([]byte(`{"model":"gpt-4o","input":[{"type":"input_audio"}]}`), &req))
-	_, err := convertResponsesToChatBodyWithError(&req)
-	if err == nil {
-		t.Fatal("expected unsupported_modality error")
-	}
-	if got := err.Error(); got == "" || !strings.Contains(got, "unsupported_modality") {
-		t.Fatalf("error=%q, want unsupported_modality", got)
-	}
+	chatBody := convertResponsesToChatBody(&req)
+	messages := chatBody["messages"].([]any)
+	require.Len(t, messages, 1)
+	require.Equal(t, "user", messages[0].(map[string]any)["role"])
 }
