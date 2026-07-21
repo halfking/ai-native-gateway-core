@@ -1086,27 +1086,27 @@ onMounted(async () => {
 .settings-header {
   margin-bottom: 24px;
   h2 { margin: 0 0 8px 0; font-size: 24px; }
-  .description { color: var(--muted, #8b949e); margin: 0; }
+  .description { color: var(--muted); margin: 0; }
 }
 .settings-tabs :deep(.el-tabs__header) { margin-bottom: 20px; }
 .section-card {
   margin-bottom: 20px;
   .card-header { display: flex; justify-content: space-between; align-items: center; }
 }
-.help-text { margin-left: 12px; color: var(--muted, #8b949e); font-size: 12px; }
-.help-text-small { color: var(--muted, #8b949e); font-size: 11px; margin-top: 4px; }
+.help-text { margin-left: 12px; color: var(--muted); font-size: 12px; }
+.help-text-small { color: var(--muted); font-size: 11px; margin-top: 4px; }
 .meta { color: var(--muted); font-size: 11px; }
 .empty-state {
-  padding: 32px 16px; text-align: center; color: var(--muted, #8b949e);
+  padding: 32px 16px; text-align: center; color: var(--muted);
   p { margin: 4px 0; }
   .meta { font-size: 12px; }
 }
-.state { color: var(--muted, #6e7681); padding: 20px 0; text-align: center; }
+.state { color: var(--muted); padding: 20px 0; text-align: center; }
 .whitelist-tags { margin-top: 8px; }
 .category-filter {
   margin-bottom: 16px;
   padding-bottom: 12px;
-  border-bottom: 1px solid var(--border, #30363d);
+  border-bottom: 1px solid var(--border);
 }
 .risk-distribution {
   h4 { margin: 0 0 16px 0; }
@@ -1123,7 +1123,7 @@ onMounted(async () => {
 .filter-form { margin-bottom: 16px; }
 .prompt-editor {
   display: flex; flex-direction: column; gap: 6px;
-  label { font-size: 12px; color: var(--text-secondary, #8b949e); }
+  label { font-size: 12px; color: var(--text-secondary); }
 }
 .flow-description {
   :deep(.el-descriptions__label) { width: 120px; font-weight: bold; }
@@ -1133,6 +1133,6 @@ onMounted(async () => {
   transition: all 0.3s;
   &:hover { transform: translateY(-4px); box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15); }
   h3 { margin: 12px 0 8px; font-size: 16px; }
-  p { color: var(--muted, #8b949e); font-size: 14px; margin: 0; }
+  p { color: var(--muted); font-size: 14px; margin: 0; }
 }
 </style>
