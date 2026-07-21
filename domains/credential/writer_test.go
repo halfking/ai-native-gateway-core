@@ -71,3 +71,39 @@ func TestInferQuotaRecoverAtIsFutureMidnight(t *testing.T) {
 		}
 	}
 }
+
+// 2026-07-21 P0 fix: when the upstream body carries an explicit reset
+// timestamp, inferQuotaRecoverAt must return it (so CredentialRecovery
+// worker can flip the credential back to ready when the window opens)
+// rather than fall back to day-based heuristics. 智谱AI 1310 returns
+// "限额将在 YYYY-MM-DD HH:MM:SS 重置。" — the timestamp is the only
+// reliable signal for when the upstream quota window resets.
+func TestInferQuotaRecoverAtUsesExplicitTimestamp(t *testing.T) {
+	want := time.Now().UTC().AddDate(0, 0, 3).
+		Truncate(time.Hour).Add(14*time.Hour + 32*time.Minute + 20*time.Second)
+	layout := "2006-01-02 15:04:05"
+	wantStr := want.Format(layout)
+
+	for _, detail := range []string{
+		`您的限额将在 ` + wantStr + ` 重置。`,
+		`You have exceeded the quota; will reset at ` + wantStr,
+		`quota exceeded, retry at ` + wantStr,
+	} {
+		got := inferQuotaRecoverAt(detail)
+		if !got.Equal(want) {
+			t.Errorf("inferQuotaRecoverAt(%q) = %s, want %s", detail, got.Format(layout), wantStr)
+		}
+	}
+}
+
+func TestInferQuotaRecoverAtRejectsPastTimestamp(t *testing.T) {
+	past := time.Now().UTC().AddDate(0, 0, -3).Format("2006-01-02 15:04:05")
+	got := inferQuotaRecoverAt("您的限额将在 " + past + " 重置。")
+	parsed, _ := time.Parse("2006-01-02 15:04:05", past)
+	if got.Equal(parsed) {
+		t.Fatalf("inferQuotaRecoverAt should not return a past timestamp %s", past)
+	}
+	if !got.After(time.Now().UTC()) {
+		t.Fatalf("recover_at should still be in the future, got %s", got)
+	}
+}
