@@ -140,9 +140,9 @@ onMounted(ensureReady)
         <el-form-item label="实例 ID（一机一实例，自动锁定）">
           <div class="copy-row">
             <el-input :model-value="instanceId" readonly class="mono-input" />
-            <el-button type="primary" :disabled="!instanceId" @click="copyInstanceId">
+            <button type="button" class="btn btn-secondary btn-sm btn-no-arrow" :disabled="!instanceId" @click="copyInstanceId">
               {{ copied ? '已复制' : '复制实例 ID' }}
-            </el-button>
+            </button>
           </div>
         </el-form-item>
         <el-form-item label="硬件哈希（自动采集）">
@@ -163,7 +163,7 @@ onMounted(ensureReady)
           粘贴上面复制的实例 ID → 提交审批。审批通过后，将激活响应或 <code>license.dat</code> 内容复制到下方输入框。
         </p>
         <div class="step-actions">
-          <el-button type="primary" @click="openPublicSite">打开公网激活站点</el-button>
+          <button type="button" class="btn btn-primary" @click="openPublicSite">打开公网激活站点</button>
         </div>
       </el-card>
 
@@ -182,10 +182,10 @@ onMounted(ensureReady)
             />
           </el-form-item>
           <div class="step-actions">
-            <el-button type="primary" :loading="loading" :disabled="!canSubmit" @click="importLicense">
+            <button type="button" class="btn btn-primary" :disabled="loading || !canSubmit" @click="importLicense">
               同意协议并导入
-            </el-button>
-            <el-button link @click="openAgreement">查看协议</el-button>
+            </button>
+            <button type="button" class="btn btn-ghost btn-no-arrow" @click="openAgreement">查看协议</button>
           </div>
           <p v-if="!agreementAccepted" class="hint warn">
             ⚠ 首次导入会弹出用户协议窗口，未勾选同意则无法激活。

@@ -1690,12 +1690,12 @@ onMounted(async () => {
   padding: 2px 8px;
   border-radius: 4px;
   border: 1px solid var(--border);
-  background: rgba(99, 102, 241, 0.08);
+  background: color-mix(in srgb, var(--accent) 8%, transparent);
   color: var(--accent);
   cursor: pointer;
 }
 .trace-action-btn:hover {
-  background: rgba(99, 102, 241, 0.18);
+  background: color-mix(in srgb, var(--accent) 18%, transparent);
   border-color: var(--accent);
 }
 
@@ -1754,7 +1754,7 @@ onMounted(async () => {
   color: #b45309;
 }
 .compression-badge.strategy-memora_l1_inject {
-  background: rgba(139, 92, 246, 0.1);
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
   color: #6d28d9;
 }
 .compression-badge.strategy-llm_summary {
@@ -1776,9 +1776,9 @@ onMounted(async () => {
 .compression-badge.strategy-sliding_window_token,
 .compression-badge.strategy-sliding_window_count,
 .compression-badge.strategy-sliding_window_idle {
-  background: rgba(168, 85, 247, 0.12);
+  background: color-mix(in srgb, #d946ef 12%, transparent);
   color: #7e22ce;
-  border: 1px solid rgba(168, 85, 247, 0.3);
+  border: 1px solid color-mix(in srgb, #d946ef 30%, transparent);
 }
 .col-compress {
   max-width: 180px;
@@ -1795,7 +1795,7 @@ onMounted(async () => {
   border-radius: 8px;
   font-size: 10px;
   font-weight: 600;
-  background: rgba(168, 85, 247, 0.12);
+  background: color-mix(in srgb, #d946ef 12%, transparent);
   color: #c084fc;
 }
 /* v3 Outbound tab — highlight when outbound differs from request. */

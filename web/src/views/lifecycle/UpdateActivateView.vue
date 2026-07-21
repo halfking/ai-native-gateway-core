@@ -240,8 +240,8 @@ onMounted(async () => {
         <p>{{ SITE_TITLE }} — 站点信息、一键激活、版本升级与已开通模块。</p>
       </div>
       <div class="ua-page__actions">
-        <RouterLink class="btn btn-ghost" to="/customer/offline-activation">离线激活</RouterLink>
-        <button type="button" class="btn btn-primary btn-sm" :disabled="loading" @click="refreshAll">
+        <RouterLink class="btn btn-ghost btn-no-arrow" to="/customer/offline-activation">离线激活</RouterLink>
+        <button type="button" class="btn btn-secondary btn-sm btn-no-arrow" :disabled="loading" @click="refreshAll">
           刷新
         </button>
       </div>

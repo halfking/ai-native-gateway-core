@@ -829,7 +829,7 @@ function healthColor(rate: number): string {
 }
 
 .runs-row.expanded .runs-summary {
-  background: rgba(99, 102, 241, 0.1);
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
 }
 
 .col-action {

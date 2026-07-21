@@ -427,7 +427,7 @@ onMounted(async () => {
   padding: 1px 6px;
   border-radius: 8px;
   font-size: 10px;
-  background: rgba(99, 102, 241, 0.2);
+  background: color-mix(in srgb, var(--accent) 20%, transparent);
   color: var(--accent-h);
 }
 
@@ -498,7 +498,7 @@ onMounted(async () => {
 .btn-ghost:hover:not(:disabled) { background: #21262d; border-color: #8b949e; }
 .btn:disabled { opacity: 0.5; cursor: not-allowed; }
 
-.preview-result { margin-top: 12px; padding: 12px; background: rgba(99, 102, 241, 0.08); border: 1px solid rgba(99, 102, 241, 0.25); border-radius: 6px; }
+.preview-result { margin-top: 12px; padding: 12px; background: color-mix(in srgb, var(--accent) 8%, transparent); border: 1px solid color-mix(in srgb, var(--accent) 25%, transparent); border-radius: 6px; }
 .preview-item { display: flex; justify-content: space-between; margin-bottom: 6px; font-size: 13px; }
 .preview-item:last-child { margin-bottom: 0; }
 .preview-label { color: #8b949e; }
@@ -509,7 +509,7 @@ onMounted(async () => {
 .tenant-table-wrap { overflow-x: auto; }
 .tenant-code { font-family: ui-monospace, SFMono-Regular, monospace; font-size: 12px; padding: 2px 6px; background: #0f1117; border-radius: 4px; color: var(--accent-h); }
 .tenant-bar-track { position: relative; width: 100%; height: 18px; background: #0f1117; border-radius: 4px; overflow: hidden; }
-.tenant-bar-fill { position: absolute; top: 0; left: 0; height: 100%; background: linear-gradient(90deg, rgba(99, 102, 241, 0.5), rgba(99, 102, 241, 0.8)); transition: width 0.3s; }
+.tenant-bar-fill { position: absolute; top: 0; left: 0; height: 100%; background: linear-gradient(90deg, color-mix(in srgb, var(--accent) 50%, transparent), color-mix(in srgb, var(--accent) 80%, transparent)); transition: width 0.3s; }
 .tenant-bar-text { position: absolute; top: 0; left: 8px; line-height: 18px; font-size: 11px; color: #e6edf3; font-weight: 500; font-variant-numeric: tabular-nums; }
 
 .empty-hint { text-align: center; padding: 32px; color: #8b949e; font-size: 13px; }

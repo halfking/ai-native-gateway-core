@@ -1943,7 +1943,7 @@ onUnmounted(() => {
   background: rgba(255, 255, 255, 0.03);
 }
 .model-row-selected {
-  background: rgba(99, 102, 241, 0.12) !important;
+  background: color-mix(in srgb, var(--accent) 12%, transparent) !important;
 }
 
 /* 🆕 2026-06-23: declared 模型行置灰 (从未被路由实际调用) */
@@ -2043,7 +2043,7 @@ onUnmounted(() => {
   vertical-align: middle;
 }
 .src-redis { background: rgba(63, 185, 80, 0.15); color: var(--success); }
-.src-rl { background: rgba(99, 102, 241, 0.15); color: var(--accent-h); }
+.src-rl { background: color-mix(in srgb, var(--accent) 15%, transparent); color: var(--accent-h); }
 
 .cell-sub { font-size: 11px; color: var(--muted); }
 .cell-muted { color: var(--muted); }
@@ -2216,7 +2216,7 @@ onUnmounted(() => {
 .layout-btn:last-child { border-right: 0; }
 .layout-btn:hover { background: rgba(255, 255, 255, 0.04); color: var(--text); }
 .layout-btn.active {
-  background: rgba(99, 102, 241, 0.18);
+  background: color-mix(in srgb, var(--accent) 18%, transparent);
   color: var(--accent-h);
   font-weight: 600;
 }

@@ -764,7 +764,7 @@ onMounted(load)
   font-size: 11px; font-weight: 500; margin-right: 6px;
   background: rgba(148, 163, 184, 0.18); color: #94a3b8;
 }
-.modality-badge.modality-multimodal { background: rgba(168, 85, 247, 0.18); color: #c084fc; }
+.modality-badge.modality-multimodal { background: color-mix(in srgb, #d946ef 18%, transparent); color: #c084fc; }
 .modality-badge.modality-vision { background: rgba(34, 197, 94, 0.18); color: #4ade80; }
 .modality-badge.modality-audio { background: rgba(245, 158, 11, 0.18); color: #fbbf24; }
 .modality-badge.modality-video { background: rgba(244, 63, 94, 0.18); color: #fb7185; }
@@ -772,7 +772,7 @@ onMounted(load)
 .multimodal-tag {
   display: inline-block; padding: 1px 6px; border-radius: 6px;
   font-size: 10px; font-weight: 600;
-  background: rgba(168, 85, 247, 0.18); color: #c084fc;
+  background: color-mix(in srgb, #d946ef 18%, transparent); color: #c084fc;
   margin-left: 2px;
 }
 .section-sub { font-size: 12px; font-weight: 600; margin: 12px 0 8px; color: var(--muted); }

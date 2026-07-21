@@ -351,7 +351,7 @@ onMounted(load)
   border-radius: 12px;
   font-size: 12px;
   font-weight: 500;
-  background: rgba(99, 102, 241, 0.12);
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
   color: var(--accent-h);
 }
 

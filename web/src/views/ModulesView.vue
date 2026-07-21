@@ -1678,7 +1678,7 @@ onMounted(() => {
 /* ── Config Hint ── */
 .config-hint {
   padding: 10px 12px;
-  background: rgba(99, 102, 241, 0.06);
+  background: color-mix(in srgb, var(--accent) 6%, transparent);
   border-left: 3px solid var(--accent);
   border-radius: 4px;
   font-size: 12px;
@@ -1811,7 +1811,7 @@ onMounted(() => {
   color: #34d399;
 }
 .src-badge.src-env {
-  background: rgba(99, 102, 241, 0.15);
+  background: color-mix(in srgb, var(--accent) 15%, transparent);
   color: var(--accent-h);
 }
 .src-badge.src-default {
@@ -1831,7 +1831,7 @@ onMounted(() => {
   align-items: center;
   gap: 12px;
   padding: 16px;
-  background: rgba(99, 102, 241, 0.05);
+  background: color-mix(in srgb, var(--accent) 5%, transparent);
   border-bottom: 1px solid var(--border);
 }
 .integ-icon { font-size: 28px; }
@@ -2042,7 +2042,7 @@ onMounted(() => {
 .module-ref-badge {
   display: inline-block;
   padding: 2px 8px;
-  background: rgba(99, 102, 241, 0.12);
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
   color: var(--accent-h);
   border-radius: 4px;
   font-size: 10px;
