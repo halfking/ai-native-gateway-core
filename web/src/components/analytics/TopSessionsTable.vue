@@ -112,7 +112,6 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import { ref } from 'vue'
-import { useRouter } from 'vue-router'
 
 export interface TopSession {
   gwSessionId: string
@@ -133,7 +132,6 @@ const props = defineProps<{
   showTenant?: boolean
 }>()
 
-const router = useRouter()
 const metric = ref<'cost' | 'tokens' | 'latency' | 'duration'>('cost')
 
 // 根据指标排序
@@ -216,9 +214,10 @@ const handleRowClick = (row: TopSession) => {
   handleViewPanorama(row.gwSessionId)
 }
 
-// 查看全景图
+// 查看全景图 — SessionPanoramaView 已迁移至 ai-session-manager plugin，
+// 跳转到插件会话详情页（iframe 全页面导航）。
 const handleViewPanorama = (sessionId: string) => {
-  router.push(`/admin/session-analytics/${sessionId}/panorama`)
+  window.location.assign(`/plugins/ai-session-manager/sessions/${encodeURIComponent(sessionId)}`)
 }
 </script>
 
