@@ -2,12 +2,15 @@ package admin
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"strconv"
 	"strings"
 	"time"
 
 	"golang.org/x/crypto/bcrypt"
+
+	"github.com/kaixuan/llm-gateway-go/licensing"
 )
 
 type tenantInfo struct {
@@ -323,6 +326,22 @@ func (h *Handler) createTenant(w http.ResponseWriter, r *http.Request) {
 
 	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 	defer cancel()
+
+	// 2026-07-21: Community mode tenant limit guard (issue: docs/TODO_COMMUNITY_MODE.md).
+	// In community mode (license missing/expired/unactivated) the gateway
+	// caps tenants at licensing.MaxCommunityTenants. Reject new tenants
+	// above that cap with 403 so the operator gets a clear upgrade hint
+	// instead of a silent half-configured instance.
+	if err := h.checkCommunityTenantLimit(ctx); err != nil {
+		var cmErr *CommunityTenantLimitError
+		if errors.As(err, &cmErr) {
+			writeError(w, http.StatusForbidden, cmErr.Error())
+			return
+		}
+		// DB failure — log + 500 (do not silently bypass limit)
+		writeError(w, http.StatusInternalServerError, "community mode limit check failed: "+err.Error())
+		return
+	}
 
 	adminUsername := DefaultTenantAdminUsername(req.Code)
 	initialPassword := GenerateTenantAdminPassword(req.Code)
@@ -762,4 +781,43 @@ func getActorFromRequest(r *http.Request) string {
 		return auth.Username
 	}
 	return "unknown"
+}
+
+// CommunityTenantLimitError signals that createTenant is blocked because
+// the gateway is running in community mode and the tenant cap is reached.
+// Returning a typed error lets the caller writeError with a 403 without
+// inspecting free-form strings.
+type CommunityTenantLimitError struct {
+	Current int
+	Max     int
+}
+
+func (e *CommunityTenantLimitError) Error() string {
+	return "community_mode: tenant limit reached (" +
+		strconv.Itoa(e.Current) + "/" + strconv.Itoa(e.Max) +
+		"). Activate a license to add more tenants."
+}
+
+// checkCommunityTenantLimit enforces the community-mode tenant cap.
+//
+// Returns nil if not in community mode or if the cap is not yet reached.
+// Returns *CommunityTenantLimitError (HTTP 403) when the cap is full.
+// Returns a generic error for DB failures (callers should 500, NOT bypass).
+//
+// Cheap O(1) — only does a SELECT COUNT(*) when community mode is active.
+func (h *Handler) checkCommunityTenantLimit(ctx context.Context) error {
+	if !licensing.IsCommunityMode() {
+		return nil
+	}
+	var count int
+	if err := h.db.QueryRow(ctx, `SELECT COUNT(*) FROM tenants`).Scan(&count); err != nil {
+		return err
+	}
+	if count >= licensing.MaxCommunityTenants {
+		return &CommunityTenantLimitError{
+			Current: count,
+			Max:     licensing.MaxCommunityTenants,
+		}
+	}
+	return nil
 }
