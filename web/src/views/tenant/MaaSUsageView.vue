@@ -387,7 +387,7 @@ onMounted(load)
   min-height: 2px;
   border-radius: 3px 3px 0 0;
 }
-.trend-bar.credits { background: #6366f1; }
+.trend-bar.credits { background: var(--accent); }
 .trend-bar.requests { background: #22c55e; }
 .trend-date {
   font-size: 10px;
@@ -423,7 +423,7 @@ onMounted(load)
   height: 100%;
   border-radius: 4px;
 }
-.bar-fill.credits { background: #6366f1; }
+.bar-fill.credits { background: var(--accent); }
 .bar-meta {
   font-size: 11px;
   color: var(--muted);
