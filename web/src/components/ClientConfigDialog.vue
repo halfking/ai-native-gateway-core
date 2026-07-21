@@ -568,7 +568,7 @@ function goManageFeatured() {
 }
 
 .select-field:focus {
-  border-color: rgba(99, 102, 241, 0.5);
+  border-color: color-mix(in srgb, var(--accent) 50%, transparent);
 }
 
 .key-info {
@@ -612,8 +612,8 @@ function goManageFeatured() {
 }
 
 .os-tab.active {
-  background: rgba(99, 102, 241, 0.2);
-  border-color: rgba(99, 102, 241, 0.5);
+  background: color-mix(in srgb, var(--accent) 20%, transparent);
+  border-color: color-mix(in srgb, var(--accent) 50%, transparent);
   color: var(--accent-h);
 }
 
@@ -670,7 +670,7 @@ function goManageFeatured() {
 .model-tag {
   font-size: 12px;
   padding: 2px 8px;
-  background: rgba(99, 102, 241, 0.15);
+  background: color-mix(in srgb, var(--accent) 15%, transparent);
   color: var(--accent-h);
   border-radius: 4px;
 }
@@ -723,7 +723,7 @@ function goManageFeatured() {
 }
 
 .model-search-input:focus {
-  background: rgba(99, 102, 241, 0.08);
+  background: color-mix(in srgb, var(--accent) 8%, transparent);
   border-bottom-color: var(--accent);
 }
 
@@ -800,7 +800,7 @@ function goManageFeatured() {
 }
 
 .model-check-item:hover {
-  background: rgba(99, 102, 241, 0.12);
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
 }
 
 .model-check-item input[type="checkbox"] {
@@ -941,8 +941,8 @@ function goManageFeatured() {
   align-items: center;
   gap: 8px;
   padding: 24px 16px;
-  background: rgba(99, 102, 241, 0.05);
-  border: 1px dashed rgba(99, 102, 241, 0.3);
+  background: color-mix(in srgb, var(--accent) 5%, transparent);
+  border: 1px dashed color-mix(in srgb, var(--accent) 30%, transparent);
   border-radius: 10px;
   text-align: center;
 }
@@ -982,7 +982,7 @@ function goManageFeatured() {
 }
 
 .model-family-header:hover {
-  background: rgba(99, 102, 241, 0.08);
+  background: color-mix(in srgb, var(--accent) 8%, transparent);
 }
 
 .group-master-checkbox {
@@ -1071,8 +1071,8 @@ function goManageFeatured() {
 }
 
 .form-input:focus {
-  border-color: rgba(99, 102, 241, 0.5);
-  background: rgba(99, 102, 241, 0.05);
+  border-color: color-mix(in srgb, var(--accent) 50%, transparent);
+  background: color-mix(in srgb, var(--accent) 5%, transparent);
 }
 
 textarea.form-input {

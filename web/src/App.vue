@@ -335,7 +335,7 @@ function handleChangePasswordSuccess() {
    * wide inside the 64px collapsed sidebar. Firefox uses the longhand
    * `scrollbar-*` properties; WebKit/Blink need the pseudo-elements. */
   scrollbar-width: thin;
-  scrollbar-color: rgba(99, 102, 241, 0.4) transparent;
+  scrollbar-color: color-mix(in srgb, var(--accent) 40%, transparent) transparent;
 }
 
 .sidebar-nav::-webkit-scrollbar {
@@ -347,13 +347,13 @@ function handleChangePasswordSuccess() {
 }
 
 .sidebar-nav::-webkit-scrollbar-thumb {
-  background: rgba(99, 102, 241, 0.4);
+  background: color-mix(in srgb, var(--accent) 40%, transparent);
   border-radius: 4px;
   transition: background 0.15s;
 }
 
 .sidebar-nav::-webkit-scrollbar-thumb:hover {
-  background: rgba(99, 102, 241, 0.75);
+  background: color-mix(in srgb, var(--accent) 75%, transparent);
 }
 
 .nav-primary {
@@ -481,7 +481,7 @@ function handleChangePasswordSuccess() {
 }
 
 .nav-item.active {
-  background: rgba(99, 102, 241, 0.15);
+  background: color-mix(in srgb, var(--accent) 15%, transparent);
   color: var(--accent-h);
 }
 
@@ -510,7 +510,7 @@ function handleChangePasswordSuccess() {
   padding: 8px 10px;
   margin-bottom: 4px;
   border-radius: 6px;
-  background: rgba(99, 102, 241, 0.08);
+  background: color-mix(in srgb, var(--accent) 8%, transparent);
   min-width: 0;
 }
 

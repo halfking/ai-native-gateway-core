@@ -514,7 +514,7 @@ const isColdStart = computed(() => {
 }
 
 .control-btn--active {
-  background: rgba(99, 102, 241, 0.15);
+  background: color-mix(in srgb, var(--accent) 15%, transparent);
   border-color: var(--accent);
   color: var(--accent);
 }
@@ -692,7 +692,7 @@ const isColdStart = computed(() => {
 
 .url-input:focus {
   border-color: var(--accent);
-  box-shadow: 0 0 0 2px rgba(99, 102, 241, 0.2);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 20%, transparent);
 }
 
 .url-edit-actions {

@@ -325,7 +325,7 @@ function moveDown(index: number) {
 .approver-role {
   font-size: 12px;
   padding: 2px 8px;
-  background: rgba(99, 102, 241, 0.15);
+  background: color-mix(in srgb, var(--accent) 15%, transparent);
   color: var(--accent-h);
   border-radius: 4px;
 }

@@ -146,7 +146,7 @@ function isNavActive(path: string) {
 
 .guest-nav__link--active {
   color: var(--accent);
-  background: rgba(99, 102, 241, 0.12);
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
 }
 
 .guest-header-right {

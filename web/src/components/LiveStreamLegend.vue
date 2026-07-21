@@ -154,7 +154,7 @@ function handleClick(key: string) {
 }
 
 .legend-item--selected {
-  background: rgba(99, 102, 241, 0.12);
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
   border-color: var(--accent);
   color: var(--accent);
 }
