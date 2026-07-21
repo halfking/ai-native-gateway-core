@@ -3086,12 +3086,8 @@ func main() {
 			if selfCheckWorker != nil {
 				selfCheckHandler.SetWorker(selfCheckWorker)
 			}
-			adminMw := func(fn http.HandlerFunc) http.HandlerFunc {
-				return admin.AdminMiddleware(fn, dbConn.Pool(), cfg.SecretKey)
-			}
-			superAdminMw := func(fn http.HandlerFunc) http.HandlerFunc {
-				return admin.SuperAdminMiddleware(fn, dbConn.Pool(), cfg.SecretKey)
-			}
+			adminMw := newAdminMiddleware(dbConn.Pool(), cfg.SecretKey)
+			superAdminMw := newSuperAdminMiddleware(dbConn.Pool(), cfg.SecretKey)
 			selfCheckHandler.RegisterRoutes(mux, adminMw, superAdminMw)
 			slog.Info("self-check API registered")
 		}
