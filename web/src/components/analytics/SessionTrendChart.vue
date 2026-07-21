@@ -126,7 +126,7 @@ function updateChart() {
         type: 'bar',
         stack: 'sessions',
         data: newSessions,
-        itemStyle: { color: '#6366f1' },
+        itemStyle: { color: '#3b82f6' },
         barMaxWidth: 24,
       },
       {
