@@ -186,9 +186,9 @@ function healthGradeColor(grade?: string): string {
         <el-table :data="data?.recent_sessions ?? []" stripe size="small">
           <el-table-column prop="session_id" :label="t('sessions.userProfile.sessionId')" min-width="200">
             <template #default="scope">
-              <router-link :to="`/admin/session-analytics/${scope?.row?.session_id}/panorama`" class="session-link">
+              <a :href="`/plugins/ai-session-manager/sessions/${encodeURIComponent(scope?.row?.session_id)}`" class="session-link" target="_blank" rel="noopener">
                 {{ scope?.row?.session_id?.slice(0, 16) }}...
-              </router-link>
+              </a>
             </template>
           </el-table-column>
           <el-table-column prop="request_count" :label="t('sessions.userProfile.requestCount')" width="80" align="right" />

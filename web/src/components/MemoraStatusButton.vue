@@ -1,7 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { localeRef } from '../i18n'
-import { RouterLink } from 'vue-router'
 import {
   getMemoraStatus,
   pingMemora,
@@ -189,11 +188,11 @@ onUnmounted(() => {
           :disabled="loading"
           @click="loadStatus"
         >刷新</button>
-        <RouterLink
-          to="/session-context"
+        <a
+          href="/plugins/ai-session-manager/sessions"
           class="btn btn-sm btn-ghost"
           @click="closePanel"
-        >会话上下文</RouterLink>
+        >会话上下文</a>
       </div>
     </div>
   </div>

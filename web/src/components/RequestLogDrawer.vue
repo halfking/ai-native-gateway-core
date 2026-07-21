@@ -7,8 +7,8 @@
 //   - 附件网格：图片缩略图 / 文件图标 + 类型/大小/路径/SHA256(截断) + 下载/放大按钮
 //   - 大图预览 lightbox：Teleport 到 body，全局 ESC 关闭（点击遮罩/图片/按钮亦可关闭）
 //
-// 该组件被 web/src/views/session-context/SessionContextDetailView.vue:435 调用，
-// 作为从 Session 上下文跳转请求详情的入口。
+// 该组件被 DashboardViewV2 / TenantDashboardView / DashboardViewLegacy 等调用，
+// 作为请求详情抽屉入口（会话上下文跳转已随 SessionContextDetailView 迁移至 plugin）。
 
 import { ref, watch, onMounted, onBeforeUnmount } from 'vue'
 import { localeRef } from '../i18n'

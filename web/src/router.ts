@@ -5,7 +5,6 @@ import { showOpsPlatform } from './config/edition'
 // Critical views loaded immediately (login, home, layout)
 import LoginView from './views/LoginView.vue'
 import HomeView from './views/HomeView.vue'
-import SessionContextLayout from './layouts/SessionContextLayout.vue'
 import ForbiddenView from './views/ForbiddenView.vue'
 
 // All other views are lazy-loaded to reduce initial bundle size
@@ -37,13 +36,6 @@ const AuditLogView = () => import('./views/AuditLogView.vue')
 const CompressionView = () => import('./views/CompressionView.vue')
 const DataLifecycleView = () => import('./views/DataLifecycleView.vue')
 const SettingsView = () => import('./views/SettingsView.vue')
-const SessionContextListView = () => import('./views/session-context/SessionContextListView.vue')
-const SessionContextDetailView = () => import('./views/session-context/SessionContextDetailView.vue')
-const SessionCompareView = () => import('./views/SessionCompareView.vue')
-const SessionListView = () => import('./views/SessionListView.vue')
-const SessionAnalyticsDashboardView = () => import('./views/SessionAnalyticsDashboardView.vue')
-const SessionPanoramaView = () => import('./views/SessionPanoramaView.vue')
-const SessionClustersView = () => import('./views/SessionClustersView.vue')
 const MaaSAccountView = () => import('./views/tenant/MaaSAccountView.vue')
 const MaaSPricingView = () => import('./views/tenant/MaaSPricingView.vue')
 const MaaSUsageView = () => import('./views/tenant/MaaSUsageView.vue')
@@ -59,15 +51,12 @@ const PromptInjectionSettingsView = () => import('./views/PromptInjectionSetting
 const ApprovalConfigView = () => import('./views/ApprovalConfigView.vue')
 const ApprovalListView = () => import('./views/ApprovalListView.vue')
 const ApprovalDetailView = () => import('./views/ApprovalDetailView.vue')
-const SessionManagementView = () => import('./views/SessionManagementView.vue')
-const SessionAuditView = () => import('./views/SessionAuditView.vue')
 const OutputComplianceView = () => import('./views/OutputComplianceView.vue')
 const UsageCostView = () => import('./views/admin/UsageCost.vue')
 const ClientAnalyticsView = () => import('./views/ClientAnalyticsView.vue')
 const TaskAnalyticsView = () => import('./views/TaskAnalyticsView.vue')
 const UserProfileListView = () => import('./views/UserProfileListView.vue')
 const UserProfileView = () => import('./views/UserProfileView.vue')
-const SessionConfigView = () => import('./views/SessionConfigView.vue')
 
 // Customer lifecycle (activation / agreement) — available for download installs
 const CustomerActivateView = () => import('./views/lifecycle/ActivateView.vue')
@@ -156,11 +145,6 @@ export const router = createRouter({
     { path: '/catalog',            redirect: (to) => ({ path: '/models', query: { ...to.query, tab: 'catalog' } }) },
     { path: '/routing-v2',         component: RoutingDashboardView, meta: { requiresSuper: true } },
     { path: '/routing-v2/credentials', component: CredentialMonitorView }, // 2026-07-04: 允许 tenant_admin 访问
-    // SessionManagementView（会话管理 v2.1，super-only）原占用 /sessions，
-    // 与下方 SessionListView（会话列表，所有登录用户可用）冲突——Vue Router
-    // 只匹配第一条，导致 SessionListView 成为死代码、且菜单「会话列表」对非
-    // super 用户显示却跳 /forbidden。现拆分：管理功能走 /admin/sessions。
-    { path: '/admin/sessions',     component: SessionManagementView, meta: { requiresSuper: true } },
     { path: '/probe-health',       component: ProbeHealthView,      meta: { requiresSuper: true } },
     { path: '/probe-health/detail', component: ProbeHealthDetailView, meta: { requiresSuper: true } },
     { path: '/routing-v2/work-types',         component: WorkTypesView, meta: { requiresSuper: true } },
@@ -172,14 +156,6 @@ export const router = createRouter({
     { path: '/tenants/:tenantId',  component: TenantDetailView,    meta: { requiresSuper: true } },
     { path: '/audit-logs',        component: AuditLogView,         meta: { requiresSuper: true } },
     { path: '/format-anomalies',  component: FormatAnomaliesView,  meta: { requiresSuper: true } },
-    {
-      path: '/session-context',
-      component: SessionContextLayout,
-      children: [
-        { path: '', component: SessionContextListView },
-        { path: ':taskId', component: SessionContextDetailView },
-      ],
-    },
 
     // Platform ops only (super_admin + default tenant)
     { path: '/users',              component: UsersView },
@@ -212,17 +188,10 @@ export const router = createRouter({
     { path: '/routing/overrides/audit', component: RoutingAuditView, meta: { requiresSuper: true } },
     { path: '/quality-correlations',  component: QualityCorrelationsView, meta: { requiresSuper: true } },
     { path: '/request-logs',       component: RequestLogsView },
-    { path: '/session-compare',    component: SessionCompareView },
-    { path: '/sessions',           component: SessionListView },
-    { path: '/admin/session-analytics', component: SessionAnalyticsDashboardView, meta: { requiresSuper: true } },
-    { path: '/admin/session-analytics/:id/panorama', component: SessionPanoramaView, meta: { requiresSuper: true } },
-    { path: '/admin/session-clusters', component: SessionClustersView, meta: { requiresSuper: true } },
-    { path: '/admin/session-audit', component: SessionAuditView, meta: { requiresSuper: true } },
     { path: '/admin/session-analytics/users', component: UserProfileListView, meta: { requiresAuth: true } },
     { path: '/admin/session-analytics/users/:owner', component: UserProfileView, meta: { requiresAuth: true } },
     { path: '/admin/session-analytics/clients/:id', component: ClientAnalyticsView, meta: { requiresAuth: true } },
     { path: '/admin/session-analytics/tasks/:id', component: TaskAnalyticsView, meta: { requiresAuth: true } },
-    { path: '/admin/session-config', component: SessionConfigView, meta: { requiresAuth: true } },
     { path: '/admin/compression',   component: CompressionView, meta: { requiresPlatformOps: true } },
     { path: '/admin/data-lifecycle', component: DataLifecycleView, meta: { requiresPlatformOps: true } },
     { path: '/admin/settings',     component: SettingsView, meta: { requiresSuper: true } },

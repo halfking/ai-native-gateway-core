@@ -314,9 +314,9 @@ watch(activeTab, loadAll)
           <span class="chip-lbl">{{ t('sessions.config.compressionModelLabel') }}</span>
           <code class="chip code-chip">{{ currentConfig.model || '—' }}</code>
         </div>
-        <button class="btn btn-ghost btn-sm" @click="router.push('/admin/session-config')">
+        <a class="btn btn-ghost btn-sm" href="/plugins/ai-session-manager/settings">
           {{ t('sessions.config.viewDetails') }} →
-        </button>
+        </a>
       </div>
     </div>
 

@@ -1,4 +1,5 @@
-// sessions.ts — SessionListView / SessionCompareView / SessionAuditView / SessionManagementView 文案。
+// sessions.ts — 会话相关文案（原 SessionListView / SessionCompareView / SessionAuditView
+// / SessionManagementView 等视图已迁移至 ai-session-manager plugin，文案保留供 plugin 合并使用）。
 // 命名空间：list / compare / audit / management / config。
 export default {
   list: {
