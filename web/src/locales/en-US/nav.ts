@@ -67,4 +67,15 @@ export default {
     opsDownloads: 'Releases & Downloads',
     opsProductEntry: 'Product Entry',
   },
+
+  // 2026-07-21: top-bar & public nav
+  mainAria: 'Main navigation',
+  guestAria: 'Product navigation',
+  signIn: 'Sign in',
+  publicDownload: 'Download',
+  publicSetup: 'Install & Activate',
+  publicActivate: 'Online Activation',
+  publicLicense: 'License',
+  publicAgreement: 'User Agreement',
+  publicSupport: 'Support',
 }

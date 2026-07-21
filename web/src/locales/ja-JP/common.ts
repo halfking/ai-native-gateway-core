@@ -157,4 +157,11 @@ export default {
     vision: 'ビジョン',
     function_call: '関数呼び出し',
   },
+
+  theme: {
+    switchToLight: 'ライトモードへ切替',
+    switchToDark: 'ダークモードへ切替',
+    lightTitle: 'ライトモード',
+    darkTitle: 'ダークモード',
+  },
 }

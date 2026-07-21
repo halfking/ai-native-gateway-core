@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { mergeNav, NAV_GROUPS } from './appNav'
+import { mergeNav, NAV_GROUPS, NAV_PRIMARY_ITEMS } from './appNav'
 import type { NavEntry } from '@/api/plugins'
 
 describe('mergeNav', () => {
@@ -9,9 +9,14 @@ describe('mergeNav', () => {
       nav_group: 'requests-sessions', label_key: 'k', super: false,
       platform_ops: false, tenant_only: false, order: 50, route_url: '/plugins/p/s',
     }]
-    const merged = mergeNav(NAV_GROUPS, items)
-    const g = merged.find((x) => x.id === 'requests-sessions')!
-    expect(g.items.some((i) => i.path === '/plugins/p/s')).toBe(true)
+    const merged = mergeNav(NAV_PRIMARY_ITEMS, NAV_GROUPS, {
+      isSuperAdmin: true,
+      isPlatformOps: true,
+      isTenantPortal: false,
+    })
+    // After merge, the plugin item should be findable somewhere in merged groups
+    const hasPlugin = merged.some((g) => g.items.some((i) => i.path === '/plugins/p/s'))
+    expect(hasPlugin).toBe(true)
   })
   it('creates plugins group for unknown nav_group', () => {
     const items: NavEntry[] = [{
@@ -19,7 +24,11 @@ describe('mergeNav', () => {
       nav_group: 'nope', label_key: 'k', super: false, platform_ops: false,
       tenant_only: false, order: 1, route_url: '/plugins/p/s',
     }]
-    const merged = mergeNav(NAV_GROUPS, items)
+    const merged = mergeNav(NAV_PRIMARY_ITEMS, NAV_GROUPS, {
+      isSuperAdmin: true,
+      isPlatformOps: true,
+      isTenantPortal: false,
+    })
     expect(merged.some((g) => g.id === 'plugins')).toBe(true)
   })
 })

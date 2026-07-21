@@ -61,5 +61,15 @@ export default {
     opsProductEntry: "產品入口",
     tenantLicense: "我的授權",
     tenantAutoUpdate: "我的更新"
-  }
+  },
+
+  mainAria: '主導航',
+  guestAria: '產品導航',
+  signIn: '登入',
+  publicDownload: '下載安裝',
+  publicSetup: '安裝啟用',
+  publicActivate: '線上啟用',
+  publicLicense: '授權狀態',
+  publicAgreement: '使用者協議',
+  publicSupport: '技術支援',
 }

@@ -1,19 +1,83 @@
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
-:root {
-  --bg:        #0f1117;
-  --sidebar:   #161b22;
-  --card:      #1c2128;
-  --bg-subtle: #161b22;
-  --border:    #30363d;
-  --text:      #e6edf3;
-  --muted:     #8b949e;
-  --accent:    #6366f1;
-  --accent-h:  #818cf8;
-  --success:   #3fb950;
-  --warning:   #d29922;
-  --danger:    #f85149;
+/* 2026-07-21: 与 ai-native-maintain / ai-session-manager 主题统一。
+ * CSS 变量在 :root 提供默认（保持原 llm-gateway-go 暗色配色），并通过
+ * html[data-theme='light'] / html[data-theme='dark'] 切换浅色与深色两套。
+ * 运行时：theme.ts 会读 URL ?theme= / localStorage[llmgw_theme] / prefers-color-scheme，
+ * 并设置 document.documentElement.setAttribute('data-theme', t)。
+ */
+:root,
+html[data-theme='light'] {
+  --kx-bg: #f4f6f9;
+  --kx-bg-accent: rgba(30, 79, 214, 0.07);
+  --kx-surface: #ffffff;
+  --kx-surface-soft: rgba(255, 255, 255, 0.88);
+  --kx-sidebar: #eef2f8;
+  --kx-text: #152033;
+  --kx-muted: #5b6b82;
+  --kx-border: #dce3ee;
+  --kx-primary: #1e4fd6;
+  --kx-primary-hover: #1841b3;
+  --kx-primary-soft: #eaf0ff;
+  --kx-success: #16845b;
+  --kx-success-soft: #e6f7ef;
+  --kx-warning: #b7791f;
+  --kx-warning-soft: #fff7e8;
+  --kx-danger: #c2413b;
+  --kx-danger-soft: #fff1f1;
+  --kx-shadow-sm: 0 8px 24px rgba(30, 55, 100, 0.06);
+  --kx-shadow-md: 0 16px 40px rgba(30, 50, 90, 0.1);
+  /* Gateway alias bridge — 旧组件仍引用 --bg/--card/--border 等 */
+  --bg:        var(--kx-bg);
+  --sidebar:   var(--kx-sidebar);
+  --card:      var(--kx-surface);
+  --bg-subtle: var(--kx-primary-soft);
+  --border:    var(--kx-border);
+  --text:      var(--kx-text);
+  --muted:     var(--kx-muted);
+  --accent:    var(--kx-primary);
+  --accent-h:  var(--kx-primary-hover);
+  --success:   var(--kx-success);
+  --warning:   var(--kx-warning);
+  --danger:    var(--kx-danger);
   --radius:    8px;
+  color-scheme: light;
+}
+
+html[data-theme='dark'] {
+  --kx-bg: #0f141c;
+  --kx-bg-accent: rgba(91, 140, 255, 0.12);
+  --kx-surface: #1a222d;
+  --kx-surface-soft: rgba(26, 34, 45, 0.92);
+  --kx-sidebar: #121820;
+  --kx-text: #e8eef7;
+  --kx-muted: #8b9bb0;
+  --kx-border: #2a3544;
+  --kx-primary: #5b8cff;
+  --kx-primary-hover: #7aa3ff;
+  --kx-primary-soft: rgba(91, 140, 255, 0.16);
+  --kx-success: #3ecf8e;
+  --kx-success-soft: rgba(62, 207, 142, 0.14);
+  --kx-warning: #e0a53a;
+  --kx-warning-soft: rgba(224, 165, 58, 0.14);
+  --kx-danger: #f07167;
+  --kx-danger-soft: rgba(240, 113, 103, 0.14);
+  --kx-shadow-sm: 0 8px 24px rgba(0, 0, 0, 0.28);
+  --kx-shadow-md: 0 16px 40px rgba(0, 0, 0, 0.4);
+  --bg:        #0f1117;
+  --sidebar:   var(--kx-sidebar);
+  --card:      var(--kx-surface);
+  --bg-subtle: var(--kx-sidebar);
+  --border:    var(--kx-border);
+  --text:      var(--kx-text);
+  --muted:     var(--kx-muted);
+  --accent:    var(--kx-primary);
+  --accent-h:  var(--kx-primary-hover);
+  --success:   var(--kx-success);
+  --warning:   var(--kx-warning);
+  --danger:    var(--kx-danger);
+  --radius:    8px;
+  color-scheme: dark;
 }
 
 html, body, #app { height: 100%; }

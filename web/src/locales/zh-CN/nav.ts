@@ -68,4 +68,15 @@ export default {
     opsDownloads: '发布与下载',
     opsProductEntry: '产品入口',
   },
+
+  // 2026-07-21: 顶部水平导航 + 未登录公开页导航
+  mainAria: '主导航',
+  guestAria: '产品导航',
+  signIn: '登录',
+  publicDownload: '下载安装',
+  publicSetup: '安装激活',
+  publicActivate: '在线激活',
+  publicLicense: '许可状态',
+  publicAgreement: '用户协议',
+  publicSupport: '技术支持',
 }

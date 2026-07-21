@@ -145,6 +145,8 @@ export const router = createRouter({
   routes: [
     { path: '/login',              component: LoginView, meta: { public: true } },
     { path: '/forbidden',          component: ForbiddenView, meta: { public: true } },
+    // 2026-07-21: 总览搬到 /dashboard；根路径 / 仍走 HomeView（未登录 redirect 到 maintain，已登录显示 DashboardView）。
+    { path: '/dashboard',          component: HomeView, meta: { requiresAuth: true } },
     { path: '/',                   component: HomeView, meta: { public: true } },
 
     // super_admin only — providers, catalog, free pool, tenants, audit logs

@@ -159,4 +159,12 @@ export default {
     vision: '视觉',
     function_call: '函数调用',
   },
+
+  // 2026-07-21: 顶部水平导航的皮肤切换按钮
+  theme: {
+    switchToLight: '切到浅色',
+    switchToDark: '切到深色',
+    lightTitle: '浅色模式',
+    darkTitle: '深色模式',
+  },
 }
