@@ -10,6 +10,9 @@ SSH_PORT=""                      # Not needed for local
 SSH_USER=""                      # Not needed for local
 SSH_PASS=""                      # Not needed for local
 
+# ── Target type (docker / direct / tunnel) ──────────────────────────────
+TARGET_TYPE="docker"
+
 # ── Docker ─────────────────────────────────────────────────────────────────
 DOCKER_HOST="local"
 DOCKER_PG_CONTAINER="llm-gateway-pg"
