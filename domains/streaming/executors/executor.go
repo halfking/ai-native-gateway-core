@@ -2287,11 +2287,10 @@ func (e *Executor) Execute(params *ExecParams) (*ExecuteResult, error) {
 					"provider_id", cand.ProviderID,
 					"reason", sie.reason,
 					"kind", kind,
+					"node_jump_from_cred", cand.CredentialID,
+					"node_jump_from_prov", cand.ProviderID,
+					"node_jump_attempt", nodeTracker.Attempts(),
 				)
-				if params.PreStreamPrepared {
-					SendNodeJumpEvent(params.W, cand.CredentialID, cand.ProviderID,
-						0, 0, "stream_interrupted:"+sie.reason, nodeTracker.Attempts())
-				}
 				continue
 			} else {
 				// Stream is not resumable (too many chunks sent) - return error.
@@ -2317,10 +2316,14 @@ func (e *Executor) Execute(params *ExecParams) (*ExecuteResult, error) {
 			}
 		}
 
-		if params.PreStreamPrepared {
-			SendNodeJumpEvent(params.W, cand.CredentialID, cand.ProviderID,
-				0, 0, "credential_failed", nodeTracker.Attempts())
-		}
+		// Record node jump for monitoring (structured log only, not SSE)
+		slog.Warn("candidate_failed_trying_next",
+			"credential_id", cand.CredentialID,
+			"provider_id", cand.ProviderID,
+			"node_jump_from_cred", cand.CredentialID,
+			"node_jump_from_prov", cand.ProviderID,
+			"node_jump_attempt", nodeTracker.Attempts(),
+		)
 		lastErr = execErr
 		// Prefer the typed Kind from *upstreampkg.Error if available, to
 		// avoid re-classifying from the error text (which embeds the
