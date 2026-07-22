@@ -341,7 +341,7 @@ func (s *Summarizer) getMessagesSince(ctx context.Context, tenantID, sessionKey 
 		       rl.outbound_model, rl.ts
 		FROM request_logs rl
 		LEFT JOIN request_logs_bodies rb 
-		  ON rb.request_id = rl.request_id AND rb.ts = rl.ts
+		  ON rb.request_id = rl.request_id
 		WHERE rl.gw_session_id = $1`
 	args := []any{sessionKey}
 	argN := 2
@@ -424,7 +424,7 @@ func (s *Summarizer) getSessionMessages(ctx context.Context, tenantID, sessionKe
 			rl.ts
 		FROM request_logs rl
 		LEFT JOIN request_logs_bodies rb 
-		  ON rb.request_id = rl.request_id AND rb.ts = rl.ts
+		  ON rb.request_id = rl.request_id
 		WHERE rl.tenant_id = $1 AND rl.gw_session_id = $2
 		ORDER BY rl.ts ASC
 		LIMIT 20

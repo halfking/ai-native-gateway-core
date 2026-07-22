@@ -191,7 +191,7 @@ func TestRequestLogInsertParamCount(t *testing.T) {
 		SELECT rb.request_body::text
 		FROM request_logs_hot rl
 		JOIN request_logs_bodies_hot rb
-		  ON rb.request_id = rl.request_id AND rb.ts = rl.ts
+		  ON rb.request_id = rl.request_id
 		WHERE rl.request_id = $1
 	`, entry.RequestID).Scan(&joinedRequestBody)
 	if err != nil {

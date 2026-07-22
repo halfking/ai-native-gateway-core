@@ -30,7 +30,7 @@ func TestGetLogDetail_WithBodies(t *testing.T) {
 		  COALESCE(rb.response_body::text, rl.response_body::text) AS response_body
 		FROM request_logs_with_current_month rl
 		LEFT JOIN request_logs_bodies_with_current_month rb 
-		  ON rb.request_id = rl.request_id AND rb.ts = rl.ts
+		  ON rb.request_id = rl.request_id
 		WHERE rl.request_id = $1
 		LIMIT 1
 	`, requestID).Scan(&requestBody, &responseBody)
@@ -63,7 +63,7 @@ func TestGetLogDetail_BackwardsCompatible(t *testing.T) {
 		  COALESCE(rb.response_body::text, rl.response_body::text) AS response_body
 		FROM request_logs_with_current_month rl
 		LEFT JOIN request_logs_bodies_with_current_month rb 
-		  ON rb.request_id = rl.request_id AND rb.ts = rl.ts
+		  ON rb.request_id = rl.request_id
 		WHERE rl.request_id = $1
 		LIMIT 1
 	`, requestID).Scan(&requestBody, &responseBody)
@@ -96,7 +96,7 @@ func TestGetLogDetail_MissingBodies(t *testing.T) {
 		  COALESCE(rb.response_body::text, rl.response_body::text) AS response_body
 		FROM request_logs_with_current_month rl
 		LEFT JOIN request_logs_bodies_with_current_month rb 
-		  ON rb.request_id = rl.request_id AND rb.ts = rl.ts
+		  ON rb.request_id = rl.request_id
 		WHERE rl.request_id = $1
 		LIMIT 1
 	`, requestID).Scan(&requestBody, &responseBody)

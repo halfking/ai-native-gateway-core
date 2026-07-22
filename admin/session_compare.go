@@ -187,7 +187,7 @@ func (api *SessionCompareAPI) loadCompareData(ctx context.Context, q pgx.Tx, ten
 			rl.ts, rl.provider_id
 		FROM request_logs_with_current_month rl
 		LEFT JOIN request_logs_bodies_with_current_month rb
-		  ON rb.request_id = rl.request_id AND rb.ts = rl.ts
+		  ON rb.request_id = rl.request_id
 		WHERE rl.gw_session_id = $1 AND rl.tenant_id = $2
 		ORDER BY rl.ts ASC
 		LIMIT 500
@@ -735,7 +735,7 @@ func (api *HandoffAPI) generateHandoffSummary(ctx context.Context, sessionID, te
 			       rl.created_at
 			FROM request_logs rl
 			LEFT JOIN request_logs_bodies rb 
-			  ON rb.request_id = rl.request_id AND rb.ts = rl.ts
+			  ON rb.request_id = rl.request_id
 			WHERE rl.gw_session_id = $1 AND rl.tenant_id = $2
 			ORDER BY rl.created_at DESC
 			LIMIT 3

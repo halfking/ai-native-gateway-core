@@ -227,7 +227,7 @@ func buildBreakdownQuery(by string) (string, error) {
 		       COALESCE(AVG(rl.cost_usd), 0) AS avg_cost
 		FROM request_logs rl
 		LEFT JOIN request_logs_bodies rb 
-		  ON rb.request_id = rl.request_id AND rb.ts = rl.ts
+		  ON rb.request_id = rl.request_id
 		WHERE rl.is_auto_request = TRUE
 		  AND rl.ts >= NOW() - INTERVAL '1 day' * $1
 		GROUP BY 1

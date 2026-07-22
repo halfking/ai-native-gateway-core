@@ -159,7 +159,7 @@ func (api *SessionExportAPI) buildExport(ctx context.Context, sessionID, tenantI
 				COALESCE(rb.request_body, rl.request_body) AS request_body,
 				COALESCE(rb.response_body, rl.response_body) AS response_body
 			FROM request_logs_with_current_month rl
-			LEFT JOIN request_logs_bodies_with_current_month rb ON rb.request_id = rl.request_id AND rb.ts = rl.ts
+			LEFT JOIN request_logs_bodies_with_current_month rb ON rb.request_id = rl.request_id
 			WHERE rl.gw_session_id = $1
 			ORDER BY rl.created_at ASC
 		`, sessionID)

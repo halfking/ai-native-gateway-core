@@ -197,7 +197,7 @@ func (h *Handler) loadSessionLogsForSummary(ctx context.Context, r *http.Request
 		       rl.error_kind, rl.client_model
 		FROM request_logs_with_current_month rl
 		LEFT JOIN request_logs_bodies_with_current_month rb
-		  ON rb.request_id = rl.request_id AND rb.ts = rl.ts
+		  ON rb.request_id = rl.request_id
 		`+where+`
 		ORDER BY rl.ts ASC
 		LIMIT 300

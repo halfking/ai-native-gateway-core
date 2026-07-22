@@ -557,7 +557,7 @@ func (h *Handler) getLog(w http.ResponseWriter, r *http.Request) {
 		  FROM request_logs_with_current_month rl
 		%s
 		  LEFT JOIN request_logs_bodies_with_current_month rb 
-		    ON rb.request_id = rl.request_id AND rb.ts = rl.ts
+		    ON rb.request_id = rl.request_id
 		 WHERE rl.request_id = $1
 		   AND ($2 OR ak.tenant_id = $3)
 		 ORDER BY rl.ts DESC
