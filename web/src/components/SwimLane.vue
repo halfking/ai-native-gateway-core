@@ -282,12 +282,12 @@ watch(
   flex-direction: column;
   justify-content: center;
   padding: 8px 10px;
-  background: linear-gradient(180deg, #1a1f27 0%, #161b22 100%);
+  background: var(--surface-secondary);
   border: 1px solid var(--border);
   border-radius: 8px;
   gap: 5px;
   overflow-wrap: break-word;
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04);
+  box-shadow: var(--kx-shadow-sm);
 }
 
 .swim-lane__name {
@@ -426,17 +426,17 @@ watch(
       90deg,
       transparent 0,
       transparent calc(80px + 6px - 1px),
-      rgba(255, 255, 255, 0.035) calc(80px + 6px - 1px),
-      rgba(255, 255, 255, 0.035) calc(80px + 6px)
+      color-mix(in srgb, var(--text) 3%, transparent) calc(80px + 6px - 1px),
+      color-mix(in srgb, var(--text) 3%, transparent) calc(80px + 6px)
     ),
-    linear-gradient(180deg, #14181f 0%, #161b22 100%);
+    var(--bg-tertiary);
   border: 1px solid var(--border);
   border-radius: 8px;
   padding: 6px 10px;
   overflow: hidden;
   overflow-x: hidden;
   overflow-y: hidden;
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.03);
+  box-shadow: var(--kx-shadow-sm);
 }
 
 .swim-lane__tiles {
