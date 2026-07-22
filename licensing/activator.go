@@ -35,12 +35,18 @@ func (a *Activator) Activate(ctx context.Context, req *ActivationRequest) (*Acti
 		return nil, err
 	}
 
-	signedLicense, err := a.crypto.SignLicense(lic)
-	if err != nil {
-		return nil, err
+	// 只在有私钥时才签名（LICENSE_DISABLED 模式下跳过）
+	if a.crypto != nil && a.crypto.PrivateKey != nil {
+		signedLicense, err := a.crypto.SignLicense(lic)
+		if err != nil {
+			return nil, err
+		}
+		resp.SignedLicense = signedLicense
+	} else {
+		slog.Warn("license activated without signing (PrivateKey not configured)",
+			"license_key", req.LicenseKey, "instance_id", req.InstanceID)
 	}
 
-	resp.SignedLicense = signedLicense
 	slog.Info("license activated", "license_key", req.LicenseKey, "instance_id", req.InstanceID)
 
 	return resp, nil
