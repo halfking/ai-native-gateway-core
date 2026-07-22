@@ -130,15 +130,25 @@ func (p *preStreamKeepalive) writeComment(line string) {
 
 // writeThinking sends a thinking event to the client (SSE event: thinking).
 // Used to display node failover status without entering the conversation.
+//
+// Format compatibility (2026-07-23 research):
+//   - SSE framing: standard, all clients parse without error
+//   - Event name "thinking": high-level SDKs (OpenAI, Anthropic) skip but don't error
+//   - Data shape {"type":"thinking","content":"..."}: matches Anthropic's JSON
+//     discriminator convention + includes OpenAI-compatible "object":"thinking" hint
+//   - Browsers dispatch only via addEventListener('thinking', ...);
+//     onmessage does NOT receive it (per WHATWG SSE spec)
+//   - Connection stays alive (this is the primary goal — prevent client timeout)
 func (p *preStreamKeepalive) writeThinking(message string) {
 	if p == nil {
 		return
 	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	// Escape message for JSON
+	// Escape message for JSON; structure with type discriminator to avoid
+	// Zod "invalid_union" errors (clients expecting choices[] or error{}).
 	escaped, _ := json.Marshal(message)
-	fmt.Fprintf(p.w, "event: thinking\ndata: {\"message\":%s}\n\n", escaped)
+	fmt.Fprintf(p.w, "event: thinking\ndata: {\"type\":\"thinking\",\"content\":%s,\"object\":\"thinking\"}\n\n", escaped)
 	safeFlush(p.flusher)
 }
 
@@ -2358,9 +2368,14 @@ func (h *ChatHandler) serveWithExecutor(
 					preStream.pause()
 				}
 			},
-			// Note: OnNodeJump removed — thinking SSE events with {"message":"..."} format
-			// cause Zod validation errors in clients expecting OpenAI schema (choices/error).
-			// Node failover still works silently; clients will retry on timeout.
+			// 2026-07-23 节点跳转回调：发送 thinking SSE 事件保持连接活跃并通知客户端
+			// Format: event: thinking + data: {"type":"thinking","content":"..."}
+			// Compatible with all major SSE parsers; Zod validation skips unknown event names.
+			OnNodeJump: func(message string) {
+				if preStream != nil {
+					preStream.writeThinking(message)
+				}
+			},
 			// 探测结束（无论恢复/失败）→ 如果 keepalive 还在跑就 resume，
 			// 让正常流式响应或后续错误路径不再卡在 pause 状态。
 			OnProbeHoldEnd: func(recovered bool) {
