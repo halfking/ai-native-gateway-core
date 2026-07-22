@@ -169,5 +169,20 @@ func TestFormatAnomalyRecorder_NilDB(t *testing.T) {
 	}
 }
 
+func TestToFaultSeverity(t *testing.T) {
+	tests := map[string]string{
+		"critical": "critical",
+		"high":     "error",
+		"medium":   "warning",
+		"low":      "info",
+		"unknown":  "warning",
+	}
+	for input, want := range tests {
+		if got := toFaultSeverity(input); got != want {
+			t.Errorf("toFaultSeverity(%q) = %q, want %q", input, got, want)
+		}
+	}
+}
+
 func ptrStr(s string) *string { return &s }
 func ptrInt(i int) *int       { return &i }

@@ -950,6 +950,9 @@ func (d *DB) ensureResponseFormatAnomaliesSchema(ctx context.Context) error {
 			WHERE provider_code IS NOT NULL;
 		CREATE INDEX IF NOT EXISTS idx_response_format_anomalies_type
 			ON response_format_anomalies(anomaly_type, detected_at DESC);
+		CREATE INDEX IF NOT EXISTS idx_response_format_anomalies_bridge
+			ON response_format_anomalies(resolved, detected_at, anomaly_type, severity)
+			WHERE NOT resolved;
 		CREATE INDEX IF NOT EXISTS idx_response_format_anomalies_unresolved
 			ON response_format_anomalies(detected_at DESC)
 			WHERE NOT resolved;
