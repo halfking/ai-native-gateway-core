@@ -53,7 +53,7 @@ function isNavActive(path: string) {
 
     <div class="guest-header-right">
       <LanguageSelector />
-      <button type="button" class="btn btn-primary btn-sm btn-no-arrow guest-login-btn" @click="$emit('login')">
+      <button type="button" class="btn btn-primary btn-sm guest-login-btn" @click="$emit('login')">
         {{ t('login.submit') }}
       </button>
     </div>
