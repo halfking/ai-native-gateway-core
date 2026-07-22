@@ -58,6 +58,7 @@ onMounted(() => {
   window.addEventListener('resize', onWindowChange)
   window.addEventListener('scroll', onWindowChange, true)
   void refreshOpsMenu()
+  void checkActivationStatus()
   stopMaintainWatch = onMaintainAvailabilityChange(() => {
     void refreshOpsMenu()
   })
@@ -75,10 +76,26 @@ const isSuperAdmin = computed(() => checkSuperAdmin())
 const isPlatformOps = computed(() => checkPlatformOps())
 const isTenantPortal = computed(() => !isPlatformOps.value)
 
+const isActivated = ref(false)
+
+// 检查激活状态
+async function checkActivationStatus() {
+  try {
+    const resp = await fetch('/api/system/bootstrap/status')
+    if (resp.ok) {
+      const data = await resp.json()
+      isActivated.value = data.activated === true
+    }
+  } catch {
+    // 忽略错误，默认未激活
+  }
+}
+
 const navPrimaryItems = computed(() => visibleNavItems(NAV_PRIMARY_ITEMS, {
   isSuperAdmin: isSuperAdmin.value,
   isPlatformOps: isPlatformOps.value,
   isTenantPortal: isTenantPortal.value,
+  isActivated: isActivated.value,
 }))
 
 const opsMenuOverrides = ref<OpsMenuGroup[] | null>(null)
@@ -114,6 +131,7 @@ const navGroups = computed(() => {
     isSuperAdmin: isSuperAdmin.value,
     isPlatformOps: isPlatformOps.value,
     isTenantPortal: isTenantPortal.value,
+    isActivated: isActivated.value,
   })
   if (!opsMenuOverrides.value) return local
   return mergeRemoteOps(local, opsMenuOverrides.value)

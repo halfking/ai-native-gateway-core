@@ -48,6 +48,8 @@ const canActivate = computed(
   () => !!deviceName.value.trim() && !!instanceId.value.trim() && !!hardwareHash.value,
 )
 
+const isActivated = computed(() => status.value?.activated === true)
+
 function readDeviceName(): string {
   try {
     return localStorage.getItem(DEVICE_NAME_KEY) || ''
@@ -287,6 +289,7 @@ onMounted(async () => {
         :status="upgrade"
         :loading="upgrading"
         :checking="checkingUpgrade"
+        :activated="isActivated"
         @check="onCheckUpgrade"
         @upgrade="onUpgrade"
       />
