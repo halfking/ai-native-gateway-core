@@ -9,9 +9,11 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"log/slog"
@@ -42,10 +44,29 @@ func (m *gatewayMigrator) Migrate(ctx context.Context) error {
 		return fmt.Errorf("gateway binary not configured")
 	}
 	cmd := exec.CommandContext(ctx, m.binary, "migrate")
-	cmd.Env = append(os.Environ())
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		return fmt.Errorf("gateway migrate: %w; output: %s", err, out)
+	cmd.Env = os.Environ()
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("gateway migrate: %w; stderr: %s", err, stderr.String())
+	}
+	// Audit I4: detect silent noop-when-no-DB. The migrate subcommand
+	// returns exit 0 with status=noop even when DATABASE_URL is unset, so
+	// without this check Prepare would succeed without running any
+	// migrations, green would start DB-less, and the health gate would
+	// pass (Gateway's /healthz doesn't check DB).
+	var report struct {
+		Status string `json:"status"`
+		HasDB  bool   `json:"has_db"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &report); err == nil {
+		if report.Status == "noop" && !report.HasDB {
+			slog.Warn("gateway migrate was a no-op with no DB configured — "+
+				"check DATABASE_URL/LLM_GATEWAY_DATABASE_URL in the launcher's env "+
+				"(green will start without schema and /healthz won't catch it)",
+				"binary", m.binary)
+		}
 	}
 	return nil
 }
@@ -54,6 +75,7 @@ func (m *gatewayMigrator) Migrate(ctx context.Context) error {
 type proxySwitcher struct{ p *proxy.Proxy }
 
 func (s *proxySwitcher) SwitchActive(addr string) { s.p.SwitchActive(addr) }
+func (s *proxySwitcher) ActiveAddr() string       { return s.p.ActiveAddr() }
 
 // daemon holds the long-lived state wired across components.
 type daemon struct {
@@ -76,6 +98,21 @@ func (d *daemon) getCurrentPlan() string {
 	d.currentPlanMu.Lock()
 	defer d.currentPlanMu.Unlock()
 	return d.currentPlanID
+}
+
+// currentPlanState returns the state of the current plan, or "" if none.
+// (audit M1: StatusProvider never populated PlanState, so the UI's "Plan
+// 状态" always showed "无" even when a plan was active.)
+func (d *daemon) currentPlanState() string {
+	id := d.getCurrentPlan()
+	if id == "" {
+		return ""
+	}
+	p, err := d.store.Load(id)
+	if err != nil {
+		return ""
+	}
+	return p.State
 }
 
 // terminalStates are states where a plan is finished (success or settled
@@ -165,7 +202,7 @@ func main() {
 	// Backend (compose only for MVP).
 	bk := backend.NewComposeBackend(backend.ComposeConfig{
 		ProjectDir: filepath.Join(*dataDir, "compose"),
-		GreenPort:  8783,
+		GreenPortBase: 8783,
 		// EnvFile lets the green container inherit DATABASE_URL/REDIS/secrets
 		// from the same env file blue uses. Without it, green starts with no
 		// DB and /healthz still returns 200 (C2).
@@ -178,9 +215,6 @@ func main() {
 		Backend:        bk,
 		Migrator:       &gatewayMigrator{binary: *gwBinary},
 		ActiveSwitcher: &proxySwitcher{p: d.proxy},
-		GatewayBinary:  *gwBinary,
-		CurrentVersion: d.currentVersion,
-		CurrentAddr:    activeAddr,
 	})
 
 	// Generate token on first run; reuse on subsequent.
@@ -199,6 +233,7 @@ func main() {
 				ActiveVersion: d.currentVersion,
 				HasPlan:       d.getCurrentPlan() != "",
 				PlanID:        d.getCurrentPlan(),
+				PlanState:     d.currentPlanState(),
 			}
 		},
 		PlanProvider: func() *store.Plan {
@@ -209,16 +244,18 @@ func main() {
 			p, _ := d.store.Load(id)
 			return p
 		},
-		// Manual check is a no-op for MVP — checker runs in background.
-		// Operator can wait for the next poll or restart daemon to force.
-		CheckFunc: func() error { slog.Info("manual check requested (background loop will pick up)"); return nil },
-		PrepareFunc: func(planID string) (*store.Plan, error) {
-			// Load the existing NOTIFIED plan to get current/target.
-			plan, err := d.store.Load(planID)
-			if err != nil {
-				return nil, fmt.Errorf("load plan %s: %w", planID, err)
+		// Manual check triggers an immediate poll (audit I1: was a no-op).
+		CheckFunc: func() error {
+			if !d.checker.CheckNow() {
+				return fmt.Errorf("checker not running")
 			}
-			updated, err := d.orch.Prepare(context.Background(), plan.Current, plan.Target)
+			slog.Info("manual check triggered")
+			return nil
+		},
+		PrepareFunc: func(planID string) (*store.Plan, error) {
+			// orchestrator.Prepare loads the NOTIFIED plan by ID and
+			// transitions it in place (audit C4: no more orphaned plans).
+			updated, err := d.orch.Prepare(context.Background(), planID)
 			if err != nil {
 				slog.Warn("prepare failed", "plan", planID, "err", err)
 				return updated, err

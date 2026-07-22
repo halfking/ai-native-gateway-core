@@ -25,9 +25,15 @@ type Migrator interface {
 	Migrate(ctx context.Context) error
 }
 
-// ActiveSwitcher abstracts proxy.SwitchActive.
+// ActiveSwitcher abstracts the proxy's active-target management.
+// Apply uses SwitchActive to redirect traffic; Prepare uses ActiveAddr
+// to read the *current* live target as BlueAddr (audit I7: previously
+// CurrentAddr was frozen at orchestrator construction, so a second
+// Prepare within one daemon lifetime would set BlueAddr to the
+// original blue even though traffic was on green after an Apply).
 type ActiveSwitcher interface {
 	SwitchActive(addr string)
+	ActiveAddr() string
 }
 
 // Config configures the orchestrator.
@@ -36,9 +42,6 @@ type Config struct {
 	Backend        backend.Backend
 	Migrator       Migrator
 	ActiveSwitcher ActiveSwitcher
-	GatewayBinary  string // systemd backend uses (compose ignores)
-	CurrentVersion string
-	CurrentAddr    string
 	HealthRetries  int           // spec: 5
 	HealthInterval time.Duration // spec: 1s
 	RetainDuration time.Duration // spec: 1h (blue retained post-drain)
@@ -82,25 +85,39 @@ func (o *Orchestrator) Stop() {
 	close(o.done)
 }
 
-// Prepare runs: Stage green → Migrate → Health gate → PREPARED.
+// Prepare transitions an existing NOTIFIED plan through PREPARING → PREPARED.
+// Steps: Stage green → Migrate → Health gate.
 // On any failure: cleans up green, plan marked FAILED.
-func (o *Orchestrator) Prepare(ctx context.Context, current, target store.Release) (*store.Plan, error) {
+//
+// Audit C4: previously Prepare took (current, target) and constructed a
+// brand-new plan, orphaning the NOTIFIED plan in the store. Now it loads
+// the existing plan by ID and transitions it in place — matching the
+// spec state machine (NOTIFIED → PREPARING → PREPARED on one object).
+//
+// Audit I7: BlueAddr is read live from ActiveSwitcher rather than a
+// Config.CurrentAddr frozen at construction, so a second Prepare within
+// one daemon lifetime correctly treats the current active as blue.
+func (o *Orchestrator) Prepare(ctx context.Context, planID string) (*store.Plan, error) {
 	o.opMu.Lock()
 	defer o.opMu.Unlock()
-	plan := &store.Plan{
-		ID:         newPlanID(),
-		CreatedAt:  time.Now().UTC(),
-		State:      store.StatePreparing,
-		Current:    current,
-		Target:     target,
-		BlueAddr:   o.cfg.CurrentAddr,
-		ActiveAddr: o.cfg.CurrentAddr,
-		History:    []store.StateEvent{{State: store.StatePreparing, At: time.Now().UTC()}},
+	plan, err := o.cfg.Store.Load(planID)
+	if err != nil {
+		return nil, fmt.Errorf("load plan %s: %w", planID, err)
 	}
+	if plan.State != store.StateNotified && plan.State != store.StateFailed {
+		return plan, fmt.Errorf("prepare: plan must be NOTIFIED or FAILED (got %s)", plan.State)
+	}
+	// Snapshot the live active addr as BlueAddr for this cycle.
+	blueAddr := o.cfg.ActiveSwitcher.ActiveAddr()
+	plan.BlueAddr = blueAddr
+	plan.ActiveAddr = blueAddr
+	plan.State = store.StatePreparing
+	plan.Error = ""
+	plan.History = append(plan.History, store.StateEvent{State: store.StatePreparing, At: time.Now().UTC()})
 	o.save(plan)
 
 	// 1. Stage green
-	greenAddr, err := o.cfg.Backend.Stage(ctx, toBackendRelease(target))
+	greenAddr, err := o.cfg.Backend.Stage(ctx, toBackendRelease(plan.Target))
 	if err != nil {
 		o.fail(plan, fmt.Sprintf("stage: %v", err))
 		return plan, fmt.Errorf("stage: %w", err)
@@ -165,6 +182,7 @@ func (o *Orchestrator) Apply(ctx context.Context, planID string) error {
 
 	plan.State = store.StateDone
 	plan.History = append(plan.History, store.StateEvent{State: store.StateDone, At: time.Now().UTC()})
+	plan.Audit = appendAudit(plan.Audit, store.AuditEntry{Action: "apply", At: time.Now().UTC()})
 	o.save(plan)
 
 	// Schedule retained remove of blue (spec: 1h after drain).
@@ -183,8 +201,12 @@ func (o *Orchestrator) Rollback(ctx context.Context, planID string) error {
 	if err != nil {
 		return err
 	}
-	if plan.State != store.StateDone && plan.State != store.StateFailed {
-		return fmt.Errorf("rollback only valid for DONE/FAILED plans (state=%s)", plan.State)
+	// Allowed states:
+	//   PREPARED — cancel a staged green without applying (audit I6).
+	//   DONE/FAILED — revert traffic to blue + remove green/retained.
+	// NOTIFIED/PREPARING have no usable green to clean, so reject.
+	if plan.State != store.StateDone && plan.State != store.StateFailed && plan.State != store.StatePrepared {
+		return fmt.Errorf("rollback only valid for PREPARED/DONE/FAILED plans (state=%s)", plan.State)
 	}
 	// Cancel any pending retained-remove so it doesn't kill blue after
 	// we switch back to it (I5).
@@ -195,6 +217,7 @@ func (o *Orchestrator) Rollback(ctx context.Context, planID string) error {
 	o.persistActive(plan.BlueAddr, plan.Current.Version)
 	plan.State = store.StateRolledBack
 	plan.History = append(plan.History, store.StateEvent{State: store.StateRolledBack, At: time.Now().UTC()})
+	plan.Audit = appendAudit(plan.Audit, store.AuditEntry{Action: "rollback", At: time.Now().UTC()})
 	o.save(plan)
 	if plan.GreenAddr != "" {
 		o.cfg.Backend.Remove(ctx, plan.GreenAddr)
@@ -290,6 +313,13 @@ func (o *Orchestrator) cancelRetainedRemove(planID string) {
 	}
 }
 
+// appendAudit returns the slice with entry appended, allocating if nil.
+// (Audit entries record who/when/what per spec §8.3 — audit I3: previously
+// store.AuditEntry existed but was never populated.)
+func appendAudit(entries []store.AuditEntry, entry store.AuditEntry) []store.AuditEntry {
+	return append(entries, entry)
+}
+
 func toBackendRelease(r store.Release) backend.Release {
 	return backend.Release{
 		Version:     r.Version,
@@ -297,8 +327,4 @@ func toBackendRelease(r store.Release) backend.Release {
 		DownloadURL: r.DownloadURL,
 		SHA256:      r.SHA256,
 	}
-}
-
-func newPlanID() string {
-	return fmt.Sprintf("plan-%d", time.Now().UnixNano())
 }

@@ -15,8 +15,10 @@
 package api
 
 import (
+	"crypto/subtle"
 	"encoding/json"
 	"net/http"
+	"regexp"
 	"strings"
 
 	"github.com/kaixuan/llm-gateway-go/installer/internal/launcher/store"
@@ -74,7 +76,9 @@ func (a *API) checkToken(r *http.Request) bool {
 	if expected == "" {
 		return true // auth disabled
 	}
-	return r.Header.Get("X-Launcher-Token") == expected
+	// Constant-time compare to avoid timing side-channels (audit I8).
+	got := r.Header.Get("X-Launcher-Token")
+	return subtle.ConstantTimeCompare([]byte(got), []byte(expected)) == 1
 }
 
 func (a *API) serveAPI(w http.ResponseWriter, r *http.Request) {
@@ -107,6 +111,10 @@ func (a *API) serveAPI(w http.ResponseWriter, r *http.Request) {
 
 	case strings.HasSuffix(r.URL.Path, "/prepare") && r.Method == http.MethodPost:
 		planID := extractPlanID(r.URL.Path, "/prepare")
+		if !validPlanID(planID) {
+			writeErr(w, http.StatusBadRequest, "invalid or missing plan id")
+			return
+		}
 		if a.cfg.PrepareFunc == nil {
 			writeErr(w, http.StatusNotImplemented, "prepare not configured")
 			return
@@ -120,6 +128,10 @@ func (a *API) serveAPI(w http.ResponseWriter, r *http.Request) {
 
 	case strings.HasSuffix(r.URL.Path, "/apply") && r.Method == http.MethodPost:
 		planID := extractPlanID(r.URL.Path, "/apply")
+		if !validPlanID(planID) {
+			writeErr(w, http.StatusBadRequest, "invalid or missing plan id")
+			return
+		}
 		var body struct {
 			Confirm bool `json:"confirm"`
 		}
@@ -150,6 +162,10 @@ func (a *API) serveAPI(w http.ResponseWriter, r *http.Request) {
 
 	case strings.HasSuffix(r.URL.Path, "/rollback") && r.Method == http.MethodPost:
 		planID := extractPlanID(r.URL.Path, "/rollback")
+		if !validPlanID(planID) {
+			writeErr(w, http.StatusBadRequest, "invalid or missing plan id")
+			return
+		}
 		if a.cfg.RollbackFunc == nil {
 			writeErr(w, http.StatusNotImplemented, "rollback not configured")
 			return
@@ -164,6 +180,18 @@ func (a *API) serveAPI(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusNotFound, "not found")
 	}
 }
+
+// validPlanID rejects malformed/empty plan IDs (audit M5: previously
+// /launcher/api/plan/apply parsed planID="apply"). Daemon-generated IDs
+// are "plan-<unixnano>", so allow that shape.
+func validPlanID(id string) bool {
+	if id == "" || len(id) > 128 {
+		return false
+	}
+	return planIDRegex.MatchString(id)
+}
+
+var planIDRegex = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9._-]*$`)
 
 // extractPlanID parses /launcher/api/plan/<id>/{apply,rollback,prepare} → <id>.
 func extractPlanID(path, suffix string) string {
