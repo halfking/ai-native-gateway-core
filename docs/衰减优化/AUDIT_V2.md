@@ -1,8 +1,8 @@
 # 衰减优化方案二次审计报告 (AUDIT_V2)
 
-> **审计日期**: 2026-07-18  
-> **审计类型**: 独立二次审计（批判性复核）  
-> **审计范围**: 初版方案的参数配置、实施风险、遗漏点、代码可行性、监控指标  
+> **审计日期**: 2026-07-18
+> **审计类型**: 独立二次审计（批判性复核）
+> **审计范围**: 初版方案的参数配置、实施风险、遗漏点、代码可行性、监控指标
 > **审计结论**: 发现 🔴 7个严重问题、🟡 5个中等问题、🟢 3个轻微问题
 
 ---
@@ -192,7 +192,7 @@ func testPusher(c echo.Context) error {
 
 ```go
 // domains/streaming/relay.go
-c.Response().Header().Set("Link", 
+c.Response().Header().Set("Link",
     "</models/"+modelID+">; rel=preload; as=fetch")
 ```
 
@@ -296,8 +296,8 @@ go build -o bin/gateway cmd/gateway/main.go
 
 echo "=== Step 3: 回滚数据库配置 ==="
 psql "$DATABASE_URL" <<SQL
-UPDATE llm_gateway_config 
-SET value = '100' 
+UPDATE llm_gateway_config
+SET value = '100'
 WHERE key = 'http2_max_concurrent_streams';  -- 恢复默认值
 
 UPDATE llm_gateway_config
@@ -482,7 +482,7 @@ AUDIT.md 提出参数调优建议（64→256连接），但未量化：
 
 MaxIdleConnsPerHost=16:
   空闲峰值 = 16 × 6KB × 10 identities = 960KB
-  
+
 MaxIdleConnsPerHost=64:
   空闲峰值 = 64 × 6KB × 10 identities = 3.75MB
   增量 = 2.8MB (per 10 identities)

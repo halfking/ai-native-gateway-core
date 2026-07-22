@@ -1,9 +1,9 @@
 # 凭据 × 路由节点 × 模型 × 请求 — 状态机与决策树综合审计报告 v2.0
 
-**审计日期**: 2026-07-05  
-**审计版本**: v2.0（增量更新，基于 2026-07-04 v1.0）  
-**审计人**: AI Agent（静态代码分析 + 决策树构建 + 状态转换验证）  
-**审计范围**: 全量扫描 llm-gateway-go 核心路由与状态管理模块  
+**审计日期**: 2026-07-05
+**审计版本**: v2.0（增量更新，基于 2026-07-04 v1.0）
+**审计人**: AI Agent（静态代码分析 + 决策树构建 + 状态转换验证）
+**审计范围**: 全量扫描 llm-gateway-go 核心路由与状态管理模块
 **基线**: commit 4fbdba07（V15-V20 修复已应用）
 
 ---
@@ -14,14 +14,14 @@
 
 **✅ 已修复漏洞（V15-V20）**: 6 个高危漏洞已在 2026-07-04~07-05 修复并合并到 main：
 - **V15**: Pool Dead 终态恢复机制 ✅
-- **V16**: Pool Dead → Draining 优雅降级 ✅  
+- **V16**: Pool Dead → Draining 优雅降级 ✅
 - **V17**: Live filter 静默失败可观测性 ✅
 - **V18**: Session task-drift 检测（HitCount ≥ 50 强制重分类）✅
 - **V20**: 并发 Slot 竞态保护 ✅
 
 **🔴 新发现漏洞（V21-V27）**: 7 个新漏洞，其中 **4 个 HIGH**，**3 个 MEDIUM**
 
-**⚠️ 架构性问题**: 
+**⚠️ 架构性问题**:
 - **7 个独立状态源**并存，无单一真相源
 - **URSM 迁移未完成**：新架构已定义但未启用
 - **跨进程状态同步**依赖 30s 缓存 TTL + Redis 手动失效
@@ -104,7 +104,7 @@ llm-gateway-go 在 4 个维度上管理状态，每个维度有多个独立的�
     └─ [enrich] enrichWithAPIKeys (Fernet/AES-GCM 解密)
 ```
 
-**漏洞位置**: `provider/client.go:334-379` — 缓存键 30s，单进程内，不会跨进程失效  
+**漏洞位置**: `provider/client.go:334-379` — 缓存键 30s，单进程内，不会跨进程失效
 **说明**: tenantID 透传到 `loadCandidatesDB` 的 SQL WHERE，V_routable 视图硬编码 `'default'`（V25 漏洞）
 
 ### DT-2: resolveModelDB — 4 段决策树
@@ -164,8 +164,8 @@ llm-gateway-go 在 4 个维度上管理状态，每个维度有多个独立的�
     └─ else → "" (routable)
 ```
 
-**V25 漏洞**: 5 阶段判定采用短路求值，首个命中的理由被返回，丢失后续原因  
-**影响**: 调试困难，无法看到完整故障链  
+**V25 漏洞**: 5 阶段判定采用短路求值，首个命中的理由被返回，丢失后续原因
+**影响**: 调试困难，无法看到完整故障链
 **修复**: 改为累积多原因，返回 `"routing_blocked; quota:exhausted; circuit:open"`
 
 ### DT-4: Decider.Decide / DecideV2 — 路由决策
@@ -284,7 +284,7 @@ llm-gateway-go 在 4 个维度上管理状态，每个维度有多个独立的�
     └─ 重要: V22 漏洞 - URSM 已定义但 main.go 中未实例化
 ```
 
-**V22 漏洞位置**: `cmd/gateway/main.go` 未实例化 `routingExec.URSM`  
+**V22 漏洞位置**: `cmd/gateway/main.go` 未实例化 `routingExec.URSM`
 **影响**: 6 个旧状态源仍在运行，无单一真相源
 
 ### DT-7: Executor.Execute — 单请求候选遍历
@@ -338,8 +338,8 @@ llm-gateway-go 在 4 个维度上管理状态，每个维度有多个独立的�
     └─ [5] return ExecuteError{Tried, Exhausted=true}
 ```
 
-**V23 漏洞位置**: `executor.go:1221, 1248, 1375` + `executor.go:2648-2674`  
-**问题**: `shouldWriteCredentialStateOnConfirmedFailure()` 只在Circuit OPEN/QUARANTINED时写DB  
+**V23 漏洞位置**: `executor.go:1221, 1248, 1375` + `executor.go:2648-2674`
+**问题**: `shouldWriteCredentialStateOnConfirmedFailure()` 只在Circuit OPEN/QUARANTINED时写DB
 **影响**: 单次Auth/Quota失败 → Circuit CLOSED → 不写DB → 其他实例看不到，需等3次失败才传播
 
 ---
@@ -353,8 +353,8 @@ llm-gateway-go 在 4 个维度上管理状态，每个维度有多个独立的�
 | `enabled` | `providers.enabled` (DB) | admin/sync | true ↔ false |
 | `manual_disabled` | `providers.manual_disabled` (DB) | admin | true ↔ false |
 
-**读侧**: `v_routable_credential_models` 视图 / URSM `ProviderState.IsAvailable`  
-**写侧**: admin UI / sync job / SQL 直写  
+**读侧**: `v_routable_credential_models` 视图 / URSM `ProviderState.IsAvailable`
+**写侧**: admin UI / sync job / SQL 直写
 **循环**: 单调：admin toggle 即可 → 没有自动恢复
 
 ### L2: Credential（7 个并行状态机）
@@ -820,6 +820,6 @@ func recordLiveFilterFailure(poolConfigured bool, err error) {
 
 ---
 
-**审计人**: AI Agent  
-**审计版本**: v2.0 @ 2026-07-05  
+**审计人**: AI Agent
+**审计版本**: v2.0 @ 2026-07-05
 **基于**: v1.0 (2026-07-04) + V15-V20 修复验证 + V21-V27 新发现

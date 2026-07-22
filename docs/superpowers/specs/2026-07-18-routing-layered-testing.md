@@ -1,7 +1,7 @@
 # LLM Gateway 路由系统分层测试策略
 
-**日期**: 2026-07-18  
-**关联**: `2026-07-18-routing-diagnosis.md`  
+**日期**: 2026-07-18
+**关联**: `2026-07-18-routing-diagnosis.md`
 **目标**: 通过分层测试验证路由系统的正确性、稳定性和效率
 
 ---
@@ -13,10 +13,10 @@
 ```
 Layer 1: 直连测试 (Bypass Routing)
     ↓ 验证: 供应商连通性 + 请求格式
-    
+
 Layer 2: 单组件测试 (Isolated Components)
     ↓ 验证: Sticky/Compression/Detection 独立功能
-    
+
 Layer 3: 集成测试 (Full Pipeline)
     ↓ 验证: 端到端路由正确性
 ```
@@ -451,7 +451,7 @@ export LLM_GATEWAY_ENABLE_CACHE=true
 
 #### T3.1.2: 候选过滤 - 自动跳过故障凭据
 
-**前置条件**: 
+**前置条件**:
 - C1: available
 - C2: cooling (5min 冷却)
 - C3: disabled
@@ -464,7 +464,7 @@ export LLM_GATEWAY_ENABLE_CACHE=true
 
 #### T3.1.3: 降级模式 - 单候选 FpSlot 饱和
 
-**前置条件**: 
+**前置条件**:
 - 只有 C1 可用
 - C1 的 FpSlotLimit=10，已有 10 个并发
 
@@ -628,10 +628,10 @@ source tests/lib/assert.sh
 # T1.1: OpenAI 直连测试
 test_openai_direct_chat() {
     echo "Running T1.1: OpenAI Direct Chat..."
-    
+
     export LLM_GATEWAY_BYPASS_ROUTING=true
     export LLM_GATEWAY_FORCE_CREDENTIAL_ID=123
-    
+
     response=$(curl -s -X POST http://localhost:8080/v1/chat/completions \
         -H "Authorization: Bearer $API_KEY" \
         -H "Content-Type: application/json" \
@@ -639,12 +639,12 @@ test_openai_direct_chat() {
             "model": "gpt-4",
             "messages": [{"role": "user", "content": "Hello"}]
         }')
-    
+
     assert_http_status 200
     assert_json_field_exists "$response" ".id"
     assert_json_field_exists "$response" ".choices"
     assert_log_contains "credential_id=123"
-    
+
     echo "✅ T1.1 PASSED"
 }
 
@@ -668,7 +668,7 @@ import (
 // StartMockOpenAI starts a mock OpenAI server
 func StartMockOpenAI() *httptest.Server {
     mux := http.NewServeMux()
-    
+
     mux.HandleFunc("/v1/chat/completions", func(w http.ResponseWriter, r *http.Request) {
         w.Header().Set("Content-Type", "application/json")
         w.WriteHeader(http.StatusOK)
@@ -682,7 +682,7 @@ func StartMockOpenAI() *httptest.Server {
             "usage": {"prompt_tokens": 10, "completion_tokens": 5}
         }`))
     })
-    
+
     return httptest.NewServer(mux)
 }
 ```

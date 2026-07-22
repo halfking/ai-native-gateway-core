@@ -114,7 +114,7 @@ curl -X POST 'http://localhost:__PORT_3__/v1/chat/completions' \
 ```sql
 -- 创建测试审批记录
 INSERT INTO approval_queue (
-    approval_id, tenant_id, session_id, request_id, 
+    approval_id, tenant_id, session_id, request_id,
     detect_result, snapshot, status, created_at, expires_at
 ) VALUES (
     'test_approval_' || gen_random_uuid(),
@@ -189,8 +189,8 @@ SELECT * FROM approval_routing_rules WHERE enabled = true;
 
 ```sql
 -- 查看发送日志
-SELECT * FROM notification_send_log 
-WHERE approval_id = 'appr_xxx' 
+SELECT * FROM notification_send_log
+WHERE approval_id = 'appr_xxx'
 ORDER BY created_at DESC LIMIT 1;
 ```
 

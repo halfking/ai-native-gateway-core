@@ -94,7 +94,7 @@ curl -X POST http://localhost:__PORT_3__/v1/chat/completions \
    ```bash
    docker logs llm-gateway-go | grep "model discovery" | tail -5
    ```
-   
+
    如果看到 `"models":0`，说明模型发现失败。
 
 2. **检查数据库架构**
@@ -106,7 +106,7 @@ curl -X POST http://localhost:__PORT_3__/v1/chat/completions \
 
 3. **检查可用凭据**
    ```sql
-   SELECT 
+   SELECT
        c.id,
        c.label,
        c.plan_type,
@@ -120,7 +120,7 @@ curl -X POST http://localhost:__PORT_3__/v1/chat/completions \
 
 4. **检查具体模型**
    ```sql
-   SELECT 
+   SELECT
        c.label,
        pm.raw_model_name,
        cmb.available,
@@ -141,7 +141,7 @@ curl -X POST http://localhost:__PORT_3__/v1/chat/completions \
 
 1. **检查计费模式一致性**
    ```sql
-   SELECT 
+   SELECT
        c.plan_type,
        cmb.billing_mode,
        COUNT(*) as count
@@ -152,7 +152,7 @@ curl -X POST http://localhost:__PORT_3__/v1/chat/completions \
 
 2. **查找不一致数据**
    ```sql
-   SELECT 
+   SELECT
        c.id,
        c.label,
        c.plan_type,
@@ -161,7 +161,7 @@ curl -X POST http://localhost:__PORT_3__/v1/chat/completions \
    FROM credentials c
    JOIN credential_model_bindings cmb ON cmb.credential_id = c.id
    WHERE (c.plan_type = 'token' AND cmb.billing_mode != 'per_token')
-      OR (c.plan_type IN ('token_plan','code_plan','agent_plan') 
+      OR (c.plan_type IN ('token_plan','code_plan','agent_plan')
           AND cmb.billing_mode NOT IN ('token_plan','code_plan','agent_plan'))
    GROUP BY c.id, c.label, c.plan_type, cmb.billing_mode;
    ```
@@ -181,7 +181,7 @@ curl -X POST http://localhost:__PORT_3__/v1/chat/completions \
 
 1. **查看凭据状态**
    ```sql
-   SELECT 
+   SELECT
        id,
        label,
        plan_type,
@@ -195,7 +195,7 @@ curl -X POST http://localhost:__PORT_3__/v1/chat/completions \
 
 2. **查看失败历史**
    ```sql
-   SELECT 
+   SELECT
        model,
        error_kind,
        COUNT(*) as failure_count
@@ -224,7 +224,7 @@ curl -X POST http://localhost:__PORT_3__/v1/chat/completions \
 
 ```sql
 -- 1. 凭据和模型统计
-SELECT 
+SELECT
     c.plan_type,
     COUNT(DISTINCT c.id) as credential_count,
     COUNT(cmb.id) as total_bindings,
@@ -235,7 +235,7 @@ WHERE c.status = 'active'
 GROUP BY c.plan_type;
 
 -- 2. 最近 1 小时的请求统计
-SELECT 
+SELECT
     DATE_TRUNC('minute', created_at) as minute,
     status,
     COUNT(*) as request_count
@@ -246,7 +246,7 @@ ORDER BY minute DESC
 LIMIT 60;
 
 -- 3. 错误类型分布
-SELECT 
+SELECT
     error_kind,
     COUNT(*) as count
 FROM request_logs
@@ -256,7 +256,7 @@ GROUP BY error_kind
 ORDER BY count DESC;
 
 -- 4. 热门模型
-SELECT 
+SELECT
     client_model,
     COUNT(*) as request_count,
     AVG(duration_ms) as avg_duration_ms
@@ -308,7 +308,7 @@ docker logs llm-gateway-go -f 2>&1 | grep "request"
 ### 1. 检查数据库性能
 ```sql
 -- 慢查询
-SELECT 
+SELECT
     query,
     mean_exec_time,
     calls
@@ -394,5 +394,5 @@ UPDATE credentials SET updated_at = NOW() WHERE id > 0;
 
 ---
 
-**最后更新：** 2026-07-03  
+**最后更新：** 2026-07-03
 **维护者：** AI 运维团队

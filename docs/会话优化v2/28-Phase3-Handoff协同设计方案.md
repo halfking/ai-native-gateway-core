@@ -1,8 +1,8 @@
 # Phase 3 设计方案：Goal 模式与 Handoff 协同
 
-> **版本**: v1.0  
-> **状态**: 设计阶段  
-> **创建日期**: 2026-07-19  
+> **版本**: v1.0
+> **状态**: 设计阶段
+> **创建日期**: 2026-07-19
 > **实施状态**: 待实施（Handoff 需先修复）
 
 ---
@@ -117,7 +117,7 @@ Goal 模式需要 Handoff 提供：
 type ContextMonitor interface {
     // ShouldHandoff 检查是否应触发 handoff
     ShouldHandoff(tokensUsed, contextWindow int) (bool, string)
-    
+
     // GetHandoffThreshold 获取 handoff 阈值（按 cost_mode）
     GetHandoffThreshold(costMode string) HandoffThreshold
 }
@@ -140,17 +140,17 @@ type HandoffThreshold struct {
 ```go
 func (m *ContextMonitor) ShouldHandoff(tokensUsed, contextWindow int) (bool, string) {
     threshold := m.GetHandoffThreshold(m.costMode)
-    
+
     // 检查绝对阈值
     if tokensUsed >= threshold.AbsoluteTokens {
         return true, fmt.Sprintf("absolute_threshold:%d", threshold.AbsoluteTokens)
     }
-    
+
     // 检查百分比阈值
     if float64(tokensUsed) / float64(contextWindow) >= threshold.Percentage {
         return true, fmt.Sprintf("percentage_threshold:%.0f%%", threshold.Percentage*100)
     }
-    
+
     return false, ""
 }
 ```
@@ -168,22 +168,22 @@ func (m *ContextMonitor) ShouldHandoff(tokensUsed, contextWindow int) (bool, str
 type GoalState struct {
     // 配置
     CostMode string `json:"cost_mode"`
-    
+
     // 执行统计
     RetryCount      int `json:"retry_count"`
     ContinueCount   int `json:"continue_count"`
     LoopDetections  int `json:"loop_detections"`
     ModelSwitches   int `json:"model_switches"`
-    
+
     // 审计历史
     AuditCount      int `json:"audit_count"`
     FixCount        int `json:"fix_count"`
-    
+
     // 上下文信息
     TokensUsed      int    `json:"tokens_used"`
     MessageCount    int    `json:"message_count"`
     LastModel       string `json:"last_model"`
-    
+
     // 任务上下文
     TaskDescription string   `json:"task_description"`
     CompletedSteps  []string `json:"completed_steps"`
@@ -196,7 +196,7 @@ type GoalState struct {
 type GoalStateSerializer interface {
     // Serialize 序列化当前 Goal 状态
     Serialize(ctx context.Context, sessionID string) (*GoalState, error)
-    
+
     // Deserialize 反序列化并恢复 Goal 状态
     Deserialize(ctx context.Context, state *GoalState) error
 }
@@ -232,19 +232,19 @@ func (t *HandoffTrigger) CheckAndTrigger(ctx context.Context, req *InterceptRequ
     if !shouldHandoff {
         return nil
     }
-    
+
     // 2. 序列化 Goal 状态
     goalState, err := t.serializer.Serialize(ctx, req.SessionID)
     if err != nil {
         return err
     }
-    
+
     // 3. 构建 Handoff 消息
     handoffMsg := t.buildHandoffMessage(goalState)
-    
+
     // 4. 记录 handoff 日志
     err = t.recordHandoff(ctx, req.SessionID, goalState, reason)
-    
+
     // 5. 返回 Handoff 指令
     return &HandoffInstruction{
         TriggerReason: reason,
@@ -319,7 +319,7 @@ type ModeHook struct {
     completionDetector *CompletionDetector
     auditHook          *AuditHook
     historyStore       *HistoryStore
-    
+
     // 新增组件（Phase 3）
     contextMonitor     *ContextMonitor     // 上下文监控
     handoffTrigger     *HandoffTrigger     // Handoff 触发器
@@ -329,7 +329,7 @@ type ModeHook struct {
 func (h *ModeHook) InterceptResponse(ctx context.Context, req *InterceptRequest) error {
     // 1. 现有逻辑：完成检测 + 审计
     // ...
-    
+
     // 2. 新增：上下文监控（Phase 3）
     if h.handoffTrigger != nil {
         err := h.handoffTrigger.CheckAndTrigger(ctx, req)
@@ -338,7 +338,7 @@ func (h *ModeHook) InterceptResponse(ctx context.Context, req *InterceptRequest)
             return err
         }
     }
-    
+
     return nil
 }
 ```
@@ -413,7 +413,7 @@ query := `
 ```go
 type ModePreset struct {
     // ... 现有字段
-    
+
     // Phase 3: Handoff
     HandoffEnabled       bool
     HandoffTokenPercent  float64
@@ -426,13 +426,13 @@ var ModePresets = map[CostMode]ModePreset{
         // ... 现有配置
         HandoffEnabled:      false, // minimal 不启用
     },
-    
+
     CostModeBalanced: {
         // ... 现有配置
         HandoffEnabled:      true,  // balanced 启用
         HandoffTokenPercent: 0.85,
     },
-    
+
     CostModeAggressive: {
         // ... 现有配置
         HandoffEnabled:      true,  // aggressive 启用
@@ -725,6 +725,6 @@ GoalStateSerializer 反序列化状态
 
 ---
 
-**最后更新**: 2026-07-19  
-**状态**: 设计完成，待实施  
+**最后更新**: 2026-07-19
+**状态**: 设计完成，待实施
 **下一步**: 修复 Handoff 基础功能（Phase 3.1）

@@ -385,7 +385,7 @@ spec:
           limits:
             cpu: 2000m
             memory: 2Gi
-      
+
       # Sidecar: 心跳代理（聚合 5 分钟心跳）
       - name: heartbeat-agent
         image: registry.cn-hangzhou.aliyuncs.com/kaixuan/kx-heartbeat-agent:v1.0.0
@@ -408,7 +408,7 @@ spec:
           limits:
             cpu: 100m
             memory: 128Mi
-      
+
       volumes:
       - name: config
         configMap:
@@ -552,7 +552,7 @@ systemctl restart kx-gateway.service
 
 **现象**: 启动时报 `License verification failed`
 
-**原因**: 
+**原因**:
 - license.dat 文件不存在
 - license.dat 签名无效
 - License 已过期

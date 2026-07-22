@@ -1,9 +1,9 @@
 # LLM Gateway 模型路由问题诊断与修复报告
 
-**日期：** 2026-07-03  
-**报告人：** AI 运维团队  
-**问题编号：** LLMGW-2026-07-03-001  
-**严重程度：** P0 - 核心功能完全不可用  
+**日期：** 2026-07-03
+**报告人：** AI 运维团队
+**问题编号：** LLMGW-2026-07-03-001
+**严重程度：** P0 - 核心功能完全不可用
 
 ---
 
@@ -48,8 +48,8 @@
 
 **问题 1：缺少 `credentials.plan_type` 列**
 
-代码版本：使用了新的计费模式架构（迁移 327）  
-数据库版本：停留在迁移 290，未应用 327  
+代码版本：使用了新的计费模式架构（迁移 327）
+数据库版本：停留在迁移 290，未应用 327
 
 影响：
 - 模型发现时查询 `credentials.plan_type` 失败
@@ -156,7 +156,7 @@ WHERE c.id = cmb.credential_id
 
 #### 步骤 2.3：验证标准化结果
 ```sql
-SELECT 
+SELECT
     c.plan_type,
     cmb.billing_mode,
     COUNT(*) as count
@@ -341,11 +341,11 @@ severity: critical
 
 ### A.1 检查计费模式一致性
 ```sql
-SELECT 
+SELECT
     c.plan_type,
     cmb.billing_mode,
     COUNT(*) as count,
-    CASE 
+    CASE
         WHEN c.plan_type = 'token' AND cmb.billing_mode = 'per_token' THEN '✅'
         WHEN c.plan_type = cmb.billing_mode THEN '✅'
         ELSE '❌'
@@ -357,7 +357,7 @@ GROUP BY c.plan_type, cmb.billing_mode;
 
 ### A.2 查看可用模型分布
 ```sql
-SELECT 
+SELECT
     c.id,
     c.label,
     c.plan_type,
@@ -388,9 +388,9 @@ ORDER BY model_count DESC;
 
 ---
 
-**报告状态：** ✅ 已完成  
-**审核人：** 待指定  
-**批准人：** 待指定  
+**报告状态：** ✅ 已完成
+**审核人：** 待指定
+**批准人：** 待指定
 
 ---
 

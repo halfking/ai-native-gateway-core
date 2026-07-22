@@ -1,6 +1,6 @@
 # 会话健康检查模块审计报告
 
-**日期**: 2026-07-09  
+**日期**: 2026-07-09
 **审计范围**: session_inspector 模块与其他模块的集成关系
 
 ---
@@ -10,8 +10,8 @@
 ### 1.1 发现的问题
 
 #### 问题 1: EventBus 未实际接入
-**严重程度**: 中等  
-**描述**: 
+**严重程度**: 中等
+**描述**:
 - `session-inspector/hook.go` 定义了 `EventBusPublisher` 接口并预留了 `SetEventBus()` 方法
 - 但在 `cmd/gateway/main_pipeline.go:349` 和 `main_v2_pipeline.go:220` 的 wiring 代码中，**未调用 `SetEventBus()` 注入 MemoryBus 实例**
 - 结果：所有 `SessionInspectorFindingEvent` 和告警事件不会被发布，IM 通知渠道无法收到
@@ -35,7 +35,7 @@ p.AddStage(&pipeline.PipelineStage{
 ```
 
 #### 问题 2: SessionLifecycleWorker 未注入 EventBus
-**严重程度**: 中等  
+**严重程度**: 中等
 **描述**:
 - `bg/session_lifecycle_worker.go` 支持可选的 `LifecycleEventPublisher` 注入
 - 但在 `cmd/gateway/main.go:2139` 注册时未使用 `WithEventBus()` option
@@ -52,7 +52,7 @@ lifecycleWorker.Start(context.Background())
 ```
 
 #### 问题 3: 通知渠道未订阅 session_inspector 事件
-**严重程度**: 高  
+**严重程度**: 高
 **描述**:
 - `domains/notification/approval_notifier.go` 仅处理 `sessionaudit` 的审批通知
 - 没有任何代码订阅 `session_inspector.finding` 或 `session_inspector.recycle` 事件
@@ -102,7 +102,7 @@ func (n *ApprovalNotifier) NotifyInspectorFinding(ctx, finding) error
 | `eventbus` | ✅ 接口抽象避免强依赖 | 否 | EventBusPublisher 是可选注入 |
 | `notification` | ❌ **未集成** | - | 缺少订阅者逻辑 |
 
-**结论**: 
+**结论**:
 - ✅ 没有重复造轮子（复用了 eventbus / settings / admin 框架）
 - ❌ notification 集成缺失导致告警功能不完整
 
@@ -159,7 +159,7 @@ PipelineRequest 触发
     → cfg := h.config (使用 Enabled 时缓存的 config)
 ```
 
-**潜在问题**: 
+**潜在问题**:
 - `Execute` 使用的是 `Enabled` 时缓存的 `h.config`
 - 如果 `Enabled` 返回 false 跳过，后续配置修改不会触发 `Execute`
 - 配置修改后需要等下一个请求才能生效
@@ -262,6 +262,6 @@ PipelineRequest 触发
 
 ---
 
-**审计人**: Kiro AI Assistant  
-**审计日期**: 2026-07-09  
+**审计人**: Kiro AI Assistant
+**审计日期**: 2026-07-09
 **下一步**: 修复 P0 问题后进行本地环境验证

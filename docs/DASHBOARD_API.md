@@ -1,7 +1,7 @@
 # 首页 Dashboard 会话 API 标准文档
 
-**版本：** v1.0  
-**日期：** 2026-07-10  
+**版本：** v1.0
+**日期：** 2026-07-10
 **状态：** 设计完成，待实施
 
 ---
@@ -592,12 +592,12 @@ recorder.RecordAccess(
 // 后端示例
 func (h *Handler) checkPermission(r *http.Request, tenantID string) error {
     ctx := GetAuthContext(r)
-    
+
     if IsSuperAdmin(r) {
         // 超级管理员可访问所有
         return nil
     }
-    
+
     if IsTenantAdmin(r) {
         // 租户管理员只能访问本租户
         if tenantID != ctx.TenantID {
@@ -605,7 +605,7 @@ func (h *Handler) checkPermission(r *http.Request, tenantID string) error {
         }
         return nil
     }
-    
+
     // 普通用户只能访问自己 owner 的数据
     // 需要在查询时添加 owner_user 过滤条件
     return nil
@@ -630,17 +630,17 @@ func (h *Handler) checkPermission(r *http.Request, tenantID string) error {
 **索引：**
 ```sql
 -- session_summaries 常用索引
-CREATE INDEX idx_session_summaries_tenant_time 
+CREATE INDEX idx_session_summaries_tenant_time
     ON session_summaries(tenant_id, last_request_at DESC);
 
-CREATE INDEX idx_session_summaries_health 
-    ON session_summaries(tenant_id, health_grade) 
+CREATE INDEX idx_session_summaries_health
+    ON session_summaries(tenant_id, health_grade)
     WHERE health_score IS NOT NULL;
 
-CREATE INDEX idx_session_summaries_cost 
+CREATE INDEX idx_session_summaries_cost
     ON session_summaries(tenant_id, total_cost_usd DESC);
 
-CREATE INDEX idx_session_summaries_first_request 
+CREATE INDEX idx_session_summaries_first_request
     ON session_summaries(tenant_id, first_request_at DESC);
 ```
 
@@ -731,5 +731,5 @@ groups:
 
 ---
 
-**文档维护者：** Backend & Frontend Teams  
+**文档维护者：** Backend & Frontend Teams
 **最后更新：** 2026-07-10

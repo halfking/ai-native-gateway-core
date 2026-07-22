@@ -91,27 +91,27 @@ if dbConn != nil {
         FailThreshold:     3,
         RecoverThreshold:  3,
     })
-    
+
     // 2. 初始化文件写入器
     fileWriter = dbdegradation.NewFileWriter(backupDir)
-    
+
     // 3. 初始化文件读取器
     fileReader = dbdegradation.NewFileReader(backupDir)
-    
+
     // 4. 初始化恢复管理器
     recovery = dbdegradation.NewRecovery(
         dbConn.Pool(),
         fileReader,
         100,       // batch size
     )
-    
+
     // 5. 初始化 TTL 管理器
     ttlManager = dbdegradation.NewTTLManager(
         sessionRedis,
         7*24*time.Hour,   // 正常 TTL
         30*24*time.Hour,  // 降级 TTL
     )
-    
+
     // 6. 注册状态变更监听器
     dbMonitor.AddListener(func(event dbdegradation.StatusChangeEvent) {
         slog.Info("database status changed",
@@ -119,14 +119,14 @@ if dbConn != nil {
             "new_status", event.NewStatus,
             "message", event.Message,
         )
-        
+
         switch event.NewStatus {
         case dbdegradation.DBStatusDegraded:
             // 进入降级模式
             sessionManager.SetDegradedMode(true)
             ttlManager.EnterDegradedMode(context.Background())
             slog.Warn("entered degraded mode - sessions will be backed up to files")
-            
+
         case dbdegradation.DBStatusAvailable:
             // 退出降级模式
             sessionManager.SetDegradedMode(false)
@@ -134,7 +134,7 @@ if dbConn != nil {
             slog.Info("exited degraded mode - database available")
         }
     })
-    
+
     // 7. 启动监控
     dbMonitor.Start(context.Background())
     defer dbMonitor.Stop()
@@ -372,10 +372,10 @@ domains/session/
 
 我们已经完成了数据库离线降级方案的核心开发工作：
 
-✅ **6 个核心模块**全部实现并支持 **gzip 压缩**  
-✅ **Session Manager** 集成完成  
-✅ **管理 API** 端点全部实现  
-✅ **路由注册** 完成  
+✅ **6 个核心模块**全部实现并支持 **gzip 压缩**
+✅ **Session Manager** 集成完成
+✅ **管理 API** 端点全部实现
+✅ **路由注册** 完成
 
 **下一步**只需要在 `main.go` 中添加初始化代码，连接所有模块即可投入使用。
 

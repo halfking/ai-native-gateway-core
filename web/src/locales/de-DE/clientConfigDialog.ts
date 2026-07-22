@@ -2,7 +2,7 @@
 export default {
   title: '{tool} Konfigurationsgenerator',
   close: 'Schließen',
-  
+
   step1: {
     title: '① API-Schlüssel auswählen (alle Schlüssel unter aktuellem Mandant)',
     refresh: 'Aktualisieren',
@@ -15,12 +15,12 @@ export default {
     },
     selected: 'Ausgewählt:',
   },
-  
+
   step2: {
     title: '② Betriebssystem',
     pathHint: 'Konfigurationsdateipfad:',
   },
-  
+
   step3: {
     title: '③ Modellbereich auswählen',
     featured: 'Ausgewählte Modelle (Routing-Featured-Konfiguration)',
@@ -41,14 +41,14 @@ export default {
       noMatch: 'Keine passenden Modelle',
     },
   },
-  
+
   footer: {
     generated: '{count} Modellkonfigurationen generiert',
     generate: 'Konfiguration generieren',
     generating: 'Wird generiert…',
     regenerate: 'Neu generieren',
   },
-  
+
   results: {
     tabs: {
       file: 'Konfigurationsdatei',
@@ -62,7 +62,7 @@ export default {
       scriptHint: 'Skript sichert alte Konfigurationsdateien automatisch',
     },
   },
-  
+
   applyDialog: {
     title: 'Neuen API-Schlüssel beantragen',
     close: 'Schließen',
@@ -74,7 +74,7 @@ export default {
     submit: 'Antrag senden',
     submitting: 'Wird gesendet…',
   },
-  
+
   error: {
     applyFailed: 'Antrag fehlgeschlagen',
   },

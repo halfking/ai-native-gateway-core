@@ -207,7 +207,7 @@ UPDATE credentials SET protocol = 'openai-completions' WHERE model = 'glm-5.2';
    - 返回的数据是什么样的？
    - 是每次都发生还是偶尔发生？
 
-3. **使用场景** - 
+3. **使用场景** -
    - 是通过什么客户端调用的？（curl / SDK / UI）
    - 是流式还是非流式？
    - 有多轮对话吗？

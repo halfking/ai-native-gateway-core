@@ -68,7 +68,7 @@ CREATE TABLE goal_sessions (
 
 ### ⏸️ 待完成
 
-1. **Docker镜像重建**: 
+1. **Docker镜像重建**:
    - 需要访问__DOMAIN_9__/kx-base:go-vue基础镜像
    - 当前镜像版本不包含最新的injectFollowUpRequest实现
 

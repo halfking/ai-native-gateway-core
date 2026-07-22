@@ -269,16 +269,16 @@ ssh root@SERVER '
   mv /opt/llm-gateway-go/llm-gateway-go /opt/llm-gateway-go/llm-gateway-go.bak-$(date +%Y%m%d_%H%M%S)
   mv /opt/llm-gateway-go/llm-gateway-go.new /opt/llm-gateway-go/llm-gateway-go
   chmod +x /opt/llm-gateway-go/llm-gateway-go
-  
+
   # 确保 STATIC_DIR 存在
   grep -q STATIC_DIR /etc/systemd/system/llm-gateway-go.service || \
     sed -i "/LLM_GATEWAY_CORS_ORIGINS/a Environment=LLM_GATEWAY_STATIC_DIR=/opt/llm-gateway-go/web" \
     /etc/systemd/system/llm-gateway-go.service
-  
+
   systemctl daemon-reload
   systemctl start llm-gateway-go
   sleep 5
-  
+
   # Smoke test
   curl -fsS http://127.0.0.1:8780/healthz
   curl -I http://127.0.0.1:8780/ | grep -q "text/html"

@@ -1,7 +1,7 @@
 # llm-gateway-go 路由架构审计报告
 
-> **审计日期**: 2026-06-26  
-> **审计范围**: Client / Session / RouteNode 三层路由设计 vs 当前实现  
+> **审计日期**: 2026-06-26
+> **审计范围**: Client / Session / RouteNode 三层路由设计 vs 当前实现
 > **参考文档**: `2026-06-26-session-routing-redesign.md` (V3.1)
 
 ---
@@ -316,6 +316,6 @@ SessionHeadersPriority = []string{
 
 ---
 
-**审计人**: AI Agent  
-**审计时间**: 2026-06-26  
+**审计人**: AI Agent
+**审计时间**: 2026-06-26
 **下一步**: 审查 credentialfpslot/slot.go + relay/handler.go + routing/executor.go，完成 Phase 0

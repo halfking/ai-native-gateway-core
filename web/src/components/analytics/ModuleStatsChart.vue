@@ -23,7 +23,7 @@ const chartOptions = computed(() => {
   const modules = props.data.slice(0, 10) // Top 10 模块
   const moduleNames = modules.map(m => m.module_name)
   const executions = modules.map(m => m.total_executions)
-  const successRates = modules.map(m => 
+  const successRates = modules.map(m =>
     m.total_executions > 0 ? (m.success_count / m.total_executions * 100) : 0
   )
   const cacheHitRates = modules.map(m => m.cache_hit_rate)
@@ -111,12 +111,12 @@ const chartOptions = computed(() => {
 
 function initChart() {
   if (!chartRef.value || isDestroyed.value) return
-  
+
   // 清理旧实例
   if (chartInstance) {
     chartInstance.dispose()
   }
-  
+
   chartInstance = echarts.init(chartRef.value)
   updateChart()
 }

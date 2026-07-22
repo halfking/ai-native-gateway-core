@@ -1,8 +1,8 @@
 # PostgreSQL 分区表读写规范 - 架构方案
 
-**文档版本**: 1.0  
-**创建日期**: 2026-07-04  
-**适用范围**: 所有使用分区表 + Columnar 存储的时序数据表  
+**文档版本**: 1.0
+**创建日期**: 2026-07-04
+**适用范围**: 所有使用分区表 + Columnar 存储的时序数据表
 **状态**: ✅ 已实施并验证
 
 ---
@@ -56,13 +56,13 @@
   位置: <table>_default (heap)
   写入: 应用直接 INSERT/UPDATE
   特征: 频繁 UPSERT，实时查询
-  
+
 阶段 2: 温数据（7-30天）
   ↓
   位置: <table>_YYYY_MM (heap, DETACHED)
   写入: 每日迁移脚本
   特征: 偶尔查询，很少更新
-  
+
 阶段 3: 冷数据（> 30天）
   ↓
   位置: <table>_YYYY_MM (columnar, ATTACHED)
@@ -269,8 +269,8 @@ WHERE ts >= '2026-07-01';
 
 ### 5.1 每日迁移（自动化）
 
-**脚本**: `scripts/migrate-default-to-monthly.sh`  
-**频率**: 每日凌晨 2:00  
+**脚本**: `scripts/migrate-default-to-monthly.sh`
+**频率**: 每日凌晨 2:00
 **功能**: 将 `*_default` 中 > 7天的数据迁移到当月分区
 
 ```bash
@@ -311,8 +311,8 @@ EOF
 
 ### 5.2 月底转换（半自动）
 
-**脚本**: `scripts/convert-last-month-to-columnar.sh`  
-**频率**: 每月 1 日凌晨 3:00  
+**脚本**: `scripts/convert-last-month-to-columnar.sh`
+**频率**: 每月 1 日凌晨 3:00
 **功能**: 将上月分区从 heap 转为 columnar
 
 ```bash
@@ -343,10 +343,10 @@ BEGIN
         SELECT * FROM request_logs_${LAST_MONTH}
         ORDER BY id
         LIMIT batch_size OFFSET offset_val;
-        
+
         GET DIAGNOSTICS rows_copied = ROW_COUNT;
         EXIT WHEN rows_copied = 0;
-        
+
         offset_val := offset_val + batch_size;
         RAISE NOTICE 'Copied % rows (offset: %)', rows_copied, offset_val;
     END LOOP;
@@ -356,7 +356,7 @@ END \$\$;
 DROP TABLE request_logs_${LAST_MONTH};
 
 -- 4. 重命名 columnar 分区
-ALTER TABLE request_logs_${LAST_MONTH}_columnar 
+ALTER TABLE request_logs_${LAST_MONTH}_columnar
 RENAME TO request_logs_${LAST_MONTH};
 
 -- 5. ATTACH 到父表
@@ -364,7 +364,7 @@ ALTER TABLE request_logs ATTACH PARTITION request_logs_${LAST_MONTH}
     FOR VALUES FROM ('${LAST_MONTH_START}') TO ('${CURRENT_MONTH_START}');
 
 -- 6. 验证
-SELECT 
+SELECT
     pg_size_pretty(pg_total_relation_size('request_logs_${LAST_MONTH}')) AS size,
     am.amname AS access_method
 FROM pg_class c
@@ -400,7 +400,7 @@ SELECT * FROM usage_ledger_2026_08;
 **自动化方案**（可选）：
 ```sql
 -- 使用函数动态生成当月分区名
-CREATE OR REPLACE FUNCTION get_current_month_partition(base_table TEXT) 
+CREATE OR REPLACE FUNCTION get_current_month_partition(base_table TEXT)
 RETURNS TEXT AS $$
 BEGIN
     RETURN base_table || '_' || to_char(now(), 'YYYY_MM');
@@ -452,8 +452,8 @@ CREATE TABLE request_logs_2026_08 (LIKE request_logs INCLUDING ALL) USING heap;
 
 ```sql
 -- 主键索引（自动创建）
-ALTER TABLE request_logs_2026_07 
-ADD CONSTRAINT request_logs_2026_07_pkey 
+ALTER TABLE request_logs_2026_07
+ADD CONSTRAINT request_logs_2026_07_pkey
 PRIMARY KEY (id);
 
 -- 唯一索引
@@ -461,10 +461,10 @@ CREATE UNIQUE INDEX request_logs_2026_07_request_id_ts_idx
 ON request_logs_2026_07 (request_id, ts);
 
 -- 查询索引
-CREATE INDEX request_logs_2026_07_ts_idx 
+CREATE INDEX request_logs_2026_07_ts_idx
 ON request_logs_2026_07 (ts);
 
-CREATE INDEX request_logs_2026_07_tenant_ts_idx 
+CREATE INDEX request_logs_2026_07_tenant_ts_idx
 ON request_logs_2026_07 (tenant_id, ts);
 ```
 
@@ -481,7 +481,7 @@ ERROR: new row for relation "request_logs_default" violates partition constraint
 SQLSTATE: 23514
 ```
 
-**原因**：当月分区 ATTACHED，导致 default 无法接收当月数据  
+**原因**：当月分区 ATTACHED，导致 default 无法接收当月数据
 **解决**：DETACH 当月分区
 
 ```sql
@@ -495,7 +495,7 @@ ERROR: UPDATE and CTID scans not supported for ColumnarScan
 SQLSTATE: 0A000
 ```
 
-**原因**：尝试 UPDATE/DELETE columnar 分区  
+**原因**：尝试 UPDATE/DELETE columnar 分区
 **解决**：
 - 确保写入代码指向 `*_default` 表
 - 历史数据删除用 DROP TABLE
@@ -507,19 +507,19 @@ ERROR: ON CONFLICT is not supported for columnar tables
 SQLSTATE: 0A000
 ```
 
-**原因**：尝试对 columnar 分区执行 UPSERT  
+**原因**：尝试对 columnar 分区执行 UPSERT
 **解决**：确保写入代码指向 `*_default` 表
 
 ### 7.2 诊断 SQL
 
 ```sql
 -- 检查分区状态
-SELECT 
+SELECT
     parent.relname AS parent_table,
     child.relname AS partition_name,
     pg_get_expr(child.relpartbound, child.oid) AS partition_bound,
     am.amname AS access_method,
-    CASE 
+    CASE
         WHEN i.inhrelid IS NOT NULL THEN 'ATTACHED'
         ELSE 'DETACHED'
     END AS status
@@ -531,7 +531,7 @@ WHERE child.relname ~ '^(request_logs|usage_ledger)'
 ORDER BY parent_table, partition_name;
 
 -- 检查数据分布
-SELECT 
+SELECT
     'request_logs_default' AS partition,
     COUNT(*) AS rows,
     pg_size_pretty(pg_total_relation_size('request_logs_default')) AS size,
@@ -539,7 +539,7 @@ SELECT
     MAX(ts) AS latest
 FROM request_logs_default
 UNION ALL
-SELECT 
+SELECT
     'request_logs_2026_07' AS partition,
     COUNT(*) AS rows,
     pg_size_pretty(pg_total_relation_size('request_logs_2026_07')) AS size,

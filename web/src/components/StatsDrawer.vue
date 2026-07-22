@@ -75,7 +75,7 @@ defineExpose({ open, close })
                 ✕
               </button>
             </div>
-            
+
             <!-- 内容 -->
             <div class="drawer-body">
               <!-- APIKey排行 -->
@@ -107,7 +107,7 @@ defineExpose({ open, close })
                 </table>
                 <div v-else class="drawer-empty">该时段暂无 API Key 排行数据</div>
               </div>
-              
+
               <!-- 模型统计 -->
               <div v-if="activeTab === 'models'" class="drawer-content">
                 <div v-if="loading" class="drawer-loading">加载中…</div>
@@ -330,11 +330,11 @@ defineExpose({ open, close })
   .drawer {
     width: 100vw;
   }
-  
+
   .stats-table {
     font-size: 11px;
   }
-  
+
   .stats-table th,
   .stats-table td {
     padding: 8px 6px;

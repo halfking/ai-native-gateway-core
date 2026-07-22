@@ -18,9 +18,9 @@
  func (p *Pool) RecordFailure() {
  	count := p.failCount.Add(1)
  	p.successCount.Store(0)
- 
+
  	currentState := p.State()
- 
+
 -	// Transition to draining if consecutive failures exceed dead threshold
 -	if count >= deadThreshold && currentState != PoolDead && currentState != PoolDraining {
 -		p.state.Store(int32(PoolDraining))
@@ -49,7 +49,7 @@
 +		)
 +		return
 +	}
- 
+
  	// Transition to degraded if consecutive failures exceed degraded threshold
  	if count >= degradedThreshold && currentState == PoolActive {
  		p.state.Store(int32(PoolDegraded))
@@ -69,9 +69,9 @@
  func (p *Pool) RecordSuccess() {
  	p.failCount.Store(0)
  	n := p.successCount.Add(1)
- 
+
  	currentState := p.State()
- 
+
 -	// Recover from degraded or draining to active after enough consecutive successes
 -	if (currentState == PoolDegraded || currentState == PoolDraining) && n >= successThreshold {
 -		p.state.Store(int32(PoolActive))
@@ -278,18 +278,18 @@ func TestPoolAcquireClosedRace(t *testing.T) {
  	topN int,
  ) []ScoredCandidate {
  	flags := GetFeatureFlags()
- 
+
  	idx.mu.RLock()
  	all := idx.entries
  	pool := idx.pool
  	availabilityFilter := idx.availabilityFilter
  	correctionLoader := idx.correctionLoader
  	idx.mu.RUnlock()
- 
+
  	if topN <= 0 {
  		topN = 3
  	}
- 
+
 -	// Step 1: hard filter - keep only currently available candidates.
 +	// Step 1: hard filter - keep only currently available candidates.
  	filtered, err := idx.filterCurrentlyAvailable(ctx, pool, availabilityFilter, all)
@@ -367,7 +367,7 @@ func LiveFilterStats() (total, failed int64) {
 ```diff
  func (d *Decider) Decide(ctx context.Context, sigs ClassificationSignals, apiKeyID int, headerProfile string, taskHint TaskType, sessionID string) (*Decision, error) {
    // ... Step 0 session cache, Step 1 profile, Step 2 classify unchanged ...
- 
+
    // Step 3: score candidates
    recommended := d.index.Recommend(cls.Primary, sigs, profile, d.TopN)
    if d.overrideStore != nil {
@@ -376,11 +376,11 @@ func LiveFilterStats() (total, failed int64) {
      filtered := d.overrideStore.FilterBanned(recommended, task, prof)
      recommended = d.overrideStore.PromotePins(filtered, task, prof)
    }
- 
+
    if len(recommended) == 0 {
      return nil, errors.New("autoroute: no candidates match task type " + string(cls.Primary))
    }
- 
+
 +  // 2026-07-04 V20 fix: Decider doesn't know whether sticky or
 +  // priority logic re-ordered candidates after this point. The
 +  // executor applies its own prioritizeSticky on top, so the
@@ -475,7 +475,7 @@ func (d *Decider) tryResolveStickyForSession(ctx context.Context, apiKeyID int) 
    Hits int `json:"hits"` // ★ NEW: how many times this entry has been used
 +  ForcedReclassifyAt time.Time `json:"forced_reclassify_at,omitempty"`
  }
- 
+
  // In decision.go:Step 0:
  if cached, ok := d.intentCache.Get(sessionID); ok {
 -  if !shouldReclassify(cached.TaskType, sigs) {
@@ -486,7 +486,7 @@ func (d *Decider) tryResolveStickyForSession(ctx context.Context, apiKeyID int) 
      return &Decision{...}, nil
    }
  }
- 
+
  // New helper:
  // shouldForceReclassify forces a re-evaluation every N cache hits to
  // catch soft task drift that the hard-override heuristics miss.

@@ -168,7 +168,7 @@ L4 request_logs 行 (failure_detail_code / failure_stage / error_kind)
 
 **19 ErrorKind → 路由决策的 AND/OR 组合规则**：
 ```
-最终路由通过 = 
+最终路由通过 =
    cmb.available=TRUE                            [OR 关系，先淘汰]
    AND availability_state IN (ready, cooling→recover_at>now)
    AND model_probe_state NOT IN (broken_confirmed)

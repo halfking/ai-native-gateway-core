@@ -1,7 +1,7 @@
 # Migration 335-336 审计报告
 
-**日期**: 2026-07-10  
-**审计人**: OpenCode Agent  
+**日期**: 2026-07-10
+**审计人**: OpenCode Agent
 **提交**: 546de8d00, 6feb1ff7e
 
 ---
@@ -173,14 +173,14 @@ psql -c "\d+ v_routable_credential_models"
 
 ```sql
 -- 检查受影响的模型是否恢复可路由
-SELECT 
-    raw_model_name, 
+SELECT
+    raw_model_name,
     credential_id,
     billing_mode,
     plan_type,
-    is_routable, 
+    is_routable,
     unavailable_reason
-FROM v_routable_credential_models 
+FROM v_routable_credential_models
 WHERE raw_model_name IN ('claude-fable-5', 'mimo-v2.5-pro')
 ORDER BY raw_model_name, credential_id;
 
@@ -266,5 +266,5 @@ fix(migration): 修正 migration 335 视图列定义
 
 ---
 
-**审计完成日期**: 2026-07-10 18:35:00  
+**审计完成日期**: 2026-07-10 18:35:00
 **下一步**: 部署到测试环境进行验证

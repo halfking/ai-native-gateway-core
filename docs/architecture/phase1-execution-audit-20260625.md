@@ -1,7 +1,7 @@
 # LLM Gateway Go 领域重构执行审计报告
 
-> **审计日期**: 2026-06-25  
-> **审计范围**: Phase 0 + Phase 1  
+> **审计日期**: 2026-06-25
+> **审计范围**: Phase 0 + Phase 1
 > **对比文档**: domain-refactoring-plan.md v2.0 + implementation-plan.md v1.0
 
 ---
@@ -139,7 +139,7 @@ domains/identity/
 
 **Pipeline 集成**: ✅ 已实现 `ClientIdentityHook`
 
-**与计划差异**: 
+**与计划差异**:
 - ✅ 超出预期：增加了 `EgressBuilder`（出站身份管理）
 - ✅ 超出预期：测试覆盖率高于计划目标
 
@@ -207,7 +207,7 @@ domains/authentication/
 
 **预期**: 在 `cmd/gateway/main.go` 中创建 Pipeline 实例并注册 Hook
 
-**实际状态**: 
+**实际状态**:
 - `cmd/gateway/main.go` 仍使用旧的直接调用方式
 - 未引入 `domains/pipeline` 包
 - 未引入任何 `domains/authentication`、`domains/identity`、`domains/session` Hook
@@ -223,7 +223,7 @@ import (
 )
 ```
 
-**影响**: 
+**影响**:
 - ❌ 新领域代码未被生产环境使用
 - ❌ 旧代码与新代码并存，增加维护负担
 - ❌ 无法验证新架构在实际流量下的表现
@@ -288,7 +288,7 @@ limiter/
 └── redis_identity.go
 ```
 
-**影响**: 
+**影响**:
 - ❌ 凭据管理逻辑分散在 3 个包中，违背领域内聚原则
 - ❌ 无法实现统一的凭据生命周期管理
 
@@ -378,7 +378,7 @@ domains/streaming/
 
 **预期**: 将 `routing/executor_*.go`（14 个文件）移到 `domains/streaming/`
 
-**实际状态**: 
+**实际状态**:
 - `routing/executor_*.go` 仍在旧位置
 - `domains/streaming/` 只有接口定义，未迁移实际执行逻辑
 

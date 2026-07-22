@@ -1,7 +1,7 @@
 # 泳道"滚动"现象根因分析
 
-**部署版本**: `82b5edcf22e9a141ed88731f30fa7ebfccf9a6f6`  
-**问题描述**: 泳道数据像在"滚动"，没有大量请求进来，但数字跳变明显  
+**部署版本**: `82b5edcf22e9a141ed88731f30fa7ebfccf9a6f6`
+**问题描述**: 泳道数据像在"滚动"，没有大量请求进来，但数字跳变明显
 **时间特征**: 不是每5分钟发生，间隔不规律
 
 ---
@@ -90,7 +90,7 @@ grouped['minimax'] = [req1-req9, req21-...]  // 窗口"滑动"了
 stats.total = 40+  // 因为窗口不同，统计的请求集合不同
 ```
 
-**结果**: 
+**结果**:
 - 没有新请求进来
 - Redis数据没变
 - 但因为SCAN顺序随机，读取的窗口每次不同
@@ -111,7 +111,7 @@ sort.SliceStable(allRequests, func(i, j int) bool {
 
 **修复的问题**: grouped[key]内部的tile顺序稳定了
 
-**没有修复的问题**: 
+**没有修复的问题**:
 1. **SCAN顺序仍然随机** → 不同次查询读到的request_id集合不同
 2. **去重逻辑仍然依赖SCAN顺序** → 同一个请求可能在这次被读到，下次被跳过
 3. **窗口仍然不稳定** → 每个泳道统计的20条tile是浮动的
@@ -166,7 +166,7 @@ for _, req := range items {
 // admin/live_stream_redis_store_snapshot_fix.go:156-162
 func (s *LiveStreamRedisStore) discoverDimensionQueues(ctx context.Context, tenantID string, isSuper bool) ([]string, error) {
     // ... 现有的SCAN逻辑 ...
-    
+
     // ⚠️ 新增：排序，消除SCAN的随机性
     sort.Strings(allKeys)
     return allKeys, nil
@@ -189,12 +189,12 @@ func (s *LiveStreamRedisStore) discoverDimensionQueues(ctx context.Context, tena
 // 在写入时记录维度值
 func (s *LiveStreamRedisStore) Record(ctx context.Context, req LiveRequest) error {
     // ... 现有写入逻辑 ...
-    
+
     // 记录已知的维度值到一个SET
     vendor := req.ModelCategory
     provider := req.ProviderCode
     model := req.CanonicalName
-    
+
     s.rdb.SAdd(ctx, "llmgw:live:known_vendors", vendor)
     s.rdb.SAdd(ctx, "llmgw:live:known_providers", provider)
     s.rdb.SAdd(ctx, "llmgw:live:known_models", model)
@@ -206,13 +206,13 @@ func (s *LiveStreamRedisStore) discoverDimensionQueues(ctx context.Context, tena
     vendors, _ := s.rdb.SMembers(ctx, "llmgw:live:known_vendors").Result()
     providers, _ := s.rdb.SMembers(ctx, "llmgw:live:known_providers").Result()
     models, _ := s.rdb.SMembers(ctx, "llmgw:live:known_models").Result()
-    
+
     var keys []string
     for _, v := range vendors {
         keys = append(keys, liveStreamDimPrefix+"vendor:"+v)
     }
     // ... provider, model同理 ...
-    
+
     sort.Strings(keys)  // 确保顺序
     return keys, nil
 }
@@ -239,13 +239,13 @@ function mergeLanesById(existing: LiveStreamLane[], incoming: LiveStreamLane[]) 
         const laneKey = lane.dimension + ':' + lane.id
         const lastIds = lastSnapshotRequestIds.get(laneKey) || new Set()
         const incomingIds = new Set(lane.requests.map(r => r.request_id))
-        
+
         // 检测"伪变化"
         if (setsEqual(lastIds, incomingIds)) {
             // request_id集合没变，跳过更新（避免滚动效应）
             continue
         }
-        
+
         // 真正的变化，更新
         lastSnapshotRequestIds.set(laneKey, incomingIds)
         // ... 正常合并逻辑 ...
@@ -294,20 +294,20 @@ es.onmessage = (e) => {
     const msg = JSON.parse(e.data);
     if (msg.type === 'request' && msg.delta) {
         const currentSnapshot = msg.delta.changed_lanes;
-        
+
         if (lastSnapshot) {
             // 对比MiniMax泳道的request_id集合
             const lastMinimax = lastSnapshot.vendor?.find(l => l.id === 'minimax');
             const currMinimax = currentSnapshot.vendor?.find(l => l.id === 'minimax');
-            
+
             if (lastMinimax && currMinimax) {
                 const lastIds = new Set(lastMinimax.requests.map(r => r.request_id));
                 const currIds = new Set(currMinimax.requests.map(r => r.request_id));
-                
+
                 // 计算差异
                 const added = [...currIds].filter(id => !lastIds.has(id));
                 const removed = [...lastIds].filter(id => !currIds.has(id));
-                
+
                 if (removed.length > 0 && added.length > 0) {
                     console.warn('🔄 检测到窗口滚动！', {
                         时间: new Date().toLocaleTimeString(),
@@ -321,13 +321,13 @@ es.onmessage = (e) => {
                 }
             }
         }
-        
+
         lastSnapshot = currentSnapshot;
     }
 };
 ```
 
-**期望结果**: 
+**期望结果**:
 - 如果频繁出现"检测到窗口滚动"
 - 且 `移除的请求` 和 `新增的请求` 数量相近
 - 说明是窗口滑动，不是真实流量变化
@@ -345,7 +345,7 @@ docker logs llm-gateway-container 2>&1 | \
   tail -20
 ```
 
-**期望结果**: 
+**期望结果**:
 - 如果没有新请求，但snapshot的total数字仍在波动
 - 说明是窗口不稳定导致的
 
@@ -359,7 +359,7 @@ docker logs llm-gateway-container 2>&1 | \
 // admin/live_stream_redis_store_snapshot_fix.go:156行后添加
 func (s *LiveStreamRedisStore) discoverDimensionQueues(...) ([]string, error) {
     // ... 现有代码 ...
-    
+
     // 新增：排序，消除SCAN的非确定性
     sort.Strings(allKeys)
     return allKeys, nil
@@ -389,7 +389,7 @@ func (s *LiveStreamRedisStore) discoverDimensionQueues(...) ([]string, error) {
 该commit只修复了**grouped[key]内部的顺序**，但没有修复**SCAN顺序的随机性**，所以窗口仍然不稳定。
 
 ### 解决方案
-**最简单**: 在discoverDimensionQueues()的返回前加一行 `sort.Strings(allKeys)`  
+**最简单**: 在discoverDimensionQueues()的返回前加一行 `sort.Strings(allKeys)`
 **最彻底**: 用SET维护已知维度值，避免SCAN
 
 ### 预期效果
@@ -397,6 +397,6 @@ func (s *LiveStreamRedisStore) discoverDimensionQueues(...) ([]string, error) {
 
 ---
 
-**分析完成时间**: 2026-07-20  
-**分析工程师**: AI Agent (Kiro)  
+**分析完成时间**: 2026-07-20
+**分析工程师**: AI Agent (Kiro)
 **部署版本**: 82b5edcf (包含部分修复9095d788，但仍存在SCAN顺序问题)

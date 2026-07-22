@@ -28,44 +28,44 @@
 
 ### 2.1 StateStore
 
-- Redis 读写、Lua 原子更新、TTL、epoch、key 协议  
-- **不**理解路由策略  
+- Redis 读写、Lua 原子更新、TTL、epoch、key 协议
+- **不**理解路由策略
 - 区分三种读结果：`ok` / `missing` / `redis_error`（禁止把 error 当 missing）
 
 ### 2.2 StateReducer
 
-- 纯函数：`Evidence + ExistingState → Decision`  
-- 优先级：`manual > probe > request`  
-- 人工禁用只允许显式 enable  
-- 免费凭据 transient：不硬剔，只软降权  
+- 纯函数：`Evidence + ExistingState → Decision`
+- 优先级：`manual > probe > request`
+- 人工禁用只允许显式 enable
+- 免费凭据 transient：不硬剔，只软降权
 - 可单测、无 I/O
 
 ### 2.3 CandidateIndex
 
-- 键：`tenant|canonical|profile|modality`  
-- member：`credential_id:raw_model`  
-- score：composite 或 last_activity  
-- 提供按模型拉候选、按维度过滤的快速检索  
+- 键：`tenant|canonical|profile|modality`
+- member：`credential_id:raw_model`
+- score：composite 或 last_activity
+- 提供按模型拉候选、按维度过滤的快速检索
 - 由配置同步、状态变更、恢复预热维护
 
 ### 2.4 ResourcePools
 
-- 适配现有 `credentialfpslot` 与 `credential.Limiter` / Redis RPM  
-- 统一 `Acquire / Release / Stats`  
-- 资源租约与健康状态 **分 key**，生命周期独立  
+- 适配现有 `credentialfpslot` 与 `credential.Limiter` / Redis RPM
+- 统一 `Acquire / Release / Stats`
+- 资源租约与健康状态 **分 key**，生命周期独立
 - Plan 阶段只读 stats，**不** acquire（避免历史 URSM 泄漏）
 
 ### 2.5 RecoveryManager
 
-- Redis 重启/空库：`ready=0`，阻塞权威/canary 路由  
-- 从 DB 配置 + 最近分钟快照预热  
+- Redis 重启/空库：`ready=0`，阻塞权威/canary 路由
+- 从 DB 配置 + 最近分钟快照预热
 - 校验通过后 `ready=1` 并 bump/记录 `recovery_epoch`
 
 ### 2.6 RolloutController
 
-- 模式：`off | shadow | canary | authoritative`  
-- 影子：新旧双算，生产用旧结果，记 diff  
-- canary：`tenant+model` 稳定哈希按百分比切流  
+- 模式：`off | shadow | canary | authoritative`
+- 影子：新旧双算，生产用旧结果，记 diff
+- canary：`tenant+model` 稳定哈希按百分比切流
 - **不得**复用 `Manager.Enabled() == (config != nil)` 作为开关
 
 ## 3. 五层状态模型
@@ -80,11 +80,11 @@
 
 ### 3.1 关键语义
 
-- **配置硬门**仍来自 DB：provider/credential/binding 是否存在、是否 active、租户策略  
-- **运行时状态**来自 Redis：冷却、连续失败、滑动成功率、资源压力、人工禁用镜像  
-- **懒初始化**：仅当候选已通过 DB 硬门时，首次请求用 Redis `NX` 创建 `unknown+eligible`  
-- **Redis 读失败**：保护性拒绝该候选，不 fail-open  
-- **Redis 丢失/重启**：全量阻塞，直到 RecoveryManager 预热完成  
+- **配置硬门**仍来自 DB：provider/credential/binding 是否存在、是否 active、租户策略
+- **运行时状态**来自 Redis：冷却、连续失败、滑动成功率、资源压力、人工禁用镜像
+- **懒初始化**：仅当候选已通过 DB 硬门时，首次请求用 Redis `NX` 创建 `unknown+eligible`
+- **Redis 读失败**：保护性拒绝该候选，不 fail-open
+- **Redis 丢失/重启**：全量阻塞，直到 RecoveryManager 预热完成
 - **初始态 `unknown`**：无运行时负面证据，允许进入候选；首次成功后转 healthy 观测
 
 ### 3.2 来源优先级与 CAS
@@ -100,9 +100,9 @@ source_priority:
 
 Lua CAS 规则：
 
-1. `incoming.generation < current.generation` → ignore（或仅 append 窗口样本）  
-2. `incoming.source_priority < current.source_priority` 且目标字段为裁决字段 → ignore  
-3. admin 的 `manual_disabled=true` 只能被 admin enable 清除  
+1. `incoming.generation < current.generation` → ignore（或仅 append 窗口样本）
+2. `incoming.source_priority < current.source_priority` 且目标字段为裁决字段 → ignore
+3. admin 的 `manual_disabled=true` 只能被 admin enable 清除
 4. 窗口样本可 append-only；`available/cool_until/manual_*` 必须 CAS
 
 ## 4. 对外 API
@@ -177,8 +177,8 @@ domains/ursm/
 
 ## 7. 单一原则与闭包
 
-- **一个写入裁决入口**：所有 request/probe/admin 证据经 Reducer + Store，禁止业务路径直接 `SET` 状态 key  
-- **一个读取入口**：Router 只调 `FilterAndScore` / `IsAvailable`，不直接拼多层 Redis key  
-- **Manager 闭包装配**：脚本、TTL、阈值、适配器在 `NewManager` 内注入；测试可替换 Store/Reducer  
-- **资源与健康分离**：ResourcePools 失败不等于 node unhealthy  
-- **配置与运行时分离**：价格/限额上限由 SyncConfig；成功率/冷却由 RecordRequest  
+- **一个写入裁决入口**：所有 request/probe/admin 证据经 Reducer + Store，禁止业务路径直接 `SET` 状态 key
+- **一个读取入口**：Router 只调 `FilterAndScore` / `IsAvailable`，不直接拼多层 Redis key
+- **Manager 闭包装配**：脚本、TTL、阈值、适配器在 `NewManager` 内注入；测试可替换 Store/Reducer
+- **资源与健康分离**：ResourcePools 失败不等于 node unhealthy
+- **配置与运行时分离**：价格/限额上限由 SyncConfig；成功率/冷却由 RecordRequest

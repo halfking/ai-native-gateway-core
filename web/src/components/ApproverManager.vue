@@ -34,21 +34,21 @@ function validateEmail(email: string): boolean {
 
 function validateForm(): boolean {
   formErrors.value = {}
-  
+
   if (!formData.value.name.trim()) {
     formErrors.value.name = '姓名不能为空'
   }
-  
+
   if (!formData.value.email.trim()) {
     formErrors.value.email = '邮箱不能为空'
   } else if (!validateEmail(formData.value.email)) {
     formErrors.value.email = '邮箱格式不正确'
   }
-  
+
   if (!formData.value.role.trim()) {
     formErrors.value.role = '角色不能为空'
   }
-  
+
   return Object.keys(formErrors.value).length === 0
 }
 
@@ -74,7 +74,7 @@ function openEditDialog(index: number) {
 
 function saveApprover() {
   if (!validateForm()) return
-  
+
   const list = [...approvers.value]
   if (editingIndex.value !== null) {
     list[editingIndex.value] = { ...formData.value }
@@ -146,7 +146,7 @@ function moveDown(index: number) {
           </div>
           <div class="approver-email">📧 {{ approver.email }}</div>
         </div>
-        
+
         <div class="approver-actions">
           <button
             class="btn-icon"
@@ -197,7 +197,7 @@ function moveDown(index: number) {
           <h3>{{ editingIndex !== null ? '编辑审批人' : '添加审批人' }}</h3>
           <button class="btn-close" @click="showDialog = false">✕</button>
         </div>
-        
+
         <div class="dialog-body">
           <div class="form-group">
             <label>姓名 <span class="required">*</span></label>

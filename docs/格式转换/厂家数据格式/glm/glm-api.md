@@ -4,7 +4,7 @@
 
 **端点**: `POST https://open.bigmodel.cn/api/paas/v4/chat/completions`
 
-**认证**: 
+**认证**:
 ```
 Authorization: Bearer {JWT_TOKEN}
 ```

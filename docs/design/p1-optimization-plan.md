@@ -1,8 +1,8 @@
 # P1优化任务设计方案
 
-**日期**: 2026-07-22  
-**优先级**: P1（本周执行）  
-**负责人**: ACC Agent  
+**日期**: 2026-07-22
+**优先级**: P1（本周执行）
+**负责人**: ACC Agent
 
 ---
 
@@ -218,25 +218,25 @@ jobs:
     name: Multimodal Unit Tests
     runs-on: ubuntu-latest
     timeout-minutes: 10
-    
+
     steps:
       - uses: actions/checkout@v4
-      
+
       - name: Setup Go
         uses: actions/setup-go@v5
         with:
           go-version: '1.25'
-      
+
       - name: Run multimodal validation tests
         run: |
           go test ./domains/transformation/anthropic/... -run="Media" -v
           go test ./internal/ir/... -run="Media" -v
-      
+
       - name: Run multimodal conversion tests
         run: |
           go test ./domains/transformation/... -run="Multimodal" -v
           go test ./internal/ir/... -run="ContentBlock" -v
-      
+
       - name: Mock Phase 3 runner (--dry-run)
         run: |
           export GATEWAY_URL=http://localhost:8781
@@ -277,17 +277,17 @@ jobs:
     name: Phase 3 LIVE
     runs-on: self-hosted  # 内网runner
     timeout-minutes: 15
-    
+
     steps:
       - uses: actions/checkout@v4
-      
+
       - name: Run Phase 3 LIVE
         env:
           GATEWAY_URL: ${{ github.event.inputs.gateway_url }}
           LLM_GATEWAY_API_KEY: ${{ secrets.LLM_GATEWAY_TEST_KEY }}
           ONLY_IDS: ${{ github.event.inputs.test_ids }}
         run: bash scripts/multimodal-e2e/run_phase3.sh
-      
+
       - name: Upload test results
         if: always()
         uses: actions/upload-artifact@v4
@@ -369,6 +369,6 @@ jobs:
 
 ---
 
-**文档版本**: v1.0  
-**最后更新**: 2026-07-22 06:30 UTC+8  
+**文档版本**: v1.0
+**最后更新**: 2026-07-22 06:30 UTC+8
 **下次审查**: 1周后（Phase 1完成后）

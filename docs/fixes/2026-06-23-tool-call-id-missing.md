@@ -5,7 +5,7 @@
 When using `claude-sonnet-4-6` with tool calls enabled, the llm-gateway-go returned errors:
 
 ```
-Tool execution was interrupted during streaming recovery before this tool was executed. 
+Tool execution was interrupted during streaming recovery before this tool was executed.
 Treat this tool call as failed and do not retry blindly.
 ```
 
@@ -14,7 +14,7 @@ Followed by:
 ```
 Turn execution failed
 Expected 'id' to be a string.
-provider=ef7bed64-de6f-42d8-86f2-eab4b62d9812 model=claude-sonnet-4-6 
+provider=ef7bed64-de6f-42d8-86f2-eab4b62d9812 model=claude-sonnet-4-6
 request=c3cb888d-52e5-4243-a715-53a8eeec5552 reason=unknown retryable=false
 ```
 

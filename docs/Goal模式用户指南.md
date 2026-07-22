@@ -1,7 +1,7 @@
 # Goal 模式用户指南
 
-> **版本**: v1.0  
-> **最后更新**: 2026-07-19  
+> **版本**: v1.0
+> **最后更新**: 2026-07-19
 > **适用版本**: llm-gateway-go v1.x+
 
 ---
@@ -78,7 +78,7 @@ curl -X PUT http://your-gateway:8080/admin/settings \
 ```sql
 INSERT INTO settings (scope, tenant_id, key, value, updated_at)
 VALUES ('tenant', 'your-tenant', 'goal.cost_mode', '"balanced"', NOW())
-ON CONFLICT (scope, tenant_id, key) 
+ON CONFLICT (scope, tenant_id, key)
 DO UPDATE SET value = EXCLUDED.value, updated_at = NOW();
 ```
 
@@ -315,23 +315,23 @@ curl -X DELETE "http://localhost:8080/admin/settings?key=goal.cost_mode&tenant_i
 -- 设置全局默认值
 INSERT INTO settings (scope, tenant_id, key, value, updated_at)
 VALUES ('global', '', 'goal.cost_mode', '"balanced"', NOW())
-ON CONFLICT (scope, tenant_id, key) 
+ON CONFLICT (scope, tenant_id, key)
 DO UPDATE SET value = EXCLUDED.value, updated_at = NOW();
 
 -- 设置租户级覆盖
 INSERT INTO settings (scope, tenant_id, key, value, updated_at)
 VALUES ('tenant', 'my-tenant', 'goal.cost_mode', '"aggressive"', NOW())
-ON CONFLICT (scope, tenant_id, key) 
+ON CONFLICT (scope, tenant_id, key)
 DO UPDATE SET value = EXCLUDED.value, updated_at = NOW();
 
 -- 查询当前配置
-SELECT scope, tenant_id, key, value, updated_at 
-FROM settings 
+SELECT scope, tenant_id, key, value, updated_at
+FROM settings
 WHERE key = 'goal.cost_mode'
 ORDER BY scope DESC, tenant_id;
 
 -- 删除配置
-DELETE FROM settings 
+DELETE FROM settings
 WHERE scope = 'tenant' AND tenant_id = 'my-tenant' AND key = 'goal.cost_mode';
 ```
 
@@ -863,9 +863,9 @@ grep "goal_audit" logs/llm-gateway.log | tail -20
 
 # 方式 2：数据库查询（如果启用了 HistoryStore）
 psql -h localhost -U postgres -d llm_gateway -c "
-  SELECT session_id, created_at, issues_found, issues_fixed 
-  FROM goal_audit_history 
-  ORDER BY created_at DESC 
+  SELECT session_id, created_at, issues_found, issues_fixed
+  FROM goal_audit_history
+  ORDER BY created_at DESC
   LIMIT 10;
 "
 ```

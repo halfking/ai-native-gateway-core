@@ -173,7 +173,7 @@ attempt 6+→ 15m  (capped)
 ### 8.3 数据落地验证（手动）
 通过 `telemetryClient.EmitRequestLogInsert` 写入：
 ```sql
-SELECT request_id, task_type, task_type_chosen, is_auto_request, 
+SELECT request_id, task_type, task_type_chosen, is_auto_request,
        quality_flags, auto_decision, success, error_kind
 FROM request_logs_hot
 WHERE request_id LIKE 'probe-direct-%'

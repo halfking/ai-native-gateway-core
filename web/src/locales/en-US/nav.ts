@@ -2,7 +2,7 @@
 export default {
   collapseSidebar: 'Collapse Sidebar',
   expandSidebar: 'Expand Sidebar',
-  
+
   group: {
     tenantPortal: 'My Services',
     modelsRouting: 'Models & Routing',
@@ -13,7 +13,7 @@ export default {
     guide: 'Integration Guide',
     chat: 'Chat',
   },
-  
+
   item: {
     overview: 'Overview',
     tenantModels: 'Standard Models',

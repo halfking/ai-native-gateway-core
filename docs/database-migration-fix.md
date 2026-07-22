@@ -83,8 +83,8 @@ export DATABASE_URL="postgres://user:password@host:5432/dbname"
 ```bash
 # 1. 检查前置条件
 psql $DATABASE_URL -c "
-SELECT tablename FROM pg_tables 
-WHERE schemaname = 'public' 
+SELECT tablename FROM pg_tables
+WHERE schemaname = 'public'
 AND tablename LIKE 'routing_decision_log%';
 "
 
@@ -96,8 +96,8 @@ psql $DATABASE_URL -f sql/migrations/startup/346_routing_decision_log_hot_indepe
 
 # 4. 验证
 psql $DATABASE_URL -c "
-SELECT tablename, pg_size_pretty(pg_total_relation_size(schemaname||'.'||tablename)) 
-FROM pg_tables 
+SELECT tablename, pg_size_pretty(pg_total_relation_size(schemaname||'.'||tablename))
+FROM pg_tables
 WHERE tablename = 'routing_decision_log_hot';
 "
 ```
@@ -157,7 +157,7 @@ WHERE tablename = 'routing_decision_log_hot';
        slog.Error("...")
        return  // ← 阻断主流程
    }
-   
+
    // 修复后：容错处理
    _, err := h.db.Exec(ctx, `INSERT INTO routing_decision_log_hot ...`)
    if err != nil {
@@ -183,12 +183,12 @@ psql $DATABASE_URL -c "
 预期输出：
 ```
                     Table "public.routing_decision_log_hot"
-       Column        |           Type           | Collation | Nullable | Default 
+       Column        |           Type           | Collation | Nullable | Default
 ---------------------+--------------------------+-----------+----------+---------
- id                  | bigint                   |           |          | 
- ts                  | timestamp with time zone |           |          | 
- request_id          | text                     |           |          | 
- model               | text                     |           |          | 
+ id                  | bigint                   |           |          |
+ ts                  | timestamp with time zone |           |          |
+ request_id          | text                     |           |          |
+ model               | text                     |           |          |
  ...
 ```
 
@@ -212,10 +212,10 @@ curl -H "Authorization: Bearer $TOKEN" \
 
 ```bash
 psql $DATABASE_URL -c "
-SELECT count(*), 
-       min(ts) as oldest, 
-       max(ts) as newest 
-FROM routing_decision_log_hot 
+SELECT count(*),
+       min(ts) as oldest,
+       max(ts) as newest
+FROM routing_decision_log_hot
 WHERE resolution_path = 'resolve_probe';
 "
 ```
@@ -293,7 +293,7 @@ pkill -9 gateway && ./gateway
 **解决方案：** 使用视图查询
 ```bash
 psql $DATABASE_URL -c "
-SELECT count(*) FROM routing_decision_log_with_current_month 
+SELECT count(*) FROM routing_decision_log_with_current_month
 WHERE resolution_path = 'resolve_probe';
 "
 ```
@@ -304,7 +304,7 @@ WHERE resolution_path = 'resolve_probe';
 
 ```bash
 psql $DATABASE_URL -c "
-SELECT 
+SELECT
     pg_size_pretty(pg_total_relation_size('routing_decision_log_hot')) as hot_size,
     count(*) as row_count,
     min(ts) as oldest,

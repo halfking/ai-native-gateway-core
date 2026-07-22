@@ -60,12 +60,12 @@ return &ExecuteResult{
 
 ### 方案 1: 修改 WriteNonStreamResponse 返回响应体（推荐）
 
-**优点**: 
+**优点**:
 - 最直接的修复
 - 符合架构设计
 - 不影响性能
 
-**缺点**: 
+**缺点**:
 - 需要修改 AnthropicExecutor 接口
 - 可能影响其他调用方
 
@@ -76,10 +76,10 @@ return &ExecuteResult{
 ```go
 // routing/executor_anthropic.go
 func (ae *AnthropicExecutor) WriteNonStreamResponse(
-    w http.ResponseWriter, 
-    resp *http.Response, 
-    clientModel string, 
-    qualityMode string, 
+    w http.ResponseWriter,
+    resp *http.Response,
+    clientModel string,
+    qualityMode string,
     signals *QualitySignals,
 ) (responseBody []byte, err error) {
     // 读取响应体
@@ -88,15 +88,15 @@ func (ae *AnthropicExecutor) WriteNonStreamResponse(
         return nil, err
     }
     resp.Body.Close()
-    
+
     // 处理响应（转换、质量检查等）
     processedBody := ae.processResponse(body, clientModel, qualityMode, signals)
-    
+
     // 写入 HTTP response
     w.Header().Set("Content-Type", "application/json")
     w.WriteHeader(http.StatusOK)
     w.Write(processedBody)
-    
+
     // 返回响应体用于日志记录
     return processedBody, nil
 }
@@ -125,11 +125,11 @@ return &ExecuteResult{
 
 ### 方案 2: 使用 ResponseRecorder 捕获响应（替代方案）
 
-**优点**: 
+**优点**:
 - 不需要修改 WriteNonStreamResponse 接口
 - 侵入性小
 
-**缺点**: 
+**缺点**:
 - 额外的内存拷贝
 - 性能略有影响
 - 代码复杂度增加
@@ -181,10 +181,10 @@ func (r *ResponseBodyRecorder) Write(b []byte) (int, error) {
 
 ### 方案 3: 在 handler 层面捕获（不推荐）
 
-**优点**: 
+**优点**:
 - 不需要修改 executor
 
-**缺点**: 
+**缺点**:
 - 需要拦截所有 HTTP 写入
 - 架构不清晰
 - 维护困难
@@ -249,12 +249,12 @@ func (r *ResponseBodyRecorder) Write(b []byte) (int, error) {
 
 修复后：
 ```sql
-SELECT 
+SELECT
   request_id,
   success,
   completion_tokens,
   LENGTH(response_body::text) as resp_len
-FROM request_logs 
+FROM request_logs
 WHERE client_model = 'claude-opus-4-8'
   AND ts > now() - interval '10 minutes';
 ```
@@ -269,7 +269,7 @@ resp_len: 450  ✅ 不再为 NULL
 
 ---
 
-**创建时间**: 2026-06-20 23:45  
-**优先级**: P0 - 立即修复  
+**创建时间**: 2026-06-20 23:45
+**优先级**: P0 - 立即修复
 **预计工作量**: 2-4 小时
 

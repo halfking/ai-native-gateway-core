@@ -5,7 +5,7 @@ export default {
   showDeleted: 'Gelöschte anzeigen',
   addButton: '+ Verweigerte Modell hinzufügen',
   loading: 'Lädt…',
-  
+
   table: {
     canonicalName: 'canonical_name',
     reason: 'reason',
@@ -14,14 +14,14 @@ export default {
     deletedAt: 'deleted_at',
     actions: 'Aktionen',
   },
-  
+
   actions: {
     softDelete: 'Vorläufig löschen',
     restore: 'Wiederherstellen',
   },
-  
+
   empty: 'Keine Richtlinien (alle Modelle standardmäßig erlaubt)',
-  
+
   audit: {
     title: 'Überwachungsprotokoll',
     recent: 'Letzte {count} Einträge',
@@ -39,7 +39,7 @@ export default {
       undelete: 'Wiederherstellen',
     },
   },
-  
+
   dialog: {
     title: 'Verweigerte Modell hinzufügen',
     hint: 'Geben Sie canonical_name unten ein (muss mit models_canonical Tabelle übereinstimmen).',
@@ -54,11 +54,11 @@ export default {
     submit: 'Senden',
     submitting: 'Wird gesendet…',
   },
-  
+
   confirm: {
     softDelete: 'Richtlinie {name} vorläufig löschen bestätigen? (Wiederherstellbar)',
   },
-  
+
   error: {
     loadFailed: 'Laden fehlgeschlagen',
     canonicalNameRequired: 'canonical_name ist erforderlich',

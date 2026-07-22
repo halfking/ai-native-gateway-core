@@ -1,7 +1,7 @@
 # llm-gateway-go 4 主题深度审计报告
 
-**审计日期**：2026-06-23  
-**审计模式**：Plan Mode（只读）  
+**审计日期**：2026-06-23
+**审计模式**：Plan Mode（只读）
 **审计范围**：services/llm-gateway-go/（HEAD `1c96a587`，working tree 有 1 个无关 dirty 文件）
 
 ---
@@ -229,9 +229,9 @@ L4 request_logs 行 (failure_detail_code / failure_stage / error_kind)
 | **T3 状态管理** | 删 dead code、恢复阈值、修假阴 | Redis pub/sub、KindNetwork 进 checker | tenant_id 补全、UPDATE 并行化 | pool size metric |
 | **T4 路由/请求** | per-attempt latency、真 request_id | window 24h、body 脱敏 | tenant filter、material view | first-byte observability |
 
-**P0 总数**：11 个改动  
-**P1 总数**：10 个改动  
-**P2 总数**：8 个改动  
+**P0 总数**：11 个改动
+**P1 总数**：10 个改动
+**P2 总数**：8 个改动
 **P3 总数**：4 个改动
 
 ---

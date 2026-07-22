@@ -57,7 +57,7 @@ async function saveConfig() {
   saving.value = true
   error.value = null
   successMessage.value = null
-  
+
   try {
     await updateApprovalConfig(config.value)
     successMessage.value = t('approval.config.success.saved')
@@ -90,7 +90,7 @@ onMounted(() => {
         <h1>{{ t('approval.config.title') }}</h1>
         <p class="page-description">{{ t('approval.config.description') }}</p>
       </div>
-      <button 
+      <button
         class="btn btn-primary btn-large"
         @click="saveConfig"
         :disabled="saving || loading"
@@ -104,7 +104,7 @@ onMounted(() => {
       <span class="message-icon">❌</span>
       {{ error }}
     </div>
-    
+
     <div v-if="successMessage" class="message message-success">
       <span class="message-icon">✅</span>
       {{ successMessage }}
@@ -122,7 +122,7 @@ onMounted(() => {
         <div class="section-header">
           <h2>{{ t('approval.config.sections.basic') }}</h2>
         </div>
-        
+
         <div class="settings-grid">
           <div class="setting-item">
             <div class="setting-label">
@@ -130,7 +130,7 @@ onMounted(() => {
               <span class="setting-hint">{{ t('approval.config.enabled.hint') }}</span>
             </div>
             <label class="switch-label">
-              <input 
+              <input
                 type="checkbox"
                 v-model="config.enabled"
                 class="switch-input"
@@ -158,7 +158,7 @@ onMounted(() => {
               <span class="setting-hint">{{ t('approval.config.timeout.hint', { value: formatTimeout(config.timeout_seconds) }) }}</span>
             </div>
             <div class="timeout-input-group">
-              <input 
+              <input
                 type="number"
                 v-model.number="config.timeout_seconds"
                 class="form-input"
@@ -213,7 +213,7 @@ onMounted(() => {
 
       <!-- Save Button (Bottom) -->
       <div class="bottom-actions">
-        <button 
+        <button
           class="btn btn-primary btn-large"
           @click="saveConfig"
           :disabled="saving || loading"

@@ -125,7 +125,7 @@ DECLARE
 BEGIN
   FOREACH table_name IN ARRAY ARRAY[
     'request_logs',
-    'request_wal', 
+    'request_wal',
     'usage_ledger',
     'routing_decision_log',
     'credential_model_index',
@@ -175,7 +175,7 @@ SELECT * FROM request_logs_2026_07;
 DROP TABLE request_logs_2026_07;
 
 -- 4. 重命名
-ALTER TABLE request_logs_2026_07_archive 
+ALTER TABLE request_logs_2026_07_archive
 RENAME TO request_logs_2026_07;
 
 -- 5. ATTACH 到归档（只读）
@@ -249,7 +249,7 @@ ALTER TABLE request_logs DETACH PARTITION request_logs_2026_08;
 
 ```sql
 -- 检查备份保留
-SELECT 
+SELECT
   backup_id,
   start_time,
   end_time,

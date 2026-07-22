@@ -4,7 +4,7 @@
 
 **端点**: `POST https://ark.cn-beijing.volces.com/api/v3/chat/completions`
 
-**认证**: 
+**认证**:
 ```
 Authorization: Bearer {API_KEY}
 ```

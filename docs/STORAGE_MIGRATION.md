@@ -203,7 +203,7 @@ LLM_GATEWAY_LOG_COMPRESS=true
 - **附件存储**：`/data/attachments`
   - 按日期和内容哈希组织：`YYYY/MM/DD/{content-hash}.ext`
   - 支持文件去重（相同内容只存储一次）
-  
+
 - **日志存储**：`__SERVER_PATH_6__`
   - 主日志文件：`gateway.log`
   - 轮转日志：`gateway.log.1.gz`, `gateway.log.2.gz`, ...
@@ -215,7 +215,7 @@ LLM_GATEWAY_LOG_COMPRESS=true
 - **预估用量**：根据业务量评估
   - 平均附件大小 × 日请求量 × 保留天数
   - 文件去重可节省 30-50% 空间
-  
+
 - **建议配置**：
   - 小型部署（< 1000 请求/天）：10GB
   - 中型部署（1000-10000 请求/天）：100GB

@@ -169,13 +169,13 @@ credentialhealth/checker.go 中的跳过逻辑（141-147行）：
 ```go
 type NodeState struct {
     // ... 现有字段 ...
-    
+
     // 新增：恢复阶段
     RecoveryPhase string `json:"recovery_phase,omitempty"` // "", "probed", "verified"
-    
+
     // 新增：探测成功时间（用于判断是否需要实际流量验证）
     ProbeSuccessAt int64 `json:"probe_success_at,omitempty"`
-    
+
     // 新增：恢复后的成功计数（用于渐进恢复）
     RecoverySuccessCount int `json:"recovery_success_count,omitempty"`
 }
@@ -199,26 +199,26 @@ type NodeState struct {
 func (r *Router) filterHealthyNodes(candidates []provider.Candidate) []provider.Candidate {
     for _, cand := range candidates {
         state := GetNodeState(cand.CredentialID, cand.RawModel)
-        
+
         // 完全禁用的节点：跳过
         if state.Disabled && now < state.DisabledUntil {
             continue
         }
-        
+
         // 探测恢复阶段：只接收 10% 流量（用于验证）
         if state.RecoveryPhase == "probed" {
             if rand.Float64() > 0.1 {
                 continue  // 90% 的请求跳过该节点
             }
         }
-        
+
         // 已验证恢复阶段：接收 50% 流量
         if state.RecoveryPhase == "verified" {
             if rand.Float64() > 0.5 {
                 continue  // 50% 的请求跳过该节点
             }
         }
-        
+
         healthyNodes = append(healthyNodes, cand)
     }
 }
@@ -230,7 +230,7 @@ func (r *Router) filterHealthyNodes(candidates []provider.Candidate) []provider.
 ```go
 func (pr *Prober) MarkSuccess(providerID string) error {
     // 现有逻辑...
-    
+
     // 新增：对所有该 provider 下的节点，尝试提前结束冷却期
     credentials, _ := GetCredentialsByProvider(providerID)
     for _, cred := range credentials {
@@ -259,7 +259,7 @@ func calculateCooldownDuration(state *NodeState) time.Duration {
     if state.DisableCount == 1 {
         return 5 * time.Minute
     }
-    
+
     // 短期内（1 小时）多次失败：指数退避
     recentDisables := countRecentDisables(state, 1*time.Hour)
     if recentDisables >= 3 {
@@ -268,12 +268,12 @@ func calculateCooldownDuration(state *NodeState) time.Duration {
             float64(30 * time.Minute),
         ))
     }
-    
+
     // 长期稳定后偶尔失败：短冷却
     if state.SuccessCount > 100 && state.FailureCount < 5 {
         return 2 * time.Minute
     }
-    
+
     return 5 * time.Minute  // 默认
 }
 ```
@@ -290,7 +290,7 @@ if streak >= streak_limit and not state.disabled then
     state.disabled = true
     state.disabled_until = now + cooldown
     state.disabled_reason = 'consecutive ' .. streak_limit .. ' failures'
-    
+
     -- P0: 记录禁用时间，用于后续判断
     state.last_disabled_at = now
 end
@@ -331,13 +331,13 @@ func TestNodeState_RecoveryRequiresActualSuccess(t *testing.T) {
     // 场景：节点失败 3 次被禁用
     state := recordFailures(3)
     assert.True(state.Disabled)
-    
+
     // 5 分钟后，冷却期到期
     time.Sleep(5 * time.Minute)
-    
+
     // 仅检查 IsUsable，不应该恢复（需要实际请求成功）
     assert.False(state.IsUsable(time.Now()))
-    
+
     // 记录一次成功，才恢复
     RecordNodeSuccess(credID, model, reqID)
     state = GetNodeState(credID, model)

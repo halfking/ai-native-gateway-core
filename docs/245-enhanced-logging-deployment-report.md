@@ -1,7 +1,7 @@
 # 245泳道修复 - 增强日志版本部署报告
 
-**部署时间**: 2026-07-21 00:56  
-**部署版本**: seq=1252, commit=942d2209  
+**部署时间**: 2026-07-21 00:56
+**部署版本**: seq=1252, commit=942d2209
 **部署耗时**: 26秒
 
 ---
@@ -34,12 +34,12 @@
 
 **日志示例**:
 ```
-INFO live stream delta push 
-  scope=tenant 
-  tenant_id=default 
+INFO live stream delta push
+  scope=tenant
+  tenant_id=default
   trigger_request=req_abc123
-  summary_total=45 
-  summary_success=42 
+  summary_total=45
+  summary_success=42
   summary_failure=3
   changed_lanes_count=3
   changed_details=vendor/minimax: total=12 tiles=20 ids=[req_001,req_002...req_019,req_020] | provider/NVIDIA: total=35 tiles=20 ids=[req_101,req_102...req_119,req_120]
@@ -139,7 +139,7 @@ docker logs llm-gateway-go --since 10m 2>&1 | grep "dimension queues discovered"
 docker logs llm-gateway-go --since 10m 2>&1 | grep "vendor/minimax"
 ```
 
-**期望**: 
+**期望**:
 - 新请求到达时，ids后面新增，前面保持不变
 - 无新请求时，ids完全不变
 
@@ -171,7 +171,7 @@ docker logs llm-gateway-go --since 10m 2>&1 | grep -E 'failed to sort by activit
 
 **期望**: 无错误
 
-**异常**: 
+**异常**:
 - "failed to sort by activity" → sortKeysByActivity()失败，已fallback到字母排序
 - "pipeline exec failed" → Redis Pipeline错误
 
@@ -211,6 +211,6 @@ docker logs llm-gateway-go --since 10m 2>&1 | grep -E 'failed to sort by activit
 
 ---
 
-**监控负责人**: ___________  
-**监控开始时间**: ___________  
+**监控负责人**: ___________
+**监控开始时间**: ___________
 **初步结论**: [ ] ✅ 修复有效  [ ] ⚠️ 部分有效  [ ] ❌ 需进一步分析

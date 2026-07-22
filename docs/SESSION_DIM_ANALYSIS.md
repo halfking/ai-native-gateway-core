@@ -2,8 +2,8 @@
 
 ## 问题概述
 
-**发现时间**: 2026-07-08  
-**影响范围**: 仪表盘会话统计面板  
+**发现时间**: 2026-07-08
+**影响范围**: 仪表盘会话统计面板
 **错误信息**: `ERROR: relation "session_dim" does not exist (SQLSTATE 42P01)`
 
 ## 问题分析
@@ -131,16 +131,16 @@ systemctl restart llm-gateway-go.service
 ```sql
 -- 从 session_summaries 回填 session_dim
 INSERT INTO session_dim (
-    gw_session_id, session_key, tenant_id, 
+    gw_session_id, session_key, tenant_id,
     first_request_at, last_active_at, status, created_at
 )
-SELECT 
+SELECT
     session_key AS gw_session_id,
     session_key,
     tenant_id,
     first_request_at,
     last_request_at AS last_active_at,
-    CASE 
+    CASE
         WHEN last_request_at > NOW() - INTERVAL '24 hours' THEN 'active'
         ELSE 'idle'
     END AS status,
@@ -153,9 +153,9 @@ WHERE NOT EXISTS (
 
 ## 执行计划
 
-**优先级**: P1 (高)  
-**建议时间**: 尽快（非业务高峰期）  
-**预计耗时**: 10-15分钟  
+**优先级**: P1 (高)
+**建议时间**: 尽快（非业务高峰期）
+**预计耗时**: 10-15分钟
 **风险评估**: 低（CREATE TABLE IF NOT EXISTS + 已测试降级方案）
 
 ### 执行检查清单
@@ -182,9 +182,9 @@ SELECT COUNT(*), MAX(created_at) FROM session_dim;
 2. **触发器执行状态**
 ```sql
 -- 查看最近的 session_summaries 更新
-SELECT session_key, updated_at, request_count 
-FROM session_summaries 
-ORDER BY updated_at DESC 
+SELECT session_key, updated_at, request_count
+FROM session_summaries
+ORDER BY updated_at DESC
 LIMIT 10;
 ```
 

@@ -1,7 +1,7 @@
 # HTTP/2 支持安全审计报告
 
-**日期**: 2026-07-16  
-**审计人**: OpenCode AI Agent  
+**日期**: 2026-07-16
+**审计人**: OpenCode AI Agent
 **变更**: 引入 h2c (HTTP/2 cleartext) 支持 + clientprofile nil pointer 修复
 
 ## 审计范围
@@ -63,28 +63,28 @@ upstream kxpms_llm_backend {
 ## HTTP/2 攻击面分析
 
 ### 1. Stream 泛洪攻击
-**风险**: 攻击者打开大量并发 stream 耗尽服务器资源  
-**缓解**: `MaxConcurrentStreams: 250` 限制每连接 250 流  
+**风险**: 攻击者打开大量并发 stream 耗尽服务器资源
+**缓解**: `MaxConcurrentStreams: 250` 限制每连接 250 流
 **状态**: ✅ 已缓解
 
 ### 2. HPACK 炸弹攻击
-**风险**: 攻击者发送超大 HPACK 压缩头部，解压后内存爆炸  
-**缓解**: `MaxReadFrameSize: 1MB` 限制单帧大小  
+**风险**: 攻击者发送超大 HPACK 压缩头部，解压后内存爆炸
+**缓解**: `MaxReadFrameSize: 1MB` 限制单帧大小
 **状态**: ✅ 已缓解
 
 ### 3. 慢读攻击 (Slow Read)
-**风险**: 攻击者缓慢读取响应，占用连接池  
-**缓解**: `IdleTimeout: 60s` + `ReadTimeout: 120s`  
+**风险**: 攻击者缓慢读取响应，占用连接池
+**缓解**: `IdleTimeout: 60s` + `ReadTimeout: 120s`
 **状态**: ✅ 已缓解
 
 ### 4. CONTINUATION frame flood
-**风险**: 攻击者发送无限 CONTINUATION frame  
-**缓解**: golang.org/x/net/http2 内置防护 (v0.23+)  
+**风险**: 攻击者发送无限 CONTINUATION frame
+**缓解**: golang.org/x/net/http2 内置防护 (v0.23+)
 **状态**: ✅ 已缓解
 
 ### 5. HTTP/2 Server Push 滥用
-**风险**: 服务器推送未请求的资源  
-**缓解**: h2c 默认未启用 server push  
+**风险**: 服务器推送未请求的资源
+**缓解**: h2c 默认未启用 server push
 **状态**: ✅ 无风险
 
 ## HTTP/1.1 兼容性
@@ -134,5 +134,5 @@ h2c.NewHandler 自动降级到 HTTP/1.1：
 
 ---
 
-**签署**: OpenCode AI Agent  
+**签署**: OpenCode AI Agent
 **审计时间**: 2026-07-16 13:37 UTC+8

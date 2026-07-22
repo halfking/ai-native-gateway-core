@@ -20,7 +20,7 @@
 + UPDATE credentials SET ...
 ```
 
-**文件：** `domains/credential/flusher.go:135`  
+**文件：** `domains/credential/flusher.go:135`
 **状态：** ✅ 已修复并编译通过
 
 
@@ -51,7 +51,7 @@ Migration 和 Flusher 使用不同的字段名：
 | `quota_remaining` | 剩余配额 |
 | `quota_reset_at` | 配额重置时间 |
 
-**文件：** `deploy/sql/migrations/033_bandit_scoring.sql`  
+**文件：** `deploy/sql/migrations/033_bandit_scoring.sql`
 **状态：** ✅ 已修复
 
 
@@ -79,7 +79,7 @@ if err := banditScorer.LoadFromDB(context.Background(), dbConn.Pool()); err != n
 }
 ```
 
-**文件：** 
+**文件：**
 - `domains/credential/bandit.go` - LoadFromDB 实现
 - `cmd/gateway/main.go:312` - 启动时调用
 
@@ -254,11 +254,11 @@ enable_bandit_scoring: true
 
 ### 🛡️ 生产就绪
 
-✅ 所有 P0 阻塞问题已修复  
-✅ 所有 P1 生产必需问题已修复  
-✅ 编译通过，单元测试通过  
-✅ 支持灰度发布（默认禁用）  
-✅ 有完整的回滚方案（关闭环境变量即可）  
+✅ 所有 P0 阻塞问题已修复
+✅ 所有 P1 生产必需问题已修复
+✅ 编译通过，单元测试通过
+✅ 支持灰度发布（默认禁用）
+✅ 有完整的回滚方案（关闭环境变量即可）
 
 
 ---
@@ -298,7 +298,7 @@ export LLM_GATEWAY_ENABLE_BANDIT_SCORING=false
 # 或重启服务时去掉环境变量
 
 # 如需完全回滚 Migration
-ALTER TABLE credentials 
+ALTER TABLE credentials
 DROP COLUMN IF EXISTS bandit_alpha,
 DROP COLUMN IF EXISTS bandit_beta,
 ...;  # 删除所有 bandit_* 和 penalty_* 字段
@@ -307,10 +307,10 @@ DROP COLUMN IF EXISTS bandit_beta,
 
 ---
 
-**审计人：** AI Assistant  
-**修正完成时间：** 2026-06-26  
-**P0 问题修复率：** 3/3 (100%)  
-**P1 问题修复率：** 2/2 (100%)  
-**编译状态：** ✅ 通过  
-**下一步：** 端到端集成测试 + 部署文档  
+**审计人：** AI Assistant
+**修正完成时间：** 2026-06-26
+**P0 问题修复率：** 3/3 (100%)
+**P1 问题修复率：** 2/2 (100%)
+**编译状态：** ✅ 通过
+**下一步：** 端到端集成测试 + 部署文档
 **建议：** 可以继续进行集成测试和部署准备

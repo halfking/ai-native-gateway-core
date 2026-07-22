@@ -1,8 +1,8 @@
 # Phase 1 并行优化实施计划
 
-> **任务**: LLM Gateway Phase 1 - 基础优化 + 号池优化  
-> **周期**: Week 2-5 (2026-07-22 ~ 2026-08-15)  
-> **状态**: 📋 待开始  
+> **任务**: LLM Gateway Phase 1 - 基础优化 + 号池优化
+> **周期**: Week 2-5 (2026-07-22 ~ 2026-08-15)
+> **状态**: 📋 待开始
 > **负责人**: Infrastructure Team
 
 ---
@@ -59,7 +59,7 @@ func (cb *CircuitBreaker) Call(fn func() error) error {
             return ErrCircuitOpen
         }
     }
-    
+
     err := fn()
     cb.recordResult(err)
     cb.updateState()
@@ -82,7 +82,7 @@ func (cb *CircuitBreaker) Call(fn func() error) error {
 // 在 buildV2DispatchPipeline 中注册熔断器中间件
 func buildV2DispatchPipeline(...) {
     // ... 现有代码
-    
+
     // 为每个 provider 创建独立的熔断器
     circuitBreakers := make(map[string]*circuit.Breaker)
     for _, provider := range providers {
@@ -93,7 +93,7 @@ func buildV2DispatchPipeline(...) {
             HalfOpenMaxTest: 3,
         })
     }
-    
+
     // 注册熔断器插件
     secRegistry.MustRegister(circuitplugin.New(circuitBreakers))
 }
@@ -110,7 +110,7 @@ var (
         },
         []string{"provider"},
     )
-    
+
     CircuitBreakerTriggered = promauto.NewCounterVec(
         prometheus.CounterOpts{
             Name: "llm_gateway_circuit_breaker_triggered_total",
@@ -118,7 +118,7 @@ var (
         },
         []string{"provider", "reason"},
     )
-    
+
     CircuitBreakerRejected = promauto.NewCounterVec(
         prometheus.CounterOpts{
             Name: "llm_gateway_circuit_breaker_rejected_total",
@@ -145,7 +145,7 @@ groups:
         annotations:
           summary: "Circuit breaker is open for {{ $labels.provider }}"
           description: "Provider {{ $labels.provider }} circuit breaker has been open for 1 minute"
-      
+
       - alert: CircuitBreakerHighTriggerRate
         expr: rate(llm_gateway_circuit_breaker_triggered_total[5m]) > 0.1
         for: 5m
@@ -266,7 +266,7 @@ var (
         },
         []string{"adapter_version", "provider", "status"},
     )
-    
+
     AdapterConversionErrors = promauto.NewCounterVec(
         prometheus.CounterOpts{
             Name: "llm_gateway_adapter_conversion_errors_total",
@@ -298,13 +298,13 @@ type SafetyResult struct {
 
 func (e *Engine) EvaluateSafety(text string) *SafetyResult {
     matches := e.DetectSensitiveWords(text)
-    
+
     // 基于匹配数和严重程度计算评分
     score := calculateScore(matches)
-    
+
     // 根据评分决定动作
     action := determineAction(score)
-    
+
     return &SafetyResult{
         Score:        score,
         MatchedWords: matches,
@@ -337,7 +337,7 @@ var (
         },
         []string{"category"},
     )
-    
+
     ContentSafetyScore = promauto.NewHistogramVec(
         prometheus.HistogramOpts{
             Name:    "llm_gateway_content_safety_score",
@@ -379,18 +379,18 @@ type WeightedCredential struct {
 func (s *WRRScheduler) Select() *Credential {
     s.mu.Lock()
     defer s.mu.Unlock()
-    
+
     // 1. 选出 current_weight 最大的
     best := s.selectBest()
-    
+
     // 2. 更新: best.current_weight -= total_weight
     best.CurrentWeight -= s.totalWeight()
-    
+
     // 3. 所有 current_weight += effective_weight
     for _, c := range s.credentials {
         c.CurrentWeight += c.EffectiveWeight
     }
-    
+
     return best.Credential
 }
 ```
@@ -456,7 +456,7 @@ var (
         },
         []string{"pool_id", "strategy"},
     )
-    
+
     CredentialWaitTime = promauto.NewHistogramVec(
         prometheus.HistogramOpts{
             Name:    "llm_gateway_credential_wait_time_seconds",
@@ -465,7 +465,7 @@ var (
         },
         []string{"pool_id"},
     )
-    
+
     CredentialAllocation = promauto.NewCounterVec(
         prometheus.CounterOpts{
             Name: "llm_gateway_credential_allocation_total",
@@ -473,7 +473,7 @@ var (
         },
         []string{"pool_id", "status"},  // allocated | timeout | pool_exhausted
     )
-    
+
     CredentialWeight = promauto.NewGaugeVec(
         prometheus.GaugeOpts{
             Name: "llm_gateway_credential_weight",
@@ -481,7 +481,7 @@ var (
         },
         []string{"credential_id", "pool_id"},
     )
-    
+
     CredentialRequestsAllocated = promauto.NewCounterVec(
         prometheus.CounterOpts{
             Name: "llm_gateway_credential_requests_allocated_total",
@@ -517,7 +517,7 @@ type PriorityQueue struct {
 func (pq *PriorityQueue) Enqueue(req *Request, priority Priority, timeout time.Duration) error {
     pq.mu.Lock()
     defer pq.mu.Unlock()
-    
+
     queue := pq.queues[priority]
     entry := &QueueEntry{
         Request:   req,
@@ -526,14 +526,14 @@ func (pq *PriorityQueue) Enqueue(req *Request, priority Priority, timeout time.D
     }
     queue.PushBack(entry)
     pq.cond.Signal()
-    
+
     return nil
 }
 
 func (pq *PriorityQueue) Dequeue() *Request {
     pq.mu.Lock()
     defer pq.mu.Unlock()
-    
+
     // 优先级: High > Medium > Low
     for _, priority := range []Priority{High, Medium, Low} {
         queue := pq.queues[priority]
@@ -542,7 +542,7 @@ func (pq *PriorityQueue) Dequeue() *Request {
             return entry.Request
         }
     }
-    
+
     // 队列空，等待
     pq.cond.Wait()
     return pq.Dequeue()
@@ -560,7 +560,7 @@ var (
         },
         []string{"pool_id"},
     )
-    
+
     CredentialQueueWaitTime = promauto.NewHistogramVec(
         prometheus.HistogramOpts{
             Name:    "llm_gateway_credential_queue_wait_seconds",
@@ -601,10 +601,10 @@ ALTER TABLE request_logs ADD COLUMN IF NOT EXISTS credential_wait_time_ms INT;
 ALTER TABLE request_logs ADD COLUMN IF NOT EXISTS credential_reuse_count INT;
 
 -- 约束
-ALTER TABLE request_logs ADD CONSTRAINT chk_content_safety_score 
+ALTER TABLE request_logs ADD CONSTRAINT chk_content_safety_score
     CHECK (content_safety_score IS NULL OR (content_safety_score >= 0 AND content_safety_score <= 1));
 
-ALTER TABLE request_logs ADD CONSTRAINT chk_credential_pool_strategy 
+ALTER TABLE request_logs ADD CONSTRAINT chk_credential_pool_strategy
     CHECK (credential_pool_strategy IS NULL OR credential_pool_strategy IN ('round_robin', 'wrr', 'least_loaded'));
 
 COMMIT;
@@ -617,7 +617,7 @@ SELECT column_name, data_type, is_nullable
 FROM information_schema.columns
 WHERE table_name = 'request_logs'
   AND column_name IN (
-    'content_safety_score', 'circuit_breaker_triggered', 
+    'content_safety_score', 'circuit_breaker_triggered',
     'credential_pool_id', 'credential_wait_time_ms'
   );
 ```
@@ -626,21 +626,21 @@ WHERE table_name = 'request_logs'
 
 ```sql
 -- 基础优化索引
-CREATE INDEX CONCURRENTLY idx_request_logs_circuit_breaker 
-    ON request_logs(circuit_breaker_triggered) 
+CREATE INDEX CONCURRENTLY idx_request_logs_circuit_breaker
+    ON request_logs(circuit_breaker_triggered)
     WHERE circuit_breaker_triggered = TRUE;
 
-CREATE INDEX CONCURRENTLY idx_request_logs_content_safety 
-    ON request_logs(content_safety_score) 
+CREATE INDEX CONCURRENTLY idx_request_logs_content_safety
+    ON request_logs(content_safety_score)
     WHERE content_safety_score IS NOT NULL;
 
 -- 号池优化索引
-CREATE INDEX CONCURRENTLY idx_request_logs_credential_pool 
-    ON request_logs(credential_pool_id) 
+CREATE INDEX CONCURRENTLY idx_request_logs_credential_pool
+    ON request_logs(credential_pool_id)
     WHERE credential_pool_id IS NOT NULL;
 
-CREATE INDEX CONCURRENTLY idx_request_logs_credential_wait 
-    ON request_logs(credential_wait_time_ms) 
+CREATE INDEX CONCURRENTLY idx_request_logs_credential_wait
+    ON request_logs(credential_wait_time_ms)
     WHERE credential_wait_time_ms > 100;
 ```
 
@@ -682,10 +682,10 @@ Week 2:
 Week 3:
   Circuit Breaker 核心完成
     └─→ 集成到请求链路 (Day 1-2)
-  
+
   WRR 调度器核心完成
     └─→ 健康检查模块 (Day 1-2)
-  
+
   Unified Adapter (独立, Day 1-4)
 
 Week 4:
@@ -761,8 +761,8 @@ rate(llm_gateway_circuit_breaker_triggered_total[5m])
 
 **Panel 3: Adapter 转换成功率**
 ```promql
-sum(rate(llm_gateway_adapter_requests_total{status="success"}[5m])) 
-/ 
+sum(rate(llm_gateway_adapter_requests_total{status="success"}[5m]))
+/
 sum(rate(llm_gateway_adapter_requests_total[5m]))
 ```
 
@@ -818,7 +818,7 @@ llm_gateway_credential_queue_length
 
 ---
 
-**创建日期**: 2026-07-18  
-**预计开始**: 2026-07-22  
-**预计完成**: 2026-08-15  
+**创建日期**: 2026-07-18
+**预计开始**: 2026-07-22
+**预计完成**: 2026-08-15
 **当前状态**: 📋 待开始

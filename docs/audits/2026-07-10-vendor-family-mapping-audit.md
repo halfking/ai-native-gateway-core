@@ -1,7 +1,7 @@
 # 厂商前缀映射完整性审计总结
 
-**日期**: 2026-07-10  
-**审计范围**: `discovery/normalize.go` 的 `vendorCanonicalFamilies` 映射表  
+**日期**: 2026-07-10
+**审计范围**: `discovery/normalize.go` 的 `vendorCanonicalFamilies` 映射表
 **触发原因**: 用户要求确认所有模型前缀都有明确的厂商归属映射
 
 ---
@@ -169,8 +169,8 @@ grep -r "gemma\|doubao\|ernie\|hunyuan\|spark" docs/ catalog/ --include="*.md" -
 
 ### 2. 对比已知厂商前缀清单
 
-已知模型前缀：28 个  
-已映射前缀（修复前）：22 个  
+已知模型前缀：28 个
+已映射前缀（修复前）：22 个
 **缺失**：6 个（gemma, doubao, ernie, hunyuan, spark, abab）
 
 ### 3. 补充映射并测试
@@ -183,7 +183,7 @@ grep -r "gemma\|doubao\|ernie\|hunyuan\|spark" docs/ catalog/ --include="*.md" -
 
 ## 提交记录
 
-**Commit**: `26959fef`  
+**Commit**: `26959fef`
 **标题**: `feat(discovery): 补充6个中国厂商模型前缀映射`
 
 **改动**:
@@ -198,10 +198,10 @@ grep -r "gemma\|doubao\|ernie\|hunyuan\|spark" docs/ catalog/ --include="*.md" -
 
 ## 结论
 
-✅ **所有已知厂商前缀都已正确映射**  
-✅ **测试覆盖完整，回归守卫到位**  
-✅ **与前端 display 映射保持一致**  
-✅ **支持新厂商的 fallback 机制完好**  
+✅ **所有已知厂商前缀都已正确映射**
+✅ **测试覆盖完整，回归守卫到位**
+✅ **与前端 display 映射保持一致**
+✅ **支持新厂商的 fallback 机制完好**
 
 **无遗留问题**。下次部署后，所有新发现的模型都将自动获得正确的 family 归类。
 

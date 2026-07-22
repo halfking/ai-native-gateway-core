@@ -1,8 +1,8 @@
 # Phase 0 完成总结 - 供应商质量画像数据库建表
 
-**完成时间**: 2026-07-19 01:30  
-**执行人**: Claude Opus 4  
-**耗时**: 约 30 分钟  
+**完成时间**: 2026-07-19 01:30
+**执行人**: Claude Opus 4
+**耗时**: 约 30 分钟
 **状态**: ✅ 完成
 
 ---
@@ -64,7 +64,7 @@ docker exec r112_postgres psql -U kxuser -d llm_gateway
 
 ### 1.4 Git 提交
 
-**Commit**: `a73428230`  
+**Commit**: `a73428230`
 **Message**: `fix(db): 修复供应商质量画像表视图的字段引用`
 
 **变更内容**：
@@ -78,8 +78,8 @@ docker exec r112_postgres psql -U kxuser -d llm_gateway
 
 ### 2.1 字段名修正
 
-**问题**：设计文档中假设 `providers` 表有 `name` 字段  
-**实际**：生产表使用 `display_name` 字段  
+**问题**：设计文档中假设 `providers` 表有 `name` 字段
+**实际**：生产表使用 `display_name` 字段
 **解决**：修改视图 `provider_health_status`，使用 `p.display_name`
 
 ### 2.2 时间窗口设计
@@ -116,7 +116,7 @@ UNIQUE(provider_id, model_name, endpoint, bucket)  -- metrics 表
 
 ```sql
 -- 表数量
-SELECT COUNT(*) FROM information_schema.tables 
+SELECT COUNT(*) FROM information_schema.tables
 WHERE table_name IN (
     'provider_quality_profiles',
     'provider_metrics_minute',
@@ -144,9 +144,9 @@ WHERE table_name IN (
 
 ```bash
 docker exec r112_postgres psql -U kxuser -d llm_gateway -c \
-  "SELECT table_name FROM information_schema.tables 
-   WHERE table_name LIKE 'provider_%quality%' 
-      OR table_name LIKE 'provider_%metrics%' 
+  "SELECT table_name FROM information_schema.tables
+   WHERE table_name LIKE 'provider_%quality%'
+      OR table_name LIKE 'provider_%metrics%'
    ORDER BY table_name;"
 
 # 输出:
@@ -167,14 +167,14 @@ docker exec r112_postgres psql -U kxuser -d llm_gateway -c \
 
 ### 4.1 问题：本地 Docker 端口不匹配
 
-**现象**：`.env.local` 配置 `DB_PORT=55432`，但实际容器监听 `15432`  
-**原因**：docker-compose.local-r112.yml 配置端口为 `15432:5432`  
+**现象**：`.env.local` 配置 `DB_PORT=55432`，但实际容器监听 `15432`
+**原因**：docker-compose.local-r112.yml 配置端口为 `15432:5432`
 **解决**：直接使用 `docker exec` 访问容器内的 PostgreSQL
 
 ### 4.2 问题：视图创建失败（字段不存在）
 
-**现象**：`ERROR: column p.name does not exist`  
-**原因**：设计文档假设字段名，但生产表使用 `display_name`  
+**现象**：`ERROR: column p.name does not exist`
+**原因**：设计文档假设字段名，但生产表使用 `display_name`
 **解决**：
 1. 检查生产表结构：`\d providers`
 2. 修改视图定义：`p.name` → `p.display_name`
@@ -182,8 +182,8 @@ docker exec r112_postgres psql -U kxuser -d llm_gateway -c \
 
 ### 4.3 问题：Edit 工具修改未生效
 
-**现象**：使用 Edit 工具后 `git diff` 显示无变化  
-**原因**：可能是 Edit 工具的缓存或同步问题  
+**现象**：使用 Edit 工具后 `git diff` 显示无变化
+**原因**：可能是 Edit 工具的缓存或同步问题
 **解决**：使用 `sed -i` 直接修改文件后再用 Edit 确认
 
 ---
@@ -409,6 +409,6 @@ Phase 0 的验收标准：
 
 ---
 
-**Phase 0 完成时间**: 2026-07-19 01:30  
-**下一阶段**: Phase 1（数据采集）预计开始时间 2026-07-19  
+**Phase 0 完成时间**: 2026-07-19 01:30
+**下一阶段**: Phase 1（数据采集）预计开始时间 2026-07-19
 **整体进度**: 1/5 (20%)

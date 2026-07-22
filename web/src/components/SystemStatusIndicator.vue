@@ -47,14 +47,14 @@ function handleClickOutside(event: MouseEvent) {
 
 const overallStatus = computed(() => {
   if (!health.value) return 'unknown'
-  
+
   const dbOk = !health.value.database || health.value.database.connected
   const redisOk = !health.value.redis || health.value.redis.connected
-  
+
   if (health.value.status === 'ok' && dbOk && redisOk) {
     return 'healthy'
   }
-  
+
   return 'unhealthy'
 })
 
@@ -76,7 +76,7 @@ const statusIcon = computed(() => {
 
 const aliveTasksCount = computed(() => {
   if (!bgTasks.value) return null
-  
+
   const tasks = [
     bgTasks.value.discovery,
     bgTasks.value.probe_loop,
@@ -84,7 +84,7 @@ const aliveTasksCount = computed(() => {
     bgTasks.value.recovery,
     bgTasks.value.telemetry
   ]
-  
+
   const alive = tasks.filter(t => t?.alive).length
   return { alive, total: tasks.length }
 })
@@ -106,7 +106,7 @@ function updateTimeSinceCheck() {
     timeSinceCheck.value = ''
     return
   }
-  
+
   const seconds = Math.floor((Date.now() - lastChecked.value.getTime()) / 1000)
   if (seconds < 60) {
     timeSinceCheck.value = `${seconds}秒前`
@@ -144,7 +144,7 @@ async function loadStatus() {
       // Background tasks might not be available, ignore
       console.warn('Background tasks not available:', e)
     }
-    
+
     lastChecked.value = new Date()
     updateTimeSinceCheck()
   } catch (e: any) {

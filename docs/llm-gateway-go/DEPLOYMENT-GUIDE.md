@@ -89,7 +89,7 @@ psql -U kxuser -d llm_gateway -c "\d credentials" | grep bandit
 
 ```bash
 # 在单个实例上启用（约占 5-10% 流量）
-# 例如：gateway-1 
+# 例如：gateway-1
 ssh gateway-1.prod.example.com
 ```
 
@@ -134,7 +134,7 @@ sudo journalctl -u llm-gateway -f
 ```bash
 # 查看 Bandit 更新频率
 psql -U kxuser -d llm_gateway -c "
-SELECT 
+SELECT
     COUNT(*) as total_credentials,
     COUNT(CASE WHEN last_scored_at > NOW() - INTERVAL '1 hour' THEN 1 END) as recently_updated,
     MAX(last_scored_at) as last_update
@@ -162,7 +162,7 @@ sudo journalctl -u llm-gateway --since "1 hour ago" | grep -i "error\|fail" | wc
 ```bash
 # 查看 bandit 字段的更新统计
 psql -U kxuser -d llm_gateway -c "
-SELECT 
+SELECT
     PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY bandit_success_count) as median_success,
     PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY bandit_failure_count) as median_failure,
     AVG(bandit_avg_latency_ms) as avg_latency
@@ -245,8 +245,8 @@ echo ""
 # 1. 检查 Migration
 echo "1. 检查数据库字段..."
 FIELD_COUNT=$(psql -h $DB_HOST -U $DB_USER -d $DB_NAME -t -c "
-SELECT COUNT(*) FROM information_schema.columns 
-WHERE table_name = 'credentials' 
+SELECT COUNT(*) FROM information_schema.columns
+WHERE table_name = 'credentials'
 AND column_name IN ('bandit_alpha', 'bandit_beta', 'bandit_success_count');
 ")
 
@@ -268,7 +268,7 @@ fi
 # 3. 检查数据更新
 echo "3. 检查数据库更新..."
 UPDATED_COUNT=$(psql -h $DB_HOST -U $DB_USER -d $DB_NAME -t -c "
-SELECT COUNT(*) FROM credentials 
+SELECT COUNT(*) FROM credentials
 WHERE last_scored_at > NOW() - INTERVAL '1 hour';
 ")
 
@@ -338,7 +338,7 @@ sudo journalctl -u llm-gateway --since "1 minute ago" | grep bandit
 
 ```sql
 -- rollback_033_bandit_scoring.sql
-ALTER TABLE credentials 
+ALTER TABLE credentials
 DROP COLUMN IF EXISTS bandit_alpha,
 DROP COLUMN IF EXISTS bandit_beta,
 DROP COLUMN IF EXISTS bandit_success_count,
@@ -378,18 +378,18 @@ psql -U kxuser -d llm_gateway < rollback_033_bandit_scoring.sql
 
 ```promql
 # 请求成功率
-sum(rate(llm_gateway_requests_total{status="success"}[5m])) 
-/ 
+sum(rate(llm_gateway_requests_total{status="success"}[5m]))
+/
 sum(rate(llm_gateway_requests_total[5m]))
 
 # P95 延迟
-histogram_quantile(0.95, 
+histogram_quantile(0.95,
   sum(rate(llm_gateway_request_duration_seconds_bucket[5m])) by (le)
 )
 
 # 429 错误率
-sum(rate(llm_gateway_requests_total{status="429"}[5m])) 
-/ 
+sum(rate(llm_gateway_requests_total{status="429"}[5m]))
+/
 sum(rate(llm_gateway_requests_total[5m]))
 ```
 
@@ -491,9 +491,9 @@ bandit: failed to load state from database: ...
 ```bash
 # 手动测试查询
 psql -U kxuser -d llm_gateway -c "
-SELECT id, bandit_alpha, bandit_beta 
-FROM credentials 
-WHERE status <> 'disabled' 
+SELECT id, bandit_alpha, bandit_beta
+FROM credentials
+WHERE status <> 'disabled'
 LIMIT 5;
 "
 ```

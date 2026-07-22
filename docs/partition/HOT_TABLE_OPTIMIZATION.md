@@ -1,7 +1,7 @@
 # 分区表架构优化方案 - 热表独立
 
-**日期**: 2026-07-05  
-**提出**: 用户架构优化建议  
+**日期**: 2026-07-05
+**提出**: 用户架构优化建议
 **状态**: 方案分析中
 
 ---
@@ -144,7 +144,7 @@ CREATE TABLE request_logs_hot (LIKE request_logs INCLUDING ALL);
 CREATE INDEX idx_request_logs_hot_ts ON request_logs_hot (ts DESC);
 CREATE INDEX idx_request_logs_hot_request_id ON request_logs_hot (request_id, ts);
 CREATE INDEX idx_request_logs_hot_tenant_ts ON request_logs_hot (tenant_id, ts DESC);
-CREATE UNIQUE INDEX idx_request_logs_hot_request_id_ts_unique 
+CREATE UNIQUE INDEX idx_request_logs_hot_request_id_ts_unique
   ON request_logs_hot (request_id, ts);
 
 -- 1.3 迁移 _default 数据到 _hot
@@ -233,7 +233,7 @@ $$;
 SELECT count(*) FROM request_logs_hot;
 
 -- 检查分区状态（预期：所有月度分区 ATTACHED）
-SELECT c.relname, 
+SELECT c.relname,
        CASE WHEN i.inhrelid IS NOT NULL THEN 'ATTACHED' ELSE 'STANDALONE' END
 FROM pg_class c
 LEFT JOIN pg_inherits i ON c.oid = i.inhrelid
@@ -289,21 +289,21 @@ func GetRequestLogs(startDate, endDate time.Time) ([]*RequestLog, error) {
     if startDate.After(time.Now().Add(-7*24*time.Hour)) {
         // 最近 7 天：直接查热表（最快）
         return db.Query(ctx, `
-            SELECT * FROM request_logs_hot 
+            SELECT * FROM request_logs_hot
             WHERE ts >= $1 AND ts < $2
             ORDER BY ts DESC
         `, startDate, endDate)
     } else if endDate.Before(time.Now().Add(-7*24*time.Hour)) {
         // 全部历史：直接查父表（享受 partition pruning）
         return db.Query(ctx, `
-            SELECT * FROM request_logs 
+            SELECT * FROM request_logs
             WHERE ts >= $1 AND ts < $2
             ORDER BY ts DESC
         `, startDate, endDate)
     } else {
         // 跨越边界：用 VIEW
         return db.Query(ctx, `
-            SELECT * FROM request_logs_with_current_month 
+            SELECT * FROM request_logs_with_current_month
             WHERE ts >= $1 AND ts < $2
             ORDER BY ts DESC
         `, startDate, endDate)
@@ -396,15 +396,15 @@ COMMIT;
 
 ### 9.1 核心优势
 
-✅ **性能提升 20-66%**  
-✅ **架构简化**（无需 DEFAULT 分区，无需 DETACH）  
-✅ **VIEW 优化**（2 路 UNION，享受 PG 优化）  
+✅ **性能提升 20-66%**
+✅ **架构简化**（无需 DEFAULT 分区，无需 DETACH）
+✅ **VIEW 优化**（2 路 UNION，享受 PG 优化）
 ✅ **热表独立**（无分区约束，完全自由）
 
 ### 9.2 实施成本
 
-⚠️ **需要数据迁移**（风险可控）  
-⚠️ **代码改动**（`*_default` → `*_hot`，约 20 处）  
+⚠️ **需要数据迁移**（风险可控）
+⚠️ **代码改动**（`*_default` → `*_hot`，约 20 处）
 ⚠️ **测试验证**（需要全面回归测试）
 
 ### 9.3 推荐决策

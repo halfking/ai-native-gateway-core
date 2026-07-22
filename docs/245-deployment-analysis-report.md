@@ -1,7 +1,7 @@
 # 245 服务器压缩修复现状分析报告
 
-**生成时间**: 2026-07-20  
-**服务器**: 8.136.114.245:25022  
+**生成时间**: 2026-07-20
+**服务器**: 8.136.114.245:25022
 **数据库**: 172.16.2.210:5432/llm_gateway
 
 ---
@@ -36,8 +36,8 @@
 
 2. **provider_settings 表中没有压缩配置**
    ```sql
-   SELECT * FROM provider_settings 
-   WHERE provider_id IN (587, 2451) 
+   SELECT * FROM provider_settings
+   WHERE provider_id IN (587, 2451)
      AND setting_key = 'compression.mode';
    -- 结果：0 行
    ```
@@ -64,7 +64,7 @@
 - **列名不同**：
   - 我们的 SQL 使用：`key`, `value`
   - 实际表结构：`setting_key`, `setting_value`
-  
+
 - **数据类型不同**：
   - 我们的 SQL：`value TEXT`
   - 实际表结构：`setting_value JSONB`
@@ -88,8 +88,8 @@
 ### 原因 1: context_window = NULL ✅ 已确认
 
 ```sql
-SELECT canonical_name, context_window 
-FROM models_canonical 
+SELECT canonical_name, context_window
+FROM models_canonical
 WHERE canonical_name = 'gpt-5.6-luna';
 
 -- 结果：
@@ -109,8 +109,8 @@ WHERE canonical_name = 'gpt-5.6-luna';
 ### 原因 3: 中转节点压缩配置
 
 ```sql
-SELECT * FROM provider_settings 
-WHERE provider_id IN (587, 2451) 
+SELECT * FROM provider_settings
+WHERE provider_id IN (587, 2451)
   AND setting_key = 'compression.mode';
 -- 结果：0 行
 ```
@@ -133,16 +133,16 @@ psql 'postgres://llm_gateway:4Q92cFTaYY8Z3AO07XTBBH-1g7kceaxg@172.16.2.210:5432/
 -- 修复 gpt-5.6-luna
 BEGIN;
 
-UPDATE models_canonical 
-SET 
+UPDATE models_canonical
+SET
     context_window = 128000,
     updated_at = NOW()
-WHERE canonical_name = 'gpt-5.6-luna' 
+WHERE canonical_name = 'gpt-5.6-luna'
   AND context_window IS NULL;
 
 -- 验证
-SELECT canonical_name, context_window 
-FROM models_canonical 
+SELECT canonical_name, context_window
+FROM models_canonical
 WHERE canonical_name = 'gpt-5.6-luna';
 
 COMMIT;
@@ -155,19 +155,19 @@ COMMIT;
 BEGIN;
 
 INSERT INTO provider_settings (provider_id, setting_key, setting_value, enabled, created_by)
-VALUES 
+VALUES
     (587, 'compression.mode', '"smart"'::jsonb, true, 'admin'),
     (2451, 'compression.mode', '"smart"'::jsonb, true, 'admin')
-ON CONFLICT (provider_id, setting_key) DO UPDATE 
-SET 
+ON CONFLICT (provider_id, setting_key) DO UPDATE
+SET
     setting_value = '"smart"'::jsonb,
     enabled = true,
     updated_at = NOW();
 
 -- 验证
-SELECT provider_id, setting_key, setting_value, enabled 
-FROM provider_settings 
-WHERE provider_id IN (587, 2451) 
+SELECT provider_id, setting_key, setting_value, enabled
+FROM provider_settings
+WHERE provider_id IN (587, 2451)
   AND setting_key = 'compression.mode';
 
 COMMIT;
@@ -198,8 +198,8 @@ systemctl restart llm-gateway
 #### 1. 验证 context_window
 
 ```sql
-SELECT canonical_name, context_window, updated_at 
-FROM models_canonical 
+SELECT canonical_name, context_window, updated_at
+FROM models_canonical
 WHERE canonical_name = 'gpt-5.6-luna';
 ```
 
@@ -208,9 +208,9 @@ WHERE canonical_name = 'gpt-5.6-luna';
 #### 2. 验证压缩配置
 
 ```sql
-SELECT provider_id, setting_key, setting_value 
-FROM provider_settings 
-WHERE provider_id IN (587, 2451) 
+SELECT provider_id, setting_key, setting_value
+FROM provider_settings
+WHERE provider_id IN (587, 2451)
   AND setting_key = 'compression.mode';
 ```
 
@@ -220,12 +220,12 @@ WHERE provider_id IN (587, 2451)
 
 需要在有真实流量后观察：
 ```sql
-SELECT 
+SELECT
     COUNT(*) AS total,
     COUNT(CASE WHEN compression_strategy IS NOT NULL THEN 1 END) AS compressed,
     ROUND(100.0 * COUNT(CASE WHEN compression_strategy IS NOT NULL THEN 1 END) / NULLIF(COUNT(*), 0), 1) AS rate_pct,
     COUNT(CASE WHEN error_kind = 'context_length_exceeded' THEN 1 END) AS ctx_errors
-FROM request_logs 
+FROM request_logs
 WHERE ts > NOW() - INTERVAL '1 hour'
   AND provider_id IN (587, 2451);
 ```
@@ -272,7 +272,7 @@ WHERE ts > NOW() - INTERVAL '1 hour'
 ```bash
 ssh -p 25022 root@8.136.114.245 "psql 'postgres://llm_gateway:4Q92cFTaYY8Z3AO07XTBBH-1g7kceaxg@172.16.2.210:5432/llm_gateway?sslmode=disable' << 'EOF'
 BEGIN;
-UPDATE models_canonical 
+UPDATE models_canonical
 SET context_window = 128000, updated_at = NOW()
 WHERE canonical_name = 'gpt-5.6-luna' AND context_window IS NULL;
 SELECT canonical_name, context_window FROM models_canonical WHERE canonical_name = 'gpt-5.6-luna';
@@ -309,5 +309,5 @@ EOF
 
 ---
 
-**报告生成**: 2026-07-20  
+**报告生成**: 2026-07-20
 **下一步**: 等待你确认后执行修复

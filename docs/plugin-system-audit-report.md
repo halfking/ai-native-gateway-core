@@ -1,7 +1,7 @@
 # Hook插件化重构方案审计报告
 
-**审计日期**: 2024-07-09  
-**审计范围**: v3计划的可行性、架构一致性、风险评估  
+**审计日期**: 2024-07-09
+**审计范围**: v3计划的可行性、架构一致性、风险评估
 **审计结论**: 需修正3处关键设计，可继续执行
 
 ---
@@ -51,14 +51,14 @@ type GovernanceExt interface {   // 继承Extension
    - `Priority() int`
    - `Enabled(ctx, env) bool`
    - `OnError(ctx, env, err) error`
-   
+
    当前有 **17个** `var _ pipeline.Hook` 实现（grep确认）
 
 2. **`security.Plugin`** (`domains/security/plugin.go:43-47`) - 3个方法：
    - `Name() string`
    - `Direction() string`
    - `Inspect(ctx, env) (*governance.Verdict, error)`
-   
+
    当前有 **7个** security.Plugin实现
 
 **不一致点**：
@@ -77,7 +77,7 @@ type GovernanceExt interface {   // 继承Extension
 type Extension interface {
     // 核心方法（pipeline.Hook + security.Plugin 的交集）
     Name() string
-    
+
     // 生命周期（新增，所有插件共有）
     Init(ctx ExtensionContext) error
     HealthCheck(ctx context.Context) error
@@ -111,7 +111,7 @@ type GovernanceExtension interface {
 
 ### 审计结果: **通过** ✅
 
-**铁律1验证（请求数据 = hook中介）**: 
+**铁律1验证（请求数据 = hook中介）**:
 - 确认模块包（`domains/outputcompliance`、`sessionaudit`、`promptinjection`）**不import `domain`**
 - 确认所有模块入口方法接收**扁平类型化参数**（如 `Check(ctx, tenantID, output string)`）
 - 确认hook是env的唯一写入者
@@ -201,7 +201,7 @@ v3计划要求插件间typed调用走"共享contracts包"。审计发现：
 
 **修正4.1**: 分两期实现
 
-**里程碑A（必需）**: 
+**里程碑A（必需）**:
 - 声明式 `depends_on: [pluginID...]`
 - 构建期拓扑排序（顺序注册到Registry）
 - nil-check式存在性检查（保持现状）
@@ -347,5 +347,5 @@ v3方案的核心设计（数据流边界、Storage独立性）经审计验证**
 
 ---
 
-**审计人**: Kiro (AI Agent)  
+**审计人**: Kiro (AI Agent)
 **复核建议**: 人工评审修正1.1（接口对齐）和修正3.1（通讯简化）

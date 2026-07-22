@@ -1,7 +1,7 @@
 # Protocol Compatibility Audit — Action Items
 
-**Date:** 2026-07-11  
-**Owner:** Backend Team + SRE  
+**Date:** 2026-07-11
+**Owner:** Backend Team + SRE
 **Tracking:** [Link to Project Management Tool]
 
 ---
@@ -10,8 +10,8 @@
 
 ### P0-1: 默认启用 IR 转换
 
-**负责人：** @backend-lead  
-**工期：** 1 天  
+**负责人：** @backend-lead
+**工期：** 1 天
 **优先级：** 🔴 Critical
 
 **任务描述：**
@@ -44,8 +44,8 @@ kubectl set env deployment/llm-gateway-go LLM_GATEWAY_IR_CONVERTER=false
 
 ### P0-2: Gemini Streaming 协议转换
 
-**负责人：** @backend-engineer-1  
-**工期：** 2 天  
+**负责人：** @backend-engineer-1
+**工期：** 2 天
 **优先级：** 🔴 Critical
 
 **任务描述：**
@@ -96,8 +96,8 @@ curl -X POST http://localhost:8080/v1/chat/completions \
 
 ### P0-3: GLM Streaming 协议转换
 
-**负责人：** @backend-engineer-2  
-**工期：** 2 天  
+**负责人：** @backend-engineer-2
+**工期：** 2 天
 **优先级：** 🔴 Critical
 
 **任务描述：**
@@ -134,8 +134,8 @@ curl -X POST http://localhost:8080/v1/chat/completions \
 
 ### P0-4: MiniMax 私有字段过滤
 
-**负责人：** @backend-engineer-1  
-**工期：** 1 天  
+**负责人：** @backend-engineer-1
+**工期：** 1 天
 **优先级：** 🔴 Critical
 
 **任务描述：**
@@ -146,13 +146,13 @@ curl -X POST http://localhost:8080/v1/chat/completions \
    ```go
    func SerializeOpenAI(req *InternalRequest) ([]byte, error) {
        // ... 现有逻辑
-       
+
        // 移除 MiniMax 私有字段
        if upstreamProvider != "minimax" {
            delete(req.Extensions, "bot_setting")
            delete(req.Extensions, "reply_constraints")
        }
-       
+
        // ...
    }
    ```
@@ -183,8 +183,8 @@ curl -X POST http://localhost:8080/v1/chat/completions \
 
 ### P0-5: 监控面板上线
 
-**负责人：** @sre-engineer  
-**工期：** 1 天  
+**负责人：** @sre-engineer
+**工期：** 1 天
 **优先级：** 🔴 Critical
 
 **任务描述：**
@@ -201,7 +201,7 @@ curl -X POST http://localhost:8080/v1/chat/completions \
            },
            []string{"client_protocol", "upstream_protocol", "provider"},
        )
-       
+
        extensionsPreservedTotal = prometheus.NewCounterVec(
            prometheus.CounterOpts{
                Name: "llm_gateway_extensions_preserved_total",
@@ -248,8 +248,8 @@ curl -X POST http://localhost:8080/v1/chat/completions \
 
 ### P1-1: MiniMax Streaming 协议转换
 
-**负责人：** @backend-engineer-2  
-**工期：** 2 天  
+**负责人：** @backend-engineer-2
+**工期：** 2 天
 **优先级：** 🟡 High
 
 **任务描述：**
@@ -274,8 +274,8 @@ curl -X POST http://localhost:8080/v1/chat/completions \
 
 ### P1-2: Extensions 白名单机制
 
-**负责人：** @backend-lead  
-**工期：** 3 天  
+**负责人：** @backend-lead
+**工期：** 3 天
 **优先级：** 🟡 High
 
 **任务描述：**
@@ -292,7 +292,7 @@ curl -X POST http://localhost:8080/v1/chat/completions \
        upstream_providers:
          minimax: ["bot_setting", "reply_constraints"]
          openai: []  # 不允许任何字段
-     
+
      glm:
        allowed_fields:
          - retrieval
@@ -316,8 +316,8 @@ curl -X POST http://localhost:8080/v1/chat/completions \
 
 ### P1-3: 协议转换日志增强
 
-**负责人：** @backend-engineer-1  
-**工期：** 2 天  
+**负责人：** @backend-engineer-1
+**工期：** 2 天
 **优先级：** 🟡 High
 
 **任务描述：**
@@ -328,7 +328,7 @@ curl -X POST http://localhost:8080/v1/chat/completions \
    ```go
    type RequestLog struct {
        // ... 现有字段
-       
+
        IREnabled           bool     `json:"ir_enabled"`
        ProtocolConversion  string   `json:"protocol_conversion"`  // "Q1", "Q2", "Q3", "Q4"
        ExtensionKeys       []string `json:"extension_keys"`
@@ -349,8 +349,8 @@ curl -X POST http://localhost:8080/v1/chat/completions \
 
 ### P1-4: 自动化回归测试
 
-**负责人：** @qa-engineer  
-**工期：** 3 天  
+**负责人：** @qa-engineer
+**工期：** 3 天
 **优先级：** 🟡 High
 
 **任务描述：**
@@ -385,8 +385,8 @@ curl -X POST http://localhost:8080/v1/chat/completions \
 
 ### P1-5: 告警规则配置
 
-**负责人：** @sre-engineer  
-**工期：** 1 天  
+**负责人：** @sre-engineer
+**工期：** 1 天
 **优先级：** 🟡 High
 
 **任务描述：**
@@ -399,17 +399,17 @@ groups:
     rules:
       - alert: ExtensionsDropRateHigh
         expr: |
-          (sum(rate(llm_gateway_extensions_dropped_total[5m])) 
+          (sum(rate(llm_gateway_extensions_dropped_total[5m]))
            / sum(rate(llm_gateway_extensions_total[5m]))) > 0.05
         for: 5m
         labels:
           severity: warning
         annotations:
           summary: "Extensions 丢失率超过 5%"
-      
+
       - alert: StreamingConversionFailureHigh
         expr: |
-          sum by (provider) (rate(llm_gateway_streaming_errors_total[5m])) 
+          sum by (provider) (rate(llm_gateway_streaming_errors_total[5m]))
           / sum by (provider) (rate(llm_gateway_streaming_requests_total[5m])) > 0.01
         for: 5m
         labels:
@@ -431,8 +431,8 @@ groups:
 
 ### P2-1: 插件化架构重构
 
-**负责人：** @backend-architect  
-**工期：** 10 天  
+**负责人：** @backend-architect
+**工期：** 10 天
 **优先级：** 🟢 Medium
 
 **任务描述：**
@@ -482,9 +482,9 @@ func init() {
 
 ### P2-2: 动态协议注册
 
-**负责人：** @backend-architect  
-**工期：** 5 天  
-**优先级：** 🟢 Medium  
+**负责人：** @backend-architect
+**工期：** 5 天
+**优先级：** 🟢 Medium
 **依赖：** P2-1
 
 **任务描述：**
@@ -507,8 +507,8 @@ func init() {
 
 ### P2-3: 性能基准测试
 
-**负责人：** @qa-engineer  
-**工期：** 3 天  
+**负责人：** @qa-engineer
+**工期：** 3 天
 **优先级：** 🟢 Medium
 
 **任务描述：**
@@ -531,8 +531,8 @@ func init() {
 
 ### P2-4: 文档完善
 
-**负责人：** @tech-writer  
-**工期：** 3 天  
+**负责人：** @tech-writer
+**工期：** 3 天
 **优先级：** 🟢 Medium
 
 **任务描述：**
@@ -555,9 +555,9 @@ func init() {
 
 ### P2-5: Legacy 代码清理
 
-**负责人：** @backend-engineer-1  
-**工期：** 5 天  
-**优先级：** 🟢 Medium  
+**负责人：** @backend-engineer-1
+**工期：** 5 天
+**优先级：** 🟢 Medium
 **依赖：** P2-1
 
 **任务描述：**
@@ -673,6 +673,6 @@ curl -X POST http://localhost:8080/debug/inject-error?type=streaming
 
 ---
 
-**文档版本：** v1.0  
-**最后更新：** 2026-07-11  
+**文档版本：** v1.0
+**最后更新：** 2026-07-11
 **下次更新：** 每周五

@@ -53,7 +53,7 @@ const chartConfig = computed(() => {
   // 合并占比小于2%的为"其他"
   const threshold = 0.02
   let items = [...props.data]
-  
+
   // 按选择的指标排序
   items.sort((a, b) => {
     switch (metric.value) {
@@ -81,8 +81,8 @@ const chartConfig = computed(() => {
   let othersValue = 0
 
   items.forEach(item => {
-    const value = metric.value === 'cost' ? item.totalCost : 
-                  metric.value === 'tokens' ? item.totalTokens : 
+    const value = metric.value === 'cost' ? item.totalCost :
+                  metric.value === 'tokens' ? item.totalTokens :
                   item.requestCount
     const ratio = value / total
 
@@ -128,15 +128,15 @@ const chartConfig = computed(() => {
             const value = context.parsed
             const total = (context.dataset.data as number[]).reduce((a: number, b: number) => a + b, 0)
             const percentage = ((value / total) * 100).toFixed(1)
-            
+
             let formattedValue = value.toString()
             if (metric.value === 'cost') {
               formattedValue = '$' + value.toFixed(2)
             } else if (metric.value === 'tokens') {
-              formattedValue = (value >= 1000000 ? (value / 1000000).toFixed(1) + 'M' : 
+              formattedValue = (value >= 1000000 ? (value / 1000000).toFixed(1) + 'M' :
                                value >= 1000 ? (value / 1000).toFixed(1) + 'K' : value.toString())
             }
-            
+
             return `${label}: ${formattedValue} (${percentage}%)`
           }
         }

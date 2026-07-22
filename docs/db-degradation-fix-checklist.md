@@ -1,6 +1,6 @@
 # 数据库降级模块修复清单
 
-**基于审计报告**: `db-degradation-audit-report.md`  
+**基于审计报告**: `db-degradation-audit-report.md`
 **修复时间估算**: 1-2 天（Critical + High 优先级）
 
 ---
@@ -30,17 +30,17 @@ func validateBackupFilename(filename string) error {
 	if filename == "" {
 		return fmt.Errorf("filename cannot be empty")
 	}
-	
+
 	// 检查路径遍历字符
 	if strings.Contains(filename, "..") || strings.Contains(filename, "/") || strings.Contains(filename, "\\") {
 		return fmt.Errorf("filename contains invalid characters")
 	}
-	
+
 	// 验证格式: sessions-YYYY-MM-DD.jsonl.gz
 	if !backupFilenamePattern.MatchString(filename) {
 		return fmt.Errorf("filename must match format: sessions-YYYY-MM-DD.jsonl.gz")
 	}
-	
+
 	return nil
 }
 ```
@@ -235,7 +235,7 @@ func (fw *FileWriter) writeRecordOnce(record BackupRecord) error {
 	defer fw.mu.Unlock()
 
 	date := time.Now().Format("2006-01-02")
-	
+
 	// 检查是否需要轮转
 	if fw.currentFile != nil && fw.currentDate == date {
 		if fileInfo, err := fw.currentFile.Stat(); err == nil {
@@ -247,7 +247,7 @@ func (fw *FileWriter) writeRecordOnce(record BackupRecord) error {
 			}
 		}
 	}
-	
+
 	// 获取或创建文件
 	if err := fw.ensureFile(date); err != nil {
 		return fmt.Errorf("ensure file: %w", err)
@@ -296,21 +296,21 @@ func (fw *FileWriter) rotateFile(date string) error {
 	} else {
 		fw.currentSeq++
 	}
-	
+
 	if fw.currentSeq >= fw.maxDailyFiles {
 		return fmt.Errorf("daily file limit reached (%d files)", fw.maxDailyFiles)
 	}
-	
+
 	// 关闭当前文件
 	if err := fw.closeCurrentFile(); err != nil {
 		slog.Warn("file writer: failed to close old file for rotation", "error", err)
 	}
-	
+
 	slog.Info("file writer: rotating to new file",
 		"date", date,
 		"sequence", fw.currentSeq,
 	)
-	
+
 	return nil
 }
 
@@ -443,7 +443,7 @@ func (m *Monitor) notifyListeners(event StatusChangeEvent) {
 				}()
 				l(event)
 			}()
-			
+
 			select {
 			case <-done:
 			case <-time.After(5 * time.Second):
@@ -463,7 +463,7 @@ func (tm *TTLManager) runExtendLoop() {
 	defer close(tm.doneCh)
 	ticker := time.NewTicker(tm.extendInterval)
 	defer ticker.Stop()
-	
+
 	retryCount := 0
 	const maxRetries = 3
 
@@ -475,8 +475,8 @@ func (tm *TTLManager) runExtendLoop() {
 		case <-ticker.C:
 			if err := tm.extendAllSessionTTLs(context.Background()); err != nil {
 				retryCount++
-				slog.Warn("ttl_manager: failed to extend TTLs", 
-					"error", err, 
+				slog.Warn("ttl_manager: failed to extend TTLs",
+					"error", err,
 					"retry_count", retryCount,
 				)
 				if retryCount < maxRetries {
@@ -561,7 +561,7 @@ func (r *Recovery) recoverSession(ctx context.Context, sessionID string, records
 
 ---
 
-**预计修复时间**: 
+**预计修复时间**:
 - Critical + High: 4-6 小时
 - Medium 优化: 2-3 小时
 - 测试验证: 2-3 小时

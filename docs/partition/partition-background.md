@@ -1,8 +1,8 @@
 # PostgreSQL 分区表 Columnar 存储与写入冲突 - 背景文档
 
-**文档版本**: 1.0  
-**创建日期**: 2026-07-04  
-**适用环境**: PostgreSQL 15.3 + Citus Columnar Extension  
+**文档版本**: 1.0
+**创建日期**: 2026-07-04
+**适用环境**: PostgreSQL 15.3 + Citus Columnar Extension
 **项目**: llm-gateway-go
 
 ---
@@ -99,7 +99,7 @@ ON CONFLICT (request_id, ts) DO UPDATE SET ...;
 
 ```sql
 -- 代码写入父表
-INSERT INTO request_logs (request_id, ts, ...) 
+INSERT INTO request_logs (request_id, ts, ...)
 VALUES ('xxx', '2026-07-04 12:00:00', ...);
 
 -- PostgreSQL 自动路由

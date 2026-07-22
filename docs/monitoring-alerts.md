@@ -8,8 +8,8 @@
 - alert: ModelDiscoveryFailed
   expr: |
     (
-      rate(llm_gateway_model_discovery_total{status="failed"}[5m]) 
-      / 
+      rate(llm_gateway_model_discovery_total{status="failed"}[5m])
+      /
       rate(llm_gateway_model_discovery_total[5m])
     ) > 0.5
     OR
@@ -64,7 +64,7 @@
 # 告警规则：P95 延迟过高
 - alert: HighLatency
   expr: |
-    histogram_quantile(0.95, 
+    histogram_quantile(0.95,
       rate(llm_gateway_request_duration_seconds_bucket[5m])
     ) > 5
   for: 5m
@@ -99,14 +99,14 @@
 
 ```sql
 -- 监控查询：计费模式不一致
-SELECT 
+SELECT
     'billing_mode_mismatch' as metric_name,
     COUNT(*) as value,
     NOW() as timestamp
 FROM credentials c
 JOIN credential_model_bindings cmb ON cmb.credential_id = c.id
 WHERE (c.plan_type = 'token' AND cmb.billing_mode != 'per_token')
-   OR (c.plan_type IN ('token_plan', 'code_plan', 'agent_plan') 
+   OR (c.plan_type IN ('token_plan', 'code_plan', 'agent_plan')
        AND cmb.billing_mode NOT IN ('token_plan', 'code_plan', 'agent_plan'));
 
 -- 告警阈值：value > 0
@@ -116,7 +116,7 @@ WHERE (c.plan_type = 'token' AND cmb.billing_mode != 'per_token')
 
 ```sql
 -- 监控查询：可用模型绑定数
-SELECT 
+SELECT
     'available_model_bindings' as metric_name,
     COUNT(*) as value,
     NOW() as timestamp
@@ -130,7 +130,7 @@ WHERE available = true;
 
 ```sql
 -- 监控查询：不健康的凭据数量
-SELECT 
+SELECT
     'unhealthy_credentials' as metric_name,
     COUNT(*) as value,
     NOW() as timestamp
@@ -149,11 +149,11 @@ WHERE status = 'active'
 
 ```sql
 -- 监控查询：最近 5 分钟的失败率
-SELECT 
+SELECT
     'request_failure_rate_5m' as metric_name,
     ROUND(
-        COUNT(CASE WHEN status != 200 THEN 1 END)::numeric / 
-        NULLIF(COUNT(*), 0) * 100, 
+        COUNT(CASE WHEN status != 200 THEN 1 END)::numeric /
+        NULLIF(COUNT(*), 0) * 100,
         2
     ) as value,
     NOW() as timestamp
@@ -213,7 +213,7 @@ route:
   group_wait: 30s
   group_interval: 5m
   repeat_interval: 4h
-  
+
   routes:
   # 关键告警立即通知
   - match:
@@ -221,7 +221,7 @@ route:
     receiver: 'critical-receiver'
     group_wait: 10s
     repeat_interval: 1h
-    
+
   # 警告级别告警
   - match:
       severity: warning
@@ -272,11 +272,11 @@ CONSECUTIVE_FAILURES=0
 while true; do
     # 检查健康端点
     HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" $GATEWAY_URL/healthz)
-    
+
     if [ "$HTTP_CODE" != "200" ]; then
         ((CONSECUTIVE_FAILURES++))
         echo "[$(date)] Health check failed: HTTP $HTTP_CODE (failures: $CONSECUTIVE_FAILURES)"
-        
+
         if [ $CONSECUTIVE_FAILURES -ge $ALERT_THRESHOLD ]; then
             # 发送告警
             curl -X POST http://alertmanager:9093/api/v1/alerts -d '[{
@@ -297,7 +297,7 @@ while true; do
         fi
         CONSECUTIVE_FAILURES=0
     fi
-    
+
     sleep 300  # 每 5 分钟检查一次
 done
 ```
@@ -374,7 +374,7 @@ WHERE (c.plan_type = 'token' AND cmb.billing_mode != 'per_token');"
 
 # 3. 检查最近 1 小时的成功率
 PGPASSWORD='xxx' psql -h __PRIV_IP_2__ -U llm_gateway -d llm_gateway -c "
-SELECT 
+SELECT
     COUNT(CASE WHEN status = 200 THEN 1 END) * 100.0 / COUNT(*) as success_rate
 FROM request_logs
 WHERE created_at > NOW() - INTERVAL '1 hour';"
@@ -417,6 +417,6 @@ WHERE status = 'active'
 
 ---
 
-**创建日期：** 2026-07-03  
-**维护者：** AI 运维团队  
+**创建日期：** 2026-07-03
+**维护者：** AI 运维团队
 **更新频率：** 每季度review

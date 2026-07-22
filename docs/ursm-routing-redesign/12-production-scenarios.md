@@ -131,7 +131,7 @@ func (h *ChatHandler) HandleIdempotent(ctx context.Context, req *Request, env *U
         // 已有相同的 requestID 在处理中
         return h.respondPending(req.SessionID, req.RequestID)
     }
-    
+
     // Step 2: Prompt Hash 匹配 → 相同消息的重试
     promptHash := hashPrompt(req.Messages)
     if cachedResp := h.sessionResponseCache.Get(req.SessionID, promptHash); cachedResp != nil {
@@ -147,7 +147,7 @@ func (h *ChatHandler) HandleIdempotent(ctx context.Context, req *Request, env *U
         // 缓存过期/模型变了: 正常请求, 但跳过缓存
         h.sessionResponseCache.Invalidate(req.SessionID, promptHash)
     }
-    
+
     // Step 3: Goal/Intent 分析 → "请继续" 意图
     if h.isContinuationIntent(req) {
         // 检查是否有 PendingStore 中的完成响应
@@ -159,7 +159,7 @@ func (h *ChatHandler) HandleIdempotent(ctx context.Context, req *Request, env *U
             }
         }
     }
-    
+
     // Step 4: 正常路由
     return h.executeNormal(ctx, req, env)
 }
@@ -224,7 +224,7 @@ func (r *Router) IsNodeAvailable(credID int, model string) bool {
             return true
         }
     }
-    
+
     // Normal path: 逐层检查
     provider := r.providerCache.Get(providerID)
     if !provider.IsAvailable() {
@@ -277,11 +277,11 @@ func (r *Router) IsNodeAvailable(credID int, model string) bool {
 条件: 客户端首次发送 "写一篇关于 AI 的文章"
   → 供应商 A 响应完整文章
   缓存到 sessionResponseCache (promptHash_1)
-  
+
   客户端第二轮: "请继续"
   → 已缓存 sessionID + promptHash_2 (不同 prompt, 未命中)
   → 正常路由
-  
+
   客户端第三轮: 同 "写一篇关于 AI 的文章" (重试/误发)
   → sessionResponseCache 命中 promptHash_1
   → 直接回放
@@ -297,7 +297,7 @@ func (r *Router) IsNodeAvailable(credID int, model string) bool {
 条件:
   请求 R1 (requestID_1): 路由到 gpt-4o/openai, 超时 (60s 无响应)
   客户端取消, 发送 R2 (requestID_2, 相同 prompt)
-  
+
 当前: R2 重新路由, 可能同一节点重试 3 次, 再返 503
 目标: R2 检测到:
   - 同一 sessionID, 同一 promptHash

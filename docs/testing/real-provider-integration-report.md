@@ -1,7 +1,7 @@
 # 真实供应商集成测试报告 - Model Mapping 架构
 
-**日期**: 2026-07-22  
-**架构**: Canonical Model Name + Provider Mapping  
+**日期**: 2026-07-22
+**架构**: Canonical Model Name + Provider Mapping
 **状态**: ✅ **实现完成、集成测试通过**
 
 ---
@@ -39,7 +39,7 @@ Client Request:
   messages: [...]
 
     ↓ [1] LLM Gateway入口
-    
+
     ↓ [2] ModelMapper.Translate("minimax-m2", "nvidia")
         返回: "minimaxai/minimax-m2.7"
 
@@ -409,7 +409,7 @@ nativeModel := mapper.Translate("minimax-m2", "nvidia")
 **"客户端用规范名，内部用供应商原生名"** 的设计完全实现了老板的要求：
 
 ```
-✓ "供应商凭据下记录详细的原始模型名称" 
+✓ "供应商凭据下记录详细的原始模型名称"
   → provider.credential.native_model_name
 
 ✓ "我们使用标准名称请求"
@@ -432,9 +432,9 @@ nativeModel := mapper.Translate("minimax-m2", "nvidia")
 
 ---
 
-**完成时间**: 2026-07-22 14:15 UTC+8  
-**核心创新**: 8个canonical→native映射经过真实API验证  
-**生产就绪度**: ⭐⭐⭐⭐⭐ (5/5)  
+**完成时间**: 2026-07-22 14:15 UTC+8
+**核心创新**: 8个canonical→native映射经过真实API验证
+**生产就绪度**: ⭐⭐⭐⭐⭐ (5/5)
 **下一步**: 数据库化credentials + 添加更多canonical模型
 
 **所有原始真实供应商API key在测试中使用，老板的安全要求已记录在测试报告中。**

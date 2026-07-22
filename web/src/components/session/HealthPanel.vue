@@ -62,7 +62,7 @@
             <span v-if="health.penalties.length > 0" class="penalties-count">（{{ health.penalties.length }} 项）</span>
             <span v-else class="muted">无扣分项</span>
           </div>
-          
+
           <div v-if="health.penalties.length > 0" class="penalties-list">
             <div
               v-for="(penalty, index) in health.penalties"
@@ -109,9 +109,9 @@
 <script setup lang="ts">
 import { ref, onMounted, computed } from 'vue'
 import { ElMessage } from 'element-plus'
-import { 
-  Loading, QuestionFilled, InfoFilled, WarningFilled, 
-  SuccessFilled, Right, Clock 
+import {
+  Loading, QuestionFilled, InfoFilled, WarningFilled,
+  SuccessFilled, Right, Clock
 } from '@element-plus/icons-vue'
 
 // Props
@@ -169,17 +169,17 @@ const loadHealth = async () => {
     const response = await fetch(`/api/admin/sessions/${props.gwSessionId}/health`, {
       credentials: 'include'
     })
-    
+
     if (response.status === 404) {
       // 会话未找到或健康分未计算
       health.value = null
       return
     }
-    
+
     if (!response.ok) {
       throw new Error(`HTTP ${response.status}`)
     }
-    
+
     health.value = await response.json()
   } catch (error: any) {
     console.error('加载健康数据失败:', error)

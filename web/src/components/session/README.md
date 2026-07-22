@@ -57,8 +57,8 @@ interface Props {
 
 ```vue
 <template>
-  <HealthPanel 
-    :gw-session-id="sessionId" 
+  <HealthPanel
+    :gw-session-id="sessionId"
     @jump-to="handleJumpTo"
     ref="healthPanelRef"
   />

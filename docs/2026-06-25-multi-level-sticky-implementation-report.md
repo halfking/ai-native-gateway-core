@@ -2,9 +2,9 @@
 
 ## 实现状态：✅ 完成
 
-**完成时间**: 2026-06-25 03:50  
-**编译状态**: ✅ 通过  
-**测试状态**: ✅ 7/7 通过  
+**完成时间**: 2026-06-25 03:50
+**编译状态**: ✅ 通过
+**测试状态**: ✅ 7/7 通过
 
 ---
 
@@ -28,7 +28,7 @@ L1: Session + Model (最高优先级)
     TTL: 1小时
     用途: 同一会话内的模型粘性
 
-L2: Client + Model (中等优先级)  
+L2: Client + Model (中等优先级)
     格式: {tenant}:{app}:{key}:{profile}:{model}
     TTL: 24小时
     用途: 跨会话的模型偏好
@@ -106,7 +106,7 @@ Model:     clientModel,
 
 **测试覆盖**:
 - ✅ L1 命中 (session+model)
-- ✅ L2 命中 (client+model)  
+- ✅ L2 命中 (client+model)
 - ✅ L3 命中 (client baseline)
 - ✅ 模型切换防污染
 - ✅ 无 sessionID 降级到 L2
@@ -163,7 +163,7 @@ kubectl -n pms-test logs deploy/kx-llm-gateway-go -f | grep "sticky"
 
 # 应该看到类似：
 # sticky L1 hit
-# sticky L2 hit  
+# sticky L2 hit
 # sticky multi-level recorded
 ```
 
@@ -232,12 +232,12 @@ curl -X POST https://__DOMAIN_8__/v1/chat/completions \
 ```bash
 K8S_SSH_PASSWORD="${SSH_PASSWORD}" sshpass -e ssh root@__INTERNAL_K8S_HOST__ \
   "docker exec llm-gateway-pg psql -U kxuser -d llm_gateway -c \"
-    SELECT 
+    SELECT
       sticky_key,
       credential_id,
       set_at,
       expires_at,
-      CASE 
+      CASE
         WHEN sticky_key LIKE '%:%:%:%:%:%' THEN 'L1 (session+model)'
         WHEN sticky_key LIKE '%:%:%:%:%' THEN 'L2 (client+model)'
         ELSE 'L3 (client)'
@@ -316,6 +316,6 @@ K8S_SSH_PASSWORD="${SSH_PASSWORD}" sshpass -e ssh root@__INTERNAL_K8S_HOST__ \
 
 ---
 
-**签名**: OpenCode AI Agent  
-**日期**: 2026-06-25 03:50  
+**签名**: OpenCode AI Agent
+**日期**: 2026-06-25 03:50
 **状态**: ✅ Ready for production deployment

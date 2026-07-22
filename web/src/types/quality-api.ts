@@ -1,6 +1,6 @@
 /**
  * LLM Gateway - 质量画像 API TypeScript 类型定义
- * 
+ *
  * 从 OpenAPI 3.0 规范自动生成
  * 版本: 1.0.0
  * 生成时间: 2026-07-19

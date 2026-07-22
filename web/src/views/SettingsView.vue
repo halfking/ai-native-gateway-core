@@ -62,7 +62,7 @@ async function selectKey(key: string) {
     selected.value = resp.spec
     currentValue.value = resp.value
     currentSource.value = resp.source
-    
+
     // Smart initialization based on type
     if (resp.spec.type === 'bool') {
       editBuffer.value = String(resp.value ?? resp.spec.default)
@@ -157,7 +157,7 @@ async function save() {
       // Fallback to JSON parsing
       parsed = JSON.parse(editBuffer.value)
     }
-    
+
     await updateSetting(selectedKey.value, { value: parsed })
     await loadList()
     await selectKey(selectedKey.value)
@@ -305,7 +305,7 @@ onMounted(() => {
           <code>{{ selectedKey }}</code>
         </h3>
         <p class="detail-desc">{{ selected.description }}</p>
-        
+
         <!-- Tenant-scoped warning -->
         <div v-if="selected.scope === 'tenant'" class="tenant-warning">
           <div class="warning-icon">⚠️</div>
@@ -314,7 +314,7 @@ onMounted(() => {
             <p>此设置作用于单个租户，无法在系统级设置。请前往<strong>租户管理</strong>页面为特定租户配置此项。</p>
           </div>
         </div>
-        
+
         <!-- Detailed documentation -->
         <div v-if="getSettingDocs(selectedKey)" class="detail-docs">
           <div class="docs-title" v-html="getSettingDocs(selectedKey)!.title"></div>
@@ -349,12 +349,12 @@ onMounted(() => {
 
         <div v-if="selected.scope !== 'tenant'" class="editor">
           <label class="editor-label">新值</label>
-          
+
           <!-- Boolean type: Switch -->
           <div v-if="selected.type === 'bool'" class="editor-boolean">
             <label class="switch-label">
-              <input 
-                type="checkbox" 
+              <input
+                type="checkbox"
                 v-model="editBuffer"
                 :true-value="'true'"
                 :false-value="'false'"
@@ -364,7 +364,7 @@ onMounted(() => {
               <span class="switch-text">{{ editBuffer === 'true' ? t('settings.editor.enabledText') : t('settings.editor.disabledText') }}</span>
             </label>
           </div>
-          
+
           <!-- Enum type with known options: Select -->
           <div v-else-if="selectedKey === 'compression.mode'" class="editor-select">
             <select v-model="editBuffer" class="select-input">
@@ -378,17 +378,17 @@ onMounted(() => {
               <div v-else-if="editBuffer === '2'" class="hint-item">收到4xx错误（如context_length_exceeded）时触发压缩并重试</div>
             </div>
           </div>
-          
+
           <!-- Number type: Number input -->
           <div v-else-if="selected.type === 'int' || selected.type === 'float'" class="editor-number">
-            <input 
+            <input
               type="number"
               v-model="editBuffer"
               class="number-input"
               :step="selected.type === 'float' ? '0.01' : '1'"
             />
           </div>
-          
+
           <!-- Session alias string: tag editor -->
           <div v-else-if="isSessionAliasSetting" class="editor-tags">
             <div class="tag-editor-shell">
@@ -420,14 +420,14 @@ onMounted(() => {
 
           <!-- String type: Text input -->
           <div v-else-if="selected.type === 'string'" class="editor-string">
-            <input 
+            <input
               type="text"
               v-model="editBuffer"
               class="text-input"
               placeholder="输入字符串值"
             />
           </div>
-          
+
           <!-- Fallback: JSON textarea -->
           <div v-else class="editor-json">
             <textarea
@@ -439,7 +439,7 @@ onMounted(() => {
             />
             <div class="json-hint">复杂类型请使用JSON格式</div>
           </div>
-          
+
           <div class="editor-actions">
             <button class="btn btn-primary" :disabled="saving" @click="save">
               {{ saving ? t('settings.editor.saving') : t('settings.editor.save') }}

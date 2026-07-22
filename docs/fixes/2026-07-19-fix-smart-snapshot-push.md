@@ -1,14 +1,14 @@
 # 修复泳道跳变 - 智能全量快照推送
 
-**修复方案**: C - 后端智能推送  
-**优先级**: 中期优化，彻底解决  
+**修复方案**: C - 后端智能推送
+**优先级**: 中期优化，彻底解决
 **影响**: 只在真正需要时推送全量快照，避免无意义的跳变
 
 ---
 
 ## 设计思路
 
-**当前问题**: 
+**当前问题**:
 - 每 2 小时无条件推送全量快照
 - 即使数据没什么变化，也会触发前端重建泳道
 
@@ -43,7 +43,7 @@ func needsFullRefresh(cached, fresh *LiveStreamSnapshot) bool {
 	if cached == nil {
 		return true // 首次推送
 	}
-	
+
 	// 判断 1: 总请求数变化 > 20%
 	oldTotal := cached.Summary.Total
 	newTotal := fresh.Summary.Total
@@ -56,7 +56,7 @@ func needsFullRefresh(cached, fresh *LiveStreamSnapshot) bool {
 			return true
 		}
 	}
-	
+
 	// 判断 2: 泳道数量变化（任一维度）
 	for _, dim := range []string{"vendor", "provider", "model"} {
 		oldLanes := cached.Dimensions[dim]
@@ -67,7 +67,7 @@ func needsFullRefresh(cached, fresh *LiveStreamSnapshot) bool {
 			return true
 		}
 	}
-	
+
 	// 判断 3: Top 5 泳道顺序变化（任一维度）
 	for _, dim := range []string{"vendor", "provider", "model"} {
 		oldLanes := cached.Dimensions[dim]
@@ -79,17 +79,17 @@ func needsFullRefresh(cached, fresh *LiveStreamSnapshot) bool {
 		if len(newLanes) < topN {
 			topN = len(newLanes)
 		}
-		
+
 		for i := 0; i < topN; i++ {
 			if oldLanes[i].ID != newLanes[i].ID {
 				slog.Debug("snapshot refresh needed: top lane order changed",
-					"dimension", dim, "position", i, 
+					"dimension", dim, "position", i,
 					"old_id", oldLanes[i].ID, "new_id", newLanes[i].ID)
 				return true
 			}
 		}
 	}
-	
+
 	// 数据变化不显著，跳过推送
 	slog.Debug("snapshot refresh skipped: no significant changes")
 	return false
@@ -111,7 +111,7 @@ func abs(x int) int {
 ```go
 func (h *LiveStreamSSEHub) pushFullSnapshots() {
 	// ... 读取 snapshot
-	
+
 	// 无条件推送
 	env := LiveStreamEnvelope{
 		Type:      "snapshot_refresh",
@@ -126,23 +126,23 @@ func (h *LiveStreamSSEHub) pushFullSnapshots() {
 ```go
 func (h *LiveStreamSSEHub) pushFullSnapshots() {
 	// ... 读取 snapshot
-	
+
 	// 2026-07-19: 智能推送 - 只在数据显著变化时推送
 	scope := newLiveStreamScope(entry.tenantID, entry.isSuper)
 	h.cachedSnapshotMu.RLock()
 	cached := h.cachedSnapshot[scope.cacheKey]
 	h.cachedSnapshotMu.RUnlock()
-	
+
 	var oldSnapshot *LiveStreamSnapshot
 	if cached != nil {
 		oldSnapshot = cached.snapshot
 	}
-	
+
 	if !needsFullRefresh(oldSnapshot, snapshot) {
 		// 数据变化不显著，跳过推送
 		continue
 	}
-	
+
 	// 数据显著变化，推送全量快照
 	h.cachedSnapshotMu.Lock()
 	h.cachedSnapshot[scope.cacheKey] = &cachedSnapshotEntry{
@@ -150,7 +150,7 @@ func (h *LiveStreamSSEHub) pushFullSnapshots() {
 		lastRefresh: time.Now(),
 	}
 	h.cachedSnapshotMu.Unlock()
-	
+
 	env := LiveStreamEnvelope{
 		Type:      "snapshot_refresh",
 		Timestamp: time.Now(),
@@ -183,16 +183,16 @@ func (h *LiveStreamSSEHub) pushFullSnapshots() {
 func TestNeedsFullRefresh(t *testing.T) {
 	// 测试 1: 首次推送
 	assert.True(t, needsFullRefresh(nil, &LiveStreamSnapshot{}))
-	
+
 	// 测试 2: 总请求数变化 < 20%
 	old := &LiveStreamSnapshot{Summary: LiveStreamSummary{Total: 100}}
 	new := &LiveStreamSnapshot{Summary: LiveStreamSummary{Total: 115}}
 	assert.False(t, needsFullRefresh(old, new))
-	
+
 	// 测试 3: 总请求数变化 > 20%
 	new = &LiveStreamSnapshot{Summary: LiveStreamSummary{Total: 130}}
 	assert.True(t, needsFullRefresh(old, new))
-	
+
 	// 测试 4: 泳道数量变化
 	old = &LiveStreamSnapshot{
 		Dimensions: map[string][]LiveStreamLane{
@@ -205,7 +205,7 @@ func TestNeedsFullRefresh(t *testing.T) {
 		},
 	}
 	assert.True(t, needsFullRefresh(old, new))
-	
+
 	// 测试 5: Top 5 顺序变化
 	old = &LiveStreamSnapshot{
 		Dimensions: map[string][]LiveStreamLane{

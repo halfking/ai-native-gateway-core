@@ -196,9 +196,9 @@ CREATE TABLE IF NOT EXISTS runtime_metrics (
     id                  BIGSERIAL PRIMARY KEY,
     instance_id         TEXT NOT NULL,
     license_id          BIGINT REFERENCES licenses(id),
-    
+
     timestamp           TIMESTAMPTZ NOT NULL DEFAULT now(),
-    
+
     -- 系统资源
     cpu_usage_pct       REAL,
     mem_used_mb         BIGINT,
@@ -207,14 +207,14 @@ CREATE TABLE IF NOT EXISTS runtime_metrics (
     disk_total_gb       BIGINT,
     db_size_mb          BIGINT,
     uptime_secs         BIGINT,
-    
+
     -- 流量
     current_concurrency INT,
     last_5min_tps       REAL,
     last_5min_p50_ms    REAL,
     last_5min_p99_ms    REAL,
     last_5min_success_pct REAL,
-    
+
     -- 业务（聚合）
     model_usage         JSONB,  -- {"gpt-4": 1234, ...}
     tenant_count        INT
@@ -236,10 +236,10 @@ CREATE TABLE IF NOT EXISTS instance_info (
     region              TEXT,
     version             TEXT,
     build_seq           INT,
-    
+
     status              TEXT NOT NULL DEFAULT 'online',
     -- online / offline / degraded
-    
+
     started_at          TIMESTAMPTZ,
     last_heartbeat      TIMESTAMPTZ NOT NULL DEFAULT now(),
     last_collect_at     TIMESTAMPTZ
@@ -259,12 +259,12 @@ CREATE TABLE IF NOT EXISTS usage_records (
     tenant_id           TEXT NOT NULL,
     period_start        TIMESTAMPTZ NOT NULL,
     period_end          TIMESTAMPTZ NOT NULL,
-    
+
     prompt_tokens       BIGINT NOT NULL DEFAULT 0,
     completion_tokens   BIGINT NOT NULL DEFAULT 0,
     total_tokens        BIGINT NOT NULL DEFAULT 0,
     request_count       INT NOT NULL DEFAULT 0,
-    
+
     recorded_at         TIMESTAMPTZ NOT NULL DEFAULT now(),
     UNIQUE (license_id, tenant_id, period_start)
 );
@@ -280,20 +280,20 @@ CREATE TABLE IF NOT EXISTS invoices (
     license_id          BIGINT NOT NULL REFERENCES licenses(id),
     period_start        TIMESTAMPTZ NOT NULL,
     period_end          TIMESTAMPTZ NOT NULL,
-    
+
     base_amount         NUMERIC(12,2) NOT NULL DEFAULT 0,
     user_amount         NUMERIC(12,2) NOT NULL DEFAULT 0,
     token_overage       BIGINT NOT NULL DEFAULT 0,
     token_overage_amount NUMERIC(12,2) NOT NULL DEFAULT 0,
     total_amount        NUMERIC(12,2) NOT NULL,
-    
+
     status              TEXT NOT NULL DEFAULT 'pending',
     -- pending / paid / overdue / void
-    
+
     due_at              TIMESTAMPTZ,
     paid_at             TIMESTAMPTZ,
     payment_method      TEXT,
-    
+
     created_at          TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at          TIMESTAMPTZ NOT NULL DEFAULT now()
 );
@@ -311,7 +311,7 @@ CREATE TABLE IF NOT EXISTS telemetry_prefs (
     id                  BIGSERIAL PRIMARY KEY,
     enabled             BOOLEAN NOT NULL DEFAULT FALSE,
     interval_sec        INT NOT NULL DEFAULT 300,
-    
+
     -- 元数据
     agree_at            TIMESTAMPTZ,           -- 用户首次同意时间
     last_change_at      TIMESTAMPTZ NOT NULL DEFAULT now(),

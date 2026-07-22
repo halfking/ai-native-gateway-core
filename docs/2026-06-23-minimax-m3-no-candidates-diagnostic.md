@@ -12,7 +12,7 @@
 ### 1. Provider 状态
 
 ```sql
-SELECT id, display_name, enabled, manual_disabled FROM providers 
+SELECT id, display_name, enabled, manual_disabled FROM providers
 WHERE display_name LIKE '%minimax%';
 ```
 
@@ -26,8 +26,8 @@ WHERE display_name LIKE '%minimax%';
 ### 2. 凭据状态
 
 ```sql
-SELECT id, provider_id, label, status, manual_disabled, 
-       lifecycle_status, availability_state, quota_state 
+SELECT id, provider_id, label, status, manual_disabled,
+       lifecycle_status, availability_state, quota_state
 FROM credentials WHERE provider_id IN (14, 67);
 ```
 
@@ -41,11 +41,11 @@ FROM credentials WHERE provider_id IN (14, 67);
 ### 3. 模型绑定状态
 
 ```sql
-SELECT cmb.credential_id, pm.raw_model_name, cmb.available, 
-       cmb.unavailable_reason, cmb.routing_tier, cmb.weight 
-FROM credential_model_bindings cmb 
-JOIN provider_models pm ON cmb.provider_model_id = pm.id 
-WHERE lower(pm.raw_model_name) LIKE '%m3%' 
+SELECT cmb.credential_id, pm.raw_model_name, cmb.available,
+       cmb.unavailable_reason, cmb.routing_tier, cmb.weight
+FROM credential_model_bindings cmb
+JOIN provider_models pm ON cmb.provider_model_id = pm.id
+WHERE lower(pm.raw_model_name) LIKE '%m3%'
 ORDER BY cmb.credential_id;
 ```
 
@@ -62,8 +62,8 @@ ORDER BY cmb.credential_id;
 ### 4. 客户端请求模型名
 
 ```sql
-SELECT client_model, COUNT(*) FROM request_logs 
-WHERE ts > now() - interval '2 hours' 
+SELECT client_model, COUNT(*) FROM request_logs
+WHERE ts > now() - interval '2 hours'
 GROUP BY client_model ORDER BY 2 DESC;
 ```
 
@@ -79,9 +79,9 @@ GROUP BY client_model ORDER BY 2 DESC;
 ### 5. 错误统计
 
 ```sql
-SELECT request_status, error_kind, COUNT(*) 
-FROM request_logs 
-WHERE ts > now() - interval '2 hours' AND client_model = 'minimax-m3' 
+SELECT request_status, error_kind, COUNT(*)
+FROM request_logs
+WHERE ts > now() - interval '2 hours' AND client_model = 'minimax-m3'
 GROUP BY request_status, error_kind;
 ```
 
@@ -98,9 +98,9 @@ GROUP BY request_status, error_kind;
 ### 6. 时间分布
 
 ```sql
-SELECT date_trunc('minute', ts), COUNT(*) 
-FROM request_logs 
-WHERE ts > now() - interval '4 hours' AND client_model = 'minimax-m3' 
+SELECT date_trunc('minute', ts), COUNT(*)
+FROM request_logs
+WHERE ts > now() - interval '4 hours' AND client_model = 'minimax-m3'
 GROUP BY 1 ORDER BY 1 DESC LIMIT 20;
 ```
 

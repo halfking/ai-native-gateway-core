@@ -25,7 +25,7 @@ L1: Session + Model (最高优先级)
     TTL: 1小时
     用途: 同一会话内的模型粘性
 
-L2: Client + Model (中等优先级)  
+L2: Client + Model (中等优先级)
     格式: {tenant}:{app}:{key}:{profile}:{model}
     TTL: 24小时
     用途: 跨会话的模型偏好

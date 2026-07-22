@@ -87,14 +87,14 @@ describe('OperationAgreementDialog', () => {
 
   it('Accept button is disabled until checkbox is checked', () => {
     const w = makeWrapper({ modelValue: true, scope: 'download', version: '2026-07-15' })
-    const acceptBtn = w.find('button')
+    const acceptBtn = w.find('button.btn-primary')
     expect(acceptBtn.attributes('disabled')).toBeDefined()
   })
 
   it('emits agreed + writes localStorage when user accepts', async () => {
     const w = makeWrapper({ modelValue: true, scope: 'download', version: '2026-07-15' })
     await w.find('input[type="checkbox"]').setValue(true)
-    await w.find('button').trigger('click')
+    await w.find('button.btn-primary').trigger('click')
     expect(w.emitted('agreed')).toBeTruthy()
     expect(localStorageMock.getItem('llmgw_op_agreement_download_2026-07-15')).toBeTruthy()
   })

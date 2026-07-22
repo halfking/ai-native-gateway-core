@@ -1,7 +1,7 @@
 # 系统自检功能 - 实施总结
 
-**完成时间**: 2026-07-12 03:15  
-**总耗时**: ~4 小时  
+**完成时间**: 2026-07-12 03:15
+**总耗时**: ~4 小时
 **状态**: ✅ 已完成并修复关键问题
 
 ---
@@ -109,15 +109,15 @@ pollTimer = window.setInterval(() => {
 ## ⚠️ 已知限制
 
 ### 1. 优雅关闭未实现
-**影响**: 进程退出时 worker 可能中断当前测试  
+**影响**: 进程退出时 worker 可能中断当前测试
 **方案**: 需要在 `cmd/gateway/main.go` 的 shutdown 逻辑中调用 `worker.Stop()`
 
 ### 2. 数据保留策略未实现
-**影响**: `self_check_runs` 表会无限增长  
+**影响**: `self_check_runs` 表会无限增长
 **方案**: 需要实现 cleanup worker（每天清理 30 天前数据）
 
 ### 3. Prometheus 指标未暴露
-**影响**: 无法通过 Prometheus 监控自检状态  
+**影响**: 无法通过 Prometheus 监控自检状态
 **方案**: 添加 `/metrics` 端点暴露:
 - `selfcheck_runs_total{model,status}`
 - `selfcheck_success_rate{model}`
@@ -189,7 +189,7 @@ psql -U postgres -d llm_gateway < sql/migrations/domain/338_self_check.sql
 - alert: SelfCheckLowSuccessRate
   expr: selfcheck_success_rate < 0.8
   for: 10m
-  
+
 - alert: SelfCheckModelFailed
   expr: selfcheck_runs_total{status="failed"} > 10
   for: 5m

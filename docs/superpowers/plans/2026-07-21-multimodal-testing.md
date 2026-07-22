@@ -458,7 +458,7 @@ git commit -m "fix(multimodal): correct modality write path + rule gaps (whisper
 # 一键复跑：go test Phase 2 + Phase 3 dry-run
 set -euo pipefail
 echo "== Phase 2 =="
-go test ./domains/streaming/... ./bg/... ./admin/... ./modelname/... 
+go test ./domains/streaming/... ./bg/... ./admin/... ./modelname/...
 echo "== Phase 3 (dry-run) =="
 bash scripts/multimodal-e2e/run_phase3.sh --dry-run
 echo "ALL PASS"

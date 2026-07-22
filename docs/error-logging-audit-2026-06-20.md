@@ -1,9 +1,9 @@
 # 错误请求信息记录全面审计与修复报告
 
-**日期**: 2026-06-20  
-**版本**: v1.0  
-**影响范围**: `relay/handler.go`, `relay/messages.go`  
-**问题**: 多个早期退出错误路径未记录请求 body 和 model，导致 request_logs 空白  
+**日期**: 2026-06-20
+**版本**: v1.0
+**影响范围**: `relay/handler.go`, `relay/messages.go`
+**问题**: 多个早期退出错误路径未记录请求 body 和 model，导致 request_logs 空白
 **状态**: ✅ 已全部修复
 
 ---
@@ -14,8 +14,8 @@
 
 **症状**：
 ```sql
-SELECT id, error_kind, client_model, request_body 
-FROM request_logs 
+SELECT id, error_kind, client_model, request_body
+FROM request_logs
 WHERE error_kind IN ('method_not_allowed', 'missing_key', 'invalid_key')
 LIMIT 10;
 
@@ -147,7 +147,7 @@ ok  	__REPO_URL_3__/relay	0.674s
 
 ```sql
 -- 1. 检查最近 1 小时内所有错误请求是否都有 client_model
-SELECT 
+SELECT
     error_kind,
     COUNT(*) as total,
     COUNT(client_model) FILTER (WHERE client_model IS NOT NULL AND client_model != '') as with_model,
@@ -161,7 +161,7 @@ ORDER BY without_model DESC;
 -- 期望：without_model 列应该只有 executor_unavailable（它在 body 读取前失败，符合预期）
 
 -- 2. 检查 method_not_allowed 是否有完整记录
-SELECT id, ts, client_model, 
+SELECT id, ts, client_model,
        LENGTH(request_body::text) as body_len,
        substring(request_body::text, 1, 100) as body_preview
 FROM request_logs
@@ -172,7 +172,7 @@ LIMIT 10;
 -- 期望：body_len > 0, client_model 不是 NULL
 
 -- 3. 检查 missing_key / invalid_key 是否有完整记录
-SELECT error_kind, client_model, 
+SELECT error_kind, client_model,
        LENGTH(request_body::text) as body_len
 FROM request_logs
 WHERE error_kind IN ('missing_key', 'invalid_key')
@@ -246,7 +246,7 @@ if <error condition> {
 
 2. **pending store 错误**（line 750+）：
    - 幂等性检查失败 - 已有 `idempotent_replay` 修复
-   
+
 3. **session 相关错误**：
    - 已有 `session_forbidden` 修复（2处）
 

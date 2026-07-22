@@ -1,7 +1,7 @@
 # LLM Gateway 系统深度审计报告（最终版）
-**日期**: 2026-06-30  
-**审计范围**: Token统计完整性、错误处理、数据传输解析  
-**服务器**: __SECRET_1__ (71服务器)  
+**日期**: 2026-06-30
+**审计范围**: Token统计完整性、错误处理、数据传输解析
+**服务器**: __SECRET_1__ (71服务器)
 **数据库**: llm_gateway @ llm-gateway-pg-71-replica:__PORT_5__
 
 ---
@@ -40,7 +40,7 @@ CREATE TABLE request_wal_2026_06 PARTITION OF request_wal
     FOR VALUES FROM ('2026-06-01 00:00:00+00') TO ('2026-07-01 00:00:00+00');
 ```
 
-**执行时间**: 2026-06-30 07:40 UTC  
+**执行时间**: 2026-06-30 07:40 UTC
 **验证**: 错误日志停止 ✅
 
 ---
@@ -90,7 +90,7 @@ CREATE TABLE request_wal_2026_06 PARTITION OF request_wal
 
 ```go
 // line 1336
-h.emitFailedDecisionLog(requestID, clientModel, keyInfo, clientID, 
+h.emitFailedDecisionLog(requestID, clientModel, keyInfo, clientID,
     0, nil, nil, "no_candidate", nil, latencyMs)
 ```
 
@@ -122,12 +122,12 @@ type DecisionLogEntry struct {
 `domains/streaming/handler.go:L2938-L2985`
 
 ```go
-func (h *ChatHandler) emitFailedDecisionLog(requestID, clientModel string, 
-    keyInfo *authentication.KeyInfo, clientID identity.ClientIdentity, 
-    candidatesTried int, modelResolution *resolve.Resolution, 
-    txResult *transformation.TransformResult, errCode string, 
+func (h *ChatHandler) emitFailedDecisionLog(requestID, clientModel string,
+    keyInfo *authentication.KeyInfo, clientID identity.ClientIdentity,
+    candidatesTried int, modelResolution *resolve.Resolution,
+    txResult *transformation.TransformResult, errCode string,
     failTrace *executors.Trace, latencyMs int) {
-    
+
     dl := &telemetry.DecisionLogEntry{
         RequestID:       requestID,
         Model:           canonicalOrClient(canonical, clientModel),
@@ -178,7 +178,7 @@ func EstimateTokens(bodyBytes []byte) int {
 
 #### 修改前
 ```go
-h.emitFailedDecisionLog(requestID, clientModel, keyInfo, clientID, 
+h.emitFailedDecisionLog(requestID, clientModel, keyInfo, clientID,
     0, nil, nil, "no_candidate", nil, int(time.Since(startTime).Milliseconds()))
 ```
 
@@ -191,8 +191,8 @@ if bodyBytes != nil && len(bodyBytes) > 0 {
     estimatedPromptTokens = &tokens
 }
 
-h.emitFailedDecisionLogWithTokens(requestID, clientModel, keyInfo, clientID, 
-    0, nil, nil, "no_candidate", nil, 
+h.emitFailedDecisionLogWithTokens(requestID, clientModel, keyInfo, clientID,
+    0, nil, nil, "no_candidate", nil,
     int(time.Since(startTime).Milliseconds()),
     estimatedPromptTokens, nil) // completion_tokens 为 nil
 ```
@@ -200,14 +200,14 @@ h.emitFailedDecisionLogWithTokens(requestID, clientModel, keyInfo, clientID,
 #### 新增函数签名
 ```go
 func (h *ChatHandler) emitFailedDecisionLogWithTokens(
-    requestID, clientModel string, 
-    keyInfo *authentication.KeyInfo, 
-    clientID identity.ClientIdentity, 
-    candidatesTried int, 
-    modelResolution *resolve.Resolution, 
-    txResult *transformation.TransformResult, 
-    errCode string, 
-    failTrace *executors.Trace, 
+    requestID, clientModel string,
+    keyInfo *authentication.KeyInfo,
+    clientID identity.ClientIdentity,
+    candidatesTried int,
+    modelResolution *resolve.Resolution,
+    txResult *transformation.TransformResult,
+    errCode string,
+    failTrace *executors.Trace,
     latencyMs int,
     promptTokens *int,      // 新增
     completionTokens *int,  // 新增
@@ -229,22 +229,22 @@ func (h *ChatHandler) emitFailedDecisionLogWithTokens(
 -- 回填 prompt_tokens（基于 request_body 估算）
 UPDATE request_logs
 SET prompt_tokens = (
-    CASE 
-        WHEN request_body IS NOT NULL 
+    CASE
+        WHEN request_body IS NOT NULL
         THEN CEIL(LENGTH(request_body::text) / 3.5)::int
         ELSE NULL
     END
 )
-WHERE prompt_tokens IS NULL 
+WHERE prompt_tokens IS NULL
   AND request_body IS NOT NULL
   AND ts >= '2026-06-01';
 
 -- 验证
-SELECT 
+SELECT
     COUNT(*) as updated_count,
     AVG(prompt_tokens) as avg_tokens
 FROM request_logs
-WHERE prompt_tokens IS NOT NULL 
+WHERE prompt_tokens IS NOT NULL
   AND success = false
   AND ts >= NOW() - INTERVAL '24 hours';
 ```
@@ -300,7 +300,7 @@ h.emitFailedDecisionLog(..., logCtx.EstimatedPromptTokens())
 docker exec llm-gateway-pg-71-replica psql -U llm_gateway -d llm_gateway << 'EOSQL'
 UPDATE request_logs
 SET prompt_tokens = CEIL(LENGTH(request_body::text) / 3.5)::int
-WHERE prompt_tokens IS NULL 
+WHERE prompt_tokens IS NULL
   AND request_body IS NOT NULL
   AND success = false
   AND ts >= '2026-06-01';
@@ -390,21 +390,21 @@ stream_chunks_sent: 0 ← 但未发送给客户端
 ```bash
 # 1. 检查凭据19的健康状态
 docker exec llm-gateway-pg-71-replica psql -U llm_gateway -d llm_gateway \
-  -c "SELECT id, availability_state, circuit_state, consecutive_failures, lifecycle_status 
+  -c "SELECT id, availability_state, circuit_state, consecutive_failures, lifecycle_status
       FROM credentials WHERE id = 19"
 
 # 2. 检查上下文窗口配置
 docker exec llm-gateway-pg-71-replica psql -U llm_gateway -d llm_gateway \
-  -c "SELECT canonical_name, context_window 
-      FROM models_canonical 
+  -c "SELECT canonical_name, context_window
+      FROM models_canonical
       WHERE lower(canonical_name) LIKE '%minimax-m3%'"
 
 # 3. 检查最近的成功请求的token数
 docker exec llm-gateway-pg-71-replica psql -U llm_gateway -d llm_gateway \
-  -c "SELECT request_id, prompt_tokens, completion_tokens 
-      FROM request_logs 
-      WHERE client_model = 'minimax-m3' 
-        AND success = true 
+  -c "SELECT request_id, prompt_tokens, completion_tokens
+      FROM request_logs
+      WHERE client_model = 'minimax-m3'
+        AND success = true
         AND ts >= NOW() - INTERVAL '7 days'
       ORDER BY prompt_tokens DESC
       LIMIT 10"
@@ -493,8 +493,8 @@ request_mode = 'chat': 192条 (100%)
 # Token统计覆盖率（按错误类型）
 sum by (error_kind) (
   rate(llmgw_requests_has_tokens_total[5m])
-) 
-/ 
+)
+/
 sum by (error_kind) (
   rate(llmgw_requests_total[5m])
 )
@@ -565,7 +565,7 @@ sum by (failure_stage) (rate(llmgw_requests_total{success="false"}[5m]))
 ### A. Token统计分析
 ```sql
 -- 按错误类型统计token覆盖率
-SELECT 
+SELECT
     error_kind,
     failure_stage,
     COUNT(*) as total,
@@ -580,13 +580,13 @@ ORDER BY total DESC;
 
 ### B. 缺失token的请求详情
 ```sql
-SELECT 
+SELECT
     request_id,
     ts,
     client_model,
     error_kind,
     failure_stage,
-    CASE WHEN request_body IS NOT NULL 
+    CASE WHEN request_body IS NOT NULL
          THEN 'has_body' ELSE 'no_body' END as body_status,
     LENGTH(request_body::text) as body_size
 FROM request_logs
@@ -601,13 +601,13 @@ LIMIT 20;
 -- 回填（估算公式: 字符数 / 3.5）
 UPDATE request_logs
 SET prompt_tokens = CEIL(LENGTH(request_body::text) / 3.5)::int
-WHERE prompt_tokens IS NULL 
+WHERE prompt_tokens IS NULL
   AND request_body IS NOT NULL
   AND success = false
   AND ts >= '2026-06-01';
 
 -- 验证回填结果
-SELECT 
+SELECT
     COUNT(*) as total_backfilled,
     MIN(prompt_tokens) as min_tokens,
     MAX(prompt_tokens) as max_tokens,

@@ -1,7 +1,7 @@
 # Credential Rotation Checklist — 2026-07-14
 
-> **Context**: Slice 7 of deployment-management hardening (spec cf8aad1a9).  
-> Current-HEAD cleanup replaced plaintext credentials with `${VAR}` references.  
+> **Context**: Slice 7 of deployment-management hardening (spec cf8aad1a9).
+> Current-HEAD cleanup replaced plaintext credentials with `${VAR}` references.
 > This document records **affected key names only**; no values are logged.
 >
 > **v2 update (2026-07-14)**: Automate rotation via `scripts/rotate-credentials.sh`.
@@ -77,7 +77,7 @@ If rotation causes service disruption:
 
 ## 5. Notes
 
-- **Git history is NOT rewritten** — old plaintext values remain in commit history.  
+- **Git history is NOT rewritten** — old plaintext values remain in commit history.
   This is acceptable per spec: rotation renders them invalid.
 - The scanner now reports 0 BLOCK findings (AC-10 satisfied).
 - `_to-be-deprecated/` excluded from scanner (legacy migration artifact).

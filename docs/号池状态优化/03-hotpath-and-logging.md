@@ -51,12 +51,12 @@ HTTP 请求
 
 ### 2.1 硬规则（对齐现网）
 
-1. Plan 阶段不 acquire 资源  
-2. 免费凭据 transient 失败：不硬剔，软降权  
-3. 永久错误：binding 或 credential 硬剔  
-4. 人工禁用：request/probe 不可恢复  
-5. Redis 读错误：保护性拒绝该候选  
-6. key missing：DB 硬门通过则懒初始化；Redis 连接失败则拒绝  
+1. Plan 阶段不 acquire 资源
+2. 免费凭据 transient 失败：不硬剔，软降权
+3. 永久错误：binding 或 credential 硬剔
+4. 人工禁用：request/probe 不可恢复
+5. Redis 读错误：保护性拒绝该候选
+6. key missing：DB 硬门通过则懒初始化；Redis 连接失败则拒绝
 
 ## 3. 评分输入（NodeView → score）
 
@@ -72,9 +72,9 @@ score =
   w_fail * fail_streak_norm
 ```
 
-- 窗口不足样本：stability 用中性值，不重罚  
-- soft_demote：提高 score（更差）但不剔除  
-- hard_exclude：R4 直接失败（免费可关）  
+- 窗口不足样本：stability 用中性值，不重罚
+- soft_demote：提高 score（更差）但不剔除
+- hard_exclude：R4 直接失败（免费可关）
 
 具体权重进入配置，不写死业务常量到多处。
 
@@ -97,9 +97,9 @@ upstream 返回
 
 同步 Redis 失败：
 
-- 不改变对客户端的上游结果  
-- `state_update_failed` metric + debug/warn  
-- 后续若 Redis 仍不可读，该节点保护性拒绝  
+- 不改变对客户端的上游结果
+- `state_update_failed` metric + debug/warn
+- 后续若 Redis 仍不可读，该节点保护性拒绝
 
 ## 5. 资源获取顺序（Executor）
 
@@ -117,9 +117,9 @@ for cand in ordered:
 
 ResourcePools：
 
-- FP → 现有 `credentialfpslot`（租户/holder/pin/active gate）  
-- RPM → 现有 Redis 60s ZSET  
-- Conc → 第一阶段进程内 semaphore；接口预留 Redis  
+- FP → 现有 `credentialfpslot`（租户/holder/pin/active gate）
+- RPM → 现有 Redis 60s ZSET
+- Conc → 第一阶段进程内 semaphore；接口预留 Redis
 
 “槽满” ≠ “凭据坏了”。
 
@@ -159,10 +159,10 @@ ResourcePools：
 
 ### 6.3 级别与采样
 
-- 成功路径细节：Debug  
-- 过滤/降级/影子差异：Info（可按 `shadow_sample_rate` 采样）  
-- Redis 失败/恢复阻塞/CAS 冲突风暴：Warn  
-- 资源释放最终失败：Error  
+- 成功路径细节：Debug
+- 过滤/降级/影子差异：Info（可按 `shadow_sample_rate` 采样）
+- Redis 失败/恢复阻塞/CAS 冲突风暴：Warn
+- 资源释放最终失败：Error
 
 与 `RoutingAttemptsTracker` / `request_logs.routing_attempts` 对齐：每次尝试一行，结束汇总，按 `request_id` 复盘 failover 链。
 

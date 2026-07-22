@@ -1,6 +1,6 @@
 # i18n 迁移审计报告 — 遗漏问题修正
 
-> 审计时间：2026-07-05 02:05  
+> 审计时间：2026-07-05 02:05
 > 审计范围：首页 i18n 迁移完整性
 
 ---
@@ -102,7 +102,7 @@ title: 'AI-Native 組織核心閘道',
    ```
    Prompt: "将以下 TypeScript 对象翻译为 [繁体中文/日语/德语/...]:
    保持键名不变，只翻译值。专业术语保持英文。
-   
+
    [粘贴 zh-CN/landing.ts 内容]"
    ```
 3. 将输出写入对应 locale 文件
@@ -146,9 +146,9 @@ TARGET_LANGS=("Traditional Chinese" "Japanese" "German" "French" "Spanish" "Arab
 for i in "${!TARGET_LOCALES[@]}"; do
   LOCALE="${TARGET_LOCALES[$i]}"
   LANG="${TARGET_LANGS[$i]}"
-  
+
   echo "翻译 $LOCALE ($LANG)..."
-  
+
   # 调用 LLM API（示例）
   curl -s https://__DOMAIN_2__/v1/chat/completions \
     -H "Authorization: Bearer YOUR_API_KEY" \
@@ -163,7 +163,7 @@ for i in "${!TARGET_LOCALES[@]}"; do
         \"content\": \"$(cat $SOURCE_FILE)\"
       }]
     }" | jq -r '.choices[0].message.content' > "$LOCALE/landing.ts"
-  
+
   echo "✅ $LOCALE/landing.ts 已更新"
 done
 

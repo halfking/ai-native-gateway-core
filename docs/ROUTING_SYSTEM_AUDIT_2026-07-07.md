@@ -1,7 +1,7 @@
 # 路由系统全面审计报告
 
-**审计日期**: 2026-07-07  
-**审计范围**: 路由实现、限流机制、凭据选择、资源利用  
+**审计日期**: 2026-07-07
+**审计范围**: 路由实现、限流机制、凭据选择、资源利用
 **审计人**: ZCode Agent
 
 ## 执行概要
@@ -27,7 +27,7 @@ func (r *Router) PlanCandidates(...) {
     if r.URSM != nil && r.URSM.Enabled() {
         return r.planWithURSM(...)
     }
-    
+
     // 使用状态管理器过滤（如果启用）
     if r.StateManager != nil && r.StateManager.Enabled() {
         available = r.filterAvailableWithStateManager(ctx, candidates)
@@ -85,14 +85,14 @@ func (l *Limiter) AcquireAll(...) (ReleaseFunc, error) {
     if err := l.global.Acquire(ctx); err != nil {
         return nil, fmt.Errorf("global limit: %w", err)
     }
-    
+
     // 2. Pool limit (100/provider)
     pool := l.Pool(providerID)
     if err := pool.Acquire(ctx); err != nil {
         l.global.Release()  // 回滚
         return nil, fmt.Errorf("pool limit: %w", err)
     }
-    
+
     // 3. Credential limit (50/credential)
     cred := l.Credential(providerID, credentialID)
     if err := cred.Acquire(ctx); err != nil {
@@ -100,7 +100,7 @@ func (l *Limiter) AcquireAll(...) (ReleaseFunc, error) {
         l.global.Release() // 回滚
         return nil, fmt.Errorf("credential limit: %w", err)
     }
-    
+
     // 4. Identity limit (10/identity) - 非阻塞
     // 5. Per-key limit - 非阻塞
 }
@@ -242,7 +242,7 @@ func() {
     if releasePeak {
         e.PeakCollector.Acquire(...)
     }
-    
+
     defer func() {
         if releasePeak {
             e.PeakCollector.Release(...)
@@ -252,7 +252,7 @@ func() {
             e.FpSlots.Release(...)
         }
     }()
-    
+
     // Execute
 }()
 ```
@@ -523,5 +523,5 @@ func (l *Limiter) SmartRecover(credID int, recentSuccessRate float64) {
 
 ---
 
-**审计状态**: ✅ 完成  
+**审计状态**: ✅ 完成
 **下一步行动**: 根据建议改进优先级制定实施计划

@@ -149,8 +149,8 @@ type ModelState struct {
 }
 
 func (s *ModelState) IsAvailable() bool {
-    return s.OfferAvailable && 
-           s.BindingAvailable && 
+    return s.OfferAvailable &&
+           s.BindingAvailable &&
            s.ProbeState != "broken_confirmed"
 }
 
@@ -214,16 +214,16 @@ type RouteNode struct {
     RawModel     string `json:"raw_model"`
     ProviderID   int    `json:"provider_id"`
     ProviderName string `json:"provider_name"`
-    
+
     // 状态（查询时填充）
     Available         bool   `json:"available"`
     UnavailableReason string `json:"unavailable_reason,omitempty"`
     HealthStatus      string `json:"health_status"`
-    
+
     // 资源（路由时分配）
     FpSlotIndex     int  `json:"fp_slot_index"`
     ConcurrencyHeld bool `json:"concurrency_held"`
-    
+
     // 成本因素（用于排序）
     PriceInPer1M    float64 `json:"price_in_per_1m"`
     PriceOutPer1M   float64 `json:"price_out_per_1m"`
@@ -231,7 +231,7 @@ type RouteNode struct {
     SuccessRate     float64 `json:"success_rate"`
     P95LatencyMs    int     `json:"p95_latency_ms"`
     CompositeScore  float64 `json:"composite_score"`
-    
+
     // 限额配置
     FpSlotLimit      int `json:"fp_slot_limit"`
     ConcurrencyLimit int `json:"concurrency_limit"`
@@ -289,41 +289,41 @@ func (m *Manager) IsAvailable(ctx context.Context, credentialID int, model strin
     if err != nil {
         return true, "" // fail-open
     }
-    
+
     provider, err := m.providerCache.Get(ctx, providerKey(cred.ProviderID))
     if err != nil {
         return true, ""
     }
-    
+
     if !provider.IsAvailable() {
         return false, "provider_disabled"
     }
-    
+
     // Layer 2: Credential
     if !cred.IsAvailable() {
         return false, cred.UnavailableReason()
     }
-    
+
     // Layer 3: Model
     modelState, err := m.modelCache.Get(ctx, modelKey(credentialID, model))
     if err != nil {
         return true, ""
     }
-    
+
     if !modelState.IsAvailable() {
         return false, modelState.UnavailableReason()
     }
-    
+
     // Layer 4: Node
     nodeState, err := m.nodeCache.Get(ctx, nodeKey(credentialID, model))
     if err != nil {
         return true, ""
     }
-    
+
     if !nodeState.IsAvailable() {
         return false, nodeState.UnavailableReason()
     }
-    
+
     return true, ""
 }
 ```
@@ -348,7 +348,7 @@ local bestOldHolder = nil
 for slot = 0, limit - 1 do
     local key = prefix .. ':' .. tostring(slot)
     local current = redis.call('GET', key)
-    
+
     if current == false then
         -- 空闲槽，直接获取
         redis.call('SET', key, holder, 'EX', slotTTL)
@@ -357,7 +357,7 @@ for slot = 0, limit - 1 do
         end
         return {1, slot, ''}
     end
-    
+
     if current == holder then
         -- 已持有，刷新TTL
         redis.call('EXPIRE', key, slotTTL)
@@ -366,7 +366,7 @@ for slot = 0, limit - 1 do
         end
         return {1, slot, ''}
     end
-    
+
     local remaining = redis.call('TTL', key)
     if remaining == -1 or remaining == -2 then
         -- 无TTL，直接获取
@@ -376,7 +376,7 @@ for slot = 0, limit - 1 do
         end
         return {1, slot, ''}
     end
-    
+
     local idle = slotTTL - remaining
     if idle >= gate and idle > bestIdle then
         -- 超过活跃阈值，且空闲时间最长
@@ -438,19 +438,19 @@ return 1
 func (s *CostScorer) CalculateCompositeScore(node RouteNode) float64 {
     // 价格分数 (0-100, 越低越好)
     priceScore := s.calculatePriceScore(node)
-    
+
     // 速度分数 (0-100, 越高越好)
     speedScore := s.calculateSpeedScore(node)
-    
+
     // 稳定性分数 (0-100, 越高越好)
     stabilityScore := s.calculateStabilityScore(node)
-    
+
     // 综合分数 (0-100, 越高越好)
-    composite := 
+    composite :=
         s.weights.PriceWeight * (100 - priceScore) +  // 价格反转
         s.weights.SpeedWeight * speedScore +
         s.weights.StabilityWeight * stabilityScore
-    
+
     return composite
 }
 
@@ -491,10 +491,10 @@ func (w *BatchWriter) ApplyUpdates(ctx context.Context, updates []StateUpdate) e
         return err
     }
     defer tx.Rollback(ctx)
-    
+
     // 2. 按层级排序
     sorted := sortUpdatesByLayer(updates)
-    
+
     // 3. 逐层应用
     for _, update := range sorted {
         switch update.Layer {
@@ -516,26 +516,26 @@ func (w *BatchWriter) ApplyUpdates(ctx context.Context, updates []StateUpdate) e
             }
         }
     }
-    
+
     // 4. 提交事务
     if err := tx.Commit(ctx); err != nil {
         return err
     }
-    
+
     // 5. 异步失效缓存
     go w.invalidateCaches(ctx, sorted)
-    
+
     return nil
 }
 
 func sortUpdatesByLayer(updates []StateUpdate) []StateUpdate {
     sorted := make([]StateUpdate, len(updates))
     copy(sorted, updates)
-    
+
     sort.SliceStable(sorted, func(i, j int) bool {
         return sorted[i].Layer < sorted[j].Layer
     })
-    
+
     return sorted
 }
 ```
@@ -574,12 +574,12 @@ L1 (Memory):
   - TTL: 10秒
   - 容量: 10000条
   - 命中率目标: >80%
-  
+
 L2 (Redis):
   - TTL: 5分钟
   - 容量: 无限制
   - 命中率目标: >95%
-  
+
 L3 (PostgreSQL):
   - 权威源
   - 索引覆盖

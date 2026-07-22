@@ -61,7 +61,7 @@ func calculateLoadScore(c provider.Candidate, r *Router, ctx context.Context, we
 	latencyScore := calculateLatencyScore(c)
 	qualityScore := calculateQualityScore(c)
 
-	composite := 
+	composite :=
 		concurrencyScore * weights.ConcurrencyWeight +
 		identityScore * weights.IdentityWeight +
 		latencyScore * weights.LatencyWeight +
@@ -176,7 +176,7 @@ type Router struct {
 	rrCounter atomic.Uint64
 	StateManager credentialstate.StateProvider
 	URSM *ursm.Manager
-	
+
 	// 新增：评分权重配置
 	ScoringWeights ScoringWeights
 }
@@ -417,7 +417,7 @@ func (dt *DegradationTracker) GetDegradationRatio(model string) float64 {
 // 在 Executor 结构体中添加
 type Executor struct {
 	// ... 现有字段
-	
+
 	// 新增：降级模式追踪器
 	DegradationTracker *DegradationTracker
 }
@@ -429,11 +429,11 @@ if len(filtered) == 0 && len(candidates) > 0 {
 		"client_model", params.ClientModel,
 	)
 	fpSlotDegraded = true
-	
+
 	// 新增：记录降级模式
 	if e.DegradationTracker != nil {
 		e.DegradationTracker.RecordRequest(params.ClientModel, true)
-		
+
 		// 检查是否超过阈值
 		ratio := e.DegradationTracker.GetDegradationRatio(params.ClientModel)
 		if ratio > 0.10 { // 10% 阈值
@@ -471,7 +471,7 @@ groups:
         annotations:
           summary: "FpSlot降级率过高: {{ $labels.model }}"
           description: "模型 {{ $labels.model }} 的FpSlot降级率为 {{ $value | humanizePercentage }}，超过10%阈值"
-          
+
       - alert: FpSlotSaturationWarning
         expr: llmgw_fp_slot_saturation_ratio > 0.80
         for: 5m
@@ -534,23 +534,23 @@ expiresAt: now.Add(7 * 24 * time.Hour),
 // 新增：根据模型类型计算动态TTL
 func calculateSessionStickyTTL(model string) time.Duration {
 	modelLower := strings.ToLower(model)
-	
+
 	// embedding 模型：短期任务
 	if strings.Contains(modelLower, "embedding") || strings.Contains(modelLower, "embed") {
 		return 30 * time.Second
 	}
-	
+
 	// chat 模型：对话上下文
-	if strings.Contains(modelLower, "chat") || strings.Contains(modelLower, "gpt") || 
+	if strings.Contains(modelLower, "chat") || strings.Contains(modelLower, "gpt") ||
 	   strings.Contains(modelLower, "claude") || strings.Contains(modelLower, "gemini") {
 		return 10 * time.Minute
 	}
-	
+
 	// completion 模型：长文本生成
 	if strings.Contains(modelLower, "completion") || strings.Contains(modelLower, "davinci") {
 		return 30 * time.Minute
 	}
-	
+
 	// 默认：15分钟
 	return 15 * time.Minute
 }
@@ -632,10 +632,10 @@ type StickyTTLConfig struct {
 	ChatTTL        time.Duration
 	CompletionTTL  time.Duration
 	DefaultL1TTL   time.Duration
-	
+
 	// L2: Client + Model
 	ClientModelTTL time.Duration
-	
+
 	// L3: Client Baseline
 	ClientBaselineTTL time.Duration
 }
@@ -688,18 +688,18 @@ func TestCalculateSessionStickyTTL(t *testing.T) {
 
 func TestStickyCache_TTLExpiry(t *testing.T) {
 	cache := NewStickyCache()
-	
+
 	// 设置短TTL
 	cache.Set("test-key", 123, 100*time.Millisecond)
-	
+
 	// 立即查询应该成功
 	credID, found := cache.Get("test-key")
 	assert.True(t, found)
 	assert.Equal(t, 123, credID)
-	
+
 	// 等待过期
 	time.Sleep(150 * time.Millisecond)
-	
+
 	// 查询应该失败
 	_, found = cache.Get("test-key")
 	assert.False(t, found)

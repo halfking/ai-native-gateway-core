@@ -51,7 +51,7 @@ async function saveConfig() {
   saving.value = true
   error.value = null
   successMessage.value = null
-  
+
   try {
     await updateApprovalConfig(config.value)
     successMessage.value = t('sessions.config.saveSuccess')
@@ -79,7 +79,7 @@ onMounted(() => {
 <template>
   <div class="approval-config-panel" v-loading="loading">
     <div class="panel-actions">
-      <el-button 
+      <el-button
         type="primary"
         @click="saveConfig"
         :disabled="saving || loading"
@@ -91,7 +91,7 @@ onMounted(() => {
     <el-alert v-if="error" type="error" :closable="false" style="margin-bottom: 20px;">
       {{ error }}
     </el-alert>
-    
+
     <el-alert v-if="successMessage" type="success" :closable="false" style="margin-bottom: 20px;">
       {{ successMessage }}
     </el-alert>

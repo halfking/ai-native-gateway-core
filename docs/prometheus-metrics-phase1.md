@@ -1,7 +1,7 @@
 # Phase 1 Prometheus Metrics 规范
 
-**版本**: v1.0  
-**更新时间**: 2026-07-19  
+**版本**: v1.0
+**更新时间**: 2026-07-19
 **覆盖模块**: Circuit Breaker, Unified Adapter, Content Safety
 
 ---
@@ -173,7 +173,7 @@ sum(rate(llm_gateway_circuit_breaker_requests_total[5m]))
 
 ```promql
 # P99 转换耗时
-histogram_quantile(0.99, 
+histogram_quantile(0.99,
   sum(rate(llm_gateway_adapter_conversion_duration_seconds_bucket[5m])) by (le, provider)
 )
 
@@ -192,7 +192,7 @@ sum(rate(llm_gateway_content_safety_checks_total{action="block"}[5m]))
 sum(rate(llm_gateway_content_safety_checks_total[5m]))
 
 # 高风险内容占比 (score >= 0.6)
-histogram_quantile(0.9, 
+histogram_quantile(0.9,
   sum(rate(llm_gateway_content_safety_score_bucket[5m])) by (le)
 )
 ```
@@ -253,7 +253,7 @@ groups:
         for: 1m
         annotations:
           summary: "熔断器打开 {{ $labels.provider }}"
-          
+
       - alert: HighErrorRate
         expr: llm_gateway_circuit_breaker_error_rate > 0.1
         for: 5m
@@ -351,5 +351,5 @@ scrape_configs:
 
 ---
 
-**文档维护**: Infrastructure Team  
+**文档维护**: Infrastructure Team
 **下次更新**: Phase 2 完成后

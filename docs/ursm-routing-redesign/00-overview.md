@@ -26,17 +26,17 @@
 供应商(Provider)
   ├─ enabled, manual_disabled
   └─ 影响所有凭据
-  
+
 凭据(Credential)
   ├─ status, lifecycle_status, availability_state
   ├─ health_status, quota_state, manual_disabled
   └─ 影响所有模型
-  
+
 模型(Model)
   ├─ offer_available, binding_available
   ├─ probe_state
   └─ 影响单个(凭据+模型)组合
-  
+
 节点(Node)
   ├─ consecutive_failures, disabled
   ├─ success_count, failure_count

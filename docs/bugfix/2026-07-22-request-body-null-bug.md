@@ -1,8 +1,8 @@
 # Bug 修复报告：Request Body 字段为空
 
-**日期**: 2026-07-22  
-**严重程度**: P0 (Critical)  
-**影响范围**: 所有模型的 request_body 和 response_body 字段  
+**日期**: 2026-07-22
+**严重程度**: P0 (Critical)
+**影响范围**: 所有模型的 request_body 和 response_body 字段
 **根本原因**: SQL 逻辑错误 - `NULLIF($37, $37)` 永远返回 NULL
 
 ---
@@ -23,7 +23,7 @@
 -- 第 1174 行
 response_body = NULLIF($30::text, $30::text)::jsonb,
 
--- 第 1181 行  
+-- 第 1181 行
 request_body = NULLIF($37::text, $37::text)::jsonb,
 ```
 
@@ -89,8 +89,8 @@ request_body = COALESCE($37::text::jsonb, request_body),
 
 6. **handler.go:2819** - 传入 `emitTelemetry`：
    ```go
-   h.emitTelemetry(auditBuilder.Build(), result, endUser, keyInfo, 
-                   streamCapture, "chat", txResult, 
+   h.emitTelemetry(auditBuilder.Build(), result, endUser, keyInfo,
+                   streamCapture, "chat", txResult,
                    result.InboundBody, result.ResponseBody, logCtx)
    ```
 
@@ -204,6 +204,6 @@ rg "NULLIF\(\$[0-9]+[^,)]*,\s*\$[0-9]+[^,)]*\)" --type go && {
 
 ---
 
-**修复人**: OpenCode Agent  
-**审计人**: 待指定  
+**修复人**: OpenCode Agent
+**审计人**: 待指定
 **批准人**: 待指定

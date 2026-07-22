@@ -1,7 +1,7 @@
 # 分区表架构审计与修复总结
 
-**日期**: 2026-07-05  
-**项目**: LLM Gateway - 分区表热表架构统一化  
+**日期**: 2026-07-05
+**项目**: LLM Gateway - 分区表热表架构统一化
 **状态**: ✅ 代码修复完成，⚠️ 数据库迁移待执行
 
 ---
@@ -217,7 +217,7 @@ psql -h prod-db -U postgres -d llm_gateway \
 
 # 检查数据完整性
 psql -h prod-db -U postgres -d llm_gateway -c "
-SELECT 'tool_usage_stats' as table_name, 
+SELECT 'tool_usage_stats' as table_name,
   (SELECT count(*) FROM tool_usage_stats_hot) as hot_count,
   (SELECT count(*) FROM tool_usage_stats) as partition_count
 UNION ALL
@@ -250,7 +250,7 @@ psql -h prod-db -U postgres -d llm_gateway <<EOF
 BEGIN;
 
 -- 1. 重建 _default 分区
-ALTER TABLE tool_usage_stats 
+ALTER TABLE tool_usage_stats
   ATTACH PARTITION tool_usage_stats_default DEFAULT;
 
 -- 2. 迁移数据回 _default
@@ -297,7 +297,7 @@ WHERE usage_date >= CURRENT_DATE - 7;
 ### 6.3 日常监控
 ```sql
 -- hot表数据量监控（应该保持在7天左右）
-SELECT 
+SELECT
   'request_logs_hot' as table_name,
   count(*) as row_count,
   min(ts) as oldest_row,
@@ -358,11 +358,11 @@ FROM usage_ledger_hot
 
 ## 九、致谢与签署
 
-**审计执行**: LLM Gateway OPS Team  
-**代码修复**: ✅ 完成  
-**迁移文件创建**: ✅ 完成  
-**测试套件创建**: ✅ 完成  
-**文档编写**: ✅ 完成  
+**审计执行**: LLM Gateway OPS Team
+**代码修复**: ✅ 完成
+**迁移文件创建**: ✅ 完成
+**测试套件创建**: ✅ 完成
+**文档编写**: ✅ 完成
 
 **待执行**: 数据库迁移（待生产部署窗口）
 

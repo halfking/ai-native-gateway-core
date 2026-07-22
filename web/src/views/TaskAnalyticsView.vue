@@ -39,7 +39,7 @@ async function load() {
 
 function renderChart() {
   if (!data.value || !chartRef.value) return
-  
+
   if (!chartInstance) {
     chartInstance = echarts.init(chartRef.value)
   }
@@ -178,8 +178,8 @@ function goBack() {
             <div class="stat-item">
               <div class="stat-label">{{ t('sessions.taskAnalytics.successRate') }}</div>
               <div class="stat-value">
-                {{ data.total_success + data.total_errors > 0 
-                   ? ((data.total_success / (data.total_success + data.total_errors)) * 100).toFixed(1) 
+                {{ data.total_success + data.total_errors > 0
+                   ? ((data.total_success / (data.total_success + data.total_errors)) * 100).toFixed(1)
                    : '0.0' }}%
               </div>
             </div>

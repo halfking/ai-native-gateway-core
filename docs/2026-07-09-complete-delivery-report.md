@@ -6,7 +6,7 @@
 ## 交付内容
 
 ### 第一阶段：核心同源问题修复
-**时间**：2026-07-09 上午  
+**时间**：2026-07-09 上午
 **提交**：
 - `c5082fb4` - 核心同源问题修复（executor/credentialstate/URSM/admin）
 - `21c615eb` / `084dba10` - 审计修复（batch_writer 异步 Redis 写超时控制）
@@ -40,7 +40,7 @@
 5. **admin**：后台 discover 已脱离 request ctx
 
 ### 第二阶段：观测能力补充
-**时间**：2026-07-09 下午  
+**时间**：2026-07-09 下午
 **提交**：
 - `e55e788f` - credentialfpslot metrics 补充
 - `97be09da` - credentialfpslot metrics 文档
@@ -161,6 +161,6 @@ go test ./internal/runctx/ ./domains/streaming/executors/ \
 
 ---
 
-**完成时间**：2026-07-09  
-**状态**：✅ 全部提交并推送到 `origin/main`  
+**完成时间**：2026-07-09
+**状态**：✅ 全部提交并推送到 `origin/main`
 **验证**：✅ 编译通过，测试通过，审计通过

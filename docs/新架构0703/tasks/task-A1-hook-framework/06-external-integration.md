@@ -1,7 +1,7 @@
 # 外部集成说明
 
-> **任务**: Task A1 - Hook框架增强  
-> **版本**: v1.0  
+> **任务**: Task A1 - Hook框架增强
+> **版本**: v1.0
 > **日期**: 2026-07-03
 
 ---
@@ -31,7 +31,7 @@ type Session struct {
 }
 ```
 
-**调用时机**: 
+**调用时机**:
 - Hook执行时，从`Environment.Session`获取会话信息
 - 无需主动调用session模块的方法
 
@@ -239,12 +239,12 @@ func (h *Handler) HandleRequest(ctx context.Context, req *Request) (*Response, e
         Metadata:  make(map[string]interface{}),
         StartTime: time.Now(),
     }
-    
+
     // 执行PreRouting Hook链
     if err := h.hookRegistry.Execute(ctx, hooks.PhasePreRouting, env); err != nil {
         return nil, err
     }
-    
+
     // 检查中止标志
     if env.Abort {
         return &Response{
@@ -252,7 +252,7 @@ func (h *Handler) HandleRequest(ctx context.Context, req *Request) (*Response, e
             Body:       []byte(env.AbortReason),
         }, nil
     }
-    
+
     // 继续处理...
 }
 ```
@@ -281,22 +281,22 @@ type Environment struct {
     TenantID   string
     SessionKey string
     TaskID     string
-    
+
     // 请求响应数据
     Request          *Request
     Response         *Response
     UpstreamRequest  *UpstreamRequest
     UpstreamResponse *UpstreamResponse
-    
+
     // 会话信息
     Session *Session
-    
+
     // Hook间共享数据
     Metadata map[string]interface{}
-    
+
     // 时间戳
     StartTime time.Time
-    
+
     // 控制标志
     Skip        bool   // 跳过后续Hook
     Abort       bool   // 中止请求
@@ -364,20 +364,20 @@ sequenceDiagram
     participant Reg as HookRegistry
     participant Hook1 as CompressionHook
     participant Hook2 as MemoraHook
-    
+
     Main->>CM: NewConfigManager("config/hooks.yaml")
     CM->>CM: Load配置文件
-    
+
     Main->>Reg: NewHookRegistry(cm, metrics, logger)
-    
+
     Main->>Hook1: NewCompressionHook(config)
     Main->>Reg: Register(Hook1)
     Reg->>Reg: 按Priority排序
-    
+
     Main->>Hook2: NewMemoraHook(config)
     Main->>Reg: Register(Hook2)
     Reg->>Reg: 按Priority排序
-    
+
     Note over Main,Hook2: 系统启动完成，准备处理请求
 ```
 
@@ -391,30 +391,30 @@ sequenceDiagram
     participant Hook1 as AuditHook
     participant Hook2 as CompressionHook
     participant LLM as 上游LLM
-    
+
     Client->>Handler: HTTP Request
     Handler->>Handler: 构建Environment
-    
+
     Handler->>Reg: Execute(PhasePreRouting, env)
     Reg->>Hook1: Execute(ctx, env)
     Hook1->>Hook1: 记录审计日志
     Hook1-->>Reg: nil
     Reg-->>Handler: nil
-    
+
     Handler->>Handler: 路由选择
-    
+
     Handler->>Reg: Execute(PhasePreUpstream, env)
     Reg->>Hook2: Execute(ctx, env)
     Hook2->>Hook2: 压缩会话上下文
     Hook2-->>Reg: nil
     Reg-->>Handler: nil
-    
+
     Handler->>LLM: 调用上游
     LLM-->>Handler: 响应
-    
+
     Handler->>Reg: Execute(PhasePostResponse, env)
     Note over Reg: 异步执行，不阻塞响应
-    
+
     Handler-->>Client: HTTP Response
 ```
 
@@ -427,21 +427,21 @@ sequenceDiagram
     participant CM as ConfigManager
     participant Reg as HookRegistry
     participant Hook as ConfigurableHook
-    
+
     Note over File: 配置文件被修改
-    
+
     File->>Watcher: 文件变更事件
     Watcher->>CM: 触发回调
     CM->>CM: Reload配置
     CM->>CM: 解析YAML
-    
+
     CM->>Reg: ReloadConfig()
     Reg->>Reg: 遍历所有Hook
-    
+
     Reg->>Hook: OnConfigChange(newConfig)
     Hook->>Hook: 应用新配置
     Hook-->>Reg: nil
-    
+
     Note over File,Hook: 配置热更新完成，无需重启
 ```
 
@@ -503,7 +503,7 @@ func (r *HookRegistry) Execute(ctx context.Context, phase Phase, env *Environmen
         if err != nil {
             // 记录错误
             r.logger.Error("hook failed", "name", hook.Name(), "error", err)
-            
+
             // 根据Phase决定是否中断
             if phase == PhasePreRouting || phase == PhaseRouting {
                 // 关键阶段，中断请求
@@ -529,12 +529,12 @@ func (r *HookRegistry) executeHook(ctx context.Context, hook Hook, env *Environm
     timeout := r.config.GetHookTimeout(hook.Name())
     ctx, cancel := context.WithTimeout(ctx, timeout)
     defer cancel()
-    
+
     done := make(chan error, 1)
     go func() {
         done <- hook.Execute(ctx, env)
     }()
-    
+
     select {
     case err := <-done:
         return err
@@ -571,7 +571,7 @@ func (cb *CircuitBreaker) ShouldExecute() bool {
 
 **问题**: 多个Hook可能修改Metadata
 
-**解决方案**: 
+**解决方案**:
 - Hook按顺序执行（不并发）
 - 每个Phase内的Hook串行执行
 - Environment不需要加锁
@@ -591,7 +591,7 @@ type ConfigManager struct {
 func (cm *ConfigManager) GetHookConfig(name string) map[string]interface{} {
     cm.mu.RLock()
     defer cm.mu.RUnlock()
-    
+
     if hc, ok := cm.hooks[name]; ok {
         return hc.Config
     }
@@ -602,13 +602,13 @@ func (cm *ConfigManager) GetHookConfig(name string) map[string]interface{} {
 func (cm *ConfigManager) Load() error {
     cm.mu.Lock()
     defer cm.mu.Unlock()
-    
+
     // 读取新配置
     newHooks := loadFromFile()
-    
+
     // 原子替换
     cm.hooks = newHooks
-    
+
     return nil
 }
 ```
@@ -700,6 +700,6 @@ llmgw_hook_failures_total{hook="hook-name", phase="pre_routing", error_type="tim
 
 ---
 
-**文档维护**: Task A1负责人  
-**最后更新**: 2026-07-03  
+**文档维护**: Task A1负责人
+**最后更新**: 2026-07-03
 **版本**: v1.0

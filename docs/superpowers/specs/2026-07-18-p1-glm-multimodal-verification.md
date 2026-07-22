@@ -1,8 +1,8 @@
 # P1-GLM 多模态能力验证设计规范
 
-**日期：** 2026-07-18  
-**问题编号：** P1-GLM  
-**优先级：** P1 (当迭代必修)  
+**日期：** 2026-07-18
+**问题编号：** P1-GLM
+**优先级：** P1 (当迭代必修)
 **状态：** Design Approved
 
 ---
@@ -114,7 +114,7 @@
 - **TestGLM_PrivateFields_WebSearch**: `web_search` 字段（联网搜索）往返
 
 #### 4. 跨厂隔离
-- **TestGLM_CrossVendorIsolation**: 
+- **TestGLM_CrossVendorIsolation**:
   - GLM → OpenAI 转换时，GLM 私有字段不应泄漏
   - OpenAI → GLM 转换时，OpenAI 不应获得 GLM 私有字段
 
@@ -225,7 +225,7 @@ func TestGLM_ImageBase64(t *testing.T) {
     assert.Len(t, parsed.Messages[0].Content, 2)
     assert.Equal(t, "image", parsed.Messages[0].Content[1].Type)
     assert.Contains(t, parsed.Messages[0].Content[1].ImageURL.URL, "data:image/png")
-    
+
     // Verify Extensions preserved
     assert.Equal(t, req.Extensions["retrieval"], parsed.Extensions["retrieval"])
 }
@@ -324,7 +324,7 @@ GLM 综合评级: B → B+ (私有字段保留 verified，多模态能力 verifi
 - `go test ./internal/ir -run GLM` 全部通过
 - 8 个测试用例覆盖基础多模态、工具混合、私有字段、跨厂隔离
 
-**修复时间**：2026-07-18  
+**修复时间**：2026-07-18
 **修复提交**：[commit SHA]
 
 **官方能力确认**：
@@ -431,5 +431,5 @@ Refs: docs/格式转换/11-问题分级与修改路线图.md"
 - [x] Section 2: 测试策略与 Fixture 设计
 - [x] Section 3: 实施步骤与验收标准
 
-**设计批准日期：** 2026-07-18  
+**设计批准日期：** 2026-07-18
 **下一步：** 进入 writing-plans skill，生成详细实施计划

@@ -11,7 +11,7 @@
 ## 架构流程
 
 ```
-用户高风险请求 
+用户高风险请求
   ↓
 SessionAuditHook.CheckV1() 检测并创建审批记录
   ↓
@@ -111,11 +111,11 @@ psql -h localhost -U postgres -d llm_gateway -f migrations/135_approval_routing.
 ```sql
 -- 租户 tenant_001 的高风险请求 → 飞书通知审批组
 INSERT INTO approval_routing_rules (
-    tenant_id, 
-    risk_level, 
-    channel_type, 
-    approver_ids, 
-    priority, 
+    tenant_id,
+    risk_level,
+    channel_type,
+    approver_ids,
+    priority,
     enabled
 ) VALUES (
     'tenant_001',
@@ -141,11 +141,11 @@ INSERT INTO approval_routing_rules (
 
 -- 全局兜底规则（所有租户的 critical 级别请求）
 INSERT INTO approval_routing_rules (
-    tenant_id, 
-    risk_level, 
-    channel_type, 
-    approver_ids, 
-    priority, 
+    tenant_id,
+    risk_level,
+    channel_type,
+    approver_ids,
+    priority,
     enabled
 ) VALUES (
     '',  -- 空字符串表示全局规则
@@ -414,7 +414,7 @@ VALUES ('tenant_001', 'high', 'lark', '[{"user_id":"admin_001",...}]'::jsonb, 0,
 UPDATE approval_routing_rules SET enabled = false WHERE id = 1;
 
 -- 更换审批人
-UPDATE approval_routing_rules 
+UPDATE approval_routing_rules
 SET approver_ids = '[{"user_id":"new_user",...}]'::jsonb
 WHERE id = 2;
 
@@ -428,13 +428,13 @@ UPDATE approval_routing_rules SET priority = 10 WHERE id = 3;
 
 1. **审批创建速率**
    ```sql
-   SELECT COUNT(*) FROM approval_queue 
+   SELECT COUNT(*) FROM approval_queue
    WHERE created_at > NOW() - INTERVAL '1 hour';
    ```
 
 2. **通知发送成功率**
    ```sql
-   SELECT 
+   SELECT
        channel_type,
        COUNT(*) AS total,
        SUM(CASE WHEN success THEN 1 ELSE 0 END) AS success_count,

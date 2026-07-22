@@ -42,7 +42,7 @@ PG 客户端被 `db/db.go` 检测到 schema 不匹配后**主动禁用**，进�
 但 154 上的 `routing_audit_log` 是**旧 schema**（只有 `actor/action/before_json/after_json`）：
 
 ```sql
-SELECT column_name FROM information_schema.columns 
+SELECT column_name FROM information_schema.columns
 WHERE table_name = 'routing_audit_log' ORDER BY ordinal_position;
 -- id, ts, actor, action, target_type, target_id, before_json, after_json
 -- （缺 idempotency_key, confirmation_token_hash, request_payload, ...）

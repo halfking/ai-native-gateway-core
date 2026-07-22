@@ -1,6 +1,6 @@
 export default {
   title: 'Operations Platform',
-  
+
   // License Management
   license: {
     title: 'License Management',

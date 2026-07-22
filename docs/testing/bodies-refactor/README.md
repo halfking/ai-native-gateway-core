@@ -143,11 +143,11 @@ SELECT COUNT(*) FROM request_logs_bodies_hot WHERE request_id = 'test-id';
 ROLLBACK;
 
 -- 验证表大小
-SELECT 
+SELECT
     'request_logs_hot' AS table_name,
     pg_size_pretty(pg_total_relation_size('request_logs_hot')) AS size
 UNION ALL
-SELECT 
+SELECT
     'request_logs_bodies_hot',
     pg_size_pretty(pg_total_relation_size('request_logs_bodies_hot'));
 ```
@@ -200,6 +200,6 @@ SELECT
 
 ---
 
-**维护者**: Infrastructure Team  
-**最后更新**: 2026-07-21  
+**维护者**: Infrastructure Team
+**最后更新**: 2026-07-21
 **状态**: ✅ 所有测试通过

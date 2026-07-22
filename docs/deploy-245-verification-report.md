@@ -39,9 +39,9 @@ curl http://localhost:8781/healthz
 节点失败3次 → 禁用5分钟 → 自动恢复 → 可能继续失败 → 循环
 ```
 
-### 修复后行为  
+### 修复后行为
 ```
-节点失败3次 → 禁用5分钟 → 
+节点失败3次 → 禁用5分钟 →
   ├─ 冷却期到期 + 成功请求 → 恢复（新）
   ├─ 冷却期到期 + 失败请求 → 延长5分钟（新）
   └─ 恢复后再次失败3次 → 立即禁用（新）
@@ -134,7 +134,7 @@ ssh -i ~/.ssh/184_id_rsa -p 25022 root@47.97.111.154 \
 ssh -i ~/.ssh/184_id_rsa -p 25022 root@47.97.111.154 \
   "tail -f /opt/llm-gateway-go/current/logs/app.log | grep 'provider_id.*15'"
 
-# NVIDIA NIM 节点状态  
+# NVIDIA NIM 节点状态
 ssh -i ~/.ssh/184_id_rsa -p 25022 root@47.97.111.154 \
   "tail -f /opt/llm-gateway-go/current/logs/app.log | grep 'provider_id.*18'"
 ```
@@ -156,6 +156,6 @@ ssh -i ~/.ssh/184_id_rsa -p 25022 root@47.97.111.154 \
 
 ---
 
-**验证人员**: AI Agent (Kiro)  
-**时间**: 2026-07-19 16:03  
+**验证人员**: AI Agent (Kiro)
+**时间**: 2026-07-19 16:03
 **状态**: ✅ 245 验证通过，待部署 154

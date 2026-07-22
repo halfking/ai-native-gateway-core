@@ -155,7 +155,7 @@ UPDATE request_logs_hot SET total_tokens = 150, latency_ms = 500;
 ✅ **查询测试**：
 ```sql
 SELECT (SELECT COUNT(*) FROM request_logs_hot) AS hot_count,
-       (SELECT COUNT(*) FROM request_logs_with_current_month 
+       (SELECT COUNT(*) FROM request_logs_with_current_month
         WHERE ts >= NOW() - INTERVAL '7 days') AS view_recent_count;
 -- hot_count = 1169
 -- view_recent_count = 1169  ✓ 一致

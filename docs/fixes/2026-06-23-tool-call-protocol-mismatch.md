@@ -1,9 +1,9 @@
 # 修复：Tool Call 协议转换错误导致 alternating success/transient
 
-**日期**: 2026-06-23  
-**问题报告**: 用户在 OpenCode CLI 使用 minimax-m3 模型时，出现"一次成功，一次 transient"交替失败  
-**根本原因**: Gateway 错误地将 OpenAI → OpenAI 的请求做了 OpenAI → Anthropic 协议转换  
-**影响范围**: 所有使用 `openai-completions` 协议的上游 provider（MiniMax、NVIDIA NIM 等）  
+**日期**: 2026-06-23
+**问题报告**: 用户在 OpenCode CLI 使用 minimax-m3 模型时，出现"一次成功，一次 transient"交替失败
+**根本原因**: Gateway 错误地将 OpenAI → OpenAI 的请求做了 OpenAI → Anthropic 协议转换
+**影响范围**: 所有使用 `openai-completions` 协议的上游 provider（MiniMax、NVIDIA NIM 等）
 
 ---
 
@@ -50,8 +50,8 @@ upstream 400: {"type":"error","error":{"type":"bad_request_error",
 ### 2. 上游 Provider 协议
 
 ```sql
-SELECT c.id, p.protocol, p.display_name 
-FROM credentials c JOIN providers p ON c.provider_id = p.id 
+SELECT c.id, p.protocol, p.display_name
+FROM credentials c JOIN providers p ON c.provider_id = p.id
 WHERE c.id = 6;
 
 -- Result:
@@ -100,8 +100,8 @@ bodyBytes = fixedBytes
 
 ```go
 // 新代码（修复后）
-needsConversion := params.ClientProtocol != "anthropic-messages" && 
-    params.ClientProtocol != "" && 
+needsConversion := params.ClientProtocol != "anthropic-messages" &&
+    params.ClientProtocol != "" &&
     cand.Protocol == "anthropic-messages"  // ← 新增：检查上游协议
 
 if needsConversion && e.IR != nil {
@@ -146,12 +146,12 @@ if cand.Protocol == "anthropic-messages" {
 func TestPrepareAnthropicRequestBody_OpenAIToOpenAI(t *testing.T) {
     // 请求包含 tool message
     sourceBody := `{"messages": [..., {"role": "tool", "tool_call_id": "call-abc"}]}`
-    
+
     params := &ExecParams{ClientProtocol: "openai-completions"}
     cand := provider.Candidate{Protocol: "openai-completions"}
-    
+
     result, _ := exec.prepareAnthropicRequestBody(params, cand, sourceBody)
-    
+
     // 断言：仍是 OpenAI 格式
     toolMsg := parseMessages(result)[2]
     assert.Equal(t, "tool", toolMsg["role"])
@@ -176,17 +176,17 @@ ok  	__REPO_URL_3__/routing	3.215s
 ## 影响评估
 
 ### 受益场景
-✅ **OpenCode CLI → MiniMax**（本次报告的场景）  
-✅ **任何 OpenAI SDK → openai-completions provider**  
-✅ **Cursor/RooCode → NVIDIA NIM**  
+✅ **OpenCode CLI → MiniMax**（本次报告的场景）
+✅ **任何 OpenAI SDK → openai-completions provider**
+✅ **Cursor/RooCode → NVIDIA NIM**
 
 ### 不受影响场景
-✓ **OpenAI SDK → Claude API**（仍会正确转换）  
-✓ **Anthropic SDK → Anthropic API**（不需要转换）  
-✓ **Anthropic SDK → OpenAI API**（反向转换，不在此函数）  
+✓ **OpenAI SDK → Claude API**（仍会正确转换）
+✓ **Anthropic SDK → Anthropic API**（不需要转换）
+✓ **Anthropic SDK → OpenAI API**（反向转换，不在此函数）
 
 ### 潜在风险
-⚠️ **如果有 provider 标记错了 protocol**（比如实际是 Anthropic 但标成 openai-completions），会失去转换  
+⚠️ **如果有 provider 标记错了 protocol**（比如实际是 Anthropic 但标成 openai-completions），会失去转换
 → 缓解措施：已有的 `format_conversion.enabled` provider 设置可以强制开启/关闭转换
 
 ---
@@ -238,12 +238,12 @@ git push
 或者临时通过 provider 设置禁用转换：
 
 ```sql
-UPDATE providers 
+UPDATE providers
 SET user_overrides_json = jsonb_set(
-    user_overrides_json, 
-    '{format_conversion,enabled}', 
+    user_overrides_json,
+    '{format_conversion,enabled}',
     'false'
-) 
+)
 WHERE id = 14;  -- MiniMax
 ```
 
@@ -267,6 +267,6 @@ WHERE id = 14;  -- MiniMax
 
 ---
 
-**修复提交**: `<commit-sha-will-be-filled>`  
-**部署时间**: 2026-06-23 19:40 UTC+8  
+**修复提交**: `<commit-sha-will-be-filled>`
+**部署时间**: 2026-06-23 19:40 UTC+8
 **验证人**: @__USER_1__

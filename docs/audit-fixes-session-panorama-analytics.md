@@ -93,8 +93,8 @@
 
 ## 推送信息
 
-**分支:** `feat/session-panorama-analytics`  
-**远程仓库:** origin (https://codeup.aliyun.com/kaixuan/official-deploy/llm-gateway-go.git)  
+**分支:** `feat/session-panorama-analytics`
+**远程仓库:** origin (https://codeup.aliyun.com/kaixuan/official-deploy/llm-gateway-go.git)
 **推送哈希:** f85c3d1c..0324ea19
 
 **提交列表:**
@@ -160,6 +160,6 @@ c7d3877f fix(security): Add tenant_id filtering to panorama helper methods
 
 ---
 
-**生成时间:** 2026-07-06  
-**审计员:** ZCode AI Agent  
+**生成时间:** 2026-07-06
+**审计员:** ZCode AI Agent
 **分支状态:** Ready for Review & Merge

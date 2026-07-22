@@ -43,10 +43,10 @@ grep -r "FROM api_keys\|FROM credentials" --include="*.go" | head -5
 ```go
 func (b *BanditScorer) LoadFromDB(ctx context.Context, db *pgxpool.Pool) error {
     rows, err := db.Query(ctx, `
-        SELECT id, bandit_alpha, bandit_beta, 
+        SELECT id, bandit_alpha, bandit_beta,
                bandit_success_count, bandit_failure_count, bandit_429_count,
                bandit_total_latency_ms, penalty_429_accumulated, penalty_429_last_at
-        FROM api_keys 
+        FROM api_keys
         WHERE enabled = true AND status = 'active'
     `)
     // ... populate b.scores map
@@ -242,9 +242,9 @@ func main() {
 
 ---
 
-**审计人：** AI Assistant  
-**审计时间：** 2026-06-26  
-**严重问题数：** 3 个（P0 阻塞）  
-**中等问题数：** 2 个（P1 生产必需）  
-**轻微问题数：** 2 个（P2 优化）  
+**审计人：** AI Assistant
+**审计时间：** 2026-06-26
+**严重问题数：** 3 个（P0 阻塞）
+**中等问题数：** 2 个（P1 生产必需）
+**轻微问题数：** 2 个（P2 优化）
 **建议：** 暂停部署，先修复 P0 问题再继续

@@ -75,8 +75,8 @@ cd /data/services/llm-gateway-go
 psql $(grep "^DATABASE_URL=" .env | cut -d= -f2-)
 
 # 执行以下SQL
-CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_request_logs_created_at_model 
-ON request_logs (created_at DESC, client_model) 
+CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_request_logs_created_at_model
+ON request_logs (created_at DESC, client_model)
 WHERE client_model IS NOT NULL;
 
 -- 验证索引
@@ -84,11 +84,11 @@ WHERE client_model IS NOT NULL;
 
 -- 测试查询性能
 \timing on
-SELECT client_model, COUNT(*) 
-FROM request_logs 
-WHERE created_at > NOW() - INTERVAL '1 hour' 
-  AND client_model IS NOT NULL 
-GROUP BY client_model 
+SELECT client_model, COUNT(*)
+FROM request_logs
+WHERE created_at > NOW() - INTERVAL '1 hour'
+  AND client_model IS NOT NULL
+GROUP BY client_model
 LIMIT 10;
 \timing off
 -- 期望耗时 < 500ms
@@ -214,6 +214,6 @@ systemctl start llm-gateway
 
 ---
 
-**部署人**: ____________  
-**部署时间**: ____________  
+**部署人**: ____________
+**部署时间**: ____________
 **验证状态**: [ ] ✅ 成功  [ ] ❌ 失败  [ ] 🔄 回滚

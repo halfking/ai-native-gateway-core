@@ -183,7 +183,7 @@ T+7m45s    : 第 5 次失败 → failed_final 终态
 
 注：以上时间线假设第 1 次提交的瞬时触发在 T+5s（即业务第 2 次失败触发 Submit
 的时间）。链 [5s, 30s, 2m, 5m, 15m] 共 5 项，其中 15m 是 chain[4] 的 cap，
-在默认 MaxAttempts=5 配置下不会真正被消费（attempt 5 失败后 attempt >= 
+在默认 MaxAttempts=5 配置下不会真正被消费（attempt 5 失败后 attempt >=
 MaxAttempts 直接进入 failed_final）。
 ```
 

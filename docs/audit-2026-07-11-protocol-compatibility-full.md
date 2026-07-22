@@ -1,8 +1,8 @@
 # Protocol Compatibility Full Audit Report
 
-**Date:** 2026-07-11  
-**Scope:** llm-gateway-go 协议转换层 — 8厂商兼容性全量审计  
-**Author:** OpenCode Agent  
+**Date:** 2026-07-11
+**Scope:** llm-gateway-go 协议转换层 — 8厂商兼容性全量审计
+**Author:** OpenCode Agent
 **Status:** 🔴 P0 风险已识别
 
 ---
@@ -92,9 +92,9 @@ type InternalRequest struct {
 
 ### 2.1 OpenAI（A级）
 
-**协议类型：** OpenAI Chat Completions  
-**转换路径：** Q1 passthrough  
-**Extensions：** ✅ 原生支持  
+**协议类型：** OpenAI Chat Completions
+**转换路径：** Q1 passthrough
+**Extensions：** ✅ 原生支持
 **Streaming：** ✅ 完整
 
 **评估：**
@@ -104,9 +104,9 @@ type InternalRequest struct {
 
 ### 2.2 Anthropic（A级）
 
-**协议类型：** Anthropic Messages  
-**转换路径：** Q4 passthrough  
-**Extensions：** ✅ 原生支持  
+**协议类型：** Anthropic Messages
+**转换路径：** Q4 passthrough
+**Extensions：** ✅ 原生支持
 **Streaming：** ✅ 完整
 
 **评估：**
@@ -116,9 +116,9 @@ type InternalRequest struct {
 
 ### 2.3 Google Gemini（C级）
 
-**协议类型：** OpenAI Chat（模拟）  
-**转换路径：** Q1 → IR → Gemini API  
-**Extensions：** ⚠️ 依赖 IR  
+**协议类型：** OpenAI Chat（模拟）
+**转换路径：** Q1 → IR → Gemini API
+**Extensions：** ⚠️ 依赖 IR
 **Streaming：** 🔴 缺失
 
 **私有字段：**
@@ -139,9 +139,9 @@ type InternalRequest struct {
 
 ### 2.4 智谱GLM（C级）
 
-**协议类型：** OpenAI Chat（模拟）  
-**转换路径：** Q1 → IR → GLM API  
-**Extensions：** ⚠️ 依赖 IR  
+**协议类型：** OpenAI Chat（模拟）
+**转换路径：** Q1 → IR → GLM API
+**Extensions：** ⚠️ 依赖 IR
 **Streaming：** 🔴 缺失
 
 **私有字段：**
@@ -164,9 +164,9 @@ type InternalRequest struct {
 
 ### 2.5 MiniMax（D级）
 
-**协议类型：** OpenAI Chat（模拟）  
-**转换路径：** Q1 → IR → MiniMax API  
-**Extensions：** ⚠️ 依赖 IR  
+**协议类型：** OpenAI Chat（模拟）
+**转换路径：** Q1 → IR → MiniMax API
+**Extensions：** ⚠️ 依赖 IR
 **Streaming：** 🔴 缺失
 
 **私有字段：**
@@ -193,9 +193,9 @@ type InternalRequest struct {
 
 ### 2.6 DeepSeek（B级）
 
-**协议类型：** OpenAI Chat（高兼容）  
-**转换路径：** Q1 passthrough（部分 IR）  
-**Extensions：** ⚠️ 依赖 IR  
+**协议类型：** OpenAI Chat（高兼容）
+**转换路径：** Q1 passthrough（部分 IR）
+**Extensions：** ⚠️ 依赖 IR
 **Streaming：** 🟢 部分支持
 
 **私有字段：**
@@ -213,9 +213,9 @@ type InternalRequest struct {
 
 ### 2.7 Doubao/字节（B级）
 
-**协议类型：** OpenAI Chat（高兼容）  
-**转换路径：** Q1 passthrough（部分 IR）  
-**Extensions：** ⚠️ 依赖 IR  
+**协议类型：** OpenAI Chat（高兼容）
+**转换路径：** Q1 passthrough（部分 IR）
+**Extensions：** ⚠️ 依赖 IR
 **Streaming：** 🟢 部分支持
 
 **私有字段：**
@@ -233,9 +233,9 @@ type InternalRequest struct {
 
 ### 2.8 Ollama（B+级）
 
-**协议类型：** OpenAI Chat（完全兼容）  
-**转换路径：** Q1 passthrough  
-**Extensions：** ✅ 无私有字段  
+**协议类型：** OpenAI Chat（完全兼容）
+**转换路径：** Q1 passthrough
+**Extensions：** ✅ 无私有字段
 **Streaming：** ✅ 完整
 
 **评估：**
@@ -372,7 +372,7 @@ func init() {
 ```go
 type RequestLog struct {
     // 现有字段...
-    
+
     // 新增
     IREnabled           bool              `json:"ir_enabled"`
     ExtensionsPreserved bool              `json:"extensions_preserved"`
@@ -386,7 +386,7 @@ type RequestLog struct {
 ```go
 type ResponseLog struct {
     // 现有字段...
-    
+
     // 新增
     UpstreamProtocol    string  `json:"upstream_protocol"`
     ClientProtocol      string  `json:"client_protocol"`
@@ -401,26 +401,26 @@ type ResponseLog struct {
 // cmd/gateway/main.go
 func (e *Executor) Execute(ctx context.Context, req *Request) error {
     start := time.Now()
-    
+
     // 采集点1：协议识别
     metrics.RecordProtocolPair(req.ClientProtocol, req.UpstreamProtocol)
-    
+
     // 采集点2：Extensions 状态
     if e.IR != nil {
         ir, _ := e.IR.ParseRequest(req.Body)
         metrics.RecordExtensions(len(ir.Extensions), req.Provider)
     }
-    
+
     // 采集点3：转换耗时
     convStart := time.Now()
     convertedBody, _ := e.ConvertRequest(req)
     metrics.RecordConversionLatency(time.Since(convStart), req.Provider)
-    
+
     // 采集点4：流式模式
     if req.Stream {
         metrics.RecordStreamingMode(req.ClientProtocol, req.UpstreamProtocol)
     }
-    
+
     // ...
 }
 ```
@@ -436,8 +436,8 @@ sum by (client_protocol, upstream_protocol) (
 
 **Panel 2: Extensions 保留率（Gauge）**
 ```promql
-sum(llm_gateway_extensions_preserved_total) 
-/ 
+sum(llm_gateway_extensions_preserved_total)
+/
 sum(llm_gateway_extensions_total) * 100
 ```
 
@@ -445,8 +445,8 @@ sum(llm_gateway_extensions_total) * 100
 ```promql
 sum by (provider) (
     rate(llm_gateway_streaming_errors_total[5m])
-) 
-/ 
+)
+/
 sum by (provider) (
     rate(llm_gateway_streaming_requests_total[5m])
 ) * 100
@@ -564,6 +564,6 @@ export LLM_GATEWAY_DEBUG_PROTOCOL=true
 
 ---
 
-**文档版本：** v1.0  
-**最后更新：** 2026-07-11  
+**文档版本：** v1.0
+**最后更新：** 2026-07-11
 **下次审计：** 2026-08-11 (P2任务完成后)

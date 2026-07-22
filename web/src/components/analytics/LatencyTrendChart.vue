@@ -129,7 +129,7 @@ watch(
       const p50Data = props.data.map(d => d.p50Latency)
       const p90Data = props.data.map(d => d.p90Latency)
       const p99Data = props.data.map(d => d.p99Latency)
-      
+
       chartInstance.value.data.labels = labels
       chartInstance.value.data.datasets[0].data = p50Data
       chartInstance.value.data.datasets[1].data = p90Data

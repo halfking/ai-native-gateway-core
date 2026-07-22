@@ -14,8 +14,8 @@ if err != nil {
     logCtx.failAndMark("no_candidate",
         fmt.Sprintf("no available provider for model '%s'", clientModel), nil, nil)
     markLogged()
-    writeErrorJSON(w, http.StatusServiceUnavailable, requestID, 
-        fmt.Sprintf("no available provider for model '%s'", clientModel), 
+    writeErrorJSON(w, http.StatusServiceUnavailable, requestID,
+        fmt.Sprintf("no available provider for model '%s'", clientModel),
         "server_error", "no_candidate")
     return
 }
@@ -39,12 +39,12 @@ if err != nil {
 candidates, policy, err := h.provider.GetCandidates(r.Context(), clientModel, clientID.Fingerprint.ClientProfile)
 if err != nil {
     slog.Error("failed to get candidates from provider", "error", err, "model", clientModel)
-    
+
     // 判断是否是数据库/基础设施错误
     errorCode := "routing_database_error"
     errorMessage := fmt.Sprintf("Routing service unavailable: %v", err)
     httpStatus := http.StatusInternalServerError
-    
+
     // 如果错误消息包含明确的数据库关键词，使用更明确的错误码
     errStr := err.Error()
     if strings.Contains(errStr, "not configured") {
@@ -60,7 +60,7 @@ if err != nil {
         errorMessage = fmt.Sprintf("Database schema error: %v", err)
         httpStatus = http.StatusInternalServerError
     }
-    
+
     h.emitFailedDecisionLog(requestID, clientModel, keyInfo, clientID, 0, nil, nil, errorCode, nil, latencyMs)
     logCtx.failAndMark(errorCode, errorMessage, nil, nil)
     markLogged()
@@ -74,8 +74,8 @@ if len(candidates) == 0 {
     logCtx.failAndMark("no_candidate",
         fmt.Sprintf("no available provider for model '%s'", clientModel), nil, nil)
     markLogged()
-    writeErrorJSON(w, http.StatusServiceUnavailable, requestID, 
-        fmt.Sprintf("No available provider for model '%s'", clientModel), 
+    writeErrorJSON(w, http.StatusServiceUnavailable, requestID,
+        fmt.Sprintf("No available provider for model '%s'", clientModel),
         "server_error", "no_candidate")
     return
 }
@@ -155,12 +155,12 @@ func (c *Client) loadCandidatesDB(ctx context.Context, clientModel string) ([]Ca
 candidates, policy, err := h.provider.GetCandidates(r.Context(), clientModel, clientID.Fingerprint.ClientProfile)
 if err != nil {
     slog.Error("failed to get candidates from provider", "error", err, "model", clientModel)
-    
+
     // 使用错误类型判断
     if provider.IsInfrastructureError(err) {
         errorCode := "routing_infrastructure_error"
         errorMessage := fmt.Sprintf("Routing service error: %v", err)
-        
+
         h.emitFailedDecisionLog(requestID, clientModel, keyInfo, clientID, 0, nil, nil, errorCode, nil, latencyMs)
         logCtx.failAndMark(errorCode, errorMessage, nil, nil)
         markLogged()
@@ -169,7 +169,7 @@ if err != nil {
         // 未知错误，也不应该伪装成 no_candidate
         errorCode := "routing_unknown_error"
         errorMessage := fmt.Sprintf("Routing failed: %v", err)
-        
+
         h.emitFailedDecisionLog(requestID, clientModel, keyInfo, clientID, 0, nil, nil, errorCode, nil, latencyMs)
         logCtx.failAndMark(errorCode, errorMessage, nil, nil)
         markLogged()
@@ -190,13 +190,13 @@ if err != nil {
 ```go
 func (h *ChatHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
     // ... 前置逻辑 ...
-    
+
     // 读取 request body
     bodyBytes, err := io.ReadAll(io.LimitReader(r.Body, int64(maxBodySize)+1))
     if err != nil {
         // ... 错误处理 ...
     }
-    
+
     // ✅ 立即估算 prompt tokens（即使后续失败也有数据）
     var estimatedPromptTokens *int
     if len(bodyBytes) > 0 {
@@ -204,22 +204,22 @@ func (h *ChatHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
         estimatedPromptTokens = &tokens
         slog.Debug("estimated prompt tokens", "tokens", tokens, "body_size", len(bodyBytes))
     }
-    
+
     // 存储到上下文或 logCtx（需要扩展 logCtx 结构）
     // 方式1: 存储到 context
     ctx := context.WithValue(r.Context(), estimatedTokensKey{}, estimatedPromptTokens)
     r = r.WithContext(ctx)
-    
+
     // 方式2: 存储到 logCtx（如果已经创建）
     // logCtx.SetEstimatedPromptTokens(estimatedPromptTokens)
-    
+
     // ... 继续处理 ...
-    
+
     // 在所有失败路径使用估算值
     candidates, policy, err := h.provider.GetCandidates(r.Context(), clientModel, clientID.Fingerprint.ClientProfile)
     if err != nil {
         // ✅ 传递估算的 token
-        h.emitFailedDecisionLogWithTokens(requestID, clientModel, keyInfo, clientID, 
+        h.emitFailedDecisionLogWithTokens(requestID, clientModel, keyInfo, clientID,
             0, nil, nil, "routing_database_error", nil, latencyMs,
             estimatedPromptTokens, nil)  // completion_tokens 为 nil
         // ...
@@ -247,9 +247,9 @@ func (h *ChatHandler) emitFailedDecisionLogWithTokens(
     if h.telemetryClient == nil || !h.telemetryClient.Enabled() {
         return
     }
-    
+
     // ... 原有逻辑 ...
-    
+
     dl := &telemetry.DecisionLogEntry{
         RequestID:         requestID,
         TenantID:          tenantID,
@@ -265,9 +265,9 @@ func (h *ChatHandler) emitFailedDecisionLogWithTokens(
         PromptTokens:      promptTokens,      // ✅ 设置
         CompletionTokens:  completionTokens,  // ✅ 设置
     }
-    
+
     // ... 其余逻辑 ...
-    
+
     h.telemetryClient.EmitDecisionLog(dl)
 }
 
@@ -370,13 +370,13 @@ curl -X POST http://localhost:__PORT_12__/v1/chat/completions \
 UPDATE request_logs
 SET prompt_tokens = CEIL(LENGTH(request_body::text) / 3.5)::int,
     outbound_token_est = CEIL(LENGTH(request_body::text) / 3.5)::int
-WHERE prompt_tokens IS NULL 
+WHERE prompt_tokens IS NULL
   AND request_body IS NOT NULL
   AND success = false
   AND ts >= NOW() - INTERVAL '30 days';
 
 -- 验证
-SELECT 
+SELECT
     error_kind,
     COUNT(*) as total,
     COUNT(prompt_tokens) as has_tokens,
@@ -395,13 +395,13 @@ GROUP BY error_kind;
 
 ```promql
 # 数据库错误率
-sum(rate(llmgw_requests_total{error_kind=~"routing_.*_error"}[5m])) 
-/ 
+sum(rate(llmgw_requests_total{error_kind=~"routing_.*_error"}[5m]))
+/
 sum(rate(llmgw_requests_total[5m]))
 
 # Token统计缺失率
-sum(rate(llmgw_requests_total{has_prompt_tokens="false"}[5m])) 
-/ 
+sum(rate(llmgw_requests_total{has_prompt_tokens="false"}[5m]))
+/
 sum(rate(llmgw_requests_total[5m]))
 
 # 真实的 no_candidate（排除数据库错误）
@@ -445,21 +445,21 @@ func TestGetCandidates_DatabaseError_ReturnsInfrastructureError(t *testing.T) {
     mockProvider := &MockProvider{
         getCandidatesErr: errors.New("connection refused"),
     }
-    
+
     handler := &ChatHandler{provider: mockProvider}
-    
+
     // 发送请求
     req := httptest.NewRequest("POST", "/v1/chat/completions", body)
     w := httptest.NewRecorder()
-    
+
     handler.ServeHTTP(w, req)
-    
+
     // 验证返回的是基础设施错误，而非 no_candidate
     assert.Equal(t, 500, w.Code)
-    
+
     var resp map[string]any
     json.Unmarshal(w.Body.Bytes(), &resp)
-    
+
     errorCode := resp["error"].(map[string]any)["code"].(string)
     assert.Contains(t, errorCode, "routing_")
     assert.NotEqual(t, "no_candidate", errorCode)
@@ -469,14 +469,14 @@ func TestEmitFailedDecisionLog_WithTokens(t *testing.T) {
     // 测试 token 估算被正确记录
     mockTelemetry := &MockTelemetryClient{}
     handler := &ChatHandler{telemetryClient: mockTelemetry}
-    
+
     promptTokens := 100
     handler.emitFailedDecisionLogWithTokens(
         "req123", "gpt-4", nil, identity.ClientIdentity{},
         0, nil, nil, "no_candidate", nil, 100,
         &promptTokens, nil,
     )
-    
+
     // 验证 PromptTokens 被设置
     assert.NotNil(t, mockTelemetry.lastEntry.PromptTokens)
     assert.Equal(t, 100, *mockTelemetry.lastEntry.PromptTokens)
@@ -497,7 +497,7 @@ curl -X POST http://localhost:__PORT_12__/v1/chat/completions \
 # 测试2: 分区缺失（模拟）
 docker exec llm-gateway-pg-71-replica psql -U llm_gateway -d llm_gateway \
   -c "DROP TABLE IF EXISTS request_wal_2026_06"
-  
+
 # 发送请求，预期: 日志写入失败但请求仍能处理
 
 # 测试3: Token统计
@@ -508,7 +508,7 @@ curl -X POST http://localhost:__PORT_12__/v1/chat/completions \
 # 验证 request_logs 中有 prompt_tokens（估算值）
 docker exec llm-gateway-pg-71-replica psql -U llm_gateway -d llm_gateway \
   -c "SELECT request_id, error_kind, prompt_tokens FROM request_logs ORDER BY ts DESC LIMIT 1"
-  
+
 # 预期: prompt_tokens 不为 NULL
 ```
 
@@ -554,6 +554,6 @@ docker exec llm-gateway-pg-71-replica psql -U llm_gateway -d llm_gateway \
 
 ---
 
-**修复优先级**: P0（立即执行）  
-**预计工时**: 10小时（分3个阶段）  
+**修复优先级**: P0（立即执行）
+**预计工时**: 10小时（分3个阶段）
 **风险等级**: 低（向后兼容）

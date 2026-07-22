@@ -72,11 +72,11 @@ defineProps<{
 .stage-meta { font-size: 11px; color: var(--text-muted); font-variant-numeric: tabular-nums; }
 .stage-dir { display: flex; flex-direction: column; gap: 3px; }
 .dir-lbl { font-size: 10px; color: var(--text-secondary); text-transform: uppercase; }
-.pii-icon { 
-  margin-left: 4px; 
-  font-size: 10px; 
-  opacity: 0.8; 
-  cursor: help; 
+.pii-icon {
+  margin-left: 4px;
+  font-size: 10px;
+  opacity: 0.8;
+  cursor: help;
 }
 .dir-body {
   font-size: 11px; line-height: 1.5; white-space: pre-wrap; word-break: break-word;

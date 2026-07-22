@@ -58,7 +58,7 @@ type ModuleWithStatus struct {
     Key: "session_analytics",
     Name: "会话全景分析",
     Dependencies: []ModuleDependency{
-        {Key: "compression", Name: "会话压缩", Icon: "🗜️", Required: true, 
+        {Key: "compression", Name: "会话压缩", Icon: "🗜️", Required: true,
          Description: "提供增量摘要、上下文裁剪和压缩节省量分析"},
         {Key: "cache", Name: "会话缓存", Icon: "💾", Required: true,
          Description: "提供会话复用、缓存命中和节省量分析"},
@@ -75,7 +75,7 @@ type ModuleWithStatus struct {
 ```go
 func moduleStatusMap(defs []ModuleDefinition) map[string]ModuleWithStatus {
     statuses := make(map[string]ModuleWithStatus, len(defs))
-    
+
     // 第一遍：计算基础状态
     for _, m := range defs {
         enabled, src := resolveModuleEnabled(m)
@@ -86,13 +86,13 @@ func moduleStatusMap(defs []ModuleDefinition) map[string]ModuleWithStatus {
             CanToggleEnabled:  true,
         }
     }
-    
+
     // 第二遍：计算依赖阻塞状态
     for key, status := range statuses {
         blocked := requiredDependencyBlockReason(statuses, status.ModuleDefinition)
         status.BlockedReason = blocked
         status.CanToggleEnabled = blocked == ""
-        
+
         // 填充依赖模块的 enabled 状态
         if len(status.Dependencies) > 0 {
             deps := make([]ModuleDependency, 0, len(status.Dependencies))
@@ -219,7 +219,7 @@ export interface ModuleWithStatus extends ModuleDefinition {
     :disabled="toggling === selectedModule.key || (!selectedEnabled && selectedModule.can_toggle_enabled === false)"
     @click="doToggle(selectedModule.key)"
   >
-    {{ toggling === selectedModule.key ? t('modulesView.status.processing') : 
+    {{ toggling === selectedModule.key ? t('modulesView.status.processing') :
        selectedEnabled ? t('modulesView.status.enabledAction') : t('modulesView.status.disabledAction') }}
   </button>
   <button class="btn-ghost" @click="goToSettings(selectedModule.key)">
@@ -254,24 +254,24 @@ function goToSettings(key: string) {
 async function doToggle(key: string) {
   const mod = modules.value.find(m => m.key === key)
   if (!mod) return
-  
+
   // 依赖未满足时阻止启用
   if (!mod.enabled && mod.can_toggle_enabled === false) {
     error.value = mod.blocked_reason || t('modulesView.error.operationFailed')
     return
   }
-  
+
   toggling.value = key
   error.value = null
   const prevEnabled = mod.enabled
-  
+
   try {
     const r = await toggleModule(key, !prevEnabled)
     mod.enabled = r.enabled
-    
+
     // 刷新状态以更新依赖计算
     await loadModules()
-    
+
     if (selectedKey.value === key) {
       await selectModule(key)
     }

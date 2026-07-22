@@ -1,7 +1,7 @@
 # 数据库错误伪装问题修复记录
 
-**修复日期**: 2026-06-30  
-**问题**: 数据库连接/查询错误被伪装成 `no_candidate` 业务错误  
+**修复日期**: 2026-06-30
+**问题**: 数据库连接/查询错误被伪装成 `no_candidate` 业务错误
 **修复人员**: AI Agent (Claude Opus 4)
 
 ---
@@ -10,7 +10,7 @@
 
 ### 1. `domains/streaming/handler.go` ✅
 
-**位置**: Line 1333-1341  
+**位置**: Line 1333-1341
 **修改类型**: 错误分类逻辑
 
 **修改前**:
@@ -28,12 +28,12 @@ if err != nil {
 candidates, policy, err := h.provider.GetCandidates(...)
 if err != nil {
     slog.Error("failed to get candidates from provider", "error", err, "model", clientModel)
-    
+
     // ✅ 根据错误内容分类
     errorCode := "routing_database_error"
     errorMessage := fmt.Sprintf("Routing service error: %v", err)
     httpStatus := http.StatusInternalServerError
-    
+
     errStr := err.Error()
     if strings.Contains(errStr, "not configured") {
         errorCode = "routing_not_configured"
@@ -41,11 +41,11 @@ if err != nil {
     } else if strings.Contains(errStr, "connection") || strings.Contains(errStr, "timeout") {
         errorCode = "routing_connection_error"
         httpStatus = http.StatusServiceUnavailable
-    } else if strings.Contains(errStr, "relation") || strings.Contains(errStr, "partition") || 
+    } else if strings.Contains(errStr, "relation") || strings.Contains(errStr, "partition") ||
         strings.Contains(errStr, "function") || strings.Contains(errStr, "does not exist") {
         errorCode = "routing_schema_error"
     }
-    
+
     h.emitFailedDecisionLog(..., errorCode, ...)  // ✅ 真实错误码
     writeErrorJSON(w, httpStatus, errorMessage, "database_error", errorCode)
 }
@@ -55,7 +55,7 @@ if err != nil {
 
 ### 2. `domains/streaming/responses.go` ✅
 
-**位置**: Line 334-343  
+**位置**: Line 334-343
 **修改类型**: 错误分类逻辑 + 导入 strings 包
 
 **添加导入**:
@@ -82,10 +82,10 @@ candidates, policy, candErr := h.chatHandler.provider.GetCandidates(...)
 if candErr != nil {
     // ✅ 先处理数据库错误
     slog.Error("failed to get candidates from provider", "error", candErr, "model", clientModel)
-    
+
     attemptErrCode = "routing_database_error"
     // ... 错误分类逻辑（同 handler.go）
-    
+
     writeResponsesError(w, httpStatus, attemptErrMsg, "database_error", attemptErrCode)
     return
 }
@@ -100,7 +100,7 @@ if len(candidates) == 0 {
 
 ### 3. `domains/streaming/messages.go` ✅
 
-**位置**: Line 391-400  
+**位置**: Line 391-400
 **修改类型**: 错误分类逻辑（strings 已导入）
 
 **修改前**:
@@ -118,10 +118,10 @@ candidates, policy, candErr := h.chatHandler.provider.GetCandidates(...)
 if candErr != nil {
     // ✅ 先处理数据库错误
     slog.Error("failed to get candidates from provider", "error", candErr, "model", clientModel)
-    
+
     attemptErrCode = "routing_database_error"
     // ... 错误分类逻辑（同 handler.go）
-    
+
     writeAnthropicError(w, httpStatus, "api_error", attemptErrMsg)
     return
 }
@@ -266,16 +266,16 @@ func TestGetCandidates_DatabaseConnectionError(t *testing.T) {
         getCandidatesErr: errors.New("connection refused"),
     }
     handler := &ChatHandler{provider: mockProvider}
-    
+
     req := httptest.NewRequest("POST", "/v1/chat/completions", body)
     w := httptest.NewRecorder()
     handler.ServeHTTP(w, req)
-    
+
     assert.Equal(t, 503, w.Code)
-    
+
     var resp map[string]any
     json.Unmarshal(w.Body.Bytes(), &resp)
-    
+
     errorCode := resp["error"].(map[string]any)["code"].(string)
     assert.Equal(t, "routing_connection_error", errorCode)
     assert.NotEqual(t, "no_candidate", errorCode)
@@ -286,16 +286,16 @@ func TestGetCandidates_SchemaError(t *testing.T) {
         getCandidatesErr: errors.New("relation \"request_logs\" does not exist"),
     }
     handler := &ChatHandler{provider: mockProvider}
-    
+
     req := httptest.NewRequest("POST", "/v1/chat/completions", body)
     w := httptest.NewRecorder()
     handler.ServeHTTP(w, req)
-    
+
     assert.Equal(t, 500, w.Code)
-    
+
     var resp map[string]any
     json.Unmarshal(w.Body.Bytes(), &resp)
-    
+
     errorCode := resp["error"].(map[string]any)["code"].(string)
     assert.Equal(t, "routing_schema_error", errorCode)
 }
@@ -306,16 +306,16 @@ func TestGetCandidates_RealNoCandidate(t *testing.T) {
         candidates:       []Candidate{}, // ✅ 但返回空列表
     }
     handler := &ChatHandler{provider: mockProvider}
-    
+
     req := httptest.NewRequest("POST", "/v1/chat/completions", body)
     w := httptest.NewRecorder()
     handler.ServeHTTP(w, req)
-    
+
     assert.Equal(t, 503, w.Code)
-    
+
     var resp map[string]any
     json.Unmarshal(w.Body.Bytes(), &resp)
-    
+
     errorCode := resp["error"].(map[string]any)["code"].(string)
     assert.Equal(t, "no_candidate", errorCode)  // ✅ 这才是真正的 no_candidate
 }
@@ -410,7 +410,7 @@ groups:
         annotations:
           summary: "路由数据库连接失败"
           description: "检测到数据库连接错误，所有路由请求将失败"
-      
+
       # Schema错误（立即告警）
       - alert: RoutingDatabaseSchemaError
         expr: |
@@ -421,7 +421,7 @@ groups:
         annotations:
           summary: "路由数据库Schema错误"
           description: "可能是表/分区/函数缺失，需立即检查"
-      
+
       # 真实的 no_candidate（业务告警）
       - alert: HighNoCandidateRate
         expr: |
@@ -478,5 +478,5 @@ groups:
 
 ---
 
-**修复完成时间**: 2026-06-30 19:00 CST  
+**修复完成时间**: 2026-06-30 19:00 CST
 **预计部署时间**: 2026-07-01 (经测试验证后)

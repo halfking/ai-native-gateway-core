@@ -87,7 +87,7 @@ if ue, ok := extractUpstreamError(execErr); ok {
 **4. 超时检测**
 ```go
 // 在 defer 块中检测客户端超时
-if errors.Is(r.Context().Err(), context.DeadlineExceeded) || 
+if errors.Is(r.Context().Err(), context.DeadlineExceeded) ||
    errors.Is(r.Context().Err(), context.Canceled) {
     logCtx.SetClientTimeout(true)  // ← 新增
 }
@@ -106,13 +106,13 @@ if errors.Is(r.Context().Err(), context.DeadlineExceeded) ||
 **清理逻辑**:
 ```sql
 UPDATE request_logs
-SET 
+SET
     success = false,
     request_status = 'failure',
     error_kind = 'gateway_timeout',
     failure_stage = 'gateway',
     failure_detail_code = 'gw_processing_timeout'
-WHERE 
+WHERE
     request_status = 'in_progress'
     AND ts < NOW() - INTERVAL '5 minutes';
 ```
@@ -127,11 +127,11 @@ WHERE
 1. **审计报告** - `docs/audit-request-logs-error-handling.md`
    - 完整的审计发现
    - 代码分析和测试场景清单
-   
+
 2. **修复方案** - `docs/fix-request-logs-missing-fields.md`
    - 8 个阶段的详细修复步骤
    - 测试计划和验证查询
-   
+
 3. **实施总结** - `docs/IMPLEMENTATION-SUMMARY-request-logs-fix.md`
    - 代码变更汇总
    - 部署步骤
@@ -247,7 +247,7 @@ docker-compose restart llm-gateway-go
 #### 4. 验证部署
 ```sql
 -- 触发一个测试错误后查询（使用无效密钥）
-SELECT 
+SELECT
     request_id,
     ts,
     error_kind,
@@ -265,7 +265,7 @@ LIMIT 5;
 #### 5. 监控字段填充率
 ```sql
 -- 应该在 1 小时内达到 >90% 填充率
-SELECT 
+SELECT
     COUNT(*) as total_failures,
     COUNT(upstream_status_code) as has_status_code,
     COUNT(client_endpoint) as has_endpoint,
@@ -300,13 +300,13 @@ psql -h localhost -p 11032 -U llm_gateway -d llm_gateway \
 
 ### 1. 上游状态码分布
 ```sql
-SELECT 
+SELECT
     upstream_status_code,
     COUNT(*) as count,
     ROUND(100.0 * COUNT(*) / SUM(COUNT(*)) OVER (), 2) as percentage,
     ROUND(AVG(latency_ms)) as avg_latency_ms
 FROM request_logs
-WHERE success = false 
+WHERE success = false
     AND failure_stage = 'upstream'
     AND ts >= NOW() - INTERVAL '24 hours'
 GROUP BY upstream_status_code
@@ -315,7 +315,7 @@ ORDER BY count DESC;
 
 ### 2. 端点错误分布
 ```sql
-SELECT 
+SELECT
     client_endpoint,
     COUNT(*) as failure_count,
     COUNT(*) FILTER (WHERE failure_stage = 'upstream') as upstream_failures,
@@ -331,7 +331,7 @@ LIMIT 10;
 
 ### 3. 超时类型分析
 ```sql
-SELECT 
+SELECT
     client_timeout,
     error_kind,
     COUNT(*) as count
@@ -413,7 +413,7 @@ WHERE request_status = 'in_progress'
 ## ✍️ 签署
 
 - **审计执行**: AI Assistant
-- **代码实施**: AI Assistant  
+- **代码实施**: AI Assistant
 - **文档编写**: AI Assistant
 - **审核状态**: 待人工审核
 - **部署状态**: 待部署

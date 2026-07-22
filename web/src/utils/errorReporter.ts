@@ -1,6 +1,6 @@
 /**
  * 前端错误上报模块
- * 
+ *
  * 捕获未处理的异常和 Promise rejections，上报到后端日志系统。
  * 轻量级实现，无外部依赖，适合私有化部署。
  */
@@ -41,18 +41,18 @@ export function configureErrorReporter(options: {
  */
 function shouldReport(): boolean {
   if (!isEnabled) return false
-  
+
   const now = Date.now()
   if (now - lastResetTime > 60000) {
     reportCount = 0
     lastResetTime = now
   }
-  
+
   if (reportCount >= maxReportsPerMinute) {
     console.warn('[ErrorReporter] Rate limit exceeded, dropping error report')
     return false
   }
-  
+
   reportCount++
   return true
 }
@@ -62,11 +62,11 @@ function shouldReport(): boolean {
  */
 async function sendReport(report: ErrorReport): Promise<void> {
   if (!shouldReport()) return
-  
+
   try {
     // 使用 sendBeacon（如果可用）确保页面卸载时也能发送
     const payload = JSON.stringify(report)
-    
+
     if (navigator.sendBeacon) {
       const blob = new Blob([payload], { type: 'application/json' })
       navigator.sendBeacon(reportEndpoint, blob)
@@ -138,7 +138,7 @@ export function createVueErrorHandler() {
       lifecycleHook: info,
     })
     sendReport(report)
-    
+
     // 继续抛出错误到控制台
     console.error('[Vue Error]', err, instance, info)
   }
@@ -158,10 +158,10 @@ export function reportError(error: Error | string, extra?: Record<string, any>):
  */
 export function initErrorReporter(): void {
   if (typeof window === 'undefined') return
-  
+
   window.addEventListener('error', handleGlobalError)
   window.addEventListener('unhandledrejection', handleUnhandledRejection)
-  
+
   console.info('[ErrorReporter] Initialized')
 }
 
@@ -170,9 +170,9 @@ export function initErrorReporter(): void {
  */
 export function cleanupErrorReporter(): void {
   if (typeof window === 'undefined') return
-  
+
   window.removeEventListener('error', handleGlobalError)
   window.removeEventListener('unhandledrejection', handleUnhandledRejection)
-  
+
   console.info('[ErrorReporter] Cleaned up')
 }

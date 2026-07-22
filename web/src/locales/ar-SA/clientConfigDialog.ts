@@ -2,7 +2,7 @@
 export default {
   title: 'مولد تكوين {tool}',
   close: 'إغلاق',
-  
+
   step1: {
     title: '① اختر مفتاح API (جميع المفاتيح تحت المستأجر الحالي)',
     refresh: 'تحديث',
@@ -15,12 +15,12 @@ export default {
     },
     selected: 'المحدد:',
   },
-  
+
   step2: {
     title: '② نظام التشغيل',
     pathHint: 'مسار ملف التكوين:',
   },
-  
+
   step3: {
     title: '③ اختر نطاق النموذج',
     featured: 'النماذج المميزة (تكوين التوجيه featured)',
@@ -41,14 +41,14 @@ export default {
       noMatch: 'لا توجد نماذج مطابقة',
     },
   },
-  
+
   footer: {
     generated: 'تم إنشاء {count} تكوينات نموذج',
     generate: 'إنشاء التكوين',
     generating: 'جارٍ الإنشاء…',
     regenerate: 'إعادة الإنشاء',
   },
-  
+
   results: {
     tabs: {
       file: 'ملف التكوين',
@@ -62,7 +62,7 @@ export default {
       scriptHint: 'يقوم السكريبت تلقائيًا بنسخ احتياطية لملفات التكوين القديمة',
     },
   },
-  
+
   applyDialog: {
     title: 'طلب مفتاح API جديد',
     close: 'إغلاق',
@@ -74,7 +74,7 @@ export default {
     submit: 'إرسال الطلب',
     submitting: 'جارٍ الإرسال…',
   },
-  
+
   error: {
     applyFailed: 'فشل الطلب',
   },

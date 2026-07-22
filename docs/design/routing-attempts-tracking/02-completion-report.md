@@ -20,7 +20,7 @@ ALTER TABLE request_logs_hot ADD COLUMN routing_attempts jsonb;
 ALTER TABLE request_logs_hot ADD COLUMN routing_summary text;
 ALTER TABLE request_logs ADD COLUMN routing_attempts jsonb;
 ALTER TABLE request_logs ADD COLUMN routing_summary text;
-CREATE INDEX idx_request_logs_hot_routing_attempts 
+CREATE INDEX idx_request_logs_hot_routing_attempts
   ON request_logs_hot USING GIN (routing_attempts);
 ```
 
@@ -75,7 +75,7 @@ PASS
 
 ### 3. Executor 记录层（100%）
 
-**修改文件**: 
+**修改文件**:
 - `domains/streaming/executors/executor.go`
 - `domains/streaming/executors/executor_chat.go`
 
@@ -100,9 +100,9 @@ if params.RoutingTracker != nil {
     if uErr != nil {
         errMsg = uErr.Message
     }
-    
+
     result := ClassifyResult(uErr, statusCode)
-    
+
     params.RoutingTracker.Add(RoutingAttempt{
         ProviderID:   int64(cand.ProviderID),
         CredentialID: int64(cand.CredentialID),
@@ -310,12 +310,12 @@ func ClassifyResult(err error, statusCode int) string {
     if err == nil {
         return "success"
     }
-    
+
     // context canceled
     if strings.Contains(err.Error(), "context canceled") {
         return "canceled"
     }
-    
+
     // HTTP status
     switch statusCode {
     case 404:

@@ -5,9 +5,9 @@
 export type GroupByDimension = 'vendor' | 'provider' | 'model'
 
 // 请求状态枚举
-export type RequestStatus = 
-  | 'success' 
-  | 'in_progress' 
+export type RequestStatus =
+  | 'success'
+  | 'in_progress'
   | 'failure_5xx'
   | 'failure_4xx'
   | 'failure_timeout'
@@ -166,22 +166,22 @@ export function calculateFontSize(text: string, maxWidth: number): number {
 export function truncateText(text: string, maxLength: number): string {
   if (!text) return ''
   if (text.length <= maxLength) return text
-  
+
   // 计算安全截断点（避免在emoji代理对中间截断）
   let truncated = text.slice(0, maxLength)
-  
+
   // 检查最后一个字符是否为高代理项（emoji的前半部分）
   const lastCharCode = truncated.charCodeAt(truncated.length - 1)
   if (lastCharCode >= 0xD800 && lastCharCode <= 0xDBFF) {
     // 是高代理项，移除它避免半个emoji
     truncated = truncated.slice(0, -1)
   }
-  
+
   // 检查是否真的被截断了
   if (truncated.length < text.length) {
     return truncated + '…'
   }
-  
+
   return truncated
 }
 

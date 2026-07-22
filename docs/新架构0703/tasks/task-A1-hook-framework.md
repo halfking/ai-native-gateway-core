@@ -1,10 +1,10 @@
 # Task A1: Hook框架增强
 
-> **任务ID**: A1  
-> **任务类型**: 基础设施（P0）  
-> **负责团队**: Go后端  
-> **预计工期**: 1周  
-> **依赖**: 无  
+> **任务ID**: A1
+> **任务类型**: 基础设施（P0）
+> **负责团队**: Go后端
+> **预计工期**: 1周
+> **依赖**: 无
 > **状态**: 可立即开始
 
 ---
@@ -80,19 +80,19 @@ type Hook interface {
     // Name 返回Hook名称（全局唯一）
     // 示例: "session-audit", "output-sanitizer"
     Name() string
-    
+
     // Priority 返回执行优先级（0-1000）
     // 数值越小越先执行
     // 建议: 认证10, 审计20, 业务逻辑50-100, 异步处理200+
     Priority() int
-    
+
     // Enabled 返回是否启用
     // 从配置文件读取或环境变量控制
     Enabled() bool
-    
+
     // Phase 返回执行阶段
     Phase() Phase
-    
+
     // Execute 执行Hook逻辑
     // ctx: 上下文控制（超时、取消）
     // env: 请求环境（包含请求、响应、会话等）
@@ -113,16 +113,16 @@ type Phase string
 const (
     // PhasePreRouting 路由前：认证、限流、审计、检测
     PhasePreRouting Phase = "pre_routing"
-    
+
     // PhaseRouting 路由中：模型选择、凭据选择
     PhaseRouting Phase = "routing"
-    
+
     // PhasePreUpstream 上游前：会话压缩、请求转换
     PhasePreUpstream Phase = "pre_upstream"
-    
+
     // PhasePostUpstream 上游后：响应缓存、输出脱敏
     PhasePostUpstream Phase = "post_upstream"
-    
+
     // PhasePostResponse 响应后：异步处理（Memora、总结等）
     PhasePostResponse Phase = "post_response"
 )
@@ -135,22 +135,22 @@ type Environment struct {
     TenantID   string
     SessionKey string
     TaskID     string
-    
+
     // 请求响应数据
     Request          *Request
     Response         *Response
     UpstreamRequest  *UpstreamRequest
     UpstreamResponse *UpstreamResponse
-    
+
     // 会话信息
     Session *Session
-    
+
     // 元数据（Hook间共享数据）
     Metadata map[string]interface{}
-    
+
     // 时间戳
     StartTime time.Time
-    
+
     // 控制标志
     Skip        bool   // 跳过后续Hook
     Abort       bool   // 中止请求
@@ -251,26 +251,26 @@ func NewHookRegistry(
 func (r *HookRegistry) Register(hook Hook) error {
     r.mu.Lock()
     defer r.mu.Unlock()
-    
+
     // 1. 验证Hook name非空
     // 2. 检查是否重复注册
     // 3. 添加到对应Phase
     // 4. 按Priority排序
     // 5. 记录日志
-    
+
     phase := hook.Phase()
     r.hooks[phase] = append(r.hooks[phase], hook)
-    
+
     // 排序
     sort.Slice(r.hooks[phase], func(i, j int) bool {
         return r.hooks[phase][i].Priority() < r.hooks[phase][j].Priority()
     })
-    
+
     r.logger.Info("hook registered",
         "name", hook.Name(),
         "phase", phase,
         "priority", hook.Priority())
-    
+
     return nil
 }
 
@@ -283,23 +283,23 @@ func (r *HookRegistry) Execute(
     r.mu.RLock()
     hooks := r.hooks[phase]
     r.mu.RUnlock()
-    
+
     for _, hook := range hooks {
         // 1. 检查Enabled
         if !hook.Enabled() {
             continue
         }
-        
+
         // 2. 检查Skip/Abort标志
         if env.Skip || env.Abort {
             break
         }
-        
+
         // 3. 执行Hook（带超时控制）
         start := time.Now()
         err := r.executeHook(ctx, hook, env)
         duration := time.Since(start)
-        
+
         // 4. 记录指标
         r.metrics.RecordHookExecution(
             hook.Name(),
@@ -307,7 +307,7 @@ func (r *HookRegistry) Execute(
             err == nil,
             duration,
         )
-        
+
         // 5. 错误处理
         if err != nil {
             r.logger.Error("hook execution failed",
@@ -318,7 +318,7 @@ func (r *HookRegistry) Execute(
             return fmt.Errorf("hook %s failed: %w", hook.Name(), err)
         }
     }
-    
+
     return nil
 }
 
@@ -335,7 +335,7 @@ func (r *HookRegistry) executeHook(
         ctx, cancel = context.WithTimeout(ctx, timeout)
         defer cancel()
     }
-    
+
     return hook.Execute(ctx, env)
 }
 
@@ -343,7 +343,7 @@ func (r *HookRegistry) executeHook(
 func (r *HookRegistry) ReloadConfig() error {
     // 1. 重新加载配置文件
     // 2. 通知所有ConfigurableHook
-    
+
     return r.config.Reload()
 }
 ```
@@ -378,7 +378,7 @@ hooks:
     config:
       async: true
       batch_size: 50
-  
+
   - name: output-sanitizer
     enabled: true
     priority: 30
@@ -398,7 +398,7 @@ import (
     "os"
     "sync"
     "time"
-    
+
     "gopkg.in/yaml.v3"
 )
 
@@ -424,15 +424,15 @@ func NewConfigManager(configFile string) (*ConfigManager, error) {
         configFile: configFile,
         hooks:      make(map[string]*HookConfig),
     }
-    
+
     // 加载配置
     if err := cm.Load(); err != nil {
         return nil, err
     }
-    
+
     // 启动文件监控
     cm.startWatcher()
-    
+
     return cm, nil
 }
 
@@ -441,30 +441,30 @@ func (cm *ConfigManager) Load() error {
     if err != nil {
         return fmt.Errorf("failed to read config: %w", err)
     }
-    
+
     var config struct {
         Hooks []*HookConfig `yaml:"hooks"`
     }
-    
+
     if err := yaml.Unmarshal(data, &config); err != nil {
         return fmt.Errorf("failed to parse config: %w", err)
     }
-    
+
     cm.mu.Lock()
     defer cm.mu.Unlock()
-    
+
     cm.hooks = make(map[string]*HookConfig)
     for _, hc := range config.Hooks {
         cm.hooks[hc.Name] = hc
     }
-    
+
     return nil
 }
 
 func (cm *ConfigManager) GetHookConfig(name string) map[string]interface{} {
     cm.mu.RLock()
     defer cm.mu.RUnlock()
-    
+
     if hc, ok := cm.hooks[name]; ok {
         return hc.Config
     }
@@ -474,7 +474,7 @@ func (cm *ConfigManager) GetHookConfig(name string) map[string]interface{} {
 func (cm *ConfigManager) IsEnabled(name string) bool {
     cm.mu.RLock()
     defer cm.mu.RUnlock()
-    
+
     if hc, ok := cm.hooks[name]; ok {
         return hc.Enabled
     }
@@ -484,7 +484,7 @@ func (cm *ConfigManager) IsEnabled(name string) bool {
 func (cm *ConfigManager) GetHookTimeout(name string) time.Duration {
     cm.mu.RLock()
     defer cm.mu.RUnlock()
-    
+
     if hc, ok := cm.hooks[name]; ok && hc.Timeout > 0 {
         return hc.Timeout
     }
@@ -512,13 +512,13 @@ func (fw *FileWatcher) Start() {
     go func() {
         ticker := time.NewTicker(3 * time.Second)
         defer ticker.Stop()
-        
+
         var lastModTime time.Time
         info, _ := os.Stat(fw.file)
         if info != nil {
             lastModTime = info.ModTime()
         }
-        
+
         for {
             select {
             case <-ticker.C:
@@ -526,7 +526,7 @@ func (fw *FileWatcher) Start() {
                 if err != nil {
                     continue
                 }
-                
+
                 if info.ModTime().After(lastModTime) {
                     lastModTime = info.ModTime()
                     fw.callback()
@@ -551,7 +551,7 @@ package hooks
 
 import (
     "time"
-    
+
     "github.com/prometheus/client_golang/prometheus"
     "github.com/prometheus/client_golang/prometheus/promauto"
 )
@@ -598,10 +598,10 @@ func (mc *MetricsCollector) RecordHookExecution(
     if !success {
         status = "failure"
     }
-    
+
     mc.executionCount.WithLabelValues(hookName, phase, status).Inc()
     mc.executionDuration.WithLabelValues(hookName, phase).Observe(duration.Seconds())
-    
+
     if !success {
         mc.failureCount.WithLabelValues(hookName, phase, "unknown").Inc()
     }
@@ -660,33 +660,33 @@ func (m *MockHook) Name() string                                         { retur
 func (m *MockHook) Priority() int                                        { return m.priority }
 func (m *MockHook) Enabled() bool                                        { return m.enabled }
 func (m *MockHook) Phase() Phase                                         { return m.phase }
-func (m *MockHook) Execute(ctx context.Context, env *Environment) error { 
+func (m *MockHook) Execute(ctx context.Context, env *Environment) error {
     if m.execFunc != nil {
         return m.execFunc(ctx, env)
     }
-    return nil 
+    return nil
 }
 
 func TestHookRegistry_Register(t *testing.T) {
     registry := NewHookRegistry(nil, NewMetricsCollector(), &TestLogger{})
-    
+
     hook := &MockHook{
         name:     "test-hook",
         priority: 10,
         phase:    PhasePreRouting,
         enabled:  true,
     }
-    
+
     err := registry.Register(hook)
     if err != nil {
         t.Fatalf("Register failed: %v", err)
     }
-    
+
     hooks := registry.GetHooks(PhasePreRouting)
     if len(hooks) != 1 {
         t.Fatalf("Expected 1 hook, got %d", len(hooks))
     }
-    
+
     if hooks[0].Name() != "test-hook" {
         t.Fatalf("Expected hook name 'test-hook', got %s", hooks[0].Name())
     }
@@ -694,7 +694,7 @@ func TestHookRegistry_Register(t *testing.T) {
 
 func TestHookRegistry_Execute(t *testing.T) {
     registry := NewHookRegistry(nil, NewMetricsCollector(), &TestLogger{})
-    
+
     executed := false
     hook := &MockHook{
         name:     "test-hook",
@@ -706,19 +706,19 @@ func TestHookRegistry_Execute(t *testing.T) {
             return nil
         },
     }
-    
+
     registry.Register(hook)
-    
+
     env := &Environment{
         RequestID: "test-123",
         StartTime: time.Now(),
     }
-    
+
     err := registry.Execute(context.Background(), PhasePreRouting, env)
     if err != nil {
         t.Fatalf("Execute failed: %v", err)
     }
-    
+
     if !executed {
         t.Fatal("Hook was not executed")
     }
@@ -726,9 +726,9 @@ func TestHookRegistry_Execute(t *testing.T) {
 
 func TestHookRegistry_Priority(t *testing.T) {
     registry := NewHookRegistry(nil, NewMetricsCollector(), &TestLogger{})
-    
+
     var executionOrder []string
-    
+
     hook1 := &MockHook{
         name:     "hook-20",
         priority: 20,
@@ -739,7 +739,7 @@ func TestHookRegistry_Priority(t *testing.T) {
             return nil
         },
     }
-    
+
     hook2 := &MockHook{
         name:     "hook-10",
         priority: 10,
@@ -750,17 +750,17 @@ func TestHookRegistry_Priority(t *testing.T) {
             return nil
         },
     }
-    
+
     registry.Register(hook1)
     registry.Register(hook2)
-    
+
     env := &Environment{}
     registry.Execute(context.Background(), PhasePreRouting, env)
-    
+
     if len(executionOrder) != 2 {
         t.Fatalf("Expected 2 executions, got %d", len(executionOrder))
     }
-    
+
     if executionOrder[0] != "hook-10" || executionOrder[1] != "hook-20" {
         t.Fatalf("Wrong execution order: %v", executionOrder)
     }
@@ -768,7 +768,7 @@ func TestHookRegistry_Priority(t *testing.T) {
 
 func TestHookRegistry_Disabled(t *testing.T) {
     registry := NewHookRegistry(nil, NewMetricsCollector(), &TestLogger{})
-    
+
     executed := false
     hook := &MockHook{
         name:     "test-hook",
@@ -780,12 +780,12 @@ func TestHookRegistry_Disabled(t *testing.T) {
             return nil
         },
     }
-    
+
     registry.Register(hook)
-    
+
     env := &Environment{}
     registry.Execute(context.Background(), PhasePreRouting, env)
-    
+
     if executed {
         t.Fatal("Disabled hook should not be executed")
     }
@@ -876,8 +876,8 @@ touch config/hooks.yaml
 
 ---
 
-**任务创建人**: 架构组  
-**创建时间**: 2026-07-03  
+**任务创建人**: 架构组
+**创建时间**: 2026-07-03
 **预计完成**: 2026-07-10
 
 ---

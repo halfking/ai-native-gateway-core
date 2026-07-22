@@ -383,7 +383,7 @@ func withTenantTx(ctx context.Context, tenantID string, fn func(pgx.Tx) error) e
         _, _ = tx.Exec(ctx, "RESET app.current_tenant")  // 清理 GUC
         _ = tx.Rollback(ctx)
     }()
-    
+
     _, _ = tx.Exec(ctx, "SET LOCAL app.current_tenant = $1", tenantID)
     return fn(tx)
 }

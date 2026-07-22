@@ -1,8 +1,8 @@
 # 请求链路追踪系统 - 部署说明
 
-> 实施日期: 2026-07-17  
-> 版本: 2.4.6+ (部署后将 `build_seq` 自动 +1)  
-> 升级路径: 245 → 154 (标准晋级流程,见 docs/deployment/DEPLOYMENT_RULES.md)  
+> 实施日期: 2026-07-17
+> 版本: 2.4.6+ (部署后将 `build_seq` 自动 +1)
+> 升级路径: 245 → 154 (标准晋级流程,见 docs/deployment/DEPLOYMENT_RULES.md)
 > 服务影响: **零停机**,新功能独立于热路径,失败仅 slog.Warn
 
 ---
@@ -208,5 +208,5 @@ var traceRec gwtrace.Recorder = gwtrace.NoopRecorder{}
 
 ---
 
-**最后更新**: 2026-07-17  
+**最后更新**: 2026-07-17
 **维护**: Platform Infrastructure Team

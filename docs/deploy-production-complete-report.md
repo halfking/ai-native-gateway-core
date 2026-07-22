@@ -2,9 +2,9 @@
 
 ## 部署摘要 ✅
 
-**状态**: 已成功部署到 245 和 154  
-**时间**: 2026-07-19 16:01 - 16:06  
-**版本**: phase0-complete-e56a3fe3-20260719-1171  
+**状态**: 已成功部署到 245 和 154
+**时间**: 2026-07-19 16:01 - 16:06
+**版本**: phase0-complete-e56a3fe3-20260719-1171
 **Commit**: e56a3fe33
 
 ---
@@ -122,7 +122,7 @@ bash scripts/deploy-seamless.sh rollback 245
 bash scripts/deploy-seamless.sh rollback 154 --to-seq 1169
 ```
 
-回滚耗时: ~40秒  
+回滚耗时: ~40秒
 回滚后行为: 节点恢复到旧逻辑（冷却期到期立即恢复）
 
 ---
@@ -222,6 +222,6 @@ bash scripts/deploy-seamless.sh rollback 154 --to-seq 1169
 
 ---
 
-**报告生成时间**: 2026-07-19 16:17  
-**报告生成者**: AI Agent (Kiro)  
+**报告生成时间**: 2026-07-19 16:17
+**报告生成者**: AI Agent (Kiro)
 **部署状态**: ✅ 完成

@@ -2,7 +2,7 @@
 export default {
   title: 'Routing Decisions Log',
   autoRefresh: 'Auto refresh every 5 seconds',
-  
+
   filter: {
     status: 'Status',
     statusAll: 'All',

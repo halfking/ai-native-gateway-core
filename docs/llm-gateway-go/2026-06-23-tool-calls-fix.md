@@ -24,7 +24,7 @@
 **文件**: `deploy/sql/migrations/042_tool_calls_column.sql`
 
 ```sql
-ALTER TABLE request_logs 
+ALTER TABLE request_logs
   ADD COLUMN IF NOT EXISTS tool_calls JSONB;
 
 CREATE INDEX IF NOT EXISTS idx_request_logs_tool_calls
@@ -58,7 +58,7 @@ CREATE INDEX IF NOT EXISTS idx_request_logs_provider_tool_calls
 ```go
 type StreamCapture struct {
     // ... existing fields ...
-    
+
     // ToolCalls accumulates structured tool calls from the stream.
     // Each entry has shape: {id, type, function: {name, arguments}}.
     ToolCalls []map[string]any
@@ -69,13 +69,13 @@ type StreamCapture struct {
 ```go
 func (sc *StreamCapture) ObserveChunk(chunk *ir.StreamChunk) {
     // ... existing code ...
-    
+
     // Capture tool calls (both textContent for preview AND structured ToolCalls)
     for _, tc := range chunk.Delta.ToolCalls {
         // Legacy text preview (backward compatibility)
         sc.appendText("\n[Tool Call: " + tc.Name + "]\n")
         sc.appendText(tc.Arguments)
-        
+
         // NEW: Structured tool_calls accumulation
         sc.mergeToolCall(tc)
     }
@@ -92,7 +92,7 @@ func (sc *StreamCapture) ObserveChunk(chunk *ir.StreamChunk) {
 ```go
 func (sc *StreamCapture) SummaryAsMap() map[string]any {
     // ... existing code ...
-    
+
     // 2026-06-23: structured tool_calls from streaming
     if len(sc.ToolCalls) > 0 {
         m["tool_calls"] = sc.ToolCalls
@@ -109,7 +109,7 @@ func (sc *StreamCapture) SummaryAsMap() map[string]any {
 ```go
 type RequestLogEntry struct {
     // ... existing fields ...
-    
+
     // 2026-06-23: structured tool_calls array
     ToolCalls json.RawMessage `json:"tool_calls,omitempty"`
 }
@@ -143,12 +143,12 @@ UPDATE request_logs rl
 ```go
 func (h *ChatHandler) emitTelemetry(...) {
     // ... existing code ...
-    
+
     if capture != nil {
         m := capture.SummaryAsMap()
-        
+
         // ... existing quality_flags extraction ...
-        
+
         // 2026-06-23: structured tool_calls from streaming
         if v, ok := m["tool_calls"].([]map[string]any); ok && len(v) > 0 {
             if b, err := json.Marshal(v); err == nil {
@@ -167,7 +167,7 @@ func (h *ChatHandler) emitTelemetry(...) {
 func (d *DB) ensureRequestLogSchema(ctx context.Context) error {
     _, err := d.pool.Exec(ctx, `
         -- ... existing ALTER TABLE ...
-        
+
         -- 2026-06-23: structured tool_calls
         ALTER TABLE request_logs ADD COLUMN IF NOT EXISTS tool_calls JSONB;
         CREATE INDEX IF NOT EXISTS idx_request_logs_tool_calls
@@ -216,7 +216,7 @@ go test ./relay -run TestStreamAnthropicSSEToOpenAI_ToolCalls_Complete -v
 ### 3. 数据库验证
 ```sql
 -- 部署后查询
-SELECT 
+SELECT
     request_id,
     client_model,
     jsonb_pretty(tool_calls) as tool_calls,

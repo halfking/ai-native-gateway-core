@@ -150,6 +150,6 @@ go test ./domains/transformation/... ./domains/streaming/executors
 
 ---
 
-**Status**: Delivered as far as incremental migration allows without breaking production.  
-**Date**: 2026-06-26  
+**Status**: Delivered as far as incremental migration allows without breaking production.
+**Date**: 2026-06-26
 **Next Owner Decision**: Choose Option 1, 2, or 3 above.

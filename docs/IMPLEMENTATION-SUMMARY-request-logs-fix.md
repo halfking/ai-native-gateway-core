@@ -216,7 +216,7 @@ docker-compose restart llm-gateway-go
 ### 3. 验证
 ```sql
 -- 触发一个上游 401 错误后查询
-SELECT 
+SELECT
     request_id,
     error_kind,
     failure_stage,
@@ -236,12 +236,12 @@ LIMIT 5;
 
 ### 1. 上游状态码分布
 ```sql
-SELECT 
+SELECT
     upstream_status_code,
     COUNT(*) as count,
     ROUND(100.0 * COUNT(*) / SUM(COUNT(*)) OVER (), 2) as percentage
 FROM request_logs
-WHERE success = false 
+WHERE success = false
     AND failure_stage = 'upstream'
     AND ts >= NOW() - INTERVAL '24 hours'
 GROUP BY upstream_status_code
@@ -250,7 +250,7 @@ ORDER BY count DESC;
 
 ### 2. 字段填充率
 ```sql
-SELECT 
+SELECT
     COUNT(*) as total_failures,
     COUNT(upstream_status_code) as has_status_code,
     COUNT(client_endpoint) as has_endpoint,
@@ -263,7 +263,7 @@ WHERE success = false
 
 ### 3. 端点错误分布
 ```sql
-SELECT 
+SELECT
     client_endpoint,
     COUNT(*) as failure_count,
     COUNT(upstream_status_code) FILTER (WHERE upstream_status_code IS NOT NULL) as upstream_failures,

@@ -2,7 +2,7 @@
 
 > 基于开源项目最佳实践的审计与改进建议
 >
-> 审计日期: 2026-07-18  
+> 审计日期: 2026-07-18
 > 参考项目: Kong Gateway, Envoy, APISIX, Nginx, quic-go, Caddy, Cloudflare Workers
 
 ---
@@ -130,7 +130,7 @@ func (h *ChatHandler) preloadCandidateHealth(w http.ResponseWriter, candidates [
     if !ok {
         return
     }
-    
+
     // 预推送前3个候选的健康探测结果（客户端可能需要重试）
     for i, c := range candidates[:min(3, len(candidates))] {
         pushURL := fmt.Sprintf("/internal/candidate-health/%d/%d", c.ProviderID, c.CredentialID)
@@ -345,12 +345,12 @@ func (e *Executor) shadowToEdge(ctx context.Context, req *http.Request) {
     if !e.edgeShadowEnabled || rand.Float64() > 0.01 {  // 1%采样
         return
     }
-    
+
     go func() {
         edgeReq := req.Clone(context.Background())
         edgeReq.URL.Host = "edge-gateway.internal"
         edgeReq.Header.Set("X-Shadow-Request", "true")
-        
+
         resp, err := e.edgeClient.Do(edgeReq)
         // 记录到metrics，不影响主路径
         recordShadowMetrics(resp, err)
@@ -385,7 +385,7 @@ var (
         },
         []string{"provider_id", "credential_id"},
     )
-    
+
     poolConnectionsReused = promauto.NewCounterVec(
         prometheus.CounterOpts{
             Name: "llm_gateway_pool_connections_reused_total",
@@ -393,7 +393,7 @@ var (
         },
         []string{"provider_id", "credential_id"},
     )
-    
+
     poolIdleConnections = promauto.NewGaugeVec(
         prometheus.GaugeOpts{
             Name: "llm_gateway_pool_idle_connections",
@@ -401,7 +401,7 @@ var (
         },
         []string{"provider_id", "credential_id"},
     )
-    
+
     ttfbHistogram = promauto.NewHistogramVec(
         prometheus.HistogramOpts{
             Name: "llm_gateway_ttfb_seconds",

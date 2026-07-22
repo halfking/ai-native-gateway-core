@@ -1,8 +1,8 @@
 # Phase 1.6 Settings 系统集成完成报告
 
-> **完成日期**: 2026-07-19  
-> **实施人员**: AI Agent (OpenCode)  
-> **实际工时**: 15 分钟  
+> **完成日期**: 2026-07-19
+> **实施人员**: AI Agent (OpenCode)
+> **实际工时**: 15 分钟
 > **状态**: ✅ 编译通过，待测试
 
 ---
@@ -326,18 +326,18 @@ psql -c "UPDATE settings SET value = '\"minimal\"' \
    ```bash
    git add domains/streaming/handler.go
    git commit -m "feat(goal): Phase 1.6 - Settings 系统集成
-   
+
    - 从 settings.Global 动态读取 goal.cost_mode
    - 支持 minimal/balanced/aggressive 三种模式
    - 配置不存在时回退到 balanced
    - 支持租户级配置覆盖
    - 支持热重载（无需重启网关）
-   
+
    配置方式：
    1. 环境变量: LLM_GATEWAY_GOAL_COST_MODE=aggressive
    2. Admin API: PUT /admin/settings
    3. 数据库: INSERT INTO settings (key='goal.cost_mode', value='\"aggressive\"')
-   
+
    Refs: 16-Goal模式会话持续机制设计方案.md Phase 1.6"
    ```
 
@@ -379,6 +379,6 @@ psql -c "UPDATE settings SET value = '\"minimal\"' \
 
 ---
 
-**Phase 1.6 状态**：✅ **代码实施完成，编译通过**  
-**下一步**：手动测试验证 → Git 提交 → Phase 2 审计自动修正  
+**Phase 1.6 状态**：✅ **代码实施完成，编译通过**
+**下一步**：手动测试验证 → Git 提交 → Phase 2 审计自动修正
 **预计剩余工作**：1-2 小时（测试 + 文档）

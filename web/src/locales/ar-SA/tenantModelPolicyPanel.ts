@@ -5,7 +5,7 @@ export default {
   showDeleted: 'إظهار المحذوفات',
   addButton: '+ إضافة نموذج مرفوض',
   loading: 'جارٍ التحميل…',
-  
+
   table: {
     canonicalName: 'canonical_name',
     reason: 'reason',
@@ -14,14 +14,14 @@ export default {
     deletedAt: 'deleted_at',
     actions: 'الإجراءات',
   },
-  
+
   actions: {
     softDelete: 'حذف منطقي',
     restore: 'استعادة',
   },
-  
+
   empty: 'لا توجد سياسات (جميع النماذج مسموح بها افتراضيًا)',
-  
+
   audit: {
     title: 'سجل المراجعة',
     recent: 'آخر {count} إدخال',
@@ -39,7 +39,7 @@ export default {
       undelete: 'استعادة',
     },
   },
-  
+
   dialog: {
     title: 'إضافة نموذج مرفوض',
     hint: 'أدخل canonical_name أدناه (يجب أن يتطابق مع جدول models_canonical).',
@@ -54,11 +54,11 @@ export default {
     submit: 'إرسال',
     submitting: 'جارٍ الإرسال…',
   },
-  
+
   confirm: {
     softDelete: 'تأكيد الحذف المنطقي للسياسة {name}؟ (قابل للاستعادة)',
   },
-  
+
   error: {
     loadFailed: 'فشل التحميل',
     canonicalNameRequired: 'canonical_name مطلوب',

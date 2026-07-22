@@ -243,7 +243,7 @@ systemctl restart llm-gateway-go
 \df cleanup_stale_in_progress_requests
 
 -- 触发测试错误后查询
-SELECT 
+SELECT
     request_id,
     error_kind,
     upstream_status_code,
@@ -277,7 +277,7 @@ psql -h localhost -p 11032 -U llm_gateway -d llm_gateway \
 
 ### 1. 字段填充率
 ```sql
-SELECT 
+SELECT
     COUNT(*) as total_failures,
     COUNT(upstream_status_code) as has_status_code,
     COUNT(client_endpoint) as has_endpoint,
@@ -292,12 +292,12 @@ WHERE success = false
 
 ### 2. 上游状态码分布
 ```sql
-SELECT 
+SELECT
     upstream_status_code,
     COUNT(*) as count,
     ROUND(100.0 * COUNT(*) / SUM(COUNT(*)) OVER (), 2) as percentage
 FROM request_logs
-WHERE success = false 
+WHERE success = false
     AND failure_stage = 'upstream'
     AND ts >= NOW() - INTERVAL '24 hours'
 GROUP BY upstream_status_code
@@ -317,7 +317,7 @@ WHERE request_status = 'in_progress'
 
 ### 4. 端点错误分布
 ```sql
-SELECT 
+SELECT
     client_endpoint,
     COUNT(*) as failure_count,
     COUNT(*) FILTER (WHERE failure_stage = 'upstream') as upstream_failures,
@@ -397,7 +397,7 @@ LIMIT 10;
 
 ---
 
-**项目状态**: ✅ **COMPLETED**  
-**完成度**: **100%** (13/13 任务)  
-**测试状态**: ✅ **ALL PASS**  
+**项目状态**: ✅ **COMPLETED**
+**完成度**: **100%** (13/13 任务)
+**测试状态**: ✅ **ALL PASS**
 **部署就绪**: ✅ **READY**

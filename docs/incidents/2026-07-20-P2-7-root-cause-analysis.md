@@ -24,7 +24,7 @@ fix(audit): unify rate-limited status and probe lifecycle guards
 
 #### 1. **Schema 不一致的假设**
 - `providers` 表**有** `enabled` 列 ✓
-- `tool_categories` 表**有** `enabled` 列 ✓  
+- `tool_categories` 表**有** `enabled` 列 ✓
 - `tool_registry` 表**有** `enabled` 列 ✓
 - **错误假设**: credentials 表也应该有 `enabled` 列 ✗
 

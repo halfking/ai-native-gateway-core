@@ -1,8 +1,8 @@
 # Phase 2 热度感知探测 - 184测试环境部署报告
 
-**部署时间**: 2026-07-01 02:50  
-**部署人**: __USER_1__  
-**目标环境**: 184测试服务器 (__PUB_IP_1__:__PORT_1__, k8s命名空间: pms-test)  
+**部署时间**: 2026-07-01 02:50
+**部署人**: __USER_1__
+**目标环境**: 184测试服务器 (__PUB_IP_1__:__PORT_1__, k8s命名空间: pms-test)
 **部署状态**: ✅ **成功**
 
 ---
@@ -40,7 +40,7 @@
 1. **184环境使用 Kubernetes** 而非直接部署
    - 原计划：SSH直接部署二进制
    - 实际：k3s集群，需构建Docker镜像
-   
+
 2. **基础镜像不存在**
    - 原Dockerfile依赖 `kx-base:go-vue-alpine-slim-runtime`
    - 184只有 `kx-base:go-vue-amd64` 和 `kx-base:node-alpine-slim-runtime`
@@ -138,7 +138,7 @@ request_logs 表: 存在
 LLM_GATEWAY_ENABLE_POPULARITY_TRACKING=false
 ```
 
-**原因**: 
+**原因**:
 1. 数据库当前无数据（0条 request_logs）
 2. 需要观察一段时间积累数据
 3. 生产环境谨慎启用原则
@@ -186,7 +186,7 @@ kubectl exec -n pms-test $(kubectl get pods -n pms-test -l app=llm-gateway-pg -o
 | CPU使用 | ~0.2 core | ~0.21 core | +0.01 core |
 | DB查询 | 0次/5min | 1次/5min | +1次 |
 
-**说明**: 
+**说明**:
 - 镜像增大是因为使用了完整的 `kx-base:go-vue-amd64` 基础镜像
 - 实际运行时内存/CPU影响极小（<5%）
 - 数据库查询每5分钟1次，耗时预计<500ms
@@ -280,7 +280,7 @@ kubectl logs -n pms-test -l app=llm-gateway-go --tail=50 | grep "credential stat
 
 **可能原因**:
 1. 数据库连接失败
-2. Redis连接失败  
+2. Redis连接失败
 3. 代码未正确编译进镜像
 
 **排查步骤**:
@@ -369,5 +369,5 @@ kubectl rollout restart deployment/llm-gateway-go-deployment -n pms-test
 
 ---
 
-**文档版本**: 1.0  
+**文档版本**: 1.0
 **最后更新**: 2026-07-01 02:50

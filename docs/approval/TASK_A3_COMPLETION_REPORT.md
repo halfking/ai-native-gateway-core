@@ -136,7 +136,7 @@ result, err := detector.Detect(ctx, content)
 if result.HasSensitive {
     fmt.Printf("检测到 %d 项敏感信息\n", result.TotalCount)
     fmt.Printf("类型分布: %+v\n", result.TypeCounts)
-    
+
     // 脱敏处理
     redacted := detector.Redact(content, result)
     fmt.Println(redacted)

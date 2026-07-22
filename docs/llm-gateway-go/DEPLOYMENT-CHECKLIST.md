@@ -64,7 +64,7 @@
   ```bash
   sudo journalctl -u llm-gateway -f | grep bandit
   ```
-  **预期：** 
+  **预期：**
   ```
   bandit: loaded N credential scores from database
   bandit_scoring enabled=true flush_interval=10s batch_size=100
@@ -100,7 +100,7 @@
 
 - [ ] 数据库已更新
   ```sql
-  SELECT COUNT(*) FROM credentials 
+  SELECT COUNT(*) FROM credentials
   WHERE last_scored_at > NOW() - INTERVAL '1 hour';
   -- 应该 > 0
   ```
@@ -124,7 +124,7 @@
   ```bash
   # 重启服务
   sudo systemctl restart llm-gateway
-  
+
   # 查看日志
   sudo journalctl -u llm-gateway --since "1 minute ago" | grep "bandit: loaded"
   # 应该看到：bandit: loaded N credential scores from database
@@ -132,7 +132,7 @@
 
 - [ ] 数据完整性
   ```sql
-  SELECT 
+  SELECT
       COUNT(*) as total,
       AVG(bandit_success_count) as avg_success,
       AVG(bandit_failure_count) as avg_failure
@@ -214,13 +214,13 @@
 
 部署成功的标志：
 
-✅ Migration 成功应用（所有字段创建）  
-✅ 服务正常启动（日志显示 bandit enabled）  
-✅ 数据库正常更新（last_scored_at 有值）  
-✅ 冷启动恢复正常（LoadFromDB 成功）  
-✅ 错误率无增加  
-✅ 延迟无恶化  
-✅ 429 错误率降低（预期优化目标）  
+✅ Migration 成功应用（所有字段创建）
+✅ 服务正常启动（日志显示 bandit enabled）
+✅ 数据库正常更新（last_scored_at 有值）
+✅ 冷启动恢复正常（LoadFromDB 成功）
+✅ 错误率无增加
+✅ 延迟无恶化
+✅ 429 错误率降低（预期优化目标）
 
 ---
 
@@ -233,5 +233,5 @@
 
 ---
 
-**更新时间：** 2026-06-26  
+**更新时间：** 2026-06-26
 **文档版本：** v1.0

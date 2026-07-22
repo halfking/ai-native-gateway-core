@@ -1,6 +1,6 @@
 # llm-gateway-go Request WAL 审计报告
-**日期**: 2026-06-22  
-**审计人**: AI Agent  
+**日期**: 2026-06-22
+**审计人**: AI Agent
 **版本**: Phase 1-3 完成 + 审计修复
 
 ## 执行摘要
@@ -10,8 +10,8 @@ Request WAL (Write-Ahead Log) 实现已完成 Phase 1-3，经过完整审计发�
 ## 审计发现与修复
 
 ### ✅ 问题 1: 缺少数据库索引
-**发现**: request_logs 表缺少 3 个索引  
-**影响**: 查询性能降低  
+**发现**: request_logs 表缺少 3 个索引
+**影响**: 查询性能降低
 **修复**: 在 184 测试数据库创建：
 ```sql
 CREATE INDEX idx_status_stage ON request_logs (status, stage);
@@ -21,8 +21,8 @@ CREATE INDEX idx_tenant_created ON request_logs (tenant_id, created_at DESC);
 **提交**: 93571f14
 
 ### ✅ 问题 2: 执行成功路径缺失日志
-**发现**: executor 成功后未调用 RequestLogger.Update()  
-**影响**: 成功请求无 completed 状态记录  
+**发现**: executor 成功后未调用 RequestLogger.Update()
+**影响**: 成功请求无 completed 状态记录
 **修复**: 在 relay/handler.go:1240 后添加：
 ```go
 h.requestLogger.Update(&telemetry.LogUpdate{
@@ -35,8 +35,8 @@ h.requestLogger.Update(&telemetry.LogUpdate{
 **提交**: 93571f14
 
 ### ✅ 问题 3: main.go 未初始化 RequestLogger
-**发现**: cmd/gateway/main.go 缺少 RequestLogger 创建和绑定  
-**影响**: 生产环境无法启用 Request WAL  
+**发现**: cmd/gateway/main.go 缺少 RequestLogger 创建和绑定
+**影响**: 生产环境无法启用 Request WAL
 **修复**: 在 main.go:580 添加初始化代码：
 ```go
 if dbConn != nil && dbConn.Enabled() && os.Getenv("LLM_GATEWAY_REQUEST_WAL_DISABLE") != "true" {
@@ -53,8 +53,8 @@ if dbConn != nil && dbConn.Enabled() && os.Getenv("LLM_GATEWAY_REQUEST_WAL_DISAB
 **提交**: 93571f14
 
 ### ✅ 问题 4: 缺少 compression 字段
-**发现**: request_logs 表缺少 compression_strategy 和 compression_meta 字段  
-**影响**: 压缩元数据无法记录  
+**发现**: request_logs 表缺少 compression_strategy 和 compression_meta 字段
+**影响**: 压缩元数据无法记录
 **修复**:
 1. 在 184 数据库添加字段：
 ```sql
@@ -163,10 +163,10 @@ CREATE TABLE request_bodies (...)
 
 ## 审计结论
 
-**状态**: ✅ 通过审计，就绪进入集成测试  
-**风险等级**: 低（已修复所有发现问题）  
+**状态**: ✅ 通过审计，就绪进入集成测试
+**风险等级**: 低（已修复所有发现问题）
 **推荐**: 继续 Phase 4 集成测试
 
 ---
-**审计完成时间**: 2026-06-22 05:45 UTC  
+**审计完成时间**: 2026-06-22 05:45 UTC
 **下次审计**: Phase 4 集成测试后

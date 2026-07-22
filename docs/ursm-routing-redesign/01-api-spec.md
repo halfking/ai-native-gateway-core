@@ -249,16 +249,16 @@ type RouteNode struct {
     RawModel         string
     ProviderID       int
     ProviderName     string
-    
+
     // 状态
     Available        bool
     UnavailableReason string
     HealthStatus     string
-    
+
     // 资源
     FpSlotIndex      int     // 已获取的指纹槽索引
     ConcurrencyHeld  bool    // 是否已获取并发槽
-    
+
     // 历史（用于排序）
     PriceInPer1M     float64
     PriceOutPer1M    float64
@@ -428,24 +428,24 @@ type StateUpdate struct {
     Actor             string
     Reason            string
     Source            string    // request/probe/manual
-    
+
     // Provider层
     ProviderID        int
     Enabled           *bool
     ManualDisabled    *bool
-    
+
     // Credential层
     CredentialID      int
     AvailabilityState *string
     HealthStatus      *string
     QuotaState        *string
-    
+
     // Model层
     Model             string
     ProbeState        *string
     OfferAvailable    *bool
     BindingAvailable  *bool
-    
+
     // Node层
     Success           bool
     ErrorKind         string
@@ -481,12 +481,12 @@ const (
     ErrCredentialNotFound     = "credential_not_found"      // 404
     ErrProviderNotFound       = "provider_not_found"        // 404
     ErrUnauthorized           = "unauthorized"              // 401
-    
+
     // 5xx 服务器错误
     ErrInternalError          = "internal_error"            // 500
     ErrDatabaseError          = "database_error"            // 500
     ErrCacheError             = "cache_error"               // 500
-    
+
     // 业务错误
     ErrNoAvailableNodes       = "no_available_nodes"
     ErrFpSlotSaturated        = "fp_slot_saturated"
@@ -564,7 +564,7 @@ ursm_cache_miss_total{layer,level}
 
 func (e *Executor) Execute(ctx context.Context, req Request) Result {
     // ... 执行请求 ...
-    
+
     // 记录结果
     err := e.ursm.RecordRequest(ctx, ursm.RecordRequestAPI{
         RequestID:    req.ID,
@@ -576,11 +576,11 @@ func (e *Executor) Execute(ctx context.Context, req Request) Result {
         ErrorKind:    string(result.ErrorKind),
         Timestamp:    time.Now(),
     })
-    
+
     if err != nil {
         slog.Warn("failed to record request", "error", err)
     }
-    
+
     return result
 }
 ```
@@ -595,13 +595,13 @@ func (r *Router) PlanCandidates(model string, sessionID string) []Candidate {
     if err != nil {
         return nil
     }
-    
+
     // 转换为旧的Candidate结构
     candidates := make([]Candidate, len(nodes))
     for i, node := range nodes {
         candidates[i] = nodeToCandidate(node)
     }
-    
+
     return candidates
 }
 ```
@@ -613,7 +613,7 @@ func (r *Router) PlanCandidates(model string, sessionID string) []Candidate {
 
 func (h *Handler) handleDisableCredential(w http.ResponseWriter, r *http.Request) {
     credID := extractCredentialID(r)
-    
+
     err := h.ursm.UpdateCredential(ctx, ursm.UpdateCredentialAPI{
         CredentialID:      credID,
         ManualDisabled:    boolPtr(true),
@@ -621,12 +621,12 @@ func (h *Handler) handleDisableCredential(w http.ResponseWriter, r *http.Request
         Reason:            "管理员手动禁用",
         Actor:             getActorFromContext(ctx),
     })
-    
+
     if err != nil {
         writeError(w, err)
         return
     }
-    
+
     writeJSON(w, map[string]any{"success": true})
 }
 ```

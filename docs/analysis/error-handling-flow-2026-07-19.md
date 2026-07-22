@@ -1,7 +1,7 @@
 # LLM Gateway 错误处理流程完整梳理
 
-**日期**: 2026-07-19  
-**目的**: 梳理智谱AI超限、商汤限流等问题的完整错误处理链路  
+**日期**: 2026-07-19
+**目的**: 梳理智谱AI超限、商汤限流等问题的完整错误处理链路
 **范围**: 从请求失败 → 错误分类 → 状态更新 → 路由过滤 → 探测恢复
 
 ---
@@ -77,7 +77,7 @@ func ClassifyError(err error, body []byte) ErrorKind {
         // ...
         }
     }
-    
+
     // 优先级2: 检查响应body中的错误模式
     msg := string(body)
     if authFailedRe.MatchString(msg) {
@@ -89,7 +89,7 @@ func ClassifyError(err error, body []byte) ErrorKind {
     if rateLimitRe.MatchString(msg) {
         return KindRateLimit
     }
-    
+
     // 优先级3: 默认分类
     return KindTransient
 }
@@ -129,17 +129,17 @@ func (e *Executor) shouldWriteCredentialState(errKind errorsx.ErrorKind) bool {
     if errorsx.IsClientBug(errKind) {
         return false
     }
-    
+
     // 2. 取消操作不写入
     if errKind == errorsx.KindCanceled {
         return false
     }
-    
+
     // 3. 瞬态错误暂不写入（等待确认）
     if errKind == errorsx.KindTransient {
         return false
     }
-    
+
     return true
 }
 ```
@@ -152,8 +152,8 @@ func (e *Executor) shouldWriteCredentialState(errKind errorsx.ErrorKind) bool {
 func IsClientBug(kind ErrorKind) bool {
     // 2026-07-03: Removed KindModelNotFound from this list.
     switch kind {
-    case KindToolCallIdMismatch, 
-         KindUnsupportedFeature, 
+    case KindToolCallIdMismatch,
+         KindUnsupportedFeature,
          KindCanceled:
         return true
     default:
@@ -177,31 +177,31 @@ func IsClientBug(kind ErrorKind) bool {
 **文件**: `domains/credentialstate/manager.go:223`
 
 ```go
-func (m *Manager) UpdateOnFailure(ctx context.Context, credID int, model string, 
+func (m *Manager) UpdateOnFailure(ctx context.Context, credID int, model string,
                                     errKind errorsx.ErrorKind, requestID, tenantID, billingMode string) {
     // 4.1 过滤不应计入统计的错误
     if errKind == errorsx.KindCanceled || errorsx.IsClientBug(errKind) {
         return  // ← model_not_found 不会被跳过（已从 IsClientBug 移除）
     }
-    
+
     // 4.2 更新内存状态
     state.ConsecutiveFails++
     state.LastError = string(errKind)
     state.LastFailureAt = &now
-    
+
     // 4.3 判断是否进入冷却
     isTransient := errKind == errorsx.KindRateLimit ||
                    errKind == errorsx.KindUpstreamDown ||
                    errKind == errorsx.KindTimeout ||
                    errKind == errorsx.KindStreamTimeout
-    
+
     // 4.4 免费凭证特殊处理
     if billingMode == "free" && isTransient {
         state.Available = true  // ← 免费凭证瞬态错误不硬剔
     } else {
         state.Available = false  // ← 进入冷却
     }
-    
+
     // 4.5 触发探测
     if state.ConsecutiveFails >= m.activeProbeThreshold {
         m.activeProbeSubmitter(credID, model, tenantID, requestID)
@@ -233,7 +233,7 @@ func (m *Manager) UpdateOnFailure(ctx context.Context, credID int, model string,
 func (c *Checker) CheckAndUpdate(ctx context.Context, credentialID int, model string) error {
     // 5.1.1 获取最近1小时的失败记录
     entries, err := c.recorder.GetRecent(ctx, credentialID, model, since)
-    
+
     // 5.1.2 计算失败率（排除网络错误、客户端错误等）
     var total, failed int
     for _, e := range entries {
@@ -250,9 +250,9 @@ func (c *Checker) CheckAndUpdate(ctx context.Context, credentialID int, model st
             failed++
         }
     }
-    
+
     failureRate := float64(failed) / float64(total)
-    
+
     // 5.1.3 超过阈值（默认80%）→ 标记为 degraded
     if failureRate >= c.failureThreshold {
         // 5.1.4 探测验证（如果配置了prober）
@@ -262,7 +262,7 @@ func (c *Checker) CheckAndUpdate(ctx context.Context, credentialID int, model st
                 return nil  // ← 探测成功，不标记degraded
             }
         }
-        
+
         return c.markDegraded(ctx, credentialID, model, failureRate, errorKinds, total)
     }
 }
@@ -271,10 +271,10 @@ func (c *Checker) CheckAndUpdate(ctx context.Context, credentialID int, model st
 #### 5.2 标记为 degraded
 
 ```go
-func (c *Checker) markDegraded(ctx context.Context, credentialID int, model string, 
+func (c *Checker) markDegraded(ctx context.Context, credentialID int, model string,
                                 rate float64, kinds map[string]int, sampleSize int) error {
     recoverAt := time.Now().Add(c.degradedCooldown)  // 默认15分钟
-    
+
     // 5.2.1 更新 credential_model_bindings
     tag, err := c.db.Exec(ctx, `
         UPDATE credential_model_bindings cmb
@@ -290,7 +290,7 @@ func (c *Checker) markDegraded(ctx context.Context, credentialID int, model stri
           AND cmb.available = TRUE
           AND COALESCE(cmb.admin_protected, FALSE) = FALSE
     `, credentialID, model, recoverAt)
-    
+
     // 5.2.2 同步到 model_offers
     // 5.2.3 清空候选缓存
     if c.invalidateCache != nil {
@@ -318,7 +318,7 @@ func (r *Router) PlanCandidates(candidates []provider.Candidate, ...) []provider
     } else {
         available = filterAvailable(candidates)  // ← 回退到数据库状态
     }
-    
+
     // 6.1.2 所有候选者都不可用？
     if len(available) == 0 {
         // 6.1.3 尝试降级模式（单候选者场景）
@@ -330,7 +330,7 @@ func (r *Router) PlanCandidates(candidates []provider.Candidate, ...) []provider
         }
         return nil  // ← 返回空，触发 "no available providers"
     }
-    
+
     // 6.1.4 继续路由选择...
     return available
 }
@@ -341,23 +341,23 @@ func (r *Router) PlanCandidates(candidates []provider.Candidate, ...) []provider
 ```go
 func (r *Router) tryDegradedMode(ctx context.Context, candidates []provider.Candidate) []provider.Candidate {
     var degradedCandidates []provider.Candidate
-    
+
     for _, c := range candidates {
         reason := c.UnavailableReason()  // ← 从数据库读取
-        
+
         // 6.2.1 如果数据库没有标记，查询内存状态
         if reason == "" && r.StateManager != nil && r.StateManager.Enabled() {
             if _, smReason := r.StateManager.IsAvailable(ctx, c.CredentialID, c.RawModel); smReason != "" {
                 reason = "state:" + smReason
             }
         }
-        
+
         // 6.2.2 判断是否为瞬态原因
         if isTransientUnavailableReason(reason) {
             degradedCandidates = append(degradedCandidates, c)  // ← 降级使用
         }
     }
-    
+
     return degradedCandidates
 }
 ```
@@ -398,21 +398,21 @@ func isTransientUnavailableReason(reason string) bool {
 **文件**: `bg/node_probe.go:510`
 
 ```go
-func (w *NodeProbeWorker) ProbeSync(ctx context.Context, 
+func (w *NodeProbeWorker) ProbeSync(ctx context.Context,
                                      candidates []credentialstate.NoCandidatesCandidate,
                                      tenantID string, parentReqID string) bool {
     // 7.1.1 对每个候选者进行探测
     for _, c := range candidates {
         key := fmt.Sprintf("%d|%s", c.CredentialID, c.RawModel)
-        
+
         // 7.1.2 直连上游探测
         res.direct = w.probeDirect(ctx, c.CredentialID, c.RawModel)
-        
+
         if res.direct.ok {
             // 7.1.3 探测成功 → 立即恢复
             w.updateBindingAvailability(ctx, c.CredentialID, c.RawModel, true, "")
             w.updateCredentialHealth(ctx, c.CredentialID)
-            
+
             // 7.1.4 再通过网关探测
             res.gateway = w.probeGateway(ctx, c.CredentialID, c.RawModel)
         } else {
@@ -431,13 +431,13 @@ func (w *NodeProbeWorker) ProbeSync(ctx context.Context,
 func (w *NodeProbeWorker) probeDirect(ctx context.Context, credID int, model string) nodeProbeRoundResult {
     // 7.2.1 查询模型配置
     plain, outboundModel, baseURL, protocol, providerID, err := w.resolveDirectTarget(ctx, credID, model)
-    
+
     // 7.2.2 使用 outbound_model_name（如果有），否则使用 raw_model_name
     bodyModel := outboundModel
     if bodyModel == "" {
         bodyModel = model  // ← 使用传入的 model 参数（即失败请求的模型）
     }
-    
+
     // 7.2.3 构造探测请求
     body := directProbeBody(bodyModel, protocol)
     // ...
@@ -480,13 +480,13 @@ func RecoverExpired(ctx context.Context, db DBQuerier) (int, error) {
           AND COALESCE(cmb.unavailable_recover_at,
                        cmb.unavailable_at + INTERVAL '30 seconds') < now()
     `)
-    
+
     // 7.3.2 同步恢复 model_offers 和 credentials.availability_state
     // ...
 }
 ```
 
-**问题**: 
+**问题**:
 - 恢复时**没有探测验证**
 - 如果上游仍在限流，会立即再次失败 → 再次冷却 → 循环往复
 
@@ -500,18 +500,18 @@ func RecoverExpired(ctx context.Context, db DBQuerier) (int, error) {
 ```
 1. 智谱AI返回: HTTP 429 或包含"model not found"的响应
    ↓
-2. 错误分类: 
+2. 错误分类:
    - 如果是标准429 → KindRateLimit ✓
    - 如果body包含"model not found" → KindModelNotFound（可能误判）
    ↓
-3. 状态更新: 
+3. 状态更新:
    - KindRateLimit → 进入冷却（Available=false）
    - KindModelNotFound → 进入冷却（Available=false）
    ↓
-4. 路由过滤: 
+4. 路由过滤:
    - filterAvailable 过滤掉该凭证
    ↓
-5. 降级模式: 
+5. 降级模式:
    - 单候选者 + reason="availability:rate_limited" → isTransientUnavailableReason=true
    - 强制使用该凭证 ← 问题！
 ```
@@ -537,7 +537,7 @@ func RecoverExpired(ctx context.Context, db DBQuerier) (int, error) {
 
 ### 问题3: 火山引擎 glm-5.2 配置缺失
 
-**根因**: 
+**根因**:
 - 数据库 `provider_models` 表中没有火山引擎的 glm-5.2 记录
 - 已通过 SQL 脚本修复
 
@@ -563,7 +563,7 @@ func RecoverExpired(ctx context.Context, db DBQuerier) (int, error) {
 **需要抓取真实的错误响应**:
 ```bash
 # 查询最近的智谱AI失败请求
-SELECT 
+SELECT
     request_id,
     credential_id,
     client_model,
@@ -588,7 +588,7 @@ LIMIT 20;
 
 ```sql
 -- 查询智谱AI的所有模型配置
-SELECT 
+SELECT
     p.provider_code,
     pm.raw_model_name,
     pm.canonical_name,

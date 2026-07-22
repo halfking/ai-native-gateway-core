@@ -1,7 +1,7 @@
 # 数据库配置状态报告
 
-**检查时间**: 2026-07-08  
-**数据库**: PostgreSQL 15.18 (Homebrew)  
+**检查时间**: 2026-07-08
+**数据库**: PostgreSQL 15.18 (Homebrew)
 **连接URL**: postgres://xutaohuang@localhost:5432/llm_gateway
 
 ---
@@ -183,7 +183,7 @@ score_threshold_block: 10
 ### 存储空间
 - ✅ 总占用: 352 KB
 - ✅ 索引占比: ~40%
-- ✅ 增长预估: 
+- ✅ 增长预估:
   - 每轮对话 ~1KB (session_intent_evolution)
   - 每条反馈 ~2KB (intent_classification_feedback)
   - 每次调整 ~500B (intent_analysis_adjustments)
@@ -211,6 +211,6 @@ score_threshold_block: 10
 
 ---
 
-**报告生成时间**: 2026-07-08  
-**数据库版本**: PostgreSQL 15.18  
+**报告生成时间**: 2026-07-08
+**数据库版本**: PostgreSQL 15.18
 **检查人**: Kiro AI Assistant

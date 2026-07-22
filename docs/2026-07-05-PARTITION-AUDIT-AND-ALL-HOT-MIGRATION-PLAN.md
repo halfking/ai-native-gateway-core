@@ -104,7 +104,7 @@ CREATE TABLE usage_ledger_hot (
 ) WITH (fillfactor=90);
 
 -- 2. 迁移 _default 分区数据到 _hot 表
-INSERT INTO usage_ledger_hot 
+INSERT INTO usage_ledger_hot
 SELECT * FROM usage_ledger_default
 ON CONFLICT DO NOTHING;
 
@@ -254,9 +254,9 @@ kubectl set image deploy/llm-gateway-go-deployment \
 
 ```sql
 -- Migration 34X: <table_name> 热表独立化
--- 
+--
 -- 将 <table_name>_default 分区转为独立 <table_name>_hot 表
--- 
+--
 -- 迁移步骤：
 --   1. CREATE TABLE <table_name>_hot
 --   2. INSERT ... SELECT from _default
@@ -334,21 +334,21 @@ TABLES=(
 
 for tbl in "${TABLES[@]}"; do
     echo "Testing ${tbl}_hot..."
-    
+
     # 1. INSERT
     psql -c "INSERT INTO ${tbl}_hot (...) VALUES (...) RETURNING id;" || exit 1
-    
+
     # 2. UPDATE (if applicable)
     if [[ "$tbl" == "usage_ledger" ]]; then
         psql -c "UPDATE ${tbl}_hot SET ... WHERE id = ...;" || exit 1
     fi
-    
+
     # 3. SELECT
     psql -c "SELECT COUNT(*) FROM ${tbl}_hot;" || exit 1
-    
+
     # 4. Promote
     psql -c "SELECT promote_${tbl}_hot_to_partition('7 days', 10);" || exit 1
-    
+
     echo "✅ ${tbl}_hot OK"
 done
 
@@ -369,11 +369,11 @@ echo "✅ All hot tables verified"
    -- 确认 8 张 _hot 表存在
    SELECT relname FROM pg_class WHERE relname LIKE '%_hot' ORDER BY relname;
    -- 应返回 8 行
-   
+
    -- 确认 _default 分区已删除
    SELECT relname FROM pg_class WHERE relname LIKE '%_default';
    -- 应返回 0 行
-   
+
    -- 确认 promote 函数已更新
    SELECT proname FROM pg_proc WHERE proname LIKE 'promote_%_hot_%';
    -- 应返回 8 行
@@ -469,10 +469,10 @@ CREATE OR REPLACE FUNCTION promote_<table>_default_batch() ...
 1. **修复 routing_decision_log_default columnar 问题**：
    ```sql
    -- 检查当前状态
-   SELECT am.amname FROM pg_class c 
-   JOIN pg_am am ON c.relam = am.oid 
+   SELECT am.amname FROM pg_class c
+   JOIN pg_am am ON c.relam = am.oid
    WHERE c.relname = 'routing_decision_log_default';
-   
+
    -- 如果返回 columnar，执行 migration 338 修复
    ```
 

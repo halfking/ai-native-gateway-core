@@ -1,7 +1,7 @@
 # 56 Nginx + PostgreSQL HA 方案审计报告
 
-**审计时间**：2026-07-06  
-**审计对象**：v4.0 最终实施方案  
+**审计时间**：2026-07-06
+**审计对象**：v4.0 最终实施方案
 **审计结论**：🔴 **发现重大架构矛盾，需修正**
 
 ---
@@ -309,7 +309,7 @@ nginx 负载均衡（应用层）
    # 71 上
    ssh root@__INTERNAL_K8S_HOST__ "docker ps | grep postgres"
    ssh root@__INTERNAL_K8S_HOST__ "grep DATABASE_URL /etc/llm-gateway-go/env"
-   
+
    # 184 上
    ssh root@__INTERNAL_K8S_HOST__ "kubectl -n pms-test get pod | grep llm-gateway-pg"
    ssh root@__INTERNAL_K8S_HOST__ "kubectl -n pms-test exec deploy/llm-gateway-go-deployment -- env | grep DATABASE_URL"

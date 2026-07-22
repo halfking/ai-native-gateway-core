@@ -105,8 +105,8 @@ error: async_pending → first_byte_timeout
 
 ### 7. 为什么直连可用？
 
-用户测试时间：10:31+  
-MiniMax API 恢复时间：10:31  
+用户测试时间：10:31+
+MiniMax API 恢复时间：10:31
 **→ 测试时 API 已恢复，所以直连正常。**
 
 ### 8. 为什么 glm-5.2 可用？
@@ -129,11 +129,11 @@ if len(bodyBytes) > 500*1024 { // 500KB 阈值
     // 1. 尝试压缩上下文（summarize、trim）
     if compressedBody, err := compressContext(bodyBytes, params); err == nil {
         bodyBytes = compressedBody
-        slog.Info("context compressed", 
+        slog.Info("context compressed",
             "original_bytes", len(bodyBytes),
             "compressed_bytes", len(compressedBody))
     }
-    
+
     // 2. 如果仍然过大，降低 TTFB 阈值
     if len(bodyBytes) > 500*1024 {
         firstByteTimeout = 60 * time.Second // 从 30s → 60s

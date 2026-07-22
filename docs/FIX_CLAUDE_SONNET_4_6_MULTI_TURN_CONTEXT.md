@@ -60,17 +60,17 @@ func ConvertChatRequestToAnthropic(in []byte) ([]byte, error) {
      - 转换 `tool_calls` → `tool_use` 块
      - 转换 `role: "tool"` → `tool_result` 块（role改为"user"）
      - 处理多模态内容（image_url等）
-   
+
    - `convertBridgeChatToolChoiceToAnthropic`: 转换工具选择
      - `"auto"` → `{"type": "auto"}`
      - `"required"` → `{"type": "any"}`
      - `"none"` → `{"type": "none"}`
      - 具名函数 → `{"type": "tool", "name": "..."}`
-   
+
    - `convertBridgeOpenAIToolToAnthropic`: 转换工具定义
      - `parameters` → `input_schema`
      - 规范化 function 结构
-   
+
    - `normalizeBridgeOpenAIToolDefinitions`: 规范化工具定义
      - 统一 Anthropic 和 OpenAI 两种格式
      - 处理 `input_schema` / `parameters` 字段差异
@@ -231,6 +231,6 @@ fix(streaming): 修复claude-sonnet-4-6多轮对话上下文丢失
 
 ---
 
-**修复时间**: 2026-07-02  
-**修复作者**: Kiro (AI Agent)  
+**修复时间**: 2026-07-02
+**修复作者**: Kiro (AI Agent)
 **问题报告**: __DOMAIN_1__ claude-sonnet-4-6 多轮对话测试

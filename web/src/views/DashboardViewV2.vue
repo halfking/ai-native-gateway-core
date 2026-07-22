@@ -85,7 +85,7 @@ async function onRefresh() {
     <div class="page-header">
       <div class="page-header-left">
         <h2>{{ t('dashboard.title') }}</h2>
-        
+
         <!-- Tab 切换器（集成到标题旁） -->
         <div class="tab-switcher">
           <button
@@ -125,14 +125,14 @@ async function onRefresh() {
             {{ t('dashboard.tabs.selfcheck') }}
           </button>
         </div>
-        
+
         <MemoraStatusButton />
       </div>
-      
+
       <div class="page-header-right">
         <!-- 快捷按钮 -->
-        <button 
-          type="button" 
+        <button
+          type="button"
           class="quick-btn"
           @click="openStatsDrawer('apikeys')"
           :disabled="loading"
@@ -140,8 +140,8 @@ async function onRefresh() {
         >
           {{ t('dashboard.v2.quickApiKey') }}
         </button>
-        <button 
-          type="button" 
+        <button
+          type="button"
           class="quick-btn"
           @click="openStatsDrawer('models')"
           :disabled="loading"
@@ -149,12 +149,12 @@ async function onRefresh() {
         >
           {{ t('dashboard.v2.quickModels') }}
         </button>
-        
+
         <!-- 租户标签 -->
         <span class="tenant-badge" :class="{ 'tenant-badge--admin': isSuperAdmin(), 'tenant-badge--default': isDefaultTenant() }">
           {{ tenantLabel }}
         </span>
-        
+
         <!-- 刷新按钮 -->
         <button class="btn btn-refresh" @click="onRefresh" :disabled="loading" :title="t('dashboard.v2.refreshData')">
           <span v-if="loading">⏳</span>
@@ -521,7 +521,7 @@ async function onRefresh() {
   .page-header {
     flex-wrap: wrap;
   }
-  
+
   .page-header-right {
     flex-wrap: wrap;
   }

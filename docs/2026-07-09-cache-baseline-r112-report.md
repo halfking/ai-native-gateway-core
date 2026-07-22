@@ -1,8 +1,8 @@
 # 缓存命中率基线诊断报告 — r112 本地环境
 
-**诊断日期**: 2026-07-09  
-**环境**: 本地 r112 (docker compose)  
-**工具链**: llm-mock-upstream (50-100ms 延迟) + r112_postgres + r112_gateway  
+**诊断日期**: 2026-07-09
+**环境**: 本地 r112 (docker compose)
+**工具链**: llm-mock-upstream (50-100ms 延迟) + r112_postgres + r112_gateway
 **诊断方式**: 被动监控 + 受控流量生成（22 个请求）
 
 ---
@@ -286,7 +286,7 @@ llmgw_cache_hit_ratio{provider, model, hit_type="read|write"}
 
 ---
 
-**诊断执行**: AI Assistant  
-**诊断日期**: 2026-07-09  
-**报告版本**: v1.0  
+**诊断执行**: AI Assistant
+**诊断日期**: 2026-07-09
+**报告版本**: v1.0
 **数据深度**: 22 个请求，100% 成功率

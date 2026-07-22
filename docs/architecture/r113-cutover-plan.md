@@ -1,7 +1,7 @@
 # R1.13 Cutover Plan — _to-be-deprecated/ 最终清理
 
-**创建时间**: 2026-06-29  
-**审计依据**: explore subagent ses_0ecfc793bffe11TpO27f4zAwbp 全量扫描  
+**创建时间**: 2026-06-29
+**审计依据**: explore subagent ses_0ecfc793bffe11TpO27f4zAwbp 全量扫描
 **Scope**: 清理 `_to-be-deprecated/` 中最后 4 个活跃包 + 1 个孤立包
 
 ---
@@ -41,7 +41,7 @@
 
 ### 2.1 credentialstate → domains/credential
 
-**老包**: `_to-be-deprecated/credentialstate/writer.go` (3 文件 / 684 LOC)  
+**老包**: `_to-be-deprecated/credentialstate/writer.go` (3 文件 / 684 LOC)
 **新包**: `domains/credential/writer.go` (已存在，19 文件 / 5,574 LOC)
 
 **受影响文件**:
@@ -64,7 +64,7 @@ type Writer interface { Write(ctx, credID, kind, detail string, retryAfter time.
 
 ### 2.2 routing → domains/streaming/executors
 
-**老包**: `_to-be-deprecated/routing/score.go` (1 个 free function)  
+**老包**: `_to-be-deprecated/routing/score.go` (1 个 free function)
 **新包**: `domains/streaming/executors/score.go` (已存在，27 文件 / 10,458 LOC)
 
 **受影响文件**:
@@ -86,8 +86,8 @@ func CalculateCompositeScore(base, latency, streak float64, failCount int) float
 
 ### 2.3 memora → domains/memory + domains/memory/client (新建)
 
-**老包**: `_to-be-deprecated/memora/` (9 文件 / 1,707 LOC)  
-**新包**: 
+**老包**: `_to-be-deprecated/memora/` (9 文件 / 1,707 LOC)
+**新包**:
 - `domains/memory/` (4 文件 / 538 LOC) — 已有 extract.go/rebuilder.go/task_id.go/types.go
 - `domains/memory/client/` (新建) — 接收 client.go + sink.go + *_test.go (3 文件 / ~900 LOC)
 
@@ -606,8 +606,8 @@ git checkout r1.13-pre -- _to-be-deprecated/{credentialstate,routing,memora,tele
 
 ---
 
-**Plan 创建者**: Kiro (explore subagent ses_0ecfc793bffe11TpO27f4zAwbp)  
-**Plan 审批者**: 用户 (2026-06-29)  
-**执行者**: opencode-agent  
-**执行日期**: 2026-06-29/30  
+**Plan 创建者**: Kiro (explore subagent ses_0ecfc793bffe11TpO27f4zAwbp)
+**Plan 审批者**: 用户 (2026-06-29)
+**执行者**: opencode-agent
+**执行日期**: 2026-06-29/30
 **结果**: ✅ 全部完成。77 包 build + test 通过，0 外部引用残留。

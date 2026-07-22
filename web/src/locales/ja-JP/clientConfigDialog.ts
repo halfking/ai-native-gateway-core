@@ -2,7 +2,7 @@
 export default {
   title: '{tool} 設定ジェネレーター',
   close: '閉じる',
-  
+
   step1: {
     title: '① API Key を選択（現在のテナント配下のすべてのキー）',
     refresh: '更新',
@@ -15,12 +15,12 @@ export default {
     },
     selected: '選択済み：',
   },
-  
+
   step2: {
     title: '② オペレーティングシステム',
     pathHint: '設定ファイルパス：',
   },
-  
+
   step3: {
     title: '③ モデルスコープを選択',
     featured: '注目モデル（ルーティング featured 設定）',
@@ -41,14 +41,14 @@ export default {
       noMatch: '一致するモデルがありません',
     },
   },
-  
+
   footer: {
     generated: '{count} 個のモデル設定を生成しました',
     generate: '設定を生成',
     generating: '生成中…',
     regenerate: '再生成',
   },
-  
+
   results: {
     tabs: {
       file: '設定ファイル',
@@ -62,7 +62,7 @@ export default {
       scriptHint: 'スクリプトは古い設定ファイルを自動的にバックアップします',
     },
   },
-  
+
   applyDialog: {
     title: '新しい API Key を申請',
     close: '閉じる',
@@ -74,7 +74,7 @@ export default {
     submit: '申請を送信',
     submitting: '送信中…',
   },
-  
+
   error: {
     applyFailed: '申請に失敗しました',
   },

@@ -5,7 +5,7 @@ export default {
   showDeleted: '显示已删除',
   addButton: '+ 添加禁用模型',
   loading: '加载中…',
-  
+
   table: {
     canonicalName: 'canonical_name',
     reason: 'reason',
@@ -14,14 +14,14 @@ export default {
     deletedAt: 'deleted_at',
     actions: '操作',
   },
-  
+
   actions: {
     softDelete: '软删除',
     restore: '恢复',
   },
-  
+
   empty: '无策略（默认所有模型允许）',
-  
+
   audit: {
     title: '审计日志',
     recent: '最近 {count} 条',
@@ -39,7 +39,7 @@ export default {
       undelete: '恢复',
     },
   },
-  
+
   dialog: {
     title: '添加禁用模型',
     hint: '在下方输入 canonical_name（必须匹配 models_canonical 表）。',
@@ -54,11 +54,11 @@ export default {
     submit: '提交',
     submitting: '提交中…',
   },
-  
+
   confirm: {
     softDelete: '确认软删除策略 {name}？(可恢复)',
   },
-  
+
   error: {
     loadFailed: '加载失败',
     canonicalNameRequired: 'canonical_name 必填',

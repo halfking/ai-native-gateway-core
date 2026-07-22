@@ -1,7 +1,7 @@
 # LLM Gateway 系统审计与修复总结
 
-**执行日期**: 2026-06-30  
-**服务器**: __SECRET_1__ (71服务器)  
+**执行日期**: 2026-06-30
+**服务器**: __SECRET_1__ (71服务器)
 **数据库**: llm_gateway @ llm-gateway-pg-71-replica:__PORT_5__
 
 ---
@@ -18,7 +18,7 @@
 
 ### 2. 紧急修复（P0-1）
 
-**问题**: request_wal 缺少6月分区  
+**问题**: request_wal 缺少6月分区
 **状态**: ✅ **已修复**
 
 ```sql
@@ -30,7 +30,7 @@ CREATE TABLE request_wal_2026_06 PARTITION OF request_wal
 
 ### 3. 代码修复（P0-2）
 
-**问题**: 数据库错误被伪装成 `no_candidate`  
+**问题**: 数据库错误被伪装成 `no_candidate`
 **状态**: ✅ **已修复**
 
 修改了3个文件：
@@ -123,7 +123,7 @@ if err != nil {
         errorCode = "routing_not_configured"
     } else if strings.Contains(err.Error(), "connection") {
         errorCode = "routing_connection_error"
-    } else if strings.Contains(err.Error(), "relation") || 
+    } else if strings.Contains(err.Error(), "relation") ||
               strings.Contains(err.Error(), "partition") {
         errorCode = "routing_schema_error"
     }
@@ -147,7 +147,7 @@ if len(candidates) == 0 {
    docker exec llm-gateway-pg-71-replica psql -U llm_gateway -d llm_gateway << 'EOSQL'
    UPDATE request_logs
    SET prompt_tokens = CEIL(LENGTH(request_body::text) / 3.5)::int
-   WHERE prompt_tokens IS NULL 
+   WHERE prompt_tokens IS NULL
      AND request_body IS NOT NULL
      AND success = false
      AND ts >= '2026-06-01';
@@ -159,11 +159,11 @@ if len(candidates) == 0 {
    # 查找 canonical_id
    docker exec llm-gateway-pg-71-replica psql -U llm_gateway -d llm_gateway \
      -c "SELECT id FROM models_canonical WHERE lower(canonical_name) = 'minimax-m2.7'"
-   
+
    # 添加别名（假设 id=15）
    docker exec llm-gateway-pg-71-replica psql -U llm_gateway -d llm_gateway \
-     -c "INSERT INTO model_aliases (raw_name, canonical_id, status) 
-         VALUES ('minimax-m2.7-quickspeed', 15, 'active') 
+     -c "INSERT INTO model_aliases (raw_name, canonical_id, status)
+         VALUES ('minimax-m2.7-quickspeed', 15, 'active')
          ON CONFLICT DO NOTHING"
    ```
 
@@ -272,11 +272,11 @@ curl -X POST http://localhost:__PORT_12__/v1/chat/completions \
 
 ---
 
-**总工时**: 约10小时  
-**文档总计**: 33,000+ 字  
-**代码修改**: 3个文件，~60行  
-**问题发现**: 5个  
-**问题修复**: 2个  
+**总工时**: 约10小时
+**文档总计**: 33,000+ 字
+**代码修改**: 3个文件，~60行
+**问题发现**: 5个
+**问题修复**: 2个
 **待修复**: 3个（方案就绪）
 
 ---

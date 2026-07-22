@@ -1,7 +1,7 @@
 # 分表架构审计与修复 - 最终报告
 
-**日期**: 2026-07-06  
-**审计人员**: llm-gateway-ops  
+**日期**: 2026-07-06
+**审计人员**: llm-gateway-ops
 **状态**: ✅ 完成并验证通过
 
 ---
@@ -111,16 +111,16 @@ client_model: gpt-3.5-turbo
 
 ```sql
 -- 插入测试记录
-INSERT INTO request_logs_hot (request_id, ts, tenant_id, success, prompt_tokens) 
+INSERT INTO request_logs_hot (request_id, ts, tenant_id, success, prompt_tokens)
 VALUES ('test-1783271317', NOW(), 'default', true, 10);
 
 -- 更新记录
-UPDATE request_logs_hot 
-SET prompt_tokens = 100, completion_tokens = 50 
+UPDATE request_logs_hot
+SET prompt_tokens = 100, completion_tokens = 50
 WHERE request_id = 'test-1783271317';
 
 -- 验证结果
-SELECT prompt_tokens, completion_tokens FROM request_logs_hot 
+SELECT prompt_tokens, completion_tokens FROM request_logs_hot
 WHERE request_id = 'test-1783271317';
 
 结果: 100 | 50  ✅
@@ -276,7 +276,7 @@ routing_decision_log_hot: 6 行
 
 ---
 
-**审计完成时间**: 2026-07-06 00:57  
+**审计完成时间**: 2026-07-06 00:57
 **最终状态**: ✅ 所有测试通过，系统正常运行
 
 **签字**: llm-gateway-ops

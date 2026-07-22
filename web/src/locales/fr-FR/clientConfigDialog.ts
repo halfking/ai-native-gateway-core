@@ -2,7 +2,7 @@
 export default {
   title: 'Générateur de configuration {tool}',
   close: 'Fermer',
-  
+
   step1: {
     title: '① Sélectionner la clé API (toutes les clés sous le locataire actuel)',
     refresh: 'Actualiser',
@@ -15,12 +15,12 @@ export default {
     },
     selected: 'Sélectionné :',
   },
-  
+
   step2: {
     title: '② Système d\'exploitation',
     pathHint: 'Chemin du fichier de configuration :',
   },
-  
+
   step3: {
     title: '③ Sélectionner la portée du modèle',
     featured: 'Modèles en vedette (configuration de routage featured)',
@@ -41,14 +41,14 @@ export default {
       noMatch: 'Aucun modèle correspondant',
     },
   },
-  
+
   footer: {
     generated: '{count} configurations de modèle générées',
     generate: 'Générer la configuration',
     generating: 'Génération…',
     regenerate: 'Régénérer',
   },
-  
+
   results: {
     tabs: {
       file: 'Fichier de configuration',
@@ -62,7 +62,7 @@ export default {
       scriptHint: 'Le script sauvegarde automatiquement les anciens fichiers de configuration',
     },
   },
-  
+
   applyDialog: {
     title: 'Demander une nouvelle clé API',
     close: 'Fermer',
@@ -74,7 +74,7 @@ export default {
     submit: 'Soumettre la demande',
     submitting: 'Soumission…',
   },
-  
+
   error: {
     applyFailed: 'La demande a échoué',
   },

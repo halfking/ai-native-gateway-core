@@ -45,7 +45,7 @@ channel := NewLarkBotChannel(config, routingRules)
 
 **典型流程**:
 ```
-检测到高风险 → 创建审批记录 → 路由审批人 → 发送飞书卡片 → 
+检测到高风险 → 创建审批记录 → 路由审批人 → 发送飞书卡片 →
 用户点击按钮 → 回调处理 → 更新审批状态 → 发送确认消息
 ```
 
@@ -314,7 +314,7 @@ notification:
     verification_token: ${LARK_VERIFICATION_TOKEN}
     encrypt_key: ${LARK_ENCRYPT_KEY}
     base_url: https://open.feishu.cn
-  
+
   # 路由规则
   routing:
     - tenant_id: tenant_001
@@ -326,7 +326,7 @@ notification:
           email: zhangsan@example.com
       priority: 100
       enabled: true
-      
+
     - tenant_id: tenant_001
       risk_level: high
       recipients:
@@ -336,7 +336,7 @@ notification:
           email: lisi@example.com
       priority: 80
       enabled: true
-      
+
     - tenant_id: tenant_001
       risk_level: medium
       recipients:
@@ -387,12 +387,12 @@ alerts:
     condition: notification_send_success_rate < 0.95
     severity: high
     action: 通知运维团队
-    
+
   - name: ApprovalTimeout
     condition: approval_pending_duration > 60min
     severity: medium
     action: 提醒审批人
-    
+
   - name: CallbackServerDown
     condition: callback_server_up == 0
     severity: critical
@@ -491,7 +491,7 @@ alerts:
 
 ---
 
-**日期**: 2026-07-01  
-**版本**: v2.0  
-**状态**: Phase 2 已完成，Phase 3 待开始  
+**日期**: 2026-07-01
+**版本**: v2.0
+**状态**: Phase 2 已完成，Phase 3 待开始
 **下一个里程碑**: Phase 3 - 任务分组和管理（预计7天）

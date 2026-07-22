@@ -2,10 +2,10 @@
 
 ## 1. 部署假设
 
-- 单实例 Redis 7 + AOF/持久卷  
-- Go 使用 `redis.UniversalClient` 抽象，第一阶段不启用 Cluster 语义  
-- key 命名预留 `{cid}` 形态，便于未来 hash-tag 扩展  
-- 跨 key 原子操作允许同实例 Lua；禁止依赖 Cluster 跨槽事务  
+- 单实例 Redis 7 + AOF/持久卷
+- Go 使用 `redis.UniversalClient` 抽象，第一阶段不启用 Cluster 语义
+- key 命名预留 `{cid}` 形态，便于未来 hash-tag 扩展
+- 跨 key 原子操作允许同实例 Lua；禁止依赖 Cluster 跨槽事务
 
 ## 2. Key 协议
 
@@ -44,11 +44,11 @@ ursm:v2:diff:shadow:{yyyyMMddHHmm}         LIST/STREAM
 
 ### 2.1 设计原则
 
-1. 健康态与资源租约分 key  
-2. 滑动窗口用 ZSET，不塞进大 JSON  
-3. Hash 只存即时摘要，热路径 `HMGET` 必要字段  
-4. 每个裁决对象带 `generation` + `source_priority` + `updated_at_ms`  
-5. 禁止生产路径 `KEYS`；扫描走 CandidateIndex 或已知集合  
+1. 健康态与资源租约分 key
+2. 滑动窗口用 ZSET，不塞进大 JSON
+3. Hash 只存即时摘要，热路径 `HMGET` 必要字段
+4. 每个裁决对象带 `generation` + `source_priority` + `updated_at_ms`
+5. 禁止生产路径 `KEYS`；扫描走 CandidateIndex 或已知集合
 
 ## 3. Hash 字段约定
 
@@ -118,11 +118,11 @@ TTL:
 
 ### 4.2 同步更新（RecordRequest Lua 内）
 
-1. `ZADD` 1m/5m（30m 可同写或由分钟任务汇总）  
-2. `ZREMRANGEBYSCORE` 裁剪  
-3. `ZCARD` + 遍历/计数成功样本（样本大时可用成对统计字段辅助）  
-4. 更新 node 摘要：`sr_* / samples_* / lat_* / fail_streak / cool_until / score`  
-5. 对裁决字段做 CAS  
+1. `ZADD` 1m/5m（30m 可同写或由分钟任务汇总）
+2. `ZREMRANGEBYSCORE` 裁剪
+3. `ZCARD` + 遍历/计数成功样本（样本大时可用成对统计字段辅助）
+4. 更新 node 摘要：`sr_* / samples_* / lat_* / fail_streak / cool_until / score`
+5. 对裁决字段做 CAS
 
 ### 4.3 双通道
 
@@ -153,7 +153,7 @@ EXPIRE node
 HSET NX binding/credential/provider 摘要（来自 CandidateSeed）
 ```
 
-并发：多实例 NX，一写多读。  
+并发：多实例 NX，一写多读。
 Redis 连接失败：不初始化，不当作 available。
 
 ## 6. Lua 脚本清单
@@ -169,8 +169,8 @@ Redis 连接失败：不初始化，不当作 available。
 
 资源相关继续复用：
 
-- `credentialfpslot` acquire/release/reclaim scripts  
-- `credential` RPM sliding window script  
+- `credentialfpslot` acquire/release/reclaim scripts
+- `credential` RPM sliding window script
 
 第一阶段不重写其语义，ResourcePools 适配调用。
 
@@ -186,8 +186,8 @@ error_redis
 
 调用方：
 
-- `applied` / `ignored_*`：请求主流程不失败  
-- `error_redis`：记 metric + warn 日志；不回滚上游结果  
+- `applied` / `ignored_*`：请求主流程不失败
+- `error_redis`：记 metric + warn 日志；不回滚上游结果
 
 ## 8. 批量读（热路径）
 
@@ -202,22 +202,22 @@ PIPELINE:
   (可选) resource stats
 ```
 
-禁止对 N 个候选串行单 key RTT。  
+禁止对 N 个候选串行单 key RTT。
 目标：状态读取 P95 ≤ 5ms。
 
 ## 9. 内存与 TTL 预算（中等规模）
 
 假设 10k node：
 
-- node hash ~ 0.5–1KB → ~10MB  
-- 三窗口，每节点短期样本有界 → 数十 MB 量级  
-- 索引 ZSET 按模型分片 → 较小  
+- node hash ~ 0.5–1KB → ~10MB
+- 三窗口，每节点短期样本有界 → 数十 MB 量级
+- 索引 ZSET 按模型分片 → 较小
 
 控制手段：
 
-- 窗口 TTL  
-- member 不存大 payload  
-- 冷节点依赖配置同步，不长期空转堆积  
+- 窗口 TTL
+- member 不存大 payload
+- 冷节点依赖配置同步，不长期空转堆积
 
 ## 10. 与旧 key 过渡
 

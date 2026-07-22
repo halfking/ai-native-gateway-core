@@ -1,7 +1,7 @@
 # claude-opus-4-8 模型零输出问题 - 根因分析报告
 
-**日期**: 2026-06-20 22:50  
-**严重程度**: 🔴 **高** - 影响所有 claude-opus-4-8 请求  
+**日期**: 2026-06-20 22:50
+**严重程度**: 🔴 **高** - 影响所有 claude-opus-4-8 请求
 **状态**: 🔍 根因已定位
 
 ---
@@ -23,14 +23,14 @@
 
 **查询结果**:
 ```sql
-SELECT 
+SELECT
   request_id,
   success,
   completion_tokens,
   outbound_body IS NOT NULL as sent_to_upstream,
   response_body IS NOT NULL as got_response,
   upstream_finish_reason
-FROM request_logs 
+FROM request_logs
 WHERE request_id IN ('14a8d12c...', '407ba59d...');
 ```
 
@@ -107,7 +107,7 @@ SELECT * FROM providers WHERE id = 587;
 SELECT * FROM credentials WHERE id = 17;
 
 -- 查看模型路由配置
-SELECT * FROM credential_model_bindings 
+SELECT * FROM credential_model_bindings
 WHERE credential_id = 17 AND model_name LIKE '%claude-opus-4%';
 ```
 
@@ -209,7 +209,7 @@ SELECT * FROM providers WHERE id = 587 \gx
 SELECT * FROM credentials WHERE id = 17 \gx
 
 # 查看模型绑定
-SELECT * FROM credential_model_bindings 
+SELECT * FROM credential_model_bindings
 WHERE credential_id = 17 AND model_name LIKE '%opus-4%';
 ```
 
@@ -341,7 +341,7 @@ grep -rn "success.*=.*true" relay/ | grep -v "=="
 
 ---
 
-**报告人**: AI Assistant  
-**报告时间**: 2026-06-20 22:50  
+**报告人**: AI Assistant
+**报告时间**: 2026-06-20 22:50
 **优先级**: 🔴 P0 - 立即处理
 

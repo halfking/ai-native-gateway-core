@@ -25,7 +25,7 @@ const chartOptions = computed(() => {
   const dates = props.data.trend.map(item => item.date)
   const errorCounts = props.data.trend.map(item => item.error_count)
   const totalCounts = props.data.trend.map(item => item.total_count)
-  const errorRates = props.data.trend.map(item => 
+  const errorRates = props.data.trend.map(item =>
     item.total_count > 0 ? (item.error_count / item.total_count * 100) : 0
   )
 
@@ -112,13 +112,13 @@ const chartOptions = computed(() => {
 
 function initChart() {
   if (!chartRef.value || isDestroyed.value) return
-  
+
   // 清理旧实例
   if (chartInstance) {
     chartInstance.dispose()
     chartInstance = null
   }
-  
+
   chartInstance = echarts.init(chartRef.value)
   updateChart()
 }
@@ -172,7 +172,7 @@ onBeforeUnmount(() => {
       </div>
     </template>
     <div ref="chartRef" style="width: 100%; height: 350px;"></div>
-    
+
     <!-- 错误摘要 -->
     <el-row v-if="data" :gutter="16" style="margin-top: 20px;">
       <el-col :span="6">

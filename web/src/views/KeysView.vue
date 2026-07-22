@@ -882,8 +882,8 @@ onBeforeUnmount(() => {
           </div>
           <div class="form-group">
             <label>租户（默认 default）</label>
-            <input 
-              v-model="newTenant" 
+            <input
+              v-model="newTenant"
               placeholder="default"
               :disabled="!isDefaultTenant()"
               :title="isDefaultTenant() ? t('keys.tenantTitleModifiable') : t('keys.tenantTitleFixed')"

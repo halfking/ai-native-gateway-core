@@ -14,9 +14,9 @@ Migration V350 completed successfully
 
 ### 验证
 ```sql
-SELECT column_name, data_type, is_nullable 
-FROM information_schema.columns 
-WHERE table_name='request_logs_hot' 
+SELECT column_name, data_type, is_nullable
+FROM information_schema.columns
+WHERE table_name='request_logs_hot'
   AND column_name IN ('routing_attempts', 'routing_summary');
 ```
 
@@ -84,12 +84,12 @@ func (t *RoutingAttemptsTracker) Summary() string {
 	if len(t.Attempts) == 0 {
 		return ""
 	}
-	
+
 	parts := make([]string, len(t.Attempts))
 	for i, a := range t.Attempts {
 		latency := float64(a.LatencyMs) / 1000.0
-		parts[i] = fmt.Sprintf("候选%d: %s(%d) %s %.1fs", 
-			a.Seq, a.ProviderName, a.ProviderID, 
+		parts[i] = fmt.Sprintf("候选%d: %s(%d) %s %.1fs",
+			a.Seq, a.ProviderName, a.ProviderID,
 			translateResult(a.Result), latency)
 	}
 	return strings.Join(parts, " → ")
@@ -144,7 +144,7 @@ if params.RoutingTracker != nil {
 		UpstreamURL:  req.URL.String(),
 		LatencyMs:    upstreamLatency.Milliseconds(),
 	}
-	
+
 	// 根据结果设置 Result 和其他字段
 	if uErr == nil {
 		attempt.Result = "success"
@@ -161,7 +161,7 @@ if params.RoutingTracker != nil {
 		attempt.HTTPStatus = status
 		attempt.ErrorMessage = uErr.Message
 	}
-	
+
 	params.RoutingTracker.Add(attempt)
 }
 ```
@@ -191,9 +191,9 @@ _, err = tx.Exec(ctx, `
 		$84::jsonb, $85
 	)
 	...
-`, 
-	..., 
-	string(routingAttemptsJSON), 
+`,
+	...,
+	string(routingAttemptsJSON),
 	routingSummary,
 )
 ```
@@ -221,11 +221,11 @@ _, err = tx.Exec(ctx, `
         <el-tag type="info" size="small">{{ attempts.length }} 次尝试</el-tag>
       </div>
     </template>
-    
+
     <div v-if="summary" class="summary">
       <strong>摘要：</strong>{{ summary }}
     </div>
-    
+
     <el-timeline class="attempts-timeline">
       <el-timeline-item
         v-for="(attempt, idx) in attempts"
@@ -241,7 +241,7 @@ _, err = tx.Exec(ctx, `
               {{ translateResult(attempt.result) }}
             </el-tag>
           </div>
-          
+
           <div class="attempt-detail">
             <div><strong>供应商：</strong>{{ attempt.provider_name }} (ID: {{ attempt.provider_id }})</div>
             <div><strong>模型：</strong>{{ attempt.raw_model }}</div>
@@ -396,13 +396,13 @@ function formatLatency(ms) {
   <div class="request-detail">
     <!-- 现有的请求基本信息 -->
     <el-card>...</el-card>
-    
+
     <!-- 新增：路由决策追踪 -->
-    <RoutingAttemptsTimeline 
+    <RoutingAttemptsTimeline
       :routing-attempts="request.routing_attempts"
       :routing-summary="request.routing_summary"
     />
-    
+
     <!-- 现有的其他卡片 -->
   </div>
 </template>

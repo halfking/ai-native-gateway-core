@@ -5,7 +5,7 @@ export default {
   showDeleted: 'Afficher les supprimés',
   addButton: '+ Ajouter un modèle refusé',
   loading: 'Chargement…',
-  
+
   table: {
     canonicalName: 'canonical_name',
     reason: 'reason',
@@ -14,14 +14,14 @@ export default {
     deletedAt: 'deleted_at',
     actions: 'Actions',
   },
-  
+
   actions: {
     softDelete: 'Supprimer logiquement',
     restore: 'Restaurer',
   },
-  
+
   empty: 'Aucune stratégie (tous les modèles autorisés par défaut)',
-  
+
   audit: {
     title: 'Journal d\'audit',
     recent: '{count} entrées récentes',
@@ -39,7 +39,7 @@ export default {
       undelete: 'Restaurer',
     },
   },
-  
+
   dialog: {
     title: 'Ajouter un modèle refusé',
     hint: 'Entrez canonical_name ci-dessous (doit correspondre à la table models_canonical).',
@@ -54,11 +54,11 @@ export default {
     submit: 'Soumettre',
     submitting: 'Soumission…',
   },
-  
+
   confirm: {
     softDelete: 'Confirmer la suppression logique de la stratégie {name}? (Récupérable)',
   },
-  
+
   error: {
     loadFailed: 'Échec du chargement',
     canonicalNameRequired: 'canonical_name est requis',

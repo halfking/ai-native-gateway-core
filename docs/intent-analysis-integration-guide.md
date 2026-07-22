@@ -6,9 +6,9 @@
 
 ## 📋 集成概述
 
-**集成方式**: Pipeline Hook  
-**阶段**: PreRouting（在路由决策前执行）  
-**优先级**: 50（在安全检测后，路由决策前）  
+**集成方式**: Pipeline Hook
+**阶段**: PreRouting（在路由决策前执行）
+**优先级**: 50（在安全检测后，路由决策前）
 **影响**: 无破坏性，可选启用
 
 ---
@@ -28,11 +28,11 @@ import (
 
 func newDeps(cfg *v2Config) *v2Deps {
     // ... 现有代码 ...
-    
+
     // === 意图分析组件初始化 ===
     // 注意：需要真实的数据库连接才能工作
     var intentAnalysisHook *intentanalysis.IntentAnalysisHook
-    
+
     if cfg.EnableIntentAnalysis && cfg.DatabaseURL != "" {
         // 1. 连接数据库
         pool, err := pgxpool.New(context.Background(), cfg.DatabaseURL)
@@ -46,18 +46,18 @@ func newDeps(cfg *v2Config) *v2Deps {
             } else {
                 // 3. 创建存储层
                 evolutionStore := intentconfig.NewPGEvolutionStore(pool, logger)
-                
+
                 // 4. 创建分析器
                 analyzer := intentconfig.NewAnalyzer(intentCfgMgr, evolutionStore, logger)
-                
+
                 // 5. 创建Hook
                 intentAnalysisHook = intentanalysis.NewIntentAnalysisHook(analyzer, logger)
-                
+
                 logger.Info("intent_analysis: initialized successfully")
             }
         }
     }
-    
+
     return &v2Deps{
         // ... 现有字段 ...
         IntentAnalysisHook: intentAnalysisHook,  // 新增字段
@@ -72,7 +72,7 @@ func newDeps(cfg *v2Config) *v2Deps {
 ```go
 type v2Deps struct {
     // ... 现有字段 ...
-    
+
     // IntentAnalysisHook 意图分析 Hook（可选）
     IntentAnalysisHook *intentanalysis.IntentAnalysisHook
 }
@@ -85,10 +85,10 @@ type v2Deps struct {
 ```go
 type v2Config struct {
     // ... 现有字段 ...
-    
+
     // EnableIntentAnalysis 是否启用意图分析
     EnableIntentAnalysis bool
-    
+
     // DatabaseURL 数据库连接URL（意图分析需要）
     DatabaseURL string
 }
@@ -100,7 +100,7 @@ type v2Config struct {
 func loadConfig() *v2Config {
     cfg := &v2Config{
         // ... 现有配置 ...
-        
+
         EnableIntentAnalysis: getEnv("LLM_GATEWAY_V2_INTENT_ANALYSIS", "false") == "true",
         DatabaseURL:          getEnv("DATABASE_URL", ""),
     }
@@ -115,9 +115,9 @@ func loadConfig() *v2Config {
 ```go
 func buildPipeline(deps *v2Deps) *pipeline.RequestPipeline {
     p := pipeline.NewRequestPipeline()
-    
+
     // ... 现有阶段 ...
-    
+
     // === Phase: Intent Analysis (PreRouting, priority 50) ===
     // 在安全检测后、路由决策前分析用户意图
     // 分析结果写入 req.Metadata["intent_analysis"]，可供后续阶段使用
@@ -129,9 +129,9 @@ func buildPipeline(deps *v2Deps) *pipeline.RequestPipeline {
             Hooks: []pipeline.Hook{deps.IntentAnalysisHook},
         })
     }
-    
+
     // ... 其他阶段 ...
-    
+
     return p
 }
 ```
@@ -226,20 +226,20 @@ func (h *RouterHook) Execute(ctx context.Context, req *domain.PipelineRequest) e
         intent := analysis["primary_intent"].(string)
         confidence := analysis["primary_confidence"].(float64)
         driftScore := analysis["intent_drift_score"].(float64)
-        
+
         // 根据意图调整路由策略
         if intent == "code" && confidence > 0.8 {
             // 优先选择代码专用模型
             req.Metadata["preferred_models"] = []string{"claude-3.5-sonnet", "gpt-4"}
         }
-        
+
         // 意图漂移严重时重新评估
         if driftScore > 0.5 {
             h.logger.Warn("significant intent drift, reconsidering routing")
             // 触发重新推荐逻辑
         }
     }
-    
+
     // ... 继续路由逻辑
 }
 ```
@@ -253,14 +253,14 @@ func (h *AuditHook) Execute(ctx context.Context, req *domain.PipelineRequest) er
         SessionID: req.SessionID,
         RequestID: req.Envelope.RequestID,
     }
-    
+
     // 附加意图分析结果
     if analysis, ok := req.Metadata["intent_analysis"].(map[string]any); ok {
         auditRecord.Intent = analysis["primary_intent"].(string)
         auditRecord.IntentConfidence = analysis["primary_confidence"].(float64)
         auditRecord.IntentDrift = analysis["intent_drift_score"].(float64)
     }
-    
+
     // 保存审计记录
     h.store.Save(ctx, auditRecord)
     return nil
@@ -291,11 +291,11 @@ level=INFO msg="intent_analysis: completed" session_id=test_session_001 turn=1 i
 
 ```sql
 -- 查看意图演化记录
-SELECT 
-    session_id, 
-    turn_number, 
-    primary_intent, 
-    primary_confidence, 
+SELECT
+    session_id,
+    turn_number,
+    primary_intent,
+    primary_confidence,
     intent_drift_score,
     classified_at
 FROM session_intent_evolution
@@ -303,10 +303,10 @@ ORDER BY classified_at DESC
 LIMIT 10;
 
 -- 查看当前配置
-SELECT 
-    tenant_id, 
-    strategy, 
-    drift_threshold, 
+SELECT
+    tenant_id,
+    strategy,
+    drift_threshold,
     multi_turn_memory
 FROM intent_classifier_config;
 ```
@@ -369,6 +369,6 @@ psql $DATABASE_URL -c "SELECT turn_number, primary_intent, primary_confidence, i
 
 ---
 
-**集成状态**: ⏳ 待实施  
-**预计时间**: 30-60分钟  
+**集成状态**: ⏳ 待实施
+**预计时间**: 30-60分钟
 **风险等级**: 低（可选功能，无破坏性变更）

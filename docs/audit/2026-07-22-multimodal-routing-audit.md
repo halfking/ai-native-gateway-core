@@ -1,8 +1,8 @@
 # 多模态消息处理 + 路由节点状态优化审计报告
 
-**审计日期**: 2026-07-22  
-**审计范围**: 多模态消息处理全链路 + 路由节点健康管理  
-**审计人**: ACC Agent  
+**审计日期**: 2026-07-22
+**审计范围**: 多模态消息处理全链路 + 路由节点健康管理
+**审计人**: ACC Agent
 
 ---
 
@@ -14,7 +14,7 @@
 
 ### 关键发现
 
-✅ **多模态消息处理** — 架构健康，validation已修复  
+✅ **多模态消息处理** — 架构健康，validation已修复
 ⚠️ **路由节点状态** — 基础健全，但存在可优化空间
 
 ---
@@ -137,7 +137,7 @@ type ImageSource struct {
 
 **位置**: `docs/multimodal-testing/` 目录
 
-**建议**: 
+**建议**:
 - 将 Phase 3 runner (`scripts/multimodal-phase3-runner.sh`) 接入CI
 - 补充 Anthropic → OpenAI 图像保真度测试（T-09, T-11, T-20）
 
@@ -273,7 +273,7 @@ type Prober struct {
 - 探测器会在服务启动后重新探测
 - 短期内自动收敛到正确状态
 
-**建议**: 
+**建议**:
 - ⚠️ **中优先级** — 考虑将 `ConsecutiveFails` / `LastHealthCheck` 持久化到 Redis
 - 或接受"重启后短暂状态不准"（如果探测周期够短）
 
@@ -303,17 +303,17 @@ type Prober struct {
 
 ### 3.1 多模态消息处理
 
-✅ **validation拦截机制健全** — 不支持的模态在序列化前被拒绝，错误信息清晰  
-✅ **IR层抽象完整** — 覆盖8种content block类型  
-✅ **O(N)架构扩展性强** — 新增协议成本低  
-✅ **回归测试覆盖** — unsupported_modality场景有专门测试  
+✅ **validation拦截机制健全** — 不支持的模态在序列化前被拒绝，错误信息清晰
+✅ **IR层抽象完整** — 覆盖8种content block类型
+✅ **O(N)架构扩展性强** — 新增协议成本低
+✅ **回归测试覆盖** — unsupported_modality场景有专门测试
 
 ### 3.2 路由节点状态
 
-✅ **quota恢复时间精确** — commit `e20832119` 修复了智谱AI时间戳解析  
-✅ **probe去重机制** — 防止探测风暴  
-✅ **URSM v2原子性** — epoch hash保证恢复进度单调递增  
-✅ **状态转换清晰** — Active → Degraded → Unhealthy 边界明确  
+✅ **quota恢复时间精确** — commit `e20832119` 修复了智谱AI时间戳解析
+✅ **probe去重机制** — 防止探测风暴
+✅ **URSM v2原子性** — epoch hash保证恢复进度单调递增
+✅ **状态转换清晰** — Active → Degraded → Unhealthy 边界明确
 
 ---
 
@@ -356,5 +356,5 @@ go vet ./...
 
 ---
 
-**审计完成时间**: 2026-07-22 05:45 UTC+8  
+**审计完成时间**: 2026-07-22 05:45 UTC+8
 **下次审计建议**: 2周后（多模态测试CI接入后）

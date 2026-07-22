@@ -141,12 +141,12 @@ curl -X POST "https://__DOMAIN_8__/api/credentials/clear-manual-disabled" \
 ### 数据库验证
 ```sql
 -- 检查路由决策数据
-SELECT COUNT(*) FROM routing_decision_log 
+SELECT COUNT(*) FROM routing_decision_log
 WHERE chosen_credential_id = 123;
 
 -- 检查审计日志
-SELECT * FROM routing_audit_log 
-WHERE action = 'credential.clear_manual_disabled' 
+SELECT * FROM routing_audit_log
+WHERE action = 'credential.clear_manual_disabled'
 ORDER BY ts DESC LIMIT 5;
 ```
 
@@ -318,6 +318,6 @@ curl http://localhost:__PORT_3__/healthz
 
 ---
 
-**维护者**: LLM Gateway Team  
-**最后更新**: 2026-06-23  
+**维护者**: LLM Gateway Team
+**最后更新**: 2026-06-23
 **状态**: ✅ 开发完成，待部署测试

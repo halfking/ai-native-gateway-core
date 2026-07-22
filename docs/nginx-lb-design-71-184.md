@@ -1,7 +1,7 @@
 # 56 Nginx 负载均衡最终方案：71 + 184 双活架构（数据库隔离 + 多终端 Sticky）
 
-**版本**：v2.0（最终版）  
-**创建时间**：2026-07-06  
+**版本**：v2.0（最终版）
+**创建时间**：2026-07-06
 **状态**：✅ 已调研完成，待评审
 
 ---
@@ -502,7 +502,7 @@ ssh root@__HOST_56_IP__ "tail -1000 /var/log/nginx/access.log | grep 'llmgateway
    ```bash
    # 71
    ssh root@__HOST_71_IP__ "docker exec llm-pg-71 pg_dumpall -U llm_gateway" > /backup/llm-pg-71-$(date +%Y%m%d).sql
-   
+
    # 184（已有流程，继续执行）
    ```
 

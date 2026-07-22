@@ -1,9 +1,9 @@
 # Provider Field Mapping Architecture
 
-**Date**: 2026-07-18  
-**Type**: Enhancement  
-**Impact**: MiniMax tool_call_id compatibility, multi-provider support  
-**Related Issues**: tool_call_id_mismatch error on MiniMax  
+**Date**: 2026-07-18
+**Type**: Enhancement
+**Impact**: MiniMax tool_call_id compatibility, multi-provider support
+**Related Issues**: tool_call_id_mismatch error on MiniMax
 
 ## Summary
 

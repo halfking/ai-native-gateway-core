@@ -113,8 +113,8 @@ function getTop5Keys(dimension: GroupByDimension): string[] {
 }
 ```
 
-**时间复杂度**: O(n log n)  
-**空间复杂度**: O(n)  
+**时间复杂度**: O(n log n)
+**空间复杂度**: O(n)
 **优化点**: 可用快速选择算法优化到O(n)
 
 ### 2.2 泳道分配算法
@@ -124,7 +124,7 @@ function addRequestToLane(tile: RequestTile) {
   const dimension = groupBy.value
   const key = tile[dimension] as string
   const top5Keys = getTop5Keys(dimension)
-  
+
   // 判断目标泳道
   let targetLane: SwimLane | undefined
   if (top5Keys.includes(key)) {
@@ -132,7 +132,7 @@ function addRequestToLane(tile: RequestTile) {
   } else {
     targetLane = lanes.value.find(l => l.id === '__others__')
   }
-  
+
   // 去重检查（更新状态）
   const existingIndex = targetLane.requests.findIndex(
     r => r.request_id === tile.request_id
@@ -140,10 +140,10 @@ function addRequestToLane(tile: RequestTile) {
   if (existingIndex >= 0) {
     targetLane.requests.splice(existingIndex, 1)
   }
-  
+
   // 追加到队尾
   targetLane.requests.push(tile)
-  
+
   // 限流（FIFO）
   while (targetLane.requests.length > 30) {
     targetLane.requests.shift()
@@ -151,7 +151,7 @@ function addRequestToLane(tile: RequestTile) {
 }
 ```
 
-**时间复杂度**: O(m)，m为单泳道请求数（≤30）  
+**时间复杂度**: O(m)，m为单泳道请求数（≤30）
 **空间复杂度**: O(1)
 
 ### 2.3 智能重绘算法
@@ -162,15 +162,15 @@ function checkNeedsReorder(): boolean {
   const laneKeys = lanes.value
     .filter(l => !l.isOthers)
     .map(l => l.id)
-  
+
   // 长度检查
   if (currentTop5.length !== laneKeys.length) return true
-  
+
   // 顺序检查
   for (let i = 0; i < currentTop5.length; i++) {
     if (currentTop5[i] !== laneKeys[i]) return true
   }
-  
+
   return false
 }
 ```
@@ -189,7 +189,7 @@ const flushTimer = ref<number | null>(null)
 
 function queueRequest(req: LiveRequest) {
   messageQueue.value.push(req)
-  
+
   if (!flushTimer.value) {
     flushTimer.value = window.setTimeout(() => {
       flushMessageQueue()
@@ -216,10 +216,10 @@ const visibleRange = computed(() => {
   const scrollLeft = scrollContainerRef.value?.scrollLeft || 0
   const containerWidth = scrollContainerRef.value?.clientWidth || 0
   const tileWidth = 80 + 6 // tile + gap
-  
+
   const startIndex = Math.floor(scrollLeft / tileWidth)
   const visibleCount = Math.ceil(containerWidth / tileWidth) + 2
-  
+
   return {
     start: Math.max(0, startIndex - 5), // 预加载5个
     end: Math.min(requests.length, startIndex + visibleCount + 5)
@@ -233,7 +233,7 @@ let rafId: number | null = null
 
 function scheduleRedraw() {
   if (rafId) cancelAnimationFrame(rafId)
-  
+
   rafId = requestAnimationFrame(() => {
     rebuildLanes()
     rafId = null
@@ -276,7 +276,7 @@ export function acquireLiveStream() {
   if (refCount === 1 && !es) {
     connect()
   }
-  
+
   return () => {
     refCount--
     if (refCount === 0 && es) {
@@ -431,7 +431,7 @@ describe('useSwimLane', () => {
     initializeLanes(mockRequests)
     expect(lanes.value).toHaveLength(6) // Top5 + Others
   })
-  
+
   it('should rebuild lanes when top5 changes', () => {
     const { lanes, queueRequest } = useSwimLane()
     // ... 模拟Top5变化
@@ -446,12 +446,12 @@ describe('useSwimLane', () => {
 // LiveRequestStreamV2.test.ts
 it('should update lanes when new request arrives', async () => {
   const wrapper = mount(LiveRequestStreamV2)
-  
+
   // 模拟WebSocket推送
   await pushMockRequest({ model: 'gpt-4', vendor: 'openai' })
-  
+
   await nextTick()
-  
+
   expect(wrapper.findAll('.request-tile')).toHaveLength(1)
 })
 ```
@@ -462,13 +462,13 @@ it('should update lanes when new request arrives', async () => {
 // performance.test.ts
 it('should handle 1000 requests in 1 second', async () => {
   const start = performance.now()
-  
+
   for (let i = 0; i < 1000; i++) {
     queueRequest(mockRequest())
   }
-  
+
   await flushPromises()
-  
+
   const duration = performance.now() - start
   expect(duration).toBeLessThan(1000)
 })
@@ -574,7 +574,7 @@ Closes #123
 ### 10.1 数据导出
 ```typescript
 function exportSwimLaneData() {
-  const csv = lanes.value.flatMap(lane => 
+  const csv = lanes.value.flatMap(lane =>
     lane.requests.map(req => ({
       lane: lane.name,
       time: req.timestamp,
@@ -626,6 +626,6 @@ async function saveToIndexedDB() {
 
 ---
 
-**文档版本**: 1.0  
-**最后更新**: 2026-07-05  
+**文档版本**: 1.0
+**最后更新**: 2026-07-05
 **维护者**: 开发团队

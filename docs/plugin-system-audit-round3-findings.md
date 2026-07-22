@@ -248,10 +248,10 @@ type ExtensionContext struct {
     Storage Storage
     LLM     LLMClient
     // ...
-    
+
     // 新增：类型化服务注册表（解决 hook→hook 类型依赖，如 ApprovalHook→CacheUpdateHook）
     Services ServiceRegistry  // F1: 必须恢复（部分），用于插件间类型化调用
-    
+
     // 新增：运行时查询（解决 budget-guard 需要 output-compliance 健康状态）
     Plugins PluginLookup      // F8: Has(name) 提前到 A
 }

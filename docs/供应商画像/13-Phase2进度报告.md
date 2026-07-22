@@ -1,6 +1,6 @@
 # Phase 2 进度报告 - 质量计算
 
-**更新时间**: 2026-07-19 03:15  
+**更新时间**: 2026-07-19 03:15
 **状态**: 🚧 90% 完成
 
 ---
@@ -33,9 +33,9 @@ internal/quality/
 
 **公式**:
 ```
-可用性分 = 成功率 × 0.70 
-         + 5xx惩罚 × 0.20 
-         + 4xx惩罚 × 0.05 
+可用性分 = 成功率 × 0.70
+         + 5xx惩罚 × 0.20
+         + 4xx惩罚 × 0.05
          + 超时惩罚 × 0.05
 ```
 
@@ -51,8 +51,8 @@ internal/quality/
 
 **公式**:
 ```
-性能分 = P95延迟 × 0.50 
-       + P99延迟 × 0.30 
+性能分 = P95延迟 × 0.50
+       + P99延迟 × 0.30
        + TTFT × 0.20
 ```
 
@@ -77,8 +77,8 @@ TTFT:
 
 **公式**:
 ```
-可信度分 = 在线率 × 0.50 
-         + 一致性 × 0.30 
+可信度分 = 在线率 × 0.50
+         + 一致性 × 0.30
          + 趋势 × 0.20
 ```
 
@@ -93,8 +93,8 @@ TTFT:
 
 **公式**:
 ```
-稳定性分 = 延迟抖动 × 0.40 
-         + 流量波动 × 0.30 
+稳定性分 = 延迟抖动 × 0.40
+         + 流量波动 × 0.30
          + 错误突增 × 0.30
 ```
 
@@ -109,7 +109,7 @@ TTFT:
 
 **公式**:
 ```
-成本效益分 = 绝对成本 × 0.60 
+成本效益分 = 绝对成本 × 0.60
            + 相对成本 × 0.40
 ```
 
@@ -133,10 +133,10 @@ TTFT:
 ### 加权平均
 
 ```
-quality_score = L1 × 0.35 
-              + L2 × 0.25 
-              + L3 × 0.20 
-              + L4 × 0.15 
+quality_score = L1 × 0.35
+              + L2 × 0.25
+              + L3 × 0.20
+              + L4 × 0.15
               + L5 × 0.05
 ```
 
@@ -237,13 +237,13 @@ if dbConn != nil && dbConn.Enabled() {
     profileUpdaterEnabled := os.Getenv("PROFILE_UPDATER_ENABLED")
     if profileUpdaterEnabled == "" || profileUpdaterEnabled == "true" {
         slog.Info("启动质量画像更新器")
-        
+
         profileUpdater := quality.NewProfileUpdater(
             dbConn.Stdlib(),
             quality.WithUpdateInterval(1*time.Hour),
             quality.WithUpdateTimeout(5*time.Minute),
         )
-        
+
         go func() {
             if err := profileUpdater.Start(context.Background()); err != nil {
                 slog.Error("质量画像更新器退出", "error", err)
@@ -466,6 +466,6 @@ ON CONFLICT (provider_id, model_name) DO UPDATE SET ...
 
 ---
 
-**Phase 2 状态**: 🚧 核心算法完成，待集成和测试  
-**下次会话**: 从集成到 main.go 开始  
+**Phase 2 状态**: 🚧 核心算法完成，待集成和测试
+**下次会话**: 从集成到 main.go 开始
 **预计完成时间**: 2026-07-20

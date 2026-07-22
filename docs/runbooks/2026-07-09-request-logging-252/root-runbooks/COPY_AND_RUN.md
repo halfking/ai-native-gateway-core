@@ -47,14 +47,14 @@ COMMIT;
 EOSQL"
 ```
 
-**预期输出**: 
+**预期输出**:
 ```
 BEGIN
 CREATE TABLE
 CREATE TABLE
 DROP VIEW
 CREATE VIEW
-    status     
+    status
 ---------------
  SUCCESS: Tables created
 COMMIT

@@ -3,7 +3,7 @@
 export default {
   collapseSidebar: '折叠侧边栏',
   expandSidebar: '展开侧边栏',
-  
+
   group: {
     tenantPortal: '我的服务',
     modelsRouting: '模型与路由',
@@ -14,7 +14,7 @@ export default {
     guide: '接入指南',
     chat: '对话',
   },
-  
+
   item: {
     overview: '总览',
     tenantModels: '标准模型',

@@ -1,8 +1,8 @@
 # PostgreSQL 分区表读写 - 测试用例
 
-**文档版本**: 1.0  
-**创建日期**: 2026-07-04  
-**测试环境**: 71 生产环境 (__DOMAIN_2__)  
+**文档版本**: 1.0
+**创建日期**: 2026-07-04
+**测试环境**: 71 生产环境 (__DOMAIN_2__)
 **覆盖率**: 100% 关键路径
 
 ---
@@ -38,8 +38,8 @@ go test -bench=. ./telemetry
 
 ### TC-001: 新数据写入验证
 
-**优先级**: P0  
-**类型**: 功能测试  
+**优先级**: P0
+**类型**: 功能测试
 **状态**: ✅ 通过
 
 **目标**: 验证新数据正确写入 `*_default` 表
@@ -87,8 +87,8 @@ assert_equals "$RESULT" "1"
 
 ### TC-002: 流式更新验证
 
-**优先级**: P0  
-**类型**: 功能测试  
+**优先级**: P0
+**类型**: 功能测试
 **状态**: ✅ 通过
 
 **目标**: 验证流式响应期间的 UPDATE 操作正确更新 `*_default` 表
@@ -105,8 +105,8 @@ assert_equals "$RESULT" "1"
 **预期结果**:
 ```sql
 -- default 表中的记录被更新
-SELECT prompt_tokens, completion_tokens, success 
-FROM request_logs_default 
+SELECT prompt_tokens, completion_tokens, success
+FROM request_logs_default
 WHERE request_id = '<request_id>';
 -- 预期: prompt_tokens > 0, completion_tokens > 0, success = true
 ```
@@ -116,7 +116,7 @@ WHERE request_id = '<request_id>';
 func TestStreamingUpdate(t *testing.T) {
     client := NewClient(db)
     requestID := "test-streaming-" + uuid.New().String()
-    
+
     // 1. INSERT 初始记录
     entry := &RequestLogEntry{
         RequestID: requestID,
@@ -125,7 +125,7 @@ func TestStreamingUpdate(t *testing.T) {
     }
     err := client.EmitRequestLogInsert(entry)
     require.NoError(t, err)
-    
+
     // 2. 模拟流式更新
     for i := 0; i < 5; i++ {
         entry.PromptTokens = intptr(10 * (i + 1))
@@ -133,12 +133,12 @@ func TestStreamingUpdate(t *testing.T) {
         err = client.EmitRequestLogUpdate(entry)
         require.NoError(t, err)
     }
-    
+
     // 3. 最终更新成功状态
     entry.Success = true
     err = client.EmitRequestLogUpdate(entry)
     require.NoError(t, err)
-    
+
     // 4. 验证最终状态
     var promptTokens, completionTokens int
     var success bool
@@ -147,7 +147,7 @@ func TestStreamingUpdate(t *testing.T) {
         FROM request_logs_default
         WHERE request_id = $1
     `, requestID).Scan(&promptTokens, &completionTokens, &success)
-    
+
     require.NoError(t, err)
     assert.Equal(t, 50, promptTokens)
     assert.Equal(t, 25, completionTokens)
@@ -159,8 +159,8 @@ func TestStreamingUpdate(t *testing.T) {
 
 ### TC-003: 分区隔离验证
 
-**优先级**: P0  
-**类型**: 配置验证  
+**优先级**: P0
+**类型**: 配置验证
 **状态**: ✅ 通过
 
 **目标**: 验证当月分区处于 DETACHED 状态，新数据不会路由到该分区
@@ -173,13 +173,13 @@ func TestStreamingUpdate(t *testing.T) {
 **预期结果**:
 ```sql
 -- 检查分区状态
-SELECT 
-    CASE 
+SELECT
+    CASE
         WHEN EXISTS (
             SELECT 1 FROM pg_inherits i
             JOIN pg_class parent ON parent.oid = i.inhparent
             JOIN pg_class child ON child.oid = i.inhrelid
-            WHERE parent.relname = 'request_logs' 
+            WHERE parent.relname = 'request_logs'
             AND child.relname = 'request_logs_2026_07'
         )
         THEN 'ATTACHED'
@@ -197,8 +197,8 @@ SELECT
 
 ### TC-004: 查询聚合验证
 
-**优先级**: P0  
-**类型**: 功能测试  
+**优先级**: P0
+**类型**: 功能测试
 **状态**: ✅ 通过
 
 **目标**: 验证查询父表和 UNION 查询的数据差异
@@ -235,8 +235,8 @@ UNION 查询: 6355 行
 
 ### TC-005: UPSERT 语义验证
 
-**优先级**: P0  
-**类型**: 功能测试  
+**优先级**: P0
+**类型**: 功能测试
 **状态**: ✅ 通过
 
 **目标**: 验证 `ON CONFLICT DO UPDATE` 的幂等性
@@ -246,7 +246,7 @@ UNION 查询: 6355 行
 func TestUpsertSemantics(t *testing.T) {
     client := NewClient(db)
     requestID := "test-upsert-" + uuid.New().String()
-    
+
     // 1. 第一次 INSERT
     entry := &RequestLogEntry{
         RequestID:     requestID,
@@ -256,24 +256,24 @@ func TestUpsertSemantics(t *testing.T) {
     }
     err := client.EmitRequestLogInsert(entry)
     require.NoError(t, err)
-    
+
     // 2. 第二次 INSERT（相同 request_id + ts）
     entry.PromptTokens = intptr(20)
     entry.Success = true
     err = client.EmitRequestLogInsert(entry)
     require.NoError(t, err)
-    
+
     // 3. 验证只有一条记录，且字段已更新
     var count int
     var promptTokens int
     var success bool
-    
+
     err = db.QueryRow(ctx, `
         SELECT COUNT(*), MAX(prompt_tokens), BOOL_OR(success)
         FROM request_logs_default
         WHERE request_id = $1
     `, requestID).Scan(&count, &promptTokens, &success)
-    
+
     require.NoError(t, err)
     assert.Equal(t, 1, count, "应该只有一条记录")
     assert.Equal(t, 20, promptTokens, "prompt_tokens 应该被更新")
@@ -285,8 +285,8 @@ func TestUpsertSemantics(t *testing.T) {
 
 ### TC-006: ON CONFLICT 列引用验证
 
-**优先级**: P0  
-**类型**: 语法验证  
+**优先级**: P0
+**类型**: 语法验证
 **状态**: ✅ 通过
 
 **目标**: 验证 ON CONFLICT 子句中的列引用正确使用 `*_default` 前缀
@@ -310,8 +310,8 @@ grep -r "ON CONFLICT.*DO UPDATE" --include="*.go" . | \
 
 ### TC-007: 最近数据查询性能
 
-**优先级**: P1  
-**类型**: 性能测试  
+**优先级**: P1
+**类型**: 性能测试
 **状态**: ⏳ 待执行
 
 **目标**: 验证查询 default 表的性能优于查询父表
@@ -345,8 +345,8 @@ SELECT * FROM request_logs_2026_07 WHERE ts > now() - interval '7 days' AND tena
 
 ### TC-008: 并发写入压力测试
 
-**优先级**: P1  
-**类型**: 性能测试  
+**优先级**: P1
+**类型**: 性能测试
 **状态**: ⏳ 待执行
 
 **目标**: 验证高并发写入场景下的稳定性
@@ -357,49 +357,49 @@ func TestConcurrentWrites(t *testing.T) {
     client := NewClient(db)
     concurrency := 100
     requestsPerGoroutine := 100
-    
+
     var wg sync.WaitGroup
     errors := make(chan error, concurrency*requestsPerGoroutine)
-    
+
     // 启动 100 个并发 goroutine
     for i := 0; i < concurrency; i++ {
         wg.Add(1)
         go func(workerID int) {
             defer wg.Done()
-            
+
             for j := 0; j < requestsPerGoroutine; j++ {
                 entry := &RequestLogEntry{
                     RequestID: fmt.Sprintf("test-concurrent-%d-%d", workerID, j),
                     TenantID:  "test",
                     Success:   true,
                 }
-                
+
                 if err := client.EmitRequestLogInsert(entry); err != nil {
                     errors <- err
                 }
             }
         }(i)
     }
-    
+
     wg.Wait()
     close(errors)
-    
+
     // 验证无错误
     errorCount := 0
     for err := range errors {
         t.Errorf("写入错误: %v", err)
         errorCount++
     }
-    
+
     assert.Equal(t, 0, errorCount, "应该无写入错误")
-    
+
     // 验证数据完整性
     var count int
     err := db.QueryRow(ctx, `
         SELECT COUNT(*) FROM request_logs_default
         WHERE request_id LIKE 'test-concurrent-%'
     `).Scan(&count)
-    
+
     require.NoError(t, err)
     assert.Equal(t, concurrency*requestsPerGoroutine, count)
 }
@@ -416,8 +416,8 @@ func TestConcurrentWrites(t *testing.T) {
 
 ### TC-009: 历史补录场景
 
-**优先级**: P1  
-**类型**: 功能测试  
+**优先级**: P1
+**类型**: 功能测试
 **状态**: ⏳ 待执行
 
 **目标**: 验证使用 `partition_router.go` 补录历史数据
@@ -426,36 +426,36 @@ func TestConcurrentWrites(t *testing.T) {
 ```go
 func TestHistoricalBackfill(t *testing.T) {
     router := NewPartitionRouter()
-    
+
     // 测试 1: 最近数据路由到 default
     recentTS := time.Now().Add(-3 * 24 * time.Hour)
     table := router.GetRequestLogsTable(recentTS)
     assert.Equal(t, "request_logs_default", table)
-    
+
     // 测试 2: 10 天前数据路由到月度分区
     oldTS := time.Now().Add(-10 * 24 * time.Hour)
     table = router.GetRequestLogsTable(oldTS)
     expectedMonth := oldTS.Format("2006_01")
     assert.Equal(t, fmt.Sprintf("request_logs_%s", expectedMonth), table)
-    
+
     // 测试 3: 实际写入验证
     requestID := "test-backfill-" + uuid.New().String()
     targetTable := router.GetRequestLogsTable(oldTS)
-    
+
     sql := fmt.Sprintf(`
         INSERT INTO %s (request_id, ts, tenant_id, success)
         VALUES ($1, $2, $3, $4)
     `, targetTable)
-    
+
     _, err := db.Exec(ctx, sql, requestID, oldTS, "test", true)
     require.NoError(t, err)
-    
+
     // 验证数据在正确的表中
     var count int
     err = db.QueryRow(ctx, fmt.Sprintf(`
         SELECT COUNT(*) FROM %s WHERE request_id = $1
     `, targetTable), requestID).Scan(&count)
-    
+
     require.NoError(t, err)
     assert.Equal(t, 1, count)
 }
@@ -465,8 +465,8 @@ func TestHistoricalBackfill(t *testing.T) {
 
 ### TC-010: 分区约束冲突错误
 
-**优先级**: P1  
-**类型**: 故障场景  
+**优先级**: P1
+**类型**: 故障场景
 **状态**: ⏳ 待执行
 
 **目标**: 验证当月分区 ATTACHED 时写入 default 会报错
@@ -503,8 +503,8 @@ ROLLBACK;  -- 回滚测试
 
 ### TC-011: Columnar UPSERT 错误
 
-**优先级**: P1  
-**类型**: 故障场景  
+**优先级**: P1
+**类型**: 故障场景
 **状态**: ⏳ 待执行
 
 **目标**: 验证对 columnar 分区执行 UPSERT 会报错
@@ -524,8 +524,8 @@ ON CONFLICT (request_id, ts) DO UPDATE SET success = EXCLUDED.success;
 
 ### TC-012: default 表大小监控
 
-**优先级**: P1  
-**类型**: 监控测试  
+**优先级**: P1
+**类型**: 监控测试
 **状态**: ⏳ 待执行
 
 **目标**: 验证监控脚本正确检测 default 表大小异常
@@ -538,15 +538,15 @@ ON CONFLICT (request_id, ts) DO UPDATE SET success = EXCLUDED.success;
 **监控 SQL**:
 ```sql
 -- 检查 default 表大小
-SELECT 
+SELECT
     pg_size_pretty(pg_total_relation_size('request_logs_default')) AS size,
     pg_total_relation_size('request_logs_default') AS bytes
 FROM request_logs_default;
 
 -- 告警逻辑
-SELECT 
-    CASE 
-        WHEN pg_total_relation_size('request_logs_default') > 10 * 1024^3 
+SELECT
+    CASE
+        WHEN pg_total_relation_size('request_logs_default') > 10 * 1024^3
         THEN 'ALERT: default table > 10GB'
         ELSE 'OK'
     END AS status;
@@ -644,6 +644,6 @@ BenchmarkPartitionWrite/update_default-8        3000    3.8 ms/op  384 B/op   10
 
 ---
 
-**测试负责人**: Infrastructure Team  
-**最后更新**: 2026-07-04  
+**测试负责人**: Infrastructure Team
+**最后更新**: 2026-07-04
 **下次测试**: 2026-07-11（每周回归测试）

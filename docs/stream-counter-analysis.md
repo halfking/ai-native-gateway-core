@@ -105,7 +105,7 @@ entry.StreamChunkCount,
 可以通过这些字段组合查询流错误：
 
 ```sql
-SELECT 
+SELECT
     COUNT(*) as interrupted_streams,
     failure_detail_code,
     AVG(stream_chunk_count) as avg_chunks_before_failure
@@ -126,7 +126,7 @@ ORDER BY interrupted_streams DESC;
 
 ```sql
 -- 查看最近的流式请求及其块计数
-SELECT 
+SELECT
     request_id,
     stream_chunk_count,
     stream_interrupted,

@@ -1,7 +1,7 @@
 # 探测恢复立即关闭circuit + 每日全量巡检
 
-**提交时间**: 2026-07-19 13:47  
-**提交SHA**: fdc7d892d → a8236419d (已合并main)  
+**提交时间**: 2026-07-19 13:47
+**提交SHA**: fdc7d892d → a8236419d (已合并main)
 **任务状态**: ✅ 完成并推送
 
 ---
@@ -88,7 +88,7 @@ func (a *DailyProbeAudit) run(ctx context.Context) {
         WHERE credential_id > 0 AND raw_model_name <> ''
         ORDER BY credential_id, raw_model_name
     `)
-    
+
     for rows.Next() {
         var credID int; var model string
         rows.Scan(&credID, &model)
@@ -280,7 +280,7 @@ go vet ./bg ./domains/credential ./domains/credentialstate
 
 1. **circuit恢复延迟**:
    ```promql
-   histogram_quantile(0.95, 
+   histogram_quantile(0.95,
      rate(probe_recovery_to_request_allow_seconds_bucket[5m]))
    ```
    预期: p95 < 5s（之前可能 >30s）
@@ -293,7 +293,7 @@ go vet ./bg ./domains/credential ./domains/credentialstate
 
 3. **探测成功率**:
    ```sql
-   SELECT 
+   SELECT
      COUNT(*) FILTER (WHERE last_direct_ok AND last_gateway_ok) * 100.0 / COUNT(*) AS success_rate
    FROM node_probe_state
    WHERE last_attempt_at >= now() - interval '1 day';
@@ -337,7 +337,7 @@ export LLM_GATEWAY_DISABLE_DAILY_PROBE_AUDIT=true
 
 ---
 
-**完成时间**: 2026-07-19 13:47  
-**提交SHA**: a8236419d  
-**推送状态**: ✅ 已推送至 origin/main  
+**完成时间**: 2026-07-19 13:47
+**提交SHA**: a8236419d
+**推送状态**: ✅ 已推送至 origin/main
 **验证状态**: ✅ 所有核心测试通过

@@ -64,10 +64,10 @@ const hasData = computed(() => !!diagnosticData.value)
 
 async function fetchDiagnostic() {
   if (!props.visible || props.credentialId <= 0) return
-  
+
   loading.value = true
   error.value = null
-  
+
   try {
     const response = await fetch(
       `/api/admin/diagnostics/credential?id=${props.credentialId}&minutes=15`,
@@ -77,12 +77,12 @@ async function fetchDiagnostic() {
         },
       }
     )
-    
+
     if (!response.ok) {
       const errData = await response.json().catch(() => ({}))
       throw new Error(errData.error?.detail || `HTTP ${response.status}`)
     }
-    
+
     diagnosticData.value = await response.json()
   } catch (err: any) {
     error.value = err.message || '诊断失败'
@@ -94,14 +94,14 @@ async function fetchDiagnostic() {
 
 async function handleForceRecover() {
   if (!props.credentialId || recovering.value) return
-  
+
   if (!confirm(`确认强制恢复凭据 ${props.credentialId}？\n此操作将重置凭据状态、清空所有 binding 的不可用标记、重置探测状态。`)) {
     return
   }
-  
+
   recovering.value = true
   error.value = null
-  
+
   try {
     const response = await fetch(
       `/api/admin/diagnostics/credential/force-recover?id=${props.credentialId}`,
@@ -112,12 +112,12 @@ async function handleForceRecover() {
         },
       }
     )
-    
+
     if (!response.ok) {
       const errData = await response.json().catch(() => ({}))
       throw new Error(errData.error?.detail || `HTTP ${response.status}`)
     }
-    
+
     // 恢复成功，重新拉取诊断数据
     await fetchDiagnostic()
     emit('recovered')
@@ -134,12 +134,12 @@ function handleClose() {
 
 function formatTimestamp(ts: string): string {
   const d = new Date(ts)
-  return d.toLocaleString('zh-CN', { 
-    month: '2-digit', 
-    day: '2-digit', 
-    hour: '2-digit', 
-    minute: '2-digit', 
-    second: '2-digit' 
+  return d.toLocaleString('zh-CN', {
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit'
   })
 }
 
@@ -207,8 +207,8 @@ watch(() => props.visible, (visible) => {
               </div>
               <div class="diag-info-item">
                 <span class="diag-info-label">可用状态:</span>
-                <span 
-                  class="diag-info-value" 
+                <span
+                  class="diag-info-value"
                   :class="diagnosticData!.availability_state === 'ready' ? 'status-ok' : 'status-warn'"
                 >
                   {{ diagnosticData!.availability_state }}
@@ -216,8 +216,8 @@ watch(() => props.visible, (visible) => {
               </div>
               <div class="diag-info-item">
                 <span class="diag-info-label">健康状态:</span>
-                <span 
-                  class="diag-info-value" 
+                <span
+                  class="diag-info-value"
                   :class="diagnosticData!.health_status === 'healthy' ? 'status-ok' : 'status-error'"
                 >
                   {{ diagnosticData!.health_status }}
@@ -225,8 +225,8 @@ watch(() => props.visible, (visible) => {
               </div>
               <div class="diag-info-item">
                 <span class="diag-info-label">熔断器:</span>
-                <span 
-                  class="diag-info-value" 
+                <span
+                  class="diag-info-value"
                   :class="diagnosticData!.circuit_state === 'closed' ? 'status-ok' : 'status-error'"
                 >
                   {{ diagnosticData!.circuit_state }}
@@ -234,8 +234,8 @@ watch(() => props.visible, (visible) => {
               </div>
               <div class="diag-info-item">
                 <span class="diag-info-label">连续失败:</span>
-                <span 
-                  class="diag-info-value" 
+                <span
+                  class="diag-info-value"
                   :class="diagnosticData!.consecutive_failures > 0 ? 'status-error' : 'status-ok'"
                 >
                   {{ diagnosticData!.consecutive_failures }}
@@ -283,9 +283,9 @@ watch(() => props.visible, (visible) => {
           <section v-if="diagnosticData!.recent_failures.length > 0" class="diag-section">
             <h3 class="diag-section-title">最近失败 ({{ diagnosticData!.recent_failures_count }})</h3>
             <div class="diag-failures-list">
-              <div 
-                v-for="f in diagnosticData!.recent_failures.slice(0, 5)" 
-                :key="f.request_id" 
+              <div
+                v-for="f in diagnosticData!.recent_failures.slice(0, 5)"
+                :key="f.request_id"
                 class="diag-failure-item"
               >
                 <div class="diag-failure-header">
@@ -320,9 +320,9 @@ watch(() => props.visible, (visible) => {
       </div>
 
       <div class="modal-footer">
-        <button 
-          v-if="hasData && diagnosticData!.recoverable" 
-          class="btn btn-primary" 
+        <button
+          v-if="hasData && diagnosticData!.recoverable"
+          class="btn btn-primary"
           :disabled="recovering"
           @click="handleForceRecover"
         >

@@ -5,7 +5,7 @@ export default {
   showDeleted: '削除済みを表示',
   addButton: '+ 拒否モデルを追加',
   loading: '読み込み中…',
-  
+
   table: {
     canonicalName: 'canonical_name',
     reason: 'reason',
@@ -14,14 +14,14 @@ export default {
     deletedAt: 'deleted_at',
     actions: '操作',
   },
-  
+
   actions: {
     softDelete: '論理削除',
     restore: '復元',
   },
-  
+
   empty: 'ポリシーなし（デフォルトですべてのモデルが許可されます）',
-  
+
   audit: {
     title: '監査ログ',
     recent: '最近の {count} 件',
@@ -39,7 +39,7 @@ export default {
       undelete: '復元',
     },
   },
-  
+
   dialog: {
     title: '拒否モデルを追加',
     hint: '以下に canonical_name を入力してください（models_canonical テーブルと一致する必要があります）。',
@@ -54,11 +54,11 @@ export default {
     submit: '送信',
     submitting: '送信中…',
   },
-  
+
   confirm: {
     softDelete: 'ポリシー {name} を論理削除しますか？（復元可能）',
   },
-  
+
   error: {
     loadFailed: '読み込みに失敗しました',
     canonicalNameRequired: 'canonical_name は必須です',

@@ -1,8 +1,8 @@
 # Credential Health Audit 验证报告
 
-**日期**: 2026-07-16  
-**类型**: 审计修复 + 部署验证  
-**环境**: 245 (预发布) → 154 (生产)  
+**日期**: 2026-07-16
+**类型**: 审计修复 + 部署验证
+**环境**: 245 (预发布) → 154 (生产)
 **基础**: Handoff 文档 `/var/folders/q9/_5p60_p90ts99ybv605s8h9r0000gn/T/handoff-credential-health-audit.md`
 
 ## 执行摘要
@@ -17,7 +17,7 @@
 
 **根因**: Commit `38ec01b05` 删除了 `writeModelLevelFailureOnly` 中的 `UPDATE model_offers`（因为 VIEW 自动反映 cmb 更新），但测试 mock 未同步更新。
 
-**修复**: 
+**修复**:
 - 删除第 90-92 行的过期 mock
 - 添加注释说明 model_offers 是 VIEW
 - 更新 CHANGELOG.md
@@ -58,15 +58,15 @@ ok  	github.com/kaixuan/llm-gateway-go/credentialhealth	0.489s
 ### 数据库验证
 
 ```sql
-SELECT column_name, data_type 
-FROM information_schema.columns 
-WHERE table_name='model_offers' 
+SELECT column_name, data_type
+FROM information_schema.columns
+WHERE table_name='model_offers'
 AND column_name IN ('unavailable_recover_at', 'canonical_raw_name', 'created_at', 'updated_at');
 ```
 
 结果：
 ```
-      column_name       |        data_type         
+      column_name       |        data_type
 ------------------------+--------------------------
  canonical_raw_name     | text
  created_at             | timestamp with time zone
@@ -82,9 +82,9 @@ AND column_name IN ('unavailable_recover_at', 'canonical_raw_name', 'created_at'
 
 ```sql
 -- BEFORE UPDATE
- cmb_available | cmb_reason | mo_available | mo_reason 
+ cmb_available | cmb_reason | mo_available | mo_reason
 ---------------+------------+--------------+-----------
- t             |            | t            | 
+ t             |            | t            |
 
 -- 更新 cmb
 UPDATE credential_model_bindings
@@ -92,7 +92,7 @@ SET available = FALSE, unavailable_reason = 'test_concurrent'
 WHERE id = 13116;
 
 -- AFTER UPDATE cmb
- cmb_available |   cmb_reason    | mo_available |    mo_reason    
+ cmb_available |   cmb_reason    | mo_available |    mo_reason
 ---------------+-----------------+--------------+-----------------
  f             | test_concurrent | f            | test_concurrent
 
@@ -110,7 +110,7 @@ $ curl http://localhost:8781/healthz
 
 ```sql
 -- 系统健康状态摘要
-         metric          | count 
+         metric          | count
 -------------------------+-------
  Total Credentials       |    24
  Available CMB           |   856
@@ -153,20 +153,20 @@ SELECT tgname FROM pg_trigger WHERE tgrelid = 'model_offers'::regclass;
 
 **修复**:
 ```sql
-CREATE TRIGGER model_offers_update 
-INSTEAD OF UPDATE ON public.model_offers 
-FOR EACH ROW 
+CREATE TRIGGER model_offers_update
+INSTEAD OF UPDATE ON public.model_offers
+FOR EACH ROW
 EXECUTE FUNCTION public.model_offers_update_trigger();
 ```
 
 **验证修复**:
 ```sql
-SELECT tgname, tgtype, proname 
-FROM pg_trigger t 
-JOIN pg_proc p ON t.tgfoid = p.oid 
+SELECT tgname, tgtype, proname
+FROM pg_trigger t
+JOIN pg_proc p ON t.tgfoid = p.oid
 WHERE tgrelid = 'model_offers'::regclass;
 
-       tgname        | tgtype |           proname           
+       tgname        | tgtype |           proname
 ---------------------+--------+-----------------------------
  model_offers_update |     81 | model_offers_update_trigger
 ```
@@ -183,7 +183,7 @@ BEGIN;
 -- 选择测试对象
 SELECT id, credential_id, raw_model_name, available
 FROM model_offers WHERE available = TRUE LIMIT 1;
---   id   | credential_id | raw_model_name  | available 
+--   id   | credential_id | raw_model_name  | available
 -- -------+---------------+-----------------+-----------
 --  13116 |            15 | MiniMax-Text-01 | t
 
@@ -197,7 +197,7 @@ WHERE id = 13116;
 SELECT unavailable_reason
 FROM credential_model_bindings
 WHERE unavailable_reason = 'test_trigger_verification';
---     unavailable_reason     
+--     unavailable_reason
 -- ---------------------------
 --  test_trigger_verification
 
@@ -242,9 +242,9 @@ $ systemctl status llm-gateway-go
 
 **154 生产环境** (手动应用):
 ```sql
-CREATE TRIGGER model_offers_update 
-INSTEAD OF UPDATE ON public.model_offers 
-FOR EACH ROW 
+CREATE TRIGGER model_offers_update
+INSTEAD OF UPDATE ON public.model_offers
+FOR EACH ROW
 EXECUTE FUNCTION public.model_offers_update_trigger();
 ```
 

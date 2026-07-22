@@ -1,8 +1,8 @@
 # 安全检测引擎模块优化任务总结
 
-**任务日期**: 2026-07-09  
-**任务类型**: 功能优化 + Bug修复 + 文档补充  
-**负责人**: Official-Deploy Team  
+**任务日期**: 2026-07-09
+**任务类型**: 功能优化 + Bug修复 + 文档补充
+**负责人**: Official-Deploy Team
 **状态**: ✅ 已完成
 
 ---
@@ -194,43 +194,43 @@ flowchart TB
     Start[用户请求] --> Check1{security.enabled?}
     Check1 -->|false| Pass[直接放行]
     Check1 -->|true| Mode{security.mode?}
-    
+
     Mode -->|observe| Intent1[意图分析]
     Mode -->|enforce| Intent2[意图分析]
-    
+
     Intent1 --> Threat1[威胁检测]
     Intent2 --> Threat2[威胁检测]
-    
+
     Threat1 --> Severity1[计算严重度]
     Threat2 --> Severity2[计算严重度]
-    
+
     Severity1 --> Log1[记录审计日志]
     Severity2 --> Route{响应策略路由}
-    
+
     Log1 --> Pass
-    
+
     Route -->|severity < 3| Pass
     Route -->|3 ≤ severity < 5| Low[low_risk动作]
     Route -->|5 ≤ severity < 7| Medium[medium_risk动作]
     Route -->|severity ≥ 7| High[high_risk动作]
-    
+
     Low -->|log| LogOnly[仅记录]
     Low -->|warn| Warn[记录+告警]
-    
+
     Medium -->|warn| Warn
     Medium -->|sanitize| Sanitize[清洗内容]
     Medium -->|block| Block[阻断请求]
     Medium -->|approval| Approval[人工审批]
-    
+
     High -->|block| Block
     High -->|approval| Approval
-    
+
     LogOnly --> Pass
     Warn --> Pass
     Sanitize --> Pass
     Block --> Reject[返回403]
     Approval --> Audit[进入审批流程]
-    
+
     Audit --> AuditDecision{审批结果?}
     AuditDecision -->|批准| Pass
     AuditDecision -->|拒绝| Reject
@@ -243,7 +243,7 @@ flowchart TB
 ```mermaid
 flowchart LR
     Start[输入: 用户请求] --> Regex[正则模式匹配]
-    
+
     Regex --> Score1{匹配到威胁?}
     Score1 -->|prompt_inject| S8[基础分: 8]
     Score1 -->|jailbreak| S9[基础分: 9]
@@ -251,23 +251,23 @@ flowchart LR
     Score1 -->|pii| S5[基础分: 5-7]
     Score1 -->|persona_override| S6[基础分: 6]
     Score1 -->|无威胁| S0[基础分: 0]
-    
+
     S8 --> LLM[LLM-as-judge]
     S9 --> LLM
     S7 --> LLM
     S5 --> LLM
     S6 --> LLM
     S0 --> Final0[最终分: 0]
-    
+
     LLM --> Judge{LLM判定?}
     Judge -->|攻击| Add2[+2分]
     Judge -->|可疑| Add1[+1分]
     Judge -->|安全| Add0[+0分]
-    
+
     Add2 --> Final[最终分 = min(基础分+LLM加成, 10)]
     Add1 --> Final
     Add0 --> Final
-    
+
     Final --> Output[输出: severity分数 0-10]
 ```
 
@@ -278,39 +278,39 @@ flowchart LR
 ```mermaid
 flowchart TD
     Admin[管理员进入 /admin/modules] --> Select[选择"安全检测引擎"]
-    
+
     Select --> Load[加载模块状态]
     Load --> CheckDep{检查依赖模块}
-    
+
     CheckDep -->|prompt_injection未启用| Warn1[显示警告: prompt_inject检测项不可用]
     CheckDep -->|output_compliance未启用| Warn2[显示警告: data_leak/pii检测项不可用]
     CheckDep -->|session_audit未启用| Warn3[显示警告: approval动作不可用]
     CheckDep -->|全部满足| ShowConfig[显示完整配置面板]
-    
+
     Warn1 --> Disable1[禁用 prompt_inject 检测项]
     Warn2 --> Disable2[禁用 data_leak/pii 检测项]
     Warn3 --> Disable3[禁用 high_risk=approval 选项]
-    
+
     Disable1 --> ShowConfig
     Disable2 --> ShowConfig
     Disable3 --> ShowConfig
-    
+
     ShowConfig --> Groups[六大配置分组]
-    
+
     Groups --> G1[基础配置<br/>mode: observe/enforce]
     Groups --> G2[LLM模型配置<br/>intent_model / threat_model]
     Groups --> G3[意图分析配置<br/>enabled / confidence / drift]
     Groups --> G4[威胁检测配置<br/>5个检测项开关]
     Groups --> G5[响应策略<br/>low/medium/high动作]
     Groups --> G6[审计联动<br/>enabled / log_all / sampling_rate]
-    
+
     G1 --> Edit[用户修改配置]
     G2 --> Edit
     G3 --> Edit
     G4 --> Edit
     G5 --> Edit
     G6 --> Edit
-    
+
     Edit --> Save[保存配置]
     Save --> Refresh[刷新模块列表]
     Refresh --> UpdateUI[更新依赖状态]
@@ -323,25 +323,25 @@ flowchart TD
 ```mermaid
 flowchart TD
     Start[用户启用配置项] --> CheckType{配置项类型?}
-    
+
     CheckType -->|prompt_inject| Dep1{prompt_injection<br/>已启用?}
     CheckType -->|data_leak/pii| Dep2{output_compliance<br/>已启用?}
     CheckType -->|high_risk=approval| Dep3{session_audit<br/>已启用?}
     CheckType -->|其他| Allow[允许修改]
-    
+
     Dep1 -->|是| Allow
     Dep1 -->|否| Block1[禁用配置项]
-    
+
     Dep2 -->|是| Allow
     Dep2 -->|否| Block2[禁用配置项]
-    
+
     Dep3 -->|是| Allow
     Dep3 -->|否| Block3[禁用配置项]
-    
+
     Block1 --> Warn1[显示警告:<br/>⚠️ 依赖模块 prompt_injection 未启用]
     Block2 --> Warn2[显示警告:<br/>⚠️ 依赖模块 output_compliance 未启用]
     Block3 --> Warn3[显示警告:<br/>⚠️ 依赖模块 session_audit 未启用]
-    
+
     Allow --> Save[保存配置]
     Save --> Refresh[刷新依赖状态]
 ```
@@ -352,9 +352,9 @@ flowchart TD
 
 ### 6.1 P0问题（阻断性）
 
-**问题**：配置项未接入实际代码  
-**现状**：20个配置项已创建，但运行时仍使用硬编码值  
-**影响**：用户修改配置不生效  
+**问题**：配置项未接入实际代码
+**现状**：20个配置项已创建，但运行时仍使用硬编码值
+**影响**：用户修改配置不生效
 **跟踪文档**：`docs/issues/p0-security-config-not-applied.md`
 
 **修复计划**：
@@ -482,6 +482,6 @@ flowchart TD
 
 ---
 
-**维护者**: Official-Deploy Team  
-**最后更新**: 2026-07-09  
+**维护者**: Official-Deploy Team
+**最后更新**: 2026-07-09
 **文档版本**: v1.0

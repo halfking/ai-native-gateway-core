@@ -1,7 +1,7 @@
 # GLM-5.2 格式转换问题 - 最终分析报告
 
-> **日期**: 2026-06-21  
-> **状态**: ✅ 代码分析完成 | ⚠️ 等待实际测试验证  
+> **日期**: 2026-06-21
+> **状态**: ✅ 代码分析完成 | ⚠️ 等待实际测试验证
 > **结论**: 格式转换逻辑正常，需要实际测试确认上游行为
 
 ---
@@ -84,7 +84,7 @@
 
 #### 文档
 
-1. **完整诊断报告** 
+1. **完整诊断报告**
    - `docs/llm-gateway-go/2026-06-21-glm52-format-issue-diagnosis.md`
    - 43 KB, 包含 3 个修复方案
 
@@ -121,7 +121,7 @@
 - 而是将其**保留**在 `reasoning_content` 字段
 - 在 `_kxg_meta` 中标记 `has_thinking: true`
 
-**影响**: 
+**影响**:
 - 这是正确的行为（符合 OpenAI o1 模型的设计）
 - 客户端可以选择显示或隐藏 reasoning
 
@@ -229,7 +229,7 @@ var (
         },
         []string{"model", "event_type"},
     )
-    
+
     emptyChoicesWarningsTotal = prometheus.NewCounterVec(
         prometheus.CounterOpts{
             Name: "llm_gateway_empty_choices_warnings_total",
@@ -331,7 +331,7 @@ Total: 15/15 PASS (100%)
 
 ```bash
 # 运行所有 GLM-5.2 测试
-go test -v ./relay -run "GLM52|glm-5.2" 
+go test -v ./relay -run "GLM52|glm-5.2"
 
 # 查看详细输出
 go test -v ./relay -run TestConvertChatToAnthropicGLM52
@@ -372,7 +372,7 @@ go test -tags=integration ./tests/integration -v -run TestGLM52
 
 ### 代码文件
 
-- **转换逻辑**: 
+- **转换逻辑**:
   - `relay/chat_to_anthropic.go`
   - `relay/anthropic_to_chat.go`
   - `relay/anthropic_to_openai_stream.go`
@@ -400,14 +400,14 @@ go test -tags=integration ./tests/integration -v -run TestGLM52
 
 **下一步**: ⏳ 需要实际测试验证用户报告的"混乱"现象
 
-**建议**: 
+**建议**:
 1. 先运行诊断脚本确认问题
 2. 如果确认有问题，应用改进 A + B
 3. 持续监控 7 天后评估效果
 
 ---
 
-**报告生成时间**: 2026-06-21  
-**作者**: AI Assistant  
-**审核状态**: 待用户验证  
+**报告生成时间**: 2026-06-21
+**作者**: AI Assistant
+**审核状态**: 待用户验证
 **优先级**: P1 (需要实际测试确认)

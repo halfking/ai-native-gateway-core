@@ -1,13 +1,13 @@
 # 探测系统后续优化项
 
-**日期**: 2026-07-13  
+**日期**: 2026-07-13
 **背景**: 修复 NVIDIA NIM minimax-m3 主动探测失败时，发现的其他潜在问题
 
 ## 已修复（commit 19d7c4d4d）
 
-✅ 主动探测模型名空值不回退  
-✅ 主动探测 StateManager 未注入  
-✅ 主动探测 backoff 索引 off-by-one  
+✅ 主动探测模型名空值不回退
+✅ 主动探测 StateManager 未注入
+✅ 主动探测 backoff 索引 off-by-one
 
 ---
 

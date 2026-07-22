@@ -95,7 +95,7 @@ const isDecided = computed(() => ['approved', 'rejected', 'timeout'].includes(ap
 async function loadApproval() {
   loading.value = true
   error.value = null
-  
+
   try {
     approval.value = await getApprovalDetail(requestId.value)
   } catch (e: any) {
@@ -107,11 +107,11 @@ async function loadApproval() {
 
 async function handleApprove() {
   if (actionLoading.value) return
-  
+
   actionLoading.value = true
   error.value = null
   successMessage.value = null
-  
+
   try {
     await approveApproval(requestId.value, actionReason.value || undefined)
     successMessage.value = '审批请求已批准'
@@ -127,16 +127,16 @@ async function handleApprove() {
 
 async function handleReject() {
   if (actionLoading.value) return
-  
+
   if (!actionReason.value.trim()) {
     error.value = '请输入拒绝原因'
     return
   }
-  
+
   actionLoading.value = true
   error.value = null
   successMessage.value = null
-  
+
   try {
     await rejectApproval(requestId.value, actionReason.value)
     successMessage.value = '审批请求已拒绝'
@@ -199,7 +199,7 @@ onBeforeUnmount(() => {
       {{ error }}
       <button class="message-close" @click="error = null">×</button>
     </div>
-    
+
     <div v-if="successMessage" class="message message-success">
       <span class="message-icon">✅</span>
       {{ successMessage }}
@@ -384,14 +384,14 @@ onBeforeUnmount(() => {
             ></textarea>
           </div>
           <div class="form-actions">
-            <button 
+            <button
               class="btn btn-success"
               @click="handleApprove"
               :disabled="actionLoading"
             >
               {{ actionLoading ? '处理中...' : '确认批准' }}
             </button>
-            <button 
+            <button
               class="btn btn-secondary"
               @click="cancelAction"
               :disabled="actionLoading"
@@ -414,14 +414,14 @@ onBeforeUnmount(() => {
             ></textarea>
           </div>
           <div class="form-actions">
-            <button 
+            <button
               class="btn btn-danger"
               @click="handleReject"
               :disabled="actionLoading || !actionReason.trim()"
             >
               {{ actionLoading ? '处理中...' : '确认拒绝' }}
             </button>
-            <button 
+            <button
               class="btn btn-secondary"
               @click="cancelAction"
               :disabled="actionLoading"

@@ -1,7 +1,7 @@
 # LLM Gateway 系统审计报告（修正版）
-**日期**: 2026-06-30  
-**审计范围**: 错误处理、数据统计、凭据路由  
-**服务器**: __SECRET_1__ (71服务器)  
+**日期**: 2026-06-30
+**审计范围**: 错误处理、数据统计、凭据路由
+**服务器**: __SECRET_1__ (71服务器)
 **数据库**: llm_gateway (NOT crm - 初次审计错误)
 
 ## 执行摘要
@@ -20,8 +20,8 @@
 
 ### 现象
 ```
-2026-06-30T07:35:18.149016746Z WARN request_logger: CreateInitial failed 
-request_id=56c3333b3cf61a230f47c4b890a964a4 
+2026-06-30T07:35:18.149016746Z WARN request_logger: CreateInitial failed
+request_id=56c3333b3cf61a230f47c4b890a964a4
 error="ERROR: no partition of relation \"request_wal\" found for row (SQLSTATE 23514)"
 ```
 
@@ -46,7 +46,7 @@ CREATE TABLE request_wal_2026_06 PARTITION OF request_wal
     FOR VALUES FROM ('2026-06-01 00:00:00+00') TO ('2026-07-01 00:00:00+00');
 ```
 
-**执行时间**: 2026-06-30 07:40 UTC  
+**执行时间**: 2026-06-30 07:40 UTC
 **验证结果**: 错误日志停止，写入恢复正常
 
 ### 预防措施
@@ -82,12 +82,12 @@ $$ LANGUAGE plpgsql;
 过去24小时内，9次 `no_candidate` 错误，全部来自 `minimax-m2.7-quickspeed`：
 
 ```sql
-SELECT client_model, COUNT(*) as count, MAX(ts) as last_occurrence 
-FROM request_logs 
-WHERE ts >= NOW() - INTERVAL '24 hours' AND error_kind = 'no_candidate' 
+SELECT client_model, COUNT(*) as count, MAX(ts) as last_occurrence
+FROM request_logs
+WHERE ts >= NOW() - INTERVAL '24 hours' AND error_kind = 'no_candidate'
 GROUP BY client_model;
 
-      client_model       | count |        last_occurrence        
+      client_model       | count |        last_occurrence
 -------------------------+-------+-------------------------------
  minimax-m2.7-quickspeed |     9 | 2026-06-30 06:26:56.262206+00
 ```
@@ -123,7 +123,7 @@ minimaxai/minimax-m2.7  → minimax-m2.7
 3. **model_aliases 匹配** (line 770-778)
    ```sql
    -- 查询 model_aliases 表
-   SELECT * FROM model_aliases 
+   SELECT * FROM model_aliases
    WHERE lower(raw_name) = 'minimax-m2.7-quickspeed';  -- ❌ 不存在
    ```
 
@@ -132,7 +132,7 @@ minimaxai/minimax-m2.7  → minimax-m2.7
 **方案1: 添加模型别名** (推荐)
 ```sql
 -- 查找 minimax-m2.7 的 canonical_id
-SELECT id, canonical_name FROM models_canonical 
+SELECT id, canonical_name FROM models_canonical
 WHERE lower(canonical_name) = 'minimax-m2.7';
 
 -- 假设 canonical_id = 123
@@ -164,12 +164,12 @@ FROM model_offers WHERE raw_model_name = 'MiniMax-M2.7-highspeed';
 过去24小时内，14次 `empty_response` 错误，全部来自 `minimax-m3`：
 
 ```sql
-SELECT client_model, COUNT(*) as count 
-FROM request_logs 
-WHERE ts >= NOW() - INTERVAL '24 hours' AND error_kind = 'empty_response' 
+SELECT client_model, COUNT(*) as count
+FROM request_logs
+WHERE ts >= NOW() - INTERVAL '24 hours' AND error_kind = 'empty_response'
 GROUP BY client_model;
 
- client_model | count 
+ client_model | count
 --------------+-------
  minimax-m3   |    14
 ```
@@ -210,17 +210,17 @@ upstream_finish_reason: NULL  ← 上游没有返回finish_reason
 
 1. **检查quality_flags**:
    ```sql
-   SELECT request_id, quality_flags, quality_fix_actions 
-   FROM request_logs 
+   SELECT request_id, quality_flags, quality_fix_actions
+   FROM request_logs
    WHERE request_id = '5255b2d0934ea31119c175de1dc389d6';
    ```
 
 2. **检查request_body大小**:
    ```sql
-   SELECT request_id, 
+   SELECT request_id,
           jsonb_array_length(request_body->'messages') as msg_count,
           length(request_body::text) as body_size
-   FROM request_logs 
+   FROM request_logs
    WHERE request_id = '5255b2d0934ea31119c175de1dc389d6';
    ```
 
@@ -300,14 +300,14 @@ func (bcw *byteCountingWriter) BytesWritten() int64 {
 // 在 StreamChatWithPendingCapture 中使用
 func StreamChatWithPendingCapture(...) (outcome StreamOutcome) {
     bcw := &byteCountingWriter{w: w}
-    
+
     // ... 流式写入到 bcw ...
-    
+
     // 记录字节数
     if capture != nil {
         capture.OutputBytes = bcw.BytesWritten()
     }
-    
+
     return outcome
 }
 ```
@@ -346,13 +346,13 @@ ALTER TABLE request_logs ADD COLUMN IF NOT EXISTS cache_read_bytes BIGINT;
 ALTER TABLE request_logs ADD COLUMN IF NOT EXISTS cache_write_bytes BIGINT;
 
 -- 添加索引（用于成本分析查询）
-CREATE INDEX IF NOT EXISTS idx_request_logs_bytes_cost 
-    ON request_logs (tenant_id, ts DESC) 
+CREATE INDEX IF NOT EXISTS idx_request_logs_bytes_cost
+    ON request_logs (tenant_id, ts DESC)
     WHERE output_bytes > 1000000; -- 仅索引大响应
 
 -- 创建字节数统计视图
 CREATE OR REPLACE VIEW v_request_bytes_stats AS
-SELECT 
+SELECT
     tenant_id,
     date_trunc('day', ts) as day,
     COUNT(*) as request_count,
@@ -417,9 +417,9 @@ GROUP BY tenant_id, date_trunc('day', ts);
 3. **missing_model 需要进一步分析** (11.4%)
    - 查询是哪些模型：
    ```sql
-   SELECT client_model, COUNT(*) 
-   FROM request_logs 
-   WHERE error_kind = 'missing_model' 
+   SELECT client_model, COUNT(*)
+   FROM request_logs
+   WHERE error_kind = 'missing_model'
    GROUP BY client_model;
    ```
 
@@ -531,7 +531,7 @@ groups:
           severity: critical
         annotations:
           summary: "request_wal可能缺少下月分区"
-          
+
       # 2. empty_response错误率
       - alert: HighEmptyResponseRate
         expr: |
@@ -545,7 +545,7 @@ groups:
           severity: warning
         annotations:
           summary: "empty_response错误率超过10%"
-          
+
       # 3. no_candidate错误
       - alert: ModelNoCandidateError
         expr: |
@@ -566,19 +566,19 @@ groups:
 
 2. **分区大小监控**
    ```sql
-   SELECT 
-       schemaname, 
-       tablename, 
+   SELECT
+       schemaname,
+       tablename,
        pg_size_pretty(pg_total_relation_size(schemaname||'.'||tablename)) as size
-   FROM pg_tables 
+   FROM pg_tables
    WHERE tablename LIKE 'request_%_2026_%'
    ORDER BY pg_total_relation_size(schemaname||'.'||tablename) DESC;
    ```
 
 3. **缓存命中率**
    ```promql
-   sum(rate(llmgw_cache_read_tokens_total[5m])) 
-   / 
+   sum(rate(llmgw_cache_read_tokens_total[5m]))
+   /
    sum(rate(llmgw_prompt_tokens_total[5m]))
    ```
 
@@ -612,7 +612,7 @@ groups:
 ```sql
 SELECT mo.raw_model_name, mo.standardized_name, COUNT(*) as offer_count
 FROM model_offers mo
-WHERE lower(mo.raw_model_name) LIKE '%minimax%' 
+WHERE lower(mo.raw_model_name) LIKE '%minimax%'
    OR lower(mo.standardized_name) LIKE '%minimax%'
 GROUP BY mo.raw_model_name, mo.standardized_name;
 ```

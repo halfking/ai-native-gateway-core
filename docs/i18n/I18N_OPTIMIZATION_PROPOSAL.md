@@ -1,7 +1,7 @@
 # i18n 优化方案 — llm-gateway-go
 
-> 对比基准：`~/workspace/llm-gateway-go-2`（参考实现）  
-> 当前项目：`~/workspace/official-deploy/services/llm-gateway-go`  
+> 对比基准：`~/workspace/llm-gateway-go-2`（参考实现）
+> 当前项目：`~/workspace/official-deploy/services/llm-gateway-go`
 > 生成时间：2026-07-05
 
 ---
@@ -83,7 +83,7 @@
 - [ ] 所有硬编码字符串替换为 `t('landing.features.smartRouting.title')` 等
 - [ ] 将 `ServiceLandingPage.vue` 的默认 props（`advantagesTitle`, `footerText` 等）改为 `t()` 调用
 
-**预估工作量**：4 小时  
+**预估工作量**：4 小时
 **文件改动**：2 个 `.vue` + 8 个 locale 文件
 
 #### 1.2 导航栏 i18n 迁移
@@ -92,7 +92,7 @@
 - [ ] `App.vue` 渲染时优先使用 `t(item.labelKey)` || `item.label`
 - [ ] 在所有 locale 文件添加 `nav.item.*` / `nav.group.*` 键
 
-**预估工作量**：3 小时  
+**预估工作量**：3 小时
 **文件改动**：`appNav.ts` + `App.vue` + 8 个 locale 文件
 
 #### 1.3 登录流程 i18n
@@ -100,7 +100,7 @@
 - [ ] `ChangePasswordDialog.vue` 改为 `t('password.*')`
 - [ ] 在 locale 文件补齐对应键（参考 llm-gateway-go-2 的 `locales/<locale>/login.ts`）
 
-**预估工作量**：2 小时  
+**预估工作量**：2 小时
 **文件改动**：2 个组件 + 8 个 locale 文件
 
 #### 1.4 修复 parity.test.ts
@@ -108,7 +108,7 @@
 - [ ] 修正硬编码的 locale 代码列表（`ar-SA` → `ar` 等）
 - [ ] 加入 pre-commit hook 或 CI
 
-**预估工作量**：1 小时  
+**预估工作量**：1 小时
 **文件改动**：`i18n/parity.test.ts` + `.github/workflows/*.yml`（可选）
 
 **阶段 1 总计**：10 小时，可产出可部署版本。
@@ -143,7 +143,7 @@ locales/
 3. 更新 `i18n.ts` 的导入逻辑（从 `./locales/zh-CN` 改为 `./locales/zh-CN/index`）
 4. 实施懒加载优化（参考项目已有 `LAZY_LOADERS`）
 
-**预估工作量**：16 小时（2 天）  
+**预估工作量**：16 小时（2 天）
 **风险**：需要冻结其他 i18n PR，避免合并冲突
 
 #### 2.2 批量迁移核心视图
@@ -177,7 +177,7 @@ locales/
 # 输出：en-US.ts / ja-JP.ts / ... 自动补全对应翻译
 ```
 
-**预估工作量**：8 小时  
+**预估工作量**：8 小时
 **依赖**：需要访问内部 LLM Gateway API
 
 **阶段 2 总计**：42.5 小时（5.3 天）
@@ -205,7 +205,7 @@ locales/
 - [ ] `<link rel="alternate" hreflang="en" href="/en/..." />` meta 标签
 - [ ] sitemap.xml 多语言支持
 
-**预估工作量**：12 小时  
+**预估工作量**：12 小时
 **收益**：搜索引擎多语言索引、可分享的语言链接
 
 #### 3.4 RTL 完善

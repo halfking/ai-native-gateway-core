@@ -1,8 +1,8 @@
 # 凭据状态管理漏洞修复总结（最终版）
 
-**项目**: llm-gateway-go  
-**日期**: 2026-07-03  
-**提交**: 089b5307 (main分支)  
+**项目**: llm-gateway-go
+**日期**: 2026-07-03
+**提交**: 089b5307 (main分支)
 **状态**: ✅ 8个漏洞已修复并推送
 
 ---
@@ -266,7 +266,7 @@ WHERE id = $1 AND lifecycle_status = 'active'
 
 **问题**: circuit_state是内存状态，多实例部署时不同步。
 
-**缓解**: 
+**缓解**:
 - 当前部署：单实例
 - 文档：`../KNOWN_LIMITATIONS_MULTI_INSTANCE.md`
 - 监控：添加circuit不同步告警
@@ -650,8 +650,8 @@ $ git log --oneline -3
 
 ---
 
-**报告人**: AI Agent (OpenCode)  
-**审核状态**: 待人工审核  
-**Git提交**: 089b5307 (main分支)  
-**仓库**: __REPO_URL_1__.git  
+**报告人**: AI Agent (OpenCode)
+**审核状态**: 待人工审核
+**Git提交**: 089b5307 (main分支)
+**仓库**: __REPO_URL_1__.git
 **下一步**: 测试环境部署验证

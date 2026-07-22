@@ -55,7 +55,7 @@ flowchart TD
     end
 
     subgraph "📂 审计发现的问题"
-        D1[deploy/sql/objects/views<br/>v_routable_credential_models.sql<br/>缺少 3 列 + 不完整逻辑] 
+        D1[deploy/sql/objects/views<br/>v_routable_credential_models.sql<br/>缺少 3 列 + 不完整逻辑]
         D2[installer/cmd/llm-gw-installer<br/>embeddata/01-schema.sql<br/>缺少 3 列 + 不完整逻辑]
         D1 -->|已同步更新| V2
         D2 -->|已同步更新| V2

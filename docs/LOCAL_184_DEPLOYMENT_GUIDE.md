@@ -181,8 +181,8 @@ export PGPASSWORD=your_password
 ```bash
 psql -h localhost -U postgres -d llm_gateway -c "
 SELECT tablename, pg_size_pretty(pg_total_relation_size(schemaname||'.'||tablename))
-FROM pg_tables 
-WHERE tablename LIKE '%_hot' 
+FROM pg_tables
+WHERE tablename LIKE '%_hot'
 ORDER BY tablename;
 "
 ```
@@ -197,7 +197,7 @@ psql -h localhost -U postgres -d llm_gateway -c "
 ### 检查数据量
 ```bash
 psql -h localhost -U postgres -d llm_gateway -c "
-SELECT 
+SELECT
   'tool_usage_stats_hot' as table,
   count(*) as rows
 FROM tool_usage_stats_hot
@@ -265,5 +265,5 @@ EOF
 
 ---
 
-**最后更新**: 2026-07-05  
+**最后更新**: 2026-07-05
 **维护者**: LLM Gateway OPS Team

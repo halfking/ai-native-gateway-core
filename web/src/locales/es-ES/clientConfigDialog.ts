@@ -2,7 +2,7 @@
 export default {
   title: 'Generador de configuración {tool}',
   close: 'Cerrar',
-  
+
   step1: {
     title: '① Seleccionar clave API (todas las claves bajo el inquilino actual)',
     refresh: 'Actualizar',
@@ -15,12 +15,12 @@ export default {
     },
     selected: 'Seleccionado:',
   },
-  
+
   step2: {
     title: '② Sistema operativo',
     pathHint: 'Ruta del archivo de configuración:',
   },
-  
+
   step3: {
     title: '③ Seleccionar alcance del modelo',
     featured: 'Modelos destacados (configuración de enrutamiento featured)',
@@ -41,14 +41,14 @@ export default {
       noMatch: 'No hay modelos coincidentes',
     },
   },
-  
+
   footer: {
     generated: '{count} configuraciones de modelo generadas',
     generate: 'Generar configuración',
     generating: 'Generando…',
     regenerate: 'Regenerar',
   },
-  
+
   results: {
     tabs: {
       file: 'Archivo de configuración',
@@ -62,7 +62,7 @@ export default {
       scriptHint: 'El script hace copia de seguridad automática de archivos de configuración antiguos',
     },
   },
-  
+
   applyDialog: {
     title: 'Solicitar nueva clave API',
     close: 'Cerrar',
@@ -74,7 +74,7 @@ export default {
     submit: 'Enviar solicitud',
     submitting: 'Enviando…',
   },
-  
+
   error: {
     applyFailed: 'La solicitud falló',
   },

@@ -1,7 +1,7 @@
 # 泳道跳变问题深度分析
 
-**日期**: 2026-07-19  
-**问题**: 前端多维度泳道图中数据大幅跳变，不像增量更新  
+**日期**: 2026-07-19
+**问题**: 前端多维度泳道图中数据大幅跳变，不像增量更新
 **数据源**: Redis（不是数据库查询）
 
 ---
@@ -13,7 +13,7 @@
 ```
 请求进入网关
   ↓
-telemetry.Client.EmitRequestLog()  
+telemetry.Client.EmitRequestLog()
   ↓ (触发 onEmitted hook)
 LiveStreamSSEHub 收到通知
   ↓
@@ -34,11 +34,11 @@ LiveStreamRedisStore.Track()      ← 写入 Redis ZSET
   - member = JSON 序列化的请求记录
   - TTL = 2 小时
 
-维度队列: 
+维度队列:
   - ZSET llmgw:live:dim:vendor:{vendor}
   - ZSET llmgw:live:dim:provider:{provider_id}
   - ZSET llmgw:live:dim:model:{model}
-  
+
 状态队列:
   - ZSET llmgw:live:status:success
   - ZSET llmgw:live:status:failure
@@ -62,16 +62,16 @@ LiveStreamRedisStore.Track()      ← 写入 Redis ZSET
 func (h *LiveStreamSSEHub) computeScopeDelta(ctx context.Context, tenantID string, isSuper bool) *LiveStreamDelta {
     // 从 Redis 读取最新快照
     fresh, err := h.store.Snapshot(ctx, tenantID, isSuper, h.cfg.InitialReplayLimit)
-    
+
     // 与缓存快照对比
     old := cached.snapshot
-    
+
     // 计算差异
     delta := computeDelta(old, fresh)
-    
+
     // 更新缓存
     cached.snapshot = fresh
-    
+
     return delta
 }
 ```
@@ -88,12 +88,12 @@ func (h *LiveStreamSSEHub) computeScopeDelta(ctx context.Context, tenantID strin
 func (h *LiveStreamSSEHub) pushFullSnapshots() {
     // 每 30 分钟执行一次
     snapshot, err := h.store.Snapshot(ctx, entry.tenantID, entry.isSuper, h.cfg.InitialReplayLimit)
-    
+
     // 更新缓存
     h.cachedSnapshot[scope.cacheKey] = &cachedSnapshotEntry{
         snapshot: snapshot,
     }
-    
+
     // 推送全量快照
     env := LiveStreamEnvelope{
         Type:      "snapshot_refresh",  // ← 关键：告诉前端"全量替换"
@@ -128,7 +128,7 @@ if c.SnapshotRefreshInterval <= 0 {
 
 **现象**: Redis ZSET 的 TTL 是 2 小时，但前端可能缓存了更久的数据
 
-**问题**: 
+**问题**:
 1. Redis 定期 TRIM 掉 2 小时前的数据
 2. 后端从 Redis 读到的快照比前端缓存的数据**少**
 3. 前端收到 delta 后，某些泳道的请求数突然减少
@@ -222,7 +222,7 @@ if c.SnapshotRefreshInterval <= 0 {
 }
 ```
 
-**优点**: 减少全量推送频率  
+**优点**: 减少全量推送频率
 **缺点**: 如果 Redis 和前端数据偏离太多，修正会延迟
 
 ### 方案 B: 优化 `snapshot_refresh` 推送策略（后端）
@@ -275,17 +275,17 @@ function handleSnapshotRefresh(msg) {
 function mergeLanesSmooth(oldLanes, newLanes) {
     // 按 lane.id 匹配，保留旧的请求记录，只添加新的
     const laneMap = new Map(oldLanes.map(l => [l.id, l]));
-    
+
     return newLanes.map(newLane => {
         const oldLane = laneMap.get(newLane.id);
         if (!oldLane) {
             return newLane;  // 新泳道，直接使用
         }
-        
+
         // 合并请求记录（按 request_id 去重）
         const oldReqIds = new Set(oldLane.requests.map(r => r.id));
         const newReqs = newLane.requests.filter(r => !oldReqIds.has(r.id));
-        
+
         return {
             ...newLane,
             requests: [...newReqs, ...oldLane.requests].slice(0, 20)  // 保留最新 20 条

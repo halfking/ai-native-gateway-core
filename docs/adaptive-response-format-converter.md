@@ -46,11 +46,11 @@ type ResponseFormatPreference struct {
 
 3. 按顺序尝试所有格式
    ├─ openai-chat
-   ├─ openai-responses  
+   ├─ openai-responses
    └─ anthropic-messages
-   
+
    第一个成功的 → 记录偏好,返回
-   
+
 4. 所有格式都失败 → 返回错误
 ```
 
@@ -299,6 +299,6 @@ rate(log{msg="session_format_preference_failed"}[5m])
 
 ---
 
-**作者**: OpenCode  
-**日期**: 2026-07-02  
+**作者**: OpenCode
+**日期**: 2026-07-02
 **版本**: v1.0

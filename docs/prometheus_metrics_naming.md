@@ -1,8 +1,8 @@
 # Prometheus Metrics 命名规范
 
-> **版本**: v1.0  
-> **日期**: 2026-07-18  
-> **状态**: 📋 待审查  
+> **版本**: v1.0
+> **日期**: 2026-07-18
+> **状态**: 📋 待审查
 > **目的**: 统一 LLM Gateway 四个优化方向的 Prometheus metrics 命名
 
 ---
@@ -402,13 +402,13 @@ sum(rate(llm_gateway_requests_total[5m])) by (model)
 
 ```promql
 # 5xx 错误率（过去 5 分钟）
-sum(rate(llm_gateway_requests_total{status=~"5.."}[5m])) 
-/ 
+sum(rate(llm_gateway_requests_total{status=~"5.."}[5m]))
+/
 sum(rate(llm_gateway_requests_total[5m]))
 
 # 按提供商的错误率
 sum(rate(llm_gateway_errors_total[5m])) by (provider)
-/ 
+/
 sum(rate(llm_gateway_requests_total[5m])) by (provider)
 ```
 
@@ -416,12 +416,12 @@ sum(rate(llm_gateway_requests_total[5m])) by (provider)
 
 ```promql
 # P99 延迟（过去 5 分钟）
-histogram_quantile(0.99, 
+histogram_quantile(0.99,
   rate(llm_gateway_request_duration_seconds_bucket[5m])
 )
 
 # 按模型的 P95 延迟
-histogram_quantile(0.95, 
+histogram_quantile(0.95,
   sum(rate(llm_gateway_request_duration_seconds_bucket[5m])) by (model, le)
 )
 ```
@@ -433,8 +433,8 @@ histogram_quantile(0.95,
 sum(increase(llm_gateway_daily_cost_usd_total[1h])) by (tenant_id)
 
 # GPU 成本占比
-sum(llm_gateway_cost_breakdown_usd{resource_type="gpu"}) 
-/ 
+sum(llm_gateway_cost_breakdown_usd{resource_type="gpu"})
+/
 sum(llm_gateway_cost_breakdown_usd)
 ```
 
@@ -463,8 +463,8 @@ sum(rate(llm_gateway_requests_total[5m]))
 
 **Panel 2: 错误率**
 ```promql
-sum(rate(llm_gateway_requests_total{status=~"5.."}[5m])) 
-/ 
+sum(rate(llm_gateway_requests_total{status=~"5.."}[5m]))
+/
 sum(rate(llm_gateway_requests_total[5m]))
 ```
 
@@ -600,21 +600,21 @@ import (
 
 func HandleRequest(w http.ResponseWriter, r *http.Request) {
     start := time.Now()
-    
+
     // 业务逻辑
     status := processRequest(r)
-    
+
     // 记录 metrics
     duration := time.Since(start).Seconds()
-    
+
     metrics.RequestsTotal.WithLabelValues(
-        r.Method, 
-        r.URL.Path, 
+        r.Method,
+        r.URL.Path,
         status,
     ).Inc()
-    
+
     metrics.RequestDuration.WithLabelValues(
-        r.Method, 
+        r.Method,
         status,
     ).Observe(duration)
 }
@@ -633,10 +633,10 @@ import (
 func main() {
     // 业务路由
     http.HandleFunc("/api/v1/chat", HandleChat)
-    
+
     // Prometheus metrics 端点
     http.Handle("/metrics", promhttp.Handler())
-    
+
     http.ListenAndServe(":8080", nil)
 }
 ```
@@ -653,7 +653,7 @@ func main() {
 
 ---
 
-**作者**: Infrastructure Team  
-**审阅者**: 待定  
-**批准日期**: 待定  
+**作者**: Infrastructure Team
+**审阅者**: 待定
+**批准日期**: 待定
 **下次复审**: Phase 1 开始前 (2026-07-22)

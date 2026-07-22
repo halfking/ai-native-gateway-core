@@ -23,7 +23,7 @@ const filters = ref({
 async function loadRanking() {
   loading.value = true
   error.value = null
-  
+
   try {
     const response = await qualityApi.getRanking(filters.value)
     if (response.code === 0 && response.data) {
@@ -42,16 +42,16 @@ async function loadRanking() {
 async function loadProviders() {
   loading.value = true
   error.value = null
-  
+
   try {
     // 从排行榜中提取唯一的供应商 ID
     const providerIds = [...new Set(ranking.value.map(item => item.provider_id))]
-    
+
     // 并发加载所有供应商的详细数据
-    const promises = providerIds.map(id => 
+    const promises = providerIds.map(id =>
       qualityApi.getProviderQuality({ provider_id: id })
     )
-    
+
     const responses = await Promise.all(promises)
     providers.value = responses
       .filter(r => r.code === 0 && r.data)
@@ -86,13 +86,13 @@ async function handleTabChange(tab: 'providers' | 'ranking') {
 
     <!-- 标签切换 -->
     <div class="tabs">
-      <button 
+      <button
         :class="{ active: activeTab === 'ranking' }"
         @click="handleTabChange('ranking')"
       >
         质量排行榜
       </button>
-      <button 
+      <button
         :class="{ active: activeTab === 'providers' }"
         @click="handleTabChange('providers')"
       >
@@ -104,24 +104,24 @@ async function handleTabChange(tab: 'providers' | 'ranking') {
     <div v-if="activeTab === 'ranking'" class="filters">
       <div class="filter-group">
         <label>模型名称</label>
-        <input 
-          v-model="filters.model_name" 
+        <input
+          v-model="filters.model_name"
           placeholder="输入模型名称过滤"
           @input="loadRanking"
         />
       </div>
-      
+
       <div class="filter-group">
         <label>最低分数</label>
-        <input 
-          v-model.number="filters.min_score" 
-          type="number" 
-          min="0" 
+        <input
+          v-model.number="filters.min_score"
+          type="number"
+          min="0"
           max="100"
           @change="loadRanking"
         />
       </div>
-      
+
       <div class="filter-group">
         <label>排序</label>
         <select v-model="filters.order_by" @change="loadRanking">
@@ -130,7 +130,7 @@ async function handleTabChange(tab: 'providers' | 'ranking') {
           <option value="performance_score">性能</option>
         </select>
       </div>
-      
+
       <div class="filter-group">
         <label>显示条数</label>
         <select v-model.number="filters.limit" @change="loadRanking">
@@ -139,7 +139,7 @@ async function handleTabChange(tab: 'providers' | 'ranking') {
           <option :value="50">50</option>
         </select>
       </div>
-      
+
       <button class="refresh-btn" @click="loadRanking">刷新</button>
     </div>
 
@@ -162,7 +162,7 @@ async function handleTabChange(tab: 'providers' | 'ranking') {
       <div v-if="ranking.length === 0" class="empty">
         <p>暂无数据</p>
       </div>
-      
+
       <div v-else class="ranking-table">
         <table>
           <thead>
@@ -190,7 +190,7 @@ async function handleTabChange(tab: 'providers' | 'ranking') {
                 <span class="score-value">{{ formatQualityScore(item.quality_score) }}</span>
               </td>
               <td class="grade">
-                <span 
+                <span
                   :class="`grade-badge grade-${item.quality_grade}`"
                   :style="{ backgroundColor: QUALITY_GRADE_COLORS[item.quality_grade] }"
                 >
@@ -212,10 +212,10 @@ async function handleTabChange(tab: 'providers' | 'ranking') {
       <div v-if="providers.length === 0" class="empty">
         <p>暂无数据</p>
       </div>
-      
+
       <div v-else class="provider-cards">
-        <div 
-          v-for="provider in providers" 
+        <div
+          v-for="provider in providers"
           :key="provider.provider_id"
           class="provider-card"
         >
@@ -223,10 +223,10 @@ async function handleTabChange(tab: 'providers' | 'ranking') {
             <h3>{{ provider.provider_name }}</h3>
             <span class="model-count">{{ provider.models.length }} 个模型</span>
           </div>
-          
+
           <div class="models-list">
-            <div 
-              v-for="model in provider.models" 
+            <div
+              v-for="model in provider.models"
               :key="model.model_name"
               class="model-item"
             >
@@ -234,7 +234,7 @@ async function handleTabChange(tab: 'providers' | 'ranking') {
                 <span class="model-name">{{ model.model_name }}</span>
                 <div class="model-quality">
                   <span class="quality-score">{{ formatQualityScore(model.quality_score) }}</span>
-                  <span 
+                  <span
                     :class="`grade-badge grade-${model.quality_grade}`"
                     :style="{ backgroundColor: QUALITY_GRADE_COLORS[model.quality_grade] }"
                   >
@@ -242,7 +242,7 @@ async function handleTabChange(tab: 'providers' | 'ranking') {
                   </span>
                 </div>
               </div>
-              
+
               <div class="scores-grid">
                 <div class="score-item">
                   <label>可用性</label>
@@ -251,7 +251,7 @@ async function handleTabChange(tab: 'providers' | 'ranking') {
                     <span>{{ model.scores.availability }}</span>
                   </div>
                 </div>
-                
+
                 <div class="score-item">
                   <label>性能</label>
                   <div class="score-bar">
@@ -259,7 +259,7 @@ async function handleTabChange(tab: 'providers' | 'ranking') {
                     <span>{{ model.scores.performance }}</span>
                   </div>
                 </div>
-                
+
                 <div class="score-item">
                   <label>稳定性</label>
                   <div class="score-bar">
@@ -267,7 +267,7 @@ async function handleTabChange(tab: 'providers' | 'ranking') {
                     <span>{{ model.scores.stability }}</span>
                   </div>
                 </div>
-                
+
                 <div class="score-item">
                   <label>成本效益</label>
                   <div class="score-bar">
@@ -276,7 +276,7 @@ async function handleTabChange(tab: 'providers' | 'ranking') {
                   </div>
                 </div>
               </div>
-              
+
               <div class="model-footer">
                 <span class="timestamp">更新: {{ formatCalculatedAt(model.calculated_at) }}</span>
               </div>
@@ -663,11 +663,11 @@ async function handleTabChange(tab: 'providers' | 'ranking') {
     flex-direction: column;
     align-items: stretch;
   }
-  
+
   .provider-cards {
     grid-template-columns: 1fr;
   }
-  
+
   .ranking-table {
     overflow-x: auto;
   }

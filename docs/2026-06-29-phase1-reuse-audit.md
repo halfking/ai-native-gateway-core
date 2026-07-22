@@ -1,8 +1,8 @@
 # LLM Gateway Go 领域重构第 1 阶段代码复用审计
 
-> **审计日期**: 2026-06-29  
-> **审计范围**: Phase 0 + Phase 1 代码复用情况与遗漏问题  
-> **对比文档**: `domain-refactoring-plan.md` v2.0 + 早期执行审计文档  
+> **审计日期**: 2026-06-29
+> **审计范围**: Phase 0 + Phase 1 代码复用情况与遗漏问题
+> **对比文档**: `domain-refactoring-plan.md` v2.0 + 早期执行审计文档
 > **审计目标**: 修正早期审计中的判断偏差，准确评估代码复用情况
 
 ---
@@ -40,7 +40,7 @@
 #### domains/credential/（凭据管理）
 
 ```
-旧代码: _to-be-deprecated/{credentialstate,circuit,limiter}/ 
+旧代码: _to-be-deprecated/{credentialstate,circuit,limiter}/
   - 9 文件，2,867 行
 新代码: domains/credential/
   - 19 文件，5,573 行
@@ -309,21 +309,21 @@
 
 **早期审计文档的问题**:
 
-1. **统计口径错误**: 
+1. **统计口径错误**:
    - 早期审计将 `domains/` 下所有代码（包括新增功能）作为分子
    - 将旧代码库作为分母
    - 得出 13,279/65,871 = 20.1% 的"复用率"
    - **但这个数字混淆了"复用"和"扩展"**
 
-2. **未统计 executor 迁移**: 
+2. **未统计 executor 迁移**:
    - `routing/executor_*.go`（4,361 行）已迁移到 `domains/streaming/executors/`
    - 早期审计未计入，导致 streaming 复用率被严重低估
 
-3. **未统计 anthropic 迁移**: 
+3. **未统计 anthropic 迁移**:
    - `relay/anthropic_*.go`（5,055 行）已迁移到 `domains/transformation/anthropic/`
    - 早期审计未计入
 
-4. **未识别代码位置变化**: 
+4. **未识别代码位置变化**:
    - 许多代码从一个包迁移到另一个包（如 executor 从 routing 到 streaming）
    - 早期审计按包名对比，未追踪代码流向
 
@@ -446,22 +446,22 @@ touch domains/tenant/rls_config.go
 
 // Phase: Authentication
 p.AddStage(&pipeline.PipelineStage{
-    Name: "authentication", 
-    Phase: pipeline.PhaseAuthentication, 
+    Name: "authentication",
+    Phase: pipeline.PhaseAuthentication,
     Hooks: []pipeline.Hook{authentication.NewAPIKeyAuthHook(keyVerifier)},
 })
 
 // Phase: Identity
 p.AddStage(&pipeline.PipelineStage{
-    Name: "identity", 
-    Phase: pipeline.PhasePreRouting, 
+    Name: "identity",
+    Phase: pipeline.PhasePreRouting,
     Hooks: []pipeline.Hook{identity.NewClientIdentityHook(builder)},
 })
 
 // Phase: Session
 p.AddStage(&pipeline.PipelineStage{
-    Name: "session", 
-    Phase: pipeline.PhasePreRouting, 
+    Name: "session",
+    Phase: pipeline.PhasePreRouting,
     Hooks: []pipeline.Hook{session.NewSessionLoaderHook(mgr)},
 })
 ```

@@ -1,7 +1,7 @@
 # 🎉 ResponseBody 修复完成报告
 
-**时间**: 2026-06-20 23:10  
-**状态**: ✅ 已完成并提交  
+**时间**: 2026-06-20 23:10
+**状态**: ✅ 已完成并提交
 **Commit**: 56d76a6d
 
 ---
@@ -61,9 +61,9 @@ func WriteNonStreamResponse(...) ([]byte, error) {
 **B. Anthropic 执行器 (executor_anthropic.go)**
 ```diff
   func (a *AnthropicExecutor) WriteNonStreamResponse(
-      w http.ResponseWriter, 
-      resp *http.Response, 
-      clientModel, qualityFixMode string, 
+      w http.ResponseWriter,
+      resp *http.Response,
+      clientModel, qualityFixMode string,
       qualitySignals *QualitySignals
 - ) error {
 + ) ([]byte, error) {
@@ -138,12 +138,12 @@ curl -X POST "https://__DOMAIN_8__/v1/chat/completions" \
 
 ### 修复前
 ```sql
-SELECT 
+SELECT
   request_id,
   success,
   completion_tokens,
   response_body IS NOT NULL as has_body
-FROM request_logs 
+FROM request_logs
 WHERE client_model = 'claude-opus-4-8'
 ORDER BY ts DESC LIMIT 10;
 
@@ -155,12 +155,12 @@ ORDER BY ts DESC LIMIT 10;
 
 ### 修复后
 ```sql
-SELECT 
+SELECT
   request_id,
   success,
   completion_tokens,
   LENGTH(response_body::text) as body_len
-FROM request_logs 
+FROM request_logs
 WHERE client_model = 'claude-opus-4-8'
   AND ts > now() - interval '10 minutes';
 
@@ -213,10 +213,10 @@ curl -X POST "https://__DOMAIN_8__/v1/chat/completions" \
 # 4. 验证数据库
 kubectl -n pms-test exec -i llm-gateway-pg-xxx -- \
   psql -U llm_gateway -d llm_gateway -c \
-  "SELECT request_id, completion_tokens, 
-   LENGTH(response_body::text) as body_len 
-   FROM request_logs 
-   WHERE ts > now() - interval '5 minutes' 
+  "SELECT request_id, completion_tokens,
+   LENGTH(response_body::text) as body_len
+   FROM request_logs
+   WHERE ts > now() - interval '5 minutes'
    ORDER BY ts DESC LIMIT 5;"
 ```
 
@@ -279,15 +279,15 @@ kubectl -n pms-test rollout undo deployment/llm-gateway-go-deployment --to-revis
 
 ## 🎉 总结
 
-**问题**: claude-opus-4-8 零输出 + 响应体不保存  
-**根因**: WriteNonStreamResponse 函数设计缺陷  
-**修复**: 返回响应体并设置到 ExecuteResult  
-**状态**: ✅ 已修复、已测试、已提交  
+**问题**: claude-opus-4-8 零输出 + 响应体不保存
+**根因**: WriteNonStreamResponse 函数设计缺陷
+**修复**: 返回响应体并设置到 ExecuteResult
+**状态**: ✅ 已修复、已测试、已提交
 **下一步**: 部署到生产环境
 
 ---
 
-**修复完成时间**: 2026-06-20 23:10  
-**修复人员**: AI Assistant  
+**修复完成时间**: 2026-06-20 23:10
+**修复人员**: AI Assistant
 **审核状态**: 待用户确认部署
 

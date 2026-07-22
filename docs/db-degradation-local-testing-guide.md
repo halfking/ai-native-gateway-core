@@ -1,7 +1,7 @@
 # 数据库降级模块 - 本地环境集成测试指南
 
-**测试环境**: macOS 本地环境  
-**测试时间**: 2026-07-10  
+**测试环境**: macOS 本地环境
+**测试时间**: 2026-07-10
 **依赖服务**: PostgreSQL (localhost:5432) + Redis (localhost:6379)
 
 ---
@@ -91,7 +91,7 @@ import (
     "fmt"
     "os"
     "time"
-    
+
     "github.com/kaixuan/llm-gateway-go/domains/dbdegradation"
     "github.com/kaixuan/llm-gateway-go/domains/session"
 )
@@ -101,13 +101,13 @@ func main() {
         fmt.Println("用法: go run test_writer.go <backup_dir>")
         os.Exit(1)
     }
-    
+
     baseDir := os.Args[1]
     fw := dbdegradation.NewFileWriter(baseDir)
     defer fw.Close()
-    
+
     ctx := context.Background()
-    
+
     // 写入 10 个测试会话
     for i := 0; i < 10; i++ {
         sess := &session.Session{
@@ -124,17 +124,17 @@ func main() {
             StoppedAt:  time.Now(),
             StopReason: "test",
         }
-        
+
         err := fw.WriteSnapshot(ctx, sess, stats, args)
         if err != nil {
             fmt.Printf("写入失败: %v\n", err)
             os.Exit(1)
         }
     }
-    
+
     fmt.Println("✅ 成功写入 10 个会话")
     fmt.Printf("📁 备份目录: %s/backups\n", baseDir)
-    
+
     // 获取统计信息
     stats := fw.GetStats()
     fmt.Printf("📊 总记录数: %d\n", stats.TotalRecords)
@@ -187,7 +187,7 @@ func main() {
         "..\\windows\\system32",
         "sessions-2026-07-10.jsonl.gz", // 合法文件名
     }
-    
+
     for _, vector := range attackVectors {
         // 注意：validateBackupFilename 是包私有的
         // 这里展示预期行为
@@ -211,7 +211,7 @@ import (
     "fmt"
     "os"
     "time"
-    
+
     "github.com/kaixuan/llm-gateway-go/domains/dbdegradation"
     "github.com/kaixuan/llm-gateway-go/domains/session"
 )
@@ -220,13 +220,13 @@ func main() {
     baseDir := "/tmp/llm-gateway-rotation-test"
     os.MkdirAll(baseDir, 0755)
     defer os.RemoveAll(baseDir)
-    
+
     fw := dbdegradation.NewFileWriter(baseDir)
     fw.SetMaxFileSize(1024) // 1KB 触发轮转（需要添加 setter 方法）
     defer fw.Close()
-    
+
     ctx := context.Background()
-    
+
     // 写入大量数据触发轮转
     for i := 0; i < 100; i++ {
         sess := &session.Session{
@@ -238,14 +238,14 @@ func main() {
         }
         stats := &session.SessionStats{TotalTurns: 1}
         args := session.SnapshotArgs{}
-        
+
         err := fw.WriteSnapshot(ctx, sess, stats, args)
         if err != nil {
             fmt.Printf("写入失败: %v\n", err)
             break
         }
     }
-    
+
     // 检查生成的文件
     files, _ := os.ReadDir(baseDir + "/backups")
     fmt.Printf("✅ 生成了 %d 个文件\n", len(files))
@@ -525,8 +525,8 @@ brew services start postgresql
 
 ---
 
-**测试负责人**: Kiro AI  
-**本地环境**: macOS  
-**数据库**: PostgreSQL localhost:5432  
-**Redis**: localhost:6379  
+**测试负责人**: Kiro AI
+**本地环境**: macOS
+**数据库**: PostgreSQL localhost:5432
+**Redis**: localhost:6379
 **测试状态**: ✅ 单元测试通过，⏳ 集成测试待运行

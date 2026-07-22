@@ -1,7 +1,7 @@
 # 数据库降级模块审计报告
 
-**审计时间**: 2026-07-10  
-**审计人员**: Kiro AI  
+**审计时间**: 2026-07-10
+**审计人员**: Kiro AI
 **审计范围**: 数据库离线降级方案全模块代码审查
 
 ---
@@ -41,7 +41,7 @@
 
 **位置**: `admin/db_degradation_handlers.go:77-89`
 
-**问题描述**:  
+**问题描述**:
 `handleGetBackupFile` 和 `handleRecoverBackupFile` 直接从 URL 路径读取 `filename` 参数，未验证是否包含目录遍历字符（`..`、`/`），攻击者可通过构造恶意文件名访问任意文件。
 
 ```go
@@ -95,7 +95,7 @@ if err := validateBackupFilename(filename); err != nil {
 
 **位置**: `domains/dbdegradation/file_writer.go:88-137`
 
-**问题描述**:  
+**问题描述**:
 `writeRecordOnce` 无文件大小限制，单个备份文件可能无限增长，导致磁盘耗尽。恶意会话或异常流量可触发 DoS。
 
 **风险**:
@@ -147,7 +147,7 @@ maxDailyFiles: 10,                // 单日最多 10 个文件
 
 **位置**: `domains/dbdegradation/recovery.go:27-36`
 
-**问题描述**:  
+**问题描述**:
 `NewRecovery` 构造函数签名缺少 `dbWriter` 参数，但文档中要求传入。实际实现中未使用 `dbWriter`，恢复逻辑直接写 DB，与设计不一致。
 
 ```go
@@ -204,7 +204,7 @@ func NewRecovery(db *pgxpool.Pool, fileReader *FileReader, dbWriter *session.DBW
 
 **位置**: `admin/db_degradation_handlers.go:62-64`, `recovery.go:104-106`
 
-**问题描述**:  
+**问题描述**:
 错误消息直接返回数据库路径、文件路径等敏感信息给客户端。
 
 ```go
@@ -232,8 +232,8 @@ if err != nil {
 if err != nil {
     task.Status = "failed"
     task.Error = "failed to read backup records"  // 通用错误
-    slog.Error("recovery: failed to read records", 
-        "task_id", task.ID, 
+    slog.Error("recovery: failed to read records",
+        "task_id", task.ID,
         "error", err,  // 详细错误仅记录日志
     )
     return
@@ -248,7 +248,7 @@ if err != nil {
 
 **位置**: `domains/dbdegradation/recovery.go:49`, `monitor.go:203-211`
 
-**问题描述**:  
+**问题描述**:
 异步 goroutine 没有超时保护，长时间运行的恢复任务可能永不退出。
 
 ```go
@@ -304,7 +304,7 @@ go func(l StatusChangeListener) {
         }()
         l(event)
     }()
-    
+
     select {
     case <-done:
     case <-time.After(5 * time.Second):
@@ -319,7 +319,7 @@ go func(l StatusChangeListener) {
 
 **位置**: `domains/dbdegradation/file_reader.go:96-104`
 
-**问题描述**:  
+**问题描述**:
 缓存 TTL 检查逻辑存在并发竞态，多个 goroutine 同时访问可能导致缓存失效时间判断错误。
 
 ```go
@@ -376,7 +376,7 @@ func (fr *FileReader) GetFileSummary(ctx context.Context, filename string) (*Bac
 
 **位置**: `domains/dbdegradation/ttl_manager.go:105-107`
 
-**问题描述**:  
+**问题描述**:
 `extendAllSessionTTLs` 失败仅记录日志，不重试。降级模式下 Redis TTL 未延长可能导致数据丢失。
 
 **修复建议**:
@@ -385,7 +385,7 @@ func (tm *TTLManager) runExtendLoop() {
     defer close(tm.doneCh)
     ticker := time.NewTicker(tm.extendInterval)
     defer ticker.Stop()
-    
+
     retryCount := 0
     maxRetries := 3
 
@@ -396,8 +396,8 @@ func (tm *TTLManager) runExtendLoop() {
         case <-ticker.C:
             if err := tm.extendAllSessionTTLs(context.Background()); err != nil {
                 retryCount++
-                slog.Warn("ttl_manager: failed to extend TTLs", 
-                    "error", err, 
+                slog.Warn("ttl_manager: failed to extend TTLs",
+                    "error", err,
                     "retry", retryCount,
                 )
                 if retryCount < maxRetries {
@@ -418,7 +418,7 @@ func (tm *TTLManager) runExtendLoop() {
 
 **位置**: `domains/dbdegradation/file_writer.go:155`, `recovery.go:381`
 
-**问题描述**:  
+**问题描述**:
 备份文件和归档目录权限为 `0644` / `0755`，同用户组可读。
 
 ```go
@@ -438,7 +438,7 @@ os.OpenFile(filepath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0600)  // 仅 owner �
 
 **位置**: `domains/dbdegradation/recovery.go:216-235`
 
-**问题描述**:  
+**问题描述**:
 `recoverSession` 使用无超时的 context，事务可能长时间锁表。
 
 **修复建议**:
@@ -457,7 +457,7 @@ func (r *Recovery) recoverSession(ctx context.Context, sessionID string, records
     if err := r.writeSnapshot(txCtx, tx, snapshot); err != nil {
         return fmt.Errorf("write snapshot: %w", err)
     }
-    
+
     // ...
 }
 ```
@@ -468,7 +468,7 @@ func (r *Recovery) recoverSession(ctx context.Context, sessionID string, records
 
 **位置**: `domains/dbdegradation/ttl_manager.go:169-171`
 
-**问题描述**:  
+**问题描述**:
 Pipeline 执行失败仅记录警告，部分键 TTL 可能未延长。
 
 **修复建议**:
@@ -485,7 +485,7 @@ if _, err := pipe.Exec(ctx); err != nil {
 
 **位置**: `domains/dbdegradation/recovery.go:385-390`
 
-**问题描述**:  
+**问题描述**:
 `os.Rename` 在跨文件系统时可能失败，未处理中间状态。
 
 **修复建议**:
@@ -515,7 +515,7 @@ func (r *Recovery) archiveFile(filename string) error {
 
 **位置**: `domains/dbdegradation/monitor.go:64-67`
 
-**问题描述**:  
+**问题描述**:
 `Stop()` 直接关闭 channel，可能在健康检查进行中时触发 panic。
 
 **修复建议**:
@@ -527,7 +527,7 @@ func (m *Monitor) Stop() {
     default:
         close(m.stopCh)
     }
-    
+
     // 等待循环退出（带超时）
     select {
     case <-m.doneCh:
@@ -541,7 +541,7 @@ func (m *Monitor) Stop() {
 
 ### L2. 日志级别不统一
 
-**问题描述**:  
+**问题描述**:
 调试信息使用 `Info` 级别，生产环境日志量过大。
 
 **修复建议**:
@@ -561,10 +561,10 @@ slog.Info("recovery: validation passed", ...)
 
 **位置**: `domains/session/session.go:152-159`
 
-**问题描述**:  
+**问题描述**:
 `FileWriterInterface` 定义在 `session` 包中以"避免循环依赖"，但实际上 `dbdegradation` 和 `session` 已经有依赖关系（`dbdegradation` import `session`）。
 
-**建议**:  
+**建议**:
 将接口移到 `dbdegradation` 包，`session.Manager` 接受 `dbdegradation.FileWriter` 类型。
 
 ---
@@ -573,10 +573,10 @@ slog.Info("recovery: validation passed", ...)
 
 **位置**: `domains/dbdegradation/recovery.go:24-25`
 
-**问题描述**:  
+**问题描述**:
 使用 `sync.Map` 存储任务，无持久化，重启后丢失。长时间运行的恢复任务无法追踪。
 
-**建议**:  
+**建议**:
 - 短期：添加任务过期清理（24 小时后自动删除）
 - 长期：持久化到 DB 或 Redis
 
@@ -584,10 +584,10 @@ slog.Info("recovery: validation passed", ...)
 
 ### A3. 缺少监控指标导出
 
-**问题描述**:  
+**问题描述**:
 所有模块缺少 Prometheus metrics 导出，生产环境无法监控关键指标（降级次数、恢复成功率、文件写入延迟等）。
 
-**建议**:  
+**建议**:
 添加指标导出（可选，非阻塞性问题）：
 ```go
 // metrics.go
@@ -599,7 +599,7 @@ var (
         },
         []string{"from_status", "to_status"},
     )
-    
+
     backupWriteDuration = prometheus.NewHistogram(
         prometheus.HistogramOpts{
             Name: "db_backup_write_duration_seconds",
@@ -749,6 +749,6 @@ curl -H "Authorization: Bearer $TOKEN" \
 
 ---
 
-**审计人员签名**: Kiro AI  
-**审计日期**: 2026-07-10  
+**审计人员签名**: Kiro AI
+**审计日期**: 2026-07-10
 **下次审计建议**: 上线后 1 个月复查（2026-08-10）

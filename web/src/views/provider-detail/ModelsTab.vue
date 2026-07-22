@@ -336,23 +336,23 @@ function closeDrawer() {
 // Phase 3.2: Check model availability across all credentials with 2-phase validation
 async function checkModelAcrossCredentials() {
   if (!selected.value) return
-  
+
   checkingModel.value = true
   modelCheckResults.value = null
-  
+
   try {
     const credentials = await getProviderCredentials(props.providerId)
     const modelName = selected.value.raw_model_name
-    
+
     // Check each credential with 2-phase validation
     const results = await Promise.all(
       credentials.map(async (cred) => {
         // Phase 1: Static check - does the credential have this model in offers?
         const offerMatch = offers.value.find(
-          offer => offer.credential_id === cred.id && 
+          offer => offer.credential_id === cred.id &&
                    offer.raw_model_name.toLowerCase() === modelName.toLowerCase()
         )
-        
+
         if (!offerMatch) {
           // Phase 1 failed: Not in offers list
           return {

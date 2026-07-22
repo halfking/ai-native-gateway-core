@@ -1,8 +1,8 @@
 # ADR-001: 使用 credentials.plan_type 作为计费模式的单一真相源
 
-**状态：** 已接受  
-**日期：** 2026-07-03  
-**决策者：** AI 运维团队  
+**状态：** 已接受
+**日期：** 2026-07-03
+**决策者：** AI 运维团队
 **相关文档：** [计费模式标准化方案](./billing-mode-standardization.md)
 
 ---
@@ -121,9 +121,9 @@ func DeriveBillingMode(planType string) string {
 
 # ADR-002: 计费模式命名标准化
 
-**状态：** 已接受  
-**日期：** 2026-07-03  
-**决策者：** AI 运维团队  
+**状态：** 已接受
+**日期：** 2026-07-03
+**决策者：** AI 运维团队
 **依赖：** ADR-001
 
 ---
@@ -169,9 +169,9 @@ func DeriveBillingMode(planType string) string {
 
 # ADR-003: 凭据类型自动检测与验证
 
-**状态：** 提议中  
-**日期：** 2026-07-03  
-**决策者：** 待定  
+**状态：** 提议中
+**日期：** 2026-07-03
+**决策者：** 待定
 
 ---
 
@@ -202,18 +202,18 @@ func DetectPlanType(credential Credential) (string, error) {
     if err != nil {
         return "", err
     }
-    
+
     // 2. 发送测试请求
     testReq := createTestRequest()
     resp, err := sendRequest(credential, testReq)
-    
+
     // 3. 根据响应判断类型
     if strings.Contains(resp.Error, "coding plan") {
         return "code_plan", nil
     } else if strings.Contains(resp.Error, "token plan") {
         return "token_plan", nil
     }
-    
+
     return "token", nil  // 默认为按量付费
 }
 ```

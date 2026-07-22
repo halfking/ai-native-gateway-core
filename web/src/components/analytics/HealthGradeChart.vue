@@ -51,13 +51,13 @@ const total = computed(() => {
 
 function initChart() {
   if (!chartRef.value || isDestroyed.value) return
-  
+
   // 清理旧实例
   if (chartInstance) {
     chartInstance.dispose()
     chartInstance = null
   }
-  
+
   chartInstance = echarts.init(chartRef.value)
   updateChart()
 }

@@ -1,6 +1,6 @@
 # Phase 1 进度报告 - 供应商质量画像数据采集
 
-**更新时间**: 2026-07-19 02:35  
+**更新时间**: 2026-07-19 02:35
 **状态**: 🚧 90% 完成
 
 ---
@@ -96,7 +96,7 @@ if dbConn != nil && dbConn.Enabled() {
     qualityCollectorEnabled := os.Getenv("QUALITY_COLLECTOR_ENABLED")
     if qualityCollectorEnabled == "" || qualityCollectorEnabled == "true" {
         slog.Info("启动质量指标采集器")
-        
+
         // 创建采集器
         qualityCollector := quality.New(
             dbConn.Stdlib(),  // 转换 pgxpool 为 *sql.DB
@@ -104,7 +104,7 @@ if dbConn != nil && dbConn.Enabled() {
             quality.WithHourInterval(1*time.Hour),
             quality.WithTimeout(30*time.Second),
         )
-        
+
         // 后台启动
         go func() {
             if err := qualityCollector.Start(context.Background()); err != nil {
@@ -320,6 +320,6 @@ if err := c.CollectMinuteMetrics(ctx); err != nil {
 
 ---
 
-**Phase 1 状态**: 🚧 核心逻辑完成，待集成和测试  
-**下次会话**: 从集成到 main.go 开始  
+**Phase 1 状态**: 🚧 核心逻辑完成，待集成和测试
+**下次会话**: 从集成到 main.go 开始
 **预计完成时间**: 2026-07-20

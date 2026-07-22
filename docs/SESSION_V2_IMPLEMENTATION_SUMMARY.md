@@ -1,8 +1,8 @@
 # 会话存储V2架构实施方案 - 完整总结
 
-> **版本**: v1.0  
-> **日期**: 2026-07-17  
-> **状态**: Phase 0 & Phase 1.1 完成  
+> **版本**: v1.0
+> **日期**: 2026-07-17
+> **状态**: Phase 0 & Phase 1.1 完成
 > **作者**: llm-gateway-ops
 
 ---
@@ -13,10 +13,10 @@
 
 ### 核心优势
 
-✅ **零风险**：旧系统完全不动，V2独立开发验证  
-✅ **可回滚**：任何时候可一键切回旧系统  
-✅ **可验证**：双写期间持续对账，充分观察  
-✅ **高性能**：增量存储 + columnar压缩，预计节省60-80%磁盘  
+✅ **零风险**：旧系统完全不动，V2独立开发验证
+✅ **可回滚**：任何时候可一键切回旧系统
+✅ **可验证**：双写期间持续对账，充分观察
+✅ **高性能**：增量存储 + columnar压缩，预计节省60-80%磁盘
 
 ---
 
@@ -332,7 +332,7 @@ func (w *DualWriter) Write(ctx context.Context, req *ProcessedRequest) error {
     if err := w.v1Writer.Write(ctx, req); err != nil {
         return err  // 主写失败则整体失败
     }
-    
+
     // 2. 副写V2
     if w.flags.IsEnabled("sessions_v2_shadow_write") {
         if err := w.v2Writer.Write(ctx, req); err != nil {
@@ -342,7 +342,7 @@ func (w *DualWriter) Write(ctx context.Context, req *ProcessedRequest) error {
             w.metrics.V2WriteSuccess.Inc()
         }
     }
-    
+
     return nil
 }
 ```
@@ -609,14 +609,14 @@ Week 6 (8/19-8/23): 完全切换
 
 ## 联系方式
 
-**技术负责人**: llm-gateway-ops  
-**项目文档**: `docs/SESSION_V2_*.md`  
-**代码目录**: `domains/session/v2/`  
-**Migration**: `sql/migrations/startup/430_*.sql`  
+**技术负责人**: llm-gateway-ops
+**项目文档**: `docs/SESSION_V2_*.md`
+**代码目录**: `domains/session/v2/`
+**Migration**: `sql/migrations/startup/430_*.sql`
 
 **紧急联系**: 如遇生产问题，立即执行回滚策略并通知团队
 
 ---
 
-**最后更新**: 2026-07-17  
+**最后更新**: 2026-07-17
 **下次审查**: 完成Phase 1.2后

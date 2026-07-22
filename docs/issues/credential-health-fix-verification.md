@@ -1,7 +1,7 @@
 # Credential Health False Positive Fix - 验证报告
 
-**日期**: 2026-07-16  
-**部署版本**: v2.4.6 (build_seq 1099/1100, commit 4a8ab149)  
+**日期**: 2026-07-16
+**部署版本**: v2.4.6 (build_seq 1099/1100, commit 4a8ab149)
 **修复范围**: Phase 2 (错误分类) + Phase 3 (主动探测) + budget_exceeded 修复
 
 ---
@@ -53,7 +53,7 @@ budget_exceeded | balance_insufficient | credit exhausted | quota exceeded
 - **之前**: 429 + `budget_exceeded` → `KindRateLimit` (transient, 会重试)
 - **现在**: 429 + `budget_exceeded` → `KindQuotaPermanent` (永久，不重试)
 
-**效果**: 
+**效果**:
 - 余额不足的 credential 不再无意义重试
 - 不触发 active_probe
 - credential 状态明确：quota_permanent
@@ -116,12 +116,12 @@ done
  "err":"upstream 429: {\"error\":{\"message\":\"Organization balance insufficient\",\"type\":\"rate_limit_error\",\"code\":\"budget_exceeded\"}}"}
 ```
 
-**问题**: 
+**问题**:
 - 被归类为 `rate_limit` (transient)
 - 触发重试 + active_probe
 - 但 credential 余额不足，重试无意义
 
-**修复后预期**: 
+**修复后预期**:
 - 归类为 `KindQuotaPermanent`
 - 不重试
 - 立即标记 credential 不可用
@@ -151,7 +151,7 @@ bash scripts/deploy-seamless.sh rollback 154
 
 ### 1. 误杀率大幅降低
 
-**修复前**: 
+**修复前**:
 - 15 次 client_disconnect → credential degraded 15 分钟
 - 估算误杀率：30-50%
 
@@ -162,7 +162,7 @@ bash scripts/deploy-seamless.sh rollback 154
 
 ### 2. budget_exceeded 立即识别
 
-**修复前**: 
+**修复前**:
 - 429 budget_exceeded → KindRateLimit
 - 继续重试，浪费资源
 
@@ -172,7 +172,7 @@ bash scripts/deploy-seamless.sh rollback 154
 
 ### 3. 减少无意义探测
 
-**修复前**: 
+**修复前**:
 - 所有 > 80% 失败率 → 触发 active_probe
 - 包括客户端问题
 
@@ -206,14 +206,14 @@ bash scripts/deploy-seamless.sh rollback 154
 
 ### 1. Phase 4: 快速恢复机制（待实施）
 
-**当前**: degraded → 15 分钟后自动恢复  
+**当前**: degraded → 15 分钟后自动恢复
 **目标**: degraded → 每 30s 探测 → 成功立即恢复
 
 **工作量**: 1 天
 
 ### 2. nginx 252 → 154:8781 超时
 
-**症状**: 通过 nginx (252) 访问 154 网关超时  
+**症状**: 通过 nginx (252) 访问 154 网关超时
 **直连**: 154:8781 正常
 
 **不影响本次修复验证**，但需要单独排查 nginx 配置。
@@ -231,12 +231,12 @@ bash scripts/deploy-seamless.sh rollback 154
 
 **生产就绪**: 已部署 154 生产环境
 
-**下一步**: 
+**下一步**:
 - 观察 1-2 天生产运行情况
 - Phase 4（快速恢复）待排期
 - Phase 5（可观测性）待排期
 
 ---
 
-**验证人**: AI Agent  
+**验证人**: AI Agent
 **复审**: 待用户确认生产效果

@@ -1,9 +1,9 @@
 # 245 服务器压缩修复部署报告
 
-**部署时间**: 2026-07-20 04:16:51  
-**服务器**: 8.136.114.245:25022  
-**数据库**: 172.16.2.210:5432/llm_gateway  
-**执行人**: Kiro AI  
+**部署时间**: 2026-07-20 04:16:51
+**服务器**: 8.136.114.245:25022
+**数据库**: 172.16.2.210:5432/llm_gateway
+**执行人**: Kiro AI
 
 ---
 
@@ -22,7 +22,7 @@ context_window: (NULL)
 family: openai-gpt
 
 -- 执行 SQL
-UPDATE models_canonical 
+UPDATE models_canonical
 SET context_window = 128000, updated_at = NOW()
 WHERE canonical_name = 'gpt-5.6-luna' AND context_window IS NULL;
 
@@ -105,11 +105,11 @@ status: ✅ 修复成功
 #### 查询 1: 压缩率监控
 
 ```sql
-SELECT 
+SELECT
     COUNT(*) AS total_requests,
     COUNT(CASE WHEN compression_strategy IS NOT NULL THEN 1 END) AS compressed_requests,
     ROUND(100.0 * COUNT(CASE WHEN compression_strategy IS NOT NULL THEN 1 END) / NULLIF(COUNT(*), 0), 2) AS compression_rate_pct
-FROM request_logs 
+FROM request_logs
 WHERE ts > NOW() - INTERVAL '24 hours'
   AND provider_id IN (587, 2451);
 ```
@@ -119,11 +119,11 @@ WHERE ts > NOW() - INTERVAL '24 hours'
 #### 查询 2: 错误率监控
 
 ```sql
-SELECT 
+SELECT
     COUNT(*) AS total,
     COUNT(CASE WHEN error_kind = 'context_length_exceeded' THEN 1 END) AS ctx_errors,
     ROUND(100.0 * COUNT(CASE WHEN error_kind = 'context_length_exceeded' THEN 1 END) / NULLIF(COUNT(*), 0), 2) AS error_rate_pct
-FROM request_logs 
+FROM request_logs
 WHERE ts > NOW() - INTERVAL '24 hours'
   AND provider_id IN (587, 2451);
 ```
@@ -133,13 +133,13 @@ WHERE ts > NOW() - INTERVAL '24 hours'
 #### 查询 3: 大会话处理
 
 ```sql
-SELECT 
+SELECT
     request_id,
     jsonb_array_length(request_body->'messages') AS client_msgs,
     COALESCE((compression_meta->>'msg_count')::int, 0) AS outbound_msgs,
     compression_strategy,
     error_kind
-FROM request_logs 
+FROM request_logs
 WHERE ts > NOW() - INTERVAL '24 hours'
   AND provider_id IN (587, 2451)
   AND jsonb_array_length(request_body->'messages') > 50
@@ -168,13 +168,13 @@ LIMIT 10;
 
 **发现**:
 ```sql
-SELECT * FROM provider_settings 
-WHERE provider_id IN (587, 2451) 
+SELECT * FROM provider_settings
+WHERE provider_id IN (587, 2451)
   AND setting_key = 'compression.mode';
 -- 结果: 0 行
 ```
 
-**结论**: 
+**结论**:
 - apigpt 和 apiclaude 都没有压缩配置
 - 使用全局默认值（Smart 模式）
 - **压缩功能应该已经启用**
@@ -251,13 +251,13 @@ psql 'postgres://llm_gateway:...' << 'EOF'
 SELECT COUNT(*) AS total,
        COUNT(CASE WHEN compression_strategy IS NOT NULL THEN 1 END) AS compressed,
        ROUND(100.0 * COUNT(CASE WHEN compression_strategy IS NOT NULL THEN 1 END) / COUNT(*), 1) AS rate
-FROM request_logs 
+FROM request_logs
 WHERE ts > NOW() - INTERVAL '24 hours'
   AND provider_id IN (587, 2451);
 
 -- 错误率
 SELECT COUNT(CASE WHEN error_kind = 'context_length_exceeded' THEN 1 END) AS errors
-FROM request_logs 
+FROM request_logs
 WHERE ts > NOW() - INTERVAL '24 hours';
 EOF
 ```
@@ -267,10 +267,10 @@ EOF
 执行方案 B（显式启用压缩）:
 ```sql
 INSERT INTO provider_settings (provider_id, setting_key, setting_value, enabled)
-VALUES 
+VALUES
     (587, 'compression.mode', '"smart"'::jsonb, true),
     (2451, 'compression.mode', '"smart"'::jsonb, true)
-ON CONFLICT (provider_id, setting_key) DO UPDATE 
+ON CONFLICT (provider_id, setting_key) DO UPDATE
 SET setting_value = '"smart"'::jsonb, enabled = true;
 ```
 
@@ -308,6 +308,6 @@ SET setting_value = '"smart"'::jsonb, enabled = true;
 
 ---
 
-**报告生成**: 2026-07-20  
-**修复状态**: ✅ 完成  
+**报告生成**: 2026-07-20
+**修复状态**: ✅ 完成
 **下一次检查**: 2026-07-21（24小时后）

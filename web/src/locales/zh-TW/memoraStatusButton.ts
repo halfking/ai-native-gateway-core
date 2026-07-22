@@ -7,11 +7,11 @@ export default {
     error: '連線失敗',
     loading: '檢測中',
   },
-  
+
   panel: {
     title: 'Memora 連線',
     closeLabel: '關閉',
-    
+
     fields: {
       serviceUrl: '服務位址',
       recentLatency: '最近延遲',
@@ -22,7 +22,7 @@ export default {
       consecutiveErrors: '連續失敗',
       recentWriteError: '最近寫入錯誤',
     },
-    
+
     actions: {
       processing: '處理中…',
       reconnect: '重新連線',
@@ -32,7 +32,7 @@ export default {
       sessionContext: '會話上下文',
     },
   },
-  
+
   error: {
     connectionFailed: '連線失敗',
     checkFailed: '檢測失敗',

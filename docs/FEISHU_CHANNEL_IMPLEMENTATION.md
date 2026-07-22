@@ -27,7 +27,7 @@
   - 批准/拒绝操作执行
 
 ### 3. 单元测试
-- **文件**: 
+- **文件**:
   - `domains/approval/channels/feishu_test.go`
   - `api/webhooks/feishu_callback_test.go`
 - **覆盖**:
@@ -120,7 +120,7 @@ http.HandleFunc("/api/webhooks/feishu/approval-callback", handler.HandleCallback
 3. **会话信息**: 会话 ID、预估成本
 4. **用户消息**: 脱敏后的用户消息（超过 500 字符自动截断）
 5. **敏感信息警告**: 如果检测到敏感信息，显示类型统计
-6. **操作按钮**: 
+6. **操作按钮**:
    - ✅ 批准（绿色 primary 按钮）
    - ❌ 拒绝（红色 danger 按钮）
 7. **页脚**: 过期时间和创建时间

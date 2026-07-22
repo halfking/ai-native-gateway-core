@@ -2,7 +2,7 @@
 
 ## API 概览
 
-**端点**: 
+**端点**:
 ```
 POST http://localhost:11434/api/chat (原生接口)
 POST http://localhost:11434/v1/chat/completions (OpenAI 兼容)
@@ -178,7 +178,7 @@ POST http://localhost:11434/v1/chat/completions (OpenAI 兼容)
       "role": "user",
       "content": "What's in this image?",
       "images": [
-        "/9j/4AAQSkZJRg..." 
+        "/9j/4AAQSkZJRg..."
       ]
     }
   ]
@@ -441,7 +441,7 @@ data: [DONE]
 
 ## Embeddings API
 
-**端点**: `POST /api/embeddings` (原生)  
+**端点**: `POST /api/embeddings` (原生)
 **端点**: `POST /v1/embeddings` (OpenAI 兼容)
 
 ### 原生格式
@@ -506,7 +506,7 @@ You are a helpful assistant.
 TEMPLATE """
 {{ if .System }}System: {{ .System }}{{ end }}
 User: {{ .Prompt }}
-Assistant: 
+Assistant:
 """
 ```
 

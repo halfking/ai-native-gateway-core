@@ -172,7 +172,7 @@ watch(
   () => {
     if (chartInstance.value && hasData.value) {
       chartInstance.value.data.labels = props.data.map(d => d.date)
-      
+
       if (viewMode.value === 'score') {
         chartInstance.value.data.datasets[0].data = props.data.map(d => d.avgHealthScore || 0)
       } else {
@@ -182,7 +182,7 @@ watch(
         chartInstance.value.data.datasets[3].data = props.data.map(d => d.gradeD || 0)
         chartInstance.value.data.datasets[4].data = props.data.map(d => d.gradeF || 0)
       }
-      
+
       chartInstance.value.update()
     }
   },

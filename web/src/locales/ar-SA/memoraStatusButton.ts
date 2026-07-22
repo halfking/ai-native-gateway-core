@@ -7,11 +7,11 @@ export default {
     error: 'فشل الاتصال',
     loading: 'جارٍ الفحص',
   },
-  
+
   panel: {
     title: 'اتصال Memora',
     closeLabel: 'إغلاق',
-    
+
     fields: {
       serviceUrl: 'عنوان URL للخدمة',
       recentLatency: 'التأخير الأخير',
@@ -22,7 +22,7 @@ export default {
       consecutiveErrors: 'الأخطاء المتتالية',
       recentWriteError: 'خطأ الكتابة الأخير',
     },
-    
+
     actions: {
       processing: 'جارٍ المعالجة…',
       reconnect: 'إعادة الاتصال',
@@ -32,7 +32,7 @@ export default {
       sessionContext: 'سياق الجلسة',
     },
   },
-  
+
   error: {
     connectionFailed: 'فشل الاتصال',
     checkFailed: 'فشل الفحص',

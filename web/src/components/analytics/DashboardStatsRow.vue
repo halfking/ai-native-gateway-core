@@ -239,9 +239,9 @@ const changeIcon = (change: number) => {
 // 变化样式类（isNegative=true 表示增长是坏事，如成本、延迟）
 const changeClass = (change: number, isNegative: boolean) => {
   if (change === 0) return 'stat-change-neutral'
-  
+
   const isIncrease = change > 0
-  
+
   if (isNegative) {
     // 对于成本、延迟，增长是坏事
     return isIncrease ? 'stat-change-bad' : 'stat-change-good'

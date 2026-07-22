@@ -1,8 +1,8 @@
 # llm-gateway-go 多级 Sticky 路由审计报告
 
-**审计时间**: 2026-06-25 04:10  
-**审计范围**: Commit b1703ccb (feat: multi-level sticky routing)  
-**审计类型**: 多租户安全、SSOT合规、部署就绪性  
+**审计时间**: 2026-06-25 04:10
+**审计范围**: Commit b1703ccb (feat: multi-level sticky routing)
+**审计类型**: 多租户安全、SSOT合规、部署就绪性
 
 ---
 
@@ -203,7 +203,7 @@ TRUNCATE TABLE sticky_sessions;
 
 1. **内存增长**: 多级 key 会增加内存占用
    - **缓解**: 每个级别有不同的 TTL，自动清理
-   
+
 2. **DB写入增加**: 每次成功写 3 条记录
    - **缓解**: 异步写入，不阻塞主流程
 
@@ -234,9 +234,9 @@ TRUNCATE TABLE sticky_sessions;
 
 ## 审计签名
 
-**审计人**: OpenCode AI Agent  
-**审计时间**: 2026-06-25 04:10  
-**审计依据**: 
+**审计人**: OpenCode AI Agent
+**审计时间**: 2026-06-25 04:10
+**审计依据**:
 - ACC Toolkit 多租户标准 (`docs/multi-tenant-standards.md`)
 - SSOT 部署规范 (`scripts/_lib/llmgw-deploy-lib.sh`)
 - 43轮多租户审计经验

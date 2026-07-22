@@ -1,7 +1,7 @@
 # GLM-5.2 修复 - 最终状态报告
 
-> **日期**: 2026-06-22 00:15  
-> **状态**: ✅ 代码已提交，⏳ 部署进行中  
+> **日期**: 2026-06-22 00:15
+> **状态**: ✅ 代码已提交，⏳ 部署进行中
 > **Commit**: 1e60fe9d
 
 ---
@@ -24,7 +24,7 @@ Message: fix(relay): add OpenAI format detector for glm-5.2 empty choices issue
 Files changed:
   M  relay/anthropic_to_openai_stream.go  (+14 lines)
   A  relay/openai_format_detector.go      (+67 lines)
-  
+
 Status: Pushed to origin/main
 ```
 
@@ -226,9 +226,9 @@ if isOpenAIFormatData(data) {
 
 ## 📞 快速参考
 
-**Git Commit**: `1e60fe9d`  
-**镜像标签**: `kx-llm-gateway-go:gitsha-1e60fe9d`  
-**修改文件**: 
+**Git Commit**: `1e60fe9d`
+**镜像标签**: `kx-llm-gateway-go:gitsha-1e60fe9d`
+**修改文件**:
 - `relay/openai_format_detector.go` (新增)
 - `relay/anthropic_to_openai_stream.go` (修改)
 
@@ -242,6 +242,6 @@ curl -N -X POST https://__DOMAIN_2__/v1/chat/completions \
 
 ---
 
-**创建时间**: 2026-06-22 00:15  
-**状态**: 代码已提交，等待部署完成  
+**创建时间**: 2026-06-22 00:15
+**状态**: 代码已提交，等待部署完成
 **下一步**: 手动完成 71/184 部署并验证

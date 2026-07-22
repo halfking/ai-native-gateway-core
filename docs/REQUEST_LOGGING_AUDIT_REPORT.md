@@ -43,11 +43,11 @@
 #### 主键修复
 ```sql
 -- request_wal_hot
-ALTER TABLE request_wal_hot 
+ALTER TABLE request_wal_hot
 ADD CONSTRAINT request_wal_hot_pkey PRIMARY KEY (request_id, created_at);
 
 -- request_logs_hot
-ALTER TABLE request_logs_hot 
+ALTER TABLE request_logs_hot
 ADD CONSTRAINT request_logs_hot_pkey PRIMARY KEY (request_id, ts);
 ```
 - ✅ 主键选择合理（request_id + 时间戳）
@@ -59,7 +59,7 @@ ADD CONSTRAINT request_logs_hot_pkey PRIMARY KEY (request_id, ts);
 // 修复前
 affinity_hit = COALESCE(EXCLUDED.affinity_hit, affinity_hit)
 
-// 修复后  
+// 修复后
 affinity_hit = COALESCE(EXCLUDED.affinity_hit, request_logs_hot.affinity_hit)
 ```
 - ✅ 明确指定表名，消除歧义
@@ -75,7 +75,7 @@ affinity_hit = COALESCE(EXCLUDED.affinity_hit, request_logs_hot.affinity_hit)
 - 新环境部署时会遇到同样的问题
 - 其他开发者不知道这个修复
 
-**建议**: 
+**建议**:
 1. 更新 `sql/migrations/startup/341_hot_table_independence.sql`
 2. 添加主键检查和创建逻辑（参考345的实现）
 
@@ -205,7 +205,7 @@ affinity_hit = COALESCE(EXCLUDED.affinity_hit, request_logs_hot.affinity_hit)
 1. **RequestLogger** → `request_wal_hot`
    - 用途：WAL（Write-Ahead Log）
    - 特点：轻量级，快速写入
-   
+
 2. **TelemetryClient** → `request_logs_hot`
    - 用途：完整的请求日志
    - 特点：包含详细信息，前端查询此表
@@ -284,13 +284,13 @@ DECLARE
   pk_exists boolean;
 BEGIN
   SELECT EXISTS (
-    SELECT 1 FROM pg_constraint 
-    WHERE conname = 'request_logs_hot_pkey' 
+    SELECT 1 FROM pg_constraint
+    WHERE conname = 'request_logs_hot_pkey'
     AND conrelid = 'request_logs_hot'::regclass
   ) INTO pk_exists;
-  
+
   IF NOT pk_exists THEN
-    ALTER TABLE request_logs_hot 
+    ALTER TABLE request_logs_hot
     ADD CONSTRAINT request_logs_hot_pkey PRIMARY KEY (request_id, ts);
   END IF;
 END $$;
@@ -434,8 +434,8 @@ func TestRequestLogsHotPrimaryKey(t *testing.T) {
 
 ---
 
-**审计执行人**: AI Assistant  
-**审计日期**: 2026-07-10 02:20  
+**审计执行人**: AI Assistant
+**审计日期**: 2026-07-10 02:20
 **下次审计**: 2026-07-17（一周后复查）
 
 **签署**: ✅ 审计完成，建议立即执行P0任务

@@ -1,7 +1,7 @@
 # pg_trgm 扩展问题核实报告
 
-**核实时间：** 2026-07-04 01:10  
-**数据库：** 71 环境（__PRIV_IP_2__:__PORT_5__）  
+**核实时间：** 2026-07-04 01:10
+**数据库：** 71 环境（__PRIV_IP_2__:__PORT_5__）
 **核实人员：** @__USER_1__
 
 ---
@@ -54,8 +54,8 @@ SELECT extname, extversion FROM pg_extension WHERE extname = 'pg_trgm';
 
 查看代码 `db/migrations/043_request_logs_client_model_trgm.sql`:
 ```sql
-CREATE INDEX idx_request_logs_2026_XX_search_trgm 
-    ON request_logs_2026_XX 
+CREATE INDEX idx_request_logs_2026_XX_search_trgm
+    ON request_logs_2026_XX
     USING gin (search_text gin_trgm_ops);
 ```
 
@@ -67,12 +67,12 @@ CREATE INDEX idx_request_logs_2026_XX_search_trgm
 func (d *DB) Open(ctx context.Context, databaseURL string) (*DB, error) {
     // 1. 连接数据库
     pool, err := pgxpool.NewWithConfig(ctx, cfg)
-    
+
     // 2. 执行 schema 迁移
     if err := db.ensureRequestLogSchema(migCtx); err != nil {
         return nil, err  // 如果失败，返回 nil
     }
-    
+
     // 3. 其他初始化...
 }
 ```
@@ -167,9 +167,9 @@ DO $$
 DECLARE
     part record;
 BEGIN
-    FOR part IN 
-        SELECT tablename 
-        FROM pg_tables 
+    FOR part IN
+        SELECT tablename
+        FROM pg_tables
         WHERE tablename LIKE 'request_logs_2026_%'
           AND schemaname = 'public'
     LOOP
@@ -235,7 +235,7 @@ END $$;
 SELECT extname, extversion FROM pg_extension WHERE extname = 'pg_trgm';
 
 -- 2. 验证索引
-SELECT 
+SELECT
     tablename,
     indexname
 FROM pg_indexes
@@ -257,9 +257,9 @@ LIMIT 10;
 
 ### 核实结果
 
-✅ **问题确认：pg_trgm 扩展确实缺失**  
-✅ **应用状态：当前正常运行**（绕过了索引创建）  
-⚠️ **潜在风险：下月分区创建会失败**  
+✅ **问题确认：pg_trgm 扩展确实缺失**
+✅ **应用状态：当前正常运行**（绕过了索引创建）
+⚠️ **潜在风险：下月分区创建会失败**
 ✅ **建议：尽快安装 pg_trgm 扩展**
 
 ### 关键发现
@@ -278,7 +278,7 @@ LIMIT 10;
 
 ---
 
-**报告生成时间：** 2026-07-04 01:15  
-**下一步行动：** 联系运维安装 postgresql-contrib-15  
-**优先级：** P0（高）  
+**报告生成时间：** 2026-07-04 01:15
+**下一步行动：** 联系运维安装 postgresql-contrib-15
+**优先级：** P0（高）
 **预计耗时：** 10 分钟（安装） + 5 分钟（重建索引）

@@ -1,6 +1,6 @@
 /**
  * LLM Gateway - 质量画像 API 客户端实现
- * 
+ *
  * 基于 axios 的 HTTP 客户端
  * 支持请求/响应拦截、错误处理、类型安全
  */
@@ -100,7 +100,7 @@ export class QualityApiClientImpl implements QualityApiClient {
   ): Promise<ProviderQualityResponse> {
     const { provider_id, model_name } = params;
     const queryParams: Record<string, string> = {};
-    
+
     if (model_name) {
       queryParams.model_name = model_name;
     }

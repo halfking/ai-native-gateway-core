@@ -1,8 +1,8 @@
 # 修复：quota_state='periodic_exhausted' 无法自动恢复
 
-**日期**: 2026-07-06  
-**问题**: claude-fable-5（以及其他模型）充值后仍然"没有可用的节点凭据"  
-**根因**: 探测成功后 `quota_state` 字段保持旧值不变  
+**日期**: 2026-07-06
+**问题**: claude-fable-5（以及其他模型）充值后仍然"没有可用的节点凭据"
+**根因**: 探测成功后 `quota_state` 字段保持旧值不变
 **影响范围**: 所有因 402 Payment Required 被标记为 `periodic_exhausted` 的凭据
 
 ---
@@ -32,7 +32,7 @@ bg/credential_recovery.go 的恢复 SQL 要求 quota_recover_at IS NOT NULL
 
 ### 代码位置
 
-1. **标记为 periodic_exhausted**:  
+1. **标记为 periodic_exhausted**:
    `bg/credential_probe_v2.go:596-601` (classifyProbeFailure)
    ```go
    case strings.Contains(errMsg, "402") || strings.Contains(errMsg, "balance"):
@@ -40,14 +40,14 @@ bg/credential_recovery.go 的恢复 SQL 要求 quota_recover_at IS NOT NULL
        // 问题：没有设置 quota_recover_at
    ```
 
-2. **写入数据库时保持旧值**:  
+2. **写入数据库时保持旧值**:
    `bg/credential_probe_v2.go:656` (writeHealth)
    ```sql
    quota_state = COALESCE($8, quota_state)
    -- 成功探测时 $8 为 NULL → 保持旧值
    ```
 
-3. **恢复条件永远不满足**:  
+3. **恢复条件永远不满足**:
    `bg/credential_recovery.go:98-102` (recover)
    ```sql
    WHERE quota_state = 'periodic_exhausted'
@@ -60,8 +60,8 @@ bg/credential_recovery.go 的恢复 SQL 要求 quota_recover_at IS NOT NULL
 
 ### 方案 A：成功探测时主动清除 quota_state（已实现）
 
-**文件**: `bg/credential_probe_v2.go`  
-**修改位置**: 
+**文件**: `bg/credential_probe_v2.go`
+**修改位置**:
 - Line 235 (cycleAll 成功分支)
 - Line 784 (ProbeNow 成功分支)
 
@@ -82,7 +82,7 @@ bg/credential_recovery.go 的恢复 SQL 要求 quota_recover_at IS NOT NULL
 
 ### 方案 B：添加补充恢复逻辑（已实现）
 
-**文件**: `bg/credential_recovery.go`  
+**文件**: `bg/credential_recovery.go`
 **修改位置**: Line 109（在原有 quota 恢复逻辑后）
 
 **变更**:
@@ -97,7 +97,7 @@ WHERE quota_state = 'periodic_exhausted'
   AND lifecycle_status = 'active'
 ```
 
-**效果**: 
+**效果**:
 - 每 60 秒运行一次
 - 清除所有"健康但卡住"的凭据
 - 即使探测间隔较长，也能在 1 分钟内恢复

@@ -1,9 +1,9 @@
 # Unified Adapter 统一适配器设计文档
 
-> **模块**: `adapter/unified/`  
-> **版本**: v1.0  
-> **日期**: 2026-07-18  
-> **状态**: 📋 设计阶段  
+> **模块**: `adapter/unified/`
+> **版本**: v1.0
+> **日期**: 2026-07-18
+> **状态**: 📋 设计阶段
 > **Phase**: Phase 1A - 基础优化
 
 ---
@@ -107,16 +107,16 @@ import "context"
 type Adapter interface {
     // Name 返回提供商名称
     Name() string
-    
+
     // ToProviderRequest 将统一请求转换为提供商请求
     ToProviderRequest(req *UnifiedRequest) (interface{}, error)
-    
+
     // FromProviderResponse 将提供商响应转换为统一响应
     FromProviderResponse(resp interface{}) (*UnifiedResponse, error)
-    
+
     // SupportedModels 返回支持的模型列表
     SupportedModels() []string
-    
+
     // ValidateRequest 验证请求参数
     ValidateRequest(req *UnifiedRequest) error
 }
@@ -124,7 +124,7 @@ type Adapter interface {
 // StreamAdapter 是支持流式响应的适配器接口
 type StreamAdapter interface {
     Adapter
-    
+
     // FromProviderStreamChunk 将流式响应块转换为统一格式
     FromProviderStreamChunk(chunk interface{}) (*UnifiedStreamChunk, error)
 }
@@ -139,22 +139,22 @@ type UnifiedRequest struct {
     Model       string    `json:"model"`
     Messages    []Message `json:"messages"`
     Stream      bool      `json:"stream,omitempty"`
-    
+
     // 生成控制
     MaxTokens       *int     `json:"max_tokens,omitempty"`
     Temperature     *float64 `json:"temperature,omitempty"`
     TopP            *float64 `json:"top_p,omitempty"`
     PresencePenalty *float64 `json:"presence_penalty,omitempty"`
     FrequencyPenalty *float64 `json:"frequency_penalty,omitempty"`
-    
+
     // 停止条件
     Stop []string `json:"stop,omitempty"`
-    
+
     // 高级参数
     ResponseFormat *ResponseFormat `json:"response_format,omitempty"`
     Tools          []Tool          `json:"tools,omitempty"`
     ToolChoice     interface{}     `json:"tool_choice,omitempty"`
-    
+
     // 用户标识
     User string `json:"user,omitempty"`
 }
@@ -263,7 +263,7 @@ func (a *OpenAIAdapter) FromProviderResponse(resp interface{}) (*UnifiedResponse
     if !ok {
         return nil, fmt.Errorf("invalid response type: %T", resp)
     }
-    
+
     return &UnifiedResponse{
         ID:      oaiResp.ID,
         Object:  oaiResp.Object,
@@ -311,16 +311,16 @@ func (a *AnthropicAdapter) Name() string {
 
 func (a *AnthropicAdapter) ToProviderRequest(req *UnifiedRequest) (interface{}, error) {
     // Anthropic 特殊处理
-    
+
     // 1. max_tokens 是必填的
     maxTokens := 4096 // 默认值
     if req.MaxTokens != nil {
         maxTokens = *req.MaxTokens
     }
-    
+
     // 2. system 消息需要单独提取
     systemMsg, messages := extractSystemMessage(req.Messages)
-    
+
     // 3. 构造 Anthropic 请求
     return &anthropic.MessageRequest{
         Model:       req.Model,
@@ -339,7 +339,7 @@ func (a *AnthropicAdapter) FromProviderResponse(resp interface{}) (*UnifiedRespo
     if !ok {
         return nil, fmt.Errorf("invalid response type: %T", resp)
     }
-    
+
     // 转换为 Unified 格式
     return &UnifiedResponse{
         ID:      anthResp.ID,
@@ -377,7 +377,7 @@ func (a *AnthropicAdapter) SupportedModels() []string {
 func extractSystemMessage(messages []Message) (string, []Message) {
     var systemMsg string
     var filtered []Message
-    
+
     for _, msg := range messages {
         if msg.Role == "system" {
             if content, ok := msg.Content.(string); ok {
@@ -387,7 +387,7 @@ func extractSystemMessage(messages []Message) (string, []Message) {
             filtered = append(filtered, msg)
         }
     }
-    
+
     return systemMsg, filtered
 }
 
@@ -433,17 +433,17 @@ func (a *AzureOpenAIAdapter) ToProviderRequest(req *UnifiedRequest) (interface{}
     if err != nil {
         return nil, err
     }
-    
+
     // 映射 model → deployment_id
     deploymentID, ok := a.deploymentMapping[req.Model]
     if !ok {
         return nil, fmt.Errorf("no deployment mapping for model: %s", req.Model)
     }
-    
+
     // Azure 特定字段
     azureReq := oaiReq.(*openai.ChatCompletionRequest)
     azureReq.DeploymentID = deploymentID
-    
+
     return azureReq, nil
 }
 ```
@@ -479,7 +479,7 @@ func (r *Registry) Register(adapter Adapter) {
 func (r *Registry) Get(provider string) (Adapter, error) {
     r.mu.RLock()
     defer r.mu.RUnlock()
-    
+
     adapter, ok := r.adapters[provider]
     if !ok {
         return nil, fmt.Errorf("adapter not found: %s", provider)
@@ -490,7 +490,7 @@ func (r *Registry) Get(provider string) (Adapter, error) {
 func (r *Registry) List() []string {
     r.mu.RLock()
     defer r.mu.RUnlock()
-    
+
     names := make([]string, 0, len(r.adapters))
     for name := range r.adapters {
         names = append(names, name)
@@ -517,7 +517,7 @@ func init() {
     // 注册内置 Adapter
     Register(NewOpenAIAdapter())
     Register(NewAnthropicAdapter())
-    
+
     // Azure OpenAI 需要配置后注册
     // Register(NewAzureOpenAIAdapter(deployments))
 }
@@ -535,7 +535,7 @@ func (a *OpenAIAdapter) FromProviderStreamChunk(chunk interface{}) (*UnifiedStre
     if !ok {
         return nil, fmt.Errorf("invalid chunk type: %T", chunk)
     }
-    
+
     choices := make([]ChunkChoice, len(oaiChunk.Choices))
     for i, choice := range oaiChunk.Choices {
         choices[i] = ChunkChoice{
@@ -547,7 +547,7 @@ func (a *OpenAIAdapter) FromProviderStreamChunk(chunk interface{}) (*UnifiedStre
             FinishReason: choice.FinishReason,
         }
     }
-    
+
     return &UnifiedStreamChunk{
         ID:      oaiChunk.ID,
         Object:  oaiChunk.Object,
@@ -573,7 +573,7 @@ var (
         },
         []string{"adapter_version", "provider", "status"},
     )
-    
+
     AdapterConversionErrors = promauto.NewCounterVec(
         prometheus.CounterOpts{
             Name: "llm_gateway_adapter_conversion_errors_total",
@@ -581,7 +581,7 @@ var (
         },
         []string{"adapter_version", "error_type"},
     )
-    
+
     AdapterConversionDuration = promauto.NewHistogramVec(
         prometheus.HistogramOpts{
             Name:    "llm_gateway_adapter_conversion_duration_seconds",
@@ -604,9 +604,9 @@ func (a *OpenAIAdapter) ToProviderRequest(req *UnifiedRequest) (interface{}, err
             a.version, a.Name(), "to_provider",
         ).Observe(duration)
     }()
-    
+
     // 转换逻辑...
-    
+
     AdapterRequests.WithLabelValues(a.version, a.Name(), "success").Inc()
     return result, nil
 }
@@ -621,7 +621,7 @@ func (a *OpenAIAdapter) ToProviderRequest(req *UnifiedRequest) (interface{}, err
 ```go
 func TestOpenAIAdapter_ToProviderRequest(t *testing.T) {
     adapter := NewOpenAIAdapter()
-    
+
     req := &UnifiedRequest{
         Model: "gpt-4",
         Messages: []Message{
@@ -630,10 +630,10 @@ func TestOpenAIAdapter_ToProviderRequest(t *testing.T) {
         MaxTokens: intPtr(100),
         Temperature: float64Ptr(0.7),
     }
-    
+
     result, err := adapter.ToProviderRequest(req)
     require.NoError(t, err)
-    
+
     oaiReq := result.(*openai.ChatCompletionRequest)
     assert.Equal(t, "gpt-4", oaiReq.Model)
     assert.Equal(t, 100, *oaiReq.MaxTokens)
@@ -642,7 +642,7 @@ func TestOpenAIAdapter_ToProviderRequest(t *testing.T) {
 
 func TestAnthropicAdapter_ExtractSystemMessage(t *testing.T) {
     adapter := NewAnthropicAdapter()
-    
+
     req := &UnifiedRequest{
         Model: "claude-3-opus",
         Messages: []Message{
@@ -650,10 +650,10 @@ func TestAnthropicAdapter_ExtractSystemMessage(t *testing.T) {
             {Role: "user", Content: "Hello"},
         },
     }
-    
+
     result, err := adapter.ToProviderRequest(req)
     require.NoError(t, err)
-    
+
     anthReq := result.(*anthropic.MessageRequest)
     assert.Equal(t, "You are helpful", anthReq.System)
     assert.Len(t, anthReq.Messages, 1)
@@ -672,7 +672,7 @@ func TestAdapter_RoundTrip(t *testing.T) {
         {"OpenAI", NewOpenAIAdapter(), "gpt-4"},
         {"Anthropic", NewAnthropicAdapter(), "claude-3-opus"},
     }
-    
+
     for _, tt := range tests {
         t.Run(tt.name, func(t *testing.T) {
             // Unified Request
@@ -682,18 +682,18 @@ func TestAdapter_RoundTrip(t *testing.T) {
                     {Role: "user", Content: "test"},
                 },
             }
-            
+
             // To Provider
             providerReq, err := tt.adapter.ToProviderRequest(req)
             require.NoError(t, err)
-            
+
             // 模拟 Provider 响应
             providerResp := mockProviderResponse(tt.name)
-            
+
             // From Provider
             unifiedResp, err := tt.adapter.FromProviderResponse(providerResp)
             require.NoError(t, err)
-            
+
             // 验证
             assert.Equal(t, tt.model, unifiedResp.Model)
             assert.NotEmpty(t, unifiedResp.Choices)
@@ -712,6 +712,6 @@ func TestAdapter_RoundTrip(t *testing.T) {
 
 ---
 
-**作者**: Infrastructure Team  
-**审阅者**: 待定  
+**作者**: Infrastructure Team
+**审阅者**: 待定
 **下次复审**: 实现完成后

@@ -1,7 +1,7 @@
 # 泳道跳变根本原因分析报告
 
-**部署版本**: `82b5edcf22e9a141ed88731f30fa7ebfccf9a6f6`  
-**问题时间**: 第1张图 ~20:46, 第2张图 ~21:08 (间隔15秒)  
+**部署版本**: `82b5edcf22e9a141ed88731f30fa7ebfccf9a6f6`
+**问题时间**: 第1张图 ~20:46, 第2张图 ~21:08 (间隔15秒)
 **现象**: 泳道请求数大幅跳变 (MiniMax: 7→44, NVIDIA NIM: 37→85, 普联: 4→28)
 
 ---
@@ -239,7 +239,7 @@ setTimeout(() => {
 4. 观察刷新后的请求数 (MiniMax: X', NVIDIA: Y')
 5. 计算差异: ΔX = X' - X, ΔY = Y' - Y
 
-**期望结果**: 
+**期望结果**:
 - ΔX > 10 或 ΔY > 10 → 确认存在显著的数据积压
 - 差异越大，说明delta丢失越严重
 
@@ -259,7 +259,7 @@ func (h *LiveStreamSSEHub) pushFullSnapshots() {
         if err != nil || fresh == nil {
             continue
         }
-        
+
         cached := h.getCachedSnapshot(scope.cacheKey)
         if needsFullRefresh(cached, fresh) {
             // 只在数据显著变化时推送 (已有的智能判断)
@@ -283,7 +283,7 @@ if (env.type === 'snapshot_refresh' && env.snapshot) {
 }
 ```
 
-**效果**: 
+**效果**:
 - ✅ 恢复校正机制，防止误差积累
 - ✅ 保持前端平滑合并，无视觉跳变
 - ⚠️ 需要重新启用 `pushFullSnapshots()`
@@ -307,7 +307,7 @@ type LiveStreamSnapshot struct {
 ```typescript
 function mergeSnapshotFromServer(incoming: LiveStreamSnapshot) {
     const current = liveStreamState.snapshot;
-    
+
     // 只接受更新的快照
     if (current && incoming.LatestRequestTs <= current.LatestRequestTs) {
         console.warn('忽略过期快照', {
@@ -316,7 +316,7 @@ function mergeSnapshotFromServer(incoming: LiveStreamSnapshot) {
         });
         return;  // 拒绝时光倒流
     }
-    
+
     // 正常合并逻辑...
 }
 ```
@@ -336,7 +336,7 @@ let autoRefreshTimer: ReturnType<typeof setInterval> | null = null;
 
 export function enableAutoRefresh(intervalMinutes: number = 5) {
     if (autoRefreshTimer) clearInterval(autoRefreshTimer);
-    
+
     autoRefreshTimer = setInterval(() => {
         console.log('自动刷新快照，防止数据偏差...');
         reconnectStream();  // 触发initial_data重新加载
@@ -434,6 +434,6 @@ TTL: LiveStreamRecordRetention (default 2 hours)
 
 ---
 
-**分析完成时间**: 2026-07-20  
-**分析工程师**: AI Agent (Kiro)  
+**分析完成时间**: 2026-07-20
+**分析工程师**: AI Agent (Kiro)
 **部署版本**: 82b5edcf22e9a141ed88731f30fa7ebfccf9a6f6

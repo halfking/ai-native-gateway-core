@@ -150,7 +150,7 @@ const MatchThreshold = 0.6  // 60% 匹配即认为同一台机器
 ```go
 type Fingerprint struct {
     // ... 现有字段
-    
+
     // 新增（防克隆 / 防虚拟机漂移）
     DiskSerial   string `json:"disk_serial"`   // lsblk --nodeps -no serial
     BIOSUUID     string `json:"bios_uuid"`     // /sys/class/dmi/id/product_uuid

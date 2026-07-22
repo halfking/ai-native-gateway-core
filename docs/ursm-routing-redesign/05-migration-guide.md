@@ -206,13 +206,13 @@ ursm:
   cache:
     mem_ttl: 10s
     redis_ttl: 5m
-  
+
   fp_slot:
     default_limit: 20
     active_gate_seconds: 300
     slot_ttl_seconds: 1800
     pin_ttl_seconds: 86400
-  
+
   scoring:
     price_weight: 0.3
     speed_weight: 0.4
@@ -242,21 +242,21 @@ URSM_READ_OLD=true
 
 func (e *Executor) Execute(ctx context.Context, req Request) Result {
     result := e.doUpstreamCall(req)
-    
+
     // 分散的状态更新
     if result.Success {
         e.stateManager.UpdateOnSuccess(ctx, req.CredentialID, req.Model, result.LatencyMs, req.ID)
     } else {
         e.stateManager.UpdateOnFailure(ctx, req.CredentialID, req.Model, result.ErrorKind, req.ID)
     }
-    
+
     // FpSlot节点状态
     if result.Success {
         e.fpSlots.RecordNodeSuccess(ctx, req.CredentialID, req.Model, req.ID)
     } else {
         e.fpSlots.RecordNodeFailure(ctx, req.CredentialID, req.Model, req.ID, string(result.ErrorKind))
     }
-    
+
     return result
 }
 ```
@@ -265,7 +265,7 @@ func (e *Executor) Execute(ctx context.Context, req Request) Result {
 ```go
 func (e *Executor) Execute(ctx context.Context, req Request) Result {
     result := e.doUpstreamCall(req)
-    
+
     // 统一状态更新
     err := e.ursm.RecordRequest(ctx, ursm.RecordRequestAPI{
         RequestID:    req.ID,
@@ -277,11 +277,11 @@ func (e *Executor) Execute(ctx context.Context, req Request) Result {
         ErrorKind:    string(result.ErrorKind),
         Timestamp:    time.Now(),
     })
-    
+
     if err != nil {
         slog.Warn("failed to record request", "error", err)
     }
-    
+
     return result
 }
 ```
@@ -295,7 +295,7 @@ func (e *Executor) Execute(ctx context.Context, req Request) Result {
 func (r *Router) PlanCandidates(...) []provider.Candidate {
     // 从DB加载所有候选
     allCandidates := r.loadCandidatesDB(ctx, model)
-    
+
     // 多处状态检查
     var available []provider.Candidate
     if r.StateManager != nil && r.StateManager.Enabled() {
@@ -303,13 +303,13 @@ func (r *Router) PlanCandidates(...) []provider.Candidate {
     } else {
         available = filterAvailable(allCandidates)
     }
-    
+
     // 检查FpSlot节点状态
     available = r.filterHealthyNodes(available)
-    
+
     // P2C排序
     ordered := p2cOrder(available, r)
-    
+
     return ordered
 }
 ```
@@ -323,13 +323,13 @@ func (r *Router) PlanCandidates(...) []provider.Candidate {
         slog.Warn("ursm get nodes failed", "error", err)
         return nil
     }
-    
+
     // 转换为旧的Candidate结构（兼容层）
     candidates := make([]provider.Candidate, len(nodes))
     for i, node := range nodes {
         candidates[i] = nodesToCandidate(node)
     }
-    
+
     return candidates
 }
 
@@ -359,17 +359,17 @@ func (h *Handler) handleSetManualDisabled(w http.ResponseWriter, r *http.Request
         ManualDisabled bool `json:"manual_disabled"`
     }
     json.NewDecoder(r.Body).Decode(&req)
-    
+
     // 直接更新DB
-    _, err := h.db.Exec(ctx, 
+    _, err := h.db.Exec(ctx,
         "UPDATE credentials SET manual_disabled=$1 WHERE id=$2",
         req.ManualDisabled, req.CredentialID)
-    
+
     // 手动失效缓存
     if h.stateManager != nil {
         h.stateManager.Invalidate(ctx, req.CredentialID)
     }
-    
+
     writeJSON(w, map[string]any{"success": true})
 }
 ```
@@ -383,7 +383,7 @@ func (h *Handler) handleSetManualDisabled(w http.ResponseWriter, r *http.Request
         Reason         string `json:"reason"`
     }
     json.NewDecoder(r.Body).Decode(&req)
-    
+
     // 调用URSM API（自动处理级联、缓存失效、审计）
     err := h.ursm.UpdateCredential(ctx, ursm.UpdateCredentialAPI{
         CredentialID:   req.CredentialID,
@@ -391,12 +391,12 @@ func (h *Handler) handleSetManualDisabled(w http.ResponseWriter, r *http.Request
         Reason:         req.Reason,
         Actor:          getActorFromRequest(r),
     })
-    
+
     if err != nil {
         writeError(w, err)
         return
     }
-    
+
     writeJSON(w, map[string]any{"success": true})
 }
 ```
@@ -411,16 +411,16 @@ func (h *Handler) handleSetManualDisabled(w http.ResponseWriter, r *http.Request
 // 同时写入旧系统和URSM
 func (e *Executor) Execute(ctx context.Context, req Request) Result {
     result := e.doUpstreamCall(req)
-    
+
     // 旧系统
     e.stateManagerOld.UpdateOnSuccess(...)
-    
+
     // 新系统（URSM）
     e.ursm.RecordRequest(...)
-    
+
     // 异步对比
     go compareStates(e.stateManagerOld, e.ursm, req.CredentialID, req.Model)
-    
+
     return result
 }
 ```
@@ -434,7 +434,7 @@ func (r *Router) PlanCandidates(...) []provider.Candidate {
         // 新系统
         return r.planWithURSM(ctx, model, sessionID)
     }
-    
+
     // 旧系统
     return r.planLegacy(ctx, model)
 }

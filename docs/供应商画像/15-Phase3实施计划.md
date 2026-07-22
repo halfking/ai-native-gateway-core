@@ -1,7 +1,7 @@
 # Phase 3 实施计划 - API 实现
 
-**开始时间**: 2026-07-19 03:30  
-**预计耗时**: 3 天  
+**开始时间**: 2026-07-19 03:30
+**预计耗时**: 3 天
 **状态**: 🚧 进行中
 
 ---
@@ -269,7 +269,7 @@ ORDER BY quality_score DESC;
 
 **质量排行榜**:
 ```sql
-SELECT 
+SELECT
     p.provider_id,
     p.model_name,
     p.quality_score,
@@ -380,19 +380,19 @@ middleware.AdminOnly()   // 验证管理员权限
 // 伪代码
 func GetProviderQuality(c *gin.Context) {
     cacheKey := fmt.Sprintf("quality:provider:%d:%s", providerID, modelName)
-    
+
     // 尝试从 Redis 获取
     if cached, err := redis.Get(cacheKey); err == nil {
         c.JSON(200, cached)
         return
     }
-    
+
     // 从数据库查询
     data := queryFromDB(...)
-    
+
     // 写入缓存
     redis.Set(cacheKey, data, 5*time.Minute)
-    
+
     c.JSON(200, data)
 }
 ```
@@ -436,7 +436,7 @@ func TestGetProviderQuality(t *testing.T) {
             wantErr:    "暂无质量数据",
         },
     }
-    
+
     for _, tt := range tests {
         t.Run(tt.name, func(t *testing.T) {
             // 测试逻辑
@@ -477,13 +477,13 @@ curl -X GET "http://localhost:8080/api/providers/1/quality/history?model_name=cl
 <template>
   <div class="provider-quality">
     <h3>质量画像</h3>
-    
+
     <!-- 综合评分 -->
     <div class="score-card">
       <div class="score">{{ quality.quality_score }}</div>
       <div class="grade">{{ quality.quality_grade }}</div>
     </div>
-    
+
     <!-- 五个维度 -->
     <div class="dimensions">
       <div class="dimension">
@@ -496,7 +496,7 @@ curl -X GET "http://localhost:8080/api/providers/1/quality/history?model_name=cl
       </div>
       <!-- ... -->
     </div>
-    
+
     <!-- 雷达图 -->
     <div ref="radarChart" style="width: 400px; height: 400px;"></div>
   </div>
@@ -512,7 +512,7 @@ onMounted(async () => {
   // 获取质量数据
   const res = await fetch(`/api/providers/${providerId}/quality?model_name=${modelName}`)
   quality.value = await res.json()
-  
+
   // 绘制雷达图
   drawRadarChart()
 })
@@ -552,7 +552,7 @@ function drawRadarChart() {
 <template>
   <div class="quality-ranking">
     <h2>供应商质量排行榜</h2>
-    
+
     <el-table :data="ranking" stripe>
       <el-table-column label="排名" prop="rank" width="80" />
       <el-table-column label="供应商" prop="provider_name" />

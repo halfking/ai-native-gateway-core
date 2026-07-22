@@ -1,8 +1,8 @@
 # Goal模式成本控制与分级方案
 
-> **文档版本**: v1.0  
-> **创建日期**: 2026-07-19  
-> **状态**: 设计阶段  
+> **文档版本**: v1.0
+> **创建日期**: 2026-07-19
+> **状态**: 设计阶段
 > **关联文档**: 16-Goal模式设计方案, 17-审计报告
 
 ---
@@ -248,23 +248,23 @@ type ModePreset struct {
     RetryDelaySeconds  int
     RetryTotalTimeout  int
     RetriableErrors    string
-    
+
     // Continue settings
     AutoContinue       bool
     MaxContinueCount   int
     CompletionConfidence float64
     DetectionMode      string
-    
+
     // Loop detection
     LoopDetectionEnabled bool
     LoopThreshold        int
     MaxModelSwitch       int
-    
+
     // Audit & Fix
     UseAudit           bool
     AutoFixEnabled     bool
     AutoFixSeverity    string
-    
+
     // Cost limits
     MonthlyTokenLimit  int
     SessionTokenBudget int
@@ -280,22 +280,22 @@ var ModePresets = map[CostMode]ModePreset{
         RetryDelaySeconds: 15,
         RetryTotalTimeout: 40,
         RetriableErrors:   "5xx,timeout,no_candidates,rate_limit,overloaded",
-        
+
         // No auto-continue
         AutoContinue:     false,
         MaxContinueCount: 0,
-        
+
         // No audit/fix
         UseAudit:       false,
         AutoFixEnabled: false,
-        
+
         // Conservative limits
         MonthlyTokenLimit:  500000,
         SessionTokenBudget: 30000,
         CostAlertThreshold: 0.85,
         DowngradeOnBudget:  true,
     },
-    
+
     CostModeBalanced: {
         // Retry + Continue
         RetryEnabled:      true,
@@ -303,27 +303,27 @@ var ModePresets = map[CostMode]ModePreset{
         RetryDelaySeconds: 20,
         RetryTotalTimeout: 50,
         RetriableErrors:   "5xx,timeout,no_candidates,rate_limit,overloaded",
-        
+
         AutoContinue:         true,
         MaxContinueCount:     5,
         CompletionConfidence: 0.75,
         DetectionMode:        "hybrid",
-        
+
         LoopDetectionEnabled: true,
         LoopThreshold:        2,
         MaxModelSwitch:       3,
-        
+
         // Manual audit only
         UseAudit:       false,
         AutoFixEnabled: false,
-        
+
         // Moderate limits
         MonthlyTokenLimit:  2000000,
         SessionTokenBudget: 100000,
         CostAlertThreshold: 0.85,
         DowngradeOnBudget:  true,
     },
-    
+
     CostModeAggressive: {
         // Full automation
         RetryEnabled:      true,
@@ -331,21 +331,21 @@ var ModePresets = map[CostMode]ModePreset{
         RetryDelaySeconds: 30,
         RetryTotalTimeout: 120,
         RetriableErrors:   "5xx,timeout,no_candidates,rate_limit,overloaded",
-        
+
         AutoContinue:         true,
         MaxContinueCount:     10,
         CompletionConfidence: 0.6,
         DetectionMode:        "hybrid",
-        
+
         LoopDetectionEnabled: true,
         LoopThreshold:        3,
         MaxModelSwitch:       5,
-        
+
         // Full audit + fix
         UseAudit:        true,
         AutoFixEnabled:  true,
         AutoFixSeverity: "medium",
-        
+
         // High limits
         MonthlyTokenLimit:  10000000,
         SessionTokenBudget: 500000,
@@ -373,31 +373,31 @@ func buildGoalConfig() (goal.ModeConfig, bool) {
     // 1. 读取cost_mode
     costMode := getEnv("LLM_GATEWAY_GOAL_COST_MODE", "minimal")
     preset := goal.GetPreset(costMode)
-    
+
     // 2. 应用preset作为默认值
     cfg := goal.ModeConfig{
         Enabled: getEnvBool("LLM_GATEWAY_GOAL_ENABLED", false),
-        
+
         // Retry settings from preset
         RetryOnError:        preset.RetryEnabled,
         MaxRetryCount:       preset.MaxRetryCount,
         RetryDelaySeconds:   preset.RetryDelaySeconds,
         RetryTotalTimeout:   preset.RetryTotalTimeout,
-        
+
         // Continue settings from preset
         AutoContinueOnPause: preset.AutoContinue,
         MaxAutoContinueCount: preset.MaxContinueCount,
         CompletionConfidence: preset.CompletionConfidence,
-        
+
         // Audit/Fix from preset
         UseAudit:        preset.UseAudit,
         AutoFixEnabled:  preset.AutoFixEnabled,
-        
+
         // Cost limits from preset
         MonthlyTokenLimit:  preset.MonthlyTokenLimit,
         SessionTokenBudget: preset.SessionTokenBudget,
     }
-    
+
     // 3. 允许环境变量覆盖（高级用户自定义）
     if v := os.Getenv("LLM_GATEWAY_GOAL_MAX_RETRY_COUNT"); v != "" {
         if n, err := strconv.Atoi(v); err == nil {
@@ -405,7 +405,7 @@ func buildGoalConfig() (goal.ModeConfig, bool) {
         }
     }
     // ... 其他覆盖 ...
-    
+
     return cfg, true
 }
 ```
@@ -423,16 +423,16 @@ func (h *ModeHook) loadCostMode(tenantID string) ModePreset {
 func (h *ModeHook) InterceptNonStream(ctx context.Context, req *response.InterceptRequest) (*response.InterceptResult, error) {
     // 1. 加载tenant的cost_mode
     preset := h.loadCostMode(req.TenantID)
-    
+
     // 2. 覆盖hook行为
     h.detector.SetMinConfidence(preset.CompletionConfidence)
-    
+
     // 3. 根据preset决策
     if !preset.AutoContinue {
         // minimal模式，不自动继续
         return nil, nil
     }
-    
+
     // 4. 检查预算
     if h.isOverBudget(ctx, req.TenantID, preset) {
         if preset.DowngradeOnBudget {
@@ -441,7 +441,7 @@ func (h *ModeHook) InterceptNonStream(ctx context.Context, req *response.Interce
         }
         // aggressive模式允许超限
     }
-    
+
     // ... 继续现有逻辑 ...
 }
 ```
@@ -478,7 +478,7 @@ goal_session_budget_exceeded_total{tenant_id}
     severity: warning
   annotations:
     summary: "Tenant {{ $labels.tenant_id }} goal mode usage at {{ $value }}%"
-    
+
 - alert: GoalMonthlyCostCritical
   expr: goal_monthly_usage_ratio > 0.95
   for: 1m
@@ -492,18 +492,18 @@ goal_session_budget_exceeded_total{tenant_id}
 
 ```
 [Goal模式成本面板]
-  
+
   ┌─────────────────────────────────────────┐
   │ 本月使用量 / 限额                       │
   │ ████████████░░░░  85% (850K / 1M)      │
   └─────────────────────────────────────────┘
-  
+
   ┌──────────────┬──────────────┬──────────────┐
   │ Retry        │ Continue     │ Audit/Fix    │
   │ 120K tokens  │ 680K tokens  │ 50K tokens   │
   │ (+12K cost)  │ (+68K cost)  │ (+5K cost)   │
   └──────────────┴──────────────┴──────────────┘
-  
+
   ┌─────────────────────────────────────────┐
   │ Cost Mode 分布                          │
   │ minimal:    60%  [████████░░░░░░░]      │
@@ -526,22 +526,22 @@ func inferCostMode() string {
     if mode := os.Getenv("LLM_GATEWAY_GOAL_COST_MODE"); mode != "" {
         return mode
     }
-    
+
     // 推断：如果启用了auto_fix，则为aggressive
     if getEnvBool("LLM_GATEWAY_GOAL_AUTO_FIX", false) {
         return "aggressive"
     }
-    
+
     // 推断：如果启用了auto_continue，则为balanced
     if getEnvBool("LLM_GATEWAY_GOAL_AUTO_CONTINUE", false) {
         return "balanced"
     }
-    
+
     // 推断：如果只启用了retry，则为minimal
     if getEnvBool("LLM_GATEWAY_GOAL_RETRY", false) {
         return "minimal"
     }
-    
+
     // 默认minimal
     return "minimal"
 }
@@ -572,13 +572,13 @@ export LLM_GATEWAY_GOAL_COST_MODE=aggressive
 ```go
 func TestMinimalMode(t *testing.T) {
     preset := goal.GetPreset("minimal")
-    
+
     assert.True(t, preset.RetryEnabled)
     assert.Equal(t, 2, preset.MaxRetryCount)
     assert.False(t, preset.AutoContinue)
     assert.False(t, preset.UseAudit)
     assert.False(t, preset.AutoFixEnabled)
-    
+
     // 成本验证
     baseCost := 1000
     avgCost := simulateCost(preset, 10000)  // 10K requests
@@ -591,11 +591,11 @@ func TestMinimalMode(t *testing.T) {
 ```go
 func TestBalancedMode(t *testing.T) {
     preset := goal.GetPreset("balanced")
-    
+
     assert.True(t, preset.AutoContinue)
     assert.Equal(t, 5, preset.MaxContinueCount)
     assert.False(t, preset.AutoFixEnabled)
-    
+
     avgCost := simulateCost(preset, 10000)
     assert.InDelta(t, 2.4, avgCost/1000, 0.1)  // 140% ±10%
 }
@@ -606,11 +606,11 @@ func TestBalancedMode(t *testing.T) {
 ```go
 func TestAggressiveMode(t *testing.T) {
     preset := goal.GetPreset("aggressive")
-    
+
     assert.True(t, preset.UseAudit)
     assert.True(t, preset.AutoFixEnabled)
     assert.Equal(t, 10, preset.MaxContinueCount)
-    
+
     avgCost := simulateCost(preset, 10000)
     assert.InDelta(t, 3.5, avgCost/1000, 0.2)  // 252% ±20%
 }

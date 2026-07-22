@@ -1,7 +1,7 @@
 # Request Body 存储架构重构 - Phase 2A 代码审计报告
 
-**审计日期**: 2026-07-21  
-**审计范围**: Tickets #9, #10, #11 (Commits: 02bea35e3, 98f156a44, 2a25696f3, 23704102d)  
+**审计日期**: 2026-07-21
+**审计范围**: Tickets #9, #10, #11 (Commits: 02bea35e3, 98f156a44, 2a25696f3, 23704102d)
 **审计者**: AI Agent (OpenCode)
 
 ---
@@ -353,14 +353,14 @@ t.classifyAndCount("request_logs_bodies_hot", e.RequestID, err)
 
 #### P1-1: 部署后 EXPLAIN ANALYZE 验证
 
-**位置**: 所有 6 处 LEFT JOIN  
-**问题**: 未验证实际查询计划  
-**建议**: 
+**位置**: 所有 6 处 LEFT JOIN
+**问题**: 未验证实际查询计划
+**建议**:
 ```sql
 EXPLAIN ANALYZE
 SELECT COALESCE(rb.request_body::text, rl.request_body::text)
   FROM request_logs_with_current_month rl
-  LEFT JOIN request_logs_bodies_with_current_month rb 
+  LEFT JOIN request_logs_bodies_with_current_month rb
     ON rb.request_id = rl.request_id AND rb.ts = rl.ts
  WHERE rl.request_id = 'test-id';
 ```
@@ -369,7 +369,7 @@ SELECT COALESCE(rb.request_body::text, rl.request_body::text)
 
 #### P1-2: 单元测试覆盖边界条件
 
-**位置**: Ticket #12  
+**位置**: Ticket #12
 **建议**: 确保测试覆盖：
 - NULL bodies 写入与查询
 - UNIQUE 冲突处理
@@ -378,7 +378,7 @@ SELECT COALESCE(rb.request_body::text, rl.request_body::text)
 
 #### P1-3: 写入性能基准测试
 
-**位置**: Ticket #13  
+**位置**: Ticket #13
 **建议**: 在 245 测试环境对比：
 - 双写前 P95/P99 写入延迟
 - 双写后 P95/P99 写入延迟
@@ -388,13 +388,13 @@ SELECT COALESCE(rb.request_body::text, rl.request_body::text)
 
 #### P2-1: 视图使用不一致
 
-**位置**: admin/logs.go vs 其他 5 处  
-**观察**: 只有 logs.go 使用 `_with_current_month` 视图  
+**位置**: admin/logs.go vs 其他 5 处
+**观察**: 只有 logs.go 使用 `_with_current_month` 视图
 **说明**: 可能是有意设计（详情查询需当月数据），但建议在代码注释中说明
 
 #### P2-2: outbound_body 位置需文档化
 
-**位置**: admin/telemetry.go  
+**位置**: admin/telemetry.go
 **观察**: outbound_body 保留在 request_logs_hot 的设计决策在注释中已说明，但建议在 Schema 文档中补充
 
 ---
@@ -501,7 +501,7 @@ SELECT COALESCE(rb.request_body::text, rl.request_body::text)
 ### 建议流程
 
 ```
-当前阶段 → Ticket #12 (单元测试) → Ticket #13 (集成测试) 
+当前阶段 → Ticket #12 (单元测试) → Ticket #13 (集成测试)
           ↓
    无代码修复需求
           ↓
@@ -510,7 +510,7 @@ SELECT COALESCE(rb.request_body::text, rl.request_body::text)
 
 ---
 
-**审计完成时间**: 2026-07-21  
-**下一步**: 开始 Ticket #12 单元测试编写  
+**审计完成时间**: 2026-07-21
+**下一步**: 开始 Ticket #12 单元测试编写
 **审计状态**: ✅ APPROVED - 无阻塞性问题
 
