@@ -1124,6 +1124,11 @@ func main() {
 		if timeoutConfig != nil {
 			routingExec.TimeoutAdapter = executors.NewTimeoutConfigAdapter(timeoutConfig)
 			slog.Info("using TimeoutConfigAdapter from Phase 2")
+
+			// Phase 3 (2026-07-23): Configure keepalive interval
+			routingExec.KeepaliveInterval = timeoutConfig.GetKeepaliveInterval()
+			slog.Info("keepalive interval configured from TimeoutConfig",
+				"interval_seconds", routingExec.KeepaliveInterval)
 		}
 		routingExec.TTFBTracker = executors.NewTTFBTracker()
 		routingExec.PreRequestValidator = executors.NewRequestValidator(false) // non-strict mode
