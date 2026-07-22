@@ -94,7 +94,7 @@ banner() {
 banner
 
 # 0. 连通性测试
-echo -e "${YELLOW}[0/5]${NC} 验证 SSH 连通性..."
+echo -e "${YELLOW}[0/6]${NC} 验证 SSH 连通性..."
 if $SSH_BASE 'echo OK' >/dev/null 2>&1; then
   echo -e "${GREEN}  ✓ SSH OK${NC}"
 else
@@ -103,16 +103,16 @@ fi
 
 # 1. 编译后端
 if [[ $SKIP_BUILD -eq 0 ]]; then
-  echo -e "${YELLOW}[1/5]${NC} 编译后端（linux/amd64 交叉编译）..."
+  echo -e "${YELLOW}[1/6]${NC} 编译后端（linux/amd64 交叉编译）..."
   mkdir -p "$REPO_DIR/bin"
   (cd "$REPO_DIR" && GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -o "$LOCAL_BIN" ./cmd/gateway) || { echo -e "${RED}  ✗ build failed${NC}"; exit 1; }
   echo -e "${GREEN}  ✓ built: $(ls -la "$LOCAL_BIN" | awk '{print $5}') bytes (linux/amd64)${NC}"
 else
-  echo -e "${YELLOW}[1/5]${NC} 跳过后端编译（使用现有 ${LOCAL_BIN}）"
+  echo -e "${YELLOW}[1/6]${NC} 跳过后端编译（使用现有 ${LOCAL_BIN}）"
 fi
 
 # 2. 备份远程二进制
-echo -e "${YELLOW}[2/5]${NC} 备份远程二进制..."
+echo -e "${YELLOW}[2/6]${NC} 备份远程二进制..."
 DEPLOY_SEQ=$($SSH_BASE "cat $REMOTE_DIR/.deploy_seq 2>/dev/null || echo 0" 2>/dev/null | tr -d '[:space:]')
 TIMESTAMP=$(date +%Y%m%d-%H%M%S)
 NEW_DEPLOY_SEQ=$((DEPLOY_SEQ + 1))
@@ -129,14 +129,26 @@ $SSH_BASE "
 "
 
 # 3. 上传二进制
-echo -e "${YELLOW}[3/5]${NC} 上传新二进制到 252..."
+echo -e "${YELLOW}[3/6]${NC} 上传新二进制到 252..."
 $SCP_BASE "$LOCAL_BIN" "$REMOTE_USER@$REMOTE_HOST:$REMOTE_DIR/llm-gateway-go.new"
 $SSH_BASE "chmod +x $REMOTE_DIR/llm-gateway-go.new && ls -la $REMOTE_DIR/llm-gateway-go.new"
 echo -e "${GREEN}  ✓ uploaded${NC}"
 
-# 4. 应用 DB migration
+# 4. 应用 DB migration — response_format_anomalies (454)
+ANOMALY_MIGRATION="$REPO_DIR/sql/migrations/startup/454_response_format_anomalies.sql"
 if [[ $SKIP_MIGRATION -eq 0 ]]; then
-  echo -e "${YELLOW}[4/5]${NC} 应用 DB migration 356 (handoff_enhanced)..."
+  if [[ -f "$ANOMALY_MIGRATION" ]]; then
+    echo -e "${YELLOW}[4a/6]${NC} 应用 migration 454 (response_format_anomalies)..."
+    $SSH_BASE "docker exec -i $DB_CONTAINER psql -v ON_ERROR_STOP=1 -U $DB_USER -d $DB_NAME < /dev/stdin" < "$ANOMALY_MIGRATION" 2>&1 | tail -10 | sed 's/^/      /'
+    echo -e "${GREEN}  ✓ migration 454 applied${NC}"
+  else
+    echo -e "${YELLOW}  ⚠ migration 454 file not found, skip (Go startup will ensure schema)${NC}"
+  fi
+fi
+
+# 4b. 应用 DB migration — 已有 migration（默认 366）
+if [[ $SKIP_MIGRATION -eq 0 ]]; then
+  echo -e "${YELLOW}[4b/6]${NC} 应用 DB migration (default: 366_model_name_mapping)..."
   if [[ ! -f "$MIGRATION_FILE" ]]; then
     echo -e "${RED}  ✗ migration file not found: $MIGRATION_FILE${NC}"; exit 1
   fi
@@ -146,14 +158,14 @@ if [[ $SKIP_MIGRATION -eq 0 ]]; then
   echo "    2) 验证迁移结果..."
   $SSH_BASE "docker exec $DB_CONTAINER psql -U $DB_USER -d $DB_NAME -c '\\d handoff_logs'" 2>&1 | grep -E "(summary_text|summary_engine|trigger_mode|tokens_in_session|messages_in_session|skill_name|duration_ms)" | sed 's/^/      /' || true
   $SSH_BASE "docker exec $DB_CONTAINER psql -U $DB_USER -d $DB_NAME -c '\\d session_summaries'" 2>&1 | grep -E "(tokens_at_trigger|messages_at_trigger|last_trigger)" | sed 's/^/      /' || true
-  echo -e "${GREEN}  ✓ migration 356 applied${NC}"
+  echo -e "${GREEN}  ✓ migration applied${NC}"
 else
-  echo -e "${YELLOW}[4/5]${NC} 跳过 DB migration"
+  echo -e "${YELLOW}[4b/6]${NC} 跳过 DB migration"
 fi
 
 # 5. 重启服务
 if [[ $SKIP_RESTART -eq 0 ]]; then
-  echo -e "${YELLOW}[5/5]${NC} 重启 $SERVICE_NAME..."
+  echo -e "${YELLOW}[5/6]${NC} 重启 $SERVICE_NAME..."
   # 读取本地 VERSION 写入远端 VERSION 文件
   LOCAL_VERSION=$(cat "$REPO_DIR/VERSION" 2>/dev/null | tr -d '[:space:]')
   LOCAL_VERSION=${LOCAL_VERSION:-2.4.1-handoff-deploy}
@@ -172,7 +184,7 @@ if [[ $SKIP_RESTART -eq 0 ]]; then
   "
   echo -e "${GREEN}  ✓ restarted (VERSION=$LOCAL_VERSION, deploy_seq=$NEW_DEPLOY_SEQ)${NC}"
 else
-  echo -e "${YELLOW}[5/5]${NC} 跳过重启（二进制已上传为 .new，待手动原子替换）"
+  echo -e "${YELLOW}[5/6]${NC} 跳过重启（二进制已上传为 .new，待手动原子替换）"
 fi
 
 # ── 验证 ────────────────────────────────────────────────────────────────
