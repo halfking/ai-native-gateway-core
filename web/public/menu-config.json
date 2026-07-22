@@ -1,0 +1,106 @@
+{
+  "version": "1.0.0",
+  "exported_at": "2026-07-22T22:25:19.154Z",
+  "menus": [
+    {
+      "path": "/dashboard",
+      "labelKey": "nav.dashboard",
+      "labelFallback": "总览",
+      "icon": "dashboard",
+      "tenantFilter": null
+    },
+    {
+      "path": "/users",
+      "labelKey": "nav.users",
+      "labelFallback": "用户",
+      "icon": "users",
+      "tenantFilter": null
+    },
+    {
+      "path": "/tenants",
+      "labelKey": "nav.tenants",
+      "labelFallback": "租户",
+      "icon": "tenants",
+      "tenantFilter": "default"
+    },
+    {
+      "path": "/providers",
+      "labelKey": "nav.providers",
+      "labelFallback": "凭据池",
+      "icon": "providers",
+      "tenantFilter": null
+    },
+    {
+      "path": "/keys",
+      "labelKey": "nav.keys",
+      "labelFallback": "API 密钥",
+      "icon": "keys",
+      "tenantFilter": null
+    },
+    {
+      "path": "/mcp-gateway",
+      "labelKey": "nav.mcpGateway",
+      "labelFallback": "MCP 网关",
+      "icon": "mcp",
+      "tenantFilter": null
+    },
+    {
+      "path": "/gateway-management",
+      "labelKey": "nav.gatewayManagement",
+      "labelFallback": "网关管理",
+      "icon": "gateway",
+      "tenantFilter": null,
+      "children": [
+        {
+          "path": "/routing-overview",
+          "labelKey": "nav.routingOverview",
+          "labelFallback": "路由总览"
+        },
+        {
+          "path": "/examples",
+          "labelKey": "nav.examples",
+          "labelFallback": "示例代码"
+        },
+        {
+          "path": "/chat",
+          "labelKey": "nav.chat",
+          "labelFallback": "对话测试"
+        }
+      ]
+    },
+    {
+      "path": "/ops-center",
+      "labelKey": "nav.opsCenter",
+      "labelFallback": "运维中心",
+      "icon": "ops",
+      "tenantFilter": "default",
+      "children": [
+        {
+          "path": "/logs",
+          "labelKey": "nav.logs",
+          "labelFallback": "请求日志"
+        },
+        {
+          "path": "/metrics",
+          "labelKey": "nav.metrics",
+          "labelFallback": "指标监控"
+        },
+        {
+          "path": "/probe-health",
+          "labelKey": "nav.probeHealth",
+          "labelFallback": "健康探测"
+        },
+        {
+          "path": "/credential-monitor",
+          "labelKey": "nav.credentialMonitor",
+          "labelFallback": "凭据监控"
+        },
+        {
+          "path": "/modules",
+          "labelKey": "nav.modules",
+          "labelFallback": "模块管理"
+        }
+      ]
+    }
+  ]
+}
