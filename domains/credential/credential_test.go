@@ -186,11 +186,16 @@ func TestBreaker_QuarantinedStateExists(t *testing.T) {
 	// Pin the existence of StateQuarantined (it was lost in the pre-migration
 	// 98-line simplified breaker and is one of the must-keep invariants of
 	// the 2026-06-26 migration).
+	//
+	// 2026-07-22 (BUG #1): KindAuth no longer triggers StateQuarantined
+	// (moved to exponential cooling). StateQuarantined is now exclusively
+	// used by KindQuota / KindQuotaBalance which remain RecoveryPermanent.
+	// We exercise the StateQuarantined code path via KindQuota here.
 	b := New(1, 1)
-	b.RecordFailure(errorsx.KindAuth)
-	b.RecordFailure(errorsx.KindAuth)
+	b.RecordFailure(errorsx.KindQuota)
+	b.RecordFailure(errorsx.KindQuota)
 	if b.State() != StateQuarantined {
-		t.Fatalf("expected StateQuarantined after 2 auth failures, got %s", b.State())
+		t.Fatalf("expected StateQuarantined after 2 quota failures, got %s", b.State())
 	}
 	if b.Allow() {
 		t.Error("quarantined breaker must not allow")
