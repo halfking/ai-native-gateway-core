@@ -186,3 +186,41 @@ export interface SelfCheckTriggerAvailability {
 export async function fetchSelfCheckTriggerAvailability(): Promise<SelfCheckTriggerAvailability> {
   return req<SelfCheckTriggerAvailability>('GET', '/api/self-check/trigger/availability')
 }
+
+// ── New probe stack (2026-07-23) ───────────────────────────────────────
+// 在新探测模式（默认）下，旧 SelfCheckWorker 关闭，self_check_runs 为空。
+// 自检统计改读 /api/admin/probe/* 接口（node/model_probe_runs，含延时数据）。
+
+export interface ProbeSystemHealth {
+  total_nodes: number
+  healthy_nodes: number
+  failing_nodes: number
+  suspicious_nodes: number
+  probing_nodes: number
+  [k: string]: unknown
+}
+
+export async function fetchProbeSystemHealth(): Promise<ProbeSystemHealth> {
+  return req<ProbeSystemHealth>('GET', '/api/admin/probe/system-health')
+}
+
+// 逐条队列任务（区别于聚合视图 v_probe_queue_snapshot），用于泳道展示
+export interface ProbeQueueTaskRow {
+  id: number
+  credential_id: number
+  provider_id: number
+  provider_name: string
+  raw_model: string
+  status: string
+  attempt: number
+  priority: number
+  reason_code: string
+  next_run_at?: string | null
+  result_latency_ms: number
+  result_http_status: number
+  updated_at?: string | null
+}
+
+export async function fetchProbeQueueTasks(limit = 100): Promise<{ tasks: ProbeQueueTaskRow[]; total: number }> {
+  return req<{ tasks: ProbeQueueTaskRow[]; total: number }>('GET', `/api/admin/probe/queue-tasks?limit=${limit}`)
+}

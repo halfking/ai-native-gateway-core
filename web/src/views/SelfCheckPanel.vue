@@ -13,12 +13,18 @@ import {
   fetchSelfCheckRunDetail,
   fetchSelfCheckTriggerAvailability,
   triggerSelfCheck,
+  fetchProbeSystemHealth,
+  fetchProbeQueueTasks,
   type SelfCheckSettings,
   type SelfCheckStats,
   type SelfCheckRun,
   type SelfCheckRunDetail,
   type SelfCheckTriggerAvailability,
+  type ProbeSystemHealth,
+  type ProbeQueueTaskRow,
 } from '../api-selfcheck'
+import SwimLane from '../components/SwimLane.vue'
+import type { SwimLane as SwimLaneType, RequestTile } from '../types/swimlane'
 
 const loading = ref(false)
 const error = ref<string | null>(null)
@@ -39,7 +45,12 @@ const triggerBusy = ref(false)
 const triggerAvailability = ref<SelfCheckTriggerAvailability>({ available: true, new_probe_mode: true })
 const range = ref<'1h' | '6h' | '24h' | '7d'>('24h')
 
+// 2026-07-23: 新探测模式下的系统健康（子项④）与队列任务（子项③）
+const probeHealth = ref<ProbeSystemHealth | null>(null)
+const queueTasks = ref<ProbeQueueTaskRow[]>([])
+
 let pollTimer: number | undefined
+let queueTimer: number | undefined
 
 // ── 数据加载 ──────────────────────────────────────────
 
@@ -65,10 +76,29 @@ async function loadAll() {
     recentRuns.value = ru.items ?? []
     models.value = mo.models ?? []
     if (avail) triggerAvailability.value = avail
+
+    // 2026-07-23: 新探测模式下补充读取系统健康统计（子项④）
+    if (triggerAvailability.value.new_probe_mode) {
+      fetchProbeSystemHealth()
+        .then((h) => { probeHealth.value = h })
+        .catch(() => { /* 新探测接口可能不存在，静默 */ })
+    }
+    // 队列任务（子项③）独立拉取
+    void refreshQueueTasks()
   } catch (e: unknown) {
     error.value = e instanceof Error ? e.message : '加载失败'
   } finally {
     loading.value = false
+  }
+}
+
+// 2026-07-23: 队列任务拉取（子项③），随执行更新状态
+async function refreshQueueTasks() {
+  try {
+    const res = await fetchProbeQueueTasks(100)
+    queueTasks.value = res.tasks ?? []
+  } catch {
+    queueTasks.value = []
   }
 }
 
@@ -77,11 +107,17 @@ function startPoll() {
   pollTimer = window.setInterval(() => {
     void loadAll()
   }, 60_000) // 60秒刷新（自检数据变化较慢）
+  // 2026-07-23: 队列任务变化更快，单独 15s 轮询（子项③）
+  queueTimer = window.setInterval(() => {
+    void refreshQueueTasks()
+  }, 15_000)
 }
 
 function stopPoll() {
   if (pollTimer) clearInterval(pollTimer)
+  if (queueTimer) clearInterval(queueTimer)
   pollTimer = undefined
+  queueTimer = undefined
 }
 
 onMounted(() => {
@@ -280,6 +316,73 @@ function healthColor(rate: number): string {
   if (rate >= 0.7) return COLOR.warn
   return COLOR.danger
 }
+
+// ── 2026-07-23 子项④: 新探测模式下的系统健康统计卡片 ──────────────────
+const useProbeStats = computed(() => triggerAvailability.value.new_probe_mode && !!probeHealth.value)
+const probeSummaryCards = computed(() => {
+  const h = probeHealth.value
+  if (!h) return []
+  return [
+    { label: '总节点数', value: h.total_nodes ?? 0, color: COLOR.accent },
+    { label: '健康', value: h.healthy_nodes ?? 0, color: COLOR.good },
+    { label: '失败', value: h.failing_nodes ?? 0, color: COLOR.danger },
+    { label: '可疑', value: h.suspicious_nodes ?? 0, color: COLOR.warn },
+    { label: '探测中', value: h.probing_nodes ?? 0, color: COLOR.accent },
+  ]
+})
+
+// ── 2026-07-23 子项③: 队列任务泳道（按状态分组） ──────────────────────
+// 将队列任务按 status 分组为泳道：ready（待执行）/ running（执行中）。
+// 每条任务映射为一个 RequestTile 以复用小模式竖条渲染。
+const QUEUE_LANE_LIMIT = 40 // 泳道满时自动挤出（仅保留最近 N 条）
+
+const queueSwimLanes = computed<SwimLaneType[]>(() => {
+  const groups: Record<string, ProbeQueueTaskRow[]> = {}
+  for (const t of queueTasks.value) {
+    const key = t.status || 'unknown'
+    if (!groups[key]) groups[key] = []
+    groups[key].push(t)
+  }
+  const labelMap: Record<string, string> = {
+    ready: '待执行',
+    running: '执行中',
+    success: '成功',
+    failed: '失败',
+    expired: '已过期',
+  }
+  const lanes: SwimLaneType[] = []
+  for (const [status, tasks] of Object.entries(groups)) {
+    // 按 next_run_at 升序，取最近 QUEUE_LANE_LIMIT 条（满时挤出旧的）
+    const sorted = [...tasks].sort((a, b) => {
+      const ta = a.next_run_at ? new Date(a.next_run_at).getTime() : 0
+      const tb = b.next_run_at ? new Date(b.next_run_at).getTime() : 0
+      return ta - tb
+    })
+    const trimmed = sorted.slice(-QUEUE_LANE_LIMIT)
+    const tiles: RequestTile[] = trimmed.map((t) => ({
+      request_id: `q-${t.id}`,
+      timestamp: t.updated_at || t.next_run_at || new Date().toISOString(),
+      model: t.raw_model || '',
+      vendor: '__unknown__',
+      provider: t.provider_name || String(t.provider_id),
+      status: t.status === 'running' ? 'in_progress' : t.status === 'success' ? 'success' : t.status === 'failed' ? 'failure' : 'idle',
+      is_probe: true,
+      probe_origin: 'direct',
+      latency_ms: t.result_latency_ms > 0 ? t.result_latency_ms : undefined,
+    }))
+    lanes.push({
+      id: status,
+      name: labelMap[status] || status,
+      dimension: 'provider',
+      requests: tiles,
+      stats: { total: tasks.length, success: 0, failure: 0 },
+      isOthers: false,
+    })
+  }
+  return lanes
+})
+
+const queueLaneSelectedLegends = ref<Set<string>>(new Set())
 </script>
 
 <template>
@@ -328,10 +431,32 @@ function healthColor(rate: number): string {
     </div>
 
     <!-- 摘要卡片 -->
-    <div v-if="stats" class="summary-cards">
+    <!-- 2026-07-23 子项④: 新探测模式下优先显示系统健康统计，避免旧表为空时空白 -->
+    <div v-if="useProbeStats" class="summary-cards">
+      <div v-for="c in probeSummaryCards" :key="c.label" class="summary-card">
+        <div class="card-label">{{ c.label }}</div>
+        <div class="card-value" :style="{ color: c.color }">{{ c.value }}</div>
+      </div>
+    </div>
+    <div v-else-if="stats" class="summary-cards">
       <div v-for="c in summaryCards" :key="c.label" class="summary-card">
         <div class="card-label">{{ c.label }}</div>
         <div class="card-value" :style="{ color: c.color }">{{ c.value }}</div>
+      </div>
+    </div>
+
+    <!-- 2026-07-23 子项③: 自检队列泳道（待执行/执行中任务） -->
+    <div v-if="queueSwimLanes.length" class="queue-swimlanes-section">
+      <h4 class="section-title">自检队列</h4>
+      <div class="queue-swimlanes">
+        <SwimLane
+          v-for="lane in queueSwimLanes"
+          :key="lane.id"
+          :lane="lane"
+          group-by="provider"
+          mode="small"
+          :selected-legends="queueLaneSelectedLegends"
+        />
       </div>
     </div>
 
@@ -898,6 +1023,16 @@ function healthColor(rate: number): string {
   text-align: center;
   color: var(--muted);
   font-size: 13px;
+}
+
+/* 2026-07-23 子项③: 自检队列泳道 */
+.queue-swimlanes-section {
+  margin-bottom: 24px;
+}
+.queue-swimlanes {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
 }
 
 .modal-overlay {

@@ -196,3 +196,66 @@ export function latencyLabel(latencyMs: number | null | undefined, isInProgress:
   if (latencyMs < 10_000) return `${(latencyMs / 1000).toFixed(1)}s`
   return `${Math.round(latencyMs / 1000)}s`
 }
+
+/**
+ * 2026-07-23: 小模式竖条颜色映射（集中管理，亮暗皮肤通用）。
+ *
+ * 颜色规范（与产品要求一致）：
+ *   - 绿色  = 成功
+ *   - 红色  = 失败（5xx / 其它服务端错误）
+ *   - 橙色  = 取消（cancelled / client_disconnect）
+ *   - 黄色  = 超时（timeout / network）
+ *   - 灰色  = 无可用节点 / idle / 未找到路由
+ *   - 白底  = 请求中（in_progress）
+ *
+ * 返回的是可用于 CSS background 的字符串。语义色用 CSS 变量，因此
+ * 亮/暗皮肤都能正确解析（绿色用 --success，红色用 --danger，依此类推）。
+ * in_progress 用 var(--kx-surface) 作为"白底"——亮色为白、暗色为浅灰。
+ */
+export function statusBarColor(
+  status: string | undefined | null,
+  errorKind: string | undefined | null,
+): string {
+  if (!status) return 'var(--muted)'
+  if (status === 'in_progress') return 'var(--kx-surface)'
+  if (status === 'success') return 'var(--success)'
+  if (status === 'idle') return 'var(--muted)'
+  if (status === 'failure') {
+    const k = (errorKind || '').toLowerCase()
+    // 取消 / 断连 → 橙色
+    if (/(cancel|disconnect|network_reset|connection_reset|eof|reset)/.test(k)) return 'var(--warning)'
+    // 超时 → 黄色
+    if (/(?<!upstream_)(?<!backend_)(?<!server_)(?<!provider_)\btimeout\b/.test(k)) return '#facc15'
+    // 未找到 / 无可用节点 → 灰色
+    if (/(not_found|no_route|\brout|resolve|policy|missing|no_available|no_node)/.test(k)) return 'var(--muted)'
+    // 4xx → 橙红
+    if (/(4xx|auth|unauthor|forbidden|quota|rate|billing|payment|invalid)/.test(k)) return 'var(--warning)'
+    // 5xx / 其它失败 → 红色
+    return 'var(--danger)'
+  }
+  if (status === 'cancelled' || status === 'canceled') return 'var(--warning)'
+  return 'var(--muted)'
+}
+
+/**
+ * 2026-07-23: 状态语义分类标签（用于 tooltip / 图例），返回中文短标签。
+ */
+export function statusSemanticLabel(
+  status: string | undefined | null,
+  errorKind: string | undefined | null,
+): string {
+  if (!status) return '未知'
+  if (status === 'in_progress') return '请求中'
+  if (status === 'success') return '成功'
+  if (status === 'idle') return '空闲'
+  if (status === 'cancelled' || status === 'canceled') return '取消'
+  if (status === 'failure') {
+    const k = (errorKind || '').toLowerCase()
+    if (/(cancel|disconnect|network_reset|connection_reset|eof|reset)/.test(k)) return '取消'
+    if (/(?<!upstream_)(?<!backend_)(?<!server_)(?<!provider_)\btimeout\b/.test(k)) return '超时'
+    if (/(not_found|no_route|\brout|resolve|policy|missing|no_available|no_node)/.test(k)) return '无可用节点'
+    if (/(4xx|auth|unauthor|forbidden|quota|rate|billing|payment|invalid)/.test(k)) return '失败(4xx)'
+    return '失败'
+  }
+  return '未知'
+}

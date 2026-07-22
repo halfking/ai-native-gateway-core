@@ -3,7 +3,7 @@
 // only selects the active dimension and exposes the server snapshot to Vue.
 
 import { computed, ref, type ComputedRef } from 'vue'
-import type { GroupByDimension, SwimLane } from '../types/swimlane'
+import type { GroupByDimension, SwimLane, SwimLaneMode } from '../types/swimlane'
 import type { LiveRequest, LiveStreamSnapshot, LiveStreamLegendItem } from './liveStreamStore'
 
 const emptySnapshot: LiveStreamSnapshot = {
@@ -18,6 +18,20 @@ export function useSwimLane(snapshotRef?: ComputedRef<LiveStreamSnapshot | null>
   const groupBy = ref<GroupByDimension>('vendor')
   const selectedLegends = ref<Set<string>>(new Set())
   const localSnapshot = ref<LiveStreamSnapshot>(emptySnapshot)
+  // 2026-07-23: 小模式（竖条）作为默认展示模式
+  const mode = ref<SwimLaneMode>('small')
+  const MODE_STORAGE_KEY = 'llmgw_swimlane_mode'
+
+  // 从 localStorage 恢复用户上次选择的模式
+  try {
+    const saved = localStorage.getItem(MODE_STORAGE_KEY)
+    if (saved === 'small' || saved === 'large') mode.value = saved
+  } catch { /* localStorage 不可用，忽略 */ }
+
+  function setMode(next: SwimLaneMode) {
+    mode.value = next
+    try { localStorage.setItem(MODE_STORAGE_KEY, next) } catch { /* ignore */ }
+  }
 
   const snapshot = computed(() => snapshotRef?.value || localSnapshot.value)
   const lanes = computed<SwimLane[]>(() => (snapshot.value.dimensions[groupBy.value] || []) as SwimLane[])
@@ -58,6 +72,8 @@ export function useSwimLane(snapshotRef?: ComputedRef<LiveStreamSnapshot | null>
 
   return {
     groupBy,
+    mode,
+    setMode,
     lanes,
     dimensionStats,
     selectedLegends,
