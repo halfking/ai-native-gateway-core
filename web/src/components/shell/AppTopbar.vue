@@ -276,6 +276,7 @@ function navLabel(labelKey: string | undefined, fallback: string): string {
           class="app-topbar__link app-topbar__group-trigger"
           :ref="(el) => setGroupTriggerRef(group.id, el as Element | null)"
           :aria-expanded="openGroupId === group.id"
+          aria-haspopup="menu"
           @click="toggleGroup(group.id)"
         >
           {{ navLabel(group.labelKey, group.label) }}

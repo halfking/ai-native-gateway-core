@@ -194,6 +194,6 @@ const heartbeatDisplay = computed(() => {
   border-left: 3px solid var(--kx-warning);
   border-radius: 4px;
   font-size: 13px;
-  color: var(--kx-warning);
+  color: var(--kx-text);
 }
 </style>
