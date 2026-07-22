@@ -204,6 +204,17 @@ func (w *CredentialSelfcheckWorker) cycleOnce(ctx context.Context) {
 //  2. oldest-checked credentials
 //
 // Returns (id, true, nil) if a candidate exists, (0, false, nil) otherwise.
+//
+// 2026-07-22 fix: the LATERAL subquery now groups last_at by credential_id
+// (via model_name='cred-<id>') instead of tenant_id.  The previous query
+// shared one last_at across all credentials of the same tenant — and since
+// every production credential lives in tenant_id='default', the worker
+// permanently re-picked c.id=2 (the lowest id) and never advanced.  The
+// credential_selfcheck worker writes its model_name as "cred-<id>" so we
+// can identify per-credential runs without adding a column.  Pre-7/18
+// legacy rows used raw model names ("gpt-5.6-luna", …) which never match
+// the "cred-<int>" pattern; that's intentional — the legacy worker is
+// retired and its last_at values should not gate the new worker.
 func (w *CredentialSelfcheckWorker) pickDueCredential(ctx context.Context) (int, bool, error) {
 	queryCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
@@ -215,7 +226,7 @@ func (w *CredentialSelfcheckWorker) pickDueCredential(ctx context.Context) (int,
 		LEFT JOIN LATERAL (
 			SELECT MAX(completed_at) AS last_at
 			FROM self_check_runs scr
-			WHERE scr.tenant_id = c.tenant_id
+			WHERE scr.model_name = 'cred-' || c.id::text
 		) l ON TRUE
 		WHERE c.status = 'active'
 		  AND c.lifecycle_status = 'active'
@@ -242,6 +253,34 @@ func (w *CredentialSelfcheckWorker) runOne(ctx context.Context, credentialID int
 		return fmt.Errorf("pick models: %w", err)
 	}
 	if len(pick.models) == 0 {
+		// 2026-07-22 fix: previously this path returned an error WITHOUT
+		// inserting a self_check_runs row. Because pickDueCredential derives
+		// last_at from self_check_runs.completed_at, this caused the worker
+		// to re-pick the same broken credential every 5-min tick forever
+		// (verified on prod 154: credential_id=2 is auth-failed → 0 routable
+		// → runOne returns → completed_at never advances → deadlock).
+		//
+		// Fix: still record a 'failed' run so last_at advances and the worker
+		// moves on. The row carries status='failed' and
+		// selection_strategy='random' (the latter is the only allowed value
+		// in self_check_runs_selection_strategy_check when no featured /
+		// most_used pick was made). error_type='none' is used because the
+		// live DB on 154 still has the 338-migration CHECK
+		// (http_000|http_502|http_503|http_504|timeout|upstream_fail|none)
+		// — migration 339's DROP CONSTRAINT was never applied there. The
+		// human-readable reason lives in error_detail.
+		startedAt := time.Now()
+		runID, ierr := w.insertRun(ctx, credentialID, startedAt, 0)
+		if ierr != nil {
+			return fmt.Errorf("insert no-routable placeholder run: %w", ierr)
+		}
+		if ferr := w.finalizeRun(ctx, runID, startedAt, "failed", "random",
+			0, 0, false, 0, 0,
+			"none",
+			fmt.Sprintf("no_routable_models: credential %d has 0 routable bindings", credentialID),
+			[]string{}); ferr != nil {
+			return fmt.Errorf("finalize no-routable placeholder run: %w", ferr)
+		}
 		return fmt.Errorf("credential %d has no routable models", credentialID)
 	}
 
