@@ -92,14 +92,20 @@ func (h *BootstrapHandler) handleStatus(c echo.Context) error {
 		st.Activated = true
 	}
 	licenseKey := strings.TrimSpace(c.QueryParam("license_key"))
+	slog.Info("handleStatus: checking activation", "activated", st.Activated, "hash", hash, "license_key_param", licenseKey)
 	if !st.Activated && h.Store != nil && hash != "" {
 		if licenseKey == "" {
-			if lic, err := h.Store.GetLicenseByHardwareHash(c.Request().Context(), hash); err == nil && lic != nil {
+			lic, err := h.Store.GetLicenseByHardwareHash(c.Request().Context(), hash)
+			slog.Info("handleStatus: GetLicenseByHardwareHash", "hash", hash, "found", lic != nil, "err", err)
+			if err == nil && lic != nil {
 				licenseKey = lic.LicenseKey
 			}
 		}
 		if licenseKey != "" {
-			if dev, err := h.Store.GetDeviceByHardwareHash(c.Request().Context(), licenseKey, hash); err == nil && dev != nil {
+			dev, err := h.Store.GetDeviceByHardwareHash(c.Request().Context(), licenseKey, hash)
+			slog.Info("handleStatus: GetDeviceByHardwareHash", "license_key", licenseKey, "hash", hash, "found", dev != nil, "err", err)
+			if err == nil && dev != nil {
+				slog.Info("handleStatus: device found", "status", dev.Status, "device_name", dev.DeviceName)
 				if dev.Status == "active" || dev.Status == "" {
 					st.Activated = true
 					st.LicenseKey = maskBootstrapLicenseKey(licenseKey)
