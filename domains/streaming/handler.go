@@ -2480,6 +2480,13 @@ func (h *ChatHandler) serveWithExecutor(
 		}
 	}
 	// ── End of retry loop ────────────────────────────────────────────────
+	if result != nil && result.CachedReplay {
+		if preStream != nil {
+			preStream.stop()
+			preStream = nil
+		}
+		return
+	}
 
 	// ── 2026-07-17: trace.route_credential ──────────────────────────────────
 	// 在 executor.Execute 返回后立即记录"实际命中的凭据"。 这是 trace 视图里
