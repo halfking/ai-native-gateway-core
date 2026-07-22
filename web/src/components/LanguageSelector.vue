@@ -38,7 +38,7 @@ if (typeof window !== 'undefined') {
   <div class="language-selector">
     <button
       type="button"
-      class="btn btn-ghost btn-sm language-btn"
+      class="btn btn-ghost btn-sm btn-no-arrow language-btn"
       @click.stop="toggleDropdown"
       :aria-label="'Switch language'"
     >

@@ -332,13 +332,13 @@ function navLabel(labelKey: string | undefined, fallback: string): string {
           </template>
         </div>
       </div>
+      <ThemeToggle />
+      <LanguageSelector />
       <UserMenuDropdown
         @user-info="emit('user-info')"
         @change-password="emit('change-password')"
         @logout="emit('logout')"
       />
-      <ThemeToggle />
-      <LanguageSelector />
     </div>
   </header>
 </template>
