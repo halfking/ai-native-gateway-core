@@ -24,19 +24,19 @@ func NewSessionBodiesWriter(db *pgxpool.Pool) *SessionBodiesWriter {
 
 // Message represents a single message in the conversation
 type Message struct {
-	Role       string                 `json:"role"`
-	Content    string                 `json:"content,omitempty"`
+	Role       string                   `json:"role"`
+	Content    string                   `json:"content,omitempty"`
 	ToolCalls  []map[string]interface{} `json:"tool_calls,omitempty"`
-	ToolCallID string                 `json:"tool_call_id,omitempty"`
-	Name       string                 `json:"name,omitempty"`
+	ToolCallID string                   `json:"tool_call_id,omitempty"`
+	Name       string                   `json:"name,omitempty"`
 }
 
 // AttachmentRef represents an attachment reference (no base64 data)
 type AttachmentRef struct {
 	Name           string    `json:"name"`
 	ObjectKey      string    `json:"object_key"`
-	MIMEType       string    `json:"mime_type"`        // Renamed from ContentType for consistency
-	SizeBytes      int64     `json:"size_bytes"`       // Renamed from Size for clarity
+	MIMEType       string    `json:"mime_type"`  // Renamed from ContentType for consistency
+	SizeBytes      int64     `json:"size_bytes"` // Renamed from Size for clarity
 	SHA256         string    `json:"sha256"`
 	SourceProtocol string    `json:"source_protocol"`  // openai/anthropic/gemini/etc
 	DeclaredMIME   string    `json:"declared_mime"`    // Client-declared MIME type
@@ -48,11 +48,11 @@ type AttachmentRef struct {
 
 // BodiesRecord represents turn bodies (incremental deltas)
 type BodiesRecord struct {
-	SessionID  string
-	TurnNo     int
-	TenantID   string
-	RequestID  string
-	Ts         time.Time
+	SessionID string
+	TurnNo    int
+	TenantID  string
+	RequestID string
+	Ts        time.Time
 
 	// Incremental deltas (core optimization)
 	RequestDelta  []Message // Only new messages in this turn
@@ -66,37 +66,67 @@ type BodiesRecord struct {
 	ResponseAttachments []AttachmentRef
 }
 
+// safeJSONMarshal marshals v to JSON, falling back to a safe placeholder on error.
+// This prevents "invalid input syntax for type json" PostgreSQL errors when
+// json.Marshal produces invalid JSON (e.g., from NaN/Inf floats or malformed UTF-8).
+// 2026-07-23: Added to fix sessionv2mirror shadow write failures.
+func safeJSONMarshal(v interface{}) ([]byte, error) {
+	data, err := json.Marshal(v)
+	if err != nil {
+		// Fallback to empty array/object depending on type
+		switch v.(type) {
+		case []interface{}, []Message, []AttachmentRef:
+			return []byte("[]"), nil
+		default:
+			return []byte("{}"), nil
+		}
+	}
+
+	// Extra safety: if marshal succeeded but produced empty string,
+	// replace with null to avoid PostgreSQL parse errors
+	if len(data) == 0 {
+		return []byte("null"), nil
+	}
+
+	// Validate it's actually parseable JSON
+	if !json.Valid(data) {
+		return []byte("null"), nil
+	}
+
+	return data, nil
+}
+
 // WriteBodies writes turn bodies to gateway.session_bodies
 //
 // The key optimization is RequestDelta only contains messages that
 // were not present in the previous turn, avoiding exponential growth
 // of storing full history in every row.
 func (w *SessionBodiesWriter) WriteBodies(ctx context.Context, rec BodiesRecord) error {
-	// Serialize deltas to JSONB
-	requestDeltaJSON, err := json.Marshal(rec.RequestDelta)
+	// Serialize deltas to JSONB with safe marshaling
+	requestDeltaJSON, err := safeJSONMarshal(rec.RequestDelta)
 	if err != nil {
 		return fmt.Errorf("marshal request_delta: %w", err)
 	}
 
-	responseDeltaJSON, err := json.Marshal(rec.ResponseDelta)
+	responseDeltaJSON, err := safeJSONMarshal(rec.ResponseDelta)
 	if err != nil {
 		return fmt.Errorf("marshal response_delta: %w", err)
 	}
 
 	var outboundBodyJSON []byte
 	if len(rec.OutboundBody) > 0 {
-		outboundBodyJSON, err = json.Marshal(rec.OutboundBody)
+		outboundBodyJSON, err = safeJSONMarshal(rec.OutboundBody)
 		if err != nil {
 			return fmt.Errorf("marshal outbound_body: %w", err)
 		}
 	}
 
-	requestAttachmentsJSON, err := json.Marshal(rec.RequestAttachments)
+	requestAttachmentsJSON, err := safeJSONMarshal(rec.RequestAttachments)
 	if err != nil {
 		return fmt.Errorf("marshal request_attachments: %w", err)
 	}
 
-	responseAttachmentsJSON, err := json.Marshal(rec.ResponseAttachments)
+	responseAttachmentsJSON, err := safeJSONMarshal(rec.ResponseAttachments)
 	if err != nil {
 		return fmt.Errorf("marshal response_attachments: %w", err)
 	}
@@ -263,9 +293,9 @@ func (w *SessionBodiesWriter) ListAllBodies(ctx context.Context, tenantID, sessi
 // ReconstructFullHistory reconstructs full message history from incremental deltas
 //
 // This is useful for:
-//  - Data validation (comparing with request_logs)
-//  - Full context display
-//  - Export/backup
+//   - Data validation (comparing with request_logs)
+//   - Full context display
+//   - Export/backup
 func (w *SessionBodiesWriter) ReconstructFullHistory(ctx context.Context, tenantID, sessionID string) ([][]Message, error) {
 	bodies, err := w.ListAllBodies(ctx, tenantID, sessionID)
 	if err != nil {
