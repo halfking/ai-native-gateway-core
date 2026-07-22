@@ -1271,6 +1271,7 @@ func main() {
 		30*time.Minute,
 	)
 	var liveStreamHub *admin.LiveStreamSSEHub
+	var anomalyHarvester *streaming.AnomalyHarvester
 	if dbConn != nil && dbConn.Enabled() {
 		liveStreamHub = admin.NewLiveStreamSSEHub(dbConn.Pool(), admin.LiveStreamConfig{
 			BroadcastQueueSize:            2048,
@@ -3582,7 +3583,7 @@ func main() {
 			// Phase 3.11: Anomaly Harvester (TTL cleanup + fault-event bridge).
 			if dbConn != nil {
 				ahCfg := streaming.DefaultAnomalyHarvesterConfig()
-				anomalyHarvester := streaming.NewAnomalyHarvester(dbConn.Pool(), ahCfg)
+				anomalyHarvester = streaming.NewAnomalyHarvester(dbConn.Pool(), ahCfg)
 				anomalyHarvester.Start()
 				slog.Info("anomaly harvester started (phase 3.11)",
 					"cleanup_interval", ahCfg.CleanupInterval,
@@ -3900,6 +3901,9 @@ func main() {
 		// 2. Stop hub/background producers before closing their dependencies.
 		if liveStreamHub != nil {
 			liveStreamHub.Stop()
+		}
+		if anomalyHarvester != nil {
+			anomalyHarvester.Stop()
 		}
 		telemetryClient.Stop()
 		lim.Stop()
