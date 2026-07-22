@@ -150,36 +150,55 @@ func (o *Orchestrator) Prepare(ctx context.Context, planID string) (*store.Plan,
 // Switches proxy to green, drains blue, schedules retained remove.
 func (o *Orchestrator) Apply(ctx context.Context, planID string) error {
 	o.opMu.Lock()
-	defer o.opMu.Unlock()
 	plan, err := o.cfg.Store.Load(planID)
 	if err != nil {
+		o.opMu.Unlock()
 		return err
 	}
 	if plan.State != store.StatePrepared {
+		o.opMu.Unlock()
 		return fmt.Errorf("plan not PREPARED (state=%s)", plan.State)
+	}
+
+	// Audit I10 (WAL): persist the new active pointer BEFORE flipping the
+	// in-memory proxy. If persist fails, we never switch — proxy stays on
+	// blue (the safe state). This avoids the C1-style post-restart-502
+	// where in-memory and on-disk disagreed on crash.
+	if err := o.cfg.Store.SaveActive(&store.ActivePointer{Addr: plan.GreenAddr, Version: plan.Target.Version}); err != nil {
+		o.opMu.Unlock()
+		return fmt.Errorf("persist active before switch: %w", err)
 	}
 
 	plan.State = store.StateActivating
 	plan.History = append(plan.History, store.StateEvent{State: store.StateActivating, At: time.Now().UTC()})
 	o.save(plan)
 
-	// Switch active to green (atomic in proxy). Persist so daemon restart
-	// restores the proxy target instead of reverting to drained blue (C1).
+	// Now flip the in-memory proxy (C1: persistActive is now done BEFORE
+	// this, so the on-disk file and the in-memory pointer are consistent
+	// even if the daemon crashes here).
 	o.cfg.ActiveSwitcher.SwitchActive(plan.GreenAddr)
 	plan.ActiveAddr = plan.GreenAddr
-	o.persistActive(plan.GreenAddr, plan.Target.Version)
 
-	// Drain blue (Gateway graceful shutdown handles in-flight).
+	// Drain blue (Gateway graceful shutdown handles in-flight). Move to
+	// DRAINING state before releasing opMu so concurrent readers see a
+	// consistent state, then release opMu for I11 (concurrent Prepare on
+	// a different plan shouldn't be blocked for the full 35s drain).
 	plan.State = store.StateDraining
 	plan.History = append(plan.History, store.StateEvent{State: store.StateDraining, At: time.Now().UTC()})
 	o.save(plan)
+	o.opMu.Unlock()
+
 	if err := o.cfg.Backend.Drain(ctx, plan.BlueAddr); err != nil {
-		// Drain failure: traffic already on green (correct), but blue not clean.
-		// Mark FAILED so operator sees, but don't revert.
+		// Drain failure: traffic already on green (correct), but blue not
+		// clean. Mark FAILED so operator sees, but don't revert.
 		o.fail(plan, fmt.Sprintf("drain blue: %v", err))
 		return fmt.Errorf("drain blue: %w", err)
 	}
 
+	// Re-acquire to finalize (concurrency-safe DONE transition + retained
+	// scheduling).
+	o.opMu.Lock()
+	defer o.opMu.Unlock()
 	plan.State = store.StateDone
 	plan.History = append(plan.History, store.StateEvent{State: store.StateDone, At: time.Now().UTC()})
 	plan.Audit = appendAudit(plan.Audit, store.AuditEntry{Action: "apply", At: time.Now().UTC()})
@@ -201,17 +220,32 @@ func (o *Orchestrator) Rollback(ctx context.Context, planID string) error {
 	if err != nil {
 		return err
 	}
-	// Allowed states:
-	//   PREPARED — cancel a staged green without applying (audit I6).
-	//   DONE/FAILED — revert traffic to blue + remove green/retained.
+	// Allowed states and what they mean:
+	//   PREPARED — cancel a staged green without ever applying; active is
+	//     still on blue (untouched), so this is safe and the only true
+	//     "rollback" the launcher supports (audit I6).
+	//   FAILED  — a Prepare failed after possibly staging green; active is
+	//     still on blue; clean up green if any.
+	//   DONE    — REJECTED. After Apply, blue has been drained (stopped) and
+	//     may already be removed by the retained-remove goroutine; switching
+	//     back would route at a dead target → guaranteed 502 (audit C10).
+	//     Reverting a completed upgrade requires a fresh Prepare targeting
+	//     the old version (forward-compatible schema makes this safe).
 	// NOTIFIED/PREPARING have no usable green to clean, so reject.
-	if plan.State != store.StateDone && plan.State != store.StateFailed && plan.State != store.StatePrepared {
-		return fmt.Errorf("rollback only valid for PREPARED/DONE/FAILED plans (state=%s)", plan.State)
+	switch plan.State {
+	case store.StatePrepared, store.StateFailed:
+		// proceed
+	case store.StateDone:
+		return fmt.Errorf("rollback of a DONE plan is not supported: blue has been drained/removed (route at dead target would 502); to revert, start a new Prepare targeting the previous version")
+	default:
+		return fmt.Errorf("rollback only valid for PREPARED/FAILED plans (state=%s)", plan.State)
 	}
 	// Cancel any pending retained-remove so it doesn't kill blue after
 	// we switch back to it (I5).
 	o.cancelRetainedRemove(planID)
 
+	// For PREPARED/FAILED, active is still on blue — SwitchActive is a
+	// harmless no-op (same addr) but keeps state consistent.
 	o.cfg.ActiveSwitcher.SwitchActive(plan.BlueAddr)
 	plan.ActiveAddr = plan.BlueAddr
 	o.persistActive(plan.BlueAddr, plan.Current.Version)
@@ -220,7 +254,9 @@ func (o *Orchestrator) Rollback(ctx context.Context, planID string) error {
 	plan.Audit = appendAudit(plan.Audit, store.AuditEntry{Action: "rollback", At: time.Now().UTC()})
 	o.save(plan)
 	if plan.GreenAddr != "" {
-		o.cfg.Backend.Remove(ctx, plan.GreenAddr)
+		if err := o.cfg.Backend.Remove(ctx, plan.GreenAddr); err != nil {
+			slog.Warn("rollback: green remove failed (plan marked ROLLED_BACK anyway)", "addr", plan.GreenAddr, "err", err)
+		}
 	}
 	return nil
 }
