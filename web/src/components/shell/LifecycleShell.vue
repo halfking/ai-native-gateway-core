@@ -33,7 +33,7 @@ const links = computed(() =>
   <div class="app-shell">
     <a class="skip-link" href="#main-content">{{ t('app.nav.skip') }}</a>
     <header class="topbar">
-      <a class="brand" href="/maintain/home" :title="SITE_TITLE">
+       <a class="brand" href="/" :title="SITE_TITLE">
         <img
           class="brand-logo"
           :src="brandLogo"
@@ -62,7 +62,7 @@ const links = computed(() =>
     </main>
     <footer class="footer">
       <span>{{ t('app.footer.left') }}</span>
-      <span>{{ t('app.footer.right') }}<a href="/maintain/feedback">{{ t('app.footer.feedbackLink') }}</a></span>
+       <span>{{ t('app.footer.right') }}<a href="/customer/update-activate">{{ t('app.footer.feedbackLink') }}</a></span>
     </footer>
   </div>
 </template>
