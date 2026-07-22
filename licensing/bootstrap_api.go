@@ -259,8 +259,12 @@ func (h *BootstrapHandler) handleActivateQuick(c echo.Context) error {
 			"activated": false, "error": "missing_signed_license", "body": body,
 		})
 	}
+
+	// 从 signed_license 解析 License 并写入本地 licenses 表
+	// 这样后续 Activator.Activate() 能查到记录
+	var parsedLicense *License
 	if h.Offline != nil {
-		_, err := h.Offline.VerifyOfflineLicense(c.Request().Context(), signed)
+		lic, err := h.Offline.VerifyOfflineLicense(c.Request().Context(), signed)
 		if err != nil && h.publicKeyConfigured {
 			// 严格模式：公钥已配置 → 验签失败必须报错
 			return c.JSON(http.StatusBadRequest, map[string]any{
@@ -273,7 +277,23 @@ func (h *BootstrapHandler) handleActivateQuick(c echo.Context) error {
 			slog.Warn("activating without local signed_license verification (LicensePublicKey 未配置)；信任通道来源",
 				"instance_id", instanceID, "verify_err", err.Error())
 		}
+		parsedLicense = lic
 	}
+
+	// 确保 licenses 表有记录（中心签发的 license 本地可能没有）
+	if parsedLicense != nil && licenseKey != "" {
+		_, err := h.Store.GetLicense(c.Request().Context(), licenseKey)
+		if err != nil {
+			// licenses 表没有记录，插入
+			if createErr := h.Store.CreateLicense(c.Request().Context(), parsedLicense); createErr != nil {
+				slog.Warn("activateQuick: failed to create license in local DB (继续激活)",
+					"license_key", licenseKey, "error", createErr)
+			} else {
+				slog.Info("activateQuick: created license in local DB", "license_key", licenseKey)
+			}
+		}
+	}
+
 	if h.Activator != nil && licenseKey != "" {
 		resp, err := h.Activator.Activate(c.Request().Context(), &ActivationRequest{
 			LicenseKey: licenseKey, HardwareHash: input.HardwareHash,
