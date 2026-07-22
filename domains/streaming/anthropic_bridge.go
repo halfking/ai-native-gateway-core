@@ -975,6 +975,20 @@ func convertBridgeChatMessageToAnthropic(msg map[string]any) map[string]any {
 						})
 					}
 				}
+			default:
+				// 2026-07-23 auto-fix (Responses/Anthropic content audit):
+				// OpenAI Responses API uses type prefix "input_*" (input_text,
+				// input_image, ...). These land here when a Chat Completions
+				// client slips a Responses-shaped block through /v1/messages.
+				// Auto-normalize instead of dropping.
+				if normalized, fromType, ok := normalizeOpenAIResponsesBlock(blockMap); ok {
+					recordAutoNormalize("anthropic_bridge", fromType, role)
+					blocks = append(blocks, normalized)
+					continue
+				}
+				// Truly unknown or attachment-specific block type: preserve it
+				// rather than silently dropping user-provided data.
+				blocks = append(blocks, blockMap)
 			}
 		}
 		out["content"] = blocks
