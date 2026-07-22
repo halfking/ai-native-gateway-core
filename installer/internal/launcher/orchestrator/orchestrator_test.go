@@ -238,16 +238,20 @@ func TestApplyRejectsNonPrepared(t *testing.T) {
 	}
 }
 
-func TestRollbackSwitchesBack(t *testing.T) {
+// TestRollbackFailedCleansGreen (audit C10): Rollback of a FAILED plan
+// (Prepare failed after staging green) removes green; active is still on
+// blue so this is safe. NOTE: Rollback of DONE is now rejected (blue is
+// drained/removed → would 502) — see TestRollbackRejectsDone.
+func TestRollbackFailedCleansGreen(t *testing.T) {
 	st := store.New(t.TempDir())
 	_ = st.Save(&store.Plan{
-		ID: "p1", State: store.StateDone,
+		ID: "p1", State: store.StateFailed,
 		BlueAddr:   "127.0.0.1:8782",
 		GreenAddr:  "127.0.0.1:8783",
-		ActiveAddr: "127.0.0.1:8783",
+		ActiveAddr: "127.0.0.1:8782", // still on blue (Prepare failed)
 	})
 	bk := &fakeBackend{}
-	sw := &fakeSwitcher{current: "127.0.0.1:8783"}
+	sw := &fakeSwitcher{current: "127.0.0.1:8782"}
 	o := New(Config{Store: st, Backend: bk, Migrator: &fakeMigrator{}, ActiveSwitcher: sw})
 
 	if err := o.Rollback(context.Background(), "p1"); err != nil {
@@ -256,9 +260,6 @@ func TestRollbackSwitchesBack(t *testing.T) {
 	got, _ := st.Load("p1")
 	if got.State != store.StateRolledBack {
 		t.Fatalf("expected ROLLED_BACK, got %s", got.State)
-	}
-	if sw.current != "127.0.0.1:8782" {
-		t.Fatalf("expected switch back to blue, got %s", sw.current)
 	}
 	foundRemove := false
 	for _, c := range bk.calls {
@@ -303,8 +304,9 @@ func TestApplyPersistsActive(t *testing.T) {
 // TestRollbackRejectsNonTerminal (I4): Rollback must reject plans that
 // have nothing to cancel/revert (NOTIFIED, PREPARING). PREPARED is now
 // accepted (audit I6: cancel a staged green without applying).
+// DONE is now rejected too (audit C10: blue drained/removed → 502).
 func TestRollbackRejectsNonTerminal(t *testing.T) {
-	for _, state := range []string{store.StateNotified, store.StatePreparing} {
+	for _, state := range []string{store.StateNotified, store.StatePreparing, store.StateDone} {
 		t.Run(state, func(t *testing.T) {
 			st := store.New(t.TempDir())
 			_ = st.Save(&store.Plan{

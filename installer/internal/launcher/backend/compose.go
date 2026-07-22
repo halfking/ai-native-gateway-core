@@ -112,6 +112,11 @@ func (b *ComposeBackend) containerName(port int) string {
 
 // pickFreePort finds the first free host port starting at GreenPortBase
 // that is both not allocated in-process and actually bindable. Holds mu.
+//
+// Audit I12: probe binds 0.0.0.0 (not 127.0.0.1) because compose publishes
+// the port on all host interfaces — a port free on loopback may be in use
+// on another interface, and compose's "up -d --wait" would then fail with
+// a confusing EADDRINUSE.
 func (b *ComposeBackend) pickFreePort() (int, error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
@@ -119,11 +124,9 @@ func (b *ComposeBackend) pickFreePort() (int, error) {
 		if b.allocated[p] {
 			continue
 		}
-		// Verify the port is actually free on the host (a stale container
-		// from a crashed daemon could be holding it).
-		ln, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", p))
+		ln, err := net.Listen("tcp", fmt.Sprintf("0.0.0.0:%d", p))
 		if err != nil {
-			continue // in use
+			continue // port in use on at least one interface
 		}
 		_ = ln.Close()
 		b.allocated[p] = true
@@ -214,6 +217,12 @@ func (b *ComposeBackend) Drain(ctx context.Context, addr string) error {
 	if port == 0 {
 		return fmt.Errorf("drain: cannot parse port from addr %q", addr)
 	}
+	// Audit M6: if this port isn't one of our compose projects (e.g. blue
+	// is managed by systemd, not docker compose), treat as no-op success —
+	// the upstream is "drained" from our perspective (we don't manage it).
+	if !b.hasComposeFile(port) {
+		return nil
+	}
 	return b.composeCmdForPort(ctx, port, "stop", "-t", "35")
 }
 
@@ -223,9 +232,22 @@ func (b *ComposeBackend) Remove(ctx context.Context, addr string) error {
 	if port == 0 {
 		return fmt.Errorf("remove: cannot parse port from addr %q", addr)
 	}
+	// Audit M6: same as Drain — silent no-op for non-compose-managed addr.
+	if !b.hasComposeFile(port) {
+		b.releasePort(port)
+		return nil
+	}
 	err := b.composeCmdForPort(ctx, port, "down", "-v")
 	b.releasePort(port)
 	return err
+}
+
+// hasComposeFile returns true iff the compose YAML for this port exists
+// on disk (i.e. we manage it). Used to no-op Drain/Remove on addrs managed
+// by something else (e.g. systemd).
+func (b *ComposeBackend) hasComposeFile(port int) bool {
+	_, err := os.Stat(b.composePath(port))
+	return err == nil
 }
 
 // composeCmdForPort runs docker compose -p <project(port)> -f <file(port)> <args...>.
