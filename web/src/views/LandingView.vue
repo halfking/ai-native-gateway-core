@@ -108,14 +108,14 @@ function openLogin() {
       :footer-text="t('landing.footer')"
       :cta-label="t('landing.ctaLogin')"
       :secondary-cta-label="t('landing.ctaDownload')"
-       secondary-cta-href="/customer/update-activate"
+      secondary-cta-href="/customer/update-activate"
       :hide-cta="false"
       @login="openLogin"
     >
       <template #hero-extra>
         <div class="llmgo-landing__extra-links">
-           <a href="/customer/update-activate">{{ t('landing.ctaActivate') }}</a>
-           <a href="/bootstrap">{{ t('landing.navSetup') }}</a>
+          <a href="/customer/update-activate">{{ t('landing.ctaActivate') }}</a>
+          <a href="/bootstrap">{{ t('landing.navSetup') }}</a>
           <a href="/customer/update-activate">{{ t('landing.ctaAgreement') }}</a>
           <a href="/user-agreement.html" target="_blank" rel="noopener">完整协议 ↗</a>
         </div>
