@@ -60,6 +60,11 @@ type Router struct {
 
 	// 新增：路由评分权重配置（Phase 1）
 	LoadScoreWeights LoadScoreWeights
+
+	// TimeoutConfig (Phase 2, 2026-07-23): Dynamic timeout calculation
+	// based on context size, historical latency, and network conditions.
+	// Hot-reloads config from system_settings table every 30 seconds.
+	TimeoutConfig TimeoutCalculator
 }
 
 func NewRouter(sticky *StickyCache, lim *credential.Limiter) *Router {
