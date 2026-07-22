@@ -463,6 +463,11 @@ type Executor struct {
 	UpstreamTimeout      time.Duration
 	StreamRetryThreshold int // Max chunks sent before stream becomes non-resumable (default 5)
 
+	// KeepaliveInterval (Phase 3, 2026-07-23): Keepalive heartbeat interval in seconds
+	// for long-running streaming requests. Loaded from system_settings or TimeoutConfig.
+	// 0 disables keepalive. Default: 15 seconds.
+	KeepaliveInterval int
+
 	// MnfStreak tracks consecutive model_not_found occurrences per
 	// (stickyKey, credentialID). When the count reaches
 	// MnfStickyBreakThreshold, the sticky binding is deleted so the
