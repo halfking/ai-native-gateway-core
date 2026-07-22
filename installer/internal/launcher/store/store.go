@@ -60,13 +60,37 @@ func (s *Store) Save(p *Plan) error {
 
 // atomicWrite writes data to path via a temp file + rename. POSIX rename
 // is atomic, so readers see either the old or the new file, never a
-// partial write.
+// partial write. Audit I13: cleans up the .tmp file on rename failure so
+// a stale tmp doesn't accumulate across repeated disk-full situations.
 func atomicWrite(path string, data []byte, mode os.FileMode) error {
 	tmp := path + ".tmp"
 	if err := os.WriteFile(tmp, data, mode); err != nil {
 		return err
 	}
-	return os.Rename(tmp, path)
+	if err := os.Rename(tmp, path); err != nil {
+		_ = os.Remove(tmp) // best-effort cleanup
+		return err
+	}
+	return nil
+}
+
+// SweepStaleTmp removes any leftover .tmp files in the plans directory.
+// Audit I13: called at daemon startup to clean up tmp files that
+// atomicWrite failed to clean (e.g. process killed between WriteFile and
+// Rename).
+func (s *Store) SweepStaleTmp() {
+	entries, err := os.ReadDir(s.plansDir())
+	if err != nil {
+		return
+	}
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		if strings.HasSuffix(e.Name(), ".json.tmp") {
+			_ = os.Remove(filepath.Join(s.plansDir(), e.Name()))
+		}
+	}
 }
 
 // Load reads a plan by ID.

@@ -51,22 +51,24 @@ func (m *gatewayMigrator) Migrate(ctx context.Context) error {
 	if err := cmd.Run(); err != nil {
 		return fmt.Errorf("gateway migrate: %w; stderr: %s", err, stderr.String())
 	}
-	// Audit I4: detect silent noop-when-no-DB. The migrate subcommand
-	// returns exit 0 with status=noop even when DATABASE_URL is unset, so
-	// without this check Prepare would succeed without running any
-	// migrations, green would start DB-less, and the health gate would
-	// pass (Gateway's /healthz doesn't check DB).
+	// Audit I4 + C11: parse the JSON report. The migrate subcommand
+	// returns exit 0 with status=noop even when DATABASE_URL is unset
+	// (green would start DB-less, /healthz still 200). Also, a non-JSON
+	// stdout (older binary, panic trace, leading log line) must NOT be
+	// silently treated as success — Prepare would proceed without any
+	// migration having run.
 	var report struct {
 		Status string `json:"status"`
 		HasDB  bool   `json:"has_db"`
 	}
-	if err := json.Unmarshal(stdout.Bytes(), &report); err == nil {
-		if report.Status == "noop" && !report.HasDB {
-			slog.Warn("gateway migrate was a no-op with no DB configured — "+
-				"check DATABASE_URL/LLM_GATEWAY_DATABASE_URL in the launcher's env "+
-				"(green will start without schema and /healthz won't catch it)",
-				"binary", m.binary)
-		}
+	if err := json.Unmarshal(stdout.Bytes(), &report); err != nil {
+		return fmt.Errorf("gateway migrate: stdout is not valid JSON (expected migration report from a compatible binary): %q", stdout.String())
+	}
+	if report.Status == "noop" && !report.HasDB {
+		slog.Warn("gateway migrate was a no-op with no DB configured — "+
+			"check DATABASE_URL/LLM_GATEWAY_DATABASE_URL in the launcher's env "+
+			"(green will start without schema and /healthz won't catch it)",
+			"binary", m.binary)
 	}
 	return nil
 }
@@ -86,6 +88,12 @@ type daemon struct {
 	currentPlanID  string
 	currentPlanMu  sync.Mutex
 	currentVersion string
+
+	// opCtx is cancelled on shutdown so any in-flight Prepare/Apply/Rollback
+	// (specifically the 35s Drain subprocess) aborts promptly instead of
+	// keeping the daemon alive past SIGTERM (audit I9).
+	opCtx    context.Context
+	opCancel context.CancelFunc
 }
 
 func (d *daemon) setCurrentPlan(id string) {
@@ -98,6 +106,22 @@ func (d *daemon) getCurrentPlan() string {
 	d.currentPlanMu.Lock()
 	defer d.currentPlanMu.Unlock()
 	return d.currentPlanID
+}
+
+// setCurrentVersion updates the in-memory current version. Called after a
+// successful Apply (target version) or Rollback (current version). Without
+// this, the daemon's currentVersion is frozen at startup and the checker
+// keeps re-notifying the version we just upgraded to (audit C9).
+func (d *daemon) setCurrentVersion(v string) {
+	d.currentPlanMu.Lock()
+	d.currentVersion = v
+	d.currentPlanMu.Unlock()
+}
+
+func (d *daemon) getCurrentVersion() string {
+	d.currentPlanMu.Lock()
+	defer d.currentPlanMu.Unlock()
+	return d.currentVersion
 }
 
 // currentPlanState returns the state of the current plan, or "" if none.
@@ -136,6 +160,43 @@ func (d *daemon) findPlanForVersion(version string) *store.Plan {
 		}
 	}
 	return nil
+}
+
+// reconcileAbandonedPlans (audit I9): on daemon startup, fail any plan
+// stuck in PREPARING/ACTIVATING/DRAINING. These states are mid-flight
+// from a previous daemon lifetime that was interrupted (SIGTERM/OOM/panic);
+// the docker subprocess may still be running, but the Go side is gone.
+// Marking FAILED lets the operator Rollback to clean up green. Without
+// this, the UI shows a plan that no operation can act on (Apply requires
+// PREPARED, Prepare requires NOTIFIED/FAILED, Rollback requires DONE/
+// FAILED).
+func (d *daemon) reconcileAbandonedPlans() {
+	abandoned := map[string]bool{
+		store.StatePreparing:  true,
+		store.StateActivating: true,
+		store.StateDraining:   true,
+	}
+	plans, err := d.store.LoadAll()
+	if err != nil {
+		slog.Warn("LoadAll for reconcile failed", "err", err)
+		return
+	}
+	for _, p := range plans {
+		if !abandoned[p.State] {
+			continue
+		}
+		p.State = store.StateFailed
+		p.History = append(p.History, store.StateEvent{
+			State: store.StateFailed,
+			At:    time.Now().UTC(),
+			Note:  "daemon restarted while plan was in " + p.State + "; auto-failed for cleanup",
+		})
+		if err := d.store.Save(p); err != nil {
+			slog.Warn("save failed-plan", "plan", p.ID, "err", err)
+			continue
+		}
+		slog.Warn("abandoned plan auto-failed on startup", "plan", p.ID, "was", p.State)
+	}
 }
 
 // restoreInProgressPlan (I3): on daemon startup, find the most recent
@@ -181,7 +242,11 @@ func main() {
 
 	// Restore active pointer from store (daemon restart scenario).
 	d.store = store.New(*dataDir)
-	active, _ := d.store.LoadActive()
+	active, err := d.store.LoadActive()
+	if err != nil {
+		slog.Warn("load active failed (falling back to flag)", "err", err)
+	}
+	_ = err
 	activeAddr := *currentAddr
 	if active != nil && active.Addr != "" {
 		activeAddr = active.Addr
@@ -197,7 +262,13 @@ func main() {
 	// I3: restore any in-progress plan so the UI shows it after a restart.
 	// (e.g. daemon crashed mid-PREPARED, or was restarted while a NOTIFIED
 	// plan awaited operator action.)
+	// Audit I9: fail any plans stuck in mid-flight states from a previous
+	// daemon lifetime (interrupted Prepare/Apply). Do this before adopting
+	// one as the in-progress plan so the adopted one is the most recent
+	// NOTIFIED/PREPARED (operator-actionable), not a stranded DRAINING.
+	d.reconcileAbandonedPlans()
 	d.restoreInProgressPlan()
+	d.store.SweepStaleTmp() // Audit I13
 
 	// Backend (compose only for MVP).
 	bk := backend.NewComposeBackend(backend.ComposeConfig{
@@ -230,7 +301,7 @@ func main() {
 		StatusProvider: func() api.Status {
 			return api.Status{
 				ActiveAddr:    d.proxy.ActiveAddr(),
-				ActiveVersion: d.currentVersion,
+				ActiveVersion: d.getCurrentVersion(),
 				HasPlan:       d.getCurrentPlan() != "",
 				PlanID:        d.getCurrentPlan(),
 				PlanState:     d.currentPlanState(),
@@ -255,7 +326,7 @@ func main() {
 		PrepareFunc: func(planID string) (*store.Plan, error) {
 			// orchestrator.Prepare loads the NOTIFIED plan by ID and
 			// transitions it in place (audit C4: no more orphaned plans).
-			updated, err := d.orch.Prepare(context.Background(), planID)
+			updated, err := d.orch.Prepare(d.opCtx, planID)
 			if err != nil {
 				slog.Warn("prepare failed", "plan", planID, "err", err)
 				return updated, err
@@ -264,23 +335,42 @@ func main() {
 			return updated, nil
 		},
 		ApplyFunc: func(planID string, confirmed bool) error {
-			return d.orch.Apply(context.Background(), planID)
+			if err := d.orch.Apply(d.opCtx, planID); err != nil {
+				return err
+			}
+			// Audit C9: keep in-memory currentVersion in sync so the
+			// checker doesn't re-notify the version we just deployed.
+			if p, err := d.store.Load(planID); err == nil {
+				d.setCurrentVersion(p.Target.Version)
+				slog.Info("current version updated after Apply", "version", p.Target.Version)
+			}
+			return nil
 		},
 		RollbackFunc: func(planID string) error {
-			return d.orch.Rollback(context.Background(), planID)
+			if err := d.orch.Rollback(d.opCtx, planID); err != nil {
+				return err
+			}
+			// Audit I14: rollback restores the prior current version.
+			if p, err := d.store.Load(planID); err == nil {
+				d.setCurrentVersion(p.Current.Version)
+				slog.Info("current version reverted after Rollback", "version", p.Current.Version)
+			}
+			return nil
 		},
 	})
 	d.proxy.SetAPIHandler(a)
 
 	// Checker: poll master, on new version build NOTIFIED plan (never auto-apply).
+	// CurrentVersion is a provider so the checker compares against the live
+	// post-Apply version, not the startup value (audit C9).
 	d.checker = checker.New(checker.Config{
-		CurrentVersion: d.currentVersion,
+		CurrentVersion: d.getCurrentVersion,
 		MasterURL:      *masterURL,
 		Channel:        *channel,
 		Interval:       *checkInterval,
 		Source: &checker.MasterHTTPSource{
 			MasterURL:      *masterURL,
-			CurrentVersion: d.currentVersion,
+			CurrentVersion: d.getCurrentVersion,
 			Channel:        *channel,
 		},
 		OnUpdate: func(r *checker.FoundRelease) {
@@ -324,6 +414,7 @@ func main() {
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	d.opCtx, d.opCancel = context.WithCancel(context.Background())
 	defer stop()
 
 	chkCtx, chkCancel := context.WithCancel(context.Background())
@@ -345,6 +436,10 @@ func main() {
 	_ = srv.Shutdown(shutCtx)
 	chkCancel()
 	d.checker.Stop()
+	// Audit I9: cancel in-flight Prepare/Apply/Rollback so the 35s Drain
+	// subprocess aborts promptly. Without this, the daemon would block
+	// the Drain even though no one's listening to the API.
+	d.opCancel()
 	d.orch.Stop()
 }
 
