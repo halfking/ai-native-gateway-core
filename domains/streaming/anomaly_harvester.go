@@ -3,11 +3,13 @@ package streaming
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"sync"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -34,15 +36,18 @@ func DefaultAnomalyHarvesterConfig() AnomalyHarvesterConfig {
 type AnomalyHarvester struct {
 	pool   *pgxpool.Pool
 	cfg    AnomalyHarvesterConfig
-	stopCh chan struct{}
+	ctx    context.Context
+	cancel context.CancelFunc
 	wg     sync.WaitGroup
 }
 
 func NewAnomalyHarvester(pool *pgxpool.Pool, cfg AnomalyHarvesterConfig) *AnomalyHarvester {
+	ctx, cancel := context.WithCancel(context.Background())
 	return &AnomalyHarvester{
 		pool:   pool,
 		cfg:    cfg,
-		stopCh: make(chan struct{}),
+		ctx:    ctx,
+		cancel: cancel,
 	}
 }
 
@@ -62,7 +67,7 @@ func (h *AnomalyHarvester) Stop() {
 	if h == nil {
 		return
 	}
-	close(h.stopCh)
+	h.cancel()
 	h.wg.Wait()
 	slog.Info("anomaly harvester stopped")
 }
@@ -73,17 +78,19 @@ func (h *AnomalyHarvester) cleanupLoop() {
 	defer ticker.Stop()
 	for {
 		select {
-		case <-h.stopCh:
+		case <-h.ctx.Done():
 			return
 		case <-ticker.C:
-			h.runCleanup()
+			h.runCleanup(h.ctx)
 		}
 	}
 }
 
-func (h *AnomalyHarvester) runCleanup() {
+func (h *AnomalyHarvester) runCleanup(parent context.Context) {
+	ctx, cancel := context.WithTimeout(parent, 30*time.Second)
+	defer cancel()
 	cutoff := time.Now().AddDate(0, 0, -h.cfg.RetentionDays)
-	ct, err := h.pool.Exec(context.WithoutCancel(context.Background()),
+	ct, err := h.pool.Exec(ctx,
 		`DELETE FROM response_format_anomalies WHERE detected_at < $1`, cutoff)
 	if err != nil {
 		slog.Warn("anomaly harvester: cleanup failed", "error", err)
@@ -102,21 +109,21 @@ func (h *AnomalyHarvester) bridgeLoop() {
 	defer ticker.Stop()
 	for {
 		select {
-		case <-h.stopCh:
+		case <-h.ctx.Done():
 			return
 		case <-ticker.C:
-			h.runBridge()
+			h.runBridge(h.ctx)
 		}
 	}
 }
 
-func (h *AnomalyHarvester) runBridge() {
-	alerts := h.queryAnomalyAlerts()
+func (h *AnomalyHarvester) runBridge(ctx context.Context) {
+	alerts := h.queryAnomalyAlerts(ctx)
 	if len(alerts) == 0 {
 		return
 	}
 	for _, a := range alerts {
-		h.createFaultEvent(a)
+		h.createFaultEvent(ctx, a)
 	}
 }
 
@@ -128,9 +135,11 @@ type anomalyAlert struct {
 
 // queryAnomalyAlerts selects anomaly types that have either hit the configured
 // count threshold OR are critical (which always trigger regardless of count).
-func (h *AnomalyHarvester) queryAnomalyAlerts() []anomalyAlert {
+func (h *AnomalyHarvester) queryAnomalyAlerts(parent context.Context) []anomalyAlert {
 	windowStart := time.Now().Add(-h.cfg.FaultEventWindow)
-	rows, err := h.pool.Query(context.WithoutCancel(context.Background()), `
+	ctx, cancel := context.WithTimeout(parent, 30*time.Second)
+	defer cancel()
+	rows, err := h.pool.Query(ctx, `
 		SELECT anomaly_type, severity, COUNT(*) AS cnt
 		FROM response_format_anomalies
 		WHERE detected_at > $1 AND resolved = FALSE
@@ -155,6 +164,10 @@ func (h *AnomalyHarvester) queryAnomalyAlerts() []anomalyAlert {
 			alerts = append(alerts, anomalyAlert{at, sev, cnt})
 		}
 	}
+	if err := rows.Err(); err != nil {
+		slog.Warn("anomaly harvester: bridge rows failed", "error", err)
+		return nil
+	}
 	return alerts
 }
 
@@ -175,7 +188,7 @@ func toFaultSeverity(anomalySev string) string {
 	}
 }
 
-func (h *AnomalyHarvester) createFaultEvent(a anomalyAlert) {
+func (h *AnomalyHarvester) createFaultEvent(parent context.Context, a anomalyAlert) {
 	meta := map[string]any{
 		"anomaly_type": a.anomalyType,
 		"count":        a.count,
@@ -190,21 +203,69 @@ func (h *AnomalyHarvester) createFaultEvent(a anomalyAlert) {
 	}
 
 	faultSev := toFaultSeverity(a.severity)
+	ruleName := "data_anomaly:" + a.anomalyType
 	title := fmt.Sprintf("数据异常: %s (%d次/%dmin)", a.anomalyType, a.count, int(h.cfg.FaultEventWindow.Minutes()))
 	description := fmt.Sprintf("异常类型 %s 在过去 %d 分钟内出现 %d 次(严重度: %s)，触发故障事件",
 		a.anomalyType, int(h.cfg.FaultEventWindow.Minutes()), a.count, a.severity)
 
-	_, err = h.pool.Exec(context.WithoutCancel(context.Background()), `
-		INSERT INTO fault_events (rule_id, rule_name, severity, title, description, source,
-		                          status, metadata, detected_at, created_at)
-		VALUES (0, $1, $2, $3, $4, 'data_anomaly', 'new', $5, NOW(), NOW())
-	`, title, faultSev, title, description, metaJSON)
+	ctx, cancel := context.WithTimeout(parent, 30*time.Second)
+	defer cancel()
+	tx, err := h.pool.Begin(ctx)
 	if err != nil {
+		slog.Warn("anomaly harvester: begin fault bridge transaction failed",
+			"anomaly_type", a.anomalyType, "error", err)
+		return
+	}
+	defer tx.Rollback(ctx)
+
+	var eventID int64
+	err = tx.QueryRow(ctx, `
+		WITH lock AS (
+			SELECT pg_advisory_xact_lock(hashtext($1))
+		), inserted AS (
+			INSERT INTO fault_events (rule_id, rule_name, severity, title, description, source,
+			                          status, metadata, detected_at, created_at)
+			SELECT 0, $1, $2, $3, $4, 'data_anomaly', 'new', $5, NOW(), NOW()
+			FROM lock
+			WHERE NOT EXISTS (
+				SELECT 1 FROM fault_events
+				WHERE source = 'data_anomaly'
+				  AND rule_name = $1
+				  AND status IN ('new', 'acknowledged', 'resolving')
+			)
+			RETURNING id
+		)
+		SELECT id FROM inserted
+	`, ruleName, faultSev, title, description, metaJSON).Scan(&eventID)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return
+		}
 		slog.Warn("anomaly harvester: bridge insert fault_event failed",
 			"anomaly_type", a.anomalyType, "error", err)
 		return
 	}
+	windowStart := time.Now().Add(-h.cfg.FaultEventWindow)
+	if _, err = tx.Exec(ctx, `
+		UPDATE response_format_anomalies
+		SET resolved = TRUE,
+		    resolved_at = NOW(),
+		    resolution_notes = 'bridged to fault_event'
+		WHERE anomaly_type = $1
+		  AND severity = $2
+		  AND detected_at > $3
+		  AND resolved = FALSE
+	`, a.anomalyType, a.severity, windowStart); err != nil {
+		slog.Warn("anomaly harvester: mark bridged anomalies resolved failed",
+			"anomaly_type", a.anomalyType, "event_id", eventID, "error", err)
+		return
+	}
+	if err = tx.Commit(ctx); err != nil {
+		slog.Warn("anomaly harvester: commit fault bridge failed",
+			"anomaly_type", a.anomalyType, "event_id", eventID, "error", err)
+		return
+	}
 	slog.Warn("anomaly harvester: bridged to fault_event",
-		"anomaly_type", a.anomalyType, "count", a.count,
+		"event_id", eventID, "anomaly_type", a.anomalyType, "count", a.count,
 		"anomaly_severity", a.severity, "fault_severity", faultSev)
 }
