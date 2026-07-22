@@ -281,6 +281,10 @@ func (h *BootstrapHandler) handleActivateQuick(c echo.Context) error {
 			if unmarshalErr == nil && len(signedStruct.Data) > 0 {
 				var trustedLic License
 				if jsonErr := json.Unmarshal(signedStruct.Data, &trustedLic); jsonErr == nil {
+					// 确保 Features 不是 nil（PostgreSQL jsonb 不接受 Go nil）
+					if trustedLic.Features == nil {
+						trustedLic.Features = []string{}
+					}
 					parsedLicense = &trustedLic
 					slog.Info("activateQuick: parsed license from Data without RSA verification (信任路径)",
 						"license_key", trustedLic.LicenseKey)
