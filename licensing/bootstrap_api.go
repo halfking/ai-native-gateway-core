@@ -275,10 +275,22 @@ func (h *BootstrapHandler) handleActivateQuick(c echo.Context) error {
 		}
 	}
 	if h.Activator != nil && licenseKey != "" {
-		_, _ = h.Activator.Activate(c.Request().Context(), &ActivationRequest{
+		resp, err := h.Activator.Activate(c.Request().Context(), &ActivationRequest{
 			LicenseKey: licenseKey, HardwareHash: input.HardwareHash,
 			InstanceID: instanceID, DeviceName: input.DeviceName,
 		})
+		if err != nil {
+			slog.Error("activateQuick: Activator.Activate failed", "error", err, "license_key", licenseKey)
+			return c.JSON(http.StatusInternalServerError, map[string]any{
+				"activated": false, "error": err.Error(), "message": "本地激活失败：写入数据库时出错",
+			})
+		}
+		if resp != nil && !resp.Success {
+			slog.Warn("activateQuick: Activator.Activate returned success=false", "message", resp.Message)
+			return c.JSON(http.StatusBadRequest, map[string]any{
+				"activated": false, "error": resp.Message, "message": "本地激活失败",
+			})
+		}
 	}
 	h.startCenterAgent(instanceID, licenseKey, input.HardwareHash)
 	return c.JSON(http.StatusOK, map[string]any{
