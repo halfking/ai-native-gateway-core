@@ -248,38 +248,8 @@ input[type="radio"], input[type="checkbox"] {
   color: var(--accent);
   background: var(--bg-hover);
 }
-/* 箭头：只有主要操作按钮（btn-primary）才带箭头 → ，hover 时变成 ⇢ 推进 4px */
-.btn-primary::after {
-  content: '→';
-  display: inline-block;
-  font-size: 1.05em;
-  line-height: 1;
-  margin-left: 2px;
-  transition: transform .18s ease, opacity .18s ease;
-  opacity: 0.92;
-}
-.btn-primary:not(:disabled):hover::after {
-  transform: translateX(4px);
-  opacity: 1;
-}
-/* 显式要求箭头的按钮（btn-arrow 类） */
-.btn-arrow::after {
-  content: '→';
-  display: inline-block;
-  font-size: 1.05em;
-  line-height: 1;
-  margin-left: 2px;
-  transition: transform .18s ease, opacity .18s ease;
-  opacity: 0.92;
-}
-.btn-arrow:not(:disabled):hover::after {
-  transform: translateX(4px);
-  opacity: 1;
-}
-/* 不带箭头的按钮（显式排除，用于 btn-primary 但不想要箭头的场景） */
-.btn-no-arrow::after { content: none; margin: 0; }
-.btn-icon::after { content: none; margin: 0; }
-/* 禁用态：显灰 + 鼠标变 not-allowed + 箭头淡出 */
+/* 按钮箭头已完全移除（2026-07-22：根据用户反馈，所有按钮不再需要箭头装饰） */
+/* 禁用态：显灰 + 鼠标变 not-allowed */
 .btn:disabled,
 .btn[disabled] {
   background: color-mix(in srgb, var(--card) 70%, var(--bg) 30%);
@@ -289,24 +259,12 @@ input[type="radio"], input[type="checkbox"] {
   box-shadow: none;
   transform: none;
 }
-.btn-primary:disabled::after,
-.btn-primary[disabled]::after,
-.btn-arrow:disabled::after,
-.btn-arrow[disabled]::after { opacity: 0.35; }
-/* 加载态：箭头变旋转指示，但保持可读 */
+/* 加载态：降低透明度 + 鼠标变 progress */
 .btn.is-loading,
 .btn[aria-busy='true'] {
   cursor: progress;
-  opacity: 0.92;
+  opacity: 0.7;
 }
-.btn-primary.is-loading::after,
-.btn-primary[aria-busy='true']::after,
-.btn-arrow.is-loading::after,
-.btn-arrow[aria-busy='true']::after {
-  content: '⟳';
-  animation: btn-spin 0.9s linear infinite;
-}
-@keyframes btn-spin { to { transform: rotate(360deg); } }
 /* 焦点环：键盘可达性 */
 .btn:focus-visible {
   outline: none;
