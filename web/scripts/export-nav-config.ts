@@ -67,7 +67,7 @@ function sanitizeNavItem(item: any): any {
   }
 }
 
-const outPath = resolve(__dirname, '../public/nav-config.json')
+const outPath = resolve(__dirname, '../public/menu-config.json')
 mkdirSync(dirname(outPath), { recursive: true })
 writeFileSync(outPath, JSON.stringify(config, null, 2), 'utf-8')
 
