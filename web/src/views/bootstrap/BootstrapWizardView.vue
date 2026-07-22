@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import {
   ElAlert,
@@ -50,6 +50,34 @@ const pendingActivation = ref(false)
 const loading = ref(false)
 const error = ref('')
 const message = ref('')
+const errorKey = ref(0)
+const messageKey = ref(0)
+const ERROR_AUTO_HIDE_MS = 8000        // 错误 8 秒后自动消失
+const SUCCESS_AUTO_HIDE_MS = 3000     // 成功 3 秒后自动消失
+const cooldownTimer = ref<number>(0)  // 控制 cooldown 自动重试计时
+
+// 错误提示：自动消失（红色，8秒），并用 key 触发过渡动画
+watch(error, (val, old) => {
+  if (old && !val) return // 用户手动关闭，不重置
+  if (val) {
+    errorKey.value++
+    if (errorTimer) window.clearTimeout(errorTimer)
+    errorTimer = window.setTimeout(() => { error.value = '' }, ERROR_AUTO_HIDE_MS)
+  }
+})
+
+// 成功提示：自动消失（绿色，3秒）
+watch(message, (val, old) => {
+  if (old && !val) return
+  if (val) {
+    messageKey.value++
+    if (messageTimer) window.clearTimeout(messageTimer)
+    messageTimer = window.setTimeout(() => { message.value = '' }, SUCCESS_AUTO_HIDE_MS)
+  }
+})
+
+let errorTimer: number | null = null
+let messageTimer: number | null = null
 
 const status = ref<BootstrapStatus | null>(null)
 const fingerprint = ref<FingerprintInfo | null>(null)
@@ -395,8 +423,21 @@ onMounted(async () => {
       </div>
     </nav>
 
-    <el-alert v-if="error" type="error" :title="error" show-icon closable class="mb" @close="error = ''" />
-    <el-alert v-if="message" type="success" :title="message" show-icon class="mb" />
+    <transition name="el-alert-fade">
+      <el-alert
+        v-if="error"
+        :key="errorKey"
+        type="error"
+        :title="error"
+        show-icon
+        closable
+        class="mb"
+        @close="error = ''"
+      />
+    </transition>
+    <transition name="el-alert-fade">
+      <el-alert v-if="message" :key="messageKey" type="success" :title="message" show-icon class="mb" />
+    </transition>
 
     <!-- 已同意协议但未完成激活：显示后续步骤；否则提示未同意 -->
     <template v-if="agreementAccepted || agreementDialogResolved === 'agreed'">
