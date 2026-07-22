@@ -120,7 +120,7 @@ async function handleLogin() {
               <p class="login-modal__hint">首次登录或管理员重置密码后，需要先修改密码才能继续使用。</p>
             </div>
           </div>
-          <button type="button" class="btn btn-ghost btn-sm btn-no-arrow login-modal__close" aria-label="关闭" @click="close">
+          <button type="button" class="btn btn-ghost btn-sm login-modal__close" aria-label="关闭" @click="close">
             ✕
           </button>
         </div>
@@ -149,7 +149,7 @@ async function handleLogin() {
             />
           </div>
           <div class="login-modal__actions">
-            <button type="button" class="btn btn-ghost btn-no-arrow" @click="close">取消</button>
+            <button type="button" class="btn btn-ghost" @click="close">取消</button>
             <button class="btn btn-primary" type="submit" :disabled="loading">
               {{ loading ? '登录中…' : '登录' }}
             </button>

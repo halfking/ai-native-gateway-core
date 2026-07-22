@@ -248,8 +248,8 @@ input[type="radio"], input[type="checkbox"] {
   color: var(--accent);
   background: var(--bg-hover);
 }
-/* 箭头：可点时尾部带 → ，hover 时变成 ⇢ 推进 4px；disabled 时仍渲染但显灰 */
-.btn::after {
+/* 箭头：只有主要操作按钮（btn-primary）才带箭头 → ，hover 时变成 ⇢ 推进 4px */
+.btn-primary::after {
   content: '→';
   display: inline-block;
   font-size: 1.05em;
@@ -258,12 +258,26 @@ input[type="radio"], input[type="checkbox"] {
   transition: transform .18s ease, opacity .18s ease;
   opacity: 0.92;
 }
-.btn:not(:disabled):hover::after {
+.btn-primary:not(:disabled):hover::after {
   transform: translateX(4px);
   opacity: 1;
 }
-/* 不带箭头的按钮（文本/链接/图标按钮） */
-.btn-no-arrow::after,
+/* 显式要求箭头的按钮（btn-arrow 类） */
+.btn-arrow::after {
+  content: '→';
+  display: inline-block;
+  font-size: 1.05em;
+  line-height: 1;
+  margin-left: 2px;
+  transition: transform .18s ease, opacity .18s ease;
+  opacity: 0.92;
+}
+.btn-arrow:not(:disabled):hover::after {
+  transform: translateX(4px);
+  opacity: 1;
+}
+/* 不带箭头的按钮（显式排除，用于 btn-primary 但不想要箭头的场景） */
+.btn-no-arrow::after { content: none; margin: 0; }
 .btn-icon::after { content: none; margin: 0; }
 /* 禁用态：显灰 + 鼠标变 not-allowed + 箭头淡出 */
 .btn:disabled,
@@ -275,16 +289,20 @@ input[type="radio"], input[type="checkbox"] {
   box-shadow: none;
   transform: none;
 }
-.btn:disabled::after,
-.btn[disabled]::after { opacity: 0.35; }
+.btn-primary:disabled::after,
+.btn-primary[disabled]::after,
+.btn-arrow:disabled::after,
+.btn-arrow[disabled]::after { opacity: 0.35; }
 /* 加载态：箭头变旋转指示，但保持可读 */
 .btn.is-loading,
 .btn[aria-busy='true'] {
   cursor: progress;
   opacity: 0.92;
 }
-.btn.is-loading::after,
-.btn[aria-busy='true']::after {
+.btn-primary.is-loading::after,
+.btn-primary[aria-busy='true']::after,
+.btn-arrow.is-loading::after,
+.btn-arrow[aria-busy='true']::after {
   content: '⟳';
   animation: btn-spin 0.9s linear infinite;
 }
