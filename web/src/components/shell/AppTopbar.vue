@@ -279,7 +279,6 @@ function navLabel(labelKey: string | undefined, fallback: string): string {
           @click="toggleGroup(group.id)"
         >
           {{ navLabel(group.labelKey, group.label) }}
-          <span class="app-topbar__chevron" aria-hidden="true">▾</span>
         </button>
       </div>
     </nav>
@@ -443,9 +442,7 @@ function navLabel(labelKey: string | undefined, fallback: string): string {
   color: var(--kx-primary, var(--accent));
 }
 .app-topbar__chevron {
-  font-size: 10px;
-  opacity: 0.7;
-  transition: transform 0.15s ease;
+  display: none;
 }
 .app-topbar__group--open .app-topbar__chevron {
   transform: rotate(180deg);

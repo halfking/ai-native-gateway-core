@@ -90,11 +90,10 @@ onBeforeUnmount(() => {
       class="user-menu__trigger"
       :aria-expanded="open"
       aria-haspopup="menu"
+      :title="roleLabel ? `${displayName} · ${roleLabel}` : displayName"
       @click.stop="toggle"
     >
       <span class="user-menu__name">{{ displayName }}</span>
-      <span v-if="roleLabel" class="user-menu__role">{{ roleLabel }}</span>
-      <span class="user-menu__chevron" aria-hidden="true">▾</span>
     </button>
 
     <Teleport to="body">
@@ -105,6 +104,10 @@ onBeforeUnmount(() => {
         role="menu"
         @click.stop
       >
+        <div v-if="displayName || roleLabel" class="user-menu__header" role="presentation">
+          <div class="user-menu__header-name">{{ displayName }}</div>
+          <div v-if="roleLabel" class="user-menu__header-role">{{ roleLabel }}</div>
+        </div>
         <button type="button" class="user-menu__item" role="menuitem" @click="onUserInfo">
           {{ t('app.userMenu.profile') }}
         </button>
@@ -133,9 +136,7 @@ onBeforeUnmount(() => {
 
 .user-menu__trigger {
   display: inline-flex;
-  flex-direction: column;
-  align-items: flex-end;
-  gap: 1px;
+  align-items: center;
   padding: 6px 10px;
   border: 0;
   border-radius: 8px;
@@ -144,7 +145,7 @@ onBeforeUnmount(() => {
   cursor: pointer;
   font-family: inherit;
   transition: background 0.15s ease;
-  max-width: min(28vw, 200px);
+  max-width: min(20vw, 160px);
 }
 
 .user-menu__trigger:hover,
@@ -163,31 +164,37 @@ onBeforeUnmount(() => {
 }
 
 .user-menu__role {
-  font-size: 10px;
-  color: var(--kx-muted, var(--muted));
-  line-height: 1.2;
-  white-space: nowrap;
-}
-
-.user-menu__chevron {
   display: none;
 }
 
-@media (min-width: 769px) {
-  .user-menu__trigger {
-    flex-direction: row;
-    align-items: center;
-    gap: 6px;
-  }
-  .user-menu__chevron {
-    display: inline;
-    font-size: 10px;
-    opacity: 0.7;
-  }
+.user-menu__header {
+  padding: 8px 10px 10px;
+  margin-bottom: 4px;
+  border-bottom: 1px solid var(--kx-border, var(--border));
+}
+
+.user-menu__header-name {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--kx-text, var(--text));
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 220px;
+}
+
+.user-menu__header-role {
+  margin-top: 2px;
+  font-size: 11px;
+  color: var(--kx-muted, var(--muted));
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 220px;
 }
 
 .user-menu__dropdown {
-  min-width: 168px;
+  min-width: 180px;
   padding: 6px;
   background: var(--kx-surface, var(--card));
   border: 1px solid var(--kx-border, var(--border));
@@ -233,11 +240,5 @@ onBeforeUnmount(() => {
 @keyframes user-menu-enter {
   from { opacity: 0; transform: translateY(-4px); }
   to { opacity: 1; transform: translateY(0); }
-}
-
-@media (max-width: 768px) {
-  .user-menu__role {
-    display: none;
-  }
 }
 </style>
