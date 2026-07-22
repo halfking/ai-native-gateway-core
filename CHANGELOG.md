@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased] - 2026-07-18
 
+### Changed
+
+- **更新与激活：激活效果 + 版本目录 + 升级切换流程** (2026-07-22): `/customer/update-activate` 引入「激活效果」卡片，复用 `/maintain/activate` 的 status-panel 视觉（状态点 + 状态文案 + 订阅 tier + License Key + 有效期 + 设备名 + 客户名 + 最近心跳），数据源 `/maintain-api/license/status`；版本模块改为展示最新 5 个版本目录（`/maintain-api/downloads/catalog`），已安装版本显示「已安装」并加高亮；升级操作改为 4 步状态机（升级→下载→安装→启动切换），通过 `/maintain-api/downloads/ticket` 触发下载、向 `/maintain-api/upgrade/report` 上报每步结果。新增 `UpdateActivateLicenseCard` 组件、`web/src/utils/labels.ts`，扩展 `web/src/api/updateActivate.ts`。详见 [docs/changelogs/2026-07-22-update-activate-license-card-versions-flow.md](docs/changelogs/2026-07-22-update-activate-license-card-versions-flow.md).
+
 ### Fixed
 
 - **Auto-recovery chain: 6-bug root-cause fix** (2026-07-22): Auth-failed credentials now auto-recover within 15 minutes via the credential_recovery 60s ticker. Previously stuck indefinitely because every layer of the recovery chain was broken — writer wrote `recover_at=NULL`, recovery ticker omitted `auth_failed` from whitelist, breaker used `RecoveryPermanent`, probe backoff capped at 24h after success, selfcheck worker called a non-existent PG function, and pickDueCredential's LATERAL shared tenant-wide max. 4 separate PRs (`9c2a8d35f` `d749098b4` `47539e23e` `56c19b679`); new PG function in V351. See [docs/changelogs/2026-07-22-auto-recovery-6-bugs.md](docs/changelogs/2026-07-22-auto-recovery-6-bugs.md).

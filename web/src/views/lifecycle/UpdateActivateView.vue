@@ -5,6 +5,7 @@ import OperationAgreementDialog from '../../components/lifecycle/OperationAgreem
 import UpdateActivateSiteCard from '../../components/lifecycle/UpdateActivateSiteCard.vue'
 import UpdateActivateVersionsCard from '../../components/lifecycle/UpdateActivateVersionsCard.vue'
 import UpdateActivateModulesCard from '../../components/lifecycle/UpdateActivateModulesCard.vue'
+import UpdateActivateLicenseCard from '../../components/lifecycle/UpdateActivateLicenseCard.vue'
 import {
   bootstrapApi,
   markBootstrapActivated,
@@ -12,6 +13,9 @@ import {
 } from '../../api/bootstrap'
 import {
   updateActivateApi,
+  type CatalogItem,
+  type CatalogResponse,
+  type LicenseStatus,
   type ModuleCatalogItem,
   type UpgradeStatus,
 } from '../../api/updateActivate'
@@ -31,11 +35,14 @@ const instanceId = ref(ensureInstanceId())
 const deviceName = ref(readDeviceName())
 const hardwareHash = ref('')
 const status = ref<BootstrapStatus | null>(null)
+const license = ref<LicenseStatus | null>(null)
 const upgrade = ref<UpgradeStatus | null>(null)
+const catalog = ref<CatalogResponse | null>(null)
 const modules = ref<ModuleCatalogItem[]>([])
 const loading = ref(false)
 const upgrading = ref(false)
 const checkingUpgrade = ref(false)
+const catalogLoading = ref(false)
 const modulesLoading = ref(false)
 const modulesError = ref('')
 const activating = ref(false)
@@ -119,6 +126,26 @@ async function loadUpgrade() {
   }
 }
 
+async function loadLicense() {
+  if (!instanceId.value.trim()) return
+  try {
+    license.value = await updateActivateApi.licenseStatus(instanceId.value.trim())
+  } catch {
+    license.value = null
+  }
+}
+
+async function loadCatalog() {
+  catalogLoading.value = true
+  try {
+    catalog.value = await updateActivateApi.downloadsCatalog()
+  } catch {
+    catalog.value = null
+  } finally {
+    catalogLoading.value = false
+  }
+}
+
 async function loadModules() {
   modulesLoading.value = true
   modulesError.value = ''
@@ -134,7 +161,7 @@ async function loadModules() {
 }
 
 async function refreshAll() {
-  await Promise.all([loadStatus(), loadUpgrade(), loadModules()])
+  await Promise.all([loadStatus(), loadUpgrade(), loadLicense(), loadCatalog(), loadModules()])
 }
 
 function onActivateClick() {
@@ -212,6 +239,7 @@ async function onCheckUpgrade() {
     } else {
       ElMessage.info('当前已是最新版本')
     }
+    await loadCatalog()
   } catch (e) {
     ElMessage.error((e as Error).message)
   } finally {
@@ -219,9 +247,64 @@ async function onCheckUpgrade() {
   }
 }
 
-function onUpgrade() {
-  // Prefer Maintain upgrade panel when co-deployed; else public download.
-  window.location.assign('/maintain/upgrade')
+// ===== 升级流程处理器（升级→下载→安装→启动切换） =====
+// 实际的 install/switch 由部署侧的安装器/agent 执行，前端只负责：
+// 1) 通过 ticket API 获取下载链接并落地；2) 上报 upgrade/report 给中心。
+// 当前端是浏览器侧时 install/switch 通常意味着「打开 maintain 运维中心」。
+
+async function onUpgradeDownload({ version, item }: { version: string; item: CatalogItem }) {
+  const startedAt = Date.now()
+  try {
+    const ticket = await updateActivateApi.downloadTicket({
+      version,
+      platform: item.platform,
+      arch: item.arch,
+    })
+    window.open(ticket.url, '_blank', 'noopener')
+    await updateActivateApi
+      .downloadEvent({ request_id: ticket.request_id, result: 'started', duration_ms: Date.now() - startedAt })
+      .catch(() => undefined)
+    ElMessage.success(`已开始下载 ${item.label}（${item.artifact_name}）`)
+  } catch (e) {
+    await updateActivateApi
+      .downloadEvent({ request_id: 'failed-' + Date.now(), result: 'failed', duration_ms: Date.now() - startedAt })
+      .catch(() => undefined)
+    throw e
+  }
+}
+
+async function onUpgradeInstall({ version }: { version: string }) {
+  const fromVersion = upgrade.value?.current_version || status.value?.service_version || ''
+  try {
+    await updateActivateApi.upgradeReport({
+      instance_id: instanceId.value.trim(),
+      from_version: fromVersion,
+      to_version: version,
+      status: 'started',
+    })
+    ElMessage.info(`已向中心上报 ${fromVersion} → ${version} 开始安装`)
+  } catch (e) {
+    // 上报失败不阻塞流程
+  }
+}
+
+async function onUpgradeSwitch({ version }: { version: string }) {
+  const fromVersion = upgrade.value?.current_version || status.value?.service_version || ''
+  try {
+    await updateActivateApi.upgradeReport({
+      instance_id: instanceId.value.trim(),
+      from_version: fromVersion,
+      to_version: version,
+      status: 'completed',
+    })
+  } catch {
+    /* ignore */
+  }
+  // 切换完成后短暂延迟再刷新状态，让中心先记录切换结果
+  setTimeout(() => {
+    void refreshAll()
+  }, 1500)
+  void version
 }
 
 onMounted(async () => {
@@ -260,38 +343,46 @@ onMounted(async () => {
         :device-name="deviceName"
       />
 
-      <el-card shadow="never" class="ua-card">
+      <UpdateActivateLicenseCard
+        :status="license"
+        :loading="checkingUpgrade || catalogLoading"
+        :instance-id="instanceId"
+        :device-name="deviceName"
+        @refresh="loadLicense"
+      />
+
+      <el-card v-if="!status?.activated" shadow="never" class="ua-card">
         <template #header>
           <span class="ua-card__title">激活与用户协议</span>
         </template>
-        <template v-if="status?.activated">
-          <el-result icon="success" title="本机已激活" :sub-title="status.message || '可继续查看版本与模块'" />
-        </template>
-        <template v-else>
-          <p class="hint">
-            默认激活只需填写注册名称、点击"同意协议并激活"，系统将弹出用户协议窗口，
-            勾选并确认后即可向中心 <code>llm.kxpms.cn</code> 申请 license 并完成本地激活（无需手填 License Key）。
-          </p>
-          <el-form label-position="top" @submit.prevent="onActivateClick">
-            <el-form-item label="注册名称" required>
-              <el-input v-model="deviceName" maxlength="64" placeholder="例如：华东机房-网关-01" />
-            </el-form-item>
-            <el-form-item>
-              <button type="button" class="btn btn-primary" :disabled="activating" @click="onActivateClick">
-                同意协议并激活
-              </button>
-            </el-form-item>
-          </el-form>
-        </template>
+        <p class="hint">
+          默认激活只需填写注册名称、点击"同意协议并激活"，系统将弹出用户协议窗口，
+          勾选并确认后即可向中心 <code>llm.kxpms.cn</code> 申请 license 并完成本地激活（无需手填 License Key）。
+        </p>
+        <el-form label-position="top" @submit.prevent="onActivateClick">
+          <el-form-item label="注册名称" required>
+            <el-input v-model="deviceName" maxlength="64" placeholder="例如：华东机房-网关-01" />
+          </el-form-item>
+          <el-form-item>
+            <button type="button" class="btn btn-primary" :disabled="activating" @click="onActivateClick">
+              同意协议并激活
+            </button>
+          </el-form-item>
+        </el-form>
       </el-card>
 
       <UpdateActivateVersionsCard
-        :status="upgrade"
-        :loading="upgrading"
+        :catalog="catalog"
+        :loading="catalogLoading"
         :checking="checkingUpgrade"
+        :upgrade-status="upgrade"
+        :current-version="status?.service_version || upgrade?.current_version || ''"
         :activated="isActivated"
         @check="onCheckUpgrade"
-        @upgrade="onUpgrade"
+        @refresh="loadCatalog"
+        @download="onUpgradeDownload"
+        @install="onUpgradeInstall"
+        @switch="onUpgradeSwitch"
       />
 
       <UpdateActivateModulesCard
@@ -341,7 +432,12 @@ onMounted(async () => {
 .mb { margin-bottom: 12px; }
 @media (min-width: 900px) {
   .ua-grid { grid-template-columns: 1fr 1fr; }
+  /* Site + License 两块是站点状态视图，横向并排 */
+  .ua-grid > :nth-child(1),
+  .ua-grid > :nth-child(2) { grid-column: auto; }
+  /* 激活表单（未激活时）、版本与升级、模块清单 跨整行 */
   .ua-grid > :nth-child(3),
-  .ua-grid > :nth-child(4) { grid-column: 1 / -1; }
+  .ua-grid > :nth-child(4),
+  .ua-grid > :nth-child(5) { grid-column: 1 / -1; }
 }
 </style>
