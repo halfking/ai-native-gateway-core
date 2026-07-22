@@ -7,7 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased] - 2026-07-18
 
-### Added
+### Fixed
+
+- **Auto-recovery chain: 6-bug root-cause fix** (2026-07-22): Auth-failed credentials now auto-recover within 15 minutes via the credential_recovery 60s ticker. Previously stuck indefinitely because every layer of the recovery chain was broken — writer wrote `recover_at=NULL`, recovery ticker omitted `auth_failed` from whitelist, breaker used `RecoveryPermanent`, probe backoff capped at 24h after success, selfcheck worker called a non-existent PG function, and pickDueCredential's LATERAL shared tenant-wide max. 4 separate PRs (`9c2a8d35f` `d749098b4` `47539e23e` `56c19b679`); new PG function in V351. See [docs/changelogs/2026-07-22-auto-recovery-6-bugs.md](docs/changelogs/2026-07-22-auto-recovery-6-bugs.md).
 
 - **更新与激活合并页（非核心节点）** (2026-07-22): 将 `/customer/site|activate|license|agreement` 合并为「数据运维 → 更新与激活」(` /customer/update-activate`)。一键同意协议后调用中心 `public/license/issue` 完成本地激活；页内展示站点信息、版本/发布说明/升级入口、已开通模块清单。后端补齐 `/api/system/bootstrap/*`（含 `activate-quick`）。核心节点超管仍通过 maintain healthz 注入完整「运维中心」。中心 `/admin/modules` 增加发版模块开通面板（maintain `module-entitlements` 内存 API）。修复升级按钮非核心降级路径，移除 `BootstrapWizardView` / `LandingView` / `UpdateActivateView` 内旧 route 引用。详见 [docs/changelogs/2026-07-22-update-activate.md](docs/changelogs/2026-07-22-update-activate.md).
 
