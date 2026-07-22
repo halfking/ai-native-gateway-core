@@ -229,44 +229,57 @@ async function copyInstanceId() {
   } catch { /* ignore */ }
 }
 
-async function performActivate() {
-  if (!canActivate.value) {
-    error.value = activateMode.value === 'online'
-      ? '设备指纹信息不完整，请返回上一步重新采集。'
-      : '请粘贴离线激活码或签名 License。'
-    return
+  // 把 result 的所有字段都串起来，给用户看最完整的错误信息
+  const buildErrorDetail = (result: any): string => {
+    return [
+      result.error && `${result.error}`,
+      result.body && result.body.message && `${result.body.message}`,
+      result.body && result.body.code && `[${result.body.code}]`,
+    ].filter(Boolean).join(' - ')
   }
-  // 二次保险：进 activate 之前再确认一次。
-  if (!agreementAccepted.value) {
-    pendingActivation.value = true
-    openAgreementDialog()
-    return
-  }
-  loading.value = true
-  error.value = ''
-  message.value = ''
-  try {
-    setInstanceId(instanceId.value.trim())
 
-    if (activateMode.value === 'online') {
-      // 在线激活：使用 activateQuick，无需 license_key
-      const result = await bootstrapApi.activateQuick({
-        instance_id: instanceId.value.trim(),
-        hardware_hash: hardwareHash.value.trim(),
-        device_name: deviceName.value.trim() || undefined,
-      })
-      if (!result.activated) {
-        throw new Error(result.error || result.online_error || '在线激活失败')
-      }
-      message.value = result.mode === 'online'
-        ? '在线激活成功。'
-        : '本地激活成功（中心不可达时仍可离线使用）。'
-      registerResult.value = {
-        registered: !!result.registered,
-        deferred: !result.registered,
-        message: result.registered ? '已向中心注册' : '中心不可达，将后台补注册',
-      }
-    } else {
+  async function performActivate() {
+    if (!canActivate.value) {
+      error.value = activateMode.value === 'online'
+        ? '设备指纹信息不完整，请返回上一步重新采集。'
+        : '请粘贴离线激活码或签名 License。'
+      return
+    }
+    // 二次保险：进 activate 之前再确认一次。
+    if (!agreementAccepted.value) {
+      pendingActivation.value = true
+      openAgreementDialog()
+      return
+    }
+    loading.value = true
+    error.value = ''
+    message.value = ''
+    try {
+      setInstanceId(instanceId.value.trim())
+
+      if (activateMode.value === 'online') {
+        const result = await bootstrapApi.activateQuick({
+          instance_id: instanceId.value.trim(),
+          hardware_hash: hardwareHash.value.trim(),
+          device_name: deviceName.value.trim() || undefined,
+        })
+        if (!result.activated) {
+          // 详细错误：cooldown 等业务错误让用户看清楚可以做什么
+          const detail = buildErrorDetail(result)
+          if (result.body && result.body.code === 'issue.cooldown') {
+            throw new Error(`中心冷却中（${result.body.message || ''}）。请稍后重试，每次失败都会清除冷却。`)
+          }
+          throw new Error(detail || '在线激活失败')
+        }
+        message.value = result.mode === 'online'
+          ? '在线激活成功。'
+          : '本地激活成功（中心不可达时仍可离线使用）。'
+        registerResult.value = {
+          registered: !!result.registered,
+          deferred: !result.registered,
+          message: result.registered ? '已向中心注册' : '中心不可达，将后台补注册',
+        }
+      } else {
       const raw = offlinePayload.value.trim()
       const result = await bootstrapApi.importOffline({
         instance_id: instanceId.value.trim(),
@@ -275,7 +288,11 @@ async function performActivate() {
         activation_code: raw,
       })
       if (!result.activated) {
-        throw new Error(result.error || '离线激活失败')
+        const detail = buildErrorDetail(result)
+        if (result.body && result.body.code === 'issue.cooldown') {
+          throw new Error(`中心冷却中（${result.body.message || ''}）。请稍后重试。`)
+        }
+        throw new Error(detail || '离线激活失败')
       }
       message.value = result.message || '离线激活成功。'
       registerResult.value = {

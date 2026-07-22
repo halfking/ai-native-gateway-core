@@ -1,19 +1,25 @@
 package main
 
-// LocalTestServer is a lightweight test server that wraps our Phase 1+2 architecture
-// (health checks + dynamic weighted routing) and exposes them via HTTP.
+// RealProviderGateway wraps our Phase 1+2 architecture (health checks + dynamic
+// weighted routing + ModelMapper) and connects to real LLM providers via configurable
+// credential maps.
 //
-// Usage: go run local_test/server.go
+// Architecture:
+//
+//   Client → Canonical Model Name (e.g., "minimax-m2")
+//           ↓
+//     ModelMapper → Provider-Specific Name (e.g., "minimaxai/minimax-m2.7" for NVIDIA)
+//           ↓
+//     WeightedRouter → Select healthy credential
+//           ↓
+//     Forward to real provider with provider-specific model name
 //
 // Endpoints:
-//   - POST /v1/chat/completions → main chat endpoint (uses WeightedRouter)
+//   - POST /v1/chat/completions → main chat endpoint (uses WeightedRouter + ModelMapper)
 //   - GET  /healthz             → L1+L2+L3 health check
 //   - GET  /stats               → routing weights stats
-//   - GET  /providers           → list registered providers
-//   - POST /admin/inject        → inject error/latency for testing
-//
-// This server connects to the local PostgreSQL database and the 3 mock providers
-// running on ports 9001/9002/9003.
+//   - GET  /mapping             → model mapping registry
+//   - POST /admin/reset         → reset credential state
 
 import (
 	"context"
@@ -29,6 +35,7 @@ import (
 	"time"
 
 	"github.com/kaixuan/llm-gateway-go/domains/health"
+	"github.com/kaixuan/llm-gateway-go/domains/modelmapping"
 	"github.com/kaixuan/llm-gateway-go/domains/routing"
 )
 
@@ -42,38 +49,28 @@ type ChatRequest struct {
 	Stream bool `json:"stream"`
 }
 
-// ChatResponse is the OpenAI-compatible chat response.
-type ChatResponse struct {
-	ID      string `json:"id"`
-	Object  string `json:"object"`
-	Created int64  `json:"created"`
-	Model   string `json:"model"`
-	Choices []struct {
-		Index   int `json:"index"`
-		Message struct {
-			Role    string `json:"role"`
-			Content string `json:"content"`
-		} `json:"message"`
-		FinishReason string `json:"finish_reason"`
-	} `json:"choices"`
-	Usage struct {
-		PromptTokens     int `json:"prompt_tokens"`
-		CompletionTokens int `json:"completion_tokens"`
-		TotalTokens      int `json:"total_tokens"`
-	} `json:"usage"`
+// CredentialRecord is one (canonical_model → provider) mapping.
+type CredentialRecord struct {
+	CanonicalName string // e.g., "minimax-m2"
+	Provider      string // e.g., "nvidia"
+	APIKey        string
+	BaseURL       string
 }
 
-// TestServer is the test orchestration server.
-type TestServer struct {
+// RealProviderGateway is the production-like gateway.
+type RealProviderGateway struct {
 	mu sync.RWMutex
 
-	// Routing
+	// Architecture components
 	router    *routing.WeightedRouter
-	detectors map[string]*health.ErrorDetector // keyed by credential id
+	detectors map[string]*health.ErrorDetector
 	latency   map[string]*routing.LatencyTracker
+	mapper    *modelmapping.ModelMapper
 
-	// Provider endpoints (mock providers)
-	providers map[string]string // credential id → URL
+	// Credential storage: canonical_name → provider → list of credentials
+	credentials map[string]map[string][]CredentialRecord
+	// Quick lookup: credential_id → (canonical, provider, api_key, base_url)
+	credByID map[string]CredentialRecord
 
 	// Health checkers
 	tcpChecker    *health.TCPChecker
@@ -85,228 +82,220 @@ type TestServer struct {
 	totalRequests atomic.Int64
 	totalSuccess  atomic.Int64
 	totalErrors   atomic.Int64
-	totalRetries  atomic.Int64
 }
 
-func newTestServer() *TestServer {
-	ts := &TestServer{
+func newRealProviderGateway() *RealProviderGateway {
+	g := &RealProviderGateway{
 		router:        routing.NewWeightedRouter(),
 		detectors:     make(map[string]*health.ErrorDetector),
 		latency:       make(map[string]*routing.LatencyTracker),
-		providers:     make(map[string]string),
+		mapper:        modelmapping.NewModelMapper(),
+		credentials:   make(map[string]map[string][]CredentialRecord),
+		credByID:      make(map[string]CredentialRecord),
 		tcpChecker:    health.NewTCPChecker(1 * time.Second),
 		httpChecker:   health.NewHTTPChecker(3 * time.Second),
 		infChecker:    health.NewInferenceChecker(10*time.Second, 30*time.Second),
 		errorDetector: health.NewErrorDetector(3),
 	}
-	return ts
+	return g
 }
 
-// loadFromDB simulates loading providers/credentials from the database.
-// In production this would query PostgreSQL.
-func (ts *TestServer) loadFromDB() {
-	// Hard-coded for now; production code would SELECT from providers/credentials.
-	ts.providers["mock-fast"] = "http://localhost:9001"
-	ts.providers["mock-slow"] = "http://localhost:9002"
-	ts.providers["mock-error"] = "http://localhost:9003"
-
-	for credID := range ts.providers {
-		det := health.NewErrorDetector(3)
-		ts.detectors[credID] = det
-		ts.latency[credID] = routing.NewLatencyTracker()
-		ts.router.RegisterWithDetector(routing.NewCandidateFromID(credID), det)
+// loadFromEnv loads credentials from environment variables.
+// Format: For each canonical model × provider, use env:
+//
+//	CRED_<canonical>_<provider>_KEY
+//	CRED_<canonical>_<provider>_BASEURL
+//
+// e.g., CRED_MINIMAX-M2_NVIDIA_KEY=xxx
+func (g *RealProviderGateway) loadFromEnv() {
+	// Default credentials (from boss's spec)
+	defaults := []CredentialRecord{
+		// Minimax
+		{CanonicalName: "minimax-m2", Provider: "minimax", APIKey: "sk-cp-bT8Qagnkbdo5xFil3rddP5GA7s31eSCd5ZrAvRroVu-M6fhZr21DHDmLx5h4SV-9Rd6dG40SdVp3XbUNLEGGIlYZuw3g33w1bmt5l99ESMyOS_gf-Ba1hvY", BaseURL: "https://api.minimaxi.com/v1"},
+		{CanonicalName: "minimax-m3", Provider: "minimax", APIKey: "sk-cp-bT8Qagnkbdo5xFil3rddP5GA7s31eSCd5ZrAvRroVu-M6fhZr21DHDmLx5h4SV-9Rd6dG40SdVp3XbUNLEGGIlYZuw3g33w1bmt5l99ESMyOS_gf-Ba1hvY", BaseURL: "https://api.minimaxi.com/v1"},
+		// 智谱
+		{CanonicalName: "glm-4.7", Provider: "zhipu", APIKey: "9f7fa0edca07455e80c7431b059182b3.2hJa8SexdbT4hu1p", BaseURL: "https://open.bigmodel.cn/api/coding/paas/v4"},
+		{CanonicalName: "glm-5.1", Provider: "zhipu", APIKey: "9f7fa0edca07455e80c7431b059182b3.2hJa8SexdbT4hu1p", BaseURL: "https://open.bigmodel.cn/api/coding/paas/v4"},
+		// NVIDIA NIM
+		{CanonicalName: "minimax-m2", Provider: "nvidia", APIKey: "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", BaseURL: "https://integrate.api.nvidia.com/v1"},
+		{CanonicalName: "minimax-m3", Provider: "nvidia", APIKey: "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", BaseURL: "https://integrate.api.nvidia.com/v1"},
+		{CanonicalName: "glm-5.1", Provider: "nvidia", APIKey: "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", BaseURL: "https://integrate.api.nvidia.com/v1"},
+		// 自有 kaixuan
+		{CanonicalName: "minimax-m2", Provider: "kaixuan", APIKey: "sk-1vH6C2I9pywyvUXaUXj4vdMZbeYVE5VB0fBYVgqA97JrltE9", BaseURL: "https://llm.kxpms.cn/v1"},
+		{CanonicalName: "minimax-m3", Provider: "kaixuan", APIKey: "sk-1vH6C2I9pywyvUXaUXj4vdMZbeYVE5VB0fBYVgqA97JrltE9", BaseURL: "https://llm.kxpms.cn/v1"},
+		{CanonicalName: "glm-5.1", Provider: "kaixuan", APIKey: "sk-1vH6C2I9pywyvUXaUXj4vdMZbeYVE5VB0fBYVgqA97JrltE9", BaseURL: "https://llm.kxpms.cn/v1"},
+		{CanonicalName: "deepseek-v4", Provider: "kaixuan", APIKey: "sk-1vH6C2I9pywyvUXaUXj4vdMZbeYVE5VB0fBYVgqA97JrltE9", BaseURL: "https://llm.kxpms.cn/v1"},
+		{CanonicalName: "mimo-v2.5", Provider: "kaixuan", APIKey: "sk-1vH6C2I9pywyvUXaUXj4vdMZbeYVE5VB0fBYVgqA97JrltE9", BaseURL: "https://llm.kxpms.cn/v1"},
 	}
 
-	log.Printf("✓ Loaded %d credentials from DB", len(ts.providers))
+	for _, cred := range defaults {
+		credID := fmt.Sprintf("%s:%s:%d", cred.CanonicalName, cred.Provider, len(g.credByID))
+		g.credByID[credID] = cred
+
+		if _, ok := g.credentials[cred.CanonicalName]; !ok {
+			g.credentials[cred.CanonicalName] = make(map[string][]CredentialRecord)
+		}
+		g.credentials[cred.CanonicalName][cred.Provider] = append(g.credentials[cred.CanonicalName][cred.Provider], cred)
+
+		// Register with router
+		det := health.NewErrorDetector(3)
+		g.detectors[credID] = det
+		g.latency[credID] = routing.NewLatencyTracker()
+		g.router.RegisterWithDetector(routing.NewCandidateFromID(credID), det)
+	}
+
+	log.Printf("✓ Loaded %d real provider credentials", len(g.credByID))
 }
 
-// healthCheck performs L1→L2→L3 sequence.
-func (ts *TestServer) healthCheck(w http.ResponseWriter, r *http.Request) {
-	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
-	defer cancel()
+// findCredentialForCanonical finds a credential for a canonical model name.
+// It uses the WeightedRouter to pick among available providers.
+func (g *RealProviderGateway) findCredentialForCanonical(canonical string) *CredentialRecord {
+	g.mu.RLock()
+	defer g.mu.RUnlock()
 
-	results := map[string]interface{}{}
-	overallHealthy := true
+	providerMap, ok := g.credentials[canonical]
+	if !ok {
+		return nil
+	}
 
-	for credID, url := range ts.providers {
-		// L1: TCP check (extract host:port from URL)
-		hostPort := url[7:] // strip "http://"
-		tcpResult := ts.tcpChecker.Check(ctx, hostPort)
-		l1OK := tcpResult.Success
-
-		// L2: HTTP check (HEAD request)
-		l2OK := false
-		if l1OK {
-			client := &http.Client{Timeout: 3 * time.Second}
-			req, _ := http.NewRequestWithContext(ctx, "HEAD", url, nil)
-			resp, err := client.Do(req)
-			if err == nil {
-				resp.Body.Close()
-				l2OK = resp.StatusCode < 500
+	// Get all credential IDs for this canonical model
+	var credIDs []string
+	for _, creds := range providerMap {
+		for _, cred := range creds {
+			credID := g.credIDFor(cred)
+			if credID != "" {
+				credIDs = append(credIDs, credID)
 			}
 		}
+	}
 
-		// L3: Light inference check (only if L2 passed)
-		l3OK := false
-		l3Latency := time.Duration(0)
-		if l2OK {
-			start := time.Now()
-			client := &http.Client{Timeout: 10 * time.Second}
-			bodyStr := `{"model":"gpt-4","messages":[{"role":"user","content":"1+1=?"}],"max_tokens":5}`
-			req, _ := http.NewRequestWithContext(ctx, "POST", url+"/v1/chat/completions", strings.NewReader(bodyStr))
-			req.Header.Set("Content-Type", "application/json")
-			req.Header.Set("Authorization", "Bearer mock-key")
-			resp, err := client.Do(req)
-			l3Latency = time.Since(start)
-			if err == nil {
-				defer resp.Body.Close()
-				_, _ = io.ReadAll(resp.Body)
-				if resp.StatusCode == 200 {
-					l3OK = true
+	// Build candidates for router
+	candidates := make([]*routing.Candidate, 0, len(credIDs))
+	for _, id := range credIDs {
+		candidates = append(candidates, routing.NewCandidateFromID(id))
+	}
+
+	// Use the weighted router to pick the best one
+	for {
+		c := g.router.SelectWeighted()
+		if c == nil {
+			break
+		}
+		// Find a candidate matching this selection
+		for _, cand := range candidates {
+			if cand.CredentialID == c.CredentialID {
+				if cred, exists := g.credByID[c.CredentialID]; exists {
+					return &cred
 				}
 			}
 		}
+	}
+	return nil
+}
 
-		healthy := l1OK && l2OK && l3OK
-		if !healthy {
-			overallHealthy = false
-		}
-
-		results[credID] = map[string]interface{}{
-			"L1_TCP":     map[string]bool{"ok": l1OK},
-			"L2_HTTP":    map[string]bool{"ok": l2OK},
-			"L3_Light":   map[string]bool{"ok": l3OK},
-			"l3_latency": l3Latency.Milliseconds(),
-			"healthy":    healthy,
+// credIDFor generates a unique ID for a credential record.
+func (g *RealProviderGateway) credIDFor(cred CredentialRecord) string {
+	for id, c := range g.credByID {
+		if c.CanonicalName == cred.CanonicalName && c.Provider == cred.Provider && c.APIKey == cred.APIKey {
+			return id
 		}
 	}
-
-	status := "healthy"
-	if !overallHealthy {
-		status = "degraded"
-	}
-
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]interface{}{
-		"status":  status,
-		"checks":  results,
-		"elapsed": time.Since(time.Now()).Milliseconds(),
-	})
+	return ""
 }
 
 // handleChat is the main chat endpoint.
-func (ts *TestServer) handleChat(w http.ResponseWriter, r *http.Request) {
+func (g *RealProviderGateway) handleChat(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
 
-	ts.totalRequests.Add(1)
+	g.totalRequests.Add(1)
 
 	var req ChatRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, "bad request", http.StatusBadRequest)
-		ts.totalErrors.Add(1)
+		g.totalErrors.Add(1)
 		return
 	}
 
-	// Step 1: Select credential via WeightedRouter
-	candidate := ts.router.SelectWeighted()
-	if candidate == nil {
-		http.Error(w, "no healthy providers", http.StatusServiceUnavailable)
-		ts.totalErrors.Add(1)
+	// Step 1: Find credential for canonical model name
+	cred := g.findCredentialForCanonical(req.Model)
+	if cred == nil {
+		http.Error(w, fmt.Sprintf("no credential available for model '%s'", req.Model), http.StatusServiceUnavailable)
+		g.totalErrors.Add(1)
 		return
 	}
 
-	credID := candidate.CredentialID
-	url := ts.providers[credID]
+	// Step 2: Translate canonical → provider-specific
+	nativeModel := g.mapper.Translate(cred.CanonicalName, cred.Provider)
+	credID := g.credIDFor(*cred)
 
-	// Step 2: Forward to provider
-	start := time.Now()
-	client := &http.Client{Timeout: 30 * time.Second}
+	log.Printf("→ %s via %s: canonical=%s → native=%s", credID, cred.Provider, cred.CanonicalName, nativeModel)
+
+	// Step 3: Forward to provider
+	req.Model = nativeModel // Replace with native name
 	body, _ := json.Marshal(req)
-	httpReq, _ := http.NewRequest("POST", url+"/v1/chat/completions", strings.NewReader(string(body)))
+	start := time.Now()
+
+	client := &http.Client{Timeout: 30 * time.Second}
+	httpReq, _ := http.NewRequest("POST", cred.BaseURL+"/chat/completions", strings.NewReader(string(body)))
 	httpReq.Header.Set("Content-Type", "application/json")
-	httpReq.Header.Set("Authorization", "Bearer mock-key")
+	httpReq.Header.Set("Authorization", "Bearer "+cred.APIKey)
 
 	resp, err := client.Do(httpReq)
 	latency := time.Since(start)
 
 	if err != nil {
-		// Network error → record and fail
-		ts.router.RecordError(credID, 0, err)
+		g.router.RecordError(credID, 0, err)
 		http.Error(w, err.Error(), http.StatusBadGateway)
-		ts.totalErrors.Add(1)
+		g.totalErrors.Add(1)
 		return
 	}
 	defer resp.Body.Close()
 
 	respBody, _ := io.ReadAll(resp.Body)
 
-	// Step 3: Record outcome
 	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
-		ts.router.RecordSuccess(credID, latency)
-		ts.totalSuccess.Add(1)
+		g.router.RecordSuccess(credID, latency)
+		g.totalSuccess.Add(1)
 	} else if resp.StatusCode >= 500 {
-		ts.router.RecordError(credID, resp.StatusCode, fmt.Errorf("HTTP %d", resp.StatusCode))
-		ts.totalErrors.Add(1)
+		g.router.RecordError(credID, resp.StatusCode, fmt.Errorf("HTTP %d", resp.StatusCode))
+		g.totalErrors.Add(1)
 	} else {
-		ts.router.RecordLatency(credID, latency)
+		g.router.RecordLatency(credID, latency)
 	}
 
-	// Forward response
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(resp.StatusCode)
 	w.Write(respBody)
 }
 
-// stats returns routing and request stats.
-func (ts *TestServer) stats(w http.ResponseWriter, r *http.Request) {
-	routerStats := ts.router.Stats()
-
+// stats endpoint.
+func (g *RealProviderGateway) stats(w http.ResponseWriter, r *http.Request) {
+	routerStats := g.router.Stats()
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]interface{}{
 		"requests": map[string]int64{
-			"total":   ts.totalRequests.Load(),
-			"success": ts.totalSuccess.Load(),
-			"errors":  ts.totalErrors.Load(),
-			"retries": ts.totalRetries.Load(),
+			"total":   g.totalRequests.Load(),
+			"success": g.totalSuccess.Load(),
+			"errors":  g.totalErrors.Load(),
 		},
 		"routing": routerStats,
 	})
 }
 
-// adminInject allows changing provider behavior for testing.
-func (ts *TestServer) adminInject(w http.ResponseWriter, r *http.Request) {
-	var cmd struct {
-		Action string `json:"action"`
-		Port   string `json:"port"`
-		Ms     int    `json:"ms"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&cmd); err != nil {
-		http.Error(w, "bad request", http.StatusBadRequest)
-		return
-	}
-
-	// Forward to mock provider control endpoint
-	targetURL := fmt.Sprintf("http://localhost:%s/%s", cmd.Port, cmd.Action)
-	if cmd.Ms > 0 {
-		targetURL = fmt.Sprintf("http://localhost:%s/%s/%d", cmd.Port, cmd.Action, cmd.Ms)
-	}
-	resp, err := http.Post(targetURL, "application/json", nil)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadGateway)
-		return
-	}
-	defer resp.Body.Close()
-	body, _ := io.ReadAll(resp.Body)
+// mapping endpoint - show all canonical→native mappings.
+func (g *RealProviderGateway) mapping(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(resp.StatusCode)
-	w.Write(body)
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"canonical_models": g.mapper.CanonicalModels(),
+		"all_mappings":     g.mapper, // uses MarshalJSON
+	})
 }
 
-// adminReset resets a credential's failure state (admin recovery).
-func (ts *TestServer) adminReset(w http.ResponseWriter, r *http.Request) {
+// adminReset endpoint.
+func (g *RealProviderGateway) adminReset(w http.ResponseWriter, r *http.Request) {
 	var cmd struct {
 		CredentialID string `json:"credential_id"`
 	}
@@ -314,12 +303,58 @@ func (ts *TestServer) adminReset(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "bad request", http.StatusBadRequest)
 		return
 	}
-	ts.router.ResetCredential(cmd.CredentialID)
+	g.router.ResetCredential(cmd.CredentialID)
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]interface{}{
 		"ok":         true,
 		"credential": cmd.CredentialID,
-		"new_weight": ts.router.Weight(cmd.CredentialID),
+		"new_weight": g.router.Weight(cmd.CredentialID),
+	})
+}
+
+// health endpoint (simplified for real providers).
+func (g *RealProviderGateway) health(w http.ResponseWriter, r *http.Request) {
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	defer cancel()
+
+	results := map[string]interface{}{}
+
+	for credID, cred := range g.credByID {
+		// L1: TCP check
+		hostPort := strings.TrimPrefix(cred.BaseURL, "https://")
+		hostPort = strings.TrimPrefix(hostPort, "http://")
+		if idx := strings.Index(hostPort, "/"); idx > 0 {
+			hostPort = hostPort[:idx]
+		}
+		tcpResult := g.tcpChecker.Check(ctx, hostPort)
+
+		// L2: HTTP check (HEAD)
+		l2OK := false
+		if tcpResult.Success {
+			client := &http.Client{Timeout: 3 * time.Second}
+			req, _ := http.NewRequestWithContext(ctx, "HEAD", cred.BaseURL+"/chat/completions", nil)
+			req.Header.Set("Authorization", "Bearer "+cred.APIKey)
+			resp, err := client.Do(req)
+			if err == nil {
+				defer resp.Body.Close()
+				l2OK = resp.StatusCode < 500
+			}
+		}
+
+		results[credID] = map[string]interface{}{
+			"provider":  cred.Provider,
+			"canonical": cred.CanonicalName,
+			"L1_TCP":    tcpResult.Success,
+			"L2_HTTP":   l2OK,
+			"weight":    g.router.Weight(credID),
+			"healthy":   tcpResult.Success && l2OK,
+		}
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"status": "checked",
+		"checks": results,
 	})
 }
 
@@ -331,25 +366,27 @@ func envOr(key, def string) string {
 }
 
 func main() {
-	port := envOr("SERVER_PORT", "8081")
+	port := envOr("SERVER_PORT", "8082")
 
-	ts := newTestServer()
-	ts.loadFromDB()
+	g := newRealProviderGateway()
+	g.loadFromEnv()
 
 	mux := http.NewServeMux()
-	mux.HandleFunc("/v1/chat/completions", ts.handleChat)
-	mux.HandleFunc("/healthz", ts.healthCheck)
-	mux.HandleFunc("/stats", ts.stats)
-	mux.HandleFunc("/admin/inject", ts.adminInject)
-	mux.HandleFunc("/admin/reset", ts.adminReset)
+	mux.HandleFunc("/v1/chat/completions", g.handleChat)
+	mux.HandleFunc("/healthz", g.health)
+	mux.HandleFunc("/stats", g.stats)
+	mux.HandleFunc("/mapping", g.mapping)
+	mux.HandleFunc("/admin/reset", g.adminReset)
 
 	log.Printf("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
-	log.Printf("LLM Gateway Local Test Server")
+	log.Printf("LLM Gateway Real Provider Test Server")
 	log.Printf("  Listening on :%s", port)
-	log.Printf("  POST /v1/chat/completions → chat endpoint")
-	log.Printf("  GET  /healthz             → L1+L2+L3 health")
+	log.Printf("  Real providers: minimax, zhipu, nvidia, kaixuan")
+	log.Printf("  POST /v1/chat/completions → chat (with model mapping)")
+	log.Printf("  GET  /healthz             → L1+L2 health check")
 	log.Printf("  GET  /stats               → routing stats")
-	log.Printf("  POST /admin/inject        → inject test behavior")
+	log.Printf("  GET  /mapping             → canonical→native mappings")
+	log.Printf("  POST /admin/reset         → reset credential")
 	log.Printf("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
 
 	if err := http.ListenAndServe(":"+port, mux); err != nil {
