@@ -977,6 +977,9 @@ type ExecuteResult struct {
 	Response  *http.Response
 	Candidate provider.Candidate
 	LatencyMs int
+	// CachedReplay means Execute already wrote a completed response from the
+	// pending store; callers must skip normal upstream response rendering.
+	CachedReplay bool
 	// StickyHit records whether the chosen credential came from an existing
 	// sticky binding (L1/L2/L3) rather than a fresh routing decision.
 	// It is consumed by telemetry so request_logs / routing_decision_log can
@@ -1265,7 +1268,7 @@ func (e *Executor) Execute(params *ExecParams) (*ExecuteResult, error) {
 	params.BodyBytes = append([]byte(nil), params.BodyBytes...)
 
 	// ── 2026-07-22: Session-aware continuation/retry detection ───────
-	if params.SessionID != "" && e.PendingStore != nil && len(params.BodyBytes) > 0 {
+	if params.SessionID != "" && e.PendingStore != nil && params.W != nil && len(params.BodyBytes) > 0 {
 		hotCfg := LoadHotConfig()
 		isContinue, isRetry := IsContinuationOrRetry(params.BodyBytes, hotCfg)
 		if isContinue {
@@ -1286,8 +1289,9 @@ func (e *Executor) Execute(params *ExecParams) (*ExecuteResult, error) {
 				)
 				writeCachedResponse(params.W, entry)
 				return &ExecuteResult{
-					RequestBody: params.BodyBytes,
-					Candidate:   candidateFromEntry(entry),
+					RequestBody:  params.BodyBytes,
+					Candidate:    candidateFromEntry(entry),
+					CachedReplay: true,
 				}, nil
 			}
 			slog.Info("executor: retry keyword but no cached response, proceeding upstream",

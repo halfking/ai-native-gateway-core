@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"strings"
 	"sync/atomic"
 	"time"
 
@@ -107,6 +108,9 @@ func (nt *NodeTracker) MaxRetries() int {
 }
 
 func LoadNodeFailoverConfig(hotCfg *hotconfig.Config) NodeFailoverConfig {
+	if hotCfg == nil {
+		return DefaultNodeFailoverConfig()
+	}
 	return NodeFailoverConfig{
 		NodeTimeoutSeconds:          clampInt(hotCfg.GetInt("llmgw_node_timeout_seconds", 30), 10, 300),
 		RetryCount:                  clampInt(hotCfg.GetInt("llmgw_retry_count", 2), 0, 5),
@@ -251,13 +255,13 @@ func IsContinuationOrRetry(body []byte, hotCfg *hotconfig.Config) (isContinue bo
 	}
 
 	for _, kw := range continueKw {
-		if contains(lastUserContent, kw) {
+		if containsFold(lastUserContent, kw) {
 			return true, false
 		}
 	}
 
 	for _, kw := range retryKw {
-		if contains(lastUserContent, kw) {
+		if containsFold(lastUserContent, kw) {
 			return false, true
 		}
 	}
@@ -267,6 +271,10 @@ func IsContinuationOrRetry(body []byte, hotCfg *hotconfig.Config) (isContinue bo
 
 func contains(s, substr string) bool {
 	return len(s) >= len(substr) && containsStr(s, substr)
+}
+
+func containsFold(s, substr string) bool {
+	return strings.Contains(strings.ToLower(s), strings.ToLower(substr))
 }
 
 func containsStr(s, substr string) bool {

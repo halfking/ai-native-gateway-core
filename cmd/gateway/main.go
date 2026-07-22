@@ -72,6 +72,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/domains/ursm/v2/persist"     //nolint:depguard // URSM v2 persist writer
 	"github.com/kaixuan/llm-gateway-go/eventbus"
 	"github.com/kaixuan/llm-gateway-go/fault"
+	"github.com/kaixuan/llm-gateway-go/hotconfig"
 	"github.com/kaixuan/llm-gateway-go/internal/attachmentmirror"
 	"github.com/kaixuan/llm-gateway-go/internal/centeragent"
 	"github.com/kaixuan/llm-gateway-go/internal/collector"
@@ -649,6 +650,20 @@ func main() {
 	} else {
 		slog.Warn("timeout config disabled (no DB), using static timeout from env")
 	}
+
+	// Keep executor continuation/retry settings backed by the same hot-reload
+	// source used by the gateway runtime. Defaults remain active without DB.
+	var executorHotConfig *hotconfig.Config
+	if dbConn != nil && dbConn.Enabled() {
+		executorHotConfig = hotconfig.New(dbConn.Pool())
+		if err := executorHotConfig.Start(context.Background()); err != nil {
+			slog.Warn("executor hotconfig disabled", "error", err)
+			executorHotConfig = nil
+		} else {
+			defer executorHotConfig.Stop()
+		}
+	}
+	executors.SetHotConfig(executorHotConfig)
 
 	// ── Routing executor (multi-candidate P2C) ──────────────────────────
 	providerClient := provider.NewClient()
