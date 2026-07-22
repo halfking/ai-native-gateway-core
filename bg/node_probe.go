@@ -477,9 +477,12 @@ func nonBlockingWake(ch chan<- struct{}) {
 // ladder rolls over — up to 24h after the most recent failure, or
 // indefinitely if paused=TRUE.
 //
-// The "next_retry_at = now() + 24h" choice mirrors runOne's success
-// branch so the row's lifecycle remains identical to a naturally-
-// recovered probe.
+// The "next_retry_at = now() + 1h" choice mirrors runOne's success
+// branch (BUG #6 fix, 2026-07-22). Previously was 24h; that left
+// credentials un-probed for 24h after every successful probe, which
+// was too long for upstream changes (key rotation, quota change,
+// model deprecation) to be detected. Capped to 1h so the asset
+// health probe + credential_recovery ticker can act within an hour.
 func MarkNodeProbeHealthy(ctx context.Context, db *pgxpool.Pool, credentialID int, rawModel string) error {
 	_, err := db.Exec(ctx, `
 		INSERT INTO node_probe_state (
@@ -490,13 +493,13 @@ func MarkNodeProbeHealthy(ctx context.Context, db *pgxpool.Pool, credentialID in
 			last_direct_ok, last_gateway_ok,
 			last_err_code, last_err_detail,
 			updated_at
-		) VALUES ($1, $2, 0, 1, now(), now() + interval '24 hours', 86400, FALSE, NULL, TRUE, TRUE, NULL, NULL, now())
+		) VALUES ($1, $2, 0, 1, now(), now() + interval '1 hour', 3600, FALSE, NULL, TRUE, TRUE, NULL, NULL, now())
 		ON CONFLICT (credential_id, raw_model_name) DO UPDATE
 		SET consecutive_failures = 0,
 		    consecutive_successes = node_probe_state.consecutive_successes + 1,
 		    last_attempt_at = now(),
-		    next_retry_at = now() + interval '24 hours',
-		    next_retry_seconds = 86400,
+		    next_retry_at = now() + interval '1 hour',
+		    next_retry_seconds = 3600,
 		    paused = FALSE,
 		    in_flight_until = NULL,
 		    last_direct_ok = TRUE,
@@ -1036,14 +1039,27 @@ func (w *NodeProbeWorker) runOne(ctx context.Context, credID int, model, trigger
 	durationMs := int(now.Sub(startedAt).Milliseconds())
 
 	if success {
-		// Reset
+		// 2026-07-22 fix (BUG #6): previous value was 24h, which left
+		// the credential un-probed for 24h after every successful
+		// probe. Combined with the backoff chain (30s → 1m → 5m → 1h →
+		// 2h → 24h), a cred that just hit attempt=6 (24h cooldown)
+		// was effectively never re-checked for a full day after the
+		// last failure — long enough for the upstream to silently
+		// change (rotate API key, quota change, deprecation) without
+		// the gateway noticing. Capped to 1h: the active_probe
+		// submitter (consecutive_threshold=2, line 2184-ish) and
+		// credential_recovery 60s ticker can act on any new auth /
+		// availability state within ~1h of upstream change. The
+		// asset health probe still runs hourly, so this is a
+		// layered defense — the cred is re-probed at most once per
+		// hour instead of once per day.
 		_, _ = w.db.Exec(ctx, `
 			UPDATE node_probe_state SET
 				consecutive_failures = 0,
 				consecutive_successes = consecutive_successes + 1,
 				last_attempt_at = now(),
-				next_retry_at = now() + interval '24 hours',
-				next_retry_seconds = 86400,
+				next_retry_at = now() + interval '1 hour',
+				next_retry_seconds = 3600,
 				paused = FALSE,
 				last_run_id = NULL,
 				last_direct_ok = TRUE,

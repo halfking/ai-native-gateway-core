@@ -1,6 +1,7 @@
 package bg
 
 import (
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -109,5 +110,33 @@ func TestNodeProbeResultToStatus(t *testing.T) {
 				t.Errorf("nodeProbeResultToStatus(%+v) = %q, want %q", c.r, got, c.want)
 			}
 		})
+	}
+}
+
+// TestNodeProbeSuccessNextRetryOneHour pins BUG #6 fix (2026-07-22):
+// after a successful probe, next_retry_at should be 1 hour away, not
+// 24 hours. Source-grep verifies both the runOne success branch and
+// MarkNodeProbeHealthy write the 1-hour interval; a future refactor
+// that accidentally restores the 24-hour value (e.g. copy-paste from
+// the older comment block) will fail this test.
+func TestNodeProbeSuccessNextRetryOneHour(t *testing.T) {
+	src, err := os.ReadFile("node_probe.go")
+	if err != nil {
+		t.Fatalf("read source: %v", err)
+	}
+	body := string(src)
+	mustContain := []string{
+		// runOne success branch
+		"next_retry_at = now() + interval '1 hour'",
+		"next_retry_seconds = 3600",
+	}
+	for _, want := range mustContain {
+		if !strings.Contains(body, want) {
+			t.Fatalf("BUG #6 regression: node_probe.go missing %q", want)
+		}
+	}
+	// And no 24-hour success branch should remain.
+	if strings.Contains(body, "now() + interval '24 hours'") {
+		t.Fatalf("BUG #6 regression: node_probe.go still has 24-hour success interval")
 	}
 }
