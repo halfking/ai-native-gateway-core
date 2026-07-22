@@ -30,6 +30,8 @@ export type NavItem = {
    *  '/routing-v2' (路由全景) vs '/routing-v2/credentials' (凭据监控) —
    *  without this both highlight at once on the credentials page. */
   exact?: boolean
+  /** Only show when system is not activated (for activation-related pages) */
+  notActivatedOnly?: boolean
 }
 
 export type NavGroup = {
@@ -106,7 +108,7 @@ export const NAV_GROUPS: NavGroup[] = [
       { path: '/admin/agents', label: 'Agent Registry', labelKey: 'nav.item.agents', icon: '🤖', super: true, hideForTenant: true },
       // 非核心节点：合并站点/激活/许可/协议 →「更新与激活」
       { path: '/customer/update-activate', label: '更新与激活', labelKey: 'nav.item.updateActivate', icon: '🔄' },
-      { path: '/customer/offline-activation', label: '离线激活', labelKey: 'nav.item.licenseOffline', icon: '🔌' },
+      { path: '/customer/offline-activation', label: '离线激活', labelKey: 'nav.item.licenseOffline', icon: '🔌', notActivatedOnly: true },
       { path: '/maintain/tenant/telemetry', label: '数据采集范围', labelKey: 'nav.item.telemetryScope', icon: '📡', external: true },
     ],
   },
@@ -141,26 +143,27 @@ export const NAV_GROUPS: NavGroup[] = [
 
 export function canShowNavItem(
   item: NavItem,
-  opts: { isSuperAdmin: boolean; isPlatformOps: boolean; isTenantPortal: boolean },
+  opts: { isSuperAdmin: boolean; isPlatformOps: boolean; isTenantPortal: boolean; isActivated?: boolean },
 ): boolean {
   if (item.opsPlatform && !showOpsPlatform()) return false
   if (item.super && !opts.isSuperAdmin) return false
   if (item.platformOps && !opts.isPlatformOps) return false
   if (item.tenantOnly && !opts.isTenantPortal) return false
   if (item.hideForTenant && opts.isTenantPortal) return false
+  if (item.notActivatedOnly && opts.isActivated) return false
   return true
 }
 
 export function visibleNavItems(
   items: NavItem[],
-  opts: { isSuperAdmin: boolean; isPlatformOps: boolean; isTenantPortal: boolean },
+  opts: { isSuperAdmin: boolean; isPlatformOps: boolean; isTenantPortal: boolean; isActivated?: boolean },
 ): NavItem[] {
   return items.filter((item) => canShowNavItem(item, opts))
 }
 
 export function visibleNavGroups(
   groups: NavGroup[],
-  opts: { isSuperAdmin: boolean; isPlatformOps: boolean; isTenantPortal: boolean },
+  opts: { isSuperAdmin: boolean; isPlatformOps: boolean; isTenantPortal: boolean; isActivated?: boolean },
 ): NavGroup[] {
   return groups
     .map((g) => ({
