@@ -83,7 +83,7 @@ func (s *PGHistoryStore) FetchBySession(ctx context.Context, sessionID, tenantID
 		       COALESCE(rb.response_body, rl.response_body) AS response_body
 		FROM request_logs rl
 		LEFT JOIN request_logs_bodies rb 
-		  ON rb.request_id = rl.request_id AND rb.ts = rl.ts
+		  ON rb.request_id = rl.request_id
 		WHERE rl.gw_session_id = $1
 		  AND COALESCE(rl.tenant_id, '') = COALESCE(NULLIF($2, ''), rl.tenant_id)
 		  AND (rb.request_body IS NOT NULL OR rl.request_body IS NOT NULL)

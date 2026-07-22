@@ -122,12 +122,12 @@ const maxVisibleTiles = computed(() => {
   return Math.max(MIN_VISIBLE_TILES, Math.min(count, total))
 })
 
-// 只显示可容纳的请求（保留最新的若干个）
+// 只显示可容纳的请求（保留最新的若干个，反转顺序使最新的在左边）
 const visibleRequests = computed(() => {
   const requests = props.lane.requests
   const max = maxVisibleTiles.value
-  if (requests.length <= max) return requests
-  return requests.slice(requests.length - max)
+  if (requests.length <= max) return [...requests].reverse()
+  return requests.slice(requests.length - max).reverse()
 })
 
 // 用于渲染的完整列表（含后端 idle 标记，按时间戳排序，不再追加尾部占位）
@@ -488,8 +488,8 @@ watch(laneMode, async () => {
   min-height: 60px;
   width: 100%;
   min-width: 0;
-  /* 最新请求靠右，形成时间轴向右流动的观感 */
-  justify-content: flex-end;
+  /* 最新请求在左边，从左往右排列，满了后最右边的旧请求被挤出 */
+  justify-content: flex-start;
   flex-wrap: nowrap;
 }
 
