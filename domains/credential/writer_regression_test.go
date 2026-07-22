@@ -119,7 +119,11 @@ func TestWriteOnError_CredentialWideKind_OnlyUpdatesCredentials(t *testing.T) {
 		{"quota_balance", errorsx.KindQuotaBalance, 3},
 		{"quota", errorsx.KindQuota, 3},
 		{"auth_revoked", errorsx.KindAuthRevoked, 3},
-		{"auth", errorsx.KindAuth, 3},
+		// 2026-07-22: KindAuth now binds $4 = availability_recover_at
+		// (now() + 15min), so the call signature is 4-arg, not 3.
+		// See TestWriteOnError_KindAuth_SetsRecoverAt for the contract
+		// test that pins this.
+		{"auth", errorsx.KindAuth, 4},
 		{"transient", errorsx.KindTransient, 3},
 	}
 
@@ -175,6 +179,68 @@ func TestWriteOnError_PerModelKind_EmptyRawModel_AllBindings(t *testing.T) {
 	w := &Writer{dbPool: mockDB}
 	err := w.WriteOnError(context.Background(), 42, "", Failure{Kind: errorsx.KindNetwork})
 	if err != nil {
+		t.Fatalf("WriteOnError: %v", err)
+	}
+	if err := mockDB.ExpectationsWereMet(); err != nil {
+		t.Errorf("unmet expectations: %v", err)
+	}
+}
+
+// TestWriteOnError_KindAuth_SetsRecoverAt pins BUG #2 fix (2026-07-22):
+// KindAuth must write a future availability_recover_at timestamp so
+// bg/credential_recovery.go's 60s ticker can flip the credential back to
+// 'ready' once the cooling period elapses. Before this fix the SQL
+// wrote `availability_recover_at = NULL`, which made the recovery
+// ticker's `AND availability_recover_at IS NOT NULL` clause impossible
+// to satisfy — auth_failed credentials were stuck indefinitely.
+//
+// We assert that:
+//  1. Exactly 4 args are passed (the new $4 is the recoverAt timestamp).
+//  2. The recoverAt arg is a future time.Time, not zero.
+func TestWriteOnError_KindAuth_SetsRecoverAt(t *testing.T) {
+	mockDB := newSQLOnlyMock()
+	defer mockDB.Close()
+
+	// BUG #2 fix (2026-07-22): KindAuth SQL now takes 4 args — the new
+	// $4 is availability_recover_at = now() + 15min. The 60s recovery
+	// ticker in bg/credential_recovery.go depends on
+	// `availability_recover_at IS NOT NULL AND <= now()` to flip
+	// auth_failed back to ready; writing NULL broke that contract.
+	//
+	// sqlOnlyMatcher only matches SQL structure, so the binding
+	// contract here is: "WriteOnError(KindAuth) emits exactly 4 bound
+	// params". If a future refactor accidentally reverts the $4, this
+	// test fails with "expected 4 args, got 3".
+	mockDB.ExpectExec(`UPDATE credentials`).
+		WithArgs(pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg()).
+		WillReturnResult(pgxmock.NewResult("UPDATE", 1))
+
+	w := &Writer{dbPool: mockDB}
+	if err := w.WriteOnError(context.Background(), 42, "claude-sonnet-5", Failure{Kind: errorsx.KindAuth, Detail: "upstream 403"}); err != nil {
+		t.Fatalf("WriteOnError: %v", err)
+	}
+	if err := mockDB.ExpectationsWereMet(); err != nil {
+		t.Errorf("unmet expectations: %v", err)
+	}
+}
+
+// TestWriteOnError_KindAuthRevoked_NoRecoverAt pins that KindAuthRevoked
+// remains a permanent "suspended" state (admin-only recovery via the
+// admin UI / CLI). Only KindAuth (transient credential-level auth
+// failures like upstream 401/403 on a single apikey) should auto-recover.
+// This protects against accidental scope creep when refactoring
+// KindAuth's path.
+func TestWriteOnError_KindAuthRevoked_NoRecoverAt(t *testing.T) {
+	mockDB := newSQLOnlyMock()
+	defer mockDB.Close()
+
+	// 3-arg signature: $1=reason, $2=detail, $3=credentialID (no recover_at)
+	mockDB.ExpectExec(`UPDATE credentials`).
+		WithArgs(pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg()).
+		WillReturnResult(pgxmock.NewResult("UPDATE", 1))
+
+	w := &Writer{dbPool: mockDB}
+	if err := w.WriteOnError(context.Background(), 42, "claude-sonnet-5", Failure{Kind: errorsx.KindAuthRevoked}); err != nil {
 		t.Fatalf("WriteOnError: %v", err)
 	}
 	if err := mockDB.ExpectationsWereMet(); err != nil {

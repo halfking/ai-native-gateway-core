@@ -212,17 +212,30 @@ func (w *Writer) WriteOnError(ctx context.Context, credentialID int, rawModel st
 		`, string(failure.Kind), detail, credentialID)
 		return err
 	case errorsx.KindAuth:
+		// 2026-07-22 fix (BUG #2): availability_recover_at must be set
+		// to a future timestamp so credential_recovery.go's 60s ticker
+		// can flip availability_state back to 'ready' once the cooling
+		// period elapses. Previously this column was written as NULL,
+		// which made the recovery ticker's `AND availability_recover_at
+		// IS NOT NULL` guard impossible to satisfy — auth_failed
+		// credentials were stuck until manual admin intervention.
+		//
+		// 15 minutes mirrors the existing breaker.go:103 intent
+		// ("permanent" auth recovery now redesigned in BUG #1 to
+		// exponential backoff), and matches the 15-minute first probe
+		// cadence used by credstate's active_probe trigger.
+		recoverAt := time.Now().UTC().Add(15 * time.Minute)
 		_, err := w.dbPool.Exec(ctx, `
 			UPDATE credentials
 			SET availability_state      = 'auth_failed',
-			    availability_recover_at = NULL,
+			    availability_recover_at = $4,
 			    state_reason_code       = $1,
 			    state_reason_detail     = $2,
 			    state_updated_at        = now()
 			WHERE id = $3
 			  AND lifecycle_status = 'active'
 			  AND availability_state NOT IN ('suspended')
-		`, string(failure.Kind), detail, credentialID)
+		`, string(failure.Kind), detail, credentialID, recoverAt)
 		return err
 	case errorsx.KindTransient:
 		_, err := w.dbPool.Exec(ctx, `
