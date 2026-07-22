@@ -94,6 +94,7 @@ onBeforeUnmount(() => {
       @click.stop="toggle"
     >
       <span class="user-menu__name">{{ displayName }}</span>
+      <span class="user-menu__chevron" aria-hidden="true">{{ open ? '▲' : '▼' }}</span>
     </button>
 
     <Teleport to="body">
@@ -137,6 +138,7 @@ onBeforeUnmount(() => {
 .user-menu__trigger {
   display: inline-flex;
   align-items: center;
+  gap: 6px;
   padding: 6px 10px;
   border: 0;
   border-radius: 8px;
@@ -161,6 +163,13 @@ onBeforeUnmount(() => {
   overflow: hidden;
   text-overflow: ellipsis;
   max-width: 100%;
+}
+
+.user-menu__chevron {
+  font-size: 10px;
+  opacity: 0.7;
+  transition: transform 0.2s ease;
+  flex-shrink: 0;
 }
 
 .user-menu__role {

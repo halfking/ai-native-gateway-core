@@ -125,10 +125,15 @@ watch(
 )
 
 async function logout() {
-  try { await apiLogout() } catch { /* ignore */ }
+  try { 
+    await apiLogout() 
+  } catch { 
+    /* ignore */ 
+  }
   clearAll()
   markAuthHydrated() // 2026-07-09: 登出后保持 hydrated=true，下一次 mount 才会重新探测
-  router.push('/')
+  // 使用 replace 而不是 push，避免显示中间状态
+  await router.replace('/')
 }
 
 function openUserInfo() {

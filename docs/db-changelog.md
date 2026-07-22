@@ -661,3 +661,9 @@
 |-----------|------|
 | 453 | `453_ursm_v2_node_snapshot_min.sql` |
 
+## 2026-07-22T20:08:46Z — deploy 154 build_seq 1311 (498d9f10)
+
+| Migration | File |
+|-----------|------|
+| 454 | `454_response_format_anomalies.sql` |
+
