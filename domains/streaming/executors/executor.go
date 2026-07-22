@@ -2286,7 +2286,7 @@ func (e *Executor) Execute(params *ExecParams) (*ExecuteResult, error) {
 				)
 				if params.PreStreamPrepared {
 					SendNodeJumpEvent(params.W, cand.CredentialID, cand.ProviderID,
-						0, 0, "stream_timeout: "+sie.reason, nodeTracker.Attempts())
+						0, 0, "stream_interrupted:"+sie.reason, nodeTracker.Attempts())
 				}
 				continue
 			} else {
