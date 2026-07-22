@@ -132,8 +132,10 @@ async function logout() {
   }
   clearAll()
   markAuthHydrated() // 2026-07-09: 登出后保持 hydrated=true，下一次 mount 才会重新探测
-  // 使用 replace 而不是 push，避免显示中间状态
-  await router.replace('/')
+  // 退出后直接跳转到产品首页（ai-native-maintain），避免先到 / 再二次跳转造成的加载延迟
+  if (typeof window !== 'undefined') {
+    window.location.replace('/maintain/home')
+  }
 }
 
 function openUserInfo() {
