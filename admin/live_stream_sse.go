@@ -1350,18 +1350,17 @@ func (h *LiveStreamSSEHub) enqueueBroadcast(req LiveRequest) {
 	}
 }
 
-// Publish persists a request to Redis and relies on the pub/sub
-// subscriber to fan out SSE updates. Falls back to in-memory
-// broadcast when Redis is unavailable.
+// Publish persists a request to Redis and notifies every subscriber
+// to fan out SSE updates. Always broadcasts regardless of Redis state
+// so connected SSE clients receive the request in real-time.
 func (h *LiveStreamSSEHub) Publish(req LiveRequest) {
 	if h.store != nil && h.cfg.RedisClient != nil {
 		ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
-		err := h.store.Record(ctx, req)
-		cancel()
-		if err != nil {
+		if err := h.store.Record(ctx, req); err != nil {
 			slog.Debug("live stream redis record failed", "request_id", req.RequestID, "tenant_id", req.TenantID, "model", req.Model, "provider", req.ProviderCode, "err", err.Error())
-			h.enqueueBroadcast(req)
 		}
+		cancel()
+		h.enqueueBroadcast(req)
 		return
 	}
 	if h.store != nil {
