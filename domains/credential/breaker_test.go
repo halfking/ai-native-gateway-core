@@ -47,15 +47,30 @@ func TestSingleAuthFailureDoesNotQuarantine(t *testing.T) {
 	}
 }
 
-func TestConfirmedAuthFailureQuarantines(t *testing.T) {
+func TestConfirmedAuthFailureOpens(t *testing.T) {
+	// 2026-07-22 fix (BUG #1): KindAuth now uses exponential cooling
+	// (15min → 30min → ... → 24h cap) instead of RecoveryPermanent
+	// quarantine. Two consecutive auth failures transition to OPEN
+	// with a 15-minute cooling window; the credential_recovery 60s
+	// ticker + active_probe mechanism can then flip it back to ready
+	// once a successful probe confirms the apikey is fixed.
 	b := New(1, 1)
 	b.RecordFailure(KindAuth)
 	b.RecordFailure(KindAuth)
-	if b.State() != StateQuarantined {
-		t.Fatalf("expected quarantined, got %s", b.State())
+	if b.State() != StateOpen {
+		t.Fatalf("expected open (exponential cooling), got %s", b.State())
 	}
 	if b.Allow() {
-		t.Fatal("quarantined breaker should not allow requests")
+		t.Fatal("open breaker should not allow requests")
+	}
+	// Confirm the cooling window matches the configured 15-minute
+	// InitialCooling — guards against accidental future changes to
+	// the KindAuth policy breaking the recovery contract.
+	b.mu.Lock()
+	cooling := b.coolingExpires.Sub(b.lastFailureAt)
+	b.mu.Unlock()
+	if cooling < 14*time.Minute || cooling > 16*time.Minute {
+		t.Fatalf("expected ~15min cooling, got %s", cooling)
 	}
 }
 
@@ -197,11 +212,14 @@ func TestTransientEscalation(t *testing.T) {
 }
 
 func TestReset(t *testing.T) {
+	// 2026-07-22 (BUG #1): Use KindQuota (not KindAuth) to land in
+	// StateQuarantined — KindAuth now uses exponential cooling and
+	// stops at StateOpen.
 	b := New(1, 1)
-	b.RecordFailure(KindAuth)
-	b.RecordFailure(KindAuth)
+	b.RecordFailure(KindQuota)
+	b.RecordFailure(KindQuota)
 	if b.State() != StateQuarantined {
-		t.Fatalf("expected quarantined")
+		t.Fatalf("expected quarantined, got %s", b.State())
 	}
 	if b.Allow() {
 		t.Fatal("quarantined should not allow")
@@ -279,7 +297,7 @@ func TestManagerStats(t *testing.T) {
 	m.GetOrCreate(2, 2)
 
 	m.RecordFailure(1, 1, KindAuth)
-	m.RecordFailure(1, 1, KindAuth) // quarantined
+	m.RecordFailure(1, 1, KindAuth) // open with 15min cooling (BUG #1 fix)
 
 	stats := m.Stats()
 	if len(stats) != 2 {
@@ -293,8 +311,11 @@ func TestManagerStats(t *testing.T) {
 	if states["closed"] != 1 {
 		t.Fatalf("expected 1 closed, got %d", states["closed"])
 	}
-	if states["quarantined"] != 1 {
-		t.Fatalf("expected 1 quarantined, got %d", states["quarantined"])
+	// 2026-07-22: KindAuth is now StateOpen (exponential), not
+	// StateQuarantined. Quarantined is reserved for KindQuota (which
+	// remains RecoveryPermanent).
+	if states["open"] != 1 {
+		t.Fatalf("expected 1 open (KindAuth exponential), got %d", states["open"])
 	}
 }
 

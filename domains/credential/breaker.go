@@ -96,11 +96,24 @@ const (
 
 // Default cooling policies per error kind.
 var defaultPolicies = map[ErrorKind]CoolingPolicy{
-	KindTransient:     {InitialCooling: 60 * time.Second, MaxCooling: 60 * time.Second, RecoveryType: RecoveryAuto, ShrinkFactor: 0},
-	KindTimeout:       {InitialCooling: 60 * time.Second, MaxCooling: 60 * time.Second, RecoveryType: RecoveryAuto, ShrinkFactor: 0},
-	KindNetwork:       {InitialCooling: 60 * time.Second, MaxCooling: 60 * time.Second, RecoveryType: RecoveryAuto, ShrinkFactor: 0},
-	KindRateLimit:     {InitialCooling: 900 * time.Second, MaxCooling: 900 * time.Second, RecoveryType: RecoveryExponential, ShrinkFactor: 0.7},
-	KindAuth:          {InitialCooling: 0, MaxCooling: 0, RecoveryType: RecoveryPermanent, ShrinkFactor: 0},
+	KindTransient: {InitialCooling: 60 * time.Second, MaxCooling: 60 * time.Second, RecoveryType: RecoveryAuto, ShrinkFactor: 0},
+	KindTimeout:   {InitialCooling: 60 * time.Second, MaxCooling: 60 * time.Second, RecoveryType: RecoveryAuto, ShrinkFactor: 0},
+	KindNetwork:   {InitialCooling: 60 * time.Second, MaxCooling: 60 * time.Second, RecoveryType: RecoveryAuto, ShrinkFactor: 0},
+	KindRateLimit: {InitialCooling: 900 * time.Second, MaxCooling: 900 * time.Second, RecoveryType: RecoveryExponential, ShrinkFactor: 0.7},
+	// 2026-07-22 fix (BUG #1): KindAuth used to be RecoveryPermanent
+	// (quarantine, manual recovery only). That combined with BUG #2
+	// (writer.go writing availability_recover_at=NULL) meant a single
+	// 401/403 from an upstream permanently disabled a credential for
+	// 15+ hours until admin intervention. With writer.go:218 now
+	// writing a 15-minute recover_at AND bg/credential_recovery.go:56
+	// including 'auth_failed' in its whitelist, the recovery ticker
+	// can flip the credential back to ready; the in-memory breaker
+	// now uses exponential backoff (15min → 30min → 60min → 2h → 4h →
+	// 24h cap) so a flapping credential (admin rotated the apikey but
+	// the new one is also bad) degrades gracefully instead of being
+	// pinned forever. After 24h of cooling the credential is
+	// effectively permanent-by-time, matching the old UX.
+	KindAuth:          {InitialCooling: 15 * time.Minute, MaxCooling: 24 * time.Hour, RecoveryType: RecoveryExponential, ShrinkFactor: 0.5},
 	KindQuota:         {InitialCooling: 0, MaxCooling: 0, RecoveryType: RecoveryPermanent, ShrinkFactor: 0},
 	KindUpstreamDown:  {InitialCooling: 30 * time.Second, MaxCooling: 1800 * time.Second, RecoveryType: RecoveryExponential, ShrinkFactor: 0.5},
 	KindStreamTimeout: {InitialCooling: 30 * time.Second, MaxCooling: 30 * time.Second, RecoveryType: RecoveryAuto, ShrinkFactor: 0},
