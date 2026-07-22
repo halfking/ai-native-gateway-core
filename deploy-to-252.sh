@@ -138,7 +138,7 @@ echo -e "${GREEN}  ✓ uploaded${NC}"
 ANOMALY_MIGRATION="$REPO_DIR/sql/migrations/startup/454_response_format_anomalies.sql"
 if [[ $SKIP_MIGRATION -eq 0 ]]; then
   if [[ -f "$ANOMALY_MIGRATION" ]]; then
-    echo -e "${YELLOW}[4a/5]${NC} 应用 migration 454 (response_format_anomalies)..."
+    echo -e "${YELLOW}[4a/6]${NC} 应用 migration 454 (response_format_anomalies)..."
     $SSH_BASE "docker exec -i $DB_CONTAINER psql -v ON_ERROR_STOP=1 -U $DB_USER -d $DB_NAME < /dev/stdin" < "$ANOMALY_MIGRATION" 2>&1 | tail -10 | sed 's/^/      /'
     echo -e "${GREEN}  ✓ migration 454 applied${NC}"
   else
@@ -148,7 +148,7 @@ fi
 
 # 4b. 应用 DB migration — 已有 migration（默认 366）
 if [[ $SKIP_MIGRATION -eq 0 ]]; then
-  echo -e "${YELLOW}[4b/5]${NC} 应用 DB migration (default: 366_model_name_mapping)..."
+  echo -e "${YELLOW}[4b/6]${NC} 应用 DB migration (default: 366_model_name_mapping)..."
   if [[ ! -f "$MIGRATION_FILE" ]]; then
     echo -e "${RED}  ✗ migration file not found: $MIGRATION_FILE${NC}"; exit 1
   fi
@@ -160,7 +160,7 @@ if [[ $SKIP_MIGRATION -eq 0 ]]; then
   $SSH_BASE "docker exec $DB_CONTAINER psql -U $DB_USER -d $DB_NAME -c '\\d session_summaries'" 2>&1 | grep -E "(tokens_at_trigger|messages_at_trigger|last_trigger)" | sed 's/^/      /' || true
   echo -e "${GREEN}  ✓ migration applied${NC}"
 else
-  echo -e "${YELLOW}[4b/5]${NC} 跳过 DB migration"
+  echo -e "${YELLOW}[4b/6]${NC} 跳过 DB migration"
 fi
 
 # 5. 重启服务

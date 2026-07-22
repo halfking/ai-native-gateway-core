@@ -1,8 +1,32 @@
--- Migration: 454_response_format_anomalies
--- Purpose: Create response_format_anomalies table for tracking format & data
---   anomalies (format extraction failures, NaN/Inf persistence failures,
---   WAL marshal failures, etc.). Bridges to fault_events via AnomalyHarvester.
--- Mirrors: db/db.go:ensureResponseFormatAnomaliesSchema()
+-- ===========================================================================
+-- File:          sql/migrations/startup/454_response_format_anomalies.sql
+-- Database:      llm_gateway
+-- Object Type:   TABLE
+-- Object Name:   response_format_anomalies
+-- Purpose:       Track format & data anomalies (extraction failures,
+--                NaN/Inf persistence failures, WAL marshal failures, etc.).
+--                Bridges to fault_events via AnomalyHarvester.
+--
+-- Mirrors:       db/db.go:ensureResponseFormatAnomaliesSchema()
+-- Status:        active
+-- Idempotent:    YES (CREATE IF NOT EXISTS / DROP+CREATE POLICY)
+-- Dependencies:  fault_events (migration 375), public.get_current_tenant()
+--
+-- Changelog:
+--   2026-07-23  v1.0  Initial creation (mirrored from Go startup ensure*)
+-- ===========================================================================
+--
+-- Execution:
+--   psql -h $DB_HOST -U $DB_USER -d llm_gateway -f 454_response_format_anomalies.sql
+--
+-- Verification:
+--   \dt response_format_anomalies
+--   \d response_format_anomalies
+--
+-- Rollback:
+--   See 454_response_format_anomalies.down.sql
+-- ===========================================================================
+
 BEGIN;
 
 CREATE TABLE IF NOT EXISTS response_format_anomalies (
@@ -40,6 +64,13 @@ CREATE INDEX IF NOT EXISTS idx_response_format_anomalies_provider
 
 CREATE INDEX IF NOT EXISTS idx_response_format_anomalies_type
     ON response_format_anomalies(anomaly_type, detected_at DESC);
+
+-- Optimized for AnomalyHarvester bridge query: WHERE detected_at > $1
+-- AND resolved = FALSE GROUP BY (anomaly_type, severity). Composite index
+-- avoids sequential scan when anomaly count grows.
+CREATE INDEX IF NOT EXISTS idx_response_format_anomalies_bridge
+    ON response_format_anomalies(resolved, detected_at, anomaly_type, severity)
+    WHERE NOT resolved;
 
 CREATE INDEX IF NOT EXISTS idx_response_format_anomalies_unresolved
     ON response_format_anomalies(detected_at DESC)
