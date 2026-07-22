@@ -52,30 +52,45 @@ func (s *fakeSwitcher) SwitchActive(addr string) {
 	s.switched = append(s.switched, addr)
 	s.current = addr
 }
+func (s *fakeSwitcher) ActiveAddr() string { return s.current }
+
+// seedNotifiedPlan stores a NOTIFIED plan and returns its ID, ready for
+// Prepare(planID). Tests use this instead of constructing inline since
+// Prepare now operates on an existing plan in place (audit C4).
+func seedNotifiedPlan(t *testing.T, st *store.Store, id, cur, target string) string {
+	t.Helper()
+	plan := &store.Plan{
+		ID:        id,
+		CreatedAt: time.Now().UTC(),
+		State:     store.StateNotified,
+		Current:   store.Release{Version: cur},
+		Target:    store.Release{Version: target, DownloadURL: "http://x"},
+		ActiveAddr: "127.0.0.1:8782",
+		History:   []store.StateEvent{{State: store.StateNotified, At: time.Now().UTC()}},
+	}
+	if err := st.Save(plan); err != nil {
+		t.Fatal(err)
+	}
+	return id
+}
 
 func TestPrepareHappyPath(t *testing.T) {
 	st := store.New(t.TempDir())
+	planID := seedNotifiedPlan(t, st, "p1", "v1.4.2", "v1.5.0")
 	bk := &fakeBackend{stageResult: "127.0.0.1:8783"}
-	mig := &fakeMigrator{}
-	sw := &fakeSwitcher{current: "127.0.0.1:8782"}
 
 	o := New(Config{
-		Store:          st,
-		Backend:        bk,
-		Migrator:       mig,
-		ActiveSwitcher: sw,
-		CurrentVersion: "v1.4.2",
-		CurrentAddr:    "127.0.0.1:8782",
-		HealthRetries:  3,
-		HealthInterval: 1 * time.Millisecond,
+		Store: st, Backend: bk, Migrator: &fakeMigrator{},
+		ActiveSwitcher: &fakeSwitcher{current: "127.0.0.1:8782"},
+		HealthRetries:  3, HealthInterval: 1 * time.Millisecond,
 	})
 
-	plan, err := o.Prepare(context.Background(),
-		store.Release{Version: "v1.4.2"},
-		store.Release{Version: "v1.5.0", DownloadURL: "http://x"},
-	)
+	plan, err := o.Prepare(context.Background(), planID)
 	if err != nil {
 		t.Fatalf("Prepare: %v", err)
+	}
+	if plan.ID != planID {
+		t.Fatalf("Prepare must return the SAME plan id (in-place transition), got %s want %s", plan.ID, planID)
 	}
 	if plan.State != store.StatePrepared {
 		t.Fatalf("expected PREPARED, got %s", plan.State)
@@ -83,26 +98,28 @@ func TestPrepareHappyPath(t *testing.T) {
 	if plan.GreenAddr != "127.0.0.1:8783" {
 		t.Fatalf("expected green :8783, got %s", plan.GreenAddr)
 	}
-	if len(sw.switched) != 0 {
-		t.Fatalf("Prepare should not switch active, got %v", sw.switched)
+	// BlueAddr should be read live from the switcher (audit I7).
+	if plan.BlueAddr != "127.0.0.1:8782" {
+		t.Fatalf("expected BlueAddr from live active, got %s", plan.BlueAddr)
+	}
+	// The original NOTIFIED plan must be the same file (not orphaned, audit C4).
+	if len(o.cfg.ActiveSwitcher.(*fakeSwitcher).switched) != 0 {
+		t.Fatal("Prepare should not switch active")
 	}
 }
 
 func TestPrepareHealthFailCleansUp(t *testing.T) {
 	st := store.New(t.TempDir())
+	planID := seedNotifiedPlan(t, st, "p1", "v1.4.2", "v1.5.0")
 	bk := &fakeBackend{stageResult: "127.0.0.1:8783", healthErr: errors.New("unhealthy")}
-	mig := &fakeMigrator{}
 	sw := &fakeSwitcher{current: "127.0.0.1:8782"}
 
 	o := New(Config{
-		Store: st, Backend: bk, Migrator: mig, ActiveSwitcher: sw,
-		CurrentVersion: "v1.4.2", CurrentAddr: "127.0.0.1:8782",
+		Store: st, Backend: bk, Migrator: &fakeMigrator{}, ActiveSwitcher: sw,
 		HealthRetries: 2, HealthInterval: 1 * time.Millisecond,
 	})
 
-	plan, err := o.Prepare(context.Background(),
-		store.Release{Version: "v1.4.2"}, store.Release{Version: "v1.5.0"},
-	)
+	plan, err := o.Prepare(context.Background(), planID)
 	if err == nil {
 		t.Fatal("expected error from Prepare (health failed)")
 	}
@@ -125,19 +142,16 @@ func TestPrepareHealthFailCleansUp(t *testing.T) {
 
 func TestPrepareMigrateFailCleansUp(t *testing.T) {
 	st := store.New(t.TempDir())
+	planID := seedNotifiedPlan(t, st, "p1", "v1.4.2", "v1.5.0")
 	bk := &fakeBackend{stageResult: "127.0.0.1:8783"}
-	mig := &fakeMigrator{err: errors.New("migration failed")}
 	sw := &fakeSwitcher{current: "127.0.0.1:8782"}
 
 	o := New(Config{
-		Store: st, Backend: bk, Migrator: mig, ActiveSwitcher: sw,
-		CurrentVersion: "v1.4.2", CurrentAddr: "127.0.0.1:8782",
-		HealthRetries: 3, HealthInterval: 1 * time.Millisecond,
+		Store: st, Backend: bk, Migrator: &fakeMigrator{err: errors.New("migration failed")},
+		ActiveSwitcher: sw, HealthRetries: 3, HealthInterval: 1 * time.Millisecond,
 	})
 
-	plan, err := o.Prepare(context.Background(),
-		store.Release{Version: "v1.4.2"}, store.Release{Version: "v1.5.0"},
-	)
+	plan, err := o.Prepare(context.Background(), planID)
 	if err == nil {
 		t.Fatal("expected error from Prepare (migrate failed)")
 	}
@@ -155,6 +169,24 @@ func TestPrepareMigrateFailCleansUp(t *testing.T) {
 	}
 }
 
+// TestPrepareRejectsNonNotified (audit C4): Prepare must only accept NOTIFIED
+// or FAILED plans, not arbitrary states. Prevents re-preparing an already
+// PREPARED plan (double-Prepare would stage a second green).
+func TestPrepareRejectsNonNotified(t *testing.T) {
+	for _, state := range []string{store.StatePreparing, store.StatePrepared, store.StateDone} {
+		t.Run(state, func(t *testing.T) {
+			st := store.New(t.TempDir())
+			_ = st.Save(&store.Plan{ID: "p1", State: state})
+			o := New(Config{Store: st, Backend: &fakeBackend{}, Migrator: &fakeMigrator{},
+				ActiveSwitcher: &fakeSwitcher{}})
+			_, err := o.Prepare(context.Background(), "p1")
+			if err == nil {
+				t.Fatalf("expected Prepare of %s plan to fail", state)
+			}
+		})
+	}
+}
+
 func TestApplySwitchesAndDrains(t *testing.T) {
 	st := store.New(t.TempDir())
 	_ = st.Save(&store.Plan{
@@ -167,11 +199,10 @@ func TestApplySwitchesAndDrains(t *testing.T) {
 	})
 
 	bk := &fakeBackend{}
-	mig := &fakeMigrator{}
 	sw := &fakeSwitcher{current: "127.0.0.1:8782"}
 	o := New(Config{
-		Store: st, Backend: bk, Migrator: mig, ActiveSwitcher: sw,
-		CurrentAddr: "127.0.0.1:8782", RetainDuration: 1 * time.Hour,
+		Store: st, Backend: bk, Migrator: &fakeMigrator{}, ActiveSwitcher: sw,
+		RetainDuration: 1 * time.Hour,
 	})
 
 	if err := o.Apply(context.Background(), "p1"); err != nil {
@@ -270,10 +301,10 @@ func TestApplyPersistsActive(t *testing.T) {
 }
 
 // TestRollbackRejectsNonTerminal (I4): Rollback must reject plans that
-// aren't DONE or FAILED (rolling back NOTIFIED/PREPARING/PREPARED is a
-// confusing no-op or worse).
+// have nothing to cancel/revert (NOTIFIED, PREPARING). PREPARED is now
+// accepted (audit I6: cancel a staged green without applying).
 func TestRollbackRejectsNonTerminal(t *testing.T) {
-	for _, state := range []string{store.StateNotified, store.StatePreparing, store.StatePrepared} {
+	for _, state := range []string{store.StateNotified, store.StatePreparing} {
 		t.Run(state, func(t *testing.T) {
 			st := store.New(t.TempDir())
 			_ = st.Save(&store.Plan{
@@ -291,29 +322,65 @@ func TestRollbackRejectsNonTerminal(t *testing.T) {
 		})
 	}
 }
+
+// TestRollbackCancelsPrepared (audit I6): a PREPARED plan (green staged
+// but not yet applied) can be rolled back to clean up green without ever
+// switching traffic. Active should stay on blue.
+func TestRollbackCancelsPrepared(t *testing.T) {
+	st := store.New(t.TempDir())
+	_ = st.Save(&store.Plan{
+		ID: "p1", State: store.StatePrepared,
+		BlueAddr:   "127.0.0.1:8782",
+		GreenAddr:  "127.0.0.1:8783",
+		ActiveAddr: "127.0.0.1:8782", // still on blue, never applied
+	})
+	bk := &fakeBackend{}
+	sw := &fakeSwitcher{current: "127.0.0.1:8782"}
+	o := New(Config{Store: st, Backend: bk, Migrator: &fakeMigrator{}, ActiveSwitcher: sw})
+
+	if err := o.Rollback(context.Background(), "p1"); err != nil {
+		t.Fatalf("Rollback of PREPARED: %v", err)
+	}
+	got, _ := st.Load("p1")
+	if got.State != store.StateRolledBack {
+		t.Fatalf("expected ROLLED_BACK, got %s", got.State)
+	}
+	// Active unchanged (still blue).
+	if sw.current != "127.0.0.1:8782" {
+		t.Fatalf("active changed to %s; PREPARED rollback shouldn't switch", sw.current)
+	}
+	foundRemove := false
+	for _, c := range bk.calls {
+		if c == "remove:127.0.0.1:8783" {
+			foundRemove = true
+		}
+	}
+	if !foundRemove {
+		t.Fatalf("expected green Remove on PREPARED cancel, calls: %v", bk.calls)
+	}
+}
+
 // TestPrepareSerializesConcurrent (I2): two concurrent Prepare calls must
 // not both be inside Stage at the same time (would race on green port/
 // container). opMu serializes them; the peak concurrent Stage count must
 // be 1.
 func TestPrepareSerializesConcurrent(t *testing.T) {
 	st := store.New(t.TempDir())
+	seedNotifiedPlan(t, st, "p1", "v1.4.2", "v1.5.0")
+	seedNotifiedPlan(t, st, "p2", "v1.4.2", "v1.5.0")
 	bk := &concurrencyBackend{stageResult: "127.0.0.1:8783"}
 	o := New(Config{
 		Store: st, Backend: bk, Migrator: &fakeMigrator{},
 		ActiveSwitcher: &fakeSwitcher{current: "127.0.0.1:8782"},
-		CurrentAddr:    "127.0.0.1:8782",
 		HealthRetries:  1, HealthInterval: 1 * time.Millisecond,
 	})
 
 	done := make(chan error, 2)
-	for i := 0; i < 2; i++ {
-		go func() {
-			_, err := o.Prepare(context.Background(),
-				store.Release{Version: "v1.4.2"},
-				store.Release{Version: "v1.5.0"},
-			)
+	for _, pid := range []string{"p1", "p2"} {
+		go func(id string) {
+			_, err := o.Prepare(context.Background(), id)
 			done <- err
-		}()
+		}(pid)
 	}
 	<-done
 	<-done

@@ -59,7 +59,6 @@ func TestApplySurvivesDaemonRestart(t *testing.T) {
 		Backend:        &restartBackend{greenAddr: "127.0.0.1:8783"},
 		Migrator:       noopMigrator{},
 		ActiveSwitcher: &proxySwitcher{p: pr1},
-		CurrentAddr:    "127.0.0.1:8782",
 		RetainDuration: 1 * time.Hour, // don't fire retained-remove during test
 	})
 	if err := o1.Apply(context.Background(), "p1"); err != nil {
@@ -100,3 +99,4 @@ func TestApplySurvivesDaemonRestart(t *testing.T) {
 type proxySwitcher struct{ p *proxy.Proxy }
 
 func (s *proxySwitcher) SwitchActive(addr string) { s.p.SwitchActive(addr) }
+func (s *proxySwitcher) ActiveAddr() string       { return s.p.ActiveAddr() }
