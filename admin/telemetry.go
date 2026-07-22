@@ -375,6 +375,10 @@ func (t *telemetryIngester) persistRequestLog(ctx context.Context, e *requestLog
 	//
 	// Migration 353 created this table with UNIQUE (request_id, ts) constraint.
 	// Both INSERTs are in the same transaction — if either fails, both roll back.
+	//
+	// 2026-07-22 Bug fix: Added ON CONFLICT DO UPDATE to handle duplicate request_id
+	// writes (race condition when multiple ingest workers process the same request).
+	// Aligns with domains/hooks/observability/telemetry/client.go:1026-1028.
 	_, err = tx.Exec(ctx, `
 		INSERT INTO request_logs_bodies_hot (
 			request_id, ts, request_body, response_body
@@ -384,6 +388,9 @@ func (t *telemetryIngester) persistRequestLog(ctx context.Context, e *requestLog
 		WHERE rl.request_id = $1
 		ORDER BY rl.ts DESC
 		LIMIT 1
+		ON CONFLICT (request_id, ts) DO UPDATE SET
+			request_body = COALESCE(EXCLUDED.request_body, request_logs_bodies_hot.request_body),
+			response_body = COALESCE(EXCLUDED.response_body, request_logs_bodies_hot.response_body)
 	`,
 		e.RequestID,
 		e.RequestBody,
