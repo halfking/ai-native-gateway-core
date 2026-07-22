@@ -127,14 +127,19 @@ func (r *FormatAnomalyRecorder) RecordDataAnomaly(ctx context.Context, anomalyTy
 	if r == nil || r.db == nil {
 		return nil
 	}
-	structureJSON, _ := json.Marshal(metadata)
+	structureJSON, err := json.Marshal(metadata)
+	if err != nil {
+		slog.Warn("failed to marshal data anomaly metadata",
+			"request_id", requestID, "anomaly_type", anomalyType, "error", err)
+		structureJSON = []byte(`{}`)
+	}
 	sev := Severity(severity)
 	query := `
 		INSERT INTO response_format_anomalies (
 			request_id, anomaly_type, severity, response_structure, response_sample, detected_at
 		) VALUES ($1, $2, $3, $4, $5, NOW())
 	`
-	_, err := r.db.Exec(ctx, query,
+	_, err = r.db.Exec(ctx, query,
 		requestID,
 		anomalyType,
 		sev,
