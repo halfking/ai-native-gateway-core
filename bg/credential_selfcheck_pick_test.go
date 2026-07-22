@@ -3,6 +3,8 @@ package bg
 import (
 	"context"
 	"math/rand"
+	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -281,5 +283,49 @@ func TestPickModels_DedupFeaturedAndMostUsed(t *testing.T) {
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Errorf("unmet expectations: %v", err)
+	}
+}
+
+// TestSelfcheckWorker_DependsOnCredentialMostUsedModel pins BUG #5 fix
+// (2026-07-22): the selfcheck worker calls
+// credential_most_used_model($1, 24) at line 421. Before V351 migration
+// this function did not exist in PG and the worker silently failed
+// every 5 minutes. This test reads the migration file and asserts the
+// function definition is present, so any future refactor that removes
+// or renames the migration will fail this test.
+func TestSelfcheckWorker_DependsOnCredentialMostUsedModel(t *testing.T) {
+	migPath := "../deploy/sql/migrations/V351__credential_most_used_model.sql"
+	body, err := os.ReadFile(migPath)
+	if err != nil {
+		t.Fatalf("read migration: %v (BUG #5 regression: V351 migration missing)", err)
+	}
+	mustContain := []string{
+		"CREATE OR REPLACE FUNCTION credential_most_used_model",
+		"p_credential_id INT",
+		"p_lookback_hours INT DEFAULT 24",
+		"RETURNS TEXT",
+		"request_logs_hot",
+		"request_logs",
+	}
+	for _, want := range mustContain {
+		if !strings.Contains(string(body), want) {
+			t.Fatalf("V351 migration missing %q:\n%s", want, body)
+		}
+	}
+}
+
+// TestPickDueCredential_FiltersByModelName pins BUG #4 fix (2026-07-22):
+// pickDueCredential's LATERAL subquery must filter self_check_runs by
+// model_name = 'cred-' || c.id::text, otherwise the tenant-wide max
+// makes the worker always pick credentials.id = 2. We verify this by
+// source-grep (the SQL is inline in pickDueCredential, not exported).
+func TestPickDueCredential_FiltersByModelName(t *testing.T) {
+	src, err := os.ReadFile("credential_selfcheck.go")
+	if err != nil {
+		t.Fatalf("read source: %v", err)
+	}
+	body := string(src)
+	if !strings.Contains(body, "scr.model_name = 'cred-' || c.id::text") {
+		t.Fatalf("BUG #4 regression: pickDueCredential does not filter self_check_runs by model_name")
 	}
 }
