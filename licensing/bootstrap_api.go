@@ -16,19 +16,25 @@ type BootstrapHandler struct {
 	Activator *Activator
 	Offline   *OfflineManager
 	Store     Store
+	// publicKeyConfigured: 中心公钥是否已配置在 OfflineManager.crypto 中。
+	// true = 严格验签；false = 信任路径（仅做 trace，不返回错误）
+	publicKeyConfigured bool
 
 	centerURL string
 	agent     centerAgentLoop
 }
 
 // NewBootstrapHandler wires bootstrap endpoints. Center URL is resolved from env.
-func NewBootstrapHandler(validator *Validator, activator *Activator, offline *OfflineManager, store Store) *BootstrapHandler {
+// publicKeyConfigured 应传入 OfflineManager.crypto != nil && PublicKey != nil
+// 反映应用是否启用了 license 局部验签；未启用时降级为「信任路径」。
+func NewBootstrapHandler(validator *Validator, activator *Activator, offline *OfflineManager, store Store, publicKeyConfigured bool) *BootstrapHandler {
 	return &BootstrapHandler{
-		Validator: validator,
-		Activator: activator,
-		Offline:   offline,
-		Store:     store,
-		centerURL: resolveCenterURL(),
+		Validator:           validator,
+		Activator:           activator,
+		Offline:             offline,
+		Store:               store,
+		publicKeyConfigured: publicKeyConfigured,
+		centerURL:           resolveCenterURL(),
 	}
 }
 
@@ -254,10 +260,18 @@ func (h *BootstrapHandler) handleActivateQuick(c echo.Context) error {
 		})
 	}
 	if h.Offline != nil {
-		if _, err := h.Offline.VerifyOfflineLicense(c.Request().Context(), signed); err != nil {
+		_, err := h.Offline.VerifyOfflineLicense(c.Request().Context(), signed)
+		if err != nil && h.publicKeyConfigured {
+			// 严格模式：公钥已配置 → 验签失败必须报错
 			return c.JSON(http.StatusBadRequest, map[string]any{
 				"activated": false, "error": err.Error(), "message": "本地校验 signed_license 失败",
 			})
+		}
+		if err != nil && !h.publicKeyConfigured {
+			// 信任路径：公钥未配置（LICENSE_DISABLED） → 不阻塞激活
+			// 中心的 TLS + 内部鉴权已经保护了这条通道
+			slog.Warn("activating without local signed_license verification (LicensePublicKey 未配置)；信任通道来源",
+				"instance_id", instanceID, "verify_err", err.Error())
 		}
 	}
 	if h.Activator != nil && licenseKey != "" {
