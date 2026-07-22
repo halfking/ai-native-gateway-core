@@ -265,6 +265,19 @@ func (e *Executor) executeOpenAI(
 
 			timeout = adaptiveTimeout
 		}
+
+		// 2026-07-22: Override with NodeTimeout from hotconfig if larger.
+		// This gives operators a knob to extend the stream timeout for
+		// slow nodes without re-deploying.
+		nodeTimeout := NodeTimeout(LoadHotConfig())
+		if nodeTimeout > timeout {
+			slog.Debug("node_timeout override",
+				"original", timeout,
+				"override", nodeTimeout,
+				"credential_id", cand.CredentialID,
+			)
+			timeout = nodeTimeout
+		}
 	}
 
 	// Ensure at least 1 retry is available for internal model_not_found retry.

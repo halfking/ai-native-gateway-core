@@ -1264,6 +1264,38 @@ func (e *Executor) Execute(params *ExecParams) (*ExecuteResult, error) {
 	// protocol rendering works from this snapshot and never re-enters attachment extraction.
 	params.BodyBytes = append([]byte(nil), params.BodyBytes...)
 
+	// ── 2026-07-22: Session-aware continuation/retry detection ───────
+	if params.SessionID != "" && e.PendingStore != nil && len(params.BodyBytes) > 0 {
+		hotCfg := LoadHotConfig()
+		isContinue, isRetry := IsContinuationOrRetry(params.BodyBytes, hotCfg)
+		if isContinue {
+			modified, err := trimOneMessageFromBody(params.BodyBytes)
+			if err == nil && len(modified) > 0 {
+				params.BodyBytes = modified
+				slog.Info("executor: continue keyword detected, trimmed one message turn",
+					"session_id", params.SessionID,
+				)
+			}
+		}
+		if isRetry {
+			entry, requestID, found, _ := e.PendingStore.GetLatest(params.R.Context(), params.SessionID)
+			if found && entry != nil && entry.Body != "" && entry.Status == pending.StatusCompleted {
+				slog.Info("executor: retry keyword, replaying cached completed response",
+					"session_id", params.SessionID,
+					"request_id", requestID,
+				)
+				writeCachedResponse(params.W, entry)
+				return &ExecuteResult{
+					RequestBody: params.BodyBytes,
+					Candidate:   candidateFromEntry(entry),
+				}, nil
+			}
+			slog.Info("executor: retry keyword but no cached response, proceeding upstream",
+				"session_id", params.SessionID,
+			)
+		}
+	}
+
 	// Layer 0: Global identity pool cap (if enabled).
 	// Acquire a stable identity for this end-user. If the cap is reached,
 	// the pool LRU-recycles an existing identity, so the request appears
@@ -1639,6 +1671,9 @@ func (e *Executor) Execute(params *ExecParams) (*ExecuteResult, error) {
 	// provider has its own content policy.
 	contentFilterProviders := make(map[int]struct{})
 
+	// 2026-07-22: NodeTracker for credential failover tracking and SSE.
+	nodeTracker := NewNodeTracker(LoadHotConfig())
+
 	for _, cand := range candidates {
 		// OPT-3: skip siblings of providers that already returned
 		// content_filter. The credential is healthy; the content is
@@ -1674,6 +1709,7 @@ func (e *Executor) Execute(params *ExecParams) (*ExecuteResult, error) {
 		}
 
 		tried++
+		nodeTracker.Record(cand)
 
 		// Reset the stream capture for this candidate so textContent, chunk
 		// count, checksum, and the done/interrupted flags from a prior
@@ -2248,6 +2284,10 @@ func (e *Executor) Execute(params *ExecParams) (*ExecuteResult, error) {
 					"reason", sie.reason,
 					"kind", kind,
 				)
+				if params.PreStreamPrepared {
+					SendNodeJumpEvent(params.W, cand.CredentialID, cand.ProviderID,
+						0, 0, "stream_timeout: "+sie.reason, nodeTracker.Attempts())
+				}
 				continue
 			} else {
 				// Stream is not resumable (too many chunks sent) - return error.
@@ -2273,6 +2313,10 @@ func (e *Executor) Execute(params *ExecParams) (*ExecuteResult, error) {
 			}
 		}
 
+		if params.PreStreamPrepared {
+			SendNodeJumpEvent(params.W, cand.CredentialID, cand.ProviderID,
+				0, 0, "credential_failed", nodeTracker.Attempts())
+		}
 		lastErr = execErr
 		// Prefer the typed Kind from *upstreampkg.Error if available, to
 		// avoid re-classifying from the error text (which embeds the
