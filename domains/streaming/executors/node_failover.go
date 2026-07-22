@@ -136,6 +136,10 @@ func LoadRetryKeywords(hotCfg *hotconfig.Config) (continueKeywords, retryKeyword
 	defaultContinue := []string{"继续", "continue", "go", "come on", "请继续", "接着", "keep going", "继续回答", "接着说"}
 	defaultRetry := []string{"重试", "retry", "请重试", "再试一次", "try again", "重新回答", "再来"}
 
+	if hotCfg == nil {
+		return defaultContinue, defaultRetry
+	}
+
 	ck := hotCfg.GetString("llmgw_continue_keywords", "")
 	if ck == "" {
 		continueKeywords = defaultContinue
@@ -222,10 +226,6 @@ func NodeTimeout(hotCfg *hotconfig.Config) time.Duration {
 }
 
 func IsContinuationOrRetry(body []byte, hotCfg *hotconfig.Config) (isContinue bool, isRetry bool) {
-	if hotCfg == nil {
-		return false, false
-	}
-
 	continueKw, retryKw := LoadRetryKeywords(hotCfg)
 
 	var req struct {
