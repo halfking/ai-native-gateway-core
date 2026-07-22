@@ -112,7 +112,10 @@ func LoadNodeFailoverConfig(hotCfg *hotconfig.Config) NodeFailoverConfig {
 		return DefaultNodeFailoverConfig()
 	}
 	return NodeFailoverConfig{
-		NodeTimeoutSeconds:          clampInt(hotCfg.GetInt("llmgw_node_timeout_seconds", 30), 10, 300),
+		// llmgw_node_timeout_seconds: Max execution time per node (default 60s, range 10-300s).
+		// Increase if "upstream read timeout" occurs frequently for long-running requests.
+		// Note: This is per-node timeout; total retry time = NodeTimeout * RetryCount.
+		NodeTimeoutSeconds:          clampInt(hotCfg.GetInt("llmgw_node_timeout_seconds", 60), 10, 300),
 		RetryCount:                  clampInt(hotCfg.GetInt("llmgw_retry_count", 2), 0, 5),
 		SingleNodeRetryDelaySeconds: clampInt(hotCfg.GetInt("llmgw_single_node_retry_delay_seconds", 10), 5, 60),
 	}
@@ -120,7 +123,7 @@ func LoadNodeFailoverConfig(hotCfg *hotconfig.Config) NodeFailoverConfig {
 
 func DefaultNodeFailoverConfig() NodeFailoverConfig {
 	return NodeFailoverConfig{
-		NodeTimeoutSeconds:          30,
+		NodeTimeoutSeconds:          60, // 2026-07-23: 30→60s, Claude long-thinking needs more time
 		RetryCount:                  2,
 		SingleNodeRetryDelaySeconds: 10,
 	}

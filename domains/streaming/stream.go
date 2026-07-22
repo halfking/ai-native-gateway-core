@@ -653,7 +653,11 @@ func StreamChatWithPendingCapture(
 				outcome.Reason = "client_cancel"
 				outcome.ChunkCount = chunkCount
 			case streamReadTimeout:
-				slog.Warn("stream read timeout, sending error chunk")
+				slog.Warn("stream read timeout",
+					"chunks_received", chunkCount,
+					"client_model", clientModel,
+					"hint", "if timeout occurs frequently with chunks received, consider increasing llmgw_node_timeout_seconds (default 60s)",
+				)
 				safeWriteSSE(w, "data: {\"error\":{\"message\":\"upstream read timeout\",\"type\":\"timeout\",\"code\":\"stream_timeout\"}}\n\n")
 				safeFlush(flusher)
 				if capture != nil {
