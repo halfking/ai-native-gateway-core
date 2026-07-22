@@ -1565,7 +1565,11 @@ func main() {
 			slog.Info("attachment download/list handler wired",
 				"dir", attachmentStorage.BaseDir())
 		}
-		chatHandler.SetFormatAnomalyRecorder(streaming.NewFormatAnomalyRecorderFromPool(dbConn.Pool()))
+		formatAnomalyRecorder := streaming.NewFormatAnomalyRecorderFromPool(dbConn.Pool())
+		chatHandler.SetFormatAnomalyRecorder(formatAnomalyRecorder)
+		if requestLogger != nil {
+			requestLogger.SetAnomalyRecorder(formatAnomalyRecorder)
+		}
 		slog.Info("response format anomaly recorder wired")
 
 		// 2026-06-27 session-audit: wire the approval manager so
@@ -3573,6 +3577,17 @@ func main() {
 				healthWorker := bg.NewSessionHealthWorker(dbConn.Pool())
 				healthWorker.Start(context.Background())
 				slog.Info("session health worker started (hourly)")
+			}
+
+			// Phase 3.11: Anomaly Harvester (TTL cleanup + fault-event bridge).
+			if dbConn != nil {
+				ahCfg := streaming.DefaultAnomalyHarvesterConfig()
+				anomalyHarvester := streaming.NewAnomalyHarvester(dbConn.Pool(), ahCfg)
+				anomalyHarvester.Start()
+				slog.Info("anomaly harvester started (phase 3.11)",
+					"cleanup_interval", ahCfg.CleanupInterval,
+					"retention_days", ahCfg.RetentionDays,
+					"bridge_interval", ahCfg.BridgeInterval)
 			}
 		}
 

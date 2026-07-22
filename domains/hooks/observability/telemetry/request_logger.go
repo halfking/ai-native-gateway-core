@@ -14,6 +14,11 @@ import (
 	"github.com/kaixuan/llm-gateway-go/domains/dbdegradation"
 )
 
+// DataAnomalyRecorder records data-level anomalies (persistence, marshal, etc.)
+type DataAnomalyRecorder interface {
+	RecordDataAnomaly(ctx context.Context, anomalyType, severity, requestID, message string, metadata map[string]any) error
+}
+
 const (
 	StageReceived      = 0
 	StageCompressed    = 1
@@ -33,14 +38,15 @@ const (
 )
 
 type RequestLogger struct {
-	db         *pgxpool.Pool
-	asyncQueue chan *LogUpdate
-	config     *RequestLoggerConfig
-	wg         sync.WaitGroup
-	done       chan struct{}
-	fallback   dbdegradation.BackupWriter
-	degraded   bool
-	mu         sync.RWMutex
+	db              *pgxpool.Pool
+	asyncQueue      chan *LogUpdate
+	config          *RequestLoggerConfig
+	wg              sync.WaitGroup
+	done            chan struct{}
+	fallback        dbdegradation.BackupWriter
+	degraded        bool
+	mu              sync.RWMutex
+	anomalyRecorder DataAnomalyRecorder
 }
 
 type RequestLoggerConfig struct {
@@ -100,6 +106,10 @@ func NewRequestLogger(pool *pgxpool.Pool, cfg *RequestLoggerConfig) *RequestLogg
 
 func (rl *RequestLogger) SetFallbackWriter(writer dbdegradation.BackupWriter) {
 	rl.fallback = writer
+}
+
+func (rl *RequestLogger) SetAnomalyRecorder(recorder DataAnomalyRecorder) {
+	rl.anomalyRecorder = recorder
 }
 
 func (rl *RequestLogger) ReplayFallback(ctx context.Context, record dbdegradation.BackupRecord) error {
@@ -283,6 +293,16 @@ func (rl *RequestLogger) flushBatch(batch []*LogUpdate) {
 				"index", i,
 				"remaining", len(batch)-i-1,
 				"error", err)
+			if rl.anomalyRecorder != nil {
+				anomalyCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 3*time.Second)
+				rl.anomalyRecorder.RecordDataAnomaly(anomalyCtx,
+					"persistence_failed", "high",
+					firstFailed.RequestID,
+					"request_wal_hot persist failed in batch: "+err.Error(),
+					map[string]any{"batch_index": i, "batch_size": len(batch)},
+				)
+				cancel()
+			}
 			if rl.fallback != nil {
 				for j := i + 1; j < len(batch); j++ {
 					remaining := batch[j]
@@ -326,7 +346,30 @@ func (rl *RequestLogger) persistUpdate(ctx context.Context, update *LogUpdate) e
 }
 
 func (rl *RequestLogger) persistUpdateInTx(ctx context.Context, tx pgx.Tx, update *LogUpdate) error {
-	compressionMetaJSON, _ := json.Marshal(update.CompressionMeta)
+	compressionMetaJSON, err := json.Marshal(update.CompressionMeta)
+	if err != nil {
+		compressionMetaJSON = []byte("null")
+		meta := update.CompressionMeta
+		slog.Warn("request_logger: compression_meta marshal failed, using null",
+			"request_id", update.RequestID, "err", err)
+		if rl.anomalyRecorder != nil {
+			metaCopy := make(map[string]any, len(meta))
+			for k, v := range meta {
+				metaCopy[k] = v
+			}
+			anomalyCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 3*time.Second)
+			defer cancel()
+			if recErr := rl.anomalyRecorder.RecordDataAnomaly(anomalyCtx,
+				"json_marshal_failed", "medium",
+				update.RequestID,
+				"compression_meta json.Marshal failed: "+err.Error(),
+				metaCopy,
+			); recErr != nil {
+				slog.Warn("request_logger: failed to record marshal anomaly",
+					"request_id", update.RequestID, "error", recErr)
+			}
+		}
+	}
 
 	// Terminal-state guard (2026-06-22 audit P0-2):
 	//
@@ -354,7 +397,7 @@ func (rl *RequestLogger) persistUpdateInTx(ctx context.Context, tx pgx.Tx, updat
 	// longer editable (columnar storage / archived partitions do not
 	// support UPDATE). Late updates after migration are silently
 	// dropped, which is the intended behavior.
-	_, err := tx.Exec(ctx, `
+	_, err = tx.Exec(ctx, `
 		UPDATE request_wal_hot SET
 			status = COALESCE(NULLIF($2, ''), status),
 			stage = COALESCE($3, stage),

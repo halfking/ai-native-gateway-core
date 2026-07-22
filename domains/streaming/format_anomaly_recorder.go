@@ -30,6 +30,9 @@ const (
 	AnomalyExtractionFailed    AnomalyType = "extraction_failed"
 	AnomalyUnexpectedStructure AnomalyType = "unexpected_structure"
 	AnomalyNullUsageValues     AnomalyType = "null_usage_values"
+	AnomalyPersistenceFailed   AnomalyType = "persistence_failed"
+	AnomalyJSONMarshalFailed   AnomalyType = "json_marshal_failed"
+	AnomalyLogHarvested        AnomalyType = "log_harvested"
 )
 
 // Severity levels for anomalies.
@@ -112,6 +115,36 @@ func (r *FormatAnomalyRecorder) RecordAnomaly(ctx context.Context, record Anomal
 		slog.Warn("failed to record format anomaly",
 			"request_id", record.RequestID,
 			"anomaly_type", record.AnomalyType,
+			"error", err)
+		return err
+	}
+	return nil
+}
+
+// RecordDataAnomaly implements the DataAnomalyRecorder interface for data-level
+// anomalies (persistence failures, JSON marshal failures, log harvest issues).
+func (r *FormatAnomalyRecorder) RecordDataAnomaly(ctx context.Context, anomalyType, severity, requestID, message string, metadata map[string]any) error {
+	if r == nil || r.db == nil {
+		return nil
+	}
+	structureJSON, _ := json.Marshal(metadata)
+	sev := Severity(severity)
+	query := `
+		INSERT INTO response_format_anomalies (
+			request_id, anomaly_type, severity, response_structure, response_sample, detected_at
+		) VALUES ($1, $2, $3, $4, $5, NOW())
+	`
+	_, err := r.db.Exec(ctx, query,
+		requestID,
+		anomalyType,
+		sev,
+		structureJSON,
+		message,
+	)
+	if err != nil {
+		slog.Warn("failed to record data anomaly",
+			"request_id", requestID,
+			"anomaly_type", anomalyType,
 			"error", err)
 		return err
 	}
