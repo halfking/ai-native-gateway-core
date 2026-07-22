@@ -1,5 +1,4 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useRoute } from 'vue-router'
 import LanguageSelector from './LanguageSelector.vue'
@@ -9,42 +8,12 @@ defineEmits<{ login: [] }>()
 const { t } = useI18n()
 const route = useRoute()
 
-const isActivated = ref(false)
-
-// 检查激活状态
-async function checkActivationStatus() {
-  try {
-    const resp = await fetch('/api/system/bootstrap/status')
-    if (resp.ok) {
-      const data = await resp.json()
-      isActivated.value = data.activated === true
-    }
-  } catch {
-    // 忽略错误，默认未激活
-  }
-}
-
-onMounted(() => {
-  checkActivationStatus()
-})
-
-const navLinks = computed(() => {
-  const baseLinks = [
-    { path: '/', labelKey: 'public.layout.home' },
-    { path: '/customer/update-activate', labelKey: 'public.layout.download' },
-    { path: '/customer/update-activate', labelKey: 'public.layout.support' },
-  ]
-  
-  // 只有未激活时才显示激活相关链接
-  if (!isActivated.value) {
-    baseLinks.push(
-      { path: '/customer/offline-activation', labelKey: 'public.layout.offline' },
-      { path: '/customer/update-activate', labelKey: 'public.download.activateLink' }
-    )
-  }
-  
-  return baseLinks
-})
+// 未登录状态的导航栏：固定结构，不动态改变（避免异步加载后布局跳动）
+const navLinks = [
+  { path: '/', labelKey: 'public.layout.home' },
+  { path: '/customer/update-activate', labelKey: 'public.layout.download' },
+  { path: '/customer/update-activate', labelKey: 'public.layout.support' },
+]
 
 function isNavActive(path: string) {
   if (path === '/') {
