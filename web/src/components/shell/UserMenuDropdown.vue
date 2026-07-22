@@ -145,7 +145,7 @@ onBeforeUnmount(() => {
   cursor: pointer;
   font-family: inherit;
   transition: background 0.15s ease;
-  max-width: min(20vw, 160px);
+  max-width: min(28vw, 200px);
 }
 
 .user-menu__trigger:hover,

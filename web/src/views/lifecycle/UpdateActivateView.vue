@@ -353,6 +353,7 @@ onMounted(async () => {
         <UpdateActivateLicenseCard
           :status="license"
           :loading="checkingUpgrade || catalogLoading"
+          :activated="isActivated"
           :instance-id="instanceId"
           :device-name="deviceName"
           @refresh="loadLicense"
