@@ -42,10 +42,11 @@ func TestPickModels_FeaturedPreferredOverMostUsed(t *testing.T) {
 
 	const credID = 101
 	// Tier 1: featured query returns one featured model.
+	// Note: actual SQL selects (raw_model_name, sort_key), mock must match
 	mock.ExpectQuery("pol.tenant_id = 'default'").
 		WithArgs(credID).
-		WillReturnRows(pgxmock.NewRows([]string{"raw_model_name"}).
-			AddRow("gpt-4o"))
+		WillReturnRows(pgxmock.NewRows([]string{"raw_model_name", "sort_key"}).
+			AddRow("gpt-4o", "gpt-4o"))
 	// Tier 2: most_used returns a non-featured model.
 	mock.ExpectQuery("credential_most_used_model").
 		WithArgs(credID).
@@ -83,11 +84,12 @@ func TestPickModels_MultipleFeaturedFillFallbackSlots(t *testing.T) {
 
 	const credID = 102
 	// Tier 1: two featured models.
+	// Note: actual SQL selects (raw_model_name, sort_key), mock must match
 	mock.ExpectQuery("pol.tenant_id = 'default'").
 		WithArgs(credID).
-		WillReturnRows(pgxmock.NewRows([]string{"raw_model_name"}).
-			AddRow("claude-3-5-sonnet-20241022").
-			AddRow("gpt-4o"))
+		WillReturnRows(pgxmock.NewRows([]string{"raw_model_name", "sort_key"}).
+			AddRow("claude-3-5-sonnet-20241022", "claude-3-5-sonnet-20241022").
+			AddRow("gpt-4o", "gpt-4o"))
 	// Tier 2: no most_used traffic.
 	mock.ExpectQuery("credential_most_used_model").
 		WithArgs(credID).
@@ -247,8 +249,8 @@ func TestPickModels_DedupFeaturedAndMostUsed(t *testing.T) {
 	// Tier 1: featured returns gpt-4o.
 	mock.ExpectQuery("pol.tenant_id = 'default'").
 		WithArgs(credID).
-		WillReturnRows(pgxmock.NewRows([]string{"raw_model_name"}).
-			AddRow("gpt-4o"))
+		WillReturnRows(pgxmock.NewRows([]string{"raw_model_name", "sort_key"}).
+			AddRow("gpt-4o", "gpt-4o"))
 	// Tier 2: most_used returns the SAME model (gpt-4o is both featured and hot).
 	mock.ExpectQuery("credential_most_used_model").
 		WithArgs(credID).
