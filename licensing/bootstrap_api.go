@@ -287,7 +287,8 @@ func (h *BootstrapHandler) handleActivateQuick(c echo.Context) error {
 					}
 					parsedLicense = &trustedLic
 					slog.Info("activateQuick: parsed license from Data without RSA verification (信任路径)",
-						"license_key", trustedLic.LicenseKey)
+						"license_key", trustedLic.LicenseKey, "customer_name", trustedLic.CustomerName,
+						"features", trustedLic.Features, "max_devices", trustedLic.MaxDevices)
 				}
 			}
 		} else {
