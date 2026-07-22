@@ -115,10 +115,10 @@ func (s *PgxStore) CreateLicense(ctx context.Context, lic *License) error {
 	err = s.pool.QueryRow(ctx, `
 		INSERT INTO licenses (license_key, customer_name, customer_email, max_devices,
 		                      subscription_tier, features, expires_at, created_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, NOW())
+		VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7, NOW())
 		RETURNING id, created_at
 	`, lic.LicenseKey, lic.CustomerName, lic.CustomerEmail, lic.MaxDevices,
-		lic.SubscriptionTier, featuresJSON, lic.ExpiresAt,
+		lic.SubscriptionTier, string(featuresJSON), lic.ExpiresAt,
 	).Scan(&lic.ID, &lic.CreatedAt)
 	if err != nil {
 		slog.Error("CreateLicense failed", "license_key", lic.LicenseKey,
