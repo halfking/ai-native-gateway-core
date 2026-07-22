@@ -202,6 +202,7 @@ export function getRecentModelFailures(opts?: { limit?: number }) {
 export interface ProviderLatencyEntry {
   provider_id: number
   provider_name: string
+  provider_code: string
   latency_ms: number
   probed_at: string
 }

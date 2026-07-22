@@ -209,36 +209,48 @@ export function latencyLabel(latencyMs: number | null | undefined, isInProgress:
  *   - 白底  = 请求中（in_progress）
  *
  * 返回的是可用于 CSS background 的字符串。语义色用 CSS 变量，因此
- * 亮/暗皮肤都能正确解析（绿色用 --success，红色用 --danger，依此类推）。
- * in_progress 用 var(--kx-surface) 作为"白底"——亮色为白、暗色为浅灰。
+ * 亮/暗皮肤都能正确解析。in_progress 用浅色透明蓝，亮/暗皮肤下都有
+ * 足够对比度（区别于旧版用 --kx-surface 与轨道背景几乎同色）。
  */
 export function statusBarColor(
   status: string | undefined | null,
   errorKind: string | undefined | null,
 ): string {
   if (!status) return 'var(--muted)'
-  if (status === 'in_progress') return 'var(--kx-surface)'
+  if (status === 'in_progress') {
+    // 用半透明 accent 色（蓝色），亮/暗皮肤下都能从轨道背景中区分
+    return 'color-mix(in srgb, var(--accent) 28%, var(--kx-surface))'
+  }
   if (status === 'success') return 'var(--success)'
   if (status === 'idle') return 'var(--muted)'
   if (status === 'failure') {
     const k = (errorKind || '').toLowerCase()
-    // 取消 / 断连 → 橙色
-    if (/(cancel|disconnect|network_reset|connection_reset|eof|reset)/.test(k)) return 'var(--warning)'
+    // 取消 / 断连 → 橙色（专用 #fb923c，区别于 warning 的黄色调）
+    if (/\b(cancel|cancelled|canceled|disconnect|network_reset|connection_reset|eof)\b/.test(k)) {
+      return '#fb923c'
+    }
     // 超时 → 黄色
-    if (/(?<!upstream_)(?<!backend_)(?<!server_)(?<!provider_)\btimeout\b/.test(k)) return '#facc15'
-    // 未找到 / 无可用节点 → 灰色
-    if (/(not_found|no_route|\brout|resolve|policy|missing|no_available|no_node)/.test(k)) return 'var(--muted)'
+    if (/(?<!upstream_)(?<!backend_)(?<!server_)(?<!provider_)\btimeout\b/.test(k)) {
+      return '#facc15'
+    }
+    // 未找到 / 无可用节点 / 不可达 → 灰色
+    if (/\b(not_found|no_route|no_route_match|no_available|no_node|all_unavail|unavail|unreachable|missing|policy)\b/.test(k)) {
+      return 'var(--muted)'
+    }
     // 4xx → 橙红
-    if (/(4xx|auth|unauthor|forbidden|quota|rate|billing|payment|invalid)/.test(k)) return 'var(--warning)'
+    if (/\b(4xx|auth|unauthor|forbidden|quota|rate_limit|rate-limit|billing|payment|invalid)\b/.test(k)) {
+      return 'var(--warning)'
+    }
     // 5xx / 其它失败 → 红色
     return 'var(--danger)'
   }
-  if (status === 'cancelled' || status === 'canceled') return 'var(--warning)'
+  if (status === 'cancelled' || status === 'canceled') return '#fb923c'
   return 'var(--muted)'
 }
 
 /**
  * 2026-07-23: 状态语义分类标签（用于 tooltip / 图例），返回中文短标签。
+ * 修正：reset 加词边界，避免匹配 password_reset_required 等 auth 词。
  */
 export function statusSemanticLabel(
   status: string | undefined | null,
@@ -251,10 +263,10 @@ export function statusSemanticLabel(
   if (status === 'cancelled' || status === 'canceled') return '取消'
   if (status === 'failure') {
     const k = (errorKind || '').toLowerCase()
-    if (/(cancel|disconnect|network_reset|connection_reset|eof|reset)/.test(k)) return '取消'
+    if (/\b(cancel|cancelled|canceled|disconnect|network_reset|connection_reset|eof)\b/.test(k)) return '取消'
     if (/(?<!upstream_)(?<!backend_)(?<!server_)(?<!provider_)\btimeout\b/.test(k)) return '超时'
-    if (/(not_found|no_route|\brout|resolve|policy|missing|no_available|no_node)/.test(k)) return '无可用节点'
-    if (/(4xx|auth|unauthor|forbidden|quota|rate|billing|payment|invalid)/.test(k)) return '失败(4xx)'
+    if (/\b(not_found|no_route|no_available|no_node|all_unavail|unavail|unreachable|missing|policy)\b/.test(k)) return '无可用节点'
+    if (/\b(4xx|auth|unauthor|forbidden|quota|rate_limit|rate-limit|billing|payment|invalid)\b/.test(k)) return '失败(4xx)'
     return '失败'
   }
   return '未知'

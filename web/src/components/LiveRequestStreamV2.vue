@@ -70,7 +70,8 @@ const {
 } = useSwimLane(liveSnapshot)
 
 // 2026-07-23: 供应商 HTTP 延时（子项②）。仅在 provider 维度展示。
-// providerLatencyMap: { [providerId(数字字符串)]: latency_ms }
+// providerLatencyMap: { [providerCode(字符串)]: latency_ms }
+// key 用 provider_code（不是 provider_id），因为 lane.id = req.ProviderCode
 const providerLatencyMap = ref<Record<string, number>>({})
 let latencyTimer: ReturnType<typeof setInterval> | null = null
 
@@ -81,7 +82,10 @@ async function refreshProviderLatency() {
     const res = await fetchProviderLatency()
     const map: Record<string, number> = {}
     for (const e of res.entries || []) {
-      if (e.latency_ms > 0) map[String(e.provider_id)] = e.latency_ms
+      if (e.latency_ms <= 0) continue
+      // 优先用 provider_code（与 lane.id 完全一致），回退到 name 作为容错
+      if (e.provider_code) map[e.provider_code] = e.latency_ms
+      if (e.provider_name) map[e.provider_name] = e.latency_ms
     }
     providerLatencyMap.value = map
   } catch {
