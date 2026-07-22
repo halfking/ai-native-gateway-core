@@ -21,7 +21,7 @@
 ```
 代码写入流程:
 1. CreateInitial() → INSERT INTO request_wal_hot
-2. Update() → UPDATE request_wal_hot  
+2. Update() → UPDATE request_wal_hot
 3. (可选) → INSERT INTO request_wal_bodies
 
 查询流程:
@@ -96,8 +96,8 @@ psql -h 192.168.0.252 -U postgres -d llm_gateway \
 
 ```sql
 SELECT EXISTS (
-    SELECT 1 FROM pg_class 
-    WHERE relname = 'request_wal_hot' 
+    SELECT 1 FROM pg_class
+    WHERE relname = 'request_wal_hot'
     AND relnamespace = (SELECT oid FROM pg_namespace WHERE nspname = 'public')
 ) AS table_exists;
 ```
@@ -107,9 +107,9 @@ SELECT EXISTS (
 ### 2. 检查表结构
 
 ```sql
-SELECT column_name, data_type 
-FROM information_schema.columns 
-WHERE table_name = 'request_wal_hot' 
+SELECT column_name, data_type
+FROM information_schema.columns
+WHERE table_name = 'request_wal_hot'
 ORDER BY ordinal_position;
 ```
 
@@ -139,11 +139,11 @@ ORDER BY ordinal_position;
 INSERT INTO request_wal_hot (
     request_id, tenant_id, status, stage, client_model, created_at
 ) VALUES (
-    'test_' || extract(epoch from now())::text, 
-    'test', 
-    'pending', 
-    0, 
-    'gpt-4', 
+    'test_' || extract(epoch from now())::text,
+    'test',
+    'pending',
+    0,
+    'gpt-4',
     NOW()
 ) ON CONFLICT (request_id, created_at) DO NOTHING
 RETURNING request_id;
@@ -156,12 +156,12 @@ DELETE FROM request_wal_hot WHERE tenant_id = 'test';
 
 ```sql
 -- 最近1小时的请求
-SELECT COUNT(*), MAX(created_at) 
-FROM request_wal_hot 
+SELECT COUNT(*), MAX(created_at)
+FROM request_wal_hot
 WHERE created_at > NOW() - INTERVAL '1 hour';
 
 -- 最近的请求详情
-SELECT 
+SELECT
     request_id,
     status,
     stage,
@@ -169,8 +169,8 @@ SELECT
     prompt_tokens,
     completion_tokens,
     created_at
-FROM request_wal_hot 
-ORDER BY created_at DESC 
+FROM request_wal_hot
+ORDER BY created_at DESC
 LIMIT 10;
 ```
 
@@ -199,8 +199,8 @@ curl -X POST https://llm.kxpms.cn/v1/chat/completions \
 
 ```sql
 -- 检查最近5分钟的新请求
-SELECT COUNT(*), MAX(created_at) 
-FROM request_wal_hot 
+SELECT COUNT(*), MAX(created_at)
+FROM request_wal_hot
 WHERE created_at > NOW() - INTERVAL '5 minutes';
 ```
 
@@ -230,7 +230,7 @@ for _, table := range requiredTables {
         "SELECT EXISTS (SELECT 1 FROM pg_class WHERE relname = $1)",
         table,
     ).Scan(&exists)
-    
+
     if err != nil || !exists {
         log.Fatalf("Required table %s does not exist", table)
     }

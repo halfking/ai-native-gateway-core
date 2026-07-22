@@ -692,10 +692,10 @@ onMounted(load)
               <input v-model="quickEntry.api_key" class="input" type="password" placeholder="sk-..." />
             </div>
           </div>
-          
+
           <!-- Advanced options toggle -->
-          <button 
-            class="btn btn-ghost btn-sm advanced-toggle" 
+          <button
+            class="btn btn-ghost btn-sm advanced-toggle"
             type="button"
             :aria-expanded="showAdvancedOptions"
             aria-controls="quick-entry-advanced-options"
@@ -704,7 +704,7 @@ onMounted(load)
             {{ showAdvancedOptions ? t('freePool.assistant.hideAdvanced') : t('freePool.assistant.showAdvanced') }}
             <span class="chevron" aria-hidden="true">{{ showAdvancedOptions ? '▲' : '▼' }}</span>
           </button>
-          
+
           <!-- Advanced options (collapsible) -->
           <div
             v-show="showAdvancedOptions"
@@ -738,7 +738,7 @@ onMounted(load)
               <input v-model="quickEntry.source_detail" class="input" placeholder="如 AIGoCode VS Code 插件" />
             </div>
           </div>
-          
+
           <div v-if="probeResult" class="probe-box">
             <strong>探活结果</strong>
             <pre>{{ JSON.stringify(probeResult, null, 2) }}</pre>
@@ -800,7 +800,7 @@ onMounted(load)
                 <span class="cell-muted">{{ m.from }}</span>
               </div>
               <div class="cell-muted inbox-intro">{{ m.intro }}</div>
-              
+
               <!-- Verification code highlight -->
               <div v-if="m.verificationCode" class="verification-code-box">
                 <span class="verification-label">{{ t('freePool.assistant.verificationCode') }}</span>
@@ -888,7 +888,7 @@ onMounted(load)
             </ol>
           </div>
         </div>
-        
+
         <!-- Operation guide collapsible panel -->
         <div class="guide-panel-wrapper">
           <button
@@ -907,7 +907,7 @@ onMounted(load)
             </div>
             <span class="chevron" aria-hidden="true">{{ showGuidePanel ? '▲' : '▼' }}</span>
           </button>
-          
+
           <div
             v-show="showGuidePanel"
             id="free-pool-guide-panel-content"
@@ -939,17 +939,17 @@ onMounted(load)
                 </li>
               </ol>
             </section>
-            
+
             <!-- 常见问题 -->
             <section class="guide-section">
               <h4>{{ t('freePool.guide.troubleshooting') }}</h4>
               <dl class="troubleshooting-list">
                 <dt>{{ t('freePool.guide.issue1') }}</dt>
                 <dd>{{ t('freePool.guide.issue1Solution') }}</dd>
-                
+
                 <dt>{{ t('freePool.guide.issue2') }}</dt>
                 <dd>{{ t('freePool.guide.issue2Solution') }}</dd>
-                
+
                 <dt>{{ t('freePool.guide.issue3') }}</dt>
                 <dd>{{ t('freePool.guide.issue3Solution') }}</dd>
               </dl>

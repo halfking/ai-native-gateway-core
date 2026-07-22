@@ -1,7 +1,7 @@
 # llm-gateway-go 协议转换增强 - 部署验证报告
 
-**部署时间**: 2026-06-20  
-**部署目标**: 184 k3s 集群 (__DOMAIN_8__)  
+**部署时间**: 2026-06-20
+**部署目标**: 184 k3s 集群 (__DOMAIN_8__)
 **部署状态**: ✅ 成功
 
 ---
@@ -108,10 +108,10 @@ curl -X POST https://__DOMAIN_8__/v1/messages \
 ### 1. 检查 thinking blocks 保留率
 ```sql
 -- 查询最近 1 小时内有 thinking blocks 的请求
-SELECT 
+SELECT
   client_model,
   COUNT(*) as total_requests,
-  SUM(CASE WHEN response_body::jsonb->'_kxg_meta'->>'has_thinking' = 'true' 
+  SUM(CASE WHEN response_body::jsonb->'_kxg_meta'->>'has_thinking' = 'true'
       THEN 1 ELSE 0 END) as with_thinking,
   AVG((response_body::jsonb->'_kxg_meta'->>'thinking_blocks_count')::int) as avg_thinking_blocks
 FROM request_logs
@@ -124,7 +124,7 @@ GROUP BY client_model;
 ### 2. 检查 Q2 路径使用情况
 ```sql
 -- Anthropic 客户端调用 OpenAI 上游
-SELECT 
+SELECT
   COUNT(*) as q2_requests,
   client_model,
   AVG(latency_ms) as avg_latency_ms
@@ -138,7 +138,7 @@ GROUP BY client_model;
 ### 3. 监控错误率
 ```sql
 -- 检查转换相关错误
-SELECT 
+SELECT
   error_kind,
   COUNT(*) as error_count,
   client_model
@@ -178,15 +178,15 @@ llm-gateway-go-deployment-78f49cd57f-yyyyy   1/1     Running   0
 ## 🔍 已知问题
 
 ### 1. build_seq 版本不匹配 (非阻塞)
-**现象**: 部署脚本期望 build_seq=384，但 API 返回 383  
-**原因**: 滚动更新过程中，部分 pod 还在更新  
-**影响**: 无，服务正常运行  
+**现象**: 部署脚本期望 build_seq=384，但 API 返回 383
+**原因**: 滚动更新过程中，部分 pod 还在更新
+**影响**: 无，服务正常运行
 **解决**: 等待所有 pod 更新完成（~2分钟）
 
 ### 2. Submodule push 权限
-**现象**: git push 失败  
-**原因**: SSH 认证问题  
-**影响**: 无，代码已提交到本地  
+**现象**: git push 失败
+**原因**: SSH 认证问题
+**影响**: 无，代码已提交到本地
 **解决**: 使用 ALLOW_SUBMODULE_DIRTY=1 绕过检查
 
 ---
@@ -214,9 +214,9 @@ kubectl -n pms-test logs -f deployment/llm-gateway-go-deployment --tail=50
 
 # 4. 查看最近的请求（需要数据库访问）
 psql -h __INTERNAL_PUBLIC_IP__ -U __DB_USER__ -d llm_gateway -c \
-  "SELECT client_model, response_body::jsonb->'_kxg_meta' as meta 
-   FROM request_logs 
-   WHERE created_at > now() - interval '10 minutes' 
+  "SELECT client_model, response_body::jsonb->'_kxg_meta' as meta
+   FROM request_logs
+   WHERE created_at > now() - interval '10 minutes'
    ORDER BY created_at DESC LIMIT 5;"
 ```
 
@@ -239,7 +239,7 @@ psql -h __INTERNAL_PUBLIC_IP__ -U __DB_USER__ -d llm_gateway -c \
 ## 📚 相关文档
 
 - **审计报告**: `docs/2026-06-20-protocol-conversion-enhancement-audit.md`
-- **测试脚本**: 
+- **测试脚本**:
   - `/tmp/test-q3-thinking.sh` (Q3 路径)
   - `/tmp/test-q2-conversion.sh` (Q2 路径)
 - **部署日志**: `/tmp/deploy-llm-gateway-go-184.log`
@@ -249,16 +249,16 @@ psql -h __INTERNAL_PUBLIC_IP__ -U __DB_USER__ -d llm_gateway -c \
 ## ✨ 总结
 
 ### 已完成
-✅ 代码增强实现并测试通过  
-✅ 部署到 184 k3s 集群  
-✅ 服务健康检查通过  
-✅ 创建验证测试脚本  
-✅ 生成监控 SQL 查询  
+✅ 代码增强实现并测试通过
+✅ 部署到 184 k3s 集群
+✅ 服务健康检查通过
+✅ 创建验证测试脚本
+✅ 生成监控 SQL 查询
 
 ### 待验证（需要真实 API key）
-⏳ Q3 路径：thinking blocks 是否保留到 reasoning_content  
-⏳ Q2 路径：Anthropic 格式调用 OpenAI 是否正常工作  
-⏳ 监控指标：_kxg_meta 统计是否准确  
+⏳ Q3 路径：thinking blocks 是否保留到 reasoning_content
+⏳ Q2 路径：Anthropic 格式调用 OpenAI 是否正常工作
+⏳ 监控指标：_kxg_meta 统计是否准确
 
 ### 建议
 1. **使用真实流量测试**：运行 `/tmp/test-q3-thinking.sh` 和 `/tmp/test-q2-conversion.sh`
@@ -268,7 +268,7 @@ psql -h __INTERNAL_PUBLIC_IP__ -U __DB_USER__ -d llm_gateway -c \
 
 ---
 
-**部署完成时间**: 2026-06-20 21:42  
-**验证状态**: 部分完成（服务运行正常，需要真实流量验证功能）  
+**部署完成时间**: 2026-06-20 21:42
+**验证状态**: 部分完成（服务运行正常，需要真实流量验证功能）
 **风险等级**: 低（向后兼容，有完整测试覆盖）
 

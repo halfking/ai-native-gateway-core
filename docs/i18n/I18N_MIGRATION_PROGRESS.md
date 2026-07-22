@@ -1,7 +1,7 @@
 # i18n 迁移进度报告
 
-> 生成时间：2026-07-05  
-> 项目：llm-gateway-go (official-deploy)  
+> 生成时间：2026-07-05
+> 项目：llm-gateway-go (official-deploy)
 > 目标：从 32% 覆盖率提升到 95%+
 
 ---
@@ -64,7 +64,7 @@ const LAZY_LOADERS = {
 
 ### 3. 首页完全 i18n 化
 
-**文件**: 
+**文件**:
 - `web/src/views/LandingView.vue` (212 行 → 100% i18n)
 - `web/src/locales/zh-CN/landing.ts` (完全重写，106 行)
 - `web/src/locales/en-US/landing.ts` (完全重写，105 行)
@@ -100,7 +100,7 @@ const LAZY_LOADERS = {
 <script setup>
 const { t } = useI18n()
 const features = computed(() => [
-  { 
+  {
     title: t('landing.features.smartRouting.title'),
     description: t('landing.features.smartRouting.description')
   },
@@ -156,7 +156,7 @@ export const NAV_GROUPS = [
 - [ ] 其他 6 种语言翻译（可用 LLM 批量）
 
 #### 1.3 登录流程 i18n（预估 2 小时）
-**文件**: 
+**文件**:
 - `web/src/components/LoginModal.vue` (64 CJK 字符)
 - `web/src/components/ChangePasswordDialog.vue` (166 CJK 字符)
 
@@ -215,7 +215,7 @@ export const NAV_GROUPS = [
 # 4. 写入 locales/{en-US,ja-JP,...}/**/*.ts
 ```
 
-**依赖**: 
+**依赖**:
 - 需要访问内部 LLM Gateway API
 - 需要为每种语言准备翻译提示词模板
 
@@ -292,7 +292,7 @@ export const NAV_GROUPS = [
 4. 部署 + 测试
 
 ### 选项 C：暂停，等待排期（不推荐）
-**风险**: 
+**风险**:
 - 当前代码处于"半迁移"状态
 - 新增功能可能继续硬编码，增加技术债
 - 184 环境对国际用户不可用
@@ -363,5 +363,5 @@ bash scripts/deploy-184.sh
 
 ---
 
-**最后更新**: 2026-07-05 01:50  
+**最后更新**: 2026-07-05 01:50
 **下次 checkpoint**: 完成阶段 1.2（导航栏 i18n）后更新本文档

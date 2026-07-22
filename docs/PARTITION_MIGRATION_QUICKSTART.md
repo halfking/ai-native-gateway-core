@@ -74,7 +74,7 @@ cd __LOCAL_PATH_1__
 ### 4. 数据验证
 ```sql
 -- 检查数据是否正确迁移
-SELECT 
+SELECT
   'tool_usage_stats' as table_name,
   (SELECT count(*) FROM tool_usage_stats_hot) as hot_count,
   (SELECT count(*) FROM tool_usage_stats_with_current_month) as view_count
@@ -112,8 +112,8 @@ psql -h $DB_HOST -U postgres -d llm_gateway \
 1. 确认代码是否正确使用hot表（见下文）
 2. 检查索引是否创建成功
 ```sql
-SELECT tablename, indexname 
-FROM pg_indexes 
+SELECT tablename, indexname
+FROM pg_indexes
 WHERE tablename LIKE '%_hot'
 ORDER BY tablename, indexname;
 ```
@@ -132,9 +132,9 @@ ANALYZE request_logs_bodies_hot;
 2. 检查是否有冲突数据被跳过
 ```sql
 -- 检查是否有重复的唯一键
-SELECT tool_id, tenant_id, usage_date, count(*) 
-FROM tool_usage_stats_hot 
-GROUP BY tool_id, tenant_id, usage_date 
+SELECT tool_id, tenant_id, usage_date, count(*)
+FROM tool_usage_stats_hot
+GROUP BY tool_id, tenant_id, usage_date
 HAVING count(*) > 1;
 ```
 3. 如果数据确实丢失，从备份恢复
@@ -165,7 +165,7 @@ _, err := db.Exec(ctx, `
 ```go
 // ✅ 直接查hot表
 _, err := db.Query(ctx, `
-    SELECT * FROM request_logs_hot 
+    SELECT * FROM request_logs_hot
     WHERE ts >= NOW() - INTERVAL '7 days'
 `)
 ```
@@ -174,7 +174,7 @@ _, err := db.Query(ctx, `
 ```go
 // ✅ 使用view
 _, err := db.Query(ctx, `
-    SELECT * FROM request_logs_with_current_month 
+    SELECT * FROM request_logs_with_current_month
     WHERE ts >= NOW() - INTERVAL '30 days'
 `)
 ```
@@ -183,7 +183,7 @@ _, err := db.Query(ctx, `
 ```go
 // ✅ 查询父表（自动路由到分区）
 _, err := db.Query(ctx, `
-    SELECT * FROM request_logs 
+    SELECT * FROM request_logs
     WHERE ts BETWEEN '2026-01-01' AND '2026-06-01'
 `)
 ```
@@ -203,7 +203,7 @@ _, err := db.Query(ctx, `
 BEGIN;
 
 -- 1. 重建default分区
-CREATE TABLE tool_usage_stats_default 
+CREATE TABLE tool_usage_stats_default
   PARTITION OF tool_usage_stats DEFAULT;
 
 -- 2. 迁移数据回default
@@ -230,7 +230,7 @@ COMMIT;
 ### 日常检查
 ```sql
 -- hot表数据量（应该保持在7天左右）
-SELECT 
+SELECT
   'tool_usage_stats_hot' as table,
   count(*) as rows,
   min(usage_date) as oldest,
@@ -263,5 +263,5 @@ WHERE usage_date >= CURRENT_DATE - 7;
 
 ---
 
-**最后更新**: 2026-07-05  
+**最后更新**: 2026-07-05
 **维护者**: LLM Gateway OPS Team

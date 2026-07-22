@@ -2,13 +2,13 @@
 
 ## API 概览
 
-**端点**: 
+**端点**:
 ```
 POST https://dashscope.aliyuncs.com/api/v1/services/aigc/text-generation/generation
 POST https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions (OpenAI 兼容)
 ```
 
-**认证**: 
+**认证**:
 ```
 Authorization: Bearer {API_KEY}
 ```

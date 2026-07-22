@@ -1,6 +1,6 @@
 # Hot 表数据迁移和分区清理功能
 
-**日期**: 2026-07-10  
+**日期**: 2026-07-10
 **功能**: 手动迁移 hot 表数据到分区表 + 删除旧分区
 
 ---
@@ -22,7 +22,7 @@
 
 **权限**: super_admin
 
-**功能**: 
+**功能**:
 - 手动触发 hot 表数据迁移到分区表
 - 不需要等待自动任务（每小时执行一次）
 - 可以自定义保留时间和批次大小
@@ -195,7 +195,7 @@ curl -X POST 'https://llm.kxpms.cn/api/admin/data-lifecycle/storage/tables/vacuu
 
 ### request_logs_hot 的特殊性
 
-1. **columnar 分区问题**: 
+1. **columnar 分区问题**:
    - 2026-07 和 2026-08 分区使用 columnar 存储
    - columnar 不支持 `INSERT ... ON CONFLICT`
    - 迁移时会出现警告但数据会保留在 hot 表
@@ -225,11 +225,11 @@ curl -X POST 'https://llm.kxpms.cn/api/admin/data-lifecycle/storage/tables/vacuu
 
 ```sql
 -- 查看 hot 表行数
-SELECT COUNT(*), MIN(ts), MAX(ts) 
+SELECT COUNT(*), MIN(ts), MAX(ts)
 FROM request_logs_hot;
 
 -- 查看分区表大小
-SELECT 
+SELECT
     tablename,
     pg_size_pretty(pg_total_relation_size('public.'||tablename)) AS size
 FROM pg_tables
@@ -244,7 +244,7 @@ ORDER BY tablename;
 SELECT pg_size_pretty(pg_database_size('llm_gateway'));
 
 -- request_logs_hot 大小明细
-SELECT 
+SELECT
     pg_size_pretty(pg_table_size('request_logs_hot')) AS table_size,
     pg_size_pretty(pg_indexes_size('request_logs_hot')) AS indexes_size,
     pg_size_pretty(pg_total_relation_size('request_logs_hot') - pg_table_size('request_logs_hot') - pg_indexes_size('request_logs_hot')) AS toast_size;
@@ -287,5 +287,5 @@ data-lifecycle: partition dropped partition=request_logs_2026_06 rows_deleted=45
 
 ---
 
-**作者**: OpenCode Agent  
+**作者**: OpenCode Agent
 **日期**: 2026-07-10

@@ -1,6 +1,6 @@
 # Phase 1 最终完成报告 - 供应商质量画像数据采集
 
-**完成时间**: 2026-07-19 02:45  
+**完成时间**: 2026-07-19 02:45
 **状态**: ✅ 完成
 
 ---
@@ -216,7 +216,7 @@ collector := quality.New(db,
 ### 查询分钟级数据
 
 ```sql
-SELECT 
+SELECT
     provider_id,
     model_name,
     endpoint,
@@ -233,7 +233,7 @@ LIMIT 20;
 ### 查询小时级数据
 
 ```sql
-SELECT 
+SELECT
     provider_id,
     model_name,
     endpoint,
@@ -512,7 +512,7 @@ Phase 5: 集成测试      ⏳ 待开始（预计 2 天）
 
 ---
 
-**文档版本**: v1.0  
-**最后更新**: 2026-07-19 02:45  
-**责任人**: Claude Opus 4  
+**文档版本**: v1.0
+**最后更新**: 2026-07-19 02:45
+**责任人**: Claude Opus 4
 **审核状态**: ✅ 已完成

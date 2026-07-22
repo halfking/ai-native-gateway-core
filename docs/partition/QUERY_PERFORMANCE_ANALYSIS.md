@@ -7,7 +7,7 @@
 ```sql
 -- 分区状态
 request_logs_2026_06: ATTACHED
-request_logs_2026_07: ATTACHED  
+request_logs_2026_07: ATTACHED
 request_logs_default: ATTACHED
 
 -- 查询
@@ -75,7 +75,7 @@ Append  (cost=0.00..1500 rows=7500)
 
 ```sql
 -- 如果 2026_07 保持 ATTACHED：
-INSERT INTO request_logs_default (request_id, ts, ...) 
+INSERT INTO request_logs_default (request_id, ts, ...)
 VALUES ('req-123', '2026-07-15 10:00:00', ...);
 
 -- PostgreSQL 行为：
@@ -116,12 +116,12 @@ func QueryRequestLogs(startDate, endDate time.Time) {
     if startDate.After(time.Now().Add(-7*24*time.Hour)) {
         return db.Query("SELECT * FROM request_logs_default WHERE ts >= $1", startDate)
     }
-    
+
     // 2. 仅当月：直接查当月分区
     if startDate.Year() == 2026 && startDate.Month() == 7 {
         return db.Query("SELECT * FROM request_logs_2026_07 WHERE ts >= $1", startDate)
     }
-    
+
     // 3. 跨月查询：使用 VIEW
     return db.Query("SELECT * FROM request_logs_with_current_month WHERE ts >= $1", startDate)
 }
@@ -169,7 +169,7 @@ func QueryRequestLogs(startDate, endDate time.Time) {
 
 ```go
 // ✅ 推荐：最近数据直接查 default
-SELECT * FROM request_logs_default 
+SELECT * FROM request_logs_default
 WHERE ts >= now() - interval '7 days'
 ORDER BY ts DESC LIMIT 100;
 
@@ -253,12 +253,12 @@ grep -rn "SELECT.*FROM request_logs" --include="*.go" | \
 ```sql
 -- 测试 1：直接查 default（最快）
 EXPLAIN ANALYZE
-SELECT * FROM request_logs_default 
+SELECT * FROM request_logs_default
 WHERE ts >= now() - interval '1 day';
 
 -- 测试 2：查 VIEW（完整但慢）
 EXPLAIN ANALYZE
-SELECT * FROM request_logs_with_current_month 
+SELECT * FROM request_logs_with_current_month
 WHERE ts >= now() - interval '1 day';
 
 -- 对比性能差异

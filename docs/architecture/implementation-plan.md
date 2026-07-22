@@ -1,8 +1,8 @@
 # LLM Gateway Go 领域重构实施计划
 
-> **关联文档**: [domain-refactoring-plan.md](./domain-refactoring-plan.md)  
-> **版本**: v1.0  
-> **日期**: 2026-06-25  
+> **关联文档**: [domain-refactoring-plan.md](./domain-refactoring-plan.md)
+> **版本**: v1.0
+> **日期**: 2026-06-25
 
 ## 执行摘要
 
@@ -121,7 +121,7 @@ func (b *MemoryBus) dispatch() {
         b.mu.RLock()
         handlers := b.subscribers[event.Type()]
         b.mu.RUnlock()
-        
+
         for _, handler := range handlers {
             go func(h Handler, e Event) {
                 ctx := context.Background()
@@ -154,16 +154,16 @@ func (e *TestEvent) Timestamp() time.Time { return e.ts }
 
 func TestMemoryBus_PublishSubscribe(t *testing.T) {
     bus := NewMemoryBus(100)
-    
+
     received := make(chan Event, 1)
     bus.Subscribe("test", func(ctx context.Context, event Event) error {
         received <- event
         return nil
     })
-    
+
     testEvent := &TestEvent{typ: "test", ts: time.Now()}
     bus.Publish(testEvent)
-    
+
     select {
     case e := <-received:
         if e.Type() != "test" {
@@ -201,7 +201,7 @@ import (
     "fmt"
     "sort"
     "time"
-    
+
     "__REPO_URL_3__/domain"
     "golang.org/x/sync/errgroup"
 )
@@ -288,12 +288,12 @@ func (p *RequestPipeline) executeStage(ctx context.Context, stage *PipelineStage
             enabledHooks = append(enabledHooks, hook)
         }
     }
-    
+
     // 按优先级排序
     sort.Slice(enabledHooks, func(i, j int) bool {
         return enabledHooks[i].Priority() < enabledHooks[j].Priority()
     })
-    
+
     // 根据执行模式执行
     if stage.Mode == ModeSequential {
         return p.executeSequential(ctx, enabledHooks, envelope)
@@ -317,14 +317,14 @@ func (p *RequestPipeline) executeSequential(ctx context.Context, hooks []Hook, e
 // executeParallel 并行执行
 func (p *RequestPipeline) executeParallel(ctx context.Context, hooks []Hook, envelope *domain.RequestEnvelope) error {
     eg, ctx := errgroup.WithContext(ctx)
-    
+
     for _, hook := range hooks {
         hook := hook
         eg.Go(func() error {
             return hook.Execute(ctx, envelope)
         })
     }
-    
+
     return eg.Wait()
 }
 ```
@@ -458,7 +458,7 @@ func (e *ClientIdentifiedEvent) Timestamp() time.Time { return e.Timestamp }
 // 在 Identify 方法中发布事件
 func (d *IdentityDomain) Identify(ctx context.Context, req *IdentityRequest) (*Identity, error) {
     // ... 现有逻辑 ...
-    
+
     // 发布事件
     d.eventBus.Publish(&ClientIdentifiedEvent{
         IdentityHash: identity.Hash,
@@ -467,7 +467,7 @@ func (d *IdentityDomain) Identify(ctx context.Context, req *IdentityRequest) (*I
         TenantID:     req.TenantID,
         Timestamp:    time.Now(),
     })
-    
+
     return identity, nil
 }
 ```
@@ -506,7 +506,7 @@ func (r *StickyRouter) GetPreferredCredential(ctx context.Context, gwSessionID s
     if err != nil {
         return "", nil // 新会话，无偏好
     }
-    
+
     // 返回上次使用的凭据 ID
     return session.LastCredentialID, nil
 }

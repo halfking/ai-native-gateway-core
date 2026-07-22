@@ -45,13 +45,13 @@
 
 **已执行**：
 ```sql
-UPDATE credential_model_bindings 
-SET available = true, 
-    unavailable_reason = NULL, 
+UPDATE credential_model_bindings
+SET available = true,
+    unavailable_reason = NULL,
     consecutive_failures = 0
-WHERE credential_id = 23 
+WHERE credential_id = 23
   AND provider_model_id IN (
-      SELECT id FROM provider_models 
+      SELECT id FROM provider_models
       WHERE raw_model_name = 'minimaxai/minimax-m3'
   );
 ```
@@ -96,7 +96,7 @@ WHERE credential_id = 23
 
 ```sql
 -- 检查 weight 和其他路由参数
-SELECT 
+SELECT
     cmb.credential_id,
     cmb.weight,
     cmb.manual_priority,

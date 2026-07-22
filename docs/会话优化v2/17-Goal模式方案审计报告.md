@@ -1,7 +1,7 @@
 # Goal模式会话持续机制方案审计报告
 
-> **审计日期**: 2026-07-19  
-> **审计对象**: `16-Goal模式会话持续机制设计方案.md`  
+> **审计日期**: 2026-07-19
+> **审计对象**: `16-Goal模式会话持续机制设计方案.md`
 > **审计标准**: 架构合理性、可实施性、风险控制、成本效益
 
 ---
@@ -108,14 +108,14 @@ for attempt := 0; attempt <= maxRetries; attempt++ {
         slog.Warn("goal_retry_timeout", "total_elapsed", totalTimeout)
         return errors.New("retry timeout exceeded")
     }
-    
+
     // 剩余时间不足时缩短延时
     remaining := time.Until(deadline)
     delay := min(retryDelay, remaining - 5*time.Second)  // 预留5s margin
     if delay <= 0 {
         break
     }
-    
+
     time.Sleep(delay)
     // 重试...
 }
@@ -151,21 +151,21 @@ func (h *ChatHandler) relayAndRespond(...) error {
         FailedProviders: make(map[int]bool),
         FailedCredentials: make(map[int]bool),
     }
-    
+
     for attempt := 0; attempt <= maxRetries; attempt++ {
         // 调用routing，传递黑名单
         route, err := h.routing.SelectRoute(ctx, req, retryCtx)
-        
+
         if err == nil && !isRetriableError(resp) {
             return h.processResponse(resp)
         }
-        
+
         // 记录失败节点
         if route != nil {
             retryCtx.FailedProviders[route.ProviderID] = true
             retryCtx.FailedCredentials[route.CredentialID] = true
         }
-        
+
         // 重试...
     }
 }
@@ -303,7 +303,7 @@ func (g *CostGuard) CheckMonthlyLimit(ctx context.Context, tenantID string) (boo
               OR metadata->>'action' = 'goal_auto_fix'
           )
     `, tenantID).Scan(&monthlyUsage)
-    
+
     limit := settings.Global.GetInt(tenantID, "goal.monthly_token_limit", 1000000)
     return monthlyUsage < limit, err
 }
@@ -322,7 +322,7 @@ type Session struct {
 // 在InterceptNonStream中检查
 func (h *ModeHook) InterceptNonStream(...) {
     goalSession, _ := h.db.GetSession(ctx, req.SessionID)
-    
+
     // 检查预算
     if goalSession.TokensConsumed >= goalSession.TokenBudget {
         slog.Warn("goal_budget_exceeded",
@@ -332,7 +332,7 @@ func (h *ModeHook) InterceptNonStream(...) {
         _ = h.db.UpdateSessionState(ctx, req.SessionID, StateFailed)
         return nil, nil
     }
-    
+
     // 累计消耗
     currentTokens := extractTotalTokens(req.ResponseBody, nil)
     _ = h.db.IncrementTokensConsumed(ctx, req.SessionID, currentTokens)
@@ -633,6 +633,6 @@ Week 2:
 
 ---
 
-**审计人**：AI Agent (ZCode)  
-**审计日期**：2026-07-19  
+**审计人**：AI Agent (ZCode)
+**审计日期**：2026-07-19
 **下一步**：等待老板确认后进入Phase 0实施

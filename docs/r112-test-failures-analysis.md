@@ -33,11 +33,11 @@
 hook_test.go:120: sanitize action → FixAction sanitize_input, got ""
 ```
 
-**根因**: 
+**根因**:
 - 测试期望 governance verdict 中的 FixAction 字段为 "sanitize_input"
 - 实际返回为空字符串
 
-**影响范围**: 
+**影响范围**:
 - 仅测试代码失败，不影响运行时逻辑
 - Prompt injection 检测功能正常工作
 
@@ -101,10 +101,10 @@ func TestSessionAuditHook_CleanContent_NoDecision_Pass(t *testing.T) {
     // Mock settings.Global
     oldSettings := settings.Global
     defer func() { settings.Global = oldSettings }()
-    
+
     settings.Global = settings.NewStore()
     settings.Global.Set("session_audit.enabled", true)
-    
+
     bus := eventbus.NewMemoryBus(10)
     defer bus.Close()
     h := NewSessionAuditHook(newTestDetector(t, nil), bus)
@@ -128,7 +128,7 @@ func NewSessionAuditHook(detector *sessionaudit.FastDetector, bus eventbus.Bus, 
 func TestSessionAuditHook_CleanContent_NoDecision_Pass(t *testing.T) {
     bus := eventbus.NewMemoryBus(10)
     defer bus.Close()
-    
+
     cfg := &sessionaudit.Config{Enabled: true}
     h := NewSessionAuditHook(newTestDetector(t, nil), bus, cfg)
     // ... rest of test

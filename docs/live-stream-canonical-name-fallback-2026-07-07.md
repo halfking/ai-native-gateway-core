@@ -1,7 +1,7 @@
 # 实时请求流字段 Fallback 与模型标准名称聚合修复
 
-**日期**: 2026-07-07  
-**分支**: `fix/live-stream-canonical-name-fallback`  
+**日期**: 2026-07-07
+**分支**: `fix/live-stream-canonical-name-fallback`
 **关联**: 基于前一轮修复（`fix/live-stream-dimension-queues`）的二次审计发现
 
 ## 一、问题背景

@@ -397,16 +397,16 @@ psql $(grep DATABASE_URL .env | cut -d= -f2-) -c "SELECT 1"
 SELECT indexname FROM pg_indexes WHERE tablename = 'request_logs';
 
 -- 分析查询计划
-EXPLAIN ANALYZE 
-SELECT client_model, COUNT(*) 
-FROM request_logs 
-WHERE created_at > NOW() - INTERVAL '1 hour' 
-  AND client_model IS NOT NULL 
+EXPLAIN ANALYZE
+SELECT client_model, COUNT(*)
+FROM request_logs
+WHERE created_at > NOW() - INTERVAL '1 hour'
+  AND client_model IS NOT NULL
 GROUP BY client_model;
 
 -- 如果缺少索引，创建
-CREATE INDEX CONCURRENTLY idx_request_logs_created_at_model 
-ON request_logs (created_at DESC, client_model) 
+CREATE INDEX CONCURRENTLY idx_request_logs_created_at_model
+ON request_logs (created_at DESC, client_model)
 WHERE client_model IS NOT NULL;
 ```
 
@@ -435,5 +435,5 @@ go tool pprof -top /tmp/heap.prof
 
 ---
 
-**文档版本**: 1.0  
+**文档版本**: 1.0
 **最后更新**: 2026-07-01

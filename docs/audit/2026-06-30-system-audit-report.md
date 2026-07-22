@@ -1,6 +1,6 @@
 # LLM Gateway 系统审计报告
-**日期**: 2026-06-30  
-**审计范围**: 错误处理、数据统计、凭据路由  
+**日期**: 2026-06-30
+**审计范围**: 错误处理、数据统计、凭据路由
 **服务器**: __SECRET_1__ (71服务器)
 
 ## 执行摘要
@@ -18,8 +18,8 @@
 
 ### 现象
 ```
-2026-06-30T06:26:52.037451629Z WARN request_logger: CreateInitial failed 
-request_id=294b2c18447e7667747f7ae203c1b2be 
+2026-06-30T06:26:52.037451629Z WARN request_logger: CreateInitial failed
+request_id=294b2c18447e7667747f7ae203c1b2be
 error="ERROR: no partition of relation \"request_wal\" found for row (SQLSTATE 23514)"
 ```
 
@@ -160,7 +160,7 @@ SELECT count(*) FROM request_logs;
    ```sql
    UPDATE model_probe_state
    SET state = 'healthy', consecutive_failures = 0
-   WHERE credential_id = <id> 
+   WHERE credential_id = <id>
      AND raw_model_name = 'minimax-m2.7-quickspeed';
    ```
 
@@ -187,8 +187,8 @@ SELECT count(*) FROM request_logs;
 ### 现象
 日志中出现 `sticky DB write failed`:
 ```
-2026-06-30T06:26:53.869819557Z DEBUG sticky DB write failed 
-key=default:3:2:default 
+2026-06-30T06:26:53.869819557Z DEBUG sticky DB write failed
+key=default:3:2:default
 error="ERROR: there is no unique or exclusion constraint matching the ON CONFLICT specification (SQLSTATE 42P10)"
 ```
 
@@ -233,7 +233,7 @@ CREATE TABLE IF NOT EXISTS sticky_routing (
 ### 现象
 ```
 2026-06-30T06:26:54.576296742Z WARN compaction: summarize call failed
-attempt=1 of=4 compact_model=MiniMax-Text-01 
+attempt=1 of=4 compact_model=MiniMax-Text-01
 error="openai summarize upstream 404: 404 page not found"
 ```
 

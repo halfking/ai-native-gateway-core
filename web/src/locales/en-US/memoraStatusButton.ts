@@ -7,11 +7,11 @@ export default {
     error: 'Connection Failed',
     loading: 'Checking',
   },
-  
+
   panel: {
     title: 'Memora Connection',
     closeLabel: 'Close',
-    
+
     fields: {
       serviceUrl: 'Service URL',
       recentLatency: 'Recent Latency',
@@ -22,7 +22,7 @@ export default {
       consecutiveErrors: 'Consecutive Errors',
       recentWriteError: 'Recent Write Error',
     },
-    
+
     actions: {
       processing: 'Processing…',
       reconnect: 'Reconnect',
@@ -32,7 +32,7 @@ export default {
       sessionContext: 'Session Context',
     },
   },
-  
+
   error: {
     connectionFailed: 'Connection failed',
     checkFailed: 'Check failed',

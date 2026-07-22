@@ -1,8 +1,8 @@
 # Content Safety Filter 设计文档
 
-> **版本**: v1.0  
-> **日期**: 2026-07-18  
-> **状态**: Draft  
+> **版本**: v1.0
+> **日期**: 2026-07-18
+> **状态**: Draft
 > **负责人**: Infrastructure Team
 
 ---
@@ -81,13 +81,13 @@ LLM Gateway 需要对用户输入和模型输出进行内容安全审核，防�
 type Filter interface {
     // CheckRequest 检查请求内容
     CheckRequest(ctx context.Context, req *CheckRequest) (*CheckResult, error)
-    
+
     // CheckResponse 检查响应内容
     CheckResponse(ctx context.Context, resp *CheckResponse) (*CheckResult, error)
-    
+
     // UpdateRules 更新规则
     UpdateRules(rules []Rule) error
-    
+
     // Metrics 返回统计指标
     Metrics() FilterMetrics
 }
@@ -213,12 +213,12 @@ func (c *regexCache) Get(pattern string) (*regexp.Regexp, error) {
 func (f *filter) check(content string) {
     var wg sync.WaitGroup
     results := make(chan Hit, 10)
-    
+
     // 并行执行 keyword 和 regex 检测
     wg.Add(2)
     go f.checkKeywords(content, results, &wg)
     go f.checkRegex(content, results, &wg)
-    
+
     // 收集结果
     go func() {
         wg.Wait()
@@ -241,7 +241,7 @@ var (
         },
         []string{"type", "action"}, // type: request|response, action: allow|block|warn|sanitize
     )
-    
+
     // 拦截总数
     ContentSafetyBlocked = promauto.NewCounterVec(
         prometheus.CounterOpts{
@@ -250,7 +250,7 @@ var (
         },
         []string{"type", "rule", "severity"},
     )
-    
+
     // 检测延迟
     ContentSafetyLatency = promauto.NewHistogramVec(
         prometheus.HistogramOpts{
@@ -260,7 +260,7 @@ var (
         },
         []string{"type"},
     )
-    
+
     // 规则命中率
     ContentSafetyHits = promauto.NewCounterVec(
         prometheus.CounterOpts{
@@ -281,13 +281,13 @@ var (
 ```yaml
 content_safety:
   enabled: true
-  
+
   # 内置规则集
   builtin_rules:
     - api_key_detection
     - pii_detection
     - sensitive_words
-  
+
   # 自定义规则
   custom_rules:
     - id: custom_001
@@ -296,19 +296,19 @@ content_safety:
       pattern: "内部机密|商业秘密"
       action: block
       severity: high
-      
+
     - id: custom_002
       name: "SQL 注入检测"
       type: regex
       pattern: "(union|select|drop|insert)\\s+"
       action: block
       severity: high
-  
+
   # 动作配置
   actions:
     block:
       response: "内容包含敏感信息，请求被拦截"
-    
+
     sanitize:
       mask_char: "*"
       expose_prefix: 3

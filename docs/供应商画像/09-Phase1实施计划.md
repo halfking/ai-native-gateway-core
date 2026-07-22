@@ -1,7 +1,7 @@
 # Phase 1 实施计划 - 数据采集
 
-**开始时间**: 2026-07-19 01:35  
-**预计耗时**: 3 天  
+**开始时间**: 2026-07-19 01:35
+**预计耗时**: 3 天
 **状态**: 🚧 进行中
 
 ---
@@ -37,7 +37,7 @@ main.go 集成          (启动时运行)
 
 ### 2.1 分钟级聚合（从 request_logs）
 
-**输入**: `request_logs` 表（最近 1 分钟的数据）  
+**输入**: `request_logs` 表（最近 1 分钟的数据）
 **输出**: `provider_metrics_minute` 表
 
 **SQL 查询**:
@@ -66,7 +66,7 @@ ON CONFLICT (provider_id, model_name, endpoint, bucket) DO UPDATE SET ...;
 
 ### 2.2 小时级聚合（从分钟级）
 
-**输入**: `provider_metrics_minute` 表（最近 1 小时的 60 行）  
+**输入**: `provider_metrics_minute` 表（最近 1 小时的 60 行）
 **输出**: `provider_metrics_hour` 表
 
 **SQL 查询**:
@@ -97,7 +97,7 @@ func StartQualityMetricsCollector(ctx context.Context, db *sql.DB) {
     go func() {
         ticker := time.NewTicker(1 * time.Minute)
         defer ticker.Stop()
-        
+
         for {
             select {
             case <-ticker.C:
@@ -109,12 +109,12 @@ func StartQualityMetricsCollector(ctx context.Context, db *sql.DB) {
             }
         }
     }()
-    
+
     // 小时级聚合：每小时执行
     go func() {
         ticker := time.NewTicker(1 * time.Hour)
         defer ticker.Stop()
-        
+
         for {
             select {
             case <-ticker.C:
@@ -161,10 +161,10 @@ import (
 type Collector interface {
     // Start 启动采集器（阻塞）
     Start(ctx context.Context) error
-    
+
     // CollectMinuteMetrics 手动触发分钟级聚合
     CollectMinuteMetrics() error
-    
+
     // CollectHourMetrics 手动触发小时级聚合
     CollectHourMetrics() error
 }
@@ -245,7 +245,7 @@ touch internal/collector/{collector.go,minute_aggregator.go,hour_aggregator.go,s
 ```sql
 -- 插入测试数据到 request_logs
 INSERT INTO request_logs (provider_id, model_name, endpoint, timestamp, status_code, latency_ms, ...)
-VALUES 
+VALUES
     (1, 'gpt-4', 'chat', NOW() - INTERVAL '30 seconds', 200, 1500, ...),
     (1, 'gpt-4', 'chat', NOW() - INTERVAL '45 seconds', 200, 1800, ...),
     (1, 'gpt-4', 'chat', NOW() - INTERVAL '50 seconds', 500, 5000, ...);
@@ -276,7 +276,7 @@ VALUES
 2. **使用时间索引**
    ```sql
    -- 确保 request_logs 有时间索引
-   CREATE INDEX IF NOT EXISTS idx_request_logs_timestamp 
+   CREATE INDEX IF NOT EXISTS idx_request_logs_timestamp
    ON request_logs(timestamp DESC);
    ```
 
@@ -293,7 +293,7 @@ VALUES
        minuteLock sync.Mutex
        hourLock   sync.Mutex
    )
-   
+
    func CollectMinuteMetrics(db *sql.DB) error {
        minuteLock.Lock()
        defer minuteLock.Unlock()

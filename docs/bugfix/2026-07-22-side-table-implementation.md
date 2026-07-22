@@ -1,8 +1,8 @@
 # 侧表实现修复 - request_logs_bodies_hot
 
-**日期**: 2026-07-22  
-**类型**: Feature Implementation + Bug Fix  
-**影响**: 所有模型的请求/响应 body 存储  
+**日期**: 2026-07-22
+**类型**: Feature Implementation + Bug Fix
+**影响**: 所有模型的请求/响应 body 存储
 **状态**: ✅ 已修复
 
 ---
@@ -216,26 +216,26 @@ ok  	github.com/kaixuan/llm-gateway-go/domains/hooks/observability/telemetry	0.4
 
 ```sql
 -- 主表：body 字段为 NULL
-SELECT request_id, request_body, response_body 
-FROM request_logs_hot 
+SELECT request_id, request_body, response_body
+FROM request_logs_hot
 LIMIT 1;
 -- 结果：request_body = NULL, response_body = NULL
 
 -- 侧表：body 字段有数据
-SELECT request_id, request_body, response_body 
-FROM request_logs_bodies_hot 
+SELECT request_id, request_body, response_body
+FROM request_logs_bodies_hot
 LIMIT 1;
 -- 结果：request_body = {...}, response_body = {...}
 
 -- JOIN 查询：完整数据
-SELECT 
-    rl.request_id, 
+SELECT
+    rl.request_id,
     rl.latency_ms,
     rb.request_body,
     rb.response_body
 FROM request_logs_hot rl
-LEFT JOIN request_logs_bodies_hot rb 
-    ON rl.request_id = rb.request_id 
+LEFT JOIN request_logs_bodies_hot rb
+    ON rl.request_id = rb.request_id
     AND rl.ts = rb.ts
 LIMIT 1;
 -- 结果：完整数据，包含 body
@@ -268,13 +268,13 @@ LIMIT 1;
 确保管理后台的请求详情查询使用 LEFT JOIN 侧表：
 
 ```sql
-SELECT 
+SELECT
     rl.*,
     rb.request_body,
     rb.response_body
 FROM request_logs_hot rl
-LEFT JOIN request_logs_bodies_hot rb 
-    ON rl.request_id = rb.request_id 
+LEFT JOIN request_logs_bodies_hot rb
+    ON rl.request_id = rb.request_id
     AND rl.ts = rb.ts
 WHERE rl.request_id = $1;
 ```
@@ -284,8 +284,8 @@ WHERE rl.request_id = $1;
 侧表已有主键 `(request_id, ts)`，查询性能已优化。如果需要按时间范围查询，可考虑添加：
 
 ```sql
-CREATE INDEX idx_request_logs_bodies_ts 
-ON request_logs_bodies_hot(ts) 
+CREATE INDEX idx_request_logs_bodies_ts
+ON request_logs_bodies_hot(ts)
 WHERE ts >= NOW() - INTERVAL '7 days';
 ```
 
@@ -295,6 +295,6 @@ WHERE ts >= NOW() - INTERVAL '7 days';
 
 ---
 
-**修复人**: AI Agent (Zcode)  
-**审核**: 待人工审核  
+**修复人**: AI Agent (Zcode)
+**审核**: 待人工审核
 **部署**: 待部署到 245 → 154

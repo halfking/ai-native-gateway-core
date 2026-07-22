@@ -1,7 +1,7 @@
 # IR 协议处理链路 — 本地部署验证报告
 
-**部署时间**：2026-07-13  
-**审计范围**：audit-provider-multimodal → audit-stream-multimodal → audit-gemini-stream → audit-gemini-detect  
+**部署时间**：2026-07-13
+**审计范围**：audit-provider-multimodal → audit-stream-multimodal → audit-gemini-stream → audit-gemini-detect
 **Gateway 版本**：v0.0.0-unknown-20260713-0 (rebuilt locally)
 
 ---
@@ -25,7 +25,7 @@
 ✓ /healthz returns {"status":"ok","version":"0.0.0-unknown-20260713-0"}
 ```
 
-构建过程：`docker compose -f docker-compose.local-r112.yml up -d --build --no-deps gateway`  
+构建过程：`docker compose -f docker-compose.local-r112.yml up -d --build --no-deps gateway`
 （先 `docker rm r112_gateway` 解决了 Exit 32h 残留容器的冲突）
 
 ---
@@ -114,7 +114,7 @@ Content-Type: text/html
 ### 4.2 根因分析
 
 ```bash
-$ grep -rn "v1beta\|:generateContent" --include="*.go" cmd/ domains/ 
+$ grep -rn "v1beta\|:generateContent" --include="*.go" cmd/ domains/
 # （无结果）
 ```
 

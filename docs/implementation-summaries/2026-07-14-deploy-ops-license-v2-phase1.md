@@ -1,8 +1,8 @@
 # Deployment Management & Ops Automation v2 — Implementation Summary
 
-**Date**: 2026-07-14  
-**Branch**: `feature/deploy-ops-license-v2`  
-**Base**: `origin/main` (947a003e7)  
+**Date**: 2026-07-14
+**Branch**: `feature/deploy-ops-license-v2`
+**Base**: `origin/main` (947a003e7)
 **Status**: Phase 1 Complete (3/3), Phase 2-4 Pending
 
 ---
@@ -267,8 +267,8 @@ timeout 30 bash scripts/scan-secrets.sh --tracked-only --baseline=scripts/scan-s
 
 ### 5.1 Phase 1 Complete
 
-✅ env-injector CLI built and tested  
-✅ Real SOPS encryption deployed  
+✅ env-injector CLI built and tested
+✅ Real SOPS encryption deployed
 ✅ Scanner performance fixed (23s, 5.2× speedup)
 
 ### 5.2 Phase 2-4 Pending (Out of Scope for This PR)

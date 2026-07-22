@@ -375,6 +375,6 @@ bash scripts/deploy-245.sh
 
 ---
 
-**最后更新**：2026-07-16  
-**维护者**：Infrastructure Team  
+**最后更新**：2026-07-16
+**维护者**：Infrastructure Team
 **适用版本**：v2.4.6+

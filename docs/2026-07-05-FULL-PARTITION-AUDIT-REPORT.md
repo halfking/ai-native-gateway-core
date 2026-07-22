@@ -1,7 +1,7 @@
 # 分区表架构全量审计报告
 
-**审计日期**: 2026-07-05  
-**审计范围**: 184 (测试环境) + 71 (生产环境) + 本地环境  
+**审计日期**: 2026-07-05
+**审计范围**: 184 (测试环境) + 71 (生产环境) + 本地环境
 **审计工具**: SQL 全量分区表扫描脚本
 
 ---
@@ -137,7 +137,7 @@
   └─ 2 路 UNION ALL
      ├─ request_logs_hot          (0-7 天，heap，快速)
      └─ request_logs              (>7 天，columnar 分区，快速)
-  
+
   性能：✅ 优化后 (100% baseline)
 
 71 生产环境查询路径：
@@ -146,7 +146,7 @@
      ├─ request_logs_default      (当月，heap)
      ├─ request_logs_2026_06      (上月，DETACHED，需显式查询)
      └─ request_logs              (父表，聚合其他月份)
-  
+
   性能：❌ 未优化 (50-60% of baseline)
 ```
 
@@ -189,10 +189,10 @@ for m in 343 344 345 346 347; do
     echo "=== Applying migration $m ==="
     PGPASSWORD='__DB_PWD_2__' psql -h 127.0.0.1 -U llm_gateway -d llm_gateway \
         -f /tmp/migrations_71/${m}_*.sql
-    
+
     # 记录到 schema_migrations
     PGPASSWORD='__DB_PWD_2__' psql -h 127.0.0.1 -U llm_gateway -d llm_gateway \
-        -c "INSERT INTO schema_migrations (version, description, applied_at) 
+        -c "INSERT INTO schema_migrations (version, description, applied_at)
             VALUES ('$m', '${m}_*.sql', NOW()) ON CONFLICT DO NOTHING;"
 done
 ```
@@ -233,8 +233,8 @@ go build ./...
 # 1. 检查热表数据
 ssh __SSH_TARGET_2__ -p __PORT_1__ "
     PGPASSWORD='__DB_PWD_2__' psql -h 127.0.0.1 -U llm_gateway -d llm_gateway -c '
-        SELECT 
-            relname, 
+        SELECT
+            relname,
             pg_size_pretty(pg_total_relation_size(oid)) AS size,
             (SELECT reltuples::bigint FROM pg_class WHERE oid = c.oid) AS rows
         FROM pg_class c
@@ -410,8 +410,8 @@ BEGIN;
 CREATE TABLE usage_ledger_default PARTITION OF usage_ledger DEFAULT;
 
 -- 2. 迁移数据回 _default
-INSERT INTO usage_ledger_default 
-SELECT * FROM usage_ledger_hot 
+INSERT INTO usage_ledger_default
+SELECT * FROM usage_ledger_hot
 ON CONFLICT DO NOTHING;
 
 -- 3. 删除热表
@@ -426,6 +426,6 @@ COMMIT;
 
 ---
 
-**报告生成时间**: 2026-07-05 08:30  
-**下次审计时间**: 2026-07-12 (71 部署后)  
+**报告生成时间**: 2026-07-05 08:30
+**下次审计时间**: 2026-07-12 (71 部署后)
 **负责人**: ACC Team

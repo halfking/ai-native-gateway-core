@@ -1,7 +1,7 @@
 # 三环境统一配置验证报告
 
-**日期：** 2026-07-04 01:40  
-**任务：** 统一三环境配置并测试多月分区创建  
+**日期：** 2026-07-04 01:40
+**任务：** 统一三环境配置并测试多月分区创建
 **状态：** ✅ 184 和本地完成，71 待执行
 
 ---
@@ -76,7 +76,7 @@ NOTICE:  ✅ 分区 request_logs_2026_12 创建完成
 ```sql
 INSERT INTO request_logs ... RETURNING ...;
 
-  id   |  month  |  request_id  |   status    
+  id   |  month  |  request_id  |   status
 -------+---------+--------------+-------------
  21107 | 2026-09 | req-test-sep | ✅ 写入成功
  21108 | 2026-10 | req-test-oct | ✅ 写入成功
@@ -86,7 +86,7 @@ INSERT INTO request_logs ... RETURNING ...;
 
 **验证查询：**
 ```
- parent_table |      partition_name      | storage_type |  size  | trgm_indexes 
+ parent_table |      partition_name      | storage_type |  size  | trgm_indexes
 --------------+--------------------------+--------------+--------+--------------
  request_logs | request_logs_2026_07_col | columnar     | 178 MB |            2
  request_logs | request_logs_2026_08     | columnar     | 296 kB |            2
@@ -123,7 +123,7 @@ NOTICE:  ✅ 分区 request_logs_2026_12 创建完成
 ```sql
 INSERT INTO request_logs ... RETURNING ...;
 
- id |  month  |  request_id   |   status    
+ id |  month  |  request_id   |   status
 ----+---------+---------------+-------------
  59 | 2026-09 | req-local-sep | ✅ 写入成功
  60 | 2026-10 | req-local-oct | ✅ 写入成功
@@ -133,7 +133,7 @@ INSERT INTO request_logs ... RETURNING ...;
 
 **验证查询：**
 ```
-   relname    |       relname        | storage_type | trgm_indexes 
+   relname    |       relname        | storage_type | trgm_indexes
 --------------+----------------------+--------------+--------------
  request_logs | request_logs_2026_04 | columnar     |            1
  request_logs | request_logs_2026_05 | columnar     |            1
@@ -203,10 +203,10 @@ idx_request_logs_2026_09_xxx                   -- 1 个额外索引
 
 ```sql
 -- 每个分区的标准 trgm 索引
-CREATE INDEX idx_<partition>_search_trgm 
+CREATE INDEX idx_<partition>_search_trgm
     ON <partition> USING gin (search_text gin_trgm_ops);
 
-CREATE INDEX idx_<partition>_client_model_trgm 
+CREATE INDEX idx_<partition>_client_model_trgm
     ON <partition> USING gin (client_model gin_trgm_ops);
 ```
 
@@ -219,7 +219,7 @@ CREATE INDEX idx_<partition>_client_model_trgm
 ### 184 环境
 
 ```sql
-SELECT 
+SELECT
     to_char(ts, 'YYYY-MM') as month,
     count(*) as row_count
 FROM request_logs
@@ -227,7 +227,7 @@ WHERE tenant_id = 'test-tenant'
 GROUP BY 1
 ORDER BY 1;
 
-  month  | row_count 
+  month  | row_count
 ---------+-----------
  2026-09 |         1  -- ✅ 数据在 2026-09 分区
  2026-10 |         1  -- ✅ 数据在 2026-10 分区
@@ -242,7 +242,7 @@ ORDER BY 1;
 ### 本地环境
 
 ```sql
-SELECT 
+SELECT
     to_char(ts, 'YYYY-MM') as month,
     count(*) as row_count
 FROM request_logs
@@ -250,7 +250,7 @@ WHERE tenant_id = 'test-local'
 GROUP BY 1
 ORDER BY 1;
 
-  month  | row_count 
+  month  | row_count
 ---------+-----------
  2026-09 |         1  -- ✅ 数据在 2026-09 分区
  2026-10 |         1  -- ✅ 数据在 2026-10 分区
@@ -413,31 +413,31 @@ $$;
 
 ## 相关文档
 
-1. **71 环境安装指南**  
-   `docs/71-pg-trgm-installation-guide.md`  
+1. **71 环境安装指南**
+   `docs/71-pg-trgm-installation-guide.md`
    完整的步骤、脚本、故障排查
 
-2. **pg_trgm 扩展核实报告**  
-   `docs/pg-trgm-verification-report.md`  
+2. **pg_trgm 扩展核实报告**
+   `docs/pg-trgm-verification-report.md`
    问题分析和验证过程
 
-3. **Columnar 故障事后分析**  
-   `docs/pg-columnar-incident-report.md`  
+3. **Columnar 故障事后分析**
+   `docs/pg-columnar-incident-report.md`
    根因分析和经验教训
 
-4. **迁移脚本**  
-   `db/migrations/043_request_logs_client_model_trgm.sql`  
+4. **迁移脚本**
+   `db/migrations/043_request_logs_client_model_trgm.sql`
    trgm 索引创建的官方脚本
 
 ---
 
 ## 验证签名
 
-**测试执行：** @__USER_1__  
-**验证时间：** 2026-07-04 01:40  
-**184 环境：** ✅ 测试通过  
-**本地环境：** ✅ 测试通过  
-**71 环境：** ⏳ 待执行安装指南  
+**测试执行：** @__USER_1__
+**验证时间：** 2026-07-04 01:40
+**184 环境：** ✅ 测试通过
+**本地环境：** ✅ 测试通过
+**71 环境：** ⏳ 待执行安装指南
 
 **下次审计：** 71 环境完成后进行最终验证
 
@@ -473,10 +473,10 @@ $$;
 - 创建 2026-09~12 分区
 - 测试写入
 
-**优先级：** P0（高）  
+**优先级：** P0（高）
 **预计完成：** 本周内（15-20 分钟）
 
 ---
 
-**报告完成时间：** 2026-07-04 01:40  
+**报告完成时间：** 2026-07-04 01:40
 **下一步：** 执行 71 环境安装指南

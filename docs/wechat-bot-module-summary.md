@@ -4,8 +4,8 @@
 
 本任务完成了企业微信机器人模块的完整集成，包括后端设置管理、前端UI展示、模块依赖验证和多语言支持。
 
-**提交哈希**: `c134d6c3` (opencode/cosmic-mountain) → `5196e202` (merged to main)  
-**实施日期**: 2026-07-09  
+**提交哈希**: `c134d6c3` (opencode/cosmic-mountain) → `5196e202` (merged to main)
+**实施日期**: 2026-07-09
 **影响范围**: 15 个文件，+461/-66 行代码
 
 ---
@@ -86,7 +86,7 @@ wechat_bot
 if body.Enabled && len(found.Requires) > 0 {
     // 构建模块映射
     defMap := make(map[string]*ModuleDefinition, len(allDefs))
-    
+
     // 检查每个前置模块
     var missing []string
     for _, reqKey := range found.Requires {
@@ -100,10 +100,10 @@ if body.Enabled && len(found.Requires) > 0 {
             missing = append(missing, reqDef.Name) // 使用中文显示名
         }
     }
-    
+
     // 如果有未满足的依赖，返回 HTTP 409 Conflict
     if len(missing) > 0 {
-        writeError(w, http.StatusConflict, 
+        writeError(w, http.StatusConflict,
             fmt.Sprintf("依赖模块未启用: %s", strings.Join(missing, "、")))
         return
     }
@@ -560,6 +560,6 @@ HTTP Status: `409 Conflict`
 
 ---
 
-**文档生成时间**: 2026-07-09  
-**作者**: OpenCode Agent  
+**文档生成时间**: 2026-07-09
+**作者**: OpenCode Agent
 **审计状态**: ✅ 已完成代码审计（详见审计报告）

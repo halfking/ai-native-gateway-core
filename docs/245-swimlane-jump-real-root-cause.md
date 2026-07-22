@@ -1,7 +1,7 @@
 # 泳道跳变真正根因分析
 
-**部署版本**: `82b5edcf22e9a141ed88731f30fa7ebfccf9a6f6`  
-**问题场景**: 没有刷新页面，正常观察时突然大幅跳变  
+**部署版本**: `82b5edcf22e9a141ed88731f30fa7ebfccf9a6f6`
+**问题场景**: 没有刷新页面，正常观察时突然大幅跳变
 **时间特征**: 两张截图间隔15秒，数据从20:46跳到21:08显示的状态
 
 ---
@@ -186,7 +186,7 @@ es.onmessage = (e) => {
         const now = new Date();
         console.log('🔔 收到idle_marker', {
             时间: now.toLocaleTimeString(),
-            距上次: lastIdleMarkerTime 
+            距上次: lastIdleMarkerTime
                 ? ((now - lastIdleMarkerTime) / 1000 / 60).toFixed(1) + '分钟'
                 : '首次',
             delta中的泳道数: Object.values(msg.delta?.changed_lanes || {})
@@ -198,7 +198,7 @@ es.onmessage = (e) => {
 };
 ```
 
-**期望结果**: 
+**期望结果**:
 - 每5分钟收到一次 `idle_marker` 消息
 - `delta.changed_lanes` 包含大量泳道（几十个）
 - 如果泳道数 > 10，说明触发了大规模同步
@@ -251,7 +251,7 @@ func (h *LiveStreamSSEHub) maybeEmitIdleMarker() {
     // 3) ⚠️ 关键修改：不要全量重算delta
     // 旧代码会调用 computeScopeDelta()，触发全量扫描
     // 新代码只发送 lane IDs，不包含delta
-    
+
     base := LiveStreamEnvelope{
         Type:      "idle_marker",
         Timestamp: now,
@@ -290,13 +290,13 @@ func (h *LiveStreamSSEHub) maybeEmitIdleMarker() {
 if (env.type === 'idle_marker') {
     // 旧注释说：delta已经在上面合并了，这里不再重复
     // 但实际上后端会发送delta，导致重复处理
-    
+
     // 新逻辑：如果有delta，才合并（向后兼容）
     // 如果没有delta，只处理lane IDs（新行为）
     if (env.delta) {
         mergeDelta(env.delta)
     }
-    
+
     // 处理 lane IDs，添加/更新空闲标记
     if (env.lane_ids && env.lane_ids.length > 0) {
         handleLaneIdleCheck(env.lane_ids, env.ts)
@@ -329,26 +329,26 @@ for _, cs := range all {
         deltaByCacheKey[sk] = nil
         continue
     }
-    
+
     ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
-    
+
     // ⚠️ 新增：只在cached明显落后时才计算delta
     cached := h.getCachedSnapshot(sk)
     fresh, err := h.store.SnapshotFromDimensionQueues(ctx, cs.tenantID, cs.isSuper)
     cancel()
-    
+
     if err != nil || fresh == nil {
         deltaByCacheKey[sk] = nil
         continue
     }
-    
+
     // 差异检测：只有总数差异 > 10% 才推送
     if cached != nil {
         oldTotal := cached.Summary.Total
         newTotal := fresh.Summary.Total
         diff := absInt(newTotal - oldTotal)
         threshold := oldTotal / 10 // 10%
-        
+
         if diff <= threshold {
             // 差异很小，跳过推送
             slog.Debug("idle marker: skipping delta (small change)",
@@ -356,12 +356,12 @@ for _, cs := range all {
             deltaByCacheKey[sk] = nil
             continue
         }
-        
+
         slog.Info("idle marker: significant data drift detected",
-            "old_total", oldTotal, "new_total", newTotal, 
+            "old_total", oldTotal, "new_total", newTotal,
             "diff", diff, "threshold", threshold)
     }
-    
+
     // 差异显著，计算并推送delta
     delta := ComputeDelta(cached, fresh)
     h.updateCachedSnapshot(sk, fresh)
@@ -391,7 +391,7 @@ func (h *LiveStreamSSEHub) enqueueBroadcast(req LiveRequest) {
     default:
         // ⚠️ 问题：队列满时直接丢弃
         slog.Debug("live stream broadcast queue full, dropping request", "request_id", req.RequestID)
-        
+
         // ✅ 新方案：标记为"需要同步"
         atomic.AddInt64(&h.droppedRequestCount, 1)
     }
@@ -494,6 +494,6 @@ case <-droppedCheckTicker.C:
 
 ---
 
-**分析完成时间**: 2026-07-20  
-**分析工程师**: AI Agent (Kiro)  
+**分析完成时间**: 2026-07-20
+**分析工程师**: AI Agent (Kiro)
 **部署版本**: 82b5edcf22e9a141ed88731f30fa7ebfccf9a6f6

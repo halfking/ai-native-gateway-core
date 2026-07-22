@@ -369,7 +369,7 @@ jobs:
         run: |
           cd tests/routing
           ./run_all_tests.sh all
-  
+
   scenario-tests:
     runs-on: ubuntu-latest
     steps:
@@ -437,6 +437,6 @@ jobs:
 
 ---
 
-**文档版本**: v2.0 (整合版)  
-**最后更新**: 2026-07-19  
+**文档版本**: v2.0 (整合版)
+**最后更新**: 2026-07-19
 **维护者**: LLM Gateway Team

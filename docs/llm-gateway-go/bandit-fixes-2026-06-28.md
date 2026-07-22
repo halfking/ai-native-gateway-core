@@ -200,6 +200,6 @@ Before enabling `LLM_GATEWAY_ENABLE_BANDIT_SCORING=true`:
 
 ---
 
-**Fixed By**: AI Assistant  
-**Date**: 2026-06-28  
+**Fixed By**: AI Assistant
+**Date**: 2026-06-28
 **Status**: ✅ All code fixes complete, awaiting database migration + integration test validation

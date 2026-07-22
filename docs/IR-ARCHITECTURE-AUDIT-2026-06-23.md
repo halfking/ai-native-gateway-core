@@ -1,7 +1,7 @@
 # IR Architecture Audit Report
-**Date**: 2026-06-23  
-**Auditor**: AI Agent  
-**Scope**: Internal Representation (IR) architecture for OpenAI ↔ Anthropic protocol conversion  
+**Date**: 2026-06-23
+**Auditor**: AI Agent
+**Scope**: Internal Representation (IR) architecture for OpenAI ↔ Anthropic protocol conversion
 **Focus**: Tool handling completeness and data flow integrity
 
 ---
@@ -296,7 +296,7 @@ if role == "tool" {
 ```go
 func (ir *InternalRequest) SerializeOpenAI() ([]byte, error) {
     // ... model, max_tokens, stream, tools handling ...
-    
+
     messages := make([]map[string]any, 0, len(ir.Messages))
     for _, msg := range ir.Messages {
         switch msg.Role {
@@ -484,17 +484,17 @@ But `relay/anthropic_to_chat.go` (non-streaming) does **direct conversion** with
 ```go
 func serializeOpenAIMessage(msg Message) map[string]any {
     oaiMsg := map[string]any{"role": msg.Role}
-    
+
     switch msg.Role {
     case "user", "assistant":
         // ... existing code ...
-    
+
     case "tool":
         // Extract tool_result from content blocks
         for _, block := range msg.Content {
             if block.Type == "tool_result" && block.ToolResult != nil {
                 oaiMsg["tool_call_id"] = block.ToolResult.ToolUseID
-                
+
                 // Extract text content from tool result
                 var textParts []string
                 for _, c := range block.ToolResult.Content {
@@ -502,22 +502,22 @@ func serializeOpenAIMessage(msg Message) map[string]any {
                         textParts = append(textParts, c.Text)
                     }
                 }
-                
+
                 if len(textParts) > 0 {
                     oaiMsg["content"] = strings.Join(textParts, "\n")
                 } else {
                     oaiMsg["content"] = ""
                 }
-                
+
                 // OpenAI tool messages can have optional name field
                 if msg.Name != "" {
                     oaiMsg["name"] = msg.Name
                 }
-                
+
                 return oaiMsg
             }
         }
-        
+
         // Fallback: if no tool_result found, use ToolCallID from message
         if msg.ToolCallID != "" {
             oaiMsg["tool_call_id"] = msg.ToolCallID
@@ -531,7 +531,7 @@ func serializeOpenAIMessage(msg Message) map[string]any {
             oaiMsg["content"] = strings.Join(textParts, "\n")
         }
     }
-    
+
     return oaiMsg
 }
 ```
@@ -572,7 +572,7 @@ case "input_json_delta":
     // Always emit incremental arguments (don't check initialArgsSent)
     if evt.Delta.PartialJSON != "" {
         bufferedToolArgs.WriteString(evt.Delta.PartialJSON)
-        
+
         // Emit incremental chunk immediately
         args := evt.Delta.PartialJSON
         chunk := buildToolCallChunk(toolCallIndex-1, currentToolCallID, "", &args, true)
@@ -586,7 +586,7 @@ if len(evt.ContentBlock.InputRaw) > 0 && string(evt.ContentBlock.InputRaw) != "{
     // Store initial args but don't send yet
     bufferedToolArgs.WriteString(string(evt.ContentBlock.InputRaw))
     initialArgsSent = false // Always buffer, emit later
-    
+
     // Emit tool call structure without arguments
     chunk := buildToolCallChunk(toolCallIndex, evt.ContentBlock.ID, evt.ContentBlock.Name, nil, false)
     writeChunk(chunk)
@@ -641,18 +641,18 @@ func TestToolMessageRoundTrip(t *testing.T) {
             {"role": "tool", "tool_call_id": "call_123", "content": "Sunny, 72°F"}
         ]
     }`
-    
+
     ir, err := ParseOpenAI([]byte(input))
     require.NoError(t, err)
-    
+
     out, err := ir.SerializeOpenAI()
     require.NoError(t, err)
-    
+
     // Verify tool message preserved
     var result map[string]any
     json.Unmarshal(out, &result)
     messages := result["messages"].([]any)
-    
+
     toolMsg := messages[1].(map[string]any)
     assert.Equal(t, "tool", toolMsg["role"])
     assert.Equal(t, "call_123", toolMsg["tool_call_id"])
@@ -669,17 +669,17 @@ func TestAnthropicToolResultToOpenAI(t *testing.T) {
             {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "toolu_123", "content": "Result text"}]}
         ]
     }`
-    
+
     ir, err := ParseAnthropic([]byte(input))
     require.NoError(t, err)
-    
+
     out, err := ir.SerializeOpenAI()
     require.NoError(t, err)
-    
+
     var result map[string]any
     json.Unmarshal(out, &result)
     messages := result["messages"].([]any)
-    
+
     // Anthropic's user message with tool_result should become OpenAI tool message
     toolMsg := messages[0].(map[string]any)
     assert.Equal(t, "tool", toolMsg["role"])
@@ -797,5 +797,5 @@ prod 184 k3s yaml), so the bug was dormant in production; the legacy
 
 ---
 
-**Audit completed by**: AI Agent  
+**Audit completed by**: AI Agent
 **Next review**: After P0-P2 fixes deployed to 184

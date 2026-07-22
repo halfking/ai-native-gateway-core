@@ -1,7 +1,7 @@
 # routing-v2 热力图 + 路由流向（Sankey）UI 经验教训
 
-> 范围：`RoutingDashboardView` 数据分析 Tab 的双栏图表（热力图 + Sankey）  
-> 时间：2026-06-16  
+> 范围：`RoutingDashboardView` 数据分析 Tab 的双栏图表（热力图 + Sankey）
+> 时间：2026-06-16
 > 相关提交：`99d112d7` → `6f2ee211` → `49ea1f1c` → `59481b4d` → `aff6653f`（已部署 `gitsha-aff6653f`）
 
 ---

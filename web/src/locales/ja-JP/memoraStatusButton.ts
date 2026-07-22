@@ -7,11 +7,11 @@ export default {
     error: '接続失敗',
     loading: '確認中',
   },
-  
+
   panel: {
     title: 'Memora 接続',
     closeLabel: '閉じる',
-    
+
     fields: {
       serviceUrl: 'サービス URL',
       recentLatency: '最近のレイテンシ',
@@ -22,7 +22,7 @@ export default {
       consecutiveErrors: '連続エラー',
       recentWriteError: '最近の書き込みエラー',
     },
-    
+
     actions: {
       processing: '処理中…',
       reconnect: '再接続',
@@ -32,7 +32,7 @@ export default {
       sessionContext: 'セッションコンテキスト',
     },
   },
-  
+
   error: {
     connectionFailed: '接続に失敗しました',
     checkFailed: '確認に失敗しました',

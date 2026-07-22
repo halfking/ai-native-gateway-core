@@ -100,7 +100,7 @@ Markdown Content:
 *   [API troubleshooting](https://ai.google.dev/gemini-api/docs/troubleshooting)
 *   [Status](https://aistudio.google.com/status)
 *   [Partner and library integrations](https://ai.google.dev/gemini-api/docs/partner-integration)
-*   
+*
 Google AI Studio
 
     *   [Quickstart](https://ai.google.dev/gemini-api/docs/ai-studio-quickstart)

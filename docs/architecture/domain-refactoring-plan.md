@@ -1,9 +1,9 @@
 # LLM Gateway Go 领域驱动架构重构方案
 
-> **版本**: v2.0  
-> **日期**: 2026-06-25  
-> **状态**: Design Approved  
-> **作者**: Architecture Team  
+> **版本**: v2.0
+> **日期**: 2026-06-25
+> **状态**: Design Approved
+> **作者**: Architecture Team
 
 ## 执行摘要
 
@@ -324,11 +324,11 @@ go test ./domains/hooks/session-inspector/... -v
   # 循环依赖检查
   scripts/check-cycles.sh
   # 期望: 0 cycles
-  
+
   # 测试覆盖率
   go test ./domains/... -cover | grep "coverage:"
   # 期望: 所有包 ≥ 80%
-  
+
   # golangci-lint
   golangci-lint run ./domains/...
   # 期望: 0 issues
@@ -346,7 +346,7 @@ go build ./cmd/gateway/
 
 # 性能基准测试
 go test -bench=. -benchmem ./domains/pipeline/
-# 期望: 
+# 期望:
 #   - 单请求延迟 < 50ms
 #   - 内存分配 < 10KB per request
 

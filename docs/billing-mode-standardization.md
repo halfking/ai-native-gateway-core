@@ -109,7 +109,7 @@ func DeriveBillingMode(planType string) string {
 ```sql
 -- 套餐兼容性检查
 WHEN c.plan_type IN ('token_plan', 'code_plan', 'agent_plan')
-     AND cmb.billing_mode NOT IN ('token_plan', 'code_plan', 'agent_plan') 
+     AND cmb.billing_mode NOT IN ('token_plan', 'code_plan', 'agent_plan')
      THEN false  -- 不兼容
 ```
 
@@ -123,7 +123,7 @@ SELECT
     cmb.billing_mode,  -- 派生自 credentials.plan_type
     c.plan_type,       -- SSOT
     -- 兼容性检查逻辑
-    CASE 
+    CASE
         WHEN c.plan_type IN ('token_plan', 'code_plan', 'agent_plan')
              AND cmb.billing_mode NOT IN ('token_plan', 'code_plan', 'agent_plan')
              THEN false
@@ -154,7 +154,7 @@ SET billing_mode = 'per_token',
 WHERE billing_mode = 'token';
 
 -- 1.3 验证结果
-SELECT 
+SELECT
     c.plan_type,
     cmb.billing_mode,
     COUNT(*) as count
@@ -206,7 +206,7 @@ SELECT COUNT(*) as mismatch_count
 FROM credentials c
 JOIN credential_model_bindings cmb ON cmb.credential_id = c.id
 WHERE (c.plan_type = 'token' AND cmb.billing_mode != 'per_token')
-   OR (c.plan_type IN ('token_plan', 'code_plan', 'agent_plan') 
+   OR (c.plan_type IN ('token_plan', 'code_plan', 'agent_plan')
        AND cmb.billing_mode NOT IN ('token_plan', 'code_plan', 'agent_plan'));
 
 -- 告警阈值：mismatch_count > 0
@@ -219,7 +219,7 @@ WHERE (c.plan_type = 'token' AND cmb.billing_mode != 'per_token')
 -- 恢复到修改前的状态（基于 plan_type_origin 标记）
 UPDATE credential_model_bindings
 SET billing_mode = (
-    SELECT CASE 
+    SELECT CASE
         WHEN plan_type_origin = 'standardization' THEN 'token'
         ELSE billing_mode
     END
@@ -311,7 +311,7 @@ CREATE TABLE billing_compatibility_rules (
 
 ---
 
-**文档版本：** 1.0  
-**创建日期：** 2026-07-03  
-**作者：** LLM Gateway 运维团队  
+**文档版本：** 1.0
+**创建日期：** 2026-07-03
+**作者：** LLM Gateway 运维团队
 **状态：** 已批准，待执行

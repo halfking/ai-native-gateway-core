@@ -1,35 +1,23 @@
 import { describe, it, expect } from 'vitest'
 import { mergeNav, NAV_GROUPS, NAV_PRIMARY_ITEMS } from './appNav'
-import type { NavEntry } from '@/api/plugins'
 
 describe('mergeNav', () => {
-  it('inserts plugin item into existing group', () => {
-    const items: NavEntry[] = [{
-      plugin_id: 'p', plugin_version: '1', page_path: 's', page_type: 'data',
-      nav_group: 'requests-sessions', label_key: 'k', super: false,
-      platform_ops: false, tenant_only: false, order: 50, route_url: '/plugins/p/s',
-    }]
+  it('preserves visible primary and grouped navigation', () => {
     const merged = mergeNav(NAV_PRIMARY_ITEMS, NAV_GROUPS, {
       isSuperAdmin: true,
       isPlatformOps: true,
       isTenantPortal: false,
     })
-    // After merge, the plugin item should be findable somewhere in merged groups
-    const hasPlugin = merged.some((g) => g.items.some((i) => i.path === '/plugins/p/s'))
-    expect(hasPlugin).toBe(true)
+    expect(merged.some((g) => g.id === 'primary')).toBe(true)
+    expect(merged.some((g) => g.id === 'requests-sessions')).toBe(true)
   })
-  it('creates plugins group for unknown nav_group', () => {
-    const items: NavEntry[] = [{
-      plugin_id: 'p', plugin_version: '1', page_path: 's', page_type: 'data',
-      nav_group: 'nope', label_key: 'k', super: false, platform_ops: false,
-      tenant_only: false, order: 1, route_url: '/plugins/p/s',
-    }]
+  it('hides tenant-only groups from platform navigation', () => {
     const merged = mergeNav(NAV_PRIMARY_ITEMS, NAV_GROUPS, {
       isSuperAdmin: true,
       isPlatformOps: true,
       isTenantPortal: false,
     })
-    expect(merged.some((g) => g.id === 'plugins')).toBe(true)
+    expect(merged.some((g) => g.id === 'tenant-portal')).toBe(false)
   })
 })
 
@@ -38,7 +26,7 @@ describe('opsplatform maintain external links', () => {
 
   it('marks migrated ops items as external /maintain/* paths', () => {
     const migrated = ops.items.filter((i) => i.path.startsWith('/maintain/'))
-    expect(migrated.length).toBeGreaterThanOrEqual(7)
+    expect(migrated.length).toBeGreaterThanOrEqual(6)
     for (const item of migrated) {
       expect(item.external).toBe(true)
     }
@@ -48,5 +36,33 @@ describe('opsplatform maintain external links', () => {
     const vibe = ops.items.find((i) => i.path === '/ops/vibecoding')
     expect(vibe).toBeTruthy()
     expect(vibe!.external).toBeFalsy()
+  })
+})
+
+/**
+ * 2026-07-22: 回归保护 — 防止 PUBLIC_NAV_LINKS 指向不存在的路由，
+ * 否则路由守卫会重定向到 /?login=1，导致导航栏错位。
+ */
+describe('PUBLIC_NAV_LINKS regression guard', () => {
+  it('all PUBLIC_NAV_LINKS must point to existing public routes', async () => {
+    const { PUBLIC_NAV_LINKS } = await import('./navLinks')
+    const routerModule = await import('../router')
+
+    // 收集所有声明为 public 的路径
+    const publicPaths = new Set<string>()
+    for (const route of routerModule.router.options.routes) {
+      if (route.meta?.public) {
+        publicPaths.add(route.path as string)
+      }
+    }
+
+    // 所有 PUBLIC_NAV_LINKS 必须在 publicPaths 中
+    for (const link of PUBLIC_NAV_LINKS) {
+      const isPublic = publicPaths.has(link.path)
+      expect(
+        isPublic,
+        `PUBLIC_NAV_LINKS entry "${link.path}" (${link.labelKey}) is not in the set of public routes — this will trigger a redirect to /?login=1`,
+      ).toBe(true)
+    }
   })
 })

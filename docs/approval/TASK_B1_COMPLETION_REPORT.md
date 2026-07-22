@@ -2,10 +2,10 @@
 
 ## 任务概述
 
-**任务**: 任务 B1 - 实现飞书通知渠道  
-**状态**: ✅ 已完成  
-**完成时间**: 2026-07-03  
-**Git Commits**: 
+**任务**: 任务 B1 - 实现飞书通知渠道
+**状态**: ✅ 已完成
+**完成时间**: 2026-07-03
+**Git Commits**:
 - `a56c8284` - feat(approval): implement Feishu notification channel (Task B1)
 - `3b30be45` - feat(approval): add Feishu channel implementation files
 
@@ -115,11 +115,11 @@
 
 1. **Token 缓存机制**: 自动缓存 access_token，减少 API 调用，提前 5 分钟刷新避免过期
 2. **优雅的错误处理**: 完善的错误处理和日志记录
-3. **安全性考虑**: 
+3. **安全性考虑**:
    - 签名验证防止伪造请求
    - 时间戳验证防止重放攻击
    - 内容自动脱敏
-4. **可扩展性**: 
+4. **可扩展性**:
    - 清晰的接口定义
    - 易于集成到现有审批管理器
    - 支持多种签名验证方法
@@ -182,5 +182,5 @@ err = feishuChannel.SendApprovalNotification(ctx, approvalRequest, approvers)
 
 ---
 
-**完成者**: Kiro AI Assistant  
+**完成者**: Kiro AI Assistant
 **审核建议**: 可以进行 Code Review 并与现有的 ApprovalManager 集成测试

@@ -1,8 +1,8 @@
 # LLMGo 全站 UI 优化审计
 
-> **站点**：https://llmgo.kxpms.cn  
-> **账号**：admin（super_admin + 默认租户）  
-> **日期**：2026-07-14  
+> **站点**：https://llmgo.kxpms.cn
+> **账号**：admin（super_admin + 默认租户）
+> **日期**：2026-07-14
 > **方法**：browser-use 实测 39 菜单页 + i18n:check 静态交叉验证
 
 ## 审计结论摘要

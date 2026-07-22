@@ -1,8 +1,8 @@
 # Phase 2.x 实际请求反馈集成 - 部署报告
 
-**日期**: 2026-07-01  
-**Git SHA**: 0d5aec70  
-**环境**: 184测试环境  
+**日期**: 2026-07-01
+**Git SHA**: 0d5aec70
+**环境**: 184测试环境
 **状态**: ⚠️ 部署成功，但因数据库未初始化导致功能未启用
 
 ---
@@ -163,7 +163,7 @@ ok      __REPO_URL_3__/domains/streaming/executors  0.522s
    ```bash
    kubectl set image deployment/llm-gateway-go-deployment \
        llm-gateway-go=127.0.0.1:__PORT_8__/kx-llm-gateway-go:gitsha-0d5aec70
-   
+
    kubectl patch deployment/llm-gateway-go-deployment \
        --type='json' \
        -p='[{"op": "replace", "path": "/spec/template/spec/containers/0/imagePullPolicy", "value": "IfNotPresent"}]'
@@ -277,13 +277,13 @@ func (d *DB) ensureSupplementalRLS(ctx context.Context) error {
     if d == nil || d.pool == nil {
         return nil
     }
-    
+
     // 先检查每个表是否存在，不存在则跳过
     tables := []string{"tenant_settings_kv", "settings_audit", "tenant_tool_policies", ...}
     for _, tbl := range tables {
         var exists bool
-        err := d.pool.QueryRow(ctx, 
-            `SELECT EXISTS (SELECT 1 FROM information_schema.tables 
+        err := d.pool.QueryRow(ctx,
+            `SELECT EXISTS (SELECT 1 FROM information_schema.tables
              WHERE table_schema = 'public' AND table_name = $1)`, tbl).Scan(&exists)
         if err != nil || !exists {
             slog.Warn("table does not exist, skipping RLS", "table", tbl)
@@ -329,10 +329,10 @@ if os.Getenv("LLM_GATEWAY_REQUIRE_DB") == "false" {
    ```bash
    # 在生产环境执行
    pg_dump -h <prod-pg> -U llm_gateway --schema-only --no-owner llm_gateway > /tmp/llm_gateway_schema.sql
-   
+
    # 传输到184
    scp /tmp/llm_gateway_schema.sql 184:/tmp/
-   
+
    # 在184应用
    ssh 184 "kubectl exec -n pms-test <pg-pod> -- psql -U llm_gateway < /tmp/llm_gateway_schema.sql"
    ```
@@ -359,11 +359,11 @@ if os.Getenv("LLM_GATEWAY_REQUIRE_DB") == "false" {
    curl -X POST http://184:31781/v1/chat/completions \
        -H "Authorization: Bearer <test-key>" \
        -d '{"model":"gpt-4","messages":[{"role":"user","content":"test"}]}'
-   
+
    # 检查数据库
    kubectl exec -n pms-test <pg-pod> -- psql -U llm_gateway -c "
-   SELECT credential_id, model, consecutive_fails, last_success_at 
-   FROM credential_states 
+   SELECT credential_id, model, consecutive_fails, last_success_at
+   FROM credential_states
    ORDER BY last_updated_at DESC LIMIT 5;"
    ```
 
@@ -418,7 +418,7 @@ if os.Getenv("LLM_GATEWAY_REQUIRE_DB") == "false" {
    database:
      required_tables: ["request_logs", "credentials"]
      fail_on_missing: false  # 测试环境允许优雅降级
-   
+
    # config/production.yaml
    database:
      required_tables: [...full list...]
@@ -460,30 +460,30 @@ if os.Getenv("LLM_GATEWAY_REQUIRE_DB") == "false" {
 
 ### 1. 184测试环境数据库未初始化
 
-**问题**: 空数据库导致 `db.Open()` 失败  
-**影响**: Phase 2.x 功能无法验证  
-**解决方案**: 运行完整 schema 迁移（方案 A）  
+**问题**: 空数据库导致 `db.Open()` 失败
+**影响**: Phase 2.x 功能无法验证
+**解决方案**: 运行完整 schema 迁移（方案 A）
 **优先级**: 🔴 P0（阻塞验收）
 
 ### 2. imagePullPolicy 反复被重置
 
-**问题**: kubectl set image 后 imagePullPolicy 变回 Never  
-**影响**: Pod ImagePullBackOff  
-**解决方案**: 使用 `kubectl patch` 或 `kubectl apply -f`  
+**问题**: kubectl set image 后 imagePullPolicy 变回 Never
+**影响**: Pod ImagePullBackOff
+**解决方案**: 使用 `kubectl patch` 或 `kubectl apply -f`
 **优先级**: 🟡 P1（部署体验）
 
 ### 3. db.Open() 缺少表存在性检查
 
-**问题**: `ensure*` 函数假设表已存在  
-**影响**: 新环境部署失败  
-**解决方案**: 添加 `SELECT EXISTS` 检查（方案 B）  
+**问题**: `ensure*` 函数假设表已存在
+**影响**: 新环境部署失败
+**解决方案**: 添加 `SELECT EXISTS` 检查（方案 B）
 **优先级**: 🟡 P1（架构改进）
 
 ### 4. 缺少统一的 migration 工具
 
-**问题**: Schema 分散在代码和 SQL 文件中  
-**影响**: 难以追踪 schema 版本  
-**解决方案**: 集成 golang-migrate  
+**问题**: Schema 分散在代码和 SQL 文件中
+**影响**: 难以追踪 schema 版本
+**解决方案**: 集成 golang-migrate
 **优先级**: 🟢 P2（长期改进）
 
 ---

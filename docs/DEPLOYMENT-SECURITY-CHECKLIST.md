@@ -1,7 +1,7 @@
 # 部署安全检查清单
 
-**版本**: 1.0  
-**日期**: 2026-06-30  
+**版本**: 1.0
+**日期**: 2026-06-30
 **适用**: llm-gateway-go 及所有服务
 
 ---
@@ -354,19 +354,19 @@ ps aux | grep llm-gateway | grep -E "(password|secret|key)" && echo "❌ Sensiti
 
 ## 十、常见问题
 
-**Q: 部署到71需要什么审批？**  
+**Q: 部署到71需要什么审批？**
 A: 需要DBA审批的变更单（CHG-XXX），包含变更内容、影响评估、回滚方案。
 
-**Q: 如何确认敏感信息已清理？**  
+**Q: 如何确认敏感信息已清理？**
 A: 运行 `scripts/scan-secrets.sh` 或 `grep -r "192.168.1\|14.103" . --include="*.sh"`
 
-**Q: 部署失败如何快速回滚？**  
+**Q: 部署失败如何快速回滚？**
 A: 参考第六部分回滚步骤，或执行 `./scripts/rollback-prod.sh --env 71`
 
-**Q: 如何验证数据库迁移安全？**  
+**Q: 如何验证数据库迁移安全？**
 A: 先在184测试环境验证，确认Schema兼容性，再申请71部署。
 
-**Q: 健康检查失败怎么办？**  
+**Q: 健康检查失败怎么办？**
 A: 立即检查日志 `docker logs llm-gateway-go --tail=100`，如5分钟内未恢复，执行回滚。
 
 ---
@@ -442,9 +442,9 @@ echo "=== Verification complete ==="
 
 ---
 
-**最后更新**: 2026-06-30  
-**维护者**: DevOps Team  
-**相关文档**: 
+**最后更新**: 2026-06-30
+**维护者**: DevOps Team
+**相关文档**:
 - [数据库环境分离规范](./DATABASE-ENVIRONMENT-SEPARATION.md)
 - [部署检查清单](./partition/MONTHLY_CHECKLIST.md)
 - [安全审计报告](SECURITY-AUDIT-2026-06-28.md)

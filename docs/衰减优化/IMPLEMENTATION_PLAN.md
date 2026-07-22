@@ -2,7 +2,7 @@
 
 > 基于 AUDIT.md 审计结果的分阶段实施路线图
 >
-> 制定日期: 2026-07-18  
+> 制定日期: 2026-07-18
 > 总工期: 4周 (零风险调优) + 8周 (代码增强) + 持续优化
 
 ---
@@ -148,7 +148,7 @@ upstream llm_gateway_canary {
 server {
     listen 80;
     server_name llm-gateway.internal;
-    
+
     location /v1/ {
         proxy_pass http://llm_gateway_canary;
         proxy_http_version 1.1;
@@ -176,7 +176,7 @@ grep "71" /tmp/routing.log | wc -l  # 应该约等于10
 
 **金丝雀调整计划**:
 - Week 1: weight=1 (10%)
-- Week 2: weight=5 (50%)  
+- Week 2: weight=5 (50%)
 - Week 3: weight=10, 184下线 (100%)
 
 #### Task 0.4: 提交前置修正
@@ -343,7 +343,7 @@ bash scripts/load-test.sh --duration=2h --qps=100
 ### 目标（基于 AUDIT_V2 修正）
 
 - **新增**: DNS 缓存 (A6) - 新建连接 -10~20ms
-- **新增**: TLS Session 复用 (A7) - 握手开销 -50~100%  
+- **新增**: TLS Session 复用 (A7) - 握手开销 -50~100%
 - **调整**: HTTP/2 Server Push → Link Preload (A2) - h2c 架构限制
 - **预期收益**: TTFB ↓ 额外 **25-30%**（初版 15-20% 被低估）
 
@@ -389,31 +389,31 @@ func (r *CachedResolver) LookupIP(ctx context.Context, host string) ([]net.IP, e
     r.mu.RLock()
     entry, ok := r.cache[host]
     r.mu.RUnlock()
-    
+
     if ok && time.Now().Before(entry.expiresAt) {
         return entry.ips, nil  // 缓存命中
     }
-    
+
     // 缓存未命中，查询DNS
     ips, err := r.resolver.LookupIP(ctx, "ip", host)
     if err != nil {
         return nil, err
     }
-    
+
     r.mu.Lock()
     r.cache[host] = &cacheEntry{
         ips:       ips,
         expiresAt: time.Now().Add(r.ttl),
     }
     r.mu.Unlock()
-    
+
     return ips, nil
 }
 
 // 集成到 upstream/client.go
 func NewClient(...) *Client {
     resolver := dnscache.NewCachedResolver(5 * time.Minute)
-    
+
     return &Client{
         hc: &http.Client{
             Transport: &http.Transport{
@@ -484,7 +484,7 @@ tcpdump -i any -w /tmp/tls.pcap port 443
 go test ./upstream/... -v -run TestTLSSessionReuse
 ```
 
-**收益**: 
+**收益**:
 - TLS 1.2: 握手时间 -50% (2-RTT → 1-RTT)
 - TLS 1.3: 握手时间 -100% (1-RTT → 0-RTT)
 - 混合场景（20%新连接）: TTFB -10~30ms
@@ -500,7 +500,7 @@ func (h *ChatHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
     if pusher, ok := w.(http.Pusher); ok {
         go h.preloadCandidateHealth(pusher, r)
     }
-    
+
     // 原有逻辑...
 }
 
@@ -510,23 +510,23 @@ func (h *ChatHandler) preloadCandidateHealth(pusher http.Pusher, r *http.Request
     if model == "" {
         return
     }
-    
+
     // 获取前3个候选
     candidates, _, _ := h.providerClient.GetCandidates(
         context.Background(), model, "", extractTenantID(r),
     )
-    
+
     for i, c := range candidates[:min(3, len(candidates))] {
-        pushURL := fmt.Sprintf("/internal/candidate-health/%d/%d", 
+        pushURL := fmt.Sprintf("/internal/candidate-health/%d/%d",
             c.ProviderID, c.CredentialID)
-        
+
         pushOpts := &http.PushOptions{
             Method: "GET",
             Header: http.Header{
                 "X-Preload": []string{"health"},
             },
         }
-        
+
         if err := pusher.Push(pushURL, pushOpts); err != nil {
             // 客户端不支持 Server Push，静默失败
             break
@@ -551,11 +551,11 @@ curl -v --http2 https://api.gateway.com/v1/chat/completions \
 // domains/streaming/handler.go — 修改 startPreStreamKeepalive 调用
 func (h *ChatHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
     // ...
-    
+
     // 改: 固定15s → 自适应间隔
     interval := h.calculateKeepaliveInterval(r)
     ka, ok := startPreStreamKeepalive(w, interval)
-    
+
     // ...
 }
 
@@ -574,7 +574,7 @@ func (h *ChatHandler) calculateKeepaliveInterval(r *http.Request) time.Duration 
             return interval
         }
     }
-    
+
     // 默认: 15s → 10s (更积极)
     return 10 * time.Second
 }
@@ -613,7 +613,7 @@ var (
         },
         []string{"provider_id", "credential_id"},
     )
-    
+
     connectionsReused = promauto.NewCounterVec(
         prometheus.CounterOpts{
             Name: "llm_gateway_pool_connections_reused_total",
@@ -621,7 +621,7 @@ var (
         },
         []string{"provider_id", "credential_id"},
     )
-    
+
     idleConnections = promauto.NewGaugeVec(
         prometheus.GaugeOpts{
             Name: "llm_gateway_pool_idle_connections",
@@ -629,7 +629,7 @@ var (
         },
         []string{"pool_key"},
     )
-    
+
     activeConnections = promauto.NewGaugeVec(
         prometheus.GaugeOpts{
             Name: "llm_gateway_pool_active_connections",
@@ -707,13 +707,13 @@ type TTFBTracker struct {
 func (t *TTFBTracker) Record(credentialID int, ttfb time.Duration) {
     t.mu.Lock()
     defer t.mu.Unlock()
-    
+
     if t.digests[credentialID] == nil {
         t.digests[credentialID] = tdigest.New()
     }
-    
+
     t.digests[credentialID].Add(float64(ttfb.Milliseconds()), 1)
-    
+
     // 每1000次采样压缩一次（防止内存膨胀）
     if t.digests[credentialID].Count() % 1000 == 0 {
         t.digests[credentialID].Compress()
@@ -723,12 +723,12 @@ func (t *TTFBTracker) Record(credentialID int, ttfb time.Duration) {
 func (t *TTFBTracker) Quantile(credentialID int, q float64) time.Duration {
     t.mu.RLock()
     defer t.mu.RUnlock()
-    
+
     digest := t.digests[credentialID]
     if digest == nil || digest.Count() == 0 {
         return 0
     }
-    
+
     ms := digest.Quantile(q)
     return time.Duration(ms) * time.Millisecond
 }
@@ -749,7 +749,7 @@ func calculateLatencyScore(c provider.Candidate, tracker *TTFBTracker) float64 {
         }
         return 0.5
     }
-    
+
     // 归一化: P50 / 5s基准
     ratio := float64(p50) / float64(5*time.Second)
     return min(ratio, 1.0)
@@ -765,18 +765,18 @@ func calculateLatencyScore(c provider.Candidate, tracker *TTFBTracker) float64 {
 func (pm *PoolManager) Prewarm(ctx context.Context, keys []PoolKey, targetConns int) error {
     var wg sync.WaitGroup
     errCh := make(chan error, len(keys))
-    
+
     for _, key := range keys {
         wg.Add(1)
         go func(k PoolKey) {
             defer wg.Done()
-            
+
             p, err := pm.GetOrCreate(ctx, k)
             if err != nil {
                 errCh <- err
                 return
             }
-            
+
             // 预建立targetConns个连接
             for i := 0; i < targetConns; i++ {
                 // 发送健康探测请求（建立连接）
@@ -787,16 +787,16 @@ func (pm *PoolManager) Prewarm(ctx context.Context, keys []PoolKey, targetConns 
             }
         }(key)
     }
-    
+
     wg.Wait()
     close(errCh)
-    
+
     // 收集错误（非阻塞）
     var errs []error
     for err := range errCh {
         errs = append(errs, err)
     }
-    
+
     if len(errs) > 0 {
         return fmt.Errorf("prewarm failed: %d errors", len(errs))
     }
@@ -811,7 +811,7 @@ func (pm *PoolManager) Prewarm(ctx context.Context, keys []PoolKey, targetConns 
 func (e *Executor) executeWithCandidates(...) {
     // 获取候选列表
     candidates := e.router.PlanCandidates(...)
-    
+
     // 新增: 后台异步预热top-3候选
     if e.poolManager != nil && len(candidates) > 1 {
         go func() {
@@ -823,14 +823,14 @@ func (e *Executor) executeWithCandidates(...) {
                     CredentialID: c.CredentialID,
                 })
             }
-            
+
             // 每个池预热2个连接
             ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
             defer cancel()
             e.poolManager.Prewarm(ctx, keys, 2)
         }()
     }
-    
+
     // 原有逻辑: 遍历候选...
 }
 ```
@@ -844,8 +844,8 @@ func (e *Executor) executeWithCandidates(...) {
 ```go
 // domains/streaming/stream.go
 func (e *Executor) canZeroCopy(clientFmt, upstreamFmt ProviderFormat) bool {
-    return clientFmt == upstreamFmt && 
-           !e.qualityFixMode && 
+    return clientFmt == upstreamFmt &&
+           !e.qualityFixMode &&
            !e.vendorFieldStripping
 }
 
@@ -853,7 +853,7 @@ func (e *Executor) zeroCopyRelay(ctx context.Context, upstream io.Reader, w http
     // 直接从upstream流拷贝到ResponseWriter，跳过JSON解析
     flusher := w.(http.Flusher)
     buf := make([]byte, 32*1024)  // 32KB buffer
-    
+
     for {
         n, err := upstream.Read(buf)
         if n > 0 {
@@ -891,8 +891,8 @@ func (e *Executor) zeroCopyRelay(ctx context.Context, upstream io.Reader, w http
 
 ```promql
 # 连接复用率 (目标>85%)
-sum(rate(llm_gateway_pool_connections_reused_total[5m])) / 
-(sum(rate(llm_gateway_pool_connections_created_total[5m])) + 
+sum(rate(llm_gateway_pool_connections_reused_total[5m])) /
+(sum(rate(llm_gateway_pool_connections_created_total[5m])) +
  sum(rate(llm_gateway_pool_connections_reused_total[5m])))
 
 # P50 TTFB (目标<200ms同地域, <500ms跨云)
@@ -902,7 +902,7 @@ histogram_quantile(0.50, rate(llm_gateway_ttfb_seconds_bucket[5m]))
 process_resident_memory_bytes
 
 # 错误率 (告警>0.5%)
-sum(rate(llm_gateway_requests_total{status="error"}[5m])) / 
+sum(rate(llm_gateway_requests_total{status="error"}[5m])) /
 sum(rate(llm_gateway_requests_total[5m]))
 ```
 

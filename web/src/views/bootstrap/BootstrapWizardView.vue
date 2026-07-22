@@ -467,13 +467,13 @@ onMounted(async () => {
               </el-tag>
             </el-descriptions-item>
           </el-descriptions>
-          
+
           <p class="hint mb">
             实例 ID 由本机在安装时自动生成（每台物理设备唯一）。设备指纹仅用于绑定本机 License，不会上传原始硬件标识。
           </p>
 
           <el-divider content-position="left">选择激活方式</el-divider>
-          
+
           <el-radio-group v-model="activateMode" class="mb">
             <el-radio value="online" size="large">
               <span style="font-weight: 500;">在线激活</span>
@@ -494,7 +494,7 @@ onMounted(async () => {
       <!-- Step 2: Activate -->
       <el-card v-else-if="step === 2" shadow="never" class="wizard-card">
         <template #header>激活 License</template>
-        
+
         <!-- 在线激活模式 -->
         <template v-if="activateMode === 'online'">
           <p class="muted mb">
@@ -512,7 +512,7 @@ onMounted(async () => {
           <p class="muted mb">
             复制实例ID到 <a href="https://llm.kxpms.cn/maintain/license" target="_blank" rel="noopener">公网激活站点</a> 获取激活码，然后粘贴到下方。
           </p>
-          
+
           <el-form label-position="top" @submit.prevent="ensureAgreementThenActivate" style="max-width: 600px;">
             <el-form-item label="实例 ID">
               <div style="display: flex; gap: 8px; align-items: center;">
@@ -522,7 +522,7 @@ onMounted(async () => {
                 </el-button>
               </div>
             </el-form-item>
-            
+
             <el-form-item label="激活响应码">
               <el-input
                 v-model="offlinePayload"
@@ -536,10 +536,10 @@ onMounted(async () => {
 
         <div class="wizard-actions">
           <button type="button" class="btn btn-secondary btn-no-arrow" @click="step = 1">上一步</button>
-          <button 
-            type="button" 
-            class="btn btn-primary" 
-            :disabled="loading || !canActivate" 
+          <button
+            type="button"
+            class="btn btn-primary"
+            :disabled="loading || !canActivate"
             @click="ensureAgreementThenActivate"
           >
             {{ activateMode === 'online' ? '激活' : '导入激活' }}

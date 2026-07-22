@@ -14,10 +14,10 @@
 
 ### 1.2 预热数据源
 
-1. DB 配置硬门：providers / credentials / credential_model_bindings（及 routable 视图字段）  
-2. 价格/计费：binding 价格、billing_mode、plan 派生  
-3. 最近分钟快照：available、cool_until、fail_streak、sr_*、score  
-4. 人工控制态：manual_disabled 与 admin 版本（必须从 DB/审计恢复）  
+1. DB 配置硬门：providers / credentials / credential_model_bindings（及 routable 视图字段）
+2. 价格/计费：binding 价格、billing_mode、plan 派生
+3. 最近分钟快照：available、cool_until、fail_streak、sr_*、score
+4. 人工控制态：manual_disabled 与 admin 版本（必须从 DB/审计恢复）
 
 ### 1.3 预热步骤
 
@@ -33,9 +33,9 @@
 
 ### 1.4 路由语义
 
-- `ready=0`：权威/canary 返回 `recovery_in_progress`（可映射 503 + 明确 reason）  
-- `shadow`：旧路径继续服务生产；URSM 侧 unready，不产生误导 diff  
-- recovery 期间禁止懒初始化“全新健康节点”绕过预热  
+- `ready=0`：权威/canary 返回 `recovery_in_progress`（可映射 503 + 明确 reason）
+- `shadow`：旧路径继续服务生产；URSM 侧 unready，不产生误导 diff
+- recovery 期间禁止懒初始化“全新健康节点”绕过预热
 
 ## 2. 每分钟持久化
 
@@ -83,22 +83,22 @@ CREATE TABLE ursm_node_snapshot_min (
 
 ### 2.2 写入节奏
 
-- ticker：默认 60s（`ursm.v2.persist_interval_sec`）  
-- 以 CandidateIndex 反查 node，禁止 KEYS  
-- 批量 INSERT/COPY  
-- 失败重试 + 告警；不阻塞路由  
+- ticker：默认 60s（`ursm.v2.persist_interval_sec`）
+- 以 CandidateIndex 反查 node，禁止 KEYS
+- 批量 INSERT/COPY
+- 失败重试 + 告警；不阻塞路由
 
 ### 2.3 保留
 
-- 分钟明细：7–14 天（可配）  
-- 小时聚合：30–90 天（后续）  
-- 与 `state_change_log` 并存：快照=画像，change_log=迁移事件  
+- 分钟明细：7–14 天（可配）
+- 小时聚合：30–90 天（后续）
+- 与 `state_change_log` 并存：快照=画像，change_log=迁移事件
 
 ### 2.4 复盘
 
-- 某分钟谁被踢出号池、成功率/延迟  
-- 与 `request_logs.routing_attempts` 按时间 + credential + model 关联  
-- Redis 故障恢复时作运行摘要回填源  
+- 某分钟谁被踢出号池、成功率/延迟
+- 与 `request_logs.routing_attempts` 按时间 + credential + model 关联
+- Redis 故障恢复时作运行摘要回填源
 
 ## 3. 灰度与回退
 
@@ -126,7 +126,7 @@ ursm.v2.recovery_block = true
 ursm.v2.persist_interval_sec = 60
 ```
 
-一键回退：`ursm.v2.mode=off`。  
+一键回退：`ursm.v2.mode=off`。
 与 `fp_slot` / `circuit_degradation` 等 kill switch 独立。
 
 ### 3.3 回退矩阵
@@ -157,70 +157,70 @@ ShadowDiff {
 
 指标：
 
-- `ursm_shadow_diff_total{type=availability|order|top1}`  
-- `ursm_shadow_agree_ratio`  
-- `ursm_state_record_applied/ignored/error`  
-- `ursm_recovery_ready` / `ursm_recovery_duration`  
-- `ursm_snapshot_write_failures`  
+- `ursm_shadow_diff_total{type=availability|order|top1}`
+- `ursm_shadow_agree_ratio`
+- `ursm_state_record_applied/ignored/error`
+- `ursm_recovery_ready` / `ursm_recovery_duration`
+- `ursm_snapshot_write_failures`
 
 ### 3.5 进入 canary 门槛
 
-1. shadow 运行达到约定窗口（建议 ≥24h 或等效流量）  
-2. top1 一致率达阈值（如 ≥95%，排除预期改进类）  
-3. 无候选率、错误率不劣于基线  
-4. 至少一次 Redis 重启恢复演练通过  
-5. 分钟快照连续成功写入  
+1. shadow 运行达到约定窗口（建议 ≥24h 或等效流量）
+2. top1 一致率达阈值（如 ≥95%，排除预期改进类）
+3. 无候选率、错误率不劣于基线
+4. 至少一次 Redis 重启恢复演练通过
+5. 分钟快照连续成功写入
 
 ## 4. 迁移阶段
 
 ### Phase A — 骨架（不切流）
 
-1. `domains/ursm` 拆六组件  
-2. StateStore key + Lua CAS + 窗口 ZSET  
-3. StateReducer 纯函数单测  
-4. RecoveryManager + ready 门闩  
-5. 分钟快照表 + writer  
+1. `domains/ursm` 拆六组件
+2. StateStore key + Lua CAS + 窗口 ZSET
+3. StateReducer 纯函数单测
+4. RecoveryManager + ready 门闩
+5. 分钟快照表 + writer
 6. mode 固定 `off`
 
 ### Phase B — 并行写与影子
 
-1. Executor 成功/失败旁路 `RecordRequest`  
-2. admin/config 同步写入 v2  
-3. Router shadow 双算 + diff  
-4. mode=`shadow` 上预发/245  
-5. 恢复演练：重启 Redis → 阻塞 → 预热 → ready  
+1. Executor 成功/失败旁路 `RecordRequest`
+2. admin/config 同步写入 v2
+3. Router shadow 双算 + diff
+4. mode=`shadow` 上预发/245
+5. 恢复演练：重启 Redis → 阻塞 → 预热 → ready
 
 ### Phase C — 灰度
 
-1. 单 tenant/模型 1% → 10% → 50%  
-2. 观察无候选、failover、P95、Redis CPU  
-3. 异常则 percent=0 或 shadow  
+1. 单 tenant/模型 1% → 10% → 50%
+2. 观察无候选、failover、P95、Redis CPU
+3. 异常则 percent=0 或 shadow
 
 ### Phase D — 权威与收敛
 
-1. mode=`authoritative`  
-2. 旧 `credentialstate` 读路径下线  
-3. `routingstate` 收敛为 URSM shadow 或薄封装  
-4. runbook 完善  
+1. mode=`authoritative`
+2. 旧 `credentialstate` 读路径下线
+3. `routingstate` 收敛为 URSM shadow 或薄封装
+4. runbook 完善
 
 ### 明确后置
 
-- 跨实例 conc 全切 Redis  
-- WRR/水位大调度  
-- 删除 provider 30s 候选缓存  
-- 探测执行器并入 URSM  
+- 跨实例 conc 全切 Redis
+- WRR/水位大调度
+- 删除 provider 30s 候选缓存
+- 探测执行器并入 URSM
 
 ## 5. 验收标准
 
-1. Redis 权威：热路径可用性不读 DB 状态表  
-2. Redis 读失败 → 候选保护性拒绝（reason 可观测）  
-3. Redis 重启 → ready=0 阻塞 → 预热后恢复  
-4. 人工 disable 不可被 request/probe 自动解开  
-5. 请求结果同步进窗口与 node 摘要；审计异步  
-6. 每分钟快照可查，可用于复盘与回填  
-7. shadow 指标齐全；可一键 `mode=off`  
-8. 路由附加开销 P95 ≤ 15ms  
-9. FP slot / RPM 现有测试不回归  
+1. Redis 权威：热路径可用性不读 DB 状态表
+2. Redis 读失败 → 候选保护性拒绝（reason 可观测）
+3. Redis 重启 → ready=0 阻塞 → 预热后恢复
+4. 人工 disable 不可被 request/probe 自动解开
+5. 请求结果同步进窗口与 node 摘要；审计异步
+6. 每分钟快照可查，可用于复盘与回填
+7. shadow 指标齐全；可一键 `mode=off`
+8. 路由附加开销 P95 ≤ 15ms
+9. FP slot / RPM 现有测试不回归
 
 ## 6. 测试矩阵（摘要）
 
@@ -237,9 +237,9 @@ ShadowDiff {
 
 ## 7. Runbook 要点（实施后补全命令）
 
-- 查看 mode / ready / epoch  
-- 强制 EnterRecovery  
-- 调 canary percent  
-- 紧急 mode=off  
-- 对比某 request_id 的 routing_attempts 与 node 快照  
-- Redis 重启后观察 `ursm_recovery_*` 与无候选率  
+- 查看 mode / ready / epoch
+- 强制 EnterRecovery
+- 调 canary percent
+- 紧急 mode=off
+- 对比某 request_id 的 routing_attempts 与 node 快照
+- Redis 重启后观察 `ursm_recovery_*` 与无候选率

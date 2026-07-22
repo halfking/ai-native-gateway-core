@@ -1,7 +1,7 @@
 # Guest UI refactor — unified header & deploy flow
 
-**Date:** 2026-07-15  
-**Target:** 245 preprod  
+**Date:** 2026-07-15
+**Target:** 245 preprod
 **Scope:** Frontend only (no DB migrations)
 
 ## Summary

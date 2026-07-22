@@ -1,9 +1,9 @@
 # 📦 项目交付清单
 
-**项目名称**: Plan Type 标准化 + 路由可用性修复  
-**交付时间**: 2026-07-03 04:09  
-**Git Commit**: 2ed2be2f  
-**状态**: ✅ 开发完成，已验证，待部署  
+**项目名称**: Plan Type 标准化 + 路由可用性修复
+**交付时间**: 2026-07-03 04:09
+**Git Commit**: 2ed2be2f
+**状态**: ✅ 开发完成，已验证，待部署
 
 ---
 
@@ -153,9 +153,9 @@ c4ccca94 Merge feat/plan-type-full: Plan type 标准化 + 路由可用性修复
 
 ### Phase 1: test-apps（本周）
 
-**执行人**: 运维团队  
-**预计时间**: 30 分钟  
-**步骤**: 按 `DEPLOYMENT_GUIDE_test-apps.md` 执行  
+**执行人**: 运维团队
+**预计时间**: 30 分钟
+**步骤**: 按 `DEPLOYMENT_GUIDE_test-apps.md` 执行
 
 1. SSH 到 test-apps
 2. 备份当前版本
@@ -172,7 +172,7 @@ c4ccca94 Merge feat/plan-type-full: Plan type 标准化 + 路由可用性修复
 
 ### Phase 2: 监控（24 小时）
 
-**执行人**: 运维团队  
+**执行人**: 运维团队
 **监控指标**:
 - 错误率（quota_exceeded, provider_disabled）
 - 平均响应时间
@@ -188,10 +188,10 @@ c4ccca94 Merge feat/plan-type-full: Plan type 标准化 + 路由可用性修复
 
 ### Phase 3: 184 生产（下周）
 
-**执行人**: 运维团队  
-**前置条件**: test-apps 运行 24 小时无问题  
-**时间窗口**: 凌晨 2:00-4:00 UTC+8  
-**灰度策略**: 1 台节点 → 30 分钟 → 全部节点  
+**执行人**: 运维团队
+**前置条件**: test-apps 运行 24 小时无问题
+**时间窗口**: 凌晨 2:00-4:00 UTC+8
+**灰度策略**: 1 台节点 → 30 分钟 → 全部节点
 
 ---
 
@@ -246,6 +246,6 @@ c4ccca94 Merge feat/plan-type-full: Plan type 标准化 + 路由可用性修复
 
 **交付状态**: ✅ **开发完成，已验证，可交付部署**
 
-**Git 仓库**: __REPO_URL_1__.git  
-**分支**: main  
+**Git 仓库**: __REPO_URL_1__.git
+**分支**: main
 **Commit**: 2ed2be2f

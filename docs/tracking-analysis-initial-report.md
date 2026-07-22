@@ -132,7 +132,7 @@ ssh -i ~/.ssh/184_id_rsa -p 25022 root@47.97.111.154 "
 - 整体成功率提升到 85%+
 - 用户反馈延迟减少
 
-**行动**: 
+**行动**:
 - 继续观察 1 周
 - 准备 P1 优化（探测成功缩短冷却期）
 
@@ -181,11 +181,11 @@ ssh -i ~/.ssh/184_id_rsa -p 25022 root@47.97.111.154 "
   echo -n '冷却期延长: '
   journalctl -u llm-gateway-go --since today --no-pager | \
     grep -c 'cooldown_extended_due_to_failure'
-  
+
   echo -n '实际流量恢复: '
   journalctl -u llm-gateway-go --since today --no-pager | \
     grep -c 'recovered_with_actual_success'
-  
+
   echo -n '恢复后再失败: '
   journalctl -u llm-gateway-go --since today --no-pager | \
     grep -c 'after_recovery'
@@ -222,6 +222,6 @@ bash scripts/deploy-seamless.sh rollback 154
 
 ---
 
-**分析人**: AI Agent (Kiro)  
-**下次更新**: 首次新逻辑触发时或 2026-07-19 17:05（以先到者为准）  
+**分析人**: AI Agent (Kiro)
+**下次更新**: 首次新逻辑触发时或 2026-07-19 17:05（以先到者为准）
 **当前状态**: ✅ 部署成功，等待实际场景触发

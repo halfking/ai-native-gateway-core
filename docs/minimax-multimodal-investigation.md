@@ -24,7 +24,7 @@ func parseOpenAIImageBlock(block map[string]any) *ImageSource {
     urlObj, ok := block["image_url"].(map[string]any)
     url, _ := urlObj["url"].(string)
     img.URL = url
-    
+
     // 解析 data URI，填充 base64 专用字段
     if mediaType, data, isBase64 := parseOpenAIDataURI(url); isBase64 {
         img.Type = "base64"
@@ -147,7 +147,7 @@ if targetProvider == "minimax" {
 1. **添加请求日志**
    ```go
    // 在 domains/streaming/executors/executor_anthropic.go:710
-   slog.Info("minimax request", 
+   slog.Info("minimax request",
        "body_length", len(bodyBytes),
        "has_image", strings.Contains(string(bodyBytes), `"type":"image"`))
    ```
@@ -199,6 +199,6 @@ if targetProvider == "minimax" {
 4. 检查是否有额外的中间件或配置
 
 ---
-调查人员: Kiro  
-日期: 2026-07-17  
+调查人员: Kiro
+日期: 2026-07-17
 测试状态: ✅ All Pass

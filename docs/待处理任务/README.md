@@ -157,7 +157,7 @@ ssh -i ~/.ssh/184_id_rsa -p 25022 root@47.97.111.154 "
   echo -n '冷却期延长: '
   journalctl -u llm-gateway-go --since today --no-pager | \
     grep -c 'cooldown_extended_due_to_failure'
-  
+
   echo -n '实际流量恢复: '
   journalctl -u llm-gateway-go --since today --no-pager | \
     grep -c 'recovered_with_actual_success'
@@ -183,7 +183,7 @@ ssh -i ~/.ssh/184_id_rsa -p 25022 root@47.97.111.154 "
 
 ---
 
-**创建时间**: 2026-07-19 16:25  
-**创建者**: AI Agent (Kiro)  
-**任务状态**: 进行中  
+**创建时间**: 2026-07-19 16:25
+**创建者**: AI Agent (Kiro)
+**任务状态**: 进行中
 **预计完成**: 2026-07-26 16:00

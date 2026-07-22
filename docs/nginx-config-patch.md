@@ -58,7 +58,7 @@ upstream llm-backend {
 
     # 71: docker 直连 8781，独立数据库
     server 172.31.0.3:8781 max_fails=3 fail_timeout=15s;
-    
+
     # 184: k8s NodePort 10023，独立数据库
     server 172.31.0.4:10023 max_fails=3 fail_timeout=15s;
 }

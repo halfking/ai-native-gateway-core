@@ -30,7 +30,7 @@
   cfg := hotconfig.New(db.Pool())
   cfg.Start(ctx)
   defer cfg.Stop()
-  
+
   // 传递给各个组件
   fpSlots := credentialfpslot.NewManager(..., cfg)
   identityPool := identitypool.New(..., cfg)
@@ -55,7 +55,7 @@
   - TestReload
   - TestGetInt/GetString/GetBool
   - TestSet/Delete
-  
+
 - [ ] **集成测试**
   - 修改配置 → 30秒后生效
   - 验证 FpSlots TTL 变化

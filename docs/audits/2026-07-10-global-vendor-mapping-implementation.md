@@ -1,7 +1,7 @@
 # 全球模型厂商前缀映射完整实施报告
 
-**日期**: 2026-07-10  
-**任务**: 完成所有可见模型厂商的前缀分析，创建初始化数据，并更新到 252 数据库  
+**日期**: 2026-07-10
+**任务**: 完成所有可见模型厂商的前缀分析，创建初始化数据，并更新到 252 数据库
 **状态**: ✅ 已完成
 
 ---
@@ -143,7 +143,7 @@ var vendorCanonicalFamilies = map[string]string{
 ```sql
 -- OpenAI (美国)
 INSERT INTO models_canonical (canonical_name, family, source, status, notes)
-VALUES 
+VALUES
     ('gpt-4o', 'openai-gpt', 'seed', 'active', 'OpenAI GPT-4 Omni'),
     ('o3-mini', 'openai-gpt', 'seed', 'active', 'OpenAI o3 mini'),
     ('dall-e-3', 'openai-image', 'seed', 'active', 'OpenAI DALL-E 图像生成')
@@ -159,9 +159,9 @@ ON CONFLICT (canonical_name) DO UPDATE SET
 
 ### 3.1 部署目标
 
-**服务器**: 252 (115.29.212.252)  
-**数据库**: PostgreSQL 17 @ 172.16.2.210:5432  
-**库名**: llm_gateway  
+**服务器**: 252 (115.29.212.252)
+**数据库**: PostgreSQL 17 @ 172.16.2.210:5432
+**库名**: llm_gateway
 **用户**: llm_gateway / 4Q92cFTaYY8Z3AO07XTBBH-1g7kceaxg
 
 ### 3.2 部署步骤
@@ -189,7 +189,7 @@ ON CONFLICT (canonical_name) DO UPDATE SET
    ...
    INSERT 0 1   (Cursor)
    COMMIT
-   
+
    NOTICE: === 初始化完成 ===
    NOTICE: 总模型数: 636
    NOTICE: 种子模型数: 59
@@ -264,7 +264,7 @@ SELECT count(DISTINCT family) FROM models_canonical WHERE source = 'seed';
 
 **查询 3**: 检查特定厂商
 ```sql
-SELECT canonical_name, family FROM models_canonical 
+SELECT canonical_name, family FROM models_canonical
 WHERE source = 'seed' AND family IN ('hunyuan', 'doubao', 'ernie', 'spark');
 -- 结果: hunyuan-lite, doubao-pro-32k, ernie-4.0-turbo-128k, spark-max 等
 ```
@@ -308,8 +308,8 @@ WHERE source = 'seed' AND family IN ('hunyuan', 'doubao', 'ernie', 'spark');
 
 ### 6.1 Git 提交
 
-**Commit**: `ec4db8d2e`  
-**分支**: main  
+**Commit**: `ec4db8d2e`
+**分支**: main
 **日期**: 2026-07-10
 
 **改动文件**:
@@ -390,7 +390,7 @@ feat(vendor): 完整的全球模型厂商前缀映射系统
 
 2. 更新 DB 中的历史数据：
    ```sql
-   UPDATE models_canonical 
+   UPDATE models_canonical
    SET family = 'newbrand', updated_at = NOW()
    WHERE family = 'oldbrand';
    ```
@@ -402,17 +402,17 @@ feat(vendor): 完整的全球模型厂商前缀映射系统
 **检查项**:
 1. 检查 `family='unknown'` 的模型是否需要归类：
    ```sql
-   SELECT canonical_name, family, source 
-   FROM models_canonical 
+   SELECT canonical_name, family, source
+   FROM models_canonical
    WHERE family = 'unknown' OR family IS NULL
    LIMIT 20;
    ```
 
 2. 检查是否有新的裸前缀需要规范化：
    ```sql
-   SELECT DISTINCT family, count(*) 
-   FROM models_canonical 
-   GROUP BY family 
+   SELECT DISTINCT family, count(*)
+   FROM models_canonical
+   GROUP BY family
    ORDER BY count(*) DESC;
    ```
 
@@ -492,6 +492,6 @@ status           text                  -- 状态: active, disabled, deprecated
 
 ---
 
-**报告编制**: OpenCode AI Agent  
-**审核**: 2026-07-10  
+**报告编制**: OpenCode AI Agent
+**审核**: 2026-07-10
 **版本**: v1.0

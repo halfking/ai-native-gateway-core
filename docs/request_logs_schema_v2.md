@@ -1,8 +1,8 @@
 # request_logs Schema v2 设计文档
 
-> **版本**: v2.0  
-> **日期**: 2026-07-18  
-> **状态**: 📋 待审查  
+> **版本**: v2.0
+> **日期**: 2026-07-18
+> **状态**: 📋 待审查
 > **目的**: 整合四个优化方向的字段需求，统一扩展 request_logs 表
 
 ---
@@ -133,5 +133,5 @@ CREATE INDEX idx_request_logs_network_latency ON request_logs(network_latency_ms
 
 ---
 
-**作者**: Infrastructure Team  
+**作者**: Infrastructure Team
 **下次复审**: Phase 1 开始前 (2026-07-22)

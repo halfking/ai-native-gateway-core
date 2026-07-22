@@ -1,9 +1,9 @@
 # [P0] 安全检测引擎配置项未接入实际代码
 
-**优先级**: P0 - 阻断性问题  
-**标签**: bug, security, configuration, r1.14  
-**分配给**: @backend-team  
-**创建时间**: 2026-07-09  
+**优先级**: P0 - 阻断性问题
+**标签**: bug, security, configuration, r1.14
+**分配给**: @backend-team
+**创建时间**: 2026-07-09
 **预计修复**: R1.14
 
 ---
@@ -100,10 +100,10 @@ type SecurityConfig struct {
 // ✅ 新构造函数：从 settings 读取配置
 func NewSecurityHook(registry *settings.Registry) *SecurityHook {
     config := loadSecurityConfig(registry)
-    
+
     intent := NewIntentAnalyzer(config.IntentConfidenceThresh)
     threat := NewThreatDetector(config.SeverityThreshold)
-    
+
     return &SecurityHook{
         intent:   intent,
         threat:   threat,
@@ -140,7 +140,7 @@ func (h *SecurityHook) Execute(ctx context.Context, env *domain.PipelineRequest)
         h.intent.minScore = h.config.IntentConfidenceThresh
         h.threat.threshold = h.config.SeverityThreshold
     }
-    
+
     // ... 执行检测逻辑
 }
 ```
@@ -238,10 +238,10 @@ func TestSecurityHook_LoadsConfigFromRegistry(t *testing.T) {
     reg := settings.NewMockRegistry()
     reg.Set("security.intent.confidence_threshold", 0.9)
     reg.Set("security.threat.severity_threshold", 8)
-    
+
     // 创建 hook
     hook := NewSecurityHook(reg)
-    
+
     // 验证配置已加载
     assert.Equal(t, 0.9, hook.intent.minScore)
     assert.Equal(t, 8, hook.threat.threshold)
@@ -251,14 +251,14 @@ func TestSecurityHook_HotReload(t *testing.T) {
     reg := settings.NewMockRegistry()
     reg.Set("security.intent.confidence_threshold", 0.7)
     hook := NewSecurityHook(reg)
-    
+
     // 修改配置
     reg.Set("security.intent.confidence_threshold", 0.8)
-    
+
     // 执行 hook（触发热加载）
     env := domain.NewRequestEnvelope(ctx, nil)
     _ = hook.Execute(ctx, env)
-    
+
     // 验证配置已更新
     assert.Equal(t, 0.8, hook.intent.minScore)
 }

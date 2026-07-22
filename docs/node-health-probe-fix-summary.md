@@ -133,13 +133,13 @@
    ```bash
    # 1. 编译并部署到测试环境（kaixuan-1）
    bash scripts/deploy-kaixuan-1.sh
-   
+
    # 2. 选择1个商汤凭据（如 credential_id=15）进行灰度
    # 观察30分钟，监控指标：
    #   - node_disabled_total{reason="consecutive_3_failures"}
    #   - node_disabled_total{reason="cooldown_extended_due_to_failure"}
    #   - node_disabled_total{reason="recovered_with_actual_success"}
-   
+
    # 3. 如果效果好，部署到生产
    bash scripts/deploy-184.sh
    ```
@@ -148,7 +148,7 @@
    ```promql
    # 冷却期延长次数（表示节点不稳定）
    rate(llmgw_node_cooldown_extended_total[5m]) > 0.1
-   
+
    # 恢复后再次失败次数（表示节点未真正恢复）
    rate(llmgw_node_redisabled_after_recovery_total[5m]) > 0.05
    ```

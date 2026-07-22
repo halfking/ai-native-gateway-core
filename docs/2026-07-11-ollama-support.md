@@ -1,7 +1,7 @@
 # Ollama 协议支持文档
 
-**日期**: 2026-07-11  
-**版本**: v1.0  
+**日期**: 2026-07-11
+**版本**: v1.0
 **状态**: ✅ 已实现
 
 ---
@@ -135,7 +135,7 @@ curl -X POST http://llmgo.kxpms.cn/v1/chat/completions \
 ```go
 func TestOllamaFieldsInWhitelist(t *testing.T) {
     ollamaFields := []string{"keep_alive", "format", "context", "raw", "template"}
-    
+
     for _, field := range ollamaFields {
         if !isStandardField(field) {
             t.Errorf("Ollama field %q should be in whitelist but was not found", field)

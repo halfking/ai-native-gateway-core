@@ -1,8 +1,8 @@
 # 错误请求信息记录修复 - 生产验证报告
 
-**日期**: 2026-06-20  
-**环境**: 生产环境 (__DOMAIN_8__ / 184 k3s)  
-**验证人**: AI Agent  
+**日期**: 2026-06-20
+**环境**: 生产环境 (__DOMAIN_8__ / 184 k3s)
+**验证人**: AI Agent
 **状态**: ✅ 验证通过
 
 ---
@@ -55,7 +55,7 @@ go test ./relay/ -run "TestMethodNotAllowed" -v
 ### SQL #1: 错误类型覆盖率 (最近 1 小时)
 
 ```sql
-SELECT 
+SELECT
     error_kind,
     COUNT(*) as total,
     COUNT(client_model) FILTER (WHERE client_model IS NOT NULL AND client_model != '') as with_model,
@@ -179,7 +179,7 @@ ORDER BY ts DESC LIMIT 10;
 
 ### 已识别的边缘情况
 
-1. **空 body 请求**: 
+1. **空 body 请求**:
    - 当客户端发送完全空的 body 时，`client_model` 正确设置为 `<unknown>`
    - 这是**符合预期**的行为，无需修复
 
@@ -218,5 +218,5 @@ ORDER BY ts DESC LIMIT 10;
 
 ---
 
-**验证完成时间**: 2026-06-20 22:10 UTC+8  
+**验证完成时间**: 2026-06-20 22:10 UTC+8
 **下一步**: 持续监控 1 周，确认无回归问题

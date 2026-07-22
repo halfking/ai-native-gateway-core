@@ -3,21 +3,21 @@
 ## 问题总结
 
 ### 问题1：前端泳道展示数据跳变
-**现象**：多维度泳道图中数据大幅跳变，不像增量更新  
+**现象**：多维度泳道图中数据大幅跳变，不像增量更新
 **根因**：
 1. 查询时间窗口不连续（可能跨越分区边界）
 2. SSE推送与轮询查询的数据源不一致
 3. 前端本地缓存失效导致全量重建
 
 ### 问题2：请求刷新延迟 >5s
-**现象**：前端请求到达网关，但网关层面延迟5秒才能看到  
+**现象**：前端请求到达网关，但网关层面延迟5秒才能看到
 **根因**：
 1. **INSERT 时机太晚**：当前只在 `EmitRequestLogInsert` 时调用，但实际调用时机在响应流结束后
 2. **批处理延迟**：telemetry worker 使用 200ms 批处理窗口 + 最多50条才flush
 3. **数据库写入延迟**：request_logs_hot 的 INSERT 本身需要时间
 
 ### 问题3：probe-direct 请求缺失消息和响应
-**现象**：探测请求详情中没有 request_body / response_body / token 统计  
+**现象**：探测请求详情中没有 request_body / response_body / token 统计
 **根因**：
 1. `active_probe_emitter.go` 只调用 `EmitRequestLogInsert`，**从未调用 UPDATE**
 2. ProbeResult 中有 RequestBody/ResponseBody，但未传递给 telemetry.RequestLogEntry
@@ -31,7 +31,7 @@
 ```sql
 -- 确保查询始终从 request_logs_hot 读取（0-7天热数据）
 -- 避免跨分区查询导致的时间窗口不连续
-SELECT * FROM request_logs_hot 
+SELECT * FROM request_logs_hot
 WHERE ts >= NOW() - INTERVAL '7 days'
   AND tenant_id = $1
 ORDER BY ts DESC;
@@ -63,7 +63,7 @@ setData([...newItems, ...currentData].slice(0, MAX_ITEMS));
 func (h *Handler) handleRequest(w http.ResponseWriter, r *http.Request) {
     requestID := middleware.GetRequestID(r.Context())
     startTime := time.Now()
-    
+
     // ✅ 立即插入占位行（in_progress 状态）
     h.telemetry.EmitRequestLogInsert(&telemetry.RequestLogEntry{
         RequestID:     requestID,
@@ -73,7 +73,7 @@ func (h *Handler) handleRequest(w http.ResponseWriter, r *http.Request) {
         // 其他基础字段...
         Op: telemetry.RequestLogInsert,
     })
-    
+
     // 继续处理请求...
     // defer 中再 UPDATE 完整信息
     defer func() {
@@ -113,7 +113,7 @@ func (c *Client) EmitRequestLog(entry *RequestLogEntry) {
             c.persistRequestLog(entry)
         }
     }
-    
+
     // onEmitted hook 立即触发（SSE推送）
     if c.onEmitted != nil {
         c.onEmitted(entry)
@@ -129,19 +129,19 @@ func (c *Client) EmitRequestLog(entry *RequestLogEntry) {
 // bg/active_probe_executor.go Run 方法
 func (e *ActiveProbeExecutor) Run(ctx context.Context, target *ProbeTarget, model string) *ProbeResult {
     startedAt := time.Now()
-    
+
     // 构造探测请求
     reqBody := buildMinimalChatRequest(model)
     reqBodyStr, _ := json.Marshal(reqBody)
-    
+
     req, _ := http.NewRequestWithContext(ctx, "POST", target.BaseURL, bytes.NewReader(reqBodyStr))
     // ... 设置headers
-    
+
     resp, err := e.httpClient.Do(req)
     // ... 处理响应
-    
+
     respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
-    
+
     return &ProbeResult{
         Status:       status,
         HTTPStatus:   resp.StatusCode,
@@ -165,7 +165,7 @@ func (e *ActiveProbeExecutor) Run(ctx context.Context, target *ProbeTarget, mode
 // bg/active_probe_emitter.go Emit 方法
 func (e *ActiveProbeEmitter) Emit(..., result *ProbeResult) {
     // 现有逻辑...
-    
+
     // ✅ 将 request/response body 传递给 telemetry
     var requestBody, responseBody json.RawMessage
     if result.RequestBody != "" {
@@ -174,7 +174,7 @@ func (e *ActiveProbeEmitter) Emit(..., result *ProbeResult) {
     if result.ResponseBody != "" {
         responseBody = json.RawMessage(result.ResponseBody)
     }
-    
+
     entry := &telemetry.RequestLogEntry{
         // ... 现有字段
         RequestBody:  requestBody,   // ← 新增
@@ -182,10 +182,10 @@ func (e *ActiveProbeEmitter) Emit(..., result *ProbeResult) {
         PromptTokens:     &promptTokens,
         CompletionTokens: &completionTokens,
     }
-    
+
     // ✅ 改为先 INSERT 占位，再 UPDATE 完整数据
     e.telemetry.EmitRequestLogInsert(entry)
-    
+
     // 如果需要模拟"请求过程"，可以短暂延迟后再 UPDATE
     // 但对于探测请求，通常是同步的，可以直接填充完整
 }
@@ -208,7 +208,7 @@ _, err = tx.Exec(ctx, `
         $41::text::jsonb, $42::text::jsonb,  -- ← 已存在
         ...
     )
-`, 
+`,
     ...,
     entry.RequestBody,   // ← 确保有值
     entry.ResponseBody,  // ← 确保有值
@@ -241,7 +241,7 @@ _, err = tx.Exec(ctx, `
 
 ### 验证1：probe-direct 完整性
 ```sql
-SELECT 
+SELECT
     request_id,
     length(request_body::text) as req_len,
     length(response_body::text) as resp_len,

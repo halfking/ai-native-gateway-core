@@ -1,8 +1,8 @@
 # llm-gateway-go 协议转换增强 - 测试验证报告
 
-**测试时间**: 2026-06-20 22:05-22:10  
-**测试环境**: 184 + 71 生产环境  
-**API Key**: sk-1R7I...KZw7 (已脱敏)  
+**测试时间**: 2026-06-20 22:05-22:10
+**测试环境**: 184 + 71 生产环境
+**API Key**: sk-1R7I...KZw7 (已脱敏)
 
 ---
 
@@ -62,7 +62,7 @@ curl -X POST https://__DOMAIN_8__/v1/chat/completions \
   -d '{
     "model": "claude-opus-4-8",
     "messages": [{
-      "role": "user", 
+      "role": "user",
       "content": "请用思维链方法逐步推理：如果一个房间里有10支蜡烛，我吹灭了3支，房间里还剩几支蜡烛？"
     }],
     "max_tokens": 500
@@ -198,7 +198,7 @@ if len(thinkingParts) > 0 {
 ### 为什么测试中没有 thinking blocks？
 
 **原因分析**:
-1. **模型版本差异**: 
+1. **模型版本差异**:
    - 某些 Claude 模型版本会返回显式的 `thinking` blocks
    - 某些版本会直接在 `content` 中展示推理过程
    - 测试的 claude-opus-4-8 属于后者
@@ -223,7 +223,7 @@ curl -X POST https://__DOMAIN_8__/v1/chat/completions \
 **方法 2**: 查询历史数据
 ```sql
 -- 查询是否有历史记录包含 thinking blocks
-SELECT 
+SELECT
   request_id,
   client_model,
   response_body::jsonb->'choices'->0->'message'->>'reasoning_content' as reasoning,
@@ -269,7 +269,7 @@ LIMIT 5;
 1. ✅ **继续使用**: 服务完全正常，可以正常使用
 2. ✅ **监控日志**: 观察是否有 thinking blocks 出现
    ```sql
-   SELECT COUNT(*) FROM request_logs 
+   SELECT COUNT(*) FROM request_logs
    WHERE response_body::text LIKE '%reasoning_content%';
    ```
 
@@ -309,7 +309,7 @@ LIMIT 5;
 
 ---
 
-**测试人员**: AI Assistant  
-**测试完成时间**: 2026-06-20 22:10  
+**测试人员**: AI Assistant
+**测试完成时间**: 2026-06-20 22:10
 **测试结论**: ✅ 部署成功，功能就绪，可以投入使用
 

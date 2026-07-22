@@ -1,8 +1,8 @@
 # GLM-5.2 格式转换混乱问题诊断报告
 
-> **日期**: 2026-06-21  
-> **问题**: 通过 `__DOMAIN_2__/v1` 调用 glm-5.2 时请求混乱  
-> **根因**: Q3 路径格式转换 + 上游混合格式响应  
+> **日期**: 2026-06-21
+> **问题**: 通过 `__DOMAIN_2__/v1` 调用 glm-5.2 时请求混乱
+> **根因**: Q3 路径格式转换 + 上游混合格式响应
 > **状态**: 诊断完成，修复方案已制定
 
 ---
@@ -103,7 +103,7 @@ if ev.Type == "" {
 - 代码注释明确提到 `glm-5.2-oneday at https://api.supxh.xin`
 - 已有针对性的混合格式检测代码
 
-**影响**: 
+**影响**:
 - 如果防护代码工作正常，这些块应该被过滤掉
 - 如果仍然出现问题，说明防护存在漏洞
 
@@ -149,27 +149,27 @@ case "thinking":
 
 **当前防护的漏洞**:
 
-1. **检测顺序问题**: 
+1. **检测顺序问题**:
    ```go
    // Line 292: 先解析 JSON
    if err := json.Unmarshal(data, &ev); err != nil {
        continue  // 解析失败直接跳过
    }
-   
+
    // Line 317: 再检查事件类型
    if !isKnownAnthropicEventType(ev.Type) {
        continue
    }
    ```
-   
+
    **问题**: 如果 OpenAI 格式的块可以成功解析为 `sseAnthropicEvent`，但 `Type` 为空，
    会进入第二个检测（Line 326），但如果 `Choices` 为空数组，仍可能通过检测。
 
-2. **空 choices 数组**: 
+2. **空 choices 数组**:
    ```go
    if oaiCheck.Choices != nil || ...  // nil vs empty array
    ```
-   
+
    `[]` (空数组) 的 `!= nil` 为 `true`，应该能检测到，但如果 JSON 格式微妙变化可能绕过。
 
 ---
@@ -278,7 +278,7 @@ if err := json.Unmarshal(data, &ev); err != nil {
 }
 ```
 
-**优点**: 
+**优点**:
 - 最小化代码改动
 - 快速部署
 
@@ -296,7 +296,7 @@ if err := json.Unmarshal(data, &ev); err != nil {
 
 ```sql
 -- 修改 glm-5.2 的协议配置（假设在 catalog manifest）
-UPDATE model_catalog 
+UPDATE model_catalog
 SET protocol = 'openai-completions'
 WHERE model_id LIKE 'glm-5.2%';
 ```
@@ -319,13 +319,13 @@ WHERE model_id LIKE 'glm-5.2%';
    ```go
    func ConvertChatRequestToAnthropic(in []byte) ([]byte, error) {
        // ... 现有逻辑 ...
-       
+
        // 新增：转换后验证
        var result map[string]any
        if err := json.Unmarshal(out, &result); err != nil {
            return nil, fmt.Errorf("converted output invalid JSON: %w", err)
        }
-       
+
        // 检查必需字段
        if _, ok := result["messages"]; !ok {
            return nil, fmt.Errorf("converted output missing messages")
@@ -333,7 +333,7 @@ WHERE model_id LIKE 'glm-5.2%';
        if _, ok := result["max_tokens"]; !ok {
            return nil, fmt.Errorf("converted output missing max_tokens")
        }
-       
+
        return json.Marshal(result)
    }
    ```
@@ -347,7 +347,7 @@ WHERE model_id LIKE 'glm-5.2%';
            slog.Error("failed to parse delta", "error", err, "request_id", requestID)
            continue  // 跳过而不是崩溃
        }
-       
+
        // 验证 delta 内容
        if d.Type == "" {
            slog.Warn("delta missing type field", "request_id", requestID)
@@ -363,13 +363,13 @@ WHERE model_id LIKE 'glm-5.2%';
        if err := json.Unmarshal(chunk, &test); err != nil {
            return fmt.Errorf("chunk not valid JSON: %w", err)
        }
-       
+
        // 必须有 choices
        choices, ok := test["choices"].([]any)
        if !ok || len(choices) == 0 {
            return fmt.Errorf("chunk missing or empty choices")
        }
-       
+
        // 写入前再次确认
        w.Write([]byte("data: "))
        w.Write(chunk)
@@ -529,12 +529,12 @@ curl -N -X POST "${BASE_URL}/v1/chat/completions" \
             echo "✅ Stream completed with [DONE]"
             break
         fi
-        
+
         # 检查是否能解析为 JSON
         if echo "$DATA" | jq . >/dev/null 2>&1; then
             CHOICES=$(echo "$DATA" | jq '.choices // []')
             CHOICES_LEN=$(echo "$CHOICES" | jq 'length')
-            
+
             if [ "$CHOICES_LEN" = "0" ]; then
                 echo "❌ Empty choices: $DATA"
             else
@@ -558,6 +558,6 @@ GLM_TEST_KEY="your-actual-key" /tmp/test_glm52_detailed.sh
 
 ---
 
-**最后更新**: 2026-06-21  
-**负责人**: LLM Gateway Team  
+**最后更新**: 2026-06-21
+**负责人**: LLM Gateway Team
 **审核状态**: 待审核

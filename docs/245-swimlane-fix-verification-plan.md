@@ -1,8 +1,8 @@
 # 245泳道修复验证计划
 
-**修复版本**: seq=1251, commit=ff28c65d  
-**部署时间**: 2026-07-21  
-**验证网站**: https://llmgo.kxpms.cn  
+**修复版本**: seq=1251, commit=ff28c65d
+**部署时间**: 2026-07-21
+**验证网站**: https://llmgo.kxpms.cn
 **登录凭证**: admin / Veritrans&9527
 
 ---
@@ -32,7 +32,7 @@
 // ===== 泳道滚动检测脚本 =====
 (function() {
     console.log('%c🔬 开始监控泳道稳定性...', 'color: #3fb950; font-size: 14px; font-weight: bold;');
-    
+
     let lastSnapshot = {};
     let stats = {
         normalAdds: 0,
@@ -40,23 +40,23 @@
         messageCount: 0,
         startTime: Date.now()
     };
-    
+
     // 拦截SSE消息
     const originalAddEventListener = EventSource.prototype.addEventListener;
     EventSource.prototype.addEventListener = function(type, listener, options) {
         if (type === 'message') {
             const wrappedListener = function(event) {
                 stats.messageCount++;
-                
+
                 try {
                     const msg = JSON.parse(event.data);
-                    
+
                     if (msg.type === 'initial_data' && msg.snapshot?.dimensions) {
                         console.log('%c📊 收到initial_data', 'color: #58a6ff;', {
                             请求数: msg.requests?.length || 0,
                             泳道数: Object.values(msg.snapshot.dimensions).flat().length
                         });
-                        
+
                         // 初始化快照
                         for (const [dim, lanes] of Object.entries(msg.snapshot.dimensions)) {
                             for (const lane of lanes) {
@@ -75,11 +75,11 @@
                                 const key = `${dim}:${lane.id}`;
                                 const currIds = new Set(lane.requests.map(r => r.request_id));
                                 const last = lastSnapshot[key];
-                                
+
                                 if (last) {
                                     const added = [...currIds].filter(id => !last.ids.has(id));
                                     const removed = [...last.ids].filter(id => !currIds.has(id));
-                                    
+
                                     if (removed.length > 0 && added.length > 0) {
                                         // 🚨 检测到窗口滚动
                                         stats.rollingCount++;
@@ -105,7 +105,7 @@
                                         }
                                     }
                                 }
-                                
+
                                 lastSnapshot[key] = {
                                     ids: currIds,
                                     total: lane.stats.total,
@@ -122,7 +122,7 @@
                 } catch (err) {
                     console.error('解析消息失败:', err);
                 }
-                
+
                 // 每30条消息输出统计
                 if (stats.messageCount % 30 === 0) {
                     const elapsed = Math.floor((Date.now() - stats.startTime) / 1000);
@@ -131,19 +131,19 @@
                         总消息数: stats.messageCount,
                         正常新增: stats.normalAdds,
                         窗口滚动: stats.rollingCount,
-                        滚动率: stats.rollingCount > 0 
-                            ? `${(stats.rollingCount/(stats.normalAdds+stats.rollingCount)*100).toFixed(1)}%` 
+                        滚动率: stats.rollingCount > 0
+                            ? `${(stats.rollingCount/(stats.normalAdds+stats.rollingCount)*100).toFixed(1)}%`
                             : '0%'
                     });
                 }
-                
+
                 return listener.call(this, event);
             };
             return originalAddEventListener.call(this, type, wrappedListener, options);
         }
         return originalAddEventListener.call(this, type, listener, options);
     };
-    
+
     // 10分钟后输出最终报告
     setTimeout(() => {
         const elapsed = Math.floor((Date.now() - stats.startTime) / 1000);
@@ -154,7 +154,7 @@
         console.log('%c总消息数:', 'font-weight: bold;', stats.messageCount);
         console.log('%c正常新增:', 'font-weight: bold; color: #3fb950;', stats.normalAdds);
         console.log('%c窗口滚动:', 'font-weight: bold; color: ' + (stats.rollingCount > 0 ? '#f85149' : '#3fb950') + ';', stats.rollingCount);
-        
+
         if (stats.rollingCount === 0) {
             console.log('%c\n✅ 修复成功！未检测到窗口滚动现象', 'color: #3fb950; font-size: 14px; font-weight: bold;');
         } else {
@@ -162,7 +162,7 @@
         }
         console.log('%c' + '='.repeat(60), 'color: #58a6ff;');
     }, 10 * 60 * 1000);
-    
+
     console.log('%c✓ 监控脚本已启动，10分钟后输出最终报告', 'color: #3fb950;');
 })();
 ```
@@ -231,7 +231,7 @@ docker logs llm-gateway-go --since 30m 2>&1 | grep -i "error.*sort\|failed.*acti
 ```bash
 # 在245服务器上
 cd /opt/llm-gateway-go/releases/current
-strings llm-gateway-go | grep -i "sortKeysByActivity" 
+strings llm-gateway-go | grep -i "sortKeysByActivity"
 
 # 如果找到该字符串，说明新代码已包含
 ```
@@ -249,7 +249,7 @@ SCAN 0 MATCH llmgw:live:dimension:* COUNT 100
 ZREVRANGE llmgw:live:dimension:vendor:minimax 0 0 WITHSCORES
 ```
 
-**期望**: 
+**期望**:
 - 能看到多个维度队列
 - 每个队列有正常的timestamp score
 
@@ -309,7 +309,7 @@ docker logs llm-gateway-go --since 30m 2>&1 | grep -i "pipeline\|timeout"
 docker stats llm-gateway-go --no-stream
 ```
 
-**解决方案**: 
+**解决方案**:
 - 减少Pipeline batch size
 - 添加排序结果缓存
 
@@ -341,6 +341,6 @@ bash scripts/deploy-seamless.sh rollback 245
 
 ---
 
-**验证负责人**: ___________  
-**验证时间**: ___________  
+**验证负责人**: ___________
+**验证时间**: ___________
 **验证结果**: [ ] ✅ 通过  [ ] ⚠️ 部分通过  [ ] ❌ 失败

@@ -1,8 +1,8 @@
 # PostgreSQL 分区表读写规范标准
 
-**文档版本**: 1.0  
-**创建日期**: 2026-07-04  
-**强制执行**: ✅ 所有新代码必须遵守  
+**文档版本**: 1.0
+**创建日期**: 2026-07-04
+**强制执行**: ✅ 所有新代码必须遵守
 **适用范围**: `request_logs`, `usage_ledger`, 以及所有使用分区表的时序数据
 
 ---
@@ -46,7 +46,7 @@ SELECT * FROM request_logs_2026_07;                  -- 当月 DETACHED 分区
 
 #### 规则 1.1.1：硬编码 *_default 表名
 
-**强制性**: ✅ 必须遵守  
+**强制性**: ✅ 必须遵守
 **适用场景**: 所有新数据插入
 
 ```go
@@ -111,7 +111,7 @@ ON CONFLICT (request_id, ts) DO UPDATE SET
 
 #### 规则 1.2.1：UPDATE 必须指向 *_default 表
 
-**强制性**: ✅ 必须遵守  
+**强制性**: ✅ 必须遵守
 **适用场景**: 流式响应更新、状态修正
 
 ```go
@@ -243,7 +243,7 @@ _, err = db.Exec(ctx, `INSERT INTO request_logs_default ...`)
 // ✅ 最佳实践：判断时间范围，选择最优查询
 func (c *Client) QueryRequestLogs(ctx context.Context, startTime time.Time) ([]RequestLog, error) {
     age := time.Since(startTime)
-    
+
     var sql string
     if age < 7*24*time.Hour {
         // 最近 7 天：直接查 default（最快）
@@ -252,7 +252,7 @@ func (c *Client) QueryRequestLogs(ctx context.Context, startTime time.Time) ([]R
         // 超过 7 天：使用 VIEW（完整数据）
         sql = `SELECT * FROM request_logs_with_current_month WHERE ts >= $1`
     }
-    
+
     return c.db.Query(ctx, sql, startTime)
 }
 
@@ -342,7 +342,7 @@ rows, err := db.Query(ctx, `
 ```go
 // ✅ 正确
 rows, err := db.Query(ctx, `
-    SELECT tenant_id, COUNT(*) 
+    SELECT tenant_id, COUNT(*)
     FROM request_logs_default
     WHERE ts >= $1 AND ts < $2  -- ✅ 时间范围
     GROUP BY tenant_id
@@ -350,7 +350,7 @@ rows, err := db.Query(ctx, `
 
 // ❌ 错误
 rows, err := db.Query(ctx, `
-    SELECT tenant_id, COUNT(*) 
+    SELECT tenant_id, COUNT(*)
     FROM request_logs_default
     GROUP BY tenant_id  -- ❌ 无时间范围
 `, ...)
@@ -432,10 +432,10 @@ func TestEmitRequestLogInsert(t *testing.T) {
             TenantID:  "test-tenant",
             Success:   true,
         }
-        
+
         err := client.EmitRequestLogInsert(entry)
         require.NoError(t, err)
-        
+
         // 验证数据在 default 表
         var count int
         err = db.QueryRow(ctx, `
@@ -444,7 +444,7 @@ func TestEmitRequestLogInsert(t *testing.T) {
         `, entry.RequestID).Scan(&count)
         require.NoError(t, err)
         assert.Equal(t, 1, count)
-        
+
         // 验证数据不在当月分区
         err = db.QueryRow(ctx, `
             SELECT COUNT(*) FROM request_logs_2026_07
@@ -453,7 +453,7 @@ func TestEmitRequestLogInsert(t *testing.T) {
         require.NoError(t, err)
         assert.Equal(t, 0, count)
     })
-    
+
     // 测试 2：验证 UPSERT 语义
     t.Run("upsert semantics", func(t *testing.T) {
         // ... UPSERT 测试
@@ -502,7 +502,7 @@ go test -bench=BenchmarkPartitionWrite -benchmem ./telemetry
 
 ```sql
 -- 监控 default 表大小
-SELECT 
+SELECT
     pg_size_pretty(pg_total_relation_size('request_logs_default')) AS size,
     COUNT(*) AS rows,
     MIN(ts) AS earliest,
@@ -510,8 +510,8 @@ SELECT
 FROM request_logs_default;
 
 -- 监控数据分布
-SELECT 
-    CASE 
+SELECT
+    CASE
         WHEN ts >= now() - interval '7 days' THEN '7d'
         WHEN ts >= now() - interval '14 days' THEN '14d'
         WHEN ts >= now() - interval '30 days' THEN '30d'
@@ -601,13 +601,13 @@ exit $violations
 // telemetry/client.go 标准写入模式
 func (c *Client) EmitRequestLogInsert(entry *RequestLogEntry) error {
     ctx := context.Background()
-    
+
     tx, err := c.pool.Begin(ctx)
     if err != nil {
         return err
     }
     defer tx.Rollback(ctx)
-    
+
     // 1. 插入 usage_ledger_default
     _, err = tx.Exec(ctx, `
         INSERT INTO usage_ledger_default (
@@ -618,7 +618,7 @@ func (c *Client) EmitRequestLogInsert(entry *RequestLogEntry) error {
     if err != nil {
         return err
     }
-    
+
     // 2. 插入 request_logs_default
     _, err = tx.Exec(ctx, `
         INSERT INTO request_logs_default (
@@ -631,7 +631,7 @@ func (c *Client) EmitRequestLogInsert(entry *RequestLogEntry) error {
     if err != nil {
         return err
     }
-    
+
     return tx.Commit(ctx)
 }
 ```
@@ -660,6 +660,6 @@ SELECT * FROM usage_ledger_2026_07;
 
 ---
 
-**文档所有权**: Infrastructure Team  
-**联系方式**: infra@example.com  
+**文档所有权**: Infrastructure Team
+**联系方式**: infra@example.com
 **最后更新**: 2026-07-04

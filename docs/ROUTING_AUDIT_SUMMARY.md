@@ -131,14 +131,14 @@ domains/streaming/executors/
    # 审查 Phase 1 实施方案
    cd /Users/xutaohuang/workspace/llm-gateway-go-4/docs
    cat ROUTING_IMPROVEMENT_PHASE1_IMPLEMENTATION.md
-   
+
    # 检查生成的代码逻辑
    ```
 
 2. **创建分支并实施** (2天)
    ```bash
    git checkout -b feature/routing-phase1-fixes
-   
+
    # 按照实施方案创建文件
    # 1. router_scoring.go
    # 2. metrics_degradation.go
@@ -155,10 +155,10 @@ domains/streaming/executors/
    ```bash
    # 启动本地环境
    docker-compose up -d
-   
+
    # 运行压测脚本
    ./scripts/loadtest-gateway.sh
-   
+
    # 观察指标
    curl http://localhost:9090/metrics | grep llmgw_fp_slot
    ```
@@ -176,7 +176,7 @@ domains/streaming/executors/
    ```bash
    # 部署到 dev 环境
    kubectl apply -f deploy/k8s/dev/
-   
+
    # 验证指标
    kubectl port-forward svc/prometheus 9090:9090
    ```
@@ -192,7 +192,7 @@ domains/streaming/executors/
    ```bash
    # 部署 Grafana 告警规则
    kubectl apply -f deploy/monitoring/grafana-alerts/
-   
+
    # 验证告警触发
    ```
 
@@ -300,6 +300,6 @@ git log --oneline --since="2026-06-01" --grep="route\|routing\|sticky\|bandit"
 
 ---
 
-**审计完成日期**: 2026-07-07  
-**审计人**: ZCode AI Agent  
+**审计完成日期**: 2026-07-07
+**审计人**: ZCode AI Agent
 **文档版本**: v1.0

@@ -78,23 +78,23 @@ async function handleUpgrade(version: string) {
         type: 'warning',
       }
     )
-    
+
     upgrading.value = version
     ElMessage.info('开始升级，请稍候...')
-    
+
     // 模拟升级流程
     await new Promise(resolve => setTimeout(resolve, 1000))
     ElMessage.success('环境检查完成')
-    
+
     await new Promise(resolve => setTimeout(resolve, 2000))
     ElMessage.success('升级包解压完成')
-    
+
     await new Promise(resolve => setTimeout(resolve, 1500))
     ElMessage.success('服务重启中...')
-    
+
     // 实际应调用后端 API
     emit('upgrade')
-    
+
   } catch (e) {
     if (e !== 'cancel') {
       ElMessage.error(`升级失败: ${(e as Error).message}`)

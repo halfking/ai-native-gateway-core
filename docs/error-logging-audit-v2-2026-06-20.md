@@ -1,8 +1,8 @@
 # 错误请求信息记录 v2 增强报告
 
-**日期**: 2026-06-20  
-**版本**: v2 (增强版)  
-**Commit**: 1c004cf4  
+**日期**: 2026-06-20
+**版本**: v2 (增强版)
+**Commit**: 1c004cf4
 **背景**: 用户报告特定请求仍有空 model 字段
 
 ---
@@ -147,7 +147,7 @@ WHERE error_kind = 'missing_key'
 
 ```sql
 -- 验证 1: 检查所有错误请求的 model 覆盖率（应达到 100%）
-SELECT 
+SELECT
     error_kind,
     COUNT(*) as total,
     COUNT(client_model) FILTER (WHERE client_model IS NOT NULL AND client_model != '') as with_model,
@@ -161,7 +161,7 @@ ORDER BY without_model DESC;
 -- 期望：所有错误类型的 without_model = 0，coverage_pct = 100.0
 
 -- 验证 2: 检查 <unknown> 标记的数量（应该是新出现的）
-SELECT 
+SELECT
     COUNT(*) FILTER (WHERE client_model = '<unknown>') as unknown_count,
     COUNT(*) FILTER (WHERE LENGTH(request_body::text) > 10 AND client_model = '<unknown>') as unknown_with_body
 FROM request_logs
@@ -170,8 +170,8 @@ WHERE ts > NOW() - INTERVAL '1 hour'
 -- 期望：unknown_with_body > 0（证明 v2 修复生效）
 
 -- 验证 3: 对比完全空 body 和 body-without-model 的分布
-SELECT 
-    CASE 
+SELECT
+    CASE
         WHEN client_model = '<unknown>' AND LENGTH(request_body::text) > 10 THEN 'body_without_model'
         WHEN client_model = '' OR client_model IS NULL THEN 'empty_body'
         ELSE 'normal'

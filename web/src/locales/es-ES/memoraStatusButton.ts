@@ -7,11 +7,11 @@ export default {
     error: 'Conexión fallida',
     loading: 'Verificando',
   },
-  
+
   panel: {
     title: 'Conexión Memora',
     closeLabel: 'Cerrar',
-    
+
     fields: {
       serviceUrl: 'URL del servicio',
       recentLatency: 'Latencia reciente',
@@ -22,7 +22,7 @@ export default {
       consecutiveErrors: 'Errores consecutivos',
       recentWriteError: 'Error de escritura reciente',
     },
-    
+
     actions: {
       processing: 'Procesando…',
       reconnect: 'Reconectar',
@@ -32,7 +32,7 @@ export default {
       sessionContext: 'Contexto de sesión',
     },
   },
-  
+
   error: {
     connectionFailed: 'Conexión fallida',
     checkFailed: 'Verificación fallida',

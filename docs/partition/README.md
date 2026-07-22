@@ -1,7 +1,7 @@
 # PostgreSQL 分区表读写规范 - 文档索引
 
-**项目**: llm-gateway-go  
-**创建日期**: 2026-07-04  
+**项目**: llm-gateway-go
+**创建日期**: 2026-07-04
 **状态**: ✅ 已完成并验证
 
 ---
@@ -49,7 +49,7 @@
    // ✅ 正确写法
    INSERT INTO request_logs_default (...) VALUES (...);
    UPDATE request_logs_default SET ... WHERE ...;
-   
+
    // ❌ 错误写法
    INSERT INTO request_logs (...) VALUES (...);  // 禁止
    ```
@@ -74,7 +74,7 @@
    ```bash
    # 运行自动化测试
    ./tests/partition_write_test.sh
-   
+
    # 运行单元测试
    go test ./telemetry -run TestPartitionRouter
    ```
@@ -146,23 +146,23 @@
 ## 🔍 常见问题速查
 
 ### Q1: 为什么不能写父表？
-**A**: 父表会自动路由到对应分区，如果当月分区是 columnar，UPSERT 会失败。  
+**A**: 父表会自动路由到对应分区，如果当月分区是 columnar，UPSERT 会失败。
 **详见**: `partition-background.md` 第 2.1 节
 
 ### Q2: 历史补录怎么办？
-**A**: 使用 `partition_router.go`，它会根据 ts 年龄动态选择目标表。  
+**A**: 使用 `partition_router.go`，它会根据 ts 年龄动态选择目标表。
 **详见**: `partition-architecture.md` 第 3.2 节
 
 ### Q3: 查询父表会丢数据吗？
-**A**: 会！当月分区 DETACHED 后不包含在父表查询中。必须使用 VIEW。  
+**A**: 会！当月分区 DETACHED 后不包含在父表查询中。必须使用 VIEW。
 **详见**: `partition-standards.md` 第 2.2 节
 
 ### Q4: 为什么要定期清理 default 表？
-**A**: 防止表无限增长，提高查询性能。  
+**A**: 防止表无限增长，提高查询性能。
 **详见**: `partition-architecture.md` 第 5.1 节
 
 ### Q5: columnar 分区可以 UPDATE 吗？
-**A**: 不可以！columnar 是只读存储。  
+**A**: 不可以！columnar 是只读存储。
 **详见**: `partition-background.md` 第 2.1 节
 
 ---
@@ -226,6 +226,6 @@
 
 ---
 
-**最后更新**: 2026-07-04  
-**文档版本**: 1.0  
+**最后更新**: 2026-07-04
+**文档版本**: 1.0
 **维护团队**: Infrastructure Team

@@ -148,16 +148,16 @@ function insertIdleBlock() {
 ```typescript
 function truncateText(text: string, maxLength: number): string {
   if (text.length <= maxLength) return text
-  
+
   let result = text.slice(0, maxLength)
-  
+
   // 检查是否在emoji或多字节字符中间截断
   const lastChar = result.charCodeAt(result.length - 1)
   if (lastChar >= 0xD800 && lastChar <= 0xDFFF) {
     // 代理对的一半，回退一个字符
     result = result.slice(0, -1)
   }
-  
+
   return result + (text.length > result.length ? '…' : '')
 }
 ```
@@ -217,7 +217,7 @@ function truncateText(text: string, maxLength: number): string {
 
 **解决方案**: 已在CSS中添加字体回退链
 ```css
-font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 
+font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI',
              'PingFang SC', 'Microsoft YaHei', sans-serif;
 ```
 
@@ -327,7 +327,7 @@ function setGroupBy(dimension: GroupByDimension) {
 - 🔧 4个小功能细节（不影响主流程）
 - 🔧 3个可选优化（按需实施）
 
-**建议**: 
+**建议**:
 1. 先观察线上使用情况1-2周
 2. 收集用户反馈
 3. 按优先级逐步完善细节功能

@@ -1,8 +1,8 @@
 # 可观测性字段扩展设计文档
 
-**日期**: 2026-07-11  
-**版本**: v1.0  
-**作者**: Implementer  
+**日期**: 2026-07-11
+**版本**: v1.0
+**作者**: Implementer
 **任务**: P2.1 - Observability Fields Extension
 
 ---
@@ -65,12 +65,12 @@ CREATE INDEX idx_request_logs_task_type ON request_logs(task_type);
 CREATE INDEX idx_request_logs_agent_type ON request_logs(agent_type);
 
 -- 部分索引（仅索引关键状态）
-CREATE INDEX idx_request_logs_protocol_conversion 
-    ON request_logs(protocol_conversion) 
+CREATE INDEX idx_request_logs_protocol_conversion
+    ON request_logs(protocol_conversion)
     WHERE protocol_conversion = true;
 
-CREATE INDEX idx_request_logs_rate_limit_status 
-    ON request_logs(rate_limit_status) 
+CREATE INDEX idx_request_logs_rate_limit_status
+    ON request_logs(rate_limit_status)
     WHERE rate_limit_status IN ('exceeded', 'approaching_limit');
 ```
 
@@ -201,7 +201,7 @@ func ExtractAgentType(r *http.Request) string {
 ### 4.1 按客户 IP 聚合
 
 ```sql
-SELECT 
+SELECT
     client_ip,
     COUNT(*) as request_count,
     SUM(total_tokens) as total_tokens,
@@ -217,7 +217,7 @@ LIMIT 20;
 ### 4.2 协议转换分析
 
 ```sql
-SELECT 
+SELECT
     client_protocol,
     upstream_protocol,
     COUNT(*) as conversion_count,
@@ -232,7 +232,7 @@ GROUP BY client_protocol, upstream_protocol;
 ### 4.3 压缩效率统计
 
 ```sql
-SELECT 
+SELECT
     compression_strategy,
     COUNT(*) as compressed_requests,
     AVG(compression_ratio) as avg_ratio,
@@ -247,7 +247,7 @@ GROUP BY compression_strategy;
 ### 4.4 安全合规审计
 
 ```sql
-SELECT 
+SELECT
     ts,
     tenant_id,
     client_ip,
@@ -257,7 +257,7 @@ SELECT
     content_safety_score
 FROM request_logs
 WHERE (
-    dlp_violations IS NOT NULL 
+    dlp_violations IS NOT NULL
     OR array_length(sensitive_keywords, 1) > 0
     OR (content_safety_score->>'score')::FLOAT < 0.8
 )
@@ -269,7 +269,7 @@ LIMIT 100;
 ### 4.5 任务级成本分析
 
 ```sql
-SELECT 
+SELECT
     task_id,
     task_title,
     task_type,
@@ -290,7 +290,7 @@ LIMIT 50;
 
 ```sql
 -- 统计 OpenAI o1/o3 reasoning tokens
-SELECT 
+SELECT
     DATE_TRUNC('day', ts) as date,
     outbound_model,
     COUNT(*) as request_count,
@@ -333,7 +333,7 @@ func MaskIP(ip string) string {
 
 ```sql
 -- 仅记录关键词类型，不记录具体值
-UPDATE request_logs 
+UPDATE request_logs
 SET sensitive_keywords = ARRAY['<redacted>']
 WHERE array_length(sensitive_keywords, 1) > 0;
 ```
@@ -403,11 +403,11 @@ go test ./telemetry -v -run TestRequestMetadata
 func ObservabilityMiddleware(next http.Handler) http.Handler {
     return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
         meta := telemetry.NewRequestMetadata(r)
-        
+
         // 注入到 request context
         ctx := context.WithValue(r.Context(), "observability_meta", meta)
         r = r.WithContext(ctx)
-        
+
         next.ServeHTTP(w, r)
     })
 }
@@ -419,14 +419,14 @@ func ObservabilityMiddleware(next http.Handler) http.Handler {
 // 在 request_logs 插入时
 func (l *Logger) LogRequest(ctx context.Context, req *Request) {
     meta := ctx.Value("observability_meta").(*telemetry.RequestMetadata)
-    
+
     _, err := l.db.Exec(ctx, `
         INSERT INTO request_logs (
             request_id, ts, tenant_id, success,
-            client_ip, agent_name, agent_type, 
+            client_ip, agent_name, agent_type,
             vendor_metadata, ...
         ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, ...)
-    `, 
+    `,
         req.ID, time.Now(), req.TenantID, req.Success,
         meta.ClientIP, meta.AgentName, meta.AgentType,
         meta.VendorMetadata, ...
@@ -444,7 +444,7 @@ func (m *Manager) CreateSession(ctx context.Context, opts CreateOptions) (*Sessi
         Summary: opts.Summary,
         // ...
     }
-    
+
     // 注入到后续请求的 metadata
     meta := &telemetry.RequestMetadata{
         SessionTitle:   session.Title,
@@ -452,7 +452,7 @@ func (m *Manager) CreateSession(ctx context.Context, opts CreateOptions) (*Sessi
         TaskID:         opts.TaskID,
         TaskTitle:      opts.TaskTitle,
     }
-    
+
     return session, nil
 }
 ```

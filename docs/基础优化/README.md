@@ -64,11 +64,11 @@ llm-gateway-go 经过近两年发展，代码量 ~10 万行，已具备扎实的
 ```mermaid
 flowchart LR
     Client --> Gateway
-    
+
     subgraph Gateway[LLM Gateway]
         Adapter[Provider Adapter Layer]
     end
-    
+
     Adapter --> OpenAI[OpenAI API]
     Adapter --> Anthropic[Anthropic API]
     Adapter --> Bedrock[AWS Bedrock]

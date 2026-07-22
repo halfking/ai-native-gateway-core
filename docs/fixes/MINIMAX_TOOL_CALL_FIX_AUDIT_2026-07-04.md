@@ -1,8 +1,8 @@
 # MiniMax-M3 Tool Call 修复审计报告
 
-**日期**: 2026-07-04  
-**审计人**: AI Agent (OpenCode)  
-**分支**: main  
+**日期**: 2026-07-04
+**审计人**: AI Agent (OpenCode)
+**分支**: main
 **版本**: 基于参考文档的完整修复
 
 ---
@@ -25,8 +25,8 @@
 
 ### 问题描述
 
-**文件**: `internal/ir/serialize_openai.go`  
-**位置**: 第 189-203 行（修复前）  
+**文件**: `internal/ir/serialize_openai.go`
+**位置**: 第 189-203 行（修复前）
 **触发条件**:
 - 消息角色 = `assistant`
 - `len(msg.Content) == 0`（空内容）
@@ -105,8 +105,8 @@ if len(msg.Content) == 0 {
 
 ### 问题描述
 
-**文件**: `internal/ir/serialize_openai.go`  
-**位置**: `SerializeOpenAI` 函数末尾（修复前缺失）  
+**文件**: `internal/ir/serialize_openai.go`
+**位置**: `SerializeOpenAI` 函数末尾（修复前缺失）
 **根因**: 客户端（OpenCode / Claude Code 等）在压缩对话上下文时，只删除了 assistant 的 tool_calls 消息，但保留了对应的 tool result，产生"孤儿 tool result"。
 
 ### 症状（生产抓包示例）
@@ -199,8 +199,8 @@ func validateToolCallIntegrity(messages []map[string]any) error {
 
 ### 问题描述
 
-**文件**: `internal/ir/serialize_anthropic.go`  
-**位置**: 第 162-163 行  
+**文件**: `internal/ir/serialize_anthropic.go`
+**位置**: 第 162-163 行
 **问题**: MiniMax 使用 Anthropic 协议时，要求使用 `tool_call_id` 而非标准的 `tool_use_id`。
 
 ### 当前代码
@@ -241,7 +241,7 @@ if msg.Role == "tool" {
 ```go
 type InternalRequest struct {
     // ... 现有字段 ...
-    
+
     // TargetProvider 目标上游 provider 代码（用于协议变体处理）
     TargetProvider string // "minimax" | "anthropic" | "openai" | ...
 }
@@ -259,7 +259,7 @@ if msg.ToolCallID != "" {
 }
 ```
 
-**优点**: 清晰、可维护、可扩展到其他 provider 变体  
+**优点**: 清晰、可维护、可扩展到其他 provider 变体
 **缺点**: 需要改动 IR 架构，影响范围较大
 
 #### 选项 B：临时方案（快速）
@@ -273,7 +273,7 @@ func rewriteToolCallIDForMinimax(body []byte) []byte {
 }
 ```
 
-**优点**: 不改动 IR 层，快速修复  
+**优点**: 不改动 IR 层，快速修复
 **缺点**: 逻辑分散，不利于长期维护
 
 #### 选项 C：双字段输出（兼容方案，但可能违反协议）
@@ -287,7 +287,7 @@ if msg.ToolCallID != "" {
 }
 ```
 
-**优点**: 无需架构改动，兼容两种协议  
+**优点**: 无需架构改动，兼容两种协议
 **缺点**: 可能违反严格的协议校验（需测试验证）
 
 ### 当前状态
@@ -311,33 +311,33 @@ if msg.ToolCallID != "" {
 
 #### `serialize_openai_toolcalls_test.go`
 
-1. **TestSerializeOpenAI_EmptyContentWithToolCalls**  
+1. **TestSerializeOpenAI_EmptyContentWithToolCalls**
    - 空 content + 单个 tool_call
    - 验证 `content` 和 `tool_calls` 字段都存在
 
-2. **TestSerializeOpenAI_MultipleToolCallsWithEmptyContent**  
+2. **TestSerializeOpenAI_MultipleToolCallsWithEmptyContent**
    - 空 content + 多个 tool_call
    - 验证所有 tool_call 都被正确序列化
 
 #### `serialize_openai_validation_test.go`
 
-1. **TestSerializeOpenAI_OrphanedToolResults**  
+1. **TestSerializeOpenAI_OrphanedToolResults**
    - 全孤儿 tool result（无匹配 assistant）
    - 验证返回错误，错误信息包含孤儿 ID 和 "likely client bug"
 
-2. **TestSerializeOpenAI_ValidToolCalls**  
+2. **TestSerializeOpenAI_ValidToolCalls**
    - 正常 tool call 链路
    - 验证不触发校验错误
 
-3. **TestSerializeOpenAI_PartialOrphans**  
+3. **TestSerializeOpenAI_PartialOrphans**
    - 部分孤儿（混合正常 + 孤儿）
    - 验证只报告孤儿 ID
 
-4. **TestSerializeOpenAI_ShortMessageList**  
+4. **TestSerializeOpenAI_ShortMessageList**
    - 短消息列表（≤2 条）
    - 验证跳过校验，不破坏单元测试
 
-5. **TestSerializeOpenAI_MultipleOrphanedToolResults**  
+5. **TestSerializeOpenAI_MultipleOrphanedToolResults**
    - 5 个孤儿
    - 验证错误信息限制显示前 3 个 ID
 

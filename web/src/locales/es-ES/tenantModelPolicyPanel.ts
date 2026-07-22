@@ -5,7 +5,7 @@ export default {
   showDeleted: 'Mostrar eliminados',
   addButton: '+ Agregar modelo denegado',
   loading: 'Cargando…',
-  
+
   table: {
     canonicalName: 'canonical_name',
     reason: 'reason',
@@ -14,14 +14,14 @@ export default {
     deletedAt: 'deleted_at',
     actions: 'Acciones',
   },
-  
+
   actions: {
     softDelete: 'Eliminación lógica',
     restore: 'Restaurar',
   },
-  
+
   empty: 'Sin políticas (todos los modelos permitidos por defecto)',
-  
+
   audit: {
     title: 'Registro de auditoría',
     recent: '{count} entradas recientes',
@@ -39,7 +39,7 @@ export default {
       undelete: 'Restaurar',
     },
   },
-  
+
   dialog: {
     title: 'Agregar modelo denegado',
     hint: 'Ingrese canonical_name a continuación (debe coincidir con la tabla models_canonical).',
@@ -54,11 +54,11 @@ export default {
     submit: 'Enviar',
     submitting: 'Enviando…',
   },
-  
+
   confirm: {
     softDelete: '¿Confirmar eliminación lógica de la política {name}? (Recuperable)',
   },
-  
+
   error: {
     loadFailed: 'Error al cargar',
     canonicalNameRequired: 'canonical_name es obligatorio',

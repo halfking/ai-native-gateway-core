@@ -5,7 +5,7 @@ export default {
   showDeleted: 'Show Deleted',
   addButton: '+ Add Denied Model',
   loading: 'Loading…',
-  
+
   table: {
     canonicalName: 'canonical_name',
     reason: 'reason',
@@ -14,14 +14,14 @@ export default {
     deletedAt: 'deleted_at',
     actions: 'Actions',
   },
-  
+
   actions: {
     softDelete: 'Soft Delete',
     restore: 'Restore',
   },
-  
+
   empty: 'No policies (all models allowed by default)',
-  
+
   audit: {
     title: 'Audit Log',
     recent: 'Recent {count} entries',
@@ -39,7 +39,7 @@ export default {
       undelete: 'Restore',
     },
   },
-  
+
   dialog: {
     title: 'Add Denied Model',
     hint: 'Enter canonical_name below (must match models_canonical table).',
@@ -54,11 +54,11 @@ export default {
     submit: 'Submit',
     submitting: 'Submitting…',
   },
-  
+
   confirm: {
     softDelete: 'Confirm soft delete policy {name}? (Recoverable)',
   },
-  
+
   error: {
     loadFailed: 'Failed to load',
     canonicalNameRequired: 'canonical_name is required',

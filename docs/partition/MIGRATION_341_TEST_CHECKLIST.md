@@ -1,7 +1,7 @@
 # Migration 341 本地测试检查清单
 
-**日期**: 2026-07-05  
-**环境**: 本地开发环境 (localhost)  
+**日期**: 2026-07-05
+**环境**: 本地开发环境 (localhost)
 **状态**: 准备测试
 
 ---
@@ -78,7 +78,7 @@ pg_dump -h localhost -U kxuser llm_gateway > backup_local_before_341_$(date +%Y%
 
 # 或仅备份 request_logs_default
 psql -h localhost -U kxuser -d llm_gateway -c "
-  CREATE TABLE request_logs_default_backup_341 AS 
+  CREATE TABLE request_logs_default_backup_341 AS
   SELECT * FROM request_logs_default;
 "
 ```
@@ -123,7 +123,7 @@ psql -h localhost -U kxuser -d llm_gateway -c "
 
 # 2. 检查索引
 psql -h localhost -U kxuser -d llm_gateway -c "
-  SELECT indexname FROM pg_indexes 
+  SELECT indexname FROM pg_indexes
   WHERE tablename = 'request_logs_hot';
 "
 
@@ -259,7 +259,7 @@ git push origin main  # 触发 CI/CD 到 184
 
 ---
 
-**测试负责人**: _______________  
-**测试日期**: _______________  
-**批准部署到 184**: ⬜ 是 / ⬜ 否  
+**测试负责人**: _______________
+**测试日期**: _______________
+**批准部署到 184**: ⬜ 是 / ⬜ 否
 **批准部署到 71**: ⬜ 是 / ⬜ 否（需用户明确命令）

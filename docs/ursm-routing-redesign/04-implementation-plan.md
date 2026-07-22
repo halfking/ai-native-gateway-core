@@ -8,8 +8,8 @@
 
 ## Task Package 1: 核心架构 (Core Architecture)
 
-**负责人**: Agent-Core  
-**预计工期**: 3天  
+**负责人**: Agent-Core
+**预计工期**: 3天
 **优先级**: P0 (阻塞其他任务)
 
 ### 子任务
@@ -27,7 +27,7 @@ domains/ursm/
 
 #### T1.2 实现状态结构
 - [x] ProviderState
-- [x] CredentialState  
+- [x] CredentialState
 - [x] ModelState
 - [x] NodeState
 - [x] RouteNode
@@ -38,12 +38,12 @@ domains/ursm/
 type Manager struct {
     db    *pgxpool.Pool
     redis *redis.Client
-    
+
     providerCache   *LayerCache[ProviderState]
     credentialCache *LayerCache[CredentialState]
     modelCache      *LayerCache[ModelState]
     nodeCache       *LayerCache[NodeState]
-    
+
     fpSlotMgr  *FingerprintSlotManager
     concSlotMgr *ConcurrencySlotManager
     costScorer *CostScorer
@@ -67,9 +67,9 @@ type Manager struct {
 
 ## Task Package 2: 资源限额管理 (Resource Managers)
 
-**负责人**: Agent-Resource  
-**预计工期**: 4天  
-**依赖**: Task 1  
+**负责人**: Agent-Resource
+**预计工期**: 4天
+**依赖**: Task 1
 **优先级**: P0
 
 ### 子任务
@@ -128,9 +128,9 @@ domains/ursm/
 
 ## Task Package 3: 批量写入器 (Batch Writer)
 
-**负责人**: Agent-Writer  
-**预计工期**: 3天  
-**依赖**: Task 1  
+**负责人**: Agent-Writer
+**预计工期**: 3天
+**依赖**: Task 1
 **优先级**: P0
 
 ### 子任务
@@ -170,9 +170,9 @@ domains/ursm/
 
 ## Task Package 4: 状态更新API (State APIs)
 
-**负责人**: Agent-API  
-**预计工期**: 3天  
-**依赖**: Task 1, 3  
+**负责人**: Agent-API
+**预计工期**: 3天
+**依赖**: Task 1, 3
 **优先级**: P1
 
 ### 子任务
@@ -224,9 +224,9 @@ func (m *Manager) RecordProbeResult(ctx context.Context, result ProbeResult) err
 
 ## Task Package 5: 路由查询API (Routing APIs)
 
-**负责人**: Agent-Routing  
-**预计工期**: 4天  
-**依赖**: Task 1, 2  
+**负责人**: Agent-Routing
+**预计工期**: 4天
+**依赖**: Task 1, 2
 **优先级**: P1
 
 ### 子任务
@@ -280,9 +280,9 @@ domains/ursm/
 
 ## Task Package 6: Router/Executor适配 (Integration)
 
-**负责人**: Agent-Integration  
-**预计工期**: 3天  
-**依赖**: Task 4, 5  
+**负责人**: Agent-Integration
+**预计工期**: 3天
+**依赖**: Task 4, 5
 **优先级**: P1
 
 ### 子任务
@@ -329,9 +329,9 @@ func (e *Executor) Execute(...) {
 
 ## Task Package 7: 测试与文档 (Testing & Documentation)
 
-**负责人**: Agent-QA  
-**预计工期**: 4天  
-**依赖**: Task 6  
+**负责人**: Agent-QA
+**预计工期**: 4天
+**依赖**: Task 6
 **优先级**: P1
 
 ### 子任务
@@ -448,32 +448,32 @@ Day 13-16: Task 7 (Testing & Documentation)
 ## 风险与应对
 
 ### 风险1: 缓存不一致
-**概率**: 中  
-**影响**: 高  
-**应对**: 
+**概率**: 中
+**影响**: 高
+**应对**:
 - 缩短TTL
 - 增加缓存失效触发点
 - 监控不一致率
 
 ### 风险2: 性能退化
-**概率**: 低  
-**影响**: 高  
+**概率**: 低
+**影响**: 高
 **应对**:
 - 基准测试对比
 - 缓存预热
 - 连接池调优
 
 ### 风险3: 资源泄露
-**概率**: 中  
-**影响**: 高  
+**概率**: 中
+**影响**: 高
 **应对**:
 - 严格的defer释放
 - 定期资源巡检
 - 监控资源占用
 
 ### 风险4: 向后兼容问题
-**概率**: 低  
-**影响**: 中  
+**概率**: 低
+**影响**: 中
 **应对**:
 - 灰度上线
 - A/B测试

@@ -7,11 +7,11 @@ export default {
     error: '连接失败',
     loading: '检测中',
   },
-  
+
   panel: {
     title: 'Memora 连接',
     closeLabel: '关闭',
-    
+
     fields: {
       serviceUrl: '服务地址',
       recentLatency: '最近延迟',
@@ -22,7 +22,7 @@ export default {
       consecutiveErrors: '连续失败',
       recentWriteError: '最近写入错误',
     },
-    
+
     actions: {
       processing: '处理中…',
       reconnect: '重连',
@@ -32,7 +32,7 @@ export default {
       sessionContext: '会话上下文',
     },
   },
-  
+
   error: {
     connectionFailed: '连接失败',
     checkFailed: '检测失败',

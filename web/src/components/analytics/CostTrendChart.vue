@@ -71,7 +71,7 @@ const trendText = computed(() => {
   if (!props.summary) return '-'
   const trend = props.summary.costTrend
   const pct = Math.abs(props.summary.trendPct).toFixed(1)
-  
+
   if (trend === 'up') return `↑ ${pct}%`
   if (trend === 'down') return `↓ ${pct}%`
   return '持平'
@@ -153,7 +153,7 @@ watch(
       const labels = props.data.map(d => d.date)
       const inputData = props.data.map(d => d.inputCost)
       const outputData = props.data.map(d => d.outputCost)
-      
+
       chartInstance.value.data.labels = labels
       chartInstance.value.data.datasets[0].data = inputData
       chartInstance.value.data.datasets[1].data = outputData

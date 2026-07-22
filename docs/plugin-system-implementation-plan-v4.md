@@ -1,8 +1,8 @@
 # Hook插件化重构实施计划（v4：经审计修正版）
 
-**版本**: v4  
-**日期**: 2024-07-09  
-**状态**: 待评审  
+**版本**: v4
+**日期**: 2024-07-09
+**状态**: 待评审
 **前置审计**: `docs/plugin-system-audit-report.md`
 
 ---
@@ -77,7 +77,7 @@ type GovernanceExtension interface {
 
 **关键**: adapter是1:1映射，Priority/Direction由插件直接提供，不从Manifest推导。
 
-**审计依据**: 
+**审计依据**:
 - 现有17个`pipeline.Hook`实现都有明确的Priority()返回值
 - 现有7个`security.Plugin`实现都有明确的Direction()返回值
 - 无需adapter"发明"缺失方法
@@ -90,17 +90,17 @@ type GovernanceExtension interface {
 type ExtensionContext struct {
     Manifest Manifest
     Config   json.RawMessage  // 已按ConfigSchema校验
-    
+
     // 持久化通道（铁律2：独立于hook）
     Storage  Storage          // KV + DB + Migrations
-    
+
     // 通讯层（简化为两层）
     Metadata MetadataRegistry  // 层1：Metadata key注册表，规范化现有~40个key
     Events   DurablePublisher  // 层2：PG-backed异步（复用analysis.bus.Publisher）
-    
+
     // 依赖查询（里程碑A，只读）
     Dependencies DependencyInfo  // 构建期填充的depends_on信息
-    
+
     // 复用网关服务
     LLM      LLMClient         // 回调网关LLM（多模型复核用）
     Settings SettingsStore     // RegisterSpec / EffectiveValue
@@ -130,7 +130,7 @@ type Storage interface {
     // Tier 1（默认）：namespaced KV
     // key自动前缀: plugin:{pluginID}:tenant:{tenantID}:
     KV() KVStore  // 复用cache/kv.Store形状
-    
+
     // Tier 2（声明式opt-in）：插件owned表
     DB() DBHandle  // 窄接口（analysis.DB形状），非裸pool
     Migrations() []Migration
@@ -157,7 +157,7 @@ type KVStore interface {
 }
 ```
 
-**审计依据**: 
+**审计依据**:
 - `ApprovalDBTX`（`approval_manager.go:41`）是"故意为pgxmock可替换而设计"
 - `analysis.DB`（`analysis/db.go:17`）是窄接口模板
 - 模块已有独立持久化：`ApprovalManager.MarkTimeout` worker无hook触发
@@ -178,10 +178,10 @@ spec:
   phases: [pre_routing]
   priority: 80      # 同phase内排序
   direction: input  # 仅governance type需要: input|output|both
-  
+
   # 依赖管理（里程碑A）
   depends_on: []    # 插件级依赖，用于拓扑排序
-  
+
   # 配置（里程碑A）
   configSchema:     # JSON Schema，加载期校验
     type: object
@@ -190,13 +190,13 @@ spec:
     required: [budget_usd]
   config:
     budget_usd: 100.0
-  
+
   # 能力声明（里程碑A）
   permissions:
     db: true           # 需要Storage.DB()
     llm_invoke: false  # 需要ExtensionContext.LLM()
     network: []        # 允许的外部host（WASM用）
-  
+
   # 迁移（里程碑B）
   migrations:
     - version: "001"
@@ -217,10 +217,10 @@ spec:
 type MetadataRegistry interface {
     // 插件注册它读写的key
     RegisterKey(key, pluginName, direction string) error  // direction: read|write|both
-    
+
     // 检查悬空契约（写者无读者、读者无写者）
     Validate() []string  // 返回警告列表
-    
+
     // 查询key的所有者
     Owners(key string) (writers, readers []string)
 }
@@ -235,7 +235,7 @@ var GlobalMetadataRegistry = NewMetadataRegistry()
 
 ### 设计6: 依赖管理（简化，分两期）
 
-**里程碑A（必需）**: 
+**里程碑A（必需）**:
 ```go
 // Registry 加载时拓扑排序
 func (r *Registry) Register(ext Extension, ctx ExtensionContext) error {
@@ -258,7 +258,7 @@ func (r *Registry) Register(ext Extension, ctx ExtensionContext) error {
 
 ### A1: 核心类型定义（1周）
 
-**交付物**: 
+**交付物**:
 - `domains/extensions/types.go`
   - Extension/HookExtension/GovernanceExtension接口
   - Manifest结构体
@@ -329,7 +329,7 @@ func (r *Registry) Register(ext Extension, ctx ExtensionContext) error {
 - 迁移可回滚（Down脚本）
 - 文档说明KV namespace规则
 
-**风险控制**: 
+**风险控制**:
 - 如A2接口需调整，B只需修改实现，接口调用者不受影响
 
 ---
@@ -474,7 +474,7 @@ func (e *BudgetGuardExtension) Execute(ctx, env) error {
   - 实现Extension gRPC服务
   - README说明编译步骤
 
-**推迟理由**: 
+**推迟理由**:
 - 需A-E'验证进程内插件系统稳定
 - gRPC跨版本兼容需额外设计
 
@@ -587,5 +587,5 @@ func (e *BudgetGuardExtension) Execute(ctx, env) error {
 - v3: 数据/通讯/依赖为一等公民（审计后发现过度设计）
 - v4: 审计修正版（本文档，简化+降低风险）
 
-**批准**: 待评审  
+**批准**: 待评审
 **实施**: 待批准后开始

@@ -2,13 +2,13 @@
 
 ## API 概览
 
-**端点**: 
+**端点**:
 ```
 POST https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent
 POST https://generativelanguage.googleapis.com/v1beta/models/{model}:streamGenerateContent
 ```
 
-**认证**: 
+**认证**:
 ```
 ?key={API_KEY}
 或

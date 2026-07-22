@@ -1,8 +1,8 @@
 # Phase 2C 实现审计报告
 
-**日期**：2026-07-15  
-**审计范围**：migration 401、Repository、Hook、main.go wiring  
-**审计人**：OpenCode Agent  
+**日期**：2026-07-15
+**审计范围**：migration 401、Repository、Hook、main.go wiring
+**审计人**：OpenCode Agent
 **提交**：`1d0c01bf4` → `bdcfd02d2`
 
 ---
@@ -136,13 +136,13 @@ if _, err := repo.InsertBatch(ctx, rows); err != nil {
 
 `cmd/gateway/main.go` 中共 3 处调用 `AddOnRequestLogPersisted`：
 
-1. **Line 1071**：`attachmentmirror.PersistHook(attachmentRepo)`  
+1. **Line 1071**：`attachmentmirror.PersistHook(attachmentRepo)`
    条件：`telemetryClient != nil && dbConn.Enabled()`
 
-2. **Line 1962**：`statsBoardCache.Record`  
+2. **Line 1962**：`statsBoardCache.Record`
    条件：`telemetryClient.Enabled()`
 
-3. **Line 1981**：`statsMinuteAccumulator.Record`  
+3. **Line 1981**：`statsMinuteAccumulator.Record`
    条件：`telemetryClient.Enabled()`
 
 **结论**：✅ 3 个 hook 可以并存（`AddOnRequestLogPersisted` 是追加而非替换）。

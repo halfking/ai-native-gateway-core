@@ -130,7 +130,7 @@ ChatHandler.ServeHTTP()
             SessionID:   gwSessionID,
             ClientModel: clientModel,
          })
-           └─ INSERT INTO request_wal_hot (...) 
+           └─ INSERT INTO request_wal_hot (...)
               ON CONFLICT (request_id, created_at) DO NOTHING
               (同步执行，5秒超时)
 ```
@@ -195,7 +195,7 @@ CREATE TABLE request_wal_hot (
     error                  TEXT,
     compression_strategy   VARCHAR(50),
     compression_meta       JSONB,
-    
+
     PRIMARY KEY (request_id, created_at)  -- ⚠️ 必须有主键支持 ON CONFLICT
 );
 ```
@@ -251,7 +251,7 @@ CREATE TABLE request_logs_hot (
     failure_stage          TEXT,
     failure_detail_code    TEXT,
     -- ... 还有20+个字段
-    
+
     PRIMARY KEY (request_id, ts)  -- ⚠️ 必须有主键支持 ON CONFLICT
 );
 ```
@@ -281,7 +281,7 @@ CREATE TABLE request_logs (
 -- 分区示例
 CREATE TABLE request_logs_2026_07 PARTITION OF request_logs
     FOR VALUES FROM ('2026-07-01') TO ('2026-08-01');
-    
+
 CREATE TABLE request_logs_2026_08 PARTITION OF request_logs
     FOR VALUES FROM ('2026-08-01') TO ('2026-09-01');
 ```
@@ -431,16 +431,16 @@ export function getRequestLogs(params: {...}) {
 **逻辑**:
 ```sql
 -- 1. 查找超过保留期的记录
-SELECT * FROM request_logs_hot 
+SELECT * FROM request_logs_hot
 WHERE ts < NOW() - INTERVAL '7 days'
-ORDER BY ts 
+ORDER BY ts
 LIMIT batch_size;
 
 -- 2. 插入到分区表
 INSERT INTO request_logs SELECT * FROM temp_batch;
 
 -- 3. 从热表删除
-DELETE FROM request_logs_hot 
+DELETE FROM request_logs_hot
 WHERE (request_id, ts) IN (SELECT request_id, ts FROM temp_batch);
 ```
 
@@ -477,11 +477,11 @@ ERROR: there is no unique or exclusion constraint matching the ON CONFLICT speci
 **修复**:
 ```sql
 -- request_wal_hot
-ALTER TABLE request_wal_hot 
+ALTER TABLE request_wal_hot
 ADD CONSTRAINT request_wal_hot_pkey PRIMARY KEY (request_id, created_at);
 
 -- request_logs_hot
-ALTER TABLE request_logs_hot 
+ALTER TABLE request_logs_hot
 ADD CONSTRAINT request_logs_hot_pkey PRIMARY KEY (request_id, ts);
 ```
 
@@ -510,12 +510,12 @@ affinity_hit = COALESCE(EXCLUDED.affinity_hit, request_logs_hot.affinity_hit)
 **检查命令**:
 ```sql
 -- 检查最近的写入
-SELECT COUNT(*), MAX(created_at) 
-FROM request_wal_hot 
+SELECT COUNT(*), MAX(created_at)
+FROM request_wal_hot
 WHERE created_at > NOW() - INTERVAL '5 minutes';
 
-SELECT COUNT(*), MAX(ts) 
-FROM request_logs_hot 
+SELECT COUNT(*), MAX(ts)
+FROM request_logs_hot
 WHERE ts > NOW() - INTERVAL '5 minutes';
 ```
 
@@ -561,7 +561,7 @@ WHERE ts > NOW() - INTERVAL '5 minutes';
 
 ```sql
 -- 每分钟写入量
-SELECT 
+SELECT
     date_trunc('minute', created_at) as minute,
     COUNT(*) as requests
 FROM request_wal_hot
@@ -570,7 +570,7 @@ GROUP BY 1
 ORDER BY 1 DESC;
 
 -- 写入延迟（通过时间戳差异估算）
-SELECT 
+SELECT
     AVG(EXTRACT(EPOCH FROM (created_at - '1970-01-01'::timestamp))) as avg_latency_ms
 FROM request_wal_hot
 WHERE created_at > NOW() - INTERVAL '5 minutes';
@@ -580,7 +580,7 @@ WHERE created_at > NOW() - INTERVAL '5 minutes';
 
 ```sql
 -- 成功率
-SELECT 
+SELECT
     success,
     COUNT(*) as count,
     COUNT(*) * 100.0 / SUM(COUNT(*)) OVER () as percentage
@@ -589,7 +589,7 @@ WHERE ts > NOW() - INTERVAL '1 hour'
 GROUP BY success;
 
 -- 热表大小
-SELECT 
+SELECT
     pg_size_pretty(pg_total_relation_size('request_wal_hot')) as wal_size,
     pg_size_pretty(pg_total_relation_size('request_logs_hot')) as logs_size;
 ```
@@ -604,7 +604,7 @@ SELECT
    ```sql
    -- ✅ 正确
    SELECT * FROM request_logs_with_current_month WHERE ...
-   
+
    -- ❌ 错误（缺少热数据）
    SELECT * FROM request_logs WHERE ...
    ```
@@ -614,7 +614,7 @@ SELECT
    -- ✅ 正确
    ON CONFLICT (...) DO UPDATE SET
        column = COALESCE(EXCLUDED.column, table_name.column)
-   
+
    -- ❌ 错误（模糊引用）
    ON CONFLICT (...) DO UPDATE SET
        column = COALESCE(EXCLUDED.column, column)
@@ -623,7 +623,7 @@ SELECT
 3. **新建热表必须添加主键检查**
    ```sql
    CREATE TABLE xxx_hot (LIKE xxx INCLUDING ALL);
-   
+
    -- 必须添加
    DO $$
    BEGIN
@@ -668,7 +668,7 @@ SELECT
 
 ### Q3: 热表数据何时迁移到分区表？
 
-**A**: 
+**A**:
 - 自动: 后台任务每小时执行，迁移7天前的数据
 - 手动: `SELECT promote_request_logs_hot_to_partition(7, 1000);`
 
@@ -676,7 +676,7 @@ SELECT
 
 **A**: 检查主键是否存在：
 ```sql
-SELECT conname FROM pg_constraint 
+SELECT conname FROM pg_constraint
 WHERE conrelid = 'request_logs_hot'::regclass AND contype = 'p';
 ```
 如果为空，执行修复脚本: `sql/fixes/fix-request-wal-hot-primary-key.sql`
@@ -694,6 +694,6 @@ WHERE conrelid = 'request_logs_hot'::regclass AND contype = 'p';
 
 ---
 
-**文档维护**: LLM Gateway Team  
-**最后更新**: 2026-07-10  
+**文档维护**: LLM Gateway Team
+**最后更新**: 2026-07-10
 **审阅周期**: 每月或重大架构变更后

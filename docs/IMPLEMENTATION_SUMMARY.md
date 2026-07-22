@@ -13,7 +13,7 @@
 
 ---
 
-**日期**: 2026-06-30  
+**日期**: 2026-06-30
 **状态**: ✅ 核心代码完成 · ⚙️ main wiring 待产品决策
 
 ---
@@ -184,30 +184,30 @@ import (
 
 func main() {
     // ... 现有初始化 ...
-    
+
     // 注册配置specs
     for _, spec := range settings.AutoControlSpecs() {
         _ = settings.Global.RegisterSpec(spec)
     }
-    
+
     // 创建stores
     handoffStore := handoff.NewPGStore(db)
     goalStore := goal.NewPGStore(db)
-    
+
     // 创建hooks
     settingsAdapter := &SettingsAdapter{store: settingsStore}
     handoffHook := handoff.NewTriggerHook(handoffConfig, handoffStore)
     goalHook := goal.NewModeHook(goalConfig, goalStore, llmCaller)
     auditHook := goal.NewAuditHook(goalStore, llmCaller)
-    
+
     // 构建拦截器链
     interceptorChain := response.NewInterceptorChain(
         handoffHook, goalHook, auditHook,
     )
-    
+
     // 设置到handler
     chatHandler.SetResponseInterceptor(interceptorChain)
-    
+
     // ... 启动服务 ...
 }
 ```

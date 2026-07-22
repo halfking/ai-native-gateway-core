@@ -256,7 +256,7 @@ v2Cost := SUM(cost_usd) FROM session_turns
 **Logic**:
 ```sql
 -- Expected from session_turns
-SELECT 
+SELECT
   COUNT(*) as turn_count,
   SUM(prompt_tokens + completion_tokens) as token_sum,
   SUM(cost_usd) as cost_sum,
@@ -414,10 +414,10 @@ Summary: 2/847 sessions have errors, 25 warnings
 Session: gw_abc123 [ERROR]
   V1: 10 turns, 15000 tokens, $0.15
   V2: 9 turns, 15000 tokens, $0.15
-  
+
   [ERROR] Request ID Parity
     Missing in V2: req_xyz789
-  
+
   [WARNING] Token Sum
     V1: 15000, V2: 15010 (diff: 10, within tolerance)
 
@@ -449,16 +449,16 @@ BEGIN;
 SELECT pg_advisory_xact_lock(hashSessionKey(tenant_id, session_id));
 
 -- 2. Delete V2 data (reverse FK order)
-DELETE FROM gateway.session_turn_logs 
+DELETE FROM gateway.session_turn_logs
 WHERE tenant_id = $1 AND session_id = $2;
 
-DELETE FROM gateway.session_bodies 
+DELETE FROM gateway.session_bodies
 WHERE tenant_id = $1 AND session_id = $2;
 
-DELETE FROM gateway.session_turns 
+DELETE FROM gateway.session_turns
 WHERE tenant_id = $1 AND session_id = $2;
 
-DELETE FROM gateway.sessions 
+DELETE FROM gateway.sessions
 WHERE tenant_id = $1 AND session_id = $2;
 
 -- 3. Rebuild from V1 (using backfill logic)
@@ -474,8 +474,8 @@ INSERT INTO gateway.session_bodies (...)
 SELECT ... FROM ordered_logs JOIN request_logs_bodies ...;
 
 INSERT INTO gateway.sessions (...)
-SELECT ... FROM gateway.session_turns 
-WHERE session_id = $2 
+SELECT ... FROM gateway.session_turns
+WHERE session_id = $2
 GROUP BY session_id;
 
 COMMIT;
@@ -486,41 +486,41 @@ COMMIT;
 **Dry-run** (`--repair` without `--apply`):
 ```
 [DRY RUN] Repair plan for session gw_abc123:
-  
+
   Will DELETE:
     - 10 rows from session_turn_logs
-    - 10 rows from session_bodies  
+    - 10 rows from session_bodies
     - 10 rows from session_turns
     - 1 row from sessions
-  
+
   Will REBUILD from V1:
     - 10 turns
     - 10 bodies
     - 1 session snapshot
-  
+
   Source: 10 rows in request_logs
-  
+
 Run with --apply to execute this repair.
 ```
 
 **Applied** (`--repair --apply`):
 ```
 [REPAIR] Rebuilding session gw_abc123 from V1...
-  
+
   Deleted:
     ✓ 10 rows from session_turn_logs
     ✓ 10 rows from session_bodies
     ✓ 10 rows from session_turns
     ✓ 1 row from sessions
-  
+
   Rebuilt:
     ✓ 10 turns inserted
     ✓ 10 bodies inserted
     ✓ 1 session snapshot created
-  
+
   Verification:
     ✓ Re-validation passed (status: ok)
-  
+
 Repair completed successfully.
 ```
 
@@ -660,7 +660,7 @@ func FormatText(report) string
 
 ### Integration Tests (with database)
 
-**Repair**: 
+**Repair**:
 - Create test session in V1
 - Write mismatched V2 data
 - Run repair, verify rebuild matches V1

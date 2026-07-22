@@ -1,8 +1,8 @@
 # 所有表数据完整性审计 - 最终报告
 
-**日期**: 2026-07-06  
-**审计人员**: llm-gateway-ops  
-**测试环境**: localhost:5432/llm_gateway  
+**日期**: 2026-07-06
+**审计人员**: llm-gateway-ops
+**测试环境**: localhost:5432/llm_gateway
 **审计范围**: 8 张分区表
 
 ---
@@ -24,8 +24,8 @@
 | credential_model_index | - | - | ✅ 正确 | ✅ 正常 | 无 |
 | request_logs_bodies | ✅ 修复后可写入 | - | ✅ default 分区兜底 | ✅ 已修复 | 原因已定位 |
 
-**总测试**: 8 个表  
-**通过**: 8 个表（其中 1 个经修复后通过）  
+**总测试**: 8 个表
+**通过**: 8 个表（其中 1 个经修复后通过）
 **发现问题**: 2 个表（2 个都已完成修复或验证）
 
 ---
@@ -34,7 +34,7 @@
 
 ### 1. request_logs ✅
 
-**状态**: ✅ 完全正常  
+**状态**: ✅ 完全正常
 **详细报告**: `docs/request-logs-data-audit-report.md`
 
 **测试覆盖**:
@@ -154,7 +154,7 @@ INSERT INTO tool_usage_stats (tool_id, tenant_id, usage_date, call_count, succes
 VALUES ('test-tool-1', 'default', CURRENT_DATE, 10, 8, 2);
 
 -- 逻辑一致性检查
-SELECT COUNT(*) FROM tool_usage_stats 
+SELECT COUNT(*) FROM tool_usage_stats
 WHERE (success_count + error_count) > call_count;
 结果: 0 条 ✅
 ```
@@ -221,7 +221,7 @@ success_rate 范围: ✅ 正确（[0, 1]）
 **测试详情**:
 ```sql
 -- 范围检查
-SELECT COUNT(*) FROM credential_model_index 
+SELECT COUNT(*) FROM credential_model_index
 WHERE success_rate < 0 OR success_rate > 1;
 结果: 0 条 ✅
 ```
@@ -255,7 +255,7 @@ ERROR: no partition of relation "request_logs_bodies" found for row
 Partition key of the failing row contains (ts) = (2026-07-05 17:25:52+00).
 
 -- 检查现有分区
-SELECT tablename FROM pg_tables 
+SELECT tablename FROM pg_tables
 WHERE tablename LIKE 'request_logs_bodies%';
 
 结果:
@@ -276,7 +276,7 @@ request_logs_bodies_2026_08   -- 8月分区
 **已执行修复**:
 
 ```sql
-CREATE TABLE IF NOT EXISTS request_logs_bodies_default 
+CREATE TABLE IF NOT EXISTS request_logs_bodies_default
 PARTITION OF request_logs_bodies DEFAULT;
 ```
 
@@ -337,7 +337,7 @@ SELECT count(*) FROM request_logs_bodies_2026_07;
 **修复代码**:
 ```sql
 -- 创建 default 分区
-CREATE TABLE IF NOT EXISTS request_logs_bodies_default 
+CREATE TABLE IF NOT EXISTS request_logs_bodies_default
 PARTITION OF request_logs_bodies DEFAULT;
 
 -- 或者重新配置 7月分区范围
@@ -353,13 +353,13 @@ FOR VALUES FROM ('2026-07-01 00:00:00+00') TO ('2026-08-01 00:00:00+00');
 
 **描述**: 直接 INSERT 失败属于预期行为，正确验证路径应走 MaaS 服务层。
 
-**影响**: 
+**影响**:
 - 裸 SQL 测试受限
 - 生产路径本身不受影响
 
 **当前状态**: ✅ 已在服务层集成测试中验证通过
 
-**建议**: 
+**建议**:
 - 文档化正确的插入方式（通过 maas/service.go）
 - 添加单元测试覆盖 AppendLedger() 方法
 
@@ -504,5 +504,5 @@ FOR VALUES FROM ('2026-07-01 00:00:00+00') TO ('2026-08-01 00:00:00+00');
 
 ---
 
-**审计完成时间**: 2026-07-06 01:25  
+**审计完成时间**: 2026-07-06 01:25
 **下一步**: 将 request_logs_bodies 的 ensure 逻辑做成自动 re-attach，避免再出现孤儿分区

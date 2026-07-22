@@ -40,7 +40,7 @@ Day 3 — Jul 1 00:39 ───────────────────�
 ## Phase Details
 
 ### P1 — Phase 1 代码复用修复 + 域重构 (11:42–11:52, 6 commits)
-**Files:** `routing/*`, `tenant/*`, `health_tracker.go`  
+**Files:** `routing/*`, `tenant/*`, `health_tracker.go`
 **Changes:**
 - `docs(audit)`: 代码复用情况综合审计
 - `feat(routing)`: 迁移 sticky routing 和 health tracker 核心逻辑到 domains
@@ -48,7 +48,7 @@ Day 3 — Jul 1 00:39 ───────────────────�
 - Docs: 标记 Hook TODO, 双包分层设计, 修正总结
 
 ### P2 — Langfuse + Security + Pipeline (11:57–12:13, 9 commits)
-**Files:** `security/*`, `pipeline/*`, `db/*`  
+**Files:** `security/*`, `pipeline/*`, `db/*`
 **Changes:**
 - SQL 注入防护白名单验证 (whitelist-based)
 - Langfuse 架构分析文档
@@ -63,7 +63,7 @@ Day 3 — Jul 1 00:39 ───────────────────�
 - 重构 310 避免与 310_session_summaries 冲突
 
 ### P4 — 提示词注入检测 (12:55–13:28, 7 commits)
-**Files:** `promptinjection/*`, `admin/*`, `web/*`, `db/*`  
+**Files:** `promptinjection/*`, `admin/*`, `web/*`, `db/*`
 **Changes:**
 - DB 架构: 注入检测日志/规则表
 - 多层检测引擎 (签名 + 语义 + 启发式)
@@ -72,21 +72,21 @@ Day 3 — Jul 1 00:39 ───────────────────�
 - 🎉 里程碑 75% 完成
 
 ### P5 — 输出合规监控 (13:30–13:32, 3 commits)
-**Files:** `outputcompliance/*`, `db/*`  
+**Files:** `outputcompliance/*`, `db/*`
 **Changes:**
 - DB 架构: 合规检测日志表
 - 合规检测引擎 (内容策略 + 格式约束)
 - 🎉 里程碑 87.5% 完成
 
 ### P6 — 会话分析 Dashboard (13:37–13:42, 3 commits)
-**Files:** `admin/*`, `web/*`  
+**Files:** `admin/*`, `web/*`
 **Changes:**
 - Dashboard API: 会话趋势/模型分布/延迟分析
 - Dashboard UI: Vue 图表组件
 - 🎊 项目 100% 完成
 
 ### P7 — Q2 Response 合并冲突 + 修复 (15:03–15:31, 6 commits)
-**Context:** 两个分支 (fix/q2-response + fix/q2-response-conversion-openai-claude-opus) 合并入 main  
+**Context:** 两个分支 (fix/q2-response + fix/q2-response-conversion-openai-claude-opus) 合并入 main
 **Changes:**
 - OpenAI upstream response → Anthropic Messages 格式转换
 - Post-merge compile break 修复
@@ -94,14 +94,14 @@ Day 3 — Jul 1 00:39 ───────────────────�
 - Version bump
 
 ### P8 — V4 审批适配器 + 异步分析 + 发布 (15:14–16:05, 4 commits)
-**Files:** `domains/analysis/*`, `eventbus/*`  
+**Files:** `domains/analysis/*`, `eventbus/*`
 **Changes:**
 - PR-V4-08: approval adapter + clean pg_poll interface
 - PR-V4-09: async analysis loop wiring + Suspend → approval_queue
 - PR-V4-10: publish + flusher — request.completed → analysis_events → intent_aggregates
 
 ### P9 — 184 部署 + DB 同步 + Probe 修复集 (16:10–19:01, 26 commits)
-**Files:** `scripts/*`, `db/*`, `probe/*`, `web/*`, `streaming/*`  
+**Files:** `scripts/*`, `db/*`, `probe/*`, `web/*`, `streaming/*`
 **Key commits:**
 | Time | Message |
 |------|---------|
@@ -122,7 +122,7 @@ Day 3 — Jul 1 00:39 ───────────────────�
 | 19:00 | feat(gateway-v2): /v1/messages + autoroute SpeedP95 修复 + E2E |
 
 ### P10 — Gateway V2 (OpenAI 兼容) + E2E (18:25–19:28, 6 commits)
-**Files:** `cmd/gateway-v2/*`, `domains/streaming/*`  
+**Files:** `cmd/gateway-v2/*`, `domains/streaming/*`
 **Changes:**
 - /v1/chat/completions (OpenAI-compatible)
 - /v1/models/{id}
@@ -133,7 +133,7 @@ Day 3 — Jul 1 00:39 ───────────────────�
 - fp_slot 回归验证工具集
 
 ### P11 — Rule 20 认证 + R1.13 重构 (20:48–00:09, 21 commits)
-**Files:** `auth/*`, `middleware/*`, `domains/*` (credential, routing, memory, etc.)  
+**Files:** `auth/*`, `middleware/*`, `domains/*` (credential, routing, memory, etc.)
 **Changes:**
 | Time | Message |
 |------|---------|
@@ -154,20 +154,20 @@ Day 3 — Jul 1 00:39 ───────────────────�
 | 00:09 | fix(audit): 添加缺失 auth_cookie_helpers.go |
 
 ### P12 — Armor Phase 5 + Auth SSOT (00:17–00:30, 4 commits)
-**Files:** `security/armor/*`, `internal/auth/*`, `middleware/*`  
+**Files:** `security/armor/*`, `internal/auth/*`, `middleware/*`
 **Changes:**
 - Armor: prompt inspect + judge + log (Phase 5 middleware)
 - Auth: Rule 20 §6.1 cookie compliance — SameSite=Strict, 24h TTL, Secure auto
 - Auth: SSOT 常量文件 + 迁移引用
 
 ### P13 — Auto-Control 会话自动控制 (00:30–00:32, 2 commits)
-**Files:** `domains/hooks/goal/*`, `domains/hooks/handoff/*`, `db/*`  
+**Files:** `domains/hooks/goal/*`, `domains/hooks/handoff/*`, `db/*`
 **Changes:**
 - 会话自动控制系统骨架
 - 审核文件 + autoroute 扩展 + DB Migration
 
 ### P14 — Agents API + UI (Phase 7) (01:05–02:46, 14 commits)
-**Files:** `domains/agent-ecosystem/*`, `domains/assets/*`, `admin/*`, `web/*`, `db/*`  
+**Files:** `domains/agent-ecosystem/*`, `domains/assets/*`, `admin/*`, `web/*`, `db/*`
 **Changes:**
 | Time | Message |
 |------|---------|
@@ -185,11 +185,11 @@ Day 3 — Jul 1 00:39 ───────────────────�
 | 02:46 | fix(gateway-v2): audit — JSON error format + ID prefix + stream guard |
 
 ### P15 — Deploy: Rule 22 标准化 (02:20, 1 commit)
-**Files:** `deploy/*`, `scripts/*`  
+**Files:** `deploy/*`, `scripts/*`
 **Changes:** deploy/*.sh + doctor.sh + .env.example + LOCAL_CONFIG 规范化
 
 ### P16 — Audit Fixes + R1.13 Finalize (02:43–03:35, 6 commits)
-**Files:** `domains/*`, `db/*`, `Dockerfile`, `version.json`  
+**Files:** `domains/*`, `db/*`, `Dockerfile`, `version.json`
 **Changes:**
 - `fix(domains)`: detector/checker 初始化表回退
 - `fix(phase7)`: P0 — multi-tenant + LastSeenAt + txn type
@@ -199,7 +199,7 @@ Day 3 — Jul 1 00:39 ───────────────────�
 - `chore(version)`: bump
 
 ### P17 — DB 同步脚本增强 (04:55–13:13, 7 commits)
-**Files:** `scripts/*`, `db/migrations/*`, `domains/*`  
+**Files:** `scripts/*`, `db/migrations/*`, `domains/*`
 **Changes:**
 - sync 184→local: port __PORT_1__ + pg_dump 15.18
 - completion_tokens + cache_tokens for non-streaming
@@ -210,7 +210,7 @@ Day 3 — Jul 1 00:39 ───────────────────�
 - sync-db-from-71.sh
 
 ### P18 — 安全审计: Week 26 P0 修复 (14:29–14:31, 6 commits)
-**Files:** `auth/*`, `middleware/*`, `admin/*`, `db/*`  
+**Files:** `auth/*`, `middleware/*`, `admin/*`, `db/*`
 **Changes:**
 - P0-3/4/5: Auth middleware — cookie bypass + MustChangePassword + logout
 - P0-6/7/8: Telemetry nil-safe + client_request_id threading
@@ -220,11 +220,11 @@ Day 3 — Jul 1 00:39 ───────────────────�
 - Weekly audit report
 
 ### P19 — Routing: DB 错误暴露 (17:47, 1 commit)
-**Files:** `domains/streaming/*`  
+**Files:** `domains/streaming/*`
 **Changes:** DB errors → properly classified (stop disguising as no_candidate)
 
 ### P20 — 安全脱敏 + DB 环境隔离 (20:42–23:19, 6 commits)
-**Files:** 78 files across entire repo  
+**Files:** 78 files across entire repo
 **Changes:**
 - 24h audit: updateRequestLog missing SET + sanitize errors + SSH paths
 - Remove hardcoded SSH passwords + fix DB_NAME
@@ -234,7 +234,7 @@ Day 3 — Jul 1 00:39 ───────────────────�
 - 3 security docs (DB env separation, deployment checklist)
 
 ### P21 — Phase 2 功能交付 (00:39–03:33, 13 commits)
-**Files:** `credentialstate/*`, `auto-control/*`, `env/*`, `auth/*`  
+**Files:** `credentialstate/*`, `auto-control/*`, `env/*`, `auth/*`
 **Changes:**
 - Wire StateManager + export StateObserver
 - injectFollowUpRequest (full follow-up injection)

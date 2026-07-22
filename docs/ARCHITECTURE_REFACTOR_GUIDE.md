@@ -49,21 +49,21 @@ err := sm.Transition(ctx, sessionCtx, session.StateReceivingFromClient, "request
 type SessionContext struct {
     // 基础标识
     SessionID, RequestID, TenantID string
-    
+
     // 状态
     State SessionState
     Transitions []StateTransition
-    
+
     // 数据快照
     ClientRawBody []byte
     ClientIR *ir.InternalRequest
     UpstreamBody []byte
     LLMResponseIR *ir.InternalResponse
     ClientFinalBody []byte
-    
+
     // 附件（只存元数据）
     Attachments []attachments.AttachmentMetadata
-    
+
     // 元数据
     Metadata map[string]any
 }
@@ -180,7 +180,7 @@ func (a *CursorAdapter) TransformRequestIR(ctx context.Context, req *ir.Internal
             }
         }
     }
-    
+
     // 2. 长上下文标记
     if len(req.Messages) > 20 {
         if req.Metadata == nil {
@@ -191,7 +191,7 @@ func (a *CursorAdapter) TransformRequestIR(ctx context.Context, req *ir.Internal
         }
         req.Metadata.Other["_cursor_long_context"] = "true"
     }
-    
+
     return req, nil
 }
 ```
@@ -243,14 +243,14 @@ chatHandler.SetAttachmentTransformer(attachmentTransformer)
 ```go
 func (h *ChatHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
     ctx := r.Context()
-    
+
     // 1. 创建会话上下文
     sc := session.NewSessionContext(r)
     sc.SessionID = extractSessionID(r)
     sc.RequestID = generateRequestID()
     sc.TenantID = extractTenantID(ctx)
     sc.ClientType = identifyClientType(r)
-    
+
     // 2. 读取请求体
     body, err := io.ReadAll(r.Body)
     if err != nil {
@@ -258,38 +258,38 @@ func (h *ChatHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
         return
     }
     sc.ClientRawBody = body
-    
+
     // 3. 状态转换：INITIAL → RECEIVING_FROM_CLIENT
     if err := h.stateMachine.Transition(ctx, sc, session.StateReceivingFromClient, "request_received"); err != nil {
         http.Error(w, err.Error(), http.StatusInternalServerError)
         return
     }
-    
+
     // 4. 协议转换：Client → IR
     if err := h.unifiedTransport.TransformRequest(ctx, sc); err != nil {
         http.Error(w, err.Error(), http.StatusBadRequest)
         return
     }
-    
+
     // 5. 附件处理
     if h.attachmentTransformer != nil {
         attachments, _ := h.attachmentTransformer.TransformRequest(ctx, sc.RequestID, sc.ClientIR)
         sc.Attachments = attachments
     }
-    
+
     // 6. 客户端适配器转换
     if adapter := GetClientAdapter(sc.ClientType); adapter != nil {
         if transformer, ok := adapter.(IRTransformer); ok {
             sc.UpstreamIR, _ = transformer.TransformRequestIR(ctx, sc.ClientIR)
         }
     }
-    
+
     // 7. 状态转换：RECEIVING_FROM_CLIENT → PENDING_TO_LLM
     if err := h.stateMachine.Transition(ctx, sc, session.StatePendingToLLM, "parsed"); err != nil {
         http.Error(w, err.Error(), http.StatusInternalServerError)
         return
     }
-    
+
     // 8. 路由选择
     candidates, _ := h.providerClient.GetCandidates(ctx, sc.ClientIR.Model)
     if len(candidates) == 0 {
@@ -300,16 +300,16 @@ func (h *ChatHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
     sc.CredentialID = selected.CredentialID
     sc.UpstreamProtocol = selected.Protocol
     sc.UpstreamModel = selected.RawModel
-    
+
     // 9. 序列化上游请求
     sc.UpstreamBody, _ = ir.SerializeRequest(sc.UpstreamProtocol, sc.UpstreamIR)
-    
+
     // 10. 状态转换：PENDING_TO_LLM → SENDING_TO_LLM
     if err := h.stateMachine.Transition(ctx, sc, session.StateSendingToLLM, "routed"); err != nil {
         http.Error(w, err.Error(), http.StatusInternalServerError)
         return
     }
-    
+
     // 11. 调用上游
     upstreamResp, err := h.executor.Execute(ctx, sc)
     if err != nil {
@@ -318,10 +318,10 @@ func (h *ChatHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
         http.Error(w, err.Error(), http.StatusBadGateway)
         return
     }
-    
+
     // 12. 状态转换：SENDING_TO_LLM → RECEIVING_FROM_LLM
     h.stateMachine.Transition(ctx, sc, session.StateReceivingFromLLM, "llm_responded")
-    
+
     // 13. 响应处理
     if sc.IsStreaming {
         // 流式转换
@@ -332,10 +332,10 @@ func (h *ChatHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
         h.unifiedTransport.TransformResponse(ctx, sc, upstreamBody)
         w.Write(sc.ClientFinalBody)
     }
-    
+
     // 14. 状态转换：RECEIVING_FROM_LLM → COMPLETED
     h.stateMachine.Transition(ctx, sc, session.StateCompleted, "done")
-    
+
     // 15. 持久化附件元数据
     if len(sc.Attachments) > 0 {
         h.attachmentTransformer.PersistMetadata(ctx, h.db, sc.RequestID, sc.Attachments)
@@ -349,7 +349,7 @@ func (h *ChatHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 1. **Legacy Transport**：
    - `domains/transformation/legacy_transport.go`
-   
+
 2. **Anthropic Bridge**（已被 UnifiedTransport 替代）：
    - `domains/streaming/anthropic_bridge.go`
 
@@ -404,20 +404,20 @@ go test -bench=. ./domains/transformation/...
 
 ### Q2: 性能是否有影响？
 
-**A**: 
+**A**:
 - **IR 转换**：通过 JSON 序列化/反序列化，性能损失 < 5%
 - **附件处理**：异步存储，不阻塞请求转发
 - **状态机**：内存操作，overhead 可忽略
 
 ### Q3: 如何处理旧数据库记录？
 
-**A**: 
+**A**:
 - 新字段向后兼容：`attachments` JSONB 列，旧记录为 NULL
 - 状态转换历史：新增 `request_logs.state_transitions` JSONB 列（可选）
 
 ### Q4: 如何回滚？
 
-**A**: 
+**A**:
 1. 保留 `_to_be_deleted/` 目录中的旧代码
 2. 通过环境变量 `USE_UNIFIED_TRANSPORT=false` 切回 Legacy
 3. 灰度部署时保持双路径运行 1 周

@@ -133,10 +133,10 @@ domains/flowcontrol/
 // 示例：将SessionStateMachine集成到PipelineRequest
 type PipelineRequest struct {
     // ... 现有字段
-    
+
     // SessionState 会话状态机（新增）
     SessionState *sessionstate.SessionStateMachine
-    
+
     // FlowPlan 当前执行的流程计划（新增）
     FlowPlan *flowcontrol.FlowPlan
 }
@@ -203,7 +203,7 @@ notification:
         app_secret: ${LARK_APP_SECRET}
         verification_token: ${LARK_VERIFICATION_TOKEN}
         encrypt_key: ${LARK_ENCRYPT_KEY}
-  
+
   routing:
     - tenant_id: "tenant_001"
       risk_level: "high"
@@ -275,6 +275,6 @@ Phase 1成功建立了会话状态管理和动态流程控制的坚实基础。�
 
 ---
 
-**日期**: 2026-07-01  
-**版本**: v1.0  
+**日期**: 2026-07-01
+**版本**: v1.0
 **状态**: Phase 1 已完成，Phase 2 待开始

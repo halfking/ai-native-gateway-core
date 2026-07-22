@@ -2,10 +2,10 @@
 
 ## 审计概览
 
-**任务名称**: 三环境数据库一致性迁移  
-**审计时间**: 2026-07-09 16:00  
-**审计人**: AI Agent (OpenCode)  
-**审计范围**: 迁移执行过程、代码质量、文档完整性、风险识别  
+**任务名称**: 三环境数据库一致性迁移
+**审计时间**: 2026-07-09 16:00
+**审计人**: AI Agent (OpenCode)
+**审计范围**: 迁移执行过程、代码质量、文档完整性、风险识别
 **审计结果**: ⚠️ 通过（有改进项）
 
 ---
@@ -54,13 +54,13 @@ DO $$
 BEGIN
     -- 先检查output_compliance_audit是否有主键/唯一约束
     IF EXISTS (
-        SELECT 1 FROM pg_constraint 
-        WHERE conrelid = 'output_compliance_audit'::regclass 
+        SELECT 1 FROM pg_constraint
+        WHERE conrelid = 'output_compliance_audit'::regclass
         AND contype IN ('p', 'u')
     ) THEN
         -- 检查外键是否已存在
         IF NOT EXISTS (
-            SELECT 1 FROM pg_constraint 
+            SELECT 1 FROM pg_constraint
             WHERE conname = 'fk_review_audit'
         ) THEN
             ALTER TABLE output_compliance_review_queue
@@ -280,25 +280,25 @@ func validate364(db *sql.DB) error {
         "canary_tokens",
         "injection_attack_vectors",
     }
-    
+
     for _, table := range expectedTables {
         var exists bool
         err := db.QueryRow(`
             SELECT EXISTS (
-                SELECT 1 FROM information_schema.tables 
+                SELECT 1 FROM information_schema.tables
                 WHERE table_name = $1
             )
         `, table).Scan(&exists)
-        
+
         if err != nil {
             return fmt.Errorf("check table %s failed: %w", table, err)
         }
-        
+
         if !exists {
             return fmt.Errorf("table %s does not exist", table)
         }
     }
-    
+
     return nil
 }
 ```
@@ -369,29 +369,29 @@ BEGIN
     IF NOT EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'prompt_injection_policies') THEN
         missing_tables := array_append(missing_tables, 'prompt_injection_policies');
     END IF;
-    
+
     IF NOT EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'prompt_injection_rules') THEN
         missing_tables := array_append(missing_tables, 'prompt_injection_rules');
     END IF;
-    
+
     -- 检查必需的列
     IF NOT EXISTS (
-        SELECT 1 FROM information_schema.columns 
-        WHERE table_name = 'prompt_injection_policies' 
+        SELECT 1 FROM information_schema.columns
+        WHERE table_name = 'prompt_injection_policies'
         AND column_name = 'tenant_id'
     ) THEN
         missing_columns := array_append(missing_columns, 'prompt_injection_policies.tenant_id');
     END IF;
-    
+
     -- 报告缺失的依赖
     IF array_length(missing_tables, 1) > 0 THEN
         RAISE EXCEPTION 'Missing required tables: %', array_to_string(missing_tables, ', ');
     END IF;
-    
+
     IF array_length(missing_columns, 1) > 0 THEN
         RAISE EXCEPTION 'Missing required columns: %', array_to_string(missing_columns, ', ');
     END IF;
-    
+
     RAISE NOTICE '✓ Pre-check passed for migration 364';
 END $$;
 ```
@@ -449,7 +449,7 @@ migrations:
       - severity_action_matrix
       - canary_tokens
       - injection_attack_vectors
-    
+
   - id: 365
     file: 365_output_compliance_policy_enhance.sql
     requires:
@@ -575,15 +575,15 @@ func ValidateTenantExists(ctx context.Context, db *sql.DB, tenantID string) erro
     err := db.QueryRowContext(ctx, `
         SELECT EXISTS(SELECT 1 FROM tenants WHERE code = $1)
     `, tenantID).Scan(&exists)
-    
+
     if err != nil {
         return fmt.Errorf("validate tenant failed: %w", err)
     }
-    
+
     if !exists {
         return fmt.Errorf("tenant %s does not exist", tenantID)
     }
-    
+
     return nil
 }
 ```
@@ -656,10 +656,10 @@ done
 
 ### 7.1 总体评价
 
-✅ **任务完成质量**: 优秀  
-✅ **技术执行能力**: 优秀  
-⚠️ **流程规范性**: 良好（有改进空间）  
-✅ **风险控制**: 优秀  
+✅ **任务完成质量**: 优秀
+✅ **技术执行能力**: 优秀
+⚠️ **流程规范性**: 良好（有改进空间）
+✅ **风险控制**: 优秀
 ✅ **文档完整性**: 优秀
 
 **综合评分**: ⭐⭐⭐⭐ (4.2/5)
@@ -745,7 +745,7 @@ done
 
 ---
 
-**审计人**: AI Agent (OpenCode)  
-**审计时间**: 2026-07-09 16:00  
-**审计版本**: v1.0  
+**审计人**: AI Agent (OpenCode)
+**审计时间**: 2026-07-09 16:00
+**审计版本**: v1.0
 **下次审计**: 2026-07-16（跟踪改进项完成情况）

@@ -1,6 +1,6 @@
 # llm-gateway-go 协议转换增强 - 完整部署报告
 
-**日期**: 2026-06-20  
+**日期**: 2026-06-20
 **状态**: ✅ 部署成功
 
 ---
@@ -53,7 +53,7 @@
 - ✅ `_kxg_meta` 记录统计 (has_thinking, thinking_blocks_count, reasoning_content_chars)
 - ✅ `user` → `metadata.user_id` 映射
 
-**影响**: 
+**影响**:
 - OpenAI 客户端调用 Anthropic 模型时，推理过程不再丢失
 - 保真度从 70% 提升到 95%
 
@@ -191,12 +191,12 @@ curl -X POST https://__DOMAIN_8__/v1/chat/completions \
 ### 1. thinking blocks 保留率
 ```sql
 -- 查看最近 1 小时 claude 模型的 thinking blocks 统计
-SELECT 
+SELECT
   client_model,
   COUNT(*) as total_requests,
-  SUM(CASE WHEN response_body::jsonb->'_kxg_meta'->>'has_thinking' = 'true' 
+  SUM(CASE WHEN response_body::jsonb->'_kxg_meta'->>'has_thinking' = 'true'
       THEN 1 ELSE 0 END) as with_thinking,
-  AVG((response_body::jsonb->'_kxg_meta'->>'thinking_blocks_count')::int) 
+  AVG((response_body::jsonb->'_kxg_meta'->>'thinking_blocks_count')::int)
     FILTER (WHERE response_body::jsonb->'_kxg_meta'->>'thinking_blocks_count' IS NOT NULL) as avg_blocks,
   AVG((response_body::jsonb->'_kxg_meta'->>'reasoning_content_chars')::int)
     FILTER (WHERE response_body::jsonb->'_kxg_meta'->>'reasoning_content_chars' IS NOT NULL) as avg_chars
@@ -211,7 +211,7 @@ ORDER BY total_requests DESC;
 ### 2. Q2 路径使用情况
 ```sql
 -- Anthropic 客户端调用 OpenAI 上游
-SELECT 
+SELECT
   DATE_TRUNC('hour', created_at) as hour,
   COUNT(*) as q2_requests,
   client_model,
@@ -230,7 +230,7 @@ ORDER BY hour DESC, q2_requests DESC;
 ### 3. 错误监控
 ```sql
 -- 检查转换相关错误
-SELECT 
+SELECT
   DATE_TRUNC('hour', created_at) as hour,
   error_kind,
   COUNT(*) as error_count,
@@ -240,7 +240,7 @@ FROM request_logs
 WHERE created_at > now() - interval '24 hours'
   AND success = false
   AND (
-    error_message LIKE '%conversion%' OR 
+    error_message LIKE '%conversion%' OR
     error_message LIKE '%transform%' OR
     error_message LIKE '%reasoning_content%'
   )
@@ -251,8 +251,8 @@ ORDER BY hour DESC, error_count DESC;
 ### 4. 性能监控
 ```sql
 -- 检查转换对延迟的影响
-SELECT 
-  CASE 
+SELECT
+  CASE
     WHEN client_model LIKE '%claude%' THEN 'Q3 (OpenAI→Anthropic)'
     WHEN request_path = '/v1/messages' THEN 'Q2 (Anthropic→OpenAI)'
     ELSE 'Q1 (OpenAI→OpenAI)'
@@ -290,18 +290,18 @@ ORDER BY requests DESC;
 ## 🎉 总结
 
 ### 已完成
-✅ Q3 路径增强 - thinking blocks 完整保留  
-✅ Q2 路径新增 - Anthropic ↔ OpenAI 双向转换  
-✅ 184 k3s 部署 - 滚动更新成功  
-✅ 71 systemd 部署 - 服务运行正常  
-✅ 测试脚本创建 - 2 个测试脚本就绪  
-✅ 监控 SQL 准备 - 4 类监控查询就绪  
+✅ Q3 路径增强 - thinking blocks 完整保留
+✅ Q2 路径新增 - Anthropic ↔ OpenAI 双向转换
+✅ 184 k3s 部署 - 滚动更新成功
+✅ 71 systemd 部署 - 服务运行正常
+✅ 测试脚本创建 - 2 个测试脚本就绪
+✅ 监控 SQL 准备 - 4 类监控查询就绪
 
 ### 待验证
-⏳ 使用真实 API key 测试 Q3 路径  
-⏳ 使用真实 API key 测试 Q2 路径  
-⏳ 观察生产流量的 thinking blocks 统计  
-⏳ 监控性能影响（预期可忽略）  
+⏳ 使用真实 API key 测试 Q3 路径
+⏳ 使用真实 API key 测试 Q2 路径
+⏳ 观察生产流量的 thinking blocks 统计
+⏳ 监控性能影响（预期可忽略）
 
 ### 风险评估
 - **回归风险**: 低（100% 单元测试覆盖，向后兼容）
@@ -321,7 +321,7 @@ ORDER BY requests DESC;
 
 ---
 
-**部署完成时间**: 2026-06-20 22:00  
-**部署人员**: AI Assistant  
+**部署完成时间**: 2026-06-20 22:00
+**部署人员**: AI Assistant
 **审核状态**: 待用户验证
 

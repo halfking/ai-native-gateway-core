@@ -95,11 +95,11 @@ export interface ProviderCredential {
 ## 本次工作内容
 
 ### 1. 确认现有实现完整性
-✅ 数据库字段存在  
-✅ 后端 API 完整实现  
-✅ 前端 API 客户端存在  
-✅ UI 组件已集成  
-✅ 审计日志已记录  
+✅ 数据库字段存在
+✅ 后端 API 完整实现
+✅ 前端 API 客户端存在
+✅ UI 组件已集成
+✅ 审计日志已记录
 
 ### 2. 清理重复代码
 - 删除了在 `admin/provider_credential.go` 中临时添加的 `toggleManualDisable()` 函数

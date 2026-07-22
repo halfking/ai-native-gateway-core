@@ -30,15 +30,15 @@
 
 ### 审计通过项
 
-✅ **代码质量**：golangci-lint 0 issues（修复后）  
-✅ **测试覆盖率**：62.8% (domains/hooks/compression)  
-✅ **竞态检测**：-race 全通过（含 LRU 并发测试）  
-✅ **密钥扫描**：44 文件扫描，0 发现  
-✅ **错误处理**：所有新增函数都有适当的错误处理  
-✅ **文档完整性**：所有公开 API 有文档注释，设计文档 189 行  
-✅ **并发安全**：新增字段在启动时赋值一次，热路径只读  
-✅ **内存泄漏**：无 goroutine/channel（测试除外）  
-✅ **构建验证**：`go build ./...` 成功  
+✅ **代码质量**：golangci-lint 0 issues（修复后）
+✅ **测试覆盖率**：62.8% (domains/hooks/compression)
+✅ **竞态检测**：-race 全通过（含 LRU 并发测试）
+✅ **密钥扫描**：44 文件扫描，0 发现
+✅ **错误处理**：所有新增函数都有适当的错误处理
+✅ **文档完整性**：所有公开 API 有文档注释，设计文档 189 行
+✅ **并发安全**：新增字段在启动时赋值一次，热路径只读
+✅ **内存泄漏**：无 goroutine/channel（测试除外）
+✅ **构建验证**：`go build ./...` 成功
 ✅ **完整测试套件**：所有相关包测试通过
 
 ## 合并流程
@@ -78,11 +78,11 @@ git push origin main
 
 ```
 *   3cc871dd (HEAD -> main, origin/main) Merge feat/rtk-borrowing-optimization
-|\  
+|\
 | * 33e59a93 (origin/feat/rtk-borrowing-optimization, feat/rtk-borrowing-optimization) fix(lint): audit fixes
 | * c40f6314 docs: design + verification report
 | * 87e9f4b2 feat(compression): core implementation (guard + LRU + Stabilize wiring + Lossiness)
-|/  
+|/
 * 69d4ad5e chore: bump build_seq for routing-v2 fix
 ```
 

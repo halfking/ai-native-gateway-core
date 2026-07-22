@@ -51,34 +51,34 @@ type ApprovalRequest struct {
     RequestID       string                 // 请求 ID
     SessionID       string                 // 会话 ID
     TenantID        string                 // 租户 ID
-    
+
     // 触发原因
     TriggerType     ApprovalTriggerType    // 触发类型
     TriggerReason   string                 // 触发原因描述
     RiskLevel       RiskLevel              // 风险等级: LOW/MEDIUM/HIGH/CRITICAL
-    
+
     // 会话摘要
     SessionSummary  SessionSummary         // 会话摘要
-    
+
     // 敏感信息
     SensitiveInfo   []SensitiveItem        // 检测到的敏感信息
-    
+
     // 请求内容
     UserMessage     string                 // 用户消息（脱敏后）
     FullContext     []Message              // 完整上下文（可选，管理员可见）
-    
+
     // 预估信息
     EstimatedCost   float64                // 预估成本
     EstimatedTokens int                    // 预估 token 数
-    
+
     // 审批配置
     ApprovalConfig  ApprovalConfig         // 审批配置
-    
+
     // 状态
     Status          ApprovalStatus         // 审批状态
     CreatedAt       time.Time              // 创建时间
     ExpiresAt       time.Time              // 过期时间
-    
+
     // 结果
     ApprovedBy      string                 // 审批人
     ApprovedAt      time.Time              // 审批时间
@@ -133,7 +133,7 @@ type ApprovalConfig struct {
     Channels        []NotificationChannel   // 通知渠道
     TimeoutSeconds  int                     // 超时时间（秒）
     AutoRejectOnTimeout bool                // 超时是否自动拒绝
-    
+
     // 触发规则
     Rules           []ApprovalRule          // 审批规则
 }
@@ -348,31 +348,31 @@ stateMachine.RegisterCallback(session.StatePendingToLLM, func(ctx context.Contex
     if err != nil {
         return err
     }
-    
+
     if !decision.RequiresApproval {
         return nil // 不需要审批，继续流程
     }
-    
+
     // 需要审批，转换状态
     if err := stateMachine.Transition(ctx, sc, session.StatePendingApproval, decision.Reason); err != nil {
         return err
     }
-    
+
     // 创建审批请求
     approvalReq, err := approvalManager.CreateApprovalRequest(ctx, sc, decision)
     if err != nil {
         return err
     }
     sc.SetMetadata("approval_request_id", approvalReq.RequestID)
-    
+
     // 转换到等待审批状态
     if err := stateMachine.Transition(ctx, sc, session.StateApprovalRequested, "approval_created"); err != nil {
         return err
     }
-    
+
     // 异步等待审批结果
     go waitForApprovalResult(ctx, sc, approvalReq.RequestID)
-    
+
     // 返回特殊错误，告知 handler 暂停处理
     return ErrApprovalPending
 })
@@ -384,7 +384,7 @@ stateMachine.RegisterCallback(session.StatePendingToLLM, func(ctx context.Contex
 // ChatHandler.ServeHTTP (修改)
 func (h *ChatHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
     // ... 前面的流程
-    
+
     // 状态转换: RECEIVING_FROM_CLIENT → PENDING_TO_LLM
     if err := h.stateMachine.Transition(ctx, sc, session.StatePendingToLLM, "parsed"); err != nil {
         if errors.Is(err, approval.ErrApprovalPending) {
@@ -395,20 +395,20 @@ func (h *ChatHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
         h.respondError(w, err, http.StatusInternalServerError)
         return
     }
-    
+
     // ... 继续后续流程
 }
 
 func (h *ChatHandler) respondApprovalPending(w http.ResponseWriter, sc *session.SessionContext) {
     approvalReqID, _ := sc.GetMetadata("approval_request_id")
-    
+
     response := map[string]any{
         "status": "approval_pending",
         "message": "Your request is pending approval",
         "approval_request_id": approvalReqID,
         "poll_url": fmt.Sprintf("/v1/approvals/%s", approvalReqID),
     }
-    
+
     w.Header().Set("Content-Type", "application/json")
     w.WriteHeader(http.StatusAccepted) // 202
     json.NewEncoder(w).Encode(response)
@@ -424,18 +424,18 @@ func (m *ApprovalManager) handleApprovalApproved(ctx context.Context, sc *sessio
     if err := stateMachine.Transition(ctx, sc, session.StateApprovalApproved, "approved"); err != nil {
         return err
     }
-    
+
     // 继续原有流程: SENDING_TO_LLM
     if err := stateMachine.Transition(ctx, sc, session.StateSendingToLLM, "resume"); err != nil {
         return err
     }
-    
+
     // 调用 LLM
     upstreamResp, err := executor.Execute(ctx, sc)
     if err != nil {
         return err
     }
-    
+
     // ... 后续流程
 }
 
@@ -445,7 +445,7 @@ func (m *ApprovalManager) handleApprovalRejected(ctx context.Context, sc *sessio
     if err := stateMachine.Transition(ctx, sc, session.StateApprovalRejected, reason); err != nil {
         return err
     }
-    
+
     // 返回拒绝响应给客户端
     return sendRejectionResponse(ctx, sc, reason)
 }
@@ -597,29 +597,29 @@ CREATE TABLE approval_requests (
     request_id VARCHAR(64) NOT NULL UNIQUE,
     session_id VARCHAR(64) NOT NULL,
     tenant_id VARCHAR(64) NOT NULL,
-    
+
     trigger_type VARCHAR(32) NOT NULL,
     trigger_reason TEXT,
     risk_level VARCHAR(16) NOT NULL,
-    
+
     session_summary JSONB,
     sensitive_info JSONB,
     user_message TEXT,
-    
+
     estimated_cost DECIMAL(10, 4),
     estimated_tokens INT,
-    
+
     status VARCHAR(32) NOT NULL, -- pending/approved/rejected/timeout
     created_at TIMESTAMP DEFAULT NOW(),
     expires_at TIMESTAMP NOT NULL,
-    
+
     approved_by VARCHAR(64),
     approved_at TIMESTAMP,
     approval_note TEXT,
-    
+
     rejected BOOLEAN DEFAULT false,
     rejection_reason TEXT,
-    
+
     metadata JSONB
 );
 
@@ -645,7 +645,7 @@ CREATE TABLE approval_approvers (
     enabled BOOLEAN DEFAULT true,
     created_at TIMESTAMP DEFAULT NOW(),
     updated_at TIMESTAMP DEFAULT NOW(),
-    
+
     UNIQUE(tenant_id, user_id)
 );
 
@@ -687,14 +687,14 @@ type FeishuChannel struct {
 
 func (c *FeishuChannel) SendApprovalNotification(ctx context.Context, req *ApprovalRequest, approvers []Approver) error {
     card := c.buildApprovalCard(req)
-    
+
     for _, approver := range approvers {
         // 发送给审批人
         if err := c.client.SendMessage(ctx, approver.UserID, card); err != nil {
             return err
         }
     }
-    
+
     return nil
 }
 
@@ -767,13 +767,13 @@ type WeChatChannel struct {
 
 func (c *WeChatChannel) SendApprovalNotification(ctx context.Context, req *ApprovalRequest, approvers []Approver) error {
     message := c.buildApprovalMessage(req)
-    
+
     for _, approver := range approvers {
         if err := c.client.SendTextCard(ctx, approver.UserID, c.agentID, message); err != nil {
             return err
         }
     }
-    
+
     return nil
 }
 ```
@@ -790,13 +790,13 @@ type DingTalkChannel struct {
 
 func (c *DingTalkChannel) SendApprovalNotification(ctx context.Context, req *ApprovalRequest, approvers []Approver) error {
     message := c.buildApprovalMessage(req)
-    
+
     for _, approver := range approvers {
         if err := c.client.SendWorkNotification(ctx, approver.UserID, message); err != nil {
             return err
         }
     }
-    
+
     return nil
 }
 ```

@@ -14,19 +14,19 @@
 ### 高风险遗漏（已修复）
 
 #### 1. domains/ursm/batch_writer.go:250-263
-**问题**: 异步 goroutine 内对 Redis 的写操作直接用 `context.Background()`，没有超时控制。  
-**风险**: Redis hang 时会导致 goroutine 永久泄漏。  
-**修复**: 改为 `runctx.BackgroundTimeout(3*time.Second)`。  
+**问题**: 异步 goroutine 内对 Redis 的写操作直接用 `context.Background()`，没有超时控制。
+**风险**: Redis hang 时会导致 goroutine 永久泄漏。
+**修复**: 改为 `runctx.BackgroundTimeout(3*time.Second)`。
 **状态**: ✅ 已修复
 
 ### 误报（不需要修复）
 
 #### 1. executor_anthropic.go:750 / executor_chat.go:348
-**判断**: `reqPool.Acquire(upCtx)` 使用的 `upCtx` 在有 session 时已经是独立 background ctx，在无 session 时继承 request ctx 是有意设计（让无会话请求可被客户端断开立即取消）。  
+**判断**: `reqPool.Acquire(upCtx)` 使用的 `upCtx` 在有 session 时已经是独立 background ctx，在无 session 时继承 request ctx 是有意设计（让无会话请求可被客户端断开立即取消）。
 **结论**: 不需要修复
 
 #### 2. admin/credential_monitor.go:825
-**判断**: `defer tx.Rollback(context.Background())` 是标准 Go 事务模式（commit 后 rollback 无害）。  
+**判断**: `defer tx.Rollback(context.Background())` 是标准 Go 事务模式（commit 后 rollback 无害）。
 **结论**: 不需要修复
 
 ### 中风险点（不在本轮修复范围）

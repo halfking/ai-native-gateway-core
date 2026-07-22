@@ -1,8 +1,8 @@
 # P0.2 GLM/DeepSeek/Doubao 抓包验证 — 审计报告
 
-**执行日期**: 2026-07-11  
-**审计时间**: 2026-07-11 03:55 UTC+8  
-**commit**: 351e578e8  
+**执行日期**: 2026-07-11
+**审计时间**: 2026-07-11 03:55 UTC+8
+**commit**: 351e578e8
 **任务**: P0.2 抓包验证 → 基于生产数据扩展厂商私有字段黑名单
 
 ---
@@ -26,11 +26,11 @@
    - DeepSeek: 0 调用 (生产未启用)
 
 3. **真实私有字段确认**
-   
+
    **MiniMax (16K+ 成功响应)**:
    - 顶层: `nvext, audio_content, name, system_fingerprint, base_resp, request_id, ...` (已覆盖)
    - **新增嵌套**: `usage.total_characters` (89 次), `usage.cache_read_tokens` (87 次), `usage.prompt_tokens_details`, `usage.completion_tokens_details`, `choices.0.message.reasoning` (4 次)
-   
+
    **Zhipu GLM-5.2 (524 成功响应)**:
    - 顶层: `system_fingerprint, zhipu_request_id, web_search_results, ...` (已覆盖)
    - **新增嵌套**: `usage.prompt_tokens_details.cached_tokens`, `usage.completion_tokens_details.reasoning_tokens`, `choices.0.message.reasoning_content`
@@ -91,7 +91,7 @@
 - 这些变更与本次 stripper 任务**无关**
 - 已通过 `stash@{0}` 保存: `WIP: pre-audit other-changes-2026-07-11`
 
-**建议**: 
+**建议**:
 - 如需提交，请独立 commit (与 stripper 分离)
 - 或继续 stash，待相关任务完成后一并提交
 
@@ -195,6 +195,6 @@
 
 ---
 
-**审计人**: OpenCode (autonomous agent)  
-**审计时间**: 2026-07-11 03:55 UTC+8  
+**审计人**: OpenCode (autonomous agent)
+**审计时间**: 2026-07-11 03:55 UTC+8
 **下一步**: 进入 P0.5 executor_chat.go 优化

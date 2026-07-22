@@ -57,7 +57,7 @@ systemctl start llm-gateway-go.service
 #### 2. 数据库表缺失
 **现象**: API返回 `relation 'xxx' does not exist`
 
-**解决**: 
+**解决**:
 - 短期：代码中实现降级查询逻辑
 - 长期：执行缺失的数据库迁移脚本
 
@@ -96,10 +96,10 @@ systemctl start llm-gateway-go.service
      mkdir -p backups/backup-$(date +%Y%m%d-%H%M%S) && \
      cp llm-gateway-go backups/backup-$(date +%Y%m%d-%H%M%S)/ && \
      cp -r web backups/backup-$(date +%Y%m%d-%H%M%S)/"
-   
+
    # 上传后端
    scp -P 25022 llm-gateway-go root@47.97.111.154:/opt/llm-gateway-go/
-   
+
    # 上传前端
    rsync -avz -e "ssh -p 25022" web/dist/ root@47.97.111.154:/opt/llm-gateway-go/web/
    ```
@@ -113,10 +113,10 @@ systemctl start llm-gateway-go.service
    ```bash
    # 检查服务状态
    ssh root@47.97.111.154 -p 25022 "systemctl status llm-gateway-go.service"
-   
+
    # 检查首页
    curl -I https://llm.kxpms.cn
-   
+
    # 检查健康状态
    curl https://llm.kxpms.cn/healthz
    ```

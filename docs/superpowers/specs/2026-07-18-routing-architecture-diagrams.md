@@ -1,7 +1,7 @@
 # LLM Gateway 路由系统架构与流程图
 
-**日期**: 2026-07-18  
-**关联文档**: 
+**日期**: 2026-07-18
+**关联文档**:
 - `2026-07-18-routing-diagnosis.md`
 - `2026-07-18-routing-layered-testing.md`
 
@@ -105,13 +105,13 @@ sequenceDiagram
 
     Client->>Handler: POST /v1/chat/completions
     Handler->>Handler: Authenticate & Extract Headers
-    
+
     Handler->>Provider: GetCandidates(model, profile, tenant)
     Provider->>DB: Query credentials + providers
     DB-->>Provider: Raw candidates (N=20)
     Provider->>Provider: Apply 30s cache
     Provider-->>Handler: []Candidate
-    
+
     Handler->>Router: PlanCandidates(candidates)
     Router->>Router: 1. Deduplicate
     Router->>Router: 2. Filter by DB state
@@ -121,18 +121,18 @@ sequenceDiagram
     Router->>Router: 6. Order by tier + score
     Router->>Router: 7. Apply round-robin
     Router-->>Handler: Ordered candidates (N=5)
-    
+
     Handler->>Sticky: GetMultiLevel(tenant, session, model)
     Sticky->>Sticky: Try L1 (session+model)
     Sticky->>Sticky: Try L2 (client+model)
     Sticky->>Sticky: Try L3 (client baseline)
     Sticky-->>Handler: credentialID or nil
-    
+
     Handler->>Router: PrioritizeSticky(candidates, stickyID)
     Router-->>Handler: Reordered candidates
-    
+
     Handler->>Executor: Execute(candidates)
-    
+
     loop For each candidate
         Executor->>Executor: Check FpSlot.Acquire()
         alt FpSlot full
@@ -158,7 +158,7 @@ sequenceDiagram
             end
         end
     end
-    
+
     alt No candidates succeeded
         Executor->>Executor: Check SyncNoCandidateProbe
         alt Probe enabled
@@ -173,7 +173,7 @@ sequenceDiagram
             Executor-->>Handler: 503 No available credentials
         end
     end
-    
+
     Handler-->>Client: HTTP Response
 ```
 

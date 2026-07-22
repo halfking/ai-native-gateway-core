@@ -1,7 +1,7 @@
 # 分区表查询修复计划
 
-**生成时间**: 2026-07-06  
-**问题**: https://llmgo.kxpms.cn/request-logs 数据为空  
+**生成时间**: 2026-07-06
+**问题**: https://llmgo.kxpms.cn/request-logs 数据为空
 **根因**: 代码查询父表而非hot表/视图
 
 ---
@@ -73,7 +73,7 @@ SELECT * FROM request_logs WHERE ts >= NOW() - INTERVAL '7 days';  // 只查分�
    ```go
    // ❌ 当前
    SELECT COUNT(*) FROM request_logs rl WHERE ...
-   
+
    // ✅ 修复
    SELECT COUNT(*) FROM request_logs_with_current_month rl WHERE ...
    ```
@@ -82,7 +82,7 @@ SELECT * FROM request_logs WHERE ts >= NOW() - INTERVAL '7 days';  // 只查分�
    ```go
    // ❌ 当前
    SELECT ... FROM request_logs rl ...
-   
+
    // ✅ 修复
    SELECT ... FROM request_logs_with_current_month rl ...
    ```
@@ -91,7 +91,7 @@ SELECT * FROM request_logs WHERE ts >= NOW() - INTERVAL '7 days';  // 只查分�
    ```go
    // ❌ 当前
    SELECT ... FROM request_logs rl WHERE request_id = $1
-   
+
    // ✅ 修复
    SELECT ... FROM request_logs_with_current_month rl WHERE request_id = $1
    ```
@@ -208,7 +208,7 @@ func selectRequestLogsTable(timeRange string) string {
 
 ```sql
 -- 添加监控查询
-SELECT 
+SELECT
     schemaname,
     tablename,
     pg_size_pretty(pg_total_relation_size(schemaname||'.'||tablename)) AS size

@@ -221,10 +221,10 @@ const loadingText = computed(() => {
 .chip-pii { background: rgba(52,211,153,.12); color: #34d399; border-color: rgba(52,211,153,.3); }
 .chip-warn { background: rgba(251,191,36,.12); color: #fbbf24; border-color: rgba(251,191,36,.3); }
 .chip-danger { background: rgba(248,113,113,.12); color: #f87171; border-color: rgba(248,113,113,.3); }
-.stag-olap { 
-  background: var(--bg-tertiary); 
-  color: var(--text-muted); 
-  border-color: var(--border-subtle); 
+.stag-olap {
+  background: var(--bg-tertiary);
+  color: var(--text-muted);
+  border-color: var(--border-subtle);
 }
 
 .summary-row {

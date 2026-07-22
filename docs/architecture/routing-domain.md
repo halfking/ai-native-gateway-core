@@ -1,7 +1,7 @@
 # Routing Domain 边界定义
 
-> **Version**: 1.0  
-> **Created**: 2026-06-24  
+> **Version**: 1.0
+> **Created**: 2026-06-24
 > **Status**: Active (Phase A - 逻辑领域边界先行，物理迁移待冻结期后)
 
 ---

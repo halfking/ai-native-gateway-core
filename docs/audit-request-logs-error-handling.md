@@ -176,19 +176,19 @@ type RequestLogContext struct {
     // 基础信息
     RequestID, ClientRequestID string
     StartTime time.Time
-    
+
     // 错误信息
     ErrCode, ErrMsg string
-    
+
     // 质量标记
     QualityFlags []string
     QualityFixActions []byte
     QualityScore *float64
-    
+
     // 会话压缩
     OutboundBody []byte
     OutboundStrategy string
-    
+
     // 标记
     logged bool
 }

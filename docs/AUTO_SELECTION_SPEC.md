@@ -286,7 +286,7 @@ type Decision struct {
 **新增索引刷新字段**：
 ```sql
 -- 在 refreshIndexSQL 中补充
-SELECT 
+SELECT
     ...existing fields...,
     cmb.available AS cmb_available,
     pm.available AS pm_available,

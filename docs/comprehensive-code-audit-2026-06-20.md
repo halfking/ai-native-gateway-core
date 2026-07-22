@@ -195,7 +195,7 @@ WHERE ts > NOW() - INTERVAL '1 hour'
 -- 期望: > 0
 
 -- 验证: 错误类型覆盖
-SELECT 
+SELECT
     error_kind,
     COUNT(*) as total,
     COUNT(client_model) FILTER (WHERE client_model IS NOT NULL AND client_model != '') as with_model,

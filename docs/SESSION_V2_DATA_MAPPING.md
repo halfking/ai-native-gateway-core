@@ -1,8 +1,8 @@
 # 会话存储V2数据映射文档
 
-> **版本**: v1.0  
-> **日期**: 2026-07-17  
-> **状态**: DESIGN  
+> **版本**: v1.0
+> **日期**: 2026-07-17
+> **状态**: DESIGN
 > **作者**: llm-gateway-ops
 
 ## 1. 概述
@@ -77,7 +77,7 @@ INSERT INTO gateway.sessions (
     last_model, last_provider, primary_request_id,
     partition_date
 )
-SELECT 
+SELECT
     gw_session_id AS session_id,
     tenant_id,
     MIN(ts) AS created_at,
@@ -95,7 +95,7 @@ SELECT
 FROM request_logs
 WHERE gw_session_id IS NOT NULL
 GROUP BY gw_session_id, tenant_id
-ON CONFLICT (session_id, partition_date) 
+ON CONFLICT (session_id, partition_date)
 DO UPDATE SET
     updated_at = EXCLUDED.updated_at,
     total_turns = EXCLUDED.total_turns,
@@ -153,7 +153,7 @@ INSERT INTO gateway.session_turns (
     latency_ms, status_code, success, error_kind,
     source_kind, quality, partition_date
 )
-SELECT 
+SELECT
     gw_session_id AS session_id,
     ROW_NUMBER() OVER (PARTITION BY gw_session_id ORDER BY ts) AS turn_no,
     tenant_id,
@@ -178,7 +178,7 @@ SELECT
     success,
     error_kind,
     'backfill' AS source_kind,
-    CASE 
+    CASE
         WHEN gw_session_id IS NOT NULL AND request_body IS NOT NULL THEN 'verified'
         ELSE 'inferred'
     END AS quality,
@@ -210,7 +210,7 @@ ON CONFLICT (request_id, partition_date) DO NOTHING;
 ```sql
 -- request_delta提取逻辑（伪代码）
 WITH session_messages AS (
-    SELECT 
+    SELECT
         gw_session_id,
         request_id,
         ts,
@@ -219,7 +219,7 @@ WITH session_messages AS (
     FROM request_logs
     WHERE gw_session_id = :session_id
 )
-SELECT 
+SELECT
     -- 提取本轮新增的消息（不在prev_outbound中的消息）
     jsonb_array_elements(request_body->'messages') AS msg
     -- 过滤：只保留不在prev_outbound中的消息
@@ -264,7 +264,7 @@ func (p *Pipeline) PersistRequest(ctx context.Context, req *ProcessedRequest) er
     if err != nil {
         return fmt.Errorf("v1 write failed: %w", err)  // 主写失败则整体失败
     }
-    
+
     // 2. 副写：写入V2（sessions体系）
     if p.featureFlags.IsEnabled("sessions_v2_shadow_write") {
         if err := p.v2Writer.Write(ctx, req); err != nil {
@@ -275,7 +275,7 @@ func (p *Pipeline) PersistRequest(ctx context.Context, req *ProcessedRequest) er
             p.metrics.V2WriteSuccess.Inc()
         }
     }
-    
+
     return nil
 }
 ```
@@ -308,7 +308,7 @@ func (w *SessionWriterV2) Write(ctx context.Context, req *ProcessedRequest) erro
     if err != nil {
         return fmt.Errorf("append turn: %w", err)
     }
-    
+
     // 2. 写入session_bodies（正文增量）
     err = w.bodiesWriter.Write(ctx, BodiesRecord{
         SessionID:     req.GwSessionID,
@@ -323,10 +323,10 @@ func (w *SessionWriterV2) Write(ctx context.Context, req *ProcessedRequest) erro
     if err != nil {
         return fmt.Errorf("write bodies: %w", err)
     }
-    
+
     // 3. 更新sessions（会话快照，异步或批量）
     go w.sessionAggregator.UpdateSession(req.GwSessionID)
-    
+
     return nil
 }
 ```
@@ -347,9 +347,9 @@ v2_turns AS (
     FROM gateway.session_turns
     WHERE session_id = :session_id
 )
-SELECT 
+SELECT
     COALESCE(v1.request_id, v2.request_id) AS request_id,
-    CASE 
+    CASE
         WHEN v1.request_id IS NULL THEN 'missing_in_v1'
         WHEN v2.request_id IS NULL THEN 'missing_in_v2'
         WHEN v1.ts <> v2.ts THEN 'timestamp_mismatch'
@@ -364,7 +364,7 @@ FULL OUTER JOIN v2_turns v2 ON v1.request_id = v2.request_id;
 ```sql
 -- 校验：sessions的统计数据与request_logs聚合结果应该一致
 WITH v1_agg AS (
-    SELECT 
+    SELECT
         gw_session_id,
         COUNT(*) AS turn_count,
         SUM(prompt_tokens + completion_tokens) AS total_tokens,
@@ -374,7 +374,7 @@ WITH v1_agg AS (
     GROUP BY gw_session_id
 ),
 v2_session AS (
-    SELECT 
+    SELECT
         session_id,
         total_turns,
         total_tokens,
@@ -382,7 +382,7 @@ v2_session AS (
     FROM gateway.sessions
     WHERE session_id = :session_id
 )
-SELECT 
+SELECT
     v1.gw_session_id,
     v1.turn_count AS v1_turns,
     v2.total_turns AS v2_turns,
@@ -390,7 +390,7 @@ SELECT
     v2.total_tokens AS v2_tokens,
     v1.total_cost AS v1_cost,
     v2.total_cost_usd AS v2_cost,
-    CASE 
+    CASE
         WHEN v1.turn_count <> v2.total_turns THEN 'turn_count_mismatch'
         WHEN ABS(v1.total_tokens - v2.total_tokens) > 10 THEN 'token_mismatch'
         WHEN ABS(v1.total_cost - v2.total_cost_usd) > 0.01 THEN 'cost_mismatch'
@@ -407,18 +407,18 @@ LEFT JOIN v2_session v2 ON v1.gw_session_id = v2.session_id;
 func ValidateIncrementalBodies(sessionID string) error {
     // 1. 从V1读取完整历史
     v1Bodies := LoadFromRequestLogs(sessionID)
-    
+
     // 2. 从V2读取增量并重建
     v2Turns := LoadFromSessionBodies(sessionID)
     reconstructed := ReconstructFromDeltas(v2Turns)
-    
+
     // 3. 逐轮对比
     for i := range v1Bodies {
         if !jsonEqual(v1Bodies[i], reconstructed[i]) {
             return fmt.Errorf("turn %d mismatch", i+1)
         }
     }
-    
+
     return nil
 }
 ```
@@ -438,14 +438,14 @@ type SessionBatchAggregator struct {
 func (a *SessionBatchAggregator) QueueUpdate(sessionID string, update *SessionUpdate) {
     a.mu.Lock()
     defer a.mu.Unlock()
-    
+
     // 合并更新
     if existing, ok := a.buffer[sessionID]; ok {
         existing.Merge(update)
     } else {
         a.buffer[sessionID] = update
     }
-    
+
     // 达到批量阈值或定时触发
     if len(a.buffer) >= 100 {
         a.Flush()
@@ -466,14 +466,14 @@ DO $$
 DECLARE
     month_date DATE;
 BEGIN
-    FOR month_date IN 
+    FOR month_date IN
         SELECT generate_series('2024-01-01'::DATE, CURRENT_DATE, '1 month'::INTERVAL)::DATE
     LOOP
         RAISE NOTICE 'Backfilling month: %', month_date;
-        
+
         -- 每个月的数据独立回填
         PERFORM backfill_sessions_v2_for_month(month_date);
-        
+
         COMMIT;  -- 每月提交一次
     END LOOP;
 END;
@@ -533,7 +533,7 @@ $$;
 
 ```sql
 -- 查询某会话的V1和V2数据对比
-SELECT 
+SELECT
     'v1' AS source,
     COUNT(*) AS turns,
     SUM(prompt_tokens + completion_tokens) AS tokens,
@@ -541,7 +541,7 @@ SELECT
 FROM request_logs
 WHERE gw_session_id = :session_id
 UNION ALL
-SELECT 
+SELECT
     'v2' AS source,
     total_turns AS turns,
     total_tokens AS tokens,

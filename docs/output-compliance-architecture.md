@@ -120,29 +120,29 @@ type Policy struct {
     CheckPII, CheckToxicity, CheckBias, CheckHallucination bool
     CheckSecrets, CheckInternalIP bool
     CheckJailbreakResponse, CheckInstructionInjectionResponse bool
-    
+
     // 引擎选择
     PIIEngine string // regex / model / hybrid
     ToxicityEngine string // keyword / model / hybrid
     LLMEngineID *int
-    
+
     // 阈值
     PIIThreshold, ToxicityThreshold, SecretsThreshold float64
-    
+
     // 响应动作
     ActionOnPII string // log / warn / redact / block
     ActionOnSecrets string
     ActionOnInternalIP string
-    
+
     // 脱敏配置
     AutoRedact bool
     RedactEmail, RedactPhone, RedactIDCard, RedactCreditCard bool
     RedactBankCard, RedactJWT, RedactPassword bool
-    
+
     // 例外规则
     ExceptionRules []ExceptionRule
     WhitelistKeywords []string
-    
+
     // 告警与学习
     RealtimeAlertEnabled bool
     AutoReviewQueueEnabled bool
@@ -267,7 +267,7 @@ type ExceptionRule struct {
 
 3. 策略：
    exception_rules = [
-     {scope: "owner_user", values: ["alice@example.com"], 
+     {scope: "owner_user", values: ["alice@example.com"],
       check_types: ["pii"], actions: ["skip_redact"]}
    ]
 
@@ -495,5 +495,5 @@ if policy.SkillGenerationEnabled && len(issues) > 0 {
 
 ---
 
-**最后更新**：2026-07-09  
+**最后更新**：2026-07-09
 **版本**：R1.13 - Output Compliance Enhancement

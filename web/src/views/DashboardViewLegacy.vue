@@ -53,7 +53,7 @@ const tenantLabel = computed(() => {
   const tenantId = getCurrentTenantId()
   const isAdmin = isSuperAdmin()
   const isDefault = isDefaultTenant()
-  
+
   if (isAdmin && isDefault) {
     return '整站数据'
   } else if (isDefault) {
@@ -284,7 +284,7 @@ scheduleStatsRecalibrate()
     <div class="page-header">
       <div class="page-header-title">
         <h2>{{ t('dashboard.title') }}</h2>
-        
+
         <!-- 版本切换器（集成到标题旁） -->
         <div v-if="versionSwitcher" class="version-switcher">
           <button
@@ -306,7 +306,7 @@ scheduleStatsRecalibrate()
             V1
           </button>
         </div>
-        
+
         <MemoraStatusButton />
       </div>
       <div class="page-header-actions">

@@ -207,16 +207,16 @@ CREATE TABLE IF NOT EXISTS state_change_log (
     id              BIGSERIAL PRIMARY KEY,
     credential_id   INT NOT NULL,
     raw_model_name  TEXT NOT NULL,
-    
+
     -- 事件信息
     event_type      TEXT NOT NULL,  -- 'available→unavailable' | 'unavailable→available'
     reason          TEXT NOT NULL,  -- 'consecutive_2_failures' | 'request_success' | 'probe_recovered'
     error_kind      TEXT,           -- 触发转换的错误类型（失败时）
     consecutive_fail INT DEFAULT 0, -- 转换时的连续失败数
-    
+
     -- 快照（记录转换时的完整状态）
     snapshot JSONB,                 -- {available, latency_avg, last_error, ...}
-    
+
     created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
@@ -386,30 +386,30 @@ type NodeReadState struct {
 // IsAvailable 路由时调用 — 只读 Redis，无 DB 查询
 func (r *StateRecorder) IsAvailable(ctx context.Context, credID int, model string) (bool, string) {
     key := fmt.Sprintf("ursm:node:%d:%s", credID, model)
-    
+
     data, err := r.redis.HGetAll(ctx, key).Result()
     if err != nil || len(data) == 0 {
         return true, ""  // fail-open
     }
-    
+
     now := time.Now().Unix()
     disabledUntil, _ := strconv.ParseInt(data["disabled_until"], 10, 64)
     consecutiveFail, _ := strconv.Atoi(data["consecutive_fail"])
-    
+
     // 冷却到期自动恢复
     if disabledUntil > 0 && now >= disabledUntil {
         return true, ""
     }
-    
+
     if data["available"] == "0" {
         return false, data["last_error"]
     }
-    
+
     // available == "1" 但连续失败未归零（静默期）
     if consecutiveFail >= 2 {
         return false, data["last_error"]
     }
-    
+
     return true, ""
 }
 ```
@@ -426,12 +426,12 @@ func (r *StateRecorder) logStateChange(ctx context.Context, req RecordRequest, t
         "source":          req.Source,
         "latency_ms":      req.LatencyMs,
     }
-    
+
     snapshotJSON, _ := json.Marshal(snapshot)
-    
+
     _, err := r.db.Exec(ctx, `
         INSERT INTO state_change_log
-            (credential_id, raw_model_name, event_type, reason, error_kind, 
+            (credential_id, raw_model_name, event_type, reason, error_kind,
              consecutive_fail, snapshot, created_at)
         VALUES ($1, $2, $3, $4, $5, $6, $7, NOW())
     `, req.CredentialID, req.Model,

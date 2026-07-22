@@ -1,6 +1,6 @@
 # GLM/DeepSeek/Doubao 真实响应抓包指南
 
-**日期**: 2026-07-11  
+**日期**: 2026-07-11
 **目的**: 验证并补充私有字段黑名单，确保字段过滤准确性
 
 ---
@@ -22,29 +22,29 @@ ssh -p 25022 root@14.103.112.184
 # 2. 查询最近的 GLM 请求日志
 kubectl exec -n pms-test deployment/llm-gateway-go-deployment -- \
   psql postgresql://llmgo:$PG_LLM_GATEWAY_PASS@postgres-citus-coordinator:5432/llm_gateway \
-  -c "SELECT request_id, response_body FROM request_log 
-      WHERE catalog_code = 'zhipu' 
-      AND response_body IS NOT NULL 
+  -c "SELECT request_id, response_body FROM request_log
+      WHERE catalog_code = 'zhipu'
+      AND response_body IS NOT NULL
       ORDER BY created_at DESC LIMIT 1;"
 
 # 3. 查询 DeepSeek 请求日志
 kubectl exec -n pms-test deployment/llm-gateway-go-deployment -- \
   psql postgresql://llmgo:$PG_LLM_GATEWAY_PASS@postgres-citus-coordinator:5432/llm_gateway \
-  -c "SELECT request_id, response_body FROM request_log 
-      WHERE catalog_code = 'deepseek' 
-      AND response_body IS NOT NULL 
+  -c "SELECT request_id, response_body FROM request_log
+      WHERE catalog_code = 'deepseek'
+      AND response_body IS NOT NULL
       ORDER BY created_at DESC LIMIT 1;"
 
 # 4. 查询 Doubao 请求日志
 kubectl exec -n pms-test deployment/llm-gateway-go-deployment -- \
   psql postgresql://llmgo:$PG_LLM_GATEWAY_PASS@postgres-citus-coordinator:5432/llm_gateway \
-  -c "SELECT request_id, response_body FROM request_log 
-      WHERE catalog_code = 'doubao' 
-      AND response_body IS NOT NULL 
+  -c "SELECT request_id, response_body FROM request_log
+      WHERE catalog_code = 'doubao'
+      AND response_body IS NOT NULL
       ORDER BY created_at DESC LIMIT 1;"
 ```
 
-**优势**: 真实生产数据，包含所有实际字段  
+**优势**: 真实生产数据，包含所有实际字段
 **注意**: 需要脱敏处理，不要直接复制到公开文档
 
 ---
@@ -243,9 +243,9 @@ var doubaoPrivateFields = []string{
 
 ## 实际抓包执行结果（2026-07-11，252 生产）
 
-**环境**: `prod-aliyun-252` (115.29.212.252:25022)，部署 `llm.itestu.cn (llm-gateway-go) + pg17 + redis:6389`  
-**数据库**: `172.16.2.210:5432/llm_gateway`，host: `pg-data-252-pg17` (podman container)  
-**凭据**: `llm_gateway / 4Q92cFTaYY8Z3AO07XTBBH-1g7kceaxg`（超级用户，跳过 RLS）  
+**环境**: `prod-aliyun-252` (115.29.212.252:25022)，部署 `llm.itestu.cn (llm-gateway-go) + pg17 + redis:6389`
+**数据库**: `172.16.2.210:5432/llm_gateway`，host: `pg-data-252-pg17` (podman container)
+**凭据**: `llm_gateway / 4Q92cFTaYY8Z3AO07XTBBH-1g7kceaxg`（超级用户，跳过 RLS）
 **连接方法**: SSH tunnel `ssh -p 25022 root@115.29.212.252 -L 25432:172.16.2.210:5432 -N -f`
 
 ### 真实 7 天流量分布（`request_logs_hot ∪ request_logs_2026_07`）

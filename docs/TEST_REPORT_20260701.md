@@ -1,8 +1,8 @@
 # LLM Gateway 测试报告
 
-**测试日期**: 2026-07-01  
-**测试环境**: https://__DOMAIN_1__ (184服务器 pms-test namespace)  
-**部署版本**: `r1.13-done-a2214914-20260701-765`  
+**测试日期**: 2026-07-01
+**测试环境**: https://__DOMAIN_1__ (184服务器 pms-test namespace)
+**部署版本**: `r1.13-done-a2214914-20260701-765`
 **测试人员**: Kiro AI
 
 ---
@@ -121,7 +121,7 @@ curl -H "Authorization: Bearer ${ADMIN_KEY}" \
   "https://__DOMAIN_1__/api/routing/resolve?model=doubao-1-5-pro-32k"
 ```
 
-✅ **结果**: 
+✅ **结果**:
 - 返回 2 个候选 provider
 - 显示详细的路由信息（provider、credential、availability_state、quota_state 等）
 - 路由解析逻辑正常工作
@@ -158,19 +158,19 @@ curl -H "Authorization: Bearer ${ADMIN_KEY}" \
 
 **索引刷新**: 每5分钟自动刷新一次
 ```
-2026/07/01 13:58:02 INFO auto index refreshed bucket=2026-07-01T13:55:00Z 
+2026/07/01 13:58:02 INFO auto index refreshed bucket=2026-07-01T13:55:00Z
   credential_rows=175 task_rows=0
 ```
 
 **路由监听**: 实时响应数据库变更通知
 ```
-2026/07/01 13:13:21 INFO auto_route listener: refresh requested 
+2026/07/01 13:13:21 INFO auto_route listener: refresh requested
   payload=credential_model_bindings:UPDATE:12
 ```
 
 **模型探测**: 持续监控模型健康状态
 ```
-2026/07/01 13:43:34 INFO model probe: restored binding available 
+2026/07/01 13:43:34 INFO model probe: restored binding available
   (healthy_confirmed) credential_id=11 raw_model=doubao-pro-4k-functioncall-240615
 ```
 
@@ -182,7 +182,7 @@ curl -H "Authorization: Bearer ${ADMIN_KEY}" \
 
 ### 问题 1: 大部分模型不可用（配额/速率限制）
 
-**现象**: 
+**现象**:
 - 通过 `/api/routing/available-models` 可以看到很多模型有 `provider_count > 0`
 - 但实际调用时返回 `No available provider` 错误
 - 路由解析显示 `routable: false`
@@ -201,7 +201,7 @@ curl -X POST https://__DOMAIN_1__/v1/chat/completions \
   -d '{"model": "doubao-1-5-pro-32k", "messages": [...]}'
 ```
 
-❌ **结果**: 
+❌ **结果**:
 ```json
 {
   "error": {
@@ -223,7 +223,7 @@ curl -X POST https://__DOMAIN_1__/v1/chat/completions \
   -d '{"model": "claude-sonnet-4.5", "messages": [...]}'
 ```
 
-❌ **结果**: 
+❌ **结果**:
 ```json
 {
   "error": {
@@ -239,7 +239,7 @@ curl -X POST https://__DOMAIN_1__/v1/chat/completions \
 
 ### 问题 2: Discovery 未运行
 
-**现象**: 
+**现象**:
 ```json
 {
   "discovery": {
@@ -259,7 +259,7 @@ curl -X POST https://__DOMAIN_1__/v1/chat/completions \
 
 ### 问题 3: Probe Loop 检查次数为0
 
-**现象**: 
+**现象**:
 ```json
 {
   "probe_loop": {
@@ -282,7 +282,7 @@ curl -X POST https://__DOMAIN_1__/v1/chat/completions \
 - **总请求数**: 16,347
 - **成功率**: 90.52%
 - **平均延迟**: 6,675 ms
-- **Token 使用**: 
+- **Token 使用**:
   - Prompt: 1,188,954,358
   - Completion: 2,673,176
 - **总成本**: $1.03 USD
@@ -316,11 +316,11 @@ curl -X POST https://__DOMAIN_1__/v1/chat/completions \
 for model in $(curl -s -H "Authorization: Bearer ${ADMIN_KEY}" \
   "${BASE_URL}/api/routing/available-models" | \
   jq -r '.families[].versions[].canonical_name' | head -10); do
-  
+
   ROUTABLE=$(curl -s "${BASE_URL}/api/routing/resolve?model=${model}" \
     -H "Authorization: Bearer ${ADMIN_KEY}" | \
     jq '[.candidates[] | select(.routable == true)] | length')
-  
+
   [ "$ROUTABLE" -gt 0 ] && echo "✅ $model: $ROUTABLE 可用"
 done
 ```
@@ -387,7 +387,7 @@ WARN admin api key fallback deprecated, migrate to JWT (removal 2026-07-27)
 
 2. **Discovery 未运行**: 自动发现服务未激活
    - 影响: **中** - 不影响现有模型使用，但新模型无法自动发现
-   
+
 3. **监控指标异常**: Probe loop 统计为 0
    - 影响: **低** - 不影响功能，但监控数据不准确
 
@@ -414,7 +414,7 @@ WARN admin api key fallback deprecated, migrate to JWT (removal 2026-07-27)
 ### 测试用 API Key
 
 - **Admin Key**: 存储在 k8s secret `llm-gateway-secret` 中
-- **获取方法**: 
+- **获取方法**:
   ```bash
   kubectl get secret llm-gateway-secret -n pms-test \
     -o jsonpath='{.data.admin-api-key}' | base64 -d
@@ -429,5 +429,5 @@ WARN admin api key fallback deprecated, migrate to JWT (removal 2026-07-27)
 
 ---
 
-**测试报告生成时间**: 2026-07-01 14:05:00 UTC  
+**测试报告生成时间**: 2026-07-01 14:05:00 UTC
 **报告版本**: v1.0

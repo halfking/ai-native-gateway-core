@@ -1,8 +1,8 @@
 # llm-gateway-go 24h Audit Report (2026-06-20)
 
-**Commit range:** `166df6d8..c95994da` (48 commits)  
-**Audit date:** 2026-06-20  
-**Files changed:** 104 files, +15705/-513 lines  
+**Commit range:** `166df6d8..c95994da` (48 commits)
+**Audit date:** 2026-06-20
+**Files changed:** 104 files, +15705/-513 lines
 
 ---
 
@@ -16,32 +16,32 @@
 
 ### 1. 🔴 M020 Migration: Unique Index Would Fail on Old Duplicates
 
-**File:** `db/migrations/020_request_logs_unique_request_id.sql`  
-**Problem:** The migration only cleaned duplicates from the last 7 days, but PostgreSQL `CREATE UNIQUE INDEX` fails if ANY duplicates exist — the comment claiming "older duplicates won't block index creation" was incorrect.  
+**File:** `db/migrations/020_request_logs_unique_request_id.sql`
+**Problem:** The migration only cleaned duplicates from the last 7 days, but PostgreSQL `CREATE UNIQUE INDEX` fails if ANY duplicates exist — the comment claiming "older duplicates won't block index creation" was incorrect.
 **Fix:** Changed to a full-table dedup using `ROW_NUMBER() OVER (PARTITION BY request_id)` window function, which removes ALL duplicates regardless of age.
 
 ### 2. 🟠 Blocking `time.Sleep(150ms)` in Request Hot Path
 
-**File:** `routing/executor_chat.go:388`  
-**Problem:** Every `model_not_found` retry added a hardcoded 150ms blocking delay. In high-concurrency scenarios with transient errors, this stalls goroutines and reduces throughput.  
+**File:** `routing/executor_chat.go:388`
+**Problem:** Every `model_not_found` retry added a hardcoded 150ms blocking delay. In high-concurrency scenarios with transient errors, this stalls goroutines and reduces throughput.
 **Fix:** Replaced with a cancellable `select` pattern (matching the existing retry backoff pattern at line 204-208), so client disconnect aborts the wait immediately.
 
 ### 3. 🟡 `_tools_cached` Comparison: JSON String vs Boolean
 
-**File:** `relay/handler.go:772`  
-**Problem:** `string(cached) == "true"` only works for JSON boolean `true`. If the compressor outputs `"_tools_cached": "true"` (string), the comparison silently fails and tools are never restored.  
+**File:** `relay/handler.go:772`
+**Problem:** `string(cached) == "true"` only works for JSON boolean `true`. If the compressor outputs `"_tools_cached": "true"` (string), the comparison silently fails and tools are never restored.
 **Fix:** Changed to `bytes.Equal(cached, []byte("true")) || bytes.Equal(cached, []byte('"true"'))` to handle both JSON boolean and string representations.
 
 ### 4. 🟡 CSS Hardcodes Break Theme Consistency
 
-**File:** `web/src/views/PricingManagementView.vue:1010-1037`  
-**Problem:** Pagination bar used hardcoded `#1e1e2e`, `#333`, `#888` instead of CSS variables (`var(--card)`, `var(--border)`, `var(--muted)`). Breaks if theme variables change.  
+**File:** `web/src/views/PricingManagementView.vue:1010-1037`
+**Problem:** Pagination bar used hardcoded `#1e1e2e`, `#333`, `#888` instead of CSS variables (`var(--card)`, `var(--border)`, `var(--muted)`). Breaks if theme variables change.
 **Fix:** Replaced all hardcoded colors with CSS custom properties, matching the style used in `RequestLogsView.vue`.
 
 ### 5. 🟡 passive_probe_state: No TTL/Cleanup
 
-**File:** `bg/passive_probe_listener.go`  
-**Problem:** The `passive_probe_state` table accumulates entries via `ON CONFLICT DO UPDATE` but had no TTL. Over months, the table grows unbounded per `(credential_id, raw_model_name, error_kind)` combination.  
+**File:** `bg/passive_probe_listener.go`
+**Problem:** The `passive_probe_state` table accumulates entries via `ON CONFLICT DO UPDATE` but had no TTL. Over months, the table grows unbounded per `(credential_id, raw_model_name, error_kind)` combination.
 **Fix:** Added `cleanupStaleEntries()` method that runs daily, deleting entries not seen in 30 days. Integrated into the existing `run()` loop with a counter-based schedule (2880 ticks × 30s = 24h).
 
 ---

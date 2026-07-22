@@ -180,7 +180,7 @@ SQLSTATE: 23505
 psql -c "SELECT count(*) FROM request_logs_2026_07;"
 
 # 2. 检查 _default 是否还有遗留数据
-psql -c "SELECT count(*) FROM request_logs_default 
+psql -c "SELECT count(*) FROM request_logs_default
         WHERE ts < now() - interval '7 days';"
 ```
 
@@ -229,7 +229,7 @@ psql -c "
 "
 
 # 2. 确认使用了 VIEW
-psql -c "SELECT count(*) FROM request_logs_with_current_month 
+psql -c "SELECT count(*) FROM request_logs_with_current_month
         WHERE ts >= '2026-07-01';"
 ```
 
@@ -290,7 +290,7 @@ systemctl restart llm-gateway
 
 ```sql
 -- 1. 备份数据
-CREATE TABLE request_logs_default_backup AS 
+CREATE TABLE request_logs_default_backup AS
 SELECT * FROM request_logs_default;
 
 -- 2. 重建表
@@ -348,7 +348,7 @@ ORDER BY c.relname;
 
 ### 4.2 表大小
 ```sql
-SELECT 
+SELECT
   schemaname || '.' || tablename AS table_name,
   pg_size_pretty(pg_total_relation_size(schemaname||'.'||tablename)) AS size
 FROM pg_stat_user_tables
@@ -358,7 +358,7 @@ ORDER BY pg_total_relation_size(schemaname||'.'||tablename) DESC;
 
 ### 4.3 写入统计
 ```sql
-SELECT 
+SELECT
   relname,
   n_tup_ins AS inserts,
   n_tup_upd AS updates,

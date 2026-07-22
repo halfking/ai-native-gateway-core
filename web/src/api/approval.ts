@@ -150,7 +150,7 @@ export function getApprovalList(params?: ApprovalListParams) {
   if (params?.sort_order) query.set('sort_order', params.sort_order)
   if (params?.session_id) query.set('session_id', params.session_id)
   if (params?.request_id) query.set('request_id', params.request_id)
-  
+
   const queryStr = query.toString()
   return req<ApprovalListResponse>('GET', `/api/admin/approvals${queryStr ? '?' + queryStr : ''}`)
 }
@@ -180,7 +180,7 @@ export function getApprovalStats(params?: { tenant_id?: string; start_time?: str
   if (params?.tenant_id) query.set('tenant_id', params.tenant_id)
   if (params?.start_time) query.set('start_time', params.start_time)
   if (params?.end_time) query.set('end_time', params.end_time)
-  
+
   const queryStr = query.toString()
   return req<ApprovalStats>('GET', `/api/admin/approvals/stats${queryStr ? '?' + queryStr : ''}`)
 }

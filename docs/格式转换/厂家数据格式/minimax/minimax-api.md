@@ -2,13 +2,13 @@
 
 ## API 概览
 
-**端点**: 
+**端点**:
 ```
 POST https://api.minimax.chat/v1/text/chatcompletion_v2
 POST https://api.minimax.chat/v1/messages (Anthropic 兼容)
 ```
 
-**认证**: 
+**认证**:
 ```
 Authorization: Bearer {API_KEY}
 ```

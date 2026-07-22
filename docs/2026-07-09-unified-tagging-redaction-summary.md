@@ -26,7 +26,7 @@
 
 ### 2.1 V1 ChatHandler ResponseInterceptor 链式插件
 ```
-请求 → PreRouting → executor.Execute (w.Write客户端) 
+请求 → PreRouting → executor.Execute (w.Write客户端)
      → ResponseInterceptor链 (goal → audit → output_compliance)
      → telemetry/日志/缓存更新
 ```
@@ -71,31 +71,31 @@ graph TB
     A[LLM Response] --> B{output_compliance.enabled?}
     B -->|false| Z[透传]
     B -->|true| C[Checker.Check<br/>检测 PII/敏感]
-    
+
     C --> D{有敏感数据?}
     D -->|无| Z
     D -->|有| E[读取 redaction_mode]
-    
+
     E --> F{mode?}
     F -->|off| G[仅记录不脱敏]
     F -->|always| H[无条件脱敏]
     F -->|owner_mismatch| I[查询 owner]
-    
+
     I --> J[session_dim.owner_user<br/>+ request_logs.api_key_owner_user]
     J --> K{callerOwner == dataOwner?}
     K -->|是| G
     K -->|否 或 空| H
-    
+
     H --> L[redactOutput<br/>位置精确替换]
     L --> M[rewriteAssistantContent<br/>回填 JSON]
-    
+
     M --> N[设置 Metadata:<br/>pii_stripped=true<br/>output_compliance_redacted=true]
     N --> O[handler 写回<br/>result.ResponseBody]
     O --> P[telemetry/日志/缓存<br/>使用脱敏后 body]
-    
+
     G --> Z
     P --> Z
-    
+
     style H fill:#fef3c7
     style N fill:#d1fae5
     style O fill:#dbeafe
@@ -114,33 +114,33 @@ graph TB
 graph TB
     A[LLM 请求完成] --> B[SessionAuditHook<br/>检测敏感/风险]
     B --> C[CacheUpdateHook.MarkAudited]
-    
+
     C --> D[构造 SessionState v6:<br/>AuditScore, SecurityScore,<br/>SensitiveDetected, PIIStripped,<br/>ApprovalStatus, OptimizationApplied]
-    
+
     D --> E[SessionCache.Set<br/>写入 L2 缓存]
     E --> F{stateProjector != nil?}
-    
+
     F -->|false| Z[结束]
     F -->|true| G[deriveStateTags<br/>映射 v6 → tag entries]
-    
+
     G --> H[security: risk:high/medium/low]
     G --> I[compliance: sensitive_detected]
     G --> J[pii: stripped/detected]
     G --> K[approval: pending/approved]
     G --> L[optimization: strip_tools/...]
-    
+
     H --> M[批量 UPSERT<br/>session_tags]
     I --> M
     J --> M
     K --> M
     L --> M
-    
+
     M --> N{失败?}
     N -->|是| O[warn 日志<br/>不阻断主流程]
     N -->|否| Z
-    
+
     O --> Z
-    
+
     style G fill:#fef3c7
     style M fill:#d1fae5
     style O fill:#fecaca
@@ -158,35 +158,35 @@ graph TB
 ```mermaid
 graph TB
     A[用户访问 Session Detail] --> B[GET /api/admin/sessions/:id/compare]
-    
+
     B --> C[loadSessionTagsForCompare<br/>SELECT * FROM session_tags<br/>WHERE gw_session_id=:id]
-    
+
     C --> D{查询成功?}
     D -->|否| E[返回空 session_tags]
     D -->|是| F[返回 SessionTagView 数组]
-    
+
     E --> G[SessionCompareData]
     F --> G
-    
+
     G --> H[前端 SessionTurnsPanel]
     H --> I[过滤 securityTags:<br/>security/compliance/pii/approval/optimization]
-    
+
     I --> J{有 tags?}
     J -->|否| K[不显示 tag bar]
     J -->|是| L[渲染 chips]
-    
+
     L --> M[pii:stripped → 绿色]
     L --> N[approval:pending → 黄色]
     L --> O[security:risk:high → 红色]
     L --> P[compliance:* → 黄色]
     L --> Q[其他 → 灰色]
-    
+
     M --> R[显示在顶部 tag bar]
     N --> R
     O --> R
     P --> R
     Q --> R
-    
+
     style C fill:#dbeafe
     style L fill:#fef3c7
     style M fill:#d1fae5
@@ -208,35 +208,35 @@ graph TB
         A1[客户端 POST /v1/chat/completions]
         A1 --> A2[V1 ChatHandler]
     end
-    
+
     subgraph "2. Pre-Routing（审计检测）"
         A2 --> B1[SessionAuditHook.Execute<br/>检测敏感内容]
         B1 --> B2{需审批?}
         B2 -->|是| B3[ApprovalGateHook 阻断<br/>创建 approval_queue]
         B2 -->|否| B4[继续路由]
     end
-    
+
     subgraph "3. Execution（LLM 调用）"
         B4 --> C1[executor.Execute]
         C1 --> C2[上游 LLM 返回]
         C2 --> C3[w.Write 写客户端<br/>⚠️ 此时字节已发出]
     end
-    
+
     subgraph "4. Post-Response（拦截器链）"
         C3 --> D1[ResponseInterceptor Chain]
         D1 --> D2[GoalHook]
         D2 --> D3[AuditHook]
         D3 --> D4[OutputComplianceInterceptor]
-        
+
         D4 --> D5[Checker.Check 检测 PII]
         D5 --> D6{需脱敏?}
         D6 -->|是| D7[redactOutput 位置替换]
         D6 -->|否| D8[透传]
-        
+
         D7 --> D9[设置 Metadata<br/>pii_stripped=true]
         D9 --> D10[写回 result.ResponseBody]
     end
-    
+
     subgraph "5. 状态投影（SessionState → session_tags）"
         D10 --> E1[CacheUpdateHook.MarkAudited]
         E1 --> E2[构造 SessionState v6<br/>AuditScore/PIIStripped/...]
@@ -244,7 +244,7 @@ graph TB
         E3 --> E4[SessionStateProjector.Project]
         E4 --> E5[UPSERT session_tags<br/>security/pii/approval/...]
     end
-    
+
     subgraph "6. Admin 查询展示"
         F1[GET /api/admin/sessions/:id/compare]
         F1 --> F2[loadSessionTagsForCompare]
@@ -252,9 +252,9 @@ graph TB
         F3 --> F4[返回 SessionTagView]
         F4 --> F5[SessionTurnsPanel 渲染 chips]
     end
-    
+
     E5 -.存储.-> F3
-    
+
     style C3 fill:#fecaca
     style D7 fill:#fef3c7
     style D9 fill:#d1fae5
@@ -388,17 +388,17 @@ POST /api/auth/token -> 404 Not Found
 
 ## 十、关键设计决策记录
 
-1. **为何不走 V4 Pipeline？**  
+1. **为何不走 V4 Pipeline？**
    V1 ChatHandler 的 `ResponseInterceptor` 是既有验证过的链式插件（goal/audit 已用），无需引入 V4 复杂度。
 
-2. **为何 post-response 不改客户端字节？**  
+2. **为何 post-response 不改客户端字节？**
    技术限制（字节已发出）+ 设计保守（本轮专注观测/打标，write-time 脱敏需独立迭代验证）。
 
-3. **为何两个 projector 共写一张表？**  
+3. **为何两个 projector 共写一张表？**
    避免碎片化（不新建 `session_security_tags` 等多表），tag_key 词汇表正交保证无冲突。
 
-4. **为何 owner 规则保守（空→脱敏）？**  
+4. **为何 owner 规则保守（空→脱敏）？**
    安全第一：配置错误导致 owner 为空时，不能因"无法判断"而明文泄露。
 
-5. **为何不直接复用 approval.SensitiveDetector？**  
+5. **为何不直接复用 approval.SensitiveDetector？**
    输入侧（pre-routing）vs 输出侧（post-response）阶段不同，检测规则/数据源也不同（硬编码 vs DB patterns）。

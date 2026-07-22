@@ -31,7 +31,7 @@ Start searching
 
 ## Search the API docs
 
-Search docs 
+Search docs
 
 ### Suggested
 
@@ -39,9 +39,9 @@ responses create reasoning_effort realtime prompt caching
 
 Primary navigation
 
- API  API Reference  Codex  ChatGPT  Resources 
+ API  API Reference  Codex  ChatGPT  Resources
 
-Search docs 
+Search docs
 
 ### Suggested
 
@@ -53,7 +53,7 @@ responses create reasoning_effort realtime prompt caching
 *   [Quickstart](https://platform.openai.com/api/docs/quickstart)
 *   [Models](https://platform.openai.com/api/docs/models)
 *   [Pricing](https://platform.openai.com/api/docs/pricing)
-*   
+*
 [SDKs and CLI](https://platform.openai.com/api/docs/libraries)
     *   [OpenAI SDK](https://platform.openai.com/api/docs/libraries)
     *   [Agents SDK](https://platform.openai.com/api/docs/guides/agents)
@@ -87,7 +87,7 @@ responses create reasoning_effort realtime prompt caching
 *   [Integrations and observability](https://platform.openai.com/api/docs/guides/agents/integrations-observability)
 *   [Evaluate agent workflows](https://platform.openai.com/api/docs/guides/agent-evals)
 *   [Voice agents](https://platform.openai.com/api/docs/guides/voice-agents)
-*   
+*
 ChatKit
     *   [Overview](https://platform.openai.com/api/docs/guides/chatkit)
     *   [Customize](https://platform.openai.com/api/docs/guides/chatkit-themes)
@@ -98,20 +98,20 @@ ChatKit
 ### Tools
 
 *   [Web search](https://platform.openai.com/api/docs/guides/tools-web-search)
-*   
+*
 [MCP and Connectors](https://platform.openai.com/api/docs/guides/tools-connectors-mcp)
     *   [Secure MCP Tunnel](https://platform.openai.com/api/docs/guides/secure-mcp-tunnels)
 
 *   [Skills](https://platform.openai.com/api/docs/guides/tools-skills)
 *   [Shell](https://platform.openai.com/api/docs/guides/tools-shell)
 *   [Computer use](https://platform.openai.com/api/docs/guides/tools-computer-use)
-*   
+*
 File search and retrieval
     *   [File search](https://platform.openai.com/api/docs/guides/tools-file-search)
     *   [Retrieval](https://platform.openai.com/api/docs/guides/retrieval)
 
 *   [Tool search](https://platform.openai.com/api/docs/guides/tools-tool-search)
-*   
+*
 More tools
     *   [Apply Patch](https://platform.openai.com/api/docs/guides/tools-apply-patch)
     *   [Local shell](https://platform.openai.com/api/docs/guides/tools-local-shell)
@@ -126,20 +126,20 @@ More tools
 *   [WebSocket mode](https://platform.openai.com/api/docs/guides/websocket-mode)
 *   [Webhooks](https://platform.openai.com/api/docs/guides/webhooks)
 *   [File inputs](https://platform.openai.com/api/docs/guides/file-inputs)
-*   
+*
 Context management
     *   [Compaction](https://platform.openai.com/api/docs/guides/compaction)
     *   [Counting tokens](https://platform.openai.com/api/docs/guides/token-counting)
     *   [Prompt caching](https://platform.openai.com/api/docs/guides/prompt-caching)
 
-*   
+*
 Prompting
     *   [Overview](https://platform.openai.com/api/docs/guides/prompting)
     *   [Prompt engineering](https://platform.openai.com/api/docs/guides/prompt-engineering)
     *   [Citation formatting](https://platform.openai.com/api/docs/guides/citation-formatting)
     *   [Migration guide](https://platform.openai.com/api/docs/guides/prompting/migrate-from-prompt-object)
 
-*   
+*
 Reasoning
     *   [Reasoning models](https://platform.openai.com/api/docs/guides/reasoning)
     *   [Reasoning best practices](https://platform.openai.com/api/docs/guides/reasoning-best-practices)
@@ -153,20 +153,20 @@ Reasoning
 *   [Overview](https://platform.openai.com/api/docs/guides/realtime)
 *   [Voice agents](https://platform.openai.com/api/docs/guides/voice-agents)
 *   [Live translation](https://platform.openai.com/api/docs/guides/realtime-translation)
-*   
+*
 Transcription
     *   [Realtime transcription](https://platform.openai.com/api/docs/guides/realtime-transcription)
     *   [Speech to text](https://platform.openai.com/api/docs/guides/speech-to-text)
 
 *   [Speech generation](https://platform.openai.com/api/docs/guides/text-to-speech)
 *   [Realtime prompting guide](https://platform.openai.com/api/docs/guides/realtime-models-prompting)
-*   
+*
 Connection methods
     *   [WebRTC](https://platform.openai.com/api/docs/guides/realtime-webrtc)
     *   [WebSocket](https://platform.openai.com/api/docs/guides/realtime-websocket)
     *   [SIP](https://platform.openai.com/api/docs/guides/realtime-sip)
 
-*   
+*
 Realtime sessions
     *   [Managing conversations](https://platform.openai.com/api/docs/guides/realtime-conversations)
     *   [Voice activity detection](https://platform.openai.com/api/docs/guides/realtime-vad)
@@ -185,7 +185,7 @@ Realtime sessions
 ### Going live
 
 *   [Production best practices](https://platform.openai.com/api/docs/guides/production-best-practices)
-*   
+*
 [Workload identity federation](https://platform.openai.com/api/docs/guides/workload-identity-federation)
     *   [Overview](https://platform.openai.com/api/docs/guides/workload-identity-federation)
     *   [Kubernetes](https://platform.openai.com/api/docs/guides/workload-identity-federation/kubernetes)
@@ -197,20 +197,20 @@ Realtime sessions
 
 *   [Deployment checklist](https://platform.openai.com/api/docs/guides/deployment-checklist)
 *   [Amazon Bedrock](https://platform.openai.com/api/docs/guides/amazon-bedrock)
-*   
+*
 Latency optimization
     *   [Overview](https://platform.openai.com/api/docs/guides/latency-optimization)
     *   [Predicted Outputs](https://platform.openai.com/api/docs/guides/predicted-outputs)
     *   [Priority processing](https://platform.openai.com/api/docs/guides/priority-processing)
 
-*   
+*
 Cost optimization
     *   [Overview](https://platform.openai.com/api/docs/guides/cost-optimization)
     *   [Batch](https://platform.openai.com/api/docs/guides/batch)
     *   [Flex processing](https://platform.openai.com/api/docs/guides/flex-processing)
 
 *   [Accuracy optimization](https://platform.openai.com/api/docs/guides/optimizing-llm-accuracy)
-*   
+*
 Safety
     *   [Safety best practices](https://platform.openai.com/api/docs/guides/safety-best-practices)
     *   [Safety checks](https://platform.openai.com/api/docs/guides/safety-checks)
@@ -219,14 +219,14 @@ Safety
 
 ### Legacy APIs
 
-*   
+*
 Agent Builder
     *   [Overview](https://platform.openai.com/api/docs/guides/agent-builder)
     *   [Migration guide](https://platform.openai.com/api/docs/guides/agent-builder/migrate-from-agent-builder)
     *   [Node reference](https://platform.openai.com/api/docs/guides/node-reference)
     *   [Safety in building agents](https://platform.openai.com/api/docs/guides/agent-builder-safety)
 
-*   
+*
 Evals
     *   [Getting started](https://platform.openai.com/api/docs/guides/evaluation-getting-started)
     *   [Working with evals](https://platform.openai.com/api/docs/guides/evals)
@@ -235,7 +235,7 @@ Evals
     *   [Best practices](https://platform.openai.com/api/docs/guides/evaluation-best-practices)
     *   [Graders](https://platform.openai.com/api/docs/guides/graders)
 
-*   
+*
 Fine-tuning
     *   [Optimization cycle](https://platform.openai.com/api/docs/guides/model-optimization)
     *   [Supervised fine-tuning](https://platform.openai.com/api/docs/guides/supervised-fine-tuning)
@@ -245,7 +245,7 @@ Fine-tuning
     *   [RFT use cases](https://platform.openai.com/api/docs/guides/rft-use-cases)
     *   [Best practices](https://platform.openai.com/api/docs/guides/fine-tuning-best-practices)
 
-*   
+*
 Assistants API
     *   [Migration guide](https://platform.openai.com/api/docs/assistants/migration)
     *   [Deep dive](https://platform.openai.com/api/docs/assistants/deep-dive)
@@ -263,7 +263,7 @@ Assistants API
 *   [Deprecations](https://platform.openai.com/api/docs/deprecations)
 *   [MCP for deep research](https://platform.openai.com/api/docs/mcp)
 *   [Developer mode](https://platform.openai.com/api/docs/guides/developer-mode)
-*   
+*
 ChatGPT Actions
     *   [Introduction](https://platform.openai.com/api/docs/actions/introduction)
     *   [Getting started](https://platform.openai.com/api/docs/actions/getting-started)
@@ -273,7 +273,7 @@ ChatGPT Actions
     *   [Data retrieval](https://platform.openai.com/api/docs/actions/data-retrieval)
     *   [Sending files](https://platform.openai.com/api/docs/actions/sending-files)
 
- Docs  Use cases 
+ Docs  Use cases
 
 ### Getting Started
 
@@ -282,15 +282,15 @@ ChatGPT Actions
 *   [Explore use cases](https://platform.openai.com/codex/use-cases)
 *   [Migrate](https://platform.openai.com/codex/migrate)
 *   [Pricing](https://platform.openai.com/codex/pricing)
-*   
+*
 Concepts
     *   [Prompting](https://platform.openai.com/codex/prompting)
     *   [Customization](https://platform.openai.com/codex/concepts/customization)
-    *   
+    *
 [Memories](https://platform.openai.com/codex/memories)
         *   [Chronicle](https://platform.openai.com/codex/memories/chronicle)
 
-    *   
+    *
 [Sandboxing](https://platform.openai.com/codex/concepts/sandboxing)
         *   [Auto-review](https://platform.openai.com/codex/concepts/sandboxing/auto-review)
 
@@ -302,7 +302,7 @@ Concepts
 
 ### Using Codex
 
-*   
+*
 App
     *   [Overview](https://platform.openai.com/codex/app)
     *   [Features](https://platform.openai.com/codex/app/features)
@@ -319,7 +319,7 @@ App
     *   [Windows](https://platform.openai.com/codex/app/windows)
     *   [Troubleshooting](https://platform.openai.com/codex/app/troubleshooting)
 
-*   
+*
 IDE Extension
     *   [Overview](https://platform.openai.com/codex/ide)
     *   [Features](https://platform.openai.com/codex/ide/features)
@@ -327,30 +327,30 @@ IDE Extension
     *   [IDE Commands](https://platform.openai.com/codex/ide/commands)
     *   [Slash commands](https://platform.openai.com/codex/ide/slash-commands)
 
-*   
+*
 CLI
     *   [Overview](https://platform.openai.com/codex/cli)
     *   [Features](https://platform.openai.com/codex/cli/features)
     *   [Command Line Options](https://platform.openai.com/codex/cli/reference)
     *   [Slash commands](https://platform.openai.com/codex/cli/slash-commands)
 
-*   
+*
 Web
     *   [Overview](https://platform.openai.com/codex/cloud)
     *   [Environments](https://platform.openai.com/codex/cloud/environments)
     *   [Internet Access](https://platform.openai.com/codex/cloud/internet-access)
 
-*   
+*
 Integrations
     *   [GitHub](https://platform.openai.com/codex/integrations/github)
     *   [Slack](https://platform.openai.com/codex/integrations/slack)
     *   [Linear](https://platform.openai.com/codex/integrations/linear)
 
-*   
+*
 Codex Security
     *   [Overview](https://platform.openai.com/codex/security)
     *   [Codex Security plugin](https://platform.openai.com/codex/security/plugin)
-    *   
+    *
 Codex Security cloud
         *   [Setup](https://platform.openai.com/codex/security/setup)
         *   [Improving the threat model](https://platform.openai.com/codex/security/threat-model)
@@ -359,7 +359,7 @@ Codex Security cloud
 
 ### Configuration
 
-*   
+*
 Config File
     *   [Config Basics](https://platform.openai.com/codex/config-basic)
     *   [Advanced Config](https://platform.openai.com/codex/config-advanced)
@@ -373,7 +373,7 @@ Config File
 *   [Hooks](https://platform.openai.com/codex/hooks)
 *   [AGENTS.md](https://platform.openai.com/codex/guides/agents-md)
 *   [MCP](https://platform.openai.com/codex/mcp)
-*   
+*
 Plugins
     *   [Overview](https://platform.openai.com/codex/plugins)
     *   [Build plugins](https://platform.openai.com/codex/plugins/build)
@@ -384,18 +384,18 @@ Plugins
 
 ### Administration
 
-*   
+*
 Authentication
     *   [Overview](https://platform.openai.com/codex/auth)
     *   [Access tokens](https://platform.openai.com/codex/enterprise/access-tokens)
 
 *   [Agent approvals & security](https://platform.openai.com/codex/agent-approvals-security)
 *   [Remote connections](https://platform.openai.com/codex/remote-connections)
-*   
+*
 Deployment
     *   [Amazon Bedrock](https://platform.openai.com/codex/amazon-bedrock)
 
-*   
+*
 Enterprise
     *   [Admin Setup](https://platform.openai.com/codex/enterprise/admin-setup)
     *   [Governance](https://platform.openai.com/codex/enterprise/governance)
@@ -416,13 +416,13 @@ Enterprise
 *   [Best practices](https://platform.openai.com/codex/learn/best-practices)
 *   [Videos](https://platform.openai.com/codex/videos)
 *   [Community](https://platform.openai.com/community)
-*   
+*
 Blog
     *   [Using skills to accelerate OSS maintenance](https://platform.openai.com/blog/skills-agents-sdk)
     *   [Building frontend UIs with Codex and Figma](https://platform.openai.com/blog/building-frontend-uis-with-codex-and-figma)
     *   [View all](https://platform.openai.com/blog/topic/codex)
 
-*   
+*
 Cookbooks
     *   [Build an Agent Improvement Loop with Traces, Evals, and Codex](https://platform.openai.com/cookbook/examples/agents_sdk/agent_improvement_loop)
     *   [Build iterative repair loops with Codex](https://platform.openai.com/cookbook/examples/codex/build_iterative_repair_loops_with_codex)
@@ -439,7 +439,7 @@ Cookbooks
 *   [Home](https://platform.openai.com/codex/use-cases)
 *   [Collections](https://platform.openai.com/codex/use-cases/collections)
 
- Apps SDK  Workspace Agents  Commerce  Ads 
+ Apps SDK  Workspace Agents  Commerce  Ads
 
 *   [Home](https://platform.openai.com/apps-sdk)
 *   [Quickstart](https://platform.openai.com/apps-sdk/quickstart)
@@ -540,7 +540,7 @@ Cookbooks
 *   [Insights](https://platform.openai.com/ads/api-reference/insights)
 *   [Files](https://platform.openai.com/ads/api-reference/files)
 
- Showcase  Blog  Cookbook  Learn  Community 
+ Showcase  Blog  Cookbook  Learn  Community
 
 *   [Home](https://platform.openai.com/showcase)
 *   [API examples](https://platform.openai.com/showcase/api-examples)
@@ -629,7 +629,7 @@ Cookbooks
 *   [Quickstart](https://platform.openai.com/api/docs/quickstart)
 *   [Models](https://platform.openai.com/api/docs/models)
 *   [Pricing](https://platform.openai.com/api/docs/pricing)
-*   
+*
 [SDKs and CLI](https://platform.openai.com/api/docs/libraries)
     *   [OpenAI SDK](https://platform.openai.com/api/docs/libraries)
     *   [Agents SDK](https://platform.openai.com/api/docs/guides/agents)
@@ -663,7 +663,7 @@ Cookbooks
 *   [Integrations and observability](https://platform.openai.com/api/docs/guides/agents/integrations-observability)
 *   [Evaluate agent workflows](https://platform.openai.com/api/docs/guides/agent-evals)
 *   [Voice agents](https://platform.openai.com/api/docs/guides/voice-agents)
-*   
+*
 ChatKit
     *   [Overview](https://platform.openai.com/api/docs/guides/chatkit)
     *   [Customize](https://platform.openai.com/api/docs/guides/chatkit-themes)
@@ -674,20 +674,20 @@ ChatKit
 ### Tools
 
 *   [Web search](https://platform.openai.com/api/docs/guides/tools-web-search)
-*   
+*
 [MCP and Connectors](https://platform.openai.com/api/docs/guides/tools-connectors-mcp)
     *   [Secure MCP Tunnel](https://platform.openai.com/api/docs/guides/secure-mcp-tunnels)
 
 *   [Skills](https://platform.openai.com/api/docs/guides/tools-skills)
 *   [Shell](https://platform.openai.com/api/docs/guides/tools-shell)
 *   [Computer use](https://platform.openai.com/api/docs/guides/tools-computer-use)
-*   
+*
 File search and retrieval
     *   [File search](https://platform.openai.com/api/docs/guides/tools-file-search)
     *   [Retrieval](https://platform.openai.com/api/docs/guides/retrieval)
 
 *   [Tool search](https://platform.openai.com/api/docs/guides/tools-tool-search)
-*   
+*
 More tools
     *   [Apply Patch](https://platform.openai.com/api/docs/guides/tools-apply-patch)
     *   [Local shell](https://platform.openai.com/api/docs/guides/tools-local-shell)
@@ -702,20 +702,20 @@ More tools
 *   [WebSocket mode](https://platform.openai.com/api/docs/guides/websocket-mode)
 *   [Webhooks](https://platform.openai.com/api/docs/guides/webhooks)
 *   [File inputs](https://platform.openai.com/api/docs/guides/file-inputs)
-*   
+*
 Context management
     *   [Compaction](https://platform.openai.com/api/docs/guides/compaction)
     *   [Counting tokens](https://platform.openai.com/api/docs/guides/token-counting)
     *   [Prompt caching](https://platform.openai.com/api/docs/guides/prompt-caching)
 
-*   
+*
 Prompting
     *   [Overview](https://platform.openai.com/api/docs/guides/prompting)
     *   [Prompt engineering](https://platform.openai.com/api/docs/guides/prompt-engineering)
     *   [Citation formatting](https://platform.openai.com/api/docs/guides/citation-formatting)
     *   [Migration guide](https://platform.openai.com/api/docs/guides/prompting/migrate-from-prompt-object)
 
-*   
+*
 Reasoning
     *   [Reasoning models](https://platform.openai.com/api/docs/guides/reasoning)
     *   [Reasoning best practices](https://platform.openai.com/api/docs/guides/reasoning-best-practices)
@@ -729,20 +729,20 @@ Reasoning
 *   [Overview](https://platform.openai.com/api/docs/guides/realtime)
 *   [Voice agents](https://platform.openai.com/api/docs/guides/voice-agents)
 *   [Live translation](https://platform.openai.com/api/docs/guides/realtime-translation)
-*   
+*
 Transcription
     *   [Realtime transcription](https://platform.openai.com/api/docs/guides/realtime-transcription)
     *   [Speech to text](https://platform.openai.com/api/docs/guides/speech-to-text)
 
 *   [Speech generation](https://platform.openai.com/api/docs/guides/text-to-speech)
 *   [Realtime prompting guide](https://platform.openai.com/api/docs/guides/realtime-models-prompting)
-*   
+*
 Connection methods
     *   [WebRTC](https://platform.openai.com/api/docs/guides/realtime-webrtc)
     *   [WebSocket](https://platform.openai.com/api/docs/guides/realtime-websocket)
     *   [SIP](https://platform.openai.com/api/docs/guides/realtime-sip)
 
-*   
+*
 Realtime sessions
     *   [Managing conversations](https://platform.openai.com/api/docs/guides/realtime-conversations)
     *   [Voice activity detection](https://platform.openai.com/api/docs/guides/realtime-vad)
@@ -761,7 +761,7 @@ Realtime sessions
 ### Going live
 
 *   [Production best practices](https://platform.openai.com/api/docs/guides/production-best-practices)
-*   
+*
 [Workload identity federation](https://platform.openai.com/api/docs/guides/workload-identity-federation)
     *   [Overview](https://platform.openai.com/api/docs/guides/workload-identity-federation)
     *   [Kubernetes](https://platform.openai.com/api/docs/guides/workload-identity-federation/kubernetes)
@@ -773,20 +773,20 @@ Realtime sessions
 
 *   [Deployment checklist](https://platform.openai.com/api/docs/guides/deployment-checklist)
 *   [Amazon Bedrock](https://platform.openai.com/api/docs/guides/amazon-bedrock)
-*   
+*
 Latency optimization
     *   [Overview](https://platform.openai.com/api/docs/guides/latency-optimization)
     *   [Predicted Outputs](https://platform.openai.com/api/docs/guides/predicted-outputs)
     *   [Priority processing](https://platform.openai.com/api/docs/guides/priority-processing)
 
-*   
+*
 Cost optimization
     *   [Overview](https://platform.openai.com/api/docs/guides/cost-optimization)
     *   [Batch](https://platform.openai.com/api/docs/guides/batch)
     *   [Flex processing](https://platform.openai.com/api/docs/guides/flex-processing)
 
 *   [Accuracy optimization](https://platform.openai.com/api/docs/guides/optimizing-llm-accuracy)
-*   
+*
 Safety
     *   [Safety best practices](https://platform.openai.com/api/docs/guides/safety-best-practices)
     *   [Safety checks](https://platform.openai.com/api/docs/guides/safety-checks)
@@ -795,14 +795,14 @@ Safety
 
 ### Legacy APIs
 
-*   
+*
 Agent Builder
     *   [Overview](https://platform.openai.com/api/docs/guides/agent-builder)
     *   [Migration guide](https://platform.openai.com/api/docs/guides/agent-builder/migrate-from-agent-builder)
     *   [Node reference](https://platform.openai.com/api/docs/guides/node-reference)
     *   [Safety in building agents](https://platform.openai.com/api/docs/guides/agent-builder-safety)
 
-*   
+*
 Evals
     *   [Getting started](https://platform.openai.com/api/docs/guides/evaluation-getting-started)
     *   [Working with evals](https://platform.openai.com/api/docs/guides/evals)
@@ -811,7 +811,7 @@ Evals
     *   [Best practices](https://platform.openai.com/api/docs/guides/evaluation-best-practices)
     *   [Graders](https://platform.openai.com/api/docs/guides/graders)
 
-*   
+*
 Fine-tuning
     *   [Optimization cycle](https://platform.openai.com/api/docs/guides/model-optimization)
     *   [Supervised fine-tuning](https://platform.openai.com/api/docs/guides/supervised-fine-tuning)
@@ -821,7 +821,7 @@ Fine-tuning
     *   [RFT use cases](https://platform.openai.com/api/docs/guides/rft-use-cases)
     *   [Best practices](https://platform.openai.com/api/docs/guides/fine-tuning-best-practices)
 
-*   
+*
 Assistants API
     *   [Migration guide](https://platform.openai.com/api/docs/assistants/migration)
     *   [Deep dive](https://platform.openai.com/api/docs/assistants/deep-dive)
@@ -839,7 +839,7 @@ Assistants API
 *   [Deprecations](https://platform.openai.com/api/docs/deprecations)
 *   [MCP for deep research](https://platform.openai.com/api/docs/mcp)
 *   [Developer mode](https://platform.openai.com/api/docs/guides/developer-mode)
-*   
+*
 ChatGPT Actions
     *   [Introduction](https://platform.openai.com/api/docs/actions/introduction)
     *   [Getting started](https://platform.openai.com/api/docs/actions/getting-started)

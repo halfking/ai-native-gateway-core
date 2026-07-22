@@ -1,8 +1,8 @@
 # Phase 0 基础设施部署 - 验收报告
 
-> **部署日期**: 2026-07-18  
-> **部署环境**: 本地 Docker (macOS)  
-> **验收人**: Infrastructure Team  
+> **部署日期**: 2026-07-18
+> **部署环境**: 本地 Docker (macOS)
+> **验收人**: Infrastructure Team
 > **状态**: ✅ 通过
 
 ---
@@ -176,7 +176,7 @@ prometheus_monitoring (bridge)
 
 **当前状态**: DOWN (预期)
 
-**原因**: 
+**原因**:
 - PostgreSQL 容器 `llm-gateway-pg` 未暴露 Prometheus metrics endpoint
 - 需要部署 `postgres_exporter` 才能采集数据库指标
 
@@ -312,14 +312,14 @@ llm-gateway-node-exporter   0.2%     ~20MB
 
 ### 9.1 问题 1: Alertmanager 配置错误
 
-**现象**: 
+**现象**:
 ```
 err="unsupported scheme \"\" for URL"
 ```
 
 **原因**: `.env` 文件中 `LARK_WEBHOOK_URL` 为空，导致 Alertmanager 解析失败
 
-**解决**: 
+**解决**:
 - 修改 `alertmanager.yml`，将飞书 Webhook 配置注释掉
 - 使用默认接收器 `default`
 - 待获取 Webhook URL 后再启用
@@ -334,7 +334,7 @@ network-scoped aliases are only supported for user-defined networks
 
 **原因**: 尝试将容器同时连接到 `monitoring` 网络和 `bridge` 网络，且使用了 network alias
 
-**解决**: 
+**解决**:
 - 移除 `default` 外部网络配置
 - 所有容器只使用 `monitoring` 用户自定义网络
 
@@ -344,7 +344,7 @@ network-scoped aliases are only supported for user-defined networks
 
 **原因**: PostgreSQL 容器未暴露 Prometheus metrics endpoint
 
-**解决**: 
+**解决**:
 - 预期行为，不影响监控栈本身
 - 待后续部署 `postgres_exporter` 解决
 
@@ -408,6 +408,6 @@ network-scoped aliases are only supported for user-defined networks
 
 ---
 
-**验收人签名**: Infrastructure Team  
-**验收日期**: 2026-07-18  
+**验收人签名**: Infrastructure Team
+**验收日期**: 2026-07-18
 **下次审查**: Week 2 结束 (2026-07-25)

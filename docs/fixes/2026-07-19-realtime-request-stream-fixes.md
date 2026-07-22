@@ -1,8 +1,8 @@
 # 实时请求流数据问题修复总结
 
-**日期**: 2026-07-19  
-**修复人**: AI Agent  
-**问题来源**: 用户反馈  
+**日期**: 2026-07-19
+**修复人**: AI Agent
+**问题来源**: 用户反馈
 
 ---
 
@@ -69,7 +69,7 @@ PASS
 
 ```sql
 -- 修复前：request_body 和 response_body 都是 NULL
-SELECT 
+SELECT
     request_id,
     request_body IS NULL as req_null,
     response_body IS NULL as resp_null,
@@ -115,7 +115,7 @@ LIMIT 1;
 // 方案 A: handler 入口立即 INSERT（推荐）
 func (h *Handler) handleRequest(w http.ResponseWriter, r *http.Request) {
     requestID := middleware.GetRequestID(r.Context())
-    
+
     // ✅ 立即插入占位行（in_progress 状态）
     h.telemetry.EmitRequestLogInsert(&telemetry.RequestLogEntry{
         RequestID:     requestID,
@@ -123,7 +123,7 @@ func (h *Handler) handleRequest(w http.ResponseWriter, r *http.Request) {
         RequestStatus: strPtr(telemetry.RequestStatusInProgress),
         Op:            telemetry.RequestLogInsert,
     })
-    
+
     // defer 中 UPDATE 完整数据
     defer func() {
         h.telemetry.EmitRequestLogUpdate(&telemetry.RequestLogEntry{
@@ -176,7 +176,7 @@ func (c *Client) EmitRequestLog(entry *RequestLogEntry) {
 
 ```sql
 -- ✅ 所有查询走 request_logs_hot（0-7 天）
-SELECT * FROM request_logs_hot 
+SELECT * FROM request_logs_hot
 WHERE ts >= NOW() - INTERVAL '7 days'
   AND tenant_id = $1
 ORDER BY ts DESC
@@ -224,7 +224,7 @@ ssh root@192.168.31.71 "systemctl restart llm-gateway-go"
 
 # 4. 验证
 psql -h 192.168.31.71 -U llm_gateway -d llm_gateway -c "
-SELECT 
+SELECT
     request_id,
     length(request_body::text) as req_len,
     length(response_body::text) as resp_len,

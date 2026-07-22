@@ -47,10 +47,10 @@ type PreRequestValidationInput struct {
 	ProviderID   int
 	RawModel     string
 	BaseURL      string
-	
+
 	// 请求体
 	RequestBody  []byte
-	
+
 	// 上下文信息
 	RequestID    string
 	SessionID    string
@@ -62,20 +62,20 @@ type PreRequestValidationInput struct {
 type PreRequestValidationOutput struct {
 	// 是否需要修正
 	Modified     bool
-	
+
 	// 修正后的请求体（如果 Modified=true）
 	RequestBody  []byte
-	
+
 	// 校验结果
 	Valid        bool
 	Errors       []ValidationError
 	Warnings     []ValidationWarning
-	
+
 	// 统计信息
 	OriginalSize int
 	FinalSize    int
 	Compressed   bool
-	
+
 	// 资源健康
 	PoolHealthy  bool
 	MemoryHealthy bool
@@ -99,7 +99,7 @@ type DefaultPreRequestValidator struct {
 	WarnRequestSize      int           // 警告阈值（默认 500KB）
 	AutoCompress         bool          // 自动压缩上下文
 	StrictValidation     bool          // 严格模式（格式错误直接拒绝）
-	
+
 	// 依赖
 	ContextCompressor    ContextCompressor
 	ResourceMonitor      ResourceMonitor
@@ -110,7 +110,7 @@ func (v *DefaultPreRequestValidator) Validate(ctx context.Context, input *PreReq
 		OriginalSize: len(input.RequestBody),
 		FinalSize:    len(input.RequestBody),
 	}
-	
+
 	// ========== 1. JSON 格式校验 ==========
 	var reqBody map[string]interface{}
 	if err := json.Unmarshal(input.RequestBody, &reqBody); err != nil {
@@ -122,16 +122,16 @@ func (v *DefaultPreRequestValidator) Validate(ctx context.Context, input *PreReq
 		})
 		return output, fmt.Errorf("invalid JSON: %w", err)
 	}
-	
+
 	// ========== 2. 必需字段校验 ==========
 	errors := v.validateRequiredFields(reqBody)
 	output.Errors = append(output.Errors, errors...)
-	
+
 	if len(errors) > 0 && v.StrictValidation {
 		output.Valid = false
 		return output, fmt.Errorf("missing required fields: %v", errors)
 	}
-	
+
 	// ========== 3. 大小检查 ==========
 	if len(input.RequestBody) > v.MaxRequestSize {
 		output.Errors = append(output.Errors, ValidationError{
@@ -139,7 +139,7 @@ func (v *DefaultPreRequestValidator) Validate(ctx context.Context, input *PreReq
 			Code:    "too_large",
 			Message: fmt.Sprintf("request body too large: %d bytes (max %d)", len(input.RequestBody), v.MaxRequestSize),
 		})
-		
+
 		// 尝试自动压缩
 		if v.AutoCompress && v.ContextCompressor != nil {
 			compressed, err := v.ContextCompressor.Compress(ctx, reqBody)
@@ -151,7 +151,7 @@ func (v *DefaultPreRequestValidator) Validate(ctx context.Context, input *PreReq
 			output.RequestBody = compressedBody
 			output.FinalSize = len(compressedBody)
 			output.Compressed = true
-			
+
 			slog.Info("pre_request_validator: auto-compressed",
 				"original_bytes", len(input.RequestBody),
 				"compressed_bytes", len(compressedBody),
@@ -167,20 +167,20 @@ func (v *DefaultPreRequestValidator) Validate(ctx context.Context, input *PreReq
 			Message: fmt.Sprintf("request body large: %d bytes (warn threshold %d)", len(input.RequestBody), v.WarnRequestSize),
 		})
 	}
-	
+
 	// ========== 4. 资源健康检查 ==========
 	if v.ResourceMonitor != nil {
 		health := v.ResourceMonitor.Check()
 		output.PoolHealthy = health.PoolHealthy
 		output.MemoryHealthy = health.MemoryHealthy
-		
+
 		if !health.PoolHealthy {
 			output.Warnings = append(output.Warnings, ValidationWarning{
 				Code:    "pool_unhealthy",
 				Message: fmt.Sprintf("connection pool unhealthy: %s", health.PoolMessage),
 			})
 		}
-		
+
 		if !health.MemoryHealthy {
 			output.Warnings = append(output.Warnings, ValidationWarning{
 				Code:    "memory_pressure",
@@ -188,18 +188,18 @@ func (v *DefaultPreRequestValidator) Validate(ctx context.Context, input *PreReq
 			})
 		}
 	}
-	
+
 	// ========== 5. 特定供应商规则 ==========
 	providerErrors := v.validateProviderSpecific(input.BaseURL, reqBody)
 	output.Errors = append(output.Errors, providerErrors...)
-	
+
 	output.Valid = len(output.Errors) == 0
 	return output, nil
 }
 
 func (v *DefaultPreRequestValidator) validateRequiredFields(body map[string]interface{}) []ValidationError {
 	var errors []ValidationError
-	
+
 	// 1. model 字段
 	if model, ok := body["model"]; !ok || model == "" {
 		errors = append(errors, ValidationError{
@@ -208,7 +208,7 @@ func (v *DefaultPreRequestValidator) validateRequiredFields(body map[string]inte
 			Message: "model field is required",
 		})
 	}
-	
+
 	// 2. messages 字段
 	messages, ok := body["messages"]
 	if !ok {
@@ -239,7 +239,7 @@ func (v *DefaultPreRequestValidator) validateRequiredFields(body map[string]inte
 				if !ok {
 					continue
 				}
-				
+
 				// 检查 role 和 content
 				if _, ok := msgMap["role"]; !ok {
 					errors = append(errors, ValidationError{
@@ -258,13 +258,13 @@ func (v *DefaultPreRequestValidator) validateRequiredFields(body map[string]inte
 			}
 		}
 	}
-	
+
 	return errors
 }
 
 func (v *DefaultPreRequestValidator) validateProviderSpecific(baseURL string, body map[string]interface{}) []ValidationError {
 	var errors []ValidationError
-	
+
 	// MiniMax 特定规则
 	if strings.Contains(baseURL, "minimaxi.com") {
 		// 检查模型名格式
@@ -277,7 +277,7 @@ func (v *DefaultPreRequestValidator) validateProviderSpecific(baseURL string, bo
 					Message: "MiniMax may not support response_format parameter",
 				})
 			}
-			
+
 			// 检查上下文长度
 			if messages, ok := body["messages"].([]interface{}); ok {
 				totalTokens := estimateTokens(messages)
@@ -291,7 +291,7 @@ func (v *DefaultPreRequestValidator) validateProviderSpecific(baseURL string, bo
 			}
 		}
 	}
-	
+
 	return errors
 }
 
@@ -330,12 +330,12 @@ func (c *DefaultContextCompressor) Compress(ctx context.Context, reqBody map[str
 	if !ok || len(messages) <= c.SummarizeThreshold {
 		return reqBody, nil // 不需要压缩
 	}
-	
+
 	compressed := make(map[string]interface{})
 	for k, v := range reqBody {
 		compressed[k] = v
 	}
-	
+
 	// 策略 1: 裁剪旧消息
 	if c.TrimOldMessages && len(messages) > c.KeepRecentCount {
 		// 保留 system message（如果有）
@@ -345,26 +345,26 @@ func (c *DefaultContextCompressor) Compress(ctx context.Context, reqBody map[str
 				systemMsg = messages[0]
 			}
 		}
-		
+
 		// 保留最近 N 条
 		recentMessages := messages[len(messages)-c.KeepRecentCount:]
-		
+
 		var finalMessages []interface{}
 		if systemMsg != nil {
 			finalMessages = append(finalMessages, systemMsg)
 		}
 		finalMessages = append(finalMessages, recentMessages...)
-		
+
 		compressed["messages"] = finalMessages
-		
+
 		slog.Info("context_compressor: trimmed old messages",
 			"original_count", len(messages),
 			"final_count", len(finalMessages),
 		)
 	}
-	
+
 	// 策略 2: TODO - 使用 LLM summarize 中间对话
-	
+
 	return compressed, nil
 }
 ```
@@ -395,7 +395,7 @@ func (m *DefaultResourceMonitor) Check() ResourceHealth {
 		PoolHealthy:   true,
 		MemoryHealthy: true,
 	}
-	
+
 	// 1. 检查连接池
 	if m.Pools != nil {
 		stats := m.Pools.Stats()
@@ -404,7 +404,7 @@ func (m *DefaultResourceMonitor) Check() ResourceHealth {
 			health.PoolMessage = fmt.Sprintf("%d dead pools detected", stats.TotalDead)
 		}
 	}
-	
+
 	// 2. 检查内存
 	var memStats runtime.MemStats
 	runtime.ReadMemStats(&memStats)
@@ -414,7 +414,7 @@ func (m *DefaultResourceMonitor) Check() ResourceHealth {
 			memStats.Alloc/1024/1024,
 			m.MemoryLimit/1024/1024)
 	}
-	
+
 	return health
 }
 ```
@@ -426,11 +426,11 @@ func (m *DefaultResourceMonitor) Check() ResourceHealth {
 
 func (e *Executor) executeChatRequest(...) (*ExecuteResult, error) {
 	// ... 现有逻辑 ...
-	
+
 	for attemptNum, cand := range candidates {
 		// 准备请求体
 		bodyBytes := prepareRequestBody(params, cand)
-		
+
 		// ========== 强制校验 ==========
 		if e.PreRequestValidator != nil {
 			validationInput := &PreRequestValidationInput{
@@ -444,7 +444,7 @@ func (e *Executor) executeChatRequest(...) (*ExecuteResult, error) {
 				IsRetry:      attemptNum > 0,
 				AttemptNum:   attemptNum,
 			}
-			
+
 			validationOutput, err := e.PreRequestValidator.Validate(params.R.Context(), validationInput)
 			if err != nil {
 				slog.Error("pre_request_validator: validation failed",
@@ -452,14 +452,14 @@ func (e *Executor) executeChatRequest(...) (*ExecuteResult, error) {
 					"credential_id", cand.CredentialID,
 					"errors", validationOutput.Errors,
 				)
-				
+
 				// 记录到 credential state
 				e.recordValidationFailure(cand.CredentialID, validationOutput.Errors)
-				
+
 				// 尝试下一个 candidate
 				continue
 			}
-			
+
 			// 使用修正后的请求体（如果有压缩）
 			if validationOutput.Modified {
 				bodyBytes = validationOutput.RequestBody
@@ -469,7 +469,7 @@ func (e *Executor) executeChatRequest(...) (*ExecuteResult, error) {
 					"compressed", validationOutput.Compressed,
 				)
 			}
-			
+
 			// 记录警告
 			for _, warn := range validationOutput.Warnings {
 				slog.Warn("pre_request_validator: warning",
@@ -480,10 +480,10 @@ func (e *Executor) executeChatRequest(...) (*ExecuteResult, error) {
 			}
 		}
 		// ========== 校验结束 ==========
-		
+
 		// 发起 HTTP 请求
 		resp, err := httpClient.Do(req)
-		
+
 		// ... 后续处理 ...
 	}
 }
@@ -499,13 +499,13 @@ validator := &executors.DefaultPreRequestValidator{
 	WarnRequestSize:   500 * 1024,       // 500KB
 	AutoCompress:      true,
 	StrictValidation:  false,
-	
+
 	ContextCompressor: &executors.DefaultContextCompressor{
 		SummarizeThreshold: 20,  // 超过 20 条 messages 开始压缩
 		TrimOldMessages:    true,
 		KeepRecentCount:    10,  // 保留最近 10 条
 	},
-	
+
 	ResourceMonitor: &executors.DefaultResourceMonitor{
 		Pools:       poolRegistry,
 		MemoryLimit: 800 * 1024 * 1024, // 800MB 告警

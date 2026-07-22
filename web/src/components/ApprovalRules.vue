@@ -123,13 +123,13 @@ function onDragStart(index: number) {
 function onDragOver(event: DragEvent, index: number) {
   event.preventDefault()
   if (draggedIndex.value === null || draggedIndex.value === index) return
-  
+
   const list = [...rules.value]
   const draggedItem = list[draggedIndex.value]
   list.splice(draggedIndex.value, 1)
   list.splice(index, 0, draggedItem)
   list.forEach((r, i) => r.priority = i)
-  
+
   rules.value = list
   draggedIndex.value = index
 }
@@ -210,11 +210,11 @@ function getRiskLevelLabel(level: string): string {
             </button>
           </div>
         </div>
-        
+
         <div v-if="rule.description" class="rule-description">
           {{ rule.description }}
         </div>
-        
+
         <div class="rule-conditions">
           <div class="conditions-label">条件：</div>
           <div class="conditions-list">
@@ -235,7 +235,7 @@ function getRiskLevelLabel(level: string): string {
           <h3>{{ editingIndex !== null ? '编辑规则' : '添加规则' }}</h3>
           <button class="btn-close" @click="showDialog = false">✕</button>
         </div>
-        
+
         <div class="dialog-body">
           <div class="form-group">
             <label>规则名称 <span class="required">*</span></label>
@@ -290,20 +290,20 @@ function getRiskLevelLabel(level: string): string {
                     {{ opt.label }}
                   </option>
                 </select>
-                
+
                 <select v-model="cond.operator" class="form-select form-select-sm">
                   <option v-for="opt in operatorOptions" :key="opt.value" :value="opt.value">
                     {{ opt.label }}
                   </option>
                 </select>
-                
+
                 <input
                   v-model="cond.value"
                   type="text"
                   class="form-input form-input-sm"
                   placeholder="值"
                 />
-                
+
                 <button
                   class="btn-icon"
                   @click="removeCondition(index)"
@@ -313,7 +313,7 @@ function getRiskLevelLabel(level: string): string {
                   ✕
                 </button>
               </div>
-              
+
               <button class="btn btn-ghost btn-sm" @click="addCondition">
                 ➕ 添加条件
               </button>

@@ -37,10 +37,10 @@ cfg.ConnConfig.DefaultQueryExecMode = pgx.QueryExecModeSimpleProtocol
 ### 第三轮真相：多服务器共享 PG
 检查 PG 172.16.2.210:5432 的活动连接：
 ```sql
-SELECT client_addr, COUNT(*), MIN(backend_start) FROM pg_stat_activity 
+SELECT client_addr, COUNT(*), MIN(backend_start) FROM pg_stat_activity
 WHERE usename = 'llm_gateway' GROUP BY client_addr;
 
- client_addr  | count |            oldest             
+ client_addr  | count |            oldest
 --------------+-------+-------------------------------
               |     3 | 2026-07-15 01:07:31 (18h前)
  172.16.2.209 |    23 | 2026-07-15 01:07:31 (18h前)
@@ -78,11 +78,11 @@ cfg.ConnConfig.DefaultQueryExecMode = pgx.QueryExecModeSimpleProtocol
 
 ## 验证结果
 ```sql
-SELECT COUNT(*) as total, 
+SELECT COUNT(*) as total,
        COUNT(CASE WHEN last_err_detail ILIKE '%provider_model_bindings%' THEN 1 END) as pmb_errors
 FROM node_probe_state;
 
- total | pmb_errors 
+ total | pmb_errors
 -------+------------
     10 |          0
 ```

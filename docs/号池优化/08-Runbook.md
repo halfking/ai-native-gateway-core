@@ -3,7 +3,7 @@
 > 日期：2026-07-18
 > 版本：v2 Production
 > 适用环境：kaixuan-1 / 154 / 245 / 252
-> 
+>
 > ⚠️ **重要**: 本 Runbook 基于设计方案编写，包含的 `/internal/scheduler/*` 和
 > `/internal/watermark/*` 端点**尚未实现**（截至 2026-07-18 commit b18af2468）。
 > 当前可用的运维端点参见 `internal/handlers/internal.go`。

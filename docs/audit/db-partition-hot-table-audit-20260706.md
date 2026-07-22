@@ -1,8 +1,8 @@
 # 数据库分表与 Hot 表架构审计报告
 
-**审计日期**: 2026-07-06  
-**审计范围**: 本地开发环境 vs 184 生产环境  
-**审计人**: ACC Team (AI-assisted)  
+**审计日期**: 2026-07-06
+**审计范围**: 本地开发环境 vs 184 生产环境
+**审计人**: ACC Team (AI-assisted)
 **最终状态**: ✅ 已完成
 
 ---
@@ -137,11 +137,11 @@
 
 **原问题**: `credential_model_index_hot` 和 `request_logs_bodies_hot` 表未创建。
 
-**影响**: 
+**影响**:
 - `credential_model_index_hot`: 自动索引刷新功能失败
 - `request_logs_bodies_hot`: 请求体数据无法使用 hot 表架构
 
-**原因**: 
+**原因**:
 - 迁移 347 (`credential_model_index_hot_independence.sql`) 失败，因为 `credential_model_index_default` 分区不存在
 - 迁移 350 (`request_logs_bodies_hot_independence.sql`) 不存在
 
@@ -158,7 +158,7 @@
 
 **影响**: 后台任务无法正常执行。
 
-**建议**: 
+**建议**:
 1. 创建缺失的 hot 表
 2. 修复 promote 函数签名
 
@@ -274,6 +274,6 @@ promote_request_logs_hot_to_partition: 成功迁移 6 行
 
 ---
 
-**审计完成时间**: 2026-07-06 18:40 UTC  
-**状态**: ✅ 全部问题已修复  
+**审计完成时间**: 2026-07-06 18:40 UTC
+**状态**: ✅ 全部问题已修复
 **下次审计建议**: 2026-07-13（一周后）

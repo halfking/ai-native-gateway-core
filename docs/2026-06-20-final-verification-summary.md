@@ -1,6 +1,6 @@
 # llm-gateway-go 协议转换增强 - 最终验证总结
 
-**日期**: 2026-06-20  
+**日期**: 2026-06-20
 **状态**: ✅ 部署成功，核心功能已验证
 
 ---
@@ -58,7 +58,7 @@
 **验证方法**:
 ```sql
 -- 监控是否有 reasoning_content 出现
-SELECT 
+SELECT
   request_id,
   client_model,
   response_body::jsonb->'choices'->0->'message'->>'reasoning_content' as reasoning,
@@ -123,7 +123,7 @@ curl -X POST https://__DOMAIN_8__/v1/messages \
 
 您提到的请求 `407ba59d84161a4a38c4d83deacf5c9d` 被标记为成功，但没有看到输出。可能的原因：
 
-1. **前端显示问题**: 
+1. **前端显示问题**:
    - 响应可能被正确返回，但前端 UI 没有正确展示
    - 检查浏览器控制台是否有 JavaScript 错误
 
@@ -224,7 +224,7 @@ curl -v https://__DOMAIN_8__/v1/chat/completions \
 
 ---
 
-**验证完成时间**: 2026-06-20 22:30  
-**总体评分**: ✅ 9/10 (核心功能全部验证通过)  
+**验证完成时间**: 2026-06-20 22:30
+**总体评分**: ✅ 9/10 (核心功能全部验证通过)
 **可用性**: ✅ 生产就绪，可以投入使用
 

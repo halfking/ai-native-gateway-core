@@ -1,6 +1,6 @@
 # llm-gateway-go 响应体缺失问题诊断报告
 
-**日期**: 2026-06-20  
+**日期**: 2026-06-20
 **问题**: 请求 `407ba59d84161a4a38c4d83deacf5c9d` 标记为成功，但数据库中没有响应体数据
 
 ---
@@ -15,13 +15,13 @@
 
 ### 数据库查询结果
 
-**数据库**: `llm_gateway` (独立 PostgreSQL 实例)  
-**服务**: `llm-gateway-pg-svc` (k8s NodePort __PORT_5__:11033)  
-**Pod**: `llm-gateway-pg-58cbbc4559-qq2rh`  
+**数据库**: `llm_gateway` (独立 PostgreSQL 实例)
+**服务**: `llm-gateway-pg-svc` (k8s NodePort __PORT_5__:11033)
+**Pod**: `llm-gateway-pg-58cbbc4559-qq2rh`
 **用户**: `llm_gateway`
 
 ```sql
-SELECT 
+SELECT
   request_id,
   ts,
   client_model,
@@ -30,7 +30,7 @@ SELECT
   has_request,
   has_response,
   has_outbound
-FROM request_logs 
+FROM request_logs
 WHERE request_id = '407ba59d84161a4a38c4d83deacf5c9d';
 ```
 
@@ -62,7 +62,7 @@ has_outbound:  f (FALSE) ❌
    成功请求 (success=true):  response_body 有数据 ✅
    失败请求 (success=false): response_body 为 NULL ✅ (符合预期)
    ```
-   
+
    **但是**: `407ba59d...` 是**成功请求却没有响应体** ⚠️
 
 3. **response_body 存储模式**
@@ -228,7 +228,7 @@ ssh root@__SECRET_1__ "journalctl -u llm-gateway-go.service --since '1 hour ago'
 
 ---
 
-**报告人**: AI Assistant  
-**报告时间**: 2026-06-20 22:45  
+**报告人**: AI Assistant
+**报告时间**: 2026-06-20 22:45
 **状态**: 待用户确认和修复
 

@@ -4,7 +4,7 @@
 
 **端点**: `POST https://api.anthropic.com/v1/messages`
 
-**认证**: 
+**认证**:
 ```
 x-api-key: {API_KEY}
 anthropic-version: 2023-06-01
@@ -65,7 +65,7 @@ anthropic-version: 2023-06-01
 
 **Content 类型**:
 - **文本**: `"content": "Hello"`
-- **多模态数组**: 
+- **多模态数组**:
   ```json
   "content": [
     {"type": "text", "text": "What's in this image?"},

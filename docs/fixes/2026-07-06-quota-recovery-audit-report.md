@@ -1,8 +1,8 @@
 # quota_state='periodic_exhausted' 修复 - 审计报告
 
-**日期**: 2026-07-06  
-**任务**: 修复 claude-fable-5 充值后仍然"没有可用的节点凭据"  
-**状态**: ✅ 已完成并推送到 main  
+**日期**: 2026-07-06
+**任务**: 修复 claude-fable-5 充值后仍然"没有可用的节点凭据"
+**状态**: ✅ 已完成并推送到 main
 **提交**: 9374673f → 06414e4b (merge)
 
 ---
@@ -61,9 +61,9 @@ WHERE ...
 UPDATE credentials
 SET ...
     quota_state = COALESCE($8, quota_state),
-    quota_recover_at = CASE 
-        WHEN COALESCE($8, quota_state) = 'ok' THEN NULL 
-        ELSE quota_recover_at 
+    quota_recover_at = CASE
+        WHEN COALESCE($8, quota_state) = 'ok' THEN NULL
+        ELSE quota_recover_at
     END,  -- 新增 CASE 语句
     ...
 ```
@@ -122,7 +122,7 @@ SET ...
 
 ### 审计修正
 - **Commit**: 9374673f (amend)
-- **修改**: 
+- **修改**:
   - `bg/credential_recovery.go`: +3 字段清除，+注释扩展
   - `bg/credential_probe_v2.go`: +CASE 语句同步清除
 - **增量**: +20 行（注释 + SQL）
@@ -147,7 +147,7 @@ git pull origin main
 
 #### 1. 检查当前卡住的凭据
 ```sql
-SELECT id, label, quota_state, health_status, 
+SELECT id, label, quota_state, health_status,
        quota_recover_at, health_checked_at
 FROM credentials
 WHERE quota_state = 'periodic_exhausted'
@@ -222,9 +222,9 @@ stale periodic_exhausted cleared (credentials already healthy) count=N
 
 ## 审计总结
 
-✅ **审计通过**：所有发现的问题已修正  
-✅ **测试通过**：编译和单测全部通过  
-✅ **已推送**: 合并到 main 并推送到远程仓库  
+✅ **审计通过**：所有发现的问题已修正
+✅ **测试通过**：编译和单测全部通过
+✅ **已推送**: 合并到 main 并推送到远程仓库
 ✅ **文档完善**: 包含修复说明、测试脚本、验证方法
 
 **建议立即部署到 184 生产环境，解决 claude-fable-5 及其他受影响模型的问题。**

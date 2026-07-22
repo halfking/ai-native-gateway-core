@@ -1,6 +1,6 @@
 # 两个关键问题的完整分析报告
 
-**日期**: 2026-06-20 23:10  
+**日期**: 2026-06-20 23:10
 **状态**: 🔴 两个严重问题已定位
 
 ---
@@ -55,7 +55,7 @@ Domestic: true
    ```bash
    # 测试 apiclaude.cc 是否可访问
    curl -I https://apiclaude.cc
-   
+
    # 或直接测试 Anthropic API
    curl https://apiclaude.cc/v1/messages \
      -H "x-api-key: <credential-17-key>" \
@@ -71,10 +71,10 @@ Domestic: true
 3. **或者添加官方 Anthropic Provider**
    ```sql
    INSERT INTO providers (
-     code, display_name, protocol, base_url, 
+     code, display_name, protocol, base_url,
      enabled, category, tenant_id
    ) VALUES (
-     'anthropic-official', 'Anthropic Official', 
+     'anthropic-official', 'Anthropic Official',
      'anthropic-messages', 'https://api.anthropic.com',
      true, 'official', 'default'
    );
@@ -96,8 +96,8 @@ if outbound == "" {
 **修复后**:
 ```go
 if outbound == "" || completion_tokens == 0 {
-    log.Error("no outbound request or zero output", 
-        "provider_id", providerID, 
+    log.Error("no outbound request or zero output",
+        "provider_id", providerID,
         "credential_id", credentialID)
     return &ErrorResponse{
         Type: "provider_error",
@@ -112,9 +112,9 @@ if outbound == "" || completion_tokens == 0 {
 
 ### 📊 问题总结
 
-**请求**: `3200b83cadb7e1543a8e9f71439d832a`  
-**API Key Prefix**: `sk-JhUIe92kk***`  
-**错误**: `invalid_key` (gw_invalid_key)  
+**请求**: `3200b83cadb7e1543a8e9f71439d832a`
+**API Key Prefix**: `sk-JhUIe92kk***`
+**错误**: `invalid_key` (gw_invalid_key)
 **用户声称**: Key 是有效的
 
 ### 🔍 根本原因
@@ -151,15 +151,15 @@ latency_ms: 1  ← 几乎立即失败
 **验证方法**:
 ```sql
 -- 搜索所有 key
-SELECT id, key_prefix, enabled, status, tenant_id 
-FROM api_keys 
+SELECT id, key_prefix, enabled, status, tenant_id
+FROM api_keys
 WHERE key_prefix LIKE 'sk-JhU%';
 
 -- 检查是否有类似的 key
-SELECT id, key_prefix, owner_user 
-FROM api_keys 
+SELECT id, key_prefix, owner_user
+FROM api_keys
 WHERE tenant_id = 'default'
-ORDER BY created_at DESC 
+ORDER BY created_at DESC
 LIMIT 20;
 ```
 
@@ -206,8 +206,8 @@ SELECT key_prefix FROM api_keys WHERE key_prefix LIKE 'sk-J%' LIMIT 100;
 **验证方法**:
 ```sql
 -- 搜索包括禁用和过期的 key
-SELECT id, key_prefix, enabled, status, expires_at 
-FROM api_keys 
+SELECT id, key_prefix, enabled, status, expires_at
+FROM api_keys
 WHERE key_prefix LIKE 'sk-JhU%'
    OR (enabled = false AND key_prefix LIKE 'sk-%')
 LIMIT 50;
@@ -225,29 +225,29 @@ LIMIT 50;
 2. **搜索完整的 API Keys 列表**
    ```sql
    -- 列出最近创建的所有 key
-   SELECT 
+   SELECT
      id,
      key_prefix,
      enabled,
      status,
      owner_user,
      created_at
-   FROM api_keys 
+   FROM api_keys
    WHERE tenant_id = 'default'
-   ORDER BY created_at DESC 
+   ORDER BY created_at DESC
    LIMIT 50;
    ```
 
 3. **检查其他可能的位置**
    ```sql
    -- 检查是否在其他租户
-   SELECT tenant_id, COUNT(*) 
-   FROM api_keys 
+   SELECT tenant_id, COUNT(*)
+   FROM api_keys
    GROUP BY tenant_id;
-   
+
    -- 搜索所有以 sk- 开头的 key
-   SELECT key_prefix, enabled, status 
-   FROM api_keys 
+   SELECT key_prefix, enabled, status
+   FROM api_keys
    WHERE key_prefix LIKE 'sk-%'
    LIMIT 100;
    ```
@@ -281,7 +281,7 @@ INSERT INTO api_keys (
 
 **启用 Key**:
 ```sql
-UPDATE api_keys 
+UPDATE api_keys
 SET enabled = true, status = 'active'
 WHERE key_prefix = 'sk-JhUIe92kk***';
 ```
@@ -376,7 +376,7 @@ kubectl -n pms-test logs deployment/llm-gateway-go-deployment --tail=__PORT_8__ 
 
 ---
 
-**报告人**: AI Assistant  
-**报告时间**: 2026-06-20 23:10  
+**报告人**: AI Assistant
+**报告时间**: 2026-06-20 23:10
 **状态**: 两个问题均已定位，等待用户确认和修复
 

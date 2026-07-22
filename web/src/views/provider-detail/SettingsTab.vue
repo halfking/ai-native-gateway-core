@@ -59,7 +59,7 @@ async function loadProviderSettings() {
   try {
     const resp = await getProviderSettings(props.provider.id)
     providerSettings.value = resp.settings || []
-    
+
     // Parse settings into editable refs
     if (resp.settings && Array.isArray(resp.settings)) {
       resp.settings.forEach(s => {

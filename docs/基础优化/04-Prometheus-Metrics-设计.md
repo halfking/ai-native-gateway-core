@@ -1,8 +1,8 @@
 # Prometheus Metrics 集成设计
 
-> **版本**: v1.0  
-> **日期**: 2026-07-19  
-> **状态**: Draft  
+> **版本**: v1.0
+> **日期**: 2026-07-19
+> **状态**: Draft
 > **负责人**: Infrastructure Team
 
 ---
@@ -194,20 +194,20 @@ type MetricsRecorder interface {
     RecordCircuitStateChange(from, to string)
     RecordCircuitTrip()
     ObserveCircuitLatency(duration time.Duration)
-    
+
     // Adapter
     RecordAdapterConversion(provider, direction string, duration time.Duration)
     RecordAdapterFailure(provider, reason string)
-    
+
     // Scheduler
     RecordSchedulerSelection(credentialID string, duration time.Duration)
     UpdateSchedulerWeight(credentialID string, weight int)
-    
+
     // Safety
     RecordSafetyCheck(checkType string, duration time.Duration)
     RecordSafetyAction(action string, severity string)
     RecordSafetyRuleHit(ruleID, ruleName string)
-    
+
     // Pool
     UpdatePoolUtilization(poolID string, utilization float64)
     RecordPoolRequest(poolID, status string)
@@ -225,12 +225,12 @@ type MetricsRecorder interface {
 func (cb *CircuitBreaker) Do(ctx context.Context, fn func() error) error {
     state := cb.State()
     metrics.RecordCircuitRequest(state.String())
-    
+
     start := time.Now()
     defer func() {
         metrics.ObserveCircuitLatency(time.Since(start))
     }()
-    
+
     err := fn()
     if err != nil {
         metrics.RecordCircuitFailure()
@@ -248,7 +248,7 @@ func (a *OpenAIAdapter) ToProviderRequest(req *UnifiedRequest) (*ProviderRequest
     defer func() {
         metrics.RecordAdapterConversion("openai", "request", time.Since(start))
     }()
-    
+
     // ... conversion logic
 }
 ```
@@ -258,7 +258,7 @@ func (a *OpenAIAdapter) ToProviderRequest(req *UnifiedRequest) (*ProviderRequest
 func (s *WRRScheduler) Select(ctx context.Context) (*Credential, error) {
     start := time.Now()
     cred, err := s.selectBest()
-    
+
     if err == nil {
         metrics.RecordSchedulerSelection(
             strconv.Itoa(cred.ID),
@@ -276,10 +276,10 @@ func (cf *ContentFilter) check(content string) (*CheckResult, error) {
     defer func() {
         metrics.RecordSafetyCheck("request", time.Since(start))
     }()
-    
+
     result := cf.applyRules(content, hits)
     metrics.RecordSafetyAction(string(result.Action), string(highestSeverity))
-    
+
     return result, nil
 }
 ```
@@ -324,7 +324,7 @@ groups:
           severity: warning
         annotations:
           summary: "Circuit breaker is open"
-          
+
       - alert: HighCircuitErrorRate
         expr: llm_gateway_circuit_error_rate > 0.1
         for: 2m
@@ -332,7 +332,7 @@ groups:
           severity: critical
         annotations:
           summary: "Circuit error rate > 10%"
-      
+
       # Content Safety
       - alert: HighSafetyBlockRate
         expr: rate(llm_gateway_safety_blocked_total[5m]) > 100
@@ -341,7 +341,7 @@ groups:
           severity: warning
         annotations:
           summary: "High content block rate"
-          
+
       # Scheduler
       - alert: UnbalancedScheduler
         expr: stddev(llm_gateway_scheduler_selections_by_credential) > 1000
@@ -350,7 +350,7 @@ groups:
           severity: info
         annotations:
           summary: "Scheduler load unbalanced"
-          
+
       # Pool
       - alert: LowPoolUtilization
         expr: llm_gateway_pool_utilization < 0.2

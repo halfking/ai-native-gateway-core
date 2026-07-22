@@ -1,8 +1,8 @@
 # Hook插件化重构架构决策记录（ADR）
 
-**项目**: llm-gateway-go Hook插件化重构  
-**日期**: 2024-07-09  
-**状态**: 已提议待评审  
+**项目**: llm-gateway-go Hook插件化重构
+**日期**: 2024-07-09
+**状态**: 已提议待评审
 
 ---
 
@@ -402,20 +402,20 @@ func (a *hookAdapter) Priority() int {
 
 ### Q1: 如何处理插件间的数据共享？
 
-**现状**: 通过Metadata传递（如audit_result）  
-**决策**: 保持现状，不引入ServiceRegistry  
+**现状**: 通过Metadata传递（如audit_result）
+**决策**: 保持现状，不引入ServiceRegistry
 **触发重新评估**: 如有3+插件需要typed接口调用
 
 ### Q2: 插件升级时的迁移兼容性？
 
-**现状**: 未设计  
-**提议**: Migrations的Version字段支持向前兼容（Up脚本幂等）  
+**现状**: 未设计
+**提议**: Migrations的Version字段支持向前兼容（Up脚本幂等）
 **待决策**: 是否需要Down脚本强制可回滚？
 
 ### Q3: 多租户下的插件级配置？
 
-**现状**: manifest.config是全局的  
-**提议**: 支持tenant-level override（settings层）  
+**现状**: manifest.config是全局的
+**提议**: 支持tenant-level override（settings层）
 **待决策**: 里程碑D实施时确认
 
 ---
@@ -432,6 +432,6 @@ func (a *hookAdapter) Priority() int {
 
 ---
 
-**版本**: 1.0  
-**批准**: 待评审  
+**版本**: 1.0
+**批准**: 待评审
 **下次更新**: 里程碑A1完成后，补充实际实施中的决策

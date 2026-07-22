@@ -2,7 +2,7 @@
 export default {
   title: '{tool} 配置產生器',
   close: '關閉',
-  
+
   step1: {
     title: '① 選擇 API Key（目前租戶下所有金鑰）',
     refresh: '重新整理',
@@ -15,12 +15,12 @@ export default {
     },
     selected: '已選：',
   },
-  
+
   step2: {
     title: '② 作業系統',
     pathHint: '配置檔案路徑：',
   },
-  
+
   step3: {
     title: '③ 選擇模型範圍',
     featured: '熱門模型（路由 featured 配置）',
@@ -41,14 +41,14 @@ export default {
       noMatch: '沒有符合的模型',
     },
   },
-  
+
   footer: {
     generated: '已產生 {count} 個模型配置',
     generate: '產生配置',
     generating: '產生中…',
     regenerate: '重新產生',
   },
-  
+
   results: {
     tabs: {
       file: '配置檔案',
@@ -62,7 +62,7 @@ export default {
       scriptHint: '指令碼自動備份舊配置檔案',
     },
   },
-  
+
   applyDialog: {
     title: '申請新 API Key',
     close: '關閉',
@@ -74,7 +74,7 @@ export default {
     submit: '提交申請',
     submitting: '提交中…',
   },
-  
+
   error: {
     applyFailed: '申請失敗',
   },

@@ -1,7 +1,7 @@
 # Hook 集成重构规划文档
 
-> **版本**: v1.0  
-> **日期**: 2026-06-29  
+> **版本**: v1.0
+> **日期**: 2026-06-29
 > **状态**: 方案 A 完成，方案 B 规划中
 
 ---
@@ -41,7 +41,7 @@
 if deps.Config.EnableAuth {
     keyVerifier := authentication.NewKeyVerifier()
     p.AddStage(&pipeline.PipelineStage{
-        Name: "authentication", 
+        Name: "authentication",
         Phase: pipeline.PhaseAuthentication,
         Mode: pipeline.ModeSequential,
         Hooks: []pipeline.Hook{authentication.NewAPIKeyAuthHook(keyVerifier)},
@@ -85,7 +85,7 @@ if apiKey := r.Header.Get("X-API-Key"); apiKey != "" {
 
 **问题**: 实际逻辑仍在 `domains/streaming/handler.go:1151`:
 ```go
-clientID := identity.BuildIdentityFromRequest(r, tenant(keyInfo), appID(keyInfo), 
+clientID := identity.BuildIdentityFromRequest(r, tenant(keyInfo), appID(keyInfo),
                                                apiKeyIDPtr(keyInfo), clientProfileFromKey(keyInfo))
 identityHash := clientID.ShortID()
 ```
@@ -113,23 +113,23 @@ func (h *ClientIdentityHook) Execute(ctx context.Context, env *domain.PipelineRe
             apiKeyID = &id
         }
     }
-    
+
     // 2. Extract client profile from HTTP headers
     clientProfile := extractClientProfile(env.HTTPRequest)
-    
+
     // 3. Call BuildIdentityFromRequest
     clientID := BuildIdentityFromRequest(
-        env.HTTPRequest, 
-        tenantID, 
-        appID, 
-        apiKeyID, 
+        env.HTTPRequest,
+        tenantID,
+        appID,
+        apiKeyID,
         clientProfile,
     )
-    
+
     // 4. Store in metadata (env.Identity doesn't exist yet)
     env.Metadata["identity_hash"] = clientID.IdentityHash
     env.Metadata["client_identity"] = clientID
-    
+
     return nil
 }
 ```
@@ -150,8 +150,8 @@ func (h *ClientIdentityHook) Execute(ctx context.Context, env *domain.PipelineRe
 ```go
 // Phase: Client Identity (priority 20)
 p.AddStage(&pipeline.PipelineStage{
-    Name: "client_identity", 
-    Phase: pipeline.PhasePreRouting, 
+    Name: "client_identity",
+    Phase: pipeline.PhasePreRouting,
     Mode: pipeline.ModeSequential,
     Hooks: []pipeline.Hook{identity.NewClientIdentityHook()},
 })
@@ -230,7 +230,7 @@ p.AddStage(&pipeline.PipelineStage{
 
 **目标**: 整合 lastSystemSession 和 sessionPref
 
-**当前位置**: 
+**当前位置**:
 - `ChatHandler.lastSystemSession` (LastSystemSessionIndex)
 - `ChatHandler.sessionPref` (SessionPreference)
 

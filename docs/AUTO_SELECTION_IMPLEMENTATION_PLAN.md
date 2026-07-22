@@ -14,18 +14,18 @@
 ## 阶段划分
 
 ### 阶段 1：数据层修复（低风险，不改决策逻辑）
-**目标**：让现有代码能拿到真正需要的数据  
-**改动**：数据库查询、索引刷新  
+**目标**：让现有代码能拿到真正需要的数据
+**改动**：数据库查询、索引刷新
 **风险**：低，只增加字段，不改逻辑
 
 ### 阶段 2：决策逻辑替换（核心改动）
-**目标**：实现新的 2 维评分 + 热门池 + 会话校验  
-**改动**：`Recommend()`, `Score()`, `Decide()`  
+**目标**：实现新的 2 维评分 + 热门池 + 会话校验
+**改动**：`Recommend()`, `Score()`, `Decide()`
 **风险**：中高，需要充分测试
 
 ### 阶段 3：回退与优化（增强鲁棒性）
-**目标**：48 小时回退、会话纠偏、审计增强  
-**改动**：回退查询、校正逻辑、日志  
+**目标**：48 小时回退、会话纠偏、审计增强
+**改动**：回退查询、校正逻辑、日志
 **风险**：低，纯增强
 
 ---
@@ -40,7 +40,7 @@
 
 ```sql
 -- 当前缺失的字段
-SELECT 
+SELECT
     ...existing...,
     cmb.available AS cmb_available,
     cmb.unavailable_reason AS cmb_unavailable_reason,
@@ -49,11 +49,11 @@ SELECT
 FROM credential_model_index cmi
 JOIN latest_bucket lb ON ...
 JOIN credentials cr ON cr.id = cmi.credential_id
-JOIN credential_model_bindings cmb 
+JOIN credential_model_bindings cmb
     ON cmb.credential_id = cmi.credential_id
    AND cmb.provider_model_id = (
-       SELECT pm_inner.id 
-       FROM provider_models pm_inner 
+       SELECT pm_inner.id
+       FROM provider_models pm_inner
        WHERE pm_inner.raw_model_name = cmi.raw_model
          AND pm_inner.provider_id = cr.provider_id
        LIMIT 1
@@ -82,7 +82,7 @@ func scanIndexRow(rows interface{ Scan(dest ...any) error }) (Candidate, error) 
     var priceIn, priceOut, successRate *float64
     var cmbAvailable, pmAvailable *bool
     var cmbUnavailableReason, pmUnavailableReason *string
-    
+
     if err := rows.Scan(
         &c.CredentialID, &c.RawModel, &canonicalID,
         &canonicalName, &tags, &ctxWindow,
@@ -95,7 +95,7 @@ func scanIndexRow(rows interface{ Scan(dest ...any) error }) (Candidate, error) 
     ); err != nil {
         return c, err
     }
-    
+
     // 合成 UnavailableReason（任一不可用即视为不可用）
     if cmbAvailable != nil && !*cmbAvailable {
         if cmbUnavailableReason != nil {
@@ -110,7 +110,7 @@ func scanIndexRow(rows interface{ Scan(dest ...any) error }) (Candidate, error) 
             c.UnavailableReason = "pm_unavailable"
         }
     }
-    
+
     // ... 其余字段填充 ...
     return c, nil
 }
@@ -198,7 +198,7 @@ func (idx *Index) Recommend(task TaskType, sigs ClassificationSignals, profile P
 
     // Step 3: 查询热门 Top 3
     hotTop3 := idx.getHotTop3Canonicals(context.Background())
-    
+
     // Step 4: 构建候选池（优先热门，不足则补充）
     candidatePool := []Candidate{}
     for _, canonID := range hotTop3 {
@@ -206,7 +206,7 @@ func (idx *Index) Recommend(task TaskType, sigs ClassificationSignals, profile P
             candidatePool = append(candidatePool, cands...)
         }
     }
-    
+
     // Step 5: 如果热门池 < 3 个模型，从其余补充
     if len(hotTop3) < 3 {
         for canonID, cands := range byCanonical {
@@ -239,18 +239,18 @@ func (idx *Index) getHotTop3Canonicals(ctx context.Context) []int {
     if idx.pool == nil {
         return []int{}
     }
-    
+
     rows, err := idx.pool.Query(ctx, `
-        SELECT canonical_id 
-        FROM hot_models_48h 
-        ORDER BY usage_count DESC 
+        SELECT canonical_id
+        FROM hot_models_48h
+        ORDER BY usage_count DESC
         LIMIT 3
     `)
     if err != nil {
         return []int{}
     }
     defer rows.Close()
-    
+
     var result []int
     for rows.Next() {
         var id int
@@ -408,7 +408,7 @@ func (d *Decider) validateCachedChoice(ctx context.Context, credentialID int64, 
     var available bool
     err := d.index.pool.QueryRow(ctx, `
         SELECT EXISTS(
-            SELECT 1 
+            SELECT 1
             FROM credential_model_bindings cmb
             JOIN provider_models pm ON pm.id = cmb.provider_model_id
             JOIN models_canonical mc ON mc.id = pm.canonical_id
@@ -666,5 +666,5 @@ func (idx *Index) Recommend(...) []ScoredCandidate {
 
 ---
 
-_Prepared by: Kiro AI Assistant_  
+_Prepared by: Kiro AI Assistant_
 _Date: 2026-06-28_

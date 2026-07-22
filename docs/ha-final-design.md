@@ -1,7 +1,7 @@
 # 56 Nginx + PostgreSQL 双活高可用 - 最终实施方案
 
-**版本**：v4.0（最终实施版）  
-**创建时间**：2026-07-06  
+**版本**：v4.0（最终实施版）
+**创建时间**：2026-07-06
 **状态**：✅ 决策已确认，待实施
 
 ---
@@ -175,27 +175,27 @@ func (h *HAHandler) SwitchPrimary(w http.ResponseWriter, r *http.Request) {
         writeError(w, 400, "invalid body")
         return
     }
-    
+
     if req.Confirm != "CONFIRM" {
         writeError(w, 400, "must confirm with CONFIRM")
         return
     }
-    
+
     // 1. 校验目标健康
     if err := h.checkTargetHealthy(req.Target); err != nil {
         writeError(w, 503, err.Error())
         return
     }
-    
+
     // 2. SSH 到目标机器执行 promote
     if err := h.executeSwitch(req.Target); err != nil {
         writeError(w, 500, err.Error())
         return
     }
-    
+
     // 3. 记录审计日志
     h.auditLog(r, "ha_switch", req.Target)
-    
+
     writeJSON(w, 200, map[string]any{
         "status": "switched",
         "new_primary": req.Target,
@@ -259,10 +259,10 @@ check_pg_health() {
 # ── 告警 ────────────────────────────────────────────────────────
 alert() {
   local severity="$1" message="$2"
-  
+
   # 写入日志
   logger -t "pg-ha" "[$severity] $message"
-  
+
   # 调用 webhook（飞书/Slack）
   curl -sf -X POST "https://alert.kxpms.cn/webhook/ha" \
     -H "Content-Type: application/json" \

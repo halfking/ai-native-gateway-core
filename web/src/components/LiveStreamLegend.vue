@@ -227,7 +227,7 @@ function handleClick(key: string) {
     flex-direction: column;
     align-items: stretch;
   }
-  
+
   .legend-section--right {
     border-top: 1px solid var(--border);
     padding-top: 8px;
@@ -239,12 +239,12 @@ function handleClick(key: string) {
   .legend-section {
     gap: 6px;
   }
-  
+
   .legend-item {
     padding: 3px 6px;
     font-size: 11px;
   }
-  
+
   .legend-swatch {
     width: 10px;
     height: 10px;

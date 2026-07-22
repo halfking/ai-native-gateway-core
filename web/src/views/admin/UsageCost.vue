@@ -442,7 +442,7 @@ onMounted(() => {
             <div class="cache-label">{{ t('dataLifecycle.usageCost.cache.hitRate') }}</div>
             <div class="cache-value">{{ formatPercent(cacheEconomicsData.cache_hit_ratio * 100) }}</div>
             <div class="cache-hint">
-              {{ formatNumber(cacheEconomicsData.cache_read_tokens) }} / 
+              {{ formatNumber(cacheEconomicsData.cache_read_tokens) }} /
               {{ formatNumber(cacheEconomicsData.cache_read_tokens + cacheEconomicsData.prompt_tokens) }} tokens
             </div>
           </div>
@@ -813,7 +813,7 @@ onMounted(() => {
   .chart-grid {
     grid-template-columns: 1fr;
   }
-  
+
   .compare-row {
     grid-template-columns: 1fr;
     gap: 16px;

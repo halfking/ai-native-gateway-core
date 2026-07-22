@@ -1,8 +1,8 @@
 # 修复"无可用路由"错误（密钥解密失败场景）
 
-**日期**: 2026-07-08  
-**优先级**: P0  
-**影响范围**: 生产环境 llm.kxpms.cn (数据库在252，服务在154)  
+**日期**: 2026-07-08
+**优先级**: P0
+**影响范围**: 生产环境 llm.kxpms.cn (数据库在252，服务在154)
 **问题追踪**: 线上单个失败请求样例（已脱敏）
 
 ## 问题描述
@@ -27,7 +27,7 @@ func (c *Client) enrichWithAPIKeys(ctx context.Context, rr *resolveResponse) []C
     for _, raw := range rr.Candidates {
         var cand Candidate
         // ... unmarshal ...
-        
+
         apiKey, err := c.RevealAPIKey(ctx, cand.ProviderID, cand.CredentialID)
         if err != nil {
             slog.Warn("failed to reveal api key", ...)
@@ -122,7 +122,7 @@ func (c *Client) enrichWithAPIKeys(ctx context.Context, rr *resolveResponse) []C
         cand.APIKey = apiKey
         cands = append(cands, cand)
     }
-    
+
     // 2026-07-08: 当有候选者因密钥解密失败被降级时，记录汇总日志
     if skippedCount > 0 {
         slog.Warn("enrichWithAPIKeys: some candidates marked unavailable due to key decrypt failure",
@@ -145,11 +145,11 @@ func (c *Client) enrichWithAPIKeys(ctx context.Context, rr *resolveResponse) []C
 1. **partial_decrypt_failure**: 部分候选者密钥解密失败
    - 验证解密成功的候选者仍然可路由
    - 验证解密失败的候选者被标记为不可路由
-   
+
 2. **all_decrypt_failure**: 全部候选者密钥解密失败
    - 验证所有候选者都被标记为不可路由
    - 验证返回列表不为空（包含诊断信息）
-   
+
 3. **all_decrypt_success**: 全部候选者密钥解密成功
    - 验证所有候选者都正常可路由
 
@@ -272,8 +272,8 @@ systemctl start llm-gateway
 修复后，通过日志可以清楚看到哪些凭据的密钥解密失败：
 
 ```
-WARN enrichWithAPIKeys: reveal failed, marking candidate unavailable 
-     credential_id=11 provider_id=1 
+WARN enrichWithAPIKeys: reveal failed, marking candidate unavailable
+     credential_id=11 provider_id=1
      error="credential reveal not configured (no DB, keyring, or fernet key)"
 ```
 

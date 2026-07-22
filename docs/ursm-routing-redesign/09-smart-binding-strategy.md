@@ -89,19 +89,19 @@ type SessionRouteBinding struct {
     StdModel     string
     RawModel     string
     FPSlotIndex  int
-    
+
     // 绑定元数据
     BindingLevel      int       // 1=强绑定, 2=软绑定, 3=无绑定
     BoundAt           time.Time
     LastSuccessAt     time.Time
     LastEvalAt        time.Time // 上次评估时间
     ConsecutiveSuccess int      // 连续成功次数
-    
+
     // 性能基线 (用于软绑定评估)
     BaselineLatencyMs  int
     BaselinePrice      float64
     BaselineSuccessRate float64
-    
+
     // 请求特征 (决定绑定级别)
     AvgPromptTokens   int
     HasCachedTokens   bool
@@ -117,17 +117,17 @@ func DetermineBindingLevel(req *Request, resp *Response) int {
     if resp.Usage.CachedTokens > 0 {
         return BindingLevelStrong
     }
-    
+
     // 检测上下文大小
     if req.PromptTokens > 2000 {
         return BindingLevelStrong
     }
-    
+
     // 检测会话属性
     if req.SessionMetadata.IsLongRunning || req.SessionMetadata.IsInteractive {
         return BindingLevelStrong
     }
-    
+
     // 默认软绑定
     return BindingLevelSoft
 }
@@ -138,35 +138,35 @@ func DetermineBindingLevel(req *Request, resp *Response) int {
 ```go
 func ShouldReEvaluate(binding *SessionRouteBinding, currentMetrics *NodeMetrics) bool {
     now := time.Now()
-    
+
     // 时间窗口: 至少 5 分钟评估一次
     if now.Sub(binding.LastEvalAt) < 5*time.Minute {
         return false
     }
-    
+
     // 请求计数: 每 10 次评估一次
     if binding.TotalRequests % 10 != 0 {
         return false
     }
-    
+
     // 性能劣化检测
     if currentMetrics.ErrorRate > 0.05 {
         return true // 错误率 > 5%
     }
-    
+
     if currentMetrics.P95LatencyMs > binding.BaselineLatencyMs * 1.5 {
         return true // 时延劣化 > 50%
     }
-    
+
     if currentMetrics.Price > binding.BaselinePrice * 1.3 {
         return true // 价格上涨 > 30%
     }
-    
+
     // 新手期: 连续成功 < 5 次时允许探索更优路由
     if binding.ConsecutiveSuccess < 5 {
         return true
     }
-    
+
     return false
 }
 ```
@@ -184,18 +184,18 @@ type CostScorer struct {
 func (s *CostScorer) Score(node *NodeReadState, currentLoad *ResourceLoad) float64 {
     // 价格归一化 (0-1, 越低越好)
     priceScore := 1.0 - normalize(node.PriceInPer1M, 0, maxPrice)
-    
+
     // 时延归一化 (0-1, 越低越好)
     speedScore := 1.0 - normalize(node.LatencyAvgMs, 0, maxLatency)
-    
+
     // 稳定性 (0-1, 成功率)
     stabilityScore := node.SuccessRate
-    
+
     // 资源压力 (0-1, 越低越好)
     fpPressure := float64(currentLoad.FPSlotUsed) / float64(node.FpSlotLimit)
     concPressure := float64(currentLoad.ConcurrencyUsed) / float64(node.ConcurrencyLimit)
     pressureScore := 1.0 - max(fpPressure, concPressure)
-    
+
     return s.PriceWeight * priceScore +
            s.SpeedWeight * speedScore +
            s.StabilityWeight * stabilityScore +

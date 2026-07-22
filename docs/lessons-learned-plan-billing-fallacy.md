@@ -1,7 +1,7 @@
 # 经验教训：billing_mode vs plan_type 业务逻辑错误
 
-**日期**: 2026-07-10  
-**问题**: Migration 327-334 引入了错误的业务逻辑假设  
+**日期**: 2026-07-10
+**问题**: Migration 327-334 引入了错误的业务逻辑假设
 **后果**: claude-fable-5, mimo-v2.5-pro 等模型无法路由
 
 ---
@@ -184,6 +184,6 @@ WHEN c.plan_type IN ('token_plan', 'code_plan', 'agent_plan')
 
 ---
 
-**记录人**: OpenCode Agent  
-**日期**: 2026-07-10  
+**记录人**: OpenCode Agent
+**日期**: 2026-07-10
 **相关文档**: `docs/migration-335-336-audit.md`

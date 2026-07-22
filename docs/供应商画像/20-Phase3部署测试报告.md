@@ -1,7 +1,7 @@
 # Phase 3 部署测试报告
 
-**测试环境**: 245 (8.136.114.245)  
-**测试时间**: 2026-07-19 12:50 - 13:00  
+**测试环境**: 245 (8.136.114.245)
+**测试时间**: 2026-07-19 12:50 - 13:00
 **状态**: ✅ 部分成功
 
 ---
@@ -105,10 +105,10 @@ SELECT COUNT(*) FROM provider_metrics_hour;     -- 0
 
 **修复**:
 ```sql
-ALTER TABLE provider_quality_profiles 
+ALTER TABLE provider_quality_profiles
 ADD COLUMN reliability_score NUMERIC(5,2) DEFAULT 0;
 
-ALTER TABLE provider_quality_profiles 
+ALTER TABLE provider_quality_profiles
 ADD COLUMN calculated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP;
 ```
 
@@ -273,17 +273,17 @@ curl -X POST "http://8.136.114.245:8081/api/quality/calculate?provider_id=1&mode
 PGPASSWORD=*** psql -h 172.16.2.210 -p 5432 -U llm_gateway -d llm_gateway
 
 # 查询画像
-SELECT provider_id, model_name, quality_score, calculated_at 
-FROM provider_quality_profiles 
+SELECT provider_id, model_name, quality_score, calculated_at
+FROM provider_quality_profiles
 ORDER BY quality_score DESC;
 
 # 检查 metrics 数据
-SELECT COUNT(*) FROM provider_metrics_hour 
+SELECT COUNT(*) FROM provider_metrics_hour
 WHERE bucket >= NOW() - INTERVAL '24 hours';
 ```
 
 ---
 
-**报告人**: AI Agent  
-**审核**: 待审核  
+**报告人**: AI Agent
+**审核**: 待审核
 **版本**: v1.0

@@ -1,8 +1,8 @@
 # llm-gateway-go Request WAL Phase 5 Real API Test Report
 
-**Date**: 2026-06-22  
-**Test Environment**: 184 (k3s)  
-**Image**: `kx-llm-gateway-go:gitsha-e8b29a5d`  
+**Date**: 2026-06-22
+**Test Environment**: 184 (k3s)
+**Image**: `kx-llm-gateway-go:gitsha-e8b29a5d`
 **Database**: `llm-gateway-pg` (TimescaleDB)
 
 ---
@@ -112,19 +112,19 @@ Phase 5 真实 API 测试成功完成。Request WAL 系统在实际负载下工�
 ## Issues Found
 
 ### Issue 1: Client Disconnect Leaves Pending Records ⚠️
-**Severity**: Medium  
+**Severity**: Medium
 **Description**: When a client disconnects mid-request (e.g., curl timeout), the `request_wal` record stays at `pending`/`stage=0` because the handler returns early without calling `Update` or `UpdateSync`.
 
-**Evidence**: 6 `deepseek-v3` records stuck at `pending` after test  
-**Root Cause**: `sync_retry_stopped` event with `client_disconnect` reason doesn't trigger WAL update  
-**Impact**: Audit completeness drops from 100% to ~85% under aggressive client timeouts  
-**Recommendation**: 
+**Evidence**: 6 `deepseek-v3` records stuck at `pending` after test
+**Root Cause**: `sync_retry_stopped` event with `client_disconnect` reason doesn't trigger WAL update
+**Impact**: Audit completeness drops from 100% to ~85% under aggressive client timeouts
+**Recommendation**:
 - Add safety net in `defer` to call `UpdateSync` with `stage=13` (response_fail) on disconnect
 - Or run periodic cleanup that times out pending records after configurable interval
 
 ### Issue 2: No Async Worker Health Monitoring ⚠️
-**Severity**: Low  
-**Description**: No Prometheus metrics for async queue depth, batch processing time, or worker status.  
+**Severity**: Low
+**Description**: No Prometheus metrics for async queue depth, batch processing time, or worker status.
 **Recommendation**: Add metrics per handoff doc §"监控指标" - `llmgw_async_log_queue_depth`, `llmgw_log_queue_drops_total`
 
 ---
@@ -174,6 +174,6 @@ The only significant issue is the client-disconnect handling, which can be addre
 **Recommendation**: Proceed to Phase 5 final step - 71 production deployment.
 
 ---
-**Test completed**: 2026-06-22 06:30 UTC  
-**Test scripts**: `/tmp/wal_fast_test.sh`, `/tmp/wal_perf_test.py`  
+**Test completed**: 2026-06-22 06:30 UTC
+**Test scripts**: `/tmp/wal_fast_test.sh`, `/tmp/wal_perf_test.py`
 **Log files**: `/tmp/wal_test.log`, `/tmp/wal_perf_test.log`

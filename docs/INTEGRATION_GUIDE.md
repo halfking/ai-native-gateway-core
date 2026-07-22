@@ -5,7 +5,7 @@
 ### 1. 核心框架
 - ✅ **ResponseInterceptor接口** (`domains/hooks/response/types.go`)
   - InterceptNonStream - 非流式响应拦截
-  - InterceptStreamChunk - 流式chunk拦截  
+  - InterceptStreamChunk - 流式chunk拦截
   - InterceptStreamEnd - 流式结束拦截
 
 - ✅ **InterceptorChain** (`domains/hooks/response/chain.go`)
@@ -76,7 +76,7 @@
 # 从 docs/auto_control_system.go 中提取 HandoffTrigger 代码
 # 创建文件: domains/hooks/handoff/trigger_hook.go
 
-# 2. Goal Mode Hook  
+# 2. Goal Mode Hook
 # 从 docs/auto_control_system.go 中提取 GoalModeHook 代码
 # 创建文件: domains/hooks/goal/mode_hook.go
 
@@ -97,7 +97,7 @@ type HandoffStore interface {
     UpdateSessionHandoffCount(ctx context.Context, sessionID string) error
 }
 
-// domains/hooks/goal/store.go  
+// domains/hooks/goal/store.go
 type GoalStore interface {
     GetSession(ctx context.Context, sessionID string) (*Session, error)
     CreateSession(ctx context.Context, session *Session) error
@@ -196,7 +196,7 @@ if IsCodeAuditRequest(sigs) {
     reasons = append(reasons, "audit_keywords_detected")
 }
 
-// Check for intent classification  
+// Check for intent classification
 if IsIntentClassificationRequest(sigs) {
     scores[TaskIntentClassification] += 0.4
     reasons = append(reasons, "intent_classification_keywords_detected")
@@ -282,8 +282,8 @@ SELECT * FROM handoff_logs ORDER BY created_at DESC LIMIT 10;
 SELECT * FROM goal_sessions WHERE state = 'active';
 
 -- 检查sessions扩展字段
-SELECT session_id, handoff_count, goal_mode_enabled, total_tokens_used 
-FROM sessions 
+SELECT session_id, handoff_count, goal_mode_enabled, total_tokens_used
+FROM sessions
 WHERE handoff_count > 0 OR goal_mode_enabled = true;
 ```
 
@@ -331,7 +331,7 @@ WHERE handoff_count > 0 OR goal_mode_enabled = true;
 - 查看日志中的 `handoff_triggered` 事件
 
 ### Goal模式不生效
-- 检查 `goal.enabled` 配置  
+- 检查 `goal.enabled` 配置
 - 验证检测逻辑（关键词/明确标记）
 - 查看 `goal_mode_activated` 日志
 

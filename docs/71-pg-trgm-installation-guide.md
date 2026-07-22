@@ -1,7 +1,7 @@
 # 71 环境 pg_trgm 扩展安装与分区统一指南
 
-**日期：** 2026-07-04  
-**目标：** 在 71 环境安装 pg_trgm 扩展并创建 2026-09 到 2026-12 分区  
+**日期：** 2026-07-04
+**目标：** 在 71 环境安装 pg_trgm 扩展并创建 2026-09 到 2026-12 分区
 **数据库：** __PRIV_IP_2__:__PORT_5__（PostgreSQL 15.3）
 
 ---
@@ -103,11 +103,11 @@ SQL
 **预期结果：**
 ```
 CREATE EXTENSION
- extname | extversion 
+ extname | extversion
 ---------+------------
  pg_trgm | 1.6
 
- test 
+ test
 ------
     1
 ```
@@ -128,9 +128,9 @@ DECLARE
     part record;
     idx_count int;
 BEGIN
-    FOR part IN 
-        SELECT tablename 
-        FROM pg_tables 
+    FOR part IN
+        SELECT tablename
+        FROM pg_tables
         WHERE tablename LIKE 'request_logs_2026_%'
           AND schemaname = 'public'
           AND tablename NOT LIKE '%archive%'
@@ -142,22 +142,22 @@ BEGIN
         FROM pg_indexes
         WHERE tablename = part.tablename
           AND indexdef LIKE '%trgm%';
-        
+
         IF idx_count = 0 THEN
             RAISE NOTICE '为 % 创建 trgm 索引...', part.tablename;
-            
+
             -- search_text trgm 索引
             EXECUTE format(
                 'CREATE INDEX CONCURRENTLY idx_%s_search_trgm ON %I USING gin (search_text gin_trgm_ops)',
                 part.tablename, part.tablename
             );
-            
+
             -- client_model trgm 索引
             EXECUTE format(
                 'CREATE INDEX CONCURRENTLY idx_%s_client_model_trgm ON %I USING gin (client_model gin_trgm_ops)',
                 part.tablename, part.tablename
             );
-            
+
             RAISE NOTICE '✅ % 索引创建完成', part.tablename;
         ELSE
             RAISE NOTICE '⚠️ % 已有 % 个 trgm 索引', part.tablename, idx_count;
@@ -166,7 +166,7 @@ BEGIN
 END $$;
 
 -- 验证索引
-SELECT 
+SELECT
     tablename,
     indexname
 FROM pg_indexes
@@ -203,28 +203,28 @@ BEGIN
         month_start := month_date::TIMESTAMPTZ;
         month_end := (month_date + INTERVAL '1 month')::TIMESTAMPTZ;
         part_name := 'request_logs_' || to_char(month_date, 'YYYY_MM');
-        
+
         IF NOT EXISTS (SELECT 1 FROM pg_class WHERE relname = part_name AND relnamespace = 'public'::regnamespace) THEN
             RAISE NOTICE '创建分区: %', part_name;
-            
+
             -- 创建 heap 分区（未来月）
             EXECUTE format(
                 'CREATE TABLE %I PARTITION OF request_logs FOR VALUES FROM (%L) TO (%L) USING heap',
                 part_name, month_start, month_end
             );
-            
+
             -- 创建 search_text trgm 索引
             EXECUTE format(
                 'CREATE INDEX idx_%s_search_trgm ON %I USING gin (search_text gin_trgm_ops)',
                 part_name, part_name
             );
-            
+
             -- 创建 client_model trgm 索引
             EXECUTE format(
                 'CREATE INDEX idx_%s_client_model_trgm ON %I USING gin (client_model gin_trgm_ops)',
                 part_name, part_name
             );
-            
+
             RAISE NOTICE '✅ 分区 % 创建完成（heap + 2 trgm 索引）', part_name;
         ELSE
             RAISE NOTICE '⚠️ 分区 % 已存在', part_name;
@@ -233,7 +233,7 @@ BEGIN
 END $$;
 
 -- 验证分区结构
-SELECT 
+SELECT
     parent.relname as parent_table,
     child.relname as partition_name,
     am.amname as storage_type,
@@ -260,7 +260,7 @@ NOTICE:  ✅ 分区 request_logs_2026_11 创建完成（heap + 2 trgm 索引）
 NOTICE:  创建分区: request_logs_2026_12
 NOTICE:  ✅ 分区 request_logs_2026_12 创建完成（heap + 2 trgm 索引）
 
- parent_table |    partition_name    | storage_type |  size   | trgm_indexes 
+ parent_table |    partition_name    | storage_type |  size   | trgm_indexes
 --------------+----------------------+--------------+---------+--------------
  request_logs | request_logs_2026_07 | columnar     | 1067 MB |            2
  request_logs | request_logs_2026_08 | heap         | 8 KB    |            2
@@ -281,7 +281,7 @@ psql -h __PRIV_IP_2__ -p __PORT_5__ -U llm_gateway -d llm_gateway << 'SQL'
 
 -- 测试写入到各个月份
 INSERT INTO request_logs (ts, tenant_id, request_id, client_model, success)
-VALUES 
+VALUES
     ('2026-09-15 10:00:00+00', 'test-71', 'req-71-sep', 'gpt-4', true),
     ('2026-10-15 10:00:00+00', 'test-71', 'req-71-oct', 'gpt-4', true),
     ('2026-11-15 10:00:00+00', 'test-71', 'req-71-nov', 'gpt-4', true),
@@ -303,7 +303,7 @@ SQL
 
 **预期结果：**
 ```
-  id   |  month  | request_id  |   status    
+  id   |  month  | request_id  |   status
 -------+---------+-------------+-------------
  26865 | 2026-09 | req-71-sep  | ✅ 写入成功
  26866 | 2026-10 | req-71-oct  | ✅ 写入成功
@@ -327,12 +327,12 @@ SQL
 
 ```sql
 -- 在三个环境中执行
-SELECT 
+SELECT
     'pg_trgm 扩展' as check_item,
     (SELECT extversion FROM pg_extension WHERE extname = 'pg_trgm') as value,
     CASE WHEN EXISTS (SELECT 1 FROM pg_extension WHERE extname = 'pg_trgm') THEN '✅' ELSE '❌' END as status
 UNION ALL
-SELECT 
+SELECT
     '2026 分区数量',
     count(*)::text,
     CASE WHEN count(*) >= 6 THEN '✅' ELSE '⚠️' END
@@ -340,7 +340,7 @@ FROM pg_tables
 WHERE tablename LIKE 'request_logs_2026_%'
   AND schemaname = 'public'
 UNION ALL
-SELECT 
+SELECT
     'trgm 索引总数',
     count(*)::text,
     CASE WHEN count(*) >= 10 THEN '✅' ELSE '⚠️' END
@@ -378,7 +378,7 @@ DETAIL: Could not open extension control file
 2. 在业务低峰期执行
 3. 监控进度：
    ```sql
-   SELECT 
+   SELECT
        pid,
        now() - query_start as duration,
        state,
@@ -470,7 +470,7 @@ SELECT * FROM request_logs_2027_01 LIMIT 1;
 
 2. **trgm 索引覆盖率**
    ```sql
-   SELECT 
+   SELECT
        count(DISTINCT tablename) as partitions,
        count(*) as trgm_indexes
    FROM pg_indexes
@@ -483,10 +483,10 @@ SELECT * FROM request_logs_2027_01 LIMIT 1;
 
 ## 签名
 
-**文档创建：** 2026-07-04 01:30  
-**测试状态：** ✅ 184 和本地环境已验证  
-**71 环境：** ⏳ 待执行（本指南）  
-**优先级：** P0（高）  
+**文档创建：** 2026-07-04 01:30
+**测试状态：** ✅ 184 和本地环境已验证
+**71 环境：** ⏳ 待执行（本指南）
+**优先级：** P0（高）
 **预计完成：** 本周内
 
 ---
@@ -523,8 +523,8 @@ psql << 'SQL'
 DO $$
 DECLARE part record;
 BEGIN
-    FOR part IN 
-        SELECT tablename FROM pg_tables 
+    FOR part IN
+        SELECT tablename FROM pg_tables
         WHERE tablename LIKE 'request_logs_2026_%'
           AND schemaname = 'public'
     LOOP
@@ -551,7 +551,7 @@ BEGIN
         month_start := month_date::TIMESTAMPTZ;
         month_end := (month_date + INTERVAL '1 month')::TIMESTAMPTZ;
         part_name := 'request_logs_' || to_char(month_date, 'YYYY_MM');
-        
+
         IF NOT EXISTS (SELECT 1 FROM pg_class WHERE relname = part_name) THEN
             EXECUTE format('CREATE TABLE %I PARTITION OF request_logs FOR VALUES FROM (%L) TO (%L) USING heap', part_name, month_start, month_end);
             EXECUTE format('CREATE INDEX idx_%s_search_trgm ON %I USING gin (search_text gin_trgm_ops)', part_name, part_name);
@@ -567,7 +567,7 @@ echo ""
 echo "步骤 5：测试写入..."
 psql << 'SQL'
 INSERT INTO request_logs (ts, tenant_id, request_id, client_model, success)
-VALUES 
+VALUES
     ('2026-09-15 10:00:00+00', 'test-71', 'req-71-sep', 'gpt-4', true),
     ('2026-10-15 10:00:00+00', 'test-71', 'req-71-oct', 'gpt-4', true),
     ('2026-11-15 10:00:00+00', 'test-71', 'req-71-nov', 'gpt-4', true),

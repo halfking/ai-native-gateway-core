@@ -48,7 +48,7 @@ function validateUrl(url: string): boolean {
 
 function validateChannelConfig(channel: NotificationChannel): string | null {
   if (!channel.enabled) return null
-  
+
   if (channel.type === 'feishu') {
     if (channel.config.webhook_url && !validateUrl(channel.config.webhook_url)) {
       return 'Webhook URL 格式不正确'
@@ -57,32 +57,32 @@ function validateChannelConfig(channel: NotificationChannel): string | null {
       return '请至少填写 App ID 或 Webhook URL'
     }
   }
-  
+
   if (channel.type === 'wecom') {
     if (!channel.config.corp_id) return '企业 ID 不能为空'
     if (!channel.config.agent_id) return 'Agent ID 不能为空'
   }
-  
+
   if (channel.type === 'dingtalk') {
     if (!channel.config.app_key) return 'App Key 不能为空'
   }
-  
+
   return null
 }
 
 async function testChannel(type: 'feishu' | 'wecom' | 'dingtalk') {
   const channel = props.modelValue[type]
   if (!channel) return
-  
+
   const error = validateChannelConfig(channel)
   if (error) {
     testResults.value[type] = { success: false, message: error }
     return
   }
-  
+
   testing.value = type
   testResults.value[type] = { success: false, message: '测试中...' }
-  
+
   try {
     const result = await testNotificationChannel(channel)
     testResults.value[type] = {
@@ -115,7 +115,7 @@ const channelLabels = {
 <template>
   <div class="notification-channels">
     <h3 class="section-title">通知渠道配置</h3>
-    
+
     <!-- 飞书 -->
     <div class="channel-card">
       <div class="channel-header">
@@ -133,7 +133,7 @@ const channelLabels = {
           <span class="switch-track"></span>
         </label>
       </div>
-      
+
       <div v-if="modelValue.feishu?.enabled" class="channel-body">
         <div class="form-group">
           <label>App ID</label>
@@ -145,7 +145,7 @@ const channelLabels = {
             @input="updateChannel('feishu', { config: { ...modelValue.feishu?.config, app_id: ($event.target as HTMLInputElement).value } })"
           />
         </div>
-        
+
         <div class="form-group">
           <label>App Secret</label>
           <input
@@ -156,7 +156,7 @@ const channelLabels = {
             @input="updateChannel('feishu', { config: { ...modelValue.feishu?.config, app_secret: ($event.target as HTMLInputElement).value } })"
           />
         </div>
-        
+
         <div class="form-group">
           <label>Webhook URL <span class="optional">(可选)</span></label>
           <input
@@ -167,7 +167,7 @@ const channelLabels = {
             @input="updateChannel('feishu', { config: { ...modelValue.feishu?.config, webhook_url: ($event.target as HTMLInputElement).value } })"
           />
         </div>
-        
+
         <div class="channel-actions">
           <button
             class="btn btn-primary btn-sm"
@@ -182,7 +182,7 @@ const channelLabels = {
         </div>
       </div>
     </div>
-    
+
     <!-- 企业微信 -->
     <div class="channel-card">
       <div class="channel-header">
@@ -200,7 +200,7 @@ const channelLabels = {
           <span class="switch-track"></span>
         </label>
       </div>
-      
+
       <div v-if="modelValue.wecom?.enabled" class="channel-body">
         <div class="form-group">
           <label>Corp ID <span class="required">*</span></label>
@@ -212,7 +212,7 @@ const channelLabels = {
             @input="updateChannel('wecom', { config: { ...modelValue.wecom?.config, corp_id: ($event.target as HTMLInputElement).value } })"
           />
         </div>
-        
+
         <div class="form-group">
           <label>Corp Secret</label>
           <input
@@ -223,7 +223,7 @@ const channelLabels = {
             @input="updateChannel('wecom', { config: { ...modelValue.wecom?.config, corp_secret: ($event.target as HTMLInputElement).value } })"
           />
         </div>
-        
+
         <div class="form-group">
           <label>Agent ID <span class="required">*</span></label>
           <input
@@ -234,7 +234,7 @@ const channelLabels = {
             @input="updateChannel('wecom', { config: { ...modelValue.wecom?.config, agent_id: ($event.target as HTMLInputElement).value } })"
           />
         </div>
-        
+
         <div class="channel-actions">
           <button
             class="btn btn-primary btn-sm"
@@ -249,7 +249,7 @@ const channelLabels = {
         </div>
       </div>
     </div>
-    
+
     <!-- 钉钉 -->
     <div class="channel-card">
       <div class="channel-header">
@@ -267,7 +267,7 @@ const channelLabels = {
           <span class="switch-track"></span>
         </label>
       </div>
-      
+
       <div v-if="modelValue.dingtalk?.enabled" class="channel-body">
         <div class="form-group">
           <label>App Key <span class="required">*</span></label>
@@ -279,7 +279,7 @@ const channelLabels = {
             @input="updateChannel('dingtalk', { config: { ...modelValue.dingtalk?.config, app_key: ($event.target as HTMLInputElement).value } })"
           />
         </div>
-        
+
         <div class="form-group">
           <label>App Secret</label>
           <input
@@ -290,7 +290,7 @@ const channelLabels = {
             @input="updateChannel('dingtalk', { config: { ...modelValue.dingtalk?.config, app_secret: ($event.target as HTMLInputElement).value } })"
           />
         </div>
-        
+
         <div class="channel-actions">
           <button
             class="btn btn-primary btn-sm"

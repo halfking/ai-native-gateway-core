@@ -4,36 +4,36 @@
 
 当前生产路由热路径大致为：
 
-1. `provider.Client`：模型解析 + DB 候选 + 30s 内存缓存  
-2. `streaming/executors.Router`：`credentialstate` 过滤、P2C/Bandit、tier、billing-round、sticky、降级  
-3. `Executor`：FP slot / concurrency / RPM / circuit、上游调用、失败切换  
-4. 结果回写分散在 `credentialstate.Manager`、探测 worker、半成品 URSM 与 `routingstate` 影子观测  
+1. `provider.Client`：模型解析 + DB 候选 + 30s 内存缓存
+2. `streaming/executors.Router`：`credentialstate` 过滤、P2C/Bandit、tier、billing-round、sticky、降级
+3. `Executor`：FP slot / concurrency / RPM / circuit、上游调用、失败切换
+4. 结果回写分散在 `credentialstate.Manager`、探测 worker、半成品 URSM 与 `routingstate` 影子观测
 
 主要问题：
 
-- 状态读写分散，跨实例难以及时共享完整号池画像  
-- `credentialstate` 同时承担缓存、DB 批写、探测触发、候选失效，职责过重  
-- `domains/ursm` 已有四层状态骨架，但缓存 miss **fail-open**，`Enabled()` 语义过宽  
-- 路由排障缺少统一 debug 链路与分钟级复盘  
+- 状态读写分散，跨实例难以及时共享完整号池画像
+- `credentialstate` 同时承担缓存、DB 批写、探测触发、候选失效，职责过重
+- `domains/ursm` 已有四层状态骨架，但缓存 miss **fail-open**，`Enabled()` 语义过宽
+- 路由排障缺少统一 debug 链路与分钟级复盘
 
 ## 2. 目标
 
-1. 独立号池状态模块（URSM v2），统一管理模型/节点/评分/延迟/成功率/计费/限额/价格/可信度/并发/指纹/多窗口成功率等  
-2. Redis 作为**运行时权威**状态池；原子更新；多维度快速检索与更新 API  
-3. 滑动窗口多池共存（1m / 5m / 30m）  
-4. 每分钟持久化快照到 PostgreSQL，用于复盘与 Redis 恢复回填  
-5. 丰富请求全链路 debug 日志，尤其路由过滤/评分/切换原因  
-6. 将原路由内散落的状态管理收敛到统一模块（单一原则、统一接口、闭包装配）  
+1. 独立号池状态模块（URSM v2），统一管理模型/节点/评分/延迟/成功率/计费/限额/价格/可信度/并发/指纹/多窗口成功率等
+2. Redis 作为**运行时权威**状态池；原子更新；多维度快速检索与更新 API
+3. 滑动窗口多池共存（1m / 5m / 30m）
+4. 每分钟持久化快照到 PostgreSQL，用于复盘与 Redis 恢复回填
+5. 丰富请求全链路 debug 日志，尤其路由过滤/评分/切换原因
+6. 将原路由内散落的状态管理收敛到统一模块（单一原则、统一接口、闭包装配）
 
 ## 3. 非目标（第一阶段）
 
-- 不直接全量切换生产路由  
-- 不重写 Executor 候选循环与上游协议转换  
-- 不引入 Redis Cluster / Sentinel  
-- 不把探测 HTTP 执行器并入状态模块（只接收 `ProbeOutcome`）  
-- 不强制第一阶段把进程内 concurrency 全量改为 Redis（接口预留）  
-- 不删除 `provider` 30s 配置候选缓存  
-- 不在本阶段交付完整 WRR/水位大调度重写  
+- 不直接全量切换生产路由
+- 不重写 Executor 候选循环与上游协议转换
+- 不引入 Redis Cluster / Sentinel
+- 不把探测 HTTP 执行器并入状态模块（只接收 `ProbeOutcome`）
+- 不强制第一阶段把进程内 concurrency 全量改为 Redis（接口预留）
+- 不删除 `provider` 30s 配置候选缓存
+- 不在本阶段交付完整 WRR/水位大调度重写
 
 ## 4. 成功标准
 

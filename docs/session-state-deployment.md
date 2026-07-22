@@ -128,7 +128,7 @@ if sessionComponents != nil && sessionComponents.RotationHook != nil {
     if rotCtx != nil {
         _ = sessionComponents.RotationHook.OnRequestComplete(ctx, rotCtx)
     }
-    
+
     // 更新使用统计
     usage := &session.UsageUpdate{
         PromptTokens:     promptTokens,

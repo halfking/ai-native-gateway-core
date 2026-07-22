@@ -13,7 +13,7 @@
 ### Test Suite 1: 端到端业务流程
 
 #### TC-E2E-001: 创建会话并请求 → 查询详情
-**前置条件**: 
+**前置条件**:
 - 245 环境已部署最新代码 (34c41da19)
 - PostgreSQL 252 可访问
 
@@ -41,7 +41,7 @@
 - ✅ GET API 返回 `request_body: null, response_body: null`
 
 #### TC-E2E-003: 向后兼容（旧记录）
-**前置条件**: 
+**前置条件**:
 - Migration 353 之前的记录（request_logs_hot 有 bodies）
 
 **步骤**:
@@ -88,7 +88,7 @@
 **步骤**:
 1. 查询两表大小：
    ```sql
-   SELECT 
+   SELECT
        pg_size_pretty(pg_total_relation_size('request_logs_hot')) AS metadata_size,
        pg_size_pretty(pg_total_relation_size('request_logs_bodies_hot')) AS bodies_size;
    ```

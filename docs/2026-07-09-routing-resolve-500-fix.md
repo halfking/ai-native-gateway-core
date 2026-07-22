@@ -1,7 +1,7 @@
 # /api/routing/resolve 接口 500 错误修复记录
 
-**日期**: 2026-07-09  
-**作者**: ZCode Agent  
+**日期**: 2026-07-09
+**作者**: ZCode Agent
 **影响范围**: 路由解析诊断接口 `/api/routing/resolve?model=&persist_probe=1`
 
 ## 问题描述
@@ -55,7 +55,7 @@ GET /api/routing/resolve?model=glm-5.2&persist_probe=1
 
 ## 审计结果
 
-- **admin/providers.go**: ✅ 仅引用 `is_routable`（视图中有） 
+- **admin/providers.go**: ✅ 仅引用 `is_routable`（视图中有）
 - **admin/provider_offer_force_recover.go**: ✅ 仅引用 `unavailable_reason`（视图中有）
 - **bg/auto_index_refresher.go**: ✅ 仅引用 `v.credential_id`、`v.binding_id`、`v.provider_model_id`、`v.is_routable`（视图中有）
 - **其他路由处理函数**: ✅ 均未使用 `v_routable_credential_models` 视图

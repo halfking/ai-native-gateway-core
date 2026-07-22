@@ -1,8 +1,8 @@
 # Goal模式会话持续机制设计方案
 
-> **文档版本**: v1.0  
-> **创建日期**: 2026-07-19  
-> **状态**: 设计阶段  
+> **文档版本**: v1.0
+> **创建日期**: 2026-07-19
+> **状态**: 设计阶段
 > **关联模块**: domains/hooks/goal, domains/hooks/handoff, domains/streaming
 
 ---
@@ -57,17 +57,17 @@
   - heuristic策略（finish_reason="stop" + 无tool_calls）
   - llm策略（调用LLM判断）
   - hybrid策略（组合以上策略）
-  
+
 - ✅ **自动继续**：`ModeHook.InterceptNonStream/InterceptStreamEnd`
   - 任务未完成时注入"请继续"follow-up
   - 原子计数保证并发安全（`AtomicAutoContinue`）
   - 支持最大继续次数限制（`max_auto_continue_count`）
-  
+
 - ✅ **循环检测与模型切换**：`loop_detector.go`
   - 检测重复响应（`RecordResponse`计算hash）
   - 达到阈值时切换到fallback模型
   - 支持最大切换次数限制（`max_model_switch_count`）
-  
+
 - ✅ **自动审计**：`AuditHook`
   - 任务完成后触发审计follow-up
   - 调用LLM审查执行结果
@@ -86,12 +86,12 @@
   - 百分比阈值（占model上限的%）
   - 消息数阈值
   - 空闲时间阈值
-  
+
 - ✅ **会话摘要生成**：`SummaryEngine`
   - llm策略（LLM生成摘要）
   - rule策略（正则提取关键事实）
   - hybrid策略（LLM失败降级到rule）
-  
+
 - ✅ **Handoff注入**：
   - 生成`/handoff` skill调用
   - 包含会话摘要和关键事实
@@ -204,16 +204,16 @@ Response Error to Client
 func (h *ChatHandler) relayAndRespond(...) error {
     maxRetries := h.getGoalRetryCount(tenantID)  // 从settings读取
     retryDelay := h.getGoalRetryDelay(tenantID)  // 默认20s
-    
+
     for attempt := 0; attempt <= maxRetries; attempt++ {
         // 调用provider
         resp, err := h.doProviderCall(...)
-        
+
         if err == nil && !isRetriableError(resp) {
             // 成功或不可重试错误，返回
             return h.processResponse(resp)
         }
-        
+
         // 可重试错误（5xx, timeout, no_candidates, rate_limit等）
         if attempt < maxRetries {
             slog.Info("goal_retry_scheduled",
@@ -221,14 +221,14 @@ func (h *ChatHandler) relayAndRespond(...) error {
                 "max", maxRetries,
                 "delay_sec", retryDelay,
                 "error", err)
-            
+
             // 延时
             time.Sleep(time.Duration(retryDelay) * time.Second)
-            
+
             // 重新routing（可能选到不同provider）
             continue
         }
-        
+
         // 所有重试耗尽，返回错误
         return err
     }
@@ -304,20 +304,20 @@ func (h *ModeHook) InterceptError(ctx context.Context, req *response.InterceptRe
     if !enabled || !retryEnabled {
         return nil, nil
     }
-    
+
     goalSession, _ := h.db.GetSession(ctx, req.SessionID)
     if goalSession == nil {
         return nil, nil  // goal未激活
     }
-    
+
     maxRetries := h.loadInt(req.TenantID, "goal.max_retry_count", 3)
     if goalSession.RetryCount >= maxRetries {
         return nil, nil  // 重试次数耗尽
     }
-    
+
     // 原子递增重试计数
     h.db.IncrementRetryCount(ctx, req.SessionID)
-    
+
     // 构造模拟response（包含tool_call）
     mockResponse := map[string]interface{}{
         "choices": []map[string]interface{}{
@@ -344,16 +344,16 @@ func (h *ModeHook) InterceptError(ctx context.Context, req *response.InterceptRe
             },
         },
     }
-    
+
     mockBody, _ := json.Marshal(mockResponse)
-    
+
     // 延时注入重试follow-up
     retryDelay := h.loadInt(req.TenantID, "goal.retry_delay_seconds", 20)
     go func() {
         time.Sleep(time.Duration(retryDelay) * time.Second)
         h.injectRetryFollowUp(ctx, req)
     }()
-    
+
     return &response.InterceptResult{
         RewriteResponse: mockBody,  // 替换error response
         Action: "goal_retry_inject",
@@ -423,7 +423,7 @@ goal.max_auto_continue_count: 5   # 允许更多次继续
 // domains/hooks/goal/audit_hook.go
 func (h *AuditHook) InterceptNonStream(...) {
     // ... 现有审计逻辑 ...
-    
+
     // 新增：自动修正
     autoFix := h.loadBool(req.TenantID, "goal.auto_fix_enabled", false)
     if autoFix && len(auditResult.Issues) > 0 {

@@ -108,7 +108,7 @@ func (p *PoolHealthProbe) Check(conn *http.Client) bool {
                                                                │
       客户端断开 (context cancelled) ──────────────────────────┘
       上游超时 (30s无chunk) ────────────────────────────────────┘
-      
+
 三种中断处理:
   客户端断开: context.Done() → cancel upstream → 审计标记 interrupted=true
   上游超时:   最后chunk后30s无新chunk → 发送error chunk → 审计
@@ -153,7 +153,7 @@ func (p *AuditPipeline) Run(ctx context.Context) {
 
 func (p *AuditPipeline) flush(ctx context.Context, batch *[]AuditEvent) {
     if len(*batch) == 0 { return }
-    
+
     err := p.db.BatchInsert(ctx, *batch)
     if err != nil {
         log.Printf("audit batch write failed: %v, moving %d to DLQ", err, len(*batch))
@@ -280,26 +280,26 @@ F1: 扩大请求体限制
     文件: app/main.py:94
     修改: _MAX_REQUEST_BODY_BYTES = 100 * 1024 → 10 * 1024 * 1024
     原因: 当前100KB限制会拦截所有带代码上下文的请求
-    
+
 F2: LiteLLM超时配置
     文件: app/core/proxy.py:18
     添加: litellm.request_timeout = 120  (总超时)
           litellm.connect_timeout = 10   (连接超时)
     原因: 默认超时可能过短,大请求超时导致503
-    
+
 F3: 凭据熔断器复位
     脚本: 检查credentials表中circuit_state='open'的凭据
     操作: 对每个open凭据发送探测请求
           成功→SET circuit_state='closed'
           失败→记录日志,保留状态
     原因: glm-4.7对应的凭据可能熔断打开
-    
+
 F4: 统一错误响应格式
     文件: app/api/v1/chat.py:166-176
     修改: 保证所有错误响应都有JSON body
     {"error":{"message":"...","type":"...","request_id":"..."}}
     原因: 客户端收到"no body"的503→无法解析→重新请求→继续503→死循环
-    
+
 F5: 接入client_identity到execute()
     文件: app/api/v1/chat.py:148-164
     修改: 调用build_identity_from_request()并传递client_identity
@@ -311,10 +311,10 @@ F5: 接入client_identity到execute()
 ```
 F6: Telemetry队列化 (P-4)
     app/core/telemetry.py: create_task → queue+batch flush
-    
+
 F7: 四层并发桶接入 (P-3)
     app/core/executor.py: acquire四层→释放→shrink
-    
+
 F8: SQL字段扩展 (P-5)
     sql/092_identity_lease_fields.sql: 新迁移脚本
 ```

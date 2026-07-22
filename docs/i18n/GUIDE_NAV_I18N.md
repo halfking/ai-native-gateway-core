@@ -1,6 +1,6 @@
 # i18n 优化实施指南 — 阶段 1.2 导航栏
 
-> 当前进度：25% (7/16 任务完成)  
+> 当前进度：25% (7/16 任务完成)
 > 本文档：导航栏 i18n 迁移详细步骤
 
 ---
@@ -44,12 +44,12 @@ export type NavItem = {
 **修改 NAV_PRIMARY_ITEMS**（line 29-31）:
 ```typescript
 export const NAV_PRIMARY_ITEMS: NavItem[] = [
-  { 
-    path: '/', 
+  {
+    path: '/',
     label: '总览',              // 保留中文 fallback
     labelKey: 'nav.item.overview',  // 新增
-    icon: '📊', 
-    platformOps: true 
+    icon: '📊',
+    platformOps: true
   },
 ]
 ```
@@ -65,19 +65,19 @@ export const NAV_GROUPS: NavGroup[] = [
     label: '我的服务',
     labelKey: 'nav.group.tenantPortal',  // 新增
     items: [
-      { 
-        path: '/tenant/models', 
-        label: '标准模型', 
+      {
+        path: '/tenant/models',
+        label: '标准模型',
         labelKey: 'nav.item.tenantModels',  // 新增
-        icon: '🤖', 
-        tenantOnly: true 
+        icon: '🤖',
+        tenantOnly: true
       },
-      { 
-        path: '/tenant/account', 
-        label: '我的账户', 
+      {
+        path: '/tenant/account',
+        label: '我的账户',
         labelKey: 'nav.item.tenantAccount',
-        icon: '💰', 
-        tenantOnly: true 
+        icon: '💰',
+        tenantOnly: true
       },
       // ... 其他 item 类似添加
     ],
@@ -182,7 +182,7 @@ const { t } = useI18n()
 export default {
   collapseSidebar: '折叠侧边栏',
   expandSidebar: '展开侧边栏',
-  
+
   group: {
     tenantPortal: '我的服务',
     modelsRouting: '模型与路由',
@@ -192,7 +192,7 @@ export default {
     guide: '接入指南',
     chat: '对话',
   },
-  
+
   item: {
     overview: '总览',
     tenantModels: '标准模型',
@@ -236,7 +236,7 @@ export default {
 export default {
   collapseSidebar: 'Collapse Sidebar',
   expandSidebar: 'Expand Sidebar',
-  
+
   group: {
     tenantPortal: 'My Services',
     modelsRouting: 'Models & Routing',
@@ -246,7 +246,7 @@ export default {
     guide: 'Integration Guide',
     chat: 'Chat',
   },
-  
+
   item: {
     overview: 'Overview',
     tenantModels: 'Standard Models',

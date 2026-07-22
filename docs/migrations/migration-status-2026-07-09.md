@@ -4,7 +4,7 @@
 
 本文档追踪三个环境的数据库迁移执行状态，确保结构一致性。
 
-**最后更新**: 2026-07-09 16:00  
+**最后更新**: 2026-07-09 16:00
 **更新人**: AI Agent
 
 ---
@@ -43,9 +43,9 @@
 
 ### 本地 R112
 
-**架构**: 单节点Citus  
-**PostgreSQL版本**: Citus 11.3.0  
-**表总数**: 170  
+**架构**: 单节点Citus
+**PostgreSQL版本**: Citus 11.3.0
+**表总数**: 170
 **视图总数**: 包含在表总数中
 
 **特殊处理**:
@@ -60,9 +60,9 @@ docker exec r112_postgres psql -U kxuser -d llm_gateway -f /tmp/xxx.sql
 
 ### kaixuan-1 (K3s测试环境)
 
-**架构**: Citus集群  
-**PostgreSQL版本**: PostgreSQL 14 + Citus  
-**表总数**: 221  
+**架构**: Citus集群
+**PostgreSQL版本**: PostgreSQL 14 + Citus
+**表总数**: 221
 **视图总数**: 34
 
 **特殊处理**:
@@ -77,9 +77,9 @@ kubectl exec -n default kaixuan-pg-55fbb459fb-wc75l -- psql -U llm_gateway -d ll
 
 ### 252 (生产环境)
 
-**架构**: Citus集群  
-**PostgreSQL版本**: PostgreSQL 17 + Citus  
-**表总数**: 218  
+**架构**: Citus集群
+**PostgreSQL版本**: PostgreSQL 17 + Citus
+**表总数**: 218
 **视图总数**: 33
 
 **特殊处理**:
@@ -144,8 +144,8 @@ ssh -p 25022 root@115.29.212.252 "docker exec pg-252-pg17 psql -U llm_gateway -d
 
 ### 2026-07-09 初始迁移
 
-**执行时间**: 14:00 - 16:00  
-**执行人**: AI Agent  
+**执行时间**: 14:00 - 16:00
+**执行人**: AI Agent
 **影响范围**: 三个环境
 
 **执行步骤**:
@@ -259,7 +259,7 @@ kubectl exec ... -- psql -U llm_gateway -d llm_gateway -f /tmp/xxx.down.sql
 kubectl rollout restart deployment/llm-gateway-go-deployment -n pms-test
 ```
 
-**注意**: 
+**注意**:
 - 回滚前备份数据
 - 回滚后验证功能
 - 记录回滚原因
@@ -314,9 +314,9 @@ ssh -p 25022 root@115.29.212.252 "docker exec pg-252-pg17 psql -U llm_gateway -d
 
 **检查列是否存在**:
 ```sql
-SELECT column_name, data_type 
-FROM information_schema.columns 
-WHERE table_name = 'output_compliance_policies' 
+SELECT column_name, data_type
+FROM information_schema.columns
+WHERE table_name = 'output_compliance_policies'
   AND column_name IN ('llm_engine_id', 'check_secrets', 'exception_rules')
 ORDER BY column_name;
 ```
@@ -340,6 +340,6 @@ SELECT viewname FROM pg_views WHERE viewname = 'v_routable_credential_models';
 
 ---
 
-**维护者**: Official-Deploy Team  
-**文档版本**: v1.0  
+**维护者**: Official-Deploy Team
+**文档版本**: v1.0
 **最后审核**: 2026-07-09

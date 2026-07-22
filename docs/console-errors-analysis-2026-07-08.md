@@ -1,6 +1,6 @@
 # 控制台错误分析与解决方案
 
-**日期**: 2026-07-08  
+**日期**: 2026-07-08
 **问题来源**: 生产环境控制台错误日志
 
 ## 问题总览
@@ -21,10 +21,10 @@
 
 **错误日志示例**:
 ```
-SessionAnalyticsDashboardView-T81Z2HDI.js:3 Failed to load cost data: 
+SessionAnalyticsDashboardView-T81Z2HDI.js:3 Failed to load cost data:
   Error: query failed: ERROR: column "input_cost_usd" does not exist (SQLSTATE 42703)
 
-SessionAnalyticsDashboardView-T81Z2HDI.js:3 Failed to load health data: 
+SessionAnalyticsDashboardView-T81Z2HDI.js:3 Failed to load health data:
   Error: query failed: ERROR: column "health_score" does not exist (SQLSTATE 42703)
 ```
 
@@ -86,7 +86,7 @@ GET https://llm.kxpms.cn/api/admin/compression/stats?hours=24 404 (Not Found)
 - 处理函数已在`admin/compression_stats.go:22`实现
 - 404错误说明后端代码版本可能不匹配，或者路由被其他handler覆盖
 
-**解决方案**: 
+**解决方案**:
 1. 确认生产服务器运行的代码版本是否包含此功能
 2. 检查是否有其他路由冲突（如`/api/admin/compression/`的通配符处理）
 3. 重新部署最新版本的后端代码
@@ -153,9 +153,9 @@ docker run --rm -i postgres:14 \
 **验证迁移成功**:
 ```sql
 -- 检查列是否已添加
-SELECT column_name, data_type 
-FROM information_schema.columns 
-WHERE table_name = 'session_state' 
+SELECT column_name, data_type
+FROM information_schema.columns
+WHERE table_name = 'session_state'
   AND column_name IN ('input_cost_usd', 'output_cost_usd', 'health_score', 'health_grade', 'range', 'last_health_at');
 ```
 

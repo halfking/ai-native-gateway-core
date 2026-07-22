@@ -45,10 +45,10 @@ const { t } = useI18n()
 // 分类标签国际化
 const groupedModules = computed(() => {
   // ...
-  groups.push({ 
-    category: cat, 
-    label: t(`modules.category.${cat}`), 
-    modules: catMap.get(cat)! 
+  groups.push({
+    category: cat,
+    label: t(`modules.category.${cat}`),
+    modules: catMap.get(cat)!
   })
 })
 
@@ -345,7 +345,7 @@ describe('ModulesView i18n', () => {
   it('should display Chinese labels', () => {
     // ...
   })
-  
+
   it('should display English labels after language switch', () => {
     // ...
   })
@@ -411,6 +411,6 @@ describe('ModulesView i18n', () => {
 
 ---
 
-**实施完成日期**: 2026-07-04  
-**实施者**: Kiro AI Assistant  
+**实施完成日期**: 2026-07-04
+**实施者**: Kiro AI Assistant
 **验证状态**: ✅ 构建通过

@@ -1,8 +1,8 @@
 # Request Logs 数据完整性审计报告
 
-**日期**: 2026-07-06  
-**审计人员**: llm-gateway-ops  
-**测试环境**: localhost:5432/llm_gateway  
+**日期**: 2026-07-06
+**审计人员**: llm-gateway-ops
+**测试环境**: localhost:5432/llm_gateway
 **测试状态**: ✅ 全部通过
 
 ---
@@ -49,7 +49,7 @@ request_id: test-data-validation-gpt4-1783272030-1
 prompt_tokens: 110, completion_tokens: 55
 
 -- 执行 UPDATE
-UPDATE request_logs 
+UPDATE request_logs
 SET prompt_tokens = 999, completion_tokens = 888, total_tokens = 1887
 WHERE request_id = 'test-data-validation-gpt4-1783272030-1';
 
@@ -61,16 +61,16 @@ prompt_tokens: 999, completion_tokens: 888, total_tokens: 1887
 
 #### 场景 B: 批量 UPDATE
 ```sql
-UPDATE request_logs 
-SET cost_usd = 0.888 
-WHERE request_id LIKE 'test-data-validation-gpt4%' 
+UPDATE request_logs
+SET cost_usd = 0.888
+WHERE request_id LIKE 'test-data-validation-gpt4%'
    OR request_id LIKE 'test-data-validation-claude%';
 
 影响行数: 10 行
 结果: ✅ 成功
 ```
 
-**关键发现**: 
+**关键发现**:
 - ✅ 单条 UPDATE 可以正常执行
 - ✅ 批量 UPDATE 可以正常执行
 - ✅ 更新后数据立即可查
@@ -111,7 +111,7 @@ WHERE request_id LIKE 'test-data-validation-gpt4%'
 
 #### 场景 A: 单条 DELETE
 ```sql
-DELETE FROM request_logs 
+DELETE FROM request_logs
 WHERE request_id = 'test-data-validation-timeout-1783272030-1';
 
 验证: SELECT COUNT(*) FROM request_logs WHERE request_id = '...';
@@ -133,9 +133,9 @@ DELETE FROM request_logs WHERE request_id LIKE 'test-data-validation-%';
 
 #### 检查 1: 必填字段完整性
 ```sql
-SELECT COUNT(*) FROM request_logs 
-WHERE request_id IS NULL 
-   OR ts IS NULL 
+SELECT COUNT(*) FROM request_logs
+WHERE request_id IS NULL
+   OR ts IS NULL
    OR tenant_id IS NULL;
 
 结果: 0 条 ✅
@@ -144,7 +144,7 @@ WHERE request_id IS NULL
 #### 检查 2: success 与 error_kind 的一致性
 ```sql
 -- 检查逻辑矛盾
-SELECT COUNT(*) FROM request_logs 
+SELECT COUNT(*) FROM request_logs
 WHERE (success = true AND error_kind IS NOT NULL)
    OR (success = false AND error_kind IS NULL);
 
@@ -155,9 +155,9 @@ WHERE (success = true AND error_kind IS NOT NULL)
 
 #### 检查 3: tokens 计算正确性
 ```sql
-SELECT COUNT(*) FROM request_logs 
-WHERE total_tokens IS NOT NULL 
-  AND prompt_tokens IS NOT NULL 
+SELECT COUNT(*) FROM request_logs
+WHERE total_tokens IS NOT NULL
+  AND prompt_tokens IS NOT NULL
   AND completion_tokens IS NOT NULL
   AND total_tokens != (prompt_tokens + completion_tokens);
 
@@ -222,8 +222,8 @@ done
 SELECT COUNT(*) FROM <table> WHERE <test_condition>;
 
 # 检查必填字段
-SELECT COUNT(*) FROM <table> 
-WHERE <required_field_1> IS NULL 
+SELECT COUNT(*) FROM <table>
+WHERE <required_field_1> IS NULL
    OR <required_field_2> IS NULL;
 ```
 
@@ -259,12 +259,12 @@ SELECT COUNT(*) FROM <table> WHERE <field> = <new_value>;
 **测试步骤**:
 ```sql
 -- 业务逻辑一致性
-SELECT COUNT(*) FROM <table> 
+SELECT COUNT(*) FROM <table>
 WHERE (<condition_A> AND NOT <condition_B>)
    OR (NOT <condition_A> AND <condition_B>);
 
 -- 计算字段正确性
-SELECT COUNT(*) FROM <table> 
+SELECT COUNT(*) FROM <table>
 WHERE <calculated_field> != (<field_1> + <field_2>);
 ```
 
@@ -337,7 +337,7 @@ VALUES ('test-1', NOW(), 'default', 100, 0.002, true);
 UPDATE usage_ledger SET total_tokens = 200 WHERE request_id = 'test-1';
 
 # 一致性检查
-SELECT COUNT(*) FROM usage_ledger 
+SELECT COUNT(*) FROM usage_ledger
 WHERE total_tokens != (prompt_tokens + completion_tokens);
 ```
 
@@ -518,6 +518,6 @@ generate_report
 
 ---
 
-**审计完成时间**: 2026-07-06  
-**审计人员**: llm-gateway-ops  
+**审计完成时间**: 2026-07-06
+**审计人员**: llm-gateway-ops
 **下一步**: 应用审计方法到其他 7 张表

@@ -1,7 +1,7 @@
 # 安全检测引擎模块配置优化审计报告
 
-**审计时间**: 2026-07-09  
-**提交**: 5e1b643a  
+**审计时间**: 2026-07-09
+**提交**: 5e1b643a
 **审计范围**: 安全检测引擎模块配置优化（18个配置项、模块依赖、前端实现）
 
 ---
@@ -40,7 +40,7 @@
           minScore = 0.5  // 硬编码，未读取 security.intent.confidence_threshold
       }
   }
-  
+
   // threat_detector.go:11
   func NewThreatDetector(severityThreshold int) *ThreatDetector {
       if severityThreshold <= 0 {
@@ -465,6 +465,6 @@ async function saveSetting(settingKey: string, value: any) {
 
 ---
 
-**审计人**: Claude (OpenCode Agent)  
-**审计方法**: 静态代码审查 + 架构分析 + 文档检查  
+**审计人**: Claude (OpenCode Agent)
+**审计方法**: 静态代码审查 + 架构分析 + 文档检查
 **审计标准**: ACC Toolkit 规范 + hook 架构一致性原则

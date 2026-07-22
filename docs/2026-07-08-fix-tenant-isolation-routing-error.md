@@ -1,8 +1,8 @@
 # 修复租户隔离导致的"无可用路由"错误
 
-**日期**: 2026-07-08  
-**优先级**: P0  
-**问题**: 部分租户的用户无法访问全局供应商，报"无可用路由"错误  
+**日期**: 2026-07-08
+**优先级**: P0
+**问题**: 部分租户的用户无法访问全局供应商，报"无可用路由"错误
 **根本原因**: SQL WHERE 条件过于严格，只查询当前租户的供应商，未支持跨租户共享
 
 ---
@@ -21,7 +21,7 @@
 1. **供应商配置是全局共享的**
    - 所有供应商配置在 `default` 租户下
    - 所有租户的 API Key 默认可以访问所有供应商的模型
-   
+
 2. **租户模型策略是"黑名单"机制**
    - 默认：所有租户可以访问所有模型
    - 配置：通过 `/api/admin/tenants/{code}/model-policies` 禁用特定模型
@@ -251,7 +251,7 @@ CREATE INDEX idx_providers_tenant_id ON providers(tenant_id);
 
 建议添加复合索引：
 ```sql
-CREATE INDEX idx_providers_tenant_id_status ON providers(tenant_id, status) 
+CREATE INDEX idx_providers_tenant_id_status ON providers(tenant_id, status)
 WHERE status IS NULL OR status != 'disabled';
 ```
 

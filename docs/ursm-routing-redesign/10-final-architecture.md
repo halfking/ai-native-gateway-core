@@ -82,7 +82,7 @@ const (
     HookAuthCompleted        = "auth_completed"         // 认证完成
     HookRateLimitChecked     = "rate_limit_checked"     // 限流检查完成
     HookKeyConcurrentAcquired = "key_concurrent_acquired" // API Key 并发获取
-    
+
     // PhaseRouting 细分
     HookBindingLookup        = "binding_lookup"         // 绑定查询
     HookBindingHit           = "binding_hit"            // 绑定命中
@@ -92,7 +92,7 @@ const (
     HookCostScored           = "cost_scored"            // 成本评分完成
     HookRouteSelected        = "route_selected"         // 路由选定
     HookBindingReEvaluate    = "binding_reevaluate"     // 软绑定重选触发
-    
+
     // PhasePreUpstream 细分
     HookProviderGateCheck    = "provider_gate_check"    // 供应商门禁检查
     HookFPSlotAcquire        = "fp_slot_acquire"        // FP 槽获取
@@ -100,7 +100,7 @@ const (
     HookCircuitBreakerCheck  = "circuit_breaker_check"  // 熔断器检查
     HookResourceDegraded     = "resource_degraded"      // 资源降级
     HookUpstreamPrepare      = "upstream_prepare"       // 上游准备完成
-    
+
     // PhasePostUpstream 细分
     HookUpstreamSuccess      = "upstream_success"       // 上游成功
     HookUpstreamFailure      = "upstream_failure"       // 上游失败
@@ -108,7 +108,7 @@ const (
     HookBindingCreated       = "binding_created"        // 绑定创建
     HookBindingUpdated       = "binding_updated"        // 绑定更新
     HookBindingInvalidated   = "binding_invalidated"    // 绑定失效
-    
+
     // PhasePostResponse 细分
     HookResourceReleased     = "resource_released"      // 资源释放
     HookTelemetryRecorded    = "telemetry_recorded"     // 遥测记录
@@ -122,16 +122,16 @@ const (
 // URSMEnvironment 扩展现有 hooks.Environment
 type URSMEnvironment struct {
     *hooks.Environment
-    
+
     // 路由上下文
     Routing *RoutingContext
-    
+
     // 资源上下文
     Resources *ResourceContext
-    
+
     // 绑定上下文
     Binding *BindingContext
-    
+
     // 成本上下文
     Cost *CostContext
 }
@@ -182,32 +182,32 @@ type CostContext struct {
 // handler.go - Phase 1: PreRouting
 func (h *ChatHandler) Handle(ctx context.Context, req *Request) (*Response, error) {
     env := NewURSMEnvironment(req.RequestID)
-    
+
     // 1. 认证
     keyInfo, err := h.auth.Authenticate(ctx, req.APIKey)
     env.Emit(HookAuthCompleted, keyInfo)
-    
+
     // 2. RPM 限流
     outcome := h.rateLimiter.CheckRPM(ctx, keyInfo.KeyID)
     env.Emit(HookRateLimitChecked, outcome)
-    
+
     // 3. API Key 并发
     acquired := h.keyConcMgr.Acquire(ctx, keyInfo.KeyID)
     env.Emit(HookKeyConcurrentAcquired, acquired)
     defer h.keyConcMgr.Release(ctx, keyInfo.KeyID)
-    
+
     // Execute PreRouting hooks
     h.hooks.Execute(ctx, hooks.PhasePreRouting, env)
-    
+
     // Phase 2: Routing
     node, binding := h.router.SelectNode(ctx, req, env)
-    
+
     // Phase 3: Resource + Upstream
     resp, err := h.executor.Execute(ctx, node, binding, env)
-    
+
     // Phase 4: PostResponse
     h.hooks.Execute(ctx, hooks.PhasePostResponse, env)
-    
+
     return resp, err
 }
 
@@ -216,16 +216,16 @@ func (r *Router) SelectNode(ctx context.Context, req *Request, env *URSMEnvironm
     // 1. Binding Lookup
     binding := r.bindingCache.Get(req.SessionID, req.StdModel)
     env.Emit(HookBindingLookup, binding)
-    
+
     if binding != nil {
         env.Binding.BindingHit = true
         env.Emit(HookBindingHit, binding)
-        
+
         // 强绑定: 直接返回
         if binding.BindingLevel == 1 {
             return r.constructNode(binding), binding
         }
-        
+
         // 软绑定: 判断是否需要重选
         if !r.shouldReEvaluate(binding, env) {
             return r.constructNode(binding), binding
@@ -234,29 +234,29 @@ func (r *Router) SelectNode(ctx context.Context, req *Request, env *URSMEnvironm
     } else {
         env.Emit(HookBindingMiss, nil)
     }
-    
+
     // 2. Load Candidates
     candidates := r.loadCandidates(ctx, req.StdModel, env)
     env.Routing.Candidates = candidates
     env.Emit(HookCandidateLoaded, candidates)
-    
+
     // 3. Filter Unavailable
     available := r.filterAvailable(ctx, candidates, env)
     env.Emit(HookCandidateFiltered, available)
-    
+
     // 4. Cost Scoring
     scores := r.costScorer.Score(available, env)
     env.Cost.CandidateScores = scores
     env.Emit(HookCostScored, scores)
-    
+
     // 5. P2C Selection
     selected := r.selectBest(available, scores, env)
     env.Routing.SelectedNode = selected
     env.Emit(HookRouteSelected, selected)
-    
+
     // Execute Routing hooks
     r.hooks.Execute(ctx, hooks.PhaseRouting, env)
-    
+
     return selected, nil
 }
 
@@ -265,7 +265,7 @@ func (e *Executor) Execute(ctx context.Context, node *RouteNode, binding *Sessio
     // 1. Provider Gate
     gate := e.providerGates.Get(node.ProviderID)
     env.Emit(HookProviderGateCheck, gate)
-    
+
     // 2. FP Slot
     if gate.FpSlotEnabled {
         lease, err := e.fpSlots.AcquireUntil(ctx, node.CredentialID, binding, deadline)
@@ -274,7 +274,7 @@ func (e *Executor) Execute(ctx context.Context, node *RouteNode, binding *Sessio
         env.Emit(HookFPSlotAcquire, lease)
         defer e.fpSlots.Release(ctx, lease)
     }
-    
+
     // 3. Concurrency Slot
     if gate.ConcSlotEnabled {
         acquired, err := e.concSlots.AcquireUntil(ctx, node.CredentialID, binding, deadline)
@@ -282,22 +282,22 @@ func (e *Executor) Execute(ctx context.Context, node *RouteNode, binding *Sessio
         env.Emit(HookConcSlotAcquire, acquired)
         defer e.concSlots.Release(ctx, node.CredentialID)
     }
-    
+
     // 4. Circuit Breaker
     if !e.breaker.Allow(node.CredentialID) {
         env.Resources.CircuitState = "open"
         env.Emit(HookCircuitBreakerCheck, "open")
         // 根据 binding level 决定 wait 或 fallback
     }
-    
+
     env.Emit(HookUpstreamPrepare, node)
-    
+
     // Execute PreUpstream hooks
     e.hooks.Execute(ctx, hooks.PhasePreUpstream, env)
-    
+
     // 5. Upstream Call
     resp, err := e.callUpstream(ctx, node, env)
-    
+
     if err != nil {
         env.Emit(HookUpstreamFailure, err)
         e.stateRecorder.Record(ctx, RecordRequest{
@@ -313,7 +313,7 @@ func (e *Executor) Execute(ctx context.Context, node *RouteNode, binding *Sessio
             Success: true,
         })
         env.Emit(HookStateRecorded, "success")
-        
+
         // 创建/更新绑定
         if binding == nil {
             binding = e.createBinding(node, resp, env)
@@ -323,10 +323,10 @@ func (e *Executor) Execute(ctx context.Context, node *RouteNode, binding *Sessio
             env.Emit(HookBindingUpdated, binding)
         }
     }
-    
+
     // Execute PostUpstream hooks
     e.hooks.Execute(ctx, hooks.PhasePostUpstream, env)
-    
+
     return resp, err
 }
 ```
@@ -340,22 +340,22 @@ func (e *Executor) Execute(ctx context.Context, node *RouteNode, binding *Sessio
 type Plugin interface {
     // Name 返回插件名称
     Name() string
-    
+
     // Version 返回插件版本
     Version() string
-    
+
     // Init 初始化插件 (传入 URSM 核心依赖)
     Init(deps *PluginDependencies) error
-    
+
     // Start 启动插件
     Start(ctx context.Context) error
-    
+
     // Stop 停止插件
     Stop(ctx context.Context) error
-    
+
     // Hooks 返回插件注册的 Hook 列表
     Hooks() []hooks.Hook
-    
+
     // HealthCheck 健康检查
     HealthCheck(ctx context.Context) error
 }
@@ -427,18 +427,18 @@ plugins:
     config:
       alert_on_frequent_switch: true
       switch_threshold: 3  # 5分钟内切换 >3 次告警
-      
+
   - name: cost_optimizer
     enabled: true
     config:
       optimization_window: 300  # 5分钟
       price_weight_adaptive: true
-      
+
   - name: resource_predictor
     enabled: false
     config:
       prediction_horizon: 60  # 预测未来 60s
-      
+
   - name: route_auditor
     enabled: true
     config:
@@ -490,7 +490,7 @@ type ResourceGate interface {
     // FP Slot
     AcquireFPSlot(ctx context.Context, credID int, binding *SessionRouteBinding, deadline time.Time) (*FPSlotLease, error)
     ReleaseFPSlot(ctx context.Context, lease *FPSlotLease) error
-    
+
     // Concurrency Slot
     AcquireConcSlot(ctx context.Context, credID int, binding *SessionRouteBinding, deadline time.Time) (bool, error)
     ReleaseConcSlot(ctx context.Context, credID int, sessionID, requestID string) error

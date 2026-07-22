@@ -53,11 +53,11 @@ Check-Execute-Record 模式，支持：
 rate(llmgw_dashboard_api_requests_total[5m])
 
 # 成功率
-sum(rate(llmgw_dashboard_api_requests_total{status="success"}[5m])) 
+sum(rate(llmgw_dashboard_api_requests_total{status="success"}[5m]))
 / sum(rate(llmgw_dashboard_api_requests_total[5m])) * 100
 
 # 错误率
-sum(rate(llmgw_dashboard_api_requests_total{status="error"}[5m])) 
+sum(rate(llmgw_dashboard_api_requests_total{status="error"}[5m]))
 / sum(rate(llmgw_dashboard_api_requests_total[5m])) * 100
 ```
 
@@ -69,7 +69,7 @@ histogram_quantile(0.95, rate(llmgw_dashboard_api_duration_seconds_bucket[5m]))
 histogram_quantile(0.99, rate(llmgw_dashboard_api_duration_seconds_bucket[5m]))
 
 # 平均延迟
-rate(llmgw_dashboard_api_duration_seconds_sum[5m]) 
+rate(llmgw_dashboard_api_duration_seconds_sum[5m])
 / rate(llmgw_dashboard_api_duration_seconds_count[5m])
 ```
 
@@ -104,7 +104,7 @@ sum(rate(llmgw_module_execution_total{status="failed"}[5m])) by (module)
 #### 缓存指标
 ```promql
 # 总体缓存命中率
-sum(rate(llmgw_module_cache_hit_total[5m])) 
+sum(rate(llmgw_module_cache_hit_total[5m]))
 / (sum(rate(llmgw_module_cache_hit_total[5m])) + sum(rate(llmgw_module_cache_miss_total[5m]))) * 100
 
 # 按缓存层级命中率
@@ -130,8 +130,8 @@ rate(llmgw_module_execution_duration_seconds_sum{from_cache="true"}[5m])
 ### 关键告警 (Critical)
 
 #### 1. DashboardAPILowSuccessRate
-**条件**: 成功率 < 95%，持续 5 分钟  
-**影响**: 用户无法正常访问Dashboard  
+**条件**: 成功率 < 95%，持续 5 分钟
+**影响**: 用户无法正常访问Dashboard
 **处理**:
 ```bash
 # 1. 检查错误日志
@@ -148,8 +148,8 @@ systemctl restart llm-gateway
 ```
 
 #### 2. DashboardAPIDatabaseErrors
-**条件**: 数据库错误 > 0.5 errors/sec，持续 2 分钟  
-**影响**: 数据查询失败  
+**条件**: 数据库错误 > 0.5 errors/sec，持续 2 分钟
+**影响**: 数据查询失败
 **处理**:
 ```bash
 # 1. 检查数据库健康状态
@@ -166,8 +166,8 @@ tail -f /var/log/postgresql/postgresql.log
 ```
 
 #### 3. ModuleExecutionStalled
-**条件**: 10分钟内无任何模块执行  
-**影响**: 系统功能完全停止  
+**条件**: 10分钟内无任何模块执行
+**影响**: 系统功能完全停止
 **处理**:
 ```bash
 # 1. 检查进程状态
@@ -188,15 +188,15 @@ journalctl -u llm-gateway -n 100 --no-pager
 ### 警告告警 (Warning)
 
 #### 4. DashboardAPIHighErrorRate
-**条件**: 错误率 > 5%，持续 2 分钟  
+**条件**: 错误率 > 5%，持续 2 分钟
 **处理**: 分析错误类型，优化查询或增加重试
 
 #### 5. DashboardAPIHighLatency
-**条件**: P95 延迟 > 5s，持续 3 分钟  
+**条件**: P95 延迟 > 5s，持续 3 分钟
 **处理**: 检查慢查询，优化索引，增加缓存
 
 #### 6. ModuleExecutionHighFailureRate
-**条件**: 模块失败率 > 10%，持续 5 分钟  
+**条件**: 模块失败率 > 10%，持续 5 分钟
 **处理**: 检查特定模块日志，修复Bug或调整配置
 
 ---
@@ -231,7 +231,7 @@ echo ""
 
 # 4. Hot表记录数
 echo "4. Hot表记录数"
-psql -t -c "SELECT 
+psql -t -c "SELECT
   (SELECT count(*) FROM session_module_executions_hot) as sme_hot,
   (SELECT count(*) FROM dashboard_access_events_hot) as dae_hot;"
 echo ""
@@ -306,19 +306,19 @@ echo "周维护完成！"
 **排查步骤**:
 ```bash
 # 1. 查看慢查询
-psql -c "SELECT query, calls, mean_time, total_time 
-FROM pg_stat_statements 
-WHERE query LIKE '%session_summaries%' 
+psql -c "SELECT query, calls, mean_time, total_time
+FROM pg_stat_statements
+WHERE query LIKE '%session_summaries%'
 ORDER BY mean_time DESC LIMIT 10;"
 
 # 2. 检查索引使用
-psql -c "EXPLAIN ANALYZE 
-SELECT * FROM session_summaries 
+psql -c "EXPLAIN ANALYZE
+SELECT * FROM session_summaries
 WHERE last_request_at >= NOW() - INTERVAL '1 hour';"
 
 # 3. 查看表膨胀
-psql -c "SELECT schemaname, tablename, 
-  pg_size_pretty(pg_total_relation_size(schemaname||'.'||tablename)) 
+psql -c "SELECT schemaname, tablename,
+  pg_size_pretty(pg_total_relation_size(schemaname||'.'||tablename))
 FROM pg_tables WHERE tablename = 'session_summaries';"
 
 # 4. 缓存命中率
@@ -340,9 +340,9 @@ curl http://localhost:9090/metrics | grep module_cache_hit
 tail -100 /var/log/llm-gateway/error.log | grep -A5 "module_name"
 
 # 2. 检查数据库记录
-psql -c "SELECT error_message, count(*) 
-FROM session_module_executions_hot 
-WHERE module_name = 'session_audit' AND status = 'failed' 
+psql -c "SELECT error_message, count(*)
+FROM session_module_executions_hot
+WHERE module_name = 'session_audit' AND status = 'failed'
 GROUP BY error_message ORDER BY count DESC LIMIT 5;"
 
 # 3. 查看模块配置
@@ -368,8 +368,8 @@ curl -X POST http://localhost:8080/internal/test-module \
 psql -c "SELECT count(*), state FROM pg_stat_activity GROUP BY state;"
 
 # 2. 查看长时间运行的查询
-psql -c "SELECT pid, now() - query_start AS duration, query 
-FROM pg_stat_activity 
+psql -c "SELECT pid, now() - query_start AS duration, query
+FROM pg_stat_activity
 WHERE state != 'idle' AND now() - query_start > interval '1 minute';"
 
 # 3. 检查连接池配置
@@ -379,9 +379,9 @@ grep -A5 "database:" /etc/llm-gateway/config.yaml
 **解决方案**:
 ```bash
 # 1. 杀死僵尸连接
-psql -c "SELECT pg_terminate_backend(pid) 
-FROM pg_stat_activity 
-WHERE state = 'idle in transaction' 
+psql -c "SELECT pg_terminate_backend(pid)
+FROM pg_stat_activity
+WHERE state = 'idle in transaction'
 AND now() - state_change > interval '10 minutes';"
 
 # 2. 增加 max_connections
@@ -406,20 +406,20 @@ psql -c "SELECT pg_reload_conf();"
 -- 检查缺失索引
 SELECT schemaname, tablename, attname, n_distinct, correlation
 FROM pg_stats
-WHERE schemaname = 'public' 
+WHERE schemaname = 'public'
 AND tablename IN ('session_module_executions_hot', 'dashboard_access_events_hot')
 ORDER BY abs(correlation) DESC;
 
 -- 创建复合索引 (示例)
-CREATE INDEX CONCURRENTLY idx_sme_tenant_module_status 
+CREATE INDEX CONCURRENTLY idx_sme_tenant_module_status
 ON session_module_executions_hot(tenant_id, module_name, status, created_at DESC);
 ```
 
 #### 2. 查询优化
 ```sql
 -- 使用 EXPLAIN ANALYZE 分析
-EXPLAIN (ANALYZE, BUFFERS) 
-SELECT * FROM session_module_executions_hot 
+EXPLAIN (ANALYZE, BUFFERS)
+SELECT * FROM session_module_executions_hot
 WHERE gw_session_id = 'xxx' AND module_name = 'session_audit';
 
 -- 优化建议:
@@ -458,12 +458,12 @@ cache:
   memory:
     max_size: 10000
     ttl: 60s
-  
+
   # Redis缓存 (L1)
   redis:
     enabled: true
     ttl: 600s
-  
+
   # 数据库缓存 (L2)
   database:
     ttl: 3600s
@@ -526,13 +526,13 @@ SELECT archive_dashboard_events(30);
 
 #### 查看归档统计
 ```sql
-SELECT 
+SELECT
   'sme_hot' as table_name,
   count(*) as total_rows,
   pg_size_pretty(pg_total_relation_size('session_module_executions_hot')) as size
 FROM session_module_executions_hot
 UNION ALL
-SELECT 
+SELECT
   'dae_hot',
   count(*),
   pg_size_pretty(pg_total_relation_size('dashboard_access_events_hot'))

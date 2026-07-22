@@ -10,7 +10,7 @@
 
 **问题**: Python 的 bcrypt 库生成 `$2b$` 前缀的哈希，但 Go 的 `golang.org/x/crypto/bcrypt` 不识别此前缀，导致登录失败 401。
 
-**根因**: 
+**根因**:
 - Python bcrypt 4.0+ 使用 `$2b$` 前缀（符合最新规范）
 - Go bcrypt 只识别 `$2a$` 和 `$2y$` 前缀（历史兼容性）
 
@@ -49,7 +49,7 @@ docker exec r112_postgres psql -U kxuser -d llm_gateway \
   -f /dev/stdin < deploy/sql/schemas/baseline/01-schema.sql
 ```
 
-**建议**: 
+**建议**:
 1. `ensureRequestLogSchema()` 应该先检查表是否存在，不存在则 `CREATE TABLE`
 2. 或者在 Docker Compose 的 entrypoint 中自动应用 schema
 
@@ -231,29 +231,29 @@ from playwright.sync_api import sync_playwright
 with sync_playwright() as p:
     browser = p.chromium.launch(headless=True)
     page = browser.new_page(viewport={"width": 1280, "height": 900})
-    
+
     # 1. Landing
     page.goto('http://localhost:8781/')
     page.screenshot(path='/tmp/ui-verify-landing-desktop-01.png')
-    
+
     # 2. Login
     page.click('button:has-text("Sign in")')
     page.fill('input[type="text"]', 'admin')
     page.fill('input[type="password"]', 'Veritrans&9527')
     page.click('button:has-text("登录")')
-    
+
     # 3. Verify localStorage
     user_info = page.evaluate('() => localStorage.getItem("llmgw_user_info")')
     assert user_info is not None
-    
+
     # 4. Navigate to modules
     page.goto('http://localhost:8781/admin/modules')
     page.screenshot(path='/tmp/ui-verify-modules-desktop-04.png')
-    
+
     # 5. Click WeChat module
     page.click('text=微信机器人')
     page.screenshot(path='/tmp/ui-verify-wechat-detail-05.png')
-    
+
     browser.close()
 ```
 

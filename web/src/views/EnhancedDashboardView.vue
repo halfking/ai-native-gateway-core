@@ -53,8 +53,8 @@ function handleRefresh() {
           <h2>{{ t('dashboard.title') || 'Dashboard' }}</h2>
         </div>
         <div class="toolbar-right">
-          <el-select 
-            :model-value="days" 
+          <el-select
+            :model-value="days"
             @change="handleTimeRangeChange"
             style="width: 140px; margin-right: 12px;">
             <el-option
@@ -64,9 +64,9 @@ function handleRefresh() {
               :value="option.value"
             />
           </el-select>
-          <el-button 
-            type="primary" 
-            :icon="RefreshRight" 
+          <el-button
+            type="primary"
+            :icon="RefreshRight"
             :loading="loading"
             @click="handleRefresh">
             {{ t('dashboard.refresh') || 'Refresh' }}
@@ -76,9 +76,9 @@ function handleRefresh() {
     </el-card>
 
     <!-- 错误提示 -->
-    <el-alert 
-      v-if="error" 
-      type="error" 
+    <el-alert
+      v-if="error"
+      type="error"
       :title="t('dashboard.loadError') || 'Load Error'"
       :description="((error as unknown) as Error).message"
       show-icon
@@ -102,10 +102,10 @@ function handleRefresh() {
     <!-- 模块执行统计 -->
     <el-row :gutter="20">
       <el-col :span="24">
-        <ModuleStatsChart 
-          v-if="moduleStats" 
-          :data="moduleStats.modules" 
-          :loading="loading" 
+        <ModuleStatsChart
+          v-if="moduleStats"
+          :data="moduleStats.modules"
+          :loading="loading"
         />
         <el-card v-else shadow="hover" v-loading="loading">
           <el-empty :description="t('dashboard.noData') || 'No Data'" />
@@ -120,8 +120,8 @@ function handleRefresh() {
       </template>
       <el-row :gutter="20">
         <el-col :span="6">
-          <el-statistic 
-            :title="t('dashboard.moduleStats.totalModules') || 'Total Modules'" 
+          <el-statistic
+            :title="t('dashboard.moduleStats.totalModules') || 'Total Modules'"
             :value="moduleStats.summary.total_modules">
             <template #prefix>
               <el-icon color="#409EFF"><Grid /></el-icon>
@@ -129,22 +129,22 @@ function handleRefresh() {
           </el-statistic>
         </el-col>
         <el-col :span="6">
-          <el-statistic 
-            :title="t('dashboard.moduleStats.totalExecutions') || 'Total Executions'" 
+          <el-statistic
+            :title="t('dashboard.moduleStats.totalExecutions') || 'Total Executions'"
             :value="moduleStats.summary.total_executions" />
         </el-col>
         <el-col :span="6">
-          <el-statistic 
-            :title="t('dashboard.moduleStats.avgCacheHitRate') || 'Avg Cache Hit Rate'" 
-            :value="moduleStats.summary.avg_cache_hit_rate" 
-            :precision="2" 
+          <el-statistic
+            :title="t('dashboard.moduleStats.avgCacheHitRate') || 'Avg Cache Hit Rate'"
+            :value="moduleStats.summary.avg_cache_hit_rate"
+            :precision="2"
             suffix="%" />
         </el-col>
         <el-col :span="6">
-          <el-statistic 
-            :title="t('dashboard.moduleStats.avgDuration') || 'Avg Duration'" 
-            :value="moduleStats.summary.avg_duration_ms" 
-            :precision="0" 
+          <el-statistic
+            :title="t('dashboard.moduleStats.avgDuration') || 'Avg Duration'"
+            :value="moduleStats.summary.avg_duration_ms"
+            :precision="0"
             suffix="ms" />
         </el-col>
       </el-row>

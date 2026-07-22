@@ -7,11 +7,11 @@ export default {
     error: 'Verbindung fehlgeschlagen',
     loading: 'Überprüfung läuft',
   },
-  
+
   panel: {
     title: 'Memora-Verbindung',
     closeLabel: 'Schließen',
-    
+
     fields: {
       serviceUrl: 'Dienst-URL',
       recentLatency: 'Aktuelle Latenz',
@@ -22,7 +22,7 @@ export default {
       consecutiveErrors: 'Aufeinanderfolgende Fehler',
       recentWriteError: 'Letzter Schreibfehler',
     },
-    
+
     actions: {
       processing: 'Wird verarbeitet…',
       reconnect: 'Erneut verbinden',
@@ -32,7 +32,7 @@ export default {
       sessionContext: 'Sitzungskontext',
     },
   },
-  
+
   error: {
     connectionFailed: 'Verbindung fehlgeschlagen',
     checkFailed: 'Prüfung fehlgeschlagen',

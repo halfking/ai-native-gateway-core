@@ -1,7 +1,7 @@
 # 请求链路追踪系统设计方案
 
-> **创建时间**: 2026-07-16  
-> **状态**: DRAFT  
+> **创建时间**: 2026-07-16
+> **状态**: DRAFT
 > **优先级**: P0 (紧急)
 
 ## 1. 问题清单
@@ -228,17 +228,17 @@ type RequestTrace struct {
 // 追加事件到Redis
 func AppendEvent(ctx context.Context, requestID string, event TraceEvent) error {
     key := fmt.Sprintf("request:trace:%s", requestID)
-    
+
     // 从Redis读取现有trace
     trace, err := getOrCreateTrace(ctx, key, requestID)
     if err != nil {
         return err
     }
-    
+
     // 追加事件
     event.Seq = len(trace.Events) + 1
     trace.Events = append(trace.Events, event)
-    
+
     // 写回Redis
     data, _ := json.Marshal(trace)
     return rdb.Set(ctx, key, data, 10*time.Minute).Err()
@@ -247,20 +247,20 @@ func AppendEvent(ctx context.Context, requestID string, event TraceEvent) error 
 // 请求结束时打包入库
 func FlushToPG(ctx context.Context, requestID string, db *pgxpool.Pool) error {
     key := fmt.Sprintf("request:trace:%s", requestID)
-    
+
     // 从Redis读取
     data, err := rdb.Get(ctx, key).Result()
     if err != nil {
         return err
     }
-    
+
     // 更新到 request_logs.trace_events
     _, err = db.Exec(ctx, `
         UPDATE request_logs
         SET trace_events = $1::jsonb
         WHERE request_id = $2
     `, data, requestID)
-    
+
     // 删除Redis key
     rdb.Del(ctx, key)
     return err
@@ -449,6 +449,6 @@ func FlushToPG(ctx context.Context, requestID string, db *pgxpool.Pool) error {
 
 ---
 
-**作者**: ACC Agent  
-**审核**: 待定  
+**作者**: ACC Agent
+**审核**: 待定
 **最后更新**: 2026-07-16

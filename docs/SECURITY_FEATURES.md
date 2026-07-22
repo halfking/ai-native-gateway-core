@@ -1,6 +1,6 @@
 # 安全特性与威胁模型 — glowing-tiger
 
-**最后更新**: 2026-07-12  
+**最后更新**: 2026-07-12
 **版本**: v1.0
 
 ---
@@ -76,7 +76,7 @@
 
 ### 3. Nonce 防重放攻击
 
-**位置**: 
+**位置**:
 - 内存存储: `cmd/license-authority/middleware/sigverify.go`
 - Redis 存储: `cmd/license-authority/middleware/redis_nonce.go`
 
@@ -107,8 +107,8 @@
 **示例**:
 ```go
 // ✅ 安全：参数化查询
-rows, err := db.Query(ctx, 
-    "SELECT * FROM licenses WHERE instance_id = $1", 
+rows, err := db.Query(ctx,
+    "SELECT * FROM licenses WHERE instance_id = $1",
     instanceID)
 
 // ❌ 危险：字符串拼接
@@ -413,7 +413,7 @@ gosec -fmt json -out gosec-report.json ./...
 
 ## 📧 安全联系方式
 
-**安全问题报告**: security@internal.example.com  
+**安全问题报告**: security@internal.example.com
 **响应时间**: 3 个工作日内
 
 ⚠️ **请勿在公开 Issue 中披露安全漏洞**

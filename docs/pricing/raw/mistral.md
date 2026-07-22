@@ -26,20 +26,20 @@ Toggle theme[Reach out](https://mistral.ai/contact?utm_source=docs&utm_medium=he
 *   [Overview](https://docs.mistral.ai/models/overview)
 *   [Model Selection Guide](https://docs.mistral.ai/models/model-selection-guide)
 
-*   [Best Practices](https://docs.mistral.ai/models/best-practices)  
+*   [Best Practices](https://docs.mistral.ai/models/best-practices)
 
     *   [Prompting](https://docs.mistral.ai/models/best-practices/prompt-engineering)
     *   [Sampling](https://docs.mistral.ai/models/best-practices/sampling)
 
-*   [Deployment](https://docs.mistral.ai/models/deployment)  
+*   [Deployment](https://docs.mistral.ai/models/deployment)
 
-    
 
-    *   [Cloud](https://docs.mistral.ai/models/deployment/cloud-deployments)   
 
-    
+    *   [Cloud](https://docs.mistral.ai/models/deployment/cloud-deployments)
 
-    *   [Self-Deployment](https://docs.mistral.ai/models/deployment/local-deployment)   
+
+
+    *   [Self-Deployment](https://docs.mistral.ai/models/deployment/local-deployment)
 
 *   [Labs](https://docs.mistral.ai/models/labs)
 

@@ -2,7 +2,7 @@
 export default {
   title: '{tool} Configuration Generator',
   close: 'Close',
-  
+
   step1: {
     title: '① Select API Key (all keys under current tenant)',
     refresh: 'Refresh',
@@ -15,12 +15,12 @@ export default {
     },
     selected: 'Selected:',
   },
-  
+
   step2: {
     title: '② Operating System',
     pathHint: 'Config file path:',
   },
-  
+
   step3: {
     title: '③ Select Model Scope',
     featured: 'Featured Models (routing featured config)',
@@ -41,14 +41,14 @@ export default {
       noMatch: 'No matching models',
     },
   },
-  
+
   footer: {
     generated: 'Generated {count} model configurations',
     generate: 'Generate Config',
     generating: 'Generating…',
     regenerate: 'Regenerate',
   },
-  
+
   results: {
     tabs: {
       file: 'Config File',
@@ -62,7 +62,7 @@ export default {
       scriptHint: 'Script automatically backs up old config files',
     },
   },
-  
+
   applyDialog: {
     title: 'Apply for New API Key',
     close: 'Close',
@@ -74,7 +74,7 @@ export default {
     submit: 'Submit Application',
     submitting: 'Submitting…',
   },
-  
+
   error: {
     applyFailed: 'Application failed',
   },

@@ -1,12 +1,12 @@
 # Phase 1.5 修正计划：充分复用成熟代码
 
-> **关联文档**: 
+> **关联文档**:
 > - [domain-refactoring-plan.md](./domain-refactoring-plan.md) (v2.0)
 > - [implementation-plan.md](./implementation-plan.md) (v1.0)
 > - [phase1-execution-audit-v2-revised-20260625.md](./phase1-execution-audit-v2-revised-20260625.md) (审计报告)
 >
-> **版本**: v1.0  
-> **日期**: 2026-06-25  
+> **版本**: v1.0
+> **日期**: 2026-06-25
 > **执行时间**: 7 天
 
 ---

@@ -13,7 +13,7 @@
   ```bash
   # 列出所有迁移文件
   ls -1 migrations/*.sql | wc -l
-  
+
   # 检查最新迁移版本
   LATEST_MIGRATION=$(ls -1 migrations/*.sql | tail -1 | grep -oP '\d+')
   echo "最新迁移版本: $LATEST_MIGRATION"
@@ -21,9 +21,9 @@
 
 - [ ] **当前数据库版本**：
   ```sql
-  SELECT version, description, applied_at 
-  FROM schema_migrations 
-  ORDER BY version DESC 
+  SELECT version, description, applied_at
+  FROM schema_migrations
+  ORDER BY version DESC
   LIMIT 1;
   ```
 
@@ -33,7 +33,7 @@
   CODE_VERSION=$(ls -1 migrations/*.sql | tail -1 | grep -oP '\d+')
   DB_VERSION=$(PGPASSWORD='xxx' psql -h xxx -U llm_gateway -d llm_gateway -t -c \
     "SELECT version FROM schema_migrations ORDER BY version DESC LIMIT 1" | tr -d ' ')
-  
+
   if [ "$CODE_VERSION" != "$DB_VERSION" ]; then
     echo "⚠️  警告：需要应用数据库迁移"
     echo "   代码版本: $CODE_VERSION"
@@ -56,7 +56,7 @@
     "LLM_GATEWAY_SECRET_KEY"
     "LLM_GATEWAY_CREDENTIAL_ENCRYPTION_KEY"
   )
-  
+
   for var in "${required_vars[@]}"; do
     if [ -z "${!var}" ]; then
       echo "❌ 缺少环境变量: $var"
@@ -115,7 +115,7 @@
   ```bash
   # 使用迁移工具
   ./bin/storage-migrate up
-  
+
   # 或手动应用
   PGPASSWORD='xxx' psql -h __PRIV_IP_2__ -U llm_gateway -d llm_gateway < migrations/327_credential_plan_type_full.sql
   ```
@@ -123,12 +123,12 @@
 - [ ] **验证迁移结果**：
   ```sql
   -- 检查新列是否存在
-  SELECT column_name 
-  FROM information_schema.columns 
+  SELECT column_name
+  FROM information_schema.columns
   WHERE table_name = 'credentials' AND column_name = 'plan_type';
-  
-  SELECT column_name 
-  FROM information_schema.columns 
+
+  SELECT column_name
+  FROM information_schema.columns
   WHERE table_name = 'credential_model_bindings' AND column_name = 'plan_type_origin';
   ```
 
@@ -146,7 +146,7 @@
 - [ ] **启动新容器**：
   ```bash
   docker-compose up -d llm-gateway-go
-  
+
   # 或 k8s
   kubectl rollout restart deployment/llm-gateway-go
   ```
@@ -188,8 +188,8 @@
 
 - [ ] **可用模型数量**：
   ```sql
-  SELECT COUNT(*) as available_models 
-  FROM credential_model_bindings 
+  SELECT COUNT(*) as available_models
+  FROM credential_model_bindings
   WHERE available = true;
   -- 应该 > 100
   ```
@@ -264,7 +264,7 @@
 
 - [ ] **最近请求统计**：
   ```sql
-  SELECT 
+  SELECT
     status,
     COUNT(*) as count
   FROM request_logs
@@ -295,7 +295,7 @@
    ```bash
    # 使用 down 迁移
    PGPASSWORD='xxx' psql -h __PRIV_IP_2__ -U llm_gateway -d llm_gateway < migrations/327_xxx.down.sql
-   
+
    # 或恢复备份
    pg_restore -h __PRIV_IP_2__ -U llm_gateway -d llm_gateway backup_xxx.sql
    ```
@@ -417,7 +417,7 @@ echo "3. 查看仪表盘: https://grafana/d/llm-gateway"
 
 ---
 
-**版本：** 1.0  
-**创建日期：** 2026-07-03  
-**维护者：** AI 运维团队  
+**版本：** 1.0
+**创建日期：** 2026-07-03
+**维护者：** AI 运维团队
 **审核状态：** 待审核

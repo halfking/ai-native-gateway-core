@@ -92,12 +92,12 @@ const handleManualDisableToggle = async (row: Credential) => {
       row.manual_disabled ? '手动禁用凭据' : '恢复凭据',
       { inputType: 'textarea' }
     )
-    
+
     await api.toggleCredentialManualDisable(row.id, {
       manual_disabled: row.manual_disabled,
       reason: reason.value
     })
-    
+
     ElMessage.success(row.manual_disabled ? '已禁用' : '已启用')
   } catch (err) {
     // 回滚开关状态

@@ -134,7 +134,7 @@ watch(
       const buckets = props.data.requestCountBuckets
       const labels = buckets.map(b => `${b.label}\n(${b.range})`)
       const data = buckets.map(b => b.count)
-      
+
       chartInstance.value.data.labels = labels
       chartInstance.value.data.datasets[0].data = data
       chartInstance.value.update()

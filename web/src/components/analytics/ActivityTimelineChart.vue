@@ -148,7 +148,7 @@ watch(
       const labels = props.data.map(d => d.date)
       const sessionData = props.data.map(d => d.sessionCount)
       const requestData = props.data.map(d => d.requestCount)
-      
+
       chartInstance.value.data.labels = labels
       chartInstance.value.data.datasets[0].data = sessionData
       chartInstance.value.data.datasets[1].data = requestData

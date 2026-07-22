@@ -127,7 +127,7 @@ VACUUM FULL request_logs_hot;  -- 从 316MB → 306MB（释放10MB）
 - 这是**实际的业务数据**，不是垃圾
 - 删除操作（93M次）实际是分区切换的副产品，每次只标记chunk为失效
 
-**结论**: 
+**结论**:
 - 这不是"问题"或"膨胀"，而是Citus Columnar的**设计特性**
 - 列存储将数据分块存储，每个chunk独立压缩
 - 删除操作通过标记chunk为"待清理"，而不是物理删除
@@ -214,7 +214,7 @@ cat > /opt/scripts/daily_cleanup.sh << 'EOF'
 #!/bin/bash
 docker exec pg-252-pg17 psql -U llm_gateway -d llm_gateway << 'SQL'
 -- 删除7天前的临时数据
-DELETE FROM self_check_round_results 
+DELETE FROM self_check_round_results
 WHERE created_at < NOW() - INTERVAL '7 days';
 DELETE FROM self_check_runs
 WHERE created_at < NOW() - INTERVAL '7 days';

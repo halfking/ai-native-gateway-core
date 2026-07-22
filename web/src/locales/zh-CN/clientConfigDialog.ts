@@ -2,7 +2,7 @@
 export default {
   title: '{tool} 配置生成器',
   close: '关闭',
-  
+
   step1: {
     title: '① 选择 API Key（当前租户下所有密钥）',
     refresh: '刷新',
@@ -15,12 +15,12 @@ export default {
     },
     selected: '已选：',
   },
-  
+
   step2: {
     title: '② 操作系统',
     pathHint: '配置文件路径：',
   },
-  
+
   step3: {
     title: '③ 选择模型范围',
     featured: '热门模型（路由 featured 配置）',
@@ -41,14 +41,14 @@ export default {
       noMatch: '没有匹配的模型',
     },
   },
-  
+
   footer: {
     generated: '已生成 {count} 个模型配置',
     generate: '生成配置',
     generating: '生成中…',
     regenerate: '重新生成',
   },
-  
+
   results: {
     tabs: {
       file: '配置文件',
@@ -62,7 +62,7 @@ export default {
       scriptHint: '脚本自动备份旧配置文件',
     },
   },
-  
+
   applyDialog: {
     title: '申请新 API Key',
     close: '关闭',
@@ -74,7 +74,7 @@ export default {
     submit: '提交申请',
     submitting: '提交中…',
   },
-  
+
   error: {
     applyFailed: '申请失败',
   },

@@ -1,7 +1,7 @@
 # 会话健康运维手册
 
-> **版本**: v2.1.0  
-> **更新日期**: 2026-07-06  
+> **版本**: v2.1.0
+> **更新日期**: 2026-07-06
 > **目标读者**: SRE、运维工程师、平台管理员
 
 ---
@@ -130,17 +130,17 @@ func determineOutcome(session SessionSummary) string {
     if session.ErrorCount > 0 && session.ErrorRate > 0.5 {
         return "error"  // 超过一半请求失败
     }
-    
+
     // 2. 用户放弃
     if session.DurationSeconds < 10 && session.RequestCount < 2 {
         return "abandoned"  // 极短会话，可能是放弃
     }
-    
+
     // 3. 正常完成
     if session.SuccessCount > 0 && session.ErrorRate < 0.3 {
         return "completed"  // 大部分请求成功
     }
-    
+
     // 4. 未知
     return "unknown"
 }
@@ -166,16 +166,16 @@ func determineOutcome(session SessionSummary) string {
 type HealthScoreConfig struct {
     // 延迟阈值（毫秒）
     LatencyThresholdMs int `json:"latency_threshold_ms"`
-    
+
     // 成本阈值（美元/请求）
     CostThresholdUSD float64 `json:"cost_threshold_usd"`
-    
+
     // 错误率容忍度（0-1）
     ErrorRateTolerance float64 `json:"error_rate_tolerance"`
-    
+
     // 合规问题权重
     ComplianceWeight int `json:"compliance_weight"`
-    
+
     // 是否启用成本扣分
     EnableCostPenalty bool `json:"enable_cost_penalty"`
 }
@@ -240,7 +240,7 @@ func GetHealthScoreConfig(tenantID string) HealthScoreConfig {
             ErrorRateTolerance: 0.05,
         }
     }
-    
+
     // 默认配置
     return DefaultHealthScoreConfig()
 }
@@ -396,7 +396,7 @@ groups:
         annotations:
           summary: "会话健康分均值过低"
           description: "过去 15 分钟平均健康分 {{ $value }}，低于 60 分阈值"
-          
+
       # 告警 2: F 等级会话占比高
       - alert: HighFailureRate
         expr: |
@@ -409,7 +409,7 @@ groups:
         annotations:
           summary: "F 等级会话占比超过 10%"
           description: "过去 5 分钟 {{ $value | humanizePercentage }} 的会话为 F 等级"
-          
+
       # 告警 3: Worker 滞后严重
       - alert: HealthWorkerLagging
         expr: health_worker_lag_seconds > 600
@@ -420,7 +420,7 @@ groups:
         annotations:
           summary: "健康分计算滞后"
           description: "Worker 滞后 {{ $value }} 秒，有未计算的会话积压"
-          
+
       # 告警 4: Worker 错误率高
       - alert: HealthWorkerErrors
         expr: |
@@ -432,7 +432,7 @@ groups:
         annotations:
           summary: "健康分计算错误率高"
           description: "Worker 错误率 {{ $value }} errors/sec"
-          
+
       # 告警 5: 合规问题激增
       - alert: ComplianceIssuesSpike
         expr: |
@@ -516,7 +516,7 @@ curl -X POST https://api.example.com/api/admin/sessions/gw_abc123/recompute-heal
 
 1. 查看扣分明细
 ```sql
-SELECT 
+SELECT
     gw_session_id,
     health_score,
     health_grade,
@@ -539,8 +539,8 @@ curl https://api.example.com/api/admin/health-score/config \
 3. 分析扣分分布
 ```sql
 -- 统计扣分原因
-SELECT 
-    CASE 
+SELECT
+    CASE
         WHEN error_count > 0 THEN 'error'
         WHEN avg_latency_ms > 800 THEN 'latency'
         WHEN total_cost_usd / NULLIF(request_count, 0) > 0.50 THEN 'cost'
@@ -568,9 +568,9 @@ ORDER BY 2 DESC;
 
 1. 检查积压数量
 ```sql
-SELECT COUNT(*) 
-FROM session_summaries 
-WHERE last_health_at IS NULL 
+SELECT COUNT(*)
+FROM session_summaries
+WHERE last_health_at IS NULL
    OR last_request_at > last_health_at;
 ```
 
@@ -594,8 +594,8 @@ cat config/health_worker.yaml
 - 增加批次大小（从 100 提高到 500）
 - 添加索引：
 ```sql
-CREATE INDEX CONCURRENTLY idx_session_summaries_health_pending 
-ON session_summaries (last_request_at) 
+CREATE INDEX CONCURRENTLY idx_session_summaries_health_pending
+ON session_summaries (last_request_at)
 WHERE last_health_at IS NULL;
 ```
 
@@ -609,7 +609,7 @@ WHERE last_health_at IS NULL;
 
 ```sql
 -- 查看等级分布
-SELECT 
+SELECT
     health_grade,
     COUNT(*) as count,
     ROUND(COUNT(*) * 100.0 / SUM(COUNT(*)) OVER (), 2) as percentage
@@ -641,7 +641,7 @@ ORDER BY health_grade;
 
 1. 查看具体触发原因
 ```sql
-SELECT 
+SELECT
     gw_session_id,
     compliance_status,
     prompt_injection_detected,
@@ -680,20 +680,20 @@ config := HealthScoreConfig{
 
 ```sql
 -- 健康分查询索引
-CREATE INDEX CONCURRENTLY idx_session_summaries_health_score 
+CREATE INDEX CONCURRENTLY idx_session_summaries_health_score
 ON session_summaries (health_score DESC, last_request_at DESC);
 
 -- 等级查询索引
-CREATE INDEX CONCURRENTLY idx_session_summaries_health_grade 
+CREATE INDEX CONCURRENTLY idx_session_summaries_health_grade
 ON session_summaries (health_grade, last_request_at DESC);
 
 -- Outcome 查询索引
-CREATE INDEX CONCURRENTLY idx_session_summaries_outcome 
+CREATE INDEX CONCURRENTLY idx_session_summaries_outcome
 ON session_summaries (outcome, last_request_at DESC);
 
 -- Worker 扫描索引
-CREATE INDEX CONCURRENTLY idx_session_summaries_health_pending 
-ON session_summaries (last_request_at) 
+CREATE INDEX CONCURRENTLY idx_session_summaries_health_pending
+ON session_summaries (last_request_at)
 WHERE last_health_at IS NULL OR last_request_at > last_health_at;
 ```
 
@@ -722,7 +722,7 @@ batchSize := 500
 tx.Begin()
 for _, session := range batch {
     health := ComputeHealth(session, config)
-    tx.Exec("UPDATE session_summaries SET health_score = $1 WHERE session_key = $2", 
+    tx.Exec("UPDATE session_summaries SET health_score = $1 WHERE session_key = $2",
             health.HealthScore, session.SessionKey)
 }
 tx.Commit()
@@ -791,7 +791,7 @@ tx.Commit()
 
 ---
 
-**文档版本**: v2.1.0  
-**最后更新**: 2026-07-06  
-**维护人**: SRE Team  
+**文档版本**: v2.1.0
+**最后更新**: 2026-07-06
+**维护人**: SRE Team
 **联系方式**: sre@example.com

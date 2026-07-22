@@ -45,7 +45,7 @@ if (typeof window !== 'undefined') {
       <span class="language-flag">{{ currentLanguage.flag }}</span>
       <span class="language-code">{{ currentLanguage.code }}</span>
     </button>
-    
+
     <div v-if="isOpen" class="language-dropdown">
       <button
         v-for="lang in languages"

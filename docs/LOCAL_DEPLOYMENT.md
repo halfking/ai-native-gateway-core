@@ -68,12 +68,12 @@ services:
     volumes:
       - pgdata:/var/lib/postgresql/data
       - ./sql/migrations/startup:/docker-entrypoint-initdb.d
-  
+
   redis:
     image: redis:7-alpine
     ports:
       - "6380:6379"
-  
+
   gateway:
     build: .
     ports:
@@ -106,7 +106,7 @@ volumes:
 **数据库表状态** (redclaw数据库):
 - ✅ users, tenants, auth_users
 - ✅ sessions, session_summaries
-- ✅ providers, applications, credentials  
+- ✅ providers, applications, credentials
 - ✅ request_logs_hot, request_logs
 - ✅ session_module_executions_hot (Dashboard)
 - ✅ dashboard_access_events_hot (Dashboard)
@@ -181,7 +181,7 @@ tail -100 /tmp/llm-gateway.log | grep "does not exist"
 
 ## 后续优化建议
 
-1. **简化db.Open()逻辑**: 
+1. **简化db.Open()逻辑**:
    - 将ensureXXXTable()改为非阻塞警告
    - 或添加 `LLM_GATEWAY_SKIP_SCHEMA_CHECK` 环境变量
 

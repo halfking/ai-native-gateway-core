@@ -208,7 +208,7 @@ go test ./api/webhooks -run TestWeChatCallback -v
 
 **问题**: `failed to get access token`
 
-**解决方案**: 
+**解决方案**:
 - 检查 `corp_id` 和 `corp_secret` 是否正确
 - 确认企业微信应用已启用
 - 检查网络连接

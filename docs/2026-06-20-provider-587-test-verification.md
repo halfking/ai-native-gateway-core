@@ -1,8 +1,8 @@
 # llm-gateway-go Provider 587 测试验证报告
 
-**日期**: 2026-06-20 23:20  
-**Provider**: 587 (apiclaude.cc)  
-**测试 Key**: sk-1R7I...KZw7  
+**日期**: 2026-06-20 23:20
+**Provider**: 587 (apiclaude.cc)
+**测试 Key**: sk-1R7I...KZw7
 **状态**: 🟡 **部分工作** - API 返回正常，但数据库记录不完整
 
 ---
@@ -82,12 +82,12 @@
 
 **查询结果**:
 ```sql
-SELECT 
+SELECT
   request_id,
   success,
   completion_tokens,
   response_body IS NOT NULL as has_response
-FROM request_logs 
+FROM request_logs
 WHERE client_model = 'claude-opus-4-8'
   AND ts > now() - interval '10 minutes';
 ```
@@ -321,7 +321,7 @@ func main() {
 
 ---
 
-**报告人**: AI Assistant  
-**报告时间**: 2026-06-20 23:20  
+**报告人**: AI Assistant
+**报告时间**: 2026-06-20 23:20
 **状态**: Provider 587 功能正常，日志记录需要修复
 

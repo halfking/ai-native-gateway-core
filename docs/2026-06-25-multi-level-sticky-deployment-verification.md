@@ -1,9 +1,9 @@
 # llm-gateway-go 多级 Sticky 路由部署验证报告
 
-**部署时间**: 2026-06-25 21:23  
-**部署环境**: 184 k3s (__DOMAIN_8__)  
-**版本**: ee72c966  
-**部署方式**: `./scripts/deploy-llm-gateway-go-184.sh --only app`  
+**部署时间**: 2026-06-25 21:23
+**部署环境**: 184 k3s (__DOMAIN_8__)
+**版本**: ee72c966
+**部署方式**: `./scripts/deploy-llm-gateway-go-184.sh --only app`
 
 ---
 
@@ -26,8 +26,8 @@ $ curl -s https://__DOMAIN_8__/healthz | jq .version
 "V2.2.0-77-gee72c966-ee72c966-2026-06-25-690"
 ```
 
-✅ 服务正常运行  
-✅ 版本正确（ee72c966 = 多级sticky实现）  
+✅ 服务正常运行
+✅ 版本正确（ee72c966 = 多级sticky实现）
 
 ---
 
@@ -53,7 +53,7 @@ $ curl -s https://__DOMAIN_8__/healthz | jq .version
 
 **测试场景**:
 1. ✅ 选择 claude-opus-4-8 → 应该使用 claude credential
-2. ✅ 同一会话切换到 minimax → 应该使用 minimax credential  
+2. ✅ 同一会话切换到 minimax → 应该使用 minimax credential
 3. ✅ 切回 claude → 应该复用之前的 claude credential（L1命中）
 
 **运行方式**:
@@ -70,10 +70,10 @@ export LLMGW_API_KEY="your-api-key"
 # SSH到184，查询 sticky_sessions 表
 ssh root@__INTERNAL_K8S_HOST__
 docker exec llm-gateway-pg psql -U kxuser -d llm_gateway -c "
-  SELECT 
+  SELECT
     sticky_key,
     credential_id,
-    CASE 
+    CASE
       WHEN sticky_key LIKE '%:%:%:%:%:%' THEN 'L1 (session+model)'
       WHEN sticky_key LIKE '%:%:%:%:%' THEN 'L2 (client+model)'
       ELSE 'L3 (client)'
@@ -122,7 +122,7 @@ kubectl -n pms-test logs deploy/llm-gateway-go-deployment -f | grep sticky
      awk '{print $NF}' | \
      sort | uniq -c
    ```
-   
+
    **预期分布**:
    - L1 命中: 40-60%（同会话同模型）
    - L2 命中: 20-30%（跨会话同模型）
@@ -137,14 +137,14 @@ kubectl -n pms-test logs deploy/llm-gateway-go-deployment -f | grep sticky
           COUNT(CASE WHEN sticky_key NOT LIKE '%:%:%:%:%' THEN 1 END) as l3_keys
    FROM sticky_sessions;
    ```
-   
+
    **预期**: L1/L2/L3 数量比例约 1:1:1（因为同时记录）
 
 3. **内存使用**:
    ```bash
    kubectl -n pms-test top pod -l app=llm-gateway-go
    ```
-   
+
    **预期**: 内存增长 2-3 倍（相对之前的单层sticky）
 
 ---
@@ -261,10 +261,10 @@ cd __DEV_HOME__/workspace/official-deploy
 
 ## 签名
 
-**部署人**: OpenCode AI Agent  
-**部署时间**: 2026-06-25 21:23 UTC+8  
-**验证状态**: ✅ 部署成功，服务正常，等待功能验证  
-**风险等级**: 低（向后兼容，可快速回滚）  
+**部署人**: OpenCode AI Agent
+**部署时间**: 2026-06-25 21:23 UTC+8
+**验证状态**: ✅ 部署成功，服务正常，等待功能验证
+**风险等级**: 低（向后兼容，可快速回滚）
 
 ---
 

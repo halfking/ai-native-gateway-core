@@ -1,7 +1,7 @@
 # Credential Health False Positive Degradation
 
-**日期**: 2026-07-16  
-**优先级**: P0 (Critical)  
+**日期**: 2026-07-16
+**优先级**: P0 (Critical)
 **影响**: 客户端错误导致 credential 被错误标记 degraded 15 分钟，造成 "No available provider" 错误
 
 ## 问题描述
@@ -142,14 +142,14 @@ func (c *Checker) CheckAndMarkDegraded(ctx context.Context, credentialID int, mo
         if c.prober != nil {
             probeResult := c.prober.ProbeCredential(ctx, credentialID, model)
             if probeResult.Success {
-                slog.Info("credential健康探测通过，不标记degraded", 
-                    "credential_id", credentialID, 
+                slog.Info("credential健康探测通过，不标记degraded",
+                    "credential_id", credentialID,
                     "model", model,
                     "failure_rate", failureRate)
                 return nil  // 探测通过，不标记
             }
         }
-        
+
         // 3. 探测失败，标记 degraded
         return c.markDegraded(ctx, credentialID, model, recoverAt)
     }
@@ -175,7 +175,7 @@ type ProbeResult struct {
 
 ### Phase 4: 快速恢复（P1, 1 天）
 
-**当前**：degraded → 15 分钟后自动恢复  
+**当前**：degraded → 15 分钟后自动恢复
 **改进**：degraded → 每 30 秒探测一次 → 成功立即恢复
 
 ```go
@@ -187,7 +187,7 @@ func (c *Checker) RecoverExpired(ctx context.Context) (int, error) {
         probeResult := c.prober.ProbeCredential(ctx, binding.CredentialID, binding.Model)
         if probeResult.Success {
             c.restoreBinding(ctx, binding.CredentialID, binding.Model)
-            slog.Info("degraded credential 探测恢复", 
+            slog.Info("degraded credential 探测恢复",
                 "credential_id", binding.CredentialID,
                 "model", binding.Model,
                 "degraded_duration", time.Since(binding.UnavailableAt))

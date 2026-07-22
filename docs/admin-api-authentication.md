@@ -163,17 +163,17 @@ fetch('/api/admin/tenants', {
 
 ## 常见问题
 
-**Q: 为什么 EventSource 需要 `?token=` 回退？**  
+**Q: 为什么 EventSource 需要 `?token=` 回退？**
 A: 浏览器 EventSource API 不支持自定义请求头。在某些代理/负载均衡配置下，Cookie 可能无法正确传递，因此需要查询参数作为兜底。
 
-**Q: `?token=` 是否会破坏 REST 风格？**  
+**Q: `?token=` 是否会破坏 REST 风格？**
 A: 这是 EventSource 技术限制的权衡方案。仅在无 Bearer 头且无 Cookie 时生效，不影响标准 API 调用。
 
-**Q: 如何防止 `?token=` 泄露？**  
-A: 
+**Q: 如何防止 `?token=` 泄露？**
+A:
 1. 前端从内存读取，不持久化到 URL
 2. 后端日志通常不记录 query string
 3. 仅在必要时使用（优先 Bearer/Cookie）
 
-**Q: 是否支持 Basic Auth？**  
+**Q: 是否支持 Basic Auth？**
 A: 不支持。企业内部部署场景下，Bearer Token + JWT Cookie 已足够安全且易于管理。

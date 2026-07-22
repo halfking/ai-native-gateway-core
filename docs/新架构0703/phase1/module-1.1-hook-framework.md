@@ -1,10 +1,10 @@
 # Module 1.1: Hook框架增强
 
-> **模块ID**: 1.1  
-> **负责人**: 开发者A  
-> **工期**: 1周  
-> **优先级**: P0 (最高)  
-> **依赖**: 无  
+> **模块ID**: 1.1
+> **负责人**: 开发者A
+> **工期**: 1周
+> **优先级**: P0 (最高)
+> **依赖**: 无
 > **状态**: 待开始
 
 ---
@@ -87,19 +87,19 @@ import (
 type Hook interface {
     // Name 返回插件名称（全局唯一）
     Name() string
-    
+
     // Priority 返回执行优先级（0-1000，越小越先执行）
     Priority() int
-    
+
     // Enabled 返回是否启用
     Enabled() bool
-    
+
     // Phase 返回执行阶段
     Phase() Phase
-    
+
     // Execute 执行Hook逻辑
     Execute(ctx context.Context, env *Environment) error
-    
+
     // OnConfigChange 配置变更回调（可选）
     OnConfigChange(config map[string]interface{}) error
 }
@@ -122,22 +122,22 @@ type Environment struct {
     TenantID        string
     SessionKey      string
     TaskID          string
-    
+
     // 请求数据
     Request         *Request          // 客户端请求
     Response        *Response         // 客户端响应
     UpstreamRequest *UpstreamRequest  // 上游请求
     UpstreamResponse *UpstreamResponse // 上游响应
-    
+
     // 会话信息
     Session         *Session
-    
+
     // 元数据（Hook间共享数据）
     Metadata        map[string]interface{}
-    
+
     // 时间戳
     StartTime       time.Time
-    
+
     // 上下文控制
     Skip            bool              // 跳过后续Hook
     Abort           bool              // 中止请求
@@ -181,19 +181,19 @@ import (
 type HookRegistry struct {
     // hooks 按Phase分组的Hook列表
     hooks map[Phase][]Hook
-    
+
     // config 配置管理器
     config *ConfigManager
-    
+
     // metrics 指标收集器
     metrics *MetricsCollector
-    
+
     // logger 日志记录器
     logger Logger
-    
+
     // mu 读写锁
     mu sync.RWMutex
-    
+
     // errorHandler 错误处理器
     errorHandler ErrorHandler
 }
@@ -217,12 +217,12 @@ func NewHookRegistry(
 func (r *HookRegistry) Register(hook Hook) error {
     r.mu.Lock()
     defer r.mu.Unlock()
-    
+
     // 验证
     if hook.Name() == "" {
         return fmt.Errorf("hook name cannot be empty")
     }
-    
+
     // 检查重复
     phase := hook.Phase()
     for _, h := range r.hooks[phase] {
@@ -230,20 +230,20 @@ func (r *HookRegistry) Register(hook Hook) error {
             return fmt.Errorf("hook %s already registered", hook.Name())
         }
     }
-    
+
     // 添加
     r.hooks[phase] = append(r.hooks[phase], hook)
-    
+
     // 排序（按优先级）
     sort.Slice(r.hooks[phase], func(i, j int) bool {
         return r.hooks[phase][i].Priority() < r.hooks[phase][j].Priority()
     })
-    
+
     r.logger.Info("hook registered",
         "name", hook.Name(),
         "phase", phase,
         "priority", hook.Priority())
-    
+
     return nil
 }
 
@@ -251,7 +251,7 @@ func (r *HookRegistry) Register(hook Hook) error {
 func (r *HookRegistry) Unregister(name string, phase Phase) error {
     r.mu.Lock()
     defer r.mu.Unlock()
-    
+
     hooks := r.hooks[phase]
     for i, h := range hooks {
         if h.Name() == name {
@@ -260,7 +260,7 @@ func (r *HookRegistry) Unregister(name string, phase Phase) error {
             return nil
         }
     }
-    
+
     return fmt.Errorf("hook %s not found in phase %s", name, phase)
 }
 
@@ -273,16 +273,16 @@ func (r *HookRegistry) Execute(
     r.mu.RLock()
     hooks := r.hooks[phase]
     r.mu.RUnlock()
-    
+
     if len(hooks) == 0 {
         return nil
     }
-    
+
     r.logger.Debug("executing hook chain",
         "phase", phase,
         "hook_count", len(hooks),
         "request_id", env.RequestID)
-    
+
     for _, hook := range hooks {
         // 检查启用状态
         if !hook.Enabled() {
@@ -291,7 +291,7 @@ func (r *HookRegistry) Execute(
                 "phase", phase)
             continue
         }
-        
+
         // 检查Skip标志
         if env.Skip {
             r.logger.Debug("hook skipped (skip flag)",
@@ -299,7 +299,7 @@ func (r *HookRegistry) Execute(
                 "phase", phase)
             continue
         }
-        
+
         // 检查Abort标志
         if env.Abort {
             r.logger.Warn("hook chain aborted",
@@ -307,12 +307,12 @@ func (r *HookRegistry) Execute(
                 "reason", env.AbortReason)
             return fmt.Errorf("hook chain aborted: %s", env.AbortReason)
         }
-        
+
         // 执行Hook
         start := time.Now()
         err := r.executeHook(ctx, hook, env)
         duration := time.Since(start)
-        
+
         // 记录指标
         r.metrics.RecordHookExecution(
             hook.Name(),
@@ -320,7 +320,7 @@ func (r *HookRegistry) Execute(
             err == nil,
             duration,
         )
-        
+
         // 处理错误
         if err != nil {
             r.logger.Error("hook execution failed",
@@ -328,7 +328,7 @@ func (r *HookRegistry) Execute(
                 "phase", phase,
                 "error", err,
                 "duration", duration)
-            
+
             // 错误处理
             action := r.errorHandler.Handle(hook, err)
             switch action {
@@ -341,13 +341,13 @@ func (r *HookRegistry) Execute(
                 continue
             }
         }
-        
+
         r.logger.Debug("hook executed successfully",
             "name", hook.Name(),
             "phase", phase,
             "duration", duration)
     }
-    
+
     return nil
 }
 
@@ -364,7 +364,7 @@ func (r *HookRegistry) executeHook(
         ctx, cancel = context.WithTimeout(ctx, timeout)
         defer cancel()
     }
-    
+
     // 执行
     return hook.Execute(ctx, env)
 }
@@ -373,7 +373,7 @@ func (r *HookRegistry) executeHook(
 func (r *HookRegistry) GetHooks(phase Phase) []Hook {
     r.mu.RLock()
     defer r.mu.RUnlock()
-    
+
     hooks := make([]Hook, len(r.hooks[phase]))
     copy(hooks, r.hooks[phase])
     return hooks
@@ -383,11 +383,11 @@ func (r *HookRegistry) GetHooks(phase Phase) []Hook {
 func (r *HookRegistry) ReloadConfig() error {
     r.mu.Lock()
     defer r.mu.Unlock()
-    
+
     if err := r.config.Reload(); err != nil {
         return fmt.Errorf("failed to reload config: %w", err)
     }
-    
+
     // 通知所有Hook配置变更
     for _, hooks := range r.hooks {
         for _, hook := range hooks {
@@ -401,7 +401,7 @@ func (r *HookRegistry) ReloadConfig() error {
             }
         }
     }
-    
+
     r.logger.Info("hook config reloaded")
     return nil
 }
@@ -419,7 +419,7 @@ import (
     "os"
     "sync"
     "time"
-    
+
     "gopkg.in/yaml.v3"
 )
 
@@ -437,16 +437,16 @@ type HookConfig struct {
 type ConfigManager struct {
     // configFile 配置文件路径
     configFile string
-    
+
     // hooks Hook配置列表
     hooks map[string]*HookConfig
-    
+
     // mu 读写锁
     mu sync.RWMutex
-    
+
     // lastModTime 最后修改时间
     lastModTime time.Time
-    
+
     // watcher 文件监控
     watcher *FileWatcher
 }
@@ -457,15 +457,15 @@ func NewConfigManager(configFile string) (*ConfigManager, error) {
         configFile: configFile,
         hooks:      make(map[string]*HookConfig),
     }
-    
+
     // 加载配置
     if err := cm.Load(); err != nil {
         return nil, err
     }
-    
+
     // 启动文件监控
     cm.startWatcher()
-    
+
     return cm, nil
 }
 
@@ -475,29 +475,29 @@ func (cm *ConfigManager) Load() error {
     if err != nil {
         return fmt.Errorf("failed to read config file: %w", err)
     }
-    
+
     var config struct {
         Hooks []*HookConfig `yaml:"hooks"`
     }
-    
+
     if err := yaml.Unmarshal(data, &config); err != nil {
         return fmt.Errorf("failed to parse config: %w", err)
     }
-    
+
     cm.mu.Lock()
     defer cm.mu.Unlock()
-    
+
     // 更新配置
     cm.hooks = make(map[string]*HookConfig)
     for _, hc := range config.Hooks {
         cm.hooks[hc.Name] = hc
     }
-    
+
     // 更新修改时间
     if info, err := os.Stat(cm.configFile); err == nil {
         cm.lastModTime = info.ModTime()
     }
-    
+
     return nil
 }
 
@@ -510,7 +510,7 @@ func (cm *ConfigManager) Reload() error {
 func (cm *ConfigManager) GetHookConfig(name string) map[string]interface{} {
     cm.mu.RLock()
     defer cm.mu.RUnlock()
-    
+
     if hc, ok := cm.hooks[name]; ok {
         return hc.Config
     }
@@ -521,7 +521,7 @@ func (cm *ConfigManager) GetHookConfig(name string) map[string]interface{} {
 func (cm *ConfigManager) IsEnabled(name string) bool {
     cm.mu.RLock()
     defer cm.mu.RUnlock()
-    
+
     if hc, ok := cm.hooks[name]; ok {
         return hc.Enabled
     }
@@ -532,7 +532,7 @@ func (cm *ConfigManager) IsEnabled(name string) bool {
 func (cm *ConfigManager) GetHookTimeout(name string) time.Duration {
     cm.mu.RLock()
     defer cm.mu.RUnlock()
-    
+
     if hc, ok := cm.hooks[name]; ok && hc.Timeout > 0 {
         return hc.Timeout
     }
@@ -560,7 +560,7 @@ package hooks
 
 import (
     "time"
-    
+
     "github.com/prometheus/client_golang/prometheus"
     "github.com/prometheus/client_golang/prometheus/promauto"
 )
@@ -569,10 +569,10 @@ import (
 type MetricsCollector struct {
     // Hook执行次数
     executionCount *prometheus.CounterVec
-    
+
     // Hook执行时长
     executionDuration *prometheus.HistogramVec
-    
+
     // Hook失败次数
     failureCount *prometheus.CounterVec
 }
@@ -615,10 +615,10 @@ func (mc *MetricsCollector) RecordHookExecution(
     if !success {
         status = "failure"
     }
-    
+
     mc.executionCount.WithLabelValues(hookName, phase, status).Inc()
     mc.executionDuration.WithLabelValues(hookName, phase).Observe(duration.Seconds())
-    
+
     if !success {
         mc.failureCount.WithLabelValues(hookName, phase, "unknown").Inc()
     }
@@ -637,7 +637,7 @@ func (mc *MetricsCollector) RecordHookExecution(
 // GET /api/admin/hooks - 获取所有Hook状态
 func (h *Handler) handleGetHooks(w http.ResponseWriter, r *http.Request) {
     hooks := h.hookRegistry.GetAllHooks()
-    
+
     response := make([]map[string]interface{}, 0)
     for _, hook := range hooks {
         response = append(response, map[string]interface{}{
@@ -647,7 +647,7 @@ func (h *Handler) handleGetHooks(w http.ResponseWriter, r *http.Request) {
             "enabled":  hook.Enabled(),
         })
     }
-    
+
     writeJSON(w, http.StatusOK, response)
 }
 
@@ -657,7 +657,7 @@ func (h *Handler) handleReloadHooks(w http.ResponseWriter, r *http.Request) {
         writeError(w, http.StatusInternalServerError, err.Error())
         return
     }
-    
+
     writeJSON(w, http.StatusOK, map[string]interface{}{
         "status": "ok",
         "message": "hooks config reloaded",
@@ -701,16 +701,16 @@ func (h *Handler) handleReloadHooks(w http.ResponseWriter, r *http.Request) {
 
 func TestHookRegistry_Register(t *testing.T) {
     registry := NewHookRegistry(nil, nil, nil)
-    
+
     hook := &MockHook{
         name:     "test-hook",
         priority: 10,
         phase:    PhasePreRouting,
     }
-    
+
     err := registry.Register(hook)
     assert.NoError(t, err)
-    
+
     hooks := registry.GetHooks(PhasePreRouting)
     assert.Len(t, hooks, 1)
     assert.Equal(t, "test-hook", hooks[0].Name())
@@ -718,7 +718,7 @@ func TestHookRegistry_Register(t *testing.T) {
 
 func TestHookRegistry_Execute(t *testing.T) {
     registry := NewHookRegistry(nil, NewMetricsCollector(), NewTestLogger())
-    
+
     executed := false
     hook := &MockHook{
         name:     "test-hook",
@@ -729,21 +729,21 @@ func TestHookRegistry_Execute(t *testing.T) {
             return nil
         },
     }
-    
+
     registry.Register(hook)
-    
+
     env := &Environment{RequestID: "test-123"}
     err := registry.Execute(context.Background(), PhasePreRouting, env)
-    
+
     assert.NoError(t, err)
     assert.True(t, executed)
 }
 
 func TestHookRegistry_Priority(t *testing.T) {
     registry := NewHookRegistry(nil, nil, nil)
-    
+
     var executionOrder []string
-    
+
     hook1 := &MockHook{
         name:     "hook-20",
         priority: 20,
@@ -753,7 +753,7 @@ func TestHookRegistry_Priority(t *testing.T) {
             return nil
         },
     }
-    
+
     hook2 := &MockHook{
         name:     "hook-10",
         priority: 10,
@@ -763,13 +763,13 @@ func TestHookRegistry_Priority(t *testing.T) {
             return nil
         },
     }
-    
+
     registry.Register(hook1)
     registry.Register(hook2)
-    
+
     env := &Environment{}
     registry.Execute(context.Background(), PhasePreRouting, env)
-    
+
     assert.Equal(t, []string{"hook-10", "hook-20"}, executionOrder)
 }
 ```
@@ -782,12 +782,12 @@ func TestHookRegistry_Priority(t *testing.T) {
 func TestHookChain_EndToEnd(t *testing.T) {
     // 准备
     registry := setupTestRegistry()
-    
+
     // 注册多个Hook
     registry.Register(NewAuthHook())
     registry.Register(NewAuditHook())
     registry.Register(NewCompressionHook())
-    
+
     // 模拟请求
     env := &Environment{
         RequestID: "req-123",
@@ -797,13 +797,13 @@ func TestHookChain_EndToEnd(t *testing.T) {
             Body:   loadTestRequest(),
         },
     }
-    
+
     ctx := context.Background()
-    
+
     // 执行Pre-Routing阶段
     err := registry.Execute(ctx, PhasePreRouting, env)
     assert.NoError(t, err)
-    
+
     // 验证结果
     assert.NotNil(t, env.Metadata["auth_user"])
     assert.NotNil(t, env.Metadata["audit_id"])
@@ -863,5 +863,5 @@ llm-gateway-go是一个企业级LLM网关，需要实现插件化架构，支持
 
 ---
 
-**文档维护**: 开发者A  
+**文档维护**: 开发者A
 **最后更新**: 2026-07-03

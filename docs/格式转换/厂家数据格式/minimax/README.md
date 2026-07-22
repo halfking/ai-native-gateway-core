@@ -23,7 +23,7 @@
 
 ## 版本信息
 
-- **API 路径**: 
+- **API 路径**:
   - OpenAI 兼容: `/v1/text/chatcompletion_v2`
   - Anthropic 兼容: `/v1/messages`
 - **私有扩展**: bot_setting, reply_constraints, plugin 等

@@ -1,7 +1,7 @@
 # 数据库降级模块修复总结
 
-**修复时间**: 2026-07-10  
-**修复人员**: Kiro AI  
+**修复时间**: 2026-07-10
+**修复人员**: Kiro AI
 **基于审计报告**: `db-degradation-audit-report.md`
 
 ---
@@ -30,12 +30,12 @@ func validateBackupFilename(filename string) error {
     if strings.Contains(filename, "..") || strings.Contains(filename, "/") || strings.Contains(filename, "\\") {
         return fmt.Errorf("filename contains invalid characters")
     }
-    
+
     // 验证格式
     if !backupFilenamePattern.MatchString(filename) {
         return fmt.Errorf("filename must match format: sessions-YYYY-MM-DD.jsonl.gz")
     }
-    
+
     return nil
 }
 ```
@@ -156,7 +156,7 @@ func (r *Recovery) RecoverFile(ctx context.Context, filename string, deleteAfter
 func (r *Recovery) recoverSession(ctx context.Context, sessionID string, records []BackupRecord) error {
     txCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
     defer cancel()
-    
+
     tx, err := r.db.Begin(txCtx)
     // ...
 }
@@ -317,7 +317,7 @@ docs/db-degradation-implementation-summary.md  +1  -2
 
 ---
 
-**修复人员**: Kiro AI  
-**审计报告**: `docs/db-degradation-audit-report.md`  
-**修复清单**: `docs/db-degradation-fix-checklist.md`  
+**修复人员**: Kiro AI
+**审计报告**: `docs/db-degradation-audit-report.md`
+**修复清单**: `docs/db-degradation-fix-checklist.md`
 **完成时间**: 2026-07-10

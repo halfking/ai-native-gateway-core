@@ -44,11 +44,11 @@ schema_version: 1      # 配置文件 schema 版本（务必匹配安装器）
 license:
   server: "https://llm.kxpms.cn/api/v1"   # License Authority 地址
   activation_mode: "online"  # online | offline | cached
-  
+
   trial:
     enabled: true
     duration_days: 15
-  
+
   enforcement:
     check_clock_rollback: true
     check_fingerprint_score: 0.6
@@ -84,7 +84,7 @@ components:
       memory: "2Gi"
       limits_cpu: "2000m"
       limits_memory: "4Gi"
-  
+
   postgres:
     enabled: true
     image: "kx-citus:v11.3.0"
@@ -94,7 +94,7 @@ components:
     init_strategy: "dump-restore"  # fresh | dump-restore | migrate-only
     dump_file: "./db/dumps/llm_gateway_baseline.dump"
     pgdata_size_gb: 50
-  
+
   redis:
     enabled: true
     image: "kx-redis:v7-alpine"

@@ -10,7 +10,7 @@ export interface QualityProfile {
   provider_id: number
   provider_name?: string
   model_name: string | null
-  
+
   // L1: 核心可用性
   success_rate_5m: number
   success_rate_1h: number
@@ -21,7 +21,7 @@ export interface QualityProfile {
   error_rate_4xx_5m: number
   error_rate_timeout_5m: number
   availability_24h: number
-  
+
   // L2: 性能
   latency_p50_5m: number
   latency_p50_1h: number
@@ -34,7 +34,7 @@ export interface QualityProfile {
   ttft_p95_5m: number
   ttft_p95_1h: number
   throughput_tokens_per_sec_1h: number
-  
+
   // L3: 可信度（反欺诈）
   trustworthiness_score: number
   trustworthiness_grade: string
@@ -43,7 +43,7 @@ export interface QualityProfile {
   quality_score: number
   probe_success_rate: number
   anomaly_count_24h: number
-  
+
   // L4: 稳定性
   volatility_24h: number
   mttr_seconds_24h: number
@@ -51,11 +51,11 @@ export interface QualityProfile {
   consecutive_failures: number
   last_failure_at: string | null
   last_recovery_at: string | null
-  
+
   // L5: 成本效益
   cost_per_1k_tokens: number
   quota_usage_percentage: number
-  
+
   // 综合评分
   availability_score: number
   performance_score: number
@@ -63,12 +63,12 @@ export interface QualityProfile {
   cost_efficiency_score: number
   quality_score_overall: number
   quality_grade: string
-  
+
   // 统计
   total_requests_5m: number
   total_requests_1h: number
   total_requests_24h: number
-  
+
   // 元数据
   updated_at: string
   created_at: string
@@ -121,31 +121,31 @@ export interface ErrorDetail {
 
 export interface QualityConfig {
   provider_id: number
-  
+
   // 告警阈值
   alert_error_rate_5xx_p0: number
   alert_error_rate_5xx_p1: number
   alert_availability_p0: number
   alert_latency_p99_p0: number
   alert_latency_p95_p1: number
-  
+
   // 质量目标
   target_success_rate: number
   target_latency_p95: number
   target_latency_p99: number
-  
+
   // 评分权重
   weight_availability: number
   weight_performance: number
   weight_stability: number
   weight_cost_efficiency: number
   weight_trustworthiness: number
-  
+
   // 熔断配置
   circuit_breaker_enabled: boolean
   circuit_breaker_threshold: number
   circuit_breaker_timeout_seconds: number
-  
+
   // 降权配置
   downgrade_on_score_below: number
   downgrade_weight_multiplier: number

@@ -1,8 +1,8 @@
 # claude-fable-5 无可用节点凭据问题 - 诊断与修复报告
 
-**日期**: 2026-07-06  
-**问题**: llmgo.kxpms.cn 中 claude-fable-5 充值后仍然"没有可用的节点凭据"  
-**状态**: ✅ 已修复  
+**日期**: 2026-07-06
+**问题**: llmgo.kxpms.cn 中 claude-fable-5 充值后仍然"没有可用的节点凭据"
+**状态**: ✅ 已修复
 **提交**: ad6ed0d4
 
 ---
@@ -175,8 +175,8 @@ cd /Users/xutaohuang/workspace/official-deploy/services/llm-gateway-go
 
 ## 提交信息
 
-**Commit**: ad6ed0d4  
-**Branch**: fix/quota-state-periodic-exhausted-recovery  
+**Commit**: ad6ed0d4
+**Branch**: fix/quota-state-periodic-exhausted-recovery
 **Files Changed**: 4 files, +328 lines
 
 - `bg/credential_probe_v2.go` - 成功探测时清除 quota_state
@@ -200,10 +200,10 @@ cd /Users/xutaohuang/workspace/official-deploy/services/llm-gateway-go
 
 ## 总结
 
-✅ **问题已解决**: quota_state='periodic_exhausted' 现在可以自动恢复  
-✅ **双重保护**: 探测成功时清除 + 60 秒兜底恢复  
-✅ **无需人工**: 充值后最多 60 秒自动恢复  
-✅ **测试通过**: 语法检查、pre-commit hooks 全部通过  
+✅ **问题已解决**: quota_state='periodic_exhausted' 现在可以自动恢复
+✅ **双重保护**: 探测成功时清除 + 60 秒兜底恢复
+✅ **无需人工**: 充值后最多 60 秒自动恢复
+✅ **测试通过**: 语法检查、pre-commit hooks 全部通过
 ✅ **文档完善**: 修复说明、测试脚本、验证方法齐全
 
 **建议立即部署到 184 生产环境，解决 claude-fable-5 及其他受影响模型的问题。**

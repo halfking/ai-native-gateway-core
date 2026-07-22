@@ -247,25 +247,25 @@ graph TD
     A[用户点击 Toggle 开关] --> B{当前状态?}
     B -->|已禁用| C[尝试启用]
     B -->|已启用| D[尝试禁用]
-    
+
     C --> E[检查 Dependencies]
     E --> F{所有依赖已启用?}
     F -->|是| G[调用 PUT /api/admin/modules/disguise/toggle]
     F -->|否| H[前端显示缺失依赖警告]
-    
+
     G --> I[后端再次验证依赖]
     I --> J{依赖满足?}
     J -->|是| K[写入 settings_kv]
     J -->|否| L[返回 424 错误]
-    
+
     K --> M[写入 settings_audit]
     M --> N[HotReload 生效]
     N --> O[返回成功响应]
     O --> P[前端刷新模块状态]
-    
+
     L --> P
     H --> Q[用户点击依赖模块标签跳转]
-    
+
     D --> R[直接禁用，无依赖检查]
     R --> G
 ```
@@ -279,7 +279,7 @@ graph LR
     C --> D[CompressionSpecs]
     C --> E[DisguiseSpecs]
     C --> F[SessionSpecs...]
-    
+
     E --> G[disguise.rotation_interval]
     E --> H[disguise.ua_pool_size]
     E --> I[disguise.lang_pool_size]
@@ -288,7 +288,7 @@ graph LR
     E --> L[disguise.fp_slot_concurrency]
     E --> M[disguise.active_gate_seconds]
     E --> N[disguise.reclaim_idle_seconds]
-    
+
     G --> O[settings.Global.EffectiveValue]
     O --> P[1. 读取 DB settings_kv]
     P --> Q{有值?}
@@ -306,52 +306,52 @@ graph TD
     A[请求到达 Gateway] --> B{enable_disguise?}
     B -->|否| C[使用标准 HTTP 客户端]
     B -->|是| D[检查请求是否需要伪装]
-    
+
     D --> E{body 包含 metadata/env?}
     E -->|否| F[跳过 body 伪装]
     E -->|是| G[应用 Profile 转换]
-    
+
     G --> H[Device ID 标准化]
     H --> I[Env block 标准化]
     I --> J[Process metrics 钳制]
-    
+
     F --> K[获取 FP Slot]
     J --> K
-    
+
     K --> L{有 Session ID?}
     L -->|是| M[Pin 复用：查找历史 Slot]
     L -->|否| N[无状态请求]
-    
+
     M --> O{Pin 存在?}
     O -->|是| P[重用该 Slot]
     O -->|否| Q[获取空闲 Slot]
-    
+
     N --> Q
     Q --> R{有空闲 Slot?}
     R -->|是| S[分配空闲 Slot]
     R -->|否| T[LRU 抢占非活跃 Slot]
-    
+
     P --> U[设置 Egress Headers]
     S --> U
     T --> U
-    
+
     U --> V[X-Device-Seed]
     U --> W[X-Virtual-Client-Id]
     U --> X[X-Virtual-IP]
     U --> Y[X-Virtual-MAC]
-    
+
     V --> Z[从 Slot 获取稳定 UA]
     Z --> AA[DisguisePool.HeadersForSlot]
     AA --> AB[User-Agent]
     AA --> AC[Accept-Language]
-    
+
     AB --> AD[发送上游请求]
     AC --> AD
-    
+
     AD --> AE[请求完成]
     AE --> AF[刷新 Slot TTL]
     AF --> AG[MaybeRotate Pool]
-    
+
     C --> AD
 ```
 
@@ -393,11 +393,11 @@ func getDisguiseConfig() {
     // 轮换间隔
     intervalSpec := settings.Global.Spec("disguise.rotation_interval")
     intervalVal, src, _ := settings.Global.EffectiveValue(intervalSpec.Scope, intervalSpec.Key, "")
-    
+
     // UA 池大小
     uaSizeSpec := settings.Global.Spec("disguise.ua_pool_size")
     uaSizeVal, _, _ := settings.Global.EffectiveValue(uaSizeSpec.Scope, uaSizeSpec.Key, "")
-    
+
     // ... 其他配置项同理
 }
 ```

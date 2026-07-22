@@ -192,7 +192,7 @@ export const i18n = createI18n({
 
 **存储键**: `llmgw_locale`
 **存储位置**: localStorage
-**行为**: 
+**行为**:
 - 用户切换语言后自动保存
 - 刷新页面后保持用户选择的语言
 

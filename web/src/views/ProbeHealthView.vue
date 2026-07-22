@@ -13,7 +13,7 @@ interface ModelHealthSummary {
   outbound_model_name: string
   protocol: string
   provider_name: string
-  
+
   total_credentials: number
   healthy_count: number
   suspicious_count: number
@@ -21,24 +21,24 @@ interface ModelHealthSummary {
   probing_count: number
   healthy_percentage: number
   failing_percentage: number
-  
+
   urgent_count: number
   suspicious_priority_count: number
   failing_priority_count: number
   watchdog_count: number
-  
+
   avg_success_rate_7d: number
   avg_verification_hours: number
   avg_consecutive_successes: number
-  
+
   total_real_success_24h: number
   total_real_failure_24h: number
   real_success_rate_24h?: number
-  
+
   last_verified_at?: string
   last_real_request_at?: string
   next_probe_at?: string
-  
+
   critical_nodes: number
   pending_probes_5min: number
   overall_health: 'critical' | 'warning' | 'degraded' | 'healthy' | 'unknown'
@@ -63,26 +63,26 @@ interface ProbeSystemHealth {
   failing_nodes: number
   suspicious_nodes: number
   probing_nodes: number
-  
+
   urgent_queue_size: number
   suspicious_queue_size: number
   failing_queue_size: number
   watchdog_queue_size: number
-  
+
   ready_probes: number
   current_probing: number
   credentials_being_probed: number
-  
+
   avg_success_rate_7d?: number
   last_probe_at?: string
   last_real_request_at?: string
-  
+
   total_real_success_24h: number
   total_real_failure_24h: number
-  
+
   critical_nodes: number
   pending_probes_5min: number
-  
+
   snapshot_at: string
 }
 
@@ -121,10 +121,10 @@ async function fetchSystemHealth() {
 async function fetchModels() {
   loading.value = true
   try {
-    const url = modelFilter.value 
+    const url = modelFilter.value
       ? `/api/admin/probe/dashboard?model=${encodeURIComponent(modelFilter.value)}`
       : '/api/admin/probe/dashboard'
-    
+
     const data = await req<{ models: ModelHealthSummary[]; total: number }>('GET', url)
     models.value = data.models || []
   } catch (err) {
@@ -157,11 +157,11 @@ async function refreshAll() {
 
 const filteredModels = computed(() => {
   let result = models.value
-  
+
   if (healthFilter.value) {
     result = result.filter(m => m.overall_health === healthFilter.value)
   }
-  
+
   return result
 })
 
@@ -172,14 +172,14 @@ const priorityQueueTotals = computed(() => {
     failing: 0,
     watchdog: 0
   }
-  
+
   queues.value.forEach(q => {
     const priority = q.probe_priority as keyof typeof totals
     if (priority in totals) {
       totals[priority] += q.queue_size
     }
   })
-  
+
   return totals
 })
 
@@ -197,7 +197,7 @@ function getHealthBadge(health: string): string {
 
 onMounted(() => {
   refreshAll()
-  
+
   if (autoRefresh.value) {
     refreshTimer = window.setInterval(refreshAll, 30000)
   }
@@ -286,7 +286,7 @@ onUnmounted(() => {
         :placeholder="t('probeHealth.filter.modelPlaceholder')"
         class="model-picker-wrapper"
       />
-      
+
       <select v-model="healthFilter" class="filter-input">
         <option value="">{{ t('probeHealth.filter.allHealth') }}</option>
         <option value="healthy">{{ t('probeHealth.filter.healthHealthy') }}</option>
@@ -315,8 +315,8 @@ onUnmounted(() => {
           </tr>
         </thead>
         <tbody>
-          <tr 
-            v-for="model in filteredModels" 
+          <tr
+            v-for="model in filteredModels"
             :key="model.provider_model_id"
             style="cursor:pointer"
             @click="router.push({ path: '/probe-health/detail', query: { model: model.raw_model_name } })"
@@ -356,7 +356,7 @@ onUnmounted(() => {
           </tr>
         </tbody>
       </table>
-      
+
       <div v-if="loading" class="empty-state">{{ t('probeHealth.loading') }}</div>
       <div v-else-if="filteredModels.length === 0" class="empty-state">{{ t('probeHealth.empty') }}</div>
     </div>

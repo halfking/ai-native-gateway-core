@@ -1,7 +1,7 @@
 # 会话健康检查模块功能总结与流程图
 
-**版本**: R1.13  
-**日期**: 2026-07-09  
+**版本**: R1.13
+**日期**: 2026-07-09
 **状态**: 生产就绪
 
 ---
@@ -462,7 +462,7 @@ func (h *InspectorHook) Execute(ctx, env) error {
 func (w *Worker) applyRecycle(ctx, candidates) {
     // 单条 SQL 更新多个会话（IN 子句）
     _, err := w.pool.Exec(ctx, `
-        UPDATE session_dim 
+        UPDATE session_dim
         SET status='closed', closed_at=NOW(), stop_reason=$1
         WHERE gw_session_id = ANY($2)
     `, reason, candidates)
@@ -473,7 +473,7 @@ func (w *Worker) applyRecycle(ctx, candidates) {
 
 ```sql
 -- session_dim 表建议索引
-CREATE INDEX idx_session_status_active ON session_dim(status, last_active_at) 
+CREATE INDEX idx_session_status_active ON session_dim(status, last_active_at)
   WHERE status='active';
 
 CREATE INDEX idx_session_tenant_status ON session_dim(tenant_id, status);
@@ -519,13 +519,13 @@ CREATE INDEX idx_session_tenant_status ON session_dim(tenant_id, status);
 
 ```
 # 每日检查
-1. llmgw_session_lifecycle_recycled_total{reason="idle_timeout"} 
+1. llmgw_session_lifecycle_recycled_total{reason="idle_timeout"}
    → 超 1000/day 需排查是否配置过严格
 
-2. llmgw_session_inspector_block_total 
+2. llmgw_session_inspector_block_total
    → 持续增长说明有恶意请求或配置不合理
 
-3. llmgw_session_lifecycle_scan_errors_total 
+3. llmgw_session_lifecycle_scan_errors_total
    → 非零值说明 DB 连接异常
 
 # 告警规则
@@ -566,8 +566,8 @@ CREATE INDEX idx_session_tenant_status ON session_dim(tenant_id, status);
 
 ---
 
-**文档维护者**: Official-Deploy Team  
-**最后更新**: 2026-07-09  
-**相关文档**: 
+**文档维护者**: Official-Deploy Team
+**最后更新**: 2026-07-09
+**相关文档**:
 - [session-inspector.md](./session-inspector.md) — 模块详细文档
 - [session-inspector-audit.md](./session-inspector-audit.md) — 审计报告

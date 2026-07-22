@@ -127,14 +127,14 @@ type RedisRPMLimiter struct {
 // Limiter 根据配置选择 RPM 实现
 type Limiter struct {
     // ... 现有字段 ...
-    
+
     rpmLimiter RPMLimiter  // 统一接口
 }
 
 // 初始化时根据环境变量选择
 func NewLimiter(...) *Limiter {
     var rpmLimiter RPMLimiter
-    
+
     if redisURL := os.Getenv("RPM_REDIS_URL"); redisURL != "" {
         // 跨进程模式
         rpmLimiter = NewRedisRPMLimiter(redisURL)
@@ -142,7 +142,7 @@ func NewLimiter(...) *Limiter {
         // 单实例模式（默认）
         rpmLimiter = NewMemoryRPMLimiter()
     }
-    
+
     return &Limiter{
         rpmLimiter: rpmLimiter,
         // ...
@@ -183,14 +183,14 @@ func (r *RedisRPMLimiter) CheckAndReserve(ctx context.Context, providerID, crede
     if err == nil {
         return allowed, count, nil
     }
-    
+
     // 2. Redis 失败，降级到内存限流
     slog.Warn("redis rpm limiter failed, fallback to memory",
         "error", err,
         "provider_id", providerID,
         "credential_id", credentialID,
     )
-    
+
     return r.fallback.CheckAndReserve(ctx, providerID, credentialID, limit)
 }
 ```
@@ -264,7 +264,7 @@ var (
         },
         []string{"mode"},
     )
-    
+
     rpmRedisLatency = prometheus.NewHistogramVec(
         prometheus.HistogramOpts{
             Name: "llmgw_rpm_redis_duration_seconds",
@@ -273,7 +273,7 @@ var (
         },
         []string{"result"}, // "allowed" | "denied" | "error"
     )
-    
+
     rpmRedisFallback = prometheus.NewCounterVec(
         prometheus.CounterOpts{
             Name: "llmgw_rpm_redis_fallback_total",
@@ -297,7 +297,7 @@ groups:
         for: 5m
         annotations:
           summary: "RPM Redis P99 延迟 > 5ms"
-          
+
       - alert: RPMRedisFallbackHigh
         expr: rate(llmgw_rpm_redis_fallback_total[5m]) > 10
         for: 2m
@@ -371,6 +371,6 @@ go test -bench=BenchmarkRPM -benchtime=10s ./domains/credential
 
 ---
 
-**审计人**: ACC Agent (claude-opus-4)  
-**实施时间**: 2026-07-18  
+**审计人**: ACC Agent (claude-opus-4)
+**实施时间**: 2026-07-18
 **依据**: 12-二次审计报告.md 审计维度 2

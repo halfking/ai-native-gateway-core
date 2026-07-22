@@ -1,9 +1,9 @@
 # Circuit Breaker 熔断器设计文档
 
-> **模块**: `circuit/breaker.go`  
-> **版本**: v1.0  
-> **日期**: 2026-07-18  
-> **状态**: 📋 设计阶段  
+> **模块**: `circuit/breaker.go`
+> **版本**: v1.0
+> **日期**: 2026-07-18
+> **状态**: 📋 设计阶段
 > **Phase**: Phase 1A - 基础优化
 
 ---
@@ -100,11 +100,11 @@ type Bucket struct {
 func (w *SlidingWindow) Record(success bool) {
     w.mu.Lock()
     defer w.mu.Unlock()
-    
+
     now := time.Now()
     // 清理过期 bucket
     w.removeExpired(now)
-    
+
     // 获取或创建当前 bucket
     bucket := w.getCurrentBucket(now)
     if success {
@@ -117,17 +117,17 @@ func (w *SlidingWindow) Record(success bool) {
 func (w *SlidingWindow) ErrorRate() float64 {
     w.mu.RLock()
     defer w.mu.RUnlock()
-    
+
     var total, failures int64
     now := time.Now()
-    
+
     for _, bucket := range w.buckets {
         if now.Sub(bucket.Timestamp) <= w.windowSize {
             total += bucket.Success + bucket.Failure
             failures += bucket.Failure
         }
     }
-    
+
     if total == 0 {
         return 0
     }
@@ -141,19 +141,19 @@ func (w *SlidingWindow) ErrorRate() float64 {
 type Config struct {
     // 错误率阈值 (0.0-1.0)
     ErrorThreshold float64 // 默认 0.5 (50%)
-    
+
     // 最小请求数 (防止样本太少误判)
     MinRequests int64 // 默认 10
-    
+
     // 统计窗口大小
     WindowSize time.Duration // 默认 10s
-    
+
     // Open 状态持续时间 (之后进入 Half-Open)
     OpenTimeout time.Duration // 默认 30s
-    
+
     // Half-Open 状态最大探测请求数
     HalfOpenMaxTest int // 默认 3
-    
+
     // Half-Open 状态成功阈值 (成功请求数 / 总探测数)
     HalfOpenSuccessThreshold float64 // 默认 0.67 (2/3)
 }
@@ -177,13 +177,13 @@ import (
 type Breaker interface {
     // Call 包装一个可能失败的函数调用
     Call(ctx context.Context, fn func() error) error
-    
+
     // State 返回当前状态
     State() State
-    
+
     // Reset 手动重置为 Closed 状态 (运维接口)
     Reset()
-    
+
     // Metrics 返回当前指标
     Metrics() Metrics
 }
@@ -261,20 +261,20 @@ if err != nil {
 ```go
 type breaker struct {
     config Config
-    
+
     // 状态 (使用原子操作)
     state atomic.Value // State
-    
+
     // 滑动窗口 (使用读写锁)
     window *SlidingWindow
-    
+
     // Half-Open 探测计数器 (使用原子操作)
     halfOpenSuccesses atomic.Int64
     halfOpenFailures  atomic.Int64
-    
+
     // 上次状态变更时间
     lastStateChange atomic.Value // time.Time
-    
+
     // Open 状态的到期时间
     openUntil atomic.Value // time.Time
 }
@@ -282,7 +282,7 @@ type breaker struct {
 func (b *breaker) Call(ctx context.Context, fn func() error) error {
     // 快速路径: 检查状态 (无锁读)
     state := b.getState()
-    
+
     switch state {
     case StateClosed:
         return b.callClosed(ctx, fn)
@@ -302,27 +302,27 @@ func (b *breaker) Call(ctx context.Context, fn func() error) error {
 ```go
 func (b *breaker) callClosed(ctx context.Context, fn func() error) error {
     err := fn()
-    
+
     // 记录结果
     b.window.Record(err == nil)
-    
+
     // 检查是否需要熔断
     if b.shouldOpen() {
         b.transitionToOpen()
         return circuit.ErrOpen
     }
-    
+
     return err
 }
 
 func (b *breaker) shouldOpen() bool {
     metrics := b.window.Metrics()
-    
+
     // 请求数不足，不熔断
     if metrics.Total < b.config.MinRequests {
         return false
     }
-    
+
     // 错误率超过阈值
     return metrics.ErrorRate >= b.config.ErrorThreshold
 }
@@ -337,7 +337,7 @@ func (b *breaker) callOpen(ctx context.Context, fn func() error) error {
         b.transitionToHalfOpen()
         return b.callHalfOpen(ctx, fn)
     }
-    
+
     // 仍在 Open 状态，快速失败
     return circuit.ErrOpen
 }
@@ -351,27 +351,27 @@ func (b *breaker) callHalfOpen(ctx context.Context, fn func() error) error {
         return circuit.ErrTooManyHalfOpenRequests
     }
     defer b.releaseHalfOpenSlot()
-    
+
     err := fn()
-    
+
     if err == nil {
         b.halfOpenSuccesses.Add(1)
     } else {
         b.halfOpenFailures.Add(1)
     }
-    
+
     // 检查是否达到探测数上限
     total := b.halfOpenSuccesses.Load() + b.halfOpenFailures.Load()
     if total >= int64(b.config.HalfOpenMaxTest) {
         successRate := float64(b.halfOpenSuccesses.Load()) / float64(total)
-        
+
         if successRate >= b.config.HalfOpenSuccessThreshold {
             b.transitionToClosed()
         } else {
             b.transitionToOpen()
         }
     }
-    
+
     return err
 }
 ```
@@ -382,7 +382,7 @@ func (b *breaker) callHalfOpen(ctx context.Context, fn func() error) error {
 var (
     // ErrOpen 表示熔断器处于 Open 状态
     ErrOpen = errors.New("circuit breaker is open")
-    
+
     // ErrTooManyHalfOpenRequests 表示 Half-Open 探测请求过多
     ErrTooManyHalfOpenRequests = errors.New("too many half-open requests")
 )
@@ -404,7 +404,7 @@ var (
         },
         []string{"provider"},
     )
-    
+
     // 熔断触发总数
     CircuitBreakerTriggered = promauto.NewCounterVec(
         prometheus.CounterOpts{
@@ -413,7 +413,7 @@ var (
         },
         []string{"provider", "reason"},
     )
-    
+
     // 被熔断拒绝的请求数
     CircuitBreakerRejected = promauto.NewCounterVec(
         prometheus.CounterOpts{
@@ -432,7 +432,7 @@ func (b *breaker) transitionToOpen() {
     b.setState(StateOpen)
     b.setOpenUntil(time.Now().Add(b.config.OpenTimeout))
     b.setLastStateChange(time.Now())
-    
+
     // 更新 Prometheus metrics
     CircuitBreakerState.WithLabelValues(b.provider).Set(1)
     CircuitBreakerTriggered.WithLabelValues(b.provider, "error_rate").Inc()
@@ -450,7 +450,7 @@ func (b *breaker) transitionToOpen() {
 ```go
 func buildV2DispatchPipeline(cfg *config.Config) (*dispatcher.V2Dispatcher, error) {
     // ... 现有代码
-    
+
     // 为每个 provider 创建独立的熔断器
     circuitBreakers := make(map[string]*circuit.Breaker)
     for _, provider := range []string{"openai", "anthropic", "azure"} {
@@ -463,11 +463,11 @@ func buildV2DispatchPipeline(cfg *config.Config) (*dispatcher.V2Dispatcher, erro
         })
         circuitBreakers[provider] = breaker
     }
-    
+
     // 注册熔断器插件
     circuitPlugin := circuitplugin.New(circuitBreakers)
     secRegistry.MustRegister("circuit-breaker", circuitPlugin)
-    
+
     return dispatcher, nil
 }
 ```
@@ -494,12 +494,12 @@ func (p *Plugin) OnRequest(ctx context.Context, req *Request) error {
         // 没有配置熔断器，直接通过
         return nil
     }
-    
+
     // 检查熔断器状态
     if breaker.State() == circuit.StateOpen {
         return circuit.ErrOpen
     }
-    
+
     return nil
 }
 
@@ -509,10 +509,10 @@ func (p *Plugin) OnResponse(ctx context.Context, resp *Response, err error) erro
     if !ok {
         return nil
     }
-    
+
     // 记录结果到熔断器
     breaker.Record(err == nil && resp.StatusCode < 500)
-    
+
     return nil
 }
 ```
@@ -531,7 +531,7 @@ func TestCircuitBreaker_OpenOnHighErrorRate(t *testing.T) {
         WindowSize:     10 * time.Second,
         OpenTimeout:    30 * time.Second,
     })
-    
+
     // 发送 10 个请求，6 个失败
     for i := 0; i < 10; i++ {
         err := breaker.Call(context.Background(), func() error {
@@ -540,12 +540,12 @@ func TestCircuitBreaker_OpenOnHighErrorRate(t *testing.T) {
             }
             return nil
         })
-        
+
         if i < 9 {
             assert.NoError(t, err)  // 前 9 个请求正常通过
         }
     }
-    
+
     // 第 10 个请求后，错误率达到 60%，应触发熔断
     assert.Equal(t, circuit.StateOpen, breaker.State())
 }
@@ -557,7 +557,7 @@ func TestCircuitBreaker_HalfOpenRecovery(t *testing.T) {
         OpenTimeout:     1 * time.Second,
         HalfOpenMaxTest: 3,
     })
-    
+
     // 触发熔断
     for i := 0; i < 5; i++ {
         breaker.Call(context.Background(), func() error {
@@ -565,10 +565,10 @@ func TestCircuitBreaker_HalfOpenRecovery(t *testing.T) {
         })
     }
     assert.Equal(t, circuit.StateOpen, breaker.State())
-    
+
     // 等待 Open 超时
     time.Sleep(1100 * time.Millisecond)
-    
+
     // 发送 3 个探测请求，全部成功
     for i := 0; i < 3; i++ {
         err := breaker.Call(context.Background(), func() error {
@@ -576,7 +576,7 @@ func TestCircuitBreaker_HalfOpenRecovery(t *testing.T) {
         })
         assert.NoError(t, err)
     }
-    
+
     // 应恢复到 Closed 状态
     assert.Equal(t, circuit.StateClosed, breaker.State())
 }
@@ -587,7 +587,7 @@ func TestCircuitBreaker_HalfOpenRecovery(t *testing.T) {
 ```go
 func BenchmarkCircuitBreaker_Concurrent(b *testing.B) {
     breaker := circuit.NewBreaker(circuit.DefaultConfig())
-    
+
     b.RunParallel(func(pb *testing.PB) {
         for pb.Next() {
             breaker.Call(context.Background(), func() error {
@@ -610,7 +610,7 @@ func BenchmarkCircuitBreaker_Concurrent(b *testing.B) {
 // GET /internal/circuit-breakers
 func HandleCircuitBreakersStatus(w http.ResponseWriter, r *http.Request) {
     status := make(map[string]interface{})
-    
+
     for provider, breaker := range circuitBreakers {
         metrics := breaker.Metrics()
         status[provider] = map[string]interface{}{
@@ -620,7 +620,7 @@ func HandleCircuitBreakersStatus(w http.ResponseWriter, r *http.Request) {
             "last_change":   metrics.LastStateChange,
         }
     }
-    
+
     json.NewEncoder(w).Encode(status)
 }
 ```
@@ -631,19 +631,19 @@ func HandleCircuitBreakersStatus(w http.ResponseWriter, r *http.Request) {
 // POST /internal/circuit-breakers/:provider/reset
 func HandleResetCircuitBreaker(w http.ResponseWriter, r *http.Request) {
     provider := chi.URLParam(r, "provider")
-    
+
     breaker, ok := circuitBreakers[provider]
     if !ok {
         http.Error(w, "provider not found", 404)
         return
     }
-    
+
     breaker.Reset()
-    
-    log.Info("circuit breaker reset manually", 
+
+    log.Info("circuit breaker reset manually",
         "provider", provider,
         "operator", r.Header.Get("X-Operator"))
-    
+
     w.WriteHeader(204)
 }
 ```
@@ -658,6 +658,6 @@ func HandleResetCircuitBreaker(w http.ResponseWriter, r *http.Request) {
 
 ---
 
-**作者**: Infrastructure Team  
-**审阅者**: 待定  
+**作者**: Infrastructure Team
+**审阅者**: 待定
 **下次复审**: 实现完成后

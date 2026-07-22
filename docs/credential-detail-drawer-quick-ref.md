@@ -136,16 +136,16 @@ curl -X POST "https://__DOMAIN_8__/api/credentials/clear-manual-disabled" \
 ### 数据库验证
 ```sql
 -- 查看路由决策数量
-SELECT chosen_credential_id, COUNT(*) 
-FROM routing_decision_log 
-GROUP BY chosen_credential_id 
-ORDER BY COUNT(*) DESC 
+SELECT chosen_credential_id, COUNT(*)
+FROM routing_decision_log
+GROUP BY chosen_credential_id
+ORDER BY COUNT(*) DESC
 LIMIT 10;
 
 -- 查看清除操作审计
-SELECT * FROM routing_audit_log 
-WHERE action = 'credential.clear_manual_disabled' 
-ORDER BY ts DESC 
+SELECT * FROM routing_audit_log
+WHERE action = 'credential.clear_manual_disabled'
+ORDER BY ts DESC
 LIMIT 5;
 ```
 
@@ -192,9 +192,9 @@ curl -v https://__DOMAIN_8__/api/credentials/decisions?credential_id=1
 ### 问题：路由决策表格空白
 ```sql
 -- 检查数据是否存在
-SELECT COUNT(*), chosen_credential_id 
-FROM routing_decision_log 
-WHERE chosen_credential_id = 123 
+SELECT COUNT(*), chosen_credential_id
+FROM routing_decision_log
+WHERE chosen_credential_id = 123
 GROUP BY chosen_credential_id;
 
 -- 检查最近数据时间
@@ -247,7 +247,7 @@ async function refreshDetailDrawer() {
   await load() // 重新加载summary
   const updated = credentials.value.find(c => c.id === selectedCred.value?.id)
   if (updated) selectedCred.value = updated
-  
+
   // 并行刷新所有section
   await Promise.all([
     selectedModel.value ? loadSlidingWindow(selectedCred.value.id, selectedModel.value) : Promise.resolve(),
@@ -285,6 +285,6 @@ m.h.db.Exec(ctx, `
 
 ---
 
-**版本**: 1.0  
-**更新**: 2026-06-23  
+**版本**: 1.0
+**更新**: 2026-06-23
 **维护**: LLM Gateway Team

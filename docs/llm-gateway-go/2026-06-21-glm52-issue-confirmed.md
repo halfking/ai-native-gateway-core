@@ -1,7 +1,7 @@
 # GLM-5.2 问题确认报告 - 空 choices 数组检测到
 
-> **日期**: 2026-06-21  
-> **状态**: ✅ 问题已确认  
+> **日期**: 2026-06-21
+> **状态**: ✅ 问题已确认
 > **严重性**: P1 - 影响用户体验
 
 ---
@@ -167,10 +167,10 @@
 ```
 Layer 1: JSON 解析
   ✅ 可以解析（有效 JSON）
-  
+
 Layer 2: 事件类型白名单 (Line 317)
   ❌ 可能绕过（如果 type 字段缺失或为空）
-  
+
 Layer 3: OpenAI 格式精细检测 (Line 326)
   ✅ 应该能检测到（有 choices 字段）
   ❌ 但可能有条件判断问题
@@ -208,19 +208,19 @@ if oaiCheck.Choices != nil {  // []  != nil 为 true
 ```go
 func isOpenAIFormatData(data []byte) bool {
     dataStr := string(data)
-    
+
     // Check 1: 包含 "choices":[ 或 "choices": [
-    if strings.Contains(dataStr, `"choices":[`) || 
+    if strings.Contains(dataStr, `"choices":[`) ||
        strings.Contains(dataStr, `"choices": [`) {
         return true  // ✅ 会捕获这个块
     }
-    
+
     // Check 2: 包含 "created": 后跟数字
     if strings.Contains(dataStr, `"created":`) {
         // ... 检查是否为数字
         return true  // ✅ 会捕获这个块
     }
-    
+
     return false
 }
 ```
@@ -240,7 +240,7 @@ Check 1: ✅ 匹配 `"choices":[`
 
 ### 1. 集成检测器到流处理（5 分钟）
 
-**文件**: `relay/anthropic_to_openai_stream.go`  
+**文件**: `relay/anthropic_to_openai_stream.go`
 **位置**: Line 292 之前
 
 **添加代码**：
@@ -371,7 +371,7 @@ Chunk 5: ✅ [DONE]
 
 ---
 
-**报告生成时间**: 2026-06-21  
-**问题严重性**: P1 - 已确认  
-**解决方案状态**: ✅ 已开发并测试  
+**报告生成时间**: 2026-06-21
+**问题严重性**: P1 - 已确认
+**解决方案状态**: ✅ 已开发并测试
 **下一步**: 集成并部署

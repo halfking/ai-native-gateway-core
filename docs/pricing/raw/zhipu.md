@@ -9,8 +9,8 @@ Markdown Content:
 
 汇集最新一代旗舰模型，涵盖高性能文本与多模态模型，全面升级推理、创作与理解能力，在多种复杂任务与应用场景中提供稳定、高效、精准的支持。
 
-*    文本模型 
-*    视觉理解 
+*    文本模型
+*    视觉理解
 
 GLM-5.1 是一个面向长程任务（Long Horizon Task）设计的模型。能够在一次任务中独立、持续地工作长达 8 小时，期间自主规划、执行、自我进化，最终交付完整的工程级成果。
 
@@ -43,12 +43,12 @@ GLM-4.7-Flash 200K 免费 免费 免费 免费
 
 提供多种型号，不同功能、不同价位的模型API产品。文生图模型按请求次数计费，其它模型均按照每千 tokens 为单位计费。Token 是指模型推理过程中文本的最小意义单位，通常指一个单词、汉语词语/短句、标点符号或数字等。通常，GLM系列模型词表 token 和汉字换算比例约为 1:1.6 。
 
-*    Language Models 
-*    Reasoning models 
-*    Multimodal Models 
-*    Real-time 
-*    Embedding Models 
-*    More 
+*    Language Models
+*    Reasoning models
+*    Multimodal Models
+*    Real-time
+*    Embedding Models
+*    More
 
 The fully self-developed fourth generation base model GLM-4 has improved performance by 60% compared to GLM-3, with an IFEval instruction following ability evaluation of up to 90%, and 100% accurate recall in 128k context needle in haystack testing，with visual and agent capabilities.
 
@@ -82,8 +82,8 @@ knowledge_capacity Knowledge Base Expansion Service: Pay-as-you-go, flexible cap
 
 开放GLM系列模型训练工具，支持一键微调定制私有的个性化模型，帮助企业针对业务场景打造独特极致的AI体验。
 
-*    Model Training 
-*    Model Inference 
+*    Model Training
+*    Model Inference
 
 GLM-4.5 32k¥0.1 / 1k tokens Not Supported
 GLM-4.5 16k Not Supported¥0.125 / 1k tokens
@@ -100,12 +100,12 @@ GLM-4V 2k¥0.03 / 1k tokens Not Supported
 
 针对客户对 “ 稳定性、推理性能、推理效果、低成本 ” 等方面诉求，提供云端私有化部署方案。用户可按日根据使用量进行付费。 [咨询方案详情](https://open.bigmodel.cn/online-book)
 
-*    Language Models 
-*    Vision Models 
-*    Image Models 
-*    Video Models 
-*    Embedding Models 
-*    More 
+*    Language Models
+*    Vision Models
+*    Image Models
+*    Video Models
+*    Embedding Models
+*    More
 
 GLM-4.6 200k-fp8¥175 / GPU Unit / Day
 GLM-4.5 128k-fp8¥175 / GPU Unit / Day
@@ -150,9 +150,9 @@ GLM-4.5-Air 算力单元数量
 
 [V2](https://open.bigmodel.cn/usercenter/equity-mgmt/user-rights)50 万元 / 年
 
-*    10亿tokens训练语料额度包括：LoRA微调 5亿 tokens、全参微调 5亿 tokens。 
-*    购买glm-4-0520、glm-4-air云端私有化年套餐的用户会额外分别赠送20亿tokens，10亿tokens用于flash模型微调训练。 
-*    算力单元：模型私有实例推理服务的最小计费单位。单个模型实例使用1天需要占用对应算力单元数量。根据模型规格不同，每个模型部署单实例需占用算力单元数量不同。 
+*    10亿tokens训练语料额度包括：LoRA微调 5亿 tokens、全参微调 5亿 tokens。
+*    购买glm-4-0520、glm-4-air云端私有化年套餐的用户会额外分别赠送20亿tokens，10亿tokens用于flash模型微调训练。
+*    算力单元：模型私有实例推理服务的最小计费单位。单个模型实例使用1天需要占用对应算力单元数量。根据模型规格不同，每个模型部署单实例需占用算力单元数量不同。
 
 增购报价
 
@@ -160,8 +160,8 @@ GLM-4.5-Air 算力单元数量
 
 为满足企业对数据的完全掌控和模型的安全运行的诉求，我们提供从模型到应用的本地私有化解决方案，帮助客户实现数据的完全掌控和模型的绝对安全运行。
 
-*    模型及一体机 
-*    知识库应用 
+*    模型及一体机
+*    知识库应用
 
 提供最新的 GLM-4、GLM-4V 等最新模型的本地私有化解决方案。
 

@@ -2,13 +2,13 @@
 
 ## API 概览
 
-**端点**: 
+**端点**:
 ```
 POST https://api.deepseek.com/v1/chat/completions
 POST https://api.deepseek.com/v1/completions (FIM 模式)
 ```
 
-**认证**: 
+**认证**:
 ```
 Authorization: Bearer {API_KEY}
 ```

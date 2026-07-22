@@ -1,8 +1,8 @@
 # Phase 2.x 实际请求反馈集成 - 部署成功报告
 
-**日期**: 2026-07-01  
-**提交**: 0d5aec70, b5b852d1  
-**环境**: 184测试环境 (pms-test namespace)  
+**日期**: 2026-07-01
+**提交**: 0d5aec70, b5b852d1
+**环境**: 184测试环境 (pms-test namespace)
 **状态**: ✅ **部署成功并运行**
 
 ---
@@ -157,7 +157,7 @@ func (m *Manager) UpdateOnFailure(...) {
 // domains/streaming/executors/executor.go:428-444
 type Executor struct {
     // ... 现有字段
-    
+
     // StateObserver (2026-07-01 Phase 2.x)
     StateObserver interface {
         UpdateOnSuccess(ctx context.Context, credID int, model string, latencyMs int, requestID string)
@@ -276,7 +276,7 @@ ok      __REPO_URL_3__/domains/streaming/executors  0.522s
 | Redis 缓存读取 | <1ms | 内存缓存未命中时 |
 | 批量DB写入 | <5ms | 每60秒一次 |
 
-**预期影响**: 
+**预期影响**:
 - 每请求增加 <1ms 延迟（内存+Redis操作）
 - CPU 增加 <1%（缓存维护）
 - Redis 内存增加 ~100MB（假设1000个凭据×模型组合）
@@ -366,7 +366,7 @@ ok      __REPO_URL_3__/domains/streaming/executors  0.522s
    ```bash
    # 监控 Redis 内存
    kubectl exec -n pms-test <redis-pod> -- redis-cli INFO memory | grep used_memory_human
-   
+
    # 监控探测频率
    kubectl logs -n pms-test -l app=llm-gateway-go --since=1h | grep "probe.*credential" | wc -l
    ```
@@ -491,6 +491,6 @@ kubectl logs -n pms-test -l app=llm-gateway-go --tail=100 --follow
 
 ---
 
-**报告生成时间**: 2026-07-01  
-**报告版本**: 1.0  
+**报告生成时间**: 2026-07-01
+**报告版本**: 1.0
 **状态**: ✅ 部署成功

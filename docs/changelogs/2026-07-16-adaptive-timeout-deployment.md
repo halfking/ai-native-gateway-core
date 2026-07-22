@@ -29,13 +29,13 @@ timeout = base(30s) × size × provider × history × session × retry
   - < 100KB: 0.5x (15s)
   - 100-500KB: 1.0x (30s)
   - > 500KB: 2.0x + 0.2x/100KB (最高 4.0x = 120s)
-  
+
 - **供应商**：
   - MiniMax: 1.5x
   - Claude/Anthropic: 1.2x
   - OpenAI/NVIDIA/火山: 1.0x
   - DeepSeek: 0.8x
-  
+
 - **历史 TTFB**：
   - 基于最近 TTFB 动态调整 (0.5x - 2.0x)
   - 5 分钟过期

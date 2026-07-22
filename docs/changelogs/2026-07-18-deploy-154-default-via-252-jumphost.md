@@ -26,7 +26,7 @@
    ```bash
    # 修改前
    : "${SSH_RETRY_FALLBACK_AFTER:=2}"  # 直连失败 2 次后切跳板机
-   
+
    # 修改后
    : "${SSH_RETRY_FALLBACK_AFTER:=0}"  # 154 默认立即使用跳板机
    ```

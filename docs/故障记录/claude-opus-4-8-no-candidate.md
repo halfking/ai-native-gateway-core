@@ -67,11 +67,11 @@ WHERE raw_name IN ('claude-opus-4.8', 'claude-opus-4-8');
 
 ```sql
 INSERT INTO provider_models (
-    provider_id, tenant_id, raw_model_name, canonical_id, 
+    provider_id, tenant_id, raw_model_name, canonical_id,
     standardized_name, outbound_model_name, available
 )
 VALUES (
-    2, 'default', 'claude-opus-4-8', 
+    2, 'default', 'claude-opus-4-8',
     (SELECT id FROM models_canonical WHERE canonical_name = 'claude-opus-4-8'),
     'claude-opus-4-8', 'claude-opus-4-8', true
 )

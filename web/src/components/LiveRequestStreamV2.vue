@@ -47,10 +47,10 @@ function handleRequestFromDrawer(requestId: string) {
 const probeFilter = ref<'all' | 'probe_only'>('all')
 
 // 解构出 reconnect —— 保存新 URL 后立即用新地址重连，不再只是 localStorage 默默记住
-const { 
+const {
   snapshot: liveSnapshot,
-  connection, 
-  paused, 
+  connection,
+  paused,
   togglePause,
   reconnect: reconnectStream,
 } = useLiveStream()
@@ -275,7 +275,7 @@ const isColdStart = computed(() => {
     <!-- 标题栏 -->
     <div class="stream-header">
       <h3 class="stream-title">{{ t('dashboard.liveStream.title') }}</h3>
-      
+
       <div class="stream-controls">
         <!-- 分组切换 -->
         <div class="control-group">
@@ -325,7 +325,7 @@ const isColdStart = computed(() => {
             {{ t('dashboard.liveStream.probeOnly') }}
           </button>
         </div>
-        
+
         <div class="control-group">
           <button
             type="button"
@@ -338,7 +338,7 @@ const isColdStart = computed(() => {
             {{ connectionLabel }}
           </button>
         </div>
-        
+
         <div v-if="showConnectionDetail" class="connection-detail-popup">
           <div class="popup-header">
             <h4>{{ t('dashboard.liveStream.sseDetailTitle') }}</h4>
@@ -357,9 +357,9 @@ const isColdStart = computed(() => {
                   <button v-if="isAdmin" type="button" class="edit-btn" @click="startEditUrl" :title="t('dashboard.liveStream.editUrl')">{{ t('dashboard.liveStream.editUrl') }}</button>
                 </template>
                 <template v-else>
-                  <input 
-                    v-model="editUrlValue" 
-                    class="url-input" 
+                  <input
+                    v-model="editUrlValue"
+                    class="url-input"
                     :placeholder="t('dashboard.liveStream.editUrlPlaceholder')"
                     @keyup.enter="saveUrl"
                     @keyup.escape="cancelEditUrl"
@@ -378,7 +378,7 @@ const isColdStart = computed(() => {
             </div>
           </div>
         </div>
-        
+
         <!-- 暂停/恢复 -->
         <button
           type="button"
@@ -387,14 +387,14 @@ const isColdStart = computed(() => {
         >
           {{ paused ? t('dashboard.liveStream.resume') : t('dashboard.liveStream.pause') }}
         </button>
-        
+
         <div class="cache-stats">
           <span class="cache-stats__label">{{ t('dashboard.liveStream.cacheWindow') }}</span>
           <span class="cache-stats__value">{{ bufferCount }}/{{ windowCount }}</span>
         </div>
       </div>
     </div>
-    
+
     <!-- 图例行 -->
     <LiveStreamLegend
       :dimension-items="legendItems"
@@ -403,13 +403,13 @@ const isColdStart = computed(() => {
       :dimension-label="dimensionLabel"
       @toggle-legend="handleToggleLegend"
     />
-    
+
     <!-- Redis 健康警告 -->
     <div v-if="!redisHealthyRef" class="redis-health-warning">
       <span class="redis-warning-icon">⚠</span>
       <span>{{ t('dashboard.liveStream.redisWarning', { error: redisErrorRef || t('dashboard.liveStream.redisFallbackError') }) }}</span>
     </div>
-    
+
     <!-- 泳道区域 -->
     <div class="swim-lanes">
       <SwimLane
@@ -889,16 +889,16 @@ const isColdStart = computed(() => {
     flex-direction: column;
     align-items: stretch;
   }
-  
+
   .stream-controls {
     flex-direction: column;
     align-items: stretch;
   }
-  
+
   .control-group {
     justify-content: stretch;
   }
-  
+
   .control-btn {
     flex: 1;
   }

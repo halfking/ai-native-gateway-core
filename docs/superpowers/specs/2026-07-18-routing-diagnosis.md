@@ -1,7 +1,7 @@
 # LLM Gateway 路由系统诊断报告
 
-**日期**: 2026-07-18  
-**状态**: 深度分析 - 识别根本原因  
+**日期**: 2026-07-18
+**状态**: 深度分析 - 识别根本原因
 **目标**: 诊断过度 sticky、无可用节点、超时等路由问题
 
 ---
@@ -168,7 +168,7 @@ t=35m: Alice 切换到 claude-3-5-sonnet
 2026-06-23 14:32:15 - minimax-m3 请求
 初始候选: 3 个 (credential_101, 102, 103)
 
-Layer 1 (DB): 
+Layer 1 (DB):
   - 101: availability_state=cooling (5min 冷却) ❌
   - 102: quota_state=balance_exhausted ❌
   - 103: lifecycle_status=disabled ❌
@@ -227,11 +227,11 @@ t=2: 使用 t=0 的 DB 快照 (已过期)
 // provider/client.go:420
 func (c *Client) GetCandidates(ctx, model, profile, tenantID) {
     cacheKey := fmt.Sprintf("%s|%s|%s", model, profile, tenantID)
-    
+
     if cached, ok := c.cache.Get(cacheKey); ok {
         return cached.Candidates, cached.Policy, nil // ← 30s 过期缓存
     }
-    
+
     // 查询 DB
     candidates := c.queryCandidates(...)
     c.cache.Set(cacheKey, result, 30*time.Second)
@@ -329,14 +329,14 @@ if e.FpSlots.Enabled() {
             filtered = append(filtered, cand)
         }
     }
-    
+
     // 降级逻辑
     if len(filtered) == 0 {
         slog.Warn("cred_fp_slot prefilter: all filtered, using original set")
         fpSlotDegraded = true
         filtered = candidates // ← 回退到原始集合
     }
-    
+
     candidates = filtered
 }
 
@@ -363,22 +363,22 @@ for _, cand := range candidates {
   - credential_101: 已用 10/10 → 过滤
   - credential_102: 已用 10/10 → 过滤
   - credential_103: 已用 10/10 → 过滤
-  → filtered = [] 
+  → filtered = []
   → 触发降级: candidates = [101, 102, 103] ✅
 
 逐候选尝试阶段:
   for 101:
     FpSlots.Acquire(101) → 错误: "slot limit exceeded"
     continue → 跳过 ❌
-    
+
   for 102:
     FpSlots.Acquire(102) → 错误: "slot limit exceeded"
     continue → 跳过 ❌
-    
+
   for 103:
     FpSlots.Acquire(103) → 错误: "slot limit exceeded"
     continue → 跳过 ❌
-    
+
 结果: 0 次真正尝试 → 503
 ```
 
@@ -401,7 +401,7 @@ for _, cand := range candidates {
 if e.SyncNoCandidateProbe && e.ProbeSync != nil {
     ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
     defer cancel()
-    
+
     probeCandidates := []ProbeCandidate{}
     for _, c := range params.Candidates {
         probeCandidates = append(probeCandidates, ProbeCandidate{
@@ -410,7 +410,7 @@ if e.SyncNoCandidateProbe && e.ProbeSync != nil {
             Model:        c.StandardizedName,
         })
     }
-    
+
     recovered := e.ProbeSync(ctx, probeCandidates, tenantID, requestID)
     // ← 串行探测，每个 2-3s
 }
@@ -420,9 +420,9 @@ if e.SyncNoCandidateProbe && e.ProbeSync != nil {
 ```
 假设 3 个候选需要探测:
   - credential_101 (OpenAI gpt-4): 直连探测 2.1s
-  - credential_102 (Azure gpt-4): 直连探测 1.8s  
+  - credential_102 (Azure gpt-4): 直连探测 1.8s
   - credential_103 (OpenAI gpt-4): 网关路由探测 2.5s
-  
+
 总耗时: 2.1 + 1.8 + 2.5 = 6.4s > 5s 超时 ❌
 
 实际结果:
@@ -432,7 +432,7 @@ if e.SyncNoCandidateProbe && e.ProbeSync != nil {
   t=3.9: 102 探测完成 (失败)
   t=3.9: 开始探测 credential_103
   t=5.0: 上下文超时 → 103 探测被取消
-  
+
 recovered = true (因为 101 成功)
 但: 103 的状态未知，可能实际可用
 ```
@@ -467,7 +467,7 @@ func getStickyTTLForModel(model string) time.Duration {
 }
 ```
 
-**问题**: 
+**问题**:
 1. **聊天模型 10 分钟过长**: 用户一次对话通常 <5 分钟
 2. **补全模型 30 分钟过长**: 代码补全通常是短请求
 3. **L2/L3 无差异化**: 所有模型类型使用相同的 L2 (2h) 和 L3 (24h)
@@ -488,7 +488,7 @@ t=8m:  credential_123 发生故障
 t=12m: 用户返回，开始新对话
        L1 已过期 (10min)
        L2 仍有效 (2h) → 路由到故障的 123 ❌
-       
+
 t=2h:  L2 过期
        用户再次返回
        L3 仍有效 (24h) → 路由到 123 ❌

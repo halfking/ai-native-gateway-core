@@ -173,12 +173,12 @@
 2. **手动VACUUM columnar表**
    ```sql
    -- 查看哪些表使用了columnar
-   SELECT tablename FROM pg_tables 
-   WHERE schemaname='public' 
+   SELECT tablename FROM pg_tables
+   WHERE schemaname='public'
    AND tablename IN (
        SELECT tablename FROM columnar.options
    );
-   
+
    -- 对columnar表执行VACUUM
    VACUUM FULL request_logs_hot;
    VACUUM FULL request_logs_2026_07;
@@ -187,11 +187,11 @@
 3. **清理旧数据**
    ```sql
    -- 删除3周前的失败日志
-   DELETE FROM candidate_failure_logs 
+   DELETE FROM candidate_failure_logs
    WHERE ts < NOW() - INTERVAL '14 days';
-   
+
    -- 归档或删除旧handoff_logs
-   DELETE FROM handoff_logs 
+   DELETE FROM handoff_logs
    WHERE created_at < NOW() - INTERVAL '7 days';
    ```
 

@@ -97,13 +97,13 @@ const chartOptions = computed(() => {
 
 function initChart() {
   if (!chartRef.value || isDestroyed.value) return
-  
+
   // 清理旧实例
   if (chartInstance) {
     chartInstance.dispose()
     chartInstance = null
   }
-  
+
   chartInstance = echarts.init(chartRef.value)
   updateChart()
 }
@@ -149,14 +149,14 @@ onBeforeUnmount(() => {
 <template>
   <el-card shadow="hover">
     <div ref="chartRef" style="width: 100%; height: 350px;"></div>
-    
+
     <!-- 性能摘要 -->
     <el-row v-if="data" :gutter="16" style="margin-top: 20px;">
       <el-col :span="6">
-        <el-statistic 
-          :title="t('dashboard.performance.p50') || 'P50 Latency'" 
-          :value="data.summary.p50_latency_ms" 
-          :precision="0" 
+        <el-statistic
+          :title="t('dashboard.performance.p50') || 'P50 Latency'"
+          :value="data.summary.p50_latency_ms"
+          :precision="0"
           suffix="ms">
           <template #prefix>
             <el-icon color="#67C23A"><Timer /></el-icon>
@@ -164,24 +164,24 @@ onBeforeUnmount(() => {
         </el-statistic>
       </el-col>
       <el-col :span="6">
-        <el-statistic 
-          :title="t('dashboard.performance.p95') || 'P95 Latency'" 
-          :value="data.summary.p95_latency_ms" 
-          :precision="0" 
+        <el-statistic
+          :title="t('dashboard.performance.p95') || 'P95 Latency'"
+          :value="data.summary.p95_latency_ms"
+          :precision="0"
           suffix="ms" />
       </el-col>
       <el-col :span="6">
-        <el-statistic 
-          :title="t('dashboard.performance.p99') || 'P99 Latency'" 
-          :value="data.summary.p99_latency_ms" 
-          :precision="0" 
+        <el-statistic
+          :title="t('dashboard.performance.p99') || 'P99 Latency'"
+          :value="data.summary.p99_latency_ms"
+          :precision="0"
           suffix="ms" />
       </el-col>
       <el-col :span="6">
-        <el-statistic 
-          :title="t('dashboard.performance.throughput') || 'Avg Throughput'" 
-          :value="data.summary.avg_throughput_rps" 
-          :precision="2" 
+        <el-statistic
+          :title="t('dashboard.performance.throughput') || 'Avg Throughput'"
+          :value="data.summary.avg_throughput_rps"
+          :precision="2"
           suffix="rps" />
       </el-col>
     </el-row>

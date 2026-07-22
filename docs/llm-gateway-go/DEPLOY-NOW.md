@@ -1,7 +1,7 @@
 # 🎯 GLM-5.2 修复 - 立即执行指南
 
-> **状态**: ✅ 问题已确认，修复已完成，准备部署  
-> **时间**: 2026-06-21  
+> **状态**: ✅ 问题已确认，修复已完成，准备部署
+> **时间**: 2026-06-21
 > **影响**: 修复流式请求空 choices 数组问题
 
 ---
@@ -10,7 +10,7 @@
 
 使用您提供的 API Key 测试后：
 
-✅ **非流式请求** - 正常工作  
+✅ **非流式请求** - 正常工作
 ❌ **流式请求** - **发现空 choices 数组**
 
 **问题块**：
@@ -77,17 +77,17 @@ scp llm-gateway-go-linux __SSH_TARGET_2__:/tmp/
 ssh __SSH_TARGET_2__ << 'EOF'
   # 备份
   cp /usr/local/bin/llm-gateway-go /usr/local/bin/llm-gateway-go.backup-$(date +%Y%m%d-%H%M%S)
-  
+
   # 停止服务
   systemctl stop llm-gateway-go
-  
+
   # 替换
   mv /tmp/llm-gateway-go-linux /usr/local/bin/llm-gateway-go
   chmod +x /usr/local/bin/llm-gateway-go
-  
+
   # 启动
   systemctl start llm-gateway-go
-  
+
   # 检查
   sleep 2
   systemctl status llm-gateway-go
@@ -157,7 +157,7 @@ systemctl start llm-gateway-go
   总块数: 7
   有效块: 4
   空 choices: 1  ❌ 问题
-  
+
 结论: 测试失败
 ```
 
@@ -167,7 +167,7 @@ systemctl start llm-gateway-go
   总块数: 6
   有效块: 4
   空 choices: 0  ✅ 已拦截
-  
+
 结论: 测试通过
 ```
 
@@ -242,8 +242,8 @@ export K8S_SSH_PASSWORD='Kaixuan2025&9900#'
 ./scripts/deploy-glm52-fix-now.sh
 ```
 
-**执行时间**: 约 3 分钟  
-**风险**: 低（可快速回滚）  
+**执行时间**: 约 3 分钟
+**风险**: 低（可快速回滚）
 **预期**: 修复流式请求问题
 
 ---
@@ -261,6 +261,6 @@ export K8S_SSH_PASSWORD='Kaixuan2025&9900#'
 
 ---
 
-**创建时间**: 2026-06-21  
-**状态**: 准备部署  
+**创建时间**: 2026-06-21
+**状态**: 准备部署
 **优先级**: P1 - 已确认问题

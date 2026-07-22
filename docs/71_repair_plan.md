@@ -1,6 +1,6 @@
 # 71 环境分区修复详细计划
 
-**生成时间**: 2026-07-04 13:15  
+**生成时间**: 2026-07-04 13:15
 **环境**: 71 生产环境 (__PUB_IP_2__)
 
 ---
@@ -22,7 +22,7 @@
    已附加的分区:
    - request_logs_default (heap, 16MB, 5,190行)
    - request_logs_2026_08 (columnar, 24KB, ~0行)
-   
+
    孤立表（未附加）:
    - request_logs_2026_07 (heap, 674MB, 4,193行) ❌
    - request_wal_2026_07 (heap, 8.6MB, 18,455行) ❌
@@ -91,11 +91,11 @@ BEGIN;
 
 -- request_logs_2026_06
 CREATE TABLE request_logs_2026_06 (LIKE request_logs INCLUDING DEFAULTS) USING heap;
-ALTER TABLE request_logs_2026_06 
-ADD CONSTRAINT chk_compression_parent_single 
+ALTER TABLE request_logs_2026_06
+ADD CONSTRAINT chk_compression_parent_single
 CHECK (((parent_request_id IS NULL) OR (compression_reason IS NOT NULL)));
-ALTER TABLE request_logs_2026_06 
-ADD CONSTRAINT request_logs_strategy_used_check 
+ALTER TABLE request_logs_2026_06
+ADD CONSTRAINT request_logs_strategy_used_check
 CHECK (((strategy_used IS NULL) OR (strategy_used = ANY (ARRAY['baseline_heuristic'::text, 'pattern_layered'::text, 'llm_fallback'::text]))));
 
 -- request_wal_2026_06 (已存在，无需创建)
@@ -120,19 +120,19 @@ systemctl status llm-gateway-go
 BEGIN;
 
 -- 3.1 将 6 月数据迁移到 2026_06
-INSERT INTO request_logs_2026_06 
-SELECT * FROM request_logs_default 
+INSERT INTO request_logs_2026_06
+SELECT * FROM request_logs_default
 WHERE ts >= '2026-06-01' AND ts < '2026-07-01';
 
-DELETE FROM request_logs_default 
+DELETE FROM request_logs_default
 WHERE ts >= '2026-06-01' AND ts < '2026-07-01';
 
 -- 3.2 将 7 月数据迁移到孤立的 2026_07
-INSERT INTO request_logs_2026_07 
-SELECT * FROM request_logs_default 
+INSERT INTO request_logs_2026_07
+SELECT * FROM request_logs_default
 WHERE ts >= '2026-07-01' AND ts < '2026-08-01';
 
-DELETE FROM request_logs_default 
+DELETE FROM request_logs_default
 WHERE ts >= '2026-07-01' AND ts < '2026-08-01';
 
 -- 3.3 验证 DEFAULT 清空
@@ -147,17 +147,17 @@ COMMIT;
 BEGIN;
 
 -- 4.1 附加 2026-06
-ALTER TABLE request_logs ATTACH PARTITION request_logs_2026_06 
+ALTER TABLE request_logs ATTACH PARTITION request_logs_2026_06
     FOR VALUES FROM ('2026-06-01 00:00:00+00') TO ('2026-07-01 00:00:00+00');
 
 -- 4.2 附加 2026-07
-ALTER TABLE request_logs ATTACH PARTITION request_logs_2026_07 
+ALTER TABLE request_logs ATTACH PARTITION request_logs_2026_07
     FOR VALUES FROM ('2026-07-01 00:00:00+00') TO ('2026-08-01 00:00:00+00');
 
 COMMIT;
 
 -- 验证
-SELECT 
+SELECT
     c.relname as partition_name,
     am.amname as storage_type,
     pg_size_pretty(pg_relation_size(c.oid)) as size
@@ -183,20 +183,20 @@ journalctl -u llm-gateway-go -f
 
 ```sql
 -- 6.1 验证新数据写入 2026_07
-SELECT 
+SELECT
     'request_logs_2026_07' as partition,
     COUNT(*) as row_count,
     MAX(ts) as latest_ts
 FROM request_logs_2026_07;
 
 -- 6.2 验证 DEFAULT 为空
-SELECT 
+SELECT
     'request_logs_default' as partition,
     COUNT(*) as row_count
 FROM request_logs_default;
 
 -- 6.3 验证总数据量
-SELECT 
+SELECT
     'request_logs 总计' as info,
     COUNT(*) as total_rows
 FROM request_logs;
@@ -254,6 +254,6 @@ DROP TABLE request_logs_2026_06;
 
 ---
 
-**预计停服时间**: 15-20 分钟  
-**最佳执行时间**: 业务低峰期  
+**预计停服时间**: 15-20 分钟
+**最佳执行时间**: 业务低峰期
 **需要人工确认**: 是否执行修复

@@ -2,7 +2,7 @@
 export default {
   title: '路由决策日志',
   autoRefresh: '每 5 秒自动刷新',
-  
+
   filter: {
     status: '状态',
     statusAll: '全部',

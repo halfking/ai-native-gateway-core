@@ -1,9 +1,9 @@
 # WRR 调度器设计文档
 
-> **模块**: `pool/scheduler/wrr.go`  
-> **版本**: v1.0  
-> **日期**: 2026-07-18  
-> **状态**: 📋 设计阶段  
+> **模块**: `pool/scheduler/wrr.go`
+> **版本**: v1.0
+> **日期**: 2026-07-18
+> **状态**: 📋 设计阶段
 > **Phase**: Phase 1B - 号池优化
 
 ---
@@ -78,17 +78,17 @@ for peer in peers:
 # 每次选择
 def select():
     total = sum(peer.effective_weight for peer in peers)
-    
+
     # 1. 所有 current_weight += effective_weight
     for peer in peers:
         peer.current_weight += peer.effective_weight
-    
+
     # 2. 选出 current_weight 最大的
     best = max(peers, key=lambda p: p.current_weight)
-    
+
     # 3. best.current_weight -= total
     best.current_weight -= total
-    
+
     return best
 ```
 
@@ -124,13 +124,13 @@ import (
 type Scheduler interface {
     // Select 选择一个凭据
     Select(ctx context.Context) (*Credential, error)
-    
+
     // Release 释放凭据
     Release(cred *Credential)
-    
+
     // UpdateWeight 更新凭据权重
     UpdateWeight(credID int, weight int)
-    
+
     // Metrics 返回调度统计
     Metrics() SchedulerMetrics
 }
@@ -159,7 +159,7 @@ package scheduler
 type WRRScheduler struct {
     credentials []*WeightedCredential
     mu          sync.Mutex
-    
+
     totalSelections int64
     perCredential   map[int]int64
 }
@@ -181,7 +181,7 @@ func NewWRRScheduler(credentials []*Credential) *WRRScheduler {
             EffectiveWeight: cred.Quota,
         }
     }
-    
+
     return &WRRScheduler{
         credentials:   weighted,
         perCredential: make(map[int]int64),
@@ -191,40 +191,40 @@ func NewWRRScheduler(credentials []*Credential) *WRRScheduler {
 func (s *WRRScheduler) Select(ctx context.Context) (*Credential, error) {
     s.mu.Lock()
     defer s.mu.Unlock()
-    
+
     if len(s.credentials) == 0 {
         return nil, ErrNoAvailableCredential
     }
-    
+
     // Smooth WRR 算法
     best := s.selectBest()
-    
+
     // 统计
     s.totalSelections++
     s.perCredential[best.Credential.ID]++
-    
+
     return best.Credential, nil
 }
 
 func (s *WRRScheduler) selectBest() *WeightedCredential {
     var best *WeightedCredential
     total := 0
-    
+
     // 1. 计算 total，更新 current_weight
     for _, cred := range s.credentials {
         cred.CurrentWeight += cred.EffectiveWeight
         total += cred.EffectiveWeight
-        
+
         if best == nil || cred.CurrentWeight > best.CurrentWeight {
             best = cred
         }
     }
-    
+
     // 2. best.current_weight -= total
     if best != nil {
         best.CurrentWeight -= total
     }
-    
+
     return best
 }
 
@@ -236,17 +236,17 @@ func (s *WRRScheduler) Release(cred *Credential) {
 func (s *WRRScheduler) UpdateWeight(credID int, weight int) {
     s.mu.Lock()
     defer s.mu.Unlock()
-    
+
     for _, cred := range s.credentials {
         if cred.Credential.ID == credID {
             cred.EffectiveWeight = weight
-            
+
             // 更新 Prometheus metrics
             metrics.CredentialWeight.WithLabelValues(
                 strconv.Itoa(credID),
                 strconv.Itoa(cred.Credential.ProviderID),
             ).Set(float64(weight))
-            
+
             return
         }
     }
@@ -255,7 +255,7 @@ func (s *WRRScheduler) UpdateWeight(credID int, weight int) {
 func (s *WRRScheduler) Metrics() SchedulerMetrics {
     s.mu.Lock()
     defer s.mu.Unlock()
-    
+
     return SchedulerMetrics{
         TotalSelections: s.totalSelections,
         PerCredential:   s.perCredential,
@@ -280,7 +280,7 @@ import (
 type Checker struct {
     scheduler *scheduler.WRRScheduler
     interval  time.Duration
-    
+
     // 降权策略
     decreaseFactor float64  // 失败时权重衰减系数 (0.5 = 减半)
     minWeight      int      // 最小权重 (避免完全移除)
@@ -298,7 +298,7 @@ func NewChecker(scheduler *scheduler.WRRScheduler, interval time.Duration) *Chec
 func (c *Checker) Start(ctx context.Context) {
     ticker := time.NewTicker(c.interval)
     defer ticker.Stop()
-    
+
     for {
         select {
         case <-ticker.C:
@@ -311,17 +311,17 @@ func (c *Checker) Start(ctx context.Context) {
 
 func (c *Checker) checkAll(ctx context.Context) {
     metrics := c.scheduler.Metrics()
-    
+
     for credID := range metrics.PerCredential {
         cred := c.getCredential(credID)
         if cred == nil {
             continue
         }
-        
+
         if err := c.checkCredential(ctx, cred); err != nil {
             // 健康检查失败，降权
             c.decreaseWeight(cred)
-            
+
             // 记录 Prometheus metrics
             metrics.CredentialHealthCheckFailures.WithLabelValues(
                 strconv.Itoa(credID),
@@ -337,37 +337,37 @@ func (c *Checker) checkAll(ctx context.Context) {
 func (c *Checker) checkCredential(ctx context.Context, cred *Credential) error {
     // 发送测试请求到上游
     // 例如: 调用 OpenAI /v1/models 接口
-    
+
     client := &http.Client{Timeout: 5 * time.Second}
-    req, _ := http.NewRequestWithContext(ctx, "GET", 
+    req, _ := http.NewRequestWithContext(ctx, "GET",
         "https://api.openai.com/v1/models", nil)
     req.Header.Set("Authorization", "Bearer "+cred.APIKey)
-    
+
     resp, err := client.Do(req)
     if err != nil {
         return err
     }
     defer resp.Body.Close()
-    
+
     if resp.StatusCode != 200 {
         return fmt.Errorf("unhealthy status: %d", resp.StatusCode)
     }
-    
+
     return nil
 }
 
 func (c *Checker) decreaseWeight(cred *Credential) {
     // 获取当前权重
     currentWeight := c.getCurrentWeight(cred.ID)
-    
+
     // 衰减权重 (但不低于最小值)
     newWeight := int(float64(currentWeight) * c.decreaseFactor)
     if newWeight < c.minWeight {
         newWeight = c.minWeight
     }
-    
+
     c.scheduler.UpdateWeight(cred.ID, newWeight)
-    
+
     log.Warn("credential health check failed, weight decreased",
         "cred_id", cred.ID,
         "old_weight", currentWeight,
@@ -418,7 +418,7 @@ var (
         },
         []string{"pool_id", "strategy"},
     )
-    
+
     // 凭据等待时间
     CredentialWaitTime = promauto.NewHistogramVec(
         prometheus.HistogramOpts{
@@ -428,7 +428,7 @@ var (
         },
         []string{"pool_id"},
     )
-    
+
     // 凭据分配总数
     CredentialAllocation = promauto.NewCounterVec(
         prometheus.CounterOpts{
@@ -437,7 +437,7 @@ var (
         },
         []string{"pool_id", "status"},
     )
-    
+
     // 凭据当前权重
     CredentialWeight = promauto.NewGaugeVec(
         prometheus.GaugeOpts{
@@ -446,7 +446,7 @@ var (
         },
         []string{"credential_id", "pool_id"},
     )
-    
+
     // 按凭据的请求分配数
     CredentialRequestsAllocated = promauto.NewCounterVec(
         prometheus.CounterOpts{
@@ -455,7 +455,7 @@ var (
         },
         []string{"credential_id", "pool_id"},
     )
-    
+
     // 凭据健康检查失败
     CredentialHealthCheckFailures = promauto.NewCounterVec(
         prometheus.CounterOpts{
@@ -472,14 +472,14 @@ var (
 ```go
 func (s *WRRScheduler) Select(ctx context.Context) (*Credential, error) {
     start := time.Now()
-    
+
     cred, err := s.selectInternal(ctx)
-    
+
     waitTime := time.Since(start).Seconds()
     CredentialWaitTime.WithLabelValues(
         strconv.Itoa(s.poolID),
     ).Observe(waitTime)
-    
+
     if err != nil {
         CredentialAllocation.WithLabelValues(
             strconv.Itoa(s.poolID),
@@ -487,17 +487,17 @@ func (s *WRRScheduler) Select(ctx context.Context) (*Credential, error) {
         ).Inc()
         return nil, err
     }
-    
+
     CredentialAllocation.WithLabelValues(
         strconv.Itoa(s.poolID),
         "success",
     ).Inc()
-    
+
     CredentialRequestsAllocated.WithLabelValues(
         strconv.Itoa(cred.ID),
         strconv.Itoa(s.poolID),
     ).Inc()
-    
+
     return cred, nil
 }
 ```
@@ -516,9 +516,9 @@ func TestWRRScheduler_Distribution(t *testing.T) {
         {ID: 2, Quota: 1},
         {ID: 3, Quota: 1},
     }
-    
+
     scheduler := NewWRRScheduler(creds)
-    
+
     // 选择 10000 次
     counts := make(map[int]int)
     for i := 0; i < 10000; i++ {
@@ -526,13 +526,13 @@ func TestWRRScheduler_Distribution(t *testing.T) {
         require.NoError(t, err)
         counts[cred.ID]++
     }
-    
+
     // 验证分布 (允许 5% 偏差)
     total := 10000
     expectedA := total * 5 / 7  // ≈ 7143
     expectedB := total * 1 / 7  // ≈ 1429
     expectedC := total * 1 / 7  // ≈ 1429
-    
+
     assertWithin(t, counts[1], expectedA, 0.05)
     assertWithin(t, counts[2], expectedB, 0.05)
     assertWithin(t, counts[3], expectedC, 0.05)
@@ -543,17 +543,17 @@ func TestWRRScheduler_DynamicWeight(t *testing.T) {
         {ID: 1, Quota: 10},
         {ID: 2, Quota: 10},
     }
-    
+
     scheduler := NewWRRScheduler(creds)
-    
+
     // 初始分布应为 50:50
     counts1 := selectN(scheduler, 1000)
     assertWithin(t, counts1[1], 500, 0.1)
     assertWithin(t, counts1[2], 500, 0.1)
-    
+
     // 降低凭据 2 的权重到 1
     scheduler.UpdateWeight(2, 1)
-    
+
     // 新分布应为 ~91:9
     counts2 := selectN(scheduler, 1000)
     assertWithin(t, counts2[1], 910, 0.1)
@@ -564,7 +564,7 @@ func assertWithin(t *testing.T, actual, expected int, tolerance float64) {
     diff := math.Abs(float64(actual - expected))
     maxDiff := float64(expected) * tolerance
     assert.LessOrEqual(t, diff, maxDiff,
-        "actual=%d, expected=%d, tolerance=%.1f%%", 
+        "actual=%d, expected=%d, tolerance=%.1f%%",
         actual, expected, tolerance*100)
 }
 ```
@@ -577,15 +577,15 @@ func TestWRRScheduler_Concurrent(t *testing.T) {
         {ID: 1, Quota: 5},
         {ID: 2, Quota: 1},
     }
-    
+
     scheduler := NewWRRScheduler(creds)
-    
+
     // 1000 个 goroutine 并发选择
     var wg sync.WaitGroup
     counts := make(map[int]*atomic.Int64)
     counts[1] = &atomic.Int64{}
     counts[2] = &atomic.Int64{}
-    
+
     for i := 0; i < 1000; i++ {
         wg.Add(1)
         go func() {
@@ -597,14 +597,14 @@ func TestWRRScheduler_Concurrent(t *testing.T) {
             }
         }()
     }
-    
+
     wg.Wait()
-    
+
     // 验证分布
     total := 100000
     expectedA := total * 5 / 6
     expectedB := total * 1 / 6
-    
+
     assertWithin(t, int(counts[1].Load()), expectedA, 0.05)
     assertWithin(t, int(counts[2].Load()), expectedB, 0.05)
 }
@@ -619,10 +619,10 @@ func BenchmarkWRRScheduler_Select(b *testing.B) {
         {ID: 2, Quota: 5},
         {ID: 3, Quota: 1},
     }
-    
+
     scheduler := NewWRRScheduler(creds)
     ctx := context.Background()
-    
+
     b.ResetTimer()
     for i := 0; i < b.N; i++ {
         _, _ = scheduler.Select(ctx)
@@ -655,7 +655,7 @@ pools:
       - id: 103
         api_key: "${OPENAI_KEY_3}"
         quota: 10
-    
+
     health_check:
       enabled: true
       interval: 60s
@@ -668,10 +668,10 @@ pools:
 ```go
 func initCredentialPools(cfg *config.Config) map[int]*pool.Pool {
     pools := make(map[int]*pool.Pool)
-    
+
     for _, poolCfg := range cfg.Pools {
         var scheduler scheduler.Scheduler
-        
+
         switch poolCfg.Strategy {
         case "wrr":
             scheduler = scheduler.NewWRRScheduler(poolCfg.Credentials)
@@ -680,17 +680,17 @@ func initCredentialPools(cfg *config.Config) map[int]*pool.Pool {
         default:
             log.Fatal("unknown strategy", "strategy", poolCfg.Strategy)
         }
-        
+
         p := pool.NewPool(poolCfg.ID, scheduler)
         pools[poolCfg.ID] = p
-        
+
         // 启动健康检查
         if poolCfg.HealthCheck.Enabled {
             checker := health.NewChecker(scheduler, poolCfg.HealthCheck.Interval)
             go checker.Start(context.Background())
         }
     }
-    
+
     return pools
 }
 ```
@@ -705,6 +705,6 @@ func initCredentialPools(cfg *config.Config) map[int]*pool.Pool {
 
 ---
 
-**作者**: Infrastructure Team  
-**审阅者**: 待定  
+**作者**: Infrastructure Team
+**审阅者**: 待定
 **下次复审**: 实现完成后

@@ -1,8 +1,8 @@
 # Fix: Remove Obsolete model_offers Mock in writer_regression_test.go
 
-**Date**: 2026-07-16  
-**Type**: Test Fix  
-**Component**: domains/credential  
+**Date**: 2026-07-16
+**Type**: Test Fix
+**Component**: domains/credential
 **Issue**: Handoff audit — credential health false positive修复的遗留测试问题
 
 ## Summary

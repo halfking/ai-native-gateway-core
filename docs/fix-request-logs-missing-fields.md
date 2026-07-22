@@ -28,14 +28,14 @@
 ```go
 type RequestLogEntry struct {
     // ... 现有字段 ...
-    
+
     // 2026-06-30: 上游错误诊断字段（手动添加到表但未同步到代码）
     UpstreamStatusCode  *int    `json:"upstream_status_code,omitempty"`
     ClientTimeout       *bool   `json:"client_timeout,omitempty"`
     ClientEndpoint      *string `json:"client_endpoint,omitempty"`
     StreamChunkErrors   *int    `json:"stream_chunk_errors,omitempty"`
     StreamChunksSent    *int    `json:"stream_chunks_sent,omitempty"`
-    
+
     // 现有字段
     ClientRequestID *string `json:"client_request_id,omitempty"`
 }
@@ -99,14 +99,14 @@ entry.StreamChunksSent,
 ```go
 type RequestLogContext struct {
     // ... 现有字段 ...
-    
+
     // 上游错误诊断
     UpstreamStatusCode *int
     ClientTimeout      bool
     ClientEndpoint     string
     StreamChunkErrors  int
     StreamChunksSent   int
-    
+
     // 现有字段
     meta   requestAttemptMeta
     logged bool
@@ -166,37 +166,37 @@ func (c *RequestLogContext) IncrementStreamChunksSent() {
 ```go
 func (c *RequestLogContext) BuildFailureEntry(errCode, errMessage string, providerID, credentialID *int) *telemetry.RequestLogEntry {
     // ... 现有代码 ...
-    
+
     var clientRequestIDPtr *string
     if c.ClientRequestID != "" {
         v := c.ClientRequestID
         clientRequestIDPtr = &v
     }
-    
+
     // 新增：客户端端点
     var clientEndpointPtr *string
     if c.ClientEndpoint != "" {
         clientEndpointPtr = &c.ClientEndpoint
     }
-    
+
     // 新增：客户端超时
     var clientTimeoutPtr *bool
     if c.ClientTimeout {
         v := true
         clientTimeoutPtr = &v
     }
-    
+
     // 新增：流错误统计
     var streamChunkErrorsPtr *int
     if c.StreamChunkErrors > 0 {
         streamChunkErrorsPtr = &c.StreamChunkErrors
     }
-    
+
     var streamChunksSentPtr *int
     if c.StreamChunksSent >= 0 {
         streamChunksSentPtr = &c.StreamChunksSent
     }
-    
+
     reqLog := &telemetry.RequestLogEntry{
         // ... 现有字段 ...
         ClientRequestID:     clientRequestIDPtr,
@@ -281,7 +281,7 @@ logCtx.SetClientEndpoint(r.URL.Path)
 
 **问题**: 有请求卡在 `in_progress` 状态
 
-**根本原因**: 
+**根本原因**:
 - 请求处理过程中发生未捕获的异常
 - 日志记录的最终更新没有执行
 
@@ -292,7 +292,7 @@ logCtx.SetClientEndpoint(r.URL.Path)
 ```go
 func (h *ChatHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
     // ... 初始化 logCtx ...
-    
+
     defer func() {
         if rec := recover(); rec != nil {
             // 捕获 panic，确保记录失败状态
@@ -303,7 +303,7 @@ func (h *ChatHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
             panic(rec)
         }
     }()
-    
+
     // ... 现有处理逻辑 ...
 }
 ```
@@ -315,13 +315,13 @@ func (h *ChatHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 ```sql
 -- 将超过 5 分钟仍为 in_progress 的记录标记为 timeout
 UPDATE request_logs
-SET 
+SET
     success = false,
     request_status = 'failure',
     error_kind = 'gateway_timeout',
     failure_stage = 'gateway',
     failure_detail_code = 'gw_processing_timeout'
-WHERE 
+WHERE
     request_status = 'in_progress'
     AND ts < NOW() - INTERVAL '5 minutes';
 ```
@@ -336,7 +336,7 @@ WHERE
 -- Purpose: 同步手动添加的字段到迁移系统，确保字段存在并有正确的索引
 
 -- 添加字段（如果不存在）
-ALTER TABLE request_logs 
+ALTER TABLE request_logs
     ADD COLUMN IF NOT EXISTS upstream_status_code INT,
     ADD COLUMN IF NOT EXISTS client_timeout BOOLEAN,
     ADD COLUMN IF NOT EXISTS client_endpoint TEXT,
@@ -344,34 +344,34 @@ ALTER TABLE request_logs
     ADD COLUMN IF NOT EXISTS stream_chunks_sent INT NOT NULL DEFAULT 0;
 
 -- 为上游状态码添加索引，用于快速查询特定状态码的错误
-CREATE INDEX IF NOT EXISTS idx_request_logs_upstream_status 
-    ON request_logs (upstream_status_code, ts DESC) 
+CREATE INDEX IF NOT EXISTS idx_request_logs_upstream_status
+    ON request_logs (upstream_status_code, ts DESC)
     WHERE upstream_status_code IS NOT NULL;
 
 -- 为客户端超时添加索引
-CREATE INDEX IF NOT EXISTS idx_request_logs_client_timeout 
-    ON request_logs (client_timeout, ts DESC) 
+CREATE INDEX IF NOT EXISTS idx_request_logs_client_timeout
+    ON request_logs (client_timeout, ts DESC)
     WHERE client_timeout = TRUE;
 
 -- 为流错误添加索引
-CREATE INDEX IF NOT EXISTS idx_request_logs_stream_errors 
-    ON request_logs (stream_chunk_errors, ts DESC) 
+CREATE INDEX IF NOT EXISTS idx_request_logs_stream_errors
+    ON request_logs (stream_chunk_errors, ts DESC)
     WHERE stream_chunk_errors IS NOT NULL AND stream_chunk_errors > 0;
 
 -- 注释
-COMMENT ON COLUMN request_logs.upstream_status_code IS 
+COMMENT ON COLUMN request_logs.upstream_status_code IS
     '上游 HTTP 状态码（从 upstream.Error.StatusCode 提取）。NULL 表示网关阶段错误或未到达上游。';
 
-COMMENT ON COLUMN request_logs.client_timeout IS 
+COMMENT ON COLUMN request_logs.client_timeout IS
     '客户端超时标记。TRUE 表示客户端断开连接或超时，与服务端超时区分。';
 
-COMMENT ON COLUMN request_logs.client_endpoint IS 
+COMMENT ON COLUMN request_logs.client_endpoint IS
     '客户端请求的端点路径（如 /v1/chat/completions），用于区分不同 API 的错误模式。';
 
-COMMENT ON COLUMN request_logs.stream_chunk_errors IS 
+COMMENT ON COLUMN request_logs.stream_chunk_errors IS
     '流式传输中发生的块级错误次数。用于诊断部分失败的流。';
 
-COMMENT ON COLUMN request_logs.stream_chunks_sent IS 
+COMMENT ON COLUMN request_logs.stream_chunks_sent IS
     '成功发送的流块数量。与 stream_chunk_count 区分（后者是从响应提取的总块数）。';
 ```
 
@@ -386,7 +386,7 @@ DROP INDEX IF EXISTS idx_request_logs_upstream_status;
 
 -- 注意：不删除列，因为可能有历史数据
 -- 如果需要完全回滚，手动执行：
--- ALTER TABLE request_logs 
+-- ALTER TABLE request_logs
 --     DROP COLUMN IF EXISTS stream_chunks_sent,
 --     DROP COLUMN IF EXISTS stream_chunk_errors,
 --     DROP COLUMN IF EXISTS client_endpoint,
@@ -445,7 +445,7 @@ DROP INDEX IF EXISTS idx_request_logs_upstream_status;
 ```sql
 -- 1. 触发一个上游错误（使用无效密钥）
 -- 验证查询
-SELECT 
+SELECT
     request_id,
     error_kind,
     failure_stage,
@@ -503,19 +503,19 @@ WHERE request_id = '<test_request_id>';
 
 ```sql
 -- 1. 上游状态码分布
-SELECT 
+SELECT
     upstream_status_code,
     COUNT(*) as count,
     ROUND(AVG(latency_ms)) as avg_latency_ms
 FROM request_logs
-WHERE success = false 
+WHERE success = false
     AND failure_stage = 'upstream'
     AND ts >= NOW() - INTERVAL '24 hours'
 GROUP BY upstream_status_code
 ORDER BY count DESC;
 
 -- 2. 客户端超时比例
-SELECT 
+SELECT
     DATE_TRUNC('hour', ts) as hour,
     COUNT(*) FILTER (WHERE client_timeout = true) as timeout_count,
     COUNT(*) as total_failures,
@@ -527,11 +527,11 @@ GROUP BY hour
 ORDER BY hour DESC;
 
 -- 3. 流传输成功率
-SELECT 
+SELECT
     DATE_TRUNC('hour', ts) as hour,
     COUNT(*) FILTER (WHERE stream_chunk_errors > 0 OR client_timeout = true) as failed_streams,
     COUNT(*) FILTER (WHERE stream_chunks_sent > 0) as total_streams,
-    ROUND(100.0 * COUNT(*) FILTER (WHERE stream_chunk_errors = 0 AND client_timeout IS NOT TRUE) / 
+    ROUND(100.0 * COUNT(*) FILTER (WHERE stream_chunk_errors = 0 AND client_timeout IS NOT TRUE) /
         NULLIF(COUNT(*) FILTER (WHERE stream_chunks_sent > 0), 0), 2) as success_rate
 FROM request_logs
 WHERE ts >= NOW() - INTERVAL '24 hours'

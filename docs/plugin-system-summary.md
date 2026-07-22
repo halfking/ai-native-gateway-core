@@ -1,6 +1,6 @@
 # Hook插件化重构方案总结
 
-**日期**: 2024-07-09  
+**日期**: 2024-07-09
 **状态**: 文档已完成，待第二轮审计验证
 
 ---
@@ -27,18 +27,18 @@
 ## 核心修正（相比v3）
 
 ### 修正1: 接口完全对齐 ✅
-**问题**: v3的RequestHookExt缺少Name/Priority/Enabled三个方法  
-**修正**: HookExtension = Extension + 完整5方法Hook接口  
+**问题**: v3的RequestHookExt缺少Name/Priority/Enabled三个方法
+**修正**: HookExtension = Extension + 完整5方法Hook接口
 **ADR**: ADR-001
 
 ### 修正2: 简化通讯层 ✅
-**问题**: 三层通讯引入废弃的MemoryBus和无需求的ServiceRegistry  
-**修正**: 两层 - Metadata规范化 + analysis.bus  
+**问题**: 三层通讯引入废弃的MemoryBus和无需求的ServiceRegistry
+**修正**: 两层 - Metadata规范化 + analysis.bus
 **ADR**: ADR-002, ADR-003, ADR-007
 
 ### 修正3: 降低里程碑风险 ✅
-**问题**: 首个迁移目标outputcompliance太复杂（4表/3调用点）  
-**修正**: E'改为新建简单插件budget-guard，推迟复杂迁移  
+**问题**: 首个迁移目标outputcompliance太复杂（4表/3调用点）
+**修正**: E'改为新建简单插件budget-guard，推迟复杂迁移
 **ADR**: ADR-006
 
 ---
@@ -83,7 +83,7 @@ Registry (拓扑排序 + Adapter)
 A1: 核心类型定义 (1周)
   └─ Extension/HookExtension/Manifest
 
-A2: Context+Storage接口 (1周) 
+A2: Context+Storage接口 (1周)
   └─ 纸面设计+mock验证，不做实现
 
 B: Storage实现 (1.5周)
@@ -184,7 +184,7 @@ E: 迁移outputcompliance (1.5周)
 ## 下一步行动
 
 ### 立即
-1. **人工评审三份文档** 
+1. **人工评审三份文档**
    - 审计报告的3处修正是否合理？
    - 实施计划v4的里程碑是否可行？
    - ADR的10条决策是否认同？

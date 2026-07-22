@@ -46,16 +46,16 @@ type TimeoutAdapter struct {
 	BaseTimeout          time.Duration // 基础超时（默认 30s）
 	MinTimeout           time.Duration // 最小超时（默认 15s）
 	MaxTimeout           time.Duration // 最大超时（默认 120s）
-	
+
 	// 大小相关
 	SizeThresholdSmall   int           // 小请求阈值（100KB）
 	SizeThresholdLarge   int           // 大请求阈值（500KB）
 	SizeMultiplierSmall  float64       // 小请求倍数（0.5x = 15s）
 	SizeMultiplierLarge  float64       // 大请求倍数（2.0x = 60s）
-	
+
 	// 供应商相关
 	ProviderMultipliers  map[string]float64 // 供应商倍数
-	
+
 	// 历史性能
 	HistoricalTTFB       *TTFBTracker       // 历史 TTFB 追踪器
 }
@@ -67,13 +67,13 @@ type AdaptiveTimeoutInput struct {
 	IsSession        bool
 	IsRetry          bool
 	AttemptNum       int
-	
+
 	// Credential 信息
 	CredentialID     int
 	ProviderID       int
 	ProviderBaseURL  string
 	RawModel         string
-	
+
 	// 历史数据
 	RecentTTFB       *time.Duration  // 该 credential 最近的 TTFB
 }
@@ -81,32 +81,32 @@ type AdaptiveTimeoutInput struct {
 // Calculate 计算自适应超时
 func (a *TimeoutAdapter) Calculate(input AdaptiveTimeoutInput) time.Duration {
 	timeout := a.BaseTimeout
-	
+
 	// ========== 1. 基于请求大小调整 ==========
 	sizeMultiplier := a.calculateSizeMultiplier(input.RequestSize)
 	timeout = time.Duration(float64(timeout) * sizeMultiplier)
-	
+
 	// ========== 2. 基于供应商特性调整 ==========
 	providerMultiplier := a.getProviderMultiplier(input.ProviderBaseURL)
 	timeout = time.Duration(float64(timeout) * providerMultiplier)
-	
+
 	// ========== 3. 基于历史 TTFB 调整 ==========
 	if input.RecentTTFB != nil {
 		historyMultiplier := a.calculateHistoryMultiplier(*input.RecentTTFB)
 		timeout = time.Duration(float64(timeout) * historyMultiplier)
 	}
-	
+
 	// ========== 4. Session 请求额外时间 ==========
 	if input.IsSession {
 		timeout = time.Duration(float64(timeout) * 1.5) // +50%
 	}
-	
+
 	// ========== 5. 重试时缩短超时（快速失败） ==========
 	if input.IsRetry {
 		retryMultiplier := math.Max(0.5, 1.0 - float64(input.AttemptNum)*0.2)
 		timeout = time.Duration(float64(timeout) * retryMultiplier)
 	}
-	
+
 	// ========== 6. 限制在合理范围内 ==========
 	if timeout < a.MinTimeout {
 		timeout = a.MinTimeout
@@ -114,7 +114,7 @@ func (a *TimeoutAdapter) Calculate(input AdaptiveTimeoutInput) time.Duration {
 	if timeout > a.MaxTimeout {
 		timeout = a.MaxTimeout
 	}
-	
+
 	return timeout
 }
 
@@ -151,14 +151,14 @@ func (a *TimeoutAdapter) getProviderMultiplier(baseURL string) float64 {
 	if strings.Contains(baseURL, "deepseek.com") {
 		return 0.8 // DeepSeek 快 -20%
 	}
-	
+
 	// 检查自定义配置
 	for pattern, multiplier := range a.ProviderMultipliers {
 		if strings.Contains(baseURL, pattern) {
 			return multiplier
 		}
 	}
-	
+
 	return 1.0 // 默认
 }
 
@@ -171,10 +171,10 @@ func (a *TimeoutAdapter) calculateHistoryMultiplier(recentTTFB time.Duration) fl
 	// - recentTTFB = 5s, baseTimeout = 30s  → 1.0 + (5/30 - 0.5) = 0.67x (缩短)
 	// - recentTTFB = 15s, baseTimeout = 30s → 1.0 + (15/30 - 0.5) = 1.0x (不变)
 	// - recentTTFB = 25s, baseTimeout = 30s → 1.0 + (25/30 - 0.5) = 1.33x (延长)
-	
+
 	ratio := float64(recentTTFB) / float64(a.BaseTimeout)
 	multiplier := 1.0 + (ratio - 0.5)
-	
+
 	// 限制在 0.5x - 2.0x 范围内
 	return math.Max(0.5, math.Min(multiplier, 2.0))
 }
@@ -206,17 +206,17 @@ func NewTTFBTracker() *TTFBTracker {
 func (t *TTFBTracker) Record(credentialID int, ttfb time.Duration) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	
+
 	stats, ok := t.data[credentialID]
 	if !ok {
 		stats = &TTFBStats{}
 		t.data[credentialID] = stats
 	}
-	
+
 	stats.RecentTTFB = ttfb
 	stats.UpdatedAt = time.Now()
 	stats.SampleCount++
-	
+
 	// 简化的滑动平均（实际应用中可以用更精确的算法）
 	if stats.AvgTTFB == 0 {
 		stats.AvgTTFB = ttfb
@@ -231,17 +231,17 @@ func (t *TTFBTracker) Record(credentialID int, ttfb time.Duration) {
 func (t *TTFBTracker) Get(credentialID int) *TTFBStats {
 	t.mu.RLock()
 	defer t.mu.RUnlock()
-	
+
 	stats, ok := t.data[credentialID]
 	if !ok {
 		return nil
 	}
-	
+
 	// 如果数据超过 5 分钟未更新，视为过期
 	if time.Since(stats.UpdatedAt) > 5*time.Minute {
 		return nil
 	}
-	
+
 	return stats
 }
 ```
@@ -253,17 +253,17 @@ func (t *TTFBTracker) Get(credentialID int) *TTFBStats {
 
 func (e *Executor) executeChatRequest(...) (*ExecuteResult, error) {
 	// ... 现有逻辑 ...
-	
+
 	for attemptNum, cand := range candidates {
 		// 准备请求体
 		bodyBytes := prepareRequestBody(params, cand)
-		
+
 		// ========== 计算自适应超时 ==========
 		var recentTTFB *time.Duration
 		if stats := e.TTFBTracker.Get(cand.CredentialID); stats != nil {
 			recentTTFB = &stats.RecentTTFB
 		}
-		
+
 		adaptiveTimeout := e.TimeoutAdapter.Calculate(AdaptiveTimeoutInput{
 			RequestSize:     len(bodyBytes),
 			IsSession:       params.SessionID != "",
@@ -275,7 +275,7 @@ func (e *Executor) executeChatRequest(...) (*ExecuteResult, error) {
 			RawModel:        cand.RawModel,
 			RecentTTFB:      recentTTFB,
 		})
-		
+
 		slog.Info("adaptive_timeout: calculated",
 			"credential_id", cand.CredentialID,
 			"request_size", len(bodyBytes),
@@ -290,23 +290,23 @@ func (e *Executor) executeChatRequest(...) (*ExecuteResult, error) {
 			"timeout_ms", adaptiveTimeout.Milliseconds(),
 		)
 		// ========== 计算结束 ==========
-		
+
 		// 使用自适应超时创建上下文
 		upCtx, upCancel := context.WithTimeout(context.Background(), adaptiveTimeout)
 		defer upCancel()
-		
+
 		// 发起 HTTP 请求
 		req := req.WithContext(upCtx)
 		reqStart := time.Now()
 		resp, err := httpClient.Do(req)
-		
+
 		// ========== 记录 TTFB ==========
 		if resp != nil && resp.Body != nil {
 			ttfb := time.Since(reqStart)
 			e.TTFBTracker.Record(cand.CredentialID, ttfb)
 		}
 		// ========== 记录结束 ==========
-		
+
 		// ... 后续处理 ...
 	}
 }
@@ -321,19 +321,19 @@ timeoutAdapter := &streaming.TimeoutAdapter{
 	BaseTimeout:         30 * time.Second,
 	MinTimeout:          15 * time.Second,
 	MaxTimeout:          120 * time.Second,
-	
+
 	SizeThresholdSmall:  100 * 1024,  // 100KB
 	SizeThresholdLarge:  500 * 1024,  // 500KB
 	SizeMultiplierSmall: 0.5,         // 小请求 15s
 	SizeMultiplierLarge: 2.0,         // 大请求 60s
-	
+
 	ProviderMultipliers: map[string]float64{
 		"minimaxi.com":     1.5,  // MiniMax +50%
 		"anthropic.com":    1.2,  // Claude +20%
 		"deepseek.com":     0.8,  // DeepSeek -20%
 		// 可以从配置文件或 DB 读取
 	},
-	
+
 	HistoricalTTFB: streaming.NewTTFBTracker(),
 }
 
@@ -361,7 +361,7 @@ Is Retry: false
   History: 无 → 1.0x
   Session: false → 1.0x
   Retry: false → 1.0x
-  
+
 结果: 30s × 0.5 = 15s ✅
 ```
 
@@ -380,7 +380,7 @@ Is Retry: false
   History: 无 → 1.0x
   Session: true → 1.5x
   Retry: false → 1.0x
-  
+
 结果: 30s × 2.9 × 1.5 × 1.5 = 195s → 限制到 MaxTimeout 120s ✅
 ```
 
@@ -399,7 +399,7 @@ Is Retry: false
   History: 25s → 1.0 + (25/30 - 0.5) = 1.33x
   Session: true → 1.5x
   Retry: false → 1.0x
-  
+
 结果: 30s × 2.9 × 1.5 × 1.33 × 1.5 = 260s → 限制到 120s ✅
 ```
 
@@ -419,7 +419,7 @@ Attempt: 2
   History: 20s → 1.0 + (20/30 - 0.5) = 1.17x
   Session: false → 1.0x
   Retry: true, attempt=2 → 1.0 - 2*0.2 = 0.6x (快速失败)
-  
+
 结果: 30s × 1.0 × 1.5 × 1.17 × 0.6 = 31.6s ✅
 ```
 
@@ -441,7 +441,7 @@ Attempt: 2
   Size: 953KB → 2.9x
   Provider: MiniMax → 1.5x
   Session: true → 1.5x
-  
+
 结果超时: 30s × 2.9 × 1.5 × 1.5 = 195s → 限制到 120s
 实际 TTFB: 34.5s
 结果: ✅ 成功！(34.5s < 120s)

@@ -54,16 +54,16 @@ const riskLevelOptions = computed(() => [
 
 const filteredApprovals = computed(() => {
   let list = approvals.value
-  
+
   // Search by session_id or request_id
   if (searchQuery.value) {
     const query = searchQuery.value.toLowerCase().trim()
-    list = list.filter(item => 
+    list = list.filter(item =>
       item.session_id.toLowerCase().includes(query) ||
       item.request_id.toLowerCase().includes(query)
     )
   }
-  
+
   return list
 })
 
@@ -116,9 +116,9 @@ function formatDate(dateStr: string): string {
   const days = Math.floor(hours / 24)
 
   if (days > 7) {
-    return date.toLocaleDateString(localeRef.value, { 
-      year: 'numeric', 
-      month: '2-digit', 
+    return date.toLocaleDateString(localeRef.value, {
+      year: 'numeric',
+      month: '2-digit',
       day: '2-digit',
       hour: '2-digit',
       minute: '2-digit'
@@ -138,7 +138,7 @@ function formatCost(cost?: number): string {
 async function loadApprovals() {
   loading.value = true
   error.value = null
-  
+
   try {
     const params = {
       status: statusFilter.value || undefined,
@@ -150,7 +150,7 @@ async function loadApprovals() {
       created_after: dateRangeStart.value || undefined,
       created_before: dateRangeEnd.value || undefined,
     }
-    
+
     const response = await getApprovalList(params)
     approvals.value = response.items || []
     totalItems.value = response.total
@@ -175,7 +175,7 @@ async function quickApprove(item: ApprovalItem) {
   if (!confirm(t('approval.list.confirm.approve', { id: item.request_id }))) {
     return
   }
-  
+
   try {
     await approveApproval(item.request_id)
     successMessage.value = t('approval.list.success.approved')
@@ -192,7 +192,7 @@ async function quickReject(item: ApprovalItem) {
   if (!reason || !reason.trim()) {
     return
   }
-  
+
   try {
     await rejectApproval(item.request_id, reason)
     successMessage.value = t('approval.list.success.rejected')
@@ -280,7 +280,7 @@ watch([statusFilter, riskLevelFilter, dateRangeStart, dateRangeEnd], () => {
       {{ error }}
       <button class="message-close" @click="error = null">×</button>
     </div>
-    
+
     <div v-if="successMessage" class="message message-success">
       <span class="message-icon">✅</span>
       {{ successMessage }}
@@ -409,23 +409,23 @@ watch([statusFilter, riskLevelFilter, dateRangeStart, dateRangeEnd], () => {
             </td>
             <td class="actions-cell">
               <div class="action-buttons">
-                <button 
-                  v-if="item.status === 'pending'" 
+                <button
+                  v-if="item.status === 'pending'"
                   class="btn btn-success btn-xs"
                   @click="quickApprove(item)"
                   :title="t('approval.list.actions.approve')"
                 >
                   ✓
                 </button>
-                <button 
-                  v-if="item.status === 'pending'" 
+                <button
+                  v-if="item.status === 'pending'"
                   class="btn btn-danger btn-xs"
                   @click="quickReject(item)"
                   :title="t('approval.list.actions.reject')"
                 >
                   ✕
                 </button>
-                <button 
+                <button
                   class="btn btn-secondary btn-xs"
                   @click="viewDetail(item)"
                   :title="t('approval.list.actions.viewDetail')"
@@ -441,19 +441,19 @@ watch([statusFilter, riskLevelFilter, dateRangeStart, dateRangeEnd], () => {
 
     <!-- Pagination -->
     <div v-if="totalPages > 1" class="pagination">
-      <button 
+      <button
         class="btn btn-secondary btn-sm"
         @click="changePage(currentPage - 1)"
         :disabled="currentPage === 1"
       >
         {{ t('approval.list.pagination.previous') }}
       </button>
-      
+
       <div class="pagination-info">
         {{ t('approval.list.pagination.info', { page: currentPage, totalPages, total: totalItems }) }}
       </div>
-      
-      <button 
+
+      <button
         class="btn btn-secondary btn-sm"
         @click="changePage(currentPage + 1)"
         :disabled="currentPage === totalPages"

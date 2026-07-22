@@ -1,7 +1,7 @@
 # 已知限制：跨进程状态同步
 
-**日期**: 2026-07-03  
-**影响组件**: Circuit Breaker (漏洞1) 和 Concurrency Limiter (漏洞11)  
+**日期**: 2026-07-03
+**影响组件**: Circuit Breaker (漏洞1) 和 Concurrency Limiter (漏洞11)
 **影响场景**: 多实例部署
 
 ---
@@ -116,21 +116,21 @@
 1. **Circuit不同步检测**:
    ```promql
    # 同一凭据在不同实例的circuit状态不一致
-   count by (credential_id) (circuit_breaker_state{state="open"}) != 
+   count by (credential_id) (circuit_breaker_state{state="open"}) !=
    count by (credential_id) (circuit_breaker_state)
    ```
 
 2. **Limiter超额检测**:
    ```promql
    # 凭据总并发数 > 配置限制 × 1.2
-   sum by (credential_id) (credential_concurrent_requests) > 
+   sum by (credential_id) (credential_concurrent_requests) >
    credential_concurrency_limit * 1.2
    ```
 
 3. **雪崩检测**:
    ```promql
    # 5分钟内5xx率 > 30%
-   rate(http_requests_total{status=~"5.."}[5m]) / 
+   rate(http_requests_total{status=~"5.."}[5m]) /
    rate(http_requests_total[5m]) > 0.3
    ```
 
@@ -151,7 +151,7 @@ type Manager struct {
 
 func (m *Manager) Allow(providerID, credentialID int) bool {
     key := fmt.Sprintf("%d/%d", providerID, credentialID)
-    
+
     // 1. 检查本地缓存（10s TTL）
     if cached, ok := m.cache.Load(key); ok {
         entry := cached.(cacheEntry)
@@ -159,29 +159,29 @@ func (m *Manager) Allow(providerID, credentialID int) bool {
             return entry.state != StateOpen && entry.state != StateQuarantined
         }
     }
-    
+
     // 2. 从Redis读取
     ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
     defer cancel()
-    
+
     state, err := m.redis.HGet(ctx, "circuit:"+key, "state").Result()
     if err == redis.Nil {
         // Redis无数据，从DB读取
         state = m.loadFromDB(ctx, credentialID)
     }
-    
+
     // 3. 更新本地缓存
     m.cache.Store(key, cacheEntry{
         state:     parseState(state),
         expiresAt: time.Now().Add(10 * time.Second),
     })
-    
+
     return state != "open" && state != "quarantined"
 }
 
 func (m *Manager) RecordFailure(providerID, credentialID int, kind ErrorKind) {
     key := fmt.Sprintf("%d/%d", providerID, credentialID)
-    
+
     // Lua脚本原子递增失败计数
     script := `
         local fails = redis.call('HINCRBY', KEYS[1], 'fail_count', 1)
@@ -191,12 +191,12 @@ func (m *Manager) RecordFailure(providerID, credentialID int, kind ErrorKind) {
         end
         return fails
     `
-    
+
     coolingUntil := time.Now().Add(5 * time.Minute).Unix()
-    m.redis.Eval(context.Background(), script, 
-        []string{"circuit:" + key}, 
+    m.redis.Eval(context.Background(), script,
+        []string{"circuit:" + key},
         circuitFailureThreshold, coolingUntil).Val()
-    
+
     // 失效本地缓存
     m.cache.Delete(key)
 }
@@ -209,6 +209,6 @@ func (m *Manager) RecordFailure(providerID, credentialID int, kind ErrorKind) {
 
 ---
 
-**作者**: AI Agent  
-**文档版本**: v1.0  
+**作者**: AI Agent
+**文档版本**: v1.0
 **最后更新**: 2026-07-03

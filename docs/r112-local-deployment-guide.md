@@ -144,26 +144,26 @@ import time, json
 with sync_playwright() as p:
     browser = p.chromium.launch(headless=False)
     page = browser.new_page(viewport={"width": 1280, "height": 900})
-    
+
     # 1. Landing page
     page.goto('http://localhost:8781/')
     time.sleep(2)
-    
+
     # 2. Login
     page.click('button:has-text("Sign in")')
     page.fill('input[type="text"]', 'admin')
     page.fill('input[type="password"]', 'Veritrans&9527')
     page.click('button:has-text("登录")')
     time.sleep(5)
-    
+
     # 3. Navigate to modules
     page.goto('http://localhost:8781/admin/modules')
     time.sleep(3)
-    
+
     # 4. Click WeChat module
     page.click('text=微信机器人')
     time.sleep(2)
-    
+
     browser.close()
 PYEOF
 ```

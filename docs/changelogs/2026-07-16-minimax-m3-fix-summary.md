@@ -33,7 +33,7 @@
   - manual_priority: 99
   - routing_tier: 2
   - available: true
-  
+
   但实际请求 100% 使用 credential 21 (MiniMax 官方)
   ```
 - **根因**：Sticky routing 过度粘性，锁定到单一 credential
@@ -58,13 +58,13 @@
 
 **操作**：
 ```sql
-UPDATE credential_model_bindings 
-SET available = true, 
-    unavailable_reason = NULL, 
+UPDATE credential_model_bindings
+SET available = true,
+    unavailable_reason = NULL,
     consecutive_failures = 0
-WHERE credential_id = 23 
+WHERE credential_id = 23
   AND provider_model_id IN (
-      SELECT id FROM provider_models 
+      SELECT id FROM provider_models
       WHERE raw_model_name = 'minimaxai/minimax-m3'
   );
 ```
@@ -121,9 +121,9 @@ outcome.Resumable = (chunkCount < 5)  // 根据已发送 chunk 数量判断
 func (e *Executor) pickStickyCredentialID(params *ExecParams) *int {
     var stickyID *int
     var level string
-    
+
     // ... sticky lookup logic ...
-    
+
     // 新增：诊断日志
     if stickyID != nil {
         slog.Debug("sticky_routing: credential locked",
@@ -135,7 +135,7 @@ func (e *Executor) pickStickyCredentialID(params *ExecParams) *int {
             "request_id", params.RequestID,
         )
     }
-    
+
     return stickyID
 }
 ```
@@ -196,7 +196,7 @@ systemctl status llm-gateway-go.service
 
 **功能**：
 ```
-timeout = base × sizeMultiplier × providerMultiplier × 
+timeout = base × sizeMultiplier × providerMultiplier ×
           historyMultiplier × sessionMultiplier × retryMultiplier
 
 限制在 [15s, 120s]

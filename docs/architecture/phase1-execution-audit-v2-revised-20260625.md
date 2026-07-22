@@ -1,7 +1,7 @@
 # LLM Gateway Go 领域重构执行审计报告 v2.0（修正版）
 
-> **审计日期**: 2026-06-25  
-> **审计方法**: 深度代码扫描 + 文件级对比  
+> **审计日期**: 2026-06-25
+> **审计方法**: 深度代码扫描 + 文件级对比
 > **关键发现**: 实际代码复用情况比预期复杂，存在大量"重写而非复用"的情况
 
 ---
@@ -176,7 +176,7 @@
 
 **新代码**: domains/streaming/ 无任何 executor 实现
 
-**影响**: 
+**影响**:
 - 无法实际调用上游 API
 - domains/streaming/ 只是空壳接口
 - 旧 routing/executor_*.go 仍在生产使用（新架构未生效）
@@ -308,7 +308,7 @@ R1.3: 完整迁移 limiter/ → domains/credential/
 ```bash
 R1.4: 迁移 routing/executor_*.go → domains/streaming/executors/
       工时: 8h | 行数: 4,361 行
-      文件: 
+      文件:
         - executor_chat.go (973 行)
         - executor_anthropic.go (880 行)
         - executor_common.go (135 行)

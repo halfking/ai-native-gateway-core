@@ -1,7 +1,7 @@
 # Migration 335 紧急热修复记录
 
-**日期**: 2026-07-10 19:30  
-**问题**: migration 335/336 虽然显示已应用，但视图定义未更新  
+**日期**: 2026-07-10 19:30
+**问题**: migration 335/336 虽然显示已应用，但视图定义未更新
 **影响**: claude-fable-5, claude-opus-4-8, gpt-5.5 仍然无法路由
 
 ---
@@ -15,7 +15,7 @@
 1. **检查数据库视图**：
 ```sql
 SELECT raw_model_name, credential_id, is_routable, unavailable_reason
-FROM v_routable_credential_models 
+FROM v_routable_credential_models
 WHERE raw_model_name IN ('claude-opus-4-8', 'claude-fable-5');
 
 -- 结果：仍然显示 plan_incompatible_cmb_requires_per_token
@@ -108,7 +108,7 @@ SELECT pg_notify('auto_route_refresh', 'manual:335_hotfix');
 2. **验证修复结果**：
 ```sql
 SELECT raw_model_name, credential_id, is_routable, unavailable_reason
-FROM v_routable_credential_models 
+FROM v_routable_credential_models
 WHERE raw_model_name IN ('claude-opus-4-8', 'claude-fable-5', 'gpt-5.5');
 
 -- 结果：
@@ -200,7 +200,7 @@ curl 'http://localhost:8080/api/routing/resolve?model=claude-fable-5'
 
 ---
 
-**修复人**: OpenCode Agent  
-**修复时间**: 2026-07-10 19:30-19:32  
-**验证时间**: 2026-07-10 19:32  
+**修复人**: OpenCode Agent
+**修复时间**: 2026-07-10 19:30-19:32
+**验证时间**: 2026-07-10 19:32
 **状态**: ✅ 已修复并验证

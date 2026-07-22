@@ -1,7 +1,7 @@
 # 任务文档结构规范
 
-> **版本**: v2.0  
-> **日期**: 2026-07-03  
+> **版本**: v2.0
+> **日期**: 2026-07-03
 > **状态**: 正式标准
 
 ---
@@ -415,7 +415,7 @@ integration_points:
   - module: domains/session
     interface: Session结构体
     usage: Environment中使用
-  
+
   - module: cmd/gateway/main.go
     integration: 启动时初始化HookRegistry
     code_location: line 123
@@ -612,5 +612,5 @@ integration_points:
 
 ---
 
-**维护人**: 架构组  
+**维护人**: 架构组
 **最后更新**: 2026-07-03

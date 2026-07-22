@@ -1,7 +1,7 @@
 # 安全检测引擎模块架构文档
 
-**版本**: R1.13  
-**状态**: 生产就绪（配置层完成，运行时接入待开发）  
+**版本**: R1.13
+**状态**: 生产就绪（配置层完成，运行时接入待开发）
 **最后更新**: 2026-07-09
 
 ---
@@ -264,20 +264,20 @@ CREATE TABLE security_audit_log (
     session_id TEXT NOT NULL,
     request_id TEXT NOT NULL,
     tenant_id TEXT NOT NULL,
-    
+
     -- 意图分析结果
     intent_type TEXT,
     intent_confidence FLOAT,
     intent_drift FLOAT,
-    
+
     -- 威胁检测结果
     threat_types TEXT[],
     threat_severity INT,
-    
+
     -- 响应决策
     response_action TEXT,
     blocked BOOLEAN,
-    
+
     -- 审计元数据
     detected_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     INDEX (session_id),
@@ -358,9 +358,9 @@ CREATE TABLE security_audit_log (
 
 4. **查看审计日志**：
    ```sql
-   SELECT * FROM security_audit_log 
-   WHERE tenant_id = 'xxx' 
-   ORDER BY detected_at DESC 
+   SELECT * FROM security_audit_log
+   WHERE tenant_id = 'xxx'
+   ORDER BY detected_at DESC
    LIMIT 100;
    ```
 
@@ -387,5 +387,5 @@ CREATE TABLE security_audit_log (
 
 ---
 
-**维护者**: Official-Deploy Team  
+**维护者**: Official-Deploy Team
 **联系方式**: See [CODEOWNERS](../../CODEOWNERS)

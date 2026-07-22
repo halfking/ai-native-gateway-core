@@ -61,26 +61,26 @@ type ExecutionOutcome struct {
 	CanonicalModel string
 	RequestID    string
 	TenantID     string
-	
+
 	// 结果
 	Success      bool
 	ErrorKind    errorsx.ErrorKind  // stream_timeout, network, concurrent, etc.
 	ErrorDetail  string
-	
+
 	// 延迟
 	LatencyMs    int64
 	TTFB_Ms      int64
-	
+
 	// 流式相关
 	IsStream     bool
 	ChunkCount   int
 	Resumable    bool
-	
+
 	// 重试/Fallback
 	IsRetry      bool
 	IsFallback   bool
 	AttemptNum   int
-	
+
 	// 时间戳
 	StartedAt    time.Time
 	CompletedAt  time.Time
@@ -91,7 +91,7 @@ type CredentialStateHook interface {
 	// RecordOutcome 记录单次执行结果
 	// 必须在每个 candidate 尝试后调用（无论成功/失败）
 	RecordOutcome(ctx context.Context, outcome ExecutionOutcome) error
-	
+
 	// RecordFinalOutcome 记录最终结果（所有 candidates 尝试完毕）
 	// 用于整体请求级别的统计
 	RecordFinalOutcome(ctx context.Context, outcomes []ExecutionOutcome) error
@@ -103,7 +103,7 @@ type DefaultCredentialStateHook struct {
 	CircuitBreaker CircuitBreaker
 	ActiveProbe  ActiveProbeSubmitter
 	MetricsEmitter MetricsEmitter
-	
+
 	// 配置
 	ActiveProbeThreshold int // 连续失败多少次触发主动探测
 	FlashGuardWindow     time.Duration // 闪断保护窗口（默认 2s）
@@ -115,13 +115,13 @@ func (h *DefaultCredentialStateHook) RecordOutcome(ctx context.Context, outcome 
 		if err := h.StateWriter.WriteOnSuccess(ctx, outcome.CredentialID, outcome.CanonicalModel); err != nil {
 			slog.Warn("state_hook: WriteOnSuccess failed", "error", err)
 		}
-		
+
 		// 2. 记录熔断器成功
 		h.CircuitBreaker.RecordSuccess(outcome.ProviderID, outcome.CredentialID)
-		
+
 		// 3. 更新指标
 		h.MetricsEmitter.RecordSuccess(outcome)
-		
+
 	} else {
 		// 1. 更新失败状态
 		failure := credential.Failure{
@@ -131,10 +131,10 @@ func (h *DefaultCredentialStateHook) RecordOutcome(ctx context.Context, outcome 
 		if err := h.StateWriter.WriteOnError(ctx, outcome.CredentialID, outcome.CanonicalModel, failure); err != nil {
 			slog.Warn("state_hook: WriteOnError failed", "error", err)
 		}
-		
+
 		// 2. 记录熔断器失败
 		h.CircuitBreaker.RecordFailure(outcome.ProviderID, outcome.CredentialID, outcome.ErrorKind)
-		
+
 		// 3. 检查是否触发主动探测
 		consecutiveFails := h.CircuitBreaker.GetConsecutiveFailures(outcome.ProviderID, outcome.CredentialID)
 		if consecutiveFails >= h.ActiveProbeThreshold {
@@ -144,11 +144,11 @@ func (h *DefaultCredentialStateHook) RecordOutcome(ctx context.Context, outcome 
 				h.ActiveProbe.Submit(outcome.CredentialID, outcome.CanonicalModel, outcome.TenantID, outcome.RequestID)
 			}
 		}
-		
+
 		// 4. 更新指标
 		h.MetricsEmitter.RecordFailure(outcome)
 	}
-	
+
 	// 5. 统一日志（可配置为 debug 级别）
 	slog.Debug("state_hook: outcome recorded",
 		"credential_id", outcome.CredentialID,
@@ -158,7 +158,7 @@ func (h *DefaultCredentialStateHook) RecordOutcome(ctx context.Context, outcome 
 		"latency_ms", outcome.LatencyMs,
 		"is_fallback", outcome.IsFallback,
 	)
-	
+
 	return nil
 }
 ```
@@ -170,13 +170,13 @@ func (h *DefaultCredentialStateHook) RecordOutcome(ctx context.Context, outcome 
 
 func (e *Executor) executeChatRequest(...) (*ExecuteResult, error) {
 	// ... 现有逻辑 ...
-	
+
 	for attemptNum, cand := range candidates {
 		outcomeStartAt := time.Now()
-		
+
 		// 发起 HTTP 请求
 		resp, err := httpClient.Do(req)
-		
+
 		// ========= 关键：立即调用 hook =========
 		outcome := ExecutionOutcome{
 			CredentialID:   cand.CredentialID,
@@ -196,7 +196,7 @@ func (e *Executor) executeChatRequest(...) (*ExecuteResult, error) {
 			StartedAt:      outcomeStartAt,
 			CompletedAt:    time.Now(),
 		}
-		
+
 		// 强制调用 hook（defer 也行，但立即调用更明确）
 		if e.StateHook != nil {
 			if err := e.StateHook.RecordOutcome(params.R.Context(), outcome); err != nil {
@@ -204,16 +204,16 @@ func (e *Executor) executeChatRequest(...) (*ExecuteResult, error) {
 			}
 		}
 		// ========= hook 调用结束 =========
-		
+
 		// 继续处理响应、failover 等逻辑
 		if err != nil || resp.StatusCode != 200 {
 			continue // 尝试下一个 candidate
 		}
-		
+
 		// 成功，返回
 		return &ExecuteResult{...}, nil
 	}
-	
+
 	// 所有 candidates 失败
 	return nil, errors.New("all candidates failed")
 }

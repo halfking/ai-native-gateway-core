@@ -32,7 +32,7 @@
 ```sql
 BEGIN;
 -- 写入 request_logs_hot
-INSERT INTO request_logs_hot (...) VALUES (...) 
+INSERT INTO request_logs_hot (...) VALUES (...)
 RETURNING request_id, ts;
 
 -- 写入 request_logs_bodies_hot
@@ -201,6 +201,6 @@ curl -X POST http://localhost:8080/v1/chat/completions \
 
 ---
 
-**测试执行者**: AI Agent  
-**报告生成时间**: 2026-07-21  
+**测试执行者**: AI Agent
+**报告生成时间**: 2026-07-21
 **报告版本**: v1.0

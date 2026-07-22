@@ -42,7 +42,7 @@
 UPDATE providers SET enabled=false WHERE id=33; -- evol
 ```
 **请求**: `POST /v1/chat/completions` model=`claude-3-5-sonnet-20241022` provider_hint=evol
-**预期**: 
+**预期**:
 - 不路由到 evol 的任何凭据
 - 候选列表中 evol 凭据的 unavailable_reason='provider_disabled'
 - 自动切换到其他 enabled provider
@@ -50,7 +50,7 @@ UPDATE providers SET enabled=false WHERE id=33; -- evol
 ### TC2: Quota 耗尽后自动切换
 **前置**:
 ```sql
-UPDATE credentials SET quota_state='exhausted', quota_recover_at=NOW()+INTERVAL '1 hour' 
+UPDATE credentials SET quota_state='exhausted', quota_recover_at=NOW()+INTERVAL '1 hour'
 WHERE id IN (SELECT id FROM credentials WHERE provider_id=1 LIMIT 1);
 ```
 **请求**: `POST /v1/chat/completions` model=`claude-3-5-sonnet-20241022`
@@ -139,12 +139,12 @@ seq 1 100 | xargs -P 10 -I {} curl -X POST http://localhost:__PORT_12__/v1/chat/
   > results_quota_failover.txt 2>&1
 
 # 3. 统计成功率和使用的 credential_id 分布
-psql -c "SELECT credential_id, COUNT(*) FROM request_logs 
-         WHERE created_at > NOW() - INTERVAL '1 minute' 
+psql -c "SELECT credential_id, COUNT(*) FROM request_logs
+         WHERE created_at > NOW() - INTERVAL '1 minute'
          GROUP BY credential_id ORDER BY COUNT(*) DESC"
 
 # 4. 验证 cred 1 没有被使用
-psql -c "SELECT COUNT(*) FROM request_logs 
+psql -c "SELECT COUNT(*) FROM request_logs
          WHERE credential_id=1 AND created_at > NOW() - INTERVAL '1 minute'"
 ```
 
