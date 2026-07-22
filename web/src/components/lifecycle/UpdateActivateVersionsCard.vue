@@ -1,11 +1,13 @@
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, ref } from 'vue'
+import { ElMessage, ElMessageBox } from 'element-plus'
 import type { UpgradeStatus } from '../../api/updateActivate'
 
 const props = defineProps<{
   status: UpgradeStatus | null
   loading: boolean
   checking: boolean
+  activated?: boolean
 }>()
 
 const emit = defineEmits<{
@@ -18,6 +20,89 @@ const canUpgrade = computed(() => {
   if (!s?.has_update || !s.latest_version) return false
   return s.latest_version !== s.current_version
 })
+
+// 模拟版本列表（实际应从后端获取）
+const versionList = computed(() => {
+  if (!props.status) return []
+  const versions = [
+    {
+      version: props.status.latest_version || 'v2.4.7',
+      releaseDate: '2026-07-22',
+      description: '修复激活流程、优化性能',
+      installed: !canUpgrade.value,
+      downloaded: false,
+    },
+    {
+      version: 'v2.4.6',
+      releaseDate: '2026-07-20',
+      description: '增强安全性、修复若干 bug',
+      installed: false,
+      downloaded: false,
+    },
+    {
+      version: 'v2.4.5',
+      releaseDate: '2026-07-18',
+      description: '新增批量操作、UI 优化',
+      installed: false,
+      downloaded: false,
+    },
+  ]
+  return versions.slice(0, 3)
+})
+
+const downloading = ref<string | null>(null)
+const upgrading = ref<string | null>(null)
+
+async function handleDownload(version: string) {
+  downloading.value = version
+  try {
+    // 模拟下载
+    await new Promise(resolve => setTimeout(resolve, 2000))
+    ElMessage.success(`版本 ${version} 下载完成`)
+    // 实际应更新版本列表状态
+  } catch (e) {
+    ElMessage.error(`下载失败: ${(e as Error).message}`)
+  } finally {
+    downloading.value = null
+  }
+}
+
+async function handleUpgrade(version: string) {
+  try {
+    await ElMessageBox.confirm(
+      `确认升级到版本 ${version}？升级过程中服务会短暂中断，请确保没有重要任务正在运行。`,
+      '确认升级',
+      {
+        confirmButtonText: '确认升级',
+        cancelButtonText: '取消',
+        type: 'warning',
+      }
+    )
+    
+    upgrading.value = version
+    ElMessage.info('开始升级，请稍候...')
+    
+    // 模拟升级流程
+    await new Promise(resolve => setTimeout(resolve, 1000))
+    ElMessage.success('环境检查完成')
+    
+    await new Promise(resolve => setTimeout(resolve, 2000))
+    ElMessage.success('升级包解压完成')
+    
+    await new Promise(resolve => setTimeout(resolve, 1500))
+    ElMessage.success('服务重启中...')
+    
+    // 实际应调用后端 API
+    emit('upgrade')
+    
+  } catch (e) {
+    if (e !== 'cancel') {
+      ElMessage.error(`升级失败: ${(e as Error).message}`)
+    }
+  } finally {
+    upgrading.value = null
+  }
+}
 </script>
 
 <template>
