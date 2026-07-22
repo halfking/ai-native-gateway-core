@@ -519,7 +519,7 @@ func main() {
 	var persistWriterStop context.CancelFunc
 	if ursmV2Mgr != nil && dbConn != nil && dbConn.Enabled() {
 		v2Cfg := ursmv2.LoadFromEnv()
-		
+
 		// Skip persist writer in shadow mode (no data to persist)
 		if v2Cfg.Mode != "shadow" {
 			persistWriter := persist.New(redisClientForCache.Client(), v2Cfg.RedisKeyPrefix, dbConn.Pool())
@@ -3290,12 +3290,14 @@ func main() {
 		} else {
 			slog.Warn("LLM_GATEWAY_LICENSE_PRIVATE_KEY not set — license signing disabled")
 		}
+		publicKeyConfigured := false
 		if cfg.LicensePublicKey != "" {
 			key, err := licensing.LoadPublicKeyFromPEM(cfg.LicensePublicKey)
 			if err != nil {
 				slog.Error("failed to load license RSA public key", "error", err)
 			} else {
 				licensingCrypto.PublicKey = key
+				publicKeyConfigured = true
 				slog.Info("license RSA public key loaded")
 			}
 		} else {
@@ -3328,7 +3330,7 @@ func main() {
 		licensingCustomerAPI.RegisterTelemetryPreferenceRoutes(e.Group("/api/tenant/telemetry-preference"))
 
 		// First-boot bootstrap: status / fingerprint / activate / activate-quick (issue+import).
-		licensingBootstrap := licensing.NewBootstrapHandler(licensingValidator, licensingActivator, licensingOffline, licensingStore)
+		licensingBootstrap := licensing.NewBootstrapHandler(licensingValidator, licensingActivator, licensingOffline, licensingStore, publicKeyConfigured)
 		customerBootstrapGroup := customerEcho.Group("/api/system/bootstrap")
 		customerBootstrapGroup.Use(noAuthCustomerMiddleware())
 		licensingBootstrap.RegisterRoutes(customerBootstrapGroup)
