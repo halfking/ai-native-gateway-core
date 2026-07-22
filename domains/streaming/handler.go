@@ -2358,12 +2358,9 @@ func (h *ChatHandler) serveWithExecutor(
 					preStream.pause()
 				}
 			},
-			// 2026-07-23 节点跳转回调：执行器切换节点时发送 thinking 事件
-			OnNodeJump: func(message string) {
-				if preStream != nil {
-					preStream.writeThinking(message)
-				}
-			},
+			// Note: OnNodeJump removed — thinking SSE events with {"message":"..."} format
+			// cause Zod validation errors in clients expecting OpenAI schema (choices/error).
+			// Node failover still works silently; clients will retry on timeout.
 			// 探测结束（无论恢复/失败）→ 如果 keepalive 还在跑就 resume，
 			// 让正常流式响应或后续错误路径不再卡在 pause 状态。
 			OnProbeHoldEnd: func(recovered bool) {
