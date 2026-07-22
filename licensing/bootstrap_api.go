@@ -1,6 +1,7 @@
 package licensing
 
 import (
+	"encoding/json"
 	"log/slog"
 	"net/http"
 	"os"
@@ -272,12 +273,22 @@ func (h *BootstrapHandler) handleActivateQuick(c echo.Context) error {
 			})
 		}
 		if err != nil && !h.publicKeyConfigured {
-			// 信任路径：公钥未配置（LICENSE_DISABLED） → 不阻塞激活
-			// 中心的 TLS + 内部鉴权已经保护了这条通道
-			slog.Warn("activating without local signed_license verification (LicensePublicKey 未配置)；信任通道来源",
+			// 信任路径：公钥未配置 → 跳过验签，直接解析 Data
+			slog.Warn("activating without RSA verification (LicensePublicKey 未配置)；信任通道来源",
 				"instance_id", instanceID, "verify_err", err.Error())
+			// 尝试解析 signed_license 的 Data 部分（不验签）
+			signedStruct, unmarshalErr := UnmarshalFromBase64(signed)
+			if unmarshalErr == nil && len(signedStruct.Data) > 0 {
+				var trustedLic License
+				if jsonErr := json.Unmarshal(signedStruct.Data, &trustedLic); jsonErr == nil {
+					parsedLicense = &trustedLic
+					slog.Info("activateQuick: parsed license from Data without RSA verification (信任路径)",
+						"license_key", trustedLic.LicenseKey)
+				}
+			}
+		} else {
+			parsedLicense = lic
 		}
-		parsedLicense = lic
 	}
 
 	// 确保 licenses 表有记录（中心签发的 license 本地可能没有）
