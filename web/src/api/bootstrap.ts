@@ -49,6 +49,13 @@ export type BootstrapActivateResult = {
   online_error?: string
   maintain?: unknown
   activation?: unknown
+  body?: {
+    code?: string
+    message?: string
+    request_id?: string
+    retryable?: boolean
+    [key: string]: unknown
+  } | null
 }
 
 export type ImportOfflineRequest = {
@@ -66,6 +73,13 @@ export type ImportOfflineResult = {
   license_key?: string
   message?: string
   error?: string
+  body?: {
+    code?: string
+    message?: string
+    request_id?: string
+    retryable?: boolean
+    [key: string]: unknown
+  } | null
 }
 
 export type RegisterCenterRequest = {
@@ -96,17 +110,32 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   })
   const body = await response.json().catch(() => null)
   if (!response.ok) {
-    let msg = `请求失败（${response.status}）`
+    // 构造详细的错误信息：合并多个有用的字段
+    let msg = `请求失败（HTTP ${response.status}）`
+    let detail = ''
+    let code = ''
     if (body && typeof body === 'object') {
+      // 提取嵌套 body 中的 code/message
+      if (body.body && typeof body.body === 'object') {
+        if (body.body.code) code = String(body.body.code)
+        if (body.body.message) detail = String(body.body.message)
+      }
       if (body.message && typeof body.message === 'string') {
         msg = body.message
-      } else if (body.error && typeof body.error === 'string') {
-        msg = body.error
-      } else if (body.body && body.body.message) {
-        msg = String(body.body.message)
+      }
+      if (!detail && body.error && typeof body.error === 'string') {
+        detail = body.error
       }
     }
-    throw new Error(msg)
+    // 拼接完整错误信息
+    const parts: string[] = []
+    if (code) parts.push(`[${code}]`)
+    if (msg) parts.push(msg)
+    if (detail && !msg.includes(detail)) parts.push(detail)
+    const fullMsg = parts.join(' - ') || `请求失败（HTTP ${response.status}）`
+    const err = new Error(fullMsg)
+    ;(err as Error & { code?: string }).code = code
+    throw err
   }
   return body as T
 }
