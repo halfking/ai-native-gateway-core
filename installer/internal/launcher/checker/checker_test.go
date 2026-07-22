@@ -19,7 +19,7 @@ func (f *fakeSource) Check(ctx context.Context) (*FoundRelease, error) {
 func TestCheckerFiresCallbackOnNewVersion(t *testing.T) {
 	found := make(chan *FoundRelease, 1)
 	c := New(Config{
-		CurrentVersion: "v1.4.2",
+		CurrentVersion: func() string { return "v1.4.2" },
 		Interval:       50 * time.Millisecond,
 		Source: &fakeSource{rel: &FoundRelease{
 			Version: "v1.5.0", DownloadURL: "http://x", SHA256: "abc",
@@ -47,7 +47,7 @@ func TestCheckerFiresCallbackOnNewVersion(t *testing.T) {
 func TestCheckerNoUpdateNoCallback(t *testing.T) {
 	fired := false
 	c := New(Config{
-		CurrentVersion: "v1.4.2",
+		CurrentVersion: func() string { return "v1.4.2" },
 		Interval:       50 * time.Millisecond,
 		Source:         &fakeSource{rel: nil},
 		OnUpdate:       func(r *FoundRelease) { fired = true },
@@ -65,7 +65,7 @@ func TestCheckerNoUpdateNoCallback(t *testing.T) {
 
 func TestCheckerOfflineNoCrash(t *testing.T) {
 	c := New(Config{
-		CurrentVersion: "v1.4.2",
+		CurrentVersion: func() string { return "v1.4.2" },
 		Interval:       50 * time.Millisecond,
 		Source:         &fakeSource{err: errors.New("offline")},
 		OnUpdate:       func(r *FoundRelease) { t.Error("should not fire when offline") },
@@ -82,7 +82,7 @@ func TestCheckerOfflineNoCrash(t *testing.T) {
 func TestCheckerSkipsSameVersion(t *testing.T) {
 	fired := false
 	c := New(Config{
-		CurrentVersion: "v1.4.2",
+		CurrentVersion: func() string { return "v1.4.2" },
 		Interval:       50 * time.Millisecond,
 		Source: &fakeSource{rel: &FoundRelease{Version: "v1.4.2"}},
 		OnUpdate:       func(r *FoundRelease) { fired = true },
@@ -102,7 +102,7 @@ func TestCheckerSkipsSameVersion(t *testing.T) {
 func TestCheckNowTriggersImmediate(t *testing.T) {
 	found := make(chan *FoundRelease, 1)
 	c := New(Config{
-		CurrentVersion: "v1.4.2",
+		CurrentVersion: func() string { return "v1.4.2" },
 		Interval:       1 * time.Hour, // long — only CheckNow should fire it
 		Source: &fakeSource{rel: &FoundRelease{Version: "v1.5.0"}},
 		OnUpdate: func(r *FoundRelease) { found <- r },

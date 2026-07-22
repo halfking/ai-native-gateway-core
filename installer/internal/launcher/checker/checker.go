@@ -28,7 +28,10 @@ type Source interface {
 
 // Config configures the checker loop.
 type Config struct {
-	CurrentVersion string
+	// CurrentVersion returns the live current version. Use a provider so
+	// the checker re-checks against the post-Apply version within one
+	// daemon lifetime (audit C9). If nil, treated as always "".
+	CurrentVersion func() string
 	MasterURL      string
 	Channel        string
 	Interval       time.Duration // default 1h
@@ -133,10 +136,14 @@ func (c *Checker) tick(ctx context.Context) {
 	if rel == nil {
 		return // no update
 	}
-	if rel.Version == c.cfg.CurrentVersion {
+	curVer := ""
+	if c.cfg.CurrentVersion != nil {
+		curVer = c.cfg.CurrentVersion()
+	}
+	if rel.Version == curVer {
 		return // already on this version
 	}
-	slog.Info("checker found new version", "current", c.cfg.CurrentVersion, "new", rel.Version)
+	slog.Info("checker found new version", "current", curVer, "new", rel.Version)
 	if c.cfg.OnUpdate != nil {
 		c.cfg.OnUpdate(rel)
 	}

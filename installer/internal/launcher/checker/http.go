@@ -12,9 +12,12 @@ import (
 // MasterHTTPSource queries master for the latest Gateway release.
 // Matches upgrader/client.go:46 endpoint shape:
 // GET <master>/api/v1/updates/latest?channel=<ch>&current_version=<ver>
+//
+// CurrentVersion is a provider so the query string reflects the live
+// post-Apply version (audit C9).
 type MasterHTTPSource struct {
 	MasterURL      string
-	CurrentVersion string
+	CurrentVersion func() string
 	Channel        string
 	HTTPClient     *http.Client
 }
@@ -23,10 +26,14 @@ func (m *MasterHTTPSource) Check(ctx context.Context) (*FoundRelease, error) {
 	if m.HTTPClient == nil {
 		m.HTTPClient = &http.Client{Timeout: 10 * time.Second}
 	}
+	curVer := ""
+	if m.CurrentVersion != nil {
+		curVer = m.CurrentVersion()
+	}
 	endpoint := fmt.Sprintf("%s/api/v1/updates/latest?channel=%s&current_version=%s",
 		m.MasterURL,
 		url.QueryEscape(m.Channel),
-		url.QueryEscape(m.CurrentVersion),
+		url.QueryEscape(curVer),
 	)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
 	if err != nil {
