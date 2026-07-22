@@ -287,12 +287,10 @@ function handleClick() {
   background:
     linear-gradient(
       145deg,
-      color-mix(in srgb, var(--accent-color) 16%, #1c2128) 0%,
-      color-mix(in srgb, var(--accent-color) 6%, #161b22) 100%
+      color-mix(in srgb, var(--accent-color) 16%, var(--kx-surface)) 0%,
+      color-mix(in srgb, var(--accent-color) 6%, var(--kx-bg)) 100%
     );
-  box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.06),
-    0 1px 2px rgba(0, 0, 0, 0.25);
+  box-shadow: var(--kx-shadow-sm);
   padding: 0;
   cursor: pointer;
   transition:
@@ -311,8 +309,7 @@ function handleClick() {
   transform: translateY(-2px) scale(1.04);
   border-color: color-mix(in srgb, var(--accent-color) 65%, transparent);
   box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.08),
-    0 6px 16px rgba(0, 0, 0, 0.35),
+    0 6px 16px color-mix(in srgb, var(--text) 15%, transparent),
     0 0 0 1px color-mix(in srgb, var(--accent-color) 25%, transparent);
   z-index: 10;
 }
@@ -353,13 +350,13 @@ function handleClick() {
   background:
     linear-gradient(
       145deg,
-      color-mix(in srgb, #38bdf8 22%, #1c2128) 0%,
-      color-mix(in srgb, #0ea5e9 10%, #161b22) 100%
+      color-mix(in srgb, #38bdf8 22%, var(--kx-surface)) 0%,
+      color-mix(in srgb, #0ea5e9 10%, var(--kx-bg)) 100%
     );
   box-shadow:
-    inset 0 1px 0 rgba(56, 189, 248, 0.12),
+    inset 0 1px 0 color-mix(in srgb, #38bdf8 12%, transparent),
     0 0 0 1px color-mix(in srgb, #38bdf8 20%, transparent),
-    0 1px 3px rgba(0, 0, 0, 0.3);
+    0 1px 3px color-mix(in srgb, var(--text) 12%, transparent);
 }
 
 .request-tile--probe.request-tile--failure {
@@ -367,8 +364,8 @@ function handleClick() {
   background:
     linear-gradient(
       145deg,
-      color-mix(in srgb, #38bdf8 14%, color-mix(in srgb, #ef4444 18%, #1c2128)) 0%,
-      color-mix(in srgb, #0ea5e9 7%, #161b22) 100%
+      color-mix(in srgb, #38bdf8 14%, color-mix(in srgb, #ef4444 18%, var(--kx-surface))) 0%,
+      color-mix(in srgb, #0ea5e9 7%, var(--kx-bg)) 100%
     );
 }
 
@@ -394,7 +391,7 @@ function handleClick() {
   height: 6px;
   border-radius: 50%;
   background: var(--status-color);
-  box-shadow: 0 0 0 2px rgba(0, 0, 0, 0.35);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--text) 15%, transparent);
   z-index: 2;
 }
 
@@ -404,10 +401,10 @@ function handleClick() {
 
 @keyframes status-pulse {
   0%, 100% {
-    box-shadow: 0 0 0 2px rgba(0, 0, 0, 0.35), 0 0 0 0 rgba(59, 130, 246, 0.5);
+    box-shadow: 0 0 0 2px color-mix(in srgb, var(--text) 15%, transparent), 0 0 0 0 rgba(59, 130, 246, 0.5);
   }
   50% {
-    box-shadow: 0 0 0 2px rgba(0, 0, 0, 0.35), 0 0 0 4px rgba(59, 130, 246, 0.25);
+    box-shadow: 0 0 0 2px color-mix(in srgb, var(--text) 15%, transparent), 0 0 0 4px rgba(59, 130, 246, 0.25);
   }
 }
 
@@ -466,7 +463,7 @@ function handleClick() {
   font-size: 9px;
   text-align: center;
   line-height: 1.1;
-  color: rgba(243, 244, 246, 0.75);
+  color: var(--kx-muted);
   font-weight: 500;
   font-variant-numeric: tabular-nums;
   letter-spacing: 0.02em;
@@ -479,7 +476,7 @@ function handleClick() {
   text-align: center;
   line-height: 1.25;
   font-weight: 600;
-  color: #f9fafb;
+  color: var(--kx-text);
   overflow: hidden;
   text-overflow: ellipsis;
   display: -webkit-box;
@@ -500,7 +497,7 @@ function handleClick() {
 .request-tile__provider {
   font-size: 8px;
   line-height: 1.2;
-  color: rgba(209, 213, 219, 0.85);
+  color: var(--kx-muted);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -512,7 +509,7 @@ function handleClick() {
   font-size: 8px;
   line-height: 1.2;
   font-variant-numeric: tabular-nums;
-  color: rgba(229, 231, 235, 0.9);
+  color: var(--kx-text);
   font-weight: 600;
   flex-shrink: 0;
 }
