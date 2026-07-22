@@ -632,6 +632,24 @@ func main() {
 		slog.Info("settings: registry disabled (no DB)")
 	}
 
+	// ── Dynamic Timeout Config (Phase 2, 2026-07-23) ────────────────────
+	// Initialize TimeoutConfig for adaptive timeout calculation based on
+	// context size, historical latency, and network conditions.
+	// Hot-reloads config from system_settings table every 30 seconds.
+	var timeoutConfig *config.TimeoutConfig
+	if dbConn != nil && dbConn.Enabled() {
+		timeoutConfig = config.NewTimeoutConfigWithPool(dbConn.Pool(), slog.Default())
+		// Graceful shutdown on exit
+		defer timeoutConfig.Stop()
+
+		slog.Info("timeout config initialized",
+			"mode", timeoutConfig.GetCurrentMode(),
+			"base_timeout", timeoutConfig.GetBaseTimeout(),
+			"hot_reload_interval", "30s")
+	} else {
+		slog.Warn("timeout config disabled (no DB), using static timeout from env")
+	}
+
 	// ── Routing executor (multi-candidate P2C) ──────────────────────────
 	providerClient := provider.NewClient()
 	if fpSlotRedis != nil {
@@ -682,6 +700,12 @@ func main() {
 			router.StateManager = stateManager
 			slog.Info("credential state manager created",
 				"redis_enabled", fpSlotRedis != nil)
+		}
+
+		// Wire TimeoutConfig to Router (Phase 2, 2026-07-23)
+		if timeoutConfig != nil {
+			router.TimeoutConfig = executors.NewTimeoutConfigAdapter(timeoutConfig)
+			slog.Info("timeout config wired to router")
 		}
 
 		// Phase 1 Bandit Scoring (2026-06-26): Initialize Thompson Sampling scorer
@@ -1096,7 +1120,11 @@ func main() {
 		slog.Info("fp_slot_degradation_tracker enabled (Phase 1 monitoring)")
 
 		// 2026-07-16: 自适应超时与状态管理增强
-		routingExec.TimeoutAdapter = executors.NewTimeoutAdapter()
+		// Phase 2 (2026-07-23): Use TimeoutConfigAdapter if available
+		if timeoutConfig != nil {
+			routingExec.TimeoutAdapter = executors.NewTimeoutConfigAdapter(timeoutConfig)
+			slog.Info("using TimeoutConfigAdapter from Phase 2")
+		}
 		routingExec.TTFBTracker = executors.NewTTFBTracker()
 		routingExec.PreRequestValidator = executors.NewRequestValidator(false) // non-strict mode
 		if routingExec.State != nil {
