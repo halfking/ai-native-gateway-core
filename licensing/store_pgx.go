@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log/slog"
 	"strconv"
 	"time"
 
@@ -112,7 +111,7 @@ func (s *PgxStore) CreateLicense(ctx context.Context, lic *License) error {
 	if err != nil {
 		return err
 	}
-	err = s.pool.QueryRow(ctx, `
+	return s.pool.QueryRow(ctx, `
 		INSERT INTO licenses (license_key, customer_name, customer_email, max_devices,
 		                      subscription_tier, features, expires_at, created_at)
 		VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7, NOW())
@@ -120,12 +119,6 @@ func (s *PgxStore) CreateLicense(ctx context.Context, lic *License) error {
 	`, lic.LicenseKey, lic.CustomerName, lic.CustomerEmail, lic.MaxDevices,
 		lic.SubscriptionTier, string(featuresJSON), lic.ExpiresAt,
 	).Scan(&lic.ID, &lic.CreatedAt)
-	if err != nil {
-		slog.Error("CreateLicense failed", "license_key", lic.LicenseKey,
-			"customer_name", lic.CustomerName, "features_json", string(featuresJSON),
-			"subscription_tier", lic.SubscriptionTier, "error", err)
-	}
-	return err
 }
 
 func (s *PgxStore) CreateTrialLicenseWithConsent(ctx context.Context, lic *License, consent *TrialConsent) error {
