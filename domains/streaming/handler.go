@@ -128,6 +128,20 @@ func (p *preStreamKeepalive) writeComment(line string) {
 	safeFlush(p.flusher)
 }
 
+// writeThinking sends a thinking event to the client (SSE event: thinking).
+// Used to display node failover status without entering the conversation.
+func (p *preStreamKeepalive) writeThinking(message string) {
+	if p == nil {
+		return
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	// Escape message for JSON
+	escaped, _ := json.Marshal(message)
+	fmt.Fprintf(p.w, "event: thinking\ndata: {\"message\":%s}\n\n", escaped)
+	safeFlush(p.flusher)
+}
+
 // pause suspends future keepalive comments. Idempotent.
 func (p *preStreamKeepalive) pause() {
 	if p == nil {
@@ -2342,6 +2356,12 @@ func (h *ChatHandler) serveWithExecutor(
 			OnPreStreamKeepalivePause: func() {
 				if preStream != nil {
 					preStream.pause()
+				}
+			},
+			// 2026-07-23 节点跳转回调：执行器切换节点时发送 thinking 事件
+			OnNodeJump: func(message string) {
+				if preStream != nil {
+					preStream.writeThinking(message)
 				}
 			},
 			// 探测结束（无论恢复/失败）→ 如果 keepalive 还在跑就 resume，

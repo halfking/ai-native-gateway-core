@@ -778,17 +778,22 @@ type ExecParams struct {
 	// the hold. The keepalive goroutine resumes naturally when stream
 	// writing begins (or is stopped via OnStreamReady). Optional.
 	OnPreStreamKeepalivePause func()
-	SuppressSuccessWrite      bool
-	ClientModel               string
-	OutboundModel             string
-	ClientID                  identity.ClientIdentity
-	Transform                 *transformation.TransformResult
-	Resolution                *resolve.Resolution
-	Candidates                []provider.Candidate
-	Policy                    *provider.Policy
-	AuditBuilder              *audit.EventBuilder
-	Capture                   *audit.StreamCapture
-	StreamWrapper             StreamWrapperFunc
+	// OnNodeJump is invoked when the executor is switching to the next
+	// credential after a failure. The handler uses this to send a thinking
+	// event (SSE event: thinking) to the client, displaying node failover
+	// status without entering the conversation. Optional.
+	OnNodeJump           func(message string)
+	SuppressSuccessWrite bool
+	ClientModel          string
+	OutboundModel        string
+	ClientID             identity.ClientIdentity
+	Transform            *transformation.TransformResult
+	Resolution           *resolve.Resolution
+	Candidates           []provider.Candidate
+	Policy               *provider.Policy
+	AuditBuilder         *audit.EventBuilder
+	Capture              *audit.StreamCapture
+	StreamWrapper        StreamWrapperFunc
 	// ToolsRequested indicates the upstream request body carried a non-empty
 	// `tools` array. Some providers (Xiaomi MiMo, MiniMax M2.7) cannot emit
 	// structured `tool_calls` and instead fall back to embedding
@@ -2291,6 +2296,11 @@ func (e *Executor) Execute(params *ExecParams) (*ExecuteResult, error) {
 					"node_jump_from_prov", cand.ProviderID,
 					"node_jump_attempt", nodeTracker.Attempts(),
 				)
+				// Notify handler to send thinking event to client
+				if params.OnNodeJump != nil {
+					msg := fmt.Sprintf("正在切换节点 (%d/%d)...", nodeTracker.Attempts(), len(candidates))
+					params.OnNodeJump(msg)
+				}
 				continue
 			} else {
 				// Stream is not resumable (too many chunks sent) - return error.
@@ -2324,6 +2334,11 @@ func (e *Executor) Execute(params *ExecParams) (*ExecuteResult, error) {
 			"node_jump_from_prov", cand.ProviderID,
 			"node_jump_attempt", nodeTracker.Attempts(),
 		)
+		// Notify handler to send thinking event to client
+		if params.OnNodeJump != nil {
+			msg := fmt.Sprintf("正在切换节点 (%d/%d)...", nodeTracker.Attempts(), len(candidates))
+			params.OnNodeJump(msg)
+		}
 		lastErr = execErr
 		// Prefer the typed Kind from *upstreampkg.Error if available, to
 		// avoid re-classifying from the error text (which embeds the
