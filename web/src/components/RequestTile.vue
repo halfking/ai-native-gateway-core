@@ -233,7 +233,6 @@ function handleClick() {
     :class="{
       'request-bar--highlighted': isHighlighted,
       'request-bar--dimmed': isDimmed,
-      'request-bar--probe': tile.is_probe,
       'request-bar--idle': isIdle,
       'request-bar--in-progress': isInProgress,
       'request-bar--failure': isFailure,
@@ -326,6 +325,8 @@ function handleClick() {
   border-radius: 3px;
   background: var(--bar-color, var(--muted));
   border: 1px solid color-mix(in srgb, var(--text) 18%, transparent);
+  /* 包含 border，避免 9px 实际渲染成 11px 破坏网格对齐 */
+  box-sizing: border-box;
   cursor: pointer;
   position: relative;
   overflow: hidden;

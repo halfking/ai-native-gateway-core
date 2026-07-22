@@ -603,26 +603,36 @@ func (h *Handler) handleProbeAvailabilityTimeline(w http.ResponseWriter, r *http
 //
 // GET /api/admin/probe/provider-latency
 type ProviderLatencyEntry struct {
-	ProviderID   int64  `json:"provider_id"`
-	ProviderName string `json:"provider_name"`
-	LatencyMs    int    `json:"latency_ms"`
-	ProbedAt     string `json:"probed_at"`
+	ProviderID   int64     `json:"provider_id"`
+	ProviderName string    `json:"provider_name"`
+	ProviderCode string    `json:"provider_code"`
+	LatencyMs    int       `json:"latency_ms"`
+	ProbedAt     time.Time `json:"probed_at"`
 }
 
 func (h *Handler) handleProviderLatency(w http.ResponseWriter, r *http.Request) {
-	// 取每个 provider 最近一次 direct_ok=true 的探测延时。
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	// 取每个 provider 最近一次成功的探测延时（direct_ok=true，1 小时窗口内）。
+	// ProviderCode 是 lane.id 的实际取值（前端 swimlane 按此 key 查找）。
 	rows, err := h.db.Query(r.Context(), `
 		SELECT DISTINCT ON (npr.provider_id)
 			npr.provider_id,
 			COALESCE(p.display_name, p.code, ''),
+			COALESCE(p.code, ''),
 			COALESCE(npr.direct_latency_ms, npr.gateway_latency_ms, 0),
 			npr.started_at
 		FROM node_probe_runs npr
 		LEFT JOIN providers p ON p.id = npr.provider_id
 		WHERE npr.provider_id IS NOT NULL
 			AND npr.provider_id > 0
-			AND COALESCE(npr.direct_latency_ms, npr.gateway_latency_ms) > 0
-		ORDER BY npr.provider_id, npr.started_at DESC
+			AND npr.direct_ok = TRUE
+			AND npr.direct_latency_ms > 0
+			AND npr.started_at >= now() - interval '1 hour'
+		ORDER BY npr.provider_id, npr.started_at DESC, npr.id DESC
+		LIMIT 500
 	`)
 	if err != nil {
 		http.Error(w, "database query failed: "+err.Error(), http.StatusInternalServerError)
@@ -633,7 +643,7 @@ func (h *Handler) handleProviderLatency(w http.ResponseWriter, r *http.Request) 
 	entries := []ProviderLatencyEntry{}
 	for rows.Next() {
 		var e ProviderLatencyEntry
-		if err := rows.Scan(&e.ProviderID, &e.ProviderName, &e.LatencyMs, &e.ProbedAt); err != nil {
+		if err := rows.Scan(&e.ProviderID, &e.ProviderName, &e.ProviderCode, &e.LatencyMs, &e.ProbedAt); err != nil {
 			http.Error(w, "scan failed: "+err.Error(), http.StatusInternalServerError)
 			return
 		}
@@ -655,25 +665,30 @@ func (h *Handler) handleProviderLatency(w http.ResponseWriter, r *http.Request) 
 //
 // GET /api/admin/probe/queue-tasks?limit=100
 type ProbeQueueTaskRow struct {
-	ID             int64      `json:"id"`
-	CredentialID   int64      `json:"credential_id"`
-	ProviderID     int64      `json:"provider_id"`
-	ProviderName   string     `json:"provider_name"`
-	RawModel       string     `json:"raw_model"`
-	Status         string     `json:"status"`
-	Attempt        int        `json:"attempt"`
-	Priority       int16      `json:"priority"`
-	ReasonCode     string     `json:"reason_code"`
-	NextRunAt      *time.Time `json:"next_run_at,omitempty"`
-	ResultLatencyMs int       `json:"result_latency_ms"`
-	ResultHTTPStatus int      `json:"result_http_status"`
-	UpdatedAt      *time.Time `json:"updated_at,omitempty"`
+	ID               int64        `json:"id"`
+	CredentialID     int64        `json:"credential_id"`
+	ProviderID       int64        `json:"provider_id"`
+	ProviderName     string       `json:"provider_name"`
+	ProviderCode     string       `json:"provider_code"`
+	RawModel         string       `json:"raw_model"`
+	Status           string       `json:"status"`
+	Attempt          int          `json:"attempt"`
+	Priority         int16        `json:"priority"`
+	ReasonCode       string       `json:"reason_code"`
+	NextRunAt        sql.NullTime `json:"next_run_at,omitempty"`
+	ResultLatencyMs  *int         `json:"result_latency_ms,omitempty"`
+	ResultHTTPStatus *int         `json:"result_http_status,omitempty"`
+	UpdatedAt        sql.NullTime `json:"updated_at,omitempty"`
 }
 
 func (h *Handler) handleProbeQueueTasks(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
 	limit := 100
 	if l := r.URL.Query().Get("limit"); l != "" {
-		if n, err := strconv.Atoi(l); err == nil && n > 0 && n <= 500 {
+		if n, err := strconv.Atoi(l); err == nil && n > 0 && n <= 100 {
 			limit = n
 		}
 	}
@@ -681,17 +696,18 @@ func (h *Handler) handleProbeQueueTasks(w http.ResponseWriter, r *http.Request) 
 	rows, err := h.db.Query(r.Context(), `
 		SELECT
 			q.id, q.credential_id, q.provider_id,
-			COALESCE(p.display_name, p.code, ''),
+			COALESCE(p.display_name, ''),
+			COALESCE(p.code, ''),
 			COALESCE(q.raw_model, ''),
 			q.status, q.attempt, q.priority, COALESCE(q.reason_code, ''),
 			q.next_run_at,
-			COALESCE(q.result_latency_ms, 0),
-			COALESCE(q.result_http_status, 0),
+			q.result_latency_ms,
+			q.result_http_status,
 			q.updated_at
 		FROM credential_probe_queue q
 		LEFT JOIN providers p ON p.id = q.provider_id
 		WHERE q.status IN ('ready', 'running')
-		ORDER BY q.priority DESC, q.next_run_at ASC
+		ORDER BY q.priority DESC, q.next_run_at ASC, q.id ASC
 		LIMIT $1
 	`, limit)
 	if err != nil {
@@ -703,13 +719,22 @@ func (h *Handler) handleProbeQueueTasks(w http.ResponseWriter, r *http.Request) 
 	tasks := []ProbeQueueTaskRow{}
 	for rows.Next() {
 		var t ProbeQueueTaskRow
+		var lat, httpStatus sql.NullInt32
 		if err := rows.Scan(
-			&t.ID, &t.CredentialID, &t.ProviderID, &t.ProviderName,
+			&t.ID, &t.CredentialID, &t.ProviderID, &t.ProviderName, &t.ProviderCode,
 			&t.RawModel, &t.Status, &t.Attempt, &t.Priority, &t.ReasonCode,
-			&t.NextRunAt, &t.ResultLatencyMs, &t.ResultHTTPStatus, &t.UpdatedAt,
+			&t.NextRunAt, &lat, &httpStatus, &t.UpdatedAt,
 		); err != nil {
 			http.Error(w, "scan failed: "+err.Error(), http.StatusInternalServerError)
 			return
+		}
+		if lat.Valid {
+			v := int(lat.Int32)
+			t.ResultLatencyMs = &v
+		}
+		if httpStatus.Valid {
+			v := int(httpStatus.Int32)
+			t.ResultHTTPStatus = &v
 		}
 		tasks = append(tasks, t)
 	}
