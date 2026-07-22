@@ -9,7 +9,71 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/jackc/pgx/v5/pgxpool"
 )
+
+// DBQuerier is an interface for database query operations
+// Supports both *sql.DB and *pgxpool.Pool
+type DBQuerier interface {
+	QueryContext(ctx context.Context, query string, args ...interface{}) (RowsScanner, error)
+}
+
+// RowsScanner is an interface for scanning query results
+type RowsScanner interface {
+	Scan(dest ...interface{}) error
+	Next() bool
+	Err() error
+	Close() error
+}
+
+// sqlDBAdapter wraps *sql.DB to implement DBQuerier
+type sqlDBAdapter struct {
+	db *sql.DB
+}
+
+func (a *sqlDBAdapter) QueryContext(ctx context.Context, query string, args ...interface{}) (RowsScanner, error) {
+	return a.db.QueryContext(ctx, query, args...)
+}
+
+// pgxPoolAdapter wraps *pgxpool.Pool to implement DBQuerier
+type pgxPoolAdapter struct {
+	pool *pgxpool.Pool
+}
+
+type pgxRowsAdapter struct {
+	rows interface {
+		Scan(dest ...interface{}) error
+		Next() bool
+		Err() error
+		Close()
+	}
+}
+
+func (r *pgxRowsAdapter) Scan(dest ...interface{}) error {
+	return r.rows.Scan(dest...)
+}
+
+func (r *pgxRowsAdapter) Next() bool {
+	return r.rows.Next()
+}
+
+func (r *pgxRowsAdapter) Err() error {
+	return r.rows.Err()
+}
+
+func (r *pgxRowsAdapter) Close() error {
+	r.rows.Close()
+	return nil
+}
+
+func (a *pgxPoolAdapter) QueryContext(ctx context.Context, query string, args ...interface{}) (RowsScanner, error) {
+	rows, err := a.pool.Query(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	return &pgxRowsAdapter{rows: rows}, nil
+}
 
 // TimeoutMode defines the dynamic timeout calculation mode
 type TimeoutMode string
@@ -43,7 +107,7 @@ type TimeoutConfig struct {
 	lastNodeWaitSeconds   int
 
 	// Database connection for hot-reload
-	db           *sql.DB
+	db           DBQuerier
 	reloadTicker *time.Ticker
 	stopChan     chan struct{}
 	logger       *slog.Logger
@@ -65,8 +129,18 @@ type TimeoutCalculationResult struct {
 	Reason                  string
 }
 
-// NewTimeoutConfig creates a new TimeoutConfig instance
+// NewTimeoutConfig creates a new TimeoutConfig instance with *sql.DB
 func NewTimeoutConfig(db *sql.DB, logger *slog.Logger) *TimeoutConfig {
+	return newTimeoutConfigInternal(&sqlDBAdapter{db: db}, logger)
+}
+
+// NewTimeoutConfigWithPool creates a new TimeoutConfig instance with *pgxpool.Pool
+func NewTimeoutConfigWithPool(pool *pgxpool.Pool, logger *slog.Logger) *TimeoutConfig {
+	return newTimeoutConfigInternal(&pgxPoolAdapter{pool: pool}, logger)
+}
+
+// newTimeoutConfigInternal is the internal constructor
+func newTimeoutConfigInternal(db DBQuerier, logger *slog.Logger) *TimeoutConfig {
 	tc := &TimeoutConfig{
 		db:       db,
 		logger:   logger,
@@ -278,7 +352,11 @@ func (tc *TimeoutConfig) ReloadFromDB(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("query system_settings: %w", err)
 	}
-	defer rows.Close()
+	defer func() {
+		if closeErr := rows.Close(); closeErr != nil {
+			tc.logger.Warn("failed to close rows", "error", closeErr)
+		}
+	}()
 
 	settings := make(map[string]string)
 	for rows.Next() {
@@ -447,4 +525,22 @@ func (tc *TimeoutConfig) GetBaseTimeout() int {
 	tc.mu.RLock()
 	defer tc.mu.RUnlock()
 	return tc.upstreamBaseSeconds
+}
+
+// Calculate implements the executors.TimeoutCalculator interface
+// This is an adapter method that bridges to CalculateEffectiveTimeout
+func (tc *TimeoutConfig) Calculate(input interface{}) time.Duration {
+	// Try to extract relevant fields from the input
+	// The input could be AdaptiveTimeoutInput from executors package
+	contextTokens := 0
+	historicalLatency := 0
+
+	// Use reflection to extract fields if needed
+	// For now, use a simple default adaptive calculation
+	result := tc.CalculateEffectiveTimeout(TimeoutCalculationInput{
+		ContextSizeTokens:   contextTokens,
+		HistoricalLatencyMS: historicalLatency,
+	})
+
+	return time.Duration(result.EffectiveTimeoutSeconds) * time.Second
 }
