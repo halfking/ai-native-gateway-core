@@ -4,6 +4,9 @@
 
 export type GroupByDimension = 'vendor' | 'provider' | 'model'
 
+// 2026-07-23: 泳道展示模式 — small=竖条（默认，容量更大），large=卡片
+export type SwimLaneMode = 'small' | 'large'
+
 // 请求状态枚举
 export type RequestStatus =
   | 'success'
@@ -87,6 +90,7 @@ export interface SwimLane {
     total: number
     success: number
     failure: number
+    avg_latency_ms?: number // 2026-07-23: 供应商维度下的 HTTP 延时（毫秒）
   }
   isOthers: boolean      // 是否是"其它"泳道
 }

@@ -595,6 +595,132 @@ func (h *Handler) handleProbeAvailabilityTimeline(w http.ResponseWriter, r *http
 	})
 }
 
+// ── Provider HTTP latency (2026-07-23, sub-item ②) ──────────────────────
+//
+// 复用 node_probe_runs 最近一次成功探测的 direct_latency_ms，按 provider
+// 聚合返回。NodeProbeWorker 在新探测模式下默认运行，健康节点约 5 分钟级
+// 节奏记录延时，无需额外定时器。
+//
+// GET /api/admin/probe/provider-latency
+type ProviderLatencyEntry struct {
+	ProviderID   int64  `json:"provider_id"`
+	ProviderName string `json:"provider_name"`
+	LatencyMs    int    `json:"latency_ms"`
+	ProbedAt     string `json:"probed_at"`
+}
+
+func (h *Handler) handleProviderLatency(w http.ResponseWriter, r *http.Request) {
+	// 取每个 provider 最近一次 direct_ok=true 的探测延时。
+	rows, err := h.db.Query(r.Context(), `
+		SELECT DISTINCT ON (npr.provider_id)
+			npr.provider_id,
+			COALESCE(p.display_name, p.code, ''),
+			COALESCE(npr.direct_latency_ms, npr.gateway_latency_ms, 0),
+			npr.started_at
+		FROM node_probe_runs npr
+		LEFT JOIN providers p ON p.id = npr.provider_id
+		WHERE npr.provider_id IS NOT NULL
+			AND npr.provider_id > 0
+			AND COALESCE(npr.direct_latency_ms, npr.gateway_latency_ms) > 0
+		ORDER BY npr.provider_id, npr.started_at DESC
+	`)
+	if err != nil {
+		http.Error(w, "database query failed: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	defer rows.Close()
+
+	entries := []ProviderLatencyEntry{}
+	for rows.Next() {
+		var e ProviderLatencyEntry
+		if err := rows.Scan(&e.ProviderID, &e.ProviderName, &e.LatencyMs, &e.ProbedAt); err != nil {
+			http.Error(w, "scan failed: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+		entries = append(entries, e)
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]interface{}{
+		"entries": entries,
+		"total":   len(entries),
+	})
+}
+
+// ── Probe queue tasks (2026-07-23, sub-item ③) ─────────────────────────
+//
+// 返回 credential_probe_queue 表中逐条任务（区别于聚合视图
+// v_probe_queue_snapshot），用于在自检 tab 以泳道形式展示待执行/执行中
+// 的探测任务，随执行更新状态。
+//
+// GET /api/admin/probe/queue-tasks?limit=100
+type ProbeQueueTaskRow struct {
+	ID             int64      `json:"id"`
+	CredentialID   int64      `json:"credential_id"`
+	ProviderID     int64      `json:"provider_id"`
+	ProviderName   string     `json:"provider_name"`
+	RawModel       string     `json:"raw_model"`
+	Status         string     `json:"status"`
+	Attempt        int        `json:"attempt"`
+	Priority       int16      `json:"priority"`
+	ReasonCode     string     `json:"reason_code"`
+	NextRunAt      *time.Time `json:"next_run_at,omitempty"`
+	ResultLatencyMs int       `json:"result_latency_ms"`
+	ResultHTTPStatus int      `json:"result_http_status"`
+	UpdatedAt      *time.Time `json:"updated_at,omitempty"`
+}
+
+func (h *Handler) handleProbeQueueTasks(w http.ResponseWriter, r *http.Request) {
+	limit := 100
+	if l := r.URL.Query().Get("limit"); l != "" {
+		if n, err := strconv.Atoi(l); err == nil && n > 0 && n <= 500 {
+			limit = n
+		}
+	}
+
+	rows, err := h.db.Query(r.Context(), `
+		SELECT
+			q.id, q.credential_id, q.provider_id,
+			COALESCE(p.display_name, p.code, ''),
+			COALESCE(q.raw_model, ''),
+			q.status, q.attempt, q.priority, COALESCE(q.reason_code, ''),
+			q.next_run_at,
+			COALESCE(q.result_latency_ms, 0),
+			COALESCE(q.result_http_status, 0),
+			q.updated_at
+		FROM credential_probe_queue q
+		LEFT JOIN providers p ON p.id = q.provider_id
+		WHERE q.status IN ('ready', 'running')
+		ORDER BY q.priority DESC, q.next_run_at ASC
+		LIMIT $1
+	`, limit)
+	if err != nil {
+		http.Error(w, "database query failed: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	defer rows.Close()
+
+	tasks := []ProbeQueueTaskRow{}
+	for rows.Next() {
+		var t ProbeQueueTaskRow
+		if err := rows.Scan(
+			&t.ID, &t.CredentialID, &t.ProviderID, &t.ProviderName,
+			&t.RawModel, &t.Status, &t.Attempt, &t.Priority, &t.ReasonCode,
+			&t.NextRunAt, &t.ResultLatencyMs, &t.ResultHTTPStatus, &t.UpdatedAt,
+		); err != nil {
+			http.Error(w, "scan failed: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+		tasks = append(tasks, t)
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]interface{}{
+		"tasks": tasks,
+		"total": len(tasks),
+	})
+}
+
 // ── Register Routes ─────────────────────────────────────────────────────
 
 // RegisterProbeDashboardRoutes registers probe dashboard API routes
@@ -602,6 +728,8 @@ func (h *Handler) handleProbeAvailabilityTimeline(w http.ResponseWriter, r *http
 func (h *Handler) RegisterProbeDashboardRoutes(mux *http.ServeMux, adminWrap func(http.HandlerFunc) http.HandlerFunc) {
 	mux.HandleFunc("/api/admin/probe/dashboard", adminWrap(h.handleProbeDashboard))
 	mux.HandleFunc("/api/admin/probe/queue-snapshot", adminWrap(h.handleProbeQueueSnapshot))
+	mux.HandleFunc("/api/admin/probe/provider-latency", adminWrap(h.handleProviderLatency))
+	mux.HandleFunc("/api/admin/probe/queue-tasks", adminWrap(h.handleProbeQueueTasks))
 	mux.HandleFunc("/api/admin/probe/system-health", adminWrap(h.handleProbeSystemHealth))
 	mux.HandleFunc("/api/admin/probe/model/", adminWrap(h.handleProbeModelRoutes))
 	mux.HandleFunc("/api/admin/probe/availability-timeline", adminWrap(h.handleProbeAvailabilityTimeline))

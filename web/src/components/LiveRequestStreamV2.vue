@@ -5,12 +5,13 @@
 // 2026-07-07: 管理员可编辑远端SSE地址
 // 2026-07-13: 转发泳道诊断事件，承载 RouteIncidentDrawer
 
-import { ref, computed, onMounted, watch } from 'vue'
+import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useLiveStream } from '../composables/useLiveStream'
 import { useSwimLane } from '../composables/useSwimLane'
 import { isSuperAdmin, authBearer, getCurrentTenantId } from '../store'
 import { redisHealthyRef, redisErrorRef } from '../composables/liveStreamStore'
+import { fetchProviderLatency } from '../api/provider-probe'
 import SwimLane from './SwimLane.vue'
 import LiveStreamLegend from './LiveStreamLegend.vue'
 import EmergencyDiagnosticModal from './EmergencyDiagnosticModal.vue'
@@ -57,6 +58,8 @@ const {
 
 const {
   groupBy,
+  mode: laneMode,
+  setMode: setLaneMode,
   lanes,
   selectedLegends,
   legendItems,
@@ -66,7 +69,30 @@ const {
   clearLegendSelection,
 } = useSwimLane(liveSnapshot)
 
-// 管理员连接详情弹窗
+// 2026-07-23: 供应商 HTTP 延时（子项②）。仅在 provider 维度展示。
+// providerLatencyMap: { [providerId(数字字符串)]: latency_ms }
+const providerLatencyMap = ref<Record<string, number>>({})
+let latencyTimer: ReturnType<typeof setInterval> | null = null
+
+async function refreshProviderLatency() {
+  // 仅 provider 维度拉取，减少不必要的请求
+  if (groupBy.value !== 'provider') return
+  try {
+    const res = await fetchProviderLatency()
+    const map: Record<string, number> = {}
+    for (const e of res.entries || []) {
+      if (e.latency_ms > 0) map[String(e.provider_id)] = e.latency_ms
+    }
+    providerLatencyMap.value = map
+  } catch {
+    // 接口可能在新探测模式未启用时不存在，静默失败
+  }
+}
+
+// 维度切换到 provider 时立即拉取一次
+watch(groupBy, (g) => {
+  if (g === 'provider') void refreshProviderLatency()
+})
 const showConnectionDetail = ref(false)
 const isAdmin = computed(() => isSuperAdmin())
 
@@ -131,6 +157,16 @@ onMounted(() => {
     }
   })()
   streamUrl.value = saved || defaultStreamUrl.value
+  // 2026-07-23: 供应商延时轮询（5 分钟一次，与探测节奏对齐）
+  void refreshProviderLatency()
+  latencyTimer = setInterval(() => void refreshProviderLatency(), 5 * 60 * 1000)
+})
+
+onUnmounted(() => {
+  if (latencyTimer) {
+    clearInterval(latencyTimer)
+    latencyTimer = null
+  }
 })
 
 // 如果用户修改了 window.location（多 tab 测试），默认地址也跟着变
@@ -305,6 +341,28 @@ const isColdStart = computed(() => {
           </button>
         </div>
 
+        <!-- 2026-07-23: 大/小 模式切换（小=竖条默认，大=卡片） -->
+        <div class="control-group">
+          <button
+            type="button"
+            class="control-btn"
+            :class="{ 'control-btn--active': laneMode === 'small' }"
+            :title="t('dashboard.liveStream.modeSmallTitle')"
+            @click="setLaneMode('small')"
+          >
+            {{ t('dashboard.liveStream.modeSmall') }}
+          </button>
+          <button
+            type="button"
+            class="control-btn"
+            :class="{ 'control-btn--active': laneMode === 'large' }"
+            :title="t('dashboard.liveStream.modeLargeTitle')"
+            @click="setLaneMode('large')"
+          >
+            {{ t('dashboard.liveStream.modeLarge') }}
+          </button>
+        </div>
+
         <div class="control-group">
           <button
             type="button"
@@ -417,7 +475,9 @@ const isColdStart = computed(() => {
         :key="lane.id"
         :lane="lane"
         :group-by="groupBy"
+        :mode="laneMode"
         :selected-legends="selectedLegends"
+        :avg-latency-ms="providerLatencyMap[lane.id]"
         @tile-click="handleTileClick"
         @emergency-diagnose="handleEmergencyDiagnose"
         @diagnose="(id: string, preview: RouteIncident) => handleDiagnose(id, preview)"

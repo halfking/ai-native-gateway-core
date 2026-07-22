@@ -5,13 +5,13 @@
 
 import { computed } from 'vue'
 import { useI18n } from 'vue-i18n'
-import type { RequestTile as RequestTileType, GroupByDimension } from '../types/swimlane'
+import type { RequestTile as RequestTileType, GroupByDimension, SwimLaneMode } from '../types/swimlane'
 import {
   VENDOR_COLORS,
   calculateFontSize,
   truncateText,
 } from '../types/swimlane'
-import { errorKindLabel } from '../composables/liveStreamDisplay'
+import { errorKindLabel, statusBarColor, statusSemanticLabel } from '../composables/liveStreamDisplay'
 
 const { t, locale } = useI18n()
 
@@ -20,7 +20,11 @@ const props = defineProps<{
   groupBy: GroupByDimension
   isHighlighted: boolean
   isDimmed: boolean
+  mode?: SwimLaneMode
 }>()
+
+const mode = computed<SwimLaneMode>(() => props.mode || 'small')
+const isSmall = computed(() => mode.value === 'small')
 
 const emit = defineEmits<{
   click: [requestId: string]
@@ -29,6 +33,14 @@ const emit = defineEmits<{
 const accentColor = computed(() => {
   return VENDOR_COLORS[props.tile.vendor] || VENDOR_COLORS['__unknown__']
 })
+
+// 2026-07-23: 小模式竖条颜色（集中映射，亮暗皮肤通用）
+const barColor = computed(() =>
+  statusBarColor(props.tile.status, props.tile.error_kind),
+)
+const statusLabel = computed(() =>
+  statusSemanticLabel(props.tile.status, props.tile.error_kind),
+)
 
 const statusColor = computed(() => {
   const s = props.tile.status
@@ -216,6 +228,29 @@ function handleClick() {
 
 <template>
   <div
+    v-if="isSmall"
+    class="request-bar"
+    :class="{
+      'request-bar--highlighted': isHighlighted,
+      'request-bar--dimmed': isDimmed,
+      'request-bar--probe': tile.is_probe,
+      'request-bar--idle': isIdle,
+      'request-bar--in-progress': isInProgress,
+      'request-bar--failure': isFailure,
+    }"
+    :style="{ '--bar-color': barColor }"
+    :title="tooltipText"
+    role="button"
+    tabindex="0"
+    :aria-label="statusLabel + ' ' + (tile.model || '')"
+    @click="handleClick"
+    @keydown.enter="handleClick"
+  >
+    <span v-if="tile.is_probe" class="request-bar__probe-mark" aria-hidden="true" />
+  </div>
+
+  <div
+    v-else
     class="request-tile"
     :class="{
       'request-tile--highlighted': isHighlighted,
@@ -278,6 +313,91 @@ function handleClick() {
 </template>
 
 <style scoped>
+/* ════════════════════════════════════════════════════════════════
+ * 2026-07-23: 小模式竖条（request-bar）— 默认展示模式。
+ * 颜色全部走 CSS 变量（--success/--danger/--warning/--kx-surface），
+ * 因此亮色/暗色皮肤下都清晰。in_progress 用 --kx-surface 作白底，
+ * 配脉冲动画。探测请求左侧青色标记条区分类型。
+ * ════════════════════════════════════════════════════════════════ */
+.request-bar {
+  width: 9px;
+  height: 52px;
+  flex-shrink: 0;
+  border-radius: 3px;
+  background: var(--bar-color, var(--muted));
+  border: 1px solid color-mix(in srgb, var(--text) 18%, transparent);
+  cursor: pointer;
+  position: relative;
+  overflow: hidden;
+  transition: transform 0.15s cubic-bezier(0.22, 1, 0.36, 1), box-shadow 0.15s ease;
+}
+
+.request-bar:hover {
+  transform: scaleY(1.08);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--text) 35%, transparent),
+              0 4px 10px color-mix(in srgb, var(--text) 18%, transparent);
+  z-index: 10;
+}
+
+.request-bar--highlighted {
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 60%, transparent);
+  z-index: 5;
+}
+
+.request-bar--dimmed {
+  opacity: 0.35;
+  filter: grayscale(0.4);
+}
+
+.request-bar--idle {
+  opacity: 0.55;
+  cursor: default;
+  border-style: dashed;
+}
+.request-bar--idle:hover {
+  transform: none;
+  box-shadow: none;
+}
+
+/* in_progress: 白底 + 顶部脉冲色块，表示正在进行 */
+.request-bar--in-progress {
+  border-color: color-mix(in srgb, var(--accent) 45%, transparent);
+  box-shadow: inset 0 -2px 0 color-mix(in srgb, var(--accent) 35%, transparent);
+}
+.request-bar--in-progress::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(180deg, color-mix(in srgb, var(--accent) 22%, transparent) 0%, transparent 60%);
+  animation: bar-pulse 1.6s ease-in-out infinite;
+}
+@keyframes bar-pulse {
+  0%, 100% { opacity: 0.45; }
+  50% { opacity: 1; }
+}
+
+/* 探测请求左侧青色标记条 */
+.request-bar__probe-mark {
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  background: #38bdf8;
+  border-radius: 3px 0 0 3px;
+  box-shadow: 0 0 4px color-mix(in srgb, #38bdf8 70%, transparent);
+}
+
+.request-bar--failure {
+  border-color: color-mix(in srgb, var(--danger) 50%, transparent);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .request-bar { transition: none; }
+  .request-bar:hover { transform: none; }
+  .request-bar--in-progress::after { animation: none; opacity: 0.6; }
+}
+
 .request-tile {
   --tile-radius: 8px;
   width: 80px;

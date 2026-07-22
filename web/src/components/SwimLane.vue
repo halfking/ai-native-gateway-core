@@ -10,6 +10,7 @@ import type {
   SwimLane as SwimLaneType,
   RequestTile as RequestTileType,
   GroupByDimension,
+  SwimLaneMode,
 } from '../types/swimlane'
 import { useRouteIncidents } from '../composables/useRouteIncidents'
 import type { RouteIncident } from '../types/routeIncident'
@@ -19,7 +20,27 @@ const props = defineProps<{
   lane: SwimLaneType
   groupBy: GroupByDimension
   selectedLegends: Set<string>
+  mode?: SwimLaneMode
+  avgLatencyMs?: number
 }>()
+
+// 2026-07-23: 小模式尺寸（竖条更窄，可放更多请求）
+const laneMode = computed<SwimLaneMode>(() => props.mode || 'small')
+const isSmall = computed(() => laneMode.value === 'small')
+const TILE_WIDTH = computed(() => (isSmall.value ? 9 : 80))
+const TILE_GAP = computed(() => (isSmall.value ? 4 : 6))
+const TRACK_PADDING = 16
+
+// 延时显示（子项②）：仅 provider 维度且有数据时展示
+const showLatency = computed(
+  () => props.groupBy === 'provider' && props.avgLatencyMs != null && props.avgLatencyMs > 0,
+)
+const latencyText = computed(() => {
+  const ms = props.avgLatencyMs
+  if (ms == null || ms <= 0) return ''
+  if (ms >= 1000) return `${(ms / 1000).toFixed(1)}s`
+  return `${Math.round(ms)}ms`
+})
 
 const emit = defineEmits<{
   tileClick: [requestId: string]
@@ -87,9 +108,6 @@ const displayName = computed(() => {
 // 动态计算可显示的请求数
 const trackRef = ref<HTMLElement | null>(null)
 const trackWidth = ref(0)
-const TILE_WIDTH = 80
-const TILE_GAP = 6
-const TRACK_PADDING = 16
 
 // 落到 1 时也至少允许显示一个，避免空泳道
 const MIN_VISIBLE_TILES = 1
@@ -100,7 +118,7 @@ const maxVisibleTiles = computed(() => {
   const availableWidth = Math.max(0, trackWidth.value - TRACK_PADDING)
   if (availableWidth <= 0) return MIN_VISIBLE_TILES
   // 第一个 tile 没有前 gap，最后一个有 padding；保守按 (n+gap) total 算
-  const count = Math.floor((availableWidth + TILE_GAP) / (TILE_WIDTH + TILE_GAP))
+  const count = Math.floor((availableWidth + TILE_GAP.value) / (TILE_WIDTH.value + TILE_GAP.value))
   return Math.max(MIN_VISIBLE_TILES, Math.min(count, total))
 })
 
@@ -208,6 +226,12 @@ watch(
   () => props.lane.requests.length,
   () => measureTrack()
 )
+
+// 2026-07-23: 模式切换后 tile 尺寸变化，需重新计算容量
+watch(laneMode, async () => {
+  await nextTick()
+  measureTrack()
+})
 </script>
 
 <template>
@@ -221,6 +245,11 @@ watch(
         <span class="swim-lane__stat swim-lane__stat--failure" :title="`失败: ${lane.stats.failure}`">
           ✗{{ lane.stats.failure }}
         </span>
+        <span
+          v-if="showLatency"
+          class="swim-lane__stat swim-lane__latency"
+          :title="`供应商 HTTP 延时: ${latencyText}`"
+        >⏱{{ latencyText }}</span>
         <button
           v-if="!lane.isOthers || primaryIncident || showEmergencyButton"
           type="button"
@@ -245,13 +274,19 @@ watch(
         </button>
       </div>
     </div>
-    <div class="swim-lane__track" ref="trackRef">
-      <TransitionGroup name="swim-tile" tag="div" class="swim-lane__tiles">
+    <div
+      class="swim-lane__track"
+      :class="{ 'swim-lane__track--small': isSmall }"
+      :style="{ '--tile-w': TILE_WIDTH + 'px', '--tile-gap': TILE_GAP + 'px' }"
+      ref="trackRef"
+    >
+      <TransitionGroup name="swim-tile" tag="div" class="swim-lane__tiles" :class="{ 'swim-lane__tiles--small': isSmall }">
         <RequestTile
           v-for="tile in renderedRequests"
           :key="tile.request_id"
           :tile="tile"
           :group-by="groupBy"
+          :mode="laneMode"
           :is-highlighted="isTileHighlighted(tile[groupBy] as string)"
           :is-dimmed="isTileDimmed(tile[groupBy] as string)"
           @click="handleTileClick"
@@ -416,6 +451,8 @@ watch(
 
 
 .swim-lane__track {
+  --tile-w: 80px;
+  --tile-gap: 6px;
   flex: 1 1 0;
   min-width: 0;
   width: auto;
@@ -425,9 +462,9 @@ watch(
     repeating-linear-gradient(
       90deg,
       transparent 0,
-      transparent calc(80px + 6px - 1px),
-      color-mix(in srgb, var(--text) 3%, transparent) calc(80px + 6px - 1px),
-      color-mix(in srgb, var(--text) 3%, transparent) calc(80px + 6px)
+      transparent calc(var(--tile-w) + var(--tile-gap) - 1px),
+      color-mix(in srgb, var(--text) 3%, transparent) calc(var(--tile-w) + var(--tile-gap) - 1px),
+      color-mix(in srgb, var(--text) 3%, transparent) calc(var(--tile-w) + var(--tile-gap))
     ),
     var(--bg-tertiary);
   border: 1px solid var(--border);
@@ -439,9 +476,14 @@ watch(
   box-shadow: var(--kx-shadow-sm);
 }
 
+.swim-lane__track--small {
+  /* 小模式轨道更紧凑 */
+  min-height: 64px;
+}
+
 .swim-lane__tiles {
   display: flex;
-  gap: 6px;
+  gap: var(--tile-gap, 6px);
   align-items: center;
   min-height: 60px;
   width: 100%;
@@ -449,6 +491,16 @@ watch(
   /* 最新请求靠右，形成时间轴向右流动的观感 */
   justify-content: flex-end;
   flex-wrap: nowrap;
+}
+
+.swim-lane__tiles--small {
+  min-height: 56px;
+  gap: var(--tile-gap, 4px);
+}
+
+.swim-lane__latency {
+  color: var(--accent-h);
+  font-weight: 600;
 }
 
 /* 动画 */

@@ -195,3 +195,19 @@ export function getRecentModelFailures(opts?: { limit?: number }) {
     }
   }>('GET', `/api/routing/recent-model-failures${qs ? `?${qs}` : ''}`)
 }
+// ── Provider HTTP latency (sub-item ②, 2026-07-23) ──────────────────────
+// 复用 node_probe_runs 最近一次成功探测的 direct_latency_ms，
+// 按 provider 聚合返回。约 5 分钟级节奏（NodeProbeWorker 退避）。
+
+export interface ProviderLatencyEntry {
+  provider_id: number
+  provider_name: string
+  latency_ms: number
+  probed_at: string
+}
+
+export function fetchProviderLatency() {
+  return req<{ entries: ProviderLatencyEntry[] }>(
+    'GET', '/api/admin/probe/provider-latency'
+  )
+}
