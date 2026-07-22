@@ -325,7 +325,11 @@ onMounted(async () => {
         <p>{{ SITE_TITLE }} — 站点信息、一键激活、版本升级与已开通模块。</p>
       </div>
       <div class="ua-page__actions">
-        <RouterLink class="btn btn-ghost btn-no-arrow" to="/customer/offline-activation">离线激活</RouterLink>
+        <RouterLink
+          v-if="!isActivated"
+          class="btn btn-ghost btn-no-arrow"
+          to="/customer/offline-activation"
+        >离线激活</RouterLink>
         <button type="button" class="btn btn-secondary btn-sm btn-no-arrow" :disabled="loading" @click="refreshAll">
           刷新
         </button>
@@ -336,60 +340,70 @@ onMounted(async () => {
     <el-alert v-if="message" type="success" :title="message" show-icon class="mb" closable @close="message = ''" />
 
     <div class="ua-grid">
-      <UpdateActivateSiteCard
-        :status="status"
-        :loading="loading"
-        :instance-id="instanceId"
-        :device-name="deviceName"
-      />
+      <div class="ua-region ua-region--info">
+        <UpdateActivateSiteCard
+          :status="status"
+          :loading="loading"
+          :instance-id="instanceId"
+          :device-name="deviceName"
+        />
+      </div>
 
-      <UpdateActivateLicenseCard
-        :status="license"
-        :loading="checkingUpgrade || catalogLoading"
-        :instance-id="instanceId"
-        :device-name="deviceName"
-        @refresh="loadLicense"
-      />
+      <div class="ua-region ua-region--success">
+        <UpdateActivateLicenseCard
+          :status="license"
+          :loading="checkingUpgrade || catalogLoading"
+          :instance-id="instanceId"
+          :device-name="deviceName"
+          @refresh="loadLicense"
+        />
+      </div>
 
-      <el-card v-if="!status?.activated" shadow="never" class="ua-card">
-        <template #header>
-          <span class="ua-card__title">激活与用户协议</span>
-        </template>
-        <p class="hint">
-          默认激活只需填写注册名称、点击"同意协议并激活"，系统将弹出用户协议窗口，
-          勾选并确认后即可向中心 <code>llm.kxpms.cn</code> 申请 license 并完成本地激活（无需手填 License Key）。
-        </p>
-        <el-form label-position="top" @submit.prevent="onActivateClick">
-          <el-form-item label="注册名称" required>
-            <el-input v-model="deviceName" maxlength="64" placeholder="例如：华东机房-网关-01" />
-          </el-form-item>
-          <el-form-item>
-            <button type="button" class="btn btn-primary" :disabled="activating" @click="onActivateClick">
-              同意协议并激活
-            </button>
-          </el-form-item>
-        </el-form>
-      </el-card>
+      <div v-if="!status?.activated" class="ua-region ua-region--warning">
+        <el-card shadow="never" class="ua-card">
+          <template #header>
+            <span class="ua-card__title">激活与用户协议</span>
+          </template>
+          <p class="hint">
+            默认激活只需填写注册名称、点击"同意协议并激活"，系统将弹出用户协议窗口，
+            勾选并确认后即可向中心 <code>llm.kxpms.cn</code> 申请 license 并完成本地激活（无需手填 License Key）。
+          </p>
+          <el-form label-position="top" @submit.prevent="onActivateClick">
+            <el-form-item label="注册名称" required>
+              <el-input v-model="deviceName" maxlength="64" placeholder="例如：华东机房-网关-01" />
+            </el-form-item>
+            <el-form-item>
+              <button type="button" class="btn btn-primary" :disabled="activating" @click="onActivateClick">
+                同意协议并激活
+              </button>
+            </el-form-item>
+          </el-form>
+        </el-card>
+      </div>
 
-      <UpdateActivateVersionsCard
-        :catalog="catalog"
-        :loading="catalogLoading"
-        :checking="checkingUpgrade"
-        :upgrade-status="upgrade"
-        :current-version="status?.service_version || upgrade?.current_version || ''"
-        :activated="isActivated"
-        @check="onCheckUpgrade"
-        @refresh="loadCatalog"
-        @download="onUpgradeDownload"
-        @install="onUpgradeInstall"
-        @switch="onUpgradeSwitch"
-      />
+      <div class="ua-region ua-region--primary">
+        <UpdateActivateVersionsCard
+          :catalog="catalog"
+          :loading="catalogLoading"
+          :checking="checkingUpgrade"
+          :upgrade-status="upgrade"
+          :current-version="status?.service_version || upgrade?.current_version || ''"
+          :activated="isActivated"
+          @check="onCheckUpgrade"
+          @refresh="loadCatalog"
+          @download="onUpgradeDownload"
+          @install="onUpgradeInstall"
+          @switch="onUpgradeSwitch"
+        />
+      </div>
 
-      <UpdateActivateModulesCard
-        :items="modules"
-        :loading="modulesLoading"
-        :error="modulesError"
-      />
+      <div class="ua-region ua-region--neutral">
+        <UpdateActivateModulesCard
+          :items="modules"
+          :loading="modulesLoading"
+          :error="modulesError"
+        />
+      </div>
     </div>
 
     <OperationAgreementDialog
@@ -430,6 +444,51 @@ onMounted(async () => {
 .ua-card__title { font-weight: 600; }
 .hint { margin: 0 0 16px; color: var(--muted); font-size: 13px; line-height: 1.6; }
 .mb { margin-bottom: 12px; }
+
+/* 2026-07-23: 用不同的浅色块将各个区域视觉隔离。
+   不同模块属于不同语义：站点信息(info)、激活效果(success)、
+   激活与协议(warning)、版本与升级(primary)、模块服务(neutral)。
+   暗色主题用相同 token，--kx-* 已是暗色变体，无需重写。 */
+.ua-region {
+  border-radius: 12px;
+  padding: 14px;
+  border: 1px solid var(--kx-border, var(--border));
+  background: var(--kx-surface, var(--card));
+}
+.ua-region--info {
+  background: color-mix(in srgb, var(--kx-primary) 6%, var(--kx-surface, var(--card)));
+  border-color: color-mix(in srgb, var(--kx-primary) 22%, var(--kx-border, var(--border)));
+}
+.ua-region--success {
+  background: color-mix(in srgb, var(--kx-success) 7%, var(--kx-surface, var(--card)));
+  border-color: color-mix(in srgb, var(--kx-success) 25%, var(--kx-border, var(--border)));
+}
+.ua-region--warning {
+  background: color-mix(in srgb, var(--kx-warning) 8%, var(--kx-surface, var(--card)));
+  border-color: color-mix(in srgb, var(--kx-warning) 30%, var(--kx-border, var(--border)));
+}
+.ua-region--primary {
+  background: color-mix(in srgb, var(--kx-primary) 4%, var(--kx-surface, var(--card)));
+  border-color: color-mix(in srgb, var(--kx-primary) 18%, var(--kx-border, var(--border)));
+}
+.ua-region--neutral {
+  background: var(--kx-bg, var(--bg));
+  border-color: var(--kx-border, var(--border));
+}
+.ua-region :deep(.el-card) {
+  background: transparent;
+  border: 0;
+  box-shadow: none;
+}
+.ua-region :deep(.el-card__header) {
+  padding: 0 0 10px;
+  border-bottom: 1px solid color-mix(in srgb, var(--kx-border, var(--border)) 60%, transparent);
+  margin-bottom: 12px;
+}
+.ua-region :deep(.el-card__body) {
+  padding: 0;
+}
+
 @media (min-width: 900px) {
   .ua-grid { grid-template-columns: 1fr 1fr; }
   /* Site + License 两块是站点状态视图，横向并排 */

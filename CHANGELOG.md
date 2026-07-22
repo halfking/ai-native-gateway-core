@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased] - 2026-07-23
+
+### Changed
+
+- **顶部导航用户菜单精简 + 更新与激活浅色块隔离** (2026-07-23): (1) `UserMenuDropdown` trigger 只显示用户名，角色挪到下拉 header；navbar 占位收窄。 (2) `AppTopbar` 组触发按钮去掉 `▾` chevron 箭头。 (3) `/customer/update-activate` 5 个 el-card 外层各包一个 `.ua-region--{info|success|warning|primary|neutral}` 浅色块容器，色板走 `color-mix(in srgb, var(--kx-*) N%, var(--kx-surface))` 公式 + `--kx-*` 语义 token。 (4) 已激活场景下隐藏 "离线激活" 按钮 (`v-if="!isActivated"`)。详见 [docs/changelogs/2026-07-23-topbar-user-menu-ua-region.md](docs/changelogs/2026-07-23-topbar-user-menu-ua-region.md).
+
 ## [Unreleased] - 2026-07-18
 
 ### Changed
