@@ -10,6 +10,7 @@ import { isLicenseActive, licenseStateLabel } from '../../utils/labels'
 const props = defineProps<{
   status: LicenseStatus | null
   loading: boolean
+  activated: boolean
   instanceId: string
   deviceName: string
 }>()
@@ -101,7 +102,7 @@ const heartbeatDisplay = computed(() => {
         </div>
       </dl>
 
-      <p v-if="!isActive" class="hint">
+      <p v-if="!isActive && !props.activated" class="hint">
         当前 License 状态非「激活」，可能已过期或被吊销。请联系运维或使用「
         <RouterLink to="/customer/offline-activation">离线激活</RouterLink>」重新签发。
       </p>
@@ -133,11 +134,11 @@ const heartbeatDisplay = computed(() => {
   height: 10px;
   border-radius: 50%;
   display: inline-block;
-  box-shadow: 0 0 0 4px rgba(0, 0, 0, 0.04);
+  box-shadow: 0 0 0 4px color-mix(in srgb, var(--kx-border) 35%, transparent);
 }
-.status-dot--success { background: var(--kx-success, #16a34a); }
-.status-dot--warning { background: var(--kx-warning, #d97706); }
-.status-dot--idle { background: var(--muted, #9ca3af); }
+.status-dot--success { background: var(--kx-success); }
+.status-dot--warning { background: var(--kx-warning); }
+.status-dot--idle { background: var(--muted); }
 .status-label { font-size: 15px; }
 
 .chip {
@@ -145,8 +146,8 @@ const heartbeatDisplay = computed(() => {
   padding: 2px 10px;
   border-radius: 999px;
   font-size: 12px;
-  background: var(--kx-primary-soft, rgba(37, 99, 235, 0.12));
-  color: var(--kx-primary, #2563eb);
+  background: var(--kx-primary-soft);
+  color: var(--kx-primary);
 }
 .chip--tier { font-weight: 500; }
 
@@ -164,13 +165,13 @@ const heartbeatDisplay = computed(() => {
   gap: 12px;
   align-items: baseline;
   padding: 6px 0;
-  border-bottom: 1px dashed var(--kx-border, rgba(0, 0, 0, 0.06));
+  border-bottom: 1px dashed color-mix(in srgb, var(--kx-border) 60%, transparent);
 }
 .meta-row:last-child { border-bottom: none; }
 .meta-row dt {
   margin: 0;
   font-size: 12px;
-  color: var(--muted, #6b7280);
+  color: var(--muted);
   letter-spacing: 0.02em;
 }
 .meta-row dd {
@@ -181,18 +182,18 @@ const heartbeatDisplay = computed(() => {
 .meta-row code {
   font-size: 12px;
   padding: 2px 6px;
-  background: var(--kx-surface-soft, rgba(0, 0, 0, 0.04));
+  background: var(--kx-surface-soft);
   border-radius: 4px;
 }
-.muted { color: var(--muted, #6b7280); }
+.muted { color: var(--muted); }
 
 .hint {
   margin: 14px 0 0;
   padding: 10px 12px;
-  background: rgba(217, 119, 6, 0.08);
-  border-left: 3px solid var(--kx-warning, #d97706);
+  background: var(--kx-warning-soft);
+  border-left: 3px solid var(--kx-warning);
   border-radius: 4px;
   font-size: 13px;
-  color: var(--kx-warning, #92400e);
+  color: var(--kx-warning);
 }
 </style>

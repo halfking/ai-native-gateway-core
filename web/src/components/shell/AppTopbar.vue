@@ -441,13 +441,6 @@ function navLabel(labelKey: string | undefined, fallback: string): string {
 .app-topbar__group--active .app-topbar__group-trigger {
   color: var(--kx-primary, var(--accent));
 }
-.app-topbar__chevron {
-  display: none;
-}
-.app-topbar__group--open .app-topbar__chevron {
-  transform: rotate(180deg);
-}
-
 .app-topbar__dropdown {
   min-width: 220px;
   max-height: min(70vh, 480px);
