@@ -58,7 +58,7 @@ func (r *CredentialRecovery) recover(ctx context.Context) {
 		SET availability_state = 'ready',
 		    availability_recover_at = NULL,
 		    state_updated_at = now()
-		WHERE availability_state IN ('cooling','rate_limited','unreachable')
+		WHERE availability_state IN ('cooling','rate_limited','unreachable','auth_failed')
 		  AND availability_recover_at IS NOT NULL
 		  AND availability_recover_at <= now()
 		  AND lifecycle_status = 'active'
