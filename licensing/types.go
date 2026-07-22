@@ -52,7 +52,7 @@ type Device struct {
 	LastHeartbeat    *time.Time `json:"last_heartbeat,omitempty"`
 	Status           string     `json:"status"`
 	DeactivatedAt    *time.Time `json:"deactivated_at,omitempty"`
-	DeactivateReason string     `json:"deactivate_reason,omitempty"`
+	DeactivateReason *string    `json:"deactivate_reason,omitempty"`
 }
 
 type ActivationRequest struct {
