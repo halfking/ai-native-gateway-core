@@ -190,3 +190,120 @@ func TestWriteResponsesError(t *testing.T) {
 }
 
 var _ = time.Now
+
+// ─── audit a9ff405d3b51cf18f953475855d7851c regression coverage ────────
+// (2026-07-23) OpenAI Responses API input items with shape
+// {"type":"input_text","text":"..."} were silently converted into
+// empty user messages because convertResponsesInputItem only knew
+// function_call / function_call_output. These tests pin the fix.
+
+// TestConvertResponsesToChatBody_PreservesInputText mirrors the actual
+// request body sent in record a9ff405d... — Chinese UTF-8 prompt wrapped
+// in OpenAI Responses input_text format.
+func TestConvertResponsesToChatBody_PreservesInputText(t *testing.T) {
+	raw := `{
+		"model":"9bfcd8c1-4428-4157-9231-88ebf221154f/claude-sonnet-5",
+		"instructions":"You are ZCode, an interactive coding agent",
+		"input":[
+			{"type":"input_text","text":"\nYou are an interactive ZCode agent...\nIMPORTANT: Assist with authorized security testing..."},
+			{"type":"input_text","text":"<system-reminder>The following skills are available...</system-reminder>"},
+			{"type":"input_text","text":"请对12小时内的修订进行审计，并总结完成情况，给出改进意见。"}
+		]
+	}`
+	var req responsesRequestBody
+	require.NoError(t, json.Unmarshal([]byte(raw), &req))
+
+	result := convertResponsesToChatBody(&req)
+	msgs, ok := result["messages"].([]any)
+	require.True(t, ok)
+	require.Len(t, msgs, 4,
+		"system instruction + 3 input_text items, no items should be silently dropped")
+
+	// instruction → system
+	require.Equal(t, "system", msgs[0].(map[string]any)["role"])
+
+	// each input_text must produce a user message with non-empty content.
+	for i := 1; i < 4; i++ {
+		m := msgs[i].(map[string]any)
+		require.Equal(t, "user", m["role"], "msg %d role", i)
+		s, ok := m["content"].(string)
+		require.True(t, ok, "msg %d content must be string", i)
+		require.NotEmpty(t, s, "msg %d content must NOT be empty (audit invariant)", i)
+	}
+
+	// the Chinese user instruction must arrive verbatim — this is the bug
+	// the fix targets.
+	last := msgs[3].(map[string]any)["content"].(string)
+	assert.Contains(t, last, "请对12小时内的修订进行审计",
+		"Chinese user instruction must survive the OpenAI Responses → Chat conversion")
+}
+
+// TestConvertResponsesInputItem_MessageType mirrors the OpenAI Responses
+// schema where text is sometimes wrapped as {"type":"message", ...}.
+func TestConvertResponsesInputItem_MessageType(t *testing.T) {
+	msg, ok := convertResponsesInputItem(map[string]any{
+		"type": "message",
+		"role": "user",
+		"text": "审计最近 12 小时的 commit",
+	})
+	require.True(t, ok)
+	assert.Equal(t, "user", msg["role"])
+	assert.Equal(t, "审计最近 12 小时的 commit", msg["content"])
+}
+
+// TestConvertResponsesInputItem_EmptyTextYieldsDrop ensures that an
+// input_text item with an empty string does NOT produce a
+// {"role":"user","content":""} message — that's exactly the silent bug
+// that triggered the original audit.
+func TestConvertResponsesInputItem_EmptyTextYieldsDrop(t *testing.T) {
+	_, ok := convertResponsesInputItem(map[string]any{
+		"type": "input_text",
+		"text": "",
+	})
+	assert.False(t, ok, "empty input_text must NOT be promoted to a chat message")
+}
+
+// TestConvertResponsesToChatBody_FallbackDropsEmptyItem exercises the
+// legacy "role + content" branch when content is empty/blank. Audit invariant:
+// no empty-content user message may reach the upstream model.
+func TestConvertResponsesToChatBody_FallbackDropsEmptyItem(t *testing.T) {
+	raw := `{
+		"model":"gpt-4o",
+		"input":[
+			{"role":"user","content":""},
+			{"role":"user","content":"   "},
+			{"role":"user","content":"follow-up question"}
+		]
+	}`
+	var req responsesRequestBody
+	require.NoError(t, json.Unmarshal([]byte(raw), &req))
+
+	result := convertResponsesToChatBody(&req)
+	msgs := result["messages"].([]any)
+	require.Len(t, msgs, 1,
+		"two empty/blank items must be dropped, only the real question survives")
+	assert.Equal(t, "follow-up question", msgs[0].(map[string]any)["content"])
+}
+
+// TestConvertResponsesToChatBody_ImageInputForwarded pins multimodal input
+// handling so future refactors don't accidentally drop image URLs.
+func TestConvertResponsesToChatBody_ImageInputForwarded(t *testing.T) {
+	raw := `{
+		"model":"claude-sonnet-5",
+		"input":[
+			{"type":"input_image","image_url":{"url":"https://example.test/a.png"}}
+		]
+	}`
+	var req responsesRequestBody
+	require.NoError(t, json.Unmarshal([]byte(raw), &req))
+
+	result := convertResponsesToChatBody(&req)
+	msgs := result["messages"].([]any)
+	require.Len(t, msgs, 1)
+	content := msgs[0].(map[string]any)["content"]
+	parts, ok := content.([]any)
+	require.True(t, ok)
+	require.Len(t, parts, 1)
+	part := parts[0].(map[string]any)
+	assert.Equal(t, "image_url", part["type"])
+}

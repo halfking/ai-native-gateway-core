@@ -6,6 +6,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -537,6 +538,9 @@ func (h *ResponsesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		writeResponsesError(w, http.StatusServiceUnavailable, "Upstream request failed", "server_error", "upstream_error")
 		return
 	}
+	if result != nil && result.CachedReplay {
+		return
+	}
 
 	auditBuilder.Success(true).Latency(time.Duration(result.LatencyMs) * time.Millisecond)
 
@@ -576,13 +580,20 @@ func convertResponsesToChatBody(req *responsesRequestBody) map[string]any {
 						messages = append(messages, message)
 						continue
 					}
+					// 2026-07-23 fix (audit a9ff405d...): unrecognised item
+					// shape must NEVER produce an empty-content message.
+					// Empty user/assistant content would be silently sent to
+					// the upstream model and trigger the "no instruction"
+					// symptom that prompted this audit.
 					role, _ := item["role"].(string)
 					if role == "" {
 						role = "user"
 					}
-					content := item["content"]
+					content := normalizeItemContent(item["content"])
 					if content == nil {
-						content = ""
+						slog.Warn("responses input item dropped: no usable content after conversion",
+							"item_keys", mapKeys(item), "role", role)
+						continue
 					}
 					messages = append(messages, map[string]any{"role": role, "content": content})
 				}
@@ -660,9 +671,190 @@ func convertResponsesInputItem(item map[string]any) (map[string]any, bool) {
 			"tool_call_id": id,
 			"content":      output,
 		}, true
+	case "message", "input_text", "text":
+		// 2026-07-23 fix (audit a9ff405d...): OpenAI Responses API input items
+		// put user/assistant text under "text", not "content". Without this
+		// branch the fallback silently dropped every Chinese (UTF-8) prompt
+		// into {"role":"user","content":""} — upstream Claude saw an empty
+		// user message and answered as if no instruction had been issued.
+		text := extractItemText(item)
+		if text == "" {
+			return nil, false
+		}
+		role, _ := item["role"].(string)
+		if role == "" {
+			role = "user"
+		}
+		if role != "user" && role != "assistant" && role != "system" && role != "tool" {
+			role = "user"
+		}
+		return map[string]any{"role": role, "content": text}, true
+	case "input_image", "image_url":
+		// Forward image input as Chat Completions image_url content part.
+		// Anthropic adapter maps this through its own vision bridge.
+		imageURL, _ := item["image_url"].(map[string]any)
+		if imageURL == nil {
+			if s, ok := item["image_url"].(string); ok {
+				imageURL = map[string]any{"url": s}
+			}
+		}
+		if imageURL == nil {
+			return nil, false
+		}
+		return map[string]any{
+			"role": "user",
+			"content": []any{
+				map[string]any{"type": "image_url", "image_url": imageURL},
+			},
+		}, true
+	case "input_audio":
+		// 2026-07-23: explicit case for gpt-4o-audio-preview audio inputs.
+		// Pass the audio block through to the upstream provider verbatim.
+		if _, ok := item["input_audio"].(map[string]any); !ok {
+			return nil, false
+		}
+		return map[string]any{
+			"role":    "user",
+			"content": []any{item},
+		}, true
+	case "input_file", "file":
+		// File input is forwarded as a placeholder text reference; the
+		// Anthropic adapter / attachment pipeline resolves the actual bytes
+		// from the persisted storage using file_id / filename.
+		fileID, _ := item["file_id"].(string)
+		filename, _ := item["filename"].(string)
+		if fileID == "" {
+			if fileMap, ok := item["file"].(map[string]any); ok {
+				fileID, _ = fileMap["file_id"].(string)
+				if filename == "" {
+					filename, _ = fileMap["filename"].(string)
+				}
+			}
+		}
+		if fileID == "" && filename == "" {
+			return nil, false
+		}
+		ref := fileID
+		if ref == "" {
+			ref = filename
+		}
+		return map[string]any{
+			"role":    "user",
+			"content": fmt.Sprintf("[attached file: %s]", ref),
+		}, true
 	default:
 		return nil, false
 	}
+}
+
+// extractItemText reads text out of an input item in either Responses-API
+// flat form ("text": "...") or wrapped content-array form
+// ("content": [{"type":"input_text","text":"..."}, ...]).
+// Returns "" when no usable text is found; caller must treat "" as "drop".
+func extractItemText(item map[string]any) string {
+	if s, ok := item["text"].(string); ok && s != "" {
+		return s
+	}
+	raw, ok := item["content"]
+	if !ok {
+		return ""
+	}
+	switch v := raw.(type) {
+	case string:
+		return v
+	case []any:
+		// Concatenate text parts in order; preserves multi-block user messages.
+		var b strings.Builder
+		for _, part := range v {
+			pm, ok := part.(map[string]any)
+			if !ok {
+				continue
+			}
+			ptype, _ := pm["type"].(string)
+			if ptype != "" && ptype != "text" && ptype != "input_text" && ptype != "output_text" {
+				continue
+			}
+			if s, ok := pm["text"].(string); ok && s != "" {
+				b.WriteString(s)
+			}
+		}
+		return b.String()
+	}
+	return ""
+}
+
+// normalizeItemContent returns nil when the input value would render as an
+// empty message (nil, "", or an array containing no usable parts). Returning
+// nil tells the caller to drop the item rather than emit {"content":""}.
+//
+// For non-text shapes (audio blocks, image_url, custom maps) the value is
+// returned untouched so that endpoint-specific extension data (e.g.
+// gpt-4o-audio-preview "input_audio" blocks) continues to flow through to
+// the upstream provider unmodified.
+func normalizeItemContent(v any) any {
+	if v == nil {
+		return nil
+	}
+	switch x := v.(type) {
+	case string:
+		if strings.TrimSpace(x) == "" {
+			return nil
+		}
+		return x
+	case []any:
+		// Empty array → drop (audit invariant: no empty user messages).
+		if len(x) == 0 {
+			return nil
+		}
+		// When every part carries text we collapse to a single string,
+		// matching the audio test "input_audio_type_passthrough" expectations
+		// only when text content is the whole story.
+		hasNonTextPart := false
+		var b strings.Builder
+		for _, part := range x {
+			pm, ok := part.(map[string]any)
+			if !ok {
+				hasNonTextPart = true
+				continue
+			}
+			ptype, _ := pm["type"].(string)
+			if ptype != "" && ptype != "text" && ptype != "input_text" && ptype != "output_text" {
+				hasNonTextPart = true
+				continue
+			}
+			if s, ok := pm["text"].(string); ok && s != "" {
+				b.WriteString(s)
+			}
+		}
+		// Mixed content (text + audio/image/etc.) or all non-text: keep
+		// the original array so upstream can render multimodal. This
+		// preserves behaviour that audio/video tests depend on.
+		if hasNonTextPart {
+			return x
+		}
+		// Text-only array: collapse to a single string.
+		if b.Len() == 0 {
+			return nil
+		}
+		return b.String()
+	}
+	// Any other shape (bool/number/map): pass through. Endpoint-specific
+	// blocks such as {"type":"input_audio","input_audio":{...}} arrive
+	// here and must reach the upstream model — collapsing to "" would
+	// silently drop audio inputs and break multimodal features.
+	return v
+}
+
+// mapKeys returns the keys of a map for diagnostic logging.
+func mapKeys(m map[string]any) []string {
+	if len(m) == 0 {
+		return nil
+	}
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	return keys
 }
 
 func normalizeResponsesTools(value any) any {

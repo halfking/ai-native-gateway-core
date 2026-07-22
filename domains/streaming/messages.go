@@ -7,6 +7,8 @@ import (
 	"log/slog"
 	"net/http"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/google/uuid"
@@ -596,6 +598,9 @@ func (h *MessagesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		writeAnthropicError(w, http.StatusServiceUnavailable, "overloaded_error", "Upstream request failed")
 		return
 	}
+	if result != nil && result.CachedReplay {
+		return
+	}
 	logCtx.markAttachmentsSent()
 
 	auditBuilder.Success(true).Latency(time.Duration(result.LatencyMs) * time.Millisecond)
@@ -753,6 +758,20 @@ func convertBlockMessage(role string, blocks []any) map[string]any {
 				}
 			}
 		default:
+			// 2026-07-23 auto-fix (Responses/Anthropic content audit):
+			// OpenAI Responses API uses type prefix "input_*" (input_text,
+			// input_image, ...) which Anthropic Messages API does not
+			// recognise. Without this fallback the block is forwarded
+			// verbatim to Claude and silently dropped (prompt_tokens=4 in the
+			// record, Claude answered "I don't have any prior context").
+			// Auto-normalize the text and image types here so the user
+			// instruction actually reaches the model. Attachment types
+			// remain passthrough because guessed conversions can lose data.
+			if normalized, fromType, ok := normalizeOpenAIResponsesBlock(block); ok {
+				recordAutoNormalize("messages", fromType, role)
+				applyNormalizedBlock(normalized, &textParts, &contentParts, &hasNonTextContent)
+				continue
+			}
 			passthrough = append(passthrough, block)
 			contentParts = append(contentParts, block)
 		}
@@ -803,6 +822,127 @@ func extractBlockText(content any) string {
 	default:
 		return fmt.Sprint(c)
 	}
+}
+
+// normalizeOpenAIResponsesBlock rewrites an OpenAI Responses API content block
+// into the schema that Anthropic Messages API understands. Returns
+// (block, fromType, ok=false) when the block is already valid Anthropic (or
+// unknown but harmless) so the caller can fall back to the original
+// passthrough behaviour.
+//
+// Audit finding (2026-07-23): clients that
+// built their payload against the OpenAI Responses API spec
+// ({"type":"input_text","text":"..."}) used the gateway's /v1/messages
+// endpoint and silently lost every Chinese user instruction. Anthropic sees
+// "input_text" as an unknown block type and drops the content, leaving
+// prompt_tokens close to zero and eliciting a confusing
+// "I don't have any prior context" reply. Auto-rewriting here is the
+// cheapest possible fix: no reject, no extra round trip, no log spam —
+// the gateway just speaks fluent Anthropic on the user's behalf.
+func normalizeOpenAIResponsesBlock(block map[string]any) (blockOut map[string]any, fromType string, ok bool) {
+	rawType, _ := block["type"].(string)
+	switch rawType {
+	case "input_text", "output_text":
+		text, _ := block["text"].(string)
+		if text == "" {
+			return nil, "", false
+		}
+		return map[string]any{"type": "text", "text": text}, rawType, true
+	case "input_image":
+		// OpenAI Responses API uses {"type":"input_image","image_url":{...}}
+		// (mirroring Chat Completions multimodal blocks). Anthropic expects
+		// {"type":"image","source":{"type":"url","url":"..."}}.
+		imageURL := extractImageURLField(block["image_url"])
+		if imageURL == nil {
+			return nil, "", false
+		}
+		return map[string]any{"type": "image", "source": imageURL}, "input_image", true
+	case "image_url":
+		// Chat Completions style (clients that pass raw chat payloads
+		// through /v1/messages by mistake). Same normalisation target.
+		imageURL := extractImageURLField(block["image_url"])
+		if imageURL == nil {
+			return nil, "", false
+		}
+		return map[string]any{"type": "image", "source": imageURL}, "image_url", true
+	case "input_audio":
+		// Anthropic has no equivalent input-audio block. Keep the original
+		// block so audio bytes and metadata are not destroyed by a guessed
+		// text conversion; the caller's passthrough path will retain it.
+		return nil, "", false
+	case "input_file", "file":
+		// File blocks require attachment-specific conversion. Preserve the
+		// original block until that converter is available instead of
+		// replacing file content with a lossy filename placeholder.
+		return nil, "", false
+	}
+	return nil, "", false
+}
+
+// extractImageURLField reshapes either a Chat Completions image_url object
+// ({"url": "..."}) or a Responses input_image image_url string into the
+// Anthropic {"type":"url","url":"..."} source shape.
+func extractImageURLField(raw any) map[string]any {
+	switch v := raw.(type) {
+	case string:
+		if v == "" {
+			return nil
+		}
+		return map[string]any{"type": "url", "url": v}
+	case map[string]any:
+		if u, ok := v["url"].(string); ok && u != "" {
+			if mediaType, data, ok := parseBridgeImageDataURI(u); ok {
+				return map[string]any{
+					"type":       "base64",
+					"media_type": mediaType,
+					"data":       data,
+				}
+			}
+			return map[string]any{"type": "url", "url": u}
+		}
+	}
+	return nil
+}
+
+// applyNormalizedBlock folds a normalised block back into the running
+// textParts / contentParts accumulators so the surrounding convertBlockMessage
+// logic stays unaware of the rewrite.
+func applyNormalizedBlock(block map[string]any, textParts *[]string, contentParts *[]any, hasNonTextContent *bool) {
+	t, _ := block["type"].(string)
+	switch t {
+	case "text":
+		if text, ok := block["text"].(string); ok && text != "" {
+			*textParts = append(*textParts, text)
+			*contentParts = append(*contentParts, map[string]any{"type": "text", "text": text})
+		}
+	case "image":
+		*hasNonTextContent = true
+		*contentParts = append(*contentParts, block)
+	}
+}
+
+type autoNormalizeCount struct {
+	total atomic.Int64
+}
+
+var autoNormalizeCounters sync.Map
+
+// recordAutoNormalize emits at most one warning per 1000 rewrites for each
+// source/type/role tuple. The counters are process-local observability state;
+// request processing is never blocked by logging.
+func recordAutoNormalize(source, fromType, role string) {
+	key := source + "|" + fromType + "|" + role
+	counter, _ := autoNormalizeCounters.LoadOrStore(key, &autoNormalizeCount{})
+	n := counter.(*autoNormalizeCount).total.Add(1)
+	if n != 1 && n%1000 != 0 {
+		return
+	}
+	slog.Warn("content_block_auto_normalized",
+		"source", source,
+		"from_type", fromType,
+		"role", role,
+		"process_total", n,
+		"action", "rewrote client OpenAI Responses content block to Anthropic schema")
 }
 
 func convertImageBlock(source map[string]any) map[string]any {
