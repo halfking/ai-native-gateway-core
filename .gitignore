@@ -206,6 +206,9 @@ web/.i18n-fix-tmp.mjs
 *.exe
 bin/
 backups/
+# Local DB dumps / pre-sync backups (large binaries, never commit)
+local-pre-sync-backup-*.dump
+*.dump
 llm-gateway-go.v969.linux.amd64
 fix-selfcheck-keyhash
 gateway.new

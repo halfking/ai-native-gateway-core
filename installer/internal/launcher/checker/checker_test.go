@@ -97,3 +97,37 @@ func TestCheckerSkipsSameVersion(t *testing.T) {
 		t.Fatal("callback should not fire for same version")
 	}
 }
+// TestCheckNowTriggersImmediate (audit I1): CheckNow must cause an
+// OnUpdate fire immediately, not after the full Interval.
+func TestCheckNowTriggersImmediate(t *testing.T) {
+	found := make(chan *FoundRelease, 1)
+	c := New(Config{
+		CurrentVersion: "v1.4.2",
+		Interval:       1 * time.Hour, // long — only CheckNow should fire it
+		Source: &fakeSource{rel: &FoundRelease{Version: "v1.5.0"}},
+		OnUpdate: func(r *FoundRelease) { found <- r },
+	})
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	c.Start(ctx)
+	defer c.Stop()
+
+	// Without CheckNow, nothing fires for this short window.
+	select {
+	case <-found:
+		t.Fatal("unexpected fire before CheckNow")
+	case <-time.After(100 * time.Millisecond):
+	}
+
+	if !c.CheckNow() {
+		t.Fatal("CheckNow returned false")
+	}
+	select {
+	case r := <-found:
+		if r.Version != "v1.5.0" {
+			t.Fatalf("expected v1.5.0, got %s", r.Version)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("CheckNow did not trigger a poll within 2s")
+	}
+}

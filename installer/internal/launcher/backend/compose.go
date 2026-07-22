@@ -3,11 +3,14 @@ package backend
 import (
 	"context"
 	"fmt"
+	"net"
 	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"strconv"
+	"sync"
 	"time"
 )
 
@@ -18,9 +21,10 @@ import (
 // like "localhost:5000/myapp" are valid; the tag group is kept narrow.
 var imageTagRegex = regexp.MustCompile(`^[a-zA-Z0-9._/:-]+:[a-zA-Z0-9._-]+$`)
 
-// validateImageTag returns nil iff img matches the allowlist. The
-// pattern permits the common forms registry/path/name:version but
-// rejects whitespace, shell metacharacters, and missing tags.
+// envPathRegex guards the env_file path interpolated into YAML.
+var envPathRegex = regexp.MustCompile(`^/[a-zA-Z0-9._/-]+$`)
+
+// validateImageTag returns nil iff img matches the allowlist.
 func validateImageTag(img string) error {
 	if !imageTagRegex.MatchString(img) {
 		return fmt.Errorf("invalid image tag %q: must match [a-zA-Z0-9._/:-]+:[a-zA-Z0-9._-]+", img)
@@ -28,52 +32,111 @@ func validateImageTag(img string) error {
 	return nil
 }
 
+func validateEnvPath(p string) error {
+	if p == "" {
+		return nil
+	}
+	if !envPathRegex.MatchString(p) {
+		return fmt.Errorf("invalid env path %q: must be absolute, chars [a-zA-Z0-9._/-]", p)
+	}
+	return nil
+}
+
 // ComposeConfig configures the ComposeBackend.
 type ComposeConfig struct {
-	// ProjectDir is where green compose files live.
-	// (Each Stage invocation writes a new <port>-specific compose file here.)
+	// ProjectDir is where green compose files live (one per port).
 	ProjectDir string
 
-	// GreenPort is the host port the green container listens on
-	// (the container itself listens on 8780, mapped to GreenPort on host).
+	// GreenPortBase is the first host port to try for a green container.
+	// Each Stage picks a free port starting here (8783, 8784, ...) so
+	// multiple greens / multi-cycle upgrades don't collide (audit C3).
 	// Default: 8783.
-	GreenPort int
+	GreenPortBase int
 
-	// EnvFile is an optional path to an env file (docker-compose --env-file
-	// syntax) shared with the green container. Without this, the green
-	// container starts with no DATABASE_URL/REDIS/keys and Gateway's
-	// /healthz still returns 200 (it doesn't check DB), so the health gate
-	// would pass on a broken instance (C2). The daemon should point this at
-	// the same env file blue uses (e.g. /etc/kx-gateway/env).
+	// EnvFile is an optional path to an env file shared with the green
+	// container (DATABASE_URL/REDIS/secrets). Without it, green starts
+	// with no DB and /healthz still returns 200 (audit C2).
 	EnvFile string
 }
 
 // ComposeBackend deploys green instances via `docker compose`.
-// Each Stage writes a new green-<port>.yml file with project name
-// kxgw-green-<port>, isolating green from blue.
+//
+// Instance isolation: each Stage call picks a unique host port and derives
+// project name kxgw-<port>, compose file docker-compose.<port>.yml, and
+// container name kx-gateway-<port>. Drain/Remove/Health receive an addr
+// of the form 127.0.0.1:<port> and reverse-map to the project (audit
+// C1/C2: previously these ignored addr and always targeted the fixed
+// green project, so Apply's drain of "blue" actually stopped the just-
+// activated green).
 type ComposeBackend struct {
 	cfg ComposeConfig
+	mu  sync.Mutex
+	// allocated tracks ports currently in use by staged greens so two
+	// concurrent Stages don't both grab 8783. Guarded by mu.
+	allocated map[int]bool
 }
 
 func NewComposeBackend(cfg ComposeConfig) *ComposeBackend {
-	if cfg.GreenPort == 0 {
-		cfg.GreenPort = 8783
+	if cfg.GreenPortBase == 0 {
+		cfg.GreenPortBase = 8783
 	}
-	return &ComposeBackend{cfg: cfg}
+	return &ComposeBackend{cfg: cfg, allocated: make(map[int]bool)}
 }
 
 func (b *ComposeBackend) Name() string { return "compose" }
 
-func (b *ComposeBackend) greenComposePath() string {
-	return filepath.Join(b.cfg.ProjectDir, fmt.Sprintf("docker-compose.green.%d.yml", b.cfg.GreenPort))
+// portFromAddr extracts the port from "host:port". Returns 0 on malformed.
+func portFromAddr(addr string) int {
+	_, portStr, err := net.SplitHostPort(addr)
+	if err != nil {
+		return 0
+	}
+	p, err := strconv.Atoi(portStr)
+	if err != nil {
+		return 0
+	}
+	return p
 }
 
-func (b *ComposeBackend) greenProjectName() string {
-	return fmt.Sprintf("kxgw-green-%d", b.cfg.GreenPort)
+func (b *ComposeBackend) composePath(port int) string {
+	return filepath.Join(b.cfg.ProjectDir, fmt.Sprintf("docker-compose.%d.yml", port))
 }
 
-func (b *ComposeBackend) greenContainerName() string {
-	return fmt.Sprintf("kx-gateway-green-%d", b.cfg.GreenPort)
+func (b *ComposeBackend) projectName(port int) string {
+	return fmt.Sprintf("kxgw-%d", port)
+}
+
+func (b *ComposeBackend) containerName(port int) string {
+	return fmt.Sprintf("kx-gateway-%d", port)
+}
+
+// pickFreePort finds the first free host port starting at GreenPortBase
+// that is both not allocated in-process and actually bindable. Holds mu.
+func (b *ComposeBackend) pickFreePort() (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	for p := b.cfg.GreenPortBase; p < b.cfg.GreenPortBase+100; p++ {
+		if b.allocated[p] {
+			continue
+		}
+		// Verify the port is actually free on the host (a stale container
+		// from a crashed daemon could be holding it).
+		ln, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", p))
+		if err != nil {
+			continue // in use
+		}
+		_ = ln.Close()
+		b.allocated[p] = true
+		return p, nil
+	}
+	return 0, fmt.Errorf("no free green port in range %d-%d", b.cfg.GreenPortBase, b.cfg.GreenPortBase+100)
+}
+
+// releasePort frees a port from the allocated set (best-effort).
+func (b *ComposeBackend) releasePort(port int) {
+	b.mu.Lock()
+	delete(b.allocated, port)
+	b.mu.Unlock()
 }
 
 // Stage writes a green compose file and brings up the green container.
@@ -84,10 +147,20 @@ func (b *ComposeBackend) Stage(ctx context.Context, rel Release) (string, error)
 	if err := validateImageTag(rel.Image); err != nil {
 		return "", err
 	}
-	// Build environment block. LLM_GATEWAY_LISTEN is forced to :8780
-	// (inside-container); the host port mapping exposes GreenPort.
-	// If EnvFile is configured, also mount it so the green container gets
-	// the same DATABASE_URL/REDIS/secrets as blue (C2 fix).
+	if err := validateEnvPath(b.cfg.EnvFile); err != nil {
+		return "", err
+	}
+	port, err := b.pickFreePort()
+	if err != nil {
+		return "", err
+	}
+	// If anything below fails, free the port + best-effort clean the
+	// half-created container (audit I5).
+	cleanup := func() {
+		b.releasePort(port)
+		_ = b.composeCmdForPort(ctx, port, "down", "-v")
+	}
+
 	envBlock := "      - LLM_GATEWAY_LISTEN=:8780\n"
 	if b.cfg.EnvFile != "" {
 		envBlock += fmt.Sprintf("    env_file:\n      - %s\n", b.cfg.EnvFile)
@@ -100,14 +173,16 @@ func (b *ComposeBackend) Stage(ctx context.Context, rel Release) (string, error)
       - "%d:8780"
     environment:
 %s    restart: "no"
-`, rel.Image, b.greenContainerName(), b.cfg.GreenPort, envBlock)
-	if err := writeFile(b.greenComposePath(), compose); err != nil {
+`, rel.Image, b.containerName(port), port, envBlock)
+	if err := writeFile(b.composePath(port), compose); err != nil {
+		cleanup()
 		return "", fmt.Errorf("write compose: %w", err)
 	}
-	if err := b.composeCmd(ctx, "up", "-d", "--wait"); err != nil {
+	if err := b.composeCmdForPort(ctx, port, "up", "-d", "--wait"); err != nil {
+		cleanup()
 		return "", fmt.Errorf("compose up: %w", err)
 	}
-	return fmt.Sprintf("127.0.0.1:%d", b.cfg.GreenPort), nil
+	return fmt.Sprintf("127.0.0.1:%d", port), nil
 }
 
 // Health does GET http://<addr>/healthz. Returns nil on 2xx, error otherwise.
@@ -129,23 +204,36 @@ func (b *ComposeBackend) Health(ctx context.Context, addr string) error {
 	return nil
 }
 
-// Drain sends SIGTERM (via docker compose stop) and waits up to 35s
-// for the container to exit gracefully.
-func (b *ComposeBackend) Drain(ctx context.Context, _ string) error {
-	return b.composeCmd(ctx, "stop", "-t", "35")
+// Drain sends SIGTERM (via docker compose stop) to the instance at addr
+// and waits up to 35s for graceful exit. The instance is identified by
+// the port in addr (audit C1: previously ignored addr and always stopped
+// the green project, so Apply's drain-blue call stopped the just-activated
+// green).
+func (b *ComposeBackend) Drain(ctx context.Context, addr string) error {
+	port := portFromAddr(addr)
+	if port == 0 {
+		return fmt.Errorf("drain: cannot parse port from addr %q", addr)
+	}
+	return b.composeCmdForPort(ctx, port, "stop", "-t", "35")
 }
 
-// Remove stops and removes the container and its volumes.
-func (b *ComposeBackend) Remove(ctx context.Context, _ string) error {
-	return b.composeCmd(ctx, "down", "-v")
+// Remove stops and removes the instance at addr and its volumes.
+func (b *ComposeBackend) Remove(ctx context.Context, addr string) error {
+	port := portFromAddr(addr)
+	if port == 0 {
+		return fmt.Errorf("remove: cannot parse port from addr %q", addr)
+	}
+	err := b.composeCmdForPort(ctx, port, "down", "-v")
+	b.releasePort(port)
+	return err
 }
 
-// composeCmd runs docker compose -p <project> -f <file> <args...>.
-func (b *ComposeBackend) composeCmd(ctx context.Context, args ...string) error {
+// composeCmdForPort runs docker compose -p <project(port)> -f <file(port)> <args...>.
+func (b *ComposeBackend) composeCmdForPort(ctx context.Context, port int, args ...string) error {
 	full := append([]string{
 		"compose",
-		"-p", b.greenProjectName(),
-		"-f", b.greenComposePath(),
+		"-p", b.projectName(port),
+		"-f", b.composePath(port),
 	}, args...)
 	cmd := exec.CommandContext(ctx, "docker", full...)
 	out, err := cmd.CombinedOutput()

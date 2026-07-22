@@ -1,0 +1,198 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>泳道修复验证工具</title>
+    <style>
+        body { font-family: monospace; padding: 20px; background: #1e1e1e; color: #d4d4d4; }
+        .container { max-width: 1200px; margin: 0 auto; }
+        .status { padding: 10px; margin: 10px 0; border-radius: 4px; }
+        .status.good { background: #0e4429; border: 1px solid #1a7f37; }
+        .status.warning { background: #4d3800; border: 1px solid #9a6700; }
+        .status.error { background: #5a1e1e; border: 1px solid #f85149; }
+        .log { background: #2d2d2d; padding: 10px; margin: 10px 0; border-radius: 4px; max-height: 400px; overflow-y: auto; font-size: 12px; }
+        .metric { display: inline-block; margin: 10px 20px 10px 0; }
+        .metric-value { font-size: 24px; font-weight: bold; }
+        button { background: #238636; color: white; border: none; padding: 10px 20px; border-radius: 6px; cursor: pointer; margin: 5px; }
+        button:hover { background: #2ea043; }
+        button.stop { background: #da3633; }
+        button.stop:hover { background: #f85149; }
+        pre { margin: 5px 0; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🔬 泳道修复验证工具</h1>
+        <div class="status good">
+            <strong>✓ 修复版本已部署</strong><br>
+            seq=1251, commit=ff28c65d (按活跃度排序维度队列)
+        </div>
+        
+        <div style="margin: 20px 0;">
+            <button onclick="startMonitoring()">开始监控</button>
+            <button onclick="stopMonitoring()" class="stop">停止监控</button>
+            <button onclick="clearLogs()">清空日志</button>
+        </div>
+        
+        <h2>实时指标</h2>
+        <div id="metrics">
+            <div class="metric">
+                <div>已监控时间</div>
+                <div class="metric-value" id="duration">0s</div>
+            </div>
+            <div class="metric">
+                <div>正常新增</div>
+                <div class="metric-value" style="color: #3fb950;" id="normalAdds">0</div>
+            </div>
+            <div class="metric">
+                <div>窗口滚动 🚨</div>
+                <div class="metric-value" style="color: #f85149;" id="rollingCount">0</div>
+            </div>
+            <div class="metric">
+                <div>收到消息</div>
+                <div class="metric-value" id="messageCount">0</div>
+            </div>
+        </div>
+        
+        <h2>连接状态</h2>
+        <div id="connectionStatus" class="status warning">未连接</div>
+        
+        <h2>监控日志</h2>
+        <div class="log" id="log"></div>
+    </div>
+    
+    <script>
+        let es = null;
+        let lastSnapshot = {};
+        let startTime = null;
+        let durationTimer = null;
+        let stats = {
+            normalAdds: 0,
+            rollingCount: 0,
+            messageCount: 0
+        };
+        
+        function log(msg, type = 'info') {
+            const logDiv = document.getElementById('log');
+            const timestamp = new Date().toLocaleTimeString('zh-CN', { hour12: false });
+            const colors = { info: '#58a6ff', warning: '#d29922', error: '#f85149', success: '#3fb950' };
+            const color = colors[type] || colors.info;
+            logDiv.innerHTML += `<pre style="color: ${color};">[${timestamp}] ${msg}</pre>`;
+            logDiv.scrollTop = logDiv.scrollHeight;
+        }
+        
+        function updateMetrics() {
+            document.getElementById('normalAdds').textContent = stats.normalAdds;
+            document.getElementById('rollingCount').textContent = stats.rollingCount;
+            document.getElementById('messageCount').textContent = stats.messageCount;
+        }
+        
+        function updateDuration() {
+            if (startTime) {
+                const elapsed = Math.floor((Date.now() - startTime) / 1000);
+                const mins = Math.floor(elapsed / 60);
+                const secs = elapsed % 60;
+                document.getElementById('duration').textContent = `${mins}m ${secs}s`;
+            }
+        }
+        
+        function startMonitoring() {
+            if (es) {
+                log('监控已在运行中', 'warning');
+                return;
+            }
+            
+            const url = 'https://llmgo.kxpms.cn/api/admin/live-stream';
+            log(`连接到 ${url}...`, 'info');
+            
+            es = new EventSource(url, { withCredentials: true });
+            startTime = Date.now();
+            durationTimer = setInterval(updateDuration, 1000);
+            
+            es.onopen = () => {
+                document.getElementById('connectionStatus').className = 'status good';
+                document.getElementById('connectionStatus').textContent = '✓ 已连接到SSE流';
+                log('✓ SSE连接建立', 'success');
+            };
+            
+            es.onmessage = (e) => {
+                stats.messageCount++;
+                updateMetrics();
+                
+                try {
+                    const msg = JSON.parse(e.data);
+                    
+                    if (msg.type === 'initial_data') {
+                        log(`收到initial_data: ${msg.requests?.length || 0} 个请求`, 'info');
+                        // 初始化snapshot
+                        if (msg.snapshot?.dimensions) {
+                            for (const [dim, lanes] of Object.entries(msg.snapshot.dimensions)) {
+                                for (const lane of lanes) {
+                                    const key = `${dim}:${lane.id}`;
+                                    lastSnapshot[key] = new Set(lane.requests.map(r => r.request_id));
+                                }
+                            }
+                        }
+                    } else if (msg.type === 'request' && msg.delta?.changed_lanes) {
+                        // 分析每个维度的变化
+                        for (const [dim, lanes] of Object.entries(msg.delta.changed_lanes)) {
+                            for (const lane of lanes) {
+                                const key = `${dim}:${lane.id}`;
+                                const currIds = new Set(lane.requests.map(r => r.request_id));
+                                const lastIds = lastSnapshot[key] || new Set();
+                                
+                                const added = [...currIds].filter(id => !lastIds.has(id));
+                                const removed = [...lastIds].filter(id => !currIds.has(id));
+                                
+                                if (removed.length > 0 && added.length > 0) {
+                                    stats.rollingCount++;
+                                    log(`🚨 窗口滚动！${dim}/${lane.name}: 移除${removed.length}个, 新增${added.length}个`, 'error');
+                                    log(`   移除示例: ${removed.slice(0, 3).join(', ')}`, 'error');
+                                    log(`   新增示例: ${added.slice(0, 3).join(', ')}`, 'error');
+                                } else if (added.length > 0) {
+                                    stats.normalAdds++;
+                                    log(`✓ ${dim}/${lane.name}: 正常新增${added.length}个请求`, 'success');
+                                }
+                                
+                                lastSnapshot[key] = currIds;
+                                updateMetrics();
+                            }
+                        }
+                    } else if (msg.type === 'idle_marker') {
+                        log(`收到idle_marker: ${msg.lane_ids?.length || 0} 个泳道`, 'info');
+                    }
+                } catch (err) {
+                    log(`解析消息失败: ${err.message}`, 'error');
+                }
+            };
+            
+            es.onerror = () => {
+                document.getElementById('connectionStatus').className = 'status error';
+                document.getElementById('connectionStatus').textContent = '✗ 连接断开';
+                log('✗ SSE连接错误', 'error');
+            };
+        }
+        
+        function stopMonitoring() {
+            if (es) {
+                es.close();
+                es = null;
+                clearInterval(durationTimer);
+                document.getElementById('connectionStatus').className = 'status warning';
+                document.getElementById('connectionStatus').textContent = '已断开';
+                log('监控已停止', 'warning');
+            }
+        }
+        
+        function clearLogs() {
+            document.getElementById('log').innerHTML = '';
+            log('日志已清空', 'info');
+        }
+        
+        // 页面关闭时清理
+        window.addEventListener('beforeunload', () => {
+            if (es) es.close();
+        });
+    </script>
+</body>
+</html>

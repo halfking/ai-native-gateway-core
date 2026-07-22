@@ -43,6 +43,9 @@ func New(dir string) *Store { return &Store{dir: dir} }
 func (s *Store) plansDir() string { return filepath.Join(s.dir, "plans") }
 
 // Save writes the plan JSON. Updates UpdatedAt. Creates plans dir if needed.
+// Atomic: writes to a temp file then renames (audit I2: previously a plain
+// WriteFile, so a crash mid-write left a truncated/corrupt plan file that
+// LoadAll then silently skipped — losing the in-flight upgrade state).
 func (s *Store) Save(p *Plan) error {
 	if err := os.MkdirAll(s.plansDir(), 0o755); err != nil {
 		return err
@@ -52,7 +55,18 @@ func (s *Store) Save(p *Plan) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(filepath.Join(s.plansDir(), p.ID+".json"), data, 0o644)
+	return atomicWrite(filepath.Join(s.plansDir(), p.ID+".json"), data, 0o644)
+}
+
+// atomicWrite writes data to path via a temp file + rename. POSIX rename
+// is atomic, so readers see either the old or the new file, never a
+// partial write.
+func atomicWrite(path string, data []byte, mode os.FileMode) error {
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, data, mode); err != nil {
+		return err
+	}
+	return os.Rename(tmp, path)
 }
 
 // Load reads a plan by ID.
@@ -142,7 +156,7 @@ func (s *Store) LoadActive() (*ActivePointer, error) {
 	return &ap, nil
 }
 
-// SaveActive writes the active pointer. Not atomic (single WriteFile).
+// SaveActive writes the active pointer atomically (audit I2).
 func (s *Store) SaveActive(ap *ActivePointer) error {
 	if err := os.MkdirAll(s.dir, 0o755); err != nil {
 		return err
@@ -152,5 +166,5 @@ func (s *Store) SaveActive(ap *ActivePointer) error {
 	if err != nil {
 		return fmt.Errorf("marshal active: %w", err)
 	}
-	return os.WriteFile(filepath.Join(s.dir, "active.json"), data, 0o644)
+	return atomicWrite(filepath.Join(s.dir, "active.json"), data, 0o644)
 }

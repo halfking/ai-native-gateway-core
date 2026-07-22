@@ -41,6 +41,13 @@ type Config struct {
 type Checker struct {
 	cfg Config
 	wg  sync.WaitGroup
+
+	// trigger is pulsed by CheckNow to force an immediate tick outside
+	// the regular interval (audit I1: the UI's "立即检查" button was a
+	// no-op before; now it triggers a real poll). Guarded by triggerMu
+	// (created lazily on first Start so pre-Start CheckNow doesn't block).
+	triggerMu sync.Mutex
+	trigger   chan struct{}
 }
 
 func New(cfg Config) *Checker {
@@ -55,6 +62,9 @@ func New(cfg Config) *Checker {
 
 // Start launches the background poll loop. Cancel ctx to stop.
 func (c *Checker) Start(ctx context.Context) {
+	c.triggerMu.Lock()
+	c.trigger = make(chan struct{}, 1)
+	c.triggerMu.Unlock()
 	c.wg.Add(1)
 	go c.loop(ctx)
 }
@@ -62,8 +72,28 @@ func (c *Checker) Start(ctx context.Context) {
 // Stop waits for the loop to exit.
 func (c *Checker) Stop() { c.wg.Wait() }
 
+// CheckNow requests an immediate poll (non-blocking; a check already in
+// flight is not duplicated). Returns false if the loop isn't running.
+func (c *Checker) CheckNow() bool {
+	c.triggerMu.Lock()
+	ch := c.trigger
+	c.triggerMu.Unlock()
+	if ch == nil {
+		return false
+	}
+	select {
+	case ch <- struct{}{}:
+		return true
+	default:
+		return true // one already pending; that's fine
+	}
+}
+
 func (c *Checker) loop(ctx context.Context) {
 	defer c.wg.Done()
+	c.triggerMu.Lock()
+	ch := c.trigger
+	c.triggerMu.Unlock()
 	// Wait first interval before initial tick (avoid hammering master at startup).
 	t := time.NewTimer(c.cfg.Interval)
 	defer t.Stop()
@@ -74,6 +104,17 @@ func (c *Checker) loop(ctx context.Context) {
 		case <-t.C:
 			c.tick(ctx)
 			t.Reset(c.cfg.Interval + jitter(c.cfg.Jitter))
+		case <-ch:
+			// Manual trigger: tick now and reset the interval timer so the
+			// next regular tick is a full interval away (no hammering).
+			c.tick(ctx)
+			if !t.Stop() {
+				select {
+				case <-t.C:
+				default:
+				}
+			}
+			t.Reset(c.cfg.Interval)
 		}
 	}
 }
