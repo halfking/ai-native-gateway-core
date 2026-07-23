@@ -214,6 +214,10 @@ v2: {
 
     emptyWaiting: 'Waiting for live request stream data…',
     groupByVendor: 'By vendor', groupByProvider: 'By provider', groupByModel: 'By model',
+    modeSmall: 'صغير',
+    modeLarge: 'كبير',
+    modeSmallTitle: 'وضع صغير: أعمدة عمودية، تستوعب المزيد من الطلبات (افتراضي)',
+    modeLargeTitle: 'وضع كبير: بطاقات بتفاصيل طلب أكثر',
     probeAll: 'All', probeOnly: 'Probes only',
     probeAllTitle: 'Show all requests (default)', probeOnlyTitle: 'Show probe requests only',
     cacheWindow: 'Cache / window', connectionDetailTitle: 'Click for connection details',

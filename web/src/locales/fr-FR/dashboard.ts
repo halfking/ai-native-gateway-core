@@ -214,6 +214,10 @@ v2: {
 
     emptyWaiting: 'Waiting for live request stream data…',
     groupByVendor: 'By vendor', groupByProvider: 'By provider', groupByModel: 'By model',
+    modeSmall: 'Petit',
+    modeLarge: 'Grand',
+    modeSmallTitle: 'Mode petit : barres verticales, contient plus de requêtes (par défaut)',
+    modeLargeTitle: 'Mode grand : cartes avec plus de détails sur les requêtes',
     probeAll: 'All', probeOnly: 'Probes only',
     probeAllTitle: 'Show all requests (default)', probeOnlyTitle: 'Show probe requests only',
     cacheWindow: 'Cache / window', connectionDetailTitle: 'Click for connection details',

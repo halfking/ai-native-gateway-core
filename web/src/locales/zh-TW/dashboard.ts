@@ -205,6 +205,10 @@ tabs: {
 
     empty等待: '等待 for live request stream data…',
     groupByVendor: '按原廠', groupByProvider: 'By provider', groupByModel: 'By model',
+    modeSmall: '小',
+    modeLarge: '大',
+    modeSmallTitle: '小模式：直條顯示，可容納更多請求（預設）',
+    modeLargeTitle: '大模式：卡片顯示，包含更多請求詳情',
     probeAll: 'All', probeOnly: 'Probes only',
     probeAllTitle: 'Show all requests (default)', probeOnlyTitle: 'Show probe requests only',
     cacheWindow: 'Cache / window', connectionDetailTitle: 'Click for connection details',
