@@ -23,6 +23,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/domains/session"         //nolint:depguard // session state manager
 	"github.com/kaixuan/llm-gateway-go/domains/sessionaudit"    //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/domains/stats/boardcache"
+	"github.com/kaixuan/llm-gateway-go/domains/ursm/v2"
 	"github.com/kaixuan/llm-gateway-go/pending"
 	"github.com/kaixuan/llm-gateway-go/secret"
 	"github.com/kaixuan/llm-gateway-go/security/ipblocklist"
@@ -219,6 +220,10 @@ type Handler struct {
 	// 详见 data_lifecycle_jobs.go。在 NewHandler 中初始化，永不为 nil。
 	jobRegistry   *jobRegistry
 	jobRegistryMu sync.Mutex
+
+	// ursmV2 (2026-07-24) 是 URSM v2 Manager，用于紧急修复操作时
+	// 同时清除 Redis 中的冷却/错误计数状态。通过 SetURSMv2 注入。
+	ursmV2 *v2.Manager
 }
 
 func NewHandler(db *pgxpool.Pool, secretKey string, encKey []byte) *Handler {
@@ -485,6 +490,12 @@ func (h *Handler) SetPendingStore(s *pending.Store) {
 	h.pendingStore = s
 }
 
+// SetURSMv2 (2026-07-24) injects the URSM v2 Manager so that emergency
+// repair operations can also clear Redis state (cooling/disabled/fail_streak).
+func (h *Handler) SetURSMv2(m *v2.Manager) {
+	h.ursmV2 = m
+}
+
 // SetSettingsStore (settings-management, 2026-06-20) injects the
 // DB-backed settings backend so /api/admin/settings/* endpoints
 // can read/write settings_kv / tenant_settings_kv.
@@ -573,6 +584,10 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	// weight 三个排序相关字段；状态/熔断/可用性等硬规则必须走原有监控路径。
 	mux.HandleFunc("/api/routing/candidate-binding/", h.superAdmin(h.handleRoutingCandidateBindingUpdate))
 	mux.HandleFunc("/api/routing/candidate-bindings/reorder", h.superAdmin(h.handleRoutingCandidateBindingReorder))
+	// 2026-07-24: emergency repair endpoint for routing-v2 resolve page.
+	// Supports: force_enable, force_disable, clear_circuit, reset_errors.
+	// Only super_admin can access. All actions are audited.
+	mux.HandleFunc("/api/routing/emergency-repair", h.superAdmin(h.handleEmergencyRepair))
 
 	// NOTE: /api/credentials/monitor-summary is registered later in
 	// RegisterMonitorRoutes (line ~460) via NewCredentialMonitorHandlers.

@@ -21,6 +21,12 @@ var applyProbeSrc string
 
 var ApplyProbeScript = redis.NewScript(applyProbeSrc)
 
+//go:embed clear_state.lua
+var clearStateSrc string
+
+// ClearStateScript clears cooling state and error counters for emergency repair.
+var ClearStateScript = redis.NewScript(clearStateSrc)
+
 type Store struct{ rdb *redis.Client }
 
 func New(rdb *redis.Client) *Store { return &Store{rdb: rdb} }

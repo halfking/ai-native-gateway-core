@@ -1554,6 +1554,14 @@ func main() {
 
 		slog.Info("admin handler created", "db_enabled", adminDB != nil)
 	}
+
+	// 2026-07-24: Wire URSM v2 Manager to admin handler so emergency repair
+	// operations can also clear Redis state (cooling/fail counters).
+	if ursmV2Mgr != nil {
+		adminHandler.SetURSMv2(ursmV2Mgr)
+		slog.Info("ursm.v2 manager wired to admin handler for emergency repair")
+	}
+
 	var approvalMgr *sessionaudit.ApprovalManager // 2026-06-27: outer-scope so the timeout worker can read it
 	if dbConn != nil && dbConn.Enabled() {
 		slog.Info("CHECKPOINT: before admin.SetKeyring etc")
