@@ -212,16 +212,10 @@ func (r *Router) PlanCandidates(
 		// 候选 UnavailableReason() 仍是空串、降级不触发 → 0 节点 503。生产事故
 		// ba9fc64f（gpt-5.6-luna cred=2 state:timeout）即此路径。
 		//
-		// 2026-07-24: 当 URSM v2 处于 authoritative 模式时，禁止降级模式。
-		// URSM v2 的冷却逻辑已经是最终决策，不应被降级模式覆盖。
-		// 降级模式是旧系统的容错机制，与 URSM v2 的 authoritative 决策冲突时，
-		// 应以 URSM v2 为准。
-		skipDegradedMode := r.URSMv2 != nil && r.URSMv2.Mode() == ursmv2api.ModeAuthoritative && func() bool {
-			ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
-			defer cancel()
-			return r.URSMv2.Ready(ctx)
-		}()
-		if len(candidates) <= 2 && !skipDegradedMode {
+		// 2026-07-24: 降级模式始终启用，不在 authoritative 模式下禁用。
+		// 降级模式是保护机制，用于处理瞬态故障导致的完全失败。
+		// URSM v2 authoritative 模式下的冷却决策仍在生效，降级只是最后的保护。
+		if len(candidates) <= 2 {
 			degradedCandidates := r.tryDegradedMode(queryCtx, candidates)
 			if len(degradedCandidates) > 0 {
 				slog.Warn("router: degraded mode activated, using transiently unavailable candidates",
