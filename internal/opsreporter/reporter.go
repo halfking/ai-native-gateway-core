@@ -3,6 +3,7 @@ package opsreporter
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -142,21 +143,58 @@ func (r *Reporter) run(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			if err := r.beat(ctx); err != nil {
-				slog.Warn("ops heartbeat failed", "error", err)
-				if regErr := r.ensureRegistered(ctx); regErr != nil {
-					slog.Warn("ops re-register failed", "error", regErr)
-				}
+			err := r.beat(ctx)
+			if err == nil {
+				continue
+			}
+			slog.Warn("ops heartbeat failed", "error", err)
+			// Only 401 (or 403) means our cached token is no longer
+			// trusted. Re-register from scratch; anything else (5xx,
+			// network blip) is transient and the next tick will retry
+			// with the same token.
+			if !isAuthError(err) {
+				continue
+			}
+			if regErr := r.forceReRegister(ctx); regErr != nil {
+				slog.Warn("ops re-register failed", "error", regErr)
+				continue
+			}
+			// Try one heartbeat immediately so the operator sees
+			// recovery on the next sweep instead of waiting a full
+			// interval.
+			if beatErr := r.beat(ctx); beatErr != nil {
+				slog.Warn("ops heartbeat after re-register failed", "error", beatErr)
 			}
 		}
 	}
 }
 
+// ensureRegistered reuses a still-valid cached token; otherwise it
+// performs a fresh register. It does NOT overwrite a still-valid
+// token (so we don't churn server-side state on every restart).
 func (r *Reporter) ensureRegistered(ctx context.Context) error {
-	if tok := r.readToken(); tok != "" {
+	if tok := r.readToken(); tok != "" && !isExpiredJWT(tok) {
 		r.instanceToken = tok
 		return nil
 	}
+	return r.registerFresh(ctx)
+}
+
+// forceReRegister is invoked by run() when an authenticated call has
+// failed with 401/403. It clears the cached token (in-memory and on
+// disk) and registers from scratch, then persists the new token.
+func (r *Reporter) forceReRegister(ctx context.Context) error {
+	r.instanceToken = ""
+	if err := os.Remove(r.tokenPath()); err != nil && !os.IsNotExist(err) {
+		slog.Warn("ops re-register: failed to clear stale token file", "error", err)
+	}
+	return r.registerFresh(ctx)
+}
+
+// registerFresh performs the actual /register call and persists the
+// returned token. Used both by ensureRegistered (cache miss / expired)
+// and by forceReRegister (auth failure).
+func (r *Reporter) registerFresh(ctx context.Context) error {
 	body := map[string]any{
 		"instance_id": r.instanceID,
 		"region":      r.region,
@@ -179,6 +217,53 @@ func (r *Reporter) ensureRegistered(ctx context.Context) error {
 	}
 	r.instanceToken = resp.InstanceToken
 	return r.writeToken(resp.InstanceToken)
+}
+
+// isAuthError returns true when err originated from an HTTP 401 or 403
+// response from postJSON. Anything else is treated as transient.
+func isAuthError(err error) bool {
+	if err == nil {
+		return false
+	}
+	s := err.Error()
+	return strings.Contains(s, "HTTP 401:") || strings.Contains(s, "HTTP 403:")
+}
+
+// isExpiredJWT parses a token of the form header.payload.signature and
+// returns true when the exp claim is in the past (or the token is
+// malformed). It does NOT verify the signature — the server will do
+// that — but it lets the client avoid burning a 401 round-trip when
+// the cache is already known to be stale.
+func isExpiredJWT(token string) bool {
+	exp, ok := jwtExp(token)
+	if !ok {
+		return true // malformed or unsigned of an unexpected shape → force re-register
+	}
+	return exp <= time.Now().Unix()
+}
+
+// jwtExp extracts the exp claim from an unsigned JWT-shaped token
+// (3 dot-separated base64url segments). Returns (0, false) on parse
+// error so callers can treat it as expired.
+func jwtExp(token string) (int64, bool) {
+	parts := strings.Split(token, ".")
+	if len(parts) != 3 {
+		return 0, false
+	}
+	payload, err := base64.RawURLEncoding.DecodeString(parts[1])
+	if err != nil {
+		return 0, false
+	}
+	var claims struct {
+		Exp int64 `json:"exp"`
+	}
+	if err := json.Unmarshal(payload, &claims); err != nil {
+		return 0, false
+	}
+	if claims.Exp == 0 {
+		return 0, false
+	}
+	return claims.Exp, true
 }
 
 func (r *Reporter) beat(ctx context.Context) error {
