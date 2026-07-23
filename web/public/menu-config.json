@@ -1,6 +1,6 @@
 {
   "version": "1.0.0",
-  "exported_at": "2026-07-23T11:23:05.680Z",
+  "exported_at": "2026-07-23T01:49:35.316Z",
   "source": "gateway-appNav",
   "tenantScopeLegend": {
     "default": "仅默认租户 + super_admin 可见",
