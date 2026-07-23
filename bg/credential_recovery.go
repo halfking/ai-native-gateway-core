@@ -2,22 +2,65 @@ package bg
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"os"
 	"strconv"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
+// credentialRecoveryDB is the minimal database contract CredentialRecovery
+// needs. Both *pgxpool.Pool and pgxmock.PgxPoolIface satisfy it, which
+// lets us test the recovery flow without a real PostgreSQL instance.
+type credentialRecoveryDB interface {
+	Exec(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error)
+	Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error)
+}
+
 type CredentialRecovery struct {
-	db     *pgxpool.Pool
-	cancel context.CancelFunc
-	done   chan struct{}
+	db credentialRecoveryDB
+	// probeSubmitter hands (credential_id, raw_model_name) pairs to
+	// NodeProbeWorker.Submit so the authoritative probe path can
+	// flip cmb.available when it confirms the upstream is healthy
+	// again. Wired from cmd/gateway/main.go AFTER NodeProbeWorker
+	// is constructed; the 60s recovery tick is safe to call this
+	// even when the worker isn't ready yet (Submit is idempotent and
+	// the next probe cycle tolerates a 5s/30s/60s backoff).
+	probeSubmitter func(credID int, model string)
+	// invalidateCandidateCache flushes the per-credential candidate
+	// snapshot so the next request re-plans with the recovered
+	// binding visible without waiting for the 30s candCache TTL.
+	// Wired from main.go via SetInvalidateCandidateCache.
+	invalidateCandidateCache func(credID int)
+	cancel                   context.CancelFunc
+	done                     chan struct{}
 }
 
 func NewCredentialRecovery(db *pgxpool.Pool) *CredentialRecovery {
 	return &CredentialRecovery{db: db, done: make(chan struct{})}
+}
+
+// SetProbeSubmitter wires the (credID, model) -> probe enqueue hook.
+// Safe to call multiple times; the latest non-nil setter wins.
+func (r *CredentialRecovery) SetProbeSubmitter(fn func(credID int, model string)) {
+	if fn == nil {
+		return
+	}
+	r.probeSubmitter = fn
+}
+
+// SetInvalidateCandidateCache wires the per-credential candidate
+// cache invalidator so the next chat request re-plans with the
+// recovered binding visible.
+func (r *CredentialRecovery) SetInvalidateCandidateCache(fn func(credID int)) {
+	if fn == nil {
+		return
+	}
+	r.invalidateCandidateCache = fn
 }
 
 func (r *CredentialRecovery) Start(ctx context.Context) {
@@ -203,6 +246,31 @@ func (r *CredentialRecovery) recover(ctx context.Context) {
 			slog.Info("mnf_cooling model_offers mirrored", "count", moTag.RowsAffected())
 		}
 	}
+
+	// 2026-07-24 P0 fix: re-probe (cred, model) bindings whose cmb.available
+	// was flipped to FALSE by continuous_failure (credentialhealth/checker.go)
+	// or by a probe_* reason (bg/node_probe.go updateBindingAvailability) and
+	// whose unavailable_recover_at has already elapsed. Without this branch,
+	// those bindings stay excluded from v_routable_credential_models
+	// indefinitely once business traffic routes around them through other
+	// working credentials — Submit is only fired by real request failures,
+	// so a once-failed-and-now-OK provider stays invisible until an
+	// operator manually clears and re-fetches the model list. Symptom:
+	//   /api/routing/resolve returns 0 (or stale) nodes; real chat
+	//   requests return "no available nodes". Clearing & re-fetching
+	//   resets cmb.available=TRUE via modelcatalog.UpsertCredentialModel.
+	//
+	// We must NOT write cmb.available=TRUE directly here: a blind restore
+	// would re-admit credentials that are still broken. The probe path
+	// (NodeProbeWorker.runOne success branch) is the authoritative writer
+	// of cmb.available — it only flips when direct + gateway probe rounds
+	// both succeed. Submit re-arms node_probe_state with next_retry_at=+5s
+	// for paused rows or for rows whose ladder has elapsed; mid-cycle
+	// rows are left untouched so the backoff ladder (5s/30s/60s/5m/1h/...)
+	// continues to advance.
+	if err := r.recoverExpiredBindings(timeoutCtx); err != nil {
+		slog.Warn("expired-binding probe recovery failed", "error", err)
+	}
 }
 
 // stalePeriodicExhaustedCleanupSQL returns the SQL that clears credentials
@@ -304,4 +372,128 @@ func mnfCoolingRecoveryMirrorSQL() string {
 		  AND COALESCE(p.manual_disabled, FALSE) = FALSE
 		  AND COALESCE(mo.admin_protected, FALSE) = FALSE
 	`
+}
+
+// expiredCmbRecoverySQL selects (credential_id, raw_model_name) pairs
+// whose credential_model_bindings row is currently FALSE with a past
+// unavailable_recover_at, AND whose unavailable_reason is one of the
+// transient failure reasons that we want to re-verify before flipping
+// available=TRUE.
+//
+// Picked reasons:
+//   - 'continuous_failure'  — written by credentialhealth/checker.go:markDegraded
+//     when a 1h sliding-window failure ratio crosses
+//     the configured threshold (default 80%).
+//   - 'probe_*'             — written by bg/node_probe.go:updateBindingAvailability
+//     when the two-round probe (direct + gateway)
+//     fails; errCode is appended (e.g. 'probe_http_503',
+//     'probe_network_error', 'probe_network_timeout').
+//
+// Hard guards (mirroring the credential_recovery.recover() siblings):
+//   - NOT LIKE 'manual%'             — operators chose manual; never auto-flip.
+//   - admin_protected = FALSE        — same.
+//   - credential is active / lifecycle=active / not manual_disabled.
+//   - availability_state = 'ready'   — don't re-probe a cred that's itself
+//     in cooling/rate_limited/auth_failed.
+//   - provider enabled / not manual_disabled.
+//   - Skip when node_probe_state.paused = TRUE (operator paused).
+//   - Skip when node_probe_state.next_retry_at > now() (ladder mid-cycle).
+//
+// The query is SELECT-only — the caller hands each row to
+// NodeProbeWorker.Submit, which writes cmb.available=TRUE via runOne's
+// success branch. We never write cmb.available=TRUE from this SQL.
+func expiredCmbRecoverySQL() string {
+	return `
+		SELECT cmb.credential_id, pm.raw_model_name
+		FROM credential_model_bindings cmb
+		JOIN provider_models pm ON pm.id = cmb.provider_model_id
+		JOIN credentials c      ON c.id = cmb.credential_id
+		JOIN providers p        ON p.id = c.provider_id
+		WHERE cmb.available = FALSE
+		  AND cmb.unavailable_recover_at IS NOT NULL
+		  AND cmb.unavailable_recover_at <= now()
+		  AND (
+		      cmb.unavailable_reason IN ('continuous_failure')
+		      OR cmb.unavailable_reason LIKE 'probe_%'
+		  )
+		  AND COALESCE(cmb.unavailable_reason, '') NOT LIKE 'manual%'
+		  AND COALESCE(cmb.admin_protected, FALSE) = FALSE
+		  AND COALESCE(c.status, 'active') = 'active'
+		  AND COALESCE(c.lifecycle_status, 'active') = 'active'
+		  AND COALESCE(c.manual_disabled, FALSE) = FALSE
+		  AND c.availability_state = 'ready'
+		  AND COALESCE(p.manual_disabled, FALSE) = FALSE
+		  AND p.enabled = TRUE
+		  AND NOT EXISTS (
+		      SELECT 1 FROM node_probe_state nps
+		      WHERE nps.credential_id  = cmb.credential_id
+		        AND nps.raw_model_name = pm.raw_model_name
+		        AND nps.paused         = TRUE
+		  )
+		  AND NOT EXISTS (
+		      SELECT 1 FROM node_probe_state nps
+		      WHERE nps.credential_id  = cmb.credential_id
+		        AND nps.raw_model_name = pm.raw_model_name
+		        AND nps.next_retry_at  > now()
+		  )
+		ORDER BY cmb.unavailable_recover_at ASC
+		LIMIT 50
+	`
+}
+
+// recoverExpiredBindings hands expired cmb.available=FALSE rows to the
+// NodeProbeWorker so the authoritative probe path can decide whether to
+// flip them back. See expiredCmbRecoverySQL for the eligibility contract.
+//
+// The submitter is wired from cmd/gateway/main.go after NodeProbeWorker
+// is constructed; if it is nil (e.g. legacy self-check mode) the
+// function is a no-op and returns nil so the 60s tick continues
+// without flagging a transient wiring gap as an error.
+//
+// Returns the first DB error verbatim so callers can decide whether
+// to halt or skip — the surrounding recover() logs and continues.
+func (r *CredentialRecovery) recoverExpiredBindings(ctx context.Context) error {
+	if r.probeSubmitter == nil {
+		return nil
+	}
+	rows, err := r.db.Query(ctx, expiredCmbRecoverySQL())
+	if err != nil {
+		return fmt.Errorf("query expired cmb bindings: %w", err)
+	}
+	defer rows.Close()
+
+	type pair struct {
+		credID int
+		model  string
+	}
+	var (
+		seen       []pair
+		invalidSet = make(map[int]struct{})
+	)
+	for rows.Next() {
+		var p pair
+		if err := rows.Scan(&p.credID, &p.model); err != nil {
+			slog.Warn("expired-binding recovery scan failed", "error", err)
+			continue
+		}
+		seen = append(seen, p)
+		invalidSet[p.credID] = struct{}{}
+		r.probeSubmitter(p.credID, p.model)
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("iterate expired cmb bindings: %w", err)
+	}
+	if len(seen) == 0 {
+		return nil
+	}
+	if r.invalidateCandidateCache != nil {
+		for credID := range invalidSet {
+			r.invalidateCandidateCache(credID)
+		}
+	}
+	slog.Info("expired-binding probe recovery queued",
+		"pairs", len(seen),
+		"unique_credentials", len(invalidSet),
+	)
+	return nil
 }
