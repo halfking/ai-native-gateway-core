@@ -2288,8 +2288,10 @@ func (h *ChatHandler) serveWithExecutor(
 	// Retry configuration - Phase 1.5: read from Phase 0 cost_mode preset
 	// 2026-07-23: Use resolver for runtime policy if available
 	var retryPolicy GoalRetryPolicy
+	var policySource string
 	if h.goalRetryPolicyResolver != nil && keyInfo != nil && keyInfo.TenantID != "" {
 		retryPolicy = h.goalRetryPolicyResolver.ResolveGoalRetryPolicy(keyInfo.TenantID)
+		policySource = "resolver"
 		slog.Debug("goal_retry_policy_resolved",
 			"request_id", requestID,
 			"tenant_id", keyInfo.TenantID,
@@ -2297,14 +2299,21 @@ func (h *ChatHandler) serveWithExecutor(
 			"enabled", retryPolicy.Enabled,
 			"max_retries", retryPolicy.MaxRetries,
 			"timeout_sec", retryPolicy.TotalTimeout.Seconds())
+
+		// Record policy resolution
+		if keyInfo != nil {
+			recordGoalRetryPolicyResolution(keyInfo.TenantID, retryPolicy.CostMode, policySource)
+		}
 	} else {
 		// Fallback to default policy
 		retryPolicy = defaultGoalRetryPolicy()
+		policySource = "fallback"
 		if keyInfo != nil {
 			slog.Debug("goal_retry_policy_fallback",
 				"request_id", requestID,
 				"tenant_id", keyInfo.TenantID,
 				"reason", "resolver_not_available")
+			recordGoalRetryPolicyResolution(keyInfo.TenantID, retryPolicy.CostMode, policySource)
 		}
 	}
 
@@ -2321,6 +2330,12 @@ func (h *ChatHandler) serveWithExecutor(
 	// Retry loop
 	retryStartTime := time.Now()
 	retriesPerformed := 0
+
+	// Track active retry (2026-07-23: metrics)
+	if keyInfo != nil && keyInfo.TenantID != "" {
+		trackGoalActiveRetry(keyInfo.TenantID, 1)
+		defer trackGoalActiveRetry(keyInfo.TenantID, -1)
+	}
 
 	for attempt := 0; attempt <= maxRetries; attempt++ {
 		// Check if context is cancelled (client disconnected or timeout)
@@ -2537,6 +2552,25 @@ func (h *ChatHandler) serveWithExecutor(
 	}
 	// ── End of retry loop ────────────────────────────────────────────────
 
+	// Record retry outcome metrics (2026-07-23)
+	retryDuration := time.Since(retryStartTime)
+	var outcome string
+	if execErr == nil {
+		outcome = "success"
+	} else if errors.Is(retryCtx.Err(), context.Canceled) {
+		outcome = "cancelled"
+	} else if errors.Is(retryCtx.Err(), context.DeadlineExceeded) {
+		outcome = "timeout"
+	} else if retriesPerformed >= maxRetries {
+		outcome = "exhausted"
+	} else {
+		outcome = "error"
+	}
+
+	if keyInfo != nil && keyInfo.TenantID != "" {
+		recordGoalRetryOutcome(keyInfo.TenantID, retryPolicy.CostMode, outcome, retriesPerformed, retryDuration)
+	}
+
 	// Persist retry count if recorder is available (fail-open)
 	if retriesPerformed > 0 && gwSessionID != "" && h.goalRetryRecorder != nil {
 		if err := h.goalRetryRecorder.AddRetryCount(r.Context(), gwSessionID, retriesPerformed); err != nil {
@@ -2545,12 +2579,21 @@ func (h *ChatHandler) serveWithExecutor(
 				"session_id", gwSessionID,
 				"retry_count", retriesPerformed,
 				"error", err.Error())
+			if keyInfo != nil {
+				recordGoalRetryCountPersistence(keyInfo.TenantID, "failure")
+			}
 		} else {
 			slog.Debug("goal_retry_count_persisted",
 				"request_id", requestID,
 				"session_id", gwSessionID,
 				"retry_count", retriesPerformed)
+			if keyInfo != nil {
+				recordGoalRetryCountPersistence(keyInfo.TenantID, "success")
+			}
 		}
+	} else if retriesPerformed == 0 && keyInfo != nil {
+		// No retries performed, count as skipped
+		recordGoalRetryCountPersistence(keyInfo.TenantID, "skipped")
 	}
 
 	if result != nil && result.CachedReplay {
