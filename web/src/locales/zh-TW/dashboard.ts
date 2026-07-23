@@ -155,6 +155,7 @@ tabs: {
     idleLabel: "閒置 {duration}",
     countTooltip: "緩衝區 {buffer} / 螢幕可見 {visible}",
     countAria: "緩衝區 {buffer} 個請求，螢幕可見 {visible}",
+    legendButton: '圖例',
     legend: {
       title: "圖例",
       model: "模型族",
@@ -254,6 +255,27 @@ tabs: {
     idleHoursMinutes: '閒置 {h} 小時 {m} 分鐘',
 
     idleReasonNoTraffic: '無流量（5 分鐘無請求）',
+    // 2026-07-24: 多維過濾器
+    filterStatus: '狀態',
+    filterAllOptions: '全部',
+    filterEmpty: '暫無可選項',
+    filterModel: '模型',
+    filterProvider: '供應商',
+    filterVendor: '原廠',
+    clearFilters: '清除過濾',
+    status: {
+      in_progress: '進行中',
+      success: '成功',
+      failure: '失敗',
+      rate_limited: '限流',
+    },
+    vendor: {
+      openai: 'OpenAI',
+      anthropic: 'Anthropic',
+      domestic: '本地',
+      oss: '開源',
+      other: '其他',
+    },
   },
   charts: {
     gradeA: "優秀",

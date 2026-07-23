@@ -155,6 +155,7 @@ tabs: {
     idleLabel: "アイドル {duration}",
     countTooltip: "バッファ内 {buffer} / 表示中 {visible}",
     countAria: "バッファ内に {buffer} 件、表示中 {visible} 件",
+    legendButton: '凡例',
     legend: {
       title: "凡例",
       model: "モデルファミリー",
@@ -254,6 +255,27 @@ tabs: {
     idleHoursMinutes: 'アイドル {h}時間{m}分',
 
     idleReasonNoTraffic: 'トラフィックなし（5分間アイドル）',
+    // 2026-07-24: マルチディメンションフィルター
+    filterStatus: 'ステータス',
+    filterAllOptions: 'すべて',
+    filterEmpty: '選択肢がありません',
+    filterModel: 'モデル',
+    filterProvider: 'プロバイダー',
+    filterVendor: 'ベンダー',
+    clearFilters: 'フィルターをクリア',
+    status: {
+      in_progress: '処理中',
+      success: '成功',
+      failure: '失敗',
+      rate_limited: '制限あり',
+    },
+    vendor: {
+      openai: 'OpenAI',
+      anthropic: 'Anthropic',
+      domestic: '国産',
+      oss: 'オープンソース',
+      other: 'その他',
+    },
   },
   charts: {
     gradeA: "Grade A",
