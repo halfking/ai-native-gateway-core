@@ -802,7 +802,7 @@ $47,
 		$80, $81, $82, $83,
 		$84::text::jsonb, $85
 		)
-				ON CONFLICT (request_id, ts) DO UPDATE SET
+				ON CONFLICT (request_id) DO UPDATE SET
 				ts = EXCLUDED.ts,
 			tenant_id = EXCLUDED.tenant_id,
 			application_id = EXCLUDED.application_id,
@@ -1027,7 +1027,7 @@ $47,
 			request_id, ts, request_body, response_body
 		)
 		VALUES ($1, NOW(), $2::jsonb, $3::jsonb)
-		ON CONFLICT (request_id, ts) DO UPDATE SET
+		ON CONFLICT (request_id) DO UPDATE SET
 			request_body = COALESCE(EXCLUDED.request_body, request_logs_bodies_hot.request_body),
 			response_body = COALESCE(EXCLUDED.response_body, request_logs_bodies_hot.response_body)
 	`,
@@ -1144,23 +1144,10 @@ func (c *Client) updateRequestLog(entry *RequestLogEntry) error {
 
 	var updatedTS time.Time
 	err = tx.QueryRow(ctx, `
-		-- 2026-07-05 migration 341: CTE selects the latest row from request_logs_hot
-		-- (独立热表，0-7 天数据窗口)。一旦数据被后台 promote 函数迁移到月度分区，
-		-- 该行将从 _hot 表中删除，不再可编辑（columnar 归档分区不支持 UPDATE）。
-		-- 这是预期行为：迁移后的延迟更新会被静默丢弃，符合数据生命周期架构。
-		WITH latest AS (
-			SELECT id, ts
-			FROM request_logs_hot
-			WHERE request_id = $1
-			ORDER BY ts DESC
-			LIMIT 1
-		)
-		-- UPDATE directly targets request_logs_hot — 所有写操作的规范目标。
-		-- 2026-07-13 P0 fix: the multimodal INSERT ($16-$22) shifted every
-		-- subsequent parameter; the UPDATE SET clause had to be rewritten
-		-- in lock-step to keep COALESCE($N, column) aligned with the
-		-- positional VALUES below.
-		-- 2026-07-16: JSONB columns use $N::text::jsonb to fix pgx binary protocol 22P02.
+		-- 2026-07-23 migration 455: request_logs_hot PK changed from (request_id, ts)
+		-- to (request_id). With request_id as the unique key, the CTE (which found
+		-- the latest row among duplicates) is no longer needed. Direct UPDATE by
+		-- request_id is now deterministic.
 		UPDATE request_logs_hot
 		   SET client_model = COALESCE($2, client_model),
 		       outbound_model = COALESCE($3, outbound_model),
@@ -1261,9 +1248,7 @@ func (c *Client) updateRequestLog(entry *RequestLogEntry) error {
 	   client_forwarded_for = COALESCE($75, client_forwarded_for),
 	   origin_stage         = COALESCE($76, origin_stage),
 	   origin_actor         = COALESCE($77, origin_actor)
-	  FROM latest
-	 WHERE request_logs_hot.id = latest.id
-	   AND request_logs_hot.ts = latest.ts
+	 WHERE request_id = $1
 	 RETURNING request_logs_hot.ts
 `,
 		entry.RequestID,
@@ -1364,19 +1349,19 @@ func (c *Client) updateRequestLog(entry *RequestLogEntry) error {
 	}
 
 	if err == nil {
-		// Use the metadata row returned by UPDATE so retries cannot attach
-		// bodies to another row sharing the same request ID.
+		// 2026-07-23 migration 455: request_logs_bodies_hot UNIQUE changed
+		// from (request_id, ts) to (request_id). Use NOW() for ts directly
+		// — no longer need the metadata row's ts.
 		_, err = tx.Exec(ctx, `
 		INSERT INTO request_logs_bodies_hot (
 			request_id, ts, request_body, response_body
 		)
-		VALUES ($1, $2, $3::jsonb, $4::jsonb)
-		ON CONFLICT (request_id, ts) DO UPDATE SET
+		VALUES ($1, NOW(), $2::jsonb, $3::jsonb)
+		ON CONFLICT (request_id) DO UPDATE SET
 			request_body = COALESCE(EXCLUDED.request_body, request_logs_bodies_hot.request_body),
 			response_body = COALESCE(EXCLUDED.response_body, request_logs_bodies_hot.response_body)
 	`,
 			entry.RequestID,
-			updatedTS,
 			strPtrToJSON(entry.RequestBody),
 			strPtrToJSON(entry.ResponseBody),
 		)
