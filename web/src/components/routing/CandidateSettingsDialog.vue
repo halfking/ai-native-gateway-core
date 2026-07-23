@@ -210,10 +210,10 @@ async function save() {
 .cs-dialog {
   width: min(520px, 92vw);
   max-height: 86vh;
-  background: var(--kx-bg-container);
-  color: var(--kx-text-primary);
+  background: var(--kx-surface);
+  color: var(--kx-text);
   border-radius: 8px;
-  border: 1px solid var(--kx-border-light);
+  border: 1px solid var(--kx-border);
   box-shadow: 0 20px 48px rgba(0, 0, 0, 0.22);
   display: flex;
   flex-direction: column;
@@ -223,7 +223,7 @@ async function save() {
   align-items: flex-start;
   gap: 12px;
   padding: 12px 16px;
-  border-bottom: 1px solid var(--kx-border-light);
+  border-bottom: 1px solid var(--kx-border);
 }
 .cs-head h3 {
   margin: 0;
@@ -232,7 +232,7 @@ async function save() {
 .cs-sub {
   margin: 4px 0 0;
   font-size: 11px;
-  color: var(--kx-text-secondary);
+  color: var(--kx-muted);
 }
 .cs-close {
   margin-left: auto;
@@ -241,7 +241,7 @@ async function save() {
   font-size: 22px;
   line-height: 1;
   cursor: pointer;
-  color: var(--kx-text-secondary);
+  color: var(--kx-muted);
 }
 .cs-body {
   overflow-y: auto;
@@ -252,20 +252,20 @@ async function save() {
   padding: 6px 10px;
   background: var(--kx-warning-soft, rgba(217, 119, 6, 0.12));
   border-left: 3px solid var(--kx-warning);
-  color: var(--kx-text-primary);
+  color: var(--kx-text);
   font-size: 12px;
   border-radius: 4px;
 }
 .cs-group {
-  border: 1px solid var(--kx-border-light);
+  border: 1px solid var(--kx-border);
   border-radius: 6px;
   padding: 8px 12px;
   margin-bottom: 12px;
-  background: var(--kx-bg-elevated);
+  background: var(--kx-surface-soft);
 }
 .cs-group legend {
   font-size: 11px;
-  color: var(--kx-text-secondary);
+  color: var(--kx-muted);
   padding: 0 6px;
 }
 .cs-row {
@@ -278,7 +278,7 @@ async function save() {
 .cs-row small {
   display: block;
   font-size: 10.5px;
-  color: var(--kx-text-tertiary);
+  color: var(--kx-muted);
   font-weight: 400;
 }
 .cs-row span {
@@ -292,20 +292,20 @@ async function save() {
 .cs-row select {
   padding: 4px 6px;
   font-size: 12px;
-  border: 1px solid var(--kx-border-light);
+  border: 1px solid var(--kx-border);
   border-radius: 4px;
-  background: var(--kx-bg-container);
-  color: var(--kx-text-primary);
+  background: var(--kx-surface);
+  color: var(--kx-text);
 }
 .cs-hint {
   margin: 6px 0 0;
   font-size: 11px;
-  color: var(--kx-text-secondary);
+  color: var(--kx-muted);
   line-height: 1.55;
 }
 .cs-hint code {
   font-size: 10.5px;
-  background: var(--kx-bg-base);
+  background: var(--kx-bg);
   padding: 1px 4px;
   border-radius: 3px;
 }
@@ -314,7 +314,7 @@ async function save() {
   justify-content: flex-end;
   gap: 8px;
   padding: 10px 16px;
-  border-top: 1px solid var(--kx-border-light);
+  border-top: 1px solid var(--kx-border);
 }
 .btn {
   padding: 6px 12px;
@@ -334,7 +334,7 @@ async function save() {
 }
 .btn-ghost {
   background: transparent;
-  color: var(--kx-text-primary);
-  border-color: var(--kx-border-light);
+  color: var(--kx-text);
+  border-color: var(--kx-border);
 }
 </style>
