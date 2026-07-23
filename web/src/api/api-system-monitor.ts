@@ -252,6 +252,6 @@ export interface MigrationMetricsResponse {
 export function fetchMigrationMetrics(windowDays = 7) {
   return req<MigrationMetricsResponse>(
     'GET',
-    `/api/admin/system-monitor/migration-metrics?window_days=${windowDays}`
+    `/api/admin/system-monitor/migration-metrics?window_days=${encodeURIComponent(String(windowDays))}`
   )
 }

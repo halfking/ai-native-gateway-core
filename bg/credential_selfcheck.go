@@ -371,7 +371,7 @@ func (w *CredentialSelfcheckWorker) runOne(ctx context.Context, credentialID int
 
 	// Phase 3 Stage 1 Task 1.2: 打标为 legacy_selfcheck，写入 system_probe_runs
 	// 用于 Phase 3 切流进度监控（对齐 docs/会话优化v2/35-*.md §2.1）
-	if err := w.auditToSystemProbeRuns(ctx, credentialID, pick.models, startedAt, status); err != nil {
+	if err := w.auditToSystemProbeRuns(ctx, runID, credentialID, pick.models, startedAt, status); err != nil {
 		// 写入失败不阻塞主流程，仅记录日志
 		slog.Warn("credential_selfcheck: failed to audit to system_probe_runs (non-blocking)",
 			"credential_id", credentialID, "error", err)
@@ -726,6 +726,7 @@ func (w *CredentialSelfcheckWorker) finalizeRun(
 // 设计依据: docs/会话优化v2/35-SystemMonitor-Phase3-切流计划.md §2.1
 func (w *CredentialSelfcheckWorker) auditToSystemProbeRuns(
 	ctx context.Context,
+	taskID int64,
 	credentialID int,
 	models []string,
 	startedAt time.Time,
@@ -742,16 +743,16 @@ func (w *CredentialSelfcheckWorker) auditToSystemProbeRuns(
 	// 注意：source="legacy_selfcheck" 是关键标记
 	query := `
 		INSERT INTO system_probe_runs (
-			task_type, automaticity, credential_id, raw_model, source,
+		task_id, task_type, automaticity, credential_id, raw_model, source,
 			worker_id, status, started_at, finished_at
 		) VALUES (
-			$1, $2, $3, $4, $5, $6, $7, $8, $9
+			$1, $2, $3, $4, $5, $6, $7, $8, $9, $10
 		)
 	`
 
-	taskType := "credential_selfcheck" // 旧 worker 特有的 task_type
-	automaticity := "automatic"         // 旧 worker 是自动探测
-	source := "legacy_selfcheck"        // Phase 3 关键：标记为旧 worker
+	taskType := "chat_tool"      // schema 允许的工具调用探测类型
+	automaticity := "automatic"  // 旧 worker 是自动探测
+	source := "legacy_selfcheck" // Phase 3 关键：标记为旧 worker
 	workerID := "credential-selfcheck-worker"
 	finishedAt := time.Now()
 
@@ -767,7 +768,7 @@ func (w *CredentialSelfcheckWorker) auditToSystemProbeRuns(
 	defer cancel()
 
 	_, err := w.db.Exec(queryCtx, query,
-		taskType, automaticity, credentialID, rawModel, source,
+		taskID, taskType, automaticity, credentialID, rawModel, source,
 		workerID, probeStatus, startedAt, finishedAt,
 	)
 	return err
