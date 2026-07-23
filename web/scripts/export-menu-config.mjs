@@ -32,6 +32,17 @@ function computeTenantScope(item) {
   return '*'
 }
 
+/**
+ * 根据菜单项的 plugin 标记计算 pluginScope
+ * 2026-07-23: 软注入探测机制
+ * - 有 plugin 字段 → 'plugin' (依赖运行时探测)
+ * - 无 plugin 字段 → '*' (始终可用)
+ */
+function computePluginScope(item) {
+  if (item.plugin) return 'plugin'
+  return '*'
+}
+
 // 直接嵌入 appNav.ts 的核心数据（构建时复制，避免跨语言解析 TS）
 // 这是 NAV_PRIMARY_ITEMS + NAV_GROUPS 的同步副本
 // 任何 appNav.ts 变更需要同步更新这里
@@ -85,6 +96,8 @@ const NAV_GROUPS = [
     labelKey: 'nav.group.requestsSessions',
     items: [
       { path: '/request-logs', label: '请求日志', labelKey: 'nav.item.requestLogs', icon: '📋' },
+      // 2026-07-23: ai-session-manager plugin 入口
+      { path: '/plugins/ai-session-manager/sessions', label: '会话列表', labelKey: 'nav.item.pluginSessions', icon: '💬', super: true, hideForTenant: true, external: true, plugin: 'ai-session-manager' },
     ],
   },
   {
@@ -142,6 +155,7 @@ function annotateGroup(group) {
   const items = group.items.map((item) => ({
     ...item,
     tenantScope: computeTenantScope(item),
+    pluginScope: computePluginScope(item),
   }))
 
   // 计算分组的整体可见性
@@ -156,9 +170,19 @@ function annotateGroup(group) {
     groupScope = 'mixed'
   }
 
+  // pluginScope 类似
+  const pluginScopes = new Set(items.map((i) => i.pluginScope))
+  let groupPluginScope
+  if (pluginScopes.size === 1) {
+    groupPluginScope = pluginScopes.values().next().value
+  } else {
+    groupPluginScope = 'mixed'
+  }
+
   return {
     ...group,
     tenantScope: groupScope,
+    pluginScope: groupPluginScope,
     items,
   }
 }
@@ -174,9 +198,15 @@ const menuConfig = {
     '*': '所有租户可见',
     mixed: '分组内包含多种可见性，需逐项检查',
   },
+  // 软注入标注（2026-07-23）
+  pluginScopeLegend: {
+    plugin: '依赖 plugin 运行时探测（按 plugin 字段名匹配）',
+    '*': '始终可用，无 plugin 依赖',
+  },
   primary: NAV_PRIMARY_ITEMS.map((item) => ({
     ...item,
     tenantScope: computeTenantScope(item),
+    pluginScope: computePluginScope(item),
   })),
   groups: NAV_GROUPS.map(annotateGroup),
 }
