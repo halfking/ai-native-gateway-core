@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/redis/go-redis/v9"
 
@@ -30,6 +31,7 @@ func (s *Store) PipelineNodeViews(ctx context.Context, prefix string, qs []NodeQ
 		return nil, fmt.Errorf("ursm.v2: pipeline exec: %w", err)
 	}
 	out := make([]api.NodeView, len(qs))
+	now := time.Now()
 	for i, c := range cmds {
 		raw, err := c.Result()
 		if err == redis.Nil {
@@ -44,6 +46,32 @@ func (s *Store) PipelineNodeViews(ctx context.Context, prefix string, qs []NodeQ
 		v.SrcPriority = atoi(raw["source_priority"])
 		v.Generation = atoi64(raw["generation"])
 		v.FailStreak = int(atoi64(raw["fail_streak"]))
+
+		// Parse cool_until_ms and check if node is in cooling period
+		if coolUntilMsStr := raw["cool_until_ms"]; coolUntilMsStr != "" {
+			coolUntilMs := atoi64(coolUntilMsStr)
+			if coolUntilMs > 0 {
+				coolUntil := time.UnixMilli(coolUntilMs)
+				v.CoolUntil = coolUntil
+				// If in cooling period, mark as unavailable
+				if coolUntil.After(now) {
+					v.Available = false
+					if v.Reason == "" {
+						v.Reason = "in_cool_until"
+					}
+				}
+			}
+		}
+
+		// Check if disabled flag is set (fallback check)
+		if raw["disabled"] == "1" && v.Available {
+			// Only mark unavailable if not already marked by cool_until
+			if v.CoolUntil == (time.Time{}) || v.CoolUntil.After(now) {
+				v.Available = false
+				v.Reason = "node_disabled"
+			}
+		}
+
 		out[i] = v
 	}
 	return out, nil

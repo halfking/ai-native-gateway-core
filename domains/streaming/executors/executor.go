@@ -864,6 +864,20 @@ func (e *Executor) SetTraceRecorder(rec gwtrace.Recorder) {
 	}
 }
 
+// isURSMv2Authoritative 检查 URSM v2 是否处于 authoritative 模式且已 Ready。
+// 用于在 authoritative 模式下跳过旧的状态管理系统，避免状态不一致。
+func (e *Executor) isURSMv2Authoritative() bool {
+	if e == nil || e.URSMv2 == nil {
+		return false
+	}
+	if e.URSMv2.Mode() != ursmv2api.ModeAuthoritative {
+		return false
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
+	defer cancel()
+	return e.URSMv2.Ready(ctx)
+}
+
 // emitTraceExec 是 Executor 内部使用的 trace 注入薄包装,避免热路径
 // 重复写 nil-check。
 func (e *Executor) emitTraceExec(ctx context.Context, requestID string, ev gwtrace.EventBuilder) {
@@ -1855,7 +1869,9 @@ func (e *Executor) Execute(params *ExecParams) (*ExecuteResult, error) {
 			defer sideEffectCancel()
 			e.restoreCredentialState(sideEffectCtx, cand.CredentialID, cand.StandardizedName)
 			e.recordStickySuccess(params, cand.CredentialID)
-			if e.Recorder != nil {
+			// 2026-07-24: URSM v2 authoritative 模式下跳过 fpSlotRecorder 写入
+			// 统一状态管理到 URSM v2，避免多路径写入导致状态不一致
+			if e.Recorder != nil && !e.isURSMv2Authoritative() {
 				e.Recorder.RecordSuccess(sideEffectCtx, cand.CredentialID, cand.RawModel)
 			}
 			// Record success for Bandit scoring (Thompson Sampling)
@@ -1902,7 +1918,8 @@ func (e *Executor) Execute(params *ExecParams) (*ExecuteResult, error) {
 
 			// 2026-07-01 Phase 2.x: Record success in credential state manager.
 			// This enables adaptive probing based on real request outcomes.
-			if e.StateObserver != nil {
+			// 2026-07-24: URSM v2 authoritative 模式下跳过 StateObserver
+			if e.StateObserver != nil && !e.isURSMv2Authoritative() {
 				requestID := params.R.Header.Get("X-Request-Id")
 				if requestID == "" {
 					requestID = "async-" + time.Now().Format("20060102T150405.000")
@@ -1929,57 +1946,51 @@ func (e *Executor) Execute(params *ExecParams) (*ExecuteResult, error) {
 				})
 			}
 
-			// 2026-07-03: URSM统一状态回写（优先于旧的StateObserver）
-			if e.URSM != nil && e.URSM.Enabled() {
+			// 2026-07-24: URSM v2 authoritative 模式下只写 v2，跳过旧 URSM。
+			// 统一状态管理：只有一个写入路径，避免状态不一致。
+			shouldWriteURSMv2 := e.URSMv2 != nil && e.URSMv2.Mode() == ursmv2api.ModeAuthoritative
+			shouldWriteLegacyURSM := e.URSM != nil && e.URSM.Enabled() && !shouldWriteURSMv2
+
+			if shouldWriteLegacyURSM || shouldWriteURSMv2 {
 				requestID := params.R.Header.Get("X-Request-Id")
 				if requestID == "" {
 					requestID = "async-" + time.Now().Format("20060102T150405.000")
 				}
-				// 异步记录，不阻塞响应
-				go func() {
-					ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-					defer cancel()
-
-					err := e.URSM.RecordRequest(ctx, ursm.RecordRequestAPI{
-						RequestID:    requestID,
+				if shouldWriteLegacyURSM {
+					// 异步写旧 URSM（向后兼容模式）
+					go func() {
+						ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+						defer cancel()
+						err := e.URSM.RecordRequest(ctx, ursm.RecordRequestAPI{
+							RequestID:    requestID,
+							CredentialID: cand.CredentialID,
+							RawModel:     cand.RawModel,
+							SessionID:    params.SessionID,
+							Success:      true,
+							LatencyMs:    result.LatencyMs,
+							ErrorKind:    "",
+							Timestamp:    time.Now(),
+						})
+						if err != nil {
+							slog.Warn("failed to record success to ursm",
+								"error", err, "request_id", requestID, "credential_id", cand.CredentialID)
+						}
+					}()
+				}
+				if shouldWriteURSMv2 {
+					// 同步写 URSM v2（authoritative 模式）
+					if err := e.URSMv2.RecordRequest(params.R.Context(), ursmv2api.RequestOutcome{
 						CredentialID: cand.CredentialID,
 						RawModel:     cand.RawModel,
-						SessionID:    params.SessionID,
+						TenantID:     params.TenantID,
+						BillingMode:  cand.BillingMode,
 						Success:      true,
 						LatencyMs:    result.LatencyMs,
-						ErrorKind:    "",
-						Timestamp:    time.Now(),
-					})
-					if err != nil {
-						slog.Warn("failed to record success to ursm",
-							"error", err,
-							"request_id", requestID,
-							"credential_id", cand.CredentialID)
+						RequestID:    requestID,
+					}); err != nil {
+						slog.Warn("ursm.v2: record success failed",
+							"error", err, "request_id", requestID, "credential_id", cand.CredentialID)
 					}
-				}()
-			}
-
-			// 2026-07-21 (URSM v2 T8): 旁路写 v2 store。Manager.RecordRequest
-			// 内部按 Mode + ShouldUseV2 决定是否真正写入；URSMv2==nil 时整段
-			// 跳过，保留所有旧行为。
-			if e.URSMv2 != nil {
-				requestID := params.R.Header.Get("X-Request-Id")
-				if requestID == "" {
-					requestID = "async-" + time.Now().Format("20060102T150405.000")
-				}
-				if err := e.URSMv2.RecordRequest(params.R.Context(), ursmv2api.RequestOutcome{
-					CredentialID: cand.CredentialID,
-					RawModel:     cand.RawModel,
-					TenantID:     params.TenantID,
-					BillingMode:  cand.BillingMode,
-					Success:      true,
-					LatencyMs:    result.LatencyMs,
-					RequestID:    requestID,
-				}); err != nil {
-					slog.Warn("ursm.v2: sidecar record success failed",
-						"error", err,
-						"request_id", requestID,
-						"credential_id", cand.CredentialID)
 				}
 			}
 
@@ -2173,13 +2184,15 @@ func (e *Executor) Execute(params *ExecParams) (*ExecuteResult, error) {
 			failureCtx, failureCancel := runctx.DetachedTimeout(params.R.Context(), 5*time.Second)
 			defer failureCancel()
 			e.recordStickyFailure(params, cand.CredentialID, kind)
-			if e.Recorder != nil {
+			// 2026-07-24: URSM v2 authoritative 模式下跳过 fpSlotRecorder 写入
+			if e.Recorder != nil && !e.isURSMv2Authoritative() {
 				e.Recorder.RecordFailure(failureCtx, cand.CredentialID, cand.RawModel, kind)
 			}
 
 			// 2026-07-01 Phase 2.x: Record failure in credential state manager.
 			// KindCanceled is automatically skipped by the manager.
-			if e.StateObserver != nil {
+			// 2026-07-24: URSM v2 authoritative 模式下跳过 StateObserver
+			if e.StateObserver != nil && !e.isURSMv2Authoritative() {
 				requestID := params.R.Header.Get("X-Request-Id")
 				if requestID == "" {
 					requestID = "async-" + time.Now().Format("20060102T150405.000")
@@ -2195,65 +2208,59 @@ func (e *Executor) Execute(params *ExecParams) (*ExecuteResult, error) {
 				)
 			}
 
-			if e.RoutingStateShadow != nil {
+			if e.RoutingStateShadow != nil && !e.isURSMv2Authoritative() {
 				e.observeRoutingStateFailure(params, cand, kind)
 				e.observeRoutingStateProbe(params, cand, routingstate.ProbeTriggerRequestFailure)
 			}
 
-			// 2026-07-03: URSM统一状态回写（失败）
-			if e.URSM != nil && e.URSM.Enabled() {
+			// 2026-07-24: URSM v2 authoritative 模式下只写 v2，跳过旧 URSM。
+			// 统一状态管理：只有一个写入路径，避免状态不一致。
+			shouldWriteURSMv2 := e.URSMv2 != nil && e.URSMv2.Mode() == ursmv2api.ModeAuthoritative
+			shouldWriteLegacyURSM := e.URSM != nil && e.URSM.Enabled() && !shouldWriteURSMv2
+
+			if shouldWriteLegacyURSM || shouldWriteURSMv2 {
 				requestID := params.R.Header.Get("X-Request-Id")
 				if requestID == "" {
 					requestID = "async-" + time.Now().Format("20060102T150405.000")
 				}
-				// 异步记录
-				go func() {
-					ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-					defer cancel()
-
-					err := e.URSM.RecordRequest(ctx, ursm.RecordRequestAPI{
-						RequestID:    requestID,
+				if shouldWriteLegacyURSM {
+					// 异步写旧 URSM（向后兼容模式）
+					go func() {
+						ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+						defer cancel()
+						err := e.URSM.RecordRequest(ctx, ursm.RecordRequestAPI{
+							RequestID:    requestID,
+							CredentialID: cand.CredentialID,
+							RawModel:     cand.RawModel,
+							SessionID:    params.SessionID,
+							Success:      false,
+							LatencyMs:    0,
+							ErrorKind:    string(kind),
+							Timestamp:    time.Now(),
+						})
+						if err != nil {
+							slog.Warn("failed to record failure to ursm",
+								"error", err, "request_id", requestID,
+								"credential_id", cand.CredentialID, "error_kind", kind)
+						}
+					}()
+				}
+				if shouldWriteURSMv2 {
+					// 同步写 URSM v2（authoritative 模式）
+					if err := e.URSMv2.RecordRequest(params.R.Context(), ursmv2api.RequestOutcome{
 						CredentialID: cand.CredentialID,
 						RawModel:     cand.RawModel,
-						SessionID:    params.SessionID,
+						TenantID:     params.TenantID,
+						BillingMode:  cand.BillingMode,
 						Success:      false,
 						LatencyMs:    0,
 						ErrorKind:    string(kind),
-						Timestamp:    time.Now(),
-					})
-					if err != nil {
-						slog.Warn("failed to record failure to ursm",
-							"error", err,
-							"request_id", requestID,
-							"credential_id", cand.CredentialID,
-							"error_kind", kind)
+						RequestID:    requestID,
+					}); err != nil {
+						slog.Warn("ursm.v2: record failure failed",
+							"error", err, "request_id", requestID,
+							"credential_id", cand.CredentialID, "error_kind", kind)
 					}
-				}()
-			}
-
-			// 2026-07-21 (URSM v2 T8): 旁路写 v2 store。Manager.RecordRequest
-			// 内部按 Mode + ShouldUseV2 决定是否真正写入；URSMv2==nil 时整段
-			// 跳过，保留所有旧行为。
-			if e.URSMv2 != nil {
-				requestID := params.R.Header.Get("X-Request-Id")
-				if requestID == "" {
-					requestID = "async-" + time.Now().Format("20060102T150405.000")
-				}
-				if err := e.URSMv2.RecordRequest(params.R.Context(), ursmv2api.RequestOutcome{
-					CredentialID: cand.CredentialID,
-					RawModel:     cand.RawModel,
-					TenantID:     params.TenantID,
-					BillingMode:  cand.BillingMode,
-					Success:      false,
-					LatencyMs:    0,
-					ErrorKind:    string(kind),
-					RequestID:    requestID,
-				}); err != nil {
-					slog.Warn("ursm.v2: sidecar record failure failed",
-						"error", err,
-						"request_id", requestID,
-						"credential_id", cand.CredentialID,
-						"error_kind", kind)
 				}
 			}
 
@@ -2445,13 +2452,15 @@ func (e *Executor) Execute(params *ExecParams) (*ExecuteResult, error) {
 		// 2026-07-09: 更新会话黑名单计数
 		sessionBlacklist[cand.CredentialID]++
 
-		if e.Recorder != nil {
+		// 2026-07-24: URSM v2 authoritative 模式下跳过 fpSlotRecorder 写入
+		if e.Recorder != nil && !e.isURSMv2Authoritative() {
 			e.Recorder.RecordFailure(failureCtx, cand.CredentialID, cand.RawModel, kind)
 		}
 
 		// 2026-07-01 Phase 2.x: Record failure in credential state manager.
 		// KindCanceled is automatically skipped by the manager.
-		if e.StateObserver != nil {
+		// 2026-07-24: URSM v2 authoritative 模式下跳过 StateObserver
+		if e.StateObserver != nil && !e.isURSMv2Authoritative() {
 			requestID := params.R.Header.Get("X-Request-Id")
 			if requestID == "" {
 				requestID = "async-" + time.Now().Format("20060102T150405.000")
