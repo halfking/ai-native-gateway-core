@@ -7,6 +7,21 @@
 
 ---
 
+> ⚠️ **当前实施状态勘误（2026-07-23）**
+> 
+> 本文档描述的 Goal ↔ Handoff 四组件协同（ContextMonitor、GoalStateSerializer、HandoffTrigger、HandoffMessage）为**设计提案，尚未实现**。
+> 
+> **当前实际状态**：
+> - ✅ Handoff 请求侧 Hook 已实现（`domains/hooks/handoff/trigger_hook.go`）
+> - ✅ Handoff SQL 已修复（Migration 354）
+> - ❌ Goal 状态序列化和四组件协同未实现
+> 
+> **原因**：Goal/Handoff 状态传递接口未冻结，需先定义稳定契约。
+> 
+> **相关决策**：见 [31-当前实现基线与修正决策.md](./31-当前实现基线与修正决策.md) § ADR-HANDOFF-001
+
+---
+
 ## 1. 背景与现状
 
 ### 1.1 Goal 模式现状
