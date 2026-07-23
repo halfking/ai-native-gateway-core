@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 )
@@ -156,15 +157,8 @@ func TestRegister_K8sDeployment(t *testing.T) {
 	}
 }
 
+// containsString 简单子串检查（2026-07-24 审计修复：原版一大段不可达代码 + json
+// 反序列化副作用，导致 go vet 报 unreachable code；直接复用 strings.Contains）。
 func containsString(s, substr string) bool {
-	return len(s) >= len(substr) && (s == substr || len(s) > len(substr) &&
-		(s[:len(substr)] == substr || s[len(s)-len(substr):] == substr ||
-			json.Unmarshal([]byte(s), &struct{}{}) == nil))
-	// Simple substring check
-	for i := 0; i <= len(s)-len(substr); i++ {
-		if s[i:i+len(substr)] == substr {
-			return true
-		}
-	}
-	return false
+	return strings.Contains(s, substr)
 }

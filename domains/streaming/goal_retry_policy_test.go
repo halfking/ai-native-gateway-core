@@ -17,6 +17,27 @@ func TestDefaultGoalRetryPolicy(t *testing.T) {
 	require.Equal(t, 5*time.Second, got.MaxDelay)
 }
 
+// TestEffectiveMaxRetriesHonorsDisabledFlag 回归测试（2026-07-24 审计修复）：
+// 租户设置 goal.retry_on_error=false 后，重试循环必须最多执行 1 次。
+// 修复前 Enabled 仅打日志、循环不受影响，会跑满 MaxRetries+1 次 + 指数退避。
+func TestEffectiveMaxRetriesHonorsDisabledFlag(t *testing.T) {
+	tests := []struct {
+		name string
+		in   GoalRetryPolicy
+		want int
+	}{
+		{"disabled_resolves_zero", GoalRetryPolicy{Enabled: false, MaxRetries: 5}, 0},
+		{"disabled_does_not_leak_big_value", GoalRetryPolicy{Enabled: false, MaxRetries: 99}, 0},
+		{"enabled_keeps_value", GoalRetryPolicy{Enabled: true, MaxRetries: 3}, 3},
+		{"enabled_zero_remains_zero", GoalRetryPolicy{Enabled: true, MaxRetries: 0}, 0},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			require.Equal(t, tt.want, tt.in.EffectiveMaxRetries())
+		})
+	}
+}
+
 func TestNormalizeGoalRetryPolicy(t *testing.T) {
 	tests := []struct {
 		name     string

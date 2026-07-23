@@ -24,7 +24,7 @@ func TestGoalRetryLoop_Integration(t *testing.T) {
 
 		// Create a context that will be cancelled
 		ctx, cancel := context.WithCancel(context.Background())
-		
+
 		// Cancel after first attempt
 		go func() {
 			time.Sleep(150 * time.Millisecond)
@@ -97,7 +97,7 @@ func TestGoalRetryLoop_Integration(t *testing.T) {
 
 		ctx := context.Background()
 		policy := GoalRetryPolicy{
-			MaxRetries:   100, // High limit
+			MaxRetries:   100,                    // High limit
 			TotalTimeout: 200 * time.Millisecond, // But short timeout
 			BaseDelay:    10 * time.Millisecond,
 			MaxDelay:     20 * time.Millisecond,
@@ -278,7 +278,7 @@ func TestGoalRetryRecorder_FailOpen(t *testing.T) {
 
 		// This should not panic or fail
 		err := failingRecorder.AddRetryCount(context.Background(), "session-123", 3)
-		
+
 		// Verify it returns error but doesn't panic
 		require.Error(t, err)
 		require.Equal(t, "mock persistence failure", err.Error())
@@ -286,7 +286,7 @@ func TestGoalRetryRecorder_FailOpen(t *testing.T) {
 
 	t.Run("nil recorder is safe", func(t *testing.T) {
 		var recorder GoalRetryRecorder = nil
-		
+
 		// Should not panic when recorder is nil
 		// (this is how production behaves when recorder not wired)
 		require.NotPanics(t, func() {

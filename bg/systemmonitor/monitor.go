@@ -134,7 +134,7 @@ func (sm *SystemMonitor) Submit(ctx context.Context, task *Task) (int64, error) 
 	if err := sm.queue.Submit(ctx, task); err != nil {
 		// Try once: lazy re-load of Lua scripts (may have been evicted).
 		if scripts, lerr := LoadScripts(ctx, sm.queue.rdb); lerr == nil {
-			sm.queue.scripts = scripts
+			sm.queue.setScripts(scripts) // 2026-07-24 审计修复：atomic 替换避免数据竞争
 			if err2 := sm.queue.Submit(ctx, task); err2 == nil {
 				sm.publishEvent(ctx, "submitted", task)
 				return task.ID, nil
@@ -287,7 +287,10 @@ func (sm *SystemMonitor) workerLoop(ctx context.Context, idx int) {
 // task is available (queue empty in both Redis and fallback modes).
 func (sm *SystemMonitor) fetchTask(ctx context.Context, workerLog *slog.Logger) (*Task, bool) {
 	if !sm.IsFallback() {
-		task, err := sm.queue.Claim(ctx /* placeholder credID, will be overridden in claim */, 0, "")
+		// 2026-07-24 审计修复：credID/rawModel 不再由调用方提供（解码前未知），
+		// inflight key 在 claim.lua 内从任务 JSON 构造。修复前传 (0,"") 被守卫
+		// 拒绝 → 队列永不消费 → fallback 抖动。
+		task, err := sm.queue.Claim(ctx)
 		if err != nil {
 			workerLog.Warn("system_monitor: claim failed", "error", err)
 			sm.markFallback()

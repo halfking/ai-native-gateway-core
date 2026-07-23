@@ -105,11 +105,23 @@ func (c *Client) CheckUpdateDistribution(ctx context.Context, currentVersion, ch
 	}
 	out := &CheckUpdateResponse{HasUpdate: v.UpdateAvailable}
 	if v.UpdateAvailable && len(v.TargetArtifacts) > 0 {
-		a := v.TargetArtifacts[0]
+		// 2026-07-24 审计修复：按请求的 platform/arch 选择 artifact，而不是无脑
+		// 取 [0]。否则多平台 release 会把 amd64 binary 推到 arm64 节点。
+		var chosen *DistributionArtifact
+		for i := range v.TargetArtifacts {
+			if v.TargetArtifacts[i].Platform == platform && v.TargetArtifacts[i].Arch == arch {
+				chosen = &v.TargetArtifacts[i]
+				break
+			}
+		}
+		if chosen == nil {
+			return nil, fmt.Errorf("no artifact matching platform=%s arch=%s in response (have %d candidates)",
+				platform, arch, len(v.TargetArtifacts))
+		}
 		out.Release = &Release{
 			Version:     v.LatestVersion,
-			DownloadURL: a.StorageURI,
-			SHA256:      a.SHA256,
+			DownloadURL: chosen.StorageURI,
+			SHA256:      chosen.SHA256,
 			Mandatory:   v.Mandatory,
 		}
 	}

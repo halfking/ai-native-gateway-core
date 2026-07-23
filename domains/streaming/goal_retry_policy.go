@@ -45,6 +45,10 @@ func defaultGoalRetryPolicy() GoalRetryPolicy {
 
 // Normalize ensures policy values are safe and consistent.
 // Clamps illegal values to safe bounds rather than failing the request.
+//
+// 注意：Enabled 的判读不在此处统一处理（零值未初始化 = false，会误伤未写 Enabled
+// 的合法策略），改由调用方在使用前根据策略来源显式分支。handler 通过
+// EffectiveMaxRetries() 收敛「Enabled=false ⇒ MaxRetries=0」的不变量。
 func (p GoalRetryPolicy) Normalize() GoalRetryPolicy {
 	if p.MaxRetries < 0 {
 		p.MaxRetries = 0
@@ -59,4 +63,14 @@ func (p GoalRetryPolicy) Normalize() GoalRetryPolicy {
 		p.MaxDelay = p.BaseDelay
 	}
 	return p
+}
+
+// EffectiveMaxRetries returns the MaxRetries actually used by the retry loop.
+// 当 Enabled=false 时强制返回 0（仅一次执行），防止下游直接读取 MaxRetries
+// 绕过关闭开关、跑满指数退避（2026-07-24 审计修复）。
+func (p GoalRetryPolicy) EffectiveMaxRetries() int {
+	if !p.Enabled {
+		return 0
+	}
+	return p.MaxRetries
 }

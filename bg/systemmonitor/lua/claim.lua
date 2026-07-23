@@ -4,7 +4,6 @@
 -- ============================================================================
 --
 -- KEYS[1] = llmgw:monitor:queue           (LIST, FIFO)
--- KEYS[2] = llmgw:monitor:inflight:{cred}:{model}  (STRING, 30s dedup token)
 -- ARGV[1] = worker_id                     (标识抢占方)
 -- ARGV[2] = inflight_ttl_seconds          (默认 30)
 --
@@ -17,13 +16,18 @@
 --   2. 弹出队头 (LPOP) + 标记 inflight (SET EX)
 --   3. 加入 llmgw:monitor:running SET
 --
+-- inflight key 构造 (2026-07-24 审计修复):
+--   早期版本由调用方传入 KEYS[2]=llmgw:monitor:inflight:{cred}:{model}，
+--   但 Claim 时任务尚未解码、cred/model 未知，导致调用方只能传 0/"" 被
+--   守卫拒绝 → 队列永不消费。现改为脚本内从 task.credential_id / task.raw_model
+--   构造，保证每个 (cred,model) 独立 30s dedup，不再折叠成全局单一 token。
+--
 -- 多机一致性:
---   Redis 单实例下原子；Redis Cluster 下需保证 KEYS[1] 与 KEYS[2] 同 slot
---   （Phase 3 评估 hash tags: {llmgw:monitor}）。
+--   Redis 单实例下原子；Redis Cluster 下 queue 与 inflight 在不同 slot，Phase 3
+--   评估 hash tags: {llmgw:monitor}。
 -- ============================================================================
 
 local queue_key = KEYS[1]
-local inflight_key = KEYS[2]
 local worker_id = ARGV[1]
 local inflight_ttl = tonumber(ARGV[2])
 
@@ -39,6 +43,16 @@ if not ok or type(task) ~= 'table' then
     redis.call('LPOP', queue_key)
     return false
 end
+
+-- 从任务自身字段构造 inflight key（修复 Claim(0,"") 导致的全局 dedup 折叠）
+local cred_id = task.credential_id
+local raw_model = task.raw_model
+if cred_id == nil or raw_model == nil or raw_model == '' then
+    -- 任务缺少必要字段：弹出丢弃，避免队头卡死
+    redis.call('LPOP', queue_key)
+    return false
+end
+local inflight_key = 'llmgw:monitor:inflight:' .. tostring(cred_id) .. ':' .. tostring(raw_model)
 
 -- 30s dedup：探测中则把任务转队尾
 if redis.call('EXISTS', inflight_key) == 1 then
