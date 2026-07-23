@@ -212,57 +212,57 @@ v2: {
     unsupported: "Live-Stream wird in diesem Browser nicht unterstützt",
     empty: "Keine Live-Anfragen",
 
-    emptyWaiting: 'Waiting for live request stream data…',
-    groupByVendor: 'By vendor', groupByProvider: 'By provider', groupByModel: 'By model',
+    emptyWaiting: 'Warten auf Live-Anfragestream-Daten…',
+    groupByVendor: 'Nach Anbieter', groupByProvider: 'Nach Provider', groupByModel: 'Nach Modell',
     modeSmall: 'Klein',
     modeLarge: 'Groß',
     modeSmallTitle: 'Kleiner Modus: vertikale Balken, fasst mehr Anfragen (Standard)',
     modeLargeTitle: 'Großer Modus: Karten mit mehr Anfragedetails',
-    probeAll: 'All', probeOnly: 'Probes only',
-    probeAllTitle: 'Show all requests (default)', probeOnlyTitle: 'Show probe requests only',
-    cacheWindow: 'Cache / window', connectionDetailTitle: 'Click for connection details',
-    dimensionVendor: 'Vendor', dimensionProvider: 'Provider', dimensionModel: 'Model',
-    statusOpen: 'Connected', statusConnecting: 'Connecting', statusReconnecting: 'Reconnecting',
-    statusUnsupported: 'Unsupported', statusClosed: 'Disconnected',
-    sseDetailTitle: 'SSE connection details', sseStatusLabel: 'Status', sseUrlLabel: 'SSE URL',
-    editUrl: 'Edit', editUrlPlaceholder: 'Enter SSE URL', save: 'Save', resetDefault: 'Default',
-    cancel: 'Cancel', testConnection: 'Test connection', close: 'Close',
-    sseTestOk: 'SSE connection OK!\nStatus: connected\nURL: {url}',
-    sseTestFail: 'SSE not connected\nStatus: {status}\nURL: {url}',
-    redisWarning: 'Redis unavailable: {error}. Live data falls back to DB queries.',
-    redisFallbackError: 'Cache service connection failed',
+    probeAll: 'Alle', probeOnly: 'Nur Probes',
+    probeAllTitle: 'Alle Anfragen anzeigen (Standard)', probeOnlyTitle: 'Nur Probe-Anfragen anzeigen',
+    cacheWindow: 'Cache / Fenster', connectionDetailTitle: 'Klicken für Verbindungsdetails',
+    dimensionVendor: 'Anbieter', dimensionProvider: 'Provider', dimensionModel: 'Modell',
+    statusOpen: 'Verbunden', statusConnecting: 'Verbinden', statusReconnecting: 'Wiederverbinden',
+    statusUnsupported: 'Nicht unterstützt', statusClosed: 'Nicht verbunden',
+    sseDetailTitle: 'SSE-Verbindungsdetails', sseStatusLabel: 'Verbindungsstatus', sseUrlLabel: 'SSE-URL',
+    editUrl: 'Bearbeiten', editUrlPlaceholder: 'SSE-URL eingeben', save: 'Speichern', resetDefault: 'Standard',
+    cancel: 'Abbrechen', testConnection: 'Verbindung testen', close: 'Schließen',
+    sseTestOk: 'SSE-Verbindung OK!\nStatus: Verbunden\nURL: {url}',
+    sseTestFail: 'SSE nicht verbunden\nStatus: {status}\nURL: {url}',
+    redisWarning: 'Redis nicht verfügbar: {error}. Live-Daten fallen auf DB-Abfragen zurück.',
+    redisFallbackError: 'Cache-Service-Verbindung fehlgeschlagen',
 
-    probeDirect: 'Active probe (direct upstream)',
+    probeDirect: 'Aktive Sonde (direkt zum Upstream)',
 
-    probeGateway: 'Active probe (gateway path)',
+    probeGateway: 'Aktive Sonde (Gateway-Pfad)',
 
-    probeScheduled: 'Scheduled probe (scheduler)',
+    probeScheduled: 'Geplante Sonde (Scheduler)',
 
-    probeGeneric: 'Probe request',
+    probeGeneric: 'Probe-Anfrage',
 
-    probeOriginLabel: 'Origin: {origin}',
+    probeOriginLabel: 'Quelle: {origin}',
 
-    probeAttempt: 'Attempt: #{n}',
+    probeAttempt: 'Versuch: Nr. {n}',
 
-    originGateway: 'Gateway path',
+    originGateway: 'Gateway-Pfad',
 
-    originScheduled: 'Scheduled probe',
+    originScheduled: 'Geplante Sonde',
 
-    originDirect: 'Direct upstream',
+    originDirect: 'Direkt zum Upstream',
 
-    idleHeartbeat: 'Heartbeat placeholder',
+    idleHeartbeat: 'Heartbeat-Platzhalter',
 
-    tileIdle: 'Idle',
+    tileIdle: 'Leer',
 
-    idleUnderOneMin: 'Idle < 1 min',
+    idleUnderOneMin: 'Leer < 1 Min',
 
-    idleMinutes: 'Idle {n} min',
+    idleMinutes: 'Leer {n} Min',
 
-    idleHours: 'Idle {h} h',
+    idleHours: 'Leer {h} Std',
 
-    idleHoursMinutes: 'Idle {h} h {m} min',
+    idleHoursMinutes: 'Leer {h} Std {m} Min',
 
-    idleReasonNoTraffic: 'No traffic (5 minutes idle)',
+    idleReasonNoTraffic: 'Kein Traffic (5 Min Leerlauf)',
   },
   charts: {
     gradeA: "Note A",

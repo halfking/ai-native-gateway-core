@@ -25,6 +25,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **补齐 `dashboard.liveStream` 4 个 mode* 键到 6 语种** (2026-07-23): `parity.test.ts` 唯一遗留失败（`every locale explicitly defines all zh-CN leaf keys` / `every locale resolves zh-CN module keys through the configured English fallback`）根因为 dashboard live-stream 视图的 `modeSmall` / `modeLarge` / `modeSmallTitle` / `modeLargeTitle` 4 键在 ar-SA / de-DE / es-ES / fr-FR / ja-JP / zh-TW 6 个 locale 全部缺失。在 6 个 `dashboard.ts` 同步补齐，parity 5/5、keys_referenced 4/4 全绿。详见 [docs/changelogs/2026-07-23-i18n-dashboard-livestream-modes.md](docs/changelogs/2026-07-23-i18n-dashboard-livestream-modes.md).
 
+- **翻译 `dashboard.liveStream` 30+ 个英文 fallback 到 6 语种** (2026-07-23): 2026-07-22 parity 收尾后，ar-SA / de-DE / es-ES / fr-FR / ja-JP / zh-TW 的 `liveStream` 块仍残留英文文案（"Show all requests (default)" / "Cache / window" / "Heartbeat placeholder" / "Redis unavailable..." 等），parity gate 不报警但用户实际看到英文 UI。本次完整翻译 37 键 × 6 locale = 222 条；同步修复 zh-TW 中 `empty等待:` 合并损坏的键名（与下方 `emptyWaiting` 重复且 key 名错误）。vue-tsc / parity / keys_referenced 全绿。详见 [docs/changelogs/2026-07-23-i18n-dashboard-livestream-translate.md](docs/changelogs/2026-07-23-i18n-dashboard-livestream-translate.md).
+
 ### Fixed
 
 - **Dashboard 实时数据流泳道渲染方向修复** (2026-07-23): `web/src/components/SwimLane.vue` 的 `visibleRequests` computed 错误地对后端 ASC 时间戳数组执行 `.reverse()`，导致泳道色块最左 = 最新（与设计文档 `DASHBOARD_V2_VERIFICATION.md §1.7` 要求的"新请求追加到泳道末尾"相反）。去掉 `.reverse()`，让渲染顺序与后端数据顺序保持一致（左→右 由旧→新），并同步修正组件 CSS 处的误导性注释。详见 [docs/changelogs/2026-07-23-swimlane-direction-fix.md](docs/changelogs/2026-07-23-swimlane-direction-fix.md)。

@@ -212,57 +212,57 @@ v2: {
     unsupported: "البث المباشر غير مدعوم في هذا المتصفح",
     empty: "لا توجد طلبات مباشرة",
 
-    emptyWaiting: 'Waiting for live request stream data…',
-    groupByVendor: 'By vendor', groupByProvider: 'By provider', groupByModel: 'By model',
+    emptyWaiting: 'في انتظار بيانات البث المباشر للطلبات…',
+    groupByVendor: 'حسب المورّد', groupByProvider: 'حسب المزوّد', groupByModel: 'حسب النموذج',
     modeSmall: 'صغير',
     modeLarge: 'كبير',
     modeSmallTitle: 'وضع صغير: أعمدة عمودية، تستوعب المزيد من الطلبات (افتراضي)',
     modeLargeTitle: 'وضع كبير: بطاقات بتفاصيل طلب أكثر',
-    probeAll: 'All', probeOnly: 'Probes only',
-    probeAllTitle: 'Show all requests (default)', probeOnlyTitle: 'Show probe requests only',
-    cacheWindow: 'Cache / window', connectionDetailTitle: 'Click for connection details',
-    dimensionVendor: 'Vendor', dimensionProvider: 'Provider', dimensionModel: 'Model',
-    statusOpen: 'Connected', statusConnecting: 'Connecting', statusReconnecting: 'Reconnecting',
-    statusUnsupported: 'Unsupported', statusClosed: 'Disconnected',
-    sseDetailTitle: 'SSE connection details', sseStatusLabel: 'Status', sseUrlLabel: 'SSE URL',
-    editUrl: 'Edit', editUrlPlaceholder: 'Enter SSE URL', save: 'Save', resetDefault: 'Default',
-    cancel: 'Cancel', testConnection: 'Test connection', close: 'Close',
-    sseTestOk: 'SSE connection OK!\nStatus: connected\nURL: {url}',
-    sseTestFail: 'SSE not connected\nStatus: {status}\nURL: {url}',
-    redisWarning: 'Redis unavailable: {error}. Live data falls back to DB queries.',
-    redisFallbackError: 'Cache service connection failed',
+    probeAll: 'الكل', probeOnly: 'عمليات الفحص فقط',
+    probeAllTitle: 'عرض جميع الطلبات (افتراضي)', probeOnlyTitle: 'عرض طلبات الفحص فقط',
+    cacheWindow: 'ذاكرة التخزين المؤقت / النافذة', connectionDetailTitle: 'انقر لعرض تفاصيل الاتصال',
+    dimensionVendor: 'المورّد', dimensionProvider: 'المزوّد', dimensionModel: 'النموذج',
+    statusOpen: 'متصل', statusConnecting: 'جارٍ الاتصال', statusReconnecting: 'جارٍ إعادة الاتصال',
+    statusUnsupported: 'غير مدعوم', statusClosed: 'غير متصل',
+    sseDetailTitle: 'تفاصيل اتصال SSE', sseStatusLabel: 'حالة الاتصال', sseUrlLabel: 'عنوان SSE',
+    editUrl: 'تحرير', editUrlPlaceholder: 'أدخل عنوان SSE', save: 'حفظ', resetDefault: 'افتراضي',
+    cancel: 'إلغاء', testConnection: 'اختبار الاتصال', close: 'إغلاق',
+    sseTestOk: 'اتصال SSE ناجح!\nالحالة: متصل\nالعنوان: {url}',
+    sseTestFail: 'SSE غير متصل\nالحالة: {status}\nالعنوان: {url}',
+    redisWarning: 'Redis غير متوفر: {error}. البيانات المباشرة تعود إلى استعلامات قاعدة البيانات.',
+    redisFallbackError: 'فشل الاتصال بخدمة التخزين المؤقت',
 
-    probeDirect: 'Active probe (direct upstream)',
+    probeDirect: 'فحص نشط (مباشر مع المنبع)',
 
-    probeGateway: 'Active probe (gateway path)',
+    probeGateway: 'فحص نشط (عبر البوابة)',
 
-    probeScheduled: 'Scheduled probe (scheduler)',
+    probeScheduled: 'فحص مجدول (المجدول)',
 
-    probeGeneric: 'Probe request',
+    probeGeneric: 'طلب فحص',
 
-    probeOriginLabel: 'Origin: {origin}',
+    probeOriginLabel: 'المصدر: {origin}',
 
-    probeAttempt: 'Attempt: #{n}',
+    probeAttempt: 'المحاولة: رقم {n}',
 
-    originGateway: 'Gateway path',
+    originGateway: 'مسار البوابة',
 
-    originScheduled: 'Scheduled probe',
+    originScheduled: 'فحص مجدول',
 
-    originDirect: 'Direct upstream',
+    originDirect: 'مباشر مع المنبع',
 
-    idleHeartbeat: 'Heartbeat placeholder',
+    idleHeartbeat: 'عنصر نائب لنبضات القلب',
 
-    tileIdle: 'Idle',
+    tileIdle: 'خامل',
 
-    idleUnderOneMin: 'Idle < 1 min',
+    idleUnderOneMin: 'خامل < 1 دقيقة',
 
-    idleMinutes: 'Idle {n} min',
+    idleMinutes: 'خامل {n} دقيقة',
 
-    idleHours: 'Idle {h} h',
+    idleHours: 'خامل {h} ساعة',
 
-    idleHoursMinutes: 'Idle {h} h {m} min',
+    idleHoursMinutes: 'خامل {h} ساعة {m} دقيقة',
 
-    idleReasonNoTraffic: 'No traffic (5 minutes idle)',
+    idleReasonNoTraffic: 'لا توجد حركة مرور (5 دقائق خاملة)',
   },
   charts: {
     gradeA: "الدرجة أ",
