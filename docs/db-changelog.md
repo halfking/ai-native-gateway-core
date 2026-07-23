@@ -667,3 +667,9 @@
 |-----------|------|
 | 454 | `454_response_format_anomalies.sql` |
 
+## 2026-07-23T04:35:41Z — deploy 245 build_seq 1342 (7536a176)
+
+| Migration | File |
+|-----------|------|
+| 455 | `455_request_id_unique_for_hot_tables.sql` |
+
