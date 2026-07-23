@@ -427,7 +427,7 @@ function fmtNum(n?: number) {
 .error-box { padding: 8px 12px; background: rgba(248,81,73,.1); border: 1px solid rgba(248,81,73,.3); border-radius: 4px; color: var(--danger); margin-bottom: 16px; }
 
 /* ── 目录迁移进度卡片 ── */
-.migration-box { margin-top: 12px; padding: 12px 14px; border-radius: 6px; border: 1px solid var(--border); background: #0f1117; font-size: 13px; }
+.migration-box { margin-top: 12px; padding: 12px 14px; border-radius: 6px; border: 1px solid var(--border); background: var(--bg-subtle); font-size: 13px; }
 .migration-box.running { border-color: color-mix(in srgb, var(--accent) 45%, transparent); background: color-mix(in srgb, var(--accent) 08%, transparent); }
 .migration-box.done { border-color: rgba(63,185,80,.45); background: rgba(63,185,80,.08); }
 .migration-box.failed { border-color: rgba(248,81,73,.45); background: rgba(248,81,73,.08); }
@@ -437,7 +437,7 @@ function fmtNum(n?: number) {
 .migration-paths { font-size: 12px; color: var(--muted); word-break: break-all; margin-bottom: 8px; }
 .migration-arrow { color: var(--accent-h); font-weight: 600; }
 .migration-progress { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
-.migration-bar-track { flex: 1; height: 14px; background: #161b22; border-radius: 7px; overflow: hidden; }
+.migration-bar-track { flex: 1; height: 14px; background: var(--bg-subtle); border-radius: 7px; overflow: hidden; }
 .migration-bar-fill { height: 100%; background: var(--accent); border-radius: 7px; transition: width 0.3s; }
 .migration-pct { font-weight: 600; min-width: 40px; text-align: right; color: var(--accent-h); }
 .migration-stats { color: var(--muted); font-size: 12px; }
