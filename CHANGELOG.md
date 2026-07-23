@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Redis 缓存 TTL 精细化分层** (2026-07-23): 按业务生命周期将 LiveStream / Session / Stats / Pending 4 大类缓存的 TTL 重新分层：泳道维度队列 2h→24h（泳道存在 ≤ 1 天）、泳道活跃度 2h→1h（1h 无变化即清除）、请求详情 2h→4h（一般请求 4h 内完成）、Session 7d→3d、Stats baseline/board 7d→1d（已缩短）、Stats dirty 6h→30min、Pending response 7d→1h、stats rebuild:last 永久→7d、session:title 7d→3d（跟随 SessionTTL）。同时修复 3 处 `HSet` 隐式清除 TTL 的 bug 让 session 永不过期（已通过 19,555 个泄漏 keys 修复）。详见 [docs/changelogs/2026-07-23-redis-ttl-layered.md](docs/changelogs/2026-07-23-redis-ttl-layered.md).
+
 - **统一登录态品牌标题为两行显示** (2026-07-23): 登录后的 `AppTopbar` 与生命周期页面 `LifecycleShell` 统一显示 `AI Native` / `组织核心网关` 两行品牌标题，避免不同登录页面的品牌布局不一致。
 
 - **审计修复：激活状态统一控制离线激活入口** (2026-07-23): `UpdateActivateLicenseCard` 接收页面级 `activated` 状态，已激活节点即使 License 状态异常也不再显示“离线激活”链接；同时清理已移除 chevron 的无效 CSS，并放宽窄屏用户名称显示宽度。详见 [docs/changelogs/2026-07-23-ui-audit-fixes.md](docs/changelogs/2026-07-23-ui-audit-fixes.md)。

@@ -112,9 +112,29 @@ type liveRequestRedisPayload struct {
 	CreditsCharged *int   `json:"credits_charged,omitempty"`
 }
 
-// LiveStreamRecordRetention is the Redis TTL for request detail keys and
-// sorted-set queues. Product requirement: at least 2 hours.
-const LiveStreamRecordRetention = 2 * time.Hour
+// 2026-07-23: 精细化分层 TTL
+//
+// LiveStream 缓存有三类 key，每类业务生命周期不同：
+//   - Request detail (live:req:*): 单次请求生命周期，正常 4h 内完成
+//   - Lane dim queue (live:dim:*): 泳道队列，泳道存在不超过 1 天
+//   - Activity key (live:activity:*): 泳道活跃时间戳，无变化 1h 应清除
+//   - Main queue (live:main): 跨租户主队列
+//   - Tenant set (live:tenants): 已知租户集合
+const (
+	// LiveStreamRecordRetention: 请求详情 hash 的 TTL。一般请求从开始到完成不超过 4h。
+	LiveStreamRecordRetention = 4 * time.Hour
+
+	// LiveStreamLaneQueueRetention: 泳道维度队列 (vendor/provider/model) 的 TTL。
+	// 泳道最多保留 24 小时，超过即视为过期泳道，让 snapshot 自动跳过。
+	LiveStreamLaneQueueRetention = 24 * time.Hour
+
+	// LiveStreamActivityRetention: 泳道活跃时间戳的 TTL。
+	// 当泳道 1h 内没有任何新请求，应该被从缓存移除（sortKeysByActivity 会跳过）。
+	LiveStreamActivityRetention = 1 * time.Hour
+
+	// LiveStreamMainQueueRetention: 主队列和租户集合的 TTL。
+	LiveStreamMainQueueRetention = 2 * time.Hour
+)
 
 // LiveStreamLaneVisibleLimit is how many tiles each swim lane shows. Entries
 // scrolled past this window are trimmed from per-dimension Redis queues.
@@ -138,9 +158,14 @@ const (
 	liveStreamStatPrefix     = "llmgw:live:status:"
 	liveStreamTenantSet      = "llmgw:live:tenants"
 	liveStreamActivityPrefix = "llmgw:live:activity:"
-	liveStreamTTL            = LiveStreamRecordRetention
-	liveStreamLaneLimit      = LiveStreamLaneVisibleLimit
-	liveStreamReplayLimit    = 200 // main-queue replay cap; per-lane display capped at liveStreamLaneLimit
+	// 2026-07-23: liveStreamTTL 仍指向 request detail 保持向后兼容
+	liveStreamTTL = LiveStreamRecordRetention
+	// 新增：分层 TTL 常量
+	liveStreamLaneQueueTTL = LiveStreamLaneQueueRetention // 24h 泳道队列
+	liveStreamActivityTTL  = LiveStreamActivityRetention  // 1h 活跃度
+	liveStreamMainQueueTTL = LiveStreamMainQueueRetention // 2h 主队列
+	liveStreamLaneLimit    = LiveStreamLaneVisibleLimit
+	liveStreamReplayLimit  = 200 // main-queue replay cap; per-lane display capped at liveStreamLaneLimit
 )
 
 // normalizeModelKey returns a case-insensitive, whitespace-trimmed
@@ -259,20 +284,25 @@ func (s *LiveStreamRedisStore) Record(ctx context.Context, req LiveRequest) erro
 		removeLiveRequestFromQueues(ctx, pipe, normalizeLiveStreamTenant(oldReq.TenantID), oldReq)
 	}
 
+	// 2026-07-23: 精细化分层 TTL
+	// - tenant set: 2h (liveStreamMainQueueTTL)
+	// - activity key: 1h (liveStreamActivityTTL) — "1h 无变化应清除"
+	// - dim queue: 24h (liveStreamLaneQueueTTL) — "泳道存在不超过 1 天"
+	// - request detail: 4h (liveStreamTTL)
 	pipe.SAdd(ctx, liveStreamTenantSet, tenantID)
-	pipe.Expire(ctx, liveStreamTenantSet, liveStreamTTL)
+	pipe.Expire(ctx, liveStreamTenantSet, liveStreamMainQueueTTL)
 
 	// Track last activity time for each dimension queue. Use the request
 	// timestamp (not current time) so replayed historical data updates
 	// activity correctly.
 	activityUnix := ts.Unix()
 	if req.ModelCategory != "" {
-		pipe.Set(ctx, liveStreamActivityKey("", "vendor", req.ModelCategory), activityUnix, liveStreamTTL)
-		pipe.Set(ctx, liveStreamActivityKey(tenantID, "vendor", req.ModelCategory), activityUnix, liveStreamTTL)
+		pipe.Set(ctx, liveStreamActivityKey("", "vendor", req.ModelCategory), activityUnix, liveStreamActivityTTL)
+		pipe.Set(ctx, liveStreamActivityKey(tenantID, "vendor", req.ModelCategory), activityUnix, liveStreamActivityTTL)
 	}
 	if req.ProviderCode != "" {
-		pipe.Set(ctx, liveStreamActivityKey("", "provider", req.ProviderCode), activityUnix, liveStreamTTL)
-		pipe.Set(ctx, liveStreamActivityKey(tenantID, "provider", req.ProviderCode), activityUnix, liveStreamTTL)
+		pipe.Set(ctx, liveStreamActivityKey("", "provider", req.ProviderCode), activityUnix, liveStreamActivityTTL)
+		pipe.Set(ctx, liveStreamActivityKey(tenantID, "provider", req.ProviderCode), activityUnix, liveStreamActivityTTL)
 	}
 	// Use CanonicalName for model dimension activity keys when available.
 	// This ensures idle markers generated from these keys use the standard
@@ -285,21 +315,23 @@ func (s *LiveStreamRedisStore) Record(ctx context.Context, req LiveRequest) erro
 	// per casing variant.
 	modelActivityKey := normalizeModelKey(emptyAs(req.CanonicalName, req.Model))
 	if modelActivityKey != "" {
-		pipe.Set(ctx, liveStreamActivityKey("", "model", modelActivityKey), activityUnix, liveStreamTTL)
-		pipe.Set(ctx, liveStreamActivityKey(tenantID, "model", modelActivityKey), activityUnix, liveStreamTTL)
+		pipe.Set(ctx, liveStreamActivityKey("", "model", modelActivityKey), activityUnix, liveStreamActivityTTL)
+		pipe.Set(ctx, liveStreamActivityKey(tenantID, "model", modelActivityKey), activityUnix, liveStreamActivityTTL)
 	}
 	// Track main queue activity
-	pipe.Set(ctx, liveStreamActivityKey("", "main", ""), activityUnix, liveStreamTTL)
-	pipe.Set(ctx, liveStreamActivityKey(tenantID, "main", ""), activityUnix, liveStreamTTL)
+	pipe.Set(ctx, liveStreamActivityKey("", "main", ""), activityUnix, liveStreamActivityTTL)
+	pipe.Set(ctx, liveStreamActivityKey(tenantID, "main", ""), activityUnix, liveStreamActivityTTL)
 
 	queueKeys := liveRequestQueueKeys(tenantID, req)
 	slog.Debug("live stream record: adding to queues", "request_id", req.RequestID, "tenant_id", tenantID, "model", req.Model, "provider", req.ProviderCode, "category", req.ModelCategory, "queue_count", len(queueKeys))
 
 	for _, key := range queueKeys {
 		pipe.ZAdd(ctx, key, redis.Z{Score: score, Member: req.RequestID})
-		pipe.Expire(ctx, key, liveStreamTTL)
+		// 2026-07-23: 维度队列 24h TTL（泳道存在不超过 1 天）
+		pipe.Expire(ctx, key, liveStreamLaneQueueTTL)
 		trimLiveStreamQueue(pipe, ctx, key, liveStreamQueueKeepLimit(key))
 	}
+	// 2026-07-23: 请求详情 4h TTL（一般请求不会跨 4 小时）
 	pipe.Set(ctx, liveStreamRequestDetailKey(tenantID, req.RequestID), data, liveStreamTTL)
 	pipe.Set(ctx, liveStreamGlobalRequestDetailKey(req.RequestID), data, liveStreamTTL)
 
@@ -1081,7 +1113,8 @@ func (s *LiveStreamRedisStore) ScanAndRecordIdleMarkers(ctx context.Context, ts 
 
 		for _, qkey := range idleMarkerQueueKeys(marker.TenantID, p.info.dimension, p.info.dimensionKey) {
 			writePipe.ZAdd(ctx, qkey, redis.Z{Score: score, Member: marker.RequestID})
-			writePipe.Expire(ctx, qkey, liveStreamTTL)
+			// 2026-07-23: idle marker 写入泳道队列，队列 TTL 用 24h（泳道存在 ≤ 1 天）
+			writePipe.Expire(ctx, qkey, liveStreamLaneQueueTTL)
 			trimLiveStreamQueue(writePipe, ctx, qkey, liveStreamQueueKeepLimit(qkey))
 		}
 	}

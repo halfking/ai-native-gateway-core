@@ -39,6 +39,9 @@ func (s *Service) Record(entry *telemetry.RequestLogEntry) {
 	now := time.Now().UTC()
 	bucketID := bucketIDFor(now)
 	ttl := deltaTTL()
+	// 2026-07-23: dirty set TTL 缩短到 30 分钟。
+	// dirty 是增量未重建标记，每 4 小时 rebuild 一次，30 分钟足够覆盖重建触发窗口。
+	dirtyTTL := 30 * time.Minute
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 
@@ -68,7 +71,8 @@ func (s *Service) Record(entry *telemetry.RequestLogEntry) {
 		}
 		pipe.Expire(ctx, key, ttl)
 		pipe.SAdd(ctx, dirtyKey(scope), bucketID)
-		pipe.Expire(ctx, dirtyKey(scope), ttl)
+		// 2026-07-23: dirty set 用短 TTL（30min），不再用 delta TTL（6h）
+		pipe.Expire(ctx, dirtyKey(scope), dirtyTTL)
 	}
 	if entry.RequestID != "" {
 		pipe.ZAdd(ctx, keyQPSWindow, redis.Z{Score: float64(now.Unix()), Member: entry.RequestID})
