@@ -1508,10 +1508,17 @@ onUnmounted(() => stopPoll())
 .score-pill.good { background: rgba(63,185,80,.15); color: var(--success); }
 .score-pill.sm { font-size: 9px; padding: 0 4px; }
 
-/* 2026-07-24: routing-v2 resolve 页候选行（默认全量展示） */
+/* 2026-07-24: routing-v2 resolve 页候选行（默认全量展示）
+ * 不可用行不用 opacity 叠加（半透叠半透在双主题下都糊成一团），
+ * 改用 左侧 3px 红色色条 + --kx-danger-soft 浅红背景，token 已含 day/night 两套。
+ */
 .resolve-row.is-unroutable {
-  opacity: 0.65;
-  background: var(--kx-bg-elevated);
+  background: var(--kx-danger-soft);
+  box-shadow: inset 3px 0 0 0 var(--kx-danger);
+}
+.resolve-row.is-unroutable .badge.badge-red {
+  /* 强调：badge 在浅红背景上更醒目 */
+  border: 1px solid var(--kx-danger);
 }
 .resolve-row .row-actions {
   display: flex;
