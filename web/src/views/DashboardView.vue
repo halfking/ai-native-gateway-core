@@ -13,7 +13,7 @@ import {
 } from '../api'
 import { useDashboardBoard } from '../composables/useDashboardBoard'
 
-export type DashboardTabId = 'board' | 'stream' | 'stats' | 'selfcheck'
+export type DashboardTabId = 'board' | 'stream' | 'stats' | 'selfcheck' | 'systemmonitor'
 
 const STORAGE_KEY_TAB = 'dashboard_active_tab'
 
@@ -31,7 +31,7 @@ const hotKeys = ref<HotApiKeyEntry[]>([])
 
 onMounted(() => {
   const saved = localStorage.getItem(STORAGE_KEY_TAB)
-  if (saved === 'board' || saved === 'stream' || saved === 'stats' || saved === 'selfcheck') {
+  if (saved === 'board' || saved === 'stream' || saved === 'stats' || saved === 'selfcheck' || saved === 'systemmonitor') {
     activeTab.value = saved
   }
 

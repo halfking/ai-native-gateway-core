@@ -21,6 +21,7 @@ export default {
     routingOverview: "Panorama de enrutamiento",
     credentialMonitor: "Monitor de credenciales",
     probeHealth: "Salud del sondeo",
+    systemMonitor: "Monitoreo del sistema",
     providers: "Proveedores",
     pricing: "Precios de coste",
     modelPricing: "Gestión de precios",

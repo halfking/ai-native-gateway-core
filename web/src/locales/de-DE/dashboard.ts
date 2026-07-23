@@ -5,7 +5,8 @@ tabs: {
     board: 'Board',
     liveStream: 'Live-Anfragestream',
     sessionStats: 'Sitzungen & Statistik',
-    selfcheck: 'Systemüberwachung',
+    selfcheck: 'Selbstprüfung',
+    systemmonitor: 'Systemüberwachung',
   },
 v2: {
     quickApiKey: 'API Key',

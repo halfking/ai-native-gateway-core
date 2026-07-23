@@ -5,7 +5,8 @@ tabs: {
     board: 'ボード',
     liveStream: 'リアルタイムリクエスト',
     sessionStats: 'セッションと統計',
-    selfcheck: 'システム監視',
+    selfcheck: 'システム自己診断',
+    systemmonitor: 'システム監視',
   },
   v2: {
     quickApiKey: 'API Key', quickModels: 'モデル', quickApiKeyTitle: 'API Key ランキング',

@@ -21,6 +21,7 @@ export default {
     routingOverview: "نظرة التوجيه",
     credentialMonitor: "مراقبة بيانات الاعتماد",
     probeHealth: "صحة الاستكشاف",
+    systemMonitor: "مراقبة النظام",
     providers: "المزودون",
     pricing: "تكلفة التسعير",
     modelPricing: "إدارة التسعير",
