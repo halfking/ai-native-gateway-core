@@ -379,15 +379,16 @@ func (t *telemetryIngester) persistRequestLog(ctx context.Context, e *requestLog
 	// 2026-07-22 Bug fix: Added ON CONFLICT DO UPDATE to handle duplicate request_id
 	// writes (race condition when multiple ingest workers process the same request).
 	// Aligns with domains/hooks/observability/telemetry/client.go:1026-1028.
+	//
+	// 2026-07-23 BUGFIX: Replace subquery with VALUES pattern. The old subquery
+	// (SELECT rl.ts FROM request_logs_hot) could return 0 rows under concurrent
+	// access or during hot-table promotion, silently dropping the body write.
+	// This matches the fix already applied to client.go:1025-1037.
 	_, err = tx.Exec(ctx, `
 		INSERT INTO request_logs_bodies_hot (
 			request_id, ts, request_body, response_body
 		)
-		SELECT $1, rl.ts, CAST($2 AS jsonb), CAST($3 AS jsonb)
-		FROM request_logs_hot rl
-		WHERE rl.request_id = $1
-		ORDER BY rl.ts DESC
-		LIMIT 1
+		VALUES ($1, NOW(), $2::jsonb, $3::jsonb)
 		ON CONFLICT (request_id, ts) DO UPDATE SET
 			request_body = COALESCE(EXCLUDED.request_body, request_logs_bodies_hot.request_body),
 			response_body = COALESCE(EXCLUDED.response_body, request_logs_bodies_hot.response_body)
