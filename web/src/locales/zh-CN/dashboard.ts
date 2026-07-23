@@ -7,7 +7,8 @@ export default {
     board: '看板',
     liveStream: '实时请求流',
     sessionStats: '会话与统计',
-    selfcheck: '系统监测',
+    selfcheck: '系统自检',
+    systemmonitor: '系统监测',
   },
   v2: {
     quickApiKey: 'API Key',

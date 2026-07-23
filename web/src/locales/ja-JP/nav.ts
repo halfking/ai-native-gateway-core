@@ -21,6 +21,7 @@ export default {
     routingOverview: "ルーティング概要",
     credentialMonitor: "認証情報モニター",
     probeHealth: "プローブヘルス",
+    systemMonitor: "システム監視",
     providers: "プロバイダー",
     pricing: "コスト価格",
     modelPricing: "価格管理",

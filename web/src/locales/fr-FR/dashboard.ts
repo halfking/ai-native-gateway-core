@@ -5,7 +5,8 @@ tabs: {
     board: 'Board',
     liveStream: 'Flux de requêtes en direct',
     sessionStats: 'Sessions et statistiques',
-    selfcheck: 'Surveillance système',
+    selfcheck: 'Auto-vérification',
+    systemmonitor: 'Surveillance système',
   },
 v2: {
     quickApiKey: 'API Key',

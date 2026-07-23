@@ -5,7 +5,8 @@ tabs: {
     board: '看板',
     liveStream: '即時請求流',
     sessionStats: '會話與統計',
-    selfcheck: '系統監測',
+    selfcheck: '系統自檢',
+    systemmonitor: '系統監測',
   },
   v2: {
     quickApiKey: 'API Key', quickModels: '模型', quickApiKeyTitle: '查看 API Key 排行',

@@ -10,6 +10,7 @@ import RequestLogDrawer from '../components/RequestLogDrawer.vue'
 import SessionStatsPanel from '../components/SessionStatsPanel.vue'
 import BoardPanel from '../components/board/BoardPanel.vue'
 import SelfCheckPanel from './SelfCheckPanel.vue'
+import SystemMonitorPanel from './SystemMonitorPanel.vue'
 import type { BoardPayload } from '../api/board'
 import type { ModelUsage, HotApiKeyEntry } from '../api'
 import type { DashboardTabId } from './DashboardView.vue'
@@ -51,6 +52,10 @@ const activeRequestId = ref<string | null>(null)
 const loading = boardState.loading
 const error = boardState.error
 const activeTab = dashboardTab.activeTab
+
+// 2026-07-24: 系统监测面板（/system-monitor）只对 super_admin 可见；
+// tenant_admin 看到的是旧 `systemmonitor` 行为：保持 dashboard 上能看到 selfcheck 即可。
+const canShowSystemMonitor = computed(() => isSuperAdmin())
 
 const tenantLabel = computed(() => {
   const tenantId = getCurrentTenantId()
@@ -124,6 +129,16 @@ async function onRefresh() {
           >
             {{ t('dashboard.tabs.selfcheck') }}
           </button>
+          <button
+            v-if="canShowSystemMonitor"
+            type="button"
+            class="tab-btn"
+            :class="{ 'tab-btn--active': activeTab === 'systemmonitor' }"
+            @click="dashboardTab.switchTab('systemmonitor')"
+            :title="t('dashboard.tabs.systemmonitor')"
+          >
+            {{ t('dashboard.tabs.systemmonitor') }}
+          </button>
         </div>
 
         <MemoraStatusButton />
@@ -183,6 +198,8 @@ async function onRefresh() {
     <SessionStatsPanel v-if="activeTab === 'stats'" style="margin-bottom: 20px;" />
 
     <SelfCheckPanel v-if="activeTab === 'selfcheck'" />
+
+    <SystemMonitorPanel v-if="activeTab === 'systemmonitor' && canShowSystemMonitor" />
 
     <LiveRequestStreamV2
       v-if="activeTab === 'stream'"

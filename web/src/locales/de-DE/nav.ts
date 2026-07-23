@@ -21,6 +21,7 @@ export default {
     routingOverview: "Routing-Übersicht",
     credentialMonitor: "Anmeldedaten-Überwachung",
     probeHealth: "Sondengesundheit",
+    systemMonitor: "Systemüberwachung",
     providers: "Anbieter",
     pricing: "Kostenpreise",
     modelPricing: "Preisverwaltung",

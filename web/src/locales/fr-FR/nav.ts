@@ -21,6 +21,7 @@ export default {
     routingOverview: "Aperçu du routage",
     credentialMonitor: "Surveillance des identifiants",
     probeHealth: "Santé du sondage",
+    systemMonitor: "Surveillance système",
     providers: "Fournisseurs",
     pricing: "Tarification des coûts",
     modelPricing: "Gestion des tarifs",

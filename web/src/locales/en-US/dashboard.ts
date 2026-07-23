@@ -10,7 +10,8 @@ export default {
     board: 'Board',
     liveStream: 'Live Request Stream',
     sessionStats: 'Sessions & Statistics',
-    selfcheck: 'System Monitoring',
+    selfcheck: 'Self-check',
+    systemmonitor: 'System Monitoring',
   },
   v2: {
     quickApiKey: 'API Key',

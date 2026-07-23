@@ -24,6 +24,7 @@ export default {
     routingOverview: 'Routing Overview',
     credentialMonitor: 'Credential Monitor',
     probeHealth: 'Probe Health',
+    systemMonitor: 'System Monitoring',
     providers: 'Providers',
     pricing: 'Cost Pricing',
     modelPricing: 'Pricing Management',
