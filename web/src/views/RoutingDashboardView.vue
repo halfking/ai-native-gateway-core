@@ -17,9 +17,9 @@ import { useL1TaskTypes } from '../composables/useL1TaskTypes'
 import { getWorkTypeStats, type WorkTypeSyncMeta } from '../api-work-types'
 import {
   getPolicy, patchPolicy, getScoringWeights, updateScoringWeights,
-  resolveRouting,
+  resolveRouting, reorderCandidateBindings,
   type RoutingPolicy, type ScoringWeights, type RoutingResolveResponse,
-  type RoutingCandidate,
+  type RoutingCandidate, type CandidateBindingReorderItem,
 } from '../api'
 import SixDimScoreBar from '../components/SixDimScoreBar.vue'
 import ModelPicker from '../components/ModelPicker.vue'
@@ -401,8 +401,10 @@ const resolveCandidates = ref<RoutingCandidate[]>([])
 const resolving = ref(false)
 const resolveErr = ref('')
 const resolved = ref(false)
-const showUnavailable = ref(false)
 const resolveLog = ref<ResolveLogEntry[]>([])
+const draggingCredentialId = ref<number | null>(null)
+const reorderSaving = ref(false)
+const reorderErr = ref('')
 // 2026-07-24: routing-v2 resolve 页「候选明细 / 设置」状态。
 const detailCandidate = ref<RoutingCandidate | null>(null)
 const settingsCandidate = ref<RoutingCandidate | null>(null)
@@ -431,12 +433,71 @@ const resolveFunnelStages = computed<AnalyticsFunnelStage[]>(() => {
   ]
 })
 
-const filteredResolveCandidates = computed(() =>
-  showUnavailable.value ? resolveCandidates.value : resolveCandidates.value.filter(c => c.routable)
-)
+const filteredResolveCandidates = computed(() => resolveCandidates.value)
 const resolveUnavailableCount = computed(() =>
-  resolveCandidates.value.filter(c => !c.routable).length
+  resolveCandidates.value.filter(c => !c.routable).length,
 )
+
+function candidateBlockReason(c: RoutingCandidate): string {
+  return c.block_reason || c.runtime_block_reason || 'unavailable'
+}
+
+function onCandidateDragStart(c: RoutingCandidate, event: DragEvent) {
+  if (!superAdmin || reorderSaving.value) {
+    event.preventDefault()
+    return
+  }
+  draggingCredentialId.value = c.credential_id
+  event.dataTransfer?.setData('text/plain', String(c.credential_id))
+  if (event.dataTransfer) event.dataTransfer.effectAllowed = 'move'
+}
+
+function onCandidateDragOver(event: DragEvent) {
+  if (!superAdmin || draggingCredentialId.value === null) return
+  event.preventDefault()
+  if (event.dataTransfer) event.dataTransfer.dropEffect = 'move'
+}
+
+async function onCandidateDrop(target: RoutingCandidate, event: DragEvent) {
+  event.preventDefault()
+  const sourceID = draggingCredentialId.value
+  draggingCredentialId.value = null
+  if (!superAdmin || sourceID === null || sourceID === target.credential_id || reorderSaving.value) return
+
+  const previous = [...resolveCandidates.value]
+  const sourceIndex = previous.findIndex(c => c.credential_id === sourceID)
+  const targetIndex = previous.findIndex(c => c.credential_id === target.credential_id)
+  if (sourceIndex < 0 || targetIndex < 0) return
+
+  const next = [...previous]
+  const [moved] = next.splice(sourceIndex, 1)
+  next.splice(targetIndex, 0, moved)
+  resolveCandidates.value = next.map((candidate, index) => ({
+    ...candidate,
+    rank: index + 1,
+    manual_priority: index + 1,
+  }))
+  const items: CandidateBindingReorderItem[] = resolveCandidates.value.map((candidate, index) => ({
+    credential_id: candidate.credential_id,
+    raw_model: candidate.model_name,
+    manual_priority: index + 1,
+  }))
+  reorderSaving.value = true
+  reorderErr.value = ''
+  try {
+    await reorderCandidateBindings(items)
+    await doResolve()
+  } catch (e: unknown) {
+    resolveCandidates.value = previous
+    reorderErr.value = e instanceof Error ? e.message : '排序保存失败'
+  } finally {
+    reorderSaving.value = false
+  }
+}
+
+function onCandidateDragEnd() {
+  draggingCredentialId.value = null
+}
 
 function loadResolveLog() {
   try {
@@ -1070,32 +1131,38 @@ onUnmounted(() => stopPoll())
           <div class="toolbar-left">
             <span class="layer-tag l2">L2</span>
             <span class="toolbar-title">路由候选 — {{ modelInput }}</span>
+            <span v-if="resolveUnavailableCount > 0" class="text-muted">不可用 {{ resolveUnavailableCount }}</span>
+            <span v-if="reorderSaving" class="text-muted">保存排序中…</span>
           </div>
-          <label v-if="resolveUnavailableCount > 0" class="show-unavail">
-            <input type="checkbox" v-model="showUnavailable" />
-            不可用（{{ resolveUnavailableCount }}）
-          </label>
+          <div v-if="reorderErr" class="text-danger reorder-error">{{ reorderErr }}</div>
         </div>
         <div v-if="resolveCandidates.length === 0" class="empty-hint">该模型暂无凭据配置</div>
         <div v-else class="table-wrap">
           <table class="dense-table">
             <thead>
               <tr>
-                <th>可用性</th><th>供应商 / 凭据</th><th>上游</th><th>Tier · 权重</th><th></th>
+                <th v-if="superAdmin" aria-label="排序">↕</th><th>#</th><th>可用性</th><th>供应商 / 凭据</th><th>上游</th><th>Tier · 权重</th><th></th>
               </tr>
             </thead>
             <tbody>
               <tr
-                v-for="c in resolveCandidates"
+                v-for="(c, i) in filteredResolveCandidates"
                 :key="c.credential_id"
-                :class="['resolve-row', c.routable ? 'is-routable' : 'is-unroutable']"
+                :draggable="superAdmin && !reorderSaving"
+                :class="['resolve-row', c.routable ? 'is-routable' : 'is-unroutable', { dragging: draggingCredentialId === c.credential_id }]"
+                @dragstart="onCandidateDragStart(c, $event)"
+                @dragover="onCandidateDragOver"
+                @drop="onCandidateDrop(c, $event)"
+                @dragend="onCandidateDragEnd"
               >
+                <td v-if="superAdmin" class="drag-cell" title="拖动以调整优先级" aria-label="拖动以调整优先级">⠿</td>
+                <td class="rank-cell">{{ i + 1 }}</td>
                 <td>
                   <span class="badge" :class="c.routable ? 'badge-green' : 'badge-red'">
                     {{ c.routable ? t('routing.routable') : t('routing.unavailable') }}
                   </span>
-                  <div v-if="!c.routable && c.runtime_block_reason" class="text-muted block-reason">
-                    {{ c.runtime_block_reason }}
+                  <div v-if="!c.routable" class="text-muted block-reason">
+                    {{ candidateBlockReason(c) }}
                   </div>
                 </td>
                 <td>
@@ -1720,15 +1787,31 @@ onUnmounted(() => stopPoll())
 .text-muted { color: var(--muted); font-size: 10px; }
 .text-danger { color: var(--danger); font-size: 10px; }
 
-.resolve-row { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+.resolve-row { display: table-row; }
+.resolve-row[draggable="true"] { cursor: grab; }
+.resolve-row[draggable="true"]:active { cursor: grabbing; }
+.resolve-row.dragging { opacity: .55; }
+.resolve-row .drag-cell {
+  width: 24px;
+  color: var(--muted);
+  text-align: center;
+  font-size: 15px;
+  cursor: grab;
+  user-select: none;
+}
+.resolve-row .rank-cell {
+  width: 28px;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+.reorder-error { color: var(--kx-danger); font-size: 10px; }
 .resolve-picker { flex: 1; min-width: 200px; }
 .resolve-profile { width: 120px; font-size: 11px; padding: 3px 6px; }
 .resolve-meta { display: flex; flex-wrap: wrap; gap: 8px 16px; font-size: 11px; }
 .resolve-meta code { font-size: 10px; }
 .plan-order { margin-top: 6px; font-size: 10px; color: var(--muted); word-break: break-all; }
 .mono-sm { font-family: ui-monospace, monospace; font-size: 9px; }
-.show-unavail { display: flex; align-items: center; gap: 4px; font-size: 10px; color: var(--muted); cursor: pointer; }
-.show-unavail input { width: auto; }
 
 @media (max-width: 768px) {
   .top-bar-head { gap: 6px; }

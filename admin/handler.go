@@ -572,6 +572,8 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	// 仅允许改 credential_model_bindings 的 manual_priority / routing_tier /
 	// weight 三个排序相关字段；状态/熔断/可用性等硬规则必须走原有监控路径。
 	mux.HandleFunc("/api/routing/candidate-binding/", h.superAdmin(h.handleRoutingCandidateBindingUpdate))
+	mux.HandleFunc("/api/routing/candidate-bindings/reorder", h.superAdmin(h.handleRoutingCandidateBindingReorder))
+
 	// NOTE: /api/credentials/monitor-summary is registered later in
 	// RegisterMonitorRoutes (line ~460) via NewCredentialMonitorHandlers.
 	// Do NOT register it here to avoid mux.HandleFunc panic.

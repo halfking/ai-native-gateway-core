@@ -108,9 +108,9 @@ func (h *Handler) handleRoutingResolve(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "model parameter required")
 		return
 	}
-	// 2026-07-01: 添加 include_blocked 参数用于诊断
-	// 默认只返回可路由的候选，设置为 true 时显示所有候选（含 block_reason）
-	includeBlocked := queryString(r, "include_blocked") == "true"
+	// Resolve is an operator-facing diagnostic surface: always return every
+	// matched candidate so unavailable credentials remain visible with their
+	// block reason. Runtime routing still uses the view's is_routable flag.
 	// 2026-06-19 audit: walk the cross-form variant matrix so a
 	// request like "claude-sonnet-4.6" matches a DB canonical
 	// "claude-sonnet-4-6" (and the inverse).  The variant matrix is
@@ -239,8 +239,8 @@ func (h *Handler) handleRoutingResolve(w http.ResponseWriter, r *http.Request) {
 			      lower(v.raw_model_name) = ANY($1)
 			      OR lower(COALESCE(mo.standardized_name, v.raw_model_name)) = ANY($1)
 			  )
-			  AND p.enabled IS TRUE
-			  AND (v.is_routable = true OR $2)
+				  AND p.enabled IS TRUE
+
 			ORDER BY
 				CASE COALESCE(cmb.billing_mode, 'per_token')
 					WHEN 'free' THEN 1
@@ -254,9 +254,10 @@ func (h *Handler) handleRoutingResolve(w http.ResponseWriter, r *http.Request) {
 				COALESCE(cmb.routing_tier, 2),
 				COALESCE(cmb.weight, 100) DESC,
 				COALESCE(cmb.success_rate, 0.9) DESC
-		`, rawModels, includeBlocked)
+			`, rawModels)
+
 	if err != nil {
-		slog.Error("routing resolve query failed", "error", err.Error(), "model", model, "rawModels", rawModels, "include_blocked", includeBlocked)
+		slog.Error("routing resolve query failed", "error", err.Error(), "model", model, "rawModels", rawModels)
 		writeError(w, http.StatusInternalServerError, "query failed")
 		return
 	}
@@ -323,11 +324,21 @@ func (h *Handler) handleRoutingResolve(w http.ResponseWriter, r *http.Request) {
 			BillingMode:         c.BillingMode,
 		}
 	}
+	// Keep the persisted manual order authoritative on this page. Composite
+	// score remains a deterministic tie-breaker for candidates that share a
+	// priority, while unavailable candidates stay in the same ordered list.
 	sort.SliceStable(candidates, func(i, j int) bool {
-		return executors.CompareCandidatePriority(
-			toProviderCandidate(candidates[i]),
-			toProviderCandidate(candidates[j]),
-		)
+		a, b := candidates[i], candidates[j]
+		if a.ManualPriority != b.ManualPriority {
+			return a.ManualPriority < b.ManualPriority
+		}
+		if a.Tier != b.Tier {
+			return a.Tier < b.Tier
+		}
+		if a.Weight != b.Weight {
+			return a.Weight > b.Weight
+		}
+		return executors.CompareCandidatePriority(toProviderCandidate(a), toProviderCandidate(b))
 	})
 
 	for i := range candidates {
@@ -531,6 +542,118 @@ func (h *Handler) handleRoutingCandidateBindingUpdate(w http.ResponseWriter, r *
 	})
 }
 
+const maxRoutingCandidateReorderItems = 99
+
+type routingCandidateReorderItem struct {
+	CredentialID   int    `json:"credential_id"`
+	RawModel       string `json:"raw_model"`
+	ManualPriority int    `json:"manual_priority"`
+}
+
+type routingCandidateReorderRequest struct {
+	Items []routingCandidateReorderItem `json:"items"`
+}
+
+func validateRoutingCandidateReorder(req routingCandidateReorderRequest) string {
+	if len(req.Items) == 0 {
+		return "items must not be empty"
+	}
+	if len(req.Items) > maxRoutingCandidateReorderItems {
+		return "too many items"
+	}
+	seenBindings := make(map[string]struct{}, len(req.Items))
+	seenPriorities := make(map[int]struct{}, len(req.Items))
+	for _, item := range req.Items {
+		if strings.TrimSpace(item.RawModel) == "" {
+			return "raw_model is required for every item"
+		}
+		if item.CredentialID <= 0 {
+			return "credential_id must be positive"
+		}
+		if item.ManualPriority < 1 || item.ManualPriority > len(req.Items) {
+			return "manual_priority must be contiguous starting at 1"
+		}
+		bindingKey := fmt.Sprintf("%d:%s", item.CredentialID, strings.TrimSpace(item.RawModel))
+		if _, ok := seenBindings[bindingKey]; ok {
+			return "credential_id and raw_model must be unique"
+		}
+		if _, ok := seenPriorities[item.ManualPriority]; ok {
+			return "manual_priority must be unique"
+		}
+		seenBindings[bindingKey] = struct{}{}
+		seenPriorities[item.ManualPriority] = struct{}{}
+	}
+	for priority := 1; priority <= len(req.Items); priority++ {
+		if _, ok := seenPriorities[priority]; !ok {
+			return "manual_priority must be contiguous starting at 1"
+		}
+	}
+	return ""
+}
+
+// handleRoutingCandidateBindingReorder persists the complete resolve-list order
+// in one transaction. It intentionally updates only manual_priority; health,
+// availability, lifecycle, and circuit state remain owned by their monitors.
+func (h *Handler) handleRoutingCandidateBindingReorder(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPatch {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	var req routingCandidateReorderRequest
+	if err := readJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid body")
+		return
+	}
+	if validationErr := validateRoutingCandidateReorder(req); validationErr != "" {
+		writeError(w, http.StatusBadRequest, validationErr)
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	defer cancel()
+	tx, err := h.db.Begin(ctx)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "begin reorder transaction failed")
+		return
+	}
+	defer tx.Rollback(ctx) // harmless after a successful commit
+
+	for _, item := range req.Items {
+		var bindingID int
+		err := tx.QueryRow(ctx, `
+			SELECT cmb.id
+			FROM credential_model_bindings cmb
+			JOIN provider_models pm ON pm.id = cmb.provider_model_id
+			WHERE cmb.credential_id = $1
+			  AND pm.raw_model_name = $2
+			LIMIT 1
+		`, item.CredentialID, strings.TrimSpace(item.RawModel)).Scan(&bindingID)
+		if err != nil {
+			writeError(w, http.StatusNotFound, "binding not found for credential/model pair")
+			return
+		}
+		if _, err := tx.Exec(ctx, `
+			UPDATE credential_model_bindings
+			SET manual_priority = $1, updated_at = NOW()
+			WHERE id = $2
+		`, item.ManualPriority, bindingID); err != nil {
+			writeError(w, http.StatusInternalServerError, "reorder update failed")
+			return
+		}
+	}
+	if err := tx.Commit(ctx); err != nil {
+		writeError(w, http.StatusInternalServerError, "commit reorder failed")
+		return
+	}
+
+	h.logAudit(r, "routing_candidate_binding_reorder", map[string]any{
+		"items": req.Items,
+	})
+	writeJSON(w, http.StatusOK, map[string]any{
+		"message": "updated",
+		"items":   req.Items,
+	})
+}
 func (h *Handler) handleRoutingOverview(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
