@@ -550,7 +550,7 @@ func (h *Handler) getLog(w http.ResponseWriter, r *http.Request) {
 	// to retrieve full request_body and response_body (moved to separate table in #10).
 	// COALESCE ensures backwards compatibility with old data still in request_logs_hot.
 	// 2026-07-06: 使用视图查询，避免遗漏 hot 表数据（migration 341）
-	// 2026-07-23 BUGFIX: JOIN 条件增加 ts 匹配（PRIMARY KEY 是 request_id + ts）
+	// 2026-07-23 BUGFIX: request_id 是唯一标识，JOIN 只需匹配 request_id
 	err = h.db.QueryRow(ctx, fmt.Sprintf(`
 		SELECT %s, 
 		       COALESCE(rb.request_body::text, rl.request_body::text) AS request_body,
@@ -558,7 +558,7 @@ func (h *Handler) getLog(w http.ResponseWriter, r *http.Request) {
 		  FROM request_logs_with_current_month rl
 		%s
 		  LEFT JOIN request_logs_bodies_with_current_month rb 
-		    ON rb.request_id = rl.request_id AND rb.ts = rl.ts
+		    ON rb.request_id = rl.request_id
 		 WHERE rl.request_id = $1
 		   AND ($2 OR ak.tenant_id = $3)
 		 ORDER BY rl.ts DESC

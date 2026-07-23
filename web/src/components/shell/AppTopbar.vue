@@ -15,7 +15,7 @@ import ThemeToggle from '../ThemeToggle.vue'
 import SystemStatusIndicator from '../SystemStatusIndicator.vue'
 import UserMenuDropdown from './UserMenuDropdown.vue'
 import { detectTheme, logoSrc } from '../../theme'
-import { SITE_LOGO_SIZE, SITE_TITLE } from '../../config/brand'
+import { SITE_LOGO_SIZE, SITE_TITLE, SITE_TITLE_LINE_ONE, SITE_TITLE_LINE_TWO } from '../../config/brand'
 import { isSuperAdmin as checkSuperAdmin, isPlatformOpsView as checkPlatformOps } from '../../store'
 import { NAV_GROUPS, NAV_PRIMARY_ITEMS, isNavItemActive, visibleNavGroups, visibleNavItems, type NavGroup } from '../../config/appNav'
 import {
@@ -244,7 +244,10 @@ function navLabel(labelKey: string | undefined, fallback: string): string {
         alt="开轩启圭"
         class="app-topbar__brand-img"
       />
-      <span class="app-topbar__brand-text">{{ SITE_TITLE }}</span>
+      <span class="app-topbar__brand-text">
+        <span>{{ SITE_TITLE_LINE_ONE }}</span>
+        <span>{{ SITE_TITLE_LINE_TWO }}</span>
+      </span>
     </a>
 
     <nav class="app-topbar__nav" :aria-label="t('nav.mainAria', '主导航')">
@@ -382,9 +385,13 @@ function navLabel(labelKey: string | undefined, fallback: string): string {
 }
 
 .app-topbar__brand-text {
-  font-size: 14px;
+  display: inline-flex;
+  flex-direction: column;
+  gap: 1px;
+  font-size: 13px;
   font-weight: 700;
-  letter-spacing: -0.01em;
+  line-height: 1.2;
+  letter-spacing: 0;
   white-space: nowrap;
   max-width: min(40vw, 320px);
   overflow: hidden;
@@ -550,6 +557,9 @@ function navLabel(labelKey: string | undefined, fallback: string): string {
   }
   .app-topbar__version {
     display: none;
+  }
+  .app-topbar__brand-text {
+    font-size: 12px;
   }
 }
 </style>
