@@ -6,7 +6,7 @@
 #   source scripts/load-env.sh --server 252  # 强制 252 (阿里云 llm.itestu.cn) 生产环境
 #   source scripts/load-env.sh --server 154  # 154 (llm.kxpms.cn 主机部署)
 #   source scripts/load-env.sh --server kaixuan-1  # 内网 k3s 控制面
-#   source scripts/load-env.sh --server 71   # 强制 71 生产环境
+#   source scripts/load-env.sh --server 154  # 强制 154 生产环境
 #   source scripts/load-env.sh --server local # 强制本地开发环境
 #
 # 搜索顺序（高→低）:
@@ -119,7 +119,7 @@ export LLM_GATEWAY_252_HOST="${LLM_GATEWAY_252_HOST:-${HOST_252_INTERNAL_IP:-172
 export LLM_GATEWAY_154_HOST="${LLM_GATEWAY_154_HOST:-${HOST_154_INTERNAL_IP:-172.16.2.209}}"
 export LLM_GATEWAY_KAIXUAN_1_HOST="${LLM_GATEWAY_KAIXUAN_1_HOST:-${KAIXUAN_1_IP:-192.168.31.28}}"
 export LLM_GATEWAY_252_SSH_PORT="${LLM_GATEWAY_252_SSH_PORT:-25022}"
-export LLM_GATEWAY_71_SSH_PORT="${LLM_GATEWAY_71_SSH_PORT:-25022}"
+
 
 # ------ 打印已加载的变量（仅 source 模式） ------
 if [ "${BASH_SOURCE[0]}" != "${0}" ]; then

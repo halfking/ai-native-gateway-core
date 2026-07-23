@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # ─────────────────────────────────────────────────────────────────────
 # 对比 252 (阿里云 llm.itestu.cn 数据面) 和本地的 columnar 配置一致性
+# 184 已退役 (2026-07-11)
 #
 # 检查项:
 #   1. 扩展列表 (citus_columnar 版本)
@@ -61,7 +62,7 @@ check() {
   fi
 }
 
-info "对比 184 与本地 columnar 配置"
+info "对比 252 与本地 columnar 配置"
 echo ""
 
 # ── 1. 扩展版本 ──
@@ -83,9 +84,9 @@ echo "── columnar 表清单差异 ──"
 remote_list=$(run_remote_psql "SELECT c.relname FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace JOIN pg_am am ON am.oid=c.relam WHERE n.nspname='public' AND c.relkind='r' AND am.amname='columnar' ORDER BY c.relname;" | sort)
 local_list=$(run_local_psql "SELECT c.relname FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace JOIN pg_am am ON am.oid=c.relam WHERE n.nspname='public' AND c.relkind='r' AND am.amname='columnar' ORDER BY c.relname;" | sort)
 
-# 只在 184 有的 (本地缺失)
+# 只在 252 有的 (本地缺失)
 only_remote=$(comm -23 <(echo "$remote_list") <(echo "$local_list") | grep -v '^$' || true)
-# 只在本地有的 (184 没有)
+# 只在本地有的 (252 没有)
 only_local=$(comm -13 <(echo "$remote_list") <(echo "$local_list") | grep -v '^$' || true)
 
 if [ -z "$only_remote" ] && [ -z "$only_local" ]; then
@@ -93,12 +94,12 @@ if [ -z "$only_remote" ] && [ -z "$only_local" ]; then
   PASS=$((PASS+1))
 else
   if [ -n "$only_remote" ]; then
-    err "本地缺失的 columnar 表 (184 有):"
+    err "本地缺失的 columnar 表 (252 有):"
     echo "$only_remote" | sed 's/^/    /'
     FAIL=$((FAIL+1))
   fi
   if [ -n "$only_local" ]; then
-    info "本地多出的 columnar 表 (184 没有, 可能是新分区):"
+    info "本地多出的 columnar 表 (252 没有, 可能是新分区):"
     echo "$only_local" | sed 's/^/    /'
   fi
 fi
@@ -116,7 +117,7 @@ echo ""
 
 # ── 总结 ──
 if [ "$FAIL" = "0" ]; then
-  ok "结果: $PASS pass, $FAIL fail — 本地与 184 columnar 配置一致"
+  ok "结果: $PASS pass, $FAIL fail — 本地与 252 columnar 配置一致"
   exit 0
 else
   err "结果: $PASS pass, $FAIL fail — 存在差异"

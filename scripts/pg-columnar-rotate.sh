@@ -5,11 +5,11 @@
 # 修订: 2026-07-05
 #
 # 模式:
-#   (默认)  通过 kubectl 访问 184 K8s PG（生产环境）
+#   (默认)  通过 kubectl 访问 K8s PG（生产环境）
 #   --local 通过 docker exec 访问本地 r112_postgres
 #
 # 用法:
-#   ./scripts/pg-columnar-rotate.sh                     # 184 K8s 环境
+#   ./scripts/pg-columnar-rotate.sh                     # K8s 环境
 #   ./scripts/pg-columnar-rotate.sh --local             # 本地 Docker 环境
 #   DRY_RUN=true ./scripts/pg-columnar-rotate.sh        # 预览模式
 #   BATCH_SIZE=500 ./scripts/pg-columnar-rotate.sh      # 自定义批次大小

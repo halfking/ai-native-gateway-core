@@ -51,7 +51,7 @@ function check_environment() {
     else
         log_error "❌ request_logs_hot 表不存在"
         log_error "当前数据库不是 hot 表架构，无法继续测试"
-        log_error "请切换到正确的环境（例如 184 服务器）"
+        log_error "请切换到正确的环境（例如 252/154 服务器）"
         exit 1
     fi
     

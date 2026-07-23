@@ -2,7 +2,7 @@
 # ============================================================================
 # File: deploy/phase0/deploy.sh
 # Purpose: Deploy Phase 0 optimization config to target environment
-# Usage: bash deploy/phase0/deploy.sh --target=<local|kaixuan-1|71|184>
+# Usage: bash deploy/phase0/deploy.sh --target=<local|kaixuan-1>
 # ============================================================================
 
 set -euo pipefail
@@ -24,7 +24,7 @@ done
 
 if [ -z "$TARGET" ]; then
     echo "❌ 缺少 --target 参数"
-    echo "用法: bash deploy/phase0/deploy.sh --target=<local|kaixuan-1|71|184>"
+    echo "用法: bash deploy/phase0/deploy.sh --target=<local|kaixuan-1>"
     exit 1
 fi
 
@@ -50,16 +50,6 @@ case "$TARGET" in
       cp /etc/systemd/system/llm-gateway.service.d/override.conf $BACKUP_DIR/ 2>/dev/null || true"
     echo "✅ 已备份到 kaixuan-1:$BACKUP_DIR"
     ;;
-  71)
-    ssh root@192.168.1.71 "mkdir -p $BACKUP_DIR && \
-      cp /etc/systemd/system/llm-gateway.service.d/override.conf $BACKUP_DIR/ 2>/dev/null || true"
-    echo "✅ 已备份到 71:$BACKUP_DIR"
-    ;;
-  184)
-    ssh root@14.103.112.184 "mkdir -p $BACKUP_DIR && \
-      cp /etc/systemd/system/llm-gateway.service.d/override.conf $BACKUP_DIR/ 2>/dev/null || true"
-    echo "✅ 已备份到 184:$BACKUP_DIR"
-    ;;
 esac
 
 # ============================================================================
@@ -77,13 +67,8 @@ case "$TARGET" in
     echo "  go run cmd/gateway/main.go"
     ;;
   
-  kaixuan-1|71|184)
-    # Determine SSH target
-    case "$TARGET" in
-      kaixuan-1) SSH_TARGET="root@192.168.31.28" ;;
-      71) SSH_TARGET="root@192.168.1.71" ;;
-      184) SSH_TARGET="root@14.103.112.184" ;;
-    esac
+  kaixuan-1)
+    SSH_TARGET="root@192.168.31.28"
     
     # Upload config file
     scp deploy/phase0/optimization.env $SSH_TARGET:/opt/llm-gateway/config/
@@ -129,12 +114,8 @@ case "$TARGET" in
     echo "  curl http://localhost:8781/metrics | grep -E 'pool|http2'"
     ;;
   
-  kaixuan-1|71|184)
-    case "$TARGET" in
-      kaixuan-1) SSH_TARGET="root@192.168.31.28" ;;
-      71) SSH_TARGET="root@192.168.1.71" ;;
-      184) SSH_TARGET="root@14.103.112.184" ;;
-    esac
+  kaixuan-1)
+    SSH_TARGET="root@192.168.31.28"
     
     echo "检查配置项..."
     ssh $SSH_TARGET "systemctl show llm-gateway | grep -i environment" | head -3

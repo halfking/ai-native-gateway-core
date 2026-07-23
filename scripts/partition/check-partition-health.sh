@@ -12,7 +12,7 @@
 #
 # 用途：快速诊断所有分区表的健康状态
 # 使用：
-#   ./scripts/partition/check-partition-health.sh [--env local|71|184]
+#   ./scripts/partition/check-partition-health.sh [--env local]
 #   ./scripts/partition/check-partition-health.sh --report-only [--env X] [--format text|json|csv]
 #
 # 输出（默认 - 完整诊断 6 节）：
@@ -43,18 +43,18 @@ usage() {
   echo "用法：$0 [OPTIONS]"
   echo ""
   echo "选项："
-  echo "  --env ENV            指定环境 (local|71|184)，默认 local"
+  echo "  --env ENV            指定环境 (local)，默认 local"
   echo "  --report-only        仅输出 DEFAULT 表大小报告，跳过其他诊断"
   echo "  --format FORMAT      --report-only 模式下的输出格式 (text|json|csv)，默认 text"
   echo "  --help, -h           显示帮助"
   echo ""
   echo "示例："
-  echo "  $0 --env 71                              # 完整健康检查"
-  echo "  $0 --env 71 --report-only                # 仅大小报告（文本）"
+  echo "  $0 --env local                           # 完整健康检查"
+  echo "  $0 --env local --report-only             # 仅大小报告（文本）"
   echo "  $0 --report-only --format json            # JSON 格式"
   echo "  $0 --report-only --format csv             # CSV 格式"
   echo ""
-  echo "位置参数形式（向后兼容）：$0 [local|71|184]"
+  echo "位置参数形式（向后兼容）：$0 [local]"
   exit "${1:-0}"
 }
 
@@ -76,7 +76,7 @@ while [[ $# -gt 0 ]]; do
     --help|-h)
       usage 0
       ;;
-    local|71|184)
+    local)
       # 向后兼容：位置参数形式
       ENV="$1"
       shift
@@ -97,21 +97,10 @@ case "$ENV" in
     PGUSER="${PGUSER:-kxuser}"
     PGDATABASE="${PGDATABASE:-llm_gateway}"
     ;;
-  71)
-    PGHOST="llm.kxpms.cn"
-    PGPORT="5432"
-    PGUSER="kxuser"
-    PGDATABASE="llm_gateway"
-    ;;
-  184)
-    PGHOST="184.kxpms.cn"
-    PGPORT="5432"
-    PGUSER="kxuser"
-    PGDATABASE="llm_gateway"
-    ;;
+  # 71/184 removed — servers decommissioned
   *)
     echo "错误：未知环境 '$ENV'" >&2
-    echo "用法：$0 [local|71|184]" >&2
+    echo "用法：$0 [local]" >&2
     exit 1
     ;;
 esac

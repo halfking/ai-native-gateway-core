@@ -2,7 +2,7 @@
 # ============================================================================
 # File: deploy/phase0/verify.sh
 # Purpose: Verify Phase 0 optimization effectiveness
-# Usage: bash deploy/phase0/verify.sh --target=<local|kaixuan-1|71|184>
+# Usage: bash deploy/phase0/verify.sh --target=<local|kaixuan-1>
 # ============================================================================
 
 set -euo pipefail
@@ -23,14 +23,6 @@ case "$TARGET" in
   kaixuan-1)
     HOST="192.168.31.28:8781"
     CMD_PREFIX="ssh root@192.168.31.28"
-    ;;
-  71)
-    HOST="192.168.1.71:8781"
-    CMD_PREFIX="ssh root@192.168.1.71"
-    ;;
-  184)
-    HOST="14.103.112.184:8781"
-    CMD_PREFIX="ssh root@14.103.112.184"
     ;;
   *)
     echo "❌ 未知目标: $TARGET"

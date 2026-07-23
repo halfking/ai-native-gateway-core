@@ -1,37 +1,19 @@
 #!/usr/bin/env bash
 # scripts/phase-23-apply.sh
 #
-# Apply phase-23 SQL files to the llm-gateway-pg primary in 184 (or 71).
+# Apply phase-23 SQL files to the llm-gateway-pg primary.
 #
 # Phase 23 enforces the columnar invariant for INSERT-only parents,
 # so future partitions created by any path inherit the correct access
 # method automatically.
 #
-# Usage:
-#   bash scripts/phase-23-apply.sh 184
-#   bash scripts/phase-23-apply.sh 71
-#
 # Idempotent: safe to run repeatedly.
 
 set -euo pipefail
 
-TARGET="${1:-184}"
-case "$TARGET" in
-  184)
-    SSH_HOST="47.97.111.154"  # 154 替代 184
-    SSH_PORT=25022
-    NS="pms-test"
-    ;;
-  71)
-    SSH_HOST="47.97.111.154"  # 154 替代 71
-    SSH_PORT=25022
-    NS="pms-test"
-    ;;
-  *)
-    echo "Usage: $0 [71|184]" >&2
-    exit 1
-    ;;
-esac
+SSH_HOST="${1:-47.97.111.154}"  # 154
+SSH_PORT=25022
+NS="pms-test"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
@@ -44,7 +26,7 @@ warn() { echo -e "${YELLOW}[WARN]${NC} $*"; }
 [[ -d "$PHASE_DIR" ]] || { echo "Phase 23 dir not found: $PHASE_DIR" >&2; exit 1; }
 
 # Decrypt env to get DB password (no-op if already source-able)
-ENC_FILE="$PROJECT_ROOT/.env.${TARGET}.enc"
+ENC_FILE="$PROJECT_ROOT/.env.prod.enc"
 if [[ -f "$ENC_FILE" ]]; then
     export SOPS_AGE_KEY_FILE="${SOPS_AGE_KEY_FILE:-$HOME/.config/sops/age/keys.txt}"
     if [[ -f "$SOPS_AGE_KEY_FILE" ]]; then

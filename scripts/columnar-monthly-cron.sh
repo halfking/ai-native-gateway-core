@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # scripts/columnar-monthly-cron.sh
 #
-# Monthly columnar archive cron for 184.
+# Monthly columnar archive cron for K8s PG.
 #
 # Schedules:
 #   - day 1: request_logs, routing_decision_log

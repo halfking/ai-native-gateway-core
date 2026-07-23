@@ -88,9 +88,7 @@ check_var "LLM_GATEWAY_IDENTITY_SALT" "身份盐值"
 check_var "LLM_GATEWAY_LISTEN" "监听地址 (LLM_GATEWAY_LISTEN)"
 check_var "LLM_GATEWAY_ENV" "运行环境 (LLM_GATEWAY_ENV)"
 
-# 部署相关
-check_var "LLM_GATEWAY_184_HOST" "184 服务器地址"
-check_var "LLM_GATEWAY_71_HOST" "71 服务器地址"
+#（71/184 服务器已退役）
 
 echo "" >&2
 
