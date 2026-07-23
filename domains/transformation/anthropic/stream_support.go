@@ -363,8 +363,9 @@ func currentStreamRuntimeConfig() streamRuntimeConfig {
 				upstreamTimeout:    durationSecondsOrDefault(cfg.UpstreamTimeout, 120*time.Second),
 				streamTimeout:      durationSecondsOrDefault(cfg.StreamTimeout, 900*time.Second),
 				streamChunkTimeout: durationSecondsOrDefault(cfg.StreamChunkTimeout, 300*time.Second),
-				firstByteTimeout:   durationSecondsOrDefault(cfg.FirstByteTimeout, 30*time.Second),
-				keepaliveInterval:  durationSecondsOrDefault(cfg.KeepaliveInterval, 15*time.Second),
+				// 2026-07-23: 30→120s for long-thinking Claude models.
+				firstByteTimeout:  durationSecondsOrDefault(cfg.FirstByteTimeout, 120*time.Second),
+				keepaliveInterval: durationSecondsOrDefault(cfg.KeepaliveInterval, 15*time.Second),
 			}
 		}
 	}
@@ -372,8 +373,9 @@ func currentStreamRuntimeConfig() streamRuntimeConfig {
 		upstreamTimeout:    envDurationSeconds("LLM_GATEWAY_UPSTREAM_TIMEOUT", 120*time.Second),
 		streamTimeout:      envDurationSeconds("LLM_GATEWAY_STREAM_TIMEOUT", 900*time.Second),
 		streamChunkTimeout: envDurationSeconds("LLM_GATEWAY_STREAM_CHUNK_TIMEOUT", 300*time.Second),
-		firstByteTimeout:   envDurationSeconds("LLM_GATEWAY_FIRST_BYTE_TIMEOUT", 30*time.Second),
-		keepaliveInterval:  envDurationSeconds("LLM_GATEWAY_KEEPALIVE_INTERVAL", 15*time.Second),
+		// 2026-07-23: 30→120s default for long-thinking Claude models.
+		firstByteTimeout:  envDurationSeconds("LLM_GATEWAY_FIRST_BYTE_TIMEOUT", 120*time.Second),
+		keepaliveInterval: envDurationSeconds("LLM_GATEWAY_KEEPALIVE_INTERVAL", 15*time.Second),
 	}
 }
 

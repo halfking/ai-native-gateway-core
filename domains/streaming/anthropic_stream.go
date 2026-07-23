@@ -159,7 +159,11 @@ func StreamOpenAIToAnthropicSSE(w http.ResponseWriter, resp *http.Response, clie
 		if capture != nil {
 			capture.MarkInterruptedWithReason("first_byte_timeout")
 		}
-		slog.Warn("anthropic stream first-byte timeout", "error", err)
+		slog.Warn("anthropic stream first-byte timeout",
+			"error", err,
+			"first_byte_timeout_seconds", int(runtimeCfg.firstByteTimeout.Seconds()),
+			"hint", "if frequent, increase LLM_GATEWAY_FIRST_BYTE_TIMEOUT or admin config (default 120s)",
+		)
 		errPayload := map[string]any{
 			"type":  "error",
 			"error": map[string]any{"type": "timeout", "message": "upstream first-byte timeout"},

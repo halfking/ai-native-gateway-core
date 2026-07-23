@@ -428,7 +428,11 @@ func StreamChatWithPendingCapture(
 		if capture != nil {
 			capture.MarkInterruptedWithReason("first_byte_timeout")
 		}
-		slog.Warn("stream first-byte timeout", "error", err)
+		slog.Warn("stream first-byte timeout",
+			"error", err,
+			"first_byte_timeout_seconds", int(runtimeCfg.firstByteTimeout.Seconds()),
+			"hint", "if frequent, increase LLM_GATEWAY_FIRST_BYTE_TIMEOUT or admin config (default 120s)",
+		)
 		safeWriteSSE(w, "data: {\"error\":{\"message\":\"upstream first-byte timeout\",\"type\":\"timeout\",\"code\":\"first_byte_timeout\"}}\n\n")
 		safeFlush(flusher)
 		outcome.Interrupted = true
