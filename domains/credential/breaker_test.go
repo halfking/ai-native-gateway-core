@@ -63,14 +63,14 @@ func TestConfirmedAuthFailureOpens(t *testing.T) {
 	if b.Allow() {
 		t.Fatal("open breaker should not allow requests")
 	}
-	// Confirm the cooling window matches the configured 15-minute
+	// Confirm the cooling window matches the configured 5-minute
 	// InitialCooling — guards against accidental future changes to
 	// the KindAuth policy breaking the recovery contract.
 	b.mu.Lock()
 	cooling := b.coolingExpires.Sub(b.lastFailureAt)
 	b.mu.Unlock()
-	if cooling < 14*time.Minute || cooling > 16*time.Minute {
-		t.Fatalf("expected ~15min cooling, got %s", cooling)
+	if cooling < 4*time.Minute || cooling > 6*time.Minute {
+		t.Fatalf("expected ~5min cooling, got %s", cooling)
 	}
 }
 
@@ -176,11 +176,11 @@ func TestRateLimitExponentialBackoff(t *testing.T) {
 	b.mu.Lock()
 	firstCooling := time.Until(b.coolingExpires)
 	b.mu.Unlock()
-	if firstCooling < 898*time.Second || firstCooling > 902*time.Second {
-		t.Fatalf("expected ~900s cooling, got %v", firstCooling)
+	if firstCooling < 118*time.Second || firstCooling > 122*time.Second {
+		t.Fatalf("expected ~120s cooling, got %v", firstCooling)
 	}
 
-	// Second rate limit → still 900s (at max)
+	// Second rate limit → still 120s (at max)
 	b.mu.Lock()
 	b.coolingExpires = time.Now().Add(-1 * time.Second) // expire current cooling
 	b.mu.Unlock()
@@ -190,8 +190,8 @@ func TestRateLimitExponentialBackoff(t *testing.T) {
 	b.mu.Lock()
 	secondCooling := time.Until(b.coolingExpires)
 	b.mu.Unlock()
-	if secondCooling < 898*time.Second || secondCooling > 902*time.Second {
-		t.Fatalf("expected ~900s cooling, got %v", secondCooling)
+	if secondCooling < 118*time.Second || secondCooling > 122*time.Second {
+		t.Fatalf("expected ~120s cooling, got %v", secondCooling)
 	}
 }
 
@@ -411,8 +411,8 @@ func TestConcurrentOverloadFiveMinuteCooling(t *testing.T) {
 	b.mu.Lock()
 	cooling := time.Until(b.coolingExpires)
 	b.mu.Unlock()
-	if cooling < 298*time.Second || cooling > 302*time.Second {
-		t.Fatalf("expected ~5min cooling for concurrent overload, got %v", cooling)
+	if cooling < 118*time.Second || cooling > 122*time.Second {
+		t.Fatalf("expected ~2min cooling for concurrent overload, got %v", cooling)
 	}
 
 	// After cooling expires, a single probe should be allowed.
