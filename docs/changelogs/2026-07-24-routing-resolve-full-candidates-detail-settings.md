@@ -47,6 +47,16 @@
 
 所有颜色直接读 `var(--kx-success)` / `var(--kx-danger)` / `var(--kx-warning)` / `var(--kx-bg-elevated)` / `var(--kx-border-light)` 等 token，自动适配 daylight / night / 任何后续主题。fallback 链 `var(--kx-*, var(--success, #16a34a))` 保证即使 token 未挂载也不会硬编码紫蓝色系。
 
+### 4.1 视觉修正（2026-07-24 第二轮）
+
+**问题**：上一版用 `opacity: 0.65 + var(--kx-bg-elevated)` 标记不可用行，深色蒙层 0.45 让卡片显得"漂浮"。在双主题下都出现"层半透明叠加背景→看不清"。
+
+**修复**：
+- 不可用行：去掉 `opacity`，改用 `background: var(--kx-danger-soft)` + `box-shadow: inset 3px 0 0 0 var(--kx-danger)` 左侧色条 + `border: 1px solid var(--kx-danger)` 加固 badge。`--kx-danger-soft` 在 `web/src/style.css` 已同时定义 daylight (`#fff1f1`) / night (`rgba(239,68,68,0.14)`) 两套。
+- 抽屉 / 对话框 backdrop：`rgba(0,0,0,0.45)` → `rgba(0,0,0,0.28)`，卡片新增 `border-left / border: 1px solid var(--kx-border-light)` 让轮廓在两种主题下都清晰。
+
+**验证证据**：`docs/screenshots/ui-verify-routing-resolve-row-fix-{daylight,night}-20260724.png`（在 `web/src/views/RoutingDashboardView.vue` 与新组件中用 `vue-tsc --noEmit` + `vite build` 通过，pre-commit-check.sh 全绿）。
+
 ## API 契约
 
 ### 新增端点（super_admin only）

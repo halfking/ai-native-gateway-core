@@ -466,7 +466,9 @@ const scoreFlags = computed<FlagRow[]>(() => [
 .cd-overlay {
   position: fixed;
   inset: 0;
-  background: rgba(0, 0, 0, 0.45);
+  /* 2026-07-24 修正：backdrop 由 0.45 降到 0.28，避免抽屉卡片显得"飘"在深色蒙层上看不清。
+   * 抽屉本体仍用 --kx-bg-container 实色 + 显式 box-shadow 提供层叠感。 */
+  background: rgba(0, 0, 0, 0.28);
   z-index: 70;
   display: flex;
   justify-content: flex-end;
@@ -476,6 +478,8 @@ const scoreFlags = computed<FlagRow[]>(() => [
   height: 100%;
   background: var(--kx-bg-container);
   color: var(--kx-text-primary);
+  /* 加 1px 边框让卡片在浅色主题下也有明确轮廓 */
+  border-left: 1px solid var(--kx-border-light);
   box-shadow: -12px 0 32px rgba(0, 0, 0, 0.16);
   display: flex;
   flex-direction: column;

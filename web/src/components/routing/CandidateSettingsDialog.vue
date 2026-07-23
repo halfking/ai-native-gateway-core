@@ -199,7 +199,9 @@ async function save() {
 .cs-overlay {
   position: fixed;
   inset: 0;
-  background: rgba(0, 0, 0, 0.45);
+  /* 2026-07-24 修正：backdrop 由 0.45 降到 0.28，对话框本身用实色 + 1px 边框 + box-shadow，
+   * 让卡片轮廓在任何主题下都清晰，不被深色蒙层"吃"掉。 */
+  background: rgba(0, 0, 0, 0.28);
   z-index: 75;
   display: flex;
   align-items: center;
@@ -211,6 +213,7 @@ async function save() {
   background: var(--kx-bg-container);
   color: var(--kx-text-primary);
   border-radius: 8px;
+  border: 1px solid var(--kx-border-light);
   box-shadow: 0 20px 48px rgba(0, 0, 0, 0.22);
   display: flex;
   flex-direction: column;
