@@ -353,13 +353,13 @@ func (h *Handler) listLogs(w http.ResponseWriter, r *http.Request) {
 		argIdx++
 	}
 
-	// tenant_admin callers may only see request logs for their own tenant's
-	// api_keys. The join `ak` (LEFT JOIN api_keys ak ON ak.id = rl.api_key_id)
-	// is already present in requestLogsJoins, so we can filter on ak.tenant_id.
+	// tenant_admin callers are scoped by the request log's own tenant.
+	// API keys may be missing or deleted for historical rows, so requiring
+	// ak.tenant_id here would hide valid metadata and make list/detail differ.
 	if IsTenantAdmin(r) {
-		addFilter("ak.tenant_id = $%d", GetTenantID(r))
 		addFilter("rl.tenant_id = $%d", GetTenantID(r))
 	}
+
 	if v := queryIntPtr(r, "api_key_id"); v != nil {
 		addFilter("rl.api_key_id = $%d", *v)
 	}
@@ -560,7 +560,7 @@ func (h *Handler) getLog(w http.ResponseWriter, r *http.Request) {
 		  LEFT JOIN request_logs_bodies_with_current_month rb 
 		    ON rb.request_id = rl.request_id
 		 WHERE rl.request_id = $1
-		   AND ($2 OR ak.tenant_id = $3)
+		   AND ($2 OR rl.tenant_id = $3)
 		 ORDER BY rl.ts DESC
 		 LIMIT 1
 	`, requestLogsDetailCols, requestLogsJoins), requestID, !IsTenantAdmin(r), GetTenantID(r)).Scan(

@@ -1301,22 +1301,19 @@ func main() {
 		})
 		go liveStreamHub.Run()
 
-		// Wire the telemetry persistence hook → SSE hub. The hook
-		// Wire the live-stream SSE hub to the telemetry EmitRequestLog
-		// pipeline, so dashboard updates happen immediately from the
-		// in-memory request state rather than waiting for DB persistence.
-		// The closure runs on the request-handling goroutine (NOT the
-		// telemetry worker), so the hub's Publish() MUST be non-blocking
-		// (select with default). The provider_id→catalog_code resolution
-		// inside is a sync.Map lookup with a 200ms-timeout DB fallback
-		// on miss. Bounded to <1ms in the common case.
+		// Publish terminal live-stream updates only after the request log
+		// transaction commits. Emitting before persistence allowed a green
+		// tile to reach the dashboard before GET /api/logs/{id} could see it.
+		// The provider_id→catalog_code resolution is bounded by the hub's
+		// short lookup context, and Publish remains non-blocking for clients.
 		if telemetryClient.Enabled() {
 			hub := liveStreamHub
-			telemetryClient.SetOnRequestLogEmitted(func(entry *telemetry.RequestLogEntry) {
+			telemetryClient.AddOnRequestLogPersisted(func(entry *telemetry.RequestLogEntry) {
 				hub.Publish(adminLiveRequestFromEntry(entry, hub))
 			})
-			slog.Info("telemetry onEmitted wired → live stream SSE hub (in-memory pipeline)")
+			slog.Info("telemetry onPersisted wired → live stream SSE hub")
 		}
+
 		slog.Info("live request stream hub enabled (sse /api/admin/live-stream)",
 			"cached_snapshot_ttl", liveStreamCachedTTL.String(),
 			"cached_snapshot_cleanup_interval", liveStreamCachedCleanup.String())

@@ -308,6 +308,16 @@ func (c *RequestLogContext) SetResponseBody(body []byte) {
 	}
 }
 
+// preferCapturedBody keeps the request-context snapshot authoritative when a
+// downstream result omitted a body. Executor results may be minimal on async
+// or stream paths, while the context retains the original client payload.
+func preferCapturedBody(primary, fallback []byte) []byte {
+	if len(primary) > 0 {
+		return primary
+	}
+	return fallback
+}
+
 // EnsureCaptured buffers the JSON body (restores r.Body) and fills key/identity meta.
 func (c *RequestLogContext) EnsureCaptured() {
 	if c == nil || c.Request == nil {

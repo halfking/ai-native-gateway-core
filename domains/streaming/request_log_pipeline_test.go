@@ -19,6 +19,17 @@ import (
 // same X-Request-Id and produce 5 rows in request_logs sharing one
 // request_id. The fix introduces client_request_id as a separate
 // column for the client value; this test guards that propagation.
+func TestPreferCapturedBody_UsesContextSnapshotWhenPrimaryMissing(t *testing.T) {
+	captured := []byte(`{"model":"minimax-m3","messages":[{"role":"user","content":"hello"}]}`)
+	if got := preferCapturedBody(nil, captured); string(got) != string(captured) {
+		t.Fatalf("preferCapturedBody(nil, captured) = %q, want captured body", got)
+	}
+	primary := []byte(`{"model":"converted"}`)
+	if got := preferCapturedBody(primary, captured); string(got) != string(primary) {
+		t.Fatalf("preferCapturedBody(primary, captured) = %q, want primary body", got)
+	}
+}
+
 func TestRequestLogContext_BuildFailureEntry_ClientRequestID(t *testing.T) {
 	ch := NewChatHandler(nil, nil, nil, nil, nil, nil)
 	r := httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(`{"model":"glm-5.1"}`))
