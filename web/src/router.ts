@@ -144,6 +144,9 @@ export const router = createRouter({
     { path: '/routing-v2/credentials', component: CredentialMonitorView }, // 2026-07-04: 允许 tenant_admin 访问
     { path: '/probe-health',       component: ProbeHealthView,      meta: { requiresSuper: true } },
     { path: '/probe-health/detail', component: ProbeHealthDetailView, meta: { requiresSuper: true } },
+    // 2026-07-23: 系统监测面板（v1）—— 入站需 super_admin 才能操作。
+    // 设计依据 docs/会话优化v2/32-系统监测模块设计.md §5
+    { path: '/system-monitor',     component: () => import('./views/SystemMonitorPanel.vue'), meta: { requiresSuper: true } },
     { path: '/routing-v2/work-types',         component: WorkTypesView, meta: { requiresSuper: true } },
     { path: '/routing-v2/work-types/settings', component: WorkTypesView, meta: { requiresSuper: true } },
     { path: '/routing-v2/work-types/:key',     component: WorkTypesView, meta: { requiresSuper: true } },

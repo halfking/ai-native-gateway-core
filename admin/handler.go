@@ -3,6 +3,7 @@ package admin
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"log/slog"
 	"net/http"
 	"strconv"
@@ -44,6 +45,10 @@ type Handler struct {
 	probeV2     *bg.CredentialProbeV2  // 900-series: mini-chat probe (spec §5)
 	probePicker *bg.DefaultProbePicker // 900-series: default probe model (spec §4)
 	modelProbe  *bg.ModelProbeRunner   // 2026-06-18: per-model re-probe of failing bindings (spec 2026-06-18-model-probe-rounds)
+	// 2026-07-23: 系统监测模块 — 所有探测任务的唯一入口 (design §1.2 #1).
+	// nil 时 /api/admin/system-monitor/* 端点 503；探测仍可能由旧 worker 跑。
+	systemMonitor    SystemMonitorBackend
+	systemMonitorSSE *SystemMonitorSSEHub
 	// 2026-06-23 Phase 2/3: backs /api/candidate-failures* endpoints.
 	// Wired from cmd/gateway/main.go via SetCandidateFailureHandlers so
 	// /alerts can read live data from the CandidateFailureMonitor.
@@ -1054,4 +1059,59 @@ func (h *Handler) SetCandidateFailureHandlers(getter func() []bg.CandidateFailur
 		h.cfHandlers = &candidateFailureHandlers{db: h.db}
 	}
 	h.cfHandlers.SetRecentAlerts(getter)
+}
+
+// SystemMonitorBackend 是 admin 与 bg/systemmonitor 的对接类型。
+//
+// 设计依据 (docs/会话优化v2/32 §6.2): handler.go 不直接 import
+// bg/systemmonitor，用结构投影 + 适配器（systemMonitorAdapter 在
+// cmd/gateway/system_monitor_adapter.go 中实现）隔离依赖。
+//
+// main.go 在 wire 时构造 *systemMonitorAdapter 传入 SetSystemMonitor。
+type SystemMonitorBackend interface {
+	Submit(ctx context.Context, task *SystemMonitorTask) (int64, error)
+	QueueStats(ctx context.Context) (SystemMonitorQueueStats, error)
+	IsFallback() bool
+}
+
+// SystemMonitorTask 是 systemmonitor.Task 的最小投影（字段全名相同），
+// 让 admin 包不 import systemmonitor。
+//
+// KEEP: 系统监测 backend 接口 —— 直到 bg/systemmonitor/types.go 拆为独立
+// 子包 sysevent 后再考虑去掉 [@monitoring] [review 2026-Q4]
+type SystemMonitorTask struct {
+	ID           int64
+	TaskType     string
+	Automaticity string
+	Source       string
+	CredentialID int64
+	ProviderID   int64
+	RawModel     string
+	ScheduledAt  time.Time
+	NextRunAt    time.Time
+	MaxAttempts  int
+}
+
+// SystemMonitorQueueStats 是 admin 自己定义的快照类型；字段与
+// bg/systemmonitor.QueueStats 一致。
+type SystemMonitorQueueStats struct {
+	QueueSize   int64
+	RunningSize int64
+	InFallback  bool
+}
+
+// ErrSystemMonitorDisabled 由 SetSystemMonitor(nil) 后调用 Submit 触发。
+var ErrSystemMonitorDisabled = errors.New("system monitor disabled")
+
+// SetSystemMonitor wires the system-monitoring module so the
+// /api/admin/system-monitor/* endpoints can submit tasks and read
+// queue state. Safe to call with nil to disable.
+func (h *Handler) SetSystemMonitor(sm SystemMonitorBackend) {
+	h.systemMonitor = sm
+}
+
+// SetSystemMonitorSSE wires the dashboard SSE hub for the system-monitor
+// stream. Pass nil to disable.
+func (h *Handler) SetSystemMonitorSSE(hub *SystemMonitorSSEHub) {
+	h.systemMonitorSSE = hub
 }
