@@ -247,6 +247,25 @@ export default {
     originGateway: '网关路径',
     originScheduled: '定时探测',
     originDirect: '直连上游',
+    // 2026-07-24: 多维过滤器
+    filterStatus: '状态',
+    filterModel: '模型',
+    filterProvider: '供应商',
+    filterVendor: '原厂',
+    clearFilters: '清除过滤',
+    status: {
+      in_progress: '进行中',
+      success: '成功',
+      failure: '失败',
+      rate_limited: '限流',
+    },
+    vendor: {
+      openai: 'OpenAI',
+      anthropic: 'Anthropic',
+      domestic: '国产',
+      oss: '开源',
+      other: '其他',
+    },
     idleHeartbeat: '心跳占位',
     tileIdle: '空闲',
     // 2026-07-14: idle_marker carries the elapsed-minutes label so
