@@ -177,7 +177,11 @@ func (h *Handler) handleRoutingResolve(w http.ResponseWriter, r *http.Request) {
 		BlockReason           string   `json:"block_reason,omitempty"`
 		ManualPriority        int      `json:"manual_priority"`
 		ActiveSessions        int      `json:"active_sessions"`
+		// R7 fix: 前端将基于这个字段判断 show 重置计数按钮，
+		// 而 resolve 操作的是 credentials.consecutive_failures。
+		// 这里增列 credential-level 的值用于显示，避免误判。
 		ConsecutiveFailures   int      `json:"consecutive_failures"`
+		CredentialConsecutiveFailures int `json:"credential_consecutive_failures"`
 		CompositeScore        float64  `json:"composite_score"`
 		BillingMode           string   `json:"billing_mode"`
 		BillingRound          int      `json:"billing_round"`
@@ -218,6 +222,7 @@ func (h *Handler) handleRoutingResolve(w http.ResponseWriter, r *http.Request) {
 				COALESCE(cmb.manual_priority, 99) AS manual_priority,
 				COALESCE(cmb.active_sessions, 0) AS active_sessions,
 				COALESCE(cmb.consecutive_failures, 0) AS consecutive_failures,
+				COALESCE(c.consecutive_failures, 0) AS credential_consecutive_failures,
 				COALESCE(cmb.billing_mode, 'per_token') AS billing_mode,
 				mo.unit_price_in_per_1m,
 				mo.unit_price_out_per_1m,
@@ -703,10 +708,11 @@ func (h *Handler) handleEmergencyRepair(w http.ResponseWriter, r *http.Request) 
 	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 	defer cancel()
 
-	// Get actor for audit
-	actor := r.Header.Get("X-Admin-User")
-	if actor == "" {
-		actor = r.RemoteAddr
+	// Get actor for audit: prefer authenticated username from AuthContext,
+	// fallback to r.RemoteAddr when not available (C4 修复).
+	actor := r.RemoteAddr
+	if auth := GetAuthContext(r); auth != nil && auth.Username != "" {
+		actor = auth.Username
 	}
 
 	beforeAfter := map[string]any{
@@ -718,7 +724,10 @@ func (h *Handler) handleEmergencyRepair(w http.ResponseWriter, r *http.Request) 
 
 	switch req.Action {
 	case "force_enable":
-		// Clear manual_disabled flag on credentials table
+		// Clear manual_disabled flag on credentials + flip cmb row.
+		// C3 修复: also ClearState in URSM v2 Redis so that any stale
+		// disabled="1" / cool_until_ms / fail_streak from prior auto-disable
+		// is wiped. ApplyAdmin alone only clears manual_hold.
 		var currentDisabled bool
 		err := h.db.QueryRow(ctx,
 			"SELECT COALESCE(manual_disabled, false) FROM credentials WHERE id = $1",
@@ -732,37 +741,81 @@ func (h *Handler) handleEmergencyRepair(w http.ResponseWriter, r *http.Request) 
 			}
 			return
 		}
-		if _, err := h.db.Exec(ctx,
-			"UPDATE credentials SET manual_disabled = false WHERE id = $1",
-			req.CredentialID,
-		); err != nil {
-			writeError(w, http.StatusInternalServerError, "update failed: "+err.Error())
+
+		tx, err := h.db.Begin(ctx)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "begin tx failed: "+err.Error())
+			return
+		}
+		defer tx.Rollback(ctx)
+
+		if _, err := tx.Exec(ctx, `
+			UPDATE credentials SET
+				manual_disabled = false,
+				state_updated_at = NOW()
+			WHERE id = $1
+		`, req.CredentialID); err != nil {
+			writeError(w, http.StatusInternalServerError, "update credentials failed: "+err.Error())
+			return
+		}
+		if req.RawModel != "" {
+			if _, err := tx.Exec(ctx, `
+				UPDATE credential_model_bindings cmb
+				SET available = TRUE,
+					unavailable_reason = NULL,
+					unavailable_at = NULL,
+					unavailable_recover_at = NULL,
+					updated_at = NOW()
+				FROM provider_models pm
+				WHERE cmb.credential_id = $1
+				  AND pm.id = cmb.provider_model_id
+				  AND pm.raw_model_name = $2
+			`, req.CredentialID, req.RawModel); err != nil {
+				writeError(w, http.StatusInternalServerError, "update cmb failed: "+err.Error())
+				return
+			}
+		}
+		if err := tx.Commit(ctx); err != nil {
+			writeError(w, http.StatusInternalServerError, "commit failed: "+err.Error())
 			return
 		}
 		beforeAfter["previous_manual_disabled"] = currentDisabled
 		beforeAfter["new_manual_disabled"] = false
+		beforeAfter["cmb_available"] = true
 
-		// Also clear manual hold in URSM v2 Redis
+		// URSM v2: clear manual_hold via ApplyAdmin, AND wipe any
+		// residual disabled/fail_streak/cool_until_ms via ClearState.
 		if h.ursmV2 != nil && req.RawModel != "" {
 			disabled := false
 			adminAction := api.AdminAction{
-				Scope:        api.ScopeNode,
-				CredentialID: req.CredentialID,
-				RawModel:     req.RawModel,
+				Scope:          api.ScopeNode,
+				CredentialID:   req.CredentialID,
+				RawModel:       req.RawModel,
 				ManualDisabled: &disabled,
-				Reason:       req.Reason,
-				Actor:       actor,
-				IssuedAtMs:  time.Now().UnixMilli(),
+				Reason:         req.Reason,
+				Actor:          actor,
+				IssuedAtMs:     time.Now().UnixMilli(),
 			}
 			if err := h.ursmV2.ApplyAdmin(ctx, adminAction); err != nil {
 				slog.Warn("emergency_repair: ursm.v2 apply_admin failed", "error", err, "cred", req.CredentialID)
+				beforeAfter["ursm_v2_admin_applied"] = false
+			} else {
+				beforeAfter["ursm_v2_admin_applied"] = true
+			}
+			if err := h.ursmV2.ClearState(ctx, req.CredentialID, req.RawModel); err != nil {
+				slog.Warn("emergency_repair: ursm.v2 clear_state failed", "error", err, "cred", req.CredentialID)
+				beforeAfter["ursm_v2_cleared"] = false
 			} else {
 				beforeAfter["ursm_v2_cleared"] = true
 			}
 		}
 
 	case "force_disable":
-		// Set manual_disabled flag on credentials table
+		// Set manual_disabled flag on credentials table.
+		// C+ 修复: now wrap UPDATE + state_updated_at in same style as
+		// the other actions for symmetry; cmb.available is NOT flipped
+		// because the binding becomes unavailable via v_routable_credential_models
+		// reading c.manual_disabled (view evaluates c, not cmb, for manual disable).
 		var currentDisabled bool
 		err := h.db.QueryRow(ctx,
 			"SELECT COALESCE(manual_disabled, false) FROM credentials WHERE id = $1",
@@ -776,10 +829,12 @@ func (h *Handler) handleEmergencyRepair(w http.ResponseWriter, r *http.Request) 
 			}
 			return
 		}
-		if _, err := h.db.Exec(ctx,
-			"UPDATE credentials SET manual_disabled = true WHERE id = $1",
-			req.CredentialID,
-		); err != nil {
+		if _, err := h.db.Exec(ctx, `
+			UPDATE credentials SET
+				manual_disabled = true,
+				state_updated_at = NOW()
+			WHERE id = $1
+		`, req.CredentialID); err != nil {
 			writeError(w, http.StatusInternalServerError, "update failed: "+err.Error())
 			return
 		}
@@ -790,23 +845,27 @@ func (h *Handler) handleEmergencyRepair(w http.ResponseWriter, r *http.Request) 
 		if h.ursmV2 != nil && req.RawModel != "" {
 			disabled := true
 			adminAction := api.AdminAction{
-				Scope:        api.ScopeNode,
-				CredentialID: req.CredentialID,
-				RawModel:     req.RawModel,
+				Scope:          api.ScopeNode,
+				CredentialID:   req.CredentialID,
+				RawModel:       req.RawModel,
 				ManualDisabled: &disabled,
-				Reason:       req.Reason,
-				Actor:       actor,
-				IssuedAtMs:  time.Now().UnixMilli(),
+				Reason:         req.Reason,
+				Actor:          actor,
+				IssuedAtMs:     time.Now().UnixMilli(),
 			}
 			if err := h.ursmV2.ApplyAdmin(ctx, adminAction); err != nil {
 				slog.Warn("emergency_repair: ursm.v2 apply_admin failed", "error", err, "cred", req.CredentialID)
+				beforeAfter["ursm_v2_admin_applied"] = false
 			} else {
-				beforeAfter["ursm_v2_set"] = true
+				beforeAfter["ursm_v2_admin_applied"] = true
 			}
 		}
 
 	case "clear_circuit":
-		// Reset circuit_state to 'closed' on credentials table
+		// Reset circuit_state to 'closed' on credentials + cmb row.
+		// C1 修复: must also flip cmb.available back to TRUE and clear
+		// unavailable_reason / unavailable_at / unavailable_recover_at,
+		// because v_routable_credential_models reads cmb-side columns.
 		var currentState *string
 		err := h.db.QueryRow(ctx,
 			"SELECT circuit_state FROM credentials WHERE id = $1",
@@ -824,27 +883,65 @@ func (h *Handler) handleEmergencyRepair(w http.ResponseWriter, r *http.Request) 
 		if currentState != nil {
 			previousState = *currentState
 		}
-		if _, err := h.db.Exec(ctx,
-			"UPDATE credentials SET circuit_state = 'closed', cooling_until = NULL WHERE id = $1",
-			req.CredentialID,
-		); err != nil {
-			writeError(w, http.StatusInternalServerError, "update failed: "+err.Error())
+
+		// Single transaction: credentials row + cmb row together.
+		tx, err := h.db.Begin(ctx)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "begin tx failed: "+err.Error())
+			return
+		}
+		defer tx.Rollback(ctx)
+
+		if _, err := tx.Exec(ctx, `
+			UPDATE credentials SET
+				circuit_state = 'closed',
+				cooling_until = NULL,
+				state_updated_at = NOW()
+			WHERE id = $1
+		`, req.CredentialID); err != nil {
+			writeError(w, http.StatusInternalServerError, "update credentials failed: "+err.Error())
+			return
+		}
+		if req.RawModel != "" {
+			if _, err := tx.Exec(ctx, `
+				UPDATE credential_model_bindings cmb
+				SET available = TRUE,
+					unavailable_reason = NULL,
+					unavailable_at = NULL,
+					unavailable_recover_at = NULL,
+					updated_at = NOW()
+				FROM provider_models pm
+				WHERE cmb.credential_id = $1
+				  AND pm.id = cmb.provider_model_id
+				  AND pm.raw_model_name = $2
+			`, req.CredentialID, req.RawModel); err != nil {
+				writeError(w, http.StatusInternalServerError, "update cmb failed: "+err.Error())
+				return
+			}
+		}
+		if err := tx.Commit(ctx); err != nil {
+			writeError(w, http.StatusInternalServerError, "commit failed: "+err.Error())
 			return
 		}
 		beforeAfter["previous_circuit_state"] = previousState
 		beforeAfter["new_circuit_state"] = "closed"
+		beforeAfter["cmb_available"] = true
 
 		// Also clear cooling state in URSM v2 Redis
 		if h.ursmV2 != nil && req.RawModel != "" {
 			if err := h.ursmV2.ClearState(ctx, req.CredentialID, req.RawModel); err != nil {
 				slog.Warn("emergency_repair: ursm.v2 clear_state failed", "error", err, "cred", req.CredentialID)
+				beforeAfter["ursm_v2_cleared"] = false
 			} else {
 				beforeAfter["ursm_v2_cleared"] = true
 			}
 		}
 
 	case "reset_errors":
-		// Reset consecutive_failures on credentials table
+		// Reset consecutive_failures on credentials + flip cmb row.
+		// C2 修复: must also flip cmb.available back to TRUE so the binding
+		// is immediately re-admitted to routing (binding-level cols are
+		// what v_routable_credential_models consults).
 		var currentFailures int
 		err := h.db.QueryRow(ctx,
 			"SELECT COALESCE(consecutive_failures, 0) FROM credentials WHERE id = $1",
@@ -858,20 +955,53 @@ func (h *Handler) handleEmergencyRepair(w http.ResponseWriter, r *http.Request) 
 			}
 			return
 		}
-		if _, err := h.db.Exec(ctx,
-			"UPDATE credentials SET consecutive_failures = 0 WHERE id = $1",
-			req.CredentialID,
-		); err != nil {
-			writeError(w, http.StatusInternalServerError, "update failed: "+err.Error())
+
+		tx, err := h.db.Begin(ctx)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "begin tx failed: "+err.Error())
+			return
+		}
+		defer tx.Rollback(ctx)
+
+		if _, err := tx.Exec(ctx, `
+			UPDATE credentials SET
+				consecutive_failures = 0,
+				state_updated_at = NOW()
+			WHERE id = $1
+		`, req.CredentialID); err != nil {
+			writeError(w, http.StatusInternalServerError, "update credentials failed: "+err.Error())
+			return
+		}
+		if req.RawModel != "" {
+			if _, err := tx.Exec(ctx, `
+				UPDATE credential_model_bindings cmb
+				SET available = TRUE,
+					unavailable_reason = NULL,
+					unavailable_at = NULL,
+					unavailable_recover_at = NULL,
+					updated_at = NOW()
+				FROM provider_models pm
+				WHERE cmb.credential_id = $1
+				  AND pm.id = cmb.provider_model_id
+				  AND pm.raw_model_name = $2
+			`, req.CredentialID, req.RawModel); err != nil {
+				writeError(w, http.StatusInternalServerError, "update cmb failed: "+err.Error())
+				return
+			}
+		}
+		if err := tx.Commit(ctx); err != nil {
+			writeError(w, http.StatusInternalServerError, "commit failed: "+err.Error())
 			return
 		}
 		beforeAfter["previous_consecutive_failures"] = currentFailures
 		beforeAfter["new_consecutive_failures"] = 0
+		beforeAfter["cmb_available"] = true
 
 		// Also clear fail counters in URSM v2 Redis
 		if h.ursmV2 != nil && req.RawModel != "" {
 			if err := h.ursmV2.ClearState(ctx, req.CredentialID, req.RawModel); err != nil {
 				slog.Warn("emergency_repair: ursm.v2 clear_state failed", "error", err, "cred", req.CredentialID)
+				beforeAfter["ursm_v2_cleared"] = false
 			} else {
 				beforeAfter["ursm_v2_cleared"] = true
 			}
@@ -884,11 +1014,20 @@ func (h *Handler) handleEmergencyRepair(w http.ResponseWriter, r *http.Request) 
 	// Invalidate routing caches so changes take effect immediately
 	invalidateRoutingCaches(ctx, h.db, "credentials", req.CredentialID)
 
+	// M2 修复: surface the URSM v2 outcome in the response so the UI
+	// can warn when PG was updated but Redis state was skipped.
+	ursmCleared, _ := beforeAfter["ursm_v2_cleared"].(bool)
+	ursmAdmin, _ := beforeAfter["ursm_v2_admin_applied"].(bool)
+	cmbAvailable, _ := beforeAfter["cmb_available"].(bool)
+
 	writeJSON(w, http.StatusOK, map[string]any{
-		"message":       "emergency repair applied: " + req.Action,
-		"credential_id":  req.CredentialID,
-		"action":        req.Action,
-		"actor":         actor,
+		"message":              "emergency repair applied: " + req.Action,
+		"credential_id":        req.CredentialID,
+		"action":               req.Action,
+		"actor":                actor,
+		"cmb_available":        cmbAvailable,
+		"ursm_v2_admin_applied": ursmAdmin,
+		"ursm_v2_cleared":      ursmCleared,
 	})
 }
 

@@ -51,6 +51,9 @@ export interface RoutingCandidate {
   manual_priority?: number
   active_sessions?: number
   consecutive_failures?: number
+  // R7: credential-level consecutive_failures (separate from cmb).
+  // emergency repair reset_errors operates on this value.
+  credential_consecutive_failures?: number
   composite_score?: number
   billing_mode?: string
   billing_round?: number
