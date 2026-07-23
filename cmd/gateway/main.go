@@ -38,6 +38,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/autoroute"
 	"github.com/kaixuan/llm-gateway-go/autoupdate"
 	"github.com/kaixuan/llm-gateway-go/bg"
+	"github.com/kaixuan/llm-gateway-go/bg/systemmonitor"
 	"github.com/kaixuan/llm-gateway-go/center"
 	"github.com/kaixuan/llm-gateway-go/config"
 	"github.com/kaixuan/llm-gateway-go/credentialfpslot"
@@ -1686,6 +1687,52 @@ func main() {
 			adminHandler.SetLiveStreamSSE(liveStreamHub)
 		}
 
+		// 2026-07-23: 系统监测模块 — 探测任务的唯一入口 (design docs/会话优化v2/32).
+		// env LLM_GATEWAY_SYSTEM_MONITOR_ENABLED=true 才会启；Phase 1 默认关。
+		// 旧 worker (NodeProbe / ActiveProbe / CredentialSelfcheck) 在启用
+		// 后仍保留双写兼容；Phase 2 才切流。
+		if os.Getenv("LLM_GATEWAY_SYSTEM_MONITOR_ENABLED") == "true" {
+			smConcurrency := 5
+			if v := os.Getenv("LLM_GATEWAY_SYSTEM_MONITOR_WORKERS_PER_NODE"); v != "" {
+				if n, err := strconv.Atoi(v); err == nil && n > 0 {
+					smConcurrency = n
+				}
+			}
+			sm, smErr := systemmonitor.NewSystemMonitor(systemmonitor.Config{
+				DB:          dbConn.Pool(),
+				Redis:       fpSlotRedis,
+				Keyring:     nil,
+				EncKey:      fernetKey,
+				ProxyFunc:   upClient.Proxy().ProxyFunc(),
+				TimeoutMs:   30000,
+				Concurrency: smConcurrency,
+				WorkerCount: smConcurrency,
+			})
+			if smErr != nil {
+				slog.Error("system_monitor: construct failed", "error", smErr)
+			} else {
+				sm.Start(context.Background())
+				adminHandler.SetSystemMonitor(newSystemMonitorAdapter(sm))
+				slog.Info("system_monitor: started",
+					"worker_count", smConcurrency,
+					"redis_enabled", fpSlotRedis != nil,
+				)
+				// SSE 流：仅在 Redis 可用时挂载
+				if fpSlotRedis != nil {
+					sseHub := admin.NewSystemMonitorSSEHub(fpSlotRedis)
+					adminHandler.SetSystemMonitorSSE(sseHub)
+					slog.Info("system_monitor sse hub: started")
+				}
+				// 5min 自动跳过规则需要 request_logs 行触发 RecentSuccessHook；
+				// 挂到 telemetryClient.AddOnRequestLogPersisted。
+				if telemetryClient != nil {
+					hook := systemmonitor.NewRecentSuccessHook(sm.Dedup())
+					telemetryClient.AddOnRequestLogPersisted(hook.Hook())
+					slog.Info("system_monitor: recent_success hook wired to telemetry")
+				}
+			}
+		}
+
 		// ── 2026-07-17: 请求链路追踪查看 API ──────────────────────────────
 		// 把 trace viewer 端点挂到 admin handler。复用现有 redis + db 连接。
 		var traceRDB *redis.Client
@@ -3267,6 +3314,8 @@ func main() {
 			adminMw := newAdminMiddleware(dbConn.Pool(), cfg.SecretKey)
 			superAdminMw := newSuperAdminMiddleware(dbConn.Pool(), cfg.SecretKey)
 			selfCheckHandler.RegisterRoutes(mux, adminMw, superAdminMw)
+			// 2026-07-23: 系统监测 REST 端点（systemMonitor 已通过 SetSystemMonitor 注入）。
+			adminHandler.RegisterSystemMonitorRoutes(mux, adminMw, superAdminMw)
 			slog.Info("self-check API registered")
 		}
 		// 2026-06-23 Phase 3: wire candidate_failure_monitor alert ring.

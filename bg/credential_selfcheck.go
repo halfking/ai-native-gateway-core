@@ -5,6 +5,16 @@
 // featured-model self-check tick in bg/self_check_worker.go (which is
 // now gated behind LLM_GATEWAY_USE_NEW_PROBE_MODE).
 //
+// 2026-07-23 (Phase 2.3 收敛进度): 节点探测路径尚未迁移到 system-monitor。
+// runOne() 内部仍调用 Executor.Run 直接打上游；Phase 3 计划改为
+// systemmonitor.Submit(SystemMonitorTaskType_ChatTool, automaticity=automatic)。
+// 设计依据: docs/会话优化v2/32-系统监测模块设计.md §6.3 + KEEP/FUTURE 表。
+//
+// KEEP: 本文件保留至 Phase 3 切流完成 + 监控指标验证自动任务覆盖率 ≥ 90%。
+//
+//	切流条件：1) NodeProbe/ActiveProbe 也迁移完成；2) 监控仪表盘看到 system_probe_runs
+//	连续 7 天累计自动任务量 ≥ 旧 self_check_runs 的 80%。 [@monitoring] [review 2026-Q3]
+//
 // Cadence
 // ───────
 //   - Once per 24h per (active) credential.

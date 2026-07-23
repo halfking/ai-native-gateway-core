@@ -1,6 +1,6 @@
 {
   "version": "1.0.0",
-  "exported_at": "2026-07-23T05:10:25.437Z",
+  "exported_at": "2026-07-23T08:56:55.941Z",
   "source": "gateway-appNav",
   "tenantScopeLegend": {
     "default": "仅默认租户 + super_admin 可见",
@@ -61,7 +61,7 @@
           "path": "/tenant/usage",
           "label": "我的消耗",
           "labelKey": "nav.item.tenantUsage",
-          "icon": "💉",
+          "icon": "📉",
           "tenantOnly": true,
           "tenantScope": "tenant",
           "pluginScope": "*"
@@ -128,7 +128,7 @@
           "path": "/pricing",
           "label": "成本价格",
           "labelKey": "nav.item.pricing",
-          "icon": "💉",
+          "icon": "📉",
           "platformOps": true,
           "hideForTenant": true,
           "tenantScope": "default",
@@ -360,7 +360,7 @@
     {
       "id": "opsplatform",
       "label": "运维中心",
-      "labelKey": "nav.group.opsPlatform",
+      "labelKey": "nav.group.opsplatform",
       "items": [
         {
           "path": "/maintain/ops/overview",

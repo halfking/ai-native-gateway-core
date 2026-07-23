@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased] - 2026-07-23
 
+### Added
+
+- **系统监测模块（System Monitor）Phase 1+2 上线** (2026-07-23): 探测任务的统一编排（Redis FIFO + Lua atomic claim + 30s inflight dedup + 5min recent_success 跳过规则）。后端 12 个 .go 文件（`bg/systemmonitor/` 8 个 + `admin/systemmonitor_*` 3 个 + `cmd/gateway/system_monitor_adapter.go` 1 个）、2 个 Lua 脚本、2 个 SQL 迁移（344_system_probe_runs + 345_self_check_monitor_concurrency）、admin REST 9 个端点（submit / start-all / stop-all / by-{credential|provider|model} / stats / recent-runs / concurrency）+ 1 个 SSE 流、Vue Dashboard `SystemMonitorPanel.vue`（队列分组泳道 + 网络延时泳道 + system_probe_runs 表格 + 4 张统计卡片 + 并发调整对话框）。env 启停 `LLM_GATEWAY_SYSTEM_MONITOR_ENABLED=true`，默认 false（与旧 NodeProbe/ActiveProbe/CredentialSelfcheckWorker 双写兼容）。详见 [docs/changelogs/2026-07-23-system-monitor.md](docs/changelogs/2026-07-23-system-monitor.md) 与 [docs/会话优化v2/32-系统监测模块设计.md](docs/会话优化v2/32-系统监测模块设计.md).
+
 ### Changed
 
 - **Redis 缓存 TTL 精细化分层** (2026-07-23): 按业务生命周期将 LiveStream / Session / Stats / Pending 4 大类缓存的 TTL 重新分层：泳道维度队列 2h→24h（泳道存在 ≤ 1 天）、泳道活跃度 2h→1h（1h 无变化即清除）、请求详情 2h→4h（一般请求 4h 内完成）、Session 7d→3d、Stats baseline/board 7d→1d（已缩短）、Stats dirty 6h→30min、Pending response 7d→1h、stats rebuild:last 永久→7d、session:title 7d→3d（跟随 SessionTTL）。同时修复 3 处 `HSet` 隐式清除 TTL 的 bug 让 session 永不过期（已通过 19,555 个泄漏 keys 修复）。详见 [docs/changelogs/2026-07-23-redis-ttl-layered.md](docs/changelogs/2026-07-23-redis-ttl-layered.md).
