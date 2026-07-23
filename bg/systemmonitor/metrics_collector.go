@@ -34,6 +34,9 @@ type CoverageMetrics struct {
 // CollectCoverage queries system_probe_runs and calculates coverage metrics.
 // windowDays: number of days to look back (default 7).
 func (mc *MetricsCollector) CollectCoverage(ctx context.Context, windowDays int) (*CoverageMetrics, error) {
+	if mc == nil || mc.db == nil {
+		return nil, fmt.Errorf("collect coverage failed: database pool is unavailable (component=metrics_collector)")
+	}
 	if windowDays <= 0 {
 		windowDays = 7
 	}

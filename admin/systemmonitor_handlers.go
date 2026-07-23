@@ -629,6 +629,10 @@ func (h *Handler) handleSystemMonitorMigrationMetrics(w http.ResponseWriter, r *
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
+	if h.systemMonitor == nil {
+		http.Error(w, "system monitor not wired", http.StatusServiceUnavailable)
+		return
+	}
 
 	// Parse window_days query param (default 7)
 	windowDays := 7

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"testing"
+	"time"
 
 	"github.com/pashagolub/pgxmock/v4"
 )
@@ -16,10 +17,10 @@ import (
 // same broken credential every 5-min tick forever.
 //
 // After the fix, runOne must:
-//   1. call insertRun to create a self_check_runs row
-//   2. call finalizeRun with status='failed' and a non-empty error_detail
-//      so completed_at advances (unblocking the next due-credential pick)
-//   3. still return a non-nil error so cycleOnce logs it
+//  1. call insertRun to create a self_check_runs row
+//  2. call finalizeRun with status='failed' and a non-empty error_detail
+//     so completed_at advances (unblocking the next due-credential pick)
+//  3. still return a non-nil error so cycleOnce logs it
 func TestRunOne_NoRoutableModels_InsertsFailedPlaceholder(t *testing.T) {
 	w, mock := newSelfcheckMock(t)
 	defer mock.Close()
@@ -46,19 +47,19 @@ func TestRunOne_NoRoutableModels_InsertsFailedPlaceholder(t *testing.T) {
 	// finalizeRun: UPDATE self_check_runs SET ... WHERE id=$1
 	mock.ExpectExec("UPDATE self_check_runs SET").
 		WithArgs(
-			int64(42),                     // run id
-			pgxmock.AnyArg(),              // completed_at
-			pgxmock.AnyArg(),              // duration_ms
-			"failed",                      // status
-			0,                             // rounds_total
-			0,                             // rounds_success
-			false,                         // had_tool_call
-			0,                             // total_tokens
-			0,                             // avg_latency_ms
-			"none",                        // error_type — must satisfy 338 CHECK on prod
-			pgxmock.AnyArg(),              // error_detail
-			"random",                      // selection_strategy — must satisfy 341 CHECK
-			pgxmock.AnyArg(),              // attempted_models jsonb
+			int64(42),        // run id
+			pgxmock.AnyArg(), // completed_at
+			pgxmock.AnyArg(), // duration_ms
+			"failed",         // status
+			0,                // rounds_total
+			0,                // rounds_success
+			false,            // had_tool_call
+			0,                // total_tokens
+			0,                // avg_latency_ms
+			"none",           // error_type — must satisfy 338 CHECK on prod
+			pgxmock.AnyArg(), // error_detail
+			"random",         // selection_strategy — must satisfy 341 CHECK
+			pgxmock.AnyArg(), // attempted_models jsonb
 		).
 		WillReturnResult(pgxmock.NewResult("UPDATE", 1))
 
@@ -73,6 +74,34 @@ func TestRunOne_NoRoutableModels_InsertsFailedPlaceholder(t *testing.T) {
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Errorf("unmet expectations: %v", err)
+	}
+}
+
+// TestAuditToSystemProbeRunsUsesCompatibleSchema guards the migration audit
+// contract: task_id is required and task_type must satisfy migration 344.
+func TestAuditToSystemProbeRunsUsesCompatibleSchema(t *testing.T) {
+	w, mock := newSelfcheckMock(t)
+	defer mock.Close()
+
+	startedAt := time.Date(2026, 7, 24, 0, 0, 0, 0, time.UTC)
+	mock.ExpectExec("INSERT INTO system_probe_runs").WithArgs(
+		int64(42),
+		"chat_tool",
+		"automatic",
+		7,
+		"gpt-test",
+		"legacy_selfcheck",
+		"credential-selfcheck-worker",
+		"success",
+		startedAt,
+		pgxmock.AnyArg(),
+	).WillReturnResult(pgxmock.NewResult("INSERT", 1))
+
+	if err := w.auditToSystemProbeRuns(context.Background(), 42, 7, []string{"gpt-test"}, startedAt, "success"); err != nil {
+		t.Fatalf("auditToSystemProbeRuns: %v", err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet expectations: %v", err)
 	}
 }
 

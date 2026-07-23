@@ -33,6 +33,10 @@ const stats = ref<SystemMonitorStats | null>(null)
 const recentRuns = ref<SystemMonitorRun[]>([])
 const sseTasks = ref<SystemMonitorEvent[]>([])
 const migrationMetrics = ref<MigrationMetricsResponse | null>(null)
+const migrationCoverage = computed(() => {
+  const value = migrationMetrics.value?.metrics.coverage_percent ?? 0
+  return Math.min(100, Math.max(0, value))
+})
 const loading = ref(false)
 const error = ref<string | null>(null)
 const triggerBusy = ref(false)
@@ -328,13 +332,13 @@ watch(() => error.value, (v) => {
           <div class="sm-migration-label">覆盖率</div>
           <div class="sm-migration-value" :class="{
             success: migrationMetrics.ready_for_migration,
-            warning: migrationMetrics.metrics.coverage_percent >= 60 && !migrationMetrics.ready_for_migration,
-            danger: migrationMetrics.metrics.coverage_percent < 60
-          }">
-            {{ migrationMetrics.metrics.coverage_percent.toFixed(1) }}%
-          </div>
-          <el-progress
-            :percentage="migrationMetrics.metrics.coverage_percent"
+             warning: migrationCoverage >= 60 && !migrationMetrics.ready_for_migration,
+             danger: migrationCoverage < 60
+           }">
+             {{ migrationCoverage.toFixed(1) }}%
+           </div>
+           <el-progress
+             :percentage="migrationCoverage"
             :status="migrationMetrics.ready_for_migration ? 'success' : undefined"
             :stroke-width="8"
           />
@@ -673,7 +677,6 @@ watch(() => error.value, (v) => {
   font-size: 13px;
   box-shadow: 0 4px 12px rgba(0,0,0,0.15);
 }
-</style>
 /* Phase 3: Migration Progress Styles */
 .sm-migration {
   margin-bottom: 20px;
@@ -734,3 +737,4 @@ watch(() => error.value, (v) => {
 .sm-migration-details {
   margin-top: 12px;
 }
+</style>
