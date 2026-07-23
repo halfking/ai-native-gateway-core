@@ -5,7 +5,7 @@
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
 [![Go Report](https://img.shields.io/badge/Go-1.21+-00ADD8.svg)](https://golang.org)
 [![Multi-Tenant](https://img.shields.io/badge/Multi--Tenant-RLS%20enabled-brightgreen.svg)]()
-[![Version](https://img.shields.io/badge/Version-v2.4.2-green.svg)](VERSION)
+[![Version](https://img.shields.io/badge/Version-v2.4.8-green.svg)](VERSION)
 
 ---
 
@@ -41,16 +41,36 @@
 
 | 能力维度 | 实现 |
 |----------|------|
-| **协议层** | OpenAI / Anthropic / Responses 兼容 + SSE 流式中继 |
+| **协议层** | OpenAI / Anthropic / Responses 兼容 + SSE 流式中继 + 请求体归档 |
 | **路由层** | 智能候选路由 + 粘性会话 + 自动路由（cost/quality 策略） |
+| **延迟感知** | p95 + 并发压力感知打分（design §2.1） + tier-plane SWRR |
 | **多租户** | 身份隧道（virtual IP/MAC/ClientID）+ 凭据池 + 38+ 表 RLS |
 | **流量治理** | Token 限流 + 语义缓存 + 提示词压缩 + 滑窗算法 |
+| **请求级重试** | Goal RetryPolicy（cost-mode preset + 租户覆盖，Enabled 可关闭）|
+| **系统监测** | Redis FIFO 队列 + 30s dedup + 旧 worker 打标 + Vue Dashboard |
 | **审计** | 全链路审计 + DLQ + 磁盘回退 + OTel + Prometheus |
 | **License** | 在线/离线激活 + 设备管理 + CRL 撤销 + 过期续期 |
-| **升级** | 在线/离线升级 + 自动回滚 + 版本检查 + 健康验证 |
+| **升级** | 在线/离线升级 + 多平台 artifact 选择 + 自动回滚 |
+| **分发** | 自动化打包（upgrade-package builder + Cloudreve + version-check API） |
 | **部署** | M1-M4 四种模式 + systemd + Docker + K8s |
 
 详细架构见 [`docs/architecture/ARCHITECTURE.md`](docs/architecture/ARCHITECTURE.md)。
+
+### 模块导航
+
+| 模块 | 关键文件 | 职责 |
+|------|----------|------|
+| 网关入口 | `cmd/gateway/main.go`, `cmd/gateway/main_v2_pipeline.go` | 装配所有依赖、启动 HTTP/SSE |
+| 数据面 | `domains/streaming/`, `domains/streaming/executors/` | 流式中继 + 候选路由 + 重试 |
+| 路由评分 | `domains/streaming/executors/router_scoring.go` | composite = penalties；P2C 取 min |
+| Goal 重试 | `domains/streaming/goal_retry_policy.go` | 租户策略 + `EffectiveMaxRetries()` |
+| 系统监测 | `bg/systemmonitor/{monitor,redis_queue,lua/claim}.go` | Redis 队列 + Lua 原子操作 |
+| 后台 worker | `bg/*` (~50 个 worker) | 主动探针 / 自适应 / 数据治理 |
+| 凭据健康 | `domains/credential/`, `domains/health/` | 内存 + Redis 双层 + 7 类错误分级 |
+| Admin API | `admin/` (163 个 handler) | 仪表盘 / 路由配置 / 审计 / 监控 |
+| 管理面板 | `web/` (Vue 3 + TS) | 双主题 + 实时请求流多维过滤器 |
+| 分发与升级 | `installer/`, `scripts/build-upgrade-package.sh` | M1-M4 + 离线升级包 + Maintain API |
+| 版本检查 | `internal/release/`, `installer/internal/upgrader/client.go` | /distribution/version-check |
 
 ---
 
@@ -95,7 +115,7 @@ cd ..
 
 # 健康检查
 curl http://localhost:8781/healthz
-# 返回: {"status":"ok","version":"v2.4.2"}
+# 返回: {"status":"ok","version":"v2.4.8"}
 ```
 
 ### 升级
