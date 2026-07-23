@@ -205,6 +205,10 @@ tabs: {
 
     emptyWaiting: '待機中 live request stream data…',
     groupByVendor: 'ベンダー別', groupByProvider: 'By provider', groupByModel: 'By model',
+    modeSmall: '小',
+    modeLarge: '大',
+    modeSmallTitle: '小モード：縦棒表示、より多くのリクエストを収容（デフォルト）',
+    modeLargeTitle: '大モード：カード表示、より詳細なリクエスト情報',
     probeAll: 'All', probeOnly: 'Probes only',
     probeAllTitle: 'Show all requests (default)', probeOnlyTitle: 'Show probe requests only',
     cacheWindow: 'Cache / window', connectionDetailTitle: 'Click for connection details',
