@@ -3044,6 +3044,11 @@ func (h *ChatHandler) emitTelemetry(evt audit.Event, result *executors.ExecuteRe
 		return
 	}
 
+	if logCtx != nil {
+		requestBody = preferCapturedBody(requestBody, logCtx.Body)
+		responseBody = preferCapturedBody(responseBody, logCtx.ResponseBody)
+	}
+
 	var apiKeyID *int
 	var tenantID = "default"
 	var applicationID *int

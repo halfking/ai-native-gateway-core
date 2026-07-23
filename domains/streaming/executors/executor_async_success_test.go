@@ -28,6 +28,23 @@ func (m *mockRequestLogEmitter) EmitRequestLogUpdate(e *telemetry.RequestLogEntr
 
 var _ RequestLogEmitter = (*telemetry.Client)(nil)
 
+func TestBuildAsyncSuccessEntry_PreservesBodies(t *testing.T) {
+	e := &Executor{}
+	startedAt := time.Now().Add(-time.Second)
+	inbound := []byte(`{"model":"gpt-4","messages":[{"role":"user","content":"hello"}]}`)
+	response := []byte(`{"choices":[{"message":{"content":"hi"}}]}`)
+	entry := e.buildAsyncSuccessEntry("req-body", "sess-body", startedAt, &ExecuteResult{
+		InboundBody:  inbound,
+		ResponseBody: response,
+	}, &ExecParams{R: httptest.NewRequest("POST", "/v1/chat/completions", nil)})
+	if entry.RequestBody == nil || *entry.RequestBody != string(inbound) {
+		t.Fatalf("RequestBody = %v, want original inbound body", entry.RequestBody)
+	}
+	if entry.ResponseBody == nil || *entry.ResponseBody != string(response) {
+		t.Fatalf("ResponseBody = %v, want response body", entry.ResponseBody)
+	}
+}
+
 func TestBuildAsyncSuccessEntry_HappyPath(t *testing.T) {
 	e := &Executor{}
 	startedAt := time.Now().Add(-2 * time.Second)

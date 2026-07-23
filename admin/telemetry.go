@@ -11,6 +11,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -367,36 +368,12 @@ func (t *telemetryIngester) persistRequestLog(ctx context.Context, e *requestLog
 		return
 	}
 
-	// 2026-07-21 Ticket #10: INSERT full bodies into request_logs_bodies_hot.
-	// This table stores the complete request_body and response_body separately
-	// from the metadata table to reduce TOAST overhead (saving ~70% disk).
-	//
-	// Note: outbound_body is stored in request_logs_hot (not here) because it's
-	// part of the v3 session compression feature (migration 016) and needs to be
-	// co-located with compression_meta for session cache queries.
-	//
-	// Migration 353 created this table with UNIQUE (request_id, ts) constraint.
-	// Both INSERTs are in the same transaction — if either fails, both roll back.
-	//
-	// 2026-07-22 Bug fix: Added ON CONFLICT DO UPDATE to handle duplicate request_id
-	// writes (race condition when multiple ingest workers process the same request).
-	// Aligns with domains/hooks/observability/telemetry/client.go:1026-1028.
-	//
-	// 2026-07-23 migration 455: request_logs_bodies_hot UNIQUE changed
-	// from (request_id, ts) to (request_id). Matches client.go.
-	_, err = tx.Exec(ctx, `
-		INSERT INTO request_logs_bodies_hot (
-			request_id, ts, request_body, response_body
-		)
-		VALUES ($1, NOW(), $2::jsonb, $3::jsonb)
-		ON CONFLICT (request_id) DO UPDATE SET
-			request_body = COALESCE(EXCLUDED.request_body, request_logs_bodies_hot.request_body),
-			response_body = COALESCE(EXCLUDED.response_body, request_logs_bodies_hot.response_body)
-	`,
-		e.RequestID,
-		e.RequestBody,
-		e.ResponseBody,
-	)
+	// 2026-07-21 Ticket #10: Persist full bodies in request_logs_bodies_hot.
+	// This path must tolerate both historical UNIQUE (request_id, ts) and
+	// migration-455 UNIQUE (request_id) deployments, because live hosts can
+	// report schema_migrations=455 while still serving the old unique index.
+	err = upsertRequestLogBodies(ctx, tx, e.RequestID, e.RequestBody, e.ResponseBody)
+
 	if err != nil {
 		t.classifyAndCount("request_logs_bodies_hot", e.RequestID, err)
 		slog.Warn("telemetry ingest bodies failed", "request_id", e.RequestID, "error", err)
@@ -406,6 +383,39 @@ func (t *telemetryIngester) persistRequestLog(ctx context.Context, e *requestLog
 	if err := tx.Commit(ctx); err != nil {
 		slog.Warn("telemetry ingest commit failed", "error", err)
 	}
+}
+
+func upsertRequestLogBodies(ctx context.Context, tx pgx.Tx, requestID string, requestBody, responseBody *string) error {
+	_, err := tx.Exec(ctx, `
+		UPDATE request_logs_bodies_hot
+		   SET request_body = COALESCE($2::jsonb, request_body),
+		       response_body = COALESCE($3::jsonb, response_body)
+		 WHERE request_id = $1
+	`, requestID, requestBody, responseBody)
+	if err != nil {
+		return err
+	}
+
+	_, err = tx.Exec(ctx, `
+		INSERT INTO request_logs_bodies_hot (
+			request_id, ts, request_body, response_body
+		)
+		SELECT $1, rl.ts, $2::jsonb, $3::jsonb
+		  FROM request_logs_hot rl
+		 WHERE rl.request_id = $1
+		ON CONFLICT DO NOTHING
+	`, requestID, requestBody, responseBody)
+	if err != nil {
+		return err
+	}
+
+	_, err = tx.Exec(ctx, `
+		UPDATE request_logs_bodies_hot
+		   SET request_body = COALESCE($2::jsonb, request_body),
+		       response_body = COALESCE($3::jsonb, response_body)
+		 WHERE request_id = $1
+	`, requestID, requestBody, responseBody)
+	return err
 }
 
 // execWithRetry runs op with up to 2 retries on transient PG errors.

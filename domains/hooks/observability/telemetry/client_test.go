@@ -209,6 +209,23 @@ func TestNormalizeRequestStatus(t *testing.T) {
 	}
 }
 
+func TestMergeRequestLogEntry_PreservesBodiesOnEmptyUpdate(t *testing.T) {
+	requestBody := `{"messages":[{"role":"user","content":"hello"}]}`
+	responseBody := `{"choices":[{"message":{"content":"hi"}}]}`
+	dst := &RequestLogEntry{
+		RequestID:    "req-body-preserve",
+		RequestBody:  &requestBody,
+		ResponseBody: &responseBody,
+	}
+	mergeRequestLogEntry(dst, &RequestLogEntry{RequestID: dst.RequestID, Success: true})
+	if dst.RequestBody == nil || *dst.RequestBody != requestBody {
+		t.Fatalf("RequestBody = %v, want original body", dst.RequestBody)
+	}
+	if dst.ResponseBody == nil || *dst.ResponseBody != responseBody {
+		t.Fatalf("ResponseBody = %v, want original body", dst.ResponseBody)
+	}
+}
+
 func TestMergeRequestLogEntry_ClearsErrorKindOnSuccess(t *testing.T) {
 	// 2026-06-20 audit fix: when a failure entry is merged with
 	// a success entry, the merged entry's ErrorKind should be

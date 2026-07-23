@@ -3828,7 +3828,14 @@ func (e *Executor) buildAsyncSuccessEntry(
 		}
 	}
 	if result != nil {
+		if len(result.InboundBody) > 0 {
+			entry.RequestBody = strPtr(string(result.InboundBody))
+		}
+		if len(result.ResponseBody) > 0 {
+			entry.ResponseBody = strPtr(string(result.ResponseBody))
+		}
 		if result.Candidate.CredentialID != 0 {
+
 			id := result.Candidate.CredentialID
 			entry.CredentialID = &id
 		}

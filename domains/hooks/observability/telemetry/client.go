@@ -1010,31 +1010,11 @@ $47,
 		return err
 	}
 
-	// 2026-07-22 Ticket #10: INSERT full bodies into request_logs_bodies_hot.
-	// This side table stores complete request_body and response_body to avoid
-	// bloating the main table. The side table uses ON CONFLICT DO UPDATE to
-	// handle race conditions (async retries landing on the same request_id).
-	//
-	// 2026-07-23 BUGFIX: request_id 是唯一标识，不需要依赖 ts。
-	// 原问题：子查询 SELECT rl.ts FROM request_logs_hot 在高并发时可能查询失败，
-	// 导致 INSERT 返回 0 行，bodies 数据丢失。
-	// 修复方案：
-	// 1. 使用 NOW() 直接作为 ts（简单可靠）
-	// 2. JOIN 查询时只用 request_id（不需要 ts，因为 request_id 唯一）
-	// 3. ON CONFLICT 保持 (request_id, ts) 以兼容现有表结构
-	_, err = tx.Exec(ctx, `
-		INSERT INTO request_logs_bodies_hot (
-			request_id, ts, request_body, response_body
-		)
-		VALUES ($1, NOW(), $2::jsonb, $3::jsonb)
-		ON CONFLICT (request_id) DO UPDATE SET
-			request_body = COALESCE(EXCLUDED.request_body, request_logs_bodies_hot.request_body),
-			response_body = COALESCE(EXCLUDED.response_body, request_logs_bodies_hot.response_body)
-	`,
-		entry.RequestID,
-		strPtrToJSON(entry.RequestBody),
-		strPtrToJSON(entry.ResponseBody),
-	)
+	// 2026-07-22 Ticket #10: Persist full bodies in request_logs_bodies_hot.
+	// The write path must tolerate both historical UNIQUE (request_id, ts)
+	// and migration-455 UNIQUE (request_id) deployments, because some hosts
+	// already recorded schema_migrations=455 but still serve the old index.
+	err = c.upsertRequestLogBodies(ctx, tx, entry.RequestID, strPtrToJSON(entry.RequestBody), strPtrToJSON(entry.ResponseBody))
 	if err != nil {
 		slog.Error("persist request_logs_bodies_hot failed",
 			"request_id", entry.RequestID,
@@ -1142,8 +1122,7 @@ func (c *Client) updateRequestLog(entry *RequestLogEntry) error {
 		}
 	}
 
-	var updatedTS time.Time
-	err = tx.QueryRow(ctx, `
+	updated, err := tx.Exec(ctx, `
 		-- 2026-07-23 migration 455: request_logs_hot PK changed from (request_id, ts)
 		-- to (request_id). With request_id as the unique key, the CTE (which found
 		-- the latest row among duplicates) is no longer needed. Direct UPDATE by
@@ -1343,41 +1322,21 @@ func (c *Client) updateRequestLog(entry *RequestLogEntry) error {
 		entry.ClientForwardedFor,
 		entry.OriginStage,
 		entry.OriginActor,
-	).Scan(&updatedTS)
-	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+	)
+	if err != nil {
 		return err
 	}
-
-	if err == nil {
-		// 2026-07-23 migration 455: request_logs_bodies_hot UNIQUE changed
-		// from (request_id, ts) to (request_id). Use NOW() for ts directly
-		// — no longer need the metadata row's ts.
-		_, err = tx.Exec(ctx, `
-		INSERT INTO request_logs_bodies_hot (
-			request_id, ts, request_body, response_body
-		)
-		VALUES ($1, NOW(), $2::jsonb, $3::jsonb)
-		ON CONFLICT (request_id) DO UPDATE SET
-			request_body = COALESCE(EXCLUDED.request_body, request_logs_bodies_hot.request_body),
-			response_body = COALESCE(EXCLUDED.response_body, request_logs_bodies_hot.response_body)
-	`,
-			entry.RequestID,
-			strPtrToJSON(entry.RequestBody),
-			strPtrToJSON(entry.ResponseBody),
-		)
-		if err != nil {
-			return err
-		}
-	}
-
-	if errors.Is(err, pgx.ErrNoRows) {
-		// No early row — fall back to insert so the request is not lost.
+	if updated.RowsAffected() == 0 {
 		if rbErr := tx.Rollback(ctx); rbErr != nil {
 			slog.Warn("telemetry update rollback failed", "request_id", entry.RequestID, "error", rbErr)
 		}
 		fallback := *entry
 		fallback.Op = RequestLogInsert
 		return c.insertRequestLog(&fallback)
+	}
+
+	if err = c.upsertRequestLogBodies(ctx, tx, entry.RequestID, strPtrToJSON(entry.RequestBody), strPtrToJSON(entry.ResponseBody)); err != nil {
+		return err
 	}
 
 	if entry.APIKeyID != nil && *entry.APIKeyID > 0 && entry.Success {
@@ -1407,6 +1366,39 @@ func (c *Client) updateRequestLog(entry *RequestLogEntry) error {
 	}
 
 	return tx.Commit(ctx)
+}
+
+func (c *Client) upsertRequestLogBodies(ctx context.Context, tx pgx.Tx, requestID, requestBodyJSON, responseBodyJSON string) error {
+	_, err := tx.Exec(ctx, `
+		UPDATE request_logs_bodies_hot
+		   SET request_body = COALESCE($2::jsonb, request_body),
+		       response_body = COALESCE($3::jsonb, response_body)
+		 WHERE request_id = $1
+	`, requestID, requestBodyJSON, responseBodyJSON)
+	if err != nil {
+		return err
+	}
+
+	_, err = tx.Exec(ctx, `
+		INSERT INTO request_logs_bodies_hot (
+			request_id, ts, request_body, response_body
+		)
+		SELECT $1, rl.ts, $2::jsonb, $3::jsonb
+		  FROM request_logs_hot rl
+		 WHERE rl.request_id = $1
+		ON CONFLICT DO NOTHING
+	`, requestID, requestBodyJSON, responseBodyJSON)
+	if err != nil {
+		return err
+	}
+
+	_, err = tx.Exec(ctx, `
+		UPDATE request_logs_bodies_hot
+		   SET request_body = COALESCE($2::jsonb, request_body),
+		       response_body = COALESCE($3::jsonb, response_body)
+		 WHERE request_id = $1
+	`, requestID, requestBodyJSON, responseBodyJSON)
+	return err
 }
 
 func intptr(v int) *int           { return &v } //nolint:unused
