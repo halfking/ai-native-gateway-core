@@ -16,15 +16,18 @@ var recordRequestSrc string
 var RecordRequestScript = redis.NewScript(recordRequestSrc)
 
 type RecordOutcome struct {
-	Success      bool
-	ErrorKind    string
-	NowMs        int64
-	LatencyMs    int
-	RequestID    string
-	NodeTTL      time.Duration
-	Window5mTTL  time.Duration
-	Window30mTTL time.Duration
-	AdminHold    bool
+	Success       bool
+	ErrorKind     string
+	NowMs         int64
+	LatencyMs     int
+	RequestID     string
+	NodeTTL       time.Duration
+	Window5mTTL   time.Duration
+	Window30mTTL  time.Duration
+	AdminHold     bool
+	// Cooling parameters (P1: unify with credentialfpslot/node_state.go)
+	CoolSeconds    int // Seconds to cool when disabled (default 300 = 5min)
+	FailStreakLimit int // Failures before disabling (default 3)
 }
 
 type RecordResult struct {
@@ -39,6 +42,15 @@ func (s *Store) RecordRequest(ctx context.Context, nodeKey, win1m, win5m, win30m
 	if s == nil || s.rdb == nil {
 		return RecordResult{}, ErrRedisUnavailable
 	}
+	// Defaults for cooling parameters
+	coolSeconds := o.CoolSeconds
+	if coolSeconds <= 0 {
+		coolSeconds = 300 // 5 minutes default
+	}
+	failStreakLimit := o.FailStreakLimit
+	if failStreakLimit <= 0 {
+		failStreakLimit = 3
+	}
 	res, err := RecordRequestScript.Run(ctx, s.rdb,
 		[]string{nodeKey, win1m, win5m, win30m},
 		BoolFlag(o.Success), o.ErrorKind, fmt.Sprintf("%d", o.NowMs),
@@ -47,6 +59,8 @@ func (s *Store) RecordRequest(ctx context.Context, nodeKey, win1m, win5m, win30m
 		fmt.Sprintf("%d", int64(o.Window5mTTL/time.Second)),
 		fmt.Sprintf("%d", int64(o.Window30mTTL/time.Second)),
 		BoolFlag(o.AdminHold),
+		fmt.Sprintf("%d", coolSeconds),
+		fmt.Sprintf("%d", failStreakLimit),
 	).Slice()
 	if err != nil {
 		return RecordResult{}, fmt.Errorf("ursm.v2: record_request: %w", err)

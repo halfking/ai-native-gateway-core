@@ -142,8 +142,18 @@ func (r *Router) PlanCandidates(
 	}
 
 	// 使用状态管理器过滤（如果启用）
+	// 2026-07-24: 当 URSM v2 处于 authoritative 模式且 Ready 时，跳过 StateManager 过滤。
+	// URSM v2 已经是权威的状态来源，StateManager 的内存缓存（10s TTL）会导致
+	// 与 URSM v2 决策不一致的状态。StateManager 只在 URSM v2 未生效时作为主过滤。
+	skipStateManager := r.URSMv2 != nil && r.URSMv2.Mode() == ursmv2api.ModeAuthoritative && func() bool {
+		ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+		defer cancel()
+		return r.URSMv2.Ready(ctx)
+	}()
 	var available []provider.Candidate
-	if r.StateManager != nil && r.StateManager.Enabled() {
+	if skipStateManager {
+		available = candidates // URSM v2 authoritative already filtered at lines 103-142
+	} else if r.StateManager != nil && r.StateManager.Enabled() {
 		ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
 		defer cancel()
 		available = r.filterAvailableWithStateManager(ctx, candidates)
@@ -191,9 +201,19 @@ func (r *Router) PlanCandidates(
 		// 2026-07-14: tryDegradedMode 现在也查询 StateManager。之前它只看
 		// c.UnavailableReason()（DB 派生字段），而 filterAvailableWithStateManager
 		// 过滤候选时不修改候选结构体，导致被内存态（state:timeout 等）过滤掉的单点
-		// 候选 UnavailableReason() 返回空串、降级不触发 → 0 节点 503。生产事故
+		// 候选 UnavailableReason() 仍是空串、降级不触发 → 0 节点 503。生产事故
 		// ba9fc64f（gpt-5.6-luna cred=2 state:timeout）即此路径。
-		if len(candidates) <= 2 {
+		//
+		// 2026-07-24: 当 URSM v2 处于 authoritative 模式时，禁止降级模式。
+		// URSM v2 的冷却逻辑已经是最终决策，不应被降级模式覆盖。
+		// 降级模式是旧系统的容错机制，与 URSM v2 的 authoritative 决策冲突时，
+		// 应以 URSM v2 为准。
+		skipDegradedMode := r.URSMv2 != nil && r.URSMv2.Mode() == ursmv2api.ModeAuthoritative && func() bool {
+			ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+			defer cancel()
+			return r.URSMv2.Ready(ctx)
+		}()
+		if len(candidates) <= 2 && !skipDegradedMode {
 			degradedCandidates := r.tryDegradedMode(queryCtx, candidates)
 			if len(degradedCandidates) > 0 {
 				slog.Warn("router: degraded mode activated, using transiently unavailable candidates",
@@ -213,7 +233,17 @@ func (r *Router) PlanCandidates(
 		return nil
 	}
 
-	available = r.filterHealthyNodes(available)
+	// URSM v2 authoritative mode already filtered candidates by availability
+	// (including cooling period state). Skip redundant FpSlots health check
+	// to avoid conflicting with URSM v2's authoritative state.
+	skipHealthFilter := r.URSMv2 != nil && r.URSMv2.Mode() == ursmv2api.ModeAuthoritative && func() bool {
+		ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+		defer cancel()
+		return r.URSMv2.Ready(ctx)
+	}()
+	if !skipHealthFilter {
+		available = r.filterHealthyNodes(available)
+	}
 
 	// Round 1: token_plan / code_plan / agent_plan / free — always before PAYG.
 	// Round 2: token (按量). Executor skips saturated round-1 creds and falls through.
