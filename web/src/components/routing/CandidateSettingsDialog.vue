@@ -47,22 +47,37 @@ const lifecycleOptions = [
 ]
 
 // Emergency repair actions availability based on current state
-const canForceEnable = computed(() =>
-  props.candidate.credential_status !== 'active' ||
-  props.candidate.lifecycle_status !== 'active'
-)
+// R6 fix: canForceEnable must only be enabled when the credential is
+// currently disabled. Previous implementation returned true when EITHER
+// status was non-active, which incorrectly enabled the button on
+// lifecycle='retired' (lifecycle_status cannot be flipped here).
+const canForceEnable = computed(() => {
+  const c = props.candidate
+  const inEffect = (c.effective_at == null) ||
+    new Date(c.effective_at).getTime() <= Date.now()
+  const notExpired = (c.expires_at == null) ||
+    new Date(c.expires_at).getTime() > Date.now()
+  return c.credential_status === 'active' &&
+    c.lifecycle_status === 'active' &&
+    inEffect &&
+    notExpired
+})
 
-const canForceDisable = computed(() =>
-  props.candidate.credential_status === 'active' &&
-  props.candidate.lifecycle_status === 'active'
-)
+const canForceDisable = computed(() => {
+  const c = props.candidate
+  return c.credential_status === 'active' &&
+    c.lifecycle_status === 'active'
+})
 
 const canClearCircuit = computed(() =>
   props.candidate.circuit_state === 'open' || props.candidate.circuit_state === 'half_open'
 )
 
+// R7 fix: source authoritative value from credential-level field.
+// resolve returns both cmb.consecutive_failures and c.consecutive_failures;
+// the reset_errors operation only touches the credential-level column.
 const canResetErrors = computed(() =>
-  (props.candidate.consecutive_failures ?? 0) > 0
+  (props.candidate.credential_consecutive_failures ?? 0) > 0
 )
 
 async function doEmergencyRepair(action: EmergencyRepairAction, label: string) {
@@ -274,7 +289,7 @@ async function save() {
                 <li>凭据状态: <strong>{{ candidate.credential_status }}</strong></li>
                 <li>生命周期: <strong>{{ candidate.lifecycle_status || '—' }}</strong></li>
                 <li>熔断状态: <strong :class="{ 'text-danger': candidate.circuit_state === 'open' || candidate.circuit_state === 'half_open' }">{{ candidate.circuit_state || 'closed' }}</strong></li>
-                <li>连续失败: <strong :class="{ 'text-danger': (candidate.consecutive_failures ?? 0) > 0 }">{{ candidate.consecutive_failures ?? 0 }} 次</strong></li>
+                <li>连续失败: <strong :class="{ 'text-danger': (candidate.credential_consecutive_failures ?? candidate.consecutive_failures ?? 0) > 0 }">{{ candidate.credential_consecutive_failures ?? candidate.consecutive_failures ?? 0 }} 次</strong></li>
               </ul>
             </div>
 
@@ -337,7 +352,7 @@ async function save() {
                   <span class="cs-emergency-title">重置错误计数</span>
                 </div>
                 <p class="cs-emergency-desc">清除连续失败计数，让节点脱离 unhealthy 状态。将 <code>consecutive_failures=0</code>。</p>
-                <div class="cs-emergency-meta">当前连续失败: <strong>{{ candidate.consecutive_failures ?? 0 }} 次</strong></div>
+                <div class="cs-emergency-meta">当前连续失败: <strong>{{ candidate.credential_consecutive_failures ?? candidate.consecutive_failures ?? 0 }} 次</strong></div>
                 <button
                   class="btn btn-info btn-sm"
                   :disabled="!canResetErrors || emergencyRepairing !== null"
