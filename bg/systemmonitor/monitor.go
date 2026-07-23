@@ -498,7 +498,9 @@ func maxInt(a, b int) int {
 }
 
 func computeBackoff(attempt int) time.Duration {
-	// design §4.5: 5s, 30s, 60s, 5m, 1h, 2h, 24h
+	// 2026-07-24 fix: changed from [5s,30s,60s,5m,1h,2h,24h] to [5s,30s,60s,5m,1h,2h,6h].
+	// After reaching 6h (attempt 7+), all subsequent attempts remain at 6h intervals
+	// until manually paused or successful. Rationale: 24h was too long.
 	ladder := []time.Duration{
 		5 * time.Second,
 		30 * time.Second,
@@ -506,7 +508,7 @@ func computeBackoff(attempt int) time.Duration {
 		5 * time.Minute,
 		1 * time.Hour,
 		2 * time.Hour,
-		24 * time.Hour,
+		6 * time.Hour, // was 24h
 	}
 	if attempt < 1 {
 		attempt = 1

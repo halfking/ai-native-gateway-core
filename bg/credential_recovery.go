@@ -430,15 +430,6 @@ func expiredCmbRecoverySQL() string {
 		        AND nps.raw_model_name = pm.raw_model_name
 		        AND nps.paused         = TRUE
 		  )
-		  AND NOT EXISTS (
-		      SELECT 1 FROM node_probe_state nps
-		      WHERE nps.credential_id  = cmb.credential_id
-		        AND nps.raw_model_name = pm.raw_model_name
-		        AND nps.next_retry_at  > now()
-		        -- 2026-07-24 fix: allow recovery if backoff > 2h (stuck in 24h ladder)
-		        -- to prevent nodes from being stranded for a full day after transient failures.
-		        AND (nps.next_retry_at - now()) < INTERVAL '2 hours'
-		  )
 		ORDER BY cmb.unavailable_recover_at ASC
 		LIMIT 50
 	`

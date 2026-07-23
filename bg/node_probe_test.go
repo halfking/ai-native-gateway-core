@@ -7,9 +7,11 @@ import (
 	"time"
 )
 
-// TestNodeProbeBackoffLadder pins the 5s/30s/60s/5m/1h/2h/24h
+// TestNodeProbeBackoffLadder pins the 5s/30s/60s/5m/1h/2h/6h
 // sequence mandated by the spec — any change here must be a
 // deliberate spec update.
+// 2026-07-24: changed from 24h to 6h to prevent nodes from being
+// stranded for a full day after transient failures.
 func TestNodeProbeBackoffLadder(t *testing.T) {
 	want := []time.Duration{
 		5 * time.Second,
@@ -18,7 +20,7 @@ func TestNodeProbeBackoffLadder(t *testing.T) {
 		5 * time.Minute,
 		1 * time.Hour,
 		2 * time.Hour,
-		24 * time.Hour,
+		6 * time.Hour, // was 24h
 	}
 	if len(NodeProbeBackoffChain) != len(want) {
 		t.Fatalf("len mismatch: got %d want %d", len(NodeProbeBackoffChain), len(want))
