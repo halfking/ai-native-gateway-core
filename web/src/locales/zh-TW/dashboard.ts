@@ -281,7 +281,7 @@ tabs: {
     avgCacheHitRate: '平均快取命中率',
     avgDuration: '平均耗時',
 
-    title: '模块执行统计',
+    title: '模組執行統計',
 
     successRate: '成功率',
   },
@@ -296,11 +296,11 @@ tabs: {
     totalErrors: '總錯誤數',
     topErrors: 'Top 錯誤',
 
-    title: '错误统计',
+    title: '錯誤統計',
 
-    totalRequests: '总请求数',
+    totalRequests: '總請求數',
 
-    avgLatency: '平均错误延迟',
+    avgLatency: '平均錯誤延遲',
   },
 
   performance: {
@@ -312,36 +312,36 @@ tabs: {
     latencyDist: '延遲分布',
     slowQueries: '慢查詢',
 
-    title: '性能指标',
+    title: '效能指標',
 
-    avgLatency: '平均延迟',
+    avgLatency: '平均延遲',
 
-    latency: '延迟',
+    latency: '延遲',
   },
 
   providerUsage: {
-    title: '供应商用量',
-    subtitle: '{period} 全站供应商消耗汇总（可用于对账）',
-    periodHint: '当前周期：{period}',
+    title: '供應商用量',
+    subtitle: '{period} 全站供應商消耗彙總（可用於對帳）',
+    periodHint: '當前週期：{period}',
     more: '更多',
-    search: '搜索供应商名称、代码或 ID…',
+    search: '搜尋供應商名稱、代碼或 ID…',
     back: '返回列表',
-    exportAll: '导出全部 Excel',
-    exportDetail: '导出明细 Excel',
-    colName: '供应商',
-    colCode: '代码',
-    colRequests: '请求数',
+    exportAll: '匯出全部 Excel',
+    exportDetail: '匯出明細 Excel',
+    colName: '供應商',
+    colCode: '代碼',
+    colRequests: '請求數',
     colTokens: 'Token',
     colCost: '成本 (USD)',
     colSuccess: '成功率',
     colModel: '模型',
     colDate: '日期',
     periodDay: '按天',
-    periodWeek: '按周',
+    periodWeek: '按週',
     periodMonth: '按月',
-    periodLabel: '统计周期：{period}',
+    periodLabel: '統計週期：{period}',
     periodRange: '{start} 至 {end}',
-    modelBreakdown: '模型聚合',
-    dailyBreakdown: '每日模型明细',
+    modelBreakdown: '模型彙總',
+    dailyBreakdown: '每日模型明細',
   },
 }
