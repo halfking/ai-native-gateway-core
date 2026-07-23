@@ -343,6 +343,8 @@ func (t *telemetryIngester) persistRequestLog(ctx context.Context, e *requestLog
 			COALESCE($32, 0),
 			$33
 		)
+		ON CONFLICT (request_id) DO UPDATE SET
+			ts = EXCLUDED.ts
 	`,
 		e.RequestID, nonEmptyDefault(e.TenantID), e.ApplicationID, e.APIKeyID,
 		e.EndUserID, e.ClientModel, e.OutboundModel,
@@ -380,16 +382,14 @@ func (t *telemetryIngester) persistRequestLog(ctx context.Context, e *requestLog
 	// writes (race condition when multiple ingest workers process the same request).
 	// Aligns with domains/hooks/observability/telemetry/client.go:1026-1028.
 	//
-	// 2026-07-23 BUGFIX: Replace subquery with VALUES pattern. The old subquery
-	// (SELECT rl.ts FROM request_logs_hot) could return 0 rows under concurrent
-	// access or during hot-table promotion, silently dropping the body write.
-	// This matches the fix already applied to client.go:1025-1037.
+	// 2026-07-23 migration 455: request_logs_bodies_hot UNIQUE changed
+	// from (request_id, ts) to (request_id). Matches client.go.
 	_, err = tx.Exec(ctx, `
 		INSERT INTO request_logs_bodies_hot (
 			request_id, ts, request_body, response_body
 		)
 		VALUES ($1, NOW(), $2::jsonb, $3::jsonb)
-		ON CONFLICT (request_id, ts) DO UPDATE SET
+		ON CONFLICT (request_id) DO UPDATE SET
 			request_body = COALESCE(EXCLUDED.request_body, request_logs_bodies_hot.request_body),
 			response_body = COALESCE(EXCLUDED.response_body, request_logs_bodies_hot.response_body)
 	`,
@@ -556,8 +556,10 @@ func (h *Handler) handleTelemetryDecisionLog(w http.ResponseWriter, r *http.Requ
 				$22, $23, $24, $25,
 				$26, $27, $28,
 				$29, $30, CAST($31 AS jsonb), CAST($32 AS jsonb)
-			)
-		`,
+		)
+		ON CONFLICT (request_id) DO UPDATE SET
+			ts = EXCLUDED.ts
+	`,
 			entry.RequestID, entry.IdempotencyKey, nonEmptyDefault(entry.TenantID), entry.APIKeyID,
 			entry.Model, entry.ChosenCredentialID, entry.ChosenProviderID, entry.Tier,
 			entry.CandidatesTried, entry.LatencyMs, entry.Success, entry.ErrorClass,
