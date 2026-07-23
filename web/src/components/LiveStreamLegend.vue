@@ -3,7 +3,7 @@
 // 2026-07-05: 显示维度图例（Top5）和状态图例，支持点击反转选择
 // 2026-07-05 v2: 将状态图例移到同一行右侧
 
-import { computed } from 'vue'
+import { computed, ref } from 'vue'
 import type { LiveStreamLegendItem } from '../composables/liveStreamStore'
 import { VENDOR_COLORS, STATUS_BORDER_COLORS } from '../types/swimlane'
 
@@ -33,6 +33,7 @@ function isSelected(key: string): boolean {
 
 // 检查是否有任何选中
 const hasSelection = computed(() => props.selectedLegends.size > 0)
+const expanded = ref(false)
 
 function handleClick(key: string) {
   emit('toggleLegend', key)
@@ -41,7 +42,15 @@ function handleClick(key: string) {
 
 <template>
   <div class="legend-container">
-    <div class="legend-row">
+    <button type="button" class="legend-toggle" :aria-expanded="expanded" @click="expanded = !expanded">
+      <span>{{ $t('dashboard.liveStream.legendButton') }}</span>
+      <span class="legend-toggle__meta">
+        <span v-if="hasSelection" class="legend-toggle__count">{{ props.selectedLegends.size }}</span>
+        <span aria-hidden="true">{{ expanded ? '▴' : '▾' }}</span>
+      </span>
+    </button>
+
+    <div v-if="expanded" class="legend-row">
       <!-- 左侧：维度图例 -->
       <div class="legend-section legend-section--left">
         <span class="legend-heading">{{ dimensionLabel }}</span>
@@ -100,7 +109,39 @@ function handleClick(key: string) {
   border-radius: 6px;
 }
 
+.legend-toggle {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.legend-toggle__meta {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--text-secondary);
+}
+
+.legend-toggle__count {
+  min-width: 18px;
+  padding: 2px 5px;
+  border-radius: 9px;
+  background: var(--accent);
+  color: var(--bg);
+  text-align: center;
+  font-size: 11px;
+}
+
 .legend-row {
+  margin-top: 10px;
   display: flex;
   justify-content: space-between;
   align-items: center;
