@@ -35,6 +35,7 @@ export default {
     auditLogs: 'Audit Logs',
     requestLogs: 'Request Logs',
     sessions: 'Sessions',
+    pluginSessions: 'Plugin Sessions',
     sessionManagement: 'Session Management',
     sessionCompare: 'Session Compare',
     compression: 'Compression',

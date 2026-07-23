@@ -34,6 +34,7 @@ export default {
     requestLogs: "Anfrage-Logs",
     requestTrace: "Anfrage-Verfolgung",
     sessions: "Sitzungen",
+    pluginSessions: "Plugin-Sitzungen",
     sessionManagement: "Sitzungsverwaltung",
     sessionCompare: "Sitzungsvergleich",
     compression: "Komprimierungsverwaltung",

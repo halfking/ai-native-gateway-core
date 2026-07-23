@@ -36,6 +36,7 @@ export default {
     auditLogs: '审计日志',
     requestLogs: '请求日志',
     sessions: '会话列表',
+    pluginSessions: '插件会话列表',
     sessionManagement: '会话管理',
     sessionCompare: '会话对比',
     compression: '压缩管理',

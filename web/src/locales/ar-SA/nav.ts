@@ -34,6 +34,7 @@ export default {
     requestLogs: "سجلات الطلبات",
     requestTrace: "تتبع الطلبات",
     sessions: "قائمة الجلسات",
+    pluginSessions: "جلسات البرنامج المساعد",
     sessionManagement: "إدارة الجلسات",
     sessionCompare: "مقارنة الجلسات",
     compression: "إدارة الضغط",
