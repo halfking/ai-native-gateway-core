@@ -230,3 +230,27 @@ export interface SystemMonitorStatsPayload {
   completed_total_1h: number
   failed_total_1h: number
 }
+// ── Phase 3: Migration Metrics ────────────────────────────
+
+export interface MigrationMetrics {
+  window_days: number
+  total_tasks: number
+  system_monitor_tasks: number
+  legacy_tasks: number
+  coverage_percent: number
+  by_source: Record<string, number>
+  by_task_type: Record<string, number>
+  collected_at: string
+}
+
+export interface MigrationMetricsResponse {
+  metrics: MigrationMetrics
+  ready_for_migration: boolean
+  migration_message: string
+}
+
+export function fetchMigrationMetrics(windowDays = 7) {
+  return req.get<MigrationMetricsResponse>(
+    `/api/admin/system-monitor/migration-metrics?window_days=${windowDays}`
+  )
+}
