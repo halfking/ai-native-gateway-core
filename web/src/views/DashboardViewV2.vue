@@ -200,7 +200,6 @@ async function onRefresh() {
     <SelfCheckPanel v-if="activeTab === 'selfcheck'" />
 
     <SystemMonitorPanel v-if="activeTab === 'systemmonitor' && canShowSystemMonitor" />
-
     <LiveRequestStreamV2
       v-if="activeTab === 'stream'"
       @open-detail="openRequestDetail"

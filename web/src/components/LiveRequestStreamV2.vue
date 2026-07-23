@@ -604,6 +604,7 @@ const activeFilterCount = computed(() => {
                 />
                 <span>{{ model }}</span>
               </label>
+              <span v-if="availableModels.length === 0" class="filter-empty">{{ t('dashboard.liveStream.filterEmpty') }}</span>
             </div>
           </div>
 
@@ -625,6 +626,7 @@ const activeFilterCount = computed(() => {
                 />
                 <span>{{ provider }}</span>
               </label>
+              <span v-if="availableProviders.length === 0" class="filter-empty">{{ t('dashboard.liveStream.filterEmpty') }}</span>
             </div>
           </div>
 
@@ -646,6 +648,7 @@ const activeFilterCount = computed(() => {
                 />
                 <span>{{ t(`dashboard.liveStream.vendor.${vendor}`) }}</span>
               </label>
+              <span v-if="availableVendors.length === 0" class="filter-empty">{{ t('dashboard.liveStream.filterEmpty') }}</span>
             </div>
           </div>
 
@@ -958,6 +961,13 @@ const activeFilterCount = computed(() => {
 .filter-option--selected {
   color: var(--accent);
   font-weight: 600;
+}
+
+.filter-empty {
+  display: block;
+  padding: 8px 10px;
+  color: var(--text-tertiary);
+  font-size: 12px;
 }
 
 .filter-option:hover {

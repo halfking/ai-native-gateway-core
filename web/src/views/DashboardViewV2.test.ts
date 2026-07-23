@@ -18,9 +18,9 @@ async function readViewSource(filename: string): Promise<string> {
 }
 
 describe('dashboard board tab contract', () => {
-  it('defaults to board tab in DashboardView', async () => {
+  it('defaults to stream tab in DashboardView', async () => {
     const source = await readViewSource('DashboardView.vue')
-    expect(source).toContain("ref<DashboardTabId>('board')")
+    expect(source).toContain("ref<DashboardTabId>('stream')")
     expect(source).toContain("saved === 'board'")
   })
 

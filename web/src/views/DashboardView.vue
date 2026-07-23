@@ -31,6 +31,7 @@ const hotKeys = ref<HotApiKeyEntry[]>([])
 
 onMounted(() => {
   const saved = localStorage.getItem(STORAGE_KEY_TAB)
+<<<<<<< Updated upstream
   if (saved === 'board' || saved === 'stream' || saved === 'stats' || saved === 'selfcheck' || saved === 'systemmonitor') {
     activeTab.value = saved
   }
