@@ -10,11 +10,33 @@ if ARGV[4] == "1" or ARGV[5] == "1" then
   return {"ignored_manual_hold"}
 end
 
+local cool_until_ms = tonumber(redis.call("HGET", KEYS[1], "cool_until_ms") or "0")
+local disabled = redis.call("HGET", KEYS[1], "disabled")
+local now_ms = tonumber(ARGV[3])
+
+-- If node is in cooling period and probe succeeds, recover immediately
+local in_cool = (disabled == "1") and (cool_until_ms > now_ms)
+
 redis.call("HINCRBY", KEYS[1], "generation", 1)
-redis.call("HSET", KEYS[1],
-  "source_priority", "20",
-  "updated_at_ms", ARGV[3],
-  "last_probe_at_ms", ARGV[3],
-  "last_probe_latency_ms", ARGV[2],
-  "available", ARGV[1])
-return {"applied"}
+if ARGV[1] == "1" and in_cool then
+  -- Probe success during cooling -> recover node
+  redis.call("HSET", KEYS[1],
+    "source_priority", "20",
+    "updated_at_ms", ARGV[3],
+    "last_probe_at_ms", ARGV[3],
+    "last_probe_latency_ms", ARGV[2],
+    "available", "1",
+    "disabled", "0",
+    "cool_until_ms", "0",
+    "fail_streak", "0",
+    "last_err", "")
+  return {"applied", "recovered_from_cool"}
+else
+  redis.call("HSET", KEYS[1],
+    "source_priority", "20",
+    "updated_at_ms", ARGV[3],
+    "last_probe_at_ms", ARGV[3],
+    "last_probe_latency_ms", ARGV[2],
+    "available", ARGV[1])
+  return {"applied"}
+end
