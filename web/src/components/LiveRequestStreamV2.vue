@@ -565,6 +565,8 @@ const activeFilterCount = computed(() => {
 
         <!-- 2026-07-24: 多维过滤器 -->
         <div ref="filterGroupRef" class="filter-group">
+          <!-- 2026-07-24 v2: 筛选分组前缀标签，让用户一眼看到这是筛选项区 -->
+          <span class="filter-group__label">筛选</span>
           <!-- 状态过滤 -->
           <div class="filter-dropdown">
             <button type="button" class="filter-btn" :class="{ 'filter-btn--active': statusFilter.size > 0 }" @click.stop="toggleFilterMenu('status')">
@@ -842,15 +844,18 @@ const activeFilterCount = computed(() => {
 
 /* 2026-07-24: 不同功能簇使用不同色调做软区分 */
 .control-group.control-group--dimension {
-  background: color-mix(in srgb, var(--accent) 6%, var(--bg-subtle));
+  background: color-mix(in srgb, var(--accent) 14%, var(--bg-subtle));
+  border-color: color-mix(in srgb, var(--accent) 35%, var(--border));
 }
 
 .control-group.control-group--mode {
-  background: color-mix(in srgb, var(--success) 6%, var(--bg-subtle));
+  background: color-mix(in srgb, var(--success) 14%, var(--bg-subtle));
+  border-color: color-mix(in srgb, var(--success) 35%, var(--border));
 }
 
 .control-group.control-group--request-type {
-  background: color-mix(in srgb, #409eff 8%, var(--bg-subtle));
+  background: color-mix(in srgb, #409eff 16%, var(--bg-subtle));
+  border-color: color-mix(in srgb, #409eff 38%, var(--border));
 }
 
 .control-btn {
@@ -887,16 +892,26 @@ const activeFilterCount = computed(() => {
   color: #1890ff;
 }
 
-/* 2026-07-24: 多维过滤器样式 */
+/* 2026-07-24: 多维过滤器样式 — 紫色高亮以便与维度/模式/请求类型组区分 */
 .filter-group {
   display: flex;
   align-items: center;
   gap: 8px;
   flex-wrap: wrap;
-  padding: 4px 8px;
+  padding: 5px 10px;
   border-radius: 6px;
-  background: color-mix(in srgb, #722ed1 8%, var(--bg-subtle));
-  border: 1px solid color-mix(in srgb, #722ed1 25%, var(--border));
+  background: color-mix(in srgb, #722ed1 18%, var(--bg-subtle));
+  border: 1px solid color-mix(in srgb, #722ed1 45%, var(--border));
+}
+
+/* 2026-07-24: "筛选"前缀标签，让用户一眼看到这是筛选项区 */
+.filter-group__label {
+  font-size: 11px;
+  font-weight: 600;
+  color: #722ed1;
+  letter-spacing: 0.5px;
+  user-select: none;
+  padding-right: 2px;
 }
 
 .filter-dropdown {
