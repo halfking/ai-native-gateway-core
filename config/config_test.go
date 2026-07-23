@@ -45,6 +45,27 @@ func TestLoad_TimeoutAndPendingTTLEnvironmentOverrides(t *testing.T) {
 	}
 }
 
+func TestLoad_DefaultStreamingTimeouts(t *testing.T) {
+	for _, key := range []string{
+		"LLM_GATEWAY_UPSTREAM_TIMEOUT",
+		"LLM_GATEWAY_STREAM_CHUNK_TIMEOUT",
+		"LLM_GATEWAY_FIRST_BYTE_TIMEOUT",
+	} {
+		t.Setenv(key, "")
+	}
+
+	cfg := Load()
+	if cfg.UpstreamTimeout != 150 {
+		t.Fatalf("UpstreamTimeout = %d, want 150", cfg.UpstreamTimeout)
+	}
+	if cfg.FirstByteTimeout != 120 {
+		t.Fatalf("FirstByteTimeout = %d, want 120", cfg.FirstByteTimeout)
+	}
+	if cfg.StreamChunkTimeout != 600 {
+		t.Fatalf("StreamChunkTimeout = %d, want 600", cfg.StreamChunkTimeout)
+	}
+}
+
 func TestLoad_InvalidPendingTTLFallsBackToDefault(t *testing.T) {
 	for _, value := range []string{"0", "-1", "invalid"} {
 		t.Run(value, func(t *testing.T) {

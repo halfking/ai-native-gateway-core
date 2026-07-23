@@ -106,11 +106,13 @@ func NewPool(key PoolKey, probeURL string, proxyFunc func(*http.Request) (*url.U
 		proxy = http.ProxyFromEnvironment
 	}
 	transport := &http.Transport{
-		Proxy:                 proxy,
-		MaxIdleConns:          maxConnsPerHost,
-		MaxIdleConnsPerHost:   maxIdleConnsPerHost,
-		IdleConnTimeout:       idleConnTimeout,
-		ResponseHeaderTimeout: 60 * time.Second,
+		Proxy:               proxy,
+		MaxIdleConns:        maxConnsPerHost,
+		MaxIdleConnsPerHost: maxIdleConnsPerHost,
+		IdleConnTimeout:     idleConnTimeout,
+		// The request context owns the upstream and first-byte deadline. A
+		// transport-level response-header timeout would otherwise cut streaming
+		// requests short before the configured first-byte budget expires.
 		TLSHandshakeTimeout:   10 * time.Second,
 		ExpectContinueTimeout: time.Second,
 		DialContext: (&net.Dialer{

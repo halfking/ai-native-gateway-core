@@ -892,23 +892,9 @@ func (e *Executor) executeOpenAI(
 						streamKind = errorsx.KindEmptyResponse
 					}
 
-					// 2026-07-23: Minimax protocol adaptation - improved benign EOF detection
-					// Minimax often doesn't send standard [DONE] marker but closes connection
-					// after sending all content. Treat as success if we received meaningful chunks.
-					// Threshold lowered from implicit >0 to explicit >=1 for clarity.
-					// Consider chunks with actual content (not just role announcements).
-					const minValidChunksForBenignEOF = 1
-					isBenignEOF := streamOutcome.Reason == "eof_without_done" && streamOutcome.ChunkCount >= minValidChunksForBenignEOF
+					isBenignEOF := streamOutcome.Reason == "eof_without_done" && streamOutcome.ChunkCount > 0
 
-					logLevel := slog.LevelWarn
-					logMsg := "executor: stream interrupted"
-					if isBenignEOF {
-						// Benign EOF is expected for some providers (Minimax), log as INFO
-						logLevel = slog.LevelInfo
-						logMsg = "executor: stream completed without [DONE] marker (benign)"
-					}
-
-					slog.Log(params.R.Context(), logLevel, logMsg,
+					slog.Warn("executor: stream interrupted",
 						"credential_id", cand.CredentialID,
 						"provider_id", cand.ProviderID,
 						"reason", streamOutcome.Reason,
@@ -919,14 +905,7 @@ func (e *Executor) executeOpenAI(
 					)
 
 					if isBenignEOF {
-						// Treat benign EOF as success - record success to circuit breaker
 						e.Circuit.RecordSuccess(cand.ProviderID, cand.CredentialID)
-						slog.Info("minimax_eof_workaround: treated as success",
-							"credential_id", cand.CredentialID,
-							"provider_id", cand.ProviderID,
-							"chunk_count", streamOutcome.ChunkCount,
-							"reason", "eof_without_done",
-						)
 						return &ExecuteResult{
 							Response:    resp,
 							Candidate:   cand,
