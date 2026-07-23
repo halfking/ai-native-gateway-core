@@ -14,10 +14,12 @@ import (
 	"sync"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/kaixuan/llm-gateway-go/discovery"
 	"github.com/kaixuan/llm-gateway-go/domains/streaming/executors" //nolint:depguard // historical violation, B1 routing.go CQRS will fix
+	"github.com/kaixuan/llm-gateway-go/domains/ursm/v2/api"
 	"github.com/kaixuan/llm-gateway-go/internal/upstreamurl"
 	"github.com/kaixuan/llm-gateway-go/modelname"
 	"github.com/kaixuan/llm-gateway-go/provider"
@@ -654,6 +656,242 @@ func (h *Handler) handleRoutingCandidateBindingReorder(w http.ResponseWriter, r 
 		"items":   req.Items,
 	})
 }
+
+// handleEmergencyRepair handles emergency repair actions for credentials.
+// PATCH /api/routing/emergency-repair
+// Body: {"credential_id": int, "raw_model": string, "action": string}
+// Actions: "force_enable" | "force_disable" | "clear_circuit" | "reset_errors"
+//
+// Authorization: super_admin only (registered via h.superAdmin).
+// Audit: every successful action appends a row to routing_audit_log.
+func (h *Handler) handleEmergencyRepair(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPatch {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+
+	var req struct {
+		CredentialID int    `json:"credential_id"`
+		RawModel     string `json:"raw_model"`
+		Action       string `json:"action"`
+		Reason       string `json:"reason"`
+	}
+	if err := readJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid body")
+		return
+	}
+	if req.CredentialID <= 0 {
+		writeError(w, http.StatusBadRequest, "credential_id must be positive")
+		return
+	}
+	if req.Reason == "" {
+		writeError(w, http.StatusBadRequest, "reason is required for audit trail")
+		return
+	}
+
+	validActions := map[string]bool{
+		"force_enable":  true,
+		"force_disable": true,
+		"clear_circuit": true,
+		"reset_errors":  true,
+	}
+	if !validActions[req.Action] {
+		writeError(w, http.StatusBadRequest, "action must be one of: force_enable, force_disable, clear_circuit, reset_errors")
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+	defer cancel()
+
+	// Get actor for audit
+	actor := r.Header.Get("X-Admin-User")
+	if actor == "" {
+		actor = r.RemoteAddr
+	}
+
+	beforeAfter := map[string]any{
+		"credential_id": req.CredentialID,
+		"raw_model":    req.RawModel,
+		"action":       req.Action,
+		"reason":       req.Reason,
+	}
+
+	switch req.Action {
+	case "force_enable":
+		// Clear manual_disabled flag on credentials table
+		var currentDisabled bool
+		err := h.db.QueryRow(ctx,
+			"SELECT COALESCE(manual_disabled, false) FROM credentials WHERE id = $1",
+			req.CredentialID,
+		).Scan(&currentDisabled)
+		if err != nil {
+			if err == pgx.ErrNoRows {
+				writeError(w, http.StatusNotFound, "credential not found")
+			} else {
+				writeError(w, http.StatusInternalServerError, "query failed: "+err.Error())
+			}
+			return
+		}
+		if _, err := h.db.Exec(ctx,
+			"UPDATE credentials SET manual_disabled = false WHERE id = $1",
+			req.CredentialID,
+		); err != nil {
+			writeError(w, http.StatusInternalServerError, "update failed: "+err.Error())
+			return
+		}
+		beforeAfter["previous_manual_disabled"] = currentDisabled
+		beforeAfter["new_manual_disabled"] = false
+
+		// Also clear manual hold in URSM v2 Redis
+		if h.ursmV2 != nil && req.RawModel != "" {
+			disabled := false
+			adminAction := api.AdminAction{
+				Scope:        api.ScopeNode,
+				CredentialID: req.CredentialID,
+				RawModel:     req.RawModel,
+				ManualDisabled: &disabled,
+				Reason:       req.Reason,
+				Actor:       actor,
+				IssuedAtMs:  time.Now().UnixMilli(),
+			}
+			if err := h.ursmV2.ApplyAdmin(ctx, adminAction); err != nil {
+				slog.Warn("emergency_repair: ursm.v2 apply_admin failed", "error", err, "cred", req.CredentialID)
+			} else {
+				beforeAfter["ursm_v2_cleared"] = true
+			}
+		}
+
+	case "force_disable":
+		// Set manual_disabled flag on credentials table
+		var currentDisabled bool
+		err := h.db.QueryRow(ctx,
+			"SELECT COALESCE(manual_disabled, false) FROM credentials WHERE id = $1",
+			req.CredentialID,
+		).Scan(&currentDisabled)
+		if err != nil {
+			if err == pgx.ErrNoRows {
+				writeError(w, http.StatusNotFound, "credential not found")
+			} else {
+				writeError(w, http.StatusInternalServerError, "query failed: "+err.Error())
+			}
+			return
+		}
+		if _, err := h.db.Exec(ctx,
+			"UPDATE credentials SET manual_disabled = true WHERE id = $1",
+			req.CredentialID,
+		); err != nil {
+			writeError(w, http.StatusInternalServerError, "update failed: "+err.Error())
+			return
+		}
+		beforeAfter["previous_manual_disabled"] = currentDisabled
+		beforeAfter["new_manual_disabled"] = true
+
+		// Also set manual hold in URSM v2 Redis
+		if h.ursmV2 != nil && req.RawModel != "" {
+			disabled := true
+			adminAction := api.AdminAction{
+				Scope:        api.ScopeNode,
+				CredentialID: req.CredentialID,
+				RawModel:     req.RawModel,
+				ManualDisabled: &disabled,
+				Reason:       req.Reason,
+				Actor:       actor,
+				IssuedAtMs:  time.Now().UnixMilli(),
+			}
+			if err := h.ursmV2.ApplyAdmin(ctx, adminAction); err != nil {
+				slog.Warn("emergency_repair: ursm.v2 apply_admin failed", "error", err, "cred", req.CredentialID)
+			} else {
+				beforeAfter["ursm_v2_set"] = true
+			}
+		}
+
+	case "clear_circuit":
+		// Reset circuit_state to 'closed' on credentials table
+		var currentState *string
+		err := h.db.QueryRow(ctx,
+			"SELECT circuit_state FROM credentials WHERE id = $1",
+			req.CredentialID,
+		).Scan(&currentState)
+		if err != nil {
+			if err == pgx.ErrNoRows {
+				writeError(w, http.StatusNotFound, "credential not found")
+			} else {
+				writeError(w, http.StatusInternalServerError, "query failed: "+err.Error())
+			}
+			return
+		}
+		previousState := "closed"
+		if currentState != nil {
+			previousState = *currentState
+		}
+		if _, err := h.db.Exec(ctx,
+			"UPDATE credentials SET circuit_state = 'closed', cooling_until = NULL WHERE id = $1",
+			req.CredentialID,
+		); err != nil {
+			writeError(w, http.StatusInternalServerError, "update failed: "+err.Error())
+			return
+		}
+		beforeAfter["previous_circuit_state"] = previousState
+		beforeAfter["new_circuit_state"] = "closed"
+
+		// Also clear cooling state in URSM v2 Redis
+		if h.ursmV2 != nil && req.RawModel != "" {
+			if err := h.ursmV2.ClearState(ctx, req.CredentialID, req.RawModel); err != nil {
+				slog.Warn("emergency_repair: ursm.v2 clear_state failed", "error", err, "cred", req.CredentialID)
+			} else {
+				beforeAfter["ursm_v2_cleared"] = true
+			}
+		}
+
+	case "reset_errors":
+		// Reset consecutive_failures on credentials table
+		var currentFailures int
+		err := h.db.QueryRow(ctx,
+			"SELECT COALESCE(consecutive_failures, 0) FROM credentials WHERE id = $1",
+			req.CredentialID,
+		).Scan(&currentFailures)
+		if err != nil {
+			if err == pgx.ErrNoRows {
+				writeError(w, http.StatusNotFound, "credential not found")
+			} else {
+				writeError(w, http.StatusInternalServerError, "query failed: "+err.Error())
+			}
+			return
+		}
+		if _, err := h.db.Exec(ctx,
+			"UPDATE credentials SET consecutive_failures = 0 WHERE id = $1",
+			req.CredentialID,
+		); err != nil {
+			writeError(w, http.StatusInternalServerError, "update failed: "+err.Error())
+			return
+		}
+		beforeAfter["previous_consecutive_failures"] = currentFailures
+		beforeAfter["new_consecutive_failures"] = 0
+
+		// Also clear fail counters in URSM v2 Redis
+		if h.ursmV2 != nil && req.RawModel != "" {
+			if err := h.ursmV2.ClearState(ctx, req.CredentialID, req.RawModel); err != nil {
+				slog.Warn("emergency_repair: ursm.v2 clear_state failed", "error", err, "cred", req.CredentialID)
+			} else {
+				beforeAfter["ursm_v2_cleared"] = true
+			}
+		}
+	}
+
+	// Write audit log
+	h.logAudit(r, "emergency_repair."+req.Action, beforeAfter)
+
+	// Invalidate routing caches so changes take effect immediately
+	invalidateRoutingCaches(ctx, h.db, "credentials", req.CredentialID)
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"message":       "emergency repair applied: " + req.Action,
+		"credential_id":  req.CredentialID,
+		"action":        req.Action,
+		"actor":         actor,
+	})
+}
+
 func (h *Handler) handleRoutingOverview(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")

@@ -3,6 +3,7 @@ package v2
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/kaixuan/llm-gateway-go/domains/ursm/v2/api"
 	"github.com/kaixuan/llm-gateway-go/domains/ursm/v2/store"
@@ -26,6 +27,26 @@ func (m *Manager) ApplyAdmin(ctx context.Context, a api.AdminAction) error {
 		fmt.Sprintf("%d", a.IssuedAtMs)).Slice()
 	if err != nil {
 		return fmt.Errorf("ursm.v2: apply_admin: %w", err)
+	}
+	return nil
+}
+
+// ClearState clears cooling state (cool_until_ms, cool_start_ms) and error
+// counters (fail_streak, fail_count) in Redis for emergency repair operations
+// "clear_circuit" and "reset_errors". It does NOT modify the PostgreSQL
+// credentials table — that is caller's responsibility.
+func (m *Manager) ClearState(ctx context.Context, credentialID int, rawModel string) error {
+	if m == nil || m.store == nil {
+		return fmt.Errorf("ursm.v2: nil manager")
+	}
+	key := store.NodeKey(m.cfg.RedisKeyPrefix, credentialID, rawModel)
+	result, err := store.ClearStateScript.Run(ctx, m.store.RawClient(),
+		[]string{key}, fmt.Sprintf("%d", time.Now().UnixMilli())).Slice()
+	if err != nil {
+		return fmt.Errorf("ursm.v2: clear_state: %w", err)
+	}
+	if len(result) > 0 && result[0] == "key_not_found" {
+		return fmt.Errorf("ursm.v2: node key not found in Redis")
 	}
 	return nil
 }

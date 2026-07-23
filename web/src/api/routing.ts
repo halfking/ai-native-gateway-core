@@ -166,6 +166,33 @@ export function reorderCandidateBindings(items: CandidateBindingReorderItem[]) {
   )
 }
 
+// 2026-07-24: emergency repair endpoint for routing-v2 resolve page.
+// Supports: force_enable, force_disable, clear_circuit, reset_errors.
+// All actions are audited and require super_admin role.
+export type EmergencyRepairAction = 'force_enable' | 'force_disable' | 'clear_circuit' | 'reset_errors'
+
+export interface EmergencyRepairRequest {
+  credential_id: number
+  raw_model: string
+  action: EmergencyRepairAction
+  reason: string
+}
+
+export interface EmergencyRepairResponse {
+  message: string
+  credential_id: number
+  action: EmergencyRepairAction
+  actor: string
+}
+
+export function emergencyRepair(body: EmergencyRepairRequest) {
+  return req<EmergencyRepairResponse>(
+    'PATCH',
+    '/api/routing/emergency-repair',
+    body,
+  )
+}
+
 export function patchApplicationProfile(applicationCode: string, default_client_profile: string | null) {
   return req<{ id: number; code: string; default_client_profile: string | null }>(
     'PATCH',
