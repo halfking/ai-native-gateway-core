@@ -32,9 +32,12 @@ import (
 )
 
 const (
-	// DefaultTTL is the lifetime of a pending entry in Redis. Mirrors
-	// sessions/session.go default of 7 days.
-	DefaultTTL = 7 * 24 * time.Hour
+	// DefaultTTL is the lifetime of a pending entry in Redis.
+	// 2026-07-23: 从 7 天缩短到 1 小时。
+	// pending_response 缓存 LLM 响应正文用于客户端重试/查询，正常生命周期是几十秒到几分钟。
+	// 7 天累计 25k keys 占用 15MB 内存毫无必要——1 小时足够覆盖客户端重试窗口。
+	// 实际生产环境中 1 小时内的 pending 已经完成并被客户端取走。
+	DefaultTTL = 1 * time.Hour
 
 	// MaxBodyBytes is the cap on what we'll cache. A 1MB LLM response
 	// is enormous (>> most streamed completions). Above this we

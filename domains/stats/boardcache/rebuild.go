@@ -33,7 +33,10 @@ func (s *Service) RebuildScope(ctx context.Context, scope Scope) error {
 			return err
 		}
 	}
-	_ = s.rdb.Set(ctx, keyRebuildLast+":"+string(scope), time.Now().UTC().Format(time.RFC3339), 0).Err()
+	// 2026-07-23: rebuild:last key 从永不过期改为 7 天 TTL。
+	// 重建历史只需要覆盖重建间隔（4h）的几倍，7 天足够查询历史趋势。
+	// 永不过期会让这个 key 长期累积。
+	_ = s.rdb.Set(ctx, keyRebuildLast+":"+string(scope), time.Now().UTC().Format(time.RFC3339), 7*24*time.Hour).Err()
 	slog.Info("boardcache baseline rebuilt", "scope", scope)
 	return nil
 }

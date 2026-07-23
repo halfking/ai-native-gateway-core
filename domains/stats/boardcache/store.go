@@ -126,7 +126,9 @@ func (s *Service) putJSON(ctx context.Context, key string, payload map[string]an
 }
 
 func (s *Service) putBaseline(ctx context.Context, scope Scope, days int, payload map[string]any, since time.Time) error {
-	ttl := 7 * 24 * time.Hour
+	// 2026-07-23: TTL 从 7 天缩短到 1 天。baseline 每 4 小时重建一次（rebuild_interval_hours=4），
+	// 1 天足够覆盖 6 次重建周期，更长 TTL 没有业务价值反而累积 key。
+	ttl := 1 * 24 * time.Hour
 	if err := s.putJSON(ctx, baselineKey(scope, days), payload, ttl); err != nil {
 		return err
 	}
@@ -135,11 +137,16 @@ func (s *Service) putBaseline(ctx context.Context, scope Scope, days int, payloa
 		"built_at": time.Now().UTC().Format(time.RFC3339),
 		"source":   "postgresql",
 	}
-	return s.rdb.HSet(ctx, baselineMetaKey(scope, days), meta).Err()
+	// 2026-07-23: meta key 必须显式设置 TTL，否则 HSet 隐式清除 TTL 让它永不过期。
+	if err := s.rdb.HSet(ctx, baselineMetaKey(scope, days), meta).Err(); err != nil {
+		return err
+	}
+	return s.rdb.Expire(ctx, baselineMetaKey(scope, days), ttl).Err()
 }
 
 func (s *Service) putBoard(ctx context.Context, scope Scope, days int, providerID int64, payload map[string]any, meta map[string]string) error {
-	ttl := 7 * 24 * time.Hour
+	// 2026-07-23: TTL 从 7 天缩短到 1 天。同 putBaseline 的理由。
+	ttl := 1 * 24 * time.Hour
 	key := cacheKeyBoard(scope, days, providerID)
 	if err := s.putJSON(ctx, key, payload, ttl); err != nil {
 		return err
@@ -147,7 +154,11 @@ func (s *Service) putBoard(ctx context.Context, scope Scope, days int, providerI
 	if len(meta) == 0 {
 		return nil
 	}
-	return s.rdb.HSet(ctx, cacheKeyBoardMeta(scope, days, providerID), meta).Err()
+	// 2026-07-23: meta key 必须显式设置 TTL，否则 HSet 隐式清除 TTL 让它永不过期。
+	if err := s.rdb.HSet(ctx, cacheKeyBoardMeta(scope, days, providerID), meta).Err(); err != nil {
+		return err
+	}
+	return s.rdb.Expire(ctx, cacheKeyBoardMeta(scope, days, providerID), ttl).Err()
 }
 
 func (s *Service) loadBaseline(ctx context.Context, scope Scope, days int) (map[string]any, time.Time, bool) {

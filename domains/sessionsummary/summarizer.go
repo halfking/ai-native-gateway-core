@@ -177,9 +177,11 @@ func (s *Summarizer) GenerateTitle(ctx context.Context, tenantID, sessionKey, fi
 	}
 
 	// 6. 缓存（7天）
+	// 2026-07-23: TTL 跟随 SessionTTL（3d），保持数据生命周期一致。
+	// session 已经缩短到 3d，title 缓存不应该超过 session 本身。
 	if s.redisClient != nil {
 		cacheKey := fmt.Sprintf("session:title:%s:%s", tenantID, sessionKey)
-		_ = s.redisClient.Set(ctx, cacheKey, title, 7*24*time.Hour).Err()
+		_ = s.redisClient.Set(ctx, cacheKey, title, 3*24*time.Hour).Err()
 	}
 
 	return title, nil
