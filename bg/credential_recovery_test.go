@@ -1,11 +1,217 @@
 package bg
 
 import (
+	"context"
+	"errors"
+	"fmt"
 	"os"
 	"regexp"
 	"strings"
+	"sync"
 	"testing"
+
+	"github.com/pashagolub/pgxmock/v4"
 )
+
+// TestExpiredCmbRecoverySQLGuards pins the safety guards of the
+// expired-binding probe SQL introduced for the 2026-07-24 incident
+// where /api/routing/resolve showed routable nodes while real chat
+// requests returned "no available nodes" because:
+//   - cmb.available was flipped to FALSE by either continuous_failure
+//     (credentialhealth/checker.go) or a probe_* reason (bg/node_probe.go)
+//   - cmb.unavailable_recover_at elapsed (5-minute cooldown done)
+//   - nothing re-checked whether the upstream had recovered
+//
+// The recovery must SELECT only — it must NEVER write cmb.available=TRUE
+// blindly. Instead it hands the (cred, model) pair to NodeProbeWorker,
+// whose runOne success path is the authoritative writer of cmb.available.
+//
+// Required safety guards:
+//  1. Only cmb rows that are currently available=FALSE with a past
+//     unavailable_recover_at are picked.
+//  2. Only the two transient reasons are targeted: 'continuous_failure'
+//     and probe_* (anything written by node_probe.go:1496-1510).
+//  3. NEVER touch manual* / admin_protected rows (operators chose those).
+//  4. Credential / provider must be active, not manually disabled, and
+//     availability_state='ready' (otherwise the upstream itself is bad).
+//  5. Skip rows whose node_probe_state is paused OR still has a future
+//     next_retry_at (operator paused OR ladder mid-cycle).
+func TestExpiredCmbRecoverySQLGuards(t *testing.T) {
+	sql := expiredCmbRecoverySQL()
+	mustContain := []string{
+		// ── 必须的 cmb 谓词 ──
+		"cmb.available = FALSE",
+		"cmb.unavailable_recover_at IS NOT NULL",
+		"cmb.unavailable_recover_at <= now()",
+		// ── 只挑两个 transient 原因 ──
+		"unavailable_reason IN ('continuous_failure'",
+		"unavailable_reason LIKE 'probe_%'",
+		// ── 硬保护：manual/admin_protected 一律不动 ──
+		"COALESCE(cmb.unavailable_reason, '') NOT LIKE 'manual%'",
+		"COALESCE(cmb.admin_protected, FALSE) = FALSE",
+		// ── credential / provider 必为可路由 ──
+		"COALESCE(c.status, 'active') = 'active'",
+		"COALESCE(c.lifecycle_status, 'active') = 'active'",
+		"COALESCE(c.manual_disabled, FALSE) = FALSE",
+		"c.availability_state = 'ready'",
+		"COALESCE(p.manual_disabled, FALSE) = FALSE",
+		"p.enabled = TRUE",
+		// ── 输出列：必须包含 credential_id + raw_model_name ──
+		"cmb.credential_id",
+		"pm.raw_model_name",
+	}
+	for _, want := range mustContain {
+		if !strings.Contains(sql, want) {
+			t.Fatalf("expiredCmbRecoverySQL missing %q in:\n%s", want, sql)
+		}
+	}
+	// Tolerant regex checks for SQL clauses where column-alignment
+	// whitespace varies between writes (mirrors TestAuthFailedRecoverySQLGuard).
+	regexMustMatch := []*regexp.Regexp{
+		regexp.MustCompile(`nps\.paused\s*=\s*TRUE`),
+		regexp.MustCompile(`nps\.next_retry_at\s*>\s*now\(\)`),
+	}
+	for _, re := range regexMustMatch {
+		if !re.MatchString(sql) {
+			t.Fatalf("expiredCmbRecoverySQL missing pattern %q in:\n%s", re.String(), sql)
+		}
+	}
+}
+
+// TestRecoverExpiredBindingsEnqueuesProbes pins the 2026-07-24
+// root cause: previously the 60s recovery tick only restored
+// availability_state / quota_state / circuit_state / health_status
+// and NEVER re-checked cmb.available=FALSE bindings. When business
+// traffic succeeded through OTHER working nodes, the previously-failed
+// (cred, model) pair was never re-probed and stayed "available=FALSE"
+// until an operator manually cleared and re-fetched the model list.
+//
+// This test wires a fake probe submitter + cache invalidator into
+// CredentialRecovery, feeds pgxmock with two expired cmb rows, and
+// asserts:
+//   - The new SQL is run (the SELECT ... cmb ... query).
+//   - The probe submitter is called once per row with the right
+//     (credID, raw_model_name) pair.
+//   - The candidate cache invalidator is called for each unique
+//     credential ID so the next chat request re-plans with the
+//     recovered binding visible without waiting for the 30s candCache
+//     TTL.
+func TestRecoverExpiredBindingsEnqueuesProbes(t *testing.T) {
+	mock, err := pgxmock.NewPool()
+	if err != nil {
+		t.Fatalf("pgxmock.NewPool: %v", err)
+	}
+	defer mock.Close()
+
+	rows := pgxmock.NewRows([]string{"credential_id", "raw_model_name"}).
+		AddRow(11, "glm-5.2").
+		AddRow(11, "glm-5.3")
+	mock.ExpectQuery("FROM credential_model_bindings cmb").
+		WillReturnRows(rows)
+
+	r := &CredentialRecovery{db: mock, done: make(chan struct{})}
+
+	var (
+		mu          sync.Mutex
+		submitted   []string
+		invalidated = make(map[int]int)
+	)
+	r.SetProbeSubmitter(func(credID int, model string) {
+		mu.Lock()
+		defer mu.Unlock()
+		submitted = append(submitted, fmt.Sprintf("%d|%s", credID, model))
+	})
+	r.SetInvalidateCandidateCache(func(credID int) {
+		mu.Lock()
+		defer mu.Unlock()
+		invalidated[credID]++
+	})
+
+	if err := r.recoverExpiredBindings(context.Background()); err != nil {
+		t.Fatalf("recoverExpiredBindings: %v", err)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	wantSubmitted := []string{"11|glm-5.2", "11|glm-5.3"}
+	if len(submitted) != len(wantSubmitted) {
+		t.Fatalf("submitted count = %d, want %d (got %v)", len(submitted), len(wantSubmitted), submitted)
+	}
+	for _, w := range wantSubmitted {
+		found := false
+		for _, s := range submitted {
+			if s == w {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("missing submit for %q (got %v)", w, submitted)
+		}
+	}
+	if invalidated[11] < 1 {
+		t.Errorf("expected invalidateCandidateCache to be called for cred 11, got %d", invalidated[11])
+	}
+
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("pgxmock expectations not met: %v", err)
+	}
+}
+
+// TestRecoverExpiredBindingsSkipsWhenNoRows verifies the no-op path
+// when nothing is eligible: no submit, no invalidate, no error.
+func TestRecoverExpiredBindingsSkipsWhenNoRows(t *testing.T) {
+	mock, err := pgxmock.NewPool()
+	if err != nil {
+		t.Fatalf("pgxmock.NewPool: %v", err)
+	}
+	defer mock.Close()
+
+	mock.ExpectQuery("FROM credential_model_bindings cmb").
+		WillReturnRows(pgxmock.NewRows([]string{"credential_id", "raw_model_name"}))
+
+	r := &CredentialRecovery{db: mock, done: make(chan struct{})}
+	calls := 0
+	r.SetProbeSubmitter(func(int, string) { calls++ })
+	r.SetInvalidateCandidateCache(func(int) { calls++ })
+
+	if err := r.recoverExpiredBindings(context.Background()); err != nil {
+		t.Fatalf("recoverExpiredBindings: %v", err)
+	}
+	if calls != 0 {
+		t.Errorf("expected 0 callbacks for empty result, got %d", calls)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("pgxmock expectations not met: %v", err)
+	}
+}
+
+// TestRecoverExpiredBindingsReturnsErrorOnQueryFailure ensures the
+// caller (the recover() tick loop) sees a non-nil error rather than
+// silently swallowing it. Without this, a DB outage would silently
+// suspend the recovery loop and the 2026-07-24 incident recurs.
+func TestRecoverExpiredBindingsReturnsErrorOnQueryFailure(t *testing.T) {
+	mock, err := pgxmock.NewPool()
+	if err != nil {
+		t.Fatalf("pgxmock.NewPool: %v", err)
+	}
+	defer mock.Close()
+
+	mock.ExpectQuery("FROM credential_model_bindings cmb").
+		WillReturnError(errors.New("simulated db outage"))
+
+	r := &CredentialRecovery{db: mock, done: make(chan struct{})}
+	calls := 0
+	r.SetProbeSubmitter(func(int, string) { calls++ })
+	r.SetInvalidateCandidateCache(func(int) { calls++ })
+
+	if err := r.recoverExpiredBindings(context.Background()); err == nil {
+		t.Fatalf("expected error from recoverExpiredBindings on DB failure")
+	}
+	if calls != 0 {
+		t.Errorf("submitter must not be called when query fails, got %d calls", calls)
+	}
+}
 
 func TestMnfCoolingRecoverySQLGuards(t *testing.T) {
 	sql := mnfCoolingRecoverySQL()

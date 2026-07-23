@@ -2240,6 +2240,21 @@ func main() {
 				slog.Info("credstate: node_probe submitter wired",
 					"consecutive_threshold", 2)
 
+				// 2026-07-24 P0 fix: bg/credential_recovery's 60s tick
+				// scans cmb.available=FALSE rows whose unavailable_recover_at
+				// has elapsed and hands them to NodeProbeWorker. Without
+				// this wiring those rows stay excluded from routing until
+				// an operator manually clears and re-fetches the model list.
+				// The probe worker is the authoritative writer of cmb.available
+				// — it only flips when direct + gateway probe rounds succeed.
+				if credRecovery != nil {
+					credRecovery.SetProbeSubmitter(func(credID int, model string) {
+						nodeProbe.Submit(credID, model, "default", "expired-binding-recovery")
+					})
+					credRecovery.SetInvalidateCandidateCache(provider.InvalidateCandidateCacheForCredential)
+					slog.Info("credRecovery: expired-binding probe submitter wired")
+				}
+
 			}
 			// C. system_health — 30s windowed success-rate monitor
 			// for the GDRT H badge.  Runs unconditionally (outside
