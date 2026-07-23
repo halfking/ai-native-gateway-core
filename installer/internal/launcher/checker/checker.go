@@ -45,6 +45,12 @@ type Checker struct {
 	cfg Config
 	wg  sync.WaitGroup
 
+	// stop 独立于 ctx 触发，让 Stop() 不依赖 ctx.Done() 即可回收 loop goroutine。
+	// 修复：测试常见写法是 `defer c.Stop()` 配 `defer cancel()`，defer LIFO 先
+	// 执行 Stop()，但旧版 loop 只能 ctx.Done() 退出 → wg.Wait 死锁。
+	stopOnce sync.Once
+	stop     chan struct{}
+
 	// trigger is pulsed by CheckNow to force an immediate tick outside
 	// the regular interval (audit I1: the UI's "立即检查" button was a
 	// no-op before; now it triggers a real poll). Guarded by triggerMu
@@ -63,17 +69,28 @@ func New(cfg Config) *Checker {
 	return &Checker{cfg: cfg}
 }
 
-// Start launches the background poll loop. Cancel ctx to stop.
+// Start launches the background poll loop. Cancel ctx OR call Stop to exit.
 func (c *Checker) Start(ctx context.Context) {
 	c.triggerMu.Lock()
 	c.trigger = make(chan struct{}, 1)
 	c.triggerMu.Unlock()
+	c.stopOnce.Do(func() { c.stop = make(chan struct{}) })
 	c.wg.Add(1)
 	go c.loop(ctx)
 }
 
-// Stop waits for the loop to exit.
-func (c *Checker) Stop() { c.wg.Wait() }
+// Stop signals the loop to exit and waits for it to return.
+// Idempotent; safe to defer without cancelling ctx.
+func (c *Checker) Stop() {
+	c.stopOnce.Do(func() { c.stop = make(chan struct{}) })
+	select {
+	case <-c.stop:
+		// already closed
+	default:
+		close(c.stop)
+	}
+	c.wg.Wait()
+}
 
 // CheckNow requests an immediate poll (non-blocking; a check already in
 // flight is not duplicated). Returns false if the loop isn't running.
@@ -103,6 +120,8 @@ func (c *Checker) loop(ctx context.Context) {
 	for {
 		select {
 		case <-ctx.Done():
+			return
+		case <-c.stop:
 			return
 		case <-t.C:
 			c.tick(ctx)

@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"strconv"
+	"sync/atomic"
 	"time"
 
 	"github.com/redis/go-redis/v9"
@@ -34,22 +35,39 @@ const (
 // 线程安全：所有方法接收 ctx 后转发给 redis.Client（其内部已线程安全）。
 // Fallback：当 rdb == nil 时所有写方法返回 nil + nil（fallback_queue.go
 // 由 SystemMonitor 顶层接管内存降级路径）。
+//
+// scripts 字段以 atomic.Pointer 存放（2026-07-24 审计修复）：worker 在 Claim/Complete
+// 中读，Submit 在 Lua 失败重载时写；裸指针存在数据竞争。
 type Queue struct {
 	rdb     *redis.Client
-	scripts *LoadedScripts
+	scripts atomic.Pointer[LoadedScripts]
 }
 
 // NewQueue 构造队列包装。
 func NewQueue(rdb *redis.Client, scripts *LoadedScripts) *Queue {
-	return &Queue{rdb: rdb, scripts: scripts}
+	q := &Queue{rdb: rdb}
+	if scripts != nil {
+		q.scripts.Store(scripts)
+	}
+	return q
 }
 
 // Enabled reports whether the queue has a live Redis backend.
-//
-// Mirrors bg/model_availability_reader.go:Enabled() pattern so callers can
-// do `if !q.Enabled() { fallback }`.
 func (q *Queue) Enabled() bool {
 	return q != nil && q.rdb != nil
+}
+
+// setScripts 原子替换已加载的 Lua 脚本（仅 Submit 失败重载路径使用）。
+func (q *Queue) setScripts(s *LoadedScripts) {
+	if s == nil {
+		return
+	}
+	q.scripts.Store(s)
+}
+
+// loadScripts 返回当前已加载的脚本；nil 表示尚未加载。
+func (q *Queue) loadScripts() *LoadedScripts {
+	return q.scripts.Load()
 }
 
 // Submit enqueues a task to the Redis FIFO queue and persists the full
@@ -111,23 +129,24 @@ func (q *Queue) Submit(ctx context.Context, task *Task) error {
 //
 // See lua/claim.lua for the full script semantics. Returns:
 //
-//	(nil, nil)           - 队列空 / 队头任务该跳过 / 损坏 JSON
-//	(*Task, nil)         - 抢占成功
-//	(nil, err)           - Redis 故障 / 脚本执行失败
+//	(nil, nil)   - 队列空 / 队头任务该跳过 / 损坏 JSON
+//	(*Task, nil) - 抢占成功
+//	(nil, err)   - Redis 故障 / 脚本执行失败
 //
-// The inflight token (30s) is set inside claim.lua; do NOT release it
-// here unless you intend to override the design §3.2 dedup window.
-func (q *Queue) Claim(ctx context.Context, credID int64, rawModel string) (*Task, error) {
+// 2026-07-24 审计修复：inflight key (30s dedup) 现已在 claim.lua 内部从
+// task.credential_id / task.raw_model 构造；调用方在解码前无法（也不应）提供
+// credID/rawModel。修复前 fetchTask 用 (0,"") 调用 → 守卫拒绝 → 队列永不消费。
+func (q *Queue) Claim(ctx context.Context) (*Task, error) {
 	if !q.Enabled() {
 		return nil, errors.New("queue disabled: redis client is nil")
 	}
-	if credID <= 0 || rawModel == "" {
-		return nil, fmt.Errorf("invalid claim args: cred_id=%d model=%q", credID, rawModel)
+	scripts := q.loadScripts()
+	if scripts == nil {
+		return nil, errors.New("claim: lua scripts not loaded")
 	}
-	inflightKey := fmt.Sprintf("llmgw:monitor:inflight:%d:%s", credID, rawModel)
 
-	res, err := runScript(ctx, q.rdb, q.scripts.claimSHA, claimLuaSrc,
-		[]string{RedisKeyQueue, inflightKey},
+	res, err := runScript(ctx, q.rdb, scripts.claimSHA, claimLuaSrc,
+		[]string{RedisKeyQueue},
 		workerIDFromContext(ctx), int(RedisInflightTTL.Seconds()))
 	if err != nil {
 		return nil, fmt.Errorf("claim: eval: %w", err)
@@ -158,6 +177,10 @@ func (q *Queue) Complete(ctx context.Context, task *Task, status TaskStatus, ext
 	if task == nil {
 		return errors.New("task is nil")
 	}
+	scripts := q.loadScripts()
+	if scripts == nil {
+		return errors.New("complete: lua scripts not loaded")
+	}
 
 	taskKey := task.HashKey()
 	inflightKey := task.InflightKey()
@@ -166,7 +189,7 @@ func (q *Queue) Complete(ctx context.Context, task *Task, status TaskStatus, ext
 	if err != nil {
 		return fmt.Errorf("complete: marshal extras: %w", err)
 	}
-	_, err = runScript(ctx, q.rdb, q.scripts.completeSHA, completeLuaSrc,
+	_, err = runScript(ctx, q.rdb, scripts.completeSHA, completeLuaSrc,
 		[]string{taskKey, inflightKey}, string(status), string(extrasJSON))
 	if err != nil {
 		return fmt.Errorf("complete: eval: %w", err)

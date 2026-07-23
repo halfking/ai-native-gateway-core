@@ -24,7 +24,7 @@ func TestGoalRetryLoop_ConcurrentRequests(t *testing.T) {
 				wg.Add(1)
 				go func(tid string) {
 					defer wg.Done()
-					
+
 					// Simulate policy resolution
 					policy := GoalRetryPolicy{
 						CostMode:     "balanced",
@@ -34,10 +34,10 @@ func TestGoalRetryLoop_ConcurrentRequests(t *testing.T) {
 						BaseDelay:    100 * time.Millisecond,
 						MaxDelay:     5 * time.Second,
 					}
-					
+
 					// Record metrics concurrently
 					recordGoalRetryPolicyResolution(tid, policy.CostMode, "resolver")
-					
+
 					// Simulate retry outcome
 					recordGoalRetryOutcome(tid, policy.CostMode, "success", 2, 500*time.Millisecond)
 				}(tenant)
@@ -76,7 +76,7 @@ func TestGoalRetryLoop_ConcurrentRequests(t *testing.T) {
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
-				
+
 				// Simulate retry loop lifecycle
 				trackGoalActiveRetry(tenantID, 1)
 				time.Sleep(time.Millisecond * 10)
@@ -85,7 +85,7 @@ func TestGoalRetryLoop_ConcurrentRequests(t *testing.T) {
 		}
 
 		wg.Wait()
-		
+
 		// If gauge was properly atomic, we should have no panics
 		// and final value should be 0 (all increments matched by decrements)
 		t.Log("Concurrent active retry tracking completed without race")
@@ -268,7 +268,7 @@ func TestGoalRetryLoop_EdgeCases(t *testing.T) {
 
 		// Verify
 		require.Error(t, finalErr)
-		require.True(t, errors.Is(finalErr, context.DeadlineExceeded) || 
+		require.True(t, errors.Is(finalErr, context.DeadlineExceeded) ||
 			errors.Is(finalErr, context.Canceled), "should timeout or cancel")
 		require.LessOrEqual(t, attempts, 2, "should not execute many times")
 		require.Less(t, elapsed, 200*time.Millisecond, "should stop quickly")
@@ -346,7 +346,7 @@ func TestGoalRetryLoop_StressTest(t *testing.T) {
 	t.Run("sustained load", func(t *testing.T) {
 		duration := 5 * time.Second
 		concurrency := 50
-		
+
 		ctx, cancel := context.WithTimeout(context.Background(), duration)
 		defer cancel()
 
@@ -376,7 +376,7 @@ func TestGoalRetryLoop_StressTest(t *testing.T) {
 					mockExecute := func(ctx context.Context) error {
 						attempts++
 						totalAttempts.Add(1)
-						
+
 						// 70% success rate after 1-2 attempts
 						if attempts >= 2 || (attempts == 1 && iterationCount%3 == 0) {
 							successCount.Add(1)
@@ -394,7 +394,7 @@ func TestGoalRetryLoop_StressTest(t *testing.T) {
 					}
 
 					retryCtx, retryCancel := context.WithTimeout(ctx, policy.TotalTimeout)
-					
+
 					retriesPerformed := 0
 					var finalErr error
 
@@ -450,14 +450,14 @@ func TestGoalRetryLoop_StressTest(t *testing.T) {
 		total := totalAttempts.Load()
 		success := successCount.Load()
 		failed := errorCount.Load()
-		
+
 		t.Logf("Stress Test Results:")
 		t.Logf("  Duration: %v", duration)
 		t.Logf("  Concurrency: %d", concurrency)
 		t.Logf("  Total Attempts: %d", total)
 		t.Logf("  Successful: %d (%.1f%%)", success, float64(success)/float64(total)*100)
 		t.Logf("  Failed: %d (%.1f%%)", failed, float64(failed)/float64(total)*100)
-		
+
 		require.Greater(t, total, int64(0), "should have executed attempts")
 		require.Greater(t, success, int64(0), "should have some successes")
 	})
@@ -468,10 +468,10 @@ func TestGoalRetryLoop_MemoryLeak(t *testing.T) {
 	t.Run("timer cleanup on cancellation", func(t *testing.T) {
 		// This test verifies timer.Stop() is called to prevent leaks
 		iterations := 100
-		
+
 		for i := 0; i < iterations; i++ {
 			ctx, cancel := context.WithCancel(context.Background())
-			
+
 			mockExecute := func(ctx context.Context) error {
 				return errors.New("error")
 			}
@@ -526,10 +526,10 @@ func TestGoalRetryLoop_MemoryLeak(t *testing.T) {
 			}
 
 			retryCancel()
-			
+
 			require.Error(t, finalErr)
 		}
-		
+
 		t.Log("Completed 100 iterations with timer cleanup - no leaks expected")
 	})
 }

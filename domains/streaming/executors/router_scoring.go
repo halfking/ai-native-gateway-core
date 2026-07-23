@@ -30,7 +30,16 @@ func DefaultLoadScoreWeights() LoadScoreWeights {
 }
 
 // calculateLoadScore 计算凭据的综合负载分数
-// 分数越低越好（越可能被选中）
+// 分数越低越好（越可能被选中）—— P2C 选择在 router.go 中取 min。
+//
+// 方向一致性：composite 的每一项都必须是「惩罚」。
+//   - concurrency / identity / quality：天然是惩罚。
+//   - latencyScore / headroom：calculateLatencyScore / calculateHeadroom 返回
+//     「健康度/奖励」（越大越好，见 docs/design/2026-07-20-latency-aware-routing.md
+//     §2.1 分段表：< 800ms → 1.0）。此处用 (1 - x) 转成惩罚后相加，
+//     否则低延迟/高 headroom 的好凭据 composite 偏高被 P2C 惩罚，与设计意图
+//     （偏好低延迟、高 headroom）相反。
+//     2026-07-24 审计修正：60809965 重写后直接相加导致方向反转。
 func calculateLoadScore(c provider.Candidate, r *Router, ctx context.Context, weights LoadScoreWeights) float64 {
 	concurrencyScore := calculateConcurrencyScore(c, r, ctx)
 	identityScore := calculateIdentityScore(c, r)
@@ -39,22 +48,25 @@ func calculateLoadScore(c provider.Candidate, r *Router, ctx context.Context, we
 
 	headroom := calculateHeadroom(c)
 	headroomWeight := envFloat("LLM_GATEWAY_ROUTING_W_HEADROOM", 0.05)
+	latencyPenalty := 1.0 - latencyScore
+	headroomPenalty := 1.0 - headroom
 	composite :=
 		concurrencyScore*weights.ConcurrencyWeight +
 			identityScore*weights.IdentityWeight +
-			latencyScore*weights.LatencyWeight +
+			latencyPenalty*weights.LatencyWeight +
 			qualityScore*weights.QualityWeight +
-			headroom*headroomWeight // P2-#5: 奖励 headroom
+			headroomPenalty*headroomWeight // 高 headroom → 低惩罚 → 更易被选中
 
-	// DEBUG: 采样日志（10%）
 	if rand.Float64() < 0.1 {
 		slog.Info("LOAD_SCORE_V2",
 			"credential_id", c.CredentialID,
 			"concurrency_score", concurrencyScore,
 			"identity_score", identityScore,
 			"latency_score", latencyScore,
+			"latency_penalty", latencyPenalty,
 			"quality_score", qualityScore,
 			"headroom", headroom,
+			"headroom_penalty", headroomPenalty,
 			"composite", composite,
 		)
 	}

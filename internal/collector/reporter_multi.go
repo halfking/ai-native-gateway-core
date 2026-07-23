@@ -37,7 +37,7 @@ func (m *MultiReporter) Report(ctx context.Context, payload []byte) error {
 				"index", i,
 				"type", reporterType,
 				"error", err)
-			
+
 			if firstErr == nil {
 				firstErr = err
 			}

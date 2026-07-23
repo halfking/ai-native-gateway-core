@@ -9,17 +9,22 @@ import (
 
 // Handler HTTP处理器
 type Handler struct {
-	service *Service
+	service     *Service
+	adminAuthMW gin.HandlerFunc // nil ⇒ admin routes 不挂载（fail-close，2026-07-24 审计）
 }
 
-// NewHandler 创建处理器
-func NewHandler(service *Service) *Handler {
-	return &Handler{service: service}
+// NewHandler 创建处理器。
+// adminAuthMW 若为 nil，所有 /admin/releases/* 路由将不会被挂载；调用方接入时
+// 必须把真正的认证门禁（SuperAdmin / JWT 等）传进来，否则写入注释忘开认证也
+// 不会漏出（P0 失败模式：fail-close）。
+func NewHandler(service *Service, adminAuthMW gin.HandlerFunc) *Handler {
+	return &Handler{service: service, adminAuthMW: adminAuthMW}
 }
 
-// RegisterRoutes 注册路由
+// RegisterRoutes 注册路由。
+//   - /releases      —— 公开读取（文件元数据 + 下载计数）
+//   - /admin/releases —— 必须先通过 adminAuthMW；否则不挂载
 func (h *Handler) RegisterRoutes(r *gin.RouterGroup) {
-	// 公开API（无需认证）
 	public := r.Group("/releases")
 	{
 		public.GET("", h.ListReleases)
@@ -29,9 +34,12 @@ func (h *Handler) RegisterRoutes(r *gin.RouterGroup) {
 		public.POST("/:id/download", h.RecordDownload)
 	}
 
-	// 管理API（需要认证）
+	if h.adminAuthMW == nil {
+		// 显式不静默：调用方需要明确知道 admin routes 没有 wire up。
+		return
+	}
 	admin := r.Group("/admin/releases")
-	// admin.Use(middleware.RequireAdmin()) // 添加认证中间件
+	admin.Use(h.adminAuthMW)
 	{
 		admin.POST("", h.CreateRelease)
 		admin.POST("/:id/publish", h.PublishRelease)
@@ -273,7 +281,13 @@ func (h *Handler) RecordDownload(c *gin.Context) {
 		return
 	}
 
-	fileID, _ := strconv.ParseInt(c.Query("file_id"), 10, 64)
+	fileID, err := strconv.ParseInt(c.Query("file_id"), 10, 64)
+	if err != nil || fileID <= 0 {
+		// 2026-07-24 审计修复：原代码吞掉 parse error，给 service 传 fileID=0
+		// → 静默累加到错误/不存在的记录上。改为显式拒绝并要求有效 file_id。
+		c.JSON(http.StatusBadRequest, gin.H{"error": "file_id must be a positive integer"})
+		return
+	}
 
 	err = h.service.RecordDownload(c.Request.Context(), id, fileID)
 	if err != nil {

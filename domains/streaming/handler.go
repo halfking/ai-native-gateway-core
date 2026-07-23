@@ -2317,8 +2317,10 @@ func (h *ChatHandler) serveWithExecutor(
 		}
 	}
 
-	// Extract values from policy
-	maxRetries := retryPolicy.MaxRetries
+	// Extract values from policy. 2026-07-24 审计修复：通过 EffectiveMaxRetries()
+	// 在一处收敛「Enabled=false ⇒ MaxRetries=0」，防止下游直接读 MaxRetries
+	// 绕过关闭开关，仍跑满指数退避。
+	maxRetries := retryPolicy.EffectiveMaxRetries()
 	retryTotalTimeout := retryPolicy.TotalTimeout
 	baseDelayMs := int(retryPolicy.BaseDelay.Milliseconds())
 	maxDelayMs := int(retryPolicy.MaxDelay.Milliseconds())
