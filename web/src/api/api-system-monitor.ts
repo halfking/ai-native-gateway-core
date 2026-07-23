@@ -250,7 +250,8 @@ export interface MigrationMetricsResponse {
 }
 
 export function fetchMigrationMetrics(windowDays = 7) {
-  return req.get<MigrationMetricsResponse>(
+  return req<MigrationMetricsResponse>(
+    'GET',
     `/api/admin/system-monitor/migration-metrics?window_days=${windowDays}`
   )
 }
