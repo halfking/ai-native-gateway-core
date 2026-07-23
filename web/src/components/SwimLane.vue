@@ -122,12 +122,13 @@ const maxVisibleTiles = computed(() => {
   return Math.max(MIN_VISIBLE_TILES, Math.min(count, total))
 })
 
-// 只显示可容纳的请求（保留最新的若干个，反转顺序使最新的在左边）
+// 只显示可容纳的请求。后端按 ASC 时间戳下发（newest 在 tail），
+// 渲染方向 left→right 与数据顺序保持一致：最右 = 最新。
 const visibleRequests = computed(() => {
   const requests = props.lane.requests
   const max = maxVisibleTiles.value
-  if (requests.length <= max) return [...requests].reverse()
-  return requests.slice(requests.length - max).reverse()
+  if (requests.length <= max) return [...requests]
+  return requests.slice(requests.length - max)
 })
 
 // 用于渲染的完整列表（含后端 idle 标记，按时间戳排序，不再追加尾部占位）
@@ -150,6 +151,8 @@ const showEmergencyButton = computed(() => {
 })
 
 function handleEmergencyDiagnose() {
+  // 后端按 ASC 时间戳下发：newest 在 tail；新数据追加到最右。
+  // 反向遍历 = 从尾部往前找，即定位到"最近"的失败请求。
   const recentFailure = props.lane.requests
     .slice()
     .reverse()
@@ -488,7 +491,7 @@ watch(laneMode, async () => {
   min-height: 60px;
   width: 100%;
   min-width: 0;
-  /* 最新请求在左边，从左往右排列，满了后最右边的旧请求被挤出 */
+  /* 数据按 ASC 时间戳渲染：左→右 由旧→新，满了后最左的旧请求被挤出 */
   justify-content: flex-start;
   flex-wrap: nowrap;
 }
