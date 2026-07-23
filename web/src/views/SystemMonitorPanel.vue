@@ -22,14 +22,17 @@ import {
   updateSystemMonitorConcurrency,
   submitSystemMonitorTask,
   openSystemMonitorStream,
+  fetchMigrationMetrics,
   type SystemMonitorStats,
   type SystemMonitorRun,
   type SystemMonitorEvent,
+  type MigrationMetricsResponse,
 } from '../api/api-system-monitor'
 
 const stats = ref<SystemMonitorStats | null>(null)
 const recentRuns = ref<SystemMonitorRun[]>([])
 const sseTasks = ref<SystemMonitorEvent[]>([])
+const migrationMetrics = ref<MigrationMetricsResponse | null>(null)
 const loading = ref(false)
 const error = ref<string | null>(null)
 const triggerBusy = ref(false)
@@ -65,9 +68,18 @@ async function loadRecentRuns() {
   }
 }
 
+async function loadMigrationMetrics() {
+  try {
+    migrationMetrics.value = await fetchMigrationMetrics(7)
+  } catch (e) {
+    // Phase 3 指标是可选的，失败不阻塞主流程
+    console.warn('Failed to load migration metrics:', e)
+  }
+}
+
 async function loadAll() {
   loading.value = true
-  await Promise.all([loadStats(), loadRecentRuns()])
+  await Promise.all([loadStats(), loadRecentRuns(), loadMigrationMetrics()])
   loading.value = false
 }
 
@@ -305,6 +317,65 @@ watch(() => error.value, (v) => {
         <div class="sm-card-value" :class="{ alert: stats?.in_fallback }">
           {{ stats?.in_fallback ? '降级（Redis 不可达）' : '正常' }}
         </div>
+      </div>
+    </section>
+
+    <!-- Phase 3: 切流进度卡片 -->
+    <section v-if="migrationMetrics" class="sm-migration">
+      <h3 class="sm-section-title">Phase 3 切流进度</h3>
+      <div class="sm-migration-grid">
+        <div class="sm-migration-card">
+          <div class="sm-migration-label">覆盖率</div>
+          <div class="sm-migration-value" :class="{
+            success: migrationMetrics.ready_for_migration,
+            warning: migrationMetrics.metrics.coverage_percent >= 60 && !migrationMetrics.ready_for_migration,
+            danger: migrationMetrics.metrics.coverage_percent < 60
+          }">
+            {{ migrationMetrics.metrics.coverage_percent.toFixed(1) }}%
+          </div>
+          <el-progress
+            :percentage="migrationMetrics.metrics.coverage_percent"
+            :status="migrationMetrics.ready_for_migration ? 'success' : undefined"
+            :stroke-width="8"
+          />
+        </div>
+        <div class="sm-migration-card">
+          <div class="sm-migration-label">新框架任务</div>
+          <div class="sm-migration-value">{{ migrationMetrics.metrics.system_monitor_tasks }}</div>
+        </div>
+        <div class="sm-migration-card">
+          <div class="sm-migration-label">旧 worker 任务</div>
+          <div class="sm-migration-value">{{ migrationMetrics.metrics.legacy_tasks }}</div>
+        </div>
+        <div class="sm-migration-card">
+          <div class="sm-migration-label">总任务数</div>
+          <div class="sm-migration-value">{{ migrationMetrics.metrics.total_tasks }}</div>
+        </div>
+      </div>
+      <div class="sm-migration-status">
+        <el-alert
+          :type="migrationMetrics.ready_for_migration ? 'success' : 'info'"
+          :closable="false"
+          show-icon
+        >
+          <template #title>
+            {{ migrationMetrics.migration_message }}
+          </template>
+        </el-alert>
+      </div>
+      <div class="sm-migration-details">
+        <el-collapse>
+          <el-collapse-item title="按来源分组" name="by-source">
+            <el-tag v-for="(count, source) in migrationMetrics.metrics.by_source" :key="source" style="margin: 4px;">
+              {{ source }}: {{ count }}
+            </el-tag>
+          </el-collapse-item>
+          <el-collapse-item title="按任务类型分组" name="by-type">
+            <el-tag v-for="(count, type) in migrationMetrics.metrics.by_task_type" :key="type" style="margin: 4px;" type="info">
+              {{ type }}: {{ count }}
+            </el-tag>
+          </el-collapse-item>
+        </el-collapse>
       </div>
     </section>
 
@@ -603,3 +674,63 @@ watch(() => error.value, (v) => {
   box-shadow: 0 4px 12px rgba(0,0,0,0.15);
 }
 </style>
+/* Phase 3: Migration Progress Styles */
+.sm-migration {
+  margin-bottom: 20px;
+  padding: 16px;
+  border: 1px solid var(--el-border-color);
+  border-radius: 6px;
+  background: var(--el-fill-color-blank);
+}
+
+.sm-section-title {
+  margin: 0 0 12px 0;
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.sm-migration-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 12px;
+  margin-bottom: 16px;
+}
+
+.sm-migration-card {
+  padding: 12px;
+  border: 1px solid var(--el-border-color-lighter);
+  border-radius: 4px;
+  background: var(--el-bg-color);
+}
+
+.sm-migration-label {
+  font-size: 12px;
+  color: var(--el-text-color-secondary);
+  margin-bottom: 4px;
+}
+
+.sm-migration-value {
+  font-size: 28px;
+  font-weight: 700;
+  margin-bottom: 8px;
+}
+
+.sm-migration-value.success {
+  color: var(--el-color-success);
+}
+
+.sm-migration-value.warning {
+  color: var(--el-color-warning);
+}
+
+.sm-migration-value.danger {
+  color: var(--el-color-danger);
+}
+
+.sm-migration-status {
+  margin-bottom: 12px;
+}
+
+.sm-migration-details {
+  margin-top: 12px;
+}
