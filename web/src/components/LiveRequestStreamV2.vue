@@ -44,14 +44,38 @@ function handleRequestFromDrawer(requestId: string) {
   emit('openDetail', requestId)
 }
 
-// 2026-07-13: 探测过滤器状态（全部 / 仅探测）
-const probeFilter = ref<'all' | 'probe_only'>('all')
+// 2026-07-24: 请求类型过滤。两项都选中表示显示全部请求。
+const requestTypeFilter = ref<Set<'business' | 'probe'>>(new Set(['business', 'probe']))
+const activeFilterMenu = ref<'status' | 'model' | 'provider' | 'vendor' | null>(null)
+const filterGroupRef = ref<HTMLElement | null>(null)
 
 // 2026-07-24: 多维过滤状态
 const statusFilter = ref<Set<LiveStatus>>(new Set())
 const modelFilter = ref<Set<string>>(new Set())
 const providerFilter = ref<Set<string>>(new Set())
 const vendorFilter = ref<Set<LiveModelCategory>>(new Set())
+
+function toggleRequestType(type: 'business' | 'probe') {
+  const next = new Set(requestTypeFilter.value)
+  if (next.has(type)) {
+    if (next.size > 1) next.delete(type)
+  } else {
+    next.add(type)
+  }
+  requestTypeFilter.value = next
+}
+
+function toggleFilterMenu(menu: 'status' | 'model' | 'provider' | 'vendor') {
+  activeFilterMenu.value = activeFilterMenu.value === menu ? null : menu
+}
+
+function closeFilterMenu(event: MouseEvent) {
+  const target = event.target as Node
+  if (!filterGroupRef.value?.contains(target)) activeFilterMenu.value = null
+}
+
+onMounted(() => document.addEventListener('click', closeFilterMenu))
+onUnmounted(() => document.removeEventListener('click', closeFilterMenu))
 
 // 解构出 reconnect —— 保存新 URL 后立即用新地址重连，不再只是 localStorage 默默记住
 const {
@@ -305,27 +329,28 @@ const filteredLanes = computed(() => {
       ...lane,
       requests: lane.requests.filter(r => {
         // 请求类型过滤
-        if (probeFilter.value === 'probe_only' && r.is_probe !== true) {
+        const requestType = r.is_probe === true ? 'probe' : 'business'
+        if (!requestTypeFilter.value.has(requestType)) {
           return false
         }
         
         // 状态过滤
-        if (statusFilter.value.size > 0 && r.status && !statusFilter.value.has(r.status as LiveStatus)) {
+        if (statusFilter.value.size > 0 && (!r.status || !statusFilter.value.has(r.status as LiveStatus))) {
           return false
         }
         
         // 模型过滤
-        if (modelFilter.value.size > 0 && r.model && !modelFilter.value.has(r.model)) {
+        if (modelFilter.value.size > 0 && (!r.model || !modelFilter.value.has(r.model))) {
           return false
         }
         
         // 供应商过滤（使用 provider 字段）
-        if (providerFilter.value.size > 0 && r.provider && !providerFilter.value.has(r.provider)) {
+        if (providerFilter.value.size > 0 && (!r.provider || !providerFilter.value.has(r.provider))) {
           return false
         }
         
         // 原厂过滤（使用 vendor 字段）
-        if (vendorFilter.value.size > 0 && r.vendor && !vendorFilter.value.has(r.vendor as LiveModelCategory)) {
+        if (vendorFilter.value.size > 0 && (!r.vendor || !vendorFilter.value.has(r.vendor as LiveModelCategory))) {
           return false
         }
         
@@ -424,8 +449,24 @@ function toggleVendorFilter(vendor: LiveModelCategory) {
   vendorFilter.value = next
 }
 
+function clearStatusFilter() {
+  statusFilter.value = new Set()
+}
+
+function clearModelFilter() {
+  modelFilter.value = new Set()
+}
+
+function clearProviderFilter() {
+  providerFilter.value = new Set()
+}
+
+function clearVendorFilter() {
+  vendorFilter.value = new Set()
+}
+
 function clearAllFilters() {
-  probeFilter.value = 'all'
+  requestTypeFilter.value = new Set(['business', 'probe'])
   statusFilter.value = new Set()
   modelFilter.value = new Set()
   providerFilter.value = new Set()
@@ -435,7 +476,7 @@ function clearAllFilters() {
 // 计算激活的过滤器数量（用于显示徽章）
 const activeFilterCount = computed(() => {
   let count = 0
-  if (probeFilter.value === 'probe_only') count++
+  if (requestTypeFilter.value.size < 2) count++
   count += statusFilter.value.size
   count += modelFilter.value.size
   count += providerFilter.value.size
@@ -501,36 +542,39 @@ const activeFilterCount = computed(() => {
           </button>
         </div>
 
-        <div class="control-group">
+        <div class="control-group request-type-filter">
           <button
             type="button"
             class="control-btn"
-            :class="{ 'control-btn--active': probeFilter === 'all' }"
-            @click="probeFilter = 'all'"
-            :title="t('dashboard.liveStream.probeAllTitle')"
+            :class="{ 'control-btn--active': requestTypeFilter.has('business') }"
+            @click="toggleRequestType('business')"
+            :title="t('dashboard.liveStream.businessTitle')"
           >
-            {{ t('dashboard.liveStream.probeAll') }}
+            {{ t('dashboard.liveStream.business') }}
           </button>
           <button
             type="button"
             class="control-btn control-btn--probe"
-            :class="{ 'control-btn--active': probeFilter === 'probe_only' }"
-            @click="probeFilter = 'probe_only'"
-            :title="t('dashboard.liveStream.probeOnlyTitle')"
+            :class="{ 'control-btn--active': requestTypeFilter.has('probe') }"
+            @click="toggleRequestType('probe')"
+            :title="t('dashboard.liveStream.probeTitle')"
           >
-            {{ t('dashboard.liveStream.probeOnly') }}
+            {{ t('dashboard.liveStream.probe') }}
           </button>
         </div>
 
         <!-- 2026-07-24: 多维过滤器 -->
-        <div class="filter-group">
+        <div ref="filterGroupRef" class="filter-group">
           <!-- 状态过滤 -->
           <div class="filter-dropdown">
-            <button type="button" class="filter-btn" :class="{ 'filter-btn--active': statusFilter.size > 0 }">
+            <button type="button" class="filter-btn" :class="{ 'filter-btn--active': statusFilter.size > 0 }" @click.stop="toggleFilterMenu('status')">
               {{ t('dashboard.liveStream.filterStatus') }}
               <span v-if="statusFilter.size > 0" class="filter-badge">{{ statusFilter.size }}</span>
             </button>
-            <div class="filter-menu">
+            <div v-if="activeFilterMenu === 'status'" class="filter-menu">
+              <button type="button" class="filter-option filter-option--all" :class="{ 'filter-option--selected': statusFilter.size === 0 }" @click="clearStatusFilter">
+                {{ t('dashboard.liveStream.filterAllOptions') }}
+              </button>
               <label v-for="status in availableStatuses" :key="status" class="filter-option">
                 <input
                   type="checkbox"
@@ -544,11 +588,14 @@ const activeFilterCount = computed(() => {
 
           <!-- 模型过滤 -->
           <div class="filter-dropdown">
-            <button type="button" class="filter-btn" :class="{ 'filter-btn--active': modelFilter.size > 0 }">
+            <button type="button" class="filter-btn" :class="{ 'filter-btn--active': modelFilter.size > 0 }" @click.stop="toggleFilterMenu('model')">
               {{ t('dashboard.liveStream.filterModel') }}
               <span v-if="modelFilter.size > 0" class="filter-badge">{{ modelFilter.size }}</span>
             </button>
-            <div class="filter-menu">
+            <div v-if="activeFilterMenu === 'model'" class="filter-menu">
+              <button type="button" class="filter-option filter-option--all" :class="{ 'filter-option--selected': modelFilter.size === 0 }" @click="clearModelFilter">
+                {{ t('dashboard.liveStream.filterAllOptions') }}
+              </button>
               <label v-for="model in availableModels" :key="model" class="filter-option">
                 <input
                   type="checkbox"
@@ -562,11 +609,14 @@ const activeFilterCount = computed(() => {
 
           <!-- 供应商过滤 -->
           <div class="filter-dropdown">
-            <button type="button" class="filter-btn" :class="{ 'filter-btn--active': providerFilter.size > 0 }">
+            <button type="button" class="filter-btn" :class="{ 'filter-btn--active': providerFilter.size > 0 }" @click.stop="toggleFilterMenu('provider')">
               {{ t('dashboard.liveStream.filterProvider') }}
               <span v-if="providerFilter.size > 0" class="filter-badge">{{ providerFilter.size }}</span>
             </button>
-            <div class="filter-menu">
+            <div v-if="activeFilterMenu === 'provider'" class="filter-menu">
+              <button type="button" class="filter-option filter-option--all" :class="{ 'filter-option--selected': providerFilter.size === 0 }" @click="clearProviderFilter">
+                {{ t('dashboard.liveStream.filterAllOptions') }}
+              </button>
               <label v-for="provider in availableProviders" :key="provider" class="filter-option">
                 <input
                   type="checkbox"
@@ -580,11 +630,14 @@ const activeFilterCount = computed(() => {
 
           <!-- 原厂过滤 -->
           <div class="filter-dropdown">
-            <button type="button" class="filter-btn" :class="{ 'filter-btn--active': vendorFilter.size > 0 }">
+            <button type="button" class="filter-btn" :class="{ 'filter-btn--active': vendorFilter.size > 0 }" @click.stop="toggleFilterMenu('vendor')">
               {{ t('dashboard.liveStream.filterVendor') }}
               <span v-if="vendorFilter.size > 0" class="filter-badge">{{ vendorFilter.size }}</span>
             </button>
-            <div class="filter-menu">
+            <div v-if="activeFilterMenu === 'vendor'" class="filter-menu">
+              <button type="button" class="filter-option filter-option--all" :class="{ 'filter-option--selected': vendorFilter.size === 0 }" @click="clearVendorFilter">
+                {{ t('dashboard.liveStream.filterAllOptions') }}
+              </button>
               <label v-for="vendor in availableVendors" :key="vendor" class="filter-option">
                 <input
                   type="checkbox"
@@ -882,10 +935,6 @@ const activeFilterCount = computed(() => {
   padding: 4px;
 }
 
-.filter-dropdown:hover .filter-menu {
-  display: block;
-}
-
 .filter-option {
   display: flex;
   align-items: center;
@@ -896,6 +945,19 @@ const activeFilterCount = computed(() => {
   transition: background 0.15s ease;
   font-size: 13px;
   user-select: none;
+}
+
+.filter-option--all {
+  width: 100%;
+  border: 0;
+  background: transparent;
+  color: var(--text);
+  text-align: left;
+}
+
+.filter-option--selected {
+  color: var(--accent);
+  font-weight: 600;
 }
 
 .filter-option:hover {
