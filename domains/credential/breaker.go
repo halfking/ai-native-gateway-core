@@ -99,7 +99,9 @@ var defaultPolicies = map[ErrorKind]CoolingPolicy{
 	KindTransient: {InitialCooling: 60 * time.Second, MaxCooling: 60 * time.Second, RecoveryType: RecoveryAuto, ShrinkFactor: 0},
 	KindTimeout:   {InitialCooling: 60 * time.Second, MaxCooling: 60 * time.Second, RecoveryType: RecoveryAuto, ShrinkFactor: 0},
 	KindNetwork:   {InitialCooling: 60 * time.Second, MaxCooling: 60 * time.Second, RecoveryType: RecoveryAuto, ShrinkFactor: 0},
-	KindRateLimit: {InitialCooling: 900 * time.Second, MaxCooling: 900 * time.Second, RecoveryType: RecoveryExponential, ShrinkFactor: 0.7},
+	// 2026-07-24: RateLimit 从 15分钟 改为 2分钟
+	// 15分钟对多轮对话场景太长，2分钟足够让上游限流恢复
+	KindRateLimit: {InitialCooling: 120 * time.Second, MaxCooling: 120 * time.Second, RecoveryType: RecoveryExponential, ShrinkFactor: 0.7},
 	// 2026-07-22 fix (BUG #1): KindAuth used to be RecoveryPermanent
 	// (quarantine, manual recovery only). That combined with BUG #2
 	// (writer.go writing availability_recover_at=NULL) meant a single
@@ -113,17 +115,13 @@ var defaultPolicies = map[ErrorKind]CoolingPolicy{
 	// the new one is also bad) degrades gracefully instead of being
 	// pinned forever. After 24h of cooling the credential is
 	// effectively permanent-by-time, matching the old UX.
-	KindAuth:          {InitialCooling: 15 * time.Minute, MaxCooling: 24 * time.Hour, RecoveryType: RecoveryExponential, ShrinkFactor: 0.5},
+	// 2026-07-24: Auth InitialCooling 从 15分钟 改为 5分钟，减少多轮对话中的长时间中断
+	KindAuth:          {InitialCooling: 5 * time.Minute, MaxCooling: 24 * time.Hour, RecoveryType: RecoveryExponential, ShrinkFactor: 0.5},
 	KindQuota:         {InitialCooling: 0, MaxCooling: 0, RecoveryType: RecoveryPermanent, ShrinkFactor: 0},
 	KindUpstreamDown:  {InitialCooling: 30 * time.Second, MaxCooling: 1800 * time.Second, RecoveryType: RecoveryExponential, ShrinkFactor: 0.5},
 	KindStreamTimeout: {InitialCooling: 30 * time.Second, MaxCooling: 30 * time.Second, RecoveryType: RecoveryAuto, ShrinkFactor: 0},
-	// KindConcurrent: upstream reports "service overloaded / too many
-	// concurrent requests". Apply a fixed 5-minute cooling window so the
-	// credential is taken out of rotation long enough for the upstream's
-	// concurrency window to clear. Auto-recovery (one probe at the end
-	// of cooling) is the right policy because concurrent overload is
-	// typically a transient platform-level condition.
-	errorsx.KindConcurrent: {InitialCooling: 5 * time.Minute, MaxCooling: 5 * time.Minute, RecoveryType: RecoveryAuto, ShrinkFactor: 0.5},
+	// 2026-07-24: Concurrent 从 5分钟 改为 2分钟，减少多轮对话中的长时间中断
+	errorsx.KindConcurrent: {InitialCooling: 2 * time.Minute, MaxCooling: 2 * time.Minute, RecoveryType: RecoveryAuto, ShrinkFactor: 0.5},
 }
 
 // ---------------------------------------------------------------------------
