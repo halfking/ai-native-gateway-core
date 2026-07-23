@@ -43,11 +43,11 @@ const showPreviewModal = ref(false)
 const showExecuteConfirm = ref(false)
 
 const diskUsageColor = computed(() => {
-  if (!stats.value) return '#3fb950'
+  if (!stats.value) return 'var(--success)'
   const level = stats.value.disk_warning_level
-  if (level === 'danger') return '#f85149'
-  if (level === 'warning') return '#d29922'
-  return '#3fb950'
+  if (level === 'danger') return 'var(--danger)'
+  if (level === 'warning') return 'var(--warning)'
+  return 'var(--success)'
 })
 
 const diskUsageText = computed(() => {
@@ -330,7 +330,7 @@ defineExpose({ load })
 }
 
 .btn-refresh:disabled {
-  background: #30363d;
+  background: var(--bg-subtle);
   color: var(--muted);
   cursor: not-allowed;
   opacity: .6;
@@ -338,8 +338,8 @@ defineExpose({ load })
 
 .error-box {
   padding: 12px;
-  background: rgba(248,81,73,.1);
-  border: 1px solid rgba(248,81,73,.3);
+  background: var(--danger-soft);
+  border: 1px solid color-mix(in srgb, var(--danger) 30%, transparent);
   border-radius: var(--radius, 8px);
   color: var(--danger);
   margin-bottom: 20px;
@@ -394,7 +394,7 @@ defineExpose({ load })
 
 .disk-bar {
   height: 24px;
-  background: #0f1117;
+  background: var(--bg-subtle);
   border-radius: 12px;
   overflow: hidden;
   margin-bottom: 8px;
@@ -445,7 +445,7 @@ defineExpose({ load })
 .form-row input[type="number"],
 .form-row input[type="text"] {
   padding: 8px 12px;
-  background: #0f1117;
+  background: var(--bg);
   border: 1px solid var(--border);
   border-radius: 4px;
   font-size: 14px;
@@ -507,7 +507,7 @@ defineExpose({ load })
 
 .btn-preview:disabled,
 .btn-execute:disabled {
-  background: #30363d;
+  background: var(--bg-subtle);
   color: var(--muted);
   cursor: not-allowed;
   opacity: .6;
@@ -534,7 +534,7 @@ defineExpose({ load })
 }
 
 .btn-danger:disabled {
-  background: #30363d;
+  background: var(--bg-subtle);
   color: var(--muted);
   cursor: not-allowed;
   opacity: .6;
@@ -546,7 +546,7 @@ defineExpose({ load })
   left: 0;
   right: 0;
   bottom: 0;
-  background: rgba(0, 0, 0, 0.6);
+  background: rgba(0, 0, 0, 0.5);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -562,7 +562,7 @@ defineExpose({ load })
   width: 90%;
   max-height: 80vh;
   overflow-y: auto;
-  box-shadow: 0 8px 24px rgba(0,0,0,.4);
+  box-shadow: 0 8px 24px rgba(0,0,0,.15);
 }
 
 .modal-content h3 {
@@ -616,7 +616,7 @@ defineExpose({ load })
   margin: 8px 0;
   max-height: 300px;
   overflow-y: auto;
-  background: #0f1117;
+  background: var(--bg-subtle);
   border: 1px solid var(--border);
   border-radius: 4px;
 }

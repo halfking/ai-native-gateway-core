@@ -854,9 +854,9 @@ function formatNumber(num: number): string {
 }
 
 .alert-error {
-  background: rgba(248, 113, 113, 0.1);
-  border: 1px solid rgba(248, 113, 113, 0.3);
-  color: #f87171;
+  background: var(--danger-soft);
+  border: 1px solid color-mix(in srgb, var(--danger) 30%, transparent);
+  color: var(--danger);
 }
 
 .alert-icon {
@@ -864,8 +864,8 @@ function formatNumber(num: number): string {
 }
 
 .card {
-  background: #161b22;
-  border: 1px solid #30363d;
+  background: var(--card);
+  border: 1px solid var(--border);
   border-radius: 10px;
   padding: 20px;
   margin-bottom: 24px;
@@ -894,15 +894,15 @@ function formatNumber(num: number): string {
 
 .retention-hint {
   font-size: 12px;
-  color: #8b949e;
-  background: #0d1117;
+  color: var(--muted);
+  background: var(--bg-subtle);
   padding: 5px 10px;
   border-radius: 6px;
-  border: 1px solid #30363d;
+  border: 1px solid var(--border);
 }
 
 .retention-hint strong {
-  color: #fbbf24;
+  color: var(--warning);
   margin: 0 4px;
 }
 
@@ -924,18 +924,18 @@ function formatNumber(num: number): string {
   font-size: 16px;
   font-weight: 600;
   margin: 0 0 6px 0;
-  color: #e6edf3;
+  color: var(--text);
 }
 
 .card-desc {
-  color: #8b949e;
+  color: var(--muted);
   margin: 0 0 16px 0;
   font-size: 13px;
   line-height: 1.6;
 }
 
 .card-desc strong {
-  color: #fbbf24;
+  color: var(--warning);
 }
 
 .hot-tables-grid {
@@ -945,17 +945,17 @@ function formatNumber(num: number): string {
 }
 
 .hot-table-card {
-  border: 1px solid #30363d;
+  border: 1px solid var(--border);
   border-radius: 8px;
   padding: 16px;
-  background: #0f1117;
+  background: var(--bg-subtle);
   transition: all 0.2s;
 }
 
 .hot-table-card.migrating {
-  background: rgba(251, 191, 36, 0.06);
-  border-color: rgba(251, 191, 36, 0.4);
-  box-shadow: 0 0 0 1px rgba(251, 191, 36, 0.2);
+  background: var(--warning-soft);
+  border-color: color-mix(in srgb, var(--warning) 35%, transparent);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--warning) 20%, transparent);
 }
 
 .table-header {
@@ -969,7 +969,7 @@ function formatNumber(num: number): string {
   font-size: 15px;
   font-weight: 600;
   margin: 0;
-  color: #e6edf3;
+  color: var(--text);
 }
 
 .table-size {
@@ -977,21 +977,21 @@ function formatNumber(num: number): string {
   font-weight: 600;
   padding: 4px 10px;
   border-radius: 4px;
-  background: #21262d;
-  color: #8b949e;
-  border: 1px solid #30363d;
+  background: var(--bg-subtle);
+  color: var(--muted);
+  border: 1px solid var(--border);
 }
 
 .table-size.size-warning {
-  background: rgba(251, 191, 36, 0.15);
-  color: #fbbf24;
-  border-color: rgba(251, 191, 36, 0.3);
+  background: var(--warning-soft);
+  color: var(--warning);
+  border-color: color-mix(in srgb, var(--warning) 35%, transparent);
 }
 
 .table-size.size-critical {
-  background: rgba(248, 113, 113, 0.15);
-  color: #f87171;
-  border-color: rgba(248, 113, 113, 0.3);
+  background: var(--danger-soft);
+  color: var(--danger);
+  border-color: color-mix(in srgb, var(--danger) 35%, transparent);
 }
 
 .table-stats {
@@ -1008,14 +1008,14 @@ function formatNumber(num: number): string {
 
 .stat-label {
   font-size: 11px;
-  color: #8b949e;
+  color: var(--muted);
   margin-bottom: 4px;
 }
 
 .stat-value {
   font-size: 14px;
   font-weight: 600;
-  color: #e6edf3;
+  color: var(--text);
   font-variant-numeric: tabular-nums;
 }
 
@@ -1044,8 +1044,8 @@ function formatNumber(num: number): string {
   font-size: 12px;
   border-radius: 0;
   background: transparent;
-  border-color: #30363d;
-  color: #8b949e;
+  border-color: var(--border);
+  color: var(--muted);
 }
 
 :global(.retention-radio .el-radio-button:first-child .el-radio-button__inner) {
@@ -1072,20 +1072,20 @@ function formatNumber(num: number): string {
 }
 
 :global(.retention-radio .el-radio-button__inner:hover) {
-  color: #e6edf3;
+  color: var(--text);
 }
 
 .migration-progress {
   margin-top: 12px;
   padding: 10px;
-  background: #0d1117;
+  background: var(--bg-subtle);
   border-radius: 6px;
-  border: 1px solid #30363d;
+  border: 1px solid var(--border);
 }
 
 .progress-bar {
   height: 6px;
-  background: #21262d;
+  background: var(--bg-subtle);
   border-radius: 3px;
   overflow: hidden;
   margin-bottom: 6px;
@@ -1099,7 +1099,7 @@ function formatNumber(num: number): string {
 
 .progress-text {
   font-size: 12px;
-  color: #cbd5e1;
+  color: var(--muted);
   display: flex;
   justify-content: space-between;
   align-items: center;
@@ -1123,7 +1123,7 @@ function formatNumber(num: number): string {
 
 .progress-hint {
   font-size: 11px;
-  color: #6b7280;
+  color: var(--muted);
   margin-top: 4px;
   display: flex;
   align-items: center;
@@ -1134,8 +1134,8 @@ function formatNumber(num: number): string {
   display: inline-flex;
   align-items: center;
   gap: 4px;
-  background: rgba(52, 211, 153, 0.15);
-  color: #34d399;
+  background: var(--success-soft);
+  color: var(--success);
   padding: 1px 6px;
   border-radius: 8px;
   font-weight: 500;
@@ -1166,18 +1166,18 @@ function formatNumber(num: number): string {
 }
 
 .migration-result.succeeded {
-  background: rgba(52, 211, 153, 0.1);
-  border-color: rgba(52, 211, 153, 0.3);
+  background: var(--success-soft);
+  border-color: color-mix(in srgb, var(--success) 35%, transparent);
 }
 
 .migration-result.partial {
-  background: rgba(251, 191, 36, 0.1);
-  border-color: rgba(251, 191, 36, 0.3);
+  background: var(--warning-soft);
+  border-color: color-mix(in srgb, var(--warning) 35%, transparent);
 }
 
 .migration-result.failed {
-  background: rgba(248, 113, 113, 0.1);
-  border-color: rgba(248, 113, 113, 0.3);
+  background: var(--danger-soft);
+  border-color: color-mix(in srgb, var(--danger) 35%, transparent);
 }
 
 .result-icon {
@@ -1185,9 +1185,9 @@ function formatNumber(num: number): string {
   font-weight: bold;
 }
 
-.migration-result.succeeded .result-icon { color: #34d399; }
-.migration-result.partial .result-icon { color: #fbbf24; }
-.migration-result.failed .result-icon { color: #f87171; }
+.migration-result.succeeded .result-icon { color: var(--success); }
+.migration-result.partial .result-icon { color: var(--warning); }
+.migration-result.failed .result-icon { color: var(--danger); }
 
 .result-content {
   flex: 1;
@@ -1196,29 +1196,29 @@ function formatNumber(num: number): string {
 
 .result-message {
   font-size: 13px;
-  color: #e6edf3;
+  color: var(--text);
   margin-bottom: 4px;
 }
 
 .result-warning {
   font-size: 12px;
-  color: #fbbf24;
-  background: rgba(251, 191, 36, 0.1);
+  color: var(--warning);
+  background: var(--warning-soft);
   padding: 6px 8px;
   border-radius: 4px;
   margin-top: 6px;
-  border: 1px solid rgba(251, 191, 36, 0.2);
+  border: 1px solid color-mix(in srgb, var(--warning) 25%, transparent);
 }
 
 .result-stats {
   font-size: 11px;
-  color: #8b949e;
+  color: var(--muted);
   margin-top: 4px;
   font-variant-numeric: tabular-nums;
 }
 
 .result-stats strong {
-  color: #e6edf3;
+  color: var(--text);
   font-weight: 600;
 }
 
@@ -1233,7 +1233,7 @@ function formatNumber(num: number): string {
   margin: 16px 0 10px 0;
   font-size: 14px;
   font-weight: 600;
-  color: #e6edf3;
+  color: var(--text);
   border-left: 3px solid var(--accent);
   padding-left: 10px;
 }
@@ -1252,17 +1252,17 @@ function formatNumber(num: number): string {
 .data-table th {
   text-align: left;
   padding: 10px 12px;
-  background: #0f1117;
-  border-bottom: 1px solid #30363d;
+  background: var(--bg-subtle);
+  border-bottom: 1px solid var(--border);
   font-weight: 500;
-  color: #8b949e;
+  color: var(--muted);
   white-space: nowrap;
 }
 
 .data-table td {
   padding: 10px 12px;
-  border-bottom: 1px solid #30363d;
-  color: #e6edf3;
+  border-bottom: 1px solid var(--border);
+  color: var(--text);
   font-variant-numeric: tabular-nums;
 }
 
@@ -1284,7 +1284,7 @@ function formatNumber(num: number): string {
 
 .data-table .empty-row {
   text-align: center;
-  color: #8b949e;
+  color: var(--muted);
   padding: 32px;
 }
 
@@ -1292,13 +1292,13 @@ function formatNumber(num: number): string {
   font-family: ui-monospace, SFMono-Regular, monospace;
   font-size: 11px;
   padding: 2px 6px;
-  background: #0f1117;
+  background: var(--bg-subtle);
   border-radius: 4px;
   color: var(--accent-h);
 }
 
-.strong { color: #e6edf3; font-weight: 600; }
-.dim { color: #8b949e; }
+.strong { color: var(--text); font-weight: 600; }
+.dim { color: var(--muted); }
 
 .pill {
   display: inline-block;
@@ -1314,13 +1314,13 @@ function formatNumber(num: number): string {
 }
 
 .pill-warn {
-  background: rgba(251, 191, 36, 0.15);
-  color: #fbbf24;
+  background: var(--warning-soft);
+  color: var(--warning);
 }
 
 .pill-dim {
-  background: #21262d;
-  color: #6b7280;
+  background: var(--bg-subtle);
+  color: var(--muted);
 }
 
 .status-pill {
@@ -1334,8 +1334,8 @@ function formatNumber(num: number): string {
 }
 
 .status-queued {
-  background: #21262d;
-  color: #8b949e;
+  background: var(--bg-subtle);
+  color: var(--muted);
 }
 
 .status-running {
@@ -1346,18 +1346,18 @@ function formatNumber(num: number): string {
 .status-running .dot-pulse { background: var(--accent-h); }
 
 .status-succeeded {
-  background: rgba(52, 211, 153, 0.15);
-  color: #34d399;
+  background: var(--success-soft);
+  color: var(--success);
 }
 
 .status-failed {
-  background: rgba(248, 113, 113, 0.15);
-  color: #f87171;
+  background: var(--danger-soft);
+  color: var(--danger);
 }
 
 .status-cancelled {
-  background: #21262d;
-  color: #8b949e;
+  background: var(--bg-subtle);
+  color: var(--muted);
 }
 
 .progress-cell {
@@ -1369,7 +1369,7 @@ function formatNumber(num: number): string {
 .mini-progress {
   width: 80px;
   height: 4px;
-  background: #21262d;
+  background: var(--bg-subtle);
   border-radius: 2px;
   overflow: hidden;
 }
@@ -1394,13 +1394,13 @@ function formatNumber(num: number): string {
 }
 
 .storage-badge.heap {
-  background: #21262d;
-  color: #8b949e;
+  background: var(--bg-subtle);
+  color: var(--muted);
 }
 
 .storage-badge.archive {
-  background: rgba(52, 211, 153, 0.15);
-  color: #34d399;
+  background: var(--success-soft);
+  color: var(--success);
 }
 
 .month-badge {
@@ -1413,18 +1413,18 @@ function formatNumber(num: number): string {
 }
 
 .month-badge.month-recent {
-  background: rgba(52, 211, 153, 0.15);
-  color: #34d399;
+  background: var(--success-soft);
+  color: var(--success);
 }
 
 .month-badge.month-medium {
-  background: rgba(251, 191, 36, 0.15);
-  color: #fbbf24;
+  background: var(--warning-soft);
+  color: var(--warning);
 }
 
 .month-badge.month-old {
-  background: #21262d;
-  color: #8b949e;
+  background: var(--bg-subtle);
+  color: var(--muted);
 }
 
 .partition-list-section {
@@ -1440,7 +1440,7 @@ function formatNumber(num: number): string {
   cursor: pointer;
   transition: all 0.15s;
   background: transparent;
-  color: #e6edf3;
+  color: var(--text);
   display: inline-flex;
   align-items: center;
   gap: 6px;
@@ -1463,26 +1463,26 @@ function formatNumber(num: number): string {
 }
 
 .btn-danger {
-  background: rgba(248, 113, 113, 0.15);
-  border-color: rgba(248, 113, 113, 0.3);
-  color: #f87171;
+  background: var(--danger-soft);
+  border-color: color-mix(in srgb, var(--danger) 30%, transparent);
+  color: var(--danger);
 }
 
 .btn-danger:hover:not(:disabled) {
-  background: rgba(248, 113, 113, 0.25);
-  border-color: #f87171;
+  background: color-mix(in srgb, var(--danger) 20%, transparent);
+  border-color: var(--danger);
 }
 
 .btn-ghost {
   background: transparent;
-  border-color: #30363d;
-  color: #8b949e;
+  border-color: var(--border);
+  color: var(--muted);
 }
 
 .btn-ghost:hover:not(:disabled) {
-  background: #21262d;
-  border-color: #8b949e;
-  color: #e6edf3;
+  background: var(--bg-hover);
+  border-color: var(--accent);
+  color: var(--text);
 }
 
 .btn:disabled {
@@ -1493,7 +1493,7 @@ function formatNumber(num: number): string {
 .modal-overlay {
   position: fixed;
   inset: 0;
-  background: rgba(0, 0, 0, 0.7);
+  background: rgba(0, 0, 0, 0.5);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -1502,24 +1502,24 @@ function formatNumber(num: number): string {
 }
 
 .modal-dialog {
-  background: #161b22;
-  border: 1px solid #30363d;
+  background: var(--card);
+  border: 1px solid var(--border);
   border-radius: 12px;
   width: 90%;
   max-width: 500px;
-  box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.5);
+  box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.2);
 }
 
 .modal-header {
   padding: 18px 24px;
-  border-bottom: 1px solid #30363d;
+  border-bottom: 1px solid var(--border);
 }
 
 .modal-header h3 {
   margin: 0;
   font-size: 16px;
   font-weight: 600;
-  color: #e6edf3;
+  color: var(--text);
 }
 
 .modal-body {
@@ -1528,7 +1528,7 @@ function formatNumber(num: number): string {
 
 .modal-footer {
   padding: 14px 24px;
-  border-top: 1px solid #30363d;
+  border-top: 1px solid var(--border);
   display: flex;
   justify-content: flex-end;
   gap: 12px;
@@ -1537,15 +1537,15 @@ function formatNumber(num: number): string {
 .warning-box {
   display: flex;
   gap: 14px;
-  background: rgba(251, 191, 36, 0.08);
-  border: 1px solid rgba(251, 191, 36, 0.3);
+  background: var(--warning-soft);
+  border: 1px solid color-mix(in srgb, var(--warning) 35%, transparent);
   border-radius: 8px;
   padding: 16px;
 }
 
 .warning-icon {
   font-size: 22px;
-  color: #fbbf24;
+  color: var(--warning);
 }
 
 .warning-content {
@@ -1554,19 +1554,19 @@ function formatNumber(num: number): string {
 
 .warning-content p {
   margin: 0 0 10px 0;
-  color: #e6edf3;
+  color: var(--text);
   font-size: 13px;
   line-height: 1.6;
 }
 
 .warning-content p strong {
-  color: #fbbf24;
+  color: var(--warning);
 }
 
 .warning-content code {
   display: block;
-  background: #0f1117;
-  border: 1px solid #30363d;
+  background: var(--bg-subtle);
+  border: 1px solid var(--border);
   padding: 8px 10px;
   border-radius: 4px;
   margin: 8px 0;
@@ -1578,7 +1578,7 @@ function formatNumber(num: number): string {
 .warning-content ul {
   margin: 10px 0;
   padding-left: 20px;
-  color: #cbd5e1;
+  color: var(--text);
   font-size: 13px;
 }
 
@@ -1589,10 +1589,10 @@ function formatNumber(num: number): string {
 .confirm-input {
   width: 100%;
   padding: 8px 12px;
-  background: #0f1117;
-  border: 1px solid #30363d;
+  background: var(--bg-subtle);
+  border: 1px solid var(--border);
   border-radius: 6px;
-  color: #e6edf3;
+  color: var(--text);
   font-size: 13px;
   font-family: ui-monospace, SFMono-Regular, monospace;
   margin-top: 8px;
@@ -1606,7 +1606,7 @@ function formatNumber(num: number): string {
 .empty-hint {
   text-align: center;
   padding: 32px;
-  color: #8b949e;
+  color: var(--muted);
   font-size: 13px;
 }
 </style>
