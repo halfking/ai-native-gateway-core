@@ -74,6 +74,9 @@ func (a *Audit) Write(ctx context.Context, task *Task, result *ExecutorResult, e
 	if v, ok := extras["latency_ms"].(int); ok {
 		latencyMs = v
 	}
+	if task.TokenCount > 0 {
+		extras["total_tokens"] = task.TokenCount
+	}
 	if v, ok := extras["err_code"].(string); ok && v != "" {
 		errCode = v
 	}
@@ -112,6 +115,7 @@ func (a *Audit) Write(ctx context.Context, task *Task, result *ExecutorResult, e
 			task_id, task_type, automaticity, credential_id, provider_id, raw_model,
 			source, worker_id, status, attempt, max_attempts,
 			http_status, latency_ms,
+			total_tokens,
 			request_url, response_body_preview,
 			err_code, err_detail,
 			skip_reason, recent_request_id, recent_request_at,
@@ -121,15 +125,16 @@ func (a *Audit) Write(ctx context.Context, task *Task, result *ExecutorResult, e
 			$1, $2, $3, $4, $5, $6,
 			$7, $8, $9, $10, $11,
 			$12, $13,
-			$14, $15,
-			$16, $17,
-			$18, $19, $20,
-			$21, $22,
+			$14,
+			$15, $16,
+			$17, $18,
+			$19, $20, $21,
+			$22, $23,
 			now()
 		)`,
 		task.ID, string(task.TaskType), string(task.Automaticity), task.CredentialID, task.ProviderID, task.RawModel,
 		string(task.Source), task.WorkerID, string(task.Status), task.Attempt, task.MaxAttempts,
-		httpStatus, latencyMs,
+		httpStatus, latencyMs, task.TokenCount,
 		nullString(requestURL), nullString(string(extrasJSON)),
 		nullString(errCode), nullString(errDetail),
 		nullString(skipReason), nullString(recentRequestID), recentRequestAt,

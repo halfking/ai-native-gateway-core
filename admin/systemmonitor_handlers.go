@@ -306,14 +306,17 @@ func (h *Handler) handleSystemMonitorStats(w http.ResponseWriter, r *http.Reques
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
-	if h.systemMonitor == nil {
-		writeError(w, http.StatusServiceUnavailable, "system monitor not wired")
-		return
-	}
-	stats, err := h.systemMonitor.QueueStats(r.Context())
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "stats: "+err.Error())
-		return
+	var queueSize, runningSize int64
+	var inFallback bool
+	if h.systemMonitor != nil {
+		stats, err := h.systemMonitor.QueueStats(r.Context())
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "stats: "+err.Error())
+			return
+		}
+		queueSize = stats.QueueSize
+		runningSize = stats.RunningSize
+		inFallback = stats.InFallback
 	}
 	concurrency := 5
 	var monitorConcurrency int
@@ -321,11 +324,25 @@ func (h *Handler) handleSystemMonitorStats(w http.ResponseWriter, r *http.Reques
 		`SELECT monitor_concurrency FROM self_check_settings WHERE id=1`).Scan(&monitorConcurrency); err == nil && monitorConcurrency > 0 {
 		concurrency = monitorConcurrency
 	}
+	var completed, failed, skipped, tokens int64
+	_ = h.db.QueryRow(r.Context(), `
+		SELECT
+			COUNT(*) FILTER (WHERE status = 'success'),
+			COUNT(*) FILTER (WHERE status IN ('failed', 'timeout', 'network_error')),
+			COUNT(*) FILTER (WHERE status = 'skipped'),
+			COALESCE(SUM(total_tokens), 0)
+		FROM system_probe_runs
+		WHERE created_at >= NOW() - INTERVAL '1 hour'
+	`).Scan(&completed, &failed, &skipped, &tokens)
 	writeJSON(w, http.StatusOK, map[string]any{
-		"queue_size":          stats.QueueSize,
-		"running_size":        stats.RunningSize,
-		"in_fallback":         stats.InFallback,
+		"queue_size":          queueSize,
+		"running_size":        runningSize,
+		"in_fallback":         inFallback,
 		"monitor_concurrency": concurrency,
+		"completed_total_1h":  completed,
+		"failed_total_1h":     failed,
+		"skipped_total_1h":    skipped,
+		"total_tokens_1h":     tokens,
 		"snapshot_at":         time.Now().UTC(),
 	})
 }

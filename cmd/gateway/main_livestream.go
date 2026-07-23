@@ -19,6 +19,20 @@ import (
 	"github.com/kaixuan/llm-gateway-go/domains/routeincident"
 )
 
+func valueOrZero(v *int) int {
+	if v == nil {
+		return 0
+	}
+	return *v
+}
+
+func valueOrEmpty(v *string) string {
+	if v == nil {
+		return ""
+	}
+	return *v
+}
+
 // adminLiveRequestFromEntry adapts a freshly-persisted telemetry
 // RequestLogEntry into the dashboard's swim-lane LiveRequest shape.
 // Called on the telemetry worker goroutine, so the implementation

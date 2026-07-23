@@ -182,6 +182,7 @@ type Task struct {
 	LatencyMs       *int       `json:"latency_ms,omitempty"`
 	ErrCode         string     `json:"err_code,omitempty"`
 	ErrDetail       string     `json:"err_detail,omitempty"`
+	TokenCount      int        `json:"token_count,omitempty"`
 	SkipReason      SkipReason `json:"skip_reason,omitempty"`
 	RecentRequestID string     `json:"recent_request_id,omitempty"`
 	RecentRequestAt *time.Time `json:"recent_request_at,omitempty"`

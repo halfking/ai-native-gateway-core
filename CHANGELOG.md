@@ -9,6 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **系统监测动态泳道与实时统计** (2026-07-24): Dashboard 默认显示 SystemMonitor，新增 SSE 实时任务泳道、等待/完成/失败任务量和 token 用量；SystemMonitor 在入队、开始、跳过、完成及失败时发布事件，探测响应解析并持久化 token 使用量。新增 `346_system_probe_run_tokens` migration。
+- **自检设置特色模型改为只读** (2026-07-24): 自检设置中的特色模型列表不再手工输入，改为从系统设置（routing_policy.featured_models）读取并只读显示。
+
 - **routing-v2 resolve 页：完整路由可能性 + 全明细状态标志 + 管理员设置** (2026-07-24): 把原"只展示可用候选"的窄表重写为"默认展示全部候选 + 行级明细抽屉 + 行级管理员设置对话框"。后端新增 `PATCH /api/routing/candidate-binding/{credential_id}?raw_model=...`（super_admin 限定，仅允许改 `manual_priority` / `routing_tier` / `weight` 三字段，不绕过熔断 / 可用性 / 凭据启用硬规则；带 audit log 写入 `routing_audit_log`）；前端新增 `CandidateDetailDrawer.vue`（8 组共 30+ 标志：可用性 / 凭据 / Provider / 配额 / 熔断 / 并发 / 时效 / 计费 / 评分，每行带说明 + 当前值 + 数据来源代码定位）和 `CandidateSettingsDialog.vue`（乐观更新 + 失败回滚，仅 `isSuperAdmin()` 时显示）。表格列精简到 5 列（可用性 + 供应商凭据 + 上游 + Tier·权重 + 明细/设置入口），所有状态颜色绑定 kx-design token (`--kx-success` / `--kx-danger` / `--kx-warning` / `--kx-bg-elevated` / `--kx-border-light`) 自动适配 daylight / night 双主题。`run go test ./admin/...` 新增 7 个输入校验回归（method / credential_id / raw_model / 必填字段 / 三个字段的范围越界）。前端 `vue-tsc --noEmit` + `vite build` 全绿。**第二轮视觉修正**：上一版不可用行 `opacity:0.65 + --kx-bg-elevated` 在双主题下都糊；抽屉 / 对话框 `rgba(0,0,0,0.45)` 深蒙层让卡片"漂浮"。本次改为不可用行 `--kx-danger-soft` 浅红背景 + `inset 3px 0 0 var(--kx-danger)` 左侧色条 + badge `1px solid var(--kx-danger)` 加固；backdrop 降到 `0.28`，卡片新增 `1px solid var(--kx-border-light)` 边框。截图证据 `docs/screenshots/ui-verify-routing-resolve-row-fix-{daylight,night}-20260724.png`。详见 [docs/changelogs/2026-07-24-routing-resolve-full-candidates-detail-settings.md](docs/changelogs/2026-07-24-routing-resolve-full-candidates-detail-settings.md).
 
 ### Fixed

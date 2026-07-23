@@ -1687,6 +1687,52 @@ func main() {
 			adminHandler.SetLiveStreamSSE(liveStreamHub)
 		}
 
+		// SystemMonitor SSE uses the same Redis client as the live request
+		// stream. Mount it independently of the worker feature flag so legacy
+		// probe workers can still feed the dashboard lane through telemetry.
+		var systemMonitorSSE *admin.SystemMonitorSSEHub
+		if fpSlotRedis != nil {
+			systemMonitorSSE = admin.NewSystemMonitorSSEHub(fpSlotRedis)
+			adminHandler.SetSystemMonitorSSE(systemMonitorSSE)
+			if telemetryClient != nil {
+				telemetryClient.AddOnRequestLogPersisted(func(entry *telemetry.RequestLogEntry) {
+					// Only legacy probe rows belong in the system-monitor lane;
+					// ordinary business requests stay in live-stream SSE.
+					if entry == nil || entry.TaskType == nil || *entry.TaskType != "probe_triggered" {
+						return
+					}
+					model := ""
+					if entry.ClientModel != nil {
+						model = *entry.ClientModel
+					} else if entry.OutboundModel != nil {
+						model = *entry.OutboundModel
+					}
+					status := ""
+					if entry.RequestStatus != nil {
+						status = *entry.RequestStatus
+					}
+					var credentialID, providerID int64
+					if entry.CredentialID != nil {
+						credentialID = int64(*entry.CredentialID)
+					}
+					if entry.ProviderID != nil {
+						providerID = int64(*entry.ProviderID)
+					}
+					timestamp := time.Now().UTC()
+					if entry.EventAt != nil {
+						timestamp = entry.EventAt.UTC()
+					}
+					systemMonitorSSE.PublishTelemetry(admin.SystemMonitorTelemetry{
+						RequestID: entry.RequestID, Model: model, Source: "legacy_worker",
+						Status: status, CredentialID: credentialID, ProviderID: providerID,
+						PromptTokens: valueOrZero(entry.PromptTokens), CompletionTokens: valueOrZero(entry.CompletionTokens),
+						ErrorCode: valueOrEmpty(entry.ErrorKind), Timestamp: timestamp,
+						IsInsert: entry.Op == telemetry.RequestLogInsert,
+					})
+				})
+			}
+		}
+
 		// 2026-07-23: 系统监测模块 — 探测任务的唯一入口 (design docs/会话优化v2/32).
 		// env LLM_GATEWAY_SYSTEM_MONITOR_ENABLED=true 才会启；Phase 1 默认关。
 		// 旧 worker (NodeProbe / ActiveProbe / CredentialSelfcheck) 在启用
@@ -1718,9 +1764,7 @@ func main() {
 					"redis_enabled", fpSlotRedis != nil,
 				)
 				// SSE 流：仅在 Redis 可用时挂载
-				if fpSlotRedis != nil {
-					sseHub := admin.NewSystemMonitorSSEHub(fpSlotRedis)
-					adminHandler.SetSystemMonitorSSE(sseHub)
+				if systemMonitorSSE != nil {
 					slog.Info("system_monitor sse hub: started")
 				}
 				// 5min 自动跳过规则需要 request_logs 行触发 RecentSuccessHook；
