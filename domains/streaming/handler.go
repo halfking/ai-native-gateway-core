@@ -132,23 +132,23 @@ func (p *preStreamKeepalive) writeComment(line string) {
 // Used to display node failover status without entering the conversation.
 //
 // Format compatibility (2026-07-23 research):
-//   - SSE framing: standard, all clients parse without error
-//   - Event name "thinking": high-level SDKs (OpenAI, Anthropic) skip but don't error
-//   - Data shape {"type":"thinking","content":"..."}: matches Anthropic's JSON
-//     discriminator convention + includes OpenAI-compatible "object":"thinking" hint
-//   - Browsers dispatch only via addEventListener('thinking', ...);
-//     onmessage does NOT receive it (per WHATWG SSE spec)
-//   - Connection stays alive (this is the primary goal — prevent client timeout)
+//   - SSE comment format: `: text\n\n` — all SSE parsers treat comments as
+//     no-ops; no event/data dispatched to any event handler or onmessage.
+//   - The opencode client parses ALL data: lines through a Zod union
+//     (choices[] | error{} | ...). ANY data: line that doesn't match
+//     triggers "Type validation failed" / "invalid_union" — regardless of
+//     event: type. The previous approach (event: thinking + data: {...})
+//     relied on incorrect assumption that Zod skips unknown event types.
+//   - SSE comment format avoids data: entirely, keeping the connection
+//     alive without any client-side parsing risk.
 func (p *preStreamKeepalive) writeThinking(message string) {
 	if p == nil {
 		return
 	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	// Escape message for JSON; structure with type discriminator to avoid
-	// Zod "invalid_union" errors (clients expecting choices[] or error{}).
 	escaped, _ := json.Marshal(message)
-	fmt.Fprintf(p.w, "event: thinking\ndata: {\"type\":\"thinking\",\"content\":%s,\"object\":\"thinking\"}\n\n", escaped)
+	fmt.Fprintf(p.w, ": thinking: %s\n\n", escaped)
 	safeFlush(p.flusher)
 }
 
