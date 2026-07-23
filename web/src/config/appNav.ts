@@ -21,6 +21,12 @@ export type NavItem = {
    */
   opsPlatform?: boolean
   /**
+   * 2026-07-23: Plugin 模式标记
+   * 例如 'ai-session-manager' — 由对应 plugin 的软注入探测控制显示
+   * 类似 opsPlatform，但用于非运维类的 plugin（会话管理、聊天等）
+   */
+  plugin?: string
+  /**
    * Same-origin path owned by ai-native-maintain SPA (`/maintain/*`).
    * Render as a full-page `<a href>` instead of Vue RouterLink.
    */
@@ -91,6 +97,9 @@ export const NAV_GROUPS: NavGroup[] = [
     labelKey: 'nav.group.requestsSessions',
     items: [
       { path: '/request-logs', label: '请求日志', labelKey: 'nav.item.requestLogs', icon: '📋' },
+      // 2026-07-23: ai-session-manager plugin 入口
+      // Plugin 模式：完整页面跳转（同 opsPlatform 的 external 机制）
+      { path: '/plugins/ai-session-manager/sessions', label: '会话列表', labelKey: 'nav.item.pluginSessions', icon: '💬', super: true, hideForTenant: true, external: true, plugin: 'ai-session-manager' },
     ],
   },
   {
