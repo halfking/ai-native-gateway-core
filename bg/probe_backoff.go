@@ -71,6 +71,12 @@ func ChainBackoffIndex(failures int, chain []time.Duration) time.Duration {
 }
 
 var (
+	// NodeProbeBackoffChain defines the retry intervals for consecutive probe failures.
+	// 2026-07-24 fix: changed from [5s,30s,60s,5m,1h,2h,24h] to [5s,30s,60s,5m,1h,2h,6h].
+	// After reaching 6h (attempt 7+), all subsequent attempts remain at 6h intervals
+	// (ChainBackoffIndex caps at last element) until manually paused or successful.
+	// Rationale: 24h was too long, causing nodes to be stranded for a full day after
+	// transient failures. 6h balances backoff pressure with recovery speed.
 	NodeProbeBackoffChain = []time.Duration{
 		5 * time.Second,
 		30 * time.Second,
@@ -78,7 +84,7 @@ var (
 		5 * time.Minute,
 		1 * time.Hour,
 		2 * time.Hour,
-		24 * time.Hour,
+		6 * time.Hour, // was 24h
 	}
 
 	ActiveProbeBackoffChain = []time.Duration{

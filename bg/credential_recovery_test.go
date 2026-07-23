@@ -69,13 +69,22 @@ func TestExpiredCmbRecoverySQLGuards(t *testing.T) {
 	// whitespace varies between writes (mirrors TestAuthFailedRecoverySQLGuard).
 	regexMustMatch := []*regexp.Regexp{
 		regexp.MustCompile(`nps\.paused\s*=\s*TRUE`),
-		regexp.MustCompile(`nps\.next_retry_at\s*>\s*now\(\)`),
-		// 2026-07-24 fix: must include 2h backoff exemption to prevent 24h strandings
-		regexp.MustCompile(`\(nps\.next_retry_at\s*-\s*now\(\)\)\s*<\s*INTERVAL\s+'2\s+hours?'`),
 	}
 	for _, re := range regexMustMatch {
 		if !re.MatchString(sql) {
 			t.Fatalf("expiredCmbRecoverySQL missing pattern %q in:\n%s", re.String(), sql)
+		}
+	}
+	// 2026-07-24 fix: removed next_retry_at > now() check entirely.
+	// Now we recover ALL expired cmb rows regardless of backoff state,
+	// except those manually paused. This prevents nodes from being stranded.
+	mustNotContain := []string{
+		"next_retry_at > now()",
+		"next_retry_at  > now()",
+	}
+	for _, want := range mustNotContain {
+		if strings.Contains(sql, want) {
+			t.Fatalf("expiredCmbRecoverySQL must NOT contain %q (removed in 2026-07-24 fix) in:\n%s", want, sql)
 		}
 	}
 }
@@ -326,24 +335,26 @@ func TestStalePeriodicExhaustedCleanupSQLGuards(t *testing.T) {
 	}
 }
 
-// TestRecoverExpiredBindingsAllowsLongBackoff verifies that nodes stuck in
-// long backoff periods (>2h, e.g. the 24h ladder tier) are eligible for
-// recovery, preventing indefinite strandings after transient failures.
+// TestRecoverExpiredBindingsIgnoresBackoffState verifies that expired cmb rows
+// are eligible for recovery regardless of their node_probe_state.next_retry_at,
+// preventing indefinite strandings after transient failures.
 //
 // Background: 2026-07-24 incident where pulian glm-5.2 was stranded for 24h
 // because consecutive_failures=7 triggered the 24h backoff tier, and the
 // original expiredCmbRecoverySQL skipped ALL nodes with next_retry_at > now().
-// The fix adds a 2h exemption: nodes in backoff >2h are force-retried.
-func TestRecoverExpiredBindingsAllowsLongBackoff(t *testing.T) {
+// The fix removes the next_retry_at check entirely: if cmb.unavailable_recover_at
+// has elapsed, we force-retry immediately regardless of backoff state (unless
+// manually paused).
+func TestRecoverExpiredBindingsIgnoresBackoffState(t *testing.T) {
 	mock, err := pgxmock.NewPool()
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer mock.Close()
 
-	// Simulate a node stuck in 24h backoff (next_retry_at 20h from now)
+	// Simulate a node stuck in 6h backoff (next_retry_at 5h from now)
 	// with cmb.available=FALSE and unavailable_recover_at already elapsed.
-	// The SQL should SELECT this row because (20h - now) > 2h exemption.
+	// The SQL should SELECT this row because we now ignore next_retry_at entirely.
 	mock.ExpectQuery(`SELECT cmb\.credential_id, pm\.raw_model_name`).
 		WillReturnRows(
 			pgxmock.NewRows([]string{"credential_id", "raw_model_name"}).
