@@ -1,7 +1,13 @@
 {
   "version": "1.0.0",
-  "exported_at": "2026-07-23T00:24:34.040Z",
+  "exported_at": "2026-07-23T00:30:46.198Z",
   "source": "gateway-appNav",
+  "tenantScopeLegend": {
+    "default": "仅默认租户 + super_admin 可见",
+    "tenant": "仅租户门户（非 default 租户）可见",
+    "*": "所有租户可见",
+    "mixed": "分组内包含多种可见性，需逐项检查"
+  },
   "primary": [
     {
       "path": "/dashboard",
@@ -9,7 +15,8 @@
       "labelKey": "nav.item.overview",
       "icon": "📊",
       "platformOps": true,
-      "exact": true
+      "exact": true,
+      "tenantScope": "default"
     }
   ],
   "groups": [
@@ -23,30 +30,35 @@
           "label": "标准模型",
           "labelKey": "nav.item.tenantModels",
           "icon": "🤖",
-          "tenantOnly": true
+          "tenantOnly": true,
+          "tenantScope": "tenant"
         },
         {
           "path": "/tenant/account",
           "label": "我的账户",
           "labelKey": "nav.item.tenantAccount",
           "icon": "💰",
-          "tenantOnly": true
+          "tenantOnly": true,
+          "tenantScope": "tenant"
         },
         {
           "path": "/tenant/pricing",
           "label": "套餐与充值",
           "labelKey": "nav.item.tenantPricing",
           "icon": "💳",
-          "tenantOnly": true
+          "tenantOnly": true,
+          "tenantScope": "tenant"
         },
         {
           "path": "/tenant/usage",
           "label": "我的消耗",
           "labelKey": "nav.item.tenantUsage",
           "icon": "📉",
-          "tenantOnly": true
+          "tenantOnly": true,
+          "tenantScope": "tenant"
         }
-      ]
+      ],
+      "tenantScope": "tenant"
     },
     {
       "id": "models-routing",
@@ -59,7 +71,8 @@
           "labelKey": "nav.item.models",
           "icon": "🏷️",
           "platformOps": true,
-          "hideForTenant": true
+          "hideForTenant": true,
+          "tenantScope": "default"
         },
         {
           "path": "/routing-v2",
@@ -68,13 +81,15 @@
           "icon": "🗺️",
           "super": true,
           "hideForTenant": true,
-          "exact": true
+          "exact": true,
+          "tenantScope": "default"
         },
         {
           "path": "/routing-v2/credentials",
           "label": "凭据监控",
           "labelKey": "nav.item.credentialMonitor",
-          "icon": "📊"
+          "icon": "📊",
+          "tenantScope": "*"
         },
         {
           "path": "/probe-health",
@@ -82,7 +97,8 @@
           "labelKey": "nav.item.probeHealth",
           "icon": "🔍",
           "super": true,
-          "hideForTenant": true
+          "hideForTenant": true,
+          "tenantScope": "default"
         },
         {
           "path": "/providers",
@@ -90,7 +106,8 @@
           "labelKey": "nav.item.providers",
           "icon": "🔌",
           "super": true,
-          "hideForTenant": true
+          "hideForTenant": true,
+          "tenantScope": "default"
         },
         {
           "path": "/pricing",
@@ -98,7 +115,8 @@
           "labelKey": "nav.item.pricing",
           "icon": "📉",
           "platformOps": true,
-          "hideForTenant": true
+          "hideForTenant": true,
+          "tenantScope": "default"
         },
         {
           "path": "/model-pricing",
@@ -106,7 +124,8 @@
           "labelKey": "nav.item.modelPricing",
           "icon": "💰",
           "platformOps": true,
-          "hideForTenant": true
+          "hideForTenant": true,
+          "tenantScope": "default"
         },
         {
           "path": "/free-pool",
@@ -114,9 +133,11 @@
           "labelKey": "nav.item.freePool",
           "icon": "🎁",
           "super": true,
-          "hideForTenant": true
+          "hideForTenant": true,
+          "tenantScope": "default"
         }
-      ]
+      ],
+      "tenantScope": "mixed"
     },
     {
       "id": "tenant-users",
@@ -129,19 +150,22 @@
           "labelKey": "nav.item.tenants",
           "icon": "🏢",
           "super": true,
-          "hideForTenant": true
+          "hideForTenant": true,
+          "tenantScope": "default"
         },
         {
           "path": "/users",
           "label": "用户管理",
           "labelKey": "nav.item.users",
-          "icon": "👤"
+          "icon": "👤",
+          "tenantScope": "*"
         },
         {
           "path": "/keys",
           "label": "API 密钥",
           "labelKey": "nav.item.keys",
-          "icon": "🔑"
+          "icon": "🔑",
+          "tenantScope": "*"
         },
         {
           "path": "/key-applications",
@@ -149,7 +173,8 @@
           "labelKey": "nav.item.keyApplications",
           "icon": "📬",
           "super": true,
-          "hideForTenant": true
+          "hideForTenant": true,
+          "tenantScope": "default"
         },
         {
           "path": "/audit-logs",
@@ -157,9 +182,11 @@
           "labelKey": "nav.item.auditLogs",
           "icon": "📋",
           "super": true,
-          "hideForTenant": true
+          "hideForTenant": true,
+          "tenantScope": "default"
         }
-      ]
+      ],
+      "tenantScope": "mixed"
     },
     {
       "id": "requests-sessions",
@@ -170,9 +197,11 @@
           "path": "/request-logs",
           "label": "请求日志",
           "labelKey": "nav.item.requestLogs",
-          "icon": "📋"
+          "icon": "📋",
+          "tenantScope": "*"
         }
-      ]
+      ],
+      "tenantScope": "*"
     },
     {
       "id": "data-ops",
@@ -185,7 +214,8 @@
           "labelKey": "nav.item.settings",
           "icon": "⚙️",
           "super": true,
-          "hideForTenant": true
+          "hideForTenant": true,
+          "tenantScope": "default"
         },
         {
           "path": "/admin/data-lifecycle",
@@ -193,7 +223,8 @@
           "labelKey": "nav.item.dataLifecycle",
           "icon": "💾",
           "platformOps": true,
-          "hideForTenant": true
+          "hideForTenant": true,
+          "tenantScope": "default"
         },
         {
           "path": "/format-anomalies",
@@ -201,7 +232,8 @@
           "labelKey": "nav.item.formatAnomalies",
           "icon": "⚠️",
           "super": true,
-          "hideForTenant": true
+          "hideForTenant": true,
+          "tenantScope": "default"
         },
         {
           "path": "/admin/modules",
@@ -209,7 +241,8 @@
           "labelKey": "nav.item.modules",
           "icon": "🧩",
           "super": true,
-          "hideForTenant": true
+          "hideForTenant": true,
+          "tenantScope": "default"
         },
         {
           "path": "/admin/prompt-injection",
@@ -217,7 +250,8 @@
           "labelKey": "nav.item.promptInjection",
           "icon": "🛡️",
           "super": true,
-          "hideForTenant": true
+          "hideForTenant": true,
+          "tenantScope": "default"
         },
         {
           "path": "/admin/compression",
@@ -225,7 +259,8 @@
           "labelKey": "nav.item.compression",
           "icon": "📦",
           "platformOps": true,
-          "hideForTenant": true
+          "hideForTenant": true,
+          "tenantScope": "default"
         },
         {
           "path": "/admin/modules?module=wechat_bot",
@@ -233,7 +268,8 @@
           "labelKey": "nav.item.wechatBot",
           "icon": "💬",
           "super": true,
-          "hideForTenant": true
+          "hideForTenant": true,
+          "tenantScope": "default"
         },
         {
           "path": "/admin/agents",
@@ -241,29 +277,34 @@
           "labelKey": "nav.item.agents",
           "icon": "🤖",
           "super": true,
-          "hideForTenant": true
+          "hideForTenant": true,
+          "tenantScope": "default"
         },
         {
           "path": "/customer/update-activate",
           "label": "更新与激活",
           "labelKey": "nav.item.updateActivate",
-          "icon": "🔄"
+          "icon": "🔄",
+          "tenantScope": "*"
         },
         {
           "path": "/customer/offline-activation",
           "label": "离线激活",
           "labelKey": "nav.item.licenseOffline",
           "icon": "🔌",
-          "notActivatedOnly": true
+          "notActivatedOnly": true,
+          "tenantScope": "*"
         },
         {
           "path": "/maintain/tenant/telemetry",
           "label": "数据采集范围",
           "labelKey": "nav.item.telemetryScope",
           "icon": "📡",
-          "external": true
+          "external": true,
+          "tenantScope": "*"
         }
-      ]
+      ],
+      "tenantScope": "mixed"
     },
     {
       "id": "opsplatform",
@@ -278,7 +319,8 @@
           "super": true,
           "hideForTenant": true,
           "opsPlatform": true,
-          "external": true
+          "external": true,
+          "tenantScope": "default"
         },
         {
           "path": "/maintain/ops/center",
@@ -288,7 +330,8 @@
           "super": true,
           "hideForTenant": true,
           "opsPlatform": true,
-          "external": true
+          "external": true,
+          "tenantScope": "default"
         },
         {
           "path": "/maintain/ops/downloads",
@@ -298,7 +341,8 @@
           "super": true,
           "hideForTenant": true,
           "opsPlatform": true,
-          "external": true
+          "external": true,
+          "tenantScope": "default"
         },
         {
           "path": "/maintain/ops/licenses",
@@ -308,7 +352,8 @@
           "super": true,
           "hideForTenant": true,
           "opsPlatform": true,
-          "external": true
+          "external": true,
+          "tenantScope": "default"
         },
         {
           "path": "/maintain/ops/faults",
@@ -318,7 +363,8 @@
           "super": true,
           "hideForTenant": true,
           "opsPlatform": true,
-          "external": true
+          "external": true,
+          "tenantScope": "default"
         },
         {
           "path": "/maintain/ops/autoupdate",
@@ -328,7 +374,8 @@
           "super": true,
           "hideForTenant": true,
           "opsPlatform": true,
-          "external": true
+          "external": true,
+          "tenantScope": "default"
         },
         {
           "path": "/ops/vibecoding",
@@ -337,9 +384,11 @@
           "icon": "💻",
           "super": true,
           "hideForTenant": true,
-          "opsPlatform": true
+          "opsPlatform": true,
+          "tenantScope": "default"
         }
-      ]
+      ],
+      "tenantScope": "default"
     },
     {
       "id": "guide",
@@ -350,9 +399,11 @@
           "path": "/examples",
           "label": "接入示例",
           "labelKey": "nav.item.examples",
-          "icon": "📝"
+          "icon": "📝",
+          "tenantScope": "*"
         }
-      ]
+      ],
+      "tenantScope": "*"
     },
     {
       "id": "chat",
@@ -363,9 +414,11 @@
           "path": "/chat",
           "label": "对话",
           "labelKey": "nav.item.chat",
-          "icon": "💬"
+          "icon": "💬",
+          "tenantScope": "*"
         }
-      ]
+      ],
+      "tenantScope": "*"
     }
   ]
 }

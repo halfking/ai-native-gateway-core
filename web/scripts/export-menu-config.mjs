@@ -1,14 +1,15 @@
 #!/usr/bin/env node
-// scripts/export-menu-config.mjs — 构建时导出 Gateway 菜单配置供 Maintain 加载
-// 2026-07-23 v2: 从 src/config/appNav.ts 真实导出结构（NAV_PRIMARY_ITEMS + NAV_GROUPS）
+// scripts/export-menu-config.mjs — 构建时导出 Gateway 菜单配置
+// 2026-07-23 v3: 增加 tenantScope 字段，明确标注每个菜单的租户可见性
+//                安全原则：菜单信息也是敏感数据，必须明确标注
 //
-// 数据结构（对齐 appNav.ts + visibleNavItems）：
-//   {
-//     version: "1.0.0",
-//     exported_at: "2026-07-23T...",
-//     primary: NavItem[],                    // 顶部主菜单（NAV_PRIMARY_ITEMS）
-//     groups: [{ id, label, labelKey, items: NavItem[] }, ...]  // 分组菜单（NAV_GROUPS）
-//   }
+// tenantScope 值：
+//   - 'default'  : 仅 default 租户 + super_admin 可见
+//   - 'tenant'   : 仅租户门户（非 default 租户）可见
+//   - '*'        : 所有租户可见
+//
+// 注意：当前是构建时导出（静态），但通过 tenantScope 字段明确标注，
+//       客户端可以做严格本地过滤；最终应改为运行时动态过滤（Phase 2）
 
 import fs from 'fs'
 import path from 'path'
@@ -16,6 +17,20 @@ import { fileURLToPath } from 'url'
 
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = path.dirname(__filename)
+
+/**
+ * 根据菜单项的权限标记计算 tenantScope
+ * - super: true → 'default' (仅超级管理员)
+ * - platformOps: true → 'default' (仅平台运维)
+ * - hideForTenant: true → 'default' (对租户隐藏)
+ * - tenantOnly: true → 'tenant' (仅租户门户)
+ * - 其余 → '*'
+ */
+function computeTenantScope(item) {
+  if (item.super || item.platformOps || item.hideForTenant) return 'default'
+  if (item.tenantOnly) return 'tenant'
+  return '*'
+}
 
 // 直接嵌入 appNav.ts 的核心数据（构建时复制，避免跨语言解析 TS）
 // 这是 NAV_PRIMARY_ITEMS + NAV_GROUPS 的同步副本
@@ -122,12 +137,48 @@ const NAV_GROUPS = [
   },
 ]
 
+// 为每个分组计算 tenantScope
+function annotateGroup(group) {
+  const items = group.items.map((item) => ({
+    ...item,
+    tenantScope: computeTenantScope(item),
+  }))
+
+  // 计算分组的整体可见性
+  // - 如果所有 item 都是 'default'，分组也是 'default'
+  // - 如果所有 item 都是 'tenant'，分组也是 'tenant'
+  // - 如果混合，分组是 'mixed'
+  const scopes = new Set(items.map((i) => i.tenantScope))
+  let groupScope
+  if (scopes.size === 1) {
+    groupScope = scopes.values().next().value
+  } else {
+    groupScope = 'mixed'
+  }
+
+  return {
+    ...group,
+    tenantScope: groupScope,
+    items,
+  }
+}
+
 const menuConfig = {
   version: '1.0.0',
   exported_at: new Date().toISOString(),
   source: 'gateway-appNav',
-  primary: NAV_PRIMARY_ITEMS,
-  groups: NAV_GROUPS,
+  // 安全标注：tenantScope 字段说明
+  tenantScopeLegend: {
+    default: '仅默认租户 + super_admin 可见',
+    tenant: '仅租户门户（非 default 租户）可见',
+    '*': '所有租户可见',
+    mixed: '分组内包含多种可见性，需逐项检查',
+  },
+  primary: NAV_PRIMARY_ITEMS.map((item) => ({
+    ...item,
+    tenantScope: computeTenantScope(item),
+  })),
+  groups: NAV_GROUPS.map(annotateGroup),
 }
 
 // 输出路径
@@ -140,6 +191,14 @@ fs.writeFileSync(outputPath, JSON.stringify(menuConfig, null, 2), 'utf-8')
 const primaryCount = menuConfig.primary.length
 const groupCount = menuConfig.groups.length
 const itemCount = menuConfig.groups.reduce((sum, g) => sum + g.items.length, 0)
+const defaultOnlyCount = menuConfig.groups.reduce(
+  (sum, g) => sum + g.items.filter((i) => i.tenantScope === 'default').length,
+  0,
+)
+const tenantOnlyCount = menuConfig.groups.reduce(
+  (sum, g) => sum + g.items.filter((i) => i.tenantScope === 'tenant').length,
+  0,
+)
 
 console.log(`✅ 菜单配置已导出: ${outputPath}`)
 console.log(`   版本: ${menuConfig.version}`)
@@ -147,3 +206,5 @@ console.log(`   来源: ${menuConfig.source}`)
 console.log(`   主菜单项: ${primaryCount}`)
 console.log(`   分组数: ${groupCount}`)
 console.log(`   分组总项: ${itemCount}`)
+console.log(`   ─ 仅 default 租户: ${defaultOnlyCount}`)
+console.log(`   ─ 仅 tenant 门户: ${tenantOnlyCount}`)
