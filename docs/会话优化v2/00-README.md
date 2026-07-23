@@ -29,6 +29,9 @@
 
 | 文件 | 状态 | 内容 |
 |------|------|------|
+| **[31-当前实现基线与修正决策.md](./31-当前实现基线与修正决策.md)** | ✅ 权威基线 | Session V2、Goal、Handoff 当前实现状态、已知缺陷、ADR 决策 |
+| **[32-审计发现与改进计划.md](./32-审计发现与改进计划.md)** | ✅ 审计报告 | DEF-001/002/003 修复验证、改进机会、Phase 1-3 计划 |
+| **[33-Goal-Retry可观测性配置.md](./33-Goal-Retry可观测性配置.md)** | ✅ 运维指南 | Prometheus 指标、Grafana 仪表板、告警规则、验证查询 |
 | [00-完整方案文档.md](./00-完整方案文档.md) | 🔄 部分有效 | V2 存储架构（⚠️ 实际使用 `gateway.*` schema，见 31 号勘误） |
 | [16-Goal模式会话持续机制设计方案.md](./16-Goal模式会话持续机制设计方案.md) | 🧭 活跃设计 | Goal 检测、Auto Continue、Retry、Loop Detection（部分实现） |
 | [18-Goal模式成本控制与分级方案.md](./18-Goal模式成本控制与分级方案.md) | ✅ 已实现 | Cost Mode 三档 preset（minimal/balanced/aggressive） |
