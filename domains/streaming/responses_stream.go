@@ -120,7 +120,11 @@ func StreamResponsesSSE(w http.ResponseWriter, resp *http.Response, clientModel,
 		if capture != nil {
 			capture.MarkInterruptedWithReason("first_byte_timeout")
 		}
-		slog.Warn("responses stream first-byte timeout", "error", err)
+		slog.Warn("responses stream first-byte timeout",
+			"error", err,
+			"first_byte_timeout_seconds", int(runtimeCfg.firstByteTimeout.Seconds()),
+			"hint", "if frequent, increase LLM_GATEWAY_FIRST_BYTE_TIMEOUT or admin config (default 120s)",
+		)
 		writeResponsesIncomplete(w, flusher, respID, msgID, createdAt, clientModel, fullText, "first_byte_timeout")
 		outcome.Interrupted = true
 		outcome.Reason = "first_byte_timeout"
