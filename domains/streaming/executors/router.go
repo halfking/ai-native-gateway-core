@@ -120,7 +120,15 @@ func (r *Router) PlanCandidates(
 				})
 			}
 			views, err := r.URSMv2.FilterAndScore(ctx, seeds)
-			if err == nil {
+			if err != nil {
+				// URSM v2 FilterAndScore 失败时，记录错误并继续使用原始候选
+				// 这是 fail-open 设计：优先保证可用性，不因 Redis 问题阻塞路由
+				slog.Warn("router: URSM v2 FilterAndScore failed, failing open",
+					"error", err,
+					"seed_count", len(seeds),
+					"mode", r.URSMv2.Mode(),
+				)
+			} else {
 				allow := make(map[int]bool, len(views))
 				for _, v := range views {
 					if v.Available {
