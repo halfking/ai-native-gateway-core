@@ -1014,15 +1014,17 @@ $47,
 	// This side table stores complete request_body and response_body to avoid
 	// bloating the main table. The side table uses ON CONFLICT DO UPDATE to
 	// handle race conditions (async retries landing on the same request_id).
+	//
+	// 2026-07-23 BUGFIX: 不再依赖子查询获取 ts（避免竞态条件），直接使用 NOW()。
+	// 问题：子查询 SELECT rl.ts FROM request_logs_hot WHERE request_id = $1 在高并发
+	// 场景下可能查不到行（事务隔离），导致 bodies 表插入失败或 ts 不一致。
+	// 修复：直接使用 NOW()，确保 request_logs_hot 和 request_logs_bodies_hot
+	// 的 ts 在同一事务内保持一致（PostgreSQL 的 NOW() 在事务内是稳定的）。
 	_, err = tx.Exec(ctx, `
 		INSERT INTO request_logs_bodies_hot (
 			request_id, ts, request_body, response_body
 		)
-		SELECT $1, rl.ts, CAST($2 AS jsonb), CAST($3 AS jsonb)
-			FROM request_logs_hot rl
-			WHERE rl.request_id = $1
-			ORDER BY rl.ts DESC
-			LIMIT 1
+		VALUES ($1, NOW(), $2::jsonb, $3::jsonb)
 		ON CONFLICT (request_id, ts) DO UPDATE SET
 			request_body = COALESCE(EXCLUDED.request_body, request_logs_bodies_hot.request_body),
 			response_body = COALESCE(EXCLUDED.response_body, request_logs_bodies_hot.response_body)
@@ -1032,6 +1034,12 @@ $47,
 		strPtrToJSON(entry.ResponseBody),
 	)
 	if err != nil {
+		slog.Error("persist request_logs_bodies_hot failed",
+			"request_id", entry.RequestID,
+			"has_request_body", entry.RequestBody != nil,
+			"has_response_body", entry.ResponseBody != nil,
+			"error", err,
+		)
 		return err
 	}
 

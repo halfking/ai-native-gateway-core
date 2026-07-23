@@ -231,6 +231,10 @@ func (sm *Manager) StartCredRotation(ctx context.Context, sessionID string, cred
 		FieldCurrentModel:         model,
 		FieldCurrentProvider:      provider,
 	})
+	// 2026-07-23: HSet 默认会清除 key 的 TTL，必须显式重新设置。
+	// 否则这个 session 变成"永不过期"，被 bug 一直累加导致 keys 增长。
+	pipe.Expire(ctx, "session:"+sessionID, sm.ttl)
+	pipe.Expire(ctx, credRotationsKey(sessionID), sm.ttl)
 	_, err := pipe.Exec(ctx)
 	return err
 }
@@ -375,6 +379,9 @@ func (sm *Manager) StopSession(ctx context.Context, sessionID, reason string) er
 		FieldStoppedAt:  now.Format(time.RFC3339),
 		FieldStopReason: reason,
 	})
+	// 2026-07-23: HSet 默认会清除 key 的 TTL，必须显式重新设置。
+	// 否则这个 session 变成"永不过期"，被 bug 一直累加导致 keys 增长。
+	pipe.Expire(ctx, "session:"+sessionID, sm.ttl)
 
 	// 维护停止索引
 	stoppedKey := fmt.Sprintf("session:stopped:%s", tenantID)
@@ -460,6 +467,9 @@ func (sm *Manager) RecoverSession(ctx context.Context, sessionID string) error {
 	if apiKeyID > 0 {
 		pipe.SAdd(ctx, fmt.Sprintf("session:apiKey:%d:active", apiKeyID), sessionID)
 	}
+	// 2026-07-23: HSet 默认会清除 key 的 TTL，必须显式重新设置。
+	// 否则这个 session 变成"永不过期"，被 bug 一直累加导致 keys 增长。
+	pipe.Expire(ctx, "session:"+sessionID, sm.ttl)
 
 	_, err = pipe.Exec(ctx)
 	return err
