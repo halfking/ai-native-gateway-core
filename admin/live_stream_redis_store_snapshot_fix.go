@@ -109,7 +109,7 @@ func (s *LiveStreamRedisStore) SnapshotFromDimensionQueues(ctx context.Context, 
 		}
 		return allRequests[i].RequestID < allRequests[j].RequestID
 	})
-	
+
 	// 2026-07-21: Log snapshot details for debugging
 	slog.Info("snapshot from dimension queues built",
 		"tenant_id", tenantID,
@@ -200,7 +200,7 @@ func (s *LiveStreamRedisStore) discoverDimensionQueues(ctx context.Context, tena
 		slog.Debug("failed to sort by activity, using lexicographic order", "err", err.Error())
 		sort.Strings(allKeys)
 	}
-	
+
 	// 2026-07-21: Log dimension queue discovery details
 	slog.Info("dimension queues discovered",
 		"tenant_id", tenantID,
@@ -219,15 +219,21 @@ func (s *LiveStreamRedisStore) discoverDimensionQueues(ctx context.Context, tena
 
 // scanKeysWithPattern uses SCAN to find keys matching a pattern.
 // Safer than KEYS * in production.
+//
+// 2026-07-23: SCAN COUNT 必须用较大值（默认 1000），
+// 否则 Redis 在大 keyspace（30万+ keys）下跳跃扫描几乎找不到匹配项。
+// 实测：DBSIZE=347850，COUNT=100 时 101 次迭代中 100 次返回空，
+// 仅找到 1 个 key；COUNT=10000 时 1-2 次迭代就能找到 27 个 key。
 func (s *LiveStreamRedisStore) scanKeysWithPattern(ctx context.Context, pattern string) ([]string, error) {
 	var keys []string
 	var cursor uint64
-	const maxIterations = 100 // safety limit
+	const maxIterations = 1000 // 允许足够多的迭代
 
 	for i := 0; i < maxIterations; i++ {
 		var scanKeys []string
 		var err error
-		scanKeys, cursor, err = s.rdb.Scan(ctx, cursor, pattern, 100).Result()
+		// COUNT=10000：避免大 keyspace 下跳跃扫描漏掉 keys
+		scanKeys, cursor, err = s.rdb.Scan(ctx, cursor, pattern, 10000).Result()
 		if err != nil {
 			return nil, err
 		}

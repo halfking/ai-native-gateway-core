@@ -17,7 +17,10 @@ export type DashboardTabId = 'board' | 'stream' | 'stats' | 'selfcheck'
 
 const STORAGE_KEY_TAB = 'dashboard_active_tab'
 
-const activeTab = ref<DashboardTabId>('board')
+// 2026-07-23: 默认 tab 改为 'stream'（实时流），
+// 之前默认是 'board' 导致用户进入 dashboard 后看不到实时流数据。
+// 后端 SSE 数据流正常（已验证），但 LiveRequestStreamV2 只在 stream tab 才渲染。
+const activeTab = ref<DashboardTabId>('stream')
 
 const isDefault = computed(() => isDefaultTenant())
 

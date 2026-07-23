@@ -407,7 +407,12 @@ func (h *LiveStreamSSEHub) Run() {
 			hasSuperClient := h.hasSuperClient()
 			var tenantDelta, superDelta *LiveStreamDelta
 			if h.store != nil {
-				ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+				// 2026-07-23: 修复实时流只显示 1 个泳道的 bug。
+				// 原来用 200ms 超时，但 SnapshotFromDimensionQueues 内部需要
+				// SCAN 多次迭代 + 27+ 个 pipeline 读，200ms 不够，导致
+				// SCAN 第一次返回后 ctx 已超时，所有后续 SCAN/Pipeline 失败。
+				// 改为 2 秒，覆盖 SCAN 全量（27+ 维度队列）+ 详情批量读取。
+				ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 				tenantDelta = h.computeScopeDelta(ctx, tenantID, false)
 				if hasSuperClient {
 					superDelta = h.computeScopeDelta(ctx, "", true)
@@ -964,7 +969,8 @@ func (h *LiveStreamSSEHub) maybeEmitIdleMarker() {
 			deltaByCacheKey[sk] = nil
 			continue
 		}
-		ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+		// 2026-07-23: 修复实时流只显示 1 个泳道的 bug（同上：从 200ms 改为 2s）
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 		deltaByCacheKey[sk] = h.computeScopeDelta(ctx, cs.tenantID, cs.isSuper)
 		cancel()
 	}
