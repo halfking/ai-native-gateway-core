@@ -171,6 +171,47 @@ func TestSanitizeRequestLogEntry_JSONBFieldsNotEscaped(t *testing.T) {
 	}
 }
 
+func TestSanitizeRequestLogEntry_DiscardsInvalidJSONBFields(t *testing.T) {
+	valid := json.RawMessage(`{"valid":true}`)
+	invalid := json.RawMessage(`{"broken"`)
+	invalidDecision := `{"broken"`
+	entry := &RequestLogEntry{
+		AutoDecision:      &invalidDecision,
+		CompressionMeta:   invalid,
+		OutboundBody:      invalid,
+		OutboundMsgHashes: invalid,
+		QualityFixActions: invalid,
+		ToolCalls:         invalid,
+		Attachments:       invalid,
+		RoutingAttempts:   invalid,
+	}
+
+	sanitizeRequestLogEntry(entry)
+
+	if entry.AutoDecision != nil {
+		t.Fatalf("AutoDecision = %q, want nil", *entry.AutoDecision)
+	}
+	for name, raw := range map[string]json.RawMessage{
+		"CompressionMeta":   entry.CompressionMeta,
+		"OutboundBody":      entry.OutboundBody,
+		"OutboundMsgHashes": entry.OutboundMsgHashes,
+		"QualityFixActions": entry.QualityFixActions,
+		"ToolCalls":         entry.ToolCalls,
+		"Attachments":       entry.Attachments,
+		"RoutingAttempts":   entry.RoutingAttempts,
+	} {
+		if raw != nil {
+			t.Errorf("%s = %q, want nil", name, raw)
+		}
+	}
+
+	entry.CompressionMeta = valid
+	sanitizeRequestLogEntry(entry)
+	if string(entry.CompressionMeta) != string(valid) {
+		t.Errorf("CompressionMeta = %q, want %q", entry.CompressionMeta, valid)
+	}
+}
+
 func TestSanitizeRequestLogEntry_ScrubsAllStringFields(t *testing.T) {
 	invalid := string([]byte{0xE5, 0xBC, 0xE2, 0x80, 0xA6})
 	mkPtr := func(s string) *string { return &s }

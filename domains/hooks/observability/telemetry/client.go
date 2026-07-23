@@ -1489,10 +1489,12 @@ func jsonOrNull(raw json.RawMessage) string {
 	return string(raw)
 }
 
-// strPtrToJSON converts *string to string for $N::text::jsonb binding.
-// Returns "null" for nil/empty input.
+// strPtrToJSON converts *string to a JSON literal for $N::text::jsonb binding.
+// sanitizeRequestLogEntry normalizes JSONB string fields before persistence;
+// this final guard prevents a malformed late mutation from aborting the whole
+// request-log transaction.
 func strPtrToJSON(s *string) string {
-	if s == nil || *s == "" {
+	if s == nil || *s == "" || !json.Valid([]byte(*s)) {
 		return "null"
 	}
 	return *s
@@ -1738,7 +1740,7 @@ func sanitizeRequestLogEntry(e *RequestLogEntry) {
 	sanitizeStringPtr(&e.ApplicationCode)
 	sanitizeStringPtr(&e.TaskType)
 	sanitizeStringPtr(&e.AutoProfile)
-	sanitizeStringPtr(&e.AutoDecision)
+	sanitizeJSONField(&e.AutoDecision)
 	sanitizeStringPtr(&e.WorkType)
 	sanitizeStringPtr(&e.TaskTypeChosen)
 	sanitizeStringPtr(&e.ModelChosen)
@@ -1758,6 +1760,13 @@ func sanitizeRequestLogEntry(e *RequestLogEntry) {
 	}
 	sanitizeJSONField(&e.RequestBody)
 	sanitizeJSONField(&e.ResponseBody)
+	sanitizeRawJSONField("compression_meta", &e.CompressionMeta)
+	sanitizeRawJSONField("outbound_body", &e.OutboundBody)
+	sanitizeRawJSONField("outbound_msg_hashes", &e.OutboundMsgHashes)
+	sanitizeRawJSONField("quality_fix_actions", &e.QualityFixActions)
+	sanitizeRawJSONField("tool_calls", &e.ToolCalls)
+	sanitizeRawJSONField("attachments", &e.Attachments)
+	sanitizeRawJSONField("routing_attempts", &e.RoutingAttempts)
 }
 
 func sanitizeJSONField(p **string) {
@@ -1770,6 +1779,22 @@ func sanitizeJSONField(p **string) {
 		return
 	}
 	*p = &v
+}
+
+func sanitizeRawJSONField(field string, raw *json.RawMessage) {
+	if len(*raw) == 0 {
+		return
+	}
+
+	cleaned := sanitizeUTF8JSON(string(*raw))
+	if cleaned == "" {
+		slog.Warn("telemetry JSONB field discarded",
+			"field", field,
+			"bytes", len(*raw))
+		*raw = nil
+		return
+	}
+	*raw = json.RawMessage(cleaned)
 }
 
 // mergeRequestLogBatch coalesces multiple updates for the same request_id so a
