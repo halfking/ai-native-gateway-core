@@ -28,6 +28,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/kaixuan/llm-gateway-go/bg/systemmonitor"
 )
 
 // submitRequest 是 POST /api/admin/system-monitor/submit 的 body schema.
@@ -611,8 +613,61 @@ func (h *Handler) RegisterSystemMonitorRoutes(mux *http.ServeMux, adminWrap func
 	mux.HandleFunc("/api/admin/system-monitor/stats", adminWrap(h.handleSystemMonitorStats))
 	mux.HandleFunc("/api/admin/system-monitor/recent-runs", adminWrap(h.handleSystemMonitorRecentRuns))
 	mux.HandleFunc("/api/admin/system-monitor/concurrency", superAdminWrap(h.handleSystemMonitorConcurrency))
+	mux.HandleFunc("/api/admin/system-monitor/migration-metrics", adminWrap(h.handleSystemMonitorMigrationMetrics))
 	// SSE 流：handler 内部自行判断 nil（与 live_stream_sse 模式一致）
 	if h.systemMonitorSSE != nil {
 		mux.HandleFunc("/api/admin/system-monitor/stream", adminWrap(h.systemMonitorSSE.HandleStream))
 	}
+}
+
+// ── Phase 3: Migration Metrics ────────────────────────────────
+
+// handleSystemMonitorMigrationMetrics returns coverage metrics for Phase 3 migration.
+// GET /api/admin/system-monitor/migration-metrics?window_days=7
+func (h *Handler) handleSystemMonitorMigrationMetrics(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	// Parse window_days query param (default 7)
+	windowDays := 7
+	if w := r.URL.Query().Get("window_days"); w != "" {
+		if parsed, err := strconv.Atoi(w); err == nil && parsed > 0 && parsed <= 90 {
+			windowDays = parsed
+		}
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+	defer cancel()
+
+	// Collect metrics
+	collectorIface := h.systemMonitor.GetMetricsCollector()
+	collector, ok := collectorIface.(*systemmonitor.MetricsCollector)
+	if !ok || collector == nil {
+		http.Error(w, "MetricsCollector not available", http.StatusInternalServerError)
+		return
+	}
+
+	metrics, err := collector.CollectCoverage(ctx, windowDays)
+	if err != nil {
+		http.Error(w, fmt.Sprintf("Failed to collect metrics: %v", err), http.StatusInternalServerError)
+		return
+	}
+
+	// Check if ready for migration
+	ready, msg, err := collector.IsReadyForMigration(ctx)
+	if err != nil {
+		http.Error(w, fmt.Sprintf("Failed to check migration readiness: %v", err), http.StatusInternalServerError)
+		return
+	}
+
+	response := map[string]interface{}{
+		"metrics":             metrics,
+		"ready_for_migration": ready,
+		"migration_message":   msg,
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(response)
 }

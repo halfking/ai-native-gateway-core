@@ -31,6 +31,9 @@ type SystemMonitor struct {
 	executor *Executor
 	audit    *Audit
 
+	// Phase 3: migration metrics collector
+	metricsCollector *MetricsCollector
+
 	concurrency int    // 全局并发上限（从 self_check_settings 读）
 	workerCount int    // 本机 worker 数（env LLM_GATEWAY_MONITOR_WORKERS_PER_NODE）
 	workerID    string // 本机 worker_id（hostname:pid:uuid）
@@ -89,15 +92,16 @@ func NewSystemMonitor(cfg Config) (*SystemMonitor, error) {
 	}
 
 	sm := &SystemMonitor{
-		queue:       NewQueue(cfg.Redis, scripts),
-		dedup:       NewInflightDedup(cfg.Redis),
-		executor:    NewExecutor(ExecutorConfig{DB: cfg.DB, Keyring: nil, EncKey: cfg.EncKey, ProxyFunc: cfg.ProxyFunc, TimeoutMs: cfg.TimeoutMs}),
-		audit:       NewAudit(cfg.DB),
-		concurrency: cfg.Concurrency,
-		workerCount: cfg.WorkerCount,
-		workerID:    cfg.WorkerID,
-		stopCh:      make(chan struct{}),
-		fallbackCh:  make(chan *Task, maxInt(cfg.Concurrency*4, 1000)),
+		queue:            NewQueue(cfg.Redis, scripts),
+		dedup:            NewInflightDedup(cfg.Redis),
+		executor:         NewExecutor(ExecutorConfig{DB: cfg.DB, Keyring: nil, EncKey: cfg.EncKey, ProxyFunc: cfg.ProxyFunc, TimeoutMs: cfg.TimeoutMs}),
+		audit:            NewAudit(cfg.DB),
+		metricsCollector: NewMetricsCollector(cfg.DB),
+		concurrency:      cfg.Concurrency,
+		workerCount:      cfg.WorkerCount,
+		workerID:         cfg.WorkerID,
+		stopCh:           make(chan struct{}),
+		fallbackCh:       make(chan *Task, maxInt(cfg.Concurrency*4, 1000)),
 	}
 
 	if cfg.Redis == nil {
@@ -519,4 +523,9 @@ func truncateForAudit(s string, max int) string {
 		return s
 	}
 	return s[:max]
+}
+
+// GetMetricsCollector returns the metrics collector for Phase 3 migration tracking.
+func (sm *SystemMonitor) GetMetricsCollector() *MetricsCollector {
+	return sm.metricsCollector
 }
