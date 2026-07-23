@@ -25,6 +25,8 @@ import {
 } from '../api-selfcheck'
 import SwimLane from '../components/SwimLane.vue'
 import type { SwimLane as SwimLaneType, RequestTile } from '../types/swimlane'
+import { getFeaturedModelsDynamic } from '../api/system'
+import type { FeaturedModel } from '../api/system'
 
 const loading = ref(false)
 const error = ref<string | null>(null)
@@ -122,6 +124,7 @@ function stopPoll() {
 
 onMounted(() => {
   void loadAll()
+  void loadSystemFeaturedModels()
   startPoll()
 })
 
@@ -132,6 +135,21 @@ onUnmounted(() => {
 watch(range, () => {
   void loadAll()
 })
+
+// ── 系统特色模型（从系统设置读取，不可编辑） ─────────────
+const systemFeaturedModels = ref<FeaturedModel[]>([])
+const systemFeaturedLoading = ref(false)
+
+async function loadSystemFeaturedModels() {
+  systemFeaturedLoading.value = true
+  try {
+    const res = await getFeaturedModelsDynamic()
+    systemFeaturedModels.value = res.models ?? []
+  } catch {
+    systemFeaturedModels.value = []
+  }
+  systemFeaturedLoading.value = false
+}
 
 // ── 详情展开 ──────────────────────────────────────────
 
@@ -167,7 +185,6 @@ async function saveSettings() {
       max_models: editingSettings.value.max_models,
       max_tokens_per_run: editingSettings.value.max_tokens_per_run,
       model_source: editingSettings.value.model_source,
-      featured_model_ids: editingSettings.value.featured_model_ids,
     })
     showSettings.value = false
     await loadAll()
@@ -271,17 +288,6 @@ function statusLabel(status: string): string {
     default: return status
   }
 }
-
-const featuredModelInput = computed({
-  get() {
-    return editingSettings.value?.featured_model_ids?.join(', ') || ''
-  },
-  set(v: string) {
-    if (editingSettings.value) {
-      editingSettings.value.featured_model_ids = v.split(',').map(s => s.trim()).filter(Boolean)
-    }
-  },
-})
 
 const errorColor = (t: string): string => {
   if (t.startsWith('http_000') || t === 'timeout') return COLOR.danger
@@ -625,8 +631,12 @@ const queueLaneSelectedLegends = ref<Set<string>>(new Set())
           </select>
         </div>
         <div class="form-group">
-          <label>特色模型列表（逗号分隔）</label>
-          <textarea v-model="featuredModelInput" rows="3"></textarea>
+          <label>系统特色模型（只读，在 模型管理 → 特色模型 中配置）</label>
+          <div v-if="systemFeaturedLoading" class="muted">加载中…</div>
+          <div v-else-if="systemFeaturedModels.length === 0" class="muted">暂无系统特色模型</div>
+          <div v-else class="featured-tags">
+            <span v-for="m in systemFeaturedModels" :key="m.name" class="featured-tag">{{ m.name }}</span>
+          </div>
         </div>
         <div class="modal-actions">
           <button class="btn btn-secondary" @click="showSettings = false">取消</button>
@@ -1091,5 +1101,22 @@ const queueLaneSelectedLegends = ref<Set<string>>(new Set())
   justify-content: flex-end;
   gap: 8px;
   margin-top: 16px;
+}
+.featured-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.featured-tag {
+  display: inline-block;
+  padding: 3px 8px;
+  border-radius: 4px;
+  font-size: 12px;
+  background: var(--accent);
+  color: #fff;
+}
+.muted {
+  font-size: 12px;
+  color: var(--el-text-color-secondary);
 }
 </style>

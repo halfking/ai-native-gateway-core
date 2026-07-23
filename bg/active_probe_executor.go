@@ -89,6 +89,7 @@ type ProbeResult struct {
 	ErrCode     string
 	ErrMsg      string
 	LatencyMs   int
+	TotalTokens int
 	RespPreview string // truncated to 500 chars
 	StartedAt   time.Time
 	CompletedAt time.Time
@@ -298,6 +299,7 @@ func (e *ActiveProbeExecutor) Run(ctx context.Context, t *ProbeTarget) *ProbeRes
 	bodyBytes, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
 	res.RespPreview = truncatePreview(string(bodyBytes), 500)
 	res.ResponseBody = res.RespPreview
+	res.TotalTokens = responseTokenCount(bodyBytes)
 
 	switch {
 	case resp.StatusCode >= 200 && resp.StatusCode < 300:
@@ -317,6 +319,28 @@ func (e *ActiveProbeExecutor) Run(ctx context.Context, t *ProbeTarget) *ProbeRes
 	}
 	res.ErrMsg = truncatePreview(string(bodyBytes), 500)
 	return res
+}
+
+func responseTokenCount(body []byte) int {
+	var payload struct {
+		Usage struct {
+			TotalTokens      int `json:"total_tokens"`
+			InputTokens      int `json:"input_tokens"`
+			OutputTokens     int `json:"output_tokens"`
+			PromptTokens     int `json:"prompt_tokens"`
+			CompletionTokens int `json:"completion_tokens"`
+		} `json:"usage"`
+	}
+	if json.Unmarshal(body, &payload) != nil {
+		return 0
+	}
+	if payload.Usage.TotalTokens > 0 {
+		return payload.Usage.TotalTokens
+	}
+	if payload.Usage.InputTokens+payload.Usage.OutputTokens > 0 {
+		return payload.Usage.InputTokens + payload.Usage.OutputTokens
+	}
+	return payload.Usage.PromptTokens + payload.Usage.CompletionTokens
 }
 
 // RunCommand executes a probe through the same single-attempt implementation

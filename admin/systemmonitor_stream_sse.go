@@ -108,6 +108,7 @@ type smTaskSummary struct {
 	HTTPStatus   *int   `json:"http_status,omitempty"`
 	LatencyMs    *int   `json:"latency_ms,omitempty"`
 	ErrCode      string `json:"err_code,omitempty"`
+	TotalTokens  int    `json:"total_tokens,omitempty"`
 }
 
 type smStats struct {
@@ -117,6 +118,22 @@ type smStats struct {
 	SkippedTotal1h   int `json:"skipped_total_1h"`
 	CompletedTotal1h int `json:"completed_total_1h"`
 	FailedTotal1h    int `json:"failed_total_1h"`
+}
+
+// SystemMonitorTelemetry is the sanitized projection of an existing request
+// log used to bridge legacy probe workers into the SystemMonitor lane.
+type SystemMonitorTelemetry struct {
+	RequestID        string
+	Model            string
+	Source           string
+	Status           string
+	CredentialID     int64
+	ProviderID       int64
+	PromptTokens     int
+	CompletionTokens int
+	ErrorCode        string
+	Timestamp        time.Time
+	IsInsert         bool
 }
 
 // run starts the dispatcher goroutines. Called by NewSystemMonitorSSEHub
@@ -301,4 +318,35 @@ func (h *SystemMonitorSSEHub) Publish(evt systemMonitorEvent) {
 		return
 	}
 	h.fanOut(evt)
+}
+
+// PublishTelemetry converts a persisted legacy probe log into the same SSE
+// envelope as native SystemMonitor tasks. It deliberately accepts only
+// sanitized telemetry fields and never forwards request or response bodies.
+func (h *SystemMonitorSSEHub) PublishTelemetry(entry SystemMonitorTelemetry) {
+	if !h.Enabled() || entry.RequestID == "" {
+		return
+	}
+	eventType := "failed"
+	if entry.IsInsert || entry.Status == "in_progress" {
+		eventType = "submitted"
+	} else if entry.Status == "success" {
+		eventType = "completed"
+	}
+	totalTokens := entry.PromptTokens + entry.CompletionTokens
+	h.fanOut(systemMonitorEvent{
+		Type:      eventType,
+		Timestamp: entry.Timestamp.UTC(),
+		Task: &smTaskSummary{
+			ID:           0,
+			TaskType:     "probe_triggered",
+			Status:       entry.Status,
+			CredentialID: entry.CredentialID,
+			ProviderID:   entry.ProviderID,
+			RawModel:     entry.Model,
+			Source:       entry.Source,
+			ErrCode:      entry.ErrorCode,
+			TotalTokens:  totalTokens,
+		},
+	})
 }

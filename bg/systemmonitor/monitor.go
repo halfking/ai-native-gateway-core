@@ -7,6 +7,7 @@ package systemmonitor
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -124,13 +125,18 @@ func (sm *SystemMonitor) Submit(ctx context.Context, task *Task) (int64, error) 
 	ctx = contextWithWorkerID(ctx, sm.workerID)
 
 	if sm.fallback {
-		return sm.submitFallback(task)
+		id, err := sm.submitFallback(task)
+		if err == nil {
+			sm.publishEvent(ctx, "submitted", task)
+		}
+		return id, err
 	}
 	if err := sm.queue.Submit(ctx, task); err != nil {
 		// Try once: lazy re-load of Lua scripts (may have been evicted).
 		if scripts, lerr := LoadScripts(ctx, sm.queue.rdb); lerr == nil {
 			sm.queue.scripts = scripts
 			if err2 := sm.queue.Submit(ctx, task); err2 == nil {
+				sm.publishEvent(ctx, "submitted", task)
 				return task.ID, nil
 			}
 		}
@@ -138,8 +144,13 @@ func (sm *SystemMonitor) Submit(ctx context.Context, task *Task) (int64, error) 
 		slog.Warn("system_monitor: redis submit failed, falling back to memory queue",
 			"error", err, "task_id", task.ID)
 		sm.markFallback()
-		return sm.submitFallback(task)
+		id, fallbackErr := sm.submitFallback(task)
+		if fallbackErr == nil {
+			sm.publishEvent(ctx, "submitted", task)
+		}
+		return id, fallbackErr
 	}
+	sm.publishEvent(ctx, "submitted", task)
 	return task.ID, nil
 }
 
@@ -164,6 +175,35 @@ func (sm *SystemMonitor) clearFallback() {
 	sm.fallbackMu.Lock()
 	defer sm.fallbackMu.Unlock()
 	sm.fallback = false
+}
+
+func (sm *SystemMonitor) publishEvent(ctx context.Context, eventType string, task *Task) {
+	if sm == nil || sm.queue == nil || sm.queue.rdb == nil || task == nil {
+		return
+	}
+	if eventType == string(TaskStatusSuccess) {
+		eventType = "completed"
+	}
+	payload, err := json.Marshal(map[string]any{
+		"type": eventType,
+		"ts":   time.Now().UTC(),
+		"task": map[string]any{
+			"id": task.ID, "task_type": task.TaskType, "automaticity": task.Automaticity,
+			"status": task.Status, "attempt": task.Attempt, "max_attempts": task.MaxAttempts,
+			"credential_id": task.CredentialID, "provider_id": task.ProviderID,
+			"raw_model": task.RawModel, "source": task.Source, "worker_id": task.WorkerID,
+			"http_status": task.HTTPStatus, "latency_ms": task.LatencyMs,
+			"err_code": task.ErrCode, "total_tokens": task.TokenCount,
+		},
+	})
+	if err != nil {
+		return
+	}
+	publishCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if err := sm.queue.rdb.Publish(publishCtx, RedisKeyEventsPub, payload).Err(); err != nil {
+		slog.Debug("system_monitor: publish event failed", "event", eventType, "error", err)
+	}
 }
 
 // IsFallback reports whether the monitor is currently degraded.
@@ -278,6 +318,7 @@ func (sm *SystemMonitor) processTask(ctx context.Context, task *Task, workerLog 
 	task.StartedAt = &now
 	task.Status = TaskStatusRunning
 	task.Attempt++
+	sm.publishEvent(ctx, "started", task)
 
 	// 5-min auto-skip
 	if task.Automaticity == AutomaticityAutomatic {
@@ -303,6 +344,7 @@ func (sm *SystemMonitor) processTask(ctx context.Context, task *Task, workerLog 
 			task.SkipReason = SkipReasonRecentRequestSuccess
 			task.RecentRequestID = info.RequestID
 			task.RecentRequestAt = &info.At
+			sm.publishEvent(ctx, "skipped", task)
 
 			if err := sm.audit.Write(ctx, task, nil, extras); err != nil {
 				workerLog.Warn("system_monitor: audit skip write failed", "error", err)
@@ -335,11 +377,13 @@ func (sm *SystemMonitor) processTask(ctx context.Context, task *Task, workerLog 
 		task.LatencyMs = &result.Result.LatencyMs
 		task.ErrCode = result.Result.ErrCode
 		task.ErrDetail = result.Result.ErrMsg
+		task.TokenCount = result.Result.TotalTokens
 	}
 
 	// Determine terminal status
 	status, extras := sm.classifyResult(task, result, execErr)
 	task.Status = status
+	sm.publishEvent(ctx, string(status), task)
 
 	// Audit
 	if err := sm.audit.Write(ctx, task, result, extras); err != nil {

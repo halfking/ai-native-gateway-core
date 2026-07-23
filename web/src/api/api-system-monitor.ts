@@ -22,10 +22,10 @@ export type TaskStatus =
   | 'running'
   | 'success'
   | 'failed'
-  | 'expired'
-  | 'skipped'
   | 'timeout'
   | 'network_error'
+  | 'expired'
+  | 'skipped'
 
 export interface SystemMonitorStats {
   queue_size: number
@@ -33,6 +33,10 @@ export interface SystemMonitorStats {
   in_fallback: boolean
   monitor_concurrency: number
   snapshot_at: string
+  completed_total_1h: number
+  failed_total_1h: number
+  skipped_total_1h: number
+  total_tokens_1h: number
 }
 
 export interface SystemMonitorRun {
@@ -171,7 +175,7 @@ export function openSystemMonitorStream(
   }
   // 后端按 type 字段命名 event（如 'submitted' / 'completed'）。
   // 我们监听所有 7 种状态 + heartbeat，并把 error 转给 onError。
-  const eventNames = ['submitted', 'claimed', 'started', 'completed', 'skipped', 'failed', 'queue_full', 'heartbeat']
+  const eventNames = ['submitted', 'claimed', 'started', 'completed', 'skipped', 'failed', 'timeout', 'network_error', 'queue_full', 'heartbeat']
   for (const name of eventNames) {
     es.addEventListener(name, handler as EventListener)
   }
@@ -195,6 +199,8 @@ export interface SystemMonitorEvent {
     | 'completed'
     | 'skipped'
     | 'failed'
+    | 'timeout'
+    | 'network_error'
     | 'queue_full'
     | 'heartbeat'
   ts: string
@@ -220,6 +226,7 @@ export interface SystemMonitorTaskSummary {
   http_status?: number
   latency_ms?: number
   err_code?: string
+  total_tokens?: number
 }
 
 export interface SystemMonitorStatsPayload {
@@ -229,6 +236,7 @@ export interface SystemMonitorStatsPayload {
   skipped_total_1h: number
   completed_total_1h: number
   failed_total_1h: number
+  total_tokens_1h: number
 }
 // ── Phase 3: Migration Metrics ────────────────────────────
 

@@ -28,6 +28,8 @@ import {
   type SystemMonitorEvent,
   type MigrationMetricsResponse,
 } from '../api/api-system-monitor'
+import SwimLane from '../components/SwimLane.vue'
+import type { SwimLane as SwimLaneType, RequestTile } from '../types/swimlane'
 
 const stats = ref<SystemMonitorStats | null>(null)
 const recentRuns = ref<SystemMonitorRun[]>([])
@@ -247,6 +249,76 @@ const httpPingLatencyStats = computed(() => {
   return entries
 })
 
+// ── 探测泳道（实时，和实时请求流一样用 SwimLane 组件） ────────────────
+const LIVE_LANE_LIMIT = 50
+const probeSelectedLegends = ref<Set<string>>(new Set())
+
+function probeEventToStatus(event: string): string {
+  switch (event) {
+    case 'completed': return 'success'
+    case 'started':
+    case 'claimed': return 'in_progress'
+    case 'failed': return 'failure'
+    case 'timeout': return 'failure_timeout'
+    case 'network_error': return 'failure_other'
+    case 'submitted':
+    case 'queue_full':
+    default: return 'idle'
+  }
+}
+
+function taskTypeLabel(tt: string): string {
+  const map: Record<string, string> = {
+    direct_ping: 'Direct Ping',
+    http_ping: 'HTTP Ping',
+    credential_selfcheck: '凭据自检',
+    latency_probe: 'Latency Probe',
+    connectivity_check: '连通检查',
+  }
+  return map[tt] || tt.replace(/_/g, ' ')
+}
+
+const probeSwimLanes = computed<SwimLaneType[]>(() => {
+  const groups: Record<string, SystemMonitorEvent[]> = {}
+  for (const ev of sseTasks.value) {
+    const tt = ev.task?.task_type ?? 'unknown'
+    if (!groups[tt]) groups[tt] = []
+    groups[tt].push(ev)
+  }
+
+  const lanes: SwimLaneType[] = []
+  for (const [taskType, events] of Object.entries(groups)) {
+    const sorted = [...events].sort(
+      (a, b) => new Date(b.ts).getTime() - new Date(a.ts).getTime()
+    )
+    const trimmed = sorted.slice(0, LIVE_LANE_LIMIT)
+    const tiles: RequestTile[] = trimmed.map((ev) => ({
+      request_id: `probe-${ev.task?.id ?? Date.now()}`,
+      timestamp: ev.ts,
+      model: ev.task?.raw_model ?? '',
+      vendor: '__unknown__',
+      provider: taskType,
+      status: probeEventToStatus(ev.type),
+      is_probe: true,
+      probe_origin: 'gateway',
+      latency_ms: ev.task?.latency_ms,
+    }))
+    const completed = events.filter(e => e.type === 'completed').length
+    const failed = events.filter(
+      e => e.type === 'failed' || e.type === 'timeout' || e.type === 'network_error'
+    ).length
+    lanes.push({
+      id: taskType,
+      name: taskTypeLabel(taskType),
+      dimension: 'provider',
+      requests: tiles,
+      stats: { total: events.length, success: completed, failure: failed },
+      isOthers: false,
+    })
+  }
+  return lanes.sort((a, b) => a.name.localeCompare(b.name))
+})
+
 // ── Toast ───────────────────────────────────────────────
 
 const toasts = ref<{ msg: string; ts: number }[]>([])
@@ -380,6 +452,27 @@ watch(() => error.value, (v) => {
             </el-tag>
           </el-collapse-item>
         </el-collapse>
+      </div>
+    </section>
+
+    <!-- 探测实时泳道（和实时请求流一样的 SwimLane 组件） -->
+    <section class="sm-section sm-live-lane-section">
+      <div class="sm-live-lane-head">
+        <h3>探测泳道（实时）</h3>
+        <span class="sm-lane-stats">队列 {{ stats?.queue_size ?? '—' }} · 运行中 {{ stats?.running_size ?? '—' }}</span>
+      </div>
+      <div v-if="probeSwimLanes.length === 0" class="sm-empty">
+        暂无探测事件。点击"开始全部任务"触发。
+      </div>
+      <div v-else>
+        <SwimLane
+          v-for="lane in probeSwimLanes"
+          :key="lane.id"
+          :lane="lane"
+          group-by="provider"
+          mode="small"
+          :selected-legends="probeSelectedLegends"
+        />
       </div>
     </section>
 
@@ -736,5 +829,19 @@ watch(() => error.value, (v) => {
 
 .sm-migration-details {
   margin-top: 12px;
+}
+.sm-live-lane-section .sm-live-lane-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 12px;
+}
+.sm-live-lane-section .sm-live-lane-head h3 {
+  margin: 0;
+  font-size: 15px;
+}
+.sm-lane-stats {
+  font-size: 12px;
+  color: var(--el-text-color-secondary);
 }
 </style>
