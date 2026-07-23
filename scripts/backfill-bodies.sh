@@ -6,28 +6,14 @@
 # of how large individual JSONB rows are.
 #
 # Usage:
-#   bash scripts/backfill-bodies.sh 184         # default batch 200
-#   BATCH=500 bash scripts/backfill-bodies.sh 184
+#   bash scripts/backfill-bodies.sh [host]    # default 47.97.111.154
+#   BATCH=500 bash scripts/backfill-bodies.sh
 
 set -euo pipefail
 
-TARGET="${1:-184}"
-case "$TARGET" in
-  184)
-    SSH_HOST="47.97.111.154"  # 154 替代 184
-    SSH_PORT=25022
-    NS="pms-test"
-    ;;
-  71)
-    SSH_HOST="47.97.111.154"  # 154 替代 71 (docker 栈迁回)
-    SSH_PORT=25022
-    NS="pms-test"
-    ;;
-  *)
-    echo "Usage: $0 [71|184]" >&2
-    exit 1
-    ;;
-esac
+SSH_HOST="${1:-47.97.111.154}"  # 154
+SSH_PORT=25022
+NS="pms-test"
 
 BATCH="${BATCH:-200}"
 
@@ -39,7 +25,7 @@ info() { echo -e "${GREEN}[INFO]${NC} $*"; }
 warn() { echo -e "${YELLOW}[WARN]${NC} $*"; }
 
 # Decrypt env to get DB password
-ENC_FILE="$PROJECT_ROOT/.env.${TARGET}.enc"
+ENC_FILE="$PROJECT_ROOT/.env.prod.enc"
 if [[ -f "$ENC_FILE" ]]; then
     export SOPS_AGE_KEY_FILE="${SOPS_AGE_KEY_FILE:-$HOME/.config/sops/age/keys.txt}"
     [[ -f "$SOPS_AGE_KEY_FILE" ]] || warn "No SOPS key — using known password"

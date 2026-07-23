@@ -172,12 +172,12 @@ delete_old_data() {
 # 功能: 检查归档表存储占用
 # ══════════════════════════════════════════════════════════════════════
 check_archive_sizes() {
-  local target="${1:-184}"
+  local target="${1:-252}"
   log_info "检查归档表存储占用 (target=$target)..."
 
   case "$target" in
-    184)
-      local ssh_host="root@47.97.111.154" ssh_port="25022"  # 154 替代 184
+    252)
+      local ssh_host="root@115.29.212.252" ssh_port="25022"
       local ns="pms-test" deploy="llm-gateway-pg"
       local sql="
         SELECT relname, pg_size_pretty(pg_total_relation_size(oid)) AS size
@@ -222,7 +222,7 @@ main() {
       delete_old_data
       ;;
     check-sizes)
-      check_archive_sizes "${1:-184}"
+      check_archive_sizes "${1:-252}"
       ;;
     cleanup)
       log_info "配置: TRIM=$ENABLE_TRIM ARCHIVE=$ENABLE_ARCHIVE DELETE=$ENABLE_DELETE DRY_RUN=$DRY_RUN"

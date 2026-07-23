@@ -19,8 +19,8 @@ if [[ -r "$PROJECT_ROOT/.env.local" ]]; then
 fi
 
 if command -v sops >/dev/null 2>&1; then
-  if [[ -n "${SOPS_AGE_KEY_FILE:-}" && -r "$PROJECT_ROOT/.env.71.enc" ]]; then
-    eval "$(sops -d "$PROJECT_ROOT/.env.71.enc" 2>/dev/null)"
+  if [[ -n "${SOPS_AGE_KEY_FILE:-}" && -r "$PROJECT_ROOT/.env.154.enc" ]]; then
+    eval "$(sops -d "$PROJECT_ROOT/.env.154.enc" 2>/dev/null)"
     return 0
   fi
 fi

@@ -368,6 +368,15 @@ func (w *CredentialSelfcheckWorker) runOne(ctx context.Context, credentialID int
 	if err := w.finalizeRun(ctx, runID, startedAt, status, pick.strategy, totalRounds, successRounds, hadToolCall, totalTokens, avgLatency, lastErrType, lastErrDetail, attemptedJSON); err != nil {
 		return fmt.Errorf("finalize run: %w", err)
 	}
+
+	// Phase 3 Stage 1 Task 1.2: 打标为 legacy_selfcheck，写入 system_probe_runs
+	// 用于 Phase 3 切流进度监控（对齐 docs/会话优化v2/35-*.md §2.1）
+	if err := w.auditToSystemProbeRuns(ctx, credentialID, pick.models, startedAt, status); err != nil {
+		// 写入失败不阻塞主流程，仅记录日志
+		slog.Warn("credential_selfcheck: failed to audit to system_probe_runs (non-blocking)",
+			"credential_id", credentialID, "error", err)
+	}
+
 	return nil
 }
 
@@ -707,6 +716,59 @@ func (w *CredentialSelfcheckWorker) finalizeRun(
 		roundsTotal, roundsSuccess, hadToolCall,
 		totalTokens, avgLatency, errType, errDetail,
 		strategy, attemptedJSON,
+	)
+	return err
+}
+
+// auditToSystemProbeRuns writes a legacy_selfcheck entry to system_probe_runs
+// for Phase 3 migration tracking (Stage 1 Task 1.2).
+//
+// 设计依据: docs/会话优化v2/35-SystemMonitor-Phase3-切流计划.md §2.1
+func (w *CredentialSelfcheckWorker) auditToSystemProbeRuns(
+	ctx context.Context,
+	credentialID int,
+	models []string,
+	startedAt time.Time,
+	status string,
+) error {
+	if len(models) == 0 {
+		return nil // 无模型可探测，跳过
+	}
+
+	// 使用第一个尝试的模型作为 raw_model
+	rawModel := models[0]
+
+	// 构造 system_probe_runs 插入语句（复用 SystemMonitor Audit 的 schema）
+	// 注意：source="legacy_selfcheck" 是关键标记
+	query := `
+		INSERT INTO system_probe_runs (
+			task_type, automaticity, credential_id, raw_model, source,
+			worker_id, status, started_at, finished_at
+		) VALUES (
+			$1, $2, $3, $4, $5, $6, $7, $8, $9
+		)
+	`
+
+	taskType := "credential_selfcheck" // 旧 worker 特有的 task_type
+	automaticity := "automatic"         // 旧 worker 是自动探测
+	source := "legacy_selfcheck"        // Phase 3 关键：标记为旧 worker
+	workerID := "credential-selfcheck-worker"
+	finishedAt := time.Now()
+
+	// 映射状态：success/partial/failed
+	probeStatus := "success"
+	if status == "failed" {
+		probeStatus = "failed"
+	} else if status == "partial" {
+		probeStatus = "success" // partial 也算成功（至少有1轮成功）
+	}
+
+	queryCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
+
+	_, err := w.db.Exec(queryCtx, query,
+		taskType, automaticity, credentialID, rawModel, source,
+		workerID, probeStatus, startedAt, finishedAt,
 	)
 	return err
 }

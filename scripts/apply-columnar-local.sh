@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ─────────────────────────────────────────────────────────────────────
-# 本地应用 columnar 不变量, 使本地 DB 与 184 的 columnar 配置一致
+# 本地应用 columnar 不变量, 使本地 DB 与生产环境的 columnar 配置一致
 #
 # pg_dump 不同步分区子表的 access method, 因此 full-sync 后需要显式:
 #   1. 确保 citus_columnar 扩展已安装
@@ -61,7 +61,7 @@ docker ps --format '{{.Names}}' | grep -q "^${LOCAL_CONTAINER}$" || {
   exit 1
 }
 
-info "应用 columnar 不变量到本地 $LOCAL_DB (匹配 184)"
+info "应用 columnar 不变量到本地 $LOCAL_DB"
 
 # ── 1. 确保 citus_columnar 扩展 ──
 info "步骤 1: 确保 citus_columnar 扩展..."
@@ -148,4 +148,4 @@ exec_sql "SELECT parent_name, compliant_count, noncompliant_count FROM columnar_
 echo ""
 ok "columnar 不变量应用完成"
 echo ""
-echo "对比 184: ./scripts/verify-columnar-sync.sh"
+echo "在生产环境上跑 ./scripts/verify-columnar-sync.sh 做比对"

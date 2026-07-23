@@ -10,7 +10,7 @@
 #   ./scripts/deploy-k8s.sh migrate 252
 #
 # 说明:
-#   - 252 / 184(legacy→252): 公网 k3s 数据面
+#   - 252: 公网 k3s 数据面
 #   - kaixuan-1/2/3: 内网 k3s 集群
 #   - 底层委托 scripts/deploy.sh，保持与主机部署相同的版本 bump / 验证流程
 # =====================================================================
@@ -25,7 +25,7 @@ usage() {
 用法: $0 <target|action> [options]
 
 target (k3s):
-  252 | 184 | kaixuan-1 | kaixuan-2 | kaixuan-3
+   252 | kaixuan-1 | kaixuan-2 | kaixuan-3
 
 action:
   verify <target>
@@ -51,13 +51,13 @@ case "${1:-}" in
     action="$1"
     target="${2:-}"
     if [[ -z "$target" ]]; then
-      echo "缺少 target: $0 $action <252|184|kaixuan-1>" >&2
+      echo "缺少 target: $0 $action <252|kaixuan-1>" >&2
       exit 64
     fi
     shift 2
     exec "$DEPLOY_SH" "$action" "$target" "$@"
     ;;
-  252|184|kaixuan-1|kaixuan-2|kaixuan-3)
+   252|kaixuan-1|kaixuan-2|kaixuan-3)
     target="$1"
     shift
     exec "$DEPLOY_SH" "$target" "$@"

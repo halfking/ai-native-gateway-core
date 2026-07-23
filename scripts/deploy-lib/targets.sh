@@ -20,7 +20,7 @@
 #     ssh_key_env           name of the SSH_KEY_<TARGET> env var
 #     rollback_policy       "versioned" | "runbook" | "refuse"
 #     legacy_aliases        list of accepted aliases that rewrite to this
-#                           canonical target (e.g. "71" -> 154)
+#                           canonical target
 #
 #   A second family of helpers (`target_status`, `target_service_manager`)
 #   reads those fields back. All access from scripts/deploy.sh goes
@@ -118,9 +118,9 @@ _ssh_key_for() {
     return
   fi
   case "$target" in
-    154|71)        printf '%s\n' "${HOME}/.ssh/id_ed25519" ;;
+    154)           printf '%s\n' "${HOME}/.ssh/id_ed25519" ;;
     245)           printf '%s\n' "${HOME}/.ssh/id_ed25519" ;;
-    252|184)       printf '%s\n' "${HOME}/.ssh/id_ed25519" ;;
+    252)           printf '%s\n' "${HOME}/.ssh/id_ed25519" ;;
     186)           printf '%s\n' "${HOME}/.ssh/id_ed25519" ;;
     kaixuan-1)     printf '%s\n' "${HOME}/.ssh/kaixuan1_id_rsa" ;;
     kaixuan-2)     printf '%s\n' "${HOME}/.ssh/kaixuan2_id_rsa" ;;
@@ -132,9 +132,9 @@ _ssh_key_for() {
 _ssh_host_for() {
   local target=$1
   case "$target" in
-    154|71)        printf '%s\n' "root@47.97.111.154" ;;
+    154)           printf '%s\n' "root@47.97.111.154" ;;
     245)           printf '%s\n' "root@8.136.114.245" ;;
-    252|184)       printf '%s\n' "root@115.29.212.252" ;;
+    252)           printf '%s\n' "root@115.29.212.252" ;;
     186)           printf '%s\n' "root@118.31.18.168" ;;
     kaixuan-1)     printf '%s\n' "kaixuan@192.168.31.28" ;;
     kaixuan-2)     printf '%s\n' "kaixuan@192.168.31.19" ;;
@@ -160,7 +160,7 @@ target_154_contract() {
     ssh_host "$(_ssh_host_for 154)" \
     ssh_key_env "SSH_KEY_154" \
     rollback_policy "runbook" \
-    legacy_aliases "71"
+    legacy_aliases ""
 }
 
 # Slice 1 / 4 target: 245 (gateway server, full versioned rollback).
@@ -202,7 +202,7 @@ target_186_contract() {
     legacy_aliases ""
 }
 
-# Slice 1 deferral: 252 / 184 — service-manager conflict not yet
+# Slice 1 deferral: 252 — service-manager conflict not yet
 # resolved (inventory says systemd, canary script says k3s). The
 # canonical CLI refuses to guess.
 target_252_contract() {
@@ -217,7 +217,7 @@ target_252_contract() {
     ssh_host "$(_ssh_host_for 252)" \
     ssh_key_env "SSH_KEY_252" \
     rollback_policy "refuse" \
-    legacy_aliases "184"
+    legacy_aliases ""
 }
 
 # Slice 1 deferral: kaixuan-1 — SOPS coverage only because the runtime
@@ -256,8 +256,7 @@ target_unsupported_contract() {
 
 # ---- dispatcher --------------------------------------------------------
 
-# Render the contract for a canonical / legacy target. The argument is
-# post-alias-resolution (i.e. 71 → 154 happens in scripts/deploy.sh).
+# Render the contract for a target.
 target_contract() {
   local target=${1:-}
   case "$target" in
@@ -330,19 +329,13 @@ target_list_all() {
   printf 'canonical\t245\n'
   printf 'retired\t186\n'
   printf 'deferred\t252\n'
-  printf 'deferred\t184\n'
   printf 'sops-only\tkaixuan-1\n'
   printf 'unsupported\tkaixuan-2\n'
   printf 'unsupported\tkaixuan-3\n'
-  printf 'legacy-alias\t71\n'
 }
 
-# Resolve a legacy alias (e.g. "71" -> "154"). Returns the input on a
-# miss so callers can pass canonical / legacy / unknown indifferently.
+# Resolve a legacy alias. Returns the input on a miss so callers can pass
+# canonical / legacy / unknown indifferently.
 target_resolve_alias() {
-  case "$1" in
-    71)  printf '%s\n' "154" ;;
-    184) printf '%s\n' "252" ;;
-    *)   printf '%s\n' "$1" ;;
-  esac
+  printf '%s\n' "$1"
 }

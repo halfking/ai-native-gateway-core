@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # scripts/columnar-daily-cron.sh
 #
-# Long-term columnar invariant guard for the llm-gateway-go PG primary
-# in 184 (and 71). Runs nightly.
+# Long-term columnar invariant guard for the llm-gateway-go PG primary.
+# Runs nightly.
 #
 # Responsibilities:
 #   1. Drain the body-table backfill: call backfill_request_logs_bodies()
@@ -32,9 +32,9 @@ LOG_FILE="${LOG_FILE:-/var/log/columnar-daily.log}"
 # Decrypt password from .env.<target>.enc if available
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
-if [[ -f "$PROJECT_ROOT/.env.184.enc" ]]; then
+if [[ -f "$PROJECT_ROOT/.env.252.enc" ]]; then
     export SOPS_AGE_KEY_FILE="${SOPS_AGE_KEY_FILE:-$HOME/.config/sops/age/keys.txt}"
-    DB_PASSWORD=$(sops -d "$PROJECT_ROOT/.env.184.enc" 2>/dev/null | grep '^export DB_PASSWORD=' | cut -d= -f2 | tr -d '"')
+    DB_PASSWORD=$(sops -d "$PROJECT_ROOT/.env.252.enc" 2>/dev/null | grep '^export DB_PASSWORD=' | cut -d= -f2 | tr -d '"')
 fi
 : "${DB_PASSWORD:?must set DB_PASSWORD}"
 

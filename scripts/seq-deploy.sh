@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# seq-deploy.sh — 统一部署编排器（本地 → 184，含完整记录 + 验证）
+# seq-deploy.sh — 统一部署编排器（含完整记录 + 验证）
 #
 # 编排流程:
 #   Phase 0:  初始化部署记录目录 (init-deploy-record.sh)
@@ -9,7 +9,6 @@
 #
 # 用法:
 #   ./scripts/seq-deploy.sh             # 本地部署
-#   ./scripts/seq-deploy.sh --to-184    # 本地 + 184 全链路
 #   ./scripts/seq-deploy.sh --local     # 仅本地（默认）
 #   ./scripts/seq-deploy.sh --record    # 初始化记录但不部署
 #   ./scripts/seq-deploy.sh --help
@@ -22,9 +21,6 @@ ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 # ── 配置 ──
 LOCAL_GW="${LOCAL_GW:-http://localhost:8782}"
 LOCAL_GW_V1="${LOCAL_GW_V1:-http://localhost:8781}"
-SERVER_184="root@47.97.111.154"  # 184 退役,改指 154 (2026-07-11)
-SSH_PORT_184="25022"
-HEALTH_184="http://47.97.111.154:30080/health"  # 154
 
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; BLUE='\033[0;34m'; NC='\033[0m'
 ok()   { echo -e "${GREEN}✓ $*${NC}"; }
@@ -36,10 +32,9 @@ step() { echo ""; echo -e "${BLUE}═══════════════�
 MODE="local"
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --to-184)  MODE="to-184"; shift ;;
     --local)   MODE="local"; shift ;;
     --record)  MODE="record"; shift ;;
-    --help)    echo "用法: $0 [--local|--to-184|--record]"; exit 0 ;;
+    --help)    echo "用法: $0 [--local|--record]"; exit 0 ;;
     *)         err "未知参数: $1"; exit 1 ;;
   esac
 done
@@ -69,7 +64,7 @@ phase0_init() {
     info "仅初始化部署记录（不执行部署）"
     bash "$SCRIPT_DIR/init-deploy-record.sh" || return 1
     info "记录目录: $RECORD_DIR"
-    info "请补充 CHANGELOG.md 后执行: $0 --local 或 $0 --to-184"
+    info "请补充 CHANGELOG.md 后执行: $0 --local"
     exit 0
   fi
 
@@ -119,31 +114,6 @@ phase1_local() {
 }
 
 # ══════════════════════════════════════════════════
-# Phase 2: 184 部署
-# ══════════════════════════════════════════════════
-phase2_184() {
-  step "Phase 2: 184 部署"
-
-  info "检查 184 SSH 可达性..."
-  ssh -p "$SSH_PORT_184" -o ConnectTimeout=5 "$SERVER_184" "echo OK" >/dev/null 2>&1 || {
-    overall_fail "184 SSH 不可达"
-  }
-  ok "184 SSH 可达"
-
-  info "执行 184 部署（含 migration + 验证）..."
-  bash "$ROOT_DIR/scripts/deploy.sh" 252 2>&1 | tee "$RECORD_DIR/verify/deploy-252.log" || {
-    overall_fail "184 部署失败"
-  }
-  ok "184 部署完成"
-
-  info "部署后验证..."
-  bash "$ROOT_DIR/deploy/verify.sh" --env 184 2>&1 | tee "$RECORD_DIR/verify/remote-verify.log" || {
-    overall_fail "184 验证失败"
-  }
-  ok "184 验证通过"
-}
-
-# ══════════════════════════════════════════════════
 # Phase 3: 最终报告
 # ══════════════════════════════════════════════════
 phase3_report() {
@@ -165,7 +135,7 @@ phase3_report() {
 | 本地验证 | ✅ 通过 |
 | 运行时测试 | ✅ 完成 |
 | Go 测试 | ✅ 完成 |
-| 184 部署 | ✅ 完成 |
+| 252 部署 | ✅ 完成 |
 | 远程验证 | ✅ 通过 |
 
 - **验证通过数**: $total_pass
@@ -206,10 +176,6 @@ main() {
   case "$MODE" in
     local)
       phase1_local
-      ;;
-    to-184)
-      phase1_local
-      phase2_184
       ;;
   esac
 

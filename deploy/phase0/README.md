@@ -35,19 +35,6 @@ bash deploy/phase0/verify.sh kaixuan-1
 watch -n 60 'ssh root@192.168.31.28 "curl -s http://localhost:8781/metrics | grep -E ttfb"'
 ```
 
-### 部署到 71 生产（10% 金丝雀）
-
-```bash
-# 前置：确保金丝雀已配置
-bash scripts/setup-canary.sh --week=1
-
-# 部署
-bash deploy/phase0/deploy.sh --target=71
-
-# 验证
-bash deploy/phase0/verify.sh 71
-```
-
 ---
 
 ## 配置参数说明

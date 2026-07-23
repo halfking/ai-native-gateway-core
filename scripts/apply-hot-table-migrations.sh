@@ -3,7 +3,6 @@
 #
 # 用法:
 #   ./scripts/apply-hot-table-migrations.sh --env local   # 本地环境（默认）
-#   ./scripts/apply-hot-table-migrations.sh --env 184     # 184 环境（通过 SSH）
 #   ./scripts/apply-hot-table-migrations.sh --env prod    # 生产环境
 
 set -euo pipefail
@@ -19,7 +18,7 @@ ENV="local"
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --env|-e) ENV="$2"; shift 2 ;;
-    --help|-h) echo "用法: $0 --env <local|184|test|staging|prod>"; exit 0 ;;
+    --help|-h) echo "用法: $0 --env <local|test|staging|prod>"; exit 0 ;;
     *) echo "❌ 未知参数: $1"; exit 1 ;;
   esac
 done
@@ -33,26 +32,7 @@ case "$ENV" in
     PSQL_BASE="psql -h $DB_HOST -p $DB_PORT -U $DB_USER -d $DB_NAME"
     PSQL() { eval "$PSQL_BASE $*"; }
     ;;
-  184)
-    REMOTE_HOST="${REMOTE_HOST:-root@47.97.111.154}"  # 154 替代 184 (2026-07-11 退役)
-    REMOTE_PORT="${REMOTE_PORT:-25022}"
-    DB_HOST="${REMOTE_DB_HOST:-10.0.0.184}"
-    DB_PORT="${REMOTE_DB_PORT:-5432}"
-    DB_USER="${REMOTE_DB_USER:-llm_gateway}"
-    DB_NAME="${REMOTE_DB_NAME:-llm_gateway}"
-    PSQL() {
-      local sql_file=""
-      if [[ "$1" == "-f" ]]; then
-        sql_file="$2"
-        shift 2
-        scp -P "$REMOTE_PORT" "$sql_file" "$REMOTE_HOST:/tmp/$(basename "$sql_file")" > /dev/null
-        ssh -p "$REMOTE_PORT" "$REMOTE_HOST" "PGPASSWORD=\$PGPASSWORD psql -h $DB_HOST -p $DB_PORT -U $DB_USER -d $DB_NAME -f /tmp/$(basename "$sql_file") $*"
-        ssh -p "$REMOTE_PORT" "$REMOTE_HOST" "rm -f /tmp/$(basename "$sql_file")" 2>/dev/null || true
-      else
-        ssh -p "$REMOTE_PORT" "$REMOTE_HOST" "PGPASSWORD=\$PGPASSWORD psql -h $DB_HOST -p $DB_PORT -U $DB_USER -d $DB_NAME -c '$*'"
-      fi
-    }
-    ;;
+  # 184 removed — server decommissioned, use prod target instead
   test|staging|prod)
     case "$ENV" in
       test)    DB_HOST="test-db.internal";    DB_USER="postgres"; DB_NAME="llm_gateway_test" ;;
@@ -64,7 +44,7 @@ case "$ENV" in
     PSQL() { eval "$PSQL_BASE $*"; }
     ;;
   *)
-    echo "❌ 无效环境: $ENV (支持: local|184|test|staging|prod)"
+    echo "❌ 无效环境: $ENV (支持: local|test|staging|prod)"
     exit 1
     ;;
 esac
