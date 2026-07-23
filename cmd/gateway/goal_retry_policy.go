@@ -31,10 +31,10 @@ func newGoalRetryPolicyResolver(getter settingsGetter) *goalRetryPolicyResolver 
 
 // ResolveGoalRetryPolicy resolves the effective retry policy for a tenant.
 // Resolution order:
-//   1. Read goal.cost_mode (tenant-scoped), default to "minimal"
-//   2. Load the corresponding preset
-//   3. Apply individual setting overrides (goal.retry_on_error, goal.max_retry_count, etc.)
-//   4. Normalize and return
+//  1. Read goal.cost_mode (tenant-scoped), default to "minimal"
+//  2. Load the corresponding preset
+//  3. Apply individual setting overrides (goal.retry_on_error, goal.max_retry_count, etc.)
+//  4. Normalize and return
 func (r *goalRetryPolicyResolver) ResolveGoalRetryPolicy(tenantID string) streaming.GoalRetryPolicy {
 	// Step 1: Read cost_mode
 	costMode := "minimal" // safe default
