@@ -149,6 +149,9 @@ func initGoalControl(db *sql.DB, chatHandler *streaming.ChatHandler) {
 	// 4. Settings adapter shared by both hooks.
 	adapter := settingsAdapter{}
 
+	// 5. Goal retry policy resolver (2026-07-23)
+	retryResolver := newGoalRetryPolicyResolver(adapter)
+
 	// 5. Goal mode hook: drives activation, completion detection, and the
 	//    "please continue" auto-follow-up, including model switching on loops.
 	//
@@ -316,6 +319,10 @@ func initGoalControl(db *sql.DB, chatHandler *streaming.ChatHandler) {
 
 	// 7a. Handoff fallback API key (2026-07-11, handoff self-call fix).
 	chatHandler.SetHandoffFallbackAPIKey(strings.TrimSpace(os.Getenv("LLM_GATEWAY_HANDOFF_FALLBACK_API_KEY")))
+
+	// 7b. Wire Goal retry policy resolver and recorder (2026-07-23)
+	chatHandler.SetGoalRetryPolicyResolver(retryResolver)
+	chatHandler.SetGoalRetryRecorder(goalStore)
 
 	handoffEnabled := handoffCfg.Enabled
 	ocEnabled := len(interceptors) > 3

@@ -189,3 +189,22 @@ func (s *PGStore) AtomicModelSwitch(ctx context.Context, sessionID, newModel str
 	rows, _ := res.RowsAffected()
 	return rows == 1, nil
 }
+
+// AddRetryCount atomically increments retry_count by delta.
+// This method is fail-open: it returns nil when sessionID is empty,
+// delta is non-positive, or the row does not exist (Goal mode not active).
+// Callers should log but not fail the request on errors.
+func (s *PGStore) AddRetryCount(ctx context.Context, sessionID string, delta int) error {
+	if sessionID == "" || delta <= 0 {
+		return nil
+	}
+
+	query := `UPDATE goal_sessions
+	          SET retry_count = retry_count + $2,
+	              last_activity_at = NOW()
+	          WHERE session_id = $1`
+
+	_, err := s.db.ExecContext(ctx, query, sessionID, delta)
+	// Ignore "no rows affected" - session may not exist if Goal mode wasn't active
+	return err
+}

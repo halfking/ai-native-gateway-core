@@ -27,7 +27,6 @@ import (
 	"github.com/kaixuan/llm-gateway-go/domains/credential"                          //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/audit"                         //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/compression"                   //nolint:depguard // historical violation, B1 routing.go CQRS will fix
-	"github.com/kaixuan/llm-gateway-go/domains/hooks/goal"                          //nolint:depguard // Phase 1.5: cost_mode preset integration
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/handoff"                       //nolint:depguard // request-side session handoff hook
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/observability/telemetry"       //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/response"                      //nolint:depguard // historical violation, B1 routing.go CQRS will fix
@@ -50,7 +49,6 @@ import (
 	"github.com/kaixuan/llm-gateway-go/registry"
 	"github.com/kaixuan/llm-gateway-go/resolve"
 	"github.com/kaixuan/llm-gateway-go/security/armor"
-	"github.com/kaixuan/llm-gateway-go/settings" //nolint:depguard // Phase 1.6: read goal.cost_mode from settings
 	upstreampkg "github.com/kaixuan/llm-gateway-go/upstream"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/trace"
@@ -527,6 +525,16 @@ type ChatHandler struct {
 	// request through h.ServeHTTP. Tests can overwrite the field to stub
 	// out the network/auth path without spinning up the full pipeline.
 	dispatchFollowUpRequest dispatchFollowUpFunc
+
+	// goalRetryPolicyResolver (2026-07-23) resolves tenant-scoped retry policy.
+	// When non-nil, retry loop reads per-request policy from tenant settings
+	// instead of fixed boot-time config. nil falls back to minimal defaults.
+	goalRetryPolicyResolver GoalRetryPolicyResolver
+
+	// goalRetryRecorder (2026-07-23) persists actual retry count to goal_sessions.
+	// When non-nil, handler writes retry_count after each request. nil disables
+	// persistence (fail-open: retry behavior unchanged, only stats missing).
+	goalRetryRecorder GoalRetryRecorder
 }
 
 // ToolRegistryService is the interface for tool registry access.
@@ -819,6 +827,22 @@ func (h *ChatHandler) SetHandoffFallbackAPIKey(apiKey string) {
 // 2026-06-29: auto-control feature integration point.
 func (h *ChatHandler) SetResponseInterceptor(interceptor ResponseInterceptor) {
 	h.responseInterceptor = interceptor
+}
+
+// SetGoalRetryPolicyResolver (2026-07-23) wires the tenant-scoped retry
+// policy resolver. When set, the handler resolves a fresh policy per
+// request based on tenant settings and cost-mode presets, replacing the
+// fixed boot-time configuration. nil falls back to minimal defaults.
+func (h *ChatHandler) SetGoalRetryPolicyResolver(resolver GoalRetryPolicyResolver) {
+	h.goalRetryPolicyResolver = resolver
+}
+
+// SetGoalRetryRecorder (2026-07-23) wires the retry count recorder.
+// When set, the handler persists actual retry attempts to goal_sessions
+// after each request. Persistence errors are logged but do not block
+// requests (fail-open). nil disables persistence.
+func (h *ChatHandler) SetGoalRetryRecorder(recorder GoalRetryRecorder) {
+	h.goalRetryRecorder = recorder
 }
 
 func (h *ChatHandler) SetSessionGetter(sg interface {
@@ -2262,40 +2286,33 @@ func (h *ChatHandler) serveWithExecutor(
 	}
 
 	// Retry configuration - Phase 1.5: read from Phase 0 cost_mode preset
-	maxRetries := 3                       // default: balanced mode
-	baseDelayMs := 100                    // fixed: 100ms base delay
-	maxDelayMs := 5000                    // fixed: 5s max delay
-	retryTotalTimeout := 50 * time.Second // default: balanced mode
-
-	// Read from Phase 0 cost_mode preset if available
-	// Uses goal.GetPreset() to load the preset based on tenant settings
-	if keyInfo != nil && keyInfo.TenantID != "" {
-		// Read cost_mode from settings system (Phase 1.6)
-		costMode := "balanced" // default fallback
-
-		// Attempt to read from global settings registry
-		if settings.Global != nil {
-			val, _, err := settings.Global.EffectiveValue(settings.ScopeTenant, "goal.cost_mode", keyInfo.TenantID)
-			if err == nil && len(val) > 0 {
-				var mode string
-				if json.Unmarshal(val, &mode) == nil && mode != "" {
-					costMode = mode
-				}
-			}
-		}
-
-		if preset := goal.GetPreset(costMode); preset.RetryEnabled {
-			maxRetries = preset.MaxRetryCount
-			retryTotalTimeout = time.Duration(preset.RetryTotalTimeout) * time.Second
-
-			slog.Debug("goal_retry_config_loaded",
+	// 2026-07-23: Use resolver for runtime policy if available
+	var retryPolicy GoalRetryPolicy
+	if h.goalRetryPolicyResolver != nil && keyInfo != nil && keyInfo.TenantID != "" {
+		retryPolicy = h.goalRetryPolicyResolver.ResolveGoalRetryPolicy(keyInfo.TenantID)
+		slog.Debug("goal_retry_policy_resolved",
+			"request_id", requestID,
+			"tenant_id", keyInfo.TenantID,
+			"cost_mode", retryPolicy.CostMode,
+			"enabled", retryPolicy.Enabled,
+			"max_retries", retryPolicy.MaxRetries,
+			"timeout_sec", retryPolicy.TotalTimeout.Seconds())
+	} else {
+		// Fallback to default policy
+		retryPolicy = defaultGoalRetryPolicy()
+		if keyInfo != nil {
+			slog.Debug("goal_retry_policy_fallback",
 				"request_id", requestID,
 				"tenant_id", keyInfo.TenantID,
-				"cost_mode", costMode,
-				"max_retries", maxRetries,
-				"retry_timeout_sec", retryTotalTimeout.Seconds())
+				"reason", "resolver_not_available")
 		}
 	}
+
+	// Extract values from policy
+	maxRetries := retryPolicy.MaxRetries
+	retryTotalTimeout := retryPolicy.TotalTimeout
+	baseDelayMs := int(retryPolicy.BaseDelay.Milliseconds())
+	maxDelayMs := int(retryPolicy.MaxDelay.Milliseconds())
 
 	// Create retry context with total timeout protection
 	retryCtx, retryCancel := context.WithTimeout(r.Context(), retryTotalTimeout)
@@ -2303,21 +2320,22 @@ func (h *ChatHandler) serveWithExecutor(
 
 	// Retry loop
 	retryStartTime := time.Now()
+	retriesPerformed := 0
+	
 	for attempt := 0; attempt <= maxRetries; attempt++ {
 		// Check if context is cancelled (client disconnected or timeout)
-		select {
-		case <-retryCtx.Done():
-			execErr = fmt.Errorf("retry timeout after %v: %w", time.Since(retryStartTime), retryCtx.Err())
-			slog.Warn("goal_retry_timeout",
+		if err := retryCtx.Err(); err != nil {
+			execErr = fmt.Errorf("retry stopped before attempt %d: %w", attempt, err)
+			slog.Warn("goal_retry_cancelled_before_execute",
 				"request_id", requestID,
 				"attempt", attempt,
 				"elapsed_sec", time.Since(retryStartTime).Seconds())
 			break
-		default:
 		}
 
 		// Log retry attempt (skip for first attempt)
 		if attempt > 0 {
+			retriesPerformed++
 			slog.Info("goal_retry_attempt",
 				"request_id", requestID,
 				"attempt", attempt,
@@ -2503,15 +2521,38 @@ func (h *ChatHandler) serveWithExecutor(
 			}())
 
 		// Wait for delay or context cancellation
+		timer := time.NewTimer(delay)
 		select {
-		case <-time.After(delay):
+		case <-timer.C:
 			// Continue to next retry attempt
 		case <-retryCtx.Done():
+			timer.Stop()
 			execErr = fmt.Errorf("retry cancelled during delay: %w", retryCtx.Err())
+			slog.Info("goal_retry_cancelled_during_delay",
+				"request_id", requestID,
+				"attempt", attempt,
+				"elapsed_sec", time.Since(retryStartTime).Seconds())
 			break
 		}
 	}
 	// ── End of retry loop ────────────────────────────────────────────────
+
+	// Persist retry count if recorder is available (fail-open)
+	if retriesPerformed > 0 && gwSessionID != "" && h.goalRetryRecorder != nil {
+		if err := h.goalRetryRecorder.AddRetryCount(r.Context(), gwSessionID, retriesPerformed); err != nil {
+			slog.Warn("goal_retry_count_persist_failed",
+				"request_id", requestID,
+				"session_id", gwSessionID,
+				"retry_count", retriesPerformed,
+				"error", err.Error())
+		} else {
+			slog.Debug("goal_retry_count_persisted",
+				"request_id", requestID,
+				"session_id", gwSessionID,
+				"retry_count", retriesPerformed)
+		}
+	}
+
 	if result != nil && result.CachedReplay {
 		if preStream != nil {
 			preStream.stop()
