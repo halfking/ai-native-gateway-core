@@ -714,8 +714,10 @@ func (c *Client) insertRequestLog(entry *RequestLogEntry) error {
 	// from race conditions (e.g. async retry landing on the same
 	// request_id). 热表的 UNIQUE 约束覆盖冲突目标。
 	// 2026-07-16: JSONB columns use $N::text::jsonb to fix pgx binary protocol 22P02.
-	_, err = tx.Exec(ctx, `
-		INSERT INTO request_logs_hot (
+	var insertedTS time.Time
+	err = tx.QueryRow(ctx, `
+			INSERT INTO request_logs_hot (
+
 			request_id, ts, tenant_id, application_id, api_key_id,
 			end_user_id, client_model, outbound_model,
 			credential_id, provider_id, canonical_id,
@@ -889,11 +891,13 @@ $47,
 		-- 2026-07-14 (migration 341): origin metadata. First-write-wins:
 		-- the first writer (usually the origin middleware) keeps its value;
 		-- later replays must not overwrite the real client IP / origin label.
-		client_ip           = COALESCE(request_logs_hot.client_ip, EXCLUDED.client_ip),
-		client_forwarded_for = COALESCE(request_logs_hot.client_forwarded_for, EXCLUDED.client_forwarded_for),
-		origin_stage        = COALESCE(request_logs_hot.origin_stage, EXCLUDED.origin_stage),
-		origin_actor        = COALESCE(request_logs_hot.origin_actor, EXCLUDED.origin_actor)
-	`,
+			client_ip           = COALESCE(request_logs_hot.client_ip, EXCLUDED.client_ip),
+			client_forwarded_for = COALESCE(request_logs_hot.client_forwarded_for, EXCLUDED.client_forwarded_for),
+			origin_stage        = COALESCE(request_logs_hot.origin_stage, EXCLUDED.origin_stage),
+			origin_actor        = COALESCE(request_logs_hot.origin_actor, EXCLUDED.origin_actor)
+			RETURNING request_logs_hot.ts
+		`,
+
 		entry.RequestID,
 		nonEmpty(entry.TenantID, "default"),
 		entry.ApplicationID,
@@ -1005,36 +1009,35 @@ $47,
 		// 2026-07-19 (migration 350): routing attempts tracking
 		jsonOrNull(entry.RoutingAttempts),
 		entry.RoutingSummary,
-	)
+	).Scan(&insertedTS)
 	if err != nil {
 		return err
 	}
 
 	// 2026-07-22 Ticket #10: INSERT full bodies into request_logs_bodies_hot.
+
 	// This side table stores complete request_body and response_body to avoid
 	// bloating the main table. The side table uses ON CONFLICT DO UPDATE to
 	// handle race conditions (async retries landing on the same request_id).
 	//
-	// 2026-07-23 BUGFIX: request_id 是唯一标识，不需要依赖 ts。
-	// 原问题：子查询 SELECT rl.ts FROM request_logs_hot 在高并发时可能查询失败，
-	// 导致 INSERT 返回 0 行，bodies 数据丢失。
-	// 修复方案：
-	// 1. 使用 NOW() 直接作为 ts（简单可靠）
-	// 2. JOIN 查询时只用 request_id（不需要 ts，因为 request_id 唯一）
-	// 3. ON CONFLICT 保持 (request_id, ts) 以兼容现有表结构
+	// 2026-07-23 BUGFIX: use the authoritative ts returned by the metadata
+	// INSERT. The side-table primary key is (request_id, ts), so a second
+	// NOW() can create a body row that the detail JOIN cannot find.
 	_, err = tx.Exec(ctx, `
-		INSERT INTO request_logs_bodies_hot (
-			request_id, ts, request_body, response_body
-		)
-		VALUES ($1, NOW(), $2::jsonb, $3::jsonb)
-		ON CONFLICT (request_id, ts) DO UPDATE SET
-			request_body = COALESCE(EXCLUDED.request_body, request_logs_bodies_hot.request_body),
-			response_body = COALESCE(EXCLUDED.response_body, request_logs_bodies_hot.response_body)
-	`,
+			INSERT INTO request_logs_bodies_hot (
+				request_id, ts, request_body, response_body
+			)
+			VALUES ($1, $2, $3::jsonb, $4::jsonb)
+			ON CONFLICT (request_id, ts) DO UPDATE SET
+				request_body = COALESCE(EXCLUDED.request_body, request_logs_bodies_hot.request_body),
+				response_body = COALESCE(EXCLUDED.response_body, request_logs_bodies_hot.response_body)
+		`,
 		entry.RequestID,
+		insertedTS,
 		strPtrToJSON(entry.RequestBody),
 		strPtrToJSON(entry.ResponseBody),
 	)
+
 	if err != nil {
 		slog.Error("persist request_logs_bodies_hot failed",
 			"request_id", entry.RequestID,

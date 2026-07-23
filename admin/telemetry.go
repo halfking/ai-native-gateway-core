@@ -312,8 +312,10 @@ func (t *telemetryIngester) persistRequestLog(ctx context.Context, e *requestLog
 	// 2026-07-21 Ticket #10: Modified to NOT include request_body/response_body.
 	// These are now written to request_logs_bodies_hot (see below).
 	// Only preview fields remain in the metadata table.
-	_, err = tx.Exec(ctx, `
-		INSERT INTO request_logs_hot (
+	var insertedTS time.Time
+	err = tx.QueryRow(ctx, `
+			INSERT INTO request_logs_hot (
+
 			request_id, ts, tenant_id, application_id, api_key_id,
 			end_user_id, client_model, outbound_model,
 			credential_id, provider_id, canonical_id,
@@ -340,10 +342,12 @@ func (t *telemetryIngester) persistRequestLog(ctx context.Context, e *requestLog
 			$25, $26, $27,
 			$28, $29, $30,
 			$31,
-			COALESCE($32, 0),
-			$33
-		)
-	`,
+				COALESCE($32, 0),
+				$33
+			)
+			RETURNING ts
+		`,
+
 		e.RequestID, nonEmptyDefault(e.TenantID), e.ApplicationID, e.APIKeyID,
 		e.EndUserID, e.ClientModel, e.OutboundModel,
 		e.CredentialID, e.ProviderID, e.CanonicalID,
@@ -358,8 +362,9 @@ func (t *telemetryIngester) persistRequestLog(ctx context.Context, e *requestLog
 		e.StreamInterrupted,
 		e.StreamChunksSent,
 		e.UpstreamFinishReason,
-	)
+	).Scan(&insertedTS)
 	if err != nil {
+
 		t.classifyAndCount("request_logs_hot", e.RequestID, err)
 		slog.Warn("telemetry ingest request_logs failed", "request_id", e.RequestID, "error", err)
 		return
@@ -380,23 +385,24 @@ func (t *telemetryIngester) persistRequestLog(ctx context.Context, e *requestLog
 	// writes (race condition when multiple ingest workers process the same request).
 	// Aligns with domains/hooks/observability/telemetry/client.go:1026-1028.
 	//
-	// 2026-07-23 BUGFIX: Replace subquery with VALUES pattern. The old subquery
-	// (SELECT rl.ts FROM request_logs_hot) could return 0 rows under concurrent
-	// access or during hot-table promotion, silently dropping the body write.
-	// This matches the fix already applied to client.go:1025-1037.
+	// 2026-07-23: use the exact timestamp returned by the metadata insert.
+	// The side-table key is (request_id, ts); a second NOW() can leave the
+	// body row unreachable by the detail query's composite-key JOIN.
 	_, err = tx.Exec(ctx, `
-		INSERT INTO request_logs_bodies_hot (
-			request_id, ts, request_body, response_body
-		)
-		VALUES ($1, NOW(), $2::jsonb, $3::jsonb)
-		ON CONFLICT (request_id, ts) DO UPDATE SET
-			request_body = COALESCE(EXCLUDED.request_body, request_logs_bodies_hot.request_body),
-			response_body = COALESCE(EXCLUDED.response_body, request_logs_bodies_hot.response_body)
-	`,
+			INSERT INTO request_logs_bodies_hot (
+				request_id, ts, request_body, response_body
+			)
+			VALUES ($1, $2, $3::jsonb, $4::jsonb)
+			ON CONFLICT (request_id, ts) DO UPDATE SET
+				request_body = COALESCE(EXCLUDED.request_body, request_logs_bodies_hot.request_body),
+				response_body = COALESCE(EXCLUDED.response_body, request_logs_bodies_hot.response_body)
+		`,
 		e.RequestID,
+		insertedTS,
 		e.RequestBody,
 		e.ResponseBody,
 	)
+
 	if err != nil {
 		t.classifyAndCount("request_logs_bodies_hot", e.RequestID, err)
 		slog.Warn("telemetry ingest bodies failed", "request_id", e.RequestID, "error", err)

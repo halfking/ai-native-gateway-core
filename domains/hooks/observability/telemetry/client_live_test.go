@@ -192,12 +192,29 @@ func TestRequestLogInsertParamCount(t *testing.T) {
 		FROM request_logs_hot rl
 		JOIN request_logs_bodies_hot rb
 		  ON rb.request_id = rl.request_id
+		 AND rb.ts = rl.ts
 		WHERE rl.request_id = $1
 	`, entry.RequestID).Scan(&joinedRequestBody)
 	if err != nil {
 		t.Fatalf("verify metadata/body join: %v", err)
 	}
 	require.JSONEq(t, *entry.RequestBody, joinedRequestBody)
+
+	var metadataTS, bodyTS time.Time
+	err = pool.QueryRow(ctx, `
+		SELECT rl.ts, rb.ts
+		FROM request_logs_hot rl
+		JOIN request_logs_bodies_hot rb
+		  ON rb.request_id = rl.request_id
+		 AND rb.ts = rl.ts
+		WHERE rl.request_id = $1
+	`, entry.RequestID).Scan(&metadataTS, &bodyTS)
+	if err != nil {
+		t.Fatalf("verify metadata/body timestamps: %v", err)
+	}
+	if !metadataTS.Equal(bodyTS) {
+		t.Fatalf("metadata/body timestamps differ: metadata=%s body=%s", metadataTS, bodyTS)
+	}
 
 	updatedRequestBody := `{"messages":[{"role":"user","content":"updated"}]}`
 	updatedResponseBody := `{"choices":[{"message":{"content":"updated"}}]}`
@@ -217,6 +234,26 @@ func TestRequestLogInsertParamCount(t *testing.T) {
 	`, entry.RequestID).Scan(&gotBodies.RequestBody, &gotBodies.ResponseBody)
 	if err != nil {
 		t.Fatalf("verify updated bodies: %v", err)
+	}
+	require.JSONEq(t, updatedRequestBody, gotBodies.RequestBody)
+	require.JSONEq(t, updatedResponseBody, gotBodies.ResponseBody)
+
+	// A late metadata-only update must not erase bodies already persisted by
+	// the initial insert or completion update.
+	if err := cl.persistRequestLog(&RequestLogEntry{
+		Op:        RequestLogUpdate,
+		RequestID: entry.RequestID,
+		Success:   true,
+	}); err != nil {
+		t.Fatalf("persistRequestLog metadata-only update: %v", err)
+	}
+	err = pool.QueryRow(ctx, `
+		SELECT request_body::text, response_body::text
+		FROM request_logs_bodies_hot
+		WHERE request_id = $1
+	`, entry.RequestID).Scan(&gotBodies.RequestBody, &gotBodies.ResponseBody)
+	if err != nil {
+		t.Fatalf("verify metadata-only update bodies: %v", err)
 	}
 	require.JSONEq(t, updatedRequestBody, gotBodies.RequestBody)
 	require.JSONEq(t, updatedResponseBody, gotBodies.ResponseBody)

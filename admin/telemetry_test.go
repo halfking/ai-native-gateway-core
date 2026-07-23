@@ -71,12 +71,27 @@ func TestPersistRequestLog_BothTablesWritten(t *testing.T) {
 	assert.Contains(t, rbRequestBody, "claude-3", "request_body should contain model")
 	assert.Contains(t, rbResponseBody, "msg_123", "response_body should contain response id")
 
+	var metadataTS, bodyTS time.Time
+	err = pool.QueryRow(ctx, `
+		SELECT rl.ts, rb.ts
+		FROM request_logs_hot rl
+		JOIN request_logs_bodies_hot rb
+		  ON rb.request_id = rl.request_id
+		 AND rb.ts = rl.ts
+		WHERE rl.request_id = $1
+	`, requestID).Scan(&metadataTS, &bodyTS)
+	require.NoError(t, err, "metadata/body timestamps should match")
+	assert.True(t, metadataTS.Equal(bodyTS), "metadata/body timestamps should be identical")
+
+	// Verify the detail-style join still returns the original body when the
+	// metadata row is selected by its authoritative composite key.
 	var joinedBody string
 	err = pool.QueryRow(ctx, `
 		SELECT rb.request_body::text
 		FROM request_logs_hot rl
 		JOIN request_logs_bodies_hot rb
 		  ON rb.request_id = rl.request_id
+		 AND rb.ts = rl.ts
 		WHERE rl.request_id = $1
 	`, requestID).Scan(&joinedBody)
 	require.NoError(t, err, "metadata/body join should find the request body")

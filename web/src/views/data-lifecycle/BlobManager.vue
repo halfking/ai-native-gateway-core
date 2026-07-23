@@ -189,30 +189,58 @@ onMounted(load)
 
 .blob-table-wrap { overflow-x: auto; }
 .data-table { width: 100%; border-collapse: collapse; font-size: 13px; }
-.data-table th, .data-table td { padding: 8px 10px; border-bottom: 1px solid #30363d; text-align: left; }
-.data-table th { color: #8b949e; font-weight: 500; white-space: nowrap; }
-.data-table td { color: #e6edf3; font-variant-numeric: tabular-nums; }
+.data-table th, .data-table td {
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--border);
+  text-align: left;
+}
+.data-table th { color: var(--muted); font-weight: 500; white-space: nowrap; }
+.data-table td { color: var(--text); font-variant-numeric: tabular-nums; }
 .data-table .num { text-align: right; }
-.data-table .strong { color: #e6edf3; font-weight: 600; }
-.data-table .empty { text-align: center; color: #8b949e; padding: 24px; }
-.code { font-family: ui-monospace, SFMono-Regular, monospace; font-size: 11px; padding: 2px 6px; background: #0f1117; border-radius: 4px; color: var(--accent-h); }
+.data-table .strong { color: var(--text); font-weight: 600; }
+.data-table .empty { text-align: center; color: var(--muted); padding: 24px; }
+.code {
+  font-family: ui-monospace, SFMono-Regular, monospace;
+  font-size: 11px;
+  padding: 2px 6px;
+  background: var(--bg-subtle);
+  border-radius: 4px;
+  color: var(--accent-h);
+}
 
 .cleanup-form { display: flex; flex-direction: column; gap: 12px; }
 .form-row { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
-.form-label { font-size: 13px; color: #8b949e; }
+.form-label { font-size: 13px; color: var(--muted); }
 .field { display: flex; flex-direction: column; gap: 4px; min-width: 160px; }
-.field label { font-size: 12px; color: #8b949e; }
+.field label { font-size: 12px; color: var(--muted); }
 .field input, .field select {
-  padding: 6px 10px; background: #0f1117; border: 1px solid #30363d; border-radius: 6px;
-  color: #e6edf3; font-size: 13px;
+  padding: 6px 10px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text);
+  font-size: 13px;
 }
 .field input:focus, .field select:focus { outline: none; border-color: var(--accent); }
-.field .hint { font-size: 11px; color: #6b7280; }
+.field .hint { font-size: 11px; color: var(--muted); }
 
-.preview-box { padding: 12px; background: color-mix(in srgb, var(--accent) 8%, transparent); border: 1px solid color-mix(in srgb, var(--accent) 25%, transparent); border-radius: 6px; }
+.preview-box {
+  padding: 12px;
+  background: color-mix(in srgb, var(--accent) 8%, transparent);
+  border: 1px solid color-mix(in srgb, var(--accent) 25%, transparent);
+  border-radius: 6px;
+}
 .preview-row { display: flex; justify-content: space-between; margin: 4px 0; font-size: 13px; }
-.preview-row .highlight { color: #fbbf24; font-weight: 600; }
-.preview-warn { margin-top: 8px; padding: 6px 10px; background: rgba(251, 191, 36, 0.1); border-left: 2px solid #fbbf24; color: #fbbf24; font-size: 12px; border-radius: 4px; }
+.preview-row .highlight { color: var(--warning); font-weight: 600; }
+.preview-warn {
+  margin-top: 8px;
+  padding: 6px 10px;
+  background: var(--warning-soft);
+  border-left: 2px solid var(--warning);
+  color: var(--warning);
+  font-size: 12px;
+  border-radius: 4px;
+}
 
 .form-actions { display: flex; gap: 8px; }
 
@@ -220,13 +248,13 @@ onMounted(load)
 .btn-sm { padding: 4px 10px; font-size: 12px; }
 .btn-primary { background: var(--accent); color: #fff; }
 .btn-primary:hover:not(:disabled) { background: var(--accent-h); }
-.btn-danger { background: #ef4444; color: #fff; }
-.btn-danger:hover:not(:disabled) { background: #f87171; }
-.btn-ghost { background: transparent; border-color: #30363d; color: #e6edf3; }
-.btn-ghost:hover:not(:disabled) { background: #21262d; }
+.btn-danger { background: var(--danger); color: #fff; }
+.btn-danger:hover:not(:disabled) { background: color-mix(in srgb, var(--danger) 88%, var(--text)); }
+.btn-ghost { background: transparent; border-color: var(--border); color: var(--text); }
+.btn-ghost:hover:not(:disabled) { background: var(--bg-hover); }
 .btn:disabled { opacity: 0.5; cursor: not-allowed; }
 
 .result-box { padding: 8px 12px; border-radius: 6px; font-size: 13px; }
-.result-box.preview { background: rgba(96, 165, 250, 0.1); color: #60a5fa; }
-.result-box.executed { background: rgba(52, 211, 153, 0.1); color: #34d399; }
+.result-box.preview { background: color-mix(in srgb, var(--accent) 10%, transparent); color: var(--accent-h); }
+.result-box.executed { background: var(--success-soft); color: var(--success); }
 </style>
