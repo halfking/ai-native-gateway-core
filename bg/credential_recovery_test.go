@@ -70,6 +70,8 @@ func TestExpiredCmbRecoverySQLGuards(t *testing.T) {
 	regexMustMatch := []*regexp.Regexp{
 		regexp.MustCompile(`nps\.paused\s*=\s*TRUE`),
 		regexp.MustCompile(`nps\.next_retry_at\s*>\s*now\(\)`),
+		// 2026-07-24 fix: must include 2h backoff exemption to prevent 24h strandings
+		regexp.MustCompile(`\(nps\.next_retry_at\s*-\s*now\(\)\)\s*<\s*INTERVAL\s+'2\s+hours?'`),
 	}
 	for _, re := range regexMustMatch {
 		if !re.MatchString(sql) {
@@ -321,5 +323,56 @@ func TestStalePeriodicExhaustedCleanupSQLGuards(t *testing.T) {
 		if !strings.Contains(sql, want) {
 			t.Fatalf("stalePeriodicExhaustedCleanupSQL missing %q in:\n%s", want, sql)
 		}
+	}
+}
+
+// TestRecoverExpiredBindingsAllowsLongBackoff verifies that nodes stuck in
+// long backoff periods (>2h, e.g. the 24h ladder tier) are eligible for
+// recovery, preventing indefinite strandings after transient failures.
+//
+// Background: 2026-07-24 incident where pulian glm-5.2 was stranded for 24h
+// because consecutive_failures=7 triggered the 24h backoff tier, and the
+// original expiredCmbRecoverySQL skipped ALL nodes with next_retry_at > now().
+// The fix adds a 2h exemption: nodes in backoff >2h are force-retried.
+func TestRecoverExpiredBindingsAllowsLongBackoff(t *testing.T) {
+	mock, err := pgxmock.NewPool()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mock.Close()
+
+	// Simulate a node stuck in 24h backoff (next_retry_at 20h from now)
+	// with cmb.available=FALSE and unavailable_recover_at already elapsed.
+	// The SQL should SELECT this row because (20h - now) > 2h exemption.
+	mock.ExpectQuery(`SELECT cmb\.credential_id, pm\.raw_model_name`).
+		WillReturnRows(
+			pgxmock.NewRows([]string{"credential_id", "raw_model_name"}).
+				AddRow(42, "glm-5.2"),
+		)
+
+	var submitted []string
+	submitter := func(credID int, model string) {
+		submitted = append(submitted, fmt.Sprintf("cred=%d,model=%s", credID, model))
+	}
+
+	r := &CredentialRecovery{
+		db:                       mock,
+		probeSubmitter:           submitter,
+		invalidateCandidateCache: func(credID int) {},
+	}
+
+	if err := r.recoverExpiredBindings(context.Background()); err != nil {
+		t.Fatalf("recoverExpiredBindings failed: %v", err)
+	}
+
+	if len(submitted) != 1 {
+		t.Fatalf("expected 1 submitted probe, got %d: %v", len(submitted), submitted)
+	}
+	if submitted[0] != "cred=42,model=glm-5.2" {
+		t.Fatalf("expected cred=42,model=glm-5.2, got %s", submitted[0])
+	}
+
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet expectations: %v", err)
 	}
 }

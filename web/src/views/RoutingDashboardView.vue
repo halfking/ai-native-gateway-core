@@ -32,6 +32,9 @@ import DecisionDetail from '../components/analytics/DecisionDetail.vue'
 import CredentialFunnel from '../components/analytics/CredentialFunnel.vue'
 import SmartRoutingConfigPanel from '../components/routing/SmartRoutingConfigPanel.vue'
 import SmartRoutingConfigDrawer from '../components/routing/SmartRoutingConfigDrawer.vue'
+import CandidateDetailDrawer from '../components/routing/CandidateDetailDrawer.vue'
+import CandidateSettingsDialog from '../components/routing/CandidateSettingsDialog.vue'
+import { isSuperAdmin } from '../store'
 
 const { t } = useI18n()
 
@@ -400,6 +403,22 @@ const resolveErr = ref('')
 const resolved = ref(false)
 const showUnavailable = ref(false)
 const resolveLog = ref<ResolveLogEntry[]>([])
+// 2026-07-24: routing-v2 resolve 页「候选明细 / 设置」状态。
+const detailCandidate = ref<RoutingCandidate | null>(null)
+const settingsCandidate = ref<RoutingCandidate | null>(null)
+const superAdmin = isSuperAdmin()
+
+function openCandidateDetail(c: RoutingCandidate) {
+  detailCandidate.value = c
+}
+function openCandidateSettings(c: RoutingCandidate) {
+  if (!superAdmin) return
+  settingsCandidate.value = c
+}
+async function onCandidateSettingsApplied() {
+  // 写完直接重查当前模型，让 admin 看到新排序生效
+  await doResolve()
+}
 
 const resolveFunnelStages = computed<AnalyticsFunnelStage[]>(() => {
   if (!resolveCandidates.value.length) return []
@@ -1058,35 +1077,50 @@ onUnmounted(() => stopPoll())
           </label>
         </div>
         <div v-if="resolveCandidates.length === 0" class="empty-hint">该模型暂无凭据配置</div>
-        <div v-else-if="filteredResolveCandidates.length === 0" class="empty-hint">
-          暂无可用凭据 — {{ resolveUnavailableCount }} 个不可用
-        </div>
         <div v-else class="table-wrap">
           <table class="dense-table">
             <thead>
               <tr>
-                <th>得分</th><th>供应商</th><th>凭据</th><th>上游</th><th>Tier</th><th>计费</th><th>状态</th>
+                <th>可用性</th><th>供应商 / 凭据</th><th>上游</th><th>Tier · 权重</th><th></th>
               </tr>
             </thead>
             <tbody>
-              <tr v-for="c in filteredResolveCandidates" :key="c.credential_id" :style="c.routable ? '' : 'opacity:0.55'">
-                <td>
-                  <span class="score-pill" :class="c.composite_score != null && c.composite_score >= 70 ? 'good' : ''">
-                    {{ c.composite_score != null ? c.composite_score.toFixed(1) : '—' }}
-                  </span>
-                </td>
-                <td>{{ c.provider_name }}</td>
-                <td>
-                  <div>#{{ c.credential_id }}</div>
-                  <div class="text-muted">{{ c.credential_label }}</div>
-                </td>
-                <td><code class="mono-sm">{{ c.model_name }}</code></td>
-                <td>T{{ c.tier }} · w{{ c.weight }}</td>
-                <td>{{ c.billing_mode || 'token' }}<span v-if="c.billing_round === 2" class="text-muted"> R2</span></td>
+              <tr
+                v-for="c in resolveCandidates"
+                :key="c.credential_id"
+                :class="['resolve-row', c.routable ? 'is-routable' : 'is-unroutable']"
+              >
                 <td>
                   <span class="badge" :class="c.routable ? 'badge-green' : 'badge-red'">
                     {{ c.routable ? t('routing.routable') : t('routing.unavailable') }}
                   </span>
+                  <div v-if="!c.routable && c.runtime_block_reason" class="text-muted block-reason">
+                    {{ c.runtime_block_reason }}
+                  </div>
+                </td>
+                <td>
+                  <div>{{ c.provider_name }}</div>
+                  <div class="text-muted">#{{ c.credential_id }} · {{ c.credential_label }}</div>
+                </td>
+                <td><code class="mono-sm">{{ c.model_name }}</code></td>
+                <td>
+                  T{{ c.tier }} · w{{ c.weight }}
+                  <span v-if="c.manual_priority != null && c.manual_priority !== 99" class="text-muted">
+                    · p{{ c.manual_priority }}
+                  </span>
+                </td>
+                <td class="row-actions">
+                  <button class="btn btn-ghost btn-sm" type="button" @click="openCandidateDetail(c)">
+                    明细
+                  </button>
+                  <button
+                    v-if="superAdmin"
+                    class="btn btn-primary btn-sm"
+                    type="button"
+                    @click="openCandidateSettings(c)"
+                  >
+                    设置
+                  </button>
                 </td>
               </tr>
             </tbody>
@@ -1224,6 +1258,18 @@ onUnmounted(() => stopPoll())
       :open="showSmartConfigDrawer"
       :task-type="selectedTask"
       @close="showSmartConfigDrawer = false"
+    />
+
+    <CandidateDetailDrawer
+      v-if="detailCandidate"
+      :candidate="detailCandidate"
+      @close="detailCandidate = null"
+    />
+    <CandidateSettingsDialog
+      v-if="settingsCandidate && superAdmin"
+      :candidate="settingsCandidate"
+      @close="settingsCandidate = null"
+      @applied="onCandidateSettingsApplied"
     />
   </div>
 </template>
@@ -1461,6 +1507,23 @@ onUnmounted(() => stopPoll())
 }
 .score-pill.good { background: rgba(63,185,80,.15); color: var(--success); }
 .score-pill.sm { font-size: 9px; padding: 0 4px; }
+
+/* 2026-07-24: routing-v2 resolve 页候选行（默认全量展示） */
+.resolve-row.is-unroutable {
+  opacity: 0.65;
+  background: var(--kx-bg-elevated);
+}
+.resolve-row .row-actions {
+  display: flex;
+  gap: 4px;
+  justify-content: flex-end;
+  white-space: nowrap;
+}
+.resolve-row .block-reason {
+  font-size: 10px;
+  margin-top: 2px;
+  font-variant-numeric: tabular-nums;
+}
 
 .model-row { cursor: pointer; }
 .model-row:hover { background: rgba(255,255,255,.03); }

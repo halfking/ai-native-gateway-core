@@ -127,6 +127,26 @@ export function resolveRouting(model: string, clientProfile?: string, persistPro
   return req<RoutingResolveResponse>('GET', `/api/routing/resolve?${qs}`)
 }
 
+// 2026-07-24: routing-v2 resolve 页管理员设置端点。
+// 仅允许改 cmb 上的 manual_priority / routing_tier / weight（影响路由排序），
+// 不绕过熔断 / 可用性 / 凭据启用等硬规则。需要 super_admin 角色。
+export interface CandidateBindingPatch {
+  manual_priority?: number
+  routing_tier?: number
+  weight?: number
+}
+export function patchCandidateBinding(
+  credentialId: number,
+  rawModel: string,
+  patch: CandidateBindingPatch,
+) {
+  return req<{ message: string; binding_id: number; actor: string }>(
+    'PATCH',
+    `/api/routing/candidate-binding/${credentialId}?raw_model=${encodeURIComponent(rawModel)}`,
+    patch,
+  )
+}
+
 export function patchApplicationProfile(applicationCode: string, default_client_profile: string | null) {
   return req<{ id: number; code: string; default_client_profile: string | null }>(
     'PATCH',

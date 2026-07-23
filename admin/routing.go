@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -416,6 +417,118 @@ func blockReason(c interface{}) string { //nolint:unused
 		}
 	}
 	return "unavailable"
+}
+
+// handleRoutingCandidateBindingUpdate updates credential_model_bindings fields
+// that influence routing order (manual_priority / routing_tier / weight).
+// It is intentionally narrow: only those three fields can be PATCHed here,
+// so admin mistakes stay inside the routing-sorted surface area and don't
+// silently flip a credential's lifecycle / availability / circuit flags.
+//
+// Path: PATCH /api/routing/candidate-binding/{credential_id}?raw_model=...
+// Body: { manual_priority?: int, routing_tier?: int, weight?: int }
+//
+// Authorization: super_admin only (registered via h.superAdmin).
+// Audit: every successful write appends a row to routing_audit_log.
+func (h *Handler) handleRoutingCandidateBindingUpdate(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPatch {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	credIDStr := strings.TrimPrefix(r.URL.Path, "/api/routing/candidate-binding/")
+	credID, err := strconv.Atoi(credIDStr)
+	if err != nil || credID <= 0 {
+		writeError(w, http.StatusBadRequest, "invalid credential_id")
+		return
+	}
+	rawModel := queryString(r, "raw_model")
+	if rawModel == "" {
+		writeError(w, http.StatusBadRequest, "raw_model query parameter required")
+		return
+	}
+
+	var req struct {
+		ManualPriority *int `json:"manual_priority"`
+		RoutingTier    *int `json:"routing_tier"`
+		Weight         *int `json:"weight"`
+	}
+	if err := readJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid body")
+		return
+	}
+	if req.ManualPriority == nil && req.RoutingTier == nil && req.Weight == nil {
+		writeError(w, http.StatusBadRequest, "at least one of manual_priority / routing_tier / weight required")
+		return
+	}
+	if req.RoutingTier != nil && (*req.RoutingTier < 0 || *req.RoutingTier > 9) {
+		writeError(w, http.StatusBadRequest, "routing_tier must be in [0,9]")
+		return
+	}
+	if req.Weight != nil && (*req.Weight < 0 || *req.Weight > 10000) {
+		writeError(w, http.StatusBadRequest, "weight must be in [0,10000]")
+		return
+	}
+	if req.ManualPriority != nil && (*req.ManualPriority < 0 || *req.ManualPriority > 99) {
+		writeError(w, http.StatusBadRequest, "manual_priority must be in [0,99]")
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	defer cancel()
+
+	// Lookup the binding_id for (credential_id, raw_model_name) — the
+	// resolve page hands callers those two keys, never the surrogate
+	// binding id. Resolve via provider_models.raw_model_name so we don't
+	// rely on the inferred provider-side match.
+	var bindingID int
+	if err := h.db.QueryRow(ctx, `
+		SELECT cmb.id
+		FROM credential_model_bindings cmb
+		JOIN provider_models pm ON pm.id = cmb.provider_model_id
+		WHERE cmb.credential_id = $1
+		  AND pm.raw_model_name = $2
+		LIMIT 1
+	`, credID, rawModel).Scan(&bindingID); err != nil {
+		writeError(w, http.StatusNotFound, "binding not found for credential/model pair")
+		return
+	}
+
+	// Static parameterised UPDATE with COALESCE so callers can PATCH a
+	// single field without wiping the others. Same defensive shape used
+	// in handleRoutingPolicy — no dynamic SQL building.
+	if _, err := h.db.Exec(ctx, `
+		UPDATE credential_model_bindings SET
+			manual_priority = COALESCE($1::int, manual_priority),
+			routing_tier    = COALESCE($2::int, routing_tier),
+			weight          = COALESCE($3::int, weight),
+			updated_at      = NOW()
+		WHERE id = $4
+	`, req.ManualPriority, req.RoutingTier, req.Weight, bindingID); err != nil {
+		writeError(w, http.StatusInternalServerError, "update failed: "+err.Error())
+		return
+	}
+
+	// Audit log: keep before/after so the routing_audit_log table holds
+	// enough context for post-mortem diffs (rule 36 alignment).
+	actor := r.Header.Get("X-Admin-User")
+	if actor == "" {
+		actor = r.RemoteAddr
+	}
+	beforeAfter := map[string]any{
+		"credential_id":   credID,
+		"binding_id":      bindingID,
+		"raw_model_name":  rawModel,
+		"manual_priority": req.ManualPriority,
+		"routing_tier":    req.RoutingTier,
+		"weight":          req.Weight,
+	}
+	h.logAudit(r, "routing_candidate_binding_update", beforeAfter)
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"message":    "updated",
+		"binding_id": bindingID,
+		"actor":      actor,
+	})
 }
 
 func (h *Handler) handleRoutingOverview(w http.ResponseWriter, r *http.Request) {
