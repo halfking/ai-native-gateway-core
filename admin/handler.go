@@ -1072,6 +1072,7 @@ type SystemMonitorBackend interface {
 	Submit(ctx context.Context, task *SystemMonitorTask) (int64, error)
 	QueueStats(ctx context.Context) (SystemMonitorQueueStats, error)
 	IsFallback() bool
+	GetMetricsCollector() interface{} // Returns *systemmonitor.MetricsCollector, but we use interface{} to avoid import cycle
 }
 
 // SystemMonitorTask 是 systemmonitor.Task 的最小投影（字段全名相同），

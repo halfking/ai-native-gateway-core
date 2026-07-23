@@ -5,7 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased] - 2026-07-23
+## [Unreleased] - 2026-07-24
+
+### Changed
+
+- **本地 DB 结构与 252 对齐（llm-gateway）** (2026-07-24): 以阿里云 252 上 `pg-252-pg17` 的 `llm_gateway` 数据库为 SSOT，把本地 Docker `llm-gateway-pg` 的结构漂移同步对齐。同步 6 个缺失表（`session_last_requests` / `system_probe_runs` 及其 default 分区 / `system_settings` / `ursm_node_snapshot_min` / `schema_migrations_backup_20260722`）、9 个缺失列（`request_logs` 8 个新列通过父表 `ADD COLUMN` 自动继承分区；`provider_models.modality` / `self_check_runs` 2 列 / `self_check_settings.monitor_concurrency` 1 列）、以及全部缺失索引（含 4 个 GIN 索引，**关键发现**：columnar 分区表不能直接建 GIN，必须挂在父表 `request_logs` 上用 `ONLY` 子句创建，与 252 上的 `pg_get_indexdef` 一致）。同步后共同表列数 4460=4460，缺失索引数=0。**纯结构同步、未触碰业务数据**。详见 [docs/changelogs/2026-07-24-db-schema-sync-from-252.md](docs/changelogs/2026-07-24-db-schema-sync-from-252.md).
+
+## [2026-07-23] - 2026-07-23
 
 ### Added
 
