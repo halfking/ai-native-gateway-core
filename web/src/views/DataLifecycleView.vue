@@ -194,7 +194,7 @@
 <script setup lang="ts">
 import { useI18n } from 'vue-i18n'
 import { localeRef } from '../i18n'
-import { ref, onMounted, nextTick, reactive } from 'vue'
+import { ref, onMounted, onUnmounted, nextTick, reactive } from 'vue'
 import { Chart, ChartConfiguration, registerables } from 'chart.js'
 import {
   dataLifecycleStats,
@@ -240,6 +240,7 @@ const storageConfigRef = ref<any>(null)
 const logMgmtRef = ref<any>(null)
 const degradationRef = ref<any>(null)
 let chartInstance: Chart | null = null
+let themeObserver: MutationObserver | null = null
 
 function formatNumber(n: number): string { return n.toLocaleString(localeRef.value) }
 function getTenantPercent(rows: number): number {
@@ -288,6 +289,13 @@ function renderChart() {
     stats.value.cold_data?.rows || 0,
     stats.value.expired_data?.rows || 0,
   ]
+  const cssRoot = getComputedStyle(document.documentElement)
+  const cssVar = (name: string, fallback: string) =>
+    (cssRoot.getPropertyValue(name).trim() || fallback)
+  const hotColor   = cssVar('--success', '#3ecf8e')
+  const warmColor  = cssVar('--warning', '#e0a53a')
+  const coldColor  = cssVar('--accent',  '#5b8cff')
+  const expiredColor = cssVar('--danger','#f07167')
   const config: ChartConfiguration = {
     type: 'doughnut',
     data: {
@@ -295,25 +303,29 @@ function renderChart() {
       datasets: [{
         data,
         backgroundColor: [
-          'rgba(52, 211, 153, 0.7)', 'rgba(251, 191, 36, 0.7)',
-          'rgba(96, 165, 250, 0.7)', 'rgba(248, 113, 113, 0.7)',
+          hotColor, warmColor, coldColor, expiredColor,
         ],
-        borderColor: [
-          'rgba(52, 211, 153, 1)', 'rgba(251, 191, 36, 1)',
-          'rgba(96, 165, 250, 1)', 'rgba(248, 113, 113, 1)',
-        ],
+        borderColor: cssVar('--card', '#1a222d'),
         borderWidth: 2,
       }],
     },
     options: {
       responsive: true, maintainAspectRatio: false,
       plugins: {
-        legend: { position: 'bottom', labels: { color: getComputedStyle(document.documentElement).getPropertyValue('--text-primary').trim() || '#152033', font: { size: 12 }, padding: 12 } },
+        legend: {
+          position: 'bottom',
+          labels: {
+            color: cssVar('--text', '#152033'),
+            font: { size: 12 },
+            padding: 12,
+          },
+        },
         tooltip: {
-          backgroundColor: getComputedStyle(document.documentElement).getPropertyValue('--bg-card').trim() || '#ffffff',
-          titleColor: getComputedStyle(document.documentElement).getPropertyValue('--text-primary').trim() || '#152033',
-          bodyColor: getComputedStyle(document.documentElement).getPropertyValue('--text-primary').trim() || '#152033',
-          borderColor: getComputedStyle(document.documentElement).getPropertyValue('--border').trim() || '#dce3ee', borderWidth: 1,
+          backgroundColor: cssVar('--card', '#ffffff'),
+          titleColor: cssVar('--text', '#152033'),
+          bodyColor: cssVar('--text', '#152033'),
+          borderColor: cssVar('--border', '#dce3ee'),
+          borderWidth: 1,
           callbacks: {
             label: (c) => {
               const v = c.parsed
@@ -369,6 +381,27 @@ onMounted(async () => {
   cleanupForm.to = to.toISOString().split('T')[0]
   // 默认只加载 stats（懒加载 storage 走 onMounted 自己的 load）
   await loadStats()
+  // 主题切换时重新渲染 chart（让 chart.js 取最新的 CSS 变量）
+  if (typeof MutationObserver !== 'undefined') {
+    themeObserver = new MutationObserver(() => {
+      if (chartInstance) {
+        chartInstance.destroy()
+        chartInstance = null
+      }
+      if (stats.value) renderChart()
+    })
+    themeObserver.observe(document.documentElement, {
+      attributes: true,
+      attributeFilter: ['data-theme'],
+    })
+  }
+})
+
+onUnmounted(() => {
+  if (themeObserver) {
+    themeObserver.disconnect()
+    themeObserver = null
+  }
 })
 </script>
 
@@ -391,7 +424,7 @@ onMounted(async () => {
   margin: 0;
   font-size: 18px;
   font-weight: 600;
-  color: #e6edf3;
+  color: var(--text);
 }
 .header-actions { display: flex; gap: 8px; }
 
@@ -400,7 +433,7 @@ onMounted(async () => {
   display: flex;
   gap: 4px;
   margin-bottom: 16px;
-  border-bottom: 1px solid #30363d;
+  border-bottom: 1px solid var(--border);
   flex-wrap: wrap;
 }
 .tab {
@@ -408,7 +441,7 @@ onMounted(async () => {
   background: transparent;
   border: none;
   border-bottom: 2px solid transparent;
-  color: #8b949e;
+  color: var(--muted);
   font-size: 14px;
   font-weight: 500;
   cursor: pointer;
@@ -416,9 +449,9 @@ onMounted(async () => {
   position: relative;
   bottom: -1px;
 }
-.tab:hover { color: #e6edf3; }
+.tab:hover { color: var(--text); }
 .tab.active {
-  color: #e6edf3;
+  color: var(--text);
   border-bottom-color: var(--accent);
 }
 .tab-badge {
@@ -442,8 +475,8 @@ onMounted(async () => {
 }
 
 .stat-card {
-  background: #161b22;
-  border: 1px solid #30363d;
+  background: var(--card);
+  border: 1px solid var(--border);
   border-radius: 10px;
   padding: 16px;
   position: relative;
@@ -453,20 +486,34 @@ onMounted(async () => {
   content: '';
   position: absolute;
   top: 0; left: 0; width: 3px; height: 100%;
-  background: #6b7280;
+  background: var(--muted);
 }
-.stat-card.segment-hot::before { background: #34d399; }
-.stat-card.segment-warm::before { background: #fbbf24; }
-.stat-card.segment-cold::before { background: #60a5fa; }
-.stat-card.segment-expired::before { background: #f87171; }
+.stat-card.segment-hot::before { background: var(--success); }
+.stat-card.segment-warm::before { background: var(--warning); }
+.stat-card.segment-cold::before { background: var(--accent); }
+.stat-card.segment-expired::before { background: var(--danger); }
 
-.stat-label { font-size: 12px; color: #8b949e; margin-bottom: 6px; }
-.stat-value { font-size: 22px; font-weight: 700; color: #e6edf3; margin-bottom: 4px; font-variant-numeric: tabular-nums; }
-.stat-meta { font-size: 11px; color: #8b949e; }
-.stat-percent { color: #6b7280; margin-left: 4px; }
+.stat-label { font-size: 12px; color: var(--muted); margin-bottom: 6px; }
+.stat-value { font-size: 22px; font-weight: 700; color: var(--text); margin-bottom: 4px; font-variant-numeric: tabular-nums; }
+.stat-meta { font-size: 11px; color: var(--muted); }
+.stat-percent { color: var(--muted); margin-left: 4px; }
 
-.card { background: #161b22; border: 1px solid #30363d; border-radius: 10px; padding: 16px; margin-bottom: 16px; }
-.card-title { margin: 0 0 12px; font-size: 14px; font-weight: 600; color: #e6edf3; display: flex; align-items: center; gap: 6px; }
+.card {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 16px;
+  margin-bottom: 16px;
+}
+.card-title {
+  margin: 0 0 12px;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
 
 .charts-row { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 16px; }
 .chart-card { margin-bottom: 0; }
@@ -474,19 +521,46 @@ onMounted(async () => {
 
 .trend-table-wrap { overflow-x: auto; }
 .data-table { width: 100%; border-collapse: collapse; font-size: 13px; }
-.data-table th { text-align: left; padding: 8px 10px; color: #8b949e; font-weight: 500; border-bottom: 1px solid #30363d; white-space: nowrap; }
-.data-table td { padding: 8px 10px; border-bottom: 1px solid #30363d; color: #e6edf3; font-variant-numeric: tabular-nums; }
+.data-table th {
+  text-align: left;
+  padding: 8px 10px;
+  color: var(--muted);
+  font-weight: 500;
+  border-bottom: 1px solid var(--border);
+  white-space: nowrap;
+}
+.data-table td {
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--border);
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+}
 .data-table tr:last-child td { border-bottom: none; }
 
-.rate-badge { display: inline-block; padding: 1px 8px; border-radius: 4px; background: color-mix(in srgb, var(--accent) 15%, transparent); color: var(--accent-h); font-weight: 500; }
-.rate-badge.high { background: rgba(52, 211, 153, 0.15); color: #34d399; }
+.rate-badge {
+  display: inline-block;
+  padding: 1px 8px;
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--accent) 15%, transparent);
+  color: var(--accent-h);
+  font-weight: 500;
+}
+.rate-badge.high { background: var(--success-soft); color: var(--success); }
 
 .cleanup-form { display: flex; flex-direction: column; gap: 12px; }
 .form-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .form-row-dates { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
 .date-group { display: flex; align-items: center; gap: 8px; }
-.form-label { font-size: 13px; color: #8b949e; white-space: nowrap; min-width: 70px; }
-.form-select, .form-input { flex: 1; padding: 6px 10px; background: #0f1117; border: 1px solid #30363d; border-radius: 6px; color: #e6edf3; font-size: 13px; }
+.form-label { font-size: 13px; color: var(--muted); white-space: nowrap; min-width: 70px; }
+.form-select, .form-input {
+  flex: 1;
+  padding: 6px 10px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text);
+  font-size: 13px;
+}
 .form-select:focus, .form-input:focus { outline: none; border-color: var(--accent); }
 .form-actions { display: flex; gap: 8px; margin-top: 4px; }
 
@@ -494,25 +568,72 @@ onMounted(async () => {
 .btn-sm { padding: 4px 10px; font-size: 12px; }
 .btn-primary { background: var(--accent); color: #fff; }
 .btn-primary:hover:not(:disabled) { background: var(--accent-h); }
-.btn-ghost { background: transparent; border-color: #30363d; color: #e6edf3; }
-.btn-ghost:hover:not(:disabled) { background: #21262d; border-color: #8b949e; }
+.btn-ghost { background: transparent; border-color: var(--border); color: var(--text); }
+.btn-ghost:hover:not(:disabled) { background: var(--bg-hover); border-color: var(--accent); color: var(--accent-h); }
 .btn:disabled { opacity: 0.5; cursor: not-allowed; }
 
-.preview-result { margin-top: 12px; padding: 12px; background: color-mix(in srgb, var(--accent) 8%, transparent); border: 1px solid color-mix(in srgb, var(--accent) 25%, transparent); border-radius: 6px; }
+.preview-result {
+  margin-top: 12px;
+  padding: 12px;
+  background: color-mix(in srgb, var(--accent) 8%, transparent);
+  border: 1px solid color-mix(in srgb, var(--accent) 25%, transparent);
+  border-radius: 6px;
+}
 .preview-item { display: flex; justify-content: space-between; margin-bottom: 6px; font-size: 13px; }
 .preview-item:last-child { margin-bottom: 0; }
-.preview-label { color: #8b949e; }
-.preview-value { color: #e6edf3; font-weight: 500; font-variant-numeric: tabular-nums; }
-.preview-value.highlight { color: #fbbf24; font-weight: 600; }
-.preview-warning { margin-top: 8px; padding: 6px 10px; background: rgba(251, 191, 36, 0.1); border-left: 2px solid #fbbf24; color: #fbbf24; font-size: 12px; border-radius: 4px; }
+.preview-label { color: var(--muted); }
+.preview-value { color: var(--text); font-weight: 500; font-variant-numeric: tabular-nums; }
+.preview-value.highlight { color: var(--warning); font-weight: 600; }
+.preview-warning {
+  margin-top: 8px;
+  padding: 6px 10px;
+  background: var(--warning-soft);
+  border-left: 2px solid var(--warning);
+  color: var(--warning);
+  font-size: 12px;
+  border-radius: 4px;
+}
 
 .tenant-table-wrap { overflow-x: auto; }
-.tenant-code { font-family: ui-monospace, SFMono-Regular, monospace; font-size: 12px; padding: 2px 6px; background: #0f1117; border-radius: 4px; color: var(--accent-h); }
-.tenant-bar-track { position: relative; width: 100%; height: 18px; background: #0f1117; border-radius: 4px; overflow: hidden; }
-.tenant-bar-fill { position: absolute; top: 0; left: 0; height: 100%; background: linear-gradient(90deg, color-mix(in srgb, var(--accent) 50%, transparent), color-mix(in srgb, var(--accent) 80%, transparent)); transition: width 0.3s; }
-.tenant-bar-text { position: absolute; top: 0; left: 8px; line-height: 18px; font-size: 11px; color: #e6edf3; font-weight: 500; font-variant-numeric: tabular-nums; }
+.tenant-code {
+  font-family: ui-monospace, SFMono-Regular, monospace;
+  font-size: 12px;
+  padding: 2px 6px;
+  background: var(--bg-subtle);
+  border-radius: 4px;
+  color: var(--accent-h);
+}
+.tenant-bar-track {
+  position: relative;
+  width: 100%;
+  height: 18px;
+  background: var(--bg-subtle);
+  border-radius: 4px;
+  overflow: hidden;
+}
+.tenant-bar-fill {
+  position: absolute;
+  top: 0;
+  left: 0;
+  height: 100%;
+  background: linear-gradient(
+    90deg,
+    color-mix(in srgb, var(--accent) 50%, transparent),
+    color-mix(in srgb, var(--accent) 80%, transparent)
+  );
+  transition: width 0.3s;
+}
+.tenant-bar-text {
+  position: absolute;
+  top: 0; left: 8px;
+  line-height: 18px;
+  font-size: 11px;
+  color: var(--text);
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+}
 
-.empty-hint { text-align: center; padding: 32px; color: #8b949e; font-size: 13px; }
+.empty-hint { text-align: center; padding: 32px; color: var(--muted); font-size: 13px; }
 
 @media (max-width: 800px) {
   .stats-row { grid-template-columns: repeat(2, 1fr); }

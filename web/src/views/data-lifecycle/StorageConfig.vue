@@ -52,9 +52,9 @@ const migrationPct = computed(() => {
 
 const diskUsageColor = computed(() => {
   const pct = config.value?.current_disk_usage || 0
-  if (pct >= 90) return '#f85149'
-  if (pct >= 80) return '#d29922'
-  return '#3fb950'
+  if (pct >= 90) return 'var(--danger)'
+  if (pct >= 80) return 'var(--warning)'
+  return 'var(--success)'
 })
 
 // 目录是否相对当前生效目录有变更（决定 save 是否弹迁移确认框）
@@ -387,12 +387,12 @@ function fmtNum(n?: number) {
 .header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; }
 .header h2 { margin: 0; font-size: 18px; color: var(--text); }
 .btn-refresh { background: var(--card); border: 1px solid var(--border); border-radius: var(--radius, 8px); padding: 4px 12px; cursor: pointer; color: var(--text); transition: background .15s, border-color .15s; }
-.btn-refresh:hover:not(:disabled) { background: #21262d; border-color: var(--muted); }
+.btn-refresh:hover:not(:disabled) { background: var(--bg-hover); border-color: var(--accent); color: var(--accent-h); }
 .btn-refresh:disabled { opacity: .4; cursor: not-allowed; }
 .card { background: var(--card); border: 1px solid var(--border); border-radius: var(--radius, 8px); padding: 16px 20px; margin-bottom: 16px; }
 .card-title { margin: 0 0 12px; font-size: 15px; color: var(--text); border-bottom: 1px solid var(--border); padding-bottom: 8px; }
 .usage-row { display: flex; align-items: center; gap: 12px; margin-bottom: 16px; }
-.usage-bar-track { flex: 1; height: 20px; background: #0f1117; border-radius: 10px; overflow: hidden; }
+.usage-bar-track { flex: 1; height: 20px; background: var(--bg-subtle); border-radius: 10px; overflow: hidden; }
 .usage-bar-fill { height: 100%; border-radius: 10px; transition: width 0.3s; }
 .usage-pct { font-weight: 600; min-width: 60px; text-align: right; color: var(--text); }
 .stats-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 12px; }
@@ -402,9 +402,9 @@ function fmtNum(n?: number) {
 .mono { font-family: 'SF Mono', Consolas, monospace; font-size: 13px; }
 .form-group { margin-bottom: 14px; }
 .form-label { display: block; font-size: 13px; color: var(--muted); margin-bottom: 6px; font-weight: 500; }
-.form-input { width: 100%; padding: 6px 10px; background: #0f1117; border: 1px solid var(--border); border-radius: 4px; font-size: 14px; box-sizing: border-box; color: var(--text); transition: border-color .15s; }
+.form-input { width: 100%; padding: 6px 10px; background: var(--bg); border: 1px solid var(--border); border-radius: 4px; font-size: 14px; box-sizing: border-box; color: var(--text); transition: border-color .15s; }
 .form-input:focus { outline: none; border-color: var(--accent); }
-.readonly-value { background: #0f1117; padding: 6px 10px; border-radius: 4px; font-size: 13px; word-break: break-all; border: 1px solid var(--border); color: var(--text); }
+.readonly-value { background: var(--bg-subtle); padding: 6px 10px; border-radius: 4px; font-size: 13px; word-break: break-all; border: 1px solid var(--border); color: var(--text); }
 .meta-hint { font-size: 12px; color: var(--muted); margin-top: 4px; }
 .meta-hint.danger { color: var(--danger); }
 .form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
@@ -416,9 +416,9 @@ function fmtNum(n?: number) {
 .btn-primary:hover:not(:disabled) { opacity: .85; }
 .btn-primary:disabled { opacity: .4; cursor: not-allowed; }
 .test-result { padding: 8px 12px; border-radius: 4px; font-size: 13px; margin-top: 8px; }
-.test-result.ok { background: rgba(63,185,80,.1); color: var(--success); border: 1px solid rgba(63,185,80,.3); }
-.test-result.fail { background: rgba(248,81,73,.1); color: var(--danger); border: 1px solid rgba(248,81,73,.3); }
-.switch-group { padding: 12px; background: #0f1117; border: 1px solid var(--border); border-radius: 4px; }
+.test-result.ok { background: var(--success-soft); color: var(--success); border: 1px solid color-mix(in srgb, var(--success) 30%, transparent); }
+.test-result.fail { background: var(--danger-soft); color: var(--danger); border: 1px solid color-mix(in srgb, var(--danger) 30%, transparent); }
+.switch-group { padding: 12px; background: var(--bg-subtle); border: 1px solid var(--border); border-radius: 4px; }
 .switch-label { display: flex; align-items: center; gap: 8px; cursor: pointer; font-size: 14px; color: var(--text); }
 .switch-label input { width: 16px; height: 16px; accent-color: var(--accent); }
 .form-actions { margin-top: 16px; }
