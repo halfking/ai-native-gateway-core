@@ -798,9 +798,11 @@ onMounted(load)
 .modal-actions { display: flex; gap: 8px; margin-top: 18px; padding-top: 12px; border-top: 1px solid var(--border); }
 .bulk-bar {
   display: flex; align-items: center; gap: 10px;
-  padding: 10px 14px; background: #2a2a3e; border-radius: 8px;
+  padding: 10px 14px; background: var(--bg-subtle); border-radius: 8px;
   margin-top: 12px; font-size: 13px;
+  color: var(--text);
 }
-.batch-msg { font-size: 12px; color: #a6e3a1; }
-tr.selected { background: #3a3a5e; }
+.batch-msg { font-size: 12px; color: var(--success); }
+tr.selected { background: var(--bg-secondary); }
+.modal { background: var(--card); color: var(--text); border: 1px solid var(--border); border-radius: var(--radius); }
 </style>
