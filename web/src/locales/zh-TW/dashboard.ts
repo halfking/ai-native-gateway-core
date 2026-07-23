@@ -203,59 +203,57 @@ tabs: {
     unsupported: "此瀏覽器不支援即時串流",
     empty: "暫無即時請求",
 
-    empty等待: '等待 for live request stream data…',
-    groupByVendor: '按原廠', groupByProvider: 'By provider', groupByModel: 'By model',
+    emptyWaiting: '等待即時請求流資料…',
+    groupByVendor: '按原廠', groupByProvider: '按供應商', groupByModel: '按模型',
     modeSmall: '小',
     modeLarge: '大',
     modeSmallTitle: '小模式：直條顯示，可容納更多請求（預設）',
     modeLargeTitle: '大模式：卡片顯示，包含更多請求詳情',
-    probeAll: 'All', probeOnly: 'Probes only',
-    probeAllTitle: 'Show all requests (default)', probeOnlyTitle: 'Show probe requests only',
-    cacheWindow: 'Cache / window', connectionDetailTitle: 'Click for connection details',
-    dimensionVendor: 'Vendor', dimensionProvider: 'Provider', dimensionModel: 'Model',
-    statusOpen: 'Connected', statusConnecting: 'Connecting', statusReconnecting: 'Reconnecting',
-    statusUnsupported: 'Unsupported', statusClosed: 'Disconnected',
-    sseDetailTitle: 'SSE connection details', sseStatusLabel: 'Status', sseUrlLabel: 'SSE URL',
-    editUrl: 'Edit', editUrlPlaceholder: 'Enter SSE URL', save: 'Save', resetDefault: 'Default',
-    cancel: 'Cancel', testConnection: 'Test connection', close: 'Close',
-    sseTestOk: 'SSE connection OK!\nStatus: connected\nURL: {url}',
-    sseTestFail: 'SSE not connected\nStatus: {status}\nURL: {url}',
-    redisWarning: 'Redis unavailable: {error}. Live data falls back to DB queries.',
-    redisFallbackError: 'Cache service connection failed',
+    probeAll: '全部', probeOnly: '僅探測',
+    probeAllTitle: '顯示所有請求（預設）', probeOnlyTitle: '僅顯示探測請求',
+    cacheWindow: '快取 / 視窗', connectionDetailTitle: '點擊查看連線詳情',
+    dimensionVendor: '原廠', dimensionProvider: '供應商', dimensionModel: '模型',
+    statusOpen: '已連線', statusConnecting: '連線中', statusReconnecting: '重新連線中',
+    statusUnsupported: '不支援', statusClosed: '未連線',
+    sseDetailTitle: 'SSE 連線詳情', sseStatusLabel: '連線狀態', sseUrlLabel: 'SSE 位址',
+    editUrl: '編輯', editUrlPlaceholder: '輸入 SSE 位址', save: '儲存', resetDefault: '預設',
+    cancel: '取消', testConnection: '測試連線', close: '關閉',
+    sseTestOk: 'SSE 連線正常！\n狀態: 已連線\n位址: {url}',
+    sseTestFail: 'SSE 未連線\n狀態: {status}\n位址: {url}',
+    redisWarning: 'Redis 不可用：{error}。即時資料降級為資料庫查詢。',
+    redisFallbackError: '快取服務連線失敗',
 
-    emptyWaiting: '等待实时请求流数据…',
+    probeDirect: '主動探測（直連上游）',
 
-    probeDirect: '主动探测 (直连上游)',
+    probeGateway: '主動探測（閘道路徑）',
 
-    probeGateway: '主动探测 (网关路径)',
+    probeScheduled: '週期探測（排程器）',
 
-    probeScheduled: '周期探测 (scheduler)',
+    probeGeneric: '探測請求',
 
-    probeGeneric: '探测请求',
+    probeOriginLabel: '來源: {origin}',
 
-    probeOriginLabel: '来源: {origin}',
+    probeAttempt: '輪次: 第 {n} 輪',
 
-    probeAttempt: '轮次: 第 {n} 轮',
+    originGateway: '閘道路徑',
 
-    originGateway: '网关路径',
+    originScheduled: '排程探測',
 
-    originScheduled: '定时探测',
+    originDirect: '直連上游',
 
-    originDirect: '直连上游',
+    idleHeartbeat: '心跳佔位',
 
-    idleHeartbeat: '心跳占位',
+    tileIdle: '閒置',
 
-    tileIdle: '空闲',
+    idleUnderOneMin: '閒置 < 1 分鐘',
 
-    idleUnderOneMin: '空闲 < 1 分钟',
+    idleMinutes: '閒置 {n} 分鐘',
 
-    idleMinutes: '空闲 {n} 分钟',
+    idleHours: '閒置 {h} 小時',
 
-    idleHours: '空闲 {h} 小时',
+    idleHoursMinutes: '閒置 {h} 小時 {m} 分鐘',
 
-    idleHoursMinutes: '空闲 {h} 小时 {m} 分钟',
-
-    idleReasonNoTraffic: '无流量（5 分钟无请求）',
+    idleReasonNoTraffic: '無流量（5 分鐘無請求）',
   },
   charts: {
     gradeA: "優秀",

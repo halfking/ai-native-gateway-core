@@ -203,57 +203,57 @@ tabs: {
     unsupported: "このブラウザはリアルタイムストリームに対応していません",
     empty: "リアルタイムリクエストがありません",
 
-    emptyWaiting: '待機中 live request stream data…',
-    groupByVendor: 'ベンダー別', groupByProvider: 'By provider', groupByModel: 'By model',
+    emptyWaiting: 'リアルタイムリクエストストリームデータを待機中…',
+    groupByVendor: 'ベンダー別', groupByProvider: 'プロバイダー別', groupByModel: 'モデル別',
     modeSmall: '小',
     modeLarge: '大',
     modeSmallTitle: '小モード：縦棒表示、より多くのリクエストを収容（デフォルト）',
     modeLargeTitle: '大モード：カード表示、より詳細なリクエスト情報',
-    probeAll: 'All', probeOnly: 'Probes only',
-    probeAllTitle: 'Show all requests (default)', probeOnlyTitle: 'Show probe requests only',
-    cacheWindow: 'Cache / window', connectionDetailTitle: 'Click for connection details',
-    dimensionVendor: 'Vendor', dimensionProvider: 'Provider', dimensionModel: 'Model',
-    statusOpen: 'Connected', statusConnecting: 'Connecting', statusReconnecting: 'Reconnecting',
-    statusUnsupported: 'Unsupported', statusClosed: 'Disconnected',
-    sseDetailTitle: 'SSE connection details', sseStatusLabel: 'Status', sseUrlLabel: 'SSE URL',
-    editUrl: 'Edit', editUrlPlaceholder: 'Enter SSE URL', save: 'Save', resetDefault: 'Default',
-    cancel: 'Cancel', testConnection: 'Test connection', close: 'Close',
-    sseTestOk: 'SSE connection OK!\nStatus: connected\nURL: {url}',
-    sseTestFail: 'SSE not connected\nStatus: {status}\nURL: {url}',
-    redisWarning: 'Redis unavailable: {error}. Live data falls back to DB queries.',
-    redisFallbackError: 'Cache service connection failed',
+    probeAll: 'すべて', probeOnly: 'プローブのみ',
+    probeAllTitle: 'すべてのリクエストを表示（デフォルト）', probeOnlyTitle: 'プローブリクエストのみ表示',
+    cacheWindow: 'キャッシュ / ウィンドウ', connectionDetailTitle: 'クリックで接続詳細を表示',
+    dimensionVendor: 'ベンダー', dimensionProvider: 'プロバイダー', dimensionModel: 'モデル',
+    statusOpen: '接続済み', statusConnecting: '接続中', statusReconnecting: '再接続中',
+    statusUnsupported: '未対応', statusClosed: '未接続',
+    sseDetailTitle: 'SSE 接続詳細', sseStatusLabel: '接続状態', sseUrlLabel: 'SSE URL',
+    editUrl: '編集', editUrlPlaceholder: 'SSE URL を入力', save: '保存', resetDefault: 'デフォルト',
+    cancel: 'キャンセル', testConnection: '接続テスト', close: '閉じる',
+    sseTestOk: 'SSE 接続 OK！\n状態: 接続済み\nURL: {url}',
+    sseTestFail: 'SSE 未接続\n状態: {status}\nURL: {url}',
+    redisWarning: 'Redis 利用不可: {error}。ライブデータは DB クエリにフォールバックします。',
+    redisFallbackError: 'キャッシュサービス接続失敗',
 
-    probeDirect: '主动探测 (直连上游)',
+    probeDirect: 'アクティブプローブ（アップストリーム直接）',
 
-    probeGateway: '主动探测 (网关路径)',
+    probeGateway: 'アクティブプローブ（ゲートウェイ経由）',
 
-    probeScheduled: '周期探测 (scheduler)',
+    probeScheduled: 'スケジュールプローブ（スケジューラ）',
 
-    probeGeneric: '探测请求',
+    probeGeneric: 'プローブリクエスト',
 
-    probeOriginLabel: '来源: {origin}',
+    probeOriginLabel: 'ソース: {origin}',
 
-    probeAttempt: '轮次: 第 {n} 轮',
+    probeAttempt: '試行: 第{n}回',
 
-    originGateway: '网关路径',
+    originGateway: 'ゲートウェイパス',
 
-    originScheduled: '定时探测',
+    originScheduled: 'スケジュールプローブ',
 
-    originDirect: '直连上游',
+    originDirect: 'アップストリーム直接',
 
-    idleHeartbeat: '心跳占位',
+    idleHeartbeat: 'ハートビートプレースホルダ',
 
-    tileIdle: '空闲',
+    tileIdle: 'アイドル',
 
-    idleUnderOneMin: '空闲 < 1 分钟',
+    idleUnderOneMin: 'アイドル < 1分',
 
-    idleMinutes: '空闲 {n} 分钟',
+    idleMinutes: 'アイドル {n}分',
 
-    idleHours: '空闲 {h} 小时',
+    idleHours: 'アイドル {h}時間',
 
-    idleHoursMinutes: '空闲 {h} 小时 {m} 分钟',
+    idleHoursMinutes: 'アイドル {h}時間{m}分',
 
-    idleReasonNoTraffic: '无流量（5 分钟无请求）',
+    idleReasonNoTraffic: 'トラフィックなし（5分間アイドル）',
   },
   charts: {
     gradeA: "Grade A",
