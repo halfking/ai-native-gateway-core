@@ -7,7 +7,7 @@
 
 import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { useLiveStream } from '../composables/useLiveStream'
+import { useLiveStream, type LiveStatus, type LiveModelCategory } from '../composables/useLiveStream'
 import { useSwimLane } from '../composables/useSwimLane'
 import { isSuperAdmin, authBearer, getCurrentTenantId } from '../store'
 import { redisHealthyRef, redisErrorRef } from '../composables/liveStreamStore'
@@ -46,6 +46,12 @@ function handleRequestFromDrawer(requestId: string) {
 
 // 2026-07-13: 探测过滤器状态（全部 / 仅探测）
 const probeFilter = ref<'all' | 'probe_only'>('all')
+
+// 2026-07-24: 多维过滤状态
+const statusFilter = ref<Set<LiveStatus>>(new Set())
+const modelFilter = ref<Set<string>>(new Set())
+const providerFilter = ref<Set<string>>(new Set())
+const vendorFilter = ref<Set<LiveModelCategory>>(new Set())
 
 // 解构出 reconnect —— 保存新 URL 后立即用新地址重连，不再只是 localStorage 默默记住
 const {
@@ -292,12 +298,39 @@ function handleToggleLegend(key: string) {
 }
 
 // 2026-07-13: 过滤泳道（"仅探测"过滤器）
+// 2026-07-24: 扩展为多维过滤（请求类型、状态、模型、供应商、原厂）
 const filteredLanes = computed(() => {
-  if (probeFilter.value === 'all') return lanes.value
   return lanes.value
     .map(lane => ({
       ...lane,
-      requests: lane.requests.filter(r => r.is_probe === true),
+      requests: lane.requests.filter(r => {
+        // 请求类型过滤
+        if (probeFilter.value === 'probe_only' && r.is_probe !== true) {
+          return false
+        }
+        
+        // 状态过滤
+        if (statusFilter.value.size > 0 && r.status && !statusFilter.value.has(r.status as LiveStatus)) {
+          return false
+        }
+        
+        // 模型过滤
+        if (modelFilter.value.size > 0 && r.model && !modelFilter.value.has(r.model)) {
+          return false
+        }
+        
+        // 供应商过滤（使用 provider 字段）
+        if (providerFilter.value.size > 0 && r.provider && !providerFilter.value.has(r.provider)) {
+          return false
+        }
+        
+        // 原厂过滤（使用 vendor 字段）
+        if (vendorFilter.value.size > 0 && r.vendor && !vendorFilter.value.has(r.vendor as LiveModelCategory)) {
+          return false
+        }
+        
+        return true
+      }),
     }))
     .filter(lane => lane.requests.length > 0)
 })
@@ -307,6 +340,107 @@ const filteredLanes = computed(() => {
 // 2026-07-13 修正：只有 filteredLanes 也为空时才显示空态（避免有泳道显示时仍显示"暂无请求数据"）
 const isColdStart = computed(() => {
   return lanes.value.length === 0 && filteredLanes.value.length === 0
+})
+
+// 2026-07-24: 从当前所有请求中提取可选项（用于下拉框）
+const availableStatuses = computed(() => {
+  const statuses = new Set<LiveStatus>()
+  for (const lane of lanes.value) {
+    for (const req of lane.requests) {
+      if (req.status) statuses.add(req.status as LiveStatus)
+    }
+  }
+  return Array.from(statuses).sort()
+})
+
+const availableModels = computed(() => {
+  const models = new Set<string>()
+  for (const lane of lanes.value) {
+    for (const req of lane.requests) {
+      if (req.model) models.add(req.model)
+    }
+  }
+  return Array.from(models).sort()
+})
+
+const availableProviders = computed(() => {
+  const providers = new Set<string>()
+  for (const lane of lanes.value) {
+    for (const req of lane.requests) {
+      if (req.provider) providers.add(req.provider)
+    }
+  }
+  return Array.from(providers).sort()
+})
+
+const availableVendors = computed(() => {
+  const vendors = new Set<LiveModelCategory>()
+  for (const lane of lanes.value) {
+    for (const req of lane.requests) {
+      if (req.vendor) vendors.add(req.vendor as LiveModelCategory)
+    }
+  }
+  return Array.from(vendors).sort()
+})
+
+// 2026-07-24: 切换过滤器的辅助函数
+function toggleStatusFilter(status: LiveStatus) {
+  const next = new Set(statusFilter.value)
+  if (next.has(status)) {
+    next.delete(status)
+  } else {
+    next.add(status)
+  }
+  statusFilter.value = next
+}
+
+function toggleModelFilter(model: string) {
+  const next = new Set(modelFilter.value)
+  if (next.has(model)) {
+    next.delete(model)
+  } else {
+    next.add(model)
+  }
+  modelFilter.value = next
+}
+
+function toggleProviderFilter(provider: string) {
+  const next = new Set(providerFilter.value)
+  if (next.has(provider)) {
+    next.delete(provider)
+  } else {
+    next.add(provider)
+  }
+  providerFilter.value = next
+}
+
+function toggleVendorFilter(vendor: LiveModelCategory) {
+  const next = new Set(vendorFilter.value)
+  if (next.has(vendor)) {
+    next.delete(vendor)
+  } else {
+    next.add(vendor)
+  }
+  vendorFilter.value = next
+}
+
+function clearAllFilters() {
+  probeFilter.value = 'all'
+  statusFilter.value = new Set()
+  modelFilter.value = new Set()
+  providerFilter.value = new Set()
+  vendorFilter.value = new Set()
+}
+
+// 计算激活的过滤器数量（用于显示徽章）
+const activeFilterCount = computed(() => {
+  let count = 0
+  if (probeFilter.value === 'probe_only') count++
+  count += statusFilter.value.size
+  count += modelFilter.value.size
+  count += providerFilter.value.size
+  count += vendorFilter.value.size
+  return count
 })
 </script>
 
@@ -385,6 +519,92 @@ const isColdStart = computed(() => {
             :title="t('dashboard.liveStream.probeOnlyTitle')"
           >
             {{ t('dashboard.liveStream.probeOnly') }}
+          </button>
+        </div>
+
+        <!-- 2026-07-24: 多维过滤器 -->
+        <div class="filter-group">
+          <!-- 状态过滤 -->
+          <div class="filter-dropdown">
+            <button type="button" class="filter-btn" :class="{ 'filter-btn--active': statusFilter.size > 0 }">
+              {{ t('dashboard.liveStream.filterStatus') }}
+              <span v-if="statusFilter.size > 0" class="filter-badge">{{ statusFilter.size }}</span>
+            </button>
+            <div class="filter-menu">
+              <label v-for="status in availableStatuses" :key="status" class="filter-option">
+                <input
+                  type="checkbox"
+                  :checked="statusFilter.has(status)"
+                  @change="toggleStatusFilter(status)"
+                />
+                <span>{{ t(`dashboard.liveStream.status.${status}`) }}</span>
+              </label>
+            </div>
+          </div>
+
+          <!-- 模型过滤 -->
+          <div class="filter-dropdown">
+            <button type="button" class="filter-btn" :class="{ 'filter-btn--active': modelFilter.size > 0 }">
+              {{ t('dashboard.liveStream.filterModel') }}
+              <span v-if="modelFilter.size > 0" class="filter-badge">{{ modelFilter.size }}</span>
+            </button>
+            <div class="filter-menu">
+              <label v-for="model in availableModels" :key="model" class="filter-option">
+                <input
+                  type="checkbox"
+                  :checked="modelFilter.has(model)"
+                  @change="toggleModelFilter(model)"
+                />
+                <span>{{ model }}</span>
+              </label>
+            </div>
+          </div>
+
+          <!-- 供应商过滤 -->
+          <div class="filter-dropdown">
+            <button type="button" class="filter-btn" :class="{ 'filter-btn--active': providerFilter.size > 0 }">
+              {{ t('dashboard.liveStream.filterProvider') }}
+              <span v-if="providerFilter.size > 0" class="filter-badge">{{ providerFilter.size }}</span>
+            </button>
+            <div class="filter-menu">
+              <label v-for="provider in availableProviders" :key="provider" class="filter-option">
+                <input
+                  type="checkbox"
+                  :checked="providerFilter.has(provider)"
+                  @change="toggleProviderFilter(provider)"
+                />
+                <span>{{ provider }}</span>
+              </label>
+            </div>
+          </div>
+
+          <!-- 原厂过滤 -->
+          <div class="filter-dropdown">
+            <button type="button" class="filter-btn" :class="{ 'filter-btn--active': vendorFilter.size > 0 }">
+              {{ t('dashboard.liveStream.filterVendor') }}
+              <span v-if="vendorFilter.size > 0" class="filter-badge">{{ vendorFilter.size }}</span>
+            </button>
+            <div class="filter-menu">
+              <label v-for="vendor in availableVendors" :key="vendor" class="filter-option">
+                <input
+                  type="checkbox"
+                  :checked="vendorFilter.has(vendor)"
+                  @change="toggleVendorFilter(vendor)"
+                />
+                <span>{{ t(`dashboard.liveStream.vendor.${vendor}`) }}</span>
+              </label>
+            </div>
+          </div>
+
+          <!-- 清除所有过滤器 -->
+          <button
+            v-if="activeFilterCount > 0"
+            type="button"
+            class="control-btn clear-filters-btn"
+            @click="clearAllFilters"
+            :title="t('dashboard.liveStream.clearFilters')"
+          >
+            {{ t('dashboard.liveStream.clearFilters') }}
           </button>
         </div>
 
@@ -591,6 +811,116 @@ const isColdStart = computed(() => {
   background: rgba(64, 158, 255, 0.18);
   border-color: #1890ff;
   color: #1890ff;
+}
+
+/* 2026-07-24: 多维过滤器样式 */
+.filter-group {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.filter-dropdown {
+  position: relative;
+}
+
+.filter-btn {
+  font-size: 12px;
+  padding: 5px 12px;
+  border-radius: 4px;
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--text);
+  cursor: pointer;
+  transition: all 0.15s ease;
+  white-space: nowrap;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.filter-btn:hover {
+  background: var(--bg-subtle);
+  border-color: var(--accent);
+}
+
+.filter-btn--active {
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.filter-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
+  border-radius: 9px;
+  background: var(--accent);
+  color: var(--bg);
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.filter-menu {
+  position: absolute;
+  top: 100%;
+  left: 0;
+  margin-top: 4px;
+  min-width: 160px;
+  max-height: 300px;
+  overflow-y: auto;
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+  z-index: 100;
+  display: none;
+  padding: 4px;
+}
+
+.filter-dropdown:hover .filter-menu {
+  display: block;
+}
+
+.filter-option {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  cursor: pointer;
+  border-radius: 4px;
+  transition: background 0.15s ease;
+  font-size: 13px;
+  user-select: none;
+}
+
+.filter-option:hover {
+  background: var(--bg-subtle);
+}
+
+.filter-option input[type="checkbox"] {
+  cursor: pointer;
+}
+
+.clear-filters-btn {
+  font-size: 12px;
+  padding: 5px 12px;
+  border-radius: 4px;
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--warning);
+  cursor: pointer;
+  transition: all 0.15s ease;
+  white-space: nowrap;
+}
+
+.clear-filters-btn:hover {
+  background: color-mix(in srgb, var(--warning) 12%, transparent);
+  border-color: var(--warning);
 }
 
 .connection-status {

@@ -250,6 +250,25 @@ export default {
     originGateway: 'Gateway path',
     originScheduled: 'Scheduled probe',
     originDirect: 'Direct upstream',
+    // 2026-07-24: Multi-dimension filters
+    filterStatus: 'Status',
+    filterModel: 'Model',
+    filterProvider: 'Provider',
+    filterVendor: 'Vendor',
+    clearFilters: 'Clear filters',
+    status: {
+      in_progress: 'In Progress',
+      success: 'Success',
+      failure: 'Failure',
+      rate_limited: 'Rate Limited',
+    },
+    vendor: {
+      openai: 'OpenAI',
+      anthropic: 'Anthropic',
+      domestic: 'Domestic',
+      oss: 'OSS',
+      other: 'Other',
+    },
     idleHeartbeat: 'Heartbeat placeholder',
     tileIdle: 'Idle',
     // 2026-07-14: idle_marker elapsed-minutes labels
