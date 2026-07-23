@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { inject, computed, type Ref } from 'vue'
+import { useRouter } from 'vue-router'
 import BoardSummaryRow from './BoardSummaryRow.vue'
 import BoardStatusCards from './BoardStatusCards.vue'
 import BoardPieGrid from './BoardPieGrid.vue'
@@ -23,8 +24,9 @@ if (!boardState) {
 }
 
 const dashboardTab = inject<{
-  switchTab: (tab: 'board' | 'stream' | 'stats' | 'selfcheck') => void
+  switchTab: (tab: 'board' | 'stream' | 'stats') => void
 }>('dashboardTab')!
+const router = useRouter()
 
 const operational = computed(() => boardState.operational?.value ?? null)
 const board = computed(() => boardState.board.value)
@@ -42,7 +44,7 @@ async function onTimeRangeChange(next: BoardTimeRange) {
 
 <template>
   <div class="board-panel">
-    <BoardStatusCards :operational="operational" @open-selfcheck="dashboardTab.switchTab('selfcheck')" />
+    <BoardStatusCards :operational="operational" @open-selfcheck="router.push('/system-monitor')" />
     <BoardSummaryRow :summary="board?.summary" :loading="loading" />
     <BoardUsageTrendSection
       :board="board"
