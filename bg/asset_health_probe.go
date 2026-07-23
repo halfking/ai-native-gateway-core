@@ -4,6 +4,13 @@
 // 6h) as HealthDegraded, and assets that have disappeared from the source
 // tables as HealthDown. The UI's stats cards surface the resulting
 // health_state counts.
+//
+// 2026-07-23 (Phase 2.3 收敛进度): 本探针只读 assets 表，无需走 system-monitor
+// 队列（无节点探测语义）。仅在 KEEP/FUTURE 审计列表里登记，不在切流范围内。
+//
+// FUTURE: 当系统监测 v3 引入资产级别监控（asset-level health）后，此 worker
+// 应迁移为 system-monitor 的一个新 source 字段，原代码保留做 cross-check。
+// [@platform] [trigger 2027-Q2]
 package bg
 
 import (

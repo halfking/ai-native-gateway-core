@@ -10,6 +10,15 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func TestJSONTextOrNull(t *testing.T) {
+	if got := jsonTextOrNull(nil); got != "null" {
+		t.Fatalf("jsonTextOrNull(nil) = %q, want null", got)
+	}
+	if got := jsonTextOrNull([]byte(`{"messages":[]}`)); got != `{"messages":[]}` {
+		t.Fatalf("jsonTextOrNull(valid JSON) = %q", got)
+	}
+}
+
 // TestSessionBodiesWriter_WriteBodies tests basic body writing
 func TestSessionBodiesWriter_WriteBodies(t *testing.T) {
 	if testing.Short() {

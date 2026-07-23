@@ -96,6 +96,13 @@ func safeJSONMarshal(v interface{}) ([]byte, error) {
 	return data, nil
 }
 
+func jsonTextOrNull(data []byte) string {
+	if len(data) == 0 {
+		return "null"
+	}
+	return string(data)
+}
+
 // WriteBodies writes turn bodies to gateway.session_bodies
 //
 // The key optimization is RequestDelta only contains messages that
@@ -141,8 +148,8 @@ func (w *SessionBodiesWriter) WriteBodies(ctx context.Context, rec BodiesRecord)
 			partition_date
 		) VALUES (
 			$1, $2, $3, $4, $5,
-			$6, $7, $8,
-			$9, $10,
+			$6::text::jsonb, $7::text::jsonb, $8::text::jsonb,
+			$9::text::jsonb, $10::text::jsonb,
 			$11
 		)
 		ON CONFLICT (session_id, turn_no, partition_date) 
@@ -152,8 +159,8 @@ func (w *SessionBodiesWriter) WriteBodies(ctx context.Context, rec BodiesRecord)
 			response_attachments = EXCLUDED.response_attachments
 	`,
 		rec.SessionID, rec.TurnNo, rec.TenantID, rec.RequestID, rec.Ts,
-		requestDeltaJSON, responseDeltaJSON, outboundBodyJSON,
-		requestAttachmentsJSON, responseAttachmentsJSON,
+		jsonTextOrNull(requestDeltaJSON), jsonTextOrNull(responseDeltaJSON), jsonTextOrNull(outboundBodyJSON),
+		jsonTextOrNull(requestAttachmentsJSON), jsonTextOrNull(responseAttachmentsJSON),
 		partitionDate,
 	)
 
