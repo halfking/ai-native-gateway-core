@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **统一登录态品牌标题为两行显示** (2026-07-23): 登录后的 `AppTopbar` 与生命周期页面 `LifecycleShell` 统一显示 `AI Native` / `组织核心网关` 两行品牌标题，避免不同登录页面的品牌布局不一致。
+
 - **审计修复：激活状态统一控制离线激活入口** (2026-07-23): `UpdateActivateLicenseCard` 接收页面级 `activated` 状态，已激活节点即使 License 状态异常也不再显示“离线激活”链接；同时清理已移除 chevron 的无效 CSS，并放宽窄屏用户名称显示宽度。详见 [docs/changelogs/2026-07-23-ui-audit-fixes.md](docs/changelogs/2026-07-23-ui-audit-fixes.md)。
 
 - **顶部导航用户菜单精简 + 更新与激活浅色块隔离** (2026-07-23): (1) `UserMenuDropdown` trigger 只显示用户名，角色挪到下拉 header；navbar 占位收窄。 (2) `AppTopbar` 组触发按钮去掉 `▾` chevron 箭头。 (3) `/customer/update-activate` 5 个 el-card 外层各包一个 `.ua-region--{info|success|warning|primary|neutral}` 浅色块容器，色板走 `color-mix(in srgb, var(--kx-*) N%, var(--kx-surface))` 公式 + `--kx-*` 语义 token。 (4) 已激活场景下隐藏 "离线激活" 按钮 (`v-if="!isActivated"`)。详见 [docs/changelogs/2026-07-23-topbar-user-menu-ua-region.md](docs/changelogs/2026-07-23-topbar-user-menu-ua-region.md).
