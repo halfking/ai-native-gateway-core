@@ -2321,7 +2321,7 @@ func (h *ChatHandler) serveWithExecutor(
 	// Retry loop
 	retryStartTime := time.Now()
 	retriesPerformed := 0
-	
+
 	for attempt := 0; attempt <= maxRetries; attempt++ {
 		// Check if context is cancelled (client disconnected or timeout)
 		if err := retryCtx.Err(); err != nil {
