@@ -21,6 +21,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **顶部导航用户菜单精简 + 更新与激活浅色块隔离** (2026-07-23): (1) `UserMenuDropdown` trigger 只显示用户名，角色挪到下拉 header；navbar 占位收窄。 (2) `AppTopbar` 组触发按钮去掉 `▾` chevron 箭头。 (3) `/customer/update-activate` 5 个 el-card 外层各包一个 `.ua-region--{info|success|warning|primary|neutral}` 浅色块容器，色板走 `color-mix(in srgb, var(--kx-*) N%, var(--kx-surface))` 公式 + `--kx-*` 语义 token。 (4) 已激活场景下隐藏 "离线激活" 按钮 (`v-if="!isActivated"`)。详见 [docs/changelogs/2026-07-23-topbar-user-menu-ua-region.md](docs/changelogs/2026-07-23-topbar-user-menu-ua-region.md).
 
+- **补齐 `nav.item.pluginSessions` 全 8 语言 i18n** (2026-07-23): `web/src/config/appNav.ts:102` 引用的 `nav.item.pluginSessions`（"请求与会话 → 会话列表" 子菜单，2026-07-23 上线的 ai-session-manager plugin 入口）在 0/8 locale 中定义，导致所有非 zh-CN 语种均 fallback 到中文 "会话列表"。在 zh-CN / zh-TW / en-US / ja-JP / ar-SA / de-DE / es-ES / fr-FR 八个 `nav.ts` 同步新增 `pluginSessions`，i18n parity 校验通过 (`keys_referenced.test.ts` 4/4、`missing-in-source=0`)。详见 [docs/changelogs/2026-07-23-i18n-plugin-sessions.md](docs/changelogs/2026-07-23-i18n-plugin-sessions.md).
+
 ### Fixed
 
 - **Dashboard 实时数据流泳道渲染方向修复** (2026-07-23): `web/src/components/SwimLane.vue` 的 `visibleRequests` computed 错误地对后端 ASC 时间戳数组执行 `.reverse()`，导致泳道色块最左 = 最新（与设计文档 `DASHBOARD_V2_VERIFICATION.md §1.7` 要求的"新请求追加到泳道末尾"相反）。去掉 `.reverse()`，让渲染顺序与后端数据顺序保持一致（左→右 由旧→新），并同步修正组件 CSS 处的误导性注释。详见 [docs/changelogs/2026-07-23-swimlane-direction-fix.md](docs/changelogs/2026-07-23-swimlane-direction-fix.md)。

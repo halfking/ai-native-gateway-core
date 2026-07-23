@@ -34,6 +34,7 @@ export default {
     requestLogs: "請求記錄",
     requestTrace: "請求鏈路追蹤",
     sessions: "會話清單",
+    pluginSessions: "插件會話列表",
     sessionManagement: "會話管理",
     sessionCompare: "會話對比",
     compression: "壓縮管理",
