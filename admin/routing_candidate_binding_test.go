@@ -99,5 +99,48 @@ func TestRoutingCandidateBindingUpdate_InputValidation(t *testing.T) {
 				t.Fatalf("body = %s, want substring %q", rec.Body.String(), tc.wantSubstr)
 			}
 		})
+
+	}
+}
+
+func TestValidateRoutingCandidateReorder(t *testing.T) {
+	base := routingCandidateReorderRequest{
+		Items: []routingCandidateReorderItem{
+			{CredentialID: 10, RawModel: "gpt-4", ManualPriority: 1},
+			{CredentialID: 20, RawModel: "gpt-4", ManualPriority: 2},
+		},
+	}
+	cases := []struct {
+		name       string
+		mutate     func(*routingCandidateReorderRequest)
+		wantSubstr string
+	}{
+		{name: "valid", mutate: func(*routingCandidateReorderRequest) {}, wantSubstr: ""},
+		{name: "missing model", mutate: func(r *routingCandidateReorderRequest) { r.Items[0].RawModel = " " }, wantSubstr: "raw_model is required"},
+		{name: "empty items", mutate: func(r *routingCandidateReorderRequest) { r.Items = nil }, wantSubstr: "items must not be empty"},
+		{name: "non-positive credential", mutate: func(r *routingCandidateReorderRequest) { r.Items[0].CredentialID = 0 }, wantSubstr: "credential_id must be positive"},
+		{name: "duplicate binding", mutate: func(r *routingCandidateReorderRequest) {
+			r.Items[1].CredentialID = r.Items[0].CredentialID
+			r.Items[1].RawModel = r.Items[0].RawModel
+		}, wantSubstr: "credential_id and raw_model must be unique"},
+		{name: "duplicate priority", mutate: func(r *routingCandidateReorderRequest) { r.Items[1].ManualPriority = 1 }, wantSubstr: "manual_priority must be unique"},
+		{name: "non-contiguous priority", mutate: func(r *routingCandidateReorderRequest) { r.Items[1].ManualPriority = 3 }, wantSubstr: "manual_priority must be contiguous"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			req := base
+			req.Items = append([]routingCandidateReorderItem(nil), base.Items...)
+			tc.mutate(&req)
+			got := validateRoutingCandidateReorder(req)
+			if tc.wantSubstr == "" {
+				if got != "" {
+					t.Fatalf("validation error = %q, want nil", got)
+				}
+				return
+			}
+			if !strings.Contains(got, tc.wantSubstr) {
+				t.Fatalf("validation error = %q, want substring %q", got, tc.wantSubstr)
+			}
+		})
 	}
 }

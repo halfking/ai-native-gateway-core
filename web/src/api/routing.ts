@@ -46,7 +46,8 @@ export interface RoutingCandidate {
   model_name: string
   routable: boolean
   runtime_routable: boolean
-  runtime_block_reason: string | null
+  block_reason?: string | null
+  runtime_block_reason?: string | null
   manual_priority?: number
   active_sessions?: number
   consecutive_failures?: number
@@ -144,6 +145,24 @@ export function patchCandidateBinding(
     'PATCH',
     `/api/routing/candidate-binding/${credentialId}?raw_model=${encodeURIComponent(rawModel)}`,
     patch,
+  )
+}
+
+export interface CandidateBindingReorderItem {
+  credential_id: number
+  raw_model: string
+  manual_priority: number
+}
+
+export interface CandidateBindingReorderRequest {
+  items: CandidateBindingReorderItem[]
+}
+
+export function reorderCandidateBindings(items: CandidateBindingReorderItem[]) {
+  return req<{ message: string; items: CandidateBindingReorderItem[] }>(
+    'PATCH',
+    '/api/routing/candidate-bindings/reorder',
+    { items },
   )
 }
 
