@@ -164,6 +164,7 @@ v2: {
     idleLabel: "Leerlauf {duration}",
     countTooltip: "{buffer} im Puffer / {visible} sichtbar",
     countAria: "{buffer} Anfragen im Puffer, {visible} sichtbar",
+    legendButton: 'Legende',
     legend: {
       title: "Legende",
       model: "Modellfamilie",
@@ -263,6 +264,27 @@ v2: {
     idleHoursMinutes: 'Leer {h} Std {m} Min',
 
     idleReasonNoTraffic: 'Kein Traffic (5 Min Leerlauf)',
+    // 2026-07-24: Multi-dimension filters
+    filterStatus: 'Status',
+    filterAllOptions: 'Alle',
+    filterEmpty: 'Keine Optionen verfügbar',
+    filterModel: 'Modell',
+    filterProvider: 'Anbieter',
+    filterVendor: 'Vendor',
+    clearFilters: 'Filter löschen',
+    status: {
+      in_progress: 'In Bearbeitung',
+      success: 'Erfolg',
+      failure: 'Fehler',
+      rate_limited: 'Begrenzt',
+    },
+    vendor: {
+      openai: 'OpenAI',
+      anthropic: 'Anthropic',
+      domestic: 'Inland',
+      oss: 'Open Source',
+      other: 'Andere',
+    },
   },
   charts: {
     gradeA: "Note A",

@@ -164,6 +164,7 @@ v2: {
     idleLabel: "Inactif {duration}",
     countTooltip: "{buffer} en mémoire / {visible} visibles",
     countAria: "{buffer} requêtes en mémoire, {visible} visibles",
+    legendButton: 'Légende',
     legend: {
       title: "Légende",
       model: "Famille de modèle",
@@ -263,6 +264,27 @@ v2: {
     idleHoursMinutes: 'Inactif {h} h {m} min',
 
     idleReasonNoTraffic: 'Aucun trafic (5 min d\'inactivité)',
+    // 2026-07-24: Multi-dimension filters
+    filterStatus: 'Statut',
+    filterAllOptions: 'Tous',
+    filterEmpty: 'Aucune option disponible',
+    filterModel: 'Modèle',
+    filterProvider: 'Fournisseur',
+    filterVendor: 'Vendor',
+    clearFilters: 'Effacer les filtres',
+    status: {
+      in_progress: 'En cours',
+      success: 'Succès',
+      failure: 'Échec',
+      rate_limited: 'Limité',
+    },
+    vendor: {
+      openai: 'OpenAI',
+      anthropic: 'Anthropic',
+      domestic: 'Local',
+      oss: 'Open source',
+      other: 'Autre',
+    },
   },
   charts: {
     gradeA: "Note A",

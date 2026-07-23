@@ -186,8 +186,8 @@ export default {
     idleLabel: '空闲 {duration}',
     countTooltip: '缓冲区内 {buffer} / 屏上可见 {visible}',
     countAria: '缓冲区内 {buffer} 个请求，屏上可见 {visible}',
+    legendButton: '图例',
     legend: {
-      legendButton: '图例',
       title: '图例',
       model: '供应商',
       status: '状态',
@@ -251,6 +251,7 @@ export default {
     // 2026-07-24: 多维过滤器
     filterStatus: '状态',
     filterAllOptions: '全部',
+    filterEmpty: '暂无可选项',
     filterModel: '模型',
     filterProvider: '供应商',
     filterVendor: '原厂',

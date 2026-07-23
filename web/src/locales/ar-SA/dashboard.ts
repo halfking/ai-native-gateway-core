@@ -164,6 +164,7 @@ v2: {
     idleLabel: "خامل {duration}",
     countTooltip: "{buffer} في المخزن / {visible} مرئية على الشاشة",
     countAria: "{buffer} طلب في المخزن، {visible} مرئية",
+    legendButton: 'مفتاح الرموز',
     legend: {
       title: "مفتاح الرموز",
       model: "عائلة النموذج",
@@ -263,6 +264,27 @@ v2: {
     idleHoursMinutes: 'خامل {h} ساعة {m} دقيقة',
 
     idleReasonNoTraffic: 'لا توجد حركة مرور (5 دقائق خاملة)',
+    // 2026-07-24: Multi-dimension filters
+    filterStatus: 'الحالة',
+    filterAllOptions: 'الكل',
+    filterEmpty: 'لا توجد خيارات متاحة',
+    filterModel: 'النموذج',
+    filterProvider: 'المزود',
+    filterVendor: 'المورّد',
+    clearFilters: 'مسح الفلاتر',
+    status: {
+      in_progress: 'قيد التنفيذ',
+      success: 'نجح',
+      failure: 'فشل',
+      rate_limited: 'محدود',
+    },
+    vendor: {
+      openai: 'OpenAI',
+      anthropic: 'Anthropic',
+      domestic: 'محلي',
+      oss: 'مفتوح المصدر',
+      other: 'أخرى',
+    },
   },
   charts: {
     gradeA: "الدرجة أ",

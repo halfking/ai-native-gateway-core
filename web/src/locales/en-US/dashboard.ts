@@ -189,8 +189,8 @@ export default {
     idleLabel: 'Idle {duration}',
     countTooltip: '{buffer} in buffer / {visible} visible on screen',
     countAria: '{buffer} requests in buffer, {visible} visible',
+    legendButton: 'Legend',
     legend: {
-      legendButton: 'Legend',
       title: 'Legend',
       model: 'Provider',
       status: 'Status',
@@ -254,6 +254,7 @@ export default {
     // 2026-07-24: Multi-dimension filters
     filterStatus: 'Status',
     filterAllOptions: 'All',
+    filterEmpty: 'No options available',
     filterModel: 'Model',
     filterProvider: 'Provider',
     filterVendor: 'Vendor',
