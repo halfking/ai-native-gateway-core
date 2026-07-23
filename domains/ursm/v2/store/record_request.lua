@@ -41,7 +41,7 @@ local disable_count = tonumber(redis.call("HGET", node_key, "disable_count") or 
 
 local in_cool = (disabled == "1") and (cool_until_ms > now_ms)
 
-if in_cool then
+  if in_cool then
   -- Node is in cooling period
   if success == "1" then
     -- Success during cool -> recover immediately
@@ -50,6 +50,7 @@ if in_cool then
       "available", "1",
       "fail_streak", "0",
       "cool_until_ms", "0",
+      "disable_count", "0",  -- Reset disable count on successful recovery
       "last_err", "",
       "disabled_reason", "recovered_with_success_during_cool",
       "updated_at_ms", tostring(now_ms))
