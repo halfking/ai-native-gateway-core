@@ -40,7 +40,7 @@ const props = withDefaults(
     hideCta?: boolean
   }>(),
   {
-    brand: 'Ai Native 网关',
+    brand: 'AI Native 组织核心网关',
     brandMark: 'K',
     logoSize: 60,
     heroPoints: () => [],
