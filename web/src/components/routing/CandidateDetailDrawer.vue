@@ -467,7 +467,7 @@ const scoreFlags = computed<FlagRow[]>(() => [
   position: fixed;
   inset: 0;
   /* 2026-07-24 修正：backdrop 由 0.45 降到 0.28，避免抽屉卡片显得"飘"在深色蒙层上看不清。
-   * 抽屉本体仍用 --kx-bg-container 实色 + 显式 box-shadow 提供层叠感。 */
+   * 抽屉本体仍用 --kx-surface 实色 + 显式 box-shadow 提供层叠感。 */
   background: rgba(0, 0, 0, 0.28);
   z-index: 70;
   display: flex;
@@ -476,10 +476,10 @@ const scoreFlags = computed<FlagRow[]>(() => [
 .cd-drawer {
   width: min(560px, 100vw);
   height: 100%;
-  background: var(--kx-bg-container);
-  color: var(--kx-text-primary);
+  background: var(--kx-surface);
+  color: var(--kx-text);
   /* 加 1px 边框让卡片在浅色主题下也有明确轮廓 */
-  border-left: 1px solid var(--kx-border-light);
+  border-left: 1px solid var(--kx-border);
   box-shadow: -12px 0 32px rgba(0, 0, 0, 0.16);
   display: flex;
   flex-direction: column;
@@ -489,7 +489,7 @@ const scoreFlags = computed<FlagRow[]>(() => [
   align-items: flex-start;
   gap: 12px;
   padding: 14px 16px;
-  border-bottom: 1px solid var(--kx-border-light);
+  border-bottom: 1px solid var(--kx-border);
 }
 .cd-head h3 {
   margin: 0;
@@ -500,13 +500,13 @@ const scoreFlags = computed<FlagRow[]>(() => [
 }
 .cd-head-label {
   font-size: 12px;
-  color: var(--kx-text-secondary);
+  color: var(--kx-muted);
   font-weight: 400;
 }
 .cd-head-sub {
   margin: 4px 0 0;
   font-size: 11px;
-  color: var(--kx-text-secondary);
+  color: var(--kx-muted);
 }
 .cd-close {
   margin-left: auto;
@@ -515,10 +515,10 @@ const scoreFlags = computed<FlagRow[]>(() => [
   font-size: 22px;
   line-height: 1;
   cursor: pointer;
-  color: var(--kx-text-secondary);
+  color: var(--kx-muted);
 }
 .cd-close:hover {
-  color: var(--kx-text-primary);
+  color: var(--kx-text);
 }
 .cd-body {
   overflow-y: auto;
@@ -531,7 +531,7 @@ const scoreFlags = computed<FlagRow[]>(() => [
   margin: 0 0 8px;
   font-size: 12px;
   font-weight: 600;
-  color: var(--kx-text-secondary);
+  color: var(--kx-muted);
   text-transform: uppercase;
   letter-spacing: 0.05em;
 }
@@ -546,13 +546,13 @@ const scoreFlags = computed<FlagRow[]>(() => [
   gap: 8px;
   padding: 8px 10px;
   margin-bottom: 6px;
-  background: var(--kx-bg-elevated);
+  background: var(--kx-surface-soft);
   border-radius: 6px;
-  border: 1px solid var(--kx-border-light);
+  border: 1px solid var(--kx-border);
 }
 .cd-flag-label {
   font-size: 12px;
-  color: var(--kx-text-secondary);
+  color: var(--kx-muted);
 }
 .cd-flag-value {
   font-size: 12px;
@@ -570,23 +570,23 @@ const scoreFlags = computed<FlagRow[]>(() => [
   color: var(--kx-danger);
 }
 .cd-sev-info {
-  color: var(--kx-text-secondary);
+  color: var(--kx-muted);
 }
 .cd-flag-meta {
   grid-column: 1 / -1;
   font-size: 11px;
-  color: var(--kx-text-secondary);
+  color: var(--kx-muted);
   line-height: 1.55;
-  border-top: 1px dashed var(--kx-border-light);
+  border-top: 1px dashed var(--kx-border);
   padding-top: 6px;
   margin-top: 4px;
 }
 .cd-flag-meta strong {
-  color: var(--kx-text-primary);
+  color: var(--kx-text);
 }
 .cd-flag-meta code {
   font-size: 10.5px;
-  background: var(--kx-bg-base);
+  background: var(--kx-bg);
   padding: 1px 4px;
   border-radius: 3px;
 }
