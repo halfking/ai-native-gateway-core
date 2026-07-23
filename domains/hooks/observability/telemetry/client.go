@@ -1015,11 +1015,13 @@ $47,
 	// bloating the main table. The side table uses ON CONFLICT DO UPDATE to
 	// handle race conditions (async retries landing on the same request_id).
 	//
-	// 2026-07-23 BUGFIX: 不再依赖子查询获取 ts（避免竞态条件），直接使用 NOW()。
-	// 问题：子查询 SELECT rl.ts FROM request_logs_hot WHERE request_id = $1 在高并发
-	// 场景下可能查不到行（事务隔离），导致 bodies 表插入失败或 ts 不一致。
-	// 修复：直接使用 NOW()，确保 request_logs_hot 和 request_logs_bodies_hot
-	// 的 ts 在同一事务内保持一致（PostgreSQL 的 NOW() 在事务内是稳定的）。
+	// 2026-07-23 BUGFIX: request_id 是唯一标识，不需要依赖 ts。
+	// 原问题：子查询 SELECT rl.ts FROM request_logs_hot 在高并发时可能查询失败，
+	// 导致 INSERT 返回 0 行，bodies 数据丢失。
+	// 修复方案：
+	// 1. 使用 NOW() 直接作为 ts（简单可靠）
+	// 2. JOIN 查询时只用 request_id（不需要 ts，因为 request_id 唯一）
+	// 3. ON CONFLICT 保持 (request_id, ts) 以兼容现有表结构
 	_, err = tx.Exec(ctx, `
 		INSERT INTO request_logs_bodies_hot (
 			request_id, ts, request_body, response_body

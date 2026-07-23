@@ -8,7 +8,7 @@ import { useI18n } from 'vue-i18n'
 import LanguageSelector from '../LanguageSelector.vue'
 import ThemeToggle from '../ThemeToggle.vue'
 import { detectTheme, logoSrc } from '../../theme'
-import { SITE_LOGO_SIZE, SITE_TITLE } from '../../config/brand'
+ import { SITE_LOGO_SIZE, SITE_TITLE, SITE_TITLE_LINE_ONE, SITE_TITLE_LINE_TWO } from '../../config/brand'
 import { PUBLIC_NAV_LINKS } from '../../config/navLinks'
 
 const { t } = useI18n()
@@ -41,7 +41,10 @@ const links = computed(() =>
           :height="SITE_LOGO_SIZE"
           :alt="SITE_TITLE"
         />
-        <span class="brand-title">{{ SITE_TITLE }}</span>
+          <span class="brand-title">
+            <span>{{ SITE_TITLE_LINE_ONE }}</span>
+            <span>{{ SITE_TITLE_LINE_TWO }}</span>
+          </span>
       </a>
       <div class="topbar-right">
         <nav class="topnav" :aria-label="t('app.nav.mainAria')">
@@ -115,10 +118,13 @@ const links = computed(() =>
   background: var(--kx-surface, var(--card));
 }
 .brand-title {
-  font-size: 14px;
+  display: inline-flex;
+  flex-direction: column;
+  gap: 1px;
+  font-size: 13px;
   font-weight: 700;
-  letter-spacing: -0.01em;
-  line-height: 1.3;
+  letter-spacing: 0;
+  line-height: 1.2;
 }
 .topbar-right {
   display: inline-flex;

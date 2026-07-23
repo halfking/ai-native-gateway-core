@@ -9,9 +9,9 @@
 
 ## 根本原因分析
 
-### 问题 1：Bodies 表插入依赖子查询存在竞态条件
+### 核心问题：Bodies 表插入依赖子查询导致数据丢失
 
-**当前代码**（client.go:1017-1033）：
+**问题代码**（client.go:1017-1033）：
 ```sql
 INSERT INTO request_logs_bodies_hot (request_id, ts, request_body, response_body)
 SELECT $1, rl.ts, CAST($2 AS jsonb), CAST($3 AS jsonb)
@@ -22,25 +22,11 @@ LIMIT 1
 ON CONFLICT (request_id, ts) DO UPDATE SET ...
 ```
 
-**问题**：
-- `request_logs_bodies_hot` 的 `ts` 来自子查询 `request_logs_hot`
-- 在同一事务内，如果 `request_logs_hot` 的行还未可见（事务隔离级别），子查询返回空
-- 导致 **bodies 表插入失败**或 **ts 不一致**
-- 高并发场景下（minimax 高频请求）问题更严重
-
-### 问题 2：JOIN 条件不完整
-
-**当前代码**（logs.go:559-560）：
-```sql
-LEFT JOIN request_logs_bodies_with_current_month rb 
-  ON rb.request_id = rl.request_id
-```
-
-**问题**：
-- PRIMARY KEY 是 `(request_id, ts)`
-- JOIN 只用 `request_id`，不匹配 `ts`
-- 如果同一 request_id 有多条记录（重试/更新），JOIN 错误的行
-- 或者 **JOIN 不到任何行**（ts 不匹配）→ 请求消息为空
+**根本问题**：
+- 子查询 `SELECT ... FROM request_logs_hot WHERE request_id = $1` 在高并发时可能返回 0 行
+- 原因：事务隔离级别 + 同一事务内查询时机
+- 结果：`INSERT ... SELECT` 插入 0 行，bodies 数据彻底丢失
+- **request_id 是唯一标识**，不应该依赖 ts 来关联两个表
 
 ### 问题 3：minimax 模型特性导致超时
 
@@ -49,57 +35,46 @@ LEFT JOIN request_logs_bodies_with_current_month rb
 
 ## 修复方案
 
-### 修复 1：Bodies 表插入使用显式 ts（最关键）
+### 修复：Bodies 表插入使用 NOW() 代替子查询
 
 **修改文件**：`domains/hooks/observability/telemetry/client.go`
 
-**原理**：不依赖子查询，直接使用 `entry.EventAt` 或 `NOW()`
-
-```go
-// 修改 persistRequestLog 函数中的 INSERT INTO request_logs_bodies_hot 部分
-// 位置：约 1017 行
-
-// 在 INSERT INTO request_logs_hot 之后，获取实际使用的 ts
-var actualTs time.Time
-if entry.EventAt != nil {
-	actualTs = *entry.EventAt
-} else {
-	actualTs = time.Now().UTC()
-}
-
-// 修改 INSERT INTO request_logs_bodies_hot，直接使用 actualTs
-_, err = tx.Exec(ctx, `
-	INSERT INTO request_logs_bodies_hot (
-		request_id, ts, request_body, response_body
-	)
-	VALUES ($1, $2, $3::jsonb, $4::jsonb)
-	ON CONFLICT (request_id, ts) DO UPDATE SET
-		request_body = COALESCE(EXCLUDED.request_body, request_logs_bodies_hot.request_body),
-		response_body = COALESCE(EXCLUDED.response_body, request_logs_bodies_hot.response_body)
-`,
-	entry.RequestID,
-	actualTs,  // 直接使用 actualTs，不依赖子查询
-	strPtrToJSON(entry.RequestBody),
-	strPtrToJSON(entry.ResponseBody),
-)
+**修改前**（依赖子查询）：
+```sql
+INSERT INTO request_logs_bodies_hot (request_id, ts, request_body, response_body)
+SELECT $1, rl.ts, CAST($2 AS jsonb), CAST($3 AS jsonb)
+FROM request_logs_hot rl
+WHERE rl.request_id = $1
+ORDER BY rl.ts DESC
+LIMIT 1
 ```
 
-### 修复 2：JOIN 条件添加 ts 匹配
+**修改后**（直接使用 NOW()）：
+```sql
+INSERT INTO request_logs_bodies_hot (request_id, ts, request_body, response_body)
+VALUES ($1, NOW(), $2::jsonb, $3::jsonb)
+```
+
+**原理**：
+- 不再依赖子查询，避免查询失败导致插入 0 行
+- 使用 NOW() 简单可靠，确保每次插入都成功
+- **request_id 是唯一标识**，ts 只是记录时间，不用于关联
+
+### 修复：JOIN 只用 request_id
 
 **修改文件**：`admin/logs.go`
 
-**位置**：约 559 行
-
-```go
-// 修改前
+**修改**：
+```sql
+-- JOIN 只需要匹配 request_id（request_id 是唯一标识）
 LEFT JOIN request_logs_bodies_with_current_month rb 
   ON rb.request_id = rl.request_id
-
-// 修改后
-LEFT JOIN request_logs_bodies_with_current_month rb 
-  ON rb.request_id = rl.request_id 
-  AND rb.ts = rl.ts
 ```
+
+**原理**：
+- request_id 是唯一标识，一个 request_id 对应一条记录
+- 不需要 ts 来辅助匹配
+- 简化查询逻辑，避免因 ts 细微差异导致 JOIN 失败
 
 ### 修复 3：增加 minimax 专用超时配置
 

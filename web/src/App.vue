@@ -12,7 +12,7 @@ import LanguageSelector from './components/LanguageSelector.vue'
 import ThemeToggle from './components/ThemeToggle.vue'
 import AppTopbar from './components/shell/AppTopbar.vue'
 import { detectTheme, logoSrc } from './theme'
-import { SITE_LOGO_SIZE, SITE_TITLE } from './config/brand'
+import { SITE_LOGO_SIZE, SITE_TITLE, SITE_TITLE_LINE_ONE, SITE_TITLE_LINE_TWO } from './config/brand'
 import { useLoginModal } from './composables/useLoginModal'
 import { onMaintainAvailabilityChange, probeMaintainAvailable } from './config/edition'
 
@@ -192,7 +192,10 @@ function handleChangePasswordSuccess() {
           alt="开轩启圭"
           class="guest-brand-img"
         />
-        <span class="guest-brand-text">{{ SITE_TITLE }}</span>
+        <span class="guest-brand-text">
+          <span>{{ SITE_TITLE_LINE_ONE }}</span>
+          <span>{{ SITE_TITLE_LINE_TWO }}</span>
+        </span>
       </a>
       <nav class="guest-nav" :aria-label="t('landing.guestNavAria') || '产品导航'">
         <a href="/customer/update-activate">{{ t('landing.navDownload') }}</a>
@@ -733,10 +736,13 @@ function handleChangePasswordSuccess() {
 }
 
 .guest-brand-text {
-  font-size: 14px;
+  display: inline-flex;
+  flex-direction: column;
+  gap: 1px;
+  font-size: 13px;
   font-weight: 700;
-  line-height: 1.35;
-  letter-spacing: -0.01em;
+  line-height: 1.2;
+  letter-spacing: 0;
   color: var(--text);
   max-width: min(52vw, 420px);
 }
