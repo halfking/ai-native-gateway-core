@@ -20,6 +20,7 @@ TESTS=(
     "test_02_database_operations.sh"
     "test_03_script_integration.sh"
     "test_04_complete_workflow.sh"
+    "test_05_user_tools.sh"
 )
 
 TOTAL_TESTS=0
