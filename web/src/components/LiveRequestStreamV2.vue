@@ -493,7 +493,7 @@ const activeFilterCount = computed(() => {
 
       <div class="stream-controls">
         <!-- 分组切换 -->
-        <div class="control-group">
+        <div class="control-group control-group--dimension">
           <button
             type="button"
             class="control-btn"
@@ -521,7 +521,7 @@ const activeFilterCount = computed(() => {
         </div>
 
         <!-- 2026-07-23: 大/小 模式切换（小=竖条默认，大=卡片） -->
-        <div class="control-group">
+        <div class="control-group control-group--mode">
           <button
             type="button"
             class="control-btn"
@@ -542,7 +542,7 @@ const activeFilterCount = computed(() => {
           </button>
         </div>
 
-        <div class="control-group request-type-filter">
+        <div class="control-group control-group--request-type request-type-filter">
           <button
             type="button"
             class="control-btn"
@@ -833,6 +833,24 @@ const activeFilterCount = computed(() => {
   align-items: center;
   gap: 4px;
   position: relative;
+  padding: 4px 8px;
+  border-radius: 6px;
+  background: var(--bg-subtle);
+  border: 1px solid var(--border);
+  /* 2026-07-24: 视觉分组 - 让相邻的功能簇有清晰的区隔 */
+}
+
+/* 2026-07-24: 不同功能簇使用不同色调做软区分 */
+.control-group.control-group--dimension {
+  background: color-mix(in srgb, var(--accent) 6%, var(--bg-subtle));
+}
+
+.control-group.control-group--mode {
+  background: color-mix(in srgb, var(--success) 6%, var(--bg-subtle));
+}
+
+.control-group.control-group--request-type {
+  background: color-mix(in srgb, #409eff 8%, var(--bg-subtle));
 }
 
 .control-btn {
@@ -875,6 +893,10 @@ const activeFilterCount = computed(() => {
   align-items: center;
   gap: 8px;
   flex-wrap: wrap;
+  padding: 4px 8px;
+  border-radius: 6px;
+  background: color-mix(in srgb, #722ed1 8%, var(--bg-subtle));
+  border: 1px solid color-mix(in srgb, #722ed1 25%, var(--border));
 }
 
 .filter-dropdown {
@@ -934,7 +956,6 @@ const activeFilterCount = computed(() => {
   border-radius: 6px;
   box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
   z-index: 100;
-  display: none;
   padding: 4px;
 }
 
