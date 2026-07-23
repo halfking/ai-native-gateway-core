@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased] - 2026-07-24
 
+### Fixed
+
+- **路由解析可见但实际请求无节点 — 自检探针未及时复检已冷却绑定** (2026-07-24): `bg/credential_recovery.go` 的 60s tick 此前只恢复 `availability_state` / `quota_state` / `circuit_state` / `health_status` / `mnf_cooling` 五类，**从不恢复 `cmb.available=FALSE`**。当业务流量经由其他健康凭据绕开某个曾失败过的 `(credential_id, raw_model_name)` 对时，`NodeProbeWorker.Submit` 不会被触发（仅错误触发），视图 `v_routable_credential_models`（migration 417）依旧因 `cmb.available=FALSE` 或 `node_probe_state.last_direct_ok=FALSE` 把它排除，导致 `/api/routing/resolve` 与 chat-completion 出现"不可见/不一致"的可见性差异（普联供应商的手动 clear+re-fetch 是用户已知的临时绕路）。新增分支 `recoverExpiredBindings`：扫描 `cmb.available=FALSE AND unavailable_recover_at <= now() AND unavailable_reason IN ('continuous_failure', 'probe_*')`（且不触碰 `manual*` / `admin_protected` / 冷却凭据），把每个 `(cred, model)` 对通过 `NodeProbeWorker.Submit` 投递探测；探测工作器的成功路径是 `cmb.available` 的权威写者，从不盲目翻转。同时按唯一 `credential_id` 调 `InvalidateCandidateCacheForCredential` 让下一次 chat 请求无须等 30s `candCache` TTL。新增 4 个回归测试（SQL 不变量 + 投递路径 + 空集 no-op + DB 故障向上传播）。详见 [docs/changelogs/2026-07-24-expired-binding-probe-recovery.md](docs/changelogs/2026-07-24-expired-binding-probe-recovery.md).
+
 ### Changed
 
 - **本地 DB 结构与 252 对齐（llm-gateway）** (2026-07-24): 以阿里云 252 上 `pg-252-pg17` 的 `llm_gateway` 数据库为 SSOT，把本地 Docker `llm-gateway-pg` 的结构漂移同步对齐。同步 6 个缺失表（`session_last_requests` / `system_probe_runs` 及其 default 分区 / `system_settings` / `ursm_node_snapshot_min` / `schema_migrations_backup_20260722`）、9 个缺失列（`request_logs` 8 个新列通过父表 `ADD COLUMN` 自动继承分区；`provider_models.modality` / `self_check_runs` 2 列 / `self_check_settings.monitor_concurrency` 1 列）、以及全部缺失索引（含 4 个 GIN 索引，**关键发现**：columnar 分区表不能直接建 GIN，必须挂在父表 `request_logs` 上用 `ONLY` 子句创建，与 252 上的 `pg_get_indexdef` 一致）。同步后共同表列数 4460=4460，缺失索引数=0。**纯结构同步、未触碰业务数据**。详见 [docs/changelogs/2026-07-24-db-schema-sync-from-252.md](docs/changelogs/2026-07-24-db-schema-sync-from-252.md).
@@ -32,6 +36,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **补齐 `dashboard.liveStream` 4 个 mode* 键到 6 语种** (2026-07-23): `parity.test.ts` 唯一遗留失败（`every locale explicitly defines all zh-CN leaf keys` / `every locale resolves zh-CN module keys through the configured English fallback`）根因为 dashboard live-stream 视图的 `modeSmall` / `modeLarge` / `modeSmallTitle` / `modeLargeTitle` 4 键在 ar-SA / de-DE / es-ES / fr-FR / ja-JP / zh-TW 6 个 locale 全部缺失。在 6 个 `dashboard.ts` 同步补齐，parity 5/5、keys_referenced 4/4 全绿。详见 [docs/changelogs/2026-07-23-i18n-dashboard-livestream-modes.md](docs/changelogs/2026-07-23-i18n-dashboard-livestream-modes.md).
 
 - **翻译 `dashboard.liveStream` 30+ 个英文 fallback 到 6 语种** (2026-07-23): 2026-07-22 parity 收尾后，ar-SA / de-DE / es-ES / fr-FR / ja-JP / zh-TW 的 `liveStream` 块仍残留英文文案（"Show all requests (default)" / "Cache / window" / "Heartbeat placeholder" / "Redis unavailable..." 等），parity gate 不报警但用户实际看到英文 UI。本次完整翻译 37 键 × 6 locale = 222 条；同步修复 zh-TW 中 `empty等待:` 合并损坏的键名（与下方 `emptyWaiting` 重复且 key 名错误）。vue-tsc / parity / keys_referenced 全绿。详见 [docs/changelogs/2026-07-23-i18n-dashboard-livestream-translate.md](docs/changelogs/2026-07-23-i18n-dashboard-livestream-translate.md).
+
+- **完成 `dashboard.{moduleStats,errors,performance,providerUsage}` 4 块全 6 语种翻译** (2026-07-23): Dashboard 上 4 张高可见性卡片（"模块执行统计"/"错误统计"/"性能指标"/"Provider 用量"）残留英文（ar-SA/de-DE/es-ES/fr-FR）或简体中文字符串（ja-JP/zh-TW）—— parity gate 不报警但用户实际看到错位文案。本次完整翻译：ar-SA/de-DE/es-ES/fr-FR 各 49 键，ja-JP 7 处简体修正 + 21 键 providerUsage 重译，zh-TW 7 处繁简修正 + 21 键 providerUsage 重译。Dashboard i18n 全部完成。详见 [docs/changelogs/2026-07-23-i18n-dashboard-blocks-translate.md](docs/changelogs/2026-07-23-i18n-dashboard-blocks-translate.md).
 
 ### Fixed
 

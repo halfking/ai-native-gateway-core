@@ -75,3 +75,12 @@ func (a *systemMonitorAdapter) IsFallback() bool {
 	}
 	return a.sm.IsFallback()
 }
+
+// GetMetricsCollector 透传，handler 侧只读 *systemmonitor.MetricsCollector
+// 的 *CoverageMetrics 字段，不需要导出新方法。
+func (a *systemMonitorAdapter) GetMetricsCollector() interface{} {
+	if a == nil || a.sm == nil {
+		return nil
+	}
+	return a.sm.GetMetricsCollector()
+}
