@@ -1470,9 +1470,9 @@ func (e *Executor) Execute(params *ExecParams) (*ExecuteResult, error) {
 			}
 			probeCancel()
 		}
-		if e.RoutingStateShadow != nil {
+		// 2026-07-24: URSM v2 authoritative 模式下跳过 RoutingStateShadow
+		if e.RoutingStateShadow != nil && !e.isURSMv2Authoritative() {
 			for _, c := range probeCandidates {
-
 				e.RoutingStateShadow.ObserveProbe(routingstate.ProbeTask{
 					CredentialID:  c.CredentialID,
 					RawModelName:  candidateRawModel(c),
@@ -1933,7 +1933,8 @@ func (e *Executor) Execute(params *ExecParams) (*ExecuteResult, error) {
 				)
 			}
 
-			if e.RoutingStateShadow != nil {
+			// 2026-07-24: URSM v2 authoritative 模式下跳过 RoutingStateShadow
+			if e.RoutingStateShadow != nil && !e.isURSMv2Authoritative() {
 				e.RoutingStateShadow.ObserveState(routingstate.Evidence{
 					CredentialID:     cand.CredentialID,
 					RawModelName:     candidateRawModel(cand),
@@ -2144,7 +2145,8 @@ func (e *Executor) Execute(params *ExecParams) (*ExecuteResult, error) {
 			)
 			lastErr = execErr
 			lastKind = kind
-			if e.RoutingStateShadow != nil {
+			// 2026-07-24: URSM v2 authoritative 模式下跳过 RoutingStateShadow
+			if e.RoutingStateShadow != nil && !e.isURSMv2Authoritative() {
 				e.observeRoutingStateFailure(params, cand, kind)
 				if !errorsx.IsClientBug(kind) {
 					e.observeRoutingStateProbe(params, cand, routingstate.ProbeTriggerRequestFailure)
