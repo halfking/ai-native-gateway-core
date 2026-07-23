@@ -12,6 +12,9 @@ func TestNewPool_UsesRequestContextForFullDeadline(t *testing.T) {
 	if p.Client().Timeout != 0 {
 		t.Fatalf("http.Client.Timeout = %s, want 0", p.Client().Timeout)
 	}
+	if p.transport.ResponseHeaderTimeout != 0 {
+		t.Fatalf("ResponseHeaderTimeout = %s, want 0 so request context controls first-byte timeout", p.transport.ResponseHeaderTimeout)
+	}
 	if p.transport.TLSHandshakeTimeout <= 0 || p.transport.ExpectContinueTimeout <= 0 {
 		t.Fatalf("transport handshake timeouts must remain bounded: tls=%s expect=%s", p.transport.TLSHandshakeTimeout, p.transport.ExpectContinueTimeout)
 	}

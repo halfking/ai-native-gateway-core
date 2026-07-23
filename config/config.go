@@ -240,10 +240,10 @@ func Load() *Config {
 		UpstreamURL:             envOrDefault("LLM_GATEWAY_UPSTREAM", "http://127.0.0.1:8780"),
 		IdentitySalt:            os.Getenv("LLM_GATEWAY_IDENTITY_SALT"),
 		BGMode:                  envOrDefault("LLM_GATEWAY_BG_MODE", "full"),
-		UpstreamTimeout:         120,
+		UpstreamTimeout:         150,
 		StreamTimeout:           900,
-		StreamChunkTimeout:      300,
-		FirstByteTimeout:        30,
+		StreamChunkTimeout:      600,
+		FirstByteTimeout:        120,
 		KeepaliveInterval:       15,
 		// 2026-07-23: Session TTL 从 168h (7d) 改为 72h (3d)。
 		// 7 天累计 23.6 万个 session hash keys 占用 91% 的 Redis 内存。
