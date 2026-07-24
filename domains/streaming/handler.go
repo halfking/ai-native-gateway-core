@@ -3811,6 +3811,9 @@ func (h *ChatHandler) emitClientDisconnectProbe(originalRequestID string, r *htt
 // the request context error and the in-flight log context. Returns ok=false
 // when there is no context error to report (nothing to probe). Pure / side
 // effect free so it can be unit tested without a telemetry client or DB.
+//
+// 2026-07-24 fix: 现在记录完整的请求信息（请求体、关键参数等），以便将来分析
+// 客户端取消/超时的原因。之前只记录最基本的字段，导致 probe 记录是空的 JSON。
 func buildClientDisconnectProbeEntry(originalRequestID string, r *http.Request, logCtx *RequestLogContext) (*telemetry.RequestLogEntry, bool) {
 	if r == nil || r.Context() == nil {
 		return nil, false
@@ -3839,22 +3842,60 @@ func buildClientDisconnectProbeEntry(originalRequestID string, r *http.Request, 
 	clientModel := ""
 	outboundModel := ""
 	var providerID, credentialID *int
+	var apiKeyID *int
+	var endUser *string
+	var requestBody *string
+	var requestPreview *string
+	
 	if logCtx != nil {
 		clientModel = logCtx.ClientModel
 		outboundModel = logCtx.OutboundModel
 		providerID = logCtx.ProviderID
 		credentialID = logCtx.CredentialID
+		
 		if logCtx.KeyInfo != nil {
 			tenantID = logCtx.KeyInfo.TenantID
+			if logCtx.KeyInfo.ID > 0 {
+				apiKeyID = &logCtx.KeyInfo.ID
+			}
+		}
+		
+		// 记录 EndUser (如果有)
+		if logCtx.EndUser != "" {
+			endUser = strPtr(logCtx.EndUser)
+		}
+		
+		// 记录请求体 (2026-07-24 fix: 重要！这样可以分析客户端为什么取消/超时)
+		if len(logCtx.Body) > 0 {
+			// 完整请求体（限制大小避免数据库字段溢出）
+			maxSize := 64 * 1024 // 64KB，足够记录大部分请求参数
+			bodyText := string(logCtx.Body)
+			if len(bodyText) > maxSize {
+				bodyText = bodyText[:maxSize] + "...[truncated]"
+			}
+			requestBody = &bodyText
+			
+			// 提取关键参数到 request_preview 用于快速查看
+			var reqBodyParsed map[string]any
+			if err := json.Unmarshal(logCtx.Body, &reqBodyParsed); err == nil {
+				preview := buildRequestPreview(reqBodyParsed)
+				if preview != "" {
+					requestPreview = &preview
+				}
+			}
 		}
 	}
 
 	stage := "probe"
 	eventAt := time.Now().UTC()
+	latencyMs := int(time.Since(logCtx.StartTime).Milliseconds())
+	
 	return &telemetry.RequestLogEntry{
 		RequestID:     probeRequestID,
 		EventAt:       &eventAt,
 		TenantID:      tenantID,
+		APIKeyID:      apiKeyID,
+		EndUserID:     endUser,
 		ClientModel:   strPtr(clientModel),
 		OutboundModel: strPtr(outboundModel),
 		ProviderID:    providerID,
@@ -3863,10 +3904,60 @@ func buildClientDisconnectProbeEntry(originalRequestID string, r *http.Request, 
 		RequestStatus: strPtr(telemetry.RequestStatusFailure),
 		ErrorKind:     strPtr(errorKind),
 		FailureStage:  &stage,
+		LatencyMs:     &latencyMs,
+		// 2026-07-24: 记录完整请求信息，用于分析客户端取消/超时原因
+		RequestBody:    requestBody,
+		RequestPreview: requestPreview,
 		// Link back to the original request via ClientRequestID so /request-logs
 		// can correlate the probe row with the in_progress row it interrupted.
 		ClientRequestID: strPtr(originalRequestID),
 	}, true
+}
+
+// buildRequestPreview 从请求体中提取关键的模型参数和统计信息，用于快速预览
+func buildRequestPreview(body map[string]any) string {
+	preview := make(map[string]any)
+	
+	// 提取常见的模型参数
+	paramKeys := []string{
+		"temperature", "top_p", "top_k", "max_tokens", "max_completion_tokens",
+		"presence_penalty", "frequency_penalty", "n", "stream",
+		"stop", "seed", "response_format", "tool_choice",
+	}
+	
+	for _, key := range paramKeys {
+		if val, ok := body[key]; ok && val != nil {
+			preview[key] = val
+		}
+	}
+	
+	// 记录消息数量和大致长度（用于分析是否因为请求太大导致超时）
+	if messages, ok := body["messages"].([]any); ok {
+		preview["message_count"] = len(messages)
+		totalLen := 0
+		for _, msg := range messages {
+			if msgMap, ok := msg.(map[string]any); ok {
+				if content, ok := msgMap["content"].(string); ok {
+					totalLen += len(content)
+				}
+			}
+		}
+		if totalLen > 0 {
+			preview["total_content_length"] = totalLen
+		}
+	}
+	
+	// 记录 tools 数量（如果有）
+	if tools, ok := body["tools"].([]any); ok && len(tools) > 0 {
+		preview["tool_count"] = len(tools)
+	}
+	
+	if len(preview) == 0 {
+		return ""
+	}
+	
+	previewJSON, _ := json.Marshal(preview)
+	return string(previewJSON)
 }
 
 // recordFailedRequestWithKey records a failure via the unified RequestLogContext pipeline.
