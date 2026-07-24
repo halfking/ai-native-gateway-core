@@ -215,6 +215,15 @@ func main() {
 		}
 	}
 
+	// V2-P8: 主读切换标记 — only the banner, the routing switch itself is
+	// a follow-up PR so this commit stays a pure observable change.
+	v2Primary := os.Getenv("SESSIONS_V2_PRIMARY_READ") == "true"
+	if v2Primary {
+		slog.Info("V2 PRIMARY READ ENABLED — V1 read-only compatibility layer")
+	} else {
+		slog.Info("V2 SHADOW WRITE — V1 remains primary (read + write)")
+	}
+
 	// ── Auth fail-closed guard (rule 20 §8) ───────────────────────────────
 	// In production, the three auth secrets must be set; otherwise the
 	// process refuses to start rather than running fail-open. dev/local
