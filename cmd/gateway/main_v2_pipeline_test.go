@@ -19,7 +19,76 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/jackc/pgx/v5/pgxpool"
 )
+
+// TestSessionV2HookRegistered verifies that when sessions_v2.enabled and
+// sessions_v2.shadow_write are both true, buildV2PipelineHooks returns a
+// list containing the SessionPersistHook ("session.persist"). The hook is
+// the V2 shadow write sidecar that dual-writes to gateway.sessions /
+// session_turns / session_bodies / session_turn_logs in addition to V1.
+//
+// The test passes nil pool to confirm the helper tolerates nil pools
+// (DB writes happen at Execute time, not registration time). Real
+// pool wiring is exercised in the integration suite.
+func TestSessionV2HookRegistered(t *testing.T) {
+	cfg := &sessionV2HookConfig{
+		Enabled:     true,
+		ShadowWrite: true,
+	}
+
+	hooks := buildV2PipelineHooks(cfg, (*pgxpool.Pool)(nil))
+	if len(hooks) == 0 {
+		t.Fatalf("expected at least one hook when sessions_v2.enabled && shadow_write")
+	}
+
+	found := false
+	for _, h := range hooks {
+		if h == nil {
+			continue
+		}
+		if h.Name() == "session.persist" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("expected session.persist hook to be registered, got %d hooks", len(hooks))
+	}
+}
+
+// TestSessionV2HookNotRegisteredWhenDisabled verifies that the hook is
+// not returned when the master switch or shadow_write flag is off.
+// BuildV2PipelineHooks must be defensive: only register the hook when
+// the feature is enabled end-to-end.
+func TestSessionV2HookNotRegisteredWhenDisabled(t *testing.T) {
+	cases := []struct {
+		name    string
+		enabled bool
+		shadow  bool
+	}{
+		{"both off", false, false},
+		{"enabled on, shadow off", true, false},
+		{"enabled off, shadow on", false, true},
+	}
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := &sessionV2HookConfig{
+				Enabled:     tc.enabled,
+				ShadowWrite: tc.shadow,
+			}
+			hooks := buildV2PipelineHooks(cfg, (*pgxpool.Pool)(nil))
+			for _, h := range hooks {
+				if h != nil && h.Name() == "session.persist" {
+					t.Fatalf("session.persist hook must NOT be registered when enabled=%v shadow=%v",
+						tc.enabled, tc.shadow)
+				}
+			}
+		})
+	}
+}
 
 // withEnv sets an env var for the duration of a test and restores it on
 // cleanup. t.Setenv handles parallel-safety and automatic restoration.
