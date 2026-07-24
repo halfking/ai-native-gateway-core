@@ -673,3 +673,9 @@
 |-----------|------|
 | 455 | `455_request_id_unique_for_hot_tables.sql` |
 
+## 2026-07-24T09:10:16Z — deploy 245 build_seq 1365 (2c8ccc61)
+
+| Migration | File |
+|-----------|------|
+| 457 | `457_session_v2_owner_filter.sql` |
+

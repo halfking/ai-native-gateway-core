@@ -113,10 +113,13 @@ COMMIT;
 -- 首次部署 / 测试库可正常 fall back（非 CONCURRENTLY）。
 -- =============================================
 
-CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_sessions_last_full_at
+-- gateway.sessions is a partitioned table; CONCURRENTLY is not supported
+-- on the parent (must be applied to each child partition if/when needed).
+-- This is the canonical pattern for partitioned indexes.
+CREATE INDEX IF NOT EXISTS idx_sessions_last_full_at
     ON gateway.sessions (tenant_id, last_full_payload_at DESC)
     WHERE last_full_payload_at IS NOT NULL;
 
-CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_sessions_summary_at
+CREATE INDEX IF NOT EXISTS idx_sessions_summary_at
     ON gateway.sessions (tenant_id, summary_generated_at DESC)
     WHERE summary_generated_at IS NOT NULL;
