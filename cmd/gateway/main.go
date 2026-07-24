@@ -3787,6 +3787,14 @@ func main() {
 		mux.HandleFunc("/api/admin/credential-success-rates/reset", wrapAdmin(admin.HandleResetCredentialSuccessRate(dbConn.Pool())))
 		slog.Info("Phase 3.6 credential success rate management enabled (/api/admin/credential-success-rates)")
 
+		// Phase 3.6.5 (2026-07-24): Sessions V2 Detail & Summary API
+		// Provides session detail query from gateway.session_* tables and LLM-powered session summary
+		sessionDetailAPI := admin.NewSessionDetailV2API(dbConn.Pool())
+		sessionSummaryAPI := admin.NewSessionSummaryV2API(dbConn.Pool())
+		mux.HandleFunc("/api/admin/sessions/detail", wrapAdmin(sessionDetailAPI.ServeHTTP))
+		mux.HandleFunc("/api/admin/sessions/summary", wrapAdmin(sessionSummaryAPI.ServeHTTP))
+		slog.Info("Phase 3.6.5 sessions v2 API enabled (/api/admin/sessions/detail, /summary)")
+
 		// Phase 3.7 (A3-1): Agent Registry API (Track A APIHub)
 		agentsAPI := admin.NewAgentsHandler(apihubSvc)
 		mux.HandleFunc("/api/agents", wrapAdmin(agentsAPI.List))
