@@ -574,3 +574,92 @@ func (l *Limiter) recoveryStep() {
 		s.RecoverStep(l.credentialLimit)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Pressure Signal - Phase 2.1
+// ---------------------------------------------------------------------------
+
+// GetPressure 返回指定 credential 的 Limiter 压力（0-1）
+// 压力 = max(各层 Used / Capacity)
+// 返回 0 表示无压力或无限制
+//
+// 参数:
+//   - credentialID: credential ID (Layer 2)
+//   - poolID: provider pool ID (Layer 1)
+//   - identityKey: 身份标识（Layer 3，可选）
+//
+// 返回最严重层的压力值（0-1）
+func (l *Limiter) GetPressure(
+	credentialID int,
+	poolID int,
+	identityKey string,
+) float64 {
+	var maxPressure float64
+
+	// Layer 0: Global
+	if l.global != nil {
+		cap := l.global.Capacity()
+		if cap > 0 {
+			used := l.global.Used()
+			pressure := float64(used) / float64(cap)
+			if pressure > maxPressure {
+				maxPressure = pressure
+			}
+		}
+	}
+
+	// Layer 1: Pool
+	l.mu.RLock()
+	pool, hasPool := l.pools[poolID]
+	l.mu.RUnlock()
+	if hasPool {
+		cap := pool.Capacity()
+		if cap > 0 {
+			used := pool.Used()
+			pressure := float64(used) / float64(cap)
+			if pressure > maxPressure {
+				maxPressure = pressure
+			}
+		}
+	}
+
+	// Layer 2: Credential (key format: "providerID/credentialID")
+	credKey := fmt.Sprintf("%d/%d", poolID, credentialID)
+	l.mu.RLock()
+	cred, hasCred := l.creds[credKey]
+	l.mu.RUnlock()
+	if hasCred {
+		cap := cred.Capacity()
+		if cap > 0 {
+			used := cred.Used()
+			pressure := float64(used) / float64(cap)
+			if pressure > maxPressure {
+				maxPressure = pressure
+			}
+		}
+	}
+
+	// Layer 3: Identity（可选）
+	if identityKey != "" {
+		l.mu.RLock()
+		identity, hasIdentity := l.idents[identityKey]
+		l.mu.RUnlock()
+		if hasIdentity {
+			cap := identity.Capacity()
+			if cap > 0 {
+				used := identity.Used()
+				pressure := float64(used) / float64(cap)
+				if pressure > maxPressure {
+					maxPressure = pressure
+				}
+			}
+		}
+	}
+
+	// 压力不会超过 1.0
+	if maxPressure > 1.0 {
+		maxPressure = 1.0
+	}
+
+	return maxPressure
+}
