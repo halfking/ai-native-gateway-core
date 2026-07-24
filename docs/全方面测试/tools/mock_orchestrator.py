@@ -154,6 +154,16 @@ async def post_connlimit(session, port: int, limit: int, timeout: int = 3):
         return {"error": str(e)}
 
 
+async def post_fault_mode(session, port: int, fault_mode: dict, timeout: int = 3):
+    """Set edge fault flags via /admin/fault-mode."""
+    url = f"http://127.0.0.1:{port}/admin/fault-mode"
+    try:
+        async with session.post(url, json=fault_mode, timeout=timeout) as resp:
+            return await resp.json()
+    except Exception as e:
+        return {"error": str(e)}
+
+
 async def get_health(session, port: int):
     url = f"http://127.0.0.1:{port}/healthz"
     try:
@@ -314,6 +324,22 @@ async def cmd_set_connlimit(args):
     print(f"set-connlimit {args.target} -> {args.limit}: {n_ok}/{len(ports)} ok")
 
 
+async def cmd_set_fault(args):
+    """set-fault <group|port> <fault> [value]"""
+    ports = ports_for_group(args.target) if args.target in GROUPS else [int(args.target)]
+    value = args.value.lower() in ("1", "true", "yes", "on")
+    if args.fault in ("slow_connect_delay_ms", "slow_header_delay_ms"):
+        payload = {args.fault: int(args.value)}
+    else:
+        payload = {args.fault: value}
+    async with aiohttp.ClientSession() as session:
+        results = await asyncio.gather(
+            *[post_fault_mode(session, p, payload) for p in ports]
+        )
+    n_ok = sum(1 for r in results if r.get("ok"))
+    print(f"set-fault {args.target} {payload}: {n_ok}/{len(ports)} ok")
+
+
 async def cmd_set_group_profile(args):
     """set-group-profile <group> <latency_ms> <latency_prob> <fail_rate>"""
     ports = ports_for_group(args.group)
@@ -395,6 +421,15 @@ def main():
     sc = sub.add_parser("set-connlimit")
     sc.add_argument("target", help="group (A-L) or port number")
     sc.add_argument("limit", help="max concurrent connections (0=unlimited)")
+
+    # Fault mode control
+    sf = sub.add_parser("set-fault")
+    sf.add_argument("target", help="group (A-L) or port number")
+    sf.add_argument("fault", choices=[
+        "slow_connect_delay_ms", "timeout_response", "huge_response",
+        "truncated_response", "slow_header_delay_ms", "invalid_json_response",
+    ])
+    sf.add_argument("value", help="boolean value, or delay milliseconds")
 
     # Group profile (latency/fail-rate)
     sgp = sub.add_parser("set-group-profile")
@@ -508,6 +543,7 @@ def main():
         "set-protocol": cmd_set_protocol,
         "set-delay": cmd_set_delay,
         "set-connlimit": cmd_set_connlimit,
+        "set-fault": cmd_set_fault,
         "set-group-profile": cmd_set_group_profile,
     }[args.cmd]
     asyncio.run(handler(args))
