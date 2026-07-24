@@ -129,6 +129,10 @@ async def one_request(
     session_id: str = None,
     stream: bool = False,
     timeout: int = 30,
+    compression: str = None,
+    no_cache: bool = False,
+    protocol_mode: str = None,
+    custom_headers: dict = None,
 ):
     url = f"{gateway}/v1/chat/completions"
     headers = {
@@ -137,6 +141,14 @@ async def one_request(
     }
     if session_id:
         headers["X-Gw-Session-Id"] = session_id
+    if compression:
+        headers["X-Gw-Compression"] = compression
+    if no_cache:
+        headers["X-Gw-Cache"] = "no-store"
+    if protocol_mode:
+        headers["X-Gw-Protocol-Mode"] = protocol_mode
+    if custom_headers:
+        headers.update(custom_headers)
     body = {
         "model": model,
         "messages": [{"role": "user", "content": prompt}],
@@ -191,6 +203,9 @@ async def client_worker(
     stream_ratio: float = 0,
     prompt_size: str = "short",
     fault_inject_cancel: float = 0,
+    compression: str = None,
+    no_cache: bool = False,
+    protocol_mode: str = None,
 ):
     """一个客户端 worker：以 rps 速率发请求。"""
     end_at = time.monotonic() + duration
@@ -251,7 +266,10 @@ async def client_worker(
                 continue
 
             status, kind, dur_ms = await one_request(
-                session, gateway, ak, m, prompt, session_id=sid, stream=stream
+                session, gateway, ak, m, prompt,
+                session_id=sid, stream=stream,
+                compression=compression, no_cache=no_cache,
+                protocol_mode=protocol_mode,
             )
             await stats.record(status, kind, dur_ms)
             await asyncio.sleep(interval)
@@ -283,6 +301,9 @@ async def run(args):
                 stream_ratio=args.stream_ratio,
                 prompt_size=args.prompt,
                 fault_inject_cancel=args.fault_inject_cancel,
+                compression=args.compression,
+                no_cache=args.no_cache,
+                protocol_mode=args.protocol,
             )
         )
         tasks.append(t)
@@ -325,6 +346,9 @@ async def run(args):
         "sticky_ratio": args.sticky_ratio,
         "stream_ratio": args.stream_ratio,
         "fault_inject_cancel": args.fault_inject_cancel,
+        "compression": args.compression,
+        "no_cache": args.no_cache,
+        "protocol": args.protocol,
         "metrics": final,
     }
     print(json.dumps(out, indent=2, ensure_ascii=False))
@@ -368,6 +392,23 @@ def main():
         type=float,
         default=0.0,
         help="0..1 客户端随机取消（模拟网络异常）",
+    )
+    parser.add_argument(
+        "--compression",
+        choices=["none", "gzip", "deflate"],
+        default=None,
+        help="X-Gw-Compression header: none|gzip|deflate",
+    )
+    parser.add_argument(
+        "--no-cache",
+        action="store_true",
+        help="发送 X-Gw-Cache: no-store 禁用会话缓存",
+    )
+    parser.add_argument(
+        "--protocol",
+        choices=["chat", "response", "anthropic"],
+        default=None,
+        help="X-Gw-Protocol-Mode: chat|response|anthropic",
     )
     parser.add_argument("--output", help="JSON 输出路径")
     parser.add_argument("--scenario", default="custom")
