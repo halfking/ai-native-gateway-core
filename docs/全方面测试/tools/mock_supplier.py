@@ -92,35 +92,41 @@ STATE: dict = dict(STATE_DEFAULTS)
 class ConnectionManager:
     def __init__(self):
         self._count = 0
-        self._lock = asyncio.Lock()
-        self._queue = asyncio.Queue()
-        self._semaphore = None
+        self._limit = 0
+        self._condition = asyncio.Condition()
 
-    def set_limit(self, limit: int):
+    async def set_limit(self, limit: int):
         """Set max concurrent connections (0 = unlimited)."""
-        self._semaphore = asyncio.Semaphore(limit) if limit > 0 else None
+        async with self._condition:
+            self._limit = max(0, int(limit))
+            self._condition.notify_all()
+
+    async def try_acquire(self):
+        """Acquire a slot without waiting, returning False when limited."""
+        async with self._condition:
+            if self._limit > 0 and self._count >= self._limit:
+                return False
+            self._count += 1
+        return True
 
     async def acquire(self):
         """Acquire a connection slot (blocks if at limit)."""
-        if self._semaphore is None:
-            async with self._lock:
-                self._count += 1
-            return True
-        await self._semaphore.acquire()
-        async with self._lock:
+        async with self._condition:
+            while self._limit > 0 and self._count >= self._limit:
+                await self._condition.wait()
             self._count += 1
         return True
 
     async def release(self):
         """Release a connection slot."""
-        async with self._lock:
+        async with self._condition:
             self._count = max(0, self._count - 1)
-        if self._semaphore:
-            self._semaphore.release()
+            self._condition.notify_all()
 
     @property
     def current(self) -> int:
         return self._count
+
 
 CONN_MGR = ConnectionManager()
 
@@ -237,7 +243,7 @@ async def admin_reset(request):
     STATE.update(copy.deepcopy(STATE_DEFAULTS))
     STATE["state_change_at"] = now()
     STATE["quota_window_start_at"] = now()
-    CONN_MGR.set_limit(0)
+    await CONN_MGR.set_limit(0)
     return web.json_response({"ok": True, "message": "reset"})
 
 
@@ -266,7 +272,7 @@ async def admin_set_connlimit(request):
     body = await request.json()
     limit = int(body.get("limit", 0))
     STATE["max_connections"] = max(0, limit)
-    CONN_MGR.set_limit(limit)
+    await CONN_MGR.set_limit(limit)
     STATE["state_change_at"] = now()
     return web.json_response({"ok": True, "max_connections": limit, "current": CONN_MGR.current})
 
@@ -322,7 +328,7 @@ async def admin_set_state_full(request):
                 STATE[k] = v
     STATE["state_change_at"] = now()
     if "max_connections" in body:
-        CONN_MGR.set_limit(body["max_connections"])
+        await CONN_MGR.set_limit(body["max_connections"])
     return web.json_response({"ok": True, "applied": {k: STATE[k] for k in body.keys() if k in valid_fields}})
 
 
@@ -334,15 +340,13 @@ async def chat_completions(request):
     REQUESTS_TOTAL += 1
     quota_tick_if_needed()
 
-    # Connection limit check
-    if STATE["max_connections"] > 0 and CONN_MGR.current >= STATE["max_connections"]:
+    if not await CONN_MGR.try_acquire():
         REQUESTS_5XX += 1
         return web.json_response(
             {"error": {"type": "connection_limit", "message": "too many connections"}},
             status=503,
         )
 
-    await CONN_MGR.acquire()
     try:
         return await _do_chat_completions(request)
     finally:
@@ -353,6 +357,11 @@ async def _do_chat_completions(request):
     """Internal handler (connection already acquired)."""
     global REQUESTS_TOTAL, REQUESTS_2XX, REQUESTS_5XX
 
+    # aiohttp cannot delay the TCP accept itself; this models a slow upstream
+    # before request processing begins.
+    if STATE["slow_connect_delay_ms"] > 0:
+        await asyncio.sleep(STATE["slow_connect_delay_ms"] / 1000.0)
+
     s = STATE["state"]
     body = {}
     try:
@@ -361,6 +370,8 @@ async def _do_chat_completions(request):
         pass
 
     # Auth/quota/server_error/dropped hard failures
+    if STATE["timeout_response"]:
+        await asyncio.sleep(3600)
     if s == "dropped":
         REQUESTS_5XX += 1
         return web.json_response(
@@ -449,7 +460,23 @@ async def _do_chat_completions(request):
         "\n", " "
     )
 
+    if STATE["huge_response"]:
+        reply = reply + (" x" * (6 * 1024 * 1024))
+
     protocol = STATE.get("protocol_mode", "chat")
+
+    if STATE["invalid_json_response"]:
+        return web.Response(status=200, body=b"{invalid-json", content_type="application/json")
+
+    if STATE["truncated_response"] and not body.get("stream"):
+        return web.Response(
+            status=200,
+            body=b'{"id":"' + cid.encode() + b'","choices":[',
+            content_type="application/json",
+        )
+
+    if STATE["slow_header_delay_ms"] > 0:
+        await asyncio.sleep(STATE["slow_header_delay_ms"] / 1000.0)
 
     if body.get("stream"):
         resp = web.StreamResponse(
@@ -462,9 +489,9 @@ async def _do_chat_completions(request):
         )
         await resp.prepare(request)
 
-        # broken_stream: 写一段就断
-        if s == "broken_stream":
-            STATE["broken_stream_drop_after"] = 5
+        # broken_stream/truncated_response: write a prefix, then close early
+        if s == "broken_stream" or STATE["truncated_response"]:
+            STATE["broken_stream_drop_after"] = min(5, len(reply))
 
         sent = 0
         for ch in reply:
