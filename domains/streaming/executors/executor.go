@@ -864,6 +864,11 @@ func (e *Executor) SetTraceRecorder(rec gwtrace.Recorder) {
 	}
 }
 
+// DEPRECATED: isURSMv2Authoritative 将被 StateBackend 接口替代。
+// 2026-07-24 Phase 1: 此方法已被 selectStateBackend() 统一入口替代。
+// 每次调用都会触发 10ms 的 Ready() 检查，在热路径中造成不必要的开销。
+// 保留用于向后兼容，新代码应使用 StateBackend.IsAuthoritative()。
+//
 // isURSMv2Authoritative 检查 URSM v2 是否处于 authoritative 模式且已 Ready。
 // 用于在 authoritative 模式下跳过旧的状态管理系统，避免状态不一致。
 func (e *Executor) isURSMv2Authoritative() bool {
