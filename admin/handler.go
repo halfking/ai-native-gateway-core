@@ -919,6 +919,10 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 		mux.HandleFunc("/api/admin/diagnostics/credential", h.superAdmin(h.handleCredentialDiagnostic))
 		mux.HandleFunc("/api/admin/diagnostics/credential/force-recover", h.superAdmin(h.handleForceRecoverSingle))
 
+		// 2026-07-24: 供应商级路由阻塞诊断 — "凭据正常但路由不到"场景
+		mux.HandleFunc("/api/admin/diagnostics/routing-blocked", h.superAdmin(h.handleRoutingBlockedDiagnostic))
+		mux.HandleFunc("/api/admin/diagnostics/routing-blocked/fix", h.superAdmin(h.handleRoutingBlockedFix))
+
 		h.registerMaasRoutes(mux)
 	}
 }
