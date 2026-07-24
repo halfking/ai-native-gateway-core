@@ -1021,6 +1021,34 @@ func (w *NodeProbeWorker) runOne(ctx context.Context, credID int, model, trigger
 			w.recordCircuitSuccess(direct.providerID, credID)
 		}
 	}
+	// 2026-07-24 P0 fix: if direct probe returned endpoint_build with
+	// "no rows in result set", it means the (cred, model) pair has no
+	// row in credential_model_bindings — this is a configuration
+	// problem (a node_probe_state row was created for a model that
+	// the credential does not actually serve), NOT an upstream health
+	// problem. Counting it as a failure and applying backoff only
+	// pollutes the worker with rows that can never succeed and starve
+	// the worker from probing other (cred, model) pairs that actually
+	// matter. We:
+	//   1. write a single audit row to node_probe_runs (for forensics)
+	//   2. drop the node_probe_state row (worker stops re-picking it)
+	//   3. log a one-shot warning so the operator sees the misconfig
+	// Returns success=true so the calling cycle() loop does not retry.
+	if isMissingBindingErr(direct) {
+		slog.Warn("node_probe_worker: dropping probe for (cred, model) with no credential_model_bindings row",
+			"credential_id", credID, "model", model,
+			"reason", "endpoint_build + no rows in result set",
+			"hint", "check provider_models.raw_model_name ↔ credential_model_bindings.raw_model_name join")
+		w.emitProbe(ctx, credID, 0, model, model, "direct", attempt, trigger, direct)
+		if _, err := w.db.Exec(ctx, `
+			DELETE FROM node_probe_state
+			 WHERE credential_id = $1 AND raw_model_name = $2
+		`, credID, model); err != nil {
+			slog.Warn("node_probe_worker: failed to drop orphan state row",
+				"credential_id", credID, "model", model, "error", err)
+		}
+		return nil
+	}
 	// Round 2: gateway — now sees the restored state from the direct round
 	gw := w.probeGateway(ctx, credID, model)
 
@@ -1154,6 +1182,29 @@ func (w *NodeProbeWorker) runOne(ctx context.Context, credID int, model, trigger
 		timeoutAtMs, direct.viaProxy,
 	)
 	return nil
+}
+
+// isMissingBindingErr reports whether a direct probe round failed
+// with the (cred, model)-pair-has-no-credential_model_bindings
+// pattern. This happens when a node_probe_state row exists for a
+// (cred, model) pair but the underlying JOIN in resolveDirectTarget
+// returns zero rows (because credential_model_bindings has no entry
+// for that pair). The probe will never succeed without a config fix
+// and would otherwise consume the worker's retry budget indefinitely.
+//
+// Detection: probeDirect sets errCode="endpoint_build" + errDetail
+// starting with "build endpoint failed: " whenever resolveDirectTarget
+// returns an error. The actual SQL "no rows in result set" sentinel
+// bubbles up unchanged from pgx (now wrapped with the
+// "no rows in result set: credential_id=... has no enabled+unlocked
+// credential_model_bindings for raw_model_name=..." prefix added in
+// 2026-07-24). We match either form so a future refactor of the
+// error wrapper does not silently re-introduce the bug.
+func isMissingBindingErr(r nodeProbeRoundResult) bool {
+	if r.errCode != "endpoint_build" {
+		return false
+	}
+	return strings.Contains(r.errDetail, "no rows in result set")
 }
 
 type nodeProbeStateRow struct {
@@ -1407,6 +1458,19 @@ func (w *NodeProbeWorker) resolveDirectTarget(ctx context.Context, credID int, m
 		LIMIT 1
 	`, credID, model).Scan(&ciphertext, &outboundModel, &baseURL, &protocol, &providerID)
 	if err != nil {
+		// 2026-07-24 P0 fix: surface the missing-binding case explicitly.
+		// resolveDirectTarget requires (cred, raw_model_name) to have a
+		// row in credential_model_bindings AND a matching provider_models
+		// row AND the provider to be enabled+not manual_disabled AND the
+		// credential to be active. Any of those conditions failing
+		// yields pgx's "no rows in result set" sentinel — without
+		// context, the operator sees the same generic string for five
+		// different misconfigurations. We rewrap with the original
+		// cred/model so the worker (and runOne's isMissingBindingErr
+		// short-circuit) can disambiguate from real upstream errors.
+		if err.Error() == "no rows in result set" {
+			return "", "", "", "", 0, fmt.Errorf("no rows in result set: credential_id=%d has no enabled+unlocked credential_model_bindings for raw_model_name=%q (check cmb.available, p.enabled, p.manual_disabled, c.status, c.lifecycle_status)", credID, model)
+		}
 		return "", "", "", "", 0, err
 	}
 	s := string(ciphertext)
