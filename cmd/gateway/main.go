@@ -215,6 +215,15 @@ func main() {
 		}
 	}
 
+	// V2-P8: 主读切换标记 — only the banner, the routing switch itself is
+	// a follow-up PR so this commit stays a pure observable change.
+	v2Primary := os.Getenv("SESSIONS_V2_PRIMARY_READ") == "true"
+	if v2Primary {
+		slog.Info("V2 PRIMARY READ ENABLED — V1 read-only compatibility layer")
+	} else {
+		slog.Info("V2 SHADOW WRITE — V1 remains primary (read + write)")
+	}
+
 	// ── Auth fail-closed guard (rule 20 §8) ───────────────────────────────
 	// In production, the three auth secrets must be set; otherwise the
 	// process refuses to start rather than running fail-open. dev/local
@@ -566,6 +575,50 @@ func main() {
 		} else {
 			slog.Info("ursm.v2: persist writer disabled in shadow mode")
 		}
+	}
+
+	// V2-P3.2: turn_logs aggregator — flushes 24h-TTL per-stage logs into
+	// gateway.sessions.turn_logs_summary and deletes the source rows.
+	// 5-minute polling, runs only when DB is enabled.
+	if dbConn != nil && dbConn.Enabled() {
+		turnLogsCtx, turnLogsCancel := context.WithCancel(context.Background())
+		defer turnLogsCancel()
+		turnLogsAgg := NewTurnLogsAggregator(dbConn.Pool())
+		go func() {
+			defer turnLogsCancel()
+			ticker := time.NewTicker(5 * time.Minute)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-turnLogsCtx.Done():
+					slog.Info("turn_logs aggregator stopped")
+					return
+				case <-ticker.C:
+					rows, err := dbConn.Pool().Query(turnLogsCtx, `
+						SELECT tenant_id, session_id
+						FROM gateway.session_turn_logs
+						WHERE expires_at > NOW()
+						GROUP BY tenant_id, session_id
+						LIMIT 100
+					`)
+					if err != nil {
+						slog.Warn("turn_logs aggregator: poll query failed", "err", err)
+						continue
+					}
+					for rows.Next() {
+						var t, s string
+						if scanErr := rows.Scan(&t, &s); scanErr != nil {
+							continue
+						}
+						if aggErr := turnLogsAgg.AggregateAndFlush(turnLogsCtx, t, s); aggErr != nil {
+							slog.Warn("turn_logs aggregator: flush failed", "tenant", t, "session", s, "err", aggErr)
+						}
+					}
+					rows.Close()
+				}
+			}
+		}()
+		slog.Info("turn_logs aggregator started", "interval_sec", (5 * time.Minute).Seconds())
 	}
 
 	fpSlots := credentialfpslot.New(credentialfpslot.Config{

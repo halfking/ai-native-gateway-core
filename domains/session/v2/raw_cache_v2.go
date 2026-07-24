@@ -1,0 +1,108 @@
+// Package v2: RawCacheV2 是 L0 原始缓存（与 session_turns/session_bodies 写入同步）
+// 仅存储本轮 delta；不做 LCS、不存完整 outbound body。
+package v2
+
+import (
+	"container/list"
+	"context"
+	"sync"
+	"time"
+)
+
+// RawEntry 表示 L0 缓存中一个会话在本轮的原始增量数据。
+// 注意：仅存储当前轮的 request/response delta，绝不存储完整 outbound body；
+// 持久化失败重放由 L1 (CompressionMetaCache) 接管。
+type RawEntry struct {
+	TurnNo        int
+	RequestDelta  []Message
+	ResponseDelta []Message
+	SubmitMode    string
+	Attachments   []AttachmentRef
+	UpdatedAt     time.Time
+}
+
+type rawEntry struct {
+	key   string
+	entry *RawEntry
+}
+
+// RawCacheV2 是 L0 原始缓存：
+//   - LRU，容量默认 1024（可由 NewRawCacheV2 自定义）
+//   - 键为 "tenantID|sessionID"，跨租户隔离
+//   - 线程安全（sync.Mutex）
+//   - 用于在写入 pipeline 中做「写前快速读取」加速
+type RawCacheV2 struct {
+	capacity int
+	mu       sync.Mutex
+	ll       *list.List          // front = most recent
+	index    map[string]*list.Element // "tenantID|sessionID" → ll element
+}
+
+// NewRawCacheV2 创建一个 L0 原始缓存。capacity <= 0 时使用默认值 1024。
+func NewRawCacheV2(capacity int) *RawCacheV2 {
+	if capacity <= 0 {
+		capacity = 1024
+	}
+	return &RawCacheV2{
+		capacity: capacity,
+		ll:       list.New(),
+		index:    make(map[string]*list.Element, capacity),
+	}
+}
+
+// rawCacheKey 生成 L0 缓存键。
+// 使用 "|" 分隔（与 cache_v2.go 中的 cacheKey 用 ":" 分隔区分），避免包级命名冲突。
+func rawCacheKey(tenant, session string) string { return tenant + "|" + session }
+
+// Put 将 (tenant, session) 对应的原始增量写入 L0 缓存；
+// 若 key 已存在则覆盖 entry 并移动到 MRU 位置。
+// 容量满时淘汰最久未访问的 entry（LRU）。
+func (c *RawCacheV2) Put(_ context.Context, tenant, session string, e *RawEntry) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	k := rawCacheKey(tenant, session)
+	if el, ok := c.index[k]; ok {
+		c.ll.MoveToFront(el)
+		el.Value.(*rawEntry).entry = e
+		return
+	}
+	el := c.ll.PushFront(&rawEntry{key: k, entry: e})
+	c.index[k] = el
+	if c.ll.Len() > c.capacity {
+		oldest := c.ll.Back()
+		if oldest != nil {
+			c.ll.Remove(oldest)
+			delete(c.index, oldest.Value.(*rawEntry).key)
+		}
+	}
+}
+
+// Get 读取 (tenant, session) 对应的原始增量；命中时将其提升到 MRU 位置。
+// miss 时返回 (nil, false)。
+func (c *RawCacheV2) Get(_ context.Context, tenant, session string) (*RawEntry, bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	el, ok := c.index[rawCacheKey(tenant, session)]
+	if !ok {
+		return nil, false
+	}
+	c.ll.MoveToFront(el)
+	return el.Value.(*rawEntry).entry, true
+}
+
+// Invalidate 从 L0 缓存中移除 (tenant, session) 对应条目。
+// 用于会话显式重置 / 写入失败需要强制重读上游的场景。
+func (c *RawCacheV2) Invalidate(_ context.Context, tenant, session string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	k := rawCacheKey(tenant, session)
+	el, ok := c.index[k]
+	if !ok {
+		return
+	}
+	c.ll.Remove(el)
+	delete(c.index, k)
+}
+
+// Close 释放缓存；当前实现无后台资源，返回 nil。
+func (c *RawCacheV2) Close() error { return nil }
