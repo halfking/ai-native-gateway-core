@@ -49,6 +49,7 @@ type routingBlockedDiagnostic struct {
 	BindingsBlocked      int                        `json:"bindings_blocked"`
 	BlockReasonBreakdown map[string]int             `json:"block_reason_breakdown"`
 	Credentials          []routingBlockedCredential `json:"credentials"`
+	Truncated            bool                       `json:"truncated,omitempty"`
 }
 
 // handleRoutingBlockedDiagnostic returns per-credential routability breakdown
@@ -86,6 +87,7 @@ func buildRoutingBlockedDiagnostic(ctx context.Context, db *pgxpool.Pool, provid
 	}
 
 	// Query v_routable_credential_models directly — this is the authoritative routing view.
+	const maxBindings = 500
 	rows, err := db.Query(ctx, `
 		SELECT
 			v.credential_id,
@@ -96,7 +98,8 @@ func buildRoutingBlockedDiagnostic(ctx context.Context, db *pgxpool.Pool, provid
 		FROM v_routable_credential_models v
 		WHERE v.provider_id = $1
 		ORDER BY v.credential_id, v.raw_model_name
-	`, providerID)
+		LIMIT $2
+	`, providerID, maxBindings+1)
 	if err != nil {
 		return nil, fmt.Errorf("v_routable_credential_models query: %w", err)
 	}
@@ -131,6 +134,11 @@ func buildRoutingBlockedDiagnostic(ctx context.Context, db *pgxpool.Pool, provid
 		}
 	}
 
+	truncated := total > maxBindings
+	if truncated {
+		total = maxBindings
+	}
+
 	// Fetch credential-level state for each credential with bindings.
 	credIDs := make([]int, 0, len(credBindingKeys))
 	for cid := range credBindingKeys {
@@ -139,8 +147,8 @@ func buildRoutingBlockedDiagnostic(ctx context.Context, db *pgxpool.Pool, provid
 	sort.Ints(credIDs)
 
 	credStateMap := make(map[int]struct {
-		status, availabilityState, healthStatus, lifecycleStatus string
-		manualDisabled                                           bool
+		label, status, availabilityState, healthStatus, lifecycleStatus string
+		manualDisabled                                                  bool
 	})
 	if len(credIDs) > 0 {
 		placeholders := make([]string, 0, len(credIDs))
@@ -150,7 +158,8 @@ func buildRoutingBlockedDiagnostic(ctx context.Context, db *pgxpool.Pool, provid
 			args = append(args, cid)
 		}
 		credRows, err := db.Query(ctx, fmt.Sprintf(`
-			SELECT id, status, availability_state, health_status,
+			SELECT id, name || ':' || COALESCE(provider_name, 'unknown'),
+			       status, availability_state, health_status,
 			       COALESCE(manual_disabled, false), lifecycle_status
 			FROM credentials WHERE id IN (%s)
 		`, strings.Join(placeholders, ",")), args...)
@@ -159,10 +168,10 @@ func buildRoutingBlockedDiagnostic(ctx context.Context, db *pgxpool.Pool, provid
 			for credRows.Next() {
 				var cid int
 				var st struct {
-					status, availabilityState, healthStatus, lifecycleStatus string
-					manualDisabled                                           bool
+					label, status, availabilityState, healthStatus, lifecycleStatus string
+					manualDisabled                                                  bool
 				}
-				if err := credRows.Scan(&cid, &st.status, &st.availabilityState, &st.healthStatus,
+				if err := credRows.Scan(&cid, &st.label, &st.status, &st.availabilityState, &st.healthStatus,
 					&st.manualDisabled, &st.lifecycleStatus); err == nil {
 					credStateMap[cid] = st
 				}
@@ -176,10 +185,19 @@ func buildRoutingBlockedDiagnostic(ctx context.Context, db *pgxpool.Pool, provid
 		keys := credBindingKeys[cid]
 		cs := credStateMap[cid]
 		cred := routingBlockedCredential{
-			CredentialID:    cid,
-			Status:          cs.status,
-			LifecycleStatus: cs.lifecycleStatus,
-			ManualDisabled:  cs.manualDisabled,
+			CredentialID:      cid,
+			CredentialLabel:   cs.label,
+			Status:            cs.status,
+			AvailabilityState: cs.availabilityState,
+			HealthStatus:      cs.healthStatus,
+			LifecycleStatus:   cs.lifecycleStatus,
+			ManualDisabled:    cs.manualDisabled,
+		}
+		// Use label from binding data when credential-state query had no result.
+		if cred.CredentialLabel == "" {
+			if first, ok := bindingMap[keys[0]]; ok {
+				cred.CredentialLabel = first.CredentialLabel
+			}
 		}
 		var routableCount, blockedCount int
 		bindings := make([]routingBlockedBinding, 0, len(keys))
@@ -197,19 +215,6 @@ func buildRoutingBlockedDiagnostic(ctx context.Context, db *pgxpool.Pool, provid
 		cred.BindingsBlocked = blockedCount
 		cred.Bindings = bindings
 
-		// Fill from credential-level query.
-		if first, ok := bindingMap[keys[0]]; ok {
-			cred.CredentialLabel = first.CredentialLabel
-		}
-		if cs2, ok := credStateMap[cid]; ok {
-			cred.CredentialLabel = "" // we already have it from binding
-			cred.Status = cs2.status
-			cred.AvailabilityState = cs2.availabilityState
-			cred.HealthStatus = cs2.healthStatus
-			cred.ManualDisabled = cs2.manualDisabled
-			cred.LifecycleStatus = cs2.lifecycleStatus
-		}
-
 		credentials = append(credentials, cred)
 	}
 
@@ -221,6 +226,7 @@ func buildRoutingBlockedDiagnostic(ctx context.Context, db *pgxpool.Pool, provid
 		BindingsBlocked:      total - routable,
 		BlockReasonBreakdown: reasonBreakdown,
 		Credentials:          credentials,
+		Truncated:            truncated,
 	}, nil
 }
 
