@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/kaixuan/llm-gateway-go/domains/authentication"
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/observability/telemetry"
@@ -16,15 +17,23 @@ import (
 // cancels (context.Canceled) the handler must synthesize a "probe-" prefixed
 // RequestLogEntry carrying the selected credential_id, so it lands in
 // request_logs_hot and the live-stream swim lane under the right provider.
+//
+// 2026-07-24: 验证修复后的版本记录了完整的请求信息（request_body, request_preview）。
 func TestBuildClientDisconnectProbeEntry_Cancel(t *testing.T) {
 	credID := 11
 	provID := 18
+	apiKeyID := 42
+	requestBody := []byte(`{"model":"glm-5.2","messages":[{"role":"user","content":"Hello"}],"temperature":0.7,"max_tokens":100}`)
+	
 	logCtx := &RequestLogContext{
-		ClientModel:  "glm-5.2",
+		ClientModel:   "glm-5.2",
 		OutboundModel: "glm-5.2",
-		CredentialID: &credID,
-		ProviderID:   &provID,
-		KeyInfo:      &authentication.KeyInfo{TenantID: "tenant-1"},
+		CredentialID:  &credID,
+		ProviderID:    &provID,
+		KeyInfo:       &authentication.KeyInfo{TenantID: "tenant-1", ID: apiKeyID},
+		Body:          requestBody,
+		StartTime:     time.Now().Add(-100 * time.Millisecond),
+		EndUser:       "user@example.com",
 	}
 
 	// Build a request whose context is already canceled (client went away).
@@ -57,6 +66,22 @@ func TestBuildClientDisconnectProbeEntry_Cancel(t *testing.T) {
 	}
 	if entry.ClientRequestID == nil || *entry.ClientRequestID != "req-abc" {
 		t.Errorf("ClientRequestID must link back to original request_id, got %v", entry.ClientRequestID)
+	}
+	// 2026-07-24: 验证新增字段 - 请求体和预览信息
+	if entry.RequestBody == nil || !strings.Contains(*entry.RequestBody, "glm-5.2") {
+		t.Errorf("RequestBody must be recorded, got %v", entry.RequestBody)
+	}
+	if entry.RequestPreview == nil || !strings.Contains(*entry.RequestPreview, "temperature") {
+		t.Errorf("RequestPreview must contain model params, got %v", entry.RequestPreview)
+	}
+	if entry.APIKeyID == nil || *entry.APIKeyID != apiKeyID {
+		t.Errorf("APIKeyID must be recorded, got %v", entry.APIKeyID)
+	}
+	if entry.EndUserID == nil || *entry.EndUserID != "user@example.com" {
+		t.Errorf("EndUserID must be recorded, got %v", entry.EndUserID)
+	}
+	if entry.LatencyMs == nil || *entry.LatencyMs < 50 {
+		t.Errorf("LatencyMs must be recorded and >= 50ms, got %v", entry.LatencyMs)
 	}
 }
 
