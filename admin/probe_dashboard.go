@@ -664,6 +664,7 @@ func (h *Handler) handleProviderLatency(w http.ResponseWriter, r *http.Request) 
 // 的探测任务，随执行更新状态。
 //
 // GET /api/admin/probe/queue-tasks?limit=100
+// 2026-07-24: 返回待执行/执行中/近期已执行，并附带标准模型名（standardized_name）。
 type ProbeQueueTaskRow struct {
 	ID               int64        `json:"id"`
 	CredentialID     int64        `json:"credential_id"`
@@ -671,6 +672,7 @@ type ProbeQueueTaskRow struct {
 	ProviderName     string       `json:"provider_name"`
 	ProviderCode     string       `json:"provider_code"`
 	RawModel         string       `json:"raw_model"`
+	StandardizedName string       `json:"standardized_name"`
 	Status           string       `json:"status"`
 	Attempt          int          `json:"attempt"`
 	Priority         int16        `json:"priority"`
@@ -688,7 +690,7 @@ func (h *Handler) handleProbeQueueTasks(w http.ResponseWriter, r *http.Request) 
 	}
 	limit := 100
 	if l := r.URL.Query().Get("limit"); l != "" {
-		if n, err := strconv.Atoi(l); err == nil && n > 0 && n <= 100 {
+		if n, err := strconv.Atoi(l); err == nil && n > 0 && n <= 200 {
 			limit = n
 		}
 	}
@@ -699,6 +701,7 @@ func (h *Handler) handleProbeQueueTasks(w http.ResponseWriter, r *http.Request) 
 			COALESCE(p.display_name, ''),
 			COALESCE(p.code, ''),
 			COALESCE(q.raw_model, ''),
+			COALESCE(NULLIF(pm.standardized_name, ''), NULLIF(mc.canonical_name, ''), q.raw_model, ''),
 			q.status, q.attempt, q.priority, COALESCE(q.reason_code, ''),
 			q.next_run_at,
 			q.result_latency_ms,
@@ -706,8 +709,24 @@ func (h *Handler) handleProbeQueueTasks(w http.ResponseWriter, r *http.Request) 
 			q.updated_at
 		FROM credential_probe_queue q
 		LEFT JOIN providers p ON p.id = q.provider_id
-		WHERE q.status IN ('ready', 'running')
-		ORDER BY q.priority DESC, q.next_run_at ASC, q.id ASC
+		LEFT JOIN provider_models pm
+		       ON pm.provider_id = q.provider_id
+		      AND lower(pm.raw_model_name) = lower(q.raw_model)
+		LEFT JOIN models_canonical mc ON mc.id = pm.canonical_id
+		WHERE q.status IN ('ready', 'running', 'success', 'failed', 'expired')
+		  AND (
+		      q.status IN ('ready', 'running')
+		      OR q.updated_at > now() - interval '2 hours'
+		  )
+		ORDER BY
+			CASE q.status
+				WHEN 'running' THEN 0
+				WHEN 'ready' THEN 1
+				ELSE 2
+			END,
+			q.priority DESC,
+			COALESCE(q.updated_at, q.next_run_at) DESC NULLS LAST,
+			q.id DESC
 		LIMIT $1
 	`, limit)
 	if err != nil {
@@ -722,7 +741,7 @@ func (h *Handler) handleProbeQueueTasks(w http.ResponseWriter, r *http.Request) 
 		var lat, httpStatus sql.NullInt32
 		if err := rows.Scan(
 			&t.ID, &t.CredentialID, &t.ProviderID, &t.ProviderName, &t.ProviderCode,
-			&t.RawModel, &t.Status, &t.Attempt, &t.Priority, &t.ReasonCode,
+			&t.RawModel, &t.StandardizedName, &t.Status, &t.Attempt, &t.Priority, &t.ReasonCode,
 			&t.NextRunAt, &lat, &httpStatus, &t.UpdatedAt,
 		); err != nil {
 			http.Error(w, "scan failed: "+err.Error(), http.StatusInternalServerError)

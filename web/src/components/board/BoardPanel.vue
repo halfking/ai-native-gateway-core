@@ -44,7 +44,7 @@ async function onTimeRangeChange(next: BoardTimeRange) {
 
 <template>
   <div class="board-panel">
-    <BoardStatusCards :operational="operational" @open-selfcheck="router.push('/system-monitor')" />
+    <BoardStatusCards :operational="operational" @open-selfcheck="router.push('/dashboard?tab=selfcheck')" />
     <BoardSummaryRow :summary="board?.summary" :loading="loading" />
     <BoardUsageTrendSection
       :board="board"

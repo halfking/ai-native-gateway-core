@@ -863,10 +863,16 @@ func InferVendorFromModel(model string) string {
 }
 
 func liveRequestTile(req LiveRequest) LiveStreamTile {
+	// 2026-07-24: tile.Model 必须是标准名（canonical），禁止用供应商 raw/outbound
+	// 做模型维度展示；与 liveStreamDimensionKey("model") 保持一致。
+	standardModel := strings.TrimSpace(req.CanonicalName)
+	if standardModel == "" {
+		standardModel = strings.TrimSpace(req.Model)
+	}
 	tile := LiveStreamTile{
 		RequestID:        req.RequestID,
 		Timestamp:        req.Ts,
-		Model:            req.Model,
+		Model:            standardModel,
 		Vendor:           resolveVendorForRequest(req),
 		Provider:         req.ProviderCode,
 		Status:           emptyAs(req.Status, "in_progress"),

@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased] - 2026-07-24
 
+### Changed
+
+- **Dashboard 实时流筛选弹窗 + 模型标准名 + 探测队列并入系统自检** (2026-07-24): 实时请求流「状态/模型/供应商/原厂」改为弹窗多选（全部 + 完整选项文案）；模型维度与筛选统一用 `canonical_name` 标准名（`liveRequestTile` 优先 canonical）。Dashboard 去掉「系统监测」Tab，`/system-monitor` 重定向到 `?tab=selfcheck`；系统自检页增加「当前探测队列」区（队列长度 / 运行中 / 并发上限 + 已执行/正在执行/待执行 FIFO 泳道）。`GET /api/admin/probe/queue-tasks` 补充 `standardized_name` 并返回近 2h 已完成任务。
+
 ### Added
 
 - **系统监测动态泳道与实时统计** (2026-07-24): Dashboard 默认显示 SystemMonitor，新增 SSE 实时任务泳道、等待/完成/失败任务量和 token 用量；SystemMonitor 在入队、开始、跳过、完成及失败时发布事件，探测响应解析并持久化 token 使用量。新增 `346_system_probe_run_tokens` migration。

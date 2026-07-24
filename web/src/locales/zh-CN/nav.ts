@@ -25,7 +25,7 @@ export default {
     routingOverview: '路由全景',
     credentialMonitor: '凭据监控',
     probeHealth: '探测健康度',
-    systemMonitor: '系统监测',
+    systemMonitor: '系统自检',
     providers: '供应商',
     pricing: '成本价格',
     modelPricing: '定价管理',

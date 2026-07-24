@@ -23,6 +23,7 @@ import {
   type ProbeSystemHealth,
   type ProbeQueueTaskRow,
 } from '../api-selfcheck'
+import { fetchSystemMonitorStats, type SystemMonitorStats } from '../api/api-system-monitor'
 import SwimLane from '../components/SwimLane.vue'
 import type { SwimLane as SwimLaneType, RequestTile } from '../types/swimlane'
 import { getFeaturedModelsDynamic } from '../api/system'
@@ -48,8 +49,10 @@ const triggerAvailability = ref<SelfCheckTriggerAvailability>({ available: true,
 const range = ref<'1h' | '6h' | '24h' | '7d'>('24h')
 
 // 2026-07-23: 新探测模式下的系统健康（子项④）与队列任务（子项③）
+// 2026-07-24: 并入系统监测指标（队列长度 / 并发）
 const probeHealth = ref<ProbeSystemHealth | null>(null)
 const queueTasks = ref<ProbeQueueTaskRow[]>([])
+const monitorStats = ref<SystemMonitorStats | null>(null)
 
 let pollTimer: number | undefined
 let queueTimer: number | undefined
@@ -97,8 +100,12 @@ async function loadAll() {
 // 2026-07-23: 队列任务拉取（子项③），随执行更新状态
 async function refreshQueueTasks() {
   try {
-    const res = await fetchProbeQueueTasks(100)
+    const [res, stats] = await Promise.all([
+      fetchProbeQueueTasks(120),
+      fetchSystemMonitorStats().catch(() => null),
+    ])
     queueTasks.value = res.tasks ?? []
+    if (stats) monitorStats.value = stats
   } catch {
     queueTasks.value = []
   }
@@ -337,56 +344,86 @@ const probeSummaryCards = computed(() => {
   ]
 })
 
-// ── 2026-07-23 子项③: 队列任务泳道（按状态分组） ──────────────────────
-// 将队列任务按 status 分组为泳道：ready（待执行）/ running（执行中）。
-// 每条任务映射为一个 RequestTile 以复用小模式竖条渲染。
-const QUEUE_LANE_LIMIT = 40 // 泳道满时自动挤出（仅保留最近 N 条）
+// ── 2026-07-24: 探测队列固定三泳道（已执行 / 正在执行 / 待执行），FIFO
+const QUEUE_LANE_LIMIT = 40
+
+function taskStandardModel(t: ProbeQueueTaskRow): string {
+  return (t.standardized_name || t.raw_model || '').trim()
+}
+
+function taskToTile(t: ProbeQueueTaskRow): RequestTile {
+  const status =
+    t.status === 'running' ? 'in_progress'
+      : t.status === 'success' ? 'success'
+        : (t.status === 'failed' || t.status === 'expired') ? 'failure'
+          : 'idle'
+  return {
+    request_id: `q-${t.id}`,
+    timestamp: t.updated_at || t.next_run_at || new Date().toISOString(),
+    model: taskStandardModel(t),
+    vendor: '__unknown__',
+    provider: t.provider_name || String(t.provider_id),
+    status,
+    is_probe: true,
+    probe_origin: 'direct',
+    latency_ms: t.result_latency_ms > 0 ? t.result_latency_ms : undefined,
+  }
+}
+
+function tasksForLane(statuses: string[], fifoAsc: boolean): RequestTile[] {
+  const matched = queueTasks.value.filter((t) => statuses.includes(t.status))
+  const sorted = [...matched].sort((a, b) => {
+    const ta = new Date(a.updated_at || a.next_run_at || 0).getTime()
+    const tb = new Date(b.updated_at || b.next_run_at || 0).getTime()
+    return fifoAsc ? ta - tb : tb - ta
+  })
+  const slice = fifoAsc
+    ? sorted.slice(0, QUEUE_LANE_LIMIT)
+    : sorted.slice(0, QUEUE_LANE_LIMIT).reverse()
+  return slice.map(taskToTile)
+}
 
 const queueSwimLanes = computed<SwimLaneType[]>(() => {
-  const groups: Record<string, ProbeQueueTaskRow[]> = {}
-  for (const t of queueTasks.value) {
-    const key = t.status || 'unknown'
-    if (!groups[key]) groups[key] = []
-    groups[key].push(t)
-  }
-  const labelMap: Record<string, string> = {
-    ready: '待执行',
-    running: '执行中',
-    success: '成功',
-    failed: '失败',
-    expired: '已过期',
-  }
-  const lanes: SwimLaneType[] = []
-  for (const [status, tasks] of Object.entries(groups)) {
-    // 按 next_run_at 升序，取最近 QUEUE_LANE_LIMIT 条（满时挤出旧的）
-    const sorted = [...tasks].sort((a, b) => {
-      const ta = a.next_run_at ? new Date(a.next_run_at).getTime() : 0
-      const tb = b.next_run_at ? new Date(b.next_run_at).getTime() : 0
-      return ta - tb
-    })
-    const trimmed = sorted.slice(-QUEUE_LANE_LIMIT)
-    const tiles: RequestTile[] = trimmed.map((t) => ({
-      request_id: `q-${t.id}`,
-      timestamp: t.updated_at || t.next_run_at || new Date().toISOString(),
-      model: t.raw_model || '',
-      vendor: '__unknown__',
-      provider: t.provider_name || String(t.provider_id),
-      status: t.status === 'running' ? 'in_progress' : t.status === 'success' ? 'success' : t.status === 'failed' ? 'failure' : 'idle',
-      is_probe: true,
-      probe_origin: 'direct',
-      latency_ms: t.result_latency_ms > 0 ? t.result_latency_ms : undefined,
-    }))
-    lanes.push({
-      id: status,
-      name: labelMap[status] || status,
+  const pending = tasksForLane(['ready'], true)
+  const running = tasksForLane(['running'], true)
+  const done = tasksForLane(['success', 'failed', 'expired'], false)
+  return [
+    {
+      id: 'done',
+      name: '已执行',
       dimension: 'provider',
-      requests: tiles,
-      stats: { total: tasks.length, success: 0, failure: 0 },
+      requests: done,
+      stats: { total: done.length, success: done.filter((r) => r.status === 'success').length, failure: done.filter((r) => r.status === 'failure').length },
       isOthers: false,
-    })
-  }
-  return lanes
+    },
+    {
+      id: 'running',
+      name: '正在执行',
+      dimension: 'provider',
+      requests: running,
+      stats: { total: running.length, success: 0, failure: 0 },
+      isOthers: false,
+    },
+    {
+      id: 'pending',
+      name: '待执行',
+      dimension: 'provider',
+      requests: pending,
+      stats: { total: pending.length, success: 0, failure: 0 },
+      isOthers: false,
+    },
+  ]
 })
+
+const queueLengthDisplay = computed(() => {
+  if (monitorStats.value) return monitorStats.value.queue_size
+  return queueTasks.value.filter((t) => t.status === 'ready').length
+})
+const runningCountDisplay = computed(() => {
+  if (monitorStats.value) return monitorStats.value.running_size
+  return queueTasks.value.filter((t) => t.status === 'running').length
+})
+const concurrencyDisplay = computed(() => monitorStats.value?.monitor_concurrency ?? '—')
 
 const queueLaneSelectedLegends = ref<Set<string>>(new Set())
 </script>
@@ -451,9 +488,16 @@ const queueLaneSelectedLegends = ref<Set<string>>(new Set())
       </div>
     </div>
 
-    <!-- 2026-07-23 子项③: 自检队列泳道（待执行/执行中任务） -->
-    <div v-if="queueSwimLanes.length" class="queue-swimlanes-section">
-      <h4 class="section-title">自检队列</h4>
+    <!-- 2026-07-24: 当前探测队列（系统监测并入） -->
+    <div class="queue-swimlanes-section">
+      <div class="queue-head">
+        <h4 class="section-title">当前探测队列</h4>
+        <div class="queue-metrics">
+          <span class="queue-metric">队列长度 <strong>{{ queueLengthDisplay }}</strong></span>
+          <span class="queue-metric">运行中 <strong>{{ runningCountDisplay }}</strong></span>
+          <span class="queue-metric">并发上限 <strong>{{ concurrencyDisplay }}</strong></span>
+        </div>
+      </div>
       <div class="queue-swimlanes">
         <SwimLane
           v-for="lane in queueSwimLanes"
@@ -1035,9 +1079,32 @@ const queueLaneSelectedLegends = ref<Set<string>>(new Set())
   font-size: 13px;
 }
 
-/* 2026-07-23 子项③: 自检队列泳道 */
+/* 2026-07-24: 当前探测队列 */
 .queue-swimlanes-section {
   margin-bottom: 24px;
+}
+.queue-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-bottom: 8px;
+}
+.queue-head .section-title {
+  margin: 0;
+}
+.queue-metrics {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px 14px;
+  font-size: 12px;
+  color: var(--muted);
+}
+.queue-metric strong {
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+  margin-left: 4px;
 }
 .queue-swimlanes {
   display: flex;
