@@ -544,6 +544,34 @@ func buildV2DispatchPipeline(deps *v2DispatchDeps) *pipeline.RequestPipeline {
 		})
 	}
 
+	// === V2-P2.3: Session V2 Shadow Write (PostResponse) ===
+	// Gated by buildV2PipelineHooks via sessions_v2.enabled &&
+	// sessions_v2.shadow_write. When both flags are on, the
+	// SessionPersistHook dual-writes request logs to V2 tables
+	// (gateway.sessions / session_turns / session_bodies /
+	// session_turn_logs) in addition to the V1 telemetry path.
+	// Best-effort: errors are logged inside the hook and never
+	// propagated up.
+	//
+	// PGDBPool is the production DB pool injected by main.go via
+	// SetV2DispatchAnalysisResources. Nil pool means shadow write
+	// stays disabled (initSessionV2Writer logs WARN and the hook
+	// is still registered as a no-op for test/dev parity).
+	//
+	// The hook's Enabled() also reads sessions_v2.rollout_percent
+	// hot-reload at call time, so a startup-time snapshot only
+	// controls whether the hook is REGISTERED at all (cheap path
+	// when the feature is off).
+	for _, h := range buildV2PipelineHooks(loadSessionV2HookConfigFromSettings(), deps.PGDBPool) {
+		if h == nil {
+			continue
+		}
+		p.AddStage(&pipeline.PipelineStage{
+			Name: "session_v2_persist", Phase: pipeline.PhasePostResponse, Mode: pipeline.ModeSequential,
+			Hooks: []pipeline.Hook{h},
+		})
+	}
+
 	// NOTE (2026-07-18): deps.SensitiveWordEngine is now set in main.go
 	// before calling buildV2DispatchPipeline, so no assignment needed here.
 
