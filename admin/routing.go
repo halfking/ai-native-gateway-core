@@ -19,6 +19,7 @@ import (
 
 	"github.com/kaixuan/llm-gateway-go/discovery"
 	"github.com/kaixuan/llm-gateway-go/domains/streaming/executors" //nolint:depguard // historical violation, B1 routing.go CQRS will fix
+	"github.com/kaixuan/llm-gateway-go/domains/ursm/v2"
 	"github.com/kaixuan/llm-gateway-go/domains/ursm/v2/api"
 	"github.com/kaixuan/llm-gateway-go/internal/upstreamurl"
 	"github.com/kaixuan/llm-gateway-go/modelname"
@@ -188,9 +189,13 @@ func (h *Handler) handleRoutingResolve(w http.ResponseWriter, r *http.Request) {
 	}
 
 	rawModels := append([]string{normalizedModel}, variants[1:]...)
-	// 2026-07-09 fix: v_routable_credential_models 视图经 migration 127/332
-	// 重写后不再暴露 credential_status/lifecycle/availability/quota 等列，
-	// 改为从已 JOIN 的 credentials(c) / credential_model_bindings(cmb) 表中获取。
+	// 2026-07-24 SQL 瘦身：cmb.available / c.circuit_state / c.cooling_until /
+	// cmb.consecutive_failures / c.consecutive_failures / cmb.success_rate /
+	// mo.p95_latency_ms 这些运行时状态在 URSM v2 里才是真相源，DB 只是
+	// credentialstate / v1 URSM 的周期性回写副本。Resolve handler 在拿到 SQL
+	// 行后会调用 h.ursmV2.FilterAndScore 按 (credential_id, raw_model) 覆写
+	// 这些字段；URSM v2 不可用（nil / ModeOff / not ready / pipeline 失败）
+	// 时落到下面的 default 分支，保留 DB 值作为 fallback。
 	rows, err := h.db.Query(ctx, `
 			SELECT
 				p.id AS provider_id,
@@ -214,21 +219,14 @@ func (h *Handler) handleRoutingResolve(w http.ResponseWriter, r *http.Request) {
 				(c.effective_at IS NULL OR c.effective_at <= now())
 					AND (c.expires_at IS NULL OR c.expires_at > now()) AS credential_in_effect,
 				c.balance_usd::float8,
-				COALESCE(c.circuit_state, 'closed') AS circuit_state,
-				c.cooling_until::text,
-				cmb.available,
 				COALESCE(cmb.routing_tier, 2) AS tier,
 				COALESCE(cmb.weight, 100) AS weight,
 				COALESCE(cmb.manual_priority, 99) AS manual_priority,
 				COALESCE(cmb.active_sessions, 0) AS active_sessions,
-				COALESCE(cmb.consecutive_failures, 0) AS consecutive_failures,
-				COALESCE(c.consecutive_failures, 0) AS credential_consecutive_failures,
 				COALESCE(cmb.billing_mode, 'per_token') AS billing_mode,
 				mo.unit_price_in_per_1m,
 				mo.unit_price_out_per_1m,
 				COALESCE(cmb.currency, 'USD') AS currency,
-				COALESCE(cmb.success_rate, 0.9)::float8 AS success_rate,
-				COALESCE(mo.p95_latency_ms, 9999) AS p95_latency_ms,
 				v.raw_model_name AS model_name,
 				COALESCE(mo.standardized_name, v.raw_model_name) AS standardized_name,
 				COALESCE(mo.unit_price_in_per_1m, 0) AS quota_cap_usd,
@@ -239,12 +237,24 @@ func (h *Handler) handleRoutingResolve(w http.ResponseWriter, r *http.Request) {
 			JOIN credentials c ON c.id = v.credential_id
 			JOIN providers p ON p.id = c.provider_id
 			JOIN credential_model_bindings cmb ON cmb.id = v.binding_id
-			LEFT JOIN model_offers mo ON mo.credential_id = v.credential_id 
+			LEFT JOIN model_offers mo ON mo.credential_id = v.credential_id
 				AND mo.raw_model_name = v.raw_model_name
+			-- 2026-07-24 fix: the ModelPicker emits models_canonical.canonical_name
+			-- (e.g. "minimax-m3"), but the previous WHERE only matched
+			-- v.raw_model_name (provider-cased, prefixed like "minimaxai/minimax-m3")
+			-- or mo.standardized_name (NULL for any legacy row that didn't go
+			-- through migration 395c). The picker never sent raw_model_name, so
+			-- canonical-only lookups silently returned zero candidates. Join
+			-- through v.canonical_id (already exposed by the view) and add a
+			-- third OR branch so canonical_name → pm.canonical_id → mc.canonical_name
+			-- resolves. models_canonical.canonical_name is lowercased by
+			-- migration 396; lower(...) is a safety net.
+			LEFT JOIN models_canonical mc ON mc.id = v.canonical_id
 			WHERE p.tenant_id = 'default'
 			  AND (
 			      lower(v.raw_model_name) = ANY($1)
 			      OR lower(COALESCE(mo.standardized_name, v.raw_model_name)) = ANY($1)
+			      OR lower(mc.canonical_name) = ANY($1)
 			  )
 				  AND p.enabled IS TRUE
 
@@ -277,16 +287,20 @@ func (h *Handler) handleRoutingResolve(w http.ResponseWriter, r *http.Request) {
 		var isRoutable bool
 		var unavailableReason *string
 
+		// Slimmed scan (2026-07-24): circuit_state / cooling_until /
+		// cmb.available / consecutive_failures / success_rate / p95_latency_ms
+		// are no longer in the SELECT — they're owned by URSM v2 and
+		// back-filled below if the manager is ready.
 		if err := rows.Scan(
 			&c.ProviderID, &c.ProviderName, &c.CatalogCode, &c.Protocol, &c.BaseURL,
 			&c.ProviderEnabled, &c.CredentialID, &c.CredentialLabel, &c.CredentialStatus,
 			&c.LifecycleStatus, &c.AvailabilityState, &c.AvailabilityRecoverAt,
 			&c.QuotaState, &c.QuotaRecoverAt, &c.ConcurrencyLimit, &c.EffectiveConcurrency,
 			&c.EffectiveAt, &c.ExpiresAt, &c.CredentialInEffect, &c.BalanceUSD,
-			&c.CircuitState, &c.CoolingUntil, &c.Available, &c.Tier, &c.Weight,
-			&c.ManualPriority, &c.ActiveSessions, &c.ConsecutiveFailures, &c.BillingMode,
-			&c.UnitPriceInPer1M, &c.UnitPriceOutPer1M, &c.Currency, &c.SuccessRate,
-			&c.P95LatencyMs, &c.ModelName, &c.StandardizedName,
+			&c.Tier, &c.Weight,
+			&c.ManualPriority, &c.ActiveSessions, &c.BillingMode,
+			&c.UnitPriceInPer1M, &c.UnitPriceOutPer1M, &c.Currency,
+			&c.ModelName, &c.StandardizedName,
 			&c.QuotaCapUSD, &c.QuotaUsedUSD,
 			&isRoutable, &unavailableReason,
 		); err != nil {
@@ -314,6 +328,135 @@ func (h *Handler) handleRoutingResolve(w http.ResponseWriter, r *http.Request) {
 		}
 		c.CompositeScore = executors.CalculateCompositeScore(pc, weights)
 		candidates = append(candidates, c)
+	}
+
+	// 2026-07-24: URSM v2 运行时状态注入。SQL 只查拓扑/配置，运行时字段
+	// (Available / CoolUntil / FailStreak / SR5m / LatP95Ms) 由 URSM v2 store
+	// 持有。如果 h.ursmV2 不可用或 ModeOff / not ready / pipeline error，
+	// 静默降级为 DB 字段填默认值（available=true / circuit_state=closed /
+	// fail_streak=0 / success_rate=0.9 / p95_latency_ms=9999），保留旧的
+	// resolve 行为。
+	//
+	// T4 保护性拒绝契约：URSM v2 Redis miss ⇒ Available=false；这里
+	// **忽略** T4 默认值 —— 只有真正拿到 NodeView 才覆写。Redis miss 的
+	// 行（新人未观测）保持 Available=true，避免误判不可用。
+	ursmManager := h.ursmV2
+	defaults := func(c *candidate) {
+		c.Available = true
+		c.CircuitState = "closed"
+		c.CoolingUntil = nil
+		c.ConsecutiveFailures = 0
+		c.CredentialConsecutiveFailures = 0
+		if c.SuccessRate == 0 {
+			c.SuccessRate = 0.9
+		}
+		if c.P95LatencyMs == 0 {
+			c.P95LatencyMs = 9999
+		}
+	}
+	switch {
+	case ursmManager == nil, ursmManager.Mode() == api.ModeOff:
+		for i := range candidates {
+			defaults(&candidates[i])
+		}
+	case !ursmManager.Ready(ctx):
+		slog.Debug("routing resolve: ursm v2 not ready, using DB defaults")
+		for i := range candidates {
+			defaults(&candidates[i])
+		}
+	default:
+		seeds := make([]v2.CandidateSeed, 0, len(candidates))
+		for _, c := range candidates {
+			var priceIn, priceOut float64
+			if c.UnitPriceInPer1M != nil {
+				priceIn = *c.UnitPriceInPer1M
+			}
+			if c.UnitPriceOutPer1M != nil {
+				priceOut = *c.UnitPriceOutPer1M
+			}
+			seeds = append(seeds, v2.CandidateSeed{
+				ProviderID:   c.ProviderID,
+				CredentialID: c.CredentialID,
+				RawModel:     c.ModelName,
+				Canonical:    c.StandardizedName,
+				TenantID:     "default",
+				PriceIn:      priceIn,
+				PriceOut:     priceOut,
+				BillingMode:  c.BillingMode,
+				Trust:        0,
+				BaseURLMs:    0,
+			})
+		}
+		views, err := ursmManager.FilterAndScore(ctx, seeds)
+		if err != nil {
+			slog.Warn("routing resolve: ursm v2 filter failed, using DB defaults",
+				"error", err.Error(), "model_count", len(seeds))
+			for i := range candidates {
+				defaults(&candidates[i])
+			}
+		} else {
+			if len(views) != len(candidates) {
+				slog.Warn("routing resolve: ursm v2 partial result",
+					"got", len(views), "want", len(candidates))
+			}
+			now := time.Now()
+			for i, c := range candidates {
+				defaults(&c) // baseline；URSM 拿到 NodeView 才覆盖
+				if i >= len(views) {
+					continue
+				}
+				v := views[i]
+				if v.CredentialID != c.CredentialID || v.RawModel != c.ModelName {
+					slog.Warn("routing resolve: ursm v2 view out of order",
+						"want_cred", c.CredentialID, "want_model", c.ModelName,
+						"got_cred", v.CredentialID, "got_model", v.RawModel)
+					continue
+				}
+				c.Available = v.Available
+				c.ConsecutiveFailures = v.FailStreak
+				c.CredentialConsecutiveFailures = v.FailStreak
+				if v.SR5m > 0 {
+					c.SuccessRate = v.SR5m
+				}
+				if v.LatP95Ms > 0 {
+					c.P95LatencyMs = v.LatP95Ms
+				}
+				if !v.CoolUntil.IsZero() && v.CoolUntil.After(now) {
+					c.CircuitState = "open"
+					s := v.CoolUntil.UTC().Format(time.RFC3339)
+					c.CoolingUntil = &s
+				} else {
+					c.CircuitState = "closed"
+					c.CoolingUntil = nil
+				}
+				// Re-derive Routable: SQL view covers schema gating
+				// (provider enabled, plan compatibility, etc.); URSM v2
+				// covers runtime gating. AND them together.
+				if !c.Routable {
+					continue // SQL view 已经否决 —— 保持它的原因
+				}
+				if !v.Available {
+					c.Routable = false
+					c.RuntimeRoutable = false
+					if v.Reason != "" {
+						c.BlockReason = v.Reason
+					} else {
+						c.BlockReason = "node_unavailable_by_ursm_v2"
+					}
+					continue
+				}
+				if c.CircuitState == "open" {
+					c.Routable = false
+					c.RuntimeRoutable = false
+					if v.Reason != "" {
+						c.BlockReason = v.Reason
+					} else {
+						c.BlockReason = "node_in_cool_until"
+					}
+					continue
+				}
+			}
+		}
 	}
 
 	toProviderCandidate := func(c candidate) provider.Candidate {
@@ -388,6 +531,9 @@ func (h *Handler) handleRoutingResolve(w http.ResponseWriter, r *http.Request) {
 		"candidates":      candidates,
 	})
 }
+
+// (applyURSMv2Overrides inlined below — see handler body; it must be a
+// closure because the local `candidate` type is private to the handler.)
 
 // isRoutable and blockReason work on the anonymous candidate struct via an
 // interface — the struct is defined locally inside handleListCandidates.

@@ -1089,7 +1089,7 @@ onUnmounted(() => stopPoll())
           <span class="layer-tag l2">L2</span>
           <h3>凭据路由解析</h3>
         </div>
-        <div class="resolve-row">
+        <div class="resolve-controls">
           <div class="resolve-picker">
             <ModelPicker
               v-model="modelInput"
@@ -1138,10 +1138,25 @@ onUnmounted(() => stopPoll())
         </div>
         <div v-if="resolveCandidates.length === 0" class="empty-hint">该模型暂无凭据配置</div>
         <div v-else class="table-wrap">
-          <table class="dense-table">
+          <table class="dense-table resolve-table">
+            <colgroup>
+              <col v-if="superAdmin" class="col-drag">
+              <col class="col-rank">
+              <col class="col-availability">
+              <col class="col-provider">
+              <col class="col-upstream">
+              <col class="col-tier">
+              <col class="col-actions">
+            </colgroup>
             <thead>
               <tr>
-                <th v-if="superAdmin" aria-label="排序">↕</th><th>#</th><th>可用性</th><th>供应商 / 凭据</th><th>上游</th><th>Tier · 权重</th><th></th>
+                <th v-if="superAdmin" style="width: 24px" aria-label="排序">↕</th>
+                <th style="width: 32px">#</th>
+                <th style="width: 92px">可用性</th>
+                <th>供应商 / 凭据</th>
+                <th style="width: 220px">上游</th>
+                <th style="width: 120px">Tier · 权重</th>
+                <th style="width: 120px"></th>
               </tr>
             </thead>
             <tbody>
@@ -1166,7 +1181,7 @@ onUnmounted(() => stopPoll())
                   </div>
                 </td>
                 <td>
-                  <div>{{ c.provider_name }}</div>
+                  <div class="provider-name">{{ c.provider_name }}</div>
                   <div class="text-muted">#{{ c.credential_id }} · {{ c.credential_label }}</div>
                 </td>
                 <td><code class="mono-sm">{{ c.model_name }}</code></td>
@@ -1787,6 +1802,22 @@ onUnmounted(() => stopPoll())
 .text-muted { color: var(--muted); font-size: 10px; }
 .text-danger { color: var(--danger); font-size: 10px; }
 
+.resolve-controls {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: nowrap;
+  margin-bottom: 6px;
+}
+.resolve-controls .resolve-picker { flex: 1; min-width: 200px; }
+.resolve-controls .resolve-profile {
+  width: 140px;
+  flex-shrink: 0;
+  font-size: 11px;
+  padding: 3px 6px;
+}
+.resolve-controls .btn { flex-shrink: 0; }
+
 .resolve-row { display: table-row; }
 .resolve-row[draggable="true"] { cursor: grab; }
 .resolve-row[draggable="true"]:active { cursor: grabbing; }
@@ -1800,14 +1831,24 @@ onUnmounted(() => stopPoll())
   user-select: none;
 }
 .resolve-row .rank-cell {
-  width: 28px;
+  width: 32px;
   color: var(--muted);
   font-variant-numeric: tabular-nums;
   text-align: right;
 }
 .reorder-error { color: var(--kx-danger); font-size: 10px; }
-.resolve-picker { flex: 1; min-width: 200px; }
-.resolve-profile { width: 120px; font-size: 11px; padding: 3px 6px; }
+.resolve-picker { min-width: 200px; }
+.resolve-profile { font-size: 11px; padding: 3px 6px; }
+
+.resolve-table { table-layout: fixed; }
+.resolve-table thead th { white-space: nowrap; }
+.resolve-table tbody td { vertical-align: top; }
+.resolve-table .col-provider { width: auto; }
+.resolve-table .col-provider .provider-name { font-weight: 600; }
+.resolve-table .col-upstream { word-break: break-all; }
+.resolve-table .col-upstream code { word-break: break-all; display: inline-block; max-width: 100%; }
+.resolve-table .row-actions { white-space: nowrap; text-align: right; }
+.resolve-table .block-reason { font-size: 10px; margin-top: 2px; }
 .resolve-meta { display: flex; flex-wrap: wrap; gap: 8px 16px; font-size: 11px; }
 .resolve-meta code { font-size: 10px; }
 .plan-order { margin-top: 6px; font-size: 10px; color: var(--muted); word-break: break-all; }

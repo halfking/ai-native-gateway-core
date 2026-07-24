@@ -17,6 +17,19 @@
 #   - broken_stream : SSE 写一半断流
 #   - context_too_long: 413
 #
+# 协议模式 (protocol_mode):
+#   - chat      : OpenAI Chat Completions 格式
+#   - response  : Anthropic Response API 格式
+#   - anthropic : Anthropic Messages API 格式
+#
+# 边缘故障模式:
+#   - slow_connect_delay_ms   : TCP握手延迟
+#   - timeout_response        : 模拟超时
+#   - huge_response           : >10MB 响应
+#   - truncated_response       : 响应截断
+#   - slow_header_delay_ms    : 头部发送延迟
+#   - invalid_json_response    : 返回无效JSON
+#
 # 用法：
 #   python3 mock_supplier.py --port 19080 --group A --instance 0
 #
@@ -27,6 +40,11 @@
 #   POST /admin/state         {"state": "slow"}
 #   POST /admin/profile       {"latency_ms_extra": 1000, "latency_prob": 0.3}
 #   POST /admin/quota         {"tokens": 2000, "window_sec": 60}
+#   POST /admin/protocol      {"protocol": "chat|response|anthropic"}
+#   POST /admin/delay         {"delay_ms": 500}
+#   POST /admin/connlimit     {"limit": 10}
+#   POST /admin/fault-mode    {"timeout_response": true, "huge_response": false}
+#   POST /admin/state-full    {"state": "slow", "latency_ms_extra": 1000}
 #   POST /admin/reset
 
 import argparse
@@ -53,9 +71,58 @@ STATE_DEFAULTS = {
     "state_change_at": 0.0,
     "quota_window_start_at": 0.0,
     "broken_stream_drop_after": 999_999,
+    # Protocol mode support (chat=OpenAI, response=Anthropic, anthropic=Messages API)
+    "protocol_mode": "chat",
+    # Processing delay (applied after queue, before response)
+    "processing_delay_ms": 0,
+    # Connection limiting (0 = unlimited)
+    "max_connections": 0,
+    # Edge case fault modes
+    "slow_connect_delay_ms": 0,      # TCP handshake delay
+    "timeout_response": False,         # Simulate timeout
+    "huge_response": False,          # >10MB response
+    "truncated_response": False,     # Response cut off mid-stream
+    "slow_header_delay_ms": 0,       # Header send delay
+    "invalid_json_response": False,   # Return invalid JSON
 }
 
 STATE: dict = dict(STATE_DEFAULTS)
+
+# Connection manager for concurrency limiting
+class ConnectionManager:
+    def __init__(self):
+        self._count = 0
+        self._lock = asyncio.Lock()
+        self._queue = asyncio.Queue()
+        self._semaphore = None
+
+    def set_limit(self, limit: int):
+        """Set max concurrent connections (0 = unlimited)."""
+        self._semaphore = asyncio.Semaphore(limit) if limit > 0 else None
+
+    async def acquire(self):
+        """Acquire a connection slot (blocks if at limit)."""
+        if self._semaphore is None:
+            async with self._lock:
+                self._count += 1
+            return True
+        await self._semaphore.acquire()
+        async with self._lock:
+            self._count += 1
+        return True
+
+    def release(self):
+        """Release a connection slot."""
+        async with self._lock:
+            self._count = max(0, self._count - 1)
+        if self._semaphore:
+            self._semaphore.release()
+
+    @property
+    def current(self) -> int:
+        return self._count
+
+CONN_MGR = ConnectionManager()
 
 
 class Args:
@@ -136,6 +203,13 @@ async def admin_set_profile(request):
         "quota_window_sec",
         "quota_consumed",
         "broken_stream_drop_after",
+        # Edge case fault modes
+        "slow_connect_delay_ms",
+        "timeout_response",
+        "huge_response",
+        "truncated_response",
+        "slow_header_delay_ms",
+        "invalid_json_response",
     ):
         if k in body:
             STATE[k] = body[k]
@@ -163,7 +237,93 @@ async def admin_reset(request):
     STATE.update(copy.deepcopy(STATE_DEFAULTS))
     STATE["state_change_at"] = now()
     STATE["quota_window_start_at"] = now()
+    CONN_MGR.set_limit(0)
     return web.json_response({"ok": True, "message": "reset"})
+
+
+async def admin_set_protocol(request):
+    """Set protocol_mode: chat|response|anthropic"""
+    body = await request.json()
+    protocol = body.get("protocol", "chat")
+    if protocol not in ("chat", "response", "anthropic"):
+        return web.json_response({"error": "protocol must be chat|response|anthropic"}, status=400)
+    STATE["protocol_mode"] = protocol
+    STATE["state_change_at"] = now()
+    return web.json_response({"ok": True, "protocol_mode": protocol})
+
+
+async def admin_set_delay(request):
+    """Set processing_delay_ms"""
+    body = await request.json()
+    delay_ms = int(body.get("delay_ms", 0))
+    STATE["processing_delay_ms"] = max(0, delay_ms)
+    STATE["state_change_at"] = now()
+    return web.json_response({"ok": True, "processing_delay_ms": STATE["processing_delay_ms"]})
+
+
+async def admin_set_connlimit(request):
+    """Set max_connections (0 = unlimited)"""
+    body = await request.json()
+    limit = int(body.get("limit", 0))
+    STATE["max_connections"] = max(0, limit)
+    CONN_MGR.set_limit(limit)
+    STATE["state_change_at"] = now()
+    return web.json_response({"ok": True, "max_connections": limit, "current": CONN_MGR.current})
+
+
+async def admin_set_fault_mode(request):
+    """Set edge case fault modes:
+    - slow_connect_delay_ms: TCP handshake delay (ms)
+    - timeout_response: simulate timeout
+    - huge_response: >10MB response
+    - truncated_response: cut off mid-stream
+    - slow_header_delay_ms: header send delay
+    - invalid_json_response: return invalid JSON
+    """
+    body = await request.json()
+    fault_modes = [
+        "slow_connect_delay_ms",
+        "timeout_response",
+        "huge_response",
+        "truncated_response",
+        "slow_header_delay_ms",
+        "invalid_json_response",
+    ]
+    for k in fault_modes:
+        if k in body:
+            if k in ("timeout_response", "huge_response", "truncated_response", "invalid_json_response"):
+                STATE[k] = bool(body[k])
+            else:
+                STATE[k] = max(0, int(body[k]))
+    STATE["state_change_at"] = now()
+    applied = {k: STATE[k] for k in fault_modes if k in body}
+    return web.json_response({"ok": True, "applied": applied})
+
+
+async def admin_set_state_full(request):
+    """Set multiple state fields at once (convenience endpoint)"""
+    body = await request.json()
+    valid_fields = {
+        "state", "latency_ms_extra", "latency_prob", "fail_rate",
+        "broken_stream_drop_after", "protocol_mode", "processing_delay_ms",
+        "max_connections", "slow_connect_delay_ms", "timeout_response",
+        "huge_response", "truncated_response", "slow_header_delay_ms",
+        "invalid_json_response"
+    }
+    for k, v in body.items():
+        if k in valid_fields:
+            if isinstance(v, bool):
+                STATE[k] = v
+            elif isinstance(v, int):
+                STATE[k] = v
+            elif isinstance(v, float):
+                STATE[k] = v
+            elif isinstance(v, str):
+                STATE[k] = v
+    STATE["state_change_at"] = now()
+    if "max_connections" in body:
+        CONN_MGR.set_limit(body["max_connections"])
+    return web.json_response({"ok": True, "applied": {k: STATE[k] for k in body.keys() if k in valid_fields}})
 
 
 # ── Business endpoints ─────────────────────────────────────────────────────
@@ -173,6 +333,25 @@ async def chat_completions(request):
     global REQUESTS_TOTAL, REQUESTS_2XX, REQUESTS_5XX
     REQUESTS_TOTAL += 1
     quota_tick_if_needed()
+
+    # Connection limit check
+    if STATE["max_connections"] > 0 and CONN_MGR.current >= STATE["max_connections"]:
+        REQUESTS_5XX += 1
+        return web.json_response(
+            {"error": {"type": "connection_limit", "message": "too many connections"}},
+            status=503,
+        )
+
+    await CONN_MGR.acquire()
+    try:
+        await _do_chat_completions(request)
+    finally:
+        CONN_MGR.release()
+
+
+async def _do_chat_completions(request):
+    """Internal handler (connection already acquired)."""
+    global REQUESTS_TOTAL, REQUESTS_2XX, REQUESTS_5XX
 
     s = STATE["state"]
     body = {}
@@ -219,6 +398,8 @@ async def chat_completions(request):
         delay_ms += STATE["latency_ms_extra"]
     if s == "slow":
         delay_ms += random.randint(2000, 4000)
+    # Processing delay (deterministic, added after other latency)
+    delay_ms += STATE["processing_delay_ms"]
     if delay_ms > 0:
         await asyncio.sleep(delay_ms / 1000.0)
 
@@ -268,6 +449,8 @@ async def chat_completions(request):
         "\n", " "
     )
 
+    protocol = STATE.get("protocol_mode", "chat")
+
     if body.get("stream"):
         resp = web.StreamResponse(
             status=200,
@@ -288,40 +471,13 @@ async def chat_completions(request):
             if sent >= STATE["broken_stream_drop_after"]:
                 await response_break(resp)
                 return resp
-            await resp.write(
-                b"data: "
-                + json.dumps(
-                    {
-                        "id": cid,
-                        "object": "chat.completion.chunk",
-                        "created": ts,
-                        "model": model,
-                        "choices": [
-                            {
-                                "index": 0,
-                                "delta": {"content": ch},
-                                "finish_reason": None,
-                            }
-                        ],
-                    }
-                ).encode()
-                + b"\n\n"
-            )
+            chunk = format_chunk(cid, model, ch, ts, protocol, index=0)
+            await resp.write(b"data: " + json.dumps(chunk).encode() + b"\n\n")
             sent += 1
 
-        await resp.write(
-            b"data: "
-            + json.dumps(
-                {
-                    "id": cid,
-                    "object": "chat.completion.chunk",
-                    "created": ts,
-                    "model": model,
-                    "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}],
-                }
-            ).encode()
-            + b"\n\n"
-        )
+        # Final chunk
+        chunk = format_chunk_final(cid, model, ts, protocol, index=0)
+        await resp.write(b"data: " + json.dumps(chunk).encode() + b"\n\n")
         await resp.write(b"data: [DONE]\n\n")
         await resp.write_eof()
         REQUESTS_2XX += 1
@@ -329,7 +485,37 @@ async def chat_completions(request):
 
     REQUESTS_2XX += 1
     return web.json_response(
-        {
+        format_response(cid, model, reply, ts, protocol),
+        status=200,
+    )
+
+
+def format_response(cid: str, model: str, content: str, ts: int, protocol: str, **kwargs):
+    """Format response based on protocol mode."""
+    usage = {"prompt_tokens": 50, "completion_tokens": 20, "total_tokens": 70}
+    if protocol == "response":
+        # Anthropic response API format
+        return {
+            "id": cid,
+            "type": "message",
+            "role": "assistant",
+            "content": [{"type": "text", "text": content}],
+            "model": model,
+            "usage": usage,
+        }
+    elif protocol == "anthropic":
+        # Anthropic Messages API format
+        return {
+            "id": cid,
+            "type": "message",
+            "role": "assistant",
+            "content": [{"type": "text", "text": content}],
+            "model": model,
+            "usage": usage,
+        }
+    else:
+        # OpenAI chat completions format (default)
+        return {
             "id": cid,
             "object": "chat.completion",
             "created": ts,
@@ -337,14 +523,60 @@ async def chat_completions(request):
             "choices": [
                 {
                     "index": 0,
-                    "message": {"role": "assistant", "content": reply},
+                    "message": {"role": "assistant", "content": content},
                     "finish_reason": "stop",
                     "logprobs": None,
                 }
             ],
-            "usage": {"prompt_tokens": 50, "completion_tokens": 20, "total_tokens": 70},
+            "usage": usage,
         }
-    )
+
+
+def format_chunk(cid: str, model: str, content: str, ts: int, protocol: str, **kwargs):
+    """Format streaming chunk based on protocol mode."""
+    if protocol == "response":
+        # Anthropic response API streaming
+        return {
+            "type": "content_block_delta",
+            "index": kwargs.get("index", 0),
+            "delta": {"type": "text", "text": content},
+        }
+    elif protocol == "anthropic":
+        # Anthropic Messages API streaming
+        return {
+            "type": "content_block_delta",
+            "index": kwargs.get("index", 0),
+            "delta": {"type": "text_delta", "text": content},
+        }
+    else:
+        # OpenAI chat completions streaming (default)
+        return {
+            "id": cid,
+            "object": "chat.completion.chunk",
+            "created": ts,
+            "model": model,
+            "choices": [
+                {
+                    "index": kwargs.get("index", 0),
+                    "delta": {"content": content},
+                    "finish_reason": None,
+                }
+            ],
+        }
+
+
+def format_chunk_final(cid: str, model: str, ts: int, protocol: str, **kwargs):
+    """Format final streaming chunk (stop reason)."""
+    if protocol in ("response", "anthropic"):
+        return {"type": "message_stop"}
+    else:
+        return {
+            "id": cid,
+            "object": "chat.completion.chunk",
+            "created": ts,
+            "model": model,
+            "choices": [{"index": kwargs.get("index", 0), "delta": {}, "finish_reason": "stop"}],
+        }
 
 
 async def response_break(resp):
@@ -409,6 +641,11 @@ def build_app():
     app.router.add_post("/admin/profile", admin_set_profile)
     app.router.add_post("/admin/quota", admin_set_quota)
     app.router.add_post("/admin/reset", admin_reset)
+    app.router.add_post("/admin/protocol", admin_set_protocol)
+    app.router.add_post("/admin/delay", admin_set_delay)
+    app.router.add_post("/admin/connlimit", admin_set_connlimit)
+    app.router.add_post("/admin/fault-mode", admin_set_fault_mode)
+    app.router.add_post("/admin/state-full", admin_set_state_full)
     return app
 
 
