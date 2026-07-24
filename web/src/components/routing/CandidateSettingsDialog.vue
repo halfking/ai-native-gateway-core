@@ -1,6 +1,5 @@
 <script setup lang="ts">
 import { reactive, ref, computed } from 'vue'
-import { ElMessage, ElMessageBox } from 'element-plus'
 import { isSuperAdmin } from '../../store'
 import { patchCandidateBinding, emergencyRepair, type RoutingCandidate, type EmergencyRepairAction } from '../../api/routing'
 import { updateCredential } from '../../api/providers'
@@ -18,6 +17,8 @@ const emit = defineEmits<{
 
 const saving = ref(false)
 const activeTab = ref<'settings' | 'emergency'>('settings')
+const settingsMsg = ref('')
+const settingsMsgKind = ref<'ok' | 'err' | 'warn'>('ok')
 
 const form = reactive({
   manual_priority: props.candidate.manual_priority ?? 99,
@@ -27,9 +28,12 @@ const form = reactive({
   lifecycle_status: (props.candidate.lifecycle_status || 'active') as string,
 })
 
-// Emergency repair state
+// Emergency repair state — confirm stays inside this dialog (no ElMessageBox:
+// project has no Element Plus CSS, so MessageBox rendered unstyled behind cs-overlay).
 const emergencyRepairing = ref<EmergencyRepairAction | null>(null)
 const emergencyErr = ref('')
+const emergencyOk = ref('')
+const pendingRepair = ref<{ action: EmergencyRepairAction; label: string } | null>(null)
 
 // 乐观更新快照；保存失败时回滚到这里的值。
 const prev = {
@@ -80,38 +84,38 @@ const canResetErrors = computed(() =>
   (props.candidate.credential_consecutive_failures ?? 0) > 0
 )
 
-async function doEmergencyRepair(action: EmergencyRepairAction, label: string) {
+function requestEmergencyRepair(action: EmergencyRepairAction, label: string) {
   emergencyErr.value = ''
-  try {
-    await ElMessageBox.confirm(
-      `确定要执行「${label}」操作吗？\n\n凭据 ID: ${props.candidate.credential_id}\n模型: ${props.candidate.model_name}\n\n此操作会绕过正常的状态检测逻辑，请确认您知道在做什么。`,
-      `紧急修复 — ${label}`,
-      {
-        confirmButtonText: '确认执行',
-        cancelButtonText: '取消',
-        type: 'warning',
-        confirmButtonClass: 'el-button--danger',
-      },
-    )
-  } catch {
-    // User cancelled
-    return
-  }
+  emergencyOk.value = ''
+  pendingRepair.value = { action, label }
+  activeTab.value = 'emergency'
+}
 
-  emergencyRepairing.value = action
+function cancelPendingRepair() {
+  if (emergencyRepairing.value) return
+  pendingRepair.value = null
+}
+
+async function confirmEmergencyRepair() {
+  const pending = pendingRepair.value
+  if (!pending || emergencyRepairing.value) return
+
+  emergencyErr.value = ''
+  emergencyOk.value = ''
+  emergencyRepairing.value = pending.action
   try {
     await emergencyRepair({
       credential_id: props.candidate.credential_id,
       raw_model: props.candidate.model_name,
-      action,
-      reason: `admin via routing-v2 resolve dialog: ${label}`,
+      action: pending.action,
+      reason: `admin via routing-v2 resolve dialog: ${pending.label}`,
     })
-    ElMessage.success(`「${label}」执行成功`)
+    emergencyOk.value = `「${pending.label}」执行成功`
+    pendingRepair.value = null
     emit('applied', { credential_id: props.candidate.credential_id, raw_model: props.candidate.model_name })
-    emit('close')
+    window.setTimeout(() => emit('close'), 600)
   } catch (e: unknown) {
     emergencyErr.value = e instanceof Error ? e.message : '操作失败'
-    ElMessage.error(`「${label}」失败: ${emergencyErr.value}`)
   } finally {
     emergencyRepairing.value = null
   }
@@ -119,10 +123,12 @@ async function doEmergencyRepair(action: EmergencyRepairAction, label: string) {
 
 async function save() {
   if (!canEdit.value) {
-    ElMessage.warning('仅系统管理员可以修改设置')
+    settingsMsgKind.value = 'warn'
+    settingsMsg.value = '仅系统管理员可以修改设置'
     return
   }
   saving.value = true
+  settingsMsg.value = ''
   const touched: Array<{ ok: boolean; label: string }> = []
   try {
     const rawModel = props.candidate.model_name
@@ -200,15 +206,18 @@ async function save() {
     }
     const fails = touched.filter((t) => !t.ok)
     if (fails.length === 0) {
-      ElMessage.success('设置已保存（部分字段刷新后生效）')
+      settingsMsgKind.value = 'ok'
+      settingsMsg.value = '设置已保存（部分字段刷新后生效）'
       emit('applied', { credential_id: props.candidate.credential_id, raw_model: props.candidate.model_name })
-      emit('close')
+      window.setTimeout(() => emit('close'), 400)
     } else if (fails.length === touched.length) {
-      ElMessage.error(`保存失败：${fails.map((f) => f.label).join('；')}`)
+      settingsMsgKind.value = 'err'
+      settingsMsg.value = `保存失败：${fails.map((f) => f.label).join('；')}`
     } else {
-      ElMessage.warning(`部分保存失败：${fails.map((f) => f.label).join('；')}`)
+      settingsMsgKind.value = 'warn'
+      settingsMsg.value = `部分保存失败：${fails.map((f) => f.label).join('；')}`
       emit('applied', { credential_id: props.candidate.credential_id, raw_model: props.candidate.model_name })
-      emit('close')
+      window.setTimeout(() => emit('close'), 800)
     }
   } finally {
     saving.value = false
@@ -246,6 +255,11 @@ async function save() {
           <p v-if="!canEdit" class="cs-warn">
             ⚠ 仅 super_admin 可见 / 可写；当前账号无权限，字段全部只读。
           </p>
+          <p
+            v-if="settingsMsg && activeTab === 'settings'"
+            class="cs-settings-msg"
+            :class="`cs-settings-msg--${settingsMsgKind}`"
+          >{{ settingsMsg }}</p>
 
           <!-- Settings Tab -->
           <template v-if="activeTab === 'settings'">
@@ -293,9 +307,23 @@ async function save() {
               </ul>
             </div>
 
-            <div class="cs-emergency-actions">
+            <div v-if="pendingRepair" class="cs-confirm-panel" role="alertdialog" aria-labelledby="cs-confirm-title">
+              <p id="cs-confirm-title" class="cs-confirm-title">确认执行「{{ pendingRepair.label }}」？</p>
+              <p class="cs-confirm-body">
+                凭据 ID: {{ candidate.credential_id }} · 模型: {{ candidate.model_name }}
+                <br />此操作会绕过正常状态检测逻辑，请确认您知道在做什么。
+              </p>
+              <div class="cs-confirm-actions">
+                <button type="button" class="btn btn-ghost" :disabled="emergencyRepairing !== null" @click="cancelPendingRepair">取消</button>
+                <button type="button" class="btn btn-danger" :disabled="emergencyRepairing !== null" @click="confirmEmergencyRepair">
+                  {{ emergencyRepairing ? '处理中…' : '确认执行' }}
+                </button>
+              </div>
+            </div>
+
+            <div class="cs-emergency-actions" :class="{ 'cs-emergency-actions--dimmed': !!pendingRepair }">
               <!-- Force Disable -->
-              <div class="cs-emergency-card cs-emergency-card--danger" :class="{ disabled: !canForceDisable || emergencyRepairing !== null }">
+              <div class="cs-emergency-card cs-emergency-card--danger" :class="{ disabled: !canForceDisable || emergencyRepairing !== null || !!pendingRepair }">
                 <div class="cs-emergency-card-header">
                   <span class="cs-emergency-icon">🔴</span>
                   <span class="cs-emergency-title">强制禁用</span>
@@ -304,15 +332,15 @@ async function save() {
                 <div class="cs-emergency-meta">当前凭据状态: {{ candidate.credential_status }}</div>
                 <button
                   class="btn btn-danger btn-sm"
-                  :disabled="!canForceDisable || emergencyRepairing !== null"
-                  @click="doEmergencyRepair('force_disable', '强制禁用')"
+                  :disabled="!canForceDisable || emergencyRepairing !== null || !!pendingRepair"
+                  @click="requestEmergencyRepair('force_disable', '强制禁用')"
                 >
-                  {{ emergencyRepairing === 'force_disable' ? '处理中…' : '强制禁用' }}
+                  强制禁用
                 </button>
               </div>
 
               <!-- Force Enable -->
-              <div class="cs-emergency-card cs-emergency-card--success" :class="{ disabled: !canForceEnable || emergencyRepairing !== null }">
+              <div class="cs-emergency-card cs-emergency-card--success" :class="{ disabled: !canForceEnable || emergencyRepairing !== null || !!pendingRepair }">
                 <div class="cs-emergency-card-header">
                   <span class="cs-emergency-icon">🟢</span>
                   <span class="cs-emergency-title">强制启用</span>
@@ -321,15 +349,15 @@ async function save() {
                 <div class="cs-emergency-meta">当前凭据状态: {{ candidate.credential_status }}</div>
                 <button
                   class="btn btn-success btn-sm"
-                  :disabled="!canForceEnable || emergencyRepairing !== null"
-                  @click="doEmergencyRepair('force_enable', '强制启用')"
+                  :disabled="!canForceEnable || emergencyRepairing !== null || !!pendingRepair"
+                  @click="requestEmergencyRepair('force_enable', '强制启用')"
                 >
-                  {{ emergencyRepairing === 'force_enable' ? '处理中…' : '强制启用' }}
+                  强制启用
                 </button>
               </div>
 
               <!-- Clear Circuit -->
-              <div class="cs-emergency-card cs-emergency-card--warning" :class="{ disabled: !canClearCircuit || emergencyRepairing !== null }">
+              <div class="cs-emergency-card cs-emergency-card--warning" :class="{ disabled: !canClearCircuit || emergencyRepairing !== null || !!pendingRepair }">
                 <div class="cs-emergency-card-header">
                   <span class="cs-emergency-icon">🟡</span>
                   <span class="cs-emergency-title">清除熔断状态</span>
@@ -338,15 +366,15 @@ async function save() {
                 <div class="cs-emergency-meta">当前熔断状态: <strong>{{ candidate.circuit_state || 'closed' }}</strong></div>
                 <button
                   class="btn btn-warning btn-sm"
-                  :disabled="!canClearCircuit || emergencyRepairing !== null"
-                  @click="doEmergencyRepair('clear_circuit', '清除熔断状态')"
+                  :disabled="!canClearCircuit || emergencyRepairing !== null || !!pendingRepair"
+                  @click="requestEmergencyRepair('clear_circuit', '清除熔断状态')"
                 >
-                  {{ emergencyRepairing === 'clear_circuit' ? '处理中…' : '清除熔断' }}
+                  清除熔断
                 </button>
               </div>
 
               <!-- Reset Errors -->
-              <div class="cs-emergency-card cs-emergency-card--info" :class="{ disabled: !canResetErrors || emergencyRepairing !== null }">
+              <div class="cs-emergency-card cs-emergency-card--info" :class="{ disabled: !canResetErrors || emergencyRepairing !== null || !!pendingRepair }">
                 <div class="cs-emergency-card-header">
                   <span class="cs-emergency-icon">🔵</span>
                   <span class="cs-emergency-title">重置错误计数</span>
@@ -355,14 +383,15 @@ async function save() {
                 <div class="cs-emergency-meta">当前连续失败: <strong>{{ candidate.credential_consecutive_failures ?? candidate.consecutive_failures ?? 0 }} 次</strong></div>
                 <button
                   class="btn btn-info btn-sm"
-                  :disabled="!canResetErrors || emergencyRepairing !== null"
-                  @click="doEmergencyRepair('reset_errors', '重置错误计数')"
+                  :disabled="!canResetErrors || emergencyRepairing !== null || !!pendingRepair"
+                  @click="requestEmergencyRepair('reset_errors', '重置错误计数')"
                 >
-                  {{ emergencyRepairing === 'reset_errors' ? '处理中…' : '重置计数' }}
+                  重置计数
                 </button>
               </div>
             </div>
 
+            <p v-if="emergencyOk" class="cs-emergency-ok">{{ emergencyOk }}</p>
             <p v-if="emergencyErr" class="cs-emergency-err">{{ emergencyErr }}</p>
           </template>
         </div>
@@ -383,10 +412,69 @@ async function save() {
   position: fixed;
   inset: 0;
   background: rgba(0, 0, 0, 0.28);
-  z-index: 75;
+  z-index: 1100;
   display: flex;
   align-items: center;
   justify-content: center;
+}
+.cs-settings-msg {
+  margin: 0 0 10px;
+  padding: 6px 10px;
+  border-radius: 4px;
+  font-size: 12px;
+  border-left: 3px solid transparent;
+}
+.cs-settings-msg--ok {
+  background: rgba(22, 163, 74, 0.1);
+  border-left-color: var(--kx-success);
+  color: var(--kx-text);
+}
+.cs-settings-msg--err {
+  background: rgba(220, 38, 38, 0.1);
+  border-left-color: var(--kx-danger);
+  color: var(--kx-danger);
+}
+.cs-settings-msg--warn {
+  background: var(--kx-warning-soft, rgba(217, 119, 6, 0.12));
+  border-left-color: var(--kx-warning);
+  color: var(--kx-text);
+}
+.cs-confirm-panel {
+  margin-bottom: 14px;
+  padding: 12px;
+  border-radius: 8px;
+  border: 1px solid var(--kx-danger);
+  background: rgba(220, 38, 38, 0.08);
+}
+.cs-confirm-title {
+  margin: 0 0 6px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--kx-text);
+}
+.cs-confirm-body {
+  margin: 0 0 10px;
+  font-size: 11px;
+  line-height: 1.55;
+  color: var(--kx-muted);
+}
+.cs-confirm-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+.cs-emergency-actions--dimmed {
+  opacity: 0.45;
+  pointer-events: none;
+}
+.cs-emergency-ok {
+  margin: 12px 0 0;
+  padding: 6px 10px;
+  background: rgba(22, 163, 74, 0.1);
+  border-left: 3px solid var(--kx-success);
+  border-radius: 4px;
+  font-size: 11px;
+  color: var(--kx-text);
 }
 .cs-dialog {
   width: min(560px, 92vw);
