@@ -46,7 +46,7 @@ type Config struct {
 	NodeTTL             time.Duration
 	ScoringWeights      ScoringWeights
 	// CoolSeconds is the cooling duration (in seconds) when a node is disabled
-	// due to consecutive failures. Defaults to 300 (5 minutes) if not set.
+	// due to consecutive failures. Defaults to 120 (2 minutes) if not set.
 	// This should be aligned with the circuit breaker's cooling policies to
 	// ensure consistent behavior between the in-memory breaker and URSM v2.
 	CoolSeconds int
