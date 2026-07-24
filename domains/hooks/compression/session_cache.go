@@ -40,6 +40,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/kaixuan/llm-gateway-go/domains/session/v2"
 	"github.com/kaixuan/llm-gateway-go/settings"
 )
 
@@ -186,8 +187,9 @@ type SessionCache struct {
 	ll *list.List          // front = MRU, back = LRU; O(1) promote/evict
 	l1 map[string]*l1Entry // key = tenantID+":"+gwSessionID → entry (entry.elem is the list node)
 
-	redis SessionCacheBackend // nil = L2 disabled (tests / no Redis)
-	db    SessionCacheDB      // nil = L3 disabled (tests / no DB)
+	redis      SessionCacheBackend // nil = L2 disabled (tests / no Redis)
+	db         SessionCacheDB      // nil = L3 disabled (tests / no DB)
+	turnReader *v2.TurnReader      // V2-P2.5: L3 reads session_bodies when wired
 }
 
 // NewSessionCache creates a SessionCache. redis and db are optional.
@@ -380,6 +382,24 @@ func (c *SessionCache) saveToRedis(ctx context.Context, tenantID, gwSessionID st
 }
 
 func (c *SessionCache) loadFromDB(ctx context.Context, tenantID, gwSessionID string) (*SessionState, []byte, error) {
+	if c.turnReader != nil {
+		msgs, err := c.turnReader.LoadChain(ctx, tenantID, gwSessionID, 10)
+		if err != nil {
+			return nil, nil, err
+		}
+		if len(msgs) == 0 {
+			return nil, nil, nil
+		}
+		body, err := json.Marshal(msgs)
+		if err != nil {
+			return nil, nil, fmt.Errorf("marshal reconstructed body: %w", err)
+		}
+		return &SessionState{
+			SchemaVersion:    schemaVersion,
+			LastOutboundHash: sha256Hex(body),
+			MsgCount:         len(msgs),
+		}, body, nil
+	}
 	row, err := c.db.LastOutboundForSession(ctx, tenantID, gwSessionID)
 	if err != nil || row == nil {
 		return nil, nil, err
