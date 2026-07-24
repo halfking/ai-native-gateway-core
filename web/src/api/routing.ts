@@ -186,6 +186,11 @@ export interface EmergencyRepairResponse {
   credential_id: number
   action: EmergencyRepairAction
   actor: string
+  cmb_available?: boolean
+  cmb_rows_updated?: number
+  node_probe_rows_updated?: number
+  ursm_v2_admin_applied?: boolean
+  ursm_v2_cleared?: boolean
 }
 
 export function emergencyRepair(body: EmergencyRepairRequest) {
