@@ -345,7 +345,7 @@ async function save() {
                   <span class="cs-emergency-icon">🟢</span>
                   <span class="cs-emergency-title">强制启用</span>
                 </div>
-                <p class="cs-emergency-desc">强制启用被禁用的节点，清除 <code>manual_disabled=false</code> 标记。</p>
+                <p class="cs-emergency-desc">强制启用：清除 <code>manual_disabled</code>、重置 availability/circuit、清空 <code>node_probe</code> 退避，并恢复该模型 binding 可用，使节点重新进入可路由。</p>
                 <div class="cs-emergency-meta">当前凭据状态: {{ candidate.credential_status }}</div>
                 <button
                   class="btn btn-success btn-sm"
