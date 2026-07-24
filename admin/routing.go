@@ -870,15 +870,19 @@ func (h *Handler) handleEmergencyRepair(w http.ResponseWriter, r *http.Request) 
 
 	switch req.Action {
 	case "force_enable":
-		// Clear manual_disabled flag on credentials + flip cmb row.
-		// C3 修复: also ClearState in URSM v2 Redis so that any stale
-		// disabled="1" / cool_until_ms / fail_streak from prior auto-disable
-		// is wiped. ApplyAdmin alone only clears manual_hold.
+		// Force-enable must make the node actually routable again.
+		// 2026-07-24: previously only cleared manual_disabled + cmb.available.
+		// Nodes blocked by node_probe_state backoff (unavailable_reason=
+		// node_probe_failed) stayed red after HTTP 200 — observed on NVIDIA NIM
+		// (cred 8/18/19/23 · minimaxai/minimax-m3) and 普联 (cred 29 · glm-5.2).
+		// Now also: reset availability/circuit/failures + node_probe_state.
 		var currentDisabled bool
+		var availState string
 		err := h.db.QueryRow(ctx,
-			"SELECT COALESCE(manual_disabled, false) FROM credentials WHERE id = $1",
+			`SELECT COALESCE(manual_disabled, false), COALESCE(availability_state, 'ready')
+			 FROM credentials WHERE id = $1`,
 			req.CredentialID,
-		).Scan(&currentDisabled)
+		).Scan(&currentDisabled, &availState)
 		if err != nil {
 			if err == pgx.ErrNoRows {
 				writeError(w, http.StatusNotFound, "credential not found")
@@ -898,14 +902,23 @@ func (h *Handler) handleEmergencyRepair(w http.ResponseWriter, r *http.Request) 
 		if _, err := tx.Exec(ctx, `
 			UPDATE credentials SET
 				manual_disabled = false,
+				availability_state = 'ready',
+				availability_recover_at = NULL,
+				circuit_state = 'closed',
+				cooling_until = NULL,
+				consecutive_failures = 0,
+				state_reason_code = NULL,
+				state_reason_detail = $2,
 				state_updated_at = NOW()
 			WHERE id = $1
-		`, req.CredentialID); err != nil {
+		`, req.CredentialID, "emergency force_enable: "+req.Reason); err != nil {
 			writeError(w, http.StatusInternalServerError, "update credentials failed: "+err.Error())
 			return
 		}
+
+		var cmbRows int64
 		if req.RawModel != "" {
-			if _, err := tx.Exec(ctx, `
+			tag, err := tx.Exec(ctx, `
 				UPDATE credential_model_bindings cmb
 				SET available = TRUE,
 					unavailable_reason = NULL,
@@ -916,18 +929,70 @@ func (h *Handler) handleEmergencyRepair(w http.ResponseWriter, r *http.Request) 
 				WHERE cmb.credential_id = $1
 				  AND pm.id = cmb.provider_model_id
 				  AND pm.raw_model_name = $2
-			`, req.CredentialID, req.RawModel); err != nil {
+			`, req.CredentialID, req.RawModel)
+			if err != nil {
 				writeError(w, http.StatusInternalServerError, "update cmb failed: "+err.Error())
 				return
 			}
+			cmbRows = tag.RowsAffected()
 		}
+
+		// Clear NodeProbeWorker backoff so v_routable_credential_models
+		// drops node_probe_failed immediately (see migration 417).
+		var probeRows int64
+		if req.RawModel != "" {
+			tag, err := tx.Exec(ctx, `
+				UPDATE node_probe_state SET
+					last_direct_ok = TRUE,
+					last_gateway_ok = TRUE,
+					last_err_code = NULL,
+					last_err_detail = NULL,
+					next_retry_at = now(),
+					next_retry_seconds = 0,
+					consecutive_failures = 0,
+					paused = FALSE,
+					in_flight_until = NULL,
+					updated_at = now()
+				WHERE credential_id = $1 AND raw_model_name = $2
+			`, req.CredentialID, req.RawModel)
+			if err != nil {
+				writeError(w, http.StatusInternalServerError, "reset node_probe_state failed: "+err.Error())
+				return
+			}
+			probeRows = tag.RowsAffected()
+		} else {
+			tag, err := tx.Exec(ctx, `
+				UPDATE node_probe_state SET
+					last_direct_ok = TRUE,
+					last_gateway_ok = TRUE,
+					last_err_code = NULL,
+					last_err_detail = NULL,
+					next_retry_at = now(),
+					next_retry_seconds = 0,
+					consecutive_failures = 0,
+					paused = FALSE,
+					in_flight_until = NULL,
+					updated_at = now()
+				WHERE credential_id = $1 AND COALESCE(last_direct_ok, FALSE) = FALSE
+			`, req.CredentialID)
+			if err != nil {
+				writeError(w, http.StatusInternalServerError, "reset node_probe_state failed: "+err.Error())
+				return
+			}
+			probeRows = tag.RowsAffected()
+		}
+
 		if err := tx.Commit(ctx); err != nil {
 			writeError(w, http.StatusInternalServerError, "commit failed: "+err.Error())
 			return
 		}
 		beforeAfter["previous_manual_disabled"] = currentDisabled
+		beforeAfter["previous_availability_state"] = availState
 		beforeAfter["new_manual_disabled"] = false
-		beforeAfter["cmb_available"] = true
+		beforeAfter["new_availability_state"] = "ready"
+		beforeAfter["cmb_available"] = cmbRows > 0 || req.RawModel == ""
+		beforeAfter["cmb_rows_updated"] = cmbRows
+		beforeAfter["node_probe_rows_updated"] = probeRows
 
 		// URSM v2: clear manual_hold via ApplyAdmin, AND wipe any
 		// residual disabled/fail_streak/cool_until_ms via ClearState.
@@ -1165,15 +1230,19 @@ func (h *Handler) handleEmergencyRepair(w http.ResponseWriter, r *http.Request) 
 	ursmCleared, _ := beforeAfter["ursm_v2_cleared"].(bool)
 	ursmAdmin, _ := beforeAfter["ursm_v2_admin_applied"].(bool)
 	cmbAvailable, _ := beforeAfter["cmb_available"].(bool)
+	cmbRows, _ := beforeAfter["cmb_rows_updated"].(int64)
+	probeRows, _ := beforeAfter["node_probe_rows_updated"].(int64)
 
 	writeJSON(w, http.StatusOK, map[string]any{
-		"message":              "emergency repair applied: " + req.Action,
-		"credential_id":        req.CredentialID,
-		"action":               req.Action,
-		"actor":                actor,
-		"cmb_available":        cmbAvailable,
-		"ursm_v2_admin_applied": ursmAdmin,
-		"ursm_v2_cleared":      ursmCleared,
+		"message":                 "emergency repair applied: " + req.Action,
+		"credential_id":           req.CredentialID,
+		"action":                  req.Action,
+		"actor":                   actor,
+		"cmb_available":           cmbAvailable,
+		"cmb_rows_updated":        cmbRows,
+		"node_probe_rows_updated": probeRows,
+		"ursm_v2_admin_applied":   ursmAdmin,
+		"ursm_v2_cleared":         ursmCleared,
 	})
 }
 
