@@ -160,6 +160,54 @@ export interface ProbeAllResult {
   latency_ms: number
 }
 
+// ── Routing blocked diagnostics (2026-07-24) ─────────────────────────
+// Providers whose "credentials look healthy but routing can't find them"
+// can use these endpoints to diagnose and fix blocked bindings.
+
+export interface RoutingBlockedBinding {
+  credential_id: number
+  credential_label: string
+  raw_model_name: string
+  is_routable: boolean
+  unavailable_reason?: string | null
+}
+
+export interface RoutingBlockedCredential {
+  credential_id: number
+  credential_label: string
+  status: string
+  availability_state: string
+  health_status: string
+  manual_disabled: boolean
+  lifecycle_status: string
+  bindings_total: number
+  bindings_routable: number
+  bindings_blocked: number
+  bindings: RoutingBlockedBinding[]
+}
+
+export interface RoutingBlockedDiagnostic {
+  provider_id: number
+  provider_name: string
+  bindings_total: number
+  bindings_routable: number
+  bindings_blocked: number
+  block_reason_breakdown: Record<string, number>
+  credentials: RoutingBlockedCredential[]
+}
+
+export function getRoutingBlockedDiagnostic(providerId: number) {
+  return req<RoutingBlockedDiagnostic>(
+    'GET', `/api/admin/diagnostics/routing-blocked?provider_id=${providerId}`
+  )
+}
+
+export function fixRoutingBlocked(providerId: number) {
+  return req<{ triggered: boolean; provider_id: number; timestamp: string; message: string }>(
+    'POST', '/api/admin/diagnostics/routing-blocked/fix', { provider_id: providerId }
+  )
+}
+
 export function getRecentModelFailures(opts?: { limit?: number }) {
   const params = new URLSearchParams()
   if (opts?.limit) params.set('limit', String(opts.limit))
