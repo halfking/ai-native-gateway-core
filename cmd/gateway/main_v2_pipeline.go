@@ -48,6 +48,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgxpool"
+
 	"github.com/kaixuan/llm-gateway-go/domain"                                           //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	agentecosystem "github.com/kaixuan/llm-gateway-go/domains/agent-ecosystem"           //nolint:depguard
 	"github.com/kaixuan/llm-gateway-go/domains/credential"                               //nolint:depguard // historical violation, B1 routing.go CQRS will fix
@@ -61,6 +63,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/domains/pipeline"                                 //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/domains/provider"                                 //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/domains/routing"                                  //nolint:depguard // historical violation, B1 routing.go CQRS will fix
+	"github.com/kaixuan/llm-gateway-go/domains/session/v2"                               //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/domains/streaming"                                //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/eventbus"
 	"github.com/kaixuan/llm-gateway-go/settings"
@@ -118,20 +121,21 @@ func envBool(key string, def bool) bool {
 // cmd/gateway package so the v1 binary can register the demo routes without
 // importing across the two `package main` binaries.
 type v2PipelineDeps struct {
-	Config           v2PipelineConfig
-	Pipeline         *pipeline.RequestPipeline
-	EventBus         *eventbus.MemoryBus
-	CacheStore       cache.Store
-	AuditSink        audit.Sink
-	AuditWriter      *audit.BatchWriter
-	Metrics          *observability.Registry
-	Tracer           observability.Tracer
-	AgentReg         *agentecosystem.Registry
-	CredentialStore  *credential.InMemoryStore
-	CredentialHealth *credential.HealthChecker
-	CredentialLimit  *credential.Limiter
-	ProviderStore    *provider.InMemoryStore
-	ProviderProber   *provider.Prober
+	Config            v2PipelineConfig
+	Pipeline          *pipeline.RequestPipeline
+	EventBus          *eventbus.MemoryBus
+	CacheStore        cache.Store
+	AuditSink         audit.Sink
+	AuditWriter       *audit.BatchWriter
+	Metrics           *observability.Registry
+	Tracer            observability.Tracer
+	AgentReg          *agentecosystem.Registry
+	CredentialStore   *credential.InMemoryStore
+	CredentialHealth   *credential.HealthChecker
+	CredentialLimit   *credential.Limiter
+	ProviderStore     *provider.InMemoryStore
+	ProviderProber    *provider.Prober
+	SessionPersistHook *v2.SessionPersistHook // nil when pool is nil (in-memory stub mode)
 }
 
 // passthroughHook is a no-op Hook implementation used as a placeholder for
@@ -288,14 +292,25 @@ func buildV2Pipeline(deps *v2PipelineDeps) *pipeline.RequestPipeline {
 		})
 	}
 
+	// PhasePostResponse: session persistence — writes to V2 tables (sessions, session_turns,
+	// session_bodies, session_turn_logs). Runs after metrics so session snapshot is the last
+	// hook. Feature-flagged via sessions_v2.{enabled,shadow_write,rollout_percent}.
+	// Best-effort: errors are logged and never propagate to the HTTP response.
+	if deps.SessionPersistHook != nil {
+		p.AddStage(&pipeline.PipelineStage{
+			Name: "session_persist", Phase: pipeline.PhasePostResponse, Mode: pipeline.ModeSequential,
+			Hooks: []pipeline.Hook{deps.SessionPersistHook},
+		})
+	}
+
 	return p
 }
 
 // newV2PipelineDeps creates in-memory dependencies for the v2 route group.
-// IMPORTANT: this does NOT touch the production DB pool, Redis, or Memora
-// client held in main.go. The flag stub is a sandboxed demo so an
-// accidental enable cannot affect v1 traffic or production data.
-func newV2PipelineDeps(cfg v2PipelineConfig) *v2PipelineDeps {
+// IMPORTANT: when pool is non-nil, the session persist hook is wired with real
+// DB writers so v2 pipeline traffic is dual-written to V2 tables. When pool is
+// nil (in-memory stub mode), the session hook is disabled and no DB write occurs.
+func newV2PipelineDeps(cfg v2PipelineConfig, pool *pgxpool.Pool) *v2PipelineDeps {
 	cacheStore := cache.NewInMemoryStore()
 	auditSink := audit.NewInMemorySink()
 	auditWriter := audit.NewBatchWriter(auditSink, 100, 5*time.Second)
@@ -330,20 +345,35 @@ func newV2PipelineDeps(cfg v2PipelineConfig) *v2PipelineDeps {
 		TimeoutSec: 60,
 	})
 
+	var sessionHook *v2.SessionPersistHook
+	if pool != nil {
+		turnWriter := v2.NewTurnWriter(pool)
+		bodiesWriter := v2.NewSessionBodiesWriter(pool)
+		aggregator := v2.NewSessionAggregator(pool)
+		turnLogsWriter := v2.NewTurnLogsWriter(pool)
+		writer := v2.NewSessionWriterV2(turnWriter, bodiesWriter, aggregator, turnLogsWriter)
+		sessionHook = v2.NewSessionPersistHook(writer)
+		slog.Info("v2 pipeline: session persist hook wired (dual-write ready)",
+			"pool_healthy", pool != nil)
+	} else {
+		slog.Info("v2 pipeline: no DB pool, session persist hook disabled (in-memory stub)")
+	}
+
 	return &v2PipelineDeps{
-		Config:           cfg,
-		CacheStore:       cacheStore,
-		AuditSink:        auditSink,
-		AuditWriter:      auditWriter,
-		Metrics:          metrics,
-		Tracer:           tracer,
-		AgentReg:         agentReg,
-		CredentialStore:  credStore,
-		CredentialHealth: credHealth,
-		CredentialLimit:  credLimiter,
-		ProviderStore:    provStore,
-		ProviderProber:   provProber,
-		EventBus:         eventbus.NewMemoryBus(100),
+		Config:             cfg,
+		CacheStore:         cacheStore,
+		AuditSink:          auditSink,
+		AuditWriter:        auditWriter,
+		Metrics:            metrics,
+		Tracer:             tracer,
+		AgentReg:           agentReg,
+		CredentialStore:    credStore,
+		CredentialHealth:   credHealth,
+		CredentialLimit:    credLimiter,
+		ProviderStore:      provStore,
+		ProviderProber:     provProber,
+		EventBus:           eventbus.NewMemoryBus(100),
+		SessionPersistHook: sessionHook,
 	}
 }
 
@@ -362,13 +392,15 @@ func v2PipelineHTTPHandler(deps *v2PipelineDeps) http.Handler {
 
 		env.TenantID = r.Header.Get("X-Tenant-ID")
 		env.SessionID = r.Header.Get("X-Session-ID")
+		// Only populate user_content when the URL param is actually present (non-empty).
+		// Storing "" for "absent" makes it impossible for downstream to distinguish
+		// "client sent no q param" from "client explicitly sent q="". See Bug-3.
 		env.Metadata = map[string]any{
-			"user_content": r.URL.Query().Get("q"),
-			"model":        r.URL.Query().Get("model"),
-			"api_key":      r.Header.Get("X-API-Key"),
+			"model":   r.URL.Query().Get("model"),
+			"api_key": r.Header.Get("X-API-Key"),
 		}
-		if env.Metadata["user_content"] == nil {
-			env.Metadata["user_content"] = ""
+		if q := r.URL.Query().Get("q"); q != "" {
+			env.Metadata["user_content"] = q
 		}
 
 		if err := deps.Pipeline.Execute(ctx, env); err != nil {
@@ -404,12 +436,13 @@ func v2PipelineHTTPHandler(deps *v2PipelineDeps) http.Handler {
 
 // v2PipelineSubMux builds (and returns) the v2 sub-mux without registering
 // it onto a parent. Exported for tests that need to assert mux shape.
-func v2PipelineSubMux() (http.Handler, *v2PipelineDeps, bool) {
+// pool may be nil for pure in-memory stub mode.
+func v2PipelineSubMux(pool *pgxpool.Pool) (http.Handler, *v2PipelineDeps, bool) {
 	cfg := loadV2PipelineConfig()
 	if !cfg.Enabled {
 		return nil, nil, false
 	}
-	deps := newV2PipelineDeps(cfg)
+	deps := newV2PipelineDeps(cfg, pool)
 	deps.Pipeline = buildV2Pipeline(deps)
 	return v2PipelineHTTPHandler(deps), deps, true
 }
@@ -425,7 +458,7 @@ func v2PipelineSubMux() (http.Handler, *v2PipelineDeps, bool) {
 // onto the parent mux under "/v2/". This means the v1 routes (/v1/*,
 // /healthz, /metrics, /api/*, etc.) continue to handle their existing
 // paths and the v2 namespace is independent.
-func registerV2PipelineRoutes(parent *http.ServeMux) {
+func registerV2PipelineRoutes(parent *http.ServeMux, pool *pgxpool.Pool) {
 	if parent == nil {
 		slog.Warn("v2 pipeline: nil parent mux, skipping registration")
 		return
@@ -437,7 +470,7 @@ func registerV2PipelineRoutes(parent *http.ServeMux) {
 	}
 
 	cfg := loadV2PipelineConfig()
-	deps := newV2PipelineDeps(cfg)
+	deps := newV2PipelineDeps(cfg, pool)
 	deps.Pipeline = buildV2Pipeline(deps)
 
 	// 2026-07-09: 飞书机器人模块 late-binding。
