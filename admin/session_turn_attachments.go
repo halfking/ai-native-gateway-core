@@ -74,7 +74,7 @@ func (h *AttachmentHandler) signURL(w http.ResponseWriter, r *http.Request, sess
 		http.Error(w, "revoked", http.StatusGone)
 		return
 	}
-	p := signedPayload{TenantID: tenant, SessionID: sessionID, TurnNo: turnNo, AttID: attID, ObjectKey: "tenant/" + tenant + "/" + sessionID + "/turn_" + turnNoText + "/" + attID, ExpiresAt: time.Now().Add(signedURLTTL).Unix()}
+	p := signedPayload{TenantID: tenant, SessionID: sessionID, TurnNo: turnNo, AttID: attID, ObjectKey: "tenant/" + tenant + "/" + sessionID + "/turn_" + turnNoText + "/" + attID, ExpiresAt: time.Now().Add(signedURLTTL).UnixNano()}
 	signed, err := h.signPayload(p)
 	if err != nil {
 		http.Error(w, err.Error(), 500)
@@ -122,7 +122,7 @@ func (h *AttachmentHandler) serveSigned(w http.ResponseWriter, r *http.Request) 
 		http.Error(w, "bad json", 400)
 		return
 	}
-	if time.Now().UnixNano()/int64(time.Second) > p.ExpiresAt || h.revoked(r.Context(), p.AttID) {
+	if time.Now().UnixNano() > p.ExpiresAt || h.revoked(r.Context(), p.AttID) {
 		http.Error(w, "expired or revoked", http.StatusGone)
 		return
 	}
