@@ -3,6 +3,7 @@ package ursm
 import (
 	"context"
 	"fmt"
+	"sync"
 	"time"
 
 	"github.com/kaixuan/llm-gateway-go/internal/runctx"
@@ -165,4 +166,94 @@ func (m *FingerprintSlotManager) ForceUnpin(
 	).Result()
 
 	return err
+}
+
+// ---------------------------------------------------------------------------
+// Pressure Signal - Phase 2.1
+// ---------------------------------------------------------------------------
+
+// pressureCache 缓存压力信号数据
+type pressureCache struct {
+	value     float64
+	timestamp time.Time
+}
+
+var (
+	fpPressureCache    = sync.Map{} // credentialID -> pressureCache
+	fpPressureCacheTTL = 5 * time.Second
+)
+
+// GetPressure 返回指定 credential 的 FpSlots 压力（0-1）
+// 压力 = 当前占用槽位数 / 槽位上限
+// 返回 0 表示无压力或无限制
+//
+// 性能优化：使用 5 秒缓存避免频繁扫描 Redis
+func (m *FingerprintSlotManager) GetPressure(
+	ctx context.Context,
+	credentialID int,
+	slotLimit int,
+) (float64, error) {
+	// 无限制（slotLimit == 0 或负数）
+	if slotLimit <= 0 {
+		return 0, nil
+	}
+
+	// Redis 不可用
+	if m.redis == nil {
+		return 0, nil
+	}
+
+	// 检查缓存
+	if cached, ok := fpPressureCache.Load(credentialID); ok {
+		c := cached.(pressureCache)
+		if time.Since(c.timestamp) < fpPressureCacheTTL {
+			return c.value, nil
+		}
+	}
+
+	// 计算压力（扫描 Redis）
+	pressure, err := m.calculatePressure(ctx, credentialID, slotLimit)
+	if err != nil {
+		// Redis 错误时返回 0（fail-open）
+		return 0, nil
+	}
+
+	// 更新缓存
+	fpPressureCache.Store(credentialID, pressureCache{
+		value:     pressure,
+		timestamp: time.Now(),
+	})
+
+	return pressure, nil
+}
+
+// calculatePressure 扫描 Redis 计算 FpSlots 压力
+func (m *FingerprintSlotManager) calculatePressure(
+	ctx context.Context,
+	credentialID int,
+	slotLimit int,
+) (float64, error) {
+	pattern := fmt.Sprintf("fpslot:cred:%d:slot:*", credentialID)
+	var cursor uint64
+	var count int
+
+	// 使用 SCAN 批量扫描（每次 100 个键）
+	for {
+		keys, nextCursor, err := m.redis.Scan(ctx, cursor, pattern, 100).Result()
+		if err != nil {
+			return 0, err
+		}
+		count += len(keys)
+		cursor = nextCursor
+		if cursor == 0 {
+			break
+		}
+	}
+
+	pressure := float64(count) / float64(slotLimit)
+	if pressure > 1.0 {
+		pressure = 1.0
+	}
+
+	return pressure, nil
 }

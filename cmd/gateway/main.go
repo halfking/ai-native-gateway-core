@@ -741,6 +741,12 @@ func main() {
 		// Connect FpSlots to Router for load-aware P2C selection
 		router.FpSlots = fpSlots
 
+		// 2026-07-24 Phase 2.3: 启用压力感知路由（通过环境变量控制）
+		if os.Getenv("PRESSURE_AWARE_ROUTING") == "true" {
+			router.PressureAwareEnabled = true
+			slog.Info("pressure-aware routing enabled", "feature", "phase2.3")
+		}
+
 		// 2026-07-21, URSM v2 plan T20: 把 v2 Manager 注入 Router，使
 		// PlanCandidates 在 mode=authoritative 时按 v2 FilterAndScore 过滤候选。
 		// URSM_V2_MODE=off 时 Manager.Mode() == off，PlanCandidates 里的 v2 分支

@@ -65,6 +65,11 @@ type Router struct {
 	// based on context size, historical latency, and network conditions.
 	// Hot-reloads config from system_settings table every 30 seconds.
 	TimeoutConfig TimeoutCalculator
+
+	// PressureAwareEnabled (Phase 2.3, 2026-07-24): 启用压力感知路由
+	// 当启用时，Router 会根据 FpSlots/Limiter 的压力信号调整候选节点权重
+	// 默认 false，通过环境变量 PRESSURE_AWARE_ROUTING 控制
+	PressureAwareEnabled bool
 }
 
 func NewRouter(sticky *StickyCache, lim *credential.Limiter) *Router {
@@ -145,11 +150,19 @@ func (r *Router) PlanCandidates(
 				if len(candidates) == 0 {
 					return nil
 				}
+				}
 			}
 		}
-	}
 
-	// 2026-07-24 Phase 1: 使用统一的状态后端接口，消除散落的条件判断。
+		// 2026-07-24 Phase 2.3: 应用压力惩罚（feature flag 控制）
+		// 在 URSM v2 过滤和评分之后，根据 FpSlots/Limiter 压力调整权重
+		if r.PressureAwareEnabled && len(candidates) > 0 {
+			ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+			defer cancel()
+			r.applyPressurePenalty(ctx, candidates)
+		}
+
+		// 2026-07-24 Phase 1: 使用统一的状态后端接口，消除散落的条件判断。
 	// 一次性决定使用 URSM v2 / StateManager / DB-only 哪套系统。
 	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
 	defer cancel()
@@ -1041,4 +1054,88 @@ func isTransientUnavailableReason(reason string) bool {
 	default:
 		return false
 	}
+}
+
+// ---------------------------------------------------------------------------
+// Pressure-Aware Routing - Phase 2.3 (2026-07-24)
+// ---------------------------------------------------------------------------
+
+// getPressureSignals 获取候选节点的压力信号
+// 返回 FpSlots 压力和 Limiter 压力（0-1 之间）
+func (r *Router) getPressureSignals(
+	ctx context.Context,
+	candidate provider.Candidate,
+) (fpPressure, limiterPressure float64) {
+	// FpSlots 压力
+	if r.FpSlots != nil && candidate.FpSlotLimit != nil && *candidate.FpSlotLimit > 0 {
+		// 类型断言获取 FingerprintSlotManager
+		if fpManager, ok := r.FpSlots.(interface {
+			GetPressure(ctx context.Context, credentialID int, slotLimit int) (float64, error)
+		}); ok {
+			pressure, err := fpManager.GetPressure(ctx, candidate.CredentialID, *candidate.FpSlotLimit)
+			if err == nil {
+				fpPressure = pressure
+			}
+			// 错误时 fpPressure 保持为 0（fail-open）
+		}
+	}
+
+	// Limiter 压力
+	if r.Limiter != nil {
+		limiterPressure = r.Limiter.GetPressure(candidate.CredentialID, candidate.ProviderID, "")
+	}
+
+	return fpPressure, limiterPressure
+}
+
+// applyPressurePenalty 根据压力信号调整候选节点的权重
+// 注意：这会修改 candidates 的 Weight 字段
+func (r *Router) applyPressurePenalty(ctx context.Context, candidates []provider.Candidate) {
+	if !r.PressureAwareEnabled {
+		return
+	}
+
+	for i := range candidates {
+		// 获取压力信号
+		fpPressure, limiterPressure := r.getPressureSignals(ctx, candidates[i])
+
+		// 计算压力惩罚
+		penalty := calculatePressurePenalty(fpPressure, limiterPressure)
+
+		// 调整权重（降低高压力节点的权重）
+		if penalty > 0 {
+			originalWeight := candidates[i].Weight
+			newWeight := int(float64(originalWeight) * (1 - penalty))
+			if newWeight < 1 {
+				newWeight = 1 // 保留最小权重 1
+			}
+			candidates[i].Weight = newWeight
+
+			// 记录惩罚日志（仅在惩罚 > 10% 时）
+			if penalty > 0.1 {
+				slog.Debug("router: applied pressure penalty",
+					"credential_id", candidates[i].CredentialID,
+					"provider_id", candidates[i].ProviderID,
+					"raw_model", candidates[i].RawModel,
+					"fp_pressure", fpPressure,
+					"limiter_pressure", limiterPressure,
+					"penalty", penalty,
+					"weight_before", originalWeight,
+					"weight_after", newWeight,
+				)
+			}
+		}
+	}
+
+	// 重新排序（按调整后的权重）
+	// 注意：这里假设 Weight 越高越优先，如果相反则需要调整
+	sortCandidatesByWeight(candidates)
+}
+
+// sortCandidatesByWeight 按权重降序排序候选节点
+// Weight 越高，优先级越高
+func sortCandidatesByWeight(candidates []provider.Candidate) {
+	sort.SliceStable(candidates, func(i, j int) bool {
+		return candidates[i].Weight > candidates[j].Weight
+	})
 }
