@@ -239,12 +239,24 @@ func (h *Handler) handleRoutingResolve(w http.ResponseWriter, r *http.Request) {
 			JOIN credentials c ON c.id = v.credential_id
 			JOIN providers p ON p.id = c.provider_id
 			JOIN credential_model_bindings cmb ON cmb.id = v.binding_id
-			LEFT JOIN model_offers mo ON mo.credential_id = v.credential_id 
+			LEFT JOIN model_offers mo ON mo.credential_id = v.credential_id
 				AND mo.raw_model_name = v.raw_model_name
+			-- 2026-07-24 fix: the ModelPicker emits models_canonical.canonical_name
+			-- (e.g. "minimax-m3"), but the previous WHERE only matched
+			-- v.raw_model_name (provider-cased, prefixed like "minimaxai/minimax-m3")
+			-- or mo.standardized_name (NULL for any legacy row that didn't go
+			-- through migration 395c). The picker never sent raw_model_name, so
+			-- canonical-only lookups silently returned zero candidates. Join
+			-- through v.canonical_id (already exposed by the view) and add a
+			-- third OR branch so canonical_name → pm.canonical_id → mc.canonical_name
+			-- resolves. models_canonical.canonical_name is lowercased by
+			-- migration 396; lower(...) is a safety net.
+			LEFT JOIN models_canonical mc ON mc.id = v.canonical_id
 			WHERE p.tenant_id = 'default'
 			  AND (
 			      lower(v.raw_model_name) = ANY($1)
 			      OR lower(COALESCE(mo.standardized_name, v.raw_model_name)) = ANY($1)
+			      OR lower(mc.canonical_name) = ANY($1)
 			  )
 				  AND p.enabled IS TRUE
 
