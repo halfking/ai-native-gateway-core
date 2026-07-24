@@ -111,7 +111,7 @@ class ConnectionManager:
             self._count += 1
         return True
 
-    def release(self):
+    async def release(self):
         """Release a connection slot."""
         async with self._lock:
             self._count = max(0, self._count - 1)
@@ -344,9 +344,9 @@ async def chat_completions(request):
 
     await CONN_MGR.acquire()
     try:
-        await _do_chat_completions(request)
+        return await _do_chat_completions(request)
     finally:
-        CONN_MGR.release()
+        await CONN_MGR.release()
 
 
 async def _do_chat_completions(request):
