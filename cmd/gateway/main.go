@@ -741,6 +741,12 @@ func main() {
 		// Connect FpSlots to Router for load-aware P2C selection
 		router.FpSlots = fpSlots
 
+		// 2026-07-24 Phase 2.3: 启用压力感知路由（通过环境变量控制）
+		if os.Getenv("PRESSURE_AWARE_ROUTING") == "true" {
+			router.PressureAwareEnabled = true
+			slog.Info("pressure-aware routing enabled", "feature", "phase2.3")
+		}
+
 		// 2026-07-21, URSM v2 plan T20: 把 v2 Manager 注入 Router，使
 		// PlanCandidates 在 mode=authoritative 时按 v2 FilterAndScore 过滤候选。
 		// URSM_V2_MODE=off 时 Manager.Mode() == off，PlanCandidates 里的 v2 分支
@@ -3780,6 +3786,14 @@ func main() {
 		mux.HandleFunc("/api/admin/credential-success-rates", wrapAdmin(admin.HandleCredentialSuccessRates(dbConn.Pool())))
 		mux.HandleFunc("/api/admin/credential-success-rates/reset", wrapAdmin(admin.HandleResetCredentialSuccessRate(dbConn.Pool())))
 		slog.Info("Phase 3.6 credential success rate management enabled (/api/admin/credential-success-rates)")
+
+		// Phase 3.6.5 (2026-07-24): Sessions V2 Detail & Summary API
+		// Provides session detail query from gateway.session_* tables and LLM-powered session summary
+		sessionDetailAPI := admin.NewSessionDetailV2API(dbConn.Pool())
+		sessionSummaryAPI := admin.NewSessionSummaryV2API(dbConn.Pool())
+		mux.HandleFunc("/api/admin/sessions/detail", wrapAdmin(sessionDetailAPI.ServeHTTP))
+		mux.HandleFunc("/api/admin/sessions/summary", wrapAdmin(sessionSummaryAPI.ServeHTTP))
+		slog.Info("Phase 3.6.5 sessions v2 API enabled (/api/admin/sessions/detail, /summary)")
 
 		// Phase 3.7 (A3-1): Agent Registry API (Track A APIHub)
 		agentsAPI := admin.NewAgentsHandler(apihubSvc)

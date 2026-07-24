@@ -732,7 +732,18 @@ async function save() {
   margin-bottom: 8px;
 }
 .cs-emergency-icon {
-  font-size: 16px;
+  /* emoji 在 Safari/macOS 上默认按 native glyph (≈64px) 渲染，
+     仅 font-size 不够；必须显式限制宽度 + 行高 + 文本呈现方式 */
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  font-size: 14px;
+  line-height: 1;
+  flex-shrink: 0;
+  font-variant-emoji: text;
+  text-align: center;
 }
 .cs-emergency-title {
   font-size: 13px;
