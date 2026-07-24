@@ -2,6 +2,7 @@
 // DashboardView.vue — 仪表盘统一入口（看板 + 实时流 + 会话统计 + 系统监测）
 
 import { ref, onMounted, computed, provide, onUnmounted, watch } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
 import DashboardViewV2 from './DashboardViewV2.vue'
 import TenantDashboardView from './TenantDashboardView.vue'
 import { isDefaultTenant, store } from '../store'
@@ -13,9 +14,20 @@ import {
 } from '../api'
 import { useDashboardBoard } from '../composables/useDashboardBoard'
 
-export type DashboardTabId = 'board' | 'stream' | 'stats' | 'selfcheck' | 'systemmonitor'
+export type DashboardTabId = 'board' | 'stream' | 'stats' | 'selfcheck' | 'systemmonitor' // systemmonitor 保留兼容，已映射到 selfcheck
 
 const STORAGE_KEY_TAB = 'dashboard_active_tab'
+const route = useRoute()
+const router = useRouter()
+
+const VALID_TABS: DashboardTabId[] = ['board', 'stream', 'stats', 'selfcheck']
+
+function normalizeTab(raw: unknown): DashboardTabId | null {
+  if (typeof raw !== 'string') return null
+  if (raw === 'systemmonitor') return 'selfcheck'
+  if (VALID_TABS.includes(raw as DashboardTabId)) return raw as DashboardTabId
+  return null
+}
 
 // 2026-07-23: 默认 tab 改为 'stream'（实时流），
 // 之前默认是 'board' 导致用户进入 dashboard 后看不到实时流数据。
@@ -30,9 +42,13 @@ const models = ref<ModelUsage[]>([])
 const hotKeys = ref<HotApiKeyEntry[]>([])
 
 onMounted(() => {
+  const fromQuery = normalizeTab(route.query.tab)
   const saved = localStorage.getItem(STORAGE_KEY_TAB)
-  if (saved === 'board' || saved === 'stream' || saved === 'stats' || saved === 'selfcheck' || saved === 'systemmonitor') {
-    activeTab.value = saved
+  if (fromQuery) {
+    activeTab.value = fromQuery
+  } else {
+    const fromStorage = normalizeTab(saved)
+    if (fromStorage) activeTab.value = fromStorage
   }
 
   if (isDefault.value && activeTab.value === 'board') {
@@ -42,16 +58,28 @@ onMounted(() => {
 })
 
 function switchTab(tab: DashboardTabId) {
-  if (activeTab.value === 'board' && tab !== 'board') {
+  const next = normalizeTab(tab) || 'stream'
+  if (activeTab.value === 'board' && next !== 'board') {
     boardState.stopAutoRefresh()
   }
-  activeTab.value = tab
-  localStorage.setItem(STORAGE_KEY_TAB, tab)
-  if (tab === 'board') {
+  activeTab.value = next
+  localStorage.setItem(STORAGE_KEY_TAB, next)
+  if (route.query.tab !== next) {
+    router.replace({ query: { ...route.query, tab: next } })
+  }
+  if (next === 'board') {
     void boardState.load()
     boardState.startAutoRefresh()
   }
 }
+
+watch(
+  () => route.query.tab,
+  (q) => {
+    const next = normalizeTab(q)
+    if (next && next !== activeTab.value) switchTab(next)
+  },
+)
 
 watch(
   () => store.jwtToken,

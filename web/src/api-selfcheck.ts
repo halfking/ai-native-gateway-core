@@ -211,6 +211,8 @@ export interface ProbeQueueTaskRow {
   provider_id: number
   provider_name: string
   raw_model: string
+  /** 标准模型名（优先于 raw_model 用于展示/维度） */
+  standardized_name?: string
   status: string
   attempt: number
   priority: number

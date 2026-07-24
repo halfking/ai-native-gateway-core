@@ -16,6 +16,7 @@ import SwimLane from './SwimLane.vue'
 import LiveStreamLegend from './LiveStreamLegend.vue'
 import EmergencyDiagnosticModal from './EmergencyDiagnosticModal.vue'
 import RouteIncidentDrawer from './RouteIncidentDrawer.vue'
+import LiveStreamFilterDialog from './LiveStreamFilterDialog.vue'
 import type { GroupByDimension } from '../types/swimlane'
 import type { RouteIncident } from '../types/routeIncident'
 
@@ -46,8 +47,8 @@ function handleRequestFromDrawer(requestId: string) {
 
 // 2026-07-24: 请求类型过滤。两项都选中表示显示全部请求。
 const requestTypeFilter = ref<Set<'business' | 'probe'>>(new Set(['business', 'probe']))
-const activeFilterMenu = ref<'status' | 'model' | 'provider' | 'vendor' | null>(null)
-const filterGroupRef = ref<HTMLElement | null>(null)
+// 2026-07-24: 筛选改为弹窗（状态/模型/供应商/原厂）
+const filterDialog = ref<'status' | 'model' | 'provider' | 'vendor' | null>(null)
 
 // 2026-07-24: 多维过滤状态
 const statusFilter = ref<Set<LiveStatus>>(new Set())
@@ -65,18 +66,14 @@ function toggleRequestType(type: 'business' | 'probe') {
   requestTypeFilter.value = next
 }
 
-function toggleFilterMenu(menu: 'status' | 'model' | 'provider' | 'vendor') {
-  activeFilterMenu.value = activeFilterMenu.value === menu ? null : menu
+function openFilterDialog(kind: 'status' | 'model' | 'provider' | 'vendor') {
+  filterDialog.value = kind
 }
 
-function closeFilterMenu(event: MouseEvent) {
-  const target = event.target as Node
-  if (!filterGroupRef.value?.contains(target)) activeFilterMenu.value = null
+/** 模型维度一律用标准名（tile.model 后端已优先 canonical） */
+function standardModelName(model: string | undefined | null): string {
+  return (model || '').trim()
 }
-
-onMounted(() => document.addEventListener('click', closeFilterMenu))
-onUnmounted(() => document.removeEventListener('click', closeFilterMenu))
-
 // 解构出 reconnect —— 保存新 URL 后立即用新地址重连，不再只是 localStorage 默默记住
 const {
   snapshot: liveSnapshot,
@@ -339,8 +336,9 @@ const filteredLanes = computed(() => {
           return false
         }
         
-        // 模型过滤
-        if (modelFilter.value.size > 0 && (!r.model || !modelFilter.value.has(r.model))) {
+        // 模型过滤（标准名）
+        const stdModel = standardModelName(r.model)
+        if (modelFilter.value.size > 0 && (!stdModel || !modelFilter.value.has(stdModel))) {
           return false
         }
         
@@ -382,10 +380,11 @@ const availableModels = computed(() => {
   const models = new Set<string>()
   for (const lane of lanes.value) {
     for (const req of lane.requests) {
-      if (req.model) models.add(req.model)
+      const name = standardModelName(req.model)
+      if (name && name !== '[空闲]') models.add(name)
     }
   }
-  return Array.from(models).sort()
+  return Array.from(models).sort((a, b) => a.localeCompare(b, 'zh-CN'))
 })
 
 const availableProviders = computed(() => {
@@ -408,61 +407,18 @@ const availableVendors = computed(() => {
   return Array.from(vendors).sort()
 })
 
-// 2026-07-24: 切换过滤器的辅助函数
-function toggleStatusFilter(status: LiveStatus) {
-  const next = new Set(statusFilter.value)
-  if (next.has(status)) {
-    next.delete(status)
-  } else {
-    next.add(status)
-  }
-  statusFilter.value = next
+// 2026-07-24: 弹窗筛选 apply
+function applyStatusFilter(selected: string[]) {
+  statusFilter.value = new Set(selected as LiveStatus[])
 }
-
-function toggleModelFilter(model: string) {
-  const next = new Set(modelFilter.value)
-  if (next.has(model)) {
-    next.delete(model)
-  } else {
-    next.add(model)
-  }
-  modelFilter.value = next
+function applyModelFilter(selected: string[]) {
+  modelFilter.value = new Set(selected)
 }
-
-function toggleProviderFilter(provider: string) {
-  const next = new Set(providerFilter.value)
-  if (next.has(provider)) {
-    next.delete(provider)
-  } else {
-    next.add(provider)
-  }
-  providerFilter.value = next
+function applyProviderFilter(selected: string[]) {
+  providerFilter.value = new Set(selected)
 }
-
-function toggleVendorFilter(vendor: LiveModelCategory) {
-  const next = new Set(vendorFilter.value)
-  if (next.has(vendor)) {
-    next.delete(vendor)
-  } else {
-    next.add(vendor)
-  }
-  vendorFilter.value = next
-}
-
-function clearStatusFilter() {
-  statusFilter.value = new Set()
-}
-
-function clearModelFilter() {
-  modelFilter.value = new Set()
-}
-
-function clearProviderFilter() {
-  providerFilter.value = new Set()
-}
-
-function clearVendorFilter() {
-  vendorFilter.value = new Set()
+function applyVendorFilter(selected: string[]) {
+  vendorFilter.value = new Set(selected as LiveModelCategory[])
 }
 
 function clearAllFilters() {
@@ -473,7 +429,20 @@ function clearAllFilters() {
   vendorFilter.value = new Set()
 }
 
-// 计算激活的过滤器数量（用于显示徽章）
+const statusFilterSelected = computed(() => Array.from(statusFilter.value))
+const modelFilterSelected = computed(() => Array.from(modelFilter.value))
+const providerFilterSelected = computed(() => Array.from(providerFilter.value))
+const vendorFilterSelected = computed(() => Array.from(vendorFilter.value) as string[])
+
+function statusOptionLabel(v: string) {
+  return t(`dashboard.liveStream.status.${v}`)
+}
+function vendorOptionLabel(v: string) {
+  const key = `dashboard.liveStream.vendor.${v}`
+  const labeled = t(key)
+  return labeled === key ? v : labeled
+}
+
 const activeFilterCount = computed(() => {
   let count = 0
   if (requestTypeFilter.value.size < 2) count++
@@ -563,98 +532,45 @@ const activeFilterCount = computed(() => {
           </button>
         </div>
 
-        <!-- 2026-07-24: 多维过滤器 -->
-        <div ref="filterGroupRef" class="filter-group">
-          <!-- 2026-07-24 v2: 筛选分组前缀标签，让用户一眼看到这是筛选项区 -->
+        <!-- 2026-07-24: 多维筛选（弹窗选择，选项完整显示） -->
+        <div class="filter-group">
           <span class="filter-group__label">筛选</span>
-          <!-- 状态过滤 -->
-          <div class="filter-dropdown">
-            <button type="button" class="filter-btn" :class="{ 'filter-btn--active': statusFilter.size > 0 }" @click.stop="toggleFilterMenu('status')">
-              {{ t('dashboard.liveStream.filterStatus') }}
-              <span v-if="statusFilter.size > 0" class="filter-badge">{{ statusFilter.size }}</span>
-            </button>
-            <div v-if="activeFilterMenu === 'status'" class="filter-menu">
-              <button type="button" class="filter-option filter-option--all" :class="{ 'filter-option--selected': statusFilter.size === 0 }" @click="clearStatusFilter">
-                {{ t('dashboard.liveStream.filterAllOptions') }}
-              </button>
-              <label v-for="status in availableStatuses" :key="status" class="filter-option">
-                <input
-                  type="checkbox"
-                  :checked="statusFilter.has(status)"
-                  @change="toggleStatusFilter(status)"
-                />
-                <span>{{ t(`dashboard.liveStream.status.${status}`) }}</span>
-              </label>
-            </div>
-          </div>
-
-          <!-- 模型过滤 -->
-          <div class="filter-dropdown">
-            <button type="button" class="filter-btn" :class="{ 'filter-btn--active': modelFilter.size > 0 }" @click.stop="toggleFilterMenu('model')">
-              {{ t('dashboard.liveStream.filterModel') }}
-              <span v-if="modelFilter.size > 0" class="filter-badge">{{ modelFilter.size }}</span>
-            </button>
-            <div v-if="activeFilterMenu === 'model'" class="filter-menu">
-              <button type="button" class="filter-option filter-option--all" :class="{ 'filter-option--selected': modelFilter.size === 0 }" @click="clearModelFilter">
-                {{ t('dashboard.liveStream.filterAllOptions') }}
-              </button>
-              <label v-for="model in availableModels" :key="model" class="filter-option">
-                <input
-                  type="checkbox"
-                  :checked="modelFilter.has(model)"
-                  @change="toggleModelFilter(model)"
-                />
-                <span>{{ model }}</span>
-              </label>
-              <span v-if="availableModels.length === 0" class="filter-empty">{{ t('dashboard.liveStream.filterEmpty') }}</span>
-            </div>
-          </div>
-
-          <!-- 供应商过滤 -->
-          <div class="filter-dropdown">
-            <button type="button" class="filter-btn" :class="{ 'filter-btn--active': providerFilter.size > 0 }" @click.stop="toggleFilterMenu('provider')">
-              {{ t('dashboard.liveStream.filterProvider') }}
-              <span v-if="providerFilter.size > 0" class="filter-badge">{{ providerFilter.size }}</span>
-            </button>
-            <div v-if="activeFilterMenu === 'provider'" class="filter-menu">
-              <button type="button" class="filter-option filter-option--all" :class="{ 'filter-option--selected': providerFilter.size === 0 }" @click="clearProviderFilter">
-                {{ t('dashboard.liveStream.filterAllOptions') }}
-              </button>
-              <label v-for="provider in availableProviders" :key="provider" class="filter-option">
-                <input
-                  type="checkbox"
-                  :checked="providerFilter.has(provider)"
-                  @change="toggleProviderFilter(provider)"
-                />
-                <span>{{ provider }}</span>
-              </label>
-              <span v-if="availableProviders.length === 0" class="filter-empty">{{ t('dashboard.liveStream.filterEmpty') }}</span>
-            </div>
-          </div>
-
-          <!-- 原厂过滤 -->
-          <div class="filter-dropdown">
-            <button type="button" class="filter-btn" :class="{ 'filter-btn--active': vendorFilter.size > 0 }" @click.stop="toggleFilterMenu('vendor')">
-              {{ t('dashboard.liveStream.filterVendor') }}
-              <span v-if="vendorFilter.size > 0" class="filter-badge">{{ vendorFilter.size }}</span>
-            </button>
-            <div v-if="activeFilterMenu === 'vendor'" class="filter-menu">
-              <button type="button" class="filter-option filter-option--all" :class="{ 'filter-option--selected': vendorFilter.size === 0 }" @click="clearVendorFilter">
-                {{ t('dashboard.liveStream.filterAllOptions') }}
-              </button>
-              <label v-for="vendor in availableVendors" :key="vendor" class="filter-option">
-                <input
-                  type="checkbox"
-                  :checked="vendorFilter.has(vendor)"
-                  @change="toggleVendorFilter(vendor)"
-                />
-                <span>{{ t(`dashboard.liveStream.vendor.${vendor}`) }}</span>
-              </label>
-              <span v-if="availableVendors.length === 0" class="filter-empty">{{ t('dashboard.liveStream.filterEmpty') }}</span>
-            </div>
-          </div>
-
-          <!-- 清除所有过滤器 -->
+          <button
+            type="button"
+            class="filter-btn"
+            :class="{ 'filter-btn--active': statusFilter.size > 0 }"
+            @click="openFilterDialog('status')"
+          >
+            {{ t('dashboard.liveStream.filterStatus') }}
+            <span v-if="statusFilter.size > 0" class="filter-badge">{{ statusFilter.size }}</span>
+          </button>
+          <button
+            type="button"
+            class="filter-btn"
+            :class="{ 'filter-btn--active': modelFilter.size > 0 }"
+            @click="openFilterDialog('model')"
+          >
+            {{ t('dashboard.liveStream.filterModel') }}
+            <span v-if="modelFilter.size > 0" class="filter-badge">{{ modelFilter.size }}</span>
+          </button>
+          <button
+            type="button"
+            class="filter-btn"
+            :class="{ 'filter-btn--active': providerFilter.size > 0 }"
+            @click="openFilterDialog('provider')"
+          >
+            {{ t('dashboard.liveStream.filterProvider') }}
+            <span v-if="providerFilter.size > 0" class="filter-badge">{{ providerFilter.size }}</span>
+          </button>
+          <button
+            type="button"
+            class="filter-btn"
+            :class="{ 'filter-btn--active': vendorFilter.size > 0 }"
+            @click="openFilterDialog('vendor')"
+          >
+            {{ t('dashboard.liveStream.filterVendor') }}
+            <span v-if="vendorFilter.size > 0" class="filter-badge">{{ vendorFilter.size }}</span>
+          </button>
           <button
             v-if="activeFilterCount > 0"
             type="button"
@@ -665,6 +581,43 @@ const activeFilterCount = computed(() => {
             {{ t('dashboard.liveStream.clearFilters') }}
           </button>
         </div>
+
+        <LiveStreamFilterDialog
+          :open="filterDialog === 'status'"
+          :title="t('dashboard.liveStream.filterStatus')"
+          :options="availableStatuses"
+          :selected="statusFilterSelected"
+          :label-of="statusOptionLabel"
+          :searchable="false"
+          @update:open="(v) => { if (!v) filterDialog = null }"
+          @apply="applyStatusFilter"
+        />
+        <LiveStreamFilterDialog
+          :open="filterDialog === 'model'"
+          :title="t('dashboard.liveStream.filterModel')"
+          :options="availableModels"
+          :selected="modelFilterSelected"
+          @update:open="(v) => { if (!v) filterDialog = null }"
+          @apply="applyModelFilter"
+        />
+        <LiveStreamFilterDialog
+          :open="filterDialog === 'provider'"
+          :title="t('dashboard.liveStream.filterProvider')"
+          :options="availableProviders"
+          :selected="providerFilterSelected"
+          @update:open="(v) => { if (!v) filterDialog = null }"
+          @apply="applyProviderFilter"
+        />
+        <LiveStreamFilterDialog
+          :open="filterDialog === 'vendor'"
+          :title="t('dashboard.liveStream.filterVendor')"
+          :options="availableVendors"
+          :selected="vendorFilterSelected"
+          :label-of="vendorOptionLabel"
+          :searchable="false"
+          @update:open="(v) => { if (!v) filterDialog = null }"
+          @apply="applyVendorFilter"
+        />
 
         <div class="control-group">
           <button
