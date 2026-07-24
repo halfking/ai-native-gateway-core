@@ -45,6 +45,11 @@ type Config struct {
 	Window30mTTL        time.Duration
 	NodeTTL             time.Duration
 	ScoringWeights      ScoringWeights
+	// CoolSeconds is the cooling duration (in seconds) when a node is disabled
+	// due to consecutive failures. Defaults to 300 (5 minutes) if not set.
+	// This should be aligned with the circuit breaker's cooling policies to
+	// ensure consistent behavior between the in-memory breaker and URSM v2.
+	CoolSeconds int
 }
 
 func DefaultConfig() Config {
@@ -61,6 +66,9 @@ func DefaultConfig() Config {
 		Window30mTTL:        35 * time.Minute,
 		NodeTTL:             60 * time.Minute,
 		ScoringWeights:      DefaultScoringWeights(),
+		// 2026-07-24: 降低冷却时间到2分钟，与circuit breaker的RateLimit/Concurrent冷却时间对齐
+		// 减少网关请求中断时长，提升多轮对话质量
+		CoolSeconds: 120,
 	}
 }
 
@@ -72,6 +80,12 @@ func LoadFromEnv() Config {
 	if v := os.Getenv("URSM_V2_CANARY_PERCENT"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil {
 			c.CanaryPercent = n
+		}
+	}
+	// 2026-07-24: 支持通过环境变量配置 URSM v2 冷却时间
+	if v := os.Getenv("URSM_V2_COOL_SECONDS"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			c.CoolSeconds = n
 		}
 	}
 	return c

@@ -330,15 +330,18 @@ func (m *Manager) RecordRequest(ctx context.Context, ev api.RequestOutcome) erro
 		store.WindowKey(m.cfg.RedisKeyPrefix, ev.CredentialID, ev.RawModel, "5m"),
 		store.WindowKey(m.cfg.RedisKeyPrefix, ev.CredentialID, ev.RawModel, "30m"),
 		store.RecordOutcome{
-			Success:      ev.Success,
-			ErrorKind:    ev.ErrorKind,
-			NowMs:        time.Now().UnixMilli(),
-			LatencyMs:    ev.LatencyMs,
-			RequestID:    ev.RequestID,
-			NodeTTL:      m.cfg.NodeTTL,
-			Window5mTTL:  m.cfg.Window5mTTL,
-			Window30mTTL: m.cfg.Window30mTTL,
-			AdminHold:    adminHold,
+			Success:       ev.Success,
+			ErrorKind:     ev.ErrorKind,
+			NowMs:         time.Now().UnixMilli(),
+			LatencyMs:     ev.LatencyMs,
+			RequestID:     ev.RequestID,
+			NodeTTL:       m.cfg.NodeTTL,
+			Window5mTTL:   m.cfg.Window5mTTL,
+			Window30mTTL:  m.cfg.Window30mTTL,
+			AdminHold:     adminHold,
+			// 2026-07-24: 使用配置的冷却时间，与 circuit breaker 冷却时间对齐
+			CoolSeconds:    m.cfg.CoolSeconds,
+			FailStreakLimit: 3,
 		}); err != nil {
 		m.log.Warn("ursm.v2: record failed", "error", err, "cid", ev.CredentialID)
 		return fmt.Errorf("ursm.v2: record: %w", err)
