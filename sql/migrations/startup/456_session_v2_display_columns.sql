@@ -78,23 +78,7 @@ ALTER TABLE gateway.session_bodies
     ADD COLUMN IF NOT EXISTS response_attachments JSONB NOT NULL DEFAULT '[]'::jsonb;
 
 -- =============================================
--- 索引：last_full_payload_at（用于冷读检查）
--- =============================================
-
-CREATE INDEX IF NOT EXISTS idx_sessions_last_full_at
-    ON gateway.sessions (tenant_id, last_full_payload_at DESC)
-    WHERE last_full_payload_at IS NOT NULL;
-
--- =============================================
--- 索引：summary_generated_at（用于 UI 提示"已总结"）
--- =============================================
-
-CREATE INDEX IF NOT EXISTS idx_sessions_summary_at
-    ON gateway.sessions (tenant_id, summary_generated_at DESC)
-    WHERE summary_generated_at IS NOT NULL;
-
--- =============================================
--- 验证
+-- 验证（仅元数据检查，可放在事务内）
 -- =============================================
 
 DO $$
@@ -113,9 +97,26 @@ BEGIN
         RAISE EXCEPTION 'gateway.session_turns.attempt_no not created';
     END IF;
 
-    RAISE NOTICE '===== Migration 456 SUCCESSFUL =====';
+    RAISE NOTICE '===== Migration 456 SUCCESSFUL (columns) =====';
     RAISE NOTICE 'Sessions V2 display + summary columns added';
 END;
 $$;
 
 COMMIT;
+
+-- =============================================
+-- 索引：必须放在事务外（CREATE INDEX CONCURRENTLY 不能在事务内）
+--   - idx_sessions_last_full_at：last_full_payload_at 用于冷读检查
+--   - idx_sessions_summary_at：summary_generated_at 用于 UI 提示"已总结"
+--
+-- 索引均为 partial（带 WHERE），建议在生产环境用 CONCURRENTLY 避免锁表；
+-- 首次部署 / 测试库可正常 fall back（非 CONCURRENTLY）。
+-- =============================================
+
+CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_sessions_last_full_at
+    ON gateway.sessions (tenant_id, last_full_payload_at DESC)
+    WHERE last_full_payload_at IS NOT NULL;
+
+CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_sessions_summary_at
+    ON gateway.sessions (tenant_id, summary_generated_at DESC)
+    WHERE summary_generated_at IS NOT NULL;
