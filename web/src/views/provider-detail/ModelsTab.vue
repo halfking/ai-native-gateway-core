@@ -11,6 +11,8 @@ import {
   getModelOfferSuggestions,
   updateModelOffer,
   getRoutableSummary,
+  getRoutingBlockedDiagnostic,
+  fixRoutingBlocked,
   triggerProviderProbeAll,
   resetNodeProbeState,
   getProviderCredentials,
@@ -20,6 +22,7 @@ import {
   type ModelOfferSuggestion,
   type ProbeAllResult,
   type ProviderRefreshRun,
+  type RoutingBlockedDiagnostic,
 } from '../../api'
 
 const { t: td } = useI18n()
@@ -56,6 +59,12 @@ const routable = ref<{
   routable_ratio: number
 } | null>(null)
 const routableLoading = ref(false)
+
+const routingDiag = ref<RoutingBlockedDiagnostic | null>(null)
+const routingDiagLoading = ref(false)
+const routingDiagFixing = ref(false)
+const routingDiagFixed = ref(false)
+const routingDiagErr = ref('')
 
 const probeAllLoading = ref(false)
 const probeAllResults = ref<ProbeAllResult[]>([])
@@ -113,6 +122,35 @@ async function load() {
     error.value = e instanceof Error ? e.message : pm('loadFailed')
   } finally {
     loading.value = false
+  }
+}
+
+async function loadRoutingDiagnostics() {
+  routingDiagLoading.value = true
+  routingDiagErr.value = ''
+  try {
+    routingDiag.value = await getRoutingBlockedDiagnostic(props.providerId)
+  } catch (e: unknown) {
+    routingDiagErr.value = e instanceof Error ? e.message : '诊断失败'
+  } finally {
+    routingDiagLoading.value = false
+  }
+}
+
+async function handleFixBlocked() {
+  if (!confirm('确定强制恢复该供应商所有被阻断的绑定？这将重置所有凭据状态、模型绑定和探测状态。')) return
+  routingDiagFixing.value = true
+  routingDiagErr.value = ''
+  try {
+    await fixRoutingBlocked(props.providerId)
+    routingDiagFixed.value = true
+    // Reload both views
+    await Promise.all([load(), loadRoutingDiagnostics()])
+    setTimeout(() => { routingDiagFixed.value = false }, 5000)
+  } catch (e: unknown) {
+    routingDiagErr.value = e instanceof Error ? e.message : '修复失败'
+  } finally {
+    routingDiagFixing.value = false
   }
 }
 
@@ -301,6 +339,13 @@ function sourceLabel(v?: string | null) {
 function timeText(v?: string | null) {
   if (!v) return '—'
   return fmtDateTime(v)
+}
+
+function statusBadge(status: string): string {
+  if (status === 'active') return 'badge-green'
+  if (status === 'degraded') return 'badge-amber'
+  if (status === 'cooling') return 'badge-blue'
+  return 'badge-red'
 }
 
 function resetDraft(o: ModelOffer) {
@@ -670,6 +715,74 @@ load()
           <div class="routable-breakdown">
             <div v-for="(count, code) in routable.unavailable_breakdown" :key="code">
               <code>{{ code }}</code>: {{ count }}
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 路由阻塞诊断 (2026-07-24) -->
+    <div class="card" style="margin-bottom:12px;border-left:3px solid var(--warning)">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+        <h5 style="margin:0">路由阻塞诊断</h5>
+        <div style="display:flex;gap:8px">
+          <button class="btn btn-sm" @click="loadRoutingDiagnostics" :disabled="routingDiagLoading">
+            {{ routingDiagLoading ? '诊断中…' : '诊断' }}
+          </button>
+          <button
+            v-if="routingDiag && routingDiag.bindings_blocked > 0"
+            class="btn btn-sm btn-danger"
+            :disabled="routingDiagFixing"
+            @click="handleFixBlocked"
+          >
+            {{ routingDiagFixing ? '修复中…' : '检测并修复全部' }}
+          </button>
+        </div>
+      </div>
+      <div v-if="routingDiagErr" class="alert alert-danger" style="margin-bottom:8px">{{ routingDiagErr }}</div>
+      <div v-if="routingDiagFixed" class="alert alert-success" style="margin-bottom:8px">✅ 修复完成，请观察路由是否恢复</div>
+      <div v-if="routingDiagLoading" class="text-muted">加载中…</div>
+      <div v-else-if="!routingDiag" class="text-muted">点击"诊断"查看每个凭据-模型的路由状态</div>
+      <div v-else>
+        <div class="metric-grid" style="grid-template-columns:repeat(4,1fr);gap:8px;margin-bottom:8px">
+          <div class="metric">
+            <b :class="routingDiag.bindings_blocked === 0 ? 'text-success' : 'text-danger'">
+              {{ routingDiag.bindings_routable }} / {{ routingDiag.bindings_total }}
+            </b>
+            <span>可路由</span>
+          </div>
+          <div class="metric">
+            <b :class="routingDiag.bindings_blocked > 0 ? 'text-danger' : ''">{{ routingDiag.bindings_blocked }}</b>
+            <span>被阻断</span>
+          </div>
+          <div class="metric" v-if="Object.keys(routingDiag.block_reason_breakdown).length > 0">
+            <b>阻断原因</b>
+            <div>
+              <div v-for="(cnt, reason) in routingDiag.block_reason_breakdown" :key="reason" style="font-size:12px">
+                <code>{{ reason }}</code>: {{ cnt }}
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Per-credential breakdown -->
+        <div v-for="cred in routingDiag.credentials" :key="cred.credential_id" style="margin-bottom:6px;padding:6px 8px;border:1px solid var(--border);border-radius:4px">
+          <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:4px">
+            <div>
+              <strong>#{{ cred.credential_id }} {{ cred.credential_label }}</strong>
+              <span class="badge" :class="statusBadge(cred.status)" style="margin-left:6px">{{ cred.status }}</span>
+            </div>
+            <div style="font-size:12px">
+              {{ cred.bindings_routable }}/{{ cred.bindings_total }} 可路由 ·
+              <span :class="cred.bindings_blocked > 0 ? 'text-danger' : ''">{{ cred.bindings_blocked }} 被阻断</span>
+              <span v-if="cred.manual_disabled" class="badge badge-red" style="margin-left:4px">已禁用</span>
+            </div>
+          </div>
+          <div v-if="cred.bindings_blocked > 0" style="margin-top:4px;font-size:12px">
+            <div v-for="b in cred.bindings.filter(b => !b.is_routable)" :key="b.raw_model_name" style="display:flex;gap:8px;padding:2px 0">
+              <code>{{ b.raw_model_name }}</code>
+              <span class="badge badge-red">阻断</span>
+              <span class="text-muted">{{ b.unavailable_reason || '未知' }}</span>
             </div>
           </div>
         </div>
