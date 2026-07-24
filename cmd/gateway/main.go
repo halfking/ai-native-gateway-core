@@ -3213,7 +3213,7 @@ func main() {
 	// Default OFF → no-op; production v1 routes are untouched. When ON,
 	// a parallel /v2/* route group is mounted on the same mux. See
 	// cmd/gateway/main_v2_pipeline.go for the wiring.
-	registerV2PipelineRoutes(mux)
+	registerV2PipelineRoutes(mux, dbConn.Pool())
 
 	// R1.12 (2026-06-26): v1 dispatch Pipeline wrapper. When
 	// LLM_GATEWAY_USE_V2_PIPELINE=true, the 4 v1 chat endpoints

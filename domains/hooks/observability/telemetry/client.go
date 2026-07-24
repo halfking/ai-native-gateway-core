@@ -1368,36 +1368,33 @@ func (c *Client) updateRequestLog(entry *RequestLogEntry) error {
 	return tx.Commit(ctx)
 }
 
+// upsertRequestLogBodies writes request/response body to request_logs_bodies_hot.
+// Uses a single INSERT ... ON CONFLICT DO UPDATE (migration 455 gave the hot table
+// UNIQUE(request_id)). The previous triple-UPDATE/INSERT/UPDATE pattern had two
+// problems:
+//   1. First UPDATE was dead code — the row doesn't exist yet in request_logs_bodies_hot.
+//   2. Third UPDATE was redundant — step 2 (INSERT) already created the row.
 func (c *Client) upsertRequestLogBodies(ctx context.Context, tx pgx.Tx, requestID, requestBodyJSON, responseBodyJSON string) error {
+	// Cast empty-string bodies to {} so they remain queryable as JSON rather than NULL.
+	// strPtrToJSON already converts nil→"null"; here we convert the empty-string case.
+	reqJSON := requestBodyJSON
+	if reqJSON == "null" || reqJSON == "" {
+		reqJSON = "{}"
+	}
+	respJSON := responseBodyJSON
+	if respJSON == "null" || respJSON == "" {
+		respJSON = "{}"
+	}
+	// Use now() as ts for the hot table (UNIQUE on request_id, ts is non-unique).
+	// The UPDATE clause overwrites whatever ts was there, keeping the row fresh.
 	_, err := tx.Exec(ctx, `
-		UPDATE request_logs_bodies_hot
-		   SET request_body = COALESCE($2::jsonb, request_body),
-		       response_body = COALESCE($3::jsonb, response_body)
-		 WHERE request_id = $1
-	`, requestID, requestBodyJSON, responseBodyJSON)
-	if err != nil {
-		return err
-	}
-
-	_, err = tx.Exec(ctx, `
-		INSERT INTO request_logs_bodies_hot (
-			request_id, ts, request_body, response_body
-		)
-		SELECT $1, rl.ts, $2::jsonb, $3::jsonb
-		  FROM request_logs_hot rl
-		 WHERE rl.request_id = $1
-		ON CONFLICT DO NOTHING
-	`, requestID, requestBodyJSON, responseBodyJSON)
-	if err != nil {
-		return err
-	}
-
-	_, err = tx.Exec(ctx, `
-		UPDATE request_logs_bodies_hot
-		   SET request_body = COALESCE($2::jsonb, request_body),
-		       response_body = COALESCE($3::jsonb, response_body)
-		 WHERE request_id = $1
-	`, requestID, requestBodyJSON, responseBodyJSON)
+		INSERT INTO request_logs_bodies_hot (request_id, ts, request_body, response_body)
+		VALUES ($1, now(), $2::jsonb, $3::jsonb)
+		ON CONFLICT (request_id) DO UPDATE
+			SET request_body = EXCLUDED.request_body,
+			    response_body = EXCLUDED.response_body,
+			    ts = EXCLUDED.ts
+	`, requestID, reqJSON, respJSON)
 	return err
 }
 
@@ -1493,9 +1490,17 @@ func jsonOrNull(raw json.RawMessage) string {
 // sanitizeRequestLogEntry normalizes JSONB string fields before persistence;
 // this final guard prevents a malformed late mutation from aborting the whole
 // request-log transaction.
+//
+// Empty string ("") is stored as "{}" rather than "null" so the body remains
+// queryable as JSON and consumers don't receive a SQL NULL that requires a
+// separate NULL-check. A nil pointer (never set) returns "null" since that
+// carries the semantic "no data was provided".
 func strPtrToJSON(s *string) string {
-	if s == nil || *s == "" || !json.Valid([]byte(*s)) {
+	if s == nil {
 		return "null"
+	}
+	if *s == "" || !json.Valid([]byte(*s)) {
+		return "{}"
 	}
 	return *s
 }

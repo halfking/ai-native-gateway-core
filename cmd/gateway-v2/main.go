@@ -412,13 +412,15 @@ func httpHandler(deps *v2Deps) http.Handler {
 		// 审计/观测/session 钩子的可序列化字段中）。改用 SHA-256 前 16 位
 		// 指纹，便于关联但不泄露密钥。
 		apiKey := r.Header.Get("X-API-Key")
+		// Only populate user_content when the URL param is actually present (non-empty).
+		// Storing "" for "absent" makes it impossible for downstream to distinguish
+		// "client sent no q param" from "client explicitly sent q="".
 		env.Metadata = map[string]any{
-			"user_content": r.URL.Query().Get("q"),
-			"model":        r.URL.Query().Get("model"),
-			"api_key_fp":   fingerprintKey(apiKey),
+			"model":      r.URL.Query().Get("model"),
+			"api_key_fp": fingerprintKey(apiKey),
 		}
-		if env.Metadata["user_content"] == nil {
-			env.Metadata["user_content"] = ""
+		if q := r.URL.Query().Get("q"); q != "" {
+			env.Metadata["user_content"] = q
 		}
 
 		// 执行 Pipeline

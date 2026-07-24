@@ -44,7 +44,7 @@ func TestV2Pipeline_DefaultOff_NoRoutes(t *testing.T) {
 		t.Fatal("v2PipelineEnabled() must return false when LLM_GATEWAY_V2_ENABLED is unset")
 	}
 
-	handler, deps, ok := v2PipelineSubMux()
+	handler, deps, ok := v2PipelineSubMux(nil)
 	if ok {
 		t.Fatalf("v2PipelineSubMux() must report !ok when flag is unset; got ok=%v deps=%v", ok, deps)
 	}
@@ -64,7 +64,7 @@ func TestV2Pipeline_ExplicitFalse_NoRoutes(t *testing.T) {
 			if v2PipelineEnabled() {
 				t.Fatalf("v2PipelineEnabled() must return false for value %q", v)
 			}
-			_, _, ok := v2PipelineSubMux()
+			_, _, ok := v2PipelineSubMux(nil)
 			if ok {
 				t.Fatalf("v2PipelineSubMux() must return !ok for value %q", v)
 			}
@@ -85,7 +85,7 @@ func TestV2Pipeline_ExplicitTrue_RegistersRoutes(t *testing.T) {
 				t.Fatalf("v2PipelineEnabled() must return true for value %q", v)
 			}
 
-			handler, deps, ok := v2PipelineSubMux()
+			handler, deps, ok := v2PipelineSubMux(nil)
 			if !ok {
 				t.Fatal("v2PipelineSubMux() must report ok=true when flag is set")
 			}
@@ -139,7 +139,7 @@ func TestV2Pipeline_MuxIsolation_V1AndV2Coexist(t *testing.T) {
 	})
 
 	// Now wire in the v2 sub-mux under /v2/.
-	registerV2PipelineRoutes(parent)
+	registerV2PipelineRoutes(parent, nil)
 
 	// /v1/chat/completions must still work exactly as before.
 	rec1 := httptest.NewRecorder()
@@ -185,7 +185,7 @@ func TestV2Pipeline_MuxIsolation_DefaultOff_NoV2Routes(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 	})
 
-	registerV2PipelineRoutes(parent)
+	registerV2PipelineRoutes(parent, nil)
 
 	// v1 still works.
 	rec1 := httptest.NewRecorder()
@@ -216,7 +216,7 @@ func TestV2Pipeline_NilParentSafe(t *testing.T) {
 			t.Fatalf("registerV2PipelineRoutes panicked on nil parent: %v", r)
 		}
 	}()
-	registerV2PipelineRoutes(nil)
+	registerV2PipelineRoutes(nil, nil)
 }
 
 // TestLoadV2PipelineConfig_Defaults verifies that when LLM_GATEWAY_V2_*
