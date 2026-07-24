@@ -149,25 +149,12 @@ func (r *Router) PlanCandidates(
 		}
 	}
 
-	// 使用状态管理器过滤（如果启用）
-	// 2026-07-24: 当 URSM v2 处于 authoritative 模式且 Ready 时，跳过 StateManager 过滤。
-	// URSM v2 已经是权威的状态来源，StateManager 的内存缓存（10s TTL）会导致
-	// 与 URSM v2 决策不一致的状态。StateManager 只在 URSM v2 未生效时作为主过滤。
-	skipStateManager := r.URSMv2 != nil && r.URSMv2.Mode() == ursmv2api.ModeAuthoritative && func() bool {
-		ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
-		defer cancel()
-		return r.URSMv2.Ready(ctx)
-	}()
-	var available []provider.Candidate
-	if skipStateManager {
-		available = candidates // URSM v2 authoritative already filtered at lines 103-142
-	} else if r.StateManager != nil && r.StateManager.Enabled() {
-		ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
-		defer cancel()
-		available = r.filterAvailableWithStateManager(ctx, candidates)
-	} else {
-		available = filterAvailable(candidates)
-	}
+	// 2026-07-24 Phase 1: 使用统一的状态后端接口，消除散落的条件判断。
+	// 一次性决定使用 URSM v2 / StateManager / DB-only 哪套系统。
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	stateBackend := selectStateBackend(r.URSMv2, r.StateManager, ctx)
+	available := stateBackend.FilterAvailable(ctx, candidates)
 
 	if len(available) == 0 {
 		// Build a per-reason breakdown so the next "all providers failed at
@@ -202,30 +189,21 @@ func (r *Router) PlanCandidates(
 			}
 		}
 
-		// 2026-07-04: 单候选者降级逻辑（minimax-m3 model_not_found 修复）
-		// 当所有候选者都被过滤，但只有1-2个候选者且原因是瞬态的（cooling, rate_limited, suspicious），
-		// 则降级使用该候选者，避免完全失败。这是针对单点候选者场景的容错机制。
-		//
-		// 2026-07-14: tryDegradedMode 现在也查询 StateManager。之前它只看
-		// c.UnavailableReason()（DB 派生字段），而 filterAvailableWithStateManager
-		// 过滤候选时不修改候选结构体，导致被内存态（state:timeout 等）过滤掉的单点
-		// 候选 UnavailableReason() 仍是空串、降级不触发 → 0 节点 503。生产事故
-		// ba9fc64f（gpt-5.6-luna cred=2 state:timeout）即此路径。
-		//
-		// 2026-07-24: 降级模式始终启用，不在 authoritative 模式下禁用。
-		// 降级模式是保护机制，用于处理瞬态故障导致的完全失败。
-		// URSM v2 authoritative 模式下的冷却决策仍在生效，降级只是最后的保护。
-		if len(candidates) <= 2 {
-			degradedCandidates := r.tryDegradedMode(queryCtx, candidates)
-			if len(degradedCandidates) > 0 {
-				slog.Warn("router: degraded mode activated, using transiently unavailable candidates",
-					"total_candidates", len(candidates),
-					"degraded_count", len(degradedCandidates),
-					"reasons", reasonCounts,
-				)
-				return degradedCandidates
-			}
+	// 2026-07-24 Phase 1: 在 authoritative 模式下也保留降级模式。
+	// 降级模式是保护机制，用于处理瞬态故障导致的完全失败。
+	// URSM v2 authoritative 模式下的冷却决策仍在生效，降级只是最后的保护。
+	if len(candidates) <= 2 {
+		degradedCandidates := r.tryDegradedMode(queryCtx, candidates)
+		if len(degradedCandidates) > 0 {
+			slog.Warn("router: degraded mode activated, using transiently unavailable candidates",
+				"total_candidates", len(candidates),
+				"degraded_count", len(degradedCandidates),
+				"reasons", reasonCounts,
+				"state_backend", stateBackend.Name(),
+			)
+			return degradedCandidates
 		}
+	}
 
 		slog.Warn("router: all candidates unavailable",
 			"total", len(candidates),
@@ -235,15 +213,9 @@ func (r *Router) PlanCandidates(
 		return nil
 	}
 
-	// URSM v2 authoritative mode already filtered candidates by availability
-	// (including cooling period state). Skip redundant FpSlots health check
-	// to avoid conflicting with URSM v2's authoritative state.
-	skipHealthFilter := r.URSMv2 != nil && r.URSMv2.Mode() == ursmv2api.ModeAuthoritative && func() bool {
-		ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
-		defer cancel()
-		return r.URSMv2.Ready(ctx)
-	}()
-	if !skipHealthFilter {
+	// 2026-07-24 Phase 1: 仅在非 authoritative 模式下执行 FpSlots 健康检查。
+	// URSM v2 authoritative 已包含冷却期和健康状态判断，无需重复过滤。
+	if !stateBackend.IsAuthoritative() {
 		available = r.filterHealthyNodes(available)
 	}
 
@@ -607,13 +579,11 @@ func filterAvailable(cands []provider.Candidate) []provider.Candidate {
 	return out
 }
 
-// DEPRECATED: filterAvailableWithStateManager 将被 URSM.GetAvailableNodes() 替代
-// Replaced by: r.URSM.GetAvailableNodes(ctx, filters)
-// Migration date: 2026-07-03
-// Status: 等待 Router 适配 URSM 完成后删除此方法
-// DO NOT use this method in new code. Use URSM.GetAvailableNodes() instead.
+// DEPRECATED: filterAvailableWithStateManager 将被 StateBackend 接口替代。
+// 2026-07-24 Phase 1: 此方法已通过 LegacyStateBackend 封装，不应直接调用。
+// 保留用于向后兼容，未来版本将移除。
 //
-// filterAvailableWithStateManager 新增：使用状态管理器优先判断可用性
+// filterAvailableWithStateManager 使用状态管理器优先判断可用性
 func (r *Router) filterAvailableWithStateManager(ctx context.Context, cands []provider.Candidate) []provider.Candidate {
 	// 2026-07-21, URSM v2 plan T21: in mode=authoritative, the v2 Manager
 	// already filtered the candidate set upstream (PlanCandidates step 1);
