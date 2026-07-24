@@ -63,7 +63,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/domains/pipeline"                                 //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/domains/provider"                                 //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/domains/routing"                                  //nolint:depguard // historical violation, B1 routing.go CQRS will fix
-	"github.com/kaixuan/llm-gateway-go/domains/session/v2"                               //nolint:depguard // historical violation, B1 routing.go CQRS will fix
+	v2 "github.com/kaixuan/llm-gateway-go/domains/session/v2"                            //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/domains/streaming"                                //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/eventbus"
 	"github.com/kaixuan/llm-gateway-go/settings"
@@ -121,20 +121,20 @@ func envBool(key string, def bool) bool {
 // cmd/gateway package so the v1 binary can register the demo routes without
 // importing across the two `package main` binaries.
 type v2PipelineDeps struct {
-	Config            v2PipelineConfig
-	Pipeline          *pipeline.RequestPipeline
-	EventBus          *eventbus.MemoryBus
-	CacheStore        cache.Store
-	AuditSink         audit.Sink
-	AuditWriter       *audit.BatchWriter
-	Metrics           *observability.Registry
-	Tracer            observability.Tracer
-	AgentReg          *agentecosystem.Registry
-	CredentialStore   *credential.InMemoryStore
+	Config             v2PipelineConfig
+	Pipeline           *pipeline.RequestPipeline
+	EventBus           *eventbus.MemoryBus
+	CacheStore         cache.Store
+	AuditSink          audit.Sink
+	AuditWriter        *audit.BatchWriter
+	Metrics            *observability.Registry
+	Tracer             observability.Tracer
+	AgentReg           *agentecosystem.Registry
+	CredentialStore    *credential.InMemoryStore
 	CredentialHealth   *credential.HealthChecker
-	CredentialLimit   *credential.Limiter
-	ProviderStore     *provider.InMemoryStore
-	ProviderProber    *provider.Prober
+	CredentialLimit    *credential.Limiter
+	ProviderStore      *provider.InMemoryStore
+	ProviderProber     *provider.Prober
 	SessionPersistHook *v2.SessionPersistHook // nil when pool is nil (in-memory stub mode)
 }
 
@@ -507,4 +507,66 @@ func shutdownV2Pipeline(deps *v2PipelineDeps) {
 	defer cancel()
 	_ = ctx
 	_ = deps.AuditWriter.Close()
+}
+
+// sessionV2HookConfig is the minimal flag subset that controls whether the
+// SessionPersistHook (V2 shadow write sidecar) gets wired into the
+// production pipeline. The struct is intentionally separate from
+// v2DispatchConfig and v2PipelineConfig so callers from main.go and from
+// the /v2/* demo can each pass the bits they actually own.
+//
+//	Enabled     — sessions_v2.enabled (master switch).
+//	ShadowWrite — sessions_v2.shadow_write (dual-write sidecar).
+//
+// The rollout percentage (sessions_v2.rollout_percent) is read live by
+// SessionPersistHook.Enabled() — see domains/session/v2/pipeline_hook.go.
+// We deliberately do NOT plumb it through this struct: keeping the
+// percentage as a hot-reload knob (settings.Global) is the design.
+type sessionV2HookConfig struct {
+	Enabled     bool
+	ShadowWrite bool
+}
+
+// buildV2PipelineHooks returns the V2 pipeline hooks that should be
+// appended to the production pipeline when sessions_v2 is enabled.
+//
+// Today the only such hook is SessionPersistHook (the V2 shadow write
+// sidecar). The function returns an empty slice when the master switch
+// or shadow_write flag is off, and nil when cfg is nil.
+//
+// Nil pool safety: when pool is nil, the helper still returns the hook
+// so registration works; DB writes happen at Execute() time and the
+// hook itself is no-op-safe via writer==nil guards.
+//
+// Exposed as a package-level helper (rather than private to main.go)
+// so TestSessionV2HookRegistered in main_v2_pipeline_test.go can
+// assert the wiring without spinning up a full pipeline.
+func buildV2PipelineHooks(cfg *sessionV2HookConfig, pool *pgxpool.Pool) []pipeline.Hook {
+	if cfg == nil || !cfg.Enabled || !cfg.ShadowWrite {
+		return nil
+	}
+	// initSessionV2Writer logs WARN and returns nil when pool is nil
+	// or both flags are off at startup. We still register the hook
+	// either way: the hook's Enabled() reads the live flag values on
+	// every call, so a startup-time nil writer is safe (DB writes
+	// happen at Execute time and writer==nil is a guarded no-op).
+	writer := initSessionV2Writer(pool)
+	return []pipeline.Hook{v2.NewSessionPersistHook(writer)}
+}
+
+// loadSessionV2HookConfigFromSettings reads the two production flags
+// from the platform settings store (hot-reload) and packages them
+// into a sessionV2HookConfig. main.go calls this once at startup
+// (after settings.Global is initialized) and the resulting struct is
+// passed into buildV2PipelineHooks.
+//
+// Hot-reload caveat: the SessionPersistHook re-reads these flags via
+// settings.GetPlatformBool on every Enabled() call, so a startup-time
+// snapshot is only used to decide WHETHER to register the hook at
+// all (the cheapest correct answer when both flags are off).
+func loadSessionV2HookConfigFromSettings() *sessionV2HookConfig {
+	return &sessionV2HookConfig{
+		Enabled:     settings.GetPlatformBool("sessions_v2.enabled", false),
+		ShadowWrite: settings.GetPlatformBool("sessions_v2.shadow_write", false),
+	}
 }

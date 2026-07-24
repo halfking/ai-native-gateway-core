@@ -22,15 +22,33 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
-	"github.com/kaixuan/llm-gateway-go/domains/session/v2"
+	v2 "github.com/kaixuan/llm-gateway-go/domains/session/v2"
+	"github.com/kaixuan/llm-gateway-go/settings"
 )
 
 // initSessionV2Writer 创建 SessionWriterV2 及其所有子 writer。
 //
 // 返回 nil 当 pool 为 nil 时（no DB mode），调用方负责 nil-check。
+//
+// Hot-reload note (V2-P2.3): the master flag (sessions_v2.enabled) and
+// shadow flag (sessions_v2.shadow_write) are read LIVE by the hook's
+// Enabled() method on every request, so toggling them via the platform
+// settings page takes effect immediately without a process restart.
+// This function therefore only reads them once (when the writer is
+// constructed) as an optimization: if both flags are off we return
+// nil instead of allocating 4 sub-writers. Operators who flip the
+// flag from off → on do NOT need to restart the gateway; the hook
+// will see the new value on its next Enabled() call.
 func initSessionV2Writer(pool *pgxpool.Pool) *v2.SessionWriterV2 {
 	if pool == nil {
 		slog.Warn("session V2: nil pool, shadow write disabled")
+		return nil
+	}
+	if !settings.GetPlatformBool("sessions_v2.enabled", false) ||
+		!settings.GetPlatformBool("sessions_v2.shadow_write", false) {
+		// Both flags off at startup → skip writer allocation. The hook
+		// (if registered) still sees fresh settings on every Enabled()
+		// call, so a later flip to on is honored without restart.
 		return nil
 	}
 
