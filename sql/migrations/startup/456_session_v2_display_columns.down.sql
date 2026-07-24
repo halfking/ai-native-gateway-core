@@ -6,10 +6,11 @@
 --     2. 已备份重要数据
 --     3. 已验证系统完全回退到 V1
 --
--- 注意：
---   - request_attachments / response_attachments 在 migration 430 中已创建，
---     本 down 不会删除（避免影响 430 之后的其它依赖）。
---   - 如果确实是 456 这一迁移引入的列，可单独评估。
+-- 所有权说明（重要）：
+--   gateway.session_bodies.request_attachments / response_attachments
+--   实际由 migration 430_sessions_v2_schema.sql 创建（DEFAULT '[]'::jsonb）；
+--   migration 456 仅以 ADD COLUMN IF NOT EXISTS 幂等补齐，因此本 down
+--   **不会** DROP 这两列（避免误删 430 创建的列及破坏下游依赖）。
 --
 -- Date: 2026-07-24
 -- Author: session-v2 integration

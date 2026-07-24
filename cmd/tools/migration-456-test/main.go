@@ -66,12 +66,24 @@ func main() {
 		{"session_bodies", "response_attachments"},
 	}
 
-	// Indexes we expect (best-effort; we don't fail hard if any index is absent
-	// because builds may strip partial indexes, but we still report them).
+	// Indexes we expect — soft-checked, never fatal.
+	//
+	// Rationale: these are partial indexes (WHERE last_full_..._at IS NOT NULL).
+	// CREATE INDEX CONCURRENTLY cannot run inside a transaction block, so the
+	// up migration splits them out of the main BEGIN/COMMIT and uses
+	// CONCURRENTLY. In some deployment contexts (fresh CI databases, debug
+	// builds, dry-run applies) the CONCURRENTLY block may be skipped or
+	// applied separately, leaving the index absent even though the columns
+	// exist. Failing hard on a missing partial index would produce a false
+	// positive and break CI for unrelated reasons. We therefore WARN only.
+	//
+	// Operators who want strict enforcement can grep the deployment logs for
+	// "CREATE INDEX" or run `\\d gateway.sessions` in psql.
 	indexes := []string{
 		"idx_sessions_last_full_at",
 		"idx_sessions_summary_at",
 	}
+	warnIndexes := 0
 
 	failed := 0
 	for _, c := range checks {
@@ -112,10 +124,15 @@ func main() {
 			continue
 		}
 		if !exists {
-			log.Printf("WARN missing index gateway.%s (non-fatal)", idx)
+			log.Printf("WARN partial-index gateway.%s absent (soft; non-fatal — see comment above)", idx)
+			warnIndexes++
 			continue
 		}
 		fmt.Printf("OK index gateway.%s\n", idx)
+	}
+
+	if warnIndexes > 0 {
+		fmt.Printf("NOTE: %d expected partial index(es) missing — verify deployment applied CONCURRENTLY block\n", warnIndexes)
 	}
 
 	if failed > 0 {
