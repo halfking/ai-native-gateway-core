@@ -8,6 +8,8 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"os"
+	"strconv"
 	"time"
 
 	"github.com/kaixuan/llm-gateway-go/domain" //nolint:depguard // historical violation, B1 routing.go CQRS will fix
@@ -27,8 +29,57 @@ type IRTransport struct {
 }
 
 // NewIRTransport 构造默认配置的 IRTransport。
+// 自动检测环境变量，按需启用诊断功能。
 func NewIRTransport() *IRTransport {
-	return NewIRTransportWithLoggers(nil, nil, nil)
+	var rawLogger *logging.RawDataLogger
+	var anomalyReporter *logging.AnomalyReporter
+	var semanticAnalyzer *ir.SemanticAnalyzer
+
+	// 原始数据日志（opt-in）
+	rawEnabled := os.Getenv("LLM_GATEWAY_RAW_LOG_ENABLED") == "true"
+	if rawEnabled {
+		logDir := os.Getenv("LLM_GATEWAY_RAW_LOG_DIR")
+		if logDir == "" {
+			logDir = "./logs/raw_data"
+		}
+		maxSizeStr := os.Getenv("LLM_GATEWAY_RAW_LOG_MAX_SIZE")
+		maxSize := int64(200 * 1024 * 1024) // 200MB default
+		if maxSizeStr != "" {
+			if parsed, err := strconv.ParseInt(maxSizeStr, 10, 64); err == nil {
+				maxSize = parsed
+			}
+		}
+		
+		logger, err := logging.NewRawDataLogger(logDir, maxSize, true)
+		if err != nil {
+			slog.Error("raw_data_logger: failed to initialize", "err", err)
+		} else {
+			rawLogger = logger
+			slog.Info("raw_data_logger: initialized", "dir", logDir, "max_size", maxSize)
+		}
+	}
+
+	// 异常报告器（opt-in）
+	anomalyEnabled := os.Getenv("LLM_GATEWAY_ANOMALY_REPORTER_ENABLED") == "true"
+	if anomalyEnabled {
+		endpoint := os.Getenv("LLM_GATEWAY_ANOMALY_ENDPOINT")
+		if endpoint == "" {
+			endpoint = "https://llm.kxpms.cn/api/diagnostics/anomalies"
+		}
+		
+		reporter := logging.NewAnomalyReporter(endpoint, true)
+		anomalyReporter = reporter
+		slog.Info("anomaly_reporter: initialized", "endpoint", endpoint)
+	}
+
+	// 语义分析器（opt-in）
+	semanticEnabled := os.Getenv("LLM_GATEWAY_SEMANTIC_ANALYSIS_ENABLED") == "true"
+	if semanticEnabled {
+		semanticAnalyzer = ir.NewSemanticAnalyzer(true)
+		slog.Info("semantic_analyzer: initialized")
+	}
+
+	return NewIRTransportWithLoggers(rawLogger, anomalyReporter, semanticAnalyzer)
 }
 
 // NewIRTransportWithLoggers 构造带日志和分析器的 IRTransport。
