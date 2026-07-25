@@ -880,6 +880,16 @@ func (r *ModelProbeRunner) TriggerManual(ctx context.Context, credentialID int, 
 	r.recordRun(ctx, t, status, &httpStatus, errCode, errMsg, latency, stateChange, applied, "manual")
 	r.applyResult(ctx, t, status, &httpStatus, errCode, errMsg, latency, stateChange, applied, "manual",
 		newSucc, newFail, newState)
+
+	// 2026-07-25 SPEC §3.1.5: mirror TriggerAllSync behavior — when the
+	// single manual probe succeeds, clear node_probe_state so
+	// v_routable_credential_models drops node_probe_failed immediately.
+	if status == "ok" {
+		if err := MarkNodeProbeHealthy(ctx, r.db, t.CredentialID, t.RawModel); err != nil {
+			slog.Warn("TriggerManual: mark node_probe_state healthy failed",
+				"credential_id", t.CredentialID, "raw_model", t.RawModel, "error", err)
+		}
+	}
 	return nil
 }
 
