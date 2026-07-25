@@ -535,6 +535,20 @@ type ChatHandler struct {
 	// When non-nil, handler writes retry_count after each request. nil disables
 	// persistence (fail-open: retry behavior unchanged, only stats missing).
 	goalRetryRecorder GoalRetryRecorder
+
+	// formatDetector (2026-07-26) automatically detects client request format patterns.
+	// When non-nil, handler identifies format (OpenAI, OpenCode, etc.) and applies
+	// known fixes before validation. nil disables format detection (strict validation only).
+	formatDetector *FormatDetector
+
+	// formatFixer (2026-07-26) applies automatic fixes to common format issues.
+	// Works with formatDetector to repair malformed requests (empty objects, wrong types).
+	// nil disables auto-fix (requests must be valid on arrival).
+	formatFixer *FormatFixer
+
+	// formatCache (2026-07-26) caches detected format patterns per session in Redis.
+	// Avoids repeated detection for same client. nil disables caching (detect every request).
+	formatCache FormatCache
 }
 
 // ToolRegistryService is the interface for tool registry access.
@@ -1429,11 +1443,140 @@ func (h *ChatHandler) serveWithExecutor(
 		return
 	}
 
+	// ========== Format Detection & Auto-Fix (2026-07-26) ==========
+	// Automatically detect client format patterns and apply fixes to common issues
+	// before field validation. This improves compatibility with various clients.
+	if h.formatDetector != nil && h.formatFixer != nil {
+		var detectedPattern *FormatPattern
+		
+		// 1. Try to get cached format from Redis (session-level optimization)
+		if sessionID != "" && h.formatCache != nil {
+			if cached, err := h.formatCache.Get(ctx, sessionID); err == nil && cached != nil {
+				detectedPattern = h.formatDetector.registry.Get(cached.PatternID)
+				if detectedPattern != nil {
+					formatCacheTotal.WithLabelValues("hit").Inc()
+					formatDetectionTotal.WithLabelValues(cached.PatternID, "cache").Inc()
+					slog.Debug("format cache hit",
+						"session_id", sessionID,
+						"pattern", cached.PatternID,
+						"confidence", cached.Confidence,
+						"use_count", cached.UseCount)
+				}
+			} else if err == nil && cached == nil {
+				formatCacheTotal.WithLabelValues("miss").Inc()
+			}
+		}
+		
+		// 2. If no cache, perform format detection
+		if detectedPattern == nil && h.formatDetector != nil {
+			detectResult := h.formatDetector.Detect(bodyBytes, r.Header)
+			
+			if detectResult.Confidence > 0.5 && detectResult.Pattern != nil {
+				detectedPattern = detectResult.Pattern
+				
+				// Record metrics
+				formatDetectionTotal.WithLabelValues(detectResult.Pattern.ID, "detect").Inc()
+				formatConfidence.Observe(detectResult.Confidence)
+				
+				slog.Info("format detected",
+					"pattern", detectResult.Pattern.ID,
+					"confidence", detectResult.Confidence,
+					"issues", len(detectResult.Issues),
+					"can_fix", detectResult.CanFix)
+				
+				// Cache the detected format for future requests
+				if sessionID != "" && h.formatCache != nil {
+					cached := &CachedFormat{
+						PatternID:   detectResult.Pattern.ID,
+						PatternName: detectResult.Pattern.Name,
+						Confidence:  detectResult.Confidence,
+						CachedAt:    time.Now(),
+						UseCount:    1,
+						LastUsed:    time.Now(),
+					}
+					// Fire and forget - don't block request if cache fails
+					go func() {
+						bgCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+						defer cancel()
+						if err := h.formatCache.Set(bgCtx, sessionID, cached); err != nil {
+							slog.Warn("format cache set failed", "error", err, "session_id", sessionID)
+						}
+					}()
+				}
+			}
+		}
+		
+		// 3. Apply format fixes if pattern has known issues
+		if detectedPattern != nil && len(detectedPattern.Fixes) > 0 {
+			fixResult, err := h.formatFixer.Fix(bodyBytes, detectedPattern)
+			if err != nil {
+				slog.Warn("format fix failed", "error", err, "pattern", detectedPattern.ID)
+			} else if fixResult.Changed {
+				// Record metrics for each fix applied
+				for _, fixType := range fixResult.Applied {
+					formatFixAppliedTotal.WithLabelValues(detectedPattern.ID, fixType).Inc()
+				}
+				
+				// Use the fixed request body
+				bodyBytes = fixResult.Fixed
+				
+				// Re-parse the fixed body
+				if err := json.Unmarshal(bodyBytes, &reqBody); err != nil {
+					slog.Error("failed to parse fixed body", "error", err)
+					// Fall back to original body (validation will catch issues)
+				} else {
+					slog.Info("request body auto-fixed",
+						"pattern", fixResult.Pattern,
+						"fixes_applied", fixResult.Applied,
+						"request_id", requestID)
+				}
+			}
+		}
+	}
+	// ========== End Format Detection & Auto-Fix ==========
+
 	// 2026-07-14: enforce lowercase at the wire boundary so downstream
 	// SQL matches (canonical_raw_name / standardized_name / model_aliases)
 	// work without lower() wrappers.
 	clientModel := modelname.CanonicalizeClientModel(reqBody.Model)
 	logCtx.SetClientModel(clientModel)
+
+	// ========== Message Field Validation (2026-07-26) ==========
+	// Validate messages field with enhanced checks for common issues.
+	// This runs after format detection/fixing to catch any remaining problems.
+	if errMsg := ValidateNonEmptyArray(reqBody.Messages, "messages"); errMsg != "" {
+		formatValidationFailureTotal.WithLabelValues("invalid_messages").Inc()
+		logCtx.SetError("invalid_messages", errMsg)
+		logCtx.EmitFailure("invalid_messages", errMsg, nil, nil)
+		logCtx.MarkLogged()
+		writeJSON(w, http.StatusBadRequest, map[string]any{
+			"error": map[string]string{
+				"message": errMsg,
+				"type":    "invalid_request",
+				"code":    "invalid_messages",
+			},
+		})
+		return
+	}
+
+	// Check for at least one user message
+	if !HasUserMessage(reqBody.Messages) {
+		formatValidationFailureTotal.WithLabelValues("no_user_message").Inc()
+		errMsg := "messages must contain at least one user message"
+		logCtx.SetError("no_user_message", errMsg)
+		logCtx.EmitFailure("no_user_message", errMsg, nil, nil)
+		logCtx.MarkLogged()
+		writeJSON(w, http.StatusBadRequest, map[string]any{
+			"error": map[string]string{
+				"message": errMsg,
+				"type":    "invalid_request",
+				"code":    "no_user_message",
+			},
+		})
+		return
+	}
+	// ========== End Message Field Validation ==========
+
 	if sessionID == "" {
 		sessionID = extractSessionIDFromBody(bodyBytes)
 	}
