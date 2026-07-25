@@ -122,16 +122,18 @@ const maxVisibleTiles = computed(() => {
   return Math.max(MIN_VISIBLE_TILES, Math.min(count, total))
 })
 
-// 只显示可容纳的请求。后端按 ASC 时间戳下发（newest 在 tail），
-// 渲染方向 left→right 与数据顺序保持一致：最右 = 最新。
+// Display first N tiles (backend sends newest first)
+// No reversal needed - backend order matches display order (newest on left)
 const visibleRequests = computed(() => {
   const requests = props.lane.requests
   const max = maxVisibleTiles.value
   if (requests.length <= max) return [...requests]
-  return requests.slice(requests.length - max)
+  // Take first N (newest) instead of last N
+  return requests.slice(0, max)
 })
 
-// 用于渲染的完整列表（含后端 idle 标记，按时间戳排序，不再追加尾部占位）
+// Backend sends tiles in DESC order (newest first).
+// Display left→right: newest on LEFT, oldest on RIGHT.
 const renderedRequests = computed<RequestTileType[]>(() => visibleRequests.value)
 
 // 2026-07-13: 应急诊断按钮 — 旧版启发式（错误率 >= 1/3）。
