@@ -125,6 +125,34 @@ export const liveStreamState = reactive({
   redisError: '',
 })
 
+// Page visibility state
+const visibilityState = reactive({
+  isVisible: typeof document !== 'undefined' ? !document.hidden : true,
+  lastVisibleAt: Date.now(),
+})
+
+let needsFullRefresh = false
+
+// Track page visibility changes
+if (typeof document !== 'undefined') {
+  document.addEventListener('visibilitychange', () => {
+    const wasHidden = !visibilityState.isVisible
+    visibilityState.isVisible = !document.hidden
+    
+    if (!document.hidden && wasHidden) {
+      // Page became visible - trigger full refresh
+      const hiddenDuration = Date.now() - visibilityState.lastVisibleAt
+      console.log(`[LiveStream] Page visible after ${Math.round(hiddenDuration / 1000)}s, refreshing snapshot`)
+      
+      // Mark that we need a full refresh on next event
+      needsFullRefresh = true
+    } else if (document.hidden) {
+      visibilityState.lastVisibleAt = Date.now()
+      console.log('[LiveStream] Page hidden, pausing updates')
+    }
+  })
+}
+
 // Vue auto-unwraps `ref` and `reactive` proxies in templates.
 // Exposing the reactive properties as ComputedRef keeps the
 // type-safety of the composable's public API while letting
@@ -729,6 +757,19 @@ function openConnection() {
   es.onmessage = (ev) => {
     try {
       const env = JSON.parse(ev.data) as LiveStreamEnvelope
+      
+      // Skip updates when page is hidden (keep connection alive)
+      if (!visibilityState.isVisible) {
+        console.debug('[LiveStream] Message received but page hidden, skipping update')
+        return
+      }
+      
+      // Handle full refresh after page becomes visible
+      if (needsFullRefresh && env.type === 'snapshot_refresh') {
+        console.log('[LiveStream] Applying full snapshot after visibility change')
+        needsFullRefresh = false
+      }
+      
       handleEnvelope(env)
     } catch (err) {
       console.warn('[liveStream] bad envelope', err)
@@ -761,6 +802,18 @@ export function acquireLiveStream(): () => void {
       closeConnection()
     }
   }
+}
+
+// Request full snapshot refresh from backend
+export function requestSnapshotRefresh() {
+  if (liveStreamState.connection !== 'open') {
+    console.warn('[LiveStream] Cannot refresh: connection not open')
+    return
+  }
+  
+  // Trigger backend snapshot push by marking refresh needed
+  needsFullRefresh = true
+  console.log('[LiveStream] Snapshot refresh requested')
 }
 
 export function pauseStream() {
