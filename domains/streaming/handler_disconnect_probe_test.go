@@ -132,19 +132,21 @@ func TestBuildClientDisconnectProbeEntry_NilRequest(t *testing.T) {
 }
 
 // TestBuildClientDisconnectProbeEntry_LargeBody covers 2026-07-25 fix:
-// request body logging was raised from 64KB to 512KB to support long
-// conversations / document analysis / tool calls. This test asserts the
-// 512KB threshold holds (body within limit is recorded verbatim) and that
-// oversize bodies are truncated with the new marker that includes the
-// original byte count so analysts can tell how much was cut.
+// request body logging was raised from 64KB → 512KB → 2MB to support
+// modern LLM context windows (Claude 200K, Gemini 2M, GPT-4 128K).
+// This test asserts the 2MB threshold holds (body within limit is recorded
+// verbatim) and that oversize bodies are truncated with the new marker
+// that includes the original byte count so analysts can tell how much
+// was cut.
 func TestBuildClientDisconnectProbeEntry_LargeBody(t *testing.T) {
 	credID := 11
 	provID := 18
 
-	// ── Case A: 400 KB body (under 512 KB limit) ── preserved verbatim.
-	bodyUnder := make([]byte, 0, 400*1024)
+	// ── Case A: 1.5 MB body (under 2 MB limit) ── preserved verbatim.
+	// 1.5MB 覆盖 Claude 200K + GPT-4 128K 的典型请求体大小。
+	bodyUnder := make([]byte, 0, 1536*1024)
 	bodyUnder = append(bodyUnder, []byte(`{"model":"glm-5.2","messages":[{"role":"user","content":"`)...)
-	for i := 0; i < 400*1024-100; i++ {
+	for i := 0; i < 1536*1024-100; i++ {
 		bodyUnder = append(bodyUnder, 'a')
 	}
 	bodyUnder = append(bodyUnder, []byte(`"}],"temperature":0.7}`)...)
@@ -172,17 +174,18 @@ func TestBuildClientDisconnectProbeEntry_LargeBody(t *testing.T) {
 		t.Fatal("RequestBody must be recorded for under-limit body")
 	}
 	if strings.Contains(*entryA.RequestBody, "...[truncated") {
-		t.Errorf("400KB body must NOT be truncated, got len=%d", len(*entryA.RequestBody))
+		t.Errorf("1.5MB body must NOT be truncated, got len=%d", len(*entryA.RequestBody))
 	}
 	if len(*entryA.RequestBody) != len(bodyUnder) {
-		t.Errorf("400KB body length must match original: got %d want %d",
+		t.Errorf("1.5MB body length must match original: got %d want %d",
 			len(*entryA.RequestBody), len(bodyUnder))
 	}
 
-	// ── Case B: 800 KB body (over 512 KB limit) ── truncated with original byte marker.
-	bodyOver := make([]byte, 0, 800*1024)
+	// ── Case B: 3 MB body (over 2 MB limit) ── truncated with original byte marker.
+	// 3MB 模拟 Gemini 1.5 Pro 2M token 上下文的极端请求。
+	bodyOver := make([]byte, 0, 3*1024*1024)
 	bodyOver = append(bodyOver, []byte(`{"model":"glm-5.2","messages":[{"role":"user","content":"`)...)
-	for i := 0; i < 800*1024-100; i++ {
+	for i := 0; i < 3*1024*1024-100; i++ {
 		bodyOver = append(bodyOver, 'b')
 	}
 	bodyOver = append(bodyOver, []byte(`"}]}`)...)
@@ -221,10 +224,10 @@ func TestBuildClientDisconnectProbeEntry_LargeBody(t *testing.T) {
 			markerFragment,
 			(*entryB.RequestBody)[len(*entryB.RequestBody)-80:])
 	}
-	// 截断后主体不超过 512KB + 标记长度
-	maxAllowed := 512*1024 + 80
+	// 截断后主体不超过 2MB + 标记长度
+	maxAllowed := 2*1024*1024 + 80
 	if len(*entryB.RequestBody) > maxAllowed {
-		t.Errorf("truncated body must be within 512KB+marker, got len=%d", len(*entryB.RequestBody))
+		t.Errorf("truncated body must be within 2MB+marker, got len=%d", len(*entryB.RequestBody))
 	}
 }
 
