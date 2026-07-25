@@ -369,10 +369,10 @@ func strPtrT(s string) *string { return &s }
 func TestRequestLogEntry_ApplyOriginFromContext(t *testing.T) {
 	t.Run("populates all four fields from ctx", func(t *testing.T) {
 		ctx := context.Background()
-		ctx = context.WithValue(ctx, originCtxKey("origin.stage"), "node_probe")
-		ctx = context.WithValue(ctx, originCtxKey("origin.actor"), "node-probe-worker")
-		ctx = context.WithValue(ctx, originCtxKey("origin.client_ip"), "203.0.113.5")
-		ctx = context.WithValue(ctx, originCtxKey("origin.xff"), "203.0.113.5, 10.0.0.1")
+		ctx = context.WithValue(ctx, "origin.stage", "node_probe")
+		ctx = context.WithValue(ctx, "origin.actor", "node-probe-worker")
+		ctx = context.WithValue(ctx, "origin.client_ip", "203.0.113.5")
+		ctx = context.WithValue(ctx, "origin.xff", "203.0.113.5, 10.0.0.1")
 		var e RequestLogEntry
 		e.ApplyOriginFromContext(ctx)
 		if e.OriginStage == nil || *e.OriginStage != "node_probe" {
@@ -398,7 +398,7 @@ func TestRequestLogEntry_ApplyOriginFromContext(t *testing.T) {
 
 	t.Run("first-write-wins: pre-set fields are not overwritten", func(t *testing.T) {
 		ctx := context.Background()
-		ctx = context.WithValue(ctx, originCtxKey("origin.stage"), "business")
+		ctx = context.WithValue(ctx, "origin.stage", "business")
 		e := RequestLogEntry{OriginStage: strPtrT("node_probe")}
 		e.ApplyOriginFromContext(ctx)
 		if e.OriginStage == nil || *e.OriginStage != "node_probe" {
