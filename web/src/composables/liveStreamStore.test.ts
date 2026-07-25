@@ -239,6 +239,110 @@ describe('mergeSnapshotFromServer', () => {
     const anthropic = __testing.state.snapshot!.dimensions.vendor.find((lane) => lane.id === 'anthropic')
     expect(anthropic?.stats.total).toBe(2)
   })
+
+  // ---------------------------------------------------------------------------
+  // snapshot_refresh timestamp guard (latest_request_ts versioning)
+  // ---------------------------------------------------------------------------
+
+  it('accepts snapshot_refresh when latest_request_ts > maxSeenTs', () => {
+    __testing.resetStream()
+    __testing.handleEnvelope({
+      type: 'snapshot_refresh',
+      ts: '2026-07-14T00:01:00Z',
+      snapshot: {
+        summary: { total: 1, success: 1, failure: 0 },
+        detail_dimensions: { vendor: [lane('openai', 1, [tile('r1')])], provider: [], model: [] },
+        dimensions: { vendor: [lane('openai', 1, [tile('r1')])], provider: [], model: [] },
+        dimension_legends: { vendor: [], provider: [], model: [] },
+        status_legends: [],
+        latest_request_ts: '2026-07-14T12:00:02Z',
+      },
+    })
+    expect(__testing.state.snapshot!.summary.total).toBe(1)
+    expect(__testing.maxSeenTs()).toBe('2026-07-14T12:00:02Z')
+  })
+
+  it('rejects stale snapshot_refresh when latest_request_ts <= maxSeenTs', () => {
+    __testing.resetStream()
+    // First snapshot raises maxSeenTs to 12:00:02
+    __testing.handleEnvelope({
+      type: 'snapshot_refresh',
+      ts: '2026-07-14T00:01:00Z',
+      snapshot: {
+        summary: { total: 1, success: 1, failure: 0 },
+        detail_dimensions: { vendor: [lane('openai', 1, [tile('r1')])], provider: [], model: [] },
+        dimensions: { vendor: [lane('openai', 1, [tile('r1')])], provider: [], model: [] },
+        dimension_legends: { vendor: [], provider: [], model: [] },
+        status_legends: [],
+        latest_request_ts: '2026-07-14T12:00:02Z',
+      },
+    })
+    // Second snapshot with OLDER ts should be rejected
+    __testing.handleEnvelope({
+      type: 'snapshot_refresh',
+      ts: '2026-07-14T00:02:00Z',
+      snapshot: {
+        summary: { total: 999, success: 999, failure: 0 },
+        detail_dimensions: { vendor: [lane('openai', 999, [tile('r1')])], provider: [], model: [] },
+        dimensions: { vendor: [lane('openai', 999, [tile('r1')])], provider: [], model: [] },
+        dimension_legends: { vendor: [], provider: [], model: [] },
+        status_legends: [],
+        latest_request_ts: '2026-07-14T12:00:01Z',
+      },
+    })
+    // Snapshot should still show the FIRST snapshot's data (rejected the stale one)
+    expect(__testing.state.snapshot!.summary.total).toBe(1)
+    expect(__testing.maxSeenTs()).toBe('2026-07-14T12:00:02Z')
+  })
+
+  it('delta with higher tiles raises maxSeenTs, rejecting subsequent stale snapshot', () => {
+    __testing.resetStream()
+    // First snapshot with latest_request_ts = 12:00:01
+    __testing.handleEnvelope({
+      type: 'snapshot_refresh',
+      ts: '2026-07-14T00:01:00Z',
+      snapshot: {
+        summary: { total: 1, success: 1, failure: 0 },
+        detail_dimensions: { vendor: [lane('openai', 1, [tile('r1')])], provider: [], model: [] },
+        dimensions: { vendor: [lane('openai', 1, [tile('r1')])], provider: [], model: [] },
+        dimension_legends: { vendor: [], provider: [], model: [] },
+        status_legends: [],
+        latest_request_ts: '2026-07-14T12:00:01Z',
+      },
+    })
+    // Delta with a tile at 12:00:03 raises maxSeenTs
+    __testing.handleEnvelope({
+      type: 'request',
+      ts: '2026-07-14T00:01:30Z',
+      delta: {
+        summary: { total: 2, success: 2, failure: 0 },
+        changed_lanes: {
+          vendor: [lane('openai', 2, [{ ...tile('r2'), timestamp: '2026-07-14T12:00:03Z' }])],
+          provider: [],
+          model: [],
+        },
+        dimension_legends: { vendor: [], provider: [], model: [] },
+        status_legends: [],
+      },
+    })
+    expect(__testing.maxSeenTs()).toBe('2026-07-14T12:00:03Z')
+    // Stale snapshot at 12:00:02 should be rejected
+    __testing.handleEnvelope({
+      type: 'snapshot_refresh',
+      ts: '2026-07-14T00:02:00Z',
+      snapshot: {
+        summary: { total: 999, success: 999, failure: 0 },
+        detail_dimensions: { vendor: [lane('openai', 999, [tile('r1')])], provider: [], model: [] },
+        dimensions: { vendor: [lane('openai', 999, [tile('r1')])], provider: [], model: [] },
+        dimension_legends: { vendor: [], provider: [], model: [] },
+        status_legends: [],
+        latest_request_ts: '2026-07-14T12:00:02Z',
+      },
+    })
+    // total remains 2 (the delta's value, not the stale snapshot's 999)
+    expect(__testing.state.snapshot!.summary.total).toBe(2)
+    expect(__testing.maxSeenTs()).toBe('2026-07-14T12:00:03Z')
+  })
 })
 
 // ---------------------------------------------------------------------------
