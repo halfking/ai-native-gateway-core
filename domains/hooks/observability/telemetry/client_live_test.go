@@ -221,6 +221,25 @@ func TestRequestLogInsertParamCount(t *testing.T) {
 	require.JSONEq(t, updatedRequestBody, gotBodies.RequestBody)
 	require.JSONEq(t, updatedResponseBody, gotBodies.ResponseBody)
 
+	// A metadata-only update must not erase bodies captured by an earlier write.
+	if err := cl.persistRequestLog(&RequestLogEntry{
+		Op:        RequestLogUpdate,
+		RequestID: entry.RequestID,
+		Success:   true,
+	}); err != nil {
+		t.Fatalf("persistRequestLog metadata-only update: %v", err)
+	}
+	err = pool.QueryRow(ctx, `
+		SELECT request_body::text, response_body::text
+		FROM request_logs_bodies_hot
+		WHERE request_id = $1
+	`, entry.RequestID).Scan(&gotBodies.RequestBody, &gotBodies.ResponseBody)
+	if err != nil {
+		t.Fatalf("verify preserved bodies: %v", err)
+	}
+	require.JSONEq(t, updatedRequestBody, gotBodies.RequestBody)
+	require.JSONEq(t, updatedResponseBody, gotBodies.ResponseBody)
+
 	// Verify the new column write and also a sanity check that
 	// quality_flags and quality_fix_actions are written as
 	// non-NULL empty arrays (the DEFAULT-override footgun: an

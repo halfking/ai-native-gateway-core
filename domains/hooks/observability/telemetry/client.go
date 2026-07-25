@@ -1376,27 +1376,21 @@ func (c *Client) updateRequestLog(entry *RequestLogEntry) error {
 // Uses a single INSERT ... ON CONFLICT DO UPDATE (migration 455 gave the hot table
 // UNIQUE(request_id)). The previous triple-UPDATE/INSERT/UPDATE pattern had two
 // problems:
-//   1. First UPDATE was dead code — the row doesn't exist yet in request_logs_bodies_hot.
-//   2. Third UPDATE was redundant — step 2 (INSERT) already created the row.
+//  1. First UPDATE was dead code — the row doesn't exist yet in request_logs_bodies_hot.
+//  2. Third UPDATE was redundant — step 2 (INSERT) already created the row.
 func (c *Client) upsertRequestLogBodies(ctx context.Context, tx pgx.Tx, requestID, requestBodyJSON, responseBodyJSON string) error {
-	// Cast empty-string bodies to {} so they remain queryable as JSON rather than NULL.
-	// strPtrToJSON already converts nil→"null"; here we convert the empty-string case.
+	// Keep missing bodies as NULL so metadata-only updates cannot erase a body
+	// captured by the initial or successful request-log write.
 	reqJSON := requestBodyJSON
-	if reqJSON == "null" || reqJSON == "" {
-		reqJSON = "{}"
-	}
 	respJSON := responseBodyJSON
-	if respJSON == "null" || respJSON == "" {
-		respJSON = "{}"
-	}
 	// Use now() as ts for the hot table (UNIQUE on request_id, ts is non-unique).
-	// The UPDATE clause overwrites whatever ts was there, keeping the row fresh.
+	// The UPDATE clause only replaces a body when this write supplied one.
 	_, err := tx.Exec(ctx, `
 		INSERT INTO request_logs_bodies_hot (request_id, ts, request_body, response_body)
-		VALUES ($1, now(), $2::jsonb, $3::jsonb)
+		VALUES ($1, now(), NULLIF($2, 'null')::jsonb, NULLIF($3, 'null')::jsonb)
 		ON CONFLICT (request_id) DO UPDATE
-			SET request_body = EXCLUDED.request_body,
-			    response_body = EXCLUDED.response_body,
+			SET request_body = COALESCE(EXCLUDED.request_body, request_logs_bodies_hot.request_body),
+			    response_body = COALESCE(EXCLUDED.response_body, request_logs_bodies_hot.response_body),
 			    ts = EXCLUDED.ts
 	`, requestID, reqJSON, respJSON)
 	return err
