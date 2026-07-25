@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -128,6 +129,111 @@ func TestBuildClientDisconnectProbeEntry_NilRequest(t *testing.T) {
 	if _, ok := buildClientDisconnectProbeEntry("req-1", nil, &RequestLogContext{}); ok {
 		t.Fatal("must not build a probe entry for a nil request")
 	}
+}
+
+// TestBuildClientDisconnectProbeEntry_LargeBody covers 2026-07-25 fix:
+// request body logging was raised from 64KB to 512KB to support long
+// conversations / document analysis / tool calls. This test asserts the
+// 512KB threshold holds (body within limit is recorded verbatim) and that
+// oversize bodies are truncated with the new marker that includes the
+// original byte count so analysts can tell how much was cut.
+func TestBuildClientDisconnectProbeEntry_LargeBody(t *testing.T) {
+	credID := 11
+	provID := 18
+
+	// ── Case A: 400 KB body (under 512 KB limit) ── preserved verbatim.
+	bodyUnder := make([]byte, 0, 400*1024)
+	bodyUnder = append(bodyUnder, []byte(`{"model":"glm-5.2","messages":[{"role":"user","content":"`)...)
+	for i := 0; i < 400*1024-100; i++ {
+		bodyUnder = append(bodyUnder, 'a')
+	}
+	bodyUnder = append(bodyUnder, []byte(`"}],"temperature":0.7}`)...)
+
+	logCtxA := &RequestLogContext{
+		ClientModel:   "glm-5.2",
+		OutboundModel: "glm-5.2",
+		CredentialID:  &credID,
+		ProviderID:    &provID,
+		KeyInfo:       &authentication.KeyInfo{TenantID: "tenant-1", ID: 42},
+		Body:          bodyUnder,
+		StartTime:     time.Now(),
+	}
+
+	rA := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader("{}"))
+	ctxA, cancelA := context.WithCancel(rA.Context())
+	rA = rA.WithContext(ctxA)
+	cancelA()
+
+	entryA, ok := buildClientDisconnectProbeEntry("req-large-A", rA, logCtxA)
+	if !ok {
+		t.Fatal("expected probe entry to be built on canceled context (under-limit body)")
+	}
+	if entryA.RequestBody == nil {
+		t.Fatal("RequestBody must be recorded for under-limit body")
+	}
+	if strings.Contains(*entryA.RequestBody, "...[truncated") {
+		t.Errorf("400KB body must NOT be truncated, got len=%d", len(*entryA.RequestBody))
+	}
+	if len(*entryA.RequestBody) != len(bodyUnder) {
+		t.Errorf("400KB body length must match original: got %d want %d",
+			len(*entryA.RequestBody), len(bodyUnder))
+	}
+
+	// ── Case B: 800 KB body (over 512 KB limit) ── truncated with original byte marker.
+	bodyOver := make([]byte, 0, 800*1024)
+	bodyOver = append(bodyOver, []byte(`{"model":"glm-5.2","messages":[{"role":"user","content":"`)...)
+	for i := 0; i < 800*1024-100; i++ {
+		bodyOver = append(bodyOver, 'b')
+	}
+	bodyOver = append(bodyOver, []byte(`"}]}`)...)
+
+	logCtxB := &RequestLogContext{
+		ClientModel:   "glm-5.2",
+		OutboundModel: "glm-5.2",
+		CredentialID:  &credID,
+		ProviderID:    &provID,
+		KeyInfo:       &authentication.KeyInfo{TenantID: "tenant-1", ID: 42},
+		Body:          bodyOver,
+		StartTime:     time.Now(),
+	}
+
+	rB := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader("{}"))
+	ctxB, cancelB := context.WithCancel(rB.Context())
+	rB = rB.WithContext(ctxB)
+	cancelB()
+
+	entryB, ok := buildClientDisconnectProbeEntry("req-large-B", rB, logCtxB)
+	if !ok {
+		t.Fatal("expected probe entry to be built on canceled context (over-limit body)")
+	}
+	if entryB.RequestBody == nil {
+		t.Fatal("RequestBody must be recorded for over-limit body")
+	}
+	if !strings.Contains(*entryB.RequestBody, "...[truncated,original=") {
+		t.Errorf("over-limit body must carry truncation marker, got prefix: %q",
+			(*entryB.RequestBody)[:min(80, len(*entryB.RequestBody))])
+	}
+	// 标记里应该包含原始字节数（实际由前面拼装决定，使用 len(bodyOver) 精确比较）
+	expectedOriginal := len(bodyOver)
+	markerFragment := "original=" + strconv.Itoa(expectedOriginal) + "bytes"
+	if !strings.Contains(*entryB.RequestBody, markerFragment) {
+		t.Errorf("truncation marker must contain original byte count %q, got: %q",
+			markerFragment,
+			(*entryB.RequestBody)[len(*entryB.RequestBody)-80:])
+	}
+	// 截断后主体不超过 512KB + 标记长度
+	maxAllowed := 512*1024 + 80
+	if len(*entryB.RequestBody) > maxAllowed {
+		t.Errorf("truncated body must be within 512KB+marker, got len=%d", len(*entryB.RequestBody))
+	}
+}
+
+// min is a tiny helper for the truncation marker assertions above.
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
 }
 
 // Ensure errors.Is is wired (guards against future import removals).

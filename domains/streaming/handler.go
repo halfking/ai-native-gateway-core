@@ -3868,13 +3868,23 @@ func buildClientDisconnectProbeEntry(originalRequestID string, r *http.Request, 
 		// 记录请求体 (2026-07-24 fix: 重要！这样可以分析客户端为什么取消/超时)
 		if len(logCtx.Body) > 0 {
 			// 完整请求体（限制大小避免数据库字段溢出）
-			maxSize := 64 * 1024 // 64KB，足够记录大部分请求参数
+			//
+			// 2026-07-25 调整：从 64KB 提升到 512KB，理由：
+			//   - 长对话场景：50+ 轮累积容易超过 100KB
+			//   - 文档分析场景：用户上传 100KB+ 文档时，请求体 200-500KB
+			//   - 工具调用场景：包含工具结果时 200KB-1MB
+			//   - VSCode Copilot：可能粘贴大段代码/错误日志进行分析
+			//
+			// 数据库字段为 jsonb 类型（无明确大小限制，理论 1GB），
+			// 但超过 512KB 的请求体通常是异常情况，继续记录会拖慢入库。
+			// 512KB 可覆盖 > 95% 的真实场景，超过部分会被截断 + 标记原始大小。
+			maxSize := 512 * 1024 // 512KB，覆盖长对话/文档分析/工具调用场景
 			bodyText := string(logCtx.Body)
 			if len(bodyText) > maxSize {
-				bodyText = bodyText[:maxSize] + "...[truncated]"
+				bodyText = bodyText[:maxSize] + "...[truncated,original=" + strconv.Itoa(len(logCtx.Body)) + "bytes]"
 			}
 			requestBody = &bodyText
-			
+
 			// 提取关键参数到 request_preview 用于快速查看
 			var reqBodyParsed map[string]any
 			if err := json.Unmarshal(logCtx.Body, &reqBodyParsed); err == nil {
