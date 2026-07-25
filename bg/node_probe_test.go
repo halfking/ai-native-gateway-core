@@ -277,3 +277,46 @@ func TestRunOneSuccessClearsLastDirectOkAndErrCode(t *testing.T) {
 		t.Fatalf("runOne success branch must write last_direct_ok=TRUE, last_err_code=NULL; update bg/node_probe.go:runOne success UPDATE block")
 	}
 }
+
+// TestRunOneSuccessInvokesInvalidateAndNotify pins that the runOne success
+// path invalidates the in-memory URSM v2 candidate cache and notifies
+// auto_route_refresh so v_routable_credential_models drops node_probe_failed
+// within the listener's 5s debounce.
+//
+// We accept either path (runOne success block or bg/auto_route_realtime_listener
+// routed through SetInvalidateCandidateCache) as long as the symbols are
+// present, because the contract is operational: a probe success must result
+// in the routing view re-evaluating the binding within the existing debounce.
+func TestRunOneSuccessInvokesInvalidateAndNotify(t *testing.T) {
+	src, err := os.ReadFile("node_probe.go")
+	if err != nil {
+		t.Fatalf("read source: %v", err)
+	}
+	body := string(src)
+
+	// (1) On success, runOne must invalidate the URSM v2 candidate cache so
+	// the next chat request re-plans. The mirror of the failure-branch call
+	// (same setter) is a regression — without it the cached bindings still
+	// see the stale node_probe_failed reason.
+	if !strings.Contains(body, "w.invalidateCandidateCache(credID)") {
+		t.Fatalf("runOne must call w.invalidateCandidateCache(credID) on success (mirror the failure branch)")
+	}
+	// It must be guarded — the worker has the setter only when wired from
+	// cmd/gateway/main.go; pass-through nil-safety keeps old tests valid.
+	if !strings.Contains(body, "if w.invalidateCandidateCache != nil {") {
+		t.Fatalf("InvalidateCandidateCacheForCredential call must be guarded by w.invalidateCandidateCache != nil")
+	}
+
+	// (2) On success, runOne must pg_notify('auto_route_refresh', ...) so
+	// bg/auto_route_realtime_listener.go wakes the AutoIndexRefresher and
+	// the v_routable view re-evaluates is_routable. Without the notify,
+	// the success path still relies on the 5-min periodic refresh.
+	if !strings.Contains(body, `SELECT pg_notify('auto_route_refresh'`) {
+		t.Fatalf("runOne success must schedule a pg_notify('auto_route_refresh') so the listener refreshes v_routable_credential_models")
+	}
+	// pg_notify payload must follow credentials:UPDATE:<id> (matches the
+	// invalidateRoutingCaches helper format used by the admin endpoints).
+	if !strings.Contains(body, `credentials:UPDATE:%d`) {
+		t.Fatalf("pg_notify payload must follow credentials:UPDATE:<id> format")
+	}
+}

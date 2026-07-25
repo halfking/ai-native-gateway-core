@@ -1098,6 +1098,20 @@ func (w *NodeProbeWorker) runOne(ctx context.Context, credID int, model, trigger
 				updated_at = now()
 			WHERE credential_id = $1 AND raw_model_name = $2
 		`, credID, model)
+
+		// 2026-07-25 SPEC §3.1.2: success must immediately drop
+		// node_probe_failed: invalidate URSM v2 candCache + pg_notify
+		if w.invalidateCandidateCache != nil {
+			w.invalidateCandidateCache(credID)
+		}
+		if w.db != nil {
+			bgCtx, bgCancel := context.WithTimeout(context.Background(), 2*time.Second)
+			if _, err := w.db.Exec(bgCtx, "SELECT pg_notify('auto_route_refresh', $1)", fmt.Sprintf("credentials:UPDATE:%d", credID)); err != nil {
+				slog.Warn("node_probe_worker: pg_notify auto_route_refresh failed",
+				"credential_id", credID, "model", model, "error", err)
+			}
+			bgCancel()
+		}
 	} else {
 		// 2026-07-15 P0 fix (B-series cascade follow-up): the previous
 		// implementation set in_flight_until = now() + 5min on the
