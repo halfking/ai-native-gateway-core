@@ -1585,8 +1585,9 @@ func (h *LiveStreamSSEHub) HandleLiveStream(w http.ResponseWriter, r *http.Reque
 	<-r.Context().Done()
 }
 
-// HandleTriggerSnapshot is a POST-only endpoint that triggers an immediate
-// full-snapshot push. Useful for manual debugging and validation.
+// HandleTriggerSnapshot is a POST-only TEMPORARY DEBUG endpoint that triggers an immediate
+// full-snapshot push. Added 2026-07-26 for snapshot_refresh guard validation.
+// TODO: Remove this endpoint when no longer needed for debugging.
 //
 // Route: POST /api/admin/live-stream/trigger-snapshot
 func (h *LiveStreamSSEHub) HandleTriggerSnapshot(w http.ResponseWriter, r *http.Request) {
