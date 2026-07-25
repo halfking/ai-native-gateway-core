@@ -331,3 +331,29 @@ func TestPickDueCredential_FiltersByModelName(t *testing.T) {
 		t.Fatalf("BUG #4 regression: pickDueCredential does not filter self_check_runs by model_name")
 	}
 }
+
+func TestPickDueCredential_RequiresRecentRequestError(t *testing.T) {
+	src, err := os.ReadFile("credential_selfcheck.go")
+	if err != nil {
+		t.Fatalf("read source: %v", err)
+	}
+	body := string(src)
+	for _, want := range []string{
+		"FROM request_logs_hot rl",
+		"rl.ts >= now() - interval '24 hours'",
+		"rl.success = FALSE",
+		"COALESCE(rl.status_code, 0) >= 400",
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("recent-error eligibility missing %q", want)
+		}
+	}
+}
+
+func TestCredentialSelfcheckDefaultsToLoopbackGateway(t *testing.T) {
+	t.Setenv("LLM_GATEWAY_SELF_CHECK_BASE_URL", "")
+	w := NewCredentialSelfcheckWorker(nil, "", "")
+	if w.baseURL != "http://127.0.0.1:8781/v1" {
+		t.Fatalf("base URL = %q, want loopback gateway", w.baseURL)
+	}
+}
