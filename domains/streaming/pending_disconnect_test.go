@@ -96,6 +96,7 @@ func TestStreamAnthropicPassthroughContinuesAfterClientDisconnect(t *testing.T) 
 		"request-1",
 		nil,
 		pc,
+		nil,
 	)
 
 	assert.False(t, outcome.Interrupted)
