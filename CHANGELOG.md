@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- **SelfCheckWorker 动态 ticker 间隔优化** (2026-07-25): 将固定 1 分钟 ticker 改为动态间隔 `max(NormalInterval / 10, 60)` 秒，避免 CPU 空跑。当 `normal_interval_seconds=3600` (1h) 时，ticker 间隔为 360s (6min)，CPU tick 次数减少 83%；当 `normal_interval_seconds=600` (10min) 时，ticker 保持 60s (1min)。启动时加载 settings 计算初始间隔，每 10 个 tick 重新加载 settings 并自动调整 ticker。故障模式（`fault_interval_seconds=600s`）下 ticker=60s，快速恢复能力不变。新增日志记录间隔调整过程，便于运维观察。详见 commit `46219da91`.
+- **SelfCheckWorker 动态 ticker 间隔优化** (2026-07-25): 将固定 1 分钟 ticker 改为按 `min(NormalInterval, FaultInterval) / 10` 计算的动态间隔，最小 60 秒，避免 CPU 空跑且保留故障模型快速恢复能力。启动时加载 settings 计算初始间隔，每个 tick 检查 settings 变化并自动调整 ticker。新增日志记录 normal/fault 两种间隔和调整过程。详见 commit `46219da91` 及后续审计修复。
 
 - **Dashboard 实时流筛选弹窗 + 模型标准名 + 探测队列并入系统自检** (2026-07-24): 实时请求流「状态/模型/供应商/原厂」改为弹窗多选（全部 + 完整选项文案）；模型维度与筛选统一用 `canonical_name` 标准名（`liveRequestTile` 优先 canonical）。Dashboard 去掉「系统监测」Tab，`/system-monitor` 重定向到 `?tab=selfcheck`；系统自检页增加「当前探测队列」区（队列长度 / 运行中 / 并发上限 + 已执行/正在执行/待执行 FIFO 泳道）。`GET /api/admin/probe/queue-tasks` 补充 `standardized_name` 并返回近 2h 已完成任务。
 

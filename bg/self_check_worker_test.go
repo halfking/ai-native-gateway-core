@@ -3,9 +3,31 @@ package bg
 import (
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/kaixuan/llm-gateway-go/domains/authentication"
 )
+
+func TestSelfCheckTickerIntervalUsesShortestConfiguredInterval(t *testing.T) {
+	tests := []struct {
+		name   string
+		config scSettings
+		want   time.Duration
+	}{
+		{name: "fault interval is shorter", config: scSettings{NormalInterval: 3600, FaultInterval: 600}, want: 60 * time.Second},
+		{name: "normal interval is shorter", config: scSettings{NormalInterval: 600, FaultInterval: 1800}, want: 60 * time.Second},
+		{name: "minimum interval is one minute", config: scSettings{NormalInterval: 300, FaultInterval: 120}, want: 60 * time.Second},
+		{name: "zero fault interval falls back to normal", config: scSettings{NormalInterval: 3600}, want: 360 * time.Second},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := selfCheckTickerInterval(&tt.config); got != tt.want {
+				t.Fatalf("selfCheckTickerInterval() = %s, want %s", got, tt.want)
+			}
+		})
+	}
+}
 
 func TestSelfCheckWorkerTriggerManualRun(t *testing.T) {
 	w := &SelfCheckWorker{

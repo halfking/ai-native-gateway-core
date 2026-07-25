@@ -101,32 +101,23 @@ func (w *SelfCheckWorker) Start(ctx context.Context) {
 	slog.Info("self_check_worker started")
 	go func() {
 		w.runOnce(ctx)
-		
-		// Load initial settings to compute dynamic ticker interval
+
+		// Load initial settings to compute the first ticker interval.
 		s, err := w.loadSettings(ctx)
 		if err != nil {
 			slog.Error("self_check_worker: failed to load initial settings, using 1min fallback", "error", err)
-			s = &scSettings{NormalInterval: 600} // 10min fallback
+			s = &scSettings{NormalInterval: 600, FaultInterval: 600}
 		}
-		
-		// Dynamic ticker interval: max(NormalInterval / 10, 60) seconds
-		// If NormalInterval=3600 (1h), ticker=360s (6min)
-		// If NormalInterval=600 (10min), ticker=60s (1min)
-		tickerInterval := time.Duration(s.NormalInterval/10) * time.Second
-		if tickerInterval < 60*time.Second {
-			tickerInterval = 60 * time.Second
-		}
+
+		tickerInterval := selfCheckTickerInterval(s)
 		slog.Info("self_check_worker: using dynamic ticker interval",
 			"interval_seconds", int(tickerInterval.Seconds()),
-			"normal_interval_seconds", s.NormalInterval)
-		
+			"normal_interval_seconds", s.NormalInterval,
+			"fault_interval_seconds", s.FaultInterval)
+
 		ticker := time.NewTicker(tickerInterval)
 		defer ticker.Stop()
-		
-		// Counter to periodically reload settings and adjust ticker
-		const settingsReloadInterval = 10 // Reload settings every 10 ticks
-		tickCount := 0
-		
+
 		for {
 			select {
 			case <-ctx.Done():
@@ -156,34 +147,35 @@ func (w *SelfCheckWorker) Start(ctx context.Context) {
 				}
 				w.runModels(ctx, models, s.MaxTokens)
 			case <-ticker.C:
-				tickCount++
-				
-				// Periodically reload settings to adjust ticker interval
-				if tickCount%settingsReloadInterval == 0 {
-					newSettings, err := w.loadSettings(ctx)
-					if err != nil {
-						slog.Error("self_check_worker: failed to reload settings", "error", err)
-					} else {
-						newInterval := time.Duration(newSettings.NormalInterval/10) * time.Second
-						if newInterval < 60*time.Second {
-							newInterval = 60 * time.Second
-						}
-						if newInterval != tickerInterval {
-							slog.Info("self_check_worker: adjusting ticker interval",
-								"old_seconds", int(tickerInterval.Seconds()),
-								"new_seconds", int(newInterval.Seconds()),
-								"normal_interval_seconds", newSettings.NormalInterval)
-							ticker.Stop()
-							ticker = time.NewTicker(newInterval)
-							tickerInterval = newInterval
-						}
-					}
+				newSettings, err := w.loadSettings(ctx)
+				if err != nil {
+					slog.Error("self_check_worker: failed to reload settings", "error", err)
+				} else if newInterval := selfCheckTickerInterval(newSettings); newInterval != tickerInterval {
+					slog.Info("self_check_worker: adjusting ticker interval",
+						"old_seconds", int(tickerInterval.Seconds()),
+						"new_seconds", int(newInterval.Seconds()),
+						"normal_interval_seconds", newSettings.NormalInterval,
+						"fault_interval_seconds", newSettings.FaultInterval)
+					ticker.Stop()
+					ticker = time.NewTicker(newInterval)
+					tickerInterval = newInterval
 				}
-				
+
 				w.runOnce(ctx)
 			}
 		}
 	}()
+}
+
+func selfCheckTickerInterval(s *scSettings) time.Duration {
+	interval := s.NormalInterval
+	if s.FaultInterval > 0 && (interval <= 0 || s.FaultInterval < interval) {
+		interval = s.FaultInterval
+	}
+	if interval < 600 {
+		interval = 600
+	}
+	return time.Duration(interval/10) * time.Second
 }
 
 func (w *SelfCheckWorker) Stop() {
