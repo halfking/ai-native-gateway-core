@@ -756,14 +756,14 @@ func buildLiveStreamLanes(dimension string, items []LiveRequest) ([]LiveStreamLa
 		if key == "" || key == "unknown" || key == "__unknown__" || key == "__idle__" {
 			continue
 		}
-		lanes = append(lanes, LiveStreamLane{
-			ID:        key,
-			Name:      key,
-			Dimension: dimension,
-			Requests:  lastTiles(grouped[key], liveStreamLaneLimit),
-			Stats:     stats[key],
-			IsOthers:  false,
-		})
+			lanes = append(lanes, LiveStreamLane{
+				ID:        key,
+				Name:      key,
+				Dimension: dimension,
+				Requests:  firstTiles(grouped[key], liveStreamLaneLimit),
+				Stats:     stats[key],
+				IsOthers:  false,
+			})
 		legends = append(legends, LiveStreamLegendItem{Key: key, Name: key, Count: stats[key].Total})
 	}
 
@@ -976,11 +976,14 @@ func countStatus(stats *LiveStreamStats, status string) {
 	}
 }
 
-func lastTiles(items []LiveStreamTile, limit int) []LiveStreamTile {
+// firstTiles returns the first N tiles from items (newest tiles, for RIGHT→LEFT display).
+// Backend stores tiles in DESC timestamp order in Redis ZSET, so first N = newest N.
+func firstTiles(items []LiveStreamTile, limit int) []LiveStreamTile {
 	if limit <= 0 || len(items) <= limit {
 		return items
 	}
-	return items[len(items)-limit:]
+	// Return first N instead of last N
+	return items[:limit]
 }
 
 func tenantLiveStreamKey(tenantID, suffix string) string {
