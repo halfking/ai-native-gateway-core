@@ -452,7 +452,7 @@ func (h *LiveStreamSSEHub) Run() {
 		case <-healthTicker.C:
 			h.checkAndBroadcastHealth()
 		case <-snapshotRefreshTicker.C:
-			h.pushFullSnapshots()
+			h.PushFullSnapshots()
 		}
 	}
 }
@@ -645,7 +645,7 @@ func absInt(x int) int {
 	return x
 }
 
-// pushFullSnapshots reads a fresh snapshot from Redis for every active
+// PushFullSnapshots reads a fresh snapshot from Redis for every active
 // scope and pushes it to connected clients as a "snapshot_refresh" envelope.
 // This ensures the dashboard's base data stays current even when the delta
 // stream has gaps (e.g. after a period of no traffic or a Redis partition).
@@ -660,7 +660,7 @@ func absInt(x int) int {
 // max timestamp it has ever seen (from snapshots, deltas, and initial_data)
 // and rejects any snapshot_refresh whose LatestRequestTs ≤ local max timestamp.
 // This prevents stale Redis snapshots from overwriting newer frontend state.
-func (h *LiveStreamSSEHub) pushFullSnapshots() {
+func (h *LiveStreamSSEHub) PushFullSnapshots() {
 	if h.store == nil {
 		return
 	}
@@ -1583,6 +1583,20 @@ func (h *LiveStreamSSEHub) HandleLiveStream(w http.ResponseWriter, r *http.Reque
 
 	// Block until the client disconnects.
 	<-r.Context().Done()
+}
+
+// HandleTriggerSnapshot is a POST-only endpoint that triggers an immediate
+// full-snapshot push. Useful for manual debugging and validation.
+//
+// Route: POST /api/admin/live-stream/trigger-snapshot
+func (h *LiveStreamSSEHub) HandleTriggerSnapshot(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	h.PushFullSnapshots()
+	w.Header().Set("Content-Type", "application/json")
+	w.Write([]byte(`{"status":"ok"}`))
 }
 
 // replay loads the most recent N requests. ASC order so the client
