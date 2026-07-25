@@ -583,7 +583,8 @@ func (h *LiveStreamSSEHub) evictStaleCachedSnapshots() {
 // 2026-07-19: 智能推送策略 - 减少泳道跳变频率。
 func needsFullRefresh(cached, fresh *LiveStreamSnapshot) bool {
 	if cached == nil {
-		return true // 首次推送
+		slog.Debug("snapshot refresh: first push (no cached snapshot)")
+		return true
 	}
 
 	// 判断 1: 总请求数变化 > 20%
@@ -593,8 +594,11 @@ func needsFullRefresh(cached, fresh *LiveStreamSnapshot) bool {
 		diff := float64(absInt(newTotal - oldTotal))
 		threshold := float64(oldTotal) * 0.2
 		if diff > threshold {
-			slog.Debug("snapshot refresh needed: total count changed",
-				"old", oldTotal, "new", newTotal, "diff_pct", diff/float64(oldTotal)*100)
+			slog.Info("snapshot refresh triggered: total count changed significantly",
+				"old_total", oldTotal,
+				"new_total", newTotal,
+				"diff_pct", fmt.Sprintf("%.1f%%", diff/float64(oldTotal)*100),
+				"threshold_pct", "20%")
 			return true
 		}
 	}
@@ -604,8 +608,10 @@ func needsFullRefresh(cached, fresh *LiveStreamSnapshot) bool {
 		oldLanes := cached.Dimensions[dim]
 		newLanes := fresh.Dimensions[dim]
 		if len(oldLanes) != len(newLanes) {
-			slog.Debug("snapshot refresh needed: lane count changed",
-				"dimension", dim, "old_count", len(oldLanes), "new_count", len(newLanes))
+			slog.Info("snapshot refresh triggered: lane count changed",
+				"dimension", dim,
+				"old_count", len(oldLanes),
+				"new_count", len(newLanes))
 			return true
 		}
 	}
@@ -624,17 +630,25 @@ func needsFullRefresh(cached, fresh *LiveStreamSnapshot) bool {
 
 		for i := 0; i < topN; i++ {
 			if oldLanes[i].ID != newLanes[i].ID {
-				slog.Debug("snapshot refresh needed: top lane order changed",
-					"dimension", dim, "position", i,
-					"old_id", oldLanes[i].ID, "new_id", newLanes[i].ID)
+				slog.Info("snapshot refresh triggered: top lane order changed",
+					"dimension", dim,
+					"position", i,
+					"old_lane", oldLanes[i].ID,
+					"new_lane", newLanes[i].ID)
 				return true
 			}
 		}
 	}
 
 	// 数据变化不显著，跳过推送
-	slog.Debug("snapshot refresh skipped: no significant changes",
-		"old_total", oldTotal, "new_total", newTotal)
+	slog.Debug("snapshot refresh skipped: no significant changes detected",
+		"old_total", oldTotal,
+		"new_total", newTotal,
+		"lane_counts", map[string]int{
+			"vendor":   len(cached.Dimensions["vendor"]),
+			"provider": len(cached.Dimensions["provider"]),
+			"model":    len(cached.Dimensions["model"]),
+		})
 	return false
 }
 
