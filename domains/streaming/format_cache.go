@@ -50,11 +50,12 @@ func (c *RedisFormatCache) Get(ctx context.Context, sessionID string) (*CachedFo
 	// Update usage statistics (fire and forget)
 	cached.UseCount++
 	cached.LastUsed = time.Now()
+	snapshot := cached
 	go func() {
 		// Use background context with timeout
 		bgCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 		defer cancel()
-		c.Set(bgCtx, sessionID, &cached)
+		c.Set(bgCtx, sessionID, &snapshot)
 	}()
 
 	return &cached, nil
@@ -89,28 +90,28 @@ func (c *RedisFormatCache) Delete(ctx context.Context, sessionID string) error {
 // GetStats returns statistics about format usage across all sessions.
 func (c *RedisFormatCache) GetStats(ctx context.Context) (map[string]int, error) {
 	stats := make(map[string]int)
-	
+
 	// Scan all keys with the format prefix
 	iter := c.redis.Scan(ctx, 0, c.prefix+"*", 1000).Iterator()
-	
+
 	for iter.Next(ctx) {
 		data, err := c.redis.Get(ctx, iter.Val()).Bytes()
 		if err != nil {
 			continue // Skip errors
 		}
-		
+
 		var cached CachedFormat
 		if err := json.Unmarshal(data, &cached); err != nil {
 			continue
 		}
-		
+
 		stats[cached.PatternID] += cached.UseCount
 	}
-	
+
 	if err := iter.Err(); err != nil {
 		return nil, err
 	}
-	
+
 	return stats, nil
 }
 
@@ -119,15 +120,15 @@ func (c *RedisFormatCache) GetSessionCount(ctx context.Context) (int64, error) {
 	// Count keys matching the prefix
 	var count int64
 	iter := c.redis.Scan(ctx, 0, c.prefix+"*", 0).Iterator()
-	
+
 	for iter.Next(ctx) {
 		count++
 	}
-	
+
 	if err := iter.Err(); err != nil {
 		return 0, err
 	}
-	
+
 	return count, nil
 }
 
@@ -136,20 +137,20 @@ func (c *RedisFormatCache) Clear(ctx context.Context) error {
 	// Find all keys
 	var keys []string
 	iter := c.redis.Scan(ctx, 0, c.prefix+"*", 1000).Iterator()
-	
+
 	for iter.Next(ctx) {
 		keys = append(keys, iter.Val())
 	}
-	
+
 	if err := iter.Err(); err != nil {
 		return err
 	}
-	
+
 	// Delete in batches
 	if len(keys) > 0 {
 		return c.redis.Del(ctx, keys...).Err()
 	}
-	
+
 	return nil
 }
 
@@ -157,29 +158,29 @@ func (c *RedisFormatCache) Clear(ctx context.Context) error {
 func (c *RedisFormatCache) GetByPattern(ctx context.Context, patternID string) ([]string, error) {
 	var sessions []string
 	iter := c.redis.Scan(ctx, 0, c.prefix+"*", 1000).Iterator()
-	
+
 	for iter.Next(ctx) {
 		data, err := c.redis.Get(ctx, iter.Val()).Bytes()
 		if err != nil {
 			continue
 		}
-		
+
 		var cached CachedFormat
 		if err := json.Unmarshal(data, &cached); err != nil {
 			continue
 		}
-		
+
 		if cached.PatternID == patternID {
 			// Extract session ID from key
 			sessionID := iter.Val()[len(c.prefix):]
 			sessions = append(sessions, sessionID)
 		}
 	}
-	
+
 	if err := iter.Err(); err != nil {
 		return nil, err
 	}
-	
+
 	return sessions, nil
 }
 

@@ -1,0 +1,9 @@
+{"request_id":"1bc60569-a71f-4813-af5d-02161f8d23b4","session_id":"routing-test-8e678666-87eb-4866-a0a9-1b5d1332f4c2-00","model":"minimax-m3","round":1,"status":200,"latency":73266458,"pending":false}
+{"request_id":"f56ac915-c252-4a51-ab78-8d102726e66b","session_id":"routing-test-f1ce11cb-f61c-4888-8f23-ef98f6cc4146-01","model":"minimax-m3","round":1,"status":200,"latency":74223750,"pending":false}
+{"request_id":"d0717421-5b61-4263-9b12-7e18619f6ad7","session_id":"routing-test-f5695d88-61c2-41f3-ac5a-0d5ddf3cfc25-02","model":"minimax-m3","round":1,"status":200,"latency":77043708,"pending":false}
+{"request_id":"8af952f0-d8f5-41dd-b9e7-60312e55a3e7","session_id":"routing-test-ac4f50a3-60ec-480a-8335-f8229bdcc92f-02","model":"gpt-5.6-luna","round":1,"status":200,"latency":274796583,"pending":false}
+{"request_id":"1f5ee4a2-d9a3-43e3-9d2e-64bcada827ae","session_id":"routing-test-2a3647e6-297c-43f3-94ec-e85f3acefc3c-01","model":"gpt-5.6-luna","round":1,"status":200,"latency":274864875,"pending":false}
+{"request_id":"48e67839-9812-4324-bafb-d5a3aa979d49","session_id":"routing-test-5fcca416-0edf-4a0a-94b3-bdba87f0198a-00","model":"gpt-5.6-luna","round":1,"status":200,"latency":280770750,"pending":false}
+{"request_id":"3403e618-e816-4eb0-b347-0dfeb9ba526f","session_id":"routing-test-c3ac1c84-a68c-49ce-9897-7ec9aa344779-01","model":"gpt-4o","round":1,"status":200,"latency":248784166,"pending":false}
+{"request_id":"74d22e98-1e45-4468-82da-f14f70f3810a","session_id":"routing-test-fbbd1710-d308-4896-9e6a-cc1b8ebaba08-02","model":"gpt-4o","round":1,"status":200,"latency":254149166,"pending":false}
+{"request_id":"a65d05dd-1a40-4a1a-a2d1-b4d398417990","session_id":"routing-test-7bfe2ab4-003c-4149-8dae-174f8e315610-00","model":"gpt-4o","round":1,"status":200,"latency":256290125,"pending":false}
