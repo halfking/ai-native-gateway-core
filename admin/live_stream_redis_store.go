@@ -377,8 +377,29 @@ func (s *LiveStreamRedisStore) Record(ctx context.Context, req LiveRequest) erro
 	queueKeys := liveRequestQueueKeys(tenantID, req)
 	slog.Debug("live stream record: adding to queues", "request_id", req.RequestID, "tenant_id", tenantID, "model", req.Model, "provider", req.ProviderCode, "category", req.ModelCategory, "queue_count", len(queueKeys))
 
+	// 2026-07-26: Slim tile storage - store lightweight JSON in dimension queues
+	// to reduce Redis memory by 72.5% (244B → 67B per tile).
+	// The main queue still stores request_id only (backward compat);
+	// dimension queues store slim tiles for display.
+	slimData, slimErr := marshalTileSlim(liveRequestTile(req))
+	if slimErr != nil {
+		slog.Debug("live stream: slim tile marshal failed, falling back to request_id", "request_id", req.RequestID, "err", slimErr.Error())
+	}
+
 	for _, key := range queueKeys {
-		pipe.ZAdd(ctx, key, redis.Z{Score: score, Member: req.RequestID})
+		// Main queues (global/tenant) keep request_id for backward compatibility
+		// with existing Replay logic that loads from detail hash
+		if strings.HasSuffix(key, ":main") || key == liveStreamMainKey {
+			pipe.ZAdd(ctx, key, redis.Z{Score: score, Member: req.RequestID})
+		} else {
+			// Dimension queues use slim tile format to save memory
+			if slimData != "" {
+				pipe.ZAdd(ctx, key, redis.Z{Score: score, Member: slimData})
+			} else {
+				// Fallback to request_id if slim marshal fails
+				pipe.ZAdd(ctx, key, redis.Z{Score: score, Member: req.RequestID})
+			}
+		}
 		// 2026-07-23: 维度队列 24h TTL（泳道存在不超过 1 天）
 		pipe.Expire(ctx, key, liveStreamLaneQueueTTL)
 		trimLiveStreamQueue(pipe, ctx, key, liveStreamQueueKeepLimit(key))
@@ -458,8 +479,17 @@ func (s *LiveStreamRedisStore) LoadRequest(ctx context.Context, tenantID, reques
 }
 
 func removeLiveRequestFromQueues(ctx context.Context, pipe redis.Pipeliner, tenantID string, req LiveRequest) {
+	// 2026-07-26: Remove from both main queues (by request_id) and dimension
+	// queues (by slim tile JSON) to support the slim tile storage format.
+	slimData, _ := marshalTileSlim(liveRequestTile(req))
 	for _, key := range liveRequestQueueKeys(tenantID, req) {
-		pipe.ZRem(ctx, key, req.RequestID)
+		if strings.HasSuffix(key, ":main") || key == liveStreamMainKey {
+			// Main queues store request_id
+			pipe.ZRem(ctx, key, req.RequestID)
+		} else if slimData != "" {
+			// Dimension queues store slim tile JSON
+			pipe.ZRem(ctx, key, slimData)
+		}
 	}
 }
 
