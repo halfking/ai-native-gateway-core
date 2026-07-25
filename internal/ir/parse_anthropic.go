@@ -361,14 +361,14 @@ func parseAnthropicContentBlocks(blocks []any) ([]ContentBlock, error) {
 				IsError:   isError,
 			}
 
-			case "image":
-				img := parseAnthropicImageBlock(blockMap)
-				irBlock.Image = img
+		case "image":
+			img := parseAnthropicImageBlock(blockMap)
+			irBlock.Image = img
 
-			case "document":
-				irBlock.Document = parseAnthropicDocumentBlock(blockMap)
+		case "document":
+			irBlock.Document = parseAnthropicDocumentBlock(blockMap)
 
-			case "thinking":
+		case "thinking":
 			thinking, _ := blockMap["thinking"].(string)
 			sig, _ := blockMap["signature"].(string)
 			irBlock.Thinking = &ThinkingBlock{Thinking: thinking, Signature: sig}
@@ -447,11 +447,11 @@ func parseAnthropicContentBlock(blockMap map[string]any) *ContentBlock {
 			}
 		}
 		irBlock.ToolResult = &ToolResult{ToolUseID: toolUseID, Content: contentBlocks, IsError: isError}
-		case "image":
-			irBlock.Image = parseAnthropicImageBlock(blockMap)
-		case "document":
-			irBlock.Document = parseAnthropicDocumentBlock(blockMap)
-		case "thinking":
+	case "image":
+		irBlock.Image = parseAnthropicImageBlock(blockMap)
+	case "document":
+		irBlock.Document = parseAnthropicDocumentBlock(blockMap)
+	case "thinking":
 		if thinking, ok := blockMap["thinking"].(string); ok {
 			sig, _ := blockMap["signature"].(string)
 			irBlock.Thinking = &ThinkingBlock{Thinking: thinking, Signature: sig}

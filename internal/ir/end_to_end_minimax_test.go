@@ -40,7 +40,7 @@ func TestMiniMaxMultimodalEndToEnd(t *testing.T) {
 	if len(irReq.Messages[0].Content) != 2 {
 		t.Fatalf("expected 2 content blocks, got %d", len(irReq.Messages[0].Content))
 	}
-	
+
 	imageBlock := irReq.Messages[0].Content[1]
 	if imageBlock.Type != "image" {
 		t.Fatalf("expected image block, got %s", imageBlock.Type)
@@ -108,7 +108,7 @@ func TestMiniMaxMultimodalEndToEnd(t *testing.T) {
 	if source["media_type"] != "image/png" {
 		t.Errorf("expected source.media_type=image/png, got %v", source["media_type"])
 	}
-	
+
 	finalData, ok := source["data"].(string)
 	if !ok {
 		t.Fatalf("source.data is not a string")

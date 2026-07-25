@@ -41,13 +41,13 @@ func TestSerializeAnthropic_Tools_SanitizeRequired(t *testing.T) {
 	tools := outMap["tools"].([]any)
 	tool0 := tools[0].(map[string]any)
 	inputSchema := tool0["input_schema"].(map[string]any)
-	
+
 	// After sanitization, required should be an array
 	required, ok := inputSchema["required"]
 	if !ok {
 		t.Fatal("required field is missing")
 	}
-	
+
 	// Check if it's an array (can be []any or []string depending on JSON unmarshal)
 	switch r := required.(type) {
 	case []any:
@@ -106,12 +106,12 @@ func TestSerializeAnthropic_Tools_SanitizeMixedArray(t *testing.T) {
 	tools := outMap["tools"].([]any)
 	tool0 := tools[0].(map[string]any)
 	inputSchema := tool0["input_schema"].(map[string]any)
-	
+
 	required, ok := inputSchema["required"]
 	if !ok {
 		t.Fatal("required field is missing")
 	}
-	
+
 	// Check array type and content
 	switch r := required.(type) {
 	case []any:
@@ -176,12 +176,12 @@ func TestSerializeAnthropic_Tools_NestedRequired(t *testing.T) {
 	inputSchema := tool0["input_schema"].(map[string]any)
 	properties := inputSchema["properties"].(map[string]any)
 	address := properties["address"].(map[string]any)
-	
+
 	required, ok := address["required"]
 	if !ok {
 		t.Fatal("nested required field is missing")
 	}
-	
+
 	// Check array type and content
 	switch r := required.(type) {
 	case []any:
@@ -240,12 +240,12 @@ func TestSerializeAnthropic_Tools_ValidRequired(t *testing.T) {
 	tools := outMap["tools"].([]any)
 	tool0 := tools[0].(map[string]any)
 	inputSchema := tool0["input_schema"].(map[string]any)
-	
+
 	required, ok := inputSchema["required"]
 	if !ok {
 		t.Fatal("required field is missing")
 	}
-	
+
 	// Check array type and content
 	switch r := required.(type) {
 	case []any:
