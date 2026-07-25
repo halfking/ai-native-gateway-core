@@ -1,8 +1,32 @@
-// DEPRECATED: This file will be moved to _to-be-deprecated/routing-old/credentialstate/
-// Replaced by: domains/ursm/manager.go
-// Migration date: 2026-07-03
-// Status: 等待 Router/Executor 适配 URSM 完成后迁移
-// DO NOT use this package in new code. Use domains/ursm instead.
+// Package credentialstate - 凭据状态管理器（LEGACY）
+//
+// ⚠️ LEGACY: 此包已被 domains/ursm/v2 替代，但保留用于回退路径。
+//
+// 演进历史:
+//   - v1.0: 初版内存缓存（10s TTL）
+//   - v2.0: 添加 Redis 后端（双层缓存）
+//   - 2026-07: 被 domains/ursm/v2 替代（Redis 单一权威源）
+//
+// Phase 3 (2026-07-25) 状态:
+//   - ✅ 已被 LegacyStateBackend 封装（state_backend.go）
+//   - ✅ 仍用于 URSM v2 authoritative 模式的 fail-open 回退
+//   - ✅ 保留回滚能力（URSM_V2_MODE=off 一键切换）
+//
+// 未来计划:
+//   - v3.0 (ETA: 2026-Q4): 完全移除（URSM v2 充分验证后）
+//
+// 维护原则:
+//   - 接受 bug 修复（回退路径必须可用）
+//   - 不接受新功能（不再添加依赖）
+//   - 新代码请使用 StateBackend 接口（state_backend.go）
+//
+// 替代关系:
+//   - StateBackend.IsAvailable() // 由 LegacyStateBackend 包装此包
+//   - domains/ursm/v2.Manager.FilterAndScore() // authoritative 模式
+//   - domains/ursm/v2.Manager.Plan() // canary 模式
+//
+// 回退测试:
+//   URSM_V2_MODE=off 确保此包路径正常工作
 
 package credentialstate
 
