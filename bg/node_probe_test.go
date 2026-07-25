@@ -242,3 +242,38 @@ func TestNodeProbeSuccessNextRetryOneHour(t *testing.T) {
 		t.Fatalf("BUG #6 regression: node_probe.go still has 24-hour success interval")
 	}
 }
+
+// TestRunOneSuccessClearsLastDirectOkAndErrCode pins the contract added
+// by 2026-07-25 realtime-routing-self-heal §3.1.1: a successful probe
+// round must clear `last_direct_ok`, `last_gateway_ok`, `last_err_code`,
+// and `last_err_detail` so v_routable_credential_models drops
+// `node_probe_failed` within AutoRouteRealtimeListener's 5s debounce.
+//
+// The corresponding SQL UPDATE already lives in node_probe.go:runOne
+// success branch (lines ~1084-1100); the test pins the exact byte
+// sequence so a future copy-paste regression cannot silently remove
+// the explicit recovery columns.
+func TestRunOneSuccessClearsLastDirectOkAndErrCode(t *testing.T) {
+	src, err := os.ReadFile("node_probe.go")
+	if err != nil {
+		t.Fatalf("read source: %v", err)
+	}
+	body := string(src)
+	wantSnippet := `
+				consecutive_failures = 0,
+				consecutive_successes = consecutive_successes + 1,
+				last_attempt_at = now(),
+				next_retry_at = now() + interval '1 hour',
+				next_retry_seconds = 3600,
+				paused = FALSE,
+				last_run_id = NULL,
+				last_direct_ok = TRUE,
+				last_gateway_ok = TRUE,
+				last_err_code = NULL,
+				last_err_detail = NULL,
+				in_flight_until = NULL,
+				updated_at = now()`
+	if !strings.Contains(body, wantSnippet) {
+		t.Fatalf("runOne success branch must write last_direct_ok=TRUE, last_err_code=NULL; update bg/node_probe.go:runOne success UPDATE block")
+	}
+}
