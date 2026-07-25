@@ -508,25 +508,29 @@ watch(laneMode, async () => {
   font-weight: 600;
 }
 
-/* 动画 */
+/* Animation: new tiles slide in from LEFT */
 .swim-tile-enter-active {
-  transition: opacity 0.15s linear;
+  transition: all 0.3s ease;
 }
 
 .swim-tile-enter-from {
   opacity: 0;
+  transform: translateX(-20px); /* New tiles enter from LEFT */
 }
 
 .swim-tile-leave-active {
-  transition: opacity 0.15s linear;
+  transition: all 0.3s ease;
+  position: absolute;
 }
 
 .swim-tile-leave-to {
   opacity: 0;
+  transform: translateX(20px); /* Old tiles slide out RIGHT */
 }
 
+/* Existing tiles shift RIGHT when new tile arrives on LEFT */
 .swim-tile-move {
-  transition: none;
+  transition: transform 0.3s ease;
 }
 
 @media (prefers-reduced-motion: reduce) {
