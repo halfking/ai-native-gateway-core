@@ -181,7 +181,7 @@ func TestApplyPressurePenalty_WeightZero(t *testing.T) {
 	}
 
 	ctx := context.Background()
-	r.applyPressurePenalty(ctx, candidates)
+	r.applyPressurePenalty(ctx, candidates, "db_only")
 
 	// Weight=0 的候选保持 0（不参与压力调整）
 	if candidates[0].Weight != 0 {
@@ -196,8 +196,8 @@ func TestApplyPressurePenalty_EmptyCandidates(t *testing.T) {
 	}
 
 	// 不应该 panic
-	r.applyPressurePenalty(context.Background(), nil)
-	r.applyPressurePenalty(context.Background(), []provider.Candidate{})
+	r.applyPressurePenalty(context.Background(), nil, "db_only")
+	r.applyPressurePenalty(context.Background(), []provider.Candidate{}, "db_only")
 }
 
 // TestSortCandidatesByWeight 测试权重排序
