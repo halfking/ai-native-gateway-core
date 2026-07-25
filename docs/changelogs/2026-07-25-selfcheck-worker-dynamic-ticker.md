@@ -46,21 +46,21 @@ NormalInterval=3600s (1h)
 ### 2.1 动态 ticker 间隔算法
 
 ```
-tickerInterval = max(NormalInterval / 10, 60) 秒
+tickerInterval = max(min(NormalInterval, FaultInterval) / 10, 60) 秒
 ```
 
 **设计原理**:
-- `NormalInterval / 10`: 确保在模型到期前有足够的检查机会（10次窗口）
+- `min(NormalInterval, FaultInterval) / 10`: 同时覆盖正常模型和故障模型，避免长正常间隔掩盖更短的故障恢复间隔
 - `max(..., 60)`: 保证最小 1 分钟间隔，避免过于频繁
 
 **效果对比**:
 
-| NormalInterval | 旧 ticker | 新 ticker | CPU tick 减少 |
+| NormalInterval / FaultInterval | 旧 ticker | 新 ticker | CPU tick 减少 |
 |---|---|---|---|
-| 3600s (1h) | 60s | 360s (6min) | **83%** |
-| 1800s (30min) | 60s | 180s (3min) | **67%** |
-| 600s (10min) | 60s | 60s (1min) | 0% (保持现状) |
-| 300s (5min) | 60s | 60s (1min) | 0% (最小间隔保护) |
+| 3600s / 600s | 60s | 60s | 0%（故障恢复优先） |
+| 1800s / 1800s | 60s | 180s (3min) | **67%** |
+| 600s / 1800s | 60s | 60s (1min) | 0% (保持现状) |
+| 300s / 120s | 60s | 60s (1min) | 0% (最小间隔保护) |
 
 ### 2.2 动态调整机制
 
@@ -71,12 +71,12 @@ tickerInterval = max(NormalInterval / 10, 60) 秒
 4. 记录日志: `using dynamic ticker interval`
 
 **运行时**:
-- 每 **10 个 tick** 重新加载 settings
-- 如果 `NormalInterval` 变化 → 调整 ticker 间隔
+- 每个 tick 重新加载 settings
+- 如果 `NormalInterval` 或 `FaultInterval` 变化 → 调整 ticker 间隔
 - 记录日志: `adjusting ticker interval`
 
 **容错**:
-- 初始加载失败 → 使用 600s (10min) 作为 fallback
+- 初始加载失败 → 使用 600s (10min) 作为 normal/fault fallback
 - 运行时加载失败 → 继续使用旧间隔，记录错误日志
 
 ---
@@ -189,11 +189,11 @@ ok  	github.com/kaixuan/llm-gateway-go/bg/systemmonitor	0.470s [no tests to run]
 启动时:
 [INFO] self_check_worker started
 [INFO] self_check_worker: using dynamic ticker interval 
-       interval_seconds=360 normal_interval_seconds=3600
+       interval_seconds=60 normal_interval_seconds=3600 fault_interval_seconds=600
 
-每 10 个 tick (如果 settings 变化):
+下一个 tick (如果 settings 变化):
 [INFO] self_check_worker: adjusting ticker interval 
-       old_seconds=360 new_seconds=180 normal_interval_seconds=1800
+       old_seconds=60 new_seconds=180 normal_interval_seconds=1800 fault_interval_seconds=1800
 ```
 
 ---
@@ -202,10 +202,10 @@ ok  	github.com/kaixuan/llm-gateway-go/bg/systemmonitor	0.470s [no tests to run]
 
 ### 5.1 CPU 使用率
 
-**场景 1: NormalInterval=3600s (1h)**
+**场景 1: NormalInterval=3600s, FaultInterval=1800s**
 - 旧: 每分钟 tick → 60 次/h
-- 新: 每 6 分钟 tick → 10 次/h
-- **减少 83% CPU tick**
+- 新: 每 3 分钟 tick → 20 次/h
+- **减少 67% CPU tick**
 
 **场景 2: NormalInterval=600s (10min)**
 - 旧: 每分钟 tick → 60 次/h
@@ -214,14 +214,14 @@ ok  	github.com/kaixuan/llm-gateway-go/bg/systemmonitor	0.470s [no tests to run]
 
 ### 5.2 故障恢复能力
 
-**故障模式 (FaultInterval=600s)**:
-- Ticker 间隔 = max(600/10, 60) = 60s
+**故障模式 (NormalInterval=3600s, FaultInterval=600s)**:
+- Ticker 间隔 = max(min(3600, 600)/10, 60) = 60s
 - **快速恢复能力保持不变** ✅
 
 ### 5.3 Settings 变更响应
 
-- 响应延迟 = max(10 * tickerInterval, 10 * 60s) = 最多 10 分钟
-- 对于运维调整 settings 后的生效时间，10 分钟是可接受的
+- 正常情况下响应延迟不超过一个当前 ticker 周期
+- settings 调整后的新间隔从下一个 tick 开始生效
 
 ---
 
@@ -233,7 +233,7 @@ ok  	github.com/kaixuan/llm-gateway-go/bg/systemmonitor	0.470s [no tests to run]
 |------|------|----------|------|
 | 初始 loadSettings 失败 | Worker 无法启动 | 使用 600s fallback | ✅ 已缓解 |
 | 运行时 loadSettings 失败 | 无法调整间隔 | 继续使用旧间隔 + 日志 | ✅ 已缓解 |
-| Ticker 调整过于频繁 | CPU 浪费 | 限制每 10 个 tick 才检查 | ✅ 已缓解 |
+| Ticker 调整过于频繁 | CPU 浪费 | 只在计算出的间隔实际变化时重建 ticker | ✅ 已缓解 |
 | 最小间隔保护不足 | 过于频繁的 tick | 硬编码 60s 最小值 | ✅ 已缓解 |
 
 ### 6.2 未触及的部分
@@ -274,12 +274,12 @@ journalctl -u llm-gateway-go -f | grep "self_check_worker"
 
 # 3. 验证 ticker 间隔
 # 应该看到类似日志:
-# [INFO] self_check_worker: using dynamic ticker interval interval_seconds=360
+# [INFO] self_check_worker: using dynamic ticker interval interval_seconds=60 normal_interval_seconds=3600 fault_interval_seconds=600
 ```
 
 ### 8.2 监控指标
 
-- **CPU 使用率**: 预期下降 (如果 NormalInterval > 600s)
+- **CPU 使用率**: 预期下降 (如果 normal/fault 最短间隔 > 600s)
 - **日志频率**: `self_check_worker` 相关日志减少
 - **模型检查延迟**: 不应有明显增加 (仍在 10% 窗口内)
 
