@@ -133,19 +133,24 @@ const visibilityState = reactive({
 
 let needsFullRefresh = false
 
+// Forward declaration - actual implementation is below
+let _requestSnapshotRefresh: () => void = () => {}
+
 // Track page visibility changes
 if (typeof document !== 'undefined') {
   document.addEventListener('visibilitychange', () => {
     const wasHidden = !visibilityState.isVisible
     visibilityState.isVisible = !document.hidden
-    
+
     if (!document.hidden && wasHidden) {
       // Page became visible - trigger full refresh
       const hiddenDuration = Date.now() - visibilityState.lastVisibleAt
       console.log(`[LiveStream] Page visible after ${Math.round(hiddenDuration / 1000)}s, refreshing snapshot`)
-      
+
       // Mark that we need a full refresh on next event
       needsFullRefresh = true
+      // Request an immediate snapshot refresh from backend
+      _requestSnapshotRefresh()
     } else if (document.hidden) {
       visibilityState.lastVisibleAt = Date.now()
       console.log('[LiveStream] Page hidden, pausing updates')
@@ -810,11 +815,14 @@ export function requestSnapshotRefresh() {
     console.warn('[LiveStream] Cannot refresh: connection not open')
     return
   }
-  
+
   // Trigger backend snapshot push by marking refresh needed
   needsFullRefresh = true
   console.log('[LiveStream] Snapshot refresh requested')
 }
+
+// Set the forward reference so the visibility listener can call this
+_requestSnapshotRefresh = requestSnapshotRefresh
 
 export function pauseStream() {
   liveStreamState.paused = true
