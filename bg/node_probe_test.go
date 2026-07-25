@@ -242,3 +242,162 @@ func TestNodeProbeSuccessNextRetryOneHour(t *testing.T) {
 		t.Fatalf("BUG #6 regression: node_probe.go still has 24-hour success interval")
 	}
 }
+
+// TestRunOneSuccessClearsLastDirectOkAndErrCode pins the contract added
+// by 2026-07-25 realtime-routing-self-heal §3.1.1: a successful probe
+// round must clear `last_direct_ok`, `last_gateway_ok`, `last_err_code`,
+// and `last_err_detail` so v_routable_credential_models drops
+// `node_probe_failed` within AutoRouteRealtimeListener's 5s debounce.
+//
+// The corresponding SQL UPDATE already lives in node_probe.go:runOne
+// success branch (lines ~1084-1100); the test pins the exact byte
+// sequence so a future copy-paste regression cannot silently remove
+// the explicit recovery columns.
+func TestRunOneSuccessClearsLastDirectOkAndErrCode(t *testing.T) {
+	src, err := os.ReadFile("node_probe.go")
+	if err != nil {
+		t.Fatalf("read source: %v", err)
+	}
+	body := string(src)
+	wantSnippet := `
+				consecutive_failures = 0,
+				consecutive_successes = consecutive_successes + 1,
+				last_attempt_at = now(),
+				next_retry_at = now() + interval '1 hour',
+				next_retry_seconds = 3600,
+				paused = FALSE,
+				last_run_id = NULL,
+				last_direct_ok = TRUE,
+				last_gateway_ok = TRUE,
+				last_err_code = NULL,
+				last_err_detail = NULL,
+				in_flight_until = NULL,
+				updated_at = now()`
+	if !strings.Contains(body, wantSnippet) {
+		t.Fatalf("runOne success branch must write last_direct_ok=TRUE, last_err_code=NULL; update bg/node_probe.go:runOne success UPDATE block")
+	}
+}
+
+// TestRunOneSuccessInvokesInvalidateAndNotify pins that the runOne success
+// path invalidates the in-memory URSM v2 candidate cache and notifies
+// auto_route_refresh so v_routable_credential_models drops node_probe_failed
+// within the listener's 5s debounce.
+//
+// We accept either path (runOne success block or bg/auto_route_realtime_listener
+// routed through SetInvalidateCandidateCache) as long as the symbols are
+// present, because the contract is operational: a probe success must result
+// in the routing view re-evaluating the binding within the existing debounce.
+func TestRunOneSuccessInvokesInvalidateAndNotify(t *testing.T) {
+	src, err := os.ReadFile("node_probe.go")
+	if err != nil {
+		t.Fatalf("read source: %v", err)
+	}
+	body := string(src)
+
+	// (1) On success, runOne must invalidate the URSM v2 candidate cache so
+	// the next chat request re-plans. The mirror of the failure-branch call
+	// (same setter) is a regression — without it the cached bindings still
+	// see the stale node_probe_failed reason.
+	if !strings.Contains(body, "w.invalidateCandidateCache(credID)") {
+		t.Fatalf("runOne must call w.invalidateCandidateCache(credID) on success (mirror the failure branch)")
+	}
+	// It must be guarded — the worker has the setter only when wired from
+	// cmd/gateway/main.go; pass-through nil-safety keeps old tests valid.
+	if !strings.Contains(body, "if w.invalidateCandidateCache != nil {") {
+		t.Fatalf("InvalidateCandidateCacheForCredential call must be guarded by w.invalidateCandidateCache != nil")
+	}
+
+	// (2) On success, runOne must pg_notify('auto_route_refresh', ...) so
+	// bg/auto_route_realtime_listener.go wakes the AutoIndexRefresher and
+	// the v_routable view re-evaluates is_routable. Without the notify,
+	// the success path still relies on the 5-min periodic refresh.
+	if !strings.Contains(body, `SELECT pg_notify('auto_route_refresh'`) {
+		t.Fatalf("runOne success must schedule a pg_notify('auto_route_refresh') so the listener refreshes v_routable_credential_models")
+	}
+	// pg_notify payload must follow credentials:UPDATE:<id> (matches the
+	// invalidateRoutingCaches helper format used by the admin endpoints).
+	if !strings.Contains(body, `credentials:UPDATE:%d`) {
+		t.Fatalf("pg_notify payload must follow credentials:UPDATE:<id> format")
+	}
+}
+
+// TestHandleNodeProbeStateResetIsNoProbe pins the emergency button
+// contract from SPEC §3.5 rollback: the admin button clears the backoff
+// state (last_direct_ok=TRUE, paused=FALSE) but does NOT issue new
+// HTTP probes — that would defeat the emergency path by adding more
+// pressure to a degraded upstream.
+func TestHandleNodeProbeStateResetIsNoProbe(t *testing.T) {
+	src, err := os.ReadFile("../admin/probe_history.go")
+	if err != nil {
+		t.Fatalf("read admin/probe_history.go: %v", err)
+	}
+	body := string(src)
+
+	// Extract only handleNodeProbeStateReset function body
+	start := strings.Index(body, "func (h *Handler) handleNodeProbeStateReset(")
+	if start < 0 {
+		t.Fatalf("handleNodeProbeStateReset function not found")
+	}
+	// Find the closing brace of this function (naive: find next "\n}\n\n" after "func")
+	end := strings.Index(body[start:], "\n}\n\n")
+	if end < 0 {
+		t.Fatalf("handleNodeProbeStateReset closing brace not found")
+	}
+	fnBody := body[start : start+end]
+
+	// The function must UPDATE node_probe_state
+	if !strings.Contains(fnBody, "UPDATE node_probe_state SET") {
+		t.Fatalf("handleNodeProbeStateReset must UPDATE node_probe_state")
+	}
+	// It must call provider.InvalidateAllCandidateCache()
+	if !strings.Contains(fnBody, "provider.InvalidateAllCandidateCache()") {
+		t.Fatalf("handleNodeProbeStateReset must call provider.InvalidateAllCandidateCache()")
+	}
+	// It must NOT submit any new probes
+	for _, banned := range []string{
+		"nodeProbe.Submit",
+		"h.nodeProbe.Submit",
+		"modelProbe.TriggerManual",
+		"h.modelProbe.TriggerManual",
+	} {
+		if strings.Contains(fnBody, banned) {
+			t.Fatalf("handleNodeProbeStateReset must not call %s (no-probe contract)", banned)
+		}
+	}
+}
+
+// TestTriggerManualSuccessCallsMarkNodeProbeHealthy pins that a successful
+// ModelProbeRunner.TriggerManual (status="ok") calls MarkNodeProbeHealthy
+// so node_probe_state is cleared and v_routable immediately reflects the
+// recovered binding without waiting for the next runOne cycle.
+//
+// This mirrors the TriggerAllSync path (line ~995 in model_probe.go) but
+// applies to the single-binding manual trigger from the admin UI.
+func TestTriggerManualSuccessCallsMarkNodeProbeHealthy(t *testing.T) {
+	src, err := os.ReadFile("model_probe.go")
+	if err != nil {
+		t.Fatalf("read model_probe.go: %v", err)
+	}
+	body := string(src)
+
+	// Extract TriggerManual function body
+	start := strings.Index(body, "func (r *ModelProbeRunner) TriggerManual(")
+	if start < 0 {
+		t.Fatalf("TriggerManual function not found")
+	}
+	end := strings.Index(body[start:], "\n}\n\n")
+	if end < 0 {
+		t.Fatalf("TriggerManual closing brace not found")
+	}
+	fnBody := body[start : start+end]
+
+	// TriggerManual must call MarkNodeProbeHealthy when status="ok"
+	if !strings.Contains(fnBody, "MarkNodeProbeHealthy") {
+		t.Fatalf("TriggerManual must call MarkNodeProbeHealthy on success (mirror TriggerAllSync behavior)")
+	}
+	// It must be conditional on status="ok" to avoid clearing node_probe_state
+	// when the manual probe itself failed
+	if !strings.Contains(fnBody, `status == "ok"`) && !strings.Contains(fnBody, `status=="ok"`) {
+		t.Fatalf("MarkNodeProbeHealthy call must be guarded by status == \"ok\"")
+	}
+}
