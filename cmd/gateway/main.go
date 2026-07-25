@@ -78,6 +78,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/internal/centeragent"
 	"github.com/kaixuan/llm-gateway-go/internal/collector"
 	"github.com/kaixuan/llm-gateway-go/internal/handlers"
+	"github.com/kaixuan/llm-gateway-go/internal/ir"      //nolint:depguard // 诊断组件：语义分析器
 	"github.com/kaixuan/llm-gateway-go/internal/logging"
 	"github.com/kaixuan/llm-gateway-go/internal/modelpolicy"
 	"github.com/kaixuan/llm-gateway-go/internal/observability"
@@ -870,6 +871,53 @@ func main() {
 			if os.Getenv("LLM_GATEWAY_TRANSPORT_IR") == "true" {
 				routingExec.IR = transformation.NewTransportIRConverter(&irAdapter{})
 				slog.Info("transport_ir", "enabled", true, "features", "extensions-roundtrip,circuit-breaker")
+			}
+		}
+
+		// ── 诊断与监控组件初始化 (2026-07-26) ──────────────────────────
+		// 根据环境变量按需启用原始数据日志、异常报告和语义分析功能。
+		// 这些组件在 USRM v2 架构下与 Executor 集成，可选地记录请求/响应数据。
+		{
+			// 原始数据日志
+			if os.Getenv("LLM_GATEWAY_RAW_LOG_ENABLED") == "true" {
+				logDir := os.Getenv("LLM_GATEWAY_RAW_LOG_DIR")
+				if logDir == "" {
+					logDir = "./logs/raw_data"
+				}
+				maxSizeStr := os.Getenv("LLM_GATEWAY_RAW_LOG_MAX_SIZE")
+				maxSize := int64(200 * 1024 * 1024) // 200MB default
+				if maxSizeStr != "" {
+					if parsed, err := strconv.ParseInt(maxSizeStr, 10, 64); err == nil {
+						maxSize = parsed
+					}
+				}
+				
+				rawLogger, err := logging.NewRawDataLogger(logDir, maxSize, true)
+				if err != nil {
+					slog.Error("raw_data_logger: failed to initialize", "err", err)
+				} else {
+					routingExec.RawDataLogger = executors.NewRawDataLoggerAdapter(rawLogger)
+					slog.Info("raw_data_logger: initialized", "dir", logDir, "max_size", maxSize)
+				}
+			}
+
+			// 异常报告器
+			if os.Getenv("LLM_GATEWAY_ANOMALY_REPORTER_ENABLED") == "true" {
+				endpoint := os.Getenv("LLM_GATEWAY_ANOMALY_ENDPOINT")
+				if endpoint == "" {
+					endpoint = "https://llm.kxpms.cn/api/diagnostics/anomalies"
+				}
+				
+				anomalyReporter := logging.NewAnomalyReporter(endpoint, true)
+				routingExec.AnomalyReporter = executors.NewAnomalyReporterAdapter(anomalyReporter)
+				slog.Info("anomaly_reporter: initialized", "endpoint", endpoint)
+			}
+
+			// 语义分析器
+			if os.Getenv("LLM_GATEWAY_SEMANTIC_ANALYSIS_ENABLED") == "true" {
+				semanticAnalyzer := ir.NewSemanticAnalyzer(true)
+				routingExec.SemanticAnalyzer = executors.NewSemanticAnalyzerAdapter(semanticAnalyzer)
+				slog.Info("semantic_analyzer: initialized")
 			}
 		}
 

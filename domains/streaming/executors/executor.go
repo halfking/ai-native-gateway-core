@@ -119,6 +119,24 @@ type ExecutionRecorder interface {
 	RecordOutcome(ctx context.Context, outcome ExecutionOutcome) error
 }
 
+// RawDataLogger 记录原始请求/响应载荷（2026-07-26）
+type RawDataLogger interface {
+	LogRequest(requestID string, protocol string, body []byte) error
+	LogResponse(requestID string, protocol string, body []byte, isStream bool) error
+}
+
+// AnomalyReporter 报告协议转换异常（2026-07-26）
+type AnomalyReporter interface {
+	ReportAnomaly(requestID string, anomalyType string, details map[string]interface{}) error
+}
+
+// SemanticAnalyzer 语义分析器，检测工具调用和内容丢失（2026-07-26）
+type SemanticAnalyzer interface {
+	AnalyzeRequest(requestID string, irReq interface{}) error
+	AnalyzeResponse(requestID string, irResp interface{}) error
+}
+
+
 // ExecutionOutcome 执行结果
 type ExecutionOutcome struct {
 	CredentialID   int
@@ -687,6 +705,13 @@ type Executor struct {
 	TTFBTracker         TTFBRecorder      // TTFB 历史追踪器
 	PreRequestValidator RequestValidator  // 请求格式校验器
 	PostExecutionHook   ExecutionRecorder // 执行后状态更新 hook
+
+	// 2026-07-26: 诊断与监控组件（opt-in via env vars）
+	// 这些组件在 Executor 初始化时根据环境变量创建，用于记录原始数据、
+	// 异常和语义分析结果。Nil 时禁用对应功能。
+	RawDataLogger    RawDataLogger    // 原始请求/响应数据记录器
+	AnomalyReporter  AnomalyReporter  // 协议转换异常报告器
+	SemanticAnalyzer SemanticAnalyzer // 语义分析器（工具调用/内容丢失检测）
 }
 
 // DefaultFallbackChain (Phase 2, 2026-07-19) returns a sensible default
