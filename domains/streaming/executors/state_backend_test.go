@@ -195,9 +195,9 @@ func TestLegacyStateBackend_FilterAvailable(t *testing.T) {
 	backend := &LegacyStateBackend{sm: stateMgr}
 
 	candidates := []provider.Candidate{
-		{CredentialID: 1, RawModel: "gpt-4", LifecycleStatus: "active"},
-		{CredentialID: 2, RawModel: "gpt-4", LifecycleStatus: "active"}, // 会被 StateManager 过滤
-		{CredentialID: 3, RawModel: "gpt-4", LifecycleStatus: "disabled"}, // DB 字段不可用
+		{CredentialID: 1, RawModel: "gpt-4", LifecycleStatus: "active", Routable: true},
+		{CredentialID: 2, RawModel: "gpt-4", LifecycleStatus: "active", Routable: true}, // 会被 StateManager 过滤
+		{CredentialID: 3, RawModel: "gpt-4", LifecycleStatus: "disabled", Routable: true}, // DB 字段不可用
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
@@ -219,9 +219,9 @@ func TestDBOnlyBackend_FilterAvailable(t *testing.T) {
 	backend := &DBOnlyBackend{}
 
 	candidates := []provider.Candidate{
-		{CredentialID: 1, RawModel: "gpt-4", LifecycleStatus: "active"},
-		{CredentialID: 2, RawModel: "gpt-4", LifecycleStatus: "disabled"},
-		{CredentialID: 3, RawModel: "gpt-4", LifecycleStatus: "active"},
+		{CredentialID: 1, RawModel: "gpt-4", LifecycleStatus: "active", Routable: true},
+		{CredentialID: 2, RawModel: "gpt-4", LifecycleStatus: "disabled", Routable: true},
+		{CredentialID: 3, RawModel: "gpt-4", LifecycleStatus: "active", Routable: true},
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
