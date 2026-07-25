@@ -5,28 +5,46 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
+	"time"
 
 	"github.com/kaixuan/llm-gateway-go/domain" //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/internal/ir"
+	"github.com/kaixuan/llm-gateway-go/internal/logging"
 )
 
 // IRTransport 使用 IR（中间表示）实现协议转换。
 type IRTransport struct {
-	detector  ProtocolDetector
-	extractor ExtensionExtractor
-	restorer  ExtensionRestorer
-	cb        *StreamCircuitBreaker // 流式降级熔断器
+	detector         ProtocolDetector
+	extractor        ExtensionExtractor
+	restorer         ExtensionRestorer
+	cb               *StreamCircuitBreaker // 流式降级熔断器
+	rawLogger        *logging.RawDataLogger
+	anomalyReporter  *logging.AnomalyReporter
+	semanticAnalyzer *ir.SemanticAnalyzer
 }
 
 // NewIRTransport 构造默认配置的 IRTransport。
 func NewIRTransport() *IRTransport {
+	return NewIRTransportWithLoggers(nil, nil, nil)
+}
+
+// NewIRTransportWithLoggers 构造带日志和分析器的 IRTransport。
+func NewIRTransportWithLoggers(
+	rawLogger *logging.RawDataLogger,
+	anomalyReporter *logging.AnomalyReporter,
+	semanticAnalyzer *ir.SemanticAnalyzer,
+) *IRTransport {
 	return &IRTransport{
-		detector:  &IRProtocolDetector{},
-		extractor: &IRExtensionExtractor{},
-		restorer:  &IRExtensionRestorer{},
-		cb:        NewStreamCircuitBreaker(),
+		detector:         &IRProtocolDetector{},
+		extractor:        &IRExtensionExtractor{},
+		restorer:         &IRExtensionRestorer{},
+		cb:               NewStreamCircuitBreaker(),
+		rawLogger:        rawLogger,
+		anomalyReporter:  anomalyReporter,
+		semanticAnalyzer: semanticAnalyzer,
 	}
 }
 
@@ -49,33 +67,113 @@ func (t *IRTransport) Convert(ctx context.Context, envelope *domain.RequestEnvel
 		return nil, errors.New("ir_transport: nil envelope/transport")
 	}
 	tc := envelope.Transport
+	requestID := envelope.RequestID
+	startTime := time.Now()
 
 	// 1. 检测客户端协议（如果未设置）
 	if tc.ClientProtocol == "" {
-		proto, _ := t.detector.Detect(tc.BodyBytes, tc.R.Header)
+		proto, confidence := t.detector.Detect(tc.BodyBytes, tc.R.Header)
 		tc.ClientProtocol = proto
+		slog.DebugContext(ctx, "ir_transport: detected client protocol",
+			"request_id", requestID,
+			"protocol", proto,
+			"confidence", confidence)
 	}
 
-	// 2. 提取扩展属性到 TransportContext.Extensions
+	// 2. 记录原始客户端请求（转换前）
+	if t.rawLogger != nil {
+		headers := extractHeaders(tc.R.Header)
+		t.rawLogger.LogClientRequest(requestID, tc.ClientProtocol, tc.BodyBytes, headers, "pre_parse")
+	}
+
+	// 3. 提取扩展属性到 TransportContext.Extensions
 	if tc.Extensions.IsZero() && t.extractor != nil {
 		ext, err := t.extractor.Extract(tc.BodyBytes, tc.R.Header)
 		if err != nil {
-			slog.Warn("ir_transport: extract extensions failed", "err", err)
+			slog.WarnContext(ctx, "ir_transport: extract extensions failed",
+				"request_id", requestID,
+				"err", err)
 		} else if ext != nil {
 			tc.Extensions = *ext
 		}
 	}
 
-	// 3. Parse: ClientProtocol → IR
+	// 4. Parse: ClientProtocol → IR
+	slog.DebugContext(ctx, "ir_transport: parsing request",
+		"request_id", requestID,
+		"from_protocol", tc.ClientProtocol,
+		"body_size", len(tc.BodyBytes))
+
 	internalReq, err := parseRequest(tc.ClientProtocol, tc.BodyBytes)
 	if err != nil {
+		// 记录解析错误
+		slog.ErrorContext(ctx, "ir_transport: parse request failed",
+			"request_id", requestID,
+			"protocol", tc.ClientProtocol,
+			"body_size", len(tc.BodyBytes),
+			"err", err)
+
+		// 记录原始数据到日志
+		if t.rawLogger != nil {
+			t.rawLogger.LogConversionError(requestID, tc.ClientProtocol, "client_request", "parse", tc.BodyBytes, err)
+		}
+
+		// 报告异常
+		if t.anomalyReporter != nil {
+			t.anomalyReporter.ReportConversionError(ctx, requestID, tc.ClientProtocol, tc.UpstreamProtocol, "parse_request", tc.BodyBytes, err)
+		}
+
 		return nil, fmt.Errorf("ir_transport: parse %s: %w", tc.ClientProtocol, err)
 	}
 
-	// 4. Serialize: IR → UpstreamProtocol
+	parseElapsed := time.Since(startTime)
+	slog.InfoContext(ctx, "ir_transport: parsed request successfully",
+		"request_id", requestID,
+		"protocol", tc.ClientProtocol,
+		"message_count", len(internalReq.Messages),
+		"tool_count", len(internalReq.Tools),
+		"has_system", internalReq.System != nil,
+		"stream", internalReq.Stream,
+		"parse_duration_ms", parseElapsed.Milliseconds())
+
+	// 5. Serialize: IR → UpstreamProtocol
+	slog.DebugContext(ctx, "ir_transport: serializing request",
+		"request_id", requestID,
+		"to_protocol", tc.UpstreamProtocol)
+
+	serializeStart := time.Now()
 	upstreamBody, err := serializeRequest(tc.UpstreamProtocol, internalReq)
 	if err != nil {
+		// 记录序列化错误
+		slog.ErrorContext(ctx, "ir_transport: serialize request failed",
+			"request_id", requestID,
+			"protocol", tc.UpstreamProtocol,
+			"err", err)
+
+		// 记录原始数据到日志（IR状态）
+		if t.rawLogger != nil {
+			t.rawLogger.LogConversionError(requestID, tc.ClientProtocol, "upstream_request", "serialize", tc.BodyBytes, err)
+		}
+
+		// 报告异常
+		if t.anomalyReporter != nil {
+			t.anomalyReporter.ReportConversionError(ctx, requestID, tc.ClientProtocol, tc.UpstreamProtocol, "serialize_request", tc.BodyBytes, err)
+		}
+
 		return nil, fmt.Errorf("ir_transport: serialize %s: %w", tc.UpstreamProtocol, err)
+	}
+
+	serializeElapsed := time.Since(serializeStart)
+	slog.InfoContext(ctx, "ir_transport: serialized request successfully",
+		"request_id", requestID,
+		"protocol", tc.UpstreamProtocol,
+		"output_size", len(upstreamBody),
+		"serialize_duration_ms", serializeElapsed.Milliseconds(),
+		"total_duration_ms", time.Since(startTime).Milliseconds())
+
+	// 6. 记录上游请求（转换后）
+	if t.rawLogger != nil {
+		t.rawLogger.LogUpstreamRequest(requestID, tc.UpstreamProtocol, upstreamBody, "post_serialize")
 	}
 
 	conversionTotal.WithLabelValues("ir", "request").Inc()
@@ -88,27 +186,149 @@ func (t *IRTransport) ConvertResponse(ctx context.Context, envelope *domain.Requ
 		return nil, errors.New("ir_transport: nil envelope/transport")
 	}
 	tc := envelope.Transport
+	requestID := envelope.RequestID
+	startTime := time.Now()
 
-	// 1. Parse: UpstreamProtocol → IR
+	// 1. 记录原始上游响应（转换前）
+	if t.rawLogger != nil {
+		t.rawLogger.LogUpstreamResponse(requestID, tc.UpstreamProtocol, upstreamBody, "pre_parse")
+	}
+
+	slog.DebugContext(ctx, "ir_transport: parsing response",
+		"request_id", requestID,
+		"from_protocol", tc.UpstreamProtocol,
+		"body_size", len(upstreamBody))
+
+	// 2. Parse: UpstreamProtocol → IR
 	internalResp, err := parseResponse(tc.UpstreamProtocol, upstreamBody)
 	if err != nil {
+		// 记录解析错误
+		slog.ErrorContext(ctx, "ir_transport: parse response failed",
+			"request_id", requestID,
+			"protocol", tc.UpstreamProtocol,
+			"body_size", len(upstreamBody),
+			"err", err)
+
+		// 记录原始数据到日志
+		if t.rawLogger != nil {
+			t.rawLogger.LogConversionError(requestID, tc.UpstreamProtocol, "upstream_response", "parse", upstreamBody, err)
+		}
+
+		// 报告异常
+		if t.anomalyReporter != nil {
+			t.anomalyReporter.ReportConversionError(ctx, requestID, tc.UpstreamProtocol, tc.ClientProtocol, "parse_response", upstreamBody, err)
+		}
+
 		return nil, fmt.Errorf("ir_transport: parse response %s: %w", tc.UpstreamProtocol, err)
 	}
 
-	// 2. Serialize: IR → ClientProtocol
+	parseElapsed := time.Since(startTime)
+	hasToolCalls := len(internalResp.ToolCalls) > 0
+
+	slog.InfoContext(ctx, "ir_transport: parsed response successfully",
+		"request_id", requestID,
+		"protocol", tc.UpstreamProtocol,
+		"content_blocks", len(internalResp.Content),
+		"tool_calls", len(internalResp.ToolCalls),
+		"finish_reason", internalResp.FinishReason,
+		"parse_duration_ms", parseElapsed.Milliseconds())
+
+	// 3. 语义分析：检测潜在的工具调用丢失
+	if t.semanticAnalyzer != nil && !hasToolCalls {
+		analysis := t.semanticAnalyzer.AnalyzeResponse(internalResp)
+		if analysis.IsIncomplete {
+			slog.WarnContext(ctx, "ir_transport: semantic analysis detected incomplete response",
+				"request_id", requestID,
+				"reason", analysis.Reason,
+				"confidence", analysis.Confidence,
+				"suspected_missing_tools", analysis.SuspectedMissingTools,
+				"indicators", analysis.Indicators)
+
+			// 对比原始日志，查找是否有工具调用丢失
+			if analysis.SuspectedMissingTools {
+				hasLoss, missingData := ir.CompareWithRawLog(upstreamBody, internalResp)
+				if hasLoss {
+					slog.ErrorContext(ctx, "ir_transport: TOOL_CALLS_LOST during conversion",
+						"request_id", requestID,
+						"missing_tool_calls", missingData)
+
+					// 报告严重异常
+					if t.anomalyReporter != nil {
+						t.anomalyReporter.ReportToolCallsMissing(
+							ctx, requestID,
+							tc.UpstreamProtocol, tc.ClientProtocol,
+							upstreamBody, nil, // clientBody will be populated below
+							missingData,
+							analysis.Confidence,
+						)
+					}
+				}
+			}
+
+			// 报告语义不完整
+			if t.anomalyReporter != nil {
+				t.anomalyReporter.ReportSemanticIncomplete(
+					ctx, requestID,
+					tc.ClientProtocol,
+					upstreamBody, // 暂时用上游数据，下面会更新为客户端数据
+					analysis.Reason,
+					analysis.Indicators,
+					analysis.Confidence,
+				)
+			}
+		}
+	}
+
+	// 4. Serialize: IR → ClientProtocol
+	slog.DebugContext(ctx, "ir_transport: serializing response",
+		"request_id", requestID,
+		"to_protocol", tc.ClientProtocol)
+
+	serializeStart := time.Now()
 	clientBody, err := serializeResponse(tc.ClientProtocol, internalResp, tc.ClientModel)
 	if err != nil {
+		// 记录序列化错误
+		slog.ErrorContext(ctx, "ir_transport: serialize response failed",
+			"request_id", requestID,
+			"protocol", tc.ClientProtocol,
+			"err", err)
+
+		// 记录原始数据到日志
+		if t.rawLogger != nil {
+			t.rawLogger.LogConversionError(requestID, tc.ClientProtocol, "client_response", "serialize", upstreamBody, err)
+		}
+
+		// 报告异常
+		if t.anomalyReporter != nil {
+			t.anomalyReporter.ReportConversionError(ctx, requestID, tc.UpstreamProtocol, tc.ClientProtocol, "serialize_response", upstreamBody, err)
+		}
+
 		return nil, fmt.Errorf("ir_transport: serialize response %s: %w", tc.ClientProtocol, err)
 	}
 
-	// 3. 还原扩展属性
+	serializeElapsed := time.Since(serializeStart)
+	slog.InfoContext(ctx, "ir_transport: serialized response successfully",
+		"request_id", requestID,
+		"protocol", tc.ClientProtocol,
+		"output_size", len(clientBody),
+		"serialize_duration_ms", serializeElapsed.Milliseconds(),
+		"total_duration_ms", time.Since(startTime).Milliseconds())
+
+	// 5. 还原扩展属性
 	if !tc.Extensions.IsZero() && t.restorer != nil {
 		restored, err := t.restorer.Restore(clientBody, &tc.Extensions)
 		if err != nil {
-			slog.Warn("ir_transport: restore extensions failed", "err", err)
+			slog.WarnContext(ctx, "ir_transport: restore extensions failed",
+				"request_id", requestID,
+				"err", err)
 		} else if restored != nil {
 			clientBody = restored
 		}
+	}
+
+	// 6. 记录客户端响应（转换后）
+	if t.rawLogger != nil {
+		t.rawLogger.LogClientResponse(requestID, tc.ClientProtocol, clientBody, "post_serialize")
 	}
 
 	conversionTotal.WithLabelValues("ir", "response").Inc()
@@ -154,23 +374,32 @@ func (t *IRTransport) ConvertStream(ctx context.Context, envelope *domain.Reques
 	// pendingEvent 跟踪 Anthropic SSE 的 event: 行类型，等待对应的 data: 行
 	pendingEvent := ""
 
-	for {
-		line, err := br.ReadBytes('\n')
+		for {
+			line, err := br.ReadBytes('\n')
 
-		if len(line) > 0 {
-			if writeErr := t.processStreamLine(tc, envelope, line, &pendingEvent); writeErr != nil {
-				// 关键写入错误 → 立即终止
-				if t.cb != nil {
-					t.cb.RecordError()
+			if len(line) > 0 {
+				if writeErr := t.processStreamLine(tc, envelope, line, &pendingEvent); writeErr != nil {
+					// 关键写入错误 → 立即终止
+					if t.cb != nil {
+						t.cb.RecordError()
+					}
+					slog.Error("ir_transport: stream write failed", "request_id", envelope.RequestID, "err", writeErr)
+					return writeErr
 				}
-				return writeErr
+			}
+
+			if err != nil {
+				if err != io.EOF {
+					// 非 EOF 的读取错误视为流失败
+					if t.cb != nil {
+						t.cb.RecordError()
+					}
+					slog.Error("ir_transport: stream read failed", "request_id", envelope.RequestID, "err", err)
+					return fmt.Errorf("stream read error: %w", err)
+				}
+				break
 			}
 		}
-
-		if err != nil {
-			break
-		}
-	}
 
 	// 发送 [DONE]（仅 OpenAI Chat Completions 客户端需要；Responses API
 	// 通过 response.completed 显式终止，不需要 [DONE] 哨兵）
@@ -250,9 +479,16 @@ func (t *IRTransport) processStreamLine(tc *domain.TransportContext, env *domain
 		return nil
 	}
 
-	// 写入客户端 + flush
-	if _, err := fmt.Fprintf(tc.W, "data: %s\n\n", clientData); err != nil {
-		return err
+	// 写入客户端（Responses API 的 SerializeResponses 已返回完整 SSE 事件）
+	if tc.ClientProtocol == "openai-responses" {
+		if _, err := fmt.Fprintf(tc.W, "%s", clientData); err != nil {
+			return err
+		}
+	} else {
+		// OpenAI Chat / Anthropic Messages：只需 data: 包装
+		if _, err := fmt.Fprintf(tc.W, "data: %s\n\n", clientData); err != nil {
+			return err
+		}
 	}
 	if f, ok := tc.W.(http.Flusher); ok {
 		f.Flush()
@@ -377,4 +613,25 @@ func serializeResponse(protocol string, resp *ir.InternalResponse, clientModel s
 	default:
 		return nil, fmt.Errorf("unsupported client protocol: %s", protocol)
 	}
+}
+
+// extractHeaders 提取HTTP头部（用于日志记录）
+func extractHeaders(headers http.Header) map[string]string {
+	result := make(map[string]string)
+	// 只记录关键头部，避免泄露敏感信息
+	safeHeaders := []string{
+		"Content-Type",
+		"User-Agent",
+		"X-Request-ID",
+		"X-Session-ID",
+		"X-Tenant-ID",
+	}
+
+	for _, key := range safeHeaders {
+		if value := headers.Get(key); value != "" {
+			result[key] = value
+		}
+	}
+
+	return result
 }

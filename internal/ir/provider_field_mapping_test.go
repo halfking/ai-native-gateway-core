@@ -4,11 +4,11 @@ import "testing"
 
 func TestGetProviderFieldConfig(t *testing.T) {
 	tests := []struct {
-		name           string
-		catalogCode    string
-		modelName      string
-		expectedField  string
-		description    string
+		name          string
+		catalogCode   string
+		modelName     string
+		expectedField string
+		description   string
 	}{
 		{
 			name:          "MiniMax uses tool_call_id",
