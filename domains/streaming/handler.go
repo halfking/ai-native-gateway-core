@@ -4285,10 +4285,16 @@ func (h *ChatHandler) recordInitialRequestLog(
 	// 2026-07-17: bridge OriginMiddleware context into the entry so
 	// node_probe / self_check requests are marked with origin_stage.
 	reqLog.ApplyOriginFromContext(ctx)
+	// 2026-07-25: bridge origin_stage from main entry to RequestLogContext
+	// so the side table request_context_attrs also carries origin_stage
+	// and is_probe (derived from it in fillFromRequestLogContext).
+	if autoCtx != nil && reqLog.OriginStage != nil && autoCtx.OriginStage == "" {
+		autoCtx.SetOriginStage(*reqLog.OriginStage)
+	}
 	h.telemetryClient.EmitRequestLogInsert(reqLog)
 	// 2026-07-15: 侧表 request_context_attrs（best-effort）。
 	if autoCtx != nil {
-		if attrs := BuildContextAttrsEntry(autoCtx, keyInfo, &autoCtx.meta, nil); attrs != nil {
+		if attrs := BuildContextAttrsEntry(autoCtx, keyInfo, &autoCtx.meta, ctx); attrs != nil {
 			h.telemetryClient.EmitContextAttrs(attrs)
 		}
 	}

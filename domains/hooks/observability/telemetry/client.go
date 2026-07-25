@@ -1970,25 +1970,25 @@ func (e *RequestLogEntry) ApplyOriginFromContext(ctx context.Context) {
 	if e == nil || ctx == nil {
 		return
 	}
-	if v, ok := ctx.Value(originCtxKey("origin.stage")).(string); ok && v != "" {
+	if v, ok := ctx.Value("origin.stage").(string); ok && v != "" {
 		if e.OriginStage == nil {
 			s := v
 			e.OriginStage = &s
 		}
 	}
-	if v, ok := ctx.Value(originCtxKey("origin.actor")).(string); ok && v != "" {
+	if v, ok := ctx.Value("origin.actor").(string); ok && v != "" {
 		if e.OriginActor == nil {
 			s := v
 			e.OriginActor = &s
 		}
 	}
-	if v, ok := ctx.Value(originCtxKey("origin.client_ip")).(string); ok && v != "" {
+	if v, ok := ctx.Value("origin.client_ip").(string); ok && v != "" {
 		if e.ClientIP == nil {
 			s := v
 			e.ClientIP = &s
 		}
 	}
-	if v, ok := ctx.Value(originCtxKey("origin.xff")).(string); ok && v != "" {
+	if v, ok := ctx.Value("origin.xff").(string); ok && v != "" {
 		if e.ClientForwardedFor == nil {
 			s := v
 			e.ClientForwardedFor = &s
@@ -1996,8 +1996,7 @@ func (e *RequestLogEntry) ApplyOriginFromContext(ctx context.Context) {
 	}
 }
 
-// originCtxKey is a string-typed context key so middleware/origin_mw.go
-// (which cannot import this package without creating a cycle) can set
-// the same key from the other side.  Using a string key follows the
-// Go stdlib convention for cross-package context values.
+// originCtxKey remains defined for test compatibility; ApplyOriginFromContext
+// now reads with plain string keys so values stored by middleware/origin_mw.go
+// (which uses string-typed context keys) are reachable.
 type originCtxKey string
