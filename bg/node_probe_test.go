@@ -320,3 +320,48 @@ func TestRunOneSuccessInvokesInvalidateAndNotify(t *testing.T) {
 		t.Fatalf("pg_notify payload must follow credentials:UPDATE:<id> format")
 	}
 }
+
+// TestHandleNodeProbeStateResetIsNoProbe pins the emergency button
+// contract from SPEC §3.5 rollback: the admin button clears the backoff
+// state (last_direct_ok=TRUE, paused=FALSE) but does NOT issue new
+// HTTP probes — that would defeat the emergency path by adding more
+// pressure to a degraded upstream.
+func TestHandleNodeProbeStateResetIsNoProbe(t *testing.T) {
+	src, err := os.ReadFile("../admin/probe_history.go")
+	if err != nil {
+		t.Fatalf("read admin/probe_history.go: %v", err)
+	}
+	body := string(src)
+
+	// Extract only handleNodeProbeStateReset function body
+	start := strings.Index(body, "func (h *Handler) handleNodeProbeStateReset(")
+	if start < 0 {
+		t.Fatalf("handleNodeProbeStateReset function not found")
+	}
+	// Find the closing brace of this function (naive: find next "\n}\n\n" after "func")
+	end := strings.Index(body[start:], "\n}\n\n")
+	if end < 0 {
+		t.Fatalf("handleNodeProbeStateReset closing brace not found")
+	}
+	fnBody := body[start : start+end]
+
+	// The function must UPDATE node_probe_state
+	if !strings.Contains(fnBody, "UPDATE node_probe_state SET") {
+		t.Fatalf("handleNodeProbeStateReset must UPDATE node_probe_state")
+	}
+	// It must call provider.InvalidateAllCandidateCache()
+	if !strings.Contains(fnBody, "provider.InvalidateAllCandidateCache()") {
+		t.Fatalf("handleNodeProbeStateReset must call provider.InvalidateAllCandidateCache()")
+	}
+	// It must NOT submit any new probes
+	for _, banned := range []string{
+		"nodeProbe.Submit",
+		"h.nodeProbe.Submit",
+		"modelProbe.TriggerManual",
+		"h.modelProbe.TriggerManual",
+	} {
+		if strings.Contains(fnBody, banned) {
+			t.Fatalf("handleNodeProbeStateReset must not call %s (no-probe contract)", banned)
+		}
+	}
+}
