@@ -1546,3 +1546,82 @@ func TestFirstTiles(t *testing.T) {
 		assert.Equal(t, 4, len(result))
 	})
 }
+
+func TestTimestampsEqual(t *testing.T) {
+	base := "2026-07-26T12:00:00.000Z"
+	
+	t.Run("exact match", func(t *testing.T) {
+		assert.True(t, timestampsEqual(base, base))
+	})
+	
+	t.Run("within tolerance (50ms)", func(t *testing.T) {
+		ts1 := "2026-07-26T12:00:00.000Z"
+		ts2 := "2026-07-26T12:00:00.050Z"
+		assert.True(t, timestampsEqual(ts1, ts2))
+	})
+	
+	t.Run("within tolerance (100ms)", func(t *testing.T) {
+		ts1 := "2026-07-26T12:00:00.000Z"
+		ts2 := "2026-07-26T12:00:00.100Z"
+		assert.True(t, timestampsEqual(ts1, ts2))
+	})
+	
+	t.Run("outside tolerance (150ms)", func(t *testing.T) {
+		ts1 := "2026-07-26T12:00:00.000Z"
+		ts2 := "2026-07-26T12:00:00.150Z"
+		assert.False(t, timestampsEqual(ts1, ts2))
+	})
+	
+	t.Run("invalid timestamps fall back to string comparison", func(t *testing.T) {
+		assert.True(t, timestampsEqual("invalid", "invalid"))
+		assert.False(t, timestampsEqual("invalid1", "invalid2"))
+	})
+}
+
+func TestLanesChangedWithTimestampTolerance(t *testing.T) {
+	baseLane := LiveStreamLane{
+		ID:       "test",
+		Name:     "test",
+		Stats:    LiveStreamStats{Total: 1},
+		IsOthers: false,
+		Requests: []LiveStreamTile{
+			{
+				RequestID: "req-1",
+				Timestamp: "2026-07-26T12:00:00.000Z",
+				Status:    "success",
+			},
+		},
+	}
+	
+	t.Run("no change detected for timestamps within tolerance", func(t *testing.T) {
+		old := []LiveStreamLane{baseLane}
+		newLane := baseLane
+		newLane.Requests = []LiveStreamTile{
+			{
+				RequestID: "req-1",
+				Timestamp: "2026-07-26T12:00:00.050Z", // 50ms diff
+				Status:    "success",
+			},
+		}
+		new := []LiveStreamLane{newLane}
+		
+		changed := lanesChanged(old, new)
+		assert.False(t, changed, "should not detect change for 50ms timestamp difference")
+	})
+	
+	t.Run("change detected for timestamps outside tolerance", func(t *testing.T) {
+		old := []LiveStreamLane{baseLane}
+		newLane := baseLane
+		newLane.Requests = []LiveStreamTile{
+			{
+				RequestID: "req-1",
+				Timestamp: "2026-07-26T12:00:00.200Z", // 200ms diff
+				Status:    "success",
+			},
+		}
+		new := []LiveStreamLane{newLane}
+		
+		changed := lanesChanged(old, new)
+		assert.True(t, changed, "should detect change for 200ms timestamp difference")
+	})
+}
