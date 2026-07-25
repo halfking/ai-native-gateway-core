@@ -95,6 +95,47 @@
   curl -I https://api.anthropic.com
   ```
 
+### 5. Nginx 配置检查（多模态支持）
+- [ ] **检查 `client_max_body_size` 配置**：
+  ```bash
+  # 登录到目标服务器
+  ssh root@154  # 或 252、245
+  
+  # 检查配置
+  sudo nginx -T 2>&1 | grep "client_max_body_size"
+  
+  # 预期输出: client_max_body_size 256m; (或更大)
+  ```
+
+- [ ] **如果未配置，运行自动化脚本**：
+  ```bash
+  # 在本地仓库运行
+  ./deploy/scripts/update-nginx-multimodal.sh 154 /etc/nginx/conf.d/llm-kxpms-cn.conf
+  ./deploy/scripts/update-nginx-multimodal.sh 252 /etc/nginx/conf.d/kxpms-on-252.conf
+  ./deploy/scripts/update-nginx-multimodal.sh 245 /etc/nginx/conf.d/llmgo-245.conf
+  ```
+
+- [ ] **验证配置生效**：
+  ```bash
+  # 测试大请求（生成 5MB 测试文件）
+  dd if=/dev/urandom of=/tmp/test_5mb.json bs=1M count=5
+  
+  # 发送测试请求
+  curl -X POST https://llm.kxpms.cn/v1/chat/completions \
+    -H "Authorization: Bearer sk-xxx" \
+    -H "Content-Type: application/json" \
+    --data-binary @/tmp/test_5mb.json \
+    -w "\nHTTP Status: %{http_code}\n"
+  
+  # 预期: 不应该返回 413 (Request Entity Too Large)
+  ```
+
+- [ ] **查看部署文档**：
+  ```bash
+  # 详细配置指南
+  cat docs/nginx-multimodal-config-guide.md
+  ```
+
 ---
 
 ## 部署执行（Deployment）
