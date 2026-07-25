@@ -11,6 +11,7 @@ import (
 
 	"github.com/alicebob/miniredis/v2"
 	"github.com/redis/go-redis/v9"
+	"github.com/stretchr/testify/assert"
 )
 
 func TestLiveStreamRedisStore_RecordAndReplay(t *testing.T) {
@@ -1518,3 +1519,30 @@ func TestSlimTileFormatSizeReduction(t *testing.T) {
 }
 
 func float64Ptr(v float64) *float64 { return &v }
+
+func TestFirstTiles(t *testing.T) {
+	tiles := []LiveStreamTile{
+		{RequestID: "newest", Timestamp: "2026-07-26T12:03:00Z"},
+		{RequestID: "newer", Timestamp: "2026-07-26T12:02:00Z"},
+		{RequestID: "older", Timestamp: "2026-07-26T12:01:00Z"},
+		{RequestID: "oldest", Timestamp: "2026-07-26T12:00:00Z"},
+	}
+	
+	t.Run("returns all when limit >= length", func(t *testing.T) {
+		result := firstTiles(tiles, 10)
+		assert.Equal(t, 4, len(result))
+		assert.Equal(t, "newest", result[0].RequestID)
+	})
+	
+	t.Run("returns first N when limit < length", func(t *testing.T) {
+		result := firstTiles(tiles, 2)
+		assert.Equal(t, 2, len(result))
+		assert.Equal(t, "newest", result[0].RequestID)
+		assert.Equal(t, "newer", result[1].RequestID)
+	})
+	
+	t.Run("returns all when limit is 0", func(t *testing.T) {
+		result := firstTiles(tiles, 0)
+		assert.Equal(t, 4, len(result))
+	})
+}
