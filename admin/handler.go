@@ -654,6 +654,7 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	if h.liveStreamHub != nil {
 		mux.HandleFunc("/api/admin/live-stream", admin(h.liveStreamHub.HandleLiveStream))
 		mux.HandleFunc("/api/admin/live-stream/stats", admin(h.handleLiveStreamStats))
+		// TEMPORARY DEBUG: snapshot_refresh validation (added 2026-07-26, TODO: remove when no longer needed)
 		mux.HandleFunc("/api/admin/live-stream/trigger-snapshot", admin(h.liveStreamHub.HandleTriggerSnapshot))
 	}
 
