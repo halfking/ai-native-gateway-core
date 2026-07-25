@@ -1,6 +1,6 @@
 # LLM Gateway Go — 系统架构（当前态）
 
-> 适用版本：**v2.4.8+**（48h 审计：2026-07-22 ~ 2026-07-24 期间合并）
+> 适用版本：**v2.4.8+**（48h 审计：2026-07-22 ~ 2026-07-25 期间合并）
 >
 > 上一版 V3 提案（Python 控制面 + Go 数据面）是早期路线图，现行代码已演进为
 > 单 Go 数据面 + Admin Web (Vue) + 离线 Installer 三件套；本文档按现行实现重写。
@@ -19,6 +19,63 @@
 
 提交 252 的主控端 `llm.kxpms.cn` 依然负责 license / 实例心跳 / 更新分发
 （在 README「双仓库策略 / 部署」一节），但本仓库不再有 Python 控制面组件。
+
+---
+
+## 0.5 路由与状态管理演进（2026-07-22 ~ 2026-07-25）
+
+最近一周完成的 3 个优化阶段：
+
+### Phase 1: 路由状态判断简化（2026-07-24）
+- **目标**：消除 router/executor 中散落的 URSM v2 模式判断
+- **成果**：
+  - 引入 `StateBackend` 统一接口
+  - 3 种实现：URSMv2Backend、LegacyStateBackend、DBOnlyBackend
+  - `selectStateBackend()` 一次性决定后端
+- **收益**：`Ready()` 调用从 4 次 → 1 次
+- **文档**：`docs/2026-07-24-routing-state-optimization.md`
+
+### Phase 2: 压力感知路由（2026-07-24 ~ 2026-07-25）
+- **目标**：让路由感知 FpSlots/Limiter 的资源压力
+- **成果**：
+  - 压力查询接口（`GetPressure()`），FpSlots 5 秒缓存
+  - 压力惩罚函数（分段策略 0-70%）
+  - Router 集成（Feature flag: `PRESSURE_AWARE_ROUTING`）
+  - Prometheus 指标支持
+- **监控**：可通过 `scripts/ab-test-pressure.sh` 启用/查看
+- **文档**：`docs/2026-07-25-phase2-final-delivery.md`
+
+### Phase 3: 旧系统 Deprecated 标记（2026-07-25）
+- **目标**：明确系统演进方向，保留回退能力
+- **状态**：
+  - `credentialstate` 标记为 LEGACY，回退路径保留
+  - `routingstate/shadow_observer` 标记为 LEGACY，仅用于影子模式
+  - 回退机制：`URSM_V2_MODE=off` 一键切换
+
+### 当前架构决策
+
+```
+生产路径（推荐）:
+  Router → URSM v2 authoritative → Redis Lua 脚本
+                                           (单一权威源)
+
+回退路径（保留）:
+  Router → StateBackend → LegacyStateBackend → credentialstate
+                                                    (内存 + Redis 双层缓存)
+
+影子路径（仅观察）:
+  Router → ShadowObserver (routingstate)
+                               (仅记录，不影响决策)
+```
+
+防封锁机制（保持独立）:
+- FpSlots（指纹槽） → credentialfpslot.Manager
+- Limiter（并发控制） → credential.Limiter
+- RPM（每分钟请求） → credential.RPMLimiter
+- DisguisePool（UA伪装） → DisguisePool
+- EgressIdentity（虚拟IP） → identity.EgressIdentity
+
+**职责分离原则**：健康判断（URSM v2）vs 资源分配（防封锁层）
 
 ---
 
