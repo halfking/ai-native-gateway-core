@@ -56,6 +56,11 @@ const modelFilter = ref<Set<string>>(new Set())
 const providerFilter = ref<Set<string>>(new Set())
 const vendorFilter = ref<Set<LiveModelCategory>>(new Set())
 
+// Normalize model filter for case-insensitive comparison
+const normalizedModelFilter = computed(() => 
+  Array.from(modelFilter.value).map(m => m.toLowerCase().trim())
+)
+
 function toggleRequestType(type: 'business' | 'probe') {
   const next = new Set(requestTypeFilter.value)
   if (next.has(type)) {
@@ -336,10 +341,12 @@ const filteredLanes = computed(() => {
           return false
         }
         
-        // 模型过滤（标准名）
-        const stdModel = standardModelName(r.model)
-        if (modelFilter.value.size > 0 && (!stdModel || !modelFilter.value.has(stdModel))) {
-          return false
+        // 模型过滤（标准名，case-insensitive）
+        if (normalizedModelFilter.value.length > 0) {
+          const stdModel = standardModelName(r.model).toLowerCase().trim()
+          if (!stdModel || !normalizedModelFilter.value.includes(stdModel)) {
+            return false
+          }
         }
         
         // 供应商过滤（使用 provider 字段）
@@ -381,10 +388,15 @@ const availableModels = computed(() => {
   for (const lane of lanes.value) {
     for (const req of lane.requests) {
       const name = standardModelName(req.model)
-      if (name && name !== '[空闲]') models.add(name)
+      if (name && name !== '[空闲]') {
+        models.add(name) // Keep original case for display
+      }
     }
   }
-  return Array.from(models).sort((a, b) => a.localeCompare(b, 'zh-CN'))
+  // Sort case-insensitively using locale compare
+  return Array.from(models).sort((a, b) => 
+    a.localeCompare(b, 'zh-CN', { sensitivity: 'base' })
+  )
 })
 
 const availableProviders = computed(() => {
