@@ -121,6 +121,7 @@ func TestStreamAnthropicSSEToOpenAI_DisconnectsKeepsCapturer(t *testing.T) {
 		"req-q3",
 		nil,
 		pc,
+		nil,
 	)
 
 	assert.False(t, outcome.Interrupted)
@@ -155,6 +156,7 @@ func TestStreamOpenAIToResponsesSSE_DisconnectsKeepsCapturer(t *testing.T) {
 		"req-q3-responses",
 		nil,
 		pc,
+		nil,
 	)
 
 	assert.False(t, outcome.Interrupted)
@@ -179,7 +181,7 @@ func TestStreamOpenAIToAnthropicSSE_DisconnectsKeepsCapturer(t *testing.T) {
 	pc := NewPendingCapturer(8192)
 
 	outcome := StreamOpenAIToAnthropicSSE(
-		newDisconnectingStreamWriter(), resp, "claude-test", "gpt-test", "req-q2", nil, pc,
+		newDisconnectingStreamWriter(), resp, "claude-test", "gpt-test", "req-q2", nil, pc, nil,
 	)
 
 	assert.False(t, outcome.Interrupted)

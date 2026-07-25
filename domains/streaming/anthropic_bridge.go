@@ -88,6 +88,7 @@ func StreamAnthropicPassthrough(
 	clientModel, outboundModel, requestID string,
 	capture *audit.StreamCapture,
 	pc *pendingCapturer,
+	diagnostics *DiagnosticContext,
 ) (outcome StreamOutcome) {
 	//nolint:errcheck // best-effort close
 	defer resp.Body.Close()
@@ -152,6 +153,13 @@ func StreamAnthropicPassthrough(
 			payload = strings.TrimSpace(payload)
 			observeAnthropicPayload(capture, payload, clientModel, outboundModel)
 		}
+		
+		// Diagnostic: Log raw passthrough data
+		if diagnostics != nil && diagnostics.RawLogger != nil && strings.HasPrefix(line, "data: ") {
+			payload := strings.TrimPrefix(line, "data: ")
+			diagnostics.RawLogger.LogResponse(requestID, "anthropic_passthrough", []byte(payload), true)
+		}
+		
 		if line == "\n" && !clientDisconnected {
 			safeFlush(flusher)
 		}
@@ -244,6 +252,7 @@ func StreamAnthropicSSEToOpenAI(
 	clientModel, outboundModel, requestID string,
 	capture *audit.StreamCapture,
 	pc *pendingCapturer,
+	diagnostics *DiagnosticContext,
 ) (outcome StreamOutcome) {
 	//nolint:errcheck // best-effort close
 	defer resp.Body.Close()
@@ -438,6 +447,11 @@ func StreamAnthropicSSEToOpenAI(
 			continue
 		}
 
+		// Diagnostic: Log raw upstream response event
+		if diagnostics != nil && diagnostics.RawLogger != nil {
+			diagnostics.RawLogger.LogResponse(requestID, "anthropic", data, true)
+		}
+
 		if isOpenAIFormatData(data) {
 			slog.Warn("anthropic_to_openai: detected OpenAI-format data, dropping",
 				"event_type", eventType,
@@ -452,6 +466,15 @@ func StreamAnthropicSSEToOpenAI(
 				"event_type", eventType,
 				"error", err,
 				"request_id", requestID)
+			
+			// Diagnostic: Report parse anomaly
+			if diagnostics != nil && diagnostics.Anomaly != nil {
+				diagnostics.Anomaly.ReportAnomaly(requestID, "parse_error", map[string]interface{}{
+					"event_type":   eventType,
+					"error":        err.Error(),
+					"data_preview": truncateForLog(string(data), 200),
+				})
+			}
 			continue
 		}
 

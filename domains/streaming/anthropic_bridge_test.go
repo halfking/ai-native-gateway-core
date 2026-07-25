@@ -135,7 +135,7 @@ func TestStreamAnthropicPassthrough_BytesForPassThrough(t *testing.T) {
 
 	rec := newBridgeWriter()
 	pc := newBridgePendingCapturer(1024)
-	out := StreamAnthropicPassthrough(rec, resp, "claude-3-5-sonnet", "claude-3-5-sonnet", "req-1", nil, pc)
+	out := StreamAnthropicPassthrough(rec, resp, "claude-3-5-sonnet", "claude-3-5-sonnet", "req-1", nil, pc, nil)
 	assert.Equal(t, body, rec.buf.String())
 	assert.False(t, out.Interrupted)
 }
@@ -163,7 +163,7 @@ func TestStreamAnthropicSSEToOpenAI_ConvertsMessageStartToOpenAIChunk(t *testing
 	defer func() { _ = resp.Body.Close() }()
 
 	rec := httptest.NewRecorder()
-	out := StreamAnthropicSSEToOpenAI(rec, resp, "claude-opus-4-8", "claude-opus-4-8", "req-opus", nil, nil)
+	out := StreamAnthropicSSEToOpenAI(rec, resp, "claude-opus-4-8", "claude-opus-4-8", "req-opus", nil, nil, nil)
 	require.False(t, out.Interrupted)
 
 	output := rec.Body.String()

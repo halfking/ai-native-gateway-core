@@ -27,7 +27,7 @@ import (
 //
 // Evidence: Line 232-236 parse chunk["choices"], which is OpenAI-specific.
 // Anthropic uses content[] blocks, not choices[].
-func StreamOpenAIToAnthropicSSE(w http.ResponseWriter, resp *http.Response, clientModel, outboundModel, requestID string, capture *audit.StreamCapture, pc *pendingCapturer) (outcome StreamOutcome) {
+func StreamOpenAIToAnthropicSSE(w http.ResponseWriter, resp *http.Response, clientModel, outboundModel, requestID string, capture *audit.StreamCapture, pc *pendingCapturer, diagnostics *DiagnosticContext) (outcome StreamOutcome) {
 	//nolint:errcheck // best-effort close
 	defer resp.Body.Close()
 	defer func() {
@@ -216,6 +216,11 @@ func StreamOpenAIToAnthropicSSE(w http.ResponseWriter, resp *http.Response, clie
 		data := line[6:]
 		if data == "[DONE]" {
 			return
+		}
+
+		// Diagnostic: Log raw OpenAI upstream response
+		if diagnostics != nil && diagnostics.RawLogger != nil {
+			diagnostics.RawLogger.LogResponse(requestID, "openai", []byte(data), true)
 		}
 
 		var chunk map[string]json.RawMessage

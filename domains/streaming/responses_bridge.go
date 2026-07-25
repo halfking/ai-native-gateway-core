@@ -236,6 +236,7 @@ func StreamAnthropicSSEToResponses(
 	clientModel, outboundModel, requestID string,
 	capture *audit.StreamCapture,
 	pc *pendingCapturer,
+	diagnostics *DiagnosticContext,
 ) (outcome StreamOutcome) {
 	//nolint:errcheck // best-effort close
 	defer resp.Body.Close()
@@ -390,6 +391,11 @@ func StreamAnthropicSSEToResponses(
 			continue
 		}
 
+		// Diagnostic: Log raw upstream Anthropic response
+		if diagnostics != nil && diagnostics.RawLogger != nil {
+			diagnostics.RawLogger.LogResponse(requestID, "anthropic", data, true)
+		}
+
 		// Defensive: detect OpenAI-format data and skip (some proxies
 		// mislabel). Same guard as StreamAnthropicSSEToOpenAI.
 		if isOpenAIFormatData(data) {
@@ -406,6 +412,15 @@ func StreamAnthropicSSEToResponses(
 				"event_type", eventType,
 				"error", perr,
 				"request_id", requestID)
+			
+			// Diagnostic: Report parse anomaly
+			if diagnostics != nil && diagnostics.Anomaly != nil {
+				diagnostics.Anomaly.ReportAnomaly(requestID, "parse_error", map[string]interface{}{
+					"event_type":   eventType,
+					"error":        perr.Error(),
+					"data_preview": truncateForLog(string(data), 200),
+				})
+			}
 			continue
 		}
 
@@ -450,6 +465,7 @@ func StreamOpenAIToResponsesSSE(
 	clientModel, outboundModel, requestID string,
 	capture *audit.StreamCapture,
 	pc *pendingCapturer,
+	diagnostics *DiagnosticContext,
 ) (outcome StreamOutcome) {
 	//nolint:errcheck // best-effort close
 	defer resp.Body.Close()
@@ -607,12 +623,25 @@ func StreamOpenAIToResponsesSSE(
 			return StreamOutcome{ChunkCount: chunkCount}
 		}
 
+		// Diagnostic: Log raw OpenAI upstream response
+		if diagnostics != nil && diagnostics.RawLogger != nil {
+			diagnostics.RawLogger.LogResponse(requestID, "openai", []byte(payload), true)
+		}
+
 		chunk, perr := ir.ParseOpenAIStreamChunk(trimmed)
 		if perr != nil {
 			slog.Warn("openai_to_responses: parse failed",
 				"data_preview", truncateForLog(payload, 100),
 				"error", perr,
 				"request_id", requestID)
+			
+			// Diagnostic: Report parse anomaly
+			if diagnostics != nil && diagnostics.Anomaly != nil {
+				diagnostics.Anomaly.ReportAnomaly(requestID, "parse_error", map[string]interface{}{
+					"error":        perr.Error(),
+					"data_preview": truncateForLog(payload, 200),
+				})
+			}
 			continue
 		}
 

@@ -857,7 +857,12 @@ func main() {
 				pc = streaming.NewPendingCapturer(0)
 				markCapturedPendingInProgress(pendingStore, resp, tenantID)
 			}
-			outcome := streaming.StreamAnthropicPassthrough(w, resp, clientModel, outboundModel, requestID, cap, pc)
+			diagnostics := &streaming.DiagnosticContext{
+				RawLogger: routingExec.RawDataLogger,
+				Anomaly:   routingExec.AnomalyReporter,
+				Semantic:  routingExec.SemanticAnalyzer,
+			}
+			outcome := streaming.StreamAnthropicPassthrough(w, resp, clientModel, outboundModel, requestID, cap, pc, diagnostics)
 			saveCapturedPending(pendingStore, pc, resp, tenantID)
 			return outcome
 		}
@@ -954,7 +959,12 @@ func main() {
 				pc = streaming.NewPendingCapturer(0)
 				markCapturedPendingInProgress(pendingStore, resp, tenantID)
 			}
-			outcome := streaming.StreamAnthropicSSEToOpenAI(w, resp, clientModel, outboundModel, requestID, cap, pc)
+			diagnostics := &streaming.DiagnosticContext{
+				RawLogger: routingExec.RawDataLogger,
+				Anomaly:   routingExec.AnomalyReporter,
+				Semantic:  routingExec.SemanticAnalyzer,
+			}
+			outcome := streaming.StreamAnthropicSSEToOpenAI(w, resp, clientModel, outboundModel, requestID, cap, pc, diagnostics)
 			saveCapturedPending(pendingStore, pc, resp, tenantID)
 			return outcome
 		}
@@ -978,7 +988,12 @@ func main() {
 				pc = streaming.NewPendingCapturer(0)
 				markCapturedPendingInProgress(pendingStore, resp, tenantID)
 			}
-			outcome := streaming.StreamOpenAIToAnthropicSSE(w, resp, clientModel, outboundModel, requestID, cap, pc)
+			diagnostics := &streaming.DiagnosticContext{
+				RawLogger: routingExec.RawDataLogger,
+				Anomaly:   routingExec.AnomalyReporter,
+				Semantic:  routingExec.SemanticAnalyzer,
+			}
+			outcome := streaming.StreamOpenAIToAnthropicSSE(w, resp, clientModel, outboundModel, requestID, cap, pc, diagnostics)
 			saveCapturedPending(pendingStore, pc, resp, tenantID)
 			return outcome
 		}
@@ -998,7 +1013,12 @@ func main() {
 				pc = streaming.NewPendingCapturer(0)
 				markCapturedPendingInProgress(pendingStore, resp, tenantID)
 			}
-			outcome := streaming.StreamAnthropicSSEToResponses(w, resp, clientModel, outboundModel, requestID, cap, pc)
+			diagnostics := &streaming.DiagnosticContext{
+				RawLogger: routingExec.RawDataLogger,
+				Anomaly:   routingExec.AnomalyReporter,
+				Semantic:  routingExec.SemanticAnalyzer,
+			}
+			outcome := streaming.StreamAnthropicSSEToResponses(w, resp, clientModel, outboundModel, requestID, cap, pc, diagnostics)
 			saveCapturedPending(pendingStore, pc, resp, tenantID)
 			return outcome
 		}
@@ -1015,7 +1035,12 @@ func main() {
 				pc = streaming.NewPendingCapturer(0)
 				markCapturedPendingInProgress(pendingStore, resp, tenantID)
 			}
-			outcome := streaming.StreamOpenAIToResponsesSSE(w, resp, clientModel, outboundModel, requestID, cap, pc)
+			diagnostics := &streaming.DiagnosticContext{
+				RawLogger: routingExec.RawDataLogger,
+				Anomaly:   routingExec.AnomalyReporter,
+				Semantic:  routingExec.SemanticAnalyzer,
+			}
+			outcome := streaming.StreamOpenAIToResponsesSSE(w, resp, clientModel, outboundModel, requestID, cap, pc, diagnostics)
 			saveCapturedPending(pendingStore, pc, resp, tenantID)
 			return outcome
 		}
