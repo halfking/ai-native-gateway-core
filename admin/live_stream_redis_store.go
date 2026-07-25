@@ -1301,15 +1301,43 @@ func lanesChanged(old, new []LiveStreamLane) bool {
 			old[i].Stats != new[i].Stats || len(old[i].Requests) != len(new[i].Requests) {
 			return true
 		}
-		for j := range old[i].Requests {
-			if old[i].Requests[j].RequestID != new[i].Requests[j].RequestID {
-				return true
+			for j := range old[i].Requests {
+				if old[i].Requests[j].RequestID != new[i].Requests[j].RequestID {
+					return true
+				}
+				if old[i].Requests[j].Status != new[i].Requests[j].Status {
+					return true
+				}
+				// Use tolerance-based comparison instead of exact string match
+				if !timestampsEqual(old[i].Requests[j].Timestamp, new[i].Requests[j].Timestamp) {
+					return true
+				}
 			}
-			if old[i].Requests[j].Status != new[i].Requests[j].Status ||
-				old[i].Requests[j].Timestamp != new[i].Requests[j].Timestamp {
-				return true
-			}
-		}
 	}
 	return false
+}
+
+// absTimeDiff returns the absolute duration between two timestamps.
+func absTimeDiff(a, b time.Time) time.Duration {
+	d := a.Sub(b)
+	if d < 0 {
+		return -d
+	}
+	return d
+}
+
+// timestampsEqual checks if two RFC3339 timestamps are equal within tolerance.
+// Tolerance accounts for clock skew and serialization precision loss.
+const timestampToleranceMs = 100
+
+func timestampsEqual(ts1, ts2 string) bool {
+	t1, err1 := time.Parse(time.RFC3339, ts1)
+	t2, err2 := time.Parse(time.RFC3339, ts2)
+	
+	if err1 != nil || err2 != nil {
+		// If either parse fails, fall back to string comparison
+		return ts1 == ts2
+	}
+	
+	return absTimeDiff(t1, t2) <= timestampToleranceMs*time.Millisecond
 }
