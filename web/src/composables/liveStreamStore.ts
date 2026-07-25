@@ -86,6 +86,7 @@ export interface LiveStreamSnapshot {
   dimensions: Record<'vendor' | 'provider' | 'model', LiveStreamLane[]>
   dimension_legends: Record<'vendor' | 'provider' | 'model', LiveStreamLegendItem[]>
   status_legends: LiveStreamLegendItem[]
+  latest_request_ts?: string
 }
 
 export interface LiveStreamDelta {
@@ -208,6 +209,13 @@ const idIndex = new Set<string>()
 const pending: LiveRequest[] = []
 const PENDING_CAP = MAX_VISIBLE * 4
 
+// maxSeenTs tracks the maximum request timestamp the frontend has ever
+// received (from snapshots, deltas, or initial_data). The backend's
+// snapshot_refresh carries LatestRequestTs; the frontend rejects any
+// snapshot whose timestamp ≤ maxSeenTs to prevent stale Redis data from
+// overwriting newer deltas already applied in local state.
+let maxSeenTs = ''
+
 let es: EventSource | null = null
 let refCount = 0
 
@@ -318,28 +326,60 @@ function handleEnvelope(env: LiveStreamEnvelope) {
   if (env.type === 'initial_data' && Array.isArray(env.requests)) {
     if (env.snapshot) {
       mergeSnapshotFromServer(env.snapshot)
+      if (env.snapshot.latest_request_ts && env.snapshot.latest_request_ts > maxSeenTs) {
+        maxSeenTs = env.snapshot.latest_request_ts
+      }
     } else if (env.delta) {
       mergeDelta(env.delta)
     }
     applyInitialData(env.requests)
+    for (const r of env.requests) {
+      if (r.ts && r.ts > maxSeenTs) maxSeenTs = r.ts
+    }
     return
   }
 
   // A periodic snapshot reconciles lane aggregates. Keep the independent
   // flat replay buffer intact so the UI never briefly renders an empty queue.
+  // 2026-07-25: timestamp-based versioning guard. The backend's
+  // pushFullSnapshots now carries LatestRequestTs on every snapshot_refresh.
+  // Skip when the incoming snapshot's max ts is not strictly greater than
+  // what the frontend already knows — prevents stale Redis data from
+  // overwriting newer deltas already applied to local state.
   if (env.type === 'snapshot_refresh' && env.snapshot) {
+    const incomingTs = env.snapshot.latest_request_ts
+    if (incomingTs && maxSeenTs && incomingTs <= maxSeenTs) {
+      return
+    }
+    if (incomingTs && incomingTs > maxSeenTs) {
+      maxSeenTs = incomingTs
+    }
     mergeSnapshotFromServer(env.snapshot)
     return
   }
 
   if (env.delta) {
     mergeDelta(env.delta)
+    for (const dim of ['vendor', 'provider', 'model'] as const) {
+      const lanes = env.delta.changed_lanes[dim]
+      if (!lanes) continue
+      for (const lane of lanes) {
+        for (const tile of lane.requests) {
+          if (tile.timestamp && tile.timestamp > maxSeenTs) {
+            maxSeenTs = tile.timestamp
+          }
+        }
+      }
+    }
   } else if (env.snapshot) {
     mergeSnapshotFromServer(env.snapshot)
   }
 
   if (env.type === 'request' && env.request) {
     pushOrQueue(env.request)
+    if (env.request.ts && env.request.ts > maxSeenTs) {
+      maxSeenTs = env.request.ts
+    }
     notifyTerminalRequest(env.request)
     return
   }
@@ -740,6 +780,7 @@ export function resetStream() {
   liveStreamState.snapshot = null
   idIndex.clear()
   pending.length = 0
+  maxSeenTs = ''
 }
 export function reconnectStream() {
   closeConnection()
@@ -770,4 +811,5 @@ export const __testing = {
   refCount: () => refCount,
   es: () => es,
   MAX_VISIBLE,
+  maxSeenTs: () => maxSeenTs,
 }

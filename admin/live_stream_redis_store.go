@@ -76,6 +76,7 @@ type LiveStreamSnapshot struct {
 	Dimensions       map[string][]LiveStreamLane       `json:"dimensions"`
 	DimensionLegends map[string][]LiveStreamLegendItem `json:"dimension_legends"`
 	StatusLegends    []LiveStreamLegendItem            `json:"status_legends"`
+	LatestRequestTs  string                            `json:"latest_request_ts,omitempty"`
 }
 
 type LiveStreamDelta struct {
@@ -634,6 +635,10 @@ func BuildLiveStreamSnapshot(items []LiveRequest) *LiveStreamSnapshot {
 		}
 		seenForSummary[item.RequestID] = struct{}{}
 		countStatus(&s.Summary, item.Status)
+		// Track the latest request timestamp for versioning
+		if item.Ts > s.LatestRequestTs {
+			s.LatestRequestTs = item.Ts
+		}
 	}
 
 	for _, dim := range []string{"vendor", "provider", "model"} {
