@@ -155,13 +155,9 @@ func (r *Router) PlanCandidates(
 		}
 
 		// 2026-07-24 Phase 2.3: 应用压力惩罚（feature flag 控制）
-		// 在 URSM v2 过滤和评分之后，根据 FpSlots/Limiter 压力调整权重
-		// 使用独立的 pressureCtx 避免遮蔽外层 ctx
-		if r.PressureAwareEnabled && len(candidates) > 0 {
-			pressureCtx, pressureCancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
-			r.applyPressurePenalty(pressureCtx, candidates)
-			pressureCancel()
-		}
+		// 在 URSM v2 过滤之后，根据 FpSlots/Limiter 压力调整权重
+		// 注意：完整调用在 stateBackend 定义之后（见下方）
+
 
 		// 2026-07-24 Phase 1: 使用统一的状态后端接口，消除散落的条件判断。
 	// 一次性决定使用 URSM v2 / StateManager / DB-only 哪套系统。
@@ -169,6 +165,17 @@ func (r *Router) PlanCandidates(
 	defer cancel()
 	stateBackend := selectStateBackend(r.URSMv2, r.StateManager, ctx)
 	available := stateBackend.FilterAvailable(ctx, candidates)
+
+	// 2026-07-25 Phase 2.4: 标记 Feature flag 状态（供外部观察）
+	SetPressureAwareRoutingEnabled(r.PressureAwareEnabled)
+
+	// 2026-07-24 Phase 2.3: 应用压力惩罚（在 StateBackend 过滤之后）
+	// 此时可用候选已经确定，对它们应用压力惩罚
+	if r.PressureAwareEnabled && len(available) > 0 {
+		pressureCtx, pressureCancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+		r.applyPressurePenalty(pressureCtx, available, stateBackend.Name())
+		pressureCancel()
+	}
 
 	if len(available) == 0 {
 		// Build a per-reason breakdown so the next "all providers failed at
@@ -1092,14 +1099,31 @@ func (r *Router) getPressureSignals(
 // applyPressurePenalty 根据压力信号调整候选节点的权重
 // 注意：这会修改 candidates 的 Weight 字段
 // 调用方需确保已检查 PressureAwareEnabled == true
-func (r *Router) applyPressurePenalty(ctx context.Context, candidates []provider.Candidate) {
+//
+// 参数:
+//   - ctx: 上下文
+//   - candidates: 候选节点列表
+//   - backendName: StateBackend 名称（用于 Prometheus 标签）
+func (r *Router) applyPressurePenalty(ctx context.Context, candidates []provider.Candidate, backendName string) {
 	if len(candidates) == 0 {
 		return
+	}
+
+	if backendName == "" {
+		backendName = "unknown"
 	}
 
 	for i := range candidates {
 		// 获取压力信号
 		fpPressure, limiterPressure := r.getPressureSignals(ctx, candidates[i])
+
+		// 2026-07-25 Phase 2.4: 记录压力信号到 Prometheus
+		if fpPressure > 0 {
+			RecordPressureSignal("fp_slots", candidates[i].CredentialID, fpPressure)
+		}
+		if limiterPressure > 0 {
+			RecordPressureSignal("limiter", candidates[i].CredentialID, limiterPressure)
+		}
 
 		// 计算压力惩罚
 		penalty := calculatePressurePenalty(fpPressure, limiterPressure)
@@ -1117,12 +1141,16 @@ func (r *Router) applyPressurePenalty(ctx context.Context, candidates []provider
 			}
 			candidates[i].Weight = newWeight
 
+			// 2026-07-25 Phase 2.4: 记录到 Prometheus
+			RecordPressurePenalty(backendName, candidates[i].RawModel, penalty)
+
 			// 记录惩罚日志（仅在惩罚 > 10% 时）
 			if penalty > 0.1 {
 				slog.Debug("router: applied pressure penalty",
 					"credential_id", candidates[i].CredentialID,
 					"provider_id", candidates[i].ProviderID,
 					"raw_model", candidates[i].RawModel,
+					"backend", backendName,
 					"fp_pressure", fpPressure,
 					"limiter_pressure", limiterPressure,
 					"penalty", penalty,
@@ -1134,7 +1162,6 @@ func (r *Router) applyPressurePenalty(ctx context.Context, candidates []provider
 	}
 
 	// 重新排序（按调整后的权重）
-	// 注意：这里假设 Weight 越高越优先，如果相反则需要调整
 	sortCandidatesByWeight(candidates)
 }
 
