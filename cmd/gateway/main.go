@@ -1653,6 +1653,31 @@ func main() {
 		}
 		slog.Info("response format anomaly recorder wired")
 
+		// ── Format Detection & Auto-Fix System (2026-07-26) ──
+		// Initialize intelligent format detection system for automatic client
+		// format identification and common issue fixes (empty objects, wrong types).
+		formatRegistry := streaming.NewFormatRegistry()
+		formatDetector := streaming.NewFormatDetector(formatRegistry)
+		formatFixer := streaming.NewFormatFixer()
+		
+		// Use Redis cache if available for session-level format caching
+		var formatCache streaming.FormatCache
+		if redisClientForCache != nil && redisClientForCache.Client() != nil {
+			formatCache = streaming.NewRedisFormatCache(
+				redisClientForCache.Client(),
+				24*time.Hour, // TTL: 24 hours
+			)
+			slog.Info("format detection: Redis cache enabled")
+		} else {
+			formatCache = streaming.NewNullFormatCache()
+			slog.Info("format detection: cache disabled (Redis not available)")
+		}
+		
+		chatHandler.SetFormatDetection(formatDetector, formatFixer, formatCache)
+		slog.Info("format detection system initialized",
+			"patterns", len(formatRegistry.List()),
+			"cache_enabled", formatCache != nil)
+
 		// 2026-06-27 session-audit: wire the approval manager so
 		// /api/admin/session-{audit,approvals}/* endpoints can serve
 		// queries and approve/reject decisions through the audit hook
