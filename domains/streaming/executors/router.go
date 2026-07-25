@@ -1083,8 +1083,14 @@ func (r *Router) getPressureSignals(
 			pressure, err := fpManager.GetPressure(ctx, candidate.CredentialID, *candidate.FpSlotLimit)
 			if err == nil {
 				fpPressure = pressure
+			} else {
+				// 错误时 fpPressure 保持为 0（fail-open）
+				slog.Debug("fpslot pressure query failed",
+					"credential_id", candidate.CredentialID,
+					"error", err,
+				)
+				RecordPressureQueryFailure("fpslot")
 			}
-			// 错误时 fpPressure 保持为 0（fail-open）
 		}
 	}
 

@@ -68,8 +68,17 @@ var (
 	pressureAwareRoutingEnabled = promauto.NewGauge(
 		prometheus.GaugeOpts{
 			Name: "llmgw_pressure_aware_routing_enabled",
-			Help: "Whether pressure-aware routing is enabled (1=yes, 0=no)",
+			Help: "Whether pressure-aware routing is enabled (1=enabled, 0=disabled)",
 		},
+	)
+
+	// pressureQueryFailures 记录压力查询失败次数
+	pressureQueryFailures = promauto.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "llmgw_pressure_query_failures_total",
+			Help: "Total number of pressure query failures by source (fpslot or limiter)",
+		},
+		[]string{"source"}, // "fpslot" or "limiter"
 	)
 )
 
@@ -104,4 +113,9 @@ func SetPressureAwareRoutingEnabled(enabled bool) {
 	} else {
 		pressureAwareRoutingEnabled.Set(0)
 	}
+}
+
+// RecordPressureQueryFailure 记录压力查询失败
+func RecordPressureQueryFailure(source string) {
+	pressureQueryFailures.WithLabelValues(source).Inc()
 }

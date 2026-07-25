@@ -198,8 +198,19 @@ type Limiter struct {
 	// RPM uses Redis across instances when configured and memory otherwise.
 	rpmLimiter RPMLimiter
 
+	// Pressure cache (Phase 2.4): 5-second TTL cache for GetPressure
+	pressureCache      map[string]cachedPressure // key: "providerID/credentialID"
+	pressureCacheMu    sync.RWMutex
+	pressureCacheTTL   time.Duration
+
 	mu     sync.RWMutex
 	stopCh chan struct{}
+}
+
+// cachedPressure stores a pressure value with expiration time
+type cachedPressure struct {
+	value     float64
+	expiresAt time.Time
 }
 
 // rpmWindow is a 60-second sliding window of acquire timestamps. Stale
@@ -219,17 +230,19 @@ func NewLimiter() *Limiter {
 // NewWithLimits creates a new limiter with custom limits.
 func NewWithLimits(global, pool, credential, identity int) *Limiter {
 	l := &Limiter{
-		globalLimit:     global,
-		poolLimit:       pool,
-		credentialLimit: credential,
-		identityLimit:   identity,
-		global:          NewSemaphore("global", global),
-		pools:           make(map[int]*Semaphore),
-		creds:           make(map[string]*Semaphore),
-		idents:          make(map[string]*Semaphore),
-		keys:            make(map[int]*Semaphore),
-		rpmLimiter:      NewRPMLimiterFromEnv(),
-		stopCh:          make(chan struct{}),
+		globalLimit:      global,
+		poolLimit:        pool,
+		credentialLimit:  credential,
+		identityLimit:    identity,
+		global:           NewSemaphore("global", global),
+		pools:            make(map[int]*Semaphore),
+		creds:            make(map[string]*Semaphore),
+		idents:           make(map[string]*Semaphore),
+		keys:             make(map[int]*Semaphore),
+		rpmLimiter:       NewRPMLimiterFromEnv(),
+		pressureCache:    make(map[string]cachedPressure),
+		pressureCacheTTL: 5 * time.Second, // 5-second TTL, matching FpSlot cache
+		stopCh:           make(chan struct{}),
 	}
 	go l.recoveryLoop()
 	return l
@@ -583,6 +596,8 @@ func (l *Limiter) recoveryStep() {
 // 压力 = max(各层 Used / Capacity)
 // 返回 0 表示无压力或无限制
 //
+// Phase 2.4 (2026-07-25): 添加 5 秒 TTL 缓存，减少高频路由选择时的开销
+//
 // 参数:
 //   - credentialID: credential ID (Layer 2)
 //   - poolID: provider pool ID (Layer 1)
@@ -590,6 +605,37 @@ func (l *Limiter) recoveryStep() {
 //
 // 返回最严重层的压力值（0-1）
 func (l *Limiter) GetPressure(
+	credentialID int,
+	poolID int,
+	identityKey string,
+) float64 {
+	// Check cache first
+	cacheKey := fmt.Sprintf("%d/%d", poolID, credentialID)
+	l.pressureCacheMu.RLock()
+	cached, found := l.pressureCache[cacheKey]
+	l.pressureCacheMu.RUnlock()
+	
+	if found && time.Now().Before(cached.expiresAt) {
+		// Cache hit
+		return cached.value
+	}
+	
+	// Cache miss or expired, calculate pressure
+	pressure := l.calculatePressure(credentialID, poolID, identityKey)
+	
+	// Update cache
+	l.pressureCacheMu.Lock()
+	l.pressureCache[cacheKey] = cachedPressure{
+		value:     pressure,
+		expiresAt: time.Now().Add(l.pressureCacheTTL),
+	}
+	l.pressureCacheMu.Unlock()
+	
+	return pressure
+}
+
+// calculatePressure calculates the actual pressure value without caching
+func (l *Limiter) calculatePressure(
 	credentialID int,
 	poolID int,
 	identityKey string,

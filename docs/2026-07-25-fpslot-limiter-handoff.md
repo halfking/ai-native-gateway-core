@@ -56,7 +56,7 @@
 
 ### 2.2 核心实现
 
-**文件**: `domains/credentialfpslot/manager.go`
+**文件**: `credentialfpslot/slot.go`
 
 #### 2.2.1 槽位分配
 
@@ -120,83 +120,86 @@ llmgw:cred_fp_slot:123:2 = "1" (TTL=60s)
 
 ## 三、并发 Slot 管理机制
 
-### 3.1 Limiter 四层架构
+### 3.1 Limiter 五层架构
 
 **文件**: `domains/credential/limiter.go`
 
-#### 3.1.1 Layer 0: IdentityPool
-
-```go
-type IdentityPool struct {
-    limit     int           // 全局身份池上限（例如 1000）
-    acquired  int           // 已分配数量
-    mu        sync.Mutex
-}
-```
-
-**用途**: 全局限制所有凭据的虚拟身份总数。
-
-#### 3.1.2 Layer 1: FpSlot 占用
-
-```go
-fpSlotUsed := fpSlotMgr.CountUsedSlots(credentialID)
-if fpSlotUsed >= fpSlotLimit {
-    return error("fp_slot_exhausted")
-}
-```
-
-**用途**: 与 FpSlot 管理器协同，限制虚拟指纹数量。
-
-#### 3.1.3 Layer 2: 正在执行请求数
+#### 3.1.1 Layer 0: Global
 
 ```go
 type Limiter struct {
-    executing map[int]*semaphore.Weighted  // credentialID -> 信号量
-}
-
-func (l *Limiter) Acquire(credentialID int, concurrencyLimit int) error {
-    sem := l.getSemaphore(credentialID, concurrencyLimit)
-    return sem.Acquire(ctx, 1)
+    global *Semaphore  // 全局并发上限（例如 1000）
 }
 ```
 
-**用途**: 限制单个凭据的并发执行请求数（例如 5）。
+**用途**: 全局限制所有请求的总并发数。
 
-#### 3.1.4 Layer 3: 待调度请求数
+#### 3.1.2 Layer 1: Pool（每供应商池）
+
+```go
+pools map[int]*Semaphore  // providerID -> 信号量
+```
+
+**用途**: 限制单个供应商（如 OpenAI）的总并发数。
+
+#### 3.1.3 Layer 2: Credential（每凭据并发）
+
+```go
+creds map[string]*Semaphore  // "providerID/credentialID" -> 信号量
+```
+
+**用途**: 限制单个凭据的并发执行请求数（例如 50）。
+
+#### 3.1.4 Layer 3: Identity（每身份软上限）
+
+```go
+idents map[string]*Semaphore  // "providerID/credentialID/identityHash" -> 信号量
+```
+
+**用途**: 限制单个虚拟身份的并发数（软上限，非阻塞）。
+
+#### 3.1.5 Layer 4: Key（每 API Key 软上限）
+
+```go
+keys map[int]*Semaphore  // keyID -> 信号量
+```
+
+**用途**: 限制单个 API Key 的并发请求数（软上限，非阻塞）。
+
+#### 3.1.4 Layer 4: 每 API Key 并发控制
 
 ```go
 type Limiter struct {
-    pending map[int]int  // credentialID -> 等待中的请求数
+    keys map[int]*semaphore.Weighted  // keyID -> 信号量
 }
 
-func (l *Limiter) IncrementPending(credentialID int) {
-    l.mu.Lock()
-    l.pending[credentialID]++
-    l.mu.Unlock()
+func (l *Limiter) Key(keyID int, limit int) *Semaphore {
+    // 返回 per-key 信号量（软上限）
 }
 ```
 
-**用途**: 跟踪排队等待执行的请求数，用于压力计算。
+**用途**: 限制单个 API Key 的并发请求数（软上限，非阻塞）。
 
 ### 3.2 压力查询（Phase 2.1 新增）
 
 ```go
-func (l *Limiter) GetPressure(ctx context.Context, credentialID int) (float64, error)
+func (l *Limiter) GetPressure(credentialID int, poolID int, identityKey string) float64
 ```
 
 **逻辑**:
-1. 查询 `concurrency_limit`（例如 5）
-2. 查询当前正在执行数（Layer 2）
-3. 查询等待中请求数（Layer 3）
-4. 计算 pressure = (executing + pending) / limit
+1. 查询各层的 Used 和 Capacity
+2. 计算每层的 pressure = Used / Capacity
+3. 返回 max(各层压力)
 
 **示例**:
 ```
-concurrency_limit = 5
-executing = 4
-pending = 2
-pressure = (4 + 2) / 5 = 1.2（超载）
+Global: 800/1000 → 0.8
+Pool: 50/100 → 0.5
+Credential: 40/50 → 0.8
+→ maxPressure = 0.8
 ```
+
+**注意**: 当前实现**不追踪等待队列长度**，仅基于已分配的信号量计算压力。
 
 ---
 
@@ -311,8 +314,8 @@ bash scripts/ab-test-pressure.sh disable  # 禁用
 
 | 文件 | 职责 |
 |------|------|
-| `domains/credentialfpslot/manager.go` | FpSlot 核心实现 |
-| `domains/credentialfpslot/manager_test.go` | FpSlot 单元测试 |
+| `credentialfpslot/slot.go` | FpSlot 核心实现 |
+| `credentialfpslot/slot_test.go` | FpSlot 单元测试 |
 
 ### 6.2 Limiter 相关
 
@@ -355,16 +358,17 @@ bash scripts/ab-test-pressure.sh disable  # 禁用
 5. ⚠️ 槽位 TTL=60s 是否合理（请求超时场景）
 
 **重点文件**:
-- `domains/credentialfpslot/manager.go`（约 200 行）
+- `credentialfpslot/slot.go`（约 1054 行）
+- `credentialfpslot/reclaim.go`（约 251 行）
 
 #### 7.1.2 Limiter 深度审计
 
 **检查项**:
-1. ✅ 四层架构实现是否完整
+1. ✅ 五层架构实现是否完整（Global/Pool/Credential/Identity/Key）
 2. ✅ 信号量释放是否配对（Acquire/Release）
-3. ⚠️ pending 计数是否准确（并发场景）
-4. ⚠️ IdentityPool 全局限制是否生效
-5. ⚠️ 压力计算公式是否合理
+3. ⚠️ GetPressure 是否需要缓存（当前无缓存）
+4. ⚠️ Global 全局限制是否生效
+5. ⚠️ 压力计算公式是否合理（当前不含等待队列）
 
 **重点文件**:
 - `domains/credential/limiter.go`（约 300 行）
@@ -388,7 +392,8 @@ bash scripts/ab-test-pressure.sh disable  # 禁用
 
 ```bash
 # 1. 读取关键文件
-Read domains/credentialfpslot/manager.go
+Read credentialfpslot/slot.go
+Read credentialfpslot/reclaim.go
 Read domains/credential/limiter.go
 Read domains/streaming/executors/pressure.go
 
@@ -426,10 +431,10 @@ go test -bench=. -benchmem ./domains/streaming/executors/
 
 | 风险点 | 严重性 | 建议 |
 |--------|--------|------|
-| Redis 连接失败 | 中 | 检查 fail-open 逻辑 |
-| FpSlot 槽位泄漏 | 高 | 验证 TTL 和 Release 配对 |
-| Limiter pending 计数不准 | 中 | 并发测试验证 |
-| 压力查询缓存失效 | 低 | 验证 5 秒缓存逻辑 |
+| Redis 连接失败 | 中 | ✅ 已实现 fail-open 逻辑 |
+| FpSlot 槽位泄漏 | 高 | ✅ 已实现 3 次重试 + TTL 自动回收 |
+| Limiter GetPressure 无缓存 | 低 | 验证高频调用时的性能影响 |
+| 压力查询缓存失效 | 低 | 验证 FpSlot 的 5 秒缓存逻辑 |
 | Feature flag 热切换 | 低 | 测试运行时切换场景 |
 
 ---
