@@ -1,12 +1,12 @@
 <script setup lang="ts">
 import { computed } from 'vue'
-import type { RequestTile, SwimLaneMode } from '../types/swimlane'
+import type { RequestTile, SwimLaneMode, GroupByDimension } from '../types/swimlane'
 import RequestTileComponent from './RequestTile.vue'
 
 const props = defineProps<{
   tiles: RequestTile[]
   mode: SwimLaneMode
-  groupBy: string
+  groupBy: GroupByDimension
   maxVisible: number
   selectedLegends?: Set<string>
 }>()
