@@ -365,3 +365,39 @@ func TestHandleNodeProbeStateResetIsNoProbe(t *testing.T) {
 		}
 	}
 }
+
+// TestTriggerManualSuccessCallsMarkNodeProbeHealthy pins that a successful
+// ModelProbeRunner.TriggerManual (status="ok") calls MarkNodeProbeHealthy
+// so node_probe_state is cleared and v_routable immediately reflects the
+// recovered binding without waiting for the next runOne cycle.
+//
+// This mirrors the TriggerAllSync path (line ~995 in model_probe.go) but
+// applies to the single-binding manual trigger from the admin UI.
+func TestTriggerManualSuccessCallsMarkNodeProbeHealthy(t *testing.T) {
+	src, err := os.ReadFile("model_probe.go")
+	if err != nil {
+		t.Fatalf("read model_probe.go: %v", err)
+	}
+	body := string(src)
+
+	// Extract TriggerManual function body
+	start := strings.Index(body, "func (r *ModelProbeRunner) TriggerManual(")
+	if start < 0 {
+		t.Fatalf("TriggerManual function not found")
+	}
+	end := strings.Index(body[start:], "\n}\n\n")
+	if end < 0 {
+		t.Fatalf("TriggerManual closing brace not found")
+	}
+	fnBody := body[start : start+end]
+
+	// TriggerManual must call MarkNodeProbeHealthy when status="ok"
+	if !strings.Contains(fnBody, "MarkNodeProbeHealthy") {
+		t.Fatalf("TriggerManual must call MarkNodeProbeHealthy on success (mirror TriggerAllSync behavior)")
+	}
+	// It must be conditional on status="ok" to avoid clearing node_probe_state
+	// when the manual probe itself failed
+	if !strings.Contains(fnBody, `status == "ok"`) && !strings.Contains(fnBody, `status=="ok"`) {
+		t.Fatalf("MarkNodeProbeHealthy call must be guarded by status == \"ok\"")
+	}
+}
