@@ -15,6 +15,7 @@ import type {
 import { useRouteIncidents } from '../composables/useRouteIncidents'
 import type { RouteIncident } from '../types/routeIncident'
 import RequestTile from './RequestTile.vue'
+import SwimLaneTrack from './SwimLaneTrack.vue'
 
 const props = defineProps<{
   lane: SwimLaneType
@@ -285,18 +286,14 @@ watch(laneMode, async () => {
       :style="{ '--tile-w': TILE_WIDTH + 'px', '--tile-gap': TILE_GAP + 'px' }"
       ref="trackRef"
     >
-      <TransitionGroup name="swim-tile" tag="div" class="swim-lane__tiles" :class="{ 'swim-lane__tiles--small': isSmall }">
-        <RequestTile
-          v-for="tile in renderedRequests"
-          :key="tile.request_id"
-          :tile="tile"
-          :group-by="groupBy"
-          :mode="laneMode"
-          :is-highlighted="isTileHighlighted(tile[groupBy] as string)"
-          :is-dimmed="isTileDimmed(tile[groupBy] as string)"
-          @click="handleTileClick"
-        />
-      </TransitionGroup>
+      <SwimLaneTrack
+        :tiles="lane.requests"
+        :mode="laneMode"
+        :group-by="groupBy"
+        :max-visible="maxVisibleTiles"
+        :selected-legends="selectedLegends"
+        @tile-click="handleTileClick"
+      />
     </div>
   </div>
 </template>
