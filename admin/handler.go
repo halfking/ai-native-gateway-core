@@ -654,6 +654,7 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	if h.liveStreamHub != nil {
 		mux.HandleFunc("/api/admin/live-stream", admin(h.liveStreamHub.HandleLiveStream))
 		mux.HandleFunc("/api/admin/live-stream/stats", admin(h.handleLiveStreamStats))
+		mux.HandleFunc("/api/admin/live-stream/trigger-snapshot", admin(h.liveStreamHub.HandleTriggerSnapshot))
 	}
 
 	// 2026-07-13: read-only route-incident diagnosis API (Phase 1).
