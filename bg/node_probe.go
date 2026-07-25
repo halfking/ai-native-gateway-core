@@ -203,7 +203,7 @@ func (w *NodeProbeWorker) SetCircuitRecovery(fn func(providerID, credentialID in
 }
 
 // NewNodeProbeWorker constructs a worker.  baseURL="" picks
-// LLM_GATEWAY_NODE_PROBE_BASE_URL or the default https://llm.kxpms.cn/v1.
+// LLM_GATEWAY_NODE_PROBE_BASE_URL or the local gateway loopback URL.
 // apiKey is the system-level API key the worker uses for the gateway
 // round; it should be an is_system=true key with read+write on the
 // provider model bindings.
@@ -218,7 +218,7 @@ func NewNodeProbeWorker(db *pgxpool.Pool, encKey []byte, keyring *secret.Keyring
 		if envURL := strings.TrimSpace(os.Getenv("LLM_GATEWAY_NODE_PROBE_BASE_URL")); envURL != "" {
 			baseURL = envURL
 		} else {
-			baseURL = "https://llm.kxpms.cn/v1"
+			baseURL = "http://127.0.0.1:8781/v1"
 		}
 	}
 	w := &NodeProbeWorker{
@@ -951,6 +951,10 @@ func (w *NodeProbeWorker) pickDueAtomically(ctx context.Context) (int, string, b
 			WHERE paused = FALSE
 			  AND next_retry_at <= now()
 			  AND (in_flight_until IS NULL OR in_flight_until <= now())
+			  AND (last_direct_ok IS DISTINCT FROM TRUE
+			       OR last_gateway_ok IS DISTINCT FROM TRUE)
+			  AND (last_attempt_at >= now() - interval '24 hours'
+			       OR updated_at >= now() - interval '24 hours')
 
 		ORDER BY next_retry_at ASC
 		LIMIT 1
@@ -1108,7 +1112,7 @@ func (w *NodeProbeWorker) runOne(ctx context.Context, credID int, model, trigger
 			bgCtx, bgCancel := context.WithTimeout(context.Background(), 2*time.Second)
 			if _, err := w.db.Exec(bgCtx, "SELECT pg_notify('auto_route_refresh', $1)", fmt.Sprintf("credentials:UPDATE:%d", credID)); err != nil {
 				slog.Warn("node_probe_worker: pg_notify auto_route_refresh failed",
-				"credential_id", credID, "model", model, "error", err)
+					"credential_id", credID, "model", model, "error", err)
 			}
 			bgCancel()
 		}
