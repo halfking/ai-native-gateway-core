@@ -55,6 +55,57 @@ type LiveStreamTile struct {
 	ProbeAttempt     int      `json:"probe_attempt,omitempty"`
 }
 
+// LiveStreamTileSlim is a lightweight version of LiveStreamTile for Redis queue storage.
+// Full details remain in the request detail hash; this minimal format reduces memory by ~90%.
+type LiveStreamTileSlim struct {
+	RequestID string  `json:"rid"`
+	Timestamp int64   `json:"ts"`           // Unix milliseconds
+	Status    string  `json:"st"`           // success, failure, in_progress, idle
+	ErrorKind *string `json:"ek,omitempty"` // 5xx, 4xx, timeout, etc.
+	IsProbe   bool    `json:"p,omitempty"`  // true if this is a probe request
+}
+
+// marshalTileSlim converts a LiveStreamTile to slim JSON format.
+func marshalTileSlim(tile LiveStreamTile) (string, error) {
+	ts, err := time.Parse(time.RFC3339, tile.Timestamp)
+	if err != nil {
+		return "", fmt.Errorf("invalid timestamp: %w", err)
+	}
+	
+	slim := LiveStreamTileSlim{
+		RequestID: tile.RequestID,
+		Timestamp: ts.UnixMilli(),
+		Status:    tile.Status,
+		ErrorKind: tile.ErrorKind,
+		IsProbe:   tile.IsProbe,
+	}
+	
+	data, err := json.Marshal(slim)
+	if err != nil {
+		return "", err
+	}
+	return string(data), nil
+}
+
+// unmarshalTileSlim converts slim JSON back to LiveStreamTile.
+func unmarshalTileSlim(data string) (LiveStreamTile, error) {
+	var slim LiveStreamTileSlim
+	if err := json.Unmarshal([]byte(data), &slim); err != nil {
+		return LiveStreamTile{}, err
+	}
+	
+	ts := time.UnixMilli(slim.Timestamp).UTC()
+	
+	return LiveStreamTile{
+		RequestID: slim.RequestID,
+		Timestamp: ts.Format(time.RFC3339),
+		Status:    slim.Status,
+		ErrorKind: slim.ErrorKind,
+		IsProbe:   slim.IsProbe,
+		// Other fields loaded from detail hash when needed
+	}, nil
+}
+
 type LiveStreamLane struct {
 	ID        string           `json:"id"`
 	Name      string           `json:"name"`
