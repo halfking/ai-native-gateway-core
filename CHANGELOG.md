@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **node_probe_failed 不再黏住已恢复凭据** (2026-07-25): `bg/node_probe.go runOne` 成功分支补齐 `last_direct_ok=TRUE / last_err_code=NULL`，与 `updateBindingAvailability` 协同 `provider.InvalidateCandidateCacheForCredential` 与 `pg_notify('auto_route_refresh')`；AutoRouteRealtimeListener 5s 内刷新 `v_routable_credential_models` 使已恢复绑定立即重新路由。详见 [docs/changelogs/2026-07-25-node-probe-realtime-recovery.md](docs/changelogs/2026-07-25-node-probe-realtime-recovery.md).
+
 - **Dashboard 实时流筛选弹窗 + 模型标准名 + 探测队列并入系统自检** (2026-07-24): 实时请求流「状态/模型/供应商/原厂」改为弹窗多选（全部 + 完整选项文案）；模型维度与筛选统一用 `canonical_name` 标准名（`liveRequestTile` 优先 canonical）。Dashboard 去掉「系统监测」Tab，`/system-monitor` 重定向到 `?tab=selfcheck`；系统自检页增加「当前探测队列」区（队列长度 / 运行中 / 并发上限 + 已执行/正在执行/待执行 FIFO 泳道）。`GET /api/admin/probe/queue-tasks` 补充 `standardized_name` 并返回近 2h 已完成任务。
 
 ### Added
