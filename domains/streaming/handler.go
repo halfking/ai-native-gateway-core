@@ -777,6 +777,15 @@ func (h *ChatHandler) SetMaas(svc *maas.Service) {
 	h.maasSvc = svc
 }
 
+// SetFormatDetection (2026-07-26) configures the format detection and auto-fix system.
+// When detector and fixer are non-nil, the handler automatically detects client request
+// formats and applies fixes before validation. cache is optional (nil disables caching).
+func (h *ChatHandler) SetFormatDetection(detector *FormatDetector, fixer *FormatFixer, cache FormatCache) {
+	h.formatDetector = detector
+	h.formatFixer = fixer
+	h.formatCache = cache
+}
+
 // SetRequestLogger wires the Request WAL logger.
 // nil disables Request WAL (default).
 func (h *ChatHandler) SetRequestLogger(rl *telemetry.RequestLogger) {
