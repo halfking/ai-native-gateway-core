@@ -743,7 +743,7 @@ func (w *SelfCheckWorker) updateRun(ctx context.Context, runID int64, completedA
 	durationMs int, status string, roundsTotal, roundsSuccess int, hadToolCall bool,
 	totalTokens, avgLatency int, errType, errDetail string,
 	upstreamTested bool, upstreamResult *string, upstreamLatency *int, upstreamError *string) {
-	w.db.Exec(ctx, `
+	if _, err := w.db.Exec(ctx, `
 		UPDATE self_check_runs SET
 			completed_at=$2, duration_ms=$3, status=$4,
 			rounds_total=$5, rounds_success=$6, had_tool_call=$7,
@@ -756,7 +756,9 @@ func (w *SelfCheckWorker) updateRun(ctx context.Context, runID int64, completedA
 		roundsTotal, roundsSuccess, hadToolCall,
 		totalTokens, avgLatency,
 		errType, errDetail,
-		upstreamTested, upstreamResult, upstreamLatency, upstreamError)
+		upstreamTested, upstreamResult, upstreamLatency, upstreamError); err != nil {
+		slog.Warn("self_check: updateRun failed", "run_id", runID, "error", err)
+	}
 }
 
 func (w *SelfCheckWorker) insertRound(ctx context.Context, runID int64, roundIdx int, r roundResult) error {
