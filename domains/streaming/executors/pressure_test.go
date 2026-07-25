@@ -1,8 +1,11 @@
 package executors
 
 import (
+	"context"
 	"math"
 	"testing"
+
+	"github.com/kaixuan/llm-gateway-go/provider"
 )
 
 // TestCalculatePressurePenalty 测试压力惩罚计算
@@ -161,5 +164,63 @@ func TestCalculatePressurePenalty_NegativeInput(t *testing.T) {
 func Benchmark_CalculatePressurePenalty(b *testing.B) {
 	for i := 0; i < b.N; i++ {
 		calculatePressurePenalty(0.75, 0.65)
+	}
+}
+
+// TestApplyPressurePenalty_WeightZero 测试 Weight=0 的边界条件
+// 原始权重为 0 的候选不应被压力调整（保持不变）
+func TestApplyPressurePenalty_WeightZero(t *testing.T) {
+	r := &Router{
+		PressureAwareEnabled: true,
+	}
+
+	// 只有 Weight=0 的候选，且没有 FpSlots/Limiter → 无压力 → 不应被调整
+	// 但排序后它仍然是 weight=0
+	candidates := []provider.Candidate{
+		{CredentialID: 1, ProviderID: 1, RawModel: "gpt-4", Weight: 0},
+	}
+
+	ctx := context.Background()
+	r.applyPressurePenalty(ctx, candidates)
+
+	// Weight=0 的候选保持 0（不参与压力调整）
+	if candidates[0].Weight != 0 {
+		t.Errorf("expected weight 0 to remain 0, got %d", candidates[0].Weight)
+	}
+}
+
+// TestApplyPressurePenalty_EmptyCandidates 测试空候选列表
+func TestApplyPressurePenalty_EmptyCandidates(t *testing.T) {
+	r := &Router{
+		PressureAwareEnabled: true,
+	}
+
+	// 不应该 panic
+	r.applyPressurePenalty(context.Background(), nil)
+	r.applyPressurePenalty(context.Background(), []provider.Candidate{})
+}
+
+// TestSortCandidatesByWeight 测试权重排序
+func TestSortCandidatesByWeight(t *testing.T) {
+	candidates := []provider.Candidate{
+		{CredentialID: 1, Weight: 10},
+		{CredentialID: 2, Weight: 100},
+		{CredentialID: 3, Weight: 50},
+	}
+
+	sortCandidatesByWeight(candidates)
+
+	// 预期顺序: 100, 50, 10
+	if candidates[0].CredentialID != 2 || candidates[0].Weight != 100 {
+		t.Errorf("expected first candidate to be cred=2 weight=100, got cred=%d weight=%d",
+			candidates[0].CredentialID, candidates[0].Weight)
+	}
+	if candidates[1].CredentialID != 3 || candidates[1].Weight != 50 {
+		t.Errorf("expected second candidate to be cred=3 weight=50, got cred=%d weight=%d",
+			candidates[1].CredentialID, candidates[1].Weight)
+	}
+	if candidates[2].CredentialID != 1 || candidates[2].Weight != 10 {
+		t.Errorf("expected third candidate to be cred=1 weight=10, got cred=%d weight=%d",
+			candidates[2].CredentialID, candidates[2].Weight)
 	}
 }
