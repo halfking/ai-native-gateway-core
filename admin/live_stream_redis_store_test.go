@@ -1383,47 +1383,138 @@ func TestSnapshotFromDimensionQueues_RequestsAreASC(t *testing.T) {
 
 // 2026-07-20: The dimension-queue snapshot path no longer dedupes across
 // dimKeys before building the snapshot. This regression test ensures the
-// later-stage per-lane and Summary dedupe keep counts stable: one request
-// should appear once in vendor, once in provider, once in model, but
-// Summary.Total must still be 1.
-func TestBuildLiveStreamSnapshot_DedupesSummaryAndLaneMembers(t *testing.T) {
-	req := LiveRequest{
-		RequestID:     "req-1",
-		Ts:            "2026-07-20T12:00:00Z",
-		TenantID:      "default",
-		Model:         "glm-5.2",
-		CanonicalName: "glm-5.2",
-		ModelCategory: "zhipu ai",
-		ProviderCode:  "普联",
-		Status:        "success",
-	}
-	// Simulate SnapshotFromDimensionQueues loading the same request once per
-	// dimKey (vendor/provider/model). The snapshot builder must count it once
-	// in Summary while keeping exactly one tile in each lane.
-	items := []LiveRequest{req, req, req}
-	snap := BuildLiveStreamSnapshot(items)
-	if snap.Summary.Total != 1 {
-		t.Fatalf("summary.total=%d want 1", snap.Summary.Total)
-	}
-	if snap.Summary.Success != 1 {
-		t.Fatalf("summary.success=%d want 1", snap.Summary.Success)
-	}
-	if got := len(snap.Dimensions["vendor"]); got != 1 {
-		t.Fatalf("vendor lanes=%d want 1", got)
-	}
-	if got := len(snap.Dimensions["provider"]); got != 1 {
-		t.Fatalf("provider lanes=%d want 1", got)
-	}
-	if got := len(snap.Dimensions["model"]); got != 1 {
-		t.Fatalf("model lanes=%d want 1", got)
-	}
-	for _, dim := range []string{"vendor", "provider", "model"} {
-		lane := snap.Dimensions[dim][0]
-		if got := len(lane.Requests); got != 1 {
-			t.Fatalf("%s lane requests=%d want 1", dim, got)
+	// later-stage per-lane and Summary dedupe keep counts stable: one request
+	// should appear once in vendor, once in provider, once in model, but
+	// Summary.Total must still be 1.
+	func TestBuildLiveStreamSnapshot_DedupesSummaryAndLaneMembers(t *testing.T) {
+		req := LiveRequest{
+			RequestID:     "req-1",
+			Ts:            "2026-07-20T12:00:00Z",
+			TenantID:      "default",
+			Model:         "glm-5.2",
+			CanonicalName: "glm-5.2",
+			ModelCategory: "zhipu ai",
+			ProviderCode:  "普联",
+			Status:        "success",
 		}
-		if lane.Requests[0].RequestID != req.RequestID {
-			t.Fatalf("%s lane request_id=%q want %q", dim, lane.Requests[0].RequestID, req.RequestID)
+		// Simulate SnapshotFromDimensionQueues loading the same request once per
+		// dimKey (vendor/provider/model). The snapshot builder must count it once
+		// in Summary while keeping exactly one tile in each lane.
+		items := []LiveRequest{req, req, req}
+		snap := BuildLiveStreamSnapshot(items)
+		if snap.Summary.Total != 1 {
+			t.Fatalf("summary.total=%d want 1", snap.Summary.Total)
 		}
+		if snap.Summary.Success != 1 {
+			t.Fatalf("summary.success=%d want 1", snap.Summary.Success)
+		}
+		if got := len(snap.Dimensions["vendor"]); got != 1 {
+			t.Fatalf("vendor lanes=%d want 1", got)
+		}
+		if got := len(snap.Dimensions["provider"]); got != 1 {
+			t.Fatalf("provider lanes=%d want 1", got)
+		}
+		if got := len(snap.Dimensions["model"]); got != 1 {
+			t.Fatalf("model lanes=%d want 1", got)
+		}
+		for _, dim := range []string{"vendor", "provider", "model"} {
+			lane := snap.Dimensions[dim][0]
+			if got := len(lane.Requests); got != 1 {
+				t.Fatalf("%s lane requests=%d want 1", dim, got)
+			}
+			if lane.Requests[0].RequestID != req.RequestID {
+				t.Fatalf("%s lane request_id=%q want %q", dim, lane.Requests[0].RequestID, req.RequestID)
+			}
+		}
+	}
+
+func TestSlimTileFormat(t *testing.T) {
+	now := time.Now().UTC()
+	errorKind := "5xx"
+	
+	tile := LiveStreamTile{
+		RequestID: "req-test-123",
+		Timestamp: now.Format(time.RFC3339),
+		Status:    "success",
+		ErrorKind: &errorKind,
+		IsProbe:   true,
+	}
+	
+	// Serialize to slim format
+	data, err := marshalTileSlim(tile)
+	if err != nil {
+		t.Fatalf("marshalTileSlim: %v", err)
+	}
+	
+	// Verify size is small (under 100 bytes)
+	if len(data) >= 100 {
+		t.Fatalf("slim format should be under 100 bytes, got %d", len(data))
+	}
+	
+	// Deserialize back
+	decoded, err := unmarshalTileSlim(data)
+	if err != nil {
+		t.Fatalf("unmarshalTileSlim: %v", err)
+	}
+	
+	// Verify key fields preserved
+	if decoded.RequestID != tile.RequestID {
+		t.Errorf("RequestID mismatch: got %q want %q", decoded.RequestID, tile.RequestID)
+	}
+	if decoded.Status != tile.Status {
+		t.Errorf("Status mismatch: got %q want %q", decoded.Status, tile.Status)
+	}
+	if decoded.IsProbe != tile.IsProbe {
+		t.Errorf("IsProbe mismatch: got %v want %v", decoded.IsProbe, tile.IsProbe)
+	}
+	if decoded.ErrorKind == nil {
+		t.Fatal("ErrorKind should not be nil")
+	}
+	if *decoded.ErrorKind != *tile.ErrorKind {
+		t.Errorf("ErrorKind mismatch: got %q want %q", *decoded.ErrorKind, *tile.ErrorKind)
+	}
+	
+	// Verify timestamp (allow 1ms tolerance for rounding)
+	origTs, _ := time.Parse(time.RFC3339, tile.Timestamp)
+	decodedTs, _ := time.Parse(time.RFC3339, decoded.Timestamp)
+	delta := origTs.UnixMilli() - decodedTs.UnixMilli()
+	if delta < -1 || delta > 1 {
+		t.Errorf("Timestamp delta %dms exceeds tolerance", delta)
 	}
 }
+
+func TestSlimTileFormatSizeReduction(t *testing.T) {
+	errorKind := "5xx"
+	tile := LiveStreamTile{
+		RequestID:        "req-test-456",
+		Timestamp:        time.Now().UTC().Format(time.RFC3339),
+		Model:            "gpt-4o",
+		Vendor:           "openai",
+		Provider:         "openai-official",
+		Status:           "failure",
+		ErrorKind:        &errorKind,
+		LatencyMs:        intPtr(1234),
+		CostUSD:          float64Ptr(0.05),
+		PromptTokens:     intPtr(100),
+		CompletionTokens: intPtr(200),
+		IsProbe:          false,
+	}
+	
+	// Full format (current)
+	fullData, _ := json.Marshal(tile)
+	
+	// Slim format (new)
+	slimData, _ := marshalTileSlim(tile)
+	
+	// Log actual sizes
+	reduction := float64(len(fullData)-len(slimData)) / float64(len(fullData))
+	t.Logf("Full size: %d bytes, Slim size: %d bytes, Reduction: %.1f%%",
+		len(fullData), len(slimData), reduction*100)
+	
+	// Verify >70% reduction (realistic based on actual field count)
+	if reduction <= 0.7 {
+		t.Fatalf("expected >70%% size reduction, got %.1f%%", reduction*100)
+	}
+}
+
+func float64Ptr(v float64) *float64 { return &v }
