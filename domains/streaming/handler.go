@@ -1373,6 +1373,7 @@ func (h *ChatHandler) serveWithExecutor(
 	}
 	if len(bodyBytes) > 0 {
 		logCtx.Body = bodyBytes
+		logCtx.RequestBodySize = len(bodyBytes) // 2026-07-25: 记录请求体大小用于统计
 
 		// ── Attachment extraction (2026-07-01) ──────────────────────────
 		// 收到请求后立即提取并保存附件到文件系统。这样即使后续转发/记录失败，
@@ -3373,6 +3374,9 @@ func (h *ChatHandler) emitTelemetry(evt audit.Event, result *executors.ExecuteRe
 		// clientReqIDPtr setup above. Audit P0-6.
 		ClientRequestID: clientReqIDPtr,
 		Attachments:     attachmentsFromLogContext(logCtx),
+		// 2026-07-25: 请求/响应体大小（用于 Redis 实时统计）
+		RequestBytes:  requestBytesFromLogCtx(logCtx),
+		ResponseBytes: intPtr(len(responseBody)),
 	}
 	// v3: if v7 compression_strategy is empty but a session compressor strategy
 	// exists, prefer the session compressor value so the row is queryable.
@@ -5264,6 +5268,17 @@ func streamChunkErrorsFromLogCtx(c *RequestLogContext) int {
 // streamChunkErrorsFromLogCtx, mirroring StreamChunksSentFromLogCtxForTest.
 func StreamChunkErrorsFromLogCtxForTest(c *RequestLogContext) int {
 	return streamChunkErrorsFromLogCtx(c)
+}
+
+// requestBytesFromLogCtx returns the request body size from logCtx.
+// Returns nil if logCtx is nil or RequestBodySize is 0 (to avoid storing
+// zero values in request_logs.request_bytes for requests without bodies).
+// 2026-07-25: Used for Redis real-time body size statistics.
+func requestBytesFromLogCtx(c *RequestLogContext) *int {
+	if c == nil || c.RequestBodySize <= 0 {
+		return nil
+	}
+	return intPtr(c.RequestBodySize)
 }
 
 // resolveGatewayVersion reads the build version from version.json (SSOT).

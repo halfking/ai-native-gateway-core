@@ -266,6 +266,10 @@ type RequestLogEntry struct {
 	// 单次成功时两者均为空，节省存储空间。
 	RoutingAttempts json.RawMessage `json:"routing_attempts,omitempty"`
 	RoutingSummary  *string         `json:"routing_summary,omitempty"`
+
+	// 2026-07-25: 请求/响应体大小（用于 Redis 实时统计和看板展示）
+	RequestBytes  *int `json:"request_bytes,omitempty"`
+	ResponseBytes *int `json:"response_bytes,omitempty"`
 }
 
 func NewClient() *Client {

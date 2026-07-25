@@ -107,6 +107,10 @@ type RequestLogContext struct {
 	// request_logs.routing_attempts。nil 表示不追踪（旧路径/降级）。
 	RoutingTracker *executors.RoutingAttemptsTracker
 
+	// 2026-07-25: 请求/响应体大小（用于 Redis 实时统计和看板展示）
+	RequestBodySize  int
+	ResponseBodySize int
+
 	meta   requestAttemptMeta
 	logged bool
 }

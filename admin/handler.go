@@ -22,6 +22,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/domains/memory"          //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/domains/session"         //nolint:depguard // session state manager
 	"github.com/kaixuan/llm-gateway-go/domains/sessionaudit"    //nolint:depguard // historical violation, B1 routing.go CQRS will fix
+	"github.com/kaixuan/llm-gateway-go/domains/stats"
 	"github.com/kaixuan/llm-gateway-go/domains/stats/boardcache"
 	"github.com/kaixuan/llm-gateway-go/domains/ursm/v2"
 	"github.com/kaixuan/llm-gateway-go/pending"
@@ -77,6 +78,9 @@ type Handler struct {
 	opsOverviewCache *opsOverviewCache
 	// ipBlocklist backs security IP denylist admin + request gate cache.
 	ipBlocklist *ipblocklist.Service
+	// bodySizeTracker (2026-07-25) tracks request/response body size stats in Redis
+	// for real-time dashboard display. nil disables body size metrics.
+	bodySizeTracker *stats.BodySizeTracker
 	// sensitiveWordEngine (2026-07-18) backs the admin sensitive-words
 	// management endpoints (reload, status, match). nil disables the
 	// endpoints. Wired from cmd/gateway/main.go.

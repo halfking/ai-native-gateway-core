@@ -144,6 +144,9 @@ export default {
     enabledCredentials: 'Enabled {enabled} · credentials {total}',
     offline: 'Offline resources',
     modelsCredentials: 'Models {models} · credentials {creds}',
+    avgRequestSize: 'Avg Request Size',
+    avgResponseSize: 'Avg Response Size',
+    maxLabel: 'Peak',
   },
   table: {
     hotKeysTitle: 'High-usage API key ranking',

@@ -1,10 +1,12 @@
 <script setup lang="ts">
 import { useI18n } from 'vue-i18n'
 import { formatLatency } from '../../types/swimlane'
-import type { BoardSummary } from '../../api/board'
+import { formatBytes } from '../../utils/format'
+import type { BoardSummary, BodySizeStats } from '../../api/board'
 
 defineProps<{
   summary: BoardSummary | null | undefined
+  bodyStats?: BodySizeStats | null
   loading?: boolean
 }>()
 
@@ -30,7 +32,7 @@ function fmtPct(v: number | undefined) {
 
 <template>
   <div v-if="loading && !summary" class="stats-row stats-row--skeleton">
-    <div v-for="i in 9" :key="i" class="stat-mini stat-mini--skeleton" />
+    <div v-for="i in 11" :key="i" class="stat-mini stat-mini--skeleton" />
   </div>
   <div v-else-if="summary" class="stats-row">
     <div class="stat-mini">
@@ -71,6 +73,17 @@ function fmtPct(v: number | undefined) {
     <div class="stat-mini">
       <div class="stat-mini__label">{{ t('dashboard.stat.providers') }}</div>
       <div class="stat-mini__value">{{ fmt(summary.providers) }}</div>
+    </div>
+    <!-- 2026-07-25: Body size statistics -->
+    <div v-if="bodyStats" class="stat-mini">
+      <div class="stat-mini__label">{{ t('dashboard.stat.avgRequestSize') }}</div>
+      <div class="stat-mini__value">{{ formatBytes(bodyStats.avg_request_bytes) }}</div>
+      <div class="stat-mini__sub">{{ t('dashboard.stat.maxLabel') }}: {{ formatBytes(bodyStats.max_request_bytes) }}</div>
+    </div>
+    <div v-if="bodyStats" class="stat-mini">
+      <div class="stat-mini__label">{{ t('dashboard.stat.avgResponseSize') }}</div>
+      <div class="stat-mini__value">{{ formatBytes(bodyStats.avg_response_bytes) }}</div>
+      <div class="stat-mini__sub">{{ t('dashboard.stat.maxLabel') }}: {{ formatBytes(bodyStats.max_response_bytes) }}</div>
     </div>
   </div>
 </template>

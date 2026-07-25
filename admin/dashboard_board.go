@@ -59,6 +59,12 @@ func (h *Handler) handleDashboardBoard(w http.ResponseWriter, r *http.Request) {
 			payload["source"] = "redis_baseline_delta"
 		}
 		payload["days"] = days
+		// 2026-07-25: Add body size stats from Redis tracker
+		if h.bodySizeTracker != nil {
+			if bodyStats, err := h.bodySizeTracker.GetStats(ctx); err == nil {
+				payload["body_stats"] = bodyStats
+			}
+		}
 		if includeBoardOperational(r) {
 			payload["operational"] = h.boardOperationalPayload(ctx)
 		}
@@ -86,6 +92,12 @@ func (h *Handler) handleDashboardBoard(w http.ResponseWriter, r *http.Request) {
 			}
 			return "_degraded_no_redis"
 		}(),
+	}
+	// 2026-07-25: Add body size stats from Redis tracker
+	if h.bodySizeTracker != nil {
+		if bodyStats, err := h.bodySizeTracker.GetStats(ctx); err == nil {
+			resp["body_stats"] = bodyStats
+		}
 	}
 	if includeBoardOperational(r) {
 		resp["operational"] = h.boardOperationalPayload(ctx)
