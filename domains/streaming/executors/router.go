@@ -156,10 +156,11 @@ func (r *Router) PlanCandidates(
 
 		// 2026-07-24 Phase 2.3: 应用压力惩罚（feature flag 控制）
 		// 在 URSM v2 过滤和评分之后，根据 FpSlots/Limiter 压力调整权重
+		// 使用独立的 pressureCtx 避免遮蔽外层 ctx
 		if r.PressureAwareEnabled && len(candidates) > 0 {
-			ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
-			defer cancel()
-			r.applyPressurePenalty(ctx, candidates)
+			pressureCtx, pressureCancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+			r.applyPressurePenalty(pressureCtx, candidates)
+			pressureCancel()
 		}
 
 		// 2026-07-24 Phase 1: 使用统一的状态后端接口，消除散落的条件判断。
@@ -1090,8 +1091,9 @@ func (r *Router) getPressureSignals(
 
 // applyPressurePenalty 根据压力信号调整候选节点的权重
 // 注意：这会修改 candidates 的 Weight 字段
+// 调用方需确保已检查 PressureAwareEnabled == true
 func (r *Router) applyPressurePenalty(ctx context.Context, candidates []provider.Candidate) {
-	if !r.PressureAwareEnabled {
+	if len(candidates) == 0 {
 		return
 	}
 
@@ -1105,6 +1107,10 @@ func (r *Router) applyPressurePenalty(ctx context.Context, candidates []provider
 		// 调整权重（降低高压力节点的权重）
 		if penalty > 0 {
 			originalWeight := candidates[i].Weight
+			// 原始权重为 0 时保持不变（不参与压力调整）
+			if originalWeight <= 0 {
+				continue
+			}
 			newWeight := int(float64(originalWeight) * (1 - penalty))
 			if newWeight < 1 {
 				newWeight = 1 // 保留最小权重 1
