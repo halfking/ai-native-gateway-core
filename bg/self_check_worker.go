@@ -101,8 +101,32 @@ func (w *SelfCheckWorker) Start(ctx context.Context) {
 	slog.Info("self_check_worker started")
 	go func() {
 		w.runOnce(ctx)
-		ticker := time.NewTicker(1 * time.Minute)
+		
+		// Load initial settings to compute dynamic ticker interval
+		s, err := w.loadSettings(ctx)
+		if err != nil {
+			slog.Error("self_check_worker: failed to load initial settings, using 1min fallback", "error", err)
+			s = &scSettings{NormalInterval: 600} // 10min fallback
+		}
+		
+		// Dynamic ticker interval: max(NormalInterval / 10, 60) seconds
+		// If NormalInterval=3600 (1h), ticker=360s (6min)
+		// If NormalInterval=600 (10min), ticker=60s (1min)
+		tickerInterval := time.Duration(s.NormalInterval/10) * time.Second
+		if tickerInterval < 60*time.Second {
+			tickerInterval = 60 * time.Second
+		}
+		slog.Info("self_check_worker: using dynamic ticker interval",
+			"interval_seconds", int(tickerInterval.Seconds()),
+			"normal_interval_seconds", s.NormalInterval)
+		
+		ticker := time.NewTicker(tickerInterval)
 		defer ticker.Stop()
+		
+		// Counter to periodically reload settings and adjust ticker
+		const settingsReloadInterval = 10 // Reload settings every 10 ticks
+		tickCount := 0
+		
 		for {
 			select {
 			case <-ctx.Done():
@@ -132,6 +156,30 @@ func (w *SelfCheckWorker) Start(ctx context.Context) {
 				}
 				w.runModels(ctx, models, s.MaxTokens)
 			case <-ticker.C:
+				tickCount++
+				
+				// Periodically reload settings to adjust ticker interval
+				if tickCount%settingsReloadInterval == 0 {
+					newSettings, err := w.loadSettings(ctx)
+					if err != nil {
+						slog.Error("self_check_worker: failed to reload settings", "error", err)
+					} else {
+						newInterval := time.Duration(newSettings.NormalInterval/10) * time.Second
+						if newInterval < 60*time.Second {
+							newInterval = 60 * time.Second
+						}
+						if newInterval != tickerInterval {
+							slog.Info("self_check_worker: adjusting ticker interval",
+								"old_seconds", int(tickerInterval.Seconds()),
+								"new_seconds", int(newInterval.Seconds()),
+								"normal_interval_seconds", newSettings.NormalInterval)
+							ticker.Stop()
+							ticker = time.NewTicker(newInterval)
+							tickerInterval = newInterval
+						}
+					}
+				}
+				
 				w.runOnce(ctx)
 			}
 		}
