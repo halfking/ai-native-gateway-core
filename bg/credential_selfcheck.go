@@ -95,7 +95,8 @@ type credentialSelfcheckDB interface {
 	Exec(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error)
 }
 
-// CredentialSelfcheckWorker runs daily per-credential self-checks.
+// CredentialSelfcheckWorker handles self-checks for credentials with recent
+// request errors. Featured-model checks are owned by ModelProbeRunner.
 type CredentialSelfcheckWorker struct {
 	db      credentialSelfcheckDB
 	apiKey  string
@@ -112,13 +113,13 @@ type CredentialSelfcheckWorker struct {
 }
 
 // NewCredentialSelfcheckWorker constructs the worker.  baseURL="" picks
-// LLM_GATEWAY_SELF_CHECK_BASE_URL or the default https://llm.kxpms.cn/v1.
+// LLM_GATEWAY_SELF_CHECK_BASE_URL or the local gateway loopback URL.
 func NewCredentialSelfcheckWorker(db credentialSelfcheckDB, apiKey, baseURL string) *CredentialSelfcheckWorker {
 	if baseURL == "" {
 		if envURL := strings.TrimSpace(os.Getenv("LLM_GATEWAY_SELF_CHECK_BASE_URL")); envURL != "" {
 			baseURL = envURL
 		} else {
-			baseURL = "https://llm.kxpms.cn/v1"
+			baseURL = "http://127.0.0.1:8781/v1"
 		}
 	}
 	return &CredentialSelfcheckWorker{
@@ -207,11 +208,9 @@ func (w *CredentialSelfcheckWorker) cycleOnce(ctx context.Context) {
 	}
 }
 
-// pickDueCredential returns one credential that has not been self-checked
-// in the last 24h.  Priority:
-//
-//  1. never-checked credentials first (NULL last_selfcheck_at)
-//  2. oldest-checked credentials
+// pickDueCredential returns one active credential with a recent failed request
+// that has not been self-checked in the last 24h. Healthy credentials are not
+// scanned here; featured models are checked by ModelProbeRunner instead.
 //
 // Returns (id, true, nil) if a candidate exists, (0, false, nil) otherwise.
 //
@@ -233,6 +232,13 @@ func (w *CredentialSelfcheckWorker) pickDueCredential(ctx context.Context) (int,
 	err := w.db.QueryRow(queryCtx, `
 		SELECT c.id
 		FROM credentials c
+		JOIN LATERAL (
+			SELECT MAX(rl.ts) AS last_error_at
+			FROM request_logs_hot rl
+			WHERE rl.credential_id = c.id
+			  AND rl.ts >= now() - interval '24 hours'
+			  AND (rl.success = FALSE OR COALESCE(rl.status_code, 0) >= 400)
+		) e ON e.last_error_at IS NOT NULL
 		LEFT JOIN LATERAL (
 			SELECT MAX(completed_at) AS last_at
 			FROM self_check_runs scr
@@ -242,7 +248,7 @@ func (w *CredentialSelfcheckWorker) pickDueCredential(ctx context.Context) (int,
 		  AND c.lifecycle_status = 'active'
 		  AND COALESCE(c.manual_disabled, FALSE) = FALSE
 		  AND COALESCE(l.last_at, '1970-01-01'::timestamptz) < now() - $1::interval
-		ORDER BY l.last_at NULLS FIRST, c.id
+		ORDER BY e.last_error_at DESC, l.last_at NULLS FIRST, c.id
 		LIMIT 1
 	`, fmt.Sprintf("%d seconds", int(credentialSelfcheckWindow.Seconds()))).Scan(&id)
 	if err != nil {

@@ -82,7 +82,7 @@ func NewSelfCheckWorker(db *pgxpool.Pool, apiKey, baseURL string, keyring *secre
 		if envURL := os.Getenv("LLM_GATEWAY_SELF_CHECK_BASE_URL"); envURL != "" {
 			baseURL = envURL
 		} else {
-			baseURL = "https://llm.kxpms.cn/v1"
+			baseURL = "http://127.0.0.1:8781/v1"
 		}
 	}
 	return &SelfCheckWorker{

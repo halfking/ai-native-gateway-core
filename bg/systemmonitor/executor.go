@@ -162,7 +162,7 @@ type ExecutorResult struct {
 // executeChatPing runs a chat-completion probe through bg.ActiveProbeExecutor.
 //
 // gateway=true uses the local gateway URL (LLM_GATEWAY_GATEWAY_BASE_URL or
-// https://llm.kxpms.cn/v1) instead of the upstream provider's base URL.
+// http://127.0.0.1:8781/v1) instead of the upstream provider's base URL.
 func (e *Executor) executeChatPing(ctx context.Context, task *Task, gateway bool) (*bg.ProbeResult, error) {
 	target, err := e.probeExec.LoadTarget(ctx, int(task.CredentialID), task.RawModel)
 	if err != nil {
@@ -176,7 +176,7 @@ func (e *Executor) executeChatPing(ctx context.Context, task *Task, gateway bool
 	if gateway {
 		gwBase := os.Getenv("LLM_GATEWAY_GATEWAY_BASE_URL")
 		if gwBase == "" {
-			gwBase = "https://llm.kxpms.cn/v1"
+			gwBase = "http://127.0.0.1:8781/v1"
 		}
 		// 直接覆盖 base_url 字段（LoadTarget 不会校验该字段语义）。
 		target.BaseURL = gwBase

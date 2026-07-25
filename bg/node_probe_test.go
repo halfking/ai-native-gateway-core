@@ -56,6 +56,32 @@ func TestNodeProbeMaxAttemptsRearmsFreshFailure(t *testing.T) {
 	}
 }
 
+func TestNodeProbeDefaultsToLoopbackGateway(t *testing.T) {
+	t.Setenv("LLM_GATEWAY_NODE_PROBE_BASE_URL", "")
+	w := NewNodeProbeWorker(nil, nil, nil, "", "", nil)
+	if w.baseURL != "http://127.0.0.1:8781/v1" {
+		t.Fatalf("base URL = %q, want loopback gateway", w.baseURL)
+	}
+}
+
+func TestNodeProbeOnlyPicksRecentFailures(t *testing.T) {
+	contents, err := os.ReadFile("node_probe.go")
+	if err != nil {
+		t.Fatalf("read node_probe.go: %v", err)
+	}
+	source := string(contents)
+	for _, want := range []string{
+		"last_direct_ok IS DISTINCT FROM TRUE",
+		"last_gateway_ok IS DISTINCT FROM TRUE",
+		"last_attempt_at >= now() - interval '24 hours'",
+		"updated_at >= now() - interval '24 hours'",
+	} {
+		if !strings.Contains(source, want) {
+			t.Fatalf("pickDueAtomically missing filter %q", want)
+		}
+	}
+}
+
 // TestNodeProbeMaxAttempts ensures attempt=7 marks paused (the
 // "max one day" cap from the spec).
 func TestNodeProbeMaxAttempts(t *testing.T) {
