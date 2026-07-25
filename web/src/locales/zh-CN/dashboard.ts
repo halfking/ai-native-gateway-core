@@ -141,6 +141,9 @@ export default {
     enabledCredentials: '启用 {enabled} · 凭据 {total}',
     offline: '下线资源',
     modelsCredentials: '模型 {models} · 凭据 {creds}',
+    avgRequestSize: '平均请求体',
+    avgResponseSize: '平均响应体',
+    maxLabel: '峰值',
   },
   table: {
     hotKeysTitle: '高用量 API Key 排行',

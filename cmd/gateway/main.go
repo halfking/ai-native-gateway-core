@@ -2498,6 +2498,14 @@ func main() {
 				slog.Info("boardcache wired (telemetry onPersisted)")
 			}
 			slog.Info("boardcache service started")
+
+			// 2026-07-25: Body size tracker for real-time dashboard stats
+			bodyTracker := stats.NewBodySizeTracker(fpSlotRedis)
+			adminHandler.SetBodySizeTracker(bodyTracker)
+			if telemetryClient.Enabled() {
+				telemetryClient.AddOnRequestLogPersisted(bodyTracker.Record)
+				slog.Info("body size tracker wired (telemetry onPersisted)")
+			}
 		}
 		if dbConn.Pool() != nil && fpSlotRedis != nil && adminHandler != nil {
 			blSvc := ipblocklist.NewService(dbConn.Pool(), fpSlotRedis)

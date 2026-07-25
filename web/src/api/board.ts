@@ -47,6 +47,13 @@ export interface BoardOperationalPayload {
   selfcheck?: BoardSelfcheck
 }
 
+export interface BodySizeStats {
+  avg_request_bytes?: number
+  max_request_bytes?: number
+  avg_response_bytes?: number
+  max_response_bytes?: number
+}
+
 export interface BoardPayload {
   summary: BoardSummary
   pies: {
@@ -62,6 +69,7 @@ export interface BoardPayload {
   background_tasks?: BoardBackgroundTasks
   selfcheck?: BoardSelfcheck
   operational?: BoardOperationalPayload
+  body_stats?: BodySizeStats
   days: number
   source?: 'postgresql_baseline' | 'redis_baseline_delta' | 'live_sse_delta' | string
   cache_meta?: {

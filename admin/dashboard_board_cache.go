@@ -3,12 +3,19 @@ package admin
 import (
 	"context"
 
+	"github.com/kaixuan/llm-gateway-go/domains/stats"
 	"github.com/kaixuan/llm-gateway-go/domains/stats/boardcache"
 )
 
 // SetBoardCache wires the Redis board stats cache (baseline + delta).
 func (h *Handler) SetBoardCache(svc *boardcache.Service) {
 	h.boardCache = svc
+}
+
+// SetBodySizeTracker wires the Redis body size tracker for real-time statistics.
+// 2026-07-25: Added to support request/response body size monitoring on dashboard.
+func (h *Handler) SetBodySizeTracker(tracker *stats.BodySizeTracker) {
+	h.bodySizeTracker = tracker
 }
 
 func (h *Handler) buildBoardPayload(ctx context.Context, tenantFilter string, days int, providerID int64) (map[string]any, error) {
