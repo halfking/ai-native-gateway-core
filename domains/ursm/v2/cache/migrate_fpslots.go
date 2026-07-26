@@ -43,6 +43,12 @@ func MigrateFpSlotsNodeStates(ctx context.Context, rdb *redis.Client) (int, erro
 			continue
 		}
 		nodeKey := fmt.Sprintf("ursm:v2:node:%d:%s", st.CredentialID, st.Model)
+		// 幂等: 若目标 node 已有 generation 字段, 说明已迁移或有 live v2 状态,
+		// 不覆盖(避免重启时把 record_request 写的 generation>1 回退到 1)。
+		existingGen, err := rdb.HGet(ctx, nodeKey, "generation").Result()
+		if err == nil && existingGen != "" {
+			continue // 已迁移/live, 跳过, 不计入 n
+		}
 		fields := map[string]interface{}{
 			"available":       "1",
 			"disabled":        boolToStr(st.Disabled),
