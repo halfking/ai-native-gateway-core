@@ -60,23 +60,41 @@ func convertToolRolesToUser(messages []interface{}) ([]interface{}, int) {
 
 		role, _ := msg["role"].(string)
 		if role == "tool" {
-			// 转换为 user 消息
-			content := msg["content"]
-			var contentStr string
-			switch v := content.(type) {
-			case string:
-				contentStr = v
-			default:
-				contentStr = fmt.Sprintf("%v", v)
+			// 2026-07-27: Preserve the original tool_call_id so the resulting
+			// tool_result block can be matched to the upstream tool_use.
+			// Falling back to the literal "unknown_tool" caused Anthropic
+			// (and minimax-m3 in particular) to return 2013 "orphan
+			// tool_result" errors. Also preserve the structured content
+			// (array / object) instead of lossy fmt.Sprintf formatting.
+			toolCallID, _ := msg["tool_call_id"].(string)
+			if toolCallID == "" {
+				toolCallID, _ = msg["tool_use_id"].(string)
 			}
-
+			if toolCallID == "" {
+				toolCallID = "unknown_tool"
+			}
+			var contentVal interface{} = msg["content"]
+			switch v := contentVal.(type) {
+			case string, nil:
+				// already acceptable for Anthropic tool_result.content
+			default:
+				// Wrap structured content in a JSON string so Anthropic
+				// still receives a valid string payload without losing
+				// the structure. The original raw content is no longer
+				// referenced after this conversion.
+				if buf, err := json.Marshal(v); err == nil {
+					contentVal = string(buf)
+				} else {
+					contentVal = fmt.Sprintf("%v", v)
+				}
+			}
 			fixedMsg := map[string]interface{}{
 				"role": "user",
 				"content": []interface{}{
 					map[string]interface{}{
 						"type":        "tool_result",
-						"tool_use_id": "unknown_tool",
-						"content":     contentStr,
+						"tool_use_id": toolCallID,
+						"content":     contentVal,
 					},
 				},
 			}

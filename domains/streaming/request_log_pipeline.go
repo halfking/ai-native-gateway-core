@@ -40,6 +40,14 @@ type RequestLogContext struct {
 	Request         *http.Request
 	Session         *session.Session
 
+	// ProvisionalSessionID is the auto-generated session id that the
+	// handler attaches to early-failure branches via
+	// applyProvisionalGatewaySessionHeader. It is recorded so that
+	// sub-functions (notably serveWithExecutor) can recover the same
+	// id without re-running ensureSessionID, which would otherwise
+	// leak a different id on every helper invocation.
+	ProvisionalSessionID string
+
 	KeyInfo       *authentication.KeyInfo
 	Body          []byte
 	ClientModel   string

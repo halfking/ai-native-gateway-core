@@ -733,3 +733,82 @@ func TestSerializeResponsesResponse_DefaultCreatedAt(t *testing.T) {
 		t.Errorf("created_at = %v, want ~%v (within 5s of now)", created, now)
 	}
 }
+
+// TestParseAnthropicResponse_PreservesToolUseInput is a regression test for
+// the minimax-m3 conversation-stops incident. The previous parser dropped
+// `tool_use.input`, which caused Anthropic→OpenAI conversion to emit
+// `tool_calls[].function.arguments` as an empty string. The fix preserves
+// the raw JSON via ResponseToolCall.InputRaw so non-object payloads
+// (e.g. string args) round-trip instead of being coerced to {}.
+func TestParseAnthropicResponse_PreservesToolUseInput(t *testing.T) {
+	body := []byte(`{
+		"id": "msg_re",
+		"type": "message",
+		"role": "assistant",
+		"model": "claude-3-5-sonnet",
+		"content": [
+			{"type": "tool_use", "id": "toolu_1", "name": "search", "input": {"q": "hi"}}
+		],
+		"stop_reason": "tool_use",
+		"usage": {"input_tokens": 1, "output_tokens": 1}
+	}`)
+	ir, err := ParseAnthropicResponse(body)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if len(ir.ToolCalls) != 1 {
+		t.Fatalf("toolcalls: %d", len(ir.ToolCalls))
+	}
+	tc := ir.ToolCalls[0]
+	if tc.Arguments != `{"q": "hi"}` {
+		t.Errorf("arguments: got %q want %q", tc.Arguments, `{"q": "hi"}`)
+	}
+	if string(tc.InputRaw) != `{"q": "hi"}` {
+		t.Errorf("input_raw: got %q want %q", string(tc.InputRaw), `{"q": "hi"}`)
+	}
+
+	out, err := SerializeOpenAIResponse(ir, "")
+	if err != nil {
+		t.Fatalf("serialize: %v", err)
+	}
+	if !strings.Contains(string(out), `"arguments":"{\"q\": \"hi\"}"`) {
+		t.Errorf("openai output lost tool arguments: %s", string(out))
+	}
+}
+
+// TestParseAnthropicResponse_PreservesNonObjectToolInput ensures the new
+// InputRaw field is honoured when the tool input is a non-object JSON
+// value (e.g. a string). The legacy path coerced these to `{}` and lost
+// information when the OpenAI client tried to parse the arguments.
+func TestParseAnthropicResponse_PreservesNonObjectToolInput(t *testing.T) {
+	body := []byte(`{
+		"id": "msg_str",
+		"type": "message",
+		"role": "assistant",
+		"model": "claude-3-5-sonnet",
+		"content": [
+			{"type": "tool_use", "id": "toolu_str", "name": "echo", "input": "plain text"}
+		],
+		"stop_reason": "tool_use",
+		"usage": {"input_tokens": 1, "output_tokens": 1}
+	}`)
+	ir, err := ParseAnthropicResponse(body)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if len(ir.ToolCalls) != 1 {
+		t.Fatalf("toolcalls: %d", len(ir.ToolCalls))
+	}
+	tc := ir.ToolCalls[0]
+	if tc.Arguments == "" || tc.Arguments == "{}" {
+		t.Errorf("arguments should preserve the raw input, got %q", tc.Arguments)
+	}
+
+	anthropicOut, err := SerializeAnthropicResponse(ir, "")
+	if err != nil {
+		t.Fatalf("serialize: %v", err)
+	}
+	if !strings.Contains(string(anthropicOut), `"plain text"`) {
+		t.Errorf("anthropic output lost tool input: %s", string(anthropicOut))
+	}
+}

@@ -1,6 +1,7 @@
 package ir
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"time"
@@ -78,8 +79,19 @@ type ResponseContentBlock struct {
 type ResponseToolCall struct {
 	ID   string
 	Name string
-	// Arguments is the JSON-stringified tool input.
+	// Arguments is the JSON-stringified tool input. Populated from
+	// OpenAI's `tool_calls[].function.arguments` verbatim so non-JSON
+	// strings (e.g. provider-specific edge cases) round-trip without
+	// reinterpretation. For Anthropic parsed via ParseAnthropicResponse
+	// this is the marshalled `tool_use.input` and InputRaw carries the
+	// same payload for callers that need the raw bytes.
 	Arguments string
+	// InputRaw is the raw JSON of the tool input. It is populated by
+	// the parser (Anthropic `tool_use.input`, OpenAI
+	// `function.arguments` parsed as JSON) and preferred by serializers
+	// that want a lossless wire-round-trip. May be empty if the upstream
+	// payload could not be parsed as a JSON object.
+	InputRaw json.RawMessage
 }
 
 // ResponseUsage holds token usage statistics.
@@ -179,9 +191,25 @@ func ParseAnthropicResponse(body []byte) (*InternalResponse, error) {
 				Name:  c.Name,
 				Input: c.Input,
 			})
+			// 2026-07-27: Preserve the raw tool_use.input so downstream
+			// serializers (Anthropic→OpenAI) don't lose arguments when
+			// the payload is a JSON scalar (string/number/bool) instead
+			// of an object. We still expose Arguments for callers that
+			// only need the string form.
+			arguments := ""
+			if len(c.Input) > 0 {
+				trimmed := bytes.TrimSpace(c.Input)
+				if json.Valid(trimmed) {
+					arguments = string(trimmed)
+				} else {
+					arguments = string(trimmed)
+				}
+			}
 			ir.ToolCalls = append(ir.ToolCalls, ResponseToolCall{
-				ID:   c.ID,
-				Name: c.Name,
+				ID:       c.ID,
+				Name:     c.Name,
+				Arguments: arguments,
+				InputRaw: append(json.RawMessage(nil), c.Input...),
 			})
 		case "thinking":
 			if c.Thinking != "" {
@@ -320,9 +348,26 @@ func ParseOpenAIResponse(body []byte) (*InternalResponse, error) {
 
 		// Tool calls
 		for _, tc := range choice.Message.ToolCalls {
+			// 2026-07-27: Preserve the raw arguments payload as JSON
+			// when possible so downstream OpenAI/Anthropic serializers
+			// emit byte-equivalent arguments instead of an empty string
+			// for non-object inputs.
+			rawArgs := json.RawMessage(nil)
+			if tc.Function.Arguments != "" {
+				if json.Valid([]byte(tc.Function.Arguments)) {
+					rawArgs = json.RawMessage(tc.Function.Arguments)
+				} else {
+					// Some upstreams wrap arguments in a literal that
+					// isn't valid JSON (e.g. an unquoted string). Keep
+					// the original bytes so we don't lose data.
+					rawArgs = json.RawMessage(tc.Function.Arguments)
+				}
+			}
 			ir.ToolCalls = append(ir.ToolCalls, ResponseToolCall{
-				ID:   tc.ID,
-				Name: tc.Function.Name,
+				ID:        tc.ID,
+				Name:      tc.Function.Name,
+				Arguments: tc.Function.Arguments,
+				InputRaw:  rawArgs,
 			})
 		}
 	}
@@ -374,12 +419,19 @@ func SerializeOpenAIResponse(ir *InternalResponse, clientModel string) ([]byte, 
 	// Tool calls
 	var toolCalls []map[string]any
 	for _, tc := range ir.ToolCalls {
+		// 2026-07-27: Prefer the preserved raw JSON payload. Fall back to
+		// the legacy string form when the parser couldn't produce valid
+		// JSON (e.g. non-object tool inputs).
+		arguments := tc.Arguments
+		if len(tc.InputRaw) > 0 && json.Valid(tc.InputRaw) {
+			arguments = string(tc.InputRaw)
+		}
 		toolCalls = append(toolCalls, map[string]any{
 			"id":   tc.ID,
 			"type": "function",
 			"function": map[string]any{
 				"name":      tc.Name,
-				"arguments": tc.Arguments,
+				"arguments": arguments,
 			},
 		})
 	}
@@ -590,13 +642,28 @@ func buildAnthropicResponseContent(ir *InternalResponse) []map[string]any {
 		}
 	}
 	for _, tc := range ir.ToolCalls {
-		if !existingIDs[tc.ID] {
-			content = append(content, map[string]any{
-				"type": "tool_use",
-				"id":   tc.ID,
-				"name": tc.Name,
-			})
+		if existingIDs[tc.ID] {
+			continue
 		}
+		// 2026-07-27: Use the preserved raw JSON input when available so
+		// non-object payloads (string/number/bool) round-trip instead of
+		// being silently replaced with an empty object.
+		var input any = map[string]any{}
+		if len(tc.InputRaw) > 0 && json.Valid(tc.InputRaw) {
+			if err := json.Unmarshal(tc.InputRaw, &input); err != nil {
+				input = string(tc.InputRaw)
+			}
+		} else if tc.Arguments != "" {
+			if err := json.Unmarshal([]byte(tc.Arguments), &input); err != nil {
+				input = tc.Arguments
+			}
+		}
+		content = append(content, map[string]any{
+			"type":  "tool_use",
+			"id":    tc.ID,
+			"name":  tc.Name,
+			"input": input,
+		})
 	}
 
 	if len(content) == 0 {

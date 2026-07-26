@@ -33,6 +33,41 @@ type responsesRequestBody struct {
 	Extra           map[string]json.RawMessage `json:"-"`
 }
 
+// responsesHasTools reports whether the request body declared a `tools`
+// array (either in the top-level Extra map, or as part of an input
+// item). Used to set ExecParams.ToolsRequested so the executor and
+// streaming bridges know the client actually asked for tool calls.
+func responsesHasTools(req *responsesRequestBody) bool {
+	if req == nil {
+		return false
+	}
+	if raw, ok := req.Extra["tools"]; ok && len(raw) > 0 && string(raw) != "null" {
+		return true
+	}
+	if len(req.Input) == 0 {
+		return false
+	}
+	var probe any
+	if err := json.Unmarshal(req.Input, &probe); err != nil {
+		return false
+	}
+	switch typed := probe.(type) {
+	case []any:
+		for _, item := range typed {
+			if m, ok := item.(map[string]any); ok {
+				if _, has := m["tools"]; has {
+					return true
+				}
+			}
+		}
+	case map[string]any:
+		if _, has := typed["tools"]; has {
+			return true
+		}
+	}
+	return false
+}
+
 func (r *responsesRequestBody) UnmarshalJSON(data []byte) error {
 	type alias responsesRequestBody
 	var decoded alias
@@ -483,7 +518,7 @@ func (h *ResponsesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		Policy:         policy,
 		AuditBuilder:   auditBuilder,
 		Capture:        streamCapture,
-		ToolsRequested: false,
+		ToolsRequested: responsesHasTools(&reqBody),
 		// StreamWrapper intentionally unset. The executor routes via
 		// AnthropicToResponsesStream / OpenAIToResponsesStream based on
 		// ClientProtocol + cand.Protocol — see executor_anthropic.go:StreamResponse
