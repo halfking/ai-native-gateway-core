@@ -161,10 +161,12 @@ func (c *LightweightCollector) collectForCredential(ctx context.Context, credent
 	stabilityMetrics := &StabilityMetrics{
 		ErrorCount: requestStats.ErrorCount,
 	}
+	// Always initialize ErrorTypes to a non-nil empty map so json.Marshal
+	// produces "{}" instead of "null". PostgreSQL JSONB rejects bare null.
 	if requestStats.ErrorTypes != nil {
 		stabilityMetrics.ErrorTypes = requestStats.ErrorTypes
 	} else {
-		stabilityMetrics.ErrorTypes = make(map[string]int)
+		stabilityMetrics.ErrorTypes = map[string]int{}
 	}
 
 	// 3. 获取规模数据
