@@ -101,7 +101,35 @@ func NewStickyCache() *StickyCache {
 			c.Clear()
 		}
 	})
+	// Background sweeper: prevent unbounded memory growth from lazy-only TTL
+	// expiry. Expired entries that are never Get'd again accumulate in items
+	// indefinitely without this periodic cleanup.
+	go c.sweepLoop()
 	return c
+}
+
+// sweepLoop periodically removes expired entries from the in-memory map.
+// Runs for the lifetime of the process. Tests that create throwaway
+// StickyCache instances should not rely on this goroutine — expiry is
+// guaranteed within one sweep interval (5 min).
+func (s *StickyCache) sweepLoop() {
+	ticker := time.NewTicker(5 * time.Minute)
+	defer ticker.Stop()
+	for range ticker.C {
+		s.sweepExpired()
+	}
+}
+
+// sweepExpired removes all entries whose expiresAt has passed.
+func (s *StickyCache) sweepExpired() {
+	now := time.Now()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for k, v := range s.items {
+		if now.After(v.expiresAt) {
+			delete(s.items, k)
+		}
+	}
 }
 
 // Clear removes every sticky binding from the cache.
