@@ -48,8 +48,8 @@ func (m *NodeMirror) applyToLRU(v NodeView) {
 		if v.Generation < old.Generation {
 			return v, false // 迟到旧 gen,拒绝
 		}
-		if v.Generation == old.Generation && v.SourcePriority <= old.SourcePriority {
-			return v, false // 同 gen 但 priority 不更高,拒绝
+		if v.Generation == old.Generation && v.SourcePriority < old.SourcePriority {
+			return v, false // 同 gen 但 priority 不更高(严格小于,与 apply_decision.lua:25 对齐:相等时接受幂等刷新)
 		}
 		return v, true // 更新或更高 priority,接受
 	})

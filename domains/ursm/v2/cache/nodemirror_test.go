@@ -70,3 +70,22 @@ func TestNodeMirrorConcurrentApplyNoRegress(t *testing.T) {
 		t.Fatalf("gen 19 should be Available=false, got true")
 	}
 }
+
+func TestNodeMirrorEqualGenPriAccepts(t *testing.T) {
+	// 与 apply_decision.lua:25 对齐: 相等 (gen, pri) 时接受幂等刷新
+	// (lua 用 cur_pri > in_pri 拒绝, 即仅严格大于才拒; 相等 = apply)
+	m := NewNodeMirror(100, time.Second)
+	first := NodeView{CredentialID: 1, RawModel: "m", Generation: 5, SourcePriority: 10, Available: true, Reason: "old"}
+	m.applyToLRU(first)
+
+	// 同 gen 同 pri, 不同 Reason — 应被接受(幂等刷新)
+	refresh := NodeView{CredentialID: 1, RawModel: "m", Generation: 5, SourcePriority: 10, Available: true, Reason: "refreshed"}
+	m.applyToLRU(refresh)
+	got, ok := m.Peek(1, "m")
+	if !ok {
+		t.Fatal("entry missing after equal-(gen,pri) apply")
+	}
+	if got.Reason != "refreshed" {
+		t.Fatalf("equal-(gen,pri) apply should refresh; Reason=%q want %q", got.Reason, "refreshed")
+	}
+}
