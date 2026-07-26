@@ -98,23 +98,28 @@ func (s *PGProfileStore) GetDailyProfile(ctx context.Context, credentialID int64
 
 	var profile DailyProfile
 	var timeslotScoresJSON, rawStatsJSON []byte
-	var bestTimeslot, worstTimeslot string
+	var bestTimeslot, worstTimeslot *string
+	// Score columns are nullable numeric(5,2); scan into pointers and deref so a
+	// NULL column (e.g. Phase-1 profiles with unimplemented dimensions) doesn't
+	// fail the whole scan with "cannot scan NULL into *float64".
+	var networkScore, credibilityScore, availabilityScore, stabilityScore *float64
+	var scaleScore, costAccuracyScore, priceScore, totalScore, scoreStddev *float64
 
 	err := s.db.QueryRow(ctx, query, credentialID, date).Scan(
 		&profile.ID,
 		&profile.CredentialID,
 		&profile.ProviderID,
 		&profile.ProfileDate,
-		&profile.NetworkScore,
-		&profile.CredibilityScore,
-		&profile.AvailabilityScore,
-		&profile.StabilityScore,
-		&profile.ScaleScore,
-		&profile.CostAccuracyScore,
-		&profile.PriceScore,
-		&profile.TotalScore,
+		&networkScore,
+		&credibilityScore,
+		&availabilityScore,
+		&stabilityScore,
+		&scaleScore,
+		&costAccuracyScore,
+		&priceScore,
+		&totalScore,
 		&timeslotScoresJSON,
-		&profile.ScoreStddev,
+		&scoreStddev,
 		&bestTimeslot,
 		&worstTimeslot,
 		&rawStatsJSON,
@@ -125,8 +130,17 @@ func (s *PGProfileStore) GetDailyProfile(ctx context.Context, credentialID int64
 		return nil, fmt.Errorf("query daily profile: %w", err)
 	}
 
-	profile.BestTimeslot = TimeSlot(bestTimeslot)
-	profile.WorstTimeslot = TimeSlot(worstTimeslot)
+	profile.NetworkScore = derefFloat(networkScore)
+	profile.CredibilityScore = derefFloat(credibilityScore)
+	profile.AvailabilityScore = derefFloat(availabilityScore)
+	profile.StabilityScore = derefFloat(stabilityScore)
+	profile.ScaleScore = derefFloat(scaleScore)
+	profile.CostAccuracyScore = derefFloat(costAccuracyScore)
+	profile.PriceScore = derefFloat(priceScore)
+	profile.TotalScore = derefFloat(totalScore)
+	profile.ScoreStddev = derefFloat(scoreStddev)
+	profile.BestTimeslot = TimeSlot(derefStr(bestTimeslot))
+	profile.WorstTimeslot = TimeSlot(derefStr(worstTimeslot))
 
 	// 反序列化 JSONB
 	if err := unmarshalJSON(timeslotScoresJSON, &profile.TimeslotScores); err != nil {
@@ -164,23 +178,28 @@ func (s *PGProfileStore) GetRecentProfiles(ctx context.Context, credentialID int
 	for rows.Next() {
 		var profile DailyProfile
 		var timeslotScoresJSON, rawStatsJSON []byte
-		var bestTimeslot, worstTimeslot string
+		var bestTimeslot, worstTimeslot *string
+		// Score columns are nullable numeric(5,2); scan into pointers and deref so a
+		// NULL column (e.g. Phase-1 profiles with unimplemented dimensions) doesn't
+		// fail the whole scan with "cannot scan NULL into *float64".
+		var networkScore, credibilityScore, availabilityScore, stabilityScore *float64
+		var scaleScore, costAccuracyScore, priceScore, totalScore, scoreStddev *float64
 
 		err := rows.Scan(
 			&profile.ID,
 			&profile.CredentialID,
 			&profile.ProviderID,
 			&profile.ProfileDate,
-			&profile.NetworkScore,
-			&profile.CredibilityScore,
-			&profile.AvailabilityScore,
-			&profile.StabilityScore,
-			&profile.ScaleScore,
-			&profile.CostAccuracyScore,
-			&profile.PriceScore,
-			&profile.TotalScore,
+			&networkScore,
+			&credibilityScore,
+			&availabilityScore,
+			&stabilityScore,
+			&scaleScore,
+			&costAccuracyScore,
+			&priceScore,
+			&totalScore,
 			&timeslotScoresJSON,
-			&profile.ScoreStddev,
+			&scoreStddev,
 			&bestTimeslot,
 			&worstTimeslot,
 			&rawStatsJSON,
@@ -190,8 +209,17 @@ func (s *PGProfileStore) GetRecentProfiles(ctx context.Context, credentialID int
 			return nil, fmt.Errorf("scan profile: %w", err)
 		}
 
-		profile.BestTimeslot = TimeSlot(bestTimeslot)
-		profile.WorstTimeslot = TimeSlot(worstTimeslot)
+		profile.NetworkScore = derefFloat(networkScore)
+		profile.CredibilityScore = derefFloat(credibilityScore)
+		profile.AvailabilityScore = derefFloat(availabilityScore)
+		profile.StabilityScore = derefFloat(stabilityScore)
+		profile.ScaleScore = derefFloat(scaleScore)
+		profile.CostAccuracyScore = derefFloat(costAccuracyScore)
+		profile.PriceScore = derefFloat(priceScore)
+		profile.TotalScore = derefFloat(totalScore)
+		profile.ScoreStddev = derefFloat(scoreStddev)
+		profile.BestTimeslot = TimeSlot(derefStr(bestTimeslot))
+		profile.WorstTimeslot = TimeSlot(derefStr(worstTimeslot))
 
 		if err := unmarshalJSON(timeslotScoresJSON, &profile.TimeslotScores); err != nil {
 			return nil, fmt.Errorf("unmarshal timeslot scores: %w", err)
@@ -230,23 +258,28 @@ func (s *PGProfileStore) GetProfilesByProvider(ctx context.Context, providerID i
 	for rows.Next() {
 		var profile DailyProfile
 		var timeslotScoresJSON, rawStatsJSON []byte
-		var bestTimeslot, worstTimeslot string
+		var bestTimeslot, worstTimeslot *string
+		// Score columns are nullable numeric(5,2); scan into pointers and deref so a
+		// NULL column (e.g. Phase-1 profiles with unimplemented dimensions) doesn't
+		// fail the whole scan with "cannot scan NULL into *float64".
+		var networkScore, credibilityScore, availabilityScore, stabilityScore *float64
+		var scaleScore, costAccuracyScore, priceScore, totalScore, scoreStddev *float64
 
 		err := rows.Scan(
 			&profile.ID,
 			&profile.CredentialID,
 			&profile.ProviderID,
 			&profile.ProfileDate,
-			&profile.NetworkScore,
-			&profile.CredibilityScore,
-			&profile.AvailabilityScore,
-			&profile.StabilityScore,
-			&profile.ScaleScore,
-			&profile.CostAccuracyScore,
-			&profile.PriceScore,
-			&profile.TotalScore,
+			&networkScore,
+			&credibilityScore,
+			&availabilityScore,
+			&stabilityScore,
+			&scaleScore,
+			&costAccuracyScore,
+			&priceScore,
+			&totalScore,
 			&timeslotScoresJSON,
-			&profile.ScoreStddev,
+			&scoreStddev,
 			&bestTimeslot,
 			&worstTimeslot,
 			&rawStatsJSON,
@@ -256,8 +289,17 @@ func (s *PGProfileStore) GetProfilesByProvider(ctx context.Context, providerID i
 			return nil, fmt.Errorf("scan profile: %w", err)
 		}
 
-		profile.BestTimeslot = TimeSlot(bestTimeslot)
-		profile.WorstTimeslot = TimeSlot(worstTimeslot)
+		profile.NetworkScore = derefFloat(networkScore)
+		profile.CredibilityScore = derefFloat(credibilityScore)
+		profile.AvailabilityScore = derefFloat(availabilityScore)
+		profile.StabilityScore = derefFloat(stabilityScore)
+		profile.ScaleScore = derefFloat(scaleScore)
+		profile.CostAccuracyScore = derefFloat(costAccuracyScore)
+		profile.PriceScore = derefFloat(priceScore)
+		profile.TotalScore = derefFloat(totalScore)
+		profile.ScoreStddev = derefFloat(scoreStddev)
+		profile.BestTimeslot = TimeSlot(derefStr(bestTimeslot))
+		profile.WorstTimeslot = TimeSlot(derefStr(worstTimeslot))
 
 		if err := unmarshalJSON(timeslotScoresJSON, &profile.TimeslotScores); err != nil {
 			return nil, fmt.Errorf("unmarshal timeslot scores: %w", err)
@@ -270,4 +312,46 @@ func (s *PGProfileStore) GetProfilesByProvider(ctx context.Context, providerID i
 	}
 
 	return profiles, rows.Err()
+}
+
+// PGProfileSource adapts PGProfileStore to the AlertEngine's ProfileSource interface.
+// GetRecentProfiles returns []*DailyProfile (pointers); Recent dereferences to
+// []DailyProfile (values) to satisfy ProfileSource, which uses value semantics for
+// read-only evaluation.
+type PGProfileSource struct {
+	store *PGProfileStore
+}
+
+// NewPGProfileSource creates a ProfileSource backed by PGProfileStore.
+func NewPGProfileSource(store *PGProfileStore) *PGProfileSource {
+	return &PGProfileSource{store: store}
+}
+
+// Recent returns the last N daily profiles ordered by profile_date DESC (most recent first).
+func (s *PGProfileSource) Recent(ctx context.Context, credentialID int64, days int) ([]DailyProfile, error) {
+	profiles, err := s.store.GetRecentProfiles(ctx, credentialID, days)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]DailyProfile, len(profiles))
+	for i, p := range profiles {
+		out[i] = *p
+	}
+	return out, nil
+}
+
+// derefFloat safely dereferences a nullable float64 pointer, returning 0 for NULL.
+func derefFloat(p *float64) float64 {
+	if p == nil {
+		return 0
+	}
+	return *p
+}
+
+// derefStr safely dereferences a nullable string pointer, returning "" for NULL.
+func derefStr(p *string) string {
+	if p == nil {
+		return ""
+	}
+	return *p
 }
