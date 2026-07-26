@@ -1,17 +1,19 @@
 // Package executors — state_backend.go
 //
-// 状态后端抽象层：统一 URSM v2、StateManager、DB-only 三种状态判断模式。
-// 目标：消除 router.go 和 executor.go 中散落的条件分支，热路径一次性决定使用哪套系统。
+// 状态后端抽象层：把"哪些候选可用"的判定收敛到一个接口，避免 router.go
+// 和 executor.go 中散落多套状态系统的条件分支。
 //
 // 设计原则：
-// - URSM v2 authoritative 模式 → URSMv2Backend（Redis 实时状态）
-// - URSM v2 off/shadow/canary 模式 → LegacyStateBackend（StateManager 内存缓存）
-// - StateManager 未启用 → DBOnlyBackend（仅依赖 DB 字段）
+// - URSM v2 authoritative 模式 + Ready → URSMv2Backend（唯一权威源）
+// - 否则 → LegacyStateBackend（StateManager 内存缓存）或 DBOnlyBackend（兜底）
 //
 // 防封锁机制（FpSlots/Limiter/RPM/DisguisePool/EgressIdentity）保持完全独立，
 // 不通过此接口管理。状态后端仅负责"节点是否可用"的健康判断。
 //
 // 2026-07-24: Phase 1 of routing simplification plan.
+// 2026-07-26: URSM v1→v2 统一。文档同步更新：v1 (domains/ursm) 已迁入
+//
+//	_to-be-deprecated/ursm/，本接口不再有 v1 分支。
 package executors
 
 import (
@@ -124,12 +126,15 @@ func (b *DBOnlyBackend) Name() string {
 }
 
 // selectStateBackend 选择当前请求使用的状态后端。
-// 决策逻辑：
-//  1. URSM v2 authoritative 且 Ready → URSMv2Backend
+// 决策逻辑（顺序敏感）：
+//  1. URSM v2 authoritative 模式 + Redis Ready 标记 → URSMv2Backend
 //  2. StateManager 启用 → LegacyStateBackend
 //  3. 否则 → DBOnlyBackend
 //
 // 此方法应在路由决策开始时调用一次，避免热路径重复检查。
+//
+// 2026-07-26 URSM v1→v2 统一：旧的"v1 (domains/ursm.Manager) 优先" 分支
+// 已删除——v1 在 main.go 中从未 wire。
 func selectStateBackend(ursmv2Mgr URSMv2Manager, stateMgr credentialstate.StateProvider, ctx context.Context) StateBackend {
 	// URSM v2 authoritative 模式优先
 	if ursmv2Mgr != nil && ursmv2Mgr.Mode() == ursmv2api.ModeAuthoritative {
