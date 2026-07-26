@@ -996,6 +996,21 @@ func (e *Executor) isURSMv2Authoritative() bool {
 	return e.URSMv2.Ready(ctx)
 }
 
+// legacyWritersEnabled 返回"是否应执行旧的状态写入路径"（FpSlots Recorder /
+// credentialstate Observer / routingstate Shadow）。当 URSM v2 authoritative
+// 模式生效时返回 false——这些旧路径会跳过，由 e.URSMv2.RecordRequest 接管。
+//
+// 2026-07-26 URSM v1→v2 统一：v1 (domains/ursm.Manager) 已迁入
+// _to-be-deprecated/ursm/，executor 不再保留任何 v1 写入路径。剩下的
+// "legacy writers"是 FpSlots/credentialstate/routingstate 这三套并行系统，
+// 仅在 v2 非 authoritative 时参与状态同步。
+//
+// 每次调用都会触发 10ms 的 Ready() 检查（见 isURSMv2Authoritative），热路径
+// 上 11+ 次调用较浪费。后续可以加 per-request 缓存。
+func (e *Executor) legacyWritersEnabled() bool {
+	return e.legacyWritersEnabled()
+}
+
 // emitTraceExec 是 Executor 内部使用的 trace 注入薄包装,避免热路径
 // 重复写 nil-check。
 func (e *Executor) emitTraceExec(ctx context.Context, requestID string, ev gwtrace.EventBuilder) {
@@ -1597,7 +1612,7 @@ func (e *Executor) Execute(params *ExecParams) (*ExecuteResult, error) {
 			probeCancel()
 		}
 		// 2026-07-24: URSM v2 authoritative 模式下跳过 RoutingStateShadow
-		if e.RoutingStateShadow != nil && !e.isURSMv2Authoritative() {
+		if e.RoutingStateShadow != nil && e.legacyWritersEnabled() {
 			for _, c := range probeCandidates {
 				e.RoutingStateShadow.ObserveProbe(routingstate.ProbeTask{
 					CredentialID:  c.CredentialID,
@@ -1997,7 +2012,7 @@ func (e *Executor) Execute(params *ExecParams) (*ExecuteResult, error) {
 			e.recordStickySuccess(params, cand.CredentialID)
 			// 2026-07-24: URSM v2 authoritative 模式下跳过 fpSlotRecorder 写入
 			// 统一状态管理到 URSM v2，避免多路径写入导致状态不一致
-			if e.Recorder != nil && !e.isURSMv2Authoritative() {
+			if e.Recorder != nil && e.legacyWritersEnabled() {
 				e.Recorder.RecordSuccess(sideEffectCtx, cand.CredentialID, cand.RawModel)
 			}
 			// Record success for Bandit scoring (Thompson Sampling)
@@ -2053,7 +2068,7 @@ func (e *Executor) Execute(params *ExecParams) (*ExecuteResult, error) {
 			// 2026-07-01 Phase 2.x: Record success in credential state manager.
 			// This enables adaptive probing based on real request outcomes.
 			// 2026-07-24: URSM v2 authoritative 模式下跳过 StateObserver
-			if e.StateObserver != nil && !e.isURSMv2Authoritative() {
+			if e.StateObserver != nil && e.legacyWritersEnabled() {
 				requestID := params.R.Header.Get("X-Request-Id")
 				if requestID == "" {
 					requestID = "async-" + time.Now().Format("20060102T150405.000")
@@ -2068,7 +2083,7 @@ func (e *Executor) Execute(params *ExecParams) (*ExecuteResult, error) {
 			}
 
 			// 2026-07-24: URSM v2 authoritative 模式下跳过 RoutingStateShadow
-			if e.RoutingStateShadow != nil && !e.isURSMv2Authoritative() {
+			if e.RoutingStateShadow != nil && e.legacyWritersEnabled() {
 				e.RoutingStateShadow.ObserveState(routingstate.Evidence{
 					CredentialID:     cand.CredentialID,
 					RawModelName:     candidateRawModel(cand),
@@ -2255,7 +2270,7 @@ func (e *Executor) Execute(params *ExecParams) (*ExecuteResult, error) {
 			lastErr = execErr
 			lastKind = kind
 			// 2026-07-24: URSM v2 authoritative 模式下跳过 RoutingStateShadow
-			if e.RoutingStateShadow != nil && !e.isURSMv2Authoritative() {
+			if e.RoutingStateShadow != nil && e.legacyWritersEnabled() {
 				e.observeRoutingStateFailure(params, cand, kind)
 				if !errorsx.IsClientBug(kind) {
 					e.observeRoutingStateProbe(params, cand, routingstate.ProbeTriggerRequestFailure)
@@ -2296,14 +2311,14 @@ func (e *Executor) Execute(params *ExecParams) (*ExecuteResult, error) {
 			defer failureCancel()
 			e.recordStickyFailure(params, cand.CredentialID, kind)
 			// 2026-07-24: URSM v2 authoritative 模式下跳过 fpSlotRecorder 写入
-			if e.Recorder != nil && !e.isURSMv2Authoritative() {
+			if e.Recorder != nil && e.legacyWritersEnabled() {
 				e.Recorder.RecordFailure(failureCtx, cand.CredentialID, cand.RawModel, kind)
 			}
 
 			// 2026-07-01 Phase 2.x: Record failure in credential state manager.
 			// KindCanceled is automatically skipped by the manager.
 			// 2026-07-24: URSM v2 authoritative 模式下跳过 StateObserver
-			if e.StateObserver != nil && !e.isURSMv2Authoritative() {
+			if e.StateObserver != nil && e.legacyWritersEnabled() {
 				requestID := params.R.Header.Get("X-Request-Id")
 				if requestID == "" {
 					requestID = "async-" + time.Now().Format("20060102T150405.000")
@@ -2319,7 +2334,7 @@ func (e *Executor) Execute(params *ExecParams) (*ExecuteResult, error) {
 				)
 			}
 
-			if e.RoutingStateShadow != nil && !e.isURSMv2Authoritative() {
+			if e.RoutingStateShadow != nil && e.legacyWritersEnabled() {
 				e.observeRoutingStateFailure(params, cand, kind)
 				e.observeRoutingStateProbe(params, cand, routingstate.ProbeTriggerRequestFailure)
 			}
@@ -2538,14 +2553,14 @@ func (e *Executor) Execute(params *ExecParams) (*ExecuteResult, error) {
 		sessionBlacklist[cand.CredentialID]++
 
 		// 2026-07-24: URSM v2 authoritative 模式下跳过 fpSlotRecorder 写入
-		if e.Recorder != nil && !e.isURSMv2Authoritative() {
+		if e.Recorder != nil && e.legacyWritersEnabled() {
 			e.Recorder.RecordFailure(failureCtx, cand.CredentialID, cand.RawModel, kind)
 		}
 
 		// 2026-07-01 Phase 2.x: Record failure in credential state manager.
 		// KindCanceled is automatically skipped by the manager.
 		// 2026-07-24: URSM v2 authoritative 模式下跳过 StateObserver
-		if e.StateObserver != nil && !e.isURSMv2Authoritative() {
+		if e.StateObserver != nil && e.legacyWritersEnabled() {
 			requestID := params.R.Header.Get("X-Request-Id")
 			if requestID == "" {
 				requestID = "async-" + time.Now().Format("20060102T150405.000")
