@@ -384,17 +384,21 @@ const availableStatuses = computed(() => {
 })
 
 const availableModels = computed(() => {
-  const models = new Set<string>()
+  const modelMap = new Map<string, string>() // lowercase key -> canonical display name
   for (const lane of lanes.value) {
     for (const req of lane.requests) {
       const name = standardModelName(req.model)
       if (name && name !== '[空闲]') {
-        models.add(name) // Keep original case for display
+        const key = name.toLowerCase().trim()
+        // Keep first occurrence (prefer backend canonical name)
+        if (!modelMap.has(key)) {
+          modelMap.set(key, name)
+        }
       }
     }
   }
-  // Sort case-insensitively using locale compare
-  return Array.from(models).sort((a, b) => 
+  // Sort case-insensitively by the lowercase key
+  return Array.from(modelMap.values()).sort((a, b) => 
     a.localeCompare(b, 'zh-CN', { sensitivity: 'base' })
   )
 })
