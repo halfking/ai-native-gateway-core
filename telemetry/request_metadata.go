@@ -7,7 +7,94 @@ import (
 	"net"
 	"net/http"
 	"strings"
+	"sync"
 )
+
+// ─── Agent system prompt pattern registry ───
+//
+// Agents identify themselves in system prompts (e.g. "You are Claude Code
+// by Anthropic"). The registry maps canonical agent names to substrings
+// that trigger detection. Extensible at runtime via RegisterAgentPattern.
+//
+// Detection priority follows registration order — more-specific patterns
+// registered first take precedence over generic matches.
+type agentPatternEntry struct {
+	name     string
+	patterns []string
+}
+
+var (
+	agentPatternsMu sync.RWMutex
+	agentPatterns   = defaultAgentPatterns()
+)
+
+func defaultAgentPatterns() []agentPatternEntry {
+	return []agentPatternEntry{
+		// Specific agent names first (they may co-occur with generic ones in
+		// prompts like "You are ZCode (Claude Code)" or "OpenCode powered by Claude").
+		{"zcode", []string{"zcode"}},
+		{"opencode", []string{"opencode"}},
+		{"codex", []string{"openai codex", "codex cli"}},
+		{"claude-code", []string{"claude code", "claude-code"}},
+		{"cursor", []string{"you are an ai assistant in cursor", "cursor ide"}},
+		{"vscode", []string{"visual studio code", "vscode"}},
+	}
+}
+
+// RegisterAgentPattern registers additional agent identity patterns for
+// system-prompt-based detection. This is safe for concurrent access and
+// intended to be called at startup (e.g. in an init() function or from main).
+//
+// Patterns are lowercased internally. Duplicate registrations for the
+// same name are additive — subsequent calls append patterns rather than
+// replace.
+//
+// Example:
+//
+//	telemetry.RegisterAgentPattern("my-custom-agent", "my agent", "custom cli")
+func RegisterAgentPattern(name string, patterns ...string) {
+	if name == "" || len(patterns) == 0 {
+		return
+	}
+	lower := make([]string, len(patterns))
+	for i, p := range patterns {
+		lower[i] = strings.ToLower(p)
+	}
+	agentPatternsMu.Lock()
+	defer agentPatternsMu.Unlock()
+	agentPatterns = append(agentPatterns, agentPatternEntry{name: name, patterns: lower})
+}
+
+// ResetAgentPatterns restores the default built-in agent patterns.
+// Used in tests to isolate registrations between test cases.
+func ResetAgentPatterns() {
+	agentPatternsMu.Lock()
+	defer agentPatternsMu.Unlock()
+	agentPatterns = defaultAgentPatterns()
+}
+
+// DetectAgentFromSystemPrompt attempts to identify the agent/client from
+// the system prompt content. Returns the canonical agent name, or ""
+// when no agent is identified.
+//
+// This is a lightweight heuristic — it lowercases the prompt and checks
+// for known identity substrings. It is not a full NLP classifier.
+func DetectAgentFromSystemPrompt(systemPrompt string) string {
+	if systemPrompt == "" {
+		return ""
+	}
+	lower := strings.ToLower(systemPrompt)
+	agentPatternsMu.RLock()
+	defer agentPatternsMu.RUnlock()
+	for _, entry := range agentPatterns {
+		for _, p := range entry.patterns {
+			if strings.Contains(lower, p) {
+				return entry.name
+			}
+		}
+	}
+	return ""
+}
 
 // RequestMetadata contains observability fields for request tracing
 type RequestMetadata struct {
@@ -132,12 +219,24 @@ func ExtractAgentName(r *http.Request) string {
 		return "claude-code"
 	case strings.Contains(ua, "opencode"):
 		return "opencode"
+	case strings.Contains(ua, "zcode"):
+		return "zcode"
+	case strings.Contains(ua, "codex"):
+		return "codex"
 	case strings.Contains(ua, "cursor"):
 		return "cursor"
 	case strings.Contains(ua, "vscode"):
 		return "vscode"
+	case strings.Contains(ua, "roocode"), strings.Contains(ua, "roo-code"):
+		return "roocode"
+	case strings.Contains(ua, "windsurf"):
+		return "windsurf"
+	case strings.Contains(ua, "zed"):
+		return "zed"
 	case strings.Contains(ua, "jetbrains"):
 		return "jetbrains"
+	case strings.Contains(ua, "github-copilot"), strings.Contains(ua, "copilot"):
+		return "copilot"
 	case strings.Contains(ua, "postman"):
 		return "postman"
 	case strings.Contains(ua, "insomnia"):
@@ -173,8 +272,15 @@ func ExtractAgentType(r *http.Request) string {
 	// Code editors / IDE agents
 	if strings.Contains(ua, "claude-code") ||
 		strings.Contains(ua, "opencode") ||
+		strings.Contains(ua, "zcode") ||
+		strings.Contains(ua, "codex") ||
 		strings.Contains(ua, "cursor") ||
 		strings.Contains(ua, "vscode") ||
+		strings.Contains(ua, "roocode") ||
+		strings.Contains(ua, "windsurf") ||
+		strings.Contains(ua, "zed") ||
+		strings.Contains(ua, "github-copilot") ||
+		strings.Contains(ua, "copilot") ||
 		strings.Contains(ua, "jetbrains") {
 		return "cli"
 	}
@@ -222,4 +328,24 @@ func NewRequestMetadata(r *http.Request) *RequestMetadata {
 		AgentName:          ExtractAgentName(r),
 		AgentType:          ExtractAgentType(r),
 	}
+}
+
+// EnrichAgentNameFromSystemPrompt merges header-based agent detection with
+// system-prompt-based semantic detection. Priority:
+//
+//  1. Header detection (if we got a name other than "unknown") — keep it
+//  2. System prompt semantic detection — prefer if header was "unknown"
+//  3. No detection — return ""
+//
+// This is designed to be called later in the request lifecycle, after the
+// body has been parsed and the system prompt is available, to backfill
+// agent_name for session-level statistics.
+func EnrichAgentNameFromSystemPrompt(headerName, systemPrompt string) string {
+	if headerName != "" && headerName != "unknown" {
+		return headerName
+	}
+	if name := DetectAgentFromSystemPrompt(systemPrompt); name != "" {
+		return name
+	}
+	return ""
 }

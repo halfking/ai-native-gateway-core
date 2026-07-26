@@ -133,7 +133,7 @@ func (h *MessagesHandler) maybeResolveAutoForMessages(reqBody *messagesRequestBo
 		return rewriteBodyWithModel(rawBody, autoFallbackModel()), nil, false
 	}
 	sigs := extractSignalsForMessages(reqBody, rawBody)
-	sigs.ClientType = extractClientType(r)
+	sigs.ClientType = extractClientTypeWithPrompt(r, sigs.SystemPrompt)
 	headerProfile := r.Header.Get(autoProfileHeader)
 	taskHint := autoroute.TaskType(r.Header.Get(autoTaskHintHeader))
 	sessionID := r.Header.Get("X-Gw-Session-Id")
@@ -162,7 +162,7 @@ func (h *ResponsesHandler) maybeResolveAutoForResponses(reqBody *responsesReques
 		return rewriteBodyWithModel(rawBody, autoFallbackModel()), nil, false
 	}
 	sigs := extractSignalsForResponses(reqBody, rawBody)
-	sigs.ClientType = extractClientType(r)
+	sigs.ClientType = extractClientTypeWithPrompt(r, sigs.SystemPrompt)
 	headerProfile := r.Header.Get(autoProfileHeader)
 	taskHint := autoroute.TaskType(r.Header.Get(autoTaskHintHeader))
 	sessionID := r.Header.Get("X-Gw-Session-Id")

@@ -11,6 +11,9 @@ package autoroute
 // Recognized clients (case-insensitive):
 //   - "cursor"       — Cursor IDE (Anysphere)
 //   - "claude-code"  — Claude Code (Anthropic)
+//   - "opencode"     — OpenCode (anomalyco)
+//   - "zcode"        — ZCode (ACC team internal)
+//   - "codex"        — OpenAI Codex CLI
 //   - "roocode"      — Roo Code (variant)
 //   - "vscode"       — Visual Studio Code (with AI extension)
 //   - "copilot"      — GitHub Copilot
@@ -25,7 +28,8 @@ func isIDEClient(clientType string) bool {
 	}
 	// Case-insensitive match (ClientType is already lowercased in relay)
 	switch lowerASCII(clientType) {
-	case "cursor", "claude-code", "roocode", "vscode", "copilot", "windsurf", "zed", "jetbrains":
+	case "cursor", "claude-code", "opencode", "zcode", "codex",
+		"roocode", "vscode", "copilot", "windsurf", "zed", "jetbrains":
 		return true
 	default:
 		return false

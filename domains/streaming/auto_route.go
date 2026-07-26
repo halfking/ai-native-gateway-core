@@ -293,8 +293,8 @@ func (h *ChatHandler) maybeResolveAuto(reqBody *chatRequestBody, rawBody []byte,
 	}
 
 	sigs := extractSignalsForAuto(reqBody, rawBody)
-	// 新增（需求 #1）：从 HTTP 头提取 IDE 客户端指纹
-	sigs.ClientType = extractClientType(r)
+	// 从 HTTP 头 + 系统提示词语义匹配提取客户端/智能体类型
+	sigs.ClientType = extractClientTypeWithPrompt(r, sigs.SystemPrompt)
 
 	headerProfile := r.Header.Get(autoProfileHeader)
 	taskHint := autoroute.TaskType(r.Header.Get(autoTaskHintHeader))
