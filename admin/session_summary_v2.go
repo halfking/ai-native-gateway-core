@@ -175,18 +175,10 @@ func (api *SessionSummaryV2API) queryTurnsForSummary(
 			return nil, err
 		}
 
-		if len(requestDeltaRaw) > 0 {
-			var delta any
-			if err := json.Unmarshal(requestDeltaRaw, &delta); err == nil {
-				t.RequestDelta = delta
-			}
-		}
-		if len(responseDeltaRaw) > 0 {
-			var delta any
-			if err := json.Unmarshal(responseDeltaRaw, &delta); err == nil {
-				t.ResponseDelta = delta
-			}
-		}
+		// Decode failures are logged: a null delta is indistinguishable from a
+		// turn that stored no delta at all.
+		t.RequestDelta = decodeStoredJSON("request_delta", sessionID, requestDeltaRaw)
+		t.ResponseDelta = decodeStoredJSON("response_delta", sessionID, responseDeltaRaw)
 
 		turns = append(turns, t)
 	}

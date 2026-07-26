@@ -128,7 +128,43 @@ if err == nil { ... }                 // 无 else，失败时静默跳过
 
 ---
 
-## 四、范围控制：靠可验证的边界，不靠嘱咐
+### 规则 3.4　本仓库的落地通道：日志 + format-anomalies
+
+丢弃事件**同时**写两处，缺一不可：
+
+| 通道 | 用途 |
+|-----|------|
+| `slog.Warn("data loss: "+类型, ...)` | 错误日志，事后 grep 排查 |
+| `RecordDataAnomaly` → `response_format_anomalies` 表 | `/format-anomalies` 页面，运营可见、可标记已解决 |
+
+请求链路（`ChatHandler` 可达）用 `h.recordDataLoss(...)`，它已封装两个通道。
+admin 只读路径无 recorder，按既有约定仅打日志。
+
+已定义的 anomaly_type（`domains/streaming/data_loss_anomaly.go`）：
+
+| 类型 | 语义 | 默认级别 |
+|-----|------|---------|
+| `tools_restore_failed` | tools 未能还原，请求以「无工具」发往上游 | high |
+| `request_body_truncated` | body 被读超时/超限截断，截断内容既落库又转发 | high（客户端主动断连为 medium）|
+| `body_decode_failed` | 存储的 body 无法解码，展示为 null／安全审计降级放行 | high |
+| `metadata_dropped` | 路由尝试链、auto 决策、附件等元数据丢失 | medium |
+
+两条硬性约束：
+
+- **只记尺寸与原因，绝不记内容**——这些字段承载用户 prompt。
+- **用 `context.WithoutCancel`**——客户端断连正是截断高发场景，请求 ctx 已取消时仍必须记录成功。
+
+### 规则 3.5　截断字符串必须按 rune，不能按字节
+
+`s[:n]` 会劈开多字节字符产生非法 UTF-8，PostgreSQL 以 SQLSTATE 22021 拒绝并**丢弃整行**。
+
+这是 2026-06-11 事故（glm-5.1/minimax/doubao 整行丢失）的成因。仓库当时新增了安全的 `truncateText` 并在注释中写明事故编号，**但 5 个调用点仍在用字节切片**——修复没有推广到同类，一个月后被再次发现。
+
+用 `streaming.truncateText` 或 `executors.truncateUTF8`。
+
+> 这也是规则 3.3 的推论：**修好一处后必须搜索同类**。
+
+
 
 ### 规则 4.1　基线对照——归因前先在干净 base 上复现
 
@@ -177,7 +213,8 @@ if json.Valid([]byte(cleaned)) {
 - [ ] **有不变量测试**——"健康输入必须存活"，不只是"坏输入被处理"
 - [ ] **新测试在旧代码上失败过**——已实际验证，非推测
 - [ ] **手写索引运算有模糊测试**——固定 seed
-- [ ] **所有丢弃/降级分支有日志**——记尺寸不记内容
+- [ ] **所有丢弃/降级分支有日志 + anomaly 记录**——记尺寸不记内容（规则 3.4）
+- [ ] **字符串截断按 rune 不按字节**（规则 3.5）
 - [ ] **成对函数行为一致**——已搜索同类缺陷
 - [ ] **失败项做过基线对照**——已确认是否为既有问题
 - [ ] **无范围蔓延**——无关改动未混入

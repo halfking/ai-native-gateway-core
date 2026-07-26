@@ -3,6 +3,7 @@ package admin
 import (
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"strings"
 )
 
@@ -76,6 +77,11 @@ func buildTurnCorpusLine(ts string, d TurnDisplay, status string, errKind *strin
 func extractLatestUserFromRequestJSON(body []byte) string {
 	var root map[string]any
 	if err := json.Unmarshal(body, &root); err != nil {
+		// The caller falls back to the stored preview; when that is absent too
+		// the turn renders with no user_turn key at all, as if it never had
+		// content. Log so that case stays diagnosable.
+		slog.Warn("data loss: stored request body unparseable for display",
+			"bytes", len(body), "error", err)
 		return ""
 	}
 	messages, ok := root["messages"].([]any)
@@ -107,6 +113,8 @@ func extractLatestUserFromRequestJSON(body []byte) string {
 func extractAssistantFromResponseJSON(body []byte) (text string, toolSummary string) {
 	var root map[string]any
 	if err := json.Unmarshal(body, &root); err != nil {
+		slog.Warn("data loss: stored response body unparseable for display",
+			"bytes", len(body), "error", err)
 		return "", ""
 	}
 	if choices, ok := root["choices"].([]any); ok && len(choices) > 0 {

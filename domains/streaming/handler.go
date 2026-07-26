@@ -1646,7 +1646,16 @@ func (h *ChatHandler) serveWithExecutor(
 	// hook 为 nil 时不调用（chat-time audit 关闭）。
 	// hook 内部失败 / 降级 → 返回 StatusCode=0, 不阻断主流程。
 	if h.sessionAuditHook != nil && len(bodyBytes) > 0 {
-		hookContent := extractFirstUserMessage(bodyBytes)
+		hookContent, parsed := extractFirstUserMessage(bodyBytes)
+		if !parsed {
+			// The hook will receive empty content and degrade to Pass, so an
+			// unparseable body silently bypasses the audit. Record it as a
+			// data loss so the bypass is visible rather than looking like a
+			// clean pass.
+			h.recordDataLoss(ctx, AnomalyBodyDecodeFailed, string(SeverityHigh), requestID,
+				"session-audit hook received empty content: request body could not be parsed, audit degrades to Pass",
+				map[string]any{"stage": "session_audit_hook", "body_bytes": len(bodyBytes)})
+		}
 		hookTenant := ""
 		if keyInfo != nil {
 			hookTenant = keyInfo.TenantID
@@ -2189,16 +2198,33 @@ func (h *ChatHandler) serveWithExecutor(
 			// If compressor cached tools (marked with "_tools_cached": true),
 			// restore them from the original request body before forwarding
 			// to upstream LLM provider.
+			//
+			// Every failure below is recorded: if restoration fails the request
+			// goes upstream with no tools and a leftover "_tools_cached" marker,
+			// and a model that CANNOT call tools looks exactly like one that
+			// chose not to. Silence here is indistinguishable from success.
 			var outbound map[string]json.RawMessage
-			if err := json.Unmarshal(bodyBytes, &outbound); err == nil {
-				if cached := outbound["_tools_cached"]; string(cached) == "true" {
-					// Tools were cached → restore from original reqBody
-					if len(reqBody.Tools) > 0 {
-						outbound["tools"] = reqBody.Tools
-						delete(outbound, "_tools_cached")
-						if restored, err := json.Marshal(outbound); err == nil {
-							bodyBytes = restored
-						}
+			if err := json.Unmarshal(bodyBytes, &outbound); err != nil {
+				h.recordDataLoss(ctx, AnomalyToolsRestoreFailed, string(SeverityHigh), requestID,
+					"compressed body is not a JSON object, tools cannot be restored: "+err.Error(),
+					map[string]any{"stage": "unmarshal_outbound", "body_bytes": len(bodyBytes)})
+			} else if cached := outbound["_tools_cached"]; string(cached) == "true" {
+				// Tools were cached → restore from original reqBody
+				switch {
+				case len(reqBody.Tools) == 0:
+					h.recordDataLoss(ctx, AnomalyToolsRestoreFailed, string(SeverityHigh), requestID,
+						"body marked _tools_cached but original request carried no tools to restore",
+						map[string]any{"stage": "no_source_tools"})
+				default:
+					outbound["tools"] = reqBody.Tools
+					delete(outbound, "_tools_cached")
+					restored, err := json.Marshal(outbound)
+					if err != nil {
+						h.recordDataLoss(ctx, AnomalyToolsRestoreFailed, string(SeverityHigh), requestID,
+							"re-marshaling body with restored tools failed, forwarding without tools: "+err.Error(),
+							map[string]any{"stage": "marshal_restored", "tools_count": len(reqBody.Tools)})
+					} else {
+						bodyBytes = restored
 					}
 				}
 			}
@@ -5535,7 +5561,12 @@ func hasStructuredToolCalls(value any) bool {
 // 2026-06-28: 为 session-audit hook.CheckV1 提供 user content。
 // 返回 "" 表示 body 不可解析 / 找不到 user message（hook 收到空 content
 // 会降级 Pass，不阻断主流程）。
-func extractFirstUserMessage(bodyBytes []byte) string {
+//
+// The bool result reports whether the body itself failed to parse, as opposed
+// to parsing cleanly with no user message. Both yield "" and both make the
+// audit auto-pass, so without the distinction an audit BYPASS is
+// indistinguishable from a clean pass. Callers must record the parse failure.
+func extractFirstUserMessage(bodyBytes []byte) (string, bool) {
 	var body struct {
 		Messages []struct {
 			Role    string          `json:"role"`
@@ -5543,19 +5574,19 @@ func extractFirstUserMessage(bodyBytes []byte) string {
 		} `json:"messages"`
 	}
 	if err := json.Unmarshal(bodyBytes, &body); err != nil {
-		return ""
+		return "", false
 	}
 	for _, m := range body.Messages {
 		if m.Role == "user" {
 			// content 可以是 string 或 []contentPart；用 extractMessageText 统一处理。
 			var anyContent any
 			if err := json.Unmarshal(m.Content, &anyContent); err == nil {
-				return extractMessageText(anyContent)
+				return extractMessageText(anyContent), true
 			}
-			return string(m.Content)
+			return string(m.Content), true
 		}
 	}
-	return ""
+	return "", true
 }
 
 // 2026-07-15: clientprofile helper —— 从 RequestLogContext 构造 SessionContext 并 emit。
