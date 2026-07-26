@@ -517,6 +517,7 @@ func (h *MessagesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		requestID, clientModel, outboundForLog, endUser, "messages", keyInfo,
 		clientID.Fingerprint.ClientProfile, clientID.IdentityHash,
 		attemptProviderID, attemptCredentialID, canonicalID,
+		canonicalNameFromResolution(modelResolution), // 2026-07-27: 标准模型名 (migration 458)
 		bodyBytes, txResult, egressProtocol, isStream,
 		gwSessionID, gwTaskID,
 		logCtx,

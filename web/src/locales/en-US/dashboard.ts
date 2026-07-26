@@ -262,6 +262,7 @@ export default {
     filterModel: 'Model',
     filterProvider: 'Provider',
     filterVendor: 'Vendor',
+    filterAgent: 'Client',  // 2026-07-27
     clearFilters: 'Clear filters',
     status: {
       in_progress: 'In Progress',

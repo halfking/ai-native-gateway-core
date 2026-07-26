@@ -197,6 +197,11 @@ type LiveRequest struct {
 	ClientProfile  string `json:"client_profile,omitempty"`
 	IdentityHash   string `json:"identity_hash,omitempty"`
 	CreditsCharged *int   `json:"credits_charged,omitempty"`
+	// 2026-07-27: 客户端感知扩展。request_logs_hot 写入后,SSE 推送
+	// 给前端的实时请求流 tile,前端可按"客户端"筛选 + 显示。
+	AgentName      string `json:"agent_name,omitempty"`
+	AgentType      string `json:"agent_type,omitempty"`
+	ClientProtocol string `json:"client_protocol,omitempty"`
 }
 
 // LiveStreamConfig controls hub behaviour. Zero values are safe and
@@ -1707,6 +1712,7 @@ func (h *LiveStreamSSEHub) LiveRequestFromTelemetry(
 	clientModel string,
 	outboundModel string,
 	canonicalID int,
+	canonicalNameIn string, // 2026-07-27: 入参标准模型名 (避免 SSE 路径里 JOIN models_canonical)
 	providerCode string,
 	status string,
 	success bool,
@@ -1717,6 +1723,9 @@ func (h *LiveStreamSSEHub) LiveRequestFromTelemetry(
 	totalTokens *int,
 	costUSD *float64,
 	failureStage *string,
+	agentName string, // 2026-07-27: 客户端类型(zcode/claude-code/opencode 等)
+	agentType string, // 2026-07-27: 客户端类型分组(web/cli/api/bot)
+	clientProtocol string, // 2026-07-27: openai-chat/anthropic-messages/gemini-generate
 	entry *telemetry.RequestLogEntry,
 ) LiveRequest {
 	out := LiveRequest{
@@ -1731,23 +1740,22 @@ func (h *LiveStreamSSEHub) LiveRequestFromTelemetry(
 		CostUSD:          costUSD,
 		ErrorKind:        errorKind,
 		FailureStage:     failureStage,
+		AgentName:        agentName,
+		AgentType:        agentType,
+		ClientProtocol:   clientProtocol,
 	}
 
 	// Model fallback chain: canonical_name → client → outbound.
 	//
 	// 老板要求（2026-07-16）"实时请求流后台分维要根据模型进行分维时，
 	// 需要将调用的模型名称全部转成标准名称再建立维度，然后请求过来后
-	// 要使用请求中的标准模型名称，不是供应商的原始模型名称"：
+	// 要使用请求中的标准模型名称，不是供应商的原始模型名称"。
 	//
-	//   1. 分维度（liveStreamDimensionKey 的 model 分支）已经用
-	//      CanonicalName 优先 + normalizeModelKey 做 case-insensitive 聚合；
-	//   2. 但流式推给前端的单条 tile 仍然把供应商原始名（outbound_model）
-	//      当成"model"显示，会让同一标准模型跨凭证散成多个泳道名称。
-	//
-	// 这里把 Model 字段的选择顺序倒过来，标准名 (CanonicalName) 永远优先；
-	// 解析不出标准名时回退到 client，再没才用 outbound（兜底保留向后兼容）。
-	canonicalName := ""
-	if canonicalID > 0 {
+	// 2026-07-27: 优先用入参 canonicalName (来自 request_logs_hot.canonical_model
+	// 字段),省掉一次 DB 查询。如果入参空 (canonical_id 没匹配),仍走原来的
+	// CanonicalNameFor fallback。
+	canonicalName := canonicalNameIn  // 2026-07-27: 入参直接用 (跳过 DB JOIN)
+	if canonicalName == "" && canonicalID > 0 {
 		canonicalName = h.CanonicalNameFor(ctx, canonicalID)
 	}
 	if canonicalName != "" {

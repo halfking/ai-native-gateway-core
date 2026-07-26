@@ -259,6 +259,7 @@ export default {
     filterModel: '模型',
     filterProvider: '供应商',
     filterVendor: '原厂',
+    filterAgent: '客户端',  // 2026-07-27
     clearFilters: '清除过滤',
     status: {
       in_progress: '进行中',

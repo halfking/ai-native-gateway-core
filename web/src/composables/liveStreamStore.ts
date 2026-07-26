@@ -35,6 +35,10 @@ export interface LiveRequest {
   client_profile?: string | null
   identity_hash?: string | null
   credits_charged?: number | null
+  // 2026-07-27: 客户端感知 (SSE 从后端 request_logs_hot.agent_* 推送)
+  agent_name?: string
+  agent_type?: string
+  client_protocol?: string
   // 2026-07-13: error-triggered probe fields
   is_probe?: boolean
   probe_origin?: 'direct' | 'gateway' | 'scheduled'

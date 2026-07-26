@@ -51,6 +51,11 @@ export interface RequestLogRow {
   api_key_owner_user: string | null
   application_code: string | null
   canonical_name: string | null
+  // 2026-07-27: 标准模型名 (migration 458) + 客户端感知
+  canonical_model: string | null
+  agent_name: string | null
+  agent_type: string | null
+  client_protocol: string | null
   provider_model: string | null
   trace_seq: number | null
   credits_charged: number | null
