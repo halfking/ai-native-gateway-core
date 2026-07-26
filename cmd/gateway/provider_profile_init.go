@@ -19,6 +19,8 @@ package main
 
 import (
 	"log/slog"
+	"os"
+	"strconv"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -35,11 +37,12 @@ type ProviderProfileWorkers struct {
 	cleaner    *bg.ProfileCleaner
 }
 
-// initProviderProfile initializes the provider profile system
+// initProviderProfile initializes the provider profile system.
 //
 // Returns nil when:
 //   - pool is nil (no DB mode)
-//   - provider_profile.enabled setting is false
+//   - provider_profile is disabled (env var LLM_GATEWAY_PROVIDER_PROFILE_ENABLED=false
+//     or settings.GetPlatformBool returns false)
 //   - initialization fails (logged as WARN)
 //
 // The system runs 3 background workers:
@@ -57,16 +60,52 @@ func initProviderProfile(pool *pgxpool.Pool, fernetKey []byte, keyring *secret.K
 		return nil
 	}
 
-	// Check if provider profile system is enabled
-	if !settings.GetPlatformBool("provider_profile.enabled", false) {
+	// Feature gate: env var takes precedence, then falls back to settings.
+	// This avoids any dependency on spec registration in the settings registry.
+	enabled := false
+	if envVal := os.Getenv("LLM_GATEWAY_PROVIDER_PROFILE_ENABLED"); envVal != "" {
+		enabled, _ = strconv.ParseBool(envVal)
+	}
+	if !enabled {
+		// Fallback: try settings (may fail if spec not yet registered)
+		enabled = settings.GetPlatformBool("provider_profile.enabled", false)
+	}
+	if !enabled {
 		slog.Info("provider profile: disabled via settings")
 		return nil
 	}
 
-	// Read configuration from settings
-	collectionSeconds := settings.GetPlatformDuration("provider_profile.collection_interval", int64((2*time.Hour)/time.Second))
-	aggregationSeconds := settings.GetPlatformDuration("provider_profile.aggregation_interval", int64((24*time.Hour)/time.Second))
-	cleanupSeconds := settings.GetPlatformDuration("provider_profile.cleanup_interval", int64((7*24*time.Hour)/time.Second))
+	// Read configuration from settings (env var takes precedence)
+	collectionSeconds := int64(7200)
+	if envVal := os.Getenv("LLM_GATEWAY_PROVIDER_PROFILE_COLLECTION_INTERVAL"); envVal != "" {
+		if v, err := strconv.ParseInt(envVal, 10, 64); err == nil {
+			collectionSeconds = v
+		}
+	}
+	if collectionSeconds <= 0 {
+		collectionSeconds = int64(settings.GetPlatformDuration("provider_profile.collection_interval", 7200))
+	}
+
+	aggregationSeconds := int64(86400)
+	if envVal := os.Getenv("LLM_GATEWAY_PROVIDER_PROFILE_AGGREGATION_INTERVAL"); envVal != "" {
+		if v, err := strconv.ParseInt(envVal, 10, 64); err == nil {
+			aggregationSeconds = v
+		}
+	}
+	if aggregationSeconds <= 0 {
+		aggregationSeconds = int64(settings.GetPlatformDuration("provider_profile.aggregation_interval", 86400))
+	}
+
+	cleanupSeconds := int64(604800)
+	if envVal := os.Getenv("LLM_GATEWAY_PROVIDER_PROFILE_CLEANUP_INTERVAL"); envVal != "" {
+		if v, err := strconv.ParseInt(envVal, 10, 64); err == nil {
+			cleanupSeconds = v
+		}
+	}
+	if cleanupSeconds <= 0 {
+		cleanupSeconds = int64(settings.GetPlatformDuration("provider_profile.cleanup_interval", 604800))
+	}
+
 	collectionInterval := time.Duration(collectionSeconds) * time.Second
 	aggregationInterval := time.Duration(aggregationSeconds) * time.Second
 	cleanupInterval := time.Duration(cleanupSeconds) * time.Second
