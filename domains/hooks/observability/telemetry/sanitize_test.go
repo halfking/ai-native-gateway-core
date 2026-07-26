@@ -134,7 +134,7 @@ func TestSanitizeUTF8JSON_InvalidJSONReturnsEmpty(t *testing.T) {
 func TestSanitizeJSONField_NilOnUnrecoverableJSON(t *testing.T) {
 	body := `{broken`
 	field := &body
-	sanitizeJSONField(&field)
+	sanitizeJSONField("request_body", &field)
 	if field != nil {
 		t.Fatalf("expected nil body, got %q", *field)
 	}
@@ -143,7 +143,7 @@ func TestSanitizeJSONField_NilOnUnrecoverableJSON(t *testing.T) {
 func TestSanitizeJSONField_PreservesValidJSON(t *testing.T) {
 	body := `{"ok":true}`
 	field := &body
-	sanitizeJSONField(&field)
+	sanitizeJSONField("request_body", &field)
 	if field == nil || *field != body {
 		t.Fatalf("expected unchanged JSON, got %v", field)
 	}
