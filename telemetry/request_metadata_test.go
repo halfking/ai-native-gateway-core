@@ -640,9 +640,19 @@ func TestExtractSystemPromptFromBody(t *testing.T) {
 			want: "You are Claude Code by Anthropic.",
 		},
 		{
+			name: "Anthropic messages — system content blocks",
+			body: []byte(`{"system":[{"type":"text","text":"You are Claude Code."}]}`),
+			want: "You are Claude Code.",
+		},
+		{
 			name: "OpenAI responses — instructions field",
 			body: []byte(`{"model":"gpt-4","instructions":"You are opencode, an interactive CLI.","input":[]}`),
 			want: "You are opencode, an interactive CLI.",
+		},
+		{
+			name: "Gemini — system instruction parts",
+			body: []byte(`{"systemInstruction":{"parts":[{"text":"You are ZCode."},{"text":"Use tools."}]}}`),
+			want: "You are ZCode.\nUse tools.",
 		},
 		{
 			name: "no system field at all",
