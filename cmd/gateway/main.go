@@ -2137,7 +2137,7 @@ func main() {
 		// Provider Profile System (Phase 1, 2026-07-26)
 		// Monitors provider quality across 7 dimensions with automated collection,
 		// aggregation, and scoring. Feature-flagged via provider_profile.enabled.
-		profileWorkers = initProviderProfile(dbConn.Pool())
+		profileWorkers = initProviderProfile(dbConn.Pool(), fernetKey, keyring)
 		if profileWorkers != nil {
 			slog.Info("CHECKPOINT: provider profile system started")
 		}
