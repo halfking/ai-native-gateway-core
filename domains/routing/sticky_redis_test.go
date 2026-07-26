@@ -73,6 +73,10 @@ func TestStickyRedisFallbackOnMemoryMiss(t *testing.T) {
 	if !cred.Found || cred.CredentialID != 7 {
 		t.Fatalf("redis fallback lookup failed: %+v", cred)
 	}
+	// Redis 命中 L1, Level 应映射到 StickyLevelSession(原 bug 硬编码 StickyLevelClient)
+	if cred.Level != StickyLevelSession {
+		t.Errorf("Redis L1 fallback Level: want StickyLevelSession, got %d", cred.Level)
+	}
 	// 回填后内存应有该 entry
 	if s.Len() == 0 {
 		t.Fatal("memory not backfilled after redis fallback")
