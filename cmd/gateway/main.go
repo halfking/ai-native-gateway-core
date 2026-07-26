@@ -2081,6 +2081,7 @@ func main() {
 	var brokenProbeReviver *bg.BrokenProbeReviver
 	var credCycler *bg.CredentialCycler
 	var credProbeV2 *bg.CredentialProbeV2
+	var periodicQuotaProbe *bg.PeriodicQuotaProbe
 	var pendingSweeper *bg.PendingSweeper
 	var candidateFailureMonitor *bg.CandidateFailureMonitor
 
@@ -2249,6 +2250,17 @@ func main() {
 				credProbeV2.Start(context.Background())
 			}
 			slog.Info("CHECKPOINT: after credProbeV2.Start")
+
+			// 2026-07-27: periodic quota probe for periodic_exhausted credentials
+			// Probes credentials in periodic_exhausted state every N minutes (default 5min)
+			// to detect when quota has recovered. Configurable via
+			// LLM_GATEWAY_PERIODIC_QUOTA_PROBE_INTERVAL.
+			periodicQuotaProbe = bg.NewPeriodicQuotaProbe(dbConn.Pool())
+			if credProbeV2 != nil {
+				periodicQuotaProbe.SetProbeSubmitter(credProbeV2.SubmitFastProbe)
+			}
+			periodicQuotaProbe.Start(context.Background())
+			slog.Info("CHECKPOINT: periodicQuotaProbe started")
 
 			// 900-series: default probe model picker (spec §4.2.1) — daily 0:00
 			slog.Info("CHECKPOINT: before NewDefaultProbePicker")

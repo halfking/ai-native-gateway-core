@@ -181,11 +181,11 @@ func (h *Handler) handleRoutingResolve(w http.ResponseWriter, r *http.Request) {
 		// R7 fix: 前端将基于这个字段判断 show 重置计数按钮，
 		// 而 resolve 操作的是 credentials.consecutive_failures。
 		// 这里增列 credential-level 的值用于显示，避免误判。
-		ConsecutiveFailures   int      `json:"consecutive_failures"`
-		CredentialConsecutiveFailures int `json:"credential_consecutive_failures"`
-		CompositeScore        float64  `json:"composite_score"`
-		BillingMode           string   `json:"billing_mode"`
-		BillingRound          int      `json:"billing_round"`
+		ConsecutiveFailures           int     `json:"consecutive_failures"`
+		CredentialConsecutiveFailures int     `json:"credential_consecutive_failures"`
+		CompositeScore                float64 `json:"composite_score"`
+		BillingMode                   string  `json:"billing_mode"`
+		BillingRound                  int     `json:"billing_round"`
 	}
 
 	rawModels := append([]string{normalizedModel}, variants[1:]...)
@@ -863,9 +863,9 @@ func (h *Handler) handleEmergencyRepair(w http.ResponseWriter, r *http.Request) 
 
 	beforeAfter := map[string]any{
 		"credential_id": req.CredentialID,
-		"raw_model":    req.RawModel,
-		"action":       req.Action,
-		"reason":       req.Reason,
+		"raw_model":     req.RawModel,
+		"action":        req.Action,
+		"reason":        req.Reason,
 	}
 
 	switch req.Action {
@@ -904,6 +904,8 @@ func (h *Handler) handleEmergencyRepair(w http.ResponseWriter, r *http.Request) 
 				manual_disabled = false,
 				availability_state = 'ready',
 				availability_recover_at = NULL,
+				quota_state = 'ok',
+				quota_recover_at = NULL,
 				circuit_state = 'closed',
 				cooling_until = NULL,
 				consecutive_failures = 0,

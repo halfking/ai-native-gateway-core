@@ -51,7 +51,7 @@ SELECT
         WHEN c.availability_state = 'auth_failed' THEN 'availability_auth_failed'
         WHEN c.availability_state = 'unreachable' THEN 'availability_unreachable'
         WHEN c.availability_state = 'suspended' THEN 'availability_suspended'
-        WHEN c.quota_state IN ('permanently_exhausted', 'balance_exhausted') THEN 'quota_' || c.quota_state
+        WHEN c.quota_state IN ('permanently_exhausted', 'balance_exhausted', 'periodic_exhausted') THEN 'quota_' || c.quota_state
         WHEN c.health_status = 'unreachable' AND c.health_checked_at > now() - interval '1 hour' THEN 'recent_probe_unreachable'
         WHEN NOT pm.available THEN 'model_unavailable'
         WHEN cmb.unavailable_reason = 'manual' THEN 'model_manual_disabled'
