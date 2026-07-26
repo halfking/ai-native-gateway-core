@@ -33,14 +33,11 @@ func (s *PGMetricsStore) SaveSnapshot(ctx context.Context, snapshot *MetricSnaps
 	}
 	var errCount int
 	var errorTypesJSON []byte
-	if snapshot.StabilityMetrics != nil {
+	if snapshot.StabilityMetrics != nil && len(snapshot.StabilityMetrics.ErrorTypes) > 0 {
 		errCount = snapshot.StabilityMetrics.ErrorCount
-		if snapshot.StabilityMetrics.ErrorTypes != nil {
-			errorTypesJSON, _ = json.Marshal(snapshot.StabilityMetrics.ErrorTypes)
-		} else {
-			errorTypesJSON = []byte("{}")
-		}
+		errorTypesJSON, _ = json.Marshal(snapshot.StabilityMetrics.ErrorTypes)
 	} else {
+		errCount = 0
 		errorTypesJSON = []byte("{}")
 	}
 	var totalModels, availModels int
