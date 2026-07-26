@@ -26,7 +26,6 @@ import (
 	"github.com/kaixuan/llm-gateway-go/domains/routingstate"
 	"github.com/kaixuan/llm-gateway-go/domains/session"        //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/domains/transformation" //nolint:depguard // historical violation, B1 routing.go CQRS will fix
-	"github.com/kaixuan/llm-gateway-go/domains/ursm"
 	ursmv2 "github.com/kaixuan/llm-gateway-go/domains/ursm/v2"
 	ursmv2api "github.com/kaixuan/llm-gateway-go/domains/ursm/v2/api"
 	"github.com/kaixuan/llm-gateway-go/errorsx"
@@ -724,16 +723,14 @@ type Executor struct {
 		ObserveProbe(task routingstate.ProbeTask)
 	}
 
-	// URSM (2026-07-03): 统一路由状态管理器，替代分散的状态管理逻辑。
-	// 当非nil时，Executor使用URSM.RecordRequest()记录请求结果，
-	// 自动触发状态更新、探测调度和资源释放。
-	// Nil则保留旧的状态管理逻辑（向后兼容）。
-	URSM *ursm.Manager
-
 	// URSMv2 (2026-07-21, URSM v2 plan T8): 旁路写新管线，影子/金丝雀模式下
 	// 通过 RecordRequest 把结果回写到 v2 store，**不影响**任何现有决策路径。
 	// 当 URSMv2 == nil 或 v2 模式为 off/shadow 时 Manager.RecordRequest
 	// 内部短路；本字段 nil 即保留所有旧行为。
+	//
+	// 2026-07-26 URSM v1→v2 统一: 旧字段 URSM (v1, domains/ursm.Manager) 已删除。
+	// v1 在 main.go 中从未 wire，运行时恒为 nil。executor 唯一的请求状态写入
+	// 入口是 URSMv2；authoritative 模式下它是唯一权威源。
 	URSMv2 *ursmv2.Manager
 
 	// DegradationTracker (2026-07-07 Phase 1): 追踪 FpSlot 降级模式请求
@@ -2084,51 +2081,26 @@ func (e *Executor) Execute(params *ExecParams) (*ExecuteResult, error) {
 				})
 			}
 
-			// 2026-07-24: URSM v2 authoritative 模式下只写 v2，跳过旧 URSM。
-			// 统一状态管理：只有一个写入路径，避免状态不一致。
-			shouldWriteURSMv2 := e.URSMv2 != nil && e.URSMv2.Mode() == ursmv2api.ModeAuthoritative
-			shouldWriteLegacyURSM := e.URSM != nil && e.URSM.Enabled() && !shouldWriteURSMv2
-
-			if shouldWriteLegacyURSM || shouldWriteURSMv2 {
-				requestID := params.R.Header.Get("X-Request-Id")
-				if requestID == "" {
-					requestID = "async-" + time.Now().Format("20060102T150405.000")
-				}
-				if shouldWriteLegacyURSM {
-					// 异步写旧 URSM（向后兼容模式）
-					go func() {
-						ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-						defer cancel()
-						err := e.URSM.RecordRequest(ctx, ursm.RecordRequestAPI{
-							RequestID:    requestID,
-							CredentialID: cand.CredentialID,
-							RawModel:     cand.RawModel,
-							SessionID:    params.SessionID,
-							Success:      true,
-							LatencyMs:    result.LatencyMs,
-							ErrorKind:    "",
-							Timestamp:    time.Now(),
-						})
-						if err != nil {
-							slog.Warn("failed to record success to ursm",
-								"error", err, "request_id", requestID, "credential_id", cand.CredentialID)
-						}
-					}()
-				}
-				if shouldWriteURSMv2 {
-					// 同步写 URSM v2（authoritative 模式）
-					if err := e.URSMv2.RecordRequest(params.R.Context(), ursmv2api.RequestOutcome{
-						CredentialID: cand.CredentialID,
-						RawModel:     cand.RawModel,
-						TenantID:     params.TenantID,
-						BillingMode:  cand.BillingMode,
-						Success:      true,
-						LatencyMs:    result.LatencyMs,
-						RequestID:    requestID,
-					}); err != nil {
-						slog.Warn("ursm.v2: record success failed",
-							"error", err, "request_id", requestID, "credential_id", cand.CredentialID)
-					}
+			// 2026-07-26 URSM v1→v2 统一: 唯一的状态写入入口是 URSMv2。
+			// v1 (domains/ursm) 已迁入 _to-be-deprecated/，executor 不再走
+			// `shouldWriteLegacyURSM` 旁路。Manager.RecordRequest 内部根据
+			// rollout 模式 (off/shadow/canary/authoritative) 自决是否真写。
+			requestID := params.R.Header.Get("X-Request-Id")
+			if requestID == "" {
+				requestID = "async-" + time.Now().Format("20060102T150405.000")
+			}
+			if e.URSMv2 != nil {
+				if err := e.URSMv2.RecordRequest(params.R.Context(), ursmv2api.RequestOutcome{
+					CredentialID: cand.CredentialID,
+					RawModel:     cand.RawModel,
+					TenantID:     params.TenantID,
+					BillingMode:  cand.BillingMode,
+					Success:      true,
+					LatencyMs:    result.LatencyMs,
+					RequestID:    requestID,
+				}); err != nil {
+					slog.Warn("ursm.v2: record success failed",
+						"error", err, "request_id", requestID, "credential_id", cand.CredentialID)
 				}
 			}
 
@@ -2352,54 +2324,28 @@ func (e *Executor) Execute(params *ExecParams) (*ExecuteResult, error) {
 				e.observeRoutingStateProbe(params, cand, routingstate.ProbeTriggerRequestFailure)
 			}
 
-			// 2026-07-24: URSM v2 authoritative 模式下只写 v2，跳过旧 URSM。
-			// 统一状态管理：只有一个写入路径，避免状态不一致。
-			shouldWriteURSMv2 := e.URSMv2 != nil && e.URSMv2.Mode() == ursmv2api.ModeAuthoritative
-			shouldWriteLegacyURSM := e.URSM != nil && e.URSM.Enabled() && !shouldWriteURSMv2
-
-			if shouldWriteLegacyURSM || shouldWriteURSMv2 {
-				requestID := params.R.Header.Get("X-Request-Id")
-				if requestID == "" {
-					requestID = "async-" + time.Now().Format("20060102T150405.000")
-				}
-				if shouldWriteLegacyURSM {
-					// 异步写旧 URSM（向后兼容模式）
-					go func() {
-						ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-						defer cancel()
-						err := e.URSM.RecordRequest(ctx, ursm.RecordRequestAPI{
-							RequestID:    requestID,
-							CredentialID: cand.CredentialID,
-							RawModel:     cand.RawModel,
-							SessionID:    params.SessionID,
-							Success:      false,
-							LatencyMs:    0,
-							ErrorKind:    string(kind),
-							Timestamp:    time.Now(),
-						})
-						if err != nil {
-							slog.Warn("failed to record failure to ursm",
-								"error", err, "request_id", requestID,
-								"credential_id", cand.CredentialID, "error_kind", kind)
-						}
-					}()
-				}
-				if shouldWriteURSMv2 {
-					// 同步写 URSM v2（authoritative 模式）
-					if err := e.URSMv2.RecordRequest(params.R.Context(), ursmv2api.RequestOutcome{
-						CredentialID: cand.CredentialID,
-						RawModel:     cand.RawModel,
-						TenantID:     params.TenantID,
-						BillingMode:  cand.BillingMode,
-						Success:      false,
-						LatencyMs:    0,
-						ErrorKind:    string(kind),
-						RequestID:    requestID,
-					}); err != nil {
-						slog.Warn("ursm.v2: record failure failed",
-							"error", err, "request_id", requestID,
-							"credential_id", cand.CredentialID, "error_kind", kind)
-					}
+			// 2026-07-26 URSM v1→v2 统一: 唯一的状态写入入口是 URSMv2。
+			// v1 (domains/ursm) 已迁入 _to-be-deprecated/，executor 不再走
+			// `shouldWriteLegacyURSM` 旁路。Manager.RecordRequest 内部根据
+			// rollout 模式自决是否真写（off/shadow 短路，canary/authoritative 落 Redis）。
+			requestID := params.R.Header.Get("X-Request-Id")
+			if requestID == "" {
+				requestID = "async-" + time.Now().Format("20060102T150405.000")
+			}
+			if e.URSMv2 != nil {
+				if err := e.URSMv2.RecordRequest(params.R.Context(), ursmv2api.RequestOutcome{
+					CredentialID: cand.CredentialID,
+					RawModel:     cand.RawModel,
+					TenantID:     params.TenantID,
+					BillingMode:  cand.BillingMode,
+					Success:      false,
+					LatencyMs:    0,
+					ErrorKind:    string(kind),
+					RequestID:    requestID,
+				}); err != nil {
+					slog.Warn("ursm.v2: record failure failed",
+						"error", err, "request_id", requestID,
+						"credential_id", cand.CredentialID, "error_kind", kind)
 				}
 			}
 
