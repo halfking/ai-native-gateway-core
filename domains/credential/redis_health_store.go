@@ -157,19 +157,56 @@ func (s *RedisHealthStore) Get(id string) (*Credential, bool, error) {
 	return cred, true, nil
 }
 
-// Save 保存credential（内存+Redis双写）
+// Save 保存credential（内存+Redis双写）。
+//
+// Redis 写入是**同步**的（而非 fire-and-forget 的 goroutine）。Save 是
+// 低频路径（credential 注册 / reload），不在请求热路径上，一次 Redis
+// 往返的开销可以接受。改成同步是为了消除一个真实的覆盖竞态：
+//
+//	旧实现 `go s.asyncSaveToRedis(cred)` 写入的是调用时刻的快照（通常
+//	consecutive_fails=0）。若该 goroutine 滞后执行，晚于随后的
+//	MarkFailure/MarkSuccess（它们用 Lua 原子 HSET 把 fails 推进到
+//	1/2/3），滞后 goroutine 的无条件 HSET 会把 Redis 状态**倒退**回
+//	0，覆盖掉原子操作的结果。重启后 LoadFromRedis 读到的就是被覆盖
+//	的错误状态。
+//
+//	同步写入后，Save 返回即代表内存与 Redis 一致，没有任何滞后 goroutine
+//	能再覆盖后续的 MarkFailure/MarkSuccess。Redis 失败时仍降级为纯内存
+//	（与原行为一致），不影响可用性。
 func (s *RedisHealthStore) Save(cred *Credential) error {
 	// 1. 内存写入（同步，必须成功）
 	if err := s.memory.Save(cred); err != nil {
 		return err
 	}
 
-	// 2. Redis写入（异步，失败不影响）
+	// 2. Redis 写入（同步；失败降级到纯内存，不影响主流程）
 	if s.Enabled() {
-		go s.asyncSaveToRedis(cred)
+		s.saveToRedis(context.Background(), cred)
 	}
 
 	return nil
+}
+
+// saveToRedis synchronously writes the credential's health state to Redis.
+// Failures are logged but not returned: Redis is a secondary store and the
+// memory copy is already authoritative after step 1 of Save.
+func (s *RedisHealthStore) saveToRedis(ctx context.Context, cred *Credential) {
+	ctx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+
+	_, err := updateHealthStateScript.Run(
+		ctx, s.client,
+		[]string{s.key(cred.ID)},
+		string(cred.Status),
+		cred.ConsecutiveFails,
+		cred.LastHealthCheck.UTC().Format(time.RFC3339),
+		int(s.ttl.Seconds()),
+	).Result()
+
+	if err != nil {
+		s.logger.Warn("save to redis failed",
+			"credential_id", cred.ID, "error", err)
+	}
 }
 
 // MarkFailure 原子标记失败（内存+Redis）
@@ -342,26 +379,6 @@ func (s *RedisHealthStore) LoadFromRedis(ctx context.Context) (int, error) {
 		"count", loaded)
 
 	return loaded, nil
-}
-
-// asyncSaveToRedis 异步保存到Redis（不阻塞）
-func (s *RedisHealthStore) asyncSaveToRedis(cred *Credential) {
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
-
-	_, err := updateHealthStateScript.Run(
-		ctx, s.client,
-		[]string{s.key(cred.ID)},
-		string(cred.Status),
-		cred.ConsecutiveFails,
-		cred.LastHealthCheck.UTC().Format(time.RFC3339),
-		int(s.ttl.Seconds()),
-	).Result()
-
-	if err != nil {
-		s.logger.Warn("async save to redis failed",
-			"credential_id", cred.ID, "error", err)
-	}
 }
 
 // verifyConsistency 异步验证内存与Redis一致性
