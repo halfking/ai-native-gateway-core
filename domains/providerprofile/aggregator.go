@@ -16,10 +16,10 @@ type Aggregator interface {
 // DailyAggregator 每日聚合器
 // 职责：从小时级指标计算天级画像和评分
 type DailyAggregator struct {
-	metricsStore MetricsStore
-	profileStore ProfileStore
-	scorer       Scorer
-	weights      ProfileWeights
+	metricsStore     MetricsStore
+	profileStore     ProfileStore
+	scorer           Scorer
+	weights          ProfileWeights
 	credentialLister CredentialLister
 }
 
@@ -49,12 +49,15 @@ func (a *DailyAggregator) AggregateDailyProfiles(ctx context.Context, date time.
 	}
 
 	// 2. 对每个凭证聚合画像
+	var aggregateErrors []error
 	for _, credID := range credentialIDs {
 		if err := a.aggregateForCredential(ctx, credID, date); err != nil {
-			// 记录错误但继续处理其他凭证
-			// TODO: 添加日志记录
-			continue
+			aggregateErrors = append(aggregateErrors, fmt.Errorf("credential %d: %w", credID, err))
 		}
+	}
+
+	if len(aggregateErrors) > 0 {
+		return fmt.Errorf("aggregated with %d errors: first error: %w", len(aggregateErrors), aggregateErrors[0])
 	}
 
 	return nil

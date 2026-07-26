@@ -36,10 +36,10 @@ func (s *PGProfileStore) SaveDailyProfile(ctx context.Context, profile *DailyPro
 		INSERT INTO provider_profile_daily (
 			credential_id, provider_id, profile_date,
 			network_score, credibility_score, availability_score, stability_score,
-			scale_score, cost_accuracy_score, price_score, total_score,
-			timeslot_scores, score_stddev, best_timeslot, worst_timeslot,
-			raw_stats, created_at
-		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)
+				scale_score, cost_accuracy_score, price_score, total_score,
+				timeslot_scores, score_stddev, best_timeslot, worst_timeslot,
+				raw_stats, created_at
+			) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12::text::jsonb, $13, $14, $15, $16::text::jsonb, $17)
 		ON CONFLICT (credential_id, profile_date) DO UPDATE SET
 			network_score = EXCLUDED.network_score,
 			credibility_score = EXCLUDED.credibility_score,
@@ -68,11 +68,11 @@ func (s *PGProfileStore) SaveDailyProfile(ctx context.Context, profile *DailyPro
 		profile.CostAccuracyScore,
 		profile.PriceScore,
 		profile.TotalScore,
-		timeslotScoresJSON,
+		string(timeslotScoresJSON),
 		profile.ScoreStddev,
 		profile.BestTimeslot,
 		profile.WorstTimeslot,
-		rawStatsJSON,
+		string(rawStatsJSON),
 		profile.CreatedAt,
 	)
 

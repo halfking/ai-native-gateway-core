@@ -62,12 +62,15 @@ func initProviderProfile(pool *pgxpool.Pool, fernetKey []byte, keyring *secret.K
 
 	// Feature gate: env var takes precedence, then falls back to settings.
 	// This avoids any dependency on spec registration in the settings registry.
-	enabled := false
-	if envVal := os.Getenv("LLM_GATEWAY_PROVIDER_PROFILE_ENABLED"); envVal != "" {
-		enabled, _ = strconv.ParseBool(envVal)
-	}
-	if !enabled {
-		// Fallback: try settings (may fail if spec not yet registered)
+	var enabled bool
+	if envVal, ok := os.LookupEnv("LLM_GATEWAY_PROVIDER_PROFILE_ENABLED"); ok {
+		parsed, err := strconv.ParseBool(envVal)
+		if err != nil {
+			slog.Warn("provider profile: invalid enabled environment value", "value", envVal, "error", err)
+			return nil
+		}
+		enabled = parsed
+	} else {
 		enabled = settings.GetPlatformBool("provider_profile.enabled", false)
 	}
 	if !enabled {
