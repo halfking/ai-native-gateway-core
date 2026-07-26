@@ -198,19 +198,8 @@ type Limiter struct {
 	// RPM uses Redis across instances when configured and memory otherwise.
 	rpmLimiter RPMLimiter
 
-	// Pressure cache (Phase 2.4): 5-second TTL cache for GetPressure
-	pressureCache      map[string]cachedPressure // key: "providerID/credentialID"
-	pressureCacheMu    sync.RWMutex
-	pressureCacheTTL   time.Duration
-
 	mu     sync.RWMutex
 	stopCh chan struct{}
-}
-
-// cachedPressure stores a pressure value with expiration time
-type cachedPressure struct {
-	value     float64
-	expiresAt time.Time
 }
 
 // rpmWindow is a 60-second sliding window of acquire timestamps. Stale
@@ -230,19 +219,17 @@ func NewLimiter() *Limiter {
 // NewWithLimits creates a new limiter with custom limits.
 func NewWithLimits(global, pool, credential, identity int) *Limiter {
 	l := &Limiter{
-		globalLimit:      global,
-		poolLimit:        pool,
-		credentialLimit:  credential,
-		identityLimit:    identity,
-		global:           NewSemaphore("global", global),
-		pools:            make(map[int]*Semaphore),
-		creds:            make(map[string]*Semaphore),
-		idents:           make(map[string]*Semaphore),
-		keys:             make(map[int]*Semaphore),
-		rpmLimiter:       NewRPMLimiterFromEnv(),
-		pressureCache:    make(map[string]cachedPressure),
-		pressureCacheTTL: 5 * time.Second, // 5-second TTL, matching FpSlot cache
-		stopCh:           make(chan struct{}),
+		globalLimit:     global,
+		poolLimit:       pool,
+		credentialLimit: credential,
+		identityLimit:   identity,
+		global:          NewSemaphore("global", global),
+		pools:           make(map[int]*Semaphore),
+		creds:           make(map[string]*Semaphore),
+		idents:          make(map[string]*Semaphore),
+		keys:            make(map[int]*Semaphore),
+		rpmLimiter:      NewRPMLimiterFromEnv(),
+		stopCh:          make(chan struct{}),
 	}
 	go l.recoveryLoop()
 	return l
@@ -592,49 +579,38 @@ func (l *Limiter) recoveryStep() {
 // Pressure Signal - Phase 2.1
 // ---------------------------------------------------------------------------
 
-// GetPressure 返回指定 credential 的 Limiter 压力（0-1）
-// 压力 = max(各层 Used / Capacity)
-// 返回 0 表示无压力或无限制
+// GetPressure 返回指定 credential 的 Limiter 压力（0-1）。
+// 压力 = max(各层 Used / Capacity)；返回 0 表示无压力或无限制。
 //
-// Phase 2.4 (2026-07-25): 添加 5 秒 TTL 缓存，减少高频路由选择时的开销
+// 该值由 Router.applyPressurePenalty 在每次路由选择时读取，用于给候选
+// 节点施加权重惩罚（见 executors/router.go）。因此必须始终反映各层
+// semaphore 的实时占用——一个刚刚 Release 了 token 的 credential 必须
+// 立即降权，否则会被继续惩罚，违背 pressure-aware routing 的目的。
 //
 // 参数:
 //   - credentialID: credential ID (Layer 2)
 //   - poolID: provider pool ID (Layer 1)
 //   - identityKey: 身份标识（Layer 3，可选）
 //
-// 返回最严重层的压力值（0-1）
+// 返回最严重层的压力值（0-1）。
+//
+// 历史：c6842218 曾为此方法引入 5 秒 TTL 缓存以降低高频路由的开销，但
+// Release()/TryAcquire() 不会失效缓存，导致压力值最长 5 秒不反映真实
+// 占用。calculatePressure 全部是 atomic.Int64 读取 + 少量除法，实测远
+// 低于路由其它开销（Redis FpSlot 查询、权重排序），缓存收益不抵正确性
+// 损失，已于 2026-07-27 移除。不要再加回 TTL 缓存；如需降开销，应从
+// semaphore 内部读取路径优化，而非在调用方缓存语义值。
 func (l *Limiter) GetPressure(
 	credentialID int,
 	poolID int,
 	identityKey string,
 ) float64 {
-	// Check cache first
-	cacheKey := fmt.Sprintf("%d/%d", poolID, credentialID)
-	l.pressureCacheMu.RLock()
-	cached, found := l.pressureCache[cacheKey]
-	l.pressureCacheMu.RUnlock()
-	
-	if found && time.Now().Before(cached.expiresAt) {
-		// Cache hit
-		return cached.value
-	}
-	
-	// Cache miss or expired, calculate pressure
-	pressure := l.calculatePressure(credentialID, poolID, identityKey)
-	
-	// Update cache
-	l.pressureCacheMu.Lock()
-	l.pressureCache[cacheKey] = cachedPressure{
-		value:     pressure,
-		expiresAt: time.Now().Add(l.pressureCacheTTL),
-	}
-	l.pressureCacheMu.Unlock()
-	
-	return pressure
+	return l.calculatePressure(credentialID, poolID, identityKey)
 }
 
-// calculatePressure calculates the actual pressure value without caching
+// calculatePressure reads the live atomic counters of every semaphore layer
+// and returns the highest Used/Capacity ratio. No caching — callers (Router)
+// depend on the value reflecting the current occupancy.
 func (l *Limiter) calculatePressure(
 	credentialID int,
 	poolID int,
