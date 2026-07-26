@@ -14,7 +14,6 @@ import (
 	"github.com/kaixuan/llm-gateway-go/credentialfpslot"
 	"github.com/kaixuan/llm-gateway-go/domains/credential"      //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/domains/credentialstate" //nolint:depguard // historical violation, B1 routing.go CQRS will fix
-	"github.com/kaixuan/llm-gateway-go/domains/ursm"
 	ursmv2 "github.com/kaixuan/llm-gateway-go/domains/ursm/v2"
 	ursmv2api "github.com/kaixuan/llm-gateway-go/domains/ursm/v2/api"
 	"github.com/kaixuan/llm-gateway-go/errorsx"
@@ -50,12 +49,12 @@ type Router struct {
 	// 新增：状态管理器引用（向后兼容）
 	StateManager credentialstate.StateProvider
 
-	// 新增：URSM统一路由状态管理器
-	URSM *ursm.Manager
-
 	// URSMv2 (2026-07-21, URSM v2 plan T16): 在 canary / authoritative 模式下，
 	// PlanCandidates 会委托 v2 Manager.Plan 重新排序/过滤候选，v2 返回 nil 时
 	// 回退到原有 ordered 切片。Nil 即保留所有旧行为（main.go 未 wire，运行时为 nil）。
+	//
+	// 2026-07-26 URSM v1→v2 统一: 旧字段 URSM (v1) 已删除，main.go 从未给它
+	// 赋值过，运行时恒为 nil。Router 唯一的 URSM 入口是 URSMv2。
 	URSMv2 *ursmv2.Manager
 
 	// 新增：路由评分权重配置（Phase 1）
@@ -91,10 +90,9 @@ func (r *Router) PlanCandidates(
 		return nil
 	}
 
-	// 新增：优先使用URSM路由（如果可用）
-	if r.URSM != nil && r.URSM.Enabled() {
-		return r.planWithURSM(candidates, stickyCredentialID, policy, egressPreference)
-	}
+	// 2026-07-26 URSM v1→v2 统一: 旧 v1 dispatch (`r.URSM.Enabled() → planWithURSM`)
+	// 已删除——v1 在 main.go 中从未 wire，运行时恒为 nil。Router 唯一的 URSM 入口
+	// 是 URSMv2 (下方 authoritative/canary 分支)。
 
 	// 2026-07-21, URSM v2 plan T20 (convergence): 在 mode=authoritative 模式下
 	// 完全关掉旧 credentialstate / IsAvailable 读取，把"哪些候选可用"的判定
@@ -150,16 +148,15 @@ func (r *Router) PlanCandidates(
 				if len(candidates) == 0 {
 					return nil
 				}
-				}
 			}
 		}
+	}
 
-		// 2026-07-24 Phase 2.3: 应用压力惩罚（feature flag 控制）
-		// 在 URSM v2 过滤之后，根据 FpSlots/Limiter 压力调整权重
-		// 注意：完整调用在 stateBackend 定义之后（见下方）
+	// 2026-07-24 Phase 2.3: 应用压力惩罚（feature flag 控制）
+	// 在 URSM v2 过滤之后，根据 FpSlots/Limiter 压力调整权重
+	// 注意：完整调用在 stateBackend 定义之后（见下方）
 
-
-		// 2026-07-24 Phase 1: 使用统一的状态后端接口，消除散落的条件判断。
+	// 2026-07-24 Phase 1: 使用统一的状态后端接口，消除散落的条件判断。
 	// 一次性决定使用 URSM v2 / StateManager / DB-only 哪套系统。
 	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
 	defer cancel()
@@ -210,21 +207,21 @@ func (r *Router) PlanCandidates(
 			}
 		}
 
-	// 2026-07-24 Phase 1: 在 authoritative 模式下也保留降级模式。
-	// 降级模式是保护机制，用于处理瞬态故障导致的完全失败。
-	// URSM v2 authoritative 模式下的冷却决策仍在生效，降级只是最后的保护。
-	if len(candidates) <= 2 {
-		degradedCandidates := r.tryDegradedMode(queryCtx, candidates)
-		if len(degradedCandidates) > 0 {
-			slog.Warn("router: degraded mode activated, using transiently unavailable candidates",
-				"total_candidates", len(candidates),
-				"degraded_count", len(degradedCandidates),
-				"reasons", reasonCounts,
-				"state_backend", stateBackend.Name(),
-			)
-			return degradedCandidates
+		// 2026-07-24 Phase 1: 在 authoritative 模式下也保留降级模式。
+		// 降级模式是保护机制，用于处理瞬态故障导致的完全失败。
+		// URSM v2 authoritative 模式下的冷却决策仍在生效，降级只是最后的保护。
+		if len(candidates) <= 2 {
+			degradedCandidates := r.tryDegradedMode(queryCtx, candidates)
+			if len(degradedCandidates) > 0 {
+				slog.Warn("router: degraded mode activated, using transiently unavailable candidates",
+					"total_candidates", len(candidates),
+					"degraded_count", len(degradedCandidates),
+					"reasons", reasonCounts,
+					"state_backend", stateBackend.Name(),
+				)
+				return degradedCandidates
+			}
 		}
-	}
 
 		slog.Warn("router: all candidates unavailable",
 			"total", len(candidates),
@@ -380,135 +377,30 @@ func deduplicateCandidates(candidates []provider.Candidate) []provider.Candidate
 	return result
 }
 
-// planWithURSM 使用URSM路由（新增）
-func (r *Router) planWithURSM(
-	candidates []provider.Candidate,
-	stickyCredentialID *int,
-	policy *provider.Policy,
-	egressPreference []string,
-) []provider.Candidate {
-	if len(candidates) == 0 {
-		return nil
-	}
-
-	// 提取model和sessionID
-	model := candidates[0].RawModel
-	sessionID := "" // TODO: 从context或请求参数中获取
-
-	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
-	defer cancel()
-
-	// 调用URSM获取可用节点
-	nodes, err := r.URSM.GetAvailableNodes(ctx, model, sessionID)
-	if err != nil {
-		slog.Warn("ursm get nodes failed, fallback to legacy",
-			"error", err,
-			"model", model)
-		// 回退到旧逻辑
-		return r.planLegacy(candidates, stickyCredentialID, policy, egressPreference)
-	}
-
-	// 转换RouteNode到Candidate
-	result := make([]provider.Candidate, 0, len(nodes))
-	for _, node := range nodes {
-		// 在原始candidates中找到匹配的Candidate
-		for _, cand := range candidates {
-			if cand.CredentialID == node.CredentialID && cand.RawModel == node.RawModel {
-				result = append(result, cand)
-				break
-			}
-		}
-	}
-
-	// 应用sticky偏好
-	if stickyCredentialID != nil {
-		result = prioritizeSticky(result, *stickyCredentialID)
-	}
-
-	// 应用协议偏好
-	if len(egressPreference) > 0 {
-		result = applyProtocolAffinity(result, egressPreference)
-	}
-
-	return result
-}
+// planWithURSM 已删除 2026-07-26 (URSM v1→v2 统一)
+// v1 入口 (r.URSM) 在 main.go 中从未 wire，运行时恒为 nil，该函数为死代码。
 
 // planLegacy 保留旧逻辑（向后兼容）
+// planLegacy 保留旧逻辑（向后兼容） — REMOVED 2026-07-26 (URSM v1→v2 统一)
+//
+// 唯一调用方 planWithURSM 已删除，planLegacy 本身也成死代码。
+// 函数体替换为 deprecated 占位返回 nil，避免任何意外调用导致 nil deref。
+// 新代码不应再调用本方法，PlanCandidates 走 selectStateBackend() 统一入口。
+//
+// DEPRECATED: 2026-07-26 之后将删除此函数（确认无外部引用后）。
 func (r *Router) planLegacy(
 	candidates []provider.Candidate,
 	stickyCredentialID *int,
 	policy *provider.Policy,
 	egressPreference []string,
 ) []provider.Candidate {
-	// 使用状态管理器过滤（如果启用）
-	var available []provider.Candidate
-	if r.StateManager != nil && r.StateManager.Enabled() {
-		ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
-		defer cancel()
-		available = r.filterAvailableWithStateManager(ctx, candidates)
-	} else {
-		available = filterAvailable(candidates)
-	}
-
-	if len(available) == 0 {
-		// Build a per-reason breakdown so the next "all providers failed at
-		// the same time" outage can be root-caused from this log line alone.
-		//
-		// 2026-07-13 fix: also query StateManager for each candidate's
-		// in-memory rejection reason (e.g. cooling/transient). Previously
-		// only `c.UnavailableReason()` was consulted, but candidates filtered
-		// by the state manager have an empty UnavailableReason() and were
-		// logged as `unknown`. We now surface the actual StateManager reason
-		// so operators can see *why* the candidate was rejected without
-		// having to correlate with credential_state_log separately.
-		reasonCounts := make(map[string]int, 8)
-		var sampleReasons []string
-		queryCtx, queryCancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
-		defer queryCancel()
-		for _, c := range candidates {
-			reason := c.UnavailableReason()
-			if reason == "" && r.StateManager != nil && r.StateManager.Enabled() {
-				if _, smReason := r.StateManager.IsAvailable(queryCtx, c.CredentialID, c.RawModel); smReason != "" {
-					reason = "state:" + smReason
-				}
-			}
-			if reason == "" {
-				reason = "unknown"
-			}
-			reasonCounts[reason]++
-			if len(sampleReasons) < 5 {
-				sampleReasons = append(sampleReasons, fmt.Sprintf(
-					"cred=%d prov=%d reason=%s", c.CredentialID, c.ProviderID, reason,
-				))
-			}
-		}
-		slog.Warn("router: all candidates unavailable",
-			"total", len(candidates),
-			"reasons", reasonCounts,
-			"sample", sampleReasons,
-		)
-		return nil
-	}
-
-	available = r.filterHealthyNodes(available)
-
-	// Round 1: token_plan / code_plan / agent_plan / free — always before PAYG.
-	// Round 2: token (按量). Executor skips saturated round-1 creds and falls through.
-	round1, round2 := splitByBillingRound(available)
-	ordered := r.planByTier(round1, policy)
-	if len(round2) > 0 {
-		ordered = append(ordered, r.planByTier(round2, policy)...)
-	}
-
-	if stickyCredentialID != nil {
-		ordered = prioritizeSticky(ordered, *stickyCredentialID)
-	}
-
-	if len(egressPreference) > 0 {
-		ordered = applyProtocolAffinity(ordered, egressPreference)
-	}
-
-	return ordered
+	_ = candidates
+	_ = stickyCredentialID
+	_ = policy
+	_ = egressPreference
+	slog.Warn("planLegacy called after URSM v1→v2 统一 deprecated; returning nil",
+		"hint", "PlanCandidates now goes through selectStateBackend() exclusively")
+	return nil
 }
 
 func splitByBillingRound(cands []provider.Candidate) (round1, round2 []provider.Candidate) {
