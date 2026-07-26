@@ -2784,6 +2784,9 @@ func (h *ChatHandler) serveWithExecutor(
 		}
 		return
 	}
+	if logCtx != nil && len(logCtx.OutboundBody) == 0 && result != nil && len(result.RequestBody) > 0 {
+		logCtx.OutboundBody = result.RequestBody
+	}
 
 	// ── 2026-07-17: trace.route_credential ──────────────────────────────────
 	// 在 executor.Execute 返回后立即记录"实际命中的凭据"。 这是 trace 视图里
