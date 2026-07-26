@@ -129,6 +129,7 @@ export const liveStreamState = reactive({
 const visibilityState = reactive({
   isVisible: typeof document !== 'undefined' ? !document.hidden : true,
   lastVisibleAt: Date.now(),
+  missedWhileHidden: false,
 })
 
 let needsFullRefresh = false
@@ -143,17 +144,19 @@ if (typeof document !== 'undefined') {
     visibilityState.isVisible = !document.hidden
 
     if (!document.hidden && wasHidden) {
-      // Page became visible - trigger full refresh
+      // Page became visible after being hidden
       const hiddenDuration = Date.now() - visibilityState.lastVisibleAt
-      console.log(`[LiveStream] Page visible after ${Math.round(hiddenDuration / 1000)}s, refreshing snapshot`)
-
-      // Mark that we need a full refresh on next event
-      needsFullRefresh = true
-      // Request an immediate snapshot refresh from backend
-      _requestSnapshotRefresh()
+      console.log(`[LiveStream] Page visible after ${Math.round(hiddenDuration / 1000)}s`)
+      
+      if (visibilityState.missedWhileHidden) {
+        console.log('[LiveStream] Missed updates while hidden, requesting full snapshot')
+        // Request full snapshot refresh from backend
+        _requestSnapshotRefresh()
+        visibilityState.missedWhileHidden = false
+      }
     } else if (document.hidden) {
       visibilityState.lastVisibleAt = Date.now()
-      console.log('[LiveStream] Page hidden, pausing updates')
+      console.log('[LiveStream] Page hidden, marking updates as missed')
     }
   })
 }
@@ -374,14 +377,18 @@ function handleEnvelope(env: LiveStreamEnvelope) {
 
   // A periodic snapshot reconciles lane aggregates. Keep the independent
   // flat replay buffer intact so the UI never briefly renders an empty queue.
-  // 2026-07-25: timestamp-based versioning guard. The backend's
-  // pushFullSnapshots now carries LatestRequestTs on every snapshot_refresh.
-  // Skip when the incoming snapshot's max ts is not strictly greater than
-  // what the frontend already knows — prevents stale Redis data from
-  // overwriting newer deltas already applied to local state.
+  // 2026-07-26: Fixed the always-skip guard. Previously `incomingTs <= maxSeenTs`
+  // rejected EVERY periodic snapshot once any delta had raised maxSeenTs above
+  // the snapshot's ts — so reconciliation never ran and local state drifted
+  // until some rare strictly-newer snapshot force-applied everything at once
+  // (the "page flip"). Now: skip only when STRICTLY older (`<`); when equal,
+  // apply it — deterministic sorting (mergeTilesById) makes an equal-timed
+  // snapshot idempotent, so applying it produces no visual change. The
+  // regression guard against genuinely-stale snapshots is preserved.
   if (env.type === 'snapshot_refresh' && env.snapshot) {
     const incomingTs = env.snapshot.latest_request_ts
-    if (incomingTs && maxSeenTs && incomingTs <= maxSeenTs) {
+    if (incomingTs && maxSeenTs && incomingTs < maxSeenTs) {
+      console.debug('[LiveStream] Skipping stale snapshot', { incomingTs, maxSeenTs })
       return
     }
     if (incomingTs && incomingTs > maxSeenTs) {
@@ -435,13 +442,16 @@ function handleEnvelope(env: LiveStreamEnvelope) {
   }
 }
 
-/**
+/** 
  * Handle idle_marker envelope: backend broadcasts all known lane IDs every 5 min.
  * For each lane, check if it has recent (<5min) non-idle activity.
  * If idle → create/update an idle tile in the snapshot lane's request list.
  * If active → remove any existing idle tile.
+ * 
+ * NOTE: This function is currently NOT CALLED. Idle markers are handled via
+ * delta.changed_lanes by the backend. Keeping for reference if needed later.
  */
-function handleLaneIdleCheck(laneIds: string[], backendTs: string) {
+function handleLaneIdleCheck_UNUSED(laneIds: string[], backendTs: string) {
   const snap = liveStreamState.snapshot
   if (!snap) return
 
@@ -672,35 +682,30 @@ function mergeLanesById(existing: LiveStreamLane[], incoming: LiveStreamLane[]) 
   }
 }
 
-// mergeTilesById reconciles an existing tile array with an incoming one
-// by request_id. Tiles already present keep their object reference; tiles
-// added at the tail follow the incoming order (the backend emits DESC,
-// newest first). Tiles whose request_id disappears from `incoming` are
-// filtered out so trimmed requests do not linger on the dashboard.
+// mergeTilesById replaces the existing tile array with the incoming one,
+// then sorts deterministically by (timestamp ASC, request_id ASC) and truncates
+// to the lane limit. This ensures rendering order depends only on server state,
+// not on message arrival history — eliminating drift and sudden "page flip" jumps.
+//
+// Vue TransitionGroup reuses components by `:key="tile.request_id"`, so swapping
+// object references does NOT re-trigger enter/leave animations as long as the key
+// set remains stable. Only actual additions/removals animate.
 function mergeTilesById(existing: LiveStreamTile[], incoming: LiveStreamTile[]) {
-  const incomingIds = new Set(incoming.map((t) => t.request_id))
-  // Drop tiles that the backend no longer carries.
-  let writeIdx = 0
-  for (let readIdx = 0; readIdx < existing.length; readIdx++) {
-    const tile = existing[readIdx]
-    if (incomingIds.has(tile.request_id)) {
-      existing[writeIdx++] = tile
-    }
-  }
-  existing.length = writeIdx
-  // Index existing by id so we can replace in place or append.
-  const byId = new Map<string, number>()
-  for (let i = 0; i < existing.length; i++) {
-    byId.set(existing[i].request_id, i)
-  }
-  for (const tile of incoming) {
-    const idx = byId.get(tile.request_id)
-    if (idx === undefined) {
-      byId.set(tile.request_id, existing.length)
-      existing.push(tile)
-    } else {
-      existing[idx] = tile
-    }
+  // Replace entire array
+  existing.length = 0
+  existing.push(...incoming)
+  
+  // Sort deterministically: oldest first (ASC), tie-break by request_id
+  existing.sort((a, b) => {
+    const tsCmp = (a.timestamp || '').localeCompare(b.timestamp || '')
+    if (tsCmp !== 0) return tsCmp
+    return (a.request_id || '').localeCompare(b.request_id || '')
+  })
+  
+  // Truncate to backend lane limit (20) to match server authority
+  const limit = 20
+  if (existing.length > limit) {
+    existing.splice(0, existing.length - limit)
   }
 }
 
@@ -730,6 +735,8 @@ function openConnection() {
   recomputeMaxVisible()
   const onResize = () => recomputeMaxVisible()
   window.addEventListener('resize', onResize)
+  // Store reference for cleanup
+  ;(openConnection as any)._resizeHandler = onResize
 
   if (typeof EventSource === 'undefined') {
     liveStreamState.connection = 'unsupported'
@@ -763,9 +770,10 @@ function openConnection() {
     try {
       const env = JSON.parse(ev.data) as LiveStreamEnvelope
       
-      // Skip updates when page is hidden (keep connection alive)
+      // Skip updates when page is hidden (keep connection alive, don't write state)
       if (!visibilityState.isVisible) {
-        console.debug('[LiveStream] Message received but page hidden, skipping update')
+        console.debug('[LiveStream] Message received but page hidden, marking as missed')
+        visibilityState.missedWhileHidden = true
         return
       }
       
@@ -793,7 +801,12 @@ function closeConnection() {
   if (!es) return
   try { es.close() } catch { /* ignore */ }
   es = null
-  window.removeEventListener('resize', recomputeMaxVisible)
+  // Remove the correct resize listener reference to prevent leak
+  const handler = (openConnection as any)._resizeHandler
+  if (handler) {
+    window.removeEventListener('resize', handler)
+    delete (openConnection as any)._resizeHandler
+  }
   liveStreamState.connection = 'closed'
 }
 
@@ -816,9 +829,26 @@ export function requestSnapshotRefresh() {
     return
   }
 
-  // Trigger backend snapshot push by marking refresh needed
-  needsFullRefresh = true
-  console.log('[LiveStream] Snapshot refresh requested')
+  // Trigger backend snapshot push via HTTP endpoint
+  const token = authBearer()
+  const url = '/api/admin/live-stream/trigger-snapshot'
+  
+  fetch(url, {
+    method: 'POST',
+    headers: token ? { 'Authorization': `Bearer ${token}` } : {},
+    credentials: 'include',
+  })
+    .then(res => {
+      if (res.ok) {
+        console.log('[LiveStream] Snapshot refresh triggered successfully')
+        needsFullRefresh = true
+      } else {
+        console.warn('[LiveStream] Snapshot refresh failed:', res.status)
+      }
+    })
+    .catch(err => {
+      console.warn('[LiveStream] Snapshot refresh error:', err)
+    })
 }
 
 // Set the forward reference so the visibility listener can call this
@@ -867,6 +897,7 @@ export const __testing = {
   mergeDelta,
   mergeSnapshotFromServer,
   mergeLaneList,
+  mergeTilesById,
   laneDataEqual,
   resetStream,
   refCount: () => refCount,

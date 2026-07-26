@@ -2,7 +2,19 @@
 
 **Date**: 2026-07-26  
 **Author**: System Design  
-**Status**: Approved
+**Status**: Partially superseded — see `2026-07-26-swimlane-data-flow-audit-design.md`
+
+> **⚠️ 显示方向决定已作废（2026-07-26 晚）**
+>
+> 本文 Issue 3 / Phase 2 要求 **newest on LEFT**（右→左填充），已由提交
+> `fad4683e` 实现。用户后续明确要求相反方向：「请求从旧到新排列，新记录放在
+> 尾部，超过宽度就将最左的挤出去」= **最新在右**。
+>
+> 以后者为准。本文其余章节（Redis 内存优化、大小写筛选、页面可见性优化）仍然有效。
+>
+> 另注：`fad4683e` 声称修复「新请求被截断丢弃」，实际只改了后端排序与渲染取片，
+> 未同步修改 `liveStreamStore.mergeTilesById`（仍向数组尾部追加），该 bug 仍然存在。
+> 详见新 spec §1 缺陷 1。
 
 ## Executive Summary
 

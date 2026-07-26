@@ -354,7 +354,9 @@ func StreamChatWithPendingCaptureAndDiagnostics(
 		requestID = resp.Request.Header.Get("X-Request-Id")
 	}
 	diagnosticCollector := &streamDiagnosticCollector{}
-	defer diagnosticCollector.report(diagnostics, requestID, "openai-completions", "openai-completions")
+	defer func() {
+		diagnosticCollector.report(diagnostics, requestID, "openai-completions", "openai-completions", outcome.Interrupted)
+	}()
 
 	// Top-level panic recovery so a panic during streaming (e.g. JSON parse
 	// failure, write to a closed connection) does not skip the deferred

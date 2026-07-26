@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"log/slog"
 	"strings"
+	"sync/atomic"
 
 	"github.com/kaixuan/llm-gateway-go/domains/streaming/executors"
 	"github.com/kaixuan/llm-gateway-go/internal/ir"
@@ -11,16 +12,44 @@ import (
 
 // DiagnosticContext bundles optional diagnostic components for stream bridges.
 // All components are best-effort and must not affect client-visible behavior.
+// A fresh value is built per request in cmd/gateway/main.go, so the embedded
+// counter is per-request state.
 type DiagnosticContext struct {
 	RawLogger executors.RawDataLogger
 	Anomaly   executors.AnomalyReporter
 	Semantic  executors.SemanticAnalyzer
+
+	// conversionReports caps conversion_error anomalies per request. An
+	// upstream emitting a shape the IR parser rejects produces one report
+	// per frame otherwise, which saturates the reporter queue and evicts
+	// unrelated anomalies for the whole process.
+	conversionReports atomic.Int32
+}
+
+// maxConversionReportsPerRequest bounds conversion_error anomalies for a single
+// request. The first few carry the same diagnostic signal as the whole stream.
+const maxConversionReportsPerRequest = 3
+
+// recoverDiagnostic keeps a misbehaving diagnostic component from reaching the
+// request path. Errors are already logged-and-ignored at every call site; a
+// panic used to escape instead, and the blast radius differed per bridge:
+// StreamChatWithPendingCaptureAndDiagnostics registers its report defer before
+// its recover defer, so the panic unwound into the HTTP handler and skipped
+// both the audit emit and pc.finalize; the other four bridges caught it but
+// then marked a fully delivered stream as Interrupted, which the executors turn
+// into a failover plus a circuit-breaker penalty on a healthy credential.
+func recoverDiagnostic(requestID, site string) {
+	if r := recover(); r != nil {
+		slog.Error("stream diagnostics: component panicked",
+			"request_id", requestID, "site", site, "panic", r)
+	}
 }
 
 func logRawUpstreamFrame(diagnostics *DiagnosticContext, requestID, protocol string, frame []byte) {
 	if diagnostics == nil || diagnostics.RawLogger == nil || len(frame) == 0 {
 		return
 	}
+	defer recoverDiagnostic(requestID, "log_raw_upstream_frame")
 	if err := diagnostics.RawLogger.LogResponse(requestID, protocol, frame, true); err != nil {
 		slog.Warn("stream diagnostics: raw response logging failed", "request_id", requestID, "error", err)
 	}
@@ -36,6 +65,10 @@ func reportConversionAnomaly(
 	if diagnostics == nil || diagnostics.Anomaly == nil || err == nil {
 		return
 	}
+	if diagnostics.conversionReports.Add(1) > maxConversionReportsPerRequest {
+		return
+	}
+	defer recoverDiagnostic(requestID, "report_conversion_anomaly")
 	if details == nil {
 		details = make(map[string]interface{}, 5)
 	}
@@ -144,14 +177,21 @@ func (c *streamDiagnosticCollector) observeEmittedChunk(chunk *ir.StreamChunk) {
 func (c *streamDiagnosticCollector) report(
 	diagnostics *DiagnosticContext,
 	requestID, sourceProtocol, targetProtocol string,
+	streamInterrupted bool,
 ) {
 	if diagnostics == nil {
 		return
 	}
+	defer recoverDiagnostic(requestID, "collector_report")
 
 	rawEvidence := strings.Join(c.rawToolCalls, "\n")
 	clientOutput := []byte(c.text.String())
-	if rawEvidence != "" && c.emittedToolCallCount == 0 && diagnostics.Anomaly != nil {
+	// An interrupted stream (chunk timeout, upstream read error, client
+	// cancel) can bank tool-call evidence from a raw frame and then die
+	// before the bridge converts it. Nothing was dropped by the gateway in
+	// that case, so reporting it as tool_calls_missing with confidence 1.0
+	// would bury genuine conversion losses under upstream flakiness.
+	if !streamInterrupted && rawEvidence != "" && c.emittedToolCallCount == 0 && diagnostics.Anomaly != nil {
 		details := map[string]interface{}{
 			"source_protocol":    sourceProtocol,
 			"target_protocol":    targetProtocol,
@@ -169,10 +209,18 @@ func (c *streamDiagnosticCollector) report(
 	if diagnostics.Semantic == nil || diagnostics.Anomaly == nil || c.textTruncated {
 		return
 	}
+	// emittedToolCallCount counts delta fragments, not distinct tool calls: a
+	// single call with a large argument payload can contribute tens of
+	// thousands. The analyzer only tests len(ToolCalls) > 0, so allocate a
+	// presence marker rather than one empty struct per fragment.
+	toolCallMarkers := 0
+	if c.emittedToolCallCount > 0 {
+		toolCallMarkers = 1
+	}
 	response := &ir.InternalResponse{
 		SourceProtocol: sourceProtocol,
 		FinishReason:   c.finishReason,
-		ToolCalls:      make([]ir.ResponseToolCall, c.emittedToolCallCount),
+		ToolCalls:      make([]ir.ResponseToolCall, toolCallMarkers),
 	}
 	if c.text.Len() > 0 {
 		response.Content = []ir.ResponseContentBlock{{Type: "text", Text: c.text.String()}}
