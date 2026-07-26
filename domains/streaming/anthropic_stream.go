@@ -27,7 +27,28 @@ import (
 //
 // Evidence: Line 232-236 parse chunk["choices"], which is OpenAI-specific.
 // Anthropic uses content[] blocks, not choices[].
-func StreamOpenAIToAnthropicSSE(w http.ResponseWriter, resp *http.Response, clientModel, outboundModel, requestID string, capture *audit.StreamCapture, pc *pendingCapturer, diagnostics *DiagnosticContext) (outcome StreamOutcome) {
+func StreamOpenAIToAnthropicSSE(
+	w http.ResponseWriter,
+	resp *http.Response,
+	clientModel, outboundModel, requestID string,
+	capture *audit.StreamCapture,
+	pc *pendingCapturer,
+) (outcome StreamOutcome) {
+	return StreamOpenAIToAnthropicSSEWithDiagnostics(
+		w, resp, clientModel, outboundModel, requestID, capture, pc, nil,
+	)
+}
+
+// StreamOpenAIToAnthropicSSEWithDiagnostics converts an OpenAI stream with
+// optional best-effort diagnostics.
+func StreamOpenAIToAnthropicSSEWithDiagnostics(
+	w http.ResponseWriter,
+	resp *http.Response,
+	clientModel, outboundModel, requestID string,
+	capture *audit.StreamCapture,
+	pc *pendingCapturer,
+	diagnostics *DiagnosticContext,
+) (outcome StreamOutcome) {
 	//nolint:errcheck // best-effort close
 	defer resp.Body.Close()
 	defer func() {
@@ -49,6 +70,9 @@ func StreamOpenAIToAnthropicSSE(w http.ResponseWriter, resp *http.Response, clie
 			pc.finalize(outcome)
 		}
 	}()
+
+	diagnosticCollector := &streamDiagnosticCollector{}
+	defer diagnosticCollector.report(diagnostics, requestID, "openai-completions", "anthropic-messages")
 	runtimeCfg := currentStreamRuntimeConfig()
 
 	flusher, ok := w.(http.Flusher)
@@ -218,14 +242,28 @@ func StreamOpenAIToAnthropicSSE(w http.ResponseWriter, resp *http.Response, clie
 			return
 		}
 
-		// Diagnostic: Log raw OpenAI upstream response
-		if diagnostics != nil && diagnostics.RawLogger != nil {
-			diagnostics.RawLogger.LogResponse(requestID, "openai", []byte(data), true)
-		}
+		rawFrame := []byte(line)
+		logRawUpstreamFrame(diagnostics, requestID, "openai-completions", rawFrame)
+		diagnosticCollector.observeRaw([]byte(data))
 
 		var chunk map[string]json.RawMessage
-		if json.Unmarshal([]byte(data), &chunk) != nil {
+		if err := json.Unmarshal([]byte(data), &chunk); err != nil {
+			reportConversionAnomaly(
+				diagnostics, requestID, "openai-completions", "anthropic-messages", "parse_stream_frame", []byte(data), err, nil,
+			)
 			return
+		}
+
+		parsedChunk, parseErr := ir.ParseOpenAIStreamChunk("data: " + data + "\n\n")
+		if parseErr != nil {
+			reportConversionAnomaly(
+				diagnostics, requestID, "openai-completions", "anthropic-messages", "parse_stream_chunk", []byte(data), parseErr, nil,
+			)
+		} else {
+			diagnosticCollector.observeChunk(parsedChunk)
+			if parsedChunk.Delta != nil && len(parsedChunk.Delta.ToolCalls) > 0 {
+				diagnosticCollector.observeEmittedChunk(parsedChunk)
+			}
 		}
 
 		if raw, ok := chunk["usage"]; ok {

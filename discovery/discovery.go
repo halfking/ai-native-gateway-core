@@ -366,7 +366,7 @@ func (s *Service) discoverForCredential(ctx context.Context, cred credential) ([
 
 	apiKey, decErr := s.decryptCredential(cred.SecretCipher)
 	if decErr != nil {
-		return nil, 0, fmt.Errorf("credential decrypt failed: %w", decErr)
+		return nil, 0, fmt.Errorf("credential decrypt failed: %w (credential_id=%d)", decErr, cred.ID)
 	}
 
 	var (

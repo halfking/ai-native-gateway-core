@@ -563,10 +563,7 @@ func (e *Executor) executeAnthropic(
 	}
 	if e.AnthropicPassthroughStream != nil {
 		clientModel := params.ClientModel
-		requestID := ""
-		if params.R != nil {
-			requestID = params.R.Header.Get("X-Request-Id")
-		}
+		requestID := diagnosticRequestID(params)
 		// Track C C5 (2026-06-21): the capturer is built by the main.go
 		// wrapper that owns the AnthropicPassthroughStream closure (it
 		// has access to pendingStore + the upstream resp to check the
@@ -581,10 +578,7 @@ func (e *Executor) executeAnthropic(
 	}
 	if e.AnthropicToOpenAIStream != nil && params.ClientProtocol != "anthropic-messages" {
 		clientModel := params.ClientModel
-		requestID := ""
-		if params.R != nil {
-			requestID = params.R.Header.Get("X-Request-Id")
-		}
+		requestID := diagnosticRequestID(params)
 		ae.OpenAITranslator = func(w http.ResponseWriter, resp *http.Response, _, _, _ string, _ *audit.StreamCapture) StreamOutcome {
 			return e.AnthropicToOpenAIStream(w, resp, clientModel, outboundModel, requestID, params.Capture, nil)
 		}
@@ -595,10 +589,7 @@ func (e *Executor) executeAnthropic(
 	// SerializeResponsesResponse (see executor_anthropic.go:WriteNonStreamResponse).
 	if e.AnthropicToResponsesStream != nil && params.ClientProtocol == "openai-responses" {
 		clientModel := params.ClientModel
-		requestID := ""
-		if params.R != nil {
-			requestID = params.R.Header.Get("X-Request-Id")
-		}
+		requestID := diagnosticRequestID(params)
 		ae.ResponsesTranslator = func(w http.ResponseWriter, resp *http.Response, _, _, _ string, _ *audit.StreamCapture) StreamOutcome {
 			return e.AnthropicToResponsesStream(w, resp, clientModel, outboundModel, requestID, params.Capture, nil)
 		}
@@ -608,10 +599,7 @@ func (e *Executor) executeAnthropic(
 	}
 	if e.AnthropicPassthroughStream != nil {
 		clientModel := params.ClientModel
-		requestID := ""
-		if params.R != nil {
-			requestID = params.R.Header.Get("X-Request-Id")
-		}
+		requestID := diagnosticRequestID(params)
 		// Second assignment is defensive (the if-block at line 411
 		// already assigned this); the capturer plumbing is identical.
 		ae.PassthroughStream = func(w http.ResponseWriter, resp *http.Response) StreamOutcome {
@@ -711,7 +699,7 @@ func (e *Executor) executeAnthropicOnce(
 	if err != nil {
 		return nil, err
 	}
-	req.Header.Set("X-Request-Id", params.R.Header.Get("X-Request-Id"))
+	req.Header.Set("X-Request-Id", diagnosticRequestID(params))
 	// Track C C2 audit fix 3.1: propagate session headers (same
 	// rationale as executor_chat.go).
 	if sid := params.R.Header.Get("X-Gw-Session-Id"); sid != "" {
@@ -789,6 +777,7 @@ func (e *Executor) executeAnthropicOnce(
 			return io.NopCloser(bytes.NewReader(bodyBytes)), nil
 		}
 	}
+	e.logUpstreamRequest(params, diagnosticProtocol(cand.Protocol, "anthropic-messages"), bodyBytes)
 
 	reqStart := time.Now()
 	var resp *http.Response
@@ -817,6 +806,7 @@ func (e *Executor) executeAnthropicOnce(
 		defer resp.Body.Close()
 		body := make([]byte, 4096)
 		n, _ := resp.Body.Read(body)
+		e.logUpstreamResponse(params, diagnosticProtocol(cand.Protocol, "anthropic-messages"), body[:n])
 		_, _ = io.Copy(io.Discard, resp.Body)
 		errKind := errorsx.ClassifyErrorWithBody(resp.StatusCode, body[:n])
 
@@ -953,10 +943,20 @@ func (e *Executor) executeAnthropicOnce(
 	}
 
 	var qualitySignals QualitySignals
+	if resp == nil || resp.Body == nil {
+		return nil, fmt.Errorf("anthropic upstream returned an empty response")
+	}
+	rawResponseBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("read anthropic upstream response: %w", err)
+	}
+	e.logUpstreamResponse(params, diagnosticProtocol(cand.Protocol, "anthropic-messages"), rawResponseBody)
+	resp.Body = io.NopCloser(bytes.NewReader(rawResponseBody))
 	responseBody, err := ae.WriteNonStreamResponse(params.W, resp, params.ClientModel, cand.QualityFixMode, &qualitySignals)
 	if err != nil {
 		return nil, err
 	}
+	e.logClientResponse(params, diagnosticProtocol(params.ClientProtocol, "anthropic-messages"), responseBody)
 	return &ExecuteResult{
 		Response:    resp,
 		Candidate:   cand,

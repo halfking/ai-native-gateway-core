@@ -78,7 +78,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/internal/centeragent"
 	"github.com/kaixuan/llm-gateway-go/internal/collector"
 	"github.com/kaixuan/llm-gateway-go/internal/handlers"
-	"github.com/kaixuan/llm-gateway-go/internal/ir"      //nolint:depguard // 诊断组件：语义分析器
+	"github.com/kaixuan/llm-gateway-go/internal/ir" //nolint:depguard // 诊断组件：语义分析器
 	"github.com/kaixuan/llm-gateway-go/internal/logging"
 	"github.com/kaixuan/llm-gateway-go/internal/modelpolicy"
 	"github.com/kaixuan/llm-gateway-go/internal/observability"
@@ -159,6 +159,8 @@ func main() {
 	// memorySvc holds the legacy memora concrete client/sink behind the
 	// live memory.Reader / memory.Writer interfaces used by gateway runtime.
 	var memorySvc *legacyMemoryServices
+	var rawDataLogger *logging.AsyncRawDataLogger
+	var anomalyReporter *logging.LockFreeAnomalyReporter
 
 	// 2026-07-20: ringBuffer holds failed request_log INSERTs in memory
 	// for online dump/replay via /internal/telemetry/fallback-buffer/*.
@@ -835,7 +837,14 @@ func main() {
 				case "minimax":
 					stripFn = streaming.StripMinimaxFieldsBody
 				}
-				outcome := streaming.StreamChatWithPendingCapture(w, resp, clientModel, outboundModel, norm, capture, toolsRequested, stripFn, pc)
+				diagnostics := &streaming.DiagnosticContext{
+					RawLogger: routingExec.RawDataLogger,
+					Anomaly:   routingExec.AnomalyReporter,
+					Semantic:  routingExec.SemanticAnalyzer,
+				}
+				outcome := streaming.StreamChatWithPendingCaptureAndDiagnostics(
+					w, resp, clientModel, outboundModel, norm, capture, toolsRequested, stripFn, pc, diagnostics,
+				)
 				saveCapturedPending(pendingStore, pc, resp, tenantID)
 				return outcome
 			},
@@ -862,7 +871,7 @@ func main() {
 				Anomaly:   routingExec.AnomalyReporter,
 				Semantic:  routingExec.SemanticAnalyzer,
 			}
-			outcome := streaming.StreamAnthropicPassthrough(w, resp, clientModel, outboundModel, requestID, cap, pc, diagnostics)
+			outcome := streaming.StreamAnthropicPassthroughWithDiagnostics(w, resp, clientModel, outboundModel, requestID, cap, pc, diagnostics)
 			saveCapturedPending(pendingStore, pc, resp, tenantID)
 			return outcome
 		}
@@ -892,16 +901,19 @@ func main() {
 				maxSizeStr := os.Getenv("LLM_GATEWAY_RAW_LOG_MAX_SIZE")
 				maxSize := int64(200 * 1024 * 1024) // 200MB default
 				if maxSizeStr != "" {
-					if parsed, err := strconv.ParseInt(maxSizeStr, 10, 64); err == nil {
+					if parsed, err := strconv.ParseInt(maxSizeStr, 10, 64); err == nil && parsed > 0 {
 						maxSize = parsed
+					} else if err != nil || parsed <= 0 {
+						slog.Warn("raw_data_logger: invalid max size, using default", "value", maxSizeStr)
 					}
 				}
-				
-				rawLogger, err := logging.NewRawDataLogger(logDir, maxSize, true)
+
+				asyncRawLogger, err := logging.NewAsyncRawDataLogger(logDir, maxSize, true, 10000)
 				if err != nil {
 					slog.Error("raw_data_logger: failed to initialize", "err", err)
 				} else {
-					routingExec.RawDataLogger = executors.NewRawDataLoggerAdapter(rawLogger)
+					rawDataLogger = asyncRawLogger
+					routingExec.RawDataLogger = executors.NewRawDataLoggerAdapter(asyncRawLogger)
 					slog.Info("raw_data_logger: initialized", "dir", logDir, "max_size", maxSize)
 				}
 			}
@@ -910,10 +922,10 @@ func main() {
 			if os.Getenv("LLM_GATEWAY_ANOMALY_REPORTER_ENABLED") == "true" {
 				endpoint := os.Getenv("LLM_GATEWAY_ANOMALY_ENDPOINT")
 				if endpoint == "" {
-					endpoint = "https://llm.kxpms.cn/api/diagnostics/anomalies"
+					endpoint = "https://llmgo.kxpms.cn/format-anomalies"
 				}
-				
-				anomalyReporter := logging.NewAnomalyReporter(endpoint, true)
+
+				anomalyReporter = logging.NewLockFreeAnomalyReporter(endpoint, true, 1000)
 				routingExec.AnomalyReporter = executors.NewAnomalyReporterAdapter(anomalyReporter)
 				slog.Info("anomaly_reporter: initialized", "endpoint", endpoint)
 			}
@@ -964,7 +976,7 @@ func main() {
 				Anomaly:   routingExec.AnomalyReporter,
 				Semantic:  routingExec.SemanticAnalyzer,
 			}
-			outcome := streaming.StreamAnthropicSSEToOpenAI(w, resp, clientModel, outboundModel, requestID, cap, pc, diagnostics)
+			outcome := streaming.StreamAnthropicSSEToOpenAIWithDiagnostics(w, resp, clientModel, outboundModel, requestID, cap, pc, diagnostics)
 			saveCapturedPending(pendingStore, pc, resp, tenantID)
 			return outcome
 		}
@@ -993,7 +1005,7 @@ func main() {
 				Anomaly:   routingExec.AnomalyReporter,
 				Semantic:  routingExec.SemanticAnalyzer,
 			}
-			outcome := streaming.StreamOpenAIToAnthropicSSE(w, resp, clientModel, outboundModel, requestID, cap, pc, diagnostics)
+			outcome := streaming.StreamOpenAIToAnthropicSSEWithDiagnostics(w, resp, clientModel, outboundModel, requestID, cap, pc, diagnostics)
 			saveCapturedPending(pendingStore, pc, resp, tenantID)
 			return outcome
 		}
@@ -1018,7 +1030,7 @@ func main() {
 				Anomaly:   routingExec.AnomalyReporter,
 				Semantic:  routingExec.SemanticAnalyzer,
 			}
-			outcome := streaming.StreamAnthropicSSEToResponses(w, resp, clientModel, outboundModel, requestID, cap, pc, diagnostics)
+			outcome := streaming.StreamAnthropicSSEToResponsesWithDiagnostics(w, resp, clientModel, outboundModel, requestID, cap, pc, diagnostics)
 			saveCapturedPending(pendingStore, pc, resp, tenantID)
 			return outcome
 		}
@@ -1040,7 +1052,7 @@ func main() {
 				Anomaly:   routingExec.AnomalyReporter,
 				Semantic:  routingExec.SemanticAnalyzer,
 			}
-			outcome := streaming.StreamOpenAIToResponsesSSE(w, resp, clientModel, outboundModel, requestID, cap, pc, diagnostics)
+			outcome := streaming.StreamOpenAIToResponsesSSEWithDiagnostics(w, resp, clientModel, outboundModel, requestID, cap, pc, diagnostics)
 			saveCapturedPending(pendingStore, pc, resp, tenantID)
 			return outcome
 		}
@@ -1732,7 +1744,7 @@ func main() {
 		formatRegistry := streaming.NewFormatRegistry()
 		formatDetector := streaming.NewFormatDetector(formatRegistry)
 		formatFixer := streaming.NewFormatFixer()
-		
+
 		// Use Redis cache if available for session-level format caching
 		var formatCache streaming.FormatCache
 		if redisClientForCache != nil && redisClientForCache.Client() != nil {
@@ -1745,7 +1757,7 @@ func main() {
 			formatCache = streaming.NewNullFormatCache()
 			slog.Info("format detection: cache disabled (Redis not available)")
 		}
-		
+
 		chatHandler.SetFormatDetection(formatDetector, formatFixer, formatCache)
 		slog.Info("format detection system initialized",
 			"patterns", len(formatRegistry.List()),
@@ -2095,6 +2107,8 @@ func main() {
 	var taxonomySync *bg.TaxonomySync
 	var partitionManager *bg.PartitionManager
 	var selfCheckWorker *bg.SelfCheckWorker
+	// Provider Profile System (Phase 1, 2026-07-26)
+	var profileWorkers *ProviderProfileWorkers
 	// peakCollector / weeklyPeakRollup / slotSuggester are declared
 	// at the top of main() so the executor can reference them.
 
@@ -2119,6 +2133,14 @@ func main() {
 		routingHealthChecker := bg.NewRoutingHealthChecker(dbConn.Pool())
 		routingHealthChecker.Start(context.Background())
 		slog.Info("CHECKPOINT: routingHealthChecker started")
+
+		// Provider Profile System (Phase 1, 2026-07-26)
+		// Monitors provider quality across 7 dimensions with automated collection,
+		// aggregation, and scoring. Feature-flagged via provider_profile.enabled.
+		profileWorkers = initProviderProfile(dbConn.Pool())
+		if profileWorkers != nil {
+			slog.Info("CHECKPOINT: provider profile system started")
+		}
 
 		// Self-check worker — runs periodic ping + tool-call smoke tests
 		// against key models to verify gateway availability (2026-07-12).
@@ -2433,6 +2455,9 @@ func main() {
 					routingExec.SyncNoCandidateProbe = syncOn
 					routingExec.SyncNoCandidateTimeout = 5 * time.Second
 					routingExec.ProbeSync = nodeProbe.ProbeSync
+					routingExec.NodeProbeHealthy = func(ctx context.Context, credentialID int, rawModel string) error {
+						return bg.MarkNodeProbeHealthy(ctx, dbConn.Pool(), credentialID, rawModel)
+					}
 					slog.Info("sync_no_candidate_probe", "enabled", syncOn, "timeout", routingExec.SyncNoCandidateTimeout)
 				}
 
@@ -4282,6 +4307,8 @@ func main() {
 				healthAutoRecover.Stop()
 			}
 		}
+		// Provider Profile System shutdown (Phase 1, 2026-07-26)
+		stopProviderProfile(profileWorkers)
 		// Drain the Memora sink queue on shutdown so in-flight writes
 		// are not lost. Bounded to 5s so shutdown is not held hostage
 		// to a slow Memora.
@@ -4289,6 +4316,16 @@ func main() {
 			memStopCtx, memStopCancel := context.WithTimeout(context.Background(), 5*time.Second)
 			memorySvc.Stop(memStopCtx)
 			memStopCancel()
+		}
+		if anomalyReporter != nil {
+			if err := anomalyReporter.Close(); err != nil {
+				slog.Warn("anomaly_reporter: shutdown failed", "error", err)
+			}
+		}
+		if rawDataLogger != nil {
+			if err := rawDataLogger.Close(); err != nil {
+				slog.Warn("raw_data_logger: shutdown failed", "error", err)
+			}
 		}
 
 		close(stopDone)

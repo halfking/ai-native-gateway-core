@@ -16,6 +16,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"sort"
 	"strconv"
@@ -200,7 +201,8 @@ func (h *Handler) handleProbeDashboard(w http.ResponseWriter, r *http.Request) {
 
 	rows, err := h.db.Query(r.Context(), query, args...)
 	if err != nil {
-		http.Error(w, "database query failed: "+err.Error(), http.StatusInternalServerError)
+		slog.Error("probe dashboard db query failed", "error", err)
+		writeError(w, http.StatusInternalServerError, "internal server error")
 		return
 	}
 	defer rows.Close()
@@ -246,7 +248,8 @@ func (h *Handler) handleProbeDashboard(w http.ResponseWriter, r *http.Request) {
 			&m.OverallHealth,
 		)
 		if err != nil {
-			http.Error(w, "scan failed: "+err.Error(), http.StatusInternalServerError)
+			slog.Error("probe dashboard scan failed", "error", err)
+			writeError(w, http.StatusInternalServerError, "internal server error")
 			return
 		}
 		m.HealthyPercentage = nullFloat64(healthyPercentage)
@@ -271,7 +274,8 @@ func (h *Handler) handleProbeDashboard(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) handleProbeQueueSnapshot(w http.ResponseWriter, r *http.Request) {
 	rows, err := h.db.Query(r.Context(), `SELECT * FROM v_probe_queue_snapshot`)
 	if err != nil {
-		http.Error(w, "database query failed: "+err.Error(), http.StatusInternalServerError)
+		slog.Error("probe dashboard db query failed", "error", err)
+		writeError(w, http.StatusInternalServerError, "internal server error")
 		return
 	}
 	defer rows.Close()
@@ -292,7 +296,8 @@ func (h *Handler) handleProbeQueueSnapshot(w http.ResponseWriter, r *http.Reques
 			&q.MaxWaitSeconds,
 		)
 		if err != nil {
-			http.Error(w, "scan failed: "+err.Error(), http.StatusInternalServerError)
+			slog.Error("probe dashboard scan failed", "error", err)
+			writeError(w, http.StatusInternalServerError, "internal server error")
 			return
 		}
 		queues = append(queues, q)
@@ -335,7 +340,8 @@ func (h *Handler) handleProbeSystemHealth(w http.ResponseWriter, r *http.Request
 		&health.SnapshotAt,
 	)
 	if err != nil {
-		http.Error(w, "database query failed: "+err.Error(), http.StatusInternalServerError)
+		slog.Error("probe dashboard db query failed", "error", err)
+		writeError(w, http.StatusInternalServerError, "internal server error")
 		return
 	}
 	if avgSuccessRate7d.Valid {
@@ -391,7 +397,8 @@ func (h *Handler) handleProbeModelNodes(w http.ResponseWriter, r *http.Request) 
 		WHERE raw_model_name = $1
 	`, modelName)
 	if err != nil {
-		http.Error(w, "database query failed: "+err.Error(), http.StatusInternalServerError)
+		slog.Error("probe dashboard db query failed", "error", err)
+		writeError(w, http.StatusInternalServerError, "internal server error")
 		return
 	}
 	defer rows.Close()
@@ -425,7 +432,8 @@ func (h *Handler) handleProbeModelNodes(w http.ResponseWriter, r *http.Request) 
 			&n.StateDurationMinutes,
 		)
 		if err != nil {
-			http.Error(w, "scan failed: "+err.Error(), http.StatusInternalServerError)
+			slog.Error("probe dashboard scan failed", "error", err)
+			writeError(w, http.StatusInternalServerError, "internal server error")
 			return
 		}
 		if rc, ok := h.redisClient.(*redis.Client); ok {
@@ -467,7 +475,8 @@ func (h *Handler) handleProbeModelStateSummary(w http.ResponseWriter, r *http.Re
 
 	rows, err := h.db.Query(r.Context(), `SELECT * FROM get_model_state_summary($1)`, modelName)
 	if err != nil {
-		http.Error(w, "database query failed: "+err.Error(), http.StatusInternalServerError)
+		slog.Error("probe dashboard db query failed", "error", err)
+		writeError(w, http.StatusInternalServerError, "internal server error")
 		return
 	}
 	defer rows.Close()
@@ -483,7 +492,8 @@ func (h *Handler) handleProbeModelStateSummary(w http.ResponseWriter, r *http.Re
 			&b.NextProbeInSeconds,
 		)
 		if err != nil {
-			http.Error(w, "scan failed: "+err.Error(), http.StatusInternalServerError)
+			slog.Error("probe dashboard scan failed", "error", err)
+			writeError(w, http.StatusInternalServerError, "internal server error")
 			return
 		}
 		breakdown = append(breakdown, b)
@@ -546,7 +556,8 @@ func (h *Handler) handleProbeAvailabilityTimeline(w http.ResponseWriter, r *http
 
 	rows, err := h.db.Query(r.Context(), query, args...)
 	if err != nil {
-		http.Error(w, "database query failed: "+err.Error(), http.StatusInternalServerError)
+		slog.Error("probe dashboard db query failed", "error", err)
+		writeError(w, http.StatusInternalServerError, "internal server error")
 		return
 	}
 	defer rows.Close()
@@ -582,7 +593,8 @@ func (h *Handler) handleProbeAvailabilityTimeline(w http.ResponseWriter, r *http
 			&p.FailedCredentials,
 		)
 		if err != nil {
-			http.Error(w, "scan failed: "+err.Error(), http.StatusInternalServerError)
+			slog.Error("probe dashboard scan failed", "error", err)
+			writeError(w, http.StatusInternalServerError, "internal server error")
 			return
 		}
 		timeline = append(timeline, p)
@@ -635,7 +647,8 @@ func (h *Handler) handleProviderLatency(w http.ResponseWriter, r *http.Request) 
 		LIMIT 500
 	`)
 	if err != nil {
-		http.Error(w, "database query failed: "+err.Error(), http.StatusInternalServerError)
+		slog.Error("probe dashboard db query failed", "error", err)
+		writeError(w, http.StatusInternalServerError, "internal server error")
 		return
 	}
 	defer rows.Close()
@@ -644,7 +657,8 @@ func (h *Handler) handleProviderLatency(w http.ResponseWriter, r *http.Request) 
 	for rows.Next() {
 		var e ProviderLatencyEntry
 		if err := rows.Scan(&e.ProviderID, &e.ProviderName, &e.ProviderCode, &e.LatencyMs, &e.ProbedAt); err != nil {
-			http.Error(w, "scan failed: "+err.Error(), http.StatusInternalServerError)
+			slog.Error("probe dashboard scan failed", "error", err)
+			writeError(w, http.StatusInternalServerError, "internal server error")
 			return
 		}
 		entries = append(entries, e)
@@ -730,7 +744,8 @@ func (h *Handler) handleProbeQueueTasks(w http.ResponseWriter, r *http.Request) 
 		LIMIT $1
 	`, limit)
 	if err != nil {
-		http.Error(w, "database query failed: "+err.Error(), http.StatusInternalServerError)
+		slog.Error("probe dashboard db query failed", "error", err)
+		writeError(w, http.StatusInternalServerError, "internal server error")
 		return
 	}
 	defer rows.Close()
@@ -744,7 +759,8 @@ func (h *Handler) handleProbeQueueTasks(w http.ResponseWriter, r *http.Request) 
 			&t.RawModel, &t.StandardizedName, &t.Status, &t.Attempt, &t.Priority, &t.ReasonCode,
 			&t.NextRunAt, &lat, &httpStatus, &t.UpdatedAt,
 		); err != nil {
-			http.Error(w, "scan failed: "+err.Error(), http.StatusInternalServerError)
+			slog.Error("probe dashboard scan failed", "error", err)
+			writeError(w, http.StatusInternalServerError, "internal server error")
 			return
 		}
 		if lat.Valid {
@@ -855,7 +871,8 @@ func (h *Handler) handleProbeCacheState(w http.ResponseWriter, r *http.Request) 
 		// Single (cred, model) lookup.
 		snap, err := h.availabilityReader.Read(ctx, credID, modelRaw)
 		if err != nil {
-			http.Error(w, "cache read failed: "+err.Error(), http.StatusInternalServerError)
+			slog.Error("probe dashboard cache read failed", "credential_id", credID, "error", err)
+			writeError(w, http.StatusInternalServerError, "internal server error")
 			return
 		}
 		if snap != nil {
@@ -865,12 +882,14 @@ func (h *Handler) handleProbeCacheState(w http.ResponseWriter, r *http.Request) 
 		// Range scan.
 		keys, err := h.availabilityReader.ScanKeys(ctx, credID)
 		if err != nil {
-			http.Error(w, "cache scan failed: "+err.Error(), http.StatusInternalServerError)
+			slog.Error("probe dashboard cache scan failed", "credential_id", credID, "error", err)
+			writeError(w, http.StatusInternalServerError, "internal server error")
 			return
 		}
 		rc, ok := h.redisClient.(*redis.Client)
 		if !ok || rc == nil {
-			http.Error(w, "redis client unavailable", http.StatusServiceUnavailable)
+			slog.Error("probe dashboard redis client unavailable")
+			writeError(w, http.StatusServiceUnavailable, "redis client unavailable")
 			return
 		}
 		for _, key := range keys {
@@ -1044,7 +1063,8 @@ func (h *Handler) handleProbeCacheRebuild(w http.ResponseWriter, r *http.Request
 	var body req
 	if r.ContentLength > 0 {
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil && err.Error() != "EOF" {
-			http.Error(w, "invalid json: "+err.Error(), http.StatusBadRequest)
+			slog.Error("probe dashboard invalid json", "error", err)
+			writeError(w, http.StatusBadRequest, "invalid request body")
 			return
 		}
 	}
@@ -1057,7 +1077,8 @@ func (h *Handler) handleProbeCacheRebuild(w http.ResponseWriter, r *http.Request
 		defer cancel()
 		count, err := runOneShotBackfill(ctx, h.availabilityBackfill, body.LookbackSeconds, body.BatchSize)
 		if err != nil {
-			http.Error(w, "backfill failed: "+err.Error(), http.StatusInternalServerError)
+			slog.Error("probe dashboard backfill failed", "error", err)
+			writeError(w, http.StatusInternalServerError, "internal server error")
 			return
 		}
 		writeJSON(w, http.StatusOK, map[string]any{
@@ -1072,7 +1093,8 @@ func (h *Handler) handleProbeCacheRebuild(w http.ResponseWriter, r *http.Request
 	defer cancel()
 	count, err := h.availabilityBackfill.RunOnceWithTrigger(ctx, "manual")
 	if err != nil {
-		http.Error(w, "backfill failed: "+err.Error(), http.StatusInternalServerError)
+		slog.Error("probe dashboard backfill failed", "error", err)
+		writeError(w, http.StatusInternalServerError, "internal server error")
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{

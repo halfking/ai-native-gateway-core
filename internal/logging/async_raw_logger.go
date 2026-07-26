@@ -14,6 +14,7 @@ type LockFreeQueue[T any] struct {
 	queue    chan T
 	capacity uint64
 	closed   atomic.Bool
+	stateMu  sync.RWMutex
 	closeMu  sync.Once
 
 	// 统计信息
@@ -36,6 +37,8 @@ func NewLockFreeQueue[T any](capacity int) *LockFreeQueue[T] {
 
 // Enqueue 入队（非阻塞）。队列满或已关闭时丢弃并返回 false。
 func (q *LockFreeQueue[T]) Enqueue(item T) bool {
+	q.stateMu.RLock()
+	defer q.stateMu.RUnlock()
 	if q.closed.Load() {
 		q.dropCount.Add(1)
 		return false
@@ -94,6 +97,8 @@ func (q *LockFreeQueue[T]) IsClosed() bool {
 // Close 关闭队列；关闭后仍允许消费者排空已有元素。
 func (q *LockFreeQueue[T]) Close() {
 	q.closeMu.Do(func() {
+		q.stateMu.Lock()
+		defer q.stateMu.Unlock()
 		q.closed.Store(true)
 		close(q.queue)
 	})
@@ -128,6 +133,11 @@ type AsyncRawDataLogger struct {
 	cancel     context.CancelFunc
 	batchSize  int
 	flushDelay time.Duration
+	done       chan struct{}
+	closed     atomic.Bool
+	stateMu    sync.RWMutex
+	closeOnce  sync.Once
+	closeErr   error
 }
 
 // NewAsyncRawDataLogger 创建异步日志记录器
@@ -150,6 +160,7 @@ func NewAsyncRawDataLogger(baseDir string, maxSize int64, enabled bool, queueSiz
 		cancel:     cancel,
 		batchSize:  50,
 		flushDelay: 100 * time.Millisecond,
+		done:       make(chan struct{}),
 	}
 
 	// 启动后台写入协程
@@ -160,20 +171,22 @@ func NewAsyncRawDataLogger(baseDir string, maxSize int64, enabled bool, queueSiz
 
 // LogClientRequest 异步记录客户端请求
 func (l *AsyncRawDataLogger) LogClientRequest(requestID, protocol string, body []byte, headers map[string]string, conversionStep string) {
-	if l.baseLogger == nil || !l.baseLogger.enabled {
+	l.stateMu.RLock()
+	defer l.stateMu.RUnlock()
+	if l.closed.Load() || l.baseLogger == nil || !l.baseLogger.enabled {
 		return
 	}
 
 	entry := RawDataEntry{
-		Timestamp:      time.Now(),
-		RequestID:      requestID,
-		Direction:      "client_request",
-		Protocol:       protocol,
-		DataSize:       len(body),
-		RawData:        encodeRawData(body),
+		Timestamp:       time.Now(),
+		RequestID:       requestID,
+		Direction:       "client_request",
+		Protocol:        protocol,
+		DataSize:        len(body),
+		RawData:         encodeRawData(body),
 		RawDataEncoding: "base64",
-		Headers:        headers,
-		ConversionStep: conversionStep,
+		Headers:         headers,
+		ConversionStep:  conversionStep,
 	}
 
 	if !l.queue.Enqueue(entry) {
@@ -185,19 +198,21 @@ func (l *AsyncRawDataLogger) LogClientRequest(requestID, protocol string, body [
 
 // LogUpstreamRequest 异步记录上游请求
 func (l *AsyncRawDataLogger) LogUpstreamRequest(requestID, protocol string, body []byte, conversionStep string) {
-	if l.baseLogger == nil || !l.baseLogger.enabled {
+	l.stateMu.RLock()
+	defer l.stateMu.RUnlock()
+	if l.closed.Load() || l.baseLogger == nil || !l.baseLogger.enabled {
 		return
 	}
 
 	entry := RawDataEntry{
-		Timestamp:      time.Now(),
-		RequestID:      requestID,
-		Direction:      "upstream_request",
-		Protocol:       protocol,
-		DataSize:       len(body),
-		RawData:        encodeRawData(body),
+		Timestamp:       time.Now(),
+		RequestID:       requestID,
+		Direction:       "upstream_request",
+		Protocol:        protocol,
+		DataSize:        len(body),
+		RawData:         encodeRawData(body),
 		RawDataEncoding: "base64",
-		ConversionStep: conversionStep,
+		ConversionStep:  conversionStep,
 	}
 
 	if !l.queue.Enqueue(entry) {
@@ -209,19 +224,21 @@ func (l *AsyncRawDataLogger) LogUpstreamRequest(requestID, protocol string, body
 
 // LogUpstreamResponse 异步记录上游响应
 func (l *AsyncRawDataLogger) LogUpstreamResponse(requestID, protocol string, body []byte, conversionStep string) {
-	if l.baseLogger == nil || !l.baseLogger.enabled {
+	l.stateMu.RLock()
+	defer l.stateMu.RUnlock()
+	if l.closed.Load() || l.baseLogger == nil || !l.baseLogger.enabled {
 		return
 	}
 
 	entry := RawDataEntry{
-		Timestamp:      time.Now(),
-		RequestID:      requestID,
-		Direction:      "upstream_response",
-		Protocol:       protocol,
-		DataSize:       len(body),
-		RawData:        encodeRawData(body),
+		Timestamp:       time.Now(),
+		RequestID:       requestID,
+		Direction:       "upstream_response",
+		Protocol:        protocol,
+		DataSize:        len(body),
+		RawData:         encodeRawData(body),
 		RawDataEncoding: "base64",
-		ConversionStep: conversionStep,
+		ConversionStep:  conversionStep,
 	}
 
 	if !l.queue.Enqueue(entry) {
@@ -233,19 +250,21 @@ func (l *AsyncRawDataLogger) LogUpstreamResponse(requestID, protocol string, bod
 
 // LogClientResponse 异步记录客户端响应
 func (l *AsyncRawDataLogger) LogClientResponse(requestID, protocol string, body []byte, conversionStep string) {
-	if l.baseLogger == nil || !l.baseLogger.enabled {
+	l.stateMu.RLock()
+	defer l.stateMu.RUnlock()
+	if l.closed.Load() || l.baseLogger == nil || !l.baseLogger.enabled {
 		return
 	}
 
 	entry := RawDataEntry{
-		Timestamp:      time.Now(),
-		RequestID:      requestID,
-		Direction:      "client_response",
-		Protocol:       protocol,
-		DataSize:       len(body),
-		RawData:        encodeRawData(body),
+		Timestamp:       time.Now(),
+		RequestID:       requestID,
+		Direction:       "client_response",
+		Protocol:        protocol,
+		DataSize:        len(body),
+		RawData:         encodeRawData(body),
 		RawDataEncoding: "base64",
-		ConversionStep: conversionStep,
+		ConversionStep:  conversionStep,
 	}
 
 	if !l.queue.Enqueue(entry) {
@@ -257,20 +276,22 @@ func (l *AsyncRawDataLogger) LogClientResponse(requestID, protocol string, body 
 
 // LogConversionError 异步记录转换错误
 func (l *AsyncRawDataLogger) LogConversionError(requestID, protocol, direction, step string, body []byte, err error) {
-	if l.baseLogger == nil || !l.baseLogger.enabled {
+	l.stateMu.RLock()
+	defer l.stateMu.RUnlock()
+	if l.closed.Load() || l.baseLogger == nil || !l.baseLogger.enabled {
 		return
 	}
 
 	entry := RawDataEntry{
-		Timestamp:      time.Now(),
-		RequestID:      requestID,
-		Direction:      direction,
-		Protocol:       protocol,
-		DataSize:       len(body),
-		RawData:        encodeRawData(body),
+		Timestamp:       time.Now(),
+		RequestID:       requestID,
+		Direction:       direction,
+		Protocol:        protocol,
+		DataSize:        len(body),
+		RawData:         encodeRawData(body),
 		RawDataEncoding: "base64",
-		ConversionStep: step,
-		Error:          err.Error(),
+		ConversionStep:  step,
+		Error:           err.Error(),
 	}
 
 	if !l.queue.Enqueue(entry) {
@@ -282,6 +303,7 @@ func (l *AsyncRawDataLogger) LogConversionError(requestID, protocol, direction, 
 
 // flushWorker 后台刷新协程
 func (l *AsyncRawDataLogger) flushWorker() {
+	defer close(l.done)
 	ticker := time.NewTicker(l.flushDelay)
 	defer ticker.Stop()
 
@@ -305,29 +327,25 @@ func (l *AsyncRawDataLogger) flushBatch() {
 	}
 
 	// 批量写入基础日志记录器
-	for _, entry := range entries {
-		l.baseLogger.writeEntry(entry)
-	}
+	l.baseLogger.writeEntries(entries)
 }
 
 // Close 关闭异步日志记录器
 func (l *AsyncRawDataLogger) Close() error {
-	// 停止后台协程
-	l.cancel()
-
-	// 等待队列清空（最多等待5秒）
-	deadline := time.Now().Add(5 * time.Second)
-	for time.Now().Before(deadline) && l.queue.Size() > 0 {
-		l.flushBatch()
-		time.Sleep(10 * time.Millisecond)
-	}
-
-	// 关闭基础日志记录器
-	if l.baseLogger != nil {
-		return l.baseLogger.Close()
-	}
-
-	return nil
+	l.closeOnce.Do(func() {
+		l.stateMu.Lock()
+		l.closed.Store(true)
+		l.stateMu.Unlock()
+		l.cancel()
+		<-l.done
+		for l.queue.Size() > 0 {
+			l.flushBatch()
+		}
+		if l.baseLogger != nil {
+			l.closeErr = l.baseLogger.Close()
+		}
+	})
+	return l.closeErr
 }
 
 // Stats 返回队列统计信息

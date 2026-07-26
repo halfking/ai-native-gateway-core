@@ -109,13 +109,30 @@ COMMIT;
 --   - idx_sessions_last_full_at：last_full_payload_at 用于冷读检查
 --   - idx_sessions_summary_at：summary_generated_at 用于 UI 提示"已总结"
 --
--- 索引均为 partial（带 WHERE），建议在生产环境用 CONCURRENTLY 避免锁表；
--- 首次部署 / 测试库可正常 fall back（非 CONCURRENTLY）。
+-- ⚠️ 锁风险（audit P1-7）：
+--   gateway.sessions 是分区表。CREATE INDEX ON 父表会逐分区获取
+--   ACCESS EXCLUSIVE 锁，生产环境大分区可能阻塞读写数分钟。
+--   CONCURRENTLY 不支持用在分区表父表上（PostgreSQL 限制）。
+--
+--   生产部署建议（替代方案，二选一）：
+--   A) 低峰期直接执行（本脚本默认方式，适合首次部署/测试）
+--   B) 逐分区 CONCURRENTLY（适合已有流量的生产环境）：
+--      DO $$ DECLARE p TEXT; BEGIN
+--        FOR p IN SELECT inhrelid::regclass::text FROM pg_inherits
+--          WHERE inhparent = 'gateway.sessions'::regclass
+--        LOOP
+--          EXECUTE format('CREATE INDEX CONCURRENTLY IF NOT EXISTS
+--            idx_sessions_last_full_at ON %s (tenant_id, last_full_payload_at DESC)
+--            WHERE last_full_payload_at IS NOT NULL', p);
+--          EXECUTE format('CREATE INDEX CONCURRENTLY IF NOT EXISTS
+--            idx_sessions_summary_at ON %s (tenant_id, summary_generated_at DESC)
+--            WHERE summary_generated_at IS NOT NULL', p);
+--        END LOOP;
+--      END; $$;
+--   方案 B 需要在每个分区建好索引后，再在父表建一个不带 CONCURRENTLY 的
+--   同名索引（仅元数据操作，瞬间完成）。
 -- =============================================
 
--- gateway.sessions is a partitioned table; CONCURRENTLY is not supported
--- on the parent (must be applied to each child partition if/when needed).
--- This is the canonical pattern for partitioned indexes.
 CREATE INDEX IF NOT EXISTS idx_sessions_last_full_at
     ON gateway.sessions (tenant_id, last_full_payload_at DESC)
     WHERE last_full_payload_at IS NOT NULL;
