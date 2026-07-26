@@ -473,8 +473,15 @@ func serializeOpenAIToolChoice(tc *ToolChoice) any {
 	switch tc.Type {
 	case "auto", "none":
 		return tc.Type
-	case "any", "required":
-		return tc.Type
+	// "any" is Anthropic's spelling of "the model must call a tool". OpenAI's
+	// API does not accept "any" (it returns 400) — the semantically closest
+	// accepted value is "required". Map it so an Anthropic-protocol client
+	// (tool_choice:"any") routed to an OpenAI upstream does not get rejected.
+	// "required" is already a native OpenAI value, pass it through unchanged.
+	case "any":
+		return "required"
+	case "required":
+		return "required"
 	case "tool":
 		return map[string]any{
 			"type": "function",

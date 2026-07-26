@@ -194,6 +194,10 @@ func TestSerializeOpenAI_ToolChoice(t *testing.T) {
 		{"auto", &ToolChoice{Type: "auto"}, "auto"},
 		{"none", &ToolChoice{Type: "none"}, "none"},
 		{"function", &ToolChoice{Type: "tool", Name: "get_weather"}, "function with name"},
+		// 2026-07-27 (F-3): Anthropic "any" means "model must call a tool".
+		// OpenAI does not accept "any" (400); map to the native "required".
+		{"any maps to required", &ToolChoice{Type: "any"}, "required"},
+		{"required passes through", &ToolChoice{Type: "required"}, "required"},
 	}
 
 	for _, tt := range tests {
@@ -218,7 +222,7 @@ func TestSerializeOpenAI_ToolChoice(t *testing.T) {
 
 			tc := result["tool_choice"]
 			switch tt.wantType {
-			case "auto", "none":
+			case "auto", "none", "required":
 				if tc != tt.wantType {
 					t.Errorf("tool_choice = %v, want %q", tc, tt.wantType)
 				}
