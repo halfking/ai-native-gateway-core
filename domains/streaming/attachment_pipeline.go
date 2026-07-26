@@ -31,20 +31,29 @@ func (c *RequestLogContext) markAttachmentsSent() {
 	}
 }
 
-func attachmentsJSON(items []attachments.AttachmentMetadata) json.RawMessage {
+// attachmentsJSON serializes attachment metadata, returning (nil, nil) when
+// there is nothing to serialize. The error is returned separately because the
+// nil return value is shared with the legitimate empty case — without it the
+// caller cannot tell "no attachments" from "attachment list failed to encode".
+func attachmentsJSON(items []attachments.AttachmentMetadata) (json.RawMessage, error) {
 	if len(items) == 0 {
-		return nil
+		return nil, nil
 	}
 	b, err := json.Marshal(items)
 	if err != nil {
-		return nil
+		return nil, err
 	}
-	return b
+	return b, nil
 }
 
 func attachmentsFromLogContext(logCtx *RequestLogContext) json.RawMessage {
 	if logCtx == nil {
 		return nil
 	}
-	return attachmentsJSON(logCtx.Attachments)
+	b, err := attachmentsJSON(logCtx.Attachments)
+	if err != nil {
+		logCtx.recordMetadataLoss("attachments", err)
+		return nil
+	}
+	return b
 }

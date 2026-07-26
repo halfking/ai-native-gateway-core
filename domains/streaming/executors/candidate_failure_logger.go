@@ -179,15 +179,12 @@ func (w *CandidateFailureWriter) buildRow(
 			row.UpstreamStatusCode = &sc
 		}
 		if len(ue.Body) > 0 {
-			body := string(ue.Body)
-			if len(body) > 1024 {
-				body = body[:1024]
-			}
+			body := truncateUTF8(string(ue.Body), 1024)
 			row.UpstreamResponseBody = body
 
-			preview := body
-			if len(preview) > 320 {
-				preview = preview[:320] + "..."
+			preview := truncateUTF8(body, 320)
+			if len(preview) < len(body) {
+				preview += "..."
 			}
 			row.UpstreamResponsePreview = preview
 		}
