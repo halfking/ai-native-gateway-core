@@ -227,7 +227,7 @@ func NewNodeProbeWorker(db *pgxpool.Pool, encKey []byte, keyring *secret.Keyring
 		keyring:     keyring,
 		apiKey:      apiKey,
 		baseURL:     baseURL,
-		client:      &http.Client{Timeout: 15 * time.Second},
+		client:      &http.Client{Timeout: 30 * time.Second},
 		stopCh:      make(chan struct{}),
 		wakeCh:      make(chan struct{}, 1),
 		inFlight:    make(map[string]struct{}),
@@ -238,7 +238,7 @@ func NewNodeProbeWorker(db *pgxpool.Pool, encKey []byte, keyring *secret.Keyring
 
 	if proxyFunc != nil {
 		w.probeClient = &http.Client{
-			Timeout: 15 * time.Second,
+			Timeout: 30 * time.Second,
 			Transport: &http.Transport{
 				Proxy:                 proxyFunc,
 				IdleConnTimeout:       90 * time.Second,

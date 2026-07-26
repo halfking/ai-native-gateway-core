@@ -1386,7 +1386,7 @@ func (c *Client) enrichWithAPIKeys(ctx context.Context, rr *resolveResponse) []C
 				"error", err,
 			)
 			skippedCount++
-			reason := fmt.Sprintf("key_decrypt_failed: %v", err)
+			reason := fmt.Sprintf("key_decrypt_failed: %v (credential_id=%d, provider_id=%d)", err, cand.CredentialID, cand.ProviderID)
 			cand.Routable = false
 			cand.BlockReason = &reason
 			cand.APIKey = "" // 确保没有泄漏部分解密的数据

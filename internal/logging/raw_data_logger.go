@@ -13,6 +13,7 @@ import (
 )
 
 const maxRawLogFileSize = 200 * 1024 * 1024
+
 // 特性：
 //   - 回转日志文件，最大200MB
 //   - 记录完整的请求和响应数据（未经IR转换）
@@ -177,6 +178,13 @@ func (l *RawDataLogger) LogConversionError(requestID, protocol, direction, step 
 
 // writeEntry 写入日志条目（线程安全）
 func (l *RawDataLogger) writeEntry(entry RawDataEntry) {
+	l.writeEntries([]RawDataEntry{entry})
+}
+
+func (l *RawDataLogger) writeEntries(entries []RawDataEntry) {
+	if len(entries) == 0 {
+		return
+	}
 	l.mu.Lock()
 	defer l.mu.Unlock()
 
@@ -185,34 +193,29 @@ func (l *RawDataLogger) writeEntry(entry RawDataEntry) {
 		return
 	}
 
-	// 序列化为JSON（单行）
-	data, err := json.Marshal(entry)
-	if err != nil {
-		slog.Error("raw_data_logger: failed to marshal entry", "err", err)
-		return
-	}
+	for _, entry := range entries {
+		data, err := json.Marshal(entry)
+		if err != nil {
+			slog.Error("raw_data_logger: failed to marshal entry", "err", err)
+			continue
+		}
+		data = append(data, '\n')
 
-	// 追加换行符
-	data = append(data, '\n')
+		if l.currentSize+int64(len(data)) > l.maxSize {
+			if err := l.rotate(); err != nil {
+				slog.Error("raw_data_logger: failed to rotate log", "err", err)
+				return
+			}
+		}
 
-	// 检查是否需要回转
-	if l.currentSize+int64(len(data)) > l.maxSize {
-		if err := l.rotate(); err != nil {
-			slog.Error("raw_data_logger: failed to rotate log", "err", err)
+		n, err := l.file.Write(data)
+		if err != nil {
+			slog.Error("raw_data_logger: failed to write entry", "err", err)
 			return
 		}
+		l.currentSize += int64(n)
 	}
 
-	// 写入数据
-	n, err := l.file.Write(data)
-	if err != nil {
-		slog.Error("raw_data_logger: failed to write entry", "err", err)
-		return
-	}
-
-	l.currentSize += int64(n)
-
-	// 立即刷新到磁盘（确保数据不丢失）
 	if err := l.file.Sync(); err != nil {
 		slog.Error("raw_data_logger: failed to sync file", "err", err)
 	}

@@ -5,7 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased] - 2026-07-24
+## [Unreleased] - 2026-07-26
+
+### Fixed
+
+- **探针自愈：业务请求成功后清除 node_probe_state 门控** (2026-07-26): `streaming executor` 成功路径新增 `NodeProbeHealthy` 回调，调用 `bg.MarkNodeProbeHealthy` 清除 `node_probe_state.last_direct_ok=FALSE`，防止瞬时探针超时永久排除健康凭据。同时探针 HTTP timeout 15s→30s，减少 NVIDIA NIM 冷启动等慢 endpoint 的探测误报。详见 [docs/changelogs/2026-07-26-probe-heal-health-checker-fix.md](docs/changelogs/2026-07-26-probe-heal-health-checker-fix.md).
+- **路由健康检查 `credential_active_not_routable` 查询修复** (2026-07-26): 查询引用了不存在的 `c.name`（实际为 `c.label`）和 `c.provider_name`，自 credentials 表列重命名后持续崩溃。修复：`c.name` → `c.label`，`c.provider_name` → `JOIN providers p ON p.id = c.provider_id` 并使用 `p.display_name`。
 
 ### Changed
 
