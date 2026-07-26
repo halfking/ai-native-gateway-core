@@ -54,13 +54,23 @@ type FeatureFlags struct {
 	UseExplicitDefault bool
 	UseComplexityScore bool
 
-	// AutoOnMessages/AutoOnResponses/AutoOnEmbeddings gate model=auto on
-	// non-chat endpoints (22 章 §22.2). Default off; each is independent.
+	// AutoOnMessages gates model=auto on non-chat endpoints (22 章 §22.2).
+	// Default off; independent of the other AutoOn* flags.
 	// Off → those endpoints ignore model="auto" (no rewrite, upstream sees "auto").
 	//
 	// Deprecated: 用 URSM_V2_MODE 替代。详见 autoroute/internal/legacyflags。
-	AutoOnMessages   bool
-	AutoOnResponses  bool
+	AutoOnMessages bool
+	// AutoOnResponses gates model=auto on non-chat endpoints (22 章 §22.2).
+	// Default off; independent of the other AutoOn* flags.
+	// Off → those endpoints ignore model="auto" (no rewrite, upstream sees "auto").
+	//
+	// Deprecated: 用 URSM_V2_MODE 替代。详见 autoroute/internal/legacyflags。
+	AutoOnResponses bool
+	// AutoOnEmbeddings gates model=auto on non-chat endpoints (22 章 §22.2).
+	// Default off; independent of the other AutoOn* flags.
+	// Off → those endpoints ignore model="auto" (no rewrite, upstream sees "auto").
+	//
+	// Deprecated: 用 URSM_V2_MODE 替代。详见 autoroute/internal/legacyflags。
 	AutoOnEmbeddings bool
 	// AutoEmbeddingRoute enables the M3 embedding shadow path. Default off.
 	//
