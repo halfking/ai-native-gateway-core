@@ -236,11 +236,15 @@ func (c *LiveStreamConfig) defaults() {
 		c.CachedSnapshotCleanupInterval = c.CachedSnapshotTTL
 	}
 	if c.SnapshotRefreshInterval <= 0 {
-		// 2026-07-19: 从 30 分钟延长到 2 小时，减少前端泳道跳变频率。
-		// 全量快照推送会导致前端重建所有泳道，视觉上出现跳变。
-		// 2 小时与 Redis TTL 对齐，在数据同步和用户体验间取得平衡。
-		// 可通过环境变量 LLM_GATEWAY_LIVE_STREAM_SNAPSHOT_REFRESH_INTERVAL 覆盖。
-		c.SnapshotRefreshInterval = 2 * time.Hour
+		// 2026-07-27: Reconciled with the field-doc default and the production
+		// caller. cmd/gateway/main.go passes 30m (or LLM_GATEWAY_LIVE_STREAM_
+		// SNAPSHOT_REFRESH_INTERVAL) so this branch is a last-resort fallback
+		// for direct construction without main.go. Previously this returned 2h,
+		// contradicting both the field comment and the effective production
+		// value — a stale value left over from an interim 2026-07-19 change.
+		// 30m matches what actually runs and is what the frontend's snapshot
+		// guard (now '<' instead of '<=') expects for periodic reconciliation.
+		c.SnapshotRefreshInterval = 30 * time.Minute
 	}
 }
 
@@ -576,87 +580,6 @@ func (h *LiveStreamSSEHub) evictStaleCachedSnapshots() {
 			"ttl", h.cfg.CachedSnapshotTTL.String(),
 			"cleanup_interval", h.cfg.CachedSnapshotCleanupInterval.String())
 	}
-}
-
-// needsFullRefresh 判断是否需要推送全量快照。
-// 只有在数据显著变化时才返回 true，避免无意义的推送导致前端跳变。
-// 2026-07-19: 智能推送策略 - 减少泳道跳变频率。
-func needsFullRefresh(cached, fresh *LiveStreamSnapshot) bool {
-	if cached == nil {
-		slog.Debug("snapshot refresh: first push (no cached snapshot)")
-		return true
-	}
-
-	// 判断 1: 总请求数变化 > 20%
-	oldTotal := cached.Summary.Total
-	newTotal := fresh.Summary.Total
-	if oldTotal > 0 {
-		diff := float64(absInt(newTotal - oldTotal))
-		threshold := float64(oldTotal) * 0.2
-		if diff > threshold {
-			slog.Info("snapshot refresh triggered: total count changed significantly",
-				"old_total", oldTotal,
-				"new_total", newTotal,
-				"diff_pct", fmt.Sprintf("%.1f%%", diff/float64(oldTotal)*100),
-				"threshold_pct", "20%")
-			return true
-		}
-	}
-
-	// 判断 2: 泳道数量变化（任一维度）
-	for _, dim := range []string{"vendor", "provider", "model"} {
-		oldLanes := cached.Dimensions[dim]
-		newLanes := fresh.Dimensions[dim]
-		if len(oldLanes) != len(newLanes) {
-			slog.Info("snapshot refresh triggered: lane count changed",
-				"dimension", dim,
-				"old_count", len(oldLanes),
-				"new_count", len(newLanes))
-			return true
-		}
-	}
-
-	// 判断 3: Top 5 泳道顺序变化（任一维度）
-	for _, dim := range []string{"vendor", "provider", "model"} {
-		oldLanes := cached.Dimensions[dim]
-		newLanes := fresh.Dimensions[dim]
-		topN := 5
-		if len(oldLanes) < topN {
-			topN = len(oldLanes)
-		}
-		if len(newLanes) < topN {
-			topN = len(newLanes)
-		}
-
-		for i := 0; i < topN; i++ {
-			if oldLanes[i].ID != newLanes[i].ID {
-				slog.Info("snapshot refresh triggered: top lane order changed",
-					"dimension", dim,
-					"position", i,
-					"old_lane", oldLanes[i].ID,
-					"new_lane", newLanes[i].ID)
-				return true
-			}
-		}
-	}
-
-	// 数据变化不显著，跳过推送
-	slog.Debug("snapshot refresh skipped: no significant changes detected",
-		"old_total", oldTotal,
-		"new_total", newTotal,
-		"lane_counts", map[string]int{
-			"vendor":   len(cached.Dimensions["vendor"]),
-			"provider": len(cached.Dimensions["provider"]),
-			"model":    len(cached.Dimensions["model"]),
-		})
-	return false
-}
-
-func absInt(x int) int {
-	if x < 0 {
-		return -x
-	}
-	return x
 }
 
 // PushFullSnapshots reads a fresh snapshot from Redis for every active
