@@ -78,7 +78,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/internal/centeragent"
 	"github.com/kaixuan/llm-gateway-go/internal/collector"
 	"github.com/kaixuan/llm-gateway-go/internal/handlers"
-	"github.com/kaixuan/llm-gateway-go/internal/ir"      //nolint:depguard // 诊断组件：语义分析器
+	"github.com/kaixuan/llm-gateway-go/internal/ir" //nolint:depguard // 诊断组件：语义分析器
 	"github.com/kaixuan/llm-gateway-go/internal/logging"
 	"github.com/kaixuan/llm-gateway-go/internal/modelpolicy"
 	"github.com/kaixuan/llm-gateway-go/internal/observability"
@@ -896,7 +896,7 @@ func main() {
 						maxSize = parsed
 					}
 				}
-				
+
 				rawLogger, err := logging.NewRawDataLogger(logDir, maxSize, true)
 				if err != nil {
 					slog.Error("raw_data_logger: failed to initialize", "err", err)
@@ -912,7 +912,7 @@ func main() {
 				if endpoint == "" {
 					endpoint = "https://llm.kxpms.cn/api/diagnostics/anomalies"
 				}
-				
+
 				anomalyReporter := logging.NewAnomalyReporter(endpoint, true)
 				routingExec.AnomalyReporter = executors.NewAnomalyReporterAdapter(anomalyReporter)
 				slog.Info("anomaly_reporter: initialized", "endpoint", endpoint)
@@ -1732,7 +1732,7 @@ func main() {
 		formatRegistry := streaming.NewFormatRegistry()
 		formatDetector := streaming.NewFormatDetector(formatRegistry)
 		formatFixer := streaming.NewFormatFixer()
-		
+
 		// Use Redis cache if available for session-level format caching
 		var formatCache streaming.FormatCache
 		if redisClientForCache != nil && redisClientForCache.Client() != nil {
@@ -1745,7 +1745,7 @@ func main() {
 			formatCache = streaming.NewNullFormatCache()
 			slog.Info("format detection: cache disabled (Redis not available)")
 		}
-		
+
 		chatHandler.SetFormatDetection(formatDetector, formatFixer, formatCache)
 		slog.Info("format detection system initialized",
 			"patterns", len(formatRegistry.List()),
@@ -2443,6 +2443,9 @@ func main() {
 					routingExec.SyncNoCandidateProbe = syncOn
 					routingExec.SyncNoCandidateTimeout = 5 * time.Second
 					routingExec.ProbeSync = nodeProbe.ProbeSync
+					routingExec.NodeProbeHealthy = func(ctx context.Context, credentialID int, rawModel string) error {
+						return bg.MarkNodeProbeHealthy(ctx, dbConn.Pool(), credentialID, rawModel)
+					}
 					slog.Info("sync_no_candidate_probe", "enabled", syncOn, "timeout", routingExec.SyncNoCandidateTimeout)
 				}
 
