@@ -807,21 +807,24 @@ func StreamChatWithPendingCaptureAndDiagnostics(
 			pc.append(line)
 		}
 
-		// 2026-06-22 fix: Filter empty choices blocks from OpenAI streams.
+		// 2026-06-22 fix (refined 2026-07-27): Filter empty-choices blocks
+		// from OpenAI streams ONLY when they carry no other useful payload.
+		//
 		// Some upstreams (e.g. glm-5.2 at https://api.supxh.xin) send
-		// {"choices":[],"usage":{...}} blocks at stream end, which crash
-		// OpenAI clients that assume choices[0] exists. Drop these blocks
-		// before writing to the client.
-		checkPayload := extractPayload(line)
-		if checkPayload != "" && checkPayload != "[DONE]" {
-			if isOpenAIFormatData([]byte(checkPayload)) {
-				// Check if it has empty choices array
-				if strings.Contains(checkPayload, `"choices":[]`) {
-					slog.Warn("relay: dropping empty choices block",
-						"payload_preview", truncateForLog(checkPayload, 100))
-					continue // Skip this chunk
-				}
-			}
+		// {"choices":[]} blocks which crash OpenAI clients that assume
+		// choices[0] exists. Those should be dropped.
+		//
+		// BUT OpenAI's own spec, when stream_options.include_usage is set,
+		// emits a terminal frame {"choices":[],"usage":{...}} — the canonical
+		// usage-reporting frame. The original filter dropped these too,
+		// silently losing token accounting for any client using include_usage.
+		// The refined check parses the JSON and only drops the frame when
+		// choices is empty AND there is no usage / other meaningful payload.
+		if shouldDropEmptyChoicesFrame(line) {
+			checkPayload := extractPayload(line)
+			slog.Warn("relay: dropping empty choices block (no payload)",
+				"payload_preview", truncateForLog(checkPayload, 100))
+			continue // Skip this chunk
 		}
 
 		diagnosticCollector.observeEmittedLine(line)
@@ -842,6 +845,76 @@ func extractPayload(line string) string {
 	}
 	payload := strings.TrimPrefix(line, "data: ")
 	return strings.TrimSpace(payload)
+}
+
+// shouldDropEmptyChoicesFrame reports whether an SSE data line is a
+// {"choices":[]} frame that carries no other useful payload and should be
+// dropped before forwarding to the client.
+//
+// Drop criteria (all must hold):
+//   - line is a "data: {...}" SSE frame (not [DONE], not a comment/event line)
+//   - payload parses as a JSON object
+//   - top-level "choices" exists and is an empty array []
+//
+// Keep criteria (return false → forward the frame) — the frame carries
+// legitimate non-choices data the client may need:
+//   - "usage" present  (OpenAI stream_options.include_usage terminal frame:
+//     {"choices":[],"usage":{...}} — dropping this loses token accounting)
+//   - "prompt_annotations" / "prompt_filter_results" present (Azure content
+//     moderation frames sometimes arrive with empty choices)
+//   - any other top-level key besides id/object/created/model/system_fingerprint
+//     (i.e. something we don't recognize but the client might want)
+//
+// On any parse failure the function returns false (best-effort: forward
+// unchanged rather than risk dropping a legitimate frame).
+func shouldDropEmptyChoicesFrame(line string) bool {
+	payload := extractPayload(line)
+	if payload == "" || payload == "[DONE]" {
+		return false
+	}
+	if !isOpenAIFormatData([]byte(payload)) {
+		return false
+	}
+	// Fast path: no "choices":[] substring → definitely not a drop candidate.
+	if !strings.Contains(payload, `"choices":[]`) {
+		return false
+	}
+
+	var obj map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(payload), &obj); err != nil {
+		// Malformed JSON — forward unchanged (do not risk dropping data).
+		return false
+	}
+
+	// Confirm choices is actually an empty array (the substring could be
+	// nested elsewhere, e.g. inside usage metadata of a quirky provider).
+	choicesRaw, ok := obj["choices"]
+	if !ok {
+		return false
+	}
+	var choicesArr []json.RawMessage
+	if err := json.Unmarshal(choicesRaw, &choicesArr); err != nil || len(choicesArr) > 0 {
+		return false // choices missing, not an array, or non-empty → keep
+	}
+
+	// choices is []. Now decide whether the rest of the frame is "useful".
+	// These keys are pure usage/accounting/context that clients consume even
+	// with empty choices — keep the frame if any is present.
+	for _, keepKey := range []string{"usage", "prompt_annotations", "prompt_filter_results"} {
+		if v, present := obj[keepKey]; present && string(v) != "null" {
+			return false
+		}
+	}
+	// Any other non-boilerplate top-level key is treated as potential signal.
+	for k := range obj {
+		switch k {
+		case "id", "object", "created", "model", "system_fingerprint", "choices":
+			continue // boilerplate; ignore
+		default:
+			return false // unrecognized key → forward to be safe
+		}
+	}
+	return true
 }
 
 // stripChunkFields applies stripFn to the JSON payload of a "data: {...}" line.
