@@ -80,22 +80,33 @@ func (h *Handler) fetchSwimLaneData(ctx context.Context, hours int) ([]SwimLaneR
 	// 查询最近N小时的请求数据
 	since := time.Now().Add(-time.Duration(hours) * time.Hour)
 
+	// 2026-07-27: This SQL previously selected non-existent columns
+	// (request_at, model, original_model_family, credential_name,
+	// credential_code, status) on request_logs_hot, whose actual schema is
+	// LIKE request_logs (ts, client_model, canonical_id, credential_id,
+	// provider_id, request_status, ...). Any call returned a 500. Rewritten
+	// against the real columns + the canonical→family→vendor and credential
+	// joins used elsewhere by the live-stream aggregation path.
 	query := `
-		SELECT 
-			request_id,
-			request_at,
-			model,
-			COALESCE(original_model_family, 'unknown') as vendor,
-			COALESCE(NULLIF(credential_name, ''), credential_code) as provider,
-			status,
-			COALESCE(error_kind, '') as error_kind,
-			COALESCE(latency_ms, 0) as latency_ms,
-			COALESCE(cost_usd, 0) as cost_usd,
-			COALESCE(prompt_tokens, 0) as prompt_tokens,
-			COALESCE(completion_tokens, 0) as completion_tokens
-		FROM request_logs_hot
-		WHERE request_at >= $1
-		ORDER BY request_at DESC
+		SELECT
+			rl.request_id,
+			rl.ts,
+			COALESCE(NULLIF(rl.client_model, ''), mc.canonical_name, rl.outbound_model, 'unknown') AS model,
+			COALESCE(NULLIF(mf.vendor, ''), COALESCE(rl.client_model, ''), 'unknown') AS vendor,
+			COALESCE(NULLIF(p.display_name, ''), NULLIF(p.catalog_code, ''), p.code, 'unknown') AS provider,
+			COALESCE(rl.request_status, '') AS status,
+			COALESCE(rl.error_kind, '') AS error_kind,
+			COALESCE(rl.latency_ms, 0) AS latency_ms,
+			COALESCE(rl.cost_usd, 0) AS cost_usd,
+			COALESCE(rl.prompt_tokens, 0) AS prompt_tokens,
+			COALESCE(rl.completion_tokens, 0) AS completion_tokens
+		FROM request_logs_hot rl
+		LEFT JOIN models_canonical mc ON mc.id = rl.canonical_id
+		LEFT JOIN model_families   mf ON mf.id = mc.family
+		LEFT JOIN credentials      c  ON c.id  = rl.credential_id
+		LEFT JOIN providers        p  ON p.id  = c.provider_id
+		WHERE rl.ts >= $1
+		ORDER BY rl.ts DESC
 		LIMIT 500
 	`
 
