@@ -1,7 +1,10 @@
 package streaming
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
+	"log/slog"
 	"net/http"
 	"strings"
 	"time"
@@ -199,7 +202,11 @@ func (c *RequestLogContext) RecordFix(actions map[string]any) {
 	}
 	var existing map[string]any
 	if len(c.QualityFixActions) > 0 {
-		_ = json.Unmarshal(c.QualityFixActions, &existing)
+		// A decode failure here would leave `existing` nil and silently
+		// overwrite every previously recorded fix action.
+		if err := json.Unmarshal(c.QualityFixActions, &existing); err != nil {
+			c.recordMetadataLoss("quality_fix_actions", err)
+		}
 	}
 	if existing == nil {
 		existing = map[string]any{}
@@ -209,6 +216,7 @@ func (c *RequestLogContext) RecordFix(actions map[string]any) {
 	}
 	out, err := json.Marshal(existing)
 	if err != nil {
+		c.recordMetadataLoss("quality_fix_actions", err)
 		return
 	}
 	c.QualityFixActions = out
@@ -323,12 +331,72 @@ func preferCapturedBody(primary, fallback []byte) []byte {
 }
 
 // EnsureCaptured buffers the JSON body (restores r.Body) and fills key/identity meta.
+//
+// A read failure here is NOT benign: readRequestBody returns whatever it read
+// before the timeout or size limit, and bufferRequestBody installs that partial
+// payload as r.Body. The truncated prompt is therefore both persisted AND
+// forwarded upstream, while the row still looks like an ordinary short request.
+// The loss is recorded so it stops being invisible.
 func (c *RequestLogContext) EnsureCaptured() {
 	if c == nil || c.Request == nil {
 		return
 	}
-	_ = ensureRequestBodyBuffered(c.Request, &c.Body, &c.ClientModel)
+	if err := ensureRequestBodyBuffered(c.Request, &c.Body, &c.ClientModel); err != nil {
+		c.recordBodyCaptureFailure(err)
+	}
 	c.refreshMeta()
+}
+
+// recordMetadataLoss reports request metadata dropped by a marshal/unmarshal
+// failure. Metadata loss degrades diagnosis rather than the request itself, so
+// it is recorded at medium severity; field name and reason only, never content.
+func (c *RequestLogContext) recordMetadataLoss(field string, err error) {
+	if c == nil {
+		return
+	}
+	if c.handler == nil {
+		slog.Warn("data loss: "+AnomalyMetadataDropped,
+			"request_id", c.RequestID, "field", field, "error", err)
+		return
+	}
+	ctx := context.Background()
+	if c.Request != nil {
+		ctx = c.Request.Context()
+	}
+	c.handler.recordDataLoss(ctx, AnomalyMetadataDropped, string(SeverityMedium), c.RequestID,
+		field+" dropped: "+err.Error(),
+		map[string]any{"field": field})
+}
+
+// recordBodyCaptureFailure reports a truncated or unreadable request body.
+// Sizes and the reason only — the body itself is a user prompt.
+func (c *RequestLogContext) recordBodyCaptureFailure(err error) {
+	reason := "read_error"
+	severity := SeverityHigh
+	switch {
+	case errors.Is(err, errBodyTooLarge):
+		reason = "body_too_large"
+	case errors.Is(err, context.DeadlineExceeded):
+		reason = "read_timeout"
+	case errors.Is(err, context.Canceled):
+		// Client went away mid-upload: the partial body is expected rather than
+		// a gateway defect, so it is recorded at a lower severity.
+		reason = "client_canceled"
+		severity = SeverityMedium
+	}
+	if c.handler == nil {
+		slog.Warn("data loss: "+AnomalyRequestBodyTruncated,
+			"request_id", c.RequestID, "reason", reason,
+			"captured_bytes", len(c.Body), "error", err)
+		return
+	}
+	c.handler.recordDataLoss(c.Request.Context(), AnomalyRequestBodyTruncated, string(severity), c.RequestID,
+		"request body capture failed ("+reason+"): "+err.Error(),
+		map[string]any{
+			"reason":         reason,
+			"captured_bytes": len(c.Body),
+			"path":           c.Request.URL.Path,
+		})
 }
 
 func (c *RequestLogContext) CapturePartialBody(body []byte) {
@@ -411,6 +479,11 @@ func (c *RequestLogContext) SetAutoDecision(wire *autoRouteDecision) {
 	b, err := jsonMarshal(wire)
 	if err == nil {
 		c.AutoDecision = b
+	} else {
+		// Without this the row shows is_auto_request=true with a NULL
+		// auto_decision — indistinguishable from a row written before the
+		// column existed.
+		c.recordMetadataLoss("auto_decision", err)
 	}
 }
 
@@ -527,7 +600,10 @@ func (c *RequestLogContext) buildEntry(errCode, errMessage string, providerID, c
 	streamChunksSentPtr = &sent
 
 	// 2026-07-01: 序列化附件元数据为 JSONB
-	attachmentsJSON := attachmentsJSON(c.Attachments)
+	attachmentsJSON, attachmentsErr := attachmentsJSON(c.Attachments)
+	if attachmentsErr != nil {
+		c.recordMetadataLoss("attachments", attachmentsErr)
+	}
 
 	reqLog := &telemetry.RequestLogEntry{
 		RequestID:         c.RequestID,
@@ -569,7 +645,14 @@ func (c *RequestLogContext) buildEntry(errCode, errMessage string, providerID, c
 
 	// 2026-07-20: serialize routing attempts into request_logs
 	if c.RoutingTracker != nil {
-		if jsonBytes, err := c.RoutingTracker.ToJSONBytes(); err == nil && jsonBytes != nil {
+		jsonBytes, err := c.RoutingTracker.ToJSONBytes()
+		switch {
+		case err != nil:
+			// The failover chain is exactly the data needed to debug the
+			// failure this row records. ToJSONBytes also legitimately returns
+			// (nil, nil), so without this the error case is fully masked.
+			c.recordMetadataLoss("routing_attempts", err)
+		case jsonBytes != nil:
 			reqLog.RoutingAttempts = jsonBytes
 		}
 		if summary := c.RoutingTracker.Summary(); summary != "" {
@@ -677,8 +760,11 @@ func applySessionCompressorFields(entry *telemetry.RequestLogEntry, c *RequestLo
 
 	// Merge window_triggered + summary_marker into compression_meta JSONB.
 	if c.OutboundWindowTriggered != "" || c.OutboundSummaryMarker != "" {
-		merged := mergeCompressionMetaV3(entry.CompressionMeta,
+		merged, err := mergeCompressionMetaV3(entry.CompressionMeta,
 			c.OutboundWindowTriggered, c.OutboundSummaryMarker)
+		if err != nil {
+			c.recordMetadataLoss("compression_meta", err)
+		}
 		if len(merged) > 0 {
 			entry.CompressionMeta = merged
 		}
@@ -687,10 +773,18 @@ func applySessionCompressorFields(entry *telemetry.RequestLogEntry, c *RequestLo
 
 // mergeCompressionMetaV3 adds window_triggered and summary_marker to the
 // existing compression_meta JSONB without clobbering v7 fields.
-func mergeCompressionMetaV3(existing json.RawMessage, windowTriggered, summaryMarker string) json.RawMessage {
+//
+// Returns (result, droppedErr). A decode failure must NOT be merged into an
+// empty map: doing so returns a blob containing only the two new keys and
+// silently deletes the pre-existing v7 compression fields. On decode failure
+// the existing blob is preserved untouched and the error is reported so the
+// caller can record it.
+func mergeCompressionMetaV3(existing json.RawMessage, windowTriggered, summaryMarker string) (json.RawMessage, error) {
 	m := make(map[string]any)
 	if len(existing) > 0 {
-		_ = json.Unmarshal(existing, &m)
+		if err := json.Unmarshal(existing, &m); err != nil {
+			return existing, err
+		}
 	}
 	if windowTriggered != "" {
 		m["window_triggered"] = windowTriggered
@@ -699,13 +793,13 @@ func mergeCompressionMetaV3(existing json.RawMessage, windowTriggered, summaryMa
 		m["summary_marker"] = summaryMarker
 	}
 	if len(m) == 0 {
-		return existing
+		return existing, nil
 	}
 	b, err := json.Marshal(m)
 	if err != nil {
-		return existing
+		return existing, err
 	}
-	return b
+	return b, nil
 }
 
 // ─── 2026-07-15: 请求性质维度 setter ───
