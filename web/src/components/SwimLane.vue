@@ -154,12 +154,11 @@ const showEmergencyButton = computed(() => {
 })
 
 function handleEmergencyDiagnose() {
-  // 后端按 ASC 时间戳下发：newest 在 tail；新数据追加到最右。
-  // 反向遍历 = 从尾部往前找，即定位到"最近"的失败请求。
-  const recentFailure = props.lane.requests
-    .slice()
-    .reverse()
-    .find((r) => r.status !== 'success')
+  // 2026-07-26: 后端按 DESC 时间戳下发（newest 在 head，见
+  // admin/live_stream_redis_store.go buildLiveStreamLanes）。正向遍历
+  // 第一个非 success 即"最近"的失败请求；此前这里 reverse() 是基于
+  // 旧的 ASC 假设，会定位到最旧的失败。
+  const recentFailure = props.lane.requests.find((r) => r.status !== 'success')
   if (!recentFailure) return
   emit('emergencyDiagnose', {
     credentialId: (recentFailure as any).credential_id || 0,

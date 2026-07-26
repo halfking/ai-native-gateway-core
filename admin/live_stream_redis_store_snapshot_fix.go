@@ -117,10 +117,15 @@ func (s *LiveStreamRedisStore) SnapshotFromDimensionQueues(ctx context.Context, 
 		}
 	}
 
-	// 2026-07-20: Sort ASC by timestamp so grouped[key] inside
-	// buildLiveStreamLanes is also ASC (oldest first, newest at the
-	// tail). lastTiles() then picks the trailing window = "newest N"
-	// consistently across snapshots.
+	// Sort ASC by timestamp so this function's own output — the
+	// first/last_request_ts log fields below — is deterministic across
+	// snapshots regardless of Redis SCAN order.
+	//
+	// 2026-07-26: per-lane display order is NOT set here. buildLiveStreamLanes
+	// sorts each lane DESC (newest first) because that is the contract the
+	// dashboard renders and firstTiles() truncates against. Previously this
+	// ASC order leaked into the lanes, so the 20-tile cap kept the OLDEST
+	// tiles and dropped every newer request.
 	sort.SliceStable(allRequests, func(i, j int) bool {
 		// Ts is RFC3339 — lexicographic compare matches chronological order,
 		// no need to parse to time.Time (which would also be ~10× slower).
