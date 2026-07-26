@@ -125,6 +125,19 @@ type RawDataLogger interface {
 	LogResponse(requestID string, protocol string, body []byte, isStream bool) error
 }
 
+// UpstreamRequestLogger records the exact body sent to an upstream provider.
+// Implementations are optional so existing diagnostic fakes stay compatible.
+type UpstreamRequestLogger interface {
+	LogUpstreamRequest(requestID string, protocol string, body []byte) error
+}
+
+// ClientResponseLogger records the final body returned to the client.
+// Streaming bridges use RawDataLogger.LogResponse for pre-conversion upstream
+// frames; this optional interface is used for non-streaming client responses.
+type ClientResponseLogger interface {
+	LogClientResponse(requestID string, protocol string, body []byte) error
+}
+
 // AnomalyReporter 报告协议转换异常（2026-07-26）
 type AnomalyReporter interface {
 	ReportAnomaly(requestID string, anomalyType string, details map[string]interface{}) error
@@ -133,9 +146,20 @@ type AnomalyReporter interface {
 // SemanticAnalyzer 语义分析器，检测工具调用和内容丢失（2026-07-26）
 type SemanticAnalyzer interface {
 	AnalyzeRequest(requestID string, irReq interface{}) error
-	AnalyzeResponse(requestID string, irResp interface{}) error
+	AnalyzeResponse(requestID string, irResp interface{}) (*SemanticAnalysisResult, error)
 }
 
+// SemanticAnalysisResult is the protocol-neutral result returned by a
+// SemanticAnalyzer. It keeps the Executor independent from a concrete IR
+// implementation while giving stream bridges enough information to report an
+// actionable anomaly.
+type SemanticAnalysisResult struct {
+	IsIncomplete          bool
+	Reason                string
+	Confidence            float64
+	SuspectedMissingTools bool
+	Indicators            []string
+}
 
 // ExecutionOutcome 执行结果
 type ExecutionOutcome struct {
@@ -768,6 +792,55 @@ func NewExecutor(
 	}
 }
 
+func diagnosticRequestID(params *ExecParams) string {
+	if params == nil {
+		return ""
+	}
+	if params.RequestID != "" {
+		return params.RequestID
+	}
+	if params.R != nil {
+		return params.R.Header.Get("X-Request-Id")
+	}
+	return ""
+}
+
+func diagnosticProtocol(protocol, fallback string) string {
+	if protocol != "" {
+		return protocol
+	}
+	return fallback
+}
+
+func (e *Executor) logUpstreamRequest(params *ExecParams, protocol string, body []byte) {
+	logger, ok := e.RawDataLogger.(UpstreamRequestLogger)
+	if !ok || logger == nil {
+		return
+	}
+	if err := logger.LogUpstreamRequest(diagnosticRequestID(params), protocol, body); err != nil {
+		slog.Warn("executor diagnostics: upstream request logging failed", "request_id", diagnosticRequestID(params), "error", err)
+	}
+}
+
+func (e *Executor) logUpstreamResponse(params *ExecParams, protocol string, body []byte) {
+	if e.RawDataLogger == nil {
+		return
+	}
+	if err := e.RawDataLogger.LogResponse(diagnosticRequestID(params), protocol, body, false); err != nil {
+		slog.Warn("executor diagnostics: upstream response logging failed", "request_id", diagnosticRequestID(params), "error", err)
+	}
+}
+
+func (e *Executor) logClientResponse(params *ExecParams, protocol string, body []byte) {
+	logger, ok := e.RawDataLogger.(ClientResponseLogger)
+	if !ok || logger == nil {
+		return
+	}
+	if err := logger.LogClientResponse(diagnosticRequestID(params), protocol, body); err != nil {
+		slog.Warn("executor diagnostics: client response logging failed", "request_id", diagnosticRequestID(params), "error", err)
+	}
+}
+
 type ExecParams struct {
 	W         http.ResponseWriter
 	R         *http.Request
@@ -879,6 +952,8 @@ type ExecParams struct {
 	// 在 handler.go 中创建，在 executor_chat.go 中填充，在 telemetry
 	// 中写入 request_logs_hot.routing_attempts。可选，nil 表示不追踪。
 	RoutingTracker *RoutingAttemptsTracker
+
+	diagnosticsLogged bool
 }
 
 // SetTraceRecorder (2026-07-17) 注入请求链路追踪器,
@@ -1315,6 +1390,14 @@ func (e *Executor) Execute(params *ExecParams) (*ExecuteResult, error) {
 	// Keep the inbound body immutable across candidate failover. Per-candidate
 	// protocol rendering works from this snapshot and never re-enters attachment extraction.
 	params.BodyBytes = append([]byte(nil), params.BodyBytes...)
+	if !params.diagnosticsLogged && e.RawDataLogger != nil {
+		requestID := diagnosticRequestID(params)
+		protocol := diagnosticProtocol(params.ClientProtocol, "openai-completions")
+		if err := e.RawDataLogger.LogRequest(requestID, protocol, params.BodyBytes); err != nil {
+			slog.Warn("executor diagnostics: client request logging failed", "request_id", requestID, "error", err)
+		}
+		params.diagnosticsLogged = true
+	}
 
 	// ── 2026-07-22: Session-aware continuation/retry detection ───────
 	if params.SessionID != "" && e.PendingStore != nil && params.W != nil && len(params.BodyBytes) > 0 {

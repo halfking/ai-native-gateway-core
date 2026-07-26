@@ -362,7 +362,7 @@ func (e *Executor) executeOpenAI(
 			if params.IsStream {
 				req.Header.Set("Accept", "text/event-stream")
 			}
-			req.Header.Set("X-Request-Id", params.R.Header.Get("X-Request-Id"))
+			req.Header.Set("X-Request-Id", diagnosticRequestID(params))
 			// Track C C2 audit fix 3.1: propagate session headers
 			// to the upstream request so the StreamChat closure in
 			// main.go can detect session-bearing requests and
@@ -447,6 +447,7 @@ func (e *Executor) executeOpenAI(
 					return io.NopCloser(bytes.NewReader(bodyBytes)), nil
 				}
 			}
+			e.logUpstreamRequest(params, diagnosticProtocol(cand.Protocol, "openai-completions"), bodyBytes)
 
 			reqStart := time.Now()
 			var resp *http.Response
@@ -581,6 +582,7 @@ func (e *Executor) executeOpenAI(
 				defer resp.Body.Close()
 				body := make([]byte, 4096)
 				n, _ := resp.Body.Read(body)
+				e.logUpstreamResponse(params, diagnosticProtocol(cand.Protocol, "openai-completions"), body[:n])
 				_, _ = io.Copy(io.Discard, resp.Body)
 				errKind := errorsx.ClassifyErrorWithBody(resp.StatusCode, body[:n])
 
@@ -812,7 +814,7 @@ func (e *Executor) executeOpenAI(
 					streamOutcome = e.OpenAIToAnthropicStream(
 						params.W, resp,
 						params.ClientModel, outboundModel,
-						params.R.Header.Get("X-Request-Id"),
+						diagnosticRequestID(params),
 						params.Capture, nil,
 					)
 				case e.OpenAIToResponsesStream != nil &&
@@ -821,7 +823,7 @@ func (e *Executor) executeOpenAI(
 					streamOutcome = e.OpenAIToResponsesStream(
 						params.W, resp,
 						params.ClientModel, outboundModel,
-						params.R.Header.Get("X-Request-Id"),
+						diagnosticRequestID(params),
 						params.Capture, nil,
 					)
 				case params.StreamWrapper != nil:
@@ -1000,6 +1002,7 @@ func (e *Executor) executeOpenAI(
 			if err != nil {
 				return nil, err
 			}
+			e.logUpstreamResponse(params, diagnosticProtocol(cand.Protocol, "openai-completions"), respBody)
 			if len(respBody) > maxBodySize {
 				slog.Warn("upstream response truncated", "size", len(respBody))
 				respBody = respBody[:maxBodySize]
@@ -1097,6 +1100,7 @@ func (e *Executor) executeOpenAI(
 				}
 			}
 			if !params.SuppressSuccessWrite {
+				e.logClientResponse(params, diagnosticProtocol(params.ClientProtocol, "openai-completions"), respBody)
 				for k, vs := range resp.Header {
 					for _, v := range vs {
 						params.W.Header().Add(k, v)

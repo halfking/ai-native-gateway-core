@@ -1,23 +1,28 @@
 package executors
 
-// diagnostic_adapters.go 提供诊断组件的适配器实现，
-// 将 internal/logging 和 internal/ir 中的具体类型适配到
-// Executor 期望的接口。
-//
-// 2026-07-26: 诊断功能集成到 Executor（USRM v2 架构）
-// Phase 1: 仅实现原始数据日志功能，异常报告和语义分析作为占位符保留。
-
 import (
+	"context"
+	"fmt"
+
 	"github.com/kaixuan/llm-gateway-go/internal/ir"
-	"github.com/kaixuan/llm-gateway-go/internal/logging"
 )
 
-// RawDataLoggerAdapter 将 logging.RawDataLogger 适配为 RawDataLogger 接口
-type RawDataLoggerAdapter struct {
-	logger *logging.RawDataLogger
+type rawDataLogger interface {
+	LogClientRequest(requestID, protocol string, body []byte, headers map[string]string, conversionStep string)
+	LogUpstreamRequest(requestID, protocol string, body []byte, conversionStep string)
+	LogUpstreamResponse(requestID, protocol string, body []byte, conversionStep string)
+	LogClientResponse(requestID, protocol string, body []byte, conversionStep string)
 }
 
-func NewRawDataLoggerAdapter(logger *logging.RawDataLogger) *RawDataLoggerAdapter {
+// RawDataLoggerAdapter adapts a raw data logger to the Executor diagnostic
+// interface. The wrapped logger may write asynchronously, so diagnostics never
+// delay the request path.
+type RawDataLoggerAdapter struct {
+	logger rawDataLogger
+}
+
+// NewRawDataLoggerAdapter creates an adapter for a raw data logger.
+func NewRawDataLoggerAdapter(logger rawDataLogger) *RawDataLoggerAdapter {
 	return &RawDataLoggerAdapter{logger: logger}
 }
 
@@ -25,8 +30,7 @@ func (a *RawDataLoggerAdapter) LogRequest(requestID string, protocol string, bod
 	if a.logger == nil {
 		return nil
 	}
-	// 使用 LogClientRequest 记录客户端请求
-	a.logger.LogClientRequest(requestID, protocol, body, nil, "executor")
+	a.logger.LogClientRequest(requestID, protocol, body, nil, "pre_conversion")
 	return nil
 }
 
@@ -34,22 +38,46 @@ func (a *RawDataLoggerAdapter) LogResponse(requestID string, protocol string, bo
 	if a.logger == nil {
 		return nil
 	}
-	// 使用 LogClientResponse 记录响应
-	convStep := "executor"
+	conversionStep := "pre_conversion"
 	if isStream {
-		convStep = "executor_stream"
+		conversionStep = "pre_conversion_stream_frame"
 	}
-	a.logger.LogClientResponse(requestID, protocol, body, convStep)
+	a.logger.LogUpstreamResponse(requestID, protocol, body, conversionStep)
 	return nil
 }
 
-// AnomalyReporterAdapter 将 logging.AnomalyReporter 适配为 AnomalyReporter 接口
-// Phase 1: 占位符实现，暂不报告异常（需要更复杂的上下文信息）
-type AnomalyReporterAdapter struct {
-	reporter *logging.AnomalyReporter
+// LogUpstreamRequest records the exact payload sent to the provider.
+func (a *RawDataLoggerAdapter) LogUpstreamRequest(requestID string, protocol string, body []byte) error {
+	if a.logger == nil {
+		return nil
+	}
+	a.logger.LogUpstreamRequest(requestID, protocol, body, "post_conversion")
+	return nil
 }
 
-func NewAnomalyReporterAdapter(reporter *logging.AnomalyReporter) *AnomalyReporterAdapter {
+// LogClientResponse records the final payload returned to the client.
+func (a *RawDataLoggerAdapter) LogClientResponse(requestID string, protocol string, body []byte) error {
+	if a.logger == nil {
+		return nil
+	}
+	a.logger.LogClientResponse(requestID, protocol, body, "post_conversion")
+	return nil
+}
+
+type anomalyReporter interface {
+	ReportToolCallsMissing(ctx context.Context, requestID string, sourceProto, targetProto string, rawInput, rawOutput []byte, missingToolCalls string, confidence float64)
+	ReportConversionError(ctx context.Context, requestID string, sourceProto, targetProto, step string, rawInput []byte, err error)
+	ReportSemanticIncomplete(ctx context.Context, requestID string, protocol string, rawOutput []byte, reason string, indicators []string, confidence float64)
+}
+
+// AnomalyReporterAdapter adapts the queued anomaly reporter to the Executor
+// interface.
+type AnomalyReporterAdapter struct {
+	reporter anomalyReporter
+}
+
+// NewAnomalyReporterAdapter creates an adapter for an anomaly reporter.
+func NewAnomalyReporterAdapter(reporter anomalyReporter) *AnomalyReporterAdapter {
 	return &AnomalyReporterAdapter{reporter: reporter}
 }
 
@@ -57,40 +85,98 @@ func (a *AnomalyReporterAdapter) ReportAnomaly(requestID string, anomalyType str
 	if a.reporter == nil {
 		return nil
 	}
-	
-	// Phase 1: 简化实现，仅记录日志
-	// 完整的异常报告需要在流式处理函数中直接调用 AnomalyReporter 的具体方法
-	// 因为它们需要 context.Context 和完整的原始数据
-	
+
+	sourceProtocol := detailString(details, "source_protocol", "unknown")
+	targetProtocol := detailString(details, "target_protocol", "unknown")
+	conversionStep := detailString(details, "conversion_step", "stream_conversion")
+	rawInput := detailBytes(details, "raw_input")
+	rawOutput := detailBytes(details, "raw_output")
+	confidence := detailFloat(details, "confidence", 1)
+
+	switch anomalyType {
+	case "tool_calls_missing":
+		a.reporter.ReportToolCallsMissing(
+			context.Background(), requestID, sourceProtocol, targetProtocol,
+			rawInput, rawOutput,
+			detailString(details, "missing_tool_calls", "upstream tool calls were not emitted"),
+			confidence,
+		)
+	case "semantic_incomplete":
+		a.reporter.ReportSemanticIncomplete(
+			context.Background(), requestID, targetProtocol, rawOutput,
+			detailString(details, "reason", "response appears incomplete"),
+			detailStrings(details, "indicators"), confidence,
+		)
+	default:
+		a.reporter.ReportConversionError(
+			context.Background(), requestID, sourceProtocol, targetProtocol, conversionStep,
+			rawInput, fmt.Errorf("%s", detailString(details, "error", anomalyType)),
+		)
+	}
 	return nil
 }
 
-// SemanticAnalyzerAdapter 将 ir.SemanticAnalyzer 适配为 SemanticAnalyzer 接口
-// Phase 1: 占位符实现，暂不执行语义分析
+func detailString(details map[string]interface{}, key, fallback string) string {
+	if value, ok := details[key].(string); ok && value != "" {
+		return value
+	}
+	return fallback
+}
+
+func detailBytes(details map[string]interface{}, key string) []byte {
+	switch value := details[key].(type) {
+	case []byte:
+		return append([]byte(nil), value...)
+	case string:
+		return []byte(value)
+	default:
+		return nil
+	}
+}
+
+func detailFloat(details map[string]interface{}, key string, fallback float64) float64 {
+	if value, ok := details[key].(float64); ok {
+		return value
+	}
+	return fallback
+}
+
+func detailStrings(details map[string]interface{}, key string) []string {
+	if value, ok := details[key].([]string); ok {
+		return append([]string(nil), value...)
+	}
+	return nil
+}
+
+// SemanticAnalyzerAdapter adapts the IR semantic analyzer to Executor.
 type SemanticAnalyzerAdapter struct {
 	analyzer *ir.SemanticAnalyzer
 }
 
+// NewSemanticAnalyzerAdapter creates an adapter for the IR semantic analyzer.
 func NewSemanticAnalyzerAdapter(analyzer *ir.SemanticAnalyzer) *SemanticAnalyzerAdapter {
 	return &SemanticAnalyzerAdapter{analyzer: analyzer}
 }
 
 func (a *SemanticAnalyzerAdapter) AnalyzeRequest(requestID string, irReq interface{}) error {
-	if a.analyzer == nil {
-		return nil
-	}
-	
-	// Phase 1: 占位符，语义分析需要在实际转换点集成
 	return nil
 }
 
-func (a *SemanticAnalyzerAdapter) AnalyzeResponse(requestID string, irResp interface{}) error {
+func (a *SemanticAnalyzerAdapter) AnalyzeResponse(requestID string, irResp interface{}) (*SemanticAnalysisResult, error) {
 	if a.analyzer == nil {
-		return nil
+		return nil, nil
 	}
-	
-	// Phase 1: 占位符，语义分析需要在实际转换点集成
-	return nil
+
+	response, ok := irResp.(*ir.InternalResponse)
+	if !ok || response == nil {
+		return nil, nil
+	}
+	analysis := a.analyzer.AnalyzeResponse(response)
+	return &SemanticAnalysisResult{
+		IsIncomplete:          analysis.IsIncomplete,
+		Reason:                analysis.Reason,
+		Confidence:            analysis.Confidence,
+		SuspectedMissingTools: analysis.SuspectedMissingTools,
+		Indicators:            append([]string(nil), analysis.Indicators...),
+	}, nil
 }
-
-

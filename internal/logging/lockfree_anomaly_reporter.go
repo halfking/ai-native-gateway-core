@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"sync"
 	"sync/atomic"
 	"time"
 )
@@ -22,6 +23,9 @@ type LockFreeAnomalyReporter struct {
 	cancel     context.CancelFunc
 	batchSize  int
 	flushDelay time.Duration
+	closeOnce  sync.Once
+	submitMu   sync.RWMutex
+	done       chan struct{}
 
 	// 统计信息
 	reportsSent   atomic.Uint64
@@ -46,13 +50,15 @@ func NewLockFreeAnomalyReporter(endpoint string, enabled bool, queueSize int) *L
 		cancel:     cancel,
 		batchSize:  10,
 		flushDelay: 5 * time.Second,
+		done:       make(chan struct{}),
 	}
 
 	reporter.enabled.Store(enabled && endpoint != "")
 
 	if reporter.enabled.Load() {
-		// 启动后台发送协程
 		go reporter.sendWorker()
+	} else {
+		close(reporter.done)
 	}
 
 	return reporter
@@ -90,7 +96,7 @@ func (r *LockFreeAnomalyReporter) ReportToolCallsMissing(
 		},
 	}
 
-	if !r.queue.Enqueue(report) {
+	if !r.enqueue(report) {
 		slog.Warn("lockfree_anomaly_reporter: queue full, dropping report",
 			"request_id", requestID,
 			"anomaly_type", "tool_calls_missing")
@@ -126,7 +132,7 @@ func (r *LockFreeAnomalyReporter) ReportConversionError(
 		},
 	}
 
-	if !r.queue.Enqueue(report) {
+	if !r.enqueue(report) {
 		slog.Warn("lockfree_anomaly_reporter: queue full, dropping report",
 			"request_id", requestID,
 			"anomaly_type", "conversion_error")
@@ -168,22 +174,31 @@ func (r *LockFreeAnomalyReporter) ReportSemanticIncomplete(
 		},
 	}
 
-	if !r.queue.Enqueue(report) {
+	if !r.enqueue(report) {
 		slog.Warn("lockfree_anomaly_reporter: queue full, dropping report",
 			"request_id", requestID,
 			"anomaly_type", "semantic_incomplete")
 	}
 }
 
+func (r *LockFreeAnomalyReporter) enqueue(report AnomalyReport) bool {
+	r.submitMu.RLock()
+	defer r.submitMu.RUnlock()
+	if !r.enabled.Load() {
+		return false
+	}
+	return r.queue.Enqueue(report)
+}
+
 // sendWorker 后台发送协程
 func (r *LockFreeAnomalyReporter) sendWorker() {
+	defer close(r.done)
 	ticker := time.NewTicker(r.flushDelay)
 	defer ticker.Stop()
 
 	for {
 		select {
 		case <-r.ctx.Done():
-			// 关闭前发送剩余报告
 			r.sendBatch()
 			return
 		case <-ticker.C:
@@ -277,18 +292,14 @@ func (r *LockFreeAnomalyReporter) Flush(ctx context.Context) {
 
 // Close 关闭报告器
 func (r *LockFreeAnomalyReporter) Close() error {
-	if !r.enabled.Load() {
-		return nil
-	}
-
-	// 停止后台协程
-	r.cancel()
-
-	// 刷新剩余报告
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-	r.Flush(ctx)
-
+	r.closeOnce.Do(func() {
+		r.submitMu.Lock()
+		r.enabled.Store(false)
+		r.submitMu.Unlock()
+		r.cancel()
+		<-r.done
+		r.queue.Close()
+	})
 	return nil
 }
 
