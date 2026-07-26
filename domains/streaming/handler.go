@@ -3685,7 +3685,12 @@ func (h *ChatHandler) emitTelemetry(evt audit.Event, result *executors.ExecuteRe
 				if isErr {
 					reqLog.Success = false
 					reqLog.RequestStatus = strPtr(telemetry.RequestStatusFailure)
-					reqLog.ErrorKind = strPtr("stream_error")
+					// 2026-07-27: Distinguish the precise kind so the
+					// operator can SQL-filter by failure mode. The
+					// previous "stream_error" value conflated stream
+					// timeouts, concurrent-overload fallbacks, and
+					// generic upstream read errors.
+					reqLog.ErrorKind = strPtr(streamErrorKindForDetailCode(detailCode))
 					reqLog.FailureStage = strPtr("upstream")
 				}
 				if detailCode != "" {
@@ -5093,6 +5098,31 @@ func classifyStreamInterruption(m map[string]any) (isError bool, detailCode stri
 	return true, detailCode
 }
 
+// streamErrorKindForDetailCode maps the StreamOutcome.FailureDetailCode
+// captured at the executor boundary to a stable request_logs.error_kind
+// value. Operators SQL-filter on this column to break down the "stream
+// issue" bucket into actionable categories:
+//
+//	stream_timeout       — no data for >stream_chunk_timeout
+//	concurrent_overload  — circuit breaker inferred a 429-class overload
+//	empty_response       — upstream 200 with zero content (NIM pattern)
+//	stream_read_error    — generic read failure (EOF without content,
+//	                       malformed SSE, etc.)
+//	stream_error         — fallback when the detail code is missing
+func streamErrorKindForDetailCode(detailCode string) string {
+	switch detailCode {
+	case "stream_chunk_timeout", "stream_timeout", "chunk_timeout":
+		return "stream_timeout"
+	case "concurrent_overload", "concurrent":
+		return "concurrent_overload"
+	case "empty_stream_no_content":
+		return "empty_response"
+	case "eof_without_done", "read_error", "stream_read_error", "stream_panic":
+		return "stream_read_error"
+	}
+	return "stream_error"
+}
+
 // canonicalOrClient prefers the canonical name (standardised model key from the
 // routing table). When the resolution did not yield a canonical entry (direct
 // passthrough), it falls back to whatever the client supplied.
@@ -5521,10 +5551,18 @@ func streamChunksSentFromLogCtx(c *RequestLogContext) int {
 	if c == nil {
 		return 0
 	}
-	if c.StreamChunksSent < 0 {
+	// 2026-07-27: counter is mirrored on an atomic int. Prefer the
+	// dedicated accessor so reads do not race with Increment*, but
+	// also respect the legacy int field (which legacy tests still
+	// write directly with negative sentinels).
+	sent := c.StreamChunksSent
+	if sent == 0 {
+		sent = c.StreamChunksSentValue()
+	}
+	if sent < 0 {
 		return 0
 	}
-	return c.StreamChunksSent
+	return sent
 }
 
 // StreamChunksSentFromLogCtxForTest is the test-only exported alias of
@@ -5541,10 +5579,16 @@ func streamChunkErrorsFromLogCtx(c *RequestLogContext) int {
 	if c == nil {
 		return 0
 	}
-	if c.StreamChunkErrors < 0 {
+	// 2026-07-27: prefer the int mirror (which tests still mutate
+	// directly) and fall back to the atomic counter when it is zero.
+	errors := c.StreamChunkErrors
+	if errors == 0 {
+		errors = c.StreamChunkErrorsValue()
+	}
+	if errors < 0 {
 		return 0
 	}
-	return c.StreamChunkErrors
+	return errors
 }
 
 // StreamChunkErrorsFromLogCtxForTest is the test-only exported alias of
