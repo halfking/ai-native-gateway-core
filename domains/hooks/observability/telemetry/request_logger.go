@@ -427,7 +427,7 @@ func (rl *RequestLogger) persistUpdateInTx(ctx context.Context, tx pgx.Tx, updat
 		update.UpstreamRequestAt, update.UpstreamResponseAt,
 		update.UpstreamProviderID, update.UpstreamCredentialID,
 		update.CompletionTokens, update.PromptTokens, update.Error,
-		update.CompressionStrategy, compressionMetaJSON)
+		update.CompressionStrategy, string(compressionMetaJSON))
 
 	if err != nil {
 		return err

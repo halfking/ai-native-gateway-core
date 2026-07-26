@@ -4,10 +4,12 @@ package integration
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/observability/telemetry"
 )
@@ -31,7 +33,12 @@ func TestRequestLifecycle_CompleteFlow(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	pool, err := pgxpool.New(ctx, pgURL)
+	cfg, err := pgxpool.ParseConfig(pgURL)
+	if err != nil {
+		t.Fatalf("parse db config: %v", err)
+	}
+	cfg.ConnConfig.DefaultQueryExecMode = pgx.QueryExecModeSimpleProtocol
+	pool, err := pgxpool.NewWithConfig(ctx, cfg)
 	if err != nil {
 		t.Fatalf("connect to db: %v", err)
 	}
@@ -63,7 +70,7 @@ func TestRequestLifecycle_CompleteFlow(t *testing.T) {
 		var status string
 		var stage int
 		err = pool.QueryRow(ctx,
-			`SELECT status, stage FROM request_wal WHERE request_id = $1 ORDER BY created_at DESC LIMIT 1`,
+			`SELECT status, stage FROM request_wal_hot WHERE request_id = $1 ORDER BY created_at DESC LIMIT 1`,
 			reqID,
 		).Scan(&status, &stage)
 		if err != nil {
@@ -105,10 +112,11 @@ func TestRequestLifecycle_CompleteFlow(t *testing.T) {
 		var status string
 		var stage int
 		var strategy *string
+		var compressionMeta *string
 		err := pool.QueryRow(ctx,
-			`SELECT status, stage, compression_strategy FROM request_wal WHERE request_id = $1 ORDER BY created_at DESC LIMIT 1`,
+			`SELECT status, stage, compression_strategy, compression_meta::text FROM request_wal_hot WHERE request_id = $1 ORDER BY created_at DESC LIMIT 1`,
 			reqID,
-		).Scan(&status, &stage, &strategy)
+		).Scan(&status, &stage, &strategy, &compressionMeta)
 		if err != nil {
 			t.Fatalf("query record: %v", err)
 		}
@@ -121,7 +129,10 @@ func TestRequestLifecycle_CompleteFlow(t *testing.T) {
 		if strategy == nil || *strategy != "delta_append" {
 			t.Errorf("expected compression_strategy=delta_append, got %v", strategy)
 		}
-		t.Logf("✓ Async update applied: status=%s stage=%d strategy=%s", status, stage, *strategy)
+		if compressionMeta == nil || *compressionMeta != `{"msg_count":5}` {
+			t.Errorf("expected compression_meta={\"msg_count\":5}, got %v", compressionMeta)
+		}
+		t.Logf("✓ Async update applied: status=%s stage=%d strategy=%s compression_meta=%s", status, stage, *strategy, *compressionMeta)
 	})
 
 	// Test 3: UpdateSync (sync for failures)
@@ -149,7 +160,7 @@ func TestRequestLifecycle_CompleteFlow(t *testing.T) {
 		var stage int
 		var errMsg *string
 		err = pool.QueryRow(ctx,
-			`SELECT status, stage, error FROM request_wal WHERE request_id = $1 ORDER BY created_at DESC LIMIT 1`,
+			`SELECT status, stage, error FROM request_wal_hot WHERE request_id = $1 ORDER BY created_at DESC LIMIT 1`,
 			reqID,
 		).Scan(&status, &stage, &errMsg)
 		if err != nil {
@@ -194,7 +205,7 @@ func TestRequestLifecycle_CompleteFlow(t *testing.T) {
 		// Count records created
 		var count int
 		err = pool.QueryRow(ctx,
-			`SELECT count(*) FROM request_wal WHERE request_id LIKE 'test-req-concurrent-%'`,
+			`SELECT count(*) FROM request_wal_hot WHERE request_id LIKE 'test-req-concurrent-%'`,
 		).Scan(&count)
 		if err != nil {
 			t.Fatalf("count: %v", err)
@@ -219,43 +230,64 @@ func TestRequestBodies_Storage(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	pool, err := pgxpool.New(ctx, pgURL)
+	cfg, err := pgxpool.ParseConfig(pgURL)
+	if err != nil {
+		t.Fatalf("parse db config: %v", err)
+	}
+	cfg.ConnConfig.DefaultQueryExecMode = pgx.QueryExecModeSimpleProtocol
+	pool, err := pgxpool.NewWithConfig(ctx, cfg)
 	if err != nil {
 		t.Fatalf("connect: %v", err)
 	}
 	defer pool.Close()
 
-	// Create a request and body record
+	rl := telemetry.NewRequestLogger(pool, &telemetry.RequestLoggerConfig{
+		QueueSize:    100,
+		BatchSize:    10,
+		FlushTimeout: 50 * time.Millisecond,
+		Enabled:      true,
+	})
+	defer rl.Stop()
+
+	// Write both the main WAL row and body row through the production logger path.
 	reqID := "test-body-" + time.Now().Format("20060102150405.000000")
-	_, err = pool.Exec(ctx,
-		`INSERT INTO request_wal_default (request_id, tenant_id, client_model) VALUES ($1, $2, $3)`,
-		reqID, "test-tenant", "gpt-4o-mini",
-	)
-	if err != nil {
-		t.Fatalf("insert: %v", err)
+	if err := rl.CreateInitial(ctx, &telemetry.InitialRequest{
+		RequestID:   reqID,
+		TenantID:    "test-tenant",
+		ClientModel: "gpt-4o-mini",
+	}); err != nil {
+		t.Fatalf("create initial: %v", err)
+	}
+	if err := rl.UpdateSync(ctx, &telemetry.LogUpdate{
+		RequestID:           reqID,
+		Stage:               telemetry.StageCompleted,
+		Status:              telemetry.StatusSuccess,
+		OutboundBody:        []byte("test outbound body"),
+		CompressionStrategy: "delta_append",
+		CompressionMeta:     map[string]interface{}{"strategy": "delta_append"},
+	}); err != nil {
+		t.Fatalf("update body: %v", err)
 	}
 
-	// Insert body
-	_, err = pool.Exec(ctx,
-		`INSERT INTO request_wal_bodies (request_id, outbound_body, compression_meta) VALUES ($1, $2, $3)`,
-		reqID, []byte("test outbound body"), []byte(`{"strategy":"delta_append"}`),
-	)
-	if err != nil {
-		t.Fatalf("insert body: %v", err)
-	}
-
-	// Verify
-	var body []byte
-	var meta []byte
+	// Verify the body and JSONB metadata written by RequestLogger.
+	var body string
+	var metaJSON []byte
 	err = pool.QueryRow(ctx,
 		`SELECT outbound_body, compression_meta FROM request_wal_bodies WHERE request_id = $1`,
 		reqID,
-	).Scan(&body, &meta)
+	).Scan(&body, &metaJSON)
 	if err != nil {
 		t.Fatalf("query body: %v", err)
 	}
-	if string(body) != "test outbound body" {
-		t.Errorf("expected body 'test outbound body', got '%s'", string(body))
+	if body != "test outbound body" {
+		t.Errorf("expected body 'test outbound body', got '%s'", body)
+	}
+	var meta map[string]interface{}
+	if err := json.Unmarshal(metaJSON, &meta); err != nil {
+		t.Fatalf("decode compression metadata: %v", err)
+	}
+	if meta["strategy"] != "delta_append" {
+		t.Errorf("expected compression strategy, got %v", meta)
 	}
 	t.Logf("✓ request_wal_bodies record created successfully")
 }
