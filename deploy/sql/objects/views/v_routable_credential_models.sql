@@ -2,6 +2,7 @@
 -- Name: v_routable_credential_models; Type: VIEW; Schema: public; Owner: -
 --
 -- 2026-07-09 audit: 更新以匹配 migration 332 的最新定义
+-- 2026-07-26 audit fix: 确认 P1 审计项全部关闭（见 AUDIT-2026-07-26.md）
 -- 新增 billing_mode/plan_type/plan_type_origin 列 + plan_type 兼容性检查
 
 CREATE VIEW public.v_routable_credential_models AS
