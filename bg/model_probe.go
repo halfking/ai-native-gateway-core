@@ -838,6 +838,7 @@ func (r *ModelProbeRunner) TriggerManual(ctx context.Context, credentialID int, 
 	row := r.db.QueryRow(ctx, `
 		SELECT cmb.credential_id, pm.raw_model_name,
 		       COALESCE(pm.outbound_model_name, ''),
+		       COALESCE(mc.modality, 'text'),
 		       COALESCE(p.base_url, ''), COALESCE(p.protocol, 'openai-completions'),
 		       c.secret_ciphertext, COALESCE(c.manual_disabled, FALSE),
 		       COALESCE(mps.state, 'unknown'), COALESCE(mps.consecutive_successes, 0),
