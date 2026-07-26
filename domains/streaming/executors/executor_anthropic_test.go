@@ -171,6 +171,96 @@ func TestExecutor_DispatchesAnthropic(t *testing.T) {
 	}
 }
 
+// TestAnthropicExecutor_4xxPassthrough_NotTruncated guards the 2026-07-27 fix
+// (D-2): when an Anthropic upstream returns a non-retryable 4xx whose body
+// exceeds the 4096-byte classification prefix, the raw-passthrough branch must
+// forward the FULL body to the client. Previously only the first 4096 bytes
+// reached the client, producing truncated/invalid JSON the SDK could not parse.
+func TestAnthropicExecutor_4xxPassthrough_NotTruncated(t *testing.T) {
+	cm := newCircuitManagerForTest()
+	lim := newLimiterForTest()
+	e := &Executor{
+		Circuit:         cm,
+		Limiter:         lim,
+		UpstreamTimeout: 5 * time.Second,
+		StreamTimeout:   10 * time.Second,
+	}
+
+	// Build a non-retryable 4xx body (tool_call_id_mismatch) larger than 4096
+	// bytes by padding the message. This kind reaches the raw-passthrough
+	// branch (not retryable, not context-length, not content-filter). A real
+	// Anthropic 400 is small, but other Anthropic-protocol upstreams (e.g.
+	// MiniMax via the messages path) can return large error bodies, and the
+	// gateway must not truncate them.
+	padding := strings.Repeat("x", 6000) // > 4096, forces the remainder-read path
+	upstreamBody := `{"type":"error","error":{"type":"invalid_request_error","message":"tool_use_id not found (2013): ` +
+		padding + `"}}`
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		//nolint:errcheck // HTTP write error non-recoverable
+		w.Write([]byte(upstreamBody))
+	}))
+	defer srv.Close()
+
+	r := httptest.NewRequest("POST", "/v1/messages", strings.NewReader(""))
+	r.Header.Set("X-Request-Id", "test-trunc-1")
+	rec := httptest.NewRecorder()
+	params := &ExecParams{
+		W:             rec,
+		R:             r,
+		BodyBytes:     []byte(`{"model":"claude-3-5-sonnet","max_tokens":10,"messages":[{"role":"user","content":"hi"}]}`),
+		IsStream:      false,
+		ClientModel:   "claude-3-5-sonnet",
+		OutboundModel: "claude-3-5-sonnet",
+	}
+	cand := provider.Candidate{
+		ProviderID:   1,
+		CredentialID: 1,
+		BaseURL:      srv.URL,
+		Protocol:     "anthropic-messages",
+		APIKey:       "sk-test",
+	}
+
+	_, err := e.executeAnthropic(params, cand, 2, time.Now(), nil)
+	if err == nil {
+		t.Fatal("expected non-nil error from 4xx upstream")
+	}
+
+	// The client must receive the 400 status.
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("client status = %d, want 400", rec.Code)
+	}
+	got := rec.Body.String()
+	if len(got) < len(upstreamBody) {
+		t.Fatalf("client body truncated: got %d bytes, want >= %d (full upstream body). got=%q...",
+			len(got), len(upstreamBody), truncStr(got, 80))
+	}
+	// The trailing padding proves the END of the body was forwarded (the old
+	// 4096 truncation would have cut it off mid-padding).
+	if !strings.HasSuffix(got, padding+`"}}`) {
+		t.Fatalf("client body does not end with the full padding suffix → truncated. tail=%q",
+			truncStr(suffix(got, len(padding)+10), 120))
+	}
+}
+
+// truncStr returns the first n bytes of s (for log-safe previews).
+func truncStr(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	return s[:n] + "..."
+}
+
+// suffix returns the last n bytes of s.
+func suffix(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	return s[len(s)-n:]
+}
+
 func TestPrepareAnthropicRequestBody_CompressesOpenAIClient(t *testing.T) {
 	ctxWin := 50
 	long := strings.Repeat("a", 200)
