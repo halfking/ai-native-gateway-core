@@ -403,6 +403,9 @@ func ExtractSystemPromptFromBody(body []byte, path string) string {
 	if sys := extractResponsesInstructions(body); sys != "" {
 		return sys
 	}
+	if sys := extractGeminiSystemInstruction(body); sys != "" {
+		return sys
+	}
 	if sys := extractChatSystemMessages(body); sys != "" {
 		return sys
 	}
@@ -412,12 +415,12 @@ func ExtractSystemPromptFromBody(body []byte, path string) string {
 
 func extractAnthropicSystem(body []byte) string {
 	var s struct {
-		System string `json:"system"`
+		System json.RawMessage `json:"system"`
 	}
-	if err := json.Unmarshal(body, &s); err == nil && strings.TrimSpace(s.System) != "" {
-		return s.System
+	if err := json.Unmarshal(body, &s); err != nil {
+		return ""
 	}
-	return ""
+	return extractTextContent(s.System)
 }
 
 func extractResponsesInstructions(body []byte) string {
@@ -428,6 +431,61 @@ func extractResponsesInstructions(body []byte) string {
 		return s.Instructions
 	}
 	return ""
+}
+
+func extractGeminiSystemInstruction(body []byte) string {
+	var s struct {
+		Instruction json.RawMessage `json:"systemInstruction"`
+	}
+	if err := json.Unmarshal(body, &s); err != nil {
+		return ""
+	}
+	var instruction struct {
+		Parts []struct {
+			Text string `json:"text"`
+		} `json:"parts"`
+	}
+	if err := json.Unmarshal(s.Instruction, &instruction); err != nil {
+		return ""
+	}
+	var buf strings.Builder
+	for _, part := range instruction.Parts {
+		if strings.TrimSpace(part.Text) == "" {
+			continue
+		}
+		if buf.Len() > 0 {
+			buf.WriteByte('\n')
+		}
+		buf.WriteString(part.Text)
+	}
+	return buf.String()
+}
+
+func extractTextContent(raw json.RawMessage) string {
+	var str string
+	if err := json.Unmarshal(raw, &str); err == nil {
+		if strings.TrimSpace(str) == "" {
+			return ""
+		}
+		return str
+	}
+	var parts []struct {
+		Text string `json:"text"`
+	}
+	if err := json.Unmarshal(raw, &parts); err != nil {
+		return ""
+	}
+	var buf strings.Builder
+	for _, part := range parts {
+		if strings.TrimSpace(part.Text) == "" {
+			continue
+		}
+		if buf.Len() > 0 {
+			buf.WriteByte('\n')
+		}
+		buf.WriteString(part.Text)
+	}
+	return buf.String()
 }
 
 func extractChatSystemMessages(body []byte) string {

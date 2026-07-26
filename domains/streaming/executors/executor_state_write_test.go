@@ -27,3 +27,14 @@ func TestShouldWriteCredentialState(t *testing.T) {
 		})
 	}
 }
+
+func TestLegacyWritersEnabled(t *testing.T) {
+	var nilExecutor *Executor
+	if got := nilExecutor.legacyWritersEnabled(); !got {
+		t.Fatal("nil executor should keep legacy writers enabled")
+	}
+
+	if got := (&Executor{}).legacyWritersEnabled(); !got {
+		t.Fatal("executor without URSM v2 should keep legacy writers enabled")
+	}
+}

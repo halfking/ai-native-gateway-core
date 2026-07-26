@@ -1008,7 +1008,7 @@ func (e *Executor) isURSMv2Authoritative() bool {
 // 每次调用都会触发 10ms 的 Ready() 检查（见 isURSMv2Authoritative），热路径
 // 上 11+ 次调用较浪费。后续可以加 per-request 缓存。
 func (e *Executor) legacyWritersEnabled() bool {
-	return e.legacyWritersEnabled()
+	return !e.isURSMv2Authoritative()
 }
 
 // emitTraceExec 是 Executor 内部使用的 trace 注入薄包装,避免热路径
