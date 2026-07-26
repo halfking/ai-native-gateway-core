@@ -73,15 +73,15 @@ type RankingItem struct {
 
 // ProviderQualitySummaryItem 供应商级品质汇总（列表页一行）
 type ProviderQualitySummaryItem struct {
-	ProviderID          int64     `json:"provider_id"`
-	ProviderName        string    `json:"provider_name"`
-	BestModelName       *string   `json:"best_model_name"`
-	QualityScore        float64   `json:"quality_score"`
-	QualityGrade        string    `json:"quality_grade"`
-	AvailabilityScore   float64   `json:"availability_score"`
-	PerformanceScore    float64   `json:"performance_score"`
-	TotalRequests24h    int64     `json:"total_requests_24h"`
-	CalculatedAt        time.Time `json:"calculated_at"`
+	ProviderID        int64     `json:"provider_id"`
+	ProviderName      string    `json:"provider_name"`
+	BestModelName     *string   `json:"best_model_name"`
+	QualityScore      float64   `json:"quality_score"`
+	QualityGrade      string    `json:"quality_grade"`
+	AvailabilityScore float64   `json:"availability_score"`
+	PerformanceScore  float64   `json:"performance_score"`
+	TotalRequests24h  int64     `json:"total_requests_24h"`
+	CalculatedAt      time.Time `json:"calculated_at"`
 }
 
 // ServeHTTP 实现 http.Handler 接口
@@ -157,42 +157,47 @@ func (h *QualityHandler) handleGetProviderQuality(w http.ResponseWriter, r *http
 		return
 	}
 
-	// 查询质量画像
-	var query string
-	var args []interface{}
-
-	if modelName != "" {
-		query = `
-SELECT 
-    model_name,
-    quality_score,
-    quality_grade,
+	// 查询质量画像。
+	//
+	// BRIDGE (2026-07-27): provider_quality_profiles 是早期未完成的 provider_quality_*
+	// 系统的表（其 writer ProfileUpdater 从未填数据，表始终为空）。当前活跃的
+	// 供应商画像数据由 provider_profile_daily 提供（domains/providerprofile，Phase 1+2
+	// 的采集器/聚合器写入）。这里改为从 provider_profile_daily 读取并映射到本 handler
+	// 期望的 4 维度评分结构，使既有前端（ProvidersView 的 quality 列、详情页 Quality
+	// tab）直接展示真实数据，无需改前端。
+	//
+	// 维度映射：
+	//   quality_score        ← total_score
+	//   availability_score   ← availability_score
+	//   performance_score    ← network_score        （网络延迟≈性能）
+	//   stability_score      ← stability_score
+	//   cost_efficiency_score← cost_accuracy_score  （Phase 2 暂未实现，为 NULL）
+	//   quality_grade        ← 按 total_score 计算（A/B/C/D/F）
+	//   model_name           ← NULL（provider_profile_daily 是 credential 粒度，非 model 粒度）
+	//
+	// model_name 过滤在本数据源下无意义（无 model 列），忽略以保证返回供应商级汇总。
+	_ = modelName // 显式忽略，避免"declared but not used"
+	query := `
+SELECT
+    NULL::varchar AS model_name,
+    total_score,
+    CASE
+        WHEN total_score >= 80 THEN 'A'
+        WHEN total_score >= 70 THEN 'B'
+        WHEN total_score >= 60 THEN 'C'
+        WHEN total_score >= 40 THEN 'D'
+        ELSE 'F'
+    END AS quality_grade,
     availability_score,
-    performance_score,
+    network_score AS performance_score,
     stability_score,
-    cost_efficiency_score,
-    updated_at
-FROM provider_quality_profiles
-WHERE provider_id = $1 AND model_name = $2
-`
-		args = []interface{}{providerID, modelName}
-	} else {
-		query = `
-SELECT 
-    model_name,
-    quality_score,
-    quality_grade,
-    availability_score,
-    performance_score,
-    stability_score,
-    cost_efficiency_score,
-    updated_at
-FROM provider_quality_profiles
+    cost_accuracy_score AS cost_efficiency_score,
+    created_at AS updated_at
+FROM provider_profile_daily
 WHERE provider_id = $1
-ORDER BY quality_score DESC
+ORDER BY profile_date DESC, total_score DESC
 `
-		args = []interface{}{providerID}
-	}
+	args := []interface{}{providerID}
 
 	slog.Info("quality: querying profiles", "provider_id", providerID, "model_name", modelName)
 
@@ -255,22 +260,30 @@ func (h *QualityHandler) handleGetSummary(w http.ResponseWriter, r *http.Request
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
 
+	// BRIDGE (2026-07-27): read from provider_profile_daily instead of the empty
+	// provider_quality_profiles. One row per provider (latest profile_date),
+	// aggregated across that provider's credentials. See handleGetProviderQuality
+	// for the full mapping rationale.
 	const sqlQuery = `
-SELECT DISTINCT ON (p.provider_id)
-    p.provider_id,
+SELECT DISTINCT ON (d.provider_id)
+    d.provider_id,
     COALESCE(pr.display_name, '') AS provider_name,
-    p.model_name,
-    COALESCE(p.quality_score, 0),
-    COALESCE(p.quality_grade, ''),
-    COALESCE(p.availability_score, 0),
-    COALESCE(p.performance_score, 0),
-    COALESCE(p.total_requests_24h, 0),
-    p.updated_at
-FROM provider_quality_profiles p
-LEFT JOIN providers pr ON p.provider_id = pr.id
-ORDER BY p.provider_id,
-    CASE WHEN p.model_name IS NULL THEN 0 ELSE 1 END,
-    p.quality_score DESC NULLS LAST
+    NULL::varchar AS model_name,
+    COALESCE(d.total_score, 0),
+    CASE
+        WHEN d.total_score >= 80 THEN 'A'
+        WHEN d.total_score >= 70 THEN 'B'
+        WHEN d.total_score >= 60 THEN 'C'
+        WHEN d.total_score >= 40 THEN 'D'
+        ELSE 'F'
+    END AS quality_grade,
+    COALESCE(d.availability_score, 0),
+    COALESCE(d.network_score, 0) AS performance_score,
+    COALESCE((d.raw_stats->>'total_requests')::bigint, 0) AS total_requests_24h,
+    d.created_at AS updated_at
+FROM provider_profile_daily d
+LEFT JOIN providers pr ON d.provider_id = pr.id
+ORDER BY d.provider_id, d.profile_date DESC, d.total_score DESC
 `
 
 	rows, err := h.db.QueryContext(ctx, sqlQuery)
@@ -346,40 +359,51 @@ func (h *QualityHandler) handleGetRanking(w http.ResponseWriter, r *http.Request
 		minScore = 0
 	}
 
-	// 验证 order_by 字段
-	validOrderBy := map[string]bool{
-		"quality_score":      true,
-		"availability_score": true,
-		"performance_score":  true,
+	// 验证 order_by 字段。BRIDGE: performance_score 映射到 network_score，
+	// quality_score 映射到 total_score。
+	orderByColumn := map[string]string{
+		"quality_score":      "total_score",
+		"availability_score": "availability_score",
+		"performance_score":  "network_score",
 	}
-	if !validOrderBy[orderBy] {
-		orderBy = "quality_score"
+	col, ok := orderByColumn[orderBy]
+	if !ok {
+		col = "total_score"
 	}
 
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
 
+	// BRIDGE (2026-07-27): read from provider_profile_daily. model_name 过滤无意义
+	// （数据源无 model 列），忽略以返回供应商级排行。
+	_ = modelName
 	sqlQuery := `
-SELECT 
-    p.provider_id,
-    COALESCE(pr.display_name, '') as provider_name,
-    p.model_name,
-    p.quality_score,
-    p.quality_grade,
-    p.availability_score,
-    p.performance_score,
-    p.updated_at
-FROM provider_quality_profiles p
-LEFT JOIN providers pr ON p.provider_id = pr.id
-WHERE ($1::text IS NULL OR $1 = '' OR p.model_name = $1)
-  AND p.quality_score >= $2
-ORDER BY p.` + orderBy + ` DESC
-LIMIT $3
+SELECT
+    d.provider_id,
+    COALESCE(pr.display_name, '') AS provider_name,
+    NULL::varchar AS model_name,
+    d.total_score AS quality_score,
+    CASE
+        WHEN d.total_score >= 80 THEN 'A'
+        WHEN d.total_score >= 70 THEN 'B'
+        WHEN d.total_score >= 60 THEN 'C'
+        WHEN d.total_score >= 40 THEN 'D'
+        ELSE 'F'
+    END AS quality_grade,
+    d.availability_score,
+    d.network_score AS performance_score,
+    d.created_at AS updated_at
+FROM provider_profile_daily d
+LEFT JOIN providers pr ON d.provider_id = pr.id
+WHERE d.total_score >= $1
+ORDER BY d.` + col + ` DESC
+LIMIT $2
 `
+	args := []interface{}{minScore, limit}
 
 	slog.Info("quality: executing ranking query", "model_name", modelName, "min_score", minScore, "limit", limit, "order_by", orderBy)
 
-	rows, err := h.db.QueryContext(ctx, sqlQuery, modelName, minScore, limit)
+	rows, err := h.db.QueryContext(ctx, sqlQuery, args...)
 	if err != nil {
 		slog.Error("quality: failed to query ranking", "error", err, "model_name", modelName)
 		h.writeError(w, http.StatusInternalServerError, 50001, "服务器内部错误")
@@ -453,14 +477,9 @@ func (h *QualityHandler) handleRecalculate(w http.ResponseWriter, r *http.Reques
 	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 	defer cancel()
 
-	// 调用 ProfileUpdater 手动更新
-	err = h.profileUpdater.UpdateOne(ctx, providerID, req.ModelName)
-	if err != nil {
-		h.writeError(w, http.StatusInternalServerError, 50001, "质量画像计算失败: "+err.Error())
-		return
-	}
-
-	// 查询最新数据
+	// BRIDGE (2026-07-27): provider_profile_daily 由 DailyAggregator（bg worker）
+	// 每日自动聚合，不再支持按 model 手动重算。这里改为返回该供应商最新一天的
+	// 画像分数（与 GET 端点一致的来源）。前端"重新计算"按钮因此变成"刷新最新分数"。
 	var result struct {
 		QualityScore float64   `json:"quality_score"`
 		QualityGrade string    `json:"quality_grade"`
@@ -468,18 +487,28 @@ func (h *QualityHandler) handleRecalculate(w http.ResponseWriter, r *http.Reques
 	}
 
 	query := `
-SELECT quality_score, quality_grade, updated_at
-FROM provider_quality_profiles
-WHERE provider_id = $1 AND model_name = $2
+SELECT total_score,
+    CASE
+        WHEN total_score >= 80 THEN 'A'
+        WHEN total_score >= 70 THEN 'B'
+        WHEN total_score >= 60 THEN 'C'
+        WHEN total_score >= 40 THEN 'D'
+        ELSE 'F'
+    END,
+    created_at
+FROM provider_profile_daily
+WHERE provider_id = $1
+ORDER BY profile_date DESC
+LIMIT 1
 `
 
-	err = h.db.QueryRowContext(ctx, query, providerID, req.ModelName).Scan(
+	err = h.db.QueryRowContext(ctx, query, providerID).Scan(
 		&result.QualityScore,
 		&result.QualityGrade,
 		&result.CalculatedAt,
 	)
 	if err != nil {
-		h.writeError(w, http.StatusInternalServerError, 50001, "查询计算结果失败")
+		h.writeError(w, http.StatusNotFound, 40402, "该供应商暂无质量画像数据")
 		return
 	}
 
