@@ -1218,26 +1218,21 @@ func TestBuildLiveStreamLanes_StableAlphabeticalOrder(t *testing.T) {
 	}
 }
 
-// 2026-07-20: Regression guard for the swim-lane flicker fix.
-// buildLiveStreamLanes must return lane.requests in ASC order (oldest
-// first, newest at the tail) so that lastTiles(items, limit) returns the
-// "newest N" window consistently across snapshots. SnapshotFromDimensionQueues
-// is the only caller; it pre-sorts allRequests ASC before invoking
-// BuildLiveStreamSnapshot, which delegates to buildLiveStreamLanes.
-// If a future refactor drops the sort, this test catches it via the
-// observable invariant: every lane's Requests must be ASC by ts.
-func TestBuildLiveStreamLanes_LaneRequestsAreASC(t *testing.T) {
-	// Out-of-order input — note: ASC sort happens upstream
-	// (SnapshotFromDimensionQueues); buildLiveStreamLanes itself
-	// inherits that order. We deliberately feed a *pre-sorted* input
-	// here to verify the lane builder preserves it, and pair this
-	// with the explicit ASC-order test on SnapshotFromDimensionQueues
-	// below.
+// 2026-07-26: the lane ordering contract is DESC (newest first).
+// SwimLaneTrack.vue paints index 0 leftmost and slices the first N, and
+// firstTiles() caps each lane by taking items[:N]. Both only mean
+// "newest on the left, oldest truncated" when the lane builder emits
+// DESC. buildLiveStreamLanes therefore sorts each lane itself rather
+// than inheriting the caller's order, so the dimension-queue path and
+// the main-queue replay path agree.
+func TestBuildLiveStreamLanes_LaneRequestsAreDESC(t *testing.T) {
+	// Deliberately shuffled: the lane builder must not depend on the
+	// caller pre-sorting its input.
 	items := []LiveRequest{
-		{RequestID: "r1", Ts: "2026-07-20T00:00:00Z", Model: "gpt-4o", ModelCategory: "openai", ProviderCode: "openai", Status: "success"},
-		{RequestID: "r2", Ts: "2026-07-20T00:00:01Z", Model: "gpt-4o", ModelCategory: "openai", ProviderCode: "openai", Status: "success"},
 		{RequestID: "r3", Ts: "2026-07-20T00:00:02Z", Model: "gpt-4o", ModelCategory: "openai", ProviderCode: "openai", Status: "success"},
+		{RequestID: "r1", Ts: "2026-07-20T00:00:00Z", Model: "gpt-4o", ModelCategory: "openai", ProviderCode: "openai", Status: "success"},
 		{RequestID: "r4", Ts: "2026-07-20T00:00:03Z", Model: "gpt-4o", ModelCategory: "openai", ProviderCode: "openai", Status: "failure"},
+		{RequestID: "r2", Ts: "2026-07-20T00:00:01Z", Model: "gpt-4o", ModelCategory: "openai", ProviderCode: "openai", Status: "success"},
 	}
 	lanes, _, _ := buildLiveStreamLanes("vendor", items)
 	if len(lanes) != 1 {
@@ -1248,15 +1243,53 @@ func TestBuildLiveStreamLanes_LaneRequestsAreASC(t *testing.T) {
 		t.Fatalf("expected 4 tiles in lane, got %d", len(requests))
 	}
 	for i := 1; i < len(requests); i++ {
-		if requests[i-1].Timestamp > requests[i].Timestamp {
-			t.Fatalf("lane %q not ASC at idx %d: prev=%q curr=%q",
+		if requests[i-1].Timestamp < requests[i].Timestamp {
+			t.Fatalf("lane %q not DESC at idx %d: prev=%q curr=%q",
 				lanes[0].ID, i, requests[i-1].Timestamp, requests[i].Timestamp)
 		}
 	}
-	// ASC means newest is at the tail; lastTiles picks the trailing window.
-	last := requests[len(requests)-1]
-	if last.RequestID != "r4" {
-		t.Fatalf("expected newest request (r4) at tail, got %q", last.RequestID)
+	// DESC means the newest request is what the UI paints leftmost.
+	if requests[0].RequestID != "r4" {
+		t.Fatalf("expected newest request (r4) at head, got %q", requests[0].RequestID)
+	}
+}
+
+// 2026-07-26: the per-lane cap must drop the OLDEST tiles. Under the
+// previous ASC ordering firstTiles kept items[:20] = the oldest 20, so a
+// busy lane froze on its first 20 tiles and newer requests never reached
+// the dashboard at all.
+func TestBuildLiveStreamLanes_LaneCapKeepsNewest(t *testing.T) {
+	base := time.Date(2026, 7, 26, 12, 0, 0, 0, time.UTC)
+	total := liveStreamLaneLimit + 5
+	items := make([]LiveRequest, 0, total)
+	for i := 0; i < total; i++ {
+		items = append(items, LiveRequest{
+			RequestID:     fmt.Sprintf("req-%03d", i),
+			Ts:            base.Add(time.Duration(i) * time.Second).Format(time.RFC3339),
+			Model:         "gpt-4o",
+			ModelCategory: "openai",
+			ProviderCode:  "openai",
+			Status:        "success",
+		})
+	}
+
+	lanes, _, _ := buildLiveStreamLanes("vendor", items)
+	if len(lanes) != 1 {
+		t.Fatalf("expected 1 lane, got %d", len(lanes))
+	}
+	requests := lanes[0].Requests
+	if len(requests) != liveStreamLaneLimit {
+		t.Fatalf("lane tiles=%d want %d", len(requests), liveStreamLaneLimit)
+	}
+
+	newest := fmt.Sprintf("req-%03d", total-1)
+	if requests[0].RequestID != newest {
+		t.Fatalf("newest tile=%q want %q", requests[0].RequestID, newest)
+	}
+	for _, tile := range requests {
+		if tile.RequestID == "req-000" {
+			t.Fatal("oldest request survived the cap; newest tiles were dropped instead")
+		}
 	}
 }
 
@@ -1304,14 +1337,15 @@ func TestLanesChanged_DetectsActualChanges(t *testing.T) {
 	}
 }
 
-// 2026-07-20: Regression guard for SnapshotFromDimensionQueues ASC sort.
-// Without the sort, the lane-internal order depends on the order redis
-// SCAN returns keys, which is not stable across calls. Feeding the same
-// underlying records but in a different Redis-internal traversal order
-// used to produce non-deterministic lane.requests and break the
-// "newest-N window" invariant. After the fix the snapshot must always
-// come back ASC regardless of input order.
-func TestSnapshotFromDimensionQueues_RequestsAreASC(t *testing.T) {
+// Regression guard for deterministic lane order end-to-end through the
+// dimension-queue path. Redis SCAN key order is not stable across calls,
+// so without an explicit sort the same underlying records produced
+// different lane.requests on consecutive snapshots — the swim-lane
+// "rolling"/jumping symptom.
+//
+// 2026-07-26: the asserted contract is now DESC (newest first) to match
+// what the dashboard renders and what firstTiles() truncates against.
+func TestSnapshotFromDimensionQueues_RequestsAreDESC(t *testing.T) {
 	mr := miniredis.RunT(t)
 	defer mr.Close()
 
@@ -1366,8 +1400,8 @@ func TestSnapshotFromDimensionQueues_RequestsAreASC(t *testing.T) {
 	for _, dim := range []string{"vendor", "provider", "model"} {
 		for _, lane := range snap.Dimensions[dim] {
 			for j := 1; j < len(lane.Requests); j++ {
-				if lane.Requests[j-1].Timestamp > lane.Requests[j].Timestamp {
-					t.Fatalf("%s lane %q not ASC at idx %d: prev=%q curr=%q",
+				if lane.Requests[j-1].Timestamp < lane.Requests[j].Timestamp {
+					t.Fatalf("%s lane %q not DESC at idx %d: prev=%q curr=%q",
 						dim, lane.ID, j,
 						lane.Requests[j-1].Timestamp, lane.Requests[j].Timestamp)
 				}

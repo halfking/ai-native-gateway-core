@@ -665,8 +665,8 @@ function mergeLanesById(existing: LiveStreamLane[], incoming: LiveStreamLane[]) 
       // per-id so unchanged tiles keep their Vue component identity and
       // Vue does not run the leave/enter animation for tiles whose only
       // change is the backend re-serialising them with new pointers.
-      // The backend now guarantees ASC order, so a stable id match also
-      // preserves the on-screen position (newest tile sits at the tail).
+      // The backend guarantees DESC order (newest first), so a stable id
+      // match also preserves the on-screen position.
       mergeTilesById(target.requests, lane.requests)
     }
   }
@@ -674,9 +674,9 @@ function mergeLanesById(existing: LiveStreamLane[], incoming: LiveStreamLane[]) 
 
 // mergeTilesById reconciles an existing tile array with an incoming one
 // by request_id. Tiles already present keep their object reference; tiles
-// added at the tail follow the incoming order (the backend emits ASC).
-// Tiles whose request_id disappears from `incoming` are filtered out so
-// trimmed requests do not linger on the dashboard.
+// added at the tail follow the incoming order (the backend emits DESC,
+// newest first). Tiles whose request_id disappears from `incoming` are
+// filtered out so trimmed requests do not linger on the dashboard.
 function mergeTilesById(existing: LiveStreamTile[], incoming: LiveStreamTile[]) {
   const incomingIds = new Set(incoming.map((t) => t.request_id))
   // Drop tiles that the backend no longer carries.
