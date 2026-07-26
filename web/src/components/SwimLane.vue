@@ -115,7 +115,9 @@ const MIN_VISIBLE_TILES = 1
 
 const maxVisibleTiles = computed(() => {
   const total = props.lane.requests.length
-  if (trackWidth.value <= 0) return total
+  // 2026-07-26: Return conservative estimate before measurement completes,
+  // avoiding initial over-render and subsequent jump.
+  if (trackWidth.value <= 0) return Math.min(total, 10)
   const availableWidth = Math.max(0, trackWidth.value - TRACK_PADDING)
   if (availableWidth <= 0) return MIN_VISIBLE_TILES
   // 第一个 tile 没有前 gap，最后一个有 padding；保守按 (n+gap) total 算
@@ -123,26 +125,12 @@ const maxVisibleTiles = computed(() => {
   return Math.max(MIN_VISIBLE_TILES, Math.min(count, total))
 })
 
-// Display first N tiles (backend sends newest first)
-// No reversal needed - backend order matches display order (newest on left)
-const visibleRequests = computed(() => {
-  const requests = props.lane.requests
-  const max = maxVisibleTiles.value
-  if (requests.length <= max) return [...requests]
-  // Take first N (newest) instead of last N
-  return requests.slice(0, max)
-})
-
-// Backend sends tiles in DESC order (newest first).
-// Display left→right: newest on LEFT, oldest on RIGHT.
-const renderedRequests = computed<RequestTileType[]>(() => visibleRequests.value)
-
 // 2026-07-13: 应急诊断按钮 — 旧版启发式（错误率 >= 1/3）。
 // 当且仅当 state-machine 还没有 active incident 时才显示，避免重复。
 // 兜底逻辑：dashboard 第一次加载、observer 未启动、或
 // route_incidents 表尚未迁移。
 const visibleErrorRate = computed(() => {
-  const visible = visibleRequests.value
+  const visible = props.lane.requests
   if (visible.length === 0) return 0
   const errorCount = visible.filter((r) => r.status !== 'success').length
   return errorCount / visible.length
@@ -154,27 +142,15 @@ const showEmergencyButton = computed(() => {
 })
 
 function handleEmergencyDiagnose() {
-  // 2026-07-26: 后端按 DESC 时间戳下发（newest 在 head，见
-  // admin/live_stream_redis_store.go buildLiveStreamLanes）。正向遍历
-  // 第一个非 success 即"最近"的失败请求；此前这里 reverse() 是基于
-  // 旧的 ASC 假设，会定位到最旧的失败。
-  const recentFailure = props.lane.requests.find((r) => r.status !== 'success')
+  // 2026-07-26: Backend下发按 (ts ASC, request_id ASC) 排序（oldest first）。
+  // 最近的失败在数组尾部，因此反向遍历找第一个非 success。
+  const recentFailure = [...props.lane.requests].reverse().find((r) => r.status !== 'success')
   if (!recentFailure) return
   emit('emergencyDiagnose', {
     credentialId: (recentFailure as any).credential_id || 0,
     model: (recentFailure as any).client_model || props.lane.name,
     laneName: props.lane.name,
   })
-}
-
-function isTileHighlighted(tileKey: string): boolean {
-  if (props.selectedLegends.size === 0) return false
-  return props.selectedLegends.has(tileKey)
-}
-
-function isTileDimmed(tileKey: string): boolean {
-  if (props.selectedLegends.size === 0) return false
-  return !props.selectedLegends.has(tileKey)
 }
 
 function handleTileClick(requestId: string) {
@@ -482,64 +458,17 @@ watch(laneMode, async () => {
   min-height: 64px;
 }
 
-.swim-lane__tiles {
-  display: flex;
-  gap: var(--tile-gap, 6px);
-  align-items: center;
-  min-height: 60px;
-  width: 100%;
-  min-width: 0;
-  /* 数据按 ASC 时间戳渲染：左→右 由旧→新，满了后最左的旧请求被挤出 */
-  justify-content: flex-start;
-  flex-wrap: nowrap;
-}
-
-.swim-lane__tiles--small {
-  min-height: 56px;
-  gap: var(--tile-gap, 4px);
-}
-
 .swim-lane__latency {
   color: var(--accent-h);
   font-weight: 600;
 }
 
-/* Animation: new tiles slide in from LEFT */
-.swim-tile-enter-active {
-  transition: all 0.3s ease;
-}
-
-.swim-tile-enter-from {
-  opacity: 0;
-  transform: translateX(-20px); /* New tiles enter from LEFT */
-}
-
-.swim-tile-leave-active {
-  transition: all 0.3s ease;
-  position: absolute;
-}
-
-.swim-tile-leave-to {
-  opacity: 0;
-  transform: translateX(20px); /* Old tiles slide out RIGHT */
-}
-
-/* Existing tiles shift RIGHT when new tile arrives on LEFT */
-.swim-tile-move {
-  transition: transform 0.3s ease;
-}
-
+/* 2026-07-26: Animation removed from SwimLane.vue — now handled by SwimLaneTrack.vue.
+   Keeping reduced-motion media query for accessibility. */
 @media (prefers-reduced-motion: reduce) {
-  .swim-tile-enter-active,
-  .swim-tile-leave-active {
-    transition: opacity 0.15s linear;
-  }
-  .swim-tile-enter-from,
-  .swim-tile-leave-to {
-    transform: none;
-  }
-  .swim-tile-move {
-    transition: none;
+  * {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
   }
 }
 </style>
