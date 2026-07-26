@@ -53,6 +53,10 @@ export interface RequestTile {
   success?: boolean       // derived flag: status === 'success'
   credential_id?: number  // optional, only present when available
   client_model?: string   // optional, the original client-facing model name
+  // 2026-07-27: 客户端感知 (从 SSE 推送,显示在 tile 角标)
+  agent_name?: string
+  agent_type?: string
+  client_protocol?: string
   error_kind?: string     // 5xx, 4xx, timeout, not_found, other
   latency_ms?: number
   cost_usd?: number

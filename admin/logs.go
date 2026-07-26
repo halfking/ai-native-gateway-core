@@ -72,9 +72,16 @@ type requestLogRow struct {
 	APIKeyOwnerUser      *string `json:"api_key_owner_user"`
 	ApplicationCode      *string `json:"application_code"`
 	CanonicalName        *string `json:"canonical_name"`
-	ProviderModel        *string `json:"provider_model"`
-	TraceSeq             *int    `json:"trace_seq,omitempty"`
-	CreditsCharged       *int64  `json:"credits_charged"`
+	// 2026-07-27: 标准模型名(migration 458)。冗余于 CanonicalName (来自
+	// models_canonical JOIN),但 denormalize 后 GROUP BY 不再需要 JOIN。
+	CanonicalModel *string `json:"canonical_model"`
+	// 2026-07-27: 客户端感知扩展。
+	AgentName      *string `json:"agent_name"`
+	AgentType      *string `json:"agent_type"`
+	ClientProtocol *string `json:"client_protocol"`
+	ProviderModel  *string `json:"provider_model"`
+	TraceSeq       *int    `json:"trace_seq,omitempty"`
+	CreditsCharged *int64  `json:"credits_charged"`
 	// v3 (2026-06-19) session-level outbound body fields.
 	OutboundBody        json.RawMessage `json:"outbound_body,omitempty"`
 	OutboundMsgCount    *int            `json:"outbound_msg_count,omitempty"`
@@ -149,6 +156,10 @@ const requestLogsListCols = `
 	COALESCE(NULLIF(TRIM(rl.api_key_owner_user), ''), ak.owner_user) AS api_key_owner_user,
 	COALESCE(NULLIF(TRIM(rl.application_code), ''), app.code) AS application_code,
 	mc.canonical_name,
+	rl.canonical_model, -- 2026-07-27: migration 458,标准模型名 denormalize
+	rl.agent_name,         -- 2026-07-27: 客户端类型(zcode/claude-code 等)
+	rl.agent_type,         -- 2026-07-27: 客户端类型分组(web/cli/api/bot)
+	rl.client_protocol,    -- 2026-07-27: openai-chat/anthropic-messages/gemini-generate
 	mo_pick.provider_model,
 	rl.credits_charged,
 	-- v3 (2026-06-19) session-level outbound body summary fields (small,
@@ -617,6 +628,10 @@ func (h *Handler) getLog(w http.ResponseWriter, r *http.Request) {
 		&detail.APIKeyOwnerUser,
 		&detail.ApplicationCode,
 		&detail.CanonicalName,
+		&detail.CanonicalModel, // 2026-07-27: 标准模型名 (migration 458)
+		&detail.AgentName,      // 2026-07-27: 客户端类型
+		&detail.AgentType,      // 2026-07-27: 客户端分组
+		&detail.ClientProtocol, // 2026-07-27: 客户端协议
 		&detail.ProviderModel,
 		&detail.CreditsCharged,
 		// v3 session-level outbound body summary fields (must mirror

@@ -173,17 +173,21 @@ func TestLiveRequestFromTelemetry_ModelPrefersCanonicalName(t *testing.T) {
 				c.clientModel,
 				c.outbound,
 				c.canonicalID,
+				"", // canonicalNameIn (空,依赖 CanonicalNameFor fallback)
 				"openai",
 				"success",
 				true,
-				nil,
-				nil,
-				nil,
-				nil,
-				nil,
-				nil,
-				nil,
-				nil,
+				nil, // errorKind
+				nil, // latencyMs
+				nil, // promptTokens
+				nil, // completionTokens
+				nil, // totalTokens
+				nil, // costUSD
+				nil, // failureStage
+				"",  // agentName
+				"",  // agentType
+				"",  // clientProtocol
+				nil, // entry
 			)
 			if got.Model != c.wantModel {
 				t.Errorf("Model = %q, want %q", got.Model, c.wantModel)

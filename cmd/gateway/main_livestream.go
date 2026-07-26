@@ -19,6 +19,15 @@ import (
 	"github.com/kaixuan/llm-gateway-go/domains/routeincident"
 )
 
+// derefStr safely returns the value of a *string or "" if nil.
+// 2026-07-27: used to pass optional telemetry fields (canonical_model,
+// agent_name, agent_type, client_protocol) into LiveRequestFromTelemetry.
+func derefStr(s *string) string {
+	if s == nil {
+		return ""
+	}
+	return *s
+}
 func valueOrZero(v *int) int {
 	if v == nil {
 		return 0
@@ -103,6 +112,7 @@ func adminLiveRequestFromEntry(entry *telemetry.RequestLogEntry, hub *admin.Live
 			clientModel,
 			outboundModel,
 			canonicalID,
+			derefStr(entry.CanonicalModel), // 2026-07-27: 标准模型名(migration 458)
 			providerCode,
 			status,
 			entry.Success,
@@ -113,6 +123,9 @@ func adminLiveRequestFromEntry(entry *telemetry.RequestLogEntry, hub *admin.Live
 			totalTokens,
 			entry.CostUSD,
 			entry.FailureStage,
+			derefStr(entry.AgentName),
+			derefStr(entry.AgentType),
+			derefStr(entry.ClientProtocol),
 			entry,
 		)
 	}
