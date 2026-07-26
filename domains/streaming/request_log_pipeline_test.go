@@ -1,12 +1,14 @@
 package streaming
 
 import (
+	"encoding/json"
 	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/kaixuan/llm-gateway-go/domains/authentication" //nolint:depguard // historical violation, B1 routing.go CQRS will fix
+	"github.com/kaixuan/llm-gateway-go/domains/hooks/observability/telemetry"
 )
 
 // TestRequestLogContext_BuildFailureEntry_ClientRequestID asserts that
@@ -134,6 +136,78 @@ func TestRequestLogContext_RateLimitedStatus(t *testing.T) {
 	}
 	// ErrorKind is preserved so the specific cause (rpm vs throttle) is queryable.
 	if rlEntry.ErrorKind == nil || *rlEntry.ErrorKind != "rate_limit_exceeded" {
-		t.Fatalf("ErrorKind=%v, want rate_limit_exceeded", rlEntry.ErrorKind)
+		t.Fatalf("ErrorKind=%v, want rate_limit_exceeded", *rlEntry.ErrorKind)
 	}
 }
+
+// TestApplySessionCompressorFields_OutboundBodyPersistedWithoutCompression
+// asserts the 2026-07-27 fix: when no session-compression strategy fired
+// (delta-only / fresh session), but the handler populated OutboundBody
+// from executor's result.RequestBody, the entry must still carry the body
+// so the admin UI's v3 转发体 tab is non-empty.
+//
+// Regression context: request d94fd76c5880ea12b229db681bc1b83b (minimax-m3,
+// 23K prompt tokens, completion=9) had outbound_msg_count=10 and
+// outbound_token_est=25701 set, but outbound_body was JSONB null —
+// admin UI showed an empty v3 转发体 tab. Root cause: handler.go:2244
+// guarded OutboundBody persistence on scResult.CompressionStrategy != "",
+// so non-compression requests lost their upstream body.
+func TestApplySessionCompressorFields_OutboundBodyPersistedWithoutCompression(t *testing.T) {
+	entry := &telemetry.RequestLogEntry{}
+	c := &RequestLogContext{}
+	// No compression strategy fired (delta-only or fresh session).
+	c.OutboundStrategy = ""
+	c.OutboundBody = []byte(`{"model":"MiniMax-M3","messages":[{"role":"user","content":"hi"}]}`)
+	msgCount := 10
+	c.OutboundMsgCount = &msgCount
+	c.OutboundTokenEst = outboundIntPtr(25701)
+
+	applySessionCompressorFields(entry, c)
+
+	if entry.OutboundBody == nil {
+		t.Fatal("OutboundBody must be populated even when CompressionStrategy is empty " +
+			"(regression: handler.go:3123 fallback now writes result.RequestBody)")
+	}
+	if string(entry.OutboundBody) != string(c.OutboundBody) {
+		t.Fatalf("OutboundBody=%s, want %s", entry.OutboundBody, c.OutboundBody)
+	}
+	if entry.OutboundMsgCount == nil || *entry.OutboundMsgCount != 10 {
+		t.Fatalf("OutboundMsgCount=%v, want 10", entry.OutboundMsgCount)
+	}
+	if entry.OutboundTokenEst == nil || *entry.OutboundTokenEst != 25701 {
+		t.Fatalf("OutboundTokenEst=%v, want 25701", entry.OutboundTokenEst)
+	}
+	// Without compression strategy, no compression_meta merge should happen.
+	if entry.CompressionStrategy != nil && *entry.CompressionStrategy != "" {
+		t.Fatalf("CompressionStrategy=%v, want nil/empty when no compression fired", entry.CompressionStrategy)
+	}
+}
+
+// TestApplySessionCompressorFields_CompressionKeepsHashes verifies that
+// compression-fired requests still get MsgHashes + Strategy copied through.
+func TestApplySessionCompressorFields_CompressionKeepsHashes(t *testing.T) {
+	entry := &telemetry.RequestLogEntry{}
+	c := &RequestLogContext{}
+	c.OutboundStrategy = "mechanical_trim"
+	c.OutboundBody = []byte(`{"model":"MiniMax-M3","messages":[]}`)
+	c.OutboundMsgHashes = json.RawMessage(`["abc","def"]`)
+	c.OutboundSummaryMarker = "smm_v1:abc"
+	c.OutboundWindowTriggered = "sliding_window_overflow"
+	msgCount := 5
+	c.OutboundMsgCount = &msgCount
+	c.OutboundTokenEst = outboundIntPtr(12000)
+
+	applySessionCompressorFields(entry, c)
+
+	if entry.OutboundBody == nil {
+		t.Fatal("OutboundBody must be set on compression path too")
+	}
+	if entry.OutboundMsgHashes == nil {
+		t.Fatal("OutboundMsgHashes must be set when compression fired")
+	}
+	if entry.CompressionStrategy == nil || *entry.CompressionStrategy != "mechanical_trim" {
+		t.Fatalf("CompressionStrategy=%v, want mechanical_trim", entry.CompressionStrategy)
+	}
+}
+
+func outboundIntPtr(v int) *int { return &v }

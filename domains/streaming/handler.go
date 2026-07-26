@@ -3120,6 +3120,18 @@ func (h *ChatHandler) serveWithExecutor(
 	auditBuilder.Success(true).Latency(time.Duration(result.LatencyMs) * time.Millisecond)
 	// Phase D (2026-06-22): use InboundBody (original client body) for audit
 	// logging, not RequestBody (which may be protocol-converted for upstream).
+	//
+	// 2026-07-27 (bugfix: outbound_body NULL on delta-only / fresh-session
+	// requests): outbound_body was previously only set when session
+	// compression fired (handler.go:2244 guards on
+	// scResult.CompressionStrategy != ""), so admin UI's v3 转发体 tab
+	// showed an empty body for every request without compression. Use the
+	// executor's actual upstream body (result.RequestBody) as the fallback
+	// so request_logs.outbound_body always reflects what was forwarded to
+	// upstream, regardless of whether compression fired.
+	if logCtx != nil && len(logCtx.OutboundBody) == 0 && len(result.RequestBody) > 0 {
+		logCtx.OutboundBody = result.RequestBody
+	}
 	h.emitTelemetry(auditBuilder.Build(), result, endUser, keyInfo, streamCapture, "chat", txResult, result.InboundBody, result.ResponseBody, logCtx)
 
 	// ── Response Interceptor (2026-06-29, auto-control feature) ─────────

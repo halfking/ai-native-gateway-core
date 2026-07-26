@@ -14,6 +14,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/observability/telemetry" //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/domains/session"                       //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/domains/streaming/executors"           //nolint:depguard // historical violation, B1 routing.go CQRS will fix
+	agenttelemetry "github.com/kaixuan/llm-gateway-go/telemetry"              //nolint:depguard // aliased: system-prompt extractor for agent fallback (avoids clash with /domains/hooks/observability/telemetry)
 )
 
 // jsonMarshal is a local alias used by auto_route.go to avoid pulling
@@ -343,6 +344,12 @@ func (c *RequestLogContext) EnsureCaptured() {
 	}
 	if err := ensureRequestBodyBuffered(c.Request, &c.Body, &c.ClientModel); err != nil {
 		c.recordBodyCaptureFailure(err)
+	}
+	// 2026-07-27: 智能体兜底识别 — 从已缓冲 body 抽出 system prompt,
+	// 让 fillAttemptMeta 能在 AgentName == "unknown" 时调用语义匹配。
+	// 只在第一次捕获后填一次,避免每次 refresh 都重新解析。
+	if c.meta.SystemPrompt == "" && len(c.Body) > 0 {
+		c.meta.SystemPrompt = agenttelemetry.ExtractSystemPromptFromBody(c.Body, c.Request.URL.Path)
 	}
 	c.refreshMeta()
 }
@@ -741,13 +748,16 @@ func applySessionCompressorFields(entry *telemetry.RequestLogEntry, c *RequestLo
 	entry.OutboundMsgCount = c.OutboundMsgCount
 	entry.OutboundTokenEst = c.OutboundTokenEst
 
-	if c.OutboundStrategy == "" {
-		return // remaining fields only when compression actually fired
-	}
-
-	// outbound body columns
+	// 2026-07-27 (bugfix: outbound_body NULL on delta-only / fresh-session
+	// requests): the handler now populates c.OutboundBody from
+	// executor's result.RequestBody for every request path, not only when
+	// compression fired. Persist the body unconditionally so the admin UI's
+	// v3 转发体 tab always reflects what was forwarded upstream.
 	if len(c.OutboundBody) > 0 {
 		entry.OutboundBody = json.RawMessage(c.OutboundBody)
+	}
+	if c.OutboundStrategy == "" {
+		return // compression_meta fields only when compression actually fired
 	}
 	if len(c.OutboundMsgHashes) > 0 {
 		entry.OutboundMsgHashes = json.RawMessage(c.OutboundMsgHashes)
