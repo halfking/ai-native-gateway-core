@@ -193,7 +193,7 @@ func (a *DailyAggregator) buildRawStats(snapshots []*MetricSnapshot) map[string]
 	totalRequests := 0
 	successRequests := 0
 	totalErrors := 0
-	
+
 	for _, snap := range snapshots {
 		if snap.AvailabilityMetrics != nil {
 			totalRequests += snap.AvailabilityMetrics.TotalRequests
@@ -204,11 +204,16 @@ func (a *DailyAggregator) buildRawStats(snapshots []*MetricSnapshot) map[string]
 		}
 	}
 
+	var successRate float64
+	if totalRequests > 0 {
+		successRate = float64(successRequests) / float64(totalRequests) * 100
+	}
+
 	return map[string]interface{}{
-		"snapshot_count":    len(snapshots),
-		"total_requests":    totalRequests,
-		"success_requests":  successRequests,
-		"total_errors":      totalErrors,
-		"success_rate":      float64(successRequests) / float64(totalRequests) * 100,
+		"snapshot_count":   len(snapshots),
+		"total_requests":   totalRequests,
+		"success_requests": successRequests,
+		"total_errors":     totalErrors,
+		"success_rate":     successRate,
 	}
 }
