@@ -41,9 +41,18 @@ func TestAlertTypeConstants(t *testing.T) {
 }
 
 func TestAlertLevelOrdering(t *testing.T) {
-	// critical > warning > info — used to pick the highest level when multiple rules fire
-	if AlertLevelCritical <= AlertLevelWarning || AlertLevelWarning <= AlertLevelInfo {
-		t.Error("alert levels must be ordered critical > warning > info")
+	// 严重程度序：critical > warning > info。
+	// 注意 AlertLevel 是纯名称字符串（"critical"/"warning"/"info"），不能用字面值
+	// 比较严重度（'c'<'i'<'w' 与严重度相反）；必须用 severityRank 比较。
+	if severityRank(AlertLevelCritical) <= severityRank(AlertLevelWarning) {
+		t.Error("critical must rank higher than warning")
+	}
+	if severityRank(AlertLevelWarning) <= severityRank(AlertLevelInfo) {
+		t.Error("warning must rank higher than info")
+	}
+	// 字面值保持纯名称（与 schema 注释 critical/warning/info 一致），便于直接入库展示
+	if string(AlertLevelCritical) != "critical" || string(AlertLevelWarning) != "warning" || string(AlertLevelInfo) != "info" {
+		t.Error("alert level strings must be pure names for storage/display")
 	}
 }
 
