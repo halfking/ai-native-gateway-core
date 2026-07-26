@@ -44,6 +44,23 @@ func seedCredential(t *testing.T, pool *pgxpool.Pool) int64 {
 	return id
 }
 
+// seedCredentialWithProvider inserts a throwaway active credential under the
+// given provider_id and returns its id. Used by tests that need a specific
+// provider (e.g. whitelist tests).
+func seedCredentialWithProvider(t *testing.T, pool *pgxpool.Pool, providerID int64) int64 {
+	t.Helper()
+	var id int64
+	err := pool.QueryRow(context.Background(), `
+		INSERT INTO credentials (provider_id, label, status, lifecycle_status, manual_disabled, fp_slot_limit)
+		VALUES ($1, $2, 'active', 'active', false, 0) RETURNING id`,
+		providerID, "pp-test-cred").Scan(&id)
+	require.NoError(t, err)
+	t.Cleanup(func() {
+		_, _ = pool.Exec(context.Background(), `DELETE FROM credentials WHERE id=$1`, id)
+	})
+	return id
+}
+
 func TestPGCredentialActor_DisableThenEnable(t *testing.T) {
 	skipIfNoDB(t)
 	pool := dbPoolFromTestURL(t)
