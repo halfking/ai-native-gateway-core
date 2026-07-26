@@ -39,10 +39,30 @@ type AnomalyHarvester struct {
 	ctx    context.Context
 	cancel context.CancelFunc
 	wg     sync.WaitGroup
+
+	lifecycleMu sync.Mutex
+	started     bool
+	stopped     bool
 }
 
 func NewAnomalyHarvester(pool *pgxpool.Pool, cfg AnomalyHarvesterConfig) *AnomalyHarvester {
 	ctx, cancel := context.WithCancel(context.Background())
+	defaults := DefaultAnomalyHarvesterConfig()
+	if cfg.CleanupInterval <= 0 {
+		cfg.CleanupInterval = defaults.CleanupInterval
+	}
+	if cfg.BridgeInterval <= 0 {
+		cfg.BridgeInterval = defaults.BridgeInterval
+	}
+	if cfg.RetentionDays <= 0 {
+		cfg.RetentionDays = defaults.RetentionDays
+	}
+	if cfg.FaultEventMinCnt <= 0 {
+		cfg.FaultEventMinCnt = defaults.FaultEventMinCnt
+	}
+	if cfg.FaultEventWindow <= 0 {
+		cfg.FaultEventWindow = defaults.FaultEventWindow
+	}
 	return &AnomalyHarvester{
 		pool:   pool,
 		cfg:    cfg,
@@ -55,7 +75,14 @@ func (h *AnomalyHarvester) Start() {
 	if h == nil || h.pool == nil {
 		return
 	}
+	h.lifecycleMu.Lock()
+	if h.started || h.stopped {
+		h.lifecycleMu.Unlock()
+		return
+	}
+	h.started = true
 	h.wg.Add(2)
+	h.lifecycleMu.Unlock()
 	go h.cleanupLoop()
 	go h.bridgeLoop()
 	slog.Info("anomaly harvester started",
@@ -67,8 +94,18 @@ func (h *AnomalyHarvester) Stop() {
 	if h == nil {
 		return
 	}
+	h.lifecycleMu.Lock()
+	if h.stopped {
+		h.lifecycleMu.Unlock()
+		return
+	}
+	h.stopped = true
+	started := h.started
+	h.lifecycleMu.Unlock()
 	h.cancel()
-	h.wg.Wait()
+	if started {
+		h.wg.Wait()
+	}
 	slog.Info("anomaly harvester stopped")
 }
 
@@ -90,10 +127,24 @@ func (h *AnomalyHarvester) runCleanup(parent context.Context) {
 	ctx, cancel := context.WithTimeout(parent, 30*time.Second)
 	defer cancel()
 	cutoff := time.Now().AddDate(0, 0, -h.cfg.RetentionDays)
-	ct, err := h.pool.Exec(ctx,
+	tx, err := h.pool.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		slog.Warn("anomaly harvester: cleanup transaction failed", "error", err)
+		return
+	}
+	defer tx.Rollback(ctx)
+	if _, err := tx.Exec(ctx, "SELECT set_config('app.bypass_rls', 'true', true)"); err != nil {
+		slog.Warn("anomaly harvester: cleanup RLS setup failed", "error", err)
+		return
+	}
+	ct, err := tx.Exec(ctx,
 		`DELETE FROM response_format_anomalies WHERE detected_at < $1`, cutoff)
 	if err != nil {
 		slog.Warn("anomaly harvester: cleanup failed", "error", err)
+		return
+	}
+	if err := tx.Commit(ctx); err != nil {
+		slog.Warn("anomaly harvester: cleanup commit failed", "error", err)
 		return
 	}
 	deleted := ct.RowsAffected()
@@ -139,7 +190,17 @@ func (h *AnomalyHarvester) queryAnomalyAlerts(parent context.Context) []anomalyA
 	windowStart := time.Now().Add(-h.cfg.FaultEventWindow)
 	ctx, cancel := context.WithTimeout(parent, 30*time.Second)
 	defer cancel()
-	rows, err := h.pool.Query(ctx, `
+	tx, err := h.pool.BeginTx(ctx, pgx.TxOptions{AccessMode: pgx.ReadOnly})
+	if err != nil {
+		slog.Warn("anomaly harvester: bridge transaction failed", "error", err)
+		return nil
+	}
+	defer tx.Rollback(ctx)
+	if _, err := tx.Exec(ctx, "SELECT set_config('app.bypass_rls', 'true', true)"); err != nil {
+		slog.Warn("anomaly harvester: bridge RLS setup failed", "error", err)
+		return nil
+	}
+	rows, err := tx.Query(ctx, `
 		SELECT anomaly_type, severity, COUNT(*) AS cnt
 		FROM response_format_anomalies
 		WHERE detected_at > $1 AND resolved = FALSE
@@ -217,6 +278,11 @@ func (h *AnomalyHarvester) createFaultEvent(parent context.Context, a anomalyAle
 		return
 	}
 	defer tx.Rollback(ctx)
+
+	if _, err := tx.Exec(ctx, "SELECT set_config('app.bypass_rls', 'true', true)"); err != nil {
+		slog.Warn("anomaly harvester: fault bridge RLS setup failed", "error", err)
+		return
+	}
 
 	var eventID int64
 	err = tx.QueryRow(ctx, `

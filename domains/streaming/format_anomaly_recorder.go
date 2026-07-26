@@ -3,9 +3,11 @@ package streaming
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -18,7 +20,8 @@ type FormatAnomalyExec interface {
 // FormatAnomalyRecorder tracks response format anomalies to help detect
 // provider API changes and improve token estimation logic.
 type FormatAnomalyRecorder struct {
-	db FormatAnomalyExec
+	db   FormatAnomalyExec
+	pool *pgxpool.Pool
 }
 
 // AnomalyType classifies different kinds of format issues.
@@ -73,7 +76,7 @@ func NewFormatAnomalyRecorderFromPool(pool *pgxpool.Pool) *FormatAnomalyRecorder
 	if pool == nil {
 		return &FormatAnomalyRecorder{}
 	}
-	return &FormatAnomalyRecorder{db: pool}
+	return &FormatAnomalyRecorder{db: pool, pool: pool}
 }
 
 // RecordAnomaly records a format anomaly to the database.
@@ -82,43 +85,63 @@ func (r *FormatAnomalyRecorder) RecordAnomaly(ctx context.Context, record Anomal
 		return nil
 	}
 
-	structureJSON, err := json.Marshal(record.Structure)
-	if err != nil {
-		structureJSON = []byte(`{"marshal_error":true}`)
-	}
+	recordFn := func(exec FormatAnomalyExec) error {
+		structureJSON, err := json.Marshal(record.Structure)
+		if err != nil {
+			structureJSON = []byte(`{"marshal_error":true}`)
+		}
 
-	query := `
-		INSERT INTO response_format_anomalies (
-			request_id, provider_id, provider_code, client_model, outbound_model,
-			anomaly_type, severity, usage_source, expected_tokens, actual_tokens,
-			content_size_bytes, response_structure, response_sample, tenant_id
-		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
-	`
+		query := `
+			INSERT INTO response_format_anomalies (
+				request_id, provider_id, provider_code, client_model, outbound_model,
+				anomaly_type, severity, usage_source, expected_tokens, actual_tokens,
+				content_size_bytes, response_structure, response_sample, tenant_id
+			) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+		`
 
-	_, err = r.db.Exec(ctx, query,
-		record.RequestID,
-		record.ProviderID,
-		record.ProviderCode,
-		record.ClientModel,
-		record.OutboundModel,
-		string(record.AnomalyType),
-		string(record.Severity),
-		record.UsageSource,
-		record.ExpectedTokens,
-		record.ActualTokens,
-		record.ContentSize,
-		structureJSON,
-		record.ResponseSample,
-		record.TenantID,
-	)
-	if err != nil {
-		slog.Warn("failed to record format anomaly",
-			"request_id", record.RequestID,
-			"anomaly_type", record.AnomalyType,
-			"error", err)
+		_, err = exec.Exec(ctx, query,
+			record.RequestID,
+			record.ProviderID,
+			record.ProviderCode,
+			record.ClientModel,
+			record.OutboundModel,
+			string(record.AnomalyType),
+			string(record.Severity),
+			record.UsageSource,
+			record.ExpectedTokens,
+			record.ActualTokens,
+			record.ContentSize,
+			structureJSON,
+			record.ResponseSample,
+			record.TenantID,
+		)
+		if err != nil {
+			slog.Warn("failed to record format anomaly",
+				"request_id", record.RequestID,
+				"anomaly_type", record.AnomalyType,
+				"error", err)
+		}
 		return err
 	}
-	return nil
+	if r.pool == nil {
+		return recordFn(r.db)
+	}
+	return withAnomalyWriteTx(ctx, r.pool, recordFn)
+}
+
+func withAnomalyWriteTx(ctx context.Context, pool *pgxpool.Pool, fn func(FormatAnomalyExec) error) error {
+	tx, err := pool.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		return fmt.Errorf("begin anomaly write tx: %w", err)
+	}
+	defer tx.Rollback(ctx)
+	if _, err := tx.Exec(ctx, "SELECT set_config('app.bypass_rls', 'true', true)"); err != nil {
+		return fmt.Errorf("set anomaly RLS bypass: %w", err)
+	}
+	if err := fn(tx); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
 }
 
 // RecordDataAnomaly implements the DataAnomalyRecorder interface for data-level
@@ -139,13 +162,26 @@ func (r *FormatAnomalyRecorder) RecordDataAnomaly(ctx context.Context, anomalyTy
 			request_id, anomaly_type, severity, response_structure, response_sample, detected_at
 		) VALUES ($1, $2, $3, $4, $5, NOW())
 	`
-	_, err = r.db.Exec(ctx, query,
-		requestID,
-		anomalyType,
-		sev,
-		structureJSON,
-		message,
-	)
+	if r.pool == nil {
+		_, err = r.db.Exec(ctx, query,
+			requestID,
+			anomalyType,
+			sev,
+			structureJSON,
+			message,
+		)
+	} else {
+		err = withAnomalyWriteTx(ctx, r.pool, func(exec FormatAnomalyExec) error {
+			_, err := exec.Exec(ctx, query,
+				requestID,
+				anomalyType,
+				sev,
+				structureJSON,
+				message,
+			)
+			return err
+		})
+	}
 	if err != nil {
 		slog.Warn("failed to record data anomaly",
 			"request_id", requestID,
