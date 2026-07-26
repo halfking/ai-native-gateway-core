@@ -72,7 +72,9 @@ func StreamOpenAIToAnthropicSSEWithDiagnostics(
 	}()
 
 	diagnosticCollector := &streamDiagnosticCollector{}
-	defer diagnosticCollector.report(diagnostics, requestID, "openai-completions", "anthropic-messages")
+	defer func() {
+		diagnosticCollector.report(diagnostics, requestID, "openai-completions", "anthropic-messages", outcome.Interrupted)
+	}()
 	runtimeCfg := currentStreamRuntimeConfig()
 
 	flusher, ok := w.(http.Flusher)

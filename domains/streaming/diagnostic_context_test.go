@@ -54,8 +54,19 @@ func (l *fakeRawLogger) frames() []string {
 	return out
 }
 
-type recordedAnomaly struct {
-	anomalyType string
+// panickingRawLogger models a diagnostic component that fails catastrophically
+// rather than returning an error.
+type panickingRawLogger struct{}
+
+func (l *panickingRawLogger) LogRequest(_ string, _ string, _ []byte) error {
+	panic("raw logger exploded")
+}
+
+func (l *panickingRawLogger) LogResponse(_ string, _ string, _ []byte, _ bool) error {
+	panic("raw logger exploded")
+}
+
+type recordedAnomaly struct {	anomalyType string
 	details     map[string]interface{}
 }
 
@@ -224,7 +235,7 @@ func TestStreamDiagnosticCollector_ReportsToolCallsMissing(t *testing.T) {
 
 	collector := &streamDiagnosticCollector{}
 	collector.observeRaw([]byte(`{"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"tu_1","name":"get_weather"}}`))
-	collector.report(diagnostics, "req-drop", "anthropic", "openai")
+	collector.report(diagnostics, "req-drop", "anthropic", "openai", false)
 
 	anomaly, ok := reporter.find("tool_calls_missing")
 	require.True(t, ok, "expected tool_calls_missing, got %v", reporter.types())
@@ -243,7 +254,7 @@ func TestStreamDiagnosticCollector_NoAnomalyWhenToolCallEmitted(t *testing.T) {
 	collector := &streamDiagnosticCollector{}
 	collector.observeRaw([]byte(`{"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"tu_1","name":"get_weather"}}`))
 	collector.observeEmittedLine(`data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"tu_1","function":{"name":"get_weather","arguments":"{}"}}]}}]}`)
-	collector.report(diagnostics, "req-ok", "anthropic", "openai")
+	collector.report(diagnostics, "req-ok", "anthropic", "openai", false)
 
 	assert.Empty(t, reporter.types(), "no anomaly expected when the tool call was emitted")
 }
@@ -275,18 +286,72 @@ func TestStreamAnthropicSSEToOpenAI_ErroringDiagnosticsDoNotCorruptStream(t *tes
 		"failing diagnostics must not alter client-visible output")
 }
 
-// TestStreamDiagnosticCollector_PanickingReporterIsIsolated documents current
-// behavior: the collector does not recover panics from a diagnostic component.
-// If this ever needs to be non-fatal, report must grow a recover().
+// TestStreamDiagnosticCollector_PanickingReporterIsIsolated pins the isolation
+// guarantee for panics, not just errors. report runs via defer in the bridges,
+// so an escaping panic either unwound into the HTTP handler (stream.go, whose
+// recover defer is registered after the report defer and therefore runs first)
+// or was caught by the other bridges and mismarked a delivered stream as
+// Interrupted, costing a failover and a circuit-breaker penalty.
 func TestStreamDiagnosticCollector_PanickingReporterIsIsolated(t *testing.T) {
 	diagnostics := &DiagnosticContext{Anomaly: &fakeAnomalyReporter{panicOnReport: true}}
 
 	collector := &streamDiagnosticCollector{}
 	collector.observeRaw([]byte(`{"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"tu_1","name":"get_weather"}}`))
 
-	assert.Panics(t, func() {
-		collector.report(diagnostics, "req-panic", "anthropic", "openai")
-	}, "collector currently propagates panics from diagnostic components")
+	assert.NotPanics(t, func() {
+		collector.report(diagnostics, "req-panic", "anthropic", "openai", false)
+	}, "a panicking diagnostic component must not escape report")
+}
+
+// TestDiagnosticHelpers_PanicIsolation covers the two hot-path helpers, which
+// run per frame inside the stream read loops.
+func TestDiagnosticHelpers_PanicIsolation(t *testing.T) {
+	assert.NotPanics(t, func() {
+		logRawUpstreamFrame(
+			&DiagnosticContext{RawLogger: &panickingRawLogger{}},
+			"req-panic", "anthropic", []byte(`{"type":"ping"}`),
+		)
+	}, "a panicking raw logger must not abort the stream loop")
+
+	assert.NotPanics(t, func() {
+		reportConversionAnomaly(
+			&DiagnosticContext{Anomaly: &fakeAnomalyReporter{panicOnReport: true}},
+			"req-panic", "anthropic", "openai", "parse", []byte("raw"), errors.New("boom"), nil,
+		)
+	}, "a panicking anomaly reporter must not abort the stream loop")
+}
+
+// TestStreamDiagnosticCollector_InterruptedStreamSkipsToolCallAnomaly guards the
+// dominant false positive: an interrupted stream can bank tool-call evidence
+// and then die before the bridge converts it. Nothing was dropped by the
+// gateway, so reporting it at confidence 1.0 would bury real conversion losses.
+func TestStreamDiagnosticCollector_InterruptedStreamSkipsToolCallAnomaly(t *testing.T) {
+	reporter := &fakeAnomalyReporter{}
+	diagnostics := &DiagnosticContext{Anomaly: reporter}
+
+	collector := &streamDiagnosticCollector{}
+	collector.observeRaw([]byte(`{"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"tu_1","name":"get_weather"}}`))
+	collector.report(diagnostics, "req-interrupted", "anthropic", "openai", true)
+
+	assert.Empty(t, reporter.types(), "interrupted streams must not report tool_calls_missing")
+}
+
+// TestReportConversionAnomaly_CappedPerRequest bounds the anomaly storm from an
+// upstream whose frames the IR parser rejects: one report per frame otherwise
+// saturates the shared reporter queue and evicts unrelated anomalies.
+func TestReportConversionAnomaly_CappedPerRequest(t *testing.T) {
+	reporter := &fakeAnomalyReporter{}
+	diagnostics := &DiagnosticContext{Anomaly: reporter}
+
+	for i := 0; i < 50; i++ {
+		reportConversionAnomaly(
+			diagnostics, "req-storm", "anthropic", "openai", "parse_stream_chunk",
+			[]byte("bad frame"), errors.New("unknown event type"), nil,
+		)
+	}
+
+	assert.Len(t, reporter.types(), maxConversionReportsPerRequest,
+		"conversion_error reports must be capped per request")
 }
 
 // TestStreamDiagnosticCollector_SemanticIncompleteReported covers the analyzer
@@ -306,7 +371,7 @@ func TestStreamDiagnosticCollector_SemanticIncompleteReported(t *testing.T) {
 
 	collector := &streamDiagnosticCollector{}
 	collector.observeChunk(textChunk("let me check the weather for you"))
-	collector.report(diagnostics, "req-semantic", "anthropic", "openai")
+	collector.report(diagnostics, "req-semantic", "anthropic", "openai", false)
 
 	require.Equal(t, 1, analyzer.callCount())
 	anomaly, ok := reporter.find("semantic_incomplete")
@@ -328,7 +393,7 @@ func TestStreamDiagnosticCollector_SkipsSemanticAnalysisWhenTruncated(t *testing
 	collector.observeChunk(textChunk(strings.Repeat("a", maxDiagnosticTextBytes+1)))
 	require.True(t, collector.textTruncated, "expected the text cap to trip")
 
-	collector.report(diagnostics, "req-truncated", "anthropic", "openai")
+	collector.report(diagnostics, "req-truncated", "anthropic", "openai", false)
 
 	assert.Zero(t, analyzer.callCount(), "truncated responses currently skip semantic analysis")
 	assert.Empty(t, reporter.types())
@@ -362,7 +427,7 @@ func TestDiagnosticHelpers_NilSafe(t *testing.T) {
 				collector.observeRaw([]byte(`{"content":[{"type":"tool_use"}]}`))
 				collector.observeChunk(nil)
 				collector.observeEmittedChunk(nil)
-				collector.report(tc.diagnostics, "req", "anthropic", "openai")
+				collector.report(tc.diagnostics, "req", "anthropic", "openai", false)
 			})
 		})
 	}

@@ -273,7 +273,9 @@ func StreamAnthropicSSEToResponsesWithDiagnostics(
 	}()
 
 	diagnosticCollector := &streamDiagnosticCollector{}
-	defer diagnosticCollector.report(diagnostics, requestID, "anthropic-messages", "openai-responses")
+	defer func() {
+		diagnosticCollector.report(diagnostics, requestID, "anthropic-messages", "openai-responses", outcome.Interrupted)
+	}()
 
 	flusher, ok := w.(http.Flusher)
 	if !ok {
@@ -518,7 +520,9 @@ func StreamOpenAIToResponsesSSEWithDiagnostics(
 	}()
 
 	diagnosticCollector := &streamDiagnosticCollector{}
-	defer diagnosticCollector.report(diagnostics, requestID, "openai-completions", "openai-responses")
+	defer func() {
+		diagnosticCollector.report(diagnostics, requestID, "openai-completions", "openai-responses", outcome.Interrupted)
+	}()
 
 	flusher, ok := w.(http.Flusher)
 	if !ok {
