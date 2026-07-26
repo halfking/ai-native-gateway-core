@@ -114,3 +114,31 @@ func TestMigrateFpSlotsSkipsBadJSON(t *testing.T) {
 		t.Fatalf("expected 0 migrated (bad json + cred_id 0), got %d", n)
 	}
 }
+
+func TestMigrateFpSlotsIdempotent(t *testing.T) {
+	mr := miniredis.RunT(t)
+	rdb := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	ctx := context.Background()
+
+	// 先模拟一个已有 live v2 状态的 node (generation=5, 由 record_request 写)
+	rdb.HSet(ctx, "ursm:v2:node:5:m3", "generation", "5", "available", "0", "disabled", "1")
+
+	// 同时放一个 legacy key 指向同 node
+	rdb.Set(ctx, "llmgw:cred_fp_node:5:m3", `{"credential_id":5,"model":"m3","success_count":1,"disabled":false}`, 0)
+
+	n, err := MigrateFpSlotsNodeStates(ctx, rdb)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != 0 {
+		t.Fatalf("expected 0 newly-migrated (node already had generation), got %d", n)
+	}
+	// live v2 状态未被覆盖
+	fields, _ := rdb.HGetAll(ctx, "ursm:v2:node:5:m3").Result()
+	if fields["generation"] != "5" {
+		t.Errorf("generation overwritten: want 5, got %q", fields["generation"])
+	}
+	if fields["available"] != "0" {
+		t.Errorf("available overwritten: want 0 (live disabled), got %q", fields["available"])
+	}
+}
