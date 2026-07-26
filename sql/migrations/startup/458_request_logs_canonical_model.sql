@@ -57,6 +57,33 @@ ALTER TABLE request_logs_hot
 COMMENT ON COLUMN request_logs_hot.canonical_model IS
     'Standard/canonical model name (lowercase). See request_logs.canonical_model.';
 
+-- ─── 2b. Client-perception columns on request_logs_hot ───
+-- 2026-07-27 (audit fix): commit 26d676ba updated client.go to INSERT
+-- agent_name / agent_type / client_protocol / virtual_client_id into
+-- request_logs_hot and to COALESCE them in ON CONFLICT DO UPDATE. But the
+-- only prior migration that added those columns was 443_observability_fields.sql,
+-- which targeted the partitioned request_logs PARENT only — not the
+-- request_logs_hot heap table that the INSERT actually writes to. Without
+-- these ALTERs every request_logs_hot INSERT would fail at runtime with
+-- SQLSTATE 42703 "column ... does not exist", the same P0 class of bug as
+-- the 2026-07-13 multimodal-token-fields-hot incident. They are added here
+-- (not in a new migration) so that the existing 458 down.sql, which already
+-- DROPs them, stays a correct inverse of this up.sql.
+-- Idempotent (ADD COLUMN IF NOT EXISTS). NULLABLE so historical rows survive.
+ALTER TABLE request_logs_hot
+    ADD COLUMN IF NOT EXISTS agent_name       VARCHAR(255),
+    ADD COLUMN IF NOT EXISTS agent_type       VARCHAR(50),
+    ADD COLUMN IF NOT EXISTS client_protocol  VARCHAR(50),
+    ADD COLUMN IF NOT EXISTS virtual_client_id VARCHAR(64);
+COMMENT ON COLUMN request_logs_hot.agent_name IS
+    'Agent/application name (claude-code/cursor/curl/...). Mirrors request_logs.agent_name.';
+COMMENT ON COLUMN request_logs_hot.agent_type IS
+    'Agent type: web/cli/api/bot/mobile/unknown. Mirrors request_logs.agent_type.';
+COMMENT ON COLUMN request_logs_hot.client_protocol IS
+    'Client protocol (openai-chat/anthropic-messages/gemini-generate). Mirrors request_logs.client_protocol.';
+COMMENT ON COLUMN request_logs_hot.virtual_client_id IS
+    'Stable virtual client id ("vc-" + hash[:16]). Mirrors request_logs.virtual_client_id.';
+
 -- ─── 3. Backfill hot table from existing canonical_id join ───
 -- Idempotent: only updates rows where canonical_model IS NULL.
 UPDATE request_logs_hot rl
