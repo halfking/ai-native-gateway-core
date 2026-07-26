@@ -1,6 +1,7 @@
 package logging
 
 import (
+	"context"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -70,6 +71,51 @@ func TestAsyncRawDataLogger_CloseWhileLogging(t *testing.T) {
 	producers.Wait()
 }
 
+func TestLockFreeAnomalyReporter_FlushCloseConcurrent(t *testing.T) {
+	requestStarted := make(chan struct{})
+	releaseRequest := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		close(requestStarted)
+		<-releaseRequest
+		w.WriteHeader(http.StatusBadGateway)
+	}))
+	defer server.Close()
+
+	reporter := NewLockFreeAnomalyReporter(server.URL, true, 4)
+	reporter.ReportConversionError(nil, "request", "openai-completions", "anthropic-messages", "parse", []byte("payload"), errors.New("parse failed"))
+
+	flushDone := make(chan struct{})
+	go func() {
+		reporter.Flush(context.Background())
+		close(flushDone)
+	}()
+
+	select {
+	case <-requestStarted:
+	case <-time.After(time.Second):
+		t.Fatal("Flush did not start an HTTP request")
+	}
+
+	closeDone := make(chan struct{})
+	go func() {
+		if err := reporter.Close(); err != nil {
+			t.Errorf("Close() error = %v", err)
+		}
+		close(closeDone)
+	}()
+	close(releaseRequest)
+
+	select {
+	case <-flushDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Flush did not return")
+	}
+	select {
+	case <-closeDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Close did not return")
+	}
+}
 func TestLockFreeAnomalyReporter_CloseRejectsReports(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
