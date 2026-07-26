@@ -14,6 +14,10 @@ const i18n = createI18n({
   },
 })
 
+// 2026-07-26: Direction reversed per user requirement — oldest on LEFT,
+// newest on RIGHT. `tiles` prop is expected to already be sorted ASC
+// (oldest first) by the caller (liveStreamStore); SwimLaneTrack only
+// takes the tail (most recent `maxVisible`) and renders in that order.
 describe('SwimLaneTrack', () => {
   const createTile = (id: string, timestamp: string): RequestTileType => ({
     request_id: id,
@@ -24,10 +28,10 @@ describe('SwimLaneTrack', () => {
     status: 'success',
   })
 
-  it('displays tiles in correct order (newest on left)', () => {
+  it('displays tiles in correct order (oldest on left, newest on right)', () => {
     const tiles = [
-      createTile('new', '2026-07-26T12:02:00Z'),
       createTile('old', '2026-07-26T12:01:00Z'),
+      createTile('new', '2026-07-26T12:02:00Z'),
     ]
 
     const wrapper = mount(SwimLaneTrack, {
@@ -44,13 +48,14 @@ describe('SwimLaneTrack', () => {
 
     const renderedTiles = wrapper.findAllComponents(RequestTile)
     expect(renderedTiles).toHaveLength(2)
-    expect(renderedTiles[0].props('tile').request_id).toBe('new')
-    expect(renderedTiles[1].props('tile').request_id).toBe('old')
+    expect(renderedTiles[0].props('tile').request_id).toBe('old')
+    expect(renderedTiles[1].props('tile').request_id).toBe('new')
   })
 
-  it('limits displayed tiles to maxVisible', () => {
+  it('limits displayed tiles to maxVisible by keeping the newest (tail)', () => {
+    // ASC input: req-0 is oldest, req-29 is newest.
     const tiles = Array.from({ length: 30 }, (_, i) =>
-      createTile(`req-${i}`, new Date(Date.now() - i * 1000).toISOString())
+      createTile(`req-${i}`, new Date(Date.now() + i * 1000).toISOString())
     )
 
     const wrapper = mount(SwimLaneTrack, {
@@ -67,7 +72,9 @@ describe('SwimLaneTrack', () => {
 
     const renderedTiles = wrapper.findAllComponents(RequestTile)
     expect(renderedTiles).toHaveLength(20)
-    expect(renderedTiles[0].props('tile').request_id).toBe('req-0')
+    // Overflow drops the oldest (leftmost); the kept window is req-10..req-29.
+    expect(renderedTiles[0].props('tile').request_id).toBe('req-10')
+    expect(renderedTiles[19].props('tile').request_id).toBe('req-29')
   })
 
   it('shows all tiles when count <= maxVisible', () => {

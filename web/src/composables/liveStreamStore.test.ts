@@ -377,3 +377,188 @@ describe('pushOrQueue', () => {
     expect(__testing.state.requests[0]?.ts).toBe('2026-07-14T00:05:00Z')
   })
 })
+
+// ---------------------------------------------------------------------------
+// 2026-07-26: Deterministic property tests — the "no jump" invariants.
+//
+// These are the regression guards for the swim-lane flicker/jump root cause.
+// They assert that rendering order depends ONLY on server state, never on
+// message arrival history. A seeded PRNG keeps runs reproducible.
+// ---------------------------------------------------------------------------
+
+// Mulberry32 — small, fast, deterministic PRNG. Same seed → same sequence.
+function mulberry32(seed: number): () => number {
+  let a = seed >>> 0
+  return function () {
+    a |= 0
+    a = (a + 0x6D2B79F5) | 0
+    let t = Math.imul(a ^ (a >>> 15), 1 | a)
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296
+  }
+}
+
+function tsAt(seconds: number): string {
+  // Fixed base so timestamps are comparable and deterministic.
+  return new Date(Date.UTC(2026, 6, 26, 12, 0, 0) + seconds * 1000).toISOString()
+}
+
+describe('mergeTilesById — deterministic ordering (no-jump invariants)', () => {
+  it('tile order after a delta equals (ts ASC, id ASC) of server state', () => {
+    // Regression for defect 1: previously new tiles were appended to the tail
+    // regardless of sort, so rendering drifted from server truth until a
+    // full snapshot force-corrected it ("page flip").
+    const existing: LiveStreamTile[] = [
+      { ...tile('a'), timestamp: tsAt(10) },
+      { ...tile('b'), timestamp: tsAt(20) },
+    ]
+    // incoming from backend is DESC (newest first) — exactly what Record emits
+    const incoming: LiveStreamTile[] = [
+      { ...tile('c'), timestamp: tsAt(30) },
+      { ...tile('a'), timestamp: tsAt(10) },
+      { ...tile('b'), timestamp: tsAt(20) },
+    ]
+    __testing.mergeTilesById(existing, incoming)
+
+    const ids = existing.map((t) => t.request_id)
+    // a(10) < b(20) < c(30): oldest left, newest right
+    expect(ids).toEqual(['a', 'b', 'c'])
+  })
+
+  it('truncates to 20 keeping the NEWEST tiles when over capacity', () => {
+    const incoming: LiveStreamTile[] = []
+    // 25 tiles, oldest first in the authoritative sense
+    for (let i = 0; i < 25; i++) incoming.push({ ...tile(`r${i}`), timestamp: tsAt(i) })
+    // backend delivers DESC
+    incoming.reverse()
+    const existing: LiveStreamTile[] = []
+    __testing.mergeTilesById(existing, incoming)
+    expect(existing).toHaveLength(20)
+    // tiles 5..24 survive (the 20 newest)
+    expect(existing[0].request_id).toBe('r5')
+    expect(existing[19].request_id).toBe('r24')
+  })
+
+  it('a new request always appears in the visible window (defect 1 regression)', () => {
+    // Pre-existing lane already at capacity (20 tiles)
+    const existing: LiveStreamTile[] = Array.from({ length: 20 }, (_, i) => ({
+      ...tile(`old${i}`),
+      timestamp: tsAt(i),
+    }))
+    // backend delta arrives DESC: new tile first
+    const incoming: LiveStreamTile[] = [
+      { ...tile('NEW'), timestamp: tsAt(100) },
+      ...existing
+        .map((t) => ({ ...t }))
+        .sort((a, b) => b.timestamp.localeCompare(a.timestamp)),
+    ]
+    __testing.mergeTilesById(existing, incoming)
+    // The newest tile MUST be present after merge (it was being dropped before)
+    expect(existing.some((t) => t.request_id === 'NEW')).toBe(true)
+    expect(existing[existing.length - 1].request_id).toBe('NEW')
+  })
+
+  it('equal-ts snapshots are idempotent: re-applying produces identical order', () => {
+    // Regression for defect 2: previously `<=` rejected equal-ts snapshots, so
+    // reconciliation never ran. Now `<` allows equal-ts to apply, and combined
+    // with deterministic sort the result is identical → no visual change.
+    function apply(tiles: LiveStreamTile[]) {
+      __testing.resetStream()
+      __testing.handleEnvelope({
+        type: 'snapshot_refresh',
+        ts: '2026-07-26T00:00:00Z',
+        snapshot: {
+          summary: { total: tiles.length, success: tiles.length, failure: 0 },
+          dimensions: { vendor: [lane('openai', tiles.length, tiles)], provider: [], model: [] },
+          detail_dimensions: { vendor: [lane('openai', tiles.length, tiles)], provider: [], model: [] },
+          dimension_legends: { vendor: [], provider: [], model: [] },
+          status_legends: [],
+          latest_request_ts: tiles[tiles.length - 1]?.timestamp || '',
+        },
+      })
+      return __testing.state.snapshot!.dimensions.vendor[0].requests.map((t) => t.request_id).join(',')
+    }
+    const tiles = [
+      { ...tile('a'), timestamp: tsAt(10) },
+      { ...tile('b'), timestamp: tsAt(20) },
+      { ...tile('c'), timestamp: tsAt(30) },
+    ]
+    const first = apply(tiles)
+    const second = apply(tiles) // same ts — would have been rejected under old `<=`
+    expect(second).toBe(first)
+  })
+
+  it('random envelope sequence yields order independent of arrival history', () => {
+    // The core invariant: build the same authoritative state via two different
+    // arrival orders, assert identical final rendering.
+    //
+    // Backend contract: each delta carries the FULL tile list for every
+    // changed lane (admin/live_stream_redis_store.go:lanesChanged emits the
+    // complete dimension). We mirror that here — accumulating each lane's
+    // full state and re-sending it on every step — so the test exercises the
+    // real data flow rather than a single-tile delta the backend never sends.
+    const rng = mulberry32(20260726)
+    const lanes = ['openai', 'anthropic', 'google']
+
+    // Generate 30 requests across 3 lanes
+    const reqs: { id: string; ts: string; lane: string }[] = []
+    for (let i = 0; i < 30; i++) {
+      const lane = lanes[Math.floor(rng() * lanes.length)]
+      reqs.push({ id: `r${i}`, ts: tsAt(i), lane })
+    }
+
+    function run(order: { id: string; ts: string; lane: string }[]): string {
+      __testing.resetStream()
+      // Seed an initial empty snapshot for the three lanes
+      __testing.handleEnvelope({
+        type: 'snapshot_refresh',
+        ts: '2026-07-26T00:00:00Z',
+        snapshot: {
+          summary: { total: 0, success: 0, failure: 0 },
+          dimensions: { vendor: [], provider: [], model: [] },
+          detail_dimensions: { vendor: [], provider: [], model: [] },
+          dimension_legends: { vendor: [], provider: [], model: [] },
+          status_legends: [],
+          latest_request_ts: '',
+        },
+      })
+      // Accumulate the authoritative per-lane tile set as we replay.
+      const laneTiles = new Map<string, LiveStreamTile[]>()
+      for (const lane of lanes) laneTiles.set(lane, [])
+      for (const r of order) {
+        laneTiles.get(r.lane)!.push({ ...tile(r.id), timestamp: r.ts })
+        // Emit a delta carrying EVERY changed lane's full current tile list,
+        // matching the backend contract.
+        const changedLanes = lanes
+          .filter((l) => laneTiles.get(l)!.some((t) => t.timestamp === r.ts))
+          .map((l) =>
+            lane(l, laneTiles.get(l)!.length, laneTiles.get(l)!.map((t) => ({ ...t }))),
+          )
+        __testing.handleEnvelope({
+          type: 'request',
+          ts: r.ts,
+          delta: {
+            summary: { total: 1, success: 1, failure: 0 },
+            changed_lanes: { vendor: changedLanes, provider: [], model: [] },
+            dimension_legends: { vendor: [], provider: [], model: [] },
+            status_legends: [],
+          },
+        })
+      }
+      // Collect each lane's rendered tile ids in order
+      const snap = __testing.state.snapshot!.dimensions.vendor
+      return snap
+        .slice()
+        .sort((a, b) => a.id.localeCompare(b.id))
+        .map((l) => `${l.id}:${l.requests.map((t) => t.request_id).join('>')}`)
+        .join('|')
+    }
+
+    const forward = run(reqs)
+    const reversed = run([...reqs].reverse())
+    const shuffled = run([...reqs].sort(() => rng() - 0.5))
+
+    expect(reversed).toBe(forward)
+    expect(shuffled).toBe(forward)
+  })
+})

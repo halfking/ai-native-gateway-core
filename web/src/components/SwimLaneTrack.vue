@@ -15,11 +15,14 @@ const emit = defineEmits<{
   tileClick: [requestId: string]
 }>()
 
-// Display first N tiles (backend sends newest first)
+// 2026-07-26: Direction reversal. Tiles are now sorted ASC (oldest first) by
+// liveStreamStore. Display newest on RIGHT: take the TAIL (last N tiles),
+// render in order. When overflow, the oldest (leftmost) gets pushed out.
 const visibleTiles = computed(() => {
   const max = props.maxVisible
   if (props.tiles.length <= max) return props.tiles
-  return props.tiles.slice(0, max)
+  // Take last N (newest)
+  return props.tiles.slice(-max)
 })
 
 function isTileHighlighted(tile: RequestTile): boolean {
@@ -79,14 +82,15 @@ function handleTileClick(requestId: string) {
   gap: var(--tile-gap, 4px);
 }
 
-/* Animation: new tiles slide in from LEFT */
+/* 2026-07-26: Animation direction reversed. New tiles enter from RIGHT,
+   old tiles exit to LEFT. Existing tiles shift left when new tile arrives. */
 .swim-tile-enter-active {
   transition: all 0.3s ease;
 }
 
 .swim-tile-enter-from {
   opacity: 0;
-  transform: translateX(-20px);
+  transform: translateX(20px); /* New tiles enter from RIGHT */
 }
 
 .swim-tile-leave-active {
@@ -96,11 +100,25 @@ function handleTileClick(requestId: string) {
 
 .swim-tile-leave-to {
   opacity: 0;
-  transform: translateX(20px);
+  transform: translateX(-20px); /* Old tiles slide out LEFT */
 }
 
-/* Existing tiles shift RIGHT when new tile arrives on LEFT */
+/* Existing tiles shift LEFT when new tile arrives on RIGHT */
 .swim-tile-move {
   transition: transform 0.3s ease;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .swim-tile-enter-active,
+  .swim-tile-leave-active {
+    transition: opacity 0.15s linear;
+  }
+  .swim-tile-enter-from,
+  .swim-tile-leave-to {
+    transform: none;
+  }
+  .swim-tile-move {
+    transition: none;
+  }
 }
 </style>
