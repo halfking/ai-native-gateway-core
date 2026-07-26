@@ -1673,29 +1673,89 @@ func truncateToValidJSON(s string) (string, bool) {
 // but the following 4 chars are not valid hex. PostgreSQL's jsonb cast
 // rejects these with SQLSTATE 22P05 ("unsupported Unicode escape sequence").
 // We double the backslash so the cast sees "\\\\uXXXX" which is harmless text.
+// This scanner is JSON-escape aware: a backslash always consumes the character
+// that follows it. Without that, the second backslash of a legitimately escaped
+// backslash pair (`\\` — how JSON encodes one literal backslash) is re-read as
+// the start of an escape. Content such as a Windows path ("C:\users" → JSON
+// "C:\\users") or a LaTeX macro ("\usepackage") would then be rewritten into an
+// odd number of backslashes, turning VALID JSON into invalid JSON and causing
+// the entire body to be discarded downstream.
 func escapeInvalidEscape(s string) string {
 	var b strings.Builder
 	b.Grow(len(s))
 	i := 0
 	for i < len(s) {
 		c := s[i]
-		if c == 0x5C && i+1 < len(s) && s[i+1] == 'u' {
-			hexOK := i+5 < len(s)
-			for j := 0; hexOK && j < 4; j++ {
-				k := s[i+2+j]
-				if !((k >= '0' && k <= '9') || (k >= 'a' && k <= 'f') || (k >= 'A' && k <= 'F')) {
-					hexOK = false
-					break
-				}
-			}
-			if !hexOK {
-				b.WriteString("\\\\u") // double the backslash
-				i += 2                 // skip the \u
-				continue
+		if c != 0x5C {
+			b.WriteByte(c)
+			i++
+			continue
+		}
+		if i+1 >= len(s) {
+			// Trailing lone backslash cannot form a valid escape.
+			b.WriteString(`\\`)
+			i++
+			continue
+		}
+		if s[i+1] != 'u' {
+			// Copy any other escape (including `\\`) as a unit so the escaped
+			// character is never re-scanned as an escape introducer.
+			b.WriteByte(c)
+			b.WriteByte(s[i+1])
+			i += 2
+			continue
+		}
+		hexOK := i+5 < len(s)
+		for j := 0; hexOK && j < 4; j++ {
+			k := s[i+2+j]
+			if !((k >= '0' && k <= '9') || (k >= 'a' && k <= 'f') || (k >= 'A' && k <= 'F')) {
+				hexOK = false
 			}
 		}
-		b.WriteByte(c)
-		i++
+		if !hexOK {
+			b.WriteString(`\\u`) // double the backslash
+			i += 2               // skip the \u
+			continue
+		}
+		b.WriteString(s[i : i+6])
+		i += 6
+	}
+	return b.String()
+}
+
+// neutralizeNullUnicodeEscape rewrites \u0000 escapes. encoding/json accepts
+// them as valid JSON but PostgreSQL's jsonb cast rejects them with SQLSTATE
+// 22P05 ("\u0000 cannot be converted to text"). It is the only escape that is
+// simultaneously valid JSON and invalid jsonb, so a json.Valid check cannot
+// catch it — it must be rewritten explicitly.
+func neutralizeNullUnicodeEscape(s string) string {
+	if !strings.Contains(s, `\u`) {
+		return s
+	}
+	var b strings.Builder
+	b.Grow(len(s))
+	i := 0
+	for i < len(s) {
+		if s[i] != 0x5C {
+			b.WriteByte(s[i])
+			i++
+			continue
+		}
+		if i+1 >= len(s) {
+			b.WriteByte(s[i])
+			i++
+			continue
+		}
+		if s[i+1] == 'u' && i+6 <= len(s) && strings.EqualFold(s[i+2:i+6], "0000") {
+			b.WriteString(`\ufffd`)
+			i += 6
+			continue
+		}
+		// Preserve escape pairs as units so `\\u0000` (literal backslash then
+		// the text u0000) is not mistaken for a real escape.
+		b.WriteByte(s[i])
+		b.WriteByte(s[i+1])
+		i += 2
 	}
 	return b.String()
 }
@@ -1703,9 +1763,32 @@ func escapeInvalidEscape(s string) string {
 // sanitizeUTF8JSON scrubs invalid UTF-8 and ensures the result is valid JSON
 // before CAST(... AS jsonb). On unrecoverable corruption it returns "" so callers
 // can store NULL and let UPDATE COALESCE keep the previous body.
+//
+// Repair heuristics are applied ONLY to input that is already invalid JSON.
+// Running them over valid JSON is what silently destroyed request bodies:
+// escapeInvalidEscape rewrote legitimately escaped backslashes, and
+// truncateToValidJSON then had no valid prefix to fall back to, so a complete
+// body became "" → SQL NULL. Valid JSON must always survive untouched apart
+// from the \u0000 rewrite that PostgreSQL requires.
 func sanitizeUTF8JSON(s string) string {
 	cleaned := scrubUTF8ForJSON(s)
-	cleaned = escapeInvalidEscape(cleaned)
+
+	// \u0000 is valid JSON but invalid jsonb, so it is rewritten in all cases.
+	cleaned = neutralizeNullUnicodeEscape(cleaned)
+
+	// Fast path: already valid JSON needs no repair.
+	if json.Valid([]byte(cleaned)) {
+		return cleaned
+	}
+
+	// Invalid JSON — now the repair heuristics are appropriate.
+	repairedEscapes := escapeInvalidEscape(cleaned)
+	if json.Valid([]byte(repairedEscapes)) {
+		return repairedEscapes
+	}
+	if repaired, ok := truncateToValidJSON(repairedEscapes); ok {
+		return repaired
+	}
 	if repaired, ok := truncateToValidJSON(cleaned); ok {
 		return repaired
 	}
@@ -1743,7 +1826,7 @@ func sanitizeRequestLogEntry(e *RequestLogEntry) {
 	sanitizeStringPtr(&e.ApplicationCode)
 	sanitizeStringPtr(&e.TaskType)
 	sanitizeStringPtr(&e.AutoProfile)
-	sanitizeJSONField(&e.AutoDecision)
+	sanitizeJSONField("auto_decision", &e.AutoDecision)
 	sanitizeStringPtr(&e.WorkType)
 	sanitizeStringPtr(&e.TaskTypeChosen)
 	sanitizeStringPtr(&e.ModelChosen)
@@ -1761,8 +1844,8 @@ func sanitizeRequestLogEntry(e *RequestLogEntry) {
 		clean := sanitizeUTF8(*e.CostCurrency)
 		e.CostCurrency = &clean
 	}
-	sanitizeJSONField(&e.RequestBody)
-	sanitizeJSONField(&e.ResponseBody)
+	sanitizeJSONField("request_body", &e.RequestBody)
+	sanitizeJSONField("response_body", &e.ResponseBody)
 	sanitizeRawJSONField("compression_meta", &e.CompressionMeta)
 	sanitizeRawJSONField("outbound_body", &e.OutboundBody)
 	sanitizeRawJSONField("outbound_msg_hashes", &e.OutboundMsgHashes)
@@ -1772,14 +1855,31 @@ func sanitizeRequestLogEntry(e *RequestLogEntry) {
 	sanitizeRawJSONField("routing_attempts", &e.RoutingAttempts)
 }
 
-func sanitizeJSONField(p **string) {
+// sanitizeJSONField normalizes a JSONB-bound string field in place, setting it
+// to nil when the content cannot be made castable to jsonb.
+//
+// Dropping is logged: a silently discarded body is indistinguishable from a
+// request that never had one, which is exactly how the escapeInvalidEscape
+// regression stayed invisible in production. Only sizes are logged, never
+// content — these fields hold user prompts.
+func sanitizeJSONField(field string, p **string) {
 	if *p == nil {
 		return
 	}
-	v := sanitizeUTF8JSON(**p)
+	original := **p
+	v := sanitizeUTF8JSON(original)
 	if v == "" {
+		slog.Warn("telemetry JSON field discarded, storing NULL",
+			"field", field,
+			"bytes", len(original))
 		*p = nil
 		return
+	}
+	if len(v) < len(original) {
+		slog.Warn("telemetry JSON field repaired by truncation",
+			"field", field,
+			"original_bytes", len(original),
+			"kept_bytes", len(v))
 	}
 	*p = &v
 }
