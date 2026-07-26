@@ -46,7 +46,8 @@ scope: telemetry/, domains/streaming/, autoroute/
 ## 提交历史
 
 ```
-<after commit>
+6a74db9e7 feat(autoroute): 添加 OpenCode/ZCode/Codex 智能体识别 + 系统提示词语义检测
+34dcd3877 feat(telemetry): 智能体客户端类型语义检测 + 可扩展模式注册表
 ```
 
 ## 验证
