@@ -547,7 +547,7 @@ func (h *MessagesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		Policy:         policy,
 		AuditBuilder:   auditBuilder,
 		Capture:        streamCapture,
-		ToolsRequested: false,
+		ToolsRequested: len(reqBody.Tools) > 0,
 		StickyKey:      buildRouteStickyKey(tenant(keyInfo), appID(keyInfo), apiKeyIDPtr(keyInfo), clientID.Fingerprint.ClientProfile),
 		KeyID: func() int {
 			if keyInfo != nil {
