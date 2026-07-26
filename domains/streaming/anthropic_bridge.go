@@ -88,6 +88,20 @@ func StreamAnthropicPassthrough(
 	clientModel, outboundModel, requestID string,
 	capture *audit.StreamCapture,
 	pc *pendingCapturer,
+) (outcome StreamOutcome) {
+	return StreamAnthropicPassthroughWithDiagnostics(
+		w, resp, clientModel, outboundModel, requestID, capture, pc, nil,
+	)
+}
+
+// StreamAnthropicPassthroughWithDiagnostics forwards an Anthropic stream with
+// optional best-effort diagnostics.
+func StreamAnthropicPassthroughWithDiagnostics(
+	w http.ResponseWriter,
+	resp *http.Response,
+	clientModel, outboundModel, requestID string,
+	capture *audit.StreamCapture,
+	pc *pendingCapturer,
 	diagnostics *DiagnosticContext,
 ) (outcome StreamOutcome) {
 	//nolint:errcheck // best-effort close
@@ -153,13 +167,9 @@ func StreamAnthropicPassthrough(
 			payload = strings.TrimSpace(payload)
 			observeAnthropicPayload(capture, payload, clientModel, outboundModel)
 		}
-		
-		// Diagnostic: Log raw passthrough data
-		if diagnostics != nil && diagnostics.RawLogger != nil && strings.HasPrefix(line, "data: ") {
-			payload := strings.TrimPrefix(line, "data: ")
-			diagnostics.RawLogger.LogResponse(requestID, "anthropic_passthrough", []byte(payload), true)
-		}
-		
+
+		logRawUpstreamFrame(diagnostics, requestID, "anthropic-messages", []byte(line))
+
 		if line == "\n" && !clientDisconnected {
 			safeFlush(flusher)
 		}
@@ -252,6 +262,20 @@ func StreamAnthropicSSEToOpenAI(
 	clientModel, outboundModel, requestID string,
 	capture *audit.StreamCapture,
 	pc *pendingCapturer,
+) (outcome StreamOutcome) {
+	return StreamAnthropicSSEToOpenAIWithDiagnostics(
+		w, resp, clientModel, outboundModel, requestID, capture, pc, nil,
+	)
+}
+
+// StreamAnthropicSSEToOpenAIWithDiagnostics converts an Anthropic stream with
+// optional best-effort diagnostics.
+func StreamAnthropicSSEToOpenAIWithDiagnostics(
+	w http.ResponseWriter,
+	resp *http.Response,
+	clientModel, outboundModel, requestID string,
+	capture *audit.StreamCapture,
+	pc *pendingCapturer,
 	diagnostics *DiagnosticContext,
 ) (outcome StreamOutcome) {
 	//nolint:errcheck // best-effort close
@@ -274,6 +298,9 @@ func StreamAnthropicSSEToOpenAI(
 			pc.finalize(outcome)
 		}
 	}()
+
+	diagnosticCollector := &streamDiagnosticCollector{}
+	defer diagnosticCollector.report(diagnostics, requestID, "anthropic-messages", "openai-completions")
 
 	flusher, ok := w.(http.Flusher)
 	if !ok {
@@ -322,7 +349,9 @@ func StreamAnthropicSSEToOpenAI(
 		}
 
 		sseLine := chunk.SerializeOpenAI(chatID, chunkModel, createdAt)
-		clientWriter.write(sseLine)
+		if clientWriter.write(sseLine) {
+			diagnosticCollector.observeEmittedChunk(chunk)
+		}
 
 		if pc != nil {
 			pc.append(sseLine)
@@ -393,7 +422,7 @@ func StreamAnthropicSSEToOpenAI(
 	}()
 
 	for {
-		eventType, data, err := readAnthropicSSEEventWithTimeout(
+		eventType, data, rawFrame, err := readAnthropicSSEEventWithTimeoutRaw(
 			ctx, reader, resp.Body, runtimeCfg.streamChunkTimeout,
 		)
 		if errors.Is(err, context.DeadlineExceeded) {
@@ -447,10 +476,8 @@ func StreamAnthropicSSEToOpenAI(
 			continue
 		}
 
-		// Diagnostic: Log raw upstream response event
-		if diagnostics != nil && diagnostics.RawLogger != nil {
-			diagnostics.RawLogger.LogResponse(requestID, "anthropic", data, true)
-		}
+		logRawUpstreamFrame(diagnostics, requestID, "anthropic-messages", rawFrame)
+		diagnosticCollector.observeRaw(data)
 
 		if isOpenAIFormatData(data) {
 			slog.Warn("anthropic_to_openai: detected OpenAI-format data, dropping",
@@ -466,16 +493,16 @@ func StreamAnthropicSSEToOpenAI(
 				"event_type", eventType,
 				"error", err,
 				"request_id", requestID)
-			
-			// Diagnostic: Report parse anomaly
-			if diagnostics != nil && diagnostics.Anomaly != nil {
-				diagnostics.Anomaly.ReportAnomaly(requestID, "parse_error", map[string]interface{}{
-					"event_type":   eventType,
-					"error":        err.Error(),
-					"data_preview": truncateForLog(string(data), 200),
-				})
-			}
+
+			reportConversionAnomaly(
+				diagnostics, requestID, "anthropic-messages", "openai-completions", "parse_stream_event", data, err,
+				map[string]interface{}{"event_type": eventType},
+			)
 			continue
+		}
+
+		if chunk != nil {
+			diagnosticCollector.observeChunk(chunk)
 		}
 
 		switch chunk.Type {
@@ -686,45 +713,6 @@ func emitAnthropicBridgeErrorChunk(w http.ResponseWriter, code, message string, 
 	_, _ = w.Write([]byte("\n\n"))
 	_, _ = w.Write([]byte("data: [DONE]\n\n"))
 	flusher.Flush()
-}
-
-func readAnthropicSSEEvent(ctx context.Context, reader io.Reader) (eventType string, data []byte, err error) {
-	br, ok := reader.(*bufio.Reader)
-	if !ok {
-		br = bufio.NewReader(reader)
-	}
-	var dataLines []string
-	for {
-		select {
-		case <-ctx.Done():
-			return "", nil, ctx.Err()
-		default:
-		}
-		line, rerr := br.ReadString('\n')
-		line = strings.TrimRight(line, "\r\n")
-		if line == "" {
-			if len(dataLines) == 0 {
-				if rerr != nil {
-					return eventType, nil, rerr
-				}
-				continue
-			}
-			return eventType, []byte(strings.Join(dataLines, "\n")), nil
-		}
-		switch {
-		case strings.HasPrefix(line, "event:"):
-			eventType = strings.TrimSpace(strings.TrimPrefix(line, "event:"))
-		case strings.HasPrefix(line, "data:"):
-			dataLines = append(dataLines, strings.TrimSpace(strings.TrimPrefix(line, "data:")))
-		case strings.HasPrefix(line, ":"): //nolint:staticcheck // matches SSE comment lines (heartbeat)
-		}
-		if rerr != nil {
-			if len(dataLines) > 0 {
-				return eventType, []byte(strings.Join(dataLines, "\n")), nil
-			}
-			return eventType, nil, io.EOF
-		}
-	}
 }
 
 // ConvertChatRequestToAnthropic is the live re-export of the Q2

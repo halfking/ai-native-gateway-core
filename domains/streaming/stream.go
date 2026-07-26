@@ -152,6 +152,7 @@ func runEmptyStreamGate(
 	firstByteTimeout time.Duration,
 	lastSend *time.Time,
 	chunkCount *int,
+	onRawLine func(string),
 ) (flushedLines []string, outcome *StreamOutcome) {
 	buffered := make([]string, 0, emptyGateMaxChunks)
 	bufferedBytes := 0
@@ -164,6 +165,9 @@ func runEmptyStreamGate(
 		// Read the next upstream line, with the same first-byte / inter-chunk
 		// timeout semantics as the main loop.
 		line, err := readLineWithTimeoutAndCloser(ctx, reader, bodyCloser, firstByteTimeout)
+		if onRawLine != nil {
+			onRawLine(line)
+		}
 		if err != nil {
 			// Timeout / network error during buffering → flush whatever we
 			// have so the caller can write them, then let the main loop
@@ -325,8 +329,33 @@ func StreamChatWithPendingCapture(
 	stripFn func([]byte) []byte,
 	pc *pendingCapturer,
 ) (outcome StreamOutcome) {
+	return StreamChatWithPendingCaptureAndDiagnostics(w, resp, clientModel, outboundModel, norm, capture, toolsRequested, stripFn, pc, nil)
+}
+
+// StreamChatWithPendingCaptureAndDiagnostics forwards an OpenAI stream with
+// optional best-effort diagnostics. Diagnostic failures never affect the
+// client-visible stream.
+func StreamChatWithPendingCaptureAndDiagnostics(
+	w http.ResponseWriter,
+	resp *http.Response,
+	clientModel, outboundModel string,
+	norm *Normalizer,
+	capture *audit.StreamCapture,
+	toolsRequested bool,
+	stripFn func([]byte) []byte,
+	pc *pendingCapturer,
+	diagnostics *DiagnosticContext,
+) (outcome StreamOutcome) {
 	//nolint:errcheck // best-effort close
 	defer resp.Body.Close()
+
+	requestID := ""
+	if resp.Request != nil {
+		requestID = resp.Request.Header.Get("X-Request-Id")
+	}
+	diagnosticCollector := &streamDiagnosticCollector{}
+	defer diagnosticCollector.report(diagnostics, requestID, "openai-completions", "openai-completions")
+
 	// Top-level panic recovery so a panic during streaming (e.g. JSON parse
 	// failure, write to a closed connection) does not skip the deferred
 	// audit emit in the caller and lose the request_logs row entirely.
@@ -453,6 +482,16 @@ func StreamChatWithPendingCapture(
 	upstreamDoneReceived := false
 
 	if firstLine != "" {
+		logRawUpstreamFrame(diagnostics, requestID, "openai-completions", []byte(firstLine))
+		firstRawPayload := extractPayload(firstLine)
+		if firstRawPayload != "" && firstRawPayload != "[DONE]" {
+			diagnosticCollector.observeRaw([]byte(firstRawPayload))
+			if chunk, parseErr := ir.ParseOpenAIStreamChunk(firstLine); parseErr == nil {
+				diagnosticCollector.observeChunk(chunk)
+			} else {
+				reportConversionAnomaly(diagnostics, requestID, "openai-completions", "openai-completions", "parse_stream_chunk", []byte(firstRawPayload), parseErr, nil)
+			}
+		}
 		// 2026-06-20 audit fix: when the upstream returns a
 		// non-SSE JSON error body (e.g. {"error":{"type":
 		// "service_unavailable","message":"积分不足"}}) for a
@@ -542,6 +581,19 @@ func StreamChatWithPendingCapture(
 				ctx, reader, bodyCloser, w, flusher, norm, capture, pc,
 				clientModel, &discoveredUpstream, firstLine,
 				runtimeCfg.firstByteTimeout, &lastSend, &chunkCount,
+				func(line string) {
+					logRawUpstreamFrame(diagnostics, requestID, "openai-completions", []byte(line))
+					payload := extractPayload(line)
+					if payload == "" || payload == "[DONE]" {
+						return
+					}
+					diagnosticCollector.observeRaw([]byte(payload))
+					if chunk, parseErr := ir.ParseOpenAIStreamChunk(line); parseErr == nil {
+						diagnosticCollector.observeChunk(chunk)
+					} else {
+						reportConversionAnomaly(diagnostics, requestID, "openai-completions", "openai-completions", "parse_stream_chunk", []byte(payload), parseErr, nil)
+					}
+				},
 			)
 			if gateOutcome != nil {
 				return *gateOutcome
@@ -558,6 +610,7 @@ func StreamChatWithPendingCapture(
 					upstreamDoneReceived = true
 				}
 				if writeClientLine(l) {
+					diagnosticCollector.observeEmittedLine(l)
 					lastSend = time.Now()
 					chunkCount++
 					if capture != nil {
@@ -576,6 +629,7 @@ func StreamChatWithPendingCapture(
 				pc.append(firstLine)
 			}
 			if writeClientLine(firstLine) {
+				diagnosticCollector.observeEmittedLine(firstLine)
 				lastSend = time.Now()
 				chunkCount++ // Count first chunk
 				if capture != nil {
@@ -685,6 +739,16 @@ func StreamChatWithPendingCapture(
 		}
 
 		line := readResult.line
+		logRawUpstreamFrame(diagnostics, requestID, "openai-completions", []byte(line))
+		rawPayload := extractPayload(line)
+		if rawPayload != "" && rawPayload != "[DONE]" {
+			diagnosticCollector.observeRaw([]byte(rawPayload))
+			if chunk, parseErr := ir.ParseOpenAIStreamChunk(line); parseErr == nil {
+				diagnosticCollector.observeChunk(chunk)
+			} else {
+				reportConversionAnomaly(diagnostics, requestID, "openai-completions", "openai-completions", "parse_stream_chunk", []byte(rawPayload), parseErr, nil)
+			}
+		}
 
 		// 2026-06-19 quality fix mode (017_quality_fix_mode.sql). See
 		// the first-line equivalent above for the rationale. We run
@@ -759,6 +823,7 @@ func StreamChatWithPendingCapture(
 		}
 
 		if writeClientLine(line) {
+			diagnosticCollector.observeEmittedLine(line)
 			lastSend = time.Now()
 			chunkCount++ // Track chunks sent
 			if capture != nil {

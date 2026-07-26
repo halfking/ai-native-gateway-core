@@ -236,6 +236,20 @@ func StreamAnthropicSSEToResponses(
 	clientModel, outboundModel, requestID string,
 	capture *audit.StreamCapture,
 	pc *pendingCapturer,
+) (outcome StreamOutcome) {
+	return StreamAnthropicSSEToResponsesWithDiagnostics(
+		w, resp, clientModel, outboundModel, requestID, capture, pc, nil,
+	)
+}
+
+// StreamAnthropicSSEToResponsesWithDiagnostics converts an Anthropic stream
+// to Responses SSE with optional best-effort diagnostics.
+func StreamAnthropicSSEToResponsesWithDiagnostics(
+	w http.ResponseWriter,
+	resp *http.Response,
+	clientModel, outboundModel, requestID string,
+	capture *audit.StreamCapture,
+	pc *pendingCapturer,
 	diagnostics *DiagnosticContext,
 ) (outcome StreamOutcome) {
 	//nolint:errcheck // best-effort close
@@ -257,6 +271,9 @@ func StreamAnthropicSSEToResponses(
 			pc.finalize(outcome)
 		}
 	}()
+
+	diagnosticCollector := &streamDiagnosticCollector{}
+	defer diagnosticCollector.report(diagnostics, requestID, "anthropic-messages", "openai-responses")
 
 	flusher, ok := w.(http.Flusher)
 	if !ok {
@@ -334,6 +351,7 @@ func StreamAnthropicSSEToResponses(
 			return
 		}
 		clientWriter.write(sseLine)
+		diagnosticCollector.observeEmittedChunk(chunk)
 		if pc != nil {
 			pc.append(sseLine)
 		}
@@ -349,7 +367,7 @@ func StreamAnthropicSSEToResponses(
 	}
 
 	for {
-		eventType, data, err := readAnthropicSSEEventWithTimeout(
+		eventType, data, rawFrame, err := readAnthropicSSEEventWithTimeoutRaw(
 			ctx, reader, resp.Body, runtimeCfg.streamChunkTimeout,
 		)
 		if errors.Is(err, context.DeadlineExceeded) {
@@ -391,10 +409,8 @@ func StreamAnthropicSSEToResponses(
 			continue
 		}
 
-		// Diagnostic: Log raw upstream Anthropic response
-		if diagnostics != nil && diagnostics.RawLogger != nil {
-			diagnostics.RawLogger.LogResponse(requestID, "anthropic", data, true)
-		}
+		logRawUpstreamFrame(diagnostics, requestID, "anthropic-messages", rawFrame)
+		diagnosticCollector.observeRaw(data)
 
 		// Defensive: detect OpenAI-format data and skip (some proxies
 		// mislabel). Same guard as StreamAnthropicSSEToOpenAI.
@@ -412,16 +428,16 @@ func StreamAnthropicSSEToResponses(
 				"event_type", eventType,
 				"error", perr,
 				"request_id", requestID)
-			
-			// Diagnostic: Report parse anomaly
-			if diagnostics != nil && diagnostics.Anomaly != nil {
-				diagnostics.Anomaly.ReportAnomaly(requestID, "parse_error", map[string]interface{}{
-					"event_type":   eventType,
-					"error":        perr.Error(),
-					"data_preview": truncateForLog(string(data), 200),
-				})
-			}
+
+			reportConversionAnomaly(
+				diagnostics, requestID, "anthropic-messages", "openai-responses", "parse_stream_event", data, perr,
+				map[string]interface{}{"event_type": eventType},
+			)
 			continue
+		}
+
+		if chunk != nil {
+			diagnosticCollector.observeChunk(chunk)
 		}
 
 		// Track usage + finish_reason as they arrive so the final
@@ -465,6 +481,20 @@ func StreamOpenAIToResponsesSSE(
 	clientModel, outboundModel, requestID string,
 	capture *audit.StreamCapture,
 	pc *pendingCapturer,
+) (outcome StreamOutcome) {
+	return StreamOpenAIToResponsesSSEWithDiagnostics(
+		w, resp, clientModel, outboundModel, requestID, capture, pc, nil,
+	)
+}
+
+// StreamOpenAIToResponsesSSEWithDiagnostics converts an OpenAI stream to
+// Responses SSE with optional best-effort diagnostics.
+func StreamOpenAIToResponsesSSEWithDiagnostics(
+	w http.ResponseWriter,
+	resp *http.Response,
+	clientModel, outboundModel, requestID string,
+	capture *audit.StreamCapture,
+	pc *pendingCapturer,
 	diagnostics *DiagnosticContext,
 ) (outcome StreamOutcome) {
 	//nolint:errcheck // best-effort close
@@ -486,6 +516,9 @@ func StreamOpenAIToResponsesSSE(
 			pc.finalize(outcome)
 		}
 	}()
+
+	diagnosticCollector := &streamDiagnosticCollector{}
+	defer diagnosticCollector.report(diagnostics, requestID, "openai-completions", "openai-responses")
 
 	flusher, ok := w.(http.Flusher)
 	if !ok {
@@ -557,6 +590,7 @@ func StreamOpenAIToResponsesSSE(
 			return
 		}
 		clientWriter.write(sseLine)
+		diagnosticCollector.observeEmittedChunk(chunk)
 		if pc != nil {
 			pc.append(sseLine)
 		}
@@ -623,10 +657,9 @@ func StreamOpenAIToResponsesSSE(
 			return StreamOutcome{ChunkCount: chunkCount}
 		}
 
-		// Diagnostic: Log raw OpenAI upstream response
-		if diagnostics != nil && diagnostics.RawLogger != nil {
-			diagnostics.RawLogger.LogResponse(requestID, "openai", []byte(payload), true)
-		}
+		rawFrame := []byte(line)
+		logRawUpstreamFrame(diagnostics, requestID, "openai-completions", rawFrame)
+		diagnosticCollector.observeRaw([]byte(payload))
 
 		chunk, perr := ir.ParseOpenAIStreamChunk(trimmed)
 		if perr != nil {
@@ -634,15 +667,15 @@ func StreamOpenAIToResponsesSSE(
 				"data_preview", truncateForLog(payload, 100),
 				"error", perr,
 				"request_id", requestID)
-			
-			// Diagnostic: Report parse anomaly
-			if diagnostics != nil && diagnostics.Anomaly != nil {
-				diagnostics.Anomaly.ReportAnomaly(requestID, "parse_error", map[string]interface{}{
-					"error":        perr.Error(),
-					"data_preview": truncateForLog(payload, 200),
-				})
-			}
+
+			reportConversionAnomaly(
+				diagnostics, requestID, "openai-completions", "openai-responses", "parse_stream_chunk", []byte(payload), perr, nil,
+			)
 			continue
+		}
+
+		if chunk != nil {
+			diagnosticCollector.observeChunk(chunk)
 		}
 
 		// Track usage + finish_reason for response.completed.

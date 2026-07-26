@@ -58,7 +58,7 @@ func TestStreamAnthropicSSEToResponses_FullFlow(t *testing.T) {
 	defer func() { _ = resp.Body.Close() }()
 
 	rec := httptest.NewRecorder()
-	out := StreamAnthropicSSEToResponses(rec, resp, "claude-opus-4-8", "claude-opus-4-8", "req-123456789012345678", nil, nil, nil)
+	out := StreamAnthropicSSEToResponses(rec, resp, "claude-opus-4-8", "claude-opus-4-8", "req-123456789012345678", nil, nil)
 	require.False(t, out.Interrupted)
 
 	body := rec.Body.String()
@@ -130,7 +130,7 @@ func TestStreamAnthropicSSEToResponses_MaxTokensMapsToIncomplete(t *testing.T) {
 	defer func() { _ = resp.Body.Close() }()
 
 	rec := httptest.NewRecorder()
-	out := StreamAnthropicSSEToResponses(rec, resp, "claude-opus-4-8", "claude-opus-4-8", "req-trunc", nil, nil, nil)
+	out := StreamAnthropicSSEToResponses(rec, resp, "claude-opus-4-8", "claude-opus-4-8", "req-trunc", nil, nil)
 	require.False(t, out.Interrupted)
 
 	body := rec.Body.String()
@@ -174,7 +174,7 @@ func TestStreamAnthropicSSEToResponses_ToolUse(t *testing.T) {
 	defer func() { _ = resp.Body.Close() }()
 
 	rec := httptest.NewRecorder()
-	out := StreamAnthropicSSEToResponses(rec, resp, "claude-opus-4-8", "claude-opus-4-8", "req-tool", nil, nil, nil)
+	out := StreamAnthropicSSEToResponses(rec, resp, "claude-opus-4-8", "claude-opus-4-8", "req-tool", nil, nil)
 	require.False(t, out.Interrupted)
 
 	body := rec.Body.String()
@@ -231,7 +231,7 @@ func TestStreamAnthropicSSEToResponses_ToolUse_MultipleArgChunks(t *testing.T) {
 	defer func() { _ = resp.Body.Close() }()
 
 	rec := httptest.NewRecorder()
-	out := StreamAnthropicSSEToResponses(rec, resp, "claude-opus-4-8", "claude-opus-4-8", "req-multi", nil, nil, nil)
+	out := StreamAnthropicSSEToResponses(rec, resp, "claude-opus-4-8", "claude-opus-4-8", "req-multi", nil, nil)
 	require.False(t, out.Interrupted)
 
 	body := rec.Body.String()
@@ -311,7 +311,7 @@ func TestStreamAnthropicSSEToResponses_ToolUse_SecondToolCall(t *testing.T) {
 	defer func() { _ = resp.Body.Close() }()
 
 	rec := httptest.NewRecorder()
-	out := StreamAnthropicSSEToResponses(rec, resp, "claude-opus-4-8", "claude-opus-4-8", "req-m2", nil, nil, nil)
+	out := StreamAnthropicSSEToResponses(rec, resp, "claude-opus-4-8", "claude-opus-4-8", "req-m2", nil, nil)
 	require.False(t, out.Interrupted)
 
 	body := rec.Body.String()
@@ -396,7 +396,7 @@ func TestStreamAnthropicSSEToResponses_DropsOpenAIFormatData(t *testing.T) {
 	defer func() { _ = resp.Body.Close() }()
 
 	rec := httptest.NewRecorder()
-	out := StreamAnthropicSSEToResponses(rec, resp, "claude-opus-4-8", "claude-opus-4-8", "req-x", nil, nil, nil)
+	out := StreamAnthropicSSEToResponses(rec, resp, "claude-opus-4-8", "claude-opus-4-8", "req-x", nil, nil)
 	require.False(t, out.Interrupted)
 
 	body := rec.Body.String()
@@ -434,7 +434,7 @@ func TestStreamOpenAIToResponsesSSE_FullFlow(t *testing.T) {
 	defer func() { _ = resp.Body.Close() }()
 
 	rec := httptest.NewRecorder()
-	out := StreamOpenAIToResponsesSSE(rec, resp, "gpt-4o", "gpt-4o", "req-openai-123456789012345678", nil, nil, nil)
+	out := StreamOpenAIToResponsesSSE(rec, resp, "gpt-4o", "gpt-4o", "req-openai-123456789012345678", nil, nil)
 	require.False(t, out.Interrupted)
 
 	body := rec.Body.String()
@@ -488,7 +488,7 @@ func TestStreamOpenAIToResponsesSSE_NoUsageStillFinishes(t *testing.T) {
 	defer func() { _ = resp.Body.Close() }()
 
 	rec := httptest.NewRecorder()
-	out := StreamOpenAIToResponsesSSE(rec, resp, "gpt-4o", "gpt-4o", "req-nou", nil, nil, nil)
+	out := StreamOpenAIToResponsesSSE(rec, resp, "gpt-4o", "gpt-4o", "req-nou", nil, nil)
 	require.False(t, out.Interrupted)
 
 	body := rec.Body.String()
@@ -520,7 +520,7 @@ func TestStreamOpenAIToResponsesSSE_LengthMapsToIncomplete(t *testing.T) {
 	defer func() { _ = resp.Body.Close() }()
 
 	rec := httptest.NewRecorder()
-	out := StreamOpenAIToResponsesSSE(rec, resp, "gpt-4o", "gpt-4o", "req-trunc", nil, nil, nil)
+	out := StreamOpenAIToResponsesSSE(rec, resp, "gpt-4o", "gpt-4o", "req-trunc", nil, nil)
 	require.False(t, out.Interrupted)
 
 	body := rec.Body.String()
@@ -676,7 +676,7 @@ func TestStreamOpenAIToResponsesSSE_ToolCalls_MultipleArgChunks(t *testing.T) {
 	defer func() { _ = resp.Body.Close() }()
 
 	rec := httptest.NewRecorder()
-	out := StreamOpenAIToResponsesSSE(rec, resp, "gpt-4o", "gpt-4o", "req-oai-tool", nil, nil, nil)
+	out := StreamOpenAIToResponsesSSE(rec, resp, "gpt-4o", "gpt-4o", "req-oai-tool", nil, nil)
 	require.False(t, out.Interrupted)
 
 	body := rec.Body.String()
