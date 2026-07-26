@@ -57,9 +57,13 @@ func initProviderProfile(pool *pgxpool.Pool) *ProviderProfileWorkers {
 	}
 
 	// Read configuration from settings
-	collectionInterval := settings.GetPlatformDuration("provider_profile.collection_interval", 2*time.Hour)
-	aggregationInterval := settings.GetPlatformDuration("provider_profile.aggregation_interval", 24*time.Hour)
-	cleanupInterval := settings.GetPlatformDuration("provider_profile.cleanup_interval", 7*24*time.Hour)
+	collectionIntervalSec := settings.GetPlatformDuration("provider_profile.collection_interval", 2*60*60)      // 2 hours
+	aggregationIntervalSec := settings.GetPlatformDuration("provider_profile.aggregation_interval", 24*60*60)   // 24 hours
+	cleanupIntervalSec := settings.GetPlatformDuration("provider_profile.cleanup_interval", 7*24*60*60)         // 7 days
+
+	collectionInterval := time.Duration(collectionIntervalSec) * time.Second
+	aggregationInterval := time.Duration(aggregationIntervalSec) * time.Second
+	cleanupInterval := time.Duration(cleanupIntervalSec) * time.Second
 
 	// Create workers
 	collector := bg.NewProfileCollector(pool, collectionInterval)
