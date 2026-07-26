@@ -57,6 +57,57 @@ func TestExtractClientTypeWithPrompt_HeaderTakesPriority(t *testing.T) {
 	}
 }
 
+// TestClientTokenOf_Defaults 验证空 userKey / 空 clientType 的回退规则
+// 设计要求（2026-07-27 Token 资源管理方案）：
+//   - 空 userKey  → "anon"
+//   - 空 clientType → "unknown"
+func TestClientTokenOf_Defaults(t *testing.T) {
+	tests := []struct {
+		name       string
+		userKey    string
+		clientType string
+		want       string
+	}{
+		{"both empty", "", "", "anon|unknown"},
+		{"empty userKey", "", "cursor", "anon|cursor"},
+		{"empty clientType", "alice", "", "alice|unknown"},
+		{"whitespace userKey", "   ", "claude-code", "   |claude-code"},
+		{"whitespace clientType", "bob", "   ", "bob|   "},
+		{"normal", "alice", "cursor", "alice|cursor"},
+		{"normal other", "bob", "claude-code", "bob|claude-code"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := ClientTokenOf(tt.userKey, tt.clientType)
+			if got != tt.want {
+				t.Errorf("ClientTokenOf(%q, %q) = %q, want %q",
+					tt.userKey, tt.clientType, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestClientTokenOf_StableFormat 验证同一输入多次拼接结果一致
+// 这是 Redis key 生成正确性的基础（不同请求对同一客户端必须 hash 到同一 key）。
+func TestClientTokenOf_StableFormat(t *testing.T) {
+	inputs := [][2]string{
+		{"alice", "cursor"},
+		{"bob", "claude-code"},
+		{"", "unknown"},
+		{"anon", ""},
+		{"user-with-dash", "jetbrains"},
+		{"123", "vscode"},
+	}
+	for _, in := range inputs {
+		a := ClientTokenOf(in[0], in[1])
+		b := ClientTokenOf(in[0], in[1])
+		if a != b {
+			t.Errorf("ClientTokenOf(%q, %q) not stable: %q vs %q", in[0], in[1], a, b)
+		}
+	}
+}
+
 func TestExtractClientTypeWithPrompt_UserAgentWins(t *testing.T) {
 	// User-Agent should win over system prompt
 	req := httptest.NewRequest("POST", "/v1/chat/completions", nil)

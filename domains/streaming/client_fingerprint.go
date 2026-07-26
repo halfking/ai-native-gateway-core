@@ -79,3 +79,26 @@ func extractClientTypeWithPrompt(r *http.Request, systemPrompt string) string {
 	}
 	return telemetry.DetectAgentFromSystemPrompt(systemPrompt)
 }
+
+// ClientTokenOf 根据 userKey 与 clientType 拼接客户端 token。
+//
+// 设计原则（2026-07-27，Token 资源管理方案）：
+//   - userKey 为空时统一为 "anon" — 兜底避免空 holder 进入 Redis
+//   - clientType 为空时统一为 "unknown" — 隐式枚举，未识别客户端类型
+//     不会进入精细配额表，但会被汇总到"未知类型"统计
+//   - 拼接使用 ASCII "|" 分隔符，userKey/clientType 本身已规范化（extractClientType
+//     输出小写 + 不含特殊字符；userKey 来源 upstream auth，已过滤）
+//
+// 这是拼接规则的规范实现（streaming 包内的调用方应使用它）。executors 包
+// 出于避免跨包依赖的考虑内联了一份等价副本 clientTokenOf（见
+// domains/streaming/executors/executor.go），FpSlot holder 实际由那份副本
+// 生成；两处逻辑必须保持一致，修改任一处需同步另一处。
+func ClientTokenOf(userKey, clientType string) string {
+	if userKey == "" {
+		userKey = "anon"
+	}
+	if clientType == "" {
+		clientType = "unknown"
+	}
+	return userKey + "|" + clientType
+}

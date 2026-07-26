@@ -828,6 +828,69 @@ func diagnosticProtocol(protocol, fallback string) string {
 	return fallback
 }
 
+// extractClientType (2026-07-27 Token 资源管理)
+//
+// 此函数是 streaming/client_fingerprint.go:extractClientType 的本地简化版，
+// 仅覆盖 FpSlot holder 拼接所需的"header-only"路径（X-Gw-Client-Type 头
+// + User-Agent 关键词匹配）。系统提示词语义补全留给 streaming.extractClientTypeWithPrompt。
+//
+// 之所以在 executors 包内重复一份：executor.go 历史上不 import streaming 父包
+// （避免循环依赖，保持包边界单向）。两份实现必须保持行为一致：未识别时返回空串，
+// 由调用方 clientTokenOf 兜底为 "unknown"。
+func extractClientType(r *http.Request) string {
+	if r == nil {
+		return ""
+	}
+	if ct := r.Header.Get("X-Gw-Client-Type"); ct != "" {
+		return strings.ToLower(ct)
+	}
+	ua := strings.ToLower(r.Header.Get("User-Agent"))
+	switch {
+	case strings.Contains(ua, "cursor/"), strings.Contains(ua, "cursor-"):
+		return "cursor"
+	case strings.Contains(ua, "claude-code/"), strings.Contains(ua, "claude-code-"):
+		return "claude-code"
+	case strings.Contains(ua, "opencode/"), strings.Contains(ua, "opencode-"):
+		return "opencode"
+	case strings.Contains(ua, "zcode/"), strings.Contains(ua, "zcode-"):
+		return "zcode"
+	case strings.Contains(ua, "codex/"), strings.Contains(ua, "codex-"):
+		return "codex"
+	case strings.Contains(ua, "roocode/"), strings.Contains(ua, "roo-code/"):
+		return "roocode"
+	case strings.Contains(ua, "vscode/"), strings.Contains(ua, "visual-studio-code/"):
+		return "vscode"
+	case strings.Contains(ua, "github-copilot/"), strings.Contains(ua, "copilot/"):
+		return "copilot"
+	case strings.Contains(ua, "windsurf/"):
+		return "windsurf"
+	case strings.Contains(ua, "zed/"):
+		return "zed"
+	case strings.Contains(ua, "jetbrains/"), strings.Contains(ua, "intellij/"),
+		strings.Contains(ua, "pycharm/"), strings.Contains(ua, "webstorm/"):
+		return "jetbrains"
+	}
+	return ""
+}
+
+// clientTokenOf (2026-07-27 Token 资源管理)
+//
+// 把 userKey 与 clientType 拼接为客户端 token，作为 FpSlot 与 Pin 的 holder。
+//   - userKey 空 → "anon"
+//   - clientType 空 → "unknown"
+//
+// 与 streaming/client_fingerprint.go:ClientTokenOf 行为一致；本地重复一份
+// 是为了保持 executors 包零外部依赖。维护注意：两份逻辑需同步演进。
+func clientTokenOf(userKey, clientType string) string {
+	if userKey == "" {
+		userKey = "anon"
+	}
+	if clientType == "" {
+		clientType = "unknown"
+	}
+	return userKey + "|" + clientType
+}
+
 func (e *Executor) logUpstreamRequest(params *ExecParams, protocol string, body []byte) {
 	logger, ok := e.RawDataLogger.(UpstreamRequestLogger)
 	if !ok || logger == nil {
@@ -1723,10 +1786,33 @@ func (e *Executor) Execute(params *ExecParams) (*ExecuteResult, error) {
 		return nil, &ExecuteError{Tried: 0, Exhausted: true, Trace: trace}
 	}
 
-	holder := params.StickyKey
-	if holder == "" {
-		holder = params.R.Header.Get("X-Request-Id")
+	// Token 资源管理（2026-07-27）：holder 现在按"客户端 token"维度拼接
+	//   holder = clientTokenOf(userKey, clientType)
+	// userKey 取 params.StickyKey —— 这是 buildRouteStickyKey 派生的
+	// {tenant}:{app}:{apiKeyID}:{profile} 稳定身份（原有 holder 的语义），
+	// fallback 到 X-Request-Id（无 sticky key 时的兜底，如探测请求）。
+	//
+	// 重要：不使用 params.ClientID.IdentityHash 作为 userKey。IdentityHash
+	// 是设备/环境指纹哈希（PrimarySeed 优先取 DeviceSeed/MachineID，否则退化
+	// 为 UA+OS+Arch+RuntimeName+RuntimeVersion 的组合哈希），会随客户端版本
+	// 升级、系统更新等环境变化而漂移。若用它做 userKey，同一用户会在环境
+	// 指纹变化时意外换 holder，丢失 24h Pin 复用，与"同用户复用同一身份槽"
+	// 的设计目标相悖。IdentityHash 仍用于 IdentityPool（全局身份数量上限）
+	// 与 Limiter（并发限流），与本 holder 拼接是两个独立维度。
+	//
+	// clientType 取自 extractClientType —— 未识别回退 "unknown"。
+	// 这样同一用户在不同客户端（cursor / claude-code / unknown）下会获得
+	// 独立的 FpSlot 与 Pin，互不挤占；同一 (userKey, clientType) 24h 内
+	// 走 Pin 复用同一个 slot。
+	//
+	// 本实现刻意内联 helper，避免在 executors 包引入对 streaming 包的依赖
+	// （executor.go 历史上不 import 父包，保持现有边界）。
+	userKey := params.StickyKey
+	if userKey == "" {
+		userKey = params.R.Header.Get("X-Request-Id")
 	}
+	clientType := extractClientType(params.R)
+	holder := clientTokenOf(userKey, clientType)
 	// fpSlotDegraded is set when the pre-filter found every candidate's slot
 	// pool saturated. In that mode the Acquire loop below tolerates a failed
 	// Acquire and runs the request without a fingerprint slot rather than
