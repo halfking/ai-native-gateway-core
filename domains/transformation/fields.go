@@ -4,6 +4,13 @@ package transformation
 //
 // 这些字段会被 IR 的 Parse/Serialize 正确转换，不需要存入 ExtensionsBag。
 // 任何不在该集合内的顶层字段视为"扩展属性"，需要靠 ExtensionsBag 往返保留。
+//
+// 注意（2026-07-27 审计 F-2）：只有 IR 真正在 parse_openai/serialize_openai 里
+// 处理的字段才能放进这个集合。曾经误列的 stream_options / metadata 实际上 IR
+// 从不 parse/serialize（internal/ir 零引用），导致它们在 IR 路由下被静默丢弃
+// （stream_options 丢失会让 stream_options.include_usage 流式 usage 帧不到达上游）。
+// 现已移出，改由 ExtensionsBag 在同协议路由上透传往返保留。新增字段前请先确认
+// internal/ir 确有对应处理，否则走 ExtensionsBag 透传。
 var standardRequestFields = map[string]bool{
 	// 公共字段
 	"model":       true,
@@ -28,10 +35,8 @@ var standardRequestFields = map[string]bool{
 	"response_format":     true,
 	"seed":                true,
 	"service_tier":        true,
-	"stream_options":      true,
 	"parallel_tool_calls": true,
 	"store":               true,
-	"metadata":            true,
 	"reasoning_effort":    true,
 
 	// audit-provider-multimodal (2026-07-13): Personalized provider fields
