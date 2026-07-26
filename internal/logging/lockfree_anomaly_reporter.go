@@ -26,6 +26,8 @@ type LockFreeAnomalyReporter struct {
 	closeOnce  sync.Once
 	submitMu   sync.RWMutex
 	done       chan struct{}
+	batchMu    sync.Mutex
+	closing    atomic.Bool
 
 	// 统计信息
 	reportsSent   atomic.Uint64
@@ -199,7 +201,6 @@ func (r *LockFreeAnomalyReporter) sendWorker() {
 	for {
 		select {
 		case <-r.ctx.Done():
-			r.sendBatch()
 			return
 		case <-ticker.C:
 			r.sendBatch()
@@ -208,10 +209,16 @@ func (r *LockFreeAnomalyReporter) sendWorker() {
 }
 
 // sendBatch 批量发送异常报告（失败时重新入队一次）
-func (r *LockFreeAnomalyReporter) sendBatch() {
+func (r *LockFreeAnomalyReporter) sendBatch() bool {
+	r.batchMu.Lock()
+	defer r.batchMu.Unlock()
+	return r.sendBatchLocked()
+}
+
+func (r *LockFreeAnomalyReporter) sendBatchLocked() bool {
 	batch := r.queue.TryDequeueBatch(r.batchSize)
 	if len(batch) == 0 {
-		return
+		return false
 	}
 
 	// 序列化为JSON
@@ -224,10 +231,8 @@ func (r *LockFreeAnomalyReporter) sendBatch() {
 	if err != nil {
 		slog.Error("lockfree_anomaly_reporter: failed to marshal batch, re-enqueuing", "err", err)
 		r.reportsFailed.Add(uint64(len(batch)))
-		for _, report := range batch {
-			r.queue.Enqueue(report) // 重试一次
-		}
-		return
+		r.requeueBatch(batch)
+		return false
 	}
 
 	// 创建请求
@@ -238,10 +243,8 @@ func (r *LockFreeAnomalyReporter) sendBatch() {
 	if err != nil {
 		slog.Error("lockfree_anomaly_reporter: failed to create request, re-enqueuing", "err", err)
 		r.reportsFailed.Add(uint64(len(batch)))
-		for _, report := range batch {
-			r.queue.Enqueue(report)
-		}
-		return
+		r.requeueBatch(batch)
+		return false
 	}
 
 	req.Header.Set("Content-Type", "application/json")
@@ -254,10 +257,8 @@ func (r *LockFreeAnomalyReporter) sendBatch() {
 			"err", err,
 			"batch_size", len(batch))
 		r.reportsFailed.Add(uint64(len(batch)))
-		for _, report := range batch {
-			r.queue.Enqueue(report)
-		}
-		return
+		r.requeueBatch(batch)
+		return false
 	}
 	defer resp.Body.Close()
 
@@ -271,34 +272,70 @@ func (r *LockFreeAnomalyReporter) sendBatch() {
 		slog.Warn("lockfree_anomaly_reporter: server returned non-2xx, re-enqueuing",
 			"status", resp.StatusCode,
 			"batch_size", len(batch))
-		for _, report := range batch {
-			r.queue.Enqueue(report)
-		}
+		r.requeueBatch(batch)
+		return false
+	}
+	return true
+}
+
+func (r *LockFreeAnomalyReporter) requeueBatch(batch []AnomalyReport) {
+	if r.closing.Load() {
+		return
+	}
+	for _, report := range batch {
+		r.queue.Enqueue(report)
 	}
 }
 
-// Flush 刷新队列中的所有报告
 func (r *LockFreeAnomalyReporter) Flush(ctx context.Context) {
 	if !r.enabled.Load() {
 		return
 	}
 
-	deadline := time.Now().Add(30 * time.Second)
-	for time.Now().Before(deadline) && r.queue.Size() > 0 {
-		r.sendBatch()
-		time.Sleep(100 * time.Millisecond)
+	deadline := time.NewTimer(30 * time.Second)
+	defer deadline.Stop()
+	for r.queue.Size() > 0 {
+		select {
+		case <-ctx.Done():
+			return
+		case <-deadline.C:
+			return
+		default:
+		}
+		if r.sendBatch() {
+			continue
+		}
+		timer := time.NewTimer(100 * time.Millisecond)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return
+		case <-deadline.C:
+			timer.Stop()
+			return
+		case <-timer.C:
+		}
 	}
 }
 
 // Close 关闭报告器
 func (r *LockFreeAnomalyReporter) Close() error {
 	r.closeOnce.Do(func() {
+		r.closing.Store(true)
 		r.submitMu.Lock()
 		r.enabled.Store(false)
 		r.submitMu.Unlock()
 		r.cancel()
 		<-r.done
+
+		r.batchMu.Lock()
+		for r.queue.Size() > 0 {
+			if !r.sendBatchLocked() {
+				break
+			}
+		}
 		r.queue.Close()
+		r.batchMu.Unlock()
 	})
 	return nil
 }

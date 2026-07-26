@@ -38,11 +38,10 @@ func readAnthropicSSEEventWithTimeoutRaw(ctx context.Context, reader io.Reader, 
 		if closer != nil {
 			_ = closer.Close()
 		}
-		result := <-resultCh
 		if readCtx.Err() == context.DeadlineExceeded {
-			return "", nil, result.raw, fmt.Errorf("stream read timeout: %w", readCtx.Err())
+			return "", nil, nil, fmt.Errorf("stream read timeout: %w", readCtx.Err())
 		}
-		return "", nil, result.raw, readCtx.Err()
+		return "", nil, nil, readCtx.Err()
 	}
 }
 
