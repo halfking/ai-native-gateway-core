@@ -193,7 +193,7 @@ func TestRouting_MemoryStressWithFluctuatingLoad(t *testing.T) {
 				deadline := time.Now().Add(1 * time.Second)
 				for time.Now().Before(deadline) {
 					_, _ = r.Route(ctx)
-					totalRequests++
+					atomic.AddUint64(&totalRequests, 1)
 				}
 			}()
 		}
@@ -207,7 +207,7 @@ func TestRouting_MemoryStressWithFluctuatingLoad(t *testing.T) {
 				deadline := time.Now().Add(2 * time.Second)
 				for time.Now().Before(deadline) {
 					_, _ = r.Route(ctx)
-					totalRequests++
+					atomic.AddUint64(&totalRequests, 1)
 					time.Sleep(10 * time.Millisecond)
 				}
 			}()

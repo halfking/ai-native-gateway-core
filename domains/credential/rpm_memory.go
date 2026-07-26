@@ -3,26 +3,47 @@ package credential
 import (
 	"context"
 	"fmt"
+	"hash/fnv"
 	"sync"
 	"time"
 )
 
 const rpmWindowSeconds = 60.0
 
+// rpmMemShardCount 是 MemoryRPMLimiter 的分片数 (2 的幂)。每个分片独立 mutex,
+// 使不同 credential 的 RPM 预约不互相争用 —— 旧实现用单一全局 mutex,
+// 在 AcquireAll 热路径上串行化所有 credential。
+const rpmMemShardCount = 16
+
 // RPMLimiter reserves a request slot in a per-credential RPM window.
 type RPMLimiter interface {
 	CheckAndReserve(ctx context.Context, providerID, credentialID int, limit int) (bool, int, error)
 }
 
+type rpmMemShard struct {
+	mu       sync.Mutex
+	credsRPM map[string]*rpmWindow
+}
+
 // MemoryRPMLimiter is the process-local fallback RPM implementation.
 type MemoryRPMLimiter struct {
-	credsRPM map[string]*rpmWindow
-	mu       sync.Mutex
+	shards [rpmMemShardCount]*rpmMemShard
 }
 
 // NewMemoryRPMLimiter creates a process-local RPM limiter.
 func NewMemoryRPMLimiter() *MemoryRPMLimiter {
-	return &MemoryRPMLimiter{credsRPM: make(map[string]*rpmWindow)}
+	m := &MemoryRPMLimiter{}
+	for i := range m.shards {
+		m.shards[i] = &rpmMemShard{credsRPM: make(map[string]*rpmWindow)}
+	}
+	return m
+}
+
+// shard 返回 key 对应的分片。
+func (m *MemoryRPMLimiter) shard(key string) *rpmMemShard {
+	h := fnv.New32a()
+	_, _ = h.Write([]byte(key))
+	return m.shards[h.Sum32()&(rpmMemShardCount-1)]
 }
 
 // CheckAndReserve checks and records one request in the sliding window.
@@ -38,13 +59,14 @@ func (m *MemoryRPMLimiter) CheckAndReserve(ctx context.Context, providerID, cred
 	now := float64(time.Now().UnixMilli()) / 1000.0
 	cutoff := now - rpmWindowSeconds
 
-	m.mu.Lock()
-	defer m.mu.Unlock()
+	s := m.shard(key)
+	s.mu.Lock()
+	defer s.mu.Unlock()
 
-	w, ok := m.credsRPM[key]
+	w, ok := s.credsRPM[key]
 	if !ok {
 		w = &rpmWindow{}
-		m.credsRPM[key] = w
+		s.credsRPM[key] = w
 	}
 	filtered := w.timestamps[:0]
 	for _, timestamp := range w.timestamps {

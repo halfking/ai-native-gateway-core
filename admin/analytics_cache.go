@@ -17,6 +17,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -27,9 +28,10 @@ type AnalyticsCache struct {
 	ttl     time.Duration
 	mu      sync.RWMutex
 
-	// 统计
-	hits   uint64
-	misses uint64
+	// 统计 (atomic:命中/未命中计数在 RLock 路径下自增,
+	// 用原子类型避免并发读路径上的写-写竞争)
+	hits   atomic.Uint64
+	misses atomic.Uint64
 
 	// 清理
 	stopCleanup chan struct{}
@@ -104,17 +106,17 @@ func (c *AnalyticsCache) Get(key string) (interface{}, bool) {
 
 	entry, found := c.items[key]
 	if !found {
-		c.misses++
+		c.misses.Add(1)
 		return nil, false
 	}
 
 	// 检查过期
 	if time.Now().After(entry.expiresAt) {
-		c.misses++
+		c.misses.Add(1)
 		return nil, false
 	}
 
-	c.hits++
+	c.hits.Add(1)
 	return entry.value, true
 }
 
@@ -148,20 +150,25 @@ func (c *AnalyticsCache) Set(key string, value interface{}) {
 
 // Stats 缓存统计
 func (c *AnalyticsCache) Stats() CacheStats {
+	// hits/misses 是原子计数,无需持有锁即可读取;
+	// 仅 Size 需要读锁保护 map。
+	hits := c.hits.Load()
+	misses := c.misses.Load()
 	c.mu.RLock()
-	defer c.mu.RUnlock()
+	size := len(c.items)
+	c.mu.RUnlock()
 
-	total := c.hits + c.misses
+	total := hits + misses
 	hitRate := 0.0
 	if total > 0 {
-		hitRate = float64(c.hits) / float64(total)
+		hitRate = float64(hits) / float64(total)
 	}
 
 	return CacheStats{
-		Hits:    c.hits,
-		Misses:  c.misses,
+		Hits:    hits,
+		Misses:  misses,
 		HitRate: hitRate,
-		Size:    len(c.items),
+		Size:    size,
 	}
 }
 

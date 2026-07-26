@@ -4,7 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
-	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/kaixuan/llm-gateway-go/domains/dbdegradation"
@@ -16,10 +16,12 @@ type degradationControl struct {
 	writer  *dbdegradation.FileWriter
 	reader  *dbdegradation.FileReader
 	generic *dbdegradation.GenericRecovery
-	mu      sync.Mutex
-	manual  bool
-	enter   func(context.Context) error
-	exit    func(context.Context) error
+	// manual 是唯一的可变状态;用 atomic.Bool 取代 mutex,避免 enter/exit
+	// 处理期间长时间持有锁 (旧实现把 mu 跨 enter()/ttl.EnterDegradedMode()
+	// 等 Redis SCAN+EXPIRE 持有,慢 Redis 会卡住并发降级请求)。
+	manual atomic.Bool
+	enter  func(context.Context) error
+	exit   func(context.Context) error
 }
 
 func (h *Handler) WireDegradationControl(monitor *dbdegradation.Monitor, ttl *dbdegradation.TTLManager, writer *dbdegradation.FileWriter, reader *dbdegradation.FileReader, generic *dbdegradation.GenericRecovery, enter, exit func(context.Context) error) {
@@ -35,10 +37,7 @@ func (h *Handler) handleDegradationStatus(w http.ResponseWriter, r *http.Request
 	if h.degradation.monitor != nil {
 		status = h.degradation.monitor.GetStatus().String()
 	}
-	manual := false
-	h.degradation.mu.Lock()
-	manual = h.degradation.manual
-	h.degradation.mu.Unlock()
+	manual := h.degradation.manual.Load()
 	response := map[string]any{"status": status, "manual": manual}
 	if h.degradation.ttl != nil {
 		response["ttl_mode"] = h.degradation.ttl.GetMode()
@@ -67,8 +66,9 @@ func (h *Handler) handleDegradationControl(w http.ResponseWriter, r *http.Reques
 		writeError(w, http.StatusBadRequest, "invalid request")
 		return
 	}
-	h.degradation.mu.Lock()
-	defer h.degradation.mu.Unlock()
+	// enter/exit/ttl 字段在 WireDegradationControl 后不可变,无需锁保护。
+	// 副作用 (enter()/ttl.EnterDegradedMode() 等 Redis 操作) 不在锁内执行,
+	// 避免慢 Redis 阻塞并发的降级控制请求。只有 manual 标志需要原子更新。
 	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
 	defer cancel()
 	switch req.Action {
@@ -85,7 +85,7 @@ func (h *Handler) handleDegradationControl(w http.ResponseWriter, r *http.Reques
 				return
 			}
 		}
-		h.degradation.manual = true
+		h.degradation.manual.Store(true)
 	case "exit":
 		if h.degradation.exit != nil {
 			if err := h.degradation.exit(ctx); err != nil {
@@ -99,12 +99,12 @@ func (h *Handler) handleDegradationControl(w http.ResponseWriter, r *http.Reques
 				return
 			}
 		}
-		h.degradation.manual = false
+		h.degradation.manual.Store(false)
 	default:
 		writeError(w, http.StatusBadRequest, "action must be enter or exit")
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"status": "ok", "manual": h.degradation.manual})
+	writeJSON(w, http.StatusOK, map[string]any{"status": "ok", "manual": h.degradation.manual.Load()})
 }
 
 func (h *Handler) handleDegradationRecovery(w http.ResponseWriter, r *http.Request) {
