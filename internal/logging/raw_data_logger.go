@@ -1,7 +1,9 @@
 package logging
 
 import (
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -40,6 +42,25 @@ type RawDataEntry struct {
 	Headers         map[string]string `json:"headers,omitempty"`
 	ConversionStep  string            `json:"conversion_step,omitempty"` // "pre_parse", "post_parse", "pre_serialize", "post_serialize"
 	Error           string            `json:"error,omitempty"`
+
+	// 2026-07-27: Correlation envelope. Every raw entry is tagged with the
+	// same identifiers that request_logs and trace spans use, so the
+	// audit log can be sliced by session, provider, attempt, or trace.
+	ClientRequestID  string `json:"client_request_id,omitempty"`
+	GWSessionID      string `json:"gw_session_id,omitempty"`
+	GWTaskID         string `json:"gw_task_id,omitempty"`
+	ParentRequestID  string `json:"parent_request_id,omitempty"`
+	TenantID         string `json:"tenant_id,omitempty"`
+	ApplicationID    string `json:"application_id,omitempty"`
+	APIKeyID         int    `json:"api_key_id,omitempty"`
+	ProviderID       int    `json:"provider_id,omitempty"`
+	CredentialID     int    `json:"credential_id,omitempty"`
+	AttemptNo        int    `json:"attempt_no,omitempty"`
+	ChunkIndex       int    `json:"chunk_index,omitempty"`
+	UpstreamEndpoint string `json:"upstream_endpoint,omitempty"`
+	TraceID          string `json:"trace_id,omitempty"`
+	SpanID           string `json:"span_id,omitempty"`
+	SHA256           string `json:"sha256,omitempty"`
 }
 
 // NewRawDataLogger 创建原始数据日志记录器
@@ -311,4 +332,13 @@ func (l *RawDataLogger) Close() error {
 
 func encodeRawData(data []byte) string {
 	return base64.StdEncoding.EncodeToString(data)
+}
+
+// hashBytes returns the lowercase hex SHA-256 of the input. Used by
+// RawDataEntry to anchor each raw entry against the upstream body so
+// request_logs, the anomaly endpoint, and the on-disk audit log can
+// be cross-checked without re-reading the payload.
+func hashBytes(data []byte) string {
+	sum := sha256.Sum256(data)
+	return hex.EncodeToString(sum[:])
 }

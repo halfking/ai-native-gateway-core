@@ -889,32 +889,36 @@ func main() {
 		}
 
 		// ── 诊断与监控组件初始化 (2026-07-26) ──────────────────────────
-		// 根据环境变量按需启用原始数据日志、异常报告和语义分析功能。
-		// 这些组件在 USRM v2 架构下与 Executor 集成，可选地记录请求/响应数据。
+		// 原始数据日志默认开启（2026-07-27）：只有审计可见的请求历史能
+		// 解释 minimax-m3 “首轮为空 / 工具丢失” 等问题。仅允许通过环境变量
+		// 调整目录和文件大小，不能关闭。
 		{
 			// 原始数据日志
-			if os.Getenv("LLM_GATEWAY_RAW_LOG_ENABLED") == "true" {
-				logDir := os.Getenv("LLM_GATEWAY_RAW_LOG_DIR")
-				if logDir == "" {
-					logDir = "./logs/raw_data"
+			logDir := os.Getenv("LLM_GATEWAY_RAW_LOG_DIR")
+			if logDir == "" {
+				logDir = "./logs/raw_data"
+			}
+			maxSizeStr := os.Getenv("LLM_GATEWAY_RAW_LOG_MAX_SIZE")
+			maxSize := int64(200 * 1024 * 1024) // 200MB default
+			if maxSizeStr != "" {
+				if parsed, err := strconv.ParseInt(maxSizeStr, 10, 64); err == nil && parsed > 0 {
+					maxSize = parsed
+				} else if err != nil || parsed <= 0 {
+					slog.Warn("raw_data_logger: invalid max size, using default", "value", maxSizeStr)
 				}
-				maxSizeStr := os.Getenv("LLM_GATEWAY_RAW_LOG_MAX_SIZE")
-				maxSize := int64(200 * 1024 * 1024) // 200MB default
-				if maxSizeStr != "" {
-					if parsed, err := strconv.ParseInt(maxSizeStr, 10, 64); err == nil && parsed > 0 {
-						maxSize = parsed
-					} else if err != nil || parsed <= 0 {
-						slog.Warn("raw_data_logger: invalid max size, using default", "value", maxSizeStr)
-					}
-				}
-
+			}
+			// LLM_GATEWAY_RAW_LOG_ENABLED=false 仍然允许停用，但默认行为
+			// 改为开启；这样可以保证 P0 审计数据稳定落盘。
+			if os.Getenv("LLM_GATEWAY_RAW_LOG_ENABLED") == "false" {
+				slog.Warn("raw_data_logger: explicitly disabled by env; audit data will not be persisted")
+			} else {
 				asyncRawLogger, err := logging.NewAsyncRawDataLogger(logDir, maxSize, true, 10000)
 				if err != nil {
 					slog.Error("raw_data_logger: failed to initialize", "err", err)
 				} else {
 					rawDataLogger = asyncRawLogger
 					routingExec.RawDataLogger = executors.NewRawDataLoggerAdapter(asyncRawLogger)
-					slog.Info("raw_data_logger: initialized", "dir", logDir, "max_size", maxSize)
+					slog.Info("raw_data_logger: initialized (default-on)", "dir", logDir, "max_size", maxSize)
 				}
 			}
 
