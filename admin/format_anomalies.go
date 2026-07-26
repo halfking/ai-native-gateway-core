@@ -6,6 +6,9 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 )
 
 type FormatAnomalyRecord struct {
@@ -100,7 +103,9 @@ func (h *Handler) handleFormatAnomalies(w http.ResponseWriter, r *http.Request) 
 		LEFT JOIN providers p ON p.id = rfa.provider_id
 		WHERE ` + whereSQL
 	var total int
-	if err := h.db.QueryRow(r.Context(), countQuery, args...).Scan(&total); err != nil {
+	if err := withAllTenantReadOnlyTx(r.Context(), h.db, func(tx pgx.Tx) error {
+		return tx.QueryRow(r.Context(), countQuery, args...).Scan(&total)
+	}); err != nil {
 		writeError(w, http.StatusInternalServerError, "count query failed")
 		return
 	}
@@ -134,49 +139,49 @@ func (h *Handler) handleFormatAnomalies(w http.ResponseWriter, r *http.Request) 
 		LIMIT $` + strconv.Itoa(argPos) + ` OFFSET $` + strconv.Itoa(argPos+1)
 	args = append(args, limit, offset)
 
-	rows, err := h.db.Query(r.Context(), listQuery, args...)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "list query failed")
-		return
-	}
-	defer rows.Close()
-
 	items := make([]FormatAnomalyRecord, 0, limit)
-	for rows.Next() {
-		var item FormatAnomalyRecord
-		var structureRaw []byte
-		if err := rows.Scan(
-			&item.ID,
-			&item.DetectedAt,
-			&item.RequestID,
-			&item.ProviderID,
-			&item.ProviderCode,
-			&item.ClientModel,
-			&item.OutboundModel,
-			&item.AnomalyType,
-			&item.Severity,
-			&item.UsageSource,
-			&item.ExpectedTokens,
-			&item.ActualTokens,
-			&item.ContentSize,
-			&structureRaw,
-			&item.ResponseSample,
-			&item.Resolved,
-			&item.ResolvedAt,
-			&item.ResolutionNotes,
-			&item.TenantID,
-			&item.CreatedAt,
-		); err != nil {
-			writeError(w, http.StatusInternalServerError, "scan failed")
-			return
+	if err := withAllTenantReadOnlyTx(r.Context(), h.db, func(tx pgx.Tx) error {
+		rows, err := tx.Query(r.Context(), listQuery, args...)
+		if err != nil {
+			return err
 		}
-		if len(structureRaw) > 0 {
-			_ = json.Unmarshal(structureRaw, &item.Structure)
+		defer rows.Close()
+
+		for rows.Next() {
+			var item FormatAnomalyRecord
+			var structureRaw []byte
+			if err := rows.Scan(
+				&item.ID,
+				&item.DetectedAt,
+				&item.RequestID,
+				&item.ProviderID,
+				&item.ProviderCode,
+				&item.ClientModel,
+				&item.OutboundModel,
+				&item.AnomalyType,
+				&item.Severity,
+				&item.UsageSource,
+				&item.ExpectedTokens,
+				&item.ActualTokens,
+				&item.ContentSize,
+				&structureRaw,
+				&item.ResponseSample,
+				&item.Resolved,
+				&item.ResolvedAt,
+				&item.ResolutionNotes,
+				&item.TenantID,
+				&item.CreatedAt,
+			); err != nil {
+				return err
+			}
+			if len(structureRaw) > 0 {
+				_ = json.Unmarshal(structureRaw, &item.Structure)
+			}
+			items = append(items, item)
 		}
-		items = append(items, item)
-	}
-	if err := rows.Err(); err != nil {
-		writeError(w, http.StatusInternalServerError, "rows failed")
+		return rows.Err()
+	}); err != nil {
+		writeError(w, http.StatusInternalServerError, "list query failed")
 		return
 	}
 
@@ -206,54 +211,53 @@ func (h *Handler) handleFormatAnomalySummary(w http.ResponseWriter, r *http.Requ
 		hours = 24 * 30
 	}
 
-	rows, err := h.db.Query(r.Context(), `
-		SELECT
-			DATE_TRUNC('hour', detected_at) AS hour,
-			provider_code,
-			client_model,
-			anomaly_type,
-			severity,
-			COUNT(*) AS anomaly_count,
-			COUNT(DISTINCT request_id) AS affected_requests,
-			AVG(content_size_bytes) AS avg_content_size,
-			AVG(expected_tokens) AS avg_expected_tokens,
-			AVG(actual_tokens) AS avg_actual_tokens,
-			COUNT(*) FILTER (WHERE resolved) AS resolved_count
-		FROM response_format_anomalies
-		WHERE detected_at > NOW() - ($1::int * INTERVAL '1 hour')
-		GROUP BY 1, 2, 3, 4, 5
-		ORDER BY hour DESC, anomaly_count DESC
-		LIMIT 200
-	`, hours)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "summary query failed")
-		return
-	}
-	defer rows.Close()
-
 	summaries := make([]FormatAnomalySummary, 0)
-	for rows.Next() {
-		var item FormatAnomalySummary
-		if err := rows.Scan(
-			&item.Hour,
-			&item.ProviderCode,
-			&item.ClientModel,
-			&item.AnomalyType,
-			&item.Severity,
-			&item.AnomalyCount,
-			&item.AffectedReqs,
-			&item.AvgContentSize,
-			&item.AvgExpTokens,
-			&item.AvgActualTokens,
-			&item.ResolvedCount,
-		); err != nil {
-			writeError(w, http.StatusInternalServerError, "summary scan failed")
-			return
+	if err := withAllTenantReadOnlyTx(r.Context(), h.db, func(tx pgx.Tx) error {
+		rows, err := tx.Query(r.Context(), `
+			SELECT
+				DATE_TRUNC('hour', detected_at) AS hour,
+				provider_code,
+				client_model,
+				anomaly_type,
+				severity,
+				COUNT(*) AS anomaly_count,
+				COUNT(DISTINCT request_id) AS affected_requests,
+				AVG(content_size_bytes) AS avg_content_size,
+				AVG(expected_tokens) AS avg_expected_tokens,
+				AVG(actual_tokens) AS avg_actual_tokens,
+				COUNT(*) FILTER (WHERE resolved) AS resolved_count
+			FROM response_format_anomalies
+			WHERE detected_at > NOW() - ($1::int * INTERVAL '1 hour')
+			GROUP BY 1, 2, 3, 4, 5
+			ORDER BY hour DESC, anomaly_count DESC
+			LIMIT 200
+		`, hours)
+		if err != nil {
+			return err
 		}
-		summaries = append(summaries, item)
-	}
-	if err := rows.Err(); err != nil {
-		writeError(w, http.StatusInternalServerError, "summary rows failed")
+		defer rows.Close()
+		for rows.Next() {
+			var item FormatAnomalySummary
+			if err := rows.Scan(
+				&item.Hour,
+				&item.ProviderCode,
+				&item.ClientModel,
+				&item.AnomalyType,
+				&item.Severity,
+				&item.AnomalyCount,
+				&item.AffectedReqs,
+				&item.AvgContentSize,
+				&item.AvgExpTokens,
+				&item.AvgActualTokens,
+				&item.ResolvedCount,
+			); err != nil {
+				return err
+			}
+			summaries = append(summaries, item)
+		}
+		return rows.Err()
+	}); err != nil {
+		writeError(w, http.StatusInternalServerError, "summary query failed")
 		return
 	}
 
@@ -291,14 +295,18 @@ func (h *Handler) handleFormatAnomalySubrouter(w http.ResponseWriter, r *http.Re
 		writeError(w, http.StatusBadRequest, "invalid json body")
 		return
 	}
-	ct, err := h.db.Exec(r.Context(), `
-		UPDATE response_format_anomalies
-		SET resolved = TRUE,
-		    resolved_at = NOW(),
-		    resolution_notes = $2
-		WHERE id = $1
-	`, id, body.ResolutionNotes)
-	if err != nil {
+	var ct pgconn.CommandTag
+	if err := withAllTenantTx(r.Context(), h.db, func(tx pgx.Tx) error {
+		var err error
+		ct, err = tx.Exec(r.Context(), `
+			UPDATE response_format_anomalies
+			SET resolved = TRUE,
+			    resolved_at = NOW(),
+			    resolution_notes = $2
+			WHERE id = $1
+		`, id, body.ResolutionNotes)
+		return err
+	}); err != nil {
 		writeError(w, http.StatusInternalServerError, "update failed")
 		return
 	}

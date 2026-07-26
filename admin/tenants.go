@@ -119,6 +119,10 @@ func isValidTenantCode(code string) bool {
 // handleTenants dispatches /api/admin/tenants and /api/admin/tenants/{code}/*
 // All routes are super_admin only (enforced via h.superAdmin() wrapper).
 func (h *Handler) handleTenants(w http.ResponseWriter, r *http.Request) {
+	if auth := GetAuthContext(r); auth != nil && auth.Role != "super_admin" && auth.Role != "admin_key" {
+		writeError(w, http.StatusForbidden, "super_admin role required for this endpoint")
+		return
+	}
 	if h.db == nil {
 		writeError(w, http.StatusServiceUnavailable, "database not configured")
 		return

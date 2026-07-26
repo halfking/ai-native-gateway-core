@@ -210,12 +210,16 @@ func (r *LockFreeAnomalyReporter) sendWorker() {
 
 // sendBatch 批量发送异常报告（失败时重新入队一次）
 func (r *LockFreeAnomalyReporter) sendBatch() bool {
-	r.batchMu.Lock()
-	defer r.batchMu.Unlock()
-	return r.sendBatchLocked()
+	return r.sendBatchContext(context.Background())
 }
 
-func (r *LockFreeAnomalyReporter) sendBatchLocked() bool {
+func (r *LockFreeAnomalyReporter) sendBatchContext(ctx context.Context) bool {
+	r.batchMu.Lock()
+	defer r.batchMu.Unlock()
+	return r.sendBatchLocked(ctx)
+}
+
+func (r *LockFreeAnomalyReporter) sendBatchLocked(parent context.Context) bool {
 	batch := r.queue.TryDequeueBatch(r.batchSize)
 	if len(batch) == 0 {
 		return false
@@ -236,7 +240,7 @@ func (r *LockFreeAnomalyReporter) sendBatchLocked() bool {
 	}
 
 	// 创建请求
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(parent, 10*time.Second)
 	defer cancel()
 
 	req, err := http.NewRequestWithContext(ctx, "POST", r.endpoint, bytes.NewReader(payload))
@@ -279,11 +283,10 @@ func (r *LockFreeAnomalyReporter) sendBatchLocked() bool {
 }
 
 func (r *LockFreeAnomalyReporter) requeueBatch(batch []AnomalyReport) {
-	if r.closing.Load() {
-		return
-	}
 	for _, report := range batch {
-		r.queue.Enqueue(report)
+		if !r.queue.Enqueue(report) {
+			break
+		}
 	}
 }
 
@@ -302,7 +305,7 @@ func (r *LockFreeAnomalyReporter) Flush(ctx context.Context) {
 			return
 		default:
 		}
-		if r.sendBatch() {
+		if r.sendBatchContext(ctx) {
 			continue
 		}
 		timer := time.NewTimer(100 * time.Millisecond)
@@ -328,14 +331,22 @@ func (r *LockFreeAnomalyReporter) Close() error {
 		r.cancel()
 		<-r.done
 
+		closeCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
 		r.batchMu.Lock()
-		for r.queue.Size() > 0 {
-			if !r.sendBatchLocked() {
-				break
+		defer r.batchMu.Unlock()
+	flush:
+		for attempts := 0; r.queue.Size() > 0 && attempts < 3; attempts++ {
+			if r.sendBatchLocked(closeCtx) {
+				continue
+			}
+			select {
+			case <-closeCtx.Done():
+				break flush
+			case <-time.After(100 * time.Millisecond):
 			}
 		}
 		r.queue.Close()
-		r.batchMu.Unlock()
 	})
 	return nil
 }

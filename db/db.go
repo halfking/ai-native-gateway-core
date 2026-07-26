@@ -958,11 +958,13 @@ func (d *DB) ensureResponseFormatAnomaliesSchema(ctx context.Context) error {
 			WHERE NOT resolved;
 		ALTER TABLE response_format_anomalies ENABLE ROW LEVEL SECURITY;
 		DROP POLICY IF EXISTS response_format_anomalies_tenant_isolation ON public.response_format_anomalies;
-		CREATE POLICY response_format_anomalies_tenant_isolation ON public.response_format_anomalies
-			USING (tenant_id IS NULL OR tenant_id = public.get_current_tenant());
+			CREATE POLICY response_format_anomalies_tenant_isolation ON public.response_format_anomalies
+				USING (tenant_id = public.get_current_tenant())
+				WITH CHECK (tenant_id = public.get_current_tenant());
 		DROP POLICY IF EXISTS response_format_anomalies_super_admin ON public.response_format_anomalies;
 		CREATE POLICY response_format_anomalies_super_admin ON public.response_format_anomalies
-			USING (current_setting('app.bypass_rls', true) = 'true');
+			USING (current_setting('app.bypass_rls', true) = 'true')
+			WITH CHECK (current_setting('app.bypass_rls', true) = 'true');
 		CREATE OR REPLACE VIEW v_format_anomaly_summary AS
 		SELECT
 			DATE_TRUNC('hour', detected_at) AS hour,
