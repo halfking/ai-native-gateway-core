@@ -649,6 +649,9 @@ func (c *RequestLogContext) buildEntry(errCode, errMessage string, providerID, c
 	}
 	enrichRequestLogFromMeta(reqLog, c.KeyInfo, &c.meta)
 	applyAutoRouteFields(reqLog, c)
+	if len(c.OutboundBody) > 0 {
+		reqLog.OutboundBody = json.RawMessage(c.OutboundBody)
+	}
 
 	// 2026-07-20: serialize routing attempts into request_logs
 	if c.RoutingTracker != nil {

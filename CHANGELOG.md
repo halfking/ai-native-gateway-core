@@ -27,7 +27,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     - `handler.go:3123` 在 `emitTelemetry` 前增加兜底：`logCtx.OutboundBody == 0 && result.RequestBody != 0` 时把 `result.RequestBody`（executor 实际发给上游的 body）写入 `logCtx.OutboundBody`。
     - `request_log_pipeline.go:744-746` `applySessionCompressorFields` 不再在无压缩策略时提前 return。OutboundBody 始终写入；只有 compression_meta 相关字段仍要求真实 strategy 值。
   - **测试**：新增 `TestApplySessionCompressorFields_OutboundBodyPersistedWithoutCompression` 覆盖无压缩路径（d94fd76c 回归），新增 `TestApplySessionCompressorFields_CompressionKeepsHashes` 保护有压缩路径的 hashes + strategy 仍正确传递。
-  - **数据回填**（运维手动）：`UPDATE request_logs SET outbound_body = NULL WHERE outbound_body IS NULL AND ts > '2026-07-01' AND compression_strategy = ''` — 新请求会自动修复，老记录的 outbound_body 仍然为 null（无法从现有数据重建，因为原始上游 body 未持久化）。
+  - **历史数据**：不执行回填。历史记录的 outbound_body 可能是 JSONB literal `null`，且原始上游 body 未持久化，无法可靠重建；部署验证必须区分 SQL NULL 与 JSONB `null`。
   - 详见 commit `280b1f8f0`（分支 `fix/outbound-body-delta-only`）。
 
 ### Changed

@@ -79,6 +79,22 @@ func TestRequestLogContext_BuildFailureEntry_EmptyClientRequestID(t *testing.T) 
 	}
 }
 
+func TestRequestLogContext_BuildFailureEntry_PersistsOutboundBody(t *testing.T) {
+	ch := NewChatHandler(nil, nil, nil, nil, nil, nil)
+	r := httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(`{"model":"minimax-m3"}`))
+	ctx := ch.NewRequestLogContext(r, "server-uuid-outbound", time.Now())
+	ctx.Body = []byte(`{"model":"minimax-m3"}`)
+	ctx.OutboundBody = []byte(`{"model":"minimax-m3","messages":[{"role":"user","content":"hello"}]}`)
+
+	entry := ctx.BuildFailureEntry("provider_error", "upstream failed", nil, nil)
+	if entry == nil || entry.OutboundBody == nil {
+		t.Fatal("failure entry must retain the body sent upstream")
+	}
+	if string(entry.OutboundBody) != string(ctx.OutboundBody) {
+		t.Fatalf("OutboundBody=%s, want %s", entry.OutboundBody, ctx.OutboundBody)
+	}
+}
+
 func TestRequestLogContext_BuildFailureEntry_EventAtUsesStartPlusLatency(t *testing.T) {
 	before := time.Now().UTC()
 	ctx := &RequestLogContext{
