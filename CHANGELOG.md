@@ -20,6 +20,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **v3 转发体 tab 永久显示 outbound_body** (2026-07-27):
+  - **Bug**：`handler.go:2244` 把 `logCtx.OutboundBody` 的持久化锁定在 `scResult.CompressionStrategy != ""`，导致 delta-only / fresh-session 请求（最常见的路径）的 `request_logs.outbound_body` 永远为 JSONB null。Admin API 返回 `outbound_body: null`，前端 v3 转发体 tab 是空的，但同一条记录能看到 `outbound_msg_count` / `outbound_token_est` — 形成"返回的数据只有局部"现象。
+  - **回归 trace**：`d94fd76c5880ea12b229db681bc1b83b`（minimax-m3，prompt 23264 tokens，completion 9 tokens，stream_interrupted=true，failure_detail_code=eof_without_done）。同模式历史上多次出现，包括 minimax-m2.7、minimax-text-01 等型号，影响范围：所有未触发 v3 会话压缩的请求。
+  - **修复**：
+    - `handler.go:3123` 在 `emitTelemetry` 前增加兜底：`logCtx.OutboundBody == 0 && result.RequestBody != 0` 时把 `result.RequestBody`（executor 实际发给上游的 body）写入 `logCtx.OutboundBody`。
+    - `request_log_pipeline.go:744-746` `applySessionCompressorFields` 不再在无压缩策略时提前 return。OutboundBody 始终写入；只有 compression_meta 相关字段仍要求真实 strategy 值。
+  - **测试**：新增 `TestApplySessionCompressorFields_OutboundBodyPersistedWithoutCompression` 覆盖无压缩路径（d94fd76c 回归），新增 `TestApplySessionCompressorFields_CompressionKeepsHashes` 保护有压缩路径的 hashes + strategy 仍正确传递。
+  - **数据回填**（运维手动）：`UPDATE request_logs SET outbound_body = NULL WHERE outbound_body IS NULL AND ts > '2026-07-01' AND compression_strategy = ''` — 新请求会自动修复，老记录的 outbound_body 仍然为 null（无法从现有数据重建，因为原始上游 body 未持久化）。
+  - 详见 commit `280b1f8f0`（分支 `fix/outbound-body-delta-only`）。
+
 ### Changed
 
 - **URSM v1→v2 统一 (clean up + write path unification)** (2026-07-26):
