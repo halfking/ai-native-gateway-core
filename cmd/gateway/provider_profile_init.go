@@ -35,6 +35,7 @@ type ProviderProfileWorkers struct {
 	collector  *bg.ProfileCollector
 	aggregator *bg.ProfileAggregator
 	cleaner    *bg.ProfileCleaner
+	alerts     *bg.ProfileAlertWorker
 }
 
 // initProviderProfile initializes the provider profile system.
@@ -109,29 +110,46 @@ func initProviderProfile(pool *pgxpool.Pool, fernetKey []byte, keyring *secret.K
 		cleanupSeconds = int64(settings.GetPlatformDuration("provider_profile.cleanup_interval", 604800))
 	}
 
+	// Alert evaluation runs daily (after the aggregator). It evaluates auto-disable
+	// and auto-enable conditions and flips credential lifecycle accordingly.
+	alertSeconds := int64(86400)
+	if envVal := os.Getenv("LLM_GATEWAY_PROVIDER_PROFILE_ALERT_INTERVAL"); envVal != "" {
+		if v, err := strconv.ParseInt(envVal, 10, 64); err == nil {
+			alertSeconds = v
+		}
+	}
+	if alertSeconds <= 0 {
+		alertSeconds = int64(settings.GetPlatformDuration("provider_profile.alert_interval", 86400))
+	}
+
 	collectionInterval := time.Duration(collectionSeconds) * time.Second
 	aggregationInterval := time.Duration(aggregationSeconds) * time.Second
 	cleanupInterval := time.Duration(cleanupSeconds) * time.Second
+	alertInterval := time.Duration(alertSeconds) * time.Second
 
 	// Create workers
 	collector := bg.NewProfileCollector(pool, collectionInterval, fernetKey, keyring)
 	aggregator := bg.NewProfileAggregator(pool, aggregationInterval)
 	cleaner := bg.NewProfileCleaner(pool, cleanupInterval)
+	alerts := bg.NewProfileAlertWorker(pool, alertInterval)
 
 	// Start workers
 	collector.Start()
 	aggregator.Start()
 	cleaner.Start()
+	alerts.Start()
 
 	slog.Info("provider profile system initialized",
 		"collection_interval", collectionInterval,
 		"aggregation_interval", aggregationInterval,
-		"cleanup_interval", cleanupInterval)
+		"cleanup_interval", cleanupInterval,
+		"alert_interval", alertInterval)
 
 	return &ProviderProfileWorkers{
 		collector:  collector,
 		aggregator: aggregator,
 		cleaner:    cleaner,
+		alerts:     alerts,
 	}
 }
 
@@ -151,6 +169,9 @@ func stopProviderProfile(workers *ProviderProfileWorkers) {
 	}
 	if workers.cleaner != nil {
 		workers.cleaner.Stop()
+	}
+	if workers.alerts != nil {
+		workers.alerts.Stop()
 	}
 
 	slog.Info("provider profile workers stopped")
