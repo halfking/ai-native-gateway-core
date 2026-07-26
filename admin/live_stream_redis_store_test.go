@@ -257,7 +257,9 @@ func TestLiveStreamRedisStore_TrimDimensionQueueToTwenty(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ZRange: %v", err)
 	}
-	if len(oldest) == 0 || oldest[0] != "req-05" {
+	// Dimension queues store slim tile JSON members, so compare the decoded
+	// request id rather than the raw member.
+	if len(oldest) == 0 || requestIDFromDimensionQueueMember(oldest[0]) != "req-05" {
 		t.Fatalf("oldest member=%v want req-05 (first 5 trimmed)", oldest)
 	}
 }
@@ -1382,57 +1384,107 @@ func TestSnapshotFromDimensionQueues_RequestsAreASC(t *testing.T) {
 	}
 }
 
+func TestSnapshotFromDimensionQueues_ReadsSlimTileMembers(t *testing.T) {
+	ctx := context.Background()
+	mr := miniredis.RunT(t)
+	defer mr.Close()
+
+	store := NewLiveStreamRedisStore(redis.NewClient(&redis.Options{Addr: mr.Addr()}))
+	req := LiveRequest{
+		RequestID:     "req-slim-1",
+		Ts:            "2026-07-26T04:30:00Z",
+		TenantID:      "default",
+		Model:         "claude-sonnet-5",
+		ModelCategory: "anthropic",
+		ProviderCode:  "apiclaude",
+		Status:        "success",
+	}
+	if err := store.Record(ctx, req); err != nil {
+		t.Fatalf("Record: %v", err)
+	}
+
+	snap, err := store.SnapshotFromDimensionQueues(ctx, "default", false)
+	if err != nil {
+		t.Fatalf("SnapshotFromDimensionQueues: %v", err)
+	}
+	if snap == nil {
+		t.Fatal("expected snapshot, got nil")
+	}
+	if snap.Summary.Total != 1 {
+		t.Fatalf("summary total=%d want 1", snap.Summary.Total)
+	}
+
+	vendorLanes := snap.Dimensions["vendor"]
+	if len(vendorLanes) != 1 {
+		t.Fatalf("vendor lanes len=%d want 1", len(vendorLanes))
+	}
+	if vendorLanes[0].ID != "anthropic" {
+		t.Fatalf("vendor lane id=%q want anthropic", vendorLanes[0].ID)
+	}
+	if got := vendorLanes[0].Requests[0].RequestID; got != "req-slim-1" {
+		t.Fatalf("vendor tile request_id=%q want req-slim-1", got)
+	}
+
+	providerLanes := snap.Dimensions["provider"]
+	if len(providerLanes) != 1 {
+		t.Fatalf("provider lanes len=%d want 1", len(providerLanes))
+	}
+	if providerLanes[0].ID != "apiclaude" {
+		t.Fatalf("provider lane id=%q want apiclaude", providerLanes[0].ID)
+	}
+}
+
 // 2026-07-20: The dimension-queue snapshot path no longer dedupes across
 // dimKeys before building the snapshot. This regression test ensures the
-	// later-stage per-lane and Summary dedupe keep counts stable: one request
-	// should appear once in vendor, once in provider, once in model, but
-	// Summary.Total must still be 1.
-	func TestBuildLiveStreamSnapshot_DedupesSummaryAndLaneMembers(t *testing.T) {
-		req := LiveRequest{
-			RequestID:     "req-1",
-			Ts:            "2026-07-20T12:00:00Z",
-			TenantID:      "default",
-			Model:         "glm-5.2",
-			CanonicalName: "glm-5.2",
-			ModelCategory: "zhipu ai",
-			ProviderCode:  "普联",
-			Status:        "success",
+// later-stage per-lane and Summary dedupe keep counts stable: one request
+// should appear once in vendor, once in provider, once in model, but
+// Summary.Total must still be 1.
+func TestBuildLiveStreamSnapshot_DedupesSummaryAndLaneMembers(t *testing.T) {
+	req := LiveRequest{
+		RequestID:     "req-1",
+		Ts:            "2026-07-20T12:00:00Z",
+		TenantID:      "default",
+		Model:         "glm-5.2",
+		CanonicalName: "glm-5.2",
+		ModelCategory: "zhipu ai",
+		ProviderCode:  "普联",
+		Status:        "success",
+	}
+	// Simulate SnapshotFromDimensionQueues loading the same request once per
+	// dimKey (vendor/provider/model). The snapshot builder must count it once
+	// in Summary while keeping exactly one tile in each lane.
+	items := []LiveRequest{req, req, req}
+	snap := BuildLiveStreamSnapshot(items)
+	if snap.Summary.Total != 1 {
+		t.Fatalf("summary.total=%d want 1", snap.Summary.Total)
+	}
+	if snap.Summary.Success != 1 {
+		t.Fatalf("summary.success=%d want 1", snap.Summary.Success)
+	}
+	if got := len(snap.Dimensions["vendor"]); got != 1 {
+		t.Fatalf("vendor lanes=%d want 1", got)
+	}
+	if got := len(snap.Dimensions["provider"]); got != 1 {
+		t.Fatalf("provider lanes=%d want 1", got)
+	}
+	if got := len(snap.Dimensions["model"]); got != 1 {
+		t.Fatalf("model lanes=%d want 1", got)
+	}
+	for _, dim := range []string{"vendor", "provider", "model"} {
+		lane := snap.Dimensions[dim][0]
+		if got := len(lane.Requests); got != 1 {
+			t.Fatalf("%s lane requests=%d want 1", dim, got)
 		}
-		// Simulate SnapshotFromDimensionQueues loading the same request once per
-		// dimKey (vendor/provider/model). The snapshot builder must count it once
-		// in Summary while keeping exactly one tile in each lane.
-		items := []LiveRequest{req, req, req}
-		snap := BuildLiveStreamSnapshot(items)
-		if snap.Summary.Total != 1 {
-			t.Fatalf("summary.total=%d want 1", snap.Summary.Total)
-		}
-		if snap.Summary.Success != 1 {
-			t.Fatalf("summary.success=%d want 1", snap.Summary.Success)
-		}
-		if got := len(snap.Dimensions["vendor"]); got != 1 {
-			t.Fatalf("vendor lanes=%d want 1", got)
-		}
-		if got := len(snap.Dimensions["provider"]); got != 1 {
-			t.Fatalf("provider lanes=%d want 1", got)
-		}
-		if got := len(snap.Dimensions["model"]); got != 1 {
-			t.Fatalf("model lanes=%d want 1", got)
-		}
-		for _, dim := range []string{"vendor", "provider", "model"} {
-			lane := snap.Dimensions[dim][0]
-			if got := len(lane.Requests); got != 1 {
-				t.Fatalf("%s lane requests=%d want 1", dim, got)
-			}
-			if lane.Requests[0].RequestID != req.RequestID {
-				t.Fatalf("%s lane request_id=%q want %q", dim, lane.Requests[0].RequestID, req.RequestID)
-			}
+		if lane.Requests[0].RequestID != req.RequestID {
+			t.Fatalf("%s lane request_id=%q want %q", dim, lane.Requests[0].RequestID, req.RequestID)
 		}
 	}
+}
 
 func TestSlimTileFormat(t *testing.T) {
 	now := time.Now().UTC()
 	errorKind := "5xx"
-	
+
 	tile := LiveStreamTile{
 		RequestID: "req-test-123",
 		Timestamp: now.Format(time.RFC3339),
@@ -1440,24 +1492,24 @@ func TestSlimTileFormat(t *testing.T) {
 		ErrorKind: &errorKind,
 		IsProbe:   true,
 	}
-	
+
 	// Serialize to slim format
 	data, err := marshalTileSlim(tile)
 	if err != nil {
 		t.Fatalf("marshalTileSlim: %v", err)
 	}
-	
+
 	// Verify size is small (under 100 bytes)
 	if len(data) >= 100 {
 		t.Fatalf("slim format should be under 100 bytes, got %d", len(data))
 	}
-	
+
 	// Deserialize back
 	decoded, err := unmarshalTileSlim(data)
 	if err != nil {
 		t.Fatalf("unmarshalTileSlim: %v", err)
 	}
-	
+
 	// Verify key fields preserved
 	if decoded.RequestID != tile.RequestID {
 		t.Errorf("RequestID mismatch: got %q want %q", decoded.RequestID, tile.RequestID)
@@ -1474,7 +1526,7 @@ func TestSlimTileFormat(t *testing.T) {
 	if *decoded.ErrorKind != *tile.ErrorKind {
 		t.Errorf("ErrorKind mismatch: got %q want %q", *decoded.ErrorKind, *tile.ErrorKind)
 	}
-	
+
 	// Verify timestamp (allow 1ms tolerance for rounding)
 	origTs, _ := time.Parse(time.RFC3339, tile.Timestamp)
 	decodedTs, _ := time.Parse(time.RFC3339, decoded.Timestamp)
@@ -1500,18 +1552,18 @@ func TestSlimTileFormatSizeReduction(t *testing.T) {
 		CompletionTokens: intPtr(200),
 		IsProbe:          false,
 	}
-	
+
 	// Full format (current)
 	fullData, _ := json.Marshal(tile)
-	
+
 	// Slim format (new)
 	slimData, _ := marshalTileSlim(tile)
-	
+
 	// Log actual sizes
 	reduction := float64(len(fullData)-len(slimData)) / float64(len(fullData))
 	t.Logf("Full size: %d bytes, Slim size: %d bytes, Reduction: %.1f%%",
 		len(fullData), len(slimData), reduction*100)
-	
+
 	// Verify >70% reduction (realistic based on actual field count)
 	if reduction <= 0.7 {
 		t.Fatalf("expected >70%% size reduction, got %.1f%%", reduction*100)
@@ -1527,20 +1579,20 @@ func TestFirstTiles(t *testing.T) {
 		{RequestID: "older", Timestamp: "2026-07-26T12:01:00Z"},
 		{RequestID: "oldest", Timestamp: "2026-07-26T12:00:00Z"},
 	}
-	
+
 	t.Run("returns all when limit >= length", func(t *testing.T) {
 		result := firstTiles(tiles, 10)
 		assert.Equal(t, 4, len(result))
 		assert.Equal(t, "newest", result[0].RequestID)
 	})
-	
+
 	t.Run("returns first N when limit < length", func(t *testing.T) {
 		result := firstTiles(tiles, 2)
 		assert.Equal(t, 2, len(result))
 		assert.Equal(t, "newest", result[0].RequestID)
 		assert.Equal(t, "newer", result[1].RequestID)
 	})
-	
+
 	t.Run("returns all when limit is 0", func(t *testing.T) {
 		result := firstTiles(tiles, 0)
 		assert.Equal(t, 4, len(result))
@@ -1549,29 +1601,29 @@ func TestFirstTiles(t *testing.T) {
 
 func TestTimestampsEqual(t *testing.T) {
 	base := "2026-07-26T12:00:00.000Z"
-	
+
 	t.Run("exact match", func(t *testing.T) {
 		assert.True(t, timestampsEqual(base, base))
 	})
-	
+
 	t.Run("within tolerance (50ms)", func(t *testing.T) {
 		ts1 := "2026-07-26T12:00:00.000Z"
 		ts2 := "2026-07-26T12:00:00.050Z"
 		assert.True(t, timestampsEqual(ts1, ts2))
 	})
-	
+
 	t.Run("within tolerance (100ms)", func(t *testing.T) {
 		ts1 := "2026-07-26T12:00:00.000Z"
 		ts2 := "2026-07-26T12:00:00.100Z"
 		assert.True(t, timestampsEqual(ts1, ts2))
 	})
-	
+
 	t.Run("outside tolerance (150ms)", func(t *testing.T) {
 		ts1 := "2026-07-26T12:00:00.000Z"
 		ts2 := "2026-07-26T12:00:00.150Z"
 		assert.False(t, timestampsEqual(ts1, ts2))
 	})
-	
+
 	t.Run("invalid timestamps fall back to string comparison", func(t *testing.T) {
 		assert.True(t, timestampsEqual("invalid", "invalid"))
 		assert.False(t, timestampsEqual("invalid1", "invalid2"))
@@ -1592,7 +1644,7 @@ func TestLanesChangedWithTimestampTolerance(t *testing.T) {
 			},
 		},
 	}
-	
+
 	t.Run("no change detected for timestamps within tolerance", func(t *testing.T) {
 		old := []LiveStreamLane{baseLane}
 		newLane := baseLane
@@ -1604,11 +1656,11 @@ func TestLanesChangedWithTimestampTolerance(t *testing.T) {
 			},
 		}
 		new := []LiveStreamLane{newLane}
-		
+
 		changed := lanesChanged(old, new)
 		assert.False(t, changed, "should not detect change for 50ms timestamp difference")
 	})
-	
+
 	t.Run("change detected for timestamps outside tolerance", func(t *testing.T) {
 		old := []LiveStreamLane{baseLane}
 		newLane := baseLane
@@ -1620,7 +1672,7 @@ func TestLanesChangedWithTimestampTolerance(t *testing.T) {
 			},
 		}
 		new := []LiveStreamLane{newLane}
-		
+
 		changed := lanesChanged(old, new)
 		assert.True(t, changed, "should detect change for 200ms timestamp difference")
 	})

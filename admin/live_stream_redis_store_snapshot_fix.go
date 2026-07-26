@@ -10,6 +10,18 @@ import (
 	"github.com/redis/go-redis/v9"
 )
 
+func requestIDFromDimensionQueueMember(member string) string {
+	if member == "" {
+		return ""
+	}
+	if strings.HasPrefix(member, "{") {
+		if tile, err := unmarshalTileSlim(member); err == nil && tile.RequestID != "" {
+			return tile.RequestID
+		}
+	}
+	return member
+}
+
 // SnapshotFromDimensionQueues builds a snapshot by reading directly from
 // dimension queues rather than reading from the main queue and grouping.
 // This fixes the swim lane flickering issue where high-traffic vendors
@@ -60,13 +72,21 @@ func (s *LiveStreamRedisStore) SnapshotFromDimensionQueues(ctx context.Context, 
 	var allRequests []LiveRequest
 
 	for _, key := range dimKeys {
-		requestIDs, err := s.rdb.ZRevRange(ctx, key, 0, int64(LiveStreamLaneVisibleLimit-1)).Result()
+		// 2026-07-26: dimension queues store slim tile JSON members (see
+		// Record()), while main queues still store bare request ids. Decode
+		// each member before building the request-detail key.
+		members, err := s.rdb.ZRevRange(ctx, key, 0, int64(LiveStreamLaneVisibleLimit-1)).Result()
 		if err != nil {
 			slog.Debug("snapshot: failed to read dimension queue", "key", key, "err", err.Error())
 			continue
 		}
 
-		for _, requestID := range requestIDs {
+		for _, member := range members {
+			requestID := requestIDFromDimensionQueueMember(member)
+			if requestID == "" {
+				continue
+			}
+
 			// Load request detail
 			detailKey := liveStreamGlobalRequestDetailKey(requestID)
 			if !isSuper && tenantID != "" {
