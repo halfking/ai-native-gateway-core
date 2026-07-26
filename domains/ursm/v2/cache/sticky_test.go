@@ -62,3 +62,25 @@ func TestStickyStoreLevelInference(t *testing.T) {
 		}
 	}
 }
+
+func TestStickyStoreSetLevelExplicit(t *testing.T) {
+	mr := miniredis.RunT(t)
+	rdb := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	s := NewStickyStore(rdb, 100, time.Hour)
+	ctx := context.Background()
+
+	// 显式传 level=1 (L1), 不依赖 colon 计数
+	rawKey := "tenant:app:1:profile-with:colon:sess:m" // profile 含冒号, 7 段
+	if err := s.SetLevel(ctx, 1, 9, rawKey, time.Hour); err != nil {
+		t.Fatal(err)
+	}
+	// Redis key 必须是 L1 前缀, 不是被 levelOf 误判
+	redisKey := StickyKey(1, rawKey)
+	if !mr.Exists(redisKey) {
+		t.Fatalf("explicit L1 key not in redis: %s", redisKey)
+	}
+	credID, ok := s.GetLevel(ctx, 1, rawKey)
+	if !ok || credID != 9 {
+		t.Fatalf("GetLevel L1: want 9, got %d ok=%v", credID, ok)
+	}
+}

@@ -46,10 +46,19 @@ type StickyLookupResult struct {
 	Found        bool
 }
 
+// StickyRedisStore 是 domains/ursm/v2/cache.StickyStore 的最小接口,
+// 避免 routing → ursm/v2/cache 的硬依赖(本包只依赖接口)。
+// 使用显式 level(1/2/3)避免 colon 段数启发式误判。
+type StickyRedisStore interface {
+	SetLevel(ctx context.Context, level int, credID int, rawKey string, ttl time.Duration) error
+	GetLevel(ctx context.Context, level int, rawKey string) (int, bool)
+}
+
 type StickyCache struct {
-	mu     sync.RWMutex
-	items  map[string]stickyEntry
-	dbPool *pgxpool.Pool
+	mu         sync.RWMutex
+	items      map[string]stickyEntry
+	dbPool     *pgxpool.Pool
+	redisStore StickyRedisStore
 }
 
 type stickyEntry struct {
@@ -60,6 +69,11 @@ type stickyEntry struct {
 
 func NewStickyCache() *StickyCache {
 	return &StickyCache{items: make(map[string]stickyEntry)}
+}
+
+// SetRedisStore 注入 StickyRedisStore(URSM v2 过渡), nil 时退化为纯内存。
+func (s *StickyCache) SetRedisStore(store StickyRedisStore) {
+	s.redisStore = store
 }
 
 func (s *StickyCache) SetDB(pool *pgxpool.Pool) {
@@ -102,17 +116,18 @@ func (s *StickyCache) GetMultiLevel(
 ) StickyLookupResult {
 	l1, l2, l3 := buildStickyKeys(tenantID, appID, apiKeyID, clientProfile, sessionID, model)
 
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-
 	now := time.Now()
 
+	// 内存级联查找(L1 → L2 → L3), 持读锁。
+	s.mu.RLock()
 	// Try L1: session + model (highest priority)
 	if l1 != "" {
 		if e, ok := s.items[l1]; ok && now.Before(e.expiresAt) {
-			slog.Debug("sticky L1 hit", "key", l1, "credentialID", e.credentialID)
+			cred := e.credentialID
+			s.mu.RUnlock()
+			slog.Debug("sticky L1 hit", "key", l1, "credentialID", cred)
 			return StickyLookupResult{
-				CredentialID: e.credentialID,
+				CredentialID: cred,
 				Level:        StickyLevelSession,
 				Found:        true,
 			}
@@ -122,9 +137,11 @@ func (s *StickyCache) GetMultiLevel(
 	// Try L2: client + model (medium priority)
 	if l2 != "" {
 		if e, ok := s.items[l2]; ok && now.Before(e.expiresAt) {
-			slog.Debug("sticky L2 hit", "key", l2, "credentialID", e.credentialID)
+			cred := e.credentialID
+			s.mu.RUnlock()
+			slog.Debug("sticky L2 hit", "key", l2, "credentialID", cred)
 			return StickyLookupResult{
-				CredentialID: e.credentialID,
+				CredentialID: cred,
 				Level:        StickyLevelClientModel,
 				Found:        true,
 			}
@@ -134,13 +151,40 @@ func (s *StickyCache) GetMultiLevel(
 	// Try L3: client baseline (lowest priority)
 	if l3 != "" {
 		if e, ok := s.items[l3]; ok && now.Before(e.expiresAt) {
-			slog.Debug("sticky L3 hit", "key", l3, "credentialID", e.credentialID)
+			cred := e.credentialID
+			s.mu.RUnlock()
+			slog.Debug("sticky L3 hit", "key", l3, "credentialID", cred)
 			return StickyLookupResult{
-				CredentialID: e.credentialID,
+				CredentialID: cred,
 				Level:        StickyLevelClient,
 				Found:        true,
 			}
 		}
+	}
+	s.mu.RUnlock()
+
+	// Redis fallback(URSM v2 过渡): 内存 miss 后回源 Redis, 用显式 level。
+	// 读锁已释放, 回填内存走写锁, 避免自死锁。
+	if s.redisStore != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+		type lv struct {
+			key string
+			lvl int
+			ttl time.Duration
+		}
+		levels := []lv{{l1, 1, 1 * time.Hour}, {l2, 2, 24 * time.Hour}, {l3, 3, 7 * 24 * time.Hour}}
+		for _, k := range levels {
+			if k.key == "" {
+				continue
+			}
+			if credID, ok := s.redisStore.GetLevel(ctx, k.lvl, k.key); ok {
+				cancel()
+				// 回填内存
+				s.Set(k.key, credID, k.ttl)
+				return StickyLookupResult{CredentialID: credID, Level: StickyLevelClient, Found: true}
+			}
+		}
+		cancel()
 	}
 
 	slog.Debug("sticky miss", "tenant", tenantID, "session", sessionID, "model", model)
@@ -228,6 +272,29 @@ func (s *StickyCache) RecordSuccessMultiLevel(
 		}
 	}
 	s.mu.Unlock()
+
+	// Redis 双写(URSM v2 过渡): 用显式 level, 避免 levelOf 启发式
+	if s.redisStore != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+		levels := []struct {
+			key string
+			lvl int
+			ttl time.Duration
+		}{
+			{l1, 1, 1 * time.Hour},
+			{l2, 2, 24 * time.Hour},
+			{l3, 3, 7 * 24 * time.Hour},
+		}
+		for _, lv := range levels {
+			if lv.key == "" {
+				continue
+			}
+			if err := s.redisStore.SetLevel(ctx, lv.lvl, credentialID, lv.key, lv.ttl); err != nil {
+				slog.Debug("sticky redis double-write failed", "key", lv.key, "error", err)
+			}
+		}
+		cancel()
+	}
 
 	// Async DB write for all levels
 	if s.dbPool != nil {
