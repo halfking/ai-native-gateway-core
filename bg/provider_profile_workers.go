@@ -167,29 +167,38 @@ func (a *ProfileAggregator) run(ctx context.Context) {
 	ticker := time.NewTicker(a.interval)
 	defer ticker.Stop()
 
+	// Run once on start for TODAY so a freshly-enabled system populates
+	// provider_profile_daily without waiting a full day. Without this, the table
+	// stays empty until the first 24h ticker fires (aggregating yesterday),
+	// which means the alert engine has no data to evaluate on day 1.
+	a.aggregateAt(ctx, time.Now())
+
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			a.aggregate(ctx)
+			a.aggregate(ctx) // normal daily cadence: aggregate yesterday
 		}
 	}
 }
 
-func (a *ProfileAggregator) aggregate(ctx context.Context) {
+// aggregateAt aggregates the daily profiles for a specific date.
+func (a *ProfileAggregator) aggregateAt(ctx context.Context, date time.Time) {
 	aggregateCtx, cancel := context.WithTimeout(ctx, 10*time.Minute)
 	defer cancel()
 
-	// Aggregate yesterday's data
-	yesterday := time.Now().AddDate(0, 0, -1)
-
-	if err := a.aggregator.AggregateDailyProfiles(aggregateCtx, yesterday); err != nil {
-		slog.Error("provider profile aggregation failed", "error", err, "date", yesterday.Format("2006-01-02"))
+	if err := a.aggregator.AggregateDailyProfiles(aggregateCtx, date); err != nil {
+		slog.Error("provider profile aggregation failed", "error", err, "date", date.Format("2006-01-02"))
 		return
 	}
 
-	slog.Info("provider profile aggregation completed", "date", yesterday.Format("2006-01-02"))
+	slog.Info("provider profile aggregation completed", "date", date.Format("2006-01-02"))
+}
+
+func (a *ProfileAggregator) aggregate(ctx context.Context) {
+	// Aggregate yesterday's data on each tick (normal daily cadence).
+	a.aggregateAt(ctx, time.Now().AddDate(0, 0, -1))
 }
 
 // ProfileCleaner runs old metrics cleanup
