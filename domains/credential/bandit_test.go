@@ -140,8 +140,8 @@ func TestBanditScorer_SpeedScore(t *testing.T) {
 	fastScore := scorer.GetScore("fast")
 	slowScore := scorer.GetScore("slow")
 
-	fastSpeed := scorer.speedScore(fastScore)
-	slowSpeed := scorer.speedScore(slowScore)
+	fastSpeed := scorer.speedScore(&fastScore)
+	slowSpeed := scorer.speedScore(&slowScore)
 
 	if fastSpeed <= slowSpeed {
 		t.Errorf("Fast credential should have higher speed score, got fast=%v, slow=%v", fastSpeed, slowSpeed)
@@ -154,12 +154,12 @@ func TestBanditScorer_HeadroomFactor(t *testing.T) {
 	// 50% quota remaining
 	scorer.UpdateQuota("cred-1", 500, 1000)
 	score1 := scorer.GetScore("cred-1")
-	headroom1 := scorer.headroomFactor(score1)
+	headroom1 := scorer.headroomFactor(&score1)
 
 	// 10% quota remaining
 	scorer.UpdateQuota("cred-2", 100, 1000)
 	score2 := scorer.GetScore("cred-2")
-	headroom2 := scorer.headroomFactor(score2)
+	headroom2 := scorer.headroomFactor(&score2)
 
 	if headroom1 <= headroom2 {
 		t.Errorf("Higher quota remaining should have higher headroom factor, got 50%%=%v, 10%%=%v", headroom1, headroom2)
@@ -171,14 +171,14 @@ func TestBanditScorer_RateLimitFactor(t *testing.T) {
 
 	// No 429s
 	score1 := scorer.GetScore("cred-1")
-	factor1 := scorer.rateLimitFactor(score1)
+	factor1 := scorer.rateLimitFactor(&score1)
 
 	// Multiple 429s
 	scorer.RecordRateLimitHit("cred-2")
 	scorer.RecordRateLimitHit("cred-2")
 	scorer.RecordRateLimitHit("cred-2")
 	score2 := scorer.GetScore("cred-2")
-	factor2 := scorer.rateLimitFactor(score2)
+	factor2 := scorer.rateLimitFactor(&score2)
 
 	if factor1 <= factor2 {
 		t.Errorf("No 429s should have higher factor than multiple 429s, got clean=%v, penalized=%v", factor1, factor2)
@@ -245,12 +245,10 @@ func TestBanditScorer_ConcurrentAccess(t *testing.T) {
 }
 
 func TestSampleBeta_Distribution(t *testing.T) {
-	scorer := NewBanditScorer()
-
 	// Test Beta(2, 2) - should be centered around 0.5
 	samples := make([]float64, 1000)
 	for i := 0; i < 1000; i++ {
-		samples[i] = scorer.sampleBeta(2.0, 2.0)
+		samples[i] = sampleBeta(2.0, 2.0)
 	}
 
 	// Calculate mean
@@ -268,12 +266,10 @@ func TestSampleBeta_Distribution(t *testing.T) {
 }
 
 func TestSampleGamma_Distribution(t *testing.T) {
-	scorer := NewBanditScorer()
-
 	// Test Gamma(2, 1) - should have mean = shape * scale = 2
 	samples := make([]float64, 1000)
 	for i := 0; i < 1000; i++ {
-		samples[i] = scorer.sampleGamma(2.0, 1.0)
+		samples[i] = sampleGamma(2.0, 1.0)
 	}
 
 	// Calculate mean
@@ -298,10 +294,11 @@ func TestBanditScorer_PenaltyDecay(t *testing.T) {
 	score := scorer.GetScore("cred-1")
 	initialPenalty := score.RateLimitPenalty
 
-	// Manually set LastRateLimitHit to simulate time passing
-	score.LastRateLimitHit = time.Now().Add(-3 * time.Minute)
+	// Manually set LastRateLimitHit to simulate time passing.
+	// Operate on the internal *BanditScore under the lock (test-only),
+	// since GetScore now returns a defensive copy.
 	scorer.mu.Lock()
-	scorer.scores["cred-1"] = score
+	scorer.scores["cred-1"].LastRateLimitHit = time.Now().Add(-3 * time.Minute)
 	scorer.mu.Unlock()
 
 	// Record another 429 (should decay first)

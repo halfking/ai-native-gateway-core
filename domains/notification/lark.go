@@ -24,6 +24,8 @@ import (
 	"net/http"
 	"sync"
 	"time"
+
+	"golang.org/x/sync/singleflight"
 )
 
 // LarkBotConfig 飞书机器人配置。
@@ -42,6 +44,8 @@ type LarkBotChannel struct {
 	tokenMu     sync.RWMutex
 	accessToken string
 	tokenExpire time.Time
+	// sf 去重并发的 token 刷新:HTTP 调用不持有 tokenMu。
+	sf singleflight.Group
 }
 
 // NewLarkBotChannel 创建飞书机器人渠道。
@@ -186,6 +190,9 @@ func (c *LarkBotChannel) HealthCheck(ctx context.Context) error {
 }
 
 // ensureAccessToken 保证 token 有效；过期前 5 分钟主动刷新。
+//
+// 用 singleflight 去重并发刷新:HTTP 调用不持有 tokenMu,避免一个慢刷新
+// 阻塞该渠道的所有并发通知。
 func (c *LarkBotChannel) ensureAccessToken(ctx context.Context) error {
 	c.tokenMu.RLock()
 	if c.accessToken != "" && time.Now().Before(c.tokenExpire) {
@@ -194,15 +201,23 @@ func (c *LarkBotChannel) ensureAccessToken(ctx context.Context) error {
 	}
 	c.tokenMu.RUnlock()
 
-	c.tokenMu.Lock()
-	defer c.tokenMu.Unlock()
-	if c.accessToken != "" && time.Now().Before(c.tokenExpire) {
-		return nil
-	}
-	return c.refreshAccessToken(ctx)
+	_, err, _ := c.sf.Do("lark_token", func() (any, error) {
+		return nil, c.refreshAccessToken(ctx)
+	})
+	return err
 }
 
+// refreshAccessToken 刷新 token。调用方不需要持有 tokenMu —— 此函数
+// 自己在写 token 时获取写锁。HTTP 调用全程无锁。
 func (c *LarkBotChannel) refreshAccessToken(ctx context.Context) error {
+	// 再次检查:可能在等待 singleflight 期间已有其他 goroutine 刷新成功。
+	c.tokenMu.RLock()
+	valid := c.accessToken != "" && time.Now().Before(c.tokenExpire)
+	c.tokenMu.RUnlock()
+	if valid {
+		return nil
+	}
+
 	url := c.config.BaseURL + "/open-apis/auth/v3/tenant_access_token/internal"
 	body, _ := json.Marshal(map[string]string{
 		"app_id":     c.config.AppID,
@@ -238,8 +253,11 @@ func (c *LarkBotChannel) refreshAccessToken(ctx context.Context) error {
 		return fmt.Errorf("notification: lark token api: %s (code %d)", result.Msg, result.Code)
 	}
 
+	// 发布:仅写 token 时持有写锁。
+	c.tokenMu.Lock()
 	c.accessToken = result.TenantAccessToken
 	c.tokenExpire = time.Now().Add(time.Duration(result.Expire-300) * time.Second)
+	c.tokenMu.Unlock()
 	slog.Info("lark access token refreshed", "expire_at", c.tokenExpire)
 	return nil
 }

@@ -6,7 +6,6 @@ import (
 	"math"
 	"strconv"
 	"strings"
-	"sync"
 
 	"github.com/jackc/pgx/v5"
 )
@@ -32,7 +31,6 @@ type EmbeddingClassifier struct {
 	model string
 	dim   int
 	alpha float64
-	mu    sync.Mutex
 }
 
 // NewEmbeddingClassifier creates an embedding classifier with EMA defaults.
@@ -131,6 +129,11 @@ func (c *EmbeddingClassifier) lowConfidence(reason string) *Classification {
 // UpdateCentroidEMA incorporates vec into taskType's centroid. The row lock
 // keeps concurrent requests from losing samples while the Go-side EMA avoids
 // relying on pgvector arithmetic operators.
+//
+// 并发说明:此函数没有可变的进程内状态需要保护 (pool/model/dim/alpha 在启动后
+// 不可变),EMA 更新的原子性由数据库事务 + SELECT ... FOR UPDATE 行锁保证。
+// 因此不再持有进程级 mutex —— 旧实现把 mutex 跨整段 DB 事务持有,任何 DB 停顿
+// (行锁等待、慢盘) 都会阻塞所有访问该分类器的 goroutine,而该锁对正确性没有贡献。
 func (c *EmbeddingClassifier) UpdateCentroidEMA(ctx context.Context, taskType TaskType, vec []float32) error {
 	if ctx == nil {
 		ctx = context.Background()
@@ -144,9 +147,6 @@ func (c *EmbeddingClassifier) UpdateCentroidEMA(ctx context.Context, taskType Ta
 	if err := validateVector(vec, c.dim); err != nil {
 		return err
 	}
-
-	c.mu.Lock()
-	defer c.mu.Unlock()
 
 	tx, err := c.pool.BeginTx(ctx, pgx.TxOptions{})
 	if err != nil {

@@ -4,6 +4,7 @@ import (
 	"math"
 	"math/rand"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/kaixuan/llm-gateway-go/domains/health"
@@ -31,14 +32,43 @@ func DefaultWeightConfig() WeightConfig {
 	}
 }
 
+// weightCache 缓存 computeWeight 的结果 (1 秒 TTL),避免每次选路重算。
+// 通过 atomic.Pointer 原子发布,读侧 Load、写侧 Store 新指针,
+// 因此 cachedWeight/cachedAt 的读写无数据竞争,且写者之间 last-writer-wins
+// (对 1 秒缓存可接受)。
+type weightCache struct {
+	weight float64
+	at     time.Time
+}
+
 // WeightedCandidate represents a routing candidate with health metadata.
 type WeightedCandidate struct {
 	Candidate      *Candidate
 	LatencyTracker *LatencyTracker
 	ErrorDetector  *health.ErrorDetector
 	// Optional cached values to avoid repeated computations.
-	cachedWeight float64
-	cachedAt     time.Time
+	// 用 atomic.Pointer 发布,使 RecordError/RecordSuccess (无锁路径) 与
+	// computeWeight (RLock 路径) 之间的缓存读写无竞争。
+	cache atomic.Pointer[weightCache]
+}
+
+// loadCache 原子读取缓存,未缓存或 nil 返回零值 + ok=false。
+func (wc *WeightedCandidate) loadCache() (weight float64, at time.Time, ok bool) {
+	c := wc.cache.Load()
+	if c == nil {
+		return 0, time.Time{}, false
+	}
+	return c.weight, c.at, true
+}
+
+// storeCache 原子发布一份新的缓存快照。
+func (wc *WeightedCandidate) storeCache(weight float64, at time.Time) {
+	wc.cache.Store(&weightCache{weight: weight, at: at})
+}
+
+// invalidateCache 清空缓存 (下次 computeWeight 会重算)。
+func (wc *WeightedCandidate) invalidateCache() {
+	wc.cache.Store(&weightCache{weight: 0, at: time.Time{}})
 }
 
 // WeightedRouter implements weighted round-robin based on dynamic error rates
@@ -103,8 +133,7 @@ func (wr *WeightedRouter) Register(c *Candidate) {
 	if existing, ok := wr.candidates[c.CredentialID]; ok {
 		existing.Candidate = c
 		// Reset cached weight so the next selection recomputes
-		existing.cachedWeight = 0
-		existing.cachedAt = time.Time{}
+		existing.invalidateCache()
 		return
 	}
 
@@ -141,8 +170,7 @@ func (wr *WeightedRouter) UpdateCandidate(c *Candidate) {
 	defer wr.mu.Unlock()
 	if wc, ok := wr.candidates[c.CredentialID]; ok {
 		wc.Candidate = c
-		wc.cachedWeight = 0
-		wc.cachedAt = time.Time{}
+		wc.invalidateCache()
 	}
 }
 
@@ -190,8 +218,7 @@ func (wr *WeightedRouter) RecordError(credentialID string, statusCode int, err e
 			Timestamp:    time.Now(),
 		})
 	}
-	wc.cachedWeight = 0
-	wc.cachedAt = time.Time{}
+	wc.invalidateCache()
 }
 
 // RecordSuccess reports a successful request.
@@ -206,8 +233,7 @@ func (wr *WeightedRouter) RecordSuccess(credentialID string, latency time.Durati
 	if wc.ErrorDetector != nil {
 		wc.ErrorDetector.OnSuccess(credentialID)
 	}
-	wc.cachedWeight = 0
-	wc.cachedAt = time.Time{}
+	wc.invalidateCache()
 }
 
 // ResetCredential fully resets a credential's failure state, allowing it to
@@ -225,8 +251,7 @@ func (wr *WeightedRouter) ResetCredential(credentialID string) {
 	}
 	// Also reset latency tracker for a fresh start.
 	wc.LatencyTracker.Reset()
-	wc.cachedWeight = 0
-	wc.cachedAt = time.Time{}
+	wc.invalidateCache()
 }
 
 // Weight returns the computed weight for a candidate (read-only).
@@ -242,17 +267,19 @@ func (wr *WeightedRouter) Weight(credentialID string) float64 {
 
 // computeWeight applies the penalty formula. Must be called with at least RLock or no lock.
 // (The caller may hold wr.mu.RLock; we do not re-acquire it here.)
+//
+// 缓存读写通过 atomic.Pointer,因此即便 RecordError/RecordSuccess 在无锁路径
+// 并发失效缓存,这里也不会产生数据竞争。
 func (wr *WeightedRouter) computeWeight(wc *WeightedCandidate) float64 {
 	// Cache for 1 second to avoid recomputing on every selection.
-	if time.Since(wc.cachedAt) < time.Second && wc.cachedWeight > 0 {
-		return wc.cachedWeight
+	if w, at, ok := wc.loadCache(); ok && time.Since(at) < time.Second && w > 0 {
+		return w
 	}
 
 	// Hard floor: if marked Unhealthy (>= failThreshold consecutive errors), set weight to 0
 	// so this credential is excluded from routing entirely.
 	if wc.ErrorDetector != nil && wc.ErrorDetector.IsUnhealthy(wc.Candidate.CredentialID) {
-		wc.cachedWeight = 0
-		wc.cachedAt = time.Now()
+		wc.storeCache(0, time.Now())
 		return 0
 	}
 
@@ -284,8 +311,7 @@ func (wr *WeightedRouter) computeWeight(wc *WeightedCandidate) float64 {
 		weight = wr.config.MinWeight
 	}
 
-	wc.cachedWeight = weight
-	wc.cachedAt = time.Now()
+	wc.storeCache(weight, time.Now())
 	return weight
 }
 
