@@ -17,12 +17,20 @@ import (
 // reconnect/refresh without hitting the DB.
 //
 // Design:
-//   - Main queue: ZSET llmgw:live:main (score = unix_ms, member = JSON)
+//   - Main queue: ZSET llmgw:live:main (score = unix_ms, member = bare request_id)
 //   - Dimension queues: ZSET llmgw:live:dim:{vendor|provider|model}:{key}
+//     (member = slim tile JSON: rid/ts/st/ek/p — see LiveStreamTileSlim)
 //   - Status queues: ZSET llmgw:live:status:{success|failure|rate_limited|in_progress}
-//   - TTL: LiveStreamRecordRetention (default 2 hours, product minimum)
+//   - Request detail: STRING llmgw:live:req:{id} (+ tenant-scoped variant),
+//     holds the full LiveRequest payload for detail/tooltip rendering.
+//   - TTL: layered — detail 4h (LiveStreamRecordRetention), dimension/status
+//     queues 24h (LiveStreamLaneQueueRetention), activity keys 1h, tenant set 2h.
 //   - Visible lane window: LiveStreamLaneVisibleLimit (20 tiles)
 //   - Idle markers: inserted after LiveStreamIdleThreshold (5 min) of silence
+//   - Concurrency: Record() holds a per-request_id SETNX lock
+//     (llmgw:live:lock:record:{id}) for the read-modify-write so that the
+//     in_progress + terminal updates for one request cannot interleave and
+//     leave duplicate ZSET members.
 //
 // Graceful degradation: all write errors are logged but not surfaced;
 // the hub falls back to DB replay when Redis is unavailable.
@@ -298,6 +306,37 @@ func (s *LiveStreamRedisStore) Record(ctx context.Context, req LiveRequest) erro
 		slog.Debug("live stream record: missing model", "request_id", req.RequestID, "tenant_id", tenantID)
 	}
 
+	// 2026-07-27: Per-request_id Redis lock. Record() is a read-modify-write
+	// (GET old payload → compute ZREM set → ZADD new slim tile). Without
+	// serialization, two concurrent Records for the SAME request_id — e.g. an
+	// in_progress insert and the terminal update, which the telemetry batcher
+	// emits near-simultaneously — both read the SAME old payload, each
+	// compute the same ZREM set, and each ZADD their own new slim tile. The
+	// slim tile carries status + error_kind, which differ between in_progress
+	// and terminal, so the two ZADDs insert two DISTINCT JSON members into the
+	// same dimension ZSET → the request appears twice on the swim lane (the
+	// "jump"/"duplicate" operators reported).
+	//
+	// The lock serializes the read-modify-write per request_id, making it
+	// atomic across instances. The existing pipeline/TTL/idle/vendor logic is
+	// left untouched. If the lock cannot be acquired (Redis down OR contention
+	// exhausted), we return nil WITHOUT writing: the request is dropped from
+	// the live stream rather than written in a raced state. Dropping one tile
+	// is far less visible than a persistent duplicate; the canonical record
+	// still lives in request_logs and arrives via the next snapshot refresh.
+	release, locked := s.acquireLiveStreamRecordLock(ctx, req.RequestID)
+	if !locked {
+		return nil
+	}
+	defer release()
+
+	return s.recordLocked(ctx, req, tenantID)
+}
+
+// recordLocked is the body of Record(), executed while holding the
+// per-request_id lock when locking succeeded. It performs the read-modify-write
+// against Redis.
+func (s *LiveStreamRedisStore) recordLocked(ctx context.Context, req LiveRequest, tenantID string) error {
 	var oldData string
 	var oldReq LiveRequest
 	hasOldReq := false
@@ -434,6 +473,96 @@ func (s *LiveStreamRedisStore) Record(ctx context.Context, req LiveRequest) erro
 		slog.Debug("live stream redis notify failed", "request_id", req.RequestID, "tenant_id", tenantID, "err", err.Error())
 	}
 	return nil
+}
+
+// liveStreamRecordLockTTL bounds how long a per-request_id lock may be held.
+// A Record() pipeline completes in low tens of milliseconds under normal load;
+// 5s is ample headroom and also bounds staleness if the holder crashes mid-write.
+const liveStreamRecordLockTTL = 5 * time.Second
+
+// liveStreamRecordLockRetry bounds contention handling. Same-request_id
+// contention is rare in production (only the in_progress + terminal pair from
+// the batcher), so a bounded backoff is cheap. We DO NOT proceed unlocked on
+// exhaustion — that would reintroduce the duplicate-member race this lock
+// exists to prevent. Only ctx cancellation aborts the wait.
+const (
+	liveStreamRecordLockRetryAttempts = 64
+	liveStreamRecordLockRetrySleep    = 10 * time.Millisecond
+)
+
+// liveStreamRecordLockKey is the Redis key for the per-request_id lock. It is
+// global (not tenant-scoped) because request_id is globally unique, so the
+// same request racing itself across instances must contend on one lock.
+func liveStreamRecordLockKey(requestID string) string {
+	return "llmgw:live:lock:record:" + requestID
+}
+
+// acquireLiveStreamRecordLock takes a short-lived SETNX lock keyed by
+// request_id, retrying with bounded backoff until acquired or ctx is cancelled.
+// Returns a release func (call always, even on error) and a flag indicating
+// whether the lock was acquired. The caller must NOT proceed with the write
+// unless locked is true — otherwise the read-modify-write race that produces
+// duplicate ZSET members would resurface. Redis errors (unavailable) are the
+// only case that returns (nil, false) without the lock; Record treats those as
+// a graceful no-op since the store is unusable anyway.
+func (s *LiveStreamRedisStore) acquireLiveStreamRecordLock(ctx context.Context, requestID string) (release func(), locked bool) {
+	if s == nil || s.rdb == nil {
+		return nil, false
+	}
+	key := liveStreamRecordLockKey(requestID)
+	token := fmt.Sprintf("%d-%d", time.Now().UnixNano(), requestIDHash(requestID))
+
+	backoff := liveStreamRecordLockRetrySleep
+	for attempt := 0; attempt < liveStreamRecordLockRetryAttempts; attempt++ {
+		ok, err := s.rdb.SetNX(ctx, key, token, liveStreamRecordLockTTL).Result()
+		if err != nil {
+			// Redis error — store is unusable; let Record decide (it no-ops).
+			slog.Debug("live stream record: lock SetNX failed", "request_id", requestID, "err", err.Error())
+			return nil, false
+		}
+		if ok {
+			release := func() {
+				// Only delete if we still own the lock (token matches) — a Lua
+				// compare-and-delete avoids releasing someone else's lock after
+				// our TTL expired. Best-effort: ignore errors.
+				_, _ = s.rdb.Eval(ctx,
+					`if redis.call('GET', KEYS[1]) == ARGV[1] then return redis.call('DEL', KEYS[1]) else return 0 end`,
+					[]string{key}, token).Result()
+			}
+			return release, true
+		}
+		// Contention: another Record for the same request_id holds the lock.
+		select {
+		case <-ctx.Done():
+			return nil, false
+		case <-time.After(backoff):
+		}
+		// Gentle backoff capped at ~50ms.
+		if backoff < 50*time.Millisecond {
+			backoff += 5 * time.Millisecond
+		}
+	}
+	// Exhausted retries WITHOUT ctx cancellation: surface as a hard error so
+	// the caller does NOT write without the lock. This path should be
+	// essentially unreachable (5s lock TTL vs ~tens-of-ms pipeline); reaching
+	// it indicates a stuck lock holder and the request is better dropped than
+	// written raced.
+	slog.Warn("live stream record: lock contention exhausted, dropping request to preserve dedup", "request_id", requestID)
+	return nil, false
+}
+
+// requestIDHash returns a non-cryptographic 63-bit hash of the request id, used
+// only to make the lock token unique per caller without depending on a UUID.
+func requestIDHash(s string) int64 {
+	var h int64 = 1469598103934665603
+	for _, c := range s {
+		h ^= int64(c)
+		h *= 1099511628211
+	}
+	if h < 0 {
+		h = -h
+	}
+	return h
 }
 
 type liveStreamNotifyPayload struct {
