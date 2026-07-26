@@ -21,6 +21,10 @@ func NewPGMetricsStore(db *pgxpool.Pool) *PGMetricsStore {
 
 // SaveSnapshot 保存采集快照
 func (s *PGMetricsStore) SaveSnapshot(ctx context.Context, snapshot *MetricSnapshot) error {
+	if snapshot == nil {
+		return fmt.Errorf("save snapshot: snapshot is nil")
+	}
+
 	// Defensively guard all pointer fields so a nil sub-struct never causes a panic.
 	var p50, p95, p99 int
 	if snapshot.NetworkMetrics != nil {
@@ -33,11 +37,14 @@ func (s *PGMetricsStore) SaveSnapshot(ctx context.Context, snapshot *MetricSnaps
 	}
 	var errCount int
 	var errorTypesJSON []byte
-	if snapshot.StabilityMetrics != nil && len(snapshot.StabilityMetrics.ErrorTypes) > 0 {
+	var err error
+	if snapshot.StabilityMetrics != nil {
 		errCount = snapshot.StabilityMetrics.ErrorCount
-		errorTypesJSON, _ = json.Marshal(snapshot.StabilityMetrics.ErrorTypes)
+		errorTypesJSON, err = marshalJSON(snapshot.StabilityMetrics.ErrorTypes)
+		if err != nil {
+			return fmt.Errorf("marshal error types: %w", err)
+		}
 	} else {
-		errCount = 0
 		errorTypesJSON = []byte("{}")
 	}
 	var totalModels, availModels int
@@ -53,10 +60,10 @@ func (s *PGMetricsStore) SaveSnapshot(ctx context.Context, snapshot *MetricSnaps
 			availability_ttft_avg_ms, availability_duration_avg_ms,
 			stability_error_count, stability_error_types,
 			scale_total_models, scale_available_models
-		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13::text::jsonb, $14, $15)
 	`
 
-	_, err := s.db.Exec(ctx, query,
+	_, err = s.db.Exec(ctx, query,
 		snapshot.CredentialID,
 		snapshot.ProviderID,
 		snapshot.MetricTime,
@@ -65,7 +72,7 @@ func (s *PGMetricsStore) SaveSnapshot(ctx context.Context, snapshot *MetricSnaps
 		totalReq, successReq,
 		avgTTFT, avgDur,
 		errCount,
-		errorTypesJSON,
+		string(errorTypesJSON),
 		totalModels, availModels,
 	)
 
@@ -79,7 +86,7 @@ func (s *PGMetricsStore) SaveSnapshot(ctx context.Context, snapshot *MetricSnaps
 // GetSnapshotsByDateRange 获取指定时间范围的快照
 func (s *PGMetricsStore) GetSnapshotsByDateRange(ctx context.Context, credentialID int64, start, end time.Time) ([]*MetricSnapshot, error) {
 	query := `
-		SELECT 
+		SELECT
 			credential_id, provider_id, metric_time, time_slot,
 			network_latency_p50, network_latency_p95, network_latency_p99,
 			availability_total_requests, availability_success_requests,

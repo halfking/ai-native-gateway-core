@@ -68,7 +68,7 @@ func TestDailyAggregator_AggregateDailyProfiles(t *testing.T) {
 	// Mock snapshots for credential 1
 	startOfDay := testDate
 	endOfDay := startOfDay.Add(24 * time.Hour)
-	
+
 	snapshots := []*providerprofile.MetricSnapshot{
 		{
 			CredentialID: 1,
@@ -175,14 +175,14 @@ func TestDailyAggregator_TimeslotAnalysis(t *testing.T) {
 	// Create snapshots for different timeslots
 	startOfDay := testDate
 	endOfDay := startOfDay.Add(24 * time.Hour)
-	
+
 	snapshots := []*providerprofile.MetricSnapshot{
 		// Morning - good performance
 		{
-			CredentialID: 1,
-			ProviderID:   10,
-			MetricTime:   testDate.Add(8 * time.Hour),
-			TimeSlot:     providerprofile.TimeSlotMorning,
+			CredentialID:   1,
+			ProviderID:     10,
+			MetricTime:     testDate.Add(8 * time.Hour),
+			TimeSlot:       providerprofile.TimeSlotMorning,
 			NetworkMetrics: &providerprofile.NetworkMetrics{P50: 80, P95: 100, P99: 120},
 			AvailabilityMetrics: &providerprofile.AvailabilityMetrics{
 				TotalRequests:   100,
@@ -195,10 +195,10 @@ func TestDailyAggregator_TimeslotAnalysis(t *testing.T) {
 		},
 		// Afternoon - poor performance
 		{
-			CredentialID: 1,
-			ProviderID:   10,
-			MetricTime:   testDate.Add(14 * time.Hour),
-			TimeSlot:     providerprofile.TimeSlotAfternoon,
+			CredentialID:   1,
+			ProviderID:     10,
+			MetricTime:     testDate.Add(14 * time.Hour),
+			TimeSlot:       providerprofile.TimeSlotAfternoon,
 			NetworkMetrics: &providerprofile.NetworkMetrics{P50: 200, P95: 500, P99: 800},
 			AvailabilityMetrics: &providerprofile.AvailabilityMetrics{
 				TotalRequests:   100,
@@ -221,7 +221,7 @@ func TestDailyAggregator_TimeslotAnalysis(t *testing.T) {
 		// Morning should have higher score than afternoon
 		morningScore := p.TimeslotScores[providerprofile.TimeSlotMorning]
 		afternoonScore := p.TimeslotScores[providerprofile.TimeSlotAfternoon]
-		
+
 		return morningScore > afternoonScore &&
 			p.BestTimeslot == providerprofile.TimeSlotMorning &&
 			p.WorstTimeslot == providerprofile.TimeSlotAfternoon &&
@@ -254,7 +254,7 @@ func TestDailyAggregator_NoSnapshots(t *testing.T) {
 
 	startOfDay := testDate
 	endOfDay := startOfDay.Add(24 * time.Hour)
-	
+
 	// No snapshots for this day
 	metricsStore.On("GetSnapshotsByDateRange", ctx, int64(1), startOfDay, endOfDay).Return([]*providerprofile.MetricSnapshot{}, nil)
 
@@ -269,7 +269,37 @@ func TestDailyAggregator_NoSnapshots(t *testing.T) {
 
 	err := aggregator.AggregateDailyProfiles(ctx, testDate)
 	assert.NoError(t, err)
-	
+
 	// Verify SaveDailyProfile was NOT called
+	profileStore.AssertNotCalled(t, "SaveDailyProfile")
+}
+
+func TestDailyAggregator_ReportsCredentialErrors(t *testing.T) {
+	ctx := context.Background()
+	testDate := time.Date(2026, 7, 26, 0, 0, 0, 0, time.UTC)
+	metricsStore := new(MockMetricsStore)
+	profileStore := new(MockProfileStore)
+	scorer := new(MockScorer)
+	credentialLister := new(MockCredentialLister)
+
+	credentialLister.On("ListActiveCredentials", ctx).Return([]int64{1, 2}, nil)
+	startOfDay := testDate
+	endOfDay := startOfDay.Add(24 * time.Hour)
+	metricsStore.On("GetSnapshotsByDateRange", ctx, int64(1), startOfDay, endOfDay).
+		Return([]*providerprofile.MetricSnapshot(nil), assert.AnError)
+	metricsStore.On("GetSnapshotsByDateRange", ctx, int64(2), startOfDay, endOfDay).
+		Return([]*providerprofile.MetricSnapshot{}, nil)
+
+	aggregator := providerprofile.NewDailyAggregator(
+		metricsStore,
+		profileStore,
+		scorer,
+		providerprofile.DefaultWeights(),
+		credentialLister,
+	)
+
+	err := aggregator.AggregateDailyProfiles(ctx, testDate)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "credential 1")
 	profileStore.AssertNotCalled(t, "SaveDailyProfile")
 }
