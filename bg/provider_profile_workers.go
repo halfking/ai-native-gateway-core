@@ -18,6 +18,7 @@ package bg
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"time"
 
@@ -263,4 +264,131 @@ func (c *ProfileCleaner) cleanup(ctx context.Context) {
 	}
 
 	slog.Info("provider profile cleanup completed", "deleted_rows", deleted)
+}
+
+// ProfileAlertWorker runs alert evaluation + auto disable/enable daily,
+// after the aggregator. It evaluates both active credentials (for disable
+// conditions) and currently auto-disabled credentials (for recovery conditions).
+type ProfileAlertWorker struct {
+	engine   *providerprofile.AlertEngine
+	lister   *providerprofile.GatewayCredentialLister
+	db       *pgxpool.Pool
+	interval time.Duration
+	cancel   context.CancelFunc
+	done     chan struct{}
+}
+
+// NewProfileAlertWorker creates the alert worker.
+func NewProfileAlertWorker(db *pgxpool.Pool, interval time.Duration) *ProfileAlertWorker {
+	profileStore := providerprofile.NewPGProfileStore(db)
+	profileSource := providerprofile.NewPGProfileSource(profileStore)
+	alertStore := providerprofile.NewPGAlertStore(db)
+	actor := providerprofile.NewPGCredentialActor(db)
+	lister := providerprofile.NewGatewayCredentialLister(db)
+	engine := providerprofile.NewAlertEngine(profileSource, alertStore, actor, providerprofile.DefaultAlertConfig())
+	return &ProfileAlertWorker{engine: engine, lister: lister, db: db, interval: interval, done: make(chan struct{})}
+}
+
+// Start begins the alert loop.
+func (w *ProfileAlertWorker) Start() {
+	ctx, cancel := context.WithCancel(context.Background())
+	w.cancel = cancel
+	go w.run(ctx)
+	slog.Info("provider profile alert worker started", "interval", w.interval)
+}
+
+// Stop gracefully stops.
+func (w *ProfileAlertWorker) Stop() {
+	if w.cancel != nil {
+		w.cancel()
+		<-w.done
+		slog.Info("provider profile alert worker stopped")
+	}
+}
+
+func (w *ProfileAlertWorker) run(ctx context.Context) {
+	defer close(w.done)
+	ticker := time.NewTicker(w.interval)
+	defer ticker.Stop()
+
+	// Delay the first run a few minutes so the aggregator's start-of-day run
+	// has a chance to populate provider_profile_daily before we evaluate.
+	select {
+	case <-ctx.Done():
+		return
+	case <-time.After(2 * time.Minute):
+	}
+	w.evaluate(ctx)
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			w.evaluate(ctx)
+		}
+	}
+}
+
+func (w *ProfileAlertWorker) evaluate(ctx context.Context) {
+	evalCtx, cancel := context.WithTimeout(ctx, 10*time.Minute)
+	defer cancel()
+
+	// Active credentials — candidates for auto-disable.
+	activeIDs, err := w.lister.ListActiveCredentials(evalCtx)
+	if err != nil {
+		slog.Error("provider profile alert: list active credentials failed", "error", err)
+		return
+	}
+	// Currently auto-disabled credentials — candidates for auto-enable (recovery).
+	// These are NOT in ListActiveCredentials (which filters lifecycle_status='active').
+	disabledIDs, err := w.listAutoDisabledCredentials(evalCtx)
+	if err != nil {
+		slog.Warn("provider profile alert: list auto-disabled credentials failed", "error", err)
+	} else {
+		activeIDs = append(activeIDs, disabledIDs...)
+	}
+
+	var disabled, enabled, alerted int
+	for _, credID := range activeIDs {
+		res, err := w.engine.EvaluateCredential(evalCtx, credID)
+		if err != nil {
+			slog.Warn("provider profile alert: evaluate failed", "credential_id", credID, "error", err)
+			continue
+		}
+		switch res.Action {
+		case "disabled":
+			disabled++
+		case "enabled":
+			enabled++
+		}
+		alerted += len(res.Alerts)
+	}
+	slog.Info("provider profile alert evaluation completed",
+		"credentials_evaluated", len(activeIDs), "disabled", disabled, "enabled", enabled, "alerts_emitted", alerted)
+}
+
+// listAutoDisabledCredentials returns credential ids that were auto-disabled
+// (lifecycle_status='disabled' AND manual_disabled=false AND auto_disabled_at IS NOT NULL),
+// so the alert engine can evaluate them for recovery.
+func (w *ProfileAlertWorker) listAutoDisabledCredentials(ctx context.Context) ([]int64, error) {
+	rows, err := w.db.Query(ctx, `
+		SELECT id FROM credentials
+		WHERE lifecycle_status = 'disabled'
+		  AND manual_disabled = false
+		  AND auto_disabled_at IS NOT NULL
+		ORDER BY id`)
+	if err != nil {
+		return nil, fmt.Errorf("query auto-disabled credentials: %w", err)
+	}
+	defer rows.Close()
+	var ids []int64
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			return nil, fmt.Errorf("scan credential id: %w", err)
+		}
+		ids = append(ids, id)
+	}
+	return ids, rows.Err()
 }
