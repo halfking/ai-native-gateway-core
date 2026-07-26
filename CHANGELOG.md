@@ -7,10 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased] - 2026-07-26
 
-### Fixed
+### Added
 
-- **探针自愈：业务请求成功后清除 node_probe_state 门控** (2026-07-26): `streaming executor` 成功路径新增 `NodeProbeHealthy` 回调，调用 `bg.MarkNodeProbeHealthy` 清除 `node_probe_state.last_direct_ok=FALSE`，防止瞬时探针超时永久排除健康凭据。同时探针 HTTP timeout 15s→30s，减少 NVIDIA NIM 冷启动等慢 endpoint 的探测误报。详见 [docs/changelogs/2026-07-26-probe-heal-health-checker-fix.md](docs/changelogs/2026-07-26-probe-heal-health-checker-fix.md).
-- **路由健康检查 `credential_active_not_routable` 查询修复** (2026-07-26): 查询引用了不存在的 `c.name`（实际为 `c.label`）和 `c.provider_name`，自 credentials 表列重命名后持续崩溃。修复：`c.name` → `c.label`，`c.provider_name` → `JOIN providers p ON p.id = c.provider_id` 并使用 `p.display_name`。
+- **智能体客户端类型语义检测 + 可扩展模式注册表** (2026-07-26):
+  - `RegisterAgentPattern(name, patterns...)` 运行时注册自定义系统提示语义匹配模式，并发安全，无需改源码即可扩展新 Agent 识别
+  - `DetectAgentFromSystemPrompt(systemPrompt)` 从系统提示词中识别智能体（zcode/opencode/codex/claude-code/cursor/vscode），优先级严格按名称特定性排序
+  - `EnrichAgentNameFromSystemPrompt(headerName, systemPrompt)` 合并 header 检测 + 系统提示词语义兜底，供 session 级 `agent_name` 二次 enrich
+  - `extractClientTypeWithPrompt(r, systemPrompt)` 在 auto-route 三处 call site 替代原 `extractClientType(r)`，当 header 归类为 `api`/`bot` 时用系统提示词语义兜底修正为智能体类型
+  - 补齐 opencode/zcode/codex 到 `ExtractAgentName` / `ExtractAgentType` / `isIDEClient` / `extractClientType` 的 User-Agent 匹配
+  - 20 个新增测试覆盖语义检测、注册表、并发安全、空值边界
+  - 详见 [docs/changelogs/2026-07-26-agent-client-type-semantic.md](docs/changelogs/2026-07-26-agent-client-type-semantic.md)
+
+### Fixed
 
 ### Changed
 
