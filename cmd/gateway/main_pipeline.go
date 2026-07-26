@@ -719,7 +719,14 @@ func v2DispatchHandler(deps *v2DispatchDeps, fallback http.Handler) http.Handler
 		// otherwise collapse every retry into a single audit row.
 		requestID := r.Header.Get("X-Request-Id")
 		if requestID == "" {
+			// 2026-07-27 (G-ID-2): when the middleware chain is bypassed
+			// (e.g. direct unit-test dispatch), synthesize a request id AND
+			// write it back onto the request header. Previously the fallback
+			// value lived only in env.RequestID while the downstream
+			// chatHandler re-read the (still-empty) header and generated a
+			// different id — splitting one request across two audit trails.
 			requestID = fmt.Sprintf("v2pipe-%d", time.Now().UnixNano())
+			r.Header.Set("X-Request-Id", requestID)
 		}
 		env := domain.NewRequestEnvelope(ctx, &domain.RequestEnvelope{
 			RequestID: requestID,
@@ -734,7 +741,17 @@ func v2DispatchHandler(deps *v2DispatchDeps, fallback http.Handler) http.Handler
 				IsStream: false, // updated below after body sniff
 			},
 		})
-		env.SessionID = r.Header.Get("X-Session-ID")
+		// 2026-07-27 (G-ID-1): read the gateway-canonical session header.
+		// The prior code read "X-Session-ID" only, which (because Header.Get
+		// is case-insensitive) happened to match the legacy "X-Session-Id"
+		// but never the canonical "X-Gw-Session-Id". As a result env.SessionID
+		// — and the analysis_events row published below — lost the gateway
+		// session id whenever the v2 pipeline was enabled. Mirror the priority
+		// used by streaming.extractSessionIDFromHeaders.
+		env.SessionID = r.Header.Get("X-Gw-Session-Id")
+		if env.SessionID == "" {
+			env.SessionID = r.Header.Get("X-Session-Id")
+		}
 
 		// Best-effort body sniff for metadata. chatHandler will
 		// re-parse the full body for its own protocol decoding.
