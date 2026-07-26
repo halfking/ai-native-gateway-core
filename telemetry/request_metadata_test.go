@@ -572,3 +572,106 @@ func TestEnrichAgentNameFromSystemPrompt(t *testing.T) {
 		})
 	}
 }
+
+// 2026-07-27: 补齐 8 类智能体语义识别 (合并自 admin/auto_title_generator.go)
+// + 增加 bare "you are claude" 兜底模式。
+func TestDetectAgentFromSystemPrompt_ExtendedAgents(t *testing.T) {
+	tests := []struct {
+		name   string
+		prompt string
+		want   string
+	}{
+		// 之前默认模式缺失的 8 类智能体
+		{"roocode", "You are RooCode, an AI-powered coding assistant.", "roocode"},
+		{"roocode hyphen", "You are roo-code, similar to Roo Code VS Code extension.", "roocode"},
+		{"windsurf", "You are Windsurf Editor AI. I help you write code in Cascade.", "windsurf"},
+		{"zed editor", "You are Zed Editor, a high-performance code editor.", "zed"},
+		{"github copilot", "You are GitHub Copilot. You are an AI pair programmer.", "copilot"},
+		{"cline", "You are Cline, an AI coding assistant that can use your CLI.", "cline"},
+		{"aider", "You are aider, an AI pair programmer that works with git.", "aider"},
+		{"continue dev", "You are Continue, an open-source AI code assistant.", "continue"},
+		{"kiro", "You are Kiro, an AI-powered IDE that helps you ship faster.", "kiro"},
+		// bare Claude 兜底
+		{"bare Claude (no agent)", "You are Claude, an AI assistant made by Anthropic.", "claude"},
+		// 优先级:具体智能体优先于 bare Claude
+		{"Claude Code wins over bare Claude", "You are Claude Code, but you can also be invoked as just Claude.", "claude-code"},
+		// 优先级:ZCode 优先于 Claude Code
+		{"ZCode wins over Claude Code", "You are ZCode (Claude Code) — based on Claude Code by Anthropic.", "zcode"},
+		// 不匹配
+		{"no match generic", "You are a helpful assistant.", ""},
+		{"no match empty", "Random text.", ""},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := DetectAgentFromSystemPrompt(tt.prompt)
+			if got != tt.want {
+				t.Errorf("DetectAgentFromSystemPrompt() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestExtractSystemPromptFromBody(t *testing.T) {
+	tests := []struct {
+		name string
+		body []byte
+		path string
+		want string
+	}{
+		{
+			name: "empty body",
+			body: nil,
+			want: "",
+		},
+		{
+			name: "OpenAI chat — system message as string",
+			body: []byte(`{"model":"gpt-4","messages":[{"role":"system","content":"You are a helpful assistant."}]}`),
+			want: "You are a helpful assistant.",
+		},
+		{
+			name: "OpenAI chat — multiple system messages concatenated",
+			body: []byte(`{"model":"gpt-4","messages":[{"role":"system","content":"You are Claude Code."},{"role":"system","content":"Be concise."}]}`),
+			want: "You are Claude Code.\nBe concise.",
+		},
+		{
+			name: "Anthropic messages — top-level system field",
+			body: []byte(`{"model":"claude-opus-4-1","system":"You are Claude Code by Anthropic.","messages":[]}`),
+			want: "You are Claude Code by Anthropic.",
+		},
+		{
+			name: "OpenAI responses — instructions field",
+			body: []byte(`{"model":"gpt-4","instructions":"You are opencode, an interactive CLI.","input":[]}`),
+			want: "You are opencode, an interactive CLI.",
+		},
+		{
+			name: "no system field at all",
+			body: []byte(`{"model":"gpt-4","messages":[{"role":"user","content":"hi"}]}`),
+			want: "",
+		},
+		{
+			name: "not JSON",
+			body: []byte(`not-json`),
+			want: "",
+		},
+		{
+			name: "empty system string",
+			body: []byte(`{"model":"gpt-4","system":"","messages":[]}`),
+			want: "",
+		},
+		{
+			name: "whitespace-only system",
+			body: []byte(`{"model":"gpt-4","system":"   ","messages":[]}`),
+			want: "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := ExtractSystemPromptFromBody(tt.body, tt.path)
+			if got != tt.want {
+				t.Errorf("ExtractSystemPromptFromBody() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}

@@ -3,6 +3,7 @@ package telemetry
 
 import (
 	"crypto/sha256"
+	"encoding/json"
 	"fmt"
 	"net"
 	"net/http"
@@ -30,14 +31,32 @@ var (
 
 func defaultAgentPatterns() []agentPatternEntry {
 	return []agentPatternEntry{
-		// Specific agent names first (they may co-occur with generic ones in
-		// prompts like "You are ZCode (Claude Code)" or "OpenCode powered by Claude").
+		// 2026-07-27: 补齐 8 类智能体语义识别 (合并自 admin/auto_title_generator.go)
+		// + 增加 roocode/windsurf/zed/copilot/cline/aider/continue/kiro 模式
+		// + 增加 bare "you are claude" 兜底。
+		//
+		// Order matters: more-specific patterns first. Generic phrases like
+		// "you are claude" can co-occur with "you are claude code" / "you are
+		// opencode" / "you are claude in zcode", so concrete agent names go
+		// before generic ones. Each pattern is lower-cased at match time.
 		{"zcode", []string{"zcode"}},
 		{"opencode", []string{"opencode"}},
-		{"codex", []string{"openai codex", "codex cli"}},
-		{"claude-code", []string{"claude code", "claude-code"}},
-		{"cursor", []string{"you are an ai assistant in cursor", "cursor ide"}},
+		{"codex", []string{"openai codex", "codex cli", "you are codex"}},
+		{"claude-code", []string{"claude code", "claude-code", "you are claude code"}},
+		{"roocode", []string{"roocode", "roo-code", "you are roo code", "you are roocode"}},
+		{"windsurf", []string{"windsurf", "you are windsurf"}},
+		{"zed", []string{"zed editor", "you are zed"}},
+		{"copilot", []string{"github copilot", "you are copilot", "copilot cli"}},
+		{"cline", []string{"you are cline", "cline cli", "cline coding"}},
+		{"aider", []string{"you are aider", "aider chat"}},
+		{"continue", []string{"you are continue", "continue dev"}},
+		{"kiro", []string{"you are kiro", "kiro ide"}},
+		{"cursor", []string{"you are an ai assistant in cursor", "cursor ide", "you are cursor"}},
 		{"vscode", []string{"visual studio code", "vscode"}},
+		// Bare Claude / Anthropic fallback — only fires when no more-specific
+		// agent above matched. Useful for custom Claude-API clients that embed
+		// Claude as the model and self-identify as plain Claude.
+		{"claude", []string{"you are claude"}},
 	}
 }
 
@@ -100,7 +119,7 @@ func DetectAgentFromSystemPrompt(systemPrompt string) string {
 type RequestMetadata struct {
 	// ─── Caller Information ───
 	ClientIP           string // Real IP extracted from headers
-	ClientForwardedFor string // Full X-Forwarded-For chain
+	ClientForwardedFor string // Full X-Forwarded-For header chain
 	AgentName          string // Agent/application name (e.g., claude-code, opencode)
 	AgentType          string // Agent type: web/mobile/cli/api/bot/internal
 	APIKeyFingerprint  string // First 8 chars of API key (masked)
@@ -348,4 +367,108 @@ func EnrichAgentNameFromSystemPrompt(headerName, systemPrompt string) string {
 		return name
 	}
 	return ""
+}
+
+// ExtractSystemPromptFromBody pulls the system-prompt text out of an
+// already-buffered JSON request body. It supports the three shapes the
+// gateway accepts:
+//
+//   - OpenAI /v1/chat/completions: messages[].role == "system"
+//   - Anthropic /v1/messages:       top-level "system" string
+//   - OpenAI /v1/responses:         top-level "instructions" string
+//
+// The path argument is informational (used to disambiguate when the body
+// shape doesn't carry an obvious hint). Pass "" when ambiguous — the
+// function will try each known field.
+//
+// Returns "" if body is empty, not JSON, or no system-prompt field is
+// present. The function is best-effort: malformed input is treated as
+// "no system prompt" rather than an error, so callers can safely fall
+// back to header-only detection.
+//
+// 2026-07-27: Added so that fillAttemptMeta can recover the agent name
+// from the system prompt when the User-Agent doesn't expose it (most
+// real-world AI agent traffic shows up as "unknown" otherwise).
+func ExtractSystemPromptFromBody(body []byte, path string) string {
+	if len(body) == 0 {
+		return ""
+	}
+	// Try the three known shapes in priority order. For Anthropic and
+	// Responses, the field is a top-level string. For OpenAI chat, it's
+	// nested in the messages array. We attempt all three — each parser is
+	// cheap and the body is small (<= ~1 MB).
+	if sys := extractAnthropicSystem(body); sys != "" {
+		return sys
+	}
+	if sys := extractResponsesInstructions(body); sys != "" {
+		return sys
+	}
+	if sys := extractChatSystemMessages(body); sys != "" {
+		return sys
+	}
+	_ = path // reserved for future path-driven disambiguation
+	return ""
+}
+
+func extractAnthropicSystem(body []byte) string {
+	var s struct {
+		System string `json:"system"`
+	}
+	if err := json.Unmarshal(body, &s); err == nil && strings.TrimSpace(s.System) != "" {
+		return s.System
+	}
+	return ""
+}
+
+func extractResponsesInstructions(body []byte) string {
+	var s struct {
+		Instructions string `json:"instructions"`
+	}
+	if err := json.Unmarshal(body, &s); err == nil && strings.TrimSpace(s.Instructions) != "" {
+		return s.Instructions
+	}
+	return ""
+}
+
+func extractChatSystemMessages(body []byte) string {
+	var s struct {
+		Messages json.RawMessage `json:"messages"`
+	}
+	if err := json.Unmarshal(body, &s); err != nil || len(s.Messages) == 0 {
+		return ""
+	}
+	var msgs []struct {
+		Role    string          `json:"role"`
+		Content json.RawMessage `json:"content"`
+	}
+	if err := json.Unmarshal(s.Messages, &msgs); err != nil {
+		return ""
+	}
+	var buf strings.Builder
+	for _, m := range msgs {
+		if !strings.EqualFold(m.Role, "system") {
+			continue
+		}
+		// Content may be a string or an array of parts; concatenate either way.
+		var str string
+		if err := json.Unmarshal(m.Content, &str); err == nil {
+			if buf.Len() > 0 {
+				buf.WriteByte('\n')
+			}
+			buf.WriteString(str)
+			continue
+		}
+		var parts []struct {
+			Text string `json:"text"`
+		}
+		if err := json.Unmarshal(m.Content, &parts); err == nil {
+			for _, p := range parts {
+				if buf.Len() > 0 {
+					buf.WriteByte('\n')
+				}
+				buf.WriteString(p.Text)
+			}
+		}
+	}
+	return buf.String()
 }

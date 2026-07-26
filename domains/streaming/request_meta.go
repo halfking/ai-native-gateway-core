@@ -52,9 +52,39 @@ type requestAttemptMeta struct {
 	ProjectID       string                  // X-Gw-Project-Id
 	SourceChannel   string                  // web/api/mcp/agent
 	FingerprintRaw  map[string]any          // 原始指纹字段（取证原材）
+
+	// ─── 智能体兜底识别（2026-07-27）───
+	// 由 EnsureCaptured 从已缓冲的 body 解析，fillAttemptMeta 阶段用作
+	// DetectAgentFromSystemPrompt 的输入，覆盖 User-Agent 不暴露身份的
+	// Claude Code / OpenCode / Codex / Cursor / RooCode / Windsurf / Zed /
+	// Copilot / Cline / Aider / Continue / Kiro / ZCode 等智能体。
+	SystemPrompt string
 }
 
 // bufferRequestBody reads the body into memory and replaces r.Body so later
+// shouldOverrideAgentName reports whether the header-derived AgentName
+// is weak enough that a system-prompt-based override should win.
+//
+// "unknown" (no UA match) and the generic client libraries (Go-http-client
+// / python-requests / curl / postman / insomnia) are considered weak —
+// they don't tell us anything about the AI agent using them, while the
+// system prompt almost always does (agents self-identify in their first
+// system message). Specific agent matches (claude-code / opencode /
+// cursor / …) are kept as-is because they're more reliable than a
+// prompt substring match.
+func shouldOverrideAgentName(headerName, systemPrompt string) bool {
+	if strings.TrimSpace(systemPrompt) == "" {
+		return false
+	}
+	switch headerName {
+	case "", "unknown",
+		"go-client", "python-client",
+		"curl", "postman", "insomnia":
+		return true
+	}
+	return false
+}
+
 // handlers can re-read without losing bytes.
 func bufferRequestBody(r *http.Request, limit int) ([]byte, error) {
 	if r == nil || r.Body == nil {
@@ -186,6 +216,25 @@ func (h *ChatHandler) fillAttemptMeta(r *http.Request, keyInfo *authentication.K
 	}
 	if meta.AgentName == "" {
 		meta.AgentName = telemetry.ExtractAgentName(r)
+	}
+	// 2026-07-27: 智能体兜底识别 — 若 header 路径拿到 "unknown",回退到
+	// system prompt 语义匹配 (telemetry.DetectAgentFromSystemPrompt)。
+	// 这样 Claude Code / OpenCode / Codex / Cursor / RooCode / Windsurf / Zed /
+	// Copilot / Cline / Aider / Continue / Kiro / ZCode 等自报身份的智能体,即使
+	// 没在 User-Agent 里暴露身份也能被正确归类,统计面板才不会把它们全归为
+	// "unknown"。meta.SystemPrompt 由 EnsureCaptured 在 body 缓冲后填充。
+	// 2026-07-27: 智能体兜底识别 — 当 header 路径拿到 "unknown" 或低质量
+	// 通用名 (go-client/python-client/curl/postman/insomnia) 时,回退到
+	// system prompt 语义匹配 (telemetry.DetectAgentFromSystemPrompt)。
+	// 这些通用 UA 是因为 Go/Python 的 HTTP 客户端库本身不带智能体身份,
+	// 但 system prompt 里 "You are Claude Code / OpenCode / Codex / Cursor
+	// / RooCode / Windsurf / Zed / Copilot / Cline / Aider / Continue / Kiro
+	// / ZCode" 才是真实身份信号。直接覆盖低质量名,统计面板才能把真实
+	// 智能体从客户端库里分离出来。
+	if shouldOverrideAgentName(meta.AgentName, meta.SystemPrompt) {
+		if name := telemetry.DetectAgentFromSystemPrompt(meta.SystemPrompt); name != "" {
+			meta.AgentName = name
+		}
 	}
 	if meta.AgentType == "" {
 		meta.AgentType = telemetry.ExtractAgentType(r)
