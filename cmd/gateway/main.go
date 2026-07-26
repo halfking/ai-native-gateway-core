@@ -2095,6 +2095,8 @@ func main() {
 	var taxonomySync *bg.TaxonomySync
 	var partitionManager *bg.PartitionManager
 	var selfCheckWorker *bg.SelfCheckWorker
+	// Provider Profile System (Phase 1, 2026-07-26)
+	var profileWorkers *ProviderProfileWorkers
 	// peakCollector / weeklyPeakRollup / slotSuggester are declared
 	// at the top of main() so the executor can reference them.
 
@@ -2119,6 +2121,14 @@ func main() {
 		routingHealthChecker := bg.NewRoutingHealthChecker(dbConn.Pool())
 		routingHealthChecker.Start(context.Background())
 		slog.Info("CHECKPOINT: routingHealthChecker started")
+
+		// Provider Profile System (Phase 1, 2026-07-26)
+		// Monitors provider quality across 7 dimensions with automated collection,
+		// aggregation, and scoring. Feature-flagged via provider_profile.enabled.
+		profileWorkers = initProviderProfile(dbConn.Pool())
+		if profileWorkers != nil {
+			slog.Info("CHECKPOINT: provider profile system started")
+		}
 
 		// Self-check worker — runs periodic ping + tool-call smoke tests
 		// against key models to verify gateway availability (2026-07-12).
@@ -4282,6 +4292,8 @@ func main() {
 				healthAutoRecover.Stop()
 			}
 		}
+		// Provider Profile System shutdown (Phase 1, 2026-07-26)
+		stopProviderProfile(profileWorkers)
 		// Drain the Memora sink queue on shutdown so in-flight writes
 		// are not lost. Bounded to 5s so shutdown is not held hostage
 		// to a slow Memora.
