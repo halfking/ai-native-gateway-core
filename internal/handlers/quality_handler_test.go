@@ -64,9 +64,9 @@ func TestHandleGetProviderQuality_Success(t *testing.T) {
 		WillReturnRows(sqlmock.NewRows([]string{"display_name"}).
 			AddRow("Anthropic"))
 
-	// Mock 质量画像查询
+	// Mock 质量画像查询 (BRIDGE: reads from provider_profile_daily, model_name ignored)
 	now := time.Now()
-	mock.ExpectQuery(`SELECT.*FROM provider_quality_profiles.*WHERE provider_id = \$1.*ORDER BY quality_score DESC`).
+	mock.ExpectQuery(`SELECT.*FROM provider_profile_daily.*WHERE provider_id = \$1.*ORDER BY profile_date DESC, total_score DESC`).
 		WithArgs(int64(1)).
 		WillReturnRows(sqlmock.NewRows([]string{
 			"model_name", "quality_score", "quality_grade",
@@ -152,9 +152,9 @@ func TestHandleGetRanking_Success(t *testing.T) {
 	handler := NewQualityHandler(db, nil)
 
 	now := time.Now()
-	// Mock 排行榜查询
-	mock.ExpectQuery(`SELECT.*FROM provider_quality_profiles p.*LEFT JOIN providers pr.*ORDER BY.*LIMIT`).
-		WithArgs("", 0.0, 20).
+	// Mock 排行榜查询 (BRIDGE: reads from provider_profile_daily, model_name ignored)
+	mock.ExpectQuery(`SELECT.*FROM provider_profile_daily d.*LEFT JOIN providers pr.*ORDER BY.*LIMIT`).
+		WithArgs(0.0, 20).
 		WillReturnRows(sqlmock.NewRows([]string{
 			"provider_id", "provider_name", "model_name", "quality_score", "quality_grade",
 			"availability_score", "performance_score", "updated_at",
@@ -186,7 +186,9 @@ func TestHandleGetRanking_Success(t *testing.T) {
 	}
 }
 
-// TestHandleGetProviderQuality_WithModelFilter 测试按模型名称过滤
+// TestHandleGetProviderQuality_WithModelFilter 测试 model_name 过滤参数。
+// BRIDGE: provider_profile_daily 数据源无 model 列，model_name 参数被显式忽略，
+// 查询退化为不带模型过滤的供应商级汇总（与 Success 用例相同的单条 SQL）。
 func TestHandleGetProviderQuality_WithModelFilter(t *testing.T) {
 	db, mock, err := sqlmock.New()
 	if err != nil {
@@ -202,10 +204,10 @@ func TestHandleGetProviderQuality_WithModelFilter(t *testing.T) {
 		WillReturnRows(sqlmock.NewRows([]string{"display_name"}).
 			AddRow("Anthropic"))
 
-	// Mock 质量画像查询（带模型过滤）
+	// Mock 质量画像查询（model_name 参数被忽略，查询不带 AND model_name = $2）
 	now := time.Now()
-	mock.ExpectQuery(`SELECT.*FROM provider_quality_profiles.*WHERE provider_id = \$1 AND model_name = \$2`).
-		WithArgs(int64(1), "claude-3-opus").
+	mock.ExpectQuery(`SELECT.*FROM provider_profile_daily.*WHERE provider_id = \$1.*ORDER BY profile_date DESC, total_score DESC`).
+		WithArgs(int64(1)).
 		WillReturnRows(sqlmock.NewRows([]string{
 			"model_name", "quality_score", "quality_grade",
 			"availability_score", "performance_score", "stability_score", "cost_efficiency_score",
@@ -252,8 +254,8 @@ func TestHandleGetProviderQuality_NoQualityData(t *testing.T) {
 		WillReturnRows(sqlmock.NewRows([]string{"display_name"}).
 			AddRow("Test Provider"))
 
-	// Mock 质量画像查询（无数据）
-	mock.ExpectQuery(`SELECT.*FROM provider_quality_profiles.*WHERE provider_id = \$1.*ORDER BY quality_score DESC`).
+	// Mock 质量画像查询（无数据，BRIDGE: reads from provider_profile_daily）
+	mock.ExpectQuery(`SELECT.*FROM provider_profile_daily.*WHERE provider_id = \$1.*ORDER BY profile_date DESC, total_score DESC`).
 		WithArgs(int64(1)).
 		WillReturnRows(sqlmock.NewRows([]string{
 			"model_name", "quality_score", "quality_grade",
@@ -328,9 +330,9 @@ func TestHandleGetRanking_WithFilters(t *testing.T) {
 	handler := NewQualityHandler(db, nil)
 
 	now := time.Now()
-	// Mock 排行榜查询（带过滤）
-	mock.ExpectQuery(`SELECT.*FROM provider_quality_profiles p.*LEFT JOIN providers pr.*ORDER BY.*LIMIT`).
-		WithArgs("claude-3-opus", 90.0, 10).
+	// Mock 排行榜查询（BRIDGE: model_name 被忽略，args 仅为 minScore, limit）
+	mock.ExpectQuery(`SELECT.*FROM provider_profile_daily d.*LEFT JOIN providers pr.*ORDER BY.*LIMIT`).
+		WithArgs(90.0, 10).
 		WillReturnRows(sqlmock.NewRows([]string{
 			"provider_id", "provider_name", "model_name", "quality_score", "quality_grade",
 			"availability_score", "performance_score", "updated_at",
@@ -399,9 +401,9 @@ func TestHandleGetRanking_EmptyResult(t *testing.T) {
 
 	handler := NewQualityHandler(db, nil)
 
-	// Mock 排行榜查询（无结果）
-	mock.ExpectQuery(`SELECT.*FROM provider_quality_profiles p.*LEFT JOIN providers pr.*ORDER BY.*LIMIT`).
-		WithArgs("non-existent-model", 99.0, 20).
+	// Mock 排行榜查询（无结果，BRIDGE: model_name 被忽略，limit 默认 20）
+	mock.ExpectQuery(`SELECT.*FROM provider_profile_daily d.*LEFT JOIN providers pr.*ORDER BY.*LIMIT`).
+		WithArgs(99.0, 20).
 		WillReturnRows(sqlmock.NewRows([]string{
 			"provider_id", "provider_name", "model_name", "quality_score", "quality_grade",
 			"availability_score", "performance_score", "updated_at",
@@ -446,7 +448,7 @@ func TestHandleGetSummary_Success(t *testing.T) {
 	handler := NewQualityHandler(db, nil)
 	now := time.Now()
 
-	mock.ExpectQuery(`SELECT DISTINCT ON \(p\.provider_id\).*FROM provider_quality_profiles p.*ORDER BY p\.provider_id`).
+	mock.ExpectQuery(`SELECT DISTINCT ON \(d\.provider_id\).*FROM provider_profile_daily d.*LEFT JOIN providers pr.*ORDER BY d\.provider_id`).
 		WillReturnRows(sqlmock.NewRows([]string{
 			"provider_id", "provider_name", "model_name", "quality_score", "quality_grade",
 			"availability_score", "performance_score", "total_requests_24h", "updated_at",
