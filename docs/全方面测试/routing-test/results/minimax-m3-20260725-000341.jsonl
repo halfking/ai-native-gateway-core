@@ -1,0 +1,15 @@
+{"request_id":"9fbf20e0-f182-40c2-873d-04f417224ef7","session_id":"routing-test-bf2c8346-cc7d-4279-a207-484a9d5a8584-04","model":"minimax-m3","round":1,"status":200,"latency":69998000,"pending":false}
+{"request_id":"9c0ecad4-2615-4dba-bbfc-6ca0bf0ba582","session_id":"routing-test-c5d15666-cc10-4b0b-ab3d-9308219a6fff-00","model":"minimax-m3","round":1,"status":200,"latency":70836750,"pending":false}
+{"request_id":"348f4188-011e-4ed9-a771-b3bae5e5b75f","session_id":"routing-test-868dbb9b-9d4f-419a-b8c7-cf70efde67b4-01","model":"minimax-m3","round":1,"status":200,"latency":70973083,"pending":false}
+{"request_id":"978d9d37-455a-4c63-9c3a-c30b6106d1ff","session_id":"routing-test-565d7dc8-05c6-47ce-9e27-5a6384203b79-02","model":"minimax-m3","round":1,"status":200,"latency":71233167,"pending":false}
+{"request_id":"3f51bb37-897f-4179-87a6-786317b7c317","session_id":"routing-test-c713ec06-7ac1-4af1-9bef-9d2ffdcba890-03","model":"minimax-m3","round":1,"status":200,"latency":72326459,"pending":false}
+{"request_id":"625adb0a-c65c-4b39-b52d-ea5d1b809bcd","session_id":"routing-test-c713ec06-7ac1-4af1-9bef-9d2ffdcba890-03","model":"minimax-m3","round":2,"status":200,"latency":82932958,"pending":false}
+{"request_id":"6cbde6c6-3590-4e9a-b435-419cb805fc51","session_id":"routing-test-bf2c8346-cc7d-4279-a207-484a9d5a8584-04","model":"minimax-m3","round":2,"status":200,"latency":84308334,"pending":false}
+{"request_id":"bb8a40ed-bbc5-4106-932d-b71ff04033b2","session_id":"routing-test-565d7dc8-05c6-47ce-9e27-5a6384203b79-02","model":"minimax-m3","round":2,"status":200,"latency":85857000,"pending":false}
+{"request_id":"97678a17-1ee3-4a38-96d0-c996494e6c2c","session_id":"routing-test-c713ec06-7ac1-4af1-9bef-9d2ffdcba890-03","model":"minimax-m3","round":3,"status":200,"latency":109487500,"pending":false}
+{"request_id":"6f2632ce-c68d-448b-af73-a80f012e5cce","session_id":"routing-test-bf2c8346-cc7d-4279-a207-484a9d5a8584-04","model":"minimax-m3","round":3,"status":200,"latency":109968542,"pending":false}
+{"request_id":"06f80e20-2927-4bf2-aa9b-bcb25d96aa82","session_id":"routing-test-565d7dc8-05c6-47ce-9e27-5a6384203b79-02","model":"minimax-m3","round":3,"status":200,"latency":113065916,"pending":false}
+{"request_id":"f1843d11-6be9-4e85-9fbd-ccb57c0e8dbc","session_id":"routing-test-c5d15666-cc10-4b0b-ab3d-9308219a6fff-00","model":"minimax-m3","round":2,"status":200,"latency":578745292,"pending":false}
+{"request_id":"39dc674f-da85-424c-a747-25826a64e6b2","session_id":"routing-test-c5d15666-cc10-4b0b-ab3d-9308219a6fff-00","model":"minimax-m3","round":3,"status":200,"latency":61693083,"pending":false}
+{"request_id":"16319872-eb9a-4514-b24a-883c4e6f48e0","session_id":"routing-test-868dbb9b-9d4f-419a-b8c7-cf70efde67b4-01","model":"minimax-m3","round":2,"status":200,"latency":1096699792,"pending":false}
+{"request_id":"28f3e6bd-fcdf-4f04-b6a8-50e45c605072","session_id":"routing-test-868dbb9b-9d4f-419a-b8c7-cf70efde67b4-01","model":"minimax-m3","round":3,"status":200,"latency":64377541,"pending":false}
