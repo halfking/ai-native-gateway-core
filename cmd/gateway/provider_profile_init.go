@@ -10,10 +10,11 @@
 //  5. 配置驱动 — 采集频率等参数从 settings 读取
 //
 // 使用方式：
-//  在 main() 函数的 dbConn != nil 块中调用：
-//    profileWorkers := initProviderProfile(dbConn.Pool())
-//  在 shutdown 序列中调用：
-//    stopProviderProfile(profileWorkers)
+//
+//	在 main() 函数的 dbConn != nil 块中调用：
+//	  profileWorkers := initProviderProfile(dbConn.Pool())
+//	在 shutdown 序列中调用：
+//	  stopProviderProfile(profileWorkers)
 package main
 
 import (
@@ -36,14 +37,14 @@ type ProviderProfileWorkers struct {
 // initProviderProfile initializes the provider profile system
 //
 // Returns nil when:
-//  - pool is nil (no DB mode)
-//  - provider_profile.enabled setting is false
-//  - initialization fails (logged as WARN)
+//   - pool is nil (no DB mode)
+//   - provider_profile.enabled setting is false
+//   - initialization fails (logged as WARN)
 //
 // The system runs 3 background workers:
-//  - ProfileCollector: collects metrics every 2 hours (configurable)
-//  - ProfileAggregator: aggregates daily profiles every day at 4am
-//  - ProfileCleaner: cleans up old metrics every Sunday at 5am
+//   - ProfileCollector: collects metrics every 2 hours (configurable)
+//   - ProfileAggregator: aggregates daily profiles every day at 4am
+//   - ProfileCleaner: cleans up old metrics every Sunday at 5am
 func initProviderProfile(pool *pgxpool.Pool) *ProviderProfileWorkers {
 	if pool == nil {
 		slog.Warn("provider profile: nil pool, system disabled")
@@ -57,9 +58,12 @@ func initProviderProfile(pool *pgxpool.Pool) *ProviderProfileWorkers {
 	}
 
 	// Read configuration from settings
-	collectionInterval := settings.GetPlatformDuration("provider_profile.collection_interval", 2*time.Hour)
-	aggregationInterval := settings.GetPlatformDuration("provider_profile.aggregation_interval", 24*time.Hour)
-	cleanupInterval := settings.GetPlatformDuration("provider_profile.cleanup_interval", 7*24*time.Hour)
+	collectionSeconds := settings.GetPlatformDuration("provider_profile.collection_interval", int64((2*time.Hour)/time.Second))
+	aggregationSeconds := settings.GetPlatformDuration("provider_profile.aggregation_interval", int64((24*time.Hour)/time.Second))
+	cleanupSeconds := settings.GetPlatformDuration("provider_profile.cleanup_interval", int64((7*24*time.Hour)/time.Second))
+	collectionInterval := time.Duration(collectionSeconds) * time.Second
+	aggregationInterval := time.Duration(aggregationSeconds) * time.Second
+	cleanupInterval := time.Duration(cleanupSeconds) * time.Second
 
 	// Create workers
 	collector := bg.NewProfileCollector(pool, collectionInterval)
