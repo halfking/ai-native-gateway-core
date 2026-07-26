@@ -10,6 +10,18 @@ import (
 	"github.com/redis/go-redis/v9"
 )
 
+func requestIDFromDimensionQueueMember(member string) string {
+	if member == "" {
+		return ""
+	}
+	if strings.HasPrefix(member, "{") {
+		if tile, err := unmarshalTileSlim(member); err == nil && tile.RequestID != "" {
+			return tile.RequestID
+		}
+	}
+	return member
+}
+
 // SnapshotFromDimensionQueues builds a snapshot by reading directly from
 // dimension queues rather than reading from the main queue and grouping.
 // This fixes the swim lane flickering issue where high-traffic vendors
@@ -60,13 +72,21 @@ func (s *LiveStreamRedisStore) SnapshotFromDimensionQueues(ctx context.Context, 
 	var allRequests []LiveRequest
 
 	for _, key := range dimKeys {
-		requestIDs, err := s.rdb.ZRevRange(ctx, key, 0, int64(LiveStreamLaneVisibleLimit-1)).Result()
+		// 2026-07-26: dimension queues store slim tile JSON members (see
+		// Record()), while main queues still store bare request ids. Decode
+		// each member before building the request-detail key.
+		members, err := s.rdb.ZRevRange(ctx, key, 0, int64(LiveStreamLaneVisibleLimit-1)).Result()
 		if err != nil {
 			slog.Debug("snapshot: failed to read dimension queue", "key", key, "err", err.Error())
 			continue
 		}
 
-		for _, requestID := range requestIDs {
+		for _, member := range members {
+			requestID := requestIDFromDimensionQueueMember(member)
+			if requestID == "" {
+				continue
+			}
+
 			// Load request detail
 			detailKey := liveStreamGlobalRequestDetailKey(requestID)
 			if !isSuper && tenantID != "" {
@@ -97,10 +117,15 @@ func (s *LiveStreamRedisStore) SnapshotFromDimensionQueues(ctx context.Context, 
 		}
 	}
 
-	// 2026-07-20: Sort ASC by timestamp so grouped[key] inside
-	// buildLiveStreamLanes is also ASC (oldest first, newest at the
-	// tail). lastTiles() then picks the trailing window = "newest N"
-	// consistently across snapshots.
+	// Sort ASC by timestamp so this function's own output — the
+	// first/last_request_ts log fields below — is deterministic across
+	// snapshots regardless of Redis SCAN order.
+	//
+	// 2026-07-26: per-lane display order is NOT set here. buildLiveStreamLanes
+	// sorts each lane DESC (newest first) because that is the contract the
+	// dashboard renders and firstTiles() truncates against. Previously this
+	// ASC order leaked into the lanes, so the 20-tile cap kept the OLDEST
+	// tiles and dropped every newer request.
 	sort.SliceStable(allRequests, func(i, j int) bool {
 		// Ts is RFC3339 — lexicographic compare matches chronological order,
 		// no need to parse to time.Time (which would also be ~10× slower).
