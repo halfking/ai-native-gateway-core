@@ -349,9 +349,10 @@ func StreamAnthropicSSEToOpenAIWithDiagnostics(
 		}
 
 		sseLine := chunk.SerializeOpenAI(chatID, chunkModel, createdAt)
-		if clientWriter.write(sseLine) {
-			diagnosticCollector.observeEmittedChunk(chunk)
-		}
+		// Count converted tool calls as emitted evidence before the write:
+		// a client disconnect must not look like the gateway dropped them.
+		diagnosticCollector.observeEmittedChunk(chunk)
+		clientWriter.write(sseLine)
 
 		if pc != nil {
 			pc.append(sseLine)

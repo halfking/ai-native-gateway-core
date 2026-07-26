@@ -609,8 +609,8 @@ func StreamChatWithPendingCaptureAndDiagnostics(
 				if p == "[DONE]" {
 					upstreamDoneReceived = true
 				}
+				diagnosticCollector.observeEmittedLine(l)
 				if writeClientLine(l) {
-					diagnosticCollector.observeEmittedLine(l)
 					lastSend = time.Now()
 					chunkCount++
 					if capture != nil {
@@ -628,8 +628,8 @@ func StreamChatWithPendingCaptureAndDiagnostics(
 			if pc != nil {
 				pc.append(firstLine)
 			}
+			diagnosticCollector.observeEmittedLine(firstLine)
 			if writeClientLine(firstLine) {
-				diagnosticCollector.observeEmittedLine(firstLine)
 				lastSend = time.Now()
 				chunkCount++ // Count first chunk
 				if capture != nil {
@@ -822,8 +822,8 @@ func StreamChatWithPendingCaptureAndDiagnostics(
 			}
 		}
 
+		diagnosticCollector.observeEmittedLine(line)
 		if writeClientLine(line) {
-			diagnosticCollector.observeEmittedLine(line)
 			lastSend = time.Now()
 			chunkCount++ // Track chunks sent
 			if capture != nil {
