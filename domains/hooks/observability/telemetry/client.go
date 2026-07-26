@@ -100,25 +100,30 @@ const (
 )
 
 type RequestLogEntry struct {
-	Op               RequestLogOp `json:"op,omitempty"`
-	RequestID        string       `json:"request_id"`
-	EventAt          *time.Time   `json:"event_at,omitempty"`
-	TenantID         string       `json:"tenant_id"`
-	ApplicationID    *int         `json:"application_id,omitempty"`
-	APIKeyID         *int         `json:"api_key_id,omitempty"`
-	EndUserID        *string      `json:"end_user_id,omitempty"`
-	ClientModel      *string      `json:"client_model,omitempty"`
-	OutboundModel    *string      `json:"outbound_model,omitempty"`
-	CredentialID     *int         `json:"credential_id,omitempty"`
-	ProviderID       *int         `json:"provider_id,omitempty"`
-	CanonicalID      *int         `json:"canonical_id,omitempty"`
-	ClientProfile    *string      `json:"client_profile,omitempty"`
-	RequestMode      *string      `json:"request_mode,omitempty"`
-	AffinityHit      *bool        `json:"affinity_hit,omitempty"`
-	PromptTokens     *int         `json:"prompt_tokens,omitempty"`
-	CompletionTokens *int         `json:"completion_tokens,omitempty"`
-	CacheReadTokens  *int         `json:"cache_read_tokens,omitempty"`
-	CacheWriteTokens *int         `json:"cache_write_tokens,omitempty"`
+	Op            RequestLogOp `json:"op,omitempty"`
+	RequestID     string       `json:"request_id"`
+	EventAt       *time.Time   `json:"event_at,omitempty"`
+	TenantID      string       `json:"tenant_id"`
+	ApplicationID *int         `json:"application_id,omitempty"`
+	APIKeyID      *int         `json:"api_key_id,omitempty"`
+	EndUserID     *string      `json:"end_user_id,omitempty"`
+	ClientModel   *string      `json:"client_model,omitempty"`
+	OutboundModel *string      `json:"outbound_model,omitempty"`
+	CredentialID  *int         `json:"credential_id,omitempty"`
+	ProviderID    *int         `json:"provider_id,omitempty"`
+	CanonicalID   *int         `json:"canonical_id,omitempty"`
+	// 2026-07-27: 标准/canonical 模型名(全小写),从 models_canonical.canonical_name 提取。
+	// 之前需要每次 JOIN models_canonical 才能拿到标准名,实时请求流的模型筛
+	// 选因此无法直接做低成本的 GROUP BY。现在直接写,过滤 SQL 简单到极致。
+	// NULL 表示 modelResolution 未匹配到 canonical row(走 passthrough)。
+	CanonicalModel   *string `json:"canonical_model,omitempty"`
+	ClientProfile    *string `json:"client_profile,omitempty"`
+	RequestMode      *string `json:"request_mode,omitempty"`
+	AffinityHit      *bool   `json:"affinity_hit,omitempty"`
+	PromptTokens     *int    `json:"prompt_tokens,omitempty"`
+	CompletionTokens *int    `json:"completion_tokens,omitempty"`
+	CacheReadTokens  *int    `json:"cache_read_tokens,omitempty"`
+	CacheWriteTokens *int    `json:"cache_write_tokens,omitempty"`
 	// audit-ir-multimodal (2026-07-13): Multimodal and reasoning token fields
 	ReasoningTokens *int     `json:"reasoning_tokens,omitempty"`
 	ImageTokens     *int     `json:"image_tokens,omitempty"`
@@ -136,8 +141,16 @@ type RequestLogEntry struct {
 	//   "llm"       — extracted from upstream response.usage block
 	//   "estimated" — computed locally from request/response text (fallback)
 	//   ""          — not available (request failed before parsing)
-	UsageSource        *string `json:"usage_source,omitempty"`
-	IdentityHash       *string `json:"identity_hash,omitempty"`
+	UsageSource  *string `json:"usage_source,omitempty"`
+	IdentityHash *string `json:"identity_hash,omitempty"`
+	// 2026-07-27: 客户端感知扩展 — 由 streaming 层 fillAttemptMeta 填充,经
+	// buildEntry / handler.go 复制到此处,主表 INSERT 可持久化。
+	// 之前只在 request_context_attrs 侧表写入,主表永远 NULL,导致
+	// GROUP BY agent_name 统计为 0。本次修复把 4 个字段从 meta 透传到主表。
+	AgentName          *string `json:"agent_name,omitempty"`
+	AgentType          *string `json:"agent_type,omitempty"`
+	ClientProtocol     *string `json:"client_protocol,omitempty"`
+	VirtualClientID    *string `json:"virtual_client_id,omitempty"`
 	StreamFirstChunkMs *int    `json:"stream_first_chunk_ms,omitempty"`
 	StreamChunkCount   *int    `json:"stream_chunk_count,omitempty"`
 	StreamChunksSent   *int    `json:"stream_chunks_sent,omitempty"`
@@ -723,6 +736,8 @@ func (c *Client) insertRequestLog(entry *RequestLogEntry) error {
 			request_id, ts, tenant_id, application_id, api_key_id,
 			end_user_id, client_model, outbound_model,
 			credential_id, provider_id, canonical_id,
+			-- 2026-07-27: 标准模型名(全小写),见 458 迁移。NULL = 没匹配到 canonical row。
+			canonical_model,
 			client_profile, request_mode, affinity_hit,
 			prompt_tokens, completion_tokens,
 			cache_read_tokens, cache_write_tokens,
@@ -770,11 +785,18 @@ func (c *Client) insertRequestLog(entry *RequestLogEntry) error {
 			-- business row and by the probe workers (self_check / node_probe / system_health).
 			client_ip, client_forwarded_for, origin_stage, origin_actor,
 			-- 2026-07-19 (migration 350): routing attempts tracking.
-			routing_attempts, routing_summary
+			routing_attempts, routing_summary,
+			-- 2026-07-27: 客户端感知扩展 (主表 GROUP BY 统计需要)。
+			-- agent_name/agent_type 来自 telemetry.ExtractAgentName + 语义 fallback。
+			-- client_protocol 来自 URL path routing。
+			-- virtual_client_id 来自 identity.BuildIdentityFromRequest。
+			-- 之前这些字段只在侧表 request_context_attrs 写入,主表永远 NULL。
+			agent_name, agent_type, client_protocol, virtual_client_id
 		) VALUES (
 		$1, now(), $2, $3, $4,
 		$5, $6, $7,
 		$8, $9, $10,
+		$11,
 		$11, $12, $13,
 		$14, $15,
 		$16, $17,
@@ -804,7 +826,9 @@ $47,
 		$79::text::jsonb,
 		-- 2026-07-14 (migration 341): client-side origin.
 		$80, $81, $82, $83,
-		$84::text::jsonb, $85
+		$84::text::jsonb, $85,
+			-- 2026-07-27: 客户端感知字段(主表 INSERT 必填)。
+			$86, $87, $88, $89
 		)
 				ON CONFLICT (request_id) DO UPDATE SET
 				ts = EXCLUDED.ts,
@@ -814,6 +838,8 @@ $47,
 			end_user_id = EXCLUDED.end_user_id,
 			client_model = EXCLUDED.client_model,
 			outbound_model = EXCLUDED.outbound_model,
+			-- 2026-07-27: 标准名同步刷新(允许 EXCLUDED 覆盖,让 canonical rename 追溯完整)
+			canonical_model = EXCLUDED.canonical_model,
 			credential_id = EXCLUDED.credential_id,
 			provider_id = EXCLUDED.provider_id,
 			canonical_id = EXCLUDED.canonical_id,
@@ -896,7 +922,13 @@ $47,
 		client_ip           = COALESCE(request_logs_hot.client_ip, EXCLUDED.client_ip),
 		client_forwarded_for = COALESCE(request_logs_hot.client_forwarded_for, EXCLUDED.client_forwarded_for),
 		origin_stage        = COALESCE(request_logs_hot.origin_stage, EXCLUDED.origin_stage),
-		origin_actor        = COALESCE(request_logs_hot.origin_actor, EXCLUDED.origin_actor)
+		origin_actor        = COALESCE(request_logs_hot.origin_actor, EXCLUDED.origin_actor),
+		-- 2026-07-27: 客户端感知字段 — first-write-wins (避免后续 retry / 补写覆盖)
+		-- origin_mw / fillAttemptMeta 阶段提取的真实值。
+		agent_name          = COALESCE(request_logs_hot.agent_name, EXCLUDED.agent_name),
+		agent_type          = COALESCE(request_logs_hot.agent_type, EXCLUDED.agent_type),
+		client_protocol     = COALESCE(request_logs_hot.client_protocol, EXCLUDED.client_protocol),
+		virtual_client_id   = COALESCE(request_logs_hot.virtual_client_id, EXCLUDED.virtual_client_id)
 	`,
 		entry.RequestID,
 		nonEmpty(entry.TenantID, "default"),
@@ -905,6 +937,7 @@ $47,
 		entry.EndUserID,
 		entry.ClientModel,
 		entry.OutboundModel,
+		entry.CanonicalModel,
 		entry.CredentialID,
 		entry.ProviderID,
 		entry.CanonicalID,
@@ -1009,6 +1042,11 @@ $47,
 		// 2026-07-19 (migration 350): routing attempts tracking
 		jsonOrNull(entry.RoutingAttempts),
 		entry.RoutingSummary,
+		// 2026-07-27: 客户端感知字段 ($86-$89,与上面 INSERT 列表对齐)
+		entry.AgentName,
+		entry.AgentType,
+		entry.ClientProtocol,
+		entry.VirtualClientID,
 	)
 	if err != nil {
 		return err

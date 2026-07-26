@@ -1457,7 +1457,7 @@ func (h *ChatHandler) serveWithExecutor(
 	// before field validation. This improves compatibility with various clients.
 	if h.formatDetector != nil && h.formatFixer != nil {
 		var detectedPattern *FormatPattern
-		
+
 		// 1. Try to get cached format from Redis (session-level optimization)
 		if sessionID != "" && h.formatCache != nil {
 			if cached, err := h.formatCache.Get(ctx, sessionID); err == nil && cached != nil {
@@ -1475,24 +1475,24 @@ func (h *ChatHandler) serveWithExecutor(
 				formatCacheTotal.WithLabelValues("miss").Inc()
 			}
 		}
-		
+
 		// 2. If no cache, perform format detection
 		if detectedPattern == nil && h.formatDetector != nil {
 			detectResult := h.formatDetector.Detect(bodyBytes, r.Header)
-			
+
 			if detectResult.Confidence > 0.5 && detectResult.Pattern != nil {
 				detectedPattern = detectResult.Pattern
-				
+
 				// Record metrics
 				formatDetectionTotal.WithLabelValues(detectResult.Pattern.ID, "detect").Inc()
 				formatConfidence.Observe(detectResult.Confidence)
-				
+
 				slog.Info("format detected",
 					"pattern", detectResult.Pattern.ID,
 					"confidence", detectResult.Confidence,
 					"issues", len(detectResult.Issues),
 					"can_fix", detectResult.CanFix)
-				
+
 				// Cache the detected format for future requests
 				if sessionID != "" && h.formatCache != nil {
 					cached := &CachedFormat{
@@ -1514,7 +1514,7 @@ func (h *ChatHandler) serveWithExecutor(
 				}
 			}
 		}
-		
+
 		// 3. Apply format fixes if pattern has known issues
 		if detectedPattern != nil && len(detectedPattern.Fixes) > 0 {
 			fixResult, err := h.formatFixer.Fix(bodyBytes, detectedPattern)
@@ -1525,10 +1525,10 @@ func (h *ChatHandler) serveWithExecutor(
 				for _, fixType := range fixResult.Applied {
 					formatFixAppliedTotal.WithLabelValues(detectedPattern.ID, fixType).Inc()
 				}
-				
+
 				// Use the fixed request body
 				bodyBytes = fixResult.Fixed
-				
+
 				// Re-parse the fixed body
 				if err := json.Unmarshal(bodyBytes, &reqBody); err != nil {
 					slog.Error("failed to parse fixed body", "error", err)
@@ -2309,6 +2309,7 @@ func (h *ChatHandler) serveWithExecutor(
 		requestID, clientModel, outboundForLog, endUser, "chat", keyInfo,
 		clientID.Fingerprint.ClientProfile, identityHash,
 		logCtx.ProviderID, logCtx.CredentialID, canonicalID,
+		canonicalNameFromResolution(modelResolution), // 2026-07-27: 标准模型名
 		bodyBytes, txResult, egressProtocol, isStream,
 		gwSessionID, gwTaskID,
 		logCtx,
@@ -3132,9 +3133,6 @@ func (h *ChatHandler) serveWithExecutor(
 	// executor's actual upstream body (result.RequestBody) as the fallback
 	// so request_logs.outbound_body always reflects what was forwarded to
 	// upstream, regardless of whether compression fired.
-	if logCtx != nil && len(logCtx.OutboundBody) == 0 && len(result.RequestBody) > 0 {
-		logCtx.OutboundBody = result.RequestBody
-	}
 	h.emitTelemetry(auditBuilder.Build(), result, endUser, keyInfo, streamCapture, "chat", txResult, result.InboundBody, result.ResponseBody, logCtx)
 
 	// ── Response Interceptor (2026-06-29, auto-control feature) ─────────
@@ -3517,11 +3515,13 @@ func (h *ChatHandler) emitTelemetry(evt audit.Event, result *executors.ExecuteRe
 		OutboundModel:   strPtr(loggedOutbound),
 		CredentialID:    intPtr(result.Candidate.CredentialID),
 		ProviderID:      intPtr(result.Candidate.ProviderID),
-		ClientProfile:   strPtr(evt.ClientProfile),
-		RequestMode:     strPtr(requestMode),
-		LatencyMs:       intPtr(result.LatencyMs),
-		Success:         true,
-		RequestStatus:   strPtr(telemetry.RequestStatusSuccess),
+		// 2026-07-27: 标准模型名 (canonical_name),见 migration 458。
+		CanonicalModel: strPtr(evt.CanonicalName),
+		ClientProfile:  strPtr(evt.ClientProfile),
+		RequestMode:    strPtr(requestMode),
+		LatencyMs:      intPtr(result.LatencyMs),
+		Success:        true,
+		RequestStatus:  strPtr(telemetry.RequestStatusSuccess),
 		// 2026-06-20: explicitly clear ErrorKind so any stale
 		// error_kind from a prior failed UPDATE attempt for the
 		// same request_id is wiped. The UPSERT also handles this
@@ -3907,6 +3907,9 @@ func (h *ChatHandler) emitTelemetry(evt audit.Event, result *executors.ExecuteRe
 	h.telemetryClient.EmitDecisionLog(dl)
 
 	applyKeyInfoToRequestLog(reqLog, keyInfo)
+	// 2026-07-27: 客户端感知字段 (agent_name/agent_type/client_protocol/virtual_client_id)
+	// 通过 meta 透传到 reqLog,主表 request_logs_hot 也能 GROUP BY 统计。
+	enrichRequestLogFromMeta(reqLog, keyInfo, &logCtx.meta)
 	// v3: merge session compressor outbound fields into the log entry.
 	applySessionCompressorFields(reqLog, logCtx)
 
@@ -4043,25 +4046,25 @@ func buildClientDisconnectProbeEntry(originalRequestID string, r *http.Request, 
 	var endUser *string
 	var requestBody *string
 	var requestPreview *string
-	
+
 	if logCtx != nil {
 		clientModel = logCtx.ClientModel
 		outboundModel = logCtx.OutboundModel
 		providerID = logCtx.ProviderID
 		credentialID = logCtx.CredentialID
-		
+
 		if logCtx.KeyInfo != nil {
 			tenantID = logCtx.KeyInfo.TenantID
 			if logCtx.KeyInfo.ID > 0 {
 				apiKeyID = &logCtx.KeyInfo.ID
 			}
 		}
-		
+
 		// 记录 EndUser (如果有)
 		if logCtx.EndUser != "" {
 			endUser = strPtr(logCtx.EndUser)
 		}
-		
+
 		// 记录请求体 (2026-07-24 fix: 重要！这样可以分析客户端为什么取消/超时)
 		if len(logCtx.Body) > 0 {
 			// 完整请求体（限制大小避免数据库字段溢出）
@@ -4104,7 +4107,7 @@ func buildClientDisconnectProbeEntry(originalRequestID string, r *http.Request, 
 	stage := "probe"
 	eventAt := time.Now().UTC()
 	latencyMs := int(time.Since(logCtx.StartTime).Milliseconds())
-	
+
 	return &telemetry.RequestLogEntry{
 		RequestID:     probeRequestID,
 		EventAt:       &eventAt,
@@ -4132,20 +4135,20 @@ func buildClientDisconnectProbeEntry(originalRequestID string, r *http.Request, 
 // buildRequestPreview 从请求体中提取关键的模型参数和统计信息，用于快速预览
 func buildRequestPreview(body map[string]any) string {
 	preview := make(map[string]any)
-	
+
 	// 提取常见的模型参数
 	paramKeys := []string{
 		"temperature", "top_p", "top_k", "max_tokens", "max_completion_tokens",
 		"presence_penalty", "frequency_penalty", "n", "stream",
 		"stop", "seed", "response_format", "tool_choice",
 	}
-	
+
 	for _, key := range paramKeys {
 		if val, ok := body[key]; ok && val != nil {
 			preview[key] = val
 		}
 	}
-	
+
 	// 记录消息数量和大致长度（用于分析是否因为请求太大导致超时）
 	if messages, ok := body["messages"].([]any); ok {
 		preview["message_count"] = len(messages)
@@ -4161,16 +4164,16 @@ func buildRequestPreview(body map[string]any) string {
 			preview["total_content_length"] = totalLen
 		}
 	}
-	
+
 	// 记录 tools 数量（如果有）
 	if tools, ok := body["tools"].([]any); ok && len(tools) > 0 {
 		preview["tool_count"] = len(tools)
 	}
-	
+
 	if len(preview) == 0 {
 		return ""
 	}
-	
+
 	previewJSON, _ := json.Marshal(preview)
 	return string(previewJSON)
 }
@@ -4379,6 +4382,19 @@ func classifyFailureStage(errCode string) string {
 	}
 }
 
+// canonicalNameFromResolution safely extracts the canonical model name
+// from a *resolve.Resolution result. Returns "" when modelResolution is nil
+// or CanonicalName is nil (passthrough case — no canonical row matched).
+// 2026-07-27: written so recordInitialRequestLog can persist the standard
+// name to request_logs.canonical_model (migration 458) without each caller
+// having to nil-check.
+func canonicalNameFromResolution(modelResolution *resolve.Resolution) string {
+	if modelResolution == nil || modelResolution.CanonicalName == nil {
+		return ""
+	}
+	return *modelResolution.CanonicalName
+}
+
 // recordInitialRequestLog writes the base request metadata as soon as routing
 // is resolved and before the upstream call starts.  Streaming requests then
 // appear immediately in /request-logs; completion paths update tokens, bodies,
@@ -4389,6 +4405,7 @@ func (h *ChatHandler) recordInitialRequestLog(
 	keyInfo *authentication.KeyInfo,
 	clientProfile, identityHash string,
 	providerID, credentialID, canonicalID *int,
+	canonicalName string, // 2026-07-27: 标准模型名 (migration 458)
 	requestBody []byte,
 	txResult *transformation.TransformResult,
 	egressProtocol string,
@@ -4444,20 +4461,22 @@ func (h *ChatHandler) recordInitialRequestLog(
 		clientRequestIDPtr = &v
 	}
 	reqLog := &telemetry.RequestLogEntry{
-		RequestID:         requestID,
-		EventAt:           &eventAt,
-		TenantID:          tenantID,
-		ApplicationID:     applicationID,
-		APIKeyID:          apiKeyID,
-		APIKeyPrefix:      strPtr(keyPrefix),
-		APIKeyOwnerUser:   strPtr(keyOwner),
-		ApplicationCode:   strPtr(appCode),
-		EndUserID:         strPtr(endUser),
-		ClientModel:       strPtr(clientModel),
-		OutboundModel:     strPtr(outboundModel),
-		ProviderID:        providerID,
-		CredentialID:      credentialID,
-		CanonicalID:       canonicalID,
+		RequestID:       requestID,
+		EventAt:         &eventAt,
+		TenantID:        tenantID,
+		ApplicationID:   applicationID,
+		APIKeyID:        apiKeyID,
+		APIKeyPrefix:    strPtr(keyPrefix),
+		APIKeyOwnerUser: strPtr(keyOwner),
+		ApplicationCode: strPtr(appCode),
+		EndUserID:       strPtr(endUser),
+		ClientModel:     strPtr(clientModel),
+		OutboundModel:   strPtr(outboundModel),
+		ProviderID:      providerID,
+		CredentialID:    credentialID,
+		CanonicalID:     canonicalID,
+		// 2026-07-27: 标准模型名 (canonical_name),见 migration 458。
+		CanonicalModel:    strPtr(canonicalName),
 		ClientProfile:     strPtr(clientProfile),
 		IdentityHash:      strPtr(identityHash),
 		RequestMode:       strPtr(requestMode),
@@ -4487,6 +4506,8 @@ func (h *ChatHandler) recordInitialRequestLog(
 		h.requestLogHook(reqLog)
 	}
 	applyKeyInfoToRequestLog(reqLog, keyInfo)
+	// 2026-07-27: 客户端感知字段透传 (streaming path)
+	enrichRequestLogFromMeta(reqLog, keyInfo, &autoCtx.meta)
 	// 2026-07-17: bridge OriginMiddleware context into the entry so
 	// node_probe / self_check requests are marked with origin_stage.
 	reqLog.ApplyOriginFromContext(ctx)
