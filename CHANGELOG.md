@@ -22,6 +22,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **URSM v1→v2 统一 (clean up + write path unification)** (2026-07-26):
+  - **v1 包迁入 `_to-be-deprecated/ursm/`**：`domains/ursm/` (25 .go + 3 .md) 在 main.go 中从未 wire（`router.URSM` / `routingExec.URSM` 恒为 nil），迁移对齐 Phase 1.5 R1.13 待删除包约定。`domains/ursm/v2/` 保留为生产路径。
+  - **删除 executor.go / router.go 中 v1 死代码**：删 `domains/ursm` import、`Executor.URSM` 字段、`Router.URSM` 字段、`planWithURSM()` 方法、`shouldWriteLegacyURSM` 双轨分支。`planLegacy()` 函数体替换为 deprecated 占位（保留签名防残留调用）。净删 -162 行（87+/249-）。零行为变化——这些分支在生产从未执行。
+  - **写入路径统一**：URSM v2 authoritative 模式下，唯一请求状态写入入口是 `e.URSMv2.RecordRequest`。v1 `RecordRequest` 旁路已移除，`Manager.RecordRequest` 内部按 rollout 模式 (off/shadow/canary/authoritative) 自决。
+  - **新增 `legacyWritersEnabled()` alias**：11 处 `!e.isURSMv2Authoritative()` 反向守卫改为正向 `e.legacyWritersEnabled()`，更直观表达"legacy writers 是否启用"。`isURSMv2Authoritative()` 保留供 router 复用。
+  - **state_backend.go 文档同步**：注释更新反映 v1 已迁出。
+  - 详见 commits `9f3ecf6d6` / `731b386d7` / `5ad3423e3` / `5fbf15f8e`。
+
 - **SelfCheckWorker 动态 ticker 间隔优化** (2026-07-25): 将固定 1 分钟 ticker 改为按 `min(NormalInterval, FaultInterval) / 10` 计算的动态间隔，最小 60 秒，避免 CPU 空跑且保留故障模型快速恢复能力。启动时加载 settings 计算初始间隔，每个 tick 检查 settings 变化并自动调整 ticker。新增日志记录 normal/fault 两种间隔和调整过程。详见 commit `46219da91` 及后续审计修复。
 - **node_probe_failed 不再黏住已恢复凭据** (2026-07-25): `bg/node_probe.go runOne` 成功分支补齐 `last_direct_ok=TRUE / last_err_code=NULL`，与 `updateBindingAvailability` 协同 `provider.InvalidateCandidateCacheForCredential` 与 `pg_notify('auto_route_refresh')`；AutoRouteRealtimeListener 5s 内刷新 `v_routable_credential_models` 使已恢复绑定立即重新路由。详见 [docs/changelogs/2026-07-25-node-probe-realtime-recovery.md](docs/changelogs/2026-07-25-node-probe-realtime-recovery.md).
 
