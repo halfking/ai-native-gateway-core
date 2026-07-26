@@ -128,9 +128,39 @@ func TestExtractAgentName(t *testing.T) {
 			expectedAgent: "opencode",
 		},
 		{
+			name:          "ZCode User-Agent",
+			headers:       map[string]string{"User-Agent": "ZCode/1.0"},
+			expectedAgent: "zcode",
+		},
+		{
+			name:          "Codex User-Agent",
+			headers:       map[string]string{"User-Agent": "Codex-CLI/0.1"},
+			expectedAgent: "codex",
+		},
+		{
 			name:          "Cursor User-Agent",
 			headers:       map[string]string{"User-Agent": "Cursor/1.5"},
 			expectedAgent: "cursor",
+		},
+		{
+			name:          "RooCode User-Agent",
+			headers:       map[string]string{"User-Agent": "RooCode/3.0"},
+			expectedAgent: "roocode",
+		},
+		{
+			name:          "Windsurf User-Agent",
+			headers:       map[string]string{"User-Agent": "Windsurf/1.0"},
+			expectedAgent: "windsurf",
+		},
+		{
+			name:          "Zed User-Agent",
+			headers:       map[string]string{"User-Agent": "Zed/2.0"},
+			expectedAgent: "zed",
+		},
+		{
+			name:          "Copilot User-Agent",
+			headers:       map[string]string{"User-Agent": "GitHub-Copilot/1.0"},
+			expectedAgent: "copilot",
 		},
 		{
 			name:          "Python client",
@@ -164,6 +194,74 @@ func TestExtractAgentName(t *testing.T) {
 	}
 }
 
+func TestDetectAgentFromSystemPrompt(t *testing.T) {
+	tests := []struct {
+		name   string
+		prompt string
+		want   string
+	}{
+		{
+			name:   "empty prompt",
+			prompt: "",
+			want:   "",
+		},
+		{
+			name:   "claude-code standard",
+			prompt: "You are Claude Code by Anthropic. You are an AI assistant.",
+			want:   "claude-code",
+		},
+		{
+			name:   "claude-code hyphen form",
+			prompt: "You are claude-code, a coding agent.",
+			want:   "claude-code",
+		},
+		{
+			name:   "opencode",
+			prompt: "You are opencode, an interactive CLI tool that helps users with software engineering tasks.",
+			want:   "opencode",
+		},
+		{
+			name:   "zcode",
+			prompt: "You are ZCode (Claude Code) — ACC 团队标准系统提示",
+			want:   "zcode",
+		},
+		{
+			name:   "vscode",
+			prompt: "You are an AI assistant in Visual Studio Code.",
+			want:   "vscode",
+		},
+		{
+			name:   "cursor",
+			prompt: "You are an AI assistant in Cursor IDE. I help you write code.",
+			want:   "cursor",
+		},
+		{
+			name:   "codex CLI",
+			prompt: "You are OpenAI Codex CLI, a coding agent.",
+			want:   "codex",
+		},
+		{
+			name:   "no match — generic assistant",
+			prompt: "You are a helpful assistant.",
+			want:   "",
+		},
+		{
+			name:   "no match — empty pattern",
+			prompt: "Just some random conversation text without agent identification.",
+			want:   "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := DetectAgentFromSystemPrompt(tt.prompt)
+			if got != tt.want {
+				t.Errorf("DetectAgentFromSystemPrompt() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestExtractAgentType(t *testing.T) {
 	tests := []struct {
 		name         string
@@ -183,6 +281,36 @@ func TestExtractAgentType(t *testing.T) {
 		{
 			name:         "CLI - claude-code",
 			headers:      map[string]string{"User-Agent": "Claude-Code/1.0"},
+			expectedType: "cli",
+		},
+		{
+			name:         "CLI - opencode",
+			headers:      map[string]string{"User-Agent": "OpenCode/2.0"},
+			expectedType: "cli",
+		},
+		{
+			name:         "CLI - zcode",
+			headers:      map[string]string{"User-Agent": "ZCode/1.0"},
+			expectedType: "cli",
+		},
+		{
+			name:         "CLI - codex",
+			headers:      map[string]string{"User-Agent": "Codex-CLI/0.1"},
+			expectedType: "cli",
+		},
+		{
+			name:         "CLI - roocode",
+			headers:      map[string]string{"User-Agent": "RooCode/3.0"},
+			expectedType: "cli",
+		},
+		{
+			name:         "CLI - windsurf",
+			headers:      map[string]string{"User-Agent": "Windsurf/1.0"},
+			expectedType: "cli",
+		},
+		{
+			name:         "CLI - copilot",
+			headers:      map[string]string{"User-Agent": "GitHub-Copilot/1.0"},
 			expectedType: "cli",
 		},
 		{
@@ -277,9 +405,9 @@ func TestExtractForwardedFor(t *testing.T) {
 
 func TestAPIKeyFingerprint(t *testing.T) {
 	tests := []struct {
-		name   string
-		key    string
-		want   string
+		name    string
+		key     string
+		want    string
 		wantLen int
 	}{
 		{name: "empty", key: "", want: "", wantLen: 0},
@@ -313,5 +441,134 @@ func TestAPIKeyFingerprint(t *testing.T) {
 	d := APIKeyFingerprint("  sk-test-key-1  ")
 	if d != a {
 		t.Errorf("APIKeyFingerprint should trim whitespace: %q vs %q", d, a)
+	}
+}
+
+func TestRegisterAgentPattern(t *testing.T) {
+	defer ResetAgentPatterns()
+
+	// Custom agent not yet registered — should not match
+	if got := DetectAgentFromSystemPrompt("you are my-custom-agent/1.0"); got != "" {
+		t.Fatalf("before registration: DetectAgentFromSystemPrompt() = %q, want %q", got, "")
+	}
+
+	RegisterAgentPattern("my-agent", "my-custom-agent", "my agent")
+
+	// Now it should match
+	if got := DetectAgentFromSystemPrompt("you are my-custom-agent/1.0"); got != "my-agent" {
+		t.Errorf("after registration: DetectAgentFromSystemPrompt() = %q, want %q", got, "my-agent")
+	}
+
+	// Second pattern should also match
+	if got := DetectAgentFromSystemPrompt("i am my agent"); got != "my-agent" {
+		t.Errorf("second pattern: DetectAgentFromSystemPrompt() = %q, want %q", got, "my-agent")
+	}
+
+	// Built-in patterns should still work
+	if got := DetectAgentFromSystemPrompt("You are Claude Code"); got != "claude-code" {
+		t.Errorf("built-in after registration: DetectAgentFromSystemPrompt() = %q, want %q", got, "claude-code")
+	}
+}
+
+func TestRegisterAgentPattern_DuplicateName(t *testing.T) {
+	defer ResetAgentPatterns()
+
+	RegisterAgentPattern("custom", "pattern-one")
+	RegisterAgentPattern("custom", "pattern-two")
+
+	// Both patterns for the same name should match
+	if got := DetectAgentFromSystemPrompt("pattern-one here"); got != "custom" {
+		t.Errorf("pattern-one: DetectAgentFromSystemPrompt() = %q, want %q", got, "custom")
+	}
+	if got := DetectAgentFromSystemPrompt("pattern-two here"); got != "custom" {
+		t.Errorf("pattern-two: DetectAgentFromSystemPrompt() = %q, want %q", got, "custom")
+	}
+}
+
+func TestRegisterAgentPattern_EmptyName(t *testing.T) {
+	defer ResetAgentPatterns()
+
+	// Should not panic or register anything
+	RegisterAgentPattern("", "some-pattern")
+	RegisterAgentPattern("valid", "")
+
+	builtins := DetectAgentFromSystemPrompt("You are Claude Code")
+	if builtins != "claude-code" {
+		t.Errorf("builtins not intact: %q", builtins)
+	}
+}
+
+func TestResetAgentPatterns(t *testing.T) {
+	RegisterAgentPattern("ephemeral", "temp-pattern")
+
+	if got := DetectAgentFromSystemPrompt("temp-pattern here"); got != "ephemeral" {
+		t.Fatalf("before reset: DetectAgentFromSystemPrompt() = %q, want %q", got, "ephemeral")
+	}
+
+	ResetAgentPatterns()
+
+	if got := DetectAgentFromSystemPrompt("temp-pattern here"); got != "" {
+		t.Errorf("after reset: DetectAgentFromSystemPrompt() = %q, want %q", got, "")
+	}
+
+	// Built-ins should still work after reset
+	if got := DetectAgentFromSystemPrompt("You are Claude Code"); got != "claude-code" {
+		t.Errorf("built-in after reset: DetectAgentFromSystemPrompt() = %q, want %q", got, "claude-code")
+	}
+}
+
+func TestEnrichAgentNameFromSystemPrompt(t *testing.T) {
+	tests := []struct {
+		name         string
+		headerName   string
+		systemPrompt string
+		want         string
+	}{
+		{
+			name:         "header name present and known — keep it",
+			headerName:   "claude-code",
+			systemPrompt: "You are ZCode (Claude Code)",
+			want:         "claude-code",
+		},
+		{
+			name:         "header is 'unknown' — fallback to semantic",
+			headerName:   "unknown",
+			systemPrompt: "You are ZCode (Claude Code)",
+			want:         "zcode",
+		},
+		{
+			name:         "header is empty — fallback to semantic",
+			headerName:   "",
+			systemPrompt: "You are opencode, an interactive CLI tool",
+			want:         "opencode",
+		},
+		{
+			name:         "header known, no system prompt match",
+			headerName:   "claude-code",
+			systemPrompt: "",
+			want:         "claude-code",
+		},
+		{
+			name:         "both empty — empty result",
+			headerName:   "",
+			systemPrompt: "",
+			want:         "",
+		},
+		{
+			name:         "header unknown, no system prompt match",
+			headerName:   "unknown",
+			systemPrompt: "random text without agent",
+			want:         "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := EnrichAgentNameFromSystemPrompt(tt.headerName, tt.systemPrompt)
+			if got != tt.want {
+				t.Errorf("EnrichAgentNameFromSystemPrompt(%q, %q) = %q, want %q",
+					tt.headerName, tt.systemPrompt, got, tt.want)
+			}
+		})
 	}
 }

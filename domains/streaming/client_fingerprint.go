@@ -3,6 +3,8 @@ package streaming
 import (
 	"net/http"
 	"strings"
+
+	"github.com/kaixuan/llm-gateway-go/telemetry"
 )
 
 // client_fingerprint.go — IDE 客户端指纹提取（需求 #1 的一部分）
@@ -11,8 +13,9 @@ import (
 //
 // 优先级：
 //  1. X-Gw-Client-Type（网关自定义头，明确标识）
-//  2. User-Agent（包含 IDE 特征字符串）
-//  3. X-Stainless-Lang（OpenAI SDK 语言指纹，辅助判断）
+//  2. User-Agent（包含 IDE/Agent 特征字符串）
+//  3. 会话首条系统提示词语义匹配（智能体自报身份，如 "You are Claude Code…"）
+//  4. X-Stainless-Lang（OpenAI SDK 语言指纹，辅助判断）
 //
 // 返回值统一小写化，便于后续 switch case 匹配。
 // 空字符串表示未识别或非 IDE 客户端。
@@ -22,13 +25,19 @@ func extractClientType(r *http.Request) string {
 		return strings.ToLower(ct)
 	}
 
-	// 2. User-Agent 解析（IDE 特征字符串）
+	// 2. User-Agent 解析（IDE/Agent 特征字符串）
 	ua := strings.ToLower(r.Header.Get("User-Agent"))
 	switch {
 	case strings.Contains(ua, "cursor/"), strings.Contains(ua, "cursor-"):
 		return "cursor"
 	case strings.Contains(ua, "claude-code/"), strings.Contains(ua, "claude-code-"):
 		return "claude-code"
+	case strings.Contains(ua, "opencode/"), strings.Contains(ua, "opencode-"):
+		return "opencode"
+	case strings.Contains(ua, "zcode/"), strings.Contains(ua, "zcode-"):
+		return "zcode"
+	case strings.Contains(ua, "codex/"), strings.Contains(ua, "codex-"):
+		return "codex"
 	case strings.Contains(ua, "roocode/"), strings.Contains(ua, "roo-code/"):
 		return "roocode"
 	case strings.Contains(ua, "vscode/"), strings.Contains(ua, "visual-studio-code/"):
@@ -51,4 +60,22 @@ func extractClientType(r *http.Request) string {
 
 	// 未识别
 	return ""
+}
+
+// extractClientTypeWithPrompt 是 extractClientType 的增强版：先尝试
+// HTTP 头检测，若未命中则通过系统提示词语义匹配补全客户端类型。
+//
+// 智能体通常在第一次会话的系统消息中自我介绍（如 "You are Claude Code
+// by Anthropic"、"You are ZCode, an AI assistant"），语义检测可识别
+// 这些自报身份。
+//
+// 优先级：
+//  1. X-Gw-Client-Type 头（显式指定）
+//  2. User-Agent 匹配
+//  3. 系统提示词语义匹配
+func extractClientTypeWithPrompt(r *http.Request, systemPrompt string) string {
+	if ct := extractClientType(r); ct != "" {
+		return ct
+	}
+	return telemetry.DetectAgentFromSystemPrompt(systemPrompt)
 }
