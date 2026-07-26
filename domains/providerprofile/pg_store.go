@@ -21,9 +21,31 @@ func NewPGMetricsStore(db *pgxpool.Pool) *PGMetricsStore {
 
 // SaveSnapshot 保存采集快照
 func (s *PGMetricsStore) SaveSnapshot(ctx context.Context, snapshot *MetricSnapshot) error {
-	errorTypesJSON, err := json.Marshal(snapshot.StabilityMetrics.ErrorTypes)
-	if err != nil {
-		return fmt.Errorf("marshal error types: %w", err)
+	// Defensively guard all pointer fields so a nil sub-struct never causes a panic.
+	var p50, p95, p99 int
+	if snapshot.NetworkMetrics != nil {
+		p50, p95, p99 = snapshot.NetworkMetrics.P50, snapshot.NetworkMetrics.P95, snapshot.NetworkMetrics.P99
+	}
+	var totalReq, successReq, avgTTFT, avgDur int
+	if snapshot.AvailabilityMetrics != nil {
+		totalReq, successReq = snapshot.AvailabilityMetrics.TotalRequests, snapshot.AvailabilityMetrics.SuccessRequests
+		avgTTFT, avgDur = snapshot.AvailabilityMetrics.AvgTTFTMs, snapshot.AvailabilityMetrics.AvgDurationMs
+	}
+	var errCount int
+	var errorTypesJSON []byte
+	if snapshot.StabilityMetrics != nil {
+		errCount = snapshot.StabilityMetrics.ErrorCount
+		if snapshot.StabilityMetrics.ErrorTypes != nil {
+			errorTypesJSON, _ = json.Marshal(snapshot.StabilityMetrics.ErrorTypes)
+		} else {
+			errorTypesJSON = []byte("{}")
+		}
+	} else {
+		errorTypesJSON = []byte("{}")
+	}
+	var totalModels, availModels int
+	if snapshot.ScaleMetrics != nil {
+		totalModels, availModels = snapshot.ScaleMetrics.TotalModels, snapshot.ScaleMetrics.AvailableModels
 	}
 
 	query := `
@@ -37,22 +59,17 @@ func (s *PGMetricsStore) SaveSnapshot(ctx context.Context, snapshot *MetricSnaps
 		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
 	`
 
-	_, err = s.db.Exec(ctx, query,
+	_, err := s.db.Exec(ctx, query,
 		snapshot.CredentialID,
 		snapshot.ProviderID,
 		snapshot.MetricTime,
 		snapshot.TimeSlot,
-		snapshot.NetworkMetrics.P50,
-		snapshot.NetworkMetrics.P95,
-		snapshot.NetworkMetrics.P99,
-		snapshot.AvailabilityMetrics.TotalRequests,
-		snapshot.AvailabilityMetrics.SuccessRequests,
-		snapshot.AvailabilityMetrics.AvgTTFTMs,
-		snapshot.AvailabilityMetrics.AvgDurationMs,
-		snapshot.StabilityMetrics.ErrorCount,
+		p50, p95, p99,
+		totalReq, successReq,
+		avgTTFT, avgDur,
+		errCount,
 		errorTypesJSON,
-		snapshot.ScaleMetrics.TotalModels,
-		snapshot.ScaleMetrics.AvailableModels,
+		totalModels, availModels,
 	)
 
 	if err != nil {
