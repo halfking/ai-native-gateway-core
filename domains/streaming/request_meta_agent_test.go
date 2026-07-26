@@ -4,7 +4,8 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/kaixuan/llm-gateway-go/telemetry" //nolint:depguard // test-only alias to /telemetry root package
+	agenttelemetry "github.com/kaixuan/llm-gateway-go/telemetry"        //nolint:depguard // test-only alias to /telemetry root package
+	telemetryv1 "github.com/kaixuan/llm-gateway-go/domains/hooks/observability/telemetry" //nolint:depguard // aliased: RequestLogEntry is in /domains/hooks/observability/telemetry
 )
 
 // TestFillAttemptMeta_AgentNameSemanticFallback verifies the 2026-07-27
@@ -106,7 +107,7 @@ func TestFillAttemptMeta_AgentNameSemanticFallback(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			// Reset registry to default built-ins to avoid cross-test pollution.
-			telemetry.ResetAgentPatterns()
+			agenttelemetry.ResetAgentPatterns()
 
 			req := httptest.NewRequest("POST", "/v1/chat/completions", nil)
 			req.Header.Set("User-Agent", tt.userAgent)
@@ -129,7 +130,7 @@ func TestFillAttemptMeta_AgentNameSemanticFallback(t *testing.T) {
 // when meta.SystemPrompt is empty, fillAttemptMeta must not crash and
 // must not change AgentName away from its header-based value.
 func TestFillAttemptMeta_SystemPromptFalsyDoesNotCall(t *testing.T) {
-	telemetry.ResetAgentPatterns()
+	agenttelemetry.ResetAgentPatterns()
 
 	req := httptest.NewRequest("POST", "/v1/chat/completions", nil)
 	req.Header.Set("User-Agent", "OpenCode/2.0")
@@ -180,5 +181,64 @@ func TestShouldOverrideAgentName(t *testing.T) {
 					tt.headerName, tt.systemPrompt, got, tt.want)
 			}
 		})
+	}
+}
+
+
+// TestEnrichRequestLogFromMeta_AgentFields verifies that the 2026-07-27 fix
+// to enrichRequestLogFromMeta copies the new client-perception fields
+// (agent_name, agent_type, client_protocol, virtual_client_id) from the
+// requestAttemptMeta into the RequestLogEntry so they get persisted to
+// request_logs_hot (the main table, not just the side table).
+//
+// Before the fix, agent_name was only written to request_context_attrs and
+// the main table always showed NULL, making GROUP BY agent_name stats 0.
+func TestEnrichRequestLogFromMeta_AgentFields(t *testing.T) {
+	reqLog := &telemetryv1.RequestLogEntry{
+		RequestID: "test-request-001",
+	}
+	meta := &requestAttemptMeta{
+		AgentName:       "claude-code",
+		AgentType:       "cli",
+		ClientProtocol:  "openai-chat",
+		VirtualClientID: "vc-abcdef0123456789",
+		IdentityHash:    "hash-123",
+	}
+
+	enrichRequestLogFromMeta(reqLog, nil, meta)
+
+	if reqLog.AgentName == nil || *reqLog.AgentName != "claude-code" {
+		t.Errorf("AgentName = %v, want %q", reqLog.AgentName, "claude-code")
+	}
+	if reqLog.AgentType == nil || *reqLog.AgentType != "cli" {
+		t.Errorf("AgentType = %v, want %q", reqLog.AgentType, "cli")
+	}
+	if reqLog.ClientProtocol == nil || *reqLog.ClientProtocol != "openai-chat" {
+		t.Errorf("ClientProtocol = %v, want %q", reqLog.ClientProtocol, "openai-chat")
+	}
+	if reqLog.VirtualClientID == nil || *reqLog.VirtualClientID != "vc-abcdef0123456789" {
+		t.Errorf("VirtualClientID = %v, want %q", reqLog.VirtualClientID, "vc-abcdef0123456789")
+	}
+	if reqLog.IdentityHash == nil || *reqLog.IdentityHash != "hash-123" {
+		t.Errorf("IdentityHash = %v, want %q", reqLog.IdentityHash, "hash-123")
+	}
+}
+
+// TestEnrichRequestLogFromMeta_EmptyMetaLeavesFieldsNil verifies that the
+// helper does NOT overwrite existing fields when meta has empty values.
+func TestEnrichRequestLogFromMeta_EmptyMetaLeavesFieldsNil(t *testing.T) {
+	reqLog := &telemetryv1.RequestLogEntry{RequestID: "test-empty"}
+	meta := &requestAttemptMeta{} // all empty
+
+	enrichRequestLogFromMeta(reqLog, nil, meta)
+
+	if reqLog.AgentName != nil {
+		t.Errorf("AgentName should be nil, got %q", *reqLog.AgentName)
+	}
+	if reqLog.AgentType != nil {
+		t.Errorf("AgentType should be nil, got %q", *reqLog.AgentType)
+	}
+	if reqLog.ClientProtocol != nil {
+		t.Errorf("ClientProtocol should be nil, got %q", *reqLog.ClientProtocol)
 	}
 }

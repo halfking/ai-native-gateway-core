@@ -12,11 +12,11 @@ import (
 	"strings"
 	"time"
 
-	"github.com/kaixuan/llm-gateway-go/domains/authentication"                //nolint:depguard // historical violation, B1 routing.go CQRS will fix
+	"github.com/kaixuan/llm-gateway-go/domains/authentication"                            //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	telemetryv1 "github.com/kaixuan/llm-gateway-go/domains/hooks/observability/telemetry" //nolint:depguard // RequestLogEntry struct lives here; aliased to avoid clash with /telemetry extractor package
-	"github.com/kaixuan/llm-gateway-go/domains/identity"                      //nolint:depguard // historical violation, B1 routing.go CQRS will fix
-	"github.com/kaixuan/llm-gateway-go/internal/ir"                           //nolint:depguard // historical violation, B1 routing.go CQRS will fix
-	"github.com/kaixuan/llm-gateway-go/telemetry"                             //nolint:depguard // canonical IP / agent / protocol extractors
+	"github.com/kaixuan/llm-gateway-go/domains/identity"                                  //nolint:depguard // historical violation, B1 routing.go CQRS will fix
+	"github.com/kaixuan/llm-gateway-go/internal/ir"                                       //nolint:depguard // historical violation, B1 routing.go CQRS will fix
+	"github.com/kaixuan/llm-gateway-go/telemetry"                                         //nolint:depguard // canonical IP / agent / protocol extractors
 )
 
 var errBodyTooLarge = errors.New("request body too large")
@@ -40,18 +40,18 @@ type requestAttemptMeta struct {
 	LookupKeyID     *int
 
 	// ─── 客户端感知（2026-07-15）─── 由 fillAttemptMeta 填充，供侧表写入。
-	VirtualClientID string                  // "vc-" + hash[:16]
-	VirtualIP       string                  // 10.x.x.x 派生 IP
-	VirtualMAC      string                  // 02:xx:xx:xx:xx:xx
-	AgentName       string                  // claude-code/cursor/curl/...
-	AgentType       string                  // web/cli/api/bot/mobile/unknown
-	ClientIP        string                  // X-Real-IP > XFF[0] > RemoteAddr
-	ForwardedFor    string                  // 完整 XFF 链
-	APIKeyFingerprint string                // SHA-256(rawKey)[:16]，在认证阶段设置
-	ClientProtocol  string                  // openai-chat/anthropic-messages/gemini-generate
-	ProjectID       string                  // X-Gw-Project-Id
-	SourceChannel   string                  // web/api/mcp/agent
-	FingerprintRaw  map[string]any          // 原始指纹字段（取证原材）
+	VirtualClientID   string         // "vc-" + hash[:16]
+	VirtualIP         string         // 10.x.x.x 派生 IP
+	VirtualMAC        string         // 02:xx:xx:xx:xx:xx
+	AgentName         string         // claude-code/cursor/curl/...
+	AgentType         string         // web/cli/api/bot/mobile/unknown
+	ClientIP          string         // X-Real-IP > XFF[0] > RemoteAddr
+	ForwardedFor      string         // 完整 XFF 链
+	APIKeyFingerprint string         // SHA-256(rawKey)[:16]，在认证阶段设置
+	ClientProtocol    string         // openai-chat/anthropic-messages/gemini-generate
+	ProjectID         string         // X-Gw-Project-Id
+	SourceChannel     string         // web/api/mcp/agent
+	FingerprintRaw    map[string]any // 原始指纹字段（取证原材）
 
 	// ─── 智能体兜底识别（2026-07-27）───
 	// 由 EnsureCaptured 从已缓冲的 body 解析，fillAttemptMeta 阶段用作
@@ -367,6 +367,21 @@ func fingerprintRawMap(fp identity.ClientFingerprint) map[string]any {
 func enrichRequestLogFromMeta(reqLog *telemetryv1.RequestLogEntry, keyInfo *authentication.KeyInfo, meta *requestAttemptMeta) {
 	if reqLog == nil || meta == nil {
 		return
+	}
+	// 2026-07-27: 把 meta 中的客户端感知字段透传到 reqLog。
+	// 之前只有侧表 request_context_attrs 拿到 agent_name,主表 request_logs_hot
+	// 永远是 NULL,导致 GROUP BY agent_name 统计为 0。这里补齐主表写入。
+	if meta.AgentName != "" && reqLog.AgentName == nil {
+		reqLog.AgentName = strPtr(meta.AgentName)
+	}
+	if meta.AgentType != "" && reqLog.AgentType == nil {
+		reqLog.AgentType = strPtr(meta.AgentType)
+	}
+	if meta.ClientProtocol != "" && reqLog.ClientProtocol == nil {
+		reqLog.ClientProtocol = strPtr(meta.ClientProtocol)
+	}
+	if meta.VirtualClientID != "" && reqLog.VirtualClientID == nil {
+		reqLog.VirtualClientID = strPtr(meta.VirtualClientID)
 	}
 	if meta.APIKeyPrefix != "" {
 		reqLog.APIKeyPrefix = strPtr(meta.APIKeyPrefix)
