@@ -3,6 +3,8 @@ package logging
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -86,8 +88,10 @@ func (r *LockFreeAnomalyReporter) ReportToolCallsMissing(
 		SourceProtocol:  sourceProto,
 		TargetProtocol:  targetProto,
 		ConversionStep:  "parse_or_serialize",
-		RawInputSample:  truncate(string(rawInput), 2000),
-		RawOutputSample: truncate(string(rawOutput), 2000),
+		RawInputHash:    hashString(string(rawInput)),
+		RawInputSize:    len(rawInput),
+		RawOutputHash:   hashString(string(rawOutput)),
+		RawOutputSize:   len(rawOutput),
 		Confidence:      confidence,
 		Analysis: map[string]string{
 			"suspected_cause":      "IR conversion dropped tool_calls field",
@@ -96,6 +100,14 @@ func (r *LockFreeAnomalyReporter) ReportToolCallsMissing(
 			"upstream_has_tools":   "true",
 			"downstream_has_tools": "false",
 		},
+	}
+	envelope := envelopeFromContext(ctx)
+	if envelope != nil {
+		report.GWSessionID = envelope.GWSessionID
+		report.ClientRequestID = envelope.ClientRequestID
+		report.ProviderID = envelope.ProviderID
+		report.CredentialID = envelope.CredentialID
+		report.TraceID = envelope.TraceID
 	}
 
 	if !r.enqueue(report) {
@@ -124,7 +136,8 @@ func (r *LockFreeAnomalyReporter) ReportConversionError(
 		SourceProtocol: sourceProto,
 		TargetProtocol: targetProto,
 		ConversionStep: step,
-		RawInputSample: truncate(string(rawInput), 2000),
+		RawInputHash:   hashString(string(rawInput)),
+		RawInputSize:   len(rawInput),
 		ErrorMessage:   err.Error(),
 		Confidence:     1.0,
 		Analysis: map[string]string{
@@ -132,6 +145,14 @@ func (r *LockFreeAnomalyReporter) ReportConversionError(
 			"suspected_cause":    "Malformed input or unsupported field",
 			"recommended_action": "Review parse/serialize logic for this protocol combination",
 		},
+	}
+	envelope := envelopeFromContext(ctx)
+	if envelope != nil {
+		report.GWSessionID = envelope.GWSessionID
+		report.ClientRequestID = envelope.ClientRequestID
+		report.ProviderID = envelope.ProviderID
+		report.CredentialID = envelope.CredentialID
+		report.TraceID = envelope.TraceID
 	}
 
 	if !r.enqueue(report) {
@@ -166,7 +187,8 @@ func (r *LockFreeAnomalyReporter) ReportSemanticIncomplete(
 		AnomalyType:     "semantic_incomplete",
 		TargetProtocol:  protocol,
 		ConversionStep:  "post_serialize",
-		RawOutputSample: truncate(string(rawOutput), 2000),
+		RawOutputHash:   hashString(string(rawOutput)),
+		RawOutputSize:   len(rawOutput),
 		Confidence:      confidence,
 		Analysis: map[string]string{
 			"reason":             reason,
@@ -174,6 +196,14 @@ func (r *LockFreeAnomalyReporter) ReportSemanticIncomplete(
 			"suspected_cause":    "Response stopped prematurely or tool_calls were dropped",
 			"recommended_action": "Compare raw upstream response with IR output to identify loss point",
 		},
+	}
+	envelope := envelopeFromContext(ctx)
+	if envelope != nil {
+		report.GWSessionID = envelope.GWSessionID
+		report.ClientRequestID = envelope.ClientRequestID
+		report.ProviderID = envelope.ProviderID
+		report.CredentialID = envelope.CredentialID
+		report.TraceID = envelope.TraceID
 	}
 
 	if !r.enqueue(report) {
@@ -372,4 +402,46 @@ type AnomalyReporterStats struct {
 	Dropped       uint64 // 丢弃总数（队列满）
 	Sent          uint64 // 成功发送总数
 	Failed        uint64 // 发送失败总数
+}
+
+// AnomalyReportEnvelope is the correlation context attached to every
+// anomaly report. Producers (executor / streaming bridges) populate it
+// from the request context so the external endpoint can join with
+// request_logs and the on-disk audit log without re-fetching the body.
+type AnomalyReportEnvelope struct {
+	ClientRequestID string
+	GWSessionID     string
+	ProviderID      int
+	CredentialID    int
+	TraceID         string
+}
+
+type anomalyContextKey struct{}
+
+// WithAnomalyEnvelope stores an envelope on the request context. The
+// anomaly reporter pulls the envelope out at report time and includes
+// its fields in the external payload.
+func WithAnomalyEnvelope(ctx context.Context, env AnomalyReportEnvelope) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return context.WithValue(ctx, anomalyContextKey{}, env)
+}
+
+func envelopeFromContext(ctx context.Context) *AnomalyReportEnvelope {
+	if ctx == nil {
+		return nil
+	}
+	if v, ok := ctx.Value(anomalyContextKey{}).(AnomalyReportEnvelope); ok {
+		return &v
+	}
+	return nil
+}
+
+// hashString returns the lowercase hex SHA-256 of the input. Used by
+// the anomaly reporter to anchor each anomaly against the upstream
+// payload without sending the bytes themselves.
+func hashString(s string) string {
+	sum := sha256.Sum256([]byte(s))
+	return hex.EncodeToString(sum[:])
 }

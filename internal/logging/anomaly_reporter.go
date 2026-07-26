@@ -22,18 +22,39 @@ type AnomalyReporter struct {
 }
 
 // AnomalyReport 异常报告
+//
+// 2026-07-27: removed RawInputSample/RawOutputSample so the external
+// payload no longer contains the original request/response bytes. The
+// audit endpoint can still join with the on-disk raw log via the
+// correlation fields below (request_id, gw_session_id, trace_id, ...)
+// plus the SHA-256 hash and size of each side.
 type AnomalyReport struct {
-	Timestamp       time.Time         `json:"timestamp"`
-	RequestID       string            `json:"request_id"`
-	AnomalyType     string            `json:"anomaly_type"` // "tool_calls_missing", "conversion_error", "semantic_incomplete"
-	SourceProtocol  string            `json:"source_protocol"`
-	TargetProtocol  string            `json:"target_protocol"`
-	ConversionStep  string            `json:"conversion_step"`
-	RawInputSample  string            `json:"raw_input_sample"`  // 截断的原始输入
-	RawOutputSample string            `json:"raw_output_sample"` // 截断的原始输出
-	ErrorMessage    string            `json:"error_message,omitempty"`
-	Analysis        map[string]string `json:"analysis,omitempty"` // 初步判断
-	Confidence      float64           `json:"confidence"`         // 置信度 (0.0-1.0)
+	Timestamp      time.Time         `json:"timestamp"`
+	RequestID      string            `json:"request_id"`
+	AnomalyType    string            `json:"anomaly_type"` // "tool_calls_missing", "conversion_error", "semantic_incomplete"
+	SourceProtocol string            `json:"source_protocol"`
+	TargetProtocol string            `json:"target_protocol"`
+	ConversionStep string            `json:"conversion_step"`
+	RawInputHash   string            `json:"raw_input_hash,omitempty"`
+	RawInputSize   int               `json:"raw_input_size,omitempty"`
+	RawOutputHash  string            `json:"raw_output_hash,omitempty"`
+	RawOutputSize  int               `json:"raw_output_size,omitempty"`
+	RawLogFile     string            `json:"raw_log_file,omitempty"`
+	RawLogOffset   int64             `json:"raw_log_offset,omitempty"`
+	ErrorMessage   string            `json:"error_message,omitempty"`
+	Analysis       map[string]string `json:"analysis,omitempty"` // 初步判断
+	Confidence     float64           `json:"confidence"`         // 置信度 (0.0-1.0)
+
+	// 2026-07-27: correlation envelope. Producers fill these from the
+	// request context so the external endpoint can pivot into
+	// request_logs and trace spans without an extra lookup.
+	ClientRequestID string `json:"client_request_id,omitempty"`
+	GWSessionID     string `json:"gw_session_id,omitempty"`
+	GWTaskID        string `json:"gw_task_id,omitempty"`
+	TenantID        string `json:"tenant_id,omitempty"`
+	ProviderID      int    `json:"provider_id,omitempty"`
+	CredentialID    int    `json:"credential_id,omitempty"`
+	TraceID         string `json:"trace_id,omitempty"`
 }
 
 // NewAnomalyReporter 创建异常报告器
@@ -66,15 +87,17 @@ func (r *AnomalyReporter) ReportToolCallsMissing(
 	}
 
 	report := AnomalyReport{
-		Timestamp:       time.Now(),
-		RequestID:       requestID,
-		AnomalyType:     "tool_calls_missing",
-		SourceProtocol:  sourceProto,
-		TargetProtocol:  targetProto,
-		ConversionStep:  "parse_or_serialize",
-		RawInputSample:  truncate(string(rawInput), 2000),
-		RawOutputSample: truncate(string(rawOutput), 2000),
-		Confidence:      confidence,
+		Timestamp:      time.Now(),
+		RequestID:      requestID,
+		AnomalyType:    "tool_calls_missing",
+		SourceProtocol: sourceProto,
+		TargetProtocol: targetProto,
+		ConversionStep: "parse_or_serialize",
+		RawInputHash:   hashString(string(rawInput)),
+		RawInputSize:   len(rawInput),
+		RawOutputHash:  hashString(string(rawOutput)),
+		RawOutputSize:  len(rawOutput),
+		Confidence:     confidence,
 		Analysis: map[string]string{
 			"suspected_cause":      "IR conversion dropped tool_calls field",
 			"missing_tool_calls":   truncate(missingToolCalls, 1000),
@@ -106,7 +129,8 @@ func (r *AnomalyReporter) ReportConversionError(
 		SourceProtocol: sourceProto,
 		TargetProtocol: targetProto,
 		ConversionStep: step,
-		RawInputSample: truncate(string(rawInput), 2000),
+		RawInputHash:   hashString(string(rawInput)),
+		RawInputSize:   len(rawInput),
 		ErrorMessage:   err.Error(),
 		Confidence:     1.0, // 转换错误是确定的
 		Analysis: map[string]string{
@@ -139,13 +163,14 @@ func (r *AnomalyReporter) ReportSemanticIncomplete(
 	}
 
 	report := AnomalyReport{
-		Timestamp:       time.Now(),
-		RequestID:       requestID,
-		AnomalyType:     "semantic_incomplete",
-		TargetProtocol:  protocol,
-		ConversionStep:  "post_serialize",
-		RawOutputSample: truncate(string(rawOutput), 2000),
-		Confidence:      confidence,
+		Timestamp:      time.Now(),
+		RequestID:      requestID,
+		AnomalyType:    "semantic_incomplete",
+		TargetProtocol: protocol,
+		ConversionStep: "post_serialize",
+		RawOutputHash:  hashString(string(rawOutput)),
+		RawOutputSize:  len(rawOutput),
+		Confidence:     confidence,
 		Analysis: map[string]string{
 			"reason":             reason,
 			"indicators":         indicatorsStr,
