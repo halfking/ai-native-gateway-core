@@ -13,15 +13,32 @@ const (
 	AlertTypeAutoEnabled  AlertType = "auto_enabled"  // 已自动恢复
 )
 
-// AlertLevel 告警级别。值的大小关系用于取最严重级别（critical>warning>info），
-// 因此字符串值使用严重程度前缀（1/2/3），使其字典序与严重程度序一致。
+// AlertLevel 告警级别。存储到 provider_profile_alerts.alert_level 时使用纯名称
+// （"info"/"warning"/"critical"，与设计文档 §8.2 和 schema 注释一致）。
+//
+// 注意：不能用字符串字面值的大小比较严重程度——Go 按 byte 字典序比较，
+// 而 'c'(99)<'i'(105)<'w'(119)，与严重度顺序 (critical>warning>info) 正好相反。
+// 因此 highestLevel 使用 severityRank 显式映射，而非 AlertLevel 字面值比较。
 type AlertLevel string
 
 const (
-	AlertLevelInfo     AlertLevel = "1_info"
-	AlertLevelWarning  AlertLevel = "2_warning"
-	AlertLevelCritical AlertLevel = "3_critical"
+	AlertLevelInfo     AlertLevel = "info"
+	AlertLevelWarning  AlertLevel = "warning"
+	AlertLevelCritical AlertLevel = "critical"
 )
+
+// severityRank 返回级别的严重程度序数（越大越严重）。
+// 未知级别视为 info（最不严重），保证 highestLevel 的比较安全。
+func severityRank(l AlertLevel) int {
+	switch l {
+	case AlertLevelCritical:
+		return 3
+	case AlertLevelWarning:
+		return 2
+	default:
+		return 1
+	}
+}
 
 // AlertConfig 告警与自动处理阈值（设计文档 §8.1）
 type AlertConfig struct {
@@ -75,12 +92,14 @@ type Alert struct {
 	ActionTaken   string // disabled/enabled/degraded/none
 }
 
-// highestLevel 返回给定级别中最严重的一个
+// highestLevel 返回给定级别中最严重的一个（用 severityRank 比较，不依赖字面值）。
 func highestLevel(levels ...AlertLevel) AlertLevel {
 	best := AlertLevelInfo
+	bestRank := severityRank(best)
 	for _, l := range levels {
-		if l > best {
+		if r := severityRank(l); r > bestRank {
 			best = l
+			bestRank = r
 		}
 	}
 	return best
