@@ -454,7 +454,7 @@ func parseOpenAITools(raw json.RawMessage) ([]ToolDefinition, error) {
 			if desc, ok := fn["description"].(string); ok {
 				td.Description = desc
 			}
-			td.Parameters = marshalAnyToRaw(fn["parameters"])
+			td.Parameters = marshalAnyToRaw(sanitizeInputSchema(fn["parameters"]))
 		} else {
 			// Flat format or Anthropic-style tool def.
 			if name, ok := tool["name"].(string); ok {
@@ -464,10 +464,10 @@ func parseOpenAITools(raw json.RawMessage) ([]ToolDefinition, error) {
 				td.Description = desc
 			}
 			// Try input_schema (Anthropic style) or parameters.
-			if p := marshalAnyToRaw(tool["input_schema"]); p != nil {
+			if p := marshalAnyToRaw(sanitizeInputSchema(tool["input_schema"])); p != nil {
 				td.Parameters = p
 			} else {
-				td.Parameters = marshalAnyToRaw(tool["parameters"])
+				td.Parameters = marshalAnyToRaw(sanitizeInputSchema(tool["parameters"]))
 			}
 		}
 
