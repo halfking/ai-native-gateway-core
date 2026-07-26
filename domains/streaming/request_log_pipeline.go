@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net/http"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/kaixuan/llm-gateway-go/domains/attachments"                   //nolint:depguard // historical violation, B1 routing.go CQRS will fix
@@ -105,11 +106,13 @@ type RequestLogContext struct {
 	QualityScore      *float64
 
 	// 2026-06-30: 上游错误诊断字段 (migration 320)
-	UpstreamStatusCode *int
-	ClientTimeout      bool
-	ClientEndpoint     string
-	StreamChunkErrors  int
-	StreamChunksSent   int
+	UpstreamStatusCode  *int
+	ClientTimeout       bool
+	ClientEndpoint      string
+	StreamChunkErrors   int
+	StreamChunksSent    int
+	streamChunkErrors   atomic.Int64
+	streamChunksSent    atomic.Int64
 
 	// 2026-07-01: 附件元数据字段 (migration 325)
 	// 存储从请求体中提取的 base64/data-URI 附件元数据，写入 request_logs.attachments JSONB。
@@ -159,20 +162,66 @@ func (c *RequestLogContext) SetClientEndpoint(endpoint string) {
 	c.ClientEndpoint = endpoint
 }
 
-// IncrementStreamChunkErrors increments the count of stream chunk errors.
+// IncrementStreamChunkErrors increments the count of stream chunk
+// errors. The counter is mirrored onto an atomic int so streaming
+// bridges and the safety net can race freely on the same request
+// without a mutex. The legacy int field is kept in sync for tests
+// that read or write it directly.
 func (c *RequestLogContext) IncrementStreamChunkErrors() {
 	if c == nil {
 		return
 	}
-	c.StreamChunkErrors++
+	c.streamChunkErrors.Add(1)
+	c.StreamChunkErrors = int(c.streamChunkErrors.Load())
 }
 
-// IncrementStreamChunksSent increments the count of successfully sent stream chunks.
+// IncrementStreamChunksSent increments the count of successfully sent
+// stream chunks. See IncrementStreamChunkErrors for the rationale.
 func (c *RequestLogContext) IncrementStreamChunksSent() {
 	if c == nil {
 		return
 	}
-	c.StreamChunksSent++
+	c.streamChunksSent.Add(1)
+	c.StreamChunksSent = int(c.streamChunksSent.Load())
+}
+
+// StreamChunkErrors returns the current value of the atomic counter in
+// a way that callers (e.g. emitTelemetry) can copy into the immutable
+// request_logs row.
+func (c *RequestLogContext) StreamChunkErrorsValue() int {
+	if c == nil {
+		return 0
+	}
+	return int(c.streamChunkErrors.Load())
+}
+
+// StreamChunksSentValue returns the current value of the atomic counter.
+func (c *RequestLogContext) StreamChunksSentValue() int {
+	if c == nil {
+		return 0
+	}
+	return int(c.streamChunksSent.Load())
+}
+
+// SetStreamChunkCounters is the bulk setter used by legacy tests and
+// by handler paths that compute the final count before persisting. It
+// keeps the int fields (which the schema layer still reads) in sync
+// with the atomic counters, so a torn read cannot produce a mismatch
+// between BuildFailureEntry and emitTelemetry.
+func (c *RequestLogContext) SetStreamChunkCounters(chunkErrors, chunksSent int) {
+	if c == nil {
+		return
+	}
+	if chunkErrors < 0 {
+		chunkErrors = 0
+	}
+	if chunksSent < 0 {
+		chunksSent = 0
+	}
+	c.streamChunkErrors.Store(int64(chunkErrors))
+	c.streamChunksSent.Store(int64(chunksSent))
+	c.StreamChunkErrors = chunkErrors
+	c.StreamChunksSent = chunksSent
 }
 
 // AddQualityFlag appends a single detected issue tag, deduplicating
@@ -598,8 +647,8 @@ func (c *RequestLogContext) buildEntry(errCode, errMessage string, providerID, c
 	}
 
 	var streamChunkErrorsPtr *int
-	if c.StreamChunkErrors > 0 {
-		streamChunkErrorsPtr = &c.StreamChunkErrors
+	if chunkErrors := c.StreamChunkErrorsValue(); chunkErrors > 0 {
+		streamChunkErrorsPtr = &chunkErrors
 	}
 
 	// 2026-07-01 P0 fix: stream_chunks_sent is NOT NULL (migration 320).
@@ -608,7 +657,7 @@ func (c *RequestLogContext) buildEntry(errCode, errMessage string, providerID, c
 	// mirrors the fix in BuildSuccessEntry (handler.go:2212) and ensures
 	// both success and failure paths honour the schema contract.
 	var streamChunksSentPtr *int
-	sent := c.StreamChunksSent
+	sent := c.StreamChunksSentValue()
 	if sent < 0 {
 		sent = 0
 	}
