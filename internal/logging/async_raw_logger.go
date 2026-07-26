@@ -138,7 +138,12 @@ type AsyncRawDataLogger struct {
 	stateMu    sync.RWMutex
 	closeOnce  sync.Once
 	closeErr   error
+	// lastDropWarn 上次队列满告警的 UnixNano，用于限流（见 noteDroppedEntry）
+	lastDropWarn atomic.Int64
 }
+
+// dropWarnInterval 队列满告警的最小间隔
+const dropWarnInterval = 10 * time.Second
 
 // NewAsyncRawDataLogger 创建异步日志记录器
 func NewAsyncRawDataLogger(baseDir string, maxSize int64, enabled bool, queueSize int) (*AsyncRawDataLogger, error) {
@@ -190,10 +195,27 @@ func (l *AsyncRawDataLogger) LogClientRequest(requestID, protocol string, body [
 	}
 
 	if !l.queue.Enqueue(entry) {
-		slog.Warn("async_raw_logger: queue full, dropping log entry",
-			"request_id", requestID,
-			"direction", "client_request")
+		l.noteDroppedEntry(requestID, "client_request")
 	}
+}
+
+// noteDroppedEntry 记录一次入队失败。
+// 丢弃发生在流式请求的 goroutine 上，每帧一条 slog.Warn 会把"尽力而为"的
+// 日志变成热路径开销，因此按时间窗口聚合，只在窗口内首次丢弃时输出一次，
+// 并带上累计丢弃总数。
+func (l *AsyncRawDataLogger) noteDroppedEntry(requestID, direction string) {
+	now := time.Now().UnixNano()
+	last := l.lastDropWarn.Load()
+	if now-last < int64(dropWarnInterval) {
+		return
+	}
+	if !l.lastDropWarn.CompareAndSwap(last, now) {
+		return
+	}
+	slog.Warn("async_raw_logger: queue full, dropping log entries",
+		"request_id", requestID,
+		"direction", direction,
+		"dropped_total", l.queue.Stats().DropCount)
 }
 
 // LogUpstreamRequest 异步记录上游请求
@@ -216,9 +238,7 @@ func (l *AsyncRawDataLogger) LogUpstreamRequest(requestID, protocol string, body
 	}
 
 	if !l.queue.Enqueue(entry) {
-		slog.Warn("async_raw_logger: queue full, dropping log entry",
-			"request_id", requestID,
-			"direction", "upstream_request")
+		l.noteDroppedEntry(requestID, "upstream_request")
 	}
 }
 
@@ -242,9 +262,7 @@ func (l *AsyncRawDataLogger) LogUpstreamResponse(requestID, protocol string, bod
 	}
 
 	if !l.queue.Enqueue(entry) {
-		slog.Warn("async_raw_logger: queue full, dropping log entry",
-			"request_id", requestID,
-			"direction", "upstream_response")
+		l.noteDroppedEntry(requestID, "upstream_response")
 	}
 }
 
@@ -268,9 +286,7 @@ func (l *AsyncRawDataLogger) LogClientResponse(requestID, protocol string, body 
 	}
 
 	if !l.queue.Enqueue(entry) {
-		slog.Warn("async_raw_logger: queue full, dropping log entry",
-			"request_id", requestID,
-			"direction", "client_response")
+		l.noteDroppedEntry(requestID, "client_response")
 	}
 }
 
@@ -295,9 +311,7 @@ func (l *AsyncRawDataLogger) LogConversionError(requestID, protocol, direction, 
 	}
 
 	if !l.queue.Enqueue(entry) {
-		slog.Warn("async_raw_logger: queue full, dropping error log",
-			"request_id", requestID,
-			"error", err)
+		l.noteDroppedEntry(requestID, "error")
 	}
 }
 
@@ -319,15 +333,21 @@ func (l *AsyncRawDataLogger) flushWorker() {
 	}
 }
 
-// flushBatch 批量刷新日志
+// flushBatch 批量刷新日志。
+// 单次 tick 会持续排空队列，而非只取一个批次：此前每 100ms 最多写出
+// batchSize(50) 条，全进程上限约 500 条/秒，而每个 SSE 帧就会产生一条记录，
+// 少量并发流即可打满 10000 长度的队列并开始丢弃。
 func (l *AsyncRawDataLogger) flushBatch() {
-	entries := l.queue.TryDequeueBatch(l.batchSize)
-	if len(entries) == 0 {
-		return
+	for {
+		entries := l.queue.TryDequeueBatch(l.batchSize)
+		if len(entries) == 0 {
+			return
+		}
+		l.baseLogger.writeEntries(entries)
+		if len(entries) < l.batchSize {
+			return
+		}
 	}
-
-	// 批量写入基础日志记录器
-	l.baseLogger.writeEntries(entries)
 }
 
 // Close 关闭异步日志记录器
