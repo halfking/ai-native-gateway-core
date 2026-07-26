@@ -3995,9 +3995,9 @@ func (e *Executor) buildAsyncSuccessEntry(
 			entry.EgressProtocol = strPtr(result.Candidate.Protocol)
 		}
 		if len(result.ResponseBody) > 0 {
-			preview := string(result.ResponseBody)
-			if len(preview) > 200 {
-				preview = preview[:200] + "..."
+			preview := truncateUTF8(string(result.ResponseBody), 200)
+			if len(preview) < len(result.ResponseBody) {
+				preview += "..."
 			}
 			entry.ResponsePreview = &preview
 		}
@@ -4007,9 +4007,9 @@ func (e *Executor) buildAsyncSuccessEntry(
 		// usage_ledger. Bounded at 200 chars to match the
 		// ResponsePreview policy.
 		if len(result.RequestBody) > 0 {
-			preview := string(result.RequestBody)
-			if len(preview) > 200 {
-				preview = preview[:200] + "..."
+			preview := truncateUTF8(string(result.RequestBody), 200)
+			if len(preview) < len(result.RequestBody) {
+				preview += "..."
 			}
 			entry.RequestPreview = &preview
 		}
@@ -4093,10 +4093,7 @@ func contentTypeFor(isStream bool) string {
 // so a 10KB vendor error body doesn't blow up the Hash.
 func truncateForStore(s string) string {
 	const max = 1024
-	if len(s) > max {
-		return s[:max]
-	}
-	return s
+	return truncateUTF8(s, max)
 }
 
 type modelNotFoundError struct {

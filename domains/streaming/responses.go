@@ -137,7 +137,13 @@ func (h *ResponsesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	_ = ensureRequestBodyBuffered(r, &attemptRequestBody, &attemptClientModel)
+	// A capture failure leaves attemptRequestBody holding a truncated prompt
+	// that is still forwarded upstream, so it must not be swallowed.
+	if err := ensureRequestBodyBuffered(r, &attemptRequestBody, &attemptClientModel); err != nil {
+		h.chatHandler.recordDataLoss(r.Context(), AnomalyRequestBodyTruncated, string(SeverityHigh), requestID,
+			"responses: request body capture failed: "+err.Error(),
+			map[string]any{"captured_bytes": len(attemptRequestBody), "path": r.URL.Path})
+	}
 
 	var keyInfo *authentication.KeyInfo
 	if h.chatHandler.keyVerifier != nil && h.chatHandler.keyVerifier.Enabled() {

@@ -309,43 +309,14 @@ func (api *SessionDetailV2API) queryTurns(
 			return nil, err
 		}
 
-		// Parse JSONB fields
-		if len(compressionMetaRaw) > 0 {
-			var meta any
-			if err := json.Unmarshal(compressionMetaRaw, &meta); err == nil {
-				t.CompressionMeta = meta
-			}
-		}
-		if len(requestDeltaRaw) > 0 {
-			var delta any
-			if err := json.Unmarshal(requestDeltaRaw, &delta); err == nil {
-				t.RequestDelta = delta
-			}
-		}
-		if len(responseDeltaRaw) > 0 {
-			var delta any
-			if err := json.Unmarshal(responseDeltaRaw, &delta); err == nil {
-				t.ResponseDelta = delta
-			}
-		}
-		if len(outboundBodyRaw) > 0 {
-			var body any
-			if err := json.Unmarshal(outboundBodyRaw, &body); err == nil {
-				t.OutboundBody = body
-			}
-		}
-		if len(requestAttachmentsRaw) > 0 {
-			var attachments any
-			if err := json.Unmarshal(requestAttachmentsRaw, &attachments); err == nil {
-				t.RequestAttachments = attachments
-			}
-		}
-		if len(responseAttachmentsRaw) > 0 {
-			var attachments any
-			if err := json.Unmarshal(responseAttachmentsRaw, &attachments); err == nil {
-				t.ResponseAttachments = attachments
-			}
-		}
+		// Parse JSONB fields. Decode failures are logged rather than silently
+		// leaving the field null, which is indistinguishable from "not stored".
+		t.CompressionMeta = decodeStoredJSON("compression_meta", t.RequestID, compressionMetaRaw)
+		t.RequestDelta = decodeStoredJSON("request_delta", t.RequestID, requestDeltaRaw)
+		t.ResponseDelta = decodeStoredJSON("response_delta", t.RequestID, responseDeltaRaw)
+		t.OutboundBody = decodeStoredJSON("outbound_body", t.RequestID, outboundBodyRaw)
+		t.RequestAttachments = decodeStoredJSON("request_attachments", t.RequestID, requestAttachmentsRaw)
+		t.ResponseAttachments = decodeStoredJSON("response_attachments", t.RequestID, responseAttachmentsRaw)
 
 		turns = append(turns, t)
 	}
