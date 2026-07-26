@@ -129,8 +129,15 @@ func TestRequestLifecycle_CompleteFlow(t *testing.T) {
 		if strategy == nil || *strategy != "delta_append" {
 			t.Errorf("expected compression_strategy=delta_append, got %v", strategy)
 		}
-		if compressionMeta == nil || *compressionMeta != `{"msg_count":5}` {
-			t.Errorf("expected compression_meta={\"msg_count\":5}, got %v", compressionMeta)
+		if compressionMeta == nil {
+			t.Fatal("expected compression metadata")
+		}
+		var compressionMetaValue map[string]interface{}
+		if err := json.Unmarshal([]byte(*compressionMeta), &compressionMetaValue); err != nil {
+			t.Fatalf("decode compression metadata: %v", err)
+		}
+		if compressionMetaValue["msg_count"] != float64(5) {
+			t.Errorf("expected compression_meta msg_count=5, got %v", compressionMetaValue)
 		}
 		t.Logf("✓ Async update applied: status=%s stage=%d strategy=%s compression_meta=%s", status, stage, *strategy, *compressionMeta)
 	})
