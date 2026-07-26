@@ -261,3 +261,37 @@ func TestSanitizeUTF8JSON_BadHexEscapeStillRepaired(t *testing.T) {
 		t.Errorf("expected doubled backslash, got %s", got)
 	}
 }
+
+// sanitizeJSONField and sanitizeRawJSONField are the *string and
+// json.RawMessage halves of the same operation. When they drift apart, one
+// half loses data in a way the other reports — which is how the truncation
+// gap in sanitizeRawJSONField survived the first pass of this very fix.
+func TestSanitize_StringAndRawFieldsAgree(t *testing.T) {
+	inputs := []string{
+		`{"messages":[{"role":"user","content":"open C:\\users\\me"}]}`,
+		`{"messages":[{"role":"user","content":"\\usepackage{x}"}]}`,
+		`{"a":"x\u0000y"}`,
+		`{"a":1}{"garbage`,
+		`not json at all`,
+		`{"a":"x\uZZZZy"}`,
+	}
+	for _, in := range inputs {
+		t.Run(in, func(t *testing.T) {
+			s := in
+			p := &s
+			sanitizeJSONField("request_body", &p)
+
+			raw := json.RawMessage(in)
+			sanitizeRawJSONField("outbound_body", &raw)
+
+			strDropped := p == nil
+			rawDropped := len(raw) == 0
+			if strDropped != rawDropped {
+				t.Fatalf("drop decision differs: string dropped=%v, raw dropped=%v", strDropped, rawDropped)
+			}
+			if !strDropped && *p != string(raw) {
+				t.Fatalf("outputs differ:\nstring=%s\nraw   =%s", *p, string(raw))
+			}
+		})
+	}
+}

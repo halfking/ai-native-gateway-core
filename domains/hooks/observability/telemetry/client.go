@@ -1884,6 +1884,10 @@ func sanitizeJSONField(field string, p **string) {
 	*p = &v
 }
 
+// sanitizeRawJSONField is the json.RawMessage counterpart of sanitizeJSONField.
+// Both must report the same events: a silently shortened body is worse than a
+// discarded one, because it still looks complete to whoever reads it back.
+// outbound_body in particular holds the prompt actually sent upstream.
 func sanitizeRawJSONField(field string, raw *json.RawMessage) {
 	if len(*raw) == 0 {
 		return
@@ -1896,6 +1900,12 @@ func sanitizeRawJSONField(field string, raw *json.RawMessage) {
 			"bytes", len(*raw))
 		*raw = nil
 		return
+	}
+	if len(cleaned) < len(*raw) {
+		slog.Warn("telemetry JSONB field repaired by truncation",
+			"field", field,
+			"original_bytes", len(*raw),
+			"kept_bytes", len(cleaned))
 	}
 	*raw = json.RawMessage(cleaned)
 }
