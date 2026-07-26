@@ -40,7 +40,7 @@ CREATE TABLE IF NOT EXISTS provider_profile_metrics (
 
 CREATE INDEX IF NOT EXISTS idx_ppm_credential_time ON provider_profile_metrics(credential_id, metric_time DESC);
 CREATE INDEX IF NOT EXISTS idx_ppm_provider_time ON provider_profile_metrics(provider_id, metric_time DESC);
-CREATE INDEX IF NOT EXISTS idx_ppm_cleanup ON provider_profile_metrics(created_at) WHERE created_at < NOW() - INTERVAL '7 days';
+CREATE INDEX IF NOT EXISTS idx_ppm_cleanup ON provider_profile_metrics(created_at);
 
 COMMENT ON TABLE provider_profile_metrics IS '供应商画像小时级原始指标数据（保留7天）';
 COMMENT ON COLUMN provider_profile_metrics.time_slot IS '时段标签: dawn(0-6)/morning(6-12)/afternoon(12-18)/evening(18-22)/night(22-24)';
