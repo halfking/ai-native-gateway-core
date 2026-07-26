@@ -130,6 +130,47 @@ type UpstreamRequestLogger interface {
 	LogUpstreamRequest(requestID string, protocol string, body []byte) error
 }
 
+// envelopeAwareUpstreamRequestLogger is the optional interface that
+// loggers implement to receive the full correlation envelope on
+// upstream request log writes. Falls back to the basic
+// UpstreamRequestLogger path when the assertion fails.
+type envelopeAwareUpstreamRequestLogger interface {
+	LogUpstreamRequestWithEnvelope(requestID, protocol string, body []byte, conversionStep string, env RawCorrelationEnvelope)
+}
+
+// envelopeAwareUpstreamResponseLogger is the optional interface for
+// upstream response frames that want to carry the correlation
+// envelope. Loggers that don't implement it fall back to the basic
+// RawDataLogger.LogResponse path.
+type envelopeAwareUpstreamResponseLogger interface {
+	LogUpstreamResponseWithEnvelope(requestID, protocol string, body []byte, conversionStep string, env RawCorrelationEnvelope)
+}
+
+// envelopeAwareClientResponseLogger is the optional interface for the
+// final body returned to the client. Loggers that don't implement it
+// fall back to the basic ClientResponseLogger path.
+type envelopeAwareClientResponseLogger interface {
+	LogClientResponseWithEnvelope(requestID, protocol string, body []byte, conversionStep string, env RawCorrelationEnvelope)
+}
+
+// envelopeFromParams builds a correlation envelope from ExecParams so
+// every raw entry can be cross-referenced with request_logs.
+func envelopeFromParams(params *ExecParams) RawCorrelationEnvelope {
+	if params == nil {
+		return RawCorrelationEnvelope{}
+	}
+	env := RawCorrelationEnvelope{
+		GWSessionID: params.SessionID,
+		GWTaskID:    params.Model,
+		TenantID:    params.TenantID,
+		APIKeyID:    params.KeyID,
+	}
+	if params.AppID != nil {
+		env.ApplicationID = fmt.Sprintf("%d", *params.AppID)
+	}
+	return env
+}
+
 // ClientResponseLogger records the final body returned to the client.
 // Streaming bridges use RawDataLogger.LogResponse for pre-conversion upstream
 // frames; this optional interface is used for non-streaming client responses.
@@ -889,6 +930,13 @@ func clientTokenOf(userKey, clientType string) string {
 }
 
 func (e *Executor) logUpstreamRequest(params *ExecParams, protocol string, body []byte) {
+	if e.RawDataLogger == nil {
+		return
+	}
+	if aware, ok := e.RawDataLogger.(envelopeAwareUpstreamRequestLogger); ok {
+		aware.LogUpstreamRequestWithEnvelope(diagnosticRequestID(params), protocol, body, "post_conversion", envelopeFromParams(params))
+		return
+	}
 	logger, ok := e.RawDataLogger.(UpstreamRequestLogger)
 	if !ok || logger == nil {
 		return
@@ -902,12 +950,23 @@ func (e *Executor) logUpstreamResponse(params *ExecParams, protocol string, body
 	if e.RawDataLogger == nil {
 		return
 	}
+	if aware, ok := e.RawDataLogger.(envelopeAwareUpstreamResponseLogger); ok {
+		aware.LogUpstreamResponseWithEnvelope(diagnosticRequestID(params), protocol, body, "post_conversion", envelopeFromParams(params))
+		return
+	}
 	if err := e.RawDataLogger.LogResponse(diagnosticRequestID(params), protocol, body, false); err != nil {
 		slog.Warn("executor diagnostics: upstream response logging failed", "request_id", diagnosticRequestID(params), "error", err)
 	}
 }
 
 func (e *Executor) logClientResponse(params *ExecParams, protocol string, body []byte) {
+	if e.RawDataLogger == nil {
+		return
+	}
+	if aware, ok := e.RawDataLogger.(envelopeAwareClientResponseLogger); ok {
+		aware.LogClientResponseWithEnvelope(diagnosticRequestID(params), protocol, body, "post_conversion", envelopeFromParams(params))
+		return
+	}
 	logger, ok := e.RawDataLogger.(ClientResponseLogger)
 	if !ok || logger == nil {
 		return

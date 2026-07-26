@@ -176,27 +176,123 @@ func NewAsyncRawDataLogger(baseDir string, maxSize int64, enabled bool, queueSiz
 
 // LogClientRequest 异步记录客户端请求
 func (l *AsyncRawDataLogger) LogClientRequest(requestID, protocol string, body []byte, headers map[string]string, conversionStep string) {
+	l.LogClientRequestWithEnvelope(requestID, protocol, body, headers, conversionStep, RawCorrelationEnvelope{})
+}
+
+// LogClientRequestWithEnvelope is the correlation-aware counterpart of
+// LogClientRequest. Operators can attach session, task, provider, and
+// trace identifiers so the audit log can be joined with request_logs
+// without an external index.
+func (l *AsyncRawDataLogger) LogClientRequestWithEnvelope(
+	requestID, protocol string,
+	body []byte,
+	headers map[string]string,
+	conversionStep string,
+	env RawCorrelationEnvelope,
+) {
 	l.stateMu.RLock()
 	defer l.stateMu.RUnlock()
 	if l.closed.Load() || l.baseLogger == nil || !l.baseLogger.enabled {
 		return
 	}
 
-	entry := RawDataEntry{
-		Timestamp:       time.Now(),
-		RequestID:       requestID,
-		Direction:       "client_request",
-		Protocol:        protocol,
-		DataSize:        len(body),
-		RawData:         encodeRawData(body),
-		RawDataEncoding: "base64",
-		Headers:         headers,
-		ConversionStep:  conversionStep,
-	}
-
+	entry := l.makeEntry("client_request", requestID, protocol, body, headers, conversionStep, env)
 	if !l.queue.Enqueue(entry) {
-		l.noteDroppedEntry(requestID, "client_request")
+		// 2026-07-27: A dropped raw entry is no longer silent. Emit a
+		// stub entry that records the queue overflow plus the
+		// correlation envelope so the operator can still join with
+		// request_logs and the anomaly endpoint can dedupe across
+		// processes.
+		overflow := RawDataEntry{
+			Timestamp:        time.Now(),
+			RequestID:        requestID,
+			Direction:        "overflow",
+			Protocol:         protocol,
+			DataSize:         len(body),
+			Headers:          headers,
+			ConversionStep:   conversionStep,
+			ClientRequestID:  env.ClientRequestID,
+			GWSessionID:      env.GWSessionID,
+			GWTaskID:         env.GWTaskID,
+			ParentRequestID:  env.ParentRequestID,
+			TenantID:         env.TenantID,
+			ApplicationID:    env.ApplicationID,
+			APIKeyID:         env.APIKeyID,
+			ProviderID:       env.ProviderID,
+			CredentialID:     env.CredentialID,
+			AttemptNo:        env.AttemptNo,
+			UpstreamEndpoint: env.UpstreamEndpoint,
+			TraceID:          env.TraceID,
+			SpanID:           env.SpanID,
+			Error:            "raw_log_queue_full",
+		}
+		if !l.queue.Enqueue(overflow) {
+			l.noteDroppedEntry(requestID, "client_request")
+		}
 	}
+}
+
+// makeEntry builds a RawDataEntry from the supplied envelope, computing
+// the SHA-256 of the body so the raw log can be verified against the
+// request_logs row and the anomaly endpoint.
+func (l *AsyncRawDataLogger) makeEntry(
+	direction, requestID, protocol string,
+	body []byte,
+	headers map[string]string,
+	conversionStep string,
+	env RawCorrelationEnvelope,
+) RawDataEntry {
+	entry := RawDataEntry{
+		Timestamp:        time.Now(),
+		RequestID:        requestID,
+		Direction:        direction,
+		Protocol:         protocol,
+		DataSize:         len(body),
+		RawData:          encodeRawData(body),
+		RawDataEncoding:  "base64",
+		Headers:          headers,
+		ConversionStep:   conversionStep,
+		ClientRequestID:  env.ClientRequestID,
+		GWSessionID:      env.GWSessionID,
+		GWTaskID:         env.GWTaskID,
+		ParentRequestID:  env.ParentRequestID,
+		TenantID:         env.TenantID,
+		ApplicationID:    env.ApplicationID,
+		APIKeyID:         env.APIKeyID,
+		ProviderID:       env.ProviderID,
+		CredentialID:     env.CredentialID,
+		AttemptNo:        env.AttemptNo,
+		UpstreamEndpoint: env.UpstreamEndpoint,
+		TraceID:          env.TraceID,
+		SpanID:           env.SpanID,
+		ChunkIndex:       env.ChunkIndex,
+	}
+	if len(body) > 0 {
+		entry.SHA256 = hashBytes(body)
+	}
+	return entry
+}
+
+// RawCorrelationEnvelope carries the request correlation fields used by
+// the audit log writer. All fields are optional; missing values fall
+// back to the legacy (request_id, direction) lookup. Producer sites
+// (executor / streaming bridges) populate the envelope from the
+// request context so every raw entry can be joined with request_logs.
+type RawCorrelationEnvelope struct {
+	ClientRequestID  string
+	GWSessionID      string
+	GWTaskID         string
+	ParentRequestID  string
+	TenantID         string
+	ApplicationID    string
+	APIKeyID         int
+	ProviderID       int
+	CredentialID     int
+	AttemptNo        int
+	ChunkIndex       int
+	UpstreamEndpoint string
+	TraceID          string
+	SpanID           string
 }
 
 // noteDroppedEntry 记录一次入队失败。
@@ -220,73 +316,89 @@ func (l *AsyncRawDataLogger) noteDroppedEntry(requestID, direction string) {
 
 // LogUpstreamRequest 异步记录上游请求
 func (l *AsyncRawDataLogger) LogUpstreamRequest(requestID, protocol string, body []byte, conversionStep string) {
+	l.LogUpstreamRequestWithEnvelope(requestID, protocol, body, conversionStep, RawCorrelationEnvelope{})
+}
+
+// LogUpstreamRequestWithEnvelope is the correlation-aware counterpart of
+// LogUpstreamRequest. Used by the streaming bridges to attribute each
+// upstream request to a specific provider, credential, attempt, and
+// chunk sequence.
+func (l *AsyncRawDataLogger) LogUpstreamRequestWithEnvelope(
+	requestID, protocol string,
+	body []byte,
+	conversionStep string,
+	env RawCorrelationEnvelope,
+) {
 	l.stateMu.RLock()
 	defer l.stateMu.RUnlock()
 	if l.closed.Load() || l.baseLogger == nil || !l.baseLogger.enabled {
 		return
 	}
 
-	entry := RawDataEntry{
-		Timestamp:       time.Now(),
-		RequestID:       requestID,
-		Direction:       "upstream_request",
-		Protocol:        protocol,
-		DataSize:        len(body),
-		RawData:         encodeRawData(body),
-		RawDataEncoding: "base64",
-		ConversionStep:  conversionStep,
-	}
-
+	entry := l.makeEntry("upstream_request", requestID, protocol, body, nil, conversionStep, env)
 	if !l.queue.Enqueue(entry) {
-		l.noteDroppedEntry(requestID, "upstream_request")
+		overflow := l.makeOverflowEntry("upstream_request", requestID, protocol, conversionStep, env)
+		if !l.queue.Enqueue(overflow) {
+			l.noteDroppedEntry(requestID, "upstream_request")
+		}
 	}
 }
 
 // LogUpstreamResponse 异步记录上游响应
 func (l *AsyncRawDataLogger) LogUpstreamResponse(requestID, protocol string, body []byte, conversionStep string) {
+	l.LogUpstreamResponseWithEnvelope(requestID, protocol, body, conversionStep, RawCorrelationEnvelope{})
+}
+
+// LogUpstreamResponseWithEnvelope is the correlation-aware counterpart
+// of LogUpstreamResponse.
+func (l *AsyncRawDataLogger) LogUpstreamResponseWithEnvelope(
+	requestID, protocol string,
+	body []byte,
+	conversionStep string,
+	env RawCorrelationEnvelope,
+) {
 	l.stateMu.RLock()
 	defer l.stateMu.RUnlock()
 	if l.closed.Load() || l.baseLogger == nil || !l.baseLogger.enabled {
 		return
 	}
 
-	entry := RawDataEntry{
-		Timestamp:       time.Now(),
-		RequestID:       requestID,
-		Direction:       "upstream_response",
-		Protocol:        protocol,
-		DataSize:        len(body),
-		RawData:         encodeRawData(body),
-		RawDataEncoding: "base64",
-		ConversionStep:  conversionStep,
-	}
-
+	entry := l.makeEntry("upstream_response", requestID, protocol, body, nil, conversionStep, env)
 	if !l.queue.Enqueue(entry) {
-		l.noteDroppedEntry(requestID, "upstream_response")
+		overflow := l.makeOverflowEntry("upstream_response", requestID, protocol, conversionStep, env)
+		if !l.queue.Enqueue(overflow) {
+			l.noteDroppedEntry(requestID, "upstream_response")
+		}
 	}
 }
 
 // LogClientResponse 异步记录客户端响应
 func (l *AsyncRawDataLogger) LogClientResponse(requestID, protocol string, body []byte, conversionStep string) {
+	l.LogClientResponseWithEnvelope(requestID, protocol, body, conversionStep, RawCorrelationEnvelope{})
+}
+
+// LogClientResponseWithEnvelope is the correlation-aware counterpart of
+// LogClientResponse. Used to capture the exact wire bytes the gateway
+// sent to the client (non-streaming or stream-end), which previously
+// were only reconstructed from chunks.
+func (l *AsyncRawDataLogger) LogClientResponseWithEnvelope(
+	requestID, protocol string,
+	body []byte,
+	conversionStep string,
+	env RawCorrelationEnvelope,
+) {
 	l.stateMu.RLock()
 	defer l.stateMu.RUnlock()
 	if l.closed.Load() || l.baseLogger == nil || !l.baseLogger.enabled {
 		return
 	}
 
-	entry := RawDataEntry{
-		Timestamp:       time.Now(),
-		RequestID:       requestID,
-		Direction:       "client_response",
-		Protocol:        protocol,
-		DataSize:        len(body),
-		RawData:         encodeRawData(body),
-		RawDataEncoding: "base64",
-		ConversionStep:  conversionStep,
-	}
-
+	entry := l.makeEntry("client_response", requestID, protocol, body, nil, conversionStep, env)
 	if !l.queue.Enqueue(entry) {
-		l.noteDroppedEntry(requestID, "client_response")
+		overflow := l.makeOverflowEntry("client_response", requestID, protocol, conversionStep, env)
+		if !l.queue.Enqueue(overflow) {
+			l.noteDroppedEntry(requestID, "client_response")
+		}
 	}
 }
 
@@ -298,20 +410,39 @@ func (l *AsyncRawDataLogger) LogConversionError(requestID, protocol, direction, 
 		return
 	}
 
-	entry := RawDataEntry{
-		Timestamp:       time.Now(),
-		RequestID:       requestID,
-		Direction:       direction,
-		Protocol:        protocol,
-		DataSize:        len(body),
-		RawData:         encodeRawData(body),
-		RawDataEncoding: "base64",
-		ConversionStep:  step,
-		Error:           err.Error(),
-	}
-
+	entry := l.makeEntry(direction, requestID, protocol, body, nil, step, RawCorrelationEnvelope{})
+	entry.Error = err.Error()
 	if !l.queue.Enqueue(entry) {
-		l.noteDroppedEntry(requestID, "error")
+		overflow := l.makeOverflowEntry(direction, requestID, protocol, step, RawCorrelationEnvelope{})
+		overflow.Error = err.Error()
+		if !l.queue.Enqueue(overflow) {
+			l.noteDroppedEntry(requestID, "error")
+		}
+	}
+}
+
+func (l *AsyncRawDataLogger) makeOverflowEntry(direction, requestID, protocol, conversionStep string, env RawCorrelationEnvelope) RawDataEntry {
+	return RawDataEntry{
+		Timestamp:        time.Now(),
+		RequestID:        requestID,
+		Direction:        "overflow",
+		Protocol:         protocol,
+		DataSize:         0,
+		ConversionStep:   conversionStep,
+		ClientRequestID:  env.ClientRequestID,
+		GWSessionID:      env.GWSessionID,
+		GWTaskID:         env.GWTaskID,
+		ParentRequestID:  env.ParentRequestID,
+		TenantID:         env.TenantID,
+		ApplicationID:    env.ApplicationID,
+		APIKeyID:         env.APIKeyID,
+		ProviderID:       env.ProviderID,
+		CredentialID:     env.CredentialID,
+		AttemptNo:        env.AttemptNo,
+		UpstreamEndpoint: env.UpstreamEndpoint,
+		TraceID:          env.TraceID,
+		SpanID:           env.SpanID,
+		Error:            "raw_log_queue_full:" + direction,
 	}
 }
 

@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	"github.com/kaixuan/llm-gateway-go/internal/ir"
+	"github.com/kaixuan/llm-gateway-go/internal/logging"
 )
 
 type rawDataLogger interface {
@@ -13,6 +14,22 @@ type rawDataLogger interface {
 	LogUpstreamResponse(requestID, protocol string, body []byte, conversionStep string)
 	LogClientResponse(requestID, protocol string, body []byte, conversionStep string)
 }
+
+// envelopeAwareRawDataLogger is the optional interface implemented by
+// loggers that can attach the full correlation envelope. Producers
+// type-assert the adapter's logger against this interface; legacy
+// loggers fall through to the non-envelope methods.
+type envelopeAwareRawDataLogger interface {
+	LogClientRequestWithEnvelope(requestID, protocol string, body []byte, headers map[string]string, conversionStep string, env RawCorrelationEnvelope)
+	LogUpstreamRequestWithEnvelope(requestID, protocol string, body []byte, conversionStep string, env RawCorrelationEnvelope)
+	LogUpstreamResponseWithEnvelope(requestID, protocol string, body []byte, conversionStep string, env RawCorrelationEnvelope)
+	LogClientResponseWithEnvelope(requestID, protocol string, body []byte, conversionStep string, env RawCorrelationEnvelope)
+}
+
+// RawCorrelationEnvelope is re-exported here so callers in this
+// package don't need to import the logging package directly. The
+// concrete type is the same struct defined in internal/logging.
+type RawCorrelationEnvelope = logging.RawCorrelationEnvelope
 
 // RawDataLoggerAdapter adapts a raw data logger to the Executor diagnostic
 // interface. The wrapped logger may write asynchronously, so diagnostics never
@@ -62,6 +79,62 @@ func (a *RawDataLoggerAdapter) LogClientResponse(requestID string, protocol stri
 	}
 	a.logger.LogClientResponse(requestID, protocol, body, "post_conversion")
 	return nil
+}
+
+// LogClientRequestWithEnvelope forwards the envelope to loggers that
+// accept it. Legacy loggers silently fall back to the basic
+// LogClientRequest path.
+func (a *RawDataLoggerAdapter) LogClientRequestWithEnvelope(requestID, protocol string, body []byte, headers map[string]string, conversionStep string, env RawCorrelationEnvelope) {
+	if a.logger == nil {
+		return
+	}
+	if aware, ok := a.logger.(envelopeAwareRawDataLogger); ok {
+		aware.LogClientRequestWithEnvelope(requestID, protocol, body, headers, conversionStep, env)
+		return
+	}
+	a.logger.LogClientRequest(requestID, protocol, body, headers, conversionStep)
+}
+
+// LogUpstreamRequestWithEnvelope forwards the envelope to loggers that
+// accept it. Legacy loggers silently fall back to the basic
+// LogUpstreamRequest path.
+func (a *RawDataLoggerAdapter) LogUpstreamRequestWithEnvelope(requestID, protocol string, body []byte, conversionStep string, env RawCorrelationEnvelope) {
+	if a.logger == nil {
+		return
+	}
+	if aware, ok := a.logger.(envelopeAwareRawDataLogger); ok {
+		aware.LogUpstreamRequestWithEnvelope(requestID, protocol, body, conversionStep, env)
+		return
+	}
+	a.logger.LogUpstreamRequest(requestID, protocol, body, conversionStep)
+}
+
+// LogUpstreamResponseWithEnvelope forwards the envelope to loggers
+// that accept it. Legacy loggers silently fall back to the basic
+// LogUpstreamResponse path.
+func (a *RawDataLoggerAdapter) LogUpstreamResponseWithEnvelope(requestID, protocol string, body []byte, conversionStep string, env RawCorrelationEnvelope) {
+	if a.logger == nil {
+		return
+	}
+	if aware, ok := a.logger.(envelopeAwareRawDataLogger); ok {
+		aware.LogUpstreamResponseWithEnvelope(requestID, protocol, body, conversionStep, env)
+		return
+	}
+	a.logger.LogUpstreamResponse(requestID, protocol, body, conversionStep)
+}
+
+// LogClientResponseWithEnvelope forwards the envelope to loggers
+// that accept it. Legacy loggers silently fall back to the basic
+// LogClientResponse path.
+func (a *RawDataLoggerAdapter) LogClientResponseWithEnvelope(requestID, protocol string, body []byte, conversionStep string, env RawCorrelationEnvelope) {
+	if a.logger == nil {
+		return
+	}
+	if aware, ok := a.logger.(envelopeAwareRawDataLogger); ok {
+		aware.LogClientResponseWithEnvelope(requestID, protocol, body, conversionStep, env)
+		return
+	}
+	a.logger.LogClientResponse(requestID, protocol, body, conversionStep)
 }
 
 type anomalyReporter interface {
