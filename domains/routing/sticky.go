@@ -181,7 +181,17 @@ func (s *StickyCache) GetMultiLevel(
 				cancel()
 				// 回填内存
 				s.Set(k.key, credID, k.ttl)
-				return StickyLookupResult{CredentialID: credID, Level: StickyLevelClient, Found: true}
+				// 按实际命中的 level 映射 StickyLevel, 不能硬编码 StickyLevelClient
+				var lvl StickyLevel
+				switch k.lvl {
+				case 1:
+					lvl = StickyLevelSession
+				case 2:
+					lvl = StickyLevelClientModel
+				default:
+					lvl = StickyLevelClient
+				}
+				return StickyLookupResult{CredentialID: credID, Level: lvl, Found: true}
 			}
 		}
 		cancel()
