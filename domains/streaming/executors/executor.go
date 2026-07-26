@@ -207,6 +207,14 @@ type ProbeSyncFunc func(
 	parentReqID string,
 ) bool
 
+// NodeProbeHealthyFunc is the contract bg.MarkNodeProbeHealthy satisfies.
+// Defined here (rather than imported from bg) so the executors package
+// does not transitively depend on the bg package. Wiring happens in
+// cmd/gateway/main.go.
+// Clears the node_probe_state failure gate for a (credential, model) pair
+// after a successful real business request.
+type NodeProbeHealthyFunc func(ctx context.Context, credentialID int, rawModel string) error
+
 // StreamWrapperFunc is injected by the main.go wiring to handle streaming
 // responses. Receives the upstream resp and returns a StreamOutcome to let
 // Execute() decide failover. The fourth argument (capture) is the audit
@@ -646,6 +654,14 @@ type Executor struct {
 	// no-candidate branch. Wired from main.go to bg.NodeProbeWorker.
 	// Nil disables the feature even if SyncNoCandidateProbe is true.
 	ProbeSync ProbeSyncFunc
+
+	// NodeProbeHealthy is called on the success path of a real business
+	// request to clear node_probe_state.last_direct_ok=FALSE, so the
+	// v_routable_credential_models view does not keep excluding the
+	// credential after transient probe timeouts.
+	// Wired from main.go to bg.MarkNodeProbeHealthy.
+	// Nil is safe — the call is skipped.
+	NodeProbeHealthy NodeProbeHealthyFunc
 
 	// asyncDepth is the recursion guard (Track C C4). The async
 	// goroutine (runAsyncRetry) calls Execute again; we bump this
@@ -1989,6 +2005,14 @@ func (e *Executor) Execute(params *ExecParams) (*ExecuteResult, error) {
 			}
 			// Record success for Bandit scoring (Thompson Sampling)
 			e.recordBanditSuccess(cand.CredentialID, result.LatencyMs)
+			// Clear node_probe_state failure gate when a real business
+			// request succeeds on a credential that was previously
+			// probe-failed. This prevents transient probe timeouts
+			// (e.g. NVIDIA NIM cold-start >15s) from permanently
+			// excluding healthy credentials from routing.
+			if e.NodeProbeHealthy != nil && cand.RawModel != "" {
+				_ = e.NodeProbeHealthy(sideEffectCtx, cand.CredentialID, cand.RawModel)
+			}
 			// Step 6 (2026-06-18): a successful response on this
 			// credential clears its model_not_found streak. The next
 			// request from this sticky session will not be tripped by
