@@ -57,8 +57,10 @@ type CredentialProbeV2 struct {
 // NewCredentialProbeV2 builds the background probe-v2 worker. The cycle
 // interval and fast-reprobe delay default to 1h / 5min (production) but
 // can both be shortened via env for local/test environments:
-//   LLM_GATEWAY_CRED_PROBE_V2_INTERVAL
-//   LLM_GATEWAY_CRED_PROBE_V2_FAST_REPROBE_DELAY
+//
+//	LLM_GATEWAY_CRED_PROBE_V2_INTERVAL
+//	LLM_GATEWAY_CRED_PROBE_V2_FAST_REPROBE_DELAY
+//
 // This avoids the "first probe missed mock startup, wait an hour for the
 // next tick" failure mode in scenario tests.
 func NewCredentialProbeV2(db *pgxpool.Pool, encKey []byte) *CredentialProbeV2 {
@@ -400,7 +402,7 @@ func (c *CredentialProbeV2) probeCredential(ctx context.Context, s v2Snapshot) (
 		return false, "empty base URL"
 	}
 
-	httpClient := &http.Client{Timeout: 15 * time.Second}
+	httpClient := &http.Client{Timeout: 30 * time.Second}
 	desc := providercap.Resolve(s.ProviderProtocol, "")
 
 	// Step 1: GET /v1/models (skip for anthropic-messages — no /models endpoint)
