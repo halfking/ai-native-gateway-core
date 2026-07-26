@@ -26,6 +26,8 @@ func PlatformSpecs() []*Spec {
 	out = append(out, SessionsV2Specs()...)
 	// 2026-07-18: dedicated session-manager service JWT gate.
 	out = append(out, SessionServiceAuthSpecs()...)
+	// 2026-07-26: Provider Profile System (供应商画像系统) - 7-dimension provider quality scoring.
+	out = append(out, ProviderProfileSpecs()...)
 	return out
 }
 
