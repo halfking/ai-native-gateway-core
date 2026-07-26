@@ -55,6 +55,35 @@ func (s *StickyStore) Get(ctx context.Context, rawKey string) (int, bool) {
 	return credID, true
 }
 
+// SetLevel 显式指定 level(1/2/3)写入, 避免 levelOf 的冒号段数启发式
+// (profile/model 含冒号时 levelOf 会误判)。调用方已知 level 时应优先用此方法。
+func (s *StickyStore) SetLevel(ctx context.Context, level int, credID int, rawKey string, ttl time.Duration) error {
+	redisKey := StickyKey(level, rawKey)
+	if err := s.rdb.Set(ctx, redisKey, strconv.Itoa(credID), ttl).Err(); err != nil {
+		return err
+	}
+	s.lru.Put(redisKey, credID)
+	return nil
+}
+
+// GetLevel 显式指定 level 读取。
+func (s *StickyStore) GetLevel(ctx context.Context, level int, rawKey string) (int, bool) {
+	redisKey := StickyKey(level, rawKey)
+	if v, ok := s.lru.Get(redisKey); ok {
+		return v, true
+	}
+	val, err := s.rdb.Get(ctx, redisKey).Result()
+	if err == redis.Nil || err != nil {
+		return 0, false
+	}
+	credID, err := strconv.Atoi(val)
+	if err != nil {
+		return 0, false
+	}
+	s.lru.Put(redisKey, credID)
+	return credID, true
+}
+
 // levelOf 从 rawKey 推断 sticky 级别(L1/L2/L3)用于 Redis key 前缀。
 // 约定: caller 传入的 rawKey 已是 buildStickyKeys 产出的完整 key,
 // 通过冒号分隔段数判定: 6 段=L1, 5 段=L2, 4 段=L3。
