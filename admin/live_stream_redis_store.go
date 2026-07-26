@@ -71,7 +71,7 @@ func marshalTileSlim(tile LiveStreamTile) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("invalid timestamp: %w", err)
 	}
-	
+
 	slim := LiveStreamTileSlim{
 		RequestID: tile.RequestID,
 		Timestamp: ts.UnixMilli(),
@@ -79,7 +79,7 @@ func marshalTileSlim(tile LiveStreamTile) (string, error) {
 		ErrorKind: tile.ErrorKind,
 		IsProbe:   tile.IsProbe,
 	}
-	
+
 	data, err := json.Marshal(slim)
 	if err != nil {
 		return "", err
@@ -93,9 +93,9 @@ func unmarshalTileSlim(data string) (LiveStreamTile, error) {
 	if err := json.Unmarshal([]byte(data), &slim); err != nil {
 		return LiveStreamTile{}, err
 	}
-	
+
 	ts := time.UnixMilli(slim.Timestamp).UTC()
-	
+
 	return LiveStreamTile{
 		RequestID: slim.RequestID,
 		Timestamp: ts.Format(time.RFC3339),
@@ -767,6 +767,27 @@ func buildLiveStreamLanes(dimension string, items []LiveRequest) ([]LiveStreamLa
 		grouped[key] = append(grouped[key], liveRequestTile(req))
 	}
 
+	// 2026-07-26: the lane owns its ordering contract instead of trusting
+	// the caller's order. SwimLaneTrack.vue paints index 0 leftmost and
+	// firstTiles() caps a lane with items[:N], so both only mean "newest
+	// on the left, oldest truncated" when tiles are DESC by ts. Sorting
+	// here also makes the two producers agree: SnapshotFromDimensionQueues
+	// (dimension ZSETs) and Replay (main queue) previously fed ASC input,
+	// which silently capped busy lanes to their OLDEST 20 tiles and hid
+	// every newer request.
+	for key := range grouped {
+		tiles := grouped[key]
+		sort.SliceStable(tiles, func(i, j int) bool {
+			// Ts is RFC3339 — lexicographic compare matches chronological
+			// order. Tie-break on RequestID so equal timestamps stay stable
+			// across snapshots and don't trip lanesChanged.
+			if tiles[i].Timestamp != tiles[j].Timestamp {
+				return tiles[i].Timestamp > tiles[j].Timestamp
+			}
+			return tiles[i].RequestID < tiles[j].RequestID
+		})
+	}
+
 	keys := make([]string, 0, len(stats))
 	for key := range stats {
 		keys = append(keys, key)
@@ -786,14 +807,14 @@ func buildLiveStreamLanes(dimension string, items []LiveRequest) ([]LiveStreamLa
 		if key == "" || key == "unknown" || key == "__unknown__" || key == "__idle__" {
 			continue
 		}
-			lanes = append(lanes, LiveStreamLane{
-				ID:        key,
-				Name:      key,
-				Dimension: dimension,
-				Requests:  firstTiles(grouped[key], liveStreamLaneLimit),
-				Stats:     stats[key],
-				IsOthers:  false,
-			})
+		lanes = append(lanes, LiveStreamLane{
+			ID:        key,
+			Name:      key,
+			Dimension: dimension,
+			Requests:  firstTiles(grouped[key], liveStreamLaneLimit),
+			Stats:     stats[key],
+			IsOthers:  false,
+		})
 		legends = append(legends, LiveStreamLegendItem{Key: key, Name: key, Count: stats[key].Total})
 	}
 
@@ -1006,8 +1027,9 @@ func countStatus(stats *LiveStreamStats, status string) {
 	}
 }
 
-// firstTiles returns the first N tiles from items (newest tiles, for RIGHT→LEFT display).
-// Backend stores tiles in DESC timestamp order in Redis ZSET, so first N = newest N.
+// firstTiles caps a lane at limit tiles by keeping the head of items.
+// buildLiveStreamLanes sorts each lane DESC (newest first) before calling
+// this, so the head is the newest N and the truncated tail is the oldest.
 func firstTiles(items []LiveStreamTile, limit int) []LiveStreamTile {
 	if limit <= 0 || len(items) <= limit {
 		return items
@@ -1331,18 +1353,18 @@ func lanesChanged(old, new []LiveStreamLane) bool {
 			old[i].Stats != new[i].Stats || len(old[i].Requests) != len(new[i].Requests) {
 			return true
 		}
-			for j := range old[i].Requests {
-				if old[i].Requests[j].RequestID != new[i].Requests[j].RequestID {
-					return true
-				}
-				if old[i].Requests[j].Status != new[i].Requests[j].Status {
-					return true
-				}
-				// Use tolerance-based comparison instead of exact string match
-				if !timestampsEqual(old[i].Requests[j].Timestamp, new[i].Requests[j].Timestamp) {
-					return true
-				}
+		for j := range old[i].Requests {
+			if old[i].Requests[j].RequestID != new[i].Requests[j].RequestID {
+				return true
 			}
+			if old[i].Requests[j].Status != new[i].Requests[j].Status {
+				return true
+			}
+			// Use tolerance-based comparison instead of exact string match
+			if !timestampsEqual(old[i].Requests[j].Timestamp, new[i].Requests[j].Timestamp) {
+				return true
+			}
+		}
 	}
 	return false
 }
@@ -1363,11 +1385,11 @@ const timestampToleranceMs = 100
 func timestampsEqual(ts1, ts2 string) bool {
 	t1, err1 := time.Parse(time.RFC3339, ts1)
 	t2, err2 := time.Parse(time.RFC3339, ts2)
-	
+
 	if err1 != nil || err2 != nil {
 		// If either parse fails, fall back to string comparison
 		return ts1 == ts2
 	}
-	
+
 	return absTimeDiff(t1, t2) <= timestampToleranceMs*time.Millisecond
 }
