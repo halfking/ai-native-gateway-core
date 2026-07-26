@@ -24,6 +24,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/kaixuan/llm-gateway-go/bg"
+	"github.com/kaixuan/llm-gateway-go/secret"
 	"github.com/kaixuan/llm-gateway-go/settings"
 )
 
@@ -45,7 +46,12 @@ type ProviderProfileWorkers struct {
 //   - ProfileCollector: collects metrics every 2 hours (configurable)
 //   - ProfileAggregator: aggregates daily profiles every day at 4am
 //   - ProfileCleaner: cleans up old metrics every Sunday at 5am
-func initProviderProfile(pool *pgxpool.Pool) *ProviderProfileWorkers {
+//
+// fernetKey/keyring are the credential decryption keys derived earlier in
+// main() (see secret.FernetKeyFromSecret / secret.KeyringFromEnv); the
+// collector's network latency probe needs them to decrypt
+// credentials.secret_ciphertext before calling GET /v1/models.
+func initProviderProfile(pool *pgxpool.Pool, fernetKey []byte, keyring *secret.Keyring) *ProviderProfileWorkers {
 	if pool == nil {
 		slog.Warn("provider profile: nil pool, system disabled")
 		return nil
@@ -66,7 +72,7 @@ func initProviderProfile(pool *pgxpool.Pool) *ProviderProfileWorkers {
 	cleanupInterval := time.Duration(cleanupSeconds) * time.Second
 
 	// Create workers
-	collector := bg.NewProfileCollector(pool, collectionInterval)
+	collector := bg.NewProfileCollector(pool, collectionInterval, fernetKey, keyring)
 	aggregator := bg.NewProfileAggregator(pool, aggregationInterval)
 	cleaner := bg.NewProfileCleaner(pool, cleanupInterval)
 

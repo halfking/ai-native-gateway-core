@@ -7,53 +7,106 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/kaixuan/llm-gateway-go/internal/providercap"
+	"github.com/kaixuan/llm-gateway-go/secret"
 )
 
 // GatewayNetworkProber 网关网络探测器适配器
-// 复用网关的 /v1/models 端点探测功能
+// 复用网关的 /v1/models 端点探测功能（GET，免费，不消耗token）
 type GatewayNetworkProber struct {
+	db         *pgxpool.Pool
 	httpClient *http.Client
-	baseURL    string // 网关自身的URL，例如 "http://localhost:8080"
+	fernetKey  []byte
+	keyring    *secret.Keyring
 }
 
 // NewGatewayNetworkProber 创建网关网络探测器
-func NewGatewayNetworkProber(baseURL string) *GatewayNetworkProber {
+// fernetKey/keyring 用于解密 credentials.secret_ciphertext（与 cmd/gateway/main.go
+// 中派生凭证解密密钥的方式一致，参见 secret.FernetKeyFromSecret / secret.KeyringFromEnv）。
+func NewGatewayNetworkProber(db *pgxpool.Pool, fernetKey []byte, keyring *secret.Keyring) *GatewayNetworkProber {
 	return &GatewayNetworkProber{
+		db: db,
 		httpClient: &http.Client{
 			Timeout: 10 * time.Second,
 		},
-		baseURL: baseURL,
+		fernetKey: fernetKey,
+		keyring:   keyring,
 	}
 }
 
-// ProbeLatency 探测网络延迟
+// ProbeLatency 探测网络延迟：对 credential 对应的供应商发起 probeCount 次
+// GET /v1/models 请求，返回每次请求的往返时延（ms）。
+//
+// 单次探测失败（网络错误等）会被跳过而不是直接失败整个探测；只有全部探测
+// 都失败时才返回 error，避免瞬时抖动导致整轮采集失败。
 func (p *GatewayNetworkProber) ProbeLatency(ctx context.Context, credentialID int64, probeCount int) ([]int, error) {
-	latencies := make([]int, 0, probeCount)
+	var (
+		baseURL      string
+		protocol     string
+		catalogCode  string
+		secretCipher []byte
+	)
 
-	// TODO: 实际实现需要：
-	// 1. 根据 credentialID 查询对应的 provider 和 credential
-	// 2. 构造带认证的 /v1/models 请求
-	// 3. 测量往返时间
-	// 
-	// 当前为占位实现，返回模拟数据
+	err := p.db.QueryRow(ctx, `
+		SELECT COALESCE(pr.base_url, ''), COALESCE(pr.protocol, ''),
+		       COALESCE(pr.catalog_code, ''), c.secret_ciphertext
+		FROM credentials c
+		JOIN providers pr ON pr.id = c.provider_id
+		WHERE c.id = $1
+	`, credentialID).Scan(&baseURL, &protocol, &catalogCode, &secretCipher)
+	if err != nil {
+		return nil, fmt.Errorf("query credential for probe: %w", err)
+	}
+
+	var apiKey string
+	if len(secretCipher) > 0 {
+		pt, _, derr := secret.DecryptAny(string(secretCipher), p.keyring, p.fernetKey)
+		if derr != nil {
+			return nil, fmt.Errorf("decrypt credential secret: %w", derr)
+		}
+		apiKey = string(pt)
+	}
+
+	desc := providercap.Resolve(protocol, catalogCode)
+	candidates := providercap.ModelsURLCandidates(baseURL, nil, desc)
+	if len(candidates) == 0 {
+		return nil, fmt.Errorf("no models endpoint candidate for credential %d (base_url=%q)", credentialID, baseURL)
+	}
+	url := candidates[0]
+
+	latencies := make([]int, 0, probeCount)
 	for i := 0; i < probeCount; i++ {
 		start := time.Now()
-		
-		// 模拟探测 - 实际应该发送真实的 HTTP 请求
-		// req, _ := http.NewRequestWithContext(ctx, "GET", p.baseURL+"/v1/models", nil)
-		// req.Header.Set("Authorization", "Bearer "+token)
-		// resp, err := p.httpClient.Do(req)
-		// ...
-		
-		elapsed := time.Since(start)
-		latencies = append(latencies, int(elapsed.Milliseconds()))
+
+		req, rerr := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+		if rerr != nil {
+			return nil, fmt.Errorf("build probe request: %w", rerr)
+		}
+		providercap.ApplyAuthHeaders(req, desc, apiKey)
+
+		resp, derr := p.httpClient.Do(req)
+		elapsedMs := int(time.Since(start).Milliseconds())
+		if derr != nil {
+			// 单次探测失败：跳过，不中断整轮探测（可能是瞬时网络抖动）
+			continue
+		}
+		//nolint:errcheck // best-effort close
+		resp.Body.Close()
+
+		latencies = append(latencies, elapsedMs)
+	}
+
+	if len(latencies) == 0 {
+		return nil, fmt.Errorf("all %d probes failed for credential %d", probeCount, credentialID)
 	}
 
 	return latencies, nil
 }
 
 // GatewayRequestAnalyzer 请求分析器适配器
-// 从 request_logs 或 sessions 表聚合请求统计
+// 从 request_logs_hot 表聚合请求统计（0-7天热数据，与 recent_success_rate()
+// SQL 函数读取同一张表，参见 sql/objects/functions/recent_success_rate_*.sql）。
 type GatewayRequestAnalyzer struct {
 	db *pgxpool.Pool
 }
@@ -65,18 +118,16 @@ func NewGatewayRequestAnalyzer(db *pgxpool.Pool) *GatewayRequestAnalyzer {
 
 // AnalyzeRequests 分析最近N小时的请求统计
 func (a *GatewayRequestAnalyzer) AnalyzeRequests(ctx context.Context, credentialID int64, hours int) (*RequestStats, error) {
-	// 从 request_logs 表聚合数据
-	// TODO: 根据实际的表结构调整查询
 	query := `
 		SELECT 
-			COUNT(*) as total_requests,
-			COUNT(*) FILTER (WHERE status_code < 400) as success_requests,
-			COUNT(*) FILTER (WHERE status_code >= 400) as error_count,
-			AVG(EXTRACT(EPOCH FROM (first_token_at - created_at)) * 1000) as avg_ttft_ms,
-			AVG(EXTRACT(EPOCH FROM (completed_at - created_at)) * 1000) as avg_duration_ms
-		FROM request_logs
+			COUNT(*) AS total_requests,
+			COUNT(*) FILTER (WHERE success) AS success_requests,
+			COUNT(*) FILTER (WHERE NOT success) AS error_count,
+			AVG(stream_first_chunk_ms) FILTER (WHERE stream_first_chunk_ms IS NOT NULL) AS avg_ttft_ms,
+			AVG(latency_ms) FILTER (WHERE latency_ms IS NOT NULL) AS avg_duration_ms
+		FROM request_logs_hot
 		WHERE credential_id = $1
-		  AND created_at >= NOW() - INTERVAL '1 hour' * $2
+		  AND ts >= NOW() - INTERVAL '1 hour' * $2
 	`
 
 	var stats RequestStats
@@ -100,14 +151,16 @@ func (a *GatewayRequestAnalyzer) AnalyzeRequests(ctx context.Context, credential
 		stats.AvgDurationMs = int(*avgDuration)
 	}
 
-	// 查询错误类型分布
+	// 错误类型分布：优先使用上游 HTTP 状态码（5xx/4xx），缺失时回退到
+	// error_kind（如 network/timeout）。scorer.go 的稳定性评分依据错误
+	// 类型字符串的首字符判断是否为 5xx，所以状态码优先。
 	errorTypeQuery := `
-		SELECT status_code::text, COUNT(*)
-		FROM request_logs
+		SELECT COALESCE(upstream_status_code::text, error_kind, 'unknown') AS error_type, COUNT(*)
+		FROM request_logs_hot
 		WHERE credential_id = $1
-		  AND created_at >= NOW() - INTERVAL '1 hour' * $2
-		  AND status_code >= 400
-		GROUP BY status_code
+		  AND ts >= NOW() - INTERVAL '1 hour' * $2
+		  AND NOT success
+		GROUP BY 1
 	`
 
 	rows, err := a.db.Query(ctx, errorTypeQuery, credentialID, hours)
@@ -126,11 +179,12 @@ func (a *GatewayRequestAnalyzer) AnalyzeRequests(ctx context.Context, credential
 		stats.ErrorTypes[errorType] = count
 	}
 
-	return &stats, nil
+	return &stats, rows.Err()
 }
 
 // GatewayScaleProvider 规模数据提供者适配器
-// 从 provider_models 表查询模型规模信息
+// 从 provider_models 表查询模型规模信息（可用性字段是 `available`，
+// 不是 `enabled`）。
 type GatewayScaleProvider struct {
 	db *pgxpool.Pool
 }
@@ -151,12 +205,10 @@ func (p *GatewayScaleProvider) GetModelScale(ctx context.Context, credentialID i
 		return nil, fmt.Errorf("get provider_id: %w", err)
 	}
 
-	// 查询模型规模
-	// TODO: 根据实际的 provider_models 表结构调整
 	query := `
 		SELECT 
-			COUNT(*) as total_models,
-			COUNT(*) FILTER (WHERE enabled = true) as available_models
+			COUNT(*) AS total_models,
+			COUNT(*) FILTER (WHERE available) AS available_models
 		FROM provider_models
 		WHERE provider_id = $1
 	`
@@ -176,7 +228,14 @@ func (p *GatewayScaleProvider) GetModelScale(ctx context.Context, credentialID i
 }
 
 // GatewayCredentialLister 凭证列表提供者适配器
-// 从 credentials 表获取活跃凭证列表
+// 从 credentials 表获取活跃凭证列表。
+//
+// credentials 表没有 enabled 布尔字段，也没有 deleted_at 软删除字段
+// （行是硬删除或通过 status 翻转为 'disabled'）。"活跃可用" 由三个字段
+// 共同表达：
+//   - status = 'active'          （非 cooling/degraded/quarantine/disabled 等）
+//   - manual_disabled = false    （人工禁用开关）
+//   - lifecycle_status = 'active'（非 disabled/suspended/retired）
 type GatewayCredentialLister struct {
 	db *pgxpool.Pool
 }
@@ -188,12 +247,12 @@ func NewGatewayCredentialLister(db *pgxpool.Pool) *GatewayCredentialLister {
 
 // ListActiveCredentials 获取所有活跃的凭证
 func (l *GatewayCredentialLister) ListActiveCredentials(ctx context.Context) ([]int64, error) {
-	// TODO: 根据实际的 credentials 表结构调整
 	query := `
 		SELECT id 
 		FROM credentials
-		WHERE enabled = true
-		  AND deleted_at IS NULL
+		WHERE status = 'active'
+		  AND manual_disabled = false
+		  AND lifecycle_status = 'active'
 		ORDER BY id
 	`
 

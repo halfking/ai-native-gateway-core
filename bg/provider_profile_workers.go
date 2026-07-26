@@ -1,9 +1,9 @@
 // Package bg — Provider Profile Background Workers
 //
 // This file contains background workers for the provider profile system:
-//  - ProfileCollector: runs lightweight metric collection every 2 hours
-//  - ProfileAggregator: runs daily profile aggregation every day at 4am
-//  - ProfileCleaner: runs old metrics cleanup every Sunday at 5am
+//   - ProfileCollector: runs lightweight metric collection every 2 hours
+//   - ProfileAggregator: runs daily profile aggregation every day at 4am
+//   - ProfileCleaner: runs old metrics cleanup every Sunday at 5am
 //
 // Integration:
 //  1. Call InitProviderProfile(db) in cmd/gateway/main.go after dbConn is ready
@@ -11,9 +11,9 @@
 //  3. Call Stop() on each worker during graceful shutdown
 //
 // Design:
-//  - Each worker runs in its own goroutine with a ticker
-//  - Failures are logged but don't crash the process
-//  - Workers can be stopped gracefully via Stop()
+//   - Each worker runs in its own goroutine with a ticker
+//   - Failures are logged but don't crash the process
+//   - Workers can be stopped gracefully via Stop()
 package bg
 
 import (
@@ -24,6 +24,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/kaixuan/llm-gateway-go/domains/providerprofile"
+	"github.com/kaixuan/llm-gateway-go/secret"
 )
 
 // ProfileCollector runs lightweight metric collection periodically
@@ -34,10 +35,15 @@ type ProfileCollector struct {
 	done      chan struct{}
 }
 
-// NewProfileCollector creates a new profile collector
-func NewProfileCollector(db *pgxpool.Pool, interval time.Duration) *ProfileCollector {
+// NewProfileCollector creates a new profile collector.
+//
+// fernetKey/keyring decrypt credentials.secret_ciphertext for the network
+// latency probe (GET /v1/models). These are the same keys derived in
+// cmd/gateway/main.go via secret.FernetKeyFromSecret / secret.KeyringFromEnv
+// and passed through initProviderProfile.
+func NewProfileCollector(db *pgxpool.Pool, interval time.Duration, fernetKey []byte, keyring *secret.Keyring) *ProfileCollector {
 	metricsStore := providerprofile.NewPGMetricsStore(db)
-	networkProber := providerprofile.NewGatewayNetworkProber("http://localhost:8080") // TODO: make configurable
+	networkProber := providerprofile.NewGatewayNetworkProber(db, fernetKey, keyring)
 	requestAnalyzer := providerprofile.NewGatewayRequestAnalyzer(db)
 	scaleProvider := providerprofile.NewGatewayScaleProvider(db)
 	credentialLister := providerprofile.NewGatewayCredentialLister(db)

@@ -78,13 +78,27 @@ if dbConn != nil {
 stopProviderProfile(profileWorkers)
 ```
 
-### 4. 完善适配器（可选）
+### 4. 适配器实现（已完成）
 
-根据实际表结构完善 `domains/providerprofile/adapters.go` 中的实现：
+`domains/providerprofile/adapters.go` 已针对真实表结构实现并验证：
 
-- `GatewayNetworkProber`: 实现真实的网络延迟探测
-- `GatewayRequestAnalyzer`: 根据实际的 request_logs 表结构调整查询
-- `GatewayScaleProvider`: 根据实际的 provider_models 表结构调整查询
+- `GatewayNetworkProber`: 解密 credential 密钥后，对 provider 的
+  `/v1/models` 端点发起真实 GET 探测（复用 `internal/providercap` 的
+  URL 解析和鉴权头逻辑，与 `bg/credential_probe_v2.go` 一致）。需要
+  `fernetKey`/`keyring`（与 `cmd/gateway/main.go` 中派生凭证解密密钥的
+  方式相同）。
+- `GatewayRequestAnalyzer`: 查询 `request_logs_hot` 表（0-7天热数据），
+  使用 `success`/`upstream_status_code`/`stream_first_chunk_ms`/
+  `latency_ms`/`ts` 等真实列名（不是 `status_code`/`created_at`）。
+- `GatewayScaleProvider`: 查询 `provider_models` 表，使用 `available`
+  列（不是 `enabled`）判断模型是否可用。
+- `GatewayCredentialLister`: 查询 `credentials` 表，使用
+  `status = 'active' AND manual_disabled = false AND lifecycle_status
+  = 'active'` 判断凭证是否活跃（该表没有 `enabled` 布尔字段，也没有
+  `deleted_at` 软删除字段）。
+
+已通过本地 Docker 数据库的真实查询验证（插入测试数据后运行三个适配器，
+结果与预期一致）。
 
 ## 架构说明
 
