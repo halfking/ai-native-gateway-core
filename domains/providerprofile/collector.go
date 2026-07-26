@@ -160,7 +160,11 @@ func (c *LightweightCollector) collectForCredential(ctx context.Context, credent
 
 	stabilityMetrics := &StabilityMetrics{
 		ErrorCount: requestStats.ErrorCount,
-		ErrorTypes: requestStats.ErrorTypes,
+	}
+	if requestStats.ErrorTypes != nil {
+		stabilityMetrics.ErrorTypes = requestStats.ErrorTypes
+	} else {
+		stabilityMetrics.ErrorTypes = make(map[string]int)
 	}
 
 	// 3. 获取规模数据
