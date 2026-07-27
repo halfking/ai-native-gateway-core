@@ -33,7 +33,16 @@ func (m *Manager) getFromMemCache(key string) (*State, bool) {
 		return nil, false
 	}
 
-	return entry.State, true
+	// 2026-07-27 (C-1): return a CLONE, not the shared pointer. Callers
+	// (UpdateOnSuccess/UpdateOnFailure) mutate the returned State in place
+	// (state.ConsecutiveFails++, state.LastError = ...). Returning the shared
+	// pointer let two concurrent callers mutate the same object — a data race.
+	// With copy-on-write here, each caller mutates its own private copy and
+	// setToMemCache stores that copy. The per-key mutex (Manager.lockFor)
+	// serializes the Load→mutate→Store window so counter increments are not
+	// lost.
+	clone := *entry.State
+	return &clone, true
 }
 
 func (m *Manager) setToMemCache(key string, state *State) {
