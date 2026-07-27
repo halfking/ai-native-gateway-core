@@ -334,7 +334,7 @@ func TestScorerWithWeights_DifferentStrategies(t *testing.T) {
 			for i := 0; i < 20; i++ {
 				scorer.Bandit.RecordSuccess("cred-1", 50) // Fast
 			}
-			scorer.Bandit.GetScore("cred-1").IntelligenceRank = 1 // Smart
+			scorer.Bandit.SetIntelligenceRank("cred-1", 1) // Smart
 
 			// Record history for a low-intelligence, slow, unreliable credential
 			for i := 0; i < 10; i++ {
@@ -343,7 +343,7 @@ func TestScorerWithWeights_DifferentStrategies(t *testing.T) {
 			for i := 0; i < 10; i++ {
 				scorer.Bandit.RecordFailure("cred-2") // Unreliable
 			}
-			scorer.Bandit.GetScore("cred-2").IntelligenceRank = 80 // Not smart
+			scorer.Bandit.SetIntelligenceRank("cred-2", 80) // Not smart
 
 			// Sample both
 			score1 := scorer.SampleWithWeights("cred-1")

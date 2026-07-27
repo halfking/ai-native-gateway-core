@@ -94,8 +94,16 @@ func (cf *ContentFilter) CheckResponse(ctx context.Context, resp *CheckResponse)
 
 // check 执行检查
 func (cf *ContentFilter) check(content string) (*CheckResult, error) {
+	// 在 RLock 下快照 matchers/rules 指针,然后释放锁再并行 Match。
+	// 旧实现把 RLock 跨 wg.Wait() 持有,使每次内容检查都占用读锁直到
+	// CPU 密集的正则匹配完成,饿死需要写锁的 UpdateRules。
+	// 快照后:keywordMatcher/regexMatcher 是长生命周期指针,UpdatePatterns
+	// 是内部同步更新,这里持有的指针在本次调用内始终有效。
 	cf.mu.RLock()
-	defer cf.mu.RUnlock()
+	keywordMatcher := cf.keywordMatcher
+	regexMatcher := cf.regexMatcher
+	rules := cf.rules
+	cf.mu.RUnlock()
 
 	// 并行检测
 	var (
@@ -109,13 +117,13 @@ func (cf *ContentFilter) check(content string) (*CheckResult, error) {
 	// Keyword 检测
 	go func() {
 		defer wg.Done()
-		keywordHits = cf.keywordMatcher.Match(content)
+		keywordHits = keywordMatcher.Match(content)
 	}()
 
 	// Regex 检测
 	go func() {
 		defer wg.Done()
-		regexHits = cf.regexMatcher.Match(content)
+		regexHits = regexMatcher.Match(content)
 	}()
 
 	wg.Wait()
@@ -131,8 +139,8 @@ func (cf *ContentFilter) check(content string) (*CheckResult, error) {
 		}, nil
 	}
 
-	// 应用规则决策
-	result := cf.applyRules(content, allHits)
+	// 应用规则决策 (使用快照 rules)
+	result := cf.applyRulesWithRules(rules, content, allHits)
 
 	// 更新统计
 	cf.updateStats(result)
@@ -142,6 +150,12 @@ func (cf *ContentFilter) check(content string) (*CheckResult, error) {
 
 // applyRules 应用规则决策
 func (cf *ContentFilter) applyRules(content string, hits []Hit) *CheckResult {
+	return cf.applyRulesWithRules(cf.rules, content, hits)
+}
+
+// applyRulesWithRules 用给定的规则快照应用规则决策。
+// 调用方可传入在 RLock 下快照的 rules,从而在释放锁后无锁执行决策。
+func (cf *ContentFilter) applyRulesWithRules(rules []Rule, content string, hits []Hit) *CheckResult {
 	// 按严重程度排序，取最高级别
 	highestSeverity := SeverityLow
 	highestAction := ActionAllow
@@ -160,7 +174,7 @@ func (cf *ContentFilter) applyRules(content string, hits []Hit) *CheckResult {
 		}
 
 		// 找到对应规则
-		for _, rule := range cf.rules {
+		for _, rule := range rules {
 			if rule.ID == hit.RuleID && rule.Enabled {
 				// 检查白名单
 				if cf.inWhiteList(content, rule.WhiteList) {

@@ -12,10 +12,25 @@ type RPMLimiter interface {
 	RPMStatus(keyID int, limit int) (used int, remaining int)
 }
 
-type SlidingWindowLimiter struct {
+// rpmShardCount 是 SlidingWindowLimiter 的分片数。每个分片有自己的 mutex,
+// 使不同 keyID 的 RPM/TPM 检查不互相争用。取 2 的幂使取模变成位与。
+// 16 在常见多核机器上提供足够的并行度,内存开销也可忽略。
+const rpmShardCount = 16
+
+type rpmShard struct {
 	mu        sync.Mutex
 	windows   map[int]*rpmWindow
 	tokenWins map[int]*tpmWindow
+}
+
+// SlidingWindowLimiter 是进程内的 RPM/TPM 滑窗限流器。
+//
+// 并发模型:按 keyID % rpmShardCount 分片到 16 个独立 shard,每个 shard
+// 有自己的 mutex。旧实现用单一全局 mutex,所有 key 的 CheckRPM/CheckTPM
+// 都串行化 —— 在请求热路径上成为瓶颈。分片后不同 key 并行,同一 key 仍互斥
+// (语义不变)。
+type SlidingWindowLimiter struct {
+	shards [rpmShardCount]*rpmShard
 }
 
 type rpmWindow struct {
@@ -32,26 +47,37 @@ type tokenEntry struct {
 }
 
 func NewSlidingWindowLimiter() *SlidingWindowLimiter {
-	return &SlidingWindowLimiter{
-		windows:   make(map[int]*rpmWindow),
-		tokenWins: make(map[int]*tpmWindow),
+	l := &SlidingWindowLimiter{}
+	for i := range l.shards {
+		l.shards[i] = &rpmShard{
+			windows:   make(map[int]*rpmWindow),
+			tokenWins: make(map[int]*tpmWindow),
+		}
 	}
+	return l
+}
+
+// shard 返回 keyID 对应的分片。keyID 可能为负 (hash),用位与取非负低 bits。
+func (l *SlidingWindowLimiter) shard(keyID int) *rpmShard {
+	// int -> uintptr 再位与,避免负数取模的分支。
+	return l.shards[uint(uintptr(keyID))&(rpmShardCount-1)]
 }
 
 func (l *SlidingWindowLimiter) CheckRPM(keyID int, limit int) bool {
 	if limit <= 0 {
 		return true
 	}
-	l.mu.Lock()
-	defer l.mu.Unlock()
+	s := l.shard(keyID)
+	s.mu.Lock()
+	defer s.mu.Unlock()
 
 	now := float64(time.Now().UnixMilli()) / 1000.0
 	cutoff := now - 60.0
 
-	w, ok := l.windows[keyID]
+	w, ok := s.windows[keyID]
 	if !ok {
 		w = &rpmWindow{}
-		l.windows[keyID] = w
+		s.windows[keyID] = w
 	}
 
 	if len(w.timestamps) > 0 {
@@ -76,16 +102,17 @@ func (l *SlidingWindowLimiter) CheckTPM(keyID int, estimatedTokens int, limit in
 	if limit <= 0 {
 		return true
 	}
-	l.mu.Lock()
-	defer l.mu.Unlock()
+	s := l.shard(keyID)
+	s.mu.Lock()
+	defer s.mu.Unlock()
 
 	now := float64(time.Now().UnixMilli()) / 1000.0
 	cutoff := now - 60.0
 
-	w, ok := l.tokenWins[keyID]
+	w, ok := s.tokenWins[keyID]
 	if !ok {
 		w = &tpmWindow{}
-		l.tokenWins[keyID] = w
+		s.tokenWins[keyID] = w
 	}
 
 	if len(w.entries) > 0 {
@@ -115,13 +142,14 @@ func (l *SlidingWindowLimiter) RPMStatus(keyID int, limit int) (used int, remain
 	if limit <= 0 {
 		return 0, -1
 	}
-	l.mu.Lock()
-	defer l.mu.Unlock()
+	s := l.shard(keyID)
+	s.mu.Lock()
+	defer s.mu.Unlock()
 
 	now := float64(time.Now().UnixMilli()) / 1000.0
 	cutoff := now - 60.0
 
-	w, ok := l.windows[keyID]
+	w, ok := s.windows[keyID]
 	if !ok {
 		return 0, limit
 	}
@@ -141,8 +169,11 @@ func (l *SlidingWindowLimiter) RPMStatus(keyID int, limit int) (used int, remain
 }
 
 func (l *SlidingWindowLimiter) Stop() {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	l.windows = make(map[int]*rpmWindow)
-	l.tokenWins = make(map[int]*tpmWindow)
+	// 并发清空所有分片。各分片独立加锁,避免单一全局锁。
+	for _, s := range l.shards {
+		s.mu.Lock()
+		s.windows = make(map[int]*rpmWindow)
+		s.tokenWins = make(map[int]*tpmWindow)
+		s.mu.Unlock()
+	}
 }
