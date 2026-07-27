@@ -15,20 +15,37 @@ type Deduper struct {
 	mu     sync.Mutex
 	window time.Duration
 	seen   map[string]time.Time
+	// 2026-07-27 concurrency fix: gcLoop 之前没有退出通道，而
+	// AlertRouter.Configure 每次配置热更新都会 new 一个 Deduper
+	// → 每次 reload 泄漏一个 goroutine + 一个 ticker。
+	stopCh    chan struct{}
+	closeOnce sync.Once
 }
 
 // NewDeduper 构造 Deduper。
 //
 // window <= 0 时退化为「不去重」（pass-through）。
+// 废弃一个 Deduper 前必须调用 Close()，否则 gc goroutine 会泄漏。
 func NewDeduper(window time.Duration) *Deduper {
 	d := &Deduper{
 		window: window,
 		seen:   make(map[string]time.Time),
+		stopCh: make(chan struct{}),
 	}
 	if window > 0 {
 		go d.gcLoop()
 	}
 	return d
+}
+
+// Close 停止后台 gc goroutine。可重复调用（sync.Once 保护）。
+func (d *Deduper) Close() {
+	if d == nil {
+		return
+	}
+	d.closeOnce.Do(func() {
+		close(d.stopCh)
+	})
 }
 
 // Fingerprint 计算告警指纹。
@@ -90,15 +107,20 @@ func (d *Deduper) Size() int {
 func (d *Deduper) gcLoop() {
 	t := time.NewTicker(d.window)
 	defer t.Stop()
-	for range t.C {
-		d.mu.Lock()
-		now := time.Now()
-		for fp, ts := range d.seen {
-			if now.Sub(ts) > d.window*3 {
-				delete(d.seen, fp)
+	for {
+		select {
+		case <-d.stopCh:
+			return
+		case <-t.C:
+			d.mu.Lock()
+			now := time.Now()
+			for fp, ts := range d.seen {
+				if now.Sub(ts) > d.window*3 {
+					delete(d.seen, fp)
+				}
 			}
+			d.mu.Unlock()
 		}
-		d.mu.Unlock()
 	}
 }
 

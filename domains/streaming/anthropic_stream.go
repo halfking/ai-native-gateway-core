@@ -631,8 +631,8 @@ func flushBufferedText(w http.ResponseWriter, flusher http.Flusher, pc *pendingC
 	})
 	writeSSEWithCapturer(w, pc, "content_block_stop", map[string]any{"type": "content_block_stop", "index": 0})
 	if capture != nil {
-		capture.HasThinking = true
-		capture.ThinkingBlocksN++
+		// 2026-07-27 并发修复：走带锁 setter（audit.StreamCapture.MarkThinkingBlock）。
+		capture.MarkThinkingBlock()
 	}
 	if rest != "" {
 		writeSSEWithCapturer(w, pc, "content_block_start", map[string]any{

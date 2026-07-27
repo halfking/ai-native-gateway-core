@@ -44,10 +44,19 @@ func (bw *BatchWriter) Start(ctx context.Context) {
 }
 
 // Stop 停止批量写入器
+//
+// 2026-07-27 concurrency fix: if Start was never called, cancel is nil and
+// the done channel was never closed by run() (run() never launched), so a bare
+// <-bw.done blocks forever. This is reachable via Manager.Stop when the writer
+// is constructed but never started. Return early in that case, matching the
+// house pattern in bg/pending_sweeper.go Stop.
 func (bw *BatchWriter) Stop() {
-	if bw.cancel != nil {
-		bw.cancel()
+	if bw.cancel == nil {
+		// Start() was never called — run() never launched and never closed
+		// done. Return immediately rather than deadlocking on <-bw.done.
+		return
 	}
+	bw.cancel()
 	<-bw.done
 }
 

@@ -50,6 +50,14 @@ type ConcurrencyPeakCollector struct {
 
 	cancel context.CancelFunc
 	done   chan struct{}
+
+	// 2026-07-27 concurrency fix: stopOnce makes Stop() idempotent and
+	// started tells Stop() whether run() will ever close done. Without
+	// the guard, Stop() on a never-Started collector blocks forever on
+	// <-c.done (cancel == nil, so nothing ever closes it).
+	// Same house pattern as bg/pending_sweeper.go / routing_health_checker.go.
+	stopOnce sync.Once
+	started  atomic.Bool
 }
 
 // NewConcurrencyPeakCollector creates a new collector.
@@ -63,6 +71,10 @@ func NewConcurrencyPeakCollector(db *pgxpool.Pool) *ConcurrencyPeakCollector {
 
 // Start spawns the background sampling and flushing goroutine.
 func (c *ConcurrencyPeakCollector) Start(ctx context.Context) {
+	if !c.started.CompareAndSwap(false, true) {
+		// Already started; a second run() would double-close c.done.
+		return
+	}
 	cctx, cancel := context.WithCancel(ctx)
 	c.cancel = cancel
 	go c.run(cctx)
@@ -73,9 +85,17 @@ func (c *ConcurrencyPeakCollector) Start(ctx context.Context) {
 }
 
 // Stop terminates the background goroutine and waits for it to finish.
+// Safe on a never-Started collector (no-op) and safe to call twice.
 func (c *ConcurrencyPeakCollector) Stop() {
-	if c.cancel != nil {
-		c.cancel()
+	c.stopOnce.Do(func() {
+		if c.cancel != nil {
+			c.cancel()
+		}
+	})
+	if !c.started.Load() {
+		// Start() was never called — run() never launched, so c.done
+		// is never closed. Return instead of deadlocking.
+		return
 	}
 	<-c.done
 }

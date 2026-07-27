@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -708,7 +709,7 @@ func TestConfigManager(t *testing.T) {
 func TestMetricsCollector(t *testing.T) {
 	t.Run("prometheus metrics collector", func(t *testing.T) {
 		mc := NewMetricsCollector()
-		
+
 		// 这些方法不应该panic
 		mc.RecordHookExecution("test-hook", PhasePreRouting, 100*time.Millisecond, true)
 		mc.RecordHookExecution("test-hook", PhasePreRouting, 200*time.Millisecond, false)
@@ -719,7 +720,7 @@ func TestMetricsCollector(t *testing.T) {
 
 	t.Run("noop metrics collector", func(t *testing.T) {
 		mc := NewNoOpMetricsCollector()
-		
+
 		// 这些方法不应该panic
 		mc.RecordHookExecution("test-hook", PhasePreRouting, 100*time.Millisecond, true)
 		mc.RecordHookFailure("test-hook", PhasePreRouting, "error")
@@ -731,7 +732,7 @@ func TestMetricsCollector(t *testing.T) {
 // TestNoOpLogger 测试无操作日志记录器
 func TestNoOpLogger(t *testing.T) {
 	logger := &NoOpLogger{}
-	
+
 	// 这些方法不应该panic
 	logger.Info("test")
 	logger.Error("test")
@@ -758,7 +759,7 @@ func TestHookRegistryWithConfigManager(t *testing.T) {
 		}
 
 		registry := NewHookRegistry(cm, NewNoOpMetricsCollector(), &NoOpLogger{})
-		
+
 		hook := NewMockHook("fast-hook", PhasePreRouting, 10)
 		hook.executeFunc = func(ctx context.Context, env *Environment) error {
 			time.Sleep(200 * time.Millisecond)
@@ -768,7 +769,7 @@ func TestHookRegistryWithConfigManager(t *testing.T) {
 
 		env := NewEnvironment("test-request")
 		err = registry.Execute(context.Background(), PhasePreRouting, env)
-		
+
 		// 应该超时
 		if err == nil {
 			t.Error("expected timeout error")
@@ -779,7 +780,7 @@ func TestHookRegistryWithConfigManager(t *testing.T) {
 // TestHookPanic 测试Hook panic恢复
 func TestHookPanic(t *testing.T) {
 	registry := NewHookRegistry(nil, NewNoOpMetricsCollector(), &NoOpLogger{})
-	
+
 	hook := NewMockHook("panic-hook", PhasePostResponse, 10)
 	hook.executeFunc = func(ctx context.Context, env *Environment) error {
 		panic("test panic")
@@ -798,13 +799,13 @@ func TestHookPanic(t *testing.T) {
 // TestMultiplePhases 测试多个阶段的Hook
 func TestMultiplePhases(t *testing.T) {
 	registry := NewHookRegistry(nil, NewNoOpMetricsCollector(), &NoOpLogger{})
-	
+
 	hook1 := NewMockHook("hook1", PhasePreRouting, 10)
 	hook2 := NewMockHook("hook2", PhaseRouting, 10)
 	hook3 := NewMockHook("hook3", PhasePreUpstream, 10)
 	hook4 := NewMockHook("hook4", PhasePostUpstream, 10)
 	hook5 := NewMockHook("hook5", PhasePostResponse, 10)
-	
+
 	_ = registry.Register(hook1)
 	_ = registry.Register(hook2)
 	_ = registry.Register(hook3)
@@ -812,7 +813,7 @@ func TestMultiplePhases(t *testing.T) {
 	_ = registry.Register(hook5)
 
 	env := NewEnvironment("test-request")
-	
+
 	// 执行所有阶段
 	phases := []Phase{
 		PhasePreRouting,
@@ -821,17 +822,17 @@ func TestMultiplePhases(t *testing.T) {
 		PhasePostUpstream,
 		PhasePostResponse,
 	}
-	
+
 	for _, phase := range phases {
 		err := registry.Execute(context.Background(), phase, env)
 		if err != nil {
 			t.Errorf("unexpected error in phase %s: %v", phase, err)
 		}
 	}
-	
+
 	// 验证所有Hook都执行了
-	if !hook1.WasExecuted() || !hook2.WasExecuted() || !hook3.WasExecuted() || 
-	   !hook4.WasExecuted() || !hook5.WasExecuted() {
+	if !hook1.WasExecuted() || !hook2.WasExecuted() || !hook3.WasExecuted() ||
+		!hook4.WasExecuted() || !hook5.WasExecuted() {
 		t.Error("not all hooks were executed")
 	}
 }
@@ -839,7 +840,7 @@ func TestMultiplePhases(t *testing.T) {
 // TestEnvironmentFields 测试Environment的所有字段
 func TestEnvironmentFields(t *testing.T) {
 	env := NewEnvironment("req-123")
-	
+
 	env.TenantID = "tenant-1"
 	env.SessionKey = "session-1"
 	env.TaskID = "task-1"
@@ -847,7 +848,7 @@ func TestEnvironmentFields(t *testing.T) {
 	env.Response = "test-response"
 	env.UpstreamRequest = "upstream-request"
 	env.UpstreamResponse = "upstream-response"
-	
+
 	if env.TenantID != "tenant-1" {
 		t.Error("TenantID not set correctly")
 	}
@@ -862,14 +863,14 @@ func TestEnvironmentFields(t *testing.T) {
 // TestInvalidPhaseRegistration 测试无效Phase注册
 func TestInvalidPhaseRegistration(t *testing.T) {
 	registry := NewHookRegistry(nil, nil, &NoOpLogger{})
-	
+
 	hook := &MockHook{
 		name:     "invalid-hook",
 		priority: 10,
 		enabled:  true,
 		phase:    Phase("invalid_phase"),
 	}
-	
+
 	err := registry.Register(hook)
 	if err == nil {
 		t.Fatal("expected error for invalid phase")
@@ -895,9 +896,11 @@ func TestConfigManagerWatch(t *testing.T) {
 		}
 		defer cm.Stop()
 
-		callbackCalled := false
+		// 2026-07-27 并发修复：callback 在 watchLoop goroutine 里执行，
+		// 断言在测试 goroutine 里读，用 atomic 而非裸 bool。
+		var callbackCalled atomic.Bool
 		callback := func() {
-			callbackCalled = true
+			callbackCalled.Store(true)
 		}
 
 		err = cm.Watch(callback)
@@ -918,7 +921,7 @@ func TestConfigManagerWatch(t *testing.T) {
 		// 等待监控检测到变化
 		time.Sleep(4 * time.Second)
 
-		if !callbackCalled {
+		if !callbackCalled.Load() {
 			t.Error("expected callback to be called")
 		}
 	})
@@ -973,34 +976,34 @@ func TestConfigManagerWatch(t *testing.T) {
 // TestNoOpConfigManagerMethods 测试NoOpConfigManager的所有方法
 func TestNoOpConfigManagerMethods(t *testing.T) {
 	cm := NewNoOpConfigManager()
-	
+
 	if err := cm.Load(); err != nil {
 		t.Error("NoOpConfigManager.Load should not error")
 	}
-	
+
 	if config := cm.GetHookConfig("any"); config != nil {
 		t.Error("expected nil config")
 	}
-	
+
 	if timeout := cm.GetHookTimeout("any"); timeout != 5*time.Second {
 		t.Errorf("expected 5s, got %v", timeout)
 	}
-	
+
 	if !cm.IsHookEnabled("any") {
 		t.Error("expected true")
 	}
-	
+
 	if err := cm.Watch(nil); err != nil {
 		t.Error("NoOpConfigManager.Watch should not error")
 	}
-	
+
 	cm.Stop() // should not panic
 }
 
 // TestNoOpMetricsCollectorMethods 测试NoOpMetricsCollector的所有方法
 func TestNoOpMetricsCollectorMethods(t *testing.T) {
 	mc := NewNoOpMetricsCollector()
-	
+
 	// 所有方法都不应该panic
 	mc.RecordHookExecution("hook", PhasePreRouting, time.Second, true)
 	mc.RecordHookExecution("hook", PhasePreRouting, time.Second, false)
@@ -1012,7 +1015,7 @@ func TestNoOpMetricsCollectorMethods(t *testing.T) {
 // TestNoOpLoggerMethods 测试NoOpLogger的所有方法
 func TestNoOpLoggerMethods(t *testing.T) {
 	logger := &NoOpLogger{}
-	
+
 	// 所有方法都不应该panic
 	logger.Info("msg", "key", "value")
 	logger.Error("msg", "key", "value")
@@ -1027,7 +1030,7 @@ func TestNewHookRegistryWithNilParams(t *testing.T) {
 	if registry == nil {
 		t.Fatal("expected registry to be created")
 	}
-	
+
 	// 应该使用默认值
 	hook := NewMockHook("test", PhasePreRouting, 10)
 	err := registry.Register(hook)
@@ -1055,7 +1058,7 @@ func TestReloadConfigWithError(t *testing.T) {
 
 		registry := NewHookRegistry(cm, nil, &NoOpLogger{})
 		err = registry.ReloadConfig()
-		
+
 		if err == nil {
 			t.Error("expected error when config file is missing")
 		}
@@ -1079,7 +1082,7 @@ func TestReloadConfigWithError(t *testing.T) {
 		}
 
 		registry := NewHookRegistry(cm, nil, &NoOpLogger{})
-		
+
 		hook := NewMockConfigurableHook("error-hook", PhasePreRouting, 10)
 		hook.configChangeFunc = func(config map[string]interface{}) error {
 			return fmt.Errorf("config change error")
@@ -1157,7 +1160,7 @@ func TestEmptyPhaseExecution(t *testing.T) {
 // TestContextCancellation 测试Context取消
 func TestContextCancellation(t *testing.T) {
 	registry := NewHookRegistry(nil, NewNoOpMetricsCollector(), &NoOpLogger{})
-	
+
 	hook := NewMockHook("slow-hook", PhasePreRouting, 10)
 	hook.executeFunc = func(ctx context.Context, env *Environment) error {
 		select {

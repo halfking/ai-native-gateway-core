@@ -78,7 +78,21 @@ func (s *StickyCache) SetRedisStore(store StickyRedisStore) {
 }
 
 func (s *StickyCache) SetDB(pool *pgxpool.Pool) {
+	// 2026-07-27 concurrency fix: guard s.dbPool with s.mu on both sides.
+	// RecordSuccess/RecordSuccessMultiLevel/RestoreFromDB read it; without
+	// the lock those reads raced with this write.
+	s.mu.Lock()
 	s.dbPool = pool
+	s.mu.Unlock()
+}
+
+// dbPoolSnapshot returns the current DB pool under the lock.
+// 2026-07-27 concurrency fix: helper so readers never touch s.dbPool unlocked.
+// Callers must not hold s.mu when doing DB I/O on the returned pool.
+func (s *StickyCache) dbPoolSnapshot() *pgxpool.Pool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.dbPool
 }
 
 func (s *StickyCache) Get(key string) (int, bool) {
@@ -234,8 +248,11 @@ func (s *StickyCache) RecordFailure(key string, threshold int) bool {
 
 func (s *StickyCache) RecordSuccess(key string, credentialID int, ttl time.Duration) {
 	s.Set(key, credentialID, ttl)
-	if s.dbPool != nil {
-		go s.dbSet(key, credentialID, ttl)
+	// 2026-07-27 concurrency fix: snapshot the pool under the lock; pass it
+	// into the async writer so it never reads the shared field unlocked.
+	pool := s.dbPoolSnapshot()
+	if pool != nil {
+		go s.dbSet(pool, key, credentialID, ttl)
 	}
 }
 
@@ -308,8 +325,12 @@ func (s *StickyCache) RecordSuccessMultiLevel(
 	}
 
 	// Async DB write for all levels
-	if s.dbPool != nil {
-		go s.dbSetMultiLevel(l1, l2, l3, credentialID, now)
+	// 2026-07-27 concurrency fix: snapshot the pool after releasing the items
+	// lock; pass it into the async writer so it never reads the shared field
+	// unlocked.
+	pool := s.dbPoolSnapshot()
+	if pool != nil {
+		go s.dbSetMultiLevel(pool, l1, l2, l3, credentialID, now)
 	}
 
 	slog.Debug("sticky multi-level recorded",
@@ -320,11 +341,11 @@ func (s *StickyCache) RecordSuccessMultiLevel(
 	)
 }
 
-func (s *StickyCache) dbSet(key string, credentialID int, ttl time.Duration) {
+func (s *StickyCache) dbSet(pool *pgxpool.Pool, key string, credentialID int, ttl time.Duration) {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 	expiresAt := time.Now().UTC().Add(ttl)
-	_, err := s.dbPool.Exec(ctx, `
+	_, err := pool.Exec(ctx, `
 		INSERT INTO sticky_sessions (sticky_key, credential_id, set_at, expires_at)
 		VALUES ($1, $2, now(), $3)
 		ON CONFLICT (sticky_key) DO UPDATE SET
@@ -337,7 +358,7 @@ func (s *StickyCache) dbSet(key string, credentialID int, ttl time.Duration) {
 	}
 }
 
-func (s *StickyCache) dbSetMultiLevel(l1, l2, l3 string, credentialID int, baseTime time.Time) {
+func (s *StickyCache) dbSetMultiLevel(pool *pgxpool.Pool, l1, l2, l3 string, credentialID int, baseTime time.Time) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
@@ -355,7 +376,7 @@ func (s *StickyCache) dbSetMultiLevel(l1, l2, l3 string, credentialID int, baseT
 			continue
 		}
 		expiresAt := baseTime.UTC().Add(k.ttl)
-		_, err := s.dbPool.Exec(ctx, `
+		_, err := pool.Exec(ctx, `
 			INSERT INTO sticky_sessions (sticky_key, credential_id, set_at, expires_at)
 			VALUES ($1, $2, now(), $3)
 			ON CONFLICT (sticky_key) DO UPDATE SET
@@ -370,10 +391,14 @@ func (s *StickyCache) dbSetMultiLevel(l1, l2, l3 string, credentialID int, baseT
 }
 
 func (s *StickyCache) RestoreFromDB(ctx context.Context) error {
-	if s.dbPool == nil {
+	// 2026-07-27 concurrency fix: copy the pool pointer out under the lock,
+	// then do the DB query off-lock. Previously s.dbPool was read unlocked
+	// (racing with SetDB) and the query ran while not holding the items lock.
+	pool := s.dbPoolSnapshot()
+	if pool == nil {
 		return nil
 	}
-	rows, err := s.dbPool.Query(ctx, `
+	rows, err := pool.Query(ctx, `
 		SELECT sticky_key, credential_id, expires_at
 		FROM sticky_sessions
 		WHERE expires_at > now()
