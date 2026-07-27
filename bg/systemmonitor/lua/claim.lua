@@ -8,8 +8,12 @@
 -- ARGV[2] = inflight_ttl_seconds          (默认 30)
 --
 -- 返回值:
---   nil (false-like): 队列空，或队头任务应被跳过 (本轮循环继续)
+--   "": 队列空，或队头任务应被跳过 (本轮循环继续)
 --   {json}: 成功抢占的任务对象 (含 worker_id / claimed_at_ms 字段)
+--
+-- 注意: 返回空字符串而非 Lua boolean false，因为 Redis 将 Lua false 转换为
+-- nil reply，go-redis 将其转为 redis.Nil error，导致正常"无任务"被误判为错误。
+-- Go 端 redis_queue.go Claim() 已处理 res==nil 和 raw=="" 两种空情况。
 --
 -- 副作用:
 --   1. 队头任务 → 队尾 (RPOPLPUSH)  当 inflight 占位 或 scheduled 未到
@@ -34,14 +38,14 @@ local inflight_ttl = tonumber(ARGV[2])
 -- 队头任务 JSON
 local raw = redis.call('LINDEX', queue_key, 0)
 if not raw then
-    return false
+    return ""
 end
 
 local ok, task = pcall(cjson.decode, raw)
 if not ok or type(task) ~= 'table' then
     -- 损坏 JSON：直接弹出丢弃，避免死循环
     redis.call('LPOP', queue_key)
-    return false
+    return ""
 end
 
 -- 从任务自身字段构造 inflight key（修复 Claim(0,"") 导致的全局 dedup 折叠）
@@ -50,14 +54,14 @@ local raw_model = task.raw_model
 if cred_id == nil or raw_model == nil or raw_model == '' then
     -- 任务缺少必要字段：弹出丢弃，避免队头卡死
     redis.call('LPOP', queue_key)
-    return false
+    return ""
 end
 local inflight_key = 'llmgw:monitor:inflight:' .. tostring(cred_id) .. ':' .. tostring(raw_model)
 
 -- 30s dedup：探测中则把任务转队尾
 if redis.call('EXISTS', inflight_key) == 1 then
     redis.call('RPOPLPUSH', queue_key, queue_key)
-    return false
+    return ""
 end
 
 -- scheduled_at_ms 未到也转队尾（即时任务 scheduled_at_ms = nil 或 <= now）
@@ -66,7 +70,7 @@ local now_ms = tonumber(time_arr[1]) * 1000 + math.floor(tonumber(time_arr[2]) /
 
 if task.scheduled_at_ms and type(task.scheduled_at_ms) == 'number' and task.scheduled_at_ms > now_ms then
     redis.call('RPOPLPUSH', queue_key, queue_key)
-    return false
+    return ""
 end
 
 -- 抢占：标记 worker / claimed_at，更新队头 JSON

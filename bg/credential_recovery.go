@@ -102,8 +102,17 @@ func (r *CredentialRecovery) recover(ctx context.Context) {
 		    availability_recover_at = NULL,
 		    state_updated_at = now()
 		WHERE availability_state IN ('cooling','rate_limited','unreachable','auth_failed')
-		  AND availability_recover_at IS NOT NULL
-		  AND availability_recover_at <= now()
+		  AND (
+		      -- 2026-07-27 fix: auth_failed never sets availability_recover_at
+		      -- (credential_probe_v2.go sets it to NULL), so we allow auth_failed
+		      -- to recover even when availability_recover_at IS NULL. The next
+		      -- successful node_probe clears auth_failed via updateCredentialHealth.
+		      availability_state = 'auth_failed'
+		      OR (
+		          availability_recover_at IS NOT NULL
+		          AND availability_recover_at <= now()
+		      )
+		  )
 		  AND lifecycle_status = 'active'
 		  -- 2026-06-22 defect (4): do NOT auto-restore a credential to 'ready'
 		  -- while any of its (credential, model) bindings is still
@@ -410,11 +419,19 @@ func expiredCmbRecoverySQL() string {
 		JOIN credentials c      ON c.id = cmb.credential_id
 		JOIN providers p        ON p.id = c.provider_id
 		WHERE cmb.available = FALSE
-		  AND cmb.unavailable_recover_at IS NOT NULL
-		  AND cmb.unavailable_recover_at <= now()
+		  -- 2026-07-27 fix: model_probe_broken never sets unavailable_recover_at
+		  -- (model_probe.go sets it to NULL), so we allow it to recover without
+		  -- a scheduled time. For other reasons, require the recovery time to have elapsed.
 		  AND (
-		      cmb.unavailable_reason IN ('continuous_failure')
-		      OR cmb.unavailable_reason LIKE 'probe_%'
+		      cmb.unavailable_reason = 'model_probe_broken'
+		      OR (
+		          cmb.unavailable_recover_at IS NOT NULL
+		          AND cmb.unavailable_recover_at <= now()
+		          AND (
+		              cmb.unavailable_reason IN ('continuous_failure')
+		              OR cmb.unavailable_reason LIKE 'probe_%'
+		          )
+		      )
 		  )
 		  AND COALESCE(cmb.unavailable_reason, '') NOT LIKE 'manual%'
 		  AND COALESCE(cmb.admin_protected, FALSE) = FALSE
@@ -430,7 +447,7 @@ func expiredCmbRecoverySQL() string {
 		        AND nps.raw_model_name = pm.raw_model_name
 		        AND nps.paused         = TRUE
 		  )
-		ORDER BY cmb.unavailable_recover_at ASC
+		ORDER BY cmb.unavailable_recover_at ASC NULLS LAST
 		LIMIT 50
 	`
 }
