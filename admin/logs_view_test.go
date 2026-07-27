@@ -1,10 +1,42 @@
 package admin
 
 import (
+	"errors"
 	"reflect"
 	"strings"
 	"testing"
 )
+
+type scanDestinationCounter struct {
+	count int
+}
+
+func (s *scanDestinationCounter) Scan(dest ...any) error {
+	s.count = len(dest)
+	return errors.New("stop after counting scan destinations")
+}
+
+func TestScanRequestListRowMatchesListColumns(t *testing.T) {
+	want := len(parseSelectColumns(requestLogsListCols))
+
+	for _, withTraceSeq := range []bool{false, true} {
+		t.Run(map[bool]string{false: "without_trace_seq", true: "with_trace_seq"}[withTraceSeq], func(t *testing.T) {
+			rows := new(scanDestinationCounter)
+			_, err := scanRequestListRow(rows, withTraceSeq)
+			if err == nil {
+				t.Fatal("scanRequestListRow should return the scanner error")
+			}
+
+			expected := want
+			if withTraceSeq {
+				expected++
+			}
+			if rows.count != expected {
+				t.Fatalf("scan destination count = %d, want %d", rows.count, expected)
+			}
+		})
+	}
+}
 
 // TestRequestLogRowColumnAlignment is a static guard against the
 // 2026-07-27 "query failed" incident where detail columns added to

@@ -37,8 +37,11 @@ func DefaultWeightConfig() WeightConfig {
 // 因此 cachedWeight/cachedAt 的读写无数据竞争,且写者之间 last-writer-wins
 // (对 1 秒缓存可接受)。
 type weightCache struct {
-	weight float64
-	at     time.Time
+	weight          float64
+	at              time.Time
+	errorsPerMin    int
+	consecutiveFail int
+	avgLatency      time.Duration
 }
 
 // WeightedCandidate represents a routing candidate with health metadata.
@@ -53,17 +56,23 @@ type WeightedCandidate struct {
 }
 
 // loadCache 原子读取缓存,未缓存或 nil 返回零值 + ok=false。
-func (wc *WeightedCandidate) loadCache() (weight float64, at time.Time, ok bool) {
+func (wc *WeightedCandidate) loadCache() (weight float64, at time.Time, errorsPerMin, consecutiveFail int, avgLatency time.Duration, ok bool) {
 	c := wc.cache.Load()
 	if c == nil {
-		return 0, time.Time{}, false
+		return 0, time.Time{}, 0, 0, 0, false
 	}
-	return c.weight, c.at, true
+	return c.weight, c.at, c.errorsPerMin, c.consecutiveFail, c.avgLatency, true
 }
 
 // storeCache 原子发布一份新的缓存快照。
-func (wc *WeightedCandidate) storeCache(weight float64, at time.Time) {
-	wc.cache.Store(&weightCache{weight: weight, at: at})
+func (wc *WeightedCandidate) storeCache(weight float64, at time.Time, errorsPerMin, consecutiveFail int, avgLatency time.Duration) {
+	wc.cache.Store(&weightCache{
+		weight:          weight,
+		at:              at,
+		errorsPerMin:    errorsPerMin,
+		consecutiveFail: consecutiveFail,
+		avgLatency:      avgLatency,
+	})
 }
 
 // invalidateCache 清空缓存 (下次 computeWeight 会重算)。
@@ -271,29 +280,34 @@ func (wr *WeightedRouter) Weight(credentialID string) float64 {
 // 缓存读写通过 atomic.Pointer,因此即便 RecordError/RecordSuccess 在无锁路径
 // 并发失效缓存,这里也不会产生数据竞争。
 func (wr *WeightedRouter) computeWeight(wc *WeightedCandidate) float64 {
-	// Cache for 1 second to avoid recomputing on every selection.
-	if w, at, ok := wc.loadCache(); ok && time.Since(at) < time.Second && w > 0 {
-		return w
-	}
-
 	// Hard floor: if marked Unhealthy (>= failThreshold consecutive errors), set weight to 0
 	// so this credential is excluded from routing entirely.
+	errorsPerMin := 0
+	consecutiveFails := 0
+	if wc.ErrorDetector != nil {
+		errorsPerMin = wc.ErrorDetector.GetErrorsPerMinute(wc.Candidate.CredentialID)
+		consecutiveFails = wc.ErrorDetector.GetConsecutiveFails(wc.Candidate.CredentialID)
+	}
+	avgLatency := wc.LatencyTracker.Avg()
 	if wc.ErrorDetector != nil && wc.ErrorDetector.IsUnhealthy(wc.Candidate.CredentialID) {
-		wc.storeCache(0, time.Now())
+		wc.storeCache(0, time.Now(), errorsPerMin, consecutiveFails, avgLatency)
 		return 0
 	}
 
-	errorsPerMin := 0.0
-	if wc.ErrorDetector != nil {
-		errorsPerMin = float64(wc.ErrorDetector.GetErrorsPerMinute(wc.Candidate.CredentialID))
+	// Cache for 1 second, but include health inputs in the key. Detectors can
+	// be updated externally, so invalidating only through RecordError is not
+	// sufficient to keep the cached weight correct.
+	if w, at, cachedErrors, cachedFails, cachedLatency, ok := wc.loadCache(); ok && w > 0 && time.Since(at) < time.Second &&
+		cachedErrors == errorsPerMin && cachedFails == consecutiveFails && cachedLatency == avgLatency {
+		return w
 	}
 
-	errorPenalty := 1.0 - (errorsPerMin / wr.config.ErrorRateBaseline)
+	errorPenalty := 1.0 - (float64(errorsPerMin) / wr.config.ErrorRateBaseline)
 	if errorPenalty < wr.config.MinWeight {
 		errorPenalty = wr.config.MinWeight
 	}
 
-	avgLatencyMs := float64(wc.LatencyTracker.Avg()) / float64(time.Millisecond)
+	avgLatencyMs := float64(avgLatency) / float64(time.Millisecond)
 	excessMs := avgLatencyMs - wr.config.LatencyBaseline
 	if excessMs < 0 {
 		excessMs = 0
@@ -311,7 +325,7 @@ func (wr *WeightedRouter) computeWeight(wc *WeightedCandidate) float64 {
 		weight = wr.config.MinWeight
 	}
 
-	wc.storeCache(weight, time.Now())
+	wc.storeCache(weight, time.Now(), errorsPerMin, consecutiveFails, avgLatency)
 	return weight
 }
 
