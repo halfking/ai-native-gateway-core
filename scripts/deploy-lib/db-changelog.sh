@@ -129,17 +129,21 @@ deploy_apply_pending_migrations() {
     _db_log "  → $base"
     if ! _deploy_verify_ssh "$ssh_cmd" "${remote_psql}
 _psql -v ON_ERROR_STOP=1 -f '$remote_dir/$base' 2>/tmp/_mig_err_${ver}.log"; then
-      if grep -qiE 'already exists|duplicate key|relation .* already exists' "/tmp/_mig_err_${ver}.log" 2>/dev/null; then
+      local migration_error
+      migration_error=$("$ssh_cmd" "cat '/tmp/_mig_err_${ver}.log' 2>/dev/null || true")
+      if grep -qiE 'already exists|duplicate key|relation .* already exists' <<<"$migration_error"; then
         _db_warn "  ⊘ $base idempotent"
       else
         _db_err "  ✗ $base:"
-        tail -15 "/tmp/_mig_err_${ver}.log" >&2 || true
+        printf '%s\n' "$migration_error" | tail -15 >&2
+        "$ssh_cmd" "rm -f '/tmp/_mig_err_${ver}.log'" || true
         "$ssh_cmd" "rm -rf '$remote_dir'" || true
         return 1
       fi
     else
       applied_count=$((applied_count + 1))
     fi
+    "$ssh_cmd" "rm -f '/tmp/_mig_err_${ver}.log'" || true
 
     if ! _deploy_verify_ssh "$ssh_cmd" "${remote_psql}
 _psql -v ON_ERROR_STOP=1 -c \"BEGIN; SELECT pg_advisory_xact_lock(hashtextextended('llm-gateway:schema_migrations', 0)); INSERT INTO schema_migrations (version, description) SELECT '$ver', '$desc' WHERE NOT EXISTS (SELECT 1 FROM schema_migrations WHERE version = '$ver'); COMMIT;\" >/dev/null"; then

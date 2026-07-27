@@ -679,3 +679,16 @@
 |-----------|------|
 | 457 | `457_session_v2_owner_filter.sql` |
 
+## 2026-07-26T21:15:42Z — deploy 245 build_seq 1404 (73e4cff8)
+
+| Migration | File |
+|-----------|------|
+| 458 | `458_request_logs_canonical_model.sql` |
+
+## 2026-07-26T21:50:16Z — deploy 245 build_seq 1408 (7edaf19a)
+
+| Migration | File |
+|-----------|------|
+| 459 | `459_request_logs_view_client_perception.sql` |
+| 460 | `460_v_routable_credential_models_periodic_exhausted.sql` |
+
