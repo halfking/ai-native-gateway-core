@@ -503,3 +503,36 @@ func (l *AsyncRawDataLogger) Close() error {
 func (l *AsyncRawDataLogger) Stats() QueueStats {
 	return l.queue.Stats()
 }
+
+// CurrentLocation forwards to the underlying RawDataLogger and reports
+// the path and byte offset of the next entry to be written. See
+// RawDataLogger.CurrentLocation for semantics. Returns empty values
+// when the underlying logger is disabled or closed.
+//
+// 2026-07-28: used by LockFreeAnomalyReporter to populate
+// AnomalyReport.RawLogFile/RawLogOffset. The async wrapper does not
+// snapshot the queue state; callers should expect the returned offset
+// to be the position of the most recently *flushed* entry, not the most
+// recently enqueued one. For most anomaly types this is acceptable
+// because the relevant upstream_request / upstream_response entry has
+// already been drained from the queue by the time the executor surfaces
+// the anomaly.
+func (l *AsyncRawDataLogger) CurrentLocation() (file string, offset int64) {
+	l.stateMu.RLock()
+	defer l.stateMu.RUnlock()
+	if l.closed.Load() || l.baseLogger == nil || !l.baseLogger.enabled {
+		return "", 0
+	}
+	return l.baseLogger.CurrentLocation()
+}
+
+// HasFile reports whether the underlying RawDataLogger has an open
+// audit log file. See RawDataLogger.HasFile.
+func (l *AsyncRawDataLogger) HasFile() bool {
+	l.stateMu.RLock()
+	defer l.stateMu.RUnlock()
+	if l.closed.Load() || l.baseLogger == nil || !l.baseLogger.enabled {
+		return false
+	}
+	return l.baseLogger.HasFile()
+}

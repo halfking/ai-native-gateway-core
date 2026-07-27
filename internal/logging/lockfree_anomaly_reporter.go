@@ -14,6 +14,46 @@ import (
 	"time"
 )
 
+// AnomalyReport 异常报告
+//
+// 2026-07-27: removed RawInputSample/RawOutputSample so the external
+// payload no longer contains the original request/response bytes. The
+// audit endpoint can still join with the on-disk raw log via the
+// correlation fields below (request_id, gw_session_id, trace_id, ...)
+// plus the SHA-256 hash and size of each side.
+//
+// 2026-07-28: AnomalyReport moved here from the legacy mutex-based
+// anomaly_reporter.go (now deleted). Producers (LockFreeAnomalyReporter
+// + streaming diagnostic adapters) share this struct.
+type AnomalyReport struct {
+	Timestamp      time.Time         `json:"timestamp"`
+	RequestID      string            `json:"request_id"`
+	AnomalyType    string            `json:"anomaly_type"` // "tool_calls_missing", "conversion_error", "semantic_incomplete"
+	SourceProtocol string            `json:"source_protocol"`
+	TargetProtocol string            `json:"target_protocol"`
+	ConversionStep string            `json:"conversion_step"`
+	RawInputHash   string            `json:"raw_input_hash,omitempty"`
+	RawInputSize   int               `json:"raw_input_size,omitempty"`
+	RawOutputHash  string            `json:"raw_output_hash,omitempty"`
+	RawOutputSize  int               `json:"raw_output_size,omitempty"`
+	RawLogFile     string            `json:"raw_log_file,omitempty"`
+	RawLogOffset   int64             `json:"raw_log_offset,omitempty"`
+	ErrorMessage   string            `json:"error_message,omitempty"`
+	Analysis       map[string]string `json:"analysis,omitempty"` // 初步判断
+	Confidence     float64           `json:"confidence"`         // 置信度 (0.0-1.0)
+
+	// 2026-07-27: correlation envelope. Producers fill these from the
+	// request context so the external endpoint can pivot into
+	// request_logs and trace spans without an extra lookup.
+	ClientRequestID string `json:"client_request_id,omitempty"`
+	GWSessionID     string `json:"gw_session_id,omitempty"`
+	GWTaskID        string `json:"gw_task_id,omitempty"`
+	TenantID        string `json:"tenant_id,omitempty"`
+	ProviderID      int    `json:"provider_id,omitempty"`
+	CredentialID    int    `json:"credential_id,omitempty"`
+	TraceID         string `json:"trace_id,omitempty"`
+}
+
 // LockFreeAnomalyReporter 无锁异常报告器
 // 使用无锁队列替代互斥锁，提升高并发性能
 type LockFreeAnomalyReporter struct {
@@ -32,6 +72,20 @@ type LockFreeAnomalyReporter struct {
 	flushMu    sync.Mutex
 	closing    atomic.Bool
 
+	// rawLogLocator returns the current raw audit log file path and the
+	// byte offset of the next write. Used to populate
+	// AnomalyReport.RawLogFile/RawLogOffset so the external endpoint can
+	// reference the on-disk audit log entry that was most recently
+	// flushed before the anomaly was raised. nil disables file/offset
+	// reporting (legacy behaviour).
+	//
+	// 2026-07-28: see design docs §5.7. The locator is invoked at
+	// Report time, so it captures the "most recent flush position" — for
+	// concurrent requests this may point to a different request's entry.
+	// Callers that need strict per-request correlation must wire the
+	// raw data logger to flush synchronously before reporting.
+	rawLogLocator func() (file string, offset int64)
+
 	// 统计信息
 	reportsSent   atomic.Uint64
 	reportsFailed atomic.Uint64
@@ -39,6 +93,16 @@ type LockFreeAnomalyReporter struct {
 
 // NewLockFreeAnomalyReporter 创建无锁异常报告器
 func NewLockFreeAnomalyReporter(endpoint string, enabled bool, queueSize int) *LockFreeAnomalyReporter {
+	return NewLockFreeAnomalyReporterWithRawLogLocator(endpoint, enabled, queueSize, nil)
+}
+
+// NewLockFreeAnomalyReporterWithRawLogLocator creates a lock-free
+// anomaly reporter that, when reporting, stamps each AnomalyReport with
+// the (file, offset) returned by locator. Pass nil to disable file
+// stamping (legacy behaviour, equivalent to NewLockFreeAnomalyReporter).
+//
+// 2026-07-28: see design docs §5.7.
+func NewLockFreeAnomalyReporterWithRawLogLocator(endpoint string, enabled bool, queueSize int, locator func() (string, int64)) *LockFreeAnomalyReporter {
 	if queueSize <= 0 {
 		queueSize = 1000
 	}
@@ -50,12 +114,13 @@ func NewLockFreeAnomalyReporter(endpoint string, enabled bool, queueSize int) *L
 		httpClient: &http.Client{
 			Timeout: 10 * time.Second,
 		},
-		queue:      NewLockFreeQueue[AnomalyReport](queueSize),
-		ctx:        ctx,
-		cancel:     cancel,
-		batchSize:  10,
-		flushDelay: 5 * time.Second,
-		done:       make(chan struct{}),
+		queue:         NewLockFreeQueue[AnomalyReport](queueSize),
+		ctx:           ctx,
+		cancel:        cancel,
+		batchSize:     10,
+		flushDelay:    5 * time.Second,
+		done:          make(chan struct{}),
+		rawLogLocator: locator,
 	}
 
 	reporter.enabled.Store(enabled && endpoint != "")
@@ -110,6 +175,7 @@ func (r *LockFreeAnomalyReporter) ReportToolCallsMissing(
 		report.CredentialID = envelope.CredentialID
 		report.TraceID = envelope.TraceID
 	}
+	r.stampRawLogLocation(&report)
 
 	if !r.enqueue(report) {
 		slog.Warn("lockfree_anomaly_reporter: queue full, dropping report",
@@ -155,6 +221,7 @@ func (r *LockFreeAnomalyReporter) ReportConversionError(
 		report.CredentialID = envelope.CredentialID
 		report.TraceID = envelope.TraceID
 	}
+	r.stampRawLogLocation(&report)
 
 	if !r.enqueue(report) {
 		slog.Warn("lockfree_anomaly_reporter: queue full, dropping report",
@@ -206,6 +273,7 @@ func (r *LockFreeAnomalyReporter) ReportSemanticIncomplete(
 		report.CredentialID = envelope.CredentialID
 		report.TraceID = envelope.TraceID
 	}
+	r.stampRawLogLocation(&report)
 
 	if !r.enqueue(report) {
 		slog.Warn("lockfree_anomaly_reporter: queue full, dropping report",
@@ -221,6 +289,28 @@ func (r *LockFreeAnomalyReporter) enqueue(report AnomalyReport) bool {
 		return false
 	}
 	return r.queue.Enqueue(report)
+}
+
+// stampRawLogLocation reads the configured rawLogLocator and writes the
+// returned (file, offset) into the report. Safe to call on a nil
+// receiver (no-op). The locator callback is invoked at most once per
+// report and is permitted to panic-recover — see recover below.
+//
+// 2026-07-28: see design docs §5.7.
+func (r *LockFreeAnomalyReporter) stampRawLogLocation(report *AnomalyReport) {
+	if r == nil || report == nil || r.rawLogLocator == nil {
+		return
+	}
+	defer func() {
+		if rec := recover(); rec != nil {
+			slog.Warn("lockfree_anomaly_reporter: rawLogLocator panicked, leaving file/offset blank",
+				"request_id", report.RequestID,
+				"panic", rec)
+		}
+	}()
+	file, offset := r.rawLogLocator()
+	report.RawLogFile = file
+	report.RawLogOffset = offset
 }
 
 // sendWorker 后台发送协程
@@ -466,4 +556,14 @@ func envelopeFromContext(ctx context.Context) *AnomalyReportEnvelope {
 func hashString(s string) string {
 	sum := sha256.Sum256([]byte(s))
 	return hex.EncodeToString(sum[:])
+}
+
+// truncate clips a string to maxLen bytes (not runes) and appends a
+// truncation marker. 2026-07-28: previously lived in the legacy mutex
+// anomaly_reporter.go; moved here when that file was deleted.
+func truncate(s string, maxLen int) string {
+	if len(s) <= maxLen {
+		return s
+	}
+	return s[:maxLen] + fmt.Sprintf("... [truncated from %d bytes]", len(s))
 }
