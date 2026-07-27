@@ -518,6 +518,31 @@ func parseAnthropicTools(raw json.RawMessage) ([]ToolDefinition, error) {
 			continue
 		}
 
+		// 2026-07-27 (F-1): Anthropic provider-specific tool types
+		// (computer_20250124, bash_20250124, text_editor_20250124,
+		// web_search_20250305) are identified by a "type" that is not
+		// "custom_tool"/empty and have no input_schema (or a fixed one the
+		// SDK owns). They were previously collapsed into an empty-name
+		// ToolDefinition and lost. Capture type + verbatim bytes for
+		// same-protocol passthrough.
+		//
+		// A standard Anthropic custom tool has type "custom_tool" or omits
+		// type and carries name + input_schema — those keep going through
+		// the function path below.
+		toolType, _ := tool["type"].(string)
+		isBuiltin := toolType != "" && toolType != "custom_tool"
+		// Anthropic built-ins may carry "name" (computer_use) or not (bash).
+		// Treat presence of a schema-less builtin type as provider-specific.
+		_, hasInputSchema := tool["input_schema"]
+		if isBuiltin && !hasInputSchema {
+			rawBytes, _ := json.Marshal(tool)
+			result = append(result, ToolDefinition{
+				Type: toolType,
+				Raw:  rawBytes,
+			})
+			continue
+		}
+
 		td := ToolDefinition{}
 
 		if name, ok := tool["name"].(string); ok {

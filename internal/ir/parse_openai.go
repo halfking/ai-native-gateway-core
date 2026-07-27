@@ -442,6 +442,22 @@ func parseOpenAITools(raw json.RawMessage) ([]ToolDefinition, error) {
 			continue
 		}
 
+		// 2026-07-27 (F-1): provider-specific tool types (OpenAI web_search,
+		// code_interpreter, file_search; anything with type != "function"
+		// and no function sub-object) have no name/parameters and were
+		// previously dropped. Capture their type + verbatim bytes so a
+		// same-protocol serialize can pass them through unchanged.
+		toolType, _ := tool["type"].(string)
+		_, hasFunction := tool["function"]
+		if toolType != "" && toolType != "function" && !hasFunction {
+			rawBytes, _ := json.Marshal(tool)
+			result = append(result, ToolDefinition{
+				Type: toolType,
+				Raw:  rawBytes,
+			})
+			continue
+		}
+
 		td := ToolDefinition{}
 
 		// Handle nested function object (OpenAI standard format).
