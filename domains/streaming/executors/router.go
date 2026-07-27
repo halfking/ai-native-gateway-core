@@ -126,10 +126,13 @@ func (r *Router) PlanCandidates(
 			if err != nil {
 				// URSM v2 FilterAndScore 失败时，记录错误并继续使用原始候选
 				// 这是 fail-open 设计：优先保证可用性，不因 Redis 问题阻塞路由
+				// 2026-07-27 (M3, S-3): surface routing_state_source=fallback so the
+				// fail-open ratio is queryable (Grafana alert threshold: 1min > 5%).
 				slog.Warn("router: URSM v2 FilterAndScore failed, failing open",
 					"error", err,
 					"seed_count", len(seeds),
 					"mode", r.URSMv2.Mode(),
+					"routing_state_source", "fallback",
 				)
 			} else {
 				allow := make(map[int]bool, len(views))

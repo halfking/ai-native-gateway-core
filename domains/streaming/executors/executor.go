@@ -790,6 +790,15 @@ type Executor struct {
 	RawDataLogger    RawDataLogger    // 原始请求/响应数据记录器
 	AnomalyReporter  AnomalyReporter  // 协议转换异常报告器
 	SemanticAnalyzer SemanticAnalyzer // 语义分析器（工具调用/内容丢失检测）
+
+	// 2026-07-27 (M3, S-4): per-Executor TTL cache for the URSMv2
+	// authoritative Ready() check. legacyWritersEnabled() is called 11+× per
+	// request; without this cache each call did a 10ms Redis round-trip.
+	// Ready() changes at most once per boot/recovery, so a 1s TTL is safe.
+	// Guarded by authCacheMu (the Executor is shared across goroutines).
+	authCacheMu  sync.Mutex
+	authCacheVal bool
+	authCacheAt  time.Time
 }
 
 // DefaultFallbackChain (Phase 2, 2026-07-19) returns a sensible default
@@ -1106,6 +1115,14 @@ func (e *Executor) SetTraceRecorder(rec gwtrace.Recorder) {
 //
 // isURSMv2Authoritative 检查 URSM v2 是否处于 authoritative 模式且已 Ready。
 // 用于在 authoritative 模式下跳过旧的状态管理系统，避免状态不一致。
+//
+// 2026-07-27 (M3, S-4): the Ready() result is now cached per-Executor for
+// 1s (authoritativeCacheTTL). Ready() reflects whether the v2 pipeline has
+// warmed up against Redis — a value that changes at most once per boot/
+// recovery, never per-request — so a 1s TTL is safe and cuts the 10ms Redis
+// round-trip from ~11×/request to ~1×/s. The cache is only consulted when
+// Mode==Authoritative; in the default off/canary modes Mode() short-circuits
+// before any Redis call.
 func (e *Executor) isURSMv2Authoritative() bool {
 	if e == nil || e.URSMv2 == nil {
 		return false
@@ -1113,10 +1130,23 @@ func (e *Executor) isURSMv2Authoritative() bool {
 	if e.URSMv2.Mode() != ursmv2api.ModeAuthoritative {
 		return false
 	}
+	// Per-instance TTL cache (safe across goroutines via the mutex below).
+	e.authCacheMu.Lock()
+	defer e.authCacheMu.Unlock()
+	if time.Since(e.authCacheAt) < authoritativeCacheTTL {
+		return e.authCacheVal
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
 	defer cancel()
-	return e.URSMv2.Ready(ctx)
+	v := e.URSMv2.Ready(ctx)
+	e.authCacheVal = v
+	e.authCacheAt = time.Now()
+	return v
 }
+
+// authoritativeCacheTTL bounds how long a cached Ready() result is trusted.
+// Ready flips at most once per boot/recovery, so 1s is conservative.
+const authoritativeCacheTTL = 1 * time.Second
 
 // legacyWritersEnabled 返回"是否应执行旧的状态写入路径"（FpSlots Recorder /
 // credentialstate Observer / routingstate Shadow）。当 URSM v2 authoritative
@@ -1127,8 +1157,9 @@ func (e *Executor) isURSMv2Authoritative() bool {
 // "legacy writers"是 FpSlots/credentialstate/routingstate 这三套并行系统，
 // 仅在 v2 非 authoritative 时参与状态同步。
 //
-// 每次调用都会触发 10ms 的 Ready() 检查（见 isURSMv2Authoritative），热路径
-// 上 11+ 次调用较浪费。后续可以加 per-request 缓存。
+// 2026-07-27 (M3, S-4): the 10ms Ready() cost is now 1s-TTL-cached inside
+// isURSMv2Authoritative, so the 11+ hot-path calls per request collapse to
+// ~1 Redis round-trip per second total.
 func (e *Executor) legacyWritersEnabled() bool {
 	return !e.isURSMv2Authoritative()
 }
