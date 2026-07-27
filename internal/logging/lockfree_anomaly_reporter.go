@@ -244,17 +244,29 @@ func (r *LockFreeAnomalyReporter) sendBatch() bool {
 }
 
 func (r *LockFreeAnomalyReporter) sendBatchContext(ctx context.Context) bool {
+	// 只在出队/重新入队时持有 batchMu,HTTP POST 不在锁内执行,
+	// 避免卡住的异常端点阻塞 Close()/shutdown 以及并发的 flush。
 	r.batchMu.Lock()
-	defer r.batchMu.Unlock()
-	return r.sendBatchLocked(ctx)
-}
-
-func (r *LockFreeAnomalyReporter) sendBatchLocked(parent context.Context) bool {
 	batch := r.queue.TryDequeueBatch(r.batchSize)
+	r.batchMu.Unlock()
 	if len(batch) == 0 {
 		return false
 	}
+	ok := r.postBatch(ctx, batch)
+	if !ok {
+		// 失败:重新入队 (需要锁)。
+		r.batchMu.Lock()
+		r.requeueBatch(batch)
+		r.batchMu.Unlock()
+	}
+	return ok
+}
 
+// postBatch 序列化并发送一个已出队的 batch。
+// 调用方负责出队/重新入队 (这些需要 batchMu);此函数本身不触碰队列,
+// 也不持有 batchMu,因此 HTTP POST 不会阻塞 Close()/并发 flush。
+// 返回 false 表示发送失败,调用方应把 batch 重新入队。
+func (r *LockFreeAnomalyReporter) postBatch(parent context.Context, batch []AnomalyReport) bool {
 	// 序列化为JSON
 	payload, err := json.Marshal(map[string]interface{}{
 		"anomalies":  batch,
@@ -265,7 +277,6 @@ func (r *LockFreeAnomalyReporter) sendBatchLocked(parent context.Context) bool {
 	if err != nil {
 		slog.Error("lockfree_anomaly_reporter: failed to marshal batch, re-enqueuing", "err", err)
 		r.reportsFailed.Add(uint64(len(batch)))
-		r.requeueBatch(batch)
 		return false
 	}
 
@@ -277,7 +288,6 @@ func (r *LockFreeAnomalyReporter) sendBatchLocked(parent context.Context) bool {
 	if err != nil {
 		slog.Error("lockfree_anomaly_reporter: failed to create request, re-enqueuing", "err", err)
 		r.reportsFailed.Add(uint64(len(batch)))
-		r.requeueBatch(batch)
 		return false
 	}
 
@@ -291,7 +301,6 @@ func (r *LockFreeAnomalyReporter) sendBatchLocked(parent context.Context) bool {
 			"err", err,
 			"batch_size", len(batch))
 		r.reportsFailed.Add(uint64(len(batch)))
-		r.requeueBatch(batch)
 		return false
 	}
 	defer resp.Body.Close()
@@ -301,15 +310,13 @@ func (r *LockFreeAnomalyReporter) sendBatchLocked(parent context.Context) bool {
 		slog.Debug("lockfree_anomaly_reporter: sent batch successfully",
 			"batch_size", len(batch),
 			"status", resp.StatusCode)
-	} else {
-		r.reportsFailed.Add(uint64(len(batch)))
-		slog.Warn("lockfree_anomaly_reporter: server returned non-2xx, re-enqueuing",
-			"status", resp.StatusCode,
-			"batch_size", len(batch))
-		r.requeueBatch(batch)
-		return false
+		return true
 	}
-	return true
+	r.reportsFailed.Add(uint64(len(batch)))
+	slog.Warn("lockfree_anomaly_reporter: server returned non-2xx, re-enqueuing",
+		"status", resp.StatusCode,
+		"batch_size", len(batch))
+	return false
 }
 
 func (r *LockFreeAnomalyReporter) requeueBatch(batch []AnomalyReport) {
@@ -363,13 +370,22 @@ func (r *LockFreeAnomalyReporter) Close() error {
 
 		closeCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
-		r.batchMu.Lock()
-		defer r.batchMu.Unlock()
 	flush:
 		for attempts := 0; r.queue.Size() > 0 && attempts < 3; attempts++ {
-			if r.sendBatchLocked(closeCtx) {
+			// 出队/重新入队在锁内,HTTP POST 不在锁内。
+			r.batchMu.Lock()
+			batch := r.queue.TryDequeueBatch(r.batchSize)
+			r.batchMu.Unlock()
+			if len(batch) == 0 {
+				break flush
+			}
+			if r.postBatch(closeCtx, batch) {
 				continue
 			}
+			// 失败:重新入队。
+			r.batchMu.Lock()
+			r.requeueBatch(batch)
+			r.batchMu.Unlock()
 			select {
 			case <-closeCtx.Done():
 				break flush

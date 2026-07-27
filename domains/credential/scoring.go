@@ -3,7 +3,6 @@ package credential
 
 import (
 	"math"
-	"time"
 )
 
 // RoutingStrategy 路由策略名称
@@ -91,14 +90,29 @@ func NewScorerWithWeights(strategy RoutingStrategy) *ScorerWithWeights {
 }
 
 // SampleWithWeights 使用自定义权重采样
+//
+// 并发说明:整个读取+计算期间持有 RLock,与 RecordX (写锁) 互斥,
+// 但允许多个采样并发。使用 math/rand/v2 顶层函数 (并发安全)。
 func (s *ScorerWithWeights) SampleWithWeights(credID string) float64 {
-	s.Bandit.mu.Lock()
-	defer s.Bandit.mu.Unlock()
-
-	score := s.Bandit.getOrCreateScoreLocked(credID)
+	s.Bandit.mu.RLock()
+	score, ok := s.Bandit.scores[credID]
+	if !ok {
+		s.Bandit.mu.RUnlock()
+		s.Bandit.mu.Lock()
+		score = s.Bandit.getOrCreateScoreLocked(credID)
+		s.Bandit.mu.Unlock()
+		s.Bandit.mu.RLock()
+		score, _ = s.Bandit.scores[credID]
+		// 极端情况:并发 Reset 在 Unlock 与 RLock 间删除了该 key。
+		if score == nil {
+			s.Bandit.mu.RUnlock()
+			return 0.5
+		}
+	}
+	defer s.Bandit.mu.RUnlock()
 
 	// 1. 可靠性：Thompson Sampling
-	reliability := s.Bandit.sampleBeta(score.Alpha, score.Beta)
+	reliability := sampleBeta(score.Alpha, score.Beta)
 
 	// 2. 速度
 	speed := s.Bandit.speedScore(score)
@@ -116,9 +130,6 @@ func (s *ScorerWithWeights) SampleWithWeights(credID string) float64 {
 		intelligence*s.Weights.Intelligence
 
 	combined = combined * headroom * rateLimitFactor
-
-	score.LastSample = combined
-	score.LastScored = time.Now()
 
 	return combined
 }
