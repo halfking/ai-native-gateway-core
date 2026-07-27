@@ -962,7 +962,14 @@ func main() {
 					endpoint = "https://llmgo.kxpms.cn/format-anomalies"
 				}
 
-				anomalyReporter = logging.NewLockFreeAnomalyReporter(endpoint, true, 1000)
+				// 2026-07-28: 把 raw audit log 的当前位置注入到异常报告器，
+				// 让 AnomalyReport.RawLogFile/RawLogOffset 不再是占位字段。
+				// 当 raw logger 被禁用时 locator 为 nil，行为兼容。
+				var locator func() (string, int64)
+				if rawDataLogger != nil {
+					locator = rawDataLogger.CurrentLocation
+				}
+				anomalyReporter = logging.NewLockFreeAnomalyReporterWithRawLogLocator(endpoint, true, 1000, locator)
 				routingExec.AnomalyReporter = executors.NewAnomalyReporterAdapter(anomalyReporter)
 				slog.Info("anomaly_reporter: initialized", "endpoint", endpoint)
 			}
