@@ -36,7 +36,7 @@ func TestWarmupThenFilter(t *testing.T) {
 	rm := recovery.New(rdb, "ursm:v2:")
 
 	if err := rm.WarmupFromSeed(context.Background(), []recovery.Seed{
-		{ProviderID: 1, CredentialID: 1, RawModel: "m"},
+		{ProviderID: 1, CredentialID: 1, RawModel: "m", TenantID: "t"},
 	}); err != nil {
 		t.Fatalf("warmup: %v", err)
 	}

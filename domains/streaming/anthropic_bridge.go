@@ -23,6 +23,7 @@ import (
 	"time"
 
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/audit" //nolint:depguard // historical violation, B1 routing.go CQRS will fix
+	anthropictransform "github.com/kaixuan/llm-gateway-go/domains/transformation/anthropic"
 	"github.com/kaixuan/llm-gateway-go/internal/ir"
 	"github.com/kaixuan/llm-gateway-go/internal/textsplit"
 )
@@ -613,7 +614,18 @@ func StreamAnthropicSSEToOpenAIWithDiagnostics(
 					flushBufferedText()
 					if !initialArgsSent && bufferedToolArgs.Len() > 0 {
 						args := bufferedToolArgs.String()
-						writeChunk(buildAnthropicBridgeToolCallChunk(toolCallIndex-1, currentToolCallID, "", &args, true))
+						validated, _, vErr := anthropictransform.ValidateStreamingToolArgs(args)
+						if vErr != nil {
+							if capture != nil {
+								capture.AddQualityFlag("malformed_tool_args_blocked")
+							}
+							emitAnthropicBridgeErrorChunk(w, "malformed_tool_args", "upstream tool arguments are invalid JSON", flusher)
+							outcome.Interrupted = true
+							outcome.Reason = "malformed_tool_args"
+							outcome.ChunkCount = chunkCount
+							return outcome
+						}
+						writeChunk(buildAnthropicBridgeToolCallChunk(toolCallIndex-1, currentToolCallID, "", &validated, true))
 						bufferedToolArgs.Reset()
 					}
 					currentToolCallID = ""

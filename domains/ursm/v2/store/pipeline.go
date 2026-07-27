@@ -11,6 +11,7 @@ import (
 )
 
 type NodeQuery struct {
+	TenantID     string
 	CredentialID int
 	RawModel     string
 }
@@ -25,7 +26,7 @@ func (s *Store) PipelineNodeViews(ctx context.Context, prefix string, qs []NodeQ
 	pipe := s.rdb.Pipeline()
 	cmds := make([]*redis.MapStringStringCmd, len(qs))
 	for i, q := range qs {
-		cmds[i] = pipe.HGetAll(ctx, NodeKey(prefix, q.CredentialID, q.RawModel))
+		cmds[i] = pipe.HGetAll(ctx, NodeKeyForTenant(prefix, q.TenantID, q.CredentialID, q.RawModel))
 	}
 	if _, err := pipe.Exec(ctx); err != nil && err != redis.Nil {
 		return nil, fmt.Errorf("ursm.v2: pipeline exec: %w", err)
@@ -40,7 +41,7 @@ func (s *Store) PipelineNodeViews(ctx context.Context, prefix string, qs []NodeQ
 		if err != nil {
 			return nil, fmt.Errorf("ursm.v2: hgetall: %w", err)
 		}
-		v := api.NodeView{CredentialID: qs[i].CredentialID, RawModel: qs[i].RawModel}
+		v := api.NodeView{TenantID: qs[i].TenantID, CredentialID: qs[i].CredentialID, RawModel: qs[i].RawModel}
 		v.Available = raw["available"] == "1"
 		v.Reason = raw["last_err"]
 		v.SrcPriority = atoi(raw["source_priority"])

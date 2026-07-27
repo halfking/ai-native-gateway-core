@@ -10,6 +10,7 @@ type Seed struct {
 	ProviderID   int
 	CredentialID int
 	RawModel     string
+	TenantID     string
 }
 
 func (m *Manager) WarmupFromSeed(ctx context.Context, seeds []Seed) error {
@@ -21,7 +22,10 @@ func (m *Manager) WarmupFromSeed(ctx context.Context, seeds []Seed) error {
 	}
 	pipe := m.rdb.Pipeline()
 	for _, s := range seeds {
-		key := fmt.Sprintf("%snode:%d:%s", m.prefix, s.CredentialID, s.RawModel)
+		key := fmt.Sprintf("%snode:%s:%d:%s", m.prefix, s.TenantID, s.CredentialID, s.RawModel)
+		if s.TenantID == "" {
+			key = fmt.Sprintf("%snode:%d:%s", m.prefix, s.CredentialID, s.RawModel)
+		}
 		pipe.HSet(ctx, key,
 			"available", "1",
 			"source_priority", "30", // recover priority

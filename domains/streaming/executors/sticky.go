@@ -491,9 +491,9 @@ func (s *StickyCache) RecordSuccessMultiLevel(
 	// 并发修复 2026-07-27：在释放写锁之前把 pool 与 redisStore 指针拷到
 	// 局部变量，这样与 SetDB/SetRedisStore 之间有明确的 happens-before；
 	// DB/Redis I/O 仍在锁外进行。
-	pool := s.dbPool
-	store := s.redisStore
 	s.mu.Unlock()
+	pool := s.db()
+	store := s.redisStoreSnapshot()
 
 	// Redis 双写(URSM v2 过渡): 用显式 level, 避免 levelOf 启发式
 	if store != nil {
@@ -661,8 +661,9 @@ func (s *StickyCache) DeleteMultiLevel(
 			delete(s.items, item.key)
 		}
 		s.mu.Unlock()
-		if s.redisStore != nil {
-			if err := s.redisStore.DeleteLevelIfCredential(ctx, item.level, item.key, credentialID); err != nil {
+		store := s.redisStoreSnapshot()
+		if store != nil {
+			if err := store.DeleteLevelIfCredential(ctx, item.level, item.key, credentialID); err != nil {
 				slog.Debug("sticky redis delete failed", "key", item.key, "error", err)
 			}
 		}

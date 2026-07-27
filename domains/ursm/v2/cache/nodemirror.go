@@ -15,6 +15,7 @@ import (
 // availability, not scoring, so every request still hit Redis — defeating
 // the purpose. CachedAt lets the scorer detect a stale entry.
 type NodeView struct {
+	TenantID       string
 	CredentialID   int
 	RawModel       string
 	Available      bool
@@ -29,14 +30,15 @@ type NodeView struct {
 	SR5m    float64
 	// CachedAt is when this entry was populated from Redis. Observability/
 	// staleness hint (the soft-expire decision uses softExpireAt, not this).
-	CachedAt time.Time
-	softExpireAt   time.Time // 软过期点;超过后 Get 返回 miss
+	CachedAt     time.Time
+	softExpireAt time.Time // 软过期点;超过后 Get 返回 miss
 }
 
 // NodeMirror 是节点状态的进程内只读镜像。
 // 不变量(设计稿 Decision 2): 任何写入必须先经 Redis Lua 成功;LRU 永远是只读副本。
 // generation 单调契约与 apply_decision.lua:25 对齐:
-//   cur_gen > in_gen or (cur_gen==in_gen and cur_pri>in_pri) → ignored_stale
+//
+//	cur_gen > in_gen or (cur_gen==in_gen and cur_pri>in_pri) → ignored_stale
 type NodeMirror struct {
 	lru     *LRU[string, NodeView]
 	softTTL time.Duration
@@ -50,11 +52,13 @@ func NewNodeMirror(capacity int, softTTL time.Duration) *NodeMirror {
 // 用 LRU.Update 在锁内原子执行单调比较 + 写入, 杜绝 Peek+Put 的 TOCTOU。
 //
 // 拒绝条件(对应 lua 的 ignored_stale):
-//   incoming.gen < existing.gen                          → 拒绝
-//   incoming.gen == existing.gen && incoming.pri <= pri  → 拒绝
+//
+//	incoming.gen < existing.gen                          → 拒绝
+//	incoming.gen == existing.gen && incoming.pri <= pri  → 拒绝
+//
 // 其余情况接受(覆盖)。
 func (m *NodeMirror) applyToLRU(v NodeView) {
-	key := nodeMirrorKey(v.CredentialID, v.RawModel)
+	key := nodeMirrorKeyForTenant(v.TenantID, v.CredentialID, v.RawModel)
 	v.softExpireAt = time.Now().Add(m.softTTL)
 	m.lru.Update(key, func(old NodeView, exists bool) (NodeView, bool) {
 		if !exists {
@@ -70,9 +74,14 @@ func (m *NodeMirror) applyToLRU(v NodeView) {
 	})
 }
 
-// Get 返回未软过期的镜像条目。软过期返回 miss(触发上层回源 Redis)。
+// Get retains the legacy non-tenant lookup for tests and operator tooling.
 func (m *NodeMirror) Get(credID int, raw string) (NodeView, bool) {
-	key := nodeMirrorKey(credID, raw)
+	return m.GetForTenant("", credID, raw)
+}
+
+// GetForTenant returns an unexpired tenant-scoped mirror entry.
+func (m *NodeMirror) GetForTenant(tenant string, credID int, raw string) (NodeView, bool) {
+	key := nodeMirrorKeyForTenant(tenant, credID, raw)
 	v, ok := m.lru.Get(key)
 	if !ok {
 		return NodeView{}, false
@@ -98,6 +107,7 @@ func (m *NodeMirror) ApplyFromAPI(v api.NodeView) {
 		return
 	}
 	m.applyToLRU(NodeView{
+		TenantID:       v.TenantID,
 		CredentialID:   v.CredentialID,
 		RawModel:       v.RawModel,
 		Available:      v.Available,

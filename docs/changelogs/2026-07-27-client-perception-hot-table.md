@@ -63,7 +63,7 @@
 3. 部署到 154 生产
 4. 在 252 上跑 SQL 验证:
    ```sql
-   SELECT 
+   SELECT
      COUNT(*) FILTER (WHERE agent_name IS NOT NULL) AS with_agent,
      COUNT(*) AS total,
      ROUND(100.0 * COUNT(*) FILTER (WHERE agent_name IS NOT NULL) / COUNT(*), 1) AS pct

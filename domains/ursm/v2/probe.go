@@ -9,11 +9,16 @@ import (
 	"github.com/kaixuan/llm-gateway-go/domains/ursm/v2/store"
 )
 
+// ApplyProbe preserves the legacy non-tenant probe entry point.
 func (m *Manager) ApplyProbe(ctx context.Context, p api.ProbeOutcome) error {
+	return m.ApplyProbeForTenant(ctx, "", p)
+}
+
+func (m *Manager) ApplyProbeForTenant(ctx context.Context, tenant string, p api.ProbeOutcome) error {
 	if m == nil || m.store == nil {
 		return fmt.Errorf("ursm.v2: nil manager")
 	}
-	key := store.NodeKey(m.cfg.RedisKeyPrefix, p.CredentialID, p.RawModel)
+	key := store.NodeKeyForTenant(m.cfg.RedisKeyPrefix, tenant, p.CredentialID, p.RawModel)
 	// Read the existing manual_hold so the Lua script's manual-hold
 	// short-circuit has real data. A missing key or transport error must
 	// NOT block the probe: only an explicit "1" on manual_hold causes the

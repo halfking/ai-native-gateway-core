@@ -426,13 +426,18 @@ func StreamAnthropicSSEToOpenAI(
 						// it cannot repair, so the failure is observable.
 						validated, repaired, vErr := validateStreamingToolArgs(args)
 						if vErr != nil {
-							slog.Warn("anthropic-to-openai: malformed tool-call args forwarded",
+							slog.Warn("anthropic-to-openai: malformed tool-call args blocked",
 								"request_id", requestID,
 								"args_len", len(args),
 								"error", vErr.Error())
 							if capture != nil {
-								capture.AddQualityFlag("malformed_tool_args_forwarded")
+								capture.AddQualityFlag("malformed_tool_args_blocked")
 							}
+							emitErrorChunk(w, "malformed_tool_args", "upstream tool arguments are invalid JSON", flusher)
+							outcome.Interrupted = true
+							outcome.Reason = "malformed_tool_args"
+							outcome.ChunkCount = chunkCount
+							return outcome
 						} else if repaired {
 							slog.Info("anthropic-to-openai: repaired truncated tool-call args",
 								"request_id", requestID,

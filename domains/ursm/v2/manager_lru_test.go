@@ -32,7 +32,7 @@ func newMirrorManager(t *testing.T) (*Manager, *miniredis.Miniredis, *redis.Clie
 // seedNode writes a node Hash into miniredis so PipelineNodeViews returns it.
 func seedNode(t *testing.T, mr *miniredis.Miniredis, credID int, model string, gen int64, available bool, latEWMA int, sr5m float64) {
 	t.Helper()
-	key := "ursm:v2:node:" + strconv.Itoa(credID) + ":" + model
+	key := "ursm:v2:node:t:" + strconv.Itoa(credID) + ":" + model
 	avail := "1"
 	if !available {
 		avail = "0"
@@ -72,7 +72,7 @@ func TestFilterAndScore_LRUMissThenHit(t *testing.T) {
 	// point of the mirror). If it errored, the LRU was not consulted — the
 	// Ready gate or the Redis pipeline would have failed.
 	mr.Close()
-	views2, err := mgr.FilterAndScore(context.Background(), seeds)
+	views2, err := mgr.FilterAndScoreReady(context.Background(), seeds, true)
 	require.NoError(t, err, "LRU hit must not require Redis (fail-open)")
 	require.Len(t, views2, 1)
 	assert.True(t, views2[0].Available, "LRU-cached availability must survive Redis death")
@@ -92,8 +92,8 @@ func TestFilterAndScore_LRUSoftExpireRefetchesRedis(t *testing.T) {
 
 	// Wait past soft TTL, then flip the node to unavailable in Redis.
 	time.Sleep(250 * time.Millisecond)
-	mr.HSet("ursm:v2:node:9:m", "available", "0")
-	mr.HSet("ursm:v2:node:9:m", "generation", "2")
+	mr.HSet("ursm:v2:node:t:9:m", "available", "0")
+	mr.HSet("ursm:v2:node:t:9:m", "generation", "2")
 
 	views, err := mgr.FilterAndScore(context.Background(), seeds)
 	require.NoError(t, err)
@@ -120,7 +120,7 @@ func TestNodeMirror_StaleGenRejected(t *testing.T) {
 
 	// Kill Redis so only the LRU can answer.
 	mr.Close()
-	views, err := mgr.FilterAndScore(context.Background(), seeds)
+	views, err := mgr.FilterAndScoreReady(context.Background(), seeds, true)
 	require.NoError(t, err)
 	require.Len(t, views, 1)
 	assert.False(t, views[0].Available,

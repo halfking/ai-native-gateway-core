@@ -6,6 +6,11 @@ import (
 	"strings"
 )
 
+// ValidateStreamingToolArgs is the public streaming tool-argument validator.
+func ValidateStreamingToolArgs(concatenated string) (string, bool, error) {
+	return validateStreamingToolArgs(concatenated)
+}
+
 // validateStreamingToolArgs checks whether the concatenated streaming tool-call
 // arguments form valid JSON, and best-effort repairs the single most common
 // truncation shape: an object/array left structurally open at end-of-stream.
