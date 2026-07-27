@@ -735,9 +735,13 @@ func (c *Client) insertRequestLog(entry *RequestLogEntry) error {
 		INSERT INTO request_logs_hot (
 			request_id, ts, tenant_id, application_id, api_key_id,
 			end_user_id, client_model, outbound_model,
-			credential_id, provider_id, canonical_id,
 			-- 2026-07-27: 标准模型名(全小写),见 458 迁移。NULL = 没匹配到 canonical row。
+			-- Column order intentionally matches the Go arg list below so $N
+			-- placeholders stay strictly sequential (a duplicated/shifted $N
+			-- here previously produced a 90-arg-vs-89-placeholder mismatch
+			-- that rejected every business-row INSERT).
 			canonical_model,
+			credential_id, provider_id, canonical_id,
 			client_profile, request_mode, affinity_hit,
 			prompt_tokens, completion_tokens,
 			cache_read_tokens, cache_write_tokens,
@@ -797,38 +801,38 @@ func (c *Client) insertRequestLog(entry *RequestLogEntry) error {
 		$5, $6, $7,
 		$8, $9, $10,
 		$11,
-		$11, $12, $13,
-		$14, $15,
-		$16, $17,
-		-- audit-ir-multimodal (2026-07-13): $18-$22 multimodal tokens
-		$18, $19, $20, $21, $22,
-		$23,
-		$24, $25, $26,
-		$27, $28, $29, $30, $31,
-		$32, $33,
-		$34, $35, $36, $37,
-		$38, $39, $40,
-		$41::text::jsonb, $42::text::jsonb,
-		$43, $44, $45,
-		$46,
-$47,
-		$48, $49,
-		$50, $51, $52,
-		$53, $54, $55, $56::text::jsonb, $57,
-		$58, $59,
-		$60, $61, $62, $63::text::jsonb,
-		$64, $65, $66, $67::text::jsonb,
-		CAST($68 AS text[]), $69::text::jsonb, $70,
-		$71,
-		$72::text::jsonb,
-		$73,
-		$74, $75, $76, $77, $78,
-		$79::text::jsonb,
+		$12, $13, $14,
+		$15, $16,
+		$17, $18,
+		-- audit-ir-multimodal (2026-07-13): $19-$23 multimodal tokens
+		$19, $20, $21, $22, $23,
+		$24,
+		$25, $26, $27,
+		$28, $29, $30, $31, $32,
+		$33, $34,
+		$35, $36, $37, $38,
+		$39, $40, $41,
+		$42::text::jsonb, $43::text::jsonb,
+		$44, $45, $46,
+		$47,
+$48,
+		$49, $50,
+		$51, $52, $53,
+		$54, $55, $56, $57::text::jsonb, $58,
+		$59, $60,
+		$61, $62, $63, $64::text::jsonb,
+		$65, $66, $67, $68::text::jsonb,
+		CAST($69 AS text[]), $70::text::jsonb, $71,
+		$72,
+		$73::text::jsonb,
+		$74,
+		$75, $76, $77, $78, $79,
+		$80::text::jsonb,
 		-- 2026-07-14 (migration 341): client-side origin.
-		$80, $81, $82, $83,
-		$84::text::jsonb, $85,
+		$81, $82, $83, $84,
+		$85::text::jsonb, $86,
 			-- 2026-07-27: 客户端感知字段(主表 INSERT 必填)。
-			$86, $87, $88, $89
+			$87, $88, $89, $90
 		)
 				ON CONFLICT (request_id) DO UPDATE SET
 				ts = EXCLUDED.ts,

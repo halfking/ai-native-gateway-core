@@ -263,9 +263,11 @@ func StreamOpenAIToAnthropicSSEWithDiagnostics(
 			)
 		} else {
 			diagnosticCollector.observeChunk(parsedChunk)
-			if parsedChunk.Delta != nil && len(parsedChunk.Delta.ToolCalls) > 0 {
-				diagnosticCollector.observeEmittedChunk(parsedChunk)
-			}
+			// tool_calls_missing accounting must fire at the EMIT site below
+			// (the tool-call write loop), not here: client-facing tool-call
+			// events are written from the raw delta map independent of the IR
+			// parser, so a parse failure here would otherwise register as
+			// "no tool call emitted" on a stream that delivered them fine.
 		}
 
 		if raw, ok := chunk["usage"]; ok {
@@ -372,6 +374,23 @@ func StreamOpenAIToAnthropicSSEWithDiagnostics(
 					fnName, _ = fn["name"].(string)
 				}
 				tcID, _ := tcMap["id"].(string)
+
+				// tool_calls_missing accounting: the moment we promise this
+				// tool call to the client via content_block_start, the
+				// tool_calls_missing detector must register it as emitted.
+				// Calling observeEmittedChunk on the IR parse site above
+				// (where the original audit found it) conflated "the parser
+				// saw the call" with "the client received it"; subsequent
+				// argument deltas for the same call are deliberately not
+				// counted again so emittedToolCallCount tracks distinct calls.
+				if diagnostics != nil {
+					diagnosticCollector.observeEmittedChunk(&ir.StreamChunk{
+						Type: ir.ChunkTypeDelta,
+						Delta: &ir.StreamDelta{
+							ToolCalls: []ir.StreamToolCallDelta{{Index: idx, ID: tcID}},
+						},
+					})
+				}
 
 				startEvent := map[string]any{
 					"type":  "content_block_start",

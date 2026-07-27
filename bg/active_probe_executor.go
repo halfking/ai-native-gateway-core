@@ -109,9 +109,15 @@ type ProbeResult struct {
 	// ResponseBody is the truncated upstream response (<=512 chars).
 	ResponseBody string
 	// ViaProxy is true when the probe honoured HTTP_PROXY. A mismatch
-	// between probe and real-traffic egress paths was the root cause of
-	// the "probe OK, requests fail" oscillation fixed on 2026-07-16.
+	// between probe and real-traffic egress paths was the root cause of the
+	// "probe OK, requests fail" oscillation fixed on 2026-07-16.
 	ViaProxy bool
+
+	// OriginStage and OriginActor identify the worker that produced the
+	// synthetic request-log row. They are set explicitly because a direct
+	// probe does not pass through OriginMiddleware.
+	OriginStage string
+	OriginActor string
 }
 
 // NewActiveProbeExecutor constructs an executor.

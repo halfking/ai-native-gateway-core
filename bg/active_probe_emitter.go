@@ -122,13 +122,66 @@ func (e *ActiveProbeEmitter) Emit(
 	}
 	autoDecisionStr := string(autoDecision)
 
-	providerIDCopy := providerID
-	credIDCopy := credID
+	entry := buildProbeRequestLogEntry(credID, providerID, tenantID, rawModel, outboundModel, origin, parentReqID, attempt, result)
+	// Recompute the request_id-dependent fields that buildProbeRequestLogEntry
+	// left to the caller (it stays a pure function of its inputs + ProbeResult,
+	// while request_id encodes success/attempt/timestamp).
+	entry.RequestID = requestID
+	entry.ErrorKind = errKind
+	entry.LatencyMs = &latencyMs
+	entry.PromptTokens = &promptTokens
+	entry.CompletionTokens = &completionTokens
+	entry.FailureStage = strPtrOrNil(failureStage)
+	entry.AutoDecision = &autoDecisionStr
 
-	// 2026-07-19: Populate request_body and response_body from ProbeResult
-	// so probe rows show the actual HTTP exchange in /request-logs detail view.
-	// Previously these fields were NULL, making it impossible to diagnose
-	// why a probe failed without querying node_probe_runs directly.
+	// Override the success-path request_status so the row reads
+	// "success" (the default fallback writes "failure" for !success
+	// rows; for success rows we explicitly set it here).
+	if success {
+		entry.RequestStatus = strPtrTelemetry(telemetry.RequestStatusSuccess)
+		entry.ErrorKind = nil
+		entry.FailureStage = nil
+	}
+
+	e.telemetry.EmitRequestLogInsert(entry)
+}
+
+// buildProbeRequestLogEntry assembles the telemetry.RequestLogEntry for a
+// probe result. It is a pure function of its inputs (no telemetry client,
+// no I/O) so it can be unit-tested directly — the live-stream dashboard,
+// /request-logs correlation, and the chk_compression_parent_single CHECK
+// constraint all depend on these fields being populated consistently, and
+// a regression here silently drops probe rows (see the 2026-07-14 incident
+// where every probe INSERT was rejected by SQLSTATE 23514).
+//
+// The caller is expected to fill in request_id, error_kind, latency_ms,
+// token counts, failure_stage and auto_decision afterwards — those depend on
+// values derived in Emit() (request_id encodes success/attempt/timestamp,
+// tokens come from parseProbeUsage, etc.). Keeping them out of this helper
+// lets the unit test assert the probe-attribution fields in isolation.
+func buildProbeRequestLogEntry(
+	credID, providerID int,
+	tenantID, rawModel, outboundModel, origin, parentReqID string,
+	attempt int,
+	result *ProbeResult,
+) *telemetry.RequestLogEntry {
+	// A direct probe bypasses OriginMiddleware, so the row would otherwise
+	// inherit whatever origin_stage/origin_actor the telemetry context
+	// carries (typically "business" / empty). Label it explicitly so the
+	// dashboard's probe filter (origin_stage IN node_probe/self_check/…)
+	// matches these rows and operators can tell a synthetic probe apart
+	// from real traffic. When the probe result did not carry an origin
+	// (older callers), fall back to "node_probe" / "active-probe-worker"
+	// rather than leaving the columns NULL and breaking the filter.
+	stage := result.OriginStage
+	if stage == "" {
+		stage = "node_probe"
+	}
+	actor := result.OriginActor
+	if actor == "" {
+		actor = "active-probe-worker"
+	}
+
 	var requestBody, responseBody *string
 	if result.RequestBody != "" {
 		requestBody = strPtrTelemetry(result.RequestBody)
@@ -137,21 +190,24 @@ func (e *ActiveProbeEmitter) Emit(
 		responseBody = strPtrTelemetry(result.ResponseBody)
 	}
 
-	entry := &telemetry.RequestLogEntry{
-		EventAt:          &result.CompletedAt,
-		RequestID:        requestID,
-		TenantID:         tenantID,
-		ClientModel:      strPtrTelemetry(rawModel),
-		OutboundModel:    strPtrTelemetry(outboundModel),
-		CredentialID:     &credIDCopy,
-		ProviderID:       &providerIDCopy,
-		Success:          success,
-		RequestStatus:    strPtrTelemetry(telemetry.RequestStatusFailure),
-		ErrorKind:        errKind,
-		LatencyMs:        &latencyMs,
-		PromptTokens:     &promptTokens,
-		CompletionTokens: &completionTokens,
-		FailureStage:     strPtrOrNil(failureStage),
+	credIDCopy := credID
+	providerIDCopy := providerID
+	success := result.Status == ProbeStatusSuccess
+
+	return &telemetry.RequestLogEntry{
+		EventAt:       &result.CompletedAt,
+		TenantID:      tenantID,
+		ClientModel:   strPtrTelemetry(rawModel),
+		OutboundModel: strPtrTelemetry(outboundModel),
+		CredentialID:  &credIDCopy,
+		ProviderID:    &providerIDCopy,
+		Success:       success,
+		// Default to the failure status; Emit() overrides to "success" on
+		// the success path so this helper stays a pure mapping of inputs.
+		RequestStatus: strPtrTelemetry(telemetry.RequestStatusFailure),
+		// Explicit origin attribution for the direct-probe path.
+		OriginStage: strPtrTelemetry(stage),
+		OriginActor: strPtrTelemetry(actor),
 		// Link back to the original failed business request so /request-logs
 		// can correlate the probe row with its trigger.
 		ParentRequestID: strPtrTelemetry(parentReqID),
@@ -173,21 +229,10 @@ func (e *ActiveProbeEmitter) Emit(
 		TaskType:       strPtrTelemetry("probe_triggered"),
 		TaskTypeChosen: strPtrTelemetry("probe_" + origin),
 		QualityFlags:   buildProbeQualityFlags(result, attempt, origin),
-		AutoDecision:   &autoDecisionStr,
 		// 2026-07-19: Probe request/response bodies for diagnostics
 		RequestBody:  requestBody,
 		ResponseBody: responseBody,
 	}
-	// Override the success-path request_status so the row reads
-	// "success" (the default fallback writes "failure" for !success
-	// rows; for success rows we explicitly set it here).
-	if success {
-		entry.RequestStatus = strPtrTelemetry(telemetry.RequestStatusSuccess)
-		entry.ErrorKind = nil
-		entry.FailureStage = nil
-	}
-
-	e.telemetry.EmitRequestLogInsert(entry)
 }
 
 // buildProbeRequestID returns the unique request_id for a probe row.
