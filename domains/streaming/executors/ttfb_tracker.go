@@ -44,6 +44,11 @@ func (t *TTFBTracker) Record(credentialID int, ttfb time.Duration) {
 }
 
 // Get 获取 credential 的 TTFB 统计
+//
+// 并发修复 2026-07-27：此处必须返回结构体副本。原实现在释放 RLock 后把 map 中的
+// *TTFBStats 直接交给调用方，而 Record 会在 Lock 下原地修改同一个结构体，
+// 调用方（如 executor_chat.go 取 &stats.RecentTTFB）会与 Record 形成数据竞争。
+// 拷贝一份返回，保证共享指针不逃逸出锁的保护范围。
 func (t *TTFBTracker) Get(credentialID int) *TTFBStats {
 	t.mu.RLock()
 	defer t.mu.RUnlock()
@@ -57,5 +62,6 @@ func (t *TTFBTracker) Get(credentialID int) *TTFBStats {
 		return nil
 	}
 
-	return stats
+	out := *stats
+	return &out
 }

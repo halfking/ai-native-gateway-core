@@ -279,30 +279,37 @@ func Level() slog.Level {
 //
 // 注意：
 //   - 仅当文件日志已启用（activeLogger != nil）时生效
-//   - 修改的是同一个 lumberjack.Logger 实例的字段，下一次 Write/Rotate
-//     即应用新参数
-//   - File（日志文件路径）变更不在热加载范围——改路径需要重建 writer，
-//     避免竞态，调用方应通过重启生效
+//   - 2026-07-27 并发修复：原来直接原地改 activeLogger 的字段，
+//     但 lumberjack.Logger 不是并发安全的——它的后台 mill goroutine
+//     (millRunOnce) 会无锁读 MaxSize/MaxBackups/MaxAge/Compress 来清理
+//     旧文件，原地写这些字段就是真实的数据竞争（-race 实测报出）。
+//     改成 ReInit 同款「整体替换」：保留原 File/LocalTime，用新轮转参数
+//     构造一个全新的 *lumberjack.Logger，在 loggerMu 写锁下替换。
+//     旧 logger.Close() 会排空 mill goroutine 后再退出，不会留竞争窗口。
+//   - File（日志文件路径）变更不在热加载范围——改路径同样走 ReInit。
 //   - 返回 nil 表示成功；err 非 nil 时配置未改动
 func Reconfigure(cfg Config) error {
 	if err := cfg.Validate(); err != nil {
 		return err
 	}
 	loggerMu.Lock()
-	defer loggerMu.Unlock()
 	if activeLogger == nil {
+		loggerMu.Unlock()
 		return errors.New("logging: file logging is not enabled, cannot reconfigure")
 	}
-	// 只热加载轮转参数，不改文件路径（避免并发写竞态）
-	activeLogger.MaxSize = cfg.MaxSizeMB
-	activeLogger.MaxBackups = cfg.MaxBackups
-	activeLogger.MaxAge = cfg.MaxAgeDays
-	activeLogger.Compress = cfg.Compress
-	// 保留原 File 和 LocalTime
-	activeConfig.MaxSizeMB = cfg.MaxSizeMB
-	activeConfig.MaxBackups = cfg.MaxBackups
-	activeConfig.MaxAgeDays = cfg.MaxAgeDays
-	activeConfig.Compress = cfg.Compress
+	// 保留原 File / LocalTime，只接受新的轮转参数
+	merged := activeConfig
+	merged.MaxSizeMB = cfg.MaxSizeMB
+	merged.MaxBackups = cfg.MaxBackups
+	merged.MaxAgeDays = cfg.MaxAgeDays
+	merged.Compress = cfg.Compress
+	loggerMu.Unlock()
+
+	// ReInit 自己拿写锁、Close 旧 logger（排空 mill goroutine）、
+	// 构造并装上新 logger。整体替换，没有字段级原地写。
+	if err := ReInit(merged); err != nil {
+		return err
+	}
 	slog.Info("logging: reconfigured (hot reload)",
 		"max_size_mb", cfg.MaxSizeMB,
 		"max_backups", cfg.MaxBackups,

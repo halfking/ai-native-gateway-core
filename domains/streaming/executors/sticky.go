@@ -150,13 +150,42 @@ func (s *StickyCache) Clear() {
 	}
 }
 
+// SetDB installs the pgx pool used for sticky persistence.
+//
+// 并发修复 2026-07-27：必须在 s.mu 写锁下赋值。main.go 在启动阶段调用
+// SetDB，而请求路径上的 RecordSuccess / RecordSuccessMultiLevel /
+// RestoreFromDB 会并发读 s.dbPool；无锁写 + 无锁读是 data race，
+// 且没有 happens-before 保证读方能看到已初始化的 pool。
 func (s *StickyCache) SetDB(pool *pgxpool.Pool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	s.dbPool = pool
 }
 
 // SetRedisStore 注入 StickyRedisStore(URSM v2 过渡), nil 时退化为纯内存。
+//
+// 2026-07-27 并发修复：与 SetDB 同因——RecordSuccessMultiLevel /
+// RestoreFromDB 在请求路径上读 s.redisStore，无锁写是数据竞争。
 func (s *StickyCache) SetRedisStore(store StickyRedisStore) {
+	s.mu.Lock()
 	s.redisStore = store
+	s.mu.Unlock()
+}
+
+// db returns the current pool under the read lock. Callers copy the
+// pointer out and then do their I/O on the local — the lock is never
+// held across a DB round trip.
+func (s *StickyCache) db() *pgxpool.Pool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.dbPool
+}
+
+// redisStoreSnapshot returns the current redis store under the read lock.
+func (s *StickyCache) redisStoreSnapshot() StickyRedisStore {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.redisStore
 }
 
 func (s *StickyCache) Get(key string) (int, bool) {
@@ -244,7 +273,9 @@ func (s *StickyCache) GetMultiLevel(
 
 	// Redis fallback(URSM v2 过渡): 内存 miss 后回源 Redis, 用显式 level。
 	// 读锁已释放, 回填内存走写锁, 避免自死锁。
-	if s.redisStore != nil {
+	// 2026-07-27 并发修复：SetRedisStore 现在在写锁下写，这里也走快照读取。
+	store := s.redisStoreSnapshot()
+	if store != nil {
 		ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
 		type lv struct {
 			key string
@@ -256,7 +287,7 @@ func (s *StickyCache) GetMultiLevel(
 			if k.key == "" {
 				continue
 			}
-			if credID, ok := s.redisStore.GetLevel(ctx, k.lvl, k.key); ok {
+			if credID, ok := store.GetLevel(ctx, k.lvl, k.key); ok {
 				cancel()
 				// 回填内存
 				s.Set(k.key, credID, k.ttl)
@@ -392,8 +423,10 @@ func (s *StickyCache) RecordFailureMultiLevel(
 
 func (s *StickyCache) RecordSuccess(key string, credentialID int, ttl time.Duration) {
 	s.Set(key, credentialID, ttl)
-	if s.dbPool != nil {
-		go s.dbSet(key, credentialID, ttl)
+	// 并发修复 2026-07-27：通过 s.db() 在读锁下取出 pool 指针，再在锁外
+	// 做 I/O。
+	if pool := s.db(); pool != nil {
+		go s.dbSet(pool, key, credentialID, ttl)
 	}
 }
 
@@ -454,10 +487,15 @@ func (s *StickyCache) RecordSuccessMultiLevel(
 			expiresAt:           now.Add(24 * time.Hour),
 		}
 	}
+	// 并发修复 2026-07-27：在释放写锁之前把 pool 与 redisStore 指针拷到
+	// 局部变量，这样与 SetDB/SetRedisStore 之间有明确的 happens-before；
+	// DB/Redis I/O 仍在锁外进行。
+	pool := s.dbPool
+	store := s.redisStore
 	s.mu.Unlock()
 
 	// Redis 双写(URSM v2 过渡): 用显式 level, 避免 levelOf 启发式
-	if s.redisStore != nil {
+	if store != nil {
 		ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
 		levels := []struct {
 			key string
@@ -472,7 +510,7 @@ func (s *StickyCache) RecordSuccessMultiLevel(
 			if lv.key == "" {
 				continue
 			}
-			if err := s.redisStore.SetLevel(ctx, lv.lvl, credentialID, lv.key, lv.ttl); err != nil {
+			if err := store.SetLevel(ctx, lv.lvl, credentialID, lv.key, lv.ttl); err != nil {
 				slog.Debug("sticky redis double-write failed", "key", lv.key, "error", err)
 			}
 		}
@@ -480,8 +518,8 @@ func (s *StickyCache) RecordSuccessMultiLevel(
 	}
 
 	// Async DB write for all levels
-	if s.dbPool != nil {
-		go s.dbSetMultiLevel(l1, l2, l3, credentialID, now)
+	if pool != nil {
+		go s.dbSetMultiLevel(pool, l1, l2, l3, credentialID, now)
 	}
 
 	slog.Debug("sticky multi-level recorded",
@@ -492,11 +530,14 @@ func (s *StickyCache) RecordSuccessMultiLevel(
 	)
 }
 
-func (s *StickyCache) dbSet(key string, credentialID int, ttl time.Duration) {
+// dbSet takes the pool as a parameter (rather than re-reading s.dbPool)
+// so the goroutine uses the exact pool the caller observed under the
+// lock. 并发修复 2026-07-27.
+func (s *StickyCache) dbSet(pool *pgxpool.Pool, key string, credentialID int, ttl time.Duration) {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 	expiresAt := time.Now().UTC().Add(ttl)
-	_, err := s.dbPool.Exec(ctx, `
+	_, err := pool.Exec(ctx, `
 		INSERT INTO sticky_sessions (sticky_key, credential_id, set_at, expires_at)
 		VALUES ($1, $2, now(), $3)
 		ON CONFLICT (sticky_key) DO UPDATE SET
@@ -509,7 +550,9 @@ func (s *StickyCache) dbSet(key string, credentialID int, ttl time.Duration) {
 	}
 }
 
-func (s *StickyCache) dbSetMultiLevel(l1, l2, l3 string, credentialID int, baseTime time.Time) {
+// dbSetMultiLevel takes the pool as a parameter for the same reason as
+// dbSet. 并发修复 2026-07-27.
+func (s *StickyCache) dbSetMultiLevel(pool *pgxpool.Pool, l1, l2, l3 string, credentialID int, baseTime time.Time) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
@@ -527,7 +570,7 @@ func (s *StickyCache) dbSetMultiLevel(l1, l2, l3 string, credentialID int, baseT
 			continue
 		}
 		expiresAt := baseTime.UTC().Add(k.ttl)
-		_, err := s.dbPool.Exec(ctx, `
+		_, err := pool.Exec(ctx, `
 			INSERT INTO sticky_sessions (sticky_key, credential_id, set_at, expires_at)
 			VALUES ($1, $2, now(), $3)
 			ON CONFLICT (sticky_key) DO UPDATE SET
@@ -542,10 +585,13 @@ func (s *StickyCache) dbSetMultiLevel(l1, l2, l3 string, credentialID int, baseT
 }
 
 func (s *StickyCache) RestoreFromDB(ctx context.Context) error {
-	if s.dbPool == nil {
+	// 并发修复 2026-07-27：读锁下取出 pool，再在锁外查询（下面才重新
+	// 拿写锁填充 items）。
+	pool := s.db()
+	if pool == nil {
 		return nil
 	}
-	rows, err := s.dbPool.Query(ctx, `
+	rows, err := pool.Query(ctx, `
 		SELECT sticky_key, credential_id, expires_at
 		FROM sticky_sessions
 		WHERE expires_at > now()

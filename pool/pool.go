@@ -426,8 +426,20 @@ func (pm *PoolManager) GetOrCreate(key PoolKey, probeURL string) *Pool {
 		return p
 	}
 
+	// 2026-07-27 concurrency fix: evictOldestLocked now only unlinks the
+	// victim and hands it back; Close() (StopHealthCheck + wg.Wait, which
+	// blocks up to the 5s health-probe timeout) must run *after* pm.mu is
+	// released. Previously a request goroutine that hit the pool cap
+	// blocked ~5s inside the write lock and stalled every concurrent
+	// GetOrCreate/Get/Stats behind it.
+	var victim *Pool
 	pm.mu.Lock()
-	defer pm.mu.Unlock()
+	defer func() {
+		pm.mu.Unlock()
+		if victim != nil {
+			victim.Close()
+		}
+	}()
 
 	if p, ok = pm.pools[key]; ok {
 		p.touch()
@@ -435,7 +447,7 @@ func (pm *PoolManager) GetOrCreate(key PoolKey, probeURL string) *Pool {
 	}
 
 	if len(pm.pools) >= poolMaxPools {
-		pm.evictOldestLocked()
+		victim = pm.evictOldestLocked()
 	}
 
 	p = NewPool(key, probeURL, pm.proxyFunc)
@@ -453,7 +465,11 @@ func (pm *PoolManager) Get(key PoolKey) *Pool {
 	return pm.pools[key]
 }
 
-func (pm *PoolManager) evictOldestLocked() {
+// evictOldestLocked unlinks the least-recently-used pool from the map and
+// returns it (nil if the map is empty). The caller MUST hold pm.mu and MUST
+// call Close() on the returned pool only after releasing pm.mu — Close()
+// waits for the health loop and can block for the full probe timeout.
+func (pm *PoolManager) evictOldestLocked() *Pool {
 	var oldestKey PoolKey
 	var oldestTime int64 = math.MaxInt64
 	for k, p := range pm.pools {
@@ -463,11 +479,13 @@ func (pm *PoolManager) evictOldestLocked() {
 			oldestKey = k
 		}
 	}
-	if p, ok := pm.pools[oldestKey]; ok {
-		p.Close()
-		delete(pm.pools, oldestKey)
-		slog.Info("pool evicted (max reached)", "key", oldestKey.String())
+	p, ok := pm.pools[oldestKey]
+	if !ok {
+		return nil
 	}
+	delete(pm.pools, oldestKey)
+	slog.Info("pool evicted (max reached)", "key", oldestKey.String())
+	return p
 }
 
 func (pm *PoolManager) evictLoop() {
@@ -490,16 +508,27 @@ func (pm *PoolManager) evictLoop() {
 }
 
 func (pm *PoolManager) evictIdle() {
-	pm.mu.Lock()
-	defer pm.mu.Unlock()
+	// 2026-07-27 concurrency fix: collect the victims under the lock and
+	// Close() them after unlocking. Close() does StopHealthCheck + wg.Wait
+	// and blocks until any in-flight probe finishes (5s HTTP timeout), so
+	// closing inside the write lock stalled the whole request hot path
+	// (GetOrCreate/Get/Stats) on every eviction tick.
+	var victims []*Pool
 	now := time.Now()
+
+	pm.mu.Lock()
 	for key, p := range pm.pools {
 		lu := p.LastUsed()
 		if !lu.IsZero() && now.Sub(lu) > poolIdleTTL {
-			p.Close()
 			delete(pm.pools, key)
+			victims = append(victims, p)
 			slog.Info("pool evicted (idle)", "key", key.String(), "idle_for", now.Sub(lu).Round(time.Second))
 		}
+	}
+	pm.mu.Unlock()
+
+	for _, p := range victims {
+		p.Close()
 	}
 }
 
@@ -513,13 +542,21 @@ func (pm *PoolManager) Stop() {
 
 // CloseAll stops and closes all pools.
 func (pm *PoolManager) CloseAll() {
+	// 2026-07-27 concurrency fix: snapshot + clear the map under the lock,
+	// then Close() outside. Closing in-place serialized N × wg.Wait() with
+	// pm.mu held, blocking every concurrent map reader for the sum of all
+	// in-flight probe timeouts.
 	pm.mu.Lock()
-	defer pm.mu.Unlock()
-	for key, p := range pm.pools {
-		p.Close()
-		delete(pm.pools, key)
+	victims := make([]*Pool, 0, len(pm.pools))
+	for _, p := range pm.pools {
+		victims = append(victims, p)
 	}
 	pm.pools = make(map[PoolKey]*Pool)
+	pm.mu.Unlock()
+
+	for _, p := range victims {
+		p.Close()
+	}
 }
 
 // Stats returns the count of pools by state.

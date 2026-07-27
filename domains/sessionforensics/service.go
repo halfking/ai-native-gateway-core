@@ -25,6 +25,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"sync/atomic"
 	"time"
 )
 
@@ -59,11 +60,14 @@ type SummarizeArgs struct {
 
 // Service 聚合 Exporter + Client + Replayer + Summarizer。
 type Service struct {
-	cfg       ServiceConfig
-	exporter  *Exporter
-	client    *Client
-	replayer  *Replayer
-	summarize *Summarizer
+	cfg      ServiceConfig
+	exporter *Exporter
+	client   *Client
+	replayer *Replayer
+	// 2026-07-27 concurrency fix: summarize 之前是裸字段，AutoSummaryHook
+	// 会在请求路径上调 SetSummarizer，而 worker goroutine 同时在读它 →
+	// 数据竞争。改成 atomic.Pointer，读写都无锁且安全。
+	summarize atomic.Pointer[Summarizer]
 }
 
 // NewService 把 config 包装成可用的 service。
@@ -84,19 +88,20 @@ func NewService(cfg ServiceConfig) *Service {
 	if cli.HTTPClient == nil {
 		cli.HTTPClient = &http.Client{Timeout: 30 * time.Second}
 	}
-	return &Service{
-		cfg:       cfg,
-		exporter:  exp,
-		client:    cli,
-		replayer:  NewReplayer(),
-		summarize: NewSummarizer(nil),
+	svc := &Service{
+		cfg:      cfg,
+		exporter: exp,
+		client:   cli,
+		replayer: NewReplayer(),
 	}
+	svc.summarize.Store(NewSummarizer(nil))
+	return svc
 }
 
 // SetSummarizer 让运维平台把自己的 sessionsummary.Summarizer 注入。
 func (s *Service) SetSummarizer(sm *Summarizer) {
 	if sm != nil {
-		s.summarize = sm
+		s.summarize.Store(sm)
 	}
 }
 
@@ -157,7 +162,11 @@ func (s *Service) Summarize(ctx context.Context, pack *SessionPack, args Summari
 	if firstMsg == "" {
 		firstMsg = s.extractFirstReadableMessage(pack, "")
 	}
-	res, err := s.summarize.Summarize(ctx, pack.SessionMeta.ID,
+	summarizer := s.summarize.Load()
+	if summarizer == nil {
+		summarizer = NewSummarizer(nil)
+	}
+	res, err := summarizer.Summarize(ctx, pack.SessionMeta.ID,
 		SummarizeOptions{
 			TenantID:             args.TenantID,
 			FirstMessageOverride: firstMsg,

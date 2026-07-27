@@ -879,46 +879,51 @@ func (e *Executor) executeAnthropicOnce(
 			if params.PreStreamPrepared {
 				return nil, upstreamErr
 			}
-			// 2026-07-27 (D-2): forward the FULL vendor error body, not just
-			// the first 4096 bytes used for classification. Previously the
-			// raw-passthrough path wrote body[:n] (n <= 4096) and the rest had
-			// already been io.Copy'd to Discard above, so a vendor 4xx body
-			// larger than 4 KiB reached the client truncated — producing
-			// invalid/truncated JSON that Anthropic SDKs could not parse.
-			//
-			// The remaining body is still unread (the discard was for the
-			// *non-passthrough* paths). Read it up to maxPassthroughErrorBody
-			// and concatenate with the classified prefix, then write the whole
-			// envelope. Cap protects against buffering a huge body in memory.
-			fullBody := body[:n]
-			if n >= len(body) {
-				// We filled the 4096 prefix buffer — there may be more. Read
-				// the remainder up to the passthrough cap.
-				remainingCap := maxPassthroughErrorBody - n
-				if remainingCap > 0 {
-					rest, _ := io.ReadAll(io.LimitReader(resp.Body, int64(remainingCap)))
-					if len(rest) > 0 {
-						fullBody = append(append([]byte(nil), body[:n]...), rest...)
+			// 并发修复 2026-07-27：异步重试 goroutine 的 params.W 为 nil
+			// （客户端已收到 202），错误体只能通过 PendingStore 回传，
+			// 这里直接跳过客户端写。
+			if params.W != nil {
+				// 2026-07-27 (D-2): forward the FULL vendor error body, not just
+				// the first 4096 bytes used for classification. Previously the
+				// raw-passthrough path wrote body[:n] (n <= 4096) and the rest had
+				// already been io.Copy'd to Discard above, so a vendor 4xx body
+				// larger than 4 KiB reached the client truncated — producing
+				// invalid/truncated JSON that Anthropic SDKs could not parse.
+				//
+				// The remaining body is still unread (the discard was for the
+				// *non-passthrough* paths). Read it up to maxPassthroughErrorBody
+				// and concatenate with the classified prefix, then write the whole
+				// envelope. Cap protects against buffering a huge body in memory.
+				fullBody := body[:n]
+				if n >= len(body) {
+					// We filled the 4096 prefix buffer — there may be more. Read
+					// the remainder up to the passthrough cap.
+					remainingCap := maxPassthroughErrorBody - n
+					if remainingCap > 0 {
+						rest, _ := io.ReadAll(io.LimitReader(resp.Body, int64(remainingCap)))
+						if len(rest) > 0 {
+							fullBody = append(append([]byte(nil), body[:n]...), rest...)
+						}
+					}
+					_, _ = io.Copy(io.Discard, resp.Body) // drain anything beyond the cap
+				}
+				// Surface an accurate Content-Length for the bytes we actually send
+				// (the copied vendor Content-Length header would now be wrong if
+				// the body exceeded the cap).
+				params.W.Header().Set("Content-Length", strconv.Itoa(len(fullBody)))
+				for k, vs := range resp.Header {
+					if k == "Content-Length" || k == "Content-Encoding" {
+						continue // we set Content-Length; skip the (possibly gzipped) encoding header
+					}
+					for _, v := range vs {
+						params.W.Header().Add(k, v)
 					}
 				}
-				_, _ = io.Copy(io.Discard, resp.Body) // drain anything beyond the cap
-			}
-			// Surface an accurate Content-Length for the bytes we actually send
-			// (the copied vendor Content-Length header would now be wrong if
-			// the body exceeded the cap).
-			params.W.Header().Set("Content-Length", strconv.Itoa(len(fullBody)))
-			for k, vs := range resp.Header {
-				if k == "Content-Length" || k == "Content-Encoding" {
-					continue // we set Content-Length; skip the (possibly gzipped) encoding header
+				params.W.WriteHeader(resp.StatusCode)
+				if len(fullBody) > 0 {
+					//nolint:errcheck // HTTP write error non-recoverable
+					params.W.Write(fullBody)
 				}
-				for _, v := range vs {
-					params.W.Header().Add(k, v)
-				}
-			}
-			params.W.WriteHeader(resp.StatusCode)
-			if len(fullBody) > 0 {
-				//nolint:errcheck // HTTP write error non-recoverable
-				params.W.Write(fullBody)
 			}
 			return nil, upstreamErr
 		}
@@ -954,7 +959,9 @@ func (e *Executor) executeAnthropicOnce(
 			params.OnStreamReady()
 			params.OnStreamReady = nil
 		}
-		outcome := ae.StreamResponse(params.W, resp)
+		// 并发修复 2026-07-27：见 responseSink 注释 —— 异步重试路径 W 为
+		// nil，改写到丢弃 writer，upstream stream 仍被完整消费。
+		outcome := ae.StreamResponse(responseSink(params), resp)
 		if outcome.Interrupted && outcome.Reason != "client_cancel" {
 			streamKind := errorsx.KindStreamTimeout
 			if errorsx.IsConcurrentOverload(outcome.Reason) {
@@ -996,7 +1003,11 @@ func (e *Executor) executeAnthropicOnce(
 	}
 	e.logUpstreamResponse(params, diagnosticProtocol(cand.Protocol, "anthropic-messages"), rawResponseBody)
 	resp.Body = io.NopCloser(bytes.NewReader(rawResponseBody))
-	responseBody, err := ae.WriteNonStreamResponse(params.W, resp, params.ClientModel, cand.QualityFixMode, &qualitySignals)
+	// 并发修复 2026-07-27：异步重试路径 W 为 nil。WriteNonStreamResponse
+	// 的返回值（转换后的 body）是 PendingStore 回传给客户端的内容，所以
+	// 这里必须照常调用，只是把字节写进丢弃 writer（responseSink 在 W 非
+	// nil 时就是 params.W）。
+	responseBody, err := ae.WriteNonStreamResponse(responseSink(params), resp, params.ClientModel, cand.QualityFixMode, &qualitySignals)
 	if err != nil {
 		return nil, err
 	}

@@ -23,6 +23,11 @@ type CallHistoryAggregator struct {
 	interval time.Duration // default 1 minute
 	stopCh   chan struct{}
 
+	// 2026-07-27 concurrency fix: Stop() did an unguarded close(stopCh),
+	// so a second Stop() panicked with "close of closed channel".
+	// Same guard as bg/routing_health_checker.go.
+	stopOnce sync.Once
+
 	// highWatermark (P1-4 fix, 2026-06-22 audit): maps each Redis key to
 	// the millisecond timestamp of the newest entry that has already been
 	// aggregated. The next tick only pulls entries strictly newer than
@@ -82,9 +87,10 @@ func (a *CallHistoryAggregator) Start(ctx context.Context) {
 	}()
 }
 
-// Stop gracefully stops the worker.
+// Stop gracefully stops the worker. Idempotent; safe on a
+// never-Started worker.
 func (a *CallHistoryAggregator) Stop() {
-	close(a.stopCh)
+	a.stopOnce.Do(func() { close(a.stopCh) })
 }
 
 // aggregate reads all Redis sliding windows and writes aggregated stats to PG.

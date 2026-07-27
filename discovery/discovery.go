@@ -98,6 +98,14 @@ func (s *Service) Start(ctx context.Context) {
 		return
 	}
 	s.running = true
+	// 2026-07-27 concurrency fix: Stop() closes stopCh permanently, so a
+	// later Start() used to spawn a loop whose select fired immediately on
+	// the already-closed channel — the service looked "running" but was
+	// silently dead. Recreate the channel under the same lock that sets
+	// running=true, and hand the loop its own reference so a concurrent
+	// Stop()/Start() pair can't make it read a newer channel.
+	s.stopCh = make(chan struct{})
+	stopCh := s.stopCh
 	s.trigger = "scheduled"
 	s.startedAt = time.Now()
 	s.heartbeatAt = time.Now()
@@ -116,7 +124,7 @@ func (s *Service) Start(ctx context.Context) {
 			select {
 			case <-ticker.C:
 				_ = s.runDiscovery(ctx, 0)
-			case <-s.stopCh:
+			case <-stopCh:
 				slog.Info("model discovery service stopping")
 				return
 			case <-ctx.Done():

@@ -142,11 +142,20 @@ func (r *RedisClient) Expire(ctx context.Context, key string, ttl time.Duration)
 }
 
 type Manager struct {
-	redis        *RedisClient
-	ttl          time.Duration
-	dbWriter     *DBWriter
-	fileWriter   FileWriterInterface
+	redis *RedisClient
+	ttl   time.Duration
+	// 2026-07-27 concurrency fix: dbWriter/fileWriter 之前是裸字段，
+	// SetDBWriter/SetFileWriter 无锁写入，而 session_state.go 在请求路径上
+	// 读它们 → 数据竞争。改成 atomic.Pointer（fileWriter 是接口，用
+	// atomic.Value 会有类型不一致的坑，所以包一层 struct 指针）。
+	dbWriter     atomic.Pointer[DBWriter]
+	fileWriter   atomic.Pointer[fileWriterHolder]
 	degradedMode atomic.Bool
+}
+
+// fileWriterHolder 把接口值包成可放进 atomic.Pointer 的具体类型。
+type fileWriterHolder struct {
+	w FileWriterInterface
 }
 
 // FileWriterInterface 定义文件写入器接口（避免循环依赖）
@@ -171,7 +180,7 @@ func (sm *Manager) SetDBWriter(writer *DBWriter) {
 	if sm == nil {
 		return
 	}
-	sm.dbWriter = writer
+	sm.dbWriter.Store(writer)
 }
 
 // SetFileWriter 设置文件写入器
@@ -179,7 +188,30 @@ func (sm *Manager) SetFileWriter(writer FileWriterInterface) {
 	if sm == nil {
 		return
 	}
-	sm.fileWriter = writer
+	if writer == nil {
+		sm.fileWriter.Store(nil)
+		return
+	}
+	sm.fileWriter.Store(&fileWriterHolder{w: writer})
+}
+
+// getDBWriter 原子读取数据库写入器（可能为 nil）
+func (sm *Manager) getDBWriter() *DBWriter {
+	if sm == nil {
+		return nil
+	}
+	return sm.dbWriter.Load()
+}
+
+// getFileWriter 原子读取文件写入器（可能为 nil）
+func (sm *Manager) getFileWriter() FileWriterInterface {
+	if sm == nil {
+		return nil
+	}
+	if h := sm.fileWriter.Load(); h != nil {
+		return h.w
+	}
+	return nil
 }
 
 // SetDegradedMode 设置降级模式

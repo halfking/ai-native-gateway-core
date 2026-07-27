@@ -40,6 +40,14 @@ func (s *Scheduler) Start(ctx context.Context) error {
 		return fmt.Errorf("scheduler already running")
 	}
 	s.running = true
+	// 2026-07-27 concurrency fix: Stop() closes stopCh permanently, so a
+	// later Start() used to fall straight through the select on the
+	// already-closed channel and return nil — the scheduler was silently
+	// dead instead of restarted. Recreate the channel under the same lock
+	// that sets running=true and read it from a local so a concurrent
+	// Stop()/Start() pair can't swap it under this loop.
+	s.stopCh = make(chan struct{})
+	stopCh := s.stopCh
 	s.mu.Unlock()
 
 	s.logger.Info("quality scheduler started",
@@ -63,7 +71,7 @@ func (s *Scheduler) Start(ctx context.Context) error {
 			if err := s.runOnce(ctx); err != nil {
 				s.logger.Error("scheduled run failed", "error", err.Error())
 			}
-		case <-s.stopCh:
+		case <-stopCh:
 			s.logger.Info("quality scheduler stopped")
 			return nil
 		case <-ctx.Done():
