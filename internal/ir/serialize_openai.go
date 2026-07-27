@@ -185,8 +185,13 @@ func SerializeOpenAI(req *InternalRequest) ([]byte, error) {
 		}
 	}
 
-	// Validate tool_call integrity before sending to upstream
-	// Skip validation for single-message requests to avoid breaking unit tests
+	// Validate tool_call integrity before sending to upstream.
+	//
+	// 2026-07-27 (F-6, re-audited): the len(messages) > 2 gate is INTENTIONAL
+	// (see serialize_anthropic.go for the full rationale). Orphaned-tool-result
+	// detection only applies to multi-turn contexts where corruption is
+	// detectable; 1-2 message slices may be legitimate continuation fragments.
+	// Do not weaken this gate without moving validation to the request boundary.
 	if len(messages) > 2 {
 		if err := validateToolCallIntegrity(messages); err != nil {
 			return nil, fmt.Errorf("tool_call validation failed: %w", err)
