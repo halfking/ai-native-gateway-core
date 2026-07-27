@@ -1,6 +1,7 @@
 package credentialstate
 
 import (
+	"context"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -14,9 +15,9 @@ import (
 // in the sync.Map; UpdateOnSuccess/UpdateOnFailure mutated it in place
 // (state.ConsecutiveFails++) and stored it back. Two concurrent updates on
 // the same (credID, model) therefore:
-//   1. raced on the shared struct fields (caught by `go test -race`), and
-//   2. lost updates (both loaded the same value, both incremented to N+1
-//      instead of N+2).
+//  1. raced on the shared struct fields (caught by `go test -race`), and
+//  2. lost updates (both loaded the same value, both incremented to N+1
+//     instead of N+2).
 //
 // The fix is copy-on-write in getFromMemCache (returns a clone) plus a
 // per-key mutex (lockFor) serializing the read-modify-write. This test runs
@@ -77,6 +78,46 @@ func TestManager_ConcurrentStateUpdate_NoDataRace(t *testing.T) {
 	}
 }
 
+func TestManager_UpdateFromProbeMergesRequestState(t *testing.T) {
+	m := &Manager{
+		memCache:    &sync.Map{},
+		memCacheTTL: time.Minute,
+	}
+	key := m.cacheKey(9, "gpt-test")
+	failureAt := time.Now().Add(-time.Minute)
+	m.setToMemCache(key, &State{
+		CredentialID:     9,
+		Model:            "gpt-test",
+		Available:        false,
+		ConsecutiveFails: 3,
+		LastFailureAt:    &failureAt,
+		LastError:        "timeout",
+	})
+
+	successAt := time.Now()
+	m.UpdateFromProbe(context.Background(), &State{
+		CredentialID:  9,
+		Model:         "gpt-test",
+		Available:     true,
+		LastSuccessAt: &successAt,
+		Source:        "probe_direct",
+	})
+
+	state, ok := m.getFromMemCache(key)
+	if !ok || state == nil {
+		t.Fatal("expected merged probe state")
+	}
+	if !state.Available || state.ConsecutiveFails != 0 {
+		t.Fatalf("probe recovery not applied: available=%v consecutive_fails=%d", state.Available, state.ConsecutiveFails)
+	}
+	if state.LastError != "" {
+		t.Fatalf("successful probe retained stale error: %q", state.LastError)
+	}
+	if state.LastFailureAt == nil {
+		t.Fatal("probe update discarded request failure timestamp")
+	}
+}
+
 // TestManager_GetStateReturnsClone verifies the copy-on-write contract of
 // getFromMemCache: callers must receive a private copy so that mutating the
 // returned *State never corrupts the cached entry.
@@ -101,4 +142,3 @@ func TestManager_GetStateReturnsClone(t *testing.T) {
 			second.ConsecutiveFails)
 	}
 }
-

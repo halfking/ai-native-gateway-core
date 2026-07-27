@@ -7,6 +7,21 @@ import (
 	"time"
 )
 
+func TestClient_StopIsIdempotent(t *testing.T) {
+	c := newClientWithBufSize(2)
+
+	done := make(chan struct{}, 4)
+	for i := 0; i < 4; i++ {
+		go func() {
+			c.Stop()
+			done <- struct{}{}
+		}()
+	}
+	for i := 0; i < 4; i++ {
+		<-done
+	}
+	c.Stop()
+}
 func TestClient_Disabled(t *testing.T) {
 	c := NewClient()
 	if c.Enabled() {
