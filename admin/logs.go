@@ -305,7 +305,9 @@ func scanRequestListRow(rows interface {
 		&l.UsageSource,
 		&l.GwSessionID, &l.GwTaskID,
 		&l.APIKeyPrefix, &l.APIKeyOwnerUser, &l.ApplicationCode,
-		&l.CanonicalName, &l.ProviderModel, &l.CreditsCharged,
+		&l.CanonicalName,
+		&l.CanonicalModel, &l.AgentName, &l.AgentType, &l.ClientProtocol,
+		&l.ProviderModel, &l.CreditsCharged,
 		// v3 session-level outbound body SUMMARY fields (small, kept for
 		// the list UI's compression badge; the full JSONB bodies are only
 		// loaded by scanRequestDetailRow for the detail drawer).
