@@ -40,6 +40,50 @@ func TestStickyDoubleWriteMultiLevel(t *testing.T) {
 	}
 }
 
+func TestStickyDeleteMultiLevel_ClearsRedisOnColdLRU(t *testing.T) {
+	mr := miniredis.RunT(t)
+	rdb := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	store := ursmcache.NewStickyStore(rdb, 100, time.Hour)
+	s := NewStickyCache()
+	s.SetRedisStore(store)
+
+	l1, l2, l3 := buildStickyKeys("t3", intPtr(1), intPtr(2), "default", "sess3", "m")
+	for level, key := range map[int]string{1: l1, 2: l2, 3: l3} {
+		if key != "" {
+			if err := store.SetLevel(context.Background(), level, 9, key, time.Hour); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	s.DeleteMultiLevel("t3", intPtr(1), intPtr(2), "default", "sess3", "m", 9)
+	for level, key := range map[int]string{1: l1, 2: l2, 3: l3} {
+		if key != "" {
+			if _, ok := store.GetLevel(context.Background(), level, key); ok {
+				t.Errorf("Redis L%d binding was not deleted", level)
+			}
+		}
+	}
+}
+
+func TestStickyDeleteMultiLevel_DoesNotDeleteReboundRedisCredential(t *testing.T) {
+	mr := miniredis.RunT(t)
+	rdb := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	store := ursmcache.NewStickyStore(rdb, 100, time.Hour)
+	s := NewStickyCache()
+	s.SetRedisStore(store)
+
+	l1, _, _ := buildStickyKeys("t4", intPtr(1), intPtr(2), "default", "sess4", "m")
+	if err := store.SetLevel(context.Background(), 1, 10, l1, time.Hour); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SetLevel(context.Background(), 1, 11, l1, time.Hour); err != nil {
+		t.Fatal(err)
+	}
+	s.DeleteMultiLevel("t4", intPtr(1), intPtr(2), "default", "sess4", "m", 10)
+	if got, ok := store.GetLevel(context.Background(), 1, l1); !ok || got != 11 {
+		t.Fatalf("rebound Redis credential changed: got=%d ok=%v", got, ok)
+	}
+}
 func TestStickyNilRedisStoreDegraded(t *testing.T) {
 	// 不注入 redisStore 时退化为纯内存(旧行为)
 	s := NewStickyCache()

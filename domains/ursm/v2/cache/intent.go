@@ -51,7 +51,14 @@ func (s *IntentStore) Set(ctx context.Context, sessionID string, in Intent, ttl 
 	return nil
 }
 
-// Get 先查 LRU,miss 回源 Redis 并回填。
+func (s *IntentStore) Delete(ctx context.Context, sessionID string) error {
+	key := IntentKey(sessionID)
+	if err := s.rdb.Del(ctx, key).Err(); err != nil {
+		return err
+	}
+	s.lru.Delete(key)
+	return nil
+}
 func (s *IntentStore) Get(ctx context.Context, sessionID string) (Intent, bool) {
 	key := IntentKey(sessionID)
 	if v, ok := s.lru.Get(key); ok {

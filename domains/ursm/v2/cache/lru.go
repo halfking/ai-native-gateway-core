@@ -109,6 +109,20 @@ func (l *LRU[K, V]) Update(key K, fn func(old V, exists bool) (new V, write bool
 	l.putLocked(key, newVal)
 }
 
+// DeleteIf 删除满足 predicate 的 key 对应值, 返回是否删除。
+// predicate 与删除在同一把 LRU 锁内执行, 避免 Get+Delete 的 TOCTOU。
+func (l *LRU[K, V]) DeleteIf(key K, predicate func(V) bool) bool {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	el, ok := l.idx[key]
+	if !ok || !predicate(el.Value.(*lruEntry[K, V]).val) {
+		return false
+	}
+	l.order.Remove(el)
+	delete(l.idx, key)
+	return true
+}
+
 // Delete 删除 key, 返回是否命中。
 func (l *LRU[K, V]) Delete(key K) bool {
 	l.mu.Lock()

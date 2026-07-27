@@ -85,72 +85,81 @@ func (r *Router) PlanCandidates(
 	policy *provider.Policy,
 	egressPreference []string,
 ) []provider.Candidate {
+	return r.PlanCandidatesWithContext(context.Background(), candidates, stickyCredentialID, policy, egressPreference, "", "", "")
+}
+
+// PlanCandidatesWithContext plans one request using a single URSM recovery
+// snapshot. The legacy PlanCandidates wrapper remains for non-request callers.
+func (r *Router) PlanCandidatesWithContext(
+	requestCtx context.Context,
+	candidates []provider.Candidate,
+	stickyCredentialID *int,
+	policy *provider.Policy,
+	egressPreference []string,
+	tenantID string,
+	canonical string,
+	requestID string,
+) []provider.Candidate {
+	if requestCtx == nil {
+		requestCtx = context.Background()
+	}
 	candidates = deduplicateCandidates(candidates)
 	if len(candidates) == 0 {
 		return nil
 	}
 
-	// 2026-07-26 URSM v1→v2 统一: 旧 v1 dispatch (`r.URSM.Enabled() → planWithURSM`)
-	// 已删除——v1 在 main.go 中从未 wire，运行时恒为 nil。Router 唯一的 URSM 入口
-	// 是 URSMv2 (下方 authoritative/canary 分支)。
+	// Capture one bounded Ready result. This value is reused for both v2
+	// filtering and backend selection below.
+	var readySnapshot *bool
+	if r.URSMv2 != nil && (r.URSMv2.Mode() == ursmv2api.ModeAuthoritative || r.URSMv2.Mode() == ursmv2api.ModeCanary) {
+		readyCtx, readyCancel := context.WithTimeout(requestCtx, 50*time.Millisecond)
+		ready := r.URSMv2.Ready(readyCtx)
+		readyCancel()
+		readySnapshot = &ready
+	}
 
-	// 2026-07-21, URSM v2 plan T20 (convergence): 在 mode=authoritative 模式下
-	// 完全关掉旧 credentialstate / IsAvailable 读取，把"哪些候选可用"的判定
-	// 委托给 v2 FilterAndScore。Ready 为 false / 调用出错时回退到旧路径，保留
-	// 现有行为，避免一次错误的 v2 调用造成全量 503。URSMv2 == nil 时代码路径
-	// 是死的（main.go 默认 URSM_V2_MODE=off 时根本不会 wire）。
-	//
-	// TODO(T20+): PlanCandidates 签名没有 tenantID / canonical / reqID；
-	// FilterAndScore 的 seed 里 TenantID 暂传空串，与 T16 planWithURSMv2
-	// 的 "" 透传一致，等待后续任务把请求级上下文接进来。
-	if r.URSMv2 != nil && r.URSMv2.Mode() == ursmv2api.ModeAuthoritative {
-		ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	if r.URSMv2 != nil && r.URSMv2.Mode() == ursmv2api.ModeAuthoritative && readySnapshot != nil && *readySnapshot {
+		ctx, cancel := context.WithTimeout(requestCtx, 50*time.Millisecond)
 		defer cancel()
-		if r.URSMv2.Ready(ctx) {
-			seeds := make([]ursmv2.CandidateSeed, 0, len(candidates))
-			for _, c := range candidates {
-				seeds = append(seeds, ursmv2.CandidateSeed{
-					ProviderID:   c.ProviderID,
-					CredentialID: c.CredentialID,
-					RawModel:     c.RawModel,
-					Canonical:    c.StandardizedName,
-					TenantID:     "",
-					PriceIn:      derefPrice(c.PriceInPer1M),
-					PriceOut:     derefPrice(c.PriceOutPer1M),
-					BillingMode:  c.BillingMode,
-					Trust:        0,
-					BaseURLMs:    c.P50LatencyMs,
-				})
+		seeds := make([]ursmv2.CandidateSeed, 0, len(candidates))
+		for _, c := range candidates {
+			seeds = append(seeds, ursmv2.CandidateSeed{
+				ProviderID:   c.ProviderID,
+				CredentialID: c.CredentialID,
+				RawModel:     c.RawModel,
+				Canonical:    firstNonEmpty(c.StandardizedName, canonical),
+				TenantID:     tenantID,
+				PriceIn:      derefPrice(c.PriceInPer1M),
+				PriceOut:     derefPrice(c.PriceOutPer1M),
+				BillingMode:  c.BillingMode,
+				Trust:        0,
+				BaseURLMs:    c.P50LatencyMs,
+			})
+		}
+		views, err := r.URSMv2.FilterAndScoreReady(ctx, seeds, *readySnapshot)
+		if err != nil {
+			slog.Warn("router: URSM v2 FilterAndScore failed, failing open",
+				"error", err,
+				"seed_count", len(seeds),
+				"mode", r.URSMv2.Mode(),
+				"routing_state_source", "fallback",
+			)
+		} else {
+			allow := make(map[string]bool, len(views))
+			for _, v := range views {
+				if v.Available {
+					allow[seedLookupKey(v.ProviderID, v.CredentialID, v.RawModel)] = true
+				}
 			}
-			views, err := r.URSMv2.FilterAndScore(ctx, seeds)
-			if err != nil {
-				// URSM v2 FilterAndScore 失败时，记录错误并继续使用原始候选
-				// 这是 fail-open 设计：优先保证可用性，不因 Redis 问题阻塞路由
-				// 2026-07-27 (M3, S-3): surface routing_state_source=fallback so the
-				// fail-open ratio is queryable (Grafana alert threshold: 1min > 5%).
-				slog.Warn("router: URSM v2 FilterAndScore failed, failing open",
-					"error", err,
-					"seed_count", len(seeds),
-					"mode", r.URSMv2.Mode(),
-					"routing_state_source", "fallback",
-				)
-			} else {
-				allow := make(map[int]bool, len(views))
-				for _, v := range views {
-					if v.Available {
-						allow[v.CredentialID] = true
-					}
+			filtered := make([]provider.Candidate, 0, len(candidates))
+			for i, c := range candidates {
+				if allow[seedLookupKey(seeds[i].ProviderID, c.CredentialID, c.RawModel)] {
+					filtered = append(filtered, c)
 				}
-				filtered := candidates[:0]
-				for _, c := range candidates {
-					if allow[c.CredentialID] {
-						filtered = append(filtered, c)
-					}
-				}
-				candidates = filtered
-				if len(candidates) == 0 {
-					return nil
-				}
+			}
+			candidates = filtered
+			if len(candidates) == 0 {
+				return nil
 			}
 		}
 	}
@@ -161,9 +170,9 @@ func (r *Router) PlanCandidates(
 
 	// 2026-07-24 Phase 1: 使用统一的状态后端接口，消除散落的条件判断。
 	// 一次性决定使用 URSM v2 / StateManager / DB-only 哪套系统。
-	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	ctx, cancel := context.WithTimeout(requestCtx, 50*time.Millisecond)
 	defer cancel()
-	stateBackend := selectStateBackend(r.URSMv2, r.StateManager, ctx)
+	stateBackend := selectStateBackendWithReady(r.URSMv2, r.StateManager, ctx, readySnapshot)
 	available := stateBackend.FilterAvailable(ctx, candidates)
 
 	// 2026-07-25 Phase 2.4: 标记 Feature flag 状态（供外部观察）
@@ -266,27 +275,50 @@ func (r *Router) PlanCandidates(
 		ordered = applyProtocolAffinity(ordered, egressPreference)
 	}
 
-	// 2026-07-21, URSM v2 plan T16: 在 canary / authoritative 模式下把 ordering
-	// 委托给 v2 Manager.Plan。v2 返回 nil 时回退到上面的 ordered 切片，保留旧
-	// 行为。URSMv2 == nil 时整段不进入；main.go 尚未 wire，运行时为 nil。
-	//
-	// T16 暂不传入 tenant / canonical / reqID：PlanCandidates 签名没有这些参数
-	// 且现有调用方没传递；URSMv2 == nil 时代码路径本来就是死的。等到 T20 等
-	// 后续任务把 tenant/canonical/reqID 透传过来，再接入 r.URSMv2.ShouldUseV2
-	// 的金丝雀白名单过滤。当前仅按 Mode 粗粒度生效 (Canary/Authoritative)。
-	if r.URSMv2 != nil {
-		mode := r.URSMv2.Mode()
-		if mode == ursmv2api.ModeCanary || mode == ursmv2api.ModeAuthoritative {
-			if v2Ordered := r.planWithURSMv2(ordered); v2Ordered != nil {
-				ordered = v2Ordered
-			}
+	if r.URSMv2 != nil && r.URSMv2.Mode() == ursmv2api.ModeCanary && r.URSMv2.ShouldUseV2(tenantID, canonical, requestID) {
+		if v2Ordered := r.planWithURSMv2Context(ordered, requestCtx, tenantID, canonical, requestID, readySnapshot != nil && *readySnapshot); v2Ordered != nil {
+			ordered = v2Ordered
 		}
 	}
 
 	return ordered
 }
 
-// planWithURSMv2 asks the v2 Manager to re-rank the input candidates. It
+// planWithURSMv2Context is the request-aware variant used by canary routing.
+func (r *Router) planWithURSMv2Context(fallback []provider.Candidate, requestCtx context.Context, tenant, canonical, requestID string, ready bool) []provider.Candidate {
+	if r.URSMv2 == nil || len(fallback) == 0 {
+		return nil
+	}
+	seeds := make([]ursmv2.CandidateSeed, 0, len(fallback))
+	lookup := make(map[string]provider.Candidate, len(fallback))
+	for _, c := range fallback {
+		key := seedLookupKey(c.ProviderID, c.CredentialID, c.RawModel)
+		lookup[key] = c
+		seeds = append(seeds, ursmv2.CandidateSeed{
+			ProviderID: c.ProviderID, CredentialID: c.CredentialID, RawModel: c.RawModel,
+			Canonical: firstNonEmpty(c.StandardizedName, canonical), TenantID: tenant,
+			PriceIn: derefPrice(c.PriceInPer1M), PriceOut: derefPrice(c.PriceOutPer1M),
+			BillingMode: c.BillingMode, BaseURLMs: c.P50LatencyMs,
+		})
+	}
+	ctx, cancel := context.WithTimeout(requestCtx, 50*time.Millisecond)
+	defer cancel()
+	ordered := r.URSMv2.PlanReady(ctx, seeds, tenant, canonical, ready)
+	if len(ordered) == 0 {
+		return nil
+	}
+	out := make([]provider.Candidate, 0, len(ordered))
+	for _, s := range ordered {
+		if c, ok := lookup[seedLookupKey(s.ProviderID, s.CredentialID, s.RawModel)]; ok {
+			out = append(out, c)
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
 // returns nil when v2 declines (off mode, not ready, FilterAndScore error,
 // empty result) so the caller falls back to the existing ordered slice.
 //
@@ -307,7 +339,7 @@ func (r *Router) planWithURSMv2(fallback []provider.Candidate) []provider.Candid
 	seeds := make([]ursmv2.CandidateSeed, 0, len(fallback))
 	lookup := make(map[string]provider.Candidate, len(fallback))
 	for _, c := range fallback {
-		key := seedLookupKey(c.CredentialID, c.RawModel)
+		key := seedLookupKey(c.ProviderID, c.CredentialID, c.RawModel)
 		lookup[key] = c
 		seeds = append(seeds, ursmv2.CandidateSeed{
 			ProviderID:   c.ProviderID,
@@ -337,7 +369,7 @@ func (r *Router) planWithURSMv2(fallback []provider.Candidate) []provider.Candid
 
 	out := make([]provider.Candidate, 0, len(ordered))
 	for _, s := range ordered {
-		key := seedLookupKey(s.CredentialID, s.RawModel)
+		key := seedLookupKey(s.ProviderID, s.CredentialID, s.RawModel)
 		c, ok := lookup[key]
 		if !ok {
 			continue
@@ -352,8 +384,17 @@ func (r *Router) planWithURSMv2(fallback []provider.Candidate) []provider.Candid
 	return out
 }
 
-func seedLookupKey(credentialID int, rawModel string) string {
-	return strconv.Itoa(credentialID) + "|" + rawModel
+func seedLookupKey(providerID, credentialID int, rawModel string) string {
+	return strconv.Itoa(providerID) + "|" + strconv.Itoa(credentialID) + "|" + rawModel
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return value
+		}
+	}
+	return ""
 }
 
 func derefPrice(p *float64) float64 {

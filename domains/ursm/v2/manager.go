@@ -179,8 +179,29 @@ func (m *Manager) FilterAndScore(ctx context.Context, seeds []CandidateSeed) ([]
 	if m.Mode() == api.ModeOff {
 		return nil, nil
 	}
+	return m.filterAndScore(ctx, seeds, true)
+}
 
+// FilterAndScoreReady evaluates seeds using a Ready result captured by the
+// caller. Routers use this to keep backend selection and URSM filtering on the
+// same recovery snapshot; a Ready flip cannot split one request between v2 and
+// the legacy state manager.
+func (m *Manager) FilterAndScoreReady(ctx context.Context, seeds []CandidateSeed, ready bool) ([]api.NodeView, error) {
+	if m == nil {
+		return nil, fmt.Errorf("ursm.v2: nil manager")
+	}
+	if m.Mode() == api.ModeOff {
+		return nil, nil
+	}
+	return m.filterAndScore(ctx, seeds, ready)
+
+}
+
+func (m *Manager) filterAndScore(ctx context.Context, seeds []CandidateSeed, ready bool) ([]api.NodeView, error) {
 	// M2 (2026-07-27, spec Decision 2 + Decision 3 fail-open): serve the hot
+	// path from the process LRU mirror first. If EVERY seed hits the mirror,
+	// the caller's Ready snapshot still governs whether this result may be used
+	// as authoritative routing state.
 	// path from the process LRU mirror first. If EVERY seed hits the mirror,
 	// we return WITHOUT consulting Redis or the Ready gate — this is the
 	// "Redis 不可达 → LRU 镜像" fail-open path. Only on a miss do we require
@@ -203,18 +224,18 @@ func (m *Manager) FilterAndScore(ctx context.Context, seeds []CandidateSeed) ([]
 		}
 	}
 
-	// Fast path: every seed was served from the mirror. No Redis, no Ready.
+	// Fast path: every seed was served from the mirror. The caller has
+	// already supplied the Ready snapshot, so no second gate read occurs.
+
 	if len(missIndices) == 0 {
 		scoreAndSort(views, seeds, m.cfg.ScoringWeights)
 		return views, nil
 	}
 
-	// Miss path: requires Ready + Redis (the authoritative read). The Ready
-	// gate is preserved here so a not-yet-warm manager (or a Redis outage with
-	// an empty mirror) surfaces an error rather than silently returning
-	// empty/false views — this is the TestFilterAndScoreRedisErrorProtectsRejection
-	// contract (protection-rejection invariant).
-	if !m.Ready(ctx) {
+	// A Redis miss must use the caller's request snapshot. A false snapshot
+	// rejects the miss, while a mirror-only request remains fail-open above.
+	// authoritative read). A false snapshot must never be bypassed by the LRU.
+	if !ready {
 		return nil, fmt.Errorf("ursm.v2: not ready")
 	}
 	missQueries := make([]store.NodeQuery, 0, len(missIndices))
@@ -300,16 +321,31 @@ func (m *Manager) Plan(ctx context.Context, seeds []CandidateSeed, tenant, canon
 	if m == nil {
 		return nil
 	}
+	return m.plan(ctx, seeds, tenant, canonical, m.Ready(ctx))
+}
+
+// PlanReady is the request-snapshot variant of Plan. The caller supplies the
+// already captured recovery-gate result so Plan cannot observe a different
+// Ready value from the rest of the routing decision.
+func (m *Manager) PlanReady(ctx context.Context, seeds []CandidateSeed, tenant, canonical string, ready bool) []CandidateSeed {
+	if m == nil {
+		return nil
+	}
+	return m.plan(ctx, seeds, tenant, canonical, ready)
+}
+
+func (m *Manager) plan(ctx context.Context, seeds []CandidateSeed, tenant, canonical string, ready bool) []CandidateSeed {
+	if m == nil {
+		return nil
+	}
 	if m.Mode() == api.ModeOff {
 		return nil
 	}
-	// Note: tenant/canonical are accepted for future filters (e.g. per-tenant
-	// overrides) but T16 does not use them — the rollout gate lives in
-	// rollout.ShouldUseV2, and T16 callers do not yet plumb tenant through.
-	_ = tenant
-	_ = canonical
+	// Note: tenant/canonical are accepted for future filters and are kept in
+	// the request seed by the router.
 
-	views, err := m.FilterAndScore(ctx, seeds)
+	views, err := m.FilterAndScoreReady(ctx, seeds, ready)
+
 	if err != nil {
 		m.log.Warn("ursm.v2: Plan filter failed, falling back", "error", err, "seed_count", len(seeds))
 		return nil
@@ -417,17 +453,17 @@ func (m *Manager) RecordRequest(ctx context.Context, ev api.RequestOutcome) erro
 		store.WindowKey(m.cfg.RedisKeyPrefix, ev.CredentialID, ev.RawModel, "5m"),
 		store.WindowKey(m.cfg.RedisKeyPrefix, ev.CredentialID, ev.RawModel, "30m"),
 		store.RecordOutcome{
-			Success:       ev.Success,
-			ErrorKind:     ev.ErrorKind,
-			NowMs:         time.Now().UnixMilli(),
-			LatencyMs:     ev.LatencyMs,
-			RequestID:     ev.RequestID,
-			NodeTTL:       m.cfg.NodeTTL,
-			Window5mTTL:   m.cfg.Window5mTTL,
-			Window30mTTL:  m.cfg.Window30mTTL,
-			AdminHold:     adminHold,
+			Success:      ev.Success,
+			ErrorKind:    ev.ErrorKind,
+			NowMs:        time.Now().UnixMilli(),
+			LatencyMs:    ev.LatencyMs,
+			RequestID:    ev.RequestID,
+			NodeTTL:      m.cfg.NodeTTL,
+			Window5mTTL:  m.cfg.Window5mTTL,
+			Window30mTTL: m.cfg.Window30mTTL,
+			AdminHold:    adminHold,
 			// 2026-07-24: 使用配置的冷却时间，与 circuit breaker 冷却时间对齐
-			CoolSeconds:    m.cfg.CoolSeconds,
+			CoolSeconds:     m.cfg.CoolSeconds,
 			FailStreakLimit: 3,
 		}); err != nil {
 		m.log.Warn("ursm.v2: record failed", "error", err, "cid", ev.CredentialID)

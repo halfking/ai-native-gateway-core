@@ -1684,12 +1684,17 @@ func (e *Executor) Execute(params *ExecParams) (*ExecuteResult, error) {
 		)
 	}
 
-	candidates := e.Router.PlanCandidates(
+	candidates := e.Router.PlanCandidatesWithContext(
+		params.R.Context(),
 		params.Candidates,
 		stickyCredID,
 		params.Policy,
 		egressPref(params.Transform),
+		params.TenantID,
+		params.ClientModel,
+		params.RequestID,
 	)
+
 	trace := &Trace{
 		PlannedCandidates: make([]TraceCandidate, 0, len(params.Candidates)),
 		BlockedCandidates: []TraceCandidate{},
@@ -1851,12 +1856,11 @@ func (e *Executor) Execute(params *ExecParams) (*ExecuteResult, error) {
 					if ratelimit.IsRateLimitEnabled() {
 						retrySticky = stickyCredID
 					}
-					subCandidates := e.Router.PlanCandidates(
-						retryCandidates,
-						retrySticky,
-						params.Policy,
-						egressPref(params.Transform),
+					subCandidates := e.Router.PlanCandidatesWithContext(
+						params.R.Context(), retryCandidates, retrySticky, params.Policy,
+						egressPref(params.Transform), params.TenantID, params.ClientModel, params.RequestID,
 					)
+
 					if len(subCandidates) > 0 {
 						e.asyncDepth.Add(1)
 						subParams := *params
@@ -2947,12 +2951,11 @@ func (e *Executor) Execute(params *ExecParams) (*ExecuteResult, error) {
 			} else {
 				retryStickyID = e.pickStickyCredentialID(params) // 保留（与首次 Execute() 同口径：L1→L2→L3）
 			}
-			subCandidates := e.Router.PlanCandidates(
-				params.Candidates,
-				retryStickyID,
-				params.Policy,
-				egressPref(params.Transform),
+			subCandidates := e.Router.PlanCandidatesWithContext(
+				params.R.Context(), params.Candidates, retryStickyID, params.Policy,
+				egressPref(params.Transform), params.TenantID, params.ClientModel, params.RequestID,
 			)
+
 			if len(subCandidates) == 0 {
 				continue // 路由器也没候选，下一轮再试
 			}
@@ -3931,12 +3934,11 @@ func (e *Executor) runAsyncRetry(
 	if asyncParams.R != nil {
 		asyncParams.R = asyncParams.R.WithContext(ctx)
 	}
-	candidates := e.Router.PlanCandidates(
-		params.Candidates,
-		nil, // no sticky: the async walk is its own attempt
-		params.Policy,
-		egressPref(params.Transform),
+	candidates := e.Router.PlanCandidatesWithContext(
+		asyncParams.R.Context(), asyncParams.Candidates, nil, asyncParams.Policy,
+		egressPref(asyncParams.Transform), asyncParams.TenantID, asyncParams.ClientModel, asyncParams.RequestID,
 	)
+
 	if len(candidates) == 0 {
 		// No candidates available — fail and write the reason.
 		_ = e.PendingStore.Save(ctx, &pending.Response{
