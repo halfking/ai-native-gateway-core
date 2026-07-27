@@ -296,6 +296,11 @@ func (sm *SystemMonitor) fetchTask(ctx context.Context, workerLog *slog.Logger) 
 			sm.markFallback()
 		} else if task != nil {
 			return task, true
+		} else {
+			// 2026-07-27: add debug log to distinguish queue-empty (nil, nil)
+			// from real errors (nil, err). Previously all cases hit the err
+			// path because claim.lua returned Lua false → redis.Nil error.
+			workerLog.Debug("system_monitor: claim returned empty, queue is likely empty")
 		}
 	}
 	// Fallback path: drain in-memory channel (non-blocking).
