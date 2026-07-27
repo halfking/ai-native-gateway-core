@@ -70,11 +70,13 @@ func TestKeepaliveSender_AutoSend(t *testing.T) {
 	defer cancel()
 
 	sender.Start(ctx)
-	defer sender.Stop()
+
+	// Stop before inspecting the recorder so the background writer has exited.
+	// httptest.ResponseRecorder is not safe for concurrent reads and writes.
+	time.Sleep(2200 * time.Millisecond)
+	sender.Stop()
 
 	// Wait for at least 2 keepalives
-	time.Sleep(2200 * time.Millisecond)
-
 	output := recorder.Body.String()
 	count := strings.Count(output, "event: keepalive")
 	if count < 2 {
@@ -82,6 +84,36 @@ func TestKeepaliveSender_AutoSend(t *testing.T) {
 	}
 }
 
+func TestKeepaliveSender_StopIsIdempotentAndConcurrentSafe(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelWarn}))
+	sender := NewKeepaliveSender(httptest.NewRecorder(), 1, logger)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	sender.Start(ctx)
+
+	done := make(chan struct{}, 8)
+	for i := 0; i < 8; i++ {
+		go func() {
+			sender.Stop()
+			done <- struct{}{}
+		}()
+	}
+	for i := 0; i < 8; i++ {
+		<-done
+	}
+
+	// Stop after all concurrent callers must remain a no-op.
+	sender.Stop()
+}
+
+func TestKeepaliveSender_StopBeforeStart(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelWarn}))
+	sender := NewKeepaliveSender(httptest.NewRecorder(), 1, logger)
+
+	sender.Stop()
+	sender.Start(context.Background())
+	sender.Stop()
+}
 func TestKeepaliveSender_NilSafety(t *testing.T) {
 	var sender *KeepaliveSender = nil
 
