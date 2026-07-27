@@ -24,7 +24,7 @@ type IRTransport struct {
 	restorer         ExtensionRestorer
 	cb               *StreamCircuitBreaker // 流式降级熔断器
 	rawLogger        *logging.RawDataLogger
-	anomalyReporter  *logging.AnomalyReporter
+	anomalyReporter  *logging.LockFreeAnomalyReporter
 	semanticAnalyzer *ir.SemanticAnalyzer
 }
 
@@ -32,7 +32,7 @@ type IRTransport struct {
 // 自动检测环境变量，按需启用诊断功能。
 func NewIRTransport() *IRTransport {
 	var rawLogger *logging.RawDataLogger
-	var anomalyReporter *logging.AnomalyReporter
+	var anomalyReporter *logging.LockFreeAnomalyReporter
 	var semanticAnalyzer *ir.SemanticAnalyzer
 
 	// 原始数据日志（opt-in）
@@ -49,7 +49,7 @@ func NewIRTransport() *IRTransport {
 				maxSize = parsed
 			}
 		}
-		
+
 		logger, err := logging.NewRawDataLogger(logDir, maxSize, true)
 		if err != nil {
 			slog.Error("raw_data_logger: failed to initialize", "err", err)
@@ -64,10 +64,19 @@ func NewIRTransport() *IRTransport {
 	if anomalyEnabled {
 		endpoint := os.Getenv("LLM_GATEWAY_ANOMALY_ENDPOINT")
 		if endpoint == "" {
-			endpoint = "https://llm.kxpms.cn/api/diagnostics/anomalies"
+			endpoint = "https://llmgo.kxpms.cn/format-anomalies"
 		}
-		
-		reporter := logging.NewAnomalyReporter(endpoint, true)
+
+		// 2026-07-28: switch from the legacy mutex-based
+		// AnomalyReporter (deleted in this commit) to the lock-free
+		// implementation. Endpoint default aligned with
+		// cmd/gateway/main.go so the two paths converge on the same
+		// receiver.
+		var locator func() (string, int64)
+		if rawLogger != nil {
+			locator = rawLogger.CurrentLocation
+		}
+		reporter := logging.NewLockFreeAnomalyReporterWithRawLogLocator(endpoint, true, 1000, locator)
 		anomalyReporter = reporter
 		slog.Info("anomaly_reporter: initialized", "endpoint", endpoint)
 	}
@@ -85,7 +94,7 @@ func NewIRTransport() *IRTransport {
 // NewIRTransportWithLoggers 构造带日志和分析器的 IRTransport。
 func NewIRTransportWithLoggers(
 	rawLogger *logging.RawDataLogger,
-	anomalyReporter *logging.AnomalyReporter,
+	anomalyReporter *logging.LockFreeAnomalyReporter,
 	semanticAnalyzer *ir.SemanticAnalyzer,
 ) *IRTransport {
 	return &IRTransport{
