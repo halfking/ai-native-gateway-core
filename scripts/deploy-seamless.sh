@@ -152,7 +152,8 @@ _seamless_auto_rollback() {
   if [[ -n "$prev" ]]; then
     warn "回滚到 releases/$prev"
     host_atomic_switch "$SSH_CMD" "$TARGET" "$prev" 2>&1 | sed 's/^/    /' || true
-    if host_wait_healthy "$SSH_CMD" "$TARGET" 30 2>&1 \
+    # 2026-07-27: 30s → 90s,与主 deploy 流程一致(回滚后 ApplyMigrations 仍需 ~30s+)
+    if host_wait_healthy "$SSH_CMD" "$TARGET" 90 2>&1 \
       && deploy_verify_gateway_ready "$SSH_CMD" "$SERVICE_NAME" 8781 90; then
       ok "已回滚到 $prev (healthz + DB OK)"
       return 0
@@ -379,9 +380,13 @@ do_deploy() {
   ok "符号链接已切换 (${switch_elapsed}s 含 restart)"
 
   # 9. wait healthy + DB ready (失败自动回滚)
-  log "[9/9] 验证 /healthz + DB (healthz 30s, DB 60s)"
-  if host_wait_healthy "$SSH_CMD" "$TARGET" 30 2>&1; then
-    if deploy_verify_gateway_ready "$SSH_CMD" "$SERVICE_NAME" 8781 60; then
+  # 2026-07-27: healthz 超时 30s → 90s。ApplyMigrations 在 252 PG 锁竞争 / 慢盘
+  # 下可达 60-90s (cmd/gateway/main.go:db.Open → db.ApplyMigrations),30s 必超时
+  # 误判失败,导致自动回滚到 verified 版本时再次超时(同 PG 状态)。
+  # 90s 与 deploy_verify_gateway_ready 90s、rollback 60s 顶部对齐。
+  log "[9/9] 验证 /healthz + DB (healthz 90s, DB 90s)"
+  if host_wait_healthy "$SSH_CMD" "$TARGET" 90 2>&1; then
+    if deploy_verify_gateway_ready "$SSH_CMD" "$SERVICE_NAME" 8781 90; then
       host_mark_verified "$SSH_CMD" "$TARGET" "$version" 2>&1 | sed 's/^/    /' || true
       ok "healthz + DB 通过，标记 verified"
     else
