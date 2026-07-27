@@ -959,6 +959,37 @@ func (h *ChatHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// via applyProvisionalGatewaySessionHeader.
 	provisionalSessionID := h.ensureSessionID(r.Context(), r, nil)
 	logCtx.ProvisionalSessionID = provisionalSessionID
+
+	// 2026-07-27 (L-1): write the request WAL row NOW, as early as possible,
+	// so EVERY received request is traceable in request_wal_hot — including
+	// pre-routing failures (missing_key, invalid_key, body_too_large,
+	// json_parse_error, rate_limit_exceeded, model_forbidden) that previously
+	// never reached the CreateInitial call at ~line 2371 (it runs AFTER auth,
+	// body parse, session assign, and model resolution). Those failures got a
+	// request_logs_hot row via the safety net but NO WAL row at all.
+	//
+	// This early write uses the minimal fields available at this point
+	// (requestID + provisional session id); tenant_id and client_model are
+	// enriched later (the request_logs_hot row carries the full detail via
+	// the telemetry path). The INSERT is ON CONFLICT (request_id, created_at)
+	// DO NOTHING, so the later, fuller CreateInitial at ~2371 is a no-op when
+	// this one already landed — no duplicate rows, no overwrite of enriched
+	// fields. For requests that DO reach 2371, the early row simply exists
+	// sooner; for pre-routing failures it is the only WAL row.
+	if h.requestLogger != nil {
+		earlyReq := &telemetry.InitialRequest{
+			RequestID: requestID,
+			TenantID:  "default", // enriched in request_logs_hot; WAL just needs a row
+			SessionID: provisionalSessionID,
+		}
+		if err := h.requestLogger.CreateInitial(r.Context(), earlyReq); err != nil {
+			// Non-fatal: the safety net + request_logs_hot still record the
+			// request. WAL is best-effort for fast operator drill-down.
+			slog.Warn("request_logger: early CreateInitial failed",
+				"request_id", requestID, "error", err)
+		}
+	}
+
 	defer func() {
 		slog.Info("safety_net_defer_fired",
 			"request_id", requestID,
