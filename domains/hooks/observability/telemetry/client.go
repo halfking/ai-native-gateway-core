@@ -929,6 +929,28 @@ $47,
 		agent_type          = COALESCE(request_logs_hot.agent_type, EXCLUDED.agent_type),
 		client_protocol     = COALESCE(request_logs_hot.client_protocol, EXCLUDED.client_protocol),
 		virtual_client_id   = COALESCE(request_logs_hot.virtual_client_id, EXCLUDED.virtual_client_id)
+		-- 2026-07-27 (L-2): terminal-state guard, mirroring the WAL guard in
+		-- request_logger.go Update(). Without this, the deferred client-
+		-- disconnect safety net could regress a row that already reached a
+		-- terminal state: the handler writes success=TRUE / request_status=
+		-- 'success' via the completion path, then the disconnect probe fires
+		-- EmitRequestLogUpdate with success=FALSE / 'client_disconnect' right
+		-- after the client reads the good response — clobbering the success
+		-- row (split-brain vs the WAL, which already had this guard).
+		--
+		-- Skip the UPDATE entirely when the existing row is already terminal
+		-- (success=TRUE OR request_status IN ('success','failure')) AND the
+		-- incoming update is NOT itself terminal-success (a legitimate later
+		-- enrichment of an already-success row, e.g. token accounting from a
+		-- slower path, is still allowed). The failure→success promotion case
+		-- is intentionally NOT allowed here: a disconnect probe must never
+		-- upgrade a failure, and a success is written by the authoritative
+		-- completion path before any probe fires.
+		WHERE NOT (
+			(request_logs_hot.success = TRUE
+			 OR request_logs_hot.request_status IN ('success', 'failure'))
+			AND EXCLUDED.success IS DISTINCT FROM TRUE
+		)
 	`,
 		entry.RequestID,
 		nonEmpty(entry.TenantID, "default"),
