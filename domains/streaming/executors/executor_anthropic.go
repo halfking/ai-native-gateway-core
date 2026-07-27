@@ -8,6 +8,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -22,6 +23,13 @@ import (
 	"github.com/kaixuan/llm-gateway-go/provider"
 	upstreampkg "github.com/kaixuan/llm-gateway-go/upstream"
 )
+
+// maxPassthroughErrorBody caps how many bytes of an upstream 4xx body are
+// forwarded verbatim to the client on the non-retryable raw-passthrough path
+// (see executeAnthropic). Vendor error envelopes are small (a few KB), so 64
+// KiB is generous while preventing a pathological/malicious upstream from
+// forcing the gateway to buffer a huge body into memory before echoing it.
+const maxPassthroughErrorBody = 64 << 10 // 64 KiB
 
 // AnthropicExecutor is the ProtocolHandler for Anthropic Messages API
 // (and compatible endpoints like minimax /anthropic).
@@ -807,7 +815,12 @@ func (e *Executor) executeAnthropicOnce(
 		body := make([]byte, 4096)
 		n, _ := resp.Body.Read(body)
 		e.logUpstreamResponse(params, diagnosticProtocol(cand.Protocol, "anthropic-messages"), body[:n])
-		_, _ = io.Copy(io.Discard, resp.Body)
+		// NOTE (2026-07-27, D-2): the unconditional io.Copy(io.Discard) that
+		// used to live here was removed. It drained the rest of the body
+		// before the raw-passthrough branch below could read it, so vendor 4xx
+		// bodies larger than 4 KiB were forwarded truncated. resp.Body is
+		// closed by the deferred Close above; the passthrough branch reads
+		// the remainder (capped) and every other branch ignores it.
 		errKind := errorsx.ClassifyErrorWithBody(resp.StatusCode, body[:n])
 
 		if bodyKind := errorsx.ClassifyResponseBody(resp.StatusCode, body[:n]); bodyKind == errorsx.KindModelNotFound {
@@ -866,15 +879,46 @@ func (e *Executor) executeAnthropicOnce(
 			if params.PreStreamPrepared {
 				return nil, upstreamErr
 			}
+			// 2026-07-27 (D-2): forward the FULL vendor error body, not just
+			// the first 4096 bytes used for classification. Previously the
+			// raw-passthrough path wrote body[:n] (n <= 4096) and the rest had
+			// already been io.Copy'd to Discard above, so a vendor 4xx body
+			// larger than 4 KiB reached the client truncated — producing
+			// invalid/truncated JSON that Anthropic SDKs could not parse.
+			//
+			// The remaining body is still unread (the discard was for the
+			// *non-passthrough* paths). Read it up to maxPassthroughErrorBody
+			// and concatenate with the classified prefix, then write the whole
+			// envelope. Cap protects against buffering a huge body in memory.
+			fullBody := body[:n]
+			if n >= len(body) {
+				// We filled the 4096 prefix buffer — there may be more. Read
+				// the remainder up to the passthrough cap.
+				remainingCap := maxPassthroughErrorBody - n
+				if remainingCap > 0 {
+					rest, _ := io.ReadAll(io.LimitReader(resp.Body, int64(remainingCap)))
+					if len(rest) > 0 {
+						fullBody = append(append([]byte(nil), body[:n]...), rest...)
+					}
+				}
+				_, _ = io.Copy(io.Discard, resp.Body) // drain anything beyond the cap
+			}
+			// Surface an accurate Content-Length for the bytes we actually send
+			// (the copied vendor Content-Length header would now be wrong if
+			// the body exceeded the cap).
+			params.W.Header().Set("Content-Length", strconv.Itoa(len(fullBody)))
 			for k, vs := range resp.Header {
+				if k == "Content-Length" || k == "Content-Encoding" {
+					continue // we set Content-Length; skip the (possibly gzipped) encoding header
+				}
 				for _, v := range vs {
 					params.W.Header().Add(k, v)
 				}
 			}
 			params.W.WriteHeader(resp.StatusCode)
-			if n > 0 {
+			if len(fullBody) > 0 {
 				//nolint:errcheck // HTTP write error non-recoverable
-				params.W.Write(body[:n])
+				params.W.Write(fullBody)
 			}
 			return nil, upstreamErr
 		}

@@ -2951,6 +2951,10 @@ func (h *ChatHandler) serveWithExecutor(
 		}
 
 		errCode := "provider_error"
+		// 2026-07-27 (E-1): shape the error envelope to the client's protocol.
+		// Anthropic SDKs type-check the error body against {"type":"error",...};
+		// the historical OpenAI-only envelope broke their error handling.
+		proto := protocolOfRequest(r)
 		if execErrTyped, ok := execErr.(*executors.ExecuteError); ok && execErrTyped.Exhausted {
 			// Content moderation rejection: render a 400 with the upstream
 			// reason + actionable hint. NOT a provider/credential problem —
@@ -2971,7 +2975,7 @@ func (h *ChatHandler) serveWithExecutor(
 					writePrewarmedStreamError(w, msg, "content_filter", "content_filter")
 					return
 				}
-				writeErrorJSONWithKind(w, http.StatusBadRequest, requestID,
+				writeErrorJSONWithKindProto(proto, w, http.StatusBadRequest, requestID,
 					msg, "content_filter", "content_filter", "content_filter",
 					map[string]any{
 						"stage":     "execution",
@@ -3031,7 +3035,7 @@ func (h *ChatHandler) serveWithExecutor(
 					writePrewarmedStreamError(w, i18n.T(r.Context(), credI18nKey), credErrType, credCode)
 					return
 				}
-				writeErrorJSONWithDebug(w, credHTTPStatus, requestID,
+				writeErrorJSONWithDebugProto(proto, w, credHTTPStatus, requestID,
 					i18n.T(r.Context(), credI18nKey), credErrType, credCode, debugInfo)
 				return
 			}
@@ -3050,7 +3054,7 @@ func (h *ChatHandler) serveWithExecutor(
 					writePrewarmedStreamError(w, reason, "invalid_request_error", string(execErrTyped.LastKind))
 					return
 				}
-				writeErrorJSONWithKind(w, status, requestID, reason, "invalid_request_error", "context_length_exceeded", string(execErrTyped.LastKind), map[string]any{
+				writeErrorJSONWithKindProto(proto, w, status, requestID, reason, "invalid_request_error", "context_length_exceeded", string(execErrTyped.LastKind), map[string]any{
 					"stage": "execution", "kind": string(execErrTyped.LastKind), "attempts": execErrTyped.Attempts, "tried": execErrTyped.Tried, "retryable": false,
 				})
 				return
@@ -3078,7 +3082,7 @@ func (h *ChatHandler) serveWithExecutor(
 					writePrewarmedStreamError(w, msg, "invalid_request_error", "unsupported_feature")
 					return
 				}
-				writeErrorJSONWithKind(w, http.StatusBadRequest, requestID, msg, "invalid_request_error", "unsupported_feature", string(execErrTyped.LastKind), debugInfo)
+				writeErrorJSONWithKindProto(proto, w, http.StatusBadRequest, requestID, msg, "invalid_request_error", "unsupported_feature", string(execErrTyped.LastKind), debugInfo)
 				return
 			}
 
@@ -3120,7 +3124,7 @@ func (h *ChatHandler) serveWithExecutor(
 					"server_error", "model_not_found")
 				return
 			}
-			writeErrorJSONWithKind(w, http.StatusServiceUnavailable, requestID,
+			writeErrorJSONWithKindProto(proto, w, http.StatusServiceUnavailable, requestID,
 				fmt.Sprintf("No available provider for model '%s'. All %d candidates failed.", clientModel, execErrTyped.Tried),
 				"server_error", "model_not_found", realKind, map[string]any{
 					"stage":     "execution",
@@ -3181,7 +3185,7 @@ func (h *ChatHandler) serveWithExecutor(
 			writePrewarmedStreamError(w, "upstream request failed", "server_error", "provider_error")
 			return
 		}
-		writeErrorJSONWithDebug(w, http.StatusBadGateway, requestID, i18n.T(r.Context(), i18n.MsgProviderError), "server_error", "provider_error", debugInfo)
+		writeErrorJSONWithDebugProto(proto, w, http.StatusBadGateway, requestID, i18n.T(r.Context(), i18n.MsgProviderError), "server_error", "provider_error", debugInfo)
 		return
 	}
 	logCtx.markAttachmentsSent()
@@ -5225,6 +5229,116 @@ func writeErrorJSONWithKind(w http.ResponseWriter, status int, requestID, msg, e
 	json.NewEncoder(w).Encode(map[string]any{
 		"error": errObj,
 	})
+}
+
+// protocolOfRequest returns the client-facing protocol family derived from
+// the request path, so error responses can be shaped to match what the
+// client SDK expects. Returns "anthropic" for /v1/messages, "openai"
+// otherwise (the historical default envelope).
+func protocolOfRequest(r *http.Request) string {
+	if r == nil {
+		return "openai"
+	}
+	if isAnthropicMessagesPath(r.URL.Path) {
+		return "anthropic"
+	}
+	return "openai"
+}
+
+// anthropicErrorType maps the gateway's OpenAI-style error "type"/"code"
+// values onto Anthropic's restricted set of error "type" strings
+// (https://docs.anthropic.com/en/api/errors). Anthropic SDKs type-check
+// this field, so an unknown value can break client error handling.
+func anthropicErrorType(errType, code string) string {
+	// Prefer mapping by the most specific signal available.
+	switch code {
+	case "rate_limit_exceeded", "rate_limit_error":
+		return "rate_limit_error"
+	case "context_length_exceeded":
+		return "invalid_request_error"
+	case "content_filter":
+		return "invalid_request_error"
+	case "unsupported_feature":
+		return "invalid_request_error"
+	case "insufficient_quota", "budget_exhausted", "insufficient_credits":
+		return "invalid_request_error"
+	case "authentication_error", "upstream_credential_invalid":
+		return "authentication_error"
+	case "permission_error", "blocked", "security_violation":
+		return "permission_error"
+	case "not_found", "model_not_found":
+		return "not_found_error"
+	case "overloaded_error", "provider_error":
+		return "overloaded_error"
+	}
+	switch errType {
+	case "authentication_error":
+		return "authentication_error"
+	case "permission_error", "security_violation":
+		return "permission_error"
+	case "rate_limit_error":
+		return "rate_limit_error"
+	case "invalid_request_error":
+		return "invalid_request_error"
+	}
+	// server_error / internal_error / provider_error / fallback → overloaded.
+	return "overloaded_error"
+}
+
+// writeErrorAnthropic emits the Anthropic-shaped error envelope
+//
+//	{"type":"error","error":{"type":<t>,"message":<msg>}}
+//
+// which Anthropic SDKs parse natively. The gateway historically emitted
+// the OpenAI shape {"error":{message,type,code,...}} for every protocol;
+// Anthropic clients received an envelope their SDK could not type-check.
+//
+// request_id is surfaced via the X-Request-Id response header (set by the
+// caller / middleware) rather than in the body, matching Anthropic's own API.
+func writeErrorAnthropic(w http.ResponseWriter, status int, requestID, msg, errType, code string, debug map[string]any) {
+	w.Header().Set("Content-Type", "application/json")
+	if requestID != "" {
+		w.Header().Set("X-Request-Id", requestID)
+	}
+	w.WriteHeader(status)
+	errObj := map[string]any{
+		"type":    anthropicErrorType(errType, code),
+		"message": msg,
+	}
+	if debug != nil {
+		// Preserve gateway_debug for operator diagnostics (Anthropic clients
+		// ignore unknown fields in the error object).
+		errObj["gateway_debug"] = debug
+	}
+	//nolint:errcheck // HTTP write error non-recoverable
+	json.NewEncoder(w).Encode(map[string]any{
+		"type":  "error",
+		"error": errObj,
+	})
+}
+
+// writeErrorJSONWithKindProto dispatches to the Anthropic envelope when the
+// client speaks the Anthropic protocol, otherwise to the OpenAI envelope.
+// This is the protocol-aware entry point for the execution-failure path
+// (Exhausted branch) where the gateway has already committed to a request
+// and the SDK error-parsing behavior matters most.
+func writeErrorJSONWithKindProto(proto string, w http.ResponseWriter, status int, requestID, msg, errType, code, kind string, debug map[string]any) {
+	if proto == "anthropic" {
+		writeErrorAnthropic(w, status, requestID, msg, errType, code, debug)
+		return
+	}
+	writeErrorJSONWithKind(w, status, requestID, msg, errType, code, kind, debug)
+}
+
+// writeErrorJSONWithDebugProto is the protocol-aware variant of
+// writeErrorJSONWithDebug (no "kind" field). Used at Exhausted-branch sites
+// that predate the kind field.
+func writeErrorJSONWithDebugProto(proto string, w http.ResponseWriter, status int, requestID, msg, errType, code string, debug map[string]any) {
+	if proto == "anthropic" {
+		writeErrorAnthropic(w, status, requestID, msg, errType, code, debug)
+		return
+	}
+	writeErrorJSONWithDebug(w, status, requestID, msg, errType, code, debug)
 }
 
 // mapExecuteErrorToKind (Step 6, 2026-06-18) maps an exhausted

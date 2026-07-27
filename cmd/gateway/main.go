@@ -69,8 +69,10 @@ import (
 	streaming "github.com/kaixuan/llm-gateway-go/domains/streaming" //nolint:depguard
 	"github.com/kaixuan/llm-gateway-go/domains/streaming/executors" //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/domains/transformation"      //nolint:depguard // historical violation, B1 routing.go CQRS will fix
-	ursmv2 "github.com/kaixuan/llm-gateway-go/domains/ursm/v2"      //nolint:depguard // URSM v2 wiring (T20)
-	"github.com/kaixuan/llm-gateway-go/domains/ursm/v2/persist"     //nolint:depguard // URSM v2 persist writer
+	ursmv2api "github.com/kaixuan/llm-gateway-go/domains/ursm/v2/api" //nolint:depguard // URSM v2 ModeOff constant (Task 8)
+	ursmcache "github.com/kaixuan/llm-gateway-go/domains/ursm/v2/cache"
+	ursmv2 "github.com/kaixuan/llm-gateway-go/domains/ursm/v2"       //nolint:depguard // URSM v2 wiring (T20)
+	"github.com/kaixuan/llm-gateway-go/domains/ursm/v2/persist"      //nolint:depguard // URSM v2 persist writer
 	"github.com/kaixuan/llm-gateway-go/eventbus"
 	"github.com/kaixuan/llm-gateway-go/fault"
 	"github.com/kaixuan/llm-gateway-go/hotconfig"
@@ -527,6 +529,21 @@ func main() {
 		slog.Info("ursm.v2 manager disabled (no redis client)")
 	}
 
+	// 启动 FpSlots NodeState 一次性迁移 (URSM v2 过渡, Task 5)。
+	// 仅 mode != off 时执行; 幂等(已迁移 key generation>=1)。旧 key 保留 7d TTL。
+	if redisClientForCache != nil && ursmV2Mgr != nil && ursmV2Mgr.Mode() != ursmv2api.ModeOff {
+		go func() {
+			ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+			defer cancel()
+			n, err := ursmcache.MigrateFpSlotsNodeStates(ctx, redisClientForCache.Client())
+			if err != nil {
+				slog.Warn("fpslots node-state migration failed", "error", err)
+			} else if n > 0 {
+				slog.Info("fpslots node states migrated to ursm:v2", "count", n)
+			}
+		}()
+	}
+
 	// URSM v2 persist writer (T15+L6): snapshot v2 Redis state to DB periodically
 	// 2026-07-22: Only run in canary/full modes. Shadow mode never calls RecordRequest,
 	// so Redis will be empty and persist writer just wastes CPU logging "collect empty".
@@ -578,6 +595,19 @@ func main() {
 		} else {
 			slog.Info("ursm.v2: persist writer disabled in shadow mode")
 		}
+	}
+
+	// URSM v2 cache stores (Tasks 1-5): 进程 LRU 镜像 + Redis 权威源。
+	// 仅在 redis 可用时构造; nil 时下游 SetRedisStore 接受 nil 退化为旧行为。
+	// NodeMirror 不在此构造 — 它在 Task 10 才接入 FilterAndScore 读路径,
+	// 现在构造会产生 unused lint。stickyStore/intentStore 在下方注入双写。
+	var (
+		stickyStore *ursmcache.StickyStore
+		intentStore *ursmcache.IntentStore
+	)
+	if redisClientForCache != nil {
+		stickyStore = ursmcache.NewStickyStore(redisClientForCache.Client(), 100000, time.Hour)
+		intentStore = ursmcache.NewIntentStore(redisClientForCache.Client(), 50000, time.Minute)
 	}
 
 	// V2-P3.2: turn_logs aggregator — flushes 24h-TTL per-stage logs into
@@ -739,6 +769,9 @@ func main() {
 				slog.Warn("sticky restore from DB failed", "error", err)
 			}
 		}
+		// URSM v2 双写过渡: 注入 StickyStore (Task 2)。
+		// nil(redis 不可用) 时 SetRedisStore 退化为纯内存/DB 旧行为。
+		stickyCache.SetRedisStore(stickyStore)
 		router := executors.NewRouter(stickyCache, lim)
 
 		// Connect FpSlots to Router for load-aware P2C selection
@@ -2721,7 +2754,11 @@ func main() {
 				autoroute.NewDBProfileStore(dbConn.Pool()),
 			)
 			if fpSlotRedis != nil {
-				decider.SetIntentCache(autoroute.NewRedisSessionIntentCache(fpSlotRedis, 10*time.Minute))
+				ic := autoroute.NewRedisSessionIntentCache(fpSlotRedis, 10*time.Minute)
+				// URSM v2 双写过渡: 注入 IntentStore (Task 3)。
+				// intentStore 在 redis 不可用时为 nil, SetRedisStore 退化为纯内存。
+				ic.SetRedisStore(intentStore)
+				decider.SetIntentCache(ic)
 			} else {
 				decider.SetIntentCache(nil)
 			}
