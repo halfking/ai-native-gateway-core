@@ -84,7 +84,16 @@ func (s *StickyStore) GetLevel(ctx context.Context, level int, rawKey string) (i
 	return credID, true
 }
 
-// levelOf 从 rawKey 推断 sticky 级别(L1/L2/L3)用于 Redis key 前缀。
+func (s *StickyStore) DeleteLevelIfCredential(ctx context.Context, level int, rawKey string, credID int) error {
+	redisKey := StickyKey(level, rawKey)
+	const deleteIfMatches = `if redis.call("GET", KEYS[1]) == ARGV[1] then return redis.call("DEL", KEYS[1]) else return 0 end`
+	if err := s.rdb.Eval(ctx, deleteIfMatches, []string{redisKey}, strconv.Itoa(credID)).Err(); err != nil {
+		return err
+	}
+	s.lru.DeleteIf(redisKey, func(v int) bool { return v == credID })
+	return nil
+}
+
 // 约定: caller 传入的 rawKey 已是 buildStickyKeys 产出的完整 key,
 // 通过冒号分隔段数判定: 6 段=L1, 5 段=L2, 4 段=L3。
 func levelOf(rawKey string) int {

@@ -136,11 +136,25 @@ func (b *DBOnlyBackend) Name() string {
 // 2026-07-26 URSM v1→v2 统一：旧的"v1 (domains/ursm.Manager) 优先" 分支
 // 已删除——v1 在 main.go 中从未 wire。
 func selectStateBackend(ursmv2Mgr URSMv2Manager, stateMgr credentialstate.StateProvider, ctx context.Context) StateBackend {
+	return selectStateBackendWithReady(ursmv2Mgr, stateMgr, ctx, nil)
+}
+
+// selectStateBackendWithReady uses an optional Ready snapshot captured by the
+// caller. A routing decision must not observe Ready twice: a recovery flip
+// between the filter and backend selection could otherwise select the legacy
+// backend after URSM filtering (or the reverse).
+func selectStateBackendWithReady(ursmv2Mgr URSMv2Manager, stateMgr credentialstate.StateProvider, ctx context.Context, readySnapshot *bool) StateBackend {
 	// URSM v2 authoritative 模式优先
 	if ursmv2Mgr != nil && ursmv2Mgr.Mode() == ursmv2api.ModeAuthoritative {
-		readyCtx, cancel := context.WithTimeout(ctx, 50*time.Millisecond)
-		defer cancel()
-		if ursmv2Mgr.Ready(readyCtx) {
+		ready := false
+		if readySnapshot != nil {
+			ready = *readySnapshot
+		} else {
+			readyCtx, cancel := context.WithTimeout(ctx, 50*time.Millisecond)
+			defer cancel()
+			ready = ursmv2Mgr.Ready(readyCtx)
+		}
+		if ready {
 			return &URSMv2Backend{mgr: ursmv2Mgr}
 		}
 		// Ready 检查失败，降级到 StateManager

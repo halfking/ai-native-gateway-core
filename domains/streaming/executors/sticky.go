@@ -79,6 +79,7 @@ type StickyLookupResult struct {
 type StickyRedisStore interface {
 	SetLevel(ctx context.Context, level int, credID int, rawKey string, ttl time.Duration) error
 	GetLevel(ctx context.Context, level int, rawKey string) (int, bool)
+	DeleteLevelIfCredential(ctx context.Context, level int, rawKey string, credID int) error
 }
 
 type StickyCache struct {
@@ -595,15 +596,29 @@ func (s *StickyCache) DeleteMultiLevel(
 	credentialID int,
 ) {
 	l1, l2, l3 := buildStickyKeys(tenantID, appID, apiKeyID, clientProfile, sessionID, model)
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	for _, key := range []string{l1, l2, l3} {
-		if key == "" {
+	keys := []struct {
+		key   string
+		level int
+	}{
+		{l1, 1}, {l2, 2}, {l3, 3},
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	for _, item := range keys {
+		if item.key == "" {
 			continue
 		}
-		entry, ok := s.items[key]
-		if ok && entry.credentialID == credentialID {
-			delete(s.items, key)
+		s.mu.Lock()
+		entry, ok := s.items[item.key]
+		matched := ok && entry.credentialID == credentialID
+		if matched {
+			delete(s.items, item.key)
+		}
+		s.mu.Unlock()
+		if s.redisStore != nil {
+			if err := s.redisStore.DeleteLevelIfCredential(ctx, item.level, item.key, credentialID); err != nil {
+				slog.Debug("sticky redis delete failed", "key", item.key, "error", err)
+			}
 		}
 	}
 }

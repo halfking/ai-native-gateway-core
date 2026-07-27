@@ -22,6 +22,7 @@ const intentCacheDriftThreshold = 50
 type IntentRedisStore interface {
 	Set(ctx context.Context, sessionID string, in ursmcache.Intent, ttl time.Duration) error
 	Get(ctx context.Context, sessionID string) (ursmcache.Intent, bool)
+	Delete(ctx context.Context, sessionID string) error
 }
 
 // toCacheIntent 将内存态 CachedIntent 转为 Redis 持久化态 ursmcache.Intent。
@@ -207,6 +208,11 @@ func (c *SessionIntentCache) Invalidate(sessionID string) {
 	c.mu.Lock()
 	delete(c.entries, sessionID)
 	c.mu.Unlock()
+	if c.redisStore != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+		defer cancel()
+		_ = c.redisStore.Delete(ctx, sessionID)
+	}
 }
 
 // Len returns the number of cached entries (for admin metrics).
