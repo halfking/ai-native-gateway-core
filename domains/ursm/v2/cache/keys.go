@@ -9,7 +9,15 @@ func keyf(format string, args ...any) string {
 
 // nodeMirrorKey 复刻 store.NodeKey 的逻辑(为避免循环 import,在此重写)。
 // 必须与 domains/ursm/v2/store/keys.go:5 NodeKey 保持一致:
-//   {prefix}node:{cid}:{raw}  (prefix 默认 "ursm:v2:")
+//
+//	{prefix}node:{cid}:{raw}  (prefix 默认 "ursm:v2:")
+func nodeMirrorKeyForTenant(tenant string, credID int, raw string) string {
+	if tenant == "" {
+		return nodeMirrorKey(credID, raw)
+	}
+	return keyf("ursm:v2:node:%s:%d:%s", tenant, credID, raw)
+}
+
 func nodeMirrorKey(credID int, raw string) string {
 	return keyf("ursm:v2:node:%d:%s", credID, raw)
 }

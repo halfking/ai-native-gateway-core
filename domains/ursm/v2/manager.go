@@ -179,7 +179,7 @@ func (m *Manager) FilterAndScore(ctx context.Context, seeds []CandidateSeed) ([]
 	if m.Mode() == api.ModeOff {
 		return nil, nil
 	}
-	return m.filterAndScore(ctx, seeds, true)
+	return m.filterAndScore(ctx, seeds, m.Ready(ctx))
 }
 
 // FilterAndScoreReady evaluates seeds using a Ready result captured by the
@@ -212,7 +212,7 @@ func (m *Manager) filterAndScore(ctx context.Context, seeds []CandidateSeed, rea
 	missIndices := make([]int, 0, len(seeds))
 	if m.nodeMirror != nil {
 		for i, s := range seeds {
-			if mv, ok := m.nodeMirror.Get(s.CredentialID, s.RawModel); ok {
+			if mv, ok := m.nodeMirror.GetForTenant(s.TenantID, s.CredentialID, s.RawModel); ok {
 				views[i] = mirrorToAPIView(mv, s)
 				continue
 			}
@@ -224,9 +224,12 @@ func (m *Manager) filterAndScore(ctx context.Context, seeds []CandidateSeed, rea
 		}
 	}
 
-	// Fast path: every seed was served from the mirror. The caller has
-	// already supplied the Ready snapshot, so no second gate read occurs.
-
+	// A false readiness snapshot must always fall back, including when the
+	// process mirror contains every requested node. The mirror is only a
+	// read accelerator; it cannot bypass the recovery gate.
+	if !ready {
+		return nil, fmt.Errorf("ursm.v2: not ready")
+	}
 	if len(missIndices) == 0 {
 		scoreAndSort(views, seeds, m.cfg.ScoringWeights)
 		return views, nil
@@ -241,6 +244,7 @@ func (m *Manager) filterAndScore(ctx context.Context, seeds []CandidateSeed, rea
 	missQueries := make([]store.NodeQuery, 0, len(missIndices))
 	for _, idx := range missIndices {
 		missQueries = append(missQueries, store.NodeQuery{
+			TenantID:     seeds[idx].TenantID,
 			CredentialID: seeds[idx].CredentialID,
 			RawModel:     seeds[idx].RawModel,
 		})
@@ -255,6 +259,7 @@ func (m *Manager) filterAndScore(ctx context.Context, seeds []CandidateSeed, rea
 		// is generation-safe (rejects stale writes), so this never lets an
 		// older snapshot overwrite a newer LRU entry.
 		if m.nodeMirror != nil {
+			fetched[j].TenantID = seeds[idx].TenantID
 			m.nodeMirror.ApplyFromAPI(fetched[j])
 		}
 	}
@@ -407,7 +412,8 @@ func (m *Manager) SetSeedForTest(ctx context.Context, s CandidateSeed) error {
 	}
 	syncer := sync.NewSyncer(m.store.RawClient(), m.cfg.RedisKeyPrefix)
 	return syncer.UpsertNodeSeed(ctx, sync.Seed{
-		ProviderID: s.ProviderID, CredentialID: s.CredentialID, RawModel: s.RawModel, Available: true,
+		ProviderID: s.ProviderID, CredentialID: s.CredentialID, RawModel: s.RawModel,
+		TenantID: s.TenantID, Available: true,
 	})
 }
 
@@ -444,14 +450,17 @@ func (m *Manager) RecordRequest(ctx context.Context, ev api.RequestOutcome) erro
 	// the Lua to ignore the outcome. Any other outcome (Nil, error,
 	// empty) is treated as "no hold" and the request is recorded normally.
 	// This mirrors the F3 ApplyProbe pattern.
-	nodeKey := store.NodeKey(m.cfg.RedisKeyPrefix, ev.CredentialID, ev.RawModel)
+	nodeKey := store.NodeKeyForTenant(m.cfg.RedisKeyPrefix, ev.TenantID, ev.CredentialID, ev.RawModel)
+	window1m := store.WindowKeyForTenant(m.cfg.RedisKeyPrefix, ev.TenantID, ev.CredentialID, ev.RawModel, "1m")
+	window5m := store.WindowKeyForTenant(m.cfg.RedisKeyPrefix, ev.TenantID, ev.CredentialID, ev.RawModel, "5m")
+	window30m := store.WindowKeyForTenant(m.cfg.RedisKeyPrefix, ev.TenantID, ev.CredentialID, ev.RawModel, "30m")
 	manualHold, _ := m.store.RawClient().HGet(rctx, nodeKey, "manual_hold").Result()
 	adminHold := manualHold == "1"
 	if _, err := m.store.RecordRequest(rctx,
 		nodeKey,
-		store.WindowKey(m.cfg.RedisKeyPrefix, ev.CredentialID, ev.RawModel, "1m"),
-		store.WindowKey(m.cfg.RedisKeyPrefix, ev.CredentialID, ev.RawModel, "5m"),
-		store.WindowKey(m.cfg.RedisKeyPrefix, ev.CredentialID, ev.RawModel, "30m"),
+		window1m,
+		window5m,
+		window30m,
 		store.RecordOutcome{
 			Success:      ev.Success,
 			ErrorKind:    ev.ErrorKind,

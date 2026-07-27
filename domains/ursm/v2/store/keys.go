@@ -2,8 +2,30 @@ package store
 
 import "fmt"
 
+func NodeKeyForTenant(prefix, tenant string, cid int, raw string) string {
+	if tenant == "" {
+		return NodeKey(prefix, cid, raw)
+	}
+	return fmt.Sprintf("%snode:%s:%d:%s", prefix, tenantKeyPart(tenant), cid, raw)
+}
+
 func NodeKey(prefix string, cid int, raw string) string {
 	return fmt.Sprintf("%snode:%d:%s", prefix, cid, raw)
+}
+
+func WindowKeyForTenant(prefix, tenant string, cid int, raw, bucket string) string {
+	if tenant == "" {
+		return WindowKey(prefix, cid, raw, bucket)
+	}
+	return fmt.Sprintf("%swin:%s:%s:%d:%s", prefix, bucket, tenantKeyPart(tenant), cid, raw)
+}
+
+func WindowKey(prefix string, cid int, raw, bucket string) string {
+	return fmt.Sprintf("%swin:%s:%d:%s", prefix, bucket, cid, raw)
+}
+
+func tenantKeyPart(tenant string) string {
+	return tenant
 }
 
 func BindingKey(prefix string, cid int, raw string) string {
@@ -16,10 +38,6 @@ func CredentialKey(prefix string, cid int) string {
 
 func ProviderKey(prefix string, pid int) string {
 	return fmt.Sprintf("%sprovider:%d", prefix, pid)
-}
-
-func WindowKey(prefix string, cid int, raw, bucket string) string {
-	return fmt.Sprintf("%swin:%s:%d:%s", prefix, bucket, cid, raw)
 }
 
 func CandidateIndexKey(prefix, tenant, canonical, profile, modality string) string {

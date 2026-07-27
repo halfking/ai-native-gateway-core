@@ -1,7 +1,7 @@
 # 客户端→LLM供应商端到端请求链路收敛设计
 
-> 日期：2026-07-27  
-> 范围：当前 live v1 data plane；覆盖 Chat、Messages、Responses、Gemini 及现有供应商协议适配。  
+> 日期：2026-07-27
+> 范围：当前 live v1 data plane；覆盖 Chat、Messages、Responses、Gemini 及现有供应商协议适配。
 > 目标：在不丢失请求数据、不破坏协议语义、可追踪、可并发安全的前提下，收敛客户端请求到供应商再返回客户端的完整链路，并在实施后完成独立审计。
 
 ## 1. 决策摘要

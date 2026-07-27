@@ -1,320 +1,61 @@
-# 24小时修改审计报告 (2026-07-27 至 2026-07-28)
-
-**审计时间:** 2026-07-28  
-**审计范围:** 最近24小时内的89个提交  
-**审计方法:** 双轴交叉审查（Standards轴 + Spec轴）  
-**审计结果:** ✅ **GO** - 可以提交推送
-
----
-
-## 执行摘要
-
-### 修改统计
-- **提交数量:** 89个提交
-- **修改文件:** 84个文件
-- **代码变更:** +2,464行 / -646行
-- **主要变更:** 2个重大修复提交 + 87个增量改进
-
-### 质量验证
-```
-✅ go build ./...           - PASS (无编译错误)
-✅ go vet ./...             - PASS (无静态检查问题)
-✅ go test -race (核心包)    - PASS (无数据竞争)
-   - pool/...               - 1.994s ✓
-   - executors/...          - 2.846s ✓
-   - routing/...            - 149.899s ✓
-   - ratelimit/...          - 1.486s ✓
-   - session/...            - 3.206s ✓
-   - hooks/...              - 7个包全通过 ✓
-   - credentialstate/...    - 1.886s ✓
-✅ gofmt -l                 - PASS (主代码库无格式问题)
-```
-
----
-
-## 关键提交分析
-
-### 1️⃣ Commit 244e8c03: fix(routing): close request flow state consistency gaps
-
-**变更范围:** 请求流状态一致性修复  
-**影响文件:** 79个文件
-
-**核心修复:**
-1. **路由器上下文传递完整性**
-   - 所有 `PlanCandidates` 调用升级为 `PlanCandidatesWithContext`
-   - 传递完整上下文: `requestCtx`, `tenantID`, `clientModel`, `requestID`
-   - 影响位置:
-     - `domains/streaming/executors/executor.go:1687` (首次路由)
-     - `domains/streaming/executors/executor.go:1859` (重试路由)
-     - `domains/streaming/executors/executor.go:2954` (异步重试)
-     - `domains/streaming/executors/executor.go:3937` (后台重试)
-
-2. **状态传播链完整性**
-   - URSMv2 现在可以访问完整的请求上下文
-   - 粘性路由缓存键包含完整标识符
-   - 遥测和审计日志关联完整
-
-**验证结果:**
-- ✅ 编译通过
-- ✅ executor 测试套件通过 (2.846s)
-- ✅ routing 测试套件通过 (149.899s)
-- ✅ 无数据竞争
-
-**逻辑正确性:**
-- ✅ 所有调用点参数对齐
-- ✅ 上下文生命周期正确
-- ✅ 无nil指针风险 (R.Context()在所有路径都有效)
-
----
-
-### 2️⃣ Commit 8001cbee: fix(concurrency): harden locking across gateway hot paths
-
-**变更范围:** 全仓并发安全加固  
-**影响文件:** 77个文件  
-**审计文档:** `AUDIT_CONCURRENCY_HARDENING_20260727.md`
-
-#### P0 修复 (生产路径数据竞争/死锁)
-
-| 缺陷 | 文件 | 修复 | 验证 |
-|------|------|------|------|
-| ResponseWriter随detached goroutine逃逸 | `executors/executor.go` | `bgParams.W=nil` + `responseSink()` | ✅ 测试通过 |
-| sync.Map内*State被外部修改 | `credentialstate/manager.go` | per-key mutex + copy-on-read | ✅ 测试通过 |
-| RLock下写map | `credential/scoring.go` | 改为只读路径 | ✅ 测试通过 |
-| 计数器RLock下++ | `cache/semantic/memory.go` | 全改atomic | ✅ 测试通过 |
-| Counter/Histogram无锁并发写 | `hooks/observability/types.go` | atomic + per-metric mutex | ✅ 测试通过 |
-| RecoveryTask字段无锁写 | `dbdegradation/generic_recovery.go` | task.mu + 字段快照 | ✅ 测试通过 |
-| channel双重close | `dbdegradation/ttl_manager.go` | 每轮重建channel | ✅ 测试通过 |
-| TTFBStats指针逃逸 | `executors/ttfb_tracker.go` | 返回副本 | ✅ 测试通过 |
-
-#### P1 修复 (潜在竞争/死锁风险)
-
-| 类别 | 文件 | 问题 | 修复 |
-|------|------|------|------|
-| 锁内I/O | `pool/pool.go` | 锁内Close()含wg.Wait+5s探针 | 锁内unlink，锁外Close |
-| sync.Once误用 | `ratelimit/redis_sliding.go` | 重置竞争+无界goroutine | 显式loaded标志+stop channel |
-| 锁跨外部调用 | `circuit/breaker.go` | halfOpenMu跨真实上游调用 | CAS抢名额后释放锁 |
-| 锁跨wg.Wait | `safety/filter.go` | RLock跨wg.Wait+CPU扫描 | 快照后解锁 |
-| 锁跨事务 | `autoroute/embedding_classifier.go` | mutex跨BeginTx→Commit | 删除(FOR UPDATE已串行化) |
-| Stop守卫缺失 | `bg/*` (8个文件) | Stop-without-Start死等 | sync.Once + started守卫 |
-| goroutine泄漏 | `eventbus/memory_bus.go` | per-handler goroutine不被wg跟踪 | 单goroutine串行 |
-| 无界goroutine | `telemetry/dashboard_events.go` | 每flushSize一个go flush() | 信号channel |
-| 结构体并发写 | `internal/logging/logging.go` | 原地改lumberjack字段 | 整体替换 |
-| 锁序错误 | `internal/trace/snapshot.go` | Unlock→写→Lock | 持锁内直接写 |
-| 回调持锁 | `hooks/registry.go` | RLock下调回调(回调取写锁) | 拷出后解锁再调 |
-| 元数据逃逸 | `sessionstate/state_machine.go` | 持锁跑回调+交出受锁metadata | 快照→解锁→跑回调 |
-| 热路径无锁写 | `session/session.go` | SetDBWriter/SetFileWriter | atomic.Pointer |
-
-#### P2 修复 (效率/原语优化)
-
-- `autoroute/feature_flags.go`: 裸指针 → atomic.Pointer
-- `metrics/interface.go`: Global变量 → Global()函数返回atomic.Pointer
-- `autoroute/decision.go`: Get→HitCount++→Put丢失更新 → IncrementHit
-- `bg/systemmonitor/monitor.go`: Mutex读bool → RWMutex
+# 24小时修改审计报告（2026-07-27 至 2026-07-28）
 
-**综合验证:**
-```bash
-✅ go build ./...                              # 无编译错误
-✅ go vet ./...                                # 无静态问题
-✅ go test -race <61个修改的包>                 # 61 ok, 0 FAIL, 0 DATA RACE
-```
-
----
-
-## 交叉检查清单
-
-### ✅ 逻辑正确性
-
-1. **互斥锁配对检查**
-   - ✅ 所有Lock()都有对应的Unlock()
-   - ✅ defer Unlock()放置在Lock()之后
-   - ✅ 所有错误路径都会释放锁
-   - ✅ 无defer顺序问题
-
-2. **锁序检查**
-   - ✅ per-key mutex不存在嵌套风险
-   - ✅ atomic.Pointer不与mutex混用
-   - ✅ RWMutex升级前会释放RLock
-   - ✅ 无A→B和B→A的循环依赖
-
-3. **原子操作检查**
-   - ✅ atomic计数器独立使用
-   - ✅ atomic.Pointer不与直接赋值混用
-   - ✅ LoadOrStore使用正确
-
-4. **Goroutine生命周期**
-   - ✅ 所有后台goroutine有stop机制
-   - ✅ WaitGroup在父goroutine Add
-   - ✅ channel close单一责任
-   - ✅ 无channel泄漏
-
-### ✅ 语法正确性
-
-1. **类型检查**
-   - ✅ 函数签名匹配调用点
-   - ✅ 指针/值传递正确
-   - ✅ 接口实现完整
-   - ✅ 类型断言有安全检查
-
-2. **错误处理**
-   - ✅ 所有error都被检查或显式忽略
-   - ✅ defer顺序正确
-   - ✅ context取消传播正确
-
-3. **资源管理**
-   - ✅ 所有打开的资源都会关闭
-   - ✅ 超时context正确取消
-   - ✅ 内存快照避免逃逸
-
-### ✅ 并发模式
-
-1. **Copy-on-Write模式**
-   - ✅ `credentialstate/cache.go:getFromMemCache()` 返回副本
-   - ✅ `credentialstate/manager.go` 所有setToRedis接收快照
-   - ✅ `dbdegradation/generic_recovery.go` Status()返回字段快照
-
-2. **Lock-Free Fast Path**
-   - ✅ `hooks/security/hook.go` atomic.Pointer + TTL刷新
-   - ✅ `credential/bandit.go` RLock fast-path + miss升级
-   - ✅ `metrics/interface.go` atomic.Pointer读取
-
-3. **Lock Outside I/O**
-   - ✅ `pool/pool.go` 锁内unlink，锁外Close
-   - ✅ `circuit/breaker.go` CAS抢名额后释放锁再调用
-   - ✅ `domains/routing/sticky.go` dbPoolSnapshot()传值
-
-4. **Per-Key Locking**
-   - ✅ `credentialstate/manager.go` keyMu sync.Map实现
-   - ✅ lockKey()创建竞争安全
-   - ✅ 粒度匹配状态粒度
-
----
-
-## 发现的问题与修复
-
-### 🔍 审计中未发现新问题
-
-经过交叉检查，两次提交的修复都是正确的：
-- ✅ 无遗漏的Lock/Unlock配对
-- ✅ 无新引入的数据竞争
-- ✅ 无死锁风险
-- ✅ 无goroutine泄漏
-- ✅ 无资源泄漏
-
-### ⚠️ 已知遗留问题(不在本次范围)
-
-以下问题已在AUDIT文档中标注为out-of-scope:
-- `domains/transformation/lockfree_circuit_breaker.go` (测试代码，生产未使用)
-- worktree中的格式问题 (非主代码库)
-
----
-
-## 测试覆盖
-
-### 单元测试
-```
-✅ autoroute/decision_priority_test.go    - 更新测试匹配新API
-✅ autoroute/decision_test.go             - 更新测试匹配新API
-✅ autoroute/recommend_v2_test.go         - 更新测试匹配新API
-✅ domains/hooks/registry_test.go         - 更新回调测试
-✅ domains/routing/sticky_redis_test.go   - 新增Redis双写测试
-✅ metrics/metrics_test.go                - 更新Global()函数测试
-```
-
-### Race检测
-```bash
-所有核心包通过 -race 检测:
-✅ pool (1.994s)
-✅ executors (2.846s)  
-✅ routing (149.899s)
-✅ ratelimit (1.486s)
-✅ session (3.206s)
-✅ hooks/* (7个包)
-✅ credentialstate (1.886s)
-```
-
----
-
-## 代码质量指标
-
-| 指标 | 结果 | 状态 |
-|------|------|------|
-| 编译 | 无错误 | ✅ |
-| go vet | 无警告 | ✅ |
-| gofmt | 主库格式正确 | ✅ |
-| race检测 | 0个竞争 | ✅ |
-| 测试覆盖 | 核心包100% | ✅ |
-| 文档完整性 | AUDIT文档齐全 | ✅ |
-
----
-
-## 影响分析
-
-### 性能影响
-- **正面:** 减少锁竞争，提升并发性能
-  - pool eviction不再阻塞热路径 (~5s → 0)
-  - security hook从每请求写锁→无锁读取
-  - credential scoring RLock fast-path减少写锁争用
-  
-- **中性:** per-key mutex
-  - 粒度更细，实际争用减少
-  - sync.Map开销可忽略(key空间有界)
-
-### 稳定性影响
-- **显著提升:**
-  - 消除8个P0数据竞争
-  - 修复12个P1死锁风险
-  - 消除5个goroutine泄漏
-
-### 兼容性影响
-- **API兼容:**
-  - `PlanCandidates` 保留向后兼容
-  - `metrics.Global` 变量→函数(无外部调用)
-  - 其他改动均为内部实现
-
----
-
-## 审计结论
-
-### ✅ 通过标准
-
-1. **Standards轴 (编码规范)**
-   - ✅ 符合Go并发最佳实践
-   - ✅ 无data race
-   - ✅ 无死锁风险
-   - ✅ 资源管理正确
-   - ✅ 错误处理完整
-
-2. **Spec轴 (需求一致性)**
-   - ✅ 修复对齐原始缺陷
-   - ✅ 无越界修改
-   - ✅ 保持向后兼容
-   - ✅ 测试覆盖充分
-
-3. **验证轴 (质量保证)**
-   - ✅ 编译通过
-   - ✅ 静态检查通过
-   - ✅ Race检测通过
-   - ✅ 单元测试通过
-
-### 🎯 最终判定: **GO**
-
-**可以安全提交和推送到main分支**
-
----
-
-## 建议行动
-
-### 立即行动
-1. ✅ 提交当前状态 (无未提交更改)
-2. ✅ 推送到远程main分支
-
-### 后续跟踪
-1. 监控生产环境并发性能指标
-2. 观察错误率是否下降
-3. 2周后评估是否可以移除deprecated代码路径
-
----
-
-**审计人:** ZCode (autonomous)  
-**审计日期:** 2026-07-28  
-**会话ID:** sess_90d6d145-8d0c-48e9-824b-56a237a19133
+**审计时间:** 2026-07-28
+**审计基线:** `8da7db526451f4c08cc18a04883a9fb66f7abd23`（24小时前的共同基线）
+**审计范围:** `git rev-list BASE..HEAD` 共 97 个提交（87 个非合并、10 个合并），265 个文件，`+16029/-4130`  以及本次审计整改未提交差异
+**审计方法:** Standards / Spec 双轴复核、核心模块测试、静态检查、迁移编号与差异门禁检查
+**审计结果:** ⚠️ **NO-GO**：代码整改已完成并通过受影响模块测试，但仍有发布阻断项未验证或未闭环，不得据此宣称全量切换完成。
+
+## 修改总结
+
+- 请求链路：arrival WAL、终态保护、请求体/遥测字段、流式断开和 keepalive 生命周期。
+- 路由状态：URSM v2 Redis/LRU、credential state 并发更新、探测/恢复、quota 路由门禁、sticky/intent 双写。
+- 协议转换：provider-specific tools、streaming tool args 校验、Anthropic 错误信封和 4xx body 处理。
+- 管理面与部署：client-perception view、迁移 458-461、健康等待超时、版本/发布文档。
+- 统计以 `8da7db52..HEAD` 为准；此前报告中的 89 个提交、84 个文件和 `+2464/-646` 不符合仓库事实，已纠正。
+
+## 本次整改
+
+- 修复 URSM `Ready=false` 时 LRU 全命中绕过 recovery gate 的问题；公开 `FilterAndScore` 恢复真实 Ready 检查，快照路由使用 `FilterAndScoreReady`。
+- 增加 tenant-aware URSM node/window key、NodeMirror 查询和请求结果写入；空 tenant 保留旧 key 兼容入口。
+- 修复 routing 与 streaming executor sticky Redis store 的无锁读取/删除，统一使用锁保护的快照。
+- 修复两条 Anthropic→OpenAI 流式桥接路径：无法修复的 tool 参数不再透传非法 JSON，而是发送协议错误并终止该流。
+- 删除重复的 `461_request_wal_hot_request_id_unique.sql`，保留唯一索引版本，消除同编号 forward migration 的执行歧义。
+- 清理新增文档尾随空格，恢复 `git diff --check` 门禁。
+
+## 双轴审查结论
+
+### Standards
+
+- 通过：受影响 Go 代码已 `gofmt`，`git diff --check` 通过，核心迁移编号检查不再包含新增重复 461。
+- 通过：受影响模块编译与测试通过；sticky 共享字段访问已改为锁内配置、锁外 I/O。
+- 仍需关注：仓库历史迁移存在既有重复编号，不能用简单全仓重复编号扫描替代部署账本校验。
+
+### Spec
+
+已闭环：L-1/L-2 WAL 与日志终态路径、D-2 范围内 body 读取、G-ID-1/2、F-1/F-2/F-3、D-1、Ready gate、tenant-aware URSM 读写、F-5 非法 JSON 阻断。
+
+未闭环或未完成发布验收：
+
+- **S-3:** `routing_state_source` 尚未传播到 request context、attempt、request log、decision log 和 metrics；当前不能统计 NodeMirror hit/miss/stale/fallback。
+- **URSM authoritative 纯度:** 未就绪时仍存在 legacy state fallback；需按发布方案验证 authoritative 模式下旧状态源零 live 调用。
+- **Session V2 单 owner:** pipeline `SessionPersistHook` 与 telemetry mirror owner/时序仍需真实 upstream 前后链路验收。
+- **迁移与真实依赖:** PostgreSQL 上 459 down/up、460/461 up/down、唯一索引对既有重复数据的清理尚未在真实数据库执行；Redis/PG 故障注入、E2E、部署主机验证未执行。
+- **IR 默认:** 设计目标要求 IR 默认路径，但当前 live 默认仍由 feature flag 保持 Legacy；不能把目标态描述为已切换。
+- **运行审计:** provider profile 当日聚合、告警并发去重和告警持久化失败处理仍需独立整改/验收。
+
+## 验证结果
+
+- ✅ `gofmt`（本次修改文件）。
+- ✅ `git diff --check`。
+- ✅ `go test ./...`：全仓通过（211 个包结果，无失败）。
+- ⚠️ 受影响模块 `go test -race`：URSM v2、routing、streaming/executors、Anthropic transform 通过；`domains/streaming/TestRedisFormatCache_TTL` 的既有 TTL 过期断言失败（不在本次整改文件范围）。
+- ⚠️ 未执行真实 PostgreSQL/Redis 迁移回滚、故障注入、部署主机和完整协议 E2E。
+- ⚠️ 严格 secrets 扫描受仓库既有 `.env*`/示例文件命中影响；未发现本次整改新增秘密。
+
+## 结论与后续
+
+当前状态是“代码修复完成、核心回归通过、发布验收未完成”。在 S-3、authoritative 纯度、Session V2 owner、真实迁移/依赖/E2E 验证完成前，不应 merge/push 或宣称 GO。若业务明确允许带风险提交，需单独记录延期项、责任人和发布阻断豁免；本审计不自动豁免。
+
+**审计人:** ZCode
+**审计日期:** 2026-07-28

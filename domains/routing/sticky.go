@@ -74,7 +74,15 @@ func NewStickyCache() *StickyCache {
 
 // SetRedisStore 注入 StickyRedisStore(URSM v2 过渡), nil 时退化为纯内存。
 func (s *StickyCache) SetRedisStore(store StickyRedisStore) {
+	s.mu.Lock()
 	s.redisStore = store
+	s.mu.Unlock()
+}
+
+func (s *StickyCache) redisStoreSnapshot() StickyRedisStore {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.redisStore
 }
 
 func (s *StickyCache) SetDB(pool *pgxpool.Pool) {
@@ -180,7 +188,8 @@ func (s *StickyCache) GetMultiLevel(
 
 	// Redis fallback(URSM v2 过渡): 内存 miss 后回源 Redis, 用显式 level。
 	// 读锁已释放, 回填内存走写锁, 避免自死锁。
-	if s.redisStore != nil {
+	store := s.redisStoreSnapshot()
+	if store != nil {
 		ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
 		type lv struct {
 			key string
@@ -192,7 +201,7 @@ func (s *StickyCache) GetMultiLevel(
 			if k.key == "" {
 				continue
 			}
-			if credID, ok := s.redisStore.GetLevel(ctx, k.lvl, k.key); ok {
+			if credID, ok := store.GetLevel(ctx, k.lvl, k.key); ok {
 				cancel()
 				// 回填内存
 				s.Set(k.key, credID, k.ttl)
@@ -302,7 +311,8 @@ func (s *StickyCache) RecordSuccessMultiLevel(
 	s.mu.Unlock()
 
 	// Redis 双写(URSM v2 过渡): 用显式 level, 避免 levelOf 启发式
-	if s.redisStore != nil {
+	store := s.redisStoreSnapshot()
+	if store != nil {
 		ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
 		levels := []struct {
 			key string
@@ -317,7 +327,7 @@ func (s *StickyCache) RecordSuccessMultiLevel(
 			if lv.key == "" {
 				continue
 			}
-			if err := s.redisStore.SetLevel(ctx, lv.lvl, credentialID, lv.key, lv.ttl); err != nil {
+			if err := store.SetLevel(ctx, lv.lvl, credentialID, lv.key, lv.ttl); err != nil {
 				slog.Debug("sticky redis double-write failed", "key", lv.key, "error", err)
 			}
 		}
@@ -464,8 +474,9 @@ func (s *StickyCache) DeleteMultiLevel(
 			delete(s.items, item.key)
 		}
 		s.mu.Unlock()
-		if s.redisStore != nil {
-			if err := s.redisStore.DeleteLevelIfCredential(ctx, item.level, item.key, credentialID); err != nil {
+		store := s.redisStoreSnapshot()
+		if store != nil {
+			if err := store.DeleteLevelIfCredential(ctx, item.level, item.key, credentialID); err != nil {
 				slog.Debug("sticky redis delete failed", "key", item.key, "error", err)
 			}
 		}

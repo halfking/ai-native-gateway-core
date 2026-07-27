@@ -11,6 +11,7 @@ type Seed struct {
 	ProviderID   int
 	CredentialID int
 	RawModel     string
+	TenantID     string
 	Available    bool
 }
 
@@ -23,8 +24,11 @@ func NewSyncer(rdb *redis.Client, prefix string) *Syncer {
 	return &Syncer{rdb: rdb, prefix: prefix}
 }
 
-func (s *Syncer) nodeKey(cid int, raw string) string {
-	return fmt.Sprintf("%snode:%d:%s", s.prefix, cid, raw)
+func (s *Syncer) nodeKey(tenant string, cid int, raw string) string {
+	if tenant == "" {
+		return fmt.Sprintf("%snode:%d:%s", s.prefix, cid, raw)
+	}
+	return fmt.Sprintf("%snode:%s:%d:%s", s.prefix, tenant, cid, raw)
 }
 
 func (s *Syncer) UpsertNodeSeed(ctx context.Context, seed Seed) error {
@@ -32,7 +36,7 @@ func (s *Syncer) UpsertNodeSeed(ctx context.Context, seed Seed) error {
 	if seed.Available {
 		avail = "1"
 	}
-	return s.rdb.HSet(ctx, s.nodeKey(seed.CredentialID, seed.RawModel),
+	return s.rdb.HSet(ctx, s.nodeKey(seed.TenantID, seed.CredentialID, seed.RawModel),
 		"available", avail,
 		"source_priority", "0",
 		"generation", "1",
