@@ -2,6 +2,7 @@ package health
 
 import (
 	"context"
+	"fmt"
 	"sync"
 	"time"
 )
@@ -210,25 +211,53 @@ func (ec *ErrorCounter) tick() {
 }
 
 // TriggerFastCheck performs L1→L2→L3 fast detection sequence.
+//
+// Contract: whenever healthy == false, err is non-nil and describes which
+// step failed and why. This lets callers distinguish "unhealthy" from
+// "unknown" without re-deriving the cause. Some checkers deliberately return
+// Success=false with Error==nil for a non-2xx HTTP status (HTTPChecker.Check
+// treats a non-2xx status as a health verdict, not a transport error); here
+// we synthesize a descriptive error in that case so the invariant holds.
 func (d *ErrorDetector) TriggerFastCheck(ctx context.Context, providerAddr, healthURL, apiURL, apiKey, model string) (healthy bool, latency time.Duration, err error) {
 	// L1: TCP check
 	tcpResult := d.tcpChecker.Check(ctx, providerAddr)
 	if !tcpResult.Success {
-		return false, tcpResult.Latency, tcpResult.Error
+		return false, tcpResult.Latency, fastCheckErr("L1 tcp", tcpResult.Error, "")
 	}
 
 	// L2: HTTP health check
 	httpResult := d.httpChecker.Check(ctx, healthURL)
 	if !httpResult.Success {
-		return false, httpResult.Latency, httpResult.Error
+		return false, httpResult.Latency, fastCheckErr("L2 http", httpResult.Error, httpResult.Body)
 	}
 
 	// L3: Light inference check
 	inferenceResult := d.inferenceChecker.CheckLight(ctx, apiURL, apiKey, model)
 	if !inferenceResult.Success {
-		return false, inferenceResult.Latency, inferenceResult.Error
+		return false, inferenceResult.Latency, fastCheckErr("L3 inference", inferenceResult.Error, "")
 	}
 
 	// All checks passed
 	return true, inferenceResult.Latency, nil
+}
+
+// fastCheckErr returns the checker's own error when present, otherwise
+// synthesizes one naming the failed step. body is a short response excerpt
+// (already truncated by the checker) included to aid diagnosis when the only
+// signal is a non-2xx status with no transport error.
+func fastCheckErr(step string, checkErr error, body string) error {
+	if checkErr != nil {
+		return fmt.Errorf("%s: %w", step, checkErr)
+	}
+	if body != "" {
+		return fmt.Errorf("%s: unhealthy (body: %s)", step, truncate(body, 128))
+	}
+	return fmt.Errorf("%s: unhealthy", step)
+}
+
+func truncate(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	return s[:n] + "..."
 }
