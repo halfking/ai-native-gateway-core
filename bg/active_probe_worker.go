@@ -261,6 +261,13 @@ func (w *ActiveProbeWorker) runLoop(ctx context.Context) {
 func (w *ActiveProbeWorker) processOne(ctx context.Context, task probeTask) {
 	key := probeKey(task.CredID, task.Model)
 
+	// 2026-07-27 concurrency fix: *probeState fields used to be read
+	// outside w.mu (NextRunAt below, TenantID / ParentReqID at the Emit
+	// call) while markFailedRetry and Submit write them under w.mu. With
+	// LLM_GATEWAY_ERROR_PROBE_WORKERS > 1 two workers can hold the same
+	// key concurrently, so those reads were racy. Copy everything we need
+	// into locals inside the critical section and only use the locals
+	// afterwards (the probe itself does network I/O — never under the lock).
 	w.mu.Lock()
 	state, ok := w.running[key]
 	if !ok {
@@ -269,13 +276,16 @@ func (w *ActiveProbeWorker) processOne(ctx context.Context, task probeTask) {
 	}
 	state.Attempt++
 	attempt := state.Attempt
+	nextRunAt := state.NextRunAt
+	stateTenantID := state.TenantID
+	stateParentReqID := state.ParentReqID
 	w.mu.Unlock()
 
-	// Wait until NextRunAt (implements the backoff between attempts).
-	if !state.NextRunAt.IsZero() {
+	// Wait until nextRunAt (implements the backoff between attempts).
+	if !nextRunAt.IsZero() {
 		now := time.Now()
-		if state.NextRunAt.After(now) {
-			wait := state.NextRunAt.Sub(now)
+		if nextRunAt.After(now) {
+			wait := nextRunAt.Sub(now)
 			select {
 			case <-ctx.Done():
 				return
@@ -314,8 +324,8 @@ func (w *ActiveProbeWorker) processOne(ctx context.Context, task probeTask) {
 	result.Log(task.CredID, task.Model, attempt)
 
 	// 3. Emit to request_logs (auto-pushed to live-stream SSE).
-	w.emitter.Emit(ctx, target.CredentialID, target.ProviderID, state.TenantID,
-		task.Model, target.OutboundModel, "direct", state.ParentReqID, attempt, result)
+	w.emitter.Emit(ctx, target.CredentialID, target.ProviderID, stateTenantID,
+		task.Model, target.OutboundModel, "direct", stateParentReqID, attempt, result)
 
 	// 4. Close the loop with the state manager.
 	if result.Status == ProbeStatusSuccess {

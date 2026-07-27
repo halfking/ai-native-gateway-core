@@ -876,15 +876,20 @@ func (e *Executor) executeAnthropicOnce(
 			if params.PreStreamPrepared {
 				return nil, upstreamErr
 			}
-			for k, vs := range resp.Header {
-				for _, v := range vs {
-					params.W.Header().Add(k, v)
+			// 并发修复 2026-07-27：异步重试 goroutine 的 params.W 为 nil
+			// （客户端已收到 202），错误体只能通过 PendingStore 回传，
+			// 这里直接跳过客户端写。
+			if params.W != nil {
+				for k, vs := range resp.Header {
+					for _, v := range vs {
+						params.W.Header().Add(k, v)
+					}
 				}
-			}
-			params.W.WriteHeader(resp.StatusCode)
-			if n > 0 {
-				//nolint:errcheck // HTTP write error non-recoverable
-				params.W.Write(body[:n])
+				params.W.WriteHeader(resp.StatusCode)
+				if n > 0 {
+					//nolint:errcheck // HTTP write error non-recoverable
+					params.W.Write(body[:n])
+				}
 			}
 			return nil, upstreamErr
 		}
@@ -920,7 +925,9 @@ func (e *Executor) executeAnthropicOnce(
 			params.OnStreamReady()
 			params.OnStreamReady = nil
 		}
-		outcome := ae.StreamResponse(params.W, resp)
+		// 并发修复 2026-07-27：见 responseSink 注释 —— 异步重试路径 W 为
+		// nil，改写到丢弃 writer，upstream stream 仍被完整消费。
+		outcome := ae.StreamResponse(responseSink(params), resp)
 		if outcome.Interrupted && outcome.Reason != "client_cancel" {
 			streamKind := errorsx.KindStreamTimeout
 			if errorsx.IsConcurrentOverload(outcome.Reason) {
@@ -953,7 +960,10 @@ func (e *Executor) executeAnthropicOnce(
 	}
 
 	var qualitySignals QualitySignals
-	responseBody, err := ae.WriteNonStreamResponse(params.W, resp, params.ClientModel, cand.QualityFixMode, &qualitySignals)
+	// 并发修复 2026-07-27：异步重试路径 W 为 nil。WriteNonStreamResponse
+	// 的返回值（转换后的 body）是 PendingStore 回传给客户端的内容，所以
+	// 这里必须照常调用，只是把字节写进丢弃 writer。
+	responseBody, err := ae.WriteNonStreamResponse(responseSink(params), resp, params.ClientModel, cand.QualityFixMode, &qualitySignals)
 	if err != nil {
 		return nil, err
 	}

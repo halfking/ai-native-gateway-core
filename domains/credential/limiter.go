@@ -198,8 +198,9 @@ type Limiter struct {
 	// RPM uses Redis across instances when configured and memory otherwise.
 	rpmLimiter RPMLimiter
 
-	mu     sync.RWMutex
-	stopCh chan struct{}
+	mu       sync.RWMutex
+	stopCh   chan struct{}
+	stopOnce sync.Once
 }
 
 // rpmWindow is a 60-second sliding window of acquire timestamps. Stale
@@ -252,8 +253,13 @@ func (l *Limiter) CheckCredentialRPM(providerID, credentialID int, limit *int) b
 }
 
 // Stop stops the recovery loop.
+//
+// 2026-07-27 concurrency fix: a bare close(stopCh) panics on a second Stop
+// call (close of closed channel). Guard with sync.Once.
 func (l *Limiter) Stop() {
-	close(l.stopCh)
+	l.stopOnce.Do(func() {
+		close(l.stopCh)
+	})
 }
 
 // Global returns the global semaphore.

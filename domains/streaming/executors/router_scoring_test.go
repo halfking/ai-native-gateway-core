@@ -75,30 +75,34 @@ func TestConcurrencyScore_Saturation(t *testing.T) {
 	}
 }
 
+// TestLatencyScore_SaturationCurve 校验 calculateLatencyScore 的分段健康度表。
+// 修复 2026-07-24 审计发现的语义反转：原测试断言是旧 penalty 曲线（latency/(latency+k)），
+// 实现已改为分段「健康度」（越大越好），对应 docs/design/2026-07-20-latency-aware-routing.md §2.1。
+// composite 用 (1 - latencyScore) 转成惩罚；低延迟 → 低惩罚 → 更易被选中。
 func TestLatencyScore_SaturationCurve(t *testing.T) {
+	// 压力 = 0.5（c.PressureLimit 为 nil），低于 knee=0.6，故 observed == p95。
 	tests := []struct {
+		name      string
 		latencyMs int
 		expected  float64
+		delta     float64
 	}{
-		{50, 0.0},    // 极快，无惩罚
-		{1000, 0.5},  // k=1000: 50%
-		{2000, 0.67}, // 约67%
-		{5000, 0.83}, // 约83%
+		{"极快_无样本", 50, 0.0, 0.0},
+		{"瞬时", 500, 1.00, 0.0},
+		{"可接受", 1000, 0.957, 0.01},
+		{"轻微退化", 2000, 0.783, 0.01},
+		{"明显慢", 5000, 0.55, 0.01},
+		{"近不可用", 12000, 0.275, 0.01},
+		{"硬阻断", 35000, 0.0, 0.0},
 	}
 
 	for _, tt := range tests {
-		t.Run("latency_"+string(rune(tt.latencyMs)), func(t *testing.T) {
+		t.Run(tt.name, func(t *testing.T) {
 			candidate := provider.Candidate{
 				P95LatencyMs: tt.latencyMs,
 			}
 			score := calculateLatencyScore(candidate)
-
-			if tt.latencyMs < 100 {
-				assert.Equal(t, 0.0, score)
-			} else {
-				// 允许小误差
-				assert.InDelta(t, tt.expected, score, 0.05)
-			}
+			assert.InDelta(t, tt.expected, score, tt.delta)
 		})
 	}
 }

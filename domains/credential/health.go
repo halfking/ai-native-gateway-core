@@ -9,7 +9,7 @@ import (
 // HealthChecker 健康检查器
 type HealthChecker struct {
 	store *InMemoryStore
-	mu    sync.Mutex //nolint:unused
+	mu    sync.Mutex
 	// checkInterval 上次检查后至少 N 毫秒才能再次检查
 	checkInterval time.Duration
 	// failThreshold 连续失败 N 次标记 unhealthy
@@ -52,10 +52,20 @@ func (h *HealthChecker) MarkSuccess(credID string) error {
 }
 
 // MarkFailure 标记探测失败
+//
+// 2026-07-27 concurrency fix: store.Get returns a COPY of the credential, so
+// the previous Get→++→Save sequence lost concurrent increments: two racing
+// MarkFailure calls would both read the same ConsecutiveFails, both write back
+// N+1, and the failThreshold could never trip under burst failures. Hold h.mu
+// across the whole read-modify-write so increments are serialized. The lock is
+// not held across anything beyond Get→mutate→Save.
 func (h *HealthChecker) MarkFailure(credID string) error {
 	if credID == "" {
 		return errors.New("credential: ID required")
 	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
 	cred, ok, err := h.store.Get(credID)
 	if err != nil {
 		return err

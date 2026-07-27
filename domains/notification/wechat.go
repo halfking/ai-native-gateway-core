@@ -297,10 +297,15 @@ func (c *WeChatChannel) getAccessToken(ctx context.Context) (string, error) {
 	if result.ErrCode != 0 {
 		return "", fmt.Errorf("notification: wechat token api: %s (code %d)", result.ErrMsg, result.ErrCode)
 	}
+	// 2026-07-27 concurrency fix: 在临界区内把 expire/token 抓成局部变量，
+	// slog 参数不再引用受 tokenMu 保护的字段（slog 可能延迟格式化，届时下
+	// 一个刷新者已经在写这些字段了）。
+	expireAt := time.Now().Add(time.Duration(result.ExpiresIn-300) * time.Second)
 	c.accessToken = result.AccessToken
-	c.tokenExpire = time.Now().Add(time.Duration(result.ExpiresIn-300) * time.Second)
-	slog.Debug("wechat access token refreshed", "expire_at", c.tokenExpire)
-	return c.accessToken, nil
+	c.tokenExpire = expireAt
+	token := c.accessToken
+	slog.Debug("wechat access token refreshed", "expire_at", expireAt)
+	return token, nil
 }
 
 // decryptCallback 解密企业微信加密回调（如果配置了 EncodingAESKey）。

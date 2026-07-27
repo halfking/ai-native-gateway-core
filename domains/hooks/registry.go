@@ -244,10 +244,17 @@ func (r *HookRegistry) ReloadConfig() error {
 	r.logger.Info("configuration reloaded")
 
 	// 通知支持配置热更新的Hook
+	// 2026-07-27 concurrency fix: 之前持 r.mu.RLock 调 OnConfigChange ——
+	// 回调里只要碰 Register（需要写锁）就死锁，且有写者排队时 RLock 也不
+	// 可重入。现在先在锁内拷一份 hook 列表，解锁后再回调。
 	r.mu.RLock()
-	defer r.mu.RUnlock()
-
+	snapshot := make(map[string]Hook, len(r.hooksByName))
 	for name, hook := range r.hooksByName {
+		snapshot[name] = hook
+	}
+	r.mu.RUnlock()
+
+	for name, hook := range snapshot {
 		if configurableHook, ok := hook.(ConfigurableHook); ok {
 			config := r.configManager.GetHookConfig(name)
 			if err := configurableHook.OnConfigChange(config); err != nil {

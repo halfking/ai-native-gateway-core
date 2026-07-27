@@ -792,12 +792,17 @@ func (e *Executor) executeOpenAI(
 				}
 
 				var streamOutcome StreamOutcome
+				// 并发修复 2026-07-27：异步重试 goroutine 的 params.W 为
+				// nil（客户端已收到 202），用 responseSink 换成丢弃
+				// writer，让 upstream body 照常读入 params.Capture 而不
+				//触碰已失效的客户端连接。
+				streamSink := responseSink(params)
 				switch {
 				case e.OpenAIToAnthropicStream != nil &&
 					params.ClientProtocol == "anthropic-messages" &&
 					cand.Protocol != "anthropic-messages":
 					streamOutcome = e.OpenAIToAnthropicStream(
-						params.W, resp,
+						streamSink, resp,
 						params.ClientModel, outboundModel,
 						params.R.Header.Get("X-Request-Id"),
 						params.Capture, nil,
@@ -806,15 +811,15 @@ func (e *Executor) executeOpenAI(
 					params.ClientProtocol == "openai-responses" &&
 					cand.Protocol != "anthropic-messages":
 					streamOutcome = e.OpenAIToResponsesStream(
-						params.W, resp,
+						streamSink, resp,
 						params.ClientModel, outboundModel,
 						params.R.Header.Get("X-Request-Id"),
 						params.Capture, nil,
 					)
 				case params.StreamWrapper != nil:
-					streamOutcome = params.StreamWrapper(params.W, resp, e.Normalize, params.Capture)
+					streamOutcome = params.StreamWrapper(streamSink, resp, e.Normalize, params.Capture)
 				case e.StreamChat != nil:
-					streamOutcome = e.StreamChat(params.W, resp, params.ClientModel, outboundModel, cand.CatalogCode, e.Normalize, params.Capture, params.ToolsRequested)
+					streamOutcome = e.StreamChat(streamSink, resp, params.ClientModel, outboundModel, cand.CatalogCode, e.Normalize, params.Capture, params.ToolsRequested)
 				}
 				if params.OnStreamCompleted != nil {
 					params.OnStreamCompleted(streamOutcome)
@@ -1083,7 +1088,10 @@ func (e *Executor) executeOpenAI(
 					}
 				}
 			}
-			if !params.SuppressSuccessWrite {
+			// 并发修复 2026-07-27：异步重试路径既设 SuppressSuccessWrite
+			// 也把 W 置为 nil，两个条件都检查，避免任何将来新增的
+			// detached 调用方只置空 W 却漏设 flag 时在这里 panic。
+			if !params.SuppressSuccessWrite && params.W != nil {
 				for k, vs := range resp.Header {
 					for _, v := range vs {
 						params.W.Header().Add(k, v)

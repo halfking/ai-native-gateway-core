@@ -61,10 +61,17 @@ func (cf *ContentFilter) CheckRequest(ctx context.Context, req *CheckRequest) (*
 		atomic.AddInt64(&cf.totalLatencyNanos, time.Since(start).Nanoseconds())
 	}()
 
+	// 2026-07-27 concurrency fix: read len(cf.rules) under RLock. The rules
+	// slice header is written by UpdateRules (which takes the write lock);
+	// reading it unlocked here was an unsynchronised slice-header read/write.
+	cf.mu.RLock()
+	rulesCount := len(cf.rules)
+	cf.mu.RUnlock()
+
 	log := logger.WithContext(ctx, "safety")
 	log.Debug("checking request content",
 		"content_len", len(req.Content),
-		"rules_count", len(cf.rules),
+		"rules_count", rulesCount,
 	)
 
 	result, err := cf.check(req.Content)
@@ -94,8 +101,17 @@ func (cf *ContentFilter) CheckResponse(ctx context.Context, resp *CheckResponse)
 
 // check 执行检查
 func (cf *ContentFilter) check(content string) (*CheckResult, error) {
+	// 2026-07-27 concurrency fix: snapshot the matchers and rules under RLock,
+	// then release before running the CPU-bound keyword/regex scans and
+	// wg.Wait(). Previously the RLock was held across the whole match phase,
+	// so UpdateRules (which takes the write lock) starved behind every
+	// in-flight check. The matchers carry their own internal locks, so it is
+	// safe to call Match on the snapshotted pointers after releasing cf.mu.
 	cf.mu.RLock()
-	defer cf.mu.RUnlock()
+	keywordMatcher := cf.keywordMatcher
+	regexMatcher := cf.regexMatcher
+	rules := cf.rules
+	cf.mu.RUnlock()
 
 	// 并行检测
 	var (
@@ -109,13 +125,13 @@ func (cf *ContentFilter) check(content string) (*CheckResult, error) {
 	// Keyword 检测
 	go func() {
 		defer wg.Done()
-		keywordHits = cf.keywordMatcher.Match(content)
+		keywordHits = keywordMatcher.Match(content)
 	}()
 
 	// Regex 检测
 	go func() {
 		defer wg.Done()
-		regexHits = cf.regexMatcher.Match(content)
+		regexHits = regexMatcher.Match(content)
 	}()
 
 	wg.Wait()
@@ -131,8 +147,8 @@ func (cf *ContentFilter) check(content string) (*CheckResult, error) {
 		}, nil
 	}
 
-	// 应用规则决策
-	result := cf.applyRules(content, allHits)
+	// 应用规则决策（使用快照后的 rules）
+	result := cf.applyRules(content, allHits, rules)
 
 	// 更新统计
 	cf.updateStats(result)
@@ -141,7 +157,7 @@ func (cf *ContentFilter) check(content string) (*CheckResult, error) {
 }
 
 // applyRules 应用规则决策
-func (cf *ContentFilter) applyRules(content string, hits []Hit) *CheckResult {
+func (cf *ContentFilter) applyRules(content string, hits []Hit, rules []Rule) *CheckResult {
 	// 按严重程度排序，取最高级别
 	highestSeverity := SeverityLow
 	highestAction := ActionAllow
@@ -160,7 +176,7 @@ func (cf *ContentFilter) applyRules(content string, hits []Hit) *CheckResult {
 		}
 
 		// 找到对应规则
-		for _, rule := range cf.rules {
+		for _, rule := range rules {
 			if rule.ID == hit.RuleID && rule.Enabled {
 				// 检查白名单
 				if cf.inWhiteList(content, rule.WhiteList) {

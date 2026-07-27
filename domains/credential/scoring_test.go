@@ -334,7 +334,13 @@ func TestScorerWithWeights_DifferentStrategies(t *testing.T) {
 			for i := 0; i < 20; i++ {
 				scorer.Bandit.RecordSuccess("cred-1", 50) // Fast
 			}
-			scorer.Bandit.GetScore("cred-1").IntelligenceRank = 1 // Smart
+			// GetScore now returns a value copy; write a mutated copy back
+			// under the lock so the stored score reflects IntelligenceRank.
+			smart := scorer.Bandit.GetScore("cred-1")
+			smart.IntelligenceRank = 1 // Smart
+			scorer.Bandit.mu.Lock()
+			scorer.Bandit.scores["cred-1"] = &smart
+			scorer.Bandit.mu.Unlock()
 
 			// Record history for a low-intelligence, slow, unreliable credential
 			for i := 0; i < 10; i++ {
@@ -343,7 +349,11 @@ func TestScorerWithWeights_DifferentStrategies(t *testing.T) {
 			for i := 0; i < 10; i++ {
 				scorer.Bandit.RecordFailure("cred-2") // Unreliable
 			}
-			scorer.Bandit.GetScore("cred-2").IntelligenceRank = 80 // Not smart
+			dumb := scorer.Bandit.GetScore("cred-2")
+			dumb.IntelligenceRank = 80 // Not smart
+			scorer.Bandit.mu.Lock()
+			scorer.Bandit.scores["cred-2"] = &dumb
+			scorer.Bandit.mu.Unlock()
 
 			// Sample both
 			score1 := scorer.SampleWithWeights("cred-1")

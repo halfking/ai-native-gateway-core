@@ -93,22 +93,36 @@ return 1
 
 // RedisLimiter wraps a Redis client and a fallback in-memory credential.
 // It also caches the loaded Lua SHA to avoid re-loading on every call.
+//
+// 2026-07-27 concurrency fix: the SHA cache used to be published by a
+// sync.Once that waitForRecovery *reassigned* (`l.shaOnce = sync.Once{}`)
+// while other goroutines were inside Do() — a data race on a live Once plus
+// an unsynchronised publish of rpmSHA/tpmSHA. The Once is replaced by an
+// explicit `scriptsLoaded` flag guarded by l.mu, and the SHAs are only read
+// through shaPair()/loadScripts under the same mutex. l.mu is never held
+// across a Redis round-trip.
 type RedisLimiter struct {
-	client    *redis.Client
-	fallback  *SlidingWindowLimiter
-	rpmSHA    string
-	tpmSHA    string
-	shaOnce   sync.Once
-	mu        sync.Mutex
-	unhealthy bool // Redis circuit-open flag
+	client   *redis.Client
+	fallback *SlidingWindowLimiter
+	mu       sync.Mutex
+	// rpmSHA/tpmSHA/scriptsLoaded are guarded by mu.
+	rpmSHA        string
+	tpmSHA        string
+	scriptsLoaded bool
+	unhealthy     bool // Redis circuit-open flag
+	// recovering guards against spawning more than one waitForRecovery
+	// goroutine; recoveryStop signals the live one to exit.
+	recovering   bool
+	recoveryStop chan struct{}
 }
 
 // NewRedisLimiter creates a limiter backed by the given Redis client.
 // If rdb is nil, the limiter falls back to pure in-memory operation.
 func NewRedisLimiter(rdb *redis.Client) *RedisLimiter {
 	return &RedisLimiter{
-		client:   rdb,
-		fallback: NewSlidingWindowLimiter(),
+		client:       rdb,
+		fallback:     NewSlidingWindowLimiter(),
+		recoveryStop: make(chan struct{}),
 	}
 }
 
@@ -138,24 +152,52 @@ func NewRedisLimiterFromEnv() *RedisLimiter {
 	return NewRedisLimiter(rdb)
 }
 
-// loadScripts loads both Lua scripts once and caches their SHA.
+// loadScripts loads both Lua scripts (once, or again after a SHA reset) and
+// caches their SHA under l.mu. The ScriptLoad round-trips run *outside* the
+// mutex; the mutex is only taken to check the loaded flag and to publish the
+// resulting SHAs, so a slow/blocked Redis never pins the limiter.
 func (l *RedisLimiter) loadScripts(ctx context.Context) error {
-	var loadErr error
-	l.shaOnce.Do(func() {
-		rpmSHA, err := l.client.ScriptLoad(ctx, rpmLua).Result()
-		if err != nil {
-			loadErr = fmt.Errorf("load rpm script: %w", err)
-			return
-		}
-		tpmSHA, err := l.client.ScriptLoad(ctx, tpmLua).Result()
-		if err != nil {
-			loadErr = fmt.Errorf("load tpm script: %w", err)
-			return
-		}
-		l.rpmSHA = rpmSHA
-		l.tpmSHA = tpmSHA
-	})
-	return loadErr
+	l.mu.Lock()
+	loaded := l.scriptsLoaded
+	l.mu.Unlock()
+	if loaded {
+		return nil
+	}
+
+	rpmSHA, err := l.client.ScriptLoad(ctx, rpmLua).Result()
+	if err != nil {
+		return fmt.Errorf("load rpm script: %w", err)
+	}
+	tpmSHA, err := l.client.ScriptLoad(ctx, tpmLua).Result()
+	if err != nil {
+		return fmt.Errorf("load tpm script: %w", err)
+	}
+
+	l.mu.Lock()
+	l.rpmSHA = rpmSHA
+	l.tpmSHA = tpmSHA
+	l.scriptsLoaded = true
+	l.mu.Unlock()
+	return nil
+}
+
+// shaPair returns the cached (rpmSHA, tpmSHA) under l.mu. Callers must not
+// touch l.rpmSHA/l.tpmSHA directly.
+func (l *RedisLimiter) shaPair() (string, string) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.rpmSHA, l.tpmSHA
+}
+
+// resetScripts marks the cached SHAs stale so the next loadScripts reloads
+// them. Used after a Redis reconnect (the script cache is per-server and is
+// lost on restart/failover).
+func (l *RedisLimiter) resetScripts() {
+	l.mu.Lock()
+	l.scriptsLoaded = false
+	l.rpmSHA = ""
+	l.tpmSHA = ""
+	l.mu.Unlock()
 }
 
 // redisKey returns the Redis key for a given metric (rpm/tpm) and API key ID.
@@ -179,10 +221,14 @@ func (l *RedisLimiter) evalBool(ctx context.Context, sha, script string, keys []
 			if err != nil {
 				return false, err
 			}
-			// Reload for future calls
+			// Reload for future calls. resetScripts is required: with the
+			// old sync.Once the reload silently did nothing once the Once
+			// had fired, so every subsequent call kept paying the
+			// NOSCRIPT + EVAL penalty.
 			go func() {
 				reloadCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 				defer cancel()
+				l.resetScripts()
 				_ = l.loadScripts(reloadCtx)
 			}()
 		} else {
@@ -207,33 +253,73 @@ func (l *RedisLimiter) isRedisAvailable() bool {
 }
 
 // markUnhealthy trips the circuit; background goroutine will try to recover.
+//
+// 2026-07-27 concurrency fix: `wasHealthy` alone did not guarantee a single
+// recovery goroutine — every markUnhealthy→recovered→markUnhealthy cycle
+// spawned another one, and they never exited while Redis stayed down. The
+// `recovering` flag (under l.mu) now admits at most one live prober.
 func (l *RedisLimiter) markUnhealthy(err error) {
 	slog.Warn("rate-limit Redis error, switching to in-memory fallback", "error", err)
 	l.mu.Lock()
-	wasHealthy := !l.unhealthy
 	l.unhealthy = true
+	start := !l.recovering
+	if start {
+		l.recovering = true
+	}
+	stop := l.recoveryStop
 	l.mu.Unlock()
 
-	if wasHealthy {
-		go l.waitForRecovery()
+	if start {
+		go l.waitForRecovery(stop)
 	}
 }
 
-func (l *RedisLimiter) waitForRecovery() {
+// Stop terminates the background Redis recovery prober, if any. Safe to call
+// multiple times and from any goroutine. Optional — the limiter is usable for
+// the whole process lifetime without it.
+func (l *RedisLimiter) Stop() {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.recoveryStop == nil {
+		return
+	}
+	select {
+	case <-l.recoveryStop:
+		// already closed
+	default:
+		close(l.recoveryStop)
+	}
+}
+
+// waitForRecovery polls Redis until it answers a PING, then clears the
+// circuit flag and invalidates the cached script SHAs (the target server may
+// have restarted and lost its script cache). It exits on `stop` so a
+// permanently dead Redis does not leave the goroutine spinning forever.
+func (l *RedisLimiter) waitForRecovery(stop <-chan struct{}) {
 	ticker := time.NewTicker(5 * time.Second)
 	defer ticker.Stop()
-	for range ticker.C {
-		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-		err := l.client.Ping(ctx).Err()
-		cancel()
-		if err == nil {
-			l.mu.Lock()
-			l.unhealthy = false
-			l.mu.Unlock()
-			// Reset shaOnce so scripts are reloaded
-			l.shaOnce = sync.Once{}
-			slog.Info("rate-limit Redis recovered")
+	defer func() {
+		l.mu.Lock()
+		l.recovering = false
+		l.mu.Unlock()
+	}()
+	for {
+		select {
+		case <-stop:
 			return
+		case <-ticker.C:
+			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+			err := l.client.Ping(ctx).Err()
+			cancel()
+			if err == nil {
+				l.mu.Lock()
+				l.unhealthy = false
+				l.mu.Unlock()
+				// Force a script reload on the next check.
+				l.resetScripts()
+				slog.Info("rate-limit Redis recovered")
+				return
+			}
 		}
 	}
 }
@@ -264,8 +350,9 @@ func (l *RedisLimiter) CheckRPMCtx(ctx context.Context, keyID int, limit int) bo
 		return l.fallback.CheckRPM(keyID, limit)
 	}
 
+	rpmSHA, _ := l.shaPair()
 	nowMS := strconv.FormatInt(time.Now().UnixMilli(), 10)
-	allowed, err := l.evalBool(tctx, l.rpmSHA, rpmLua,
+	allowed, err := l.evalBool(tctx, rpmSHA, rpmLua,
 		[]string{redisKey("rpm", keyID)},
 		nowMS, "60000", strconv.Itoa(limit),
 	)
@@ -295,8 +382,9 @@ func (l *RedisLimiter) CheckTPM(keyID int, estimatedTokens int, limit int) bool 
 		return l.fallback.CheckTPM(keyID, estimatedTokens, limit)
 	}
 
+	_, tpmSHA := l.shaPair()
 	nowMS := strconv.FormatInt(time.Now().UnixMilli(), 10)
-	allowed, err := l.evalBool(ctx, l.tpmSHA, tpmLua,
+	allowed, err := l.evalBool(ctx, tpmSHA, tpmLua,
 		[]string{redisKey("tpm", keyID)},
 		nowMS, "60000", strconv.Itoa(limit), strconv.Itoa(estimatedTokens),
 	)

@@ -209,21 +209,25 @@ func (b *breaker) callOpen(ctx context.Context, fn func() error) error {
 }
 
 // callHalfOpen 在 Half-Open 状态下执行调用
+//
+// 2026-07-27 并发修复：原实现在 halfOpenMu 保护下执行 fn()（真实上游调用），
+// 导致所有 half-open 探测串行化，上游挂住时整个请求超时期间都占着这把锁。
+// 现在改为用 CAS 抢占探测配额（语义与原来完全一致：至多
+// HalfOpenMaxTest 个探测），抢到后立刻释放"占位"再调用 fn()，
+// 因此不再有任何锁跨越网络 I/O。
 func (b *breaker) callHalfOpen(ctx context.Context, fn func() error) error {
-	// 限制并发探测数
-	if b.halfOpenTotal.Load() >= int64(b.config.HalfOpenMaxTest) {
-		return ErrTooManyHalfOpenRequests
+	// 限制并发探测数：CAS 抢占一个探测名额，失败即说明名额已满。
+	maxTest := int64(b.config.HalfOpenMaxTest)
+	for {
+		cur := b.halfOpenTotal.Load()
+		if cur >= maxTest {
+			return ErrTooManyHalfOpenRequests
+		}
+		if b.halfOpenTotal.CompareAndSwap(cur, cur+1) {
+			break
+		}
+		// 有其它 goroutine 同时抢占，重新读取后重试
 	}
-
-	b.halfOpenMu.Lock()
-	defer b.halfOpenMu.Unlock()
-
-	// 再次检查（防止并发竞争）
-	if b.halfOpenTotal.Load() >= int64(b.config.HalfOpenMaxTest) {
-		return ErrTooManyHalfOpenRequests
-	}
-
-	b.halfOpenTotal.Add(1)
 
 	err := fn()
 

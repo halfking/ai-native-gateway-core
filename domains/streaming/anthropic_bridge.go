@@ -208,8 +208,9 @@ func observeAnthropicPayload(c *audit.StreamCapture, payload, clientModel, outbo
 		c.MarkDone()
 	case "content_block_start":
 		if v.ContentBlock != nil && v.ContentBlock.Type == "thinking" {
-			c.HasThinking = true
-			c.ThinkingBlocksN++
+			// 2026-07-27 并发修复：走带锁 setter（见 audit.StreamCapture.MarkThinkingBlock），
+			// 避免与 SummaryAsMap 的 sc.mu 读竞争。
+			c.MarkThinkingBlock()
 		}
 	case "error":
 		c.MarkStreamError()
@@ -507,7 +508,8 @@ func StreamAnthropicSSEToOpenAI(
 						}
 						hasEmittedToolCalls = true
 					} else if err == nil && evt.ContentBlock.Type == "thinking" && capture != nil {
-						capture.HasThinking = true
+						// 2026-07-27 并发修复：走带锁 setter（audit.StreamCapture.SetHasThinking）。
+						capture.SetHasThinking()
 					}
 
 				case "content_block_delta":

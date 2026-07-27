@@ -1,6 +1,9 @@
 package metrics
 
-import "time"
+import (
+	"sync/atomic"
+	"time"
+)
 
 // Recorder 是统一的指标记录器接口
 type Recorder interface {
@@ -77,10 +80,35 @@ func (n *NoopRecorder) SetPoolCapacity(poolID string, capacity int)             
 func (n *NoopRecorder) SetPoolActiveCredentials(poolID string, count int)                          {}
 func (n *NoopRecorder) SetPoolHealthyCredentials(poolID string, count int)                         {}
 
-// Global 是全局默认 Recorder
-var Global Recorder = NewNoopRecorder()
+// globalRecorder 保存全局默认 Recorder。
+//
+// 2026-07-27 concurrency fix: 之前是一个裸的包级变量 `var Global Recorder`,
+// SetGlobal 无同步地写它，而请求路径同时在读 —— 这是一个真实的数据竞争
+// (interface 值是 2 个 word，撕裂读可能拿到不匹配的 type/data 对)。
+// 现在用 atomic.Pointer 保存，读写都是原子的。
+// Recorder 是 interface，所以存 *Recorder。
+var globalRecorder atomic.Pointer[Recorder]
 
-// SetGlobal 设置全局 Recorder
+func init() {
+	var r Recorder = NewNoopRecorder()
+	globalRecorder.Store(&r)
+}
+
+// Global 返回当前全局 Recorder。永不返回 nil。
+//
+// 注意：这里从包级变量改成了访问器函数。全仓 grep 确认包外没有任何
+// `metrics.Global` 读取点（只有本包的测试），所以这次收窄不影响调用方。
+func Global() Recorder {
+	if p := globalRecorder.Load(); p != nil && *p != nil {
+		return *p
+	}
+	return NewNoopRecorder()
+}
+
+// SetGlobal 设置全局 Recorder。签名保持不变。
 func SetGlobal(r Recorder) {
-	Global = r
+	if r == nil {
+		r = NewNoopRecorder()
+	}
+	globalRecorder.Store(&r)
 }

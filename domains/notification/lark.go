@@ -238,9 +238,12 @@ func (c *LarkBotChannel) refreshAccessToken(ctx context.Context) error {
 		return fmt.Errorf("notification: lark token api: %s (code %d)", result.Msg, result.Code)
 	}
 
+	// 2026-07-27 concurrency fix: 同 wechat.go —— 日志用局部变量，不引用受
+	// tokenMu 保护的 c.tokenExpire。
+	expireAt := time.Now().Add(time.Duration(result.Expire-300) * time.Second)
 	c.accessToken = result.TenantAccessToken
-	c.tokenExpire = time.Now().Add(time.Duration(result.Expire-300) * time.Second)
-	slog.Info("lark access token refreshed", "expire_at", c.tokenExpire)
+	c.tokenExpire = expireAt
+	slog.Info("lark access token refreshed", "expire_at", expireAt)
 	return nil
 }
 

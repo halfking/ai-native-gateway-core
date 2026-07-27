@@ -17,16 +17,34 @@ type ResponseFormatPreference struct {
 	prefs map[string]string // session_id -> preferred_format ("openai-chat" | "anthropic-messages" | "openai-responses")
 	// 过期清理
 	expiry map[string]time.Time
+	// 并发修复 2026-07-27：cleanupLoop 的关闭信号。原实现用
+	// `for range ticker.C` 死循环，ticker 永不 Stop，goroutine 也没有
+	// 退出路径 —— 每 new 一个 ResponseFormatPreference 就泄漏一个
+	// goroutine + 一个 runtime timer（测试里反复构造尤其明显）。
+	stopOnce sync.Once
+	stop     chan struct{}
 }
 
 // NewResponseFormatPreference 创建新的格式偏好管理器
+//
+// 构造函数签名保持不变（外部调用方不改）；调用方可在不再需要时调用
+// Close() 回收后台清理 goroutine。
 func NewResponseFormatPreference() *ResponseFormatPreference {
 	rfp := &ResponseFormatPreference{
 		prefs:  make(map[string]string),
 		expiry: make(map[string]time.Time),
+		stop:   make(chan struct{}),
 	}
 	go rfp.cleanupLoop()
 	return rfp
+}
+
+// Close 停止后台清理 goroutine。可重复调用（sync.Once 保护），
+// 并发调用安全。并发修复 2026-07-27.
+func (rfp *ResponseFormatPreference) Close() {
+	rfp.stopOnce.Do(func() {
+		close(rfp.stop)
+	})
 }
 
 // Get 获取会话的格式偏好
@@ -75,8 +93,13 @@ func (rfp *ResponseFormatPreference) cleanupLoop() {
 	ticker := time.NewTicker(1 * time.Hour)
 	defer ticker.Stop()
 
-	for range ticker.C {
-		rfp.cleanup()
+	for {
+		select {
+		case <-rfp.stop:
+			return
+		case <-ticker.C:
+			rfp.cleanup()
+		}
 	}
 }
 
