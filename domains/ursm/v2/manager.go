@@ -14,6 +14,7 @@ import (
 	"github.com/redis/go-redis/v9"
 
 	"github.com/kaixuan/llm-gateway-go/domains/ursm/v2/api"
+	"github.com/kaixuan/llm-gateway-go/domains/ursm/v2/cache"
 	"github.com/kaixuan/llm-gateway-go/domains/ursm/v2/recovery"
 	"github.com/kaixuan/llm-gateway-go/domains/ursm/v2/resource"
 	"github.com/kaixuan/llm-gateway-go/domains/ursm/v2/rollout"
@@ -59,6 +60,11 @@ type Manager struct {
 	conc     resource.Concurrency
 	rpm      resource.RPM
 	log      Logger
+	// nodeMirror is the process-local LRU read accelerator for node views
+	// (M2, spec Decision 2). nil when LRUMirrorSize==0 (mirror disabled).
+	// Always a read-only replica of Redis; never written before a successful
+	// Redis Lua write.
+	nodeMirror *cache.NodeMirror
 }
 
 // New constructs a Manager. If d.Config.RedisKeyPrefix is empty the
@@ -76,7 +82,7 @@ func New(d Dependencies) *Manager {
 	if log == nil {
 		log = nopLogger{}
 	}
-	return &Manager{
+	m := &Manager{
 		cfg:      cfg,
 		store:    store.New(d.Redis),
 		recovery: recovery.New(d.Redis, cfg.RedisKeyPrefix),
@@ -91,6 +97,12 @@ func New(d Dependencies) *Manager {
 		rpm:  d.RPM,
 		log:  log,
 	}
+	// M2: enable the process LRU mirror when configured (default 100k / 30s).
+	// LRUMirrorSize==0 disables it (every read hits Redis).
+	if cfg.LRUMirrorSize > 0 {
+		m.nodeMirror = cache.NewNodeMirror(cfg.LRUMirrorSize, cfg.LRUMirrorSoftTTL)
+	}
+	return m
 }
 
 // Mode returns the active rollout mode.
@@ -164,20 +176,76 @@ func (m *Manager) FilterAndScore(ctx context.Context, seeds []CandidateSeed) ([]
 	if m == nil {
 		return nil, fmt.Errorf("ursm.v2: nil manager")
 	}
-	if !m.Ready(ctx) {
-		return nil, fmt.Errorf("ursm.v2: not ready")
-	}
 	if m.Mode() == api.ModeOff {
 		return nil, nil
 	}
-	queries := make([]store.NodeQuery, 0, len(seeds))
-	for _, s := range seeds {
-		queries = append(queries, store.NodeQuery{CredentialID: s.CredentialID, RawModel: s.RawModel})
+
+	// M2 (2026-07-27, spec Decision 2 + Decision 3 fail-open): serve the hot
+	// path from the process LRU mirror first. If EVERY seed hits the mirror,
+	// we return WITHOUT consulting Redis or the Ready gate — this is the
+	// "Redis 不可达 → LRU 镜像" fail-open path. Only on a miss do we require
+	// Ready + Redis. The mirror is a read-only replica, backfilled only AFTER
+	// a Redis read; applyToLRU enforces the generation-monotonic contract so a
+	// stale snapshot can never overwrite a newer LRU entry.
+	views := make([]api.NodeView, len(seeds))
+	missIndices := make([]int, 0, len(seeds))
+	if m.nodeMirror != nil {
+		for i, s := range seeds {
+			if mv, ok := m.nodeMirror.Get(s.CredentialID, s.RawModel); ok {
+				views[i] = mirrorToAPIView(mv, s)
+				continue
+			}
+			missIndices = append(missIndices, i)
+		}
+	} else {
+		for i := range seeds {
+			missIndices = append(missIndices, i)
+		}
 	}
-	views, err := m.store.PipelineNodeViews(ctx, m.cfg.RedisKeyPrefix, queries)
+
+	// Fast path: every seed was served from the mirror. No Redis, no Ready.
+	if len(missIndices) == 0 {
+		scoreAndSort(views, seeds, m.cfg.ScoringWeights)
+		return views, nil
+	}
+
+	// Miss path: requires Ready + Redis (the authoritative read). The Ready
+	// gate is preserved here so a not-yet-warm manager (or a Redis outage with
+	// an empty mirror) surfaces an error rather than silently returning
+	// empty/false views — this is the TestFilterAndScoreRedisErrorProtectsRejection
+	// contract (protection-rejection invariant).
+	if !m.Ready(ctx) {
+		return nil, fmt.Errorf("ursm.v2: not ready")
+	}
+	missQueries := make([]store.NodeQuery, 0, len(missIndices))
+	for _, idx := range missIndices {
+		missQueries = append(missQueries, store.NodeQuery{
+			CredentialID: seeds[idx].CredentialID,
+			RawModel:     seeds[idx].RawModel,
+		})
+	}
+	fetched, err := m.store.PipelineNodeViews(ctx, m.cfg.RedisKeyPrefix, missQueries)
 	if err != nil {
 		return nil, fmt.Errorf("ursm.v2: pipeline: %w", err)
 	}
+	for j, idx := range missIndices {
+		views[idx] = fetched[j]
+		// Backfill the mirror from the authoritative Redis read. applyToLRU
+		// is generation-safe (rejects stale writes), so this never lets an
+		// older snapshot overwrite a newer LRU entry.
+		if m.nodeMirror != nil {
+			m.nodeMirror.ApplyFromAPI(fetched[j])
+		}
+	}
+
+	scoreAndSort(views, seeds, m.cfg.ScoringWeights)
+	return views, nil
+}
+
+// scoreAndSort applies the price/latency/stability scoring and orders views
+// by ascending Score. Extracted so the LRU fast path and the Redis miss path
+// share identical scoring.
+func scoreAndSort(views []api.NodeView, seeds []CandidateSeed, weights ScoringWeights) {
 	// 评分：price 0.4 + latency 0.4 + stability 0.2 (SR5m)；lat 缺失回退 baseURLMs
 	for i := range views {
 		s := seeds[i]
@@ -187,11 +255,30 @@ func (m *Manager) FilterAndScore(ctx context.Context, seeds []CandidateSeed) ([]
 		if lat == 0 {
 			lat = s.BaseURLMs
 		}
-		weights := m.cfg.ScoringWeights
 		v.Score = weights.Price*price + weights.Latency*float64(lat) + weights.Stability*v.SR5m*1000
 	}
 	sort.SliceStable(views, func(i, j int) bool { return views[i].Score < views[j].Score })
-	return views, nil
+}
+
+// mirrorToAPIView expands a cached NodeView (the score-relevant subset) into
+// an api.NodeView for the scoring loop. Fields not held in the cache (SR1m,
+// Samples*, LatP50/P95, HealthStatus) are left zero — they are not read by
+// the scorer, only by observers, and a soft-expired entry would have missed
+// the LRU anyway (so we never score off a stale entry).
+func mirrorToAPIView(mv cache.NodeView, s CandidateSeed) api.NodeView {
+	return api.NodeView{
+		ProviderID:    s.ProviderID,
+		CredentialID:  mv.CredentialID,
+		RawModel:      mv.RawModel,
+		CanonicalName: s.Canonical,
+		TenantID:      s.TenantID,
+		Available:     mv.Available,
+		Reason:        mv.Reason,
+		FailStreak:    mv.FailStreak,
+		CoolUntil:     mv.CoolUntil,
+		LatEWMA:       mv.LatEWMA,
+		SR5m:          mv.SR5m,
+	}
 }
 
 // Plan returns the input seeds filtered by v2 availability (Available==true)
