@@ -17,6 +17,9 @@ func (s *Service) foldScope(ctx context.Context, scope Scope) {
 		if !ok {
 			continue
 		}
+		if current, found := s.readBoard(ctx, scope, days, 0); found {
+			base = current
+		}
 		board := cloneMap(base)
 		agg := summaryCounters{}
 		dimAgg := map[string]map[string]map[string]float64{}
