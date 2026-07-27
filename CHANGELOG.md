@@ -44,6 +44,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     - `scripts/deploy-lib/db-changelog.sh` 改为通过 `ssh ... cat` 拉回远端错误并 `<<<` 喂给 grep；成功或失败后都 `rm -f /tmp/_mig_err_<ver>.log`。
   - **验证**：245 部署 (build_seq 1404) `[db] ✓ 迁移完成 (1 新应用 / 1 检查)`；`request_logs_hot WHERE canonical_model IS NOT NULL` 行数从 0 增长到 6846；两个 partial index 已创建；`/api/system/version=200`、`/api/system/background-tasks=401`（非 503，表示 DB 已就绪）。详见 commit `fix(db): 458 columnar-safe + remote psql error capture`.
 
+- **deploy-seamless healthz/DB 等待超时 30s → 90s** (2026-07-27):
+  - **Bug**：2026-07-27 11:43 老板跑 `bash scripts/deploy-245.sh` 部署 build_seq 1411，在 `[9/9]` 阶段 `host_wait_healthy 30` 超时 → 自动回滚 → 回滚后 `host_wait_healthy 30` 仍超时 → 部署退出 1。根因是 `cmd/gateway/main.go:257` 同步跑 `db.Open → db.ApplyMigrations`（30 个 ensure DDL），单 ensure 卡 30s 会被 PG `statement_timeout` 取消 → `postgres disabled` → HTTP listen → healthz 通，整个启动耗时 ≥ 30s。同时锁竞争场景下回滚到旧版本再次卡同一 PG 状态，回滚后 healthz 也超 30s，部署彻底失败。
+  - **修复**：`scripts/deploy-seamless.sh` 主流程 `host_wait_healthy 30→90`、`deploy_verify_gateway_ready 60→90`；自动回滚流程 `host_wait_healthy 30→90`；日志字符串 `(healthz 30s, DB 60s) → (healthz 90s, DB 90s)`。90s 与现有手动 rollback 60s 顶部对齐，且小于 `deploy_verify_gateway_ready` 内部 120s 轮询上限。
+  - **验证**：`bash -n scripts/deploy-seamless.sh` syntax OK；245 当前回滚 1410 稳定运行（healthz=200、background-tasks=401、`database health check succeeded`）；PG `pg_stat_activity` 1 个 idle 连接，无锁竞争。详见 [docs/changelogs/2026-07-27-deploy-healthz-timeout-90s.md](docs/changelogs/2026-07-27-deploy-healthz-timeout-90s.md)。
+
 ### Changed
 
 - **URSM v1→v2 统一 (clean up + write path unification)** (2026-07-26):
