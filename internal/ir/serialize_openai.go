@@ -452,6 +452,18 @@ func serializeOpenAIToolCalls(calls []ToolCall) []map[string]any {
 func serializeOpenAITools(tools []ToolDefinition) []map[string]any {
 	result := make([]map[string]any, 0, len(tools))
 	for _, tool := range tools {
+		// 2026-07-27 (F-1): provider-specific tool types (web_search,
+		// code_interpreter, file_search, ...) are passed through verbatim
+		// from their captured Raw bytes on same-protocol routes, instead of
+		// being collapsed into a broken {type:"function",function:{name:""}}.
+		if !tool.IsFunction() && len(tool.Raw) > 0 {
+			var obj map[string]any
+			if err := json.Unmarshal(tool.Raw, &obj); err == nil && obj != nil {
+				result = append(result, obj)
+				continue
+			}
+			// Fall through to function shape if Raw is unparseable (defensive).
+		}
 		result = append(result, map[string]any{
 			"type": "function",
 			"function": map[string]any{

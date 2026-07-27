@@ -562,6 +562,18 @@ func serializeAnthropicContentBlock(block ContentBlock, targetProvider string, m
 func serializeAnthropicTools(tools []ToolDefinition) []map[string]any {
 	result := make([]map[string]any, 0, len(tools))
 	for _, tool := range tools {
+		// 2026-07-27 (F-1): provider-specific tool types (computer_use,
+		// bash, text_editor, web_search) are passed through verbatim from
+		// their captured Raw bytes on same-protocol routes, instead of
+		// being collapsed into a broken {name:""} that Anthropic rejects.
+		if !tool.IsFunction() && len(tool.Raw) > 0 {
+			var obj map[string]any
+			if err := json.Unmarshal(tool.Raw, &obj); err == nil && obj != nil {
+				result = append(result, obj)
+				continue
+			}
+			// Fall through to the custom_tool shape if Raw is unparseable.
+		}
 		toolMap := map[string]any{
 			"name": tool.Name,
 		}
