@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"sync"
 	"time"
 )
 
@@ -32,6 +33,11 @@ type KeepaliveSender struct {
 	interval    time.Duration
 	stopChan    chan struct{}
 	stoppedChan chan struct{}
+	stopOnce    sync.Once
+	lifecycleMu sync.Mutex
+	writeMu     sync.Mutex
+	started     bool
+	stopped     bool
 	logger      *slog.Logger
 }
 
@@ -57,11 +63,19 @@ func NewKeepaliveSender(w http.ResponseWriter, intervalSeconds int, logger *slog
 	}
 }
 
-// Start begins sending keepalive events
+// Start begins sending keepalive events. Calls after the first start are no-ops.
 func (k *KeepaliveSender) Start(ctx context.Context) {
 	if k == nil {
 		return
 	}
+
+	k.lifecycleMu.Lock()
+	if k.started || k.stopped {
+		k.lifecycleMu.Unlock()
+		return
+	}
+	k.started = true
+	k.lifecycleMu.Unlock()
 
 	go func() {
 		defer close(k.stoppedChan)
@@ -88,14 +102,27 @@ func (k *KeepaliveSender) Start(ctx context.Context) {
 	}()
 }
 
-// Stop stops the keepalive sender
+// Stop stops the keepalive sender. It is safe to call before Start and multiple
+// times; every call waits until a started sender has exited.
 func (k *KeepaliveSender) Stop() {
 	if k == nil {
 		return
 	}
 
-	close(k.stopChan)
-	<-k.stoppedChan // wait for goroutine to exit
+	k.lifecycleMu.Lock()
+	if !k.stopped {
+		k.stopped = true
+		started := k.started
+		k.lifecycleMu.Unlock()
+		k.stopOnce.Do(func() { close(k.stopChan) })
+		if !started {
+			close(k.stoppedChan)
+			return
+		}
+	} else {
+		k.lifecycleMu.Unlock()
+	}
+	<-k.stoppedChan
 }
 
 // sendKeepalive sends a keepalive event immediately
@@ -103,6 +130,9 @@ func (k *KeepaliveSender) sendKeepalive() error {
 	if k == nil {
 		return nil
 	}
+
+	k.writeMu.Lock()
+	defer k.writeMu.Unlock()
 
 	event := KeepaliveEvent{
 		Type:      "keepalive",
@@ -128,6 +158,9 @@ func (k *KeepaliveSender) SendNodeSwitch(fromNode, toNode string, attempt int, r
 	if k == nil {
 		return nil
 	}
+
+	k.writeMu.Lock()
+	defer k.writeMu.Unlock()
 
 	event := NodeSwitchEvent{
 		Type:      "node_switch",
