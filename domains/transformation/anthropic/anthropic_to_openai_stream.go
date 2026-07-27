@@ -414,7 +414,33 @@ func StreamAnthropicSSEToOpenAI(
 					// Flush accumulated tool args if needed
 					if !initialArgsSent && bufferedToolArgs.Len() > 0 {
 						args := bufferedToolArgs.String()
-						chunk := buildToolCallChunk(toolCallIndex-1, currentToolCallID, "", &args, true)
+						// 2026-07-27 (F-5): validate the concatenated tool-call
+						// arguments before emitting. Anthropic streams args as
+						// input_json_delta partial-JSON fragments; a truncated
+						// stream (mid-stream error / upstream bug) produced
+						// invalid JSON that was forwarded to the OpenAI client
+						// and rejected/mis-parsed — silently. validateStreamingToolArgs
+						// closes open containers to recover the common mid-object
+						// truncation, and surfaces an anomaly (logged below) when
+						// it cannot repair, so the failure is observable.
+						validated, repaired, vErr := validateStreamingToolArgs(args)
+						if vErr != nil {
+							slog.Warn("anthropic-to-openai: malformed tool-call args forwarded",
+								"request_id", requestID,
+								"args_len", len(args),
+								"error", vErr.Error())
+							if capture != nil {
+								capture.AddQualityFlag("malformed_tool_args_forwarded")
+							}
+						} else if repaired {
+							slog.Info("anthropic-to-openai: repaired truncated tool-call args",
+								"request_id", requestID,
+								"args_len", len(args))
+							if capture != nil {
+								capture.AddQualityFlag("tool_args_repaired_on_flush")
+							}
+						}
+						chunk := buildToolCallChunk(toolCallIndex-1, currentToolCallID, "", &validated, true)
 						writeChunk(chunk)
 						bufferedToolArgs.Reset()
 					}
