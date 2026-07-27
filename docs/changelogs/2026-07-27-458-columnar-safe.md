@@ -94,3 +94,30 @@ Migration `458_request_logs_canonical_model` 在 245 部署（build_seq 1403）�
 - 实时请求流 `/api/admin/live-stream` 与详情 `/api/logs/{id}` 的客户端筛选/标准模型
   字段由 459 修复（commit `a00a224a1`）+ 458 字段组成。
 - 文档：`docs/changelogs/2026-07-27-458-columnar-safe.md`、`CHANGELOG.md` Unreleased / Fixed 段。
+
+## 审计发现与跟进（2026-07-27 第二轮）
+
+### 审计范围
+
+1. `2af4bc2e8 chore: bump version to 1410 and update changelogs` 的全部变更
+2. `a00a224a1 fix(api): /api/logs/{id} 500 query failed after 443+458 view drift` 的事实复查
+3. 与之配套的数据库脚本、CHANGELOG、归档文档
+4. 仓库内 .gitignore / 敏感文件 / 部署链可观测性
+
+### 修复（已落地）
+
+| # | 项 | 文件 | 说明 |
+|---|----|------|------|
+| 1 | 远端错误日志为空时给出诊断 | `scripts/deploy-lib/db-changelog.sh:132-149` | `migration_error` 为空且 grep 非 idempotent 时改为提示"远端 /tmp 日志为空/不可读"+ 远端 `ls -la` 排查信息；之前只输出空 `tail -15`，无任何线索 |
+| 2 | 文档归档 + CHANGELOG 补登 | `CHANGELOG.md` Unreleased / Fixed、`docs/changelogs/2026-07-27-458-columnar-safe.md` | rule 36 留痕 |
+
+### 遗留项（不破坏任务边界，单独 PR 处理）
+
+| # | 项 | 建议 | 阻塞 |
+|---|----|------|------|
+| 3 | `configs/env-local.sh` 入仓（PG_PASS 等本地开发凭据与容器名）| 加入 `.gitignore` + `git rm --cached`，保留本地文件 | 否（仓库内非生产凭据，但仍是规则 39 风险）|
+| 4 | `2af4bc2e8` 是单 commit 多逻辑点（fix + docs + chore + local config） | 下次部署以 `fix()` + `chore()` + `docs()` 拆 commit | 否（已推，不可 force-push） |
+| 5 | 458 up/down SQL 头部未按 rule 38 §4 标记 `Status:` / `Idempotent:` / `Changelog:` 字段 | 历史问题，不动已应用文件；新建 migration 时补齐 | 否 |
+| 6 | 154 生产部署 458 | 245 验证通过后人工触发 | 否（任务边界）|
+| 7 | `db-changelog.sh` line 89 `head -15 \| grep` SUPERSEDED 检查 | 无需变更 | — |
+| 8 | `deploy-seamless.sh` 自动 commit（`2af4bc2e8` 由它产生）| 加 GPG 签名要求 + 拆 commit hook | 否 |

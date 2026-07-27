@@ -131,8 +131,14 @@ deploy_apply_pending_migrations() {
 _psql -v ON_ERROR_STOP=1 -f '$remote_dir/$base' 2>/tmp/_mig_err_${ver}.log"; then
       local migration_error
       migration_error=$("$ssh_cmd" "cat '/tmp/_mig_err_${ver}.log' 2>/dev/null || true")
-      if grep -qiE 'already exists|duplicate key|relation .* already exists' <<<"$migration_error"; then
+      if [[ -n "$migration_error" ]] && grep -qiE 'already exists|duplicate key|relation .* already exists' <<<"$migration_error"; then
         _db_warn "  ⊘ $base idempotent"
+      elif [[ -z "$migration_error" ]]; then
+        _db_err "  ✗ $base: psql 退出非零，但远端 /tmp/_mig_err_${ver}.log 为空或不可读。"
+        _db_err "    远端诊断: $($ssh_cmd "ls -la '/tmp/_mig_err_${ver}.log' '/tmp/llm-gateway-migrations-*' 2>/dev/null" || true)"
+        "$ssh_cmd" "rm -f '/tmp/_mig_err_${ver}.log'" || true
+        "$ssh_cmd" "rm -rf '$remote_dir'" || true
+        return 1
       else
         _db_err "  ✗ $base:"
         printf '%s\n' "$migration_error" | tail -15 >&2
