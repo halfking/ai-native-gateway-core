@@ -245,6 +245,23 @@ func (sc *StreamCapture) Reset() {
 
 }
 
+// AddQualityFlag appends a tool-call quality flag (deduped) under the capture
+// mutex. Safe to call from the streaming goroutine concurrent with the
+// completion-path reader that summarizes QualityFlags.
+func (sc *StreamCapture) AddQualityFlag(flag string) {
+	if sc == nil || flag == "" {
+		return
+	}
+	sc.mu.Lock()
+	defer sc.mu.Unlock()
+	for _, f := range sc.QualityFlags {
+		if f == flag {
+			return
+		}
+	}
+	sc.QualityFlags = append(sc.QualityFlags, flag)
+}
+
 func (sc *StreamCapture) Snapshot() (chunkCount, ttfbMs int, done, interrupted bool, checksum string) {
 	sc.mu.Lock()
 	defer sc.mu.Unlock()
