@@ -177,7 +177,7 @@ func (rl *RequestLogger) CreateInitial(ctx context.Context, req *InitialRequest)
 	// land in a non-default partition (which would block subsequent
 	// UPDATE/DELETE once that partition is converted to columnar storage
 	// by the background migrator).
-		_, err := rl.db.Exec(ctx, `
+	_, err := rl.db.Exec(ctx, `
 			INSERT INTO request_wal_hot (request_id, tenant_id, gw_session_id, status, stage, client_model, created_at)
 			VALUES ($1, $2, $3, $4, $5, $6, NOW())
 			ON CONFLICT (request_id) DO UPDATE SET
