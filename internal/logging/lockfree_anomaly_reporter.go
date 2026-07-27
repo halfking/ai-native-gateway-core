@@ -29,6 +29,7 @@ type LockFreeAnomalyReporter struct {
 	submitMu   sync.RWMutex
 	done       chan struct{}
 	batchMu    sync.Mutex
+	flushMu    sync.Mutex
 	closing    atomic.Bool
 
 	// 统计信息
@@ -82,17 +83,17 @@ func (r *LockFreeAnomalyReporter) ReportToolCallsMissing(
 	}
 
 	report := AnomalyReport{
-		Timestamp:       time.Now(),
-		RequestID:       requestID,
-		AnomalyType:     "tool_calls_missing",
-		SourceProtocol:  sourceProto,
-		TargetProtocol:  targetProto,
-		ConversionStep:  "parse_or_serialize",
-		RawInputHash:    hashString(string(rawInput)),
-		RawInputSize:    len(rawInput),
-		RawOutputHash:   hashString(string(rawOutput)),
-		RawOutputSize:   len(rawOutput),
-		Confidence:      confidence,
+		Timestamp:      time.Now(),
+		RequestID:      requestID,
+		AnomalyType:    "tool_calls_missing",
+		SourceProtocol: sourceProto,
+		TargetProtocol: targetProto,
+		ConversionStep: "parse_or_serialize",
+		RawInputHash:   hashString(string(rawInput)),
+		RawInputSize:   len(rawInput),
+		RawOutputHash:  hashString(string(rawOutput)),
+		RawOutputSize:  len(rawOutput),
+		Confidence:     confidence,
 		Analysis: map[string]string{
 			"suspected_cause":      "IR conversion dropped tool_calls field",
 			"missing_tool_calls":   truncate(missingToolCalls, 1000),
@@ -182,14 +183,14 @@ func (r *LockFreeAnomalyReporter) ReportSemanticIncomplete(
 	}
 
 	report := AnomalyReport{
-		Timestamp:       time.Now(),
-		RequestID:       requestID,
-		AnomalyType:     "semantic_incomplete",
-		TargetProtocol:  protocol,
-		ConversionStep:  "post_serialize",
-		RawOutputHash:   hashString(string(rawOutput)),
-		RawOutputSize:   len(rawOutput),
-		Confidence:      confidence,
+		Timestamp:      time.Now(),
+		RequestID:      requestID,
+		AnomalyType:    "semantic_incomplete",
+		TargetProtocol: protocol,
+		ConversionStep: "post_serialize",
+		RawOutputHash:  hashString(string(rawOutput)),
+		RawOutputSize:  len(rawOutput),
+		Confidence:     confidence,
 		Analysis: map[string]string{
 			"reason":             reason,
 			"indicators":         indicatorsStr,
@@ -244,8 +245,11 @@ func (r *LockFreeAnomalyReporter) sendBatch() bool {
 }
 
 func (r *LockFreeAnomalyReporter) sendBatchContext(ctx context.Context) bool {
+	r.flushMu.Lock()
+	defer r.flushMu.Unlock()
+
 	// 只在出队/重新入队时持有 batchMu,HTTP POST 不在锁内执行,
-	// 避免卡住的异常端点阻塞 Close()/shutdown 以及并发的 flush。
+	// 避免卡住的异常端点阻塞 Close()/并发 flush。
 	r.batchMu.Lock()
 	batch := r.queue.TryDequeueBatch(r.batchSize)
 	r.batchMu.Unlock()
@@ -370,6 +374,8 @@ func (r *LockFreeAnomalyReporter) Close() error {
 
 		closeCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
+		r.flushMu.Lock()
+		defer r.flushMu.Unlock()
 	flush:
 		for attempts := 0; r.queue.Size() > 0 && attempts < 3; attempts++ {
 			// 出队/重新入队在锁内,HTTP POST 不在锁内。

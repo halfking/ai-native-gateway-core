@@ -121,16 +121,14 @@ func (rl *RequestLogger) ReplayFallback(ctx context.Context, record dbdegradatio
 		if rl.db == nil {
 			return fmt.Errorf("request logger database not configured")
 		}
-		// 2026-07-27: mirror CreateInitial's ON CONFLICT (request_id) path so a
-		// replayed initial record collapses onto an existing row instead of
-		// creating a duplicate (the (request_id, created_at) target would not
-		// collide because NOW() differs from the original write).
 		_, err := rl.db.Exec(ctx, `
 			INSERT INTO request_wal_hot (request_id, tenant_id, gw_session_id, status, stage, client_model, created_at)
 			VALUES ($1, $2, $3, $4, $5, $6, NOW())
 			ON CONFLICT (request_id) DO UPDATE SET
-				tenant_id = COALESCE(NULLIF(EXCLUDED.tenant_id, 'default'), request_wal_hot.tenant_id),
-				gw_session_id = COALESCE(NULLIF(EXCLUDED.gw_session_id, ''), request_wal_hot.gw_session_id),
+				tenant_id = EXCLUDED.tenant_id,
+				gw_session_id = EXCLUDED.gw_session_id,
+				status = COALESCE(NULLIF(EXCLUDED.status, ''), request_wal_hot.status),
+				stage = COALESCE(EXCLUDED.stage, request_wal_hot.stage),
 				client_model = COALESCE(NULLIF(EXCLUDED.client_model, ''), request_wal_hot.client_model)
 		`, req.RequestID, req.TenantID, req.SessionID, StatusPending, StageReceived, req.ClientModel)
 		return err
@@ -179,31 +177,16 @@ func (rl *RequestLogger) CreateInitial(ctx context.Context, req *InitialRequest)
 	// land in a non-default partition (which would block subsequent
 	// UPDATE/DELETE once that partition is converted to columnar storage
 	// by the background migrator).
-	//
-	// 2026-07-27 (audit fix for L-1): the conflict target is now
-	// (request_id) via the unique index from migration 461, NOT the
-	// (request_id, created_at) primary key. L-1 added an EARLY CreateInitial
-	// at request arrival in addition to the later, fuller call after routing.
-	// Each call runs its own Exec, so NOW() differs between them and the old
-	// (request_id, created_at) DO NOTHING almost never collided — the second
-	// INSERT succeeded and orphaned the early row at status='pending' /
-	// tenant_id='default' forever. With ON CONFLICT (request_id) DO UPDATE the
-	// later call enriches the early row in place. COALESCE first-write-wins
-	// keeps the early created_at and only fills fields the early call could
-	// not know (tenant_id != 'default', client_model, session).
-	_, err := rl.db.Exec(ctx, `
-		INSERT INTO request_wal_hot (request_id, tenant_id, gw_session_id, status, stage, client_model, created_at)
-		VALUES ($1, $2, $3, $4, $5, $6, NOW())
-		ON CONFLICT (request_id) DO UPDATE SET
-			tenant_id = COALESCE(NULLIF(EXCLUDED.tenant_id, 'default'), request_wal_hot.tenant_id),
-			gw_session_id = COALESCE(NULLIF(EXCLUDED.gw_session_id, ''), request_wal_hot.gw_session_id),
-			client_model = COALESCE(NULLIF(EXCLUDED.client_model, ''), request_wal_hot.client_model)
-			-- stage / status are intentionally NOT in the SET list: both
-			-- CreateInitial calls write pending/received, and Update() may
-			-- have already advanced the row past that between the two calls.
-			-- Omitting them preserves the existing (possibly more advanced)
-			-- value instead of regressing it to pending/received.
-	`, req.RequestID, req.TenantID, req.SessionID, StatusPending, StageReceived, req.ClientModel)
+		_, err := rl.db.Exec(ctx, `
+			INSERT INTO request_wal_hot (request_id, tenant_id, gw_session_id, status, stage, client_model, created_at)
+			VALUES ($1, $2, $3, $4, $5, $6, NOW())
+			ON CONFLICT (request_id) DO UPDATE SET
+				tenant_id = COALESCE(NULLIF(EXCLUDED.tenant_id, 'default'), request_wal_hot.tenant_id),
+				gw_session_id = COALESCE(NULLIF(EXCLUDED.gw_session_id, ''), request_wal_hot.gw_session_id),
+				status = COALESCE(NULLIF(EXCLUDED.status, ''), request_wal_hot.status),
+				stage = COALESCE(EXCLUDED.stage, request_wal_hot.stage),
+				client_model = COALESCE(NULLIF(EXCLUDED.client_model, ''), request_wal_hot.client_model)
+		`, req.RequestID, req.TenantID, req.SessionID, StatusPending, StageReceived, req.ClientModel)
 
 	if err != nil {
 		if rl.fallback != nil {

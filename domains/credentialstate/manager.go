@@ -493,15 +493,55 @@ func (m *Manager) UpdateOnFailure(ctx context.Context, credID int, model string,
 
 // UpdateFromProbe 探测结果更新状态（权威来源）
 func (m *Manager) UpdateFromProbe(ctx context.Context, state *State) {
+	if m == nil || state == nil {
+		return
+	}
 	key := m.cacheKey(state.CredentialID, state.Model)
+
+	// Probe updates share the same per-key read-modify-write lock as request
+	// updates. A probe may have started before a request update completed; do
+	// not replace the current request-owned counters and timestamps with the
+	// probe's sparse state object.
+	unlock := m.lockFor(key)
+	defer unlock()
+
+	oldState, _ := m.getFromMemCache(key)
+	probeSucceeded := state.LastSuccessAt != nil
+	merged := *state
+	if oldState != nil {
+		merged.ConsecutiveFails = oldState.ConsecutiveFails
+		merged.LastFailureAt = oldState.LastFailureAt
+		merged.LastError = oldState.LastError
+		merged.AvgLatencyMs = oldState.AvgLatencyMs
+		merged.P95LatencyMs = oldState.P95LatencyMs
+		merged.SuccessRate = oldState.SuccessRate
+		merged.ActiveSessions = oldState.ActiveSessions
+		merged.ConcurrencyLimit = oldState.ConcurrencyLimit
+		if merged.LastFailureAt == nil {
+			merged.LastFailureAt = oldState.LastFailureAt
+		}
+		if merged.LastError == "" {
+			merged.LastError = oldState.LastError
+		}
+		if merged.LastSuccessAt == nil || (oldState.LastSuccessAt != nil && oldState.LastSuccessAt.After(*merged.LastSuccessAt)) {
+			merged.LastSuccessAt = oldState.LastSuccessAt
+		}
+	}
+	if probeSucceeded {
+		// A successful probe is authoritative evidence of recovery.
+		merged.ConsecutiveFails = 0
+		merged.LastError = ""
+	}
+	if merged.LastUpdatedAt.IsZero() {
+		merged.LastUpdatedAt = time.Now()
+	}
 
 	// 2026-07-04 Bug #8 fix (part 2): invalidate candidate cache when
 	// probe flips Available from false → true. Without this, router sees
 	// stale candidate list (without the newly-recovered credential) for
 	// up to 30s (cache TTL). This complements the UpdateOnFailure fix
 	// (part 1) which invalidates on true → false transition.
-	oldState, _ := m.getFromMemCache(key)
-	if oldState != nil && !oldState.Available && state.Available {
+	if oldState != nil && !oldState.Available && merged.Available {
 		if m.invalidateCandidateCache != nil {
 			m.invalidateCandidateCache(state.CredentialID)
 		}
@@ -511,18 +551,18 @@ func (m *Manager) UpdateFromProbe(ctx context.Context, state *State) {
 		)
 	}
 
-	m.setToMemCache(key, state)
+	m.setToMemCache(key, &merged)
 	go func() {
 		redisCtx, cancel := runctx.DetachedTimeout(ctx, 3*time.Second)
 		defer cancel()
-		m.setToRedis(redisCtx, key, state)
+		m.setToRedis(redisCtx, key, &merged)
 	}()
 
 	slog.Debug("credstate: probe result updated",
-		"credential_id", state.CredentialID,
-		"model", state.Model,
-		"available", state.Available,
-		"source", state.Source)
+		"credential_id", merged.CredentialID,
+		"model", merged.Model,
+		"available", merged.Available,
+		"source", merged.Source)
 }
 
 // OnNoCandidates (2026-07-14) fans out per-candidate probes when the

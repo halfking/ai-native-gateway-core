@@ -5,6 +5,24 @@ import (
 	"time"
 )
 
+func TestAnalyticsCache_CloseIsIdempotent(t *testing.T) {
+	cache, err := NewAnalyticsCache(10, time.Minute)
+	if err != nil {
+		t.Fatalf("NewAnalyticsCache failed: %v", err)
+	}
+
+	done := make(chan struct{}, 4)
+	for i := 0; i < 4; i++ {
+		go func() {
+			cache.Close()
+			done <- struct{}{}
+		}()
+	}
+	for i := 0; i < 4; i++ {
+		<-done
+	}
+	cache.Close()
+}
 func TestAnalyticsCache_SetGet(t *testing.T) {
 	cache, err := NewAnalyticsCache(10, 1*time.Minute)
 	if err != nil {

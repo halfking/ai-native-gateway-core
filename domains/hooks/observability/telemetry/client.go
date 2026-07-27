@@ -25,6 +25,9 @@ type Client struct {
 	done  chan struct{}
 	wg    sync.WaitGroup
 
+	lifecycleMu sync.RWMutex
+	stopped     atomic.Bool
+
 	// onPersisted hooks run after every successful INSERT/UPDATE of a
 	// request_logs row. Consumers use AddOnRequestLogPersisted to register.
 	onPersisted []func(entry *RequestLogEntry)
@@ -401,7 +404,12 @@ func (c *Client) SetOnRequestLogEmitted(fn func(entry *RequestLogEntry)) {
 }
 
 func (c *Client) EmitDecisionLog(entry *DecisionLogEntry) {
-	if !c.Enabled() {
+	if c == nil {
+		return
+	}
+	c.lifecycleMu.RLock()
+	defer c.lifecycleMu.RUnlock()
+	if c.stopped.Load() || !c.Enabled() {
 		return
 	}
 	select {
@@ -415,7 +423,12 @@ func (c *Client) EmitDecisionLog(entry *DecisionLogEntry) {
 }
 
 func (c *Client) EmitRequestLog(entry *RequestLogEntry) {
-	if !c.Enabled() {
+	if c == nil {
+		return
+	}
+	c.lifecycleMu.RLock()
+	defer c.lifecycleMu.RUnlock()
+	if c.stopped.Load() || !c.Enabled() {
 		return
 	}
 	if entry.Op == "" {
@@ -467,7 +480,17 @@ func (c *Client) EmitRequestLogUpdate(entry *RequestLogEntry) {
 }
 
 func (c *Client) Stop() {
+	if c == nil {
+		return
+	}
+	c.lifecycleMu.Lock()
+	if c.stopped.Swap(true) {
+		c.lifecycleMu.Unlock()
+		c.wg.Wait()
+		return
+	}
 	close(c.done)
+	c.lifecycleMu.Unlock()
 	c.wg.Wait()
 }
 

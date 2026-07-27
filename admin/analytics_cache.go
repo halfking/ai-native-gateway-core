@@ -35,6 +35,8 @@ type AnalyticsCache struct {
 
 	// 清理
 	stopCleanup chan struct{}
+	cleanupDone chan struct{}
+	closeOnce   sync.Once
 }
 
 // cacheEntry 缓存条目
@@ -54,6 +56,7 @@ func NewAnalyticsCache(size int, ttl time.Duration) (*AnalyticsCache, error) {
 		maxSize:     size,
 		ttl:         ttl,
 		stopCleanup: make(chan struct{}),
+		cleanupDone: make(chan struct{}),
 	}
 
 	// 启动后台清理 goroutine（每分钟）
@@ -64,6 +67,7 @@ func NewAnalyticsCache(size int, ttl time.Duration) (*AnalyticsCache, error) {
 
 // cleanupLoop 定期清理过期条目
 func (c *AnalyticsCache) cleanupLoop() {
+	defer close(c.cleanupDone)
 	ticker := time.NewTicker(1 * time.Minute)
 	defer ticker.Stop()
 
@@ -92,7 +96,11 @@ func (c *AnalyticsCache) cleanup() {
 
 // Close 关闭缓存（停止清理 goroutine）
 func (c *AnalyticsCache) Close() {
-	close(c.stopCleanup)
+	if c == nil {
+		return
+	}
+	c.closeOnce.Do(func() { close(c.stopCleanup) })
+	<-c.cleanupDone
 }
 
 // Get 获取缓存值
@@ -234,13 +242,13 @@ func (c *AnalyticsCache) InvalidateTenant(tenantID string) {
 
 // AnalyticsCacheFilters 通用过滤器结构（用于构建缓存键）
 type AnalyticsCacheFilters struct {
-	DateFrom  string   `json:"date_from"`
-	DateTo    string   `json:"date_to"`
-	Model     []string `json:"model,omitempty"`
-	Provider  []string `json:"provider,omitempty"`
-	Intent    string   `json:"intent,omitempty"`
-	Compliance string  `json:"compliance,omitempty"`
-	HealthGrade string `json:"health_grade,omitempty"`
-	GroupBy   string   `json:"group_by,omitempty"`
-	Granularity string `json:"granularity,omitempty"`
+	DateFrom    string   `json:"date_from"`
+	DateTo      string   `json:"date_to"`
+	Model       []string `json:"model,omitempty"`
+	Provider    []string `json:"provider,omitempty"`
+	Intent      string   `json:"intent,omitempty"`
+	Compliance  string   `json:"compliance,omitempty"`
+	HealthGrade string   `json:"health_grade,omitempty"`
+	GroupBy     string   `json:"group_by,omitempty"`
+	Granularity string   `json:"granularity,omitempty"`
 }
