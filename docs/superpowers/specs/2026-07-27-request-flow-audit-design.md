@@ -10,27 +10,34 @@
 
 - 保留现有 HTTP 入口和兼容路由，不重写整个 `ChatHandler`。
 - 新增统一请求生命周期上下文和记录协调器，逐步替换分散的身份、日志、终态和 session 镜像入口。
-- IR 作为默认协议转换主路径；Legacy 仅作为显式紧急回滚路径。该假设基于用户“请继续”，若部署前改变，应单独更新方案和验收矩阵。
+- **本次收敛后** IR 作为默认协议转换主路径；Legacy 仅作为显式紧急回滚路径。**今日 live 默认仍是 Legacy**（`TRANSPORT_LAYER_IR_ENABLED` 默认 false，见 `domains/transformation/factory.go:49`），切换需 feature flag 推进并加全链路验收。部署前若决定不切换 IR 默认，方案与验收矩阵须同步更新。
 - URSM v2 authoritative 作为 live 路由状态目标；`NodeMirror` 只做读加速，Redis Lua/CAS 是状态写入权威。
 - 默认保存脱敏后的完整客户端体、出站体和响应体；超限时保存 hash、长度、预览和截断原因。
 - 不长期保留日常双轨逻辑，但保留一个可关闭 IR/authoritative 的紧急开关，回滚时必须记录原因和影响。
 
 ## 2. 当前基线与已完成项
 
-当前基线为 `HEAD=f87d29aa`。以下问题已在代码中落地，不作为重复修复项：
+当前基线为 `HEAD=5ab773ae`（合并 commit，`f87d29aa` 之后还有 15 个 commit 含 `244e8c03 fix(routing): close request flow state consistency gaps` 与 `b579d98e fix/concurrency-hardening-20260727`）。以下修复已在代码中落地，不作为本次重复修复项，但**仍须全链路 + 真实依赖回归**：
 
-- Chat 入口的 WAL early create、按 `request_id` upsert 及重复初始写合并。
-- `request_logs_hot` 和 WAL 的基本终态回退保护。
-- `credentialstate` per-key lock 与 copy-on-write。
-- `choices:[]` usage 终帧保留。
-- Anthropic 错误信封。
-- IR `ToolDefinition` 的 `Type`/`Raw` provider-specific tool 保留基础能力。
-- `stream_options` 通过扩展字段旁路透传。
-- Anthropic `tool_choice=any` 到 OpenAI `required` 的映射。
-- 流式 tool 参数的 JSON 校验与有限修补。
-- URSM v2 NodeMirror 读路径接入、Ready 缓存及 authoritative 分支基础实现。
+- Chat 入口的 WAL early create、按 `request_id` upsert 及重复初始写合并（`domains/streaming/handler.go:981-993`）。
+- `request_logs_hot` 和 WAL 的基本终态回退保护（`request_logger.go` 终态守卫；`telemetry/client.go` 侧仍需在本次补 logs 终态守卫 L-2）。
+- `credentialstate` per-key lock 与 copy-on-write（`manager.go:112 keyLocks` + COW）。
+- `choices:[]` usage 终帧保留（`stream.go:810-828` 谓词 `shouldDropEmptyChoicesFrame`，仅丢无 usage/payload 的空帧）。
+- Anthropic 错误信封（`handler.go:5321 writeErrorAnthropic`，按 `isAnthropicMessagesPath` 分发）。
+- IR `ToolDefinition` 的 `Type`/`Raw` provider-specific tool 保留基础能力（`internal/ir/types.go:381-392`）。
+- `stream_options` 通过扩展字段旁路透传（`fields.go:9-13` 已从 standardRequestFields 移除，改走 ExtensionsBag）。
+- Anthropic `tool_choice=any` 到 OpenAI `required` 的映射（`serialize_openai.go:498-499`）。
+- URSM v2 NodeMirror 读路径接入、Ready 缓存及 authoritative 分支基础实现（`domains/ursm/v2/cache/` 目录已存在 `nodemirror.go`/`lru.go`/`intent.go`/`sticky.go`）。
 
-这些修复仍需通过全链路和真实依赖验证，但不应在新计划中被误报为未实现。
+**已知仍待实施项**（不在 §2 “已完成”，明确归入 Step 实施）：
+- **F-5** 流式 tool 参数的 JSON 拼装器与合法性校验（今日仅个别 path 容忍 fallback，**全仓零 `json.Decoder` 校验**）。
+- **L-2** logs 侧（`telemetry/client.go`）的终态守卫尚不与 WAL 侧对齐。
+- **D-2** Anthropic 4xx body 超过 4096B 时仍按原长度截断透传。
+- **S-3** `routing_state_source` 字段尚未实现，fail-open 无可观测占比。
+- **G-ID-1/2** v2 wrapper session header 读错、fallback requestID 不写回 header。
+- **L-1** 仍需回归 CreateInitial 在 session 派生后、auth 前的位置以覆盖全部 pre-routing 失败。
+
+这些项仍需通过全链路和真实依赖验证，且不应在新计划中被误报为未实现或未实施。
 
 ## 3. 范围
 
@@ -44,6 +51,23 @@
 6. 候选路由、重试/failover、供应商 HTTP 转发、响应校验及客户端返回。
 7. URSM v2、NodeMirror、tenant 传播、routing state source 和相关并发。
 8. PostgreSQL/Redis 故障注入、`-race`、压力测试、E2E 和完成后审计。
+
+### 3.1.1 用户八类关注点（实施后必须逐项验收）
+
+来源：审计原报告 `docs/superpowers/specs/2026-07-27-request-flow-audit.md`。本设计在 §12 完成后审计中逐项核对：
+
+| # | 关注点 | 本设计映射章节 | 关键 commit/门禁 |
+|---|---|---|---|
+| ① | 客户端识别与标记（key→用户，请求标记） | §4.1, §5.1, §10 Step 2 | G-ID-1/2 修 v2 wrapper 传播 |
+| ② | 请求记录全程 + 双写正确性 | §4.2, §5.2, §10 Step 1/2 | L-1 WAL 前移, L-2 logs 终态守卫 |
+| ③ | 格式转换/tools/JSON 兼容 | §7.1-7.3, §10 Step 4 | F-1 Type/Raw, F-2 stream_options, F-3 tool_choice any, F-5 JSON assembler |
+| ④ | 路由与数据转发多流程完整性 | §8, §9, §10 Step 5 | D-1 empty-choices 谓词, D-2 Anthropic 4xx, spec M1-M4 |
+| ⑤ | 异常处理与返回格式 | §9.3, §10 Step 4/6 | E-1 Anthropic 错误信封 |
+| ⑥ | 返回数据格式检查（等待 vs 修补） | §9.2 failover 分类 | 无需新增（failover + 字节改写修补已覆盖） |
+| ⑦ | 路由/节点状态完整性与并发 | §8.2-8.3, §10 Step 5 | spec M1-M4 收敛 + S-3 routing_state_source |
+| ⑧ | 全链路并发检查 | §8.3, §10 Step 6 | `-race` 覆盖请求记录/session writer/credentialstate/NodeMirror/路由 planner/shutdown |
+
+**未覆盖项必须在 §12 #6 中显式声明延期或阻断发布**，不接受隐性遗漏。
 
 ### 3.2 Out of scope
 
@@ -66,7 +90,7 @@
 
 ### 4.2 记录不变量
 
-- 请求进入业务 handler 后，先建立 `received` 记录，再做认证、解析、限流和路由。
+- 请求进入业务 handler 后（session/request ID 派生完成时），立即先建立 `received` 记录，再做认证、解析、限流和路由；`CreateReceived`/`CreateInitial` 必须发生在 `KeyVerifier.Verify` 之前。**全局 middleware 链拒绝的请求（recovery/Locale/CORS/Prometheus/Auth-静态-key 等）不强制要求 WAL 行**，仅记 logs 与 audit。
 - 早期初始写与后续补全写必须按 `request_id` 幂等合并，不能产生孤儿 pending 行。
 - 每个请求最多一个主终态；终态不可被迟到的非终态或断开事件覆盖。
 - 所有丢失、截断、降级、修补和持久化失败都必须有结构化原因，不能静默吞掉。
@@ -81,7 +105,7 @@
 ### 4.4 路由与并发不变量
 
 - 一次路由计划使用一个一致的状态快照。
-- 状态写入先经 Redis Lua/CAS，再 write-through 到 NodeMirror；迟到 generation 不得覆盖新状态。
+- **目标态**（Step 5 authoritative 门禁通过后强制）：状态写入先经 Redis Lua/CAS，再 write-through 到 NodeMirror；迟到 generation 不得覆盖新状态。**迁移态**允许 off/canary 模式并存 legacy 路径，但旧的 `credentialstate`/`routingstate.ShadowObserver`/`credentialfpslot.NodeState` 不得参与权威健康判定。
 - Redis、PostgreSQL、队列和后台 worker 失败必须可重放或显式报告。
 - 共享状态禁止从缓存取出指针后原地修改；请求局部跨 goroutine 状态使用 atomic/mutex。
 
@@ -167,7 +191,7 @@ Flush(ctx)
 
 ### 6.1 单一写入 owner
 
-保留 telemetry persisted hook 作为唯一生产镜像入口；pipeline hook 不得在真实 upstream response 之前执行 post-response session 写入。若确需 pipeline 使用，必须改为只发事件，不能直接写 V2。
+保留 **telemetry 主记录 commit 之后触发的 `sessionv2mirror.PersistHook`**（位置 `domains/hooks/observability/telemetry/sessionv2mirror/hook.go:41`）作为唯一生产镜像入口；v2 pipeline 的 `SessionPersistHook` 不得在真实 upstream response 之前执行 post-response session 写入，若确需 pipeline 使用，必须改为只发事件，不能直接写 V2。
 
 ### 6.2 幂等与事务
 
@@ -304,8 +328,10 @@ NodeMirror hit → Redis read → fail-open original candidates
 
 ### Step 1：记录可靠性
 
+- 验证/前移 WAL `CreateInitial` 至 session/request ID 派生后、`KeyVerifier.Verify` 之前（L-1 回归门禁）；新增字段先留空、后续 `UpdateStage` 补全。
 - 修复 WAL 队列满直接丢更新。
 - 修复 batch 当前失败行未进入 fallback。
+- **修复 logs 侧（`telemetry/client.go:848`）的终态守卫**（L-2）：`ON CONFLICT DO UPDATE` 加 `WHERE status NOT IN ('success','failure')`，与 WAL 侧终态守卫对齐。
 - 使 RequestLogger Stop/flush 生命周期幂等并可等待全部 goroutine。
 - 增加 overflow/replay 指标和测试。
 
@@ -313,7 +339,8 @@ NodeMirror hit → Redis read → fail-open original candidates
 
 - 抽取 Chat/Messages/Responses 共享身份和生命周期初始化。
 - 统一 request context、终态原子门、阶段事件和错误模型。
-- 核对全局 middleware 拒绝路径的可追踪性边界。
+- 修 v2 wrapper session header 优先读 `X-Gw-Session-Id`（G-ID-1），fallback requestID 写回 header（G-ID-2）。
+- 核对全局 middleware 拒绝路径的可追踪性边界（middleware 前拒绝 → 仅 logs + audit，无 WAL）。
 
 ### Step 3：Session V2 单 owner
 
@@ -325,18 +352,26 @@ NodeMirror hit → Redis read → fail-open original candidates
 
 ### Step 4：IR 默认与协议验收
 
-- 默认打开 IR converter。
-- 保留 Legacy 紧急开关，但禁止无记录切换。
-- 完成全协议/tools fixture、round-trip、流式 assembler 和错误信封测试。
-- 对跨协议不可映射字段生成明确 anomaly/loss reason。
+- **Step 4.1**: 默认打开 IR converter（`TRANSPORT_LAYER_IR_ENABLED=true`）；保留 Legacy 紧急开关，但禁止无记录切换（切换需写 `conversion_path=legacy` 与回滚原因）。
+- **Step 4.2**: 验证 IR `ToolDefinition` 的 `Type`/`Raw` 字段在 parse/serialize 两侧完整保留（F-1）；新增 provider-specific tool 形（`computer_use`/`bash`/`text_editor`/`web_search`/`code_interpreter`/`file_search`）的 round-trip 测试。
+- **Step 4.3**: 验证 `stream_options` 通过 ExtensionsBag 旁路透传（F-2）的 IR 路径端到端。
+- **Step 4.4**: 验证 Anthropic `tool_choice:"any"` → OpenAI `"required"`（F-3）的 IR 路径。
+- **Step 4.5**: 引入流式 JSON 拼装器（F-5），覆盖截断、转义、嵌套、Unicode 与 `content_block_stop` 终帧校验；不完整时记 anomaly 并生成协议正确错误，禁止以裸字符串继续发送。
+- **Step 4.6**: 引入 Anthropic 错误信封翻译（E-1），`isAnthropicMessagesPath` 时输出 `{"type":"error",...}`。
+- **Step 4.7**: 修复 Anthropic 4xx body 超过 4096B 时仍按原长度截断透传（D-2）；raw 透传前 `io.ReadAll(io.LimitReader(resp.Body, maxBodySize))` 读全再转发。
+- **Step 4.8**: 修复 empty-choices SSE 谓词（D-1）：仅在帧无 `usage`/`prompt_annotations` 等有效 payload 时丢弃。
+- **Step 4.9**: 完成全协议/tools fixture、round-trip、流式 assembler 和错误信封测试。
+- **Step 4.10**: 对跨协议不可映射字段生成明确 anomaly/loss reason。
 
 ### Step 5：URSM authoritative
 
 - 补全 tenant/request/canonical 上下文。
 - 完成 NodeMirror write-through。
-- 完成 `routing_state_source` 全链路传播。
+- **新增 `routing_state_source` 字段**（S-3）全链路传播，NodeMirror hit/miss/stale/fallback 均需打点。
 - 明确并验证 off/canary/authoritative 行为。
 - 验证 authoritative 下旧状态源零 live 调用；保留紧急回滚开关。
+- **验证 `credentialstate.Manager`（C-1）在 `URSM_V2_MODE=authoritative` 下零 live 写读**（manager.go 在 `_to-be-deprecated/credentialstate/` 下沉后回归 `-race`）；保留 step 前的 COW/per-key lock 防御性回归。
+- 熔断器（`breaker.go`）保留独立语义、不进 Redis。
 
 ### Step 6：一次性切换与验证
 
@@ -385,27 +420,32 @@ NodeMirror hit → Redis read → fail-open original candidates
 2. **数据审计**：按 request id 对账 WAL、主日志、raw、usage、body、Session V2 和 routing decision。
 3. **协议审计**：按官网公开 schema 和版本记录核对字段、tools、流式事件和错误信封。
 4. **并发审计**：`-race`、高并发、重复终态、重复 replay、Redis/PG 故障注入和 shutdown。
-5. **运行审计**：检查成功率、P95、fallback、队列溢出、replay backlog、镜像失败、状态来源和数据缺口。
-6. **目标一致性审计**：逐项核对用户八个关注点，任何未覆盖项必须明确延期或阻断发布。
+5. **运行审计**：检查成功率、P95、fallback、队列溢出、replay backlog、镜像失败、状态来源（`routing_state_source`）和数据缺口。
+6. **目标一致性审计**：按 §3.1.1 八类关注点逐项核对；任何未覆盖项必须显式声明延期或阻断发布，不接受隐性遗漏。
 
 ## 13. 发布阻断条件
 
 出现以下任一情况不得完成切换：
 
-- 任何已知 P0/P1 数据丢失、协议错误、终态回退、重复 turn 或真实 data race。
-- 无法用 request id 关联客户端、上游和主记录。
-- tools/扩展字段静默丢失。
+- 任何已知 P0/P1 数据丢失、协议错误、终态回退、重复 turn 或真实 data race（含 `credentialstate` 真实竞争 C-1 回归未过）。
+- 无法用 request id 关联客户端、上游和主记录（含 v2 wrapper 双 request_id G-ID-2 未修）。
+- tools/扩展字段静默丢失（含 F-1/F-2/F-3 任一项未达验收）。
+- 流式 tool 参数仍可作为非法 JSON 发出（F-5 未达验收）。
+- 错误信封与客户端协议不一致（E-1 Anthropic 错误信封未翻译）。
 - authoritative 路径 tenant 不正确或旧状态源仍参与健康判定。
-- 队列满、批失败或 shutdown 导致已接受事件不可重放。
+- 队列满、批失败或 shutdown 导致已接受事件不可重放（含 L-2 logs 终态守卫未对齐）。
 - 真实 PostgreSQL/Redis 故障注入未通过。
 - 关键协议 fixture 与官网格式不一致。
+- `routing_state_source` 字段缺失或 fail-open 无占比可观测（S-3）。
+- §3.1.1 八类关注点中任一类未覆盖且未声明延期。
 
 ## 14. 设计自审结论
 
 - 未保留未定义的 `TODO/TBD` 作为验收条件。
-- 已区分当前 `HEAD` 已落地修复与本次新增实施项。
+- 已区分当前 `HEAD` 已落地修复与本次新增实施项（含仍待实施的 F-5/L-2/D-2/S-3/G-ID-1/2/L-1）。
 - 已明确一次性收敛不等于取消紧急回滚。
 - 已明确 middleware 之前拒绝请求的 WAL 边界，避免承诺“绝对所有 HTTP 请求都有业务 WAL”。
-- 已明确 IR 默认主路径是假设；若部署前改变，必须重新评估协议切换范围。
-- 已覆盖客户端识别、请求记录、双写、格式转换、tools/JSON、路由转发、异常响应、返回等待/修补、状态完整性和并发八类目标。
+- 已明确 IR 默认主路径是**目标态**（今日 live 默认 Legacy）；若部署前不切换默认，方案与验收矩阵须同步更新。
+- 已覆盖客户端识别、请求记录、双写、格式转换、tools/JSON、路由转发、异常响应、返回等待/修补、状态完整性和并发**十类目标**（§14 此前误计为八类，已修正）。
+- 已在 §3.1.1 列出用户八类关注点并映射到章节/commit/门禁；§12 #6 完成后审计将逐项核对。
 - 已定义实现顺序、测试门禁、发布阻断条件和完成后独立审计。
