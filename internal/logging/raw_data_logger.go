@@ -28,6 +28,12 @@ type RawDataLogger struct {
 	maxSize     int64
 	baseDir     string
 	enabled     bool
+
+	// 2026-07-28: 记录当前 raw log 文件路径与已落盘偏移，供异常上报时
+	// 引用最近一次写盘位置。currentOffset 是"下一次落盘的起点"，
+	// 即历史写入字节总数（受 mu 保护）。
+	currentPath   string
+	currentOffset int64
 }
 
 // RawDataEntry 原始数据日志条目
@@ -235,6 +241,7 @@ func (l *RawDataLogger) writeEntries(entries []RawDataEntry) {
 			return
 		}
 		l.currentSize += int64(n)
+		l.currentOffset += int64(n)
 	}
 
 	if err := l.file.Sync(); err != nil {
@@ -263,6 +270,8 @@ func (l *RawDataLogger) rotate() error {
 
 	l.file = file
 	l.currentSize = 0
+	l.currentPath = filePath
+	l.currentOffset = 0
 
 	slog.Info("raw_data_logger: rotated log file", "path", filePath)
 
@@ -328,6 +337,34 @@ func (l *RawDataLogger) Close() error {
 	}
 
 	return nil
+}
+
+// CurrentLocation returns the path of the raw data log file currently
+// being written and the byte offset of the next write. The offset is the
+// total number of bytes successfully written to disk (after Sync), so an
+// operator seeking to the returned offset will land at the start of the
+// next entry. Returns empty values when the logger is disabled or has
+// never rotated.
+//
+// 2026-07-28: used by LockFreeAnomalyReporter to populate
+// AnomalyReport.RawLogFile/RawLogOffset so the external endpoint can
+// reference the on-disk audit log. Concurrency: safe under the
+// gateway-side mu; callers should invoke through the AsyncRawDataLogger
+// wrapper to avoid racing against the background flush worker.
+func (l *RawDataLogger) CurrentLocation() (file string, offset int64) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.currentPath, l.currentOffset
+}
+
+// HasFile reports whether the logger has an open raw data log file. It
+// returns false when the logger is disabled or has not yet rotated into
+// its first file. Callers can use this to distinguish "no audit log
+// configured" from "audit log is empty".
+func (l *RawDataLogger) HasFile() bool {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.file != nil
 }
 
 func encodeRawData(data []byte) string {
