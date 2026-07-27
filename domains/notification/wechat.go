@@ -31,6 +31,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"golang.org/x/sync/singleflight"
 )
 
 // WeChatConfig 企业微信配置。
@@ -53,6 +55,10 @@ type WeChatChannel struct {
 	tokenMu     sync.RWMutex
 	accessToken string
 	tokenExpire time.Time
+	// sf 去重并发的 token 刷新:多个 goroutine 同时发现 token 过期时,
+	// 只有一个执行 HTTP 刷新,其余等待结果。刷新的 HTTP 调用不再持有 tokenMu,
+	// 避免一个慢刷新阻塞该渠道所有并发通知。
+	sf singleflight.Group
 }
 
 // NewWeChatChannel 创建企业微信渠道。
@@ -260,6 +266,7 @@ func (c *WeChatChannel) postRaw(ctx context.Context, url string, body map[string
 }
 
 func (c *WeChatChannel) getAccessToken(ctx context.Context) (string, error) {
+	// 快路径:读已缓存的 token (RLock)。
 	c.tokenMu.RLock()
 	if c.accessToken != "" && time.Now().Before(c.tokenExpire) {
 		tok := c.accessToken
@@ -268,11 +275,28 @@ func (c *WeChatChannel) getAccessToken(ctx context.Context) (string, error) {
 	}
 	c.tokenMu.RUnlock()
 
-	c.tokenMu.Lock()
-	defer c.tokenMu.Unlock()
-	if c.accessToken != "" && time.Now().Before(c.tokenExpire) {
-		return c.accessToken, nil
+	// 慢路径:token 缺失/过期。用 singleflight 去重并发刷新 —— 只有一个
+	// goroutine 执行 HTTP,其余等待同一结果。HTTP 调用不持有 tokenMu,
+	// 避免慢刷新阻塞该渠道的所有并发通知。
+	v, err, _ := c.sf.Do("wechat_token", func() (any, error) {
+		return c.refreshWeChatToken(ctx)
+	})
+	if err != nil {
+		return "", err
 	}
+	return v.(string), nil
+}
+
+// refreshWeChatToken 执行 token 刷新 HTTP 并在写锁下发布新 token。
+func (c *WeChatChannel) refreshWeChatToken(ctx context.Context) (string, error) {
+	// 再次检查:可能在等待 singleflight 期间已有其他 goroutine 刷新成功。
+	c.tokenMu.RLock()
+	if c.accessToken != "" && time.Now().Before(c.tokenExpire) {
+		tok := c.accessToken
+		c.tokenMu.RUnlock()
+		return tok, nil
+	}
+	c.tokenMu.RUnlock()
 
 	url := fmt.Sprintf("%s/cgi-bin/gettoken?corpid=%s&corpsecret=%s",
 		c.config.BaseURL, c.config.CorpID, c.config.CorpSecret)
@@ -297,10 +321,14 @@ func (c *WeChatChannel) getAccessToken(ctx context.Context) (string, error) {
 	if result.ErrCode != 0 {
 		return "", fmt.Errorf("notification: wechat token api: %s (code %d)", result.ErrMsg, result.ErrCode)
 	}
+	// 发布:仅在写 token 时持有写锁,写入即释放。
+	c.tokenMu.Lock()
 	c.accessToken = result.AccessToken
 	c.tokenExpire = time.Now().Add(time.Duration(result.ExpiresIn-300) * time.Second)
+	tok := c.accessToken
+	c.tokenMu.Unlock()
 	slog.Debug("wechat access token refreshed", "expire_at", c.tokenExpire)
-	return c.accessToken, nil
+	return tok, nil
 }
 
 // decryptCallback 解密企业微信加密回调（如果配置了 EncodingAESKey）。
