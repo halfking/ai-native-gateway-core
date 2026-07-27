@@ -3,16 +3,23 @@ package credential
 
 import (
 	"math"
-	"math/rand"
+	"math/rand/v2"
 	"sync"
 	"time"
 )
 
 // BanditScorer 实现 Thompson Sampling 的凭据评分器
 // 参考 freellmapi 的 services/scoring.ts
+//
+// 并发模型:
+//   - scores map 由 b.mu 保护。
+//   - 指向 *BanditScore 的指针永远不会泄漏到锁之外;读取者通过
+//     GetScore (返回值副本) 或 SnapshotScore 获取快照,因此请求处理
+//     goroutine 上的字段写入不会与后台 flusher/worker 的读取竞争。
+//   - 采样使用 math/rand/v2 的顶层函数,该函数并发安全且无锁竞争,
+//     因此 Sample 不再需要写锁。
 type BanditScorer struct {
 	mu     sync.RWMutex
-	rng    *rand.Rand
 	scores map[string]*BanditScore // credentialID -> score
 }
 
@@ -51,20 +58,24 @@ type BanditScore struct {
 // NewBanditScorer 创建新的 Bandit 评分器
 func NewBanditScorer() *BanditScorer {
 	return &BanditScorer{
-		rng:    rand.New(rand.NewSource(time.Now().UnixNano())),
 		scores: make(map[string]*BanditScore),
 	}
 }
 
-// GetScore 获取凭据的评分数据，如不存在则创建默认值
-func (b *BanditScorer) GetScore(credID string) *BanditScore {
+// GetScore 返回凭据评分的快照副本 (值类型,非指针)。
+//
+// 返回值副本是有意为之的:BanditScore 字段会被请求处理 goroutine
+// (RecordSuccess/RecordFailure/RecordRateLimitHit) 在写锁下原地修改。
+// 若返回 *BanditScore 指针,调用方在锁外读取字段会与上述写入发生数据竞争。
+// 调用方应直接读取返回的副本,不应保留对内部状态的引用。
+func (b *BanditScorer) GetScore(credID string) BanditScore {
 	b.mu.RLock()
-	score, exists := b.scores[credID]
-	b.mu.RUnlock()
-
-	if exists {
-		return score
+	if score, exists := b.scores[credID]; exists {
+		snap := b.snapshotScore(score) // copy while holding RLock
+		b.mu.RUnlock()
+		return snap
 	}
+	b.mu.RUnlock()
 
 	// 创建新评分（Uniform 先验: Alpha=1, Beta=1）
 	b.mu.Lock()
@@ -72,17 +83,23 @@ func (b *BanditScorer) GetScore(credID string) *BanditScore {
 
 	// Double-check after acquiring write lock
 	if score, exists := b.scores[credID]; exists {
-		return score
+		return b.snapshotScore(score)
 	}
 
-	score = &BanditScore{
+	score := &BanditScore{
 		Alpha:            1.0,
 		Beta:             1.0,
 		IntelligenceRank: 50, // 默认中等智能
 		RateLimitPenalty: 0,
 	}
 	b.scores[credID] = score
-	return score
+	return b.snapshotScore(score)
+}
+
+// snapshotScore 返回 *BanditScore 的值副本。调用方应持有至少 RLock,
+// 这样副本反映某个一致时刻的状态,不会与并发的 RecordX 写入竞争。
+func (b *BanditScorer) snapshotScore(score *BanditScore) BanditScore {
+	return *score
 }
 
 // RecordSuccess 记录成功请求
@@ -145,16 +162,47 @@ func (b *BanditScorer) UpdateQuota(credID string, remaining, total int64) {
 	score.LastQuotaUpdate = time.Now()
 }
 
-// Sample 使用 Thompson Sampling 采样凭据得分
-// 返回 0-1 之间的综合得分，越高越好
-func (b *BanditScorer) Sample(credID string) float64 {
+// SetIntelligenceRank 更新凭据的智能排名 (1-100,越小越聪明)。
+// 提供此 setter 是为了通过线程安全的方式修改单个字段,
+// 而不是通过返回的快照副本回写 (那是数据竞争陷阱)。
+func (b *BanditScorer) SetIntelligenceRank(credID string, rank int) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
+	b.getOrCreateScoreLocked(credID).IntelligenceRank = rank
+}
 
-	score := b.getOrCreateScoreLocked(credID)
+// Sample 使用 Thompson Sampling 采样凭据得分
+// 返回 0-1 之间的综合得分，越高越好
+//
+// 并发说明:此函数是路由热路径。它在整个读取+计算期间持有 RLock,
+// 因此与 RecordX (持写锁) 互斥,但允许多个 Sample 并发执行。
+// 采样使用 math/rand/v2 的顶层函数 (并发安全),不需要实例 RNG 锁。
+// 不再原地写 LastSample/LastScored —— 它们是 debug 遥测且无功能读取者,
+// LastScored 已由 RecordSuccess/RecordFailure 在写锁下维护。
+func (b *BanditScorer) Sample(credID string) float64 {
+	b.mu.RLock()
+	score, ok := b.scores[credID]
+	if !ok {
+		// 稀有路径:首次见到该凭据。释放 RLock,用写锁初始化,再重试只读采样。
+		b.mu.RUnlock()
+		b.mu.Lock()
+		score = b.getOrCreateScoreLocked(credID)
+		b.mu.Unlock()
+		b.mu.RLock()
+		// 重新读取:虽然 score 指针稳定 (getOrCreateScoreLocked 复用现有),
+		// 但严格起见重新查表,确保与并发 Reset 的交互一致。
+		score, _ = b.scores[credID]
+		// 极端情况:在 Unlock 与 RLock 之间发生并发 Reset 删除了该 key。
+		// 此时返回中性分 (Uniform 先验的期望 0.5),避免 nil 解引用。
+		if score == nil {
+			b.mu.RUnlock()
+			return 0.5
+		}
+	}
+	defer b.mu.RUnlock()
 
 	// 1. Thompson Sampling: 从 Beta 分布采样可靠性
-	reliability := b.sampleBeta(score.Alpha, score.Beta)
+	reliability := sampleBeta(score.Alpha, score.Beta)
 
 	// 2. 速度得分: 基于平均延迟的饱和曲线
 	speed := b.speedScore(score)
@@ -179,18 +227,15 @@ func (b *BanditScorer) Sample(credID string) float64 {
 	combined := reliability*wReliability + speed*wSpeed + intelligence*wIntelligence
 	combined = combined * headroom * rateLimitFactor
 
-	score.LastSample = combined
-	score.LastScored = time.Now()
-
 	return combined
 }
 
 // sampleBeta 从 Beta(α, β) 分布采样
-func (b *BanditScorer) sampleBeta(alpha, beta float64) float64 {
+func sampleBeta(alpha, beta float64) float64 {
 	// 使用 Gamma 分布实现 Beta 分布采样
 	// Beta(α, β) = Gamma(α, 1) / (Gamma(α, 1) + Gamma(β, 1))
-	x := b.sampleGamma(alpha, 1.0)
-	y := b.sampleGamma(beta, 1.0)
+	x := sampleGamma(alpha, 1.0)
+	y := sampleGamma(beta, 1.0)
 	if x+y == 0 {
 		return 0.5 // 退化情况
 	}
@@ -199,10 +244,12 @@ func (b *BanditScorer) sampleBeta(alpha, beta float64) float64 {
 
 // sampleGamma 从 Gamma(shape, scale) 分布采样
 // 使用 Marsaglia and Tsang's method (shape >= 1)
-func (b *BanditScorer) sampleGamma(shape, scale float64) float64 {
+//
+// 使用 math/rand/v2 的顶层函数 (并发安全),无需实例状态或锁。
+func sampleGamma(shape, scale float64) float64 {
 	if shape < 1.0 {
 		// shape < 1: 使用 rejection method
-		return b.sampleGamma(shape+1.0, scale) * math.Pow(b.rng.Float64(), 1.0/shape)
+		return sampleGamma(shape+1.0, scale) * math.Pow(rand.Float64(), 1.0/shape)
 	}
 
 	d := shape - 1.0/3.0
@@ -211,7 +258,7 @@ func (b *BanditScorer) sampleGamma(shape, scale float64) float64 {
 	for {
 		var x, v float64
 		for {
-			x = b.rng.NormFloat64()
+			x = rand.NormFloat64()
 			v = 1.0 + c*x
 			if v > 0 {
 				break
@@ -219,7 +266,7 @@ func (b *BanditScorer) sampleGamma(shape, scale float64) float64 {
 		}
 
 		v = v * v * v
-		u := b.rng.Float64()
+		u := rand.Float64()
 
 		if u < 1.0-0.0331*(x*x)*(x*x) {
 			return d * v * scale
@@ -329,9 +376,9 @@ func (b *BanditScorer) GetAllScores() map[string]*BanditScore {
 
 	result := make(map[string]*BanditScore, len(b.scores))
 	for id, score := range b.scores {
-		// 返回副本
-		scoreCopy := *score
-		result[id] = &scoreCopy
+		// 返回副本,并从原子字段物化 debug 值。
+		snap := b.snapshotScore(score)
+		result[id] = &snap
 	}
 	return result
 }

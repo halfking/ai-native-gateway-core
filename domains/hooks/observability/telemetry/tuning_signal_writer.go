@@ -21,6 +21,7 @@ import (
 	"fmt"
 	"log/slog"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -59,11 +60,12 @@ type TuningSignal struct {
 
 // tuningWriter manages the batching worker for tuning_signals.
 type tuningWriter struct {
-	queue chan TuningSignal
-	wg    sync.WaitGroup
-	stop  chan struct{}
-	once  sync.Once
-	pool  poolExec
+	queue   chan TuningSignal
+	wg      sync.WaitGroup
+	stop    chan struct{}
+	once    sync.Once // guards StartTuningWriter
+	stopOnce sync.Once // guards StopTuningWriter (close(stop) exactly once)
+	pool    poolExec
 }
 
 // poolExec is the minimal interface from Client we depend on, so the
@@ -114,25 +116,45 @@ var tuningWriterSingleton = &tuningWriter{
 	stop:  make(chan struct{}),
 }
 
+// tuningStarted 在 StartTuningWriter 执行时置 true,供 StopTuningWriter
+// 判断 worker 是否曾启动 (避免对未启动的 wg 调用 Wait 造成的死锁风险)。
+var tuningStarted atomic.Bool
+
 // StartTuningWriter launches the batching worker. Safe to call multiple times.
 // The pool adapter is wired via the global Adapter.PoolExec in main.go.
 func StartTuningWriter() {
 	tuningWriterSingleton.once.Do(func() {
 		tuningWriterSingleton.pool = adapterExec{}
 		tuningWriterSingleton.wg.Add(1)
+		tuningStarted.Store(true)
 		go tuningWriterSingleton.run()
 	})
 }
 
 // StopTuningWriter drains the queue and stops the worker.
+//
+// 并发安全说明:用独立的 stopOnce 保护 close(stop),避免并发调用时
+// 两个调用方都观察到 channel 仍开 (select default 分支) 然后都执行
+// close(stop) 导致 "close of closed channel" panic。wg.Wait() 对所有
+// 调用方都安全 (可重复等待)。
 func StopTuningWriter() {
-	select {
-	case <-tuningWriterSingleton.stop:
-		// already stopped
-	default:
-		close(tuningWriterSingleton.stop)
-		tuningWriterSingleton.wg.Wait()
+	// 若 worker 从未启动,直接返回 (wg 没有 Done 对应的 Add)。
+	if !tuningWorkerStarted() {
+		return
 	}
+	tuningWriterSingleton.stopOnce.Do(func() {
+		close(tuningWriterSingleton.stop)
+	})
+	// 等待 worker 退出 (多个调用方可同时等待,Wait 可重入)。
+	tuningWriterSingleton.wg.Wait()
+}
+
+// tuningWorkerStarted 报告 StartTuningWriter 是否曾执行过。
+// 通过 stopOnce 之外的方式判断:once.Do 是否运行过无法直接查询,
+// 所以用 stop channel 是否被 close 来间接判断也不准确 (Stop 已运行)。
+// 最简单的可靠方式:Start 用 once 设置一个 atomic 标志。
+func tuningWorkerStarted() bool {
+	return tuningStarted.Load()
 }
 
 // WriteTuningSignal enqueues a feedback signal for async batched write.
