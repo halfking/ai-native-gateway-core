@@ -74,6 +74,18 @@ func ConvertChatRequestToAnthropic(in []byte) ([]byte, error) {
 			toolMap, _ := tool.(map[string]any)
 			if anthropicTool, ok := openAIToolToAnthropic(toolMap); ok {
 				anthTools = append(anthTools, anthropicTool)
+				continue
+			}
+			// 2026-07-27 (F-1): openAIToolToAnthropic rejects non-function
+			// tools (web_search, code_interpreter, file_search, ...). The
+			// prior behavior silently dropped them, which is data loss for
+			// agentic clients. Pass them through verbatim instead — Anthropic
+			// will reject ones it doesn't understand, but that surfaces the
+			// mismatch as an explicit upstream error rather than a silent
+			// disappearance, and Anthropic-native built-ins (computer_use,
+			// bash) routed via an OpenAI-protocol client survive.
+			if toolType, _ := toolMap["type"].(string); toolType != "" && toolType != "function" {
+				anthTools = append(anthTools, toolMap)
 			}
 		}
 		if len(anthTools) > 0 {
