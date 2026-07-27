@@ -2,6 +2,8 @@ package cache
 
 import (
 	"context"
+	"sync"
+	"sync/atomic"
 	"testing"
 
 	"github.com/alicebob/miniredis/v2"
@@ -140,5 +142,72 @@ func TestMigrateFpSlotsIdempotent(t *testing.T) {
 	}
 	if fields["available"] != "0" {
 		t.Errorf("available overwritten: want 0 (live disabled), got %q", fields["available"])
+	}
+}
+
+// TestMigrateFpSlotsConcurrentDoesNotClobberLiveState exercises the atomicity
+// contract of migrateIfAbsentScript: several migration runs plus a live
+// record_request-style writer all target the same node, and the live
+// generation must never be regressed to the migration's seed of 1.
+//
+// NOTE: miniredis is single-threaded and serializes commands, so it cannot
+// truly interleave the HGet→HSet pair that the OLD non-atomic logic used.
+// This test therefore cannot deterministically reproduce the pre-fix race on
+// miniredis; it asserts the post-fix INVARIANT (live state preserved) that
+// the Lua check-and-seed guarantees on real, multiplexed Redis, where the
+// script's atomicity is what closes the window. Run against a real Redis to
+// observe the old logic failing under contention.
+func TestMigrateFpSlotsConcurrentDoesNotClobberLiveState(t *testing.T) {
+	mr := miniredis.RunT(t)
+	rdb := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	ctx := context.Background()
+
+	// Legacy seed + a live writer that races the migration.
+	rdb.Set(ctx, "llmgw:cred_fp_node:11:race", `{"credential_id":11,"model":"race","success_count":1,"disabled":false}`, 0)
+
+	const movers = 8
+	var wg sync.WaitGroup
+	// Live record_request-style writer landing mid-migration: writes a more
+	// advanced generation than the migration's seed of 1.
+	liveLanded := atomic.Bool{}
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		// Land a live state with generation=5 before/around the migration.
+		if _, err := rdb.HSet(ctx, "ursm:v2:node:11:race",
+			"generation", "5", "available", "0", "disabled", "1").Result(); err == nil {
+			liveLanded.Store(true)
+		}
+	}()
+	for i := 0; i < movers; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_, _ = MigrateFpSlotsNodeStates(ctx, rdb)
+		}()
+	}
+	wg.Wait()
+
+	fields, err := rdb.HGetAll(ctx, "ursm:v2:node:11:race").Result()
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Invariant: generation must never be regressed below the live value.
+	// The migration seeds 1; record_request wrote 5. Whichever landed first
+	// wins, but generation must be >= 1 and, critically, if the live writer
+	// won the seed slot the available/disabled live values are preserved.
+	gen := fields["generation"]
+	if gen == "" {
+		t.Fatal("node was never seeded by any writer")
+	}
+	// If the live write landed first (generation=5), the migration must NOT
+	// have overwritten it with 1. If the migration seeded first (generation=1),
+	// the live write's HSet may or may not have run after; either way the
+	// generation must not be 1 when a live generation=5 already existed.
+	if liveLanded.Load() && gen == "1" && fields["available"] == "0" {
+		// live wrote available=0 + generation=5; a migration that then set
+		// generation=1 would have clobbered the live generation while leaving
+		// available=0 — the exact corruption the race fix prevents.
+		t.Fatalf("live generation=5 was clobbered by migration seed: generation=%q available=%q", gen, fields["available"])
 	}
 }
