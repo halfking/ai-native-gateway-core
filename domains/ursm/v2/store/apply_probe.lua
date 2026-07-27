@@ -3,10 +3,20 @@
 -- ARGV[1] = "1"|"0"   success
 -- ARGV[2] = latency_ms
 -- ARGV[3] = now_ms
--- ARGV[4] = admin_hold (1|0)
--- ARGV[5] = current_admin_hold (1|0)
+-- ARGV[4] = admin_hold (1|0) [DEPRECATED: lua now reads manual_hold directly]
+-- ARGV[5] = current_admin_hold (1|0) [DEPRECATED: see ARGV[4] note]
 
 if ARGV[4] == "1" or ARGV[5] == "1" then
+  return {"ignored_manual_hold"}
+end
+
+-- M3 (2026-07-28): read manual_hold INSIDE the script so the short-circuit
+-- observes the live value at write time. Eliminates the prior TOCTOU race
+-- where the Go caller pre-read manual_hold via HGet and could hand a stale
+-- value to this script if ApplyAdmin flipped the flag in between. Also
+-- drops one hot-path RTT.
+local manual_hold = redis.call("HGET", KEYS[1], "manual_hold")
+if manual_hold == "1" then
   return {"ignored_manual_hold"}
 end
 

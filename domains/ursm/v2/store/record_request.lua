@@ -10,7 +10,7 @@
 -- ARGV[6] = node_ttl_sec
 -- ARGV[7] = window_5m_ttl_sec
 -- ARGV[8] = window_30m_ttl_sec
--- ARGV[9] = admin_hold_flag ("1"|"0")
+-- ARGV[9] = admin_hold_flag ("1"|"0") [DEPRECATED: lua now reads manual_hold directly]
 -- ARGV[10] = cool_seconds (default 300 = 5min)
 -- ARGV[11] = fail_streak_limit (default 3)
 
@@ -26,11 +26,19 @@ local req_id = ARGV[5]
 local node_ttl = tonumber(ARGV[6])
 local w5_ttl = tonumber(ARGV[7])
 local w30_ttl = tonumber(ARGV[8])
-local admin_hold = ARGV[9]
+local admin_hold_arg = ARGV[9]
 local cool_seconds = tonumber(ARGV[10]) or 300
 local fail_streak_limit = tonumber(ARGV[11]) or 3
 
-if admin_hold == "1" then
+-- M3 (2026-07-28): read manual_hold INSIDE the script so the short-circuit
+-- observes the live value at write time. Eliminates the prior TOCTOU race
+-- where the Go caller pre-read manual_hold via HGet and could hand a stale
+-- value to this script if ApplyAdmin flipped the flag in between. Also
+-- drops one hot-path RTT (was: Go HGet + Lua Eval).
+-- Precedence: live Redis manual_hold wins; the legacy ARGV[9] admin_hold_arg
+-- stays as a redundant sanity check (kept for ABI; callers may pass "0").
+local manual_hold = redis.call("HGET", node_key, "manual_hold")
+if manual_hold == "1" or admin_hold_arg == "1" then
   return {"ignored_manual_hold", "0", "0"}
 end
 

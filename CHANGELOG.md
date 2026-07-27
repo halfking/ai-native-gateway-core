@@ -50,6 +50,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - **修复**：`scripts/deploy-seamless.sh` 主流程 `host_wait_healthy 30→90`、`deploy_verify_gateway_ready 60→90`；自动回滚流程 `host_wait_healthy 30→90`；日志字符串 `(healthz 30s, DB 60s) → (healthz 90s, DB 90s)`。90s 与现有手动 rollback 60s 顶部对齐，且小于 `deploy_verify_gateway_ready` 内部 120s 轮询上限。
   - **验证**：`bash -n scripts/deploy-seamless.sh` syntax OK；245 当前回滚 1410 稳定运行（healthz=200、background-tasks=401、`database health check succeeded`）；PG `pg_stat_activity` 1 个 idle 连接，无锁竞争。详见 [docs/changelogs/2026-07-27-deploy-healthz-timeout-90s.md](docs/changelogs/2026-07-27-deploy-healthz-timeout-90s.md)。
 
+- **URSM v2 并发加固 (M3): sharded NodeMirror LRU + lua 自读 manual_hold** (2026-07-28):
+  - **🔴 P0 — 写入路径 TOCTOU race window 关闭**：先前 `domains/ursm/v2/manager.go RecordRequest` 与 `domains/ursm/v2/probe.go ApplyProbe` 在 `Lua.Run` 前 Go 端先 `HGet manual_hold`，再传 ARGV 给 Lua；HGet 与 Lua Run 是两次独立 Redis 操作，中间 `ApplyAdmin` 翻转 `manual_hold` 会让 Lua 收到过期旧值继续写。修复把 manual_hold 读取迁入 `record_request.lua` / `apply_probe.lua` 内部，Lua 是单条原子 Redis 操作，**race window 不存在 + 节省一次 hot-path RTT**（每请求 2 次 IO → 1 次）。ARGV[9] / ARGV[4] / ARGV[5] 保留为 deprecated ABI 槽；`RecordOutcome.AdminHold` 字段保留。
+  - **🟡 P1 性能 — NodeMirror 16 分片 LRU 减锁争抢**：原先 `cache/nodemirror.go` 单一 LRU 单 Mutex，FilterAndScore 每次对每个 seed 调 Get+MoveToFront。引入 `NodeMirrorShards=16` + FNV-1a 64 hash（无 rand seed，跨进程一致），每 shard 独立 mutex 与（小 idx + 小 order）。同一 (cred, model) key 永远落同一 shard，per-shard CAS 单调性保留。生产默认 cap=100000 → 每 shard ≈ 6250 entry，总容量不变。
+  - **🟢 P2 — Plan() ModeOff 短路**：`Plan()` 入口先 `Mode() == ModeOff` 短路，避免 `m.Ready(ctx)` 一次冗余 Redis GET（生产默认 ModeOff）。
+  - **测试**：新增 `TestNodeMirrorShardedConcurrentWrites`（32 goroutines × 100 写不同 key + 实时 Get/Peek）+ `TestNodeMirrorShardedGenMonotonicPerKey`（32 goroutines 写同一 key 不同 gen）覆盖分片互不阻塞 + per-shard CAS 单调性。
+  - **验证**：`go build ./...` 0 error、`go vet ./domains/ursm/...` 0 issue、`go test -race -count=1 ./domains/ursm/v2/...` 13 packages / 0 FAIL / 0 DATA RACE、`go test -race -count=1 ./pool ./ratelimit ./circuit ./bg/... ./safety ./autoroute/... ./domains/sessionstate`（复测 8001cbee 已修热点，无回归）。
+  - **对接设计稿不变性（spec Decision 2）**：✅ 写入必须先经 Redis Lua 成功（`applyToLRU` 写入路径不变） / ✅ LRU 永远是只读副本 / ✅ generation 单调（per-shard CAS） / ✅ admin 优先级恒占（manual_hold 现由 Redis 原子上下文读取）。
+  - **部署**：与 commit `8001cbee9` (上轮 77 文件加固) 同一节奏，245 灰度 → 154 全量。
+  - 详见 [AUDIT_URSMV2_CONCURRENCY_20260728.md](AUDIT_URSMV2_CONCURRENCY_20260728.md) 与 [docs/changelogs/2026-07-28-ursmv2-m3-concurrency.md](docs/changelogs/2026-07-28-ursmv2-m3-concurrency.md)。
+
 ### Changed
 
 - **URSM v1→v2 统一 (clean up + write path unification)** (2026-07-26):
