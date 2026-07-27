@@ -102,6 +102,27 @@ type Manager struct {
 
 	noCandidatesMu         sync.Mutex
 	noCandidatesDispatched map[string]time.Time
+
+	// 2026-07-27 (C-1): per-key mutex serializes the read-modify-write on a
+	// credential+model State. Without it, two concurrent UpdateOnFailure calls
+	// on the same key both Load the same *State pointer, both mutate it in
+	// place (state.ConsecutiveFails++) — a data race and lost update. The
+	// mutex is paired with copy-on-write in getFromMemCache (see cache.go) so
+	// no goroutine ever mutates the shared *State pointer.
+	keyLocks sync.Map // map[string]*sync.Mutex
+}
+
+// lockFor returns (and lazily creates) the mutex for a cache key. Callers must
+// defer unlock. Creation is racy by design: two goroutines may each create a
+// mutex for a new key, but only one is stored and used thereafter — the loser
+// is GC'd. This is safe because the mutex is only used to serialize RMW on the
+// *value*, and any one of the created mutexes correctly serializes the first
+// contenders.
+func (m *Manager) lockFor(key string) func() {
+	v, _ := m.keyLocks.LoadOrStore(key, &sync.Mutex{})
+	mu := v.(*sync.Mutex)
+	mu.Lock()
+	return mu.Unlock
 }
 
 // CacheEntry 缓存条目
@@ -187,6 +208,11 @@ func (m *Manager) SetInvalidateCandidateCache(fn func(credentialID int)) {
 func (m *Manager) UpdateOnSuccess(ctx context.Context, credID int, model string, latencyMs int, requestID string) {
 	key := m.cacheKey(credID, model)
 
+	// 2026-07-27 (C-1): serialize the read-modify-write on this key so
+	// concurrent success/failure updates don't lose counter mutations.
+	unlock := m.lockFor(key)
+	defer unlock()
+
 	state, _ := m.getFromMemCache(key)
 	if state == nil {
 		state = &State{
@@ -254,6 +280,17 @@ func (m *Manager) UpdateOnFailure(ctx context.Context, credID int, model string,
 	}
 
 	key := m.cacheKey(credID, model)
+
+	// 2026-07-27 (C-1): serialize the read-modify-write + downstream
+	// state-dependent decisions on this key. Previously two concurrent
+	// UpdateOnFailure calls on the same (credID, model) both mutated the
+	// shared *State pointer (state.ConsecutiveFails++) — a data race now
+	// also blocked by copy-on-write in getFromMemCache. The lock additionally
+	// prevents lost counter updates. Probe submitters (scheduleCredProbe /
+	// activeProbeSubmitter) do not re-enter this key's lock, so holding it
+	// across their calls is deadlock-free.
+	unlock := m.lockFor(key)
+	defer unlock()
 
 	state, _ := m.getFromMemCache(key)
 	if state == nil {
