@@ -2,10 +2,18 @@ package cache
 
 import (
 	"time"
+
+	"github.com/kaixuan/llm-gateway-go/domains/ursm/v2/api"
 )
 
 // NodeView 是节点状态的 LRU 镜像条目。字段是 domains/ursm/v2/api.NodeView
 // 的子集(只取镜像需要的字段)。generation + source_priority 用于单调裁决。
+//
+// 2026-07-27 (M2): extended with LatEWMA + SR5m so the mirror can serve the
+// FilterAndScore hot path (which scores on price 0.4 + latency 0.4 +
+// stability 0.2·SR5m). Without these the LRU hit could only answer
+// availability, not scoring, so every request still hit Redis — defeating
+// the purpose. CachedAt lets the scorer detect a stale entry.
 type NodeView struct {
 	CredentialID   int
 	RawModel       string
@@ -15,6 +23,13 @@ type NodeView struct {
 	SourcePriority int
 	FailStreak     int
 	CoolUntil      time.Time
+	// Scoring fields (M2): mirror what FilterAndScore reads so a cache hit
+	// can produce the same Score as a fresh Redis read.
+	LatEWMA int
+	SR5m    float64
+	// CachedAt is when this entry was populated from Redis. Observability/
+	// staleness hint (the soft-expire decision uses softExpireAt, not this).
+	CachedAt time.Time
 	softExpireAt   time.Time // 软过期点;超过后 Get 返回 miss
 }
 
@@ -71,4 +86,28 @@ func (m *NodeMirror) Get(credID int, raw string) (NodeView, bool) {
 // Peek 返回值但不提升 LRU 顺序(测试与观测用)。
 func (m *NodeMirror) Peek(credID int, raw string) (NodeView, bool) {
 	return m.lru.Peek(nodeMirrorKey(credID, raw))
+}
+
+// ApplyFromAPI backfills the mirror from an authoritative api.NodeView just
+// read from Redis (M2). It is the read path's only write entrypoint;
+// applyToLRU enforces the generation-monotonic contract so a stale Redis
+// snapshot can never overwrite a newer LRU entry. Safe to call on a
+// zero-value view (only Generation>0 writes pin an entry).
+func (m *NodeMirror) ApplyFromAPI(v api.NodeView) {
+	if m == nil {
+		return
+	}
+	m.applyToLRU(NodeView{
+		CredentialID:   v.CredentialID,
+		RawModel:       v.RawModel,
+		Available:      v.Available,
+		Reason:         v.Reason,
+		Generation:     v.Generation,
+		SourcePriority: v.SrcPriority,
+		FailStreak:     v.FailStreak,
+		CoolUntil:      v.CoolUntil,
+		LatEWMA:        v.LatEWMA,
+		SR5m:           v.SR5m,
+		CachedAt:       time.Now(),
+	})
 }
