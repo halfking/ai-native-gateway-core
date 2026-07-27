@@ -228,17 +228,19 @@ func TestStreamChunksSentFromLogCtxNilSafe(t *testing.T) {
 		t.Errorf("negative count → want 0, got %d", got)
 	}
 
-	// Positive values are passed through untouched.
-	ctx.StreamChunksSent = 42
+	ctx.SetStreamChunkCounters(0, 42)
 	if got := streaming.StreamChunksSentFromLogCtxForTest(ctx); got != 42 {
 		t.Errorf("positive count → want 42, got %d", got)
 	}
 
-	// Zero is also passed through (the column accepts 0 by default).
+	// Production reads must use the atomic counter even when the legacy mirror
+	// is stale, because the mirror is written concurrently by stream bridges.
+	ctx.SetStreamChunkCounters(3, 4)
 	ctx.StreamChunksSent = 0
-	if got := streaming.StreamChunksSentFromLogCtxForTest(ctx); got != 0 {
-		t.Errorf("zero → want 0, got %d", got)
+	if got := streaming.StreamChunksSentFromLogCtxForTest(ctx); got != 4 {
+		t.Errorf("stale legacy sent mirror should not hide atomic value: got %d", got)
 	}
+
 }
 
 func TestStreamChunkErrorsFromLogCtxNilSafe(t *testing.T) {
@@ -250,7 +252,7 @@ func TestStreamChunkErrorsFromLogCtxNilSafe(t *testing.T) {
 	if got := streaming.StreamChunkErrorsFromLogCtxForTest(ctx); got != 0 {
 		t.Errorf("negative count → want 0, got %d", got)
 	}
-	ctx.StreamChunkErrors = 7
+	ctx.SetStreamChunkCounters(7, 0)
 	if got := streaming.StreamChunkErrorsFromLogCtxForTest(ctx); got != 7 {
 		t.Errorf("positive count → want 7, got %d", got)
 	}

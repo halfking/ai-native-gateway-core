@@ -5698,18 +5698,7 @@ func streamChunksSentFromLogCtx(c *RequestLogContext) int {
 	if c == nil {
 		return 0
 	}
-	// 2026-07-27: counter is mirrored on an atomic int. Prefer the
-	// dedicated accessor so reads do not race with Increment*, but
-	// also respect the legacy int field (which legacy tests still
-	// write directly with negative sentinels).
-	sent := c.StreamChunksSent
-	if sent == 0 {
-		sent = c.StreamChunksSentValue()
-	}
-	if sent < 0 {
-		return 0
-	}
-	return sent
+	return max(c.StreamChunksSentValue(), 0)
 }
 
 // StreamChunksSentFromLogCtxForTest is the test-only exported alias of
@@ -5726,16 +5715,7 @@ func streamChunkErrorsFromLogCtx(c *RequestLogContext) int {
 	if c == nil {
 		return 0
 	}
-	// 2026-07-27: prefer the int mirror (which tests still mutate
-	// directly) and fall back to the atomic counter when it is zero.
-	errors := c.StreamChunkErrors
-	if errors == 0 {
-		errors = c.StreamChunkErrorsValue()
-	}
-	if errors < 0 {
-		return 0
-	}
-	return errors
+	return max(c.StreamChunkErrorsValue(), 0)
 }
 
 // StreamChunkErrorsFromLogCtxForTest is the test-only exported alias of

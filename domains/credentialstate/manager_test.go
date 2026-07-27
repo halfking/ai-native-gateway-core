@@ -12,6 +12,85 @@ import (
 	"github.com/kaixuan/llm-gateway-go/errorsx"
 )
 
+func TestManager_UpdateFromProbe_PreservesAndMergesState(t *testing.T) {
+	m := NewManager(nil, nil)
+	key := m.cacheKey(11, "model")
+	failureAt := time.Now().Add(-time.Minute)
+	updatedAt := time.Now().Add(-30 * time.Second)
+	m.setToMemCache(key, &State{
+		CredentialID:     11,
+		Model:            "model",
+		Available:        false,
+		HealthStatus:     "unreachable",
+		ConsecutiveFails: 3,
+		LastFailureAt:    &failureAt,
+		LastUpdatedAt:    updatedAt,
+		LastError:        "timeout",
+	})
+
+	probeAt := time.Now()
+	m.UpdateFromProbe(context.Background(), &State{
+		CredentialID:  11,
+		Model:         "model",
+		Available:     true,
+		LastSuccessAt: &probeAt,
+		LastUpdatedAt: time.Now(),
+		Source:        "probe_direct",
+	})
+
+	state, ok := m.getFromMemCache(key)
+	if !ok || state == nil {
+		t.Fatal("expected merged state")
+	}
+	if state.ConsecutiveFails != 0 {
+		t.Fatalf("successful probe should clear consecutive failures, got %d", state.ConsecutiveFails)
+	}
+	if state.LastError != "" {
+		t.Fatalf("successful probe should clear last error, got %q", state.LastError)
+	}
+	if state.HealthStatus != "unreachable" {
+		t.Fatalf("sparse probe must preserve health status, got %q", state.HealthStatus)
+	}
+	if state.LastUpdatedAt.Before(updatedAt) {
+		t.Fatalf("probe update moved timestamp backwards: got %v before %v", state.LastUpdatedAt, updatedAt)
+	}
+}
+
+func TestManager_UpdateFromProbe_PreservesProbeFailureDetails(t *testing.T) {
+	m := NewManager(nil, nil)
+	key := m.cacheKey(12, "model")
+	oldFailureAt := time.Now().Add(-time.Minute)
+	m.setToMemCache(key, &State{
+		CredentialID:     12,
+		Model:            "model",
+		Available:        true,
+		ConsecutiveFails: 1,
+		LastFailureAt:    &oldFailureAt,
+		LastError:        "old_error",
+	})
+	newFailureAt := time.Now()
+	m.UpdateFromProbe(context.Background(), &State{
+		CredentialID:  12,
+		Model:         "model",
+		Available:     false,
+		LastUpdatedAt: newFailureAt,
+		LastFailureAt: &newFailureAt,
+		LastError:     "probe_error",
+		Source:        "probe_v2",
+	})
+
+	state, _ := m.getFromMemCache(key)
+	if state == nil {
+		t.Fatal("expected merged state")
+	}
+	if state.LastError != "probe_error" {
+		t.Fatalf("probe error was overwritten: got %q", state.LastError)
+	}
+	if state.LastFailureAt == nil || !state.LastFailureAt.Equal(newFailureAt) {
+		t.Fatalf("probe failure timestamp was overwritten: got %v", state.LastFailureAt)
+	}
+}
+
 func TestManager_UpdateOnSuccess(t *testing.T) {
 	// 跳过集成测试（需要数据库）
 	if testing.Short() {

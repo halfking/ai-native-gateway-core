@@ -509,22 +509,38 @@ func (m *Manager) UpdateFromProbe(ctx context.Context, state *State) {
 	probeSucceeded := state.LastSuccessAt != nil
 	merged := *state
 	if oldState != nil {
-		merged.ConsecutiveFails = oldState.ConsecutiveFails
-		merged.LastFailureAt = oldState.LastFailureAt
-		merged.LastError = oldState.LastError
-		merged.AvgLatencyMs = oldState.AvgLatencyMs
-		merged.P95LatencyMs = oldState.P95LatencyMs
-		merged.SuccessRate = oldState.SuccessRate
-		merged.ActiveSessions = oldState.ActiveSessions
-		merged.ConcurrencyLimit = oldState.ConcurrencyLimit
+		if !probeSucceeded {
+			merged.ConsecutiveFails = oldState.ConsecutiveFails
+		}
 		if merged.LastFailureAt == nil {
 			merged.LastFailureAt = oldState.LastFailureAt
 		}
 		if merged.LastError == "" {
 			merged.LastError = oldState.LastError
 		}
+		if merged.AvgLatencyMs == 0 {
+			merged.AvgLatencyMs = oldState.AvgLatencyMs
+		}
+		if merged.P95LatencyMs == 0 {
+			merged.P95LatencyMs = oldState.P95LatencyMs
+		}
+		if merged.SuccessRate == 0 {
+			merged.SuccessRate = oldState.SuccessRate
+		}
+		if merged.ActiveSessions == 0 {
+			merged.ActiveSessions = oldState.ActiveSessions
+		}
+		if merged.ConcurrencyLimit == 0 {
+			merged.ConcurrencyLimit = oldState.ConcurrencyLimit
+		}
+		if merged.HealthStatus == "" {
+			merged.HealthStatus = oldState.HealthStatus
+		}
 		if merged.LastSuccessAt == nil || (oldState.LastSuccessAt != nil && oldState.LastSuccessAt.After(*merged.LastSuccessAt)) {
 			merged.LastSuccessAt = oldState.LastSuccessAt
+		}
+		if oldState.LastUpdatedAt.After(merged.LastUpdatedAt) {
+			merged.LastUpdatedAt = oldState.LastUpdatedAt
 		}
 	}
 	if probeSucceeded {
