@@ -276,11 +276,32 @@ type ScoreSnapshot struct {
 }
 
 // SnapshotScore 生成评分快照
+//
+// 2026-07-27 (concurrency fix): this used to hold only RLock and then call
+// getOrCreateScoreLocked, which WRITES b.scores on a miss — a concurrent map
+// write under a read lock, which is a fatal, unrecoverable runtime throw.
+// The snapshot path is pure observability (reputation_worker aggregation and
+// tests), so it is now read-only: on a miss we synthesize the same defaults
+// getOrCreateScoreLocked would have inserted without touching the map. The
+// resulting snapshot is identical to the previous behaviour for a fresh
+// credential (TotalRequests == 0), so callers see no change.
 func (b *BanditScorer) SnapshotScore(credID string) ScoreSnapshot {
 	b.mu.RLock()
-	defer b.mu.RUnlock()
+	existing, ok := b.scores[credID]
+	var local BanditScore
+	if ok {
+		local = *existing
+	} else {
+		local = BanditScore{
+			Alpha:            1.0,
+			Beta:             1.0,
+			IntelligenceRank: 50,
+			RateLimitPenalty: 0,
+		}
+	}
+	b.mu.RUnlock()
 
-	score := b.getOrCreateScoreLocked(credID)
+	score := &local
 
 	reliability := ExpectedReliability(score.Alpha, score.Beta)
 	speed := b.speedScore(score)

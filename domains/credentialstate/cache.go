@@ -33,7 +33,19 @@ func (m *Manager) getFromMemCache(key string) (*State, bool) {
 		return nil, false
 	}
 
-	return entry.State, true
+	// 2026-07-27 (concurrency fix): return a copy, never the cached *State.
+	// sync.Map only synchronizes access to the map itself, not to the value it
+	// points at. Handing the shared pointer out let UpdateOnSuccess /
+	// UpdateOnFailure mutate a State that routers were concurrently reading
+	// through IsAvailable/GetState (data race + torn reads).
+	//
+	// A shallow copy is sufficient: every reference-typed field of State is a
+	// *time.Time (LastSuccessAt / LastFailureAt / RecoverAt) and the writers
+	// always *replace* those pointers with a freshly-allocated time
+	// (`state.LastSuccessAt = &now`) rather than mutating the pointee. There
+	// are no maps or slices in State.
+	clone := *entry.State
+	return &clone, true
 }
 
 func (m *Manager) setToMemCache(key string, state *State) {

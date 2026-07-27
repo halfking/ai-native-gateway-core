@@ -341,7 +341,8 @@ func StreamAnthropicSSEToOpenAI(
 						// "no thinking" in audit logs even when the
 						// upstream shipped a real thinking block.
 						if capture != nil {
-							capture.HasThinking = true
+							// 2026-07-27 并发修复：走带锁 setter（audit.StreamCapture.SetHasThinking）。
+							capture.SetHasThinking()
 						}
 					}
 

@@ -39,8 +39,8 @@ func NewTTLManager(redis *session.RedisClient, normalTTL, degradedTTL time.Durat
 		normalTTL:      normalTTL,
 		degradedTTL:    degradedTTL,
 		extendInterval: 1 * time.Hour, // 每小时延长一次
-		stopCh:         make(chan struct{}),
-		doneCh:         make(chan struct{}),
+		// 2026-07-27 concurrency fix: stopCh/doneCh 不再在构造时一次性创建
+		// —— 每次 Enter 启动循环时重建一对（见 EnterDegradedMode）。
 	}
 	tm.mode.Store("normal")
 	return tm
@@ -55,23 +55,33 @@ func (tm *TTLManager) EnterDegradedMode(ctx context.Context) error {
 	slog.Info("ttl_manager: entering degraded mode")
 
 	// 先启动定期延长循环
+	// 2026-07-27 concurrency fix: 每次启动都新建 stopCh/doneCh 并把这一对
+	// 传给循环。之前两者只在构造函数里建一次，Enter→Exit→Enter（DB 抖动时
+	// dbMonitor 每次都会回调）会启动第二个 runExtendLoop，其
+	// `defer close(tm.doneCh)` 对已关闭 channel panic。
 	tm.mu.Lock()
+	startedHere := false
 	if !tm.running && !tm.closed {
+		tm.stopCh = make(chan struct{})
+		tm.doneCh = make(chan struct{})
 		tm.running = true
-		go tm.runExtendLoop()
+		startedHere = true
+		go tm.runExtendLoop(tm.stopCh, tm.doneCh)
 	}
 	tm.mu.Unlock()
 
 	// 立即延长所有会话 TTL
 	if err := tm.extendAllSessionTTLs(ctx, tm.degradedTTL); err != nil {
 		slog.Warn("ttl_manager: failed to extend TTLs on enter", "error", err)
-		// 失败时回滚 mode
-		tm.mu.Lock()
-		if tm.running {
-			close(tm.stopCh)
-			tm.running = false
+		// 失败时回滚：只回滚本次调用启动的循环，避免关掉别人的 channel
+		if startedHere {
+			tm.mu.Lock()
+			done := tm.stopLoopLocked()
+			tm.mu.Unlock()
+			if done != nil {
+				<-done
+			}
 		}
-		tm.mu.Unlock()
 		return err
 	}
 
@@ -89,14 +99,13 @@ func (tm *TTLManager) ExitDegradedMode(ctx context.Context) error {
 
 	// 停止延长循环
 	tm.mu.Lock()
-	if tm.running {
-		close(tm.stopCh)
-		tm.running = false
-	}
+	done := tm.stopLoopLocked()
 	tm.mu.Unlock()
 
-	// 等待循环退出
-	<-tm.doneCh
+	// 等待循环退出（没在跑时 done 为 nil，直接跳过）
+	if done != nil {
+		<-done
+	}
 
 	// 恢复正常 TTL（可选：不主动缩短 TTL，让 Redis 自然过期）
 	tm.mode.Store("normal")
@@ -112,23 +121,24 @@ func (tm *TTLManager) GetMode() string {
 
 // Stop 停止 TTL 管理器
 func (tm *TTLManager) Stop(ctx context.Context) error {
+	// 2026-07-27 concurrency fix: 不再持锁等待 goroutine 退出（会和
+	// stopLoopLocked 的调用方互相挡住），并且 doneCh 为 nil 时直接返回。
 	tm.mu.Lock()
-	defer tm.mu.Unlock()
-
 	if tm.closed {
+		tm.mu.Unlock()
 		return nil // 已经关闭
 	}
-
-	if tm.running {
-		close(tm.stopCh)
-		tm.running = false
-	}
-
+	done := tm.stopLoopLocked()
 	tm.closed = true
+	tm.mu.Unlock()
+
+	if done == nil {
+		return nil // 循环没在跑
+	}
 
 	// 等待 goroutine 退出（带超时）
 	select {
-	case <-tm.doneCh:
+	case <-done:
 		slog.Info("ttl_manager: stopped gracefully")
 	case <-ctx.Done():
 		slog.Warn("ttl_manager: stop timeout", "error", ctx.Err())
@@ -138,15 +148,32 @@ func (tm *TTLManager) Stop(ctx context.Context) error {
 	return nil
 }
 
+// stopLoopLocked 关闭当前运行中的循环并返回它的 doneCh；未在运行时返回 nil。
+// 调用方必须持有 tm.mu。running 标志保证 stopCh 只会被 close 一次。
+func (tm *TTLManager) stopLoopLocked() chan struct{} {
+	if !tm.running {
+		return nil
+	}
+	close(tm.stopCh)
+	tm.running = false
+	done := tm.doneCh
+	tm.stopCh = nil
+	tm.doneCh = nil
+	return done
+}
+
 // runExtendLoop 运行定期延长循环
-func (tm *TTLManager) runExtendLoop() {
-	defer close(tm.doneCh)
+//
+// stopCh/doneCh 由调用方（EnterDegradedMode）为本次运行单独创建并传入，
+// 保证反复 Enter/Exit 不会 close 同一个 channel 两次。
+func (tm *TTLManager) runExtendLoop(stopCh, doneCh chan struct{}) {
+	defer close(doneCh)
 	ticker := time.NewTicker(tm.extendInterval)
 	defer ticker.Stop()
 
 	for {
 		select {
-		case <-tm.stopCh:
+		case <-stopCh:
 			slog.Info("ttl_manager: extend loop stopped")
 			return
 		case <-ticker.C:

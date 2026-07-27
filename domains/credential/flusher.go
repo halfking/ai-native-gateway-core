@@ -22,6 +22,11 @@ type BanditFlusher struct {
 	wg     sync.WaitGroup
 	mu     sync.Mutex
 	dirty  map[string]bool // credentialID (string) -> needs flush
+	// 2026-07-27 concurrency fix: stopOnce makes Stop idempotent; a bare
+	// close(stop) panicked on a second Stop. started guards against Stop being
+	// called before Start (ticker==nil, flushLoop never launched).
+	stopOnce sync.Once
+	started  bool
 
 	flushInterval time.Duration
 	batchSize     int
@@ -44,13 +49,27 @@ func NewBanditFlusher(db *pgxpool.Pool, bandit *BanditScorer, flushInterval time
 // Start begins the background flush loop.
 func (f *BanditFlusher) Start() {
 	f.ticker = time.NewTicker(f.flushInterval)
+	f.started = true
 	f.wg.Add(1)
 	go f.flushLoop()
 }
 
 // Stop gracefully stops the flusher and performs a final flush.
+//
+// 2026-07-27 concurrency fix: guard with stopOnce so a double Stop does not
+// panic on close(closed channel), and return early when Start was never called
+// (ticker==nil, flushLoop never launched) — matches the house pattern in
+// bg/pending_sweeper.go Stop.
 func (f *BanditFlusher) Stop() {
-	close(f.stop)
+	if !f.started {
+		// Start() was never called — the flushLoop goroutine never launched,
+		// so there is nothing to signal or wait on. Return immediately rather
+		// than deadlocking on wg.Wait / panicking on close.
+		return
+	}
+	f.stopOnce.Do(func() {
+		close(f.stop)
+	})
 	f.wg.Wait()
 	if f.ticker != nil {
 		f.ticker.Stop()

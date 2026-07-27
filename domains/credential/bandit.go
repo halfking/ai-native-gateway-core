@@ -14,6 +14,11 @@ type BanditScorer struct {
 	mu     sync.RWMutex
 	rng    *rand.Rand
 	scores map[string]*BanditScore // credentialID -> score
+	// 2026-07-27 concurrency fix: rand.Rand is not safe for concurrent use.
+	// Sample's hot path no longer holds the scores write lock for the whole
+	// body (it only needs it to lazily create a missing score), so rng access
+	// is now serialized by its own mutex instead of piggybacking on mu.
+	rngMu sync.Mutex
 }
 
 // BanditScore 单个凭据的 bandit 评分数据
@@ -56,14 +61,20 @@ func NewBanditScorer() *BanditScorer {
 	}
 }
 
-// GetScore 获取凭据的评分数据，如不存在则创建默认值
-func (b *BanditScorer) GetScore(credID string) *BanditScore {
+// GetScore 获取凭据的评分数据，如不存在则创建默认值。
+//
+// 2026-07-27 concurrency fix: returns a BanditScore VALUE (not a pointer to
+// the internal struct). Callers such as flusher.go previously read
+// Alpha/SuccessRequests/TotalLatencyMs off the returned pointer while
+// RecordSuccess/RecordFailure mutated the same struct under lock, causing a
+// data race (-race detected). A value copy is the caller's own snapshot.
+func (b *BanditScorer) GetScore(credID string) BanditScore {
 	b.mu.RLock()
 	score, exists := b.scores[credID]
 	b.mu.RUnlock()
 
 	if exists {
-		return score
+		return *score
 	}
 
 	// 创建新评分（Uniform 先验: Alpha=1, Beta=1）
@@ -72,7 +83,7 @@ func (b *BanditScorer) GetScore(credID string) *BanditScore {
 
 	// Double-check after acquiring write lock
 	if score, exists := b.scores[credID]; exists {
-		return score
+		return *score
 	}
 
 	score = &BanditScore{
@@ -82,7 +93,7 @@ func (b *BanditScorer) GetScore(credID string) *BanditScore {
 		RateLimitPenalty: 0,
 	}
 	b.scores[credID] = score
-	return score
+	return *score
 }
 
 // RecordSuccess 记录成功请求
@@ -147,26 +158,51 @@ func (b *BanditScorer) UpdateQuota(credID string, remaining, total int64) {
 
 // Sample 使用 Thompson Sampling 采样凭据得分
 // 返回 0-1 之间的综合得分，越高越好
+//
+// 2026-07-27 concurrency fix: the hot path used to take the exclusive write
+// lock (b.mu.Lock) for the whole body, only so getOrCreateScoreLocked could
+// lazily create a missing score. That serialized every Sample on the routing
+// path. Now the fast path (score exists) takes only the RLock long enough to
+// snapshot the score fields; on a miss it upgrades to the write lock and
+// re-checks (a concurrent Sample may have created the score in the meantime).
+// rng access is serialized by its own rngMu (see struct comment). The returned
+// value and the LastSample/LastScored side effects are identical to before.
 func (b *BanditScorer) Sample(credID string) float64 {
-	b.mu.Lock()
-	defer b.mu.Unlock()
+	// Fast path: score already exists — snapshot its fields under the read
+	// lock, then compute without holding the scores lock.
+	b.mu.RLock()
+	scorePtr, exists := b.scores[credID]
+	var snapshot BanditScore
+	if exists {
+		snapshot = *scorePtr
+	}
+	b.mu.RUnlock()
 
-	score := b.getOrCreateScoreLocked(credID)
+	if !exists {
+		// Miss: upgrade to the write lock to lazily create, re-checking after
+		// upgrading because a concurrent Sample may have created it already.
+		b.mu.Lock()
+		scorePtr = b.getOrCreateScoreLocked(credID)
+		snapshot = *scorePtr
+		b.mu.Unlock()
+	}
 
-	// 1. Thompson Sampling: 从 Beta 分布采样可靠性
-	reliability := b.sampleBeta(score.Alpha, score.Beta)
+	// 1. Thompson Sampling: 从 Beta 分布采样可靠性 (rng is shared → rngMu)
+	b.rngMu.Lock()
+	reliability := b.sampleBeta(snapshot.Alpha, snapshot.Beta)
+	b.rngMu.Unlock()
 
 	// 2. 速度得分: 基于平均延迟的饱和曲线
-	speed := b.speedScore(score)
+	speed := b.speedScore(&snapshot)
 
 	// 3. 智能得分: 归一化 rank (1-100 -> 1.0-0.0)
-	intelligence := b.intelligenceScore(score)
+	intelligence := b.intelligenceScore(&snapshot)
 
 	// 4. 配额保护因子: headroom factor
-	headroom := b.headroomFactor(score)
+	headroom := b.headroomFactor(&snapshot)
 
 	// 5. 429 惩罚因子
-	rateLimitFactor := b.rateLimitFactor(score)
+	rateLimitFactor := b.rateLimitFactor(&snapshot)
 
 	// 综合得分（参考 freellmapi 的 combineScore）
 	// 默认权重: reliability=0.4, speed=0.3, intelligence=0.3
@@ -179,8 +215,15 @@ func (b *BanditScorer) Sample(credID string) float64 {
 	combined := reliability*wReliability + speed*wSpeed + intelligence*wIntelligence
 	combined = combined * headroom * rateLimitFactor
 
-	score.LastSample = combined
-	score.LastScored = time.Now()
+	// Write back the debug side effects under the write lock. This is a tiny
+	// critical section (two field assigns) instead of holding the lock across
+	// the whole sampling body.
+	b.mu.Lock()
+	if s, ok := b.scores[credID]; ok {
+		s.LastSample = combined
+		s.LastScored = time.Now()
+	}
+	b.mu.Unlock()
 
 	return combined
 }

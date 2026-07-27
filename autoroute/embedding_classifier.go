@@ -6,7 +6,6 @@ import (
 	"math"
 	"strconv"
 	"strings"
-	"sync"
 
 	"github.com/jackc/pgx/v5"
 )
@@ -26,13 +25,16 @@ type EmbeddingDB interface {
 
 // EmbeddingClassifier finds the nearest task centroid using cosine similarity.
 // Centroids are updated online by UpdateCentroidEMA after sampled requests.
+//
+// 2026-07-27: the struct carries no mutable in-memory state — pool/embed/
+// model/dim/alpha are write-once at construction — so there is nothing left
+// for a mutex to protect (see UpdateCentroidEMA).
 type EmbeddingClassifier struct {
 	pool  EmbeddingDB
 	embed EmbeddingClient
 	model string
 	dim   int
 	alpha float64
-	mu    sync.Mutex
 }
 
 // NewEmbeddingClassifier creates an embedding classifier with EMA defaults.
@@ -145,9 +147,13 @@ func (c *EmbeddingClassifier) UpdateCentroidEMA(ctx context.Context, taskType Ta
 		return err
 	}
 
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
+	// 2026-07-27 concurrency fix: no process-wide mutex around the
+	// transaction. Correctness comes from the row-level `SELECT ... FOR
+	// UPDATE` below: concurrent EMA updaters (in this process or any other
+	// instance) serialize on the centroid row itself, so no sample is lost.
+	// Holding c.mu across BeginTx → QueryRow → Exec → Commit added nothing
+	// (it cannot coordinate other instances) while a single DB stall pinned
+	// every shadow-EMA goroutine behind it.
 	tx, err := c.pool.BeginTx(ctx, pgx.TxOptions{})
 	if err != nil {
 		return fmt.Errorf("embedding classifier: begin EMA transaction: %w", err)

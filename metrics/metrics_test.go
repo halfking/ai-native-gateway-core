@@ -107,20 +107,20 @@ func TestPrometheusRecorder(t *testing.T) {
 // TestGlobalRecorder 测试全局 Recorder
 func TestGlobalRecorder(t *testing.T) {
 	// 默认是 NoopRecorder
-	assert.NotNil(t, Global)
+	assert.NotNil(t, Global())
 
 	// 设置为 Noop (避免重复注册 Prometheus metrics)
 	noop := NewNoopRecorder()
 	SetGlobal(noop)
-	assert.Equal(t, noop, Global)
+	assert.Equal(t, noop, Global())
 
 	// 使用全局 Recorder
-	Global.RecordCircuitRequest("closed")
-	Global.RecordCircuitSuccess()
+	Global().RecordCircuitRequest("closed")
+	Global().RecordCircuitSuccess()
 
 	// 验证不会 panic
-	Global.RecordAdapterConversion("openai", "request", time.Millisecond)
-	Global.RecordSchedulerSelection("1", time.Microsecond)
+	Global().RecordAdapterConversion("openai", "request", time.Millisecond)
+	Global().RecordSchedulerSelection("1", time.Microsecond)
 }
 
 // BenchmarkPrometheusRecorder_CircuitBreaker Circuit Breaker 指标性能

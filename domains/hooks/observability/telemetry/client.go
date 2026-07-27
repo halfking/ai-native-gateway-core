@@ -24,6 +24,12 @@ type Client struct {
 	done  chan struct{}
 	wg    sync.WaitGroup
 
+	// 2026-07-27 concurrency fix: hookMu guards onPersisted / onEmitted /
+	// fallback. The worker goroutine starts inside the constructor and reads
+	// all three, while Set*/Add* run later from wiring code — previously an
+	// unsynchronized write/read pair.
+	hookMu sync.RWMutex
+
 	// onPersisted hooks run after every successful INSERT/UPDATE of a
 	// request_logs row. Consumers use AddOnRequestLogPersisted to register.
 	onPersisted []func(entry *RequestLogEntry)
@@ -338,7 +344,18 @@ func (c *Client) DBPool() *pgxpool.Pool {
 func (c *Client) SetDegraded(enabled bool) { c.degraded.Store(enabled) }
 
 func (c *Client) SetFallbackWriter(writer dbdegradation.BackupWriter) {
+	c.hookMu.Lock()
 	c.fallback = writer
+	c.hookMu.Unlock()
+}
+
+// fallbackWriter returns the current fallback writer under hookMu.
+// Callers must invoke it OUTSIDE any lock they hold and then use the
+// returned value — the writer itself does file I/O.
+func (c *Client) fallbackWriter() dbdegradation.BackupWriter {
+	c.hookMu.RLock()
+	defer c.hookMu.RUnlock()
+	return c.fallback
 }
 
 func (c *Client) ReplayFallback(ctx context.Context, record dbdegradation.BackupRecord) error {
@@ -356,6 +373,8 @@ func (c *Client) ReplayFallback(ctx context.Context, record dbdegradation.Backup
 // SetOnRequestLogPersisted registers the sole persisted hook (replaces any prior hooks).
 // Prefer AddOnRequestLogPersisted when multiple consumers are needed.
 func (c *Client) SetOnRequestLogPersisted(fn func(entry *RequestLogEntry)) {
+	c.hookMu.Lock()
+	defer c.hookMu.Unlock()
 	if fn == nil {
 		c.onPersisted = nil
 		return
@@ -370,7 +389,14 @@ func (c *Client) AddOnRequestLogPersisted(fn func(entry *RequestLogEntry)) {
 	if fn == nil {
 		return
 	}
-	c.onPersisted = append(c.onPersisted, fn)
+	c.hookMu.Lock()
+	// Copy-on-write: readers snapshot the slice header, so appending in place
+	// could overwrite an element a reader is iterating over.
+	next := make([]func(entry *RequestLogEntry), 0, len(c.onPersisted)+1)
+	next = append(next, c.onPersisted...)
+	next = append(next, fn)
+	c.onPersisted = next
+	c.hookMu.Unlock()
 }
 
 // SetOnRequestLogEmitted registers a hook invoked immediately when
@@ -379,7 +405,9 @@ func (c *Client) AddOnRequestLogPersisted(fn func(entry *RequestLogEntry)) {
 // runs on the caller's goroutine and MUST be non-blocking (use
 // select with default for channel sends). Pass nil to clear.
 func (c *Client) SetOnRequestLogEmitted(fn func(entry *RequestLogEntry)) {
+	c.hookMu.Lock()
 	c.onEmitted = fn
+	c.hookMu.Unlock()
 }
 
 func (c *Client) EmitDecisionLog(entry *DecisionLogEntry) {
@@ -407,14 +435,19 @@ func (c *Client) EmitRequestLog(entry *RequestLogEntry) {
 	// Fire the onEmitted hook immediately from the caller's goroutine
 	// BEFORE queuing. This provides faster real-time updates from the
 	// in-memory pipeline rather than waiting for DB write completion.
-	if c.onEmitted != nil {
+	// 2026-07-27 concurrency fix: read the hook under hookMu, then invoke it
+	// with the lock released (never hold a mutex across a user callback).
+	c.hookMu.RLock()
+	onEmitted := c.onEmitted
+	c.hookMu.RUnlock()
+	if onEmitted != nil {
 		func() {
 			defer func() {
 				if r := recover(); r != nil {
 					slog.Warn("telemetry onEmitted panic", "request_id", entry.RequestID)
 				}
 			}()
-			c.onEmitted(entry)
+			onEmitted(entry)
 		}()
 	}
 
@@ -424,8 +457,8 @@ func (c *Client) EmitRequestLog(entry *RequestLogEntry) {
 		// Request logs power /request-logs — never silently drop on backpressure.
 		if err := c.persistRequestLog(entry); err != nil {
 			atomic.AddUint64(&c.failPermanent, 1)
-			if c.fallback != nil {
-				if fallbackErr := c.fallback.WriteRequestLog(context.Background(), entry.RequestID+":"+string(entry.Op), entry); fallbackErr != nil {
+			if fallback := c.fallbackWriter(); fallback != nil {
+				if fallbackErr := fallback.WriteRequestLog(context.Background(), entry.RequestID+":"+string(entry.Op), entry); fallbackErr != nil {
 					slog.Warn("telemetry request sync fallback failed", "request_id", entry.RequestID, "db_error", err, "fallback_error", fallbackErr)
 				} else {
 					atomic.AddUint64(&c.failFallback, 1)
@@ -509,8 +542,8 @@ func (c *Client) flush(batch []any) {
 		case *RequestLogEntry:
 			if err := c.persistRequestLog(v); err != nil {
 				atomic.AddUint64(&c.failPermanent, 1)
-				if c.fallback != nil {
-					if fallbackErr := c.fallback.WriteRequestLog(context.Background(), v.RequestID+":"+string(v.Op), v); fallbackErr != nil {
+				if fallback := c.fallbackWriter(); fallback != nil {
+					if fallbackErr := fallback.WriteRequestLog(context.Background(), v.RequestID+":"+string(v.Op), v); fallbackErr != nil {
 						slog.Warn("telemetry request fallback failed", "request_id", v.RequestID, "db_error", err, "fallback_error", fallbackErr)
 					} else {
 						atomic.AddUint64(&c.failFallback, 1)
@@ -611,10 +644,11 @@ func (c *Client) insertDecisionLog(entry *DecisionLogEntry) error {
 func (c *Client) persistRequestLog(entry *RequestLogEntry) error {
 	normalizeRequestStatus(entry)
 	if c.degraded.Load() {
-		if c.fallback == nil {
+		fallback := c.fallbackWriter()
+		if fallback == nil {
 			return errNoTelemetryDB
 		}
-		return c.fallback.WriteRequestLog(context.Background(), entry.RequestID+":"+string(entry.Op), entry)
+		return fallback.WriteRequestLog(context.Background(), entry.RequestID+":"+string(entry.Op), entry)
 	}
 	var err error
 	if entry.Op == RequestLogUpdate {
@@ -622,8 +656,13 @@ func (c *Client) persistRequestLog(entry *RequestLogEntry) error {
 	} else {
 		err = c.insertRequestLog(entry)
 	}
-	if err == nil && len(c.onPersisted) > 0 {
-		for _, hook := range c.onPersisted {
+	// 2026-07-27 concurrency fix: snapshot the hook slice under hookMu and
+	// invoke the callbacks with the lock released.
+	c.hookMu.RLock()
+	persisted := c.onPersisted
+	c.hookMu.RUnlock()
+	if err == nil && len(persisted) > 0 {
+		for _, hook := range persisted {
 			func(h func(*RequestLogEntry)) {
 				defer func() {
 					if r := recover(); r != nil {
@@ -1645,7 +1684,7 @@ func escapeInvalidEscape(s string) string {
 			}
 			if !hexOK {
 				b.WriteString("\\\\u") // double the backslash
-				i += 2 // skip the \u
+				i += 2                 // skip the \u
 				continue
 			}
 		}

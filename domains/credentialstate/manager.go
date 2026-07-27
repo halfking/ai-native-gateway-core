@@ -78,6 +78,34 @@ type Manager struct {
 
 	noCandidatesMu         sync.Mutex
 	noCandidatesDispatched map[string]time.Time
+
+	// 2026-07-27 (concurrency fix): per-cache-key mutexes serializing the
+	// read-modify-write in UpdateOnSuccess / UpdateOnFailure. memCache is a
+	// sync.Map, which only protects the map — not the *State it stores — so
+	// two concurrent failures for the same (credential, model) used to read
+	// the same ConsecutiveFails, both increment to N+1 and lose one bump,
+	// making the cooling/threshold decision read torn state.
+	//
+	// A keyed sync.Map of mutexes (rather than a fixed 64-way shard array) is
+	// used deliberately: the lock granularity is exactly the state granularity,
+	// so no unrelated (credential, model) pair is ever serialized against
+	// another. The entries are tiny and the key space is bounded by the number
+	// of live credential×model pairs, which memCache already holds.
+	keyMu sync.Map // cacheKey -> *sync.Mutex
+}
+
+// lockKey returns the mutex guarding the read-modify-write cycle for one
+// cache key, creating it on first use. Callers must Unlock it.
+func (m *Manager) lockKey(key string) *sync.Mutex {
+	if mu, ok := m.keyMu.Load(key); ok {
+		l := mu.(*sync.Mutex)
+		l.Lock()
+		return l
+	}
+	actual, _ := m.keyMu.LoadOrStore(key, &sync.Mutex{})
+	l := actual.(*sync.Mutex)
+	l.Lock()
+	return l
 }
 
 // CacheEntry 缓存条目
@@ -163,6 +191,14 @@ func (m *Manager) SetInvalidateCandidateCache(fn func(credentialID int)) {
 func (m *Manager) UpdateOnSuccess(ctx context.Context, credID int, model string, latencyMs int, requestID string) {
 	key := m.cacheKey(credID, model)
 
+	// 2026-07-27 (concurrency fix): serialize the whole read-modify-write for
+	// this key. getFromMemCache now returns a private copy, so the mutation
+	// below is race-free; the lock is what keeps the AvgLatencyMs moving
+	// average and the ConsecutiveFails reset from being computed off a state
+	// that another goroutine has already superseded.
+	keyLock := m.lockKey(key)
+	defer keyLock.Unlock()
+
 	state, _ := m.getFromMemCache(key)
 	if state == nil {
 		state = &State{
@@ -188,10 +224,15 @@ func (m *Manager) UpdateOnSuccess(ctx context.Context, credID int, model string,
 	state.Source = "request"
 
 	m.setToMemCache(key, state)
+	// 2026-07-27 (concurrency fix): hand the goroutine its own snapshot. The
+	// goroutine json.Marshals the state asynchronously, so it must not read a
+	// State that is still reachable (and previously mutable) from the request
+	// path.
+	snapshot := *state
 	go func() {
 		redisCtx, cancel := runctx.DetachedTimeout(ctx, 3*time.Second)
 		defer cancel()
-		m.setToRedis(redisCtx, key, state)
+		m.setToRedis(redisCtx, key, &snapshot)
 	}()
 
 	avail := true
@@ -230,6 +271,14 @@ func (m *Manager) UpdateOnFailure(ctx context.Context, credID int, model string,
 	}
 
 	key := m.cacheKey(credID, model)
+
+	// 2026-07-27 (concurrency fix): serialize the read-modify-write for this
+	// key. Without it two concurrent failures both read the same
+	// ConsecutiveFails, both write N+1, and one increment is lost — so the
+	// >=2 / >=3 permanent/transient thresholds could be skipped entirely and
+	// the cooling decision below ran on torn state.
+	keyLock := m.lockKey(key)
+	defer keyLock.Unlock()
 
 	state, _ := m.getFromMemCache(key)
 	if state == nil {
@@ -408,10 +457,13 @@ func (m *Manager) UpdateOnFailure(ctx context.Context, credID int, model string,
 	}
 
 	m.setToMemCache(key, state)
+	// 2026-07-27 (concurrency fix): snapshot before launching the goroutine —
+	// see UpdateOnSuccess.
+	snapshot := *state
 	go func() {
 		redisCtx, cancel := runctx.DetachedTimeout(ctx, 3*time.Second)
 		defer cancel()
-		m.setToRedis(redisCtx, key, state)
+		m.setToRedis(redisCtx, key, &snapshot)
 	}()
 
 	errStr := string(errKind)
@@ -450,11 +502,17 @@ func (m *Manager) UpdateFromProbe(ctx context.Context, state *State) {
 		)
 	}
 
-	m.setToMemCache(key, state)
+	// 2026-07-27 (concurrency fix): cache and marshal our own copy. `state` is
+	// owned by the caller (a probe worker), which may keep mutating or reusing
+	// it after this returns; the async setToRedis below would then marshal a
+	// state that is being written concurrently.
+	cached := *state
+	m.setToMemCache(key, &cached)
+	snapshot := *state
 	go func() {
 		redisCtx, cancel := runctx.DetachedTimeout(ctx, 3*time.Second)
 		defer cancel()
-		m.setToRedis(redisCtx, key, state)
+		m.setToRedis(redisCtx, key, &snapshot)
 	}()
 
 	slog.Debug("credstate: probe result updated",
@@ -585,7 +643,10 @@ func (m *Manager) GetState(ctx context.Context, credID int, model string) (*Stat
 
 	// L2: Redis缓存
 	if state, err := m.getFromRedis(ctx, key); err == nil && state != nil {
-		m.setToMemCache(key, state)
+		// 2026-07-27 (concurrency fix): cache a copy so the pointer we return
+		// to the caller is not the one the cache keeps (see getFromMemCache).
+		cached := *state
+		m.setToMemCache(key, &cached)
 		return state, nil
 	}
 
@@ -596,8 +657,18 @@ func (m *Manager) GetState(ctx context.Context, credID int, model string) (*Stat
 	}
 
 	if state != nil {
-		m.setToMemCache(key, state)
-		go m.setToRedis(ctx, key, state)
+		cached := *state
+		m.setToMemCache(key, &cached)
+		// 2026-07-27: use a detached context like every other setToRedis call
+		// site. With the request ctx the cache write was cancelled as soon as
+		// the request finished, so the L2 backfill after an L3 hit usually
+		// never landed.
+		snapshot := *state
+		go func() {
+			redisCtx, cancel := runctx.DetachedTimeout(ctx, 3*time.Second)
+			defer cancel()
+			m.setToRedis(redisCtx, key, &snapshot)
+		}()
 	}
 
 	return state, nil
@@ -626,7 +697,10 @@ func (m *Manager) GetStaleStates(staleTTL time.Duration) []*State {
 	m.memCache.Range(func(k, v interface{}) bool {
 		entry := v.(*CacheEntry)
 		if now.Sub(entry.State.LastUpdatedAt) > staleTTL {
-			stale = append(stale, entry.State)
+			// 2026-07-27 (concurrency fix): copy — the cached *State must never
+			// escape the cache, see getFromMemCache.
+			clone := *entry.State
+			stale = append(stale, &clone)
 		}
 		return true
 	})

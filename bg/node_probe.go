@@ -640,6 +640,29 @@ func (w *NodeProbeWorker) ProbeSync(
 		winnerSet    bool
 	)
 
+	// 2026-07-27 concurrency fix: winnerSet / winnerDirect / winnerGw were
+	// written under winnerMu but read unlocked (the `!winnerSet` fast-path
+	// guards and the success log below). Harmless today — only this
+	// goroutine writes them — but the mutex was dead weight and the
+	// asymmetry invites a real race the moment a second writer appears.
+	// Lock both sides consistently instead.
+	winnerIsSet := func() bool {
+		winnerMu.Lock()
+		defer winnerMu.Unlock()
+		return winnerSet
+	}
+	// takeWinner records the first recovered result. Returns nothing; the
+	// double-check inside the lock keeps "first writer wins" semantics.
+	takeWinner := func(direct, gw nodeProbeRoundResult) {
+		winnerMu.Lock()
+		if !winnerSet {
+			winnerDirect = direct
+			winnerGw = gw
+			winnerSet = true
+		}
+		winnerMu.Unlock()
+	}
+
 	doneFresh := make(chan struct{})
 	go func() {
 		wg.Wait()
@@ -650,27 +673,15 @@ drainLoop:
 	for {
 		select {
 		case res := <-results:
-			if !winnerSet && probeRecovered(res.direct) {
-				winnerMu.Lock()
-				if !winnerSet {
-					winnerDirect = res.direct
-					winnerGw = res.gateway
-					winnerSet = true
-				}
-				winnerMu.Unlock()
+			if !winnerIsSet() && probeRecovered(res.direct) {
+				takeWinner(res.direct, res.gateway)
 			}
 		case <-doneFresh:
 			for {
 				select {
 				case res := <-results:
-					if !winnerSet && probeRecovered(res.direct) {
-						winnerMu.Lock()
-						if !winnerSet {
-							winnerDirect = res.direct
-							winnerGw = res.gateway
-							winnerSet = true
-						}
-						winnerMu.Unlock()
+					if !winnerIsSet() && probeRecovered(res.direct) {
+						takeWinner(res.direct, res.gateway)
 					}
 				default:
 					break drainLoop
@@ -696,22 +707,17 @@ drainLoop:
 			nodeProbeSyncInflightWaiters.Dec()
 			// A background / sibling probe finished. Did it actually
 			// mark this (cred,model) available? Re-check the cache.
-			if !winnerSet && w.stateProvider != nil {
+			// IsAvailable does I/O — call it outside winnerMu.
+			if !winnerIsSet() && w.stateProvider != nil {
 				if avail, _ := w.stateProvider.IsAvailable(ctx, j.credID, j.model); avail {
-					winnerMu.Lock()
-					if !winnerSet {
-						winnerSet = true
-						// We don't have the probe round result here;
-						// synthesize a minimal winner record so the
-						// success-path log line still fires.
-						winnerDirect = nodeProbeRoundResult{
-							ok:            true,
-							providerID:    j.credID,
-							outboundModel: j.model,
-						}
-						winnerGw = nodeProbeRoundResult{ok: true}
-					}
-					winnerMu.Unlock()
+					// We don't have the probe round result here;
+					// synthesize a minimal winner record so the
+					// success-path log line still fires.
+					takeWinner(nodeProbeRoundResult{
+						ok:            true,
+						providerID:    j.credID,
+						outboundModel: j.model,
+					}, nodeProbeRoundResult{ok: true})
 				}
 			}
 		case <-ctx.Done():
@@ -719,13 +725,18 @@ drainLoop:
 		}
 	}
 
-	if winnerSet {
+	// Read the winner fields once under the lock, then log from the locals.
+	winnerMu.Lock()
+	finalSet, finalDirect, finalGw := winnerSet, winnerDirect, winnerGw
+	winnerMu.Unlock()
+
+	if finalSet {
 		nodeProbeSyncTotal.WithLabelValues("recovered").Inc()
 		slog.Info("node_probe_worker: sync probe recovered",
-			"credential_id", winnerDirect.providerID,
-			"outbound_model", winnerDirect.outboundModel,
-			"direct_status", winnerDirect.httpStatus,
-			"gateway_status", winnerGw.httpStatus,
+			"credential_id", finalDirect.providerID,
+			"outbound_model", finalDirect.outboundModel,
+			"direct_status", finalDirect.httpStatus,
+			"gateway_status", finalGw.httpStatus,
 			"tenant_id", tenantID,
 			"parent_request_id", parentReqID,
 			"elapsed_ms", time.Since(start).Milliseconds(),

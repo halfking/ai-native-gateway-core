@@ -244,10 +244,12 @@ func (d *Decider) Decide(ctx context.Context, sigs ClassificationSignals, apiKey
 	}
 	// Step 0: check session intent cache (skip if no sessionID or cache disabled)
 	if sessionID != "" && d.intentCache != nil {
-		if cached, ok := d.intentCache.Get(sessionID); ok {
-			// 2026-07-04 V18: increment hit count and check drift threshold
-			cached.HitCount++
-			d.intentCache.Put(sessionID, cached)
+		// 2026-07-27 concurrency fix: use IncrementHit so the read-modify-write
+		// of HitCount happens under a single write lock. The previous
+		// Get→HitCount++→Put pattern raced across concurrent requests on the
+		// same session (same count read, last Put wins → hits undercounted,
+		// drift threshold fires late).
+		if cached, ok := d.intentCache.IncrementHit(sessionID); ok {
 			if !shouldReclassify(cached.TaskType, sigs, cached.HitCount) {
 				decision := &Decision{
 					ChosenModel:        cached.ChosenModel,

@@ -838,6 +838,43 @@ type ExecParams struct {
 	RoutingTracker *RoutingAttemptsTracker
 }
 
+// discardResponseWriter is a write-only sink used when there is no live
+// client to write to (async retry goroutine — see startAsyncRetry).
+//
+// 并发修复 2026-07-27：异步重试 goroutine 里 ExecParams.W 为 nil，但
+// 下游的流式/非流式写函数（StreamChat / StreamResponse /
+// WriteNonStreamResponse / 各 protocol bridge）都无条件解引用 writer。
+// 与其在每个调用点分支，不如给它们一个丢弃 writer：upstream body 仍会
+// 被完整读出并写入 params.Capture（PendingStore 依赖它拿到 body），
+// 字节则直接丢掉。实现 http.Flusher 是必需的 —— 所有 SSE 写函数都做
+// `w.(http.Flusher)` 断言，缺了它会走降级/报错分支。
+type discardResponseWriter struct {
+	header http.Header
+}
+
+func (d *discardResponseWriter) Header() http.Header {
+	if d.header == nil {
+		d.header = make(http.Header)
+	}
+	return d.header
+}
+
+func (d *discardResponseWriter) Write(p []byte) (int, error) { return len(p), nil }
+func (d *discardResponseWriter) WriteHeader(int)             {}
+func (d *discardResponseWriter) Flush()                      {}
+
+// responseSink returns the writer downstream write paths should use.
+// It is params.W for a normal request-scoped call, or a discard writer
+// when W is nil (async retry goroutine). Never returns nil, so callers
+// can pass the result straight into the stream/response writers without
+// a nil check.
+func responseSink(params *ExecParams) http.ResponseWriter {
+	if params != nil && params.W != nil {
+		return params.W
+	}
+	return &discardResponseWriter{}
+}
+
 // SetTraceRecorder (2026-07-17) 注入请求链路追踪器,
 // 用于记录 upstream_request / stream_start 等阶段事件。
 func (e *Executor) SetTraceRecorder(rec gwtrace.Recorder) {
@@ -3419,6 +3456,28 @@ func (e *Executor) startAsyncRetry(
 	// unbounded. We pass the ctx via a closure to runAsyncRetry
 	// which sets it on the request before calling Execute.
 	bgParams := *params
+	// 并发修复 2026-07-27：detached goroutine 绝不能触碰客户端的
+	// http.ResponseWriter 或它的回调。startAsyncRetry 返回
+	// AsyncPendingError 后 handler 立即写 202 并返回，此时 W 已经失效
+	// （net/http 会复用/回收底层连接对象）。原实现把 *params 整体拷贝进
+	// bgParams，于是 W 和六个 On* 回调都被带进了后台 goroutine，
+	// runAsyncRetry -> Execute -> executor_chat.go 的
+	// `if !params.SuppressSuccessWrite { params.W.WriteHeader(...) }`
+	// 会在 202 之后继续往死掉的 writer 上写，造成 "superfluous
+	// WriteHeader" / 响应串包 / keepalive goroutine 竞争。
+	//
+	// 异步结果的唯一出口是 PendingStore（客户端轮询获取），所以这里
+	// 置空 W + 打开 SuppressSuccessWrite，并清掉全部回调；下游需要
+	// writer 才能工作的流式/非流式路径改用 responseSink() 的丢弃
+	// writer（既能读完 upstream body 写入 Capture，又不碰客户端连接）。
+	bgParams.W = nil
+	bgParams.SuppressSuccessWrite = true
+	bgParams.OnStreamReady = nil
+	bgParams.OnStreamStarted = nil
+	bgParams.OnStreamCompleted = nil
+	bgParams.OnProbeHoldStart = nil
+	bgParams.OnProbeHoldEnd = nil
+	bgParams.OnPreStreamKeepalivePause = nil
 	if params.R != nil {
 		syntheticReq := httptest.NewRequest("POST", params.R.URL.Path, nil)
 		syntheticReq.Header = params.R.Header.Clone()
