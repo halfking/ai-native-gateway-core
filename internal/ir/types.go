@@ -362,10 +362,39 @@ type ToolResult struct {
 }
 
 // ToolDefinition is a callable tool schema.
+//
+// 2026-07-27 (F-1): the struct previously had only Name/Description/Parameters,
+// which modelled only OpenAI/Anthropic "function"-shaped tools. Provider-specific
+// tool types (Anthropic computer_use / bash / text_editor; OpenAI web_search /
+// code_interpreter / file_search) have no function.name and no JSON-schema
+// parameters, so they were silently dropped on parse and could never be
+// re-emitted. Type + Raw capture them for passthrough:
+//
+//   - Type: the tool's wire "type". Empty or "function" → standard function
+//     tool, serialized as {type:"function", function:{name,description,
+//     parameters}}. Any other value (e.g. "computer_20250124",
+//     "web_search_preview") → provider-specific; serialized from Raw on
+//     same-protocol routes.
+//   - Raw: the original JSON object bytes for a provider-specific tool, kept
+//     verbatim so a same-protocol serialize is byte-faithful. Empty for
+//     standard function tools.
 type ToolDefinition struct {
 	Name        string          `json:"name"`
 	Description string          `json:"description,omitempty"`
 	Parameters  json.RawMessage `json:"parameters,omitempty"` // JSON Schema
+	// Type is the wire type of the tool. "" and "function" mean a standard
+	// function tool (serialized from Name/Description/Parameters). Any other
+	// value marks a provider-specific tool serialized from Raw.
+	Type string `json:"type,omitempty"`
+	// Raw is the verbatim original JSON for a provider-specific tool. Only
+	// populated when Type is neither "" nor "function".
+	Raw json.RawMessage `json:"raw,omitempty"`
+}
+
+// IsFunction reports whether this tool is a standard function-shaped tool
+// (Name/Description/Parameters) rather than a provider-specific type.
+func (t ToolDefinition) IsFunction() bool {
+	return t.Type == "" || t.Type == "function"
 }
 
 // ToolChoice controls automatic vs forced tool calling.
