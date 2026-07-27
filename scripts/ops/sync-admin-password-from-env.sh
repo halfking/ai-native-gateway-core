@@ -42,7 +42,7 @@ import json, os, subprocess, sys, urllib.error, urllib.request, uuid
 
 def read_env(path):
     out = {}
-    with open(path) as f:
+    with open(path, encoding='utf-8') as f:
         for line in f:
             line = line.strip()
             if not line or line.startswith('#') or '=' not in line:
