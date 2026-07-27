@@ -171,6 +171,18 @@ func (s *DefaultScorer) calculateAvailabilityScore(snapshots []*MetricSnapshot) 
 	// 成功率分数
 	successRate := float64(successRequests) / float64(totalRequests) * 100
 
+	// 2026-07-27 (audit): guard against count==0. count only increments when a
+	// snapshot carries AvgTTFTMs>0, but totalRequests can be >0 while every
+	// snapshot has AvgTTFTMs==0 (e.g. all probes timed out before first
+	// token). Dividing by zero here yields +Inf/NaN, which silently corrupts
+	// the availability score and can trip a false auto-disable alert. When
+	// there is no TTFT signal, score on success rate alone (the 0.7 weight)
+	// rather than poisoning the dimension. Commit 006a8ce3 fixed the sibling
+	// site in aggregator.go but missed this scorer path.
+	if count == 0 {
+		return successRate
+	}
+
 	// TTFT评分
 	avgTTFT = avgTTFT / float64(count)
 	ttftScore := s.scoreTTFT(avgTTFT)

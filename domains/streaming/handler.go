@@ -971,11 +971,13 @@ func (h *ChatHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// This early write uses the minimal fields available at this point
 	// (requestID + provisional session id); tenant_id and client_model are
 	// enriched later (the request_logs_hot row carries the full detail via
-	// the telemetry path). The INSERT is ON CONFLICT (request_id, created_at)
-	// DO NOTHING, so the later, fuller CreateInitial at ~2371 is a no-op when
-	// this one already landed — no duplicate rows, no overwrite of enriched
-	// fields. For requests that DO reach 2371, the early row simply exists
-	// sooner; for pre-routing failures it is the only WAL row.
+	// the telemetry path). CreateInitial now conflicts on (request_id) — via
+	// the unique index from migration 461 — and does an additive
+	// COALESCE first-write-wins UPDATE, so the later, fuller CreateInitial at
+	// ~2371 enriches this early row in place rather than creating a second
+	// one (the old (request_id, created_at) target never collided across two
+	// separate Execs because NOW() differed, orphaning the early row). For
+	// pre-routing failures this is the only WAL row.
 	if h.requestLogger != nil {
 		earlyReq := &telemetry.InitialRequest{
 			RequestID: requestID,

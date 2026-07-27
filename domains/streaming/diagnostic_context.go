@@ -110,19 +110,34 @@ func rawStreamFrameHasToolCall(frame []byte) bool {
 	if err := json.Unmarshal(frame, &raw); err != nil {
 		return false
 	}
-	if choices, ok := raw["choices"].([]any); ok && len(choices) > 0 {
-		if choice, ok := choices[0].(map[string]any); ok {
-			if delta, ok := choice["delta"].(map[string]any); ok {
-				if toolCalls, ok := delta["tool_calls"].([]any); ok && len(toolCalls) > 0 {
+	// OpenAI / OpenAI-compatible (including n>1 with multiple choices)
+	if choices, ok := raw["choices"].([]any); ok {
+		for _, choice := range choices {
+			c, ok := choice.(map[string]any)
+			if !ok {
+				continue
+			}
+			if delta, ok := c["delta"].(map[string]any); ok {
+				if tcs, ok := delta["tool_calls"].([]any); ok && len(tcs) > 0 {
+					return true
+				}
+				if _, ok := delta["function_call"].(map[string]any); ok {
 					return true
 				}
 			}
-			if message, ok := choice["message"].(map[string]any); ok {
-				if toolCalls, ok := message["tool_calls"].([]any); ok && len(toolCalls) > 0 {
+			if msg, ok := c["message"].(map[string]any); ok {
+				if tcs, ok := msg["tool_calls"].([]any); ok && len(tcs) > 0 {
+					return true
+				}
+				if _, ok := msg["function_call"].(map[string]any); ok {
 					return true
 				}
 			}
 		}
+	}
+	// Anthropic: top-level content_block or message_start carrying message.content[]
+	if cb, ok := raw["content_block"].(map[string]any); ok && cb["type"] == "tool_use" {
+		return true
 	}
 	if content, ok := raw["content"].([]any); ok {
 		for _, block := range content {
@@ -131,8 +146,40 @@ func rawStreamFrameHasToolCall(frame []byte) bool {
 			}
 		}
 	}
-	if contentBlock, ok := raw["content_block"].(map[string]any); ok && contentBlock["type"] == "tool_use" {
-		return true
+	if msg, ok := raw["message"].(map[string]any); ok {
+		if content, ok := msg["content"].([]any); ok {
+			for _, block := range content {
+				if value, ok := block.(map[string]any); ok && value["type"] == "tool_use" {
+					return true
+				}
+			}
+		}
+	}
+	// Gemini: candidates[].content.parts[].functionCall
+	if candidates, ok := raw["candidates"].([]any); ok {
+		for _, c := range candidates {
+			cm, ok := c.(map[string]any)
+			if !ok {
+				continue
+			}
+			content, ok := cm["content"].(map[string]any)
+			if !ok {
+				continue
+			}
+			parts, ok := content["parts"].([]any)
+			if !ok {
+				continue
+			}
+			for _, p := range parts {
+				pm, ok := p.(map[string]any)
+				if !ok {
+					continue
+				}
+				if _, ok := pm["functionCall"].(map[string]any); ok {
+					return true
+				}
+			}
+		}
 	}
 	return false
 }

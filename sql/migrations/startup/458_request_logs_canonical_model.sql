@@ -67,8 +67,8 @@ COMMENT ON COLUMN request_logs_hot.canonical_model IS
 -- these ALTERs every request_logs_hot INSERT would fail at runtime with
 -- SQLSTATE 42703 "column ... does not exist", the same P0 class of bug as
 -- the 2026-07-13 multimodal-token-fields-hot incident. They are added here
--- (not in a new migration) so that the existing 458 down.sql, which already
--- DROPs them, stays a correct inverse of this up.sql.
+-- (not in a new migration) so they share 458's down.sql, which DROPs them
+-- alongside canonical_model — keeping the up/down inverse invariant intact.
 -- Idempotent (ADD COLUMN IF NOT EXISTS). NULLABLE so historical rows survive.
 ALTER TABLE request_logs_hot
     ADD COLUMN IF NOT EXISTS agent_name       VARCHAR(255),

@@ -1411,6 +1411,13 @@ func (w *NodeProbeWorker) emitProbe(ctx context.Context, credID, providerID int,
 		ViaProxy:     result.viaProxy,
 		StartedAt:    time.Now().Add(-time.Duration(result.latencyMs) * time.Millisecond),
 		CompletedAt:  time.Now(),
+		// Explicit origin attribution: the node-probe worker bypasses
+		// OriginMiddleware, so without these labels the emitted request_logs
+		// row would inherit a stale/empty origin and the dashboard's probe
+		// filter (origin_stage = 'node_probe') would miss it. The actor name
+		// matches the goroutine label used in logs for cross-referencing.
+		OriginStage: "node_probe",
+		OriginActor: "node-probe-worker",
 	})
 }
 
