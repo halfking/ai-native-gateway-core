@@ -4,20 +4,30 @@ import (
 	"context"
 	"os"
 	"strconv"
+
+	"github.com/kaixuan/llm-gateway-go/autoroute/internal/legacyflags"
 )
 
 // FeatureFlags controls selective rollout of the V2 autoroute path.
 type FeatureFlags struct {
 	// UseSimplifiedScoring enables the 2-dim score (intent/price + correction).
+	//
+	// Deprecated: 用 URSM_V2_MODE 替代。详见 autoroute/internal/legacyflags。
 	UseSimplifiedScoring bool
 
 	// UseHotTop3Pool enables seeding candidates from the 48h hot top-3 canonicals.
+	//
+	// Deprecated: 用 URSM_V2_MODE 替代。详见 autoroute/internal/legacyflags。
 	UseHotTop3Pool bool
 
 	// UseCacheRevalidation enables live availability revalidation for session cache hits.
+	//
+	// Deprecated: 用 URSM_V2_MODE 替代。详见 autoroute/internal/legacyflags。
 	UseCacheRevalidation bool
 
 	// Use48hFallback enables the 48h fallback candidate selection.
+	//
+	// Deprecated: 用 URSM_V2_MODE 替代。详见 autoroute/internal/legacyflags。
 	Use48hFallback bool
 
 	// UseChannelQualityRouting enables the 4-dim score
@@ -44,13 +54,27 @@ type FeatureFlags struct {
 	UseExplicitDefault bool
 	UseComplexityScore bool
 
-	// AutoOnMessages/AutoOnResponses/AutoOnEmbeddings gate model=auto on
-	// non-chat endpoints (22 章 §22.2). Default off; each is independent.
+	// AutoOnMessages gates model=auto on non-chat endpoints (22 章 §22.2).
+	// Default off; independent of the other AutoOn* flags.
 	// Off → those endpoints ignore model="auto" (no rewrite, upstream sees "auto").
-	AutoOnMessages   bool
-	AutoOnResponses  bool
+	//
+	// Deprecated: 用 URSM_V2_MODE 替代。详见 autoroute/internal/legacyflags。
+	AutoOnMessages bool
+	// AutoOnResponses gates model=auto on non-chat endpoints (22 章 §22.2).
+	// Default off; independent of the other AutoOn* flags.
+	// Off → those endpoints ignore model="auto" (no rewrite, upstream sees "auto").
+	//
+	// Deprecated: 用 URSM_V2_MODE 替代。详见 autoroute/internal/legacyflags。
+	AutoOnResponses bool
+	// AutoOnEmbeddings gates model=auto on non-chat endpoints (22 章 §22.2).
+	// Default off; independent of the other AutoOn* flags.
+	// Off → those endpoints ignore model="auto" (no rewrite, upstream sees "auto").
+	//
+	// Deprecated: 用 URSM_V2_MODE 替代。详见 autoroute/internal/legacyflags。
 	AutoOnEmbeddings bool
 	// AutoEmbeddingRoute enables the M3 embedding shadow path. Default off.
+	//
+	// Deprecated: 用 URSM_V2_MODE 替代。详见 autoroute/internal/legacyflags。
 	AutoEmbeddingRoute bool
 }
 
@@ -84,24 +108,26 @@ func DefaultFeatureFlags() *FeatureFlags {
 
 // LoadFeatureFlagsFromEnv loads feature flags from environment variables.
 //
-// UseChannelQualityRouting 的默认值是 true（与 DefaultFeatureFlags 一致），
-// 表示"全量启动，没有灰度"。Opt-out：环境变量
-// AUTO_USE_CHANNEL_QUALITY_ROUTING=false。
+// 8 个 deprecated flag (UseSimplifiedScoring 等) 委托给 legacyflags.Load()
+// (设计稿 Decision 6)。新代码应读 URSM_V2_MODE。
+//
+// UseChannelQualityRouting 默认 true(全量启动), 不下沉。
 func LoadFeatureFlagsFromEnv() *FeatureFlags {
+	lf := legacyflags.Load()
 	flags := &FeatureFlags{
-		UseSimplifiedScoring: getEnvBool("AUTO_USE_SIMPLIFIED_SCORING", false),
-		UseHotTop3Pool:       getEnvBool("AUTO_USE_HOT_TOP3_POOL", false),
-		UseCacheRevalidation: getEnvBool("AUTO_USE_CACHE_REVALIDATION", false),
-		Use48hFallback:       getEnvBool("AUTO_USE_48H_FALLBACK", false),
+		UseSimplifiedScoring: lf.UseSimplifiedScoring,
+		UseHotTop3Pool:       lf.UseHotTop3Pool,
+		UseCacheRevalidation: lf.UseCacheRevalidation,
+		Use48hFallback:       lf.Use48hFallback,
 		// CHANNEL_QUALITY_ROUTING: 默认 true（全量启动）
 		UseChannelQualityRouting: getEnvBool("AUTO_USE_CHANNEL_QUALITY_ROUTING", true),
 		EnableV2Logic:            getEnvBool("AUTO_ENABLE_V2", false),
 		UseExplicitDefault:       getEnvBool("AUTO_USE_EXPLICIT_DEFAULT", false),
 		UseComplexityScore:       getEnvBool("AUTO_USE_COMPLEXITY_SCORE", false),
-		AutoOnMessages:           getEnvBool("AUTO_ON_MESSAGES", false),
-		AutoOnResponses:          getEnvBool("AUTO_ON_RESPONSES", false),
-		AutoOnEmbeddings:         getEnvBool("AUTO_ON_EMBEDDINGS", false),
-		AutoEmbeddingRoute:       getEnvBool("AUTO_EMBEDDING_ROUTE", false),
+		AutoOnMessages:           lf.AutoOnMessages,
+		AutoOnResponses:          lf.AutoOnResponses,
+		AutoOnEmbeddings:         lf.AutoOnEmbeddings,
+		AutoEmbeddingRoute:       lf.AutoEmbeddingRoute,
 	}
 
 	if flags.EnableV2Logic {

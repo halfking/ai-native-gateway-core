@@ -1,16 +1,57 @@
 package autoroute
 
 import (
+	"context"
 	"sync"
 	"time"
 
 	"github.com/redis/go-redis/v9"
+
+	ursmcache "github.com/kaixuan/llm-gateway-go/domains/ursm/v2/cache"
 )
 
 // 2026-07-04 V18: task-drift detection threshold.
 // After this many cache hits, force reclassification to detect task drift
 // (e.g., user starts with chat, then switches to code review with tools).
 const intentCacheDriftThreshold = 50
+
+// IntentRedisStore 是 domains/ursm/v2/cache.IntentStore 的最小接口,
+// autoroute 只依赖接口(与 routing.StickyRedisStore 同一模式)。
+// autoroute → ursm/v2/cache 是同模块兄弟包, 无循环依赖
+// (ursm/v2/cache 不 import autoroute, 仅注释引用)。
+type IntentRedisStore interface {
+	Set(ctx context.Context, sessionID string, in ursmcache.Intent, ttl time.Duration) error
+	Get(ctx context.Context, sessionID string) (ursmcache.Intent, bool)
+}
+
+// toCacheIntent 将内存态 CachedIntent 转为 Redis 持久化态 ursmcache.Intent。
+// 自定义 string 类型 (TaskType/Profile) 显式 cast 为 string;
+// ClassifiedAt/ExpiresAt 不入库 (Intent 用 LastSeen 自动盖戳)。
+func toCacheIntent(in CachedIntent) ursmcache.Intent {
+	return ursmcache.Intent{
+		TaskType:     string(in.TaskType),
+		ChosenModel:  in.ChosenModel,
+		CredentialID: in.CredentialID,
+		Profile:      string(in.Profile),
+		Confidence:   in.Confidence,
+		Classifier:   in.Classifier,
+		HitCount:     in.HitCount,
+	}
+}
+
+// fromCacheIntent 反向转换: Redis 拉回的 Intent 还原为 CachedIntent。
+// ClassifiedAt/ExpiresAt 留零值, 由回填内存时由 Put/调用方补戳。
+func fromCacheIntent(ci ursmcache.Intent) CachedIntent {
+	return CachedIntent{
+		TaskType:     TaskType(ci.TaskType),
+		ChosenModel:  ci.ChosenModel,
+		CredentialID: ci.CredentialID,
+		Profile:      Profile(ci.Profile),
+		Confidence:   ci.Confidence,
+		Classifier:   ci.Classifier,
+		HitCount:     ci.HitCount,
+	}
+}
 
 // CachedIntent stores the auto-route decision for a session so that
 // subsequent requests in the same session skip classification + scoring.
@@ -51,10 +92,11 @@ type CachedIntent struct {
 //	// ... classify + score ...
 //	cache.Put(sessionID, intent)
 type SessionIntentCache struct {
-	mu      sync.RWMutex
-	entries map[string]CachedIntent
-	ttl     time.Duration
-	now     func() time.Time // injectable for tests
+	mu         sync.RWMutex
+	entries    map[string]CachedIntent
+	ttl        time.Duration
+	now        func() time.Time // injectable for tests
+	redisStore IntentRedisStore // URSM v2 过渡: nil 时退化为纯内存
 }
 
 // NewSessionIntentCache constructs a cache with the given TTL.
@@ -78,8 +120,20 @@ func NewRedisSessionIntentCache(_ *redis.Client, ttl time.Duration) *SessionInte
 	return NewSessionIntentCache(ttl)
 }
 
+// SetRedisStore 注入 IntentRedisStore(URSM v2 过渡)。
+// Put 双写内存+Redis; Get miss 后回源 Redis 并回填。nil 时退化为纯内存(旧行为)。
+func (c *SessionIntentCache) SetRedisStore(store IntentRedisStore) {
+	if c == nil {
+		return
+	}
+	c.redisStore = store
+}
+
 // Get returns the cached intent for sessionID, or (zero, false) if
 // not found or expired. Expired entries are lazily deleted.
+//
+// URSM v2 过渡: 内存 miss/expired 后, 若注入了 Redis store, 回源 Redis
+// 并回填内存(读锁已释放, 回填走写锁, 不自死锁)。Redis 错误 fail-open(返回 miss)。
 func (c *SessionIntentCache) Get(sessionID string) (CachedIntent, bool) {
 	if c == nil || sessionID == "" {
 		return CachedIntent{}, false
@@ -88,14 +142,37 @@ func (c *SessionIntentCache) Get(sessionID string) (CachedIntent, bool) {
 	intent, ok := c.entries[sessionID]
 	c.mu.RUnlock()
 	if !ok {
-		return CachedIntent{}, false
+		return c.redisFallback(sessionID)
 	}
 	if c.now().After(intent.ExpiresAt) {
 		c.mu.Lock()
 		delete(c.entries, sessionID)
 		c.mu.Unlock()
+		return c.redisFallback(sessionID)
+	}
+	return intent, true
+}
+
+// redisFallback 在内存 miss 后回源 Redis。命中则转回 CachedIntent 并回填内存,
+// 不命中或 Redis 错误则返回 (zero,false)。无锁期间发起 Redis 调用。
+func (c *SessionIntentCache) redisFallback(sessionID string) (CachedIntent, bool) {
+	if c.redisStore == nil {
 		return CachedIntent{}, false
 	}
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	ci, ok := c.redisStore.Get(ctx, sessionID)
+	cancel()
+	if !ok {
+		return CachedIntent{}, false
+	}
+	intent := fromCacheIntent(ci)
+	// 回填内存, 补上 ClassifiedAt/ExpiresAt(否则下次 Get 会因零值 ExpiresAt 立即过期)
+	now := c.now()
+	intent.ClassifiedAt = now
+	intent.ExpiresAt = now.Add(c.ttl)
+	c.mu.Lock()
+	c.entries[sessionID] = intent
+	c.mu.Unlock()
 	return intent, true
 }
 
@@ -111,6 +188,14 @@ func (c *SessionIntentCache) Put(sessionID string, intent CachedIntent) {
 	c.mu.Lock()
 	c.entries[sessionID] = intent
 	c.mu.Unlock()
+
+	// Redis 双写(URSM v2 过渡): fail-open, 错误仅忽略不影响内存。
+	// 无锁期间发起 Redis 调用。
+	if c.redisStore != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+		defer cancel()
+		_ = c.redisStore.Set(ctx, sessionID, toCacheIntent(intent), c.ttl) // fail-open
+	}
 }
 
 // Invalidate removes the cached intent for sessionID. Called when a
