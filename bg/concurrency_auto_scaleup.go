@@ -3,6 +3,7 @@ package bg
 import (
 	"context"
 	"log/slog"
+	"sync"
 	"time"
 
 	"github.com/kaixuan/llm-gateway-go/credentialhealth"
@@ -15,6 +16,12 @@ type ConcurrencyAutoScaleUp struct {
 	db       credentialhealth.DBQuerier
 	interval time.Duration // default 1 hour
 	stopCh   chan struct{}
+
+	// 2026-07-27 concurrency fix: Stop() did an unguarded close(stopCh),
+	// so a second Stop() (double shutdown path) panicked with
+	// "close of closed channel". Same guard as
+	// bg/routing_health_checker.go.
+	stopOnce sync.Once
 }
 
 // NewConcurrencyAutoScaleUp creates a scaleup worker.
@@ -61,9 +68,10 @@ func (w *ConcurrencyAutoScaleUp) Start(ctx context.Context) {
 	}()
 }
 
-// Stop gracefully stops the worker.
+// Stop gracefully stops the worker. Idempotent; safe on a
+// never-Started worker.
 func (w *ConcurrencyAutoScaleUp) Stop() {
-	close(w.stopCh)
+	w.stopOnce.Do(func() { close(w.stopCh) })
 }
 
 // scaleUp finds credentials that are healthy + heavily loaded and increases their limit by 1.

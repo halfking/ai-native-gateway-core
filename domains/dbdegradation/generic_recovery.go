@@ -34,33 +34,72 @@ func (r *GenericRecovery) Recover(ctx context.Context, filename string, archive 
 	return task.ID, nil
 }
 
+// Status 返回任务状态快照。
+//
+// 2026-07-27 concurrency fix: 之前直接返回活指针，admin 侧 JSON 编码时
+// execute() 仍在后台写同一批字段 → 读写竞争。改为持 task.mu 逐字段拷贝，
+// 与 Recovery.GetTaskStatus 保持一致，活指针不再逃逸。
 func (r *GenericRecovery) Status(id string) (*RecoveryTask, bool) {
 	v, ok := r.tasks.Load(id)
 	if !ok {
 		return nil, false
 	}
-	return v.(*RecoveryTask), true
+	task := v.(*RecoveryTask)
+
+	task.mu.RLock()
+	defer task.mu.RUnlock()
+
+	return &RecoveryTask{
+		ID:               task.ID,
+		Filename:         task.Filename,
+		Status:           task.Status,
+		TotalRecords:     task.TotalRecords,
+		ProcessedRecords: task.ProcessedRecords,
+		SuccessCount:     task.SuccessCount,
+		FailureCount:     task.FailureCount,
+		StartedAt:        task.StartedAt,
+		CompletedAt:      task.CompletedAt,
+		Error:            task.Error,
+		Progress:         task.Progress,
+	}, true
 }
 
+// execute 在后台 goroutine 上跑恢复。
+//
+// 2026-07-27 concurrency fix: 所有 task 字段写入都持 task.mu（RecoveryTask
+// 本来就带 mu，这里之前完全没用），避免与 Status() 的 JSON 编码竞争。
+// I/O（GetFileSummary / ReadRecords / write / ArchiveFile）一律在锁外执行。
 func (r *GenericRecovery) execute(ctx context.Context, task *RecoveryTask, archive bool) {
+	task.mu.Lock()
 	task.Status = "running"
 	task.StartedAt = time.Now().UTC()
+	task.mu.Unlock()
+
 	file, err := r.reader.GetFileSummary(ctx, task.Filename)
 	if err != nil {
+		task.mu.Lock()
 		task.Status, task.Error, task.CompletedAt = "failed", err.Error(), time.Now().UTC()
+		task.mu.Unlock()
 		return
 	}
+
+	task.mu.Lock()
 	task.TotalRecords = file.RecordCount
+	task.mu.Unlock()
+
 	sawLegacy := false
 	err = r.reader.ReadRecords(ctx, task.Filename, func(record BackupRecord) error {
 		if record.Type != "request_log" && record.Type != "request_wal" {
 			sawLegacy = true
+			task.mu.Lock()
 			task.ProcessedRecords++
+			task.mu.Unlock()
 			return nil
 		}
-		if err := r.write(ctx, record); err != nil {
+		writeErr := r.write(ctx, record)
+		task.mu.Lock()
+		if writeErr != nil {
 			task.FailureCount++
-			slog.Warn("generic recovery record failed", "task_id", task.ID, "key", record.RecordKey, "error", err)
 		} else {
 			task.SuccessCount++
 		}
@@ -68,8 +107,16 @@ func (r *GenericRecovery) execute(ctx context.Context, task *RecoveryTask, archi
 		if task.TotalRecords > 0 {
 			task.Progress = float64(task.ProcessedRecords) / float64(task.TotalRecords) * 100
 		}
+		task.mu.Unlock()
+		if writeErr != nil {
+			slog.Warn("generic recovery record failed", "task_id", task.ID, "key", record.RecordKey, "error", writeErr)
+		}
 		return nil
 	})
+
+	// 先在锁内判定终态，需要归档时把 I/O 放到锁外再回写结果。
+	task.mu.Lock()
+	needArchive := false
 	if err != nil {
 		task.Status, task.Error = "failed", err.Error()
 	} else if task.FailureCount > 0 {
@@ -81,11 +128,19 @@ func (r *GenericRecovery) execute(ctx context.Context, task *RecoveryTask, archi
 	} else {
 		task.Status = "completed"
 		task.Progress = 100
-		if archive {
-			if err := r.reader.ArchiveFile(task.Filename); err != nil {
-				task.Status, task.Error = "completed_with_errors", err.Error()
-			}
+		needArchive = archive
+	}
+	task.mu.Unlock()
+
+	if needArchive {
+		if archiveErr := r.reader.ArchiveFile(task.Filename); archiveErr != nil {
+			task.mu.Lock()
+			task.Status, task.Error = "completed_with_errors", archiveErr.Error()
+			task.mu.Unlock()
 		}
 	}
+
+	task.mu.Lock()
 	task.CompletedAt = time.Now().UTC()
+	task.mu.Unlock()
 }

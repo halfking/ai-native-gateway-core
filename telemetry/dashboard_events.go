@@ -20,6 +20,7 @@ import (
 	"fmt"
 	"log/slog"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -86,6 +87,19 @@ type DashboardEventRecorder struct {
 
 	stopCh chan struct{}
 	doneCh chan struct{}
+
+	// 2026-07-27 concurrency fix: started 标记 runFlushLoop 是否真的起来了。
+	// Stop() 只有在 started 时才能阻塞等待 doneCh，否则（Start 未调用，或
+	// Start 因 db==nil 提前返回）doneCh 永远不会关闭，关停路径会永久挂死。
+	// stopOnce 保证重复 Stop() 不会 close 已关闭的 channel 而 panic。
+	// 参考 bg/pending_sweeper.go 的同类写法。
+	stopOnce sync.Once
+	started  atomic.Bool
+
+	// flushSignal 用于在 buffer 达到 flushSize 时唤醒 runFlushLoop。
+	// 容量 1 + 非阻塞发送：并发 Record 只会留下一个待处理信号，
+	// 刷盘始终由 runFlushLoop 这一个 goroutine 串行执行。
+	flushSignal chan struct{}
 }
 
 // NewDashboardEventRecorder 创建事件记录器
@@ -105,6 +119,7 @@ func newDashboardEventRecorder(db dashboardDB, logger *slog.Logger) *DashboardEv
 		flushInterval: 10 * time.Second,
 		stopCh:        make(chan struct{}),
 		doneCh:        make(chan struct{}),
+		flushSignal:   make(chan struct{}, 1),
 	}
 }
 
@@ -113,15 +128,30 @@ func (r *DashboardEventRecorder) Start(ctx context.Context) {
 	if r == nil || r.db == nil {
 		return
 	}
+	// 2026-07-27 concurrency fix: 记录“循环已启动”，供 Stop() 判断是否
+	// 可以安全阻塞在 doneCh 上。CompareAndSwap 同时保证重复 Start()
+	// 不会起第二个刷盘 goroutine（否则两个 goroutine 会重复 close(doneCh)）。
+	if !r.started.CompareAndSwap(false, true) {
+		return
+	}
 	go r.runFlushLoop(ctx)
 }
 
-// Stop 停止记录器
+// Stop 停止记录器。
+// 对从未 Start() 过的 recorder 调用是安全的 no-op（不会挂死在 doneCh 上），
+// 重复调用也是安全的（close 由 sync.Once 保护）。
 func (r *DashboardEventRecorder) Stop() {
 	if r == nil {
 		return
 	}
-	close(r.stopCh)
+	r.stopOnce.Do(func() {
+		close(r.stopCh)
+	})
+	if !r.started.Load() {
+		// runFlushLoop 从未启动（Start 未调用，或 db==nil 提前返回），
+		// doneCh 永远不会关闭。直接返回而不是永久阻塞。
+		return
+	}
 	<-r.doneCh
 }
 
@@ -147,7 +177,15 @@ func (r *DashboardEventRecorder) Record(event *DashboardEvent) {
 	r.bufferMu.Unlock()
 
 	if shouldFlush {
-		go r.flush()
+		// 2026-07-27 concurrency fix: 之前每次跨过 flushSize 都 `go r.flush()`,
+		// 突发流量下会并发出多个 flush，每个串行执行最多 30s 的逐条 DB INSERT,
+		// goroutine 和 DB 往返成倍堆积。改为向 runFlushLoop 投递一个信号,
+		// 刷盘仍由那一个 goroutine 串行完成；信号 channel 容量 1 且非阻塞发送,
+		// 已有待处理信号时直接丢弃（下一轮刷盘本来就会带走这批数据）。
+		select {
+		case r.flushSignal <- struct{}{}:
+		default:
+		}
 	}
 }
 
@@ -228,6 +266,10 @@ func (r *DashboardEventRecorder) runFlushLoop(ctx context.Context) {
 		case <-ctx.Done():
 			r.flush()
 			return
+		case <-r.flushSignal:
+			// buffer 达到 flushSize，提前刷盘（不重置 ticker：
+			// 下一个周期性刷盘遇到空 buffer 会直接返回）。
+			r.flush()
 		case <-ticker.C:
 			r.flush()
 		}

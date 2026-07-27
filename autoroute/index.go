@@ -301,10 +301,17 @@ func percentile(sorted []float64, p float64) float64 {
 // models_canonical, and credential_model_index. Returns a flat list
 // of Candidate structs. Tags are parsed from JSONB.
 func (idx *Index) Refresh(ctx context.Context) error {
-	if idx.pool == nil {
+	// 2026-07-27 concurrency fix: read idx.pool under RLock. SetPool writes
+	// it under the write lock; reading it unlocked here was an unsynchronised
+	// pointer read. Snapshot the pointer, release the lock, then do the
+	// (potentially slow) DB query off-lock.
+	idx.mu.RLock()
+	pool := idx.pool
+	idx.mu.RUnlock()
+	if pool == nil {
 		return fmt.Errorf("autoroute index: PG pool not set")
 	}
-	rows, err := idx.pool.Query(ctx, refreshIndexSQL)
+	rows, err := pool.Query(ctx, refreshIndexSQL)
 	if err != nil {
 		return fmt.Errorf("query credential_model_index: %w", err)
 	}

@@ -29,13 +29,13 @@ type SnapshotProvider interface {
 
 // CandidateInfo 路由候选凭据的最小摘要, 用于 trace 快照。
 type CandidateInfo struct {
-	ProviderID    int    `json:"provider_id"`
-	CredentialID  int    `json:"credential_id"`
-	RawModel      string `json:"raw_model"`
-	Tier          string `json:"tier,omitempty"`
-	BillingMode   string `json:"billing_mode,omitempty"`
-	Available     bool   `json:"available"`
-	LastError     string `json:"last_error,omitempty"`
+	ProviderID   int    `json:"provider_id"`
+	CredentialID int    `json:"credential_id"`
+	RawModel     string `json:"raw_model"`
+	Tier         string `json:"tier,omitempty"`
+	BillingMode  string `json:"billing_mode,omitempty"`
+	Available    bool   `json:"available"`
+	LastError    string `json:"last_error,omitempty"`
 }
 
 // NoopSnapshotProvider 默认空实现。生产环境在 main.go 注入真实 provider。
@@ -72,10 +72,12 @@ var (
 func SetGlobalSnapshotProvider(p SnapshotProvider) {
 	globalProviderMu.Lock()
 	defer globalProviderMu.Unlock()
+	// 2026-07-27 concurrency fix: 之前的 nil 分支做了 Unlock() → 赋值 → Lock(),
+	// 而 defer Unlock() 已经挂起。赋值实际上在完全无锁的状态下执行,
+	// 与 GetGlobalSnapshotProvider 的 RLock 读者形成数据竞争。
+	// 现在直接在已持有的写锁下赋值。
 	if p == nil {
-		globalProviderMu.Unlock()
 		globalProvider = NoopSnapshotProvider{}
-		globalProviderMu.Lock()
 		return
 	}
 	globalProvider = p
@@ -155,13 +157,13 @@ func BuildFailureSnapshot(ctx context.Context, model string, credentialID int, h
 	}
 
 	return &Snapshot{
-		CapturedAt:       time.Now(),
-		Candidates:       candAny,
-		RoutingState:     r.state,
-		CredentialMode:   r.cred,
-		NodeProbeState:   r.probe,
-		ConcurrencySlot:  &r.conc,
-		FailureHint:      hint,
+		CapturedAt:      time.Now(),
+		Candidates:      candAny,
+		RoutingState:    r.state,
+		CredentialMode:  r.cred,
+		NodeProbeState:  r.probe,
+		ConcurrencySlot: &r.conc,
+		FailureHint:     hint,
 	}
 }
 

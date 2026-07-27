@@ -145,22 +145,29 @@ func (cm *FileConfigManager) Watch(callback func()) error {
 		return fmt.Errorf("already watching")
 	}
 	cm.watching = true
+	// 2026-07-27 并发修复：把本次运行的 stopCh 在持锁时快照出来传给循环。
+	// Stop() 会重建 cm.stopCh 以支持再次 Watch，若循环直接读字段，
+	// 就与 Stop() 的赋值构成数据竞争（-race 实测报出），
+	// 且旧循环可能改为监听新 channel 而永不退出。
+	stopCh := cm.stopCh
 	cm.mu.Unlock()
 
 	// 启动监控goroutine
-	go cm.watchLoop(callback)
+	go cm.watchLoop(callback, stopCh)
 
 	return nil
 }
 
-// watchLoop 监控循环
-func (cm *FileConfigManager) watchLoop(callback func()) {
+// watchLoop 监控循环。
+//
+// stopCh 由 Watch 在持锁时快照传入，绑定本次运行；不要改回读 cm.stopCh。
+func (cm *FileConfigManager) watchLoop(callback func(), stopCh <-chan struct{}) {
 	ticker := time.NewTicker(3 * time.Second)
 	defer ticker.Stop()
 
 	for {
 		select {
-		case <-cm.stopCh:
+		case <-stopCh:
 			return
 		case <-ticker.C:
 			if cm.checkFileChanged() {

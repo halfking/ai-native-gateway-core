@@ -62,6 +62,11 @@ func (r *AlertRouter) Configure(cfg Config) {
 	r.cfgMu.Lock()
 	defer r.cfgMu.Unlock()
 	r.cfg = cfg
+	// 2026-07-27 concurrency fix: 换新 Deduper 前先关掉旧的，否则每次配置
+	// 热更新都会留下一个 gcLoop goroutine + ticker。
+	if r.deduper != nil {
+		r.deduper.Close()
+	}
 	r.deduper = NewDeduper(cfg.AlertDedupWindow)
 	r.limiter = NewRateLimiter(cfg.AlertRateLimitPerMin)
 	if cfg.AllowedUsers != nil {

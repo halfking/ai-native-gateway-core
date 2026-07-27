@@ -387,11 +387,18 @@ func (c *Client) SetOnRequestLogPersisted(fn func(entry *RequestLogEntry)) {
 // AddOnRequestLogPersisted appends a hook invoked after each successful
 // INSERT/UPDATE of a request_logs row. Hooks run on the telemetry worker
 // goroutine and must be cheap and non-blocking.
+//
+// 2026-07-27 concurrency fix: append under lifecycleMu.Lock(). The worker
+// goroutine reads onPersisted under RLock (see persistEntry), so an unlocked
+// append here is a concurrent map/slice write that -race flags and that can
+// lose a just-registered hook.
 func (c *Client) AddOnRequestLogPersisted(fn func(entry *RequestLogEntry)) {
 	if fn == nil {
 		return
 	}
+	c.lifecycleMu.Lock()
 	c.onPersisted = append(c.onPersisted, fn)
+	c.lifecycleMu.Unlock()
 }
 
 // SetOnRequestLogEmitted registers a hook invoked immediately when
@@ -399,8 +406,13 @@ func (c *Client) AddOnRequestLogPersisted(fn func(entry *RequestLogEntry)) {
 // faster real-time updates from the in-memory pipeline. The hook
 // runs on the caller's goroutine and MUST be non-blocking (use
 // select with default for channel sends). Pass nil to clear.
+//
+// 2026-07-27 concurrency fix: guard with lifecycleMu — EmitRequestLog reads
+// onEmitted under RLock, so the assignment must take the same lock.
 func (c *Client) SetOnRequestLogEmitted(fn func(entry *RequestLogEntry)) {
+	c.lifecycleMu.Lock()
 	c.onEmitted = fn
+	c.lifecycleMu.Unlock()
 }
 
 func (c *Client) EmitDecisionLog(entry *DecisionLogEntry) {

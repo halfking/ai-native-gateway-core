@@ -104,12 +104,49 @@ func NewRequestLogger(pool *pgxpool.Pool, cfg *RequestLoggerConfig) *RequestLogg
 	return rl
 }
 
+// SetFallbackWriter 注入降级写入器。
+//
+// 2026-07-27 concurrency fix: 之前是裸字段写入，而 worker goroutine 在
+// NewRequestLogger 里就已经起来了，CreateInitial / persistUpdate 也在请求
+// 路径上读它 → 数据竞争。现在写入与所有读取都走已有的 rl.mu。
 func (rl *RequestLogger) SetFallbackWriter(writer dbdegradation.BackupWriter) {
+	rl.mu.Lock()
 	rl.fallback = writer
+	rl.mu.Unlock()
 }
 
+// fallbackWriter 持读锁取出当前 fallback。调用方必须在锁外使用返回值
+// （fallback 会做文件 I/O）。
+func (rl *RequestLogger) fallbackWriter() dbdegradation.BackupWriter {
+	rl.mu.RLock()
+	defer rl.mu.RUnlock()
+	return rl.fallback
+}
+
+// degradedAndFallback 一次性读出降级标志与 fallback，避免两次加锁读到不
+// 一致的组合。
+func (rl *RequestLogger) degradedAndFallback() (bool, dbdegradation.BackupWriter) {
+	rl.mu.RLock()
+	defer rl.mu.RUnlock()
+	return rl.degraded, rl.fallback
+}
+
+// SetAnomalyRecorder 注入数据异常记录器。
+//
+// 2026-07-27 concurrency fix: 与 SetFallbackWriter 同因——worker 在
+// NewRequestLogger 里已启动，persist 路径会读 anomalyRecorder，裸字段写是
+// 数据竞争。现在写与读都走 rl.mu。
 func (rl *RequestLogger) SetAnomalyRecorder(recorder DataAnomalyRecorder) {
+	rl.mu.Lock()
 	rl.anomalyRecorder = recorder
+	rl.mu.Unlock()
+}
+
+// anomalyRecorderSnapshot 持读锁取出当前 anomalyRecorder。调用方在锁外使用。
+func (rl *RequestLogger) anomalyRecorderSnapshot() DataAnomalyRecorder {
+	rl.mu.RLock()
+	defer rl.mu.RUnlock()
+	return rl.anomalyRecorder
 }
 
 func (rl *RequestLogger) ReplayFallback(ctx context.Context, record dbdegradation.BackupRecord) error {
@@ -161,8 +198,9 @@ func (rl *RequestLogger) CreateInitial(ctx context.Context, req *InitialRequest)
 	if !rl.Enabled() {
 		return nil
 	}
-	if rl.isDegraded() && rl.fallback != nil {
-		return rl.fallback.WriteRequestWAL(ctx, req.RequestID+":initial", req)
+	degraded, fallback := rl.degradedAndFallback()
+	if degraded && fallback != nil {
+		return fallback.WriteRequestWAL(ctx, req.RequestID+":initial", req)
 	}
 	if rl.db == nil {
 		return nil
@@ -189,8 +227,8 @@ func (rl *RequestLogger) CreateInitial(ctx context.Context, req *InitialRequest)
 		`, req.RequestID, req.TenantID, req.SessionID, StatusPending, StageReceived, req.ClientModel)
 
 	if err != nil {
-		if rl.fallback != nil {
-			if fallbackErr := rl.fallback.WriteRequestWAL(ctx, req.RequestID+":initial", req); fallbackErr != nil {
+		if fallback := rl.fallbackWriter(); fallback != nil {
+			if fallbackErr := fallback.WriteRequestWAL(ctx, req.RequestID+":initial", req); fallbackErr != nil {
 				slog.Warn("request_logger: initial fallback failed", "request_id", req.RequestID, "error", fallbackErr)
 			}
 			return nil
@@ -207,8 +245,9 @@ func (rl *RequestLogger) Update(update *LogUpdate) {
 	if !rl.Enabled() || update == nil {
 		return
 	}
-	if rl.isDegraded() && rl.fallback != nil {
-		if err := rl.fallback.WriteRequestWAL(context.Background(), update.RequestID+":update", update); err != nil {
+	degraded, fallback := rl.degradedAndFallback()
+	if degraded && fallback != nil {
+		if err := fallback.WriteRequestWAL(context.Background(), update.RequestID+":update", update); err != nil {
 			slog.Warn("request_logger: degraded update fallback failed", "request_id", update.RequestID, "error", err)
 		}
 		return
@@ -235,8 +274,8 @@ func (rl *RequestLogger) UpdateSync(ctx context.Context, update *LogUpdate) erro
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 	err := rl.persistUpdate(ctx, update)
-	if err != nil && rl.fallback != nil {
-		if fallbackErr := rl.fallback.WriteRequestWAL(ctx, update.RequestID+":update", update); fallbackErr != nil {
+	if fallback := rl.fallbackWriter(); err != nil && fallback != nil {
+		if fallbackErr := fallback.WriteRequestWAL(ctx, update.RequestID+":update", update); fallbackErr != nil {
 			return fallbackErr
 		}
 		return nil
@@ -309,9 +348,9 @@ func (rl *RequestLogger) flushBatch(batch []*LogUpdate) {
 				"index", i,
 				"remaining", len(batch)-i-1,
 				"error", err)
-			if rl.anomalyRecorder != nil {
+			if recorder := rl.anomalyRecorderSnapshot(); recorder != nil {
 				anomalyCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 3*time.Second)
-				rl.anomalyRecorder.RecordDataAnomaly(anomalyCtx,
+				recorder.RecordDataAnomaly(anomalyCtx,
 					"persistence_failed", "high",
 					firstFailed.RequestID,
 					"request_wal_hot persist failed in batch: "+err.Error(),
@@ -319,10 +358,10 @@ func (rl *RequestLogger) flushBatch(batch []*LogUpdate) {
 				)
 				cancel()
 			}
-			if rl.fallback != nil {
+			if fallback := rl.fallbackWriter(); fallback != nil {
 				for j := i + 1; j < len(batch); j++ {
 					remaining := batch[j]
-					if fallbackErr := rl.fallback.WriteRequestWAL(ctx, remaining.RequestID+":update", remaining); fallbackErr != nil {
+					if fallbackErr := fallback.WriteRequestWAL(ctx, remaining.RequestID+":update", remaining); fallbackErr != nil {
 						slog.Warn("request_logger: update fallback failed",
 							"request_id", remaining.RequestID, "error", fallbackErr)
 					}
@@ -368,14 +407,14 @@ func (rl *RequestLogger) persistUpdateInTx(ctx context.Context, tx pgx.Tx, updat
 		meta := update.CompressionMeta
 		slog.Warn("request_logger: compression_meta marshal failed, using null",
 			"request_id", update.RequestID, "err", err)
-		if rl.anomalyRecorder != nil {
+		if recorder := rl.anomalyRecorderSnapshot(); recorder != nil {
 			metaCopy := make(map[string]any, len(meta))
 			for k, v := range meta {
 				metaCopy[k] = v
 			}
 			anomalyCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 3*time.Second)
 			defer cancel()
-			if recErr := rl.anomalyRecorder.RecordDataAnomaly(anomalyCtx,
+			if recErr := recorder.RecordDataAnomaly(anomalyCtx,
 				"json_marshal_failed", "medium",
 				update.RequestID,
 				"compression_meta json.Marshal failed: "+err.Error(),

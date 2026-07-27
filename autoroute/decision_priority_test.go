@@ -11,9 +11,9 @@ import (
 // candidate pool, that model is promoted to winner and RoutingSource reflects
 // explicit_default. See 22 §22.4 / §22.9 AUTO-02.
 func TestDecide_ExplicitDefaultPromotesWinner(t *testing.T) {
-	old := globalFeatureFlags
-	globalFeatureFlags = &FeatureFlags{UseExplicitDefault: true}
-	defer func() { globalFeatureFlags = old }()
+	old := GetFeatureFlags()
+	SetGlobalFeatureFlagsForTest(&FeatureFlags{UseExplicitDefault: true})
+	defer func() { SetGlobalFeatureFlagsForTest(old) }()
 
 	cls := &stubClassifier{name: "heuristic", out: &Classification{
 		Primary: TaskCode, Confidence: 0.9, Classifier: "heuristic",
@@ -50,9 +50,9 @@ func TestDecide_ExplicitDefaultPromotesWinner(t *testing.T) {
 // When the configured default model is NOT in the live pool, we fall back to
 // implicit tag scoring (do NOT fabricate a candidate). RoutingSource=implicit_tag.
 func TestDecide_ExplicitDefaultMissesFallsBackToImplicit(t *testing.T) {
-	old := globalFeatureFlags
-	globalFeatureFlags = &FeatureFlags{UseExplicitDefault: true}
-	defer func() { globalFeatureFlags = old }()
+	old := GetFeatureFlags()
+	SetGlobalFeatureFlagsForTest(&FeatureFlags{UseExplicitDefault: true})
+	defer func() { SetGlobalFeatureFlagsForTest(old) }()
 
 	cls := &stubClassifier{name: "heuristic", out: &Classification{Primary: TaskCode, Confidence: 0.9}}
 	idx := &stubIndex{cands: []ScoredCandidate{
@@ -83,9 +83,9 @@ func TestDecide_ExplicitDefaultMissesFallsBackToImplicit(t *testing.T) {
 // TestDecide_FlagOffSkipsExplicitDefault: with UseExplicitDefault=false,
 // DefaultRoutingStore is never consulted even if wired.
 func TestDecide_FlagOffSkipsExplicitDefault(t *testing.T) {
-	old := globalFeatureFlags
-	globalFeatureFlags = &FeatureFlags{UseExplicitDefault: false}
-	defer func() { globalFeatureFlags = old }()
+	old := GetFeatureFlags()
+	SetGlobalFeatureFlagsForTest(&FeatureFlags{UseExplicitDefault: false})
+	defer func() { SetGlobalFeatureFlagsForTest(old) }()
 
 	cls := &stubClassifier{name: "heuristic", out: &Classification{Primary: TaskCode, Confidence: 0.9}}
 	idx := &stubIndex{cands: []ScoredCandidate{
@@ -115,9 +115,9 @@ func TestDecide_FlagOffSkipsExplicitDefault(t *testing.T) {
 // priority order ban > pin > explicit_default > implicit_tag.
 // A pin on a third model must win over the explicit default.
 func TestDecide_OverridePinBeatsExplicitDefault(t *testing.T) {
-	old := globalFeatureFlags
-	globalFeatureFlags = &FeatureFlags{UseExplicitDefault: true}
-	defer func() { globalFeatureFlags = old }()
+	old := GetFeatureFlags()
+	SetGlobalFeatureFlagsForTest(&FeatureFlags{UseExplicitDefault: true})
+	defer func() { SetGlobalFeatureFlagsForTest(old) }()
 
 	cls := &stubClassifier{name: "heuristic", out: &Classification{Primary: TaskCode, Confidence: 0.9}}
 	idx := &stubIndex{cands: []ScoredCandidate{
@@ -159,9 +159,9 @@ func TestDecide_OverridePinBeatsExplicitDefault(t *testing.T) {
 // TestDecide_OverrideBanRemovesExplicitDefault (AUTO-03 neg):
 // A ban on the explicit-default model removes it; we fall back to implicit.
 func TestDecide_OverrideBanRemovesExplicitDefault(t *testing.T) {
-	old := globalFeatureFlags
-	globalFeatureFlags = &FeatureFlags{UseExplicitDefault: true}
-	defer func() { globalFeatureFlags = old }()
+	old := GetFeatureFlags()
+	SetGlobalFeatureFlagsForTest(&FeatureFlags{UseExplicitDefault: true})
+	defer func() { SetGlobalFeatureFlagsForTest(old) }()
 
 	cls := &stubClassifier{name: "heuristic", out: &Classification{Primary: TaskCode, Confidence: 0.9}}
 	idx := &stubIndex{cands: []ScoredCandidate{

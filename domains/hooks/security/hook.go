@@ -4,7 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/kaixuan/llm-gateway-go/domain"            //nolint:depguard // historical violation, B1 routing.go CQRS will fix
@@ -34,13 +34,24 @@ type SecurityConfig struct {
 	AuditSamplingRate      float64
 }
 
+// securityConfigTTL 是配置缓存的刷新间隔。
+//
+// 2026-07-27 concurrency fix: Execute 原来每个请求都取 h.mu 的写锁去
+// loadSecurityConfig（读 settings 后端），把所有请求串行化在一把互斥锁上。
+// 现在配置放在 atomic.Pointer 里，热路径只做一次无锁 Load；刷新按这个 TTL
+// 节流，由第一个发现过期的请求异步触发（不阻塞自己）。
+const securityConfigTTL = 5 * time.Second
+
 // SecurityHook 安全检查 Hook
 type SecurityHook struct {
 	intent   *IntentAnalyzer
 	threat   *ThreatDetector
-	config   *SecurityConfig
+	config   atomic.Pointer[SecurityConfig]
 	registry *settings.Registry
-	mu       sync.RWMutex
+	// reloadAtUnixNano 是下一次允许重新加载配置的时间点（UnixNano）。
+	reloadAtUnixNano atomic.Int64
+	// reloading 保证同一时刻只有一个后台刷新在跑。
+	reloading atomic.Bool
 }
 
 // NewSecurityHook 创建安全检查 Hook（从 settings 读取配置）
@@ -50,12 +61,36 @@ func NewSecurityHook(registry *settings.Registry) *SecurityHook {
 	intent := NewIntentAnalyzer(config.IntentConfidenceThresh)
 	threat := NewThreatDetector(config.SeverityThreshold)
 
-	return &SecurityHook{
+	h := &SecurityHook{
 		intent:   intent,
 		threat:   threat,
-		config:   config,
 		registry: registry,
 	}
+	h.config.Store(config)
+	h.reloadAtUnixNano.Store(time.Now().Add(securityConfigTTL).UnixNano())
+	return h
+}
+
+// currentConfig 无锁读取当前配置，并在 TTL 到期时异步触发一次刷新。
+func (h *SecurityHook) currentConfig() *SecurityConfig {
+	config := h.config.Load()
+	if h.registry == nil {
+		return config
+	}
+
+	now := time.Now()
+	deadline := h.reloadAtUnixNano.Load()
+	if now.UnixNano() >= deadline &&
+		h.reloadAtUnixNano.CompareAndSwap(deadline, now.Add(securityConfigTTL).UnixNano()) {
+		// 刷新会读 settings 后端（可能有 I/O），放到后台跑，绝不阻塞请求。
+		if h.reloading.CompareAndSwap(false, true) {
+			go func() {
+				defer h.reloading.Store(false)
+				h.config.Store(loadSecurityConfig(h.registry))
+			}()
+		}
+	}
+	return config
 }
 
 // loadSecurityConfig 从 settings 加载安全配置
@@ -244,12 +279,11 @@ func loadSecurityConfig(reg *settings.Registry) *SecurityConfig {
 
 // GetConfig 获取当前配置（用于测试和调试）
 func (h *SecurityHook) GetConfig() *SecurityConfig {
-	h.mu.RLock()
-	defer h.mu.RUnlock()
-	if h.config == nil {
+	current := h.config.Load()
+	if current == nil {
 		return nil
 	}
-	config := *h.config
+	config := *current
 	return &config
 }
 
@@ -270,16 +304,13 @@ func (h *SecurityHook) Enabled(ctx context.Context, env *domain.PipelineRequest)
 // 同时把判定写入 env.EnsureGovernance()，使 domains/interception.Engine
 // 能与 v4 安全插件 verdicts 一同参与决策。
 func (h *SecurityHook) Execute(ctx context.Context, env *domain.PipelineRequest) error {
-	// 热加载配置（每次执行时重新读取）
-	h.mu.Lock()
+	// 热加载配置：无锁 atomic Load + TTL 节流刷新（见 currentConfig）
 	severityThreshold := h.threat.severityThreshold
-	if h.registry != nil {
-		h.config = loadSecurityConfig(h.registry)
-		severityThreshold = h.config.SeverityThreshold
+	if config := h.currentConfig(); config != nil && h.registry != nil {
+		severityThreshold = config.SeverityThreshold
 	}
 	intent := h.intent
 	threat := h.threat
-	h.mu.Unlock()
 
 	content, _ := env.Metadata["user_content"].(string)
 	if content == "" {

@@ -58,6 +58,13 @@ func (s *AliasSyncService) Start(ctx context.Context) {
 		return
 	}
 	s.running = true
+	// 2026-07-27 concurrency fix: Stop() closes stopCh permanently, so a
+	// later Start() used to spawn a loop whose select fired immediately on
+	// the already-closed channel — the service looked "running" but was
+	// silently dead. Recreate the channel under the same lock that sets
+	// running=true and pass the loop its own reference.
+	s.stopCh = make(chan struct{})
+	stopCh := s.stopCh
 	s.mu.Unlock()
 
 	slog.Info("alias sync service starting", "interval", s.interval)
@@ -74,7 +81,7 @@ func (s *AliasSyncService) Start(ctx context.Context) {
 			case <-ticker.C:
 				//nolint:errcheck // best-effort sync, non-critical
 				s.runSync(ctx)
-			case <-s.stopCh:
+			case <-stopCh:
 				slog.Info("alias sync service stopping")
 				return
 			case <-ctx.Done():

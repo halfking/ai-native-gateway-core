@@ -19,6 +19,10 @@ type DBWriter struct {
 	pending map[string][]CredRotationEntry
 	stopCh  chan struct{}
 	doneCh  chan struct{}
+	// 2026-07-27 concurrency fix: batch 满时不再在 Enqueue（且持锁）里
+	// `go flushSession`，而是往这个容量 1 的通道投一个非阻塞信号，由已有的
+	// flush loop 去落库 —— 突发流量不会再产生无上限的并发 DB 事务。
+	flushSignal chan struct{}
 }
 
 func NewDBWriter(db *pgxpool.Pool, batchSize int, flushInterval time.Duration) *DBWriter {
@@ -35,6 +39,7 @@ func NewDBWriter(db *pgxpool.Pool, batchSize int, flushInterval time.Duration) *
 		pending:       make(map[string][]CredRotationEntry),
 		stopCh:        make(chan struct{}),
 		doneCh:        make(chan struct{}),
+		flushSignal:   make(chan struct{}, 1),
 	}
 }
 
@@ -58,12 +63,17 @@ func (w *DBWriter) Enqueue(sessionID string, entry CredRotationEntry) {
 		return
 	}
 	w.mu.Lock()
-	defer w.mu.Unlock()
 	w.pending[sessionID] = append(w.pending[sessionID], entry)
-	if len(w.pending[sessionID]) >= w.batchSize {
-		entries := append([]CredRotationEntry(nil), w.pending[sessionID]...)
-		delete(w.pending, sessionID)
-		go w.flushSession(context.Background(), sessionID, entries)
+	full := len(w.pending[sessionID]) >= w.batchSize
+	w.mu.Unlock()
+
+	// 2026-07-27 concurrency fix: 只投信号，落库交给 flush loop；并且信号在
+	// 锁外发送，绝不在持锁时启动 goroutine / 开事务。
+	if full {
+		select {
+		case w.flushSignal <- struct{}{}:
+		default: // 已经有待处理信号，合并
+		}
 	}
 }
 
@@ -107,6 +117,9 @@ func (w *DBWriter) runFlushLoop(ctx context.Context) {
 			return
 		case <-ctx.Done():
 			return
+		case <-w.flushSignal:
+			// Enqueue 攒满一个 batch 时唤醒
+			w.flushAllInternal(ctx)
 		case <-ticker.C:
 			w.flushAllInternal(ctx)
 		}
