@@ -53,8 +53,21 @@ func SerializeAnthropic(req *InternalRequest) ([]byte, error) {
 		out["messages"] = messages
 	}
 
-	// Validate tool_call integrity before sending to upstream
-	// Skip validation for single-message requests to avoid breaking unit tests
+	// Validate tool_call integrity before sending to upstream.
+	//
+	// 2026-07-27 (F-6, re-audited): the len(messages) > 2 gate is INTENTIONAL,
+	// not a leftover. It encodes the contract that orphaned-tool_result
+	// detection only applies when there is enough context to judge that a
+	// real conversation was corrupted (multi-turn: the assistant turn that
+	// should have carried the tool_use was deleted). A 1- or 2-message
+	// request carrying a tool_result is a legitimate serializer fragment
+	// (cross-turn replay, continuation prefix) where the prior assistant
+	// turn legitimately lives outside this slice — rejecting it would be a
+	// false positive. This was confirmed by an attempt to remove the gate
+	// (it broke both the orphan-detection tests AND the serializer-fragment
+	// tests, which encode opposing contracts). A future, sharper fix would
+	// move validation to the request boundary where the full conversation
+	// is available; do NOT weaken this gate without that context.
 	if len(messages) > 2 {
 		if err := validateAnthropicToolCallIntegrity(messages, req.TargetProvider, req.Model); err != nil {
 			return nil, fmt.Errorf("tool_call validation failed: %w", err)
