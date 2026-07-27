@@ -213,6 +213,12 @@ func (rl *RequestLogger) Update(update *LogUpdate) {
 		}
 		return
 	}
+	if update.Status == StatusSuccess || update.Status == StatusFailure {
+		if err := rl.UpdateSync(context.Background(), update); err != nil {
+			slog.Warn("request_logger: terminal update failed", "request_id", update.RequestID, "status", update.Status, "error", err)
+		}
+		return
+	}
 	select {
 	case rl.asyncQueue <- update:
 	default:

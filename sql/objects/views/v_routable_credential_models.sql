@@ -26,7 +26,7 @@ SELECT
         AND c.lifecycle_status = 'active'
         AND COALESCE(c.manual_disabled, FALSE) = FALSE
         AND c.availability_state = 'ready'
-        AND c.quota_state NOT IN ('permanently_exhausted', 'balance_exhausted')
+        AND c.quota_state NOT IN ('permanently_exhausted', 'balance_exhausted', 'periodic_exhausted')
         AND pm.available = TRUE
         AND cmb.available = TRUE
         AND cmb.unavailable_reason IS DISTINCT FROM 'manual'

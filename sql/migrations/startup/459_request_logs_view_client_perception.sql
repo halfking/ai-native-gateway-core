@@ -1,5 +1,6 @@
 -- Migration 459: Rebuild request_logs_with_current_month to expose client
--- perception columns (agent_name / agent_type / client_protocol / canonical_model)
+-- perception columns (agent_name / agent_type / client_protocol / canonical_model /
+-- virtual_client_id)
 -- so /api/logs/{id} stops failing with "query failed" after ingestion adopts
 -- 443 + 458.
 --
@@ -34,19 +35,21 @@ ALTER TABLE request_logs
     ADD COLUMN IF NOT EXISTS agent_name      VARCHAR(255),
     ADD COLUMN IF NOT EXISTS agent_type      VARCHAR(50),
     ADD COLUMN IF NOT EXISTS client_protocol VARCHAR(50),
-    ADD COLUMN IF NOT EXISTS canonical_model TEXT;
+    ADD COLUMN IF NOT EXISTS canonical_model TEXT,
+    ADD COLUMN IF NOT EXISTS virtual_client_id VARCHAR(64);
 
 ALTER TABLE request_logs_hot
     ADD COLUMN IF NOT EXISTS agent_name      VARCHAR(255),
     ADD COLUMN IF NOT EXISTS agent_type      VARCHAR(50),
     ADD COLUMN IF NOT EXISTS client_protocol VARCHAR(50),
-    ADD COLUMN IF NOT EXISTS canonical_model TEXT;
+    ADD COLUMN IF NOT EXISTS canonical_model TEXT,
+    ADD COLUMN IF NOT EXISTS virtual_client_id VARCHAR(64);
 
 -- 2. Rebuild the union view with the new columns. The block is a copy of
 --    448's append-pattern, parameterized on the four target columns.
 DO $$
 DECLARE
-  new_cols text[] := ARRAY['agent_name', 'agent_type', 'client_protocol', 'canonical_model'];
+  new_cols text[] := ARRAY['agent_name', 'agent_type', 'client_protocol', 'canonical_model', 'virtual_client_id'];
   base_cols text;
   final_cols text;
   missing_count int;
@@ -136,12 +139,12 @@ BEGIN
     END IF;
   END LOOP;
 
-  -- Smoke: select the four columns to confirm the view is queryable.
-  PERFORM agent_name, agent_type, client_protocol, canonical_model
+  -- Smoke: select all client-perception columns to confirm the view is queryable.
+  PERFORM agent_name, agent_type, client_protocol, canonical_model, virtual_client_id
     FROM request_logs_with_current_month
    LIMIT 1;
 
-  RAISE NOTICE 'Migration 459 completed: VIEW exposes 4 client-perception columns';
+  RAISE NOTICE 'Migration 459 completed: VIEW exposes client-perception columns';
 END $$;
 
 COMMIT;

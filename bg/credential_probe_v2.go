@@ -802,9 +802,16 @@ func (c *CredentialProbeV2) writeHealth(ctx context.Context, credID int, pr prob
 			HealthStatus:  pr.HealthStatus,
 			AvgLatencyMs:  pr.HealthLatencyMs,
 			LastUpdatedAt: now,
-			LastError:     pr.HealthError,
-			RecoverAt:     recoverAt,
-			Source:        "probe_v2",
+			LastSuccessAt: func() *time.Time {
+				if pr.AvailabilityState != "ready" {
+					return nil
+				}
+				return &now
+			}(),
+			LastError: pr.HealthError,
+
+			RecoverAt: recoverAt,
+			Source:    "probe_v2",
 		}
 		c.stateManager.UpdateFromProbe(execCtx, state)
 	}

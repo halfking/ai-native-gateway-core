@@ -974,9 +974,15 @@ $48,
 		-- upgrade a failure, and a success is written by the authoritative
 		-- completion path before any probe fires.
 		WHERE NOT (
-			(request_logs_hot.success = TRUE
-			 OR request_logs_hot.request_status IN ('success', 'failure'))
-			AND EXCLUDED.success IS DISTINCT FROM TRUE
+			request_logs_hot.request_status = 'failure'
+			OR (
+				(request_logs_hot.success = TRUE
+				 OR request_logs_hot.request_status = 'success')
+				AND NOT (
+					EXCLUDED.success = TRUE
+					AND EXCLUDED.request_status = 'success'
+				)
+			)
 		)
 	`,
 		entry.RequestID,
