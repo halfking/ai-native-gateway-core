@@ -170,9 +170,9 @@ func TestDecide_InvalidTaskHint_Ignored(t *testing.T) {
 }
 
 func TestDecideWithFeatureFlags_SubFeatureEnablesV2Path(t *testing.T) {
-	old := globalFeatureFlags
-	globalFeatureFlags = &FeatureFlags{UseCacheRevalidation: true}
-	defer func() { globalFeatureFlags = old }()
+	old := GetFeatureFlags()
+	SetGlobalFeatureFlagsForTest(&FeatureFlags{UseCacheRevalidation: true})
+	defer func() { SetGlobalFeatureFlagsForTest(old) }()
 
 	cls := &stubClassifier{name: "heuristic", out: &Classification{Primary: TaskChat, Confidence: 0.9, Classifier: "heuristic"}}
 	idx := NewIndex()

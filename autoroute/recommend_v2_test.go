@@ -214,9 +214,9 @@ func TestRecommendV2_LiveAvailabilityFilter(t *testing.T) {
 
 // TestRecommendV2_CorrectionScoreApplied 验证上次任务结果校正会提升同模型得分。
 func TestRecommendV2_CorrectionScoreApplied(t *testing.T) {
-	old := globalFeatureFlags
-	globalFeatureFlags = &FeatureFlags{UseSimplifiedScoring: true}
-	defer func() { globalFeatureFlags = old }()
+	old := GetFeatureFlags()
+	SetGlobalFeatureFlagsForTest(&FeatureFlags{UseSimplifiedScoring: true})
+	defer func() { SetGlobalFeatureFlagsForTest(old) }()
 
 	candidates := []Candidate{
 		{CredentialID: 1, CanonicalID: 1, CanonicalName: "model-a", UnavailableReason: "", Tags: []string{"code"}, SuccessRate: 0.95, UnitPriceInPer1M: 100, UnitPriceOutPer1M: 100},
@@ -281,9 +281,9 @@ func TestGetHotTop3Canonicals_CacheStale(t *testing.T) {
 // TestRecommendV2_DisabledHotPoolUsesAllCandidates verifies that disabling the
 // hot-top3 seed pool falls back to scoring across all available candidates.
 func TestRecommendV2_DisabledHotPoolUsesAllCandidates(t *testing.T) {
-	old := globalFeatureFlags
-	globalFeatureFlags = &FeatureFlags{UseHotTop3Pool: false, UseSimplifiedScoring: true}
-	defer func() { globalFeatureFlags = old }()
+	old := GetFeatureFlags()
+	SetGlobalFeatureFlagsForTest(&FeatureFlags{UseHotTop3Pool: false, UseSimplifiedScoring: true})
+	defer func() { SetGlobalFeatureFlagsForTest(old) }()
 
 	candidates := []Candidate{
 		{CredentialID: 1, CanonicalID: 1, CanonicalName: "hot-a", UnavailableReason: "", Tags: []string{"chat"}, SuccessRate: 0.80, UnitPriceInPer1M: 400, UnitPriceOutPer1M: 400},
@@ -303,9 +303,9 @@ func TestRecommendV2_DisabledHotPoolUsesAllCandidates(t *testing.T) {
 // TestRecommendV2_DisabledFallbackReturnsNil verifies that fallback does not trigger
 // when the fallback sub-feature is disabled.
 func TestRecommendV2_DisabledFallbackReturnsNil(t *testing.T) {
-	old := globalFeatureFlags
-	globalFeatureFlags = &FeatureFlags{Use48hFallback: false, UseSimplifiedScoring: true}
-	defer func() { globalFeatureFlags = old }()
+	old := GetFeatureFlags()
+	SetGlobalFeatureFlagsForTest(&FeatureFlags{Use48hFallback: false, UseSimplifiedScoring: true})
+	defer func() { SetGlobalFeatureFlagsForTest(old) }()
 
 	candidates := []Candidate{
 		{CredentialID: 1, CanonicalID: 1, CanonicalName: "model-a", UnavailableReason: "manual", Tags: []string{"code"}},
@@ -349,15 +349,15 @@ func abs(x float64) float64 {
 // routes candidates through the legacy 8-dim Score() path, so the request
 // profile (e.g. speed_first) is honoured.
 func TestRecommendV2_LegacyScoringBranch(t *testing.T) {
-	old := globalFeatureFlags
-	globalFeatureFlags = &FeatureFlags{
+	old := GetFeatureFlags()
+	SetGlobalFeatureFlagsForTest(&FeatureFlags{
 		UseSimplifiedScoring:     false,
 		UseHotTop3Pool:           false,
 		Use48hFallback:           false,
 		UseCacheRevalidation:     false,
 		UseChannelQualityRouting: false,
-	}
-	defer func() { globalFeatureFlags = old }()
+	})
+	defer func() { SetGlobalFeatureFlagsForTest(old) }()
 
 	candidates := []Candidate{
 		{CredentialID: 1, CanonicalID: 1, CanonicalName: "speedy", UnavailableReason: "", Tags: []string{"chat"}, SuccessRate: 0.95, P95LatencyMs: 100, UnitPriceInPer1M: 20, UnitPriceOutPer1M: 20},

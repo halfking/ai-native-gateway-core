@@ -176,8 +176,8 @@ func observeAnthropicPayload(c *audit.StreamCapture, payload, clientModel, outbo
 		c.MarkDone()
 	case "content_block_start":
 		if v.ContentBlock != nil && v.ContentBlock.Type == "thinking" {
-			c.HasThinking = true
-			c.ThinkingBlocksN++
+			// 2026-07-27 并发修复：走带锁 setter（audit.StreamCapture.MarkThinkingBlock）。
+			c.MarkThinkingBlock()
 		}
 	case "error":
 		c.MarkStreamError()

@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"sync"
+	"sync/atomic"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -32,6 +33,12 @@ type TuningViewRefresher struct {
 	stop     chan struct{}
 	done     chan struct{}
 	stopOnce sync.Once
+
+	// 2026-07-27 concurrency fix: the previous "select on done with a
+	// default" probe could not distinguish "never started" from "still
+	// running" — it returned immediately while the goroutine was still
+	// mid-refresh. An explicit started flag makes the distinction exact.
+	started atomic.Bool
 }
 
 // NewTuningViewRefresher constructs the worker. Default tick = 5 min.
@@ -46,6 +53,10 @@ func NewTuningViewRefresher(pool *pgxpool.Pool) *TuningViewRefresher {
 
 // Start spawns the background goroutine. Returns immediately.
 func (r *TuningViewRefresher) Start(ctx context.Context) {
+	if !r.started.CompareAndSwap(false, true) {
+		// Already started; a second run() would double-close r.done.
+		return
+	}
 	go r.run(ctx)
 	slog.Info("tuning view refresher started", "interval", r.tick.String())
 }
@@ -57,20 +68,15 @@ func (r *TuningViewRefresher) Stop() {
 	if r.stop == nil || r.done == nil {
 		return
 	}
-	// Determine whether Start was called (the done channel is
-	// only closed by the goroutine on its way out). A nil-pointer
-	// test won't help; use a select with a default to detect.
 	r.stopOnce.Do(func() {
 		close(r.stop)
 	})
 	// Wait for the goroutine, but only if it ever started.
-	// A noop Stop (never Started) returns immediately because
-	// the default case fires.
-	select {
-	case <-r.done:
-	default:
-		// goroutine never started
+	// A noop Stop (never Started) returns immediately.
+	if !r.started.Load() {
+		return
 	}
+	<-r.done
 }
 
 // RefreshOnce triggers an immediate refresh (admin use).

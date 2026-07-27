@@ -12,6 +12,7 @@ package semantic
 
 import (
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -27,7 +28,17 @@ type InMemoryCache struct {
 	mu sync.RWMutex
 	// data[tenantID][model][promptHash] = entry
 	data map[string]map[string]map[string]entry
-	s    Stats
+	// 2026-07-27 concurrency fix: Lookup only holds RLock, so the stats
+	// counters were read-modify-written concurrently on the same words and
+	// silently lost increments (-race flags it). Counters now use
+	// sync/atomic, matching cache/kv/memory.go. Never read these fields
+	// directly — go through Stats(), which does atomic loads.
+	lookups     int64
+	exactHits   int64
+	vectorHits  int64
+	misses      int64
+	stores      int64
+	invalidates int64
 }
 
 // NewInMemoryCache creates an empty cache. Callers typically construct it
@@ -45,29 +56,29 @@ func (c *InMemoryCache) Lookup(ctx Context, tenantID, model, promptHash, _ strin
 	}
 	c.mu.RLock()
 	defer c.mu.RUnlock()
-	c.s.Lookups++
+	atomic.AddInt64(&c.lookups, 1)
 
 	models, ok := c.data[tenantID]
 	if !ok {
-		c.s.Misses++
+		atomic.AddInt64(&c.misses, 1)
 		return nil, false, nil
 	}
 	entries, ok := models[model]
 	if !ok {
-		c.s.Misses++
+		atomic.AddInt64(&c.misses, 1)
 		return nil, false, nil
 	}
 	e, ok := entries[promptHash]
 	if !ok {
-		c.s.Misses++
+		atomic.AddInt64(&c.misses, 1)
 		return nil, false, nil
 	}
 	if time.Now().After(e.expiresAt) {
 		// expired; treat as miss (don't evict here — caller or TTL sweep)
-		c.s.Misses++
+		atomic.AddInt64(&c.misses, 1)
 		return nil, false, nil
 	}
-	c.s.ExactHits++
+	atomic.AddInt64(&c.exactHits, 1)
 	// Return a copy so callers can't mutate our storage.
 	out := make([]byte, len(e.payload))
 	copy(out, e.payload)
@@ -84,7 +95,7 @@ func (c *InMemoryCache) Store(ctx Context, tenantID, model, promptHash, _ string
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	c.s.Stores++
+	atomic.AddInt64(&c.stores, 1)
 
 	models, ok := c.data[tenantID]
 	if !ok {
@@ -113,7 +124,7 @@ func (c *InMemoryCache) Invalidate(ctx Context, tenantID, model string) (int, er
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	c.s.Invalidates++
+	atomic.AddInt64(&c.invalidates, 1)
 
 	models, ok := c.data[tenantID]
 	if !ok {
@@ -130,9 +141,14 @@ func (c *InMemoryCache) Invalidate(ctx Context, tenantID, model string) (int, er
 
 // Stats returns a snapshot of cumulative counters.
 func (c *InMemoryCache) Stats() Stats {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-	return c.s
+	return Stats{
+		Lookups:     atomic.LoadInt64(&c.lookups),
+		ExactHits:   atomic.LoadInt64(&c.exactHits),
+		VectorHits:  atomic.LoadInt64(&c.vectorHits),
+		Misses:      atomic.LoadInt64(&c.misses),
+		Stores:      atomic.LoadInt64(&c.stores),
+		Invalidates: atomic.LoadInt64(&c.invalidates),
+	}
 }
 
 // Size returns the number of cached entries (for telemetry / debugging).

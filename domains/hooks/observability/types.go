@@ -121,20 +121,47 @@ func (n *NoopTracer) FinishSpan(span *Span) {
 }
 
 // Counter 计数器
+//
+// 2026-07-27 concurrency fix: Inc/Add 之前直接对 Value 做读改写，而
+// MetricsHook.Execute 会在每个请求 goroutine 上调用它们（Registry.mu 只
+// 保护 map，不保护 metric 内部字段）→ 数据竞争 + 丢计数。
+// 现在用 per-metric mu 保护 Value；Value 仍然是导出字段，因为
+// cmd/gateway-v2 的 /metrics 渲染读取快照里的 Value（快照由
+// Registry.Counters() 持锁逐字段拷贝产生，不拷贝 mu）。
 type Counter struct {
+	mu     sync.Mutex
 	Name   string
 	Value  float64
 	Labels map[string]string
 }
 
 // Inc 自增 1
-func (c *Counter) Inc() { c.Value++ }
+func (c *Counter) Inc() {
+	c.mu.Lock()
+	c.Value++
+	c.mu.Unlock()
+}
 
 // Add 增加 v
-func (c *Counter) Add(v float64) { c.Value += v }
+func (c *Counter) Add(v float64) {
+	c.mu.Lock()
+	c.Value += v
+	c.mu.Unlock()
+}
+
+// Get 持锁读取当前值
+func (c *Counter) Get() float64 {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.Value
+}
 
 // Histogram 直方图
+//
+// 2026-07-27 concurrency fix: Observe 之前无锁修改 Sum/Count/Counts，
+// 与 Counter 同一条请求路径 → 同样的竞争。per-metric mu 保护三者。
 type Histogram struct {
+	mu      sync.Mutex
 	Name    string
 	Buckets []float64
 	Counts  []int64 // len = len(Buckets)+1; last is +Inf
@@ -145,6 +172,8 @@ type Histogram struct {
 
 // Observe 记录一个值
 func (h *Histogram) Observe(v float64) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
 	h.Sum += v
 	h.Count++
 	for i, bucket := range h.Buckets {
@@ -153,6 +182,27 @@ func (h *Histogram) Observe(v float64) {
 		}
 	}
 	h.Counts[len(h.Buckets)]++ // +Inf bucket
+}
+
+// Snapshot 返回持锁拷贝（Counts 深拷贝），供导出路径安全读取
+func (h *Histogram) Snapshot() *Histogram {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.snapshotLocked()
+}
+
+// snapshotLocked 调用方必须已持有 h.mu
+func (h *Histogram) snapshotLocked() *Histogram {
+	counts := make([]int64, len(h.Counts))
+	copy(counts, h.Counts)
+	return &Histogram{
+		Name:    h.Name,
+		Buckets: h.Buckets, // 创建后只读
+		Counts:  counts,
+		Labels:  cloneLabels(h.Labels),
+		Sum:     h.Sum,
+		Count:   h.Count,
+	}
 }
 
 // Registry 指标注册表
@@ -222,9 +272,11 @@ func (r *Registry) Counters() map[string]*Counter {
 	defer r.mu.RUnlock()
 	out := make(map[string]*Counter, len(r.counters))
 	for k, v := range r.counters {
-		c := *v
-		c.Labels = cloneLabels(v.Labels)
-		out[k] = &c
+		// 2026-07-27 concurrency fix: 逐字段拷贝而不是 `c := *v`
+		// —— 后者会连带复制 Counter.mu（vet copylocks）且读 Value 无锁。
+		v.mu.Lock()
+		out[k] = &Counter{Name: v.Name, Value: v.Value, Labels: cloneLabels(v.Labels)}
+		v.mu.Unlock()
 	}
 	return out
 }
@@ -235,9 +287,9 @@ func (r *Registry) Histograms() map[string]*Histogram {
 	defer r.mu.RUnlock()
 	out := make(map[string]*Histogram, len(r.histograms))
 	for k, v := range r.histograms {
-		h := *v
-		h.Labels = cloneLabels(v.Labels)
-		out[k] = &h
+		// 2026-07-27 concurrency fix: 同上 —— 持 metric 锁做逐字段快照，
+		// 并深拷贝 Counts（原来共享底层数组，导出时仍会与 Observe 竞争）。
+		out[k] = v.Snapshot()
 	}
 	return out
 }

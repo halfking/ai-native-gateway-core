@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"strconv"
+	"sync/atomic"
 
 	"github.com/kaixuan/llm-gateway-go/autoroute/internal/legacyflags"
 )
@@ -154,24 +155,28 @@ func getEnvBool(key string, defaultValue bool) bool {
 	return b
 }
 
-var globalFeatureFlags *FeatureFlags
+// 2026-07-27 concurrency fix: globalFeatureFlags is read on the hot path
+// (every autoroute request) and written by InitFeatureFlags /
+// SetGlobalFeatureFlagsForTest. Store it in an atomic.Pointer so the
+// reader/writer are synchronised without a mutex on the hot path.
+var globalFeatureFlags atomic.Pointer[FeatureFlags]
 
 // InitFeatureFlags initializes the global feature flags instance.
 func InitFeatureFlags() {
-	globalFeatureFlags = LoadFeatureFlagsFromEnv()
+	globalFeatureFlags.Store(LoadFeatureFlagsFromEnv())
 }
 
 // GetFeatureFlags returns the global feature flags.
 func GetFeatureFlags() *FeatureFlags {
-	if globalFeatureFlags == nil {
-		return DefaultFeatureFlags()
+	if f := globalFeatureFlags.Load(); f != nil {
+		return f
 	}
-	return globalFeatureFlags
+	return DefaultFeatureFlags()
 }
 
 // SetGlobalFeatureFlagsForTest overrides the global flags for tests.
 // Pass the previous value (from GetFeatureFlags) to restore in defer.
-func SetGlobalFeatureFlagsForTest(f *FeatureFlags) { globalFeatureFlags = f }
+func SetGlobalFeatureFlagsForTest(f *FeatureFlags) { globalFeatureFlags.Store(f) }
 
 func activeFeatureNames(flags *FeatureFlags) []string {
 	if flags == nil {

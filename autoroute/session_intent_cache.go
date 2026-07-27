@@ -199,6 +199,37 @@ func (c *SessionIntentCache) Put(sessionID string, intent CachedIntent) {
 	}
 }
 
+// IncrementHit atomically increments the HitCount of the cached intent for
+// sessionID and returns the updated intent. It performs the read-modify-write
+// under a single write lock so concurrent requests on the same session each
+// observe a distinct count (the prior Get→HitCount++→Put pattern read the same
+// count and let the last Put win, undercounting hits and firing the drift
+// threshold late).
+//
+// 2026-07-27 concurrency fix. Returns (zero, false) when the entry is absent
+// or expired. On a hit it also refreshes the expiry like Put, so the cached
+// intent stays live for the session's duration.
+func (c *SessionIntentCache) IncrementHit(sessionID string) (CachedIntent, bool) {
+	if c == nil || sessionID == "" {
+		return CachedIntent{}, false
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	intent, ok := c.entries[sessionID]
+	if !ok {
+		return CachedIntent{}, false
+	}
+	now := c.now()
+	if now.After(intent.ExpiresAt) {
+		delete(c.entries, sessionID)
+		return CachedIntent{}, false
+	}
+	intent.HitCount++
+	intent.ExpiresAt = now.Add(c.ttl)
+	c.entries[sessionID] = intent
+	return intent, true
+}
+
 // Invalidate removes the cached intent for sessionID. Called when a
 // decision fails or when the client explicitly requests reclassification.
 func (c *SessionIntentCache) Invalidate(sessionID string) {

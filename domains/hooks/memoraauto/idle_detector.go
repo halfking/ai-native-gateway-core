@@ -14,9 +14,9 @@ import (
 //   - 判断会话是否满足空闲条件
 //   - 线程安全
 type IdleDetector struct {
-	mu             sync.RWMutex
-	sessions       map[string]*SessionStats
-	idleThreshold  time.Duration
+	mu              sync.RWMutex
+	sessions        map[string]*SessionStats
+	idleThreshold   time.Duration
 	minRequestCount int
 }
 
@@ -56,7 +56,7 @@ func (d *IdleDetector) Track(ctx context.Context, sessionKey, taskID, tenantID s
 	stats.RequestCount++
 	// 只更新 LastActive（每次请求都更新）
 	stats.LastActive = time.Now()
-	
+
 	return nil
 }
 
@@ -74,15 +74,20 @@ func (d *IdleDetector) CheckIdle(ctx context.Context, sessionKey string) (bool, 
 		return false, nil, fmt.Errorf("session not tracked: %s", sessionKey)
 	}
 
+	// 2026-07-27 concurrency fix: 返回副本而不是内部指针 —— hook.go 会读
+	// stats.RequestCount 并把指针带进 goroutine，而 Track() 持写锁改同一个
+	// 结构体 → 数据竞争。GetStats() 早就是这么做的。
+	statsCopy := *stats
+
 	// 检查是否满足空闲条件
-	if stats.RequestCount < d.minRequestCount {
-		return false, stats, nil
+	if statsCopy.RequestCount < d.minRequestCount {
+		return false, &statsCopy, nil
 	}
 
-	idleDuration := time.Since(stats.LastActive)
+	idleDuration := time.Since(statsCopy.LastActive)
 	isIdle := idleDuration > d.idleThreshold
 
-	return isIdle, stats, nil
+	return isIdle, &statsCopy, nil
 }
 
 // MarkProcessed 标记会话已处理（从跟踪中移除）

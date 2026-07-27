@@ -3,6 +3,7 @@ package credentialstate
 import (
 	"context"
 	"log/slog"
+	"sync"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -15,13 +16,21 @@ type ModelPopularityTracker struct {
 	updateTicker  *time.Ticker
 	stopCh        chan struct{}
 	popularModels map[string]int
+	// 2026-07-27 concurrency fix: refresh() replaced popularModels with a new
+	// map while GetProbeInterval/GetPopularModels read it, a plain data race
+	// (-race detected). modelsMu guards popularModels: read accessors take the
+	// RLock, refresh takes the write Lock.
+	modelsMu sync.RWMutex
 }
 
 // NewModelPopularityTracker creates a popularity tracker.
+//
+// 2026-07-27 concurrency fix: the ticker is now created in Start() and stopped
+// in Stop(). Previously it was created here and never stopped (Stop was never
+// called anywhere), leaking a goroutine-channel pair for the process lifetime.
 func NewModelPopularityTracker(db *pgxpool.Pool) *ModelPopularityTracker {
 	return &ModelPopularityTracker{
 		db:            db,
-		updateTicker:  time.NewTicker(5 * time.Minute),
 		stopCh:        make(chan struct{}),
 		popularModels: make(map[string]int),
 	}
@@ -29,13 +38,16 @@ func NewModelPopularityTracker(db *pgxpool.Pool) *ModelPopularityTracker {
 
 // Start begins the background refresh loop.
 func (t *ModelPopularityTracker) Start(ctx context.Context) {
+	t.updateTicker = time.NewTicker(5 * time.Minute)
 	go t.run(ctx)
 }
 
 // Stop halts the refresh loop.
 func (t *ModelPopularityTracker) Stop() {
 	close(t.stopCh)
-	t.updateTicker.Stop()
+	if t.updateTicker != nil {
+		t.updateTicker.Stop()
+	}
 }
 
 func (t *ModelPopularityTracker) run(ctx context.Context) {
@@ -91,14 +103,21 @@ func (t *ModelPopularityTracker) refresh(ctx context.Context) error {
 		return err
 	}
 
+	// 2026-07-27 concurrency fix: swap the map under the write lock so
+	// concurrent GetProbeInterval/GetPopularModels readers never observe a
+	// half-published map pointer.
+	t.modelsMu.Lock()
 	t.popularModels = newPopularity
+	t.modelsMu.Unlock()
 	slog.Debug("popularity tracker: refreshed", "models_tracked", len(newPopularity))
 	return nil
 }
 
 // GetProbeInterval returns the recommended probe interval based on heat.
 func (t *ModelPopularityTracker) GetProbeInterval(model string) time.Duration {
+	t.modelsMu.RLock()
 	count, exists := t.popularModels[model]
+	t.modelsMu.RUnlock()
 	if !exists {
 		return 5 * time.Minute
 	}
@@ -120,10 +139,12 @@ func (t *ModelPopularityTracker) GetPopularModels(topN int) []string {
 		count int
 	}
 
+	t.modelsMu.RLock()
 	models := make([]modelCount, 0, len(t.popularModels))
 	for model, count := range t.popularModels {
 		models = append(models, modelCount{model, count})
 	}
+	t.modelsMu.RUnlock()
 
 	for i := 0; i < len(models); i++ {
 		for j := i + 1; j < len(models); j++ {

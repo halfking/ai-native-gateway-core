@@ -335,11 +335,16 @@ func (idx *Index) getHotTop3Canonicals(ctx context.Context) []int {
 	idx.hotCanonicalMu.RUnlock()
 
 	// Cache miss or stale, query DB
-	if idx.pool == nil {
+	// 2026-07-27 concurrency fix: read idx.pool under RLock (SetPool writes
+	// it under the write lock). Snapshot the pointer, release, then query.
+	idx.mu.RLock()
+	pool := idx.pool
+	idx.mu.RUnlock()
+	if pool == nil {
 		return []int{}
 	}
 
-	rows, err := idx.pool.Query(ctx, `
+	rows, err := pool.Query(ctx, `
 		SELECT canonical_id, count(*) as usage_count
 		FROM request_logs
 		WHERE ts > NOW() - INTERVAL '48 hours'

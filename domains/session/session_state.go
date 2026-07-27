@@ -281,8 +281,8 @@ func (sm *Manager) EndCredRotation(ctx context.Context, sessionID string) error 
 	client.LSet(ctx, rotationsKey, 0, updatedJSON)
 
 	// 如果在降级模式，写入文件备份
-	if sm.IsDegraded() && sm.fileWriter != nil {
-		if err := sm.fileWriter.WriteRotation(ctx, sessionID, &entry); err != nil {
+	if fw := sm.getFileWriter(); sm.IsDegraded() && fw != nil {
+		if err := fw.WriteRotation(ctx, sessionID, &entry); err != nil {
 			// 记录错误但不阻断流程
 			// 使用 fmt.Printf 因为可能没有 slog
 			fmt.Printf("session: failed to write rotation to file: %v\n", err)
@@ -409,9 +409,11 @@ func (sm *Manager) StopSession(ctx context.Context, sessionID, reason string) er
 		}
 
 		// 判断是否在降级模式
-		if sm.IsDegraded() && sm.fileWriter != nil {
+		fw := sm.getFileWriter()
+		dw := sm.getDBWriter()
+		if sm.IsDegraded() && fw != nil {
 			// 降级模式：写入文件
-			if err := sm.fileWriter.WriteSnapshot(ctx, sess, stats, args); err != nil {
+			if err := fw.WriteSnapshot(ctx, sess, stats, args); err != nil {
 				slog.Warn("session: failed to write snapshot to file",
 					"session_id", sessionID,
 					"error", err,
@@ -419,9 +421,9 @@ func (sm *Manager) StopSession(ctx context.Context, sessionID, reason string) er
 			} else {
 				slog.Debug("session: snapshot written to file (degraded mode)", "session_id", sessionID)
 			}
-		} else if sm.dbWriter != nil {
+		} else if dw != nil {
 			// 正常模式：写入数据库
-			if err := sm.dbWriter.WriteSnapshot(ctx, sess, stats, args); err != nil {
+			if err := dw.WriteSnapshot(ctx, sess, stats, args); err != nil {
 				slog.Warn("session: failed to write snapshot to database",
 					"session_id", sessionID,
 					"error", err,

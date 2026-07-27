@@ -3,6 +3,7 @@ package bg
 import (
 	"context"
 	"log/slog"
+	"sync"
 	"time"
 
 	"github.com/kaixuan/llm-gateway-go/credentialhealth"
@@ -14,6 +15,11 @@ type HealthAutoRecover struct {
 	db       credentialhealth.DBQuerier
 	interval time.Duration // default 1 minute
 	stopCh   chan struct{}
+
+	// 2026-07-27 concurrency fix: Stop() did an unguarded close(stopCh),
+	// so a second Stop() panicked with "close of closed channel".
+	// Same guard as bg/routing_health_checker.go.
+	stopOnce sync.Once
 }
 
 // NewHealthAutoRecover creates a recovery worker.
@@ -57,9 +63,10 @@ func (w *HealthAutoRecover) Start(ctx context.Context) {
 	}()
 }
 
-// Stop gracefully stops the worker.
+// Stop gracefully stops the worker. Idempotent; safe on a
+// never-Started worker.
 func (w *HealthAutoRecover) Stop() {
-	close(w.stopCh)
+	w.stopOnce.Do(func() { close(w.stopCh) })
 }
 
 // recover restores expired credentials to 'ready' state.

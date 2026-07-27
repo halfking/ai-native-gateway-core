@@ -204,6 +204,37 @@ func (sc *StreamCapture) RecordChunkSent() {
 	sc.chunksSent++
 }
 
+// MarkThinkingBlock records one thinking content block: sets HasThinking and
+// bumps ThinkingBlocksN under sc.mu.
+//
+// 2026-07-27 concurrency fix: the stream goroutines in domains/streaming and
+// domains/transformation/anthropic write sc.HasThinking / sc.ThinkingBlocksN
+// directly with no lock, while SummaryAsMap reads both under sc.mu → data
+// race. The fields stay exported so existing callers still compile; new /
+// migrated callers should use this setter (and SetHasThinking) instead.
+func (sc *StreamCapture) MarkThinkingBlock() {
+	sc.mu.Lock()
+	defer sc.mu.Unlock()
+	sc.HasThinking = true
+	sc.ThinkingBlocksN++
+}
+
+// SetHasThinking sets HasThinking under sc.mu without touching the block
+// counter. Use it where the stream only learns "there was thinking" (e.g. a
+// signature_delta) and has no new block to count.
+func (sc *StreamCapture) SetHasThinking() {
+	sc.mu.Lock()
+	defer sc.mu.Unlock()
+	sc.HasThinking = true
+}
+
+// ThinkingSummary returns HasThinking / ThinkingBlocksN under sc.mu.
+func (sc *StreamCapture) ThinkingSummary() (bool, int) {
+	sc.mu.Lock()
+	defer sc.mu.Unlock()
+	return sc.HasThinking, sc.ThinkingBlocksN
+}
+
 func (sc *StreamCapture) MarkInterrupted() {
 	sc.mu.Lock()
 	defer sc.mu.Unlock()

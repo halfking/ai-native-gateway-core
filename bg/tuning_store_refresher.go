@@ -13,6 +13,8 @@ package bg
 import (
 	"context"
 	"log/slog"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/kaixuan/llm-gateway-go/autoroute"
@@ -25,6 +27,13 @@ type TuningStoreRefresher struct {
 	tick  time.Duration
 	stop  chan struct{}
 	done  chan struct{}
+
+	// 2026-07-27 concurrency fix: the old Stop() did an unguarded
+	// close(r.stop) (panic on a second Stop) and then blocked on
+	// <-r.done, which never closes when Start() was never called.
+	// Mirrors bg/tuning_view_refresher.go / routing_health_checker.go.
+	stopOnce sync.Once
+	started  atomic.Bool
 }
 
 // NewTuningStoreRefresher constructs the worker. Default tick = 5 min.
@@ -39,13 +48,24 @@ func NewTuningStoreRefresher(store *autoroute.TuningStore, _ interface{}) *Tunin
 
 // Start spawns the background goroutine. Returns immediately.
 func (r *TuningStoreRefresher) Start(ctx context.Context) {
+	if !r.started.CompareAndSwap(false, true) {
+		// Already started; a second run() would double-close r.done.
+		return
+	}
 	go r.run(ctx)
 	slog.Info("tuning store refresher started", "interval", r.tick.String())
 }
 
 // Stop terminates the goroutine and waits for it to finish.
+// Safe on a never-Started refresher (no-op) and safe to call twice.
 func (r *TuningStoreRefresher) Stop() {
-	close(r.stop)
+	r.stopOnce.Do(func() {
+		close(r.stop)
+	})
+	if !r.started.Load() {
+		// run() never launched, so r.done is never closed.
+		return
+	}
 	<-r.done
 }
 

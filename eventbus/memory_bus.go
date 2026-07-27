@@ -53,6 +53,9 @@ func NewMemoryBus(bufferSize int) *MemoryBus {
 
 // Subscribe 订阅指定类型的事件。
 // 同一事件类型可注册多个 handler，按注册顺序串行调用（每次 Publish 时）。
+// 2026-07-27 concurrency fix: 这条“按注册顺序串行调用”的语义此前只是注释，
+// dispatchEvent 实际是每个 handler 一个 goroutine（并发、顺序不确定）。
+// 现在 dispatchEvent 真正按注册顺序串行执行，注释与实现一致。
 func (b *MemoryBus) Subscribe(eventType string, handler Handler) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
@@ -93,7 +96,7 @@ func (b *MemoryBus) Close() {
 }
 
 // dispatch 后台分发循环。
-// 从 buffer 读取事件，查找订阅者，并发调用所有 handler。
+// 从 buffer 读取事件，查找订阅者，按注册顺序串行调用所有 handler。
 // 任一 handler 返回 error 仅记录，不影响其他 handler。
 func (b *MemoryBus) dispatch() {
 	defer b.wg.Done()
@@ -122,20 +125,43 @@ func (b *MemoryBus) dispatch() {
 }
 
 // dispatchEvent 分发单个事件到所有订阅者。
+//
+// 2026-07-27 concurrency fix (两个问题):
+//  1. 此前每个 (event × handler) 都 `go handler(...)`，这些 goroutine 完全
+//     不受 b.wg 跟踪，Close() 里的 wg.Wait() 只等 dispatch() 本身返回，
+//     所以 Close() 声称的“等待所有 handler 执行完毕”不成立，
+//     关闭时在途的 handler 工作会丢失。
+//  2. 每个 (event × handler) 一个 goroutine 是无界的：慢订阅者在高负载下
+//     会无限堆积 goroutine。
+//
+// 修复：一个事件只开 1 个 goroutine，在其中按注册顺序串行调用 handler。
+// 这同时把并发度从 O(事件数 × handler 数) 降到 O(事件数)，并恢复了
+// Subscribe 文档承诺的“按注册顺序串行调用”语义。
+// 已 grep 全部调用方（cmd/gateway*、domains/notification、domains/feishubot、
+// domains/hooks/session-inspector）：没有任何订阅者依赖 handler 之间的并行，
+// 它们都是独立的通知/告警转发，串行执行语义等价。
+// wg.Add 在父 goroutine（dispatch 循环）里执行，不在子 goroutine 内。
 func (b *MemoryBus) dispatchEvent(event Event) {
 	b.mu.RLock()
 	handlers := make([]Handler, len(b.subscribers[event.Type()]))
 	copy(handlers, b.subscribers[event.Type()])
 	b.mu.RUnlock()
 
-	for _, h := range handlers {
-		go func(handler Handler, e Event) {
-			ctx := context.Background()
+	if len(handlers) == 0 {
+		return
+	}
+
+	b.wg.Add(1)
+	go func(hs []Handler, e Event) {
+		defer b.wg.Done()
+		// handler 里可能有 I/O，这里不持任何锁。
+		ctx := context.Background()
+		for _, handler := range hs {
 			if err := handler(ctx, e); err != nil {
 				log.Printf("eventbus: handler error for event type=%s: %v", e.Type(), err)
 			}
-		}(h, event)
-	}
+		}
+	}(handlers, event)
 }
 
 // SubscriberCount 返回指定事件类型的订阅者数量（用于测试）。

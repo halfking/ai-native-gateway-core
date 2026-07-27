@@ -3,6 +3,8 @@ package bg
 import (
 	"context"
 	"log/slog"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -22,6 +24,12 @@ type StatsMinuteRollup struct {
 	db     *pgxpool.Pool
 	cancel context.CancelFunc
 	done   chan struct{}
+
+	// 2026-07-27 concurrency fix: Stop() used to block on <-w.done even
+	// when Start() had never run, which hangs the shutdown path forever.
+	// started/stopOnce follow bg/pending_sweeper.go.
+	stopOnce sync.Once
+	started  atomic.Bool
 }
 
 func NewStatsMinuteRollup(db *pgxpool.Pool) *StatsMinuteRollup {
@@ -29,15 +37,27 @@ func NewStatsMinuteRollup(db *pgxpool.Pool) *StatsMinuteRollup {
 }
 
 func (w *StatsMinuteRollup) Start(ctx context.Context) {
+	if !w.started.CompareAndSwap(false, true) {
+		// Already started; a second run() would double-close w.done.
+		return
+	}
 	cctx, cancel := context.WithCancel(ctx)
 	w.cancel = cancel
 	go w.run(cctx)
 	slog.Info("stats minute rollup started", "interval", statsRollupInterval.String())
 }
 
+// Stop cancels the loop and waits for it. Safe on a never-Started
+// worker (no-op) and safe to call twice.
 func (w *StatsMinuteRollup) Stop() {
-	if w.cancel != nil {
-		w.cancel()
+	w.stopOnce.Do(func() {
+		if w.cancel != nil {
+			w.cancel()
+		}
+	})
+	if !w.started.Load() {
+		// run() never launched, so w.done is never closed.
+		return
 	}
 	<-w.done
 }

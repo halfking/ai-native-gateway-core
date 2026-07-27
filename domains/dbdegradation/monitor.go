@@ -31,6 +31,7 @@ type Monitor struct {
 	lastCheckTime time.Time
 	degradedSince time.Time // 降级开始时间
 	mu            sync.Mutex
+	stopOnce      sync.Once // 2026-07-27 concurrency fix: Stop 幂等
 }
 
 // NewMonitor 创建监控器
@@ -61,8 +62,14 @@ func (m *Monitor) Start(ctx context.Context) {
 }
 
 // Stop 停止监控
+//
+// 2026-07-27 concurrency fix: 之前无条件 close(stopCh)，第二次 Stop 会
+// panic（"close of closed channel"）。用 sync.Once 保证只关一次；等待
+// doneCh 放在 Once 外面，所以重复 Stop 依然是「等到真的停了才返回」。
 func (m *Monitor) Stop() {
-	close(m.stopCh)
+	m.stopOnce.Do(func() {
+		close(m.stopCh)
+	})
 	<-m.doneCh
 }
 

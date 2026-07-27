@@ -225,32 +225,46 @@ func (sm *SessionStateMachine) RegisterTransition(t SessionTransition) {
 // 返回：
 //   - error: 转换失败时返回错误
 func (sm *SessionStateMachine) Transition(ctx context.Context, event TransitionEvent, reason string, metadata map[string]any) error {
+	// 2026-07-27 concurrency fix: 之前整个函数（含 Condition/Action 回调）
+	// 都在 sm.mu 写锁里跑，回调只要调 GetState/SetMetadata 就自死锁；
+	// 而 StateMeta 直接把受锁保护的 sm.metadata 交出去，回调能在锁外改它。
+	// 现在：锁内做规则匹配 + metadata 快照 → 解锁 → 跑回调 → 重新加锁提交。
 	sm.mu.Lock()
-	defer sm.mu.Unlock()
 
 	currentState := sm.currentState
 
 	// 检查是否为终态
 	if currentState.IsTerminal() {
+		sm.mu.Unlock()
 		return fmt.Errorf("cannot transition from terminal state: %s", currentState)
 	}
 
 	// 查找匹配的转换规则
 	transitions, ok := sm.transitions[currentState]
 	if !ok {
+		sm.mu.Unlock()
 		return fmt.Errorf("no transitions defined for state: %s", currentState)
 	}
 
 	var matchedTransition *SessionTransition
 	for i := range transitions {
 		if transitions[i].Event == event {
-			matchedTransition = &transitions[i]
+			// 拷贝一份规则，避免在锁外解引用 sm.transitions 的元素
+			t := transitions[i]
+			matchedTransition = &t
 			break
 		}
 	}
 
 	if matchedTransition == nil {
+		sm.mu.Unlock()
 		return fmt.Errorf("no transition found for event %s in state %s", event, currentState)
+	}
+
+	// 快照 metadata：回调拿到的是副本，改它不会破坏受锁保护的 map
+	stateMeta := make(map[string]any, len(sm.metadata))
+	for k, v := range sm.metadata {
+		stateMeta[k] = v
 	}
 
 	// 构建转换上下文
@@ -262,10 +276,13 @@ func (sm *SessionStateMachine) Transition(ctx context.Context, event TransitionE
 		Event:     string(event),
 		Metadata:  metadata,
 		Timestamp: time.Now(),
-		StateMeta: sm.metadata,
+		StateMeta: stateMeta,
 	}
 
-	// 检查转换条件
+	// 回调期间不持锁
+	sm.mu.Unlock()
+
+	// 检查转换条件（不满足则中止转换，语义与修复前一致）
 	if matchedTransition.Condition != nil {
 		if !matchedTransition.Condition(transCtx) {
 			return fmt.Errorf("transition condition not satisfied for %s -> %s on event %s",
@@ -278,6 +295,15 @@ func (sm *SessionStateMachine) Transition(ctx context.Context, event TransitionE
 		if err := matchedTransition.Action(transCtx); err != nil {
 			return fmt.Errorf("transition action failed: %w", err)
 		}
+	}
+
+	// 重新加锁提交状态
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+
+	// 回调期间可能已经有别的转换落地了 —— 此时本次转换的前置状态已失效
+	if sm.currentState != currentState {
+		return fmt.Errorf("state changed concurrently during transition: %s -> %s", currentState, sm.currentState)
 	}
 
 	// 更新指标
