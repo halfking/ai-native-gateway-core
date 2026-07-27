@@ -92,15 +92,11 @@ FROM models_canonical mc
 WHERE rl.canonical_id = mc.id
   AND rl.canonical_model IS NULL;
 
--- ─── 4. Backfill partitioned parent (cascades to all partitions) ───
--- Same idempotent guard: only touch rows where the value is missing.
-UPDATE request_logs rl
-SET canonical_model = mc.canonical_name
-FROM models_canonical mc
-WHERE rl.canonical_id = mc.id
-  AND rl.canonical_model IS NULL;
+-- Historical request_logs partitions may use Citus columnar storage, which
+-- does not support UPDATE. Historical rows therefore remain NULL and are
+-- resolved through the existing canonical_id join when queried.
 
--- ─── 5. Indexes for hot + parent (dashboard filter speedup) ───
+-- ─── 4. Indexes for hot + parent (dashboard filter speedup) ───
 -- Partial index because most rows will have a value but some legacy
 -- rows may not (NULL skip), keeping the index small and tight.
 CREATE INDEX IF NOT EXISTS idx_request_logs_hot_canonical_model_ts

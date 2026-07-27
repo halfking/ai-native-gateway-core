@@ -15,14 +15,14 @@ TARGET_TYPE="docker"
 
 # ── Docker ─────────────────────────────────────────────────────────────────
 DOCKER_HOST="local"
-DOCKER_PG_CONTAINER="llm-gateway-pg"
+DOCKER_PG_CONTAINER="distribution-bc-pg17"
 
 # ── PostgreSQL ─────────────────────────────────────────────────────────────
 PG_HOST="localhost"
-PG_PORT="5432"
-PG_USER="llm_gateway"
-PG_PASS="llm_gateway_db_pass_2026_secure"
-PG_DB="llm_gateway"
+PG_PORT="55432"
+PG_USER="maintain"
+PG_PASS="maintain"
+PG_DB="maintain"
 
 # ── Image Info ─────────────────────────────────────────────────────────────
 PG_IMAGE="kx-citus-pg17:arm64"

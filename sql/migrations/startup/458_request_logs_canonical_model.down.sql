@@ -15,18 +15,7 @@ ALTER TABLE request_logs
 ALTER TABLE request_logs_hot
     DROP COLUMN IF EXISTS canonical_model;
 
--- 2026-07-27 agent perception write-back columns (companion to the original
--- client-perception-hot-table migration, not a separate migration file).
-ALTER TABLE request_logs_hot
-    DROP COLUMN IF EXISTS agent_name;
-ALTER TABLE request_logs_hot
-    DROP COLUMN IF EXISTS agent_type;
-ALTER TABLE request_logs_hot
-    DROP COLUMN IF EXISTS client_protocol;
-ALTER TABLE request_logs_hot
-    DROP COLUMN IF EXISTS virtual_client_id;
-
--- Index cleanup (the index files were 458_request_logs_canonical_model.sql)
+-- Index cleanup (the indexes were created by the up migration).
 DROP INDEX IF EXISTS idx_request_logs_hot_canonical_model_ts;
 DROP INDEX IF EXISTS idx_request_logs_canonical_model_ts;
 

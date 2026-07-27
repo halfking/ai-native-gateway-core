@@ -35,6 +35,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - **历史数据**：不执行回填。历史记录的 outbound_body 可能是 JSONB literal `null`，且原始上游 body 未持久化，无法可靠重建；部署验证必须区分 SQL NULL 与 JSONB `null`。
   - 详见 commit `280b1f8f0`（分支 `fix/outbound-body-delta-only`）。
 
+- **migration 458 在 Citus columnar 历史分区上崩溃 + 部署错误捕获误报** (2026-07-27):
+  - **Bug 1**：`458_request_logs_canonical_model.sql` 的第 4 步直接 `UPDATE request_logs` 回填 `canonical_model`。`request_logs` 是按 `ts` 分区的月表，至少一个历史月分区使用 Citus columnar 存储（Citus 不支持 UPDATE/CTID 扫描），PG 报 `ERROR: UPDATE and CTID scans not supported for ColumnarScan`，第一次 245 部署 (build_seq 1403) 因此被拦截。错误捕获又因 `/tmp/_mig_err_458.log` 写在远端而本机 `tail` 而被掩盖，真因延迟一轮才发现。
+  - **Bug 2**：`scripts/deploy-lib/db-changelog.sh` 的失败分支在调用方机器上 `grep`/`tail` 远端错误日志。远端文件存在但本机无权限或路径错时输出变成 `tail: ... No such file or directory`，真实 psql 报错被覆盖；后续缺少清理，`/tmp` 上每次失败都堆积临时日志。
+  - **修复**：
+    - `458_request_logs_canonical_model.sql` 删掉对分区父表 `request_logs` 的整体 `UPDATE`；只回填 `request_logs_hot`（heap，支持 UPDATE）。历史月分区的 `canonical_model` 保持 NULL，查询通过已有的 `canonical_id → models_canonical.canonical_name` 关联获取，热表（最近 7d）直接走新列。
+    - `458_request_logs_canonical_model.down.sql` 删除不属于本迁移的客户端字段 `DROP COLUMN`，避免 down 误删 443 添加的列；保留本迁移加的两个 partial index。
+    - `scripts/deploy-lib/db-changelog.sh` 改为通过 `ssh ... cat` 拉回远端错误并 `<<<` 喂给 grep；成功或失败后都 `rm -f /tmp/_mig_err_<ver>.log`。
+  - **验证**：245 部署 (build_seq 1404) `[db] ✓ 迁移完成 (1 新应用 / 1 检查)`；`request_logs_hot WHERE canonical_model IS NOT NULL` 行数从 0 增长到 6846；两个 partial index 已创建；`/api/system/version=200`、`/api/system/background-tasks=401`（非 503，表示 DB 已就绪）。详见 commit `fix(db): 458 columnar-safe + remote psql error capture`.
+
 ### Changed
 
 - **URSM v1→v2 统一 (clean up + write path unification)** (2026-07-26):
