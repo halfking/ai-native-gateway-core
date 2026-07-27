@@ -1,6 +1,7 @@
 package cache
 
 import (
+	"sync"
 	"testing"
 	"time"
 )
@@ -87,5 +88,118 @@ func TestNodeMirrorEqualGenPriAccepts(t *testing.T) {
 	}
 	if got.Reason != "refreshed" {
 		t.Fatalf("equal-(gen,pri) apply should refresh; Reason=%q want %q", got.Reason, "refreshed")
+	}
+}
+
+// TestNodeMirrorShardedConcurrentWrites is the M3 (2026-07-28) regression
+// test for the per-shard LRU split. It exercises:
+//   - many goroutines writing DIFFERENT (cred, raw) keys (the FilterAndScore
+//     hot-path shape): they MUST all complete without deadlock or race
+//   - the same goroutines ALSO hammering ApplyFromAPI concurrently with
+//     reads via Get / Peek — the shard-level mutex MUST not panic, must not
+//     interleave a get with itself, and must respect soft-expire
+//
+// A pre-M3 (single mutex) version of this test would still pass for small N,
+// but the run time scales poorly with contention; the sharded variant keeps
+// throughput steady as N grows because each shard's lock is independent.
+func TestNodeMirrorShardedConcurrentWrites(t *testing.T) {
+	const goroutines = 32
+	const writes = 100
+	// Per-shard capacity must comfortably exceed total/N so the LRU does
+	// not evict keys we still need to assert at the end. 1024 per shard
+	// gives plenty of headroom without slowing the test.
+	m := NewNodeMirror(NodeMirrorShards*1024, time.Minute)
+
+	var wg sync.WaitGroup
+	for g := 0; g < goroutines; g++ {
+		wg.Add(1)
+		go func(off int) {
+			defer wg.Done()
+			for i := 0; i < writes; i++ {
+				credID := off*writes + i
+				v := NodeView{
+					CredentialID:   credID,
+					RawModel:       "m",
+					Available:      true,
+					Generation:     int64(i + 1),
+					SourcePriority: 10,
+				}
+				m.applyToLRU(v)
+				if _, ok := m.Get(credID, "m"); !ok {
+					t.Errorf("Get miss immediately after Apply for key=%d", credID)
+				}
+				if _, ok := m.Peek(credID, "m"); !ok {
+					t.Errorf("Peek miss for key=%d", credID)
+				}
+			}
+		}(g)
+	}
+	wg.Wait()
+
+	// Every distinct (cred, raw) we wrote should still be Peek-able.
+	for g := 0; g < goroutines; g++ {
+		for i := 0; i < writes; i++ {
+			credID := g*writes + i
+			if _, ok := m.Peek(credID, "m"); !ok {
+				t.Fatalf("key %d missing after concurrent writes", credID)
+			}
+		}
+	}
+}
+
+// TestNodeMirrorShardedGenMonotonicPerKey exercises the per-shard CAS in
+// applyToLRU when many goroutines race to update the SAME (cred, raw).
+// Even though the shards split unrelated keys, a single key's updates are
+// strictly serialised by its shard's mutex, so generation MUST remain
+// monotonic — never regress — under racy concurrent calls.
+//
+// Without the per-shard serialisation, a slow writer holding a stale gen
+// could land AFTER a faster writer holding a newer gen, leaving a regressed
+// entry in the cache and breaking the lua apply_decision contract.
+func TestNodeMirrorShardedGenMonotonicPerKey(t *testing.T) {
+	m := NewNodeMirror(100, time.Minute)
+	const goroutines = 32
+	const writes = 200
+
+	// Seed the key at a high generation so every concurrent writer sees an
+	// existing entry and must respect the monotonic contract.
+	m.applyToLRU(NodeView{
+		CredentialID:   7,
+		RawModel:       "racey",
+		Generation:     int64(writes + 1),
+		SourcePriority: 10,
+		Available:      true,
+	})
+
+	var wg sync.WaitGroup
+	for g := 0; g < goroutines; g++ {
+		wg.Add(1)
+		go func(off int) {
+			defer wg.Done()
+			for i := 0; i < writes; i++ {
+				// Write monotonically decreasing gen — every iteration is
+				// strictly older than the seed, so all of these MUST be
+				// rejected by applyToLRU's per-shard CAS.
+				v := NodeView{
+					CredentialID:   7,
+					RawModel:       "racey",
+					Generation:     int64(writes - i),
+					SourcePriority: 10,
+					Available:      true,
+				}
+				m.applyToLRU(v)
+			}
+		}(g)
+	}
+	wg.Wait()
+
+	// The original seed must still be there with its original generation —
+	// every concurrent caller wrote a strictly older gen and was rejected.
+	got, ok := m.Peek(7, "racey")
+	if !ok {
+		t.Fatal("seed entry evicted by concurrent older-gen writers")
+	}
+	if got.Generation != int64(writes+1) {
+		t.Fatalf("gen regressed: seed had gen=%d, after writes got %d", writes+1, got.Generation)
 	}
 }

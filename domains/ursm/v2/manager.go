@@ -326,6 +326,13 @@ func (m *Manager) Plan(ctx context.Context, seeds []CandidateSeed, tenant, canon
 	if m == nil {
 		return nil
 	}
+	// M3 (2026-07-28): skip the Ready Redis IO when the rollout controller
+	// would short-circuit anyway. plan() also checks ModeOff but Plan()
+	// already needs the Ready result, so guarding here saves a round-trip
+	// in the off-mode default — which is the production rollout state today.
+	if m.Mode() == api.ModeOff {
+		return nil
+	}
 	return m.plan(ctx, seeds, tenant, canonical, m.Ready(ctx))
 }
 
@@ -444,18 +451,20 @@ func (m *Manager) RecordRequest(ctx context.Context, ev api.RequestOutcome) erro
 	timeout := time.Duration(m.cfg.RecordTimeoutMs) * time.Millisecond
 	rctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), timeout)
 	defer cancel()
-	// Read the existing manual_hold so the Lua script's admin-hold
-	// short-circuit has real data. A missing key or transport error must
-	// NOT block the request: only an explicit "1" on manual_hold causes
-	// the Lua to ignore the outcome. Any other outcome (Nil, error,
-	// empty) is treated as "no hold" and the request is recorded normally.
-	// This mirrors the F3 ApplyProbe pattern.
+	// M3 (2026-07-28): record_request.lua now reads manual_hold directly
+	// inside the script (single atomic Redis op), so we no longer pre-read
+	// manual_hold here. This:
+	//   - closes the prior TOCTOU window where ApplyAdmin could flip
+	//     manual_hold between Go-side HGet and Lua Run;
+	//   - saves one hot-path RTT (2 IO → 1 IO per record);
+	//   - admin priority still dominates via the lua-internal manual_hold
+	//     read.
+	// Keys are tenant-aware (afb13c9ea, 2026-07-28) — empty TenantID falls
+	// back to the legacy non-tenant key.
 	nodeKey := store.NodeKeyForTenant(m.cfg.RedisKeyPrefix, ev.TenantID, ev.CredentialID, ev.RawModel)
 	window1m := store.WindowKeyForTenant(m.cfg.RedisKeyPrefix, ev.TenantID, ev.CredentialID, ev.RawModel, "1m")
 	window5m := store.WindowKeyForTenant(m.cfg.RedisKeyPrefix, ev.TenantID, ev.CredentialID, ev.RawModel, "5m")
 	window30m := store.WindowKeyForTenant(m.cfg.RedisKeyPrefix, ev.TenantID, ev.CredentialID, ev.RawModel, "30m")
-	manualHold, _ := m.store.RawClient().HGet(rctx, nodeKey, "manual_hold").Result()
-	adminHold := manualHold == "1"
 	if _, err := m.store.RecordRequest(rctx,
 		nodeKey,
 		window1m,
@@ -470,7 +479,7 @@ func (m *Manager) RecordRequest(ctx context.Context, ev api.RequestOutcome) erro
 			NodeTTL:      m.cfg.NodeTTL,
 			Window5mTTL:  m.cfg.Window5mTTL,
 			Window30mTTL: m.cfg.Window30mTTL,
-			AdminHold:    adminHold,
+			AdminHold:    false, // deprecated; handled in lua
 			// 2026-07-24: 使用配置的冷却时间，与 circuit breaker 冷却时间对齐
 			CoolSeconds:     m.cfg.CoolSeconds,
 			FailStreakLimit: 3,
