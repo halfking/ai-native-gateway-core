@@ -452,6 +452,13 @@ type ChatHandler struct {
 	// anomalyRecorder (2026-06-28) tracks response format anomalies to detect
 	// provider API changes and improve token estimation logic. nil disables.
 	anomalyRecorder *FormatAnomalyRecorder
+
+	// integrityDetector (2026-07-28) emits model-integrity events
+	// (model_mismatch, finish_refusal, finish_truncation, empty_response,
+	// repeated_content). Runs once per request inside emitTelemetry and
+	// also once per OpenAI non-stream success path in the executor.
+	// nil disables (legacy behavior).
+	integrityDetector executors.IntegrityDetector
 	// (list_categories, load_tools) locally without forwarding to upstream.
 	// nil disables Phase 2 meta-tools.
 	metaToolInterceptor *MetaToolInterceptor
@@ -790,6 +797,15 @@ func (h *ChatHandler) SetFormatDetection(detector *FormatDetector, fixer *Format
 // nil disables Request WAL (default).
 func (h *ChatHandler) SetRequestLogger(rl *telemetry.RequestLogger) {
 	h.requestLogger = rl
+}
+
+// SetIntegrityDetector (2026-07-28) wires the model-integrity detector.
+// nil disables the per-request detection; the executor side keeps
+// its own field because the non-stream path records from inside
+// executeOpenAI (before result.ResponseBody is fully consumed by
+// the response interceptor).
+func (h *ChatHandler) SetIntegrityDetector(d executors.IntegrityDetector) {
+	h.integrityDetector = d
 }
 
 // SetAutoTitleGenerator (2026-06-22) wires the auto title generator from admin package.
@@ -4063,6 +4079,102 @@ func (h *ChatHandler) emitTelemetry(evt audit.Event, result *executors.ExecuteRe
 	if h.autoTitleGenerator != nil && reqLog.Success && reqLog.GwSessionID != nil && *reqLog.GwSessionID != "" {
 		h.autoTitleGenerator.MaybeGenerateTitle(*reqLog.GwSessionID, tenantID)
 	}
+
+	// 2026-07-28: model-integrity detection (finish_refusal /
+	// finish_truncation / empty_response / repeated_content). Skipped
+	// when the executor already recorded (the non-stream OpenAI path
+	// fires inside executeOpenAI before ResponseBody is consumed by the
+	// response interceptor). The detector is nil-safe; we nil-check
+	// here anyway so the call site stays explicit.
+	if h.integrityDetector != nil {
+		h.integrityDetector.Observe(logCtx.Request.Context(), executors.IntegrityCandidate{
+			RequestID:          reqLog.RequestID,
+			TenantID:           tenantID,
+			ApplicationID:      reqLog.ApplicationID,
+			APIKeyID:           reqLog.APIKeyID,
+			ProviderID:         reqLog.ProviderID,
+			CredentialID:       reqLog.CredentialID,
+			ClientModel:        strValueOrEmpty(reqLog.ClientModel),
+			OutboundModel:      strValueOrEmpty(reqLog.OutboundModel),
+			RawModel:           strValueOrEmpty(reqLog.OutboundModel),
+			RespModel:          streamRespModelForIntegrity(capture, responseBody),
+			ProviderResponseID: "",
+			SystemFingerprint:  "",
+			UsageSource:        strValueOrEmpty(reqLog.UsageSource),
+			FinishReason:       strValueOrEmpty(reqLog.UpstreamFinishReason),
+			PromptTokens:       reqLog.PromptTokens,
+			CompletionTokens:   reqLog.CompletionTokens,
+			ChunkCount:         intValueOrZero(reqLog.StreamChunkCount),
+			ChunksSent:         intValueOrZero(reqLog.StreamChunksSent),
+			TextContent:        streamTextContentForIntegrity(capture),
+			ResponseBody:       append([]byte(nil), responseBody...),
+			IsStream:           capture != nil,
+		})
+	}
+}
+
+// streamRespModelForIntegrity returns the upstream-returned model
+// from a stream capture, falling back to the first-chunk .model in
+// the response body. Empty disables the integrity mismatch check.
+//
+// Implementation note: we deliberately do not import
+// domains/streaming/integrity here to keep the dependency graph
+// one-directional (integrity → audit, not the reverse). The
+// response-body fallback is a 12-line JSON parse; duplicating it in
+// the streaming package avoids the cycle.
+func streamRespModelForIntegrity(capture *audit.StreamCapture, responseBody []byte) string {
+	if capture != nil {
+		if m := capture.RespModel(); m != "" {
+			return m
+		}
+	}
+	if len(responseBody) == 0 {
+		return ""
+	}
+	var v struct {
+		Model string `json:"model"`
+	}
+	if err := json.Unmarshal(responseBody, &v); err != nil {
+		return ""
+	}
+	return strings.TrimSpace(v.Model)
+}
+
+// streamTextContentForIntegrity extracts the rolling text content
+// from a stream capture, returning "" if absent. Mirrors
+// audit.StreamCapture.SummaryAsMap's `stream_text_content` field.
+func streamTextContentForIntegrity(capture *audit.StreamCapture) string {
+	if capture == nil {
+		return ""
+	}
+	// The capture keeps textContent internal; we read it via the
+	// summary map to avoid a new exporter just for this. The cost is
+	// one extra mu lock + map alloc per request, acceptable for a
+	// signal that runs once after stream completion.
+	m := capture.SummaryAsMap()
+	if v, ok := m["stream_text_content"].(string); ok {
+		return v
+	}
+	return ""
+}
+
+// strValueOrEmpty returns "" for nil pointer and the dereferenced
+// value otherwise. Used to feed the IntegrityDetector when an
+// optional column is NULL.
+func strValueOrEmpty(p *string) string {
+	if p == nil {
+		return ""
+	}
+	return *p
+}
+
+// intValueOrZero returns 0 for nil pointer and the dereferenced
+// value otherwise.
+func intValueOrZero(p *int) int {
+	if p == nil {
+		return 0
+	}
+	return *p
 }
 
 // recordFailedRequest writes a request_logs row for any non-success

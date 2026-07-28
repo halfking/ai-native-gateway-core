@@ -131,6 +131,14 @@ type StreamCapture struct {
 	// with type=thinking. Used for audit (how deeply did the model
 	// reason) and cost estimation.
 	ThinkingBlocksN int
+	// RespModel (2026-07-28) is the upstream-returned model name
+	// captured from the first SSE chunk that carries a `model` field
+	// (OpenAI chat.completion.chunk) or from message_start
+	// (Anthropic). Used by the integrity detector to compare against
+	// the client/outbound model and surface silent substitution.
+	// Concurrency-safe via SetRespModel/RespModel helpers below.
+	respModel string
+
 	// ModelMismatch is set when the upstream response model name
 	// does not match the request model name (case-insensitive).
 	// Detected in the side-channel audit; surfaces in
@@ -228,6 +236,33 @@ func (sc *StreamCapture) SetHasThinking() {
 	sc.HasThinking = true
 }
 
+// SetRespModelIfEmpty (2026-07-28) stores the first non-empty upstream
+// model name seen on the stream. Used by the integrity detector to
+// detect silent model substitution. Concurrency-safe; subsequent
+// calls are no-ops if a value is already recorded.
+func (sc *StreamCapture) SetRespModelIfEmpty(model string) {
+	if sc == nil || model == "" {
+		return
+	}
+	sc.mu.Lock()
+	defer sc.mu.Unlock()
+	if sc.respModel == "" {
+		sc.respModel = model
+	}
+}
+
+// RespModel returns the upstream-returned model name captured during
+// the stream, or "" if none was observed. Used by the integrity
+// detector in streaming/handler.go emitTelemetry.
+func (sc *StreamCapture) RespModel() string {
+	if sc == nil {
+		return ""
+	}
+	sc.mu.Lock()
+	defer sc.mu.Unlock()
+	return sc.respModel
+}
+
 // ThinkingSummary returns HasThinking / ThinkingBlocksN under sc.mu.
 func (sc *StreamCapture) ThinkingSummary() (bool, int) {
 	sc.mu.Lock()
@@ -266,6 +301,7 @@ func (sc *StreamCapture) Reset() {
 	sc.HasThinking = false
 	sc.ThinkingBlocksN = 0
 	sc.ModelMismatch = false
+	sc.respModel = ""
 	sc.InputTokens = nil
 	sc.OutputTokens = nil
 	sc.ToolCalls = nil
@@ -584,6 +620,9 @@ func (sc *StreamCapture) SummaryAsMap() map[string]any {
 	}
 	if sc.ModelMismatch {
 		m["model_mismatch"] = true
+	}
+	if sc.respModel != "" {
+		m["resp_model"] = sc.respModel
 	}
 	// 2026-06-19 quality fix mode (017_quality_fix_mode.sql): surface
 	// the stream-collected quality signals so emitTelemetry can persist

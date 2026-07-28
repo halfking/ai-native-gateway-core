@@ -98,6 +98,24 @@ func (c *ChatExecutor) WriteNonStreamResponse(w http.ResponseWriter, resp *http.
 	if clientModel != "" {
 		body = replaceModelInResponseBody(body, clientModel)
 	}
+	// 2026-07-28: model identity check (silent substitution / 注水). The
+	// OpenAI wire format carries the upstream-returned model in the
+	// top-level `.model` field. If it doesn't case-insensitively match
+	// clientModel (which is the canonicalized client-supplied model),
+	// surface the mismatch through qualitySignals so the executor can
+	// append a `model_mismatch:<reason>` QualityFlag and the streaming
+	// SummaryAsMap will serialize it under auto_decision.model_mismatch
+	// (the same path the Anthropic SSE side-channel uses).
+	respModel := extractResponseModel(body)
+	if respModel != "" && clientModel != "" {
+		if mismatched, reason := c.CheckSoftMismatch(clientModel, respModel); mismatched {
+			if qualitySignals == nil {
+				qualitySignals = &QualitySignals{}
+			}
+			qualitySignals.Flags = append(qualitySignals.Flags,
+				"model_mismatch:"+reason)
+		}
+	}
 	// Write-time 客户端可见脱敏（2026-07-09，增强 1）。
 	// 在 w.Write 前调用，让客户端真正收到脱敏后字节。
 	// sessionID/tenantID 需从上下文传入（当前简化为空，TODO: 从 routing 上下文注入）。
@@ -112,6 +130,35 @@ func (c *ChatExecutor) WriteNonStreamResponse(w http.ResponseWriter, resp *http.
 	w.WriteHeader(resp.StatusCode)
 	_, err = w.Write(body)
 	return body, err
+}
+
+// extractResponseModel returns the upstream-returned model name from an
+// OpenAI-shaped chat completions body, or "" if the field is absent.
+// It tolerates the common cases (string-typed model, surrounding
+// fields) and returns "" on any parse failure so the caller can
+// safely skip the mismatch check.
+func extractResponseModel(body []byte) string {
+	if len(body) == 0 {
+		return ""
+	}
+	var v struct {
+		Model string `json:"model"`
+	}
+	if err := json.Unmarshal(body, &v); err != nil {
+		return ""
+	}
+	return strings.TrimSpace(v.Model)
+}
+
+// intPtrFromInt returns a *int copy of the value. Used for the
+// integrity candidate; duplicated from the test-only intPtr to keep
+// the executors package's surface stable.
+func intPtrFromInt(v int) *int {
+	if v == 0 {
+		return nil
+	}
+	out := v
+	return &out
 }
 
 func (c *ChatExecutor) StreamResponse(w http.ResponseWriter, resp *http.Response) StreamOutcome {
@@ -1108,6 +1155,29 @@ func (e *Executor) executeOpenAI(
 			// 也把 W 置为 nil，两个条件都检查，避免任何将来新增的
 			// detached 调用方只置空 W 却漏设 flag 时在这里 panic。
 			if !params.SuppressSuccessWrite && params.W != nil {
+				// 2026-07-28: 在写回客户端前，调用模型完整性检测器。覆盖
+				// model_mismatch（静默替换/注水）、finish_refusal、
+				// finish_truncation、token_arith_fail、empty_response、
+				// repeated_content。recorder 内部用 context.WithoutCancel
+				// + 3s 预算，延迟或失败都不会影响 W.Write。
+				if e.IntegrityDetector != nil && len(respBody) > 0 {
+					e.IntegrityDetector.Observe(params.R.Context(), IntegrityCandidate{
+						RequestID:          params.RequestID,
+						TenantID:           params.TenantID,
+						ApplicationID:      params.AppID,
+						APIKeyID:           params.ApiKeyID,
+						ProviderID:         intPtrFromInt(cand.ProviderID),
+						ProviderCode:       cand.CatalogCode,
+						CredentialID:       intPtrFromInt(cand.CredentialID),
+						ClientModel:        params.ClientModel,
+						OutboundModel:      outboundModel,
+						RawModel:           cand.RawModel,
+						ProviderResponseID: resp.Header.Get("X-Request-Id"),
+						SystemFingerprint:  resp.Header.Get("X-System-Fingerprint"),
+						IsStream:           false,
+						ResponseBody:       append([]byte(nil), respBody...),
+					})
+				}
 				e.logClientResponse(params, diagnosticProtocol(params.ClientProtocol, "openai-completions"), respBody)
 				for k, vs := range resp.Header {
 					for _, v := range vs {
