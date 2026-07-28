@@ -47,7 +47,6 @@ func RunChecks(ctx context.Context, db *pgxpool.Pool) (newCritical, newWarning i
 				var pmID, mcID int64
 				var rawName string
 				if scanErr := rows.Scan(&pmID, &rawName, &mcID); scanErr != nil {
-					rows.Close()
 					continue
 				}
 				entityID = pmID
@@ -59,7 +58,6 @@ func RunChecks(ctx context.Context, db *pgxpool.Pool) (newCritical, newWarning i
 				var cmbID int64
 				var credModel, credPlan, cmbBilling string
 				if scanErr := rows.Scan(&cmbID, &credModel, &credPlan, &cmbBilling); scanErr != nil {
-					rows.Close()
 					continue
 				}
 				entityID = cmbID
@@ -74,7 +72,6 @@ func RunChecks(ctx context.Context, db *pgxpool.Pool) (newCritical, newWarning i
 				var cmbID, credID int64
 				var modelName string
 				if scanErr := rows.Scan(&cmbID, &entityName, &modelName, &credID); scanErr != nil {
-					rows.Close()
 					continue
 				}
 				entityID = cmbID
@@ -85,7 +82,6 @@ func RunChecks(ctx context.Context, db *pgxpool.Pool) (newCritical, newWarning i
 				var id int64
 				var name string
 				if scanErr := rows.Scan(&id, &name, &entityName, &detail); scanErr != nil {
-					rows.Close()
 					continue
 				}
 				entityID = id
@@ -97,7 +93,6 @@ func RunChecks(ctx context.Context, db *pgxpool.Pool) (newCritical, newWarning i
 				var cmbID int64
 				var credModel, circuitState, availState string
 				if scanErr := rows.Scan(&cmbID, &credModel, &circuitState, &availState); scanErr != nil {
-					rows.Close()
 					continue
 				}
 				entityID = cmbID
@@ -109,7 +104,6 @@ func RunChecks(ctx context.Context, db *pgxpool.Pool) (newCritical, newWarning i
 				var credID int64
 				var credName, availState, circuitState string
 				if scanErr := rows.Scan(&credID, &credName, &availState, &circuitState); scanErr != nil {
-					rows.Close()
 					continue
 				}
 				entityID = credID

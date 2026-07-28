@@ -3,8 +3,10 @@ package bg
 import (
 	"context"
 	"log/slog"
+	"sync"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -13,37 +15,62 @@ const (
 	dailyProbeInterval = 24 * time.Hour
 )
 
+type dailyProbeAuditorDB interface {
+	Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error)
+}
+
 // DailyProbeAudit submits every credential/model pair used or degraded in the
-// last three days to NodeProbeWorker. It uses the same durable queue and
-// worker-level dedup/backoff, so a daily sweep cannot create an unbounded burst.
+// last three days to NodeProbeWorker. NodeProbeWorker performs in-memory and
+// database-level deduplication/backoff; Submit itself is not a durable queue.
 type DailyProbeAudit struct {
-	db     *pgxpool.Pool
+	db     dailyProbeAuditorDB
 	worker *NodeProbeWorker
+
+	stopCh    chan struct{}
+	stopOnce  sync.Once
+	startOnce sync.Once
 }
 
 func NewDailyProbeAudit(db *pgxpool.Pool, worker *NodeProbeWorker) *DailyProbeAudit {
-	return &DailyProbeAudit{db: db, worker: worker}
+	return &DailyProbeAudit{
+		db:     db,
+		worker: worker,
+		stopCh: make(chan struct{}),
+	}
 }
 
-// Start runs one audit immediately, then repeats every 24 hours.
+// Start runs one audit immediately, then repeats every 24 hours. It is safe to
+// call repeatedly.
 func (a *DailyProbeAudit) Start(ctx context.Context) {
 	if a == nil || a.db == nil || a.worker == nil {
 		return
 	}
-	go func() {
-		a.run(ctx)
-		ticker := time.NewTicker(dailyProbeInterval)
-		defer ticker.Stop()
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case <-ticker.C:
-				a.run(ctx)
+	a.startOnce.Do(func() {
+		go func() {
+			a.run(ctx)
+			ticker := time.NewTicker(dailyProbeInterval)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case <-a.stopCh:
+					return
+				case <-ticker.C:
+					a.run(ctx)
+				}
 			}
-		}
-	}()
-	slog.Info("daily probe audit started", "lookback", dailyProbeLookback, "interval", dailyProbeInterval)
+		}()
+		slog.Info("daily probe audit started", "lookback", dailyProbeLookback, "interval", dailyProbeInterval)
+	})
+}
+
+// Stop requests termination. It is safe to call repeatedly, including before Start.
+func (a *DailyProbeAudit) Stop() {
+	if a == nil {
+		return
+	}
+	a.stopOnce.Do(func() { close(a.stopCh) })
 }
 
 func (a *DailyProbeAudit) run(ctx context.Context) {

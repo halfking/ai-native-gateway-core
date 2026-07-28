@@ -42,7 +42,7 @@ type PoolRecorder struct {
 	sampleRatio float64
 	// rng is a per-instance hash-based pseudo RNG; we don't need
 	// cryptographic randomness here, just a stable per-row toss.
-	rngSeed uint64
+	rngSeed atomic.Uint64
 
 	// counters for /metrics and unit tests. atomic.
 	recorded atomic.Uint64
@@ -59,11 +59,12 @@ func NewPoolRecorder(pool *pgxpool.Pool, sampleRatio float64) *PoolRecorder {
 	if sampleRatio <= 0 || sampleRatio > 1 {
 		sampleRatio = 0.1
 	}
-	return &PoolRecorder{
+	r := &PoolRecorder{
 		pool:        pool,
 		sampleRatio: sampleRatio,
-		rngSeed:     uint64(time.Now().UnixNano()),
 	}
+	r.rngSeed.Store(uint64(time.Now().UnixNano()))
+	return r
 }
 
 // NewRecorderFromExec is a variant for tests that pass a fake Exec
@@ -72,11 +73,12 @@ func NewRecorderFromExec(exec Exec, sampleRatio float64) *PoolRecorder {
 	if sampleRatio <= 0 || sampleRatio > 1 {
 		sampleRatio = 0.1
 	}
-	return &PoolRecorder{
+	r := &PoolRecorder{
 		pool:        exec,
 		sampleRatio: sampleRatio,
-		rngSeed:     42,
 	}
+	r.rngSeed.Store(42)
+	return r
 }
 
 // recordTimeout bounds the out-of-band write so a slow DB never stalls
@@ -177,9 +179,12 @@ func (r *PoolRecorder) Stats() (recorded, sampled, dropped uint64) {
 // nextRand returns a pseudo-random number in [0, 1). FNV-mixed with a
 // per-row counter so collisions are vanishingly rare in practice.
 func (r *PoolRecorder) nextRand() float64 {
-	r.rngSeed = fnvHash(r.rngSeed + 1)
-	// Map uint64 -> [0, 1) by dividing by 2^64.
-	return float64(r.rngSeed&math.MaxInt64) / float64(1<<63)
+	// Atomically reserve a distinct input value before hashing. The old
+	// read-modify-write assignment raced under concurrent request traffic.
+	seed := r.rngSeed.Add(1)
+	mixed := fnvHash(seed)
+	// Map uint64 -> [0, 1) by dividing by 2^63 after clearing the sign bit.
+	return float64(mixed&math.MaxInt64) / float64(1<<63)
 }
 
 func fnvHash(x uint64) uint64 {

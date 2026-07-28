@@ -4087,20 +4087,21 @@ func (h *ChatHandler) emitTelemetry(evt audit.Event, result *executors.ExecuteRe
 	// fires inside executeOpenAI before ResponseBody is consumed by the
 	// response interceptor). The detector is nil-safe; we nil-check
 	// here anyway so the call site stays explicit.
-	if h.integrityDetector != nil {
+	if h.integrityDetector != nil && !result.IntegrityObserved {
 		h.integrityDetector.Observe(logCtx.Request.Context(), executors.IntegrityCandidate{
 			RequestID:          reqLog.RequestID,
 			TenantID:           tenantID,
 			ApplicationID:      reqLog.ApplicationID,
 			APIKeyID:           reqLog.APIKeyID,
 			ProviderID:         reqLog.ProviderID,
+			ProviderCode:       result.Candidate.CatalogCode,
 			CredentialID:       reqLog.CredentialID,
 			ClientModel:        strValueOrEmpty(reqLog.ClientModel),
 			OutboundModel:      strValueOrEmpty(reqLog.OutboundModel),
-			RawModel:           strValueOrEmpty(reqLog.OutboundModel),
+			RawModel:           result.Candidate.RawModel,
 			RespModel:          streamRespModelForIntegrity(capture, responseBody),
-			ProviderResponseID: "",
-			SystemFingerprint:  "",
+			ProviderResponseID: integrityHeader(result.Response, "X-Request-Id"),
+			SystemFingerprint:  integrityHeader(result.Response, "X-System-Fingerprint"),
 			UsageSource:        strValueOrEmpty(reqLog.UsageSource),
 			FinishReason:       strValueOrEmpty(reqLog.UpstreamFinishReason),
 			PromptTokens:       reqLog.PromptTokens,
@@ -4157,6 +4158,16 @@ func streamTextContentForIntegrity(capture *audit.StreamCapture) string {
 		return v
 	}
 	return ""
+}
+
+// integrityHeader returns an upstream response header for handler-side
+// fallback observation. Executor-side observation already has this metadata;
+// retaining it here prevents context loss on stream and fallback paths.
+func integrityHeader(resp *http.Response, name string) string {
+	if resp == nil {
+		return ""
+	}
+	return resp.Header.Get(name)
 }
 
 // strValueOrEmpty returns "" for nil pointer and the dereferenced
