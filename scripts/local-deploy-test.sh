@@ -161,10 +161,13 @@ check_running_gateway() {
     ok "旧网关已关闭"
 
     for port in 8781 15432 6379 18080; do
-      local pid
-      pid=$(lsof -ti :$port 2>/dev/null || true)
-      if [ -n "$pid" ]; then
-        sub "端口 $port 仍有残留进程 PID $pid, 等待释放..."
+      local pids
+      pids=$(lsof -ti :$port 2>/dev/null || true)
+      if [ -n "$pids" ]; then
+        # 可能有多个 PID, 逐行处理
+        while IFS= read -r pid; do
+          sub "端口 $port 仍有残留进程 PID $pid, 等待释放..."
+        done <<< "$pids"
         sleep 2
       fi
     done
@@ -331,7 +334,7 @@ start_gateway_native() {
   mkdir -p "$ROOT_DIR/.build-local"
 
   info "编译 gateway..."
-  go build -o "$ROOT_DIR/.build-local/llm-gateway-go" "$ROOT_DIR/./cmd/gateway" 2>&1 | tee -a "$LOG_FILE"
+  cd "$ROOT_DIR" && go build -o ".build-local/llm-gateway-go" "./cmd/gateway" 2>&1 | tee -a "$LOG_FILE"
   ok "编译完成"
 
   info "启动网关进程..."
