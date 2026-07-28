@@ -865,6 +865,7 @@ func buildLiveStreamLanes(dimension string, items []LiveRequest) ([]LiveStreamLa
 	stats := map[string]LiveStreamStats{}
 	grouped := map[string][]LiveStreamTile{}
 	seenByLane := map[string]map[string]struct{}{}
+	latestIdleByLane := map[string]LiveStreamTile{}
 
 	for _, req := range items {
 		key := liveStreamDimensionKey(dimension, req)
@@ -872,6 +873,27 @@ func buildLiveStreamLanes(dimension string, items []LiveRequest) ([]LiveStreamLa
 		if key == "" {
 			continue
 		}
+
+		// Idle markers from different scopes can have different RequestIDs
+		// while representing the same rendered lane (for example, a global
+		// marker and a legacy tenant marker in a super-admin snapshot). Keep
+		// one idle tile per lane, choosing the newest timestamp. This also
+		// cleans up duplicates already left in Redis by older writers.
+		if req.Type == "idle_marker" {
+			candidate := liveRequestTile(req)
+			previous, exists := latestIdleByLane[key]
+			if !exists || candidate.Timestamp > previous.Timestamp ||
+				(candidate.Timestamp == previous.Timestamp && candidate.RequestID < previous.RequestID) {
+				latestIdleByLane[key] = candidate
+			}
+			if _, ok := stats[key]; !ok {
+				// Ensure an idle-only lane still gets an (empty) stats entry so it
+				// appears in the legend.
+				stats[key] = LiveStreamStats{}
+			}
+			continue
+		}
+
 		laneSeen := seenByLane[key]
 		if laneSeen == nil {
 			laneSeen = map[string]struct{}{}
@@ -881,19 +903,14 @@ func buildLiveStreamLanes(dimension string, items []LiveRequest) ([]LiveStreamLa
 			continue
 		}
 		laneSeen[req.RequestID] = struct{}{}
-		// Idle markers are displayed as tiles inside the lane but do NOT
-		// inflate the lane's business stats (success/failure/in_progress),
-		// keeping lane.Stats consistent with the global Summary.
-		if req.Type != "idle_marker" {
-			st := stats[key]
-			countStatus(&st, req.Status)
-			stats[key] = st
-		} else if _, ok := stats[key]; !ok {
-			// Ensure an idle-only lane still gets an (empty) stats entry so
-			// it appears in the legend.
-			stats[key] = LiveStreamStats{}
-		}
+		st := stats[key]
+		countStatus(&st, req.Status)
+		stats[key] = st
 		grouped[key] = append(grouped[key], liveRequestTile(req))
+	}
+
+	for key, idleTile := range latestIdleByLane {
+		grouped[key] = append(grouped[key], idleTile)
 	}
 
 	// 2026-07-26: the lane owns its ordering contract instead of trusting
@@ -1441,13 +1458,10 @@ func idleMarkerQueueKeys(tenantID, dimension, dimensionKey string) []string {
 		// Tenant-scoped dim queue — the production reader looks here
 		// for the tenant view.
 		tenantLiveStreamKey(tid, "dim:"+dimSuffix),
-		// Also write to the global dim queue so the super-admin view
-		// (which isSuper==true, tenantID=="") can see tenant markers.
-		// Without this, a super-admin opening the dashboard would
-		// still see the lane go idle visually because the tenant
-		// main queue is never read for super scope; the global dim
-		// queue is the only path the super view ever traverses.
-		liveStreamDimPrefix + dimSuffix,
+		// Tenant markers intentionally stay out of global dim queues.
+		// The global activity key produces the single global marker used
+		// by the super-admin view; mirroring every tenant marker there
+		// would create one idle tile per tenant in the same global lane.
 	}
 	return keys
 }

@@ -759,16 +759,18 @@ func TestIdleMarkerQueueKeys_ScopeRouting(t *testing.T) {
 		}
 	})
 
-	t.Run("tenant scope writes to tenant main + tenant dim + global dim", func(t *testing.T) {
+	t.Run("tenant scope writes to tenant main + tenant dim only", func(t *testing.T) {
 		keys := idleMarkerQueueKeys("tenant-a", "vendor", "openai")
 		mustContain := map[string]bool{
 			tenantLiveStreamKey("tenant-a", "main"):              false,
 			tenantLiveStreamKey("tenant-a", "dim:vendor:openai"): false,
-			liveStreamDimPrefix + "vendor:openai":                false,
 		}
 		for _, k := range keys {
 			if _, ok := mustContain[k]; ok {
 				mustContain[k] = true
+			}
+			if k == liveStreamDimPrefix+"vendor:openai" {
+				t.Fatalf("tenant idle marker must not be mirrored to global dim queue: %q", keys)
 			}
 		}
 		for k, seen := range mustContain {
@@ -776,11 +778,8 @@ func TestIdleMarkerQueueKeys_ScopeRouting(t *testing.T) {
 				t.Fatalf("tenant idle queues=%#v missing %q", keys, k)
 			}
 		}
-		// Tenant must NOT use a different tenant's queue.
-		for _, k := range keys {
-			if strings.Contains(k, "tenant-b") {
-				t.Fatalf("tenant-a marker must not pollute tenant-b queues, got %q", k)
-			}
+		if len(keys) != len(mustContain) {
+			t.Fatalf("tenant idle queues=%#v want exactly tenant main + tenant dim", keys)
 		}
 	})
 
@@ -1897,7 +1896,62 @@ func TestIdleMarker_VisibleInDimensionQueueSnapshot(t *testing.T) {
 	}
 }
 
-// TestIdleMarker_StableRequestIdAcrossTicks verifies "末尾已 idle 则更新
+// TestBuildLiveStreamSnapshot_DedupesIdleMarkersPerLane verifies the contract
+// that a rendered lane contains at most one idle tile. Global and tenant
+// markers have different stable RequestIDs, and legacy global-dim data can
+// leave both in the input snapshot; lane-level dedupe must still collapse
+// them to the newest idle marker.
+func TestBuildLiveStreamSnapshot_DedupesIdleMarkersPerLane(t *testing.T) {
+	oldIdle := LiveRequest{
+		Type:          "idle_marker",
+		RequestID:     "idle-t-tenant-a-vendor-openai",
+		Ts:            "2026-07-28T10:00:00Z",
+		TenantID:      "tenant-a",
+		Status:        "idle",
+		ModelCategory: "openai",
+	}
+	newIdle := oldIdle
+	newIdle.RequestID = "idle-global-vendor-openai"
+	newIdle.Ts = "2026-07-28T10:05:00Z"
+	newIdle.TenantID = ""
+	newRequest := LiveRequest{
+		RequestID:     "req-new",
+		Ts:            "2026-07-28T10:06:00Z",
+		TenantID:      "tenant-a",
+		Model:         "gpt-4o",
+		ModelCategory: "openai",
+		ProviderCode:  "openai",
+		Status:        "success",
+	}
+
+	snap := BuildLiveStreamSnapshot([]LiveRequest{oldIdle, newIdle, newRequest})
+	var lane *LiveStreamLane
+	for i := range snap.Dimensions["vendor"] {
+		if snap.Dimensions["vendor"][i].ID == "openai" {
+			lane = &snap.Dimensions["vendor"][i]
+			break
+		}
+	}
+	if lane == nil {
+		t.Fatalf("expected openai lane, got %#v", snap.Dimensions["vendor"])
+	}
+
+	if len(lane.Requests) != 2 {
+		t.Fatalf("expected one normal tile plus one idle tile, got %#v", lane.Requests)
+	}
+	if lane.Requests[0].RequestID != "req-new" {
+		t.Fatalf("new normal request should remain leftmost, got %#v", lane.Requests)
+	}
+	if lane.Requests[1].RequestID != newIdle.RequestID || lane.Requests[1].Status != "idle" {
+		t.Fatalf("expected newest idle marker after normal request, got %#v", lane.Requests)
+	}
+	for _, tile := range lane.Requests {
+		if tile.Status == "idle" && tile.RequestID == oldIdle.RequestID {
+			t.Fatalf("stale duplicate idle marker survived: %#v", lane.Requests)
+		}
+	}
+}
+
 // 不加入新记录" — the "update existing idle, do not add new" requirement.
 // A lane that has been idle for 3 consecutive ticks must carry exactly
 // ONE idle marker in Redis, never three (the ZADD is idempotent because
