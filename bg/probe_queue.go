@@ -2,6 +2,7 @@ package bg
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -10,6 +11,11 @@ import (
 )
 
 const ProbeQueueTTL = 5 * time.Minute
+
+// ErrProbeLeaseLost means the task was reclaimed or its lease expired before
+// this worker wrote its result. Callers must not retry Complete with the stale
+// task because a newer owner may already have recorded a result.
+var ErrProbeLeaseLost = errors.New("probe queue lease lost")
 
 type ProbeQueueStatus string
 
@@ -38,6 +44,7 @@ type ProbeQueueTask struct {
 	MaxAttempts  int
 	NextRunAt    time.Time
 	LeaseUntil   *time.Time
+	LeaseToken   string
 	Source       string
 	SourceEvent  string
 	ParentReqID  string
@@ -134,18 +141,19 @@ func (q *ProbeQueue) Claim(ctx context.Context, limit int, lease time.Duration) 
 	rows, err := tx.Query(ctx, `
 		WITH picked AS (
 			SELECT id FROM credential_probe_queue
-			WHERE status='ready' AND next_run_at <= now() AND expires_at > now()
+			WHERE status='ready' AND next_run_at <= now() AND expires_at > now() AND attempt < max_attempts
 			ORDER BY priority DESC, next_run_at, id
 			FOR UPDATE SKIP LOCKED LIMIT $1
 		)
 		UPDATE credential_probe_queue q
 		SET status='running', attempt=q.attempt+1,
-			lease_until=now()+$2, started_at=COALESCE(q.started_at, now()), updated_at=now()
+			lease_token=gen_random_uuid(), lease_until=now()+$2,
+			started_at=COALESCE(q.started_at, now()), updated_at=now()
 		FROM picked WHERE q.id=picked.id
 		RETURNING q.id, q.credential_id, COALESCE(q.provider_id,0), q.tenant_id,
 			COALESCE(q.canonical_model,''), q.raw_model, COALESCE(q.outbound_model,''),
 			q.probe_command, q.probe_mode, q.priority, q.attempt, q.max_attempts,
-			q.next_run_at, q.lease_until, q.source, COALESCE(q.source_event_id,''),
+			q.next_run_at, q.lease_until, q.lease_token::text, q.source, COALESCE(q.source_event_id,''),
 			COALESCE(q.parent_request_id,''), q.dedup_key, q.expires_at`, limit, lease)
 	if err != nil {
 		return nil, fmt.Errorf("claim probes failed: select tasks: %w (limit=%d)", err, limit)
@@ -156,7 +164,7 @@ func (q *ProbeQueue) Claim(ctx context.Context, limit int, lease time.Duration) 
 		var task ProbeQueueTask
 		if err := rows.Scan(&task.ID, &task.CredentialID, &task.ProviderID, &task.TenantID, &task.Canonical,
 			&task.RawModel, &task.Outbound, &task.Command, &task.Mode, &task.Priority,
-			&task.Attempt, &task.MaxAttempts, &task.NextRunAt, &task.LeaseUntil,
+			&task.Attempt, &task.MaxAttempts, &task.NextRunAt, &task.LeaseUntil, &task.LeaseToken,
 			&task.Source, &task.SourceEvent, &task.ParentReqID, &task.DedupKey, &task.ExpiresAt); err != nil {
 			return nil, fmt.Errorf("claim probes failed: scan task: %w (limit=%d)", err, limit)
 		}
@@ -171,7 +179,8 @@ func (q *ProbeQueue) Claim(ctx context.Context, limit int, lease time.Duration) 
 	return tasks, nil
 }
 
-func (q *ProbeQueue) Complete(ctx context.Context, id int64, result ProbeQueueResult) error {
+func (q *ProbeQueue) Complete(ctx context.Context, task ProbeQueueTask, result ProbeQueueResult) error {
+	id := task.ID
 	if q == nil || q.db == nil {
 		return fmt.Errorf("complete probe failed: database is unavailable (queue_id=%d)", id)
 	}
@@ -180,16 +189,20 @@ func (q *ProbeQueue) Complete(ctx context.Context, id int64, result ProbeQueueRe
 		now := time.Now()
 		result.FinishedAt = &now
 	}
-	_, err := q.db.Exec(ctx, `
+	tag, err := q.db.Exec(ctx, `
 		UPDATE credential_probe_queue
 		SET status=$2, reason_code=$3, reason_detail=$4, result_http_status=$5,
 			result_latency_ms=$6, result_body_preview=$7, next_run_at=COALESCE($8,next_run_at),
 			lease_until=$9, finished_at=$10, updated_at=now()
-		WHERE id=$1`, id, result.Status, nilString(result.ReasonCode), nilString(result.ReasonDetail),
+		WHERE id=$1 AND status='running' AND lease_token=$11::uuid`,
+		id, result.Status, nilString(result.ReasonCode), nilString(result.ReasonDetail),
 		result.HTTPStatus, result.LatencyMs, nilString(result.BodyPreview), result.NextRunAt,
-		result.LeaseUntil, result.FinishedAt)
+		result.LeaseUntil, result.FinishedAt, task.LeaseToken)
 	if err != nil {
 		return fmt.Errorf("complete probe failed: %w (queue_id=%d)", err, id)
+	}
+	if tag.RowsAffected() == 0 {
+		return fmt.Errorf("%w (queue_id=%d)", ErrProbeLeaseLost, id)
 	}
 	return nil
 }
@@ -200,8 +213,14 @@ func (q *ProbeQueue) RequeueExpiredLeases(ctx context.Context) (int64, error) {
 	}
 	result, err := q.db.Exec(ctx, `
 		UPDATE credential_probe_queue
-		SET status=CASE WHEN expires_at <= now() THEN 'expired' ELSE 'ready' END,
-			lease_until=NULL, updated_at=now()
+		SET status=CASE
+				WHEN expires_at <= now() THEN 'expired'
+				WHEN attempt >= max_attempts THEN 'failed'
+				ELSE 'ready'
+			END,
+			lease_until=NULL, lease_token=NULL,
+			finished_at=CASE WHEN expires_at <= now() OR attempt >= max_attempts THEN now() ELSE finished_at END,
+			updated_at=now()
 		WHERE status='running' AND lease_until < now()`)
 	if err != nil {
 		return 0, fmt.Errorf("requeue expired probes failed: %w (queue=credential_probe_queue)", err)

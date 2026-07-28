@@ -41,6 +41,7 @@ export interface SelfCheckSettings {
 export interface SelfCheckRun {
   id: number
   model_name: string
+  credential_id?: number | null
   started_at: string
   completed_at?: string | null
   duration_ms: number
@@ -56,6 +57,8 @@ export interface SelfCheckRun {
   upstream_result?: string
   upstream_latency_ms?: number
   upstream_error?: string
+  selection_strategy?: 'featured' | 'most_used' | 'random' | string | null
+  attempted_models?: string[] | null
 }
 
 export interface SelfCheckRoundResult {
@@ -217,6 +220,9 @@ export interface ProbeQueueTaskRow {
   attempt: number
   priority: number
   reason_code: string
+  /** 探测命令；integrity_verify 来自 integrity_probe_planner */
+  probe_command?: string
+  source?: string
   next_run_at?: string | null
   result_latency_ms: number
   result_http_status: number

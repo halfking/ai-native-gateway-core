@@ -39,6 +39,10 @@ test: ## 全量单元测试（CI 默认入口）
 test-short: ## 短模式，跳过 -short=false 的测试
 	$(GO) test ./... -count=1 -short -timeout=120s
 
+.PHONY: integrity-smoke
+integrity-smoke: ## model integrity + durable queue planner smoke (requires PG*)
+	bash scripts/integrity_smoke_test.sh
+
 .PHONY: test-rls
 test-rls: ## 使用 TEST_DATABASE_URL 运行真实 PostgreSQL RLS 门禁
 	@test -n "$(TEST_DATABASE_URL)" || (echo "TEST_DATABASE_URL is required; source .env.local first" && exit 1)

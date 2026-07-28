@@ -103,8 +103,9 @@ type CredentialSelfcheckWorker struct {
 	baseURL string
 	client  *http.Client
 
-	stopCh   chan struct{}
-	stopOnce sync.Once
+	stopCh    chan struct{}
+	stopOnce  sync.Once
+	startOnce sync.Once
 
 	// rng is concurrency-safe (rand.Rand with mutex) so model fallback
 	// selection on a never-used credential can pick uniformly.
@@ -132,18 +133,21 @@ func NewCredentialSelfcheckWorker(db credentialSelfcheckDB, apiKey, baseURL stri
 	}
 }
 
-// Start launches the worker goroutine.  Idempotent.
+// Start launches the worker goroutine. It is safe to call repeatedly.
 func (w *CredentialSelfcheckWorker) Start(ctx context.Context) {
 	if w == nil {
 		return
 	}
-	go w.loop(ctx)
-	slog.Info("credential_selfcheck_worker started",
-		"cycle_interval", credentialSelfcheckCycleInterval,
-		"window", credentialSelfcheckWindow,
-	)
+	w.startOnce.Do(func() {
+		go w.loop(ctx)
+		slog.Info("credential_selfcheck_worker started",
+			"cycle_interval", credentialSelfcheckCycleInterval,
+			"window", credentialSelfcheckWindow,
+		)
+	})
 }
 
+// Stop requests termination. It is safe to call repeatedly, including before Start.
 func (w *CredentialSelfcheckWorker) Stop() {
 	if w == nil {
 		return

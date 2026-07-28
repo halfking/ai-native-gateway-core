@@ -1478,6 +1478,8 @@ func main() {
 	var liveStreamHub *admin.LiveStreamSSEHub
 	var anomalyHarvester *streaming.AnomalyHarvester
 	var integrityDriftWorker *bg.IntegrityFingerprintDrift
+	var integrityHarvester *bg.IntegrityHarvester
+	var integrityProbePlanner *bg.IntegrityProbePlanner
 	if dbConn != nil && dbConn.Enabled() {
 		liveStreamHub = admin.NewLiveStreamSSEHub(dbConn.Pool(), admin.LiveStreamConfig{
 			BroadcastQueueSize:            2048,
@@ -2145,7 +2147,13 @@ func main() {
 	var modelAvailabilityKeyCounter *bg.AvailabilityKeyCounter
 	var passiveProbe *bg.PassiveProbeListener
 	var activeProbe *bg.ActiveProbeWorker // 2026-07-13: 错误触发的主动探测
+	var probeQueue *bg.ProbeQueue
 	var probeQueueWorker *bg.ProbeQueueWorker
+	// New-mode workers are held at this scope so shutdown can stop them
+	// before telemetry and the database pool are closed.
+	var credentialSelfcheckWorker *bg.CredentialSelfcheckWorker
+	var nodeProbeWorker *bg.NodeProbeWorker
+	var dailyProbeAudit *bg.DailyProbeAudit
 	// 2026-07-14: 30s system-health monitor (GDRT H badge).
 	var systemHealthWorker *bg.SystemHealthWorker
 	var stickyCleaner *bg.StickyCleaner
@@ -2432,8 +2440,9 @@ func main() {
 			}
 			if os.Getenv("LLM_GATEWAY_PROBE_QUEUE_ENABLED") == "true" {
 				queueExecutor := bg.NewActiveProbeExecutor(dbConn.Pool(), keyring, fernetKey, epTimeoutMs)
+				probeQueue = bg.NewProbeQueue(dbConn.Pool())
 				probeQueueWorker = bg.NewProbeQueueWorker(bg.ProbeQueueWorkerConfig{
-					Queue:        bg.NewProbeQueue(dbConn.Pool()),
+					Queue:        probeQueue,
 					Executor:     queueExecutor,
 					Emitter:      bg.NewActiveProbeEmitter(telemetryClient),
 					BatchSize:    epWorkers,
@@ -2485,25 +2494,25 @@ func main() {
 			slog.Info("credential state manager started")
 
 			// 2026-07-14: launch the new probe workers from the
-			// spec rewrite.  They replace the legacy selfCheck /
+			// spec rewrite. They replace the legacy selfCheck /
 			// credProbeV2 / modelProbe / passiveProbe / activeProbe
 			// stack, all of which are gated by useNewProbeMode() above.
-			if useNewProbeMode() {
+			if shouldStartNewProbeWorkers(selfCheckAPIKey) {
 				// A. credential_selfcheck — 24h/cred daily check
 				// (uses the same system api key as the legacy worker).
-				credSelfcheck := bg.NewCredentialSelfcheckWorker(dbConn.Pool(), selfCheckAPIKey, "")
-				credSelfcheck.Start(context.Background())
+				credentialSelfcheckWorker = bg.NewCredentialSelfcheckWorker(dbConn.Pool(), selfCheckAPIKey, "")
+				credentialSelfcheckWorker.Start(context.Background())
 				slog.Info("CHECKPOINT: credential_selfcheck_worker started")
 
 				// B. node_probe — error-triggered 5s/30s/60s/5m/1h/2h/24h
 				// backoff, direct + gateway two rounds.
-				nodeProbe := bg.NewNodeProbeWorker(dbConn.Pool(), fernetKey, keyring, selfCheckAPIKey, "", upClient.Proxy().ProxyFunc())
-				nodeProbe.SetStateObserver(stateManager)
-				nodeProbe.SetStateProvider(stateManager)
-				nodeProbe.SetEmitter(bg.NewActiveProbeEmitter(telemetryClient))
-				nodeProbe.SetInvalidateCandidateCache(provider.InvalidateCandidateCacheForCredential)
+				nodeProbeWorker = bg.NewNodeProbeWorker(dbConn.Pool(), fernetKey, keyring, selfCheckAPIKey, "", upClient.Proxy().ProxyFunc())
+				nodeProbeWorker.SetStateObserver(stateManager)
+				nodeProbeWorker.SetStateProvider(stateManager)
+				nodeProbeWorker.SetEmitter(bg.NewActiveProbeEmitter(telemetryClient))
+				nodeProbeWorker.SetInvalidateCandidateCache(provider.InvalidateCandidateCacheForCredential)
 				if routingExec != nil && routingExec.Circuit != nil {
-					nodeProbe.SetCircuitRecovery(routingExec.Circuit.RecordSuccess)
+					nodeProbeWorker.SetCircuitRecovery(routingExec.Circuit.RecordSuccess)
 				}
 				// 2026-07-17: 同步探测 hold 模式开关。env LLM_GATEWAY_SYNC_NO_CANDIDATE_PROBE
 				// 取值 "0"/"false"/"off" 即关闭（默认开启）。关闭时 executor 走原 fire-and-forget
@@ -2512,23 +2521,23 @@ func main() {
 					syncOn := !envBoolOff("LLM_GATEWAY_SYNC_NO_CANDIDATE_PROBE")
 					routingExec.SyncNoCandidateProbe = syncOn
 					routingExec.SyncNoCandidateTimeout = 5 * time.Second
-					routingExec.ProbeSync = nodeProbe.ProbeSync
+					routingExec.ProbeSync = nodeProbeWorker.ProbeSync
 					routingExec.NodeProbeHealthy = func(ctx context.Context, credentialID int, rawModel string) error {
 						return bg.MarkNodeProbeHealthy(ctx, dbConn.Pool(), credentialID, rawModel)
 					}
 					slog.Info("sync_no_candidate_probe", "enabled", syncOn, "timeout", routingExec.SyncNoCandidateTimeout)
 				}
 
-				nodeProbe.Start(context.Background())
+				nodeProbeWorker.Start(context.Background())
 				slog.Info("CHECKPOINT: node_probe_worker started")
 
-				dailyProbeAudit := bg.NewDailyProbeAudit(dbConn.Pool(), nodeProbe)
+				dailyProbeAudit = bg.NewDailyProbeAudit(dbConn.Pool(), nodeProbeWorker)
 				dailyProbeAudit.Start(context.Background())
 				slog.Info("CHECKPOINT: daily_probe_audit started")
 				// Wire stateManager → node_probe so consecutive
 				// failures >= threshold trigger the new path
 				// (replaces the legacy active_probe wiring above).
-				stateManager.SetActiveProbeSubmitter(nodeProbe.Submit, 2)
+				stateManager.SetActiveProbeSubmitter(nodeProbeWorker.Submit, 2)
 				slog.Info("credstate: node_probe submitter wired",
 					"consecutive_threshold", 2)
 
@@ -2541,20 +2550,22 @@ func main() {
 				// — it only flips when direct + gateway probe rounds succeed.
 				if credRecovery != nil {
 					credRecovery.SetProbeSubmitter(func(credID int, model string) {
-						nodeProbe.Submit(credID, model, "default", "expired-binding-recovery")
+						nodeProbeWorker.Submit(credID, model, "default", "expired-binding-recovery")
 					})
 					credRecovery.SetInvalidateCandidateCache(provider.InvalidateCandidateCacheForCredential)
 					slog.Info("credRecovery: expired-binding probe submitter wired")
 				}
-
+			} else if useNewProbeMode() {
+				slog.Warn("new probe workers skipped: system API key unavailable")
 			}
 			// C. system_health — 30s windowed success-rate monitor
-			// for the GDRT H badge.  Runs unconditionally (outside
-			// useNewProbeMode) so the homepage badge works even when
-			// LLM_GATEWAY_USE_NEW_PROBE_MODE=false.
-			systemHealthWorker = bg.NewSystemHealthWorker(dbConn.Pool())
-			systemHealthWorker.Start(context.Background())
-			slog.Info("CHECKPOINT: system_health_worker started")
+			// for the GDRT H badge. Starts with the new probe worker group so
+			// all new probe/self-check workers share the system API key gate.
+			if shouldStartNewProbeWorkers(selfCheckAPIKey) {
+				systemHealthWorker = bg.NewSystemHealthWorker(dbConn.Pool())
+				systemHealthWorker.Start(context.Background())
+				slog.Info("CHECKPOINT: system_health_worker started")
+			}
 		}
 
 		slog.Info("CHECKPOINT: before NewStickyCleaner")
@@ -3988,10 +3999,43 @@ func main() {
 
 				// Fingerprint drift: 1h tick, 7-day window, 20+
 				// samples, 80% dominant ratio (env overrides).
+				// 2026-07-28 rewrite: baseline vs current comparison
+				// with integrity_fingerprint_baseline dedup; synthetic
+				// traffic (self_check / node_probe / active_probe /
+				// integrity_probe / credential_selfcheck) is filtered
+				// out of the sample.
 				fpd := bg.NewIntegrityFingerprintDrift(dbConn.Pool())
 				fpd.Start(context.Background())
 				integrityDriftWorker = fpd
-				slog.Info("integrity detector + fingerprint drift worker started (2026-07-28)")
+
+				// Integrity event → fault_events bridge. Critical rows
+				// past the age threshold bridge immediately; high rows
+				// bridge per-cluster after a count threshold. Reuses
+				// the same advisory-lock pattern as the legacy
+				// AnomalyHarvester so concurrent gateway instances
+				// do not double-bridge the same rows.
+				ihCfg := bg.DefaultIntegrityHarvesterConfig()
+				integrityHarvester = bg.NewIntegrityHarvester(dbConn.Pool(), ihCfg)
+				integrityHarvester.Start(context.Background())
+
+				// Integrity probe planner: durable queue producer that
+				// watches unresolved model_mismatch / fingerprint_drift
+				// events and enqueues a single deduped integrity_verify
+				// task per (cred, model). Requires probe_queue to be
+				// enabled so we have a consumer; otherwise we skip.
+				if probeQueue != nil {
+					ipCfg := bg.DefaultIntegrityProbePlannerConfig()
+					integrityProbePlanner = bg.NewIntegrityProbePlanner(dbConn.Pool(), probeQueue, ipCfg)
+					integrityProbePlanner.Start(context.Background())
+					slog.Info("integrity probe planner started (2026-07-28)",
+						"interval", ipCfg.Interval,
+						"dedup_window", ipCfg.DedupWindow,
+					)
+				} else {
+					slog.Info("integrity probe planner disabled: probe_queue feature flag off")
+				}
+
+				slog.Info("integrity detector + drift + harvester + planner started (2026-07-28)")
 			}
 		}
 
@@ -4295,6 +4339,21 @@ func main() {
 			persistWriterStop()
 		}
 
+		// Stop new probe/self-check workers before closing telemetry or the
+		// database pool they use.
+		if dailyProbeAudit != nil {
+			dailyProbeAudit.Stop()
+		}
+		if credentialSelfcheckWorker != nil {
+			credentialSelfcheckWorker.Stop()
+		}
+		if nodeProbeWorker != nil {
+			nodeProbeWorker.Stop()
+		}
+		if systemHealthWorker != nil {
+			systemHealthWorker.Stop()
+		}
+
 		// Stop probe/state services before closing their shared dependencies.
 		if activeProbe != nil {
 			activeProbe.Stop()
@@ -4316,13 +4375,19 @@ func main() {
 		if anomalyHarvester != nil {
 			anomalyHarvester.Stop()
 		}
-if integrityDriftWorker != nil {
-			integrityDriftWorker.Stop()
-		}
-		if requestLogger != nil {
-			requestLogger.Stop()
-		}
-		telemetryClient.Stop()
+	if integrityDriftWorker != nil {
+		integrityDriftWorker.Stop()
+	}
+	if integrityHarvester != nil {
+		integrityHarvester.Stop()
+	}
+	if integrityProbePlanner != nil {
+		integrityProbePlanner.Stop()
+	}
+	if requestLogger != nil {
+		requestLogger.Stop()
+	}
+	telemetryClient.Stop()
 		lim.Stop()
 		pools.Stop()
 		pools.CloseAll()
