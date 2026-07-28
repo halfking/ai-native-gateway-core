@@ -150,7 +150,7 @@ func newTimeoutConfigInternal(db DBQuerier, logger *slog.Logger) *TimeoutConfig 
 		clientDefaultSeconds:   60,
 		upstreamBaseSeconds:    90,
 		upstreamMinSeconds:     20,
-		upstreamMaxSeconds:     180,
+		upstreamMaxSeconds:     600,
 		contextThresholdTokens: 20000,
 		contextBonusSeconds:    45,
 		mode:                   TimeoutModeAdaptive,
