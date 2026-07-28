@@ -154,3 +154,108 @@ func TestSemanticAnalyzerAdapter_MapsIRAnalysis(t *testing.T) {
 	require.NoError(t, err)
 	require.Nil(t, analysis)
 }
+
+// TestEnvelopeFromParams_AllFields covers the 2026-07-28 §5.7 fix:
+// envelopeFromParams must populate every field the operator dashboard
+// needs, and GWTaskID must NEVER be the model name (which was the
+// pre-fix bug).
+func TestEnvelopeFromParams_AllFields(t *testing.T) {
+	appID := 33
+	env := envelopeFromParams(&ExecParams{
+		RequestID:        "req-1",
+		SessionID:        "sess",
+		Model:            "gpt-4o", // legacy buggy binding; should NOT bleed through
+		TenantID:         "t1",
+		KeyID:            7,
+		AppID:            &appID,
+		ClientRequestID:  "cr1",
+		GWTaskID:         "task-x",
+		ParentRequestID:  "parent",
+		TraceID:          "trace",
+		SpanID:           "span",
+		ProviderID:       18,
+		CredentialID:     42,
+		AttemptNo:        2,
+		UpstreamEndpoint: "https://upstream/api",
+	})
+	if env.GWTaskID == "gpt-4o" {
+		t.Error("GWTaskID must NOT be the model name (pre-fix bug)")
+	}
+	if env.GWTaskID != "task-x" {
+		t.Errorf("GWTaskID=%q want %q", env.GWTaskID, "task-x")
+	}
+	if env.ClientRequestID != "cr1" {
+		t.Errorf("client_request_id=%q", env.ClientRequestID)
+	}
+	if env.ProviderID != 18 {
+		t.Errorf("provider_id=%d", env.ProviderID)
+	}
+	if env.CredentialID != 42 {
+		t.Errorf("credential_id=%d", env.CredentialID)
+	}
+	if env.AttemptNo != 2 {
+		t.Errorf("attempt_no=%d", env.AttemptNo)
+	}
+	if env.UpstreamEndpoint != "https://upstream/api" {
+		t.Errorf("upstream_endpoint=%s", env.UpstreamEndpoint)
+	}
+	if env.ApplicationID != "33" {
+		t.Errorf("application_id=%s", env.ApplicationID)
+	}
+	if env.TraceID != "trace" || env.SpanID != "span" {
+		t.Errorf("trace/span=%s/%s", env.TraceID, env.SpanID)
+	}
+}
+
+// TestEnvelopeFromParams_AuditContext takes precedence: when
+// ExecParams.Audit is non-nil, the envelope is the AuditContext
+// snapshot — flat fields are ignored.
+func TestEnvelopeFromParams_AuditContext(t *testing.T) {
+	auditCtx := &AuditContext{
+		RequestID:        "req-audit",
+		ClientRequestID:  "cr-audit",
+		GWSessionID:      "sess-audit",
+		GWTaskID:         "task-audit",
+		TenantID:         "t-audit",
+		APIKeyID:         99,
+		ProviderID:       100,
+		CredentialID:     200,
+		AttemptNo:        3,
+		UpstreamEndpoint: "https://audit/upstream",
+		TraceID:          "trace-audit",
+		SpanID:           "span-audit",
+	}
+	env := envelopeFromParams(&ExecParams{
+		Audit:         auditCtx,
+		SessionID:     "ignored-sess", // flat field must be ignored
+		GWTaskID:      "ignored-task", // flat field must be ignored
+		Model:         "ignored-model",
+	})
+	if env.ClientRequestID != "cr-audit" {
+		t.Errorf("client_request_id=%q (must come from Audit)", env.ClientRequestID)
+	}
+	if env.GWSessionID != "sess-audit" {
+		t.Errorf("gw_session_id=%q (must come from Audit)", env.GWSessionID)
+	}
+	if env.GWTaskID != "task-audit" {
+		t.Errorf("gw_task_id=%q (must come from Audit)", env.GWTaskID)
+	}
+	if env.APIKeyID != 99 {
+		t.Errorf("api_key_id=%d (must come from Audit)", env.APIKeyID)
+	}
+	if env.ProviderID != 100 {
+		t.Errorf("provider_id=%d (must come from Audit)", env.ProviderID)
+	}
+	if env.UpstreamEndpoint != "https://audit/upstream" {
+		t.Errorf("upstream_endpoint=%s", env.UpstreamEndpoint)
+	}
+}
+
+// TestEnvelopeFromParams_Nil covers the defensive guarantee for
+// callers that pass nil.
+func TestEnvelopeFromParams_Nil(t *testing.T) {
+	env := envelopeFromParams(nil)
+	if env.GWSessionID != "" || env.ClientRequestID != "" {
+		t.Errorf("nil params envelope must be empty: %+v", env)
+	}
+}
