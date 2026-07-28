@@ -111,7 +111,7 @@ func chunkHasContent(payload string) bool {
 // can be detected and the executor transparently fails over to the next
 // candidate. Architecture mirrors the existing json_error_in_stream /
 // first_byte_timeout branches that already return Resumable=true with
-// ChunkCount=0 < StreamRetryThreshold(5).
+// ChunkCount=0 < StreamRetryThreshold(50).
 //
 // The HTTP 200 + SSE headers are already committed by the caller before
 // this gate runs (stream.go:142). On Resumable return the client will see
