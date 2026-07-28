@@ -631,6 +631,8 @@ func (h *Handler) RegisterSystemMonitorRoutes(mux *http.ServeMux, adminWrap func
 	mux.HandleFunc("/api/admin/system-monitor/recent-runs", adminWrap(h.handleSystemMonitorRecentRuns))
 	mux.HandleFunc("/api/admin/system-monitor/concurrency", superAdminWrap(h.handleSystemMonitorConcurrency))
 	mux.HandleFunc("/api/admin/system-monitor/migration-metrics", adminWrap(h.handleSystemMonitorMigrationMetrics))
+	// Audit follow-up #5: recovery gate observability surface.
+	mux.HandleFunc("/api/admin/system-monitor/recovery", adminWrap(h.handleSystemMonitorRecovery))
 	// SSE 流：handler 内部自行判断 nil（与 live_stream_sse 模式一致）
 	if h.systemMonitorSSE != nil {
 		mux.HandleFunc("/api/admin/system-monitor/stream", adminWrap(h.systemMonitorSSE.HandleStream))
@@ -691,4 +693,49 @@ func (h *Handler) handleSystemMonitorMigrationMetrics(w http.ResponseWriter, r *
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(response)
+}
+
+// ── Recovery Stats (audit follow-up #5) ────────────────────────
+
+// handleSystemMonitorRecovery returns the recovery gate observability
+// snapshot (audit follow-ups #1/#4/#6). GET
+// /api/admin/system-monitor/recovery
+//
+// JSON shape:
+//
+//	{
+//	  "last_error": "...",
+//	  "last_error_at": "RFC3339",
+//	  "last_recovery_at": "RFC3339",
+//	  "last_recovery_key_count": 7,
+//	  "consecutive_failures": 0,
+//	  "fail_threshold": 3,
+//	  "in_fallback": true
+//	}
+//
+// Safe on a nil systemMonitor — returns the zero snapshot with
+// HTTP 503 so dashboards can distinguish "disabled" from "freshly
+// started" via the absence of "last_recovery_at".
+func (h *Handler) handleSystemMonitorRecovery(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if h.systemMonitor == nil {
+		http.Error(w, "system monitor not wired", http.StatusServiceUnavailable)
+		return
+	}
+	s := h.systemMonitor.RecoveryStats()
+	resp := map[string]any{
+		"last_error":              s.LastError,
+		"last_error_at":           s.LastErrorAt,
+		"last_recovery_at":        s.LastRecoveryAt,
+		"last_recovery_key_count": s.LastRecoveryKeyCount,
+		"consecutive_failures":    s.ConsecutiveFailures,
+		"fail_threshold":          s.FailThreshold,
+		"in_fallback":             h.systemMonitor.IsFallback(),
+		"snapshot_at":             time.Now().UTC(),
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(resp)
 }

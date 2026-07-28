@@ -3,6 +3,7 @@ package v2
 import (
 	"os"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/kaixuan/llm-gateway-go/domains/ursm/v2/api"
@@ -61,6 +62,14 @@ type Config struct {
 	// This should be aligned with the circuit breaker's cooling policies to
 	// ensure consistent behavior between the in-memory breaker and URSM v2.
 	CoolSeconds int
+	// ShadowDoubleWrite opts shadow mode into writing sidecar records to
+	// the v2 store. Default false. P0-3 (audit §7.1) flips this true during
+	// the 7-day cutover comparison window. Routing stays on legacy
+	// credentialstate (selectStateBackendWithReady only trusts v2 in
+	// ModeAuthoritative). See rollout.Config.ShadowDoubleWrite for the
+	// matching rollout-layer knob — both must agree for the sidecar to
+	// fire. Loaded from URSM_V2_SHADOW_DOUBLE_WRITE (truthy 1/true/yes).
+	ShadowDoubleWrite bool
 }
 
 func DefaultConfig() Config {
@@ -83,6 +92,10 @@ func DefaultConfig() Config {
 		// 2026-07-24: 降低冷却时间到2分钟，与circuit breaker的RateLimit/Concurrent冷却时间对齐
 		// 减少网关请求中断时长，提升多轮对话质量
 		CoolSeconds: 120,
+		// P0-3: shadow double-write is opt-in. Operators must explicitly
+		// flip URSM_V2_SHADOW_DOUBLE_WRITE=1 for the cutover comparison
+		// window. Default off keeps v2 Redis namespace clean.
+		ShadowDoubleWrite: false,
 	}
 }
 
@@ -112,6 +125,15 @@ func LoadFromEnv() Config {
 	if v := os.Getenv("URSM_V2_LRU_SOFT_TTL_MS"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil && n > 0 {
 			c.LRUMirrorSoftTTL = time.Duration(n) * time.Millisecond
+		}
+	}
+	// P0-3: shadow double-write env. Truthy (1/true/yes, case-insensitive)
+	// turns on sidecar writes in ModeShadow. Operators MUST also leave
+	// URSM_V2_MODE=shadow (NOT authoritative) so routing stays on legacy.
+	// Invalid values are silently ignored — default-off is the safe choice.
+	if v := strings.ToLower(strings.TrimSpace(os.Getenv("URSM_V2_SHADOW_DOUBLE_WRITE"))); v != "" {
+		if v == "1" || v == "true" || v == "yes" {
+			c.ShadowDoubleWrite = true
 		}
 	}
 	return c

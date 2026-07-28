@@ -50,6 +50,14 @@ type Recorder interface {
 	RecordShadowWriteFailure(kind string)
 	RecordRingBufferDropped(count uint64)
 	RecordRawAuditWriteFailure()
+
+	// URSMv2Shadow (P0-3): record what the shadow sidecar did with each
+	// outcome during the URSM v2 cutover comparison window. result is
+	// "recorded" (URSM v2 accepted the write) | "skipped" (ModeOff /
+	// ShadowDoubleWrite off) | "failed" (Redis write error). Operators
+	// diff legacy credentialstate log entries vs URSMv2Shadow counts
+	// after a 7-day shadow run to confirm < 1% drift before cutover.
+	RecordURSMv2ShadowResult(result string)
 }
 
 // NoopRecorder 是空实现，用于测试
@@ -91,6 +99,9 @@ func (n *NoopRecorder) SetPoolHealthyCredentials(poolID string, count int)      
 func (n *NoopRecorder) RecordShadowWriteFailure(kind string) {}
 func (n *NoopRecorder) RecordRingBufferDropped(count uint64) {}
 func (n *NoopRecorder) RecordRawAuditWriteFailure()          {}
+
+// P0-3 URSMv2Shadow method — no-op fallback.
+func (n *NoopRecorder) RecordURSMv2ShadowResult(result string) {}
 
 // globalRecorder 保存全局默认 Recorder。
 //

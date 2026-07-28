@@ -295,3 +295,18 @@ func TestCheckRedisHealthOnce_RestoreErrorDoesNotPanic(t *testing.T) {
 		t.Fatalf("restore must have been attempted once; got %d", len(gate.restoreCalls))
 	}
 }
+
+// TestPublishRecoveryEvent_NilQueueIsNoop verifies that publishRecoveryEvent
+// is safe when the queue is not wired (tests / disabled-Redis
+// deployments). Audit follow-up #5: the SSE event surface must
+// never panic the health-check loop.
+func TestPublishRecoveryEvent_NilQueueIsNoop(t *testing.T) {
+	sm := &SystemMonitor{
+		recoveryGate: nil,
+		workerID:     "test-worker",
+	}
+	// Should not panic with nil queue.
+	sm.publishRecoveryEvent(context.Background(), "recovery_closed", map[string]any{
+		"reason": "redis_unavailable",
+	})
+}

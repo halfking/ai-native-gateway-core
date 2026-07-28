@@ -452,6 +452,52 @@ func (sm *SystemMonitor) publishEvent(ctx context.Context, eventType string, tas
 	}
 }
 
+// publishRecoveryEvent emits a recovery-state-transition event on
+// the Redis Pub/Sub channel that admin/systemmonitor_stream_sse.go
+// consumes. Audit follow-up #5: lets dashboards show "recovery
+// gate closed at T1, reopened at T2" in real time instead of polling
+// /api/admin/system-monitor/recovery.
+//
+// Event shape:
+//
+//	{
+//	  "type": "recovery_closed" | "recovery_reopened",
+//	  "ts":   "RFC3339",
+//	  "recovery": {
+//	    "reason":           "redis_unavailable",
+//	    "consecutive_failures": 3,
+//	    "threshold":        3,
+//	    "debounce_ttl":     "5m0s",
+//	    "worker_id":        "...",
+//	    "keys_re_warmed":   7  // only on reopened
+//	  }
+//	}
+//
+// Best-effort: publish failures are logged and swallowed.
+func (sm *SystemMonitor) publishRecoveryEvent(ctx context.Context, eventType string, details map[string]any) {
+	if sm == nil || sm.queue == nil || sm.queue.rdb == nil {
+		return
+	}
+	if details == nil {
+		details = map[string]any{}
+	}
+	details["worker_id"] = sm.workerID
+	payload, err := json.Marshal(map[string]any{
+		"type":     eventType,
+		"ts":       time.Now().UTC(),
+		"recovery": details,
+	})
+	if err != nil {
+		return
+	}
+	publishCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if err := sm.queue.rdb.Publish(publishCtx, RedisKeyEventsPub, payload).Err(); err != nil {
+		slog.Debug("system_monitor: publish recovery event failed",
+			"event", eventType, "error", err)
+	}
+}
+
 // IsFallback reports whether the monitor is currently degraded.
 func (sm *SystemMonitor) IsFallback() bool {
 	sm.fallbackMu.Lock()
@@ -833,6 +879,16 @@ func (sm *SystemMonitor) maybeAutoCloseRecoveryGate(ctx context.Context, pingErr
 			"ping_error", pingErr.Error(),
 			"worker_id", sm.workerID,
 		)
+		// Audit follow-up #5: emit a recovery-state-transition event
+		// so dashboards subscribed to /api/admin/system-monitor/stream
+		// see the gate closure in real time.
+		sm.publishRecoveryEvent(ctx, "recovery_closed", map[string]any{
+			"reason":               "redis_unavailable",
+			"consecutive_failures": sm.consecutiveFailures,
+			"threshold":            sm.recoveryFailThreshold,
+			"debounce_ttl":         sm.recoveryDebounceTTL.String(),
+			"ping_error":           pingErr.Error(),
+		})
 	}
 	// Lost the debounce race (another instance won): stay silent at info
 	// level — this is the expected outcome for any cluster of size > 1.
@@ -864,6 +920,12 @@ func (sm *SystemMonitor) maybeAutoRestoreRecoveryGate(ctx context.Context) {
 			"keys_re_warmed", n,
 			"worker_id", sm.workerID,
 		)
+		// Audit follow-up #5: emit a recovery-reopened event so
+		// dashboards subscribed to /api/admin/system-monitor/stream
+		// see the gate recovery in real time.
+		sm.publishRecoveryEvent(ctx, "recovery_reopened", map[string]any{
+			"keys_re_warmed": n,
+		})
 	}
 }
 

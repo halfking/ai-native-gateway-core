@@ -266,11 +266,11 @@ refactor between them cannot accidentally lift the recovery gate.」
 | # | 任务 | 影响面 | 估计 | 阻塞？ | 状态 |
 |---|------|--------|------|-------|------|
 | 1 | 接线 `systemmonitor.healthCheckLoop → MarkClosedDebounced` | Redis 严重故障 incident 复盘 + 自动 close gate | 3 文件 + 5 测试 | 否（fallback 已兜底） | ✅ 已完成 2026-07-28 |
-| 2 | `systemmonitor` fallback 任务持久化到 `credential_probe_queue` | 防重启丢任务 | 1-2 文件 | 否（fallback 期间低频） | 待跟进 |
+| 2 | `systemmonitor` fallback 任务持久化（durable backstop） | 防重启丢任务 | 4 文件 + 5 测试 | 否（fallback 期间低频） | ✅ 已完成 2026-07-29 |
 | 3 | `filterAndScore` duplicate `if !ready` 注释 + 回归测试 | 防止后续 refactor 破坏 | 1 文件 1 测试 | 是（本次审计附带） | ✅ 已完成 2026-07-28 |
-| 4 | 给 `recovery.Manager` 加一个 `LastError()` 指标 | 排查 Redis 抖动 | 1 文件 5 行 | 否 | 待跟进 |
-| 5 | `state_health_checks` 路由层视图（admin SSE） | 监控可视化 | 1 文件 | 否 | 待跟进 |
-| 6 | 配套 Redis 恢复后自动 `WarmupFromSeed` → `SetReady(true)`（follow-up #1 续） | gate 关闭后能自动恢复 | 2 文件 | 否 | 待跟进 |
+| 4 | `recovery.LastError / LastRecoveryAt / LastRecoveryKeyCount` 指标 | 排查 Redis 抖动 | 4 文件 + 5 测试 | 否 | ✅ 已完成 2026-07-29 |
+| 5 | `state_health_checks` admin 端点 + SSE 事件 | 监控可视化 | 3 文件 + 4 测试 | 否 | ✅ 已完成 2026-07-29 |
+| 6 | 配套 Redis 恢复后自动 `WarmupFromExistingKeys` → `SetReady(true)` | gate 关闭后能自动恢复 | 2 文件 + 4 测试 | 否 | ✅ 已完成 2026-07-29 |
 
 ---
 
