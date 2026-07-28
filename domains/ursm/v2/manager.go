@@ -20,6 +20,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/domains/ursm/v2/rollout"
 	"github.com/kaixuan/llm-gateway-go/domains/ursm/v2/store"
 	"github.com/kaixuan/llm-gateway-go/domains/ursm/v2/sync"
+	"github.com/kaixuan/llm-gateway-go/metrics"
 )
 
 // Dependencies wires the v2 facade. Redis is required; the resource
@@ -515,7 +516,14 @@ func (m *Manager) RecordRequest(ctx context.Context, ev api.RequestOutcome) erro
 	if m == nil || m.store == nil {
 		return nil
 	}
+	// P0-3 (audit §7.1 R-7.1): shadow double-write is opt-in via
+	// ShadowDoubleWrite. Default false → ShouldUseV2 returns false →
+	// "skipped" metric. When ShadowDoubleWrite is true AND ModeShadow,
+	// ShouldUseV2 returns true → "recorded" metric. Recording the
+	// skip/record/failed outcome lets operators run the 7-day drift
+	// comparison (legacy credentialstate vs URSM v2 totals).
 	if !m.rollout.ShouldUseV2(ev.TenantID, ev.RawModel, ev.RequestID) {
+		metrics.Global().RecordURSMv2ShadowResult("skipped")
 		return nil
 	}
 	timeout := time.Duration(m.cfg.RecordTimeoutMs) * time.Millisecond
@@ -554,8 +562,10 @@ func (m *Manager) RecordRequest(ctx context.Context, ev api.RequestOutcome) erro
 			CoolSeconds:     m.cfg.CoolSeconds,
 			FailStreakLimit: 3,
 		}); err != nil {
+		metrics.Global().RecordURSMv2ShadowResult("failed")
 		m.log.Warn("ursm.v2: record failed", "error", err, "cid", ev.CredentialID)
 		return fmt.Errorf("ursm.v2: record: %w", err)
 	}
+	metrics.Global().RecordURSMv2ShadowResult("recorded")
 	return nil
 }
