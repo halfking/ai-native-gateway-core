@@ -350,3 +350,71 @@ func TestObserveChunk_NilCapture(t *testing.T) {
 	// Should not panic
 	capture.ObserveChunk(chunk)
 }
+
+// TestStreamCapture_ChunkCountersSnapshot covers ChunkCountersSnapshot /
+// Finalized (2026-07-28 §5.5). Once MarkDone is called, the snapshot
+// returns the values cached at finalisation time so concurrent emit
+// calls (success + failure) read the same numbers and the request_logs
+// row matches StreamCapture.
+//
+// We name the method ChunkCountersSnapshot because StreamCapture
+// already exposes a 5-tuple Snapshot() (chunkCount/ttfbMs/done/
+// interrupted/checksum) used by SummaryAsMap; renaming it would
+// break every existing call site. The 2-tuple carries just the
+// counters the request_logs row needs.
+func TestStreamCapture_ChunkCountersSnapshot(t *testing.T) {
+	c := NewStreamCapture()
+	c.RecordChunkSent()
+	c.RecordChunkSent()
+	c.RecordChunkSent()
+	c.RecordChunkError()
+	c.RecordChunkError()
+
+	sent, errs := c.ChunkCountersSnapshot()
+	if sent != 3 {
+		t.Errorf("sent=%d want 3", sent)
+	}
+	if errs != 2 {
+		t.Errorf("errs=%d want 2", errs)
+	}
+	if c.Finalized() {
+		t.Error("expected not finalized before MarkDone")
+	}
+
+	c.MarkDone()
+	if !c.Finalized() {
+		t.Error("expected finalized after MarkDone")
+	}
+
+	// MarkDone must be idempotent: subsequent RecordChunkSent must not
+	// advance the snapshot (the stream is closed).
+	c.RecordChunkSent()
+	sent2, _ := c.ChunkCountersSnapshot()
+	if sent2 != 3 {
+		t.Errorf("snapshot moved after MarkDone: got %d want 3", sent2)
+	}
+}
+
+// TestStreamCapture_FinalizedOnInterrupt ensures MarkInterrupted also
+// flips Finalized, since the failure-path emit reads the same counter.
+func TestStreamCapture_FinalizedOnInterrupt(t *testing.T) {
+	c := NewStreamCapture()
+	c.RecordChunkSent()
+	c.MarkInterrupted()
+	if !c.Finalized() {
+		t.Error("expected finalized after MarkInterrupted")
+	}
+}
+
+// TestStreamCapture_NilReceiver is a defensive guarantee for callers
+// that hold an optional *StreamCapture on the request log context.
+func TestStreamCapture_NilReceiver(t *testing.T) {
+	var c *StreamCapture
+	if sent, errs := c.ChunkCountersSnapshot(); sent != 0 || errs != 0 {
+		t.Errorf("nil receiver Snapshot returned (%d,%d) want (0,0)", sent, errs)
+	}
+	if c.Finalized() {
+		t.Error("nil receiver should not be Finalized")
+	}
+	c.RecordChunkError() // must not panic
+}
