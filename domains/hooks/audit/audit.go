@@ -112,9 +112,11 @@ type StreamCapture struct {
 	startTime        time.Time
 	chunkCount       int
 	chunksSent       int // Chunks successfully sent to client (vs chunkCount = chunks received from upstream)
+	chunkErrors      int // 2026-07-28 §5.5: chunks the bridge or executor failed to emit
 	firstChunkMs     int
 	doneReceived     bool
 	interrupted      bool
+	finalized        bool // 2026-07-28 §5.5: pinned at MarkDone / MarkInterrupted
 	checksum         [32]byte
 	finalFinish      string
 	preview          []byte
@@ -206,9 +208,18 @@ func (sc *StreamCapture) RecordDone() {
 // RecordChunkSent increments the count of chunks successfully sent to the client.
 // This is called after a chunk is written and flushed to the client, distinguishing
 // it from chunkCount (which tracks chunks received from upstream).
+//
+// 2026-07-28 §5.5: once the stream is finalized, the counter is pinned and
+// subsequent calls are no-ops. The lock-free guarantee from before the
+// 2026-07-28 fix relied on chunkCount (received) rather than chunksSent
+// (sent); after the fix we treat chunksSent as authoritative, so the
+// pinning is correct.
 func (sc *StreamCapture) RecordChunkSent() {
 	sc.mu.Lock()
 	defer sc.mu.Unlock()
+	if sc.finalized {
+		return
+	}
 	sc.chunksSent++
 }
 
@@ -274,6 +285,7 @@ func (sc *StreamCapture) MarkInterrupted() {
 	sc.mu.Lock()
 	defer sc.mu.Unlock()
 	sc.interrupted = true
+	sc.finalized = true
 }
 
 // Reset clears all accumulated state so the capture can be reused for a
@@ -287,9 +299,11 @@ func (sc *StreamCapture) Reset() {
 	sc.startTime = time.Now()
 	sc.chunkCount = 0
 	sc.chunksSent = 0
+	sc.chunkErrors = 0
 	sc.firstChunkMs = 0
 	sc.doneReceived = false
 	sc.interrupted = false
+	sc.finalized = false
 	sc.checksum = [32]byte{}
 	sc.finalFinish = ""
 	sc.preview = sc.preview[:0]
@@ -333,6 +347,53 @@ func (sc *StreamCapture) Snapshot() (chunkCount, ttfbMs int, done, interrupted b
 	sc.mu.Lock()
 	defer sc.mu.Unlock()
 	return sc.chunkCount, sc.firstChunkMs, sc.doneReceived, sc.interrupted, hex.EncodeToString(sc.checksum[:])
+}
+
+// ChunkCountersSnapshot returns the chunksSent and chunkErrors
+// counters as a 2-tuple for the request_logs row. Distinct from
+// Snapshot() (which carries chunkCount/ttfbMs/done/checksum) so the
+// request_log_pipeline call site stays compact.
+//
+// 2026-07-28 §5.5: this snapshot is the single source of truth for
+// stream_chunks_sent / stream_chunk_errors. After MarkDone or
+// MarkInterrupted, the counters are pinned so concurrent emit calls
+// (success + failure) read the same values.
+func (sc *StreamCapture) ChunkCountersSnapshot() (sent, errs int) {
+	if sc == nil {
+		return 0, 0
+	}
+	sc.mu.Lock()
+	defer sc.mu.Unlock()
+	return sc.chunksSent, sc.chunkErrors
+}
+
+// Finalized reports whether the stream has reached MarkDone /
+// MarkInterrupted. Once true, subsequent RecordChunkSent /
+// RecordChunkError calls do not advance the snapshot — the
+// counters are pinned at the finalization time so concurrent
+// success + failure emit calls observe the same row.
+func (sc *StreamCapture) Finalized() bool {
+	if sc == nil {
+		return false
+	}
+	sc.mu.Lock()
+	defer sc.mu.Unlock()
+	return sc.finalized
+}
+
+// RecordChunkError increments the chunks-failed counter. Called by
+// streaming bridges when a chunk cannot be serialised or written
+// to the client (e.g. broken pipe, conversion_error, EOF mid-frame).
+func (sc *StreamCapture) RecordChunkError() {
+	if sc == nil {
+		return
+	}
+	sc.mu.Lock()
+	defer sc.mu.Unlock()
+	if sc.finalized {
+		return
+	}
+	sc.chunkErrors++
 }
 
 // appendText appends s to textContent, truncating s if it would push the
@@ -461,6 +522,7 @@ func (sc *StreamCapture) MarkInterruptedWithReason(finishReason string) {
 	sc.mu.Lock()
 	defer sc.mu.Unlock()
 	sc.interrupted = true
+	sc.finalized = true
 	if finishReason != "" {
 		sc.finalFinish = finishReason
 	}
@@ -470,12 +532,14 @@ func (sc *StreamCapture) MarkDone() {
 	sc.mu.Lock()
 	defer sc.mu.Unlock()
 	sc.doneReceived = true
+	sc.finalized = true
 }
 
 func (sc *StreamCapture) MarkStreamError() {
 	sc.mu.Lock()
 	defer sc.mu.Unlock()
 	sc.interrupted = true
+	sc.finalized = true
 }
 
 // Link layer event types

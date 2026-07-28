@@ -12,6 +12,7 @@ import (
 
 	"github.com/kaixuan/llm-gateway-go/domains/attachments"                   //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/domains/authentication"                //nolint:depguard // historical violation, B1 routing.go CQRS will fix
+	"github.com/kaixuan/llm-gateway-go/domains/hooks/audit"                   //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/observability/telemetry" //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/domains/session"                       //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/domains/streaming/executors"           //nolint:depguard // historical violation, B1 routing.go CQRS will fix
@@ -125,6 +126,14 @@ type RequestLogContext struct {
 	// 2026-07-25: 请求/响应体大小（用于 Redis 实时统计和看板展示）
 	RequestBodySize  int
 	ResponseBodySize int
+
+	// StreamCapture (2026-07-28 §5.5) is the single source of truth
+	// for stream_chunks_sent / stream_chunk_errors. The executor
+	// stores it on the log context so BuildFailureEntry and the
+	// success-path emit read the same numbers; StreamCapture pins the
+	// counters at MarkDone / MarkInterrupted, so concurrent emit
+	// calls cannot observe a torn read.
+	StreamCapture *audit.StreamCapture
 
 	meta   requestAttemptMeta
 	logged bool
@@ -646,9 +655,16 @@ func (c *RequestLogContext) buildEntry(errCode, errMessage string, providerID, c
 		clientTimeoutPtr = &v
 	}
 
+	// 2026-07-28 §5.5: prefer StreamCapture.Snapshot() over the
+	// RequestLogContext atomics when the capture is attached. The
+	// capture is the single source of truth and is pinned at
+	// MarkDone / MarkInterrupted, so success + failure emit calls
+	// read the same numbers. Fall back to the atomics when no
+	// capture is attached (legacy test paths).
+	sent, errs := streamCountersFromContext(c)
 	var streamChunkErrorsPtr *int
-	if chunkErrors := c.StreamChunkErrorsValue(); chunkErrors > 0 {
-		streamChunkErrorsPtr = &chunkErrors
+	if errs > 0 {
+		streamChunkErrorsPtr = &errs
 	}
 
 	// 2026-07-01 P0 fix: stream_chunks_sent is NOT NULL (migration 320).
@@ -657,7 +673,6 @@ func (c *RequestLogContext) buildEntry(errCode, errMessage string, providerID, c
 	// mirrors the fix in BuildSuccessEntry (handler.go:2212) and ensures
 	// both success and failure paths honour the schema contract.
 	var streamChunksSentPtr *int
-	sent := c.StreamChunksSentValue()
 	if sent < 0 {
 		sent = 0
 	}
@@ -906,4 +921,28 @@ func (c *RequestLogContext) SetOriginStage(stage string) {
 		return
 	}
 	c.OriginStage = strings.TrimSpace(stage)
+}
+
+// streamCountersFromContext (2026-07-28 §5.5) returns the
+// (chunksSent, chunkErrors) counters, preferring the per-request
+// StreamCapture (single source of truth, pinned at finalisation)
+// over the legacy RequestLogContext atomics. When the capture is
+// attached we also refresh the log-context atomics so other readers
+// stay in sync.
+func streamCountersFromContext(c *RequestLogContext) (sent, errs int) {
+	if c == nil {
+		return 0, 0
+	}
+	if c.StreamCapture != nil {
+		sent, errs = c.StreamCapture.ChunkCountersSnapshot()
+		if sent < 0 {
+			sent = 0
+		}
+		if errs < 0 {
+			errs = 0
+		}
+		c.SetStreamChunkCounters(errs, sent)
+		return sent, errs
+	}
+	return c.StreamChunksSentValue(), c.StreamChunkErrorsValue()
 }

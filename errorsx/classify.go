@@ -19,6 +19,12 @@ const (
 	KindQuota          ErrorKind = "quota"
 	KindUpstreamDown   ErrorKind = "upstream_down"
 	KindCanceled       ErrorKind = "canceled"
+	// KindClientBug (2026-07-28 §5.6) covers client-side mistakes that
+	// look like a KindCanceled from the upstream's perspective but
+	// originate from the caller's protocol (e.g. echoing a stale
+	// tool_call_id). Distinct from KindCanceled so the error_kind
+	// taxonomy can keep cancel and bug separately countable.
+	KindClientBug      ErrorKind = "client_bug"
 	KindConcurrent     ErrorKind = "concurrent"
 	KindAuthRevoked    ErrorKind = "auth_revoked"
 	KindQuotaPeriodic  ErrorKind = "quota_periodic"
@@ -76,6 +82,13 @@ const (
 	//     returns Resumable=true → executor continues to next candidate), not
 	//     the generic IsRetryable retry loop.
 	KindEmptyResponse ErrorKind = "empty_response"
+	// KindConversion marks a stream / body that the bridge or executor
+	// emitted but whose serialization or shape could not be converted
+	// (e.g. conversion_error in 2026-07-28 §5.8 taxonomy). Distinct
+	// from KindUnsupportedFeature because conversion failure is
+	// driven by payload shape, not by upstream capability — a
+	// different credential against the same provider would also fail.
+	KindConversion ErrorKind = "conversion_error"
 )
 
 // contextLengthRe matches upstream error bodies that signal "prompt too

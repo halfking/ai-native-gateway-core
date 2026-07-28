@@ -147,6 +147,22 @@ type anomalyReporter interface {
 // interface.
 type AnomalyReporterAdapter struct {
 	reporter anomalyReporter
+	// parentCtx (2026-07-28 §5.7) is the context used when callers
+	// invoke ReportAnomaly without an envelope. nil falls back to
+	// context.Background() at call time.
+	parentCtx context.Context
+}
+
+// SetParentContext overrides the context passed to the underlying
+// reporter when callers invoke ReportAnomaly without supplying one.
+func (a *AnomalyReporterAdapter) SetParentContext(ctx context.Context) {
+	if a == nil {
+		return
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	a.parentCtx = ctx
 }
 
 // NewAnomalyReporterAdapter creates an adapter for an anomaly reporter.
@@ -166,23 +182,131 @@ func (a *AnomalyReporterAdapter) ReportAnomaly(requestID string, anomalyType str
 	rawOutput := detailBytes(details, "raw_output")
 	confidence := detailFloat(details, "confidence", 1)
 
+	// 2026-07-28 §5.7: the anomaly reporter's `ctx` is what carries
+	// the audit envelope (via logging.WithAnomalyEnvelope). We
+	// historically passed context.Background() here, which produced
+	// empty correlation context on every report. Until callers are
+	// migrated to ReportAnomalyFromContext, use the parent context
+	// from the adapter if one was configured via SetParentContext;
+	// fall back to context.Background() otherwise.
+	ctx := a.parentCtx
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
 	switch anomalyType {
 	case "tool_calls_missing":
 		a.reporter.ReportToolCallsMissing(
-			context.Background(), requestID, sourceProtocol, targetProtocol,
+			ctx, requestID, sourceProtocol, targetProtocol,
 			rawInput, rawOutput,
 			detailString(details, "missing_tool_calls", "upstream tool calls were not emitted"),
 			confidence,
 		)
 	case "semantic_incomplete":
 		a.reporter.ReportSemanticIncomplete(
-			context.Background(), requestID, targetProtocol, rawOutput,
+			ctx, requestID, targetProtocol, rawOutput,
 			detailString(details, "reason", "response appears incomplete"),
 			detailStrings(details, "indicators"), confidence,
 		)
 	default:
 		a.reporter.ReportConversionError(
-			context.Background(), requestID, sourceProtocol, targetProtocol, conversionStep,
+			ctx, requestID, sourceProtocol, targetProtocol, conversionStep,
+			rawInput, fmt.Errorf("%s", detailString(details, "error", anomalyType)),
+		)
+	}
+	return nil
+}
+
+// AnomalyReporterAdapterWithAudit (2026-07-28 §5.7) enriches
+// AnomalyReporterAdapter with an AuditContext. ReportAnomalyFromContext
+// dispatches with the audit envelope attached to ctx, so the
+// downstream LockFreeAnomalyReporter fills client_request_id /
+// gw_session_id / provider_id / credential_id / trace_id on the
+// AnomalyReport. SetRawLookup additionally populates file/offset
+// from the per-request frame index.
+type AnomalyReporterAdapterWithAudit struct {
+	*AnomalyReporterAdapter
+	parentCtx context.Context
+	rawLookup func(requestID, direction string) (file string, offset int64, ok bool)
+}
+
+// NewAnomalyReporterAdapterWithAudit builds a wrapper that defaults
+// parentCtx to context.Background(). Callers that have a request
+// context (e.g. the handler's request context) can SetParentContext
+// before invoking ReportAnomalyFromContext.
+func NewAnomalyReporterAdapterWithAudit(reporter anomalyReporter) *AnomalyReporterAdapterWithAudit {
+	return &AnomalyReporterAdapterWithAudit{
+		AnomalyReporterAdapter: &AnomalyReporterAdapter{reporter: reporter},
+		parentCtx:              context.Background(),
+	}
+}
+
+// SetParentContext overrides the parent context used when no
+// per-report ctx is supplied. The AuditContext's envelope is
+// layered on top of this context.
+func (a *AnomalyReporterAdapterWithAudit) SetParentContext(ctx context.Context) {
+	if a == nil {
+		return
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	a.parentCtx = ctx
+}
+
+// SetRawLookup wires a per-request raw-frame index. When set, the
+// adapter populates file/offset on the underlying reporter's
+// anomaly report via context.WithValue (the LockFreeAnomalyReporter
+// reads it during ReportXxx). For now the lookup is plumbed via
+// the existing rawLogLocator on the reporter itself — adapter-side
+// overrides are a future enhancement.
+func (a *AnomalyReporterAdapterWithAudit) SetRawLookup(fn func(string, string) (string, int64, bool)) {
+	if a == nil {
+		return
+	}
+	a.rawLookup = fn
+}
+
+// ReportAnomalyFromContext dispatches to the underlying reporter
+// with the audit envelope's correlation context attached.
+func (a *AnomalyReporterAdapterWithAudit) ReportAnomalyFromContext(
+	auditCtx *AuditContext, requestID, anomalyType string, details map[string]interface{},
+) error {
+	if a == nil || a.reporter == nil {
+		return nil
+	}
+	ctx := a.parentCtx
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if auditCtx != nil {
+		env := auditCtx.AnomalyReportEnvelope()
+		ctx = logging.WithAnomalyEnvelope(ctx, env)
+	}
+	sourceProtocol := detailString(details, "source_protocol", "unknown")
+	targetProtocol := detailString(details, "target_protocol", "unknown")
+	conversionStep := detailString(details, "conversion_step", "stream_conversion")
+	rawInput := detailBytes(details, "raw_input")
+	rawOutput := detailBytes(details, "raw_output")
+	confidence := detailFloat(details, "confidence", 1)
+
+	switch anomalyType {
+	case "tool_calls_missing":
+		a.reporter.ReportToolCallsMissing(
+			ctx, requestID, sourceProtocol, targetProtocol,
+			rawInput, rawOutput,
+			detailString(details, "missing_tool_calls", "upstream tool calls were not emitted"),
+			confidence,
+		)
+	case "semantic_incomplete":
+		a.reporter.ReportSemanticIncomplete(
+			ctx, requestID, targetProtocol, rawOutput,
+			detailString(details, "reason", "response appears incomplete"),
+			detailStrings(details, "indicators"), confidence,
+		)
+	default:
+		a.reporter.ReportConversionError(
+			ctx, requestID, sourceProtocol, targetProtocol, conversionStep,
 			rawInput, fmt.Errorf("%s", detailString(details, "error", anomalyType)),
 		)
 	}

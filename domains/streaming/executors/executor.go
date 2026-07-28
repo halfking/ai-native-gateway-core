@@ -208,15 +208,34 @@ type envelopeAwareClientResponseLogger interface {
 
 // envelopeFromParams builds a correlation envelope from ExecParams so
 // every raw entry can be cross-referenced with request_logs.
+//
+// 2026-07-28 §5.7: when ExecParams.Audit is non-nil, the full
+// AuditContext is the source of truth — every field the operator
+// dashboard needs is populated. When Audit is nil (legacy tests /
+// async-retry paths that build ExecParams directly), the flat
+// fields on ExecParams are used. The previous implementation
+// incorrectly bound GWTaskID to the model name; AuditContext
+// resolves GWTaskID from X-Gw-Task-Id or session.TaskID.
 func envelopeFromParams(params *ExecParams) RawCorrelationEnvelope {
 	if params == nil {
 		return RawCorrelationEnvelope{}
 	}
+	if params.Audit != nil {
+		return params.Audit.RawCorrelationEnvelope()
+	}
 	env := RawCorrelationEnvelope{
-		GWSessionID: params.SessionID,
-		GWTaskID:    params.Model,
-		TenantID:    params.TenantID,
-		APIKeyID:    params.KeyID,
+		ClientRequestID:  params.ClientRequestID,
+		GWSessionID:      params.SessionID,
+		GWTaskID:         params.GWTaskID,
+		ParentRequestID:  params.ParentRequestID,
+		TenantID:         params.TenantID,
+		APIKeyID:         params.KeyID,
+		ProviderID:       params.ProviderID,
+		CredentialID:     params.CredentialID,
+		AttemptNo:        params.AttemptNo,
+		UpstreamEndpoint: params.UpstreamEndpoint,
+		TraceID:          params.TraceID,
+		SpanID:           params.SpanID,
 	}
 	if params.AppID != nil {
 		env.ApplicationID = fmt.Sprintf("%d", *params.AppID)
@@ -280,6 +299,13 @@ type StreamOutcome = struct {
 	Reason      string
 	Resumable   bool // Whether the stream can be resumed with a different credential
 	ChunkCount  int  // Number of chunks sent before interruption
+
+	// Kind (2026-07-28 §5.6) is the structured errorsx.ErrorKind the
+	// executor assigns to the interruption. When non-empty,
+	// streamErrorKindForDetailCode prefers it over the legacy
+	// detail-code switch. Empty when the executor did not classify
+	// the outcome (e.g. async-retry paths, legacy bridges).
+	Kind errorsx.ErrorKind
 }
 
 type StreamHandler func(w http.ResponseWriter, resp *http.Response, clientModel, outboundModel, catalogCode string, norm NormalizerFunc, capture *audit.StreamCapture, toolsRequested bool) StreamOutcome
@@ -299,6 +325,31 @@ type ProbeSyncFunc func(
 	tenantID string,
 	parentReqID string,
 ) bool
+
+// classifyStreamOutcome maps the streaming-bridge Reason string to a
+// structured errorsx.ErrorKind. The executor's StreamOutcome.Kind is
+// what the request_logs.error_kind taxonomy prefers (2026-07-28
+// §5.6); Reason remains the human-readable cause.
+func classifyStreamOutcome(reason string) errorsx.ErrorKind {
+	switch reason {
+	case "first_byte_timeout", "stream_chunk_timeout", "stream_timeout", "chunk_timeout":
+		return errorsx.KindStreamTimeout
+	case "concurrent_overload", "concurrent":
+		return errorsx.KindConcurrent
+	case "empty_stream_no_content":
+		return errorsx.KindEmptyResponse
+	case "client_cancel", "client_disconnected":
+		return errorsx.KindCanceled
+	case "json_error_in_stream":
+		return errorsx.KindUpstreamDown
+	case "stream_panic", "stream_panic_recover":
+		return errorsx.KindUpstreamDown
+	case "anthropic_to_openai_read_error", "anthropic_to_responses_read_error",
+		"read_error", "stream_read_error", "eof_without_done":
+		return errorsx.KindUpstreamDown
+	}
+	return ""
+}
 
 // NodeProbeHealthyFunc is the contract bg.MarkNodeProbeHealthy satisfies.
 // Defined here (rather than imported from bg) so the executors package
@@ -1155,6 +1206,27 @@ type ExecParams struct {
 	// 在 handler.go 中创建，在 executor_chat.go 中填充，在 telemetry
 	// 中写入 request_logs_hot.routing_attempts。可选，nil 表示不追踪。
 	RoutingTracker *RoutingAttemptsTracker
+
+	// 2026-07-28 §5.1: per-attempt correlation fields. Populated by
+	// the handler when AuditContext is built, refreshed by the
+	// executor when each candidate credential is selected. Used by
+	// envelopeFromParams to populate RawCorrelationEnvelope for the
+	// raw log writer.
+	ClientRequestID  string
+	GWTaskID         string
+	ParentRequestID  string
+	ProviderID       int
+	CredentialID     int
+	AttemptNo        int
+	UpstreamEndpoint string
+	TraceID          string
+	SpanID           string
+	// Audit (2026-07-28 §5.7) is the full AuditContext handle. When
+	// non-nil, envelopeFromParams delegates to it (and ignores the
+	// flat fields above). When nil, the flat fields above are used.
+	// The handler always sets Audit; tests and async-retry paths that
+	// construct ExecParams directly may set only the flat fields.
+	Audit *AuditContext
 
 	diagnosticsLogged bool
 }

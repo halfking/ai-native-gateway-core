@@ -13,6 +13,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/kaixuan/llm-gateway-go/errorsx"
+
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/audit" //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/internal/ir"
 )
@@ -297,6 +299,12 @@ type StreamOutcome struct {
 	Reason      string
 	Resumable   bool // Whether the stream can be resumed with a different credential
 	ChunkCount  int  // Number of chunks sent before interruption
+
+	// Kind (2026-07-28 §5.6) is the structured errorsx.ErrorKind
+	// the executor assigns to the interruption. When non-empty,
+	// streamErrorKindForDetailCode prefers it over the legacy
+	// detail-code switch.
+	Kind errorsx.ErrorKind
 }
 
 func StreamChat(w http.ResponseWriter, resp *http.Response, clientModel, outboundModel string, norm *Normalizer) StreamOutcome {
@@ -380,6 +388,7 @@ func StreamChatWithPendingCaptureAndDiagnostics(
 			}
 			outcome.Interrupted = true
 			outcome.Reason = "stream_panic"
+			outcome.Kind = errorsx.KindUpstreamDown
 			if pc != nil {
 				pc.markInterrupted("stream_panic")
 			}
@@ -455,6 +464,7 @@ func StreamChatWithPendingCaptureAndDiagnostics(
 		}
 		outcome.Interrupted = true
 		outcome.Reason = "client_write_failed"
+		outcome.Kind = errorsx.KindUpstreamDown
 		outcome.Resumable = chunkCount < 5
 		outcome.ChunkCount = chunkCount
 		if capture != nil {
@@ -479,6 +489,7 @@ func StreamChatWithPendingCaptureAndDiagnostics(
 		safeFlush(flusher)
 		outcome.Interrupted = true
 		outcome.Reason = "first_byte_timeout"
+		outcome.Kind = errorsx.KindStreamTimeout
 		outcome.Resumable = true // First-byte timeout is resumable (no chunks sent)
 		outcome.ChunkCount = 0
 		return outcome
@@ -495,7 +506,7 @@ func StreamChatWithPendingCaptureAndDiagnostics(
 	upstreamDoneReceived := false
 
 	if firstLine != "" {
-		logRawUpstreamFrame(diagnostics, requestID, "openai-completions", []byte(firstLine))
+		logRawUpstreamFrame(diagnostics, auditFromDiagnostics(diagnostics, requestID, "openai-completions"), []byte(firstLine))
 		firstRawPayload := extractPayload(firstLine)
 		if firstRawPayload != "" && firstRawPayload != "[DONE]" {
 			diagnosticCollector.observeRaw([]byte(firstRawPayload))
@@ -536,6 +547,7 @@ func StreamChatWithPendingCaptureAndDiagnostics(
 			safeFlush(flusher)
 			outcome.Interrupted = true
 			outcome.Reason = "json_error_in_stream"
+			outcome.Kind = errorsx.KindUpstreamDown
 			outcome.Resumable = true
 			outcome.ChunkCount = 0
 			return outcome
@@ -600,7 +612,7 @@ func StreamChatWithPendingCaptureAndDiagnostics(
 				clientModel, &discoveredUpstream, firstLine,
 				runtimeCfg.firstByteTimeout, &lastSend, &chunkCount,
 				func(line string) {
-					logRawUpstreamFrame(diagnostics, requestID, "openai-completions", []byte(line))
+					logRawUpstreamFrame(diagnostics, auditFromDiagnostics(diagnostics, requestID, "openai-completions"), []byte(line))
 					payload := extractPayload(line)
 					if payload == "" || payload == "[DONE]" {
 						return
@@ -679,6 +691,7 @@ func StreamChatWithPendingCaptureAndDiagnostics(
 			}
 			outcome.Interrupted = true
 			outcome.Reason = "client_cancel"
+			outcome.Kind = errorsx.KindCanceled
 			outcome.ChunkCount = chunkCount
 			outcome.Resumable = false
 			return outcome
@@ -702,6 +715,7 @@ func StreamChatWithPendingCaptureAndDiagnostics(
 					}
 					outcome.Interrupted = true
 					outcome.Reason = "eof_without_done"
+					outcome.Kind = errorsx.KindUpstreamDown
 				}
 				// When the client has gone away but the capturer is
 				// still alive and the upstream DID send [DONE], do NOT
@@ -727,6 +741,7 @@ func StreamChatWithPendingCaptureAndDiagnostics(
 				}
 				outcome.Interrupted = true
 				outcome.Reason = "client_cancel"
+				outcome.Kind = errorsx.KindCanceled
 				outcome.ChunkCount = chunkCount
 			case streamReadTimeout:
 				slog.Warn("stream read timeout",
@@ -741,6 +756,7 @@ func StreamChatWithPendingCaptureAndDiagnostics(
 				}
 				outcome.Interrupted = true
 				outcome.Reason = "stream_timeout"
+				outcome.Kind = errorsx.KindStreamTimeout
 				outcome.Resumable = true // Timeout is resumable
 				outcome.ChunkCount = chunkCount
 			default:
@@ -750,6 +766,7 @@ func StreamChatWithPendingCaptureAndDiagnostics(
 				}
 				outcome.Interrupted = true
 				outcome.Reason = "read_error"
+				outcome.Kind = errorsx.KindUpstreamDown
 				outcome.Resumable = true // Read error is resumable
 				outcome.ChunkCount = chunkCount
 			}
@@ -757,7 +774,7 @@ func StreamChatWithPendingCaptureAndDiagnostics(
 		}
 
 		line := readResult.line
-		logRawUpstreamFrame(diagnostics, requestID, "openai-completions", []byte(line))
+		logRawUpstreamFrame(diagnostics, auditFromDiagnostics(diagnostics, requestID, "openai-completions"), []byte(line))
 		rawPayload := extractPayload(line)
 		if rawPayload != "" && rawPayload != "[DONE]" {
 			diagnosticCollector.observeRaw([]byte(rawPayload))
