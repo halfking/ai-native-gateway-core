@@ -910,7 +910,7 @@ func NewExecutor(
 		Auditor:              auditor,
 		StreamTimeout:        900 * time.Second,
 		UpstreamTimeout:      120 * time.Second,
-		StreamRetryThreshold: 5, // Default: allow stream failover if < 5 chunks sent
+		StreamRetryThreshold: 50, // Default: allow stream failover if < 50 chunks sent
 	}
 }
 

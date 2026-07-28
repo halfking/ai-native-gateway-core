@@ -22,15 +22,16 @@ import (
 // The wider field set is declared so future phases (P2 onwards) can
 // grow the abstraction without re-plumbing the type.
 type CommonExecutor struct {
-	Circuit              *credential.Manager
-	Limiter              *credential.Limiter
-	Pools                *pool.PoolManager
-	State                *credential.Writer
-	HeaderProfiles       *HeaderProfileCache
-	Upstream             *upstream.Client
-	FpSlots              *credentialfpslot.Manager
-	UpstreamTimeout      time.Duration
-	StreamTimeout        time.Duration
+	Circuit         *credential.Manager
+	Limiter         *credential.Limiter
+	Pools           *pool.PoolManager
+	State           *credential.Writer
+	HeaderProfiles  *HeaderProfileCache
+	Upstream        *upstream.Client
+	FpSlots         *credentialfpslot.Manager
+	UpstreamTimeout time.Duration
+	StreamTimeout   time.Duration
+	// Chunks sent before stream becomes non-resumable (default 50)
 	StreamRetryThreshold int
 
 	// Internal: identifies the (provider, credential) pair this
