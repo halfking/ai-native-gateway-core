@@ -124,6 +124,59 @@ type RawDataLogger interface {
 	LogResponse(requestID string, protocol string, body []byte, isStream bool) error
 }
 
+// IntegrityDetector (2026-07-28) is the per-request observer that
+// emits model-integrity events (model_mismatch, finish_refusal,
+// finish_truncation, token_arith_fail, empty_response,
+// repeated_content, fingerprint_drift). The Executor calls it from
+// both the OpenAI non-stream success path and the streaming completion
+// path; nil disables the feature (legacy behavior).
+//
+// Defined in the integrity package; declared here as an interface so
+// the executors package doesn't import integrity (keeps the dependency
+// graph one-directional — integrity is wired in main.go and pushed in
+// via Executor.IntegrityDetector).
+type IntegrityDetector interface {
+	Observe(ctx context.Context, c IntegrityCandidate)
+}
+
+// IntegrityCandidate is the minimal view the executor hands the
+// detector. Mirrors integrity.Candidate; duplicated as a struct so
+// this package does not need to import integrity. The detector itself
+// will accept the public type via an adapter at construction time in
+// main.go.
+type IntegrityCandidate struct {
+	RequestID          string
+	TenantID           string
+	ApplicationID      *int
+	APIKeyID           *int
+	ProviderID         *int
+	ProviderCode       string
+	CredentialID       *int
+	ClientModel        string
+	OutboundModel      string
+	RawModel           string
+	RespModel          string
+	FinishReason       string
+	PromptTokens       *int
+	CompletionTokens   *int
+	TotalTokens        *int
+	InputTokens        *int
+	OutputTokens       *int
+	ChunkCount         int
+	ChunksSent         int
+	ContentPreview     string
+	TextContent        string
+	ProviderResponseID string
+	SystemFingerprint  string
+	UsageSource        string
+	IsStream           bool
+	// ResponseBody is the upstream-returned body, kept verbatim for
+	// the detector to inspect (extract finish_reason / tokens / model
+	// without re-doing the JSON parse). Empty disables body-based
+	// checks.
+	ResponseBody []byte
+}
+
 // UpstreamRequestLogger records the exact body sent to an upstream provider.
 // Implementations are optional so existing diagnostic fakes stay compatible.
 type UpstreamRequestLogger interface {
@@ -790,6 +843,12 @@ type Executor struct {
 	RawDataLogger    RawDataLogger    // 原始请求/响应数据记录器
 	AnomalyReporter  AnomalyReporter  // 协议转换异常报告器
 	SemanticAnalyzer SemanticAnalyzer // 语义分析器（工具调用/内容丢失检测）
+
+	// 2026-07-28: 模型质量探测（per-request 完整性事件）。
+	// 由 main.go 注入；nil 时不调用任何完整性检测（旧行为）。
+	// 该字段是接口而不是具体类型，executors 包不依赖 integrity 子包，
+	// 注入的实例在底层是 *integrity.Detector 包装。
+	IntegrityDetector IntegrityDetector
 
 	// 2026-07-27 (M3, S-4): per-Executor TTL cache for the URSMv2
 	// authoritative Ready() check. legacyWritersEnabled() is called 11+× per

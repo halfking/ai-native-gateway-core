@@ -577,6 +577,12 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/admin/format-anomaly-summary", h.superAdmin(h.handleFormatAnomalySummary))
 	mux.HandleFunc("/api/admin/format-anomalies", h.superAdmin(h.handleFormatAnomalies))
 	mux.HandleFunc("/api/admin/format-anomalies/", h.superAdmin(h.handleFormatAnomalySubrouter))
+	// 2026-07-28: model integrity detection (model_mismatch,
+	// finish_refusal, finish_truncation, empty_response, repeated_content,
+	// fingerprint_drift). See domains/streaming/integrity/ and
+	// admin/model_integrity.go for the read/write surface.
+	mux.HandleFunc("/api/admin/model-integrity", h.superAdmin(h.handleModelIntegrity))
+	mux.HandleFunc("/api/admin/model-integrity/", h.superAdmin(h.handleModelIntegrity))
 	mux.HandleFunc("/api/admin/tenants", h.superAdmin(h.handleTenants))
 	mux.HandleFunc("/api/admin/tenants/", h.superAdmin(h.handleTenants))
 	mux.HandleFunc("/api/users/", admin(h.handleUsers))

@@ -181,6 +181,17 @@ func runEmptyStreamGate(
 		if payload != "" && capture != nil {
 			if chunk, perr := ir.ParseOpenAIStreamChunk(line); perr == nil {
 				capture.ObserveChunk(chunk)
+				// 2026-07-28: capture the upstream-returned model
+				// (the first SSE chunk carries it under
+				// `chat.completion.chunk.model`). Used by the
+				// integrity detector at end-of-stream to detect
+				// silent model substitution. The Anthropic side
+				// already records model via message_start in
+				// anthropic_passthrough_stream.go:195; this closes
+				// the OpenAI SSE gap.
+				if chunk.Model != "" {
+					capture.SetRespModelIfEmpty(chunk.Model)
+				}
 			}
 		}
 
@@ -561,6 +572,11 @@ func StreamChatWithPendingCaptureAndDiagnostics(
 			// IR-based audit: parse to chunk and observe
 			if chunk, err := ir.ParseOpenAIStreamChunk(firstLine); err == nil {
 				capture.ObserveChunk(chunk)
+				// 2026-07-28: capture upstream model for integrity
+				// detector (silent substitution detection).
+				if chunk.Model != "" {
+					capture.SetRespModelIfEmpty(chunk.Model)
+				}
 			}
 		}
 
@@ -791,6 +807,12 @@ func StreamChatWithPendingCaptureAndDiagnostics(
 			if capture != nil {
 				if chunk, err := ir.ParseOpenAIStreamChunk(line); err == nil {
 					capture.ObserveChunk(chunk)
+					// 2026-07-28: integrity detector needs the
+					// upstream-returned model for silent
+					// substitution detection.
+					if chunk.Model != "" {
+						capture.SetRespModelIfEmpty(chunk.Model)
+					}
 				}
 			}
 		}
