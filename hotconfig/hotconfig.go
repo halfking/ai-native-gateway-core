@@ -22,6 +22,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"sort"
 	"sync"
 	"time"
 
@@ -115,8 +116,22 @@ func (c *Config) reload(ctx context.Context) error {
 	c.values = newValues
 	c.mu.Unlock()
 
-	slog.Debug("config: reloaded", "count", len(newValues))
+	// 2026-07-29: Promote Debug→Info so operators can verify hotconfig
+	// reloads (e.g. after PUT /api/admin/settings). Keys list is bounded
+	// to ~10s of llmgw_* entries, so the log volume is negligible.
+	slog.Info("hotconfig: reloaded", "count", len(newValues), "keys", sortedKeys(newValues))
 	return nil
+}
+
+// sortedKeys returns the keys of a map[string]interface{} sorted
+// alphabetically. Used by reload() for a stable log line.
+func sortedKeys(m map[string]interface{}) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
 }
 
 // GetInt reads an integer setting. Returns defaultValue if not found.
