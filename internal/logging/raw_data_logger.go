@@ -78,6 +78,26 @@ type RawDataEntry struct {
 	SHA256           string `json:"sha256,omitempty"`
 }
 
+// RawDataEncodingJSON returns the JSON-line size of this entry as
+// it would be written to the on-disk audit log. Computed once at
+// index time so the per-request frame index in AsyncRawDataLogger
+// can reconstruct the entry's start byte offset from the
+// post-write currentOffset.
+//
+// 2026-07-28 §5.7: this is the inverse of writeEntries, which
+// marshals the entry, appends '\n', and writes the resulting bytes.
+// The returned slice is the JSON bytes WITHOUT the trailing newline.
+func (e *RawDataEntry) RawDataEncodingJSON() []byte {
+	b, err := json.Marshal(e)
+	if err != nil {
+		// marshalling RawDataEntry never fails (it has no func/chan
+		// fields), but be defensive — return an empty line so the
+		// caller can still peel at least one byte.
+		return nil
+	}
+	return b
+}
+
 // NewRawDataLogger 创建原始数据日志记录器
 //
 // baseDir: 日志文件目录路径

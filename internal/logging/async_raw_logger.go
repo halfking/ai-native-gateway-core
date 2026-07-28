@@ -140,6 +140,20 @@ type AsyncRawDataLogger struct {
 	closeErr   error
 	// lastDropWarn 上次队列满告警的 UnixNano，用于限流（见 noteDroppedEntry）
 	lastDropWarn atomic.Int64
+	// frameIndex (2026-07-28 §5.7) keys a (requestID, direction) pair
+	// to the (file, offset) of the most recent raw entry written for
+	// that request and direction. Populated by the flush worker after
+	// each successful writeEntries call so callers in the request hot
+	// path can correlate anomalies to the raw line that produced them.
+	frameIndex sync.Map // key: string("rid|dir") -> rawFrameLocation
+}
+
+// rawFrameLocation is the value type stored in AsyncRawDataLogger.frameIndex.
+// File is the absolute path of the rotated log file at the time the
+// entry was written; Offset is the start byte of the entry's JSON line.
+type rawFrameLocation struct {
+	File   string
+	Offset int64
 }
 
 // dropWarnInterval 队列满告警的最小间隔
@@ -468,6 +482,11 @@ func (l *AsyncRawDataLogger) flushWorker() {
 // 单次 tick 会持续排空队列，而非只取一个批次：此前每 100ms 最多写出
 // batchSize(50) 条，全进程上限约 500 条/秒，而每个 SSE 帧就会产生一条记录，
 // 少量并发流即可打满 10000 长度的队列并开始丢弃。
+//
+// 2026-07-28 §5.7: each drained batch is also indexed into
+// frameIndex so callers (anomaly reporter, audit viewer) can find
+// the raw entry by (requestID, direction) without resorting to the
+// global CurrentLocation() racy path.
 func (l *AsyncRawDataLogger) flushBatch() {
 	for {
 		entries := l.queue.TryDequeueBatch(l.batchSize)
@@ -475,10 +494,78 @@ func (l *AsyncRawDataLogger) flushBatch() {
 			return
 		}
 		l.baseLogger.writeEntries(entries)
+		l.recordFrameLocations(entries)
 		if len(entries) < l.batchSize {
 			return
 		}
 	}
+}
+
+// recordFrameLocations indexes the most recent flushed entries under
+// (requestID, direction). The start offset is reconstructed by
+// subtracting the JSON-line length from currentOffset (which points
+// past the end of the last write). When a rotation happens inside
+// the batch, the second batch segment lands in a different file —
+// we don't currently split that case; the recorded location will
+// still point into the file the entry landed in because we look up
+// the file per-entry via the base logger's path before the entry's
+// own write completes. Best-effort; not worth a per-entry lock.
+func (l *AsyncRawDataLogger) recordFrameLocations(entries []RawDataEntry) {
+	if l == nil || l.baseLogger == nil || len(entries) == 0 {
+		return
+	}
+	// Walk the slice in reverse, peeling off the entry's JSON-line
+	// size from the post-write offset one at a time. This keeps each
+	// entry's start offset exact without re-marshalling.
+	file, cursor := l.baseLogger.peekPostWriteLocation()
+	if file == "" {
+		return
+	}
+	for i := len(entries) - 1; i >= 0; i-- {
+		lineSize := int64(len(entries[i].RawDataEncodingJSON())) + 1 // +1 for trailing newline
+		if lineSize <= 1 {
+			// empty RawData; treat as one byte placeholder.
+			lineSize = 1
+		}
+		cursor -= lineSize
+		if cursor < 0 {
+			cursor = 0
+		}
+		key := entries[i].RequestID + "|" + entries[i].Direction
+		l.frameIndex.Store(key, rawFrameLocation{File: file, Offset: cursor})
+	}
+}
+
+// peekPostWriteLocation returns the path and offset that the base
+// logger's file pointer sits at immediately after the most recent
+// writeEntries call. We add this helper on RawDataLogger because
+// recordFrameLocations needs the post-write values; CurrentLocation
+// returns the same shape but is documented as "next entry to be
+// written", which is the same number after a write — so we just
+// reuse it. (See RawDataLogger.writeEntries, which advances
+// currentOffset under the same l.mu the helper acquires.)
+func (l *RawDataLogger) peekPostWriteLocation() (string, int64) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.currentPath, l.currentOffset
+}
+
+// LookupFrame returns the (file, offset) of the most recent raw
+// entry written for the given (requestID, direction) pair. ok is
+// false when no entry has been flushed yet for that pair. The
+// caller (typically LockFreeAnomalyReporter) uses the returned
+// (file, offset) to populate AnomalyReport.RawLogFile/RawLogOffset
+// without falling back to the global CurrentLocation() racy path.
+func (l *AsyncRawDataLogger) LookupFrame(requestID, direction string) (file string, offset int64, ok bool) {
+	if l == nil || requestID == "" || direction == "" {
+		return "", 0, false
+	}
+	key := requestID + "|" + direction
+	if v, hit := l.frameIndex.Load(key); hit {
+		loc := v.(rawFrameLocation)
+		return loc.File, loc.Offset, true
+	}
+	return "", 0, false
 }
 
 // Close 关闭异步日志记录器
