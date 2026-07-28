@@ -59,3 +59,128 @@
 
 **审计人:** ZCode
 **审计日期:** 2026-07-28
+
+---
+
+## 增量审计：154 最近 6 小时日志异常 + 模型质量探测补齐 (2026-07-28)
+
+> **范围:** 仅针对 6h 内"请求中断 / 上游 LLM 响应不合理"的归因，以及"模型注水 / 假替代"探测能力的补齐。上一节（24h audit）的结论未变，本节是**追加**。
+
+### 1. 6h 日志观察到的"中断/异常"形态（按现有探针归类）
+
+| 形态 | 现象 | 直接成因 | 根因归属 | 现有探针 |
+|---|---|---|---|---|
+| `stream_interrupted=true` | `failure_detail_code ∈ {stream_chunk_timeout, eof_without_done, client_cancel, read_error}` | 上游连接 / 网关超时 / 客户端断开 | 上游或客户端 | `request_log_pipeline.go:441-449` + `streamErrorKindForDetailCode` (`handler.go:5149`) |
+| `empty_response` + `upstream_empty_response` | 200 OK + 0 token + ≤3 chunk + `failure_detail_code=zero_tokens_few_chunks` | 200 + 0 内容（NIM pattern） | 上游/模型质量 | `detectEmptyStreamResponse` (`handler.go:5778`) |
+| `failure_detail_code=eof_without_done` 但有内容 | 上游未发 [DONE] | 上游协议/模型 | 上游/模型 | 已判定 benign (`classifyStreamInterruption` `handler.go:5125`) |
+| `finish_reason=content_filter` / 拒答 | Anthropic `stop_reason=refusal` → OpenAI `content_filter` | 模型策略/上游 | 翻译中已识别（`anthropic_to_chat.go:194`），**未标记为完整性事件** |
+| `finish_reason=length` / 截断 | 上游达到 token 上限 | 上游/模型 | 翻译中已通过字段传出（`fields.go:51 truncation`），**未独立标记** |
+| 上游返回 `model` ≠ client 请求 `model` | 模型替换 / 注水 | **代码问题** | `CheckSoftMismatch` 已实现但 OpenAI 路径未被调用（`executor_chat.go:128`）；Anthropic SSE 侧已实现（`anthropic_passthrough_stream.go:195`） |
+| `tools_restore_failed` / `request_body_truncated` / `body_decode_failed` / `metadata_dropped` | 网关 IR 转换丢字段 | **代码问题** | `data_loss_anomaly.go:8-37` + recorder → `response_format_anomalies` |
+| `tool_calls_missing` (IR) | IR 序列化丢 `tool_calls` | **代码问题** | `lockfree_anomaly_reporter.go:136-184` |
+| `persistence_failed` / `json_marshal_failed` | request_logs 写入失败 | **代码问题** | `request_log_pipeline.go:316-427` |
+
+**结论：**
+
+- 大多数"中断"是上游/客户端/超时/空响应，**网关已有探针**。
+- **真正缺的是模型质量探测**：模型身份不一致（OpenAI 非流 + 上游 SSE 都缺）、`finish_reason=refusal/length` 完整性标记、token 算术一致性、同一 (cred, model) 的指纹漂移。
+- 现有 `response_format_anomalies` 只覆盖**格式**类异常；`finish_reason` 拒答/截断和"假替代"还没有独立表。
+
+### 2. 本次提交的修复（feat/model-integrity-20260728）
+
+#### 2.1 新增表 `model_integrity_events`（独立于 `response_format_anomalies`）
+
+迁移：
+- `sql/migrations/startup/462_model_integrity_events.sql` + `.down.sql`
+- `deploy/sql/objects/tables/model_integrity_events.sql`（deploy 目录镜像）
+- `db/db.go::ensureModelIntegrityEventsSchema`（增量 IF NOT EXISTS）
+
+字段：`ts, request_id, tenant_id, application_id, api_key_id, provider_id, provider_code, credential_id, client_model, outbound_model, raw_model_name, anomaly_type, severity, expected_value, actual_value, sample, context, resolved, resolved_at, resolution_notes`。
+
+`anomaly_type` 枚举（**追加不改**）：
+- `model_mismatch` — 上游模型 ≠ 客户端请求
+- `finish_refusal` — `finish_reason ∈ {refusal, content_filter}`
+- `finish_truncation` — `finish_reason ∈ {length, max_tokens}`
+- `token_arith_fail` — `prompt+completion ≠ total` 且 body 非空
+- `empty_response` — 流 200 OK + 0 token + ≤3 chunk
+- `repeated_content` — 256B 块在响应中重复 ≥ 2 次
+- `fingerprint_drift` — `(cred, model)` 7d 内 `system_fingerprint` 主导值变化
+
+索引：`ts DESC`, `(credential_id, raw_model_name, anomaly_type, ts DESC)`, `(provider_id, anomaly_type, ts DESC)`, `request_id`, 未解决 partial。RLS 策略与 `response_format_anomalies` 镜像。
+
+#### 2.2 新增子包 `domains/streaming/integrity`
+
+```
+domains/streaming/integrity/
+  signals.go          // AnomalyType / Severity / Event
+  recorder.go         // PoolRecorder: 异步落表 + 采样 + nil-safe
+  detector.go         // 8 个 signal 一次性扫描
+  executor_adapter.go // 把 executors.IntegrityCandidate 适配到 integrity.Candidate
+  recorder_test.go
+  detector_test.go
+```
+
+设计要点：
+- **采样**：`LLM_GATEWAY_INTEGRITY_SAMPLE_RATIO=0.1`，critical 必落。
+- **零拷贝**：`sample` 字段只放 provider_response_id / system_fingerprint / finish_reason / chunk_count / usage_source，**绝不**放用户 prompt / 模型正文。
+- **context.WithoutCancel + 3s 预算**（沿用 `data_loss_anomaly.go:41` 的 `anomalyRecordTimeout` 模式），保证客户端断开不会让记录半途而废。
+
+#### 2.3 信号采集（全部走 async 落表）
+
+| 信号 | 来源 | 触发点 |
+|---|---|---|
+| `model_mismatch` (OpenAI 非流) | 上游响应 JSON `.model` 字段 | `executors/executor_chat.go::executeOpenAI` 在 `W.Write(respBody)` 之前调用 `IntegrityDetector.Observe` |
+| `model_mismatch` (OpenAI 流) | 首块 SSE `chat.completion.chunk.model` | `domains/streaming/stream.go` 在 3 处 `ir.ParseOpenAIStreamChunk` 后调用 `capture.SetRespModelIfEmpty`（新增 `audit.StreamCapture.RespModel` 字段，mutex 保护） |
+| `model_mismatch` (Anthropic 流) | `message_start.message.model` | **已存在**（`anthropic_passthrough_stream.go:195`） |
+| `finish_refusal` / `finish_truncation` | `finish_reason` | `domains/streaming/handler.go::emitTelemetry` 末尾 `integrityDetector.Observe` |
+| `token_arith_fail` | `prompt+completion ≠ total` | 同上 |
+| `empty_response` | `detectEmptyStreamResponse` 已判定 | 同上 |
+| `repeated_content` | 256B 块 ≥ 2 次 | 同上 |
+| `fingerprint_drift` | 7d 滚动分布 | `bg/integrity_fingerprint_drift.go`（新增，1h tick） |
+
+#### 2.4 后台巡检 — `bg/integrity_fingerprint_drift.go`
+
+每 1 小时跑一次：
+- 时间窗：过去 7 天（env 可覆盖）
+- 最小样本：20（env 可覆盖）
+- 主导比例：< 80% 视为漂移（env 可覆盖）
+- 命中后写一行 `anomaly_type='fingerprint_drift', severity='high'`，含 `window_days / total_samples / dominant_fingerprint` 上下文。
+
+#### 2.5 Admin API
+
+`/api/admin/model-integrity/{summary,events,fingerprint-drift,events/{id}/resolve}` — 全部 `superAdmin` 鉴权链（与 `format-anomalies` 镜像）。新文件 `admin/model_integrity.go` + `admin/model_integrity_test.go`。
+
+#### 2.6 Web — 1 行 UI 芯片
+
+`web/src/components/IntegrityChip.vue` + `web/src/api/integrity.ts`：自包含、零 store 依赖、按 color 切换（绿/橙/红/灰），点击 emit `open` 事件。**未**新建独立页面 — 由前端把 `<IntegrityChip />` 嵌入到现有模型路由/异常 dashboard 顶部即可。修改面 ≤ 1 行。
+
+#### 2.7 main.go 装载
+
+`cmd/gateway/main.go` 在 `anomalyHarvester.Start()` 之后挂：
+```go
+integrityRecorder := integrity.NewPoolRecorder(dbConn.Pool(), 0.1)
+integrityDetector := integrity.NewDetector(integrityRecorder)
+integrityAdapter  := integrity.NewExecutorAdapter(integrityDetector)
+routingExec.IntegrityDetector = integrityAdapter
+chatHandler.SetIntegrityDetector(integrityAdapter)
+integrityDriftWorker = bg.NewIntegrityFingerprintDrift(dbConn.Pool())
+integrityDriftWorker.Start(context.Background())
+```
+shutdown 链路：和 `anomalyHarvester.Stop()` 并列 `integrityDriftWorker.Stop()`。
+
+### 3. 验收
+
+- ✅ `go build ./...`（含 `cmd/gateway`）— 0 error
+- ✅ `go test -short ./domains/streaming/...` — 3 个子包全绿
+- ✅ `go test -short ./bg/...` — 全绿
+- ✅ `go test -short ./admin/...` — 全绿（含新加的 6 个 model_integrity 路由测试）
+- ✅ 关键文件 `gofmt` 通过
+- ⚠️ `make test` 全量未跑（按 deploy-154 规则部署后才在 154 上跑）
+- ⚠️ 真实 PG 迁移 / 真实 deploy / smoke test / model-smoke-test 留作 PR 描述里的 follow-up runbook
+
+### 4. 不在本任务内（按 plan 锁定的边界）
+
+- 不动 `_to-be-deprecated/`、`pms-go-*`、任何旧 relay 路径。
+- 不重写 `request_logs` schema。
+- 不修改 `quality-service` 二进制。
+- 154 上的 deploy、smoke、model-smoke 留作 PR 合并后的 follow-up。

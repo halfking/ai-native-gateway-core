@@ -157,6 +157,13 @@ func (db *DB) ApplyMigrations(ctx context.Context) error {
 	if err := db.ensureResponseFormatAnomaliesSchema(migCtx); err != nil {
 		return err
 	}
+	// 2026-07-28: per-request / per-(cred,model) integrity events
+	// (model identity mismatch, finish_refusal, finish_truncation, token_arith
+	// failure, empty_response, repeated_content, fingerprint_drift). See
+	// migration 462 and admin/model_integrity.go.
+	if err := db.ensureModelIntegrityEventsSchema(migCtx); err != nil {
+		return err
+	}
 	if err := db.ensureSupplementalRLS(migCtx); err != nil {
 		return err
 	}
@@ -986,6 +993,81 @@ func (d *DB) ensureResponseFormatAnomaliesSchema(ctx context.Context) error {
 		return err
 	}
 	slog.Info("response_format_anomalies schema ensured")
+	return nil
+}
+
+// ensureModelIntegrityEventsSchema (2026-07-28) mirrors migration 462: the
+// model_integrity_events table. Independent of response_format_anomalies
+// because its semantics are different (it stores per-request *and* per-
+// (cred,model) events like fingerprint drift, where request_id may be NULL).
+//
+// Idempotent: CREATE TABLE IF NOT EXISTS / DROP+CREATE POLICY.
+//
+// Sample column holds only PII-safe metadata (provider_response_id,
+// system_fingerprint, finish_reason, chunk_count, usage_source) — never
+// the user prompt or the model's output. The recorder enforces this
+// in domains/streaming/integrity/recorder.go.
+func (d *DB) ensureModelIntegrityEventsSchema(ctx context.Context) error {
+	if d == nil || d.pool == nil {
+		return nil
+	}
+	_, err := d.pool.Exec(ctx, `
+		CREATE TABLE IF NOT EXISTS model_integrity_events (
+			id BIGSERIAL PRIMARY KEY,
+			ts TIMESTAMPTZ NOT NULL DEFAULT now(),
+			request_id TEXT,
+			tenant_id TEXT,
+			application_id INT,
+			api_key_id INT,
+			provider_id INT,
+			provider_code TEXT,
+			credential_id INT,
+			client_model TEXT,
+			outbound_model TEXT,
+			raw_model_name TEXT,
+			anomaly_type TEXT NOT NULL,
+			severity TEXT NOT NULL DEFAULT 'low',
+			expected_value TEXT,
+			actual_value TEXT,
+			sample TEXT,
+			context JSONB,
+			resolved BOOLEAN NOT NULL DEFAULT false,
+			resolved_at TIMESTAMPTZ,
+			resolution_notes TEXT,
+			created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+		);
+		CREATE INDEX IF NOT EXISTS idx_model_integrity_events_ts
+			ON model_integrity_events(ts DESC);
+		CREATE INDEX IF NOT EXISTS idx_model_integrity_events_cred_model_type
+			ON model_integrity_events(credential_id, raw_model_name, anomaly_type, ts DESC);
+		CREATE INDEX IF NOT EXISTS idx_model_integrity_events_provider_type
+			ON model_integrity_events(provider_id, anomaly_type, ts DESC);
+		CREATE INDEX IF NOT EXISTS idx_model_integrity_events_request_id
+			ON model_integrity_events(request_id)
+			WHERE request_id IS NOT NULL;
+		CREATE INDEX IF NOT EXISTS idx_model_integrity_events_bridge
+			ON model_integrity_events(resolved, ts, anomaly_type, severity)
+			WHERE NOT resolved;
+		ALTER TABLE model_integrity_events ENABLE ROW LEVEL SECURITY;
+		DROP POLICY IF EXISTS model_integrity_events_tenant_isolation ON public.model_integrity_events;
+		CREATE POLICY model_integrity_events_tenant_isolation ON public.model_integrity_events
+			USING (
+				tenant_id IS NULL
+				OR tenant_id = public.get_current_tenant()
+			)
+			WITH CHECK (
+				tenant_id IS NULL
+				OR tenant_id = public.get_current_tenant()
+			);
+		DROP POLICY IF EXISTS model_integrity_events_super_admin ON public.model_integrity_events;
+		CREATE POLICY model_integrity_events_super_admin ON public.model_integrity_events
+			USING (current_setting('app.bypass_rls', true) = 'true')
+			WITH CHECK (current_setting('app.bypass_rls', true) = 'true');
+	`)
+	if err != nil {
+		return err
+	}
+	slog.Info("model_integrity_events schema ensured")
 	return nil
 }
 

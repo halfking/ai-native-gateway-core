@@ -66,13 +66,14 @@ import (
 	"github.com/kaixuan/llm-gateway-go/domains/sessionaudit" //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/domains/stats"
 	"github.com/kaixuan/llm-gateway-go/domains/stats/boardcache"
-	streaming "github.com/kaixuan/llm-gateway-go/domains/streaming" //nolint:depguard
-	"github.com/kaixuan/llm-gateway-go/domains/streaming/executors" //nolint:depguard // historical violation, B1 routing.go CQRS will fix
-	"github.com/kaixuan/llm-gateway-go/domains/transformation"      //nolint:depguard // historical violation, B1 routing.go CQRS will fix
+	streaming "github.com/kaixuan/llm-gateway-go/domains/streaming"   //nolint:depguard
+	"github.com/kaixuan/llm-gateway-go/domains/streaming/executors"   //nolint:depguard // historical violation, B1 routing.go CQRS will fix
+	"github.com/kaixuan/llm-gateway-go/domains/streaming/integrity"   //nolint:depguard // 2026-07-28: model integrity detection
+	"github.com/kaixuan/llm-gateway-go/domains/transformation"        //nolint:depguard // historical violation, B1 routing.go CQRS will fix
+	ursmv2 "github.com/kaixuan/llm-gateway-go/domains/ursm/v2"        //nolint:depguard // URSM v2 wiring (T20)
 	ursmv2api "github.com/kaixuan/llm-gateway-go/domains/ursm/v2/api" //nolint:depguard // URSM v2 ModeOff constant (Task 8)
 	ursmcache "github.com/kaixuan/llm-gateway-go/domains/ursm/v2/cache"
-	ursmv2 "github.com/kaixuan/llm-gateway-go/domains/ursm/v2"       //nolint:depguard // URSM v2 wiring (T20)
-	"github.com/kaixuan/llm-gateway-go/domains/ursm/v2/persist"      //nolint:depguard // URSM v2 persist writer
+	"github.com/kaixuan/llm-gateway-go/domains/ursm/v2/persist" //nolint:depguard // URSM v2 persist writer
 	"github.com/kaixuan/llm-gateway-go/eventbus"
 	"github.com/kaixuan/llm-gateway-go/fault"
 	"github.com/kaixuan/llm-gateway-go/hotconfig"
@@ -1476,6 +1477,7 @@ func main() {
 	)
 	var liveStreamHub *admin.LiveStreamSSEHub
 	var anomalyHarvester *streaming.AnomalyHarvester
+	var integrityDriftWorker *bg.IntegrityFingerprintDrift
 	if dbConn != nil && dbConn.Enabled() {
 		liveStreamHub = admin.NewLiveStreamSSEHub(dbConn.Pool(), admin.LiveStreamConfig{
 			BroadcastQueueSize:            2048,
@@ -3968,6 +3970,29 @@ func main() {
 					"retention_days", ahCfg.RetentionDays,
 					"bridge_interval", ahCfg.BridgeInterval)
 			}
+
+			// 2026-07-28: model integrity (per-request signal + 7-day
+			// fingerprint drift worker). Default-on. The recorder
+			// runs at 10% sample for non-critical events; critical
+			// events (secrets leaked, model swap confirmed) are
+			// always recorded.
+			if dbConn != nil {
+				integrityRecorder := integrity.NewPoolRecorder(
+					dbConn.Pool(),
+					integrity.LoadSampleRatioFromEnv(0.1),
+				)
+				integrityDetector := integrity.NewDetector(integrityRecorder)
+				integrityAdapter := integrity.NewExecutorAdapter(integrityDetector)
+				routingExec.IntegrityDetector = integrityAdapter
+				chatHandler.SetIntegrityDetector(integrityAdapter)
+
+				// Fingerprint drift: 1h tick, 7-day window, 20+
+				// samples, 80% dominant ratio (env overrides).
+				fpd := bg.NewIntegrityFingerprintDrift(dbConn.Pool())
+				fpd.Start(context.Background())
+				integrityDriftWorker = fpd
+				slog.Info("integrity detector + fingerprint drift worker started (2026-07-28)")
+			}
 		}
 
 		// Task T1.4: Usage Cost Enhanced API 注册已在 admin/handler.go:572 完成
@@ -4290,6 +4315,9 @@ func main() {
 		}
 		if anomalyHarvester != nil {
 			anomalyHarvester.Stop()
+		}
+		if integrityDriftWorker != nil {
+			integrityDriftWorker.Stop()
 		}
 		telemetryClient.Stop()
 		lim.Stop()
