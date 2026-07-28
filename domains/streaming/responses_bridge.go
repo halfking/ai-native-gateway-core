@@ -12,6 +12,7 @@ import (
 	"runtime/debug"
 	"strings"
 	"time"
+	"github.com/kaixuan/llm-gateway-go/errorsx"
 
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/audit" //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/internal/ir"
@@ -263,6 +264,7 @@ func StreamAnthropicSSEToResponsesWithDiagnostics(
 			}
 			outcome.Interrupted = true
 			outcome.Reason = "stream_panic"
+			outcome.Kind = errorsx.KindUpstreamDown
 			if pc != nil {
 				pc.markInterrupted("stream_panic")
 			}
@@ -384,6 +386,7 @@ func StreamAnthropicSSEToResponsesWithDiagnostics(
 			scaffold.writeFinalEvents(fullText.String(), finishReason, inputTokens, outputTokens, totalTokens)
 			outcome.Interrupted = true
 			outcome.Reason = "chunk_timeout"
+			outcome.Kind = errorsx.KindStreamTimeout
 			outcome.ChunkCount = chunkCount
 			if pc != nil {
 				pc.markInterrupted("chunk_timeout")
@@ -399,6 +402,7 @@ func StreamAnthropicSSEToResponsesWithDiagnostics(
 			}
 			outcome.Interrupted = true
 			outcome.Reason = "read_error"
+			outcome.Kind = errorsx.KindUpstreamDown
 			if capture != nil {
 				capture.MarkInterruptedWithReason("anthropic_to_responses_read_error")
 			}
@@ -510,6 +514,7 @@ func StreamOpenAIToResponsesSSEWithDiagnostics(
 			}
 			outcome.Interrupted = true
 			outcome.Reason = "stream_panic"
+			outcome.Kind = errorsx.KindUpstreamDown
 			if pc != nil {
 				pc.markInterrupted("stream_panic")
 			}
@@ -620,6 +625,7 @@ func StreamOpenAIToResponsesSSEWithDiagnostics(
 				scaffold.writeFinalEvents(fullText.String(), finishReason, inputTokens, outputTokens, inputTokens+outputTokens)
 				outcome.Interrupted = true
 				outcome.Reason = "client_cancel"
+				outcome.Kind = errorsx.KindCanceled
 				return outcome
 			case streamReadEOF:
 				scaffold.writeFinalEvents(fullText.String(), finishReason, inputTokens, outputTokens, inputTokens+outputTokens)
@@ -632,6 +638,7 @@ func StreamOpenAIToResponsesSSEWithDiagnostics(
 				scaffold.writeFinalEvents(fullText.String(), finishReason, inputTokens, outputTokens, inputTokens+outputTokens)
 				outcome.Interrupted = true
 				outcome.Reason = "stream_timeout"
+				outcome.Kind = errorsx.KindStreamTimeout
 				return outcome
 			default:
 				slog.Warn("openai_to_responses: stream read error", "error", readResult.err)
@@ -641,6 +648,7 @@ func StreamOpenAIToResponsesSSEWithDiagnostics(
 				scaffold.writeFinalEvents(fullText.String(), finishReason, inputTokens, outputTokens, inputTokens+outputTokens)
 				outcome.Interrupted = true
 				outcome.Reason = "read_error"
+				outcome.Kind = errorsx.KindUpstreamDown
 				return outcome
 			}
 		}

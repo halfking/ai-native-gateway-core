@@ -10,6 +10,7 @@ import (
 	"runtime/debug"
 	"strings"
 	"time"
+	"github.com/kaixuan/llm-gateway-go/errorsx"
 
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/audit" //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 )
@@ -25,6 +26,7 @@ func StreamResponsesSSE(w http.ResponseWriter, resp *http.Response, clientModel,
 			}
 			outcome.Interrupted = true
 			outcome.Reason = "stream_panic"
+			outcome.Kind = errorsx.KindUpstreamDown
 		}
 	}()
 	runtimeCfg := currentStreamRuntimeConfig()
@@ -128,6 +130,7 @@ func StreamResponsesSSE(w http.ResponseWriter, resp *http.Response, clientModel,
 		writeResponsesIncomplete(w, flusher, respID, msgID, createdAt, clientModel, fullText, "first_byte_timeout")
 		outcome.Interrupted = true
 		outcome.Reason = "first_byte_timeout"
+		outcome.Kind = errorsx.KindStreamTimeout
 		return outcome
 	}
 
@@ -217,6 +220,7 @@ func StreamResponsesSSE(w http.ResponseWriter, resp *http.Response, clientModel,
 				writeResponsesIncomplete(w, flusher, respID, msgID, createdAt, clientModel, fullText, "client_disconnected")
 				outcome.Interrupted = true
 				outcome.Reason = "client_cancel"
+				outcome.Kind = errorsx.KindCanceled
 				return outcome
 			case streamReadEOF:
 				stop = true
@@ -228,6 +232,7 @@ func StreamResponsesSSE(w http.ResponseWriter, resp *http.Response, clientModel,
 				writeResponsesIncomplete(w, flusher, respID, msgID, createdAt, clientModel, fullText, "stream_timeout")
 				outcome.Interrupted = true
 				outcome.Reason = "stream_timeout"
+				outcome.Kind = errorsx.KindStreamTimeout
 				return outcome
 			default:
 				slog.Warn("responses stream read error", "error", readResult.err)
@@ -237,6 +242,7 @@ func StreamResponsesSSE(w http.ResponseWriter, resp *http.Response, clientModel,
 				writeResponsesIncomplete(w, flusher, respID, msgID, createdAt, clientModel, fullText, "upstream_error")
 				outcome.Interrupted = true
 				outcome.Reason = "read_error"
+				outcome.Kind = errorsx.KindUpstreamDown
 				return outcome
 			}
 		}
