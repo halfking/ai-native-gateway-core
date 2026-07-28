@@ -77,7 +77,7 @@ func TestStreamChatWithPendingCapture_EOFWithoutDoneZeroChunks(t *testing.T) {
 	// 2026-07-29: error_kind must equal detail_code (not stream_read_error)
 	// so operator dashboards can distinguish a real empty-body failure
 	// from a generic read error.
-	assert.Equal(t, "eof_without_done", streamErrorKindForDetailCode(outcome.Reason))
+	assert.Equal(t, "eof_without_done", streamErrorKindForDetailCode(nil, outcome.Reason))
 	// Synthesised [DONE] must still be appended so clients don't hang.
 	assert.True(t, strings.HasSuffix(writer.Body.String(), "data: [DONE]\n\n"))
 }

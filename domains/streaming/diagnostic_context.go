@@ -19,6 +19,12 @@ type DiagnosticContext struct {
 	Anomaly   executors.AnomalyReporter
 	Semantic  executors.SemanticAnalyzer
 
+	// Audit (2026-07-28 §5.4) is the per-request correlation handle
+	// that streaming bridges attach to every raw log emission and
+	// anomaly report. nil disables the per-frame envelope; the legacy
+	// `request_id` / `direction` lookup still works in that case.
+	Audit *executors.AuditContext
+
 	// conversionReports caps conversion_error anomalies per request. An
 	// upstream emitting a shape the IR parser rejects produces one report
 	// per frame otherwise, which saturates the reporter queue and evicts
@@ -45,11 +51,34 @@ func recoverDiagnostic(requestID, site string) {
 	}
 }
 
-func logRawUpstreamFrame(diagnostics *DiagnosticContext, requestID, protocol string, frame []byte) {
+// auditFromDiagnostics returns the per-attempt AuditContext from the
+// diagnostic, falling back to a freshly-allocated context with just
+// the request_id + protocol when diagnostics or its Audit field is
+// nil. The fallback keeps the legacy (request_id, protocol)
+// envelope-blind path working for callers that haven't been
+// migrated yet.
+func auditFromDiagnostics(diagnostics *DiagnosticContext, requestID, protocol string) *executors.AuditContext {
+	if diagnostics != nil && diagnostics.Audit != nil {
+		return diagnostics.Audit
+	}
+	return &executors.AuditContext{RequestID: requestID, Protocol: protocol}
+}
+
+// logRawUpstreamFrame emits one upstream SSE frame to the raw log.
+// The audit context (2026-07-28 §5.4) drives the correlation envelope
+// so every frame carries gw_session_id, trace_id, etc. When audit is
+// nil the function falls back to the legacy (request_id, protocol)
+// envelope-blind path.
+func logRawUpstreamFrame(diagnostics *DiagnosticContext, audit *executors.AuditContext, frame []byte) {
 	if diagnostics == nil || diagnostics.RawLogger == nil || len(frame) == 0 {
 		return
 	}
+	requestID := audit.GetRequestID()
+	protocol := audit.GetProtocol()
 	defer recoverDiagnostic(requestID, "log_raw_upstream_frame")
+	if audit != nil {
+		audit.ChunkIndex.Add(1)
+	}
 	if err := diagnostics.RawLogger.LogResponse(requestID, protocol, frame, true); err != nil {
 		slog.Warn("stream diagnostics: raw response logging failed", "request_id", requestID, "error", err)
 	}

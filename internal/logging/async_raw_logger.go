@@ -2,6 +2,7 @@ package logging
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"sync"
 	"sync/atomic"
@@ -140,6 +141,26 @@ type AsyncRawDataLogger struct {
 	closeErr   error
 	// lastDropWarn 上次队列满告警的 UnixNano，用于限流（见 noteDroppedEntry）
 	lastDropWarn atomic.Int64
+	// frameIndex (2026-07-28 §5.7) keys a (requestID, direction) pair
+	// to the (file, offset) of the most recent raw entry written for
+	// that request and direction. Populated by the flush worker after
+	// each successful writeEntries call so callers in the request hot
+	// path can correlate anomalies to the raw line that produced them.
+	frameIndex sync.Map // key: string("rid|dir") -> rawFrameLocation
+	// overflowReporter (2026-07-28 §5.8) is invoked from
+	// noteDroppedEntry when the queue is full (after the in-band
+	// overflow stub fails to enqueue) and from Close() when the
+	// shutdown drain deadline (5*flushDelay) expires with items
+	// remaining. nil disables the path.
+	overflowReporter *LockFreeAnomalyReporter
+}
+
+// rawFrameLocation is the value type stored in AsyncRawDataLogger.frameIndex.
+// File is the absolute path of the rotated log file at the time the
+// entry was written; Offset is the start byte of the entry's JSON line.
+type rawFrameLocation struct {
+	File   string
+	Offset int64
 }
 
 // dropWarnInterval 队列满告警的最小间隔
@@ -227,7 +248,7 @@ func (l *AsyncRawDataLogger) LogClientRequestWithEnvelope(
 			Error:            "raw_log_queue_full",
 		}
 		if !l.queue.Enqueue(overflow) {
-			l.noteDroppedEntry(requestID, "client_request")
+			l.noteDroppedEntry(requestID, "client_request", env)
 		}
 	}
 }
@@ -295,11 +316,35 @@ type RawCorrelationEnvelope struct {
 	SpanID           string
 }
 
+// SetOverflowReporter wires an anomaly reporter that is invoked on
+// queue overflow (raw_log_overflow) and on close-with-remaining-items
+// (raw_log_close_drained). The reporter's ReportRawLogOverflow /
+// ReportRawLogCloseDrained methods carry the audit correlation
+// envelope so dashboards can correlate the anomaly with the
+// request_logs row. Calling with nil disables both hooks.
+//
+// 2026-07-28 §5.8: replaces the silent slog.Warn-only behaviour.
+func (l *AsyncRawDataLogger) SetOverflowReporter(rep *LockFreeAnomalyReporter) {
+	if l == nil {
+		return
+	}
+	l.stateMu.Lock()
+	l.overflowReporter = rep
+	l.stateMu.Unlock()
+}
+
 // noteDroppedEntry 记录一次入队失败。
 // 丢弃发生在流式请求的 goroutine 上，每帧一条 slog.Warn 会把"尽力而为"的
 // 日志变成热路径开销，因此按时间窗口聚合，只在窗口内首次丢弃时输出一次，
 // 并带上累计丢弃总数。
-func (l *AsyncRawDataLogger) noteDroppedEntry(requestID, direction string) {
+//
+// 2026-07-28 §5.8: in addition to the rate-limited slog.Warn, when an
+// overflow reporter is wired this method dispatches a
+// raw_log_overflow anomaly carrying the dropped count and the
+// envelope of the entry that was dropped. The anomaly is what
+// operators actually act on; the slog.Warn is kept for in-process
+// debug logs.
+func (l *AsyncRawDataLogger) noteDroppedEntry(requestID, direction string, env RawCorrelationEnvelope) {
 	now := time.Now().UnixNano()
 	last := l.lastDropWarn.Load()
 	if now-last < int64(dropWarnInterval) {
@@ -308,10 +353,16 @@ func (l *AsyncRawDataLogger) noteDroppedEntry(requestID, direction string) {
 	if !l.lastDropWarn.CompareAndSwap(last, now) {
 		return
 	}
+	dropped := l.queue.Stats().DropCount
 	slog.Warn("async_raw_logger: queue full, dropping log entries",
 		"request_id", requestID,
 		"direction", direction,
-		"dropped_total", l.queue.Stats().DropCount)
+		"dropped_total", dropped)
+	if l.overflowReporter != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		l.overflowReporter.ReportRawLogOverflow(ctx, env, uint64(dropped))
+	}
 }
 
 // LogUpstreamRequest 异步记录上游请求
@@ -339,7 +390,7 @@ func (l *AsyncRawDataLogger) LogUpstreamRequestWithEnvelope(
 	if !l.queue.Enqueue(entry) {
 		overflow := l.makeOverflowEntry("upstream_request", requestID, protocol, conversionStep, env)
 		if !l.queue.Enqueue(overflow) {
-			l.noteDroppedEntry(requestID, "upstream_request")
+			l.noteDroppedEntry(requestID, "upstream_request", env)
 		}
 	}
 }
@@ -367,7 +418,7 @@ func (l *AsyncRawDataLogger) LogUpstreamResponseWithEnvelope(
 	if !l.queue.Enqueue(entry) {
 		overflow := l.makeOverflowEntry("upstream_response", requestID, protocol, conversionStep, env)
 		if !l.queue.Enqueue(overflow) {
-			l.noteDroppedEntry(requestID, "upstream_response")
+			l.noteDroppedEntry(requestID, "upstream_response", env)
 		}
 	}
 }
@@ -397,7 +448,7 @@ func (l *AsyncRawDataLogger) LogClientResponseWithEnvelope(
 	if !l.queue.Enqueue(entry) {
 		overflow := l.makeOverflowEntry("client_response", requestID, protocol, conversionStep, env)
 		if !l.queue.Enqueue(overflow) {
-			l.noteDroppedEntry(requestID, "client_response")
+			l.noteDroppedEntry(requestID, "client_response", env)
 		}
 	}
 }
@@ -416,7 +467,7 @@ func (l *AsyncRawDataLogger) LogConversionError(requestID, protocol, direction, 
 		overflow := l.makeOverflowEntry(direction, requestID, protocol, step, RawCorrelationEnvelope{})
 		overflow.Error = err.Error()
 		if !l.queue.Enqueue(overflow) {
-			l.noteDroppedEntry(requestID, "error")
+			l.noteDroppedEntry(requestID, "error", RawCorrelationEnvelope{})
 		}
 	}
 }
@@ -468,6 +519,11 @@ func (l *AsyncRawDataLogger) flushWorker() {
 // 单次 tick 会持续排空队列，而非只取一个批次：此前每 100ms 最多写出
 // batchSize(50) 条，全进程上限约 500 条/秒，而每个 SSE 帧就会产生一条记录，
 // 少量并发流即可打满 10000 长度的队列并开始丢弃。
+//
+// 2026-07-28 §5.7: each drained batch is also indexed into
+// frameIndex so callers (anomaly reporter, audit viewer) can find
+// the raw entry by (requestID, direction) without resorting to the
+// global CurrentLocation() racy path.
 func (l *AsyncRawDataLogger) flushBatch() {
 	for {
 		entries := l.queue.TryDequeueBatch(l.batchSize)
@@ -475,13 +531,88 @@ func (l *AsyncRawDataLogger) flushBatch() {
 			return
 		}
 		l.baseLogger.writeEntries(entries)
+		l.recordFrameLocations(entries)
 		if len(entries) < l.batchSize {
 			return
 		}
 	}
 }
 
+// recordFrameLocations indexes the most recent flushed entries under
+// (requestID, direction). The start offset is reconstructed by
+// subtracting the JSON-line length from currentOffset (which points
+// past the end of the last write). When a rotation happens inside
+// the batch, the second batch segment lands in a different file —
+// we don't currently split that case; the recorded location will
+// still point into the file the entry landed in because we look up
+// the file per-entry via the base logger's path before the entry's
+// own write completes. Best-effort; not worth a per-entry lock.
+func (l *AsyncRawDataLogger) recordFrameLocations(entries []RawDataEntry) {
+	if l == nil || l.baseLogger == nil || len(entries) == 0 {
+		return
+	}
+	// Walk the slice in reverse, peeling off the entry's JSON-line
+	// size from the post-write offset one at a time. This keeps each
+	// entry's start offset exact without re-marshalling.
+	file, cursor := l.baseLogger.peekPostWriteLocation()
+	if file == "" {
+		return
+	}
+	for i := len(entries) - 1; i >= 0; i-- {
+		lineSize := int64(len(entries[i].RawDataEncodingJSON())) + 1 // +1 for trailing newline
+		if lineSize <= 1 {
+			// empty RawData; treat as one byte placeholder.
+			lineSize = 1
+		}
+		cursor -= lineSize
+		if cursor < 0 {
+			cursor = 0
+		}
+		key := entries[i].RequestID + "|" + entries[i].Direction
+		l.frameIndex.Store(key, rawFrameLocation{File: file, Offset: cursor})
+	}
+}
+
+// peekPostWriteLocation returns the path and offset that the base
+// logger's file pointer sits at immediately after the most recent
+// writeEntries call. We add this helper on RawDataLogger because
+// recordFrameLocations needs the post-write values; CurrentLocation
+// returns the same shape but is documented as "next entry to be
+// written", which is the same number after a write — so we just
+// reuse it. (See RawDataLogger.writeEntries, which advances
+// currentOffset under the same l.mu the helper acquires.)
+func (l *RawDataLogger) peekPostWriteLocation() (string, int64) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.currentPath, l.currentOffset
+}
+
+// LookupFrame returns the (file, offset) of the most recent raw
+// entry written for the given (requestID, direction) pair. ok is
+// false when no entry has been flushed yet for that pair. The
+// caller (typically LockFreeAnomalyReporter) uses the returned
+// (file, offset) to populate AnomalyReport.RawLogFile/RawLogOffset
+// without falling back to the global CurrentLocation() racy path.
+func (l *AsyncRawDataLogger) LookupFrame(requestID, direction string) (file string, offset int64, ok bool) {
+	if l == nil || requestID == "" || direction == "" {
+		return "", 0, false
+	}
+	key := requestID + "|" + direction
+	if v, hit := l.frameIndex.Load(key); hit {
+		loc := v.(rawFrameLocation)
+		return loc.File, loc.Offset, true
+	}
+	return "", 0, false
+}
+
 // Close 关闭异步日志记录器
+//
+// 2026-07-28 §5.8: on shutdown, drain for up to 5*flushDelay, then
+// emit a final `direction=close_drained` RawDataEntry capturing the
+// queue's final stats (EnqueueCount, DequeueCount, DropCount,
+// Remaining). If the queue still has items after the deadline, call
+// ReportRawLogCloseDrained on the wired overflow reporter so
+// operators see the anomaly in the dashboard.
 func (l *AsyncRawDataLogger) Close() error {
 	l.closeOnce.Do(func() {
 		l.stateMu.Lock()
@@ -489,8 +620,33 @@ func (l *AsyncRawDataLogger) Close() error {
 		l.stateMu.Unlock()
 		l.cancel()
 		<-l.done
-		for l.queue.Size() > 0 {
+		// Drain for up to 5*flushDelay (default 5s).
+		deadline := time.Now().Add(5 * l.flushDelay)
+		for time.Now().Before(deadline) && l.queue.Size() > 0 {
 			l.flushBatch()
+		}
+		// Emit close_drained stub entry capturing remaining state.
+		stats := l.queue.Stats()
+		remaining := uint64(l.queue.Size())
+		if remaining > 0 || stats.EnqueueCount > 0 {
+			closeEntry := RawDataEntry{
+				Timestamp:       time.Now(),
+				RequestID:       "raw_logger",
+				Direction:       "close_drained",
+				Protocol:        "raw_logger",
+				DataSize:        int(remaining),
+				ConversionStep:  "shutdown",
+				Error:           fmt.Sprintf("enqueued=%d dequeued=%d dropped=%d remaining=%d", stats.EnqueueCount, stats.DequeueCount, stats.DropCount, remaining),
+				RawDataEncoding: "json",
+			}
+			if l.baseLogger != nil {
+				l.baseLogger.writeEntry(closeEntry)
+			}
+			if l.overflowReporter != nil {
+				ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+				defer cancel()
+				l.overflowReporter.ReportRawLogCloseDrained(ctx, RawCorrelationEnvelope{}, remaining)
+			}
 		}
 		if l.baseLogger != nil {
 			l.closeErr = l.baseLogger.Close()

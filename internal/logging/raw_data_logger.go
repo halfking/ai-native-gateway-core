@@ -51,6 +51,15 @@ type RawDataEntry struct {
 	ConversionStep  string            `json:"conversion_step,omitempty"` // "pre_parse", "post_parse", "pre_serialize", "post_serialize"
 	Error           string            `json:"error,omitempty"`
 
+	// Reason carries the structured outcome of a streaming or
+	// interrupted frame (e.g. "client_cancel", "upstream_error",
+	// "end_of_stream", "stream_panic"). Distinct from Error which
+	// holds the message text. Operators filter the audit log on this
+	// field the same way they filter request_logs.error_kind, so the
+	// values must line up with the executor's errorsx classification
+	// (2026-07-28 §5.6 / §5.8).
+	Reason string `json:"reason,omitempty"`
+
 	// 2026-07-27: Correlation envelope. Every raw entry is tagged with the
 	// same identifiers that request_logs and trace spans use, so the
 	// audit log can be sliced by session, provider, attempt, or trace.
@@ -69,6 +78,26 @@ type RawDataEntry struct {
 	TraceID          string `json:"trace_id,omitempty"`
 	SpanID           string `json:"span_id,omitempty"`
 	SHA256           string `json:"sha256,omitempty"`
+}
+
+// RawDataEncodingJSON returns the JSON-line size of this entry as
+// it would be written to the on-disk audit log. Computed once at
+// index time so the per-request frame index in AsyncRawDataLogger
+// can reconstruct the entry's start byte offset from the
+// post-write currentOffset.
+//
+// 2026-07-28 §5.7: this is the inverse of writeEntries, which
+// marshals the entry, appends '\n', and writes the resulting bytes.
+// The returned slice is the JSON bytes WITHOUT the trailing newline.
+func (e *RawDataEntry) RawDataEncodingJSON() []byte {
+	b, err := json.Marshal(e)
+	if err != nil {
+		// marshalling RawDataEntry never fails (it has no func/chan
+		// fields), but be defensive — return an empty line so the
+		// caller can still peel at least one byte.
+		return nil
+	}
+	return b
 }
 
 // NewRawDataLogger 创建原始数据日志记录器
