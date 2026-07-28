@@ -1,6 +1,7 @@
 package streaming
 
 import (
+	"context"
 	"encoding/json"
 	"io"
 	"log/slog"
@@ -9,8 +10,17 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/kaixuan/llm-gateway-go/domains/hooks/observability/telemetry"
 	"github.com/kaixuan/llm-gateway-go/internal/ir"
 )
+
+type geminiRequestLoggerStub struct {
+	create func(context.Context, *telemetry.InitialRequest) error
+}
+
+func (s *geminiRequestLoggerStub) CreateInitial(ctx context.Context, req *telemetry.InitialRequest) error {
+	return s.create(ctx, req)
+}
 
 type geminiFlushWriter struct {
 	header  http.Header
@@ -161,7 +171,50 @@ func TestGeminiHandler_URLPathNotMatching(t *testing.T) {
 	}
 }
 
-// TestGeminiHandler_InvalidJSONBody verifies 400 on invalid Gemini body.
+func TestGeminiHandler_InvalidJSONBodyCreatesEarlyWALAndPropagatesGeneratedID(t *testing.T) {
+	var got *telemetry.InitialRequest
+	logger := &geminiRequestLoggerStub{create: func(_ context.Context, req *telemetry.InitialRequest) error {
+		got = req
+		return nil
+	}}
+	chat := &ChatHandler{}
+	chat.SetRequestLogger(nil)
+	h := &GeminiHandler{chatHandler: chat, requestLogger: logger}
+	req := httptest.NewRequest(http.MethodPost, "/v1beta/models/gemini-2.5-pro:generateContent",
+		strings.NewReader(`not json`))
+	rec := httptest.NewRecorder()
+	gotHeader := req.Header.Get("X-Request-Id")
+	h.ServeHTTP(rec, req)
+
+	if got == nil || got.RequestID == "" || got.SessionID == "" || !got.Provisional {
+		t.Fatalf("early WAL request = %#v", got)
+	}
+	if req.Header.Get("X-Request-Id") != got.RequestID {
+		t.Fatalf("request header ID = %q, WAL ID = %q", req.Header.Get("X-Request-Id"), got.RequestID)
+	}
+	if gotHeader != "" {
+		t.Fatalf("test request unexpectedly had header: %q", gotHeader)
+	}
+}
+
+func TestGeminiHandler_InvalidJSONBodyWithRequestIDCreatesEarlyWAL(t *testing.T) {
+	var got *telemetry.InitialRequest
+	logger := &geminiRequestLoggerStub{create: func(_ context.Context, req *telemetry.InitialRequest) error {
+		got = req
+		return nil
+	}}
+	h := &GeminiHandler{chatHandler: &ChatHandler{}, requestLogger: logger}
+	req := httptest.NewRequest(http.MethodPost, "/v1beta/models/gemini-2.5-pro:generateContent",
+		strings.NewReader(`not json`))
+	req.Header.Set("X-Request-Id", "gemini-req")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	if got == nil || got.RequestID != "gemini-req" || got.SessionID == "" || !got.Provisional {
+		t.Fatalf("early WAL request = %#v", got)
+	}
+}
+
 func TestGeminiHandler_InvalidJSONBody(t *testing.T) {
 	h := &GeminiHandler{chatHandler: &ChatHandler{}}
 	req := httptest.NewRequest(http.MethodPost, "/v1beta/models/gemini-2.5-pro:generateContent",

@@ -2,6 +2,7 @@ package streaming
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -11,6 +12,7 @@ import (
 	"regexp"
 	"strings"
 
+	"github.com/kaixuan/llm-gateway-go/domains/hooks/observability/telemetry"
 	"github.com/kaixuan/llm-gateway-go/internal/ir"
 )
 
@@ -30,7 +32,10 @@ import (
 // a brand-new executor — credentials, sticky sessions, retries, audit,
 // telemetry all reuse the OpenAI infrastructure via IR translation.
 type GeminiHandler struct {
-	chatHandler *ChatHandler
+	chatHandler   *ChatHandler
+	requestLogger interface {
+		CreateInitial(context.Context, *telemetry.InitialRequest) error
+	}
 }
 
 type geminiStreamWriter struct {
@@ -120,12 +125,36 @@ var geminiModelPathRe = regexp.MustCompile(`/(?:v1beta|v1)/models/([^:/]+)(?::(g
 // NewGeminiHandler constructs a Gemini handler that delegates to the
 // existing ChatHandler after IR translation.
 func NewGeminiHandler(ch *ChatHandler) *GeminiHandler {
-	return &GeminiHandler{chatHandler: ch}
+	h := &GeminiHandler{chatHandler: ch}
+	if ch != nil {
+		h.requestLogger = ch.requestLogger
+	}
+	return h
 }
 
 // ServeHTTP routes a Gemini-native request through the IR translation
 // pipeline and back to Gemini-native response format.
 func (h *GeminiHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	requestID := r.Header.Get("X-Request-Id")
+	if requestID == "" {
+		requestID = generateRequestID()
+		r.Header.Set("X-Request-Id", requestID)
+		w.Header().Set("X-Request-Id", requestID)
+	}
+	provisionalSessionID := ""
+	if h.chatHandler != nil {
+		provisionalSessionID = h.chatHandler.ensureSessionID(r.Context(), r, nil)
+	} else {
+		provisionalSessionID = generateSystemSessionID()
+	}
+	if h.requestLogger != nil {
+		if err := h.requestLogger.CreateInitial(r.Context(), &telemetry.InitialRequest{
+			RequestID: requestID, TenantID: "default", SessionID: provisionalSessionID, Provisional: true,
+		}); err != nil {
+			slog.Warn("gemini_handler: early WAL create failed", "request_id", requestID, "error", err)
+		}
+	}
+
 	// Step 1: Extract model name and action from URL path
 	model, action, ok := extractGeminiPath(r.URL.Path)
 	if !ok {

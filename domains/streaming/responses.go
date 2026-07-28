@@ -10,8 +10,9 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/kaixuan/llm-gateway-go/domains/authentication"      //nolint:depguard // historical violation, B1 routing.go CQRS will fix
-	"github.com/kaixuan/llm-gateway-go/domains/hooks/audit"         //nolint:depguard // historical violation, B1 routing.go CQRS will fix
+	"github.com/kaixuan/llm-gateway-go/domains/authentication" //nolint:depguard // historical violation, B1 routing.go CQRS will fix
+	"github.com/kaixuan/llm-gateway-go/domains/hooks/audit"    //nolint:depguard // historical violation, B1 routing.go CQRS will fix
+	"github.com/kaixuan/llm-gateway-go/domains/hooks/observability/telemetry"
 	"github.com/kaixuan/llm-gateway-go/domains/identity"            //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/domains/session"             //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/domains/streaming/executors" //nolint:depguard // historical violation, B1 routing.go CQRS will fix
@@ -134,6 +135,16 @@ func (h *ResponsesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// Generate a provisional session ID for early-failure branches.
 	// Declared before the deferred safety-net so the closure can capture it.
 	provisionalSessionID := generateSystemSessionID()
+	if h.chatHandler.requestLogger != nil {
+		if err := h.chatHandler.requestLogger.CreateInitial(r.Context(), &telemetry.InitialRequest{
+			RequestID:   requestID,
+			TenantID:    "default",
+			SessionID:   provisionalSessionID,
+			Provisional: true,
+		}); err != nil {
+			slog.Warn("request_logger: responses early CreateInitial failed", "request_id", requestID, "error", err)
+		}
+	}
 	defer func() {
 		// Ensure the safety-net logger always sees a non-empty
 		// gw_session_id, even for pre-body-parse failures. Idempotent.
@@ -334,11 +345,8 @@ func (h *ResponsesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	isStream := reqBody.Stream
 
 	// ── Session resolution (2026-06-29) ────────────────────────────
-	// Priority: header > body > Redis Get > CreateV2 > provisional.
-	sessionID := extractSessionIDFromHeaders(r)
-	if sessionID == "" {
-		sessionID = extractSessionIDFromBody(bodyBytes)
-	}
+	// Priority: body > header > Redis Get > CreateV2 > provisional.
+	sessionID := extractSessionIDFromRequest(r, bodyBytes)
 	var sessionInfo *session.Session
 	if sessionID == "" {
 		assignment, assignErr := h.chatHandler.assignGatewaySession(r.Context(), bodyBytes, r, keyInfo, sessionID, sessionInfo, clientProfileFromKey(keyInfo))
@@ -378,6 +386,21 @@ func (h *ResponsesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		sessionID = provisionalSessionID
 	}
 	r = applyResolvedGatewaySession(r, sessionID, sessionInfo)
+	if h.chatHandler.requestLogger != nil {
+		tenantID := "default"
+		if keyInfo != nil {
+			tenantID = keyInfo.TenantID
+		}
+		if err := h.chatHandler.requestLogger.CreateInitial(r.Context(), &telemetry.InitialRequest{
+			RequestID:   requestID,
+			TenantID:    tenantID,
+			SessionID:   sessionID,
+			ClientModel: clientModel,
+			Provisional: false,
+		}); err != nil {
+			slog.Warn("request_logger: responses session merge failed", "request_id", requestID, "error", err)
+		}
+	}
 	endUser := extractEndUser(r)
 	clientID := identity.BuildIdentityFromRequest(r, tenant(keyInfo), appID(keyInfo), apiKeyIDPtr(keyInfo), clientProfileFromKey(keyInfo))
 
