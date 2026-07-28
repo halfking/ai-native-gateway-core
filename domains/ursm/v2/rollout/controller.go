@@ -12,6 +12,19 @@ type Config struct {
 	CanaryPercent int
 	CanaryTenants []string
 	CanaryModels  []string
+	// ShadowDoubleWrite opts shadow mode into writing sidecar records to
+	// the v2 store. Default off — by design shadow mode is silent so the
+	// v2 Redis namespace stays clean until cutover. P0-3 (audit §7.1)
+	// turns this on during the 7-day comparison window: routing still
+	// reads legacy credentialstate.Manager, but every success/failure
+	// ALSO writes to URSM v2 so we can diff the two after the run.
+	//
+	// When this is true, ModeShadow returns ShouldUseV2==true and the
+	// executor's RecordRequest sidecar fires. Routing still picks
+	// LegacyStateBackend because selectStateBackendWithReady only
+	// promotes v2 in ModeAuthoritative. So ShadowDoubleWrite is a
+	// record-only change; traffic behavior is unchanged.
+	ShadowDoubleWrite bool
 }
 
 type Controller struct{ cfg Config }
@@ -19,6 +32,17 @@ type Controller struct{ cfg Config }
 func New(cfg Config) *Controller { return &Controller{cfg: cfg} }
 
 func (c *Controller) Mode() api.RolloutMode { return c.cfg.Mode }
+
+// ShadowDoubleWrite returns whether shadow mode is currently writing
+// sidecar records to v2. Used by the executor / metrics layer to
+// distinguish "shadow mode is on but quiet" from "shadow mode is on
+// and double-writing for the 7-day cutover comparison".
+func (c *Controller) ShadowDoubleWrite() bool {
+	if c == nil {
+		return false
+	}
+	return c.cfg.ShadowDoubleWrite
+}
 
 func (c *Controller) ShouldUseV2(tenant, model, requestID string) bool {
 	if c == nil {
@@ -30,7 +54,11 @@ func (c *Controller) ShouldUseV2(tenant, model, requestID string) bool {
 	case api.ModeAuthoritative:
 		return true
 	case api.ModeShadow:
-		return false
+		// Default false (shadow is silent). Flipped to true ONLY when
+		// ShadowDoubleWrite is on — the P0-3 cutover-comparison window.
+		// Routing still uses the legacy state manager because
+		// selectStateBackendWithReady only trusts v2 in ModeAuthoritative.
+		return c.cfg.ShadowDoubleWrite
 	case api.ModeCanary:
 		return c.inCanary(tenant, model, requestID)
 	}

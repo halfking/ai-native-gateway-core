@@ -37,11 +37,11 @@ INSERT INTO public.providers (
 
 -- ── Provider model: gpt-4o + gpt-4o-mini ──
 INSERT INTO public.provider_models (
-    id, provider_id, tenant_id, raw_model_name, standardized_name,
-    outbound_model_name, available
+    id, provider_id, tenant_id, raw_model_name, canonical_raw_name,
+    standardized_name, outbound_model_name, available
 ) VALUES
-    (9001, 9001, 'default', 'gpt-4o',      'gpt-4o',      'gpt-4o',      true),
-    (9002, 9001, 'default', 'gpt-4o-mini', 'gpt-4o-mini', 'gpt-4o-mini', true);
+    (9001, 9001, 'default', 'gpt-4o',      'gpt-4o',      'gpt-4o',      'gpt-4o',      true),
+    (9002, 9001, 'default', 'gpt-4o-mini', 'gpt-4o-mini', 'gpt-4o-mini', 'gpt-4o-mini', true);
 
 -- ── Credential: local-mock-key ──
 -- secret_ciphertext 用 LLM_GATEWAY_CREDENTIAL_ENCRYPTION_KEY 加密

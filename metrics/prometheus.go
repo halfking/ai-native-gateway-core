@@ -73,6 +73,16 @@ type PrometheusRecorder struct {
 	ringBufferDropped   prometheus.Counter
 	rawAuditWriteFailed prometheus.Counter
 
+	// URSMv2Shadow (P0-3)
+	//
+	// ursmv2ShadowResult counts what the URSM v2 sidecar did with each
+	// request outcome. result = "recorded" (URSM v2 accepted the write)
+	// | "skipped" (ModeOff / ShadowDoubleWrite off) | "failed" (Redis
+	// write error). Operators diff against legacy credentialstate write
+	// counts after a 7-day shadow run to confirm < 1% drift before
+	// cutover (audit §7.1 R-7.1).
+	ursmv2ShadowResult *prometheus.CounterVec
+
 	logger logger.Logger
 }
 
@@ -329,6 +339,15 @@ func NewPrometheusRecorder() *PrometheusRecorder {
 			},
 		),
 
+		// URSMv2Shadow (P0-3)
+		ursmv2ShadowResult: promauto.NewCounterVec(
+			prometheus.CounterOpts{
+				Name: "llm_gateway_ursm_v2_shadow_records_total",
+				Help: "URSM v2 shadow sidecar outcomes during cutover comparison (label = recorded|skipped|failed)",
+			},
+			[]string{"result"},
+		),
+
 		logger: logger.New("metrics"),
 	}
 }
@@ -517,4 +536,18 @@ func (p *PrometheusRecorder) RecordRingBufferDropped(count uint64) {
 // cross-machine replication lands (P2-2).
 func (p *PrometheusRecorder) RecordRawAuditWriteFailure() {
 	p.rawAuditWriteFailed.Inc()
+}
+
+// RecordURSMv2ShadowResult (P0-3) classifies each shadow sidecar
+// call into one of three buckets so operators can run the 7-day
+// drift comparison (audit §7.1):
+//
+//   - "recorded": URSM v2 accepted the write (Mode != Off, sidecar on)
+//   - "skipped":  sidecar decided not to write (ModeOff, ShadowDoubleWrite off)
+//   - "failed":   URSM v2 Redis write returned an error
+//
+// result values are validated upstream; unknown values will create
+// new Prometheus time series. Keep this list stable.
+func (p *PrometheusRecorder) RecordURSMv2ShadowResult(result string) {
+	p.ursmv2ShadowResult.WithLabelValues(result).Inc()
 }
