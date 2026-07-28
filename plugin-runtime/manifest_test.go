@@ -10,6 +10,12 @@ func TestLoadManifest_ValidatesContract(t *testing.T) {
 	if m.GatewayCompatibility.APIContract != "gateway-plugin-v1" {
 		t.Fatalf("contract = %q", m.GatewayCompatibility.APIContract)
 	}
+	if m.Activation.ModuleKey != "session_manager" {
+		t.Fatalf("activation.module_key = %q", m.Activation.ModuleKey)
+	}
+	if !m.Activation.LicenseRequired {
+		t.Fatal("session-manager fixture must require an entitlement")
+	}
 }
 
 func TestLoadManifest_RejectsBadContract(t *testing.T) {
