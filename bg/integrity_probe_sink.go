@@ -1,0 +1,172 @@
+package bg
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"strings"
+	"time"
+
+	"github.com/jackc/pgx/v5/pgxpool"
+)
+
+const integrityProbeWriteTimeout = 5 * time.Second
+
+// IntegrityProbeResultSink persists the outcome of a durable integrity probe.
+// Implementations must be nil-safe at the worker boundary: a reporting failure
+// must never prevent the queue lease from being completed.
+type IntegrityProbeResultSink interface {
+	Record(ctx context.Context, task ProbeQueueTask, target *ProbeTarget, result *ProbeResult, targetErr error) error
+}
+
+// PostgresIntegrityProbeResultSink writes probe outcomes to
+// model_integrity_events and resolves the event class that triggered the
+// verification when the provider answers successfully.
+type PostgresIntegrityProbeResultSink struct {
+	db *pgxpool.Pool
+}
+
+func NewPostgresIntegrityProbeResultSink(db *pgxpool.Pool) *PostgresIntegrityProbeResultSink {
+	return &PostgresIntegrityProbeResultSink{db: db}
+}
+
+func (s *PostgresIntegrityProbeResultSink) Record(parent context.Context, task ProbeQueueTask, target *ProbeTarget, result *ProbeResult, targetErr error) error {
+	if s == nil || s.db == nil || task.Command != "integrity_verify" {
+		return nil
+	}
+	if result == nil {
+		status := ProbeStatusFailed
+		message := "integrity probe did not produce a result"
+		if targetErr != nil {
+			message = targetErr.Error()
+		}
+		result = &ProbeResult{Status: status, ErrCode: "load_target", ErrMsg: message}
+	}
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(parent), integrityProbeWriteTimeout)
+	defer cancel()
+
+	anomaly := normalizeIntegrityAnomaly(task.ReasonCode)
+	severity := "high"
+	if result.Status == ProbeStatusSuccess {
+		severity = "low"
+	}
+	credentialID := task.CredentialID
+	providerID := task.ProviderID
+	rawModel := task.RawModel
+	outboundModel := task.Outbound
+	if target != nil {
+		credentialID = int64(target.CredentialID)
+		providerID = int64(target.ProviderID)
+		rawModel = target.RawModel
+		outboundModel = target.OutboundModel
+	}
+
+	status := string(result.Status)
+	if status == "" {
+		status = "failed"
+	}
+	detail := result.ErrMsg
+	if detail == "" && targetErr != nil {
+		detail = targetErr.Error()
+	}
+	ctxPayload := map[string]any{
+		"probe":         true,
+		"probe_command": task.Command,
+		"probe_status":  status,
+		"http_status":   result.HTTPStatus,
+		"err_code":      result.ErrCode,
+		"latency_ms":    result.LatencyMs,
+		"attempt":       task.Attempt,
+		"queue_id":      task.ID,
+	}
+	if detail != "" {
+		ctxPayload["error_detail"] = truncateProbeText(detail, 512)
+	}
+	if preview := result.ResponseBody; preview != "" {
+		ctxPayload["response_preview"] = truncateProbeText(preview, 512)
+	} else if result.RespPreview != "" {
+		ctxPayload["response_preview"] = truncateProbeText(result.RespPreview, 512)
+	}
+	contextJSON, err := json.Marshal(ctxPayload)
+	if err != nil {
+		return fmt.Errorf("marshal integrity probe context: %w", err)
+	}
+
+	tx, err := s.db.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("begin integrity probe result: %w", err)
+	}
+	defer tx.Rollback(ctx)
+
+	_, err = tx.Exec(ctx, `
+		INSERT INTO model_integrity_events (
+			ts, tenant_id, provider_id, credential_id,
+			outbound_model, raw_model_name, anomaly_type, severity,
+			expected_value, actual_value, sample, context
+		) VALUES (now(), $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
+		nilIfEmpty(task.TenantID), nullableInt64(providerID), nullableInt64(credentialID),
+		nilIfEmpty(outboundModel), nilIfEmpty(rawModel), anomaly, severity,
+		"success", status, nilIfEmpty(probeSample(result)), contextJSON)
+	if err != nil {
+		return fmt.Errorf("insert integrity probe result: %w", err)
+	}
+
+	if result.Status == ProbeStatusSuccess {
+		_, err = tx.Exec(ctx, `
+			UPDATE model_integrity_events
+			SET resolved = true, resolved_at = now(),
+				resolution_notes = $4
+			WHERE credential_id = $1
+			  AND raw_model_name = $2
+			  AND anomaly_type = $3
+			  AND resolved = false`, credentialID, rawModel, anomaly,
+			fmt.Sprintf("integrity probe succeeded: %s", status))
+		if err != nil {
+			return fmt.Errorf("resolve integrity events: %w", err)
+		}
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("commit integrity probe result: %w", err)
+	}
+	return nil
+}
+
+func normalizeIntegrityAnomaly(value string) string {
+	switch strings.TrimSpace(value) {
+	case "model_mismatch", "finish_refusal", "finish_truncation", "token_arith_fail", "empty_response", "repeated_content", "fingerprint_drift":
+		return strings.TrimSpace(value)
+	default:
+		return "model_mismatch"
+	}
+}
+
+func probeSample(result *ProbeResult) string {
+	if result == nil {
+		return ""
+	}
+	if result.ResponseBody != "" {
+		return truncateProbeText(result.ResponseBody, 512)
+	}
+	return truncateProbeText(result.RespPreview, 512)
+}
+
+func truncateProbeText(value string, limit int) string {
+	if limit <= 0 || len(value) <= limit {
+		return value
+	}
+	return value[:limit]
+}
+
+func nilIfEmpty(value string) any {
+	if value == "" {
+		return nil
+	}
+	return value
+}
+
+func nullableInt64(value int64) any {
+	if value == 0 {
+		return nil
+	}
+	return value
+}

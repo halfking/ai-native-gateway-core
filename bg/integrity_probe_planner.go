@@ -149,6 +149,7 @@ func (p *IntegrityProbePlanner) cycle(ctx context.Context) error {
 	stepCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 
+	dedupInterval := fmt.Sprintf("%f seconds", p.cfg.DedupWindow.Seconds())
 	rows, err := p.db.Query(stepCtx, `
 		WITH pick AS (
 		    SELECT DISTINCT ON (e.credential_id, e.raw_model_name)
@@ -159,11 +160,19 @@ func (p *IntegrityProbePlanner) cycle(ctx context.Context) error {
 		      ON c.id = e.credential_id
 		    LEFT JOIN providers p
 		      ON p.id = c.provider_id
-		    WHERE e.severity IN ('critical', 'high')
-		      AND e.resolved = false
-		      AND e.credential_id IS NOT NULL
-		      AND e.raw_model_name IS NOT NULL
-		      AND EXISTS (
+			WHERE e.severity IN ('critical', 'high')
+			  AND e.resolved = false
+			  AND e.credential_id IS NOT NULL
+			  AND e.raw_model_name IS NOT NULL
+			  AND NOT EXISTS (
+			      SELECT 1
+			      FROM credential_probe_queue q
+			      WHERE q.credential_id = e.credential_id
+			        AND q.raw_model = e.raw_model_name
+			        AND q.probe_command = 'integrity_verify'
+			        AND q.created_at >= now() - $1::interval
+			)
+			  AND EXISTS (
 		          SELECT 1
 		          FROM credential_model_bindings cmb
 		          JOIN provider_models pm ON pm.id = cmb.provider_model_id
@@ -176,7 +185,7 @@ func (p *IntegrityProbePlanner) cycle(ctx context.Context) error {
 		SELECT credential_id, raw_model_name, anomaly_type, provider_code
 		FROM pick
 		ORDER BY credential_id
-		LIMIT $1`, p.cfg.MaxPerTick)
+			LIMIT $2`, dedupInterval, p.cfg.MaxPerTick)
 	if err != nil {
 		return fmt.Errorf("integrity_probe_planner: query events: %w", err)
 	}
@@ -214,8 +223,11 @@ func (p *IntegrityProbePlanner) cycle(ctx context.Context) error {
 			ReasonDetail: fmt.Sprintf("planner: unresolved %s event for (%d, %s)", item.anomaly, item.credID, item.rawModel),
 			MaxAttempts:  2,
 			Source:       "integrity_probe_planner",
-			SourceEvent:  fmt.Sprintf("anomaly:%s", item.anomaly),
-			DedupKey:     fmt.Sprintf("integrity:%d:%s", item.credID, item.rawModel),
+			// source_event_id is intentionally empty: the anomaly type is
+			// not globally unique and would collide across credentials.
+			// The credential/model dedup key plus the SQL time window is
+			// the durable idempotency contract for planner tasks.
+			DedupKey: fmt.Sprintf("integrity:%d:%s", item.credID, item.rawModel),
 		}
 		_, inserted, err := p.queue.Enqueue(stepCtx, task)
 		if err != nil {

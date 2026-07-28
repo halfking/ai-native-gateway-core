@@ -2445,6 +2445,7 @@ func main() {
 					Queue:        probeQueue,
 					Executor:     queueExecutor,
 					Emitter:      bg.NewActiveProbeEmitter(telemetryClient),
+					ResultSink:   bg.NewPostgresIntegrityProbeResultSink(dbConn.Pool()),
 					BatchSize:    epWorkers,
 					Workers:      epWorkers,
 					Lease:        30 * time.Second,
