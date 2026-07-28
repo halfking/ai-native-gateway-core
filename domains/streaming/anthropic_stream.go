@@ -245,7 +245,7 @@ func StreamOpenAIToAnthropicSSEWithDiagnostics(
 		}
 
 		rawFrame := []byte(line)
-		logRawUpstreamFrame(diagnostics, requestID, "openai-completions", rawFrame)
+		logRawUpstreamFrame(diagnostics, auditFromDiagnostics(diagnostics, requestID, "openai-completions"), rawFrame)
 		diagnosticCollector.observeRaw([]byte(data))
 
 		var chunk map[string]json.RawMessage

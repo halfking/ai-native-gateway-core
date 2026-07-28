@@ -411,7 +411,7 @@ func StreamAnthropicSSEToResponsesWithDiagnostics(
 			continue
 		}
 
-		logRawUpstreamFrame(diagnostics, requestID, "anthropic-messages", rawFrame)
+		logRawUpstreamFrame(diagnostics, auditFromDiagnostics(diagnostics, requestID, "anthropic-messages"), rawFrame)
 		diagnosticCollector.observeRaw(data)
 
 		// Defensive: detect OpenAI-format data and skip (some proxies
@@ -662,7 +662,7 @@ func StreamOpenAIToResponsesSSEWithDiagnostics(
 		}
 
 		rawFrame := []byte(line)
-		logRawUpstreamFrame(diagnostics, requestID, "openai-completions", rawFrame)
+		logRawUpstreamFrame(diagnostics, auditFromDiagnostics(diagnostics, requestID, "openai-completions"), rawFrame)
 		diagnosticCollector.observeRaw([]byte(payload))
 
 		chunk, perr := ir.ParseOpenAIStreamChunk(trimmed)
