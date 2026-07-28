@@ -174,13 +174,24 @@ func main() {
 	cooled := 0
 	manualHold := 0
 	for _, n := range nodes {
-		switch n.Fields["available"] + "|" + n.Fields["manual_hold"] + "|" + n.Fields["disabled"] {
-		case "1|0|", "1||":
+		// 2026-07-29 audit fix (B3): inspect each field independently
+		// instead of string-concatenating them. The previous tuple-
+		// match approach broke because the healthy path produces
+		// ("1", "", "0") — concatenated "1||0" matched none of the
+		// hard-coded cases, so every healthy node fell through to
+		// no category and the summary printed 0/0/0. Similarly the
+		// in-cool path produces ("0", "", "1") → "0||1" with the
+		// same miss. Per-field checks below match all three states.
+		isAvailable := n.Fields["available"] == "1" && n.Fields["manual_hold"] != "1"
+		isManualHold := n.Fields["manual_hold"] == "1"
+		isCool := !isAvailable && !isManualHold && n.Fields["disabled"] == "1"
+		switch {
+		case isAvailable:
 			available++
-		case "0|0|1":
-			cooled++
-		case "0|1|1":
+		case isManualHold:
 			manualHold++
+		case isCool:
+			cooled++
 		}
 	}
 	fmt.Printf("\n[%s] would write %d URSM v2 nodes:\n", mode, len(nodes))
