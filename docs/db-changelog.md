@@ -692,3 +692,9 @@
 | 459 | `459_request_logs_view_client_perception.sql` |
 | 460 | `460_v_routable_credential_models_periodic_exhausted.sql` |
 
+## 2026-07-28T08:52:33Z — deploy 245 build_seq 1414 (33a68312)
+
+| Migration | File |
+|-----------|------|
+| 462 | `462_model_integrity_events.sql` |
+
