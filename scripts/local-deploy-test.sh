@@ -38,10 +38,11 @@ REPORT_FILE="/tmp/llm-gateway-deploy-test-report.md"
 LOG_FILE="/tmp/llm-gateway-deploy-test.log"
 PID_FILE="/tmp/llm-gateway-deploy-test.pid"
 
-RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; CYAN='\033[0;36m'; NC='\033[0m'
-err()  { echo -e "${RED}✗ $*${NC}" | tee -a "$LOG_FILE" >&2; }
-ok()   { echo -e "${GREEN}✓ $*${NC}" | tee -a "$LOG_FILE"; }
-info() { echo -e "${YELLOW}▶ $*${NC}" | tee -a "$LOG_FILE"; }
+RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; ORANGE='\033[0;33m'; CYAN='\033[0;36m'; NC='\033[0m'
+err()   { echo -e "${RED}✗ $*${NC}" | tee -a "$LOG_FILE" >&2; }
+warn()  { echo -e "${ORANGE}⚠ $*${NC}" | tee -a "$LOG_FILE" >&2; }
+ok()    { echo -e "${GREEN}✓ $*${NC}" | tee -a "$LOG_FILE"; }
+info()  { echo -e "${YELLOW}▶ $*${NC}" | tee -a "$LOG_FILE"; }
 heading() { echo -e "\n${CYAN}━━━ $* ━━━${NC}" | tee -a "$LOG_FILE"; }
 sub()   { echo -e "  ${YELLOW}·${NC} $*" | tee -a "$LOG_FILE"; }
 
@@ -113,6 +114,46 @@ precheck() {
       sub "端口 $port 已被 PID $proc 占用"
     fi
   done
+}
+
+# ════════════════════════════════════════════════════════════════════
+# 检查已运行网关
+# ════════════════════════════════════════════════════════════════════
+check_running_gateway() {
+  local gw_running=false
+
+  if curl -sf http://localhost:8781/healthz >/dev/null 2>&1; then
+    gw_running=true
+  elif docker ps --format '{{.Names}}' 2>/dev/null | grep -q "^r112_gateway$"; then
+    gw_running=true
+  fi
+
+  if [ "$gw_running" = "true" ]; then
+    warn "检测到网关已在运行 (port 8781)"
+    info "重新部署将关闭当前网关并启动新版本"
+    echo ""
+    read -p "  确认重新部署? [Y/n] " answer </dev/tty
+    case "$answer" in
+      n|N|no|NO) warn "已取消"; exit 0 ;;
+      *) info "开始关闭旧网关..." ;;
+    esac
+
+    heading "关闭旧网关"
+    # 停止 docker compose 服务
+    $COMPOSE_CMD -f "$COMPOSE_FILE" down 2>&1 | tee -a "$LOG_FILE"
+    ok "旧网关已关闭"
+
+    # 清理端口 (预防残留)
+    for port in 8781 15432 6379 18080; do
+      local pid
+      pid=$(lsof -ti :$port 2>/dev/null || true)
+      if [ -n "$pid" ]; then
+        sub "端口 $port 仍有残留进程 PID $pid, 等待释放..."
+        sleep 2
+      fi
+    done
+    ok "端口已释放"
+  fi
 }
 
 # ════════════════════════════════════════════════════════════════════
@@ -581,6 +622,7 @@ case "$MODE" in
     ;;
   quick)
     precheck
+    check_running_gateway
     [ "$SKIP_DB" = "false" ] && { start_deps; run_migrations; }
     verify_l1_health
     [ "$SKIP_DB" = "false" ] && verify_l2_deps
@@ -590,6 +632,7 @@ case "$MODE" in
     ;;
   full)
     precheck
+    check_running_gateway
     [ "$SKIP_DB" = "false" ] && { start_deps; run_migrations; }
     start_gateway
     verify_l1_health
