@@ -252,7 +252,7 @@ func Load() *Config {
 		SessionTTLHours:                    72,
 		PendingTTLSeconds:                  300,
 		SessionIDBodyKeys:                  parseCommaList(os.Getenv("LLM_GATEWAY_SESSION_ID_BODY_KEYS")),
-		StreamRetryThreshold:               5,     // Default: allow stream failover if < 5 chunks sent
+		StreamRetryThreshold:               50,    // Default: allow stream failover if < 50 chunks sent
 		EnablePreStreamKeepalive:           false, // opt-in; see LLM_GATEWAY_ENABLE_PRE_STREAM_KEEPALIVE
 		PoolGracePeriod:                    180,   // Default: 3 minutes grace period before marking pool as dead
 		DefaultCredentialConcurrency:       20,    // 2026-06-24: 5 → 20. 每个凭据 20 个 fp_slot，更宽松避免争抢。
