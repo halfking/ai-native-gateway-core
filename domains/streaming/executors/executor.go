@@ -208,15 +208,34 @@ type envelopeAwareClientResponseLogger interface {
 
 // envelopeFromParams builds a correlation envelope from ExecParams so
 // every raw entry can be cross-referenced with request_logs.
+//
+// 2026-07-28 §5.7: when ExecParams.Audit is non-nil, the full
+// AuditContext is the source of truth — every field the operator
+// dashboard needs is populated. When Audit is nil (legacy tests /
+// async-retry paths that build ExecParams directly), the flat
+// fields on ExecParams are used. The previous implementation
+// incorrectly bound GWTaskID to the model name; AuditContext
+// resolves GWTaskID from X-Gw-Task-Id or session.TaskID.
 func envelopeFromParams(params *ExecParams) RawCorrelationEnvelope {
 	if params == nil {
 		return RawCorrelationEnvelope{}
 	}
+	if params.Audit != nil {
+		return params.Audit.RawCorrelationEnvelope()
+	}
 	env := RawCorrelationEnvelope{
-		GWSessionID: params.SessionID,
-		GWTaskID:    params.Model,
-		TenantID:    params.TenantID,
-		APIKeyID:    params.KeyID,
+		ClientRequestID:  params.ClientRequestID,
+		GWSessionID:      params.SessionID,
+		GWTaskID:         params.GWTaskID,
+		ParentRequestID:  params.ParentRequestID,
+		TenantID:         params.TenantID,
+		APIKeyID:         params.KeyID,
+		ProviderID:       params.ProviderID,
+		CredentialID:     params.CredentialID,
+		AttemptNo:        params.AttemptNo,
+		UpstreamEndpoint: params.UpstreamEndpoint,
+		TraceID:          params.TraceID,
+		SpanID:           params.SpanID,
 	}
 	if params.AppID != nil {
 		env.ApplicationID = fmt.Sprintf("%d", *params.AppID)
@@ -1155,6 +1174,27 @@ type ExecParams struct {
 	// 在 handler.go 中创建，在 executor_chat.go 中填充，在 telemetry
 	// 中写入 request_logs_hot.routing_attempts。可选，nil 表示不追踪。
 	RoutingTracker *RoutingAttemptsTracker
+
+	// 2026-07-28 §5.1: per-attempt correlation fields. Populated by
+	// the handler when AuditContext is built, refreshed by the
+	// executor when each candidate credential is selected. Used by
+	// envelopeFromParams to populate RawCorrelationEnvelope for the
+	// raw log writer.
+	ClientRequestID  string
+	GWTaskID         string
+	ParentRequestID  string
+	ProviderID       int
+	CredentialID     int
+	AttemptNo        int
+	UpstreamEndpoint string
+	TraceID          string
+	SpanID           string
+	// Audit (2026-07-28 §5.7) is the full AuditContext handle. When
+	// non-nil, envelopeFromParams delegates to it (and ignores the
+	// flat fields above). When nil, the flat fields above are used.
+	// The handler always sets Audit; tests and async-retry paths that
+	// construct ExecParams directly may set only the flat fields.
+	Audit *AuditContext
 
 	diagnosticsLogged bool
 }
