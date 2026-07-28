@@ -5,7 +5,203 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/pashagolub/pgxmock/v4"
+	"github.com/stretchr/testify/require"
 )
+
+type boolPointerMatcher struct {
+	want bool
+}
+
+func (m boolPointerMatcher) Match(value interface{}) bool {
+	actual, ok := value.(*bool)
+	return ok && actual != nil && *actual == m.want
+}
+
+type stringPointerMatcher struct {
+	want *string
+}
+
+func (m stringPointerMatcher) Match(value interface{}) bool {
+	actual, ok := value.(*string)
+	if !ok {
+		return false
+	}
+	if m.want == nil {
+		return actual == nil
+	}
+	return actual != nil && *actual == *m.want
+}
+
+func requestLogUpdateArgs(entry RequestLogEntry) []interface{} {
+	args := make([]interface{}, 77)
+	for index := range args {
+		args[index] = pgxmock.AnyArg()
+	}
+	args[36] = boolPointerMatcher{want: entry.Success}
+	args[37] = stringPointerMatcher{want: entry.RequestStatus}
+	return args
+}
+
+func TestUpdateRequestLog_UsesTerminalStateGuard(t *testing.T) {
+	mockDB, err := pgxmock.NewPool()
+	require.NoError(t, err)
+	defer mockDB.Close()
+
+	mockDB.ExpectBegin()
+	mockDB.ExpectExec(`UPDATE usage_ledger_hot`).
+		WithArgs("req-update", pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg()).
+		WillReturnResult(pgxmock.NewResult("UPDATE", 1))
+	status := RequestStatusFailure
+	requestLogArgs := requestLogUpdateArgs(RequestLogEntry{
+		Success:       false,
+		RequestStatus: &status,
+	})
+	mockDB.ExpectExec(`UPDATE request_logs_hot[\s\S]*request_logs_hot\.request_status = 'failure'`).
+		WithArgs(requestLogArgs...).
+		WillReturnResult(pgxmock.NewResult("UPDATE", 1))
+	mockDB.ExpectExec(`INSERT INTO request_logs_bodies_hot`).
+		WithArgs(pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg()).
+		WillReturnResult(pgxmock.NewResult("INSERT", 1))
+	mockDB.ExpectCommit()
+
+	client := &Client{requestLogDB: mockDB}
+	err = client.updateRequestLog(&RequestLogEntry{
+		RequestID:     "req-update",
+		Op:            RequestLogUpdate,
+		Success:       false,
+		RequestStatus: &status,
+	})
+	require.NoError(t, err)
+	require.NoError(t, mockDB.ExpectationsWereMet())
+}
+
+func TestUpdateRequestLog_TerminalGuardDistinguishesNoOpFromMissing(t *testing.T) {
+	tests := []struct {
+		name         string
+		entry        RequestLogEntry
+		updateRows   int64
+		existing     bool
+		wantQuery    bool
+		wantRollback bool
+		wantCommit   bool
+	}{
+		{
+			name:         "late nonterminal",
+			entry:        RequestLogEntry{RequestID: "req-late-nonterminal", Success: false, RequestStatus: strptr(RequestStatusInProgress)},
+			updateRows:   0,
+			existing:     true,
+			wantQuery:    true,
+			wantRollback: true,
+		},
+		{
+			name:         "late failure",
+			entry:        RequestLogEntry{RequestID: "req-late-failure", Success: false, RequestStatus: strptr(RequestStatusFailure)},
+			updateRows:   0,
+			existing:     true,
+			wantQuery:    true,
+			wantRollback: true,
+		},
+		{
+			name:         "failure to success",
+			entry:        RequestLogEntry{RequestID: "req-failure-success", Success: true, RequestStatus: strptr(RequestStatusSuccess)},
+			updateRows:   0,
+			existing:     true,
+			wantQuery:    true,
+			wantRollback: true,
+		},
+		{
+			name:       "success enrichment",
+			entry:      RequestLogEntry{RequestID: "req-success-enrichment", Success: true, RequestStatus: strptr(RequestStatusSuccess)},
+			updateRows: 1,
+			wantCommit: true,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			mockDB, err := pgxmock.NewPool()
+			require.NoError(t, err)
+			defer mockDB.Close()
+
+			mockDB.ExpectBegin()
+			mockDB.ExpectExec(`UPDATE usage_ledger_hot`).
+				WithArgs(tc.entry.RequestID, pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg()).
+				WillReturnResult(pgxmock.NewResult("UPDATE", 1))
+			requestLogArgs := requestLogUpdateArgs(tc.entry)
+			mockDB.ExpectExec(`UPDATE request_logs_hot`).
+				WithArgs(requestLogArgs...).
+				WillReturnResult(pgxmock.NewResult("UPDATE", tc.updateRows))
+			if tc.wantQuery {
+				mockDB.ExpectQuery(`SELECT EXISTS`).
+					WithArgs(tc.entry.RequestID).
+					WillReturnRows(pgxmock.NewRows([]string{"exists"}).AddRow(tc.existing))
+			}
+			if tc.wantRollback {
+				mockDB.ExpectRollback()
+			}
+			if tc.wantCommit {
+				mockDB.ExpectExec(`INSERT INTO request_logs_bodies_hot`).
+					WithArgs(pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg()).
+					WillReturnResult(pgxmock.NewResult("INSERT", 1))
+				mockDB.ExpectCommit()
+			}
+
+			client := &Client{requestLogDB: mockDB}
+			err = client.updateRequestLog(&tc.entry)
+			require.NoError(t, err)
+			require.NoError(t, mockDB.ExpectationsWereMet())
+		})
+	}
+}
+
+func TestUpdateRequestLog_MissingRequestFallsBackToInsert(t *testing.T) {
+	mockDB, err := pgxmock.NewPool()
+	require.NoError(t, err)
+	defer mockDB.Close()
+
+	mockDB.ExpectBegin()
+	mockDB.ExpectExec(`UPDATE usage_ledger_hot`).
+		WithArgs(pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg()).
+		WillReturnResult(pgxmock.NewResult("UPDATE", 0))
+	requestLogArgs := requestLogUpdateArgs(RequestLogEntry{Success: false})
+	mockDB.ExpectExec(`UPDATE request_logs_hot`).
+		WithArgs(requestLogArgs...).
+		WillReturnResult(pgxmock.NewResult("UPDATE", 0))
+	mockDB.ExpectQuery(`SELECT EXISTS`).
+		WithArgs("req-missing").
+		WillReturnRows(pgxmock.NewRows([]string{"exists"}).AddRow(false))
+	mockDB.ExpectRollback()
+
+	mockDB.ExpectBegin()
+	usageInsertArgs := make([]interface{}, 18)
+	for index := range usageInsertArgs {
+		usageInsertArgs[index] = pgxmock.AnyArg()
+	}
+	mockDB.ExpectExec(`INSERT INTO usage_ledger_hot`).
+		WithArgs(usageInsertArgs...).
+		WillReturnResult(pgxmock.NewResult("INSERT", 1))
+	requestInsertArgs := make([]interface{}, 90)
+	for index := range requestInsertArgs {
+		requestInsertArgs[index] = pgxmock.AnyArg()
+	}
+	mockDB.ExpectExec(`INSERT INTO request_logs_hot`).
+		WithArgs(requestInsertArgs...).
+		WillReturnResult(pgxmock.NewResult("INSERT", 1))
+	mockDB.ExpectExec(`INSERT INTO request_logs_bodies_hot`).
+		WithArgs(pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg()).
+		WillReturnResult(pgxmock.NewResult("INSERT", 1))
+	mockDB.ExpectCommit()
+
+	client := &Client{requestLogDB: mockDB}
+	err = client.updateRequestLog(&RequestLogEntry{
+		RequestID: "req-missing",
+		Success:   false,
+	})
+	require.NoError(t, err)
+	require.NoError(t, mockDB.ExpectationsWereMet())
+}
 
 func TestClient_StopIsIdempotent(t *testing.T) {
 	c := newClientWithBufSize(2)
