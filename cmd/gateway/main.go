@@ -4316,8 +4316,11 @@ func main() {
 		if anomalyHarvester != nil {
 			anomalyHarvester.Stop()
 		}
-		if integrityDriftWorker != nil {
+if integrityDriftWorker != nil {
 			integrityDriftWorker.Stop()
+		}
+		if requestLogger != nil {
+			requestLogger.Stop()
 		}
 		telemetryClient.Stop()
 		lim.Stop()

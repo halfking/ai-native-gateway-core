@@ -115,10 +115,10 @@ func splitSessionFieldList(raw string) []string {
 }
 
 func extractSessionIDFromRequest(r *http.Request, body []byte) string { //nolint:unused
-	if sessionID := extractSessionIDFromHeaders(r); sessionID != "" {
+	if sessionID := extractSessionIDFromBody(body); sessionID != "" {
 		return sessionID
 	}
-	return extractSessionIDFromBody(body)
+	return extractSessionIDFromHeaders(r)
 }
 
 func extractSessionIDFromBody(body []byte) string {

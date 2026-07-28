@@ -2,23 +2,34 @@ package telemetry
 
 import (
 	"context"
+	"errors"
 	"sync/atomic"
 	"testing"
+
+	"github.com/pashagolub/pgxmock/v4"
+	"github.com/stretchr/testify/require"
 )
 
 // stubBackupWriter records every WriteRequestWAL key it sees. Used to
 // assert that flushBatch routes remaining updates to the fallback after
 // the first update fails inside the tx (2026-07-20 P0 fix).
 type stubBackupWriter struct {
-	keys  atomic.Pointer[[]string]
-	other atomic.Int32
+	keyList  atomic.Pointer[[]string]
+	payloads atomic.Pointer[map[string]any]
+	other    atomic.Int32
 }
 
 func newStubBackupWriter() *stubBackupWriter {
 	s := &stubBackupWriter{}
 	empty := []string{}
-	s.keys.Store(&empty)
+	s.keyList.Store(&empty)
+	emptyPayloads := map[string]any{}
+	s.payloads.Store(&emptyPayloads)
 	return s
+}
+
+func newPayloadBackupWriter() *stubBackupWriter {
+	return newStubBackupWriter()
 }
 
 func (s *stubBackupWriter) WriteRequestLog(_ context.Context, _ string, _ any) error {
@@ -26,22 +37,147 @@ func (s *stubBackupWriter) WriteRequestLog(_ context.Context, _ string, _ any) e
 	return nil
 }
 
-func (s *stubBackupWriter) WriteRequestWAL(_ context.Context, key string, _ any) error {
-	prev := s.keys.Load()
+func (s *stubBackupWriter) WriteRequestWAL(_ context.Context, key string, payload any) error {
+	prev := s.keyList.Load()
 	cp := append([]string{}, *prev...)
 	cp = append(cp, key)
-	s.keys.Store(&cp)
+	s.keyList.Store(&cp)
+	prevPayloads := s.payloads.Load()
+	payloadCopy := make(map[string]any, len(*prevPayloads)+1)
+	for k, v := range *prevPayloads {
+		payloadCopy[k] = v
+	}
+	payloadCopy[key] = payload
+	s.payloads.Store(&payloadCopy)
 	return nil
 }
 
 func (s *stubBackupWriter) seen() []string {
-	cp := *s.keys.Load()
+	cp := *s.keyList.Load()
 	out := make([]string, len(cp))
 	copy(out, cp)
 	return out
 }
 
-// TestFlushBatch_AbortsOnFirstFailureAndRoutesRestToFallback verifies the
+func (s *stubBackupWriter) keys() []string {
+	return s.seen()
+}
+
+func (s *stubBackupWriter) keysWithPrefix(prefix string) []string {
+	var out []string
+	for _, key := range s.seen() {
+		if len(key) >= len(prefix) && key[:len(prefix)] == prefix {
+			out = append(out, key)
+		}
+	}
+	return out
+}
+
+func (s *stubBackupWriter) payload(key string) any {
+	return (*s.payloads.Load())[key]
+}
+
+func TestFlushBatch_BeginFailureRoutesEntireBatchToFallback(t *testing.T) {
+	mockDB, err := pgxmock.NewConn()
+	require.NoError(t, err)
+	defer mockDB.Close(context.Background())
+
+	mockDB.ExpectBegin().WillReturnError(errors.New("database unavailable"))
+	fallback := newStubBackupWriter()
+	rl := &RequestLogger{
+		db:       mockDB,
+		config:   &RequestLoggerConfig{Enabled: true},
+		fallback: fallback,
+	}
+
+	rl.flushBatch([]*LogUpdate{{RequestID: "req-1"}, {RequestID: "req-2"}})
+
+	require.Equal(t, []string{"req-1:update", "req-2:update"}, fallback.seen())
+	require.NoError(t, mockDB.ExpectationsWereMet())
+}
+
+func TestFlushBatch_RowFailureRoutesFailedAndRemainingUpdatesToFallback(t *testing.T) {
+	mockDB, err := pgxmock.NewConn()
+	require.NoError(t, err)
+	defer mockDB.Close(context.Background())
+
+	mockDB.ExpectBegin()
+	mockDB.ExpectExec(`UPDATE request_wal_hot SET`).
+		WithArgs(pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg()).
+		WillReturnError(errors.New("update failed"))
+	mockDB.ExpectRollback()
+	fallback := newStubBackupWriter()
+	rl := &RequestLogger{
+		db:       mockDB,
+		config:   &RequestLoggerConfig{Enabled: true},
+		fallback: fallback,
+	}
+
+	rl.flushBatch([]*LogUpdate{{RequestID: "req-1"}, {RequestID: "req-2"}})
+
+	require.Equal(t, []string{"req-1:update", "req-2:update"}, fallback.seen())
+	require.NoError(t, mockDB.ExpectationsWereMet())
+}
+
+func TestFlushBatch_RowFailureAtIndexOneRoutesEntireBatchToFallback(t *testing.T) {
+	mockDB, err := pgxmock.NewConn()
+	require.NoError(t, err)
+	defer mockDB.Close(context.Background())
+
+	mockDB.ExpectBegin()
+	for _, result := range []struct {
+		err error
+	}{
+		{err: nil},
+		{err: errors.New("middle update failed")},
+	} {
+		expect := mockDB.ExpectExec(`UPDATE request_wal_hot SET`).
+			WithArgs(pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg())
+		if result.err != nil {
+			expect.WillReturnError(result.err)
+		} else {
+			expect.WillReturnResult(pgxmock.NewResult("UPDATE", 1))
+		}
+	}
+	mockDB.ExpectRollback()
+	fallback := newStubBackupWriter()
+	rl := &RequestLogger{
+		db:       mockDB,
+		config:   &RequestLoggerConfig{Enabled: true},
+		fallback: fallback,
+	}
+	batch := []*LogUpdate{{RequestID: "req-0"}, {RequestID: "req-1"}, {RequestID: "req-2"}}
+
+	rl.flushBatch(batch)
+
+	require.Equal(t, []string{"req-0:update", "req-1:update", "req-2:update"}, fallback.seen())
+	require.NoError(t, mockDB.ExpectationsWereMet())
+}
+
+func TestFlushBatch_CommitFailureRoutesEntireBatchToFallback(t *testing.T) {
+	mockDB, err := pgxmock.NewConn()
+	require.NoError(t, err)
+	defer mockDB.Close(context.Background())
+
+	mockDB.ExpectBegin()
+	mockDB.ExpectExec(`UPDATE request_wal_hot SET`).
+		WithArgs(pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg()).
+		WillReturnResult(pgxmock.NewResult("UPDATE", 1))
+	mockDB.ExpectCommit().WillReturnError(errors.New("commit failed"))
+	mockDB.ExpectRollback()
+	fallback := newStubBackupWriter()
+	rl := &RequestLogger{
+		db:       mockDB,
+		config:   &RequestLoggerConfig{Enabled: true},
+		fallback: fallback,
+	}
+
+	rl.flushBatch([]*LogUpdate{{RequestID: "req-1"}})
+
+	require.Equal(t, []string{"req-1:update"}, fallback.seen())
+	require.NoError(t, mockDB.ExpectationsWereMet())
+}
+
 // 2026-07-20 P0 fix: when persistUpdateInTx fails inside flushBatch, the
 // transaction is left in SQLSTATE 25P02 (aborted). Without the fix, the
 // loop would call tx.Exec once per remaining update, each emitting a
@@ -69,23 +205,14 @@ func (s *stubBackupWriter) seen() []string {
 // abort-then-fallback path is exercised manually in the load test
 // described in docs/issues/2026-07-20-request-logger-batch-abort.md.
 func TestFlushBatch_AbortsOnFirstFailureAndRoutesRestToFallback(t *testing.T) {
-	// Case 1: nil db → flushBatch short-circuits (line 252: if rl.db == nil
-	// return). Without the 2026-07-20 fix this guard already existed; we
-	// re-assert it here as a regression tripwire.
 	rl := &RequestLogger{
 		db:       nil,
 		config:   &RequestLoggerConfig{},
 		fallback: newStubBackupWriter(),
 	}
+	// A nil database has no persistence seam; the caller must configure a fallback.
 	rl.flushBatch([]*LogUpdate{{RequestID: "req-1"}, {RequestID: "req-2"}})
-	if seen := rl.fallback.(*stubBackupWriter).seen(); len(seen) != 0 {
-		t.Fatalf("nil-db case must not write fallback; got keys=%v", seen)
-	}
-	// If we reach here without panic, the nil-db short-circuit still
-	// works post-refactor. The actual "tx abort → fallback remaining"
-	// path requires a live Postgres to drive the 25P02 failure mode;
-	// see docs/issues/2026-07-20-request-logger-batch-abort.md for the
-	// S07 reproduction steps used to confirm the fix end-to-end.
+	require.Equal(t, []string{"req-1:update", "req-2:update"}, rl.fallback.(*stubBackupWriter).seen())
 }
 
 // TestPersistUpdateInTx_NoDuplicatesNo21000 documents that
