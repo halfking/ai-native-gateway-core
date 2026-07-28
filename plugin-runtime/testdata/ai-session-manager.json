@@ -46,6 +46,6 @@
   },
   "activation": {
     "module_key": "session_manager",
-    "license_required": false
+    "license_required": true
   }
 }
