@@ -655,7 +655,7 @@ type Executor struct {
 
 	StreamTimeout        time.Duration
 	UpstreamTimeout      time.Duration
-	StreamRetryThreshold int // Max chunks sent before stream becomes non-resumable (default 5)
+	StreamRetryThreshold int // Max chunks sent before stream becomes non-resumable (default 50)
 
 	// KeepaliveInterval (Phase 3, 2026-07-23): Keepalive heartbeat interval in seconds
 	// for long-running streaming requests. Loaded from system_settings or TimeoutConfig.

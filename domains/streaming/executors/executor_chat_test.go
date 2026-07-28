@@ -3,9 +3,23 @@ package executors
 import (
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/kaixuan/llm-gateway-go/provider"
 )
+
+// stubTimeoutCalculator is a test double for TimeoutCalculator that
+// returns the configured value verbatim (ignoring input). It lets us
+// pin the streaming-timeout invariant: adaptive must NEVER shorten a
+// stream below StreamTimeout, even when the calculator claims a smaller
+// value.
+type stubTimeoutCalculator struct {
+	value time.Duration
+}
+
+func (s stubTimeoutCalculator) Calculate(_ AdaptiveTimeoutInput) time.Duration {
+	return s.value
+}
 
 func TestChatExecutor_BuildRequest(t *testing.T) {
 	ce := &ChatExecutor{}
@@ -143,5 +157,82 @@ func TestPrepareRequestBody_SkipsStreamOptionsForAnthropic(t *testing.T) {
 	}
 	if !strings.Contains(string(got), `"stream":true`) {
 		t.Errorf("Anthropic body should keep stream:true, got: %s", string(got))
+	}
+}
+
+// TestSelectUpstreamTimeout_NonStreamUsesUpstreamTimeout pins the
+// non-streaming path: regardless of what the adaptive calculator would
+// say, non-streaming requests must use UpstreamTimeout verbatim
+// (adaptive is intentionally a no-op for non-streaming).
+func TestSelectUpstreamTimeout_NonStreamUsesUpstreamTimeout(t *testing.T) {
+	e := &Executor{
+		UpstreamTimeout: 120 * time.Second,
+		StreamTimeout:   900 * time.Second,
+		TimeoutAdapter:  stubTimeoutCalculator{value: 30 * time.Second}, // shorter than UpstreamTimeout
+	}
+	params := &ExecParams{IsStream: false}
+	cand := provider.Candidate{BaseURL: "https://example.com"}
+
+	got := e.selectUpstreamTimeout(params, cand, 1024)
+	if got != 120*time.Second {
+		t.Errorf("non-streaming should use UpstreamTimeout=120s, got %v", got)
+	}
+}
+
+// TestSelectUpstreamTimeout_AdaptiveNeverShortensStream is the core
+// streaming-timeout invariant added in 81e627ff1 (2026-07-29): the
+// adaptive calculator must NEVER shorten a streaming response below
+// StreamTimeout. Long-running LLM reasoning chains were being killed
+// mid-stream when adaptive capped the upstream context to 180s.
+func TestSelectUpstreamTimeout_AdaptiveNeverShortensStream(t *testing.T) {
+	e := &Executor{
+		UpstreamTimeout: 120 * time.Second,
+		StreamTimeout:   900 * time.Second,
+		TimeoutAdapter:  stubTimeoutCalculator{value: 30 * time.Second}, // far shorter than StreamTimeout
+	}
+	params := &ExecParams{IsStream: true}
+	cand := provider.Candidate{BaseURL: "https://example.com"}
+
+	got := e.selectUpstreamTimeout(params, cand, 1024)
+	if got != 900*time.Second {
+		t.Fatalf("streaming timeout must NOT be shortened by adaptive; want 900s, got %v", got)
+	}
+}
+
+// TestSelectUpstreamTimeout_AdaptiveCanExtendStream verifies the
+// complementary case: when the adaptive calculator recommends a value
+// longer than StreamTimeout (e.g. for a slow node or huge context), the
+// recommendation wins. Without this path, operators would have no way
+// to lengthen the upstream context beyond StreamTimeout.
+func TestSelectUpstreamTimeout_AdaptiveCanExtendStream(t *testing.T) {
+	e := &Executor{
+		UpstreamTimeout: 120 * time.Second,
+		StreamTimeout:   900 * time.Second,
+		TimeoutAdapter:  stubTimeoutCalculator{value: 1800 * time.Second}, // longer than StreamTimeout
+	}
+	params := &ExecParams{IsStream: true}
+	cand := provider.Candidate{BaseURL: "https://example.com"}
+
+	got := e.selectUpstreamTimeout(params, cand, 1024)
+	if got != 1800*time.Second {
+		t.Fatalf("adaptive timeout > StreamTimeout should win; want 1800s, got %v", got)
+	}
+}
+
+// TestSelectUpstreamTimeout_NoAdapterUsesStreamTimeout pins the
+// no-adapter case: without TimeoutAdapter the streaming timeout must
+// fall back to StreamTimeout verbatim (no adaptive math involved).
+func TestSelectUpstreamTimeout_NoAdapterUsesStreamTimeout(t *testing.T) {
+	e := &Executor{
+		UpstreamTimeout: 120 * time.Second,
+		StreamTimeout:   900 * time.Second,
+		TimeoutAdapter:  nil,
+	}
+	params := &ExecParams{IsStream: true}
+	cand := provider.Candidate{BaseURL: "https://example.com"}
+
+	got := e.selectUpstreamTimeout(params, cand, 1024)
+	if got != 900*time.Second {
+		t.Errorf("without adapter, streaming should use StreamTimeout=900s, got %v", got)
 	}
 }

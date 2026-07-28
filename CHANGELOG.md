@@ -32,6 +32,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `docs/runbooks/ursm-v2-cutover.md` (254 行): 4 阶段切流操作手册；每阶段含 env / L1-L4 验证 / drift 计算 / 回退触发；引用 `scripts/migrations/` + `scripts/rollback/` 工具
   - Session 收口归档: `docs/changelogs/2026-07-29-p0-3-ursmv2-framework-and-session-close.md` (198 行)
 
+### Changed
+
+- **流式超时与重试阈值提升，修复长 reasoning 链中途被杀 (2026-07-29, commit 81e627ff1)**:
+  - **症状**：通过网关的多步 tool call 链（含长 thinking/reasoning 模型）在 3 分钟左右频繁中断；直连供应商路径稳定可跑完。日志出现大量 `stream_timeout` / `first_byte_timeout` 终止，且一旦 stream 进入 ≥5 chunk 后任何中断都不可恢复。
+  - **根因（rule 49 schema 真相 + rule 11 §14 段落级验证 + rule 37 §3 精准修改）**：
+    1. `config.TimeoutConfig.upstreamMaxSeconds=180s` 把自适应超时硬限制在 180s；thinking 模型单次推理常超 3min → 上游 ctx 在 180s 处 `cancel`。
+    2. `executor_chat.go` 流式分支以 `timeout = adaptiveTimeout` 覆盖 `StreamTimeout(900s)`，自适应 180s 直接吞噬 StreamTimeout 的 15min 上限。
+    3. `StreamRetryThreshold=5` 在工具调用前置 chunk 后即耗尽，剩余流的中断都不可恢复。
+  - **Fix**：
+    1. `config/timeout_config.go:153` `upstreamMaxSeconds: 180 → 600`：自适应上限放宽到与直连（OmniRoute `FETCH_TIMEOUT_MS=600000ms`）一致，DB 端的 `system_settings.timeout.upstream_max_seconds` 若已设值也需同步上调。
+    2. `domains/streaming/executors/executor_chat.go` 重构：将超时选择抽到 `Executor.selectUpstreamTimeout()`，流式分支用 `if adaptiveTimeout > timeout { timeout = adaptiveTimeout }`，StreamTimeout(900s) 作为下限；NodeTimeout 热配置仍作为最高 floor（保留 2026-07-22 的可调旋钮）。新增 4 个单元测试 `TestSelectUpstreamTimeout_*` 钉死不变量。
+    3. `config/config.go:255` + `domains/streaming/executors/executor.go:913` `StreamRetryThreshold: 5 → 50`：宽松 10× 流式 failover 窗口；同步更新 `executor_common_test.go:34` 测试结构体与 `executor.go:607` / `stream.go:112` 注释（"default 5" → "default 50"，避免文档/实际值漂移）。
+  - **不变量（rule 17 测试门禁）**：
+    - `TestSelectUpstreamTimeout_NonStreamUsesUpstreamTimeout`：非流式不受自适应影响
+    - `TestSelectUpstreamTimeout_AdaptiveNeverShortensStream`：自适应永远不能缩短流式超时（核心 fix）
+    - `TestSelectUpstreamTimeout_AdaptiveCanExtendStream`：自适应仍可向上放宽（如慢节点）
+    - `TestSelectUpstreamTimeout_NoAdapterUsesStreamTimeout`：无 adapter 时退化到 StreamTimeout
+  - **风险**：自适应放宽后，慢 provider 上的 retry cost 可能上升（每个失败的 upstream 调用最长可达 600s）。建议监控 `llm_gateway_stream_timeout_total` 与 `llm_gateway_first_byte_timeout_total` 7 天；如 provider 在 600s 内仍可成功，保留 50 重试阈值即可。
+
 ### Fixed
 
 ## [Unreleased] - 2026-07-28
