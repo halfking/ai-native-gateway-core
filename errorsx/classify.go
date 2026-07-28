@@ -76,6 +76,13 @@ const (
 	//     returns Resumable=true → executor continues to next candidate), not
 	//     the generic IsRetryable retry loop.
 	KindEmptyResponse ErrorKind = "empty_response"
+	// KindConversion marks a stream / body that the bridge or executor
+	// emitted but whose serialization or shape could not be converted
+	// (e.g. conversion_error in 2026-07-28 §5.8 taxonomy). Distinct
+	// from KindUnsupportedFeature because conversion failure is
+	// driven by payload shape, not by upstream capability — a
+	// different credential against the same provider would also fail.
+	KindConversion ErrorKind = "conversion_error"
 )
 
 // contextLengthRe matches upstream error bodies that signal "prompt too

@@ -8,6 +8,18 @@ import (
 	"testing"
 )
 
+// TestKindConversion_IsValid ensures the KindConversion constant used
+// by the audit-correlation error_kind taxonomy (2026-07-28 §5.8) is
+// populated with the expected wire value.
+func TestKindConversion_IsValid(t *testing.T) {
+	if KindConversion == "" {
+		t.Fatal("KindConversion must be non-empty")
+	}
+	if KindConversion != "conversion_error" {
+		t.Errorf("KindConversion wire value changed: got %q want %q", KindConversion, "conversion_error")
+	}
+}
+
 func TestClassifyError_ContextCanceled(t *testing.T) {
 	kind := ClassifyError(context.Canceled, nil)
 	if kind != KindCanceled {
