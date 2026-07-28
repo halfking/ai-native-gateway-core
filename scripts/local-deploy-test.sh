@@ -52,12 +52,18 @@ skip() { TOTAL=$((TOTAL+1)); echo -e "  ${YELLOW}─${NC} $1 (跳过)" | tee -a 
 
 # ── 解析参数 ──
 MODE="full"
+SKIP_DB=true
 for arg in "$@"; do
   case "$arg" in
     --quick)   MODE="quick" ;;
     --verify)  MODE="verify" ;;
     --clean)   MODE="clean" ;;
-    --help)    echo "用法: $0 [--quick|--verify|--clean|--help]"; exit 0 ;;
+    --with-db) SKIP_DB=false ;;
+    --skip-db) SKIP_DB=true ;;
+    --help)    echo "用法: $0 [--quick|--verify|--clean|--with-db|--skip-db|--help]"
+               echo "  --with-db  部署新数据库 (默认本地开发模式跳过 DB)"
+               echo "  --skip-db  跳过数据库部署和迁移 (使用已有外部 PG)"
+               exit 0 ;;
     *) err "未知参数: $arg"; exit 1 ;;
   esac
 done
@@ -170,12 +176,16 @@ run_migrations() {
   pg_exec() { PGPASSWORD="$PG_PASS" docker exec -e PGPASSWORD="$PG_PASS" "$PG_CONTAINER" psql -U "$PG_USER" -d "$ADMIN_DB" -v ON_ERROR_STOP=1 -tAc "$1"; }
   pg_exec_db() { PGPASSWORD="$PG_PASS" docker exec -e PGPASSWORD="$PG_PASS" -i "$PG_CONTAINER" psql -U "$PG_USER" -d "$PG_DB" -v ON_ERROR_STOP=1 "$@"; }
 
-  # 重建 llm_gateway 库
-  info "重建 $PG_DB 库（干净基线）..."
-  pg_exec "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname='$PG_DB' AND pid <> pg_backend_pid();" >/dev/null 2>&1 || true
-  pg_exec "DROP DATABASE IF EXISTS $PG_DB;" >/dev/null 2>&1 || true
-  pg_exec "CREATE DATABASE $PG_DB;"
-  ok "CREATE DATABASE $PG_DB"
+  # 检查 $PG_DB 是否存在，存在则跳过重建
+  local db_exists
+  db_exists=$(pg_exec "SELECT 1 FROM pg_database WHERE datname='$PG_DB';" 2>/dev/null || echo "")
+  if [ -n "$db_exists" ]; then
+    sub "$PG_DB 已存在，跳过重建"
+  else
+    info "创建 $PG_DB 库..."
+    pg_exec "CREATE DATABASE $PG_DB;"
+    ok "CREATE DATABASE $PG_DB"
+  fi
 
   # 加载 00-prereqs.sql（扩展）
   local PREREQS="$ROOT_DIR/sql/schema/00-prereqs.sql"
@@ -564,28 +574,26 @@ case "$MODE" in
   verify)
     precheck
     verify_l1_health
-    verify_l2_deps
+    [ "$SKIP_DB" = "false" ] && verify_l2_deps
     verify_l3_smoke
     verify_l4_business
     run_smoke_script
     ;;
   quick)
     precheck
-    start_deps
-    run_migrations
+    [ "$SKIP_DB" = "false" ] && { start_deps; run_migrations; }
     verify_l1_health
-    verify_l2_deps
+    [ "$SKIP_DB" = "false" ] && verify_l2_deps
     verify_l3_smoke
     verify_l4_business
     run_smoke_script
     ;;
   full)
     precheck
-    start_deps
-    run_migrations
+    [ "$SKIP_DB" = "false" ] && { start_deps; run_migrations; }
     start_gateway
     verify_l1_health
-    verify_l2_deps
+    [ "$SKIP_DB" = "false" ] && verify_l2_deps
     verify_l3_smoke
     verify_l4_business
     run_smoke_script
