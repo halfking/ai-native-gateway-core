@@ -169,7 +169,7 @@ func StreamAnthropicPassthroughWithDiagnostics(
 			observeAnthropicPayload(capture, payload, clientModel, outboundModel)
 		}
 
-		logRawUpstreamFrame(diagnostics, requestID, "anthropic-messages", []byte(line))
+		logRawUpstreamFrame(diagnostics, auditFromDiagnostics(diagnostics, requestID, "anthropic-messages"), []byte(line))
 
 		if line == "\n" && !clientDisconnected {
 			safeFlush(flusher)
@@ -481,7 +481,7 @@ func StreamAnthropicSSEToOpenAIWithDiagnostics(
 			continue
 		}
 
-		logRawUpstreamFrame(diagnostics, requestID, "anthropic-messages", rawFrame)
+		logRawUpstreamFrame(diagnostics, auditFromDiagnostics(diagnostics, requestID, "anthropic-messages"), rawFrame)
 		diagnosticCollector.observeRaw(data)
 
 		if isOpenAIFormatData(data) {

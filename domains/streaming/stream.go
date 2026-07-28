@@ -495,7 +495,7 @@ func StreamChatWithPendingCaptureAndDiagnostics(
 	upstreamDoneReceived := false
 
 	if firstLine != "" {
-		logRawUpstreamFrame(diagnostics, requestID, "openai-completions", []byte(firstLine))
+		logRawUpstreamFrame(diagnostics, auditFromDiagnostics(diagnostics, requestID, "openai-completions"), []byte(firstLine))
 		firstRawPayload := extractPayload(firstLine)
 		if firstRawPayload != "" && firstRawPayload != "[DONE]" {
 			diagnosticCollector.observeRaw([]byte(firstRawPayload))
@@ -600,7 +600,7 @@ func StreamChatWithPendingCaptureAndDiagnostics(
 				clientModel, &discoveredUpstream, firstLine,
 				runtimeCfg.firstByteTimeout, &lastSend, &chunkCount,
 				func(line string) {
-					logRawUpstreamFrame(diagnostics, requestID, "openai-completions", []byte(line))
+					logRawUpstreamFrame(diagnostics, auditFromDiagnostics(diagnostics, requestID, "openai-completions"), []byte(line))
 					payload := extractPayload(line)
 					if payload == "" || payload == "[DONE]" {
 						return
@@ -757,7 +757,7 @@ func StreamChatWithPendingCaptureAndDiagnostics(
 		}
 
 		line := readResult.line
-		logRawUpstreamFrame(diagnostics, requestID, "openai-completions", []byte(line))
+		logRawUpstreamFrame(diagnostics, auditFromDiagnostics(diagnostics, requestID, "openai-completions"), []byte(line))
 		rawPayload := extractPayload(line)
 		if rawPayload != "" && rawPayload != "[DONE]" {
 			diagnosticCollector.observeRaw([]byte(rawPayload))
