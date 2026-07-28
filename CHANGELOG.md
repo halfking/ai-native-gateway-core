@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased] - 2026-07-28
+
+### Fixed
+
+- **实时请求流空闲块不再丢失 + 空闲时间随心跳刷新** (2026-07-28):
+  - **Bug**：`ScanAndRecordIdleMarkers` 把 idle marker 只写入 main queue，但生产读取路径 `SnapshotFromDimensionQueues` 只读 dimension queues；只要任意 vendor/provider/model 队列有数据，main queue 中的 idle marker 永远不会被前端看到。同时 Ts 锚定到 `lastActivity+threshold`（沉默开始那一刻），导致"更新空闲时间"在 Redis 层面是 no-op（ZADD same member + same score = 不写、TTL 不刷新）。
+  - **Fix**（`admin/live_stream_redis_store.go`）：
+    1. `idleMarkerQueueKeys` 改为同时写入 main queue + 对应 dim queue（global scope 写 main + global dim；tenant scope 写 tenant main + tenant dim + global dim），让 `SnapshotFromDimensionQueues` 真正能看到 idle marker。
+    2. `ScanAndRecordIdleMarkers` 用 `ts`（扫描时间）作为 score 和 `Ts`，每次 tick 都是一次真实的 ZADD（不同 score），刷新 ZSet 内存与 key TTL；新请求 score=now 永远高于 idle 标记 → DESC 排序把新请求放到最左、空闲块被推到右侧。
+  - **测试**（`admin/live_stream_redis_store_test.go`）：5 个新回归测试 `TestIdleMarker_VisibleInDimensionQueueSnapshot` / `TestIdleMarker_StableRequestIdAcrossTicks` / `TestIdleMarker_PushedRightByNewRequest` / `TestIdleMarker_RefreshesTsOnEachTick` / `TestIdleMarker_BothMainAndDimQueueUpdated` 覆盖"dim 队列可见 / 跨 tick RequestID 稳定 / 新请求左推 / Ts 跨 tick 刷新 / 双写 main+dim"。原 `TestIdleMarkerAnchorsAtSilenceStart` 改写为 `TestIdleMarkerUsesScanTimeAsTs` 反映新语义。
+
 ## [Unreleased] - 2026-07-26
 
 ### Added

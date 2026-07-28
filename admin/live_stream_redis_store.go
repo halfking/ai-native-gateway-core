@@ -1339,17 +1339,30 @@ func (s *LiveStreamRedisStore) ScanAndRecordIdleMarkers(ctx context.Context, ts 
 	// 3) Build + persist idle markers, writing only to the relevant lane(s).
 	writePipe := s.rdb.Pipeline()
 	for _, p := range idle {
-		// Anchor idle at the moment silence began (last activity + threshold),
-		// not at scan time, so new requests push the idle tile left instead
-		// of keeping it pinned at the tail.
-		idleStartedAt := time.Unix(p.lastActivity+idleThresholdSeconds, 0).UTC()
-		marker := createIdleMarkerForDimension(p.info.dimension, p.info.dimensionKey, p.info.tenantID, idleStartedAt)
+		// 2026-07-28 fix: use scan time (ts) for BOTH the marker Ts and
+		// the ZSet score. The previous implementation anchored both at
+		// `lastActivity+threshold` (the moment silence began), which
+		// caused the "update idle time" requirement to be a Redis no-op
+		// (ZADD with the same member + same score does nothing, and the
+		// detail hash was also overwritten with identical bytes). With
+		// the new behavior:
+		//   - Each tick is a real ZADD (different score than the previous
+		//     tick), so the ZSet key's TTL is refreshed and the marker
+		//     visibly moves to the leftmost position.
+		//   - The detail hash gets the fresh Ts payload, so any front-end
+		//     that reads detail (e.g. via Replay fallback) sees the new
+		//     Ts without waiting for a full re-snapshot.
+		//   - A new real request at score=now has a higher score than the
+		//     idle marker, so the new request goes leftmost and the idle
+		//     tile gets pushed right (the "正常记录把 idle 推到最左侧"
+		//     requirement from the bug report).
+		marker := createIdleMarkerForDimension(p.info.dimension, p.info.dimensionKey, p.info.tenantID, ts)
 		data, err := marshalLiveRequestRedisPayload(marker)
 		if err != nil {
 			slog.Debug("failed to marshal idle marker", "dimension", p.info.dimension, "dimension_key", p.info.dimensionKey, "tenant_id", p.info.tenantID, "err", err.Error())
 			continue
 		}
-		score := float64(idleStartedAt.UnixMilli())
+		score := float64(ts.UnixMilli())
 
 		// Detail lookups: store under the global key always, and the
 		// tenant key when scoped, so Replay can resolve the marker.
@@ -1372,16 +1385,71 @@ func (s *LiveStreamRedisStore) ScanAndRecordIdleMarkers(ctx context.Context, ts 
 }
 
 // idleMarkerQueueKeys returns the Redis ZSET keys an idle marker should
-// land in. Global-scope markers go to the super-admin main queue; tenant-
-// scoped markers go to that tenant's main queue only — never both — so
-// Replay() does not show duplicate idle tiles for the same lane.
+// land in.
+//
+// Two readers must see the marker:
+//   - Replay() / Snapshot() — read the main queue, so we write the
+//     marker there for backward compatibility and for the empty-queue
+//     fallback path.
+//   - SnapshotFromDimensionQueues() (the production reader) — reads
+//     only dimension queues. Without a mirror write here, the idle
+//     marker is invisible to the dashboard the moment any vendor/
+//     provider/model queue has data (the original bug: idle was
+//     written but never reached the front-end).
+//
+// Global-scope markers go to the super-admin main queue AND every
+// dim:* key they belong to (no tenant prefix on dim keys). Tenant-
+// scoped markers go to that tenant's main queue AND the tenant's
+// tenant-scoped dim keys — never the global dim keys — so a
+// tenant-scoped marker never pollutes the super-admin view.
+//
+// The ZADD with stable RequestID + refreshed score is idempotent: a
+// lane that has been idle for many ticks carries exactly one marker
+// (the last score wins), and the "update idle time, don't add new"
+// requirement is satisfied at the Redis level.
 func idleMarkerQueueKeys(tenantID, dimension, dimensionKey string) []string {
-	_ = dimension
-	_ = dimensionKey
-	if strings.TrimSpace(tenantID) == "" {
-		return []string{liveStreamMainKey}
+	if strings.TrimSpace(dimensionKey) == "" {
+		// No dimension key (e.g. a "main" activity key that escaped the
+		// filter — should not happen because ScanAndRecordIdleMarkers
+		// skips dimension=="main", but guard anyway). Fall back to main
+		// queue only; there is no dim queue to mirror to.
+		if strings.TrimSpace(tenantID) == "" {
+			return []string{liveStreamMainKey}
+		}
+		return []string{tenantLiveStreamKey(normalizeLiveStreamTenant(tenantID), "main")}
 	}
-	return []string{tenantLiveStreamKey(normalizeLiveStreamTenant(tenantID), "main")}
+
+	// Build the dim key path. Safe escaping matches the convention used
+	// by idleMarkerRequestID and liveStreamDimensionKey: ":" and "/"
+	// in dimension values are turned into "_" so the resulting Redis
+	// key never has an ambiguous ":" that a downstream parser would
+	// split incorrectly.
+	safeKey := strings.NewReplacer(":", "_", "/", "_").Replace(dimensionKey)
+	dimSuffix := dimension + ":" + safeKey
+	var keys []string
+	if strings.TrimSpace(tenantID) == "" {
+		// Global scope: super-admin main queue + global dim queue.
+		keys = []string{
+			liveStreamMainKey,
+			liveStreamDimPrefix + dimSuffix,
+		}
+		return keys
+	}
+	tid := normalizeLiveStreamTenant(tenantID)
+	keys = []string{
+		tenantLiveStreamKey(tid, "main"),
+		// Tenant-scoped dim queue — the production reader looks here
+		// for the tenant view.
+		tenantLiveStreamKey(tid, "dim:"+dimSuffix),
+		// Also write to the global dim queue so the super-admin view
+		// (which isSuper==true, tenantID=="") can see tenant markers.
+		// Without this, a super-admin opening the dashboard would
+		// still see the lane go idle visually because the tenant
+		// main queue is never read for super scope; the global dim
+		// queue is the only path the super view ever traverses.
+		liveStreamDimPrefix + dimSuffix,
+	}
+	return keys
 }
 
 // idleMarkerRequestID returns the stable request_id for an idle marker tile.
@@ -1401,6 +1469,20 @@ func createIdleMarkerForDimension(dimension, key, tenantID string, ts time.Time)
 
 	errKind := idleMarkerErrorKind
 	failStage := idleMarkerFailureStage
+	// 2026-07-28 fix: Ts now reflects the scan time (ts) on every tick.
+	// Previously it was anchored at lastActivity+threshold ("the moment
+	// silence began"), which made the displayed idle duration grow
+	// monotonically but caused the "update idle time" semantics to be a
+	// no-op at the Redis level (ZADD same member + same score = nothing
+	// happens, TTL is not refreshed). Using scan time for both Ts and
+	// the ZSet score means:
+	//   1. ZADD is a real write each tick → ZSet memory + key TTL refresh
+	//   2. The displayed "空闲 X 分钟" oscillates between 0 and IdleTickInterval
+	//      (default 5 min) — accurate "time since the most recent heartbeat"
+	//   3. A new real request (score = now) has a higher score than the
+	//      idle marker, so DESC ordering places the new request leftmost
+	//      and pushes the idle tile right (the "正常记录把 idle 推到
+	//      最左侧" requirement).
 	marker := LiveRequest{
 		Type:         "idle_marker",
 		RequestID:    requestID,
