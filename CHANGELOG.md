@@ -5,6 +5,35 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased] - 2026-07-29
+
+### Added
+
+- **v2 Pipeline feature flag 状态文档化 (P0-5, R-5.2 关闭)** (2026-07-29):
+  - `docs/operations/v2-pipeline-status.md` (166 行): 全环境 flag 状态表 / 启用条件 L1-L4 验证清单 / 灰度流程 / 已知问题 / 切换动作记录
+  - 默认 OFF（生产 / 245 / local 一致）；flag 由 `LLM_GATEWAY_USE_V2_PIPELINE` 或 `LLM_GATEWAY_V2_ENABLED` 控制
+  - `cmd/gateway/v2_dispatch_test.go:11` 个测试 + `cmd/gateway/main_v2_pipeline_test.go:5` 个测试固化 default-off contract
+
+- **onPersisted hook + RingBuffer + RawAudit 失败 metric (P0-2, R-3.3/R-3.4 关闭)** (2026-07-29):
+  - 4 个 Prometheus counter：`llm_gateway_shadow_write_failed_total{kind}` / `llm_gateway_ringbuffer_dropped_total` / `llm_gateway_rawaudit_write_failed_total`
+  - 4 个 hook 处加 Inc 调用：`internal/attachmentmirror/hook.go:65` / `internal/sessionv2mirror/hook.go:70` / `domains/dbdegradation/ring_buffer.go:106` / `internal/logging/raw_data_logger.go:244`
+  - `deploy/monitoring/grafana-alerts/shadow-write-failures.yaml` (85 行) 4 条告警规则 + runbook annotation
+
+- **URSM v2 shadow double-write 框架 (P0-3, R-7.1 部分)** (2026-07-29):
+  - `domains/ursm/v2/rollout/controller.go` 加 `ShadowDoubleWrite bool` Config + `ShadowDoubleWrite()` 访问器；`ShouldUseV2` 在 ModeShadow 下仅当 ShadowDoubleWrite=true 才返回 true（默认 false）
+  - `domains/ursm/v2/config.go` 读 `URSM_V2_SHADOW_DOUBLE_WRITE` 环境变量；truthy 1/true/yes 才打开
+  - `metrics` 加 `RecordURSMv2ShadowResult(result)` 方法 + `llm_gateway_ursm_v2_shadow_records_total{result="recorded|skipped|failed"}` counter
+  - `domains/ursm/v2/manager.go:RecordRequest` 三处加 metric（skip / record / fail），用于 7 天漂移对比
+  - 路由层 `selectStateBackendWithReady` 不变：Shadow / Canary 模式下仍走 legacy credentialstate（生产路由行为完全不变）
+
+- **URSM v2 数据迁移工具 + 回退脚本 + 操作手册 (P0-3 框架)** (2026-07-29):
+  - `cmd/migrate-ursm-v2/main.go` (344 行) + `main_test.go` (144 行): `--dry-run` 默认 / `--apply` 显式；从 `public.node_probe_state` 一键写入 URSM v2 Redis hash；含 6 个测试覆盖映射契约
+  - `scripts/rollback/ursm_v2_to_legacy.sh` (203 行): 一键回退；自动检测 systemd / docker；rule 03 §6.0 L1-L4 验证
+  - `docs/runbooks/ursm-v2-cutover.md` (254 行): 4 阶段切流操作手册；每阶段含 env / L1-L4 验证 / drift 计算 / 回退触发；引用 `scripts/migrations/` + `scripts/rollback/` 工具
+  - Session 收口归档: `docs/changelogs/2026-07-29-p0-3-ursmv2-framework-and-session-close.md` (198 行)
+
+### Fixed
+
 ## [Unreleased] - 2026-07-28
 
 ### Fixed
