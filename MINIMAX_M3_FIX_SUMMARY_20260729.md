@@ -79,9 +79,24 @@ case "read_error", "stream_read_error", "stream_panic":
 
 驱动方式：使用 `data: not-valid-json\n\n`（非合法 SSE JSON）作为 firstLine，触发"eof_without_done + 0 valid chunks"路径。验证 `streamErrorKindForDetailCode("eof_without_done") == "eof_without_done"`，防止未来回归到 stream_read_error。
 
-### 修复 4（P0）：154 生产 hotconfig 调参（待执行）
+### 修复 4（P0）：154 生产 hotconfig 调参（已执行）
 
-**方式**：`PUT /api/admin/settings/llmgw_node_timeout_seconds = 300`（JSON int, scope=platform）
+**方式**：直接 INSERT 到 `settings_kv` 表（admin API 路径不支持此 key，因为 `settings.Global` 未注册 spec）
+
+```sql
+INSERT INTO settings_kv (key, value, value_type, scope, category, updated_by, prev_value)
+VALUES ('llmgw_node_timeout_seconds', '"300"'::jsonb, 'integer', 'platform', 'timeout',
+        'admin:hotconfig-p0-fix-20260729', NULL)
+ON CONFLICT (key) DO UPDATE
+  SET prev_value      = settings_kv.value,
+      prev_updated_at = settings_kv.updated_at,
+      value           = EXCLUDED.value,
+      value_type      = EXCLUDED.value_type,
+      scope           = EXCLUDED.scope,
+      category        = EXCLUDED.category,
+      updated_at      = now(),
+      updated_by      = EXCLUDED.updated_by;
+```
 
 **理由**：
 - 真正 chunk 超时 2 次（884/770 chunk）发生在当前默认 120s 上限附近
@@ -89,20 +104,36 @@ case "read_error", "stream_read_error", "stream_panic":
 - `clampInt(hotCfg.GetInt("llmgw_node_timeout_seconds", 120), 10, 600)`，300 合法
 - 30s 轮询 reload，无需重启
 
+**审计发现**：hotconfig 默认 `slog.Debug("config: reloaded", ...)`，生产 `LLM_GATEWAY_LOG_LEVEL=info` 不打印，无法验证 reload 是否成功。
+
+### 修复 5（P2）：hotconfig reload 可观测性提升
+
+**文件**：`hotconfig/hotconfig.go:118,124-133`
+
+将 `slog.Debug` 升级为 `slog.Info`，并在消息中附上 sorted keys 列表，让运维能直接验证 hotconfig reload（特别是 PUT 后或 DB 写入后）。
+
+**理由**：
+- 当前热配置修改无法在日志中确认是否生效
+- keys 列表 ≤ 10s 条，对日志量影响可忽略
+
 ---
 
 ## 4. 部署与回滚
 
 ### 部署顺序
 1. 本地 `make test-short` ✅
-2. 推送 origin/main（pre-push hooks）
-3. 走 245 → 154 晋级路径（`llm-gateway-deploy-test`）
-4. 154 hotconfig PUT 调参
+2. 推送 origin/main（pre-push hooks）✅
+3. **154 hotconfig 调参** ✅（P0 已通过 DB INSERT 完成，30s 内 poller reload）
+4. 走 245 → 154 部署路径（待执行，部署含 P1 代码 + P2 hotconfig 可观测性提升）
 5. 30 分钟审计窗口：观察 stream interrupted / first_byte_timeout / chunk_count 分布
 
 ### 回滚
 - 代码：单 commit 可 `git revert`
-- hotconfig：单独 `PUT llmgw_node_timeout_seconds=120` 回滚
+- hotconfig：
+  ```sql
+  UPDATE settings_kv SET value = '"120"'::jsonb, updated_by = 'admin:rollback-20260729'
+  WHERE key = 'llmgw_node_timeout_seconds';
+  ```
 
 ---
 
@@ -114,6 +145,7 @@ case "read_error", "stream_read_error", "stream_panic":
 | `domains/streaming/stream.go` | 735 | hint 文案 |
 | `domains/streaming/stream_error_kind_test.go` | 21 | 测试断言 |
 | `domains/streaming/stream_eof_test.go` | 41-90 | 新增 ZeroChunks 反向测试 |
+| `hotconfig/hotconfig.go` | 118-133 | Debug→Info reload 可观测性
 
 ---
 
