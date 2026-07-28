@@ -2,8 +2,8 @@
   "schema_version": 1,
   "plugin_id": "ai-session-manager",
   "display_name": "AI Session Manager",
-  "plugin_version": "0.1.0",
-  "build_seq": 1,
+  "plugin_version": "0.1.1",
+  "build_seq": 2,
   "channel": "dev",
   "gateway_compatibility": {
     "min_version": "0.0.0",
@@ -24,7 +24,8 @@
       "type": "data",
       "nav": {
         "group": "requests-sessions",
-        "label_key": "nav.item.sessions",
+        "label": "会话运营（插件）",
+        "label_key": "nav.item.sessionPlugin",
         "order": 100
       }
     },
@@ -33,7 +34,8 @@
       "type": "settings",
       "nav": {
         "group": "data-ops",
-        "label_key": "nav.item.sessionConfig",
+        "label": "会话插件设置",
+        "label_key": "nav.item.sessionPluginSettings",
         "super": true,
         "order": 110
       }
