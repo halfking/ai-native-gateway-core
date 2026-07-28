@@ -1969,6 +1969,17 @@ func main() {
 					smConcurrency = n
 				}
 			}
+			// 2026-07-28 (audit follow-up #1,
+			// docs/architecture/2026-07-28-routing-state-anomaly-audit.md §4.1):
+			// on persistent Redis health failures, automatically close the
+			// URSM v2 authoritative gate cluster-wide via the debounced
+			// MarkClosedDebounced. Only wired when v2 mode is non-off
+			// (otherwise the gate is never authoritative anyway, and
+			// wiring it would just produce no-op logs).
+			var recoveryGate systemmonitor.RecoveryGate
+			if ursmV2Mgr != nil && ursmV2Mgr.Mode() != ursmv2api.ModeOff {
+				recoveryGate = ursmV2Mgr
+			}
 			sm, smErr := systemmonitor.NewSystemMonitor(systemmonitor.Config{
 				DB:          dbConn.Pool(),
 				Redis:       fpSlotRedis,
@@ -1978,6 +1989,11 @@ func main() {
 				TimeoutMs:   30000,
 				Concurrency: smConcurrency,
 				WorkerCount: smConcurrency,
+				// Auto-close URSM v2 gate on persistent Redis health
+				// failures (audit follow-up #1). Threshold / TTL have
+				// sensible defaults; env overrides live in
+				// bg/systemmonitor.Config.
+				RecoveryGate: recoveryGate,
 			})
 			if smErr != nil {
 				slog.Error("system_monitor: construct failed", "error", smErr)
@@ -4375,19 +4391,19 @@ func main() {
 		if anomalyHarvester != nil {
 			anomalyHarvester.Stop()
 		}
-	if integrityDriftWorker != nil {
-		integrityDriftWorker.Stop()
-	}
-	if integrityHarvester != nil {
-		integrityHarvester.Stop()
-	}
-	if integrityProbePlanner != nil {
-		integrityProbePlanner.Stop()
-	}
-	if requestLogger != nil {
-		requestLogger.Stop()
-	}
-	telemetryClient.Stop()
+		if integrityDriftWorker != nil {
+			integrityDriftWorker.Stop()
+		}
+		if integrityHarvester != nil {
+			integrityHarvester.Stop()
+		}
+		if integrityProbePlanner != nil {
+			integrityProbePlanner.Stop()
+		}
+		if requestLogger != nil {
+			requestLogger.Stop()
+		}
+		telemetryClient.Stop()
 		lim.Stop()
 		pools.Stop()
 		pools.CloseAll()

@@ -51,3 +51,13 @@ func ReadyKey(prefix string) string {
 func EpochKey(prefix string) string {
 	return fmt.Sprintf("%smeta:epoch", prefix)
 }
+
+// RecoveryDebounceKey is the cluster-wide coordination key used by
+// Manager.MarkClosedDebounced. When set (with TTL), all subsequent
+// callers see "already debounced" and skip the EnterRecovery write
+// — this caps the cluster's epoch counter inflation to one bump per
+// debounce window regardless of how many gateway instances are
+// simultaneously observing Redis health failures.
+func RecoveryDebounceKey(prefix string) string {
+	return fmt.Sprintf("%smeta:recovery_debounce", prefix)
+}
