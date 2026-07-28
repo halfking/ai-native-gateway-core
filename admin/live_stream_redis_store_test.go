@@ -180,7 +180,18 @@ func TestLiveStreamQueueKeepLimit(t *testing.T) {
 	}
 }
 
-func TestIdleMarkerAnchorsAtSilenceStart(t *testing.T) {
+// TestIdleMarkerUsesScanTimeAsTs verifies the 2026-07-28 fix: the idle
+// marker's Ts (and ZSet score) is the scan time, not the anchor
+// "lastActivity+threshold". This is what makes the "update idle time on
+// every tick" requirement observable at the Redis level (a ZADD with
+// the same member but a fresh score is a real write that refreshes the
+// key TTL and reorders the marker in the lane).
+//
+// 2026-07-28: This test replaces the previous TestIdleMarkerAnchorsAtSilenceStart
+// which asserted the buggy "freeze at silence start" behaviour. The
+// bug report requires idle duration to grow between ticks, which is
+// only achievable if the Ts advances on each tick.
+func TestIdleMarkerUsesScanTimeAsTs(t *testing.T) {
 	mr, err := miniredis.Run()
 	if err != nil {
 		t.Fatalf("miniredis: %v", err)
@@ -212,12 +223,19 @@ func TestIdleMarkerAnchorsAtSilenceStart(t *testing.T) {
 	if idle == nil {
 		t.Fatalf("expected idle marker, got %#v", items)
 	}
-	wantTs := lastActivity.Add(threshold).UTC().Format(time.RFC3339)
+	// 2026-07-28 fix: Ts is now the scan time (emitTs), not the
+	// anchor at silence start (lastActivity+threshold). This is what
+	// makes each idle tick a real ZADD (different score than the
+	// previous tick) so the key TTL is refreshed and the displayed
+	// idle duration is "time since the most recent heartbeat".
+	wantTs := emitTs.UTC().Format(time.RFC3339)
 	if idle.Ts != wantTs {
-		t.Fatalf("idle ts=%q want %q (anchored at silence start, not scan time)", idle.Ts, wantTs)
+		t.Fatalf("idle ts=%q want %q (scan time, so each tick is a real ZADD)", idle.Ts, wantTs)
 	}
-	if idle.Ts == emitTs.UTC().Format(time.RFC3339) {
-		t.Fatal("idle marker must not use scan time as timestamp")
+	// Sanity: must NOT be the old anchored value.
+	oldAnchoredTs := lastActivity.Add(threshold).UTC().Format(time.RFC3339)
+	if idle.Ts == oldAnchoredTs {
+		t.Fatalf("idle ts=%q must not be the legacy anchored-at-silence-start value", idle.Ts)
 	}
 }
 
@@ -710,16 +728,102 @@ func TestComputeScopeDelta_FallsBackToReplayWhenDimensionSnapshotEmpty(t *testin
 	}
 }
 
+// TestIdleMarkerQueueKeys_ScopeRouting verifies the 2026-07-28 fix:
+// idle markers are mirror-written to the dimension queue as well as
+// the main queue, so the production reader (SnapshotFromDimensionQueues)
+// can surface them. The previous implementation only wrote to the
+// main queue, which meant idle markers were invisible whenever any
+// dim queue had any data — the "idle tile suddenly missing" bug.
 func TestIdleMarkerQueueKeys_ScopeRouting(t *testing.T) {
-	global := idleMarkerQueueKeys("", "vendor", "openai")
-	if len(global) != 1 || global[0] != liveStreamMainKey {
-		t.Fatalf("global idle queues=%#v want [%q]", global, liveStreamMainKey)
-	}
-	tenant := idleMarkerQueueKeys("tenant-a", "vendor", "openai")
-	want := tenantLiveStreamKey("tenant-a", "main")
-	if len(tenant) != 1 || tenant[0] != want {
-		t.Fatalf("tenant idle queues=%#v want [%q]", tenant, want)
-	}
+	t.Run("global scope writes to main + global dim", func(t *testing.T) {
+		keys := idleMarkerQueueKeys("", "vendor", "openai")
+		mustContain := map[string]bool{
+			liveStreamMainKey:                     false,
+			liveStreamDimPrefix + "vendor:openai": false,
+		}
+		for _, k := range keys {
+			if _, ok := mustContain[k]; ok {
+				mustContain[k] = true
+			}
+		}
+		for k, seen := range mustContain {
+			if !seen {
+				t.Fatalf("global idle queues=%#v missing %q", keys, k)
+			}
+		}
+		// Must NOT leak into a tenant main queue for global scope.
+		for _, k := range keys {
+			if strings.HasPrefix(k, "llmgw:live:tenant:") {
+				t.Fatalf("global idle queue %q must not be tenant-scoped", k)
+			}
+		}
+	})
+
+	t.Run("tenant scope writes to tenant main + tenant dim + global dim", func(t *testing.T) {
+		keys := idleMarkerQueueKeys("tenant-a", "vendor", "openai")
+		mustContain := map[string]bool{
+			tenantLiveStreamKey("tenant-a", "main"):              false,
+			tenantLiveStreamKey("tenant-a", "dim:vendor:openai"): false,
+			liveStreamDimPrefix + "vendor:openai":                false,
+		}
+		for _, k := range keys {
+			if _, ok := mustContain[k]; ok {
+				mustContain[k] = true
+			}
+		}
+		for k, seen := range mustContain {
+			if !seen {
+				t.Fatalf("tenant idle queues=%#v missing %q", keys, k)
+			}
+		}
+		// Tenant must NOT use a different tenant's queue.
+		for _, k := range keys {
+			if strings.Contains(k, "tenant-b") {
+				t.Fatalf("tenant-a marker must not pollute tenant-b queues, got %q", k)
+			}
+		}
+	})
+
+	t.Run("empty dimension key falls back to main queue only", func(t *testing.T) {
+		// The ScanAndRecordIdleMarkers filter already skips dimension=="main",
+		// but a defensive empty-key call must not produce a malformed dim
+		// key like "llmgw:live:dim:vendor:".
+		keys := idleMarkerQueueKeys("", "vendor", "")
+		if len(keys) != 1 || keys[0] != liveStreamMainKey {
+			t.Fatalf("empty-dim global idle queues=%#v want [%q]", keys, liveStreamMainKey)
+		}
+		keys = idleMarkerQueueKeys("tenant-a", "vendor", "")
+		want := tenantLiveStreamKey("tenant-a", "main")
+		if len(keys) != 1 || keys[0] != want {
+			t.Fatalf("empty-dim tenant idle queues=%#v want [%q]", keys, want)
+		}
+	})
+
+	t.Run("unsafe characters in dimension key are escaped", func(t *testing.T) {
+		// dim values with ':' or '/' would produce an ambiguous key
+		// that downstream parsers could split incorrectly. The mirror
+		// must apply the same safeKey transform that idleMarkerRequestID
+		// uses, so the dim key matches the RequestID the dashboard
+		// expects to see.
+		keys := idleMarkerQueueKeys("", "model", "gpt:4o/abc")
+		wantDim := liveStreamDimPrefix + "model:gpt_4o_abc"
+		found := false
+		for _, k := range keys {
+			if k == wantDim {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Fatalf("idle queues=%#v missing escaped dim key %q", keys, wantDim)
+		}
+		// None of the keys should still contain the unsafe colon-slash.
+		for _, k := range keys {
+			if strings.Contains(k, "gpt:4o/") {
+				t.Fatalf("idle queue %q still contains unsafe characters", k)
+			}
+		}
+	})
 }
 
 func TestComputeDelta_ReturnsAllLanesWhenOldIsNil(t *testing.T) {
@@ -1710,4 +1814,438 @@ func TestLanesChangedWithTimestampTolerance(t *testing.T) {
 		changed := lanesChanged(old, new)
 		assert.True(t, changed, "should detect change for 200ms timestamp difference")
 	})
+}
+
+// TestIdleMarker_VisibleInDimensionQueueSnapshot is the regression test for
+// the "idle tile missing from dashboard" bug. Before the 2026-07-28 fix,
+// ScanAndRecordIdleMarkers only wrote idle markers to the main queue, but
+// the production reader (SnapshotFromDimensionQueues) reads only dimension
+// queues, so the marker was never visible whenever any dim queue had data.
+//
+// This test sets up a lane with real requests, runs the idle scan, then
+// reads via the production path and asserts the idle marker surfaces.
+func TestIdleMarker_VisibleInDimensionQueueSnapshot(t *testing.T) {
+	mr := miniredis.RunT(t)
+	defer mr.Close()
+
+	rdb := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	defer rdb.Close()
+	store := NewLiveStreamRedisStore(rdb)
+	ctx := context.Background()
+
+	// Seed a real request so a dim queue exists (this is the precondition
+	// that hid the bug: with ANY dim data, SnapshotFromDimensionQueues
+	// would never fall back to Replay()).
+	seedTs := time.Now().UTC().Add(-30 * time.Minute)
+	if err := store.Record(ctx, LiveRequest{
+		RequestID:     "req-seed",
+		Ts:            seedTs.Format(time.RFC3339),
+		TenantID:      "default",
+		Model:         "gpt-4o",
+		ModelCategory: "openai",
+		ProviderCode:  "openai",
+		Status:        "success",
+	}); err != nil {
+		t.Fatalf("Record seed: %v", err)
+	}
+
+	// Force every activity key into the past so the lane is considered idle.
+	staleUnix := seedTs.Unix() - int64(LiveStreamLaneRetention.Seconds()) - 5
+	for _, k := range mr.Keys() {
+		if strings.HasPrefix(k, liveStreamActivityPrefix) {
+			mr.Set(k, fmt.Sprintf("%d", staleUnix))
+		}
+	}
+
+	if err := store.ScanAndRecordIdleMarkers(ctx, time.Now().UTC(), LiveStreamLaneRetention); err != nil {
+		t.Fatalf("ScanAndRecordIdleMarkers: %v", err)
+	}
+
+	// The bug was: the production reader (SnapshotFromDimensionQueues)
+	// never saw the idle marker because it only reads dim queues. The
+	// fix mirror-writes to dim queues, so this assertion must now pass.
+	snap, err := store.SnapshotFromDimensionQueues(ctx, "default", false)
+	if err != nil {
+		t.Fatalf("SnapshotFromDimensionQueues: %v", err)
+	}
+	if snap == nil {
+		t.Fatal("expected snapshot, got nil")
+	}
+
+	// Find the openai vendor lane.
+	var openaiLane *LiveStreamLane
+	for i := range snap.Dimensions["vendor"] {
+		if snap.Dimensions["vendor"][i].ID == "openai" {
+			openaiLane = &snap.Dimensions["vendor"][i]
+			break
+		}
+	}
+	if openaiLane == nil {
+		t.Fatalf("expected openai vendor lane, got %#v", snap.Dimensions["vendor"])
+	}
+
+	// The openai lane must now contain an idle tile alongside the seed request.
+	hasIdle := false
+	for _, tile := range openaiLane.Requests {
+		if tile.Status == "idle" {
+			hasIdle = true
+			break
+		}
+	}
+	if !hasIdle {
+		t.Fatalf("idle marker should be visible to the production dim-queue reader; got tiles=%#v", openaiLane.Requests)
+	}
+}
+
+// TestIdleMarker_StableRequestIdAcrossTicks verifies "末尾已 idle 则更新
+// 不加入新记录" — the "update existing idle, do not add new" requirement.
+// A lane that has been idle for 3 consecutive ticks must carry exactly
+// ONE idle marker in Redis, never three (the ZADD is idempotent because
+// the RequestID is stable per (scope, dimension, dimKey)).
+func TestIdleMarker_StableRequestIdAcrossTicks(t *testing.T) {
+	mr := miniredis.RunT(t)
+	defer mr.Close()
+
+	rdb := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	defer rdb.Close()
+	store := NewLiveStreamRedisStore(rdb)
+	ctx := context.Background()
+
+	// Seed a request so a lane exists.
+	if err := store.Record(ctx, LiveRequest{
+		RequestID:     "req-1",
+		Ts:            time.Now().UTC().Add(-30 * time.Minute).Format(time.RFC3339),
+		TenantID:      "default",
+		Model:         "gpt-4o",
+		ModelCategory: "openai",
+		ProviderCode:  "openai",
+		Status:        "success",
+	}); err != nil {
+		t.Fatalf("Record: %v", err)
+	}
+
+	// Force EVERY activity key (global + tenant) into the past so the
+	// scanner treats the lane as idle regardless of which scope it picks
+	// up. Record() writes both global and tenant activity keys, so we
+	// must stale them all. The threshold the scanner checks against is
+	// LiveStreamLaneRetention (4h), so the activity key must be older
+	// than that to register as idle.
+	staleUnix := time.Now().Add(-LiveStreamLaneRetention - time.Minute).Unix()
+	for _, k := range mr.Keys() {
+		if strings.HasPrefix(k, liveStreamActivityPrefix) {
+			mr.Set(k, fmt.Sprintf("%d", staleUnix))
+		}
+	}
+
+	// Three consecutive idle ticks, separated by simulated time advance.
+	var idleRequestIDs []string
+	for tick := 0; tick < 3; tick++ {
+		ts := time.Now().UTC().Add(time.Duration(tick) * time.Minute)
+		if err := store.ScanAndRecordIdleMarkers(ctx, ts, LiveStreamLaneRetention); err != nil {
+			t.Fatalf("tick %d ScanAndRecordIdleMarkers: %v", tick, err)
+		}
+		// Inspect the tenant dim queue directly (the request was
+		// recorded with tenantID="default" so the activity scanner
+		// produces tenant-scoped markers). The mirror write also
+		// populates the global dim queue, so we check both.
+		tenantDimKey := tenantLiveStreamKey("default", "dim:vendor:openai")
+		members, err := rdb.ZRange(ctx, tenantDimKey, 0, -1).Result()
+		if err != nil {
+			t.Fatalf("tick %d ZRange: %v", tick, err)
+		}
+		var idleCount int
+		for _, m := range members {
+			// For tenant-scoped markers, the ZSet member is the bare
+			// request_id (not slim-tile JSON) because idleMarkerQueueKeys
+			// ZADDs marker.RequestID directly. For real requests, the
+			// member IS slim-tile JSON; filter on prefix.
+			if strings.HasPrefix(m, "idle-") {
+				idleCount++
+				idleRequestIDs = append(idleRequestIDs, m)
+			}
+		}
+		if idleCount != 1 {
+			t.Fatalf("tick %d: expected exactly 1 idle marker in dim queue, got %d (members=%#v)", tick, idleCount, members)
+		}
+	}
+
+	// All 3 ticks must have produced the SAME RequestID (stable identity).
+	if idleRequestIDs[0] != idleRequestIDs[1] || idleRequestIDs[1] != idleRequestIDs[2] {
+		t.Fatalf("idle RequestID must be stable across ticks; got %q, %q, %q", idleRequestIDs[0], idleRequestIDs[1], idleRequestIDs[2])
+	}
+}
+
+// TestIdleMarker_PushedRightByNewRequest verifies "后续的正常记录推到最左侧，
+// 并挤出去" — a new real request has a higher score than the idle marker
+// (since real requests use the request's own ts and idle uses scan time,
+// both equal to "now", but the new request's ZADD happens AFTER the idle
+// tick, so the real request's score is ≥ idle's). In the DESC lane ordering
+// the new request goes leftmost and the idle tile gets pushed right.
+func TestIdleMarker_PushedRightByNewRequest(t *testing.T) {
+	mr := miniredis.RunT(t)
+	defer mr.Close()
+
+	rdb := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	defer rdb.Close()
+	store := NewLiveStreamRedisStore(rdb)
+	ctx := context.Background()
+
+	// Seed an old request, then make the lane go idle.
+	if err := store.Record(ctx, LiveRequest{
+		RequestID:     "req-1",
+		Ts:            time.Now().UTC().Add(-30 * time.Minute).Format(time.RFC3339),
+		TenantID:      "default",
+		Model:         "gpt-4o",
+		ModelCategory: "openai",
+		ProviderCode:  "openai",
+		Status:        "success",
+	}); err != nil {
+		t.Fatalf("Record: %v", err)
+	}
+	// Force EVERY activity key into the past. The scanner compares
+	// against LiveStreamLaneRetention (4h), so the activity must be
+	// older than that.
+	staleUnix := time.Now().Add(-LiveStreamLaneRetention - time.Minute).Unix()
+	for _, k := range mr.Keys() {
+		if strings.HasPrefix(k, liveStreamActivityPrefix) {
+			mr.Set(k, fmt.Sprintf("%d", staleUnix))
+		}
+	}
+
+	idleScanTs := time.Now().UTC()
+	if err := store.ScanAndRecordIdleMarkers(ctx, idleScanTs, LiveStreamLaneRetention); err != nil {
+		t.Fatalf("ScanAndRecordIdleMarkers: %v", err)
+	}
+
+	// Now a new real request arrives AFTER the idle tick. We pass a Ts
+	// strictly in the future of the idle scan, so the new request's
+	// score is GUARANTEED to be greater than the idle marker's score.
+	// (Using time.Now() in tests is racy — by the time ScanAndRecordIdleMarkers
+	// finishes, the clock may have advanced past the new request's Ts.)
+	futureTs := time.Now().UTC().Add(time.Hour)
+	if err := store.Record(ctx, LiveRequest{
+		RequestID:     "req-2",
+		Ts:            futureTs.Format(time.RFC3339),
+		TenantID:      "default",
+		Model:         "gpt-4o",
+		ModelCategory: "openai",
+		ProviderCode:  "openai",
+		Status:        "success",
+	}); err != nil {
+		t.Fatalf("Record req-2: %v", err)
+	}
+
+	// Tenant-scoped dim queue: this is what the production reader sees
+	// for tenant="default". The ZSet has three members — req-1 + req-2
+	// as slim tile JSON (because Record() encodes real requests that
+	// way) and the idle marker as bare request_id.
+	dimKey := tenantLiveStreamKey("default", "dim:vendor:openai")
+	members, err := rdb.ZRevRangeWithScores(ctx, dimKey, 0, -1).Result()
+	if err != nil {
+		t.Fatalf("ZRevRangeWithScores: %v", err)
+	}
+	if len(members) != 3 {
+		t.Fatalf("expected 3 members, got %d (%#v)", len(members), members)
+	}
+	// members[0] is leftmost (highest score), members[1] is middle,
+	// members[2] is rightmost. req-2 (future Ts) must be leftmost and
+	// the idle marker must be to the LEFT of req-1 (because its score
+	// was the scan time, which is more recent than req-1's 30-min-old
+	// Ts). So the order is: req-2 (leftmost), idle (middle), req-1
+	// (rightmost).
+	if requestIDFromDimensionQueueMember(members[0].Member.(string)) != "req-2" {
+		t.Fatalf("new request should be leftmost; got %q (members=%#v)", members[0].Member, members)
+	}
+	if requestIDFromDimensionQueueMember(members[1].Member.(string)) != idleMarkerRequestID("default", "vendor", "openai") {
+		t.Fatalf("middle member should be idle marker; got %q (members=%#v)", members[1].Member, members)
+	}
+	if requestIDFromDimensionQueueMember(members[2].Member.(string)) != "req-1" {
+		t.Fatalf("rightmost member should be the older req-1; got %q (members=%#v)", members[2].Member, members)
+	}
+	// Score order: req-2 > idle > req-1.
+	if !(members[0].Score > members[1].Score && members[1].Score > members[2].Score) {
+		t.Fatalf("expected strict score order: req-2 > idle > req-1, got %v %v %v", members[0].Score, members[1].Score, members[2].Score)
+	}
+}
+
+// TestIdleMarker_RefreshesTsOnEachTick verifies "更新其空闲时间" — between
+// two ticks, the idle marker's Ts in the detail hash advances. This is
+// the user-visible "空闲 X 分钟" counter: it resets to 0 on each tick and
+// then counts up until the next tick, so the operator always sees an
+// accurate "time since last heartbeat".
+func TestIdleMarker_RefreshesTsOnEachTick(t *testing.T) {
+	mr := miniredis.RunT(t)
+	defer mr.Close()
+
+	rdb := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	defer rdb.Close()
+	store := NewLiveStreamRedisStore(rdb)
+	ctx := context.Background()
+
+	if err := store.Record(ctx, LiveRequest{
+		RequestID:     "req-1",
+		Ts:            time.Now().UTC().Add(-30 * time.Minute).Format(time.RFC3339),
+		TenantID:      "default",
+		Model:         "gpt-4o",
+		ModelCategory: "openai",
+		ProviderCode:  "openai",
+		Status:        "success",
+	}); err != nil {
+		t.Fatalf("Record: %v", err)
+	}
+	// Force EVERY activity key into the past. The scanner compares
+	// against LiveStreamLaneRetention (4h), so the activity must be
+	// older than that.
+	staleUnix := time.Now().Add(-LiveStreamLaneRetention - time.Minute).Unix()
+	for _, k := range mr.Keys() {
+		if strings.HasPrefix(k, liveStreamActivityPrefix) {
+			mr.Set(k, fmt.Sprintf("%d", staleUnix))
+		}
+	}
+
+	firstTs := time.Now().UTC()
+	if err := store.ScanAndRecordIdleMarkers(ctx, firstTs, LiveStreamLaneRetention); err != nil {
+		t.Fatalf("first ScanAndRecordIdleMarkers: %v", err)
+	}
+	// Tenant-scoped RequestID is "idle-t-default-vendor-openai".
+	idleRequestID := idleMarkerRequestID("default", "vendor", "openai")
+	firstDetail, err := rdb.Get(ctx, liveStreamRequestDetailKey("default", idleRequestID)).Result()
+	if err != nil {
+		t.Fatalf("Get first detail: %v", err)
+	}
+	var firstReq LiveRequest
+	if err := json.Unmarshal([]byte(firstDetail), &firstReq); err != nil {
+		t.Fatalf("Unmarshal first detail: %v", err)
+	}
+	if firstReq.Ts != firstTs.UTC().Format(time.RFC3339) {
+		t.Fatalf("first idle Ts=%q want %q", firstReq.Ts, firstTs.UTC().Format(time.RFC3339))
+	}
+
+	// Second tick, 1 second later (simulated).
+	mr.FastForward(1 * time.Second)
+	secondTs := time.Now().UTC()
+	if err := store.ScanAndRecordIdleMarkers(ctx, secondTs, LiveStreamLaneRetention); err != nil {
+		t.Fatalf("second ScanAndRecordIdleMarkers: %v", err)
+	}
+	secondDetail, err := rdb.Get(ctx, liveStreamRequestDetailKey("default", idleRequestID)).Result()
+	if err != nil {
+		t.Fatalf("Get second detail: %v", err)
+	}
+	var secondReq LiveRequest
+	if err := json.Unmarshal([]byte(secondDetail), &secondReq); err != nil {
+		t.Fatalf("Unmarshal second detail: %v", err)
+	}
+	if secondReq.Ts != secondTs.UTC().Format(time.RFC3339) {
+		t.Fatalf("second idle Ts=%q want %q (must advance between ticks)", secondReq.Ts, secondTs.UTC().Format(time.RFC3339))
+	}
+	if secondReq.RequestID != firstReq.RequestID {
+		t.Fatalf("RequestID must stay stable across ticks; got %q then %q", firstReq.RequestID, secondReq.RequestID)
+	}
+}
+
+// TestIdleMarker_BothMainAndDimQueueUpdated verifies the dual-write fix:
+// after a single tick, the idle marker is present in BOTH the main queue
+// (so Replay() / Snapshot() see it) AND the dimension queue (so the
+// production reader SnapshotFromDimensionQueues sees it). The detail
+// hash payload is consistent across both.
+func TestIdleMarker_BothMainAndDimQueueUpdated(t *testing.T) {
+	mr := miniredis.RunT(t)
+	defer mr.Close()
+
+	rdb := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	defer rdb.Close()
+	store := NewLiveStreamRedisStore(rdb)
+	ctx := context.Background()
+
+	if err := store.Record(ctx, LiveRequest{
+		RequestID:     "req-1",
+		Ts:            time.Now().UTC().Add(-30 * time.Minute).Format(time.RFC3339),
+		TenantID:      "default",
+		Model:         "gpt-4o",
+		ModelCategory: "openai",
+		ProviderCode:  "openai",
+		Status:        "success",
+	}); err != nil {
+		t.Fatalf("Record: %v", err)
+	}
+	// Force EVERY activity key into the past. The scanner compares
+	// against LiveStreamLaneRetention (4h), so the activity must be
+	// older than that.
+	staleUnix := time.Now().Add(-LiveStreamLaneRetention - time.Minute).Unix()
+	for _, k := range mr.Keys() {
+		if strings.HasPrefix(k, liveStreamActivityPrefix) {
+			mr.Set(k, fmt.Sprintf("%d", staleUnix))
+		}
+	}
+
+	if err := store.ScanAndRecordIdleMarkers(ctx, time.Now().UTC(), LiveStreamLaneRetention); err != nil {
+		t.Fatalf("ScanAndRecordIdleMarkers: %v", err)
+	}
+
+	// Tenant-scoped RequestID.
+	idleRequestID := idleMarkerRequestID("default", "vendor", "openai")
+	tenantMainKey := tenantLiveStreamKey("default", "main")
+	tenantDimKey := tenantLiveStreamKey("default", "dim:vendor:openai")
+
+	// Tenant main queue must contain the idle marker (for Replay() / Snapshot()).
+	mainMembers, err := rdb.ZRange(ctx, tenantMainKey, 0, -1).Result()
+	if err != nil {
+		t.Fatalf("ZRange tenant main: %v", err)
+	}
+	foundInMain := false
+	for _, m := range mainMembers {
+		if m == idleRequestID {
+			foundInMain = true
+			break
+		}
+	}
+	if !foundInMain {
+		t.Fatalf("idle marker %q missing from tenant main queue %q (members=%#v)", idleRequestID, tenantMainKey, mainMembers)
+	}
+
+	// Tenant dim queue must ALSO contain the idle marker (for
+	// SnapshotFromDimensionQueues — the production reader).
+	dimMembers, err := rdb.ZRange(ctx, tenantDimKey, 0, -1).Result()
+	if err != nil {
+		t.Fatalf("ZRange tenant dim: %v", err)
+	}
+	foundInDim := false
+	for _, m := range dimMembers {
+		if m == idleRequestID {
+			foundInDim = true
+			break
+		}
+	}
+	if !foundInDim {
+		t.Fatalf("idle marker %q missing from tenant dim queue %q (members=%#v) — production reader would not see it", idleRequestID, tenantDimKey, dimMembers)
+	}
+
+	// Score must be the same in both queues (the marker's "logical time").
+	mainScore, err := rdb.ZScore(ctx, tenantMainKey, idleRequestID).Result()
+	if err != nil {
+		t.Fatalf("ZScore tenant main: %v", err)
+	}
+	dimScore, err := rdb.ZScore(ctx, tenantDimKey, idleRequestID).Result()
+	if err != nil {
+		t.Fatalf("ZScore tenant dim: %v", err)
+	}
+	if mainScore != dimScore {
+		t.Fatalf("idle marker score mismatch: main=%v dim=%v (must be identical so lane ordering agrees)", mainScore, dimScore)
+	}
+
+	// Detail hash must be readable from both global and tenant keys.
+	globalDetail, err := rdb.Get(ctx, liveStreamGlobalRequestDetailKey(idleRequestID)).Result()
+	if err != nil {
+		t.Fatalf("Get global detail: %v", err)
+	}
+	var req LiveRequest
+	if err := json.Unmarshal([]byte(globalDetail), &req); err != nil {
+		t.Fatalf("Unmarshal global detail: %v", err)
+	}
+	if req.Type != "idle_marker" {
+		t.Fatalf("detail type=%q want idle_marker", req.Type)
+	}
+	if req.ModelCategory != "openai" {
+		t.Fatalf("detail ModelCategory=%q want openai (vendor identity preserved)", req.ModelCategory)
+	}
 }
