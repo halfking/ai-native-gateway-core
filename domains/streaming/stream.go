@@ -388,6 +388,7 @@ func StreamChatWithPendingCaptureAndDiagnostics(
 			}
 			outcome.Interrupted = true
 			outcome.Reason = "stream_panic"
+			outcome.Kind = errorsx.KindUpstreamDown
 			if pc != nil {
 				pc.markInterrupted("stream_panic")
 			}
@@ -463,6 +464,7 @@ func StreamChatWithPendingCaptureAndDiagnostics(
 		}
 		outcome.Interrupted = true
 		outcome.Reason = "client_write_failed"
+		outcome.Kind = errorsx.KindUpstreamDown
 		outcome.Resumable = chunkCount < 5
 		outcome.ChunkCount = chunkCount
 		if capture != nil {
@@ -487,6 +489,7 @@ func StreamChatWithPendingCaptureAndDiagnostics(
 		safeFlush(flusher)
 		outcome.Interrupted = true
 		outcome.Reason = "first_byte_timeout"
+		outcome.Kind = errorsx.KindStreamTimeout
 		outcome.Resumable = true // First-byte timeout is resumable (no chunks sent)
 		outcome.ChunkCount = 0
 		return outcome
@@ -544,6 +547,7 @@ func StreamChatWithPendingCaptureAndDiagnostics(
 			safeFlush(flusher)
 			outcome.Interrupted = true
 			outcome.Reason = "json_error_in_stream"
+			outcome.Kind = errorsx.KindUpstreamDown
 			outcome.Resumable = true
 			outcome.ChunkCount = 0
 			return outcome
@@ -687,6 +691,7 @@ func StreamChatWithPendingCaptureAndDiagnostics(
 			}
 			outcome.Interrupted = true
 			outcome.Reason = "client_cancel"
+			outcome.Kind = errorsx.KindCanceled
 			outcome.ChunkCount = chunkCount
 			outcome.Resumable = false
 			return outcome
@@ -710,6 +715,7 @@ func StreamChatWithPendingCaptureAndDiagnostics(
 					}
 					outcome.Interrupted = true
 					outcome.Reason = "eof_without_done"
+					outcome.Kind = errorsx.KindUpstreamDown
 				}
 				// When the client has gone away but the capturer is
 				// still alive and the upstream DID send [DONE], do NOT
@@ -735,6 +741,7 @@ func StreamChatWithPendingCaptureAndDiagnostics(
 				}
 				outcome.Interrupted = true
 				outcome.Reason = "client_cancel"
+				outcome.Kind = errorsx.KindCanceled
 				outcome.ChunkCount = chunkCount
 			case streamReadTimeout:
 				slog.Warn("stream read timeout",
@@ -749,6 +756,7 @@ func StreamChatWithPendingCaptureAndDiagnostics(
 				}
 				outcome.Interrupted = true
 				outcome.Reason = "stream_timeout"
+				outcome.Kind = errorsx.KindStreamTimeout
 				outcome.Resumable = true // Timeout is resumable
 				outcome.ChunkCount = chunkCount
 			default:
@@ -758,6 +766,7 @@ func StreamChatWithPendingCaptureAndDiagnostics(
 				}
 				outcome.Interrupted = true
 				outcome.Reason = "read_error"
+				outcome.Kind = errorsx.KindUpstreamDown
 				outcome.Resumable = true // Read error is resumable
 				outcome.ChunkCount = chunkCount
 			}

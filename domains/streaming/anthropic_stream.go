@@ -10,6 +10,7 @@ import (
 	"runtime/debug"
 	"strings"
 	"time"
+	"github.com/kaixuan/llm-gateway-go/errorsx"
 
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/audit" //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/internal/ir"
@@ -59,6 +60,7 @@ func StreamOpenAIToAnthropicSSEWithDiagnostics(
 			}
 			outcome.Interrupted = true
 			outcome.Reason = "stream_panic"
+			outcome.Kind = errorsx.KindUpstreamDown
 			if pc != nil {
 				pc.markInterrupted("stream_panic")
 			}
@@ -199,6 +201,7 @@ func StreamOpenAIToAnthropicSSEWithDiagnostics(
 		writeAnthropicTail(w, flusher, pc, msgID, clientModel, finalFinishReason, outputTokens, inputTokens, capture)
 		outcome.Interrupted = true
 		outcome.Reason = "first_byte_timeout"
+		outcome.Kind = errorsx.KindStreamTimeout
 		return outcome
 	}
 
@@ -228,6 +231,7 @@ func StreamOpenAIToAnthropicSSEWithDiagnostics(
 			flusher.Flush()
 			outcome.Interrupted = true
 			outcome.Reason = "json_error_in_stream"
+			outcome.Kind = errorsx.KindUpstreamDown
 			outcome.Resumable = true
 			outcome.ChunkCount = 0
 			return outcome
@@ -435,6 +439,7 @@ func StreamOpenAIToAnthropicSSEWithDiagnostics(
 				}
 				outcome.Interrupted = true
 				outcome.Reason = "client_cancel"
+				outcome.Kind = errorsx.KindCanceled
 			case streamReadEOF:
 			case streamReadTimeout:
 				slog.Warn("anthropic stream read timeout", "error", readResult.err)
@@ -449,6 +454,7 @@ func StreamOpenAIToAnthropicSSEWithDiagnostics(
 				flusher.Flush()
 				outcome.Interrupted = true
 				outcome.Reason = "stream_timeout"
+				outcome.Kind = errorsx.KindStreamTimeout
 			default:
 				slog.Warn("anthropic stream read error", "error", readResult.err)
 				if capture != nil {
@@ -462,6 +468,7 @@ func StreamOpenAIToAnthropicSSEWithDiagnostics(
 				flusher.Flush()
 				outcome.Interrupted = true
 				outcome.Reason = "read_error"
+				outcome.Kind = errorsx.KindUpstreamDown
 			}
 			break
 		}
