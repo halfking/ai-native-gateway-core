@@ -214,6 +214,83 @@ func legacyStreamChat(w http.ResponseWriter, resp *http.Response) StreamOutcome 
 // The signature matches the plan: (params, cand) -> (*ExecuteResult, error).
 // The retry loop / circuit / credential-state handling is at the call
 // site (Execute()) and is not duplicated here.
+
+// selectUpstreamTimeout resolves the upstream call's context timeout.
+//
+// Resolution order:
+//   - For non-streaming: UpstreamTimeout (default 120s).
+//   - For streaming: StreamTimeout (default 900s) acts as a floor.
+//     AdaptiveTimeout (if configured) can only RAISE the timeout above
+//     StreamTimeout, never shorten it — long-running streams must not
+//     be killed by an over-eager adaptive calculation.
+//     NodeTimeout from hotconfig is the next floor; useful for slow nodes.
+//
+// Extracted from executeOpenAI (2026-07-29) so the streaming-timeout
+// invariant is unit-testable in isolation.
+func (e *Executor) selectUpstreamTimeout(params *ExecParams, cand provider.Candidate, requestSize int) time.Duration {
+	timeout := e.UpstreamTimeout
+	if !params.IsStream {
+		return timeout
+	}
+
+	timeout = e.StreamTimeout
+
+	// Apply adaptive timeout calculation
+	if e.TimeoutAdapter != nil {
+		var recentTTFB *time.Duration
+		if e.TTFBTracker != nil {
+			stats := e.TTFBTracker.Get(cand.CredentialID)
+			if stats != nil {
+				recentTTFB = &stats.RecentTTFB
+			}
+		}
+
+		adaptiveTimeout := e.TimeoutAdapter.Calculate(AdaptiveTimeoutInput{
+			RequestSize: requestSize,
+			IsSession:   params.SessionID != "",
+			IsRetry:     false,
+			AttemptNum:  0,
+			ProviderURL: cand.BaseURL,
+			RecentTTFB:  recentTTFB,
+		})
+
+		slog.Debug("adaptive_timeout calculated",
+			"credential_id", cand.CredentialID,
+			"model", params.Model,
+			"request_size", requestSize,
+			"is_session", params.SessionID != "",
+			"provider_url", cand.BaseURL,
+			"recent_ttfb_ms", func() int64 {
+				if recentTTFB != nil {
+					return recentTTFB.Milliseconds()
+				}
+				return 0
+			}(),
+			"calculated_timeout_ms", adaptiveTimeout.Milliseconds(),
+			"default_timeout_ms", timeout.Milliseconds(),
+		)
+
+		// Only use adaptive if it's longer than StreamTimeout —
+		// don't let it shorten long-running streaming responses.
+		if adaptiveTimeout > timeout {
+			timeout = adaptiveTimeout
+		}
+	}
+
+	// 2026-07-22: Override with NodeTimeout from hotconfig if larger.
+	nodeTimeout := NodeTimeout(LoadHotConfig())
+	if nodeTimeout > timeout {
+		slog.Debug("node_timeout override",
+			"original", timeout,
+			"override", nodeTimeout,
+			"credential_id", cand.CredentialID,
+		)
+		timeout = nodeTimeout
+	}
+
+	return timeout
+}
+
 func (e *Executor) executeOpenAI(
 	params *ExecParams,
 	cand provider.Candidate,
@@ -271,65 +348,7 @@ func (e *Executor) executeOpenAI(
 	// Previously the timeout was computed inside the anonymous closure, which
 	// caused it to be recomputed on every attempt — minor but cleaner here.
 	// 2026-07-16: Use adaptive timeout if available
-	timeout := e.UpstreamTimeout
-	if params.IsStream {
-		timeout = e.StreamTimeout
-
-		// Apply adaptive timeout calculation
-		if e.TimeoutAdapter != nil {
-			var recentTTFB *time.Duration
-			if e.TTFBTracker != nil {
-				stats := e.TTFBTracker.Get(cand.CredentialID)
-				if stats != nil {
-					recentTTFB = &stats.RecentTTFB
-				}
-			}
-
-			adaptiveTimeout := e.TimeoutAdapter.Calculate(AdaptiveTimeoutInput{
-				RequestSize: len(bodyBytes),
-				IsSession:   params.SessionID != "",
-				IsRetry:     false, // Will be updated in retry loop
-				AttemptNum:  0,
-				ProviderURL: cand.BaseURL,
-				RecentTTFB:  recentTTFB,
-			})
-
-			slog.Debug("adaptive_timeout calculated",
-				"credential_id", cand.CredentialID,
-				"model", params.Model,
-				"request_size", len(bodyBytes),
-				"is_session", params.SessionID != "",
-				"provider_url", cand.BaseURL,
-				"recent_ttfb_ms", func() int64 {
-					if recentTTFB != nil {
-						return recentTTFB.Milliseconds()
-					}
-					return 0
-				}(),
-				"calculated_timeout_ms", adaptiveTimeout.Milliseconds(),
-				"default_timeout_ms", timeout.Milliseconds(),
-			)
-
-			// Only use adaptive if it's longer than StreamTimeout —
-			// don't let it shorten long-running streaming responses.
-			if adaptiveTimeout > timeout {
-				timeout = adaptiveTimeout
-			}
-		}
-
-		// 2026-07-22: Override with NodeTimeout from hotconfig if larger.
-		// This gives operators a knob to extend the stream timeout for
-		// slow nodes without re-deploying.
-		nodeTimeout := NodeTimeout(LoadHotConfig())
-		if nodeTimeout > timeout {
-			slog.Debug("node_timeout override",
-				"original", timeout,
-				"override", nodeTimeout,
-				"credential_id", cand.CredentialID,
-			)
-			timeout = nodeTimeout
-		}
-	}
+	timeout := e.selectUpstreamTimeout(params, cand, len(bodyBytes))
 
 	// Ensure at least 1 retry is available for internal model_not_found retry.
 	// When maxRetries is 0 (from policy.RetryPerCredential), we still need

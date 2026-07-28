@@ -28,7 +28,7 @@ import (
 type AnomalyReport struct {
 	Timestamp      time.Time         `json:"timestamp"`
 	RequestID      string            `json:"request_id"`
-	AnomalyType    string            `json:"anomaly_type"` // "tool_calls_missing", "conversion_error", "semantic_incomplete"
+	AnomalyType    string            `json:"anomaly_type"` // "tool_calls_missing", "conversion_error", "semantic_incomplete", "raw_log_overflow", "raw_log_close_drained"
 	SourceProtocol string            `json:"source_protocol"`
 	TargetProtocol string            `json:"target_protocol"`
 	ConversionStep string            `json:"conversion_step"`
@@ -53,6 +53,17 @@ type AnomalyReport struct {
 	CredentialID    int    `json:"credential_id,omitempty"`
 	TraceID         string `json:"trace_id,omitempty"`
 }
+
+// Anomaly type constants (2026-07-28 §5.8). Defined as package-level
+// constants so producers can switch on the typed value rather than
+// a stringly-typed `anomaly_type` field.
+const (
+	AnomalyTypeToolCallsMissing    = "tool_calls_missing"
+	AnomalyTypeConversionError     = "conversion_error"
+	AnomalyTypeSemanticIncomplete  = "semantic_incomplete"
+	AnomalyTypeRawLogOverflow      = "raw_log_overflow"
+	AnomalyTypeRawLogCloseDrained  = "raw_log_close_drained"
+)
 
 // LockFreeAnomalyReporter 无锁异常报告器
 // 使用无锁队列替代互斥锁，提升高并发性能
@@ -566,4 +577,85 @@ func truncate(s string, maxLen int) string {
 		return s
 	}
 	return s[:maxLen] + fmt.Sprintf("... [truncated from %d bytes]", len(s))
+}
+
+// ReportRawLogOverflow queues an anomaly reporting that the async
+// raw-data logger dropped entries because the queue was full. The
+// envelope fields are best-effort; the key payload is the dropped
+// count and the latest raw-log location so operators can find the
+// gap on disk.
+//
+// 2026-07-28 §5.8: replaces the silent slog.Warn-only behaviour
+// from the pre-fix AsyncRawDataLogger.noteDroppedEntry.
+func (r *LockFreeAnomalyReporter) ReportRawLogOverflow(
+	ctx context.Context,
+	env RawCorrelationEnvelope,
+	dropped uint64,
+) {
+	if r == nil || !r.enabled.Load() {
+		return
+	}
+	report := AnomalyReport{
+		Timestamp:      time.Now(),
+		RequestID:      "raw_logger",
+		AnomalyType:    AnomalyTypeRawLogOverflow,
+		SourceProtocol: "raw_logger",
+		TargetProtocol: "raw_logger",
+		ConversionStep: "queue_overflow",
+		ErrorMessage:   fmt.Sprintf("raw log queue overflow; dropped=%d", dropped),
+		Confidence:     1.0,
+		Analysis: map[string]string{
+			"dropped_count": fmt.Sprintf("%d", dropped),
+			"cause":         "async_raw_logger: queue full, dropping log entries",
+		},
+		ClientRequestID: env.ClientRequestID,
+		GWSessionID:     env.GWSessionID,
+		GWTaskID:        env.GWTaskID,
+		TenantID:        env.TenantID,
+		ProviderID:      env.ProviderID,
+		CredentialID:    env.CredentialID,
+		TraceID:         env.TraceID,
+	}
+	r.stampRawLogLocation(&report)
+	if !r.enqueue(report) {
+		slog.Warn("lockfree_anomaly_reporter: queue full, dropping raw_log_overflow report",
+			"dropped_count", dropped)
+	}
+}
+
+// ReportRawLogCloseDrained queues an anomaly when Close() exits with
+// items still in the queue. `remaining` is the number of items that
+// could not be drained before the flush deadline (5*flushDelay).
+//
+// 2026-07-28 §5.8: paired with the close_drained stub entry written
+// to the audit log so operators can correlate the anomaly with the
+// on-disk "shutdown" row.
+func (r *LockFreeAnomalyReporter) ReportRawLogCloseDrained(
+	ctx context.Context,
+	env RawCorrelationEnvelope,
+	remaining uint64,
+) {
+	if r == nil || !r.enabled.Load() {
+		return
+	}
+	report := AnomalyReport{
+		Timestamp:      time.Now(),
+		RequestID:      "raw_logger",
+		AnomalyType:    AnomalyTypeRawLogCloseDrained,
+		SourceProtocol: "raw_logger",
+		TargetProtocol: "raw_logger",
+		ConversionStep: "shutdown",
+		ErrorMessage:   fmt.Sprintf("raw logger close drained with remaining=%d", remaining),
+		Confidence:     1.0,
+		Analysis: map[string]string{
+			"remaining_count": fmt.Sprintf("%d", remaining),
+			"cause":           "AsyncRawDataLogger.Close exited before draining the queue",
+		},
+		GWSessionID: env.GWSessionID,
+	}
+	r.stampRawLogLocation(&report)
+	if !r.enqueue(report) {
+		slog.Warn("lockfree_anomaly_reporter: queue full, dropping raw_log_close_drained report",
+			"remaining", remaining)
+	}
 }

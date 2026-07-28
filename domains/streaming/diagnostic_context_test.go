@@ -309,7 +309,8 @@ func TestDiagnosticHelpers_PanicIsolation(t *testing.T) {
 	assert.NotPanics(t, func() {
 		logRawUpstreamFrame(
 			&DiagnosticContext{RawLogger: &panickingRawLogger{}},
-			"req-panic", "anthropic", []byte(`{"type":"ping"}`),
+			&executors.AuditContext{RequestID: "req-panic"},
+			[]byte(`{"type":"ping"}`),
 		)
 	}, "a panicking raw logger must not abort the stream loop")
 
@@ -416,8 +417,9 @@ func TestDiagnosticHelpers_NilSafe(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			assert.NotPanics(t, func() {
-				logRawUpstreamFrame(tc.diagnostics, "req", "anthropic", []byte(`{"type":"ping"}`))
-				logRawUpstreamFrame(tc.diagnostics, "req", "anthropic", nil)
+				audit := &executors.AuditContext{RequestID: "req"}
+				logRawUpstreamFrame(tc.diagnostics, audit, []byte(`{"type":"ping"}`))
+				logRawUpstreamFrame(tc.diagnostics, audit, nil)
 				reportConversionAnomaly(tc.diagnostics, "req", "anthropic", "openai", "step",
 					[]byte("raw"), errors.New("boom"), nil)
 				reportConversionAnomaly(tc.diagnostics, "req", "anthropic", "openai", "step",
