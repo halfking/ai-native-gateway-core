@@ -1,12 +1,18 @@
 package main
 
 import (
+	"context"
 	"net/http"
+	"os"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/kaixuan/llm-gateway-go/admin"
-	"github.com/kaixuan/llm-gateway-go/plugin-runtime"
+	pluginruntime "github.com/kaixuan/llm-gateway-go/plugin-runtime"
 )
+
+type pluginEntitlementAuthorizer interface {
+	Allowed(ctx context.Context, tenantID, moduleID string) (bool, error)
+}
 
 // registerPluginAPIProxy mounts GET /plugins/{pluginId}/api/{rest...}, admin-auth-gated.
 // The {rest...} tail makes it unambiguously more specific than the static-file route
@@ -15,7 +21,7 @@ import (
 // X-Caller-Tenant so the proxy signs the forwarded request with the REAL tenant (not a
 // client-forged/default one). pluginBaseFor returns the plugin's listen URL for a
 // pluginID ("" => not running => 502).
-func registerPluginAPIProxy(mux *http.ServeMux, secret []byte, pluginBaseFor func(pluginID string) string, pool *pgxpool.Pool, adminSecret string) {
+func registerPluginAPIProxy(mux *http.ServeMux, secret []byte, pluginBaseFor func(pluginID string) string, moduleKeyFor func(pluginID string) (moduleID string, licenseRequired bool), authorizer pluginEntitlementAuthorizer, pool *pgxpool.Pool, adminSecret string) {
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		pluginID := r.PathValue("pluginId")
 		base := pluginBaseFor(pluginID)
@@ -23,9 +29,28 @@ func registerPluginAPIProxy(mux *http.ServeMux, secret []byte, pluginBaseFor fun
 			http.Error(w, "plugin not running", http.StatusBadGateway)
 			return
 		}
+		auth := admin.GetAuthContext(r)
+		if os.Getenv("LLM_GATEWAY_PLUGIN_ENTITLEMENT_GATE") == "true" {
+			moduleID, licenseRequired := moduleKeyFor(pluginID)
+			if licenseRequired {
+				if authorizer == nil {
+					http.Error(w, "plugin_entitlement_unavailable", http.StatusServiceUnavailable)
+					return
+				}
+				active, err := authorizer.Allowed(r.Context(), auth.TenantID, moduleID)
+				if err != nil {
+					http.Error(w, "plugin_entitlement_unavailable", http.StatusServiceUnavailable)
+					return
+				}
+				if !active {
+					http.Error(w, "plugin_entitlement_required", http.StatusForbidden)
+					return
+				}
+			}
+		}
 		// Inject the verified tenant (set by AdminMiddleware into AuthContext) so the
 		// proxy's SignHeaders uses the real tenant, not a client-forged header.
-		if auth := admin.GetAuthContext(r); auth != nil && auth.TenantID != "" {
+		if auth != nil && auth.TenantID != "" {
 			r.Header.Set("X-Caller-Tenant", auth.TenantID)
 		}
 		pluginruntime.PluginAPIProxy(base, secret).ServeHTTP(w, r)
