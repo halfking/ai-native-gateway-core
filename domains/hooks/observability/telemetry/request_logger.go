@@ -7,9 +7,11 @@ import (
 	"log/slog"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/kaixuan/llm-gateway-go/domains/dbdegradation"
 )
@@ -37,16 +39,54 @@ const (
 	StatusFailure = "failure"
 )
 
+type requestLoggerDB interface {
+	Exec(context.Context, string, ...any) (pgconn.CommandTag, error)
+	Begin(context.Context) (pgx.Tx, error)
+}
+
+const (
+	overflowMarkerKind   = "request_logger_overflow"
+	overflowRecordPrefix = "request_logger:overflow:"
+)
+
+type requestLoggerOverflowMarker struct {
+	Kind      string `json:"kind"`
+	RequestID string `json:"request_id"`
+	Stage     int    `json:"stage"`
+	Status    string `json:"status"`
+	Reason    string `json:"reason"`
+}
+
+type RequestLoggerStats struct {
+	QueueOverflow         uint64
+	FallbackWriteFailure  uint64
+	UnrecoverableFallback uint64
+	ReplayAttempt         uint64
+	ReplaySuccess         uint64
+	ReplayFailure         uint64
+	ReplayMarker          uint64
+}
+
 type RequestLogger struct {
-	db              *pgxpool.Pool
-	asyncQueue      chan *LogUpdate
-	config          *RequestLoggerConfig
-	wg              sync.WaitGroup
-	done            chan struct{}
-	fallback        dbdegradation.BackupWriter
-	degraded        bool
-	mu              sync.RWMutex
-	anomalyRecorder DataAnomalyRecorder
+	db                    requestLoggerDB
+	asyncQueue            chan *LogUpdate
+	config                *RequestLoggerConfig
+	wg                    sync.WaitGroup
+	done                  chan struct{}
+	stopOnce              sync.Once
+	lifecycleMu           sync.RWMutex
+	stopped               bool
+	fallback              dbdegradation.BackupWriter
+	degraded              bool
+	mu                    sync.RWMutex
+	anomalyRecorder       DataAnomalyRecorder
+	queueOverflow         atomic.Uint64
+	fallbackWriteFailure  atomic.Uint64
+	unrecoverableFallback atomic.Uint64
+	replayAttempt         atomic.Uint64
+	replaySuccess         atomic.Uint64
+	replayFailure         atomic.Uint64
+	replayMarker          atomic.Uint64
 }
 
 type RequestLoggerConfig struct {
@@ -61,6 +101,7 @@ type InitialRequest struct {
 	TenantID    string
 	SessionID   string
 	ClientModel string
+	Provisional bool
 }
 
 type LogUpdate struct {
@@ -94,10 +135,12 @@ func NewRequestLogger(pool *pgxpool.Pool, cfg *RequestLoggerConfig) *RequestLogg
 		}
 	}
 	rl := &RequestLogger{
-		db:         pool,
 		asyncQueue: make(chan *LogUpdate, cfg.QueueSize),
 		config:     cfg,
 		done:       make(chan struct{}),
+	}
+	if pool != nil {
+		rl.db = pool
 	}
 	rl.wg.Add(1)
 	go rl.worker()
@@ -149,32 +192,87 @@ func (rl *RequestLogger) anomalyRecorderSnapshot() DataAnomalyRecorder {
 	return rl.anomalyRecorder
 }
 
+func (rl *RequestLogger) upsertInitial(ctx context.Context, req *InitialRequest) error {
+	_, err := rl.db.Exec(ctx, `
+		INSERT INTO request_wal_hot (request_id, tenant_id, gw_session_id, status, stage, client_model, created_at)
+		VALUES ($1, $2, $3, $4, $5, $6, NOW())
+		ON CONFLICT (request_id) DO UPDATE SET
+			tenant_id = COALESCE(NULLIF(EXCLUDED.tenant_id, 'default'), request_wal_hot.tenant_id),
+			gw_session_id = CASE
+				WHEN $7 THEN request_wal_hot.gw_session_id
+				WHEN NULLIF($3, '') IS NULL THEN request_wal_hot.gw_session_id
+				ELSE $3
+			END,
+			status = CASE
+				WHEN request_wal_hot.status IN ('success', 'failure') THEN request_wal_hot.status
+				ELSE COALESCE(NULLIF(EXCLUDED.status, ''), request_wal_hot.status)
+			END,
+			stage = CASE
+				WHEN request_wal_hot.status IN ('success', 'failure') THEN request_wal_hot.stage
+				ELSE COALESCE(EXCLUDED.stage, request_wal_hot.stage)
+			END,
+			client_model = COALESCE(NULLIF(EXCLUDED.client_model, ''), request_wal_hot.client_model)
+	`, req.RequestID, req.TenantID, req.SessionID, StatusPending, StageReceived, req.ClientModel, req.Provisional)
+	return err
+}
+
+func (rl *RequestLogger) OverflowCounts() RequestLoggerStats {
+	if rl == nil {
+		return RequestLoggerStats{}
+	}
+	return RequestLoggerStats{
+		QueueOverflow:         rl.queueOverflow.Load(),
+		FallbackWriteFailure:  rl.fallbackWriteFailure.Load(),
+		UnrecoverableFallback: rl.unrecoverableFallback.Load(),
+		ReplayAttempt:         rl.replayAttempt.Load(),
+		ReplaySuccess:         rl.replaySuccess.Load(),
+		ReplayFailure:         rl.replayFailure.Load(),
+		ReplayMarker:          rl.replayMarker.Load(),
+	}
+}
+
 func (rl *RequestLogger) ReplayFallback(ctx context.Context, record dbdegradation.BackupRecord) error {
+	rl.replayAttempt.Add(1)
+	if strings.HasPrefix(record.RecordKey, overflowRecordPrefix) {
+		var marker requestLoggerOverflowMarker
+		if err := json.Unmarshal(record.Payload, &marker); err != nil {
+			rl.replayFailure.Add(1)
+			return fmt.Errorf("decode request logger overflow marker: %w", err)
+		}
+		if marker.Kind != overflowMarkerKind {
+			rl.replayFailure.Add(1)
+			return fmt.Errorf("invalid request logger overflow marker kind %q", marker.Kind)
+		}
+		rl.replayMarker.Add(1)
+		rl.replaySuccess.Add(1)
+		return nil
+	}
+	var err error
 	if strings.HasSuffix(record.RecordKey, ":initial") {
 		var req InitialRequest
-		if err := json.Unmarshal(record.Payload, &req); err != nil {
-			return err
+		if err = json.Unmarshal(record.Payload, &req); err == nil {
+			if rl.db == nil {
+				err = fmt.Errorf("request logger database not configured")
+			} else {
+				err = rl.upsertInitial(ctx, &req)
+			}
 		}
-		if rl.db == nil {
-			return fmt.Errorf("request logger database not configured")
+	} else {
+		var update LogUpdate
+		if err = json.Unmarshal(record.Payload, &update); err == nil {
+			if rl.db == nil {
+				err = fmt.Errorf("request logger database not configured")
+			} else {
+				err = rl.persistUpdate(ctx, &update)
+			}
 		}
-		_, err := rl.db.Exec(ctx, `
-			INSERT INTO request_wal_hot (request_id, tenant_id, gw_session_id, status, stage, client_model, created_at)
-			VALUES ($1, $2, $3, $4, $5, $6, NOW())
-			ON CONFLICT (request_id) DO UPDATE SET
-				tenant_id = EXCLUDED.tenant_id,
-				gw_session_id = EXCLUDED.gw_session_id,
-				status = COALESCE(NULLIF(EXCLUDED.status, ''), request_wal_hot.status),
-				stage = COALESCE(EXCLUDED.stage, request_wal_hot.stage),
-				client_model = COALESCE(NULLIF(EXCLUDED.client_model, ''), request_wal_hot.client_model)
-		`, req.RequestID, req.TenantID, req.SessionID, StatusPending, StageReceived, req.ClientModel)
+	}
+	if err != nil {
+		rl.replayFailure.Add(1)
 		return err
 	}
-	var update LogUpdate
-	if err := json.Unmarshal(record.Payload, &update); err != nil {
-		return err
-	}
-	return rl.persistUpdate(ctx, &update)
+	rl.replaySuccess.Add(1)
+	return nil
 }
 
 func (rl *RequestLogger) SetDegraded(enabled bool) {
@@ -198,6 +296,11 @@ func (rl *RequestLogger) CreateInitial(ctx context.Context, req *InitialRequest)
 	if !rl.Enabled() {
 		return nil
 	}
+	rl.lifecycleMu.RLock()
+	defer rl.lifecycleMu.RUnlock()
+	if rl.stopped {
+		return nil
+	}
 	degraded, fallback := rl.degradedAndFallback()
 	if degraded && fallback != nil {
 		return fallback.WriteRequestWAL(ctx, req.RequestID+":initial", req)
@@ -215,16 +318,7 @@ func (rl *RequestLogger) CreateInitial(ctx context.Context, req *InitialRequest)
 	// land in a non-default partition (which would block subsequent
 	// UPDATE/DELETE once that partition is converted to columnar storage
 	// by the background migrator).
-	_, err := rl.db.Exec(ctx, `
-			INSERT INTO request_wal_hot (request_id, tenant_id, gw_session_id, status, stage, client_model, created_at)
-			VALUES ($1, $2, $3, $4, $5, $6, NOW())
-			ON CONFLICT (request_id) DO UPDATE SET
-				tenant_id = COALESCE(NULLIF(EXCLUDED.tenant_id, 'default'), request_wal_hot.tenant_id),
-				gw_session_id = COALESCE(NULLIF(EXCLUDED.gw_session_id, ''), request_wal_hot.gw_session_id),
-				status = COALESCE(NULLIF(EXCLUDED.status, ''), request_wal_hot.status),
-				stage = COALESCE(EXCLUDED.stage, request_wal_hot.stage),
-				client_model = COALESCE(NULLIF(EXCLUDED.client_model, ''), request_wal_hot.client_model)
-		`, req.RequestID, req.TenantID, req.SessionID, StatusPending, StageReceived, req.ClientModel)
+	err := rl.upsertInitial(ctx, req)
 
 	if err != nil {
 		if fallback := rl.fallbackWriter(); fallback != nil {
@@ -241,13 +335,25 @@ func (rl *RequestLogger) CreateInitial(ctx context.Context, req *InitialRequest)
 	return nil
 }
 
+func (rl *RequestLogger) accepting() bool {
+	rl.lifecycleMu.RLock()
+	defer rl.lifecycleMu.RUnlock()
+	return !rl.stopped
+}
+
 func (rl *RequestLogger) Update(update *LogUpdate) {
 	if !rl.Enabled() || update == nil {
 		return
 	}
 	degraded, fallback := rl.degradedAndFallback()
 	if degraded && fallback != nil {
+		rl.lifecycleMu.RLock()
+		defer rl.lifecycleMu.RUnlock()
+		if rl.stopped {
+			return
+		}
 		if err := fallback.WriteRequestWAL(context.Background(), update.RequestID+":update", update); err != nil {
+			rl.fallbackWriteFailure.Add(1)
 			slog.Warn("request_logger: degraded update fallback failed", "request_id", update.RequestID, "error", err)
 		}
 		return
@@ -258,17 +364,25 @@ func (rl *RequestLogger) Update(update *LogUpdate) {
 		}
 		return
 	}
+	rl.lifecycleMu.RLock()
+	defer rl.lifecycleMu.RUnlock()
+	if rl.stopped {
+		return
+	}
 	select {
 	case rl.asyncQueue <- update:
 	default:
-		slog.Warn("request_logger: async queue full, dropping update",
-			"request_id", update.RequestID,
-			"stage", update.Stage)
+		rl.recordOverflow(update, "queue_full")
 	}
 }
 
 func (rl *RequestLogger) UpdateSync(ctx context.Context, update *LogUpdate) error {
 	if !rl.Enabled() || update == nil {
+		return nil
+	}
+	rl.lifecycleMu.RLock()
+	defer rl.lifecycleMu.RUnlock()
+	if rl.stopped {
 		return nil
 	}
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
@@ -283,6 +397,63 @@ func (rl *RequestLogger) UpdateSync(ctx context.Context, update *LogUpdate) erro
 	return err
 }
 
+func (rl *RequestLogger) recordOverflow(update *LogUpdate, reason string) {
+	rl.queueOverflow.Add(1)
+	ctx, cancel := context.WithTimeout(context.Background(), 25*time.Millisecond)
+	defer cancel()
+	fallback := rl.fallbackWriter()
+	if fallback != nil {
+		if err := fallback.WriteRequestWAL(ctx, update.RequestID+":update", update); err == nil {
+			return
+		} else {
+			rl.fallbackWriteFailure.Add(1)
+			slog.Warn("request_logger: overflow update fallback failed", "request_id", update.RequestID, "error", err)
+		}
+	}
+	rl.writeOverflowMarker(update, reason)
+}
+
+func (rl *RequestLogger) writeOverflowMarker(update *LogUpdate, reason string) {
+	fallback := rl.fallbackWriter()
+	if fallback == nil {
+		rl.unrecoverableFallback.Add(1)
+		slog.Warn("request_logger: overflow marker has no fallback writer", "request_id", update.RequestID, "reason", reason)
+		return
+	}
+	marker := requestLoggerOverflowMarker{
+		Kind:      overflowMarkerKind,
+		RequestID: update.RequestID,
+		Reason:    reason,
+		Stage:     update.Stage,
+		Status:    update.Status,
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 25*time.Millisecond)
+	defer cancel()
+	if err := fallback.WriteRequestWAL(ctx, overflowRecordPrefix+update.RequestID, marker); err != nil {
+		rl.fallbackWriteFailure.Add(1)
+		rl.unrecoverableFallback.Add(1)
+		slog.Warn("request_logger: overflow marker failed", "request_id", update.RequestID, "reason", reason, "error", err)
+	}
+}
+
+func (rl *RequestLogger) fallbackUpdates(ctx context.Context, updates []*LogUpdate) {
+	fallback := rl.fallbackWriter()
+	if fallback == nil {
+		for _, update := range updates {
+			rl.unrecoverableFallback.Add(1)
+			slog.Warn("request_logger: update has no fallback writer", "request_id", update.RequestID)
+		}
+		return
+	}
+	for _, update := range updates {
+		if err := fallback.WriteRequestWAL(ctx, update.RequestID+":update", update); err != nil {
+			rl.fallbackWriteFailure.Add(1)
+			slog.Warn("request_logger: update fallback failed", "request_id", update.RequestID, "error", err)
+			rl.writeOverflowMarker(update, "fallback_write_failure")
+		}
+	}
+}
+
 func (rl *RequestLogger) worker() {
 	defer rl.wg.Done()
 
@@ -293,9 +464,21 @@ func (rl *RequestLogger) worker() {
 	for {
 		select {
 		case <-rl.done:
-			rl.flushBatch(batch)
-			return
+			for {
+				select {
+				case update := <-rl.asyncQueue:
+					if update != nil {
+						batch = append(batch, update)
+					}
+				default:
+					rl.flushBatch(batch)
+					return
+				}
+			}
 		case update := <-rl.asyncQueue:
+			if update == nil {
+				continue
+			}
 			batch = append(batch, update)
 			if len(batch) >= rl.config.BatchSize {
 				rl.flushBatch(batch)
@@ -314,16 +497,21 @@ func (rl *RequestLogger) worker() {
 }
 
 func (rl *RequestLogger) flushBatch(batch []*LogUpdate) {
-	if len(batch) == 0 || rl.db == nil {
+	if len(batch) == 0 {
 		return
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
+	if rl.db == nil {
+		rl.fallbackUpdates(ctx, batch)
+		return
+	}
 
 	tx, err := rl.db.Begin(ctx)
 	if err != nil {
 		slog.Warn("request_logger: flush batch begin failed", "error", err)
+		rl.fallbackUpdates(ctx, batch)
 		return
 	}
 	//nolint:errcheck
@@ -358,27 +546,14 @@ func (rl *RequestLogger) flushBatch(batch []*LogUpdate) {
 				)
 				cancel()
 			}
-			if fallback := rl.fallbackWriter(); fallback != nil {
-				for j := i + 1; j < len(batch); j++ {
-					remaining := batch[j]
-					if fallbackErr := fallback.WriteRequestWAL(ctx, remaining.RequestID+":update", remaining); fallbackErr != nil {
-						slog.Warn("request_logger: update fallback failed",
-							"request_id", remaining.RequestID, "error", fallbackErr)
-					}
-				}
-			} else {
-				for j := i + 1; j < len(batch); j++ {
-					remaining := batch[j]
-					slog.Warn("request_logger: persist update skipped due to prior tx abort",
-						"request_id", remaining.RequestID)
-				}
-			}
+			rl.fallbackUpdates(ctx, batch)
 			return
 		}
 	}
 
 	if err := tx.Commit(ctx); err != nil {
 		slog.Warn("request_logger: flush batch commit failed", "error", err)
+		rl.fallbackUpdates(ctx, batch)
 	}
 }
 
@@ -509,7 +684,18 @@ func (rl *RequestLogger) persistUpdateInTx(ctx context.Context, tx pgx.Tx, updat
 }
 
 func (rl *RequestLogger) Stop() {
-	close(rl.done)
+	if rl == nil {
+		return
+	}
+	if rl.done == nil {
+		return
+	}
+	rl.stopOnce.Do(func() {
+		rl.lifecycleMu.Lock()
+		rl.stopped = true
+		rl.lifecycleMu.Unlock()
+		close(rl.done)
+	})
 	rl.wg.Wait()
 }
 
