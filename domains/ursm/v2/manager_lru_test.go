@@ -152,6 +152,47 @@ func TestFilterAndScore_LRUDisabledWhenSizeZero(t *testing.T) {
 	require.Error(t, err, "no mirror → Redis death must surface (mirror was disabled)")
 }
 
+// TestFilterAndScoreReady_RejectsMirrorWhenNotReady pins the audit invariant
+// (docs/architecture/2026-07-28-routing-state-anomaly-audit.md §4.3):
+// the NodeMirror LRU is a read accelerator, NOT a bypass of the recovery
+// gate. When the caller passes ready=false, the manager must return
+// "ursm.v2: not ready" even if every requested seed is already cached —
+// otherwise a stale recovery snapshot could keep serving traffic after the
+// pipeline has been closed for incidents.
+//
+// 2026-07-28 audit regression: there is a second, duplicate `if !ready` check
+// at manager.go:~line 240 guarding the miss path. That check is currently
+// dead code (line 230 already returned), but it is an intentional safeguard
+// — this test makes sure the safeguard's contract (ready=false always
+// rejects) cannot be removed by accident during a refactor.
+func TestFilterAndScoreReady_RejectsMirrorWhenNotReady(t *testing.T) {
+	mgr, mr, _ := newMirrorManager(t)
+	seedNode(t, mr, 21, "m", 1, true, 50, 0.9)
+
+	seeds := []CandidateSeed{{ProviderID: 1, CredentialID: 21, RawModel: "m", TenantID: "t"}}
+
+	// First populate the LRU with ready=true. The mirror must be warm now.
+	_, err := mgr.FilterAndScore(context.Background(), seeds)
+	require.NoError(t, err)
+	require.NotNil(t, mgr.nodeMirror, "mirror must be enabled for this test")
+
+	// Kill Redis so ONLY the LRU could answer. The contract under test is:
+	// even with the mirror populated, ready=false MUST reject.
+	mr.Close()
+
+	_, err = mgr.FilterAndScoreReady(context.Background(), seeds, false)
+	require.Error(t, err, "ready=false must reject even when the LRU has the answer")
+	require.Contains(t, err.Error(), "not ready",
+		"rejection reason must be explicit so router.go can fall back to LegacyStateBackend")
+
+	// And ready=true on the same data still works (mirror is consulted, no Redis IO).
+	views, err := mgr.FilterAndScoreReady(context.Background(), seeds, true)
+	require.NoError(t, err, "ready=true must consult the LRU when Redis is down")
+	require.Len(t, views, 1)
+	assert.True(t, views[0].Available,
+		"mirror-cached availability must survive when ready=true")
+}
+
 // --- test helpers ---
 
 func apiNodeView(credID int, model string, gen int64, available bool) api.NodeView {
