@@ -71,8 +71,7 @@ members, err := s.rdb.ZRevRange(ctx, key, 0, int64(LiveStreamLaneVisibleLimit-1)
 `SnapshotFromDimensionQueues` 也能读到：
 
 - **Global scope**：写入 main queue + global dim queue
-- **Tenant scope**：写入 tenant main queue + tenant dim queue + global dim queue
-  （global dim queue 让 super-admin 视图也能看到）
+- **Tenant scope**：写入 tenant main queue + tenant dim queue；不再写 global dim queue，否则超管视图会把多个 tenant 的同一泳道 idle marker 合并成多个相同空闲块
 - **Dimension key 防御**：`dimensionKey` 为空时 fallback 到 main queue only
 - **Dimension key 转义**：`:` 和 `/` 替换为 `_`，与 `idleMarkerRequestID` 一致
 
