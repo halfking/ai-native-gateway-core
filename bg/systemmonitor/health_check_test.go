@@ -21,15 +21,20 @@ import (
 // fakeRecoveryGate implements RecoveryGate and records every call so
 // tests can assert on (count, reasons, ttl) without spinning up Redis.
 type fakeRecoveryGate struct {
-	mu      sync.Mutex
-	calls   []fakeGateCall
-	failAll bool // when true, every MarkClosedDebounced returns an error
+	mu           sync.Mutex
+	calls        []fakeGateCall
+	restoreCalls []fakeRestoreCall
+	failAll      bool  // when true, every MarkClosedDebounced returns an error
+	restoreErr   error // optional override for RestoreIfClosed
+	restoreCount int   // what RestoreIfClosed should report
 }
 
 type fakeGateCall struct {
 	reason      string
 	debounceTTL time.Duration
 }
+
+type fakeRestoreCall struct{}
 
 func (g *fakeRecoveryGate) MarkClosedDebounced(_ context.Context, reason string, debounceTTL time.Duration) (bool, error) {
 	g.mu.Lock()
@@ -39,6 +44,16 @@ func (g *fakeRecoveryGate) MarkClosedDebounced(_ context.Context, reason string,
 	}
 	g.calls = append(g.calls, fakeGateCall{reason: reason, debounceTTL: debounceTTL})
 	return true, nil
+}
+
+func (g *fakeRecoveryGate) RestoreIfClosed(_ context.Context) (int, error) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.restoreCalls = append(g.restoreCalls, fakeRestoreCall{})
+	if g.restoreErr != nil {
+		return 0, g.restoreErr
+	}
+	return g.restoreCount, nil
 }
 
 func (g *fakeRecoveryGate) callCount() int {
@@ -199,5 +214,77 @@ func TestCheckRedisHealthOnce_GateErrorDoesNotPanic(t *testing.T) {
 		// failAll returns (false, error) — the calls slice stays empty
 		// because the fake records calls only on success.
 		t.Fatalf("fake recorded %d calls under failAll=true", len(gate.calls))
+	}
+}
+
+// TestCheckRedisHealthOnce_TriggersRestoreOnRecovery verifies the
+// audit follow-up #6 wiring: on the fallback → healthy transition,
+// checkRedisHealthOnce calls RecoveryGate.RestoreIfClosed. This
+// complements TestCheckRedisHealthOnce_TriggersAtThreshold (the close
+// side) — together they implement the full incident lifecycle.
+func TestCheckRedisHealthOnce_TriggersRestoreOnRecovery(t *testing.T) {
+	gate := &fakeRecoveryGate{restoreCount: 7}
+	sm := newHealthCheckSystemMonitor(gate, 3, time.Minute, func(_ context.Context) error {
+		return errors.New("redis error")
+	})
+
+	// Drive past the close threshold so we enter fallback + auto-close.
+	for i := 0; i < 3; i++ {
+		sm.checkRedisHealthOnce(context.Background())
+	}
+	if !sm.IsFallback() {
+		t.Fatalf("setup: monitor must be in fallback after 3 failures")
+	}
+	gate.mu.Lock()
+	initialCloseCalls := len(gate.calls)
+	gate.mu.Unlock()
+	if initialCloseCalls != 1 {
+		t.Fatalf("setup: expected 1 close call, got %d", initialCloseCalls)
+	}
+
+	// Now Redis recovers — flip the ping stub to success and drive one
+	// more tick. The monitor must clear fallback AND call RestoreIfClosed.
+	sm.pingFn = func(_ context.Context) error { return nil }
+	sm.checkRedisHealthOnce(context.Background())
+
+	if sm.IsFallback() {
+		t.Fatalf("monitor must exit fallback after recovery")
+	}
+	gate.mu.Lock()
+	defer gate.mu.Unlock()
+	if len(gate.restoreCalls) != 1 {
+		t.Fatalf("RestoreIfClosed must be called exactly once on recovery; got %d",
+			len(gate.restoreCalls))
+	}
+}
+
+// TestCheckRedisHealthOnce_RestoreErrorDoesNotPanic verifies that a
+// failing RecoveryGate.RestoreIfClosed is swallowed (best-effort) and
+// does not crash the health-check loop on the recovery transition.
+func TestCheckRedisHealthOnce_RestoreErrorDoesNotPanic(t *testing.T) {
+	gate := &fakeRecoveryGate{restoreErr: errors.New("simulated restore failure")}
+	sm := newHealthCheckSystemMonitor(gate, 2, time.Minute, func(_ context.Context) error {
+		return errors.New("redis error")
+	})
+
+	// Drive into fallback (2 failures to hit threshold of 2).
+	sm.checkRedisHealthOnce(context.Background())
+	sm.checkRedisHealthOnce(context.Background())
+	if !sm.IsFallback() {
+		t.Fatalf("setup: must be in fallback")
+	}
+
+	// Recover.
+	sm.pingFn = func(_ context.Context) error { return nil }
+	// Should not panic even though RestoreIfClosed returns an error.
+	sm.checkRedisHealthOnce(context.Background())
+
+	if sm.IsFallback() {
+		t.Fatalf("fallback must clear even when restore fails")
+	}
+	gate.mu.Lock()
+	defer gate.mu.Unlock()
+	if len(gate.restoreCalls) != 1 {
+		t.Fatalf("restore must have been attempted once; got %d", len(gate.restoreCalls))
 	}
 }

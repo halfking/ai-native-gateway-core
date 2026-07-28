@@ -66,13 +66,21 @@ type SystemMonitor struct {
 }
 
 // RecoveryGate is the interface SystemMonitor uses to flip the URSM v2
-// authoritative gate on persistent Redis health failures. Production
-// wires it to domains/ursm/v2.Manager.MarkClosedDebounced; tests use a
-// stub. The interface lives in bg/systemmonitor to avoid an import
-// cycle (recovery lives in domains/ursm/v2/recovery which is already a
-// dependency of bg/systemmonitor transitively through the Config).
+// authoritative gate on persistent Redis health failures and to
+// reopen it on Redis recovery. Production wires it to
+// domains/ursm/v2.Manager; tests use a stub. The interface lives in
+// bg/systemmonitor to avoid an import cycle (recovery lives in
+// domains/ursm/v2/recovery which is already a dependency of
+// bg/systemmonitor transitively through the Config).
+//
+// Methods form the audit follow-up #6 incident lifecycle:
+//   - MarkClosedDebounced: auto-close on persistent Redis health failure
+//     (follow-up #1, cluster-debounced via SETNX+TTL)
+//   - RestoreIfClosed: auto-reopen on Redis recovery (follow-up #6,
+//     idempotent; no-op when gate is already open)
 type RecoveryGate interface {
 	MarkClosedDebounced(ctx context.Context, reason string, debounceTTL time.Duration) (bool, error)
+	RestoreIfClosed(ctx context.Context) (int, error)
 }
 
 // DefaultRecoveryFailureThreshold is the default number of consecutive
@@ -565,7 +573,8 @@ func (sm *SystemMonitor) healthCheckLoop(ctx context.Context) {
 //
 // State transitions:
 //
-//	ping ok, fallback        -> clear fallback, reset consecutiveFailures
+//	ping ok, fallback        -> clear fallback, reset consecutiveFailures,
+//	                           maybe auto-reopen v2 gate (follow-up #6)
 //	ping ok, healthy         -> reset consecutiveFailures (no-op)
 //	ping fail, healthy       -> mark fallback, increment, maybe auto-close gate
 //	ping fail, fallback      -> increment, maybe auto-close gate
@@ -580,6 +589,7 @@ func (sm *SystemMonitor) checkRedisHealthOnce(ctx context.Context) {
 		slog.Info("system_monitor: redis recovered, exiting fallback mode")
 		sm.clearFallback()
 		sm.consecutiveFailures = 0
+		sm.maybeAutoRestoreRecoveryGate(ctx)
 	case pingErr == nil && !sm.IsFallback():
 		// Healthy and not in fallback — nothing to do, but reset the
 		// failure counter so the next failure event starts from 0.
@@ -636,6 +646,35 @@ func (sm *SystemMonitor) maybeAutoCloseRecoveryGate(ctx context.Context, pingErr
 	}
 	// Lost the debounce race (another instance won): stay silent at info
 	// level — this is the expected outcome for any cluster of size > 1.
+}
+
+// maybeAutoRestoreRecoveryGate is the audit follow-up #6 counterpart to
+// maybeAutoCloseRecoveryGate: on the fallback→healthy transition, call
+// RecoveryGate.RestoreIfClosed to reopen the v2 gate and stamp
+// recovery metadata. Idempotent on the recovery.Manager side, so we
+// can call it on every health-check that observes a healthy Redis
+// without worrying about cluster-wide thrash.
+//
+// Best-effort: failures are logged and swallowed so a single bad call
+// never blocks the health-check loop.
+func (sm *SystemMonitor) maybeAutoRestoreRecoveryGate(ctx context.Context) {
+	if sm.recoveryGate == nil {
+		return
+	}
+	n, err := sm.recoveryGate.RestoreIfClosed(ctx)
+	if err != nil {
+		slog.Warn("system_monitor: recovery gate auto-restore failed",
+			"error", err,
+			"worker_id", sm.workerID,
+		)
+		return
+	}
+	if n > 0 {
+		slog.Info("system_monitor: recovery gate auto-reopened",
+			"keys_re_warmed", n,
+			"worker_id", sm.workerID,
+		)
+	}
 }
 
 // QueueStats is the snapshot returned by QueueStats() for dashboards.

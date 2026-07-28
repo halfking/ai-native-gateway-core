@@ -140,3 +140,169 @@ func TestMarkClosedDebounced_NextWindowBumpsAgain(t *testing.T) {
 		t.Fatalf("epoch.reason = %q, want second", epoch["reason"])
 	}
 }
+
+// TestWarmupFromExistingKeys_ReopensGate verifies the audit
+// follow-up #6 contract: after MarkClosedDebounced closes the gate,
+// WarmupFromExistingKeys reopens it AND records the recovery event in
+// the epoch hash. Existing per-node state (admin holds, fail_streaks,
+// source_priority) must be PRESERVED — only the gate + epoch metadata
+// change.
+func TestWarmupFromExistingKeys_ReopensGate(t *testing.T) {
+	m := New(newMini(t), "ursm:v2:")
+	ctx := context.Background()
+
+	// Seed two node hashes with admin hold + non-trivial fail_streak
+	// so we can verify they're preserved across the warmup.
+	if err := m.rdb.HSet(ctx, "ursm:v2:node:1:gpt-4",
+		"available", "1",
+		"source_priority", "40",
+		"manual_hold", "1",
+		"fail_streak", "5",
+		"generation", "7",
+	).Err(); err != nil {
+		t.Fatalf("seed 1: %v", err)
+	}
+	if err := m.rdb.HSet(ctx, "ursm:v2:node:tenant-a:2:claude",
+		"available", "0",
+		"source_priority", "20",
+		"fail_streak", "2",
+		"generation", "11",
+	).Err(); err != nil {
+		t.Fatalf("seed 2: %v", err)
+	}
+
+	// Close the gate via MarkClosedDebounced.
+	if _, err := m.MarkClosedDebounced(ctx, "redis_unavailable", 5*time.Minute); err != nil {
+		t.Fatalf("close: %v", err)
+	}
+	if m.Ready(ctx) {
+		t.Fatalf("gate must be closed after MarkClosedDebounced")
+	}
+
+	// Reopen via WarmupFromExistingKeys.
+	n, err := m.WarmupFromExistingKeys(ctx)
+	if err != nil {
+		t.Fatalf("warmup: %v", err)
+	}
+	if n != 2 {
+		t.Fatalf("warmup observed %d keys, want 2", n)
+	}
+	if !m.Ready(ctx) {
+		t.Fatalf("gate must be open after WarmupFromExistingKeys")
+	}
+
+	// Verify per-node state is preserved (admin hold, fail_streak,
+	// generation, source_priority — everything except what warmup
+	// itself didn't touch).
+	hash1, _ := m.rdb.HGetAll(ctx, "ursm:v2:node:1:gpt-4").Result()
+	if hash1["manual_hold"] != "1" {
+		t.Fatalf("manual_hold lost on warmup: %v", hash1)
+	}
+	if hash1["fail_streak"] != "5" {
+		t.Fatalf("fail_streak lost on warmup: %v", hash1)
+	}
+	if hash1["generation"] != "7" {
+		t.Fatalf("generation lost on warmup: %v", hash1)
+	}
+	if hash1["source_priority"] != "40" {
+		t.Fatalf("source_priority lost on warmup: %v", hash1)
+	}
+
+	hash2, _ := m.rdb.HGetAll(ctx, "ursm:v2:node:tenant-a:2:claude").Result()
+	if hash2["source_priority"] != "20" {
+		t.Fatalf("node 2 source_priority lost: %v", hash2)
+	}
+	if hash2["fail_streak"] != "2" {
+		t.Fatalf("node 2 fail_streak lost: %v", hash2)
+	}
+
+	// Verify recovery metadata was written.
+	epoch, _ := m.rdb.HGetAll(ctx, "ursm:v2:meta:epoch").Result()
+	if epoch["recovered_keys_count"] != "2" {
+		t.Fatalf("epoch.recovered_keys_count = %q, want 2", epoch["recovered_keys_count"])
+	}
+	if epoch["recovered_at"] == "" {
+		t.Fatalf("epoch.recovered_at is empty")
+	}
+	if epoch["recovery_counter"] != "1" {
+		t.Fatalf("epoch.recovery_counter = %q, want 1", epoch["recovery_counter"])
+	}
+}
+
+// TestRestoreIfClosed_AlreadyOpen verifies the no-op branch: when
+// the gate is already open, RestoreIfClosed returns (0, nil) and does
+// NOT touch the epoch hash (no spurious recovery_counter bumps).
+func TestRestoreIfClosed_AlreadyOpen(t *testing.T) {
+	m := New(newMini(t), "ursm:v2:")
+	ctx := context.Background()
+	if err := m.SetReady(ctx, true); err != nil {
+		t.Fatalf("set ready: %v", err)
+	}
+
+	n, err := m.RestoreIfClosed(ctx)
+	if err != nil {
+		t.Fatalf("restore: %v", err)
+	}
+	if n != 0 {
+		t.Fatalf("RestoreIfClosed on open gate must return 0, got %d", n)
+	}
+
+	// recovery_counter must NOT have been incremented (gate was open
+	// from the start, nothing to restore).
+	epoch, _ := m.rdb.HGetAll(ctx, "ursm:v2:meta:epoch").Result()
+	if epoch["recovery_counter"] != "" {
+		t.Fatalf("recovery_counter = %q, want empty (no recovery happened)", epoch["recovery_counter"])
+	}
+	if epoch["recovered_at"] != "" {
+		t.Fatalf("recovered_at = %q, want empty", epoch["recovered_at"])
+	}
+}
+
+// TestRestoreIfClosed_WhenClosed verifies that a closed gate is
+// re-opened on call, and the observed key count is returned.
+func TestRestoreIfClosed_WhenClosed(t *testing.T) {
+	m := New(newMini(t), "ursm:v2:")
+	ctx := context.Background()
+
+	// Seed a node, close gate, call RestoreIfClosed.
+	if err := m.rdb.HSet(ctx, "ursm:v2:node:1:m", "available", "1").Err(); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	if err := m.SetReady(ctx, false); err != nil {
+		t.Fatalf("close: %v", err)
+	}
+
+	n, err := m.RestoreIfClosed(ctx)
+	if err != nil {
+		t.Fatalf("restore: %v", err)
+	}
+	if n != 1 {
+		t.Fatalf("restore observed %d keys, want 1", n)
+	}
+	if !m.Ready(ctx) {
+		t.Fatalf("gate must be open after RestoreIfClosed")
+	}
+}
+
+// TestWarmupFromExistingKeys_EmptyRedisIsSafe verifies the empty-state
+// case: when Redis has just been initialised and no node keys exist
+// yet, WarmupFromExistingKeys still opens the gate (so the v2
+// pipeline can serve traffic) without error.
+func TestWarmupFromExistingKeys_EmptyRedisIsSafe(t *testing.T) {
+	m := New(newMini(t), "ursm:v2:")
+	ctx := context.Background()
+	if err := m.SetReady(ctx, false); err != nil {
+		t.Fatalf("close: %v", err)
+	}
+
+	n, err := m.WarmupFromExistingKeys(ctx)
+	if err != nil {
+		t.Fatalf("warmup empty: %v", err)
+	}
+	if n != 0 {
+		t.Fatalf("warmup on empty redis returned %d, want 0", n)
+	}
+	if !m.Ready(ctx) {
+		t.Fatalf("gate must be open after warmup, even with 0 keys")
+	}
+}
