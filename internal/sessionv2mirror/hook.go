@@ -20,6 +20,7 @@ import (
 
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/observability/telemetry"
 	"github.com/kaixuan/llm-gateway-go/domains/session/v2"
+	"github.com/kaixuan/llm-gateway-go/metrics"
 	"github.com/kaixuan/llm-gateway-go/settings"
 )
 
@@ -67,6 +68,12 @@ func PersistHook(writer *v2.SessionWriterV2) func(entry *telemetry.RequestLogEnt
 				"request_id", entry.RequestID,
 				"session_id", *entry.GwSessionID,
 				"error", err)
+			// P0-2 (audit §3.6 R-3.3): count this lost-row event so the
+			// Grafana rule in deploy/monitoring/grafana-alerts/shadow-write-failures.yaml
+			// can fire. V2 sessions tables are migration 430 (shadow write
+			// during cutover); losing rows during the cutover window is the
+			// exact "data drift" failure mode the audit calls out.
+			metrics.Global().RecordShadowWriteFailure("session_v2")
 		}
 	}
 }

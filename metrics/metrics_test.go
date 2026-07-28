@@ -4,6 +4,7 @@ import (
 	"testing"
 	"time"
 
+	dto "github.com/prometheus/client_model/go"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -46,6 +47,12 @@ func TestNoopRecorder(t *testing.T) {
 	r.SetPoolCapacity("pool1", 100)
 	r.SetPoolActiveCredentials("pool1", 50)
 	r.SetPoolHealthyCredentials("pool1", 48)
+
+	// P0-2 ShadowWrite methods — must not panic on the NoopRecorder.
+	r.RecordShadowWriteFailure("attachment")
+	r.RecordShadowWriteFailure("session_v2")
+	r.RecordRingBufferDropped(3)
+	r.RecordRawAuditWriteFailure()
 }
 
 // TestPrometheusRecorder 测试 Prometheus 实现
@@ -102,6 +109,76 @@ func TestPrometheusRecorder(t *testing.T) {
 
 	// 验证不会 panic
 	assert.NotNil(t, r)
+}
+
+// TestPrometheusRecorder_ShadowWriteCounters (P0-2) pins the contract
+// that the three new ShadowWrite counters actually move when their
+// methods are called. Without this regression test, adding the
+// counters in PrometheusRecorder and forgetting to wire them up would
+// compile but report zero forever — exactly the "data loss is silent"
+// failure mode that R-3.3 / R-3.4 in the 2026-07-28 audit call out.
+//
+// We check the *delta* before/after a single Inc(), so the test does
+// not depend on global state from other tests in the package.
+//
+// Note: uses the package-level testRecorder (NewPrometheusRecorder uses
+// promauto which registers to the default global registry; creating
+// a second recorder would panic with "duplicate metrics collector
+// registration attempted").
+func TestPrometheusRecorder_ShadowWriteCounters(t *testing.T) {
+	r := testRecorder
+
+	// helper: read the current counter value via Collect + proto.
+	readCounter := func(counter interface{ Write(*dto.Metric) error }) float64 {
+		m := &dto.Metric{}
+		if err := counter.Write(m); err != nil {
+			t.Fatalf("counter.Write: %v", err)
+		}
+		return m.GetCounter().GetValue()
+	}
+
+	// shadowWriteFailed is a *CounterVec — need to read a specific label.
+	beforeAttach := readCounter(r.shadowWriteFailed.WithLabelValues("attachment"))
+	r.RecordShadowWriteFailure("attachment")
+	afterAttach := readCounter(r.shadowWriteFailed.WithLabelValues("attachment"))
+	assert.Equal(t, beforeAttach+1, afterAttach, "shadowWriteFailed{attachment} must increment by 1")
+
+	beforeSession := readCounter(r.shadowWriteFailed.WithLabelValues("session_v2"))
+	r.RecordShadowWriteFailure("session_v2")
+	afterSession := readCounter(r.shadowWriteFailed.WithLabelValues("session_v2"))
+	assert.Equal(t, beforeSession+1, afterSession, "shadowWriteFailed{session_v2} must increment by 1")
+
+	beforeRing := readCounter(r.ringBufferDropped)
+	r.RecordRingBufferDropped(5)
+	afterRing := readCounter(r.ringBufferDropped)
+	assert.Equal(t, beforeRing+5, afterRing, "ringBufferDropped must add 5")
+
+	// zero-count is a no-op (avoids spurious churn in metrics scrapes).
+	r.RecordRingBufferDropped(0)
+	stillRing := readCounter(r.ringBufferDropped)
+	assert.Equal(t, afterRing, stillRing, "RecordRingBufferDropped(0) must not increment")
+
+	beforeRaw := readCounter(r.rawAuditWriteFailed)
+	r.RecordRawAuditWriteFailure()
+	afterRaw := readCounter(r.rawAuditWriteFailed)
+	assert.Equal(t, beforeRaw+1, afterRaw, "rawAuditWriteFailed must increment by 1")
+}
+
+// TestNoopRecorder_ShadowWriteNoCrash pins that the NoopRecorder
+// exposes the three new methods without panic, so tests / dry-runs
+// that don't need real Prometheus can use NoopRecorder freely.
+func TestNoopRecorder_ShadowWriteNoCrash(t *testing.T) {
+	r := NewNoopRecorder()
+	r.RecordShadowWriteFailure("attachment")
+	r.RecordShadowWriteFailure("session_v2")
+	r.RecordRingBufferDropped(7)
+	r.RecordRawAuditWriteFailure()
+	// Calling the methods on NoopRecorder must not panic — assert.NotPanics
+	// documents this contract explicitly so a future refactor that adds
+	// e.g. an internal channel and forgets to guard it fails this test.
+	assert.NotPanics(t, func() {
+		r.RecordShadowWriteFailure("ringbuffer_drop")
+	})
 }
 
 // TestGlobalRecorder 测试全局 Recorder
