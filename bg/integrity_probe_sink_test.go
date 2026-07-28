@@ -12,28 +12,36 @@ func TestNormalizeIntegrityAnomaly(t *testing.T) {
 	if got := normalizeIntegrityAnomaly("anomaly:unknown"); got != "model_mismatch" {
 		t.Fatalf("unknown anomaly = %q, want model_mismatch", got)
 	}
+	if got := normalizeIntegrityAnomaly(""); got != "model_mismatch" {
+		t.Fatalf("empty anomaly = %q, want model_mismatch", got)
+	}
 }
 
-func TestProbeSampleTruncatesResponse(t *testing.T) {
-	result := &ProbeResult{ResponseBody: "0123456789"}
-	if got := probeSample(result); got != "0123456789" {
-		t.Fatalf("sample = %q", got)
+func TestProbeSamplePrefersRequestURL(t *testing.T) {
+	// sample must hold a PII-safe identifier, not the response body.
+	if got := probeSample(&ProbeResult{}); got != "" {
+		t.Fatalf("empty result = %q, want empty", got)
 	}
-	result.ResponseBody = ""
-	result.RespPreview = "preview"
-	if got := probeSample(result); got != "preview" {
-		t.Fatalf("preview sample = %q", got)
+	if got := probeSample(&ProbeResult{RequestURL: "https://api.openai.com/v1/chat/completions"}); got != "https://api.openai.com/v1/chat/completions" {
+		t.Fatalf("request url = %q", got)
+	}
+	if got := probeSample(&ProbeResult{ErrCode: "load_target", RequestURL: "https://api.openai.com/v1/chat/completions"}); got != "https://api.openai.com/v1/chat/completions" {
+		t.Fatalf("request url preferred over err code = %q", got)
+	}
+	if got := probeSample(&ProbeResult{ErrCode: "load_target"}); got != "load_target" {
+		t.Fatalf("err code fallback = %q", got)
 	}
 }
 
 func TestProbeQueueWorkerRecordsOnlyIntegrityTasks(t *testing.T) {
 	sink := &recordingIntegritySink{}
 	worker := &ProbeQueueWorker{cfg: ProbeQueueWorkerConfig{ResultSink: sink}}
-	worker.recordIntegrityResult(t.Context(), ProbeQueueTask{Command: "single"}, nil, &ProbeResult{}, nil)
+	ctx := context.Background()
+	worker.recordIntegrityResult(ctx, ProbeQueueTask{Command: "single"}, nil, &ProbeResult{}, nil)
 	if sink.calls != 0 {
 		t.Fatalf("ordinary task called sink %d times", sink.calls)
 	}
-	worker.recordIntegrityResult(t.Context(), ProbeQueueTask{Command: "integrity_verify"}, nil, &ProbeResult{}, nil)
+	worker.recordIntegrityResult(ctx, ProbeQueueTask{Command: "integrity_verify"}, nil, &ProbeResult{}, nil)
 	if sink.calls != 1 {
 		t.Fatalf("integrity task called sink %d times, want 1", sink.calls)
 	}
