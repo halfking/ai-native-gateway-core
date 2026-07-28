@@ -310,7 +310,11 @@ func (e *Executor) executeOpenAI(
 				"default_timeout_ms", timeout.Milliseconds(),
 			)
 
-			timeout = adaptiveTimeout
+			// Only use adaptive if it's longer than StreamTimeout —
+			// don't let it shorten long-running streaming responses.
+			if adaptiveTimeout > timeout {
+				timeout = adaptiveTimeout
+			}
 		}
 
 		// 2026-07-22: Override with NodeTimeout from hotconfig if larger.

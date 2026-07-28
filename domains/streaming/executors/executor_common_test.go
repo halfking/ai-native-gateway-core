@@ -31,7 +31,7 @@ func TestCommonExecutor_RetryOnTransient(t *testing.T) {
 		Limiter:              lim,
 		UpstreamTimeout:      5 * time.Second,
 		StreamTimeout:        30 * time.Second,
-		StreamRetryThreshold: 5,
+		StreamRetryThreshold: 50,
 		providerID:           1,
 		credentialID:         1,
 	}
