@@ -152,7 +152,8 @@ func (p *IntegrityProbePlanner) cycle(ctx context.Context) error {
 	dedupInterval := fmt.Sprintf("%f seconds", p.cfg.DedupWindow.Seconds())
 	rows, err := p.db.Query(stepCtx, `
 		WITH pick AS (
-		    SELECT DISTINCT ON (e.credential_id, e.raw_model_name)
+		    SELECT DISTINCT ON (COALESCE(NULLIF(e.tenant_id, ''), 'default'), e.credential_id, e.raw_model_name)
+		         COALESCE(NULLIF(e.tenant_id, ''), 'default') AS tenant_id,
 		         e.credential_id, e.raw_model_name, e.anomaly_type,
 		         COALESCE(p.code, 'unknown') AS provider_code
 		    FROM model_integrity_events e
@@ -160,19 +161,20 @@ func (p *IntegrityProbePlanner) cycle(ctx context.Context) error {
 		      ON c.id = e.credential_id
 		    LEFT JOIN providers p
 		      ON p.id = c.provider_id
-			WHERE e.severity IN ('critical', 'high')
-			  AND e.resolved = false
-			  AND e.credential_id IS NOT NULL
-			  AND e.raw_model_name IS NOT NULL
-			  AND NOT EXISTS (
-			      SELECT 1
-			      FROM credential_probe_queue q
-			      WHERE q.credential_id = e.credential_id
-			        AND q.raw_model = e.raw_model_name
-			        AND q.probe_command = 'integrity_verify'
-			        AND q.created_at >= now() - $1::interval
-			)
-			  AND EXISTS (
+				WHERE e.severity IN ('critical', 'high')
+				  AND e.resolved = false
+				  AND e.credential_id IS NOT NULL
+				  AND e.raw_model_name IS NOT NULL
+				  AND NOT EXISTS (
+				      SELECT 1
+				      FROM credential_probe_queue q
+				      WHERE q.tenant_id = COALESCE(NULLIF(e.tenant_id, ''), 'default')
+				        AND q.credential_id = e.credential_id
+				        AND q.raw_model = e.raw_model_name
+				        AND q.probe_command = 'integrity_verify'
+				        AND q.created_at >= now() - $1::interval
+				  )
+				  AND EXISTS (
 		          SELECT 1
 		          FROM credential_model_bindings cmb
 		          JOIN provider_models pm ON pm.id = cmb.provider_model_id
@@ -180,17 +182,18 @@ func (p *IntegrityProbePlanner) cycle(ctx context.Context) error {
 		            AND pm.raw_model_name = e.raw_model_name
 		            AND cmb.available = TRUE
 		      )
-		    ORDER BY e.credential_id, e.raw_model_name, e.ts DESC
+		    ORDER BY COALESCE(NULLIF(e.tenant_id, ''), 'default'), e.credential_id, e.raw_model_name, e.ts DESC
 		)
-		SELECT credential_id, raw_model_name, anomaly_type, provider_code
+		SELECT tenant_id, credential_id, raw_model_name, anomaly_type, provider_code
 		FROM pick
-		ORDER BY credential_id
+		ORDER BY tenant_id, credential_id
 			LIMIT $2`, dedupInterval, p.cfg.MaxPerTick)
 	if err != nil {
 		return fmt.Errorf("integrity_probe_planner: query events: %w", err)
 	}
 	defer rows.Close()
 	type pending struct {
+		tenant   string
 		credID   int64
 		rawModel string
 		anomaly  string
@@ -199,7 +202,7 @@ func (p *IntegrityProbePlanner) cycle(ctx context.Context) error {
 	var batch []pending
 	for rows.Next() {
 		var p pending
-		if err := rows.Scan(&p.credID, &p.rawModel, &p.anomaly, &p.provider); err != nil {
+		if err := rows.Scan(&p.tenant, &p.credID, &p.rawModel, &p.anomaly, &p.provider); err != nil {
 			slog.Warn("integrity_probe_planner: scan row failed", "error", err)
 			continue
 		}
@@ -213,8 +216,8 @@ func (p *IntegrityProbePlanner) cycle(ctx context.Context) error {
 	for _, item := range batch {
 		task := ProbeQueueTask{
 			CredentialID: item.credID,
-			ProviderID:   0, // Resolved at consumer via LoadTarget; provider_id is denormalized in the queue column.
-			TenantID:     "default",
+			ProviderID:   0, // Resolved at consumer via LoadTarget, provider_id is denormalized in the queue column.
+			TenantID:     item.tenant,
 			RawModel:     item.rawModel,
 			Command:      "integrity_verify",
 			Mode:         "single",
@@ -227,7 +230,9 @@ func (p *IntegrityProbePlanner) cycle(ctx context.Context) error {
 			// not globally unique and would collide across credentials.
 			// The credential/model dedup key plus the SQL time window is
 			// the durable idempotency contract for planner tasks.
-			DedupKey: fmt.Sprintf("integrity:%d:%s", item.credID, item.rawModel),
+			// Tenant is part of the durable idempotency key so identical
+			// credentials/models in separate tenants do not suppress each other.
+			DedupKey: fmt.Sprintf("integrity:%s:%d:%s", item.tenant, item.credID, item.rawModel),
 		}
 		_, inserted, err := p.queue.Enqueue(stepCtx, task)
 		if err != nil {

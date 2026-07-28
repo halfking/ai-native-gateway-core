@@ -54,6 +54,7 @@ func (s *PostgresIntegrityProbeResultSink) Record(parent context.Context, task P
 	providerID := task.ProviderID
 	rawModel := task.RawModel
 	outboundModel := task.Outbound
+	tenantID := task.TenantID
 	if target != nil {
 		credentialID = int64(target.CredentialID)
 		providerID = int64(target.ProviderID)
@@ -92,34 +93,53 @@ func (s *PostgresIntegrityProbeResultSink) Record(parent context.Context, task P
 		return fmt.Errorf("marshal integrity probe context: %w", err)
 	}
 
+	// sample column holds PII-safe metadata only (request URL, err_code).
+	// Response bodies belong in the JSON context blob above. We do not
+	// store the model's model_mismatch returned value (which can include
+	// the upstream's model name) to avoid duplicating it with the
+	// outbound_model column. probeSample is the in-helper that prefers
+	// the upstream URL so operators can pivot from the integrity event
+	// back to the request_logs row.
+	sample := probeSample(result)
+	if len(sample) > 256 {
+		sample = sample[:256]
+	}
+
 	tx, err := s.db.Begin(ctx)
 	if err != nil {
 		return fmt.Errorf("begin integrity probe result: %w", err)
 	}
 	defer tx.Rollback(ctx)
 
+	// expected_value carries the source anomaly (why the planner
+	// enqueued the probe). actual_value carries the probe outcome so
+	// operators can see "expected vs actual" in the admin UI.
 	_, err = tx.Exec(ctx, `
 		INSERT INTO model_integrity_events (
 			ts, tenant_id, provider_id, credential_id,
 			outbound_model, raw_model_name, anomaly_type, severity,
 			expected_value, actual_value, sample, context
 		) VALUES (now(), $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
-		nilIfEmpty(task.TenantID), nullableInt64(providerID), nullableInt64(credentialID),
+		nilIfEmpty(tenantID), nullableInt64(providerID), nullableInt64(credentialID),
 		nilIfEmpty(outboundModel), nilIfEmpty(rawModel), anomaly, severity,
-		"success", status, nilIfEmpty(probeSample(result)), contextJSON)
+		anomaly, status, nilIfEmpty(sample), contextJSON)
 	if err != nil {
 		return fmt.Errorf("insert integrity probe result: %w", err)
 	}
 
 	if result.Status == ProbeStatusSuccess {
+		// tenant_id guard prevents an integrity event in another tenant
+		// that happens to share credential_id/raw_model_name from being
+		// silently resolved.
 		_, err = tx.Exec(ctx, `
 			UPDATE model_integrity_events
 			SET resolved = true, resolved_at = now(),
-				resolution_notes = $4
-			WHERE credential_id = $1
-			  AND raw_model_name = $2
-			  AND anomaly_type = $3
-			  AND resolved = false`, credentialID, rawModel, anomaly,
+				resolution_notes = $5
+			WHERE tenant_id IS NOT DISTINCT FROM $1
+			  AND credential_id = $2
+			  AND raw_model_name = $3
+			  AND anomaly_type = $4
+			  AND resolved = false`, tenantID, credentialID, rawModel, anomaly,
 			fmt.Sprintf("integrity probe succeeded: %s", status))
 		if err != nil {
 			return fmt.Errorf("resolve integrity events: %w", err)
@@ -144,10 +164,17 @@ func probeSample(result *ProbeResult) string {
 	if result == nil {
 		return ""
 	}
-	if result.ResponseBody != "" {
-		return truncateProbeText(result.ResponseBody, 512)
+	// The sample column is PII-safe metadata only. Prefer the request URL
+	// so operators can pivot from a model_integrity_events row back to
+	// the originating request_logs row via task ID / RequestURL. Fall back
+	// to the structured error code; never store the model output here.
+	if result.RequestURL != "" {
+		return truncateProbeText(result.RequestURL, 256)
 	}
-	return truncateProbeText(result.RespPreview, 512)
+	if result.ErrCode != "" {
+		return result.ErrCode
+	}
+	return ""
 }
 
 func truncateProbeText(value string, limit int) string {
