@@ -2,6 +2,7 @@ package logging
 
 import (
 	"bufio"
+	"bytes"
 	"compress/gzip"
 	"encoding/json"
 	"io"
@@ -431,4 +432,41 @@ func TestReInit_InvalidDir(t *testing.T) {
 	}
 	// 不管成功/失败，ReInit 都应保证 ActiveConfig 是自洽的
 	_ = ActiveConfig().File
+}
+
+// TestRawDataEntry_ReasonField covers the JSON wire format for the
+// Reason field added in 2026-07-28 §5.4: streaming bridges stamp a
+// structured interruption reason (e.g. "client_cancel", "stream_panic")
+// on the final RawDataEntry so the audit log carries the same kind
+// the operator dashboard filters on.
+func TestRawDataEntry_ReasonField(t *testing.T) {
+	e := RawDataEntry{
+		RequestID: "r1",
+		Direction: "client_response",
+		Protocol:  "openai-chat",
+		Reason:    "client_cancel",
+	}
+	data, err := json.Marshal(e)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(data, []byte(`"reason":"client_cancel"`)) {
+		t.Fatalf("missing reason in json: %s", data)
+	}
+	var round RawDataEntry
+	if err := json.Unmarshal(data, &round); err != nil {
+		t.Fatal(err)
+	}
+	if round.Reason != "client_cancel" {
+		t.Fatalf("got %q want %q", round.Reason, "client_cancel")
+	}
+	// omitempty: an empty Reason must not serialise as a key.
+	empty := RawDataEntry{RequestID: "r2", Direction: "client_response"}
+	data2, err := json.Marshal(empty)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(data2, []byte(`"reason"`)) {
+		t.Fatalf("expected reason omitted, got: %s", data2)
+	}
 }

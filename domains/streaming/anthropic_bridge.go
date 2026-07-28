@@ -13,6 +13,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"github.com/kaixuan/llm-gateway-go/errorsx"
 	"errors"
 	"fmt"
 	"io"
@@ -115,6 +116,7 @@ func StreamAnthropicPassthroughWithDiagnostics(
 			}
 			outcome.Interrupted = true
 			outcome.Reason = "stream_panic"
+			outcome.Kind = errorsx.KindUpstreamDown
 			if pc != nil {
 				pc.markInterrupted("stream_panic")
 			}
@@ -149,6 +151,7 @@ func StreamAnthropicPassthroughWithDiagnostics(
 			}
 			outcome.Interrupted = true
 			outcome.Reason = "read_error"
+			outcome.Kind = errorsx.KindUpstreamDown
 			if capture != nil {
 				capture.MarkInterruptedWithReason("read_error")
 			}
@@ -169,7 +172,7 @@ func StreamAnthropicPassthroughWithDiagnostics(
 			observeAnthropicPayload(capture, payload, clientModel, outboundModel)
 		}
 
-		logRawUpstreamFrame(diagnostics, requestID, "anthropic-messages", []byte(line))
+		logRawUpstreamFrame(diagnostics, auditFromDiagnostics(diagnostics, requestID, "anthropic-messages"), []byte(line))
 
 		if line == "\n" && !clientDisconnected {
 			safeFlush(flusher)
@@ -292,6 +295,7 @@ func StreamAnthropicSSEToOpenAIWithDiagnostics(
 			}
 			outcome.Interrupted = true
 			outcome.Reason = "stream_panic"
+			outcome.Kind = errorsx.KindUpstreamDown
 			if pc != nil {
 				pc.markInterrupted("stream_panic")
 			}
@@ -422,6 +426,7 @@ func StreamAnthropicSSEToOpenAIWithDiagnostics(
 				fmt.Sprintf("internal error: %v", r), flusher)
 			outcome.Interrupted = true
 			outcome.Reason = "stream_panic"
+			outcome.Kind = errorsx.KindUpstreamDown
 			outcome.ChunkCount = chunkCount
 		}
 	}()
@@ -442,6 +447,7 @@ func StreamAnthropicSSEToOpenAIWithDiagnostics(
 				fmt.Sprintf("no data received for %v", runtimeCfg.streamChunkTimeout), flusher)
 			outcome.Interrupted = true
 			outcome.Reason = "chunk_timeout"
+			outcome.Kind = errorsx.KindStreamTimeout
 			outcome.ChunkCount = chunkCount
 			if pc != nil {
 				pc.markInterrupted("chunk_timeout")
@@ -469,6 +475,7 @@ func StreamAnthropicSSEToOpenAIWithDiagnostics(
 			}
 			outcome.Interrupted = true
 			outcome.Reason = "read_error"
+			outcome.Kind = errorsx.KindUpstreamDown
 			if capture != nil {
 				capture.MarkInterruptedWithReason("anthropic_to_openai_read_error")
 			}
@@ -481,7 +488,7 @@ func StreamAnthropicSSEToOpenAIWithDiagnostics(
 			continue
 		}
 
-		logRawUpstreamFrame(diagnostics, requestID, "anthropic-messages", rawFrame)
+		logRawUpstreamFrame(diagnostics, auditFromDiagnostics(diagnostics, requestID, "anthropic-messages"), rawFrame)
 		diagnosticCollector.observeRaw(data)
 
 		if isOpenAIFormatData(data) {
@@ -683,6 +690,7 @@ func StreamAnthropicSSEToOpenAIWithDiagnostics(
 			}
 			outcome.Interrupted = true
 			outcome.Reason = "upstream_error"
+			outcome.Kind = errorsx.KindUpstreamDown
 			outcome.ChunkCount = chunkCount
 			return outcome
 		}

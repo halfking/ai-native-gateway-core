@@ -3744,7 +3744,7 @@ func (h *ChatHandler) emitTelemetry(evt audit.Event, result *executors.ExecuteRe
 					// previous "stream_error" value conflated stream
 					// timeouts, concurrent-overload fallbacks, and
 					// generic upstream read errors.
-					reqLog.ErrorKind = strPtr(streamErrorKindForDetailCode(detailCode))
+					reqLog.ErrorKind = strPtr(streamErrorKindForDetailCode(nil, detailCode))
 					reqLog.FailureStage = strPtr("upstream")
 				}
 				if detailCode != "" {
@@ -5270,13 +5270,45 @@ func classifyStreamInterruption(m map[string]any) (isError bool, detailCode stri
 //	eof_without_done     — upstream closed without sending [DONE]; benign
 //	                       when chunks > 0 (handled by executor_chat.go
 //	                       isBenignEOF before this mapper is reached),
-//	                       real failure when chunks == 0
+//	                       real failure when chunks == 0 (2026-07-29 split)
 //	stream_read_error    — generic read failure (malformed SSE, etc.)
-//	stream_error         — fallback when the detail code is missing
-func streamErrorKindForDetailCode(detailCode string) string {
+//	stream_panic         — recovered panic in a stream bridge
+//	client_cancel        — client disconnected before stream completion
+//	upstream_error       — upstream returned malformed SSE / 5xx
+//	conversion_error     — protocol-conversion pipeline rejected the body
+//	stream_error         — fallback when neither Kind nor detail code is set
+//
+// 2026-07-28 §5.6: the executor-classified Kind (StreamOutcome.Kind)
+// takes precedence over the legacy detail-code mapping. When the
+// executor populates Kind (Task 11) the operator dashboard gets the
+// fully specified taxonomy; the detail-code switch is the fallback
+// for legacy paths and tests that don't go through the executor.
+func streamErrorKindForDetailCode(outcome *StreamOutcome, detailCode string) string {
+	if outcome != nil && outcome.Kind != "" {
+		switch outcome.Kind {
+		case errorsx.KindStreamTimeout, errorsx.KindTimeout:
+			return "stream_timeout"
+		case errorsx.KindConcurrent, errorsx.KindRateLimit:
+			return "concurrent_overload"
+		case errorsx.KindEmptyResponse:
+			return "empty_response"
+		case errorsx.KindCanceled, errorsx.KindClientBug:
+			return "client_cancel"
+		case errorsx.KindUpstreamDown, errorsx.KindNetwork:
+			return "upstream_error"
+		case errorsx.KindConversion:
+			return "conversion_error"
+		}
+	}
 	switch detailCode {
-	case "stream_chunk_timeout", "stream_timeout", "chunk_timeout":
+	case "stream_panic", "stream_panic_recover":
+		return "stream_panic"
+	case "first_byte_timeout", "stream_chunk_timeout", "stream_timeout", "chunk_timeout":
 		return "stream_timeout"
+	case "json_error_in_stream":
+		return "upstream_error"
+	case "client_cancel", "client_disconnected":
+		return "client_cancel"
 	case "concurrent_overload", "concurrent":
 		return "concurrent_overload"
 	case "empty_stream_no_content":
@@ -5291,7 +5323,8 @@ func streamErrorKindForDetailCode(detailCode string) string {
 		// remains a real failure but now has its own error_kind for
 		// accurate dashboard filtering.
 		return "eof_without_done"
-	case "read_error", "stream_read_error", "stream_panic":
+	case "anthropic_to_openai_read_error", "anthropic_to_responses_read_error",
+		"read_error", "stream_read_error":
 		return "stream_read_error"
 	}
 	return "stream_error"
