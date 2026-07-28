@@ -210,10 +210,16 @@ probe 写：
 
 **影响**：Redis 重启 / 严重数据损坏时，gate 不会自动关闭；上层依赖 fallback 检测。
 
-**建议**（不在本审计任务内）：
-- 由 `systemmonitor.healthCheckLoop` 在连续 N 次 Ping 失败时调用 `EnterRecovery("redis_unavailable")`，
-  写入 epoch 元数据（已实现但未接线），便于 incident 复盘。
-- 与之配套，Redis 恢复后自动 `WarmupFromSeed` 再 `SetReady(true)`。
+**修复状态（2026-07-28, follow-up #1）**：已完成。`recovery.Manager.MarkClosedDebounced`
+新增 SETNX-based cluster-wide debounce（5m 默认 TTL），由
+`systemmonitor.healthCheckLoop` 在 3 次连续 ping 失败（~45s）后自动调用，自动关闭
+v2 authoritative gate 并写入 epoch 元数据；cmd/gateway/main.go 仅在 v2 mode != off
+时接线，避免 off 模式下的噪声日志。测试：`TestMarkClosedDebounced_ClusterCoordinator`、
+`TestMarkClosedDebounced_NextWindowBumpsAgain`、`TestCheckRedisHealthOnce_*` (5 个)。
+
+**后续（不在本审计任务内）**：
+- 与之配套，Redis 恢复后自动 `WarmupFromSeed` 再 `SetReady(true)`（需要监控 Warmup 是否完成，
+  避免数据未准备好就开 gate）。建议下个迭代跟进。
 
 ### 4.2 `systemmonitor` 内存 fallback 在重启时会丢任务
 
@@ -257,13 +263,14 @@ refactor between them cannot accidentally lift the recovery gate.」
 
 ## 5. 待跟进工作清单（建议优先级）
 
-| # | 任务 | 影响面 | 估计 | 阻塞？ |
-|---|------|--------|------|-------|
-| 1 | 接线 `systemmonitor.healthCheckLoop → EnterRecovery` | Redis 严重故障 incident 复盘 + 自动 close gate | 1 文件 30 行 | 否（fallback 已兜底） |
-| 2 | `systemmonitor` fallback 任务持久化到 `credential_probe_queue` | 防重启丢任务 | 1-2 文件 | 否（fallback 期间低频） |
-| 3 | 注释强化 `filterAndScore` 第 240 行 invariant safeguard | 防止后续 refactor 破坏 | 1 文件 1 行注释 + 1 测试 | 是（仅本次审计附带） |
-| 4 | 给 `recovery.Manager` 加一个 `LastError()` 指标 | 排查 Redis 抖动 | 1 文件 5 行 | 否 |
-| 5 | `state_health_checks` 路由层视图（admin SSE） | 监控可视化 | 1 文件 | 否 |
+| # | 任务 | 影响面 | 估计 | 阻塞？ | 状态 |
+|---|------|--------|------|-------|------|
+| 1 | 接线 `systemmonitor.healthCheckLoop → MarkClosedDebounced` | Redis 严重故障 incident 复盘 + 自动 close gate | 3 文件 + 5 测试 | 否（fallback 已兜底） | ✅ 已完成 2026-07-28 |
+| 2 | `systemmonitor` fallback 任务持久化到 `credential_probe_queue` | 防重启丢任务 | 1-2 文件 | 否（fallback 期间低频） | 待跟进 |
+| 3 | `filterAndScore` duplicate `if !ready` 注释 + 回归测试 | 防止后续 refactor 破坏 | 1 文件 1 测试 | 是（本次审计附带） | ✅ 已完成 2026-07-28 |
+| 4 | 给 `recovery.Manager` 加一个 `LastError()` 指标 | 排查 Redis 抖动 | 1 文件 5 行 | 否 | 待跟进 |
+| 5 | `state_health_checks` 路由层视图（admin SSE） | 监控可视化 | 1 文件 | 否 | 待跟进 |
+| 6 | 配套 Redis 恢复后自动 `WarmupFromSeed` → `SetReady(true)`（follow-up #1 续） | gate 关闭后能自动恢复 | 2 文件 | 否 | 待跟进 |
 
 ---
 

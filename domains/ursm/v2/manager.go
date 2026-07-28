@@ -139,6 +139,24 @@ func (m *Manager) SetReady(ctx context.Context, ready bool) error {
 	return m.recovery.SetReady(ctx, ready)
 }
 
+// MarkClosedDebounced is the cluster-coordinated variant of
+// EnterRecovery. It is wired to bg/systemmonitor's healthCheckLoop so
+// that persistent Redis health failures automatically close the v2
+// authoritative gate and stamp incident metadata (epoch counter,
+// reason, started_at). The debounce window ensures the epoch counter
+// increments at most once per window per failure event regardless of
+// how many gateway instances observe the failure simultaneously.
+//
+// See recovery.Manager.MarkClosedDebounced for the full contract and
+// docs/architecture/2026-07-28-routing-state-anomaly-audit.md §4.1 for
+// the audit motivation.
+func (m *Manager) MarkClosedDebounced(ctx context.Context, reason string, debounceTTL time.Duration) (bool, error) {
+	if m == nil {
+		return false, nil
+	}
+	return m.recovery.MarkClosedDebounced(ctx, reason, debounceTTL)
+}
+
 // CandidateSeed is the input to FilterAndScore. The router hands one
 // seed per candidate it is considering; the manager resolves each seed
 // against the v2 store to produce a NodeView. Fields beyond

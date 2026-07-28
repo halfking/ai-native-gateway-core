@@ -47,7 +47,47 @@ type SystemMonitor struct {
 	fallback   bool
 	fallbackMu sync.Mutex
 	fallbackCh chan *Task // buffered, len = max(concurrency * 4, 1000)
+
+	// 2026-07-28 (audit follow-up #1, docs/architecture/2026-07-28-routing-state-anomaly-audit.md
+	// §4.1): on persistent Redis health failures, the monitor may close
+	// the URSM v2 authoritative gate so the router falls back to
+	// LegacyStateBackend during the incident. recoveryGate is optional;
+	// when nil the auto-close wiring is disabled (default behaviour
+	// before this change).
+	recoveryGate          RecoveryGate
+	recoveryFailThreshold int           // consecutive ping failures to trigger; default 3
+	recoveryDebounceTTL   time.Duration // debounce window for cluster-wide MarkClosedDebounced; default 5m
+	consecutiveFailures   int           // private health-check state
+
+	// pingFn is an optional test seam that overrides the production
+	// dedup.Ping. nil in production; tests inject a stub here to drive
+	// checkRedisHealthOnce without standing up Redis.
+	pingFn func(ctx context.Context) error
 }
+
+// RecoveryGate is the interface SystemMonitor uses to flip the URSM v2
+// authoritative gate on persistent Redis health failures. Production
+// wires it to domains/ursm/v2.Manager.MarkClosedDebounced; tests use a
+// stub. The interface lives in bg/systemmonitor to avoid an import
+// cycle (recovery lives in domains/ursm/v2/recovery which is already a
+// dependency of bg/systemmonitor transitively through the Config).
+type RecoveryGate interface {
+	MarkClosedDebounced(ctx context.Context, reason string, debounceTTL time.Duration) (bool, error)
+}
+
+// DefaultRecoveryFailureThreshold is the default number of consecutive
+// 15s health-check ticks (i.e. ~45s of unreachable Redis) before the
+// monitor calls MarkClosedDebounced. Overridable per-instance via
+// Config.RecoveryFailureThreshold.
+const DefaultRecoveryFailureThreshold = 3
+
+// DefaultRecoveryDebounceTTL caps the cluster's epoch counter inflation
+// to one bump per TTL regardless of how many gateway instances observe
+// the same failure event simultaneously. 5m is long enough that a brief
+// Redis flap will not blow up the audit trail, but short enough that
+// the next failure event is captured within an operator's incident
+// window.
+const DefaultRecoveryDebounceTTL = 5 * time.Minute
 
 // Config holds the wiring parameters.
 type Config struct {
@@ -60,6 +100,16 @@ type Config struct {
 	Concurrency int
 	WorkerCount int
 	WorkerID    string
+	// RecoveryGate is the optional auto-close wiring for the URSM v2
+	// authoritative gate. When non-nil, the monitor will close the gate
+	// after Config.RecoveryFailureThreshold consecutive ping failures.
+	RecoveryGate RecoveryGate
+	// RecoveryFailureThreshold overrides DefaultRecoveryFailureThreshold
+	// when > 0. Tests use this to drive the auto-close path without
+	// waiting for real 15s ticks.
+	RecoveryFailureThreshold int
+	// RecoveryDebounceTTL overrides DefaultRecoveryDebounceTTL when > 0.
+	RecoveryDebounceTTL time.Duration
 }
 
 // NewSystemMonitor constructs the monitor and loads the embedded Lua scripts.
@@ -93,16 +143,28 @@ func NewSystemMonitor(cfg Config) (*SystemMonitor, error) {
 	}
 
 	sm := &SystemMonitor{
-		queue:            NewQueue(cfg.Redis, scripts),
-		dedup:            NewInflightDedup(cfg.Redis),
-		executor:         NewExecutor(ExecutorConfig{DB: cfg.DB, Keyring: nil, EncKey: cfg.EncKey, ProxyFunc: cfg.ProxyFunc, TimeoutMs: cfg.TimeoutMs}),
-		audit:            NewAudit(cfg.DB),
-		metricsCollector: NewMetricsCollector(cfg.DB),
-		concurrency:      cfg.Concurrency,
-		workerCount:      cfg.WorkerCount,
-		workerID:         cfg.WorkerID,
-		stopCh:           make(chan struct{}),
-		fallbackCh:       make(chan *Task, maxInt(cfg.Concurrency*4, 1000)),
+		queue:                 NewQueue(cfg.Redis, scripts),
+		dedup:                 NewInflightDedup(cfg.Redis),
+		executor:              NewExecutor(ExecutorConfig{DB: cfg.DB, Keyring: nil, EncKey: cfg.EncKey, ProxyFunc: cfg.ProxyFunc, TimeoutMs: cfg.TimeoutMs}),
+		audit:                 NewAudit(cfg.DB),
+		metricsCollector:      NewMetricsCollector(cfg.DB),
+		concurrency:           cfg.Concurrency,
+		workerCount:           cfg.WorkerCount,
+		workerID:              cfg.WorkerID,
+		stopCh:                make(chan struct{}),
+		fallbackCh:            make(chan *Task, maxInt(cfg.Concurrency*4, 1000)),
+		recoveryGate:          cfg.RecoveryGate,
+		recoveryFailThreshold: cfg.RecoveryFailureThreshold,
+		recoveryDebounceTTL:   cfg.RecoveryDebounceTTL,
+	}
+
+	// Apply defaults to the recovery wiring. Centralised here so tests
+	// and production share the exact same fallback semantics.
+	if sm.recoveryFailThreshold <= 0 {
+		sm.recoveryFailThreshold = DefaultRecoveryFailureThreshold
+	}
+	if sm.recoveryDebounceTTL <= 0 {
+		sm.recoveryDebounceTTL = DefaultRecoveryDebounceTTL
 	}
 
 	if cfg.Redis == nil {
@@ -475,6 +537,10 @@ func (sm *SystemMonitor) classifyResult(task *Task, result *ExecutorResult, exec
 }
 
 // healthCheckLoop periodically pings Redis; on success clears fallback mode.
+// On persistent failures (>= recoveryFailThreshold consecutive ticks) it
+// also calls RecoveryGate.MarkClosedDebounced to close the URSM v2
+// authoritative gate cluster-wide — see
+// docs/architecture/2026-07-28-routing-state-anomaly-audit.md §4.1.
 func (sm *SystemMonitor) healthCheckLoop(ctx context.Context) {
 	defer sm.wg.Done()
 	ticker := time.NewTicker(15 * time.Second)
@@ -486,16 +552,90 @@ func (sm *SystemMonitor) healthCheckLoop(ctx context.Context) {
 		case <-sm.stopCh:
 			return
 		case <-ticker.C:
-			if err := sm.dedup.Ping(ctx); err == nil && sm.IsFallback() {
-				slog.Info("system_monitor: redis recovered, exiting fallback mode")
-				sm.clearFallback()
-			} else if err != nil && !sm.IsFallback() {
-				slog.Warn("system_monitor: redis unhealthy, entering fallback mode",
-					"error", err)
-				sm.markFallback()
-			}
+			sm.checkRedisHealthOnce(ctx)
 		}
 	}
+}
+
+// checkRedisHealthOnce is the per-tick Redis health check logic, exposed
+// (lowercase, package-private) so tests can drive multiple ticks without
+// time.Sleep on the 15s ticker. Production calls it from
+// healthCheckLoop; tests call it directly with a constructed
+// SystemMonitor.
+//
+// State transitions:
+//
+//	ping ok, fallback        -> clear fallback, reset consecutiveFailures
+//	ping ok, healthy         -> reset consecutiveFailures (no-op)
+//	ping fail, healthy       -> mark fallback, increment, maybe auto-close gate
+//	ping fail, fallback      -> increment, maybe auto-close gate
+func (sm *SystemMonitor) checkRedisHealthOnce(ctx context.Context) {
+	ping := sm.pingFn
+	if ping == nil {
+		ping = sm.dedup.Ping
+	}
+	pingErr := ping(ctx)
+	switch {
+	case pingErr == nil && sm.IsFallback():
+		slog.Info("system_monitor: redis recovered, exiting fallback mode")
+		sm.clearFallback()
+		sm.consecutiveFailures = 0
+	case pingErr == nil && !sm.IsFallback():
+		// Healthy and not in fallback — nothing to do, but reset the
+		// failure counter so the next failure event starts from 0.
+		sm.consecutiveFailures = 0
+	case pingErr != nil && !sm.IsFallback():
+		slog.Warn("system_monitor: redis unhealthy, entering fallback mode",
+			"error", pingErr)
+		sm.markFallback()
+		sm.consecutiveFailures++
+		sm.maybeAutoCloseRecoveryGate(ctx, pingErr)
+	case pingErr != nil && sm.IsFallback():
+		sm.consecutiveFailures++
+		sm.maybeAutoCloseRecoveryGate(ctx, pingErr)
+	}
+}
+
+// maybeAutoCloseRecoveryGate calls MarkClosedDebounced when the
+// consecutive-failure counter has reached the configured threshold.
+// The (debounced, single-flight) gate ensures the cluster-wide epoch
+// counter increments at most once per debounce window regardless of
+// how many instances observe the same failure event — see
+// recovery.Manager.MarkClosedDebounced for the cluster-coordination
+// contract.
+//
+// Best-effort: failures are logged and swallowed so a single bad call
+// never blocks the health-check loop. RecoveryGate==nil is a no-op
+// (production wired default; tests can drive the path explicitly).
+func (sm *SystemMonitor) maybeAutoCloseRecoveryGate(ctx context.Context, pingErr error) {
+	if sm.recoveryGate == nil {
+		return
+	}
+	if sm.consecutiveFailures < sm.recoveryFailThreshold {
+		return
+	}
+	won, err := sm.recoveryGate.MarkClosedDebounced(ctx, "redis_unavailable", sm.recoveryDebounceTTL)
+	if err != nil {
+		slog.Warn("system_monitor: recovery gate auto-close failed",
+			"error", err,
+			"consecutive_failures", sm.consecutiveFailures,
+			"threshold", sm.recoveryFailThreshold,
+			"ping_error", pingErr.Error(),
+		)
+		return
+	}
+	if won {
+		slog.Warn("system_monitor: recovery gate closed by persistent redis failure",
+			"reason", "redis_unavailable",
+			"consecutive_failures", sm.consecutiveFailures,
+			"threshold", sm.recoveryFailThreshold,
+			"debounce_ttl", sm.recoveryDebounceTTL.String(),
+			"ping_error", pingErr.Error(),
+			"worker_id", sm.workerID,
+		)
+	}
+	// Lost the debounce race (another instance won): stay silent at info
+	// level — this is the expected outcome for any cluster of size > 1.
 }
 
 // QueueStats is the snapshot returned by QueueStats() for dashboards.
