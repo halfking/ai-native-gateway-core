@@ -18,7 +18,9 @@ func TestStreamErrorKindForDetailCode(t *testing.T) {
 		{"concurrent_overload", "concurrent_overload"},
 		{"concurrent", "concurrent_overload"},
 		{"empty_stream_no_content", "empty_response"},
-		{"eof_without_done", "stream_read_error"},
+		// 2026-07-29: Decomposed from stream_read_error; see handler.go
+		// streamErrorKindForDetailCode.
+		{"eof_without_done", "eof_without_done"},
 		{"read_error", "stream_read_error"},
 		{"stream_read_error", "stream_read_error"},
 		{"stream_panic", "stream_read_error"},

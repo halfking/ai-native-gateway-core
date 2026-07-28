@@ -5267,8 +5267,11 @@ func classifyStreamInterruption(m map[string]any) (isError bool, detailCode stri
 //	stream_timeout       — no data for >stream_chunk_timeout
 //	concurrent_overload  — circuit breaker inferred a 429-class overload
 //	empty_response       — upstream 200 with zero content (NIM pattern)
-//	stream_read_error    — generic read failure (EOF without content,
-//	                       malformed SSE, etc.)
+//	eof_without_done     — upstream closed without sending [DONE]; benign
+//	                       when chunks > 0 (handled by executor_chat.go
+//	                       isBenignEOF before this mapper is reached),
+//	                       real failure when chunks == 0
+//	stream_read_error    — generic read failure (malformed SSE, etc.)
 //	stream_error         — fallback when the detail code is missing
 func streamErrorKindForDetailCode(detailCode string) string {
 	switch detailCode {
@@ -5278,7 +5281,17 @@ func streamErrorKindForDetailCode(detailCode string) string {
 		return "concurrent_overload"
 	case "empty_stream_no_content":
 		return "empty_response"
-	case "eof_without_done", "read_error", "stream_read_error", "stream_panic":
+	case "eof_without_done":
+		// 2026-07-29: Decomposed from the "stream_read_error" bucket so the
+		// operator-facing error_kind column no longer conflates the benign
+		// "upstream closed without [DONE]" pattern (observed on MiniMax,
+		// ~13% of streams as of 2026-07-28) with generic read failures.
+		// Mirrors executor_chat.go isBenignEOF: chunk_count > 0 is
+		// classified as success and never reaches this mapping; chunks == 0
+		// remains a real failure but now has its own error_kind for
+		// accurate dashboard filtering.
+		return "eof_without_done"
+	case "read_error", "stream_read_error", "stream_panic":
 		return "stream_read_error"
 	}
 	return "stream_error"

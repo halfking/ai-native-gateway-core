@@ -732,7 +732,7 @@ func StreamChatWithPendingCaptureAndDiagnostics(
 				slog.Warn("stream read timeout",
 					"chunks_received", chunkCount,
 					"client_model", clientModel,
-					"hint", "if timeout occurs frequently with chunks received, consider increasing llmgw_node_timeout_seconds (default 60s)",
+					"hint", "if timeout occurs frequently with chunks received, consider increasing llmgw_node_timeout_seconds (current default 120s, hotconfigurable via admin/settings)",
 				)
 				safeWriteSSE(w, "data: {\"error\":{\"message\":\"upstream read timeout\",\"type\":\"timeout\",\"code\":\"stream_timeout\"}}\n\n")
 				safeFlush(flusher)
