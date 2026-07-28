@@ -78,9 +78,43 @@ type SystemMonitor struct {
 //     (follow-up #1, cluster-debounced via SETNX+TTL)
 //   - RestoreIfClosed: auto-reopen on Redis recovery (follow-up #6,
 //     idempotent; no-op when gate is already open)
+//   - Stats: observability snapshot for admin dashboards (follow-up #4).
+//     Returns the zero value when no operation has happened yet or
+//     when the receiver is nil.
 type RecoveryGate interface {
 	MarkClosedDebounced(ctx context.Context, reason string, debounceTTL time.Duration) (bool, error)
 	RestoreIfClosed(ctx context.Context) (int, error)
+	Stats() RecoveryStats
+}
+
+// RecoveryStats is the audit follow-up #4 observability surface:
+// combines the recovery gate's last-error / last-recovery metadata
+// (from the gate itself) with the monitor's own consecutive-failure
+// counter + fail threshold (per-instance state). Safe on a nil
+// receiver — returns the zero value when no gate is wired.
+//
+// Note on field naming: we duplicate fields from
+// domains/ursm/v2/recovery.Stats intentionally rather than import
+// the recovery package, because that would create an import cycle
+// (monitor → recovery → systemmonitor via the wired chain). The
+// adapter (cmd/gateway/system_monitor_adapter.go) does the typed
+// field-by-field conversion at wire time.
+type RecoveryStats struct {
+	// LastError + LastErrorAt: the most recent gate operation failure.
+	// Empty/zero on success or when no operation has happened yet.
+	LastError   string
+	LastErrorAt time.Time
+	// LastRecoveryAt: timestamp of the most recent successful reopen.
+	// Zero when no recovery has happened yet.
+	LastRecoveryAt time.Time
+	// LastRecoveryKeyCount: the key count observed on the most recent
+	// successful reopen. 0 when no recovery has happened yet.
+	LastRecoveryKeyCount int
+	// ConsecutiveFailures + FailThreshold: monitor-internal state
+	// included so admin dashboards can render "X / Y failures" +
+	// gate state in a single round-trip.
+	ConsecutiveFailures int
+	FailThreshold       int
 }
 
 // DefaultRecoveryFailureThreshold is the default number of consecutive
@@ -698,6 +732,31 @@ func (sm *SystemMonitor) QueueStats(ctx context.Context) (QueueStats, error) {
 		return QueueStats{}, fmt.Errorf("running_size: %w", err)
 	}
 	return QueueStats{QueueSize: qSize, RunningSize: rSize}, nil
+}
+
+// RecoveryStats returns the combined observability snapshot. Safe on
+// a nil receiver. When no gate is wired (production default for
+// tests / off-mode deployment), only the monitor-internal fields are
+// populated and the gate fields are zero-valued.
+func (sm *SystemMonitor) RecoveryStats() RecoveryStats {
+	if sm == nil {
+		return RecoveryStats{}
+	}
+	out := RecoveryStats{
+		ConsecutiveFailures: sm.consecutiveFailures,
+		FailThreshold:       sm.recoveryFailThreshold,
+	}
+	if sm.recoveryGate != nil {
+		// The gate's own Stats() returns the gate-typed
+		// RecoveryStats; we merge it in. Production wires
+		// (v2.Manager) populate all four gate fields.
+		gateStats := sm.recoveryGate.Stats()
+		out.LastError = gateStats.LastError
+		out.LastErrorAt = gateStats.LastErrorAt
+		out.LastRecoveryAt = gateStats.LastRecoveryAt
+		out.LastRecoveryKeyCount = gateStats.LastRecoveryKeyCount
+	}
+	return out
 }
 
 // Dedup exposes the InflightDedup for callers (e.g. RecentSuccessHook wiring).

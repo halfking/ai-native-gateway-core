@@ -2,6 +2,7 @@ package recovery
 
 import (
 	"context"
+	"fmt"
 	"testing"
 	"time"
 
@@ -304,5 +305,123 @@ func TestWarmupFromExistingKeys_EmptyRedisIsSafe(t *testing.T) {
 	}
 	if !m.Ready(ctx) {
 		t.Fatalf("gate must be open after warmup, even with 0 keys")
+	}
+}
+
+// TestStats_RecordsErrorAndRecovery is the audit follow-up #4 surface:
+// verify that on success/failure the Stats() snapshot reflects the
+// last operation accurately.
+func TestStats_RecordsErrorAndRecovery(t *testing.T) {
+	m := New(newMini(t), "ursm:v2:")
+	ctx := context.Background()
+
+	// Step 1: close the gate successfully (no error expected, no
+	// LastError stamped).
+	if _, err := m.MarkClosedDebounced(ctx, "test", time.Minute); err != nil {
+		t.Fatalf("close: %v", err)
+	}
+	stats := m.Stats()
+	if stats.LastError != "" {
+		t.Fatalf("LastError must be empty on success, got %q", stats.LastError)
+	}
+	if stats.LastRecoveryAt.IsZero() == false {
+		t.Fatalf("LastRecoveryAt must be zero (no recovery yet), got %v",
+			stats.LastRecoveryAt)
+	}
+
+	// Step 2: re-warm (records LastRecoveryAt).
+	if err := m.rdb.HSet(ctx, "ursm:v2:node:1:m", "available", "1").Err(); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	if err := m.SetReady(ctx, false); err != nil {
+		t.Fatalf("close: %v", err)
+	}
+	before := time.Now().UTC()
+	n, err := m.WarmupFromExistingKeys(ctx)
+	if err != nil {
+		t.Fatalf("warmup: %v", err)
+	}
+	if n != 1 {
+		t.Fatalf("warmup observed %d, want 1", n)
+	}
+	stats = m.Stats()
+	if stats.LastRecoveryAt.IsZero() {
+		t.Fatalf("LastRecoveryAt must be set after warmup")
+	}
+	if stats.LastRecoveryAt.Before(before) {
+		t.Fatalf("LastRecoveryAt = %v, want >= %v", stats.LastRecoveryAt, before)
+	}
+	if m.LastRecoveryKeyCount() != 1 {
+		t.Fatalf("LastRecoveryKeyCount = %d, want 1", m.LastRecoveryKeyCount())
+	}
+}
+
+// TestStats_RecordsErrorOnFailure verifies the error path stamps
+// LastError + LastErrorAt so an admin dashboard can show "last error
+// at <time>: <msg>".
+func TestStats_RecordsErrorOnFailure(t *testing.T) {
+	mr := miniredis.RunT(t)
+	rdb := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	m := New(rdb, "ursm:v2:")
+
+	// Close miniredis so the SetNX call fails.
+	mr.Close()
+	before := time.Now().UTC()
+	_, err := m.MarkClosedDebounced(context.Background(), "test", time.Minute)
+	if err == nil {
+		t.Fatalf("MarkClosedDebounced must fail when redis is down")
+	}
+
+	stats := m.Stats()
+	if stats.LastError == "" {
+		t.Fatalf("LastError must be set after a failure, got empty")
+	}
+	if stats.LastErrorAt.Before(before) {
+		t.Fatalf("LastErrorAt = %v, want >= %v", stats.LastErrorAt, before)
+	}
+}
+
+// TestStats_NilReceiverIsSafe verifies the safe-on-nil-receiver
+// contract: callers (admin handlers, Prometheus exporters) must not
+// have to nil-check the manager before reading stats.
+func TestStats_NilReceiverIsSafe(t *testing.T) {
+	var m *Manager
+	stats := m.Stats()
+	if stats.LastError != "" || !stats.LastErrorAt.IsZero() || !stats.LastRecoveryAt.IsZero() {
+		t.Fatalf("nil receiver must return zero Stats, got %+v", stats)
+	}
+	if n := m.LastRecoveryKeyCount(); n != 0 {
+		t.Fatalf("nil receiver LastRecoveryKeyCount = %d, want 0", n)
+	}
+}
+
+// TestStats_ClearErrorOnSuccess verifies that a successful operation
+// AFTER a failure resets LastError so a one-shot transient failure
+// doesn't keep showing up on the dashboard indefinitely.
+func TestStats_ClearErrorOnSuccess(t *testing.T) {
+	// We can't easily simulate "redis comes back" with miniredis (the
+	// closed mr.Addr panics), so we exercise the success-then-clear path
+	// directly: record an error via recordError (private), then call
+	// clearError through MarkClosedDebounced, then verify.
+	mr1 := miniredis.RunT(t)
+	rdb := redis.NewClient(&redis.Options{Addr: mr1.Addr()})
+	m := New(rdb, "ursm:v2:")
+
+	// Plant an error so we can verify the clear-on-success path.
+	m.recordError(fmt.Errorf("synthetic prior failure"))
+	if m.Stats().LastError == "" {
+		t.Fatalf("setup: LastError must be set")
+	}
+
+	// Successful MarkClosedDebounced must clear the planted error.
+	won, err := m.MarkClosedDebounced(context.Background(), "test", time.Minute)
+	if err != nil {
+		t.Fatalf("close: %v", err)
+	}
+	if !won {
+		t.Fatalf("first caller must win")
+	}
+	if got := m.Stats().LastError; got != "" {
+		t.Fatalf("LastError must be cleared after success, got %q", got)
 	}
 }

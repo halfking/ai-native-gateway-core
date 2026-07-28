@@ -1110,6 +1110,13 @@ type SystemMonitorBackend interface {
 	QueueStats(ctx context.Context) (SystemMonitorQueueStats, error)
 	IsFallback() bool
 	GetMetricsCollector() interface{} // Returns *systemmonitor.MetricsCollector, but we use interface{} to avoid import cycle
+	// RecoveryStats returns the URSM v2 recovery gate snapshot:
+	// last error (with timestamp) and last successful reopen (with
+	// timestamp + observed key count). Safe on a nil receiver; returns
+	// the zero value when no operation has happened yet. Added in
+	// audit follow-up #4 to expose the recovery gate observability
+	// surface to admin endpoints and Prometheus exporters.
+	RecoveryStats() SystemMonitorRecoveryStats
 }
 
 // SystemMonitorTask 是 systemmonitor.Task 的最小投影（字段全名相同），
@@ -1136,6 +1143,29 @@ type SystemMonitorQueueStats struct {
 	QueueSize   int64
 	RunningSize int64
 	InFallback  bool
+}
+
+// SystemMonitorRecoveryStats is the admin-side projection of
+// bg/systemmonitor.RecoveryStats. Mirrors recovery.Stats with JSON
+// tags so it can be returned directly from the admin endpoint.
+type SystemMonitorRecoveryStats struct {
+	// LastError is the most recent operation failure (empty on success).
+	LastError string `json:"last_error,omitempty"`
+	// LastErrorAt is the timestamp of LastError (zero on success).
+	LastErrorAt time.Time `json:"last_error_at,omitempty"`
+	// LastRecoveryAt is the timestamp of the most recent successful
+	// gate reopen (zero when no recovery has happened yet).
+	LastRecoveryAt time.Time `json:"last_recovery_at,omitempty"`
+	// LastRecoveryKeyCount is the key count observed on the most recent
+	// successful reopen.
+	LastRecoveryKeyCount int `json:"last_recovery_key_count,omitempty"`
+	// ConsecutiveFailures is the monitor's own counter — included
+	// here so admin dashboards can render "consecutive failures" +
+	// "last error" + "last recovery" in a single round-trip.
+	ConsecutiveFailures int `json:"consecutive_failures"`
+	// FailThreshold is the configured consecutive-failures threshold
+	// before auto-close fires. Useful for "X / Y failures" displays.
+	FailThreshold int `json:"fail_threshold"`
 }
 
 // ErrSystemMonitorDisabled 由 SetSystemMonitor(nil) 后调用 Submit 触发。
