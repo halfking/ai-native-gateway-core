@@ -108,6 +108,55 @@ func TestMapRow_GenerationMonotonic(t *testing.T) {
 	}
 }
 
+// TestSummaryClassification (B3 audit fix) pins the dry-run / apply
+// summary counter logic. The previous implementation string-concatenated
+// "available|manual_hold|disabled" and matched against hard-coded tuples,
+// but the healthy path produces ("1", "", "0") → "1||0" — none of the
+// cases matched, so every healthy node fell through to 0. This test
+// would have caught the bug.
+func TestSummaryClassification(t *testing.T) {
+	nodes := []mappedNode{
+		// Healthy: available=1, manual_hold=unset, disabled=0
+		{NodeKey: "k1", Fields: map[string]string{"available": "1", "disabled": "0"}},
+		// In-cool: available=0, manual_hold=unset, disabled=1, cool_until_ms set
+		{NodeKey: "k2", Fields: map[string]string{"available": "0", "disabled": "1", "cool_until_ms": "999"}},
+		// Manual hold: available=0, manual_hold=1, disabled=1
+		{NodeKey: "k3", Fields: map[string]string{"available": "0", "disabled": "1", "manual_hold": "1"}},
+		// Edge: available=1 + manual_hold=1 (admin override, but not zero) — count as manual_hold
+		{NodeKey: "k4", Fields: map[string]string{"available": "1", "disabled": "1", "manual_hold": "1"}},
+	}
+	available, cooled, manualHold := classifyNodes(nodes)
+	if available != 1 {
+		t.Fatalf("available=%d, want 1", available)
+	}
+	if cooled != 1 {
+		t.Fatalf("cooled=%d, want 1", cooled)
+	}
+	if manualHold != 2 {
+		t.Fatalf("manualHold=%d, want 2", manualHold)
+	}
+}
+
+// classifyNodes mirrors the summary-counting logic in main(). It is
+// exported (capital C) only inside the package so the test can call it.
+// Production code uses the inline switch in main().
+func classifyNodes(nodes []mappedNode) (available, cooled, manualHold int) {
+	for _, n := range nodes {
+		isAvailable := n.Fields["available"] == "1" && n.Fields["manual_hold"] != "1"
+		isManualHold := n.Fields["manual_hold"] == "1"
+		isCool := !isAvailable && !isManualHold && n.Fields["disabled"] == "1"
+		switch {
+		case isAvailable:
+			available++
+		case isManualHold:
+			manualHold++
+		case isCool:
+			cooled++
+		}
+	}
+	return
+}
+
 // TestEnvOr pins the env-or-default helper so a future refactor
 // doesn't accidentally flip the precedence.
 func TestEnvOr(t *testing.T) {

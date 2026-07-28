@@ -91,6 +91,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/licensing"
 	"github.com/kaixuan/llm-gateway-go/maas"
 	"github.com/kaixuan/llm-gateway-go/metatools"
+	"github.com/kaixuan/llm-gateway-go/metrics"
 	"github.com/kaixuan/llm-gateway-go/middleware"
 	"github.com/kaixuan/llm-gateway-go/pending"
 	"github.com/kaixuan/llm-gateway-go/plugin-runtime"
@@ -135,6 +136,23 @@ func main() {
 	if len(os.Args) > 1 && os.Args[1] == "migrate" {
 		os.Exit(runMigrate(config.Load().DatabaseURL))
 	}
+
+	// P0-3 fix: wire the global metrics recorder so the P0-2 / P0-3
+	// counters (shadow_write_failed / ringbuffer_dropped /
+	// rawaudit_write_failed / ursm_v2_shadow_records_total) actually
+	// register with prometheus. Before this call, metrics.Global()
+	// returns NoopRecorder (set by metrics/interface.go init()) and
+	// every Inc() is a no-op — the /metrics endpoint shows only the
+	// counters that prometheus_mw.go registers directly (HTTP latency
+	// histogram) and not the metrics package counters.
+	//
+	// Must be set BEFORE any goroutine that records metrics starts.
+	// The migrate subcommand above does not record metrics so it does
+	// not need the recorder — it exits before any concurrent caller.
+	//
+	// Idempotency: metrics.SetGlobal uses atomic.Pointer.Store so
+	// repeated calls (e.g. main reload) are safe.
+	metrics.SetGlobal(metrics.NewPrometheusRecorder())
 
 	processStartedAt := time.Now()
 	// Round 39 (2026-06-16) — initialize OTel tracer.
