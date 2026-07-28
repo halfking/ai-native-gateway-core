@@ -3413,9 +3413,27 @@ func main() {
 			SigningPubkey: os.Getenv("LLM_GATEWAY_PLUGIN_SIGNING_PUBKEY"),
 		})
 		pluginBases := ScanAndStartPlugins(sup, pluginsDir, pluginManifests)
+		pluginActivations := make(map[string]pluginruntime.Activation, len(pluginManifests))
+		for _, manifest := range pluginManifests {
+			if manifest != nil {
+				pluginActivations[manifest.PluginID] = manifest.Activation
+			}
+		}
+		var entitlementAuthorizer pluginEntitlementAuthorizer
+		maintainServiceURL := os.Getenv("MAINTAIN_SERVICE_URL")
+		jwtSecret := resolveJWTSecret(os.Getenv("LLM_GATEWAY_JWT_SECRET"), cfg.SecretKey)
+		if maintainServiceURL != "" && jwtSecret != "" {
+			entitlementAuthorizer = pluginruntime.NewEntitlementClient(maintainServiceURL, jwtSecret, "ai-native-gateway")
+		}
 		registerPluginAPIProxy(mux, []byte(cfg.SecretKey), func(pluginID string) string {
 			return pluginBases[pluginID] // "" if not running → apiproxy returns 502
-		}, dbConn.Pool(), cfg.SecretKey)
+		}, func(pluginID string) (string, bool) {
+			activation, ok := pluginActivations[pluginID]
+			if !ok {
+				return "", false
+			}
+			return activation.ModuleKey, activation.LicenseRequired
+		}, entitlementAuthorizer, dbConn.Pool(), cfg.SecretKey)
 
 		// P6: health loop — precise HTTP health check as the liveness signal.
 		// Each tick GETs manifest.Runtime.HealthPath over the plugin's unix
