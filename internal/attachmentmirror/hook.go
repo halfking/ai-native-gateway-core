@@ -21,6 +21,7 @@ import (
 
 	"github.com/kaixuan/llm-gateway-go/domains/attachments"
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/observability/telemetry"
+	"github.com/kaixuan/llm-gateway-go/metrics"
 )
 
 // PersistHook returns a telemetry "onPersisted" hook that mirrors the
@@ -59,6 +60,13 @@ func PersistHook(repo *attachments.Repository) func(entry *telemetry.RequestLogE
 				"request_id", entry.RequestID,
 				"count", len(rows),
 				"error", err)
+			// P0-2 (audit §3.6 R-3.3): count this lost-row event so the
+			// Grafana rule in deploy/monitoring/grafana-alerts/shadow-write-failures.yaml
+			// can fire. The primary request_logs INSERT already succeeded
+			// upstream — these rows are persisted in JSONB but the relational
+			// mirror is missing. No retry: best-effort contract per the
+			// package doc above.
+			metrics.Global().RecordShadowWriteFailure("attachment")
 		}
 	}
 }

@@ -12,6 +12,8 @@ import (
 	"sort"
 	"sync"
 	"time"
+
+	"github.com/kaixuan/llm-gateway-go/metrics"
 )
 
 const maxRawLogFileSize = 200 * 1024 * 1024
@@ -238,6 +240,14 @@ func (l *RawDataLogger) writeEntries(entries []RawDataEntry) {
 		n, err := l.file.Write(data)
 		if err != nil {
 			slog.Error("raw_data_logger: failed to write entry", "err", err)
+			// P0-2 (audit §3.6 R-3.4): count this audit pipeline failure
+			// so the rawaudit_write_failed_total rule in
+			// deploy/monitoring/grafana-alerts/shadow-write-failures.yaml
+			// can fire. CRITICAL: raw audit JSONL is the only immutable
+			// local audit copy before cross-machine replication lands
+			// (P2-2). Single failure already matters — operator can
+			// diagnose whether disk full / fs corrupt / perms broken.
+			metrics.Global().RecordRawAuditWriteFailure()
 			return
 		}
 		l.currentSize += int64(n)

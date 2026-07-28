@@ -8,6 +8,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/kaixuan/llm-gateway-go/metrics"
 )
 
 // RingBufferStats is a snapshot of RingBuffer state for monitoring
@@ -100,6 +102,15 @@ func (rb *RingBuffer) push(rec BackupRecord) {
 	if rb.size == rb.cap {
 		// Buffer is full — about to overwrite the oldest entry.
 		atomic.AddUint64(&rb.dropped, 1)
+		// P0-2 (audit §3.6 R-3.4): surface this on Prometheus so the
+		// ringbuffer_dropped_total rule in
+		// deploy/monitoring/grafana-alerts/shadow-write-failures.yaml
+		// can fire. CRITICAL: these rows are LOST (not deferred to disk
+		// or replay). Call from outside the mu would also be safe — the
+		// counter is a Prometheus Counter.Add, atomic in prometheus client.
+		// We deliberately call while mu is held to preserve the invariant
+		// that "every +1 in dropped is paired with exactly one +1 here".
+		metrics.Global().RecordRingBufferDropped(1)
 	}
 	rb.buf[rb.head] = rec
 	rb.head = (rb.head + 1) % rb.cap

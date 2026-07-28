@@ -43,6 +43,13 @@ type Recorder interface {
 	SetPoolCapacity(poolID string, capacity int)
 	SetPoolActiveCredentials(poolID string, count int)
 	SetPoolHealthyCredentials(poolID string, count int)
+
+	// ShadowWrite (P0-2): record failures from best-effort "soft" write paths
+	// (attachmentmirror, sessionv2mirror, RingBuffer overflow, raw audit JSONL).
+	// kind = "attachment" | "session_v2" | "ringbuffer_drop" | "raw_audit"
+	RecordShadowWriteFailure(kind string)
+	RecordRingBufferDropped(count uint64)
+	RecordRawAuditWriteFailure()
 }
 
 // NoopRecorder 是空实现，用于测试
@@ -79,6 +86,11 @@ func (n *NoopRecorder) RecordPoolRequest(poolID, status string)                 
 func (n *NoopRecorder) SetPoolCapacity(poolID string, capacity int)                                {}
 func (n *NoopRecorder) SetPoolActiveCredentials(poolID string, count int)                          {}
 func (n *NoopRecorder) SetPoolHealthyCredentials(poolID string, count int)                         {}
+
+// P0-2 ShadowWrite methods — no-op fallbacks.
+func (n *NoopRecorder) RecordShadowWriteFailure(kind string) {}
+func (n *NoopRecorder) RecordRingBufferDropped(count uint64) {}
+func (n *NoopRecorder) RecordRawAuditWriteFailure()          {}
 
 // globalRecorder 保存全局默认 Recorder。
 //

@@ -54,6 +54,25 @@ type PrometheusRecorder struct {
 	poolActiveCredentials  *prometheus.GaugeVec
 	poolHealthyCredentials *prometheus.GaugeVec
 
+	// ShadowWrite (P0-2)
+	//
+	// shadowWriteFailed  : best-effort hook (attachmentmirror / sessionv2mirror)
+	//                      that failed AFTER the primary request_logs INSERT
+	//                      succeeded. Counter is monotonic — missing rows are
+	//                      observable through Prometheus rate().
+	//
+	// ringBufferDropped  : entries overwritten because the in-memory fallback
+	//                      buffer hit its configured capacity. CRITICAL because
+	//                      these rows are LOST, not deferred. Counter is
+	//                      monotonic.
+	//
+	// rawAuditFailed     : raw audit JSONL write/rotate/sync failed. CRITICAL
+	//                      because audit JSONL is the only immutable local copy
+	//                      before cross-machine replication (P2-2).
+	shadowWriteFailed   *prometheus.CounterVec
+	ringBufferDropped   prometheus.Counter
+	rawAuditWriteFailed prometheus.Counter
+
 	logger logger.Logger
 }
 
@@ -284,9 +303,30 @@ func NewPrometheusRecorder() *PrometheusRecorder {
 		poolHealthyCredentials: promauto.NewGaugeVec(
 			prometheus.GaugeOpts{
 				Name: "llm_gateway_pool_healthy_credentials",
-				Help: "Healthy credentials in pool",
+				Help: "Healthy credentials count",
 			},
 			[]string{"pool_id"},
+		),
+
+		// ShadowWrite (P0-2)
+		shadowWriteFailed: promauto.NewCounterVec(
+			prometheus.CounterOpts{
+				Name: "llm_gateway_shadow_write_failed_total",
+				Help: "Best-effort hook writes that failed AFTER the primary request_logs INSERT succeeded (label = hook kind)",
+			},
+			[]string{"kind"},
+		),
+		ringBufferDropped: promauto.NewCounter(
+			prometheus.CounterOpts{
+				Name: "llm_gateway_ringbuffer_dropped_total",
+				Help: "In-memory fallback buffer entries overwritten because the ring hit its capacity (lost rows)",
+			},
+		),
+		rawAuditWriteFailed: promauto.NewCounter(
+			prometheus.CounterOpts{
+				Name: "llm_gateway_rawaudit_write_failed_total",
+				Help: "Raw audit JSONL write/rotate/sync failures (immutable local audit pipeline)",
+			},
 		),
 
 		logger: logger.New("metrics"),
@@ -435,4 +475,46 @@ func (p *PrometheusRecorder) SetPoolActiveCredentials(poolID string, count int) 
 
 func (p *PrometheusRecorder) SetPoolHealthyCredentials(poolID string, count int) {
 	p.poolHealthyCredentials.WithLabelValues(poolID).Set(float64(count))
+}
+
+// P0-2 ShadowWrite methods.
+//
+// The three counters cover the "soft write" failure modes that the
+// audit identified as having no observability today. Each call site
+// is documented in the caller's commit; the metric name + help text
+// are the contract.
+//
+// Important: these counters are intentionally MONOTONIC (no reset).
+// A rate(window) > 0 means rows are being lost / miswritten; a
+// rate(window) == 0 means we're healthy. Operators should alert on
+// rate() > 0 over a non-trivial window, not on the absolute counter
+// value (which grows forever).
+
+// RecordShadowWriteFailure counts a single failed best-effort hook
+// write. kind is the hook's tag (e.g. "attachment", "session_v2").
+//
+// Kind values MUST be kept in sync with the alerting rules in
+// deploy/monitoring/grafana-alerts/shadow-write-failures.yaml so the
+// Grafana queries resolve to a non-empty time series.
+func (p *PrometheusRecorder) RecordShadowWriteFailure(kind string) {
+	p.shadowWriteFailed.WithLabelValues(kind).Inc()
+}
+
+// RecordRingBufferDropped counts the number of entries the
+// in-memory fallback ring buffer overwrote because it was at
+// capacity. These rows are LOST (not deferred to disk / replay).
+// The caller passes the count from one ring-buffer push.
+func (p *PrometheusRecorder) RecordRingBufferDropped(count uint64) {
+	if count == 0 {
+		return
+	}
+	p.ringBufferDropped.Add(float64(count))
+}
+
+// RecordRawAuditWriteFailure counts one write/rotate/sync failure
+// from the raw audit JSONL pipeline. Single failure already matters
+// because JSONL is the only immutable local audit copy before
+// cross-machine replication lands (P2-2).
+func (p *PrometheusRecorder) RecordRawAuditWriteFailure() {
+	p.rawAuditWriteFailed.Inc()
 }

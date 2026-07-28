@@ -1,0 +1,86 @@
+# Grafana alert rules — shadow write failures (P0-2)
+#
+# Origin: docs/audit/2026-07-28-llm-gateway-flow-comprehensive-audit.md §3.6
+#         R-3.3 / R-3.4 — best-effort write paths had no observability.
+#
+# Plan:    docs/design/2026-07-28-llm-gateway-flow-improvements.md §2 P0-2
+#
+# These three rules cover the "soft write" failure modes that R-3.3
+# and R-3.4 call out. Each rule fires on a non-zero rate() over a
+# short window so a transient blip doesn't page anyone, but a real
+# outage (DB down, disk full, fs corrupt) lights up within ~5 minutes.
+#
+# IMPORTANT: rates must be strictly greater than zero. A single
+# lost row is signal — the primary request_logs INSERT succeeded,
+# but a downstream mirror (attachment / session_v2 / fallback buffer /
+# raw audit JSONL) silently failed. Operators need to know.
+#
+# Metric → counter mapping:
+#
+#   llm_gateway_shadow_write_failed_total{kind="attachment"}
+#     → attachmentmirror onPersisted hook fail
+#   llm_gateway_shadow_write_failed_total{kind="session_v2"}
+#     → sessionv2mirror onPersisted hook fail
+#   llm_gateway_ringbuffer_dropped_total
+#     → in-memory fallback buffer overflow (rows LOST, not deferred)
+#   llm_gateway_rawaudit_write_failed_total
+#     → raw audit JSONL write/rotate/sync fail (only immutable
+#       local audit copy before P2-2 cross-machine replication)
+
+groups:
+  - name: shadow_write_failures
+    interval: 30s
+    rules:
+      # Hook-level failures: a *deliberate* threshold of 10/min
+      # tolerates ~one blip every 6s while still paging within ~1 min
+      # of any sustained outage. WARN severity because primary
+      # request_logs INSERT still succeeded — these are downstream
+      # mirrors.
+      - alert: ShadowWriteAttachmentFailing
+        expr: rate(llm_gateway_shadow_write_failed_total{kind="attachment"}[5m]) > 10/60
+        for: 5m
+        labels:
+          severity: warning
+          audit_id: P0-2
+        annotations:
+          summary: "attachmentmirror hook writing >10/min into request_attachments"
+          description: "request_logs JSONB has the attachments column but the relational mirror is missing rows. Audit §3.6 R-3.3."
+          runbook: "Check request_logs vs request_attachments row counts; if divergent, file incident."
+
+      - alert: ShadowWriteSessionV2Failing
+        expr: rate(llm_gateway_shadow_write_failed_total{kind="session_v2"}[5m]) > 10/60
+        for: 5m
+        labels:
+          severity: warning
+          audit_id: P0-2
+        annotations:
+          summary: "sessionv2mirror V2 sessions shadow write failing >10/min"
+          description: "Gateway V2 sessions tables (migration 430) losing rows during cutover window. Audit §3.6 R-3.3."
+          runbook: "Check sessions_v2.shadow_write flag + DB health; reconciliation job may need re-run."
+
+      # CRITICAL because rows are LOST (no replay possible for the
+      # overwritten entries). Even a single drop should page.
+      - alert: RingBufferOverflowed
+        expr: increase(llm_gateway_ringbuffer_dropped_total[1m]) > 0
+        for: 1m
+        labels:
+          severity: critical
+          audit_id: P0-2
+        annotations:
+          summary: "In-memory fallback RingBuffer lost >=1 entry in the last 1m"
+          description: "LLM_GATEWAY_DB_DEGRADATION_BUFFER capacity reached; entries overwritten. CRITICAL — these rows are LOST (not deferred to disk). Audit §3.6 R-3.4."
+          runbook: "Check primary DB health + FileWriter fallback queue; replay the ring buffer (if entries remain) and raise capacity if sustained."
+
+      # CRITICAL because raw audit JSONL is the only immutable local
+      # audit copy before P2-2 cross-machine replication. Single
+      # failure already indicates disk / fs / perms problem.
+      - alert: RawAuditWriteFailing
+        expr: increase(llm_gateway_rawaudit_write_failed_total[5m]) > 0
+        for: 5m
+        labels:
+          severity: critical
+          audit_id: P0-2
+        annotations:
+          summary: "Raw audit JSONL write/rotate/sync failed >=1 time in the last 5m"
+          description: "raw_data_logger (audit JSONL) failed to write or rotate. Audit pipeline integrity compromised. Audit §3.6 R-3.4."
+          runbook: "Check disk space, fs health, file permissions on $LLM_GATEWAY_RAW_AUDIT_DIR. If repeated, switch audit sink to P2-2 cross-machine replication."
