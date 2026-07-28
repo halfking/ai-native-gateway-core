@@ -299,6 +299,13 @@ type StreamOutcome = struct {
 	Reason      string
 	Resumable   bool // Whether the stream can be resumed with a different credential
 	ChunkCount  int  // Number of chunks sent before interruption
+
+	// Kind (2026-07-28 §5.6) is the structured errorsx.ErrorKind the
+	// executor assigns to the interruption. When non-empty,
+	// streamErrorKindForDetailCode prefers it over the legacy
+	// detail-code switch. Empty when the executor did not classify
+	// the outcome (e.g. async-retry paths, legacy bridges).
+	Kind errorsx.ErrorKind
 }
 
 type StreamHandler func(w http.ResponseWriter, resp *http.Response, clientModel, outboundModel, catalogCode string, norm NormalizerFunc, capture *audit.StreamCapture, toolsRequested bool) StreamOutcome

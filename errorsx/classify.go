@@ -19,6 +19,12 @@ const (
 	KindQuota          ErrorKind = "quota"
 	KindUpstreamDown   ErrorKind = "upstream_down"
 	KindCanceled       ErrorKind = "canceled"
+	// KindClientBug (2026-07-28 §5.6) covers client-side mistakes that
+	// look like a KindCanceled from the upstream's perspective but
+	// originate from the caller's protocol (e.g. echoing a stale
+	// tool_call_id). Distinct from KindCanceled so the error_kind
+	// taxonomy can keep cancel and bug separately countable.
+	KindClientBug      ErrorKind = "client_bug"
 	KindConcurrent     ErrorKind = "concurrent"
 	KindAuthRevoked    ErrorKind = "auth_revoked"
 	KindQuotaPeriodic  ErrorKind = "quota_periodic"

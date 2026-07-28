@@ -13,6 +13,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/kaixuan/llm-gateway-go/errorsx"
+
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/audit" //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/internal/ir"
 )
@@ -297,6 +299,12 @@ type StreamOutcome struct {
 	Reason      string
 	Resumable   bool // Whether the stream can be resumed with a different credential
 	ChunkCount  int  // Number of chunks sent before interruption
+
+	// Kind (2026-07-28 §5.6) is the structured errorsx.ErrorKind
+	// the executor assigns to the interruption. When non-empty,
+	// streamErrorKindForDetailCode prefers it over the legacy
+	// detail-code switch.
+	Kind errorsx.ErrorKind
 }
 
 func StreamChat(w http.ResponseWriter, resp *http.Response, clientModel, outboundModel string, norm *Normalizer) StreamOutcome {
