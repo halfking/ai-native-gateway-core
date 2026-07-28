@@ -183,6 +183,31 @@ func (m *Manager) RestoreIfClosed(ctx context.Context) (int, error) {
 	return m.recovery.RestoreIfClosed(ctx)
 }
 
+// RecoveryStats returns the observability snapshot for the recovery
+// gate — last error (with timestamp) and last successful reopen
+// (with timestamp + observed key count). Safe on a nil receiver;
+// returns the zero value when no operations have happened.
+//
+// Audit follow-up #4: closes the gap that the recovery gate has no
+// metrics surface. Admin endpoints and Prometheus exporters consume
+// this snapshot for "time since last recovery" and "last error"
+// dashboards.
+func (m *Manager) RecoveryStats() recovery.Stats {
+	if m == nil {
+		return recovery.Stats{}
+	}
+	return m.recovery.Stats()
+}
+
+// LastRecoveryKeyCount returns the key count observed on the most
+// recent successful reopen. Safe on a nil receiver.
+func (m *Manager) LastRecoveryKeyCount() int {
+	if m == nil {
+		return 0
+	}
+	return m.recovery.LastRecoveryKeyCount()
+}
+
 // CandidateSeed is the input to FilterAndScore. The router hands one
 // seed per candidate it is considering; the manager resolves each seed
 // against the v2 store to produce a NodeView. Fields beyond

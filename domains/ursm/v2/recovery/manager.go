@@ -3,6 +3,7 @@ package recovery
 import (
 	"context"
 	"fmt"
+	"sync"
 	"time"
 
 	"github.com/redis/go-redis/v9"
@@ -13,6 +14,21 @@ import (
 type Manager struct {
 	rdb    *redis.Client
 	prefix string
+
+	// 2026-07-29 (audit follow-up #4): observability for the incident
+	// lifecycle. lastError / lastErrorAt record the most recent
+	// operation failure (MarkClosedDebounced, WarmupFromExistingKeys,
+	// etc.) so operators can correlate health-check noise with the
+	// recovery gate state. lastRecoveryAt records the timestamp of the
+	// most recent successful reopen, so a dashboard can show "last
+	// recovery was N minutes ago". All access is mutex-guarded; the
+	// fields are read by admin endpoints and Prometheus exporters, not
+	// by the request hot path, so contention is bounded.
+	mu              sync.RWMutex
+	lastError       string
+	lastErrorAt     time.Time
+	lastRecoveryAt  time.Time
+	lastRecoveryKey int
 }
 
 func New(rdb *redis.Client, prefix string) *Manager {
@@ -40,6 +56,7 @@ func (m *Manager) SetReady(ctx context.Context, ready bool) error {
 
 func (m *Manager) EnterRecovery(ctx context.Context, reason string) error {
 	if err := m.SetReady(ctx, false); err != nil {
+		m.recordError(err)
 		return fmt.Errorf("ursm.v2: enter recovery: %w", err)
 	}
 	pipe := m.rdb.Pipeline()
@@ -49,6 +66,7 @@ func (m *Manager) EnterRecovery(ctx context.Context, reason string) error {
 		"started_at", time.Now().UTC().Format(time.RFC3339),
 	)
 	if _, err := pipe.Exec(ctx); err != nil {
+		m.recordError(err)
 		return fmt.Errorf("ursm.v2: enter recovery pipeline: %w", err)
 	}
 	return nil
@@ -79,14 +97,17 @@ func (m *Manager) MarkClosedDebounced(ctx context.Context, reason string, deboun
 	}
 	ok, err := m.rdb.SetNX(ctx, store.RecoveryDebounceKey(m.prefix), reason, debounceTTL).Result()
 	if err != nil {
+		m.recordError(err)
 		return false, fmt.Errorf("ursm.v2: setnx debounce: %w", err)
 	}
 	if !ok {
 		return false, nil
 	}
 	if err := m.EnterRecovery(ctx, reason); err != nil {
+		// EnterRecovery already recorded the error; bubble up.
 		return true, err
 	}
+	m.clearError()
 	return true, nil
 }
 
@@ -118,6 +139,7 @@ func (m *Manager) WarmupFromExistingKeys(ctx context.Context) (int, error) {
 	pattern := m.prefix + "node:*"
 	keys, err := m.scanNodeKeys(ctx, pattern)
 	if err != nil {
+		m.recordError(err)
 		return 0, err
 	}
 	now := time.Now().UTC().Format(time.RFC3339Nano)
@@ -131,8 +153,11 @@ func (m *Manager) WarmupFromExistingKeys(ctx context.Context) (int, error) {
 	)
 	pipe.Set(ctx, store.ReadyKey(m.prefix), "1", 0)
 	if _, err := pipe.Exec(ctx); err != nil {
+		m.recordError(err)
 		return 0, fmt.Errorf("ursm.v2: warmup pipeline: %w", err)
 	}
+	m.recordRecovery(len(keys))
+	m.clearError()
 	return len(keys), nil
 }
 
@@ -200,4 +225,78 @@ func intToString(n int) string {
 		n /= 10
 	}
 	return string(buf[i:])
+}
+
+// Stats is the snapshot of the recovery gate state returned to the
+// admin endpoint and the Prometheus exporter. All fields are
+// zero-valued on a nil receiver or when no operation has happened.
+type Stats struct {
+	LastError      string
+	LastErrorAt    time.Time
+	LastRecoveryAt time.Time
+}
+
+// recordError stamps the latest failure on the manager so an admin
+// dashboard can show "recovery gate last failed at <time>: <err>".
+// Best-effort: callers log + return the error; the recorded value is
+// purely diagnostic.
+func (m *Manager) recordError(err error) {
+	if m == nil || err == nil {
+		return
+	}
+	m.mu.Lock()
+	m.lastError = err.Error()
+	m.lastErrorAt = time.Now().UTC()
+	m.mu.Unlock()
+}
+
+// recordRecovery stamps the latest successful reopen so a dashboard
+// can compute "time since last recovery" without parsing epoch hashes.
+func (m *Manager) recordRecovery(keyCount int) {
+	if m == nil {
+		return
+	}
+	m.mu.Lock()
+	m.lastRecoveryAt = time.Now().UTC()
+	m.lastRecoveryKey = keyCount
+	m.mu.Unlock()
+}
+
+// clearError resets the lastError state on a successful operation.
+// We do this so a one-shot transient failure doesn't keep showing up
+// on the dashboard long after the underlying issue was resolved.
+func (m *Manager) clearError() {
+	if m == nil {
+		return
+	}
+	m.mu.Lock()
+	m.lastError = ""
+	m.lastErrorAt = time.Time{}
+	m.mu.Unlock()
+}
+
+// Stats returns the observability snapshot. Safe on a nil receiver.
+func (m *Manager) Stats() Stats {
+	if m == nil {
+		return Stats{}
+	}
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return Stats{
+		LastError:      m.lastError,
+		LastErrorAt:    m.lastErrorAt,
+		LastRecoveryAt: m.lastRecoveryAt,
+	}
+}
+
+// LastRecoveryKeyCount returns the key count observed on the most
+// recent successful reopen. Useful for dashboards that want to show
+// "last recovery re-warmed N nodes".
+func (m *Manager) LastRecoveryKeyCount() int {
+	if m == nil {
+		return 0
+	}
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.lastRecoveryKey
 }

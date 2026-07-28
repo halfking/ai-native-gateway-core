@@ -84,3 +84,21 @@ func (a *systemMonitorAdapter) GetMetricsCollector() interface{} {
 	}
 	return a.sm.GetMetricsCollector()
 }
+
+// RecoveryStats 透传 + 字段映射：把 systemmonitor.RecoveryStats 投影到
+// admin.SystemMonitorRecoveryStats。审计 follow-up #4：暴露给
+// admin /api/system-monitor/recovery 端点（后续 follow-up #5 补路由）。
+func (a *systemMonitorAdapter) RecoveryStats() admin.SystemMonitorRecoveryStats {
+	if a == nil || a.sm == nil {
+		return admin.SystemMonitorRecoveryStats{}
+	}
+	s := a.sm.RecoveryStats()
+	return admin.SystemMonitorRecoveryStats{
+		LastError:            s.LastError,
+		LastErrorAt:          s.LastErrorAt,
+		LastRecoveryAt:       s.LastRecoveryAt,
+		LastRecoveryKeyCount: s.LastRecoveryKeyCount,
+		ConsecutiveFailures:  s.ConsecutiveFailures,
+		FailThreshold:        s.FailThreshold,
+	}
+}

@@ -1976,9 +1976,14 @@ func main() {
 			// MarkClosedDebounced. Only wired when v2 mode is non-off
 			// (otherwise the gate is never authoritative anyway, and
 			// wiring it would just produce no-op logs).
+			//
+			// 2026-07-29 (audit follow-up #4): the gate is wrapped in a
+			// v2RecoveryGateAdapter so the bg/systemmonitor package does
+			// not need to import domains/ursm/v2/recovery — the adapter
+			// does the typed field-by-field conversion at wire time.
 			var recoveryGate systemmonitor.RecoveryGate
 			if ursmV2Mgr != nil && ursmV2Mgr.Mode() != ursmv2api.ModeOff {
-				recoveryGate = ursmV2Mgr
+				recoveryGate = newV2RecoveryGateAdapter(ursmV2Mgr)
 			}
 			sm, smErr := systemmonitor.NewSystemMonitor(systemmonitor.Config{
 				DB:          dbConn.Pool(),
@@ -3518,7 +3523,9 @@ func main() {
 	mux.Handle("/v1/completions", chatHandler)
 	mux.Handle("/v1/messages", messagesHandler)
 	mux.Handle("/v1/responses", responsesHandler)
-	mux.Handle("/v1/embeddings", embeddingsHandler)
+	if embeddingsHandler != nil {
+		mux.Handle("/v1/embeddings", embeddingsHandler)
+	}
 	mux.Handle("/v1/models", modelsHandler)
 
 	// audit-gateway-gemini (2026-07-13): Gemini native API endpoints.

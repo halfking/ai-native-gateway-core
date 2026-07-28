@@ -21,12 +21,13 @@ import (
 // fakeRecoveryGate implements RecoveryGate and records every call so
 // tests can assert on (count, reasons, ttl) without spinning up Redis.
 type fakeRecoveryGate struct {
-	mu           sync.Mutex
-	calls        []fakeGateCall
-	restoreCalls []fakeRestoreCall
-	failAll      bool  // when true, every MarkClosedDebounced returns an error
-	restoreErr   error // optional override for RestoreIfClosed
-	restoreCount int   // what RestoreIfClosed should report
+	mu            sync.Mutex
+	calls         []fakeGateCall
+	restoreCalls  []fakeRestoreCall
+	failAll       bool          // when true, every MarkClosedDebounced returns an error
+	restoreErr    error         // optional override for RestoreIfClosed
+	restoreCount  int           // what RestoreIfClosed should report
+	statsOverride RecoveryStats // optional override for Stats()
 }
 
 type fakeGateCall struct {
@@ -54,6 +55,12 @@ func (g *fakeRecoveryGate) RestoreIfClosed(_ context.Context) (int, error) {
 		return 0, g.restoreErr
 	}
 	return g.restoreCount, nil
+}
+
+func (g *fakeRecoveryGate) Stats() RecoveryStats {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return g.statsOverride
 }
 
 func (g *fakeRecoveryGate) callCount() int {
