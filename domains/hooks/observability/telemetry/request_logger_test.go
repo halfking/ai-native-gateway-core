@@ -2,12 +2,182 @@ package telemetry
 
 import (
 	"context"
+	"encoding/json"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/kaixuan/llm-gateway-go/domains/dbdegradation"
+	"github.com/pashagolub/pgxmock/v4"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
+
+func TestReplayFallback_InitialUsesProvisionalMergeAndTerminalGuard(t *testing.T) {
+	mockDB, err := pgxmock.NewConn()
+	require.NoError(t, err)
+	defer mockDB.Close(context.Background())
+
+	mockDB.ExpectExec(`INSERT INTO request_wal_hot`).
+		WithArgs("req-replay", "default", "gw_provisional", StatusPending, StageReceived, "", true).
+		WillReturnResult(pgxmock.NewResult("INSERT", 1))
+
+	rl := &RequestLogger{
+		config: &RequestLoggerConfig{Enabled: true},
+		db:     mockDB,
+	}
+	payload, err := json.Marshal(&InitialRequest{
+		RequestID:   "req-replay",
+		TenantID:    "default",
+		SessionID:   "gw_provisional",
+		Provisional: true,
+	})
+	require.NoError(t, err)
+	err = rl.ReplayFallback(context.Background(), dbdegradation.BackupRecord{
+		RecordKey: "req-replay:initial",
+		Payload:   payload,
+	})
+	require.NoError(t, err)
+	require.NoError(t, mockDB.ExpectationsWereMet())
+}
+
+func TestRequestLogger_QueueOverflowWritesMarkerAndStats(t *testing.T) {
+	fallback := newStubBackupWriter()
+	rl := &RequestLogger{
+		config:     &RequestLoggerConfig{Enabled: true},
+		asyncQueue: make(chan *LogUpdate, 1),
+		fallback:   fallback,
+		done:       make(chan struct{}),
+	}
+	rl.Update(&LogUpdate{RequestID: "req-1", Stage: StageCompressed})
+	rl.Update(&LogUpdate{RequestID: "req-2", Stage: StageTransformed})
+
+	stats := rl.OverflowCounts()
+	assert.Equal(t, uint64(1), stats.QueueOverflow)
+	assert.Equal(t, []string{"req-2:update"}, fallback.seen())
+}
+
+type recordedFallback struct {
+	key     string
+	payload []byte
+}
+
+type failingBackupWriter struct {
+	calls []recordedFallback
+}
+
+func (w *failingBackupWriter) WriteRequestLog(context.Context, string, any) error { return nil }
+
+func (w *failingBackupWriter) WriteRequestWAL(_ context.Context, key string, payload any) error {
+	encoded, _ := json.Marshal(payload)
+	w.calls = append(w.calls, recordedFallback{key: key, payload: encoded})
+	if len(w.calls) == 1 {
+		return assert.AnError
+	}
+	return nil
+}
+
+func (w *failingBackupWriter) records() []recordedFallback { return w.calls }
+
+func TestRequestLogger_QueueOverflowWritesOriginalUpdateBeforeMarker(t *testing.T) {
+	fallback := newPayloadBackupWriter()
+	rl := &RequestLogger{
+		config:     &RequestLoggerConfig{Enabled: true},
+		asyncQueue: make(chan *LogUpdate, 1),
+		fallback:   fallback,
+		done:       make(chan struct{}),
+	}
+	first := &LogUpdate{RequestID: "req-1", Stage: StageCompressed, Status: StatusPending}
+	second := &LogUpdate{RequestID: "req-2", Stage: StageTransformed, Status: StatusPending, OutboundBody: []byte("must-not-be-in-marker")}
+	rl.Update(first)
+	rl.Update(second)
+
+	stats := rl.OverflowCounts()
+	assert.Equal(t, uint64(1), stats.QueueOverflow)
+	assert.Equal(t, []string{"req-2:update"}, fallback.keys())
+	assert.Equal(t, second, fallback.payload("req-2:update"))
+	assert.Empty(t, fallback.keysWithPrefix("request_logger:overflow:"))
+}
+
+func TestRequestLogger_QueueOverflowFallbackFailureWritesSafeMarker(t *testing.T) {
+	fallback := &failingBackupWriter{}
+	rl := &RequestLogger{
+		config:     &RequestLoggerConfig{Enabled: true},
+		asyncQueue: make(chan *LogUpdate, 1),
+		fallback:   fallback,
+		done:       make(chan struct{}),
+	}
+	rl.Update(&LogUpdate{RequestID: "req-occupied", Stage: StageCompressed, Status: StatusPending})
+	rl.Update(&LogUpdate{RequestID: "req-safe", Stage: StageTransformed, Status: StatusPending, OutboundBody: []byte("secret-body")})
+	records := fallback.records()
+	require.Len(t, records, 2)
+	assert.Equal(t, "req-safe:update", records[0].key)
+	assert.Equal(t, "request_logger:overflow:req-safe", records[1].key)
+	assert.NotContains(t, string(records[1].payload), "secret-body")
+	assert.Contains(t, string(records[1].payload), "request_id")
+	assert.Contains(t, string(records[1].payload), "stage")
+	assert.Contains(t, string(records[1].payload), "status")
+	assert.Contains(t, string(records[1].payload), "reason")
+}
+
+func TestRequestLogger_ReplayFallback_OverflowMarkerIsNoOp(t *testing.T) {
+	rl := &RequestLogger{config: &RequestLoggerConfig{Enabled: true}}
+	payload, err := json.Marshal(map[string]any{
+		"kind":       "request_logger_overflow",
+		"request_id": "req-marker",
+		"stage":      StageTransformed,
+		"status":     StatusFailure,
+		"reason":     "queue_full",
+	})
+	require.NoError(t, err)
+
+	err = rl.ReplayFallback(context.Background(), dbdegradation.BackupRecord{
+		RecordKey: "request_logger:overflow:req-marker",
+		Payload:   payload,
+	})
+	require.NoError(t, err)
+	stats := rl.OverflowCounts()
+	assert.Equal(t, uint64(1), stats.ReplayAttempt)
+	assert.Equal(t, uint64(1), stats.ReplaySuccess)
+	assert.Equal(t, uint64(1), stats.ReplayMarker)
+	assert.Equal(t, uint64(0), stats.ReplayFailure)
+}
+
+func TestRequestLogger_StopIsIdempotentAndDrainsQueue(t *testing.T) {
+	mockDB, err := pgxmock.NewConn()
+	require.NoError(t, err)
+	defer mockDB.Close(context.Background())
+	mockDB.ExpectBegin()
+	mockDB.ExpectExec(`UPDATE request_wal_hot SET`).
+		WithArgs(pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg()).
+		WillReturnResult(pgxmock.NewResult("UPDATE", 1))
+	mockDB.ExpectCommit()
+	rl := &RequestLogger{
+		config:     &RequestLoggerConfig{Enabled: true, BatchSize: 10, FlushTimeout: time.Hour},
+		asyncQueue: make(chan *LogUpdate, 2),
+		done:       make(chan struct{}),
+		db:         mockDB,
+	}
+	rl.asyncQueue <- &LogUpdate{RequestID: "req-drain", Stage: StageCompressed}
+	rl.wg.Add(1)
+	go rl.worker()
+	rl.Stop()
+	rl.Stop()
+
+	require.NoError(t, mockDB.ExpectationsWereMet())
+}
+
+func TestRequestLogger_ReplayFallbackCountsFailure(t *testing.T) {
+	rl := &RequestLogger{config: &RequestLoggerConfig{Enabled: true}}
+	err := rl.ReplayFallback(context.Background(), dbdegradation.BackupRecord{
+		RecordKey: "req-replay:update",
+		Payload:   []byte(`{"RequestID":"req-replay"}`),
+	})
+	require.Error(t, err)
+	stats := rl.OverflowCounts()
+	assert.Equal(t, uint64(1), stats.ReplayAttempt)
+	assert.Equal(t, uint64(1), stats.ReplayFailure)
+}
 
 func TestRequestLogger_Enabled(t *testing.T) {
 	rl := &RequestLogger{

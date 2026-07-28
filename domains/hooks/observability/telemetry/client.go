@@ -12,14 +12,26 @@ import (
 	"unicode/utf8"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/kaixuan/llm-gateway-go/domains/dbdegradation"
 )
 
 var errNoTelemetryDB = errors.New("telemetry database not configured")
 
+type requestLogDB interface {
+	execQuerier
+	Begin(context.Context) (pgx.Tx, error)
+}
+
+type execQuerier interface {
+	Exec(context.Context, string, ...any) (pgconn.CommandTag, error)
+	QueryRow(context.Context, string, ...any) pgx.Row
+}
+
 type Client struct {
-	dbPool *pgxpool.Pool
+	dbPool       *pgxpool.Pool
+	requestLogDB requestLogDB
 
 	queue chan any
 	done  chan struct{}
@@ -303,7 +315,7 @@ func newClientWithBufSize(bufSize int) *Client {
 }
 
 func (c *Client) Enabled() bool {
-	return c.dbPool != nil
+	return c != nil && (c.dbPool != nil || c.requestLogDB != nil)
 }
 
 func (c *Client) FindRecentGatewaySession(ctx context.Context, tenantID, identityHash string, apiKeyID int, since time.Duration) (string, error) {
@@ -342,6 +354,17 @@ func (c *Client) FindRecentGatewaySession(ctx context.Context, tenantID, identit
 
 func (c *Client) SetDB(pool *pgxpool.Pool) {
 	c.dbPool = pool
+	c.requestLogDB = pool
+}
+
+func (c *Client) requestLogDatabase() requestLogDB {
+	if c == nil {
+		return nil
+	}
+	if c.requestLogDB != nil {
+		return c.requestLogDB
+	}
+	return c.dbPool
 }
 
 // DBPool 返回底层 *pgxpool.Pool,供需要直接操作 PG 的模块使用。
@@ -691,7 +714,8 @@ func (c *Client) persistRequestLog(entry *RequestLogEntry) error {
 }
 
 func (c *Client) insertRequestLog(entry *RequestLogEntry) error {
-	if c.dbPool == nil {
+	db := c.requestLogDatabase()
+	if db == nil {
 		return errNoTelemetryDB
 	}
 	// Defence-in-depth: scrub any invalid UTF-8 from all string-valued fields
@@ -706,7 +730,7 @@ func (c *Client) insertRequestLog(entry *RequestLogEntry) error {
 	totalTokens := total(entry.PromptTokens, entry.CompletionTokens)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	tx, err := c.dbPool.Begin(ctx)
+	tx, err := db.Begin(ctx)
 	if err != nil {
 		return err
 	}
@@ -1164,14 +1188,15 @@ $48,
 }
 
 func (c *Client) updateRequestLog(entry *RequestLogEntry) error {
-	if c.dbPool == nil {
+	db := c.requestLogDatabase()
+	if db == nil {
 		return errNoTelemetryDB
 	}
 	sanitizeRequestLogEntry(entry)
 	totalTokens := total(entry.PromptTokens, entry.CompletionTokens)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	tx, err := c.dbPool.Begin(ctx)
+	tx, err := db.Begin(ctx)
 	if err != nil {
 		return err
 	}
@@ -1336,8 +1361,19 @@ func (c *Client) updateRequestLog(entry *RequestLogEntry) error {
 	   client_forwarded_for = COALESCE($75, client_forwarded_for),
 	   origin_stage         = COALESCE($76, origin_stage),
 	   origin_actor         = COALESCE($77, origin_actor)
-	 WHERE request_id = $1
-	 RETURNING request_logs_hot.ts
+		   WHERE request_id = $1
+		     AND NOT (
+				request_logs_hot.request_status = 'failure'
+				OR (
+					(request_logs_hot.success = TRUE
+					 OR request_logs_hot.request_status = 'success')
+					AND NOT (
+						COALESCE($37, FALSE) = TRUE
+						AND $38 = 'success'
+					)
+				)
+			)
+		 RETURNING request_logs_hot.ts
 `,
 		entry.RequestID,
 		entry.ClientModel,
@@ -1436,8 +1472,19 @@ func (c *Client) updateRequestLog(entry *RequestLogEntry) error {
 		return err
 	}
 	if updated.RowsAffected() == 0 {
+		var exists bool
+		if err := tx.QueryRow(ctx, `
+			SELECT EXISTS (
+				SELECT 1 FROM request_logs_hot WHERE request_id = $1
+			)
+		`, entry.RequestID).Scan(&exists); err != nil {
+			return err
+		}
 		if rbErr := tx.Rollback(ctx); rbErr != nil {
 			slog.Warn("telemetry update rollback failed", "request_id", entry.RequestID, "error", rbErr)
+		}
+		if exists {
+			return nil
 		}
 		fallback := *entry
 		fallback.Op = RequestLogInsert
