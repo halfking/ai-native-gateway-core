@@ -157,6 +157,32 @@ func (m *Manager) MarkClosedDebounced(ctx context.Context, reason string, deboun
 	return m.recovery.MarkClosedDebounced(ctx, reason, debounceTTL)
 }
 
+// WarmupFromExistingKeys re-opens the recovery gate from the keys
+// already in Redis. It is the audit follow-up #6 counterpart to
+// MarkClosedDebounced (follow-up #1): together they implement the full
+// incident lifecycle — auto-close on persistent failure, auto-reopen
+// on Redis recovery — without operator intervention.
+//
+// See recovery.Manager.WarmupFromExistingKeys for the full contract.
+func (m *Manager) WarmupFromExistingKeys(ctx context.Context) (int, error) {
+	if m == nil {
+		return 0, nil
+	}
+	return m.recovery.WarmupFromExistingKeys(ctx)
+}
+
+// RestoreIfClosed is the convenience wrapper for the
+// fallback→healthy transition path: opens the gate iff it is
+// currently closed, returning the observed key count for audit.
+//
+// See recovery.Manager.RestoreIfClosed for the full contract.
+func (m *Manager) RestoreIfClosed(ctx context.Context) (int, error) {
+	if m == nil {
+		return 0, nil
+	}
+	return m.recovery.RestoreIfClosed(ctx)
+}
+
 // CandidateSeed is the input to FilterAndScore. The router hands one
 // seed per candidate it is considering; the manager resolves each seed
 // against the v2 store to produce a NodeView. Fields beyond

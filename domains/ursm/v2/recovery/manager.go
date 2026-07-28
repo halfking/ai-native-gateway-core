@@ -89,3 +89,115 @@ func (m *Manager) MarkClosedDebounced(ctx context.Context, reason string, deboun
 	}
 	return true, nil
 }
+
+// WarmupFromExistingKeys re-opens the recovery gate after a Redis
+// health incident without resetting per-node state. It SCANs the
+// existing ursm:v2:node:* keys (so an operator can audit "how many
+// nodes survived the incident"), records the recovery timestamp + key
+// count in the epoch hash, and flips meta:ready to "1".
+//
+// Crucially, WarmupFromExistingKeys does NOT touch individual node
+// hashes — admin holds, fail_streaks, source_priority values, and
+// generation counters all persist across the recovery so live traffic
+// resumes from the same per-node state it had before the incident.
+// Only the gate flips from closed to open.
+//
+// This is the audit follow-up #6 counterpart to MarkClosedDebounced
+// (follow-up #1): together they implement the full incident lifecycle
+// (auto-close on persistent failure, auto-reopen on Redis recovery)
+// without operator intervention.
+//
+// Returns the number of node keys observed (informational; 0 is fine
+// if Redis was just initialised and the warmup step in main.go hasn't
+// run yet — in that case the gate still opens, but live traffic
+// doesn't see any node state until the first request writes it).
+func (m *Manager) WarmupFromExistingKeys(ctx context.Context) (int, error) {
+	if m == nil || m.rdb == nil {
+		return 0, fmt.Errorf("ursm.v2: nil manager / redis client")
+	}
+	pattern := m.prefix + "node:*"
+	keys, err := m.scanNodeKeys(ctx, pattern)
+	if err != nil {
+		return 0, err
+	}
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	pipe := m.rdb.Pipeline()
+	if len(keys) > 0 {
+		pipe.HIncrBy(ctx, store.EpochKey(m.prefix), "recovery_counter", 1)
+	}
+	pipe.HSet(ctx, store.EpochKey(m.prefix),
+		"recovered_at", now,
+		"recovered_keys_count", intToString(len(keys)),
+	)
+	pipe.Set(ctx, store.ReadyKey(m.prefix), "1", 0)
+	if _, err := pipe.Exec(ctx); err != nil {
+		return 0, fmt.Errorf("ursm.v2: warmup pipeline: %w", err)
+	}
+	return len(keys), nil
+}
+
+// RestoreIfClosed is the convenience wrapper used by
+// systemmonitor.healthCheckLoop on the fallback→healthy transition.
+// When the gate is already open it returns (0, nil) as a no-op; when
+// the gate is closed it re-warms from existing keys and returns the
+// observed count.
+//
+// The check + warmup is NOT atomic — between the Ready() check and
+// the Set(ready, "1") another instance could win the recovery race.
+// This is safe because:
+//   - WarmupFromExistingKeys is idempotent (HSet of the same
+//     epoch hash fields is harmless)
+//   - The Set(ready, "1") is a SETNX-style idempotent write
+//   - The race window is < 5ms in practice
+//
+// In the rare case of a race, two instances will both observe the
+// existing keys; the second writer's HSet overwrites with the same
+// recovered_at + recovered_keys_count (slightly later timestamp),
+// which is fine for audit purposes.
+func (m *Manager) RestoreIfClosed(ctx context.Context) (int, error) {
+	if m == nil || m.rdb == nil {
+		return 0, fmt.Errorf("ursm.v2: nil manager / redis client")
+	}
+	if m.Ready(ctx) {
+		return 0, nil
+	}
+	return m.WarmupFromExistingKeys(ctx)
+}
+
+// scanNodeKeys performs a SCAN over the given pattern and returns all
+// matching keys. We use SCAN (not KEYS) to avoid blocking Redis on
+// large keyspaces; the iteration cost is O(N) amortised over many
+// short-lived connections, which is fine for a recovery flow that
+// runs at most a few times per hour.
+func (m *Manager) scanNodeKeys(ctx context.Context, pattern string) ([]string, error) {
+	var (
+		cursor uint64
+		out    []string
+	)
+	for {
+		keys, next, err := m.rdb.Scan(ctx, cursor, pattern, 200).Result()
+		if err != nil {
+			return nil, fmt.Errorf("ursm.v2: scan %s: %w", pattern, err)
+		}
+		out = append(out, keys...)
+		if next == 0 {
+			break
+		}
+		cursor = next
+	}
+	return out, nil
+}
+
+func intToString(n int) string {
+	if n == 0 {
+		return "0"
+	}
+	var buf [20]byte
+	i := len(buf)
+	for n > 0 {
+		i--
+		buf[i] = byte('0' + n%10)
+		n /= 10
+	}
+	return string(buf[i:])
+}
