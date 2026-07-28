@@ -303,6 +303,21 @@ const errorColor = (t: string): string => {
   return COLOR.neutral
 }
 
+// formatSelfCheckModelLabel distinguishes the synthetic "cred-<id>"
+// model_name rows the credential_selfcheck worker writes from real
+// model names. In new probe mode most rows are per-credential labels;
+// the suffix indicates which credential's daily check produced the
+// run. Real upstream models (e.g. "gpt-5.6-luna") pass through.
+function formatSelfCheckModelLabel(label: string): string {
+  if (!label) return label
+  if (label.startsWith('cred-')) {
+    const id = label.slice(5)
+    if (/^\d+$/.test(id)) return `凭据 #${id}`
+    return label
+  }
+  return label
+}
+
 const summaryCards = computed(() => {
   if (!stats.value) return []
   const s = stats.value.summary
@@ -514,7 +529,7 @@ const queueLaneSelectedLegends = ref<Set<string>>(new Set())
     <h4 class="section-title">模型实时状态</h4>
     <div class="model-grid">
       <div v-for="m in modelsByHealth" :key="m.model_name" class="model-card">
-        <div class="model-name">{{ m.model_name }}</div>
+        <div class="model-name">{{ formatSelfCheckModelLabel(m.model_name) }}</div>
         <div class="model-stats">
           <div class="stat-row">
             <span class="stat-label">成功率</span>
@@ -597,7 +612,7 @@ const queueLaneSelectedLegends = ref<Set<string>>(new Set())
       </div>
       <div v-for="r in recentRuns" :key="r.id" class="runs-row" :class="{ expanded: expandedRunId === r.id }">
         <div class="runs-summary" @click="toggleRunDetail(r.id)">
-          <div class="col-model">{{ r.model_name }}</div>
+          <div class="col-model" :title="r.model_name">{{ formatSelfCheckModelLabel(r.model_name) }}</div>
           <div class="col-status" :style="{ color: statusColor(r.status) }">{{ statusLabel(r.status) }}</div>
           <div class="col-time">{{ fmtTime(r.started_at) }}</div>
           <div class="col-duration">{{ fmtMs(r.duration_ms) }}</div>

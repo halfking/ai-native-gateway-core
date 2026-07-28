@@ -2,6 +2,7 @@ package bg
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"sync"
 	"time"
@@ -27,7 +28,9 @@ type ProbeQueueWorker struct {
 
 func NewProbeQueueWorker(cfg ProbeQueueWorkerConfig) *ProbeQueueWorker {
 	if cfg.BatchSize <= 0 {
-		cfg.BatchSize = 8
+		// A worker claims one task at a time. Claiming a batch then executing it
+		// serially lets later tasks lose their leases before they start.
+		cfg.BatchSize = 1
 	}
 	if cfg.Workers <= 0 {
 		cfg.Workers = 1
@@ -82,7 +85,7 @@ func (w *ProbeQueueWorker) processBatch(ctx context.Context) error {
 	if _, err := w.cfg.Queue.RequeueExpiredLeases(ctx); err != nil {
 		return err
 	}
-	tasks, err := w.cfg.Queue.Claim(ctx, w.cfg.BatchSize, w.cfg.Lease)
+	tasks, err := w.cfg.Queue.Claim(ctx, 1, w.cfg.Lease)
 	if err != nil {
 		return err
 	}
@@ -133,7 +136,11 @@ func (w *ProbeQueueWorker) completeFailure(ctx context.Context, task ProbeQueueT
 }
 
 func (w *ProbeQueueWorker) complete(ctx context.Context, task ProbeQueueTask, result ProbeQueueResult) {
-	if err := w.cfg.Queue.Complete(ctx, taskID(task), result); err != nil {
+	if err := w.cfg.Queue.Complete(ctx, task, result); err != nil {
+		if errors.Is(err, ErrProbeLeaseLost) {
+			slog.Info("probe queue task completion skipped after lease loss", "queue_id", taskID(task))
+			return
+		}
 		slog.Warn("probe queue task completion failed", "queue_id", taskID(task), "error", err)
 	}
 }

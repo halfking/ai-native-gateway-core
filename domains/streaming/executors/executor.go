@@ -1396,7 +1396,11 @@ type ExecuteResult struct {
 	// need the canonical client request.
 	InboundBody  []byte
 	ResponseBody []byte
-	Trace        *Trace
+	// IntegrityObserved is set by the executor after it records a successful
+	// non-stream response. The handler uses it to avoid observing the same
+	// logical response a second time during request-log finalization.
+	IntegrityObserved bool
+	Trace             *Trace
 	// Round 47 compression v7 T-NEW-2: optional compression event captured
 	// by handleContextLengthRecovery. Populated when a 4xx recovery rewrote
 	// the body (mechanical trim / memora L1 / LLM summary). nil otherwise.

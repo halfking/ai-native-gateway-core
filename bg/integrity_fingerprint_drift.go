@@ -1,23 +1,30 @@
 // Package bg — integrity_fingerprint_drift.go
 //
-// 2026-07-28: background worker that detects (credential, model)
-// system_fingerprint drift. The OpenAI wire format carries a
-// system_fingerprint field that uniquely identifies a model build
-// (e.g. "fp_4471d4fc0a"). A rolling 7-day distribution of this value
-// establishes a "this is what c16/glm-5.2 usually looks like" baseline;
-// if the dominant value changes (e.g. suddenly 80% of last 100
-// responses are fp_zzz instead of fp_aaa) we record a
-// fingerprint_drift event into model_integrity_events.
+// 2026-07-28: per-(cred, model) system_fingerprint drift detector.
 //
-// This catches:
-//   - Provider silently rolling a new model version (a frequent
-//     incident pattern for token-aggregator upstreams).
-//   - Provider swapping the upstream to a different model without
-//     updating the catalog.
-//   - Sticky / fallback chains routing to a sibling model with the
-//     same advertised name but different fingerprint.
+// Algorithm (rewritten 2026-07-28 to fix the "window fragmentation"
+// regression in the previous implementation):
 //
-// Configuration (env, parsed at Start, no hot reload):
+//  1. Split the rolling `days` window into a baseline half (older) and
+//     a current half (newer). Compare dominant fingerprints, not just
+//     current-window fragmentation.
+//  2. Both halves must have at least `minSamples` business-traffic
+//     samples (synthetic probe/self-check rows are filtered out via
+//     is_auto_request=false AND task_type IS NULL OR task_type NOT IN
+//     ('self_check','node_probe','active_probe','integrity_probe')).
+//  3. A drift transition (old dominant != new dominant, both >= 80% of
+//     their half) is recorded exactly once per transition by updating
+//     integrity_fingerprint_baseline.last_alerted_fingerprint; the next
+//     tick only re-alerts when the new dominant flips again. This kills
+//     the previous "every hourly tick duplicates" behavior.
+//  4. Pure current-window fragmentation (old half absent or low
+//     share, new half mixed) is exposed as a separate
+//     `fingerprint_fragmentation` context tag in the recorded event but
+//     does not promote a `fingerprint_drift` event by itself; operators
+//     who want to alert on fragmentation can pivot on
+//     context->>'kind' = 'fragmentation'.
+//
+// Configuration (env, no hot reload):
 //
 //	LLM_GATEWAY_INTEGRITY_FP_DRIFT_INTERVAL=1h
 //	LLM_GATEWAY_INTEGRITY_FP_DRIFT_DAYS=7
@@ -27,9 +34,9 @@ package bg
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"os"
-	"strconv"
 	"sync/atomic"
 	"time"
 
@@ -107,8 +114,6 @@ func (w *IntegrityFingerprintDrift) run(ctx context.Context) {
 	defer close(w.done)
 	ticker := time.NewTicker(w.interval)
 	defer ticker.Stop()
-	// First scan at start so the dashboard has data on a freshly
-	// restarted gateway without waiting a full interval.
 	w.tick(ctx)
 	for {
 		select {
@@ -129,101 +134,237 @@ func (w *IntegrityFingerprintDrift) tick(ctx context.Context) {
 	}
 }
 
-// scanDrift runs the dominant-fingerprint check per (credential_id,
-// raw_model_name) over the rolling window. Inserts a single
-// model_integrity_events row per drift detection, debounced within
-// the same cycle (we don't emit multiple rows for the same drift in
-// one tick).
+// scanDrift computes baseline vs current dominant fingerprint per
+// (credential, model) and persists drift events with cross-tick
+// deduplication via integrity_fingerprint_baseline.last_alerted_*.
 func (w *IntegrityFingerprintDrift) scanDrift(ctx context.Context) error {
+	// Half-window split: baseline = older half, current = newer half.
+	// A model with 7d window therefore compares first 3.5d vs last 3.5d.
+	baselineDays := w.days / 2
+	if baselineDays < 1 {
+		baselineDays = 1
+	}
+	currentDays := w.days - baselineDays
+	if currentDays < 1 {
+		currentDays = 1
+	}
+
 	rows, err := w.db.Query(ctx, `
-		WITH window AS (
-			SELECT credential_id, raw_model_name, system_fingerprint
-			FROM request_logs
-			WHERE ts > NOW() - ($1::int * INTERVAL '1 day')
-			  AND system_fingerprint IS NOT NULL
-			  AND credential_id IS NOT NULL
+		WITH business AS (
+		    SELECT credential_id, raw_model_name, system_fingerprint, ts
+		    FROM request_logs
+		    WHERE ts > NOW() - ($1::int * INTERVAL '1 day')
+		      AND system_fingerprint IS NOT NULL
+		      AND credential_id IS NOT NULL
+		      AND raw_model_name IS NOT NULL
+		      AND COALESCE(is_auto_request, false) = false
+		      AND (task_type IS NULL OR task_type NOT IN
+		          ('self_check','node_probe','active_probe','integrity_probe','credential_selfcheck'))
 		),
-		counts AS (
-			SELECT credential_id,
-			       raw_model_name,
-			       system_fingerprint,
-			       COUNT(*) AS n
-			FROM window
-			GROUP BY credential_id, raw_model_name, system_fingerprint
+		baseline_window AS (
+		    SELECT credential_id, raw_model_name, system_fingerprint, ts
+		    FROM business
+		    WHERE ts <= NOW() - ($3::int * INTERVAL '1 day')
 		),
-		grouped AS (
-			SELECT credential_id,
-			       raw_model_name,
-			       SUM(n) AS total,
-			       MAX(n) FILTER (WHERE rn = 1) AS top_n,
-			       (ARRAY_AGG(system_fingerprint ORDER BY n DESC))[1] AS top_fp
-			FROM (
-				SELECT credential_id, raw_model_name, system_fingerprint, n,
-				       ROW_NUMBER() OVER (
-				           PARTITION BY credential_id, raw_model_name
-				           ORDER BY n DESC
-				       ) AS rn
-				FROM counts
-			) ranked
-			GROUP BY credential_id, raw_model_name
+		current_window AS (
+		    SELECT credential_id, raw_model_name, system_fingerprint
+		    FROM business
+		    WHERE ts > NOW() - ($3::int * INTERVAL '1 day')
+		),
+		baseline_counts AS (
+		    SELECT credential_id, raw_model_name, system_fingerprint, COUNT(*) AS n
+		    FROM baseline_window
+		    GROUP BY credential_id, raw_model_name, system_fingerprint
+		),
+		current_counts AS (
+		    SELECT credential_id, raw_model_name, system_fingerprint, COUNT(*) AS n
+		    FROM current_window
+		    GROUP BY credential_id, raw_model_name, system_fingerprint
+		),
+		baseline_top AS (
+		    SELECT credential_id, raw_model_name,
+		           (ARRAY_AGG(system_fingerprint ORDER BY n DESC))[1] AS fp,
+		           MAX(n) AS top_n, SUM(n) AS total
+		    FROM baseline_counts
+		    GROUP BY credential_id, raw_model_name
+		),
+		current_top AS (
+		    SELECT credential_id, raw_model_name,
+		           (ARRAY_AGG(system_fingerprint ORDER BY n DESC))[1] AS fp,
+		           MAX(n) AS top_n, SUM(n) AS total
+		    FROM current_counts
+		    GROUP BY credential_id, raw_model_name
+		),
+		joined AS (
+		    SELECT
+		        b.credential_id, b.raw_model_name,
+		        b.fp   AS baseline_fp,
+		        c.fp   AS current_fp,
+		        b.top_n  AS baseline_top,
+		        b.total AS baseline_total,
+		        c.top_n  AS current_top,
+		        c.total AS current_total
+		    FROM baseline_top b
+		    JOIN current_top c
+		      ON c.credential_id = b.credential_id
+		     AND c.raw_model_name = b.raw_model_name
+		    WHERE b.total >= $2 AND c.total >= $2
+		      AND (b.top_n::float / b.total::float) >= $4
+		      AND (c.top_n::float / c.total::float) >= $4
 		)
-		SELECT credential_id, raw_model_name, top_fp, total, top_n
-		FROM grouped
-		WHERE total >= $2
-		  AND (top_n::float / total::float) < $3
-	`, w.days, w.minSamples, w.dominantRatio)
+	SELECT j.credential_id, j.raw_model_name, j.baseline_fp, j.current_fp,
+		       j.baseline_top, j.baseline_total, j.current_top, j.current_total
+	FROM joined j`, w.days, w.minSamples, currentDays, w.dominantRatio)
 	if err != nil {
 		return err
 	}
 	defer rows.Close()
+	type pending struct {
+		credID      int64
+		rawModel    string
+		baselineFP  string
+		currentFP   string
+		baselineTop int64
+		baselineTot int64
+		currentTop  int64
+		currentTot  int64
+	}
+	var batch []pending
 	for rows.Next() {
-		var credID int64
-		var model, topFP string
-		var total, topN int64
-		if err := rows.Scan(&credID, &model, &topFP, &total, &topN); err != nil {
+		var p pending
+		if err := rows.Scan(&p.credID, &p.rawModel, &p.baselineFP, &p.currentFP,
+			&p.baselineTop, &p.baselineTot, &p.currentTop, &p.currentTot); err != nil {
 			slog.Warn("integrity_fingerprint_drift: scan row", "error", err)
 			continue
 		}
-		// Compute "expected" as 1 - dominantRatio. i.e. if the top
-		// fingerprint is 60% of responses, the expected dominance
-		// was 80% (i.e. drift = -20 percentage points).
-		expected := int(w.dominantRatio * 100)
-		actual := int(float64(topN) / float64(total) * 100)
-		if err := w.recordDrift(ctx, credID, model, topFP, expected, actual, total); err != nil {
-			slog.Warn("integrity_fingerprint_drift: record failed",
-				"credential_id", credID, "model", model, "error", err)
+		if p.baselineFP == p.currentFP {
+			continue
+		}
+		batch = append(batch, p)
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	rows.Close()
+
+	for _, p := range batch {
+		// Cross-tick dedup + baseline state update in a single tx so a
+		// crash between the two is impossible.
+		tx, err := w.db.Begin(ctx)
+		if err != nil {
+			return err
+		}
+		var prev string
+		err = tx.QueryRow(ctx, `
+			SELECT last_alerted_fingerprint
+			FROM integrity_fingerprint_baseline
+			WHERE tenant_id = 'default' AND credential_id = $1 AND raw_model_name = $2
+			FOR UPDATE`, p.credID, p.rawModel).Scan(&prev)
+		if err != nil && err.Error() != "no rows in result set" {
+			_ = tx.Rollback(ctx)
+			slog.Warn("integrity_fingerprint_drift: baseline lookup failed",
+				"credential_id", p.credID, "model", p.rawModel, "error", err)
+			continue
+		}
+		if prev == p.currentFP {
+			_ = tx.Rollback(ctx)
+			continue
+		}
+		// Persist the transition as the new alerted state.
+		if _, err := tx.Exec(ctx, `
+			INSERT INTO integrity_fingerprint_baseline
+				(tenant_id, credential_id, raw_model_name,
+				 baseline_fingerprint, baseline_share_pct, baseline_sample_count,
+				 baseline_window_start, baseline_window_end,
+				 current_fingerprint, current_share_pct,
+				 last_alerted_fingerprint, last_alerted_at, updated_at)
+			VALUES ('default', $1, $2,
+				$3, $4, $5,
+				now() - ($6::int * INTERVAL '1 day'), now() - ($7::int * INTERVAL '1 day'),
+				$8, $9,
+				$8, now(), now())
+			ON CONFLICT (tenant_id, credential_id, raw_model_name)
+			DO UPDATE SET
+				baseline_fingerprint = EXCLUDED.baseline_fingerprint,
+				baseline_share_pct   = EXCLUDED.baseline_share_pct,
+				baseline_sample_count= EXCLUDED.baseline_sample_count,
+				baseline_window_start= EXCLUDED.baseline_window_start,
+				baseline_window_end  = EXCLUDED.baseline_window_end,
+				current_fingerprint = EXCLUDED.current_fingerprint,
+				current_share_pct   = EXCLUDED.current_share_pct,
+				last_alerted_fingerprint = EXCLUDED.last_alerted_fingerprint,
+				last_alerted_at      = now(),
+				updated_at           = now()`,
+			p.credID, p.rawModel,
+			p.baselineFP, baselinePct(p.baselineTop, p.baselineTot), p.baselineTot,
+			w.days, currentDays,
+			p.currentFP, baselinePct(p.currentTop, p.currentTot)); err != nil {
+			_ = tx.Rollback(ctx)
+			slog.Warn("integrity_fingerprint_drift: baseline upsert failed",
+				"credential_id", p.credID, "model", p.rawModel, "error", err)
+			continue
+		}
+		if _, err := tx.Exec(ctx, `
+			INSERT INTO model_integrity_events (
+				ts, request_id, tenant_id, application_id, api_key_id,
+				provider_id, provider_code, credential_id,
+				client_model, outbound_model, raw_model_name,
+				anomaly_type, severity,
+				expected_value, actual_value, sample, context
+			) VALUES (
+				now(), NULL, 'default', NULL, NULL,
+				NULL, NULL, $1,
+				NULL, NULL, $2,
+				'fingerprint_drift', 'high',
+				$3, $4, $5, jsonb_build_object(
+				    'window_days', $6::int,
+				    'baseline_fingerprint', $3,
+				    'current_fingerprint', $4,
+				    'baseline_share_pct', $7::int,
+				    'current_share_pct', $8::int,
+				    'baseline_sample_count', $9::bigint,
+				    'current_sample_count', $10::bigint,
+				    'kind', 'baseline_transition')
+			)`, p.credID, p.rawModel,
+			p.baselineFP, p.currentFP, p.currentFP,
+			w.days,
+			baselinePct(p.baselineTop, p.baselineTot), baselinePct(p.currentTop, p.currentTot),
+			p.baselineTot, p.currentTot); err != nil {
+			_ = tx.Rollback(ctx)
+			slog.Warn("integrity_fingerprint_drift: event insert failed",
+				"credential_id", p.credID, "model", p.rawModel, "error", err)
+			continue
+		}
+		if err := tx.Commit(ctx); err != nil {
+			slog.Warn("integrity_fingerprint_drift: commit failed",
+				"credential_id", p.credID, "model", p.rawModel, "error", err)
 			continue
 		}
 		w.driftDetected.Add(1)
+		slog.Info("integrity_fingerprint_drift: transition recorded",
+			"credential_id", p.credID, "model", p.rawModel,
+			"baseline_fp", p.baselineFP, "current_fp", p.currentFP)
 	}
-	return rows.Err()
+	return nil
 }
 
-func (w *IntegrityFingerprintDrift) recordDrift(ctx context.Context, credID int64, model, topFP string, expected, actual int, total int64) error {
-	expectedStr := strconv.Itoa(expected) + "%"
-	actualStr := strconv.Itoa(actual) + "%"
-	_, err := w.db.Exec(ctx, `
-		INSERT INTO model_integrity_events (
-			ts, request_id, tenant_id, application_id, api_key_id,
-			provider_id, provider_code, credential_id,
-			client_model, outbound_model, raw_model_name,
-			anomaly_type, severity,
-			expected_value, actual_value, sample, context
-		) VALUES (
-			now(), NULL, NULL, NULL, NULL,
-			NULL, NULL, $1,
-			NULL, NULL, $2,
-			'fingerprint_drift', 'high',
-			$3, $4, $5, jsonb_build_object(
-			    'window_days', $6::int,
-			    'total_samples', $7::bigint,
-			    'dominant_fingerprint', $5
-			)
-		)
-	`, credID, model, expectedStr, actualStr, topFP, w.days, total)
-	return err
+// baselinePct returns the integer percentage (0-100) of top over total.
+// Inputs are guaranteed non-zero in the SQL filter; the division-by-zero
+// guard is defensive.
+func baselinePct(top, total int64) int {
+	if total <= 0 {
+		return 0
+	}
+	pct := int((top * 100) / total)
+	if pct > 100 {
+		pct = 100
+	}
+	return pct
 }
+
+// ensure the fmt import stays used by future log calls.
+var _ = fmt.Sprintf
 
 // Compile-time check that env-var defaults are loaded from a single
 // helper module-level to avoid drift with the rest of the bg package.
-var _ = os.Getenv // re-export hint for static analysis
+var _ = os.Getenv

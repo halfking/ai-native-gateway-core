@@ -1196,6 +1196,9 @@ func (e *Executor) executeOpenAI(
 				// Phase D (2026-06-22): inbound body for audit logging
 				InboundBody:  sourceBody,
 				ResponseBody: append([]byte(nil), respBody...),
+				// The detector above observed this successful response before its
+				// client write. Preserve that fact for handler finalization.
+				IntegrityObserved: e.IntegrityDetector != nil && !params.SuppressSuccessWrite && params.W != nil && len(respBody) > 0,
 				// Round 47 compression v7 T-NEW-2: surface the compression
 				// event captured by handleContextLengthRecovery so
 				// relay/handler.go emitTelemetry can write it to
