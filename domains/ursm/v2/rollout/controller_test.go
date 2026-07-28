@@ -38,3 +38,51 @@ func TestCanaryRespectWhitelist(t *testing.T) {
 		t.Fatalf("non-whitelist must respect percent")
 	}
 }
+
+// TestShadowDoubleWrite (P0-3) pins the opt-in contract for shadow
+// double-write. Default off (shadow is silent) → ShouldUseV2 false.
+// Explicit on → true. Mode itself is unchanged — routing in shadow
+// stays on the legacy credentialstate manager (see
+// selectStateBackendWithReady, ModeAuthoritative-only promotion).
+func TestShadowDoubleWrite(t *testing.T) {
+	cases := []struct {
+		name string
+		cfg  Config
+		want bool
+	}{
+		{"shadow default off", Config{Mode: api.ModeShadow}, false},
+		{"shadow explicit on", Config{Mode: api.ModeShadow, ShadowDoubleWrite: true}, true},
+		{"off mode double-write flag ignored", Config{Mode: api.ModeOff, ShadowDoubleWrite: true}, false},
+		{"authoritative always on regardless of flag", Config{Mode: api.ModeAuthoritative, ShadowDoubleWrite: false}, true},
+		{"canary unaffected by shadow flag", Config{Mode: api.ModeCanary, CanaryPercent: 100, ShadowDoubleWrite: false}, true},
+		{"canary 0% with shadow flag unaffected", Config{Mode: api.ModeCanary, CanaryPercent: 0, ShadowDoubleWrite: true}, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			c := New(tc.cfg)
+			got := c.ShouldUseV2("t", "m", "r")
+			if got != tc.want {
+				t.Fatalf("ShouldUseV2() = %v, want %v (cfg=%+v)", got, tc.want, tc.cfg)
+			}
+		})
+	}
+}
+
+// TestShadowDoubleWriteAccessor pins the ShadowDoubleWrite() reader
+// so callers (executor / sidecar instrumentation) can distinguish
+// "shadow mode is on but quiet" from "shadow mode is on and
+// double-writing for the cutover comparison".
+func TestShadowDoubleWriteAccessor(t *testing.T) {
+	// Default config (no explicit ShadowDoubleWrite) reports false.
+	if New(Config{Mode: api.ModeShadow}).ShadowDoubleWrite() {
+		t.Fatal("default Config{Mode: ModeShadow} must report ShadowDoubleWrite()==false")
+	}
+	if !New(Config{Mode: api.ModeShadow, ShadowDoubleWrite: true}).ShadowDoubleWrite() {
+		t.Fatal("ShadowDoubleWrite=true must be readable")
+	}
+	// nil controller must not panic.
+	var nilCtl *Controller
+	if nilCtl.ShadowDoubleWrite() {
+		t.Fatal("nil controller must report ShadowDoubleWrite()==false")
+	}
+}
