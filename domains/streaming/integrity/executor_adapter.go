@@ -43,23 +43,46 @@ func (a *ExecutorAdapter) Observe(ctx context.Context, ec executors.IntegrityCan
 		ClientModel:        ec.ClientModel,
 		OutboundModel:      ec.OutboundModel,
 		RawModel:           ec.RawModel,
+		RespModel:          ec.RespModel,
+		FinishReason:       ec.FinishReason,
+		PromptTokens:       ec.PromptTokens,
+		CompletionTokens:   ec.CompletionTokens,
+		TotalTokens:        ec.TotalTokens,
+		InputTokens:        ec.InputTokens,
+		OutputTokens:       ec.OutputTokens,
+		ChunkCount:         ec.ChunkCount,
+		ChunksSent:         ec.ChunksSent,
+		ContentPreview:     ec.ContentPreview,
+		TextContent:        ec.TextContent,
 		ProviderResponseID: ec.ProviderResponseID,
 		SystemFingerprint:  ec.SystemFingerprint,
 		UsageSource:        ec.UsageSource,
 		IsStream:           ec.IsStream,
 	}
-	// Extract model + finish_reason + token counts from the response
-	// body so the Detector can do its checks without re-parsing
-	// upstream.
+	// Preserve values already extracted by the executor or stream capture.
+	// Parse the response body only to fill gaps; this avoids overwriting
+	// valid stream metadata with empty fallback values.
 	if len(ec.ResponseBody) > 0 {
-		c.RespModel = ExtractRespModelFromBody(ec.ResponseBody)
-		c.FinishReason = ExtractFinishReasonFromBody(ec.ResponseBody)
+		if c.RespModel == "" {
+			c.RespModel = ExtractRespModelFromBody(ec.ResponseBody)
+		}
+		if c.FinishReason == "" {
+			c.FinishReason = ExtractFinishReasonFromBody(ec.ResponseBody)
+		}
 		pt, ct, tot, it, ot := ExtractTokenCountsFromBody(ec.ResponseBody)
-		if pt != nil || ct != nil || tot != nil || it != nil || ot != nil {
+		if c.PromptTokens == nil {
 			c.PromptTokens = pt
+		}
+		if c.CompletionTokens == nil {
 			c.CompletionTokens = ct
+		}
+		if c.TotalTokens == nil {
 			c.TotalTokens = tot
+		}
+		if c.InputTokens == nil {
 			c.InputTokens = it
+		}
+		if c.OutputTokens == nil {
 			c.OutputTokens = ot
 		}
 	}

@@ -13,12 +13,22 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
+// selfCheckDB is the subset of a pgx pool used by self-check handlers.
+// Keeping this dependency narrow lets handler tests exercise database error
+// paths without requiring a running PostgreSQL instance.
+type selfCheckDB interface {
+	Exec(ctx context.Context, sql string, arguments ...any) (pgconn.CommandTag, error)
+	Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error)
+	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
+}
+
 // SelfCheckHandler serves /api/self-check/* endpoints.
 type SelfCheckHandler struct {
-	db     *pgxpool.Pool
+	db     selfCheckDB
 	worker interface {
 		TriggerManualRun(model string) error
 	}
@@ -45,26 +55,45 @@ func (h *SelfCheckHandler) RegisterRoutes(mux *http.ServeMux, admin, superAdmin 
 	mux.HandleFunc("/api/self-check/models", admin(h.handleModels))
 }
 
+// credentialIDFromSelfCheckLabel parses the synthetic "cred-<int>" model
+// label that the credential selfcheck worker writes so dashboards can
+// distinguish a per-credential probe run from a real upstream request.
+// Returns nil when the label does not match the convention.
+func credentialIDFromSelfCheckLabel(modelName string) *int64 {
+	const prefix = "cred-"
+	if !strings.HasPrefix(modelName, prefix) {
+		return nil
+	}
+	id, err := strconv.ParseInt(modelName[len(prefix):], 10, 64)
+	if err != nil || id <= 0 {
+		return nil
+	}
+	return &id
+}
+
 // --- List Runs ---
 
 type scRun struct {
-	ID                int64      `json:"id"`
-	ModelName         string     `json:"model_name"`
-	StartedAt         time.Time  `json:"started_at"`
-	CompletedAt       *time.Time `json:"completed_at,omitempty"`
-	DurationMs        int        `json:"duration_ms"`
-	Status            string     `json:"status"`
-	RoundsTotal       int        `json:"rounds_total"`
-	RoundsSuccess     int        `json:"rounds_success"`
-	HadToolCall       bool       `json:"had_tool_call"`
-	TotalTokens       int        `json:"total_tokens"`
-	AvgLatencyMs      int        `json:"avg_latency_ms"`
-	ErrorType         string     `json:"error_type,omitempty"`
-	ErrorDetail       string     `json:"error_detail,omitempty"`
-	UpstreamTested    bool       `json:"upstream_tested"`
-	UpstreamResult    string     `json:"upstream_result,omitempty"`
-	UpstreamLatencyMs int        `json:"upstream_latency_ms,omitempty"`
-	UpstreamError     string     `json:"upstream_error,omitempty"`
+	ID                int64           `json:"id"`
+	ModelName         string          `json:"model_name"`
+	CredentialID      *int64          `json:"credential_id,omitempty"`
+	StartedAt         time.Time       `json:"started_at"`
+	CompletedAt       *time.Time      `json:"completed_at,omitempty"`
+	DurationMs        int             `json:"duration_ms"`
+	Status            string          `json:"status"`
+	RoundsTotal       int             `json:"rounds_total"`
+	RoundsSuccess     int             `json:"rounds_success"`
+	HadToolCall       bool            `json:"had_tool_call"`
+	TotalTokens       int             `json:"total_tokens"`
+	AvgLatencyMs      int             `json:"avg_latency_ms"`
+	ErrorType         string          `json:"error_type,omitempty"`
+	ErrorDetail       string          `json:"error_detail,omitempty"`
+	UpstreamTested    bool            `json:"upstream_tested"`
+	UpstreamResult    string          `json:"upstream_result,omitempty"`
+	UpstreamLatencyMs int             `json:"upstream_latency_ms,omitempty"`
+	UpstreamError     string          `json:"upstream_error,omitempty"`
+	SelectionStrategy string          `json:"selection_strategy,omitempty"`
+	AttemptedModels   json.RawMessage `json:"attempted_models,omitempty"`
 }
 
 func (h *SelfCheckHandler) handleListRuns(w http.ResponseWriter, r *http.Request) {
@@ -101,7 +130,9 @@ func (h *SelfCheckHandler) handleListRuns(w http.ResponseWriter, r *http.Request
 		COALESCE(error_type,'') AS error_type, COALESCE(error_detail,'') AS error_detail,
 		upstream_tested, COALESCE(upstream_result,'') AS upstream_result,
 		COALESCE(upstream_latency_ms,0) AS upstream_latency_ms,
-		COALESCE(upstream_error,'') AS upstream_error
+		COALESCE(upstream_error,'') AS upstream_error,
+		COALESCE(selection_strategy,'') AS selection_strategy,
+		COALESCE(attempted_models,'[]'::jsonb) AS attempted_models
 		FROM self_check_runs` + where
 	query += " ORDER BY started_at DESC LIMIT $" + strconv.Itoa(argIdx)
 	args = append(args, limit)
@@ -121,10 +152,12 @@ func (h *SelfCheckHandler) handleListRuns(w http.ResponseWriter, r *http.Request
 			&item.DurationMs, &item.Status, &item.RoundsTotal, &item.RoundsSuccess,
 			&item.HadToolCall, &item.TotalTokens, &item.AvgLatencyMs,
 			&item.ErrorType, &item.ErrorDetail, &item.UpstreamTested,
-			&item.UpstreamResult, &item.UpstreamLatencyMs, &item.UpstreamError); err != nil {
+			&item.UpstreamResult, &item.UpstreamLatencyMs, &item.UpstreamError,
+			&item.SelectionStrategy, &item.AttemptedModels); err != nil {
 			slog.Error("self_check: scan run failed", "error", err)
 			continue
 		}
+		item.CredentialID = credentialIDFromSelfCheckLabel(item.ModelName)
 		items = append(items, item)
 	}
 	if err := rows.Err(); err != nil {
@@ -171,17 +204,21 @@ func (h *SelfCheckHandler) handleGetRun(w http.ResponseWriter, r *http.Request) 
 		COALESCE(error_type,'') AS error_type, COALESCE(error_detail,'') AS error_detail,
 		upstream_tested, COALESCE(upstream_result,'') AS upstream_result,
 		COALESCE(upstream_latency_ms,0) AS upstream_latency_ms,
-		COALESCE(upstream_error,'') AS upstream_error
+		COALESCE(upstream_error,'') AS upstream_error,
+		COALESCE(selection_strategy,'') AS selection_strategy,
+		COALESCE(attempted_models,'[]'::jsonb) AS attempted_models
 		FROM self_check_runs WHERE id=$1`, id).Scan(
 		&run.ID, &run.ModelName, &run.StartedAt, &run.CompletedAt,
 		&run.DurationMs, &run.Status, &run.RoundsTotal, &run.RoundsSuccess,
 		&run.HadToolCall, &run.TotalTokens, &run.AvgLatencyMs,
 		&run.ErrorType, &run.ErrorDetail, &run.UpstreamTested,
-		&run.UpstreamResult, &run.UpstreamLatencyMs, &run.UpstreamError)
+		&run.UpstreamResult, &run.UpstreamLatencyMs, &run.UpstreamError,
+		&run.SelectionStrategy, &run.AttemptedModels)
 	if err != nil {
 		writeJSON(w, 404, map[string]any{"error": "run not found"})
 		return
 	}
+	run.CredentialID = credentialIDFromSelfCheckLabel(run.ModelName)
 
 	// Get rounds.
 	rows, err := h.db.Query(r.Context(), `

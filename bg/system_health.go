@@ -28,6 +28,7 @@ package bg
 import (
 	"context"
 	"log/slog"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -51,6 +52,9 @@ type SystemHealthWorker struct {
 	pool       *pgxpool.Pool
 	interval   time.Duration
 	lastStatus atomic.Value // SystemHealthStatus
+
+	stopCh   chan struct{}
+	stopOnce sync.Once
 }
 
 // NewSystemHealthWorker constructs a worker.  Pass nil to disable
@@ -60,6 +64,7 @@ func NewSystemHealthWorker(pool *pgxpool.Pool) *SystemHealthWorker {
 	w := &SystemHealthWorker{
 		pool:     pool,
 		interval: SystemHealthInterval,
+		stopCh:   make(chan struct{}),
 	}
 	w.lastStatus.Store(SystemHealthStatus{Status: "suspect"})
 	return w
@@ -74,6 +79,14 @@ func (w *SystemHealthWorker) Start(ctx context.Context) {
 	slog.Info("system_health_worker started", "interval", w.interval)
 }
 
+// Stop requests termination. It is safe to call repeatedly, including before Start.
+func (w *SystemHealthWorker) Stop() {
+	if w == nil {
+		return
+	}
+	w.stopOnce.Do(func() { close(w.stopCh) })
+}
+
 func (w *SystemHealthWorker) loop(ctx context.Context) {
 	defer func() {
 		if r := recover(); r != nil {
@@ -86,6 +99,8 @@ func (w *SystemHealthWorker) loop(ctx context.Context) {
 	for {
 		select {
 		case <-ctx.Done():
+			return
+		case <-w.stopCh:
 			return
 		case <-ticker.C:
 			w.tick(ctx)

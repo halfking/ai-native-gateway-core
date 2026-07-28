@@ -123,3 +123,23 @@ func useNewProbeMode() bool {
 	}
 	return v == "1" || v == "true" || v == "yes" || v == "on"
 }
+
+// shouldStartNewProbeWorkers controls the new probe/self-check worker group.
+// Each member relies on the system API key directly or shares the group's
+// lifecycle, so partial startup is deliberately avoided.
+// canStartGatewayDependentNewProbes gates the new probe/self-check worker
+// group on a usable system API key. The check intentionally re-reads
+// EnsureSystemAPIKeyFromEnv so deployments that do not have a system
+// key cached in DB (or whose key generation fails) skip all four
+// gateway-dependent workers in one go instead of each running with an
+// empty Authorization header.
+func canStartGatewayDependentNewProbes(apiKey string) bool {
+	if strings.TrimSpace(apiKey) == "" {
+		return false
+	}
+	return true
+}
+
+func shouldStartNewProbeWorkers(apiKey string) bool {
+	return useNewProbeMode() && canStartGatewayDependentNewProbes(apiKey)
+}

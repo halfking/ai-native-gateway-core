@@ -64,7 +64,7 @@ func TestPoolRecorder_Sampling(t *testing.T) {
 	f := &fakeExec{}
 	// ratio 0.5 + deterministic seed → test the deterministic boundary.
 	r := NewRecorderFromExec(f, 0.5)
-	r.rngSeed = 0
+	r.rngSeed.Store(0)
 	for i := 0; i < 100; i++ {
 		_ = r.Record(context.Background(), Event{
 			AnomalyType: AnomalyFinishTruncation,

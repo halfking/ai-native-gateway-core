@@ -164,6 +164,13 @@ func (db *DB) ApplyMigrations(ctx context.Context) error {
 	if err := db.ensureModelIntegrityEventsSchema(migCtx); err != nil {
 		return err
 	}
+	// 2026-07-28: fingerprint drift baseline state. Stored separately
+	// from model_integrity_events so the drift worker can compare today's
+	// dominant fingerprint against a stable historical reference and
+	// dedup alerts across hourly ticks.
+	if err := db.ensureIntegrityFingerprintBaselineSchema(migCtx); err != nil {
+		return err
+	}
 	if err := db.ensureSupplementalRLS(migCtx); err != nil {
 		return err
 	}
@@ -1068,6 +1075,50 @@ func (d *DB) ensureModelIntegrityEventsSchema(ctx context.Context) error {
 		return err
 	}
 	slog.Info("model_integrity_events schema ensured")
+	return nil
+}
+
+// ensureIntegrityFingerprintBaselineSchema (2026-07-28) mirrors
+// migration 348: integrity_fingerprint_baseline table. Holds the
+// historical dominant fingerprint per (cred, model) and the most recent
+// dominant fingerprint so the drift worker can detect genuine
+// change-point events (A → B rollout) without conflating them with
+// current-window fragmentation.
+//
+// PRIMARY KEY (tenant_id, credential_id, raw_model_name) so the same
+// physical credential can host multiple tenants in deployments that
+// share a row layout. tenant_id defaults to 'default' to match the
+// rest of the integrity surface.
+func (d *DB) ensureIntegrityFingerprintBaselineSchema(ctx context.Context) error {
+	if d == nil || d.pool == nil {
+		return nil
+	}
+	_, err := d.pool.Exec(ctx, `
+		CREATE TABLE IF NOT EXISTS integrity_fingerprint_baseline (
+			tenant_id              TEXT NOT NULL DEFAULT 'default',
+			provider_id            INT,
+			credential_id          INT NOT NULL,
+			raw_model_name         TEXT NOT NULL,
+			baseline_fingerprint   TEXT,
+			baseline_share_pct     INT,
+			baseline_sample_count  BIGINT NOT NULL DEFAULT 0,
+			baseline_window_start  TIMESTAMPTZ,
+			baseline_window_end    TIMESTAMPTZ,
+			current_fingerprint    TEXT,
+			current_share_pct      INT,
+			last_observed_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
+			last_alerted_fingerprint TEXT,
+			last_alerted_at        TIMESTAMPTZ,
+			updated_at             TIMESTAMPTZ NOT NULL DEFAULT now(),
+			PRIMARY KEY (tenant_id, credential_id, raw_model_name)
+		);
+		CREATE INDEX IF NOT EXISTS idx_integrity_fingerprint_baseline_cred_model
+			ON integrity_fingerprint_baseline (credential_id, raw_model_name);
+	`)
+	if err != nil {
+		return err
+	}
+	slog.Info("integrity_fingerprint_baseline schema ensured")
 	return nil
 }
 

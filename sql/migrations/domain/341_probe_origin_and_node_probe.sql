@@ -197,7 +197,7 @@ ALTER TABLE self_check_runs
     ADD COLUMN IF NOT EXISTS attempted_models   jsonb DEFAULT '[]'::jsonb;
 
 COMMENT ON COLUMN self_check_runs.selection_strategy IS
-'341: most_used | fallback_<n> | random — which model the credential_selfcheck worker tested';
+'341: featured | most_used | fallback_<n> | random — which model the credential_selfcheck worker tested';
 COMMENT ON COLUMN self_check_runs.attempted_models IS
 '341: ordered list of models tried during this run, e.g. ["gpt-4o","gpt-4o-mini","claude-haiku-4-5"]';
 
