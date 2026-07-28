@@ -95,20 +95,38 @@ func AuditContextFromRequest(r *http.Request, sn *session.Session, body []byte, 
 	return ctx
 }
 
-// AuditContextFromAttempt returns a shallow copy of `base` with
-// per-attempt fields populated. The returned struct is safe for the
-// caller to mutate (the per-attempt fields) without affecting base.
-// Returns nil when base is nil.
+// AuditContextFromAttempt returns a copy of `base` with per-attempt
+// fields populated. The returned struct is safe for the caller to
+// mutate (the per-attempt fields) without affecting base. The
+// ChunkIndex atomic is NOT copied (zero-init in the new struct);
+// callers must continue to use the base's counter or attach a fresh
+// one. Returns nil when base is nil.
+//
+// We cannot do a shallow struct copy because AuditContext embeds
+// sync/atomic.Int64 (vet: "assignment copies lock value"). Use
+// field-by-field assignment instead.
 func AuditContextFromAttempt(base *AuditContext, providerID, credentialID int, endpoint string, attemptNo int) *AuditContext {
 	if base == nil {
 		return nil
 	}
-	cp := *base
-	cp.ProviderID = providerID
-	cp.CredentialID = credentialID
-	cp.UpstreamEndpoint = endpoint
-	cp.AttemptNo = attemptNo
-	return &cp
+	return &AuditContext{
+		RequestID:        base.RequestID,
+		ClientRequestID:  base.ClientRequestID,
+		GWSessionID:      base.GWSessionID,
+		GWTaskID:         base.GWTaskID,
+		ParentRequestID:  base.ParentRequestID,
+		TenantID:         base.TenantID,
+		ApplicationID:    base.ApplicationID,
+		APIKeyID:         base.APIKeyID,
+		TraceID:          base.TraceID,
+		SpanID:           base.SpanID,
+		Protocol:         base.Protocol,
+		ProviderID:       providerID,
+		CredentialID:     credentialID,
+		UpstreamEndpoint: endpoint,
+		AttemptNo:        attemptNo,
+		// ChunkIndex is intentionally not copied — see comment above.
+	}
 }
 
 // RawCorrelationEnvelope returns a snapshot of the current fields in
