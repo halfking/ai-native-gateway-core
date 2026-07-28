@@ -996,9 +996,10 @@ func (h *ChatHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// pre-routing failures this is the only WAL row.
 	if h.requestLogger != nil {
 		earlyReq := &telemetry.InitialRequest{
-			RequestID: requestID,
-			TenantID:  "default", // enriched in request_logs_hot; WAL just needs a row
-			SessionID: provisionalSessionID,
+			RequestID:   requestID,
+			TenantID:    "default", // enriched in request_logs_hot; WAL just needs a row
+			SessionID:   provisionalSessionID,
+			Provisional: true,
 		}
 		if err := h.requestLogger.CreateInitial(r.Context(), earlyReq); err != nil {
 			// Non-fatal: the safety net + request_logs_hot still record the

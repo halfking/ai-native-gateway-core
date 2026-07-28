@@ -4375,16 +4375,19 @@ func main() {
 		if anomalyHarvester != nil {
 			anomalyHarvester.Stop()
 		}
-		if integrityDriftWorker != nil {
-			integrityDriftWorker.Stop()
-		}
-		if integrityHarvester != nil {
-			integrityHarvester.Stop()
-		}
-		if integrityProbePlanner != nil {
-			integrityProbePlanner.Stop()
-		}
-		telemetryClient.Stop()
+	if integrityDriftWorker != nil {
+		integrityDriftWorker.Stop()
+	}
+	if integrityHarvester != nil {
+		integrityHarvester.Stop()
+	}
+	if integrityProbePlanner != nil {
+		integrityProbePlanner.Stop()
+	}
+	if requestLogger != nil {
+		requestLogger.Stop()
+	}
+	telemetryClient.Stop()
 		lim.Stop()
 		pools.Stop()
 		pools.CloseAll()
