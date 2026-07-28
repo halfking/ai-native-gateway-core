@@ -152,6 +152,73 @@ func TestSelectStateBackend_OffMode(t *testing.T) {
 	}
 }
 
+// TestSelectStateBackend_ShadowMode (P0-3) pins the critical
+// shadow-mode contract for the 7-day cutover comparison window:
+// ModeShadow must pick the LEGACY state backend (routing behavior
+// unchanged) even when URSM v2 manager reports Ready=true. The
+// shadow double-write opt-in only affects the executor sidecar
+// (record path), NOT the read path used by routing. If this test
+// fails, a refactor accidentally let shadow mode promote URSM v2
+// to authoritative-equivalent, which would route production
+// traffic through untrusted comparison data.
+func TestSelectStateBackend_ShadowMode(t *testing.T) {
+	cases := []struct {
+		name       string
+		ready      bool
+		stateMgrOK bool
+	}{
+		{"shadow + ready + state manager", true, true},
+		{"shadow + not ready + state manager", false, true},
+		{"shadow + ready + no state manager", true, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ursmMgr := &mockURSMv2Manager{
+				mode:  ursmv2api.ModeShadow,
+				ready: tc.ready,
+			}
+			var stateMgr credentialstate.StateProvider
+			if tc.stateMgrOK {
+				stateMgr = &mockStateProvider{enabled: true}
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+			defer cancel()
+
+			backend := selectStateBackend(ursmMgr, stateMgr, ctx)
+			if backend.Name() != "legacy_state_manager" && backend.Name() != "db_only" {
+				t.Fatalf("shadow mode must NOT promote to ursm_v2_authoritative, got %s", backend.Name())
+			}
+			if backend.IsAuthoritative() {
+				t.Fatalf("shadow mode backend must NOT be authoritative, got %s", backend.Name())
+			}
+		})
+	}
+}
+
+// TestSelectStateBackend_CanaryMode_BackendUnchanged (P0-3) pins that
+// canary mode ALSO stays on the legacy state backend for routing
+// (canary only affects the executor sidecar via rollout.ShouldUseV2,
+// NOT the read path). Same reasoning as the shadow-mode test —
+// the 7-day cutover window must never accidentally take over
+// production routing during the comparison run. The existing
+// TestSelectStateBackend_CanaryMode already pins the backend
+// selection; this test additionally asserts IsAuthoritative()==false
+// to lock down the contract.
+func TestSelectStateBackend_CanaryMode_BackendUnchanged(t *testing.T) {
+	ursmMgr := &mockURSMv2Manager{
+		mode:  ursmv2api.ModeCanary,
+		ready: true,
+	}
+	stateMgr := &mockStateProvider{enabled: true}
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+
+	backend := selectStateBackend(ursmMgr, stateMgr, ctx)
+	if backend.IsAuthoritative() {
+		t.Fatalf("canary mode backend must NOT be authoritative, got %s", backend.Name())
+	}
+}
+
 // TestSelectStateBackend_NoStateManager 测试无 StateManager 时回退到 DB-only
 func TestSelectStateBackend_NoStateManager(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
@@ -196,7 +263,7 @@ func TestLegacyStateBackend_FilterAvailable(t *testing.T) {
 
 	candidates := []provider.Candidate{
 		{CredentialID: 1, RawModel: "gpt-4", LifecycleStatus: "active", Routable: true},
-		{CredentialID: 2, RawModel: "gpt-4", LifecycleStatus: "active", Routable: true}, // 会被 StateManager 过滤
+		{CredentialID: 2, RawModel: "gpt-4", LifecycleStatus: "active", Routable: true},   // 会被 StateManager 过滤
 		{CredentialID: 3, RawModel: "gpt-4", LifecycleStatus: "disabled", Routable: true}, // DB 字段不可用
 	}
 
