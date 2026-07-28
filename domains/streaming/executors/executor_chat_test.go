@@ -41,6 +41,33 @@ func TestChatExecutor_CheckSoftMismatch_NotImplemented(t *testing.T) {
 	}
 }
 
+// TestExtractResponseModel (2026-07-28) verifies the helper that powers
+// the OpenAI non-stream model-mismatch check. It must tolerate missing
+// fields and malformed bodies (return "" rather than panic / return
+// junk that would produce false-positive mismatches).
+func TestExtractResponseModel(t *testing.T) {
+	cases := []struct {
+		name string
+		body string
+		want string
+	}{
+		{"empty", "", ""},
+		{"malformed", `{not json`, ""},
+		{"no-model", `{"choices":[]}`, ""},
+		{"openai-typical", `{"model":"gpt-4o-2024-08-06","choices":[]}`, "gpt-4o-2024-08-06"},
+		{"glm-typical", `{"model":"glm-4.6","choices":[]}`, "glm-4.6"},
+		{"trimmed-whitespace", `{"model":"  glm-4.6  ","choices":[]}`, "glm-4.6"},
+		{"nested-other-fields", `{"id":"x","model":"a","object":"chat.completion","choices":[]}`, "a"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := extractResponseModel([]byte(c.body)); got != c.want {
+				t.Fatalf("got %q want %q", got, c.want)
+			}
+		})
+	}
+}
+
 func TestExecutorStripVendorFieldsUsesCandidateCatalog(t *testing.T) {
 	strip := func(body []byte) []byte {
 		return append(body, []byte("-stripped")...)
