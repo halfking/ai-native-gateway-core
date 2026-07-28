@@ -18,6 +18,8 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/redis/go-redis/v9"
 )
@@ -63,6 +65,29 @@ type SystemMonitor struct {
 	// dedup.Ping. nil in production; tests inject a stub here to drive
 	// checkRedisHealthOnce without standing up Redis.
 	pingFn func(ctx context.Context) error
+
+	// 2026-07-29 (audit follow-up #2,
+	// docs/architecture/2026-07-28-routing-state-anomaly-audit.md §4.2):
+	// durable backstop for fallback-mode tasks. When Submit's Redis
+	// path fails we currently write the task to fallbackCh (in-memory
+	// only) — if the process restarts during a fallback window, every
+	// queued task is lost. With fallbackDB wired, we also INSERT the
+	// task JSON into system_monitor_fallback_queue (PG), and on the
+	// fallback → healthy transition healthCheckLoop drains the table
+	// back into Redis. nil disables the durable path; legacy
+	// behaviour is preserved for tests / disabled-DB deployments.
+	fallbackDB fallbackDBIface
+}
+
+// fallbackDBIface is the minimum contract systemmonitor needs from
+// the durable backstop pool. Production wires *pgxpool.Pool; tests
+// use pgxmock.PgxPoolIface. Keeping this here (not in a public
+// types file) signals that the durable backstop is an internal
+// implementation detail — admin endpoints should not depend on
+// the fallback queue schema.
+type fallbackDBIface interface {
+	Exec(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error)
+	Begin(ctx context.Context) (pgx.Tx, error)
 }
 
 // RecoveryGate is the interface SystemMonitor uses to flip the URSM v2
@@ -152,6 +177,12 @@ type Config struct {
 	RecoveryFailureThreshold int
 	// RecoveryDebounceTTL overrides DefaultRecoveryDebounceTTL when > 0.
 	RecoveryDebounceTTL time.Duration
+	// FallbackDB (audit follow-up #2) wires the durable backstop
+	// pool. When non-nil, fallback-mode tasks are also INSERTed into
+	// system_monitor_fallback_queue so they survive a process
+	// restart during the fallback window. nil preserves the legacy
+	// in-memory-only behaviour.
+	FallbackDB *pgxpool.Pool
 }
 
 // NewSystemMonitor constructs the monitor and loads the embedded Lua scripts.
@@ -213,6 +244,12 @@ func NewSystemMonitor(cfg Config) (*SystemMonitor, error) {
 		sm.fallback = true
 		slog.Warn("system_monitor: redis disabled, starting in fallback mode (memory FIFO only)")
 	}
+	// Audit follow-up #2: durable backstop wiring. If both DB and
+	// FallbackDB are nil, fall back to legacy in-memory-only behaviour.
+	sm.fallbackDB = cfg.FallbackDB
+	if sm.fallbackDB != nil {
+		slog.Info("system_monitor: durable fallback backstop enabled (system_monitor_fallback_queue)")
+	}
 	return sm, nil
 }
 
@@ -231,6 +268,7 @@ func (sm *SystemMonitor) Submit(ctx context.Context, task *Task) (int64, error) 
 	if sm.fallback {
 		id, err := sm.submitFallback(task)
 		if err == nil {
+			sm.publishFallbackDurable(ctx, task)
 			sm.publishEvent(ctx, "submitted", task)
 		}
 		return id, err
@@ -250,12 +288,116 @@ func (sm *SystemMonitor) Submit(ctx context.Context, task *Task) (int64, error) 
 		sm.markFallback()
 		id, fallbackErr := sm.submitFallback(task)
 		if fallbackErr == nil {
+			sm.publishFallbackDurable(ctx, task)
 			sm.publishEvent(ctx, "submitted", task)
 		}
 		return id, fallbackErr
 	}
 	sm.publishEvent(ctx, "submitted", task)
 	return task.ID, nil
+}
+
+// publishFallbackDurable is the audit follow-up #2 durable backstop
+// path. When a task is enqueued in fallback mode, we ALSO INSERT its
+// JSON into system_monitor_fallback_queue (best-effort, log on
+// failure) so the task survives a process restart during the
+// fallback window. On the fallback → healthy transition,
+// healthCheckLoop drains the table back into Redis.
+//
+// Idempotent via ON CONFLICT (task_id) DO NOTHING: if the same task
+// id is submitted twice (multi-instance race during fallback), only
+// one row survives.
+func (sm *SystemMonitor) publishFallbackDurable(ctx context.Context, task *Task) {
+	if sm.fallbackDB == nil || task == nil {
+		return
+	}
+	payload, err := json.Marshal(task)
+	if err != nil {
+		slog.Warn("system_monitor: fallback durable marshal failed",
+			"error", err, "task_id", task.ID)
+		return
+	}
+	insertCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	_, err = sm.fallbackDB.Exec(insertCtx, `
+		INSERT INTO system_monitor_fallback_queue
+			(task_id, task_json, worker_id)
+		VALUES ($1, $2, $3)
+		ON CONFLICT (task_id) DO NOTHING
+	`, task.ID, payload, sm.workerID)
+	if err != nil {
+		slog.Warn("system_monitor: fallback durable insert failed",
+			"error", err, "task_id", task.ID)
+	}
+}
+
+// drainFallbackQueue is called on the fallback → healthy transition
+// to re-push persisted fallback tasks back into Redis. We use SELECT
+// FOR UPDATE SKIP LOCKED so concurrent gateway instances don't fight
+// over the same rows; each row is owned by exactly one instance per
+// drain cycle. After LPUSH we DELETE the row.
+//
+// Best-effort: errors are logged and skipped — the next drain cycle
+// retries any leftover rows (drain is idempotent because we DELETE
+// only after successful LPUSH).
+func (sm *SystemMonitor) drainFallbackQueue(ctx context.Context) (int, error) {
+	if sm.fallbackDB == nil || sm.queue == nil || sm.queue.rdb == nil {
+		return 0, nil
+	}
+	drainCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	tx, err := sm.fallbackDB.Begin(drainCtx)
+	if err != nil {
+		return 0, fmt.Errorf("begin: %w", err)
+	}
+	defer tx.Rollback(drainCtx)
+	rows, err := tx.Query(drainCtx, `
+		SELECT id, task_json
+		FROM system_monitor_fallback_queue
+		ORDER BY enqueued_at ASC
+		FOR UPDATE SKIP LOCKED
+		LIMIT 100
+	`)
+	if err != nil {
+		return 0, fmt.Errorf("select: %w", err)
+	}
+	type drained struct {
+		id      int64
+		payload []byte
+	}
+	var batch []drained
+	for rows.Next() {
+		var d drained
+		if err := rows.Scan(&d.id, &d.payload); err != nil {
+			slog.Warn("system_monitor: fallback durable scan failed", "error", err)
+			continue
+		}
+		batch = append(batch, d)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return 0, fmt.Errorf("iterate: %w", err)
+	}
+	drainedCount := 0
+	for _, d := range batch {
+		if err := sm.queue.rdb.LPush(drainCtx, RedisKeyQueue, d.payload).Err(); err != nil {
+			slog.Warn("system_monitor: fallback durable LPUSH failed",
+				"error", err, "id", d.id)
+			continue
+		}
+		if _, err := tx.Exec(drainCtx,
+			`DELETE FROM system_monitor_fallback_queue WHERE id = $1`, d.id,
+		); err != nil {
+			slog.Warn("system_monitor: fallback durable DELETE failed",
+				"error", err, "id", d.id)
+			continue
+		}
+		drainedCount++
+	}
+	if err := tx.Commit(drainCtx); err != nil {
+		return drainedCount, fmt.Errorf("commit: %w", err)
+	}
+	return drainedCount, nil
 }
 
 // submitFallback puts the task into the in-memory channel. Used when Redis
@@ -624,6 +766,20 @@ func (sm *SystemMonitor) checkRedisHealthOnce(ctx context.Context) {
 		sm.clearFallback()
 		sm.consecutiveFailures = 0
 		sm.maybeAutoRestoreRecoveryGate(ctx)
+		// Audit follow-up #2: drain the durable fallback backstop
+		// so tasks persisted during the fallback window get back
+		// into Redis. Best-effort: errors are logged + skipped.
+		if sm.fallbackDB != nil {
+			if n, err := sm.drainFallbackQueue(ctx); err != nil {
+				slog.Warn("system_monitor: fallback durable drain failed",
+					"error", err)
+			} else if n > 0 {
+				slog.Info("system_monitor: fallback durable drain complete",
+					"drained", n,
+					"worker_id", sm.workerID,
+				)
+			}
+		}
 	case pingErr == nil && !sm.IsFallback():
 		// Healthy and not in fallback — nothing to do, but reset the
 		// failure counter so the next failure event starts from 0.
@@ -769,6 +925,17 @@ func (sm *SystemMonitor) Dedup() *InflightDedup {
 		return nil
 	}
 	return sm.dedup
+}
+
+// SetFallbackDBForTest replaces the durable fallback DB pool for
+// testing only. Production code must NOT call this — wire the pool
+// through Config.FallbackDB at construction time. The field name
+// ends in "ForTest" so a future linter can flag production callers.
+func (sm *SystemMonitor) SetFallbackDBForTest(pool fallbackDBIface) {
+	if sm == nil {
+		return
+	}
+	sm.fallbackDB = pool
 }
 
 // helper

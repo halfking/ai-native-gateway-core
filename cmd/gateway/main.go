@@ -1999,6 +1999,13 @@ func main() {
 				// sensible defaults; env overrides live in
 				// bg/systemmonitor.Config.
 				RecoveryGate: recoveryGate,
+				// Audit follow-up #2: durable backstop pool. When DB
+				// is enabled, fallback-mode tasks are also INSERTed
+				// into system_monitor_fallback_queue (PG) so they
+				// survive a process restart during the fallback
+				// window. nil when DB is disabled preserves legacy
+				// in-memory-only behaviour.
+				FallbackDB: dbConn.Pool(),
 			})
 			if smErr != nil {
 				slog.Error("system_monitor: construct failed", "error", smErr)
