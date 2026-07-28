@@ -326,31 +326,6 @@ type ProbeSyncFunc func(
 	parentReqID string,
 ) bool
 
-// classifyStreamOutcome maps the streaming-bridge Reason string to a
-// structured errorsx.ErrorKind. The executor's StreamOutcome.Kind is
-// what the request_logs.error_kind taxonomy prefers (2026-07-28
-// §5.6); Reason remains the human-readable cause.
-func classifyStreamOutcome(reason string) errorsx.ErrorKind {
-	switch reason {
-	case "first_byte_timeout", "stream_chunk_timeout", "stream_timeout", "chunk_timeout":
-		return errorsx.KindStreamTimeout
-	case "concurrent_overload", "concurrent":
-		return errorsx.KindConcurrent
-	case "empty_stream_no_content":
-		return errorsx.KindEmptyResponse
-	case "client_cancel", "client_disconnected":
-		return errorsx.KindCanceled
-	case "json_error_in_stream":
-		return errorsx.KindUpstreamDown
-	case "stream_panic", "stream_panic_recover":
-		return errorsx.KindUpstreamDown
-	case "anthropic_to_openai_read_error", "anthropic_to_responses_read_error",
-		"read_error", "stream_read_error", "eof_without_done":
-		return errorsx.KindUpstreamDown
-	}
-	return ""
-}
-
 // NodeProbeHealthyFunc is the contract bg.MarkNodeProbeHealthy satisfies.
 // Defined here (rather than imported from bg) so the executors package
 // does not transitively depend on the bg package. Wiring happens in
