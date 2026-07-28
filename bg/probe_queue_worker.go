@@ -12,6 +12,7 @@ type ProbeQueueWorkerConfig struct {
 	Queue        *ProbeQueue
 	Executor     *ActiveProbeExecutor
 	Emitter      *ActiveProbeEmitter
+	ResultSink   IntegrityProbeResultSink
 	BatchSize    int
 	Workers      int
 	Lease        time.Duration
@@ -98,6 +99,7 @@ func (w *ProbeQueueWorker) processBatch(ctx context.Context) error {
 func (w *ProbeQueueWorker) processTask(ctx context.Context, task ProbeQueueTask) {
 	target, err := w.cfg.Executor.LoadTarget(ctx, int(task.CredentialID), task.RawModel)
 	if err != nil {
+		w.recordIntegrityResult(ctx, task, nil, nil, err)
 		w.completeFailure(ctx, task, "load_target", err.Error(), 0, 0, "")
 		return
 	}
@@ -105,6 +107,7 @@ func (w *ProbeQueueWorker) processTask(ctx context.Context, task ProbeQueueTask)
 		Target: target, Mode: probeMode(task.Mode), Attempt: task.Attempt,
 		Origin: task.Source, ParentID: task.ParentReqID,
 	})
+	w.recordIntegrityResult(ctx, task, target, result, nil)
 	if w.cfg.Emitter != nil {
 		w.cfg.Emitter.Emit(ctx, target.CredentialID, target.ProviderID, task.TenantID,
 			task.RawModel, target.OutboundModel, task.Source, task.ParentReqID, task.Attempt, result)
@@ -118,6 +121,15 @@ func (w *ProbeQueueWorker) processTask(ctx context.Context, task ProbeQueueTask)
 		return
 	}
 	w.completeFailure(ctx, task, result.ErrCode, result.ErrMsg, result.HTTPStatus, result.LatencyMs, result.RespPreview)
+}
+
+func (w *ProbeQueueWorker) recordIntegrityResult(ctx context.Context, task ProbeQueueTask, target *ProbeTarget, result *ProbeResult, targetErr error) {
+	if w == nil || w.cfg.ResultSink == nil || task.Command != "integrity_verify" {
+		return
+	}
+	if err := w.cfg.ResultSink.Record(ctx, task, target, result, targetErr); err != nil {
+		slog.Warn("integrity probe result persistence failed", "queue_id", task.ID, "error", err)
+	}
 }
 
 func (w *ProbeQueueWorker) completeFailure(ctx context.Context, task ProbeQueueTask, code, detail string, httpStatus, latencyMs int, preview string) {
