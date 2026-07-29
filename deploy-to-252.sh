@@ -31,6 +31,12 @@
 #   3. **新 handler 必须 nil-check h.db** (pg keepalive 60s 后会失效)
 #   4. **部署后立即 smoke test** (健康、auth、admin 端点)
 #   完整经验见 docs/lessons-learned-2026-07-10-auth-unification.md
+#
+# ⚠️  关键经验 (2026-07-29 pg17 容器日志撑爆磁盘):
+#   5. **容器必须设置日志轮转** (k8s-file 默认无轮转, 49GB 撑爆磁盘)
+#   6. **重启命令: podman run --log-driver json-file --log-opt max-size=100m --log-opt max-file=3**
+#   7. **磁盘监控阈值 60% 告警, 75% critical** (见 scripts/252-monitor/pg17-disk-watch.sh)
+#   完整经验见 docs/lessons-learned-2026-07-29-pg17-ctr-log-explosion.md
 
 set -euo pipefail
 
