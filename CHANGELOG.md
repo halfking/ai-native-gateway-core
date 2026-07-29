@@ -14,6 +14,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - 默认 OFF（生产 / 245 / local 一致）；flag 由 `LLM_GATEWAY_USE_V2_PIPELINE` 或 `LLM_GATEWAY_V2_ENABLED` 控制
   - `cmd/gateway/v2_dispatch_test.go:11` 个测试 + `cmd/gateway/main_v2_pipeline_test.go:5` 个测试固化 default-off contract
 
+- **PG17 容器日志轮转 + 磁盘清理 (2026-07-29)**:
+  - 修复 252 pg-252-pg17 容器因 k8s-file 日志驱动无轮转导致 ctr.log 49GB 撑爆磁盘
+  - 容器日志驱动改为 json-file + `--log-opt max-size=100m --log-opt max-file=3`
+  - 配置 logrotate 兜底 (`/etc/logrotate.d/podman-pg-252`, daily, 100M, rotate 3)
+  - 全盘清理释放 ~71GB（旧日志 + 旧镜像 + 部署残留），磁盘使用率 85% → 47%
+  - 新增 `/opt/scripts/pg17-start.sh` 标准容器启动脚本
+  - 经验文档：`docs/lessons-learned-2026-07-29-pg17-ctr-log-explosion.md`
+
 - **onPersisted hook + RingBuffer + RawAudit 失败 metric (P0-2, R-3.3/R-3.4 关闭)** (2026-07-29):
   - 4 个 Prometheus counter：`llm_gateway_shadow_write_failed_total{kind}` / `llm_gateway_ringbuffer_dropped_total` / `llm_gateway_rawaudit_write_failed_total`
   - 4 个 hook 处加 Inc 调用：`internal/attachmentmirror/hook.go:65` / `internal/sessionv2mirror/hook.go:70` / `domains/dbdegradation/ring_buffer.go:106` / `internal/logging/raw_data_logger.go:244`
