@@ -107,13 +107,13 @@ type RequestLogContext struct {
 	QualityScore      *float64
 
 	// 2026-06-30: 上游错误诊断字段 (migration 320)
-	UpstreamStatusCode  *int
-	ClientTimeout       bool
-	ClientEndpoint      string
-	StreamChunkErrors   int
-	StreamChunksSent    int
-	streamChunkErrors   atomic.Int64
-	streamChunksSent    atomic.Int64
+	UpstreamStatusCode *int
+	ClientTimeout      bool
+	ClientEndpoint     string
+	StreamChunkErrors  int
+	StreamChunksSent   int
+	streamChunkErrors  atomic.Int64
+	streamChunksSent   atomic.Int64
 
 	// 2026-07-01: 附件元数据字段 (migration 325)
 	// 存储从请求体中提取的 base64/data-URI 附件元数据，写入 request_logs.attachments JSONB。
@@ -135,8 +135,9 @@ type RequestLogContext struct {
 	// calls cannot observe a torn read.
 	StreamCapture *audit.StreamCapture
 
-	meta   requestAttemptMeta
-	logged bool
+	meta     requestAttemptMeta
+	logged   bool
+	terminal atomic.Bool
 }
 
 func (c *RequestLogContext) SetError(code, msg string) {
@@ -504,9 +505,24 @@ func (c *RequestLogContext) RequestMode() string {
 	return "chat"
 }
 
-func (c *RequestLogContext) MarkLogged() { c.logged = true }
+// SetTerminal atomically claims the request terminal transition. The kind is
+// accepted for call-site clarity; detailed classification remains on the entry.
+func (c *RequestLogContext) SetTerminal(kind string) bool {
+	return c != nil && kind != "" && c.terminal.CompareAndSwap(false, true)
+}
+
+func (c *RequestLogContext) IsTerminal() bool {
+	return c != nil && c.terminal.Load()
+}
+
+func (c *RequestLogContext) MarkLogged() {
+	if c != nil {
+		c.logged = true
+		c.terminal.CompareAndSwap(false, true)
+	}
+}
 func (c *RequestLogContext) IsLogged() bool {
-	return c != nil && c.logged
+	return c != nil && (c.logged || c.IsTerminal())
 }
 
 // MarkProbeHoldStart is invoked by the executor when it enters the

@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"net/http/httptest"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -227,3 +229,22 @@ func TestApplySessionCompressorFields_CompressionKeepsHashes(t *testing.T) {
 }
 
 func outboundIntPtr(v int) *int { return &v }
+
+func TestRequestLogContextTerminalGateCompetingOutcomes(t *testing.T) {
+	ctx := &RequestLogContext{}
+	var won atomic.Int64
+	var wg sync.WaitGroup
+	for _, kind := range []string{"success", "failure", "disconnect"} {
+		wg.Add(1)
+		go func(kind string) {
+			defer wg.Done()
+			if ctx.SetTerminal(kind) {
+				won.Add(1)
+			}
+		}(kind)
+	}
+	wg.Wait()
+	if won.Load() != 1 || !ctx.IsTerminal() {
+		t.Fatalf("terminal gate winners=%d terminal=%v", won.Load(), ctx.IsTerminal())
+	}
+}

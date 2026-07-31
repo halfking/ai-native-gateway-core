@@ -28,11 +28,17 @@ func SessionFromContextWith(ctx context.Context, s *Session) context.Context {
 
 func WithSession(next http.Handler, manager *Manager) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		sessionID := r.Header.Get("X-Session-Id")
+		sessionID := r.Header.Get("X-Gw-Session-Id")
+		legacyHeader := false
+		if sessionID == "" {
+			sessionID = r.Header.Get("X-Session-Id")
+			legacyHeader = sessionID != ""
+		}
 		if sessionID == "" {
 			next.ServeHTTP(w, r)
 			return
 		}
+		w.Header().Set("X-Gw-Session-Id", sessionID)
 
 		session, err := manager.Get(r.Context(), sessionID)
 		if err == nil {
@@ -45,6 +51,11 @@ func WithSession(next http.Handler, manager *Manager) http.Handler {
 
 		if err != ErrSessionNotFound {
 			slog.Warn("legacy session lookup failed", "error", err, "session_id", sessionID)
+			next.ServeHTTP(w, r)
+			return
+		}
+
+		if !legacyHeader {
 			next.ServeHTTP(w, r)
 			return
 		}
