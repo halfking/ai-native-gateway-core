@@ -494,6 +494,12 @@ func main() {
 	var stateManager *credentialstate.Manager // 2026-06-30: credential×model state manager
 	var lastSystemSession *session.LastSystemSessionIndex
 	var sessionPref *session.SessionPreference
+	// 2026-07-28 request-flow Step 3 (spec §6.3 + Step 3): session_state_init
+	// 返回的 DBWriter 需要在 telemetryClient.Stop 之后、pools.CloseAll 之前
+	// 显式 Stop（flush 排空）。声明为函数级变量以便 shutdown goroutine 访问；
+	// DBWriter.Stop 已具备 idempotent 语义（sync.Once），与 init 处的 defer
+	// c.DBWriter.Stop() 安全共存，不会 panic on close-of-closed-channel。
+	var sessionStateForShutdown *SessionStateComponents
 	if cfg.RedisAddr != "" {
 		redisClient := session.NewRedisClient(cfg.RedisAddr, cfg.RedisPassword, cfg.RedisDB)
 		pingCtx, pingCancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -3085,6 +3091,11 @@ func main() {
 				slog.Error("session state init failed", "error", ssErr)
 			} else if sessionState != nil {
 				defer sessionState.Shutdown()
+				// 2026-07-28 request-flow Step 3: 主 shutdown 在 telemetryClient.Stop
+				// 之后、pools.CloseAll 之前会再调用一次 sessionState.DBWriter.Stop()，
+				// 由 DBWriter.stopOnce 兜底做幂等，不重复触发 close-of-closed-channel。
+				// 这里把引用保存到函数级变量供 shutdown goroutine 读取。
+				sessionStateForShutdown = sessionState
 				// 将 RotationHook 注入到 ChatHandler，使请求链路自动检测凭据轮换
 				if sessionState.RotationHook != nil {
 					chatHandler.SetRotationHook(sessionState.RotationHook)
@@ -4484,6 +4495,14 @@ func main() {
 			requestLogger.Stop()
 		}
 		telemetryClient.Stop()
+		// 2026-07-28 request-flow Step 3 (spec §6.3 + Step 3): session DBWriter
+		// 必须在 telemetryClient.Stop 之后、依赖（pools）关闭之前显式 Stop，
+		// 排空 flush loop。DBWriter.Stop 自身是 idempotent（sync.Once），
+		// 与 init 处 defer sessionState.Shutdown() 中的 Stop 安全共存。
+		if sessionStateForShutdown != nil && sessionStateForShutdown.DBWriter != nil {
+			sessionStateForShutdown.DBWriter.Stop()
+			slog.Info("session db writer stopped (shutdown goroutine)")
+		}
 		lim.Stop()
 		pools.Stop()
 		pools.CloseAll()
