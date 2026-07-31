@@ -216,3 +216,5 @@ llm-gateway-go.v969.linux.amd64
 fix-selfcheck-keyhash
 gateway.new
 .worktrees/
+migrate-ursm-v2
+scripts/sync-to-252.sh
