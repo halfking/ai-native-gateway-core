@@ -23,38 +23,17 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-// TestSessionV2HookRegistered verifies that when sessions_v2.enabled and
-// sessions_v2.shadow_write are both true, buildV2PipelineHooks returns a
-// list containing the SessionPersistHook ("session.persist"). The hook is
-// the V2 shadow write sidecar that dual-writes to gateway.sessions /
-// session_turns / session_bodies / session_turn_logs in addition to V1.
-//
-// The test passes nil pool to confirm the helper tolerates nil pools
-// (DB writes happen at Execute time, not registration time). Real
-// pool wiring is exercised in the integration suite.
-func TestSessionV2HookRegistered(t *testing.T) {
+// TestSessionV2HookNotRegistered verifies telemetry onPersisted remains the
+// sole production Session V2 persistence owner.
+func TestSessionV2HookNotRegistered(t *testing.T) {
 	cfg := &sessionV2HookConfig{
 		Enabled:     true,
 		ShadowWrite: true,
 	}
 
 	hooks := buildV2PipelineHooks(cfg, (*pgxpool.Pool)(nil))
-	if len(hooks) == 0 {
-		t.Fatalf("expected at least one hook when sessions_v2.enabled && shadow_write")
-	}
-
-	found := false
-	for _, h := range hooks {
-		if h == nil {
-			continue
-		}
-		if h.Name() == "session.persist" {
-			found = true
-			break
-		}
-	}
-	if !found {
-		t.Fatalf("expected session.persist hook to be registered, got %d hooks", len(hooks))
+	if len(hooks) != 0 {
+		t.Fatalf("expected no pipeline session persistence hooks, got %d", len(hooks))
 	}
 }
 

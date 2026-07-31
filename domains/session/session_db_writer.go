@@ -7,11 +7,21 @@ import (
 	"sync"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
+// flushDB is the minimal pool surface that DBWriter needs to commit
+// credential-rotation rows. Production wires *pgxpool.Pool; tests
+// substitute pgxmock.PgxPoolIface via newDBWriterWithDB.
+type flushDB interface {
+	Begin(ctx context.Context) (pgx.Tx, error)
+	Exec(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error)
+}
+
 type DBWriter struct {
-	db            *pgxpool.Pool
+	db            flushDB
 	batchSize     int
 	flushInterval time.Duration
 
@@ -23,9 +33,26 @@ type DBWriter struct {
 	// `go flushSession`，而是往这个容量 1 的通道投一个非阻塞信号，由已有的
 	// flush loop 去落库 —— 突发流量不会再产生无上限的并发 DB 事务。
 	flushSignal chan struct{}
+	// 2026-07-28 idempotency guard: gateway 主 shutdown 在 telemetryClient.Stop
+	// 之后显式调用 Stop()，同时 init 处仍有 defer c.DBWriter.Stop()；
+	// 用 sync.Once 保证 stopCh 不会被重复 close 而 panic。
+	stopOnce sync.Once
 }
 
 func NewDBWriter(db *pgxpool.Pool, batchSize int, flushInterval time.Duration) *DBWriter {
+	if batchSize <= 0 {
+		batchSize = 10
+	}
+	if flushInterval <= 0 {
+		flushInterval = 60 * time.Second
+	}
+	return newDBWriterWithDB(db, batchSize, flushInterval)
+}
+
+// newDBWriterWithDB is the test seam that accepts any flushDB
+// implementation. Production callers use NewDBWriter; tests can pass
+// pgxmock.PgxPoolIface directly.
+func newDBWriterWithDB(db flushDB, batchSize int, flushInterval time.Duration) *DBWriter {
 	if batchSize <= 0 {
 		batchSize = 10
 	}
@@ -54,8 +81,10 @@ func (w *DBWriter) Stop() {
 	if w == nil {
 		return
 	}
-	close(w.stopCh)
-	<-w.doneCh
+	w.stopOnce.Do(func() {
+		close(w.stopCh)
+		<-w.doneCh
+	})
 }
 
 func (w *DBWriter) Enqueue(sessionID string, entry CredRotationEntry) {
@@ -110,10 +139,31 @@ func (w *DBWriter) runFlushLoop(ctx context.Context) {
 	defer close(w.doneCh)
 	ticker := time.NewTicker(w.flushInterval)
 	defer ticker.Stop()
+	// nil context guard: caller may pass nil (e.g. in tests / very early
+	// init). Substitute a non-nil background context so ctx.Done() does
+	// not panic. We still drive shutdown purely via stopCh.
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	// 2026-07-28 Step 3 Round 3 (spec §6.3): every shutdown path must
+	// drain the in-flight pending map to the DB. Previously the ctx.Done
+	// branch returned without flushing — if the gateway cancelled ctx
+	// (e.g. telemetryClient.Stop) while entries were queued, those
+	// session_credential_rotations rows would be lost. We now defer a
+	// single FlushAll that runs on every exit path (stopCh / ctx.Done /
+	// ticker / flushSignal — the latter two return via this defer after
+	// the explicit `return` in the case body, because `return` evaluates
+	// deferred functions before actually returning to the caller).
+	//
+	// We use a fresh background context for the drain so an already-
+	// cancelled ctx cannot abort the flush mid-way. The drain is bounded
+	// by FlushAll's own loop: each session flushes a single tx, and the
+	// pool's Begin will surface a connection error if the DB is
+	// unavailable (logged via slog.Warn in flushSession).
+	defer w.FlushAll(context.Background())
 	for {
 		select {
 		case <-w.stopCh:
-			w.FlushAll(context.Background())
 			return
 		case <-ctx.Done():
 			return

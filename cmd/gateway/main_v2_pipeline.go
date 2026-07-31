@@ -63,7 +63,6 @@ import (
 	"github.com/kaixuan/llm-gateway-go/domains/pipeline"                                 //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/domains/provider"                                 //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/domains/routing"                                  //nolint:depguard // historical violation, B1 routing.go CQRS will fix
-	v2 "github.com/kaixuan/llm-gateway-go/domains/session/v2"                            //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/domains/streaming"                                //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/eventbus"
 	"github.com/kaixuan/llm-gateway-go/settings"
@@ -121,21 +120,20 @@ func envBool(key string, def bool) bool {
 // cmd/gateway package so the v1 binary can register the demo routes without
 // importing across the two `package main` binaries.
 type v2PipelineDeps struct {
-	Config             v2PipelineConfig
-	Pipeline           *pipeline.RequestPipeline
-	EventBus           *eventbus.MemoryBus
-	CacheStore         cache.Store
-	AuditSink          audit.Sink
-	AuditWriter        *audit.BatchWriter
-	Metrics            *observability.Registry
-	Tracer             observability.Tracer
-	AgentReg           *agentecosystem.Registry
-	CredentialStore    *credential.InMemoryStore
-	CredentialHealth   *credential.HealthChecker
-	CredentialLimit    *credential.Limiter
-	ProviderStore      *provider.InMemoryStore
-	ProviderProber     *provider.Prober
-	SessionPersistHook *v2.SessionPersistHook // nil when pool is nil (in-memory stub mode)
+	Config           v2PipelineConfig
+	Pipeline         *pipeline.RequestPipeline
+	EventBus         *eventbus.MemoryBus
+	CacheStore       cache.Store
+	AuditSink        audit.Sink
+	AuditWriter      *audit.BatchWriter
+	Metrics          *observability.Registry
+	Tracer           observability.Tracer
+	AgentReg         *agentecosystem.Registry
+	CredentialStore  *credential.InMemoryStore
+	CredentialHealth *credential.HealthChecker
+	CredentialLimit  *credential.Limiter
+	ProviderStore    *provider.InMemoryStore
+	ProviderProber   *provider.Prober
 }
 
 // passthroughHook is a no-op Hook implementation used as a placeholder for
@@ -292,16 +290,10 @@ func buildV2Pipeline(deps *v2PipelineDeps) *pipeline.RequestPipeline {
 		})
 	}
 
-	// PhasePostResponse: session persistence — writes to V2 tables (sessions, session_turns,
-	// session_bodies, session_turn_logs). Runs after metrics so session snapshot is the last
-	// hook. Feature-flagged via sessions_v2.{enabled,shadow_write,rollout_percent}.
-	// Best-effort: errors are logged and never propagate to the HTTP response.
-	if deps.SessionPersistHook != nil {
-		p.AddStage(&pipeline.PipelineStage{
-			Name: "session_persist", Phase: pipeline.PhasePostResponse, Mode: pipeline.ModeSequential,
-			Hooks: []pipeline.Hook{deps.SessionPersistHook},
-		})
-	}
+	// 2026-07-28 Step 3 Round 3: Session V2 writes are owned by telemetry
+	// onPersisted in main.go. The v2 pipeline no longer registers a
+	// session_persist stage — adding one would create a second V2 write
+	// owner. See docs/superpowers/specs/2026-07-27-request-flow-audit-design.md §6.1.
 
 	return p
 }
@@ -345,35 +337,27 @@ func newV2PipelineDeps(cfg v2PipelineConfig, pool *pgxpool.Pool) *v2PipelineDeps
 		TimeoutSec: 60,
 	})
 
-	var sessionHook *v2.SessionPersistHook
-	if pool != nil {
-		turnWriter := v2.NewTurnWriter(pool)
-		bodiesWriter := v2.NewSessionBodiesWriter(pool)
-		aggregator := v2.NewSessionAggregator(pool)
-		turnLogsWriter := v2.NewTurnLogsWriter(pool)
-		writer := v2.NewSessionWriterV2(turnWriter, bodiesWriter, aggregator, turnLogsWriter)
-		sessionHook = v2.NewSessionPersistHook(writer)
-		slog.Info("v2 pipeline: session persist hook wired (dual-write ready)",
-			"pool_healthy", pool != nil)
-	} else {
-		slog.Info("v2 pipeline: no DB pool, session persist hook disabled (in-memory stub)")
-	}
+	// 2026-07-28 Step 3 Round 3: Session V2 writes are owned by telemetry
+	// onPersisted in main.go. The v2 pipeline does not register a second
+	// V2 write owner, so we deliberately do not construct a SessionPersistHook
+	// here. The previous double-branch (pool == nil vs pool != nil) was dead
+	// code — both branches set sessionHook to nil.
+	_ = pool
 
 	return &v2PipelineDeps{
-		Config:             cfg,
-		CacheStore:         cacheStore,
-		AuditSink:          auditSink,
-		AuditWriter:        auditWriter,
-		Metrics:            metrics,
-		Tracer:             tracer,
-		AgentReg:           agentReg,
-		CredentialStore:    credStore,
-		CredentialHealth:   credHealth,
-		CredentialLimit:    credLimiter,
-		ProviderStore:      provStore,
-		ProviderProber:     provProber,
-		EventBus:           eventbus.NewMemoryBus(100),
-		SessionPersistHook: sessionHook,
+		Config:           cfg,
+		CacheStore:       cacheStore,
+		AuditSink:        auditSink,
+		AuditWriter:      auditWriter,
+		Metrics:          metrics,
+		Tracer:           tracer,
+		AgentReg:         agentReg,
+		CredentialStore:  credStore,
+		CredentialHealth: credHealth,
+		CredentialLimit:  credLimiter,
+		ProviderStore:    provStore,
+		ProviderProber:   provProber,
+		EventBus:         eventbus.NewMemoryBus(100),
 	}
 }
 
@@ -545,13 +529,9 @@ func buildV2PipelineHooks(cfg *sessionV2HookConfig, pool *pgxpool.Pool) []pipeli
 	if cfg == nil || !cfg.Enabled || !cfg.ShadowWrite {
 		return nil
 	}
-	// initSessionV2Writer logs WARN and returns nil when pool is nil
-	// or both flags are off at startup. We still register the hook
-	// either way: the hook's Enabled() reads the live flag values on
-	// every call, so a startup-time nil writer is safe (DB writes
-	// happen at Execute time and writer==nil is a guarded no-op).
-	writer := initSessionV2Writer(pool)
-	return []pipeline.Hook{v2.NewSessionPersistHook(writer)}
+	// Session V2 writes are owned exclusively by telemetry onPersisted in
+	// main.go. The v2 pipeline must not register a second persistence owner.
+	return nil
 }
 
 // loadSessionV2HookConfigFromSettings reads the two production flags

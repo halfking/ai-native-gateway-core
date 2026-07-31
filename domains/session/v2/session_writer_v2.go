@@ -247,6 +247,11 @@ type ProcessingStage struct {
 		err := w.sessionAggregator.UpdateSession(ctx, SessionUpdate{
 			SessionID:        req.SessionID,
 			TenantID:         req.TenantID,
+			// 2026-07-28 request-flow Step 3 (spec §6.2): pass RequestID so
+			// the aggregator can dedup on (tenant_id, request_id,
+			// partition_date) and never double-accumulate token/turn/cost
+			// when the same request_id is replayed.
+			RequestID:        req.RequestID,
 			LastTurnNo:       turnNo,
 			LastRequestSummary: summarizeMessages(requestDelta),
 			LastResponseSummary: summarizeMessages(req.ResponseBody),
