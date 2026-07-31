@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased] - 2026-07-29
 
+### Fixed
+
+- **migrate-ursm-v2 字段名对齐 (B4 审计修正)** (2026-07-31):
+  - `cmd/migrate-ursm-v2/main.go` `mapRow` 用短字段名 `"gen"` / `"pri"`，与权威 V2 协议 (`generation` / `source_priority`) 不一致
+  - 已迁移 hash 缺少 `generation` 导致: B4 CAS 守卫的 generation>1 永不触发；`migrateIfAbsentScript` 的 `HEXISTS generation` 原子种子被绕过；`apply_decision.lua` 视 cur_gen=0 被任意写入覆盖
+  - 修正为 `"generation"` / `"source_priority"`，同步更新 `main_test.go` `TestMapRow_GenerationMonotonic` 断言
+
 ### Added
 
 - **v2 Pipeline feature flag 状态文档化 (P0-5, R-5.2 关闭)** (2026-07-29):
