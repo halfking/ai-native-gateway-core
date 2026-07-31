@@ -1,37 +1,58 @@
-# OmniRoute 集成方案审计：现有文档 vs 真实代码
+# OmniRoute 集成方案审计：参考源码、重建草案与 Go 真实代码
 
 > **目标项目**: llm-gateway-go（`github.com/kaixuan/llm-gateway-go`, Go 1.25）
-> **源参考**: OmniRoute v3.8.49（TypeScript）
-> **审计日期**: 2026-07-29
-> **审计范围**: `docs/omniroute-ref/{phase1,phase2,phase3}` 共 7 份特性方案
-> **审计方法**: 逐条核对方案中引用的代码路径 / 签名 / 字段名是否与 `main` 分支真实代码一致
+> **源参考**: OmniRoute 参考 checkout（package metadata `3.8.49`；已核对 snapshot `c8f1d62de5d223aa209c7b0f7e09bb35382a4d2e`）
+> **Go 审计基线**: `052dbd02034d1e04a92c4e216b87e5b66e12dcee`
+> **审计状态**: `RECONSTRUCTED-DRAFT`，不是原始 `omniroute-ref` 正文的恢复
+> **证据标签**: `SOURCE-VERIFIED` / `AUDIT-INFERRED` / `NEW-DESIGN` / `MISSING-EVIDENCE`
 
 ---
 
-## 1. 审计结论（TL;DR）
+## 1. 审计结论
 
-**总体判断：7 份方案的事实基础扎实、可执行性高。** 方案中引用的代码路径、结构体字段、函数签名绝大部分与真实代码一致。所有"已存在"的扩展点（Candidate、Router、Executor、Compressor、metatools、tool_registry）都经过 grep/读源码确认。
+当前 Go checkout 中原始 `docs/omniroute-ref` 方案正文无法从可用 refs、reflog 或 dangling objects 恢复。现有 `docs/omniroute-ref` 文件是本轮依据参考源码与 Go HEAD 重建的实施草案；它们不能被引用为历史设计的逐字内容。
 
-**核心修正（3 处，均在文档措辞层面，不影响架构方向）：**
+Go 侧的 Candidate、Router、Executor、Compressor、metatools 和 `registry.ToolRegistry` 路径已经通过源码核对。跨项目的策略数量、MCP registry 数量和 stageTrace 结论只在有参考 checkout 路径时成立，不能反推 Go 已实现这些能力。
 
-| # | 方案位置 | 文档说法 | 真实代码 | 影响 |
-|---|---|---|---|---|
-| 1 | phase1/01 §2.1 / phase2/04 | 暗示存在 `providerRegistry.ts` 对应物 | **不存在** Go provider registry/常量文件；provider 完全 DB 驱动（`providers` 表） | 翻译方式改变：不是"移植常量"，而是"生成 seed SQL" |
-| 2 | phase1/03 / phase2/04 | `CompressMessagesIfNeeded` 在 compression 包 | 实际有两处同名物，分属不同包（见 §4） | 接入点需精确到包，避免改错文件 |
-| 3 | phase2/05 | 把 `ToolRegistry.IsAllowed` 归到 admin 包 | 实际在 `registry` 包（`registry/tool_registry.go:334`），admin 只是调用方 | 接口导入路径修正 |
+### 已确认的关键修正
 
-**确认不存在（待新建）的模块**：`provider/catalog`、`provider/auth`、`domains/hooks/compression/{lite,rtk,caveman,stage}.go`、`mcp/`、`a2a/`、`fusion/`。这些与方案"新建"目标一致，无冲突。
+| # | 主题 | 事实与影响 |
+|---|---|---|
+| 1 | provider catalog | Go 没有对应 OmniRoute provider registry 常量；provider 完全由 `providers` 数据和 `provider.Client` 驱动。旧的“290 条”总数没有可靠证据。翻译应是 catalog 导出 + 幂等 SQL seed。 |
+| 2 | compression entry points | 当前 Go 有 `transformation.CompressMessagesIfNeeded`、`transformation.CompressAnthropicMessagesIfNeeded` 和 `compression.Compressor.Compress`/`CompressAfter4xx`；没有 `Compressor.Apply`。统一 Pipeline/Apply 是未来设计。 |
+| 3 | MCP policy | `ToolRegistry.IsAllowed` 定义在 `registry/tool_registry.go`，admin 只是调用方。MCP server 尚未接线。 |
+| 4 | routing strategies | OmniRoute 的参考源码当前为 19 个公开策略加内部 `quota-share`；这不是 Go 已有的策略清单。OmniRoute 的 5% exploration/rotator 也不是 Thompson Sampling。 |
+| 5 | MCP cardinality | `MCP_TOOLS` registry 当前可核对为 42（34+6+1+1），但 server 会 union 其他工具集合；42 不能写成 server 的总可见工具数，scope 也必须动态取 metadata。 |
+| 6 | stage trace | OmniRoute 的路径是 `open-sse/handlers/chatCore/stageTrace.ts`，由 `OMNIROUTE_TRACE=true` 或 `DEBUG=true` 控制；Go 没有同名实现。 |
 
 ---
 
 ## 2. 验证方法清单
 
-每条事实的验证命令（可复跑，满足 AGENTS.md 的 doc-accuracy 纪律）：
+每条事实都应记录来源 checkout、文件路径和验证命令。Go 路径可在当前工作树复跑；参考源码结论只对上方 snapshot 负责。原始设计正文缺失时，文档不得把推断写成已实现事实。
 
 ```bash
 cd /Users/xutaohuang/workspace/ai-native-tools/llm-gateway/llm-gateway-go
+rg -n "type Candidate struct" provider
+rg -n "func \(r \*Router\) PlanCandidatesWithContext" domains/streaming/executors/router.go
+rg -n "func \(c \*Compressor\) (Compress|CompressAfter4xx)" domains/hooks/compression/compressor.go
+rg -n "ToolRegistry|func \(tr \*ToolRegistry\) IsAllowed" registry admin
+rg -n "mcp|a2a|fusion" --glob '*.go' .
+```
 
-# provider.Candidate 定义
+---
+
+## 3. Go 当前状态摘要
+
+- `SOURCE-VERIFIED`: `provider.Candidate` 已有价格、缓存、上下文、延迟、成功率、配额和计费字段。
+- `SOURCE-VERIFIED`: router 已有 tier、billing round、sticky、P2C、round-robin、pressure-aware、protocol affinity 和 URSM v2 集成。
+- `SOURCE-VERIFIED`: Bandit scorer 代码存在，但当前 main 装配仍是 WIP/注释状态，不能写成默认启用。
+- `SOURCE-VERIFIED`: compression 包的生产入口是 `Compress` 和 `CompressAfter4xx`；已有 context-window trim 与 recovery/memory 路径各自有 owner。
+- `SOURCE-VERIFIED`: Go 当前没有 MCP、A2A 或 Fusion package/server。
+
+详细字段、协议字面量、迁移基线和 `registry.ToolRegistry` 的签名仍保留在本文件后半部分；它们是 Go 源码核对结果，不是原始 OmniRoute 方案内容。
+
+---
 grep -n "type Candidate struct" provider/client.go          # → provider/client.go:88
 
 # 路由主函数 + 评分
@@ -138,7 +159,7 @@ ls -d mcp a2a fusion provider/catalog provider/auth 2>/dev/null   # 全部不存
 
 ### 修正 #1：provider 不是"移植常量"，而是"生成 seed 数据"
 
-**问题**：phase1/01 的 §3.1 / §4 Step 1 措辞让人以为存在一个类似 OmniRoute `src/shared/constants/providers.ts` 的 Go 常量文件，要把 290 个条目"翻译"过去。
+**问题**：旧草案的 §3.1 / §4 Step 1 措辞让人以为存在一个类似 OmniRoute provider constants 的 Go 常量文件，还把没有可靠来源的 provider 总数写成了 290。
 
 **真实情况**：llm-gateway-go **没有** Go 层 provider 常量。Provider 是**完全 DB 驱动**的：
 - `providers` 表（`sql/objects/tables/providers.sql`）是唯一事实源，字段含 `code`、`catalog_code`、`protocol`、`base_url`、`category`、`kind`、`enabled` 等。
@@ -148,7 +169,7 @@ ls -d mcp a2a fusion provider/catalog provider/auth 2>/dev/null   # 全部不存
 **修正后的翻译方式**（详见融合指南 `01-TS-TO-GO-FUSION-GUIDE.md` §3）：
 1. 从 OmniRoute 的 TypeScript provider 定义**导出中间 JSON**（catalog_code + protocol + base_url + models）。
 2. 用新建的 `provider/catalog` 包把 JSON **幂等生成 SQL seed**（`INSERT ... ON CONFLICT`）。
-3. 不要在 Go 里建 290 行常量；让 DB 做 catalog 的单一事实源。
+3. 不要在 Go 里建大段常量；让 DB 做 catalog 的单一事实源。
 4. `domains/provider/types.go` 的 `Protocol` 枚举（`openai`/`anthropic`/`azure`/`custom`）是**领域层**语义，与 Candidate 的运行时 `Protocol` 字符串（`openai-completions` 等）不同，不要混用。
 
 ### 修正 #2：`CompressMessagesIfNeeded` 同名两物，接入须精确到包
@@ -158,9 +179,9 @@ ls -d mcp a2a fusion provider/catalog provider/auth 2>/dev/null   # 全部不存
 **真实情况**：存在两个不同包的同名/近名函数：
 - `transformation.CompressMessagesIfNeeded`（`domains/transformation/ctx_compress.go:98`）—— **客户端侧** context-window 机械裁剪，在 `prepareRequestBody`（`executor_chat.go:1528`）中按 `cand.ContextWindow` 调用。
 - `compression.CompressMessagesIfNeededBody`（`domains/hooks/compression/compressor.go:401`）—— compression 包内的 body 级 trim。
-- 此外 `Compressor.Compress(...)`（`compressor.go:269`）是 v7 分发器，但文档自述目前只实现机械 trim 路径。
+- 此外 `Compressor.Compress(...)`（`compressor.go:269`）和 `Compressor.CompressAfter4xx(...)`（`:353`）是当前 v7 入口；不存在 `Compressor.Apply`。
 
-**修正后接入原则**：Lite/RTK/Caveman 必须插在**协议转换完成后、上游发送前**，且与上述两个已有 trim 做 stage 去重（见 phase2/04 §3 的 pipeline 图）。接入点优先用 `Compressor` 暴露的统一 `Apply` 方法，不要在 `executor_chat.go` 里再加第三处 body 改写。
+**修正后接入原则**：Lite/RTK/Caveman 必须插在**协议转换完成后、上游发送前**，且与上述两个已有 trim 做 stage 去重。当前实现应调用 `Compress`/`CompressAfter4xx`；统一 `Apply`/Pipeline 只是 `NEW-DESIGN`，不要在 `executor_chat.go` 里再加第三处 body 改写。
 
 ### 修正 #3：`ToolRegistry.IsAllowed` 在 `registry` 包
 
@@ -228,7 +249,7 @@ executor 用**运行时字符串字面量**（非枚举常量）区分协议，�
 已存在（`router.go`）：
 
 1. **P2C**（power-of-two-choices）— `router.go:615`，tier 内默认
-2. **Bandit**（Thompson Sampling）— 代码支持但 `main.go:832-836` **当前注释禁用**
+2. **Bandit scorer** — 代码支持但 `main.go:832-836` **当前注释禁用**；不要据此写成默认启用的 Thompson Sampling 路由
 3. **Tier 分桶** — `tierOrder {1,2,3,9}`，`planByTier` `router.go:461`
 4. **Billing round** — `splitByBillingRound` `router.go:450`
 5. **Sticky**（L1/L2/L3）— `prioritizeSticky` + `sticky.go`
@@ -255,6 +276,6 @@ R1 新增 `cost-optimized` / `cache-optimized` / `context-aware` / `headroom` �
 本审计**只做事实核对与修正**，不改架构方向。翻译方法论、参考代码清单、融合技能、分步落地步骤见：
 
 - **`01-TS-TO-GO-FUSION-GUIDE.md`** —— TypeScript→Go 翻译方法论 + 每特性的可参考代码清单 + 融合技能
-- 现有 `docs/omniroute-ref/{phase1,phase2,phase3}/*.md` —— 各特性详细设计（经本审计确认可执行）
+- `docs/omniroute-ref/{phase1,phase2,phase3}/*.md` —— 本轮带证据等级的重建草案，不是恢复的历史原文
 
 **推荐使用顺序**：先读本审计 → 再读融合指南 §1 通用方法论 → 按 phase1→2→3 顺序，每读一份方案时对照本审计 §3 的对应行。

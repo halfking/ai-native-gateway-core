@@ -1,6 +1,6 @@
 # TypeScript → Go 翻译与融合技能指南（OmniRoute → llm-gateway-go）
 
-> **目的**：为 `docs/omniroute-ref/{phase1,phase2,phase3}` 的 7 个特性方案提供"可参考代码清单 + 翻译方法论 + 融合技能"。
+> **目的**：为 `docs/omniroute-ref/{phase1,phase2,phase3}` 的 7 个重建草案提供"可参考代码清单 + 翻译方法论 + 融合技能"。这些草案不是原始设计正文的恢复。
 > **源**：OmniRoute v3.8.49（TypeScript / Next.js / SQLite）
 > **目标**：llm-gateway-go（Go 1.25 / net/http + Gin / PostgreSQL + Redis）
 > **前置阅读**：`00-AUDIT-EXISTING-DOCS.md`（确认方案事实基础）
@@ -96,7 +96,7 @@ go func() { wg.Wait(); close(results) }()
 
 | OmniRoute 参考 | 用途 | Go 目标 | 翻译方式 |
 |---|---|---|---|
-| `src/shared/constants/providers.ts` | 290 provider 定义 | `provider/catalog/`（新建）+ `463_*.sql` seed | **导出 JSON → 幂等 SQL**，不建 Go 常量（见审计修正 #1） |
+| `src/shared/constants/providers/*` | 分层 provider catalog（总数未核实） | `provider/catalog/`（新建）+ 经批准的 SQL seed | **导出 JSON → 幂等 SQL**，不建 Go 常量（见审计修正 #1） |
 | `src/shared/validation/providerSchema.ts` | provider Zod 校验 | `provider/catalog/validate.go` | Zod schema → 手写 Go 校验函数（URL https 校验、protocol 枚举、重复键检查） |
 | `open-sse/config/providerRegistry.ts` | base URL/auth/model 注册 | `provider/catalog/entry.go` | 只取**数据**（base_url/protocol/auth_kind/models），运行时由 `provider.NewClient().SetDB()` 解析 |
 | `open-sse/utils/publicCreds.ts` `resolvePublicCred()` | OAuth client_id/secret | `provider/auth/resolver.go` | **逻辑翻译**：从 env/secret store 读，绝不写明文字面量 |
@@ -105,7 +105,7 @@ go func() { wg.Wait(); close(results) }()
 
 | OmniRoute 参考 | 用途 | Go 目标 | 翻译方式 |
 |---|---|---|---|
-| `src/shared/constants/routingStrategies.ts` `ROUTING_STRATEGY_VALUES` | 17 策略枚举 | `domains/streaming/executors/routing_strategy.go` | 只取 cost/cache/context/headroom 4 种，做成 `RoutingMode` 字符串常量 |
+| `src/shared/constants/routingStrategies.ts` `ROUTING_STRATEGY_VALUES` | 19 个公开策略（另有内部 quota-share） | `domains/streaming/executors/routing_strategy.go`（未来） | 只取经评审的 cost/cache/context/headroom 等评分函数，不复制路由编排 |
 | OmniRoute 的 cost/cache/headroom 评分（分散在 services） | 评分公式 | `router_strategy.go` `Strategy.Score()` | **公式翻译**为纯函数；权重照搬 phase1/02 §3 的系数 |
 | —（无直接对应） | tier/sticky/billing | `router.go` 已有 | **直接复用**，不翻译 |
 
@@ -132,8 +132,8 @@ go func() { wg.Wait(); close(results) }()
 | OmniRoute 参考 | 用途 | Go 目标 | 翻译方式 |
 |---|---|---|---|
 | `open-sse/mcp-server/server.ts` `createMcpServer()` | MCP server 装配 | `mcp/server.go`（新建） | **重写**：Go 用自建 JSON-RPC dispatcher（见 phase2/05 §4.1） |
-| `open-sse/mcp-server/schemas/tools.ts` `MCP_TOOLS` | 42 核心工具定义 | `mcp/tools/*.go` | 工具**定义数据**翻译为 Go struct；**handler 重写**调用 Go 侧能力 |
-| `open-sse/mcp-server/scopeEnforcement.ts` | 30 scope 授权 | `mcp/scope.go` | scope 字符串列表翻译；判定逻辑接入 `registry.ToolRegistry.IsAllowed`（见审计修正 #3） |
+| `open-sse/mcp-server/schemas/tools.ts` `MCP_TOOLS` | registry 当前 42（不是 server 总可见数） | `mcp/tools/*.go`（未来） | 工具**定义数据**翻译为 Go struct；server union 必须动态去重 |
+| `open-sse/mcp-server/scopeEnforcement.ts` | metadata 驱动 scope evaluator（固定总数未核实） | `mcp/scope.go`（未来） | scope 判定接入 `registry.ToolRegistry.IsAllowed`（见审计修正 #3） |
 | `open-sse/mcp-server/audit.ts` `logToolCall` | 审计落库 | `mcp/audit.go` | SQLite→PG：建 `mcp_audit` 表 + tenant RLS |
 | `open-sse/mcp-server/httpTransport.ts` | SSE/HTTP transport | `mcp/sse.go` `mcp/http.go` | 重写，复用 gateway 已有 SSE 经验 |
 | `open-sse/mcp-server/toolCardinality.ts` | 工具去重计数 | `mcp/tool_count.go` | 纯函数翻译 |
@@ -284,17 +284,17 @@ llm-gateway-go 的 `cmd/gateway/main.go` 是**唯一装配点**。每个新特�
 
 ### 4.2 压缩融合：Stage/Pipeline 接入 Compressor
 
-现有 `Executor.Compressor`（`executor.go:641`）是单一 trim 分发器。融合方式（phase2/04 §3）：
+现有 `Executor.Compressor` 使用 `Compress`/`CompressAfter4xx` 分发。融合方式（未来设计）：
 
 ```text
 协议转换完成（prepareRequestBody/finalizeOpenAIUpstreamBody）
-  → 现有 context-window trim（transformation.CompressMessagesIfNeeded）
-  → 【新增】Pipeline.Apply：Lite → RTK → Caveman（受 protect + budget 门禁）
+  → 现有 context-window trim（按协议使用 transformation 对应入口）
+  → 【未来】Pipeline.Apply：Lite → RTK → Caveman（受 protect + budget 门禁）
   → 上游发送
 ```
 
 **关键融合约束**：
-- 接入点用 `Compressor` 暴露的统一 `Apply` 方法，**不要在 executor_chat.go 加第三处 body 改写**。
+- 当前接入点只能使用 `Compress`/`CompressAfter4xx`；统一 `Apply` 仍是未来 API，**不要在 executor_chat.go 加第三处 body 改写**。
 - retry 时**不重复压缩**：在 `ExecParams` request scope 缓存原始 body + compression event（phase1/03 Step 4）。
 - 与 `RecoveryCoord`（`executor.go:781`）、`Memora`（`:661`）做 stage 去重，同一请求不既触发 session compaction 又被报为 Lite（phase2/04 §12）。
 
@@ -362,7 +362,7 @@ go test ./mcp/... ./a2a/... -race -count=1   # 协议层必须 race
 |---|---|---|---|---|
 | 1 (9w) | P1 提供商 | providers.ts → catalog JSON → SQL | `provider.NewClient().SetDB` | 463 |
 | 1 | R1 路由策略 | routingStrategies.ts 评分公式 | `Router.orderBucket` | (settings) |
-| 1 | C1 Lite | lite.ts 近 1:1 | `Compressor.Apply` | (settings) |
+| 1 | C1 Lite | lite.ts 近 1:1 | `Compressor.Compress` / `CompressAfter4xx`（未来再统一 Pipeline） | (settings) |
 | 2 (12w) | C2 RTK | engines/rtk/*.ts + filter JSON | Pipeline stage | — |
 | 2 | C3 Caveman | cavemanRules.ts 正则 | Pipeline stage | — |
 | 2 | C4 Stacked | strategySelector.ts 优先级 | Pipeline gate | — |
@@ -379,8 +379,8 @@ go test ./mcp/... ./a2a/... -race -count=1   # 协议层必须 race
 
 | 反模式 | 正确做法 |
 |---|---|
-| 把 290 provider 写成 Go 常量 | 生成 seed SQL，DB 做单一事实源 |
-| 在 executor 里加第三处 body 改写 | 走 `Compressor.Apply` 统一 stage |
+| 把 provider catalog 写成 Go 常量 | 生成 seed SQL，DB 做单一事实源 |
+| 在 executor 里加第三处 body 改写 | 复用 `Compress`/`CompressAfter4xx`；未来再统一 Pipeline |
 | 照搬 `@modelcontextprotocol/sdk` | Go 自建 JSON-RPC dispatcher |
 | TS lookbehind 正则直接搬 | 改写为 RE2 兼容（Go regexp 不支持回溯） |
 | `getInstance()` 全局单例 | 构造注入 |

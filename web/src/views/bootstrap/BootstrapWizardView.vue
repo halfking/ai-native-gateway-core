@@ -498,7 +498,7 @@ onMounted(async () => {
         <!-- 在线激活模式 -->
         <template v-if="activateMode === 'online'">
           <p class="muted mb">
-            点击"激活"按钮，系统将自动向中心 <code>llm.kxpms.cn</code> 申请 License 并完成本地激活（无需手动填写 License Key）。
+            点击"激活"按钮，系统将自动向中心 <code>llm.kxpms.cn</code> 申请 License 并完成本地激活（无需手动填写 License Key）。若中心暂时不可达，可切换到离线激活。
           </p>
           <el-form label-position="top" @submit.prevent="ensureAgreementThenActivate" style="max-width: 600px; min-height: 0;" :show-message="false" :inline-message="false">
             <el-form-item label="设备名称（可选）" error="">

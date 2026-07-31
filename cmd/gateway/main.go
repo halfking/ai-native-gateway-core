@@ -1354,6 +1354,35 @@ func main() {
 				"interval_seconds", routingExec.KeepaliveInterval)
 		}
 		routingExec.TTFBTracker = executors.NewTTFBTracker()
+		// O-1 predictive TTFT pre-skip is explicitly default-off. Require
+		// multiple fresh observations before bypassing a candidate so a single
+		// transient slow response cannot remove a route from consideration.
+		predictiveTTFBMinSamples := 3
+		if v := os.Getenv("LLM_GATEWAY_PREDICTIVE_TTFB_MIN_SAMPLES"); v != "" {
+			if n, err := strconv.Atoi(v); err == nil && n > 0 {
+				predictiveTTFBMinSamples = n
+			}
+		}
+		predictiveTTFBThreshold := time.Duration(0)
+		if v := os.Getenv("LLM_GATEWAY_PREDICTIVE_TTFB_THRESHOLD_MS"); v != "" {
+			if n, err := strconv.Atoi(v); err == nil && n > 0 {
+				predictiveTTFBThreshold = time.Duration(n) * time.Millisecond
+			}
+		}
+		if predictiveTTFBThreshold > 0 {
+			routingExec.PredictiveTTFBSkipper = executors.NewPredictiveSkipper(
+				routingExec.TTFBTracker,
+				predictiveTTFBThreshold,
+				predictiveTTFBMinSamples,
+			)
+			slog.Info("predictive_ttfb_skip_enabled",
+				"threshold_ms", predictiveTTFBThreshold.Milliseconds(),
+				"min_samples", predictiveTTFBMinSamples,
+			)
+		} else {
+			slog.Debug("predictive_ttfb_skip_disabled")
+		}
+
 		routingExec.PreRequestValidator = executors.NewRequestValidator(false) // non-strict mode
 		if routingExec.State != nil {
 			routingExec.PostExecutionHook = executors.NewExecutionRecorder(routingExec.State)

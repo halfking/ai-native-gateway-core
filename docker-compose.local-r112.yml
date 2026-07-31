@@ -188,6 +188,8 @@ services:
       LLM_GATEWAY_SEED_ADMIN_PASSWORD: "Veritrans&9527"
       # ── 运维节点标识（写入 gateway_instances.region）──
       OPS_NODE_REGION: "local"
+      # ── 首次激活/中心注册地址 ──
+      LLM_GATEWAY_CENTER_URL: "https://llm.kxpms.cn"
       OPS_COLLECT_URL: "https://llm.kxpms.cn"
       # ── Frontend static dir (Docker image 中的路径) ──
       LLM_GATEWAY_STATIC_DIR: "/opt/llm-gateway-go/web/dist"

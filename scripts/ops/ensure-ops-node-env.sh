@@ -49,6 +49,7 @@ from pathlib import Path
 path = Path(sys.argv[1])
 region = sys.argv[2]
 wanted = {
+    "LLM_GATEWAY_CENTER_URL": "https://llm.kxpms.cn",
     "OPS_NODE_REGION": region,
     "OPS_CENTER_AGENT_DISABLED": "0",
     "OPS_COLLECT_URL": "https://llm.kxpms.cn",
@@ -56,7 +57,10 @@ wanted = {
 lines = path.read_text().splitlines() if path.exists() else []
 out, touched = [], set()
 for ln in lines:
-    if ln.startswith("OPS_NODE_REGION=") or ln.startswith("OPS_CENTER_AGENT_DISABLED="):
+    if (ln.startswith("LLM_GATEWAY_CENTER_URL=") or
+            ln.startswith("OPS_NODE_REGION=") or
+            ln.startswith("OPS_CENTER_AGENT_DISABLED=") or
+            ln.startswith("OPS_COLLECT_URL=")):
         key = ln.split("=", 1)[0]
         if key in wanted:
             out.append(f"{key}={wanted[key]}")
@@ -104,6 +108,7 @@ bak = env_path.with_suffix(env_path.suffix + f'.bak.ops.{time.strftime(\"%Y%m%d-
 if env_path.exists():
     shutil.copy2(env_path, bak)
 wanted = {
+    'LLM_GATEWAY_CENTER_URL': 'https://llm.kxpms.cn',
     'OPS_NODE_REGION': region,
     'OPS_CENTER_AGENT_DISABLED': '0',
     'OPS_COLLECT_URL': 'https://llm.kxpms.cn',
@@ -111,7 +116,10 @@ wanted = {
 lines = env_path.read_text().splitlines() if env_path.exists() else []
 out, touched = [], set()
 for ln in lines:
-    if ln.startswith('OPS_NODE_REGION=') or ln.startswith('OPS_CENTER_AGENT_DISABLED='):
+    if (ln.startswith('LLM_GATEWAY_CENTER_URL=') or
+            ln.startswith('OPS_NODE_REGION=') or
+            ln.startswith('OPS_CENTER_AGENT_DISABLED=') or
+            ln.startswith('OPS_COLLECT_URL=')):
         key = ln.split('=', 1)[0]
         if key in wanted:
             out.append(f'{key}={wanted[key]}')

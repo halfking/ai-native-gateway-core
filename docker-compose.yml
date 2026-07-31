@@ -11,6 +11,7 @@ services:
       - LLM_GATEWAY_API_KEY=${LLM_GATEWAY_API_KEY:?LLM_GATEWAY_API_KEY is required}
       - LLM_GATEWAY_ADMIN_API_KEY=${LLM_GATEWAY_ADMIN_API_KEY:?LLM_GATEWAY_ADMIN_API_KEY is required}
       - LLM_GATEWAY_SECRET_KEY=${LLM_GATEWAY_SECRET_KEY:?LLM_GATEWAY_SECRET_KEY is required}
+      - LLM_GATEWAY_CENTER_URL=${LLM_GATEWAY_CENTER_URL:-https://llm.kxpms.cn}
     volumes:
       - ./logs:/app/logs
     restart: unless-stopped

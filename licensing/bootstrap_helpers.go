@@ -13,13 +13,20 @@ import (
 	"time"
 )
 
+const defaultCenterURL = "https://llm.kxpms.cn"
+
 func resolveCenterURL() string {
-	for _, key := range []string{"LLM_GATEWAY_CENTER_URL", "LICENSE_AUTHORITY_URL", "MAINTAIN_SERVICE_URL"} {
+	for _, key := range []string{
+		"LLM_GATEWAY_CENTER_URL",
+		"LICENSE_AUTHORITY_URL",
+		"MAINTAIN_SERVICE_URL",
+		"OPS_COLLECT_URL",
+	} {
 		if v := strings.TrimRight(strings.TrimSpace(os.Getenv(key)), "/"); v != "" {
 			return v
 		}
 	}
-	return ""
+	return defaultCenterURL
 }
 
 // instanceIDPath returns the on-disk file path that holds the local instance ID.

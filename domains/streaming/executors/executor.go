@@ -94,6 +94,22 @@ type TTFBStats struct {
 	SampleCount int
 }
 
+// PredictiveTTFBDecision describes a candidate that exceeded the configured
+// predictive TTFT threshold. AvgTTFB is kept as a duration internally and is
+// converted to milliseconds at the trace boundary.
+type PredictiveTTFBDecision struct {
+	Reason      string
+	AvgTTFB     time.Duration
+	SampleCount int
+}
+
+// PredictiveTTFBSkipper is the narrow request-routing contract for O-1.
+// Implementations must be read-only; candidate health and limiter state are
+// intentionally managed by the existing executor flow.
+type PredictiveTTFBSkipper interface {
+	ShouldSkip(credentialID int) (PredictiveTTFBDecision, bool)
+}
+
 // RequestValidator 请求格式校验器
 type RequestValidator interface {
 	Validate(ctx context.Context, requestBody []byte) (*ValidationResult, error)
@@ -870,6 +886,11 @@ type Executor struct {
 	AnomalyReporter  AnomalyReporter  // 协议转换异常报告器
 	SemanticAnalyzer SemanticAnalyzer // 语义分析器（工具调用/内容丢失检测）
 
+	// PredictiveTTFBSkipper implements the default-off O-1 pre-skip policy.
+	// It is checked at most once per Execute call and only when more than one
+	// routed candidate remains, so the last candidate is always given a chance.
+	PredictiveTTFBSkipper PredictiveTTFBSkipper
+
 	// 2026-07-28: 模型质量探测（per-request 完整性事件）。
 	// 由 main.go 注入；nil 时不调用任何完整性检测（旧行为）。
 	// 该字段是接口而不是具体类型，executors 包不依赖 integrity 子包，
@@ -1515,12 +1536,14 @@ type Trace struct {
 }
 
 type TraceCandidate struct {
-	ProviderID   int    `json:"provider_id"`
-	CredentialID int    `json:"credential_id"`
-	ProviderName string `json:"provider_name,omitempty"`
-	RawModel     string `json:"raw_model,omitempty"`
-	Tier         int    `json:"tier,omitempty"`
-	Reason       string `json:"reason,omitempty"`
+	ProviderID         int    `json:"provider_id"`
+	CredentialID       int    `json:"credential_id"`
+	ProviderName       string `json:"provider_name,omitempty"`
+	RawModel           string `json:"raw_model,omitempty"`
+	Tier               int    `json:"tier,omitempty"`
+	Reason             string `json:"reason,omitempty"`
+	PredictedAvgTTFBMs int64  `json:"predicted_avg_ttfb_ms,omitempty"`
+	PredictedSamples   int    `json:"predicted_samples,omitempty"`
 }
 
 func (e *ExecuteError) Error() string {
@@ -2165,11 +2188,17 @@ func (e *Executor) Execute(params *ExecParams) (*ExecuteResult, error) {
 	// 2026-07-22: NodeTracker for credential failover tracking and SSE.
 	nodeTracker := NewNodeTracker(LoadHotConfig())
 
+	// O-1 is request-local: at most one candidate is predictive-skipped.
+	// Do not derive this from tried; tried counts only candidates that reached
+	// the real execution path after earlier filters.
+	predictiveDecisionMade := false
+
 	for _, cand := range candidates {
 		// OPT-3: skip siblings of providers that already returned
 		// content_filter. The credential is healthy; the content is
 		// the problem. We do NOT update circuit / sticky / state —
 		// see classifyContentFilterError below for the rationale.
+
 		if _, hit := contentFilterProviders[cand.ProviderID]; hit {
 			trace.BlockedCandidates = append(trace.BlockedCandidates, TraceCandidate{
 				ProviderID:   cand.ProviderID,
@@ -2199,7 +2228,31 @@ func (e *Executor) Execute(params *ExecParams) (*ExecuteResult, error) {
 			continue // 跳过该凭据
 		}
 
+		// O-1: make one prediction decision after existing logical skips.
+		// A non-slow first executable candidate consumes the decision too;
+		// this prevents scanning all candidates for a slow one.
+		if decision, skip := predictiveDecisionForCandidate(e.PredictiveTTFBSkipper, &predictiveDecisionMade, len(candidates), cand.CredentialID); skip {
+
+			trace.BlockedCandidates = append(trace.BlockedCandidates, TraceCandidate{
+				ProviderID:         cand.ProviderID,
+				CredentialID:       cand.CredentialID,
+				RawModel:           cand.RawModel,
+				Tier:               cand.Tier,
+				Reason:             decision.Reason,
+				PredictedAvgTTFBMs: decision.AvgTTFB.Milliseconds(),
+				PredictedSamples:   decision.SampleCount,
+			})
+			slog.Debug("executor: predictive TTFB candidate skip",
+				"credential_id", cand.CredentialID,
+				"provider_id", cand.ProviderID,
+				"avg_ttfb_ms", decision.AvgTTFB.Milliseconds(),
+				"sample_count", decision.SampleCount,
+			)
+			continue
+		}
+
 		tried++
+
 		nodeTracker.Record(cand)
 
 		// Reset the stream capture for this candidate so textContent, chunk

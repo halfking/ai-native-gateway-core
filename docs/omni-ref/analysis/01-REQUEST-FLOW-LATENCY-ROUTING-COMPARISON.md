@@ -54,7 +54,7 @@
 | **P50/P95 百分位** | ❌ **仅平均** | ✅ DB `p95_latency_ms` + EMA TTFB | **Go 胜** |
 | 首字节延时(TTFB) | ❌ 隐含在 avg | ✅ `TTFBTracker` EMA(0.8/0.2) 5min 过期 | **Go 胜** |
 | 并发放大修正 | ❌ | ✅ `calculateLatencyScore` queue-amplification（knee/alpha/beta） | **Go 胜** |
-| **预测性 TTFT 预跳过** | ✅ `combo.ts:1038` predictive-TTFT breaker | ❌ | **OmniRoute 胜** |
+| **预测性 TTFT 预跳过** | ✅ `combo.ts:1038` predictive-TTFT breaker | ✅ `PredictiveSkipper`（默认关闭，EMA TTFB + 样本门槛） | 已融合 |
 | 超时分层 | 5 层（fetch/idle/readiness/target/combo） | 多层（upstream/stream/firstByte/syncRetry/async） | 平 |
 
 ### 2.2 评分公式对照
@@ -71,31 +71,15 @@ composite = concurrencyScore*0.4 + identityScore*0.1
 其中 latencyScore 经 queue-amplification 放大后按 P95 分段 lerp
 ```
 
-**判断**：llm-gateway-go 的评分在并发/延时/质量维度更全面。但 OmniRoute 的 **predictive-TTFT 预跳过**（见下）是 Go 侧缺失的具体能力。
+**判断**：llm-gateway-go 的评分在并发/延时/质量维度更全面。预测性 TTFT 预跳过已按默认关闭、样本门槛和“始终保留其他候选”的约束融合到 Executor。
 
 ### 2.3 🎯 优化项 O-1：引入预测性 TTFT 预跳过
 
 **OmniRoute 做法**（`combo.ts:1038-1057`）：首次尝试（retry==0）前，若某候选的 `avgLatencyMs > config.predictiveTtftMs`，直接跳过该候选（返回 null），不浪费一次失败的上游调用。
 
-**llm-gateway-go 现状**：`calculateLatencyScore` 已用 P95 给低分候选**降权**，但仍会**实际调用**它（P2C 只是排序，不是过滤）。慢候选照样被试一次。
+**llm-gateway-go 现状**：`calculateLatencyScore` 已用 P95 给低分候选降权，`PredictiveSkipper` 还会在执行循环中对首个可考虑候选做一次可选预跳过（只在有其他路由候选时生效）。
 
-**移植价值**：高。慢上游的首次失败往往就是首字节超时（30-120s），预跳过可直接省掉这个浪费。
-
-**Go 落地方式**（接入 `PlanCandidatesWithContext` 后、failover 循环前）：
-```go
-// domains/streaming/executors/router_predictive.go（新建）
-// 复用已有 TTFBTracker（EMA）而非 avg，更准
-func (r *Router) predictiveSkip(c provider.Candidate, maxTtftMs int) bool {
-    if maxTtftMs <= 0 { return false }
-    ema := r.TTFBTracker.Recent(c.CredentialID) // 已有，5min EMA
-    if ema <= 0 { return false }                 // 无样本不跳
-    return int(ema.Milliseconds()) > maxTtftMs
-}
-```
-- 配置：`LLM_GATEWAY_PREDICTIVE_TTFT_MS`（默认 0=关；建议灰度 60000）。
-- 仅首次尝试跳过；retry 时不跳（可能已恢复）。
-- 安全：跳过后候选为空则**降级不跳**（不能因预跳把请求饿死），复用现有降级路径。
-- **注意**：OmniRoute 用 avg，Go 应用 EMA TTFB（`TTFBTracker` 已存在，比 avg 更反映当前状态）。
+**Go 实现**：`domains/streaming/executors/predictive_ttfb.go` 的 `PredictiveSkipper` 复用 `TTFBTracker` EMA。通过 `LLM_GATEWAY_PREDICTIVE_TTFB_THRESHOLD_MS`（默认 0=关）启用，并用 `LLM_GATEWAY_PREDICTIVE_TTFB_MIN_SAMPLES`（默认 3）避免单个瞬时样本触发；每次 `Execute` 最多预跳过一个候选，`Tried` 不计入预测跳过，且始终保留其他候选。重试递归会重新进入自己的 Execute，仍受同一“最多一个/有余候选”门禁。
 
 ---
 
@@ -190,7 +174,7 @@ llm-gateway-go 的 `RPMLimit`（`Candidate.RPMLimit`）目前是**静态配置**
 
 | ID | 优化项 | 来源 | 价值 | 成本 | 契合 | 优先级 |
 |---|---|---|---|---|---|---|
-| **O-1** | 预测性 TTFT 预跳过 | OmniRoute `combo.ts:1038` | 高（省慢上游首次失败 30-120s） | 低（复用 TTFBTracker） | 高（插 PlanCandidates 后） | **P0** |
+| **O-1** | 预测性 TTFT 预跳过 | OmniRoute `combo.ts:1038` + Go `predictive_ttfb.go` | 高（省慢上游首次失败 30-120s） | 低（复用 TTFBTracker） | 已融合，默认关闭 |
 | **O-5** | 真滑窗 RPM + header 自学习 | OmniRoute `slidingWindowLimiter` | 高（自适应限额） | 中（Redis sorted-set） | 高（补 Limiter 层） | **P0** |
 | **O-4** | 熔断 DEGRADED 中间态 | OmniRoute `circuitBreaker.ts` | 中（减少抖动） | 中（改 breaker 状态机） | 高（复用 weight） | **P1** |
 | **O-2** | reset-aware/reset-window 策略 | OmniRoute `quotaScoring.ts` | 中（免费配额场景） | 中（需重置时间数据） | 高（R1 Strategy 插件） | **P1** |
@@ -215,7 +199,7 @@ llm-gateway-go 的 `RPMLimit`（`Candidate.RPMLimit`）目前是**静态配置**
 3. **5 层加权信号量**：比 OmniRoute 的单 Bottleneck 更精细。
 4. **异步重试（202 + 轮询）**：OmniRoute 无。
 5. **空候选同步探活自救**：OmniRoute 无。
-6. **Bandit（Thompson Sampling）+ URSMv2**：OmniRoute 无。
+6. **Bandit scorer + URSMv2**：Go 侧有对应代码路径，但 `main.go:832-836` 的 Bandit 装配当前被注释；不能写成默认启用能力。
 7. **5 阶段 failover**（候选→探活→同步重试→跨模型→异步）：比 OmniRoute 的 3 层更深。
 8. **并发感知的 latency 评分**（queue-amplification）：OmniRoute 无。
 
@@ -223,41 +207,14 @@ llm-gateway-go 的 `RPMLimit`（`Candidate.RPMLimit`）目前是**静态配置**
 
 ## 8. P0 详细落地（O-1 + O-5）
 
-### O-1：预测性 TTFT 预跳过（工期 ~3 天）
+### O-1：预测性 TTFT 预跳过（已融合，默认关闭）
 
-**文件**：
-- 新建 `domains/streaming/executors/router_predictive.go`
-- 改 `executor.go` failover 循环开头（`executor.go:2121` 附近）
+**实现文件**：`domains/streaming/executors/predictive_ttfb.go`、`domains/streaming/executors/executor.go`、`cmd/gateway/main.go`。
 
-**接口**：
-```go
-type PredictiveSkipper struct {
-    TTFB    *ttfb.Tracker
-    MaxMs   int  // env LLM_GATEWAY_PREDICTIVE_TTFT_MS, 0=off
-}
+**策略**：`PredictiveSkipper` 读取 `TTFBTracker` 的 5 分钟 EMA；只有 `AvgTTFB > threshold` 且样本数达到门槛时才建议跳过。Executor 在既有 content-filter/session-blacklist 过滤之后、fp-slot/circuit/limiter 之前，对每次 `Execute` 最多做一次判断；只有 `len(candidates) > 1` 时生效。预测跳过会写入 `Trace.BlockedCandidates`（`reason=predictive_ttfb_above_threshold`、平均 TTFB 和样本数），但不增加 `Tried`，也不改健康、熔断或限流状态。
 
-// 返回 true 表示应跳过该候选（首次尝试且 EMA TTFB 超阈值）
-func (p *PredictiveSkipper) ShouldSkip(c provider.Candidate, attempt int) bool {
-    if p.MaxMs <= 0 || attempt > 0 { return false }
-    ema := p.TTFB.Recent(c.CredentialID)
-    if !ema.HasSample() { return false }
-    return ema.Milliseconds() > int64(p.MaxMs)
-}
-```
-
-**接入**（failover 循环内，circuit 检查后）：
-```go
-if predictive.ShouldSkip(cand, attemptRound) && len(candidates) > 1 {
-    continue  // 跳过，但有其他候选时才跳
-}
-```
-
-**测试**：EMA 超阈值跳过；首次跳、retry 不跳；候选仅剩 1 个时不跳（降级）；TTFB 无样本不跳。
-
-**验收**：灰度租户的慢上游首次失败率下降；无候选饿死。
-
-### O-5：真滑窗 RPM + header 自学习（工期 ~1.5 周）
-
+**配置**：`LLM_GATEWAY_PREDICTIVE_TTFB_THRESHOLD_MS` 默认 `0`（关闭）；`LLM_GATEWAY_PREDICTIVE_TTFB_MIN_SAMPLES` 默认 `3`。
+- 本节 O-1 已实现；O-5 仍是待实施方案。
 **文件**：
 - 新建 `domains/credential/sliding_window.go`（Redis ZSET）
 - 新建 `domains/credential/limit_learner.go`（header 学习）
