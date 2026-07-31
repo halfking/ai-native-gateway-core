@@ -4,16 +4,16 @@
 // metadata that the realtime stream / request_logs should display:
 //
 //   - origin_stage        : self_check | node_probe | system_health | business
-//                           (plus legacy probe_* values for backward
-//                           compatibility with rows written before
-//                           migration 341 by credential_probe_v2 /
-//                           model_probe / active_probe / passive_probe).
+//     (plus legacy probe_* values for backward
+//     compatibility with rows written before
+//     migration 341 by credential_probe_v2 /
+//     model_probe / active_probe / passive_probe).
 //   - origin_actor        : worker / actor name (see commit 4/5/6).
 //   - client_ip           : real client IP (X-Real-IP > X-Forwarded-For[0]
-//                           > RemoteAddr, mirroring
-//                           telemetry/request_metadata.go:ExtractClientIP).
+//     > RemoteAddr, mirroring
+//     telemetry/request_metadata.go:ExtractClientIP).
 //   - client_forwarded_for: full X-Forwarded-For header chain (capped at
-//                           1024B to keep the request_logs row narrow).
+//     1024B to keep the request_logs row narrow).
 //
 // Header trust model
 // ──────────────────
@@ -77,11 +77,11 @@ import (
 //	                                headers are trustworthy.
 
 const (
-	originStageKey        = "origin.stage"
-	originActorKey        = "origin.actor"
-	originClientIPKey     = "origin.client_ip"
-	originClientXFFKey    = "origin.xff"
-	authOwnerUserCtxKey   = "auth.owner_user"
+	originStageKey      = "origin.stage"
+	originActorKey      = "origin.actor"
+	originClientIPKey   = "origin.client_ip"
+	originClientXFFKey  = "origin.xff"
+	authOwnerUserCtxKey = "auth.owner_user"
 )
 
 // system-owner-user list. Auth middleware stores the resolved owner

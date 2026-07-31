@@ -141,3 +141,12 @@ func TestAuthMiddleware_BypassesHealthAndMetrics(t *testing.T) {
 		}
 	}
 }
+
+func TestAuthMiddlewareRejectionPreservesRequestID(t *testing.T) {
+	h := NewRequestIDMiddleware().Wrap(NewAuthMiddleware("secret-key").Wrap(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {})))
+	rr := httptest.NewRecorder()
+	h.ServeHTTP(rr, httptest.NewRequest(http.MethodPost, "/v1/messages", nil))
+	if rr.Code != http.StatusUnauthorized || rr.Header().Get("X-Request-Id") == "" {
+		t.Fatalf("status=%d request_id=%q", rr.Code, rr.Header().Get("X-Request-Id"))
+	}
+}

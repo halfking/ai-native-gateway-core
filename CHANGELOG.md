@@ -72,6 +72,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **请求入口身份、终态和拒绝路径追踪收敛** (2026-07-28): Chat/Messages/Responses/Gemini 共享稳定的 request/session 身份派生；Messages/Responses/Gemini 回写最终 `X-Gw-Session-Id`，直连 handler 时也回写 `X-Request-Id`；session middleware 优先读取 `X-Gw-Session-Id`、兼容回退 `X-Session-Id` 并回写规范 header；RequestLogContext 增加原子终态门，success/failure/disconnect 竞争只允许一个终态；全局 middleware 拒绝仍遵循“logs + audit、无强制 WAL”边界，Auth 401 保留 `X-Request-Id` 供客户端关联。
+
 - **实时请求流空闲块不再丢失 + 空闲时间随心跳刷新** (2026-07-28):
   - **Bug**：`ScanAndRecordIdleMarkers` 把 idle marker 只写入 main queue，但生产读取路径 `SnapshotFromDimensionQueues` 只读 dimension queues；只要任意 vendor/provider/model 队列有数据，main queue 中的 idle marker 永远不会被前端看到。同时 Ts 锚定到 `lastActivity+threshold`（沉默开始那一刻），导致"更新空闲时间"在 Redis 层面是 no-op（ZADD same member + same score = 不写、TTL 不刷新）。
   - **Fix**（`admin/live_stream_redis_store.go`）：

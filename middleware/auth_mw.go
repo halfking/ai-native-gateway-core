@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"log/slog"
 	"net/http"
+	"strings"
 
 	"github.com/kaixuan/llm-gateway-go/i18n"
 )
@@ -84,6 +85,9 @@ func (m *AuthMiddleware) Wrap(next http.Handler) http.Handler {
 // machine-readable token kept stable for SDKs.
 func writeAuthUnauthorized(ctx context.Context, w http.ResponseWriter, messageKey, code string) {
 	msg := i18n.T(ctx, messageKey)
+	if requestID, ok := ctx.Value(requestIDContextKey{}).(string); ok && strings.TrimSpace(requestID) != "" {
+		w.Header().Set("X-Request-Id", requestID)
+	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusUnauthorized)
 	//nolint:errcheck // HTTP write error non-recoverable

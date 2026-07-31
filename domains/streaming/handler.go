@@ -187,6 +187,45 @@ func writePrewarmedStreamError(w http.ResponseWriter, message, errType, code str
 	}
 }
 
+// RequestIdentity contains immutable correlation fields derived at the HTTP boundary.
+type RequestIdentity struct {
+	RequestID       string
+	ClientRequestID string
+	TenantID        string
+	APIKeyID        int
+	ClientType      string
+	ClientModel     string
+	SessionID       string
+	UserKey         string
+}
+
+// initializeRequestIdentity establishes one stable request and provisional
+// gateway-session identity even when middleware is bypassed by direct tests.
+func initializeRequestIdentity(r *http.Request) RequestIdentity {
+	identity := RequestIdentity{TenantID: "default"}
+	if r == nil {
+		identity.RequestID = generateRequestID()
+		identity.SessionID = generateSystemSessionID()
+		return identity
+	}
+	identity.RequestID = strings.TrimSpace(r.Header.Get("X-Request-Id"))
+	if identity.RequestID == "" {
+		identity.RequestID = generateRequestID()
+		r.Header.Set("X-Request-Id", identity.RequestID)
+	}
+	identity.ClientRequestID = strings.TrimSpace(r.Header.Get("X-Gw-Client-Request-Id"))
+	if identity.ClientRequestID == "" {
+		identity.ClientRequestID = strings.TrimSpace(r.Header.Get("X-Client-Request-Id"))
+	}
+	identity.SessionID = sanitizeGwSessionHeader(r.Header.Get("X-Gw-Session-Id"))
+	if identity.SessionID == "" {
+		identity.SessionID = generateSystemSessionID()
+		r.Header.Set("X-Gw-Session-Id", identity.SessionID)
+	}
+	identity.ClientType = strings.TrimSpace(r.Header.Get("X-Gw-Client-Type"))
+	return identity
+}
+
 func sanitizeGwSessionHeader(v string) string {
 	s := strings.TrimSpace(v)
 	if s == "" {
