@@ -238,7 +238,7 @@ func TestRequestLogContextTerminalGateCompetingOutcomes(t *testing.T) {
 		wg.Add(1)
 		go func(kind string) {
 			defer wg.Done()
-			if ctx.SetTerminal(kind) {
+			if ctx.SetTerminal(kind, nil) {
 				won.Add(1)
 			}
 		}(kind)

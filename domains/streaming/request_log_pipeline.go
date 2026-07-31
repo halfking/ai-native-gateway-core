@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net/http"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -30,8 +31,17 @@ func jsonMarshal(v any) ([]byte, error) {
 // (auth, body read, routing, upstream, response) so every exit path emits
 // a complete request_logs row with user/application correlation.
 type RequestLogContext struct {
-	handler   *ChatHandler
+	handler *ChatHandler
 	RequestID string
+
+	// terminalKind guards the captured kind for the lifetime of the
+	// request once a winner has claimed the terminal transition.
+	// Read via TerminalKind() while holding terminalMu (RLock).
+	// 2026-07-28 §10 Step 2: support richer terminal classification
+	// (success/failure/disconnect) for downstream logs/audit.
+	terminalMu     sync.RWMutex
+	terminalKind   string
+	terminalEntry  *telemetry.RequestLogEntry
 	// ClientRequestID is the X-Request-Id the client supplied, if any.
 	// Persisted into request_logs.client_request_id for debug /
 	// cross-system tracing. Distinct from RequestID (the server-generated
@@ -505,10 +515,51 @@ func (c *RequestLogContext) RequestMode() string {
 	return "chat"
 }
 
-// SetTerminal atomically claims the request terminal transition. The kind is
-// accepted for call-site clarity; detailed classification remains on the entry.
-func (c *RequestLogContext) SetTerminal(kind string) bool {
-	return c != nil && kind != "" && c.terminal.CompareAndSwap(false, true)
+// SetTerminal atomically claims the request terminal transition.
+// kind is the high-level outcome (success/failure/disconnect/...).
+// payload is the entry the caller intends to persist; it is captured
+// for downstream logs+audit consumers but does not replace the
+// per-handler builder. Returns true exactly once per request lifetime;
+// subsequent callers (including MarkLogged) observe won=false.
+//
+// 2026-07-28 §10 Step 2: replace the previous single-arg variant so
+// the gate can carry the snapshot of the entry chosen by the winner.
+func (c *RequestLogContext) SetTerminal(kind string, payload *telemetry.RequestLogEntry) bool {
+	if c == nil || kind == "" {
+		return false
+	}
+	if !c.terminal.CompareAndSwap(false, true) {
+		return false
+	}
+	c.terminalMu.Lock()
+	c.terminalKind = kind
+	c.terminalEntry = payload
+	c.terminalMu.Unlock()
+	return true
+}
+
+// TerminalKind returns the kind captured by the winning SetTerminal
+// caller. Returns "" when no winner has claimed the terminal yet or
+// the receiver is nil. Safe for concurrent reads.
+func (c *RequestLogContext) TerminalKind() string {
+	if c == nil {
+		return ""
+	}
+	c.terminalMu.RLock()
+	defer c.terminalMu.RUnlock()
+	return c.terminalKind
+}
+
+// TerminalEntry returns the entry captured by the winning SetTerminal
+// caller (if any). Returns nil when no winner has claimed the terminal
+// yet or the receiver is nil. Safe for concurrent reads.
+func (c *RequestLogContext) TerminalEntry() *telemetry.RequestLogEntry {
+	if c == nil {
+		return nil
+	}
+	c.terminalMu.RLock()
+	defer c.terminalMu.RUnlock()
+	return c.terminalEntry
 }
 
 func (c *RequestLogContext) IsTerminal() bool {
