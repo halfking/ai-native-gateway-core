@@ -82,14 +82,28 @@ done
 precheck() {
   heading "前置检查"
 
-  command -v docker >/dev/null 2>&1 && ok "docker $(docker --version | cut -d' ' -f3 | tr -d ',')" || { err "docker 未安装"; exit 1; }
+  # docker: 仅 docker 部署或需要 DB 时强制; native+skip-db 只需网关进程
+  if ! command -v docker >/dev/null 2>&1; then
+    if [ "$DEPLOY_MODE" = "docker" ] || [ "$SKIP_DB" = "false" ]; then
+      err "docker 未安装"; exit 1
+    fi
+    warn "docker 未安装 (native 模式跳过 Docker 检查)"
+  else
+    ok "docker $(docker --version | cut -d' ' -f3 | tr -d ',')"
+  fi
   command -v curl >/dev/null 2>&1 && ok "curl $(curl --version | head -1 | awk '{print $2}')" || { err "curl 未安装"; exit 1; }
   command -v go >/dev/null 2>&1 && ok "go $(go version | awk '{print $3}')" || sub "go 未安装 (跳过, 用 Docker 构建)"
   command -v jq >/dev/null 2>&1 && ok "jq $(jq --version)" || sub "jq 未安装 (跳过 JSON 解析)"
 
   # Docker daemon 是否在运行
-  docker info >/dev/null 2>&1 || { err "Docker daemon 未运行"; exit 1; }
-  ok "Docker daemon 运行中"
+  if ! docker info >/dev/null 2>&1; then
+    if [ "$DEPLOY_MODE" = "docker" ] || [ "$SKIP_DB" = "false" ]; then
+      err "Docker daemon 未运行"; exit 1
+    fi
+    warn "Docker daemon 未运行 (native 模式跳过)"
+  else
+    ok "Docker daemon 运行中"
+  fi
 
   # Docker compose 版本
   if docker compose version >/dev/null 2>&1; then
@@ -124,6 +138,56 @@ precheck() {
 }
 
 # ════════════════════════════════════════════════════════════════════
+# 释放 8781 端口 (native 模式)
+# ════════════════════════════════════════════════════════════════════
+# 处理两类占用者:
+#   1. docker 容器转发持有 (com.docker 监听) → 停止对应容器 (docker stop)
+#   2. 普通进程占用 → 逐个 kill
+# 15s 内未释放 → 返回 1 (调用方中止部署, 避免 bind 冲突静默失败)
+free_port_8781() {
+  local port=8781
+  local tries=0
+
+  # 先按 PID 文件停止本脚本启动的 native 进程
+  if [ -f "$PID_FILE" ]; then
+    local old_pid; old_pid=$(cat "$PID_FILE")
+    kill "$old_pid" 2>/dev/null || true
+    rm -f "$PID_FILE"
+    sub "native 进程 $old_pid 已停止"
+  fi
+
+  while lsof -ti :$port >/dev/null 2>&1; do
+    tries=$((tries+1))
+    if [ "$tries" -gt 15 ]; then
+      err "端口 $port 15s 内未释放, 请手动处理占用进程后重试"
+      return 1
+    fi
+
+    # 1) docker 容器转发持有 → 停止容器
+    local cname
+    cname=$(docker ps --filter "publish=$port" --format '{{.Names}}' 2>/dev/null | head -1)
+    if [ -n "$cname" ]; then
+      info "端口 $port 由 docker 容器 $cname 转发持有, 停止容器..."
+      docker stop "$cname" >/dev/null 2>&1 || true
+    else
+      # 2) 普通进程占用 → 逐个 kill (跳过 docker 自身 helper, 不可直接 kill)
+      local pids; pids=$(lsof -ti :$port 2>/dev/null || true)
+      if [ -n "$pids" ]; then
+        while IFS= read -r pid; do
+          local comm; comm=$(ps -p "$pid" -o comm= 2>/dev/null || echo "")
+          case "$comm" in
+            *com.docker*|*vpnkit*|*Docker*) sub "端口 $port 由 Docker 端口转发持有 ($comm), 等待容器停止..." ;;
+            *) sub "停止占用端口 $port 的进程 PID $pid ($comm)..."; kill "$pid" 2>/dev/null || true ;;
+          esac
+        done <<< "$pids"
+      fi
+    fi
+    sleep 1
+  done
+  ok "端口 $port 已释放"
+}
+
+# ════════════════════════════════════════════════════════════════════
 # 检查已运行网关
 # ════════════════════════════════════════════════════════════════════
 check_running_gateway() {
@@ -141,7 +205,7 @@ check_running_gateway() {
     warn "检测到网关已在运行 (port 8781)"
     info "重新部署将关闭当前网关并启动新版本"
     echo ""
-    read -p "  确认重新部署? [Y/n] " answer </dev/tty
+    read -p "  确认重新部署? [Y/n] " answer </dev/tty || answer="y"
     case "$answer" in
       n|N|no|NO) warn "已取消"; exit 0 ;;
       *) info "开始关闭旧网关..." ;;
@@ -150,28 +214,12 @@ check_running_gateway() {
     heading "关闭旧网关"
     if [ "$DEPLOY_MODE" = "docker" ]; then
       $COMPOSE_CMD -f "$COMPOSE_FILE" down 2>&1 | tee -a "$LOG_FILE"
+      ok "旧网关已关闭"
+      ok "端口已释放"
     else
-      if [ -f "$PID_FILE" ]; then
-        local old_pid; old_pid=$(cat "$PID_FILE")
-        kill "$old_pid" 2>/dev/null || true
-        rm -f "$PID_FILE"
-        sub "native 进程 $old_pid 已停止"
-      fi
+      # native 模式: 必须真正释放 8781, 否则新进程 bind 冲突 → 部署失败
+      free_port_8781 || { err "无法释放端口 8781, 中止部署"; exit 1; }
     fi
-    ok "旧网关已关闭"
-
-    for port in 8781 15432 6379 18080; do
-      local pids
-      pids=$(lsof -ti :$port 2>/dev/null || true)
-      if [ -n "$pids" ]; then
-        # 可能有多个 PID, 逐行处理
-        while IFS= read -r pid; do
-          sub "端口 $port 仍有残留进程 PID $pid, 等待释放..."
-        done <<< "$pids"
-        sleep 2
-      fi
-    done
-    ok "端口已释放"
   fi
 }
 
@@ -328,6 +376,55 @@ run_migrations() {
 # ════════════════════════════════════════════════════════════════════
 # 启动 Gateway v1
 # ════════════════════════════════════════════════════════════════════
+# gateway_env: 与 docker-compose.local-r112.yml gateway 服务一致的 env,
+# 仅把 compose 内部服务名 (postgres/redis/llm-mock-upstream) 换成宿主机可达地址。
+gateway_env() {
+  export LLM_GATEWAY_LISTEN=":8781"
+  export LLM_GATEWAY_ENV="local"
+  export LOG_LEVEL="info"
+  export STICKY_MULTILEVEL_DEBUG="1"
+  export LLM_GATEWAY_DATABASE_URL="postgres://kxuser:kxpass@localhost:15432/llm_gateway?sslmode=disable"
+  export LLM_GATEWAY_REDIS_ADDR="localhost:6379"
+  export LLM_GATEWAY_CREDENTIAL_ENCRYPTION_KEY="AwoRGB8mLTQ7QklQV15lbHN6gYiPlp2kq7K5wMfO1dw"
+  export LLM_GATEWAY_JWT_SECRET="local-dev-secret-do-not-use-in-production-12345678"
+  export LLM_GATEWAY_ADMIN_API_KEY="local-admin-test-token-do-not-use-in-production"
+  export LLM_GATEWAY_CORS_ORIGINS="*"
+  export LLM_GATEWAY_ATTACHMENT_DIR="/tmp/attachments"
+  export LLM_GATEWAY_BACKUP_DIR="/tmp/llm-gateway-backups"
+  export LLM_GATEWAY_UPSTREAM="http://localhost:18080"
+  export LLM_GATEWAY_SEED_ADMIN_PASSWORD="Veritrans&9527"
+  export OPS_NODE_REGION="local"
+  export OPS_COLLECT_URL="https://llm.kxpms.cn"
+  if [ -d "$ROOT_DIR/web/dist" ]; then
+    export LLM_GATEWAY_STATIC_DIR="$ROOT_DIR/web/dist"
+  fi
+}
+
+# 本地 mock provider (id=9001) 的 base_url 随部署模式切换:
+#   host   → 宿主机可达 http://localhost:18080   (native 网关)
+#   docker → compose 内网 http://llm-mock-upstream:18080
+# 幂等: 值一致时跳过写入。
+switch_mock_upstream() {
+  local target="$1"
+  local url
+  if [ "$target" = "host" ]; then
+    url="http://localhost:18080"
+  else
+    url="http://llm-mock-upstream:18080"
+  fi
+  local sql="UPDATE public.providers SET base_url='$url' WHERE id=9001 AND base_url IS DISTINCT FROM '$url';"
+
+  if PGPASSWORD=kxpass docker exec -e PGPASSWORD=kxpass r112_postgres psql -U kxuser -d llm_gateway -v ON_ERROR_STOP=1 -c "$sql" >/dev/null 2>&1; then
+    sub "mock provider base_url → $url"
+    return 0
+  fi
+  if command -v psql >/dev/null 2>&1; then
+    PGPASSWORD=kxpass psql -h localhost -p 15432 -U kxuser -d llm_gateway -v ON_ERROR_STOP=1 -c "$sql" >/dev/null 2>&1 && { sub "mock provider base_url → $url"; return 0; }
+  fi
+  warn "无法更新 mock provider base_url (chat 转发可能失败)"
+  return 1
+}
+
 start_gateway_native() {
   heading "启动 Gateway v1 (native)"
 
@@ -337,6 +434,10 @@ start_gateway_native() {
   cd "$ROOT_DIR" && go build -o ".build-local/llm-gateway-go" "./cmd/gateway" 2>&1 | tee -a "$LOG_FILE"
   ok "编译完成"
 
+  info "注入 gateway 运行环境 (host 可达地址)..."
+  gateway_env
+  info "切换 mock upstream 到宿主机地址..."
+  switch_mock_upstream host || true
   info "启动网关进程..."
   nohup "$ROOT_DIR/.build-local/llm-gateway-go" > /tmp/llm-gateway-native.log 2>&1 &
   local pid=$!
@@ -365,6 +466,9 @@ start_gateway_docker() {
   heading "启动 Gateway v1 (docker)"
 
   $COMPOSE_CMD -f "$COMPOSE_FILE" rm -sf gateway 2>/dev/null || true
+
+  info "切换 mock upstream 到 compose 内网地址..."
+  switch_mock_upstream docker || true
 
   info "使用 Docker Compose 构建并启动 gateway..."
   $COMPOSE_CMD -f "$COMPOSE_FILE" up -d --build gateway 2>&1 | tee -a "$LOG_FILE"
@@ -520,10 +624,12 @@ verify_l3_smoke() {
     echo
   fi
 
-  # /metrics — Prometheus 指标
-  info "检查 /metrics..."
+  # /metrics — Prometheus 指标 (v1 需要 admin Bearer token)
+  info "检查 /metrics (admin Bearer)..."
   local metrics_code
-  metrics_code=$(curl -sS -o /tmp/verify_metrics.txt -w "%{http_code}" "$base/metrics" --max-time 10 || echo "000")
+  metrics_code=$(curl -sS -o /tmp/verify_metrics.txt -w "%{http_code}" \
+    -H "Authorization: Bearer local-admin-test-token-do-not-use-in-production" \
+    "$base/metrics" --max-time 10 || echo "000")
   if [ "$metrics_code" = "200" ]; then
     if grep -q "# TYPE" /tmp/verify_metrics.txt 2>/dev/null; then
       local metric_lines
@@ -571,18 +677,61 @@ verify_l4_business() {
 }
 
 # ════════════════════════════════════════════════════════════════════
-# 运行现有 smoke
+# 运行 smoke (针对 gateway v1 :8781)
 # ════════════════════════════════════════════════════════════════════
+# 注意: local-r112-smoke.sh 的默认 battery 面向 gateway-v2 (:8782),
+# 其中 "v2 metrics"(需要 admin Bearer) 与 "dangerous_blocked"(期望 403,
+# v1 的 armor 为 mock judge 恒安全) 两项与 v1 行为不符。
+# 因此此处不复用 v2 battery, 改为 v1 适用的内联检查:
+#   healthz / /v1/models / chat→mock 回包 / /metrics(带 admin Bearer)
 run_smoke_script() {
-  heading "R1.12 Smoke 测试"
+  heading "R1.12 Smoke 测试 (gateway v1 :8781)"
 
-  if [ ! -f "$SCRIPT_DIR/local-r112-smoke.sh" ]; then
-    sub "smoke 脚本不存在: local-r112-smoke.sh"
-    return
+  local base="http://localhost:8781"
+  local admin_key="local-admin-test-token-do-not-use-in-production"
+
+  # 1. healthz
+  local c1
+  c1=$(curl -s -o /dev/null -w "%{http_code}" "$base/healthz" --max-time 10 || echo "000")
+  [ "$c1" = "200" ] && pass "smoke: v1 healthz → 200" || fail "smoke: v1 healthz → HTTP $c1"
+
+  # 2. models — 返回 data 数组
+  local mbody
+  mbody=$(curl -s "$base/v1/models" --max-time 15 || echo "")
+  if echo "$mbody" | jq -e '.data | type == "array"' >/dev/null 2>&1; then
+    pass "smoke: v1 models → 模型列表"
+  else
+    fail "smoke: v1 models 响应异常: $(echo "$mbody" | head -c 120)"
   fi
 
-  info "运行 R1.12 smoke 测试 (针对 gateway v1:8781)..."
-  BASE_URL=http://localhost:8781 V1_BASE_URL=http://localhost:8781 SKIP_V1=1 bash "$SCRIPT_DIR/local-r112-smoke.sh" 2>&1 | tee -a "$LOG_FILE" || true
+  # 3. chat → 转发 mock 并回包 (choices)
+  local c3 has
+  c3=$(curl -s -o /tmp/verify_smoke_chat.json -w "%{http_code}" \
+    -X POST "$base/v1/chat/completions" \
+    -H "Content-Type: application/json" \
+    -H "X-Tenant-ID: t-a" \
+    -d '{"model":"gpt-4o","messages":[{"role":"user","content":"hello from smoke"}],"max_tokens":10}' \
+    --max-time 30 || echo "000")
+  has=$(jq '.choices | length > 0' /tmp/verify_smoke_chat.json 2>/dev/null || echo "false")
+  if [ "$c3" = "200" ] && [ "$has" = "true" ]; then
+    pass "smoke: v1 chat/completions → 200 + choices"
+  else
+    fail "smoke: v1 chat/completions → HTTP $c3 (choices=$has)"
+    cat /tmp/verify_smoke_chat.json 2>/dev/null | head -c 200 | tee -a "$LOG_FILE"; echo
+  fi
+
+  # 4. metrics — v1 需要 admin Bearer token
+  local c4 mlines
+  c4=$(curl -s -o /tmp/verify_smoke_metrics.txt -w "%{http_code}" \
+    -H "Authorization: Bearer $admin_key" "$base/metrics" --max-time 10 || echo "000")
+  mlines=$(grep -c "# TYPE" /tmp/verify_smoke_metrics.txt 2>/dev/null || echo "0")
+  if [ "$c4" = "200" ] && [ "$mlines" -gt 0 ]; then
+    pass "smoke: v1 metrics → 200 ($mlines 个 TYPE)"
+  elif [ "$c4" = "200" ]; then
+    pass "smoke: v1 metrics → 200"
+  else
+    fail "smoke: v1 metrics → HTTP $c4"
+  fi
 }
 
 # ════════════════════════════════════════════════════════════════════
