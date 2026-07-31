@@ -39,6 +39,10 @@
 //	# actually apply
 //	./bin/migrate-ursm-v2 --apply
 //
+//	# force-overwrite: bypass CAS guard (overwrites pre-existing keys)
+//	# ONLY use if you intentionally want to reset live/admin state
+//	./bin/migrate-ursm-v2 --apply --force-overwrite
+//
 //	# restrict to one tenant for staged rollout
 //	./bin/migrate-ursm-v2 --apply --tenant-id=42
 //
@@ -50,6 +54,9 @@
 //   - Default mode is --dry-run. Apply must be explicit.
 //   - The migration is idempotent: running twice produces the same Redis
 //     state (HSET overwrites). Use --dry-run to verify before --apply.
+//   - CAS guard (default ON): pre-existing keys with manual_hold=1 or
+//     generation>1 are SKIPPED to avoid clobbering admin overrides or
+//     live traffic state. Use --force-overwrite to bypass.
 //   - Operator MUST have manually set URSM_V2_MODE=shadow before this
 //     run, otherwise the gateway will refuse the sidecar write path.
 //   - Operator MUST verify the resulting Redis keys with the docs/runbooks/
@@ -110,12 +117,13 @@ const (
 
 func main() {
 	var (
-		apply     = flag.Bool("apply", false, "Actually write to Redis. Default is dry-run.")
-		redisURL  = flag.String("redis", envOr("REDIS_URL", "redis://localhost:6379/0"), "Redis URL")
-		pgDSN     = flag.String("pg", envOr("LLM_GATEWAY_DATABASE_URL", envOr("DATABASE_URL", "")), "Postgres DSN")
-		keyPrefix = flag.String("key-prefix", defaultRedisKeyPrefix, "URSM v2 Redis key prefix (must match gateway config)")
-		tenantID  = flag.Int64("tenant-id", 0, "Optional: restrict migration to one tenant_id (0 = all)")
-		batchSize = flag.Int("batch-size", 500, "Rows per batch (HSET pipelining)")
+		apply          = flag.Bool("apply", false, "Actually write to Redis. Default is dry-run.")
+		forceOverwrite = flag.Bool("force-overwrite", false, "Bypass CAS guard and overwrite pre-existing keys.")
+		redisURL       = flag.String("redis", envOr("REDIS_URL", "redis://localhost:6379/0"), "Redis URL")
+		pgDSN          = flag.String("pg", envOr("LLM_GATEWAY_DATABASE_URL", envOr("DATABASE_URL", "")), "Postgres DSN")
+		keyPrefix      = flag.String("key-prefix", defaultRedisKeyPrefix, "URSM v2 Redis key prefix (must match gateway config)")
+		tenantID       = flag.Int64("tenant-id", 0, "Optional: restrict migration to one tenant_id (0 = all)")
+		batchSize      = flag.Int("batch-size", 500, "Rows per batch (HSET pipelining)")
 	)
 	flag.Parse()
 
@@ -165,54 +173,113 @@ func main() {
 		nodes = append(nodes, mapRow(r, *keyPrefix))
 	}
 
-	// 5) Print summary or apply.
-	mode := "DRY-RUN"
-	if *apply {
-		mode = "APPLY"
-	}
-	available := 0
-	cooled := 0
-	manualHold := 0
-	for _, n := range nodes {
-		// 2026-07-29 audit fix (B3): inspect each field independently
-		// instead of string-concatenating them. The previous tuple-
-		// match approach broke because the healthy path produces
-		// ("1", "", "0") — concatenated "1||0" matched none of the
-		// hard-coded cases, so every healthy node fell through to
-		// no category and the summary printed 0/0/0. Similarly the
-		// in-cool path produces ("0", "", "1") → "0||1" with the
-		// same miss. Per-field checks below match all three states.
-		isAvailable := n.Fields["available"] == "1" && n.Fields["manual_hold"] != "1"
-		isManualHold := n.Fields["manual_hold"] == "1"
-		isCool := !isAvailable && !isManualHold && n.Fields["disabled"] == "1"
-		switch {
-		case isAvailable:
-			available++
-		case isManualHold:
-			manualHold++
-		case isCool:
-			cooled++
-		}
-	}
-	fmt.Printf("\n[%s] would write %d URSM v2 nodes:\n", mode, len(nodes))
-	fmt.Printf("  - available (healthy)         : %d\n", available)
-	fmt.Printf("  - in cool (>= %d fails)       : %d\n", failStreakLimit, cooled)
-	fmt.Printf("  - manual_hold (legacy paused) : %d\n", manualHold)
-	fmt.Printf("  - key prefix                  : %s\n", *keyPrefix)
+	// 5) Print dry-run summary and exit.
+	available, cooled, manualHold := classifyNodes(nodes)
+	fmt.Printf("\n[DRY-RUN] would write %d URSM v2 nodes:\n", len(nodes))
+	fmt.Printf("  - available (healthy)            : %d\n", available)
+	fmt.Printf("  - in cool (>= %d fails)          : %d\n", failStreakLimit, cooled)
+	fmt.Printf("  - manual_hold (legacy paused)    : %d\n", manualHold)
+	fmt.Printf("  - key prefix                     : %s\n", *keyPrefix)
 	if !*apply {
 		fmt.Println("\n(no Redis writes; pass --apply to commit)")
 		return
 	}
 
-	// 6) Apply in batches.
+	// 6) Pre-flight CAS check (B4): don't clobber existing keys with
+	// manual_hold=1 (admin override) or generation>1 (live traffic).
+	var toWrite []mappedNode
+	type skipInfo struct{ Reason string }
+	skipped := make(map[int]skipInfo) // index into nodes
+	if !*forceOverwrite {
+		fmt.Println("\n[cas] checking pre-existing keys...")
+		pipe := rdb.Pipeline()
+		existsCmds := make([]*redis.IntCmd, len(nodes))
+		for i, n := range nodes {
+			existsCmds[i] = pipe.Exists(ctx, n.NodeKey)
+		}
+		if _, err := pipe.Exec(ctx); err != nil {
+			log.Fatalf("redis pipeline (CAS exists check): %v", err)
+		}
+
+		// Load manual_hold + generation for existing keys.
+		pipe2 := rdb.Pipeline()
+		hmgetCmds := make([]*redis.SliceCmd, len(nodes))
+		for i, n := range nodes {
+			if existsCmds[i].Val() == 0 {
+				continue
+			}
+			hmgetCmds[i] = pipe2.HMGet(ctx, n.NodeKey, "manual_hold", "generation")
+		}
+		if _, err := pipe2.Exec(ctx); err != nil {
+			log.Fatalf("redis pipeline (CAS HMGET): %v", err)
+		}
+
+		for i, n := range nodes {
+			if hmgetCmds[i] == nil {
+				toWrite = append(toWrite, n)
+				continue
+			}
+			vals, err := hmgetCmds[i].Result()
+			if err != nil {
+				log.Fatalf("HMGET %s: %v", n.NodeKey, err)
+			}
+			manualHold := ""
+			generation := ""
+			if len(vals) > 0 && vals[0] != nil {
+				manualHold = fmt.Sprintf("%v", vals[0])
+			}
+			if len(vals) > 1 && vals[1] != nil {
+				generation = fmt.Sprintf("%v", vals[1])
+			}
+			if manualHold == "1" {
+				skipped[i] = skipInfo{Reason: "manual_hold=1 (admin override)"}
+				continue
+			}
+			if generation != "" && generation != "1" {
+				skipped[i] = skipInfo{Reason: fmt.Sprintf("generation=%s (live traffic)", generation)}
+				continue
+			}
+			toWrite = append(toWrite, n)
+		}
+	} else {
+		toWrite = nodes
+	}
+
+	// 7) Print final summary.
+	available, cooled, manualHold = classifyNodes(nodes)
+	skipCount := len(skipped)
+	writeCount := len(toWrite)
+	fmt.Printf("\n[APPLY] summary (prefix=%s):\n", *keyPrefix)
+	fmt.Printf("  - total nodes from PG            : %d\n", len(nodes))
+	fmt.Printf("  - available (healthy)            : %d\n", available)
+	fmt.Printf("  - in cool (>= %d fails)          : %d\n", failStreakLimit, cooled)
+	fmt.Printf("  - manual_hold (legacy paused)    : %d\n", manualHold)
+	fmt.Printf("  - to write                       : %d\n", writeCount)
+	if skipCount > 0 {
+		fmt.Printf("  - skipped by CAS guard           : %d\n", skipCount)
+		for idx, info := range skipped {
+			fmt.Printf("      [%d] key=%s  reason=%s\n", idx, nodes[idx].NodeKey, info.Reason)
+		}
+		fmt.Println("  (use --force-overwrite to bypass CAS guard)")
+	}
+	if !*apply {
+		fmt.Println("\n(no Redis writes; pass --apply to commit)")
+		return
+	}
+	if writeCount == 0 {
+		fmt.Println("\n⏹  Nothing to write (all keys skipped by CAS guard)")
+		return
+	}
+
+	// 8) Apply in batches.
 	written := 0
-	for start := 0; start < len(nodes); start += *batchSize {
+	for start := 0; start < len(toWrite); start += *batchSize {
 		end := start + *batchSize
-		if end > len(nodes) {
-			end = len(nodes)
+		if end > len(toWrite) {
+			end = len(toWrite)
 		}
 		pipe := rdb.Pipeline()
-		for _, n := range nodes[start:end] {
+		for _, n := range toWrite[start:end] {
 			pipe.HSet(ctx, n.NodeKey, n.Fields)
 			// Set a TTL slightly longer than NodeTTL (default 60min) so
 			// cold entries self-expire if the gateway never touches them.
@@ -222,9 +289,12 @@ func main() {
 			log.Fatalf("redis pipeline (rows %d-%d): %v", start, end, err)
 		}
 		written += end - start
-		fmt.Printf("  ✓ wrote %d / %d\n", written, len(nodes))
+		fmt.Printf("  ✓ wrote %d / %d\n", written, len(toWrite))
 	}
 	fmt.Printf("\n✅ Wrote %d URSM v2 nodes to Redis (prefix=%s)\n", written, *keyPrefix)
+	if skipCount > 0 {
+		fmt.Printf("   ⚠  Skipped %d pre-existing keys (CAS guard)\n", skipCount)
+	}
 	fmt.Println("\nNEXT STEPS (see docs/runbooks/ursm-v2-cutover.md):")
 	fmt.Println("  1. verify Redis keys with redis-cli HGETALL ursm:v2:node:<cid>:<model>")
 	fmt.Println("  2. start gateway with URSM_V2_MODE=shadow + URSM_V2_SHADOW_DOUBLE_WRITE=1")
@@ -328,6 +398,25 @@ func mapRow(r probeRow, prefix string) mappedNode {
 	// RecordRequest always wins (higher pri overrides equal gen).
 	fields["updated_at_ms"] = fmt.Sprintf("%d", nowMs)
 	return mappedNode{NodeKey: key, Fields: fields}
+}
+
+// classifyNodes categorizes mapped nodes into available / cooled / manualHold.
+// Exported (capital C) only to be accessible from tests in the same package.
+func classifyNodes(nodes []mappedNode) (available, cooled, manualHold int) {
+	for _, n := range nodes {
+		isAvailable := n.Fields["available"] == "1" && n.Fields["manual_hold"] != "1"
+		isManualHold := n.Fields["manual_hold"] == "1"
+		isCool := !isAvailable && !isManualHold && n.Fields["disabled"] == "1"
+		switch {
+		case isAvailable:
+			available++
+		case isManualHold:
+			manualHold++
+		case isCool:
+			cooled++
+		}
+	}
+	return
 }
 
 func boolStr(b bool) string {

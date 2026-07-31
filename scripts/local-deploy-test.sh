@@ -4,22 +4,26 @@
 #
 # 流程:
 #   1. 前置检查 (docker / curl / go / 二进制文件)
-#   2. 启动依赖栈 (PG / Redis / Mock Upstream)
-#   3. 数据库迁移 (schema + migrations + seed)
-#   4. 构建并启动 gateway v1
-#   5. L1-L4 部署验证
+#   2. 如已运行则询问是否关闭旧网关
+#   3. 启动依赖栈 (PG / Redis / Mock Upstream) — 仅 --with-db
+#   4. 数据库迁移 (schema + migrations + seed) — 仅 --with-db
+#   5. 构建并启动 gateway v1 (native 或 docker)
+#   6. L1-L4 部署验证
 #       - L1: HTTP 存活 (/healthz)
 #       - L2: 依赖连通 (DB / Redis)
 #       - L3: 功能链路 (chat/completions)
 #       - L4: 业务真实 (model list / metrics)
-#   6. 输出验证报告
+#   7. 输出验证报告
 #
 # 用法:
-#   ./scripts/local-deploy-test.sh             # 全流程
-#   ./scripts/local-deploy-test.sh --quick     # 跳过 rebuild, 只验证
-#   ./scripts/local-deploy-test.sh --verify    # 只跑验证 (服务已运行)
-#   ./scripts/local-deploy-test.sh --clean     # 停止 + 清数据
-#   ./scripts/local-deploy-test.sh --help      # 帮助
+#   ./scripts/local-deploy-test.sh                 # 全流程 (native 部署)
+#   ./scripts/local-deploy-test.sh --docker        # 全流程 (Docker Compose 部署)
+#   ./scripts/local-deploy-test.sh --quick         # 跳过 rebuild, 只验证
+#   ./scripts/local-deploy-test.sh --verify        # 只跑验证 (服务已运行)
+#   ./scripts/local-deploy-test.sh --clean         # 停止 + 清数据
+#   ./scripts/local-deploy-test.sh --with-db       # 全流程 + 部署新数据库
+#   ./scripts/local-deploy-test.sh --skip-db       # 全流程 + 跳过数据库
+#   ./scripts/local-deploy-test.sh --help          # 帮助
 #
 # 端口映射:
 #   PG:       localhost:15432 → 5432 (kxuser/kxpass, db=llm_gateway)
@@ -54,14 +58,17 @@ skip() { TOTAL=$((TOTAL+1)); echo -e "  ${YELLOW}─${NC} $1 (跳过)" | tee -a 
 # ── 解析参数 ──
 MODE="full"
 SKIP_DB=true
+DEPLOY_MODE="native"
 for arg in "$@"; do
   case "$arg" in
     --quick)   MODE="quick" ;;
     --verify)  MODE="verify" ;;
     --clean)   MODE="clean" ;;
+    --docker)  DEPLOY_MODE="docker" ;;
     --with-db) SKIP_DB=false ;;
     --skip-db) SKIP_DB=true ;;
-    --help)    echo "用法: $0 [--quick|--verify|--clean|--with-db|--skip-db|--help]"
+    --help)    echo "用法: $0 [--quick|--verify|--clean|--docker|--with-db|--skip-db|--help]"
+               echo "  --docker   使用 Docker Compose 部署 (默认 native 系统进程)"
                echo "  --with-db  部署新数据库 (默认本地开发模式跳过 DB)"
                echo "  --skip-db  跳过数据库部署和迁移 (使用已有外部 PG)"
                exit 0 ;;
@@ -124,7 +131,9 @@ check_running_gateway() {
 
   if curl -sf http://localhost:8781/healthz >/dev/null 2>&1; then
     gw_running=true
-  elif docker ps --format '{{.Names}}' 2>/dev/null | grep -q "^r112_gateway$"; then
+  elif [ "$DEPLOY_MODE" = "docker" ] && docker ps --format '{{.Names}}' 2>/dev/null | grep -q "^r112_gateway$"; then
+    gw_running=true
+  elif [ "$DEPLOY_MODE" = "native" ] && [ -f "$PID_FILE" ] && kill -0 "$(cat "$PID_FILE" 2>/dev/null)" 2>/dev/null; then
     gw_running=true
   fi
 
@@ -139,16 +148,26 @@ check_running_gateway() {
     esac
 
     heading "关闭旧网关"
-    # 停止 docker compose 服务
-    $COMPOSE_CMD -f "$COMPOSE_FILE" down 2>&1 | tee -a "$LOG_FILE"
+    if [ "$DEPLOY_MODE" = "docker" ]; then
+      $COMPOSE_CMD -f "$COMPOSE_FILE" down 2>&1 | tee -a "$LOG_FILE"
+    else
+      if [ -f "$PID_FILE" ]; then
+        local old_pid; old_pid=$(cat "$PID_FILE")
+        kill "$old_pid" 2>/dev/null || true
+        rm -f "$PID_FILE"
+        sub "native 进程 $old_pid 已停止"
+      fi
+    fi
     ok "旧网关已关闭"
 
-    # 清理端口 (预防残留)
     for port in 8781 15432 6379 18080; do
-      local pid
-      pid=$(lsof -ti :$port 2>/dev/null || true)
-      if [ -n "$pid" ]; then
-        sub "端口 $port 仍有残留进程 PID $pid, 等待释放..."
+      local pids
+      pids=$(lsof -ti :$port 2>/dev/null || true)
+      if [ -n "$pids" ]; then
+        # 可能有多个 PID, 逐行处理
+        while IFS= read -r pid; do
+          sub "端口 $port 仍有残留进程 PID $pid, 等待释放..."
+        done <<< "$pids"
         sleep 2
       fi
     done
@@ -309,10 +328,42 @@ run_migrations() {
 # ════════════════════════════════════════════════════════════════════
 # 启动 Gateway v1
 # ════════════════════════════════════════════════════════════════════
-start_gateway() {
-  heading "启动 Gateway v1"
+start_gateway_native() {
+  heading "启动 Gateway v1 (native)"
 
-  # 先停旧的
+  mkdir -p "$ROOT_DIR/.build-local"
+
+  info "编译 gateway..."
+  cd "$ROOT_DIR" && go build -o ".build-local/llm-gateway-go" "./cmd/gateway" 2>&1 | tee -a "$LOG_FILE"
+  ok "编译完成"
+
+  info "启动网关进程..."
+  nohup "$ROOT_DIR/.build-local/llm-gateway-go" > /tmp/llm-gateway-native.log 2>&1 &
+  local pid=$!
+  echo "$pid" > "$PID_FILE"
+  ok "native 进程 PID: $pid"
+
+  info "等待 gateway (max 90s)..."
+  GW_OK=0
+  for i in $(seq 1 90); do
+    if curl -sf http://localhost:8781/healthz >/dev/null 2>&1; then
+      GW_OK=1
+      ok "gateway v1 ready (after ${i}s)"
+      break
+    fi
+    if ! kill -0 "$pid" 2>/dev/null; then
+      err "gateway 进程已退出"
+      cat /tmp/llm-gateway-native.log | tail -40 2>&1 | tee -a "$LOG_FILE"
+      break
+    fi
+    sleep 1
+  done
+  [ "$GW_OK" = "1" ] || { err "gateway v1 未就绪"; cat /tmp/llm-gateway-native.log | tail -40 2>&1 | tee -a "$LOG_FILE"; exit 1; }
+}
+
+start_gateway_docker() {
+  heading "启动 Gateway v1 (docker)"
+
   $COMPOSE_CMD -f "$COMPOSE_FILE" rm -sf gateway 2>/dev/null || true
 
   info "使用 Docker Compose 构建并启动 gateway..."
@@ -326,7 +377,6 @@ start_gateway() {
       ok "gateway v1 ready (after ${i}s)"
       break
     fi
-    # 检查容器是否还在运行
     if ! docker ps --format '{{.Names}}' | grep -q "^r112_gateway$"; then
       err "gateway 容器已退出"
       docker logs r112_gateway --tail 40 2>&1 | tee -a "$LOG_FILE"
@@ -335,6 +385,14 @@ start_gateway() {
     sleep 1
   done
   [ "$GW_OK" = "1" ] || { err "gateway v1 未就绪"; docker logs r112_gateway --tail 40 2>&1 | tee -a "$LOG_FILE"; exit 1; }
+}
+
+start_gateway() {
+  if [ "$DEPLOY_MODE" = "docker" ]; then
+    start_gateway_docker
+  else
+    start_gateway_native
+  fi
 }
 
 # ════════════════════════════════════════════════════════════════════
@@ -523,8 +581,8 @@ run_smoke_script() {
     return
   fi
 
-  info "运行 R1.12 smoke 测试..."
-  V1_BASE_URL=http://localhost:8781 SKIP_V1=0 bash "$SCRIPT_DIR/local-r112-smoke.sh" 2>&1 | tee -a "$LOG_FILE" || true
+  info "运行 R1.12 smoke 测试 (针对 gateway v1:8781)..."
+  BASE_URL=http://localhost:8781 V1_BASE_URL=http://localhost:8781 SKIP_V1=1 bash "$SCRIPT_DIR/local-r112-smoke.sh" 2>&1 | tee -a "$LOG_FILE" || true
 }
 
 # ════════════════════════════════════════════════════════════════════
@@ -533,11 +591,20 @@ run_smoke_script() {
 cleanup() {
   heading "清理环境"
 
-  info "停止 Docker Compose 服务..."
-  $COMPOSE_CMD -f "$COMPOSE_FILE" down 2>&1 | tee -a "$LOG_FILE"
+  if [ "$DEPLOY_MODE" = "docker" ]; then
+    info "停止 Docker Compose 服务..."
+    $COMPOSE_CMD -f "$COMPOSE_FILE" down 2>&1 | tee -a "$LOG_FILE"
+  else
+    if [ -f "$PID_FILE" ]; then
+      local pid; pid=$(cat "$PID_FILE")
+      info "停止 native 进程 (PID $pid)..."
+      kill "$pid" 2>/dev/null || true
+      rm -f "$PID_FILE"
+      ok "native 进程已停止"
+    fi
+  fi
 
-  # 清理临时文件
-  rm -f /tmp/verify_*.json /tmp/verify_*.txt
+  rm -f /tmp/verify_*.json /tmp/verify_*.txt /tmp/llm-gateway-native.log
   ok "临时文件已清理"
 
   info "环境已停止"

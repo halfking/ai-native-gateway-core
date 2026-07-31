@@ -137,26 +137,6 @@ func TestSummaryClassification(t *testing.T) {
 	}
 }
 
-// classifyNodes mirrors the summary-counting logic in main(). It is
-// exported (capital C) only inside the package so the test can call it.
-// Production code uses the inline switch in main().
-func classifyNodes(nodes []mappedNode) (available, cooled, manualHold int) {
-	for _, n := range nodes {
-		isAvailable := n.Fields["available"] == "1" && n.Fields["manual_hold"] != "1"
-		isManualHold := n.Fields["manual_hold"] == "1"
-		isCool := !isAvailable && !isManualHold && n.Fields["disabled"] == "1"
-		switch {
-		case isAvailable:
-			available++
-		case isManualHold:
-			manualHold++
-		case isCool:
-			cooled++
-		}
-	}
-	return
-}
-
 // TestEnvOr pins the env-or-default helper so a future refactor
 // doesn't accidentally flip the precedence.
 func TestEnvOr(t *testing.T) {
