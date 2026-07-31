@@ -148,6 +148,10 @@ if entry_id:
         warn(f"blocklist delete HTTP {st}")
 
 # 6) env checks
+if env.get("LLM_GATEWAY_CENTER_URL"):
+    ok(f"LLM_GATEWAY_CENTER_URL={env.get('LLM_GATEWAY_CENTER_URL').split(chr(10))[0]}")
+else:
+    fail("LLM_GATEWAY_CENTER_URL missing")
 if env.get("OPS_COLLECT_URL"):
     ok(f"OPS_COLLECT_URL={env.get('"'"'OPS_COLLECT_URL'"'"').split(chr(10))[0]}")
 else:

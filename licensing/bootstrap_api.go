@@ -241,8 +241,9 @@ func (h *BootstrapHandler) handleActivateQuick(c echo.Context) error {
 	if h.centerURL == "" || !h.probeCenter() {
 		return c.JSON(http.StatusServiceUnavailable, map[string]any{
 			"activated": false, "error": "center_unreachable",
-			"message": "中心不可达，请改用离线激活或检查 LLM_GATEWAY_CENTER_URL",
+			"message": "中心不可达，请改用离线激活或检查 LLM_GATEWAY_CENTER_URL/OPS_COLLECT_URL",
 		})
+
 	}
 	ok, body, err := bootstrapPostJSON(h.centerURL+"/maintain-api/public/license/issue", map[string]string{
 		"instance_id": instanceID, "hardware_hash": input.HardwareHash, "device_name": input.DeviceName,
