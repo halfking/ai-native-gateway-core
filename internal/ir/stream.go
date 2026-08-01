@@ -38,6 +38,32 @@ type StreamChunk struct {
 
 	// Source protocol tracking (used by Serializer to determine output format)
 	SourceProtocol string // "openai-chat" | "anthropic-messages"
+
+	// Internal stream quality annotation. These fields are not serialized and
+	// preserve wire compatibility while exposing tool argument validation.
+	Quality             string // verified | partial | rejected
+	ArgumentsJSONReason string
+}
+
+// AnnotateArgumentsJSON validates completed streaming tool arguments without
+// changing the serialized SSE payload.
+func (c *StreamChunk) AnnotateArgumentsJSON(arguments string) {
+	if c == nil {
+		return
+	}
+	a := NewToolArgumentsAssembler()
+	_ = a.Append(arguments)
+	_, reason, err := a.Finalize()
+	c.ArgumentsJSONReason = reason
+	if err != nil {
+		c.Quality = "rejected"
+		return
+	}
+	if reason != "" {
+		c.Quality = "partial"
+		return
+	}
+	c.Quality = "verified"
 }
 
 // ChunkType discriminates the chunk purpose.
@@ -491,7 +517,8 @@ func ParseAnthropicStreamEvent(eventType string, data []byte) (*StreamChunk, err
 		return chunk, nil
 
 	case "content_block_stop":
-		// Block boundary marker (no new content)
+		// Block boundary marker. Callers that accumulated input_json_delta can
+		// annotate this chunk with the completed arguments before forwarding.
 		chunk.Type = ChunkTypeDelta
 		chunk.Delta = &StreamDelta{}
 		return chunk, nil
