@@ -93,18 +93,18 @@ func TestMapRow_FailStreakCool(t *testing.T) {
 	}
 }
 
-// TestMapRow_GenerationMonotonic pins that the migrated gen=1 + pri=10
-// contract matches what URSM v2 expects so live RecordRequest writes
-// (which always carry higher gen via NodeMirror.ApplyFromAPI) can
-// safely overwrite migrated entries.
+// TestMapRow_GenerationMonotonic pins that the migrated generation=1 +
+// source_priority=10 contract matches what URSM v2 expects so live
+// RecordRequest writes (which always carry higher gen via
+// NodeMirror.ApplyFromAPI) can safely overwrite migrated entries.
 func TestMapRow_GenerationMonotonic(t *testing.T) {
 	r := probeRow{CredentialID: 1, RawModel: "m", ConsecutiveFailures: 0}
 	got := mapRow(r, "ursm:v2:")
-	if got.Fields["gen"] != "1" {
-		t.Fatalf("gen=%q, want 1 (baseline for migration)", got.Fields["gen"])
+	if got.Fields["generation"] != "1" {
+		t.Fatalf("generation=%q, want 1 (baseline for migration)", got.Fields["generation"])
 	}
-	if got.Fields["pri"] != "10" {
-		t.Fatalf("pri=%q, want 10 (Request priority; lower than Admin=40)", got.Fields["pri"])
+	if got.Fields["source_priority"] != "10" {
+		t.Fatalf("source_priority=%q, want 10 (Request priority; lower than Admin=40)", got.Fields["source_priority"])
 	}
 }
 

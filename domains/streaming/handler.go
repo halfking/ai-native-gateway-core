@@ -187,6 +187,45 @@ func writePrewarmedStreamError(w http.ResponseWriter, message, errType, code str
 	}
 }
 
+// RequestIdentity contains immutable correlation fields derived at the HTTP boundary.
+type RequestIdentity struct {
+	RequestID       string
+	ClientRequestID string
+	TenantID        string
+	APIKeyID        int
+	ClientType      string
+	ClientModel     string
+	SessionID       string
+	UserKey         string
+}
+
+// initializeRequestIdentity establishes one stable request and provisional
+// gateway-session identity even when middleware is bypassed by direct tests.
+func initializeRequestIdentity(r *http.Request) RequestIdentity {
+	identity := RequestIdentity{TenantID: "default"}
+	if r == nil {
+		identity.RequestID = generateRequestID()
+		identity.SessionID = generateSystemSessionID()
+		return identity
+	}
+	identity.RequestID = strings.TrimSpace(r.Header.Get("X-Request-Id"))
+	if identity.RequestID == "" {
+		identity.RequestID = generateRequestID()
+		r.Header.Set("X-Request-Id", identity.RequestID)
+	}
+	identity.ClientRequestID = strings.TrimSpace(r.Header.Get("X-Gw-Client-Request-Id"))
+	if identity.ClientRequestID == "" {
+		identity.ClientRequestID = strings.TrimSpace(r.Header.Get("X-Client-Request-Id"))
+	}
+	identity.SessionID = sanitizeGwSessionHeader(r.Header.Get("X-Gw-Session-Id"))
+	if identity.SessionID == "" {
+		identity.SessionID = generateSystemSessionID()
+		r.Header.Set("X-Gw-Session-Id", identity.SessionID)
+	}
+	identity.ClientType = strings.TrimSpace(r.Header.Get("X-Gw-Client-Type"))
+	return identity
+}
+
 func sanitizeGwSessionHeader(v string) string {
 	s := strings.TrimSpace(v)
 	if s == "" {
@@ -198,6 +237,122 @@ func sanitizeGwSessionHeader(v string) string {
 		return ""
 	}
 	return s
+}
+
+// InitializeRequestIdentity is the exported helper that establishes one
+// stable request identity (server-issued request_id, optional client
+// request_id, and a provisional gateway session id) at the HTTP
+// boundary. It mirrors the contract used by the production ChatHandler
+// pipeline so that new callers (and tests that bypass the full
+// ChatHandler) get identical behaviour:
+//
+//   - request_id: prefers the inbound X-Request-Id (set by the
+//     RequestIDMiddleware); if absent, generates a fresh value and
+//     writes it back to BOTH the request header (so downstream
+//     middleware / audit / telemetry see it) AND the response header
+//     (so the client can correlate on the way back).
+//   - client_request_id: reads X-Gw-Client-Request-Id first, then
+//     falls back to the legacy X-Client-Request-Id; if non-empty and
+//     different from request_id, writes the canonical
+//     X-Client-Request-Id back to the response so legacy clients
+//     still see the value they sent.
+//   - session_id: reuses ensureSessionID semantics — it RETURNS the
+//     resolved id but does NOT mutate the response header. The full
+//     session assignment pipeline decides whether to surface the id
+//     to the client (after body parsing + DB lookup).
+//   - tenant_id: defaults to "default" when no keyInfo context is
+//     available; ChatHandler overrides this after API key
+//     authentication.
+//
+// Why this is a separate function (2026-07-28, request-flow audit
+// spec §10 Step 2):
+//
+//   - The internal initializeRequestIdentity(r) helper exists to feed
+//     the Messages/Responses/Gemini sub-handlers, which never see
+//     http.ResponseWriter directly. They only mutate r.Header for
+//     downstream observability, so they don't need the response-side
+//     writes.
+//   - InitializeRequestIdentity is the version new code SHOULD call:
+//     it writes the canonical response headers (X-Request-Id,
+//     X-Client-Request-Id) so external clients and proxies can
+//     correlate requests even when the upstream middleware is
+//     skipped (e.g. integration tests that bypass the router).
+//
+// This helper MUST stay within the ChatHandler package — it touches
+// the package-private RequestIdentity type and reuses the same
+// generation functions. Do not move to a shared package without
+// lifting RequestIdentity with it.
+func InitializeRequestIdentity(r *http.Request, w http.ResponseWriter) RequestIdentity {
+	identity := RequestIdentity{TenantID: "default"}
+
+	// request_id: prefer inbound X-Request-Id; generate + write back
+	// if missing. Mirror the value to the response header so external
+	// clients see the server-issued id even on direct (non-proxied)
+	// connections.
+	identity.RequestID = strings.TrimSpace(getRequestHeader(r, "X-Request-Id"))
+	if identity.RequestID == "" {
+		identity.RequestID = generateRequestID()
+		setRequestHeader(r, "X-Request-Id", identity.RequestID)
+	}
+	if w != nil {
+		w.Header().Set("X-Request-Id", identity.RequestID)
+	}
+
+	// client_request_id: canonical header first, legacy fallback.
+	// When non-empty and different from request_id, surface it on the
+	// response so legacy clients can still echo the value back.
+	identity.ClientRequestID = strings.TrimSpace(getRequestHeader(r, "X-Gw-Client-Request-Id"))
+	if identity.ClientRequestID == "" {
+		identity.ClientRequestID = strings.TrimSpace(getRequestHeader(r, "X-Client-Request-Id"))
+	}
+	if identity.ClientRequestID != "" && w != nil && identity.ClientRequestID != identity.RequestID {
+		w.Header().Set("X-Client-Request-Id", identity.ClientRequestID)
+	}
+
+	// provisional session_id: reuse ensureSessionID semantics. The id
+	// is returned for early-failure logging / request_log_context but
+	// is NOT written to the response header — the full session
+	// assignment pipeline (after body parsing + DB lookup) decides
+	// what to surface.
+	identity.SessionID = ensureSessionIDIdentity(r)
+
+	identity.ClientType = strings.TrimSpace(getRequestHeader(r, "X-Gw-Client-Type"))
+	return identity
+}
+
+// getRequestHeader is a nil-safe wrapper around r.Header.Get.
+func getRequestHeader(r *http.Request, key string) string {
+	if r == nil {
+		return ""
+	}
+	return r.Header.Get(key)
+}
+
+// setRequestHeader is a nil-safe wrapper around r.Header.Set.
+func setRequestHeader(r *http.Request, key, value string) {
+	if r == nil {
+		return
+	}
+	r.Header.Set(key, value)
+}
+
+// ensureSessionIDIdentity mirrors the provisional-only behaviour of
+// (*ChatHandler).ensureSessionID without taking a *ChatHandler
+// receiver — used by InitializeRequestIdentity when called outside
+// the full handler pipeline.
+//
+// Contract (2026-07-28):
+//   - returns the client-supplied X-Gw-Session-Id when present and
+//     gw_-prefixed
+//   - otherwise returns a fresh gw_<uuid> so request_logs.gw_session_id
+//     is never empty
+//   - NEVER writes X-Gw-Session-Id back to the response — the
+//     canonical session id is decided after body parsing
+func ensureSessionIDIdentity(r *http.Request) string {
+	if id := sanitizeGwSessionHeader(getRequestHeader(r, "X-Gw-Session-Id")); id != "" {
+		return id
+	}
+	return generateSystemSessionID()
 }
 
 // stripLegacyToolCallText removes the legacy "[Tool Call: <name>]\n"

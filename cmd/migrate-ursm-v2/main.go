@@ -355,9 +355,9 @@ func mapRow(r probeRow, prefix string) mappedNode {
 	nowMs := time.Now().UnixMilli()
 	key := fmt.Sprintf("%snode:%d:%s", prefix, r.CredentialID, r.RawModel)
 	fields := map[string]string{
-		"gen":         "1",
-		"pri":         "10", // Request priority
-		"fail_streak": fmt.Sprintf("%d", r.ConsecutiveFailures),
+		"generation":      "1",
+		"source_priority": "10", // Request priority
+		"fail_streak":     fmt.Sprintf("%d", r.ConsecutiveFailures),
 	}
 
 	if r.LastAttemptAt.Valid {
@@ -394,7 +394,7 @@ func mapRow(r probeRow, prefix string) mappedNode {
 	if r.LastAttemptAt.Valid {
 		fields["last_ok_ms"] = fmt.Sprintf("%d", r.LastAttemptAt.Time.UnixMilli())
 	}
-	// Generation monotonic contract: gen=1 + pri=Request; a fresh live
+	// Generation monotonic contract: generation=1 + source_priority=Request; a fresh live
 	// RecordRequest always wins (higher pri overrides equal gen).
 	fields["updated_at_ms"] = fmt.Sprintf("%d", nowMs)
 	return mappedNode{NodeKey: key, Fields: fields}

@@ -28,14 +28,29 @@ func SessionFromContextWith(ctx context.Context, s *Session) context.Context {
 
 func WithSession(next http.Handler, manager *Manager) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		sessionID := r.Header.Get("X-Session-Id")
+		sessionID := r.Header.Get("X-Gw-Session-Id")
+		legacyHeader := false
+		if sessionID == "" {
+			sessionID = r.Header.Get("X-Session-Id")
+			legacyHeader = sessionID != ""
+		}
 		if sessionID == "" {
 			next.ServeHTTP(w, r)
 			return
 		}
+		w.Header().Set("X-Gw-Session-Id", sessionID)
 
 		session, err := manager.Get(r.Context(), sessionID)
 		if err == nil {
+			// 2026-07-28 (request-flow audit §10 Step 2): surface the
+			// resolved session id on X-Gw-Session-Id-Resume whenever the
+			// gateway successfully resumed an existing session — both
+			// for the canonical X-Gw-Session-Id path AND the legacy
+			// X-Session-Id fallback path below. This makes the resume
+			// hint observable to operators / clients even when no new
+			// session was created (i.e. the original id was already
+			// valid).
+			w.Header().Set("X-Gw-Session-Id-Resume", sessionID)
 			ctx := context.WithValue(r.Context(), sessionContextKey, session)
 			//nolint:errcheck // best-effort touch, non-critical
 			go manager.Touch(context.Background(), sessionID)
@@ -45,6 +60,11 @@ func WithSession(next http.Handler, manager *Manager) http.Handler {
 
 		if err != ErrSessionNotFound {
 			slog.Warn("legacy session lookup failed", "error", err, "session_id", sessionID)
+			next.ServeHTTP(w, r)
+			return
+		}
+
+		if !legacyHeader {
 			next.ServeHTTP(w, r)
 			return
 		}

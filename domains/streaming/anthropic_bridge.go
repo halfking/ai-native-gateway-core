@@ -13,9 +13,9 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
-	"github.com/kaixuan/llm-gateway-go/errorsx"
 	"errors"
 	"fmt"
+	"github.com/kaixuan/llm-gateway-go/errorsx"
 	"io"
 	"log/slog"
 	"net/http"
@@ -621,6 +621,13 @@ func StreamAnthropicSSEToOpenAIWithDiagnostics(
 					flushBufferedText()
 					if !initialArgsSent && bufferedToolArgs.Len() > 0 {
 						args := bufferedToolArgs.String()
+						chunk.AnnotateArgumentsJSON(args)
+						if chunk.Quality != "verified" {
+							slog.Warn("anthropic_to_openai: streaming tool arguments quality",
+								"request_id", requestID,
+								"quality", chunk.Quality,
+								"reason", chunk.ArgumentsJSONReason)
+						}
 						validated, _, vErr := anthropictransform.ValidateStreamingToolArgs(args)
 						if vErr != nil {
 							if capture != nil {
