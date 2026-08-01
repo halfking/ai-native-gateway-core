@@ -43,6 +43,17 @@ INSERT INTO public.provider_models (
     (9001, 9001, 'default', 'gpt-4o',      'gpt-4o',      'gpt-4o',      'gpt-4o',      true),
     (9002, 9001, 'default', 'gpt-4o-mini', 'gpt-4o-mini', 'gpt-4o-mini', 'gpt-4o-mini', true);
 
+-- ── 链接 provider_models → models_canonical (canonical_id) ──
+-- models_canonical 的 gpt-4o/gpt-4o-mini 行由 startup migration 预置 (id 8/9)。
+-- 按 canonical_name 匹配, 不依赖固定 id; 否则 /v1/models 的
+-- model_offers(view) JOIN models_canonical 因 canonical_id IS NULL 返回空。
+UPDATE public.provider_models pm
+SET canonical_id = mc.id
+FROM models_canonical mc
+WHERE pm.provider_id = 9001
+  AND pm.raw_model_name = mc.canonical_name
+  AND pm.canonical_id IS DISTINCT FROM mc.id;
+
 -- ── Credential: local-mock-key ──
 -- secret_ciphertext 用 LLM_GATEWAY_CREDENTIAL_ENCRYPTION_KEY 加密
 -- 明文 = "sk-local-mock-not-a-real-key"

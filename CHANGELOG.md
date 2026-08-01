@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **R1.12 本地部署 /v1/models 返回空 (2026-07-31)**:
+  - 根因: `provider_models.canonical_id` 为 NULL，`model_offers`(view) JOIN `models_canonical` 无匹配 → `/v1/models` 返回 `data: []`
+  - `sql/scripts/03-local-mock-credential.sql` 增加按 `canonical_name` 回填 `canonical_id` 的幂等 UPDATE（不依赖固定 id）
+  - 验证: `/v1/models` 返回 gpt-4o + gpt-4o-mini，chat 转发不受影响
+
 - **migrate-ursm-v2 字段名对齐 (B4 审计修正)** (2026-07-31):
   - `cmd/migrate-ursm-v2/main.go` `mapRow` 用短字段名 `"gen"` / `"pri"`，与权威 V2 协议 (`generation` / `source_priority`) 不一致
   - 已迁移 hash 缺少 `generation` 导致: B4 CAS 守卫的 generation>1 永不触发；`migrateIfAbsentScript` 的 `HEXISTS generation` 原子种子被绕过；`apply_decision.lua` 视 cur_gen=0 被任意写入覆盖
