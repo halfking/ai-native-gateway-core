@@ -135,18 +135,11 @@ func NewGeminiHandler(ch *ChatHandler) *GeminiHandler {
 // ServeHTTP routes a Gemini-native request through the IR translation
 // pipeline and back to Gemini-native response format.
 func (h *GeminiHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	requestID := r.Header.Get("X-Request-Id")
-	if requestID == "" {
-		requestID = generateRequestID()
-		r.Header.Set("X-Request-Id", requestID)
-		w.Header().Set("X-Request-Id", requestID)
-	}
-	provisionalSessionID := ""
-	if h.chatHandler != nil {
-		provisionalSessionID = h.chatHandler.ensureSessionID(r.Context(), r, nil)
-	} else {
-		provisionalSessionID = generateSystemSessionID()
-	}
+	requestIdentity := initializeRequestIdentity(r)
+	requestID := requestIdentity.RequestID
+	provisionalSessionID := requestIdentity.SessionID
+	w.Header().Set("X-Request-Id", requestID)
+	w.Header().Set("X-Gw-Session-Id", provisionalSessionID)
 	if h.requestLogger != nil {
 		if err := h.requestLogger.CreateInitial(r.Context(), &telemetry.InitialRequest{
 			RequestID: requestID, TenantID: "default", SessionID: provisionalSessionID, Provisional: true,

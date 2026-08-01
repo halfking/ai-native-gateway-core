@@ -99,3 +99,23 @@ func TestWithSession_NotFoundWithAPIKey_NoDeviceSeed(t *testing.T) {
 		t.Fatal("downstream not called")
 	}
 }
+
+func TestWithSessionPrefersGatewayHeaderAndWritesCanonicalResponse(t *testing.T) {
+	mgr, _ := newTestManager(t)
+	gw, _ := mgr.Create(context.Background(), 1, "t", "gw")
+	legacy, _ := mgr.Create(context.Background(), 1, "t", "legacy")
+	h := WithSession(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got := SessionFromContext(r.Context())
+		if got == nil || got.SessionID != gw.SessionID {
+			t.Fatalf("got session %+v", got)
+		}
+	}), mgr)
+	r := httptest.NewRequest(http.MethodGet, "/", nil)
+	r.Header.Set("X-Gw-Session-Id", gw.SessionID)
+	r.Header.Set("X-Session-Id", legacy.SessionID)
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, r)
+	if got := w.Header().Get("X-Gw-Session-Id"); got != gw.SessionID {
+		t.Fatalf("response session=%q", got)
+	}
+}

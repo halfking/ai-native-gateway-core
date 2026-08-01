@@ -11,7 +11,6 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/google/uuid"
 	"github.com/kaixuan/llm-gateway-go/domains/authentication" //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/audit"    //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/observability/telemetry"
@@ -79,23 +78,17 @@ func (h *MessagesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// value when the request enters the chain, so r.Header.Get reads
 	// the server value here. The defensive uuid.NewString fallback
 	// covers direct unit-test invocations that bypass the middleware.
-	requestID := r.Header.Get("X-Request-Id")
-	if requestID == "" {
-		requestID = uuid.NewString()
-		w.Header().Set("X-Request-Id", requestID)
-	}
-	// 2026-06-30 PR-5: thread the client-supplied X-Request-Id so request_logs
-	// distinguishes legitimate client retries from fresh requests.
-	clientRequestID := r.Header.Get("X-Gw-Client-Request-Id")
-	if clientRequestID == "" {
-		clientRequestID = r.Header.Get("X-Client-Request-Id")
-	}
+	requestIdentity := initializeRequestIdentity(r)
+	requestID := requestIdentity.RequestID
+	clientRequestID := requestIdentity.ClientRequestID
+	w.Header().Set("X-Request-Id", requestID)
+	w.Header().Set("X-Gw-Session-Id", requestIdentity.SessionID)
 	logCtx := h.chatHandler.NewRequestLogContext(r, requestID, time.Now())
 	logCtx.ClientRequestID = clientRequestID
 	startTime := logCtx.StartTime
 	// Generate a provisional session ID for early-failure branches.
 	// Declared before the deferred safety-net so the closure can capture it.
-	provisionalSessionID := generateSystemSessionID()
+	provisionalSessionID := requestIdentity.SessionID
 	if h.chatHandler.requestLogger != nil {
 		if err := h.chatHandler.requestLogger.CreateInitial(r.Context(), &telemetry.InitialRequest{
 			RequestID:   requestID,

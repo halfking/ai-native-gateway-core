@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased] - 2026-07-29
 
+### Fixed
+
+- **migrate-ursm-v2 字段名对齐 (B4 审计修正)** (2026-07-31):
+  - `cmd/migrate-ursm-v2/main.go` `mapRow` 用短字段名 `"gen"` / `"pri"`，与权威 V2 协议 (`generation` / `source_priority`) 不一致
+  - 已迁移 hash 缺少 `generation` 导致: B4 CAS 守卫的 generation>1 永不触发；`migrateIfAbsentScript` 的 `HEXISTS generation` 原子种子被绕过；`apply_decision.lua` 视 cur_gen=0 被任意写入覆盖
+  - 修正为 `"generation"` / `"source_priority"`，同步更新 `main_test.go` `TestMapRow_GenerationMonotonic` 断言
+
 ### Added
 
 - **v2 Pipeline feature flag 状态文档化 (P0-5, R-5.2 关闭)** (2026-07-29):
@@ -64,6 +71,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased] - 2026-07-28
 
 ### Fixed
+
+- **请求入口身份、终态和拒绝路径追踪收敛** (2026-07-28): Chat/Messages/Responses/Gemini 共享稳定的 request/session 身份派生；Messages/Responses/Gemini 回写最终 `X-Gw-Session-Id`，直连 handler 时也回写 `X-Request-Id`；session middleware 优先读取 `X-Gw-Session-Id`、兼容回退 `X-Session-Id` 并回写规范 header；RequestLogContext 增加原子终态门，success/failure/disconnect 竞争只允许一个终态；全局 middleware 拒绝仍遵循“logs + audit、无强制 WAL”边界，Auth 401 保留 `X-Request-Id` 供客户端关联。
 
 - **实时请求流空闲块不再丢失 + 空闲时间随心跳刷新** (2026-07-28):
   - **Bug**：`ScanAndRecordIdleMarkers` 把 idle marker 只写入 main queue，但生产读取路径 `SnapshotFromDimensionQueues` 只读 dimension queues；只要任意 vendor/provider/model 队列有数据，main queue 中的 idle marker 永远不会被前端看到。同时 Ts 锚定到 `lastActivity+threshold`（沉默开始那一刻），导致"更新空闲时间"在 Redis 层面是 no-op（ZADD same member + same score = 不写、TTL 不刷新）。

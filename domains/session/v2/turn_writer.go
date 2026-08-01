@@ -26,12 +26,22 @@ import (
 //
 // It ensures turn_no is monotonically increasing within each session
 // using PostgreSQL advisory locks to prevent concurrent conflicts.
+type turnDB interface {
+	Begin(ctx context.Context) (pgx.Tx, error)
+	Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error)
+	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
+}
+
 type TurnWriter struct {
-	db *pgxpool.Pool
+	db turnDB
 }
 
 // NewTurnWriter creates a new TurnWriter instance
 func NewTurnWriter(db *pgxpool.Pool) *TurnWriter {
+	return newTurnWriter(db)
+}
+
+func newTurnWriter(db turnDB) *TurnWriter {
 	return &TurnWriter{db: db}
 }
 
@@ -93,11 +103,16 @@ type TurnRecord struct {
 // Process:
 //  1. Acquire advisory lock based on (tenant_id, session_id) hash
 //  2. Query MAX(turn_no) for this session
-//  3. Insert new turn with turn_no = MAX + 1
-//  4. Release lock on commit
+//  3. Insert new turn with turn_no = MAX + 1 (ON CONFLICT DO NOTHING)
+//  4. On conflict (RowsAffected == 0), re-read the real turn_no for the
+//     idempotency key (request_id, partition_date) so retries / concurrent
+//     inserts see a stable number.
+//  5. Release lock on commit
 //
-// If the same request_id already exists (idempotency), the insert is skipped
-// via ON CONFLICT DO NOTHING.
+// 2026-07-28 Step 3 Round 3: the previous pre-INSERT probe (SELECT turn_no
+// WHERE request_id=… before the INSERT) was removed. ON CONFLICT DO NOTHING
+// + RowsAffected==0 post-read is sufficient and avoids a redundant round
+// trip on the hot path.
 func (w *TurnWriter) AppendTurn(ctx context.Context, rec TurnRecord) (turnNo int, err error) {
 	if rec.SubmitMode == "" {
 		rec.SubmitMode = "full"
@@ -138,6 +153,8 @@ func (w *TurnWriter) AppendTurn(ctx context.Context, rec TurnRecord) (turnNo int
 		return 0, fmt.Errorf("get next turn_no: %w", err)
 	}
 
+	partitionDate := rec.Ts.Truncate(24 * time.Hour)
+
 	// 3. Serialize compression_meta to JSONB
 	compressionMetaJSON, err := json.Marshal(rec.CompressionMeta)
 	if err != nil {
@@ -148,12 +165,10 @@ func (w *TurnWriter) AppendTurn(ctx context.Context, rec TurnRecord) (turnNo int
 	compressionMetaStr := string(compressionMetaJSON)
 
 	// 4. Insert turn record
-	partitionDate := rec.Ts.Truncate(24 * time.Hour)
-
-	_, err = tx.Exec(ctx, `
+	result, err := tx.Exec(ctx, `
 		INSERT INTO gateway.session_turns (
 			session_id, turn_no, tenant_id, request_id, ts,
-			submit_mode, 
+			submit_mode,
 			compression_applied, compression_strategy, compression_meta, compression_tokens_saved,
 			injection_verdict, output_verdict,
 			model, provider, credential_id,
@@ -190,6 +205,20 @@ func (w *TurnWriter) AppendTurn(ctx context.Context, rec TurnRecord) (turnNo int
 
 	if err != nil {
 		return 0, fmt.Errorf("insert turn: %w", err)
+	}
+
+	// Concurrent insert may have raced past us; resolve to the real turn_no
+	// for the idempotency key so retries see the existing row's number.
+	if result.RowsAffected() == 0 {
+		err = tx.QueryRow(ctx, `
+			SELECT turn_no
+			FROM gateway.session_turns
+			WHERE session_id = $1 AND tenant_id = $2
+			  AND request_id = $3 AND partition_date = $4
+		`, rec.SessionID, rec.TenantID, rec.RequestID, partitionDate).Scan(&turnNo)
+		if err != nil {
+			return 0, fmt.Errorf("read existing turn_no: %w", err)
+		}
 	}
 
 	// 5. Commit transaction (releases advisory lock)

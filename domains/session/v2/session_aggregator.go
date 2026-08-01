@@ -6,20 +6,50 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
+
+// aggregatorDB is the minimal pool surface that SessionAggregator needs.
+//
+// Defined as an interface so unit tests can wire pgxmock without spinning up
+// a live PostgreSQL instance (mirrors the turnDB pattern in turn_writer.go).
+type aggregatorDB interface {
+	Exec(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error)
+	Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error)
+	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
+}
 
 // SessionAggregator updates session snapshots in gateway.sessions
 //
 // It maintains session-level aggregated data like total_turns, total_tokens,
 // total_cost, and last turn summaries. Updates can be incremental (add to
 // existing) or full replace.
+//
+// Idempotency (request-flow Step 3 / spec §6.2):
+//
+//	When SessionUpdate.RequestID is non-empty, UpdateSession treats the
+//	(session_id, tenant_id, request_id, partition_date) tuple as the dedup
+//	key. It probes gateway.session_turns (which has UNIQUE (request_id,
+//	partition_date)) and short-circuits to nil when an existing turn row
+//	is found. This guarantees replay of the same request_id cannot
+//	double-accumulate total_turns / total_tokens / total_cost_usd.
+//
+//	An empty RequestID bypasses the dedup probe and falls through to the
+//	plain aggregate INSERT, preserving legacy backfill / fan-in paths that
+//	intentionally aggregate without a single request_id.
 type SessionAggregator struct {
-	db *pgxpool.Pool
+	db aggregatorDB
 }
 
 // NewSessionAggregator creates a new SessionAggregator instance
 func NewSessionAggregator(db *pgxpool.Pool) *SessionAggregator {
+	return newSessionAggregator(db)
+}
+
+// newSessionAggregator is the seam used by unit tests with pgxmock.
+func newSessionAggregator(db aggregatorDB) *SessionAggregator {
 	return &SessionAggregator{db: db}
 }
 
@@ -27,6 +57,10 @@ func NewSessionAggregator(db *pgxpool.Pool) *SessionAggregator {
 type SessionUpdate struct {
 	SessionID string
 	TenantID  string
+
+	// RequestID is the dedup key (see SessionAggregator doc). Empty
+	// disables idempotency and falls through to the aggregate INSERT.
+	RequestID string
 
 	// Last turn info (replace)
 	LastTurnNo          int
@@ -48,12 +82,29 @@ type SessionUpdate struct {
 //
 // This uses INSERT ... ON CONFLICT DO UPDATE to handle both creation
 // and updates atomically. Counters are incremented, summaries are replaced.
+//
+// When update.RequestID is non-empty, the call is idempotent on
+// (session_id, tenant_id, request_id, partition_date): a second call with
+// the same RequestID within the same partition is a no-op (returns nil
+// without touching gateway.sessions).
 func (a *SessionAggregator) UpdateSession(ctx context.Context, update SessionUpdate) error {
 	partitionDate := update.UpdatedAt.Truncate(24 * time.Hour)
 
+	if update.RequestID != "" {
+		alreadyProcessed, err := a.requestAlreadyAggregated(ctx, update, partitionDate)
+		if err != nil {
+			return fmt.Errorf("check aggregate idempotency: %w", err)
+		}
+		if alreadyProcessed {
+			// Replay of the same request_id — spec §6.2 mandates that
+			// token / turn / cost counters MUST NOT be re-added.
+			return nil
+		}
+	}
+
 	_, err := a.db.Exec(ctx, `
 		INSERT INTO gateway.sessions (
-			session_id, tenant_id, 
+			session_id, tenant_id,
 			created_at, updated_at, status,
 			total_turns, total_tokens, total_cost_usd,
 			last_turn_no, last_request_summary, last_response_summary,
@@ -94,17 +145,46 @@ func (a *SessionAggregator) UpdateSession(ctx context.Context, update SessionUpd
 	return nil
 }
 
+// requestAlreadyAggregated probes gateway.session_turns for an existing
+// (session_id, tenant_id, request_id, partition_date) row. session_turns is
+// the dedup ledger for V2 sessions and carries UNIQUE (request_id,
+// partition_date); we therefore treat its presence as proof that this
+// request_id has already fed the aggregate once.
+//
+// Returns true when the row exists, false when it does not (or when the
+// probe fails for transient reasons — the caller will then surface the
+// error rather than silently double-aggregating).
+func (a *SessionAggregator) requestAlreadyAggregated(ctx context.Context, update SessionUpdate, partitionDate time.Time) (bool, error) {
+	var exists int
+	err := a.db.QueryRow(ctx, `
+		SELECT 1
+		FROM gateway.session_turns
+		WHERE session_id = $1
+		  AND tenant_id = $2
+		  AND request_id = $3
+		  AND partition_date = $4
+		LIMIT 1
+	`, update.SessionID, update.TenantID, update.RequestID, partitionDate).Scan(&exists)
+	if err == pgx.ErrNoRows {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
 // GetSession retrieves a session snapshot
 func (a *SessionAggregator) GetSession(ctx context.Context, tenantID, sessionID string) (*SessionSnapshot, error) {
 	var snap SessionSnapshot
 	var turnLogsSummaryJSON []byte
 
 	query := `
-		SELECT 
-			session_id, tenant_id, 
+		SELECT
+			session_id, tenant_id,
 			created_at, updated_at, closed_at, status,
 			total_turns, total_tokens, total_cost_usd,
-			last_turn_no, 
+			last_turn_no,
 			COALESCE(last_request_summary, ''),
 			COALESCE(last_response_summary, ''),
 			COALESCE(last_model, ''),

@@ -1,6 +1,7 @@
 package middleware
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"net/http"
@@ -55,6 +56,7 @@ func (m *RequestIDMiddleware) Wrap(next http.Handler) http.Handler {
 		// Standard X-Request-Id round-trip (server value).
 		r.Header.Set("X-Request-Id", id)
 		w.Header().Set("X-Request-Id", id)
+		r = r.WithContext(context.WithValue(r.Context(), requestIDContextKey{}, id))
 
 		next.ServeHTTP(w, r)
 	})

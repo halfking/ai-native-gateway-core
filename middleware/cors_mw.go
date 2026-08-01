@@ -30,7 +30,7 @@ func NewCORSMiddleware(origins string) *CORSMiddleware {
 		allowMethods:   "GET, POST, PUT, DELETE, OPTIONS",
 		// NET-001 fix: Authorization 移出默认 allow-headers —— 跨域携带
 		// 认证凭证必须由调用方额外 CORS 反代/前端代理明确要求。
-			allowHeaders: "Content-Type, X-Request-Id, X-Device-Seed, X-Machine-Id, X-Runtime-Name, X-Runtime-Version, X-OS-Name, X-OS-Arch, X-Client-Profile, X-Agent-Name, X-Agent-Type, X-Gw-Project-Id, X-Client-Channel",
+		allowHeaders: "Content-Type, X-Request-Id, X-Device-Seed, X-Machine-Id, X-Runtime-Name, X-Runtime-Version, X-OS-Name, X-OS-Arch, X-Client-Profile, X-Agent-Name, X-Agent-Type, X-Gw-Project-Id, X-Client-Channel",
 		maxAge:       "86400",
 	}
 }
