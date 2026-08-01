@@ -1,6 +1,10 @@
 package executors
 
-import "time"
+import (
+	"time"
+
+	"github.com/kaixuan/llm-gateway-go/provider"
+)
 
 const predictiveTTFBReason = "predictive_ttfb_above_threshold"
 
@@ -45,6 +49,31 @@ func predictiveDecisionForCandidate(skipper PredictiveTTFBSkipper, decided *bool
 	}
 	*decided = true
 	return skipper.ShouldSkip(credentialID)
+}
+
+// predictiveCandidateCount returns the number of candidates from current onward
+// that are not already excluded by request-local logical filters. The executor
+// uses this as the last-candidate guard; router availability and circuit/limiter
+// checks remain owned by their existing stages.
+func predictiveCandidateCount(candidates []provider.Candidate, start int, contentFilterProviders map[int]struct{}, sessionBlacklist map[int]int) int {
+	if start < 0 {
+		start = 0
+	}
+	if start >= len(candidates) {
+		return 0
+	}
+
+	count := 0
+	for _, cand := range candidates[start:] {
+		if _, hit := contentFilterProviders[cand.ProviderID]; hit {
+			continue
+		}
+		if sessionBlacklist[cand.CredentialID] >= 2 {
+			continue
+		}
+		count++
+	}
+	return count
 }
 
 var _ PredictiveTTFBSkipper = (*PredictiveSkipper)(nil)

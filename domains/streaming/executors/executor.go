@@ -2193,7 +2193,7 @@ func (e *Executor) Execute(params *ExecParams) (*ExecuteResult, error) {
 	// the real execution path after earlier filters.
 	predictiveDecisionMade := false
 
-	for _, cand := range candidates {
+	for candidateIndex, cand := range candidates {
 		// OPT-3: skip siblings of providers that already returned
 		// content_filter. The credential is healthy; the content is
 		// the problem. We do NOT update circuit / sticky / state —
@@ -2231,7 +2231,8 @@ func (e *Executor) Execute(params *ExecParams) (*ExecuteResult, error) {
 		// O-1: make one prediction decision after existing logical skips.
 		// A non-slow first executable candidate consumes the decision too;
 		// this prevents scanning all candidates for a slow one.
-		if decision, skip := predictiveDecisionForCandidate(e.PredictiveTTFBSkipper, &predictiveDecisionMade, len(candidates), cand.CredentialID); skip {
+		candidateCount := predictiveCandidateCount(candidates, candidateIndex, contentFilterProviders, sessionBlacklist)
+		if decision, skip := predictiveDecisionForCandidate(e.PredictiveTTFBSkipper, &predictiveDecisionMade, candidateCount, cand.CredentialID); skip {
 
 			trace.BlockedCandidates = append(trace.BlockedCandidates, TraceCandidate{
 				ProviderID:         cand.ProviderID,
