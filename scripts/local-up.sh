@@ -4,7 +4,7 @@
 #
 # 与本地部署 (customer-instance) 不同: dev-research 复用本机 host 上的
 # llm-gateway-pg 共享实例, 仅用于研发本地集成测试。
-# 客户实例请走: ./scripts/local-deploy-test.sh 或 deploy/one-click/install.sh
+# 客户实例请走: ./scripts/customer-instance-up.sh 或 deploy/one-click/install.sh
 #
 # 用法:
 #   ./scripts/local-up.sh             # 全链路: 依赖 + v1 + v2 + migrate + smoke
