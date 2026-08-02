@@ -9,11 +9,11 @@
 
 set -euo pipefail
 
-# 默认连接配置（与 .env.local 保持一致）
+# 默认连接配置（必须显式提供，不提供任何明文 fallback）
 PGHOST="${PGHOST:-localhost}"
 PGPORT="${PGPORT:-5432}"
 PGUSER="${PGUSER:-llm_gateway}"
-PGPASSWORD="${PGPASSWORD:-4Q92cFTaYY8Z3AO07XTBBH-1g7kceaxg}"
+PGPASSWORD="${PGPASSWORD:?PGPASSWORD or DATABASE_URL required (source from .env.local, not committed)}"
 PGDATABASE="${PGDATABASE:-llm_gateway}"
 
 export PGHOST PGPORT PGUSER PGPASSWORD PGDATABASE
