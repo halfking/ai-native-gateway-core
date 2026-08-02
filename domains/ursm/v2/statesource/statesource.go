@@ -109,9 +109,17 @@ func init() {
 func RecordRoutingStateSource(source RoutingStateSource) {
 	c := counterFor(source)
 	if c == nil {
-		return
+		source = StateSourceSkipped
+		c = counterFor(source)
+		if c == nil {
+			return
+		}
 	}
 	c.Add(1)
+	// 2026-08-03 (spec §13 #10): mirror the in-process counter into
+	// the Prometheus collector so /metrics exposes the fail-open ratio
+	// (spec §11.4: routing_state_source 可在日志和指标中统计).
+	routingStateSourceTotal.WithLabelValues(string(source)).Inc()
 }
 
 // counterFor returns the counter for a known source, or nil for an
