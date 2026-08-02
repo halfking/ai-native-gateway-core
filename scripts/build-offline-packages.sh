@@ -13,10 +13,9 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 cd "$ROOT"
 
-VERSION_ARG="${1:-}"
+VERSION_ARG=""
 OUT_DIR=""
 SKIP_WEB=false
-shift || true
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --out) OUT_DIR="$2"; shift 2 ;;
@@ -25,7 +24,8 @@ while [[ $# -gt 0 ]]; do
       sed -n '2,12p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
       exit 0
       ;;
-    *) echo "unknown arg: $1" >&2; exit 1 ;;
+    -*) echo "unknown arg: $1" >&2; exit 1 ;;
+    *) VERSION_ARG="$1"; shift ;;
   esac
 done
 
