@@ -189,8 +189,9 @@ services:
       # ── 运维节点标识（写入 gateway_instances.region）──
       OPS_NODE_REGION: "local"
       # ── 首次激活/中心注册地址 ──
-      LLM_GATEWAY_CENTER_URL: "https://llm.kxpms.cn"
-      OPS_COLLECT_URL: "https://llm.kxpms.cn"
+      # 本地环回: 指到宿主机 ai-native-maintain dev compose (127.0.0.1:8082)
+      LLM_GATEWAY_CENTER_URL: "http://host.docker.internal:8082"
+      OPS_COLLECT_URL: "http://host.docker.internal:8082"
       # ── Frontend static dir (Docker image 中的路径) ──
       LLM_GATEWAY_STATIC_DIR: "/opt/llm-gateway-go/web/dist"
     healthcheck:
