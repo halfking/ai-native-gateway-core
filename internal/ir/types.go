@@ -26,6 +26,9 @@ const (
 	// ProtocolGeminiGenerate is the native Google Gemini generateContent API.
 	// audit-gemini-adapter (2026-07-13).
 	ProtocolGeminiGenerate = "gemini-generate"
+	// ProtocolOpenAIResponses is the OpenAI Responses API
+	// (previous_response_id, status, etc.). 2026-07-28 (Step 4 round 2).
+	ProtocolOpenAIResponses = "openai-responses"
 )
 
 // InternalRequest is the unified intermediate representation for all inbound

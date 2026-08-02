@@ -59,7 +59,100 @@ func SerializeGemini(req *InternalRequest) ([]byte, error) {
 		out["generationConfig"] = gc
 	}
 
+	// Step 4.10 (2026-07-28): explicit anomaly for cross-protocol losses.
+	reportSerializeGeminiLosses(req)
+
 	return json.Marshal(out)
+}
+
+// reportSerializeGeminiLosses records IR fields that the Gemini generateContent
+// wire format cannot faithfully represent. 2026-07-28 (Step 4 round 2).
+//
+// Gemini has a smaller conceptual surface than Anthropic / OpenAI; the most
+// common losses are Anthropic thinking.signature and OpenAI Responses-only
+// status / previous_response_id.
+//
+// 2026-07-28 (BLOCK review): same-protocol false-positive guards. When the
+// IR source is itself Anthropic, fields like cache_control / documents /
+// thinking.signature are native to Anthropic (not Gemini). The Gemini
+// target's loss reporting must respect that the source is Anthropic — the
+// field is genuinely a loss when going TO Gemini (different target), but
+// the dedup key / source_protocol labeling must remain correct.
+//
+// Specifically, the BLOCK review calls out thinking.signature / redacted_thinking
+// and other Anthropic-only fields: when SourceProtocol == AnthropicMessages
+// AND target == Gemini, the field IS a loss (different target); when both
+// source and target equal Anthropic we skip (handled in serialize_anthropic).
+// Gemini → Gemini must not emit any cross-protocol loss.
+func reportSerializeGeminiLosses(req *InternalRequest) {
+	if req == nil {
+		return
+	}
+	src := req.SourceProtocol
+	// Same-protocol Gemini → Gemini is a no-op for loss reporting.
+	if src == ProtocolGeminiGenerate {
+		return
+	}
+
+	for i, msg := range req.Messages {
+		for j, block := range msg.Content {
+			if block.Thinking != nil && block.Thinking.Signature != "" {
+				ReportProtocolLoss(
+					requestIDFromIR(req),
+					fieldPathMessageContent(i, j, "thinking.signature"),
+					ifaceNonEmpty(src, ProtocolAnthropicMessages),
+					ProtocolGeminiGenerate,
+					"loss",
+					"Anthropic thinking.signature has no Gemini equivalent",
+					nil,
+				)
+			}
+			if block.RedactedThinking != "" {
+				ReportProtocolLoss(
+					requestIDFromIR(req),
+					fieldPathMessageContent(i, j, "redacted_thinking"),
+					ifaceNonEmpty(src, ProtocolAnthropicMessages),
+					ProtocolGeminiGenerate,
+					"loss",
+					"Anthropic redacted_thinking has no Gemini equivalent",
+					nil,
+				)
+			}
+		}
+	}
+	if req.PreviousResponseID != "" {
+		ReportProtocolLoss(
+			requestIDFromIR(req),
+			"previous_response_id",
+			ifaceNonEmpty(src, ProtocolOpenAIChat),
+			ProtocolGeminiGenerate,
+			"loss",
+			"OpenAI Responses previous_response_id has no Gemini equivalent",
+			nil,
+		)
+	}
+	if len(req.CacheControl) > 0 {
+		ReportProtocolLoss(
+			requestIDFromIR(req),
+			"cache_control",
+			ifaceNonEmpty(src, ProtocolAnthropicMessages),
+			ProtocolGeminiGenerate,
+			"loss",
+			"Anthropic cache_control has no Gemini equivalent",
+			nil,
+		)
+	}
+	if len(req.Documents) > 0 {
+		ReportProtocolLoss(
+			requestIDFromIR(req),
+			"documents",
+			ifaceNonEmpty(src, ProtocolAnthropicMessages),
+			ProtocolGeminiGenerate,
+			"loss",
+			"Anthropic top-level documents have no Gemini equivalent",
+			nil,
+		)
+	}
 }
 
 // buildGeminiSystemInstruction converts IR System → Gemini systemInstruction.

@@ -50,6 +50,8 @@ func ParseAnthropic(body []byte) (*InternalRequest, error) {
 	for key, value := range rawMap {
 		if !knownFields[key] && len(value) > 0 && string(value) != "null" {
 			extensions[key] = value
+			// Step 4.10 (2026-07-28): parse-time unknown-field anomaly.
+			ReportUnknownField("unknown", ProtocolAnthropicMessages, key, nil)
 		}
 	}
 

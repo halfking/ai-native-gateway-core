@@ -151,6 +151,9 @@ func SerializeOpenAI(req *InternalRequest) ([]byte, error) {
 
 	// Messages (system prompt becomes first message)
 	messages := serializeOpenAIMessages(req)
+	// Step 4.10 (2026-07-28): emit explicit anomaly when source fields
+	// cannot be expressed on the OpenAI Chat Completions wire format.
+	reportSerializeOpenAILosses(req)
 	if len(messages) > 0 {
 		out["messages"] = messages
 	}
@@ -648,4 +651,271 @@ func serializeOpenAIDocumentBlock(doc *DocumentBlock) map[string]any {
 	}
 	block["file"] = fileInner
 	return block
+}
+
+// reportSerializeOpenAILosses is the cross-protocol anomaly hook called by
+// SerializeOpenAI for every IR field that the OpenAI Chat Completions wire
+// format cannot faithfully represent. It is a recording-only side effect;
+// the wire format is unchanged.
+//
+// 2026-07-28 (Step 4 round 2, §10 Step 4.10): when an Anthropic IR carries a
+// thinking.signature (no OpenAI equivalent) or a CacheControl / Documents
+// block, the loss must be explicit. Same for any top_k value (OpenAI Chat
+// has no top_k field).
+//
+// 2026-07-28 (BLOCK review): same-protocol false-positive guards. The
+// BLOCK review identified three false-positive classes:
+//
+//   1. Anthropic-only fields (cache_control / mcp_servers / thinking.signature
+//      / documents / context_management / container) being reported when the
+//      IR source is itself OpenAI Chat (same-protocol, target=OpenAI Chat).
+//      Note: Anthropic source + OpenAI target IS cross-protocol and we
+//      still report there (e.g. the original
+//      TestAnomaly_AnthropicThinkingSig_LostOnOpenAITarget fixture).
+//   2. OpenAI-only fields (frequency_penalty / presence_penalty / logprobs
+//      / top_logprobs / n / response_format / logit_bias / store /
+//      service_tier / prediction / verbosity / web_search_options /
+//      safety_identifier / parallel_tool_calls / modalities / audio) being
+//      reported when the IR source is itself OpenAI Chat (same-protocol).
+//   3. previous_response_id being reported when the IR source is already
+//      OpenAI Chat or OpenAI Responses (both accept it natively).
+//
+// An empty SourceProtocol is treated as "unknown / cross-protocol default"
+// to preserve historical fixture behavior for tests that build IR directly
+// without setting SourceProtocol.
+func reportSerializeOpenAILosses(req *InternalRequest) {
+	if req == nil {
+		return
+	}
+	src := req.SourceProtocol
+
+	// top_k: Anthropic-native field. Loss on cross-protocol. The only
+	// same-protocol skip is when source == OpenAI Chat or Responses (both
+	// accept the field via ExtensionsBag; round-trip is lossless).
+	if req.TopK != nil && src != ProtocolOpenAIChat && src != ProtocolOpenAIResponses {
+		ReportProtocolLoss(
+			requestIDFromIR(req),
+			"top_k",
+			ifaceNonEmpty(src, ProtocolAnthropicMessages),
+			ProtocolOpenAIChat,
+			"loss",
+			"top_k is Anthropic-only; OpenAI Chat Completions has no equivalent",
+			map[string]any{"top_k_value": *req.TopK},
+		)
+	}
+	// Per-message thinking.signature / redacted_thinking: Anthropic
+	// concept. Skip when source == OpenAI Chat (same-protocol with target).
+	for i, msg := range req.Messages {
+		for j, block := range msg.Content {
+			if src == ProtocolOpenAIChat {
+				continue
+			}
+			if block.Thinking != nil && block.Thinking.Signature != "" {
+				ReportProtocolLoss(
+					requestIDFromIR(req),
+					fieldPathMessageContent(i, j, "thinking.signature"),
+					ifaceNonEmpty(src, ProtocolAnthropicMessages),
+					ProtocolOpenAIChat,
+					"loss",
+					"Anthropic thinking signature cannot be expressed on OpenAI Chat Completions",
+					map[string]any{"message_index": i, "content_index": j},
+				)
+			}
+			if block.RedactedThinking != "" {
+				ReportProtocolLoss(
+					requestIDFromIR(req),
+					fieldPathMessageContent(i, j, "redacted_thinking"),
+					ifaceNonEmpty(src, ProtocolAnthropicMessages),
+					ProtocolOpenAIChat,
+					"loss",
+					"Anthropic redacted_thinking cannot be expressed on OpenAI Chat Completions",
+					nil,
+				)
+			}
+		}
+	}
+	// Cache control / documents / thinking / mcp_servers / context_management
+	// / container are Anthropic-specific. Skip when source == OpenAI Chat
+	// (same-protocol with target = OpenAI Chat).
+	if src != ProtocolOpenAIChat {
+		if len(req.CacheControl) > 0 {
+			ReportProtocolLoss(
+				requestIDFromIR(req),
+				"cache_control",
+				ifaceNonEmpty(src, ProtocolAnthropicMessages),
+				ProtocolOpenAIChat,
+				"loss",
+				"Anthropic cache_control cannot be expressed on OpenAI Chat Completions",
+				nil,
+			)
+		}
+		if len(req.Documents) > 0 {
+			ReportProtocolLoss(
+				requestIDFromIR(req),
+				"documents",
+				ifaceNonEmpty(src, ProtocolAnthropicMessages),
+				ProtocolOpenAIChat,
+				"loss",
+				"Anthropic top-level documents cannot be expressed on OpenAI Chat Completions",
+				nil,
+			)
+		}
+		if req.Thinking != nil {
+			ReportProtocolLoss(
+				requestIDFromIR(req),
+				"thinking",
+				ifaceNonEmpty(src, ProtocolAnthropicMessages),
+				ProtocolOpenAIChat,
+				"loss",
+				"Anthropic thinking config cannot be expressed on OpenAI Chat Completions",
+				nil,
+			)
+		}
+		if len(req.MCPServers) > 0 {
+			ReportProtocolLoss(
+				requestIDFromIR(req),
+				"mcp_servers",
+				ifaceNonEmpty(src, ProtocolAnthropicMessages),
+				ProtocolOpenAIChat,
+				"loss",
+				"Anthropic mcp_servers cannot be expressed on OpenAI Chat Completions",
+				nil,
+			)
+		}
+		if req.ContextManagement != nil {
+			ReportProtocolLoss(
+				requestIDFromIR(req),
+				"context_management",
+				ifaceNonEmpty(src, ProtocolAnthropicMessages),
+				ProtocolOpenAIChat,
+				"loss",
+				"Anthropic context_management cannot be expressed on OpenAI Chat Completions",
+				nil,
+			)
+		}
+		if req.Container != nil {
+			ReportProtocolLoss(
+				requestIDFromIR(req),
+				"container",
+				ifaceNonEmpty(src, ProtocolAnthropicMessages),
+				ProtocolOpenAIChat,
+				"loss",
+				"Anthropic container cannot be expressed on OpenAI Chat Completions",
+				nil,
+			)
+		}
+	}
+
+	// OpenAI-only fields (BLOCK review spec §10 Step 4.10 round 2). The
+	// per-field guard is `src != ProtocolOpenAIChat`: when the source is
+	// itself Chat, these fields are native and the loss event is a false
+	// positive. An empty SourceProtocol still triggers (cross-protocol
+	// fallback) to preserve historical fixture behavior.
+	if src != ProtocolOpenAIChat {
+		openAIOnly := []struct {
+			field string
+			have  bool
+		}{
+			{"frequency_penalty", req.FrequencyPenalty != nil},
+			{"presence_penalty", req.PresencePenalty != nil},
+			{"logprobs", req.Logprobs != nil},
+			{"top_logprobs", req.TopLogprobs != nil},
+			{"n", req.N > 0},
+			{"response_format", req.ResponseFormat != nil},
+			{"logit_bias", len(req.LogitBias) > 0},
+			{"store", req.Store != nil},
+			{"service_tier", req.ServiceTier != ""},
+			{"prediction", req.Prediction != nil},
+			{"verbosity", req.Verbosity != ""},
+			{"web_search_options", req.WebSearchOptions != nil},
+			{"safety_identifier", req.SafetyIdentifier != ""},
+			{"parallel_tool_calls", req.ParallelToolCalls != nil},
+			{"modalities", len(req.Modalities) > 0},
+			{"audio", req.AudioConfig != nil},
+		}
+		for _, f := range openAIOnly {
+			if !f.have {
+				continue
+			}
+			ReportProtocolLoss(
+				requestIDFromIR(req),
+				f.field,
+				ifaceNonEmpty(src, ProtocolOpenAIChat),
+				ProtocolOpenAIChat,
+				"loss",
+				"OpenAI Chat Completions-only field cannot be expressed on non-OpenAI target",
+				nil,
+			)
+		}
+	}
+
+	// previous_response_id is OpenAI Responses-API. Chat accepts it (the
+	// IR serializer emits it as a Chat wire field) and so does Responses;
+	// no loss event when the source is one of the OpenAI family. Only
+	// Anthropic / Gemini sources carry a real loss. Per BLOCK review:
+	// "仅在 SourceProtocol 既不是 ProtocolOpenAIChat 也不是 ProtocolOpenAIResponses
+	// 时上报". When SourceProtocol is empty we treat it as cross-protocol
+	// default (Anthropic fallback) and emit.
+	if req.PreviousResponseID != "" {
+		isOpenAISource := src == ProtocolOpenAIChat || src == ProtocolOpenAIResponses
+		if !isOpenAISource {
+			ReportProtocolLoss(
+				requestIDFromIR(req),
+				"previous_response_id",
+				ifaceNonEmpty(src, ProtocolOpenAIChat),
+				ProtocolOpenAIChat,
+				"loss",
+				"OpenAI Responses previous_response_id is not portable to OpenAI Chat when source is non-OpenAI",
+				nil,
+			)
+		}
+	}
+}
+
+// requestIDFromIR returns the request id from the IR's first message raw
+// content if present, else "unknown". Today the IR does not carry an
+// explicit RequestID field; we keep a placeholder for cross-protocol
+// tests. Future revision may add RequestID to InternalRequest directly.
+func requestIDFromIR(_ *InternalRequest) string {
+	return "unknown"
+}
+
+// ifaceNonEmpty returns s if non-empty, otherwise the fallback.
+func ifaceNonEmpty(s, fallback string) string {
+	if s == "" {
+		return fallback
+	}
+	return s
+}
+
+// fieldPathMessageContent produces a stable dotted JSON pointer for
+// messages[i].content[j].<leaf>.
+func fieldPathMessageContent(i, j int, leaf string) string {
+	return "messages[" + smallItoa(i) + "].content[" + smallItoa(j) + "]." + leaf
+}
+
+// smallItoa is a tiny local helper that avoids importing strconv for a few
+// hot call sites; keeps the anomaly code footprint minimal. We give it a
+// distinct name to avoid colliding with response.go's itoa.
+func smallItoa(i int) string {
+	if i == 0 {
+		return "0"
+	}
+	neg := false
+	if i < 0 {
+		neg = true
+		i = -i
+	}
+	buf := [20]byte{}
+	pos := len(buf)
+	for i > 0 {
+		pos--
+		buf[pos] = byte('0' + i%10)
+		i /= 10
+	}
+	if neg {
+		pos--
+		buf[pos] = '-'
+	}
+	return string(buf[pos:])
 }
