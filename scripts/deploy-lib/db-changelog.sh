@@ -50,6 +50,46 @@ _db_migration_checksum() {
   fi
 }
 
+_deploy_migration_history_gate() {
+  local ssh_cmd=$1 env_file=$2
+  local remote_psql result
+  remote_psql=$(_deploy_remote_psql_script "$env_file")
+
+  result=$(_deploy_verify_ssh "$ssh_cmd" "${remote_psql}
+_psql -v ON_ERROR_STOP=1 -tAc \"SELECT
+  (SELECT COALESCE(sum(n-1),0) FROM (SELECT count(*) n FROM schema_migrations GROUP BY version HAVING count(*) > 1) d) || '|' ||
+  (SELECT count(*) FROM schema_migrations a JOIN schema_migrations b
+   ON a.version=b.version AND a.ctid < b.ctid
+   WHERE ROW(a.description,a.applied_at) IS DISTINCT FROM ROW(b.description,b.applied_at)) || '|' ||
+  (SELECT count(*) FROM pg_constraint c JOIN pg_attribute a
+   ON a.attrelid=c.conrelid AND a.attnum=ANY(c.conkey)
+   WHERE c.conrelid='public.schema_migrations'::regclass
+     AND c.contype IN ('p','u') AND a.attname='version') || '|' ||
+  CASE WHEN to_regclass('public.llm_gateway_migration_checksums') IS NULL THEN 'missing' ELSE 'present' END\"" 2>/dev/null) || {
+    _db_err "无法读取 schema_migrations migration gate 状态"
+    return 1
+  }
+  result=$(printf '%s' "$result" | tr -d '[:space:]')
+  local duplicate_rows inconsistent_pairs version_key ledger
+  IFS='|' read -r duplicate_rows inconsistent_pairs version_key ledger <<<"$result"
+  if [[ "$duplicate_rows" != "0" ]]; then
+    _db_err "schema_migrations 存在 $duplicate_rows 条重复版本；先运行 scripts/repair-252-migration-ledger.sh --apply"
+    return 1
+  fi
+  if [[ "$inconsistent_pairs" != "0" ]]; then
+    _db_err "schema_migrations 重复行字段不一致，拒绝自动修复；需要人工审计"
+    return 1
+  fi
+  if [[ "$version_key" != "1" ]]; then
+    _db_err "schema_migrations.version 缺少唯一约束；先运行 migration ledger repair"
+    return 1
+  fi
+  if [[ "$ledger" != "present" ]]; then
+    _db_err "llm_gateway_migration_checksums 不存在；普通部署不隐式初始化，请先运行 migration ledger repair"
+    return 1
+  fi
+}
+
 _deploy_applied_migration_ids() {
   local ssh_cmd=$1 env_file=$2
   local remote_psql
@@ -133,57 +173,73 @@ _deploy_validate_pending_migration_versions() {
 }
 
 _deploy_migration_checksum_reconcile() {
-  local ssh_cmd=$1 env_file=$2 repo_root=$3 applied_ids=$4
-  local remote_psql f base ver checksum row recorded_name recorded_checksum
+  local ssh_cmd=$1 env_file=$2 repo_root=$3
+  local remote_psql row ver description f base checksum recorded_name recorded_checksum
   local ledger_reconcile_from=${DB_LEDGER_RECONCILE_FROM:-412}
-  local -A candidate_count=()
   remote_psql=$(_deploy_remote_psql_script "$env_file")
 
-  for f in "$repo_root"/sql/migrations/startup/[0-9]*.sql; do
-    [[ -f "$f" ]] || continue
-    base=$(basename "$f")
-    [[ "$base" =~ ^[0-9]{3}_ ]] || continue
-    [[ "$base" != *.down.sql && "$base" != *.skip && "$base" != *.bak.skip ]] || continue
-    head -15 "$f" | grep -qiE 'SUPERSEDED|superceded|DEPRECATED' && continue
-    ver=${base%%_*}
-    [[ ",${applied_ids}," == *",${ver},"* ]] || continue
+  while IFS='|' read -r ver description; do
+    [[ -n "$ver" ]] || continue
     (( 10#$ver >= ledger_reconcile_from )) || continue
-    candidate_count[$ver]=$(( ${candidate_count[$ver]:-0} + 1 ))
-  done
 
-  for f in "$repo_root"/sql/migrations/startup/[0-9]*.sql; do
-    [[ -f "$f" ]] || continue
+    case "$ver:$description" in
+      461:request_wal_hot_request_id_unique) description="request_wal_hot_unique_request_id" ;;
+    esac
+
+    local -a candidates=()
+    local candidate suffix
+    shopt -s nullglob
+    for f in "$repo_root"/sql/migrations/startup/"${ver}"_*.sql; do
+      base=$(basename "$f")
+      [[ "$base" != *.down.sql && "$base" != *.skip && "$base" != *.bak.skip ]] || continue
+      head -15 "$f" | grep -qiE 'SUPERSEDED|superceded|DEPRECATED|deprecated' && continue
+      candidates+=("$f")
+    done
+    shopt -u nullglob
+
+    f=""
+    for candidate in "${candidates[@]}"; do
+      base=$(basename "$candidate")
+      suffix=${base#"${ver}"_}
+      suffix=${suffix%.sql}
+      if [[ "$suffix" == "$description" || "${base%.sql}" == "$description" ]]; then
+        f=$candidate
+        break
+      fi
+    done
+    if [[ -z "$f" && ${#candidates[@]} -eq 1 ]]; then
+      f=${candidates[0]}
+    fi
+    if [[ -z "$f" ]]; then
+      _db_err "已应用迁移 version $ver description='$description' 无法解析为唯一 canonical 文件，拒绝部署"
+      printf '  candidate: %s\n' "${candidates[@]}" >&2
+      return 1
+    fi
+
     base=$(basename "$f")
-    [[ "$base" =~ ^[0-9]{3}_ ]] || continue
-    [[ "$base" != *.down.sql && "$base" != *.skip && "$base" != *.bak.skip ]] || continue
-    head -15 "$f" | grep -qiE 'SUPERSEDED|superceded|DEPRECATED' && continue
-    ver=${base%%_*}
-    [[ -n "${candidate_count[$ver]+x}" ]] || continue
     checksum=$(_db_migration_checksum "$f")
     row=$(_deploy_verify_ssh "$ssh_cmd" "${remote_psql}
-_psql -v ON_ERROR_STOP=1 -tAc \"SELECT migration_name || '|' || checksum FROM llm_gateway_migration_checksums WHERE version = '$ver' LIMIT 1\"")
+_psql -v ON_ERROR_STOP=1 -tAc \"SELECT migration_name || '|' || checksum FROM llm_gateway_migration_checksums WHERE version = '$ver' LIMIT 1\"" 2>/dev/null) || {
+      _db_err "无法读取 migration checksum ledger: $ver"
+      return 1
+    }
     row=$(printf '%s' "$row" | tr -d '[:space:]')
     if [[ -z "$row" ]]; then
-      if (( candidate_count[$ver] > 1 )); then
-        _db_err "已应用迁移 version $ver 有多个本地候选且 checksum ledger 缺失，拒绝自动猜测：$base"
-        return 1
-      fi
-      _db_log "  ↺ 补录 checksum ledger: $base"
-      if ! _deploy_verify_ssh "$ssh_cmd" "${remote_psql}
-_psql -v ON_ERROR_STOP=1 -c \"INSERT INTO llm_gateway_migration_checksums (version, migration_name, checksum) VALUES ('$ver', '$base', '$checksum') ON CONFLICT (version) DO NOTHING\" >/dev/null"; then
-        _db_err "无法补录 migration checksum ledger: $base"
-        return 1
-      fi
-      row="$base|$checksum"
+      _db_err "已应用迁移 $ver:$base 缺少 checksum ledger；普通部署不补录，请先运行 migration ledger repair"
+      return 1
     fi
     recorded_name=${row%%|*}
     recorded_checksum=${row#*|}
-    [[ "$recorded_name" == "$base" ]] || continue
-    if [[ "$recorded_checksum" != "$checksum" ]]; then
-      _db_err "已应用迁移 checksum 不匹配，拒绝继续：$ver:$base:recorded=${row}:local=${base}|${checksum}"
+    if [[ "$recorded_name" != "$base" ]]; then
+      _db_err "migration ledger 文件名不匹配，拒绝继续：$ver:recorded=$recorded_name:local=$base"
       return 1
     fi
-  done
+    if [[ "$recorded_checksum" != "$checksum" ]]; then
+      _db_err "已应用迁移 checksum 不匹配，拒绝继续：$ver:$base:recorded=$recorded_checksum:local=$checksum"
+      return 1
+    fi
+  done < <(_deploy_verify_ssh "$ssh_cmd" "${remote_psql}
+_psql -v ON_ERROR_STOP=1 -tAc \"SELECT version || '|' || COALESCE(description,'') FROM schema_migrations WHERE version ~ '^[0-9]+$' AND version::int >= $ledger_reconcile_from ORDER BY version::int\"" 2>/dev/null)
 }
 
 deploy_apply_pending_migrations() {
@@ -192,6 +248,7 @@ deploy_apply_pending_migrations() {
   local -a pending=() applied_files=()
 
   repo_root=$(_db_changelog_repo_root)
+  _deploy_migration_history_gate "$ssh_cmd" "$env_file" || return 1
   remote_psql=$(_deploy_remote_psql_script "$env_file")
   while IFS= read -r line; do
     [[ -n "$line" ]] && pending+=("$line")
@@ -200,20 +257,18 @@ deploy_apply_pending_migrations() {
     _deploy_validate_pending_migration_versions "${pending[@]}" || return 1
   fi
 
-  # Keep a checksum ledger separate from the legacy schema_migrations table.
-  # The legacy table remains the applied-version source of truth, while this
-  # ledger prevents an already-applied migration file from being silently
-  # edited and reused under the same version.
+  # The repair script is the only code path allowed to create this table.
+  # Ordinary deployments must fail closed when the ledger is absent.
   if ! _deploy_verify_ssh "$ssh_cmd" "${remote_psql}
-_psql -v ON_ERROR_STOP=1 -c \"CREATE TABLE IF NOT EXISTS llm_gateway_migration_checksums (version TEXT PRIMARY KEY, migration_name TEXT NOT NULL, checksum TEXT NOT NULL, applied_at TIMESTAMPTZ NOT NULL DEFAULT NOW());\" >/dev/null"; then
-    _db_err "无法创建 migration checksum ledger"
+_psql -v ON_ERROR_STOP=1 -tAc \"SELECT 1 FROM pg_class WHERE oid = 'public.llm_gateway_migration_checksums'::regclass\" | grep -qx '1'" >/dev/null; then
+    _db_err "migration checksum ledger missing after history gate; run scripts/repair-252-migration-ledger.sh --apply"
     return 1
   fi
 
   local applied_csv
   applied_csv=$(_deploy_applied_migration_ids "$ssh_cmd" "$env_file" | paste -sd, -)
   if [[ -n "$applied_csv" ]]; then
-    _deploy_migration_checksum_reconcile "$ssh_cmd" "$env_file" "$repo_root" "$applied_csv" || return 1
+    _deploy_migration_checksum_reconcile "$ssh_cmd" "$env_file" "$repo_root" || return 1
   fi
 
   if [[ ${#pending[@]} -eq 0 ]]; then
