@@ -83,6 +83,8 @@ build_one() {
   [[ -f .env.example ]] && cp -a .env.example "$work/.env.example" || true
   cp -a install.sh "$work/install.sh"
   cp -a deploy/one-click/README.md "$work/ONE-CLICK.md"
+  cp -a deploy/one-click/DEPLOYMENT-GUIDE.md "$work/DEPLOYMENT-GUIDE.md" 2>/dev/null || true
+  cp -a deploy/one-click/verify-install.sh "$work/verify-install.sh" 2>/dev/null || true
   cp -a deploy/sql/schemas/baseline/*.sql "$work/sql/baseline/" 2>/dev/null || true
 
   local inst_root="llm-gw-installer-${goos}-${goarch}"
