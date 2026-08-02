@@ -16,6 +16,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/domains/credentialstate" //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	ursmv2 "github.com/kaixuan/llm-gateway-go/domains/ursm/v2"
 	ursmv2api "github.com/kaixuan/llm-gateway-go/domains/ursm/v2/api"
+	"github.com/kaixuan/llm-gateway-go/domains/ursm/v2/statesource"
 	"github.com/kaixuan/llm-gateway-go/errorsx"
 	"github.com/kaixuan/llm-gateway-go/provider"
 )
@@ -108,6 +109,27 @@ func (r *Router) PlanCandidatesWithContext(
 		return nil
 	}
 
+	// S-3 (Step 5 round 1): decide and record the OUTER
+	// routing_state_source label exactly once per request. The inner
+	// NodeMirror source (hit/miss/stale) is exposed by
+	// FilterAndScoreReadyWithSource and recorded there. The outer
+	// label here is the routing decision's source (authoritative /
+	// fallback / canary / off); the spec §8.2 + §11.4 require both
+	// inner and outer be observable.
+	//
+	// The stateRecorded flag guards against double-recording on the
+	// canary branch (where v2 is consulted but the request also
+	// short-circuits to a non-v2 path). One call per
+	// PlanCandidatesWithContext invocation is the contract.
+	outerSourceRecorded := false
+	recordOuterSource := func(src statesource.RoutingStateSource) {
+		if outerSourceRecorded {
+			return
+		}
+		outerSourceRecorded = true
+		statesource.RecordRoutingStateSource(src)
+	}
+
 	// Capture one bounded Ready result. This value is reused for both v2
 	// filtering and backend selection below.
 	var readySnapshot *bool
@@ -136,15 +158,20 @@ func (r *Router) PlanCandidatesWithContext(
 				BaseURLMs:    c.P50LatencyMs,
 			})
 		}
-		views, err := r.URSMv2.FilterAndScoreReady(ctx, seeds, *readySnapshot)
+		// Use the S-3 variant so the inner NodeMirror source is
+		// recorded into the shared counter. The returned enum is
+		// intentionally not consulted here — the router records the
+		// OUTER label, not the inner one.
+		views, _, err := r.URSMv2.FilterAndScoreReadyWithSource(ctx, seeds, *readySnapshot)
 		if err != nil {
 			slog.Warn("router: URSM v2 FilterAndScore failed, failing open",
 				"error", err,
 				"seed_count", len(seeds),
 				"mode", r.URSMv2.Mode(),
-				"routing_state_source", "fallback",
 			)
+			recordOuterSource(statesource.StateSourceFallback)
 		} else {
+			recordOuterSource(statesource.StateSourceAuthoritative)
 			allow := make(map[string]bool, len(views))
 			for _, v := range views {
 				if v.Available {
@@ -162,6 +189,12 @@ func (r *Router) PlanCandidatesWithContext(
 				return nil
 			}
 		}
+	} else if r.URSMv2 != nil && r.URSMv2.Mode() == ursmv2api.ModeAuthoritative {
+		// Authoritative but not ready. Per spec §8.2 the legacy
+		// state source must NOT be the authoritative health judge,
+		// but the router still needs to surface that we did not
+		// consult v2 on this request → StateSourceFallback.
+		recordOuterSource(statesource.StateSourceFallback)
 	}
 
 	// 2026-07-24 Phase 2.3: 应用压力惩罚（feature flag 控制）
@@ -279,12 +312,35 @@ func (r *Router) PlanCandidatesWithContext(
 		if v2Ordered := r.planWithURSMv2Context(ordered, requestCtx, tenantID, canonical, requestID, readySnapshot != nil && *readySnapshot); v2Ordered != nil {
 			ordered = v2Ordered
 		}
+		// S-3 (Step 5 round 1): the canary v2 path was applied to
+		// this request — the outer source is Canary. The inner
+		// NodeMirror source (hit/miss/stale/fallback) is recorded
+		// inside planWithURSMv2Context -> PlanReadyWithSource ->
+		// FilterAndScoreReadyWithSource, which auto-records into the
+		// shared statesource counter (same contract as the
+		// authoritative path). Spec §8.2 requires both inner and
+		// outer to be observable; the canary path now satisfies
+		// that.
+		recordOuterSource(statesource.StateSourceCanary)
+	}
+
+	// S-3: if we got here without recording an outer source, the
+	// request did not consult v2 (off / shadow / canary-but-rolled-
+	// out / v2 manager nil). Record Off so the per-request metric
+	// surface stays closed.
+	if !outerSourceRecorded {
+		recordOuterSource(statesource.StateSourceOff)
 	}
 
 	return ordered
 }
 
 // planWithURSMv2Context is the request-aware variant used by canary routing.
+// It uses PlanReadyWithSource so the inner NodeMirror source
+// (hit/miss/stale/fallback) is auto-recorded by the manager (same
+// contract as the authoritative path). The router records the outer
+// Canary label separately — the S-3 spec §8.2 invariant requires
+// both inner and outer to be observable.
 func (r *Router) planWithURSMv2Context(fallback []provider.Candidate, requestCtx context.Context, tenant, canonical, requestID string, ready bool) []provider.Candidate {
 	if r.URSMv2 == nil || len(fallback) == 0 {
 		return nil
@@ -303,7 +359,15 @@ func (r *Router) planWithURSMv2Context(fallback []provider.Candidate, requestCtx
 	}
 	ctx, cancel := context.WithTimeout(requestCtx, 50*time.Millisecond)
 	defer cancel()
-	ordered := r.URSMv2.PlanReady(ctx, seeds, tenant, canonical, ready)
+	// Use PlanReadyWithSource so the inner NodeMirror source is
+	// recorded via the manager's FilterAndScoreReadyWithSource path.
+	// The error path falls back to the existing ordered slice in the
+	// caller; the inner source for the error case is empty (the
+	// outer router records StateSourceFallback).
+	ordered, _, err := r.URSMv2.PlanReadyWithSource(ctx, seeds, tenant, canonical, ready)
+	if err != nil {
+		return nil
+	}
 	if len(ordered) == 0 {
 		return nil
 	}
