@@ -15,7 +15,7 @@ func setupTestDB(t *testing.T) *pgxpool.Pool {
 	t.Helper()
 
 	// 使用本地Docker测试数据库连接
-	connString := "postgres://maintain:maintain@localhost:55432/llm_gateway?sslmode=disable"
+	connString := "postgres://maintain:maintain@localhost:5432/llm_gateway?sslmode=disable"
 	pool, err := pgxpool.New(context.Background(), connString)
 	require.NoError(t, err)
 
