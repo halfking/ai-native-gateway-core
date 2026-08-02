@@ -1,17 +1,20 @@
 #!/usr/bin/env bash
 # ─────────────────────────────────────────────────────────────────────
-# R1.12 本地 PG migrations
+# Dev Research 本地 PG migrations (复用 host llm-gateway-pg)
 #
 # 流程:
-#   1. 等待 r112_postgres 启动
-#   2. 重建 llm_gateway 库（本地测试需要干净基线）
-#   3. 加载 sql/schema/00-prereqs.sql + 01-schema.sql + 02-seed.sql
-#   4. 按文件名顺序应用 sql/migrations/startup/*.sql (增量迁移)
-#   4. 每个 migration 单独 try/catch, 失败时精确定位
+#   1. 从 .env.dev-research 读 PG 凭证
+#   2. 等待 host PG 可达
+#   3. 重建目标库 (--reset)
+#   4. 加载 sql/schema/01-schema.sql (基线)
+#   5. 按文件名顺序应用 sql/migrations/startup/*.sql (增量迁移)
+#   6. 应用 local mock credential seed
 #
 # 用法:
 #   ./scripts/local-r112-migrate.sh
 #   ./scripts/local-r112-migrate.sh --reset   # DROP + 重建库 (慎用)
+#
+# 前置: .env.dev-research 必须存在 (由 ./scripts/local-up.sh 已校验)
 #
 # 验证:
 #   bash -n scripts/local-r112-migrate.sh
@@ -23,12 +26,24 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 MIGRATIONS_DIR="$ROOT_DIR/sql/migrations/startup"
 BASE_SCHEMA_SQL="$ROOT_DIR/sql/schema/01-schema.sql"
+ENV_FILE="$ROOT_DIR/.env.dev-research"
 
-PG_CONTAINER="r112_postgres"
-PG_USER="kxuser"
-PG_PASS="kxpass"
-TARGET_DB="llm_gateway"
+# 凭证从 .env.dev-research 注入 (dev-research 共享 host PG)
+if [[ ! -f "$ENV_FILE" ]]; then
+  echo "✗ .env.dev-research 不存在; 请先 ./scripts/local-up.sh 触发凭证检查" >&2
+  exit 1
+fi
+# shellcheck disable=SC1090
+set -a; source "$ENV_FILE"; set +a
+
+PG_HOST="${POSTGRES_HOST:-host.docker.internal}"
+PG_PORT="${POSTGRES_PORT:-5432}"
+PG_USER="${POSTGRES_USER:-kxuser}"
+PG_PASS="${POSTGRES_PASSWORD:?POSTGRES_PASSWORD required in .env.dev-research}"
+TARGET_DB="${POSTGRES_DB:-llm_gateway_test_dev}"
 ADMIN_DB="postgres"   # CREATE DATABASE 必须在 postgres 库下执行
+
+export PGPASSWORD="$PG_PASS"
 
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -49,30 +64,22 @@ esac
 # ── 前置检查 ──
 [ -d "$MIGRATIONS_DIR" ] || { err "migrations 目录不存在: $MIGRATIONS_DIR"; exit 1; }
 
-if ! docker ps --format '{{.Names}}' | grep -q "^${PG_CONTAINER}\$"; then
-  err "容器 $PG_CONTAINER 未运行"
-  err "  修复: ./scripts/local-up.sh  (会先启动 postgres)"
-  exit 1
-fi
-
 # ── 工具函数 ──
 pg_exec() {
   # 用 admin 库 (postgres) 执行 SQL, 不指定 -d
-  PGPASSWORD="$PG_PASS" docker exec -e PGPASSWORD="$PG_PASS" \
-    "$PG_CONTAINER" psql -U "$PG_USER" -d "$ADMIN_DB" -v ON_ERROR_STOP=1 -tAc "$1"
+  psql -h "$PG_HOST" -p "$PG_PORT" -U "$PG_USER" -d "$ADMIN_DB" -v ON_ERROR_STOP=1 -tAc "$1"
 }
 
 pg_exec_db() {
-  # 用目标库 (llm_gateway) 执行 SQL 文件
-  PGPASSWORD="$PG_PASS" docker exec -e PGPASSWORD="$PG_PASS" \
-    -i "$PG_CONTAINER" psql -U "$PG_USER" -d "$TARGET_DB" -v ON_ERROR_STOP=1 "$@"
+  # 用目标库 执行 SQL 文件
+  psql -h "$PG_HOST" -p "$PG_PORT" -U "$PG_USER" -d "$TARGET_DB" -v ON_ERROR_STOP=1 "$@"
 }
 
 # ── 等待 postgres 就绪 ──
-info "等待 postgres..."
+info "等待 host PG ($PG_HOST:$PG_PORT)..."
 for i in $(seq 1 60); do
-  if docker exec "$PG_CONTAINER" pg_isready -U "$PG_USER" -d "$ADMIN_DB" >/dev/null 2>&1; then
-    ok "postgres ready (after ${i}s)"
+  if pg_isready -h "$PG_HOST" -p "$PG_PORT" -U "$PG_USER" -d "$ADMIN_DB" >/dev/null 2>&1; then
+    ok "host PG ready (after ${i}s)"
     break
   fi
   sleep 1
@@ -109,8 +116,7 @@ for BASE_SQL in "$ROOT_DIR/sql/schema/00-prereqs.sql" "$BASE_SCHEMA_SQL" "$ROOT_
   else
     LOAD_CMD=(cat "$BASE_SQL")
   fi
-  if ! "${LOAD_CMD[@]}" | PGPASSWORD="$PG_PASS" docker exec -e PGPASSWORD="$PG_PASS" \
-       -i "$PG_CONTAINER" psql -U "$PG_USER" -d "$TARGET_DB" \
+  if ! "${LOAD_CMD[@]}" | psql -h "$PG_HOST" -p "$PG_PORT" -U "$PG_USER" -d "$TARGET_DB" \
        -v ON_ERROR_STOP=1 -f - >/tmp/r112_base_$$.log 2>&1; then
     echo -e "${RED}FAIL${NC}"
     err "  SQL 错误输出 (前 20 行):"
@@ -220,8 +226,7 @@ for MIG_FILE in "${MIGRATION_FILES[@]}"; do
   # (当前迁移不依赖此机制, 留扩展点)
   printf "  [%3d/%d] %s ... " "$((APPLIED+SKIPPED+FAILED+1))" "$TOTAL" "$MIG_NAME"
 
-  if PGPASSWORD="$PG_PASS" docker exec -e PGPASSWORD="$PG_PASS" \
-       -i "$PG_CONTAINER" psql -U "$PG_USER" -d "$TARGET_DB" \
+  if psql -h "$PG_HOST" -p "$PG_PORT" -U "$PG_USER" -d "$TARGET_DB" \
        -v ON_ERROR_STOP=1 -f - < "$MIG_FILE" >/tmp/r112_mig_$$.log 2>&1; then
     echo -e "${GREEN}OK${NC}"
     APPLIED=$((APPLIED+1))
@@ -238,7 +243,7 @@ for MIG_FILE in "${MIGRATION_FILES[@]}"; do
       err "  修复建议:"
       err "    1. 检查迁移文件: $MIG_FILE"
       err "    2. 重置后重试:   $0 --reset"
-      err "    3. 手动调试:     PGPASSWORD=$PG_PASS docker exec -it $PG_CONTAINER psql -U $PG_USER -d $TARGET_DB -f $MIG_FILE"
+      err "    3. 手动调试:     PGPASSWORD=\$PG_PASSWORD psql -h $PG_HOST -p $PG_PORT -U $PG_USER -d $TARGET_DB -f $MIG_FILE"
       rm -f /tmp/r112_mig_$$.log
       exit 1
     fi
@@ -253,13 +258,12 @@ ok "Migrations 完成: $APPLIED applied, $SKIPPED skipped, $FAILED failed (total
 LOCAL_SEED="$ROOT_DIR/sql/scripts/03-local-mock-credential.sql"
 if [ -f "$LOCAL_SEED" ]; then
   info "加载本地 mock credential seed: $(basename "$LOCAL_SEED")"
-  if PGPASSWORD="$PG_PASS" docker exec -e PGPASSWORD="$PG_PASS" \
-       -i "$PG_CONTAINER" psql -U "$PG_USER" -d "$TARGET_DB" \
+  if psql -h "$PG_HOST" -p "$PG_PORT" -U "$PG_USER" -d "$TARGET_DB" \
        -v ON_ERROR_STOP=1 -f - < "$LOCAL_SEED" >/dev/null 2>&1; then
     ok "local mock credential seed 已加载 (provider=local-mock, model=gpt-4o)"
   else
     err "local mock credential seed 加载失败 (非致命, v1 chat 转发将不可用)"
-    err "  排查: PGPASSWORD=$PG_PASS docker exec -i $PG_CONTAINER psql -U $PG_USER -d $TARGET_DB -f $LOCAL_SEED"
+    err "  排查: PGPASSWORD=\$PG_PASSWORD psql -h $PG_HOST -p $PG_PORT -U $PG_USER -d $TARGET_DB -f $LOCAL_SEED"
   fi
 fi
 
@@ -268,8 +272,7 @@ fi
 FORMAL_MIGRATION="$ROOT_DIR/sql/migrations/startup/445_routing_persistence_hardening.sql"
 if [ -f "$FORMAL_MIGRATION" ]; then
   info "Applying routing persistence hardening migration..."
-  if PGPASSWORD="$PG_PASS" docker exec -e PGPASSWORD="$PG_PASS" -i \
-       "$PG_CONTAINER" psql -U "$PG_USER" -d "$TARGET_DB" \
+  if psql -h "$PG_HOST" -p "$PG_PORT" -U "$PG_USER" -d "$TARGET_DB" \
        -v ON_ERROR_STOP=1 -f - < "$FORMAL_MIGRATION" >/tmp/r112_routing_hardening_$$.log 2>&1; then
     ok "routing persistence hardening migration applied"
   else

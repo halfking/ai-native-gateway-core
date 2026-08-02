@@ -1,9 +1,13 @@
-# R1.12 本地测试 docker-compose
+# Dev Research 本地集成 docker-compose
+#
+# 用途: 研发本地集成环境 (shared host PG, dev convenience)
+#       与 customer-instance 路径独立 (见 docker-compose.deploy-test.yml)
 #
 # 用法:
-#   docker-compose -f docker-compose.local-r112.yml config    # 验证语法
-#   ./scripts/local-up.sh                                       # 启动 + 等健康
-#   ./scripts/local-down.sh [--volumes]                         # 停止 + 清理 volumes
+#   cp .env.dev-research.example .env.dev-research   # 首次: 复制模板
+#   编辑 .env.dev-research 设置本地凭证                # dev-research 是共享 host PG
+#   ./scripts/local-up.sh                              # 启动 + 等健康
+#   ./scripts/local-down.sh [--volumes]                # 停止 + 清理 volumes
 #
 # 端口映射 (避免与本地其他 compose 冲突):
 #   - 5432  postgres  (citusdata/citus:11.3.0, 与生产一致)
@@ -14,22 +18,21 @@
 #   - 8782  gateway-v2     (v2 演示入口, cmd/gateway-v2)
 #   - 10302 memora-mcp     (mock 占位, 注释说明)
 #
-# 所有 volume 名前缀 r112_ —— 避免与本地其他 docker-compose 冲突
+# 所有凭证 (POSTGRES_PASSWORD / REDIS_PASSWORD / LLM_GATEWAY_CREDENTIAL_ENCRYPTION_KEY /
+# LLM_GATEWAY_JWT_SECRET / LLM_GATEWAY_ADMIN_API_KEY / LLM_GATEWAY_SEED_ADMIN_PASSWORD)
+# 必须从 .env.dev-research 提供 (chmod 0600, gitignore)。本文件不固化任何明文。
+#
+# 容器/volume 名前缀 r112_ 保留历史命名 (避免破坏已存在 volumes)。
 
 version: "3.9"
 
 services:
   # ─────────────────────────────────────────────────────────────────────
-  # PostgreSQL — 复用共享实例 llm-gateway-pg (本机 127.0.0.1:5432)。
-  # 原 r112_postgres 容器已随 PG 实例合并停用，r112 测试数据迁移到
-  # llm-gateway-pg 上的独立库 llm_gateway_test_r112 (owner=kxuser, 与主库隔离)。
+  # 注意: dev-research 路径复用本机 host 上的 llm-gateway-pg 共享实例
+  # (host.docker.internal:5432), 数据库名固定 llm_gateway_test_dev,
+  # 凭证 (POSTGRES_USER / POSTGRES_PASSWORD) 从 .env.dev-research 注入。
+  # 与 customer-instance 路径 (deploy-test / one-click) 完全独立。
   # ─────────────────────────────────────────────────────────────────────
-  # PostgreSQL (Citus 11.3, 与 184/71 生产一致)
-  # ─────────────────────────────────────────────────────────────────────
-  # 2026-07-14: switched from citusdata/citus:11.3.0 (amd64 only) to
-  # pgvector/pgvector:pg17 (native arm64). The gateway does not use
-  # Citus distributed features in local tests; plain PG17 + pgvector
-  # matches production column types and keeps everything arm64-native.
 
   # ─────────────────────────────────────────────────────────────────────
   # Redis 7
@@ -129,6 +132,8 @@ services:
       dockerfile: Dockerfile.local-arm64
     image: r112-gateway:local-arm64
     container_name: r112_gateway
+    env_file:
+      - .env.dev-research
     depends_on:
       redis:
         condition: service_healthy
@@ -146,17 +151,19 @@ services:
       LOG_LEVEL: "info"
       STICKY_MULTILEVEL_DEBUG: "1"
       # ── 依赖 (compose 内服务名) ──
-      LLM_GATEWAY_DATABASE_URL: "postgres://kxuser:kxpass@host.docker.internal:5432/llm_gateway_test_r112?sslmode=disable"
-      LLM_GATEWAY_REDIS_ADDR: "redis:6379"
-      # ── credential 解密 key (与 03-local-mock-credential.sql 配对) ──
+      # POSTGRES_USER / POSTGRES_PASSWORD 从 .env.dev-research 注入
+      # 默认: 复用本机 host llm-gateway-pg (dev-research 共享 host PG)
+      LLM_GATEWAY_DATABASE_URL: "postgres://${POSTGRES_USER:-kxuser}:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD required in .env.dev-research}@host.docker.internal:${POSTGRES_PORT:-5432}/${POSTGRES_DB:-llm_gateway_test_dev}?sslmode=disable"
+      LLM_GATEWAY_REDIS_ADDR: "redis:${REDIS_PORT:-6379}"
+      # ── credential 解密 key (.env.dev-research 注入) ──
       # 32-byte deterministic key, base64url. LOCAL ONLY, never production.
-      LLM_GATEWAY_CREDENTIAL_ENCRYPTION_KEY: "AwoRGB8mLTQ7QklQV15lbHN6gYiPlp2kq7K5wMfO1dw"
-      # ── JWT signing secret (本地测试用固定值) ──
-      LLM_GATEWAY_JWT_SECRET: "local-dev-secret-do-not-use-in-production-12345678"
+      # LLM_GATEWAY_CREDENTIAL_ENCRYPTION_KEY: <from .env.dev-research>
+      # ── JWT signing secret (.env.dev-research 注入) ──
+      # LLM_GATEWAY_JWT_SECRET: <from .env.dev-research>
       # ── 关闭数据面 auth (本地测试, 不设 API_KEY 即默认 off) ──
       # LLM_GATEWAY_API_KEY 留空 → auth middleware 不生效
-      # ── Admin API token for /api/admin/* endpoints ──
-      LLM_GATEWAY_ADMIN_API_KEY: "local-admin-test-token-do-not-use-in-production"
+      # ── Admin API token (.env.dev-research 注入) ──
+      # LLM_GATEWAY_ADMIN_API_KEY: <from .env.dev-research>
       # ── CORS (v1 启动时 panic 若未设; 本地用通配) ──
       LLM_GATEWAY_CORS_ORIGINS: "*"
       # ── 附件目录 (容器内可写, 避免启动时 mkdir 失败) ──
@@ -164,8 +171,8 @@ services:
       LLM_GATEWAY_BACKUP_DIR: "/tmp/llm-gateway-backups"
       # ── 指向真 mock upstream (仅用于无 credential 命中时的兜底) ──
       LLM_GATEWAY_UPSTREAM: "http://llm-mock-upstream:18080"
-      # ── Seed admin password (本地测试) ──
-      LLM_GATEWAY_SEED_ADMIN_PASSWORD: "Veritrans&9527"
+      # ── Seed admin password (.env.dev-research 注入) ──
+      # LLM_GATEWAY_SEED_ADMIN_PASSWORD: <from .env.dev-research>
       # ── 运维节点标识（写入 gateway_instances.region）──
       OPS_NODE_REGION: "local"
       # ── 首次激活/中心注册地址 ──
@@ -191,6 +198,8 @@ services:
     image: r112-gateway-v2:disabled
     container_name: r112_gateway_v2
     profiles: ["v2"]
+    env_file:
+      - .env.dev-research
     depends_on:
       redis:
         condition: service_healthy
@@ -208,8 +217,9 @@ services:
       LOG_LEVEL: info
       LISTEN_ADDR: ":8080"
       # ── 依赖指向 compose 内服务名 (docker DNS 自动解析) ──
-      DATABASE_URL: postgres://kxuser:kxpass@host.docker.internal:5432/llm_gateway_test_r112?sslmode=disable
-      REDIS_URL: redis://redis:6379/0
+      # DATABASE_URL 从 .env.dev-research 注入 (docker-compose v1/v2 共享同一份 env)
+      # REDIS_URL: compose 内服务名解析
+      REDIS_URL: redis://redis:${REDIS_PORT:-6379}/0
       MEMORA_URL: http://memora-mcp:80
       # 指向真 OpenAI 兼容 mock (支持 chat/completions 真实回包)
       OPENAI_BASE_URL: http://llm-mock-upstream:18080
