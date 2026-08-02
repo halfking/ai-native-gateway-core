@@ -963,6 +963,30 @@ func (h *ChatHandler) SetIntegrityDetector(d executors.IntegrityDetector) {
 	h.integrityDetector = d
 }
 
+// integrityObserverFactory is the optional interface an
+// executors.IntegrityDetector implements to supply a per-request
+// incremental stream observer. Declared here (rather than imported) so
+// domains/streaming keeps its one-directional dependency on
+// domains/streaming/integrity — see the note on
+// streamRespModelForIntegrity.
+type integrityObserverFactory interface {
+	NewStreamTextObserver() audit.StreamTextObserver
+}
+
+// newStreamCapture builds a StreamCapture with the incremental integrity
+// observer attached when the wired detector supplies one. Every stream
+// entry point (chat / responses / messages) goes through here so the
+// four transformer families are covered uniformly.
+func (h *ChatHandler) newStreamCapture() *audit.StreamCapture {
+	capture := audit.NewStreamCapture()
+	if f, ok := h.integrityDetector.(integrityObserverFactory); ok && f != nil {
+		if obs := f.NewStreamTextObserver(); obs != nil {
+			capture.SetTextObserver(obs)
+		}
+	}
+	return capture
+}
+
 // SetAutoTitleGenerator (2026-06-22) wires the auto title generator from admin package.
 func (h *ChatHandler) SetAutoTitleGenerator(atg interface {
 	MaybeGenerateTitle(sessionID, tenantID string)
@@ -2126,7 +2150,7 @@ func (h *ChatHandler) serveWithExecutor(
 
 	var streamCapture *audit.StreamCapture
 	if isStream {
-		streamCapture = audit.NewStreamCapture()
+		streamCapture = h.newStreamCapture()
 	}
 
 	var preStream *preStreamKeepalive
@@ -4243,6 +4267,10 @@ func (h *ChatHandler) emitTelemetry(evt audit.Event, result *executors.ExecuteRe
 	// response interceptor). The detector is nil-safe; we nil-check
 	// here anyway so the call site stays explicit.
 	if h.integrityDetector != nil && !result.IntegrityObserved {
+		// 2026-08-02: hand over the incremental observer's finding so the
+		// detector records the mid-stream repeat instead of rescanning
+		// textContent. Exactly one repeated_content event per request.
+		repHash, repHits, repBlockSize, repBlocks, repFound := capture.IncrementalRepeatedContent()
 		h.integrityDetector.Observe(logCtx.Request.Context(), executors.IntegrityCandidate{
 			RequestID:          reqLog.RequestID,
 			TenantID:           tenantID,
@@ -4266,6 +4294,13 @@ func (h *ChatHandler) emitTelemetry(evt audit.Event, result *executors.ExecuteRe
 			TextContent:        streamTextContentForIntegrity(capture),
 			ResponseBody:       append([]byte(nil), responseBody...),
 			IsStream:           capture != nil,
+
+			RepeatedContentDetected:    repFound,
+			RepeatedContentHash:        repHash,
+			RepeatedContentHits:        repHits,
+			RepeatedContentBlockSize:   repBlockSize,
+			RepeatedContentBlocksTotal: repBlocks,
+			StreamAborted:              capture.IntegrityBreachReason() == "integrity_repeated_content",
 		})
 	}
 }

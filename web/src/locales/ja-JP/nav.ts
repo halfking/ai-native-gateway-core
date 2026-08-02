@@ -44,6 +44,7 @@ export default {
     settings: "システム設定",
     dataLifecycle: "データライフサイクル",
     formatAnomalies: "フォーマット異常モニター",
+    modelIntegrity: "モデル整合性モニター",
     modules: "モジュール管理",
     sessionAnalytics: "セッション分析センター",
     sessionClusters: "セッションクラスタ",
