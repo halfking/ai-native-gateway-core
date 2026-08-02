@@ -27,6 +27,29 @@ func TestGoldenFixture_AnthropicToOpenAI(t *testing.T) {
 	runGoldenFixture(t, "anthropic_to_openai", "anthropic-messages", "openai-chat")
 }
 
+func TestGoldenFixture_OpenAIToGemini(t *testing.T) {
+	runGoldenFixture(t, "openai_to_gemini", "openai-chat", "gemini-generate")
+}
+
+func TestGoldenFixture_GeminiToOpenAI(t *testing.T) {
+	runGoldenFixture(t, "gemini_to_openai", "gemini-generate", "openai-chat")
+}
+
+// TestGoldenFixture_OpenAIToResponses is recorded as an unsupported direction:
+// IRTransport has no Responses *request* serializer (only the response/stream
+// Serialize direction exists — see ir_converter.go:295). The fixture pair is
+// committed for documentation + future enablement; the test skips until the
+// Responses request direction lands.
+func TestGoldenFixture_OpenAIToResponses(t *testing.T) {
+	runGoldenFixtureUnsupported(t, "openai_to_responses")
+}
+
+// TestGoldenFixture_AnthropicToResponses — same gap as OpenAIToResponses:
+// no Responses request serializer in IRTransport.serializeRequest.
+func TestGoldenFixture_AnthropicToResponses(t *testing.T) {
+	runGoldenFixtureUnsupported(t, "anthropic_to_responses")
+}
+
 func runGoldenFixture(t *testing.T, fixtureName, clientProtocol, upstreamProtocol string) {
 	t.Helper()
 	dir := filepath.Join("testdata", "ir_golden", fixtureName)
@@ -68,6 +91,26 @@ func assertJSONEqual(t *testing.T, actual, expected []byte) {
 	if !reflect.DeepEqual(actualValue, expectedValue) {
 		t.Fatalf("fixture output mismatch\nactual: %s\nexpected: %s", actual, expected)
 	}
+}
+
+// runGoldenFixtureUnsupported validates metadata for a fixture whose direction
+// IRTransport.Convert cannot yet perform (e.g. Responses as a request target).
+// The fixture is committed for traceability; the test skips with a documented
+// reason rather than failing the suite.
+func runGoldenFixtureUnsupported(t *testing.T, fixtureName string) {
+	t.Helper()
+	dir := filepath.Join("testdata", "ir_golden", fixtureName)
+	meta, err := LoadFixtureMetadata(filepath.Join(dir, "_fixture_meta.json"))
+	if err != nil {
+		t.Fatalf("LoadFixtureMetadata: %v", err)
+	}
+	if err := ValidateFixtureMetadata(meta); err != nil {
+		t.Fatalf("ValidateFixtureMetadata: %v", err)
+	}
+	if meta.FixtureKind != "unsupported" {
+		t.Fatalf("fixture %s expected fixture_kind=unsupported, got %q", fixtureName, meta.FixtureKind)
+	}
+	t.Skipf("fixture %s is unsupported: %s", fixtureName, meta.UnsupportedReason)
 }
 
 func TestValidateFixtureMetadata_RejectsMissingRequiredField(t *testing.T) {
