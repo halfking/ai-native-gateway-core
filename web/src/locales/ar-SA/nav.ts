@@ -44,6 +44,7 @@ export default {
     settings: "إعدادات النظام",
     dataLifecycle: "دورة حياة البيانات",
     formatAnomalies: "مراقبة شذوذ التنسيق",
+    modelIntegrity: "مراقبة سلامة النموذج",
     modules: "إدارة الوحدات",
     sessionAnalytics: "مركز تحليل الجلسات",
     sessionClusters: "تجميع الجلسات",

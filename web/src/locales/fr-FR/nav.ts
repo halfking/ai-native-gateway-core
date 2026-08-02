@@ -44,6 +44,7 @@ export default {
     settings: "Paramètres système",
     dataLifecycle: "Cycle de vie des données",
     formatAnomalies: "Surveillance des anomalies de format",
+    modelIntegrity: "Surveillance de l intégrité du modèle",
     modules: "Gestion des modules",
     sessionAnalytics: "Centre d'analyse des sessions",
     sessionClusters: "Clusters de sessions",

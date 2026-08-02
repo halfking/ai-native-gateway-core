@@ -44,6 +44,7 @@ export default {
     settings: "Systemeinstellungen",
     dataLifecycle: "Datenlebenszyklus",
     formatAnomalies: "Formatanomalie-Überwachung",
+    modelIntegrity: "Modellintegritäts-Monitor",
     modules: "Modulverwaltung",
     sessionAnalytics: "Sitzungsanalyse-Zentrum",
     sessionClusters: "Sitzungs-Cluster",
