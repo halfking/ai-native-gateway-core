@@ -1,0 +1,119 @@
+# Local Deploy Test docker-compose (customer-instance simulation)
+#
+# ─────────────────────────────────────────────────────────────────────────────
+# 用法:
+#   ./scripts/local-deploy-test.sh                 # 全流程: 生成密码 + 启动栈 + L1-L4 验证
+#   ./scripts/local-deploy-test.sh --reset         # 删除旧 stack + 重新生成密码
+#   ./scripts/local-deploy-test.sh --verify       # 仅跑 L1-L4 (服务已运行)
+#   ./scripts/local-deploy-test.sh --clean        # 停 + 清数据
+#
+# 设计原则 (与 dev-research 严格分离):
+#   - 自带 PG/Redis 容器 (kx-citus-test / kx-redis-test), 不复用 host PG
+#   - 所有凭证从 .env.deploy-test 注入 (chmod 0600, gitignored)
+#   - 每次启动自动生成新密码 (除非 .env.deploy-test 已存在并提供 --reuse)
+#   - 与 install.sh (生产/客户实例) 使用相同的 compose 模板模式
+#
+# 与以下两个 compose 严格区别:
+#   - docker-compose.dev-research.yml      研发本地集成 (共享 host PG)
+#   - docker-compose.yml                  生产/预生产主栈
+# ─────────────────────────────────────────────────────────────────────────────
+
+version: "3.9"
+
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
+services:
+  # ─────────────────────────────────────────────────────────────────────
+  # PostgreSQL (客户实例独立容器, 与 host PG 隔离)
+  # ─────────────────────────────────────────────────────────────────────
+  citus:
+    image: pgvector/pgvector:pg17
+    container_name: kx-citus-test
+    restart: unless-stopped
+    logging: *default-logging
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-kxuser}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD required in .env.deploy-test}
+      POSTGRES_DB: ${POSTGRES_DB:-llm_gateway}
+    ports:
+      - "${POSTGRES_PORT:-55432}:5432"
+    volumes:
+      - citus_test_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-kxuser} -d ${POSTGRES_DB:-llm_gateway}"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+      start_period: 10s
+
+  # ─────────────────────────────────────────────────────────────────────
+  # Redis (客户实例独立容器, 与 host Redis 隔离)
+  # ─────────────────────────────────────────────────────────────────────
+  redis:
+    image: redis:7-alpine
+    container_name: kx-redis-test
+    restart: unless-stopped
+    logging: *default-logging
+    command: ["redis-server", "--requirepass", "${REDIS_PASSWORD:?REDIS_PASSWORD required in .env.deploy-test}", "--appendonly", "yes"]
+    ports:
+      - "${REDIS_PORT:-16379}:6379"
+    volumes:
+      - redis_test_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD:?REDIS_PASSWORD required in .env.deploy-test}", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 5s
+
+  # ─────────────────────────────────────────────────────────────────────
+  # Gateway (单实例, 本地构建)
+  # ─────────────────────────────────────────────────────────────────────
+  gateway:
+    build:
+      context: .
+      dockerfile: Dockerfile.local-arm64
+    image: deploy-test-gateway:local-arm64
+    container_name: deploy-test-gateway
+    restart: unless-stopped
+    logging: *default-logging
+    env_file: .env.deploy-test
+    depends_on:
+      citus:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    ports:
+      - "${APP_PORT:-18781}:8781"
+    environment:
+      LLM_GATEWAY_LISTEN: ":8781"
+      LLM_GATEWAY_ENV: "local"
+      LOG_LEVEL: "info"
+      DATABASE_URL: "postgres://${POSTGRES_USER:-kxuser}:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD required in .env.deploy-test}@citus:5432/${POSTGRES_DB:-llm_gateway}?sslmode=disable"
+      LLM_GATEWAY_REDIS_ADDR: "redis:6379"
+      LLM_GATEWAY_REDIS_PASSWORD: "${REDIS_PASSWORD:?REDIS_PASSWORD required in .env.deploy-test}"
+      LLM_GATEWAY_CREDENTIAL_ENCRYPTION_KEY: "${LLM_GATEWAY_CREDENTIAL_ENCRYPTION_KEY:?required in .env.deploy-test}"
+      LLM_GATEWAY_JWT_SECRET: "${LLM_GATEWAY_JWT_SECRET:?required in .env.deploy-test}"
+      LLM_GATEWAY_ADMIN_API_KEY: "${LLM_GATEWAY_ADMIN_API_KEY:?required in .env.deploy-test}"
+      LLM_GATEWAY_SEED_ADMIN_PASSWORD: "${LLM_GATEWAY_SEED_ADMIN_PASSWORD:?required in .env.deploy-test}"
+      LLM_GATEWAY_ATTACHMENT_DIR: "/tmp/attachments"
+      LLM_GATEWAY_BACKUP_DIR: "/tmp/llm-gateway-backups"
+      OPS_NODE_REGION: "deploy-test"
+    volumes:
+      - ./configs:/configs:ro
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O- http://localhost:8781/healthz | grep -q ok || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+      start_period: 20s
+
+volumes:
+  citus_test_data:
+    name: deploy_test_citus_data
+  redis_test_data:
+    name: deploy_test_redis_data
