@@ -120,6 +120,9 @@ traffic-replay-bin
 .env.*.local
 .env.*.user
 .env.*.production
+.env.dev-research
+.env.deploy-test
+.env.*.bak
 *.env
 secrets.json
 secrets.yaml

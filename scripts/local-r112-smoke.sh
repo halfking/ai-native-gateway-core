@@ -148,6 +148,6 @@ else
   echo "  docker logs r112_gateway    | tail -100   # v1"
   echo "  curl -v $BASE_URL/healthz"
   echo "  curl -v $V1_BASE_URL/healthz"
-  echo "  PGPASSWORD=kxpass docker exec r112_postgres psql -U kxuser -d llm_gateway -c '\\dt'"
+  echo "  PGPASSWORD=\$POSTGRES_PASSWORD psql -h \$POSTGRES_HOST -p \$POSTGRES_PORT -U \$POSTGRES_USER -d \$POSTGRES_DB -c '\\dt'"
   exit "$FAIL"
 fi

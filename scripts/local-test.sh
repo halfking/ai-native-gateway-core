@@ -132,11 +132,19 @@ if [ "$RUN_INTEGRATION" = "1" ]; then
     record "request lifecycle test" SKIP "go 未安装"
   else
     info "go test -tags=integration TestRequestLifecycle"
-    export LLM_GATEWAY_PG_URL="postgres://kxuser:kxpass@localhost:5432/llm_gateway?sslmode=disable"
-    if go test -tags=integration -timeout 60s ./tests/integration/ -run TestRequestLifecycle 2>&1 | tail -5; then
-      record "request lifecycle test" PASS
+    # 凭证从 .env.dev-research 注入 (PG 凭证统一来源)
+    ENV_FILE="$ROOT_DIR/.env.dev-research"
+    if [[ ! -f "$ENV_FILE" ]]; then
+      record "request lifecycle test" SKIP ".env.dev-research 不存在 (run local-up.sh 触发凭证检查)"
     else
-      record "request lifecycle test" FAIL "test command failed"
+      # shellcheck disable=SC1090
+      set -a; source "$ENV_FILE"; set +a
+      export LLM_GATEWAY_PG_URL="postgres://${POSTGRES_USER:-kxuser}:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD required}@${POSTGRES_HOST:-host.docker.internal}:${POSTGRES_PORT:-5432}/${POSTGRES_DB:-llm_gateway_test_dev}?sslmode=disable"
+      if go test -tags=integration -timeout 60s ./tests/integration/ -run TestRequestLifecycle 2>&1 | tail -5; then
+        record "request lifecycle test" PASS
+      else
+        record "request lifecycle test" FAIL "test command failed"
+      fi
     fi
   fi
 fi
