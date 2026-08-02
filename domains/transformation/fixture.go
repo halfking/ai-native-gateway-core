@@ -9,13 +9,14 @@ import (
 
 // FixtureMetadata identifies the origin and redaction status of a golden fixture.
 type FixtureMetadata struct {
-	SourceURL        string `json:"source_url"`
-	CapturedAt       string `json:"captured_at"`
-	APIVersion       string `json:"api_version"`
-	Model            string `json:"model"`
-	ProviderProfile  string `json:"provider_profile"`
-	RedactionVersion string `json:"redaction_version"`
-	FixtureKind      string `json:"fixture_kind"`
+	SourceURL         string `json:"source_url"`
+	CapturedAt        string `json:"captured_at"`
+	APIVersion        string `json:"api_version"`
+	Model             string `json:"model"`
+	ProviderProfile   string `json:"provider_profile"`
+	RedactionVersion  string `json:"redaction_version"`
+	FixtureKind       string `json:"fixture_kind"`
+	UnsupportedReason string `json:"unsupported_reason,omitempty"`
 }
 
 func LoadFixtureMetadata(path string) (FixtureMetadata, error) {

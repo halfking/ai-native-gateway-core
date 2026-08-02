@@ -1,0 +1,41 @@
+{
+  "contents": [
+    {
+      "role": "user",
+      "parts": [
+        { "text": "What is the weather in Tokyo?" }
+      ]
+    }
+  ],
+  "systemInstruction": {
+    "parts": [
+      { "text": "You are a helpful assistant." }
+    ]
+  },
+  "tools": [
+    {
+      "functionDeclarations": [
+        {
+          "name": "get_weather",
+          "description": "Get current weather for a city",
+          "parameters": {
+            "type": "OBJECT",
+            "properties": {
+              "city": { "type": "STRING" }
+            },
+            "required": ["city"]
+          }
+        }
+      ]
+    }
+  ],
+  "toolConfig": {
+    "functionCallingConfig": {
+      "mode": "AUTO"
+    }
+  },
+  "generationConfig": {
+    "temperature": 0.7,
+    "maxOutputTokens": 256
+  }
+}

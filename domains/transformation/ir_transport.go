@@ -627,6 +627,8 @@ func parseRequest(protocol string, body []byte) (*ir.InternalRequest, error) {
 		return ir.ParseOpenAI(body)
 	case "anthropic-messages", "anthropic":
 		return ir.ParseAnthropic(body)
+	case "gemini-generate", "gemini":
+		return ir.ParseGemini(body)
 	default:
 		return nil, fmt.Errorf("unsupported client protocol: %s", protocol)
 	}
@@ -639,6 +641,8 @@ func serializeRequest(protocol string, req *ir.InternalRequest) ([]byte, error) 
 		return ir.SerializeOpenAI(req)
 	case "anthropic-messages", "anthropic":
 		return ir.SerializeAnthropic(req)
+	case "gemini-generate", "gemini":
+		return ir.SerializeGemini(req)
 	default:
 		return nil, fmt.Errorf("unsupported upstream protocol: %s", protocol)
 	}
