@@ -18,6 +18,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/domains/ursm/v2/recovery"
 	"github.com/kaixuan/llm-gateway-go/domains/ursm/v2/resource"
 	"github.com/kaixuan/llm-gateway-go/domains/ursm/v2/rollout"
+	"github.com/kaixuan/llm-gateway-go/domains/ursm/v2/statesource"
 	"github.com/kaixuan/llm-gateway-go/domains/ursm/v2/store"
 	"github.com/kaixuan/llm-gateway-go/domains/ursm/v2/sync"
 	"github.com/kaixuan/llm-gateway-go/metrics"
@@ -250,7 +251,8 @@ func (m *Manager) FilterAndScore(ctx context.Context, seeds []CandidateSeed) ([]
 	if m.Mode() == api.ModeOff {
 		return nil, nil
 	}
-	return m.filterAndScore(ctx, seeds, m.Ready(ctx))
+	views, _, err := m.filterAndScore(ctx, seeds, m.Ready(ctx))
+	return views, err
 }
 
 // FilterAndScoreReady evaluates seeds using a Ready result captured by the
@@ -264,11 +266,56 @@ func (m *Manager) FilterAndScoreReady(ctx context.Context, seeds []CandidateSeed
 	if m.Mode() == api.ModeOff {
 		return nil, nil
 	}
-	return m.filterAndScore(ctx, seeds, ready)
+	views, _, err := m.filterAndScore(ctx, seeds, ready)
+	return views, err
 
 }
 
-func (m *Manager) filterAndScore(ctx context.Context, seeds []CandidateSeed, ready bool) ([]api.NodeView, error) {
+// FilterAndScoreReadyWithSource is the S-3 (routing_state_source)
+// companion of FilterAndScoreReady. The returned source enum reports
+// what actually served the read for this request:
+//
+//   - StateSourceNodeMirrorHit  — every seed resolved from the LRU
+//     mirror (no Redis IO on this call).
+//   - StateSourceNodeMirrorMiss — at least one seed had no mirror
+//     entry, so a Redis pipeline read ran. The call is still
+//     authoritative if it returned no error.
+//   - StateSourceNodeMirrorStale — every seed resolved from the
+//     mirror but at least one entry was soft-expired (counts as a
+//     miss on the LRU side; the helper reports it separately so
+//     operators can size soft-TTL from the dashboard).
+//
+// In addition to returning the source to the caller, this method
+// records the inner NodeMirror source into the shared
+// statesource counter so the per-process metric surface stays
+// authoritative even when callers (router tests, audit dumps) only
+// consume the outer (authoritative/canary/off) label. The outer
+// label is the router's responsibility — see router.go.
+//
+// Off-mode short-circuits at the caller (FilterAndScoreReady) and
+// never reaches this method. The ready==false path returns
+// ("", error) — the caller must NOT record a source in that case
+// because authoritative state was not consulted at all.
+func (m *Manager) FilterAndScoreReadyWithSource(ctx context.Context, seeds []CandidateSeed, ready bool) ([]api.NodeView, statesource.RoutingStateSource, error) {
+	if m == nil {
+		return nil, "", fmt.Errorf("ursm.v2: nil manager")
+	}
+	if m.Mode() == api.ModeOff {
+		return nil, "", nil
+	}
+	views, src, err := m.filterAndScore(ctx, seeds, ready)
+	// Record the inner source for the live metric surface. We do this
+	// only on the success path — when filterAndScore errored, the
+	// outer router records StateSourceFallback and the inner label
+	// would be a misleading double-count. Skip on a non-empty source
+	// (the empty value means "we never reached a decision point").
+	if err == nil && src != "" {
+		statesource.RecordRoutingStateSource(src)
+	}
+	return views, src, err
+}
+
+func (m *Manager) filterAndScore(ctx context.Context, seeds []CandidateSeed, ready bool) ([]api.NodeView, statesource.RoutingStateSource, error) {
 	// M2 (2026-07-27, spec Decision 2 + Decision 3 fail-open): serve the hot
 	// path from the process LRU mirror first. If EVERY seed hits the mirror,
 	// the caller's Ready snapshot still governs whether this result may be used
@@ -281,15 +328,39 @@ func (m *Manager) filterAndScore(ctx context.Context, seeds []CandidateSeed, rea
 	// stale snapshot can never overwrite a newer LRU entry.
 	views := make([]api.NodeView, len(seeds))
 	missIndices := make([]int, 0, len(seeds))
+	// Per-seed source tally for the S-3 helper. We classify each seed
+	// into one of three buckets:
+	//   mirrorHit  — mirror had a fresh entry,
+	//   mirrorStale — mirror had an entry but it was past soft-TTL,
+	//   mirrorMiss  — mirror had no entry at all (or mirror disabled).
+	// The aggregate is decided below.
+	var mirrorHit, mirrorStale, mirrorMiss int
 	if m.nodeMirror != nil {
+		now := time.Now()
 		for i, s := range seeds {
 			if mv, ok := m.nodeMirror.GetForTenant(s.TenantID, s.CredentialID, s.RawModel); ok {
 				views[i] = mirrorToAPIView(mv, s)
+				mirrorHit++
+				continue
+			}
+			// GetForTenant already returns false for soft-expired entries,
+			// so distinguish "never seen" from "seen but expired" by
+			// checking the underlying entry. PeekForTenant does NOT
+			// honour soft-TTL (it's an introspection helper), which is
+			// exactly what we need here.
+			if _, present := m.nodeMirror.PeekForTenant(s.TenantID, s.CredentialID, s.RawModel); present {
+				_ = now // time check is encapsulated in softExpireAt
+				missIndices = append(missIndices, i)
+				mirrorStale++
 				continue
 			}
 			missIndices = append(missIndices, i)
+			mirrorMiss++
 		}
 	} else {
+		for range seeds {
+			mirrorMiss++
+		}
 		for i := range seeds {
 			missIndices = append(missIndices, i)
 		}
@@ -299,18 +370,19 @@ func (m *Manager) filterAndScore(ctx context.Context, seeds []CandidateSeed, rea
 	// process mirror contains every requested node. The mirror is only a
 	// read accelerator; it cannot bypass the recovery gate.
 	if !ready {
-		return nil, fmt.Errorf("ursm.v2: not ready")
+		return nil, "", fmt.Errorf("ursm.v2: not ready")
 	}
 	if len(missIndices) == 0 {
 		scoreAndSort(views, seeds, m.cfg.ScoringWeights)
-		return views, nil
+		// Every seed resolved from the mirror (no soft-expired entries).
+		return views, statesource.StateSourceNodeMirrorHit, nil
 	}
 
 	// A Redis miss must use the caller's request snapshot. A false snapshot
 	// rejects the miss, while a mirror-only request remains fail-open above.
 	// authoritative read). A false snapshot must never be bypassed by the LRU.
 	if !ready {
-		return nil, fmt.Errorf("ursm.v2: not ready")
+		return nil, "", fmt.Errorf("ursm.v2: not ready")
 	}
 	missQueries := make([]store.NodeQuery, 0, len(missIndices))
 	for _, idx := range missIndices {
@@ -322,7 +394,7 @@ func (m *Manager) filterAndScore(ctx context.Context, seeds []CandidateSeed, rea
 	}
 	fetched, err := m.store.PipelineNodeViews(ctx, m.cfg.RedisKeyPrefix, missQueries)
 	if err != nil {
-		return nil, fmt.Errorf("ursm.v2: pipeline: %w", err)
+		return nil, "", fmt.Errorf("ursm.v2: pipeline: %w", err)
 	}
 	for j, idx := range missIndices {
 		views[idx] = fetched[j]
@@ -336,7 +408,21 @@ func (m *Manager) filterAndScore(ctx context.Context, seeds []CandidateSeed, rea
 	}
 
 	scoreAndSort(views, seeds, m.cfg.ScoringWeights)
-	return views, nil
+	// Decide the aggregate source for this request:
+	//   - hit       : every seed served from mirror, no miss/stale
+	//   - stale     : at least one seed was soft-expired (no "never seen")
+	//   - miss      : at least one seed was never in the mirror
+	switch {
+	case mirrorHit == 0 && mirrorStale == 0:
+		return views, statesource.StateSourceNodeMirrorMiss, nil
+	case mirrorMiss == 0:
+		// hit > 0 and stale > 0 and miss == 0 → still "stale" because
+		// some seeds forced a Redis read; surface the more informative
+		// label.
+		return views, statesource.StateSourceNodeMirrorStale, nil
+	default:
+		return views, statesource.StateSourceNodeMirrorMiss, nil
+	}
 }
 
 // scoreAndSort applies the price/latency/stability scoring and orders views
@@ -415,6 +501,77 @@ func (m *Manager) PlanReady(ctx context.Context, seeds []CandidateSeed, tenant, 
 		return nil
 	}
 	return m.plan(ctx, seeds, tenant, canonical, ready)
+}
+
+// PlanReadyWithSource is the S-3 (routing_state_source) companion of
+// PlanReady. It returns the inner NodeMirror source so the router can
+// record BOTH the outer routing decision (canary / authoritative /
+// off / fallback) AND the inner read source (hit / miss / stale /
+// fallback) on the canary path. The authoritative path also
+// benefits: today the router only sees the outer authoritative label
+// while the inner label is silently auto-recorded by the manager.
+//
+// The inner source is auto-recorded by FilterAndScoreReadyWithSource
+// (same as the authoritative path), so the router may opt to record
+// only the outer label; the inner counter is already updated by the
+// time this method returns. The returned source is propagated for
+// callers that want to log it / use it in structured records.
+//
+// Returns ("", nil) when v2 is off (the manager short-circuits before
+// the read path runs); the router must not record a source in that
+// case.
+func (m *Manager) PlanReadyWithSource(ctx context.Context, seeds []CandidateSeed, tenant, canonical string, ready bool) ([]CandidateSeed, statesource.RoutingStateSource, error) {
+	if m == nil {
+		return nil, "", nil
+	}
+	if m.Mode() == api.ModeOff {
+		return nil, "", nil
+	}
+	views, src, err := m.filterAndScore(ctx, seeds, ready)
+	if err != nil {
+		// Mirror the PlanReady warn-and-fallback contract, but on
+		// the S-3 path we also record the inner source as
+		// StateSourceFallback so the routing_state_source metric
+		// surface stays closed on the canary path. The router
+		// records the outer Canary label separately; the inner
+		// counter is the manager's responsibility.
+		m.log.Warn("ursm.v2: Plan filter failed, falling back", "error", err, "seed_count", len(seeds))
+		statesource.RecordRoutingStateSource(statesource.StateSourceFallback)
+		return nil, statesource.StateSourceFallback, err
+	}
+	if len(views) == 0 {
+		return nil, src, nil
+	}
+	// Build a lookup keyed by (CredentialID, RawModel) so we can map back to
+	// the input seeds while preserving FilterAndScore's ordering (and its
+	// availability filter — FilterAndScore returns one view per input seed
+	// with Available=false on missing Redis data).
+	idx := make(map[string]int, len(seeds))
+	for i, s := range seeds {
+		idx[seedKey(s.CredentialID, s.RawModel)] = i
+	}
+	out := make([]CandidateSeed, 0, len(views))
+	for _, v := range views {
+		if !v.Available {
+			continue
+		}
+		i, ok := idx[seedKey(v.CredentialID, v.RawModel)]
+		if !ok {
+			continue
+		}
+		out = append(out, seeds[i])
+	}
+	// Record the inner source for the live metric surface (same
+	// contract as FilterAndScoreReadyWithSource on the authoritative
+	// path). On the empty-source path (off-mode short-circuit), we
+	// skip — the router must not see a misleading inner label.
+	if src != "" {
+		statesource.RecordRoutingStateSource(src)
+	}
+	if len(out) == 0 {
+		return nil, src, nil
+	}
+	return out, src, nil
 }
 
 func (m *Manager) plan(ctx context.Context, seeds []CandidateSeed, tenant, canonical string, ready bool) []CandidateSeed {
