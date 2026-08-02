@@ -444,6 +444,39 @@ func TestPlanCandidates_Authoritative_StateManagerUnused(t *testing.T) {
 	}
 }
 
+// TestPlanCandidates_AuthoritativeZeroAvailable_StateManagerUnused pins
+// the spec §10 Step 5 C-1 invariant in the len(available)==0 branch:
+// when URSM v2 authoritative filters out ALL candidates, the router's
+// reason-breakup loop must NOT consult the legacy StateManager. The
+// guard added 2026-08-02 (`!stateBackend.IsAuthoritative()`) makes this
+// explicit rather than relying on "unreachable" reasoning.
+func TestPlanCandidates_AuthoritativeZeroAvailable_StateManagerUnused(t *testing.T) {
+	statesource.ResetForTest()
+	mgr, mr := buildV2Manager(t, api.ModeAuthoritative)
+	// Seed both nodes as unavailable → URSM v2 filters them all out.
+	seedV2Node(t, mr, 1, "m", 1, false)
+	seedV2Node(t, mr, 2, "m", 1, false)
+
+	spy := &spyStateProvider{enabled: true}
+
+	r := NewRouter(nil, nil)
+	r.URSMv2 = mgr
+	r.StateManager = spy
+
+	out := r.PlanCandidatesWithContext(
+		context.Background(), candidateSet(), nil, &provider.Policy{}, nil, "t", "m", "req-zero",
+	)
+	// All candidates were filtered by URSM v2 → expect nil result.
+	if len(out) != 0 {
+		t.Fatalf("expected 0 candidates after URSM v2 filter, got %d", len(out))
+	}
+	// Spec §10 Step 5 C-1: authoritative mode must have ZERO live
+	// StateManager calls, even in the reason-breakup branch.
+	if spy.calls != 0 {
+		t.Fatalf("authoritative zero-available path consulted StateManager %d times; spec §10 Step 5 C-1 forbids any live calls", spy.calls)
+	}
+}
+
 // spyStateProvider counts IsAvailable calls and tracks per-cred
 // availability. Used by the S-3 spec-§8.2 invariant test. The spy
 // defaults to BLOCKING (available=false, reason="blocked") so that
