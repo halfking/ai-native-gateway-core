@@ -53,4 +53,27 @@ echo "║  (可用 LLM_GATEWAY_HOME 环境变量覆盖)"
 echo "╚════════════════════════════════════════════════════════════════╝"
 echo ""
 
-exec "${BINARY}" --dir "${DEFAULT_HOME}" "$@"
+# ── 子命令 ────────────────────────────────────────────────────────────
+# --dir 是 install 子命令专属 flag，须置于子命令之后（cobra 在 root
+# 解析未知 flag 会直接报错）；uninstall/doctor/activate 等无目录 flag，
+# 应原样透传。未显式传子命令时默认 install。
+KNOWN_SUBCOMMANDS="activate completion doctor heartbeat help install uninstall upgrade version"
+CMD=""
+if [[ "$#" -gt 0 ]]; then
+  for c in ${KNOWN_SUBCOMMANDS}; do
+    if [[ "$1" == "$c" ]]; then CMD="$1"; shift; break; fi
+  done
+fi
+[[ -z "$CMD" ]] && CMD="install"
+
+# installer 要求目标目录已存在（install --dir 会 chdir 到该目录）
+mkdir -p "${DEFAULT_HOME}"
+
+case "$CMD" in
+  install)
+    exec "${BINARY}" install --dir "${DEFAULT_HOME}" "$@"
+    ;;
+  *)
+    exec "${BINARY}" "$CMD" "$@"
+    ;;
+esac
