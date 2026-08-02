@@ -50,6 +50,7 @@ import fpSlotVisualizer from './fpSlotVisualizer'
 import modelPicker from './modelPicker'
 import modulesView from './modulesView'
 import formatAnomaliesView from './formatAnomaliesView'
+import modelIntegrityView from './modelIntegrityView'
 import outputCompliance from './outputCompliance'
 import agentRegistryView from './agentRegistryView'
 import ops from './ops'
@@ -113,6 +114,7 @@ export default {
   modelPicker,
   modulesView,
   formatAnomaliesView,
+  modelIntegrityView,
   agentRegistryView,
   ops,
   qualityCorrelations,

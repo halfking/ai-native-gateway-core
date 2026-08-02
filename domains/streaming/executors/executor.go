@@ -191,6 +191,20 @@ type IntegrityCandidate struct {
 	// without re-doing the JSON parse). Empty disables body-based
 	// checks.
 	ResponseBody []byte
+
+	// RepeatedContentDetected and the fields below carry the incremental
+	// (mid-stream) repeated-content finding from the stream capture's
+	// integrity observer. When set, the detector records this finding
+	// rather than rescanning TextContent, so exactly one
+	// repeated_content event is written per request. See
+	// domains/hooks/audit/stream_integrity.go.
+	RepeatedContentDetected    bool
+	RepeatedContentHash        string
+	RepeatedContentHits        int
+	RepeatedContentBlockSize   int
+	RepeatedContentBlocksTotal int
+	// StreamAborted reports that the incremental rule cut the stream.
+	StreamAborted bool
 }
 
 // UpstreamRequestLogger records the exact body sent to an upstream provider.

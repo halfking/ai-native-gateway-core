@@ -5,12 +5,12 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/kaixuan/llm-gateway-go/errorsx"
 	"log/slog"
 	"net/http"
 	"runtime/debug"
 	"strings"
 	"time"
-	"github.com/kaixuan/llm-gateway-go/errorsx"
 
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/audit" //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/internal/ir"
@@ -238,14 +238,14 @@ func StreamOpenAIToAnthropicSSEWithDiagnostics(
 		}
 	}
 
-	processLine := func(line string) {
+	processLine := func(line string) bool {
 		line = strings.TrimSpace(line)
 		if line == "" || !strings.HasPrefix(line, "data: ") {
-			return
+			return false
 		}
 		data := line[6:]
 		if data == "[DONE]" {
-			return
+			return false
 		}
 
 		rawFrame := []byte(line)
@@ -257,7 +257,7 @@ func StreamOpenAIToAnthropicSSEWithDiagnostics(
 			reportConversionAnomaly(
 				diagnostics, requestID, "openai-completions", "anthropic-messages", "parse_stream_frame", []byte(data), err, nil,
 			)
-			return
+			return false
 		}
 
 		parsedChunk, parseErr := ir.ParseOpenAIStreamChunk("data: " + data + "\n\n")
@@ -297,7 +297,7 @@ func StreamOpenAIToAnthropicSSEWithDiagnostics(
 			json.Unmarshal(raw, &choices)
 		}
 		if len(choices) == 0 {
-			return
+			return false
 		}
 
 		choice := choices[0]
@@ -307,7 +307,7 @@ func StreamOpenAIToAnthropicSSEWithDiagnostics(
 
 		delta, _ := choice["delta"].(map[string]any)
 		if delta == nil {
-			return
+			return false
 		}
 
 		textDelta, _ := delta["content"].(string)
@@ -362,6 +362,9 @@ func StreamOpenAIToAnthropicSSEWithDiagnostics(
 					},
 					SourceProtocol: ir.ProtocolOpenAIChat,
 				})
+				if capture.IntegrityBreached() {
+					return true
+				}
 			}
 		}
 
@@ -422,10 +425,14 @@ func StreamOpenAIToAnthropicSSEWithDiagnostics(
 				lastSend = time.Now()
 			}
 		}
+		return false
 	}
 
 	if firstLine != "" {
-		processLine(firstLine)
+		if processLine(firstLine) {
+			outcome = integrityBreachOutcome(capture, 0)
+			return outcome
+		}
 	}
 
 	for {
@@ -478,7 +485,10 @@ func StreamOpenAIToAnthropicSSEWithDiagnostics(
 		if line == "" {
 			continue
 		}
-		processLine(line)
+		if processLine(line) {
+			outcome = integrityBreachOutcome(capture, 0)
+			return outcome
+		}
 	}
 
 	// Phase 4: flush whatever mode we ended up in. Probing means the

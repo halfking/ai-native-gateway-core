@@ -1,6 +1,6 @@
 {
   "version": "1.0.0",
-  "exported_at": "2026-07-28T18:01:54.900Z",
+  "exported_at": "2026-08-02T15:59:38.659Z",
   "source": "gateway-appNav",
   "tenantScopeLegend": {
     "default": "仅默认租户 + super_admin 可见",
@@ -272,6 +272,16 @@
           "label": "格式异常监控",
           "labelKey": "nav.item.formatAnomalies",
           "icon": "⚠️",
+          "super": true,
+          "hideForTenant": true,
+          "tenantScope": "default",
+          "pluginScope": "*"
+        },
+        {
+          "path": "/model-integrity",
+          "label": "模型完整性监控",
+          "labelKey": "nav.item.modelIntegrity",
+          "icon": "🛰️",
           "super": true,
           "hideForTenant": true,
           "tenantScope": "default",

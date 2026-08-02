@@ -62,6 +62,24 @@ type Candidate struct {
 	UsageSource string
 	// IsStream true if this is a streaming response.
 	IsStream bool
+
+	// RepeatedContentDetected reports that the incremental
+	// StreamTracker already found a repeated block mid-stream. When set,
+	// checkRepeatedContent records the tracker's finding instead of
+	// rescanning TextContent, which guarantees exactly one
+	// repeated_content event per request even though both the
+	// incremental and completion paths run.
+	RepeatedContentDetected bool
+	// RepeatedContentHash / Hits / BlockSize / BlocksTotal carry the
+	// tracker's finding. Only read when RepeatedContentDetected is true.
+	RepeatedContentHash        string
+	RepeatedContentHits        int
+	RepeatedContentBlockSize   int
+	RepeatedContentBlocksTotal int
+	// StreamAborted reports that the stream was cut short by the
+	// incremental rule. Recorded in the event context so an operator can
+	// tell a detected-and-cut loop from a detected-and-completed one.
+	StreamAborted bool
 }
 
 // Detector runs the per-request checks in one pass and emits events
@@ -324,6 +342,20 @@ const repeatedBlockBytes = 256
 // known loop signature; the content itself is the model's output and
 // could be a PII channel.
 func (d *Detector) checkRepeatedContent(ctx context.Context, c Candidate) {
+	// The incremental StreamTracker already found the repeat mid-stream.
+	// Record its finding and return: rescanning TextContent here would
+	// emit a second event for the same loop, and on an aborted stream the
+	// text may have been truncated below the two-block minimum anyway.
+	if c.RepeatedContentDetected {
+		d.recordRepeatedContent(ctx, c, c.RepeatedContentHash, map[string]any{
+			"block_hits":   c.RepeatedContentHits,
+			"block_size":   c.RepeatedContentBlockSize,
+			"blocks_total": c.RepeatedContentBlocksTotal,
+			"detection":    "incremental",
+			"aborted":      c.StreamAborted,
+		})
+		return
+	}
 	if c.TextContent == "" {
 		return
 	}
@@ -342,30 +374,38 @@ func (d *Detector) checkRepeatedContent(ctx context.Context, c Candidate) {
 		if n < minRepeatedHits {
 			continue
 		}
-		_ = d.rec.Record(ctx, Event{
-			AnomalyType:   AnomalyRepeatedContent,
-			Severity:      SeverityHigh,
-			RequestID:     c.RequestID,
-			TenantID:      c.TenantID,
-			ApplicationID: c.ApplicationID,
-			APIKeyID:      c.APIKeyID,
-			ProviderID:    c.ProviderID,
-			ProviderCode:  c.ProviderCode,
-			CredentialID:  c.CredentialID,
-			ClientModel:   c.ClientModel,
-			OutboundModel: c.OutboundModel,
-			RawModel:      c.RawModel,
-			ActualValue:   hash,
-			Sample:        c.ProviderResponseID,
-			Context: map[string]any{
-				"block_hits":   n,
-				"block_size":   repeatedBlockBytes,
-				"blocks_total": blocks,
-			},
+		d.recordRepeatedContent(ctx, c, hash, map[string]any{
+			"block_hits":   n,
+			"block_size":   repeatedBlockBytes,
+			"blocks_total": blocks,
+			"detection":    "final",
 		})
 		// One event per request is enough; bail to avoid spam.
 		return
 	}
+}
+
+// recordRepeatedContent emits the repeated_content event. Shared by the
+// incremental and final detection paths so both produce an identical row
+// shape apart from the context's `detection` discriminator.
+func (d *Detector) recordRepeatedContent(ctx context.Context, c Candidate, hash string, extra map[string]any) {
+	_ = d.rec.Record(ctx, Event{
+		AnomalyType:   AnomalyRepeatedContent,
+		Severity:      SeverityHigh,
+		RequestID:     c.RequestID,
+		TenantID:      c.TenantID,
+		ApplicationID: c.ApplicationID,
+		APIKeyID:      c.APIKeyID,
+		ProviderID:    c.ProviderID,
+		ProviderCode:  c.ProviderCode,
+		CredentialID:  c.CredentialID,
+		ClientModel:   c.ClientModel,
+		OutboundModel: c.OutboundModel,
+		RawModel:      c.RawModel,
+		ActualValue:   hash,
+		Sample:        c.ProviderResponseID,
+		Context:       extra,
+	})
 }
 
 // ptrOrZero returns 0 for nil and *p otherwise. Tiny helper to keep

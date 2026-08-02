@@ -17,6 +17,7 @@ package bg
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -25,6 +26,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -48,11 +50,20 @@ func DefaultIntegrityHarvesterConfig() IntegrityHarvesterConfig {
 	}
 }
 
+// integrityHarvesterDB is the minimal database contract the bridges
+// exercise (Begin + a nil-sentinel check). *pgxpool.Pool and the
+// pgxmock-backed shim in the test both satisfy it, so the SQL contract
+// can be pinned without a real PostgreSQL instance. Mirrors the
+// credentialRecoveryDB seam in credential_recovery.go.
+type integrityHarvesterDB interface {
+	Begin(ctx context.Context) (pgx.Tx, error)
+}
+
 // IntegrityHarvester polls model_integrity_events and inserts fault_events
 // for unresolved critical rows past the age threshold and high
 // per-(cred, model, anomaly) clusters above the count threshold.
 type IntegrityHarvester struct {
-	db   *pgxpool.Pool
+	db   integrityHarvesterDB
 	cfg  IntegrityHarvesterConfig
 	done chan struct{}
 
@@ -64,6 +75,9 @@ type IntegrityHarvester struct {
 
 // NewIntegrityHarvester constructs a worker. Pass nil pool to disable.
 func NewIntegrityHarvester(db *pgxpool.Pool, cfg IntegrityHarvesterConfig) *IntegrityHarvester {
+	if db == nil {
+		return &IntegrityHarvester{cfg: cfg, done: make(chan struct{})}
+	}
 	return &IntegrityHarvester{db: db, cfg: cfg, done: make(chan struct{})}
 }
 
@@ -132,29 +146,49 @@ func (h *IntegrityHarvester) cycle(ctx context.Context) error {
 // bridgeCritical writes fault_events for each unresolved critical
 // integrity event older than CriticalAge. Uses an advisory lock so
 // concurrent gateway instances do not double-bridge the same rows.
+//
+// 2026-08-02: rewritten against the real fault_events schema (migration
+// 375 / db/db.go:2649). The previous version referenced columns that do
+// not exist on this table (context, tenant_id, source_event_id,
+// first_seen_at, last_seen_at, occurrence_count), passed a string into
+// the BIGINT rule_id, used status='open' (rejected by the CHECK) and an
+// ON CONFLICT with no arbiter index — so every tick errored out. The
+// fix mirrors domains/streaming/anomaly_harvester.go::createFaultEvent:
+// rule_id is the literal 0, the human key lives in rule_name, the
+// dedup context goes into the metadata JSONB, status is 'new', and
+// cross-tick dedup is a WHERE NOT EXISTS on (source, rule_name,
+// metadata->>'integrity_event_id') over the active statuses.
 func (h *IntegrityHarvester) bridgeCritical(ctx context.Context) error {
 	tx, err := h.db.Begin(ctx)
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback(ctx)
-	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtext('integrity_harvester:critical'))`); err != nil {
+	// The lock key is passed as a parameter ($1) rather than inlined so
+	// the SQL string has no ':' that pgxmock's placeholder scanner (and
+	// some proxied PG pools) misread as a named parameter.
+	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtext($1))`, "integrity_harvester:critical"); err != nil {
 		return err
 	}
+	// Only candidates without an active fault for the same integrity
+	// event id survive the WHERE NOT EXISTS guard, so a re-tick after a
+	// successful bridge is a no-op.
 	rows, err := tx.Query(ctx, `
 		SELECT e.id, e.tenant_id, e.provider_id, e.credential_id,
 		       COALESCE(e.provider_code,''), COALESCE(e.raw_model_name,''),
 		       COALESCE(e.client_model,''), COALESCE(e.outbound_model,''),
 		       e.anomaly_type, e.severity, e.actual_value
 		FROM model_integrity_events e
-		LEFT JOIN fault_events f
-		  ON f.rule_id = 'integrity:' || e.anomaly_type
-		 AND f.tenant_id IS NOT DISTINCT FROM e.tenant_id
-		 AND (f.context->>'integrity_event_id')::bigint = e.id
 		WHERE e.severity = 'critical'
 		  AND e.resolved = false
-		  AND f.id IS NULL
 		  AND e.ts < now() - $1::interval
+		  AND NOT EXISTS (
+		    SELECT 1 FROM fault_events f
+		    WHERE f.source = 'integrity_harvester'
+		      AND f.rule_name = 'integrity:' || e.anomaly_type
+		      AND f.metadata->>'integrity_event_id' = e.id::text
+		      AND f.status IN ('new', 'acknowledged', 'resolving')
+		  )
 		ORDER BY e.ts ASC
 		LIMIT 200`, h.cfg.CriticalAge)
 	if err != nil {
@@ -162,28 +196,33 @@ func (h *IntegrityHarvester) bridgeCritical(ctx context.Context) error {
 	}
 	defer rows.Close()
 	type pending struct {
-		eventID  int64
-		tenantID *string
-		ruleID   string
-		title    string
-		desc     string
-		severity string
+		eventID     int64
+		tenantID    *string
+		ruleName    string
+		title       string
+		desc        string
+		severity    string
+		provider    string
+		rawModel    string
+		clientModel string
+		credential  *int64
 	}
 	var batch []pending
 	for rows.Next() {
 		var p pending
-		var tenant *string
 		var providerID, credID *int64
 		var providerCode, rawModel, client, outbound, anomaly, severity, actual string
-		if err := rows.Scan(&p.eventID, &tenant, &providerID, &credID,
+		if err := rows.Scan(&p.eventID, &p.tenantID, &providerID, &credID,
 			&providerCode, &rawModel, &client, &outbound, &anomaly, &severity, &actual); err != nil {
 			slog.Warn("integrity_harvester: scan row failed", "error", err)
 			continue
 		}
 		_ = providerID
-		_ = credID
-		p.tenantID = tenant
-		p.ruleID = "integrity:" + anomaly
+		p.credential = credID
+		p.provider = providerCode
+		p.rawModel = rawModel
+		p.clientModel = client
+		p.ruleName = "integrity:" + anomaly
 		p.title = fmt.Sprintf("[%s] %s", severity, anomaly)
 		p.desc = formatIntegrityFaultDesc(providerCode, rawModel, client, outbound, anomaly, actual)
 		p.severity = mapIntegritySeverityToFault(severity)
@@ -194,20 +233,34 @@ func (h *IntegrityHarvester) bridgeCritical(ctx context.Context) error {
 	}
 	rows.Close()
 	for _, p := range batch {
-		var tenant any
+		// metadata carries every key the operator dashboard + the
+		// WHERE NOT EXISTS dedup need: the integrity event id (dedup),
+		// plus provider/model/credential context so the fault row is
+		// self-describing without a join back to model_integrity_events.
+		meta := map[string]any{
+			"integrity_event_id": p.eventID,
+			"provider_code":      p.provider,
+			"raw_model_name":     p.rawModel,
+			"client_model":       p.clientModel,
+		}
+		if p.credential != nil {
+			meta["credential_id"] = *p.credential
+		}
 		if p.tenantID != nil {
-			tenant = *p.tenantID
+			meta["tenant_id"] = *p.tenantID
+		}
+		metaJSON, err := json.Marshal(meta)
+		if err != nil {
+			slog.Warn("integrity_harvester: metadata marshal failed", "error", err)
+			metaJSON = []byte(`{}`)
 		}
 		if _, err := tx.Exec(ctx, `
 			INSERT INTO fault_events
 				(rule_id, rule_name, severity, title, description, source,
-				 tenant_id, status, source_event_id, first_seen_at, last_seen_at,
-				 occurrence_count, created_at, updated_at)
-			VALUES ($1, $2, $3, $4, $5, 'integrity_harvester',
-				$6, 'open', $7, now(), now(),
-				1, now(), now())
-			ON CONFLICT (rule_id, source_event_id) DO NOTHING`,
-			p.ruleID, p.ruleID, p.severity, p.title, p.desc, tenant, p.eventID); err != nil {
+				 status, metadata, detected_at, created_at, updated_at)
+			VALUES (0, $1, $2, $3, $4, 'integrity_harvester',
+				'new', $5, now(), now(), now())`,
+			p.ruleName, p.severity, p.title, p.desc, metaJSON); err != nil {
 			return err
 		}
 		h.criticalBridged.Add(1)
@@ -223,13 +276,21 @@ func (h *IntegrityHarvester) bridgeCritical(ctx context.Context) error {
 // single fault_events row when the count crosses HighMinCount. Lower
 // severity events (low/medium) are intentionally not bridged here;
 // model_integrity_events remains the source of truth for them.
+//
+// 2026-08-02: rewritten against the real fault_events schema (see the
+// note on bridgeCritical). The high cluster's dedup key is
+// (anomaly, credential_id, raw_model_name); those live in the metadata
+// JSONB and the WHERE NOT EXISTS guard reads them back NULL-safely
+// (IS NOT DISTINCT FROM) so a NULL credential does not collapse two
+// different clusters into one.
 func (h *IntegrityHarvester) bridgeHigh(ctx context.Context) error {
 	tx, err := h.db.Begin(ctx)
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback(ctx)
-	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtext('integrity_harvester:high'))`); err != nil {
+	// See bridgeCritical for why the lock key is a parameter.
+	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtext($1))`, "integrity_harvester:high"); err != nil {
 		return err
 	}
 	rows, err := tx.Query(ctx, `
@@ -249,14 +310,14 @@ func (h *IntegrityHarvester) bridgeHigh(ctx context.Context) error {
 		SELECT a.tenant_id, a.anomaly_type, a.provider_code, a.credential_id,
 		       a.raw_model_name, a.n, a.first_ts, a.last_ts, a.sample_actual
 		FROM agg a
-		LEFT JOIN fault_events f
-		  ON f.rule_id = 'integrity-high:' || a.anomaly_type
-		 AND f.tenant_id IS NOT DISTINCT FROM a.tenant_id
-		 AND f.context->>'credential_id' = a.credential_id::text
-		 AND f.context->>'raw_model_name' = a.raw_model_name
-		 AND f.status NOT IN ('auto_resolved', 'dismissed')
-		 AND f.last_seen_at > now() - $1::interval
-		WHERE f.id IS NULL
+		WHERE NOT EXISTS (
+		    SELECT 1 FROM fault_events f
+		    WHERE f.source = 'integrity_harvester'
+		      AND f.rule_name = 'integrity-high:' || a.anomaly_type
+		      AND f.metadata->>'credential_id' IS NOT DISTINCT FROM COALESCE(a.credential_id::text, '')
+		      AND f.metadata->>'raw_model_name' IS NOT DISTINCT FROM a.raw_model_name
+		      AND f.status IN ('new', 'acknowledged', 'resolving')
+		)
 		ORDER BY a.last_ts DESC
 		LIMIT 200`, h.cfg.HighWindow, h.cfg.HighMinCount)
 	if err != nil {
@@ -265,15 +326,18 @@ func (h *IntegrityHarvester) bridgeHigh(ctx context.Context) error {
 	defer rows.Close()
 	type pending struct {
 		tenantID    *string
-		ruleID      string
+		ruleName    string
 		severity    string
 		title       string
 		description string
-		credID      int64
+		provider    string
+		credID      *int64
 		rawModel    string
+		anomaly     string
 		firstSeen   time.Time
 		lastSeen    time.Time
 		count       int
+		sample      string
 	}
 	var batch []pending
 	for rows.Next() {
@@ -281,7 +345,7 @@ func (h *IntegrityHarvester) bridgeHigh(ctx context.Context) error {
 			tenant       *string
 			anomaly      string
 			providerCode string
-			credID       int64
+			credID       *int64
 			rawModel     string
 			count        int
 			firstSeen    time.Time
@@ -293,22 +357,30 @@ func (h *IntegrityHarvester) bridgeHigh(ctx context.Context) error {
 			slog.Warn("integrity_harvester: high scan row failed", "error", err)
 			continue
 		}
-		_ = providerCode
+		var credStr string
+		if credID != nil {
+			credStr = fmt.Sprintf("%d", *credID)
+		} else {
+			credStr = "(unknown)"
+		}
 		p := pending{
 			tenantID: tenant,
-			ruleID:   "integrity-high:" + anomaly,
+			ruleName: "integrity-high:" + anomaly,
 			severity: "warning",
 			title:    fmt.Sprintf("[high] %s burst", anomaly),
-			description: fmt.Sprintf("%d high-severity %s events between %s and %s on credential %d model %s; latest: %s",
+			description: fmt.Sprintf("%d high-severity %s events between %s and %s on credential %s model %s; latest: %s",
 				count, anomaly,
 				firstSeen.UTC().Format(time.RFC3339),
 				lastSeen.UTC().Format(time.RFC3339),
-				credID, rawModel, sampleActual),
+				credStr, rawModel, sampleActual),
+			provider:  providerCode,
 			credID:    credID,
 			rawModel:  rawModel,
+			anomaly:   anomaly,
 			firstSeen: firstSeen,
 			lastSeen:  lastSeen,
 			count:     count,
+			sample:    sampleActual,
 		}
 		batch = append(batch, p)
 	}
@@ -317,19 +389,43 @@ func (h *IntegrityHarvester) bridgeHigh(ctx context.Context) error {
 	}
 	rows.Close()
 	for _, p := range batch {
-		var tenant any
+		// metadata mirrors the critical path's keys plus the cluster
+		// aggregates (count, window) so the operator dashboard can show
+		// the burst without a second query.
+		var credVal any
+		credText := ""
+		if p.credID != nil {
+			credVal = *p.credID
+			credText = fmt.Sprintf("%d", *p.credID)
+		}
+		meta := map[string]any{
+			"anomaly_type":   p.anomaly,
+			"provider_code":  p.provider,
+			"raw_model_name": p.rawModel,
+			"credential_id":  credText,
+			"event_count":    p.count,
+			"first_seen":     p.firstSeen.UTC().Format(time.RFC3339),
+			"last_seen":      p.lastSeen.UTC().Format(time.RFC3339),
+			"sample_actual":  p.sample,
+			"window":         h.cfg.HighWindow.String(),
+			"min_count":      h.cfg.HighMinCount,
+		}
 		if p.tenantID != nil {
-			tenant = *p.tenantID
+			meta["tenant_id"] = *p.tenantID
+		}
+		_ = credVal
+		metaJSON, err := json.Marshal(meta)
+		if err != nil {
+			slog.Warn("integrity_harvester: high metadata marshal failed", "error", err)
+			metaJSON = []byte(`{}`)
 		}
 		if _, err := tx.Exec(ctx, `
 			INSERT INTO fault_events
 				(rule_id, rule_name, severity, title, description, source,
-				 tenant_id, status, source_event_id, first_seen_at, last_seen_at,
-				 occurrence_count, created_at, updated_at)
-			VALUES ($1, $1, $2, $3, $4, 'integrity_harvester',
-				$5, 'open', 0, $6, $7,
-				$8, now(), now())`,
-			p.ruleID, p.severity, p.title, p.description, tenant, p.firstSeen, p.lastSeen, p.count); err != nil {
+				 status, metadata, detected_at, created_at, updated_at)
+			VALUES (0, $1, $2, $3, $4, 'integrity_harvester',
+				'new', $5, $6, now(), now())`,
+			p.ruleName, p.severity, p.title, p.description, metaJSON, p.lastSeen); err != nil {
 			return err
 		}
 		h.highBridged.Add(1)

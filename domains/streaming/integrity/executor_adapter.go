@@ -3,6 +3,7 @@ package integrity
 import (
 	"context"
 
+	"github.com/kaixuan/llm-gateway-go/domains/hooks/audit"
 	"github.com/kaixuan/llm-gateway-go/domains/streaming/executors"
 )
 
@@ -17,13 +18,25 @@ import (
 // is what we want and is unidirectional.
 type ExecutorAdapter struct {
 	d *Detector
+	// streamCfg is the incremental-detection config, resolved once at
+	// construction so every request's tracker shares the same thresholds
+	// without re-reading the environment on the hot path.
+	streamCfg StreamTrackerConfig
 }
 
 // NewExecutorAdapter wraps a Detector into the executors.IntegrityDetector
 // interface. The Detector's nil-safety applies — passing a nil Detector
-// is allowed and Observe is a no-op.
+// is allowed and Observe is a no-op. Incremental stream tracking uses
+// the env-derived defaults; use NewExecutorAdapterWithConfig to override.
 func NewExecutorAdapter(d *Detector) *ExecutorAdapter {
-	return &ExecutorAdapter{d: d}
+	return &ExecutorAdapter{d: d, streamCfg: DefaultStreamTrackerConfig()}
+}
+
+// NewExecutorAdapterWithConfig is NewExecutorAdapter with explicit
+// incremental thresholds. Used by tests and by callers that resolve the
+// config from a source other than the environment.
+func NewExecutorAdapterWithConfig(d *Detector, cfg StreamTrackerConfig) *ExecutorAdapter {
+	return &ExecutorAdapter{d: d, streamCfg: cfg}
 }
 
 // Observe implements executors.IntegrityDetector. It builds an
@@ -58,6 +71,13 @@ func (a *ExecutorAdapter) Observe(ctx context.Context, ec executors.IntegrityCan
 		SystemFingerprint:  ec.SystemFingerprint,
 		UsageSource:        ec.UsageSource,
 		IsStream:           ec.IsStream,
+
+		RepeatedContentDetected:    ec.RepeatedContentDetected,
+		RepeatedContentHash:        ec.RepeatedContentHash,
+		RepeatedContentHits:        ec.RepeatedContentHits,
+		RepeatedContentBlockSize:   ec.RepeatedContentBlockSize,
+		RepeatedContentBlocksTotal: ec.RepeatedContentBlocksTotal,
+		StreamAborted:              ec.StreamAborted,
 	}
 	// Preserve values already extracted by the executor or stream capture.
 	// Parse the response body only to fill gaps; this avoids overwriting
@@ -93,6 +113,25 @@ func (a *ExecutorAdapter) Observe(ctx context.Context, ec executors.IntegrityCan
 	a.d.Observe(ctx, c)
 }
 
+// NewStreamTextObserver returns a fresh per-request incremental observer
+// for a stream capture, or nil when the detector is disabled. The
+// streaming handler calls this through a narrow local interface so
+// domains/streaming never has to import this package (see
+// ChatHandler.integrityObserverFactory).
+//
+// A nil return is safe: audit.StreamCapture.SetTextObserver(nil) simply
+// leaves the capture without an observer.
+func (a *ExecutorAdapter) NewStreamTextObserver() audit.StreamTextObserver {
+	if a == nil || a.d == nil {
+		return nil
+	}
+	return NewStreamTracker(a.streamCfg)
+}
+
 // Compile-time assertion: ExecutorAdapter satisfies the executor-side
 // interface.
 var _ executors.IntegrityDetector = (*ExecutorAdapter)(nil)
+
+// Compile-time assertion: StreamTracker satisfies the audit-side
+// incremental observer contract.
+var _ audit.StreamTextObserver = (*StreamTracker)(nil)

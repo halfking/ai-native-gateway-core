@@ -444,7 +444,7 @@ func (h *MessagesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	var streamCapture *audit.StreamCapture
 	if isStream {
-		streamCapture = audit.NewStreamCapture()
+		streamCapture = h.chatHandler.newStreamCapture()
 	}
 	defer func() {
 		if streamCapture != nil {

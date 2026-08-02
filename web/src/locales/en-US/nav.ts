@@ -45,6 +45,7 @@ export default {
     settings: 'System Settings',
     dataLifecycle: 'Data Lifecycle',
     formatAnomalies: 'Format Anomalies',
+    modelIntegrity: 'Model Integrity',
     modules: 'Module Management',
     sessionAnalytics: 'Session Analytics',
     sessionClusters: 'Session Clusters',
