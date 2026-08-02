@@ -18,36 +18,18 @@
 
 version: "3.9"
 
-x-pg-env: &pg-env
-  POSTGRES_USER: kxuser
-  POSTGRES_PASSWORD: kxpass
-  POSTGRES_DB: postgres
-
 services:
+  # ─────────────────────────────────────────────────────────────────────
+  # PostgreSQL — 复用共享实例 llm-gateway-pg (本机 127.0.0.1:5432)。
+  # 原 r112_postgres 容器已随 PG 实例合并停用，r112 测试数据迁移到
+  # llm-gateway-pg 上的独立库 llm_gateway_test_r112 (owner=kxuser, 与主库隔离)。
   # ─────────────────────────────────────────────────────────────────────
   # PostgreSQL (Citus 11.3, 与 184/71 生产一致)
   # ─────────────────────────────────────────────────────────────────────
-  postgres:
-    # 2026-07-14: switched from citusdata/citus:11.3.0 (amd64 only) to
-    # pgvector/pgvector:pg17 (native arm64). The gateway does not use
-    # Citus distributed features in local tests; plain PG17 + pgvector
-    # matches production column types and keeps everything arm64-native.
-    image: pgvector/pgvector:pg17
-    container_name: r112_postgres
-    environment:
-      <<: *pg-env
-    ports:
-      - "15432:5432"
-    volumes:
-      - r112_pg_data:/var/lib/postgresql/data
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U kxuser -d postgres"]
-      interval: 5s
-      timeout: 3s
-      retries: 30
-      start_period: 10s
-    networks:
-      - r112_net
+  # 2026-07-14: switched from citusdata/citus:11.3.0 (amd64 only) to
+  # pgvector/pgvector:pg17 (native arm64). The gateway does not use
+  # Citus distributed features in local tests; plain PG17 + pgvector
+  # matches production column types and keeps everything arm64-native.
 
   # ─────────────────────────────────────────────────────────────────────
   # Redis 7
@@ -148,8 +130,6 @@ services:
     image: r112-gateway:local-arm64
     container_name: r112_gateway
     depends_on:
-      postgres:
-        condition: service_healthy
       redis:
         condition: service_healthy
       llm-mock-upstream:
@@ -166,7 +146,7 @@ services:
       LOG_LEVEL: "info"
       STICKY_MULTILEVEL_DEBUG: "1"
       # ── 依赖 (compose 内服务名) ──
-      LLM_GATEWAY_DATABASE_URL: "postgres://kxuser:kxpass@postgres:5432/llm_gateway?sslmode=disable"
+      LLM_GATEWAY_DATABASE_URL: "postgres://kxuser:kxpass@host.docker.internal:5432/llm_gateway_test_r112?sslmode=disable"
       LLM_GATEWAY_REDIS_ADDR: "redis:6379"
       # ── credential 解密 key (与 03-local-mock-credential.sql 配对) ──
       # 32-byte deterministic key, base64url. LOCAL ONLY, never production.
@@ -212,8 +192,6 @@ services:
     container_name: r112_gateway_v2
     profiles: ["v2"]
     depends_on:
-      postgres:
-        condition: service_healthy
       redis:
         condition: service_healthy
       memora-mcp:
@@ -230,7 +208,7 @@ services:
       LOG_LEVEL: info
       LISTEN_ADDR: ":8080"
       # ── 依赖指向 compose 内服务名 (docker DNS 自动解析) ──
-      DATABASE_URL: postgres://kxuser:kxpass@postgres:5432/llm_gateway?sslmode=disable
+      DATABASE_URL: postgres://kxuser:kxpass@host.docker.internal:5432/llm_gateway_test_r112?sslmode=disable
       REDIS_URL: redis://redis:6379/0
       MEMORA_URL: http://memora-mcp:80
       # 指向真 OpenAI 兼容 mock (支持 chat/completions 真实回包)
@@ -264,8 +242,6 @@ services:
       - test
 
 volumes:
-  r112_pg_data:
-    name: r112_pg_data
   r112_redis_data:
     name: r112_redis_data
 
