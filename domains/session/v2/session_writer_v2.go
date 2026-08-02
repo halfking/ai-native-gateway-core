@@ -4,8 +4,17 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"sync"
 	"time"
 )
+
+// sessionUpdater is the minimal surface of SessionAggregator that
+// SessionWriterV2 uses. Declared as an interface so unit tests can inject a
+// fake (e.g. a recording aggregator) and so the lifecycle code can be tested
+// without a live PostgreSQL instance.
+type sessionUpdater interface {
+	UpdateSession(ctx context.Context, update SessionUpdate) error
+}
 
 // SessionWriterV2 is the main coordinator for writing session data to V2 tables
 //
@@ -15,21 +24,77 @@ import (
 //   - SessionAggregator: updates session snapshots in sessions table
 //
 // This is the entry point for shadow writes alongside request_logs.
+//
+// Lifecycle (spec §6.3):
+//
+//	The session-snapshot aggregate update runs in a goroutine tracked by
+//	aggWg and bound to lifecycleCtx. Callers MUST call Stop before the
+//	process exits so the goroutine is awaited (it is no longer a detached
+//	fire-and-forget). Stop is idempotent and safe to call from the
+//	gateway shutdown goroutine.
 type SessionWriterV2 struct {
 	turnWriter        *TurnWriter
 	bodiesWriter      *SessionBodiesWriter
-	sessionAggregator *SessionAggregator
+	sessionAggregator sessionUpdater
 	turnLogsWriter    *TurnLogsWriter
+
+	// aggWg tracks the in-flight aggregate snapshot goroutines so Stop can
+	// wait for them (spec §6.3). Each Write that reaches the aggregate step
+	// does Add(1) before launching the goroutine and Done() when it returns.
+	aggWg sync.WaitGroup
+
+	// lifecycleCtx / lifecycleCancel gate the aggregate goroutine. Stop
+	// cancels lifecycleCtx so a blocked/slow aggregate returns promptly,
+	// then waits on aggWg. New writes after Stop will see a cancelled ctx
+	// and skip the aggregate (the primary turn+bodies write still runs).
+	lifecycleCtx    context.Context
+	lifecycleCancel context.CancelFunc
+	lifecycleInit   sync.Once
+	stopOnce        sync.Once
+}
+
+// ensureLifecycle lazily initializes lifecycleCtx / lifecycleCancel for
+// SessionWriterV2 instances that were constructed via a struct literal (e.g.
+// in tests) instead of NewSessionWriterV2. Idempotent.
+func (w *SessionWriterV2) ensureLifecycle() {
+	w.lifecycleInit.Do(func() {
+		if w.lifecycleCtx == nil {
+			ctx, cancel := context.WithCancel(context.Background())
+			w.lifecycleCtx = ctx
+			w.lifecycleCancel = cancel
+		}
+	})
 }
 
 // NewSessionWriterV2 creates a new SessionWriterV2 instance
 func NewSessionWriterV2(tw *TurnWriter, bw *SessionBodiesWriter, sa *SessionAggregator, tlw *TurnLogsWriter) *SessionWriterV2 {
+	ctx, cancel := context.WithCancel(context.Background())
 	return &SessionWriterV2{
 		turnWriter:        tw,
 		bodiesWriter:      bw,
 		sessionAggregator: sa,
 		turnLogsWriter:    tlw,
+		lifecycleCtx:      ctx,
+		lifecycleCancel:   cancel,
 	}
+}
+
+// Stop signals shutdown and waits for all in-flight aggregate goroutines to
+// finish (or be cancelled). It is idempotent and safe to call multiple times
+// and from multiple goroutines.
+//
+// Per spec §6.3, the gateway shutdown sequence must call this AFTER
+// telemetryClient.Stop so the telemetry onPersisted hook (which feeds Write)
+// has stopped producing new work before we drain.
+func (w *SessionWriterV2) Stop(ctx context.Context) error {
+	w.ensureLifecycle()
+	w.stopOnce.Do(func() {
+		if w.lifecycleCancel != nil {
+			w.lifecycleCancel()
+		}
+	})
+	w.aggWg.Wait()
+	return nil
 }
 
 // ProcessedRequest represents a request that has been processed through the pipeline
@@ -102,17 +167,23 @@ type ProcessingStage struct {
 	ErrorMsg   string
 }
 
-	// Write writes a processed request to all V2 tables
-	//
-	// This is a coordinated write that ensures consistency across:
-	//   1. session_turns (metadata)
-	//   2. session_bodies (incremental deltas)
-	//   3. session_turn_logs (processing stages)
-	//   4. sessions (snapshot, async)
-	//
-	// Error handling: If turn or bodies write fails, we return error.
-	// Session aggregation is async, so its failures are logged but don't fail the write.
-	func (w *SessionWriterV2) Write(ctx context.Context, req *ProcessedRequest) error {
+// Write writes a processed request to all V2 tables
+//
+// This is a coordinated write that ensures consistency across:
+//  1. session_turns (metadata)
+//  2. session_bodies (incremental deltas)  — committed atomically with (1)
+//  3. session_turn_logs (processing stages) — best-effort, own connection
+//  4. sessions (snapshot, async)            — best-effort, lifecycle-managed
+//
+// Atomicity (spec §6.2): the turn INSERT and the bodies INSERT run inside a
+// SINGLE transaction. If either fails the whole tx is rolled back, so a
+// bodies failure can never leave an orphan turn row. Stage logs and the
+// aggregate snapshot are best-effort (their failures are logged but do not
+// fail the primary write), as the spec explicitly allows.
+//
+// Lifecycle (spec §6.3): the aggregate snapshot update runs in a goroutine
+// tracked by aggWg and bound to lifecycleCtx; Stop() awaits it.
+func (w *SessionWriterV2) Write(ctx context.Context, req *ProcessedRequest) error {
 		// 1. Detect submit mode using the full detector
 		detector := NewSubmitModeDetector()
 		
@@ -137,19 +208,20 @@ type ProcessingStage struct {
 	// 2. Extract request delta (incremental messages)
 	requestDelta := extractRequestDelta(req, submitMode)
 
-	// 3. Write turn metadata
+	// 3. Build the turn record and bodies record (computed before the tx so a
+	// marshalling error fails fast without holding a transaction open).
 	requestAttachments := extractRequestAttachments(req)
 	responseAttachments := extractResponseAttachments(req)
 	attachmentCount := len(requestAttachments) + len(responseAttachments)
 	attachmentTotalBytes := calculateTotalBytes(requestAttachments, responseAttachments)
-	
+
 	// Auto-populate MultimodalTypes if not provided
 	if len(req.MultimodalTypes) == 0 && attachmentCount > 0 {
 		allAttachments := append(requestAttachments, responseAttachments...)
 		req.MultimodalTypes = ExtractMultimodalTypes(allAttachments)
 	}
-	
-	turnNo, err := w.turnWriter.AppendTurn(ctx, TurnRecord{
+
+	turnRec := TurnRecord{
 		SessionID:  req.SessionID,
 		TenantID:   req.TenantID,
 		RequestID:  req.RequestID,
@@ -181,19 +253,38 @@ type ProcessingStage struct {
 
 		SourceKind: "live",
 		Quality:    "verified",
-		
+
 		// Attachment metadata
 		AttachmentCount:      attachmentCount,
 		AttachmentTotalBytes: attachmentTotalBytes,
 		MultimodalTypes:      req.MultimodalTypes,
-	})
+	}
 
+	// 4. Atomic turn + bodies write (spec §6.2).
+	//
+	// A SINGLE transaction wraps AppendTurnInTx + WriteBodiesInTx. If bodies
+	// fails after turn succeeded, the whole tx rolls back — no orphan turn.
+	tx, err := w.turnWriter.BeginTx(ctx)
+	if err != nil {
+		return fmt.Errorf("begin tx: %w", err)
+	}
+	// tx.Rollback is safe to call after Commit (pgx returns ErrTxClosed,
+	// which we ignore). Using a named return + the closure lets us surface
+	// the original error from the happy path while still guaranteeing the
+	// tx is torn down on any early return.
+	committed := false
+	defer func() {
+		if !committed {
+			_ = tx.Rollback(ctx)
+		}
+	}()
+
+	turnNo, err := w.turnWriter.AppendTurnInTx(ctx, tx, turnRec)
 	if err != nil {
 		return fmt.Errorf("write turn: %w", err)
 	}
 
-	// 4. Write bodies (incremental deltas)
-	err = w.bodiesWriter.WriteBodies(ctx, BodiesRecord{
+	bodiesRec := BodiesRecord{
 		SessionID: req.SessionID,
 		TurnNo:    turnNo,
 		TenantID:  req.TenantID,
@@ -206,14 +297,22 @@ type ProcessingStage struct {
 
 		RequestAttachments:  requestAttachments,
 		ResponseAttachments: responseAttachments,
-	})
-
-	if err != nil {
+	}
+	if err := w.bodiesWriter.WriteBodiesInTx(ctx, tx, bodiesRec); err != nil {
 		return fmt.Errorf("write bodies: %w", err)
 	}
 
-	// 5. Write turn logs (processing stages)
-	if len(req.ProcessingStages) > 0 {
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("commit tx: %w", err)
+	}
+	committed = true
+
+	// 5. Write turn logs (processing stages) — best-effort, NOT in the tx.
+	//
+	// spec §6.2 allows turn logs to fail without failing the write; keeping
+	// them out of the atomic tx means a slow/stale stage log can't hold the
+	// turn+bodies transaction open.
+	if w.turnLogsWriter != nil && len(req.ProcessingStages) > 0 {
 		for _, stage := range req.ProcessingStages {
 			err := w.turnLogsWriter.WriteStage(ctx, TurnLogRecord{
 				SessionID: req.SessionID,
@@ -241,34 +340,46 @@ type ProcessingStage struct {
 		}
 	}
 
-	// 6. Update session snapshot (async)
-	go func() {
-		ctx := context.Background() // Detached context
-		err := w.sessionAggregator.UpdateSession(ctx, SessionUpdate{
-			SessionID:        req.SessionID,
-			TenantID:         req.TenantID,
-			// 2026-07-28 request-flow Step 3 (spec §6.2): pass RequestID so
-			// the aggregator can dedup on (tenant_id, request_id,
-			// partition_date) and never double-accumulate token/turn/cost
-			// when the same request_id is replayed.
-			RequestID:        req.RequestID,
-			LastTurnNo:       turnNo,
-			LastRequestSummary: summarizeMessages(requestDelta),
-			LastResponseSummary: summarizeMessages(req.ResponseBody),
-			LastModel:        req.ClientModel,
-			LastProvider:     req.ProviderID,
-			TurnIncrement:    1,
-			TokensIncrement:  req.PromptTokens + req.CompletionTokens,
-			CostIncrement:    req.CostUSD,
-			UpdatedAt:        req.Timestamp,
-		})
+	// 6. Update session snapshot — best-effort, lifecycle-managed goroutine
+	// (spec §6.3). The goroutine is tracked by aggWg so Stop can await it,
+	// and bound to lifecycleCtx so a blocked aggregate is cancelled on
+	// shutdown instead of leaking.
+	if w.sessionAggregator != nil {
+		w.ensureLifecycle()
+		w.aggWg.Add(1)
+		go func() {
+			defer w.aggWg.Done()
+			// lifecycleCtx gates the goroutine on shutdown. A small timeout
+			// bounds it so a slow DB can't stall Stop indefinitely even if
+			// the ctx isn't yet cancelled.
+			aggCtx, cancel := context.WithTimeout(w.lifecycleCtx, 30*time.Second)
+			defer cancel()
+			err := w.sessionAggregator.UpdateSession(aggCtx, SessionUpdate{
+				SessionID: req.SessionID,
+				TenantID:  req.TenantID,
+				// 2026-07-28 request-flow Step 3 (spec §6.2): pass RequestID so
+				// the aggregator can dedup on (tenant_id, request_id,
+				// partition_date) and never double-accumulate token/turn/cost
+				// when the same request_id is replayed.
+				RequestID:           req.RequestID,
+				LastTurnNo:          turnNo,
+				LastRequestSummary:  summarizeMessages(requestDelta),
+				LastResponseSummary: summarizeMessages(req.ResponseBody),
+				LastModel:           req.ClientModel,
+				LastProvider:        req.ProviderID,
+				TurnIncrement:       1,
+				TokensIncrement:     req.PromptTokens + req.CompletionTokens,
+				CostIncrement:       req.CostUSD,
+				UpdatedAt:           req.Timestamp,
+			})
 
-		if err != nil {
-			slog.Error("update session snapshot failed",
-				"session_id", req.SessionID,
-				"error", err)
-		}
-	}()
+			if err != nil {
+				slog.Error("update session snapshot failed",
+					"session_id", req.SessionID,
+					"error", err)
+			}
+		}()
+	}
 
 	return nil
 }

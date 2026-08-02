@@ -96,9 +96,37 @@ type TurnRecord struct {
 
 // AppendTurn appends a new turn to the session, returning the assigned turn_no
 //
-// This method uses PostgreSQL advisory locks to ensure turn_no is
-// monotonically increasing within the same session, even under concurrent
-// requests.
+// This is the backwards-compatible wrapper that owns its own transaction. It
+// begins a tx, delegates to AppendTurnInTx, and commits on success.
+//
+// Prefer AppendTurnInTx when you need turn + bodies to commit atomically
+// (spec §6.2). This method is kept so existing callers (and their tests) are
+// unaffected.
+func (w *TurnWriter) AppendTurn(ctx context.Context, rec TurnRecord) (turnNo int, err error) {
+	tx, err := w.db.Begin(ctx)
+	if err != nil {
+		return 0, fmt.Errorf("begin tx: %w", err)
+	}
+	defer tx.Rollback(ctx)
+
+	turnNo, err = w.AppendTurnInTx(ctx, tx, rec)
+	if err != nil {
+		return 0, err
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return 0, fmt.Errorf("commit tx: %w", err)
+	}
+	return turnNo, nil
+}
+
+// AppendTurnInTx appends a new turn within a caller-managed transaction.
+//
+// It does NOT begin or commit; the caller controls the tx lifecycle so the
+// turn INSERT can be committed atomically with the bodies INSERT (spec §6.2 —
+// "turn 与 bodies 必须同事务，失败时整体可重试，无孤儿 turn"). The advisory
+// lock is still acquired inside this tx (pg_advisory_xact_lock releases on
+// commit/rollback), so concurrency semantics are identical to AppendTurn.
 //
 // Process:
 //  1. Acquire advisory lock based on (tenant_id, session_id) hash
@@ -107,13 +135,12 @@ type TurnRecord struct {
 //  4. On conflict (RowsAffected == 0), re-read the real turn_no for the
 //     idempotency key (request_id, partition_date) so retries / concurrent
 //     inserts see a stable number.
-//  5. Release lock on commit
 //
 // 2026-07-28 Step 3 Round 3: the previous pre-INSERT probe (SELECT turn_no
 // WHERE request_id=… before the INSERT) was removed. ON CONFLICT DO NOTHING
 // + RowsAffected==0 post-read is sufficient and avoids a redundant round
 // trip on the hot path.
-func (w *TurnWriter) AppendTurn(ctx context.Context, rec TurnRecord) (turnNo int, err error) {
+func (w *TurnWriter) AppendTurnInTx(ctx context.Context, tx pgx.Tx, rec TurnRecord) (turnNo int, err error) {
 	if rec.SubmitMode == "" {
 		rec.SubmitMode = "full"
 	}
@@ -129,12 +156,6 @@ func (w *TurnWriter) AppendTurn(ctx context.Context, rec TurnRecord) (turnNo int
 	if rec.Quality == "" {
 		rec.Quality = "verified"
 	}
-
-	tx, err := w.db.Begin(ctx)
-	if err != nil {
-		return 0, fmt.Errorf("begin tx: %w", err)
-	}
-	defer tx.Rollback(ctx)
 
 	// 1. Acquire advisory lock
 	lockKey := hashSessionKey(rec.TenantID, rec.SessionID)
@@ -221,13 +242,15 @@ func (w *TurnWriter) AppendTurn(ctx context.Context, rec TurnRecord) (turnNo int
 		}
 	}
 
-	// 5. Commit transaction (releases advisory lock)
-	err = tx.Commit(ctx)
-	if err != nil {
-		return 0, fmt.Errorf("commit tx: %w", err)
-	}
-
 	return turnNo, nil
+}
+
+// BeginTx begins a new transaction on the underlying pool.
+//
+// Exposed so SessionWriterV2 can begin one tx and feed it to both
+// AppendTurnInTx and WriteBodiesInTx (spec §6.2 atomicity).
+func (w *TurnWriter) BeginTx(ctx context.Context) (pgx.Tx, error) {
+	return w.db.Begin(ctx)
 }
 
 // GetTurn retrieves a single turn by request_id
