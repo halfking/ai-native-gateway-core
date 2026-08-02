@@ -44,6 +44,31 @@ type requestLoggerDB interface {
 	Begin(context.Context) (pgx.Tx, error)
 }
 
+// RequestLoggerDB is the exported alias of the persistence seam the
+// RequestLogger talks to. It exists so integration tests (which live
+// in the external `integration` package) can substitute a wrapping DB
+// that injects a real-Postgres tx abort, connection kill, or other
+// fault on top of a live *pgxpool.Pool — without exposing the internal
+// `db` field directly.
+//
+// Production code continues to construct RequestLogger via
+// NewRequestLogger(*pgxpool.Pool, ...); the setter below is a test
+// seam, mirroring the existing SetRedisForTest / SetSeedForTest
+// convention in domains/ursm/v2.
+type RequestLoggerDB = requestLoggerDB
+
+// SetDBForTest replaces the RequestLogger's persistence backend. It is
+// a test-only seam used by the fault-injection integration tests
+// (spec §13 BLOCK #8) to wrap a real PG pool with a fault-injecting DB
+// that aborts transactions on a live connection. Production callers
+// must use NewRequestLogger(pool, cfg) instead.
+func (rl *RequestLogger) SetDBForTest(db RequestLoggerDB) {
+	if rl == nil {
+		return
+	}
+	rl.db = db
+}
+
 const (
 	overflowMarkerKind   = "request_logger_overflow"
 	overflowRecordPrefix = "request_logger:overflow:"
