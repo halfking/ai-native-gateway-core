@@ -11,7 +11,7 @@ set -euo pipefail
 
 # 默认连接配置（与 .env.local 保持一致）
 PGHOST="${PGHOST:-localhost}"
-PGPORT="${PGPORT:-55432}"
+PGPORT="${PGPORT:-5432}"
 PGUSER="${PGUSER:-llm_gateway}"
 PGPASSWORD="${PGPASSWORD:-4Q92cFTaYY8Z3AO07XTBBH-1g7kceaxg}"
 PGDATABASE="${PGDATABASE:-llm_gateway}"
