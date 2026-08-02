@@ -1274,6 +1274,16 @@ func (e *Executor) executeOpenAI(
 // finalizeOpenAIUpstreamBody applies prepareRequestBody plus OpenAI-path-only
 // transforms (Q2 anthropic→openai conversion, disguise, prompt-cache injection).
 func (e *Executor) finalizeOpenAIUpstreamBody(params *ExecParams, cand provider.Candidate, sourceBody []byte) ([]byte, error) {
+	// Step 4 audit fix (2026-07-28): bind a per-request IR scope so anomaly
+	// dedup is bounded to THIS request instead of the process-global map.
+	// Both SerializeOpenAI call sites below (the IR path and the legacy IR
+	// path) emit ir_protocol_loss / ir_unknown_field through this scope; the
+	// deferred cleanup restores the prior scope. nil reporter = use the
+	// process-wide DefaultAnomalyReporter / injected reporter.
+	scope, cleanup := ir.WithIRScope(nil)
+	defer cleanup()
+	_ = scope
+
 	// Phase B (2026-06-22): When e.IR is set, use Parse→IR→Serialize instead of
 	// the legacy AnthropicToOpenAI callback. This reduces conversion complexity
 	// from O(N²) to O(N) and unifies all protocol handling through the IR layer.

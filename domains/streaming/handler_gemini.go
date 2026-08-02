@@ -135,6 +135,14 @@ func NewGeminiHandler(ch *ChatHandler) *GeminiHandler {
 // ServeHTTP routes a Gemini-native request through the IR translation
 // pipeline and back to Gemini-native response format.
 func (h *GeminiHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	// Step 4 audit fix (2026-07-28): per-request IR scope so anomaly dedup
+	// is bounded to this request (SerializeOpenAI at step 6 and
+	// SerializeGeminiResponse at the non-stream tail) rather than the
+	// process-global map.
+	scope, cleanup := ir.WithIRScope(nil)
+	defer cleanup()
+	_ = scope
+
 	requestIdentity := initializeRequestIdentity(r)
 	requestID := requestIdentity.RequestID
 	provisionalSessionID := requestIdentity.SessionID
