@@ -205,7 +205,100 @@ func SerializeAnthropic(req *InternalRequest) ([]byte, error) {
 		}
 	}
 
+	// Step 4.10 (2026-07-28): explicit anomaly for cross-protocol losses.
+	reportSerializeAnthropicLosses(req)
+
 	return json.Marshal(out)
+}
+
+// reportSerializeAnthropicLosses records the IR fields that the Anthropic
+// wire format cannot faithfully represent. 2026-07-28 (Step 4 round 2).
+//
+// 2026-07-28 (BLOCK review): same-protocol false-positive guards. When the
+// IR source is itself Anthropic, the following fields are native and MUST
+// NOT trigger an ir_protocol_loss event:
+//
+//   - top_k / cache_control / documents / mcp_servers / context_management
+//     / container / thinking / thinking.signature / redacted_thinking
+//
+// The OpenAI-only fields list (frequency_penalty / presence_penalty / ...)
+// is only emitted when the source is non-Anthropic. An empty SourceProtocol
+// is treated as cross-protocol default to preserve historical fixtures.
+func reportSerializeAnthropicLosses(req *InternalRequest) {
+	if req == nil {
+		return
+	}
+	src := req.SourceProtocol
+
+	// OpenAI Chat Completions → Anthropic: any OpenAI-only field that
+	// does not have a 1:1 Anthropic equivalent is a loss. Skip on
+	// same-protocol Anthropic → Anthropic.
+	if src != ProtocolAnthropicMessages {
+		openAIOnly := []struct {
+			field string
+			have  bool
+		}{
+			{"frequency_penalty", req.FrequencyPenalty != nil},
+			{"presence_penalty", req.PresencePenalty != nil},
+			{"logprobs", req.Logprobs != nil},
+			{"top_logprobs", req.TopLogprobs != nil},
+			{"n", req.N > 0},
+			{"response_format", req.ResponseFormat != nil},
+			{"logit_bias", len(req.LogitBias) > 0},
+			{"store", req.Store != nil},
+			{"service_tier", req.ServiceTier != ""},
+			{"prediction", req.Prediction != nil},
+			{"verbosity", req.Verbosity != ""},
+			{"web_search_options", req.WebSearchOptions != nil},
+			{"safety_identifier", req.SafetyIdentifier != ""},
+			{"parallel_tool_calls", req.ParallelToolCalls != nil},
+			{"modalities", len(req.Modalities) > 0},
+			{"audio", req.AudioConfig != nil},
+		}
+		for _, f := range openAIOnly {
+			if !f.have {
+				continue
+			}
+			ReportProtocolLoss(
+				requestIDFromIR(req),
+				f.field,
+				ifaceNonEmpty(src, ProtocolOpenAIChat),
+				ProtocolAnthropicMessages,
+				"loss",
+				"OpenAI Chat Completions-only field has no Anthropic equivalent",
+				nil,
+			)
+		}
+	}
+	// previous_response_id is Responses-API-specific. It is a loss on
+	// Anthropic regardless of OpenAI Chat vs Responses source because
+	// Anthropic has no chainable previous_response_id concept. Skip only
+	// when the source is itself Anthropic (impossible in practice but
+	// kept for symmetry with other same-protocol guards).
+	if req.PreviousResponseID != "" && src != ProtocolAnthropicMessages {
+		ReportProtocolLoss(
+			requestIDFromIR(req),
+			"previous_response_id",
+			ifaceNonEmpty(src, ProtocolOpenAIChat),
+			ProtocolAnthropicMessages,
+			"loss",
+			"OpenAI Responses previous_response_id is not portable to Anthropic",
+			nil,
+		)
+	}
+	// TopK=0 on OpenAI source: the IR accepted it but Anthropic ignores it
+	// semantically. (When SourceProtocol is Anthropic this is normal usage.)
+	if req.TopK != nil && *req.TopK == 0 && src == ProtocolOpenAIChat {
+		ReportProtocolLoss(
+			requestIDFromIR(req),
+			"top_k",
+			ProtocolOpenAIChat,
+			ProtocolAnthropicMessages,
+			"loss",
+			"OpenAI Chat Completions top_k=0 cannot be expressed on Anthropic",
+			map[string]any{"top_k_value": 0},
+		)
+	}
 }
 
 // serializeAnthropicSystem serializes the system prompt.
