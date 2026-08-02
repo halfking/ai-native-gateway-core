@@ -18,6 +18,7 @@
 package main
 
 import (
+	"context"
 	"log/slog"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -60,4 +61,25 @@ func initSessionV2Writer(pool *pgxpool.Pool) *v2.SessionWriterV2 {
 	writer := v2.NewSessionWriterV2(turnWriter, bodiesWriter, aggregator, turnLogsWriter)
 	slog.Info("session V2 writer initialized (shadow write ready)")
 	return writer
+}
+
+// stopSessionV2Writer drains the writer's lifecycle-managed aggregate
+// goroutine (spec §6.3). Nil-safe. Idempotent (writer.Stop is itself
+// sync.Once-guarded).
+//
+// MUST be called AFTER telemetryClient.Stop in the shutdown sequence: the
+// aggregate goroutine's work is triggered by the telemetry onPersisted hook,
+// so only after telemetry has drained can we be sure no new aggregate work
+// will be enqueued.
+func stopSessionV2Writer(writer *v2.SessionWriterV2) {
+	if writer == nil {
+		return
+	}
+	// No deadline on the wait itself — Stop bounds each aggregate call with
+	// its own 30s timeout via lifecycleCtx, so this returns promptly once the
+	// in-flight snapshot update finishes or is cancelled.
+	if err := writer.Stop(context.Background()); err != nil {
+		slog.Warn("session V2 writer stop returned error", "error", err)
+	}
+	slog.Info("session V2 writer stopped (aggregate goroutine drained)")
 }

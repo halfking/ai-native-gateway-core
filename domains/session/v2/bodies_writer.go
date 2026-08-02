@@ -6,19 +6,38 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
+
+// bodiesDB is the minimal DB surface that SessionBodiesWriter needs.
+//
+// Defined as an interface (mirroring turnDB / aggregatorDB) so unit tests can
+// wire pgxmock without a live PostgreSQL instance and — more importantly —
+// so WriteBodiesInTx can run inside a caller-provided pgx.Tx.
+type bodiesDB interface {
+	Exec(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error)
+	Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error)
+	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
+}
 
 // SessionBodiesWriter writes turn bodies to gateway.session_bodies
 //
 // It stores incremental message deltas to avoid the bloat problem
 // of storing full message history in every row (as request_logs does).
 type SessionBodiesWriter struct {
-	db *pgxpool.Pool
+	db bodiesDB
 }
 
 // NewSessionBodiesWriter creates a new SessionBodiesWriter instance
 func NewSessionBodiesWriter(db *pgxpool.Pool) *SessionBodiesWriter {
+	return newSessionBodiesWriter(db)
+}
+
+// newSessionBodiesWriter is the test seam that accepts the bodiesDB interface
+// (so tests can inject a pgxmock-backed pool or a pgx.Tx directly).
+func newSessionBodiesWriter(db bodiesDB) *SessionBodiesWriter {
 	return &SessionBodiesWriter{db: db}
 }
 
@@ -105,10 +124,28 @@ func jsonTextOrNull(data []byte) string {
 
 // WriteBodies writes turn bodies to gateway.session_bodies
 //
+// This is the backwards-compatible wrapper that runs against the writer's own
+// pool. Prefer WriteBodiesInTx when you need turn + bodies to commit atomically
+// (spec §6.2).
+//
 // The key optimization is RequestDelta only contains messages that
 // were not present in the previous turn, avoiding exponential growth
 // of storing full history in every row.
 func (w *SessionBodiesWriter) WriteBodies(ctx context.Context, rec BodiesRecord) error {
+	return w.WriteBodiesInTx(ctx, w.db, rec)
+}
+
+// WriteBodiesInTx writes turn bodies within a caller-managed transaction
+// (or directly against the pool when tx is the pool).
+//
+// It does NOT begin or commit; the caller controls the tx lifecycle so the
+// bodies INSERT can be committed atomically with the turn INSERT (spec §6.2 —
+// "turn 与 bodies 必须同事务").
+//
+// tx is typed as the same bodiesDB interface the writer already holds; both
+// *pgxpool.Pool and pgx.Tx satisfy it, so the same code path serves the
+// standalone wrapper and the atomic-coordinated caller.
+func (w *SessionBodiesWriter) WriteBodiesInTx(ctx context.Context, tx bodiesDB, rec BodiesRecord) error {
 	// Serialize deltas to JSONB with safe marshaling
 	requestDeltaJSON, err := safeJSONMarshal(rec.RequestDelta)
 	if err != nil {
@@ -140,7 +177,7 @@ func (w *SessionBodiesWriter) WriteBodies(ctx context.Context, rec BodiesRecord)
 
 	partitionDate := rec.Ts.Truncate(24 * time.Hour)
 
-	_, err = w.db.Exec(ctx, `
+	_, err = tx.Exec(ctx, `
 		INSERT INTO gateway.session_bodies (
 			session_id, turn_no, tenant_id, request_id, ts,
 			request_delta, response_delta, outbound_body,
@@ -152,7 +189,7 @@ func (w *SessionBodiesWriter) WriteBodies(ctx context.Context, rec BodiesRecord)
 			$9::text::jsonb, $10::text::jsonb,
 			$11
 		)
-		ON CONFLICT (session_id, turn_no, partition_date) 
+		ON CONFLICT (session_id, turn_no, partition_date)
 		DO UPDATE SET
 			response_delta = EXCLUDED.response_delta,
 			outbound_body = EXCLUDED.outbound_body,

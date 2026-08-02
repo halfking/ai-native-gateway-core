@@ -62,7 +62,8 @@ import (
 	"github.com/kaixuan/llm-gateway-go/domains/notification"                        //nolint:depguard // 审批通知器
 	"github.com/kaixuan/llm-gateway-go/domains/routeincident"                       //nolint:depguard // 2026-07-13 route incident diagnosis (Phase 1)
 	"github.com/kaixuan/llm-gateway-go/domains/routingstate"
-	"github.com/kaixuan/llm-gateway-go/domains/session"      //nolint:depguard // historical violation, B1 routing.go CQRS will fix
+	"github.com/kaixuan/llm-gateway-go/domains/session" //nolint:depguard // historical violation, B1 routing.go CQRS will fix
+	v2 "github.com/kaixuan/llm-gateway-go/domains/session/v2"
 	"github.com/kaixuan/llm-gateway-go/domains/sessionaudit" //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/domains/stats"
 	"github.com/kaixuan/llm-gateway-go/domains/stats/boardcache"
@@ -500,6 +501,10 @@ func main() {
 	// DBWriter.Stop 已具备 idempotent 语义（sync.Once），与 init 处的 defer
 	// c.DBWriter.Stop() 安全共存，不会 panic on close-of-closed-channel。
 	var sessionStateForShutdown *SessionStateComponents
+	// sessionV2Writer is the V2 sessions shadow writer; Stop() drains its
+	// lifecycle-managed aggregate goroutine (spec §6.3). Nil when V2 shadow
+	// write is disabled or the pool is unavailable.
+	var sessionV2Writer *v2.SessionWriterV2
 	if cfg.RedisAddr != "" {
 		redisClient := session.NewRedisClient(cfg.RedisAddr, cfg.RedisPassword, cfg.RedisDB)
 		pingCtx, pingCancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -1596,7 +1601,7 @@ func main() {
 	// blocks the primary INSERT. Schema prerequisite: migration 430 must
 	// have been applied on the target database.
 	if telemetryClient != nil && dbConn != nil && dbConn.Enabled() {
-		sessionV2Writer := initSessionV2Writer(dbConn.Pool())
+		sessionV2Writer = initSessionV2Writer(dbConn.Pool())
 		if sessionV2Writer != nil {
 			telemetryClient.AddOnRequestLogPersisted(sessionv2mirror.PersistHook(sessionV2Writer))
 			slog.Info("session V2 shadow write hook registered (gateway.sessions gateway.session_turns gateway.session_bodies gateway.session_turn_logs)")
@@ -4503,6 +4508,13 @@ func main() {
 			sessionStateForShutdown.DBWriter.Stop()
 			slog.Info("session db writer stopped (shutdown goroutine)")
 		}
+		// 2026-08-02 request-flow Step 3 deep fix (spec §6.3): drain the V2
+		// sessions aggregate goroutine. MUST run after telemetryClient.Stop
+		// because the aggregate's work is triggered by the telemetry
+		// onPersisted hook — only once telemetry has drained can we be sure no
+		// new aggregate work is enqueued. stopSessionV2Writer is nil-safe and
+		// idempotent (Stop is sync.Once-guarded).
+		stopSessionV2Writer(sessionV2Writer)
 		lim.Stop()
 		pools.Stop()
 		pools.CloseAll()
