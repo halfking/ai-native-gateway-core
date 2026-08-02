@@ -97,7 +97,7 @@ llm-gateway-go-{VERSION}-{os}-{arch}-offline/
 | `LLM_GATEWAY_CENTER_URL` | 授权中心地址。未设置默认 `https://llm.kxpms.cn` |
 | `OPS_COLLECT_URL` | 节点数据汇聚地址（心跳 / 采集） |
 | `OPS_NODE_REGION` | 运维节点标识（如 `customer-1` / `245` / `154`） |
-| `OPS_INSTANCE_ID` | 可选；默认持久化到 `~/.local/share/kx-gateway/instance.id` |
+| `OPS_INSTANCE_ID` | 可选；默认持久化到 `~/.local/share/kx-gateway/instance.id`（按 instanceIDPath() 权威级联，见第 6 节） |
 | `OPS_COLLECT_LICENSE_KEY` | 运维节点注册用 licensee key（license 场景必填） |
 
 激活：浏览器打开 `https://llm.kxpms.cn/maintain/activate` 输入激活码；无外网环境用
@@ -207,8 +207,10 @@ redis-cli -a "$REDIS_PASSWORD" ping                # 期望 PONG
 curl -fsS http://127.0.0.1:8781/v1/models -H "Authorization: Bearer $LLM_GATEWAY_API_KEY"
 
 # L4 业务真实：授权中心心跳可见
-# 登录 https://llm.kxpms.cn/maintain 查看实例在线；本机 instance_id：
-cat ~/.local/share/kx-gateway/instance.id 2>/dev/null || cat ~/llm-gateway/instance_id
+# 登录 https://llm.kxpms.cn/maintain 查看实例在线；本机 instance_id 按权威级联查找：
+# $LLM_GATEWAY_DATA_DIR/instance.id → ~/.local/share/kx-gateway/instance.id
+# → ~/.kx-gateway/instance.id → /var/lib/kx-gateway/instance.id（安装目录内 instance_id 兼容保留）
+./verify-install.sh   # 一键跑完整 L1-L4 自检
 ```
 
 ---
