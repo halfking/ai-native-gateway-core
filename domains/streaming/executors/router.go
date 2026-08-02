@@ -235,12 +235,16 @@ func (r *Router) PlanCandidatesWithContext(
 		queryCtx, queryCancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
 		defer queryCancel()
 		for _, c := range candidates {
-			reason := c.UnavailableReason()
-			if reason == "" && r.StateManager != nil && r.StateManager.Enabled() {
-				if _, smReason := r.StateManager.IsAvailable(queryCtx, c.CredentialID, c.RawModel); smReason != "" {
-					reason = "state:" + smReason
+				reason := c.UnavailableReason()
+				// 2026-08-02 (spec §10 Step 5 C-1): authoritative 模式下
+				// StateManager 必须零调用。当前靠 URSMv2Backend no-op +
+				// PlanCandidates 早期过滤保证"不可达"，此处补显式 guard，
+				// 避免任何未来重构意外触发 StateManager 读路径。
+				if reason == "" && !stateBackend.IsAuthoritative() && r.StateManager != nil && r.StateManager.Enabled() {
+					if _, smReason := r.StateManager.IsAvailable(queryCtx, c.CredentialID, c.RawModel); smReason != "" {
+						reason = "state:" + smReason
+					}
 				}
-			}
 			if reason == "" {
 				reason = "unknown"
 			}
