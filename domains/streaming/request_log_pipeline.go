@@ -817,6 +817,14 @@ func (c *RequestLogContext) EmitFailure(errCode, errMessage string, providerID, 
 	if c == nil || c.handler == nil {
 		return
 	}
+	// 2026-08-02 (GAP 2): Use SetTerminal CAS so that success/failure/
+	// disconnect three-way race has a single in-process winner. If
+	// another path already claimed the terminal transition, skip the
+	// emit entirely (the DB-level L-2 guard still prevents terminal
+	// regression, but this avoids a double telemetry emit in-process).
+	if !c.SetTerminal("failure", nil) {
+		return
+	}
 	reqLog := c.BuildFailureEntry(errCode, errMessage, providerID, credentialID)
 	if reqLog == nil {
 		return
@@ -845,6 +853,11 @@ func (c *RequestLogContext) EmitFailure(errCode, errMessage string, providerID, 
 // the executor or any upstream.
 func (c *RequestLogContext) EmitRateLimited(errCode, errMessage string, providerID, credentialID *int) {
 	if c == nil || c.handler == nil {
+		return
+	}
+	// 2026-08-02 (GAP 2): Use SetTerminal CAS so that success/failure/
+	// disconnect three-way race has a single in-process winner.
+	if !c.SetTerminal("rate_limited", nil) {
 		return
 	}
 	reqLog := c.buildEntry(errCode, errMessage, providerID, credentialID, telemetry.RequestStatusRateLimited)
