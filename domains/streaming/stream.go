@@ -194,6 +194,9 @@ func runEmptyStreamGate(
 				if chunk.Model != "" {
 					capture.SetRespModelIfEmpty(chunk.Model)
 				}
+				if capture.IntegrityBreached() {
+					return nil, ptrStreamOutcome(integrityBreachOutcome(capture, *chunkCount))
+				}
 			}
 		}
 
@@ -306,6 +309,30 @@ type StreamOutcome struct {
 	// detail-code switch.
 	Kind errorsx.ErrorKind
 }
+
+// integrityBreachOutcome converts a latched capture integrity breach into
+// the common stream interruption shape. The observer itself only reports
+// the breach; transformers call this helper at their public capture update
+// points so the executor's existing recoverable-stream failover path can
+// decide whether another candidate may retry.
+func integrityBreachOutcome(capture *audit.StreamCapture, chunkCount int) StreamOutcome {
+	reason := "integrity_breach"
+	if capture != nil {
+		if r := capture.IntegrityBreachReason(); r != "" {
+			reason = r
+		}
+		capture.MarkInterruptedWithReason(reason)
+	}
+	return StreamOutcome{
+		Interrupted: true,
+		Reason:      reason,
+		Resumable:   true,
+		ChunkCount:  chunkCount,
+		Kind:        errorsx.KindEmptyResponse,
+	}
+}
+
+func ptrStreamOutcome(o StreamOutcome) *StreamOutcome { return &o }
 
 func StreamChat(w http.ResponseWriter, resp *http.Response, clientModel, outboundModel string, norm *Normalizer) StreamOutcome {
 	return StreamChatWithCapture(w, resp, clientModel, outboundModel, norm, nil)
@@ -589,6 +616,10 @@ func StreamChatWithPendingCaptureAndDiagnostics(
 				if chunk.Model != "" {
 					capture.SetRespModelIfEmpty(chunk.Model)
 				}
+				if capture.IntegrityBreached() {
+					outcome = integrityBreachOutcome(capture, chunkCount)
+					return outcome
+				}
 			}
 		}
 
@@ -829,6 +860,10 @@ func StreamChatWithPendingCaptureAndDiagnostics(
 					// substitution detection.
 					if chunk.Model != "" {
 						capture.SetRespModelIfEmpty(chunk.Model)
+					}
+					if capture.IntegrityBreached() {
+						outcome = integrityBreachOutcome(capture, chunkCount)
+						return outcome
 					}
 				}
 			}

@@ -44,6 +44,7 @@ export default {
     settings: "系統設定",
     dataLifecycle: "資料生命週期",
     formatAnomalies: "格式異常監控",
+    modelIntegrity: "模型完整性監控",
     modules: "模組管理",
     sessionAnalytics: "會話分析中心",
     sessionClusters: "會話聚類",

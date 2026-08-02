@@ -101,7 +101,10 @@ func isInterruptionCode(s string) bool {
 		"write_failed",
 		"hangup",
 		"body_too_large",
-		"eof_mid_tool_call":
+		"eof_mid_tool_call",
+		// 2026-08-02: mid-stream integrity abort (looping model cut
+		// short by the incremental repeated-content rule).
+		"integrity_repeated_content":
 		return true
 	}
 	return false
@@ -180,6 +183,19 @@ type StreamCapture struct {
 	// This is OpenAI Chat Completions format, compatible with both
 	// OpenAI and Anthropic upstream protocols (IR layer normalizes them).
 	ToolCalls []map[string]any
+
+	// textObserver is the optional incremental integrity observer. It is
+	// notified from appendText — the single funnel every transformer
+	// reaches, via ObserveChunk or ObservePayload — so the four stream
+	// paths (OpenAI chat, Anthropic, Responses, IR bridge) are covered by
+	// one hook. See stream_integrity.go.
+	textObserver StreamTextObserver
+	// integrityBreached latches the first breach the observer reported.
+	// Transformers poll IntegrityBreached() after each capture update.
+	integrityBreached bool
+	// integrityBreachReason names the rule that tripped, used as the
+	// capture's interruption reason.
+	integrityBreachReason string
 }
 
 func NewStreamCapture() *StreamCapture {
@@ -323,7 +339,16 @@ func (sc *StreamCapture) Reset() {
 	sc.QualityFixActions = nil
 	sc.QualityScore = nil
 	sc.QualitySeenToolCallIDs = nil
-
+	// Clear the incremental integrity state too: without this, a
+	// failover attempt would inherit the previous attempt's block
+	// hashes and could abort a healthy stream.
+	sc.integrityBreached = false
+	sc.integrityBreachReason = ""
+	if sc.textObserver != nil {
+		// Safe under sc.mu: the observer contract forbids re-entering
+		// the capture, so Reset only touches the observer's own state.
+		sc.textObserver.Reset()
+	}
 }
 
 // AddQualityFlag appends a tool-call quality flag (deduped) under the capture
@@ -416,6 +441,10 @@ func (sc *StreamCapture) appendText(s string) {
 		s = safeTruncateUTF8(s, remaining)
 	}
 	sc.textContent = append(sc.textContent, s...)
+	// Feed the incremental integrity observer the exact bytes that
+	// landed in textContent, so the mid-stream rule and the final
+	// completion-time rule see identical input.
+	sc.notifyTextObserver(s)
 }
 
 // safeTruncateUTF8 returns the longest valid-UTF-8 prefix of s whose byte
