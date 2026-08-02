@@ -164,11 +164,9 @@ target_154_contract() {
 }
 
 # Slice 1 / 4 target: 245 (gateway server, full versioned rollback).
-# 2026-07-14: service_name corrected to llm-gateway-go.service — the ACTUAL
-# unit name on the 245 host (confirmed via `systemctl list-units`). The
-# deploy/llmgo-245.service template uses this name; the earlier
-# "llmgo-245.service" value was a stale artifact name that never matched
-# the running unit, which would have broken host_restart_service.
+# 245 uses the same canonical gateway unit as production. The deployment gate
+# validates this contract before any apply so legacy template names cannot
+# silently route a release to the wrong service.
 target_245_contract() {
   _json_object \
     target "245" \
@@ -337,5 +335,9 @@ target_list_all() {
 # Resolve a legacy alias. Returns the input on a miss so callers can pass
 # canonical / legacy / unknown indifferently.
 target_resolve_alias() {
-  printf '%s\n' "$1"
+  case "$1" in
+    71)  printf '%s\n' "154" ;;
+    184) printf '%s\n' "252" ;;
+    *)   printf '%s\n' "$1" ;;
+  esac
 }

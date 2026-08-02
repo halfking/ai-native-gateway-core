@@ -224,9 +224,14 @@ phase "PHASE 1: SCHEMA SYNC"
 
 DUMP="$WORK/252_schema.sql"
 info "Dumping 252 schema..."
+# Exclude empty vector-typed tables (memories, task_type_centroids): 252 container
+# image lacks $libdir/vector.so, so pg_dump fails when touching their indexes.
+# They are empty (relpages=0); local target restores their schema from its own
+# vector extension (0.8.5+). See env check 2026-07-31.
 ssh_252_cmd \
   "docker exec ${REMOTE_DB_CONTAINER:-pg-252-pg17} pg_dump -U llm_gateway -d llm_gateway \
-   --schema-only --no-owner --no-privileges --format=plain" > "$DUMP" 2>/dev/null
+   --schema-only --no-owner --no-privileges --format=plain \
+   --exclude-table=memories --exclude-table=task_type_centroids" > "$DUMP" 2>/dev/null
 sed -i.bak '/^\\(restrict|unrestrict)/d' "$DUMP" 2>/dev/null || true
 ok "$(wc -l < "$DUMP") lines from 252 schema dump"
 
@@ -364,6 +369,7 @@ else
   ALL_TABLES=$(remote_psql "
     SELECT tablename FROM pg_tables
     WHERE schemaname='public'
+      AND tablename NOT IN ('memories','task_type_centroids')
     ORDER BY pg_total_relation_size(schemaname||'.'||tablename) DESC
   ")
 
@@ -387,6 +393,13 @@ else
   EXPORTED=0; SKIPPED=0; IMPORTED=0; FAILED=0
 
   for tbl in "${COLD_LIST[@]}"; do
+    # Skip empty vector-typed tables (252 lacks $libdir/vector.so; any SELECT
+    # on them errors). They hold no data (relpages=0), schema restored locally.
+    if [[ "$tbl" == "memories" || "$tbl" == "task_type_centroids" ]]; then
+      echo -e "  ${C}%-45s ${N}(vector table, skip)${N}" "$tbl"
+      SKIPPED=$((SKIPPED + 1))
+      continue
+    fi
     row_count=$(remote_psql "SELECT count(*) FROM public.$tbl;")
     printf "  %-45s %10s rows" "$tbl" "$row_count"
     if [[ "$row_count" == "0" ]]; then

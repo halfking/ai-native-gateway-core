@@ -3,6 +3,14 @@
 
 set -e
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+
+# The canonical deployment runner uses this command as its source of truth
+# for target contracts. Keep the legacy build/deploy commands below intact,
+# but make target selection explicit and fail closed for production.
+source "$SCRIPT_DIR/deploy-lib/targets.sh"
+
 # 颜色输出
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -69,7 +77,24 @@ test() {
 
 # 部署
 deploy() {
-    ENV=${1:-production}
+    ENV=$(target_resolve_alias "${1:-245}")
+
+    case "$ENV" in
+        245|test|preprod)
+            ENV="245"
+            ;;
+        154|prod|production)
+            if [ "${LLM_GATEWAY_EXPLICIT_PROD:-false}" != "true" ]; then
+                echo_error "生产目标 154 必须显式设置 LLM_GATEWAY_EXPLICIT_PROD=true，并使用 scripts/deploy-154.sh"
+                exit 64
+            fi
+            ENV="154"
+            ;;
+        *)
+            echo_error "不支持的部署目标: $ENV（仅 245；154 需显式使用 scripts/deploy-154.sh）"
+            exit 64
+            ;;
+    esac
     
     echo_info "Deploying to $ENV..."
     
@@ -99,6 +124,24 @@ deploy() {
     fi
 }
 
+# Canonical target plan consumed by the deployment gate. The optional
+# --json is accepted for compatibility with the runner and does not change
+# the output because the contract is already JSON.
+plan() {
+    local target
+    target=$(target_resolve_alias "${1:-}")
+    case "$target" in
+        245|154|186|252|kaixuan-1|kaixuan-2|kaixuan-3)
+            printf 'target: %s\n' "$target"
+            target_contract "$target"
+            ;;
+        *)
+            echo_error "用法: $0 plan <245|154|186|252|kaixuan-1|kaixuan-2|kaixuan-3> [--json]"
+            exit 64
+            ;;
+    esac
+}
+
 # 健康检查
 health_check() {
     echo_info "Performing health check..."
@@ -117,7 +160,15 @@ health_check() {
 
 # 回滚
 rollback() {
-    echo_warn "Rolling back..."
+    local target
+    target=$(target_resolve_alias "${1:-245}")
+    local rollback_policy
+    rollback_policy=$(target_field "$target" rollback_policy)
+    if [[ "$rollback_policy" == "runbook" ]]; then
+        echo_error "target $target rollback is runbook-only; use the documented rollback runbook"
+        return 64
+    fi
+    echo_warn "Rolling back target $target..."
     
     # 停止当前服务
     if [ -f "llm-gateway.pid" ]; then
@@ -141,6 +192,9 @@ main() {
     COMMAND=${1:-deploy}
     
     case $COMMAND in
+        plan)
+            plan "${2:-}"
+            ;;
         check)
             check_environment
             ;;
@@ -151,19 +205,25 @@ main() {
             test
             ;;
         deploy)
+            target=$(target_resolve_alias "${2:-245}")
+            target_check_actionable "$target" deploy
+            if [[ "$target" == "154" && "${LLM_GATEWAY_EXPLICIT_PROD:-false}" != "true" ]]; then
+                echo_error "生产目标 154 必须显式设置 LLM_GATEWAY_EXPLICIT_PROD=true，并使用 scripts/deploy-154.sh"
+                exit 64
+            fi
             check_environment
             build
             test
-            deploy ${2:-production}
+            deploy "$target"
             ;;
         rollback)
-            rollback
+            rollback "${2:-245}"
             ;;
         health)
             health_check
             ;;
         *)
-            echo "Usage: $0 {check|build|test|deploy|rollback|health}"
+            echo "Usage: $0 {plan|check|build|test|deploy|rollback|health} [target]"
             exit 1
             ;;
     esac
