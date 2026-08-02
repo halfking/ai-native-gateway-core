@@ -34,6 +34,12 @@ func applyInlineValidation(bodyBytes []byte, requestID string) []byte {
 	// Validate and fix
 	irReq = ir.ValidateAndFixRequest(irReq, requestID)
 
+	// Step 4 audit fix (2026-07-28): per-request scope so anomaly dedup is
+	// bounded to this request rather than the process-global map.
+	scope, cleanup := ir.WithIRScope(nil)
+	defer cleanup()
+	_ = scope
+
 	// Serialize back to OpenAI format
 	fixedBytes, err := ir.SerializeOpenAI(irReq)
 	if err != nil {
