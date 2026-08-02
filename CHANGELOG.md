@@ -52,6 +52,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `docs/runbooks/ursm-v2-cutover.md` (254 行): 4 阶段切流操作手册；每阶段含 env / L1-L4 验证 / drift 计算 / 回退触发；引用 `scripts/migrations/` + `scripts/rollback/` 工具
   - Session 收口归档: `docs/changelogs/2026-07-29-p0-3-ursmv2-framework-and-session-close.md` (198 行)
 
+### Added
+
+- **并发安全终审报告 (M3 + 60 follow-up commits)** (2026-08-02):
+  - **🔴 0 P0 race / deadlock / goroutine leak / double-close** — 全任务 60 commits (含 audit-bot 推的 `statesource / anomaly_reporter / tool_arguments_assembler / audit_context / predictive_ttfb / entitlement_client / session_db_writer / pipeline_hook / async_raw_logger / lockfree_anomaly_reporter / executor / executor_chat` 等) 全部 -race PASS
+  - **🟡 3 个 P1 优化点已识别不修**：`ReportAnomaly` 全局 lock 竞争 / `counterFor` 持锁读 / 多 mutex 路径 — 改造收益微、范围扩散风险，按 rule 11 §1 保留
+  - **8 个 spec 不变性全部守住**：写入必须先经 Redis Lua 成功 / LRU 永远是只读副本 / generation 单调 (per-shard CAS) / admin 优先级恒占 (lua 自读 manual_hold) / routing_state_source 状态完整分类 (8 种 label) / recovery_gate_* 指标已暴露 / 字段名对齐 generation/source_priority / 不引入 race window
+  - **21 包 -race 全 PASS**：domains/ursm/v2 (+statesource) / domains/streaming (+integrity) / internal/ir / internal/logging / bg / bg/systemmonitor
+  - **无源代码修改** — audit-bot 后续 60 commits 的并发安全已经按上次加固标准落地. 本次审计只产出报告
+  - 详见 [AUDIT_FULL_TASK_CONCURRENCY_FINAL.md](AUDIT_FULL_TASK_CONCURRENCY_FINAL.md) 与 [docs/changelogs/2026-08-02-full-task-concurrency-final-audit.md](docs/changelogs/2026-08-02-full-task-concurrency-final-audit.md)。
+
 ### Changed
 
 - **流式超时与重试阈值提升，修复长 reasoning 链中途被杀 (2026-07-29, commit 81e627ff1)**:
