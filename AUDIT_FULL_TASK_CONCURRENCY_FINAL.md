@@ -191,6 +191,66 @@ ok  bg/systemmonitor                  6.917s
 
 ---
 
+## 10. plugin-runtime 子系统深化审计 (2026-08-02 续)
+
+补充审计老板 60 commits 引入的 `plugin-runtime/` 子系统并发安全.
+
+### 10.1 `Registry` (registry.go)
+- `sync.RWMutex` + maps (plugins / nav / versions)
+- 写: `Lock` (`SetPlugin` / `SetPluginStatus` / `SetNav` / `RemovePlugin`)
+- 读: `RLock` (`NavEntries`)
+- 跨包 mutex 路径: `HealthLoop.tick` 持 HealthLoop.mu + 调 Registry.SetPluginStatus → Registry.mu.Lock — 不同 mutex, lock order 不会环
+
+### 10.2 `HealthLoop` (health_loop.go) — 🟡 P1 已声明未修
+**已声明 P8 TODO (line 140-141):**
+> The Restarter is invoked synchronously under h.mu; it should be fast (sup.Restart performs an exec). P8 may release the lock and run async.
+
+```go
+// line 142-156 — 持锁调外部 syscall
+func (h *HealthLoop) tryRestart(id string) {
+    if h.cfg.Restarter == nil { return }
+    if h.cfg.MaxRestarts > 0 && h.restartAttempts[id] >= h.cfg.MaxRestarts {
+        h.reg.SetPluginStatus(id, "failed") // <-- 持 HealthLoop.mu, 取 Registry.mu.Lock
+        return
+    }
+    ...
+    h.lastRestart[id] = time.Now()
+    _ = h.cfg.Restarter(id) // <-- 持锁调外部 Restarter (supervisor exec)
+}
+```
+
+**问题**:
+- Restarter 是 `supervisor.Restart` 的 syscall, 可能耗时长 (exec plugin 二进制 + 启动子进程)
+- 持锁期间阻塞 → 所有 plugin 健康检查 tick 排队
+- 单个 plugin restart 期间, 其他 plugin 的 status 更新被锁阻塞
+- 不会数据竞争 (mutex 保护), 但有性能 hot-spot
+
+**P8 修复方向** (未在本次 commit):
+- 把 Restarter 调用挪到锁外 (异步 channel 投递, 后台 worker 处理)
+- 或 release lock → 调 Restarter → re-acquire lock 更新状态
+
+**评估**:
+- 当前 Restarter 调用频率受 backoff ladder 控制 (`BackoffStart * 2^n`, capped at `BackoffMax`)
+- 单次 tick 持锁最坏时长 ≈ 累加各 plugin 的 Restarter 调用时间
+- 245 / 154 部署 plugin 数量有限, 实际影响小
+- 不在本次修复范围 (rule 11 §1 不扩大修改)
+
+### 10.3 plugin-runtime 死锁分析
+
+| 锁对 | 顺序 | 死锁路径? |
+|---|---|---|
+| HealthLoop.mu → Registry.mu (via SetPluginStatus) | tick → tryRestart | ✅ 无环 (Registry.mu.Lock 不调 HealthLoop) |
+| Registry.mu (RLock) → pluginIDs/currentStatus | NavEntries 不调 HealthLoop | ✅ 无环 (NavEntries 自己 RLock 后释放) |
+| HealthLoop.mu (RLock read cancel) → wg.Wait | Stop | ✅ 无环 (主线程 Stop, goroutine tick 完成后 Wait 收到) |
+
+### 10.4 plugin-runtime 总评
+- ✅ Registry 用 RWMutex 规范
+- ✅ HealthLoop lifecycle 完整 (ctx + cancel + wg)
+- ✅ 死锁路径全过
+- 🟡 tryRestart 持锁调外部 syscall (P8 TODO, 不修)
+
+---
+
 **审计人:** ZCode (autonomous)
 **审计日期:** 2026-08-02
 **对应 commit:** 即将 commit 本报告到 origin/main (待 push)

@@ -61,6 +61,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - **21 包 -race 全 PASS**：domains/ursm/v2 (+statesource) / domains/streaming (+integrity) / internal/ir / internal/logging / bg / bg/systemmonitor
   - **无源代码修改** — audit-bot 后续 60 commits 的并发安全已经按上次加固标准落地. 本次审计只产出报告
   - 详见 [AUDIT_FULL_TASK_CONCURRENCY_FINAL.md](AUDIT_FULL_TASK_CONCURRENCY_FINAL.md) 与 [docs/changelogs/2026-08-02-full-task-concurrency-final-audit.md](docs/changelogs/2026-08-02-full-task-concurrency-final-audit.md)。
+- **深化 plugin-runtime 子系统审计** (2026-08-02):
+  - **Registry (RWMutex 规范)** + **HealthLoop lifecycle 完整**（ctx + cancel + wg.Wait）+ 死锁路径全过
+  - **🟡 P1 已声明未修**：`HealthLoop.tryRestart` 持锁调外部 Restarter (注释 line 140-141 已标 "P8 may release the lock and run async"），是性能 hot-spot 但无数据竞争；按 rule 11 §1 保留待未来 P8 fix
+  - 不修改源代码 — plugin 子系统并发安全合规
 
 ### Changed
 
