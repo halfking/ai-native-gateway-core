@@ -41,6 +41,15 @@ _psql() {
 REMOTE
 }
 
+_db_migration_checksum() {
+  local file=$1
+  if command -v shasum >/dev/null 2>&1; then
+    shasum -a 256 "$file" | awk '{print $1}'
+  else
+    sha256sum "$file" | awk '{print $1}'
+  fi
+}
+
 _deploy_applied_migration_ids() {
   local ssh_cmd=$1 env_file=$2
   local remote_psql
@@ -95,6 +104,88 @@ _deploy_pending_startup_migrations() {
   done
 }
 
+_deploy_validate_pending_migration_versions() {
+  local -a files=("$@")
+  local -A seen=()
+  local -a duplicates=()
+  local f base ver
+
+  for f in "${files[@]}"; do
+    base=$(basename "$f")
+    ver=${base%%_*}
+    if [[ -n "${seen[$ver]+x}" ]]; then
+      duplicates+=("$ver:$base")
+    else
+      seen["$ver"]=$base
+    fi
+  done
+
+  if [[ ${#duplicates[@]} -gt 0 ]]; then
+    _db_err "pending startup migration version 冲突，拒绝部署；同一 version 不能在一次切换中应用多个文件："
+    local entry version first
+    for entry in "${duplicates[@]}"; do
+      version=${entry%%:*}
+      first=${seen[$version]}
+      _db_err "  version $version: $first, ${entry#*:}"
+    done
+    return 1
+  fi
+}
+
+_deploy_migration_checksum_reconcile() {
+  local ssh_cmd=$1 env_file=$2 repo_root=$3 applied_ids=$4
+  local remote_psql f base ver checksum row recorded_name recorded_checksum
+  local ledger_reconcile_from=${DB_LEDGER_RECONCILE_FROM:-412}
+  local -A candidate_count=()
+  remote_psql=$(_deploy_remote_psql_script "$env_file")
+
+  for f in "$repo_root"/sql/migrations/startup/[0-9]*.sql; do
+    [[ -f "$f" ]] || continue
+    base=$(basename "$f")
+    [[ "$base" =~ ^[0-9]{3}_ ]] || continue
+    [[ "$base" != *.down.sql && "$base" != *.skip && "$base" != *.bak.skip ]] || continue
+    head -15 "$f" | grep -qiE 'SUPERSEDED|superceded|DEPRECATED' && continue
+    ver=${base%%_*}
+    [[ ",${applied_ids}," == *",${ver},"* ]] || continue
+    (( 10#$ver >= ledger_reconcile_from )) || continue
+    candidate_count[$ver]=$(( ${candidate_count[$ver]:-0} + 1 ))
+  done
+
+  for f in "$repo_root"/sql/migrations/startup/[0-9]*.sql; do
+    [[ -f "$f" ]] || continue
+    base=$(basename "$f")
+    [[ "$base" =~ ^[0-9]{3}_ ]] || continue
+    [[ "$base" != *.down.sql && "$base" != *.skip && "$base" != *.bak.skip ]] || continue
+    head -15 "$f" | grep -qiE 'SUPERSEDED|superceded|DEPRECATED' && continue
+    ver=${base%%_*}
+    [[ -n "${candidate_count[$ver]+x}" ]] || continue
+    checksum=$(_db_migration_checksum "$f")
+    row=$(_deploy_verify_ssh "$ssh_cmd" "${remote_psql}
+_psql -v ON_ERROR_STOP=1 -tAc \"SELECT migration_name || '|' || checksum FROM llm_gateway_migration_checksums WHERE version = '$ver' LIMIT 1\"")
+    row=$(printf '%s' "$row" | tr -d '[:space:]')
+    if [[ -z "$row" ]]; then
+      if (( candidate_count[$ver] > 1 )); then
+        _db_err "已应用迁移 version $ver 有多个本地候选且 checksum ledger 缺失，拒绝自动猜测：$base"
+        return 1
+      fi
+      _db_log "  ↺ 补录 checksum ledger: $base"
+      if ! _deploy_verify_ssh "$ssh_cmd" "${remote_psql}
+_psql -v ON_ERROR_STOP=1 -c \"INSERT INTO llm_gateway_migration_checksums (version, migration_name, checksum) VALUES ('$ver', '$base', '$checksum') ON CONFLICT (version) DO NOTHING\" >/dev/null"; then
+        _db_err "无法补录 migration checksum ledger: $base"
+        return 1
+      fi
+      row="$base|$checksum"
+    fi
+    recorded_name=${row%%|*}
+    recorded_checksum=${row#*|}
+    [[ "$recorded_name" == "$base" ]] || continue
+    if [[ "$recorded_checksum" != "$checksum" ]]; then
+      _db_err "已应用迁移 checksum 不匹配，拒绝继续：$ver:$base:recorded=${row}:local=${base}|${checksum}"
+      return 1
+    fi
+  done
+}
+
 deploy_apply_pending_migrations() {
   local ssh_cmd=$1 env_file=$2 target=$3 seq=$4 git_sha=$5
   local repo_root remote_dir applied_count=0 remote_psql
@@ -105,9 +196,28 @@ deploy_apply_pending_migrations() {
   while IFS= read -r line; do
     [[ -n "$line" ]] && pending+=("$line")
   done < <(_deploy_pending_startup_migrations "$ssh_cmd" "$env_file")
+  if [[ ${#pending[@]} -gt 0 ]]; then
+    _deploy_validate_pending_migration_versions "${pending[@]}" || return 1
+  fi
+
+  # Keep a checksum ledger separate from the legacy schema_migrations table.
+  # The legacy table remains the applied-version source of truth, while this
+  # ledger prevents an already-applied migration file from being silently
+  # edited and reused under the same version.
+  if ! _deploy_verify_ssh "$ssh_cmd" "${remote_psql}
+_psql -v ON_ERROR_STOP=1 -c \"CREATE TABLE IF NOT EXISTS llm_gateway_migration_checksums (version TEXT PRIMARY KEY, migration_name TEXT NOT NULL, checksum TEXT NOT NULL, applied_at TIMESTAMPTZ NOT NULL DEFAULT NOW());\" >/dev/null"; then
+    _db_err "无法创建 migration checksum ledger"
+    return 1
+  fi
+
+  local applied_csv
+  applied_csv=$(_deploy_applied_migration_ids "$ssh_cmd" "$env_file" | paste -sd, -)
+  if [[ -n "$applied_csv" ]]; then
+    _deploy_migration_checksum_reconcile "$ssh_cmd" "$env_file" "$repo_root" "$applied_csv" || return 1
+  fi
 
   if [[ ${#pending[@]} -eq 0 ]]; then
-    _db_log "无 pending startup 迁移"
+    _db_log "无 pending startup 迁移；checksum ledger 校验通过"
     return 0
   fi
 
@@ -122,11 +232,12 @@ deploy_apply_pending_migrations() {
   done
 
   for f in "${pending[@]}"; do
-    local ver desc
+    local ver desc checksum
     base=$(basename "$f")
     ver=$(echo "$base" | grep -oE '^[0-9]+')
     desc=$(echo "$base" | sed 's/^[0-9]*_//;s/.sql$//')
-    _db_log "  → $base"
+    checksum=$(_db_migration_checksum "$f")
+    _db_log "  → $base (sha256=${checksum:0:12})"
     if ! _deploy_verify_ssh "$ssh_cmd" "${remote_psql}
 _psql -v ON_ERROR_STOP=1 -f '$remote_dir/$base' 2>/tmp/_mig_err_${ver}.log"; then
       local migration_error
@@ -152,7 +263,7 @@ _psql -v ON_ERROR_STOP=1 -f '$remote_dir/$base' 2>/tmp/_mig_err_${ver}.log"; the
     "$ssh_cmd" "rm -f '/tmp/_mig_err_${ver}.log'" || true
 
     if ! _deploy_verify_ssh "$ssh_cmd" "${remote_psql}
-_psql -v ON_ERROR_STOP=1 -c \"BEGIN; SELECT pg_advisory_xact_lock(hashtextextended('llm-gateway:schema_migrations', 0)); INSERT INTO schema_migrations (version, description) SELECT '$ver', '$desc' WHERE NOT EXISTS (SELECT 1 FROM schema_migrations WHERE version = '$ver'); COMMIT;\" >/dev/null"; then
+_psql -v ON_ERROR_STOP=1 -c \"BEGIN; SELECT pg_advisory_xact_lock(hashtextextended('llm-gateway:schema_migrations', 0)); INSERT INTO schema_migrations (version, description) SELECT '$ver', '$desc' WHERE NOT EXISTS (SELECT 1 FROM schema_migrations WHERE version = '$ver'); INSERT INTO llm_gateway_migration_checksums (version, migration_name, checksum) VALUES ('$ver', '$base', '$checksum') ON CONFLICT (version) DO UPDATE SET migration_name = EXCLUDED.migration_name, checksum = EXCLUDED.checksum; COMMIT;\" >/dev/null"; then
       _db_err "  ✗ $base: migration applied but schema_migrations ledger write failed"
       "$ssh_cmd" "rm -rf '$remote_dir'" || true
       return 1
@@ -163,7 +274,13 @@ _psql -v ON_ERROR_STOP=1 -tAc \"SELECT 1 FROM schema_migrations WHERE version = 
       "$ssh_cmd" "rm -rf '$remote_dir'" || true
       return 1
     fi
-    applied_files+=("$base")
+    if ! _deploy_verify_ssh "$ssh_cmd" "${remote_psql}
+_psql -v ON_ERROR_STOP=1 -tAc \"SELECT checksum FROM llm_gateway_migration_checksums WHERE version = '$ver' AND migration_name = '$base' AND checksum = '$checksum' LIMIT 1\" | grep -Fxq '$checksum'"; then
+      _db_err "  ✗ $base: migration checksum ledger verification failed"
+      "$ssh_cmd" "rm -rf '$remote_dir'" || true
+      return 1
+    fi
+    applied_files+=("$base:$checksum")
   done
 
   "$ssh_cmd" "rm -rf '$remote_dir'" || true
@@ -195,12 +312,14 @@ HDR
   {
     echo "## $ts — deploy $target build_seq $seq (${git_sha:0:8})"
     echo ""
-    echo "| Migration | File |"
-    echo "|-----------|------|"
-    local base ver
-    for base in "${files[@]}"; do
+    echo "| Migration | File | SHA-256 | Status |"
+    echo "|-----------|------|---------|--------|"
+    local entry base checksum ver
+    for entry in "${files[@]}"; do
+      base=${entry%%:*}
+      checksum=${entry#*:}
       ver=$(echo "$base" | grep -oE '^[0-9]+')
-      echo "| $ver | \`$base\` |"
+      echo "| $ver | \`$base\` | \`${checksum}\` | applied+verified |"
     done
     echo ""
   } >>"$DB_CHANGELOG_FILE"

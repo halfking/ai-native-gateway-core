@@ -19,7 +19,12 @@ migration is not recorded.
 - **Existing repository ledger:** run `DATABASE_URL=... scripts/run-migrations-strict.sh`.
   Changed content for an applied migration is rejected rather than silently run.
 
-## 382/383 compatibility and RLS
+## Deployment checksum ledger
+
+`deploy-seamless.sh` uses `schema_migrations.version` as the legacy applied-version source of truth and maintains a separate `llm_gateway_migration_checksums` table. Before a switch it validates every applied startup migration at or above `DB_LEDGER_RECONCILE_FROM` (default `412`) against the local filename and SHA-256. A missing checksum row is reconciled once; an existing filename or checksum mismatch fails closed.
+
+Startup migration numbers must be unique within one pending deployment. Duplicate numeric versions already present in historical local files are tolerated only when the remote checksum ledger identifies the applied filename; if the ledger is missing for a repeated version, deployment stops and requires manual reconciliation. Duplicate pending files are always rejected before SSH, SQL, or service operations because the legacy ledger cannot distinguish two files with the same version. Files explicitly marked `SUPERSEDED` or `DEPRECATED` are excluded from these checks.
+
 
 Migrations `382_session_module_executions.sql` and
 `383_dashboard_access_events.sql` create the operational hot/archive tables. Their
