@@ -62,12 +62,20 @@ fi
 
 # ---------- L4 业务真实 ----------
 echo "=== L4 业务真实 ==="
+# 实例 ID 路径权威源：licensing/bootstrap_helpers.go instanceIDPath()
+# 优先级: $LLM_GATEWAY_DATA_DIR/instance.id → ~/.local/share/kx-gateway
+# → ~/.kx-gateway → /var/lib/kx-gateway。安装目录内 instance_id 作兼容保留。
 INSTANCE_ID_FILE=""
-for c in "$HOME_DIR/instance_id" "$HOME/.local/share/kx-gateway/instance.id"; do
+for c in \
+  "${LLM_GATEWAY_DATA_DIR:-/x/does-not-exist}/instance.id" \
+  "$HOME_DIR/instance_id" \
+  "$HOME/.local/share/kx-gateway/instance.id" \
+  "$HOME/.kx-gateway/instance.id" \
+  "/var/lib/kx-gateway/instance.id"; do
   [[ -f "$c" ]] && INSTANCE_ID_FILE="$c" && break
 done
 if [[ -n "$INSTANCE_ID_FILE" ]]; then
-  echo "instance_id: $(cat "$INSTANCE_ID_FILE")"
+  echo "instance_id: $(cat "$INSTANCE_ID_FILE") (${INSTANCE_ID_FILE})"
   echo "→ 请到 https://llm.kxpms.cn/maintain 确认该实例在线"
   pass 4 "实例注册文件存在"
 else
