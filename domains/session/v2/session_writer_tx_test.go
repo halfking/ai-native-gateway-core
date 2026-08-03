@@ -238,6 +238,19 @@ func (r *recordingAggregator) callCount() int32 { return atomic.LoadInt32(&r.cal
 // WaitGroup and tied to the writer's lifecycle context. After Stop() returns,
 // the goroutine must have completed (or been cancelled) — there must be no
 // detached fire-and-forget work that outlives shutdown.
+func TestStop_ContextDeadline(t *testing.T) {
+	w := &SessionWriterV2{}
+	w.ensureLifecycle()
+	w.aggWg.Add(1)
+	defer w.aggWg.Done()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
+	defer cancel()
+	if err := w.Stop(ctx); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("Stop error = %v, want context deadline exceeded", err)
+	}
+}
+
 func TestWrite_AggregateGoroutineManagedByLifecycle(t *testing.T) {
 	mock, err := pgxmock.NewPool(pgxmock.QueryMatcherOption(pgxmock.QueryMatcherRegexp))
 	require.NoError(t, err)

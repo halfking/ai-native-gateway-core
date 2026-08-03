@@ -235,10 +235,10 @@ func buildResponsesInput(messages []Message) []map[string]any {
 					args = "{}"
 				}
 				input = append(input, map[string]any{
-					"type": "function_call",
-					"id":   call.ID,
-					"call_id": call.ID,
-					"name": call.Function.Name,
+					"type":      "function_call",
+					"id":        call.ID,
+					"call_id":   call.ID,
+					"name":      call.Function.Name,
 					"arguments": args,
 				})
 			}
@@ -337,8 +337,8 @@ func buildResponsesInputImage(img *ImageSource) map[string]any {
 	}
 
 	block := map[string]any{
-		"type":       "input_image",
-		"image_url":  url,
+		"type":      "input_image",
+		"image_url": url,
 	}
 	// Detail is optional but accepted.
 	if img.Detail != "" {
@@ -397,7 +397,9 @@ func buildResponsesInputFile(doc *DocumentBlock) map[string]any {
 		}
 		inner["file_data"] = doc.Source.Data
 	}
-	block["file"] = inner
+	for key, value := range inner {
+		block[key] = value
+	}
 	return block
 }
 

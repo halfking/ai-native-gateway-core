@@ -34,7 +34,11 @@ import (
 //   - the entry has no GwSessionID (no session context).
 //
 // On real DB errors it logs WARN with the request_id and continues.
-func PersistHook(writer *v2.SessionWriterV2) func(entry *telemetry.RequestLogEntry) {
+//
+// The writer parameter accepts the V2Writer interface so unit tests can
+// inject a failing writer; production passes a *v2.SessionWriterV2,
+// which satisfies V2Writer.
+func PersistHook(writer V2Writer) func(entry *telemetry.RequestLogEntry) {
 	if writer == nil {
 		return func(*telemetry.RequestLogEntry) {}
 	}
@@ -44,11 +48,10 @@ func PersistHook(writer *v2.SessionWriterV2) func(entry *telemetry.RequestLogEnt
 			return
 		}
 
-		// Check feature flags
-		if !settings.GetPlatformBool("sessions_v2.enabled", false) {
-			return
-		}
-		if !settings.GetPlatformBool("sessions_v2.shadow_write", false) {
+		// Check feature flags via the shadowWriteEnabled seam (defaults to
+		// the settings-backed reader; tests override it because
+		// settings.Global is nil in the unit-test binary).
+		if !shadowWriteEnabled() {
 			return
 		}
 
@@ -74,6 +77,16 @@ func PersistHook(writer *v2.SessionWriterV2) func(entry *telemetry.RequestLogEnt
 			// during cutover); losing rows during the cutover window is the
 			// exact "data drift" failure mode the audit calls out.
 			metrics.Global().RecordShadowWriteFailure("session_v2")
+			// Spec §12 GAP 2: also retain the failed entry in the
+			// in-process backlog so it is observable (gauge) and drainable
+			// rather than dropped on the floor with only a counter. The
+			// backlog is bounded (FIFO eviction at cap); it is not
+			// persisted — dbdegradation.RingBuffer covers WAL fallback.
+			appendBacklog(BacklogItem{
+				RequestID: entry.RequestID,
+				Req:       req,
+				Entry:     entry,
+			})
 		}
 	}
 }

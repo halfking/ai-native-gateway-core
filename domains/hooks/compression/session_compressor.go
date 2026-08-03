@@ -31,7 +31,9 @@ import (
 	"strings"
 	"time"
 
+	summarymodel "github.com/kaixuan/llm-gateway-go/domains/hooks/compression/summary"
 	"github.com/kaixuan/llm-gateway-go/domains/transformation" //nolint:depguard // historical violation, B1 routing.go CQRS will fix
+	"github.com/kaixuan/llm-gateway-go/settings"
 )
 
 // SessionCompressorDeps are the external dependencies of SessionCompressor.
@@ -151,6 +153,9 @@ func (sc *SessionCompressor) Prepare(
 	}
 
 	mode := sc.resolveCompressionMode()
+	if !settings.GetPlatformBool("compression.enabled", true) {
+		mode = ModeDeltaOnly
+	}
 
 	// ── Phase 1: Load session state ──────────────────────────────────────
 	var (
@@ -191,6 +196,18 @@ func (sc *SessionCompressor) Prepare(
 	// ── Phase 4: v4 Smart modes ──────────────────────────────────────────
 	// For delta_only mode: just delta-append, no compression
 	if mode == ModeDeltaOnly {
+		if !diffResult.Unchanged && !diffResult.IsNewSess {
+			res.OutboundBody = outboundBody
+			res.CompressionStrategy = "delta_append"
+		}
+		sc.updateCache(ctx, tenantID, gwSessionID, state, outboundBody, res, false)
+		return res
+	}
+
+	// Legacy modes are controlled by the existing Compressor/executor paths.
+	// The session compressor only owns v4 smart/aggressive proactive work.
+	// In particular, off must never fall through to the window trigger.
+	if mode != ModeSmart && mode != ModeAggressive {
 		if !diffResult.Unchanged && !diffResult.IsNewSess {
 			res.OutboundBody = outboundBody
 			res.CompressionStrategy = "delta_append"
@@ -365,22 +382,52 @@ func classifyLossiness(strategy, summaryMarker string) string {
 // resolveCompressionMode returns the effective v4 compression mode.
 // Priority: SessionState mode → env mode → default (ModeSmart).
 func (sc *SessionCompressor) resolveCompressionMode() Mode {
-	env := envMode()
-	if env != ModeSmart {
-		return env
-	}
-	return ModeSmart
+	return LoadMode()
 }
 
 func (sc *SessionCompressor) tryLLMSummary(ctx context.Context, body []byte, protocol, taskType string) ([]byte, bool) {
 	if sc.deps.CompactionDeps == nil {
 		return nil, false
 	}
+
+	conversation, err := extractConversationText(body, protocol)
+	if err != nil || strings.TrimSpace(conversation) == "" {
+		return nil, false
+	}
+	conversation = trimTextToTokenBudget(conversation, 900_000)
+
+	dim := summarymodel.DimensionForTaskType(taskType)
+	summarizer := summarymodel.NewSummarizer(newSummaryClientAdapter(sc.deps.CompactionDeps, ""))
+	summaryText, sumErr := summarizer.Summarize(ctx, dim, conversation)
+	if sumErr == nil && strings.TrimSpace(summaryText) != "" {
+		if rebuilt, ok := rebuildBodyAfterSummary(body, strings.TrimSpace(summaryText), protocol); ok {
+			return rebuilt, true
+		}
+	}
+
 	newBody, ok := tryLLMContextCompaction(ctx, sc.deps.CompactionDeps, "", protocol, body)
 	if !ok {
 		return nil, false
 	}
 	return newBody, true
+}
+
+func rebuildBodyAfterSummary(body []byte, summaryText, protocol string) ([]byte, bool) {
+	if strings.TrimSpace(summaryText) == "" {
+		return nil, false
+	}
+	if protocol == "anthropic-messages" {
+		ret, err := extractAnthropic(body)
+		if err != nil {
+			return nil, false
+		}
+		return RebuildAnthropicAfterSummary(body, summaryText, ret, 2)
+	}
+	ret, err := extractOpenAI(body)
+	if err != nil {
+		return nil, false
+	}
+	return RebuildOpenAIAfterSummary(body, summaryText, ret, 2)
 }
 
 func (sc *SessionCompressor) updateCache(
@@ -453,16 +500,25 @@ func injectSummaryMarker(summarisedBody []byte, protocol string) (marker string,
 	}
 	// Find the first assistant message.
 	for i, m := range msgs {
-		var msg struct {
-			Role    string `json:"role"`
-			Content string `json:"content"`
-		}
-		if json.Unmarshal(m, &msg) != nil || msg.Role != "assistant" {
+		var msg map[string]json.RawMessage
+		if json.Unmarshal(m, &msg) != nil {
 			continue
 		}
-		marker = BuildSummaryMarker(msg.Content)
-		// Prepend marker to content.
-		msg.Content = marker + "\n" + msg.Content
+		var role string
+		if json.Unmarshal(msg["role"], &role) != nil || role != "assistant" {
+			continue
+		}
+		var content string
+		if json.Unmarshal(msg["content"], &content) != nil {
+			continue
+		}
+		marker = BuildSummaryMarker(content)
+		// Prepend marker to content while preserving all other message fields.
+		newContent, err := json.Marshal(marker + "\n" + content)
+		if err != nil {
+			return "", nil
+		}
+		msg["content"] = newContent
 		newMsgBytes, err := json.Marshal(msg)
 		if err != nil {
 			return "", nil
