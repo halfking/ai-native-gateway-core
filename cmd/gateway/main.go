@@ -1273,10 +1273,18 @@ func main() {
 			routingExec.Compressor.LiteStageEnabled = true
 			slog.Info("compression lite stage enabled (GW-05)")
 		}
+		// GW-07 (omni-ref2): Caveman 压缩 stage。默认关，feature flag 开。
+		// LLM_GATEWAY_COMPRESSION_CAVEMAN=true 时在 Lite 之后、mechanical trim 之前跑
+		// 8 语言 306 规则 + 保护块 + validation。经 NeverWorse 守卫保证不增字节，fail-open。
+		if os.Getenv("LLM_GATEWAY_COMPRESSION_CAVEMAN") == "true" {
+			routingExec.Compressor.CavemanStageEnabled = true
+			slog.Info("compression caveman stage enabled (GW-07)")
+		}
 		slog.Info("compressor initialized",
 			"mode", routingExec.Compressor.Mode().String(),
 			"window_fraction", routingExec.Compressor.Estimator().Fraction(),
 			"lite_stage", routingExec.Compressor.LiteStageEnabled,
+			"caveman_stage", routingExec.Compressor.CavemanStageEnabled,
 		)
 
 		// Phase 3.2: Wire provider-level settings resolver into executor and compressor
