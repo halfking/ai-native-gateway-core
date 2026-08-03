@@ -15,6 +15,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - B 项：截断 `/var/log/llm-gateway-go/gateway.stderr.log` (4.1G 单文件，systemd append: 模式未走 journald) + `systemctl restart` 重开 fd
   - 新增 `/etc/logrotate.d/llm-gateway-go` (daily, size 100M, rotate 7, copytruncate, compress) — 与 systemd append: 模式兼容无需重启服务
   - 新增 `deploy/logrotate-llm-gateway-go` (仓库真源模板)
+  - 新增 `scripts/install-logrotate.sh` (install/uninstall/status/verify 管理脚本, 支持 file/stdin 配置源, 供其他 pre-prod 服务器同步)
   - 磁盘释放 13G（97% → 63%），可用 1.5G → 15G
   - 验证：service active / logrotate -f 成功 / 归档审计日志写入 `/opt/backup/.trash/.archive-log`
   - 经验文档：[docs/changelogs/2026-08-04-245-disk-cleanup-and-logrotate.md](docs/changelogs/2026-08-04-245-disk-cleanup-and-logrotate.md)

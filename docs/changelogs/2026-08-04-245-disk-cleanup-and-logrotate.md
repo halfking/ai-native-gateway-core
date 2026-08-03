@@ -17,6 +17,7 @@
 | **B. stderr 日志归档 + 截断** | `/var/log/llm-gateway-go/gateway.stderr.log` (4.1G 单文件) → mv 到 trash 归档 → 创建新空文件 (mode 600) → `systemctl restart llm-gateway-go` 让 systemd 重开 fd | 立即清零 |
 | **B+. logrotate 轮转配置** | `/etc/logrotate.d/llm-gateway-go` (daily, size 100M, rotate 7, copytruncate, compress) | 防止再次膨胀 |
 | **本仓模板** | `deploy/logrotate-llm-gateway-go` (同名配置，作为仓库真源) | — |
+| **管理脚本** | `scripts/install-logrotate.sh` (install/uninstall/status/verify 子命令, file/stdin 双配置源, 幂等, 用于向其他 pre-prod 服务器同步) | — |
 
 ## 验证结果
 
@@ -69,7 +70,7 @@ daily | size 100M | rotate 7 | compress | delaycompress | copytruncate
 
 1. **告警埋点**：`du -sh /var/log/llm-gateway-go/gateway.stderr.log` > 500M 触发告警
 2. **排查 kx-registry**：单独任务（与磁盘清理无关）
-3. **同步 logrotate 到其他 pre-prod 服务器**
+3. **同步 logrotate 到其他 pre-prod 服务器**（用 `scripts/install-logrotate.sh install`，支持 scp 传配置或 stdin pipe 两种方式）
 
 ## 相关规则
 
