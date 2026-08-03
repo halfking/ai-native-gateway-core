@@ -4942,6 +4942,16 @@ func (h *ChatHandler) recordInitialRequestLog(
 	if autoCtx != nil && reqLog.OriginStage != nil && autoCtx.OriginStage == "" {
 		autoCtx.SetOriginStage(*reqLog.OriginStage)
 	}
+	// 2026-08-02 (spec §12 GAP 3): persist routing_state_source and
+	// conversion_path into request_logs metadata so the IR default-cut-
+	// over readiness gate can attribute each row to its routing decision
+	// and transport path. Until a dedicated routing_state_source column
+	// is migrated (TODO migration), the values are merged into the
+	// existing compression_meta JSONB — a generic metadata map that
+	// applySessionCompressorFields already merges additively. This avoids
+	// a schema change in the observability-only GAP. Best-effort: a
+	// missing/evicted entry leaves the keys absent, never a row failure.
+	applyRoutingMetadata(reqLog, requestID)
 	h.telemetryClient.EmitRequestLogInsert(reqLog)
 	// 2026-07-15: 侧表 request_context_attrs（best-effort）。
 	if autoCtx != nil {

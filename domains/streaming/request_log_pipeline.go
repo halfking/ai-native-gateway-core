@@ -967,6 +967,57 @@ func mergeCompressionMetaV3(existing json.RawMessage, windowTriggered, summaryMa
 	return b, nil
 }
 
+// applyRoutingMetadata (spec §12 GAP 3) merges the per-request
+// routing_state_source and conversion_path into the request_logs
+// metadata so each row can be attributed to its routing decision
+// (authoritative / fallback / canary / off) and its transport path
+// (ir / legacy). Until a dedicated routing_state_source column is
+// migrated (TODO migration), the values land in the existing
+// compression_meta JSONB — a generic metadata map that
+// applySessionCompressorFields already merges additively, so this is
+// purely additive and avoids a schema change in the observability-only
+// GAP.
+//
+// Best-effort: RoutingSourceForRequest returns empty values when the
+// entry was never recorded or was evicted (bounded map); in that case
+// nothing is merged and the row keeps its pre-GAP-3 metadata, never a
+// failure.
+func applyRoutingMetadata(entry *telemetry.RequestLogEntry, requestID string) {
+	if entry == nil || requestID == "" {
+		return
+	}
+	source, conversionPath := executors.RoutingSourceForRequest(requestID)
+	if source == "" && conversionPath == "" {
+		return
+	}
+	m := make(map[string]any)
+	if len(entry.CompressionMeta) > 0 {
+		// Decode failure: preserve the existing blob untouched rather
+		// than clobbering pre-existing compression fields (same contract
+		// as mergeCompressionMetaV3). Record the loss for diagnosis.
+		if err := json.Unmarshal(entry.CompressionMeta, &m); err != nil {
+			return
+		}
+	}
+	changed := false
+	if source != "" {
+		m["routing_state_source"] = string(source)
+		changed = true
+	}
+	if conversionPath != "" {
+		m["conversion_path"] = conversionPath
+		changed = true
+	}
+	if !changed {
+		return
+	}
+	b, err := json.Marshal(m)
+	if err != nil {
+		return
+	}
+	entry.CompressionMeta = b
+}
+
 // ─── 2026-07-15: 请求性质维度 setter ───
 
 // SetAttemptNo 记录网关 failover 轮次（从候选执行器取，≥1）。
