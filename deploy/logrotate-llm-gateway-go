@@ -1,0 +1,31 @@
+# /etc/logrotate.d/llm-gateway-go
+# Purpose: 轮转 llm-gateway-go 服务日志 (stderr/stdout via systemd append:)
+# Created: 2026-08-04 (cleanup 245 disk)
+# Reference: rule 03 §6b (日志归档) + deploy-245 SKILL.md (systemd unit: append:模式)
+#
+# 关键说明：llm-gateway-go.service 使用 StandardOutput/StandardError=append:/var/log/...
+# systemd 持有写 fd 不释放，故不能用 create 模式（会改 inode，systemd 继续写旧 fd）
+# 必须用 copytruncate：保留 inode 不重启服务
+#
+# 触发策略：100M 单文件 OR 每日（两者先到先触发）
+
+/var/log/llm-gateway-go/gateway.stderr.log
+/var/log/llm-gateway-go/gateway.stdout.log {
+    daily
+    size 100M
+    rotate 7
+    missingok
+    notifempty
+    compress
+    delaycompress
+    copytruncate
+    dateext
+    dateformat -%Y%m%d-%H%M%S
+    create 0600 root root
+    sharedscripts
+    postrotate
+        # 不需要 postrotate，systemd append 模式不依赖 SIGHUP
+        # copytruncate 已处理 fd 重连
+        true
+    endscript
+}
