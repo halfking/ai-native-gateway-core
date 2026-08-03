@@ -5,6 +5,20 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased] - 2026-08-04
+
+### Added
+
+- **245 预生产磁盘清理 + stderr 日志轮转 (2026-08-04)**:
+  - 修复 245 (8.136.114.245) 预生产服务器 `/dev/vda3` 磁盘撑爆（40G 已用 36G/97%，仅 1.5G 可用）
+  - A 项：归档 `/opt/backup/releases_20260727/` (262 个历史发布版本目录，13G) → mv → trash → rm 真正释放
+  - B 项：截断 `/var/log/llm-gateway-go/gateway.stderr.log` (4.1G 单文件，systemd append: 模式未走 journald) + `systemctl restart` 重开 fd
+  - 新增 `/etc/logrotate.d/llm-gateway-go` (daily, size 100M, rotate 7, copytruncate, compress) — 与 systemd append: 模式兼容无需重启服务
+  - 新增 `deploy/logrotate-llm-gateway-go` (仓库真源模板)
+  - 磁盘释放 13G（97% → 63%），可用 1.5G → 15G
+  - 验证：service active / logrotate -f 成功 / 归档审计日志写入 `/opt/backup/.trash/.archive-log`
+  - 经验文档：[docs/changelogs/2026-08-04-245-disk-cleanup-and-logrotate.md](docs/changelogs/2026-08-04-245-disk-cleanup-and-logrotate.md)
+
 ## [Unreleased] - 2026-07-29
 
 ### Fixed
