@@ -5,7 +5,11 @@
 // redact.go before it leaves the package boundary.
 package routeincident
 
-import "time"
+import (
+	"time"
+
+	"github.com/kaixuan/llm-gateway-go/domains/events"
+)
 
 // Terminal status strings, mirroring request_logs.request_status.
 const (
@@ -133,6 +137,10 @@ type RouteSnapshot struct {
 	CredentialLabel string `json:"credential_label,omitempty"` // public label only
 	RoutingDecision string `json:"routing_decision"`
 	RetryPath       string `json:"retry_path,omitempty"`
+	// Decision 是结构化的路由决策解释（GW-00 canonical metadata）。
+	// 与上面的 RoutingDecision 字符串字段互补：字符串字段保留向后兼容，
+	// Decision 是可向外发的低敏结构化解释。nil 时 omitempty 不输出。
+	Decision *events.RoutingDecision `json:"decision,omitempty"`
 }
 
 // ResourceSnapshot mirrors the drawer's "Resource snapshot" section

@@ -70,6 +70,13 @@ type Router struct {
 	// 当启用时，Router 会根据 FpSlots/Limiter 的压力信号调整候选节点权重
 	// 默认 false，通过环境变量 PRESSURE_AWARE_ROUTING 控制
 	PressureAwareEnabled bool
+
+	// ShadowStrategy (GW-03, omni-ref2): 可选的路由策略，仅用于 shadow 评分
+	// 对比，不改变实际选中候选。nil = 现状（P2C/bandit 行为零变化）。
+	// 非 nil 时，planByTier 在每个 tier bucket 用 ShadowStrategy 独立评分，
+	// 记录 agreed/disagreed metric（llmgw_routing_shadow_strategy_outcomes_total）。
+	// 通过环境变量 LLM_GATEWAY_ROUTING_SHADOW_STRATEGY 选择策略名构造。
+	ShadowStrategy Strategy
 }
 
 func NewRouter(sticky *StickyCache, lim *credential.Limiter) *Router {
@@ -289,9 +296,17 @@ func (r *Router) PlanCandidatesWithContext(
 	// Round 1: token_plan / code_plan / agent_plan / free — always before PAYG.
 	// Round 2: token (按量). Executor skips saturated round-1 creds and falls through.
 	round1, round2 := splitByBillingRound(available)
-	ordered := r.planByTier(round1, policy)
+	stratIn := StrategyInput{
+		Policy:           policy,
+		EgressPreference: egressPreference,
+		TenantID:         tenantID,
+		Canonical:        canonical,
+		RequestID:        requestID,
+		LoadScoreWeights: r.LoadScoreWeights,
+	}
+	ordered := r.planByTier(requestCtx, round1, policy, stratIn)
 	if len(round2) > 0 {
-		ordered = append(ordered, r.planByTier(round2, policy)...)
+		ordered = append(ordered, r.planByTier(requestCtx, round2, policy, stratIn)...)
 	}
 
 	// Note (2026-07-07 audit): an earlier "session-aware" round-robin rotation
@@ -526,7 +541,7 @@ func splitByBillingRound(cands []provider.Candidate) (round1, round2 []provider.
 	return round1, round2
 }
 
-func (r *Router) planByTier(candidates []provider.Candidate, policy *provider.Policy) []provider.Candidate {
+func (r *Router) planByTier(ctx context.Context, candidates []provider.Candidate, policy *provider.Policy, stratIn StrategyInput) []provider.Candidate {
 	if len(candidates) == 0 {
 		return nil
 	}
@@ -552,6 +567,12 @@ func (r *Router) planByTier(candidates []provider.Candidate, policy *provider.Po
 		} else {
 			// Legacy P2C ordering (load-aware)
 			sorted = p2cOrder(bucket, r)
+		}
+
+		// GW-03: shadow strategy diff（仅观测，不改顺序）。
+		// 在 round-robin rotation 之前对比 ShadowStrategy 首选 vs 实际首选。
+		if r.ShadowStrategy != nil {
+			r.scoreWithShadow(ctx, bucket, sorted, stratIn)
 		}
 
 		// Apply round-robin rotation when multiple candidates exist

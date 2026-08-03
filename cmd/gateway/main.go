@@ -813,6 +813,18 @@ func main() {
 			slog.Info("pressure-aware routing enabled", "feature", "phase2.3")
 		}
 
+		// GW-03 (omni-ref2): 可选路由策略 shadow 评分。仅观测，不改选中候选。
+		// LLM_GATEWAY_ROUTING_SHADOW_STRATEGY=p2c|cost-optimized|...（默认空=关）。
+		// GW-04 提供后四个策略；GW-03 仅 p2c 可用（identity shadow，验证管线）。
+		if shadowName := os.Getenv("LLM_GATEWAY_ROUTING_SHADOW_STRATEGY"); shadowName != "" {
+			if ss, err := executors.NewStrategyByName(shadowName, router); err != nil {
+				slog.Warn("unknown shadow strategy, ignoring (routing unchanged)", "name", shadowName, "err", err)
+			} else if ss != nil {
+				router.ShadowStrategy = ss
+				slog.Info("routing shadow strategy enabled (observe-only)", "strategy", ss.Name())
+			}
+		}
+
 		// 2026-07-21, URSM v2 plan T20: 把 v2 Manager 注入 Router，使
 		// PlanCandidates 在 mode=authoritative 时按 v2 FilterAndScore 过滤候选。
 		// URSM_V2_MODE=off 时 Manager.Mode() == off，PlanCandidates 里的 v2 分支
@@ -1252,9 +1264,19 @@ func main() {
 		// All three modes (off / auto_threshold / on_4xx) are nil-safe so a
 		// misconfigured install degrades gracefully to ModeOff.
 		routingExec.Compressor = compression.NewCompressor()
+		// GW-05 (omni-ref2): Lite compression stage。默认关，feature flag 开。
+		// LLM_GATEWAY_COMPRESSION_LITE=true 时在 mechanical trim 之前跑 5 个纯函数
+		// stage。Lite 经 NeverWorse 守卫保证不增字节，fail-open。注意：当前 Compressor
+		// 未接入执行器实时路径（执行器直接调 transformation.*），故 Lite 即使开启也只
+		// 影响显式调 Compressor 的路径（CompressionHook / 测试），零线上风险。
+		if os.Getenv("LLM_GATEWAY_COMPRESSION_LITE") == "true" {
+			routingExec.Compressor.LiteStageEnabled = true
+			slog.Info("compression lite stage enabled (GW-05)")
+		}
 		slog.Info("compressor initialized",
 			"mode", routingExec.Compressor.Mode().String(),
 			"window_fraction", routingExec.Compressor.Estimator().Fraction(),
+			"lite_stage", routingExec.Compressor.LiteStageEnabled,
 		)
 
 		// Phase 3.2: Wire provider-level settings resolver into executor and compressor
