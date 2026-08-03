@@ -287,6 +287,20 @@ run_ssh "chmod +x $TARGET_DIR/llm-gateway-go"
 log_success "权限设置完成"
 
 # ============================================================================
+# 确保 IR 默认路径开启（spec §10.4.1）
+# ============================================================================
+
+log_info "确保 TRANSPORT_LAYER_IR_ENABLED=true (spec §10.4.1)..."
+ENV_FILE="/etc/llm-gateway-go/env"
+if run_ssh "grep -q '^TRANSPORT_LAYER_IR_ENABLED=true' '$ENV_FILE'" 2>/dev/null; then
+  log_success "IR 已在 env 中启用"
+else
+  run_ssh "sed -i '/^TRANSPORT_LAYER_IR_ENABLED=/d' '$ENV_FILE' && echo 'TRANSPORT_LAYER_IR_ENABLED=true' >> '$ENV_FILE'" \
+    && log_success "IR 已注入 env (TRANSPORT_LAYER_IR_ENABLED=true)" \
+    || log_warn "IR env 注入失败（可手动: echo TRANSPORT_LAYER_IR_ENABLED=true >> $ENV_FILE）"
+fi
+
+# ============================================================================
 # 重启服务
 # ============================================================================
 
