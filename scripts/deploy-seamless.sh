@@ -421,6 +421,31 @@ do_deploy() {
     fi
   fi
 
+  # 9.6 安装 logrotate 轮转配置 (stderr/stdout 100M/daily)
+  # 必做：服务已 healthz OK，再装 logrotate 即便失败也不影响 deploy。
+  # deploy/logrotate-llm-gateway-go 是仓内 SSOT；copytruncate 模式
+  # 与 systemd append: 配套 (systemd 持有 fd 不释放, create 模式会丢日志)。
+  log "[9.6/9] 安装 logrotate 轮转配置 (/etc/logrotate.d/llm-gateway-go)"
+  local lg_remote_dir="/tmp/llm-gw-deploy-helpers"
+  local lg_remote_cfg="$lg_remote_dir/llm-gateway-go.logrotate"
+  local lg_remote_script="$lg_remote_dir/install-logrotate.sh"
+  local lg_local_cfg="$PROJECT_ROOT/deploy/logrotate-llm-gateway-go"
+  local lg_local_script="$SCRIPT_DIR/install-logrotate.sh"
+  if [[ -f "$lg_local_cfg" && -f "$lg_local_script" ]]; then
+    if cat "$lg_local_cfg" | remote_ssh_pipe "mkdir -p '$lg_remote_dir' && cat > '$lg_remote_cfg'" \
+       && cat "$lg_local_script" | remote_ssh_pipe "cat > '$lg_remote_script'"; then
+      if remote_ssh "chmod +x '$lg_remote_script' && bash '$lg_remote_script' install '$lg_remote_cfg'"; then
+        ok "logrotate 配置已就绪"
+      else
+        warn "logrotate install 失败（不影响 deploy, 可手动: ssh $TARGET 'bash $lg_remote_script install $lg_remote_cfg'）"
+      fi
+    else
+      warn "logrotate 文件传输失败（不影响 deploy）"
+    fi
+  else
+    warn "logrotate 资源缺失: $lg_local_cfg 或 $lg_local_script 不存在"
+  fi
+
   # 清理本地临时文件
   rm -f "$tmpbin"; rm -rf "$bundle_dir"
 

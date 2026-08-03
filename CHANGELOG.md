@@ -20,6 +20,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - 验证：service active / logrotate -f 成功 / 归档审计日志写入 `/opt/backup/.trash/.archive-log`
   - 经验文档：[docs/changelogs/2026-08-04-245-disk-cleanup-and-logrotate.md](docs/changelogs/2026-08-04-245-disk-cleanup-and-logrotate.md)
 
+- **stderr/stdout 日志轮转集成到 deploy 流程 (2026-08-04)**:
+  - 接续 `f6279fee4` 的 `scripts/install-logrotate.sh` (初版),修 3 个 bug:
+    - `SCRIPT_DIR` 用 realpath 解析,防 cp/symlink 后算错位置
+    - `resolve_config` 加 `-t 0` 自动识别 stdin 重定向
+    - `read_config` 改 `mktemp` 避免 `$(...)` command substitution 抢走 stdin
+  - 集成到 2 个 deploy 入口: 顶层 `deploy-154.sh` (老路径) + `scripts/deploy-seamless.sh` (新路径, 245 唯一)
+  - 失败 warn 不 abort (服务已 healthz OK, logrotate 是 nice-to-have 增强)
+  - Docker 端到端 9/9 用例通过 (debian-slim + apt install logrotate)
+  - 经验文档: [docs/changelogs/2026-08-04-stderr-logrotate-integration.md](docs/changelogs/2026-08-04-stderr-logrotate-integration.md)
+
 ## [Unreleased] - 2026-07-29
 
 ### Fixed

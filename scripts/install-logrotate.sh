@@ -51,7 +51,12 @@
 
 set -euo pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# SCRIPT_DIR 用 realpath 解析, 防止脚本被 cp/symlink 后算错位置
+SCRIPT_PATH="${BASH_SOURCE[0]}"
+if command -v realpath >/dev/null 2>&1; then
+  SCRIPT_PATH="$(realpath "$SCRIPT_PATH" 2>/dev/null || echo "$SCRIPT_PATH")"
+fi
+SCRIPT_DIR="$(cd "$(dirname "$SCRIPT_PATH")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 DEFAULT_CONFIG="$PROJECT_ROOT/deploy/logrotate-llm-gateway-go"
 TARGET="/etc/logrotate.d/llm-gateway-go"
@@ -89,22 +94,36 @@ esac
 # ── 解析配置源 ───────────────────────────────────────────────
 resolve_config() {
   local cfg="${1:-${LOGROTATE_CONFIG_FILE:-}}"
-  if [[ -n "$cfg" && "$cfg" != "-" && "$cfg" != "/dev/stdin" && -f "$cfg" ]]; then
-    echo "$cfg"
+
+  # 1) 显式 stdin
+  if [[ "$cfg" == "-" || "$cfg" == "/dev/stdin" ]]; then
+    printf '%s\n' "-"
     return 0
   fi
-  if [[ "$cfg" == "-" || "$cfg" == "/dev/stdin" ]]; then
-    echo "$cfg"
-    return 0  # caller will stream stdin
-  fi
+
+  # 2) 显式 file path
   if [[ -n "$cfg" ]]; then
+    if [[ -f "$cfg" ]]; then
+      printf '%s\n' "$cfg"
+      return 0
+    fi
     err "指定的配置文件不存在: $cfg"
     return 1
   fi
+
+  # 3) 无参 → DEFAULT_CONFIG (仓内 SSOT)
   if [[ -f "$DEFAULT_CONFIG" ]]; then
-    echo "$DEFAULT_CONFIG"
+    printf '%s\n' "$DEFAULT_CONFIG"
     return 0
   fi
+
+  # 4) 无参 + DEFAULT_CONFIG 不存在 + stdin 被重定向 → 自动走 stdin
+  if [[ ! -t 0 ]]; then
+    printf '%s\n' "-"
+    return 0
+  fi
+
+  # 5) 全无
   err "未找到 logrotate 配置文件, 请通过位置参数或 LOGROTATE_CONFIG_FILE 指定"
   err "默认路径: $DEFAULT_CONFIG"
   return 1
@@ -125,13 +144,18 @@ preflight() {
   return 0
 }
 
-# ── read_config: 读源到 stdout (支持 file/stdin) ─────────────
-read_config() {
+# ── read_config_to_file: 把源 (file 或 stdin) 复制到临时文件, 返回路径 ──
+# 注意: command substitution `$(cat ...)` 会消费 stdin, 所以 stdin 模式
+# 必须先 cat 到 tmp file, 再 cat tmp file 进变量。
+read_config_to_file() {
   local cfg="$1"
   if [[ "$cfg" == "-" || "$cfg" == "/dev/stdin" ]]; then
-    cat
+    local tmp
+    tmp="$(mktemp)"
+    cat > "$tmp"
+    printf '%s\n' "$tmp"
   else
-    cat "$cfg"
+    printf '%s\n' "$cfg"
   fi
 }
 
@@ -170,13 +194,20 @@ do_install() {
   preflight || return 1
 
   hdr "install logrotate 配置"
-  info "源: ${cfg:-$DEFAULT_CONFIG}"
+  info "源: $cfg"
   info "目标: $TARGET"
 
+  # 把 stdin (若) 或 file 复制到 tmp file, 然后从 tmp 读内容到变量
+  # 必须先落盘, 否则 `$(cat)` command substitution 会消费 stdin
+  local source
+  source="$(read_config_to_file "$cfg")" || { err "读取配置失败"; return 1; }
   local content
-  content="$(read_config "$cfg")" || { err "读取配置失败"; return 1; }
+  content="$(cat "$source")" || { err "读取内容失败: $source"; rm -f "$source"; return 1; }
+  if [[ "$source" != "$cfg" ]]; then
+    rm -f "$source"
+  fi
 
-  # 必填字段预检 (避免空内容覆盖)
+  # 必填字段预检 (避免空内容 / 错配覆盖)
   if [[ -z "$content" ]]; then
     err "配置内容为空, 拒绝安装"
     return 1
