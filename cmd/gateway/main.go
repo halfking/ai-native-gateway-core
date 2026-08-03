@@ -824,7 +824,19 @@ func main() {
 		// memory→redis→db cache hierarchy. Created early so it can be
 		// wired into healthTracker; started later after probe services
 		// are initialised.
-		if dbConn != nil && dbConn.Enabled() {
+		//
+		// 2026-08-02, spec §10 Step 5 C-1: In URSM v2 authoritative mode
+		// the legacy credentialstate.Manager must NOT be assembled — v2
+		// is the single authority, and leaving the legacy manager wired
+		// would reintroduce a live read/write path that the step requires
+		// to be zero. We therefore leave stateManager == nil (so every
+		// downstream `if stateManager != nil` wire-up is skipped) and log
+		// the disablement. off/canary/shadow keep the legacy assembly so
+		// the rollback / dual-run paths remain exercised.
+		if ursmV2Mgr != nil && ursmV2Mgr.Mode() == ursmv2api.ModeAuthoritative {
+			slog.Info("credentialstate.Manager disabled in URSM v2 authoritative mode (spec §10 Step 5 C-1)")
+			// stateManager stays nil; fall through without wiring.
+		} else if dbConn != nil && dbConn.Enabled() {
 			stateManager = credentialstate.NewManager(dbConn.Pool(), fpSlotRedis)
 
 			// Phase 2 (2026-07-01): Enable model popularity tracking.
