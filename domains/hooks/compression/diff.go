@@ -182,6 +182,9 @@ func BuildOutboundMessages(
 
 	// Splice new messages into the client body (preserves model, stream, tools, etc.)
 	newBody, ok := spliceBodyMessages(clientBody, newMsgsRaw)
+	if ok && protocol == "anthropic-messages" {
+		newBody = preserveAnthropicSystem(lastOutboundBody, newBody)
+	}
 	if !ok {
 		// Splice failed — fall back to client body.
 		hashes := computeHashes(clientMsgs)
@@ -333,4 +336,24 @@ func estimateBodyTokens(body []byte) int {
 // already handles the generic map swap correctly.
 func spliceBodyMessages(origBody []byte, newMessages []byte) ([]byte, bool) {
 	return spliceMessagesRaw(origBody, newMessages)
+}
+
+// preserveAnthropicSystem carries the prior outbound system field through a
+// client delta body. Anthropic summaries live in this top-level field, while
+// BuildOutboundMessages replaces only messages[].
+func preserveAnthropicSystem(lastBody, newBody []byte) []byte {
+	var previous, current map[string]json.RawMessage
+	if json.Unmarshal(lastBody, &previous) != nil || json.Unmarshal(newBody, &current) != nil {
+		return newBody
+	}
+	system, ok := previous["system"]
+	if !ok || len(system) == 0 || string(system) == "null" {
+		return newBody
+	}
+	current["system"] = system
+	out, err := json.Marshal(current)
+	if err != nil {
+		return newBody
+	}
+	return out
 }

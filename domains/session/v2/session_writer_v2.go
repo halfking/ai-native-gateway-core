@@ -51,6 +51,12 @@ type SessionWriterV2 struct {
 	lifecycleCancel context.CancelFunc
 	lifecycleInit   sync.Once
 	stopOnce        sync.Once
+
+	// lifecycleMu serializes aggregate registration with Stop. Without this
+	// gate, WaitGroup.Add could race with Wait when a write finishes as shutdown
+	// begins, which is unsupported and can let work escape the drain.
+	lifecycleMu sync.Mutex
+	stopped     bool
 }
 
 // ensureLifecycle lazily initializes lifecycleCtx / lifecycleCancel for
@@ -89,12 +95,25 @@ func NewSessionWriterV2(tw *TurnWriter, bw *SessionBodiesWriter, sa *SessionAggr
 func (w *SessionWriterV2) Stop(ctx context.Context) error {
 	w.ensureLifecycle()
 	w.stopOnce.Do(func() {
+		w.lifecycleMu.Lock()
+		w.stopped = true
 		if w.lifecycleCancel != nil {
 			w.lifecycleCancel()
 		}
+		w.lifecycleMu.Unlock()
 	})
-	w.aggWg.Wait()
-	return nil
+
+	done := make(chan struct{})
+	go func() {
+		w.aggWg.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }
 
 // ProcessedRequest represents a request that has been processed through the pipeline
@@ -114,8 +133,8 @@ type ProcessedRequest struct {
 	Attachments  []AttachmentRef
 
 	// Compression state
-	LastOutboundBody    []Message              // Previous turn's outbound (for delta extraction)
-	OutboundBody        []Message              // Actual outbound sent to LLM (after compression)
+	LastOutboundBody    []Message // Previous turn's outbound (for delta extraction)
+	OutboundBody        []Message // Actual outbound sent to LLM (after compression)
 	CompressionApplied  bool
 	CompressionStrategy string
 	CompressionMeta     map[string]interface{}
@@ -159,12 +178,12 @@ type ProcessedRequest struct {
 
 // ProcessingStage represents one stage in the request pipeline
 type ProcessingStage struct {
-	Stage      string                 // routing | compression | injection_check | llm_call | output_check | response
-	Status     string                 // pending | running | success | failed | skipped
-	StartedAt  time.Time
+	Stage       string // routing | compression | injection_check | llm_call | output_check | response
+	Status      string // pending | running | success | failed | skipped
+	StartedAt   time.Time
 	CompletedAt time.Time
-	EventData  map[string]interface{}
-	ErrorMsg   string
+	EventData   map[string]interface{}
+	ErrorMsg    string
 }
 
 // Write writes a processed request to all V2 tables
@@ -184,26 +203,26 @@ type ProcessingStage struct {
 // Lifecycle (spec §6.3): the aggregate snapshot update runs in a goroutine
 // tracked by aggWg and bound to lifecycleCtx; Stop() awaits it.
 func (w *SessionWriterV2) Write(ctx context.Context, req *ProcessedRequest) error {
-		// 1. Detect submit mode using the full detector
-		detector := NewSubmitModeDetector()
-		
-		// Get previous turn's attachments for attachment-only detection
-		previousAttachments, err := w.getPreviousAttachments(ctx, req.SessionID, req.TenantID)
-		if err != nil {
-			// Log but don't fail - we can still detect other submit modes
-			slog.WarnContext(ctx, "failed to get previous attachments for submit mode detection",
-				"session_id", req.SessionID,
-				"error", err)
-		}
-		
-		submitMode := string(detector.Detect(DetectionContext{
-			SubmitModeHeader:    req.SubmitModeHeader,
-			ClientMessages:      req.RequestBody,
-			LastOutboundBody:    req.LastOutboundBody,
-			CompressionApplied:  req.CompressionApplied,
-			CurrentAttachments:  req.Attachments,
-			PreviousAttachments: previousAttachments,
-		}))
+	// 1. Detect submit mode using the full detector
+	detector := NewSubmitModeDetector()
+
+	// Get previous turn's attachments for attachment-only detection
+	previousAttachments, err := w.getPreviousAttachments(ctx, req.SessionID, req.TenantID)
+	if err != nil {
+		// Log but don't fail - we can still detect other submit modes
+		slog.WarnContext(ctx, "failed to get previous attachments for submit mode detection",
+			"session_id", req.SessionID,
+			"error", err)
+	}
+
+	submitMode := string(detector.Detect(DetectionContext{
+		SubmitModeHeader:    req.SubmitModeHeader,
+		ClientMessages:      req.RequestBody,
+		LastOutboundBody:    req.LastOutboundBody,
+		CompressionApplied:  req.CompressionApplied,
+		CurrentAttachments:  req.Attachments,
+		PreviousAttachments: previousAttachments,
+	}))
 
 	// 2. Extract request delta (incremental messages)
 	requestDelta := extractRequestDelta(req, submitMode)
@@ -346,7 +365,13 @@ func (w *SessionWriterV2) Write(ctx context.Context, req *ProcessedRequest) erro
 	// shutdown instead of leaking.
 	if w.sessionAggregator != nil {
 		w.ensureLifecycle()
+		w.lifecycleMu.Lock()
+		if w.stopped {
+			w.lifecycleMu.Unlock()
+			return nil
+		}
 		w.aggWg.Add(1)
+		w.lifecycleMu.Unlock()
 		go func() {
 			defer w.aggWg.Done()
 			// lifecycleCtx gates the goroutine on shutdown. A small timeout
@@ -395,11 +420,11 @@ func (w *SessionWriterV2) getPreviousAttachments(ctx context.Context, sessionID,
 	if err != nil {
 		return nil, fmt.Errorf("list bodies: %w", err)
 	}
-	
+
 	if len(bodies) == 0 {
 		return []AttachmentRef{}, nil // First turn, no previous attachments
 	}
-	
+
 	// Get the last turn's attachments
 	lastBody := bodies[len(bodies)-1]
 	return lastBody.RequestAttachments, nil

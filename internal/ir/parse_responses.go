@@ -231,19 +231,53 @@ func parseResponsesInput(raw json.RawMessage) (messages []Message, systemText st
 // roles so the caller can hoist them into req.System; msg is nil for those.
 func parseResponsesInputItem(item map[string]any) (*Message, string, error) {
 	role, _ := item["role"].(string)
+	itemType, _ := item["type"].(string)
 
-	// "type"-tagged items (function_call / function_call_output / message) are
-	// valid Responses shapes; we surface the common message form and pass
-	// others through as raw content to avoid silent loss.
-	if itemType, _ := item["type"].(string); itemType != "" {
-		// A "message"-typed item carries a normal {role, content}.
-		if itemType != "message" && role == "" {
-			raw, _ := json.Marshal(item)
-			return &Message{
-				Role:    "assistant",
-				Content: []ContentBlock{{Type: "raw", RawContent: string(raw)}},
-			}, "", nil
+	// Responses tool-call history items do not carry a message role. Handle
+	// them before the generic type-item fallback so tool semantics survive the
+	// conversion into the shared IR.
+	if itemType == "function_call" {
+		name, _ := item["name"].(string)
+		args, _ := item["arguments"].(string)
+		if args == "" {
+			args = "{}"
 		}
+		callID, _ := item["call_id"].(string)
+		if callID == "" {
+			callID, _ = item["id"].(string)
+		}
+		call := ToolCall{ID: callID, Type: "function"}
+		call.Function.Name = name
+		call.Function.Arguments = args
+		return &Message{
+			Role:      "assistant",
+			ToolCalls: []ToolCall{call},
+		}, "", nil
+	}
+	if itemType == "function_call_output" {
+		callID, _ := item["call_id"].(string)
+		output := extractItemText(item)
+		return &Message{
+			Role:       "tool",
+			ToolCallID: callID,
+			Content: []ContentBlock{{
+				Type: "tool_result",
+				ToolResult: &ToolResult{
+					ToolUseID: callID,
+					Content:   []ContentBlock{{Type: "text", Text: output}},
+				},
+			}},
+		}, "", nil
+	}
+
+	// "message"-typed items carry a normal {role, content}. Unknown typed
+	// items are preserved as raw assistant content rather than dropped.
+	if itemType != "" && itemType != "message" && role == "" {
+		raw, _ := json.Marshal(item)
+		return &Message{
+			Role:    "assistant",
+			Content: []ContentBlock{{Type: "raw", RawContent: string(raw)}},
+		}, "", nil
 	}
 
 	switch role {
