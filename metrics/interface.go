@@ -24,10 +24,10 @@ type Recorder interface {
 	SetAdapterActive(provider string, active bool)
 
 	// Scheduler
-	RecordSchedulerSelection(credentialID string, duration time.Duration)
-	UpdateSchedulerWeight(credentialID string, weight int)
-	UpdateSchedulerCurrentWeight(credentialID string, weight int)
-	UpdateSchedulerEffectiveWeight(credentialID string, weight int)
+	RecordSchedulerSelection(providerID string, duration time.Duration)
+	UpdateSchedulerWeight(providerID string, weight int)
+	UpdateSchedulerCurrentWeight(providerID string, weight int)
+	UpdateSchedulerEffectiveWeight(providerID string, weight int)
 	SetSchedulerAvailableCredentials(count int)
 
 	// Safety
@@ -79,10 +79,10 @@ func (n *NoopRecorder) RecordAdapterConversion(provider, direction string, durat
 func (n *NoopRecorder) RecordAdapterFailure(provider, reason string)                               {}
 func (n *NoopRecorder) RecordAdapterTokens(provider, tokenType string, count int)                  {}
 func (n *NoopRecorder) SetAdapterActive(provider string, active bool)                              {}
-func (n *NoopRecorder) RecordSchedulerSelection(credentialID string, duration time.Duration)       {}
-func (n *NoopRecorder) UpdateSchedulerWeight(credentialID string, weight int)                      {}
-func (n *NoopRecorder) UpdateSchedulerCurrentWeight(credentialID string, weight int)               {}
-func (n *NoopRecorder) UpdateSchedulerEffectiveWeight(credentialID string, weight int)             {}
+func (n *NoopRecorder) RecordSchedulerSelection(providerID string, duration time.Duration)       {}
+func (n *NoopRecorder) UpdateSchedulerWeight(providerID string, weight int)                      {}
+func (n *NoopRecorder) UpdateSchedulerCurrentWeight(providerID string, weight int)               {}
+func (n *NoopRecorder) UpdateSchedulerEffectiveWeight(providerID string, weight int)             {}
 func (n *NoopRecorder) SetSchedulerAvailableCredentials(count int)                                 {}
 func (n *NoopRecorder) RecordSafetyCheck(checkType string, duration time.Duration)                 {}
 func (n *NoopRecorder) RecordSafetyAction(action, severity string)                                 {}

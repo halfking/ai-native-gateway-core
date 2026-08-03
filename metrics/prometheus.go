@@ -30,13 +30,13 @@ type PrometheusRecorder struct {
 	adapterActive             *prometheus.GaugeVec
 
 	// Scheduler
-	schedulerSelections             prometheus.Counter
-	schedulerSelectionsByCredential *prometheus.CounterVec
-	schedulerWeight                 *prometheus.GaugeVec
-	schedulerCurrentWeight          *prometheus.GaugeVec
-	schedulerEffectiveWeight        *prometheus.GaugeVec
-	schedulerSelectionDuration      prometheus.Histogram
-	schedulerAvailableCredentials   prometheus.Gauge
+	schedulerSelections            prometheus.Counter
+	schedulerSelectionsByProvider  *prometheus.CounterVec
+	schedulerWeight                *prometheus.GaugeVec
+	schedulerCurrentWeight         *prometheus.GaugeVec
+	schedulerEffectiveWeight       *prometheus.GaugeVec
+	schedulerSelectionDuration     prometheus.Histogram
+	schedulerAvailableCredentials  prometheus.Gauge
 
 	// Safety
 	safetyChecks        *prometheus.CounterVec
@@ -188,33 +188,36 @@ func NewPrometheusRecorder() *PrometheusRecorder {
 				Help: "Total scheduler selections",
 			},
 		),
-		schedulerSelectionsByCredential: promauto.NewCounterVec(
+		// GW-00: label 从 credential_id（高基数，随部署无限增长）改为
+		// provider_id（低基数，按 provider 聚合）。这 4 个指标此前无生产
+		// 调用方（scheduler 用自己的内存计数器），改动零生产破坏。
+		schedulerSelectionsByProvider: promauto.NewCounterVec(
 			prometheus.CounterOpts{
-				Name: "llm_gateway_scheduler_selections_by_credential",
-				Help: "Selections by credential",
+				Name: "llm_gateway_scheduler_selections_by_provider",
+				Help: "Selections by provider (low-cardinality)",
 			},
-			[]string{"credential_id"},
+			[]string{"provider_id"},
 		),
 		schedulerWeight: promauto.NewGaugeVec(
 			prometheus.GaugeOpts{
 				Name: "llm_gateway_scheduler_weight",
 				Help: "Configured weight",
 			},
-			[]string{"credential_id"},
+			[]string{"provider_id"},
 		),
 		schedulerCurrentWeight: promauto.NewGaugeVec(
 			prometheus.GaugeOpts{
 				Name: "llm_gateway_scheduler_current_weight",
 				Help: "Current weight",
 			},
-			[]string{"credential_id"},
+			[]string{"provider_id"},
 		),
 		schedulerEffectiveWeight: promauto.NewGaugeVec(
 			prometheus.GaugeOpts{
 				Name: "llm_gateway_scheduler_effective_weight",
 				Help: "Effective weight",
 			},
-			[]string{"credential_id"},
+			[]string{"provider_id"},
 		),
 		schedulerSelectionDuration: promauto.NewHistogram(
 			prometheus.HistogramOpts{
@@ -424,22 +427,22 @@ func (p *PrometheusRecorder) SetAdapterActive(provider string, active bool) {
 }
 
 // Scheduler methods
-func (p *PrometheusRecorder) RecordSchedulerSelection(credentialID string, duration time.Duration) {
+func (p *PrometheusRecorder) RecordSchedulerSelection(providerID string, duration time.Duration) {
 	p.schedulerSelections.Inc()
-	p.schedulerSelectionsByCredential.WithLabelValues(credentialID).Inc()
+	p.schedulerSelectionsByProvider.WithLabelValues(providerID).Inc()
 	p.schedulerSelectionDuration.Observe(duration.Seconds())
 }
 
-func (p *PrometheusRecorder) UpdateSchedulerWeight(credentialID string, weight int) {
-	p.schedulerWeight.WithLabelValues(credentialID).Set(float64(weight))
+func (p *PrometheusRecorder) UpdateSchedulerWeight(providerID string, weight int) {
+	p.schedulerWeight.WithLabelValues(providerID).Set(float64(weight))
 }
 
-func (p *PrometheusRecorder) UpdateSchedulerCurrentWeight(credentialID string, weight int) {
-	p.schedulerCurrentWeight.WithLabelValues(credentialID).Set(float64(weight))
+func (p *PrometheusRecorder) UpdateSchedulerCurrentWeight(providerID string, weight int) {
+	p.schedulerCurrentWeight.WithLabelValues(providerID).Set(float64(weight))
 }
 
-func (p *PrometheusRecorder) UpdateSchedulerEffectiveWeight(credentialID string, weight int) {
-	p.schedulerEffectiveWeight.WithLabelValues(credentialID).Set(float64(weight))
+func (p *PrometheusRecorder) UpdateSchedulerEffectiveWeight(providerID string, weight int) {
+	p.schedulerEffectiveWeight.WithLabelValues(providerID).Set(float64(weight))
 }
 
 func (p *PrometheusRecorder) SetSchedulerAvailableCredentials(count int) {

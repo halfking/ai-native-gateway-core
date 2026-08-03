@@ -63,6 +63,8 @@ const (
 	GuardStageCompress  GuardStage = "compress"
 	GuardStageStabilize GuardStage = "stabilize"
 	GuardStageInject    GuardStage = "inject"
+	// GuardStageLite (GW-05): Lite stage 的 NeverWorse 守卫标签。
+	GuardStageLite GuardStage = "lite"
 )
 
 // NeverWorse enforces the rtk safety contract for a single transform stage.

@@ -32,6 +32,7 @@ import (
 	"os"
 	"strings"
 
+	"github.com/kaixuan/llm-gateway-go/domains/hooks/compression/lite"
 	"github.com/kaixuan/llm-gateway-go/settings"
 )
 
@@ -155,6 +156,9 @@ const (
 	StrategyMemoraL1Inject CompressionStrategy = "memora_l1_inject"
 	StrategyLLMSummary     CompressionStrategy = "llm_summary"
 	StrategyNoop           CompressionStrategy = "noop"
+	// StrategyLite (GW-05, omni-ref2): Lite stage 翻译自 OmniRoute lite.ts。
+	// 5 个纯函数 stage（whitespace/system-dedup/tool-compress/redundant-remove/image-placeholder）。
+	StrategyLite CompressionStrategy = "lite"
 )
 
 // Meta is the compression telemetry payload written to
@@ -201,6 +205,15 @@ type Compressor struct {
 		GetString(ctx context.Context, providerID int, key string) (string, bool)
 		GetBool(ctx context.Context, providerID int, key string) (bool, bool)
 	}
+
+	// LiteStageEnabled (GW-05, omni-ref2): 启用 Lite 压缩 stage。
+	// true 时 Compress/CompressAfter4xx 在 mechanical trim 之前先跑 Lite
+	// 5 stage（whitespace/system-dedup/tool-compress/redundant-remove/image-placeholder）。
+	// 默认 false（feature flag LLM_GATEWAY_COMPRESSION_LITE）。Lite 是纯函数、
+	// fail-open：任何错误返回原 body，不 panic。经 NeverWorse 守卫保证不增字节。
+	// 注意：当前 Compressor.Compress 未接入执行器实时路径，故 Lite 即使开启也
+	// 只在显式调用 Compressor 的地方（测试/CompressionHook）生效，零线上风险。
+	LiteStageEnabled bool
 }
 
 // NewCompressor builds a Compressor with the current env config.
@@ -312,11 +325,28 @@ func (c *Compressor) Compress(body []byte, contextWindow int) (newBody []byte, r
 	// mechanical tier — that's a T11 enhancement to transform/ctx_compress.go.
 	// Until then, transform's sliding window can drop the first user.
 	// The dispatcher reports this in ReasonDetail so callers know.
+
+	// GW-05: 在 mechanical trim 之前先跑 Lite stage（feature-flagged，fail-open）。
+	// Lite 是纯函数 5 stage（whitespace/system-dedup/tool-compress/redundant-remove/
+	// image-placeholder），清理 body 后让 mechanical 在更干净的输入上工作。
+	// 经 NeverWorse 守卫保证不增字节；任何错误返回原 body。
+	if c.LiteStageEnabled {
+		if lb, lr, ok := lite.Apply(body, lite.Options{}); ok {
+			guarded, regressed := NeverWorse(body, lb, GuardStageLite)
+			if !regressed {
+				body = guarded
+				if len(lr.Techniques) > 0 {
+					meta.ReasonDetail = fmt.Sprintf("lite stages=%v before mechanical", lr.Techniques)
+				}
+			}
+		}
+	}
+
 	trimmed := compressMechanical(body, contextWindow)
 	if len(trimmed) >= len(body) {
 		// Mechanical couldn't make room. Mark as noop; caller should
 		// fall through to memora L1 / LLM summary via the post-error path.
-		meta.ReasonDetail = "mechanical trim had no effect; needs memora or LLM fallback"
+		meta.ReasonDetail = appendLiteNote(meta.ReasonDetail, "mechanical trim had no effect; needs memora or LLM fallback")
 		meta.ThresholdBytes = c.est.ThresholdBytes(contextWindow)
 		meta.ContextWindowUsed = &contextWindow
 		return body, ReasonAutoThreshold, StrategyNoop, meta, false
@@ -364,9 +394,22 @@ func (c *Compressor) CompressAfter4xx(body []byte, contextWindow int) (newBody [
 		return body, ReasonOn4xx, StrategyNoop, meta, false
 	}
 
+	// GW-05: Lite stage（与 Compress 一致，feature-flagged，fail-open）。
+	if c.LiteStageEnabled {
+		if lb, lr, ok := lite.Apply(body, lite.Options{}); ok {
+			guarded, regressed := NeverWorse(body, lb, GuardStageLite)
+			if !regressed {
+				body = guarded
+				if len(lr.Techniques) > 0 {
+					meta.ReasonDetail = fmt.Sprintf("lite stages=%v before mechanical (4xx)", lr.Techniques)
+				}
+			}
+		}
+	}
+
 	trimmed := compressMechanical(body, contextWindow)
 	if len(trimmed) >= len(body) {
-		meta.ReasonDetail = "4xx recovery: mechanical trim had no effect"
+		meta.ReasonDetail = appendLiteNote(meta.ReasonDetail, "4xx recovery: mechanical trim had no effect")
 		meta.ContextWindowUsed = &contextWindow
 		return body, ReasonOn4xx, StrategyNoop, meta, false
 	}
@@ -378,8 +421,17 @@ func (c *Compressor) CompressAfter4xx(body []byte, contextWindow int) (newBody [
 	meta.DroppedMessages = ptrInt(countDroppedMessages(body, trimmed))
 	meta.ContextWindowUsed = &contextWindow
 	meta.ThresholdBytes = (contextWindow * 8 / 10) * 35 / 10
-	meta.ReasonDetail = fmt.Sprintf("4xx recovery: body %d > window %d capacity", before, contextWindow)
+	meta.ReasonDetail = appendLiteNote(meta.ReasonDetail, fmt.Sprintf("4xx recovery: body %d > window %d capacity", before, contextWindow))
 	return trimmed, ReasonOn4xx, StrategyMechanicalTrim, meta, true
+}
+
+// appendLiteNote 把 mechanical 分支的 reason 追加到已有 Lite note 之后（若存在）。
+// GW-05：Lite 在 mechanical 之前跑并设置 ReasonDetail，mechanical 分支不能覆盖它。
+func appendLiteNote(existing, mechanicalNote string) string {
+	if existing == "" {
+		return mechanicalNote
+	}
+	return existing + "; " + mechanicalNote
 }
 
 // compressMechanical is the in-place sliding-window trim. Thin wrapper
