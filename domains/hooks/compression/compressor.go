@@ -32,6 +32,7 @@ import (
 	"os"
 	"strings"
 
+	"github.com/kaixuan/llm-gateway-go/domains/hooks/compression/caveman"
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/compression/lite"
 	"github.com/kaixuan/llm-gateway-go/settings"
 )
@@ -159,6 +160,9 @@ const (
 	// StrategyLite (GW-05, omni-ref2): Lite stage 翻译自 OmniRoute lite.ts。
 	// 5 个纯函数 stage（whitespace/system-dedup/tool-compress/redundant-remove/image-placeholder）。
 	StrategyLite CompressionStrategy = "lite"
+	// StrategyCaveman (GW-07, omni-ref2): Caveman stage 翻译自 OmniRoute caveman.ts。
+	// 8 语言 306 规则 + 保护块 + validation。
+	StrategyCaveman CompressionStrategy = "caveman"
 )
 
 // Meta is the compression telemetry payload written to
@@ -214,6 +218,11 @@ type Compressor struct {
 	// 注意：当前 Compressor.Compress 未接入执行器实时路径，故 Lite 即使开启也
 	// 只在显式调用 Compressor 的地方（测试/CompressionHook）生效，零线上风险。
 	LiteStageEnabled bool
+	// CavemanStageEnabled (GW-07, omni-ref2): 启用 Caveman 压缩 stage。
+	// true 时 Compress/CompressAfter4xx 在 Lite 之后、mechanical trim 之前跑 Caveman
+	// 8 语言规则。默认 false（feature flag LLM_GATEWAY_COMPRESSION_CAVEMAN）。
+	// Caveman 纯函数 + validation fallback，经 NeverWorse(GuardStageCaveman) 守卫。
+	CavemanStageEnabled bool
 }
 
 // NewCompressor builds a Compressor with the current env config.
@@ -342,11 +351,26 @@ func (c *Compressor) Compress(body []byte, contextWindow int) (newBody []byte, r
 		}
 	}
 
+	// GW-07: 在 Lite 之后、mechanical trim 之前跑 Caveman stage（feature-flagged，fail-open）。
+	// Caveman 跑 8 语言规则 + 保护块 + validation；validation 失败的单条 message 回退原文。
+	// 经 NeverWorse(GuardStageCaveman) 守卫保证 stage 输出不增字节。
+	if c.CavemanStageEnabled {
+		if cb, cr, ok := caveman.Compress(body, caveman.DefaultConfig()); ok {
+			guarded, regressed := NeverWorse(body, cb, GuardStageCaveman)
+			if !regressed {
+				body = guarded
+				if len(cr.RulesApplied) > 0 {
+					meta.ReasonDetail = appendStageNote(meta.ReasonDetail, fmt.Sprintf("caveman rules=%v before mechanical", cr.RulesApplied))
+				}
+			}
+		}
+	}
+
 	trimmed := compressMechanical(body, contextWindow)
 	if len(trimmed) >= len(body) {
 		// Mechanical couldn't make room. Mark as noop; caller should
 		// fall through to memora L1 / LLM summary via the post-error path.
-		meta.ReasonDetail = appendLiteNote(meta.ReasonDetail, "mechanical trim had no effect; needs memora or LLM fallback")
+		meta.ReasonDetail = appendStageNote(meta.ReasonDetail, "mechanical trim had no effect; needs memora or LLM fallback")
 		meta.ThresholdBytes = c.est.ThresholdBytes(contextWindow)
 		meta.ContextWindowUsed = &contextWindow
 		return body, ReasonAutoThreshold, StrategyNoop, meta, false
@@ -407,9 +431,22 @@ func (c *Compressor) CompressAfter4xx(body []byte, contextWindow int) (newBody [
 		}
 	}
 
+	// GW-07: Caveman stage（与 Compress 一致，feature-flagged，fail-open）。
+	if c.CavemanStageEnabled {
+		if cb, cr, ok := caveman.Compress(body, caveman.DefaultConfig()); ok {
+			guarded, regressed := NeverWorse(body, cb, GuardStageCaveman)
+			if !regressed {
+				body = guarded
+				if len(cr.RulesApplied) > 0 {
+					meta.ReasonDetail = appendStageNote(meta.ReasonDetail, fmt.Sprintf("caveman rules=%v before mechanical (4xx)", cr.RulesApplied))
+				}
+			}
+		}
+	}
+
 	trimmed := compressMechanical(body, contextWindow)
 	if len(trimmed) >= len(body) {
-		meta.ReasonDetail = appendLiteNote(meta.ReasonDetail, "4xx recovery: mechanical trim had no effect")
+		meta.ReasonDetail = appendStageNote(meta.ReasonDetail, "4xx recovery: mechanical trim had no effect")
 		meta.ContextWindowUsed = &contextWindow
 		return body, ReasonOn4xx, StrategyNoop, meta, false
 	}
@@ -421,13 +458,13 @@ func (c *Compressor) CompressAfter4xx(body []byte, contextWindow int) (newBody [
 	meta.DroppedMessages = ptrInt(countDroppedMessages(body, trimmed))
 	meta.ContextWindowUsed = &contextWindow
 	meta.ThresholdBytes = (contextWindow * 8 / 10) * 35 / 10
-	meta.ReasonDetail = appendLiteNote(meta.ReasonDetail, fmt.Sprintf("4xx recovery: body %d > window %d capacity", before, contextWindow))
+	meta.ReasonDetail = appendStageNote(meta.ReasonDetail, fmt.Sprintf("4xx recovery: body %d > window %d capacity", before, contextWindow))
 	return trimmed, ReasonOn4xx, StrategyMechanicalTrim, meta, true
 }
 
-// appendLiteNote 把 mechanical 分支的 reason 追加到已有 Lite note 之后（若存在）。
+// appendStageNote 把 mechanical 分支的 reason 追加到已有 Lite note 之后（若存在）。
 // GW-05：Lite 在 mechanical 之前跑并设置 ReasonDetail，mechanical 分支不能覆盖它。
-func appendLiteNote(existing, mechanicalNote string) string {
+func appendStageNote(existing, mechanicalNote string) string {
 	if existing == "" {
 		return mechanicalNote
 	}
