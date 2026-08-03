@@ -5,6 +5,5 @@
   "model": "gpt-4o",
   "provider_profile": "openai-responses",
   "redaction_version": "v1",
-  "fixture_kind": "unsupported",
-  "unsupported_reason": "IRTransport.serializeRequest has no Responses request serializer (no SerializeResponsesRequest in internal/ir). ir_converter.go:295 documents 'no upstream speaks Responses API yet' — only the Serialize (response) direction exists. Convert returns 'unsupported upstream protocol: openai-responses'. Skip until Responses inbound/outbound request direction is implemented (future Phase)."
+  "fixture_kind": "synthetic-contract"
 }

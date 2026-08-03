@@ -643,6 +643,11 @@ func serializeRequest(protocol string, req *ir.InternalRequest) ([]byte, error) 
 		return ir.SerializeAnthropic(req)
 	case "gemini-generate", "gemini":
 		return ir.SerializeGemini(req)
+	case "openai-responses":
+		// Spec §7.1 IR main-path extension (2026-08-02): the Responses API
+		// request direction. Maps IR → {input[], instructions, max_output_tokens,
+		// flat tools[]}. See internal/ir/serialize_responses.go.
+		return ir.SerializeResponsesRequest(req)
 	default:
 		return nil, fmt.Errorf("unsupported upstream protocol: %s", protocol)
 	}
