@@ -10,6 +10,9 @@ User=root
 Group=root
 WorkingDirectory=/opt/llm-gateway-go
 EnvironmentFile=/opt/llm-gateway-go/.env
+# 2026-08-04 (spec §10.4.1): IR as default protocol conversion path.
+# Emergency rollback: change to "false" in /opt/llm-gateway-go/.env.
+Environment=TRANSPORT_LAYER_IR_ENABLED=true
 ExecStart=/opt/llm-gateway-go/gateway
 Restart=always
 RestartSec=5

@@ -12,6 +12,9 @@ services:
       - LLM_GATEWAY_ADMIN_API_KEY=${LLM_GATEWAY_ADMIN_API_KEY:?LLM_GATEWAY_ADMIN_API_KEY is required}
       - LLM_GATEWAY_SECRET_KEY=${LLM_GATEWAY_SECRET_KEY:?LLM_GATEWAY_SECRET_KEY is required}
       - LLM_GATEWAY_CENTER_URL=${LLM_GATEWAY_CENTER_URL:-https://llm.kxpms.cn}
+      # 2026-08-04 (spec §10.4.1): IR as default protocol conversion path.
+      # Emergency rollback: set to "false" or remove this line.
+      - TRANSPORT_LAYER_IR_ENABLED=true
     volumes:
       - ./logs:/app/logs
     restart: unless-stopped
