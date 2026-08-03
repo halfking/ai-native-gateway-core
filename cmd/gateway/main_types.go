@@ -216,6 +216,12 @@ func (a *irAdapter) ParseAnthropic(body []byte) (*ir.InternalRequest, error) {
 	return ir.ParseAnthropic(body)
 }
 
+// ParseResponses parses an OpenAI Responses API request body into IR.
+// Spec §7.1 IR main-path extension (2026-08-02).
+func (a *irAdapter) ParseResponses(body []byte) (*ir.InternalRequest, error) {
+	return ir.ParseResponses(body)
+}
+
 func (a *irAdapter) SerializeOpenAI(req *ir.InternalRequest) ([]byte, error) {
 	return ir.SerializeOpenAI(req)
 }

@@ -53,25 +53,26 @@ const defaultWindowFraction = 0.8
 // so live config changes via reload.sh / kubectl rollout restart take
 // effect immediately.
 func envFraction() float64 {
+	return envFractionWithDefault(defaultWindowFraction)
+}
+
+func envFractionWithDefault(fallback float64) float64 {
 	raw := os.Getenv("LLM_GATEWAY_COMPRESSION_WINDOW_FRACTION")
 	if raw == "" {
-		return defaultWindowFraction
+		return fallback
 	}
 	v, err := strconv.ParseFloat(raw, 64)
 	if err != nil || v <= 0 || v > 1.0 {
-		return defaultWindowFraction
+		return fallback
 	}
 	return v
 }
 
-// LoadFraction resolves compression.window_fraction via settings.Global
-// (DB > env > default). Falls back to envFractionLegacy() when settings.Global
-// is not yet initialised (early-init paths, unit tests).
-func LoadFraction() float64 {
+func loadFractionWithDefault(fallback float64) float64 {
 	if settings.Global != nil {
 		if sp := settings.Global.Spec("compression.window_fraction"); sp != nil {
-			v, _, err := settings.Global.EffectiveValue(sp.Scope, sp.Key, "")
-			if err == nil && len(v) > 0 {
+			v, source, err := settings.Global.EffectiveValue(sp.Scope, sp.Key, "")
+			if err == nil && len(v) > 0 && source != "default" {
 				var f float64
 				if err := json.Unmarshal(v, &f); err == nil && f > 0 && f <= 1.0 {
 					return f
@@ -79,7 +80,13 @@ func LoadFraction() float64 {
 			}
 		}
 	}
-	return envFraction()
+	return envFractionWithDefault(fallback)
+}
+
+// LoadFraction resolves compression.window_fraction via settings.Global
+// (DB > env > default). Its default remains the dormant estimator's 0.8.
+func LoadFraction() float64 {
+	return loadFractionWithDefault(defaultWindowFraction)
 }
 
 // Estimator carries the env-derived fraction once so the hot path

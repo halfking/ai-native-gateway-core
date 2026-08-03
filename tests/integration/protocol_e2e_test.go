@@ -39,10 +39,11 @@ type protocolCombo struct {
 	upstream string // upstream (outbound) protocol
 }
 
-// allCombos is the 4×3 dedup matrix (no same-protocol pairs). Responses is
-// only valid as an *upstream* target because the IR layer has no request
-// parser for Responses input (domains/transformation/ir_converter.go:
-// "No ParseResponses* method is added").
+// allCombos is the 4×3 dedup matrix (no same-protocol pairs).
+//
+// Spec §7.1 IR main-path extension (2026-08-02): now that the IR layer ships a
+// ParseResponses request parser, Responses is also valid as a *client* input
+// protocol, so Responses→{OpenAI,Anthropic,Gemini} rows are included here.
 var allCombos = []protocolCombo{
 	{"OpenAIChat_To_Anthropic", "openai-chat", "anthropic-messages"},
 	{"OpenAIChat_To_Gemini", "openai-chat", "gemini-generate"},
@@ -53,6 +54,9 @@ var allCombos = []protocolCombo{
 	{"Gemini_To_OpenAIChat", "gemini-generate", "openai-chat"},
 	{"Gemini_To_Anthropic", "gemini-generate", "anthropic-messages"},
 	{"Gemini_To_Responses", "gemini-generate", "openai-responses"},
+	{"Responses_To_OpenAIChat", "openai-responses", "openai-chat"},
+	{"Responses_To_Anthropic", "openai-responses", "anthropic-messages"},
+	{"Responses_To_Gemini", "openai-responses", "gemini-generate"},
 }
 
 // fixtures holds one body per inbound protocol for each scenario. The
@@ -176,26 +180,66 @@ func buildFixtures() fixtures {
   "generationConfig": {"maxOutputTokens": 256}
 }`
 
+	// Responses API plain body. "input" replaces messages[]; the system prompt
+	// is hoisted to top-level "instructions"; max_output_tokens replaces
+	// max_tokens.
+	const responsesPlain = `{
+  "model": "gpt-4o",
+  "instructions": "You are a helpful assistant.",
+  "max_output_tokens": 256,
+  "input": [
+    {"role": "user", "content": [{"type": "input_text", "text": "Say hello in one sentence."}]}
+  ]
+}`
+
+	// Responses tool body: flat {type:"function", name, parameters} shape and
+	// tool_choice as a bare string.
+	const responsesTool = `{
+  "model": "gpt-4o",
+  "instructions": "You are a helpful assistant.",
+  "max_output_tokens": 256,
+  "tools": [
+    {
+      "type": "function",
+      "name": "get_weather",
+      "description": "Get current weather for a city",
+      "parameters": {
+        "type": "object",
+        "properties": {"city": {"type": "string"}},
+        "required": ["city"]
+      }
+    }
+  ],
+  "tool_choice": "auto",
+  "input": [
+    {"role": "user", "content": [{"type": "input_text", "text": "What is the weather in Tokyo?"}]}
+  ]
+}`
+
 	// plainStream bodies are derived from plain by injecting "stream":true.
 	openAIStream := injectStream(openAIPlain, true)
 	anthropicStream := injectStream(anthropicPlain, true)
 	geminiStream := geminiPlain // Gemini has no stream flag (see notes)
+	responsesStream := injectStream(responsesPlain, true)
 
 	return fixtures{
 		plain: map[string]string{
 			"openai-chat":        openAIPlain,
 			"anthropic-messages": anthropicPlain,
 			"gemini-generate":    geminiPlain,
+			"openai-responses":   responsesPlain,
 		},
 		tool: map[string]string{
 			"openai-chat":        openAITool,
 			"anthropic-messages": anthropicTool,
 			"gemini-generate":    geminiTool,
+			"openai-responses":   responsesTool,
 		},
 		stream: map[string]string{
 			"openai-chat":        openAIStream,
 			"anthropic-messages": anthropicStream,
 			"gemini-generate":    geminiStream,
+			"openai-responses":   responsesStream,
 		},
 		// Each protocol's error body is invalid JSON so parsing deterministically
 		// fails. (Empty-model bodies do NOT error in the IR parsers — they
@@ -204,6 +248,7 @@ func buildFixtures() fixtures {
 			"openai-chat":        `{invalid-json`,
 			"anthropic-messages": `{invalid-json`,
 			"gemini-generate":    `{invalid-json`,
+			"openai-responses":   `{invalid-json`,
 		},
 	}
 }
@@ -425,11 +470,18 @@ func TestProtocolE2E_Matrix(t *testing.T) {
 	}
 }
 
-// TestProtocolE2E_ResponsesAsInputUnsupported documents and enforces that
-// the IR layer has no request parser for the Responses API input direction.
-// If a ParseResponses is ever added, this test should flip to exercising the
-// Responses→* matrix and the allCombos table above should gain those rows.
-func TestProtocolE2E_ResponsesAsInputUnsupported(t *testing.T) {
+// TestProtocolE2E_ResponsesAsInput exercises the spec §7.1 IR main-path
+// extension: the OpenAI Responses API is now a valid *client* input protocol.
+//
+// Before 2026-08-02 this test asserted the opposite ("unsupported client
+// protocol") because the IR layer shipped no ParseResponses. Now that
+// internal/ir.ParseResponses exists, a Responses-shaped request must convert
+// successfully to every upstream protocol with its key fields intact.
+//
+// The Responses→{OpenAI,Anthropic,Gemini} rows are also covered by the
+// TestProtocolE2E_Matrix table (see allCombos); this test adds focused
+// assertions on model preservation and tool_choice shape per target.
+func TestProtocolE2E_ResponsesAsInput(t *testing.T) {
 	tr := transformation.NewIRTransport()
 
 	targets := []string{"openai-chat", "anthropic-messages", "gemini-generate", "openai-responses"}
@@ -437,17 +489,23 @@ func TestProtocolE2E_ResponsesAsInputUnsupported(t *testing.T) {
 		upstream := upstream
 		t.Run("Responses_To_"+strings.ReplaceAll(strings.Title(upstream), "-", ""), func(t *testing.T) {
 			t.Parallel()
-			// A minimal Responses-shaped request body. Even a well-formed one
-			// cannot be parsed because no ParseResponses exists.
-			body := `{"model":"gpt-4o","input":[{"role":"user","content":[{"type":"input_text","text":"hi"}]}]}`
+			// A minimal Responses-shaped request body. It must now parse and
+			// convert instead of erroring.
+			body := `{"model":"gpt-4o","instructions":"be brief","input":[{"role":"user","content":[{"type":"input_text","text":"hi"}]}]}`
 			env := newE2EEnvelope("openai-responses", upstream, body, "gpt-4o")
 
 			out, err := tr.Convert(context.Background(), env)
-			if err == nil {
-				t.Fatalf("expected error: IR layer has no ParseResponses; got output %s", out)
+			if err != nil {
+				t.Fatalf("Responses→%s Convert failed: %v\noutput: %s", upstream, err, out)
 			}
-			if !strings.Contains(err.Error(), "unsupported client protocol") {
-				t.Fatalf("expected 'unsupported client protocol' error, got: %v", err)
+			assertParseable(t, protocolCombo{client: "openai-responses", upstream: upstream}, out)
+
+			// Model preservation is protocol-aware: Gemini upstream carries no
+			// body-level model; every other upstream must carry gpt-4o.
+			if upstream != "gemini-generate" {
+				if m := modelFromOutput(out); m != "gpt-4o" {
+					t.Errorf("Responses→%s model = %q, want gpt-4o\noutput: %s", upstream, m, out)
+				}
 			}
 		})
 	}
@@ -485,6 +543,8 @@ func plainModelFor(client string) string {
 		return "claude-sonnet-4-20250514"
 	case "gemini-generate":
 		return "" // Gemini input has no model; serializer emits ""
+	case "openai-responses":
+		return "gpt-4o"
 	}
 	return ""
 }

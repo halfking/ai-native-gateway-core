@@ -3,6 +3,7 @@ package compression
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 )
 
@@ -136,6 +137,22 @@ func TestBuildOutbound_FullHistoryResend(t *testing.T) {
 }
 
 // summary_marker: summary message is preserved verbatim, not used in LCS diff
+func TestBuildOutbound_AnthropicSystemPreserved(t *testing.T) {
+	last := []byte(`{"model":"claude","system":"gateway summary","messages":[{"role":"user","content":"old"},{"role":"assistant","content":"answer"}]}`)
+	client := []byte(`{"model":"claude","messages":[{"role":"user","content":"old"},{"role":"assistant","content":"answer"},{"role":"user","content":"new"}]}`)
+	res, err := BuildOutboundMessages(client, &SessionState{SchemaVersion: 1}, last, "anthropic-messages")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out map[string]any
+	if err := json.Unmarshal(res.Body, &out); err != nil {
+		t.Fatal(err)
+	}
+	if out["system"] != "gateway summary" {
+		t.Errorf("system = %v, want prior summary", out["system"])
+	}
+}
+
 func TestBuildOutbound_SummaryMarkerPreserved(t *testing.T) {
 	// last outbound has a summary marker + recent turns
 	last := makeBody([]map[string]string{
@@ -178,6 +195,25 @@ func TestMsgHash_Stable(t *testing.T) {
 	}
 	if h1 == "" {
 		t.Error("msgHash should not be empty")
+	}
+}
+
+func TestInjectSummaryMarker_PreservesAssistantFields(t *testing.T) {
+	body := []byte(`{"messages":[{"role":"assistant","content":"answer","tool_calls":[{"id":"call_1"}],"name":"agent","refusal":null}]}`)
+	marker, rebuilt := injectSummaryMarker(body, "openai")
+	if marker == "" {
+		t.Fatal("expected marker")
+	}
+	var out map[string][]map[string]any
+	if err := json.Unmarshal(rebuilt, &out); err != nil {
+		t.Fatal(err)
+	}
+	msg := out["messages"][0]
+	if len(msg["tool_calls"].([]any)) != 1 || msg["name"] != "agent" {
+		t.Errorf("assistant fields lost: %+v", msg)
+	}
+	if !strings.Contains(msg["content"].(string), marker) {
+		t.Errorf("content missing marker: %v", msg["content"])
 	}
 }
 

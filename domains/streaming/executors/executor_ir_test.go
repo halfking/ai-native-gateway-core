@@ -21,6 +21,10 @@ func (a *irAdapterForTest) ParseAnthropic(body []byte) (*ir.InternalRequest, err
 	return ir.ParseAnthropic(body)
 }
 
+func (a *irAdapterForTest) ParseResponses(body []byte) (*ir.InternalRequest, error) {
+	return ir.ParseResponses(body)
+}
+
 func (a *irAdapterForTest) SerializeOpenAI(req *ir.InternalRequest) ([]byte, error) {
 	return ir.SerializeOpenAI(req)
 }

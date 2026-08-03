@@ -629,6 +629,11 @@ func parseRequest(protocol string, body []byte) (*ir.InternalRequest, error) {
 		return ir.ParseAnthropic(body)
 	case "gemini-generate", "gemini":
 		return ir.ParseGemini(body)
+	case "openai-responses", "responses":
+		// Spec §7.1 IR main-path extension (2026-08-02): the Responses API
+		// input direction. Reverses SerializeResponsesRequest. See
+		// internal/ir/parse_responses.go.
+		return ir.ParseResponses(body)
 	default:
 		return nil, fmt.Errorf("unsupported client protocol: %s", protocol)
 	}
