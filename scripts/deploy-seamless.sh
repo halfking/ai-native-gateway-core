@@ -309,6 +309,19 @@ do_deploy() {
     fi
   fi
 
+  # 0.8 确保 IR 默认路径开启（spec §10.4.1）
+  log "[0.8/9] 确保 TRANSPORT_LAYER_IR_ENABLED=true (spec §10.4.1)"
+  local _env_file
+  _env_file=$(_env_file_for_target)
+  if $SSH_CMD "grep -q '^TRANSPORT_LAYER_IR_ENABLED=true' '$_env_file'" 2>/dev/null; then
+    ok "IR 已在 env 中启用"
+  else
+    # 移除可能的旧 false 行，追加 true
+    $SSH_CMD "sed -i '/^TRANSPORT_LAYER_IR_ENABLED=/d' '$_env_file' && echo 'TRANSPORT_LAYER_IR_ENABLED=true' >> '$_env_file'" \
+      && ok "IR 已注入 env (TRANSPORT_LAYER_IR_ENABLED=true)" \
+      || warn "IR env 注入失败（可手动: echo TRANSPORT_LAYER_IR_ENABLED=true >> $_env_file）"
+  fi
+
   # 1. bump version
   if [[ -n "$SEQ_FLAG" ]]; then
     log "[1/9] bump version $SEQ_FLAG"
