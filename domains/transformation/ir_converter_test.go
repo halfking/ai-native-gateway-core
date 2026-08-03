@@ -38,6 +38,10 @@ func (m *mockIRAdapter) ParseAnthropic(body []byte) (*ir.InternalRequest, error)
 	return &ir.InternalRequest{Model: "claude-sonnet-4"}, nil
 }
 
+func (m *mockIRAdapter) ParseResponses(body []byte) (*ir.InternalRequest, error) {
+	return &ir.InternalRequest{Model: "gpt-4o", SourceProtocol: ir.ProtocolOpenAIResponses}, nil
+}
+
 func (m *mockIRAdapter) SerializeOpenAI(req *ir.InternalRequest) ([]byte, error) {
 	if m.serializeOpenAIFunc != nil {
 		return m.serializeOpenAIFunc(req)

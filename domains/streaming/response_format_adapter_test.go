@@ -216,6 +216,10 @@ func (m *mockIRConverter) ParseAnthropic(body []byte) (*ir.InternalRequest, erro
 	return &ir.InternalRequest{}, nil
 }
 
+func (m *mockIRConverter) ParseResponses(body []byte) (*ir.InternalRequest, error) {
+	return &ir.InternalRequest{}, nil
+}
+
 func (m *mockIRConverter) SerializeOpenAI(req *ir.InternalRequest) ([]byte, error) {
 	return []byte(`{"model":"test","messages":[]}`), nil
 }
