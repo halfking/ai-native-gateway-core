@@ -18,6 +18,7 @@ import (
 type IRConverterAdapter interface {
 	ParseOpenAI(body []byte) (*ir.InternalRequest, error)
 	ParseAnthropic(body []byte) (*ir.InternalRequest, error)
+	ParseResponses(body []byte) (*ir.InternalRequest, error)
 	SerializeOpenAI(req *ir.InternalRequest) ([]byte, error)
 	SerializeAnthropic(req *ir.InternalRequest) ([]byte, error)
 	ParseAnthropicResponse(body []byte) (*ir.InternalResponse, error)
@@ -125,6 +126,24 @@ func (c *TransportIRConverter) ParseAnthropic(body []byte) (*ir.InternalRequest,
 		return nil, err
 	}
 	req, err := c.inner.ParseAnthropic(body)
+	if err != nil {
+		c.recordErr()
+		return nil, err
+	}
+	c.extractRequestExtensions(body, req)
+	return req, nil
+}
+
+// ParseResponses parses an OpenAI Responses API request body and extracts
+// non-standard fields into req.Extensions for lossless round-trip.
+//
+// Spec §7.1 IR main-path extension (2026-08-02): the Responses API input
+// direction, mirroring ParseOpenAI/ParseAnthropic.
+func (c *TransportIRConverter) ParseResponses(body []byte) (*ir.InternalRequest, error) {
+	if err := c.circuitCheck(); err != nil {
+		return nil, err
+	}
+	req, err := c.inner.ParseResponses(body)
 	if err != nil {
 		c.recordErr()
 		return nil, err

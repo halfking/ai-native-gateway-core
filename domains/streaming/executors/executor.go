@@ -491,6 +491,8 @@ type QualitySetModeFunc func(ctx context.Context, mode string) context.Context
 type IRConverter interface {
 	ParseOpenAI(body []byte) (*ir.InternalRequest, error)
 	ParseAnthropic(body []byte) (*ir.InternalRequest, error)
+	// Spec §7.1 IR main-path extension (2026-08-02): Responses API input.
+	ParseResponses(body []byte) (*ir.InternalRequest, error)
 	SerializeOpenAI(req *ir.InternalRequest) ([]byte, error)
 	SerializeAnthropic(req *ir.InternalRequest) ([]byte, error)
 	// Response direction (Phase D)
