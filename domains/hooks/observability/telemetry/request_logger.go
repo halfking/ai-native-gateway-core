@@ -258,18 +258,23 @@ func (rl *RequestLogger) OverflowCounts() RequestLoggerStats {
 
 func (rl *RequestLogger) ReplayFallback(ctx context.Context, record dbdegradation.BackupRecord) error {
 	rl.replayAttempt.Add(1)
+	incWALEvent("replay_attempt")
 	if strings.HasPrefix(record.RecordKey, overflowRecordPrefix) {
 		var marker requestLoggerOverflowMarker
 		if err := json.Unmarshal(record.Payload, &marker); err != nil {
 			rl.replayFailure.Add(1)
+			incWALEvent("replay_failure")
 			return fmt.Errorf("decode request logger overflow marker: %w", err)
 		}
 		if marker.Kind != overflowMarkerKind {
 			rl.replayFailure.Add(1)
+			incWALEvent("replay_failure")
 			return fmt.Errorf("invalid request logger overflow marker kind %q", marker.Kind)
 		}
 		rl.replayMarker.Add(1)
+		incWALEvent("replay_marker")
 		rl.replaySuccess.Add(1)
+		incWALEvent("replay_success")
 		return nil
 	}
 	var err error
@@ -294,9 +299,11 @@ func (rl *RequestLogger) ReplayFallback(ctx context.Context, record dbdegradatio
 	}
 	if err != nil {
 		rl.replayFailure.Add(1)
+		incWALEvent("replay_failure")
 		return err
 	}
 	rl.replaySuccess.Add(1)
+	incWALEvent("replay_success")
 	return nil
 }
 
@@ -379,6 +386,7 @@ func (rl *RequestLogger) Update(update *LogUpdate) {
 		}
 		if err := fallback.WriteRequestWAL(context.Background(), update.RequestID+":update", update); err != nil {
 			rl.fallbackWriteFailure.Add(1)
+			incWALEvent("fallback_write_failure")
 			slog.Warn("request_logger: degraded update fallback failed", "request_id", update.RequestID, "error", err)
 		}
 		return
@@ -424,6 +432,7 @@ func (rl *RequestLogger) UpdateSync(ctx context.Context, update *LogUpdate) erro
 
 func (rl *RequestLogger) recordOverflow(update *LogUpdate, reason string) {
 	rl.queueOverflow.Add(1)
+	incWALEvent("queue_overflow")
 	ctx, cancel := context.WithTimeout(context.Background(), 25*time.Millisecond)
 	defer cancel()
 	fallback := rl.fallbackWriter()
@@ -432,6 +441,7 @@ func (rl *RequestLogger) recordOverflow(update *LogUpdate, reason string) {
 			return
 		} else {
 			rl.fallbackWriteFailure.Add(1)
+			incWALEvent("fallback_write_failure")
 			slog.Warn("request_logger: overflow update fallback failed", "request_id", update.RequestID, "error", err)
 		}
 	}
@@ -442,6 +452,7 @@ func (rl *RequestLogger) writeOverflowMarker(update *LogUpdate, reason string) {
 	fallback := rl.fallbackWriter()
 	if fallback == nil {
 		rl.unrecoverableFallback.Add(1)
+		incWALEvent("unrecoverable_fallback")
 		slog.Warn("request_logger: overflow marker has no fallback writer", "request_id", update.RequestID, "reason", reason)
 		return
 	}
@@ -456,7 +467,9 @@ func (rl *RequestLogger) writeOverflowMarker(update *LogUpdate, reason string) {
 	defer cancel()
 	if err := fallback.WriteRequestWAL(ctx, overflowRecordPrefix+update.RequestID, marker); err != nil {
 		rl.fallbackWriteFailure.Add(1)
+		incWALEvent("fallback_write_failure")
 		rl.unrecoverableFallback.Add(1)
+		incWALEvent("unrecoverable_fallback")
 		slog.Warn("request_logger: overflow marker failed", "request_id", update.RequestID, "reason", reason, "error", err)
 	}
 }
@@ -466,6 +479,7 @@ func (rl *RequestLogger) fallbackUpdates(ctx context.Context, updates []*LogUpda
 	if fallback == nil {
 		for _, update := range updates {
 			rl.unrecoverableFallback.Add(1)
+			incWALEvent("unrecoverable_fallback")
 			slog.Warn("request_logger: update has no fallback writer", "request_id", update.RequestID)
 		}
 		return
@@ -473,6 +487,7 @@ func (rl *RequestLogger) fallbackUpdates(ctx context.Context, updates []*LogUpda
 	for _, update := range updates {
 		if err := fallback.WriteRequestWAL(ctx, update.RequestID+":update", update); err != nil {
 			rl.fallbackWriteFailure.Add(1)
+			incWALEvent("fallback_write_failure")
 			slog.Warn("request_logger: update fallback failed", "request_id", update.RequestID, "error", err)
 			rl.writeOverflowMarker(update, "fallback_write_failure")
 		}

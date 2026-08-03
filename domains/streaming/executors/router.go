@@ -128,6 +128,12 @@ func (r *Router) PlanCandidatesWithContext(
 		}
 		outerSourceRecorded = true
 		statesource.RecordRoutingStateSource(src)
+		// Spec §12 GAP 3: also attribute the outer source to this
+		// requestID so recordInitialRequestLog can persist it into
+		// request_logs metadata (compression_meta JSONB until a
+		// dedicated column is migrated). Best-effort; a dropped entry
+		// leaves the row with empty routing metadata, never a failure.
+		RecordRoutingSourceForRequest(requestID, src)
 	}
 
 	// Capture one bounded Ready result. This value is reused for both v2
