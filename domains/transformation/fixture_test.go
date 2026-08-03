@@ -35,19 +35,20 @@ func TestGoldenFixture_GeminiToOpenAI(t *testing.T) {
 	runGoldenFixture(t, "gemini_to_openai", "gemini-generate", "openai-chat")
 }
 
-// TestGoldenFixture_OpenAIToResponses is recorded as an unsupported direction:
-// IRTransport has no Responses *request* serializer (only the response/stream
-// Serialize direction exists — see ir_converter.go:295). The fixture pair is
-// committed for documentation + future enablement; the test skips until the
-// Responses request direction lands.
+// TestGoldenFixture_OpenAIToResponses exercises the OpenAI Chat → Responses
+// request direction (SerializeResponsesRequest, spec §7.1 IR main-path
+// extension, 2026-08-02). IRTransport.serializeRequest now routes
+// "openai-responses" to ir.SerializeResponsesRequest; the fixture pair was
+// previously committed as "unsupported" and is now a passing golden test.
 func TestGoldenFixture_OpenAIToResponses(t *testing.T) {
-	runGoldenFixtureUnsupported(t, "openai_to_responses")
+	runGoldenFixture(t, "openai_to_responses", "openai-chat", "openai-responses")
 }
 
-// TestGoldenFixture_AnthropicToResponses — same gap as OpenAIToResponses:
-// no Responses request serializer in IRTransport.serializeRequest.
+// TestGoldenFixture_AnthropicToResponses exercises the Anthropic Messages →
+// Responses request direction (same serializer as above; cross-protocol loss
+// reporting is exercised because the source is Anthropic).
 func TestGoldenFixture_AnthropicToResponses(t *testing.T) {
-	runGoldenFixtureUnsupported(t, "anthropic_to_responses")
+	runGoldenFixture(t, "anthropic_to_responses", "anthropic-messages", "openai-responses")
 }
 
 func runGoldenFixture(t *testing.T, fixtureName, clientProtocol, upstreamProtocol string) {
