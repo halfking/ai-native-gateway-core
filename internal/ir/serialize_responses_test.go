@@ -44,7 +44,7 @@ import (
 
 func TestSerializeResponsesRequest_Basic(t *testing.T) {
 	req := &InternalRequest{
-		Model: "gpt-4o",
+		Model:  "gpt-4o",
 		System: &SystemPrompt{Content: "You are a helpful assistant."},
 		Messages: []Message{
 			{Role: "user", Content: []ContentBlock{{Type: "text", Text: "What is the weather in Tokyo?"}}},
@@ -197,8 +197,8 @@ func TestSerializeResponsesRequest_ToolsAndToolChoice(t *testing.T) {
 
 func TestSerializeResponsesRequest_ToolChoiceForced(t *testing.T) {
 	req := &InternalRequest{
-		Model: "gpt-4o",
-		Tools: []ToolDefinition{{Name: "get_weather"}},
+		Model:      "gpt-4o",
+		Tools:      []ToolDefinition{{Name: "get_weather"}},
 		ToolChoice: &ToolChoice{Type: "tool", Name: "get_weather"},
 		Messages: []Message{
 			{Role: "user", Content: []ContentBlock{{Type: "text", Text: "x"}}},
@@ -394,6 +394,36 @@ func TestSerializeResponsesRequest_MaxOutputTokensNotMaxTokens(t *testing.T) {
 
 // ─── Extensions bypass ────────────────────────────────────────────────────────
 
+func TestSerializeResponsesRequest_FunctionCallAndOutput(t *testing.T) {
+	call := ToolCall{ID: "call_1", Type: "function"}
+	call.Function.Name = "get_weather"
+	call.Function.Arguments = `{"city":"Tokyo"}`
+	req := &InternalRequest{Messages: []Message{
+		{Role: "assistant", ToolCalls: []ToolCall{call}},
+		{Role: "tool", ToolCallID: "call_1", Content: []ContentBlock{{Type: "text", Text: "sunny"}}},
+	}}
+	body, err := SerializeResponsesRequest(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out map[string]any
+	if err := json.Unmarshal(body, &out); err != nil {
+		t.Fatal(err)
+	}
+	input := out["input"].([]any)
+	if len(input) != 2 {
+		t.Fatalf("input length = %d, want 2", len(input))
+	}
+	callItem := input[0].(map[string]any)
+	if callItem["type"] != "function_call" || callItem["call_id"] != "call_1" || callItem["arguments"] != `{"city":"Tokyo"}` {
+		t.Errorf("function_call item = %+v", callItem)
+	}
+	outputItem := input[1].(map[string]any)
+	if outputItem["type"] != "function_call_output" || outputItem["call_id"] != "call_1" || outputItem["output"] != "sunny" {
+		t.Errorf("function_call_output item = %+v", outputItem)
+	}
+}
+
 func TestSerializeResponsesRequest_ExtensionsBypass(t *testing.T) {
 	// Non-standard fields preserved by the transport Extensions extractor should
 	// round-trip on the Responses wire when source is itself Responses.
@@ -428,7 +458,7 @@ func TestSerializeResponsesRequest_ExtensionsBypass(t *testing.T) {
 
 func TestSerializeResponsesRequest_Metadata(t *testing.T) {
 	req := &InternalRequest{
-		Model: "gpt-4o",
+		Model:    "gpt-4o",
 		Metadata: &Metadata{UserID: "u_123"},
 		Messages: []Message{
 			{Role: "user", Content: []ContentBlock{{Type: "text", Text: "hi"}}},

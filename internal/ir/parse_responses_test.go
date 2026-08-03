@@ -305,6 +305,40 @@ func TestParseResponses_RoundTripWithSerialize(t *testing.T) {
 	}
 }
 
+func TestParseResponses_FunctionCallHistory(t *testing.T) {
+	body := []byte(`{
+  "model":"gpt-4o",
+  "input":[
+    {"type":"function_call","id":"fc_1","call_id":"call_1","name":"get_weather","arguments":"{\"city\":\"Tokyo\"}"},
+    {"type":"function_call_output","call_id":"call_1","output":"sunny"}
+  ]
+}`)
+	req, err := ParseResponses(body)
+	if err != nil {
+		t.Fatalf("ParseResponses: %v", err)
+	}
+	if len(req.Messages) != 2 {
+		t.Fatalf("messages = %d, want 2", len(req.Messages))
+	}
+	call := req.Messages[0]
+	if call.Role != "assistant" || len(call.ToolCalls) != 1 {
+		t.Fatalf("function call message = %+v", call)
+	}
+	if call.ToolCalls[0].ID != "call_1" || call.ToolCalls[0].Function.Name != "get_weather" {
+		t.Errorf("tool call = %+v", call.ToolCalls[0])
+	}
+	if call.ToolCalls[0].Function.Arguments != `{"city":"Tokyo"}` {
+		t.Errorf("arguments = %q", call.ToolCalls[0].Function.Arguments)
+	}
+	result := req.Messages[1]
+	if result.Role != "tool" || result.ToolCallID != "call_1" {
+		t.Fatalf("function call output = %+v", result)
+	}
+	if got := result.Content[0].ToolResult.Content[0].Text; got != "sunny" {
+		t.Errorf("tool output = %q", got)
+	}
+}
+
 // ─── image/file input blocks ───────────────────────────────────────────────
 
 func TestParseResponses_ImageAndFileBlocks(t *testing.T) {
@@ -336,6 +370,24 @@ func TestParseResponses_ImageAndFileBlocks(t *testing.T) {
 	docBlock := req.Messages[0].Content[1]
 	if docBlock.Type != "document" || docBlock.Document == nil {
 		t.Errorf("document block = %+v, want normalized document", docBlock)
+	}
+
+	serialized, err := SerializeResponsesRequest(req)
+	if err != nil {
+		t.Fatalf("SerializeResponsesRequest: %v", err)
+	}
+	var out map[string]any
+	if err := json.Unmarshal(serialized, &out); err != nil {
+		t.Fatal(err)
+	}
+	items := out["input"].([]any)
+	blocks := items[0].(map[string]any)["content"].([]any)
+	file := blocks[1].(map[string]any)
+	if _, nested := file["file"]; nested {
+		t.Fatal("input_file must not contain nested file object")
+	}
+	if file["filename"] != "doc.pdf" || file["mime_type"] != "application/pdf" {
+		t.Errorf("input_file metadata = %+v", file)
 	}
 }
 
