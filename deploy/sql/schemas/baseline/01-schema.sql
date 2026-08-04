@@ -25,13 +25,11 @@
 
 CREATE SCHEMA IF NOT EXISTS public;
 
-
 --
 -- Name: SCHEMA public; Type: COMMENT; Schema: -; Owner: -
 --
 
 COMMENT ON SCHEMA public IS 'standard public schema';
-
 
 --
 -- Name: injection_action; Type: TYPE; Schema: public; Owner: -
@@ -51,13 +49,11 @@ CREATE TYPE public.injection_action AS ENUM (
     'block'
 );
 
-
 --
 -- Name: TYPE injection_action; Type: COMMENT; Schema: public; Owner: -
 --
 
 COMMENT ON TYPE public.injection_action IS '处理动作类型 - 11种响应动作';
-
 
 --
 -- Name: injection_category; Type: TYPE; Schema: public; Owner: -
@@ -81,13 +77,11 @@ CREATE TYPE public.injection_category AS ENUM (
     'tool_abuse'
 );
 
-
 --
 -- Name: TYPE injection_category; Type: COMMENT; Schema: public; Owner: -
 --
 
 COMMENT ON TYPE public.injection_category IS '提示词注入风险类别 - 15种攻击类型';
-
 
 --
 -- Name: _064_convert_partition_to_heap(text); Type: PROCEDURE; Schema: public; Owner: -
@@ -171,7 +165,6 @@ BEGIN
 END;
 $$;
 
-
 --
 -- Name: analyze_llm_gateway_table_stats(integer); Type: FUNCTION; Schema: public; Owner: -
 --
@@ -207,14 +200,12 @@ CREATE FUNCTION public.analyze_llm_gateway_table_stats(p_recent_months integer D
 		END;
 		$_$;
 
-
 --
 -- Name: FUNCTION analyze_llm_gateway_table_stats(p_recent_months integer); Type: COMMENT; Schema: public; Owner: -
 --
 
 COMMENT ON FUNCTION public.analyze_llm_gateway_table_stats(p_recent_months integer) IS 'ANALYZE hot heap tables + recent monthly partitions (default 2 months).
 Columnar partitions do not always get autovacuum analyze after bulk INSERT.';
-
 
 --
 -- Name: apply_llm_gateway_autovacuum_settings(); Type: FUNCTION; Schema: public; Owner: -
@@ -270,14 +261,12 @@ CREATE FUNCTION public.apply_llm_gateway_autovacuum_settings() RETURNS integer
 		END;
 		$$;
 
-
 --
 -- Name: FUNCTION apply_llm_gateway_autovacuum_settings(); Type: COMMENT; Schema: public; Owner: -
 --
 
 COMMENT ON FUNCTION public.apply_llm_gateway_autovacuum_settings() IS 'Enable aggressive autovacuum/analyze reloptions on llm_gateway hot + partition tables.
 Idempotent. Migration 404 / partition_manager startup.';
-
 
 --
 -- Name: archive_credential_model_index(date); Type: FUNCTION; Schema: public; Owner: -
@@ -325,7 +314,6 @@ CREATE FUNCTION public.archive_credential_model_index(archive_month date) RETURN
 		END;
 		$$;
 
-
 --
 -- Name: FUNCTION archive_credential_model_index(archive_month date); Type: COMMENT; Schema: public; Owner: -
 --
@@ -335,7 +323,6 @@ credential_model_index_archive (columnar). Uses TRUNCATE-then-INSERT to be
 idempotent (columnar storage does not support ON CONFLICT). Deletes archived
 rows from the main partitioned table to keep it lean. Run monthly on day 1.
 Fixed 2026-06-30 in migration 318 (was using ON CONFLICT DO NOTHING).';
-
 
 --
 -- Name: archive_request_logs(date); Type: FUNCTION; Schema: public; Owner: -
@@ -394,7 +381,6 @@ CREATE FUNCTION public.archive_request_logs(archive_month date) RETURNS TABLE(st
 		END;
 		$$;
 
-
 --
 -- Name: FUNCTION archive_request_logs(archive_month date); Type: COMMENT; Schema: public; Owner: -
 --
@@ -409,7 +395,6 @@ overflow Citus columnar''s 1 GB string buffer on serialization. See
 migration 318b for the full rationale and the future body-table split
 plan. Idempotent in practice because the source partition is dropped
 after a successful run.';
-
 
 --
 -- Name: archive_request_wal(date); Type: FUNCTION; Schema: public; Owner: -
@@ -493,7 +478,6 @@ BEGIN
 END;
 $$;
 
-
 --
 -- Name: FUNCTION archive_request_wal(archive_month date); Type: COMMENT; Schema: public; Owner: -
 --
@@ -504,7 +488,6 @@ columnar stripe buffer overflow. Idempotent in practice because the source
 partition is dropped after a successful run.
 Updated 2026-06-30 in migration 318 (preventive: same fix as the other
 archive functions).';
-
 
 --
 -- Name: archive_routing_decision_log(date); Type: FUNCTION; Schema: public; Owner: -
@@ -563,7 +546,6 @@ CREATE FUNCTION public.archive_routing_decision_log(archive_month date) RETURNS 
 		END;
 		$$;
 
-
 --
 -- Name: FUNCTION archive_routing_decision_log(archive_month date); Type: COMMENT; Schema: public; Owner: -
 --
@@ -574,7 +556,6 @@ rows/iter) avoids columnar stripe buffer overflow. Idempotent in practice
 because the source partition is dropped after a successful run.
 Fixed 2026-06-30 in migration 318 (was a single batched INSERT).';
 
-
 --
 -- Name: array_unique_append(text[], text); Type: FUNCTION; Schema: public; Owner: -
 --
@@ -582,7 +563,6 @@ Fixed 2026-06-30 in migration 318 (was a single batched INSERT).';
 CREATE FUNCTION public.array_unique_append(arr text[], new_elem text) RETURNS text[]
     LANGUAGE plpgsql IMMUTABLE
     AS $$ BEGIN IF new_elem IS NULL THEN RETURN arr; END IF; IF new_elem = ANY(arr) THEN RETURN arr; ELSE RETURN array_append(arr, new_elem); END IF; END; $$;
-
 
 --
 -- Name: auto_rotate_to_columnar(boolean, integer); Type: FUNCTION; Schema: public; Owner: -
@@ -625,7 +605,6 @@ BEGIN
         ORDER BY parent.relname, child.relname
     LOOP
         
-        
         IF dry_run THEN
             RETURN QUERY SELECT 
                 'WOULD_MIGRATE'::text,
@@ -651,7 +630,6 @@ BEGIN
 END;
 $_$;
 
-
 --
 -- Name: auto_set_fp_slot_limit(); Type: FUNCTION; Schema: public; Owner: -
 --
@@ -671,7 +649,6 @@ BEGIN
     RETURN NEW;
 END;
 $$;
-
 
 --
 -- Name: backfill_request_logs_bodies(integer); Type: PROCEDURE; Schema: public; Owner: -
@@ -705,7 +682,6 @@ BEGIN
         inserted, p_batch;
 END;
 $$;
-
 
 --
 -- Name: calculate_request_cost(character varying, integer, integer, integer, integer); Type: FUNCTION; Schema: public; Owner: -
@@ -749,7 +725,6 @@ BEGIN
 END;
 $$;
 
-
 --
 -- Name: check_credential_dates(); Type: FUNCTION; Schema: public; Owner: -
 --
@@ -766,7 +741,6 @@ BEGIN
     RETURN NEW;
 END;
 $$;
-
 
 --
 -- Name: cleanup_expired_session_requests(); Type: FUNCTION; Schema: public; Owner: -
@@ -787,13 +761,11 @@ BEGIN
 END;
 $$;
 
-
 --
 -- Name: FUNCTION cleanup_expired_session_requests(); Type: COMMENT; Schema: public; Owner: -
 --
 
 COMMENT ON FUNCTION public.cleanup_expired_session_requests() IS '清理过期的会话请求缓存';
-
 
 --
 -- Name: cleanup_expired_session_turn_logs(); Type: FUNCTION; Schema: public; Owner: -
@@ -816,7 +788,6 @@ BEGIN
 END;
 $$;
 
-
 --
 -- Name: FUNCTION cleanup_expired_session_turn_logs(); Type: COMMENT; Schema: public; Owner: -
 --
@@ -824,7 +795,6 @@ $$;
 COMMENT ON FUNCTION public.cleanup_expired_session_turn_logs() IS 'Cleanup expired session turn logs (older than 24 hours).
      Should be called by bg worker or cron job every hour.
      Created: 2026-07-17, Migration 430';
-
 
 --
 -- Name: cleanup_old_credential_model_index(); Type: FUNCTION; Schema: public; Owner: -
@@ -855,13 +825,11 @@ BEGIN
 END;
 $$;
 
-
 --
 -- Name: FUNCTION cleanup_old_credential_model_index(); Type: COMMENT; Schema: public; Owner: -
 --
 
 COMMENT ON FUNCTION public.cleanup_old_credential_model_index() IS 'Daily cleanup: removes credential_model_index rows older than 7 days from main table. Assumes historical data has been archived to credential_model_index_archive. Run daily at 3AM via background worker or cron.';
-
 
 --
 -- Name: cleanup_old_credential_probe_model_log(integer); Type: FUNCTION; Schema: public; Owner: -
@@ -887,13 +855,11 @@ BEGIN
 END;
 $$;
 
-
 --
 -- Name: FUNCTION cleanup_old_credential_probe_model_log(p_retention_days integer); Type: COMMENT; Schema: public; Owner: -
 --
 
 COMMENT ON FUNCTION public.cleanup_old_credential_probe_model_log(p_retention_days integer) IS 'Deletes rows from credential_probe_model_log older than the given retention. Used by bg.partition_manager. Idempotent.';
-
 
 --
 -- Name: cleanup_stale_in_progress_requests(); Type: FUNCTION; Schema: public; Owner: -
@@ -926,27 +892,6 @@ BEGIN
     RETURN QUERY SELECT updated_rows;
 END;
 $$;
-
-
---
--- Name: columnar_drift_report(); Type: FUNCTION; Schema: public; Owner: -
---
-
-CREATE FUNCTION public.columnar_drift_report() RETURNS TABLE(parent_name text, compliant_count integer, noncompliant_count integer, total_size_bytes bigint, heap_size_bytes bigint, columnar_size_bytes bigint)
-    LANGUAGE sql STABLE
-    AS $$
-    SELECT
-        parent_name,
-        count(*) FILTER (WHERE compliant) AS compliant_count,
-        count(*) FILTER (WHERE NOT compliant) AS noncompliant_count,
-        sum(total_size_bytes)::bigint AS total_size_bytes,
-        sum(total_size_bytes) FILTER (WHERE storage='heap')::bigint AS heap_size_bytes,
-        sum(total_size_bytes) FILTER (WHERE storage='columnar')::bigint AS columnar_size_bytes
-    FROM columnar_healthcheck()
-    GROUP BY parent_name
-    ORDER BY parent_name;
-$$;
-
 
 --
 -- Name: columnar_heal(); Type: FUNCTION; Schema: public; Owner: -
@@ -998,66 +943,6 @@ BEGIN
     END LOOP;
 END;
 $$;
-
-
---
--- Name: columnar_healthcheck(); Type: FUNCTION; Schema: public; Owner: -
---
-
-CREATE FUNCTION public.columnar_healthcheck() RETURNS TABLE(parent_name text, partition_name text, storage text, expected text, compliant boolean, total_size_bytes bigint, n_live_tup bigint)
-    LANGUAGE sql STABLE
-    AS $$
-    WITH config AS (
-        SELECT
-            columnar_insert_only_parents() AS should_be_columnar,
-            ARRAY['request_logs','request_wal','usage_ledger',
-                  'request_logs_archive','request_wal_archive',
-                  'usage_ledger_archive']::text[] AS should_be_heap
-    ), partitions AS (
-        SELECT
-            p.relname AS parent_name,
-            c.relname AS partition_name,
-            CASE WHEN c.relam=(SELECT oid FROM pg_am WHERE amname='columnar') THEN 'columnar'
-                 WHEN c.relam=(SELECT oid FROM pg_am WHERE amname='heap') THEN 'heap'
-                 ELSE 'other' END AS storage,
-            pg_total_relation_size(c.oid) AS total_size_bytes,
-            (SELECT n_live_tup FROM pg_stat_user_tables WHERE relid=c.oid) AS n_live_tup
-        FROM pg_inherits i
-        JOIN pg_class p ON p.oid = i.inhparent
-        JOIN pg_class c ON c.oid = i.inhrelid
-        JOIN pg_namespace n ON n.oid = p.relnamespace
-        WHERE n.nspname = 'public'
-    )
-    SELECT
-        par.parent_name,
-        par.partition_name,
-        par.storage,
-        CASE
-            WHEN par.parent_name = ANY(cfg.should_be_columnar) THEN 'columnar'
-            WHEN par.parent_name = ANY(cfg.should_be_heap)     THEN 'heap'
-            ELSE 'unknown'
-        END::text AS expected,
-        (par.storage = CASE
-            WHEN par.parent_name = ANY(cfg.should_be_columnar) THEN 'columnar'
-            WHEN par.parent_name = ANY(cfg.should_be_heap)     THEN 'heap'
-            ELSE NULL END) AS compliant,
-        par.total_size_bytes,
-        COALESCE(par.n_live_tup, 0)
-    FROM partitions par, config cfg
-    ORDER BY par.parent_name, par.partition_name;
-$$;
-
-
---
--- Name: columnar_insert_only_parents(); Type: FUNCTION; Schema: public; Owner: -
---
-
-CREATE FUNCTION public.columnar_insert_only_parents() RETURNS text[]
-    LANGUAGE sql STABLE
-    AS $$
-    SELECT ARRAY['routing_decision_log'];
-$$;
-
 
 --
 -- Name: create_next_month_partitions(); Type: FUNCTION; Schema: public; Owner: -
@@ -1116,13 +1001,11 @@ BEGIN
 END;
 $$;
 
-
 --
 -- Name: FUNCTION create_next_month_partitions(); Type: COMMENT; Schema: public; Owner: -
 --
 
 COMMENT ON FUNCTION public.create_next_month_partitions() IS '自动创建下个月的所有 telemetry 表分区（heap 存储）。每月28日执行。';
-
 
 --
 -- Name: create_next_month_routing_partitions(); Type: FUNCTION; Schema: public; Owner: -
@@ -1151,13 +1034,11 @@ CREATE FUNCTION public.create_next_month_routing_partitions() RETURNS void
 		END;
 		$$;
 
-
 --
 -- Name: FUNCTION create_next_month_routing_partitions(); Type: COMMENT; Schema: public; Owner: -
 --
 
 COMMENT ON FUNCTION public.create_next_month_routing_partitions() IS 'Auto-create next month partitions for both routing_decision_log (heap) and routing_decision_log_archive (columnar). Run this on the last day of each month.';
-
 
 --
 -- Name: credential_most_used_model(integer, integer); Type: FUNCTION; Schema: public; Owner: -
@@ -1201,39 +1082,11 @@ BEGIN
 END;
 $$;
 
-
 --
 -- Name: FUNCTION credential_most_used_model(p_credential_id integer, p_lookback_hours integer); Type: COMMENT; Schema: public; Owner: -
 --
 
 COMMENT ON FUNCTION public.credential_most_used_model(p_credential_id integer, p_lookback_hours integer) IS 'Returns the raw_model_name with the most successful requests for a credential in the last N hours. Used by bg/credential_selfcheck.go to pick a fallback probe model.';
-
-
---
--- Name: credential_most_used_model(bigint, integer); Type: FUNCTION; Schema: public; Owner: -
---
-
-CREATE FUNCTION public.credential_most_used_model(p_credential_id bigint, p_window_hours integer DEFAULT 24) RETURNS TABLE(raw_model_name text, call_count bigint)
-    LANGUAGE sql STABLE
-    AS $$
-    SELECT pm.raw_model_name, COUNT(*) AS call_count
-    FROM request_logs_hot rl
-    JOIN provider_models pm ON pm.id = rl.canonical_id
-    WHERE rl.credential_id = p_credential_id
-      AND rl.ts >= now() - make_interval(hours => p_window_hours)
-      AND rl.success = TRUE
-    GROUP BY pm.raw_model_name
-    ORDER BY call_count DESC, pm.raw_model_name ASC
-    LIMIT 1;
-$$;
-
-
---
--- Name: FUNCTION credential_most_used_model(p_credential_id bigint, p_window_hours integer); Type: COMMENT; Schema: public; Owner: -
---
-
-COMMENT ON FUNCTION public.credential_most_used_model(p_credential_id bigint, p_window_hours integer) IS '341: top-1 model by 24h successful traffic for a credential. Used by credential_selfcheck to pick the daily probe model.';
-
 
 --
 -- Name: diagnose_failure_kind(integer, text); Type: FUNCTION; Schema: public; Owner: -
@@ -1401,7 +1254,6 @@ BEGIN
 END;
 $_$;
 
-
 --
 -- Name: FUNCTION diagnose_failure_kind(p_status integer, p_body text); Type: COMMENT; Schema: public; Owner: -
 --
@@ -1410,7 +1262,6 @@ COMMENT ON FUNCTION public.diagnose_failure_kind(p_status integer, p_body text) 
      v_request_failures_diagnosis. Stays in sync with the Go side
      via the tests in errorsx/classify_minimax_test.go (Go) and
      the unit-test block at the bottom of migration 056 (SQL).';
-
 
 --
 -- Name: drop_old_model_probe_runs_partitions(integer); Type: FUNCTION; Schema: public; Owner: -
@@ -1423,7 +1274,6 @@ BEGIN
     RETURN;
 END;
 $$;
-
 
 --
 -- Name: drop_old_request_logs_bodies_partitions(integer); Type: FUNCTION; Schema: public; Owner: -
@@ -1464,7 +1314,6 @@ BEGIN
     END LOOP;
 END;
 $_$;
-
 
 --
 -- Name: drop_old_state_partitions(integer); Type: FUNCTION; Schema: public; Owner: -
@@ -1529,13 +1378,11 @@ BEGIN
 END;
 $_$;
 
-
 --
 -- Name: FUNCTION drop_old_state_partitions(p_retention_days integer); Type: COMMENT; Schema: public; Owner: -
 --
 
 COMMENT ON FUNCTION public.drop_old_state_partitions(p_retention_days integer) IS 'Drops monthly partitions older than the given retention for state/routing tables. Used by bg.partition_manager. Idempotent.';
-
 
 --
 -- Name: enforce_columnar_partition(text, text); Type: FUNCTION; Schema: public; Owner: -
@@ -1578,7 +1425,6 @@ BEGIN
 END;
 $$;
 
-
 --
 -- Name: ensure_candidate_failure_logs_partition(timestamp with time zone); Type: FUNCTION; Schema: public; Owner: -
 --
@@ -1589,7 +1435,6 @@ CREATE FUNCTION public.ensure_candidate_failure_logs_partition(target_ts timesta
 BEGIN
 END;
 $$;
-
 
 --
 -- Name: ensure_credential_model_index_partition(timestamp with time zone); Type: FUNCTION; Schema: public; Owner: -
@@ -1616,7 +1461,6 @@ BEGIN
 END;
 $$;
 
-
 --
 -- Name: FUNCTION ensure_credential_model_index_partition(target_month timestamp with time zone); Type: COMMENT; Schema: public; Owner: -
 --
@@ -1624,7 +1468,6 @@ $$;
 COMMENT ON FUNCTION public.ensure_credential_model_index_partition(target_month timestamp with time zone) IS 'Ensure a monthly partition exists for credential_model_index at the given month.
 Called by bg.PartitionManager on every tick for current + next month.
 Idempotent. Added 2026-06-30 in migration 319.';
-
 
 --
 -- Name: ensure_model_probe_runs_partition(timestamp with time zone); Type: FUNCTION; Schema: public; Owner: -
@@ -1639,7 +1482,6 @@ BEGIN
     RETURN partition_name;
 END;
 $$;
-
 
 --
 -- Name: ensure_next_month_archive_partition(); Type: FUNCTION; Schema: public; Owner: -
@@ -1663,13 +1505,11 @@ CREATE FUNCTION public.ensure_next_month_archive_partition() RETURNS void
 		END;
 		$$;
 
-
 --
 -- Name: FUNCTION ensure_next_month_archive_partition(); Type: COMMENT; Schema: public; Owner: -
 --
 
 COMMENT ON FUNCTION public.ensure_next_month_archive_partition() IS 'Pre-create the next month columnar partition for request_logs_archive. Call this from a cron job or background service at month-end so the columnar partition is ready when archive_request_logs() is called.';
-
 
 --
 -- Name: ensure_next_month_cmi_archive_partition(); Type: FUNCTION; Schema: public; Owner: -
@@ -1693,13 +1533,11 @@ CREATE FUNCTION public.ensure_next_month_cmi_archive_partition() RETURNS void
 		END;
 		$$;
 
-
 --
 -- Name: FUNCTION ensure_next_month_cmi_archive_partition(); Type: COMMENT; Schema: public; Owner: -
 --
 
 COMMENT ON FUNCTION public.ensure_next_month_cmi_archive_partition() IS 'Pre-create the next month columnar partition for credential_model_index_archive. Call this at month-end so the partition is ready for archival.';
-
 
 --
 -- Name: ensure_next_month_request_wal_partition(); Type: FUNCTION; Schema: public; Owner: -
@@ -1723,7 +1561,6 @@ BEGIN
 END;
 $$;
 
-
 --
 -- Name: ensure_next_month_routing_archive_partition(); Type: FUNCTION; Schema: public; Owner: -
 --
@@ -1746,13 +1583,11 @@ CREATE FUNCTION public.ensure_next_month_routing_archive_partition() RETURNS voi
 		END;
 		$$;
 
-
 --
 -- Name: FUNCTION ensure_next_month_routing_archive_partition(); Type: COMMENT; Schema: public; Owner: -
 --
 
 COMMENT ON FUNCTION public.ensure_next_month_routing_archive_partition() IS 'Pre-create the next month columnar partition for routing_decision_log_archive. Call this from a cron job or background service at month-end so the columnar partition is ready when archive_routing_decision_log() is called.';
-
 
 --
 -- Name: ensure_request_logs_bodies_partition(timestamp with time zone); Type: FUNCTION; Schema: public; Owner: -
@@ -1778,7 +1613,6 @@ BEGIN
     END IF;
 END;
 $$;
-
 
 --
 -- Name: ensure_request_logs_partition(timestamp with time zone); Type: FUNCTION; Schema: public; Owner: -
@@ -1812,7 +1646,6 @@ BEGIN
 END;
 $$;
 
-
 --
 -- Name: ensure_request_wal_partition(timestamp with time zone); Type: FUNCTION; Schema: public; Owner: -
 --
@@ -1820,7 +1653,6 @@ $$;
 CREATE FUNCTION public.ensure_request_wal_partition(target_ts timestamp with time zone DEFAULT now()) RETURNS void
     LANGUAGE plpgsql
     AS $$ DECLARE month_start date := date_trunc('month', target_ts)::date; month_end date := (date_trunc('month', target_ts) + interval '1 month')::date; part_name text := 'request_wal_' || to_char(month_start, 'YYYY_MM'); BEGIN IF NOT EXISTS (SELECT 1 FROM pg_class WHERE relname = part_name AND relnamespace = 'public'::regnamespace) THEN EXECUTE format('CREATE TABLE %I PARTITION OF request_wal FOR VALUES FROM (%L) TO (%L)', part_name, month_start, month_end); END IF; END; $$;
-
 
 --
 -- Name: ensure_routing_decision_log_partition(timestamp with time zone); Type: FUNCTION; Schema: public; Owner: -
@@ -1847,7 +1679,6 @@ BEGIN
 END;
 $$;
 
-
 --
 -- Name: FUNCTION ensure_routing_decision_log_partition(target_month timestamp with time zone); Type: COMMENT; Schema: public; Owner: -
 --
@@ -1855,7 +1686,6 @@ $$;
 COMMENT ON FUNCTION public.ensure_routing_decision_log_partition(target_month timestamp with time zone) IS 'Ensure a monthly partition exists for routing_decision_log at the given month.
 Called by bg.PartitionManager on every tick for current + next month.
 Idempotent. Added 2026-06-30 in migration 319.';
-
 
 --
 -- Name: ensure_sessions_v2_partitions(date); Type: FUNCTION; Schema: public; Owner: -
@@ -1894,7 +1724,6 @@ BEGIN
 END;
 $$;
 
-
 --
 -- Name: FUNCTION ensure_sessions_v2_partitions(target_date date); Type: COMMENT; Schema: public; Owner: -
 --
@@ -1903,7 +1732,6 @@ COMMENT ON FUNCTION public.ensure_sessions_v2_partitions(target_date date) IS 'E
      Called by bg.PartitionManager alongside ensure_request_logs_partition.
      session_bodies uses heap storage because response bodies can be updated.
      Created: 2026-07-17, Migration 430';
-
 
 --
 -- Name: ensure_usage_ledger_partition(timestamp with time zone); Type: FUNCTION; Schema: public; Owner: -
@@ -1929,7 +1757,6 @@ BEGIN
     END IF;
 END;
 $$;
-
 
 --
 -- Name: fn_enforce_columnar_event_trigger(); Type: FUNCTION; Schema: public; Owner: -
@@ -1964,16 +1791,6 @@ BEGIN
 END;
 $$;
 
-
---
--- Name: get_current_tenant(); Type: FUNCTION; Schema: public; Owner: -
---
-
-CREATE FUNCTION public.get_current_tenant() RETURNS text
-    LANGUAGE sql STABLE
-    AS $$ SELECT COALESCE(NULLIF(current_setting('app.current_tenant', true), ''), 'default'); $$;
-
-
 --
 -- Name: get_last_successful_request(character varying, integer); Type: FUNCTION; Schema: public; Owner: -
 --
@@ -1997,13 +1814,11 @@ BEGIN
 END;
 $$;
 
-
 --
 -- Name: FUNCTION get_last_successful_request(p_session_id character varying, p_minutes integer); Type: COMMENT; Schema: public; Owner: -
 --
 
 COMMENT ON FUNCTION public.get_last_successful_request(p_session_id character varying, p_minutes integer) IS '获取会话最后一次成功请求（用于继续/重试检测）';
-
 
 --
 -- Name: get_model_pricing_summary(character varying); Type: FUNCTION; Schema: public; Owner: -
@@ -2026,54 +1841,6 @@ BEGIN
     WHERE mp.model_canonical = p_model_canonical;
 END;
 $$;
-
-
---
--- Name: get_model_state_summary(text); Type: FUNCTION; Schema: public; Owner: -
---
-
-CREATE FUNCTION public.get_model_state_summary(p_raw_model_name text) RETURNS TABLE(state text, priority text, count bigint, avg_success_rate numeric, next_probe_in_seconds integer)
-    LANGUAGE sql STABLE
-    AS $$
-		    SELECT
-		        sub.state::TEXT,
-		        sub.priority::TEXT,
-		        COUNT(*) as count,
-		        ROUND(AVG(CASE WHEN sub.total_attempts > 0
-		                       THEN sub.consecutive_successes::float / sub.total_attempts * 100
-		                       ELSE NULL END)::numeric, 2) as avg_success_rate,
-		        EXTRACT(EPOCH FROM MIN(sub.next_retry_at - NOW()))::INTEGER as next_probe_in_seconds
-		    FROM (
-		        SELECT
-		            mps.state,
-		            mps.consecutive_successes,
-		            mps.total_attempts,
-		            mps.next_retry_at,
-		            CASE
-		                WHEN mps.consecutive_failures >= 3 THEN 'urgent'
-		                WHEN mps.state = 'suspicious' THEN 'suspicious'
-		                WHEN mps.state IN ('failing', 'recovering') THEN 'failing'
-		                ELSE 'watchdog'
-		            END as priority
-		        FROM model_probe_state mps
-		        JOIN credentials c ON c.id = mps.credential_id
-		        WHERE mps.raw_model_name = p_raw_model_name
-		          AND COALESCE(c.status, 'active') = 'active'
-		          AND COALESCE(c.lifecycle_status, 'active') = 'active'
-		          AND COALESCE(c.manual_disabled, FALSE) = FALSE
-		    ) sub
-		    GROUP BY sub.state, sub.priority
-		    ORDER BY
-		        CASE sub.priority
-		            WHEN 'urgent' THEN 1
-		            WHEN 'suspicious' THEN 2
-		            WHEN 'failing' THEN 3
-		            WHEN 'watchdog' THEN 4
-		            ELSE 5
-		        END,
-		        sub.state;
-		$$;
-
 
 SET default_table_access_method = heap;
 
@@ -2121,13 +1888,11 @@ CREATE TABLE public.prompt_injection_policies (
     CONSTRAINT prompt_injection_policies_vector_similarity_threshold_check CHECK (((vector_similarity_threshold >= (0)::double precision) AND (vector_similarity_threshold <= (1)::double precision)))
 );
 
-
 --
 -- Name: COLUMN prompt_injection_policies.content_replacement_strategy; Type: COMMENT; Schema: public; Owner: -
 --
 
 COMMENT ON COLUMN public.prompt_injection_policies.content_replacement_strategy IS '内容替换策略: llm_rewrite(LLM重写), pattern_redact(正则脱敏), keyword_remove(关键词移除)';
-
 
 --
 -- Name: get_prompt_injection_policy(character varying); Type: FUNCTION; Schema: public; Owner: -
@@ -2136,7 +1901,6 @@ COMMENT ON COLUMN public.prompt_injection_policies.content_replacement_strategy 
 CREATE FUNCTION public.get_prompt_injection_policy(p_tenant_id character varying) RETURNS public.prompt_injection_policies
     LANGUAGE plpgsql STABLE
     AS $$ DECLARE v_policy prompt_injection_policies; BEGIN SELECT * INTO v_policy FROM prompt_injection_policies WHERE tenant_id = p_tenant_id; RETURN v_policy; END; $$;
-
 
 --
 -- Name: get_session_last_request(character varying); Type: FUNCTION; Schema: public; Owner: -
@@ -2163,13 +1927,11 @@ BEGIN
 END;
 $$;
 
-
 --
 -- Name: FUNCTION get_session_last_request(p_session_id character varying); Type: COMMENT; Schema: public; Owner: -
 --
 
 COMMENT ON FUNCTION public.get_session_last_request(p_session_id character varying) IS '获取会话最后请求信息（未过期）';
-
 
 --
 -- Name: get_setting_bool(character varying); Type: FUNCTION; Schema: public; Owner: -
@@ -2189,13 +1951,11 @@ BEGIN
 END;
 $$;
 
-
 --
 -- Name: FUNCTION get_setting_bool(setting_key character varying); Type: COMMENT; Schema: public; Owner: -
 --
 
 COMMENT ON FUNCTION public.get_setting_bool(setting_key character varying) IS '获取布尔配置值';
-
 
 --
 -- Name: get_setting_int(character varying); Type: FUNCTION; Schema: public; Owner: -
@@ -2215,13 +1975,11 @@ BEGIN
 END;
 $$;
 
-
 --
 -- Name: FUNCTION get_setting_int(setting_key character varying); Type: COMMENT; Schema: public; Owner: -
 --
 
 COMMENT ON FUNCTION public.get_setting_int(setting_key character varying) IS '获取整数配置值';
-
 
 --
 -- Name: get_setting_value(character varying); Type: FUNCTION; Schema: public; Owner: -
@@ -2241,13 +1999,11 @@ BEGIN
 END;
 $$;
 
-
 --
 -- Name: FUNCTION get_setting_value(setting_key character varying); Type: COMMENT; Schema: public; Owner: -
 --
 
 COMMENT ON FUNCTION public.get_setting_value(setting_key character varying) IS '获取配置值（返回文本格式）';
-
 
 --
 -- Name: get_standardized_name(text); Type: FUNCTION; Schema: public; Owner: -
@@ -2283,14 +2039,12 @@ BEGIN
 END;
 $$;
 
-
 --
 -- Name: FUNCTION get_standardized_name(p_raw_model_name text); Type: COMMENT; Schema: public; Owner: -
 --
 
 COMMENT ON FUNCTION public.get_standardized_name(p_raw_model_name text) IS 'Returns the standardized name for a raw model name. 
 Priority: 1. model_name_mapping table, 2. provider_models.standardized_name, 3. raw_model_name (fallback)';
-
 
 --
 -- Name: key_applications_set_updated_at(); Type: FUNCTION; Schema: public; Owner: -
@@ -2304,7 +2058,6 @@ BEGIN
     RETURN NEW;
 END;
 $$;
-
 
 --
 -- Name: log_model_pricing_change(); Type: FUNCTION; Schema: public; Owner: -
@@ -2338,7 +2091,6 @@ BEGIN
 END;
 $$;
 
-
 --
 -- Name: model_name_mapping_updated_at(); Type: FUNCTION; Schema: public; Owner: -
 --
@@ -2351,7 +2103,6 @@ BEGIN
     RETURN NEW;
 END;
 $$;
-
 
 --
 -- Name: model_offers_delete_trigger(); Type: FUNCTION; Schema: public; Owner: -
@@ -2370,7 +2121,6 @@ BEGIN
     RETURN OLD;
 END;
 $$;
-
 
 --
 -- Name: model_offers_insert_trigger(); Type: FUNCTION; Schema: public; Owner: -
@@ -2438,7 +2188,6 @@ BEGIN
 END;
 $$;
 
-
 --
 -- Name: model_offers_update_trigger(); Type: FUNCTION; Schema: public; Owner: -
 --
@@ -2500,7 +2249,6 @@ BEGIN
 END;
 $$;
 
-
 --
 -- Name: model_probe_backoff(integer); Type: FUNCTION; Schema: public; Owner: -
 --
@@ -2515,7 +2263,6 @@ CREATE FUNCTION public.model_probe_backoff(consecutive_failures integer) RETURNS
 			ELSE                                  INTERVAL '15 minutes'
 		    END;
 		$$;
-
 
 --
 -- Name: model_probe_backoff_v2(integer, timestamp with time zone); Type: FUNCTION; Schema: public; Owner: -
@@ -2542,13 +2289,11 @@ CREATE FUNCTION public.model_probe_backoff_v2(consecutive_failures integer, last
     END;
 $$;
 
-
 --
 -- Name: FUNCTION model_probe_backoff_v2(consecutive_failures integer, last_attempt_at timestamp with time zone); Type: COMMENT; Schema: public; Owner: -
 --
 
 COMMENT ON FUNCTION public.model_probe_backoff_v2(consecutive_failures integer, last_attempt_at timestamp with time zone) IS 'Adaptive backoff: 0 failures = 2h watchdog; recovery ladder = 10s, 30s, 60s, 120s, 300s, then 3600s.';
-
 
 --
 -- Name: model_probe_cleanup_stuck_probing(); Type: FUNCTION; Schema: public; Owner: -
@@ -2558,16 +2303,6 @@ CREATE FUNCTION public.model_probe_cleanup_stuck_probing() RETURNS integer
     LANGUAGE plpgsql
     AS $$ DECLARE cleaned_count INTEGER; BEGIN WITH cleaned AS (UPDATE model_probe_state SET state = 'suspicious', probing_started_at = NULL, next_retry_at = NOW() + INTERVAL '2 minutes' WHERE state = 'probing' AND probing_started_at IS NOT NULL AND probing_started_at < NOW() - INTERVAL '5 minutes' RETURNING 1) SELECT COUNT(*) INTO cleaned_count FROM cleaned; RETURN cleaned_count; END; $$;
 
-
---
--- Name: model_probe_credential_concurrency(bigint); Type: FUNCTION; Schema: public; Owner: -
---
-
-CREATE FUNCTION public.model_probe_credential_concurrency(p_credential_id bigint) RETURNS integer
-    LANGUAGE sql STABLE
-    AS $$ SELECT COUNT(*)::INTEGER FROM model_probe_state WHERE credential_id = p_credential_id AND state = 'probing' AND probing_started_at > NOW() - INTERVAL '5 minutes'; $$;
-
-
 --
 -- Name: model_probe_expire_to_suspicious(); Type: FUNCTION; Schema: public; Owner: -
 --
@@ -2575,7 +2310,6 @@ CREATE FUNCTION public.model_probe_credential_concurrency(p_credential_id bigint
 CREATE FUNCTION public.model_probe_expire_to_suspicious() RETURNS integer
     LANGUAGE plpgsql
     AS $$ DECLARE expired_count INTEGER; BEGIN WITH updated AS (UPDATE model_probe_state SET state = 'suspicious', marked_suspicious_at = NOW(), state_expires_at = NULL, next_retry_at = NOW() WHERE state IN ('available', 'unavailable') AND state_expires_at IS NOT NULL AND state_expires_at <= NOW() RETURNING 1) SELECT COUNT(*) INTO expired_count FROM updated; RETURN expired_count; END; $$;
-
 
 --
 -- Name: model_probe_mark_available(bigint, text, integer); Type: FUNCTION; Schema: public; Owner: -
@@ -2619,7 +2353,6 @@ CREATE FUNCTION public.model_probe_mark_available(p_credential_id bigint, p_raw_
 		      AND COALESCE(cmb.unavailable_reason, '') NOT LIKE 'manual%';
 		END;
 		$$;
-
 
 --
 -- Name: model_probe_mark_unavailable(bigint, text, text, text); Type: FUNCTION; Schema: public; Owner: -
@@ -2668,7 +2401,6 @@ CREATE FUNCTION public.model_probe_mark_unavailable(p_credential_id bigint, p_ra
 		END;
 		$$;
 
-
 --
 -- Name: model_probe_passive_boost(bigint, text, timestamp with time zone); Type: FUNCTION; Schema: public; Owner: -
 --
@@ -2707,13 +2439,11 @@ BEGIN
 END;
 $$;
 
-
 --
 -- Name: FUNCTION model_probe_passive_boost(p_credential_id bigint, p_raw_model_name text, p_now timestamp with time zone); Type: COMMENT; Schema: public; Owner: -
 --
 
 COMMENT ON FUNCTION public.model_probe_passive_boost(p_credential_id bigint, p_raw_model_name text, p_now timestamp with time zone) IS 'When a (cred, model) sees 2+ failures in 5 min via passive signals, pull next_retry_at forward to 30s–1m so the next cycle probes sooner.';
-
 
 --
 -- Name: model_probe_reclaim_idle_slots(integer); Type: FUNCTION; Schema: public; Owner: -
@@ -2765,13 +2495,11 @@ BEGIN
 END;
 $$;
 
-
 --
 -- Name: FUNCTION model_probe_reclaim_idle_slots(reclaim_after_seconds integer); Type: COMMENT; Schema: public; Owner: -
 --
 
 COMMENT ON FUNCTION public.model_probe_reclaim_idle_slots(reclaim_after_seconds integer) IS 'Mark model_probe_state rows as unknown if last_attempt_at is older than reclaim_after_seconds. Companion to credentialfpslot.reclaimIdleSlots which does the actual Redis key cleanup.';
-
 
 --
 -- Name: model_probe_start_probing(bigint, text, integer); Type: FUNCTION; Schema: public; Owner: -
@@ -2781,7 +2509,6 @@ CREATE FUNCTION public.model_probe_start_probing(p_credential_id bigint, p_raw_m
     LANGUAGE plpgsql
     AS $$ DECLARE current_concurrency INTEGER; can_probe BOOLEAN := FALSE; BEGIN SELECT model_probe_credential_concurrency(p_credential_id) INTO current_concurrency; IF current_concurrency >= p_max_credential_concurrency THEN RETURN FALSE; END IF; WITH updated AS (UPDATE model_probe_state SET state = 'probing', probing_started_at = NOW(), last_attempt_at = NOW() WHERE credential_id = p_credential_id AND raw_model_name = p_raw_model_name AND state = 'suspicious' RETURNING 1) SELECT COUNT(*) > 0 INTO can_probe FROM updated; RETURN can_probe; END; $$;
 
-
 --
 -- Name: notify_auto_route_refresh(); Type: FUNCTION; Schema: public; Owner: -
 --
@@ -2789,7 +2516,6 @@ CREATE FUNCTION public.model_probe_start_probing(p_credential_id bigint, p_raw_m
 CREATE FUNCTION public.notify_auto_route_refresh() RETURNS trigger
     LANGUAGE plpgsql
     AS $$ DECLARE entity_id text := ''; BEGIN IF TG_TABLE_NAME = 'credential_model_bindings' THEN entity_id := COALESCE(NEW.credential_id, OLD.credential_id)::text; ELSIF TG_TABLE_NAME IN ('credentials', 'api_keys', 'providers') THEN entity_id := COALESCE(NEW.id, OLD.id)::text; END IF; PERFORM pg_notify('auto_route_refresh', TG_TABLE_NAME || ':' || TG_OP || ':' || entity_id); RETURN COALESCE(NEW, OLD); END; $$;
-
 
 --
 -- Name: populate_model_name_mapping_from_provider_models(); Type: FUNCTION; Schema: public; Owner: -
@@ -2812,7 +2538,6 @@ BEGIN
 END;
 $$;
 
-
 --
 -- Name: promote_candidate_failure_logs_hot_to_partition(interval, integer); Type: FUNCTION; Schema: public; Owner: -
 --
@@ -2824,7 +2549,6 @@ BEGIN
   RETURN 0;
 END;
 $$;
-
 
 --
 -- Name: promote_credential_model_index_default_batch(interval, integer); Type: FUNCTION; Schema: public; Owner: -
@@ -2866,7 +2590,6 @@ BEGIN
 END;
 $$;
 
-
 --
 -- Name: promote_credential_model_index_hot_to_partition(interval, integer); Type: FUNCTION; Schema: public; Owner: -
 --
@@ -2906,7 +2629,6 @@ BEGIN
 END;
 $$;
 
-
 --
 -- Name: promote_credit_ledger_default_batch(interval, integer); Type: FUNCTION; Schema: public; Owner: -
 --
@@ -2944,7 +2666,6 @@ BEGIN
     RETURN n;
 END;
 $$;
-
 
 --
 -- Name: promote_credit_ledger_hot_to_partition(interval, integer); Type: FUNCTION; Schema: public; Owner: -
@@ -2984,7 +2705,6 @@ BEGIN
 END;
 $$;
 
-
 --
 -- Name: promote_model_probe_runs_hot_to_partition(interval, integer); Type: FUNCTION; Schema: public; Owner: -
 --
@@ -2996,7 +2716,6 @@ BEGIN
     RETURN 0;
 END;
 $$;
-
 
 --
 -- Name: promote_request_logs_bodies_default_batch(interval, integer); Type: FUNCTION; Schema: public; Owner: -
@@ -3037,7 +2756,6 @@ BEGIN
 END;
 $$;
 
-
 --
 -- Name: promote_request_logs_bodies_hot_to_partition(interval, integer); Type: FUNCTION; Schema: public; Owner: -
 --
@@ -3067,7 +2785,6 @@ BEGIN
   RETURN v_moved;
 END;
 $$;
-
 
 --
 -- Name: promote_request_logs_default_batch(interval, integer); Type: FUNCTION; Schema: public; Owner: -
@@ -3107,7 +2824,6 @@ BEGIN
 END;
 $$;
 
-
 --
 -- Name: promote_request_logs_hot_to_partition(interval, integer); Type: FUNCTION; Schema: public; Owner: -
 --
@@ -3144,7 +2860,6 @@ BEGIN
   RETURN n;
 END;
 $$;
-
 
 --
 -- Name: promote_request_wal_default_batch(interval, integer); Type: FUNCTION; Schema: public; Owner: -
@@ -3185,7 +2900,6 @@ BEGIN
 END;
 $$;
 
-
 --
 -- Name: promote_request_wal_hot_to_partition(interval, integer); Type: FUNCTION; Schema: public; Owner: -
 --
@@ -3200,7 +2914,6 @@ BEGIN
   RETURN 0;
 END;
 $$;
-
 
 --
 -- Name: promote_routing_decision_log_default_batch(interval, integer); Type: FUNCTION; Schema: public; Owner: -
@@ -3241,7 +2954,6 @@ BEGIN
 END;
 $$;
 
-
 --
 -- Name: promote_routing_decision_log_hot_to_partition(interval, integer); Type: FUNCTION; Schema: public; Owner: -
 --
@@ -3278,7 +2990,6 @@ BEGIN
   RETURN n;
 END;
 $$;
-
 
 --
 -- Name: promote_tool_usage_stats_default_batch(interval, integer); Type: FUNCTION; Schema: public; Owner: -
@@ -3318,7 +3029,6 @@ BEGIN
     RETURN n;
 END;
 $$;
-
 
 --
 -- Name: promote_tool_usage_stats_hot_to_partition(interval, integer); Type: FUNCTION; Schema: public; Owner: -
@@ -3360,7 +3070,6 @@ BEGIN
 END;
 $$;
 
-
 --
 -- Name: promote_usage_ledger_default_batch(interval, integer); Type: FUNCTION; Schema: public; Owner: -
 --
@@ -3399,7 +3108,6 @@ BEGIN
 END;
 $$;
 
-
 --
 -- Name: promote_usage_ledger_hot_to_partition(interval, integer); Type: FUNCTION; Schema: public; Owner: -
 --
@@ -3437,7 +3145,6 @@ BEGIN
 END;
 $$;
 
-
 --
 -- Name: recent_success_rate(bigint, text, integer, integer); Type: FUNCTION; Schema: public; Owner: -
 --
@@ -3448,14 +3155,6 @@ $$;
 -- `request_logs` directly (LANGUAGE sql) which doesn't exist yet at this point.
 -- It has been moved to the end of this file, after all tables are created.
 -- -----------------------------------------------------------------------------
-
-
---
--- Name: FUNCTION system_health_status(p_window_seconds integer); Type: COMMENT; Schema: public; Owner: -
---
-
-COMMENT ON FUNCTION public.system_health_status(p_window_seconds integer) IS '341: returns ok (>=80% success), degraded (<80%), or suspect (no traffic) over a sliding window. Consumed by bg/system_health.go and /api/health/system.';
-
 
 --
 -- Name: tenant_model_policies_audit_fn(); Type: FUNCTION; Schema: public; Owner: -
@@ -3509,7 +3208,6 @@ CREATE FUNCTION public.tenant_model_policies_audit_fn() RETURNS trigger
 		END;
 		$$;
 
-
 --
 -- Name: touch_route_incidents_updated_at(); Type: FUNCTION; Schema: public; Owner: -
 --
@@ -3522,7 +3220,6 @@ CREATE FUNCTION public.touch_route_incidents_updated_at() RETURNS trigger
 			RETURN NEW;
 		END;
 		$$;
-
 
 --
 -- Name: trg_cmb_protect_manual_disable(); Type: FUNCTION; Schema: public; Owner: -
@@ -3553,7 +3250,6 @@ BEGIN
 END;
 $$;
 
-
 --
 -- Name: trg_session_audit_records_updated_at(); Type: FUNCTION; Schema: public; Owner: -
 --
@@ -3566,7 +3262,6 @@ BEGIN
     RETURN NEW;
 END;
 $$;
-
 
 --
 -- Name: unified_probe_mark_failing(bigint, text, text, text, integer); Type: FUNCTION; Schema: public; Owner: -
@@ -3630,7 +3325,6 @@ CREATE FUNCTION public.unified_probe_mark_failing(p_credential_id bigint, p_raw_
 		      AND COALESCE(cmb.unavailable_reason, '') NOT LIKE 'manual%';
 		END;
 		$$;
-
 
 --
 -- Name: unified_probe_mark_healthy(bigint, text, integer); Type: FUNCTION; Schema: public; Owner: -
@@ -3698,7 +3392,6 @@ CREATE FUNCTION public.unified_probe_mark_healthy(p_credential_id bigint, p_raw_
 		END;
 		$$;
 
-
 --
 -- Name: update_api_key_model_cost(); Type: FUNCTION; Schema: public; Owner: -
 --
@@ -3760,7 +3453,6 @@ BEGIN
     RETURN NEW;
 END;
 $$;
-
 
 --
 -- Name: update_api_key_model_cost_stmt(); Type: FUNCTION; Schema: public; Owner: -
@@ -3831,7 +3523,6 @@ BEGIN
 END;
 $$;
 
-
 --
 -- Name: update_approval_updated_at(); Type: FUNCTION; Schema: public; Owner: -
 --
@@ -3844,7 +3535,6 @@ BEGIN
     RETURN NEW;
 END;
 $$;
-
 
 --
 -- Name: update_intent_feedback_correctness(); Type: FUNCTION; Schema: public; Owner: -
@@ -3863,13 +3553,11 @@ BEGIN
 END;
 $$;
 
-
 --
 -- Name: FUNCTION update_intent_feedback_correctness(); Type: COMMENT; Schema: public; Owner: -
 --
 
 COMMENT ON FUNCTION public.update_intent_feedback_correctness() IS '触发器函数：当actual_intent被标注时，自动计算is_correct并设置annotated_at';
-
 
 --
 -- Name: update_model_pricing_updated_at(); Type: FUNCTION; Schema: public; Owner: -
@@ -3884,7 +3572,6 @@ BEGIN
 END;
 $$;
 
-
 --
 -- Name: update_modified_column(); Type: FUNCTION; Schema: public; Owner: -
 --
@@ -3897,7 +3584,6 @@ BEGIN
     RETURN NEW;
 END;
 $$;
-
 
 --
 -- Name: update_output_compliance_modified_column(); Type: FUNCTION; Schema: public; Owner: -
@@ -3912,7 +3598,6 @@ BEGIN
 END;
 $$;
 
-
 --
 -- Name: update_provider_settings_updated_at(); Type: FUNCTION; Schema: public; Owner: -
 --
@@ -3925,7 +3610,6 @@ BEGIN
     RETURN NEW;
 END;
 $$;
-
 
 --
 -- Name: update_session_last_requests_updated_at(); Type: FUNCTION; Schema: public; Owner: -
@@ -3940,7 +3624,6 @@ BEGIN
 END;
 $$;
 
-
 --
 -- Name: update_session_summary(); Type: FUNCTION; Schema: public; Owner: -
 --
@@ -3948,7 +3631,6 @@ $$;
 CREATE FUNCTION public.update_session_summary() RETURNS trigger
     LANGUAGE plpgsql
     AS $$ DECLARE v_input_cost DECIMAL(12,6); v_output_cost DECIMAL(12,6); v_total_cost DECIMAL(12,6); v_prompt_tokens BIGINT; v_completion_tokens BIGINT; v_latency_ms INT; v_status VARCHAR(50); v_client_model VARCHAR(100); v_upstream_model VARCHAR(100); v_work_type VARCHAR(50); v_provider VARCHAR(50); BEGIN v_input_cost := COALESCE(NEW.input_cost, 0); v_output_cost := COALESCE(NEW.output_cost, 0); v_total_cost := COALESCE(NEW.total_cost, 0); v_prompt_tokens := COALESCE(NEW.prompt_tokens, 0); v_completion_tokens := COALESCE(NEW.completion_tokens, 0); v_latency_ms := COALESCE(NEW.latency_ms, 0); v_status := NEW.status; v_client_model := NEW.client_model; v_upstream_model := NEW.upstream_model; v_work_type := NEW.work_type; v_provider := NEW.provider; INSERT INTO session_summaries (session_key, tenant_id, first_request_at, last_request_at, request_count, success_count, error_count, total_cost_usd, input_cost_usd, output_cost_usd, total_prompt_tokens, total_completion_tokens, avg_latency_ms, min_latency_ms, max_latency_ms, models_used, work_types, providers, client_models, updated_at) VALUES (NEW.session_key, NEW.tenant_id, NEW.created_at, NEW.created_at, 1, CASE WHEN v_status = 'success' THEN 1 ELSE 0 END, CASE WHEN v_status != 'success' THEN 1 ELSE 0 END, v_total_cost, v_input_cost, v_output_cost, v_prompt_tokens, v_completion_tokens, v_latency_ms, v_latency_ms, v_latency_ms, ARRAY[v_upstream_model]::TEXT[], CASE WHEN v_work_type IS NOT NULL THEN ARRAY[v_work_type]::TEXT[] ELSE '{}'::TEXT[] END, CASE WHEN v_provider IS NOT NULL THEN ARRAY[v_provider]::TEXT[] ELSE '{}'::TEXT[] END, CASE WHEN v_client_model IS NOT NULL THEN ARRAY[v_client_model]::TEXT[] ELSE '{}'::TEXT[] END, NOW()) ON CONFLICT (session_key) DO UPDATE SET last_request_at = GREATEST(session_summaries.last_request_at, NEW.created_at), request_count = session_summaries.request_count + 1, success_count = session_summaries.success_count + CASE WHEN v_status = 'success' THEN 1 ELSE 0 END, error_count = session_summaries.error_count + CASE WHEN v_status != 'success' THEN 1 ELSE 0 END, total_cost_usd = session_summaries.total_cost_usd + v_total_cost, input_cost_usd = session_summaries.input_cost_usd + v_input_cost, output_cost_usd = session_summaries.output_cost_usd + v_output_cost, total_prompt_tokens = session_summaries.total_prompt_tokens + v_prompt_tokens, total_completion_tokens = session_summaries.total_completion_tokens + v_completion_tokens, avg_latency_ms = ((session_summaries.avg_latency_ms * session_summaries.request_count + v_latency_ms) / (session_summaries.request_count + 1))::INT, min_latency_ms = LEAST(session_summaries.min_latency_ms, v_latency_ms), max_latency_ms = GREATEST(session_summaries.max_latency_ms, v_latency_ms), models_used = array_unique_append(session_summaries.models_used, v_upstream_model), work_types = array_unique_append(session_summaries.work_types, v_work_type), providers = array_unique_append(session_summaries.providers, v_provider), client_models = array_unique_append(session_summaries.client_models, v_client_model), updated_at = NOW(); RETURN NEW; END; $$;
-
 
 --
 -- Name: update_system_settings_updated_at(); Type: FUNCTION; Schema: public; Owner: -
@@ -3962,7 +3644,6 @@ BEGIN
     RETURN NEW;
 END;
 $$;
-
 
 --
 -- Name: upsert_session_last_request(character varying, bigint, character varying, text, text, integer, character varying, integer, integer, integer); Type: FUNCTION; Schema: public; Owner: -
@@ -4009,13 +3690,11 @@ BEGIN
 END;
 $$;
 
-
 --
 -- Name: FUNCTION upsert_session_last_request(p_session_id character varying, p_request_id bigint, p_status character varying, p_user_message text, p_response_cached text, p_response_chunks integer, p_model character varying, p_provider_id integer, p_latency_ms integer, p_ttl_seconds integer); Type: COMMENT; Schema: public; Owner: -
 --
 
 COMMENT ON FUNCTION public.upsert_session_last_request(p_session_id character varying, p_request_id bigint, p_status character varying, p_user_message text, p_response_cached text, p_response_chunks integer, p_model character varying, p_provider_id integer, p_latency_ms integer, p_ttl_seconds integer) IS '更新或插入会话最后请求记录';
-
 
 --
 -- Name: agent_relationships; Type: TABLE; Schema: public; Owner: -
@@ -4030,7 +3709,6 @@ CREATE TABLE public.agent_relationships (
     CONSTRAINT chk_agent_rel CHECK ((rel = ANY (ARRAY['calls'::text, 'delegates'::text, 'depends_on'::text, 'similar_to'::text]))),
     CONSTRAINT chk_agent_rel_no_self CHECK ((src_agent_id <> dst_agent_id))
 );
-
 
 --
 -- Name: agents; Type: TABLE; Schema: public; Owner: -
@@ -4055,7 +3733,6 @@ CREATE TABLE public.agents (
     CONSTRAINT chk_agents_status CHECK ((status = ANY (ARRAY['healthy'::text, 'degraded'::text, 'down'::text, 'unknown'::text])))
 );
 
-
 --
 -- Name: agents_id_seq; Type: SEQUENCE; Schema: public; Owner: -
 --
@@ -4067,13 +3744,11 @@ CREATE SEQUENCE public.agents_id_seq
     NO MAXVALUE
     CACHE 1;
 
-
 --
 -- Name: agents_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
 --
 
 ALTER SEQUENCE public.agents_id_seq OWNED BY public.agents.id;
-
 
 --
 -- Name: analysis_events; Type: TABLE; Schema: public; Owner: -
@@ -4096,7 +3771,6 @@ CREATE TABLE public.analysis_events (
     claimed_by text
 );
 
-
 --
 -- Name: analysis_events_id_seq; Type: SEQUENCE; Schema: public; Owner: -
 --
@@ -4108,13 +3782,11 @@ CREATE SEQUENCE public.analysis_events_id_seq
     NO MAXVALUE
     CACHE 1;
 
-
 --
 -- Name: analysis_events_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
 --
 
 ALTER SEQUENCE public.analysis_events_id_seq OWNED BY public.analysis_events.id;
-
 
 --
 -- Name: api_key_auto_profile; Type: TABLE; Schema: public; Owner: -
@@ -4129,13 +3801,11 @@ CREATE TABLE public.api_key_auto_profile (
     CONSTRAINT api_key_auto_profile_profile_check CHECK ((profile = ANY (ARRAY['smart'::text, 'speed_first'::text, 'cost_first'::text])))
 );
 
-
 --
 -- Name: TABLE api_key_auto_profile; Type: COMMENT; Schema: public; Owner: -
 --
 
 COMMENT ON TABLE public.api_key_auto_profile IS 'Auto route: per-API-Key profile preference (sticky 30min)';
-
 
 --
 -- Name: api_key_model_cost; Type: TABLE; Schema: public; Owner: -
@@ -4163,13 +3833,11 @@ CREATE TABLE public.api_key_model_cost (
     updated_at timestamp with time zone DEFAULT now()
 );
 
-
 --
 -- Name: TABLE api_key_model_cost; Type: COMMENT; Schema: public; Owner: -
 --
 
 COMMENT ON TABLE public.api_key_model_cost IS 'Auto route: per-API-Key per-model 5min rolled-up cost + concurrency + score';
-
 
 --
 -- Name: api_keys; Type: TABLE; Schema: public; Owner: -
@@ -4217,13 +3885,11 @@ CREATE TABLE public.api_keys (
     CONSTRAINT api_keys_status_check CHECK (((status)::text = ANY (ARRAY[('active'::character varying)::text, ('pending'::character varying)::text, ('disabled'::character varying)::text, ('throttled'::character varying)::text, ('revoked'::character varying)::text])))
 );
 
-
 --
 -- Name: COLUMN api_keys.status; Type: COMMENT; Schema: public; Owner: -
 --
 
 COMMENT ON COLUMN public.api_keys.status IS 'active | pending | disabled | throttled (auto-frozen) | revoked (permanent ban)';
-
 
 --
 -- Name: COLUMN api_keys.is_system; Type: COMMENT; Schema: public; Owner: -
@@ -4231,13 +3897,11 @@ COMMENT ON COLUMN public.api_keys.status IS 'active | pending | disabled | throt
 
 COMMENT ON COLUMN public.api_keys.is_system IS 'System key - should not be disabled (e.g., admin login key)';
 
-
 --
 -- Name: COLUMN api_keys.rate_limit_concurrent; Type: COMMENT; Schema: public; Owner: -
 --
 
 COMMENT ON COLUMN public.api_keys.rate_limit_concurrent IS 'Per-key concurrent request cap (NULL = use tier default)';
-
 
 --
 -- Name: COLUMN api_keys.rate_limit_tpm; Type: COMMENT; Schema: public; Owner: -
@@ -4245,13 +3909,11 @@ COMMENT ON COLUMN public.api_keys.rate_limit_concurrent IS 'Per-key concurrent r
 
 COMMENT ON COLUMN public.api_keys.rate_limit_tpm IS 'Tokens per minute cap (NULL = no limit)';
 
-
 --
 -- Name: COLUMN api_keys.key_tier; Type: COMMENT; Schema: public; Owner: -
 --
 
 COMMENT ON COLUMN public.api_keys.key_tier IS 'system | production | default | applicant';
-
 
 --
 -- Name: COLUMN api_keys.key_ciphertext_kid; Type: COMMENT; Schema: public; Owner: -
@@ -4259,13 +3921,11 @@ COMMENT ON COLUMN public.api_keys.key_tier IS 'system | production | default | a
 
 COMMENT ON COLUMN public.api_keys.key_ciphertext_kid IS 'kid that was used when key_ciphertext was last written (v1 AES-GCM envelope)';
 
-
 --
 -- Name: COLUMN api_keys.throttled_at; Type: COMMENT; Schema: public; Owner: -
 --
 
 COMMENT ON COLUMN public.api_keys.throttled_at IS 'Timestamp when the key was auto-throttled by anomaly detection';
-
 
 --
 -- Name: COLUMN api_keys.ewma_rpm_baseline; Type: COMMENT; Schema: public; Owner: -
@@ -4273,13 +3933,11 @@ COMMENT ON COLUMN public.api_keys.throttled_at IS 'Timestamp when the key was au
 
 COMMENT ON COLUMN public.api_keys.ewma_rpm_baseline IS 'Rolling EWMA baseline RPM for anomaly detection (7-day window)';
 
-
 --
 -- Name: COLUMN api_keys.remark; Type: COMMENT; Schema: public; Owner: -
 --
 
 COMMENT ON COLUMN public.api_keys.remark IS 'Reason for key creation (system-created keys must explain why)';
-
 
 --
 -- Name: COLUMN api_keys.key_alias; Type: COMMENT; Schema: public; Owner: -
@@ -4287,13 +3945,11 @@ COMMENT ON COLUMN public.api_keys.remark IS 'Reason for key creation (system-cre
 
 COMMENT ON COLUMN public.api_keys.key_alias IS 'Optional human-readable alias for the key';
 
-
 --
 -- Name: COLUMN api_keys.total_requests; Type: COMMENT; Schema: public; Owner: -
 --
 
 COMMENT ON COLUMN public.api_keys.total_requests IS 'Cumulative count of requests authenticated by this key';
-
 
 --
 -- Name: COLUMN api_keys.total_prompt_tokens; Type: COMMENT; Schema: public; Owner: -
@@ -4301,13 +3957,11 @@ COMMENT ON COLUMN public.api_keys.total_requests IS 'Cumulative count of request
 
 COMMENT ON COLUMN public.api_keys.total_prompt_tokens IS 'Cumulative prompt token count';
 
-
 --
 -- Name: COLUMN api_keys.total_completion_tokens; Type: COMMENT; Schema: public; Owner: -
 --
 
 COMMENT ON COLUMN public.api_keys.total_completion_tokens IS 'Cumulative completion token count';
-
 
 --
 -- Name: COLUMN api_keys.total_cost_usd; Type: COMMENT; Schema: public; Owner: -
@@ -4315,13 +3969,11 @@ COMMENT ON COLUMN public.api_keys.total_completion_tokens IS 'Cumulative complet
 
 COMMENT ON COLUMN public.api_keys.total_cost_usd IS 'Cumulative cost in USD';
 
-
 --
 -- Name: COLUMN api_keys.last_request_at; Type: COMMENT; Schema: public; Owner: -
 --
 
 COMMENT ON COLUMN public.api_keys.last_request_at IS 'When this key last made a request (denormalized from usage_ledger)';
-
 
 --
 -- Name: api_keys_id_seq; Type: SEQUENCE; Schema: public; Owner: -
@@ -4334,13 +3986,11 @@ CREATE SEQUENCE public.api_keys_id_seq
     NO MAXVALUE
     CACHE 1;
 
-
 --
 -- Name: api_keys_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
 --
 
 ALTER SEQUENCE public.api_keys_id_seq OWNED BY public.api_keys.id;
-
 
 --
 -- Name: applications; Type: TABLE; Schema: public; Owner: -
@@ -4363,7 +4013,6 @@ CREATE TABLE public.applications (
     CONSTRAINT applications_data_sensitivity_check CHECK ((data_sensitivity = ANY (ARRAY['public'::text, 'internal'::text, 'confidential'::text])))
 );
 
-
 --
 -- Name: applications_id_seq; Type: SEQUENCE; Schema: public; Owner: -
 --
@@ -4375,13 +4024,11 @@ CREATE SEQUENCE public.applications_id_seq
     NO MAXVALUE
     CACHE 1;
 
-
 --
 -- Name: applications_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
 --
 
 ALTER SEQUENCE public.applications_id_seq OWNED BY public.applications.id;
-
 
 --
 -- Name: approval_approvers; Type: TABLE; Schema: public; Owner: -
@@ -4402,7 +4049,6 @@ CREATE TABLE public.approval_approvers (
     CONSTRAINT approval_approvers_role_check CHECK (((role)::text = ANY (ARRAY[('admin'::character varying)::text, ('auditor'::character varying)::text, ('manager'::character varying)::text, ('reviewer'::character varying)::text])))
 );
 
-
 --
 -- Name: approval_approvers_id_seq; Type: SEQUENCE; Schema: public; Owner: -
 --
@@ -4414,7 +4060,6 @@ CREATE SEQUENCE public.approval_approvers_id_seq
     NO MINVALUE
     NO MAXVALUE
     CACHE 1;
-
 
 --
 -- Name: approval_configs; Type: TABLE; Schema: public; Owner: -
@@ -4433,7 +4078,6 @@ CREATE TABLE public.approval_configs (
     CONSTRAINT approval_configs_mode_check CHECK (((mode)::text = ANY (ARRAY[('disabled'::character varying)::text, ('automatic'::character varying)::text, ('manual'::character varying)::text])))
 );
 
-
 --
 -- Name: approval_configs_id_seq; Type: SEQUENCE; Schema: public; Owner: -
 --
@@ -4445,7 +4089,6 @@ CREATE SEQUENCE public.approval_configs_id_seq
     NO MINVALUE
     NO MAXVALUE
     CACHE 1;
-
 
 --
 -- Name: approval_queue; Type: TABLE; Schema: public; Owner: -
@@ -4468,7 +4111,6 @@ CREATE TABLE public.approval_queue (
 );
 
 ALTER TABLE ONLY public.approval_queue FORCE ROW LEVEL SECURITY;
-
 
 --
 -- Name: approval_requests; Type: TABLE; Schema: public; Owner: -
@@ -4502,7 +4144,6 @@ CREATE TABLE public.approval_requests (
     CONSTRAINT approval_requests_trigger_type_check CHECK (((trigger_type)::text = ANY (ARRAY[('sensitive_content'::character varying)::text, ('high_cost'::character varying)::text, ('tool_call'::character varying)::text, ('policy_match'::character varying)::text, ('manual_mode'::character varying)::text])))
 );
 
-
 --
 -- Name: approval_requests_id_seq; Type: SEQUENCE; Schema: public; Owner: -
 --
@@ -4514,7 +4155,6 @@ CREATE SEQUENCE public.approval_requests_id_seq
     NO MINVALUE
     NO MAXVALUE
     CACHE 1;
-
 
 --
 -- Name: approval_routing_rules; Type: TABLE; Schema: public; Owner: -
@@ -4537,7 +4177,6 @@ CREATE TABLE public.approval_routing_rules (
     CONSTRAINT chk_routing_risk_level CHECK (((risk_level IS NULL) OR ((risk_level)::text = ANY ((ARRAY['low'::character varying, 'medium'::character varying, 'high'::character varying, 'critical'::character varying])::text[]))))
 );
 
-
 --
 -- Name: approval_routing_rules_id_seq; Type: SEQUENCE; Schema: public; Owner: -
 --
@@ -4549,13 +4188,11 @@ CREATE SEQUENCE public.approval_routing_rules_id_seq
     NO MAXVALUE
     CACHE 1;
 
-
 --
 -- Name: approval_routing_rules_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
 --
 
 ALTER SEQUENCE public.approval_routing_rules_id_seq OWNED BY public.approval_routing_rules.id;
-
 
 --
 -- Name: approval_rules; Type: TABLE; Schema: public; Owner: -
@@ -4573,7 +4210,6 @@ CREATE TABLE public.approval_rules (
     updated_at timestamp with time zone DEFAULT now() NOT NULL
 );
 
-
 --
 -- Name: approval_rules_id_seq; Type: SEQUENCE; Schema: public; Owner: -
 --
@@ -4585,7 +4221,6 @@ CREATE SEQUENCE public.approval_rules_id_seq
     NO MINVALUE
     NO MAXVALUE
     CACHE 1;
-
 
 --
 -- Name: armor_judgments; Type: TABLE; Schema: public; Owner: -
@@ -4614,7 +4249,6 @@ CREATE TABLE public.armor_judgments (
     CONSTRAINT chk_armor_source CHECK ((source = ANY (ARRAY['pattern'::text, 'judge'::text])))
 );
 
-
 --
 -- Name: armor_judgments_id_seq; Type: SEQUENCE; Schema: public; Owner: -
 --
@@ -4626,13 +4260,11 @@ CREATE SEQUENCE public.armor_judgments_id_seq
     NO MAXVALUE
     CACHE 1;
 
-
 --
 -- Name: armor_judgments_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
 --
 
 ALTER SEQUENCE public.armor_judgments_id_seq OWNED BY public.armor_judgments.id;
-
 
 --
 -- Name: asset_relationships; Type: TABLE; Schema: public; Owner: -
@@ -4648,7 +4280,6 @@ CREATE TABLE public.asset_relationships (
     created_at timestamp with time zone DEFAULT now() NOT NULL,
     CONSTRAINT chk_asset_rel_type CHECK ((rel = ANY (ARRAY['depends_on'::text, 'calls'::text, 'similar_to'::text])))
 );
-
 
 --
 -- Name: assets; Type: TABLE; Schema: public; Owner: -
@@ -4672,7 +4303,6 @@ CREATE TABLE public.assets (
     CONSTRAINT chk_assets_kind CHECK ((kind = ANY (ARRAY['llm_endpoint'::text, 'mcp_server'::text, 'agent'::text])))
 );
 
-
 --
 -- Name: attachments; Type: TABLE; Schema: public; Owner: -
 --
@@ -4691,7 +4321,6 @@ CREATE TABLE public.attachments (
     created_at timestamp with time zone DEFAULT now() NOT NULL,
     metadata jsonb
 );
-
 
 --
 -- Name: auto_tune_audit; Type: TABLE; Schema: public; Owner: -
@@ -4712,13 +4341,11 @@ CREATE TABLE public.auto_tune_audit (
     applied_by text
 );
 
-
 --
 -- Name: TABLE auto_tune_audit; Type: COMMENT; Schema: public; Owner: -
 --
 
 COMMENT ON TABLE public.auto_tune_audit IS 'Audit log for concurrency limit auto-tune actions (24h preview + auto-apply)';
-
 
 --
 -- Name: auto_tune_audit_id_seq; Type: SEQUENCE; Schema: public; Owner: -
@@ -4731,13 +4358,11 @@ CREATE SEQUENCE public.auto_tune_audit_id_seq
     NO MAXVALUE
     CACHE 1;
 
-
 --
 -- Name: auto_tune_audit_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
 --
 
 ALTER SEQUENCE public.auto_tune_audit_id_seq OWNED BY public.auto_tune_audit.id;
-
 
 --
 -- Name: background_tasks; Type: TABLE; Schema: public; Owner: -
@@ -4756,7 +4381,6 @@ CREATE TABLE public.background_tasks (
     started_at timestamp with time zone DEFAULT now() NOT NULL,
     finished_at timestamp with time zone
 );
-
 
 --
 -- Name: background_tasks_duplicates; Type: TABLE; Schema: public; Owner: -
@@ -4777,7 +4401,6 @@ CREATE TABLE public.background_tasks_duplicates (
     removed_at timestamp with time zone DEFAULT now()
 );
 
-
 --
 -- Name: background_tasks_id_seq; Type: SEQUENCE; Schema: public; Owner: -
 --
@@ -4789,13 +4412,11 @@ CREATE SEQUENCE public.background_tasks_id_seq
     NO MAXVALUE
     CACHE 1;
 
-
 --
 -- Name: background_tasks_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
 --
 
 ALTER SEQUENCE public.background_tasks_id_seq OWNED BY public.background_tasks.id;
-
 
 --
 -- Name: billing_orders; Type: TABLE; Schema: public; Owner: -
@@ -4824,7 +4445,6 @@ CREATE TABLE public.billing_orders (
     CONSTRAINT billing_orders_status_check CHECK (((status)::text = ANY (ARRAY[('pending'::character varying)::text, ('paid'::character varying)::text, ('cancelled'::character varying)::text, ('expired'::character varying)::text])))
 );
 
-
 --
 -- Name: billing_orders_id_seq; Type: SEQUENCE; Schema: public; Owner: -
 --
@@ -4836,13 +4456,11 @@ CREATE SEQUENCE public.billing_orders_id_seq
     NO MAXVALUE
     CACHE 1;
 
-
 --
 -- Name: billing_orders_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
 --
 
 ALTER SEQUENCE public.billing_orders_id_seq OWNED BY public.billing_orders.id;
-
 
 --
 -- Name: canary_tokens; Type: TABLE; Schema: public; Owner: -
@@ -4868,20 +4486,17 @@ CREATE TABLE public.canary_tokens (
     created_by character varying(255)
 );
 
-
 --
 -- Name: TABLE canary_tokens; Type: COMMENT; Schema: public; Owner: -
 --
 
 COMMENT ON TABLE public.canary_tokens IS 'Canary Token 配置 - 检测提示词泄漏';
 
-
 --
 -- Name: COLUMN canary_tokens.token_value; Type: COMMENT; Schema: public; Owner: -
 --
 
 COMMENT ON COLUMN public.canary_tokens.token_value IS '金丝雀令牌值，注入到提示词中用于检测泄漏';
-
 
 --
 -- Name: canary_tokens_id_seq; Type: SEQUENCE; Schema: public; Owner: -
@@ -4895,13 +4510,11 @@ CREATE SEQUENCE public.canary_tokens_id_seq
     NO MAXVALUE
     CACHE 1;
 
-
 --
 -- Name: canary_tokens_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
 --
 
 ALTER SEQUENCE public.canary_tokens_id_seq OWNED BY public.canary_tokens.id;
-
 
 SET default_table_access_method = columnar;
 
@@ -4932,13 +4545,11 @@ CREATE TABLE public.candidate_failure_logs (
 )
 WITH (autovacuum_enabled='true', autovacuum_vacuum_scale_factor='0.05', autovacuum_vacuum_threshold='10', autovacuum_analyze_scale_factor='0.02', autovacuum_analyze_threshold='50');
 
-
 --
 -- Name: COLUMN candidate_failure_logs.per_attempt_latency_ms; Type: COMMENT; Schema: public; Owner: -
 --
 
 COMMENT ON COLUMN public.candidate_failure_logs.per_attempt_latency_ms IS 'Latency of the single upstream call.';
-
 
 SET default_table_access_method = heap;
 
@@ -4962,7 +4573,6 @@ CREATE TABLE public.center_commands (
     CONSTRAINT center_commands_status_check CHECK ((status = ANY (ARRAY['pending'::text, 'executed'::text, 'failed'::text, 'expired'::text])))
 );
 
-
 --
 -- Name: center_commands_id_seq; Type: SEQUENCE; Schema: public; Owner: -
 --
@@ -4974,13 +4584,11 @@ CREATE SEQUENCE public.center_commands_id_seq
     NO MAXVALUE
     CACHE 1;
 
-
 --
 -- Name: center_commands_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
 --
 
 ALTER SEQUENCE public.center_commands_id_seq OWNED BY public.center_commands.id;
-
 
 --
 -- Name: compression_bench_results; Type: TABLE; Schema: public; Owner: -
@@ -5014,7 +4622,6 @@ CREATE TABLE public.compression_bench_results (
     created_at timestamp with time zone DEFAULT now()
 );
 
-
 --
 -- Name: compression_bench_results_id_seq; Type: SEQUENCE; Schema: public; Owner: -
 --
@@ -5026,13 +4633,11 @@ CREATE SEQUENCE public.compression_bench_results_id_seq
     NO MAXVALUE
     CACHE 1;
 
-
 --
 -- Name: compression_bench_results_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
 --
 
 ALTER SEQUENCE public.compression_bench_results_id_seq OWNED BY public.compression_bench_results.id;
-
 
 --
 -- Name: credential_capabilities; Type: TABLE; Schema: public; Owner: -
@@ -5048,7 +4653,6 @@ CREATE TABLE public.credential_capabilities (
     CONSTRAINT credential_capabilities_capability_check CHECK ((capability = ANY (ARRAY['tool_use'::text, 'vision'::text, 'streaming'::text, 'prompt_caching'::text, 'structured_output'::text, 'long_context'::text, 'json_mode'::text, 'batch'::text])))
 );
 
-
 --
 -- Name: credential_capabilities_id_seq; Type: SEQUENCE; Schema: public; Owner: -
 --
@@ -5060,13 +4664,11 @@ CREATE SEQUENCE public.credential_capabilities_id_seq
     NO MAXVALUE
     CACHE 1;
 
-
 --
 -- Name: credential_capabilities_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
 --
 
 ALTER SEQUENCE public.credential_capabilities_id_seq OWNED BY public.credential_capabilities.id;
-
 
 --
 -- Name: credential_health_checks; Type: TABLE; Schema: public; Owner: -
@@ -5096,7 +4698,6 @@ CREATE TABLE public.credential_health_checks (
     CONSTRAINT chk_credential_health_checks_status CHECK ((health_status = ANY (ARRAY['unknown'::text, 'healthy'::text, 'warning'::text, 'unreachable'::text])))
 );
 
-
 --
 -- Name: credential_health_checks_id_seq; Type: SEQUENCE; Schema: public; Owner: -
 --
@@ -5108,13 +4709,11 @@ CREATE SEQUENCE public.credential_health_checks_id_seq
     NO MAXVALUE
     CACHE 1;
 
-
 --
 -- Name: credential_health_checks_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
 --
 
 ALTER SEQUENCE public.credential_health_checks_id_seq OWNED BY public.credential_health_checks.id;
-
 
 --
 -- Name: credential_model_bindings; Type: TABLE; Schema: public; Owner: -
@@ -5153,13 +4752,11 @@ CREATE TABLE public.credential_model_bindings (
     plan_type_updated_at timestamp with time zone
 );
 
-
 --
 -- Name: TABLE credential_model_bindings; Type: COMMENT; Schema: public; Owner: -
 --
 
 COMMENT ON TABLE public.credential_model_bindings IS 'Many-to-many: which credential can access which model, with routing/pricing attrs';
-
 
 --
 -- Name: COLUMN credential_model_bindings.billing_mode; Type: COMMENT; Schema: public; Owner: -
@@ -5167,13 +4764,11 @@ COMMENT ON TABLE public.credential_model_bindings IS 'Many-to-many: which creden
 
 COMMENT ON COLUMN public.credential_model_bindings.billing_mode IS 'Billing mode: token (PAYG per-1M) | token_plan (prepaid credits/package) | code_plan (subscription, monthly fee + bundle) | free (rate=0) | per_token/per_request/monthly (legacy aliases)';
 
-
 --
 -- Name: COLUMN credential_model_bindings.plan_meta; Type: COMMENT; Schema: public; Owner: -
 --
 
 COMMENT ON COLUMN public.credential_model_bindings.plan_meta IS 'Subscription/plan metadata: {monthly_cny, included_tokens, tier, validity_days, modality, etc.}. Mirrors pricing_plans.plan_json at offer level.';
-
 
 --
 -- Name: COLUMN credential_model_bindings.transient_failure_count; Type: COMMENT; Schema: public; Owner: -
@@ -5181,13 +4776,11 @@ COMMENT ON COLUMN public.credential_model_bindings.plan_meta IS 'Subscription/pl
 
 COMMENT ON COLUMN public.credential_model_bindings.transient_failure_count IS '触发验证时的失败计数快照（非实时；实时计数在 Redis 滑动窗口）';
 
-
 --
 -- Name: COLUMN credential_model_bindings.pending_verification; Type: COMMENT; Schema: public; Owner: -
 --
 
 COMMENT ON COLUMN public.credential_model_bindings.pending_verification IS '是否有进行中的双重验证';
-
 
 --
 -- Name: credential_model_bindings_id_seq; Type: SEQUENCE; Schema: public; Owner: -
@@ -5200,13 +4793,11 @@ CREATE SEQUENCE public.credential_model_bindings_id_seq
     NO MAXVALUE
     CACHE 1;
 
-
 --
 -- Name: credential_model_bindings_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
 --
 
 ALTER SEQUENCE public.credential_model_bindings_id_seq OWNED BY public.credential_model_bindings.id;
-
 
 --
 -- Name: credential_model_call_history; Type: TABLE; Schema: public; Owner: -
@@ -5233,13 +4824,11 @@ CREATE TABLE public.credential_model_call_history (
     created_at timestamp with time zone DEFAULT now()
 );
 
-
 --
 -- Name: TABLE credential_model_call_history; Type: COMMENT; Schema: public; Owner: -
 --
 
 COMMENT ON TABLE public.credential_model_call_history IS 'Aggregated call history per (credential, model) in 1-minute windows. Used for intelligent availability tracking, continuous failure detection, and concurrency auto-tuning.';
-
 
 --
 -- Name: COLUMN credential_model_call_history.error_rate_limit_count; Type: COMMENT; Schema: public; Owner: -
@@ -5247,13 +4836,11 @@ COMMENT ON TABLE public.credential_model_call_history IS 'Aggregated call histor
 
 COMMENT ON COLUMN public.credential_model_call_history.error_rate_limit_count IS '429 rate limit errors - triggers concurrency reduction';
 
-
 --
 -- Name: COLUMN credential_model_call_history.error_concurrent_count; Type: COMMENT; Schema: public; Owner: -
 --
 
 COMMENT ON COLUMN public.credential_model_call_history.error_concurrent_count IS '503 concurrent overload errors - triggers concurrency reduction';
-
 
 --
 -- Name: COLUMN credential_model_call_history.avg_concurrent; Type: COMMENT; Schema: public; Owner: -
@@ -5261,13 +4848,11 @@ COMMENT ON COLUMN public.credential_model_call_history.error_concurrent_count IS
 
 COMMENT ON COLUMN public.credential_model_call_history.avg_concurrent IS 'Average concurrent requests in this window - used for auto-scaleup';
 
-
 --
 -- Name: COLUMN credential_model_call_history.peak_concurrent; Type: COMMENT; Schema: public; Owner: -
 --
 
 COMMENT ON COLUMN public.credential_model_call_history.peak_concurrent IS 'Peak concurrent requests in this window - used for capacity planning';
-
 
 --
 -- Name: credential_model_index; Type: TABLE; Schema: public; Owner: -
@@ -5294,13 +4879,11 @@ CREATE TABLE public.credential_model_index (
 )
 PARTITION BY RANGE (bucket);
 
-
 --
 -- Name: TABLE credential_model_index; Type: COMMENT; Schema: public; Owner: -
 --
 
 COMMENT ON TABLE public.credential_model_index IS '5-min rollup of per-credential health metrics. Monthly partitions (heap). Data older than 7 days is archived to credential_model_index_archive (columnar) by archive_credential_model_index() — see migration 317.';
-
 
 SET default_table_access_method = columnar;
 
@@ -5329,7 +4912,6 @@ CREATE TABLE public.credential_model_index_2026_07 (
 )
 WITH (autovacuum_enabled='true', autovacuum_vacuum_scale_factor='0.05', autovacuum_vacuum_threshold='10', autovacuum_analyze_scale_factor='0.02', autovacuum_analyze_threshold='50');
 
-
 --
 -- Name: credential_model_index_2026_08; Type: TABLE; Schema: public; Owner: -
 --
@@ -5354,7 +4936,6 @@ CREATE TABLE public.credential_model_index_2026_08 (
     updated_at timestamp with time zone DEFAULT now()
 )
 WITH (autovacuum_enabled='true', autovacuum_vacuum_scale_factor='0.05', autovacuum_vacuum_threshold='10', autovacuum_analyze_scale_factor='0.02', autovacuum_analyze_threshold='50');
-
 
 --
 -- Name: credential_model_index_archive; Type: TABLE; Schema: public; Owner: -
@@ -5381,13 +4962,11 @@ CREATE TABLE public.credential_model_index_archive (
 )
 PARTITION BY RANGE (bucket);
 
-
 --
 -- Name: TABLE credential_model_index_archive; Type: COMMENT; Schema: public; Owner: -
 --
 
 COMMENT ON TABLE public.credential_model_index_archive IS 'Tiered storage: columnar partitions for historical credential_model_index (older than 7 days). Monthly partitions use Citus columnar (compressed, read-only). Main table keeps recent 7 days with ON CONFLICT support. Data flow: daily cleanup_old_credential_model_index() removes 7d+ data from main table after archival. Monthly archive_credential_model_index(month) migrates 7d+ data to columnar partitions. Query historical data via UNION ALL with main table.';
-
 
 SET default_table_access_method = heap;
 
@@ -5415,7 +4994,6 @@ CREATE TABLE public.credential_model_index_hot (
     updated_at timestamp with time zone DEFAULT now()
 )
 WITH (fillfactor='90', autovacuum_enabled='true', autovacuum_vacuum_scale_factor='0.05', autovacuum_vacuum_threshold='10', autovacuum_analyze_scale_factor='0.02', autovacuum_analyze_threshold='50');
-
 
 --
 -- Name: credential_model_index_with_current_month; Type: VIEW; Schema: public; Owner: -
@@ -5460,7 +5038,6 @@ UNION ALL
     credential_model_index.updated_at
    FROM public.credential_model_index;
 
-
 --
 -- Name: credential_model_peak_1m; Type: TABLE; Schema: public; Owner: -
 --
@@ -5474,13 +5051,11 @@ CREATE TABLE public.credential_model_peak_1m (
     sample_count integer DEFAULT 0 NOT NULL
 );
 
-
 --
 -- Name: TABLE credential_model_peak_1m; Type: COMMENT; Schema: public; Owner: -
 --
 
 COMMENT ON TABLE public.credential_model_peak_1m IS 'Per-minute peak concurrency per credential-model pair (used by auto-tune)';
-
 
 --
 -- Name: credential_model_stats_1m; Type: TABLE; Schema: public; Owner: -
@@ -5503,13 +5078,11 @@ CREATE TABLE public.credential_model_stats_1m (
     error_counts jsonb DEFAULT '{}'::jsonb NOT NULL
 );
 
-
 --
 -- Name: TABLE credential_model_stats_1m; Type: COMMENT; Schema: public; Owner: -
 --
 
 COMMENT ON TABLE public.credential_model_stats_1m IS 'Per-minute aggregated routing stats, used for sliding window queries';
-
 
 --
 -- Name: credential_model_weekly_peak; Type: TABLE; Schema: public; Owner: -
@@ -5531,13 +5104,11 @@ CREATE TABLE public.credential_model_weekly_peak (
     updated_at timestamp with time zone DEFAULT now() NOT NULL
 );
 
-
 --
 -- Name: TABLE credential_model_weekly_peak; Type: COMMENT; Schema: public; Owner: -
 --
 
 COMMENT ON TABLE public.credential_model_weekly_peak IS 'Weekly aggregated peak concurrency for auto-tune suggestions';
-
 
 --
 -- Name: credential_probe_configs; Type: TABLE; Schema: public; Owner: -
@@ -5552,7 +5123,6 @@ CREATE TABLE public.credential_probe_configs (
     created_at timestamp with time zone DEFAULT now()
 );
 
-
 --
 -- Name: credential_probe_configs_id_seq; Type: SEQUENCE; Schema: public; Owner: -
 --
@@ -5564,13 +5134,11 @@ CREATE SEQUENCE public.credential_probe_configs_id_seq
     NO MAXVALUE
     CACHE 1;
 
-
 --
 -- Name: credential_probe_configs_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
 --
 
 ALTER SEQUENCE public.credential_probe_configs_id_seq OWNED BY public.credential_probe_configs.id;
-
 
 --
 -- Name: credential_probe_model_log; Type: TABLE; Schema: public; Owner: -
@@ -5589,7 +5157,6 @@ CREATE TABLE public.credential_probe_model_log (
 )
 WITH (autovacuum_enabled='true', autovacuum_vacuum_scale_factor='0.05', autovacuum_vacuum_threshold='10', autovacuum_analyze_scale_factor='0.02', autovacuum_analyze_threshold='50');
 
-
 --
 -- Name: credential_probe_model_log_id_seq; Type: SEQUENCE; Schema: public; Owner: -
 --
@@ -5601,13 +5168,11 @@ CREATE SEQUENCE public.credential_probe_model_log_id_seq
     NO MAXVALUE
     CACHE 1;
 
-
 --
 -- Name: credential_probe_model_log_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
 --
 
 ALTER SEQUENCE public.credential_probe_model_log_id_seq OWNED BY public.credential_probe_model_log.id;
-
 
 --
 -- Name: credential_probes; Type: TABLE; Schema: public; Owner: -
@@ -5628,7 +5193,6 @@ CREATE TABLE public.credential_probes (
     created_at timestamp with time zone DEFAULT now()
 );
 
-
 --
 -- Name: credential_probes_id_seq; Type: SEQUENCE; Schema: public; Owner: -
 --
@@ -5640,13 +5204,11 @@ CREATE SEQUENCE public.credential_probes_id_seq
     NO MAXVALUE
     CACHE 1;
 
-
 --
 -- Name: credential_probes_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
 --
 
 ALTER SEQUENCE public.credential_probes_id_seq OWNED BY public.credential_probes.id;
-
 
 --
 -- Name: credential_quota_usage; Type: TABLE; Schema: public; Owner: -
@@ -5666,7 +5228,6 @@ CREATE TABLE public.credential_quota_usage (
     exhausted boolean DEFAULT false NOT NULL
 );
 
-
 --
 -- Name: credential_quota_usage_id_seq; Type: SEQUENCE; Schema: public; Owner: -
 --
@@ -5678,13 +5239,11 @@ CREATE SEQUENCE public.credential_quota_usage_id_seq
     NO MAXVALUE
     CACHE 1;
 
-
 --
 -- Name: credential_quota_usage_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
 --
 
 ALTER SEQUENCE public.credential_quota_usage_id_seq OWNED BY public.credential_quota_usage.id;
-
 
 --
 -- Name: credential_quotas; Type: TABLE; Schema: public; Owner: -
@@ -5716,7 +5275,6 @@ CREATE TABLE public.credential_quotas (
     CONSTRAINT credential_quotas_window_type_check CHECK ((window_type = ANY (ARRAY['fixed'::text, 'recurring'::text, 'rolling'::text])))
 );
 
-
 --
 -- Name: credential_quotas_id_seq; Type: SEQUENCE; Schema: public; Owner: -
 --
@@ -5728,13 +5286,11 @@ CREATE SEQUENCE public.credential_quotas_id_seq
     NO MAXVALUE
     CACHE 1;
 
-
 --
 -- Name: credential_quotas_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
 --
 
 ALTER SEQUENCE public.credential_quotas_id_seq OWNED BY public.credential_quotas.id;
-
 
 --
 -- Name: credential_state_log; Type: TABLE; Schema: public; Owner: -
@@ -5753,13 +5309,11 @@ CREATE TABLE public.credential_state_log (
     updated_at timestamp with time zone DEFAULT now() NOT NULL
 );
 
-
 --
 -- Name: TABLE credential_state_log; Type: COMMENT; Schema: public; Owner: -
 --
 
 COMMENT ON TABLE public.credential_state_log IS 'Real-time per-(credential, model) state snapshots written by domains/credentialstate/batch_writer. Mirrors application-level StateUpdate struct. UPSERT by (credential_id, raw_model_name).';
-
 
 --
 -- Name: COLUMN credential_state_log.available; Type: COMMENT; Schema: public; Owner: -
@@ -5767,20 +5321,17 @@ COMMENT ON TABLE public.credential_state_log IS 'Real-time per-(credential, mode
 
 COMMENT ON COLUMN public.credential_state_log.available IS 'Last observed availability flag (true=serving, false=broken/disabled). NULL when the event did not report availability.';
 
-
 --
 -- Name: COLUMN credential_state_log.health_status; Type: COMMENT; Schema: public; Owner: -
 --
 
 COMMENT ON COLUMN public.credential_state_log.health_status IS 'Last observed health status (healthy|warning|degraded|unreachable). NULL when not reported.';
 
-
 --
 -- Name: COLUMN credential_state_log.updated_at; Type: COMMENT; Schema: public; Owner: -
 --
 
 COMMENT ON COLUMN public.credential_state_log.updated_at IS 'Wall-clock time of the last UPSERT. Defaults to now() so concurrent writers do not race the timestamp.';
-
 
 --
 -- Name: credentials; Type: TABLE; Schema: public; Owner: -
@@ -5869,13 +5420,11 @@ CREATE TABLE public.credentials (
     CONSTRAINT credentials_trust_level_check CHECK ((trust_level = ANY (ARRAY['trusted'::text, 'cooling'::text, 'degraded'::text, 'quarantine'::text])))
 );
 
-
 --
 -- Name: COLUMN credentials.api_models_ok; Type: COMMENT; Schema: public; Owner: -
 --
 
 COMMENT ON COLUMN public.credentials.api_models_ok IS '最近一次模型清单 API 拉取是否成功（NULL=未验证）';
-
 
 --
 -- Name: COLUMN credentials.api_models_last_checked_at; Type: COMMENT; Schema: public; Owner: -
@@ -5883,13 +5432,11 @@ COMMENT ON COLUMN public.credentials.api_models_ok IS '最近一次模型清单 
 
 COMMENT ON COLUMN public.credentials.api_models_last_checked_at IS '最近一次模型清单 API 验证时间';
 
-
 --
 -- Name: COLUMN credentials.api_models_error; Type: COMMENT; Schema: public; Owner: -
 --
 
 COMMENT ON COLUMN public.credentials.api_models_error IS '最近一次模型清单 API 验证失败原因（HTTP 状态码 + 错误摘要，已脱敏）';
-
 
 --
 -- Name: COLUMN credentials.balance_check_endpoint; Type: COMMENT; Schema: public; Owner: -
@@ -5897,13 +5444,11 @@ COMMENT ON COLUMN public.credentials.api_models_error IS '最近一次模型清�
 
 COMMENT ON COLUMN public.credentials.balance_check_endpoint IS 'URL template to check remaining balance';
 
-
 --
 -- Name: COLUMN credentials.pool_group; Type: COMMENT; Schema: public; Owner: -
 --
 
 COMMENT ON COLUMN public.credentials.pool_group IS 'free | shared | dedicated | NULL';
-
 
 --
 -- Name: COLUMN credentials.acquisition_source; Type: COMMENT; Schema: public; Owner: -
@@ -5911,13 +5456,11 @@ COMMENT ON COLUMN public.credentials.pool_group IS 'free | shared | dedicated | 
 
 COMMENT ON COLUMN public.credentials.acquisition_source IS 'Free pool: signup | env | oauth | mirrored | discovered | no_key | manual';
 
-
 --
 -- Name: COLUMN credentials.acquisition_detail; Type: COMMENT; Schema: public; Owner: -
 --
 
 COMMENT ON COLUMN public.credentials.acquisition_detail IS 'Free pool source detail: env var name, mirror source label, oauth file, signup URL, etc.';
-
 
 --
 -- Name: COLUMN credentials.concurrency_limit_auto; Type: COMMENT; Schema: public; Owner: -
@@ -5925,13 +5468,11 @@ COMMENT ON COLUMN public.credentials.acquisition_detail IS 'Free pool source det
 
 COMMENT ON COLUMN public.credentials.concurrency_limit_auto IS 'Algorithm-recommended concurrency limit. Adjusted dynamically based on 429/503 errors and success rate. Read priority: concurrency_limit (manual) > concurrency_limit_auto > default 5.';
 
-
 --
 -- Name: COLUMN credentials.fp_slot_limit; Type: COMMENT; Schema: public; Owner: -
 --
 
 COMMENT ON COLUMN public.credentials.fp_slot_limit IS 'Fingerprint slot pool size: number of distinct virtual user identities this credential can simulate. 0 = unlimited. Distinct from concurrency_limit which controls in-flight request count.';
-
 
 --
 -- Name: COLUMN credentials.rpm_limit; Type: COMMENT; Schema: public; Owner: -
@@ -5944,13 +5485,11 @@ executor to failover to the next candidate when the limit is hit.
 Free-pool credentials (admin/free_pool_extra.go) auto-populate this from
 the template rpmLimit; paid credentials are typically NULL.';
 
-
 --
 -- Name: COLUMN credentials.auto_disabled_at; Type: COMMENT; Schema: public; Owner: -
 --
 
 COMMENT ON COLUMN public.credentials.auto_disabled_at IS '自动禁用时间';
-
 
 --
 -- Name: COLUMN credentials.auto_disabled_reason; Type: COMMENT; Schema: public; Owner: -
@@ -5958,13 +5497,11 @@ COMMENT ON COLUMN public.credentials.auto_disabled_at IS '自动禁用时间';
 
 COMMENT ON COLUMN public.credentials.auto_disabled_reason IS '自动禁用原因';
 
-
 --
 -- Name: COLUMN credentials.auto_enabled_at; Type: COMMENT; Schema: public; Owner: -
 --
 
 COMMENT ON COLUMN public.credentials.auto_enabled_at IS '自动恢复时间';
-
 
 --
 -- Name: COLUMN credentials.auto_enabled_reason; Type: COMMENT; Schema: public; Owner: -
@@ -5972,13 +5509,11 @@ COMMENT ON COLUMN public.credentials.auto_enabled_at IS '自动恢复时间';
 
 COMMENT ON COLUMN public.credentials.auto_enabled_reason IS '自动恢复原因';
 
-
 --
 -- Name: CONSTRAINT credentials_fp_slot_vs_concurrency ON credentials; Type: COMMENT; Schema: public; Owner: -
 --
 
 COMMENT ON CONSTRAINT credentials_fp_slot_vs_concurrency ON public.credentials IS 'fp_slot_limit (distinct user identities) MUST be <= concurrency_limit (in-flight requests). Otherwise the fingerprint pool exceeds the upstream capacity, defeating anti-rate-limit.';
-
 
 --
 -- Name: credentials_id_seq; Type: SEQUENCE; Schema: public; Owner: -
@@ -5991,13 +5526,11 @@ CREATE SEQUENCE public.credentials_id_seq
     NO MAXVALUE
     CACHE 1;
 
-
 --
 -- Name: credentials_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
 --
 
 ALTER SEQUENCE public.credentials_id_seq OWNED BY public.credentials.id;
-
 
 --
 -- Name: credit_ledger; Type: TABLE; Schema: public; Owner: -
@@ -6017,7 +5550,6 @@ CREATE TABLE public.credit_ledger (
 )
 PARTITION BY RANGE (created_at);
 
-
 --
 -- Name: credit_ledger_partitioned_id_seq; Type: SEQUENCE; Schema: public; Owner: -
 --
@@ -6029,13 +5561,11 @@ CREATE SEQUENCE public.credit_ledger_partitioned_id_seq
     NO MAXVALUE
     CACHE 1;
 
-
 --
 -- Name: credit_ledger_partitioned_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
 --
 
 ALTER SEQUENCE public.credit_ledger_partitioned_id_seq OWNED BY public.credit_ledger.id;
-
 
 --
 -- Name: credit_ledger_2026_07; Type: TABLE; Schema: public; Owner: -
@@ -6055,7 +5585,6 @@ CREATE TABLE public.credit_ledger_2026_07 (
 )
 WITH (autovacuum_enabled='true', autovacuum_vacuum_scale_factor='0.05', autovacuum_vacuum_threshold='10', autovacuum_analyze_scale_factor='0.02', autovacuum_analyze_threshold='50');
 
-
 --
 -- Name: credit_ledger_2026_08; Type: TABLE; Schema: public; Owner: -
 --
@@ -6073,7 +5602,6 @@ CREATE TABLE public.credit_ledger_2026_08 (
     pool character varying
 )
 WITH (autovacuum_enabled='true', autovacuum_vacuum_scale_factor='0.05', autovacuum_vacuum_threshold='10', autovacuum_analyze_scale_factor='0.02', autovacuum_analyze_threshold='50');
-
 
 --
 -- Name: credit_ledger_hot; Type: TABLE; Schema: public; Owner: -
@@ -6093,7 +5621,6 @@ CREATE TABLE public.credit_ledger_hot (
 )
 WITH (fillfactor='90', autovacuum_enabled='true', autovacuum_vacuum_scale_factor='0.05', autovacuum_vacuum_threshold='10', autovacuum_analyze_scale_factor='0.02', autovacuum_analyze_threshold='50');
 
-
 --
 -- Name: credit_ledger_old; Type: TABLE; Schema: public; Owner: -
 --
@@ -6112,7 +5639,6 @@ CREATE TABLE public.credit_ledger_old (
     CONSTRAINT credit_ledger_entry_type_check CHECK (((entry_type)::text = ANY (ARRAY[('consume'::character varying)::text, ('topup'::character varying)::text, ('subscribe'::character varying)::text, ('adjust'::character varying)::text, ('refund'::character varying)::text])))
 );
 
-
 --
 -- Name: credit_ledger_id_seq; Type: SEQUENCE; Schema: public; Owner: -
 --
@@ -6124,13 +5650,11 @@ CREATE SEQUENCE public.credit_ledger_id_seq
     NO MAXVALUE
     CACHE 1;
 
-
 --
 -- Name: credit_ledger_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
 --
 
 ALTER SEQUENCE public.credit_ledger_id_seq OWNED BY public.credit_ledger_old.id;
-
 
 --
 -- Name: credit_ledger_with_current_month; Type: VIEW; Schema: public; Owner: -
@@ -6161,7 +5685,6 @@ UNION ALL
     credit_ledger.pool
    FROM public.credit_ledger;
 
-
 --
 -- Name: request_logs_id_seq; Type: SEQUENCE; Schema: public; Owner: -
 --
@@ -6172,7 +5695,6 @@ CREATE SEQUENCE public.request_logs_id_seq
     NO MINVALUE
     NO MAXVALUE
     CACHE 1;
-
 
 --
 -- Name: request_logs; Type: TABLE; Schema: public; Owner: -
@@ -6323,13 +5845,11 @@ PARTITION BY RANGE (ts);
 
 ALTER TABLE ONLY public.request_logs FORCE ROW LEVEL SECURITY;
 
-
 --
 -- Name: COLUMN request_logs.cost_display; Type: COMMENT; Schema: public; Owner: -
 --
 
 COMMENT ON COLUMN public.request_logs.cost_display IS 'Request-level displayed cost in its native currency; may differ from cost_usd when provider pricing is not USD.';
-
 
 --
 -- Name: COLUMN request_logs.cost_currency; Type: COMMENT; Schema: public; Owner: -
@@ -6337,13 +5857,11 @@ COMMENT ON COLUMN public.request_logs.cost_display IS 'Request-level displayed c
 
 COMMENT ON COLUMN public.request_logs.cost_currency IS 'Currency for request_logs.cost_display, e.g. USD/CNY.';
 
-
 --
 -- Name: COLUMN request_logs.is_auto_request; Type: COMMENT; Schema: public; Owner: -
 --
 
 COMMENT ON COLUMN public.request_logs.is_auto_request IS 'Auto route: was this request model=auto?';
-
 
 --
 -- Name: COLUMN request_logs.task_type; Type: COMMENT; Schema: public; Owner: -
@@ -6351,13 +5869,11 @@ COMMENT ON COLUMN public.request_logs.is_auto_request IS 'Auto route: was this r
 
 COMMENT ON COLUMN public.request_logs.task_type IS 'Auto route: classified task type (chat/reasoning/code/...)';
 
-
 --
 -- Name: COLUMN request_logs.auto_profile; Type: COMMENT; Schema: public; Owner: -
 --
 
 COMMENT ON COLUMN public.request_logs.auto_profile IS 'Auto route: profile used (smart/speed_first/cost_first)';
-
 
 --
 -- Name: COLUMN request_logs.auto_decision; Type: COMMENT; Schema: public; Owner: -
@@ -6365,13 +5881,11 @@ COMMENT ON COLUMN public.request_logs.auto_profile IS 'Auto route: profile used 
 
 COMMENT ON COLUMN public.request_logs.auto_decision IS 'Auto route: top-N candidates + chosen model + scoring breakdown';
 
-
 --
 -- Name: COLUMN request_logs.auto_confidence; Type: COMMENT; Schema: public; Owner: -
 --
 
 COMMENT ON COLUMN public.request_logs.auto_confidence IS 'Auto route: classification confidence 0-1';
-
 
 --
 -- Name: COLUMN request_logs.parent_request_id; Type: COMMENT; Schema: public; Owner: -
@@ -6379,13 +5893,11 @@ COMMENT ON COLUMN public.request_logs.auto_confidence IS 'Auto route: classifica
 
 COMMENT ON COLUMN public.request_logs.parent_request_id IS 'Round 47 (2026-06-18): the pre-compression request_id when compressor rewrote the body. NULL for uncompressed rows. Single-level chain only (child has at most 1 parent).';
 
-
 --
 -- Name: COLUMN request_logs.compression_reason; Type: COMMENT; Schema: public; Owner: -
 --
 
 COMMENT ON COLUMN public.request_logs.compression_reason IS 'Round 47 (2026-06-18): why compression fired. mode_1_auto_threshold = body > cand.ContextWindow × 0.8 × 3.5 (LLM_GATEWAY_COMPRESSION_MODE=1). mode_2_on_4xx = upstream 4xx context_length_exceeded (LLM_GATEWAY_COMPRESSION_MODE=2). NULL = no compression event, OR pre-request trim happened without 4xx (T-NEW-4). See compression_meta.trim_phase for explicit phase tagging.';
-
 
 --
 -- Name: COLUMN request_logs.compression_strategy; Type: COMMENT; Schema: public; Owner: -
@@ -6393,13 +5905,11 @@ COMMENT ON COLUMN public.request_logs.compression_reason IS 'Round 47 (2026-06-1
 
 COMMENT ON COLUMN public.request_logs.compression_strategy IS 'Round 47 (2026-06-18): which decompression path succeeded. mechanical_trim = oldest-pair drop (transform/ctx_compress.go). memora_l1_inject = dynamic_context user message from Memora /product/search. llm_summary = 1M-context model summary. noop = attempted but skipped (e.g. warmup_min_facts guard).';
 
-
 --
 -- Name: COLUMN request_logs.compression_meta; Type: COMMENT; Schema: public; Owner: -
 --
 
 COMMENT ON COLUMN public.request_logs.compression_meta IS 'Round 47 (2026-06-18): compression telemetry. 4xx recovery fields (T-NEW-2): tokens_before/after, bytes_before/after, context_window_used, threshold_bytes, dropped_messages, summary_chars, model_used, latency_ms, memora_facts_used, warmup_skipped, first_user_retained, system_retained, reason_detail. Pre-request trim fields (T-NEW-4): trim_phase="pre_request", phases=["pre_request_trim"] or ["pre_request_trim","4xx_recovery"], reason_detail="pre-request trim (cand.ContextWindow × 0.85 × 3.5 threshold)". See v7 §3.2.';
-
 
 --
 -- Name: COLUMN request_logs.outbound_body; Type: COMMENT; Schema: public; Owner: -
@@ -6410,14 +5920,12 @@ COMMENT ON COLUMN public.request_logs.outbound_body IS 'v3 (2026-06-19): LLM wir
      Differs from request_body when v3 session-level delta-append or proactive
      sliding-window summary rewrote the body before forwarding.';
 
-
 --
 -- Name: COLUMN request_logs.outbound_msg_count; Type: COMMENT; Schema: public; Owner: -
 --
 
 COMMENT ON COLUMN public.request_logs.outbound_msg_count IS 'v3 (2026-06-19): Message count inside outbound_body (including system).
      Compare to the client message count in request_body to measure delta.';
-
 
 --
 -- Name: COLUMN request_logs.outbound_token_est; Type: COMMENT; Schema: public; Owner: -
@@ -6427,7 +5935,6 @@ COMMENT ON COLUMN public.request_logs.outbound_token_est IS 'v3 (2026-06-19): Es
      3.5 chars/token heuristic (same as compressor/estimator.go). Used to
      audit sliding-window threshold decisions in request_logs UI.';
 
-
 --
 -- Name: COLUMN request_logs.outbound_msg_hashes; Type: COMMENT; Schema: public; Owner: -
 --
@@ -6436,7 +5943,6 @@ COMMENT ON COLUMN public.request_logs.outbound_msg_hashes IS 'v3 (2026-06-19): P
      outbound_body messages. The next request with the same gw_session_id
      reads this column to run LCS diff and find the incremental message tail,
      enabling delta-append without full re-send of conversation history.';
-
 
 --
 -- Name: COLUMN request_logs.upstream_finish_reason; Type: COMMENT; Schema: public; Owner: -
@@ -6449,13 +5955,11 @@ COMMENT ON COLUMN public.request_logs.upstream_finish_reason IS '2026-06-19 T-NE
      This column REPLACES the prior use of failure_detail_code for
      finish reasons; see the migration header for the full rationale.';
 
-
 --
 -- Name: COLUMN request_logs.tool_calls; Type: COMMENT; Schema: public; Owner: -
 --
 
 COMMENT ON COLUMN public.request_logs.tool_calls IS 'Structured tool calls from assistant message. OpenAI format: [{id, type, function: {name, arguments}}]. Populated for both streaming and non-streaming responses.';
-
 
 --
 -- Name: COLUMN request_logs.upstream_status_code; Type: COMMENT; Schema: public; Owner: -
@@ -6463,13 +5967,11 @@ COMMENT ON COLUMN public.request_logs.tool_calls IS 'Structured tool calls from 
 
 COMMENT ON COLUMN public.request_logs.upstream_status_code IS 'HTTP status code returned by upstream (NULL = network-level error, success, or unknown). Populated from the last attempt in executor.go and persisted via telemetry/client.go INSERT/UPDATE.';
 
-
 --
 -- Name: COLUMN request_logs.client_ip; Type: COMMENT; Schema: public; Owner: -
 --
 
 COMMENT ON COLUMN public.request_logs.client_ip IS 'Client real IP (extracted from X-Forwarded-For or X-Real-IP)';
-
 
 --
 -- Name: COLUMN request_logs.client_forwarded_for; Type: COMMENT; Schema: public; Owner: -
@@ -6477,13 +5979,11 @@ COMMENT ON COLUMN public.request_logs.client_ip IS 'Client real IP (extracted fr
 
 COMMENT ON COLUMN public.request_logs.client_forwarded_for IS 'Full X-Forwarded-For header chain';
 
-
 --
 -- Name: COLUMN request_logs.agent_name; Type: COMMENT; Schema: public; Owner: -
 --
 
 COMMENT ON COLUMN public.request_logs.agent_name IS 'Agent/application name (e.g., claude-code, opencode, custom-bot)';
-
 
 --
 -- Name: COLUMN request_logs.agent_type; Type: COMMENT; Schema: public; Owner: -
@@ -6491,13 +5991,11 @@ COMMENT ON COLUMN public.request_logs.agent_name IS 'Agent/application name (e.g
 
 COMMENT ON COLUMN public.request_logs.agent_type IS 'Agent type: web/mobile/cli/api/bot/internal';
 
-
 --
 -- Name: COLUMN request_logs.api_key_fingerprint; Type: COMMENT; Schema: public; Owner: -
 --
 
 COMMENT ON COLUMN public.request_logs.api_key_fingerprint IS 'First 8 chars of API key for masking (e.g., sk-1234ab***)';
-
 
 --
 -- Name: COLUMN request_logs.customer_id; Type: COMMENT; Schema: public; Owner: -
@@ -6505,13 +6003,11 @@ COMMENT ON COLUMN public.request_logs.api_key_fingerprint IS 'First 8 chars of A
 
 COMMENT ON COLUMN public.request_logs.customer_id IS 'Customer/organization ID for multi-tenant billing';
 
-
 --
 -- Name: COLUMN request_logs.upstream_endpoint; Type: COMMENT; Schema: public; Owner: -
 --
 
 COMMENT ON COLUMN public.request_logs.upstream_endpoint IS 'Full upstream API endpoint URL (e.g., https://api.anthropic.com/v1/messages)';
-
 
 --
 -- Name: COLUMN request_logs.session_title; Type: COMMENT; Schema: public; Owner: -
@@ -6519,13 +6015,11 @@ COMMENT ON COLUMN public.request_logs.upstream_endpoint IS 'Full upstream API en
 
 COMMENT ON COLUMN public.request_logs.session_title IS 'Human-readable session title (from session manager)';
 
-
 --
 -- Name: COLUMN request_logs.session_summary; Type: COMMENT; Schema: public; Owner: -
 --
 
 COMMENT ON COLUMN public.request_logs.session_summary IS 'Session summary/description';
-
 
 --
 -- Name: COLUMN request_logs.task_id; Type: COMMENT; Schema: public; Owner: -
@@ -6533,13 +6027,11 @@ COMMENT ON COLUMN public.request_logs.session_summary IS 'Session summary/descri
 
 COMMENT ON COLUMN public.request_logs.task_id IS 'Task/work item ID (e.g., JIRA-123, task_001)';
 
-
 --
 -- Name: COLUMN request_logs.task_title; Type: COMMENT; Schema: public; Owner: -
 --
 
 COMMENT ON COLUMN public.request_logs.task_title IS 'Task title/description';
-
 
 --
 -- Name: COLUMN request_logs.compression_start_index; Type: COMMENT; Schema: public; Owner: -
@@ -6547,13 +6039,11 @@ COMMENT ON COLUMN public.request_logs.task_title IS 'Task title/description';
 
 COMMENT ON COLUMN public.request_logs.compression_start_index IS 'Starting message index for context compression';
 
-
 --
 -- Name: COLUMN request_logs.compression_end_index; Type: COMMENT; Schema: public; Owner: -
 --
 
 COMMENT ON COLUMN public.request_logs.compression_end_index IS 'Ending message index for context compression';
-
 
 --
 -- Name: COLUMN request_logs.compression_ratio; Type: COMMENT; Schema: public; Owner: -
@@ -6561,13 +6051,11 @@ COMMENT ON COLUMN public.request_logs.compression_end_index IS 'Ending message i
 
 COMMENT ON COLUMN public.request_logs.compression_ratio IS 'Compression ratio (compressed_tokens / original_tokens)';
 
-
 --
 -- Name: COLUMN request_logs.cache_hit; Type: COMMENT; Schema: public; Owner: -
 --
 
 COMMENT ON COLUMN public.request_logs.cache_hit IS 'Whether request hit cache (semantic/exact match)';
-
 
 --
 -- Name: COLUMN request_logs.cache_tokens_saved; Type: COMMENT; Schema: public; Owner: -
@@ -6575,13 +6063,11 @@ COMMENT ON COLUMN public.request_logs.cache_hit IS 'Whether request hit cache (s
 
 COMMENT ON COLUMN public.request_logs.cache_tokens_saved IS 'Tokens saved due to cache hit';
 
-
 --
 -- Name: COLUMN request_logs.content_safety_score; Type: COMMENT; Schema: public; Owner: -
 --
 
 COMMENT ON COLUMN public.request_logs.content_safety_score IS 'Content safety analysis (e.g., {"score": 0.95, "categories": {"hate": 0.01}})';
-
 
 --
 -- Name: COLUMN request_logs.dlp_violations; Type: COMMENT; Schema: public; Owner: -
@@ -6589,13 +6075,11 @@ COMMENT ON COLUMN public.request_logs.content_safety_score IS 'Content safety an
 
 COMMENT ON COLUMN public.request_logs.dlp_violations IS 'DLP violation details (e.g., [{"type": "ssn", "count": 1}])';
 
-
 --
 -- Name: COLUMN request_logs.sensitive_keywords; Type: COMMENT; Schema: public; Owner: -
 --
 
 COMMENT ON COLUMN public.request_logs.sensitive_keywords IS 'Matched sensitive keywords (e.g., ["password", "secret"])';
-
 
 --
 -- Name: COLUMN request_logs.rate_limit_status; Type: COMMENT; Schema: public; Owner: -
@@ -6603,13 +6087,11 @@ COMMENT ON COLUMN public.request_logs.sensitive_keywords IS 'Matched sensitive k
 
 COMMENT ON COLUMN public.request_logs.rate_limit_status IS 'Rate limit status: under_limit/approaching_limit/exceeded/bypassed';
 
-
 --
 -- Name: COLUMN request_logs.client_protocol; Type: COMMENT; Schema: public; Owner: -
 --
 
 COMMENT ON COLUMN public.request_logs.client_protocol IS 'Client protocol (e.g., openai, anthropic, gemini)';
-
 
 --
 -- Name: COLUMN request_logs.upstream_protocol; Type: COMMENT; Schema: public; Owner: -
@@ -6617,13 +6099,11 @@ COMMENT ON COLUMN public.request_logs.client_protocol IS 'Client protocol (e.g.,
 
 COMMENT ON COLUMN public.request_logs.upstream_protocol IS 'Upstream provider protocol (e.g., anthropic, openai, bedrock)';
 
-
 --
 -- Name: COLUMN request_logs.protocol_conversion; Type: COMMENT; Schema: public; Owner: -
 --
 
 COMMENT ON COLUMN public.request_logs.protocol_conversion IS 'Whether protocol conversion was performed (OpenAI -> Anthropic, etc.)';
-
 
 --
 -- Name: COLUMN request_logs.ir_extensions; Type: COMMENT; Schema: public; Owner: -
@@ -6631,13 +6111,11 @@ COMMENT ON COLUMN public.request_logs.protocol_conversion IS 'Whether protocol c
 
 COMMENT ON COLUMN public.request_logs.ir_extensions IS 'IR (intermediate representation) extension fields (e.g., {"reasoning_effort": "medium"})';
 
-
 --
 -- Name: COLUMN request_logs.sanitizer_mutations; Type: COMMENT; Schema: public; Owner: -
 --
 
 COMMENT ON COLUMN public.request_logs.sanitizer_mutations IS 'Sanitizer mutations applied (e.g., {"stripped_fields": ["user_metadata"]})';
-
 
 --
 -- Name: COLUMN request_logs.vendor_metadata; Type: COMMENT; Schema: public; Owner: -
@@ -6645,13 +6123,11 @@ COMMENT ON COLUMN public.request_logs.sanitizer_mutations IS 'Sanitizer mutation
 
 COMMENT ON COLUMN public.request_logs.vendor_metadata IS 'Vendor-specific fields snapshot (e.g., {"reasoning_tokens": 1500, "provider_request_id": "req_abc"})';
 
-
 --
 -- Name: COLUMN request_logs.trace_events; Type: COMMENT; Schema: public; Owner: -
 --
 
 COMMENT ON COLUMN public.request_logs.trace_events IS '2026-07-17: 请求链路追踪事件数组,格式见 internal/trace.RequestTrace。请求进行中由 Redis 暂存(request:trace:{request_id}, TTL 600s),请求结束时由 trace.Recorder.FlushToPG 一次性写入此列。';
-
 
 --
 -- Name: COLUMN request_logs.routing_attempts; Type: COMMENT; Schema: public; Owner: -
@@ -6660,13 +6136,11 @@ COMMENT ON COLUMN public.request_logs.trace_events IS '2026-07-17: 请求链路�
 COMMENT ON COLUMN public.request_logs.routing_attempts IS '路由尝试序列（JSONB 数组），记录每个候选供应商的尝试结果。
    继承到所有月度分区。详见 request_logs_hot 的注释。';
 
-
 --
 -- Name: COLUMN request_logs.routing_summary; Type: COMMENT; Schema: public; Owner: -
 --
 
 COMMENT ON COLUMN public.request_logs.routing_summary IS '路由尝试人类可读摘要。继承到所有月度分区。详见 request_logs_hot 的注释。';
-
 
 --
 -- Name: COLUMN request_logs.effective_timeout_seconds; Type: COMMENT; Schema: public; Owner: -
@@ -6674,13 +6148,11 @@ COMMENT ON COLUMN public.request_logs.routing_summary IS '路由尝试人类可�
 
 COMMENT ON COLUMN public.request_logs.effective_timeout_seconds IS '实际使用的超时时间(秒)，动态计算后的值';
 
-
 --
 -- Name: COLUMN request_logs.context_size_tokens; Type: COMMENT; Schema: public; Owner: -
 --
 
 COMMENT ON COLUMN public.request_logs.context_size_tokens IS '请求上下文大小(tokens)，用于动态超时计算';
-
 
 --
 -- Name: COLUMN request_logs.timeout_mode; Type: COMMENT; Schema: public; Owner: -
@@ -6688,13 +6160,11 @@ COMMENT ON COLUMN public.request_logs.context_size_tokens IS '请求上下文大
 
 COMMENT ON COLUMN public.request_logs.timeout_mode IS '超时模式：static/context_aware/network_aware/adaptive';
 
-
 --
 -- Name: COLUMN request_logs.is_continuation; Type: COMMENT; Schema: public; Owner: -
 --
 
 COMMENT ON COLUMN public.request_logs.is_continuation IS '是否为继续/重试请求';
-
 
 --
 -- Name: COLUMN request_logs.continuation_keywords; Type: COMMENT; Schema: public; Owner: -
@@ -6702,13 +6172,11 @@ COMMENT ON COLUMN public.request_logs.is_continuation IS '是否为继续/重试
 
 COMMENT ON COLUMN public.request_logs.continuation_keywords IS '检测到的继续/重试关键词列表';
 
-
 --
 -- Name: COLUMN request_logs.node_switch_count; Type: COMMENT; Schema: public; Owner: -
 --
 
 COMMENT ON COLUMN public.request_logs.node_switch_count IS '节点切换次数';
-
 
 --
 -- Name: COLUMN request_logs.keepalive_sent_count; Type: COMMENT; Schema: public; Owner: -
@@ -6716,13 +6184,11 @@ COMMENT ON COLUMN public.request_logs.node_switch_count IS '节点切换次数';
 
 COMMENT ON COLUMN public.request_logs.keepalive_sent_count IS 'Keepalive消息发送次数';
 
-
 --
 -- Name: COLUMN request_logs.canonical_model; Type: COMMENT; Schema: public; Owner: -
 --
 
 COMMENT ON COLUMN public.request_logs.canonical_model IS 'Standard/canonical model name (lowercase, models_canonical.canonical_name). Denormalized for cheap GROUP BY / filter without joining models_canonical. NULL when modelResolution did not match a canonical row.';
-
 
 --
 -- Name: customer_cost_view; Type: VIEW; Schema: public; Owner: -
@@ -6767,13 +6233,11 @@ CREATE VIEW public.customer_cost_view AS
      JOIN public.api_keys ak ON ((ak.id = akmc.api_key_id)))
   GROUP BY akmc.api_key_id, ak.key_alias, ak.tenant_id, ak.application_id;
 
-
 --
 -- Name: VIEW customer_cost_view; Type: COMMENT; Schema: public; Owner: -
 --
 
 COMMENT ON VIEW public.customer_cost_view IS 'Auto route: per-API-Key customer cost dashboard (1h/24h/7d windows + concurrency + scores). active_concurrent is computed live from request_logs (5min window).';
-
 
 --
 -- Name: dashboard_access_events; Type: TABLE; Schema: public; Owner: -
@@ -6806,13 +6270,11 @@ CREATE TABLE public.dashboard_access_events (
 )
 PARTITION BY RANGE (created_at);
 
-
 --
 -- Name: TABLE dashboard_access_events; Type: COMMENT; Schema: public; Owner: -
 --
 
 COMMENT ON TABLE public.dashboard_access_events IS 'Dashboard API 访问事件归档表 - 按月分区，长期保留用于审计和分析';
-
 
 --
 -- Name: dashboard_access_events_2026_07; Type: TABLE; Schema: public; Owner: -
@@ -6844,6 +6306,13 @@ CREATE TABLE public.dashboard_access_events_2026_07 (
     created_at timestamp with time zone NOT NULL
 );
 
+--
+-- Name: get_current_tenant(); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.get_current_tenant() RETURNS text
+    LANGUAGE sql STABLE
+    AS $$ SELECT COALESCE(NULLIF(current_setting('app.current_tenant', true), ''), 'default'); $$;
 
 --
 -- Name: dashboard_access_events_2026_08; Type: TABLE; Schema: public; Owner: -
@@ -6874,7 +6343,6 @@ CREATE TABLE public.dashboard_access_events_2026_08 (
     cache_query_time_ms integer,
     created_at timestamp with time zone NOT NULL
 );
-
 
 --
 -- Name: dashboard_access_events_hot; Type: TABLE; Schema: public; Owner: -
@@ -6907,13 +6375,11 @@ CREATE TABLE public.dashboard_access_events_hot (
 )
 WITH (autovacuum_enabled='true', autovacuum_vacuum_scale_factor='0.05', autovacuum_vacuum_threshold='10', autovacuum_analyze_scale_factor='0.02', autovacuum_analyze_threshold='50');
 
-
 --
 -- Name: TABLE dashboard_access_events_hot; Type: COMMENT; Schema: public; Owner: -
 --
 
 COMMENT ON TABLE public.dashboard_access_events_hot IS 'Dashboard API 访问事件热表 - 记录所有 Dashboard 相关 API 的访问情况（保留 30 天）';
-
 
 --
 -- Name: COLUMN dashboard_access_events_hot.event_type; Type: COMMENT; Schema: public; Owner: -
@@ -6921,20 +6387,17 @@ COMMENT ON TABLE public.dashboard_access_events_hot IS 'Dashboard API 访问事�
 
 COMMENT ON COLUMN public.dashboard_access_events_hot.event_type IS '事件类型：api_access（API 访问）/ query（数据查询）/ export（数据导出）/ error（错误）';
 
-
 --
 -- Name: COLUMN dashboard_access_events_hot.query_params; Type: COMMENT; Schema: public; Owner: -
 --
 
 COMMENT ON COLUMN public.dashboard_access_events_hot.query_params IS '请求参数（JSONB，需要脱敏处理后再存储）';
 
-
 --
 -- Name: COLUMN dashboard_access_events_hot.response_time_ms; Type: COMMENT; Schema: public; Owner: -
 --
 
 COMMENT ON COLUMN public.dashboard_access_events_hot.response_time_ms IS '响应时间（毫秒），用于慢查询监控';
-
 
 --
 -- Name: diagnostic_runs; Type: TABLE; Schema: public; Owner: -
@@ -6958,13 +6421,11 @@ CREATE TABLE public.diagnostic_runs (
     CONSTRAINT diagnostic_runs_state_check CHECK ((state = ANY (ARRAY['pending'::text, 'running'::text, 'succeeded'::text, 'failed'::text, 'cancelled'::text])))
 );
 
-
 --
 -- Name: TABLE diagnostic_runs; Type: COMMENT; Schema: public; Owner: -
 --
 
 COMMENT ON TABLE public.diagnostic_runs IS 'Phase-2 sanitized results of a single diagnostic test. request body, response body, auth headers, raw upstream errors, and the upstream URL are NEVER stored. The route key is recorded so the result can be associated with a specific incident.';
-
 
 --
 -- Name: donations; Type: TABLE; Schema: public; Owner: -
@@ -6988,7 +6449,6 @@ CREATE TABLE public.donations (
     CONSTRAINT donations_status_check CHECK ((status = ANY (ARRAY['pending'::text, 'paid'::text, 'cancelled'::text, 'expired'::text])))
 );
 
-
 --
 -- Name: donations_id_seq; Type: SEQUENCE; Schema: public; Owner: -
 --
@@ -7000,13 +6460,11 @@ CREATE SEQUENCE public.donations_id_seq
     NO MAXVALUE
     CACHE 1;
 
-
 --
 -- Name: donations_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
 --
 
 ALTER SEQUENCE public.donations_id_seq OWNED BY public.donations.id;
-
 
 --
 -- Name: download_events; Type: TABLE; Schema: public; Owner: -
@@ -7029,7 +6487,6 @@ CREATE TABLE public.download_events (
     CONSTRAINT download_events_result_check CHECK ((result = ANY (ARRAY['started'::text, 'completed'::text, 'failed'::text])))
 );
 
-
 --
 -- Name: download_events_id_seq; Type: SEQUENCE; Schema: public; Owner: -
 --
@@ -7041,13 +6498,11 @@ CREATE SEQUENCE public.download_events_id_seq
     NO MAXVALUE
     CACHE 1;
 
-
 --
 -- Name: download_events_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
 --
 
 ALTER SEQUENCE public.download_events_id_seq OWNED BY public.download_events.id;
-
 
 --
 -- Name: download_publish_runs; Type: TABLE; Schema: public; Owner: -
@@ -7066,7 +6521,6 @@ CREATE TABLE public.download_publish_runs (
     finished_at timestamp with time zone
 );
 
-
 --
 -- Name: download_publish_runs_id_seq; Type: SEQUENCE; Schema: public; Owner: -
 --
@@ -7078,13 +6532,11 @@ CREATE SEQUENCE public.download_publish_runs_id_seq
     NO MAXVALUE
     CACHE 1;
 
-
 --
 -- Name: download_publish_runs_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
 --
 
 ALTER SEQUENCE public.download_publish_runs_id_seq OWNED BY public.download_publish_runs.id;
-
 
 --
 -- Name: fault_action_logs; Type: TABLE; Schema: public; Owner: -
@@ -7101,7 +6553,6 @@ CREATE TABLE public.fault_action_logs (
     completed_at timestamp with time zone
 );
 
-
 --
 -- Name: fault_action_logs_id_seq; Type: SEQUENCE; Schema: public; Owner: -
 --
@@ -7113,13 +6564,11 @@ CREATE SEQUENCE public.fault_action_logs_id_seq
     NO MAXVALUE
     CACHE 1;
 
-
 --
 -- Name: fault_action_logs_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
 --
 
 ALTER SEQUENCE public.fault_action_logs_id_seq OWNED BY public.fault_action_logs.id;
-
 
 --
 -- Name: fault_events; Type: TABLE; Schema: public; Owner: -
@@ -7146,7 +6595,6 @@ CREATE TABLE public.fault_events (
     CONSTRAINT fault_events_status_check CHECK ((status = ANY (ARRAY['new'::text, 'acknowledged'::text, 'resolving'::text, 'resolved'::text, 'ignored'::text])))
 );
 
-
 --
 -- Name: fault_events_id_seq; Type: SEQUENCE; Schema: public; Owner: -
 --
@@ -7158,13 +6606,11 @@ CREATE SEQUENCE public.fault_events_id_seq
     NO MAXVALUE
     CACHE 1;
 
-
 --
 -- Name: fault_events_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
 --
 
 ALTER SEQUENCE public.fault_events_id_seq OWNED BY public.fault_events.id;
-
 
 --
 -- Name: fault_rules; Type: TABLE; Schema: public; Owner: -
@@ -7189,7 +6635,6 @@ CREATE TABLE public.fault_rules (
     CONSTRAINT fault_rules_severity_check CHECK ((severity = ANY (ARRAY['info'::text, 'warning'::text, 'error'::text, 'critical'::text])))
 );
 
-
 --
 -- Name: fault_rules_id_seq; Type: SEQUENCE; Schema: public; Owner: -
 --
@@ -7202,13 +6647,11 @@ CREATE SEQUENCE public.fault_rules_id_seq
     NO MAXVALUE
     CACHE 1;
 
-
 --
 -- Name: fault_rules_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
 --
 
 ALTER SEQUENCE public.fault_rules_id_seq OWNED BY public.fault_rules.id;
-
 
 --
 -- Name: gateway_instances; Type: TABLE; Schema: public; Owner: -
@@ -7240,7 +6683,6 @@ CREATE TABLE public.gateway_instances (
     CONSTRAINT gateway_instances_status_check CHECK ((status = ANY (ARRAY['online'::text, 'offline'::text, 'degraded'::text])))
 );
 
-
 --
 -- Name: goal_sessions; Type: TABLE; Schema: public; Owner: -
 --
@@ -7264,13 +6706,11 @@ CREATE TABLE public.goal_sessions (
     current_model character varying(128) DEFAULT ''::character varying
 );
 
-
 --
 -- Name: COLUMN goal_sessions.model_switch_count; Type: COMMENT; Schema: public; Owner: -
 --
 
 COMMENT ON COLUMN public.goal_sessions.model_switch_count IS 'Number of times the goal hook rotated the session to a fallback model after detecting a loop. Bounded by goal.max_model_switch_count.';
-
 
 --
 -- Name: COLUMN goal_sessions.repeat_count; Type: COMMENT; Schema: public; Owner: -
@@ -7278,20 +6718,17 @@ COMMENT ON COLUMN public.goal_sessions.model_switch_count IS 'Number of times th
 
 COMMENT ON COLUMN public.goal_sessions.repeat_count IS 'Consecutive identical assistant replies observed. When it reaches goal.repeat_threshold the session is considered stuck and a model switch may be triggered.';
 
-
 --
 -- Name: COLUMN goal_sessions.last_response_hash; Type: COMMENT; Schema: public; Owner: -
 --
 
 COMMENT ON COLUMN public.goal_sessions.last_response_hash IS 'sha256 (hex) of the last assistant content, used to detect repeated responses.';
 
-
 --
 -- Name: COLUMN goal_sessions.current_model; Type: COMMENT; Schema: public; Owner: -
 --
 
 COMMENT ON COLUMN public.goal_sessions.current_model IS 'The model currently driving this goal session. Changes on each model rotation; empty means the original client model is in use.';
-
 
 --
 -- Name: goal_sessions_id_seq; Type: SEQUENCE; Schema: public; Owner: -
@@ -7305,13 +6742,11 @@ CREATE SEQUENCE public.goal_sessions_id_seq
     NO MAXVALUE
     CACHE 1;
 
-
 --
 -- Name: goal_sessions_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
 --
 
 ALTER SEQUENCE public.goal_sessions_id_seq OWNED BY public.goal_sessions.id;
-
 
 --
 -- Name: gray_release_rules; Type: TABLE; Schema: public; Owner: -
@@ -7331,7 +6766,6 @@ CREATE TABLE public.gray_release_rules (
     CONSTRAINT gray_release_rules_status_check CHECK ((status = ANY (ARRAY['active'::text, 'paused'::text, 'completed'::text])))
 );
 
-
 --
 -- Name: gray_release_rules_id_seq; Type: SEQUENCE; Schema: public; Owner: -
 --
@@ -7343,13 +6777,11 @@ CREATE SEQUENCE public.gray_release_rules_id_seq
     NO MAXVALUE
     CACHE 1;
 
-
 --
 -- Name: gray_release_rules_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
 --
 
 ALTER SEQUENCE public.gray_release_rules_id_seq OWNED BY public.gray_release_rules.id;
-
 
 --
 -- Name: handoff_logs; Type: TABLE; Schema: public; Owner: -
@@ -7375,7 +6807,6 @@ CREATE TABLE public.handoff_logs (
 )
 WITH (autovacuum_enabled='true', autovacuum_vacuum_scale_factor='0.05', autovacuum_vacuum_threshold='10', autovacuum_analyze_scale_factor='0.02', autovacuum_analyze_threshold='50');
 
-
 --
 -- Name: handoff_logs_id_seq; Type: SEQUENCE; Schema: public; Owner: -
 --
@@ -7388,13 +6819,11 @@ CREATE SEQUENCE public.handoff_logs_id_seq
     NO MAXVALUE
     CACHE 1;
 
-
 --
 -- Name: handoff_logs_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
 --
 
 ALTER SEQUENCE public.handoff_logs_id_seq OWNED BY public.handoff_logs.id;
-
 
 --
 -- Name: injection_attack_vectors; Type: TABLE; Schema: public; Owner: -
@@ -7415,20 +6844,17 @@ CREATE TABLE public.injection_attack_vectors (
     CONSTRAINT injection_attack_vectors_severity_check CHECK (((severity >= 1) AND (severity <= 10)))
 );
 
-
 --
 -- Name: TABLE injection_attack_vectors; Type: COMMENT; Schema: public; Owner: -
 --
 
 COMMENT ON TABLE public.injection_attack_vectors IS '攻击向量库 - 存储历史攻击样本用于相似度检测';
 
-
 --
 -- Name: COLUMN injection_attack_vectors.embedding; Type: COMMENT; Schema: public; Owner: -
 --
 
 COMMENT ON COLUMN public.injection_attack_vectors.embedding IS '攻击文本的向量嵌入，用于相似度匹配';
-
 
 --
 -- Name: injection_attack_vectors_id_seq; Type: SEQUENCE; Schema: public; Owner: -
@@ -7441,13 +6867,11 @@ CREATE SEQUENCE public.injection_attack_vectors_id_seq
     NO MAXVALUE
     CACHE 1;
 
-
 --
 -- Name: injection_attack_vectors_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
 --
 
 ALTER SEQUENCE public.injection_attack_vectors_id_seq OWNED BY public.injection_attack_vectors.id;
-
 
 --
 -- Name: instance_heartbeats; Type: TABLE; Schema: public; Owner: -
@@ -7462,7 +6886,6 @@ CREATE TABLE public.instance_heartbeats (
     status text NOT NULL,
     metrics jsonb
 );
-
 
 --
 -- Name: instance_release_status; Type: TABLE; Schema: public; Owner: -
@@ -7480,7 +6903,6 @@ CREATE TABLE public.instance_release_status (
     updated_at timestamp with time zone DEFAULT now() NOT NULL
 );
 
-
 --
 -- Name: instance_status_reports; Type: TABLE; Schema: public; Owner: -
 --
@@ -7497,7 +6919,6 @@ CREATE TABLE public.instance_status_reports (
     avg_latency_ms double precision DEFAULT 0 NOT NULL,
     p99_latency_ms double precision DEFAULT 0 NOT NULL
 );
-
 
 --
 -- Name: integrity_fingerprint_baseline; Type: TABLE; Schema: public; Owner: -
@@ -7520,7 +6941,6 @@ CREATE TABLE public.integrity_fingerprint_baseline (
     last_alerted_at timestamp with time zone,
     updated_at timestamp with time zone DEFAULT now() NOT NULL
 );
-
 
 --
 -- Name: intent_analysis_adjustments; Type: TABLE; Schema: public; Owner: -
@@ -7551,13 +6971,11 @@ CREATE TABLE public.intent_analysis_adjustments (
     CONSTRAINT intent_analysis_adjustments_effectiveness_score_check CHECK (((effectiveness_score >= (0)::double precision) AND (effectiveness_score <= (1)::double precision)))
 );
 
-
 --
 -- Name: TABLE intent_analysis_adjustments; Type: COMMENT; Schema: public; Owner: -
 --
 
 COMMENT ON TABLE public.intent_analysis_adjustments IS '意图分析调整记录 — 追踪配置变更历史、原因和效果评估，支持版本管理和回滚';
-
 
 --
 -- Name: COLUMN intent_analysis_adjustments.adjustment_type; Type: COMMENT; Schema: public; Owner: -
@@ -7565,13 +6983,11 @@ COMMENT ON TABLE public.intent_analysis_adjustments IS '意图分析调整记录
 
 COMMENT ON COLUMN public.intent_analysis_adjustments.adjustment_type IS '调整类型：keyword_add/keyword_remove/pattern_add/threshold_change/strategy_change等';
 
-
 --
 -- Name: COLUMN intent_analysis_adjustments.adjustment_detail; Type: COMMENT; Schema: public; Owner: -
 --
 
 COMMENT ON COLUMN public.intent_analysis_adjustments.adjustment_detail IS '详细调整内容（JSONB）：包含action、old_value、new_value等字段，具体结构按调整类型不同';
-
 
 --
 -- Name: COLUMN intent_analysis_adjustments.triggered_by; Type: COMMENT; Schema: public; Owner: -
@@ -7579,13 +6995,11 @@ COMMENT ON COLUMN public.intent_analysis_adjustments.adjustment_detail IS '详�
 
 COMMENT ON COLUMN public.intent_analysis_adjustments.triggered_by IS '触发方式：manual（人工）/ auto_optimization（自动优化）/ ab_test（A/B测试）';
 
-
 --
 -- Name: COLUMN intent_analysis_adjustments.effectiveness_score; Type: COMMENT; Schema: public; Owner: -
 --
 
 COMMENT ON COLUMN public.intent_analysis_adjustments.effectiveness_score IS '效果评分（0-1）：综合准确率提升、用户满意度等指标计算。>0.5为有效调整';
-
 
 --
 -- Name: COLUMN intent_analysis_adjustments.status; Type: COMMENT; Schema: public; Owner: -
@@ -7593,13 +7007,11 @@ COMMENT ON COLUMN public.intent_analysis_adjustments.effectiveness_score IS '效
 
 COMMENT ON COLUMN public.intent_analysis_adjustments.status IS '状态：active（当前生效）/ rolled_back（已回滚）/ superseded（被覆盖）';
 
-
 --
 -- Name: COLUMN intent_analysis_adjustments.superseded_by; Type: COMMENT; Schema: public; Owner: -
 --
 
 COMMENT ON COLUMN public.intent_analysis_adjustments.superseded_by IS '被哪条记录覆盖（外键指向新调整记录）。用于追踪配置演化链';
-
 
 --
 -- Name: intent_adjustment_effectiveness; Type: VIEW; Schema: public; Owner: -
@@ -7627,13 +7039,11 @@ CREATE VIEW public.intent_adjustment_effectiveness AS
   WHERE (effectiveness_score IS NOT NULL)
   GROUP BY tenant_id, adjustment_type, target_intent, status;
 
-
 --
 -- Name: VIEW intent_adjustment_effectiveness; Type: COMMENT; Schema: public; Owner: -
 --
 
 COMMENT ON VIEW public.intent_adjustment_effectiveness IS '配置调整效果分析 — 统计各类调整的平均效果、准确率提升和回滚率';
-
 
 --
 -- Name: intent_aggregates; Type: TABLE; Schema: public; Owner: -
@@ -7646,7 +7056,6 @@ CREATE TABLE public.intent_aggregates (
     last_updated timestamp with time zone DEFAULT now() NOT NULL
 );
 
-
 --
 -- Name: intent_analysis_adjustments_id_seq; Type: SEQUENCE; Schema: public; Owner: -
 --
@@ -7658,13 +7067,11 @@ CREATE SEQUENCE public.intent_analysis_adjustments_id_seq
     NO MAXVALUE
     CACHE 1;
 
-
 --
 -- Name: intent_analysis_adjustments_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
 --
 
 ALTER SEQUENCE public.intent_analysis_adjustments_id_seq OWNED BY public.intent_analysis_adjustments.id;
-
 
 --
 -- Name: intent_classification_feedback; Type: TABLE; Schema: public; Owner: -
@@ -7697,13 +7104,11 @@ CREATE TABLE public.intent_classification_feedback (
     CONSTRAINT intent_classification_feedback_user_satisfaction_score_check CHECK (((user_satisfaction_score >= 1) AND (user_satisfaction_score <= 5)))
 );
 
-
 --
 -- Name: TABLE intent_classification_feedback; Type: COMMENT; Schema: public; Owner: -
 --
 
 COMMENT ON TABLE public.intent_classification_feedback IS '意图分类反馈 — 收集人工标注和用户行为反馈，用于评估准确率和自动优化';
-
 
 --
 -- Name: COLUMN intent_classification_feedback.predicted_intent; Type: COMMENT; Schema: public; Owner: -
@@ -7711,13 +7116,11 @@ COMMENT ON TABLE public.intent_classification_feedback IS '意图分类反馈 �
 
 COMMENT ON COLUMN public.intent_classification_feedback.predicted_intent IS '系统预测的意图类型（chat/code/reasoning/agent/creative/long_context/vision/function_call）';
 
-
 --
 -- Name: COLUMN intent_classification_feedback.is_correct; Type: COMMENT; Schema: public; Owner: -
 --
 
 COMMENT ON COLUMN public.intent_classification_feedback.is_correct IS '分类是否正确：TRUE=正确，FALSE=错误，NULL=未标注。由actual_intent与predicted_intent对比得出';
-
 
 --
 -- Name: COLUMN intent_classification_feedback.user_accepted_model; Type: COMMENT; Schema: public; Owner: -
@@ -7725,13 +7128,11 @@ COMMENT ON COLUMN public.intent_classification_feedback.is_correct IS '分类是
 
 COMMENT ON COLUMN public.intent_classification_feedback.user_accepted_model IS '用户是否接受推荐的模型（隐式反馈）：TRUE=未切换模型，FALSE=手动切换了模型';
 
-
 --
 -- Name: COLUMN intent_classification_feedback.user_retry_count; Type: COMMENT; Schema: public; Owner: -
 --
 
 COMMENT ON COLUMN public.intent_classification_feedback.user_retry_count IS '用户重试次数（隐式反馈）：高重试次数可能表示模型推荐不准确或结果不满意';
-
 
 --
 -- Name: COLUMN intent_classification_feedback.user_content_hash; Type: COMMENT; Schema: public; Owner: -
@@ -7739,13 +7140,11 @@ COMMENT ON COLUMN public.intent_classification_feedback.user_retry_count IS '用
 
 COMMENT ON COLUMN public.intent_classification_feedback.user_content_hash IS 'SHA256内容哈希（隐私保护）：不存储原始用户输入，仅用于相似查询识别和去重';
 
-
 --
 -- Name: COLUMN intent_classification_feedback.classification_context; Type: COMMENT; Schema: public; Owner: -
 --
 
 COMMENT ON COLUMN public.intent_classification_feedback.classification_context IS '分类上下文（JSONB）：{"context_length":1024,"has_images":false,"classifier_version":"v2_pattern"}';
-
 
 --
 -- Name: intent_classification_feedback_id_seq; Type: SEQUENCE; Schema: public; Owner: -
@@ -7758,13 +7157,11 @@ CREATE SEQUENCE public.intent_classification_feedback_id_seq
     NO MAXVALUE
     CACHE 1;
 
-
 --
 -- Name: intent_classification_feedback_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
 --
 
 ALTER SEQUENCE public.intent_classification_feedback_id_seq OWNED BY public.intent_classification_feedback.id;
-
 
 --
 -- Name: intent_classification_metrics; Type: VIEW; Schema: public; Owner: -
@@ -7799,13 +7196,11 @@ CREATE VIEW public.intent_classification_metrics AS
   WHERE (annotated_at IS NOT NULL)
   GROUP BY tenant_id, (date_trunc('day'::text, created_at)), predicted_intent;
 
-
 --
 -- Name: VIEW intent_classification_metrics; Type: COMMENT; Schema: public; Owner: -
 --
 
 COMMENT ON VIEW public.intent_classification_metrics IS '意图分类效果指标 — 按天、按租户、按意图类型统计准确率、置信度和用户行为';
-
 
 --
 -- Name: intent_classifier_config; Type: TABLE; Schema: public; Owner: -
@@ -7831,13 +7226,11 @@ CREATE TABLE public.intent_classifier_config (
     CONSTRAINT intent_classifier_config_multi_turn_memory_check CHECK (((multi_turn_memory > 0) AND (multi_turn_memory <= 20)))
 );
 
-
 --
 -- Name: TABLE intent_classifier_config; Type: COMMENT; Schema: public; Owner: -
 --
 
 COMMENT ON TABLE public.intent_classifier_config IS '意图分类器配置 — 租户级可配置的分类策略、关键词、模式和阈值，支持热更新';
-
 
 --
 -- Name: COLUMN intent_classifier_config.tenant_id; Type: COMMENT; Schema: public; Owner: -
@@ -7845,13 +7238,11 @@ COMMENT ON TABLE public.intent_classifier_config IS '意图分类器配置 — �
 
 COMMENT ON COLUMN public.intent_classifier_config.tenant_id IS 'NULL=平台级默认配置，非NULL=租户级覆盖。租户配置优先级高于平台配置';
 
-
 --
 -- Name: COLUMN intent_classifier_config.strategy; Type: COMMENT; Schema: public; Owner: -
 --
 
 COMMENT ON COLUMN public.intent_classifier_config.strategy IS '分类策略：baseline_heuristic（快速）/ pattern_layered（平衡，默认）/ llm_fallback（准确但慢）';
-
 
 --
 -- Name: COLUMN intent_classifier_config.keywords_config; Type: COMMENT; Schema: public; Owner: -
@@ -7859,13 +7250,11 @@ COMMENT ON COLUMN public.intent_classifier_config.strategy IS '分类策略：ba
 
 COMMENT ON COLUMN public.intent_classifier_config.keywords_config IS '关键词配置（JSONB）：{"intent_kind":{"en":[...],"zh":[...]}}，支持多语言和动态扩展';
 
-
 --
 -- Name: COLUMN intent_classifier_config.patterns_config; Type: COMMENT; Schema: public; Owner: -
 --
 
 COMMENT ON COLUMN public.intent_classifier_config.patterns_config IS '模式配置（JSONB）：{"intent_kind":[{"pattern":"regex","weight":0.95}]}，正则匹配+权重';
-
 
 --
 -- Name: COLUMN intent_classifier_config.drift_threshold; Type: COMMENT; Schema: public; Owner: -
@@ -7873,13 +7262,11 @@ COMMENT ON COLUMN public.intent_classifier_config.patterns_config IS '模式配�
 
 COMMENT ON COLUMN public.intent_classifier_config.drift_threshold IS '意图漂移阈值（0-1）：超过此值触发模型重新推荐。默认0.3（30%变化）';
 
-
 --
 -- Name: COLUMN intent_classifier_config.multi_turn_memory; Type: COMMENT; Schema: public; Owner: -
 --
 
 COMMENT ON COLUMN public.intent_classifier_config.multi_turn_memory IS '多轮记忆窗口：分析最近N轮对话。范围1-20，默认5轮';
-
 
 --
 -- Name: intent_classifier_config_id_seq; Type: SEQUENCE; Schema: public; Owner: -
@@ -7893,13 +7280,11 @@ CREATE SEQUENCE public.intent_classifier_config_id_seq
     NO MAXVALUE
     CACHE 1;
 
-
 --
 -- Name: intent_classifier_config_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
 --
 
 ALTER SEQUENCE public.intent_classifier_config_id_seq OWNED BY public.intent_classifier_config.id;
-
 
 --
 -- Name: internal_service_keys; Type: TABLE; Schema: public; Owner: -
@@ -7916,7 +7301,6 @@ CREATE TABLE public.internal_service_keys (
     rotation_notes text
 );
 
-
 --
 -- Name: TABLE internal_service_keys; Type: COMMENT; Schema: public; Owner: -
 --
@@ -7924,7 +7308,6 @@ CREATE TABLE public.internal_service_keys (
 COMMENT ON TABLE public.internal_service_keys IS 'Registry of HMAC secrets for internal service-to-service authentication.
      The actual secret is stored in INTERNAL_SERVICE_KEYS_JSON env var (not here).
      This table tracks registration metadata and last-used timestamps for audit.';
-
 
 --
 -- Name: ip_blocklist; Type: TABLE; Schema: public; Owner: -
@@ -7946,7 +7329,6 @@ CREATE TABLE public.ip_blocklist (
     CONSTRAINT ip_blocklist_source_check CHECK ((source = ANY (ARRAY['manual'::text, 'auto_attack'::text])))
 );
 
-
 --
 -- Name: ip_blocklist_id_seq; Type: SEQUENCE; Schema: public; Owner: -
 --
@@ -7958,13 +7340,11 @@ CREATE SEQUENCE public.ip_blocklist_id_seq
     NO MAXVALUE
     CACHE 1;
 
-
 --
 -- Name: ip_blocklist_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
 --
 
 ALTER SEQUENCE public.ip_blocklist_id_seq OWNED BY public.ip_blocklist.id;
-
 
 --
 -- Name: key_applications; Type: TABLE; Schema: public; Owner: -
@@ -7987,7 +7367,6 @@ CREATE TABLE public.key_applications (
     CONSTRAINT key_applications_status_check CHECK ((status = ANY (ARRAY['pending'::text, 'approved'::text, 'rejected'::text, 'expired'::text])))
 );
 
-
 --
 -- Name: key_rpm_daily; Type: TABLE; Schema: public; Owner: -
 --
@@ -7999,7 +7378,6 @@ CREATE TABLE public.key_rpm_daily (
     avg_rpm numeric(10,3) DEFAULT 0 NOT NULL,
     request_count bigint DEFAULT 0 NOT NULL
 );
-
 
 --
 -- Name: license_devices; Type: TABLE; Schema: public; Owner: -
@@ -8019,7 +7397,6 @@ CREATE TABLE public.license_devices (
     CONSTRAINT license_devices_status_check CHECK ((status = ANY (ARRAY['active'::text, 'deactivated'::text])))
 );
 
-
 --
 -- Name: license_devices_id_seq; Type: SEQUENCE; Schema: public; Owner: -
 --
@@ -8031,13 +7408,11 @@ CREATE SEQUENCE public.license_devices_id_seq
     NO MAXVALUE
     CACHE 1;
 
-
 --
 -- Name: license_devices_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
 --
 
 ALTER SEQUENCE public.license_devices_id_seq OWNED BY public.license_devices.id;
-
 
 --
 -- Name: license_holders; Type: TABLE; Schema: public; Owner: -
@@ -8055,7 +7430,6 @@ CREATE TABLE public.license_holders (
     CONSTRAINT license_holders_holder_type_check CHECK ((holder_type = ANY (ARRAY['individual'::text, 'organization'::text])))
 );
 
-
 --
 -- Name: license_holders_id_seq; Type: SEQUENCE; Schema: public; Owner: -
 --
@@ -8067,13 +7441,11 @@ CREATE SEQUENCE public.license_holders_id_seq
     NO MAXVALUE
     CACHE 1;
 
-
 --
 -- Name: license_holders_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
 --
 
 ALTER SEQUENCE public.license_holders_id_seq OWNED BY public.license_holders.id;
-
 
 --
 -- Name: license_module_audit; Type: TABLE; Schema: public; Owner: -
@@ -8090,7 +7462,6 @@ CREATE TABLE public.license_module_audit (
     created_at timestamp with time zone DEFAULT now() NOT NULL
 );
 
-
 --
 -- Name: license_module_audit_id_seq; Type: SEQUENCE; Schema: public; Owner: -
 --
@@ -8102,13 +7473,11 @@ CREATE SEQUENCE public.license_module_audit_id_seq
     NO MAXVALUE
     CACHE 1;
 
-
 --
 -- Name: license_module_audit_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
 --
 
 ALTER SEQUENCE public.license_module_audit_id_seq OWNED BY public.license_module_audit.id;
-
 
 --
 -- Name: license_modules; Type: TABLE; Schema: public; Owner: -
@@ -8124,7 +7493,6 @@ CREATE TABLE public.license_modules (
     created_at timestamp with time zone DEFAULT now() NOT NULL
 );
 
-
 --
 -- Name: license_modules_id_seq; Type: SEQUENCE; Schema: public; Owner: -
 --
@@ -8136,13 +7504,11 @@ CREATE SEQUENCE public.license_modules_id_seq
     NO MAXVALUE
     CACHE 1;
 
-
 --
 -- Name: license_modules_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
 --
 
 ALTER SEQUENCE public.license_modules_id_seq OWNED BY public.license_modules.id;
-
 
 --
 -- Name: license_trial_consents; Type: TABLE; Schema: public; Owner: -
@@ -8157,7 +7523,6 @@ CREATE TABLE public.license_trial_consents (
     created_at timestamp with time zone DEFAULT now() NOT NULL
 );
 
-
 --
 -- Name: license_trial_consents_id_seq; Type: SEQUENCE; Schema: public; Owner: -
 --
@@ -8169,13 +7534,11 @@ CREATE SEQUENCE public.license_trial_consents_id_seq
     NO MAXVALUE
     CACHE 1;
 
-
 --
 -- Name: license_trial_consents_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
 --
 
 ALTER SEQUENCE public.license_trial_consents_id_seq OWNED BY public.license_trial_consents.id;
-
 
 --
 -- Name: licenses; Type: TABLE; Schema: public; Owner: -
@@ -8196,7 +7559,6 @@ CREATE TABLE public.licenses (
     holder_id bigint
 );
 
-
 --
 -- Name: licenses_id_seq; Type: SEQUENCE; Schema: public; Owner: -
 --
@@ -8208,13 +7570,11 @@ CREATE SEQUENCE public.licenses_id_seq
     NO MAXVALUE
     CACHE 1;
 
-
 --
 -- Name: licenses_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
 --
 
 ALTER SEQUENCE public.licenses_id_seq OWNED BY public.licenses.id;
-
 
 --
 -- Name: llm_gateway_migration_checksums; Type: TABLE; Schema: public; Owner: -
@@ -8226,7 +7586,6 @@ CREATE TABLE public.llm_gateway_migration_checksums (
     checksum text NOT NULL,
     applied_at timestamp with time zone DEFAULT now() NOT NULL
 );
-
 
 --
 -- Name: local_models; Type: TABLE; Schema: public; Owner: -
@@ -8246,7 +7605,6 @@ CREATE TABLE public.local_models (
     last_used_at timestamp with time zone
 );
 
-
 --
 -- Name: local_models_id_seq; Type: SEQUENCE; Schema: public; Owner: -
 --
@@ -8258,13 +7616,11 @@ CREATE SEQUENCE public.local_models_id_seq
     NO MAXVALUE
     CACHE 1;
 
-
 --
 -- Name: local_models_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
 --
 
 ALTER SEQUENCE public.local_models_id_seq OWNED BY public.local_models.id;
-
 
 --
 -- Name: local_runtimes; Type: TABLE; Schema: public; Owner: -
@@ -8288,7 +7644,6 @@ CREATE TABLE public.local_runtimes (
     CONSTRAINT local_runtimes_status_check CHECK ((status = ANY (ARRAY['unknown'::text, 'healthy'::text, 'degraded'::text, 'offline'::text])))
 );
 
-
 --
 -- Name: local_runtimes_id_seq; Type: SEQUENCE; Schema: public; Owner: -
 --
@@ -8300,13 +7655,11 @@ CREATE SEQUENCE public.local_runtimes_id_seq
     NO MAXVALUE
     CACHE 1;
 
-
 --
 -- Name: local_runtimes_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
 --
 
 ALTER SEQUENCE public.local_runtimes_id_seq OWNED BY public.local_runtimes.id;
-
 
 --
 -- Name: maas_credit_consumption_buckets; Type: TABLE; Schema: public; Owner: -
@@ -8319,7 +7672,6 @@ CREATE TABLE public.maas_credit_consumption_buckets (
     request_count integer DEFAULT 0 NOT NULL,
     updated_at timestamp with time zone DEFAULT now() NOT NULL
 );
-
 
 --
 -- Name: maas_settings; Type: TABLE; Schema: public; Owner: -
@@ -8342,7 +7694,6 @@ CREATE TABLE public.maas_settings (
     CONSTRAINT maas_settings_id_check CHECK ((id = 1))
 );
 
-
 --
 -- Name: memories_id_seq; Type: SEQUENCE; Schema: public; Owner: -
 --
@@ -8354,7 +7705,6 @@ CREATE SEQUENCE public.memories_id_seq
     NO MINVALUE
     NO MAXVALUE
     CACHE 1;
-
 
 --
 -- Name: model_aliases; Type: TABLE; Schema: public; Owner: -
@@ -8374,7 +7724,6 @@ CREATE TABLE public.model_aliases (
     CONSTRAINT model_aliases_status_check CHECK ((status = ANY (ARRAY['active'::text, 'disabled'::text, 'deprecated'::text, 'hidden'::text])))
 );
 
-
 --
 -- Name: model_aliases_id_seq; Type: SEQUENCE; Schema: public; Owner: -
 --
@@ -8386,13 +7735,11 @@ CREATE SEQUENCE public.model_aliases_id_seq
     NO MAXVALUE
     CACHE 1;
 
-
 --
 -- Name: model_aliases_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
 --
 
 ALTER SEQUENCE public.model_aliases_id_seq OWNED BY public.model_aliases.id;
-
 
 --
 -- Name: model_cost_per_task_view; Type: VIEW; Schema: public; Owner: -
@@ -8420,13 +7767,11 @@ CREATE VIEW public.model_cost_per_task_view AS
   WHERE (bucket >= (now() - '7 days'::interval))
   GROUP BY canonical_id, raw_model;
 
-
 --
 -- Name: VIEW model_cost_per_task_view; Type: COMMENT; Schema: public; Owner: -
 --
 
 COMMENT ON VIEW public.model_cost_per_task_view IS 'Auto route: per-model aggregated cost for last 7 days';
-
 
 --
 -- Name: model_credit_rates; Type: TABLE; Schema: public; Owner: -
@@ -8451,13 +7796,11 @@ CREATE TABLE public.model_credit_rates (
     manual_video boolean DEFAULT false NOT NULL
 );
 
-
 --
 -- Name: COLUMN model_credit_rates.credits_per_1m_image_tokens; Type: COMMENT; Schema: public; Owner: -
 --
 
 COMMENT ON COLUMN public.model_credit_rates.credits_per_1m_image_tokens IS '每 1M image_tokens 的 credit 单价（NULL/0 = 跟随全局基准），用于多模态视觉输入计费';
-
 
 --
 -- Name: COLUMN model_credit_rates.credits_per_1m_audio_tokens; Type: COMMENT; Schema: public; Owner: -
@@ -8465,13 +7808,11 @@ COMMENT ON COLUMN public.model_credit_rates.credits_per_1m_image_tokens IS '每 
 
 COMMENT ON COLUMN public.model_credit_rates.credits_per_1m_audio_tokens IS '每 1M audio_tokens 的 credit 单价，用于多模态音频输入/输出计费';
 
-
 --
 -- Name: COLUMN model_credit_rates.credits_per_1m_video_tokens; Type: COMMENT; Schema: public; Owner: -
 --
 
 COMMENT ON COLUMN public.model_credit_rates.credits_per_1m_video_tokens IS '每 1M video_tokens 的 credit 单价，用于多模态视频输入计费';
-
 
 --
 -- Name: COLUMN model_credit_rates.manual_image; Type: COMMENT; Schema: public; Owner: -
@@ -8479,20 +7820,17 @@ COMMENT ON COLUMN public.model_credit_rates.credits_per_1m_video_tokens IS '每 
 
 COMMENT ON COLUMN public.model_credit_rates.manual_image IS '图像维度是否手工定价；false = 跟随全局基准 × 折扣';
 
-
 --
 -- Name: COLUMN model_credit_rates.manual_audio; Type: COMMENT; Schema: public; Owner: -
 --
 
 COMMENT ON COLUMN public.model_credit_rates.manual_audio IS '音频维度是否手工定价；false = 跟随全局基准 × 折扣';
 
-
 --
 -- Name: COLUMN model_credit_rates.manual_video; Type: COMMENT; Schema: public; Owner: -
 --
 
 COMMENT ON COLUMN public.model_credit_rates.manual_video IS '视频维度是否手工定价；false = 跟随全局基准 × 折扣';
-
 
 --
 -- Name: model_discovery_runs; Type: TABLE; Schema: public; Owner: -
@@ -8515,7 +7853,6 @@ CREATE TABLE public.model_discovery_runs (
     CONSTRAINT chk_model_discovery_runs_trigger CHECK ((trigger = ANY (ARRAY['manual'::text, 'scheduled'::text, 'credential_added'::text])))
 );
 
-
 --
 -- Name: model_discovery_runs_id_seq; Type: SEQUENCE; Schema: public; Owner: -
 --
@@ -8527,13 +7864,11 @@ CREATE SEQUENCE public.model_discovery_runs_id_seq
     NO MAXVALUE
     CACHE 1;
 
-
 --
 -- Name: model_discovery_runs_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
 --
 
 ALTER SEQUENCE public.model_discovery_runs_id_seq OWNED BY public.model_discovery_runs.id;
-
 
 --
 -- Name: model_families; Type: TABLE; Schema: public; Owner: -
@@ -8551,7 +7886,6 @@ CREATE TABLE public.model_families (
     CONSTRAINT model_families_status_check CHECK ((status = ANY (ARRAY['active'::text, 'disabled'::text, 'deprecated'::text, 'hidden'::text])))
 );
 
-
 --
 -- Name: model_fingerprints; Type: TABLE; Schema: public; Owner: -
 --
@@ -8566,7 +7900,6 @@ CREATE TABLE public.model_fingerprints (
     drift_detected boolean DEFAULT false NOT NULL
 );
 
-
 --
 -- Name: model_fingerprints_id_seq; Type: SEQUENCE; Schema: public; Owner: -
 --
@@ -8578,13 +7911,11 @@ CREATE SEQUENCE public.model_fingerprints_id_seq
     NO MAXVALUE
     CACHE 1;
 
-
 --
 -- Name: model_fingerprints_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
 --
 
 ALTER SEQUENCE public.model_fingerprints_id_seq OWNED BY public.model_fingerprints.id;
-
 
 --
 -- Name: model_integrity_events; Type: TABLE; Schema: public; Owner: -
@@ -8615,7 +7946,6 @@ CREATE TABLE public.model_integrity_events (
     created_at timestamp with time zone DEFAULT now() NOT NULL
 );
 
-
 --
 -- Name: model_integrity_events_id_seq; Type: SEQUENCE; Schema: public; Owner: -
 --
@@ -8627,13 +7957,11 @@ CREATE SEQUENCE public.model_integrity_events_id_seq
     NO MAXVALUE
     CACHE 1;
 
-
 --
 -- Name: model_integrity_events_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
 --
 
 ALTER SEQUENCE public.model_integrity_events_id_seq OWNED BY public.model_integrity_events.id;
-
 
 --
 -- Name: model_lifecycle_jobs; Type: TABLE; Schema: public; Owner: -
@@ -8654,7 +7982,6 @@ CREATE TABLE public.model_lifecycle_jobs (
     CONSTRAINT model_lifecycle_jobs_status_check CHECK ((status = ANY (ARRAY['queued'::text, 'running'::text, 'success'::text, 'failed'::text, 'canceled'::text])))
 );
 
-
 --
 -- Name: model_lifecycle_jobs_id_seq; Type: SEQUENCE; Schema: public; Owner: -
 --
@@ -8666,13 +7993,11 @@ CREATE SEQUENCE public.model_lifecycle_jobs_id_seq
     NO MAXVALUE
     CACHE 1;
 
-
 --
 -- Name: model_lifecycle_jobs_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
 --
 
 ALTER SEQUENCE public.model_lifecycle_jobs_id_seq OWNED BY public.model_lifecycle_jobs.id;
-
 
 --
 -- Name: model_name_mapping; Type: TABLE; Schema: public; Owner: -
@@ -8689,13 +8014,11 @@ CREATE TABLE public.model_name_mapping (
     created_by text
 );
 
-
 --
 -- Name: TABLE model_name_mapping; Type: COMMENT; Schema: public; Owner: -
 --
 
 COMMENT ON TABLE public.model_name_mapping IS 'Maps raw model names (from provider APIs) to standardized names. Used when provider_models.standardized_name is empty.';
-
 
 --
 -- Name: model_name_mapping_id_seq; Type: SEQUENCE; Schema: public; Owner: -
@@ -8708,13 +8031,11 @@ CREATE SEQUENCE public.model_name_mapping_id_seq
     NO MAXVALUE
     CACHE 1;
 
-
 --
 -- Name: model_name_mapping_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
 --
 
 ALTER SEQUENCE public.model_name_mapping_id_seq OWNED BY public.model_name_mapping.id;
-
 
 SET default_table_access_method = columnar;
 
@@ -8737,7 +8058,6 @@ CREATE TABLE public.model_offer_events (
     run_id bigint,
     metadata_json jsonb
 );
-
 
 SET default_table_access_method = heap;
 
@@ -8764,13 +8084,11 @@ CREATE TABLE public.provider_models (
     CONSTRAINT provider_models_modality_check CHECK ((modality = ANY (ARRAY['text'::text, 'vision'::text, 'audio'::text, 'video'::text, 'multimodal'::text, 'embedding'::text])))
 );
 
-
 --
 -- Name: TABLE provider_models; Type: COMMENT; Schema: public; Owner: -
 --
 
 COMMENT ON TABLE public.provider_models IS 'Provider-exposed models: one row per (provider, raw_model_name)';
-
 
 --
 -- Name: COLUMN provider_models.canonical_id; Type: COMMENT; Schema: public; Owner: -
@@ -8778,13 +8096,11 @@ COMMENT ON TABLE public.provider_models IS 'Provider-exposed models: one row per
 
 COMMENT ON COLUMN public.provider_models.canonical_id IS 'FK to models_canonical.id for canonical name resolution';
 
-
 --
 -- Name: COLUMN provider_models.modality; Type: COMMENT; Schema: public; Owner: -
 --
 
 COMMENT ON COLUMN public.provider_models.modality IS 'Provider-specific modality fallback when models_canonical.modality is generic';
-
 
 --
 -- Name: model_offers; Type: VIEW; Schema: public; Owner: -
@@ -8825,7 +8141,6 @@ CREATE VIEW public.model_offers AS
    FROM (public.credential_model_bindings cmb
      JOIN public.provider_models pm ON ((pm.id = cmb.provider_model_id)));
 
-
 --
 -- Name: model_pricing; Type: TABLE; Schema: public; Owner: -
 --
@@ -8862,7 +8177,6 @@ CREATE TABLE public.model_pricing (
     CONSTRAINT positive_output_price CHECK ((output_credits_per_1m >= 0))
 );
 
-
 --
 -- Name: model_pricing_history; Type: TABLE; Schema: public; Owner: -
 --
@@ -8880,7 +8194,6 @@ CREATE TABLE public.model_pricing_history (
     created_at timestamp with time zone DEFAULT now() NOT NULL
 );
 
-
 --
 -- Name: model_pricing_history_id_seq; Type: SEQUENCE; Schema: public; Owner: -
 --
@@ -8893,7 +8206,6 @@ CREATE SEQUENCE public.model_pricing_history_id_seq
     NO MAXVALUE
     CACHE 1;
 
-
 --
 -- Name: model_pricing_id_seq; Type: SEQUENCE; Schema: public; Owner: -
 --
@@ -8905,7 +8217,6 @@ CREATE SEQUENCE public.model_pricing_id_seq
     NO MINVALUE
     NO MAXVALUE
     CACHE 1;
-
 
 --
 -- Name: model_probe_runs; Type: TABLE; Schema: public; Owner: -
@@ -8928,13 +8239,11 @@ CREATE TABLE public.model_probe_runs (
 )
 PARTITION BY RANGE (created_at);
 
-
 --
 -- Name: TABLE model_probe_runs; Type: COMMENT; Schema: public; Owner: -
 --
 
 COMMENT ON TABLE public.model_probe_runs IS 'Per-(credential, model) probe attempts. Drives the providers-page "auto-test" panel and the model-discovery failed-count badge.';
-
 
 SET default_table_access_method = columnar;
 
@@ -8959,7 +8268,6 @@ CREATE TABLE public.model_probe_runs_2026_07 (
 )
 WITH (autovacuum_enabled='true', autovacuum_vacuum_scale_factor='0.05', autovacuum_vacuum_threshold='10', autovacuum_analyze_scale_factor='0.02', autovacuum_analyze_threshold='50');
 
-
 SET default_table_access_method = heap;
 
 --
@@ -8982,7 +8290,6 @@ CREATE TABLE public.model_probe_runs_hot (
     created_at timestamp with time zone DEFAULT now()
 )
 WITH (fillfactor='90', autovacuum_enabled='true', autovacuum_vacuum_scale_factor='0.05', autovacuum_vacuum_threshold='10', autovacuum_analyze_scale_factor='0.02', autovacuum_analyze_threshold='50');
-
 
 --
 -- Name: model_probe_runs_with_current_month; Type: VIEW; Schema: public; Owner: -
@@ -9019,7 +8326,6 @@ UNION ALL
     model_probe_runs.created_at
    FROM public.model_probe_runs;
 
-
 --
 -- Name: VIEW model_probe_runs_with_current_month; Type: COMMENT; Schema: public; Owner: -
 --
@@ -9029,7 +8335,6 @@ COMMENT ON VIEW public.model_probe_runs_with_current_month IS 'Optimized query V
 - model_probe_runs: parent table (auto-aggregates all ATTACHED monthly partitions, columnar storage)
 PostgreSQL partition pruning applies to parent table queries.
 Created by migration 386 (2026-07-11).';
-
 
 --
 -- Name: model_probe_state; Type: TABLE; Schema: public; Owner: -
@@ -9071,13 +8376,11 @@ CREATE TABLE public.model_probe_state (
     CONSTRAINT check_probe_priority CHECK ((probe_priority = ANY (ARRAY['urgent'::text, 'suspicious'::text, 'failing'::text, 'recovering'::text, 'watchdog'::text])))
 );
 
-
 --
 -- Name: TABLE model_probe_state; Type: COMMENT; Schema: public; Owner: -
 --
 
 COMMENT ON TABLE public.model_probe_state IS 'Per-(credential, model) probe consensus state. 3 consecutive successes to recover; 3 consecutive failures to confirm-broken.';
-
 
 --
 -- Name: COLUMN model_probe_state.consecutive_successes; Type: COMMENT; Schema: public; Owner: -
@@ -9085,13 +8388,11 @@ COMMENT ON TABLE public.model_probe_state IS 'Per-(credential, model) probe cons
 
 COMMENT ON COLUMN public.model_probe_state.consecutive_successes IS 'Counter; resets to 0 on any failure. State flips to healthy_confirmed when this hits 3.';
 
-
 --
 -- Name: COLUMN model_probe_state.consecutive_failures; Type: COMMENT; Schema: public; Owner: -
 --
 
 COMMENT ON COLUMN public.model_probe_state.consecutive_failures IS 'Counter; resets to 0 on any success. Stops probing when this hits 3 (broken_confirmed).';
-
 
 --
 -- Name: COLUMN model_probe_state.verification_attempt_1_at; Type: COMMENT; Schema: public; Owner: -
@@ -9099,13 +8400,11 @@ COMMENT ON COLUMN public.model_probe_state.consecutive_failures IS 'Counter; res
 
 COMMENT ON COLUMN public.model_probe_state.verification_attempt_1_at IS '防闪断第一次验证时间（阈值触发后约2秒）';
 
-
 --
 -- Name: COLUMN model_probe_state.verification_attempt_2_at; Type: COMMENT; Schema: public; Owner: -
 --
 
 COMMENT ON COLUMN public.model_probe_state.verification_attempt_2_at IS '防闪断第二次验证时间（第一次后约3秒）';
-
 
 --
 -- Name: COLUMN model_probe_state.verification_result_1; Type: COMMENT; Schema: public; Owner: -
@@ -9113,13 +8412,11 @@ COMMENT ON COLUMN public.model_probe_state.verification_attempt_2_at IS '防闪�
 
 COMMENT ON COLUMN public.model_probe_state.verification_result_1 IS '第一次验证结果';
 
-
 --
 -- Name: COLUMN model_probe_state.verification_result_2; Type: COMMENT; Schema: public; Owner: -
 --
 
 COMMENT ON COLUMN public.model_probe_state.verification_result_2 IS '第二次验证结果';
-
 
 --
 -- Name: model_reconcile_log; Type: TABLE; Schema: public; Owner: -
@@ -9136,7 +8433,6 @@ CREATE TABLE public.model_reconcile_log (
     diff_json jsonb
 );
 
-
 --
 -- Name: model_reconcile_log_id_seq; Type: SEQUENCE; Schema: public; Owner: -
 --
@@ -9148,13 +8444,11 @@ CREATE SEQUENCE public.model_reconcile_log_id_seq
     NO MAXVALUE
     CACHE 1;
 
-
 --
 -- Name: model_reconcile_log_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
 --
 
 ALTER SEQUENCE public.model_reconcile_log_id_seq OWNED BY public.model_reconcile_log.id;
-
 
 --
 -- Name: model_task_index; Type: TABLE; Schema: public; Owner: -
@@ -9173,13 +8467,11 @@ CREATE TABLE public.model_task_index (
     updated_at timestamp with time zone DEFAULT now()
 );
 
-
 --
 -- Name: TABLE model_task_index; Type: COMMENT; Schema: public; Owner: -
 --
 
 COMMENT ON TABLE public.model_task_index IS 'Auto route: per-model-per-task 5min rolled-up performance (success/latency/cost)';
-
 
 --
 -- Name: models_canonical; Type: TABLE; Schema: public; Owner: -
@@ -9218,13 +8510,11 @@ CREATE TABLE public.models_canonical (
     CONSTRAINT models_canonical_status_check CHECK ((status = ANY (ARRAY['active'::text, 'disabled'::text, 'deprecated'::text, 'hidden'::text])))
 );
 
-
 --
 -- Name: COLUMN models_canonical.input_price_cny; Type: COMMENT; Schema: public; Owner: -
 --
 
 COMMENT ON COLUMN public.models_canonical.input_price_cny IS 'Input price in CNY per million tokens (0 = not set/unknown)';
-
 
 --
 -- Name: COLUMN models_canonical.output_price_cny; Type: COMMENT; Schema: public; Owner: -
@@ -9232,13 +8522,11 @@ COMMENT ON COLUMN public.models_canonical.input_price_cny IS 'Input price in CNY
 
 COMMENT ON COLUMN public.models_canonical.output_price_cny IS 'Output price in CNY per million tokens (0 = not set/unknown)';
 
-
 --
 -- Name: COLUMN models_canonical.released_at; Type: COMMENT; Schema: public; Owner: -
 --
 
 COMMENT ON COLUMN public.models_canonical.released_at IS '模型发布日期，用于 version_recency 评分维度（高难度任务偏好最新版，普通任务偏好次新版）';
-
 
 --
 -- Name: COLUMN models_canonical.strengths; Type: COMMENT; Schema: public; Owner: -
@@ -9246,13 +8534,11 @@ COMMENT ON COLUMN public.models_canonical.released_at IS '模型发布日期，�
 
 COMMENT ON COLUMN public.models_canonical.strengths IS '运营标注的优势方向数组，用于 strength_match 评分维度（比 tags 更精准）';
 
-
 --
 -- Name: COLUMN models_canonical.cost_tier; Type: COMMENT; Schema: public; Owner: -
 --
 
 COMMENT ON COLUMN public.models_canonical.cost_tier IS '成本粗评：free/low/medium/high/premium，用于快速筛选和展示';
-
 
 --
 -- Name: COLUMN models_canonical.multimodal_caps; Type: COMMENT; Schema: public; Owner: -
@@ -9260,13 +8546,11 @@ COMMENT ON COLUMN public.models_canonical.cost_tier IS '成本粗评：free/low/
 
 COMMENT ON COLUMN public.models_canonical.multimodal_caps IS '多模态能力细粒度标签：vision/audio/image_gen/video/embedding 等';
 
-
 --
 -- Name: COLUMN models_canonical.version_rank; Type: COMMENT; Schema: public; Owner: -
 --
 
 COMMENT ON COLUMN public.models_canonical.version_rank IS '版本级次：1=最新, 2=次新, 3=稳定版... 用于路由策略（普通任务偏次新，高难度偏最新）';
-
 
 --
 -- Name: COLUMN models_canonical.complexity_ceiling; Type: COMMENT; Schema: public; Owner: -
@@ -9274,20 +8558,17 @@ COMMENT ON COLUMN public.models_canonical.version_rank IS '版本级次：1=最�
 
 COMMENT ON COLUMN public.models_canonical.complexity_ceiling IS '模型能稳定胜任的最高任务难度（easy/medium/hard/frontier）；NULL=不参与复杂度过滤。auto 路由在 auto_complexity_score=true 时剔除任务难度>ceiling 的候选。';
 
-
 --
 -- Name: COLUMN models_canonical.min_complexity; Type: COMMENT; Schema: public; Owner: -
 --
 
 COMMENT ON COLUMN public.models_canonical.min_complexity IS '模型不应承接的难度下限；NULL=不过滤。避免 frontier 模型承接简单 chat 请求。';
 
-
 --
 -- Name: CONSTRAINT models_canonical_modality_check ON models_canonical; Type: COMMENT; Schema: public; Owner: -
 --
 
 COMMENT ON CONSTRAINT models_canonical_modality_check ON public.models_canonical IS 'Allowed modality values: text/vision/audio/video/multimodal/embedding. Updated 2026-07-20 (migration 451) to add video support — fixes the contract mismatch with domains/streaming/modality_detect.go which can return modality=video.';
-
 
 --
 -- Name: models_canonical_id_seq; Type: SEQUENCE; Schema: public; Owner: -
@@ -9300,13 +8581,11 @@ CREATE SEQUENCE public.models_canonical_id_seq
     NO MAXVALUE
     CACHE 1;
 
-
 --
 -- Name: models_canonical_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
 --
 
 ALTER SEQUENCE public.models_canonical_id_seq OWNED BY public.models_canonical.id;
-
 
 --
 -- Name: node_probe_runs; Type: TABLE; Schema: public; Owner: -
@@ -9348,13 +8627,11 @@ CREATE TABLE public.node_probe_runs (
     CONSTRAINT node_probe_runs_trigger_kind_check CHECK ((trigger_kind = ANY (ARRAY['request_failure'::text, 'manual'::text, 'credential_recovery'::text, 'sync_request'::text])))
 );
 
-
 --
 -- Name: COLUMN node_probe_runs.api_model; Type: COMMENT; Schema: public; Owner: -
 --
 
 COMMENT ON COLUMN public.node_probe_runs.api_model IS '用户请求的标准模型名（如 gpt-5.6-luna）';
-
 
 --
 -- Name: COLUMN node_probe_runs.outbound_model; Type: COMMENT; Schema: public; Owner: -
@@ -9362,13 +8639,11 @@ COMMENT ON COLUMN public.node_probe_runs.api_model IS '用户请求的标准模�
 
 COMMENT ON COLUMN public.node_probe_runs.outbound_model IS '发送给provider的outbound模型名';
 
-
 --
 -- Name: COLUMN node_probe_runs.provider_id; Type: COMMENT; Schema: public; Owner: -
 --
 
 COMMENT ON COLUMN public.node_probe_runs.provider_id IS 'provider ID';
-
 
 --
 -- Name: COLUMN node_probe_runs.request_url; Type: COMMENT; Schema: public; Owner: -
@@ -9376,13 +8651,11 @@ COMMENT ON COLUMN public.node_probe_runs.provider_id IS 'provider ID';
 
 COMMENT ON COLUMN public.node_probe_runs.request_url IS 'probe请求的完整URL';
 
-
 --
 -- Name: COLUMN node_probe_runs.request_headers; Type: COMMENT; Schema: public; Owner: -
 --
 
 COMMENT ON COLUMN public.node_probe_runs.request_headers IS '请求头（已脱敏，不含Authorization/x-api-key）';
-
 
 --
 -- Name: COLUMN node_probe_runs.request_body; Type: COMMENT; Schema: public; Owner: -
@@ -9390,13 +8663,11 @@ COMMENT ON COLUMN public.node_probe_runs.request_headers IS '请求头（已脱�
 
 COMMENT ON COLUMN public.node_probe_runs.request_body IS 'probe请求的body';
 
-
 --
 -- Name: COLUMN node_probe_runs.response_body; Type: COMMENT; Schema: public; Owner: -
 --
 
 COMMENT ON COLUMN public.node_probe_runs.response_body IS '响应body前512字节';
-
 
 --
 -- Name: COLUMN node_probe_runs.timeout_at_ms; Type: COMMENT; Schema: public; Owner: -
@@ -9404,20 +8675,17 @@ COMMENT ON COLUMN public.node_probe_runs.response_body IS '响应body前512字�
 
 COMMENT ON COLUMN public.node_probe_runs.timeout_at_ms IS '如果超时，记录超时时长（毫秒）';
 
-
 --
 -- Name: COLUMN node_probe_runs.via_proxy; Type: COMMENT; Schema: public; Owner: -
 --
 
 COMMENT ON COLUMN public.node_probe_runs.via_proxy IS 'probeDirect是否通过HTTP代理';
 
-
 --
 -- Name: CONSTRAINT node_probe_runs_trigger_kind_check ON node_probe_runs; Type: COMMENT; Schema: public; Owner: -
 --
 
 COMMENT ON CONSTRAINT node_probe_runs_trigger_kind_check ON public.node_probe_runs IS '425: trigger_kind 枚举扩展 —— 新增 sync_request（同步探测，由 inbound 请求 no_candidate 路径发起）';
-
 
 --
 -- Name: node_probe_runs_id_seq; Type: SEQUENCE; Schema: public; Owner: -
@@ -9431,7 +8699,6 @@ ALTER TABLE public.node_probe_runs ALTER COLUMN id ADD GENERATED ALWAYS AS IDENT
     NO MAXVALUE
     CACHE 1
 );
-
 
 --
 -- Name: node_probe_state; Type: TABLE; Schema: public; Owner: -
@@ -9455,13 +8722,11 @@ CREATE TABLE public.node_probe_state (
     updated_at timestamp with time zone DEFAULT now() NOT NULL
 );
 
-
 --
 -- Name: TABLE node_probe_state; Type: COMMENT; Schema: public; Owner: -
 --
 
 COMMENT ON TABLE public.node_probe_state IS '341: per (credential, model) node-probe state machine. 7-step backoff ladder, paused after attempt=7 (24h cap).';
-
 
 --
 -- Name: node_stats; Type: TABLE; Schema: public; Owner: -
@@ -9477,7 +8742,6 @@ CREATE TABLE public.node_stats (
     updated_at timestamp with time zone DEFAULT now()
 );
 
-
 --
 -- Name: node_stats_id_seq; Type: SEQUENCE; Schema: public; Owner: -
 --
@@ -9489,13 +8753,11 @@ CREATE SEQUENCE public.node_stats_id_seq
     NO MAXVALUE
     CACHE 1;
 
-
 --
 -- Name: node_stats_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
 --
 
 ALTER SEQUENCE public.node_stats_id_seq OWNED BY public.node_stats.id;
-
 
 --
 -- Name: offline_activation_requests; Type: TABLE; Schema: public; Owner: -
@@ -9513,7 +8775,6 @@ CREATE TABLE public.offline_activation_requests (
     signed_license jsonb
 );
 
-
 --
 -- Name: offline_activation_requests_id_seq; Type: SEQUENCE; Schema: public; Owner: -
 --
@@ -9525,13 +8786,11 @@ CREATE SEQUENCE public.offline_activation_requests_id_seq
     NO MAXVALUE
     CACHE 1;
 
-
 --
 -- Name: offline_activation_requests_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
 --
 
 ALTER SEQUENCE public.offline_activation_requests_id_seq OWNED BY public.offline_activation_requests.id;
-
 
 --
 -- Name: ops_node_registrations; Type: TABLE; Schema: public; Owner: -
@@ -9556,7 +8815,6 @@ CREATE TABLE public.ops_node_registrations (
     CONSTRAINT ops_node_registrations_status_check CHECK ((status = ANY (ARRAY['active'::text, 'revoked'::text])))
 );
 
-
 --
 -- Name: ops_node_registrations_id_seq; Type: SEQUENCE; Schema: public; Owner: -
 --
@@ -9568,13 +8826,11 @@ CREATE SEQUENCE public.ops_node_registrations_id_seq
     NO MAXVALUE
     CACHE 1;
 
-
 --
 -- Name: ops_node_registrations_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
 --
 
 ALTER SEQUENCE public.ops_node_registrations_id_seq OWNED BY public.ops_node_registrations.id;
-
 
 --
 -- Name: output_compliance_audit; Type: TABLE; Schema: public; Owner: -
@@ -9609,20 +8865,17 @@ CREATE TABLE public.output_compliance_audit (
     CONSTRAINT output_compliance_audit_severity_check CHECK (((severity >= 1) AND (severity <= 10)))
 );
 
-
 --
 -- Name: COLUMN output_compliance_audit.exception_matched; Type: COMMENT; Schema: public; Owner: -
 --
 
 COMMENT ON COLUMN public.output_compliance_audit.exception_matched IS '是否因身份感知例外规则被跳过脱敏/阻断';
 
-
 --
 -- Name: COLUMN output_compliance_audit.skill_suggestion; Type: COMMENT; Schema: public; Owner: -
 --
 
 COMMENT ON COLUMN public.output_compliance_audit.skill_suggestion IS 'skill_generation_enabled=true 时自动生成的合规改写建议';
-
 
 --
 -- Name: output_compliance_audit_id_seq; Type: SEQUENCE; Schema: public; Owner: -
@@ -9635,13 +8888,11 @@ CREATE SEQUENCE public.output_compliance_audit_id_seq
     NO MAXVALUE
     CACHE 1;
 
-
 --
 -- Name: output_compliance_audit_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
 --
 
 ALTER SEQUENCE public.output_compliance_audit_id_seq OWNED BY public.output_compliance_audit.id;
-
 
 --
 -- Name: output_compliance_custom_keywords; Type: TABLE; Schema: public; Owner: -
@@ -9664,13 +8915,11 @@ CREATE TABLE public.output_compliance_custom_keywords (
     CONSTRAINT output_compliance_custom_keywords_severity_check CHECK (((severity >= 1) AND (severity <= 10)))
 );
 
-
 --
 -- Name: TABLE output_compliance_custom_keywords; Type: COMMENT; Schema: public; Owner: -
 --
 
 COMMENT ON TABLE public.output_compliance_custom_keywords IS '输出合规自定义敏感词库 - 租户级';
-
 
 --
 -- Name: output_compliance_custom_keywords_id_seq; Type: SEQUENCE; Schema: public; Owner: -
@@ -9684,13 +8933,11 @@ CREATE SEQUENCE public.output_compliance_custom_keywords_id_seq
     NO MAXVALUE
     CACHE 1;
 
-
 --
 -- Name: output_compliance_custom_keywords_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
 --
 
 ALTER SEQUENCE public.output_compliance_custom_keywords_id_seq OWNED BY public.output_compliance_custom_keywords.id;
-
 
 --
 -- Name: output_compliance_feedback; Type: TABLE; Schema: public; Owner: -
@@ -9707,7 +8954,6 @@ CREATE TABLE public.output_compliance_feedback (
     CONSTRAINT output_compliance_feedback_feedback_type_check CHECK (((feedback_type)::text = ANY ((ARRAY['false_positive'::character varying, 'false_negative'::character varying, 'correct'::character varying])::text[])))
 );
 
-
 --
 -- Name: output_compliance_feedback_id_seq; Type: SEQUENCE; Schema: public; Owner: -
 --
@@ -9719,13 +8965,11 @@ CREATE SEQUENCE public.output_compliance_feedback_id_seq
     NO MAXVALUE
     CACHE 1;
 
-
 --
 -- Name: output_compliance_feedback_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
 --
 
 ALTER SEQUENCE public.output_compliance_feedback_id_seq OWNED BY public.output_compliance_feedback.id;
-
 
 --
 -- Name: output_compliance_policies; Type: TABLE; Schema: public; Owner: -
@@ -9808,13 +9052,11 @@ CREATE TABLE public.output_compliance_policies (
     CONSTRAINT output_compliance_policies_toxicity_engine_check CHECK (((toxicity_engine)::text = ANY ((ARRAY['keyword'::character varying, 'model'::character varying, 'hybrid'::character varying])::text[])))
 );
 
-
 --
 -- Name: COLUMN output_compliance_policies.llm_engine_id; Type: COMMENT; Schema: public; Owner: -
 --
 
 COMMENT ON COLUMN public.output_compliance_policies.llm_engine_id IS '用于幻觉/偏见评估的 LLM 引擎 ID（可关联 prompt_injection_llm_engines）';
-
 
 --
 -- Name: COLUMN output_compliance_policies.pii_engine; Type: COMMENT; Schema: public; Owner: -
@@ -9822,13 +9064,11 @@ COMMENT ON COLUMN public.output_compliance_policies.llm_engine_id IS '用于幻�
 
 COMMENT ON COLUMN public.output_compliance_policies.pii_engine IS 'PII 检测引擎：regex / model / hybrid';
 
-
 --
 -- Name: COLUMN output_compliance_policies.toxicity_engine; Type: COMMENT; Schema: public; Owner: -
 --
 
 COMMENT ON COLUMN public.output_compliance_policies.toxicity_engine IS '毒性检测引擎：keyword / model / hybrid';
-
 
 --
 -- Name: COLUMN output_compliance_policies.check_secrets; Type: COMMENT; Schema: public; Owner: -
@@ -9836,13 +9076,11 @@ COMMENT ON COLUMN public.output_compliance_policies.toxicity_engine IS '毒性�
 
 COMMENT ON COLUMN public.output_compliance_policies.check_secrets IS '检测 API Key、私钥、Token 等凭据';
 
-
 --
 -- Name: COLUMN output_compliance_policies.check_internal_ip; Type: COMMENT; Schema: public; Owner: -
 --
 
 COMMENT ON COLUMN public.output_compliance_policies.check_internal_ip IS '检测内网 IP（RFC1918）';
-
 
 --
 -- Name: COLUMN output_compliance_policies.check_jailbreak_response; Type: COMMENT; Schema: public; Owner: -
@@ -9850,13 +9088,11 @@ COMMENT ON COLUMN public.output_compliance_policies.check_internal_ip IS '检测
 
 COMMENT ON COLUMN public.output_compliance_policies.check_jailbreak_response IS '检测模型是否输出越狱/被注入后的异常响应';
 
-
 --
 -- Name: COLUMN output_compliance_policies.check_instruction_injection_response; Type: COMMENT; Schema: public; Owner: -
 --
 
 COMMENT ON COLUMN public.output_compliance_policies.check_instruction_injection_response IS '检测模型输出是否泄露系统提示或被注入指令触发';
-
 
 --
 -- Name: COLUMN output_compliance_policies.exception_rules; Type: COMMENT; Schema: public; Owner: -
@@ -9864,13 +9100,11 @@ COMMENT ON COLUMN public.output_compliance_policies.check_instruction_injection_
 
 COMMENT ON COLUMN public.output_compliance_policies.exception_rules IS '身份感知例外规则（owner_user/role/application_code等）';
 
-
 --
 -- Name: COLUMN output_compliance_policies.notification_channels; Type: COMMENT; Schema: public; Owner: -
 --
 
 COMMENT ON COLUMN public.output_compliance_policies.notification_channels IS '告警通道配置（webhook/lark/email）';
-
 
 --
 -- Name: COLUMN output_compliance_policies.skill_generation_enabled; Type: COMMENT; Schema: public; Owner: -
@@ -9878,13 +9112,11 @@ COMMENT ON COLUMN public.output_compliance_policies.notification_channels IS '�
 
 COMMENT ON COLUMN public.output_compliance_policies.skill_generation_enabled IS '命中后自动生成安全改写建议/团队技能';
 
-
 --
 -- Name: COLUMN output_compliance_policies.retention_days; Type: COMMENT; Schema: public; Owner: -
 --
 
 COMMENT ON COLUMN public.output_compliance_policies.retention_days IS '审计日志保留天数，0 表示永久保留';
-
 
 --
 -- Name: output_compliance_policies_id_seq; Type: SEQUENCE; Schema: public; Owner: -
@@ -9898,13 +9130,11 @@ CREATE SEQUENCE public.output_compliance_policies_id_seq
     NO MAXVALUE
     CACHE 1;
 
-
 --
 -- Name: output_compliance_policies_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
 --
 
 ALTER SEQUENCE public.output_compliance_policies_id_seq OWNED BY public.output_compliance_policies.id;
-
 
 --
 -- Name: output_compliance_review_queue; Type: TABLE; Schema: public; Owner: -
@@ -9927,7 +9157,6 @@ CREATE TABLE public.output_compliance_review_queue (
     CONSTRAINT output_compliance_review_queue_status_check CHECK (((status)::text = ANY ((ARRAY['pending'::character varying, 'approved'::character varying, 'rejected'::character varying])::text[])))
 );
 
-
 --
 -- Name: output_compliance_review_queue_id_seq; Type: SEQUENCE; Schema: public; Owner: -
 --
@@ -9940,13 +9169,11 @@ CREATE SEQUENCE public.output_compliance_review_queue_id_seq
     NO MAXVALUE
     CACHE 1;
 
-
 --
 -- Name: output_compliance_review_queue_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
 --
 
 ALTER SEQUENCE public.output_compliance_review_queue_id_seq OWNED BY public.output_compliance_review_queue.id;
-
 
 --
 -- Name: output_compliance_stats_today; Type: VIEW; Schema: public; Owner: -
@@ -9966,7 +9193,6 @@ CREATE VIEW public.output_compliance_stats_today AS
    FROM public.output_compliance_audit
   WHERE (detected_at >= CURRENT_DATE)
   GROUP BY tenant_id;
-
 
 --
 -- Name: passive_probe_state; Type: TABLE; Schema: public; Owner: -
@@ -9988,13 +9214,11 @@ CREATE TABLE public.passive_probe_state (
     last_response_body_preview text
 );
 
-
 --
 -- Name: TABLE passive_probe_state; Type: COMMENT; Schema: public; Owner: -
 --
 
 COMMENT ON TABLE public.passive_probe_state IS 'v5: Passive observation state for Layer 5. Accumulates consecutive errors from request_logs for the secondary-verification trigger (consecutive>=3 or error_rate>=0.6).';
-
 
 --
 -- Name: pii_patterns; Type: TABLE; Schema: public; Owner: -
@@ -10012,7 +9236,6 @@ CREATE TABLE public.pii_patterns (
     created_at timestamp with time zone DEFAULT now()
 );
 
-
 --
 -- Name: pii_patterns_id_seq; Type: SEQUENCE; Schema: public; Owner: -
 --
@@ -10025,13 +9248,11 @@ CREATE SEQUENCE public.pii_patterns_id_seq
     NO MAXVALUE
     CACHE 1;
 
-
 --
 -- Name: pii_patterns_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
 --
 
 ALTER SEQUENCE public.pii_patterns_id_seq OWNED BY public.pii_patterns.id;
-
 
 SET default_table_access_method = columnar;
 
@@ -10048,7 +9269,6 @@ CREATE TABLE public.price_change_events (
     notify_channel text,
     applied boolean
 );
-
 
 SET default_table_access_method = heap;
 
@@ -10078,13 +9298,11 @@ CREATE TABLE public.pricing_plans (
     CONSTRAINT pricing_plans_source_check CHECK ((source = ANY (ARRAY['manual'::text, 'seed'::text, 'litellm'::text, 'scraped'::text, 'catalog'::text])))
 );
 
-
 --
 -- Name: COLUMN pricing_plans.plan_type; Type: COMMENT; Schema: public; Owner: -
 --
 
 COMMENT ON COLUMN public.pricing_plans.plan_type IS 'Plan type: token (PAYG per-1M) | token_plan (prepaid credits/package, NEW 2026-06-12) | code_plan (subscription) | agent_plan (agent bundle) | seat (per seat) | request (per request) | compute_time | flat_quota | free';
-
 
 --
 -- Name: pricing_plans_id_seq; Type: SEQUENCE; Schema: public; Owner: -
@@ -10097,13 +9315,11 @@ CREATE SEQUENCE public.pricing_plans_id_seq
     NO MAXVALUE
     CACHE 1;
 
-
 --
 -- Name: pricing_plans_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
 --
 
 ALTER SEQUENCE public.pricing_plans_id_seq OWNED BY public.pricing_plans.id;
-
 
 --
 -- Name: pricing_refresh_log; Type: TABLE; Schema: public; Owner: -
@@ -10128,13 +9344,11 @@ CREATE TABLE public.pricing_refresh_log (
     created_at timestamp with time zone DEFAULT now() NOT NULL
 );
 
-
 --
 -- Name: TABLE pricing_refresh_log; Type: COMMENT; Schema: public; Owner: -
 --
 
 COMMENT ON TABLE public.pricing_refresh_log IS 'Audit log for monthly pricing refresh cron job. Each run inserts one row.';
-
 
 --
 -- Name: COLUMN pricing_refresh_log.before_summary; Type: COMMENT; Schema: public; Owner: -
@@ -10142,13 +9356,11 @@ COMMENT ON TABLE public.pricing_refresh_log IS 'Audit log for monthly pricing re
 
 COMMENT ON COLUMN public.pricing_refresh_log.before_summary IS 'pricing/summary response BEFORE refresh (pricing_plans + cmb state)';
 
-
 --
 -- Name: COLUMN pricing_refresh_log.after_summary; Type: COMMENT; Schema: public; Owner: -
 --
 
 COMMENT ON COLUMN public.pricing_refresh_log.after_summary IS 'pricing/summary response AFTER refresh';
-
 
 --
 -- Name: COLUMN pricing_refresh_log.diff_count; Type: COMMENT; Schema: public; Owner: -
@@ -10156,13 +9368,11 @@ COMMENT ON COLUMN public.pricing_refresh_log.after_summary IS 'pricing/summary r
 
 COMMENT ON COLUMN public.pricing_refresh_log.diff_count IS 'Total offers changed (new + removed + changed)';
 
-
 --
 -- Name: COLUMN pricing_refresh_log.artifacts_path; Type: COMMENT; Schema: public; Owner: -
 --
 
 COMMENT ON COLUMN public.pricing_refresh_log.artifacts_path IS 'PVC path containing fetch.log, tier-pricing.csv, summary_*.json';
-
 
 --
 -- Name: pricing_refresh_log_id_seq; Type: SEQUENCE; Schema: public; Owner: -
@@ -10175,13 +9385,11 @@ CREATE SEQUENCE public.pricing_refresh_log_id_seq
     NO MAXVALUE
     CACHE 1;
 
-
 --
 -- Name: pricing_refresh_log_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
 --
 
 ALTER SEQUENCE public.pricing_refresh_log_id_seq OWNED BY public.pricing_refresh_log.id;
-
 
 --
 -- Name: product_module_features; Type: TABLE; Schema: public; Owner: -
@@ -10198,7 +9406,6 @@ CREATE TABLE public.product_module_features (
     created_at timestamp with time zone DEFAULT now() NOT NULL
 );
 
-
 --
 -- Name: product_module_features_id_seq; Type: SEQUENCE; Schema: public; Owner: -
 --
@@ -10211,13 +9418,11 @@ CREATE SEQUENCE public.product_module_features_id_seq
     NO MAXVALUE
     CACHE 1;
 
-
 --
 -- Name: product_module_features_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
 --
 
 ALTER SEQUENCE public.product_module_features_id_seq OWNED BY public.product_module_features.id;
-
 
 --
 -- Name: product_modules; Type: TABLE; Schema: public; Owner: -
@@ -10238,7 +9443,6 @@ CREATE TABLE public.product_modules (
     updated_at timestamp with time zone DEFAULT now() NOT NULL
 );
 
-
 --
 -- Name: product_modules_id_seq; Type: SEQUENCE; Schema: public; Owner: -
 --
@@ -10251,13 +9455,11 @@ CREATE SEQUENCE public.product_modules_id_seq
     NO MAXVALUE
     CACHE 1;
 
-
 --
 -- Name: product_modules_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
 --
 
 ALTER SEQUENCE public.product_modules_id_seq OWNED BY public.product_modules.id;
-
 
 --
 -- Name: prompt_injection_detections; Type: TABLE; Schema: public; Owner: -
@@ -10293,7 +9495,6 @@ CREATE TABLE public.prompt_injection_detections (
     CONSTRAINT prompt_injection_detections_risk_level_check CHECK (((risk_level >= 1) AND (risk_level <= 10)))
 );
 
-
 --
 -- Name: prompt_injection_detections_id_seq; Type: SEQUENCE; Schema: public; Owner: -
 --
@@ -10305,13 +9506,11 @@ CREATE SEQUENCE public.prompt_injection_detections_id_seq
     NO MAXVALUE
     CACHE 1;
 
-
 --
 -- Name: prompt_injection_detections_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
 --
 
 ALTER SEQUENCE public.prompt_injection_detections_id_seq OWNED BY public.prompt_injection_detections.id;
-
 
 --
 -- Name: prompt_injection_llm_engines; Type: TABLE; Schema: public; Owner: -
@@ -10346,13 +9545,11 @@ CREATE TABLE public.prompt_injection_llm_engines (
     CONSTRAINT prompt_injection_llm_engines_timeout_ms_check CHECK ((timeout_ms > 0))
 );
 
-
 --
 -- Name: TABLE prompt_injection_llm_engines; Type: COMMENT; Schema: public; Owner: -
 --
 
 COMMENT ON TABLE public.prompt_injection_llm_engines IS '提示词注入 LLM 检测引擎配置 - 支持多引擎选择和故障转移';
-
 
 --
 -- Name: prompt_injection_llm_engines_id_seq; Type: SEQUENCE; Schema: public; Owner: -
@@ -10366,13 +9563,11 @@ CREATE SEQUENCE public.prompt_injection_llm_engines_id_seq
     NO MAXVALUE
     CACHE 1;
 
-
 --
 -- Name: prompt_injection_llm_engines_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
 --
 
 ALTER SEQUENCE public.prompt_injection_llm_engines_id_seq OWNED BY public.prompt_injection_llm_engines.id;
-
 
 --
 -- Name: prompt_injection_policies_id_seq; Type: SEQUENCE; Schema: public; Owner: -
@@ -10386,13 +9581,11 @@ CREATE SEQUENCE public.prompt_injection_policies_id_seq
     NO MAXVALUE
     CACHE 1;
 
-
 --
 -- Name: prompt_injection_policies_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
 --
 
 ALTER SEQUENCE public.prompt_injection_policies_id_seq OWNED BY public.prompt_injection_policies.id;
-
 
 --
 -- Name: prompt_injection_rules; Type: TABLE; Schema: public; Owner: -
@@ -10419,20 +9612,17 @@ CREATE TABLE public.prompt_injection_rules (
     CONSTRAINT prompt_injection_rules_severity_check CHECK (((severity >= 1) AND (severity <= 10)))
 );
 
-
 --
 -- Name: COLUMN prompt_injection_rules.action_override; Type: COMMENT; Schema: public; Owner: -
 --
 
 COMMENT ON COLUMN public.prompt_injection_rules.action_override IS '规则级动作覆盖（优先于等级矩阵）';
 
-
 --
 -- Name: COLUMN prompt_injection_rules.is_system; Type: COMMENT; Schema: public; Owner: -
 --
 
 COMMENT ON COLUMN public.prompt_injection_rules.is_system IS '是否系统预置规则（不可删除，可禁用）';
-
 
 --
 -- Name: prompt_injection_rules_id_seq; Type: SEQUENCE; Schema: public; Owner: -
@@ -10446,13 +9636,11 @@ CREATE SEQUENCE public.prompt_injection_rules_id_seq
     NO MAXVALUE
     CACHE 1;
 
-
 --
 -- Name: prompt_injection_rules_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
 --
 
 ALTER SEQUENCE public.prompt_injection_rules_id_seq OWNED BY public.prompt_injection_rules.id;
-
 
 --
 -- Name: prompt_injection_stats_today; Type: VIEW; Schema: public; Owner: -
@@ -10471,7 +9659,6 @@ CREATE VIEW public.prompt_injection_stats_today AS
    FROM public.prompt_injection_detections
   WHERE (detected_at >= CURRENT_DATE)
   GROUP BY tenant_id;
-
 
 --
 -- Name: provider_catalog; Type: TABLE; Schema: public; Owner: -
@@ -10510,13 +9697,11 @@ CREATE TABLE public.provider_catalog (
     CONSTRAINT provider_catalog_tier_check CHECK ((tier = ANY (ARRAY['tier1'::text, 'tier2'::text, 'local'::text, 'restricted'::text])))
 );
 
-
 --
 -- Name: COLUMN provider_catalog.models_endpoint_template; Type: COMMENT; Schema: public; Owner: -
 --
 
 COMMENT ON COLUMN public.provider_catalog.models_endpoint_template IS '模型清单 API 模板：NULL=自动推导；/models 或 /v1/models 追加到 base_url；https://… 全 URL；空串=仅 manifest';
-
 
 --
 -- Name: COLUMN provider_catalog.capabilities; Type: COMMENT; Schema: public; Owner: -
@@ -10524,13 +9709,11 @@ COMMENT ON COLUMN public.provider_catalog.models_endpoint_template IS '模型清
 
 COMMENT ON COLUMN public.provider_catalog.capabilities IS 'Per-catalog capability flags and request sanitization config';
 
-
 --
 -- Name: COLUMN provider_catalog.vendor_name; Type: COMMENT; Schema: public; Owner: -
 --
 
 COMMENT ON COLUMN public.provider_catalog.vendor_name IS 'Human-readable vendor name for grouped view, e.g. "OpenAI", "Anthropic", "DeepSeek"';
-
 
 --
 -- Name: provider_cost_reconciliation; Type: TABLE; Schema: public; Owner: -
@@ -10556,20 +9739,17 @@ CREATE TABLE public.provider_cost_reconciliation (
     updated_at timestamp with time zone DEFAULT now()
 );
 
-
 --
 -- Name: TABLE provider_cost_reconciliation; Type: COMMENT; Schema: public; Owner: -
 --
 
 COMMENT ON TABLE public.provider_cost_reconciliation IS '供应商费用对账数据（月度）';
 
-
 --
 -- Name: COLUMN provider_cost_reconciliation.data_source; Type: COMMENT; Schema: public; Owner: -
 --
 
 COMMENT ON COLUMN public.provider_cost_reconciliation.data_source IS '数据来源：api(自动获取)/manual(手动录入)';
-
 
 --
 -- Name: provider_cost_reconciliation_id_seq; Type: SEQUENCE; Schema: public; Owner: -
@@ -10582,13 +9762,11 @@ CREATE SEQUENCE public.provider_cost_reconciliation_id_seq
     NO MAXVALUE
     CACHE 1;
 
-
 --
 -- Name: provider_cost_reconciliation_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
 --
 
 ALTER SEQUENCE public.provider_cost_reconciliation_id_seq OWNED BY public.provider_cost_reconciliation.id;
-
 
 --
 -- Name: provider_credibility_tests; Type: TABLE; Schema: public; Owner: -
@@ -10610,20 +9788,17 @@ CREATE TABLE public.provider_credibility_tests (
     created_at timestamp with time zone DEFAULT now()
 );
 
-
 --
 -- Name: TABLE provider_credibility_tests; Type: COMMENT; Schema: public; Owner: -
 --
 
 COMMENT ON TABLE public.provider_credibility_tests IS '模型可信度测试详细记录';
 
-
 --
 -- Name: COLUMN provider_credibility_tests.test_type; Type: COMMENT; Schema: public; Owner: -
 --
 
 COMMENT ON COLUMN public.provider_credibility_tests.test_type IS '测试类型：capability_probe(能力探针)/cost_analysis(成本倒推)/standard_testset(标准测试集)/fingerprint(输出指纹)';
-
 
 --
 -- Name: provider_credibility_tests_id_seq; Type: SEQUENCE; Schema: public; Owner: -
@@ -10636,13 +9811,11 @@ CREATE SEQUENCE public.provider_credibility_tests_id_seq
     NO MAXVALUE
     CACHE 1;
 
-
 --
 -- Name: provider_credibility_tests_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
 --
 
 ALTER SEQUENCE public.provider_credibility_tests_id_seq OWNED BY public.provider_credibility_tests.id;
-
 
 --
 -- Name: provider_error_details; Type: TABLE; Schema: public; Owner: -
@@ -10671,20 +9844,17 @@ CREATE TABLE public.provider_error_details (
     updated_at timestamp with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL
 );
 
-
 --
 -- Name: TABLE provider_error_details; Type: COMMENT; Schema: public; Owner: -
 --
 
 COMMENT ON TABLE public.provider_error_details IS '供应商错误详情聚合表 - 用于根因分析和错误趋势';
 
-
 --
 -- Name: COLUMN provider_error_details.occurrences; Type: COMMENT; Schema: public; Owner: -
 --
 
 COMMENT ON COLUMN public.provider_error_details.occurrences IS '相同错误的出现次数';
-
 
 --
 -- Name: provider_error_details_id_seq; Type: SEQUENCE; Schema: public; Owner: -
@@ -10697,13 +9867,11 @@ CREATE SEQUENCE public.provider_error_details_id_seq
     NO MAXVALUE
     CACHE 1;
 
-
 --
 -- Name: provider_error_details_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
 --
 
 ALTER SEQUENCE public.provider_error_details_id_seq OWNED BY public.provider_error_details.id;
-
 
 --
 -- Name: provider_error_distribution; Type: VIEW; Schema: public; Owner: -
@@ -10722,13 +9890,11 @@ CREATE VIEW public.provider_error_distribution AS
   GROUP BY provider_id, error_type, error_code
   ORDER BY (sum(occurrences)) DESC;
 
-
 --
 -- Name: VIEW provider_error_distribution; Type: COMMENT; Schema: public; Owner: -
 --
 
 COMMENT ON VIEW public.provider_error_distribution IS '24小时错误分布统计 - 用于错误分析';
-
 
 SET default_table_access_method = columnar;
 
@@ -10743,7 +9909,6 @@ CREATE TABLE public.provider_events (
     payload_json jsonb,
     ts timestamp with time zone
 );
-
 
 SET default_table_access_method = heap;
 
@@ -10763,7 +9928,6 @@ CREATE TABLE public.provider_header_profiles (
     updated_at timestamp with time zone DEFAULT now() NOT NULL
 );
 
-
 --
 -- Name: provider_header_profiles_id_seq; Type: SEQUENCE; Schema: public; Owner: -
 --
@@ -10775,13 +9939,11 @@ CREATE SEQUENCE public.provider_header_profiles_id_seq
     NO MAXVALUE
     CACHE 1;
 
-
 --
 -- Name: provider_header_profiles_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
 --
 
 ALTER SEQUENCE public.provider_header_profiles_id_seq OWNED BY public.provider_header_profiles.id;
-
 
 --
 -- Name: provider_health_events; Type: TABLE; Schema: public; Owner: -
@@ -10810,20 +9972,17 @@ CREATE TABLE public.provider_health_events (
     created_at timestamp with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL
 );
 
-
 --
 -- Name: TABLE provider_health_events; Type: COMMENT; Schema: public; Owner: -
 --
 
 COMMENT ON TABLE public.provider_health_events IS '供应商健康事件日志 - 用于告警和审计追踪';
 
-
 --
 -- Name: COLUMN provider_health_events.auto_action; Type: COMMENT; Schema: public; Owner: -
 --
 
 COMMENT ON COLUMN public.provider_health_events.auto_action IS '系统自动执行的动作（如降权、切换供应商）';
-
 
 --
 -- Name: provider_health_events_id_seq; Type: SEQUENCE; Schema: public; Owner: -
@@ -10836,13 +9995,11 @@ CREATE SEQUENCE public.provider_health_events_id_seq
     NO MAXVALUE
     CACHE 1;
 
-
 --
 -- Name: provider_health_events_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
 --
 
 ALTER SEQUENCE public.provider_health_events_id_seq OWNED BY public.provider_health_events.id;
-
 
 --
 -- Name: provider_quality_profiles; Type: TABLE; Schema: public; Owner: -
@@ -10904,13 +10061,11 @@ CREATE TABLE public.provider_quality_profiles (
     calculated_at timestamp without time zone DEFAULT CURRENT_TIMESTAMP
 );
 
-
 --
 -- Name: TABLE provider_quality_profiles; Type: COMMENT; Schema: public; Owner: -
 --
 
 COMMENT ON TABLE public.provider_quality_profiles IS '供应商质量画像表';
-
 
 --
 -- Name: COLUMN provider_quality_profiles.model_name; Type: COMMENT; Schema: public; Owner: -
@@ -10918,13 +10073,11 @@ COMMENT ON TABLE public.provider_quality_profiles IS '供应商质量画像表';
 
 COMMENT ON COLUMN public.provider_quality_profiles.model_name IS 'NULL=provider级别聚合, 非NULL=model级别画像';
 
-
 --
 -- Name: COLUMN provider_quality_profiles.availability_score; Type: COMMENT; Schema: public; Owner: -
 --
 
 COMMENT ON COLUMN public.provider_quality_profiles.availability_score IS 'L1 可用性评分 (35%权重)';
-
 
 --
 -- Name: COLUMN provider_quality_profiles.performance_score; Type: COMMENT; Schema: public; Owner: -
@@ -10932,13 +10085,11 @@ COMMENT ON COLUMN public.provider_quality_profiles.availability_score IS 'L1 可
 
 COMMENT ON COLUMN public.provider_quality_profiles.performance_score IS 'L2 性能评分 (25%权重)';
 
-
 --
 -- Name: COLUMN provider_quality_profiles.stability_score; Type: COMMENT; Schema: public; Owner: -
 --
 
 COMMENT ON COLUMN public.provider_quality_profiles.stability_score IS 'L4 稳定性评分 (15%权重)';
-
 
 --
 -- Name: COLUMN provider_quality_profiles.cost_efficiency_score; Type: COMMENT; Schema: public; Owner: -
@@ -10946,13 +10097,11 @@ COMMENT ON COLUMN public.provider_quality_profiles.stability_score IS 'L4 稳定
 
 COMMENT ON COLUMN public.provider_quality_profiles.cost_efficiency_score IS 'L5 成本效益评分 (5%权重)';
 
-
 --
 -- Name: COLUMN provider_quality_profiles.quality_score; Type: COMMENT; Schema: public; Owner: -
 --
 
 COMMENT ON COLUMN public.provider_quality_profiles.quality_score IS '综合质量分 (加权平均)';
-
 
 --
 -- Name: COLUMN provider_quality_profiles.quality_grade; Type: COMMENT; Schema: public; Owner: -
@@ -10960,20 +10109,17 @@ COMMENT ON COLUMN public.provider_quality_profiles.quality_score IS '综合质�
 
 COMMENT ON COLUMN public.provider_quality_profiles.quality_grade IS '质量等级: S(90-100) A(80-89) B(70-79) C(60-69) D(<60)';
 
-
 --
 -- Name: COLUMN provider_quality_profiles.reliability_score; Type: COMMENT; Schema: public; Owner: -
 --
 
 COMMENT ON COLUMN public.provider_quality_profiles.reliability_score IS 'L3 可信度评分 (20%权重)';
 
-
 --
 -- Name: COLUMN provider_quality_profiles.calculated_at; Type: COMMENT; Schema: public; Owner: -
 --
 
 COMMENT ON COLUMN public.provider_quality_profiles.calculated_at IS '计算时间';
-
 
 --
 -- Name: providers; Type: TABLE; Schema: public; Owner: -
@@ -11008,7 +10154,6 @@ CREATE TABLE public.providers (
     CONSTRAINT providers_quality_fix_mode_check CHECK ((quality_fix_mode = ANY (ARRAY['off'::text, 'detect_only'::text, 'fix'::text])))
 );
 
-
 --
 -- Name: COLUMN providers.quality_fix_mode; Type: COMMENT; Schema: public; Owner: -
 --
@@ -11018,7 +10163,6 @@ COMMENT ON COLUMN public.providers.quality_fix_mode IS 'off         : passthroug
                    but do NOT modify the response body sent to the client.
      fix         : detect + write signals + rewrite the response body
                    (rename empty names, dedup ids, etc.) before forwarding.';
-
 
 --
 -- Name: provider_health_status; Type: VIEW; Schema: public; Owner: -
@@ -11047,13 +10191,11 @@ CREATE VIEW public.provider_health_status AS
   WHERE (pqp.model_name IS NULL)
   ORDER BY pqp.quality_score DESC;
 
-
 --
 -- Name: VIEW provider_health_status; Type: COMMENT; Schema: public; Owner: -
 --
 
 COMMENT ON VIEW public.provider_health_status IS '供应商健康状态概览 - 用于监控看板';
-
 
 --
 -- Name: provider_metrics_hour; Type: TABLE; Schema: public; Owner: -
@@ -11082,13 +10224,11 @@ CREATE TABLE public.provider_metrics_hour (
     created_at timestamp with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL
 );
 
-
 --
 -- Name: TABLE provider_metrics_hour; Type: COMMENT; Schema: public; Owner: -
 --
 
 COMMENT ON TABLE public.provider_metrics_hour IS '按小时聚合的供应商指标 - 从分钟级聚合，保留90天';
-
 
 --
 -- Name: provider_metrics_hour_id_seq; Type: SEQUENCE; Schema: public; Owner: -
@@ -11101,13 +10241,11 @@ CREATE SEQUENCE public.provider_metrics_hour_id_seq
     NO MAXVALUE
     CACHE 1;
 
-
 --
 -- Name: provider_metrics_hour_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
 --
 
 ALTER SEQUENCE public.provider_metrics_hour_id_seq OWNED BY public.provider_metrics_hour.id;
-
 
 --
 -- Name: provider_metrics_minute; Type: TABLE; Schema: public; Owner: -
@@ -11139,20 +10277,17 @@ CREATE TABLE public.provider_metrics_minute (
     created_at timestamp with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL
 );
 
-
 --
 -- Name: TABLE provider_metrics_minute; Type: COMMENT; Schema: public; Owner: -
 --
 
 COMMENT ON TABLE public.provider_metrics_minute IS '按分钟聚合的供应商指标 - 从request_logs实时聚合';
 
-
 --
 -- Name: COLUMN provider_metrics_minute.bucket; Type: COMMENT; Schema: public; Owner: -
 --
 
 COMMENT ON COLUMN public.provider_metrics_minute.bucket IS '分钟对齐的时间戳，如 2026-07-19 01:23:00';
-
 
 --
 -- Name: provider_metrics_minute_id_seq; Type: SEQUENCE; Schema: public; Owner: -
@@ -11165,13 +10300,11 @@ CREATE SEQUENCE public.provider_metrics_minute_id_seq
     NO MAXVALUE
     CACHE 1;
 
-
 --
 -- Name: provider_metrics_minute_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
 --
 
 ALTER SEQUENCE public.provider_metrics_minute_id_seq OWNED BY public.provider_metrics_minute.id;
-
 
 --
 -- Name: provider_models_id_seq; Type: SEQUENCE; Schema: public; Owner: -
@@ -11184,13 +10317,11 @@ CREATE SEQUENCE public.provider_models_id_seq
     NO MAXVALUE
     CACHE 1;
 
-
 --
 -- Name: provider_models_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
 --
 
 ALTER SEQUENCE public.provider_models_id_seq OWNED BY public.provider_models.id;
-
 
 --
 -- Name: provider_models_v1000_backup; Type: TABLE; Schema: public; Owner: -
@@ -11202,7 +10333,6 @@ CREATE TABLE public.provider_models_v1000_backup (
     standardized_name text,
     outbound_model_name text
 );
-
 
 --
 -- Name: provider_profile_alerts; Type: TABLE; Schema: public; Owner: -
@@ -11226,13 +10356,11 @@ CREATE TABLE public.provider_profile_alerts (
     created_at timestamp with time zone DEFAULT now()
 );
 
-
 --
 -- Name: TABLE provider_profile_alerts; Type: COMMENT; Schema: public; Owner: -
 --
 
 COMMENT ON TABLE public.provider_profile_alerts IS '供应商画像告警和自动处理记录';
-
 
 --
 -- Name: COLUMN provider_profile_alerts.alert_type; Type: COMMENT; Schema: public; Owner: -
@@ -11240,13 +10368,11 @@ COMMENT ON TABLE public.provider_profile_alerts IS '供应商画像告警和自�
 
 COMMENT ON COLUMN public.provider_profile_alerts.alert_type IS '告警类型：score_drop(分数下降)/trend_drop(趋势下降)/auto_disabled(自动禁用)/auto_enabled(自动恢复)/dimension_low(维度过低)';
 
-
 --
 -- Name: COLUMN provider_profile_alerts.action_taken; Type: COMMENT; Schema: public; Owner: -
 --
 
 COMMENT ON COLUMN public.provider_profile_alerts.action_taken IS '已采取动作：disabled(已禁用)/enabled(已恢复)/degraded(已降权)/none(仅告警)';
-
 
 --
 -- Name: provider_profile_alerts_id_seq; Type: SEQUENCE; Schema: public; Owner: -
@@ -11259,13 +10385,11 @@ CREATE SEQUENCE public.provider_profile_alerts_id_seq
     NO MAXVALUE
     CACHE 1;
 
-
 --
 -- Name: provider_profile_alerts_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
 --
 
 ALTER SEQUENCE public.provider_profile_alerts_id_seq OWNED BY public.provider_profile_alerts.id;
-
 
 --
 -- Name: provider_profile_daily; Type: TABLE; Schema: public; Owner: -
@@ -11292,20 +10416,17 @@ CREATE TABLE public.provider_profile_daily (
     created_at timestamp with time zone DEFAULT now()
 );
 
-
 --
 -- Name: TABLE provider_profile_daily; Type: COMMENT; Schema: public; Owner: -
 --
 
 COMMENT ON TABLE public.provider_profile_daily IS '供应商画像天级聚合数据和评分（保留365天）';
 
-
 --
 -- Name: COLUMN provider_profile_daily.total_score; Type: COMMENT; Schema: public; Owner: -
 --
 
 COMMENT ON COLUMN public.provider_profile_daily.total_score IS '总分：各维度加权平均，权重见设计文档';
-
 
 --
 -- Name: provider_profile_daily_id_seq; Type: SEQUENCE; Schema: public; Owner: -
@@ -11318,13 +10439,11 @@ CREATE SEQUENCE public.provider_profile_daily_id_seq
     NO MAXVALUE
     CACHE 1;
 
-
 --
 -- Name: provider_profile_daily_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
 --
 
 ALTER SEQUENCE public.provider_profile_daily_id_seq OWNED BY public.provider_profile_daily.id;
-
 
 --
 -- Name: provider_profile_metrics; Type: TABLE; Schema: public; Owner: -
@@ -11350,20 +10469,17 @@ CREATE TABLE public.provider_profile_metrics (
     created_at timestamp with time zone DEFAULT now()
 );
 
-
 --
 -- Name: TABLE provider_profile_metrics; Type: COMMENT; Schema: public; Owner: -
 --
 
 COMMENT ON TABLE public.provider_profile_metrics IS '供应商画像小时级原始指标数据（保留7天）';
 
-
 --
 -- Name: COLUMN provider_profile_metrics.time_slot; Type: COMMENT; Schema: public; Owner: -
 --
 
 COMMENT ON COLUMN public.provider_profile_metrics.time_slot IS '时段标签: dawn(0-6)/morning(6-12)/afternoon(12-18)/evening(18-22)/night(22-24)';
-
 
 --
 -- Name: provider_profile_metrics_id_seq; Type: SEQUENCE; Schema: public; Owner: -
@@ -11376,13 +10492,11 @@ CREATE SEQUENCE public.provider_profile_metrics_id_seq
     NO MAXVALUE
     CACHE 1;
 
-
 --
 -- Name: provider_profile_metrics_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
 --
 
 ALTER SEQUENCE public.provider_profile_metrics_id_seq OWNED BY public.provider_profile_metrics.id;
-
 
 --
 -- Name: provider_profile_whitelist; Type: TABLE; Schema: public; Owner: -
@@ -11396,13 +10510,11 @@ CREATE TABLE public.provider_profile_whitelist (
     added_at timestamp with time zone DEFAULT now()
 );
 
-
 --
 -- Name: TABLE provider_profile_whitelist; Type: COMMENT; Schema: public; Owner: -
 --
 
 COMMENT ON TABLE public.provider_profile_whitelist IS '供应商自动处理白名单（白名单中的供应商不会被自动禁用）';
-
 
 --
 -- Name: provider_profile_whitelist_id_seq; Type: SEQUENCE; Schema: public; Owner: -
@@ -11415,13 +10527,11 @@ CREATE SEQUENCE public.provider_profile_whitelist_id_seq
     NO MAXVALUE
     CACHE 1;
 
-
 --
 -- Name: provider_profile_whitelist_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
 --
 
 ALTER SEQUENCE public.provider_profile_whitelist_id_seq OWNED BY public.provider_profile_whitelist.id;
-
 
 --
 -- Name: provider_quality_configs; Type: TABLE; Schema: public; Owner: -
@@ -11451,20 +10561,17 @@ CREATE TABLE public.provider_quality_configs (
     created_at timestamp with time zone DEFAULT CURRENT_TIMESTAMP NOT NULL
 );
 
-
 --
 -- Name: TABLE provider_quality_configs; Type: COMMENT; Schema: public; Owner: -
 --
 
 COMMENT ON TABLE public.provider_quality_configs IS '供应商质量配置表 - 存储告警阈值和评分权重';
 
-
 --
 -- Name: COLUMN provider_quality_configs.weight_availability; Type: COMMENT; Schema: public; Owner: -
 --
 
 COMMENT ON COLUMN public.provider_quality_configs.weight_availability IS '可用性权重(默认40%)';
-
 
 --
 -- Name: provider_quality_configs_id_seq; Type: SEQUENCE; Schema: public; Owner: -
@@ -11477,13 +10584,11 @@ CREATE SEQUENCE public.provider_quality_configs_id_seq
     NO MAXVALUE
     CACHE 1;
 
-
 --
 -- Name: provider_quality_configs_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
 --
 
 ALTER SEQUENCE public.provider_quality_configs_id_seq OWNED BY public.provider_quality_configs.id;
-
 
 --
 -- Name: provider_quality_profiles_id_seq; Type: SEQUENCE; Schema: public; Owner: -
@@ -11496,13 +10601,11 @@ CREATE SEQUENCE public.provider_quality_profiles_id_seq
     NO MAXVALUE
     CACHE 1;
 
-
 --
 -- Name: provider_quality_profiles_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
 --
 
 ALTER SEQUENCE public.provider_quality_profiles_id_seq OWNED BY public.provider_quality_profiles.id;
-
 
 --
 -- Name: provider_quality_rollup; Type: TABLE; Schema: public; Owner: -
@@ -11518,7 +10621,6 @@ CREATE TABLE public.provider_quality_rollup (
     top_flag text
 );
 
-
 --
 -- Name: provider_scores; Type: TABLE; Schema: public; Owner: -
 --
@@ -11532,7 +10634,6 @@ CREATE TABLE public.provider_scores (
     computed_at timestamp with time zone DEFAULT now() NOT NULL
 );
 
-
 --
 -- Name: provider_scores_id_seq; Type: SEQUENCE; Schema: public; Owner: -
 --
@@ -11544,13 +10645,11 @@ CREATE SEQUENCE public.provider_scores_id_seq
     NO MAXVALUE
     CACHE 1;
 
-
 --
 -- Name: provider_scores_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
 --
 
 ALTER SEQUENCE public.provider_scores_id_seq OWNED BY public.provider_scores.id;
-
 
 --
 -- Name: provider_settings; Type: TABLE; Schema: public; Owner: -
@@ -11567,13 +10666,11 @@ CREATE TABLE public.provider_settings (
     updated_at timestamp with time zone DEFAULT now() NOT NULL
 );
 
-
 --
 -- Name: TABLE provider_settings; Type: COMMENT; Schema: public; Owner: -
 --
 
 COMMENT ON TABLE public.provider_settings IS 'Provider级别的配置覆盖，优先级高于平台默认配置';
-
 
 --
 -- Name: COLUMN provider_settings.setting_key; Type: COMMENT; Schema: public; Owner: -
@@ -11581,20 +10678,17 @@ COMMENT ON TABLE public.provider_settings IS 'Provider级别的配置覆盖，�
 
 COMMENT ON COLUMN public.provider_settings.setting_key IS '配置键，如: compression.mode, cache.enabled, format_conversion.enabled';
 
-
 --
 -- Name: COLUMN provider_settings.setting_value; Type: COMMENT; Schema: public; Owner: -
 --
 
 COMMENT ON COLUMN public.provider_settings.setting_value IS '配置值，JSON格式，如: "off", true, false';
 
-
 --
 -- Name: COLUMN provider_settings.enabled; Type: COMMENT; Schema: public; Owner: -
 --
 
 COMMENT ON COLUMN public.provider_settings.enabled IS '是否启用该配置覆盖';
-
 
 --
 -- Name: provider_settings_id_seq; Type: SEQUENCE; Schema: public; Owner: -
@@ -11607,13 +10701,11 @@ CREATE SEQUENCE public.provider_settings_id_seq
     NO MAXVALUE
     CACHE 1;
 
-
 --
 -- Name: provider_settings_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
 --
 
 ALTER SEQUENCE public.provider_settings_id_seq OWNED BY public.provider_settings.id;
-
 
 --
 -- Name: providers_id_seq; Type: SEQUENCE; Schema: public; Owner: -
@@ -11626,13 +10718,11 @@ CREATE SEQUENCE public.providers_id_seq
     NO MAXVALUE
     CACHE 1;
 
-
 --
 -- Name: providers_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
 --
 
 ALTER SEQUENCE public.providers_id_seq OWNED BY public.providers.id;
-
 
 --
 -- Name: release_artifacts; Type: TABLE; Schema: public; Owner: -
@@ -11651,7 +10741,6 @@ CREATE TABLE public.release_artifacts (
     created_at timestamp with time zone DEFAULT now() NOT NULL
 );
 
-
 --
 -- Name: release_artifacts_id_seq; Type: SEQUENCE; Schema: public; Owner: -
 --
@@ -11663,13 +10752,11 @@ CREATE SEQUENCE public.release_artifacts_id_seq
     NO MAXVALUE
     CACHE 1;
 
-
 --
 -- Name: release_artifacts_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
 --
 
 ALTER SEQUENCE public.release_artifacts_id_seq OWNED BY public.release_artifacts.id;
-
 
 --
 -- Name: releases; Type: TABLE; Schema: public; Owner: -
@@ -11693,7 +10780,6 @@ CREATE TABLE public.releases (
     CONSTRAINT releases_channel_check CHECK ((channel = ANY (ARRAY['stable'::text, 'beta'::text, 'canary'::text])))
 );
 
-
 --
 -- Name: releases_id_seq; Type: SEQUENCE; Schema: public; Owner: -
 --
@@ -11705,13 +10791,11 @@ CREATE SEQUENCE public.releases_id_seq
     NO MAXVALUE
     CACHE 1;
 
-
 --
 -- Name: releases_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
 --
 
 ALTER SEQUENCE public.releases_id_seq OWNED BY public.releases.id;
-
 
 --
 -- Name: request_attachments; Type: TABLE; Schema: public; Owner: -
@@ -11734,7 +10818,6 @@ CREATE TABLE public.request_attachments (
     CONSTRAINT request_attachments_status_check CHECK ((status = ANY (ARRAY['detected'::text, 'storing'::text, 'stored'::text, 'manifest_ready'::text, 'sent'::text, 'store_failed'::text])))
 );
 
-
 --
 -- Name: TABLE request_attachments; Type: COMMENT; Schema: public; Owner: -
 --
@@ -11755,7 +10838,6 @@ Status lifecycle:
 
 Migration 401 (2026-07-15) — Phase 2C relational upgrade.';
 
-
 --
 -- Name: request_attachments_id_seq; Type: SEQUENCE; Schema: public; Owner: -
 --
@@ -11767,13 +10849,11 @@ CREATE SEQUENCE public.request_attachments_id_seq
     NO MAXVALUE
     CACHE 1;
 
-
 --
 -- Name: request_attachments_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
 --
 
 ALTER SEQUENCE public.request_attachments_id_seq OWNED BY public.request_attachments.id;
-
 
 --
 -- Name: request_context_attrs; Type: TABLE; Schema: public; Owner: -
@@ -11815,7 +10895,6 @@ CREATE TABLE public.request_context_attrs (
     fingerprint_raw jsonb
 );
 
-
 --
 -- Name: request_envelope; Type: TABLE; Schema: public; Owner: -
 --
@@ -11834,7 +10913,6 @@ CREATE TABLE public.request_envelope (
     created_at timestamp with time zone DEFAULT now() NOT NULL,
     expires_at timestamp with time zone NOT NULL
 );
-
 
 SET default_table_access_method = columnar;
 
@@ -11985,7 +11063,6 @@ CREATE TABLE public.request_logs_2026_07 (
 )
 WITH (autovacuum_enabled='true', autovacuum_vacuum_scale_factor='0.05', autovacuum_vacuum_threshold='10', autovacuum_analyze_scale_factor='0.02', autovacuum_analyze_threshold='50');
 
-
 --
 -- Name: request_logs_2026_08; Type: TABLE; Schema: public; Owner: -
 --
@@ -12133,7 +11210,6 @@ CREATE TABLE public.request_logs_2026_08 (
 )
 WITH (autovacuum_enabled='true', autovacuum_vacuum_scale_factor='0.05', autovacuum_vacuum_threshold='10', autovacuum_analyze_scale_factor='0.02', autovacuum_analyze_threshold='50');
 
-
 --
 -- Name: request_logs_archive; Type: TABLE; Schema: public; Owner: -
 --
@@ -12229,13 +11305,11 @@ CREATE TABLE public.request_logs_archive (
 )
 PARTITION BY RANGE (ts);
 
-
 --
 -- Name: TABLE request_logs_archive; Type: COMMENT; Schema: public; Owner: -
 --
 
 COMMENT ON TABLE public.request_logs_archive IS 'Tiered storage: columnar partitions for historical request_logs. Monthly partitions use Citus columnar (compressed, read-only). Data flow: monthly archive_request_logs(archive_month) migrates request_logs_YYYY_MM (heap) into request_logs_archive_YYYY_MM (columnar) and drops the source partition. Use UNION ALL across request_logs + request_logs_archive for time-range queries.';
-
 
 --
 -- Name: request_logs_bodies; Type: TABLE; Schema: public; Owner: -
@@ -12250,7 +11324,6 @@ CREATE TABLE public.request_logs_bodies (
 )
 PARTITION BY RANGE (ts);
 
-
 --
 -- Name: request_logs_bodies_2026_07; Type: TABLE; Schema: public; Owner: -
 --
@@ -12263,7 +11336,6 @@ CREATE TABLE public.request_logs_bodies_2026_07 (
     response_body jsonb
 )
 WITH (autovacuum_enabled='true', autovacuum_vacuum_scale_factor='0.05', autovacuum_vacuum_threshold='10', autovacuum_analyze_scale_factor='0.02', autovacuum_analyze_threshold='50');
-
 
 --
 -- Name: request_logs_bodies_2026_08; Type: TABLE; Schema: public; Owner: -
@@ -12278,7 +11350,6 @@ CREATE TABLE public.request_logs_bodies_2026_08 (
 )
 WITH (autovacuum_enabled='true', autovacuum_vacuum_scale_factor='0.05', autovacuum_vacuum_threshold='10', autovacuum_analyze_scale_factor='0.02', autovacuum_analyze_threshold='50');
 
-
 --
 -- Name: request_logs_bodies_2026_09; Type: TABLE; Schema: public; Owner: -
 --
@@ -12291,7 +11362,6 @@ CREATE TABLE public.request_logs_bodies_2026_09 (
     response_body jsonb
 )
 WITH (autovacuum_enabled='true', autovacuum_vacuum_scale_factor='0.05', autovacuum_vacuum_threshold='10', autovacuum_analyze_scale_factor='0.02', autovacuum_analyze_threshold='50');
-
 
 SET default_table_access_method = heap;
 
@@ -12308,7 +11378,6 @@ CREATE TABLE public.request_logs_bodies_hot (
 )
 WITH (fillfactor='90', autovacuum_enabled='true', autovacuum_vacuum_scale_factor='0.05', autovacuum_vacuum_threshold='10', autovacuum_analyze_scale_factor='0.02', autovacuum_analyze_threshold='50');
 
-
 --
 -- Name: request_logs_bodies_progress; Type: VIEW; Schema: public; Owner: -
 --
@@ -12324,7 +11393,6 @@ CREATE VIEW public.request_logs_bodies_progress AS
           WHERE (((request_logs.request_body IS NOT NULL) OR (request_logs.outbound_body IS NOT NULL) OR (request_logs.response_body IS NOT NULL)) AND (NOT (EXISTS ( SELECT 1
                    FROM public.request_logs_bodies b
                   WHERE ((b.request_id = request_logs.request_id) AND (b.ts = request_logs.ts))))))) AS rows_pending_backfill;
-
 
 --
 -- Name: request_logs_bodies_with_current_month; Type: VIEW; Schema: public; Owner: -
@@ -12344,7 +11412,6 @@ UNION ALL
     request_logs_bodies.outbound_body,
     request_logs_bodies.response_body
    FROM public.request_logs_bodies;
-
 
 --
 -- Name: request_logs_hot; Type: TABLE; Schema: public; Owner: -
@@ -12487,7 +11554,6 @@ CREATE TABLE public.request_logs_hot (
 )
 WITH (autovacuum_enabled='true', autovacuum_vacuum_scale_factor='0.05', autovacuum_vacuum_threshold='10', autovacuum_analyze_scale_factor='0.02', autovacuum_analyze_threshold='50');
 
-
 --
 -- Name: COLUMN request_logs_hot.routing_attempts; Type: COMMENT; Schema: public; Owner: -
 --
@@ -12499,7 +11565,6 @@ COMMENT ON COLUMN public.request_logs_hot.routing_attempts IS '路由尝试序�
    "latency_ms": 1523, "http_status": 404, "error_message": "..."}]}
    仅在多次尝试或失败时才写入，首次成功时为 NULL 以节省空间。';
 
-
 --
 -- Name: COLUMN request_logs_hot.routing_summary; Type: COMMENT; Schema: public; Owner: -
 --
@@ -12508,20 +11573,17 @@ COMMENT ON COLUMN public.request_logs_hot.routing_summary IS '路由尝试人类
    例如: "候选1: 火山方舟(35) 模型未找到 1.5s → 候选2: NVIDIA(18) 取消 120s"
    便于快速浏览，不需要解析 JSONB。';
 
-
 --
 -- Name: COLUMN request_logs_hot.trace_events; Type: COMMENT; Schema: public; Owner: -
 --
 
 COMMENT ON COLUMN public.request_logs_hot.trace_events IS '2026-07-20: 请求链路追踪事件数组,补齐 migration 420 对 request_logs_hot 的遗漏。格式与 request_logs.trace_events 一致;写入逻辑见 internal/trace.RedisRecorder.FlushToPG.';
 
-
 --
 -- Name: COLUMN request_logs_hot.canonical_model; Type: COMMENT; Schema: public; Owner: -
 --
 
 COMMENT ON COLUMN public.request_logs_hot.canonical_model IS 'Standard/canonical model name (lowercase). See request_logs.canonical_model.';
-
 
 --
 -- Name: request_logs_with_current_month; Type: VIEW; Schema: public; Owner: -
@@ -12728,13 +11790,11 @@ UNION ALL
     request_logs.canonical_model
    FROM public.request_logs;
 
-
 --
 -- Name: VIEW request_logs_with_current_month; Type: COMMENT; Schema: public; Owner: -
 --
 
 COMMENT ON VIEW public.request_logs_with_current_month IS 'Hot + monthly partitions UNION. Recreated by migration 459 (2026-07-27) to expose agent_name / agent_type / client_protocol / canonical_model after ADD COLUMN via migrations 443 + 458. Preserves prior VIEW column set to avoid hot/parent type drift (see 448).';
-
 
 --
 -- Name: request_stage_events; Type: TABLE; Schema: public; Owner: -
@@ -12762,13 +11822,11 @@ CREATE TABLE public.request_stage_events (
     created_at timestamp with time zone DEFAULT now() NOT NULL
 );
 
-
 --
 -- Name: TABLE request_stage_events; Type: COMMENT; Schema: public; Owner: -
 --
 
 COMMENT ON TABLE public.request_stage_events IS '请求阶段事件扁平化表。补充 trace_events JSONB，用于高效查询和聚合。';
-
 
 --
 -- Name: COLUMN request_stage_events.response_body; Type: COMMENT; Schema: public; Owner: -
@@ -12776,13 +11834,11 @@ COMMENT ON TABLE public.request_stage_events IS '请求阶段事件扁平化表�
 
 COMMENT ON COLUMN public.request_stage_events.response_body IS '上游响应体（失败时），截断 512 字节。完整 body 见 candidate_failure_logs.upstream_response_body。';
 
-
 --
 -- Name: COLUMN request_stage_events.redis_hit; Type: COMMENT; Schema: public; Owner: -
 --
 
 COMMENT ON COLUMN public.request_stage_events.redis_hit IS '该阶段是否有 Redis 缓存命中（可选字段，用于诊断缓存效率）。';
-
 
 --
 -- Name: request_stage_events_id_seq; Type: SEQUENCE; Schema: public; Owner: -
@@ -12795,13 +11851,11 @@ CREATE SEQUENCE public.request_stage_events_id_seq
     NO MAXVALUE
     CACHE 1;
 
-
 --
 -- Name: request_stage_events_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
 --
 
 ALTER SEQUENCE public.request_stage_events_id_seq OWNED BY public.request_stage_events.id;
-
 
 --
 -- Name: request_stats_dim_minute; Type: TABLE; Schema: public; Owner: -
@@ -12820,13 +11874,11 @@ CREATE TABLE public.request_stats_dim_minute (
     cost_usd numeric(18,8) DEFAULT 0 NOT NULL
 );
 
-
 --
 -- Name: TABLE request_stats_dim_minute; Type: COMMENT; Schema: public; Owner: -
 --
 
 COMMENT ON TABLE public.request_stats_dim_minute IS 'Per-minute dimension breakdowns: client_profile, virtual_ip, identity_hash, model, error_kind, tenant, provider.';
-
 
 --
 -- Name: request_stats_error_drill_minute; Type: TABLE; Schema: public; Owner: -
@@ -12842,13 +11894,11 @@ CREATE TABLE public.request_stats_error_drill_minute (
     requests bigint DEFAULT 0 NOT NULL
 );
 
-
 --
 -- Name: TABLE request_stats_error_drill_minute; Type: COMMENT; Schema: public; Owner: -
 --
 
 COMMENT ON TABLE public.request_stats_error_drill_minute IS 'Error drill-down aggregates for dashboard pie chart second level.';
-
 
 --
 -- Name: request_stats_minute; Type: TABLE; Schema: public; Owner: -
@@ -12870,13 +11920,11 @@ CREATE TABLE public.request_stats_minute (
     latency_ms_sum bigint DEFAULT 0 NOT NULL
 );
 
-
 --
 -- Name: TABLE request_stats_minute; Type: COMMENT; Schema: public; Owner: -
 --
 
 COMMENT ON TABLE public.request_stats_minute IS 'Per-minute usage aggregates for dashboard KPIs and trend charts. provider_id=0 and canonical_id=0 denote tenant-wide totals.';
-
 
 --
 -- Name: request_stats_rollup_cursor; Type: TABLE; Schema: public; Owner: -
@@ -12889,7 +11937,6 @@ CREATE TABLE public.request_stats_rollup_cursor (
     updated_at timestamp with time zone DEFAULT now() NOT NULL,
     CONSTRAINT request_stats_rollup_cursor_id_check CHECK ((id = 1))
 );
-
 
 --
 -- Name: request_wal; Type: TABLE; Schema: public; Owner: -
@@ -12916,13 +11963,11 @@ CREATE TABLE public.request_wal (
 )
 PARTITION BY RANGE (created_at);
 
-
 --
 -- Name: TABLE request_wal; Type: COMMENT; Schema: public; Owner: -
 --
 
 COMMENT ON TABLE public.request_wal IS 'Request WAL: synchronous initial log + async batch updates for request lifecycle';
-
 
 --
 -- Name: request_wal_2026_07; Type: TABLE; Schema: public; Owner: -
@@ -12948,7 +11993,6 @@ CREATE TABLE public.request_wal_2026_07 (
     compression_meta jsonb
 )
 WITH (autovacuum_enabled='true', autovacuum_vacuum_scale_factor='0.05', autovacuum_vacuum_threshold='10', autovacuum_analyze_scale_factor='0.02', autovacuum_analyze_threshold='50');
-
 
 SET default_table_access_method = columnar;
 
@@ -12977,7 +12021,6 @@ CREATE TABLE public.request_wal_2026_08 (
 )
 WITH (autovacuum_enabled='true', autovacuum_vacuum_scale_factor='0.05', autovacuum_vacuum_threshold='10', autovacuum_analyze_scale_factor='0.02', autovacuum_analyze_threshold='50');
 
-
 --
 -- Name: request_wal_archive; Type: TABLE; Schema: public; Owner: -
 --
@@ -13003,13 +12046,11 @@ CREATE TABLE public.request_wal_archive (
 )
 PARTITION BY RANGE (created_at);
 
-
 --
 -- Name: TABLE request_wal_archive; Type: COMMENT; Schema: public; Owner: -
 --
 
 COMMENT ON TABLE public.request_wal_archive IS 'Columnar archive for old request_wal partitions (2+ months old).';
-
 
 SET default_table_access_method = heap;
 
@@ -13024,13 +12065,11 @@ CREATE TABLE public.request_wal_bodies (
     created_at timestamp with time zone DEFAULT now() NOT NULL
 );
 
-
 --
 -- Name: TABLE request_wal_bodies; Type: COMMENT; Schema: public; Owner: -
 --
 
 COMMENT ON TABLE public.request_wal_bodies IS 'Large outbound bodies separated for performance';
-
 
 --
 -- Name: request_wal_hot; Type: TABLE; Schema: public; Owner: -
@@ -13056,7 +12095,6 @@ CREATE TABLE public.request_wal_hot (
     compression_meta jsonb
 )
 WITH (fillfactor='90', autovacuum_enabled='true', autovacuum_vacuum_scale_factor='0.05', autovacuum_vacuum_threshold='10', autovacuum_analyze_scale_factor='0.02', autovacuum_analyze_threshold='50');
-
 
 --
 -- Name: request_wal_with_current_month; Type: VIEW; Schema: public; Owner: -
@@ -13101,7 +12139,6 @@ UNION ALL
     request_wal.compression_meta
    FROM public.request_wal;
 
-
 --
 -- Name: response_format_anomalies; Type: TABLE; Schema: public; Owner: -
 --
@@ -13129,7 +12166,6 @@ CREATE TABLE public.response_format_anomalies (
     created_at timestamp with time zone DEFAULT now() NOT NULL
 );
 
-
 --
 -- Name: response_format_anomalies_id_seq; Type: SEQUENCE; Schema: public; Owner: -
 --
@@ -13141,13 +12177,11 @@ CREATE SEQUENCE public.response_format_anomalies_id_seq
     NO MAXVALUE
     CACHE 1;
 
-
 --
 -- Name: response_format_anomalies_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
 --
 
 ALTER SEQUENCE public.response_format_anomalies_id_seq OWNED BY public.response_format_anomalies.id;
-
 
 --
 -- Name: route_decisions; Type: TABLE; Schema: public; Owner: -
@@ -13166,7 +12200,6 @@ CREATE TABLE public.route_decisions (
     sticky_hit boolean
 );
 
-
 --
 -- Name: route_decisions_id_seq; Type: SEQUENCE; Schema: public; Owner: -
 --
@@ -13178,13 +12211,11 @@ CREATE SEQUENCE public.route_decisions_id_seq
     NO MAXVALUE
     CACHE 1;
 
-
 --
 -- Name: route_decisions_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
 --
 
 ALTER SEQUENCE public.route_decisions_id_seq OWNED BY public.route_decisions.id;
-
 
 --
 -- Name: route_incident_events; Type: TABLE; Schema: public; Owner: -
@@ -13206,13 +12237,11 @@ CREATE TABLE public.route_incident_events (
     CONSTRAINT route_incident_events_event_type_check CHECK ((event_type = ANY (ARRAY['opened'::text, 'failure_observed'::text, 'recovery_progress'::text, 'recovered'::text, 'diagnostic_run'::text, 'operator_action'::text])))
 );
 
-
 --
 -- Name: TABLE route_incident_events; Type: COMMENT; Schema: public; Owner: -
 --
 
 COMMENT ON TABLE public.route_incident_events IS 'Immutable, append-only evidence trail for route_incidents. Each (incident_id, request_id, terminal_status) triple is unique so the observer can retry safely.';
-
 
 --
 -- Name: route_incident_events_id_seq; Type: SEQUENCE; Schema: public; Owner: -
@@ -13225,13 +12254,11 @@ CREATE SEQUENCE public.route_incident_events_id_seq
     NO MAXVALUE
     CACHE 1;
 
-
 --
 -- Name: route_incident_events_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
 --
 
 ALTER SEQUENCE public.route_incident_events_id_seq OWNED BY public.route_incident_events.id;
-
 
 --
 -- Name: route_incidents; Type: TABLE; Schema: public; Owner: -
@@ -13264,13 +12291,11 @@ CREATE TABLE public.route_incidents (
     CONSTRAINT route_incidents_state_check CHECK ((state = ANY (ARRAY['active'::text, 'recovering'::text, 'recovered'::text])))
 );
 
-
 --
 -- Name: TABLE route_incidents; Type: COMMENT; Schema: public; Owner: -
 --
 
 COMMENT ON TABLE public.route_incidents IS 'Phase-1 read-only route incident aggregate. One active/recovering row per route key (tenant + protocol + model + provider + credential). Recovered rows are retained for timeline/audit. Cross-tenant reads return 404 at the API layer.';
-
 
 --
 -- Name: routing_audit_log; Type: TABLE; Schema: public; Owner: -
@@ -13301,13 +12326,11 @@ CREATE TABLE public.routing_audit_log (
     CONSTRAINT routing_audit_log_action_check CHECK (((action IS NOT NULL) AND (length(action) > 0)))
 );
 
-
 --
 -- Name: TABLE routing_audit_log; Type: COMMENT; Schema: public; Owner: -
 --
 
 COMMENT ON TABLE public.routing_audit_log IS 'Phase-2 append-only audit trail. Every mutating action and evidence export is recorded with the authenticated actor, the confirmation-token hash, an idempotency key, and a before/after snapshot. Rows are immutable once committed; the unique index on idempotency_key guarantees that operator retries do not double-execute.';
-
 
 --
 -- Name: routing_audit_log_id_seq; Type: SEQUENCE; Schema: public; Owner: -
@@ -13320,13 +12343,11 @@ CREATE SEQUENCE public.routing_audit_log_id_seq
     NO MAXVALUE
     CACHE 1;
 
-
 --
 -- Name: routing_audit_log_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
 --
 
 ALTER SEQUENCE public.routing_audit_log_id_seq OWNED BY public.routing_audit_log.id;
-
 
 --
 -- Name: routing_decision_log; Type: TABLE; Schema: public; Owner: -
@@ -13372,13 +12393,11 @@ CREATE TABLE public.routing_decision_log (
 )
 PARTITION BY RANGE (ts);
 
-
 --
 -- Name: TABLE routing_decision_log; Type: COMMENT; Schema: public; Owner: -
 --
 
 COMMENT ON TABLE public.routing_decision_log IS 'Routing decision logs - partitioned by month (RANGE on ts). Current month uses heap storage. Historical months are archived to routing_decision_log_archive (columnar) via archive_routing_decision_log() function. Call this monthly on day 1.';
-
 
 SET default_table_access_method = columnar;
 
@@ -13426,7 +12445,6 @@ CREATE TABLE public.routing_decision_log_2026_07 (
 )
 WITH (autovacuum_enabled='true', autovacuum_vacuum_scale_factor='0.05', autovacuum_vacuum_threshold='10', autovacuum_analyze_scale_factor='0.02', autovacuum_analyze_threshold='50');
 
-
 --
 -- Name: routing_decision_log_2026_08; Type: TABLE; Schema: public; Owner: -
 --
@@ -13470,7 +12488,6 @@ CREATE TABLE public.routing_decision_log_2026_08 (
     decision_trace jsonb
 )
 WITH (autovacuum_enabled='true', autovacuum_vacuum_scale_factor='0.05', autovacuum_vacuum_threshold='10', autovacuum_analyze_scale_factor='0.02', autovacuum_analyze_threshold='50');
-
 
 --
 -- Name: routing_decision_log_archive; Type: TABLE; Schema: public; Owner: -
@@ -13516,13 +12533,11 @@ CREATE TABLE public.routing_decision_log_archive (
 )
 PARTITION BY RANGE (ts);
 
-
 --
 -- Name: TABLE routing_decision_log_archive; Type: COMMENT; Schema: public; Owner: -
 --
 
 COMMENT ON TABLE public.routing_decision_log_archive IS 'Tiered storage: columnar partitions for historical routing_decision_log. Monthly partitions use Citus columnar (compressed, read-only). Data flow: monthly archive_routing_decision_log(archive_month) migrates routing_decision_log_YYYY_MM (heap) into routing_decision_log_archive_YYYY_MM (columnar) and drops the source partition. Use UNION ALL across routing_decision_log + routing_decision_log_archive for time-range queries.';
-
 
 --
 -- Name: routing_decision_log_archive_2026_08; Type: TABLE; Schema: public; Owner: -
@@ -13566,7 +12581,6 @@ CREATE TABLE public.routing_decision_log_archive_2026_08 (
     resolution_raw_models jsonb,
     decision_trace jsonb
 );
-
 
 SET default_table_access_method = heap;
 
@@ -13613,7 +12627,6 @@ CREATE TABLE public.routing_decision_log_hot (
     decision_trace jsonb
 )
 WITH (fillfactor='90', autovacuum_enabled='true', autovacuum_vacuum_scale_factor='0.05', autovacuum_vacuum_threshold='10', autovacuum_analyze_scale_factor='0.02', autovacuum_analyze_threshold='50');
-
 
 --
 -- Name: routing_decision_log_with_current_month; Type: VIEW; Schema: public; Owner: -
@@ -13696,7 +12709,6 @@ UNION ALL
     routing_decision_log.decision_trace
    FROM public.routing_decision_log;
 
-
 --
 -- Name: routing_health_checks; Type: TABLE; Schema: public; Owner: -
 --
@@ -13722,13 +12734,11 @@ CREATE TABLE public.routing_health_checks (
     CONSTRAINT routing_health_checks_status_check CHECK ((status = ANY (ARRAY['open'::text, 'auto_fixed'::text, 'manual_fixed'::text, 'dismissed'::text])))
 );
 
-
 --
 -- Name: TABLE routing_health_checks; Type: COMMENT; Schema: public; Owner: -
 --
 
 COMMENT ON TABLE public.routing_health_checks IS '路由健康检查发现问题（自动检查 → 预警 → 修复/忽略）';
-
 
 --
 -- Name: COLUMN routing_health_checks.check_id; Type: COMMENT; Schema: public; Owner: -
@@ -13736,13 +12746,11 @@ COMMENT ON TABLE public.routing_health_checks IS '路由健康检查发现问题
 
 COMMENT ON COLUMN public.routing_health_checks.check_id IS '检查类型：canonical_id_null / billing_mismatch / probe_missing / family_unknown / alias_missing';
 
-
 --
 -- Name: COLUMN routing_health_checks.fix_sql; Type: COMMENT; Schema: public; Owner: -
 --
 
 COMMENT ON COLUMN public.routing_health_checks.fix_sql IS '建议修复 SQL，可直接复制到 psql 执行';
-
 
 --
 -- Name: routing_health_checks_id_seq; Type: SEQUENCE; Schema: public; Owner: -
@@ -13756,7 +12764,6 @@ ALTER TABLE public.routing_health_checks ALTER COLUMN id ADD GENERATED ALWAYS AS
     NO MAXVALUE
     CACHE 1
 );
-
 
 --
 -- Name: routing_overrides; Type: TABLE; Schema: public; Owner: -
@@ -13775,7 +12782,6 @@ CREATE TABLE public.routing_overrides (
     updated_at timestamp with time zone DEFAULT now() NOT NULL,
     CONSTRAINT routing_overrides_mode_check CHECK ((mode = ANY (ARRAY['pin'::text, 'ban'::text])))
 );
-
 
 --
 -- Name: routing_overrides_audit; Type: TABLE; Schema: public; Owner: -
@@ -13797,7 +12803,6 @@ CREATE TABLE public.routing_overrides_audit (
     CONSTRAINT routing_overrides_audit_action_check CHECK ((action = ANY (ARRAY['insert'::text, 'update'::text, 'delete'::text])))
 );
 
-
 --
 -- Name: routing_overrides_audit_id_seq; Type: SEQUENCE; Schema: public; Owner: -
 --
@@ -13809,13 +12814,11 @@ CREATE SEQUENCE public.routing_overrides_audit_id_seq
     NO MAXVALUE
     CACHE 1;
 
-
 --
 -- Name: routing_overrides_audit_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
 --
 
 ALTER SEQUENCE public.routing_overrides_audit_id_seq OWNED BY public.routing_overrides_audit.id;
-
 
 --
 -- Name: routing_overrides_id_seq; Type: SEQUENCE; Schema: public; Owner: -
@@ -13828,13 +12831,11 @@ CREATE SEQUENCE public.routing_overrides_id_seq
     NO MAXVALUE
     CACHE 1;
 
-
 --
 -- Name: routing_overrides_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
 --
 
 ALTER SEQUENCE public.routing_overrides_id_seq OWNED BY public.routing_overrides.id;
-
 
 --
 -- Name: routing_policy; Type: TABLE; Schema: public; Owner: -
@@ -13866,7 +12867,6 @@ CREATE TABLE public.routing_policy (
     CONSTRAINT routing_policy_transient_fail_threshold_check CHECK (((transient_fail_threshold >= 0) AND (transient_fail_threshold <= 10)))
 );
 
-
 --
 -- Name: runtime_alert_events; Type: TABLE; Schema: public; Owner: -
 --
@@ -13891,7 +12891,6 @@ CREATE TABLE public.runtime_alert_events (
     CONSTRAINT runtime_alert_events_status_check CHECK ((status = ANY (ARRAY['triggered'::text, 'acknowledged'::text, 'resolved'::text, 'suppressed'::text])))
 );
 
-
 --
 -- Name: runtime_alert_events_id_seq; Type: SEQUENCE; Schema: public; Owner: -
 --
@@ -13903,13 +12902,11 @@ CREATE SEQUENCE public.runtime_alert_events_id_seq
     NO MAXVALUE
     CACHE 1;
 
-
 --
 -- Name: runtime_alert_events_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
 --
 
 ALTER SEQUENCE public.runtime_alert_events_id_seq OWNED BY public.runtime_alert_events.id;
-
 
 --
 -- Name: runtime_metrics; Type: TABLE; Schema: public; Owner: -
@@ -13936,7 +12933,6 @@ CREATE TABLE public.runtime_metrics (
     tenant_count integer
 );
 
-
 --
 -- Name: runtime_metrics_id_seq; Type: SEQUENCE; Schema: public; Owner: -
 --
@@ -13948,13 +12944,11 @@ CREATE SEQUENCE public.runtime_metrics_id_seq
     NO MAXVALUE
     CACHE 1;
 
-
 --
 -- Name: runtime_metrics_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
 --
 
 ALTER SEQUENCE public.runtime_metrics_id_seq OWNED BY public.runtime_metrics.id;
-
 
 --
 -- Name: runtime_telemetry_consent_events; Type: TABLE; Schema: public; Owner: -
@@ -13971,7 +12965,6 @@ CREATE TABLE public.runtime_telemetry_consent_events (
     occurred_at timestamp with time zone NOT NULL
 );
 
-
 --
 -- Name: runtime_telemetry_consent_events_id_seq; Type: SEQUENCE; Schema: public; Owner: -
 --
@@ -13983,13 +12976,11 @@ CREATE SEQUENCE public.runtime_telemetry_consent_events_id_seq
     NO MAXVALUE
     CACHE 1;
 
-
 --
 -- Name: runtime_telemetry_consent_events_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
 --
 
 ALTER SEQUENCE public.runtime_telemetry_consent_events_id_seq OWNED BY public.runtime_telemetry_consent_events.id;
-
 
 --
 -- Name: runtime_telemetry_preferences; Type: TABLE; Schema: public; Owner: -
@@ -14004,7 +12995,6 @@ CREATE TABLE public.runtime_telemetry_preferences (
     disabled_at timestamp with time zone
 );
 
-
 --
 -- Name: schema_migration_audit; Type: TABLE; Schema: public; Owner: -
 --
@@ -14016,7 +13006,6 @@ CREATE TABLE public.schema_migration_audit (
     note text DEFAULT ''::text NOT NULL
 );
 
-
 --
 -- Name: schema_migrations; Type: TABLE; Schema: public; Owner: -
 --
@@ -14027,7 +13016,6 @@ CREATE TABLE public.schema_migrations (
     applied_at timestamp with time zone DEFAULT now()
 );
 
-
 --
 -- Name: schema_migrations_backup_20260722; Type: TABLE; Schema: public; Owner: -
 --
@@ -14037,7 +13025,6 @@ CREATE TABLE public.schema_migrations_backup_20260722 (
     description text,
     applied_at timestamp with time zone
 );
-
 
 --
 -- Name: security_audit_log; Type: TABLE; Schema: public; Owner: -
@@ -14056,7 +13043,6 @@ CREATE TABLE public.security_audit_log (
     CONSTRAINT security_audit_log_event_kind_check CHECK ((event_kind = ANY (ARRAY['key_created'::text, 'key_disabled'::text, 'key_throttled'::text, 'key_unthrottled'::text, 'key_revoked'::text, 'key_revealed'::text, 'auth_failed'::text, 'auth_expired'::text, 'admin_login_failed'::text, 'key_reencrypted'::text, 'hmac_sig_failed'::text, 'hmac_nonce_replay'::text, 'hmac_timestamp_bad'::text, 'rate_limited'::text, 'anomaly_spike'::text])))
 );
 
-
 --
 -- Name: security_audit_log_id_seq; Type: SEQUENCE; Schema: public; Owner: -
 --
@@ -14068,13 +13054,11 @@ CREATE SEQUENCE public.security_audit_log_id_seq
     NO MAXVALUE
     CACHE 1;
 
-
 --
 -- Name: security_audit_log_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
 --
 
 ALTER SEQUENCE public.security_audit_log_id_seq OWNED BY public.security_audit_log.id;
-
 
 --
 -- Name: security_detector_config; Type: TABLE; Schema: public; Owner: -
@@ -14110,13 +13094,11 @@ CREATE TABLE public.security_detector_config (
     CONSTRAINT security_detector_config_severity_threshold_approval_check CHECK (((severity_threshold_approval >= 0) AND (severity_threshold_approval <= 10)))
 );
 
-
 --
 -- Name: TABLE security_detector_config; Type: COMMENT; Schema: public; Owner: -
 --
 
 COMMENT ON TABLE public.security_detector_config IS '安全检测器配置 — 统一管理提示词注入检测和会话审计配置，支持租户级定制和热更新';
-
 
 --
 -- Name: COLUMN security_detector_config.sensitive_words; Type: COMMENT; Schema: public; Owner: -
@@ -14124,13 +13106,11 @@ COMMENT ON TABLE public.security_detector_config IS '安全检测器配置 — �
 
 COMMENT ON COLUMN public.security_detector_config.sensitive_words IS '敏感词列表（JSONB数组）：["政变", "六四", "色情", "暴力"]';
 
-
 --
 -- Name: COLUMN security_detector_config.injection_patterns; Type: COMMENT; Schema: public; Owner: -
 --
 
 COMMENT ON COLUMN public.security_detector_config.injection_patterns IS '提示词注入检测规则（JSONB）：[{"pattern":"regex","severity":9,"description":"说明"}]';
-
 
 --
 -- Name: COLUMN security_detector_config.pii_patterns; Type: COMMENT; Schema: public; Owner: -
@@ -14138,13 +13118,11 @@ COMMENT ON COLUMN public.security_detector_config.injection_patterns IS '提示�
 
 COMMENT ON COLUMN public.security_detector_config.pii_patterns IS 'PII检测规则（JSONB）：[{"pattern":"regex","type":"credit_card","severity":9}]';
 
-
 --
 -- Name: COLUMN security_detector_config.jailbreak_patterns; Type: COMMENT; Schema: public; Owner: -
 --
 
 COMMENT ON COLUMN public.security_detector_config.jailbreak_patterns IS '越狱检测规则（JSONB）：[{"pattern":"regex","severity":10,"description":"DAN越狱"}]';
-
 
 --
 -- Name: COLUMN security_detector_config.audit_sampling_rate; Type: COMMENT; Schema: public; Owner: -
@@ -14152,13 +13130,11 @@ COMMENT ON COLUMN public.security_detector_config.jailbreak_patterns IS '越狱�
 
 COMMENT ON COLUMN public.security_detector_config.audit_sampling_rate IS '审计采样率（0-1）：1.0=全量，0.1=10%采样。用于高流量场景降低存储压力';
 
-
 --
 -- Name: COLUMN security_detector_config.auto_approval_whitelist; Type: COMMENT; Schema: public; Owner: -
 --
 
 COMMENT ON COLUMN public.security_detector_config.auto_approval_whitelist IS '自动通过白名单（JSONB）：{"user_ids":[...],"ip_cidrs":[...],"tenant_ids":[...]}';
-
 
 --
 -- Name: security_detector_config_id_seq; Type: SEQUENCE; Schema: public; Owner: -
@@ -14172,13 +13148,11 @@ CREATE SEQUENCE public.security_detector_config_id_seq
     NO MAXVALUE
     CACHE 1;
 
-
 --
 -- Name: security_detector_config_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
 --
 
 ALTER SEQUENCE public.security_detector_config_id_seq OWNED BY public.security_detector_config.id;
-
 
 --
 -- Name: self_check_round_results; Type: TABLE; Schema: public; Owner: -
@@ -14203,7 +13177,6 @@ CREATE TABLE public.self_check_round_results (
     CONSTRAINT self_check_round_results_round_check CHECK (((round_index >= 0) AND (round_index <= 10)))
 );
 
-
 --
 -- Name: self_check_round_results_id_seq; Type: SEQUENCE; Schema: public; Owner: -
 --
@@ -14216,7 +13189,6 @@ ALTER TABLE public.self_check_round_results ALTER COLUMN id ADD GENERATED ALWAYS
     NO MAXVALUE
     CACHE 1
 );
-
 
 --
 -- Name: self_check_runs; Type: TABLE; Schema: public; Owner: -
@@ -14249,20 +13221,17 @@ CREATE TABLE public.self_check_runs (
     CONSTRAINT self_check_runs_status_check CHECK ((status = ANY (ARRAY['running'::text, 'success'::text, 'partial'::text, 'failed'::text, 'retrying'::text])))
 );
 
-
 --
 -- Name: COLUMN self_check_runs.selection_strategy; Type: COMMENT; Schema: public; Owner: -
 --
 
 COMMENT ON COLUMN public.self_check_runs.selection_strategy IS '341: most_used | fallback_<n> | random — which model the credential_selfcheck worker tested';
 
-
 --
 -- Name: COLUMN self_check_runs.attempted_models; Type: COMMENT; Schema: public; Owner: -
 --
 
 COMMENT ON COLUMN public.self_check_runs.attempted_models IS '341: ordered list of models tried during this run, e.g. ["gpt-4o","gpt-4o-mini","claude-haiku-4-5"]';
-
 
 --
 -- Name: self_check_runs_id_seq; Type: SEQUENCE; Schema: public; Owner: -
@@ -14276,7 +13245,6 @@ ALTER TABLE public.self_check_runs ALTER COLUMN id ADD GENERATED ALWAYS AS IDENT
     NO MAXVALUE
     CACHE 1
 );
-
 
 --
 -- Name: self_check_settings; Type: TABLE; Schema: public; Owner: -
@@ -14300,13 +13268,11 @@ CREATE TABLE public.self_check_settings (
     CONSTRAINT self_check_settings_monitor_concurrency_check CHECK (((monitor_concurrency >= 1) AND (monitor_concurrency <= 32)))
 );
 
-
 --
 -- Name: COLUMN self_check_settings.monitor_concurrency; Type: COMMENT; Schema: public; Owner: -
 --
 
 COMMENT ON COLUMN public.self_check_settings.monitor_concurrency IS '345: 系统监测模块全局并发上限（mandatory + automatic 任务总和），1-32，默认 5。';
-
 
 --
 -- Name: session_audit_records; Type: TABLE; Schema: public; Owner: -
@@ -14342,7 +13308,6 @@ CREATE TABLE public.session_audit_records (
 
 ALTER TABLE ONLY public.session_audit_records FORCE ROW LEVEL SECURITY;
 
-
 --
 -- Name: session_audit_records_id_seq; Type: SEQUENCE; Schema: public; Owner: -
 --
@@ -14354,13 +13319,11 @@ CREATE SEQUENCE public.session_audit_records_id_seq
     NO MAXVALUE
     CACHE 1;
 
-
 --
 -- Name: session_audit_records_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
 --
 
 ALTER SEQUENCE public.session_audit_records_id_seq OWNED BY public.session_audit_records.id;
-
 
 --
 -- Name: session_bodies; Type: TABLE; Schema: public; Owner: -
@@ -14382,7 +13345,6 @@ CREATE TABLE public.session_bodies (
 )
 PARTITION BY RANGE (partition_date);
 
-
 --
 -- Name: TABLE session_bodies; Type: COMMENT; Schema: public; Owner: -
 --
@@ -14390,7 +13352,6 @@ PARTITION BY RANGE (partition_date);
 COMMENT ON TABLE public.session_bodies IS 'V2正文存储表：存储增量正文，避免request_logs的全量JSONB膨胀问题。
      使用columnar存储格式，配合zstd压缩，预计可节省60-80%磁盘空间。
      Created: 2026-07-17, Migration 430';
-
 
 --
 -- Name: session_bodies_id_seq; Type: SEQUENCE; Schema: public; Owner: -
@@ -14403,13 +13364,11 @@ CREATE SEQUENCE public.session_bodies_id_seq
     NO MAXVALUE
     CACHE 1;
 
-
 --
 -- Name: session_bodies_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
 --
 
 ALTER SEQUENCE public.session_bodies_id_seq OWNED BY public.session_bodies.id;
-
 
 SET default_table_access_method = columnar;
 
@@ -14432,7 +13391,6 @@ CREATE TABLE public.session_bodies_2026_07 (
     partition_date date DEFAULT CURRENT_DATE NOT NULL
 );
 
-
 --
 -- Name: session_bodies_2026_08; Type: TABLE; Schema: public; Owner: -
 --
@@ -14451,7 +13409,6 @@ CREATE TABLE public.session_bodies_2026_08 (
     ts timestamp with time zone DEFAULT now() NOT NULL,
     partition_date date DEFAULT CURRENT_DATE NOT NULL
 );
-
 
 SET default_table_access_method = heap;
 
@@ -14483,13 +13440,11 @@ CREATE TABLE public.session_intent_evolution (
     CONSTRAINT session_intent_evolution_primary_confidence_check CHECK (((primary_confidence >= (0)::double precision) AND (primary_confidence <= (1)::double precision)))
 );
 
-
 --
 -- Name: TABLE session_intent_evolution; Type: COMMENT; Schema: public; Owner: -
 --
 
 COMMENT ON TABLE public.session_intent_evolution IS '多轮意图分析 — 记录每轮对话的意图判断和演化轨迹，支持意图漂移检测';
-
 
 --
 -- Name: COLUMN session_intent_evolution.intent_candidates; Type: COMMENT; Schema: public; Owner: -
@@ -14497,13 +13452,11 @@ COMMENT ON TABLE public.session_intent_evolution IS '多轮意图分析 — 记�
 
 COMMENT ON COLUMN public.session_intent_evolution.intent_candidates IS '多方向意图候选（JSONB数组）：[{"kind":"code","confidence":0.85,"signals":{"has_code_block":true}}]';
 
-
 --
 -- Name: COLUMN session_intent_evolution.intent_drift_score; Type: COMMENT; Schema: public; Owner: -
 --
 
 COMMENT ON COLUMN public.session_intent_evolution.intent_drift_score IS '意图漂移分数（KL散度）：0=无变化，1=完全不同。超过drift_threshold触发重新推荐模型';
-
 
 --
 -- Name: COLUMN session_intent_evolution.classifier_version; Type: COMMENT; Schema: public; Owner: -
@@ -14511,13 +13464,11 @@ COMMENT ON COLUMN public.session_intent_evolution.intent_drift_score IS '意图�
 
 COMMENT ON COLUMN public.session_intent_evolution.classifier_version IS '分类器版本：v1_keyword（仅关键词）/ v2_pattern（模式+关键词）/ v3_llm（LLM兜底）';
 
-
 --
 -- Name: COLUMN session_intent_evolution.user_content_hash; Type: COMMENT; Schema: public; Owner: -
 --
 
 COMMENT ON COLUMN public.session_intent_evolution.user_content_hash IS 'SHA256内容哈希（隐私保护）：用于相似查询识别，不存储原始敏感内容';
-
 
 --
 -- Name: session_intent_evolution_id_seq; Type: SEQUENCE; Schema: public; Owner: -
@@ -14530,13 +13481,11 @@ CREATE SEQUENCE public.session_intent_evolution_id_seq
     NO MAXVALUE
     CACHE 1;
 
-
 --
 -- Name: session_intent_evolution_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
 --
 
 ALTER SEQUENCE public.session_intent_evolution_id_seq OWNED BY public.session_intent_evolution.id;
-
 
 --
 -- Name: session_last_requests; Type: TABLE; Schema: public; Owner: -
@@ -14557,20 +13506,17 @@ CREATE TABLE public.session_last_requests (
     expires_at timestamp with time zone DEFAULT (now() + '01:00:00'::interval)
 );
 
-
 --
 -- Name: TABLE session_last_requests; Type: COMMENT; Schema: public; Owner: -
 --
 
 COMMENT ON TABLE public.session_last_requests IS '会话最后请求缓存表';
 
-
 --
 -- Name: COLUMN session_last_requests.last_request_status; Type: COMMENT; Schema: public; Owner: -
 --
 
 COMMENT ON COLUMN public.session_last_requests.last_request_status IS '请求状态：success/timeout/error/client_disconnected';
-
 
 --
 -- Name: session_memora_extraction_log; Type: TABLE; Schema: public; Owner: -
@@ -14585,7 +13531,6 @@ CREATE TABLE public.session_memora_extraction_log (
     status text DEFAULT 'ok'::text NOT NULL,
     detail jsonb
 );
-
 
 --
 -- Name: session_module_executions; Type: TABLE; Schema: public; Owner: -
@@ -14614,13 +13559,11 @@ CREATE TABLE public.session_module_executions (
 )
 PARTITION BY RANGE (created_at);
 
-
 --
 -- Name: TABLE session_module_executions; Type: COMMENT; Schema: public; Owner: -
 --
 
 COMMENT ON TABLE public.session_module_executions IS '会话模块执行记录归档表 - 按月分区，保留历史数据供审计和长期分析';
-
 
 --
 -- Name: session_module_executions_2026_07; Type: TABLE; Schema: public; Owner: -
@@ -14648,7 +13591,6 @@ CREATE TABLE public.session_module_executions_2026_07 (
     updated_at timestamp with time zone NOT NULL
 );
 
-
 --
 -- Name: session_module_executions_2026_08; Type: TABLE; Schema: public; Owner: -
 --
@@ -14674,7 +13616,6 @@ CREATE TABLE public.session_module_executions_2026_08 (
     created_at timestamp with time zone NOT NULL,
     updated_at timestamp with time zone NOT NULL
 );
-
 
 --
 -- Name: session_module_executions_hot; Type: TABLE; Schema: public; Owner: -
@@ -14703,13 +13644,11 @@ CREATE TABLE public.session_module_executions_hot (
 )
 WITH (autovacuum_enabled='true', autovacuum_vacuum_scale_factor='0.05', autovacuum_vacuum_threshold='10', autovacuum_analyze_scale_factor='0.02', autovacuum_analyze_threshold='50');
 
-
 --
 -- Name: TABLE session_module_executions_hot; Type: COMMENT; Schema: public; Owner: -
 --
 
 COMMENT ON TABLE public.session_module_executions_hot IS '会话模块执行记录热表 - 记录每个会话对每个模块的执行情况，避免重复执行（保留 7 天）';
-
 
 --
 -- Name: COLUMN session_module_executions_hot.module_name; Type: COMMENT; Schema: public; Owner: -
@@ -14717,13 +13656,11 @@ COMMENT ON TABLE public.session_module_executions_hot IS '会话模块执行记�
 
 COMMENT ON COLUMN public.session_module_executions_hot.module_name IS '模块标识，参考 domains/moduleregistry/constants.go';
 
-
 --
 -- Name: COLUMN session_module_executions_hot.result_summary; Type: COMMENT; Schema: public; Owner: -
 --
 
 COMMENT ON COLUMN public.session_module_executions_hot.result_summary IS '结果摘要（轻量 JSONB），用于快速判断和展示';
-
 
 --
 -- Name: COLUMN session_module_executions_hot.result_detail; Type: COMMENT; Schema: public; Owner: -
@@ -14731,20 +13668,17 @@ COMMENT ON COLUMN public.session_module_executions_hot.result_summary IS '结果
 
 COMMENT ON COLUMN public.session_module_executions_hot.result_detail IS '结果详情（完整 JSONB），供后续模块使用';
 
-
 --
 -- Name: COLUMN session_module_executions_hot.cache_key; Type: COMMENT; Schema: public; Owner: -
 --
 
 COMMENT ON COLUMN public.session_module_executions_hot.cache_key IS '输入参数哈希，用于判断是否可复用之前的执行结果';
 
-
 --
 -- Name: COLUMN session_module_executions_hot.expires_at; Type: COMMENT; Schema: public; Owner: -
 --
 
 COMMENT ON COLUMN public.session_module_executions_hot.expires_at IS '结果过期时间，超过此时间视为无效';
-
 
 --
 -- Name: session_module_executions_hot_execution_id_seq; Type: SEQUENCE; Schema: public; Owner: -
@@ -14757,13 +13691,11 @@ CREATE SEQUENCE public.session_module_executions_hot_execution_id_seq
     NO MAXVALUE
     CACHE 1;
 
-
 --
 -- Name: session_module_executions_hot_execution_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
 --
 
 ALTER SEQUENCE public.session_module_executions_hot_execution_id_seq OWNED BY public.session_module_executions_hot.execution_id;
-
 
 --
 -- Name: session_summaries; Type: TABLE; Schema: public; Owner: -
@@ -14820,13 +13752,11 @@ CREATE TABLE public.session_summaries (
     CONSTRAINT session_summaries_quality_score_check CHECK (((quality_score >= 0) AND (quality_score <= 10)))
 );
 
-
 --
 -- Name: COLUMN session_summaries.health_score; Type: COMMENT; Schema: public; Owner: -
 --
 
 COMMENT ON COLUMN public.session_summaries.health_score IS 'Session health score (0-100)';
-
 
 --
 -- Name: COLUMN session_summaries.health_grade; Type: COMMENT; Schema: public; Owner: -
@@ -14834,20 +13764,17 @@ COMMENT ON COLUMN public.session_summaries.health_score IS 'Session health score
 
 COMMENT ON COLUMN public.session_summaries.health_grade IS 'Session health grade (A, B, C, D, F)';
 
-
 --
 -- Name: COLUMN session_summaries.range; Type: COMMENT; Schema: public; Owner: -
 --
 
 COMMENT ON COLUMN public.session_summaries.range IS 'Session size range category (e.g., "1-5", "6-10", etc.)';
 
-
 --
 -- Name: COLUMN session_summaries.last_health_at; Type: COMMENT; Schema: public; Owner: -
 --
 
 COMMENT ON COLUMN public.session_summaries.last_health_at IS 'Timestamp of last health score calculation';
-
 
 --
 -- Name: session_stats_today; Type: VIEW; Schema: public; Owner: -
@@ -14868,7 +13795,6 @@ CREATE VIEW public.session_stats_today AS
   WHERE (first_request_at >= CURRENT_DATE)
   GROUP BY tenant_id;
 
-
 --
 -- Name: session_titles; Type: TABLE; Schema: public; Owner: -
 --
@@ -14881,7 +13807,6 @@ CREATE TABLE public.session_titles (
     model text,
     api_key_id integer
 );
-
 
 --
 -- Name: session_turn_logs; Type: TABLE; Schema: public; Owner: -
@@ -14905,7 +13830,6 @@ CREATE TABLE public.session_turn_logs (
     CONSTRAINT session_turn_logs_stage_status_check CHECK ((stage_status = ANY (ARRAY['pending'::text, 'running'::text, 'success'::text, 'failed'::text, 'skipped'::text])))
 );
 
-
 --
 -- Name: TABLE session_turn_logs; Type: COMMENT; Schema: public; Owner: -
 --
@@ -14913,7 +13837,6 @@ CREATE TABLE public.session_turn_logs (
 COMMENT ON TABLE public.session_turn_logs IS 'V2环节状态日志：记录每个轮次的处理过程，用于故障诊断。
      24小时后自动清理，会话结束时汇总生成JSON存入sessions表。
      Created: 2026-07-17, Migration 430';
-
 
 --
 -- Name: session_turn_logs_id_seq; Type: SEQUENCE; Schema: public; Owner: -
@@ -14926,13 +13849,11 @@ CREATE SEQUENCE public.session_turn_logs_id_seq
     NO MAXVALUE
     CACHE 1;
 
-
 --
 -- Name: session_turn_logs_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
 --
 
 ALTER SEQUENCE public.session_turn_logs_id_seq OWNED BY public.session_turn_logs.id;
-
 
 --
 -- Name: session_turn_snapshots; Type: TABLE; Schema: public; Owner: -
@@ -14971,13 +13892,11 @@ CREATE TABLE public.session_turn_snapshots (
     stream_completed boolean DEFAULT true NOT NULL
 );
 
-
 --
 -- Name: TABLE session_turn_snapshots; Type: COMMENT; Schema: public; Owner: -
 --
 
 COMMENT ON TABLE public.session_turn_snapshots IS 'TTL-bound, turn-aligned original/compressed/secured conversation snapshots for admin audit.';
-
 
 --
 -- Name: session_turn_snapshots_id_seq; Type: SEQUENCE; Schema: public; Owner: -
@@ -14990,13 +13909,11 @@ CREATE SEQUENCE public.session_turn_snapshots_id_seq
     NO MAXVALUE
     CACHE 1;
 
-
 --
 -- Name: session_turn_snapshots_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
 --
 
 ALTER SEQUENCE public.session_turn_snapshots_id_seq OWNED BY public.session_turn_snapshots.id;
-
 
 --
 -- Name: session_turns; Type: TABLE; Schema: public; Owner: -
@@ -15039,7 +13956,6 @@ CREATE TABLE public.session_turns (
 )
 PARTITION BY RANGE (partition_date);
 
-
 --
 -- Name: TABLE session_turns; Type: COMMENT; Schema: public; Owner: -
 --
@@ -15048,7 +13964,6 @@ COMMENT ON TABLE public.session_turns IS 'V2轮次元数据表：存储每轮的
      与request_logs并行，通过request_id关联便于数据校验。
      使用advisory lock保证turn_no在同一会话内单调递增。
      Created: 2026-07-17, Migration 430';
-
 
 --
 -- Name: session_turns_id_seq; Type: SEQUENCE; Schema: public; Owner: -
@@ -15061,13 +13976,11 @@ CREATE SEQUENCE public.session_turns_id_seq
     NO MAXVALUE
     CACHE 1;
 
-
 --
 -- Name: session_turns_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
 --
 
 ALTER SEQUENCE public.session_turns_id_seq OWNED BY public.session_turns.id;
-
 
 --
 -- Name: session_turns_2026_07; Type: TABLE; Schema: public; Owner: -
@@ -15109,7 +14022,6 @@ CREATE TABLE public.session_turns_2026_07 (
     CONSTRAINT session_turns_submit_mode_check CHECK ((submit_mode = ANY (ARRAY['full'::text, 'delta'::text, 'snapshot'::text, 'inferred_compressed'::text])))
 );
 
-
 --
 -- Name: session_turns_2026_08; Type: TABLE; Schema: public; Owner: -
 --
@@ -15150,7 +14062,6 @@ CREATE TABLE public.session_turns_2026_08 (
     CONSTRAINT session_turns_submit_mode_check CHECK ((submit_mode = ANY (ARRAY['full'::text, 'delta'::text, 'snapshot'::text, 'inferred_compressed'::text])))
 );
 
-
 --
 -- Name: sessions; Type: TABLE; Schema: public; Owner: -
 --
@@ -15182,7 +14093,6 @@ CREATE TABLE public.sessions (
 )
 PARTITION BY RANGE (partition_date);
 
-
 --
 -- Name: TABLE sessions; Type: COMMENT; Schema: public; Owner: -
 --
@@ -15191,7 +14101,6 @@ COMMENT ON TABLE public.sessions IS 'V2会话快照表：一个会话一条记�
      与request_logs并行运行，通过Feature Flag控制流量路由。
      通过primary_request_id可以关联到request_logs进行数据校验。
      Created: 2026-07-17, Migration 430';
-
 
 --
 -- Name: sessions_id_seq; Type: SEQUENCE; Schema: public; Owner: -
@@ -15204,13 +14113,11 @@ CREATE SEQUENCE public.sessions_id_seq
     NO MAXVALUE
     CACHE 1;
 
-
 --
 -- Name: sessions_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
 --
 
 ALTER SEQUENCE public.sessions_id_seq OWNED BY public.sessions.id;
-
 
 --
 -- Name: sessions_2026_07; Type: TABLE; Schema: public; Owner: -
@@ -15242,7 +14149,6 @@ CREATE TABLE public.sessions_2026_07 (
     CONSTRAINT sessions_status_check CHECK ((status = ANY (ARRAY['active'::text, 'closed'::text, 'archived'::text, 'deleted'::text])))
 );
 
-
 --
 -- Name: sessions_2026_08; Type: TABLE; Schema: public; Owner: -
 --
@@ -15273,7 +14179,6 @@ CREATE TABLE public.sessions_2026_08 (
     CONSTRAINT sessions_status_check CHECK ((status = ANY (ARRAY['active'::text, 'closed'::text, 'archived'::text, 'deleted'::text])))
 );
 
-
 --
 -- Name: settings_audit; Type: TABLE; Schema: public; Owner: -
 --
@@ -15294,20 +14199,17 @@ CREATE TABLE public.settings_audit (
 
 ALTER TABLE ONLY public.settings_audit FORCE ROW LEVEL SECURITY;
 
-
 --
 -- Name: TABLE settings_audit; Type: COMMENT; Schema: public; Owner: -
 --
 
 COMMENT ON TABLE public.settings_audit IS '设置修改审计日志（bg/settings_audit_cleaner.go 每 24h 清理 7 天前的数据）';
 
-
 --
 -- Name: COLUMN settings_audit.action; Type: COMMENT; Schema: public; Owner: -
 --
 
 COMMENT ON COLUMN public.settings_audit.action IS 'update / rollback / delete';
-
 
 --
 -- Name: settings_audit_id_seq; Type: SEQUENCE; Schema: public; Owner: -
@@ -15320,13 +14222,11 @@ CREATE SEQUENCE public.settings_audit_id_seq
     NO MAXVALUE
     CACHE 1;
 
-
 --
 -- Name: settings_audit_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
 --
 
 ALTER SEQUENCE public.settings_audit_id_seq OWNED BY public.settings_audit.id;
-
 
 --
 -- Name: settings_kv; Type: TABLE; Schema: public; Owner: -
@@ -15344,20 +14244,17 @@ CREATE TABLE public.settings_kv (
     prev_updated_at timestamp with time zone
 );
 
-
 --
 -- Name: TABLE settings_kv; Type: COMMENT; Schema: public; Owner: -
 --
 
 COMMENT ON TABLE public.settings_kv IS '平台级运行时设置（Q2: 立即生效）';
 
-
 --
 -- Name: COLUMN settings_kv.prev_value; Type: COMMENT; Schema: public; Owner: -
 --
 
 COMMENT ON COLUMN public.settings_kv.prev_value IS '上次的值，用于一键回滚';
-
 
 --
 -- Name: severity_action_matrix; Type: TABLE; Schema: public; Owner: -
@@ -15384,13 +14281,11 @@ CREATE TABLE public.severity_action_matrix (
     CONSTRAINT valid_severity CHECK (((severity_level)::text = ANY ((ARRAY['low'::character varying, 'medium'::character varying, 'high'::character varying, 'critical'::character varying])::text[])))
 );
 
-
 --
 -- Name: TABLE severity_action_matrix; Type: COMMENT; Schema: public; Owner: -
 --
 
 COMMENT ON TABLE public.severity_action_matrix IS '严重等级处理矩阵 - 配置不同风险等级的处理动作';
-
 
 --
 -- Name: COLUMN severity_action_matrix.observe_action; Type: COMMENT; Schema: public; Owner: -
@@ -15398,20 +14293,17 @@ COMMENT ON TABLE public.severity_action_matrix IS '严重等级处理矩阵 - �
 
 COMMENT ON COLUMN public.severity_action_matrix.observe_action IS '观察模式下的动作（仅记录不阻断）';
 
-
 --
 -- Name: COLUMN severity_action_matrix.enforce_action; Type: COMMENT; Schema: public; Owner: -
 --
 
 COMMENT ON COLUMN public.severity_action_matrix.enforce_action IS '执行模式下的动作（可阻断请求）';
 
-
 --
 -- Name: COLUMN severity_action_matrix.approval_timeout_minutes; Type: COMMENT; Schema: public; Owner: -
 --
 
 COMMENT ON COLUMN public.severity_action_matrix.approval_timeout_minutes IS '审批超时时间（分钟），0=无限等待';
-
 
 --
 -- Name: severity_action_matrix_id_seq; Type: SEQUENCE; Schema: public; Owner: -
@@ -15425,13 +14317,11 @@ CREATE SEQUENCE public.severity_action_matrix_id_seq
     NO MAXVALUE
     CACHE 1;
 
-
 --
 -- Name: severity_action_matrix_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
 --
 
 ALTER SEQUENCE public.severity_action_matrix_id_seq OWNED BY public.severity_action_matrix.id;
-
 
 --
 -- Name: stage_performance_recent; Type: VIEW; Schema: public; Owner: -
@@ -15455,13 +14345,11 @@ CREATE VIEW public.stage_performance_recent AS
   GROUP BY stage
   ORDER BY (avg(duration_ms)) DESC NULLS LAST;
 
-
 --
 -- Name: VIEW stage_performance_recent; Type: COMMENT; Schema: public; Owner: -
 --
 
 COMMENT ON VIEW public.stage_performance_recent IS '最近 1 小时各阶段性能统计（平均耗时、P50/P99、失败率、缓存命中率）。';
-
 
 --
 -- Name: sticky_sessions; Type: TABLE; Schema: public; Owner: -
@@ -15475,7 +14363,6 @@ CREATE TABLE public.sticky_sessions (
     canonical_id bigint,
     last_request_id text
 );
-
 
 --
 -- Name: subscription_plans; Type: TABLE; Schema: public; Owner: -
@@ -15495,7 +14382,6 @@ CREATE TABLE public.subscription_plans (
     CONSTRAINT subscription_plans_tier_check CHECK (((tier)::text = ANY (ARRAY[('basic'::character varying)::text, ('pro'::character varying)::text, ('max'::character varying)::text])))
 );
 
-
 --
 -- Name: subscription_plans_id_seq; Type: SEQUENCE; Schema: public; Owner: -
 --
@@ -15508,13 +14394,11 @@ CREATE SEQUENCE public.subscription_plans_id_seq
     NO MAXVALUE
     CACHE 1;
 
-
 --
 -- Name: subscription_plans_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
 --
 
 ALTER SEQUENCE public.subscription_plans_id_seq OWNED BY public.subscription_plans.id;
-
 
 --
 -- Name: subscription_tiers; Type: TABLE; Schema: public; Owner: -
@@ -15531,7 +14415,6 @@ CREATE TABLE public.subscription_tiers (
     created_at timestamp with time zone DEFAULT now() NOT NULL
 );
 
-
 --
 -- Name: subscription_tiers_id_seq; Type: SEQUENCE; Schema: public; Owner: -
 --
@@ -15544,13 +14427,11 @@ CREATE SEQUENCE public.subscription_tiers_id_seq
     NO MAXVALUE
     CACHE 1;
 
-
 --
 -- Name: subscription_tiers_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
 --
 
 ALTER SEQUENCE public.subscription_tiers_id_seq OWNED BY public.subscription_tiers.id;
-
 
 --
 -- Name: system_identity_pool; Type: TABLE; Schema: public; Owner: -
@@ -15564,13 +14445,11 @@ CREATE TABLE public.system_identity_pool (
     CONSTRAINT system_identity_pool_id_check CHECK ((id = 1))
 );
 
-
 --
 -- Name: TABLE system_identity_pool; Type: COMMENT; Schema: public; Owner: -
 --
 
 COMMENT ON TABLE public.system_identity_pool IS 'Global cap on total distinct end-user identities the gateway will accept. Once this many unique fingerprints are active, new connections must reuse an existing fingerprint (round-robin among least-recently-used).';
-
 
 --
 -- Name: system_metrics_local; Type: VIEW; Schema: public; Owner: -
@@ -15595,13 +14474,11 @@ CREATE VIEW public.system_metrics_local AS
   WHERE ("timestamp" >= (now() - '24:00:00'::interval))
   ORDER BY "timestamp" DESC;
 
-
 --
 -- Name: VIEW system_metrics_local; Type: COMMENT; Schema: public; Owner: -
 --
 
 COMMENT ON VIEW public.system_metrics_local IS '最近 24 小时本地系统指标汇总。用于与 request_logs 时间戳对齐分析负载与性能关系。';
-
 
 --
 -- Name: system_metrics_recent; Type: VIEW; Schema: public; Owner: -
@@ -15625,7 +14502,6 @@ CREATE VIEW public.system_metrics_recent AS
   WHERE ("timestamp" >= (now() - '24:00:00'::interval))
   GROUP BY instance_id, (date_trunc('minute'::text, "timestamp"))
   ORDER BY (date_trunc('minute'::text, "timestamp")) DESC;
-
 
 --
 -- Name: system_probe_runs; Type: TABLE; Schema: public; Owner: -
@@ -15666,13 +14542,11 @@ CREATE TABLE public.system_probe_runs (
 )
 PARTITION BY RANGE (created_at);
 
-
 --
 -- Name: TABLE system_probe_runs; Type: COMMENT; Schema: public; Owner: -
 --
 
 COMMENT ON TABLE public.system_probe_runs IS '344: 系统监测模块审计表。任务唯一身份 = task_id (Redis INCR)。按天分区，30d 滚动。';
-
 
 --
 -- Name: COLUMN system_probe_runs.task_id; Type: COMMENT; Schema: public; Owner: -
@@ -15680,13 +14554,11 @@ COMMENT ON TABLE public.system_probe_runs IS '344: 系统监测模块审计表�
 
 COMMENT ON COLUMN public.system_probe_runs.task_id IS 'Redis 自增任务 ID (llmgw:monitor:tasks:counter)，用于跨 Redis/PG 关联。';
 
-
 --
 -- Name: COLUMN system_probe_runs.automaticity; Type: COMMENT; Schema: public; Owner: -
 --
 
 COMMENT ON COLUMN public.system_probe_runs.automaticity IS 'mandatory = 强制（手工/错误触发）, automatic = 自动（周期/watchdog）。';
-
 
 --
 -- Name: COLUMN system_probe_runs.dns_ms; Type: COMMENT; Schema: public; Owner: -
@@ -15694,20 +14566,17 @@ COMMENT ON COLUMN public.system_probe_runs.automaticity IS 'mandatory = 强制�
 
 COMMENT ON COLUMN public.system_probe_runs.dns_ms IS 'http_ping 专属：DNS 解析耗时（ms）。';
 
-
 --
 -- Name: COLUMN system_probe_runs.tls_ms; Type: COMMENT; Schema: public; Owner: -
 --
 
 COMMENT ON COLUMN public.system_probe_runs.tls_ms IS 'http_ping 专属：TLS 握手耗时（ms）。';
 
-
 --
 -- Name: COLUMN system_probe_runs.skip_reason; Type: COMMENT; Schema: public; Owner: -
 --
 
 COMMENT ON COLUMN public.system_probe_runs.skip_reason IS '最近一次执行被跳过的原因：recent_request_success 等。NULL 表示未被跳过。';
-
 
 --
 -- Name: system_probe_runs_default; Type: TABLE; Schema: public; Owner: -
@@ -15747,7 +14616,6 @@ CREATE TABLE public.system_probe_runs_default (
     CONSTRAINT system_probe_runs_task_type_check CHECK ((task_type = ANY (ARRAY['direct_ping'::text, 'gateway_ping'::text, 'chat_minimal'::text, 'chat_tool'::text, 'chat_stream'::text, 'http_ping'::text])))
 );
 
-
 --
 -- Name: system_probe_runs_id_seq; Type: SEQUENCE; Schema: public; Owner: -
 --
@@ -15760,7 +14628,6 @@ ALTER TABLE public.system_probe_runs ALTER COLUMN id ADD GENERATED ALWAYS AS IDE
     NO MAXVALUE
     CACHE 1
 );
-
 
 --
 -- Name: system_settings; Type: TABLE; Schema: public; Owner: -
@@ -15778,13 +14645,11 @@ CREATE TABLE public.system_settings (
     updated_by character varying(100)
 );
 
-
 --
 -- Name: TABLE system_settings; Type: COMMENT; Schema: public; Owner: -
 --
 
 COMMENT ON TABLE public.system_settings IS '系统配置表，支持热更新，配置值以JSONB格式存储';
-
 
 --
 -- Name: COLUMN system_settings.key; Type: COMMENT; Schema: public; Owner: -
@@ -15792,13 +14657,11 @@ COMMENT ON TABLE public.system_settings IS '系统配置表，支持热更新，
 
 COMMENT ON COLUMN public.system_settings.key IS '配置键，唯一标识';
 
-
 --
 -- Name: COLUMN system_settings.value; Type: COMMENT; Schema: public; Owner: -
 --
 
 COMMENT ON COLUMN public.system_settings.value IS '配置值，JSONB格式支持复杂结构';
-
 
 --
 -- Name: COLUMN system_settings.description; Type: COMMENT; Schema: public; Owner: -
@@ -15806,13 +14669,11 @@ COMMENT ON COLUMN public.system_settings.value IS '配置值，JSONB格式支持
 
 COMMENT ON COLUMN public.system_settings.description IS '配置说明';
 
-
 --
 -- Name: COLUMN system_settings.category; Type: COMMENT; Schema: public; Owner: -
 --
 
 COMMENT ON COLUMN public.system_settings.category IS '配置分类：timeout/retry/continuation/general';
-
 
 --
 -- Name: COLUMN system_settings.is_public; Type: COMMENT; Schema: public; Owner: -
@@ -15820,13 +14681,11 @@ COMMENT ON COLUMN public.system_settings.category IS '配置分类：timeout/ret
 
 COMMENT ON COLUMN public.system_settings.is_public IS '是否为公开配置（可被前端访问）';
 
-
 --
 -- Name: COLUMN system_settings.updated_by; Type: COMMENT; Schema: public; Owner: -
 --
 
 COMMENT ON COLUMN public.system_settings.updated_by IS '最后更新人（用户名或系统标识）';
-
 
 --
 -- Name: system_settings_id_seq; Type: SEQUENCE; Schema: public; Owner: -
@@ -15840,13 +14699,11 @@ CREATE SEQUENCE public.system_settings_id_seq
     NO MAXVALUE
     CACHE 1;
 
-
 --
 -- Name: system_settings_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
 --
 
 ALTER SEQUENCE public.system_settings_id_seq OWNED BY public.system_settings.id;
-
 
 --
 -- Name: task_default_routing; Type: TABLE; Schema: public; Owner: -
@@ -15869,13 +14726,11 @@ CREATE TABLE public.task_default_routing (
     CONSTRAINT task_default_routing_tier_check CHECK ((tier = ANY (ARRAY['primary'::text, 'secondary'::text, 'fallback'::text])))
 );
 
-
 --
 -- Name: TABLE task_default_routing; Type: COMMENT; Schema: public; Owner: -
 --
 
 COMMENT ON TABLE public.task_default_routing IS 'Auto 路由显式默认：为 (task_type, profile, tenant) 指定首选/兜底模型。tenant_id NULL=平台默认。Resolve 优先级：tenant+profile > tenant+通用 > platform+profile > platform+通用。';
-
 
 --
 -- Name: task_default_routing_audit; Type: TABLE; Schema: public; Owner: -
@@ -15899,13 +14754,11 @@ CREATE TABLE public.task_default_routing_audit (
     CONSTRAINT task_default_routing_audit_action_check CHECK ((action = ANY (ARRAY['insert'::text, 'update'::text, 'delete'::text])))
 );
 
-
 --
 -- Name: TABLE task_default_routing_audit; Type: COMMENT; Schema: public; Owner: -
 --
 
 COMMENT ON TABLE public.task_default_routing_audit IS 'task_default_routing 的变更审计；actor 必须是已认证的 super_admin 或 tenant_admin（后者仅可见本租户行）。';
-
 
 --
 -- Name: task_default_routing_audit_id_seq; Type: SEQUENCE; Schema: public; Owner: -
@@ -15920,7 +14773,6 @@ ALTER TABLE public.task_default_routing_audit ALTER COLUMN id ADD GENERATED ALWA
     CACHE 1
 );
 
-
 --
 -- Name: task_default_routing_id_seq; Type: SEQUENCE; Schema: public; Owner: -
 --
@@ -15934,7 +14786,6 @@ ALTER TABLE public.task_default_routing ALTER COLUMN id ADD GENERATED ALWAYS AS 
     CACHE 1
 );
 
-
 --
 -- Name: tenant_credit_wallets; Type: TABLE; Schema: public; Owner: -
 --
@@ -15947,7 +14798,6 @@ CREATE TABLE public.tenant_credit_wallets (
     granted_balance bigint DEFAULT 0 NOT NULL,
     purchased_balance bigint DEFAULT 0 NOT NULL
 );
-
 
 --
 -- Name: tenant_model_policies; Type: TABLE; Schema: public; Owner: -
@@ -15968,7 +14818,6 @@ CREATE TABLE public.tenant_model_policies (
 
 ALTER TABLE ONLY public.tenant_model_policies FORCE ROW LEVEL SECURITY;
 
-
 --
 -- Name: tenant_model_policies_active; Type: VIEW; Schema: public; Owner: -
 --
@@ -15983,7 +14832,6 @@ CREATE VIEW public.tenant_model_policies_active AS
     updated_at
    FROM public.tenant_model_policies
   WHERE (deleted_at IS NULL);
-
 
 --
 -- Name: tenant_model_policies_audit; Type: TABLE; Schema: public; Owner: -
@@ -16003,7 +14851,6 @@ CREATE TABLE public.tenant_model_policies_audit (
 
 ALTER TABLE ONLY public.tenant_model_policies_audit FORCE ROW LEVEL SECURITY;
 
-
 --
 -- Name: tenant_model_policies_audit_id_seq; Type: SEQUENCE; Schema: public; Owner: -
 --
@@ -16015,13 +14862,11 @@ CREATE SEQUENCE public.tenant_model_policies_audit_id_seq
     NO MAXVALUE
     CACHE 1;
 
-
 --
 -- Name: tenant_model_policies_audit_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
 --
 
 ALTER SEQUENCE public.tenant_model_policies_audit_id_seq OWNED BY public.tenant_model_policies_audit.id;
-
 
 --
 -- Name: tenant_model_policies_id_seq; Type: SEQUENCE; Schema: public; Owner: -
@@ -16034,13 +14879,11 @@ CREATE SEQUENCE public.tenant_model_policies_id_seq
     NO MAXVALUE
     CACHE 1;
 
-
 --
 -- Name: tenant_model_policies_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
 --
 
 ALTER SEQUENCE public.tenant_model_policies_id_seq OWNED BY public.tenant_model_policies.id;
-
 
 --
 -- Name: tenant_settings_kv; Type: TABLE; Schema: public; Owner: -
@@ -16060,13 +14903,11 @@ CREATE TABLE public.tenant_settings_kv (
 
 ALTER TABLE ONLY public.tenant_settings_kv FORCE ROW LEVEL SECURITY;
 
-
 --
 -- Name: TABLE tenant_settings_kv; Type: COMMENT; Schema: public; Owner: -
 --
 
 COMMENT ON TABLE public.tenant_settings_kv IS '租户级运行时设置（Q3）';
-
 
 --
 -- Name: tenant_subscriptions; Type: TABLE; Schema: public; Owner: -
@@ -16085,7 +14926,6 @@ CREATE TABLE public.tenant_subscriptions (
     CONSTRAINT tenant_subscriptions_status_check CHECK (((status)::text = ANY (ARRAY[('pending'::character varying)::text, ('active'::character varying)::text, ('expired'::character varying)::text, ('cancelled'::character varying)::text])))
 );
 
-
 --
 -- Name: tenant_subscriptions_id_seq; Type: SEQUENCE; Schema: public; Owner: -
 --
@@ -16098,13 +14938,11 @@ CREATE SEQUENCE public.tenant_subscriptions_id_seq
     NO MAXVALUE
     CACHE 1;
 
-
 --
 -- Name: tenant_subscriptions_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
 --
 
 ALTER SEQUENCE public.tenant_subscriptions_id_seq OWNED BY public.tenant_subscriptions.id;
-
 
 --
 -- Name: tenant_tool_policies; Type: TABLE; Schema: public; Owner: -
@@ -16125,13 +14963,11 @@ CREATE TABLE public.tenant_tool_policies (
 
 ALTER TABLE ONLY public.tenant_tool_policies FORCE ROW LEVEL SECURITY;
 
-
 --
 -- Name: TABLE tenant_tool_policies; Type: COMMENT; Schema: public; Owner: -
 --
 
 COMMENT ON TABLE public.tenant_tool_policies IS 'Tenant-level tool access policies (Phase 3.4: 权限控制)';
-
 
 --
 -- Name: COLUMN tenant_tool_policies.tool_pattern; Type: COMMENT; Schema: public; Owner: -
@@ -16139,20 +14975,17 @@ COMMENT ON TABLE public.tenant_tool_policies IS 'Tenant-level tool access polici
 
 COMMENT ON COLUMN public.tenant_tool_policies.tool_pattern IS 'Tool pattern: exact match (filesystem.read_file) or wildcard (filesystem.*)';
 
-
 --
 -- Name: COLUMN tenant_tool_policies.policy_type; Type: COMMENT; Schema: public; Owner: -
 --
 
 COMMENT ON COLUMN public.tenant_tool_policies.policy_type IS 'Policy type: allow (whitelist) or deny (blacklist)';
 
-
 --
 -- Name: COLUMN tenant_tool_policies.reason; Type: COMMENT; Schema: public; Owner: -
 --
 
 COMMENT ON COLUMN public.tenant_tool_policies.reason IS 'Reason for this policy (audit trail)';
-
 
 --
 -- Name: tenant_tool_policies_id_seq; Type: SEQUENCE; Schema: public; Owner: -
@@ -16165,13 +14998,11 @@ CREATE SEQUENCE public.tenant_tool_policies_id_seq
     NO MAXVALUE
     CACHE 1;
 
-
 --
 -- Name: tenant_tool_policies_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
 --
 
 ALTER SEQUENCE public.tenant_tool_policies_id_seq OWNED BY public.tenant_tool_policies.id;
-
 
 --
 -- Name: tenants; Type: TABLE; Schema: public; Owner: -
@@ -16188,7 +15019,6 @@ CREATE TABLE public.tenants (
     CONSTRAINT tenants_status_check CHECK (((status)::text = ANY (ARRAY[('active'::character varying)::text, ('trial'::character varying)::text, ('suspended'::character varying)::text, ('expired'::character varying)::text, ('disabled'::character varying)::text])))
 );
 
-
 SET default_table_access_method = columnar;
 
 --
@@ -16204,7 +15034,6 @@ CREATE TABLE public.test_columnar_new (
     created_at timestamp with time zone DEFAULT now()
 );
 
-
 SET default_table_access_method = heap;
 
 --
@@ -16217,7 +15046,6 @@ CREATE TABLE public.tier_module_map (
     max_features text,
     created_at timestamp with time zone DEFAULT now() NOT NULL
 );
-
 
 --
 -- Name: token_audit_events; Type: TABLE; Schema: public; Owner: -
@@ -16233,7 +15061,6 @@ CREATE TABLE public.token_audit_events (
     ts timestamp with time zone DEFAULT now() NOT NULL
 );
 
-
 --
 -- Name: token_audit_events_id_seq; Type: SEQUENCE; Schema: public; Owner: -
 --
@@ -16245,13 +15072,11 @@ CREATE SEQUENCE public.token_audit_events_id_seq
     NO MAXVALUE
     CACHE 1;
 
-
 --
 -- Name: token_audit_events_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
 --
 
 ALTER SEQUENCE public.token_audit_events_id_seq OWNED BY public.token_audit_events.id;
-
 
 SET default_table_access_method = columnar;
 
@@ -16271,7 +15096,6 @@ CREATE TABLE public.tool_call_events (
     called_at timestamp with time zone
 );
 
-
 SET default_table_access_method = heap;
 
 --
@@ -16288,13 +15112,11 @@ CREATE TABLE public.tool_categories (
     updated_at timestamp with time zone DEFAULT now()
 );
 
-
 --
 -- Name: TABLE tool_categories; Type: COMMENT; Schema: public; Owner: -
 --
 
 COMMENT ON TABLE public.tool_categories IS 'Phase 2: Tool category definitions for layered loading';
-
 
 --
 -- Name: tool_registry; Type: TABLE; Schema: public; Owner: -
@@ -16318,13 +15140,11 @@ CREATE TABLE public.tool_registry (
     superseded_by character varying(128)
 );
 
-
 --
 -- Name: TABLE tool_registry; Type: COMMENT; Schema: public; Owner: -
 --
 
 COMMENT ON TABLE public.tool_registry IS 'Phase 2: Centralized tool definition registry';
-
 
 --
 -- Name: COLUMN tool_registry.tool_id; Type: COMMENT; Schema: public; Owner: -
@@ -16332,13 +15152,11 @@ COMMENT ON TABLE public.tool_registry IS 'Phase 2: Centralized tool definition r
 
 COMMENT ON COLUMN public.tool_registry.tool_id IS 'Phase 3: Unique tool identifier (category.tool_name)';
 
-
 --
 -- Name: COLUMN tool_registry.tenant_id; Type: COMMENT; Schema: public; Owner: -
 --
 
 COMMENT ON COLUMN public.tool_registry.tenant_id IS 'Phase 3: Tenant isolation (default = global shared)';
-
 
 --
 -- Name: COLUMN tool_registry.version; Type: COMMENT; Schema: public; Owner: -
@@ -16346,13 +15164,11 @@ COMMENT ON COLUMN public.tool_registry.tenant_id IS 'Phase 3: Tenant isolation (
 
 COMMENT ON COLUMN public.tool_registry.version IS 'Tool version (Phase 3.2: 多版本共存)';
 
-
 --
 -- Name: COLUMN tool_registry.deprecation_date; Type: COMMENT; Schema: public; Owner: -
 --
 
 COMMENT ON COLUMN public.tool_registry.deprecation_date IS 'Deprecated after this date (Phase 3.2: 版本管理)';
-
 
 --
 -- Name: COLUMN tool_registry.min_client_version; Type: COMMENT; Schema: public; Owner: -
@@ -16360,20 +15176,17 @@ COMMENT ON COLUMN public.tool_registry.deprecation_date IS 'Deprecated after thi
 
 COMMENT ON COLUMN public.tool_registry.min_client_version IS 'Minimum client version required (Phase 3.2: 版本管理)';
 
-
 --
 -- Name: COLUMN tool_registry.breaking_changes; Type: COMMENT; Schema: public; Owner: -
 --
 
 COMMENT ON COLUMN public.tool_registry.breaking_changes IS 'List of breaking changes in this version (Phase 3.2: 版本管理)';
 
-
 --
 -- Name: COLUMN tool_registry.superseded_by; Type: COMMENT; Schema: public; Owner: -
 --
 
 COMMENT ON COLUMN public.tool_registry.superseded_by IS 'Newer tool_id that replaces this version (Phase 3.2: 版本管理)';
-
 
 --
 -- Name: tool_registry_id_seq; Type: SEQUENCE; Schema: public; Owner: -
@@ -16387,13 +15200,11 @@ CREATE SEQUENCE public.tool_registry_id_seq
     NO MAXVALUE
     CACHE 1;
 
-
 --
 -- Name: tool_registry_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
 --
 
 ALTER SEQUENCE public.tool_registry_id_seq OWNED BY public.tool_registry.id;
-
 
 --
 -- Name: tool_usage_stats; Type: TABLE; Schema: public; Owner: -
@@ -16414,7 +15225,6 @@ CREATE TABLE public.tool_usage_stats (
 )
 PARTITION BY RANGE (created_at);
 
-
 --
 -- Name: tool_usage_stats_partitioned_id_seq; Type: SEQUENCE; Schema: public; Owner: -
 --
@@ -16426,13 +15236,11 @@ CREATE SEQUENCE public.tool_usage_stats_partitioned_id_seq
     NO MAXVALUE
     CACHE 1;
 
-
 --
 -- Name: tool_usage_stats_partitioned_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
 --
 
 ALTER SEQUENCE public.tool_usage_stats_partitioned_id_seq OWNED BY public.tool_usage_stats.id;
-
 
 --
 -- Name: tool_usage_stats_2026_07; Type: TABLE; Schema: public; Owner: -
@@ -16453,7 +15261,6 @@ CREATE TABLE public.tool_usage_stats_2026_07 (
 )
 WITH (autovacuum_enabled='true', autovacuum_vacuum_scale_factor='0.05', autovacuum_vacuum_threshold='10', autovacuum_analyze_scale_factor='0.02', autovacuum_analyze_threshold='50');
 
-
 --
 -- Name: tool_usage_stats_2026_08; Type: TABLE; Schema: public; Owner: -
 --
@@ -16473,7 +15280,6 @@ CREATE TABLE public.tool_usage_stats_2026_08 (
 )
 WITH (autovacuum_enabled='true', autovacuum_vacuum_scale_factor='0.05', autovacuum_vacuum_threshold='10', autovacuum_analyze_scale_factor='0.02', autovacuum_analyze_threshold='50');
 
-
 --
 -- Name: tool_usage_stats_hot; Type: TABLE; Schema: public; Owner: -
 --
@@ -16492,7 +15298,6 @@ CREATE TABLE public.tool_usage_stats_hot (
     updated_at timestamp with time zone
 )
 WITH (fillfactor='90', autovacuum_enabled='true', autovacuum_vacuum_scale_factor='0.05', autovacuum_vacuum_threshold='10', autovacuum_analyze_scale_factor='0.02', autovacuum_analyze_threshold='50');
-
 
 --
 -- Name: tool_usage_stats_old; Type: TABLE; Schema: public; Owner: -
@@ -16514,13 +15319,11 @@ CREATE TABLE public.tool_usage_stats_old (
 
 ALTER TABLE ONLY public.tool_usage_stats_old FORCE ROW LEVEL SECURITY;
 
-
 --
 -- Name: TABLE tool_usage_stats_old; Type: COMMENT; Schema: public; Owner: -
 --
 
 COMMENT ON TABLE public.tool_usage_stats_old IS 'Tool usage statistics (Phase 3.3: 使用统计)';
-
 
 --
 -- Name: COLUMN tool_usage_stats_old.call_count; Type: COMMENT; Schema: public; Owner: -
@@ -16528,20 +15331,17 @@ COMMENT ON TABLE public.tool_usage_stats_old IS 'Tool usage statistics (Phase 3.
 
 COMMENT ON COLUMN public.tool_usage_stats_old.call_count IS 'Total call count for this tool on this day';
 
-
 --
 -- Name: COLUMN tool_usage_stats_old.success_count; Type: COMMENT; Schema: public; Owner: -
 --
 
 COMMENT ON COLUMN public.tool_usage_stats_old.success_count IS 'Successful call count';
 
-
 --
 -- Name: COLUMN tool_usage_stats_old.error_count; Type: COMMENT; Schema: public; Owner: -
 --
 
 COMMENT ON COLUMN public.tool_usage_stats_old.error_count IS 'Failed call count';
-
 
 --
 -- Name: tool_usage_stats_id_seq; Type: SEQUENCE; Schema: public; Owner: -
@@ -16554,13 +15354,11 @@ CREATE SEQUENCE public.tool_usage_stats_id_seq
     NO MAXVALUE
     CACHE 1;
 
-
 --
 -- Name: tool_usage_stats_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
 --
 
 ALTER SEQUENCE public.tool_usage_stats_id_seq OWNED BY public.tool_usage_stats_old.id;
-
 
 --
 -- Name: tool_usage_stats_with_current_month; Type: VIEW; Schema: public; Owner: -
@@ -16593,7 +15391,6 @@ UNION ALL
     tool_usage_stats.updated_at
    FROM public.tool_usage_stats;
 
-
 --
 -- Name: topup_packages; Type: TABLE; Schema: public; Owner: -
 --
@@ -16612,7 +15409,6 @@ CREATE TABLE public.topup_packages (
     CONSTRAINT topup_packages_tier_check CHECK (((tier)::text = ANY (ARRAY[('small'::character varying)::text, ('medium'::character varying)::text, ('large'::character varying)::text])))
 );
 
-
 --
 -- Name: topup_packages_id_seq; Type: SEQUENCE; Schema: public; Owner: -
 --
@@ -16625,13 +15421,11 @@ CREATE SEQUENCE public.topup_packages_id_seq
     NO MAXVALUE
     CACHE 1;
 
-
 --
 -- Name: topup_packages_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
 --
 
 ALTER SEQUENCE public.topup_packages_id_seq OWNED BY public.topup_packages.id;
-
 
 --
 -- Name: toxic_keywords; Type: TABLE; Schema: public; Owner: -
@@ -16648,7 +15442,6 @@ CREATE TABLE public.toxic_keywords (
     CONSTRAINT toxic_keywords_severity_check CHECK (((severity >= 1) AND (severity <= 10)))
 );
 
-
 --
 -- Name: toxic_keywords_id_seq; Type: SEQUENCE; Schema: public; Owner: -
 --
@@ -16661,13 +15454,11 @@ CREATE SEQUENCE public.toxic_keywords_id_seq
     NO MAXVALUE
     CACHE 1;
 
-
 --
 -- Name: toxic_keywords_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
 --
 
 ALTER SEQUENCE public.toxic_keywords_id_seq OWNED BY public.toxic_keywords.id;
-
 
 --
 -- Name: tuning_params; Type: TABLE; Schema: public; Owner: -
@@ -16685,7 +15476,6 @@ CREATE TABLE public.tuning_params (
     created_at timestamp with time zone DEFAULT now() NOT NULL,
     updated_at timestamp with time zone DEFAULT now() NOT NULL
 );
-
 
 --
 -- Name: tuning_proposals; Type: TABLE; Schema: public; Owner: -
@@ -16708,13 +15498,11 @@ CREATE TABLE public.tuning_proposals (
     CONSTRAINT tuning_proposals_status_check CHECK ((status = ANY (ARRAY['pending'::text, 'approved'::text, 'rejected'::text, 'applied'::text, 'expired'::text])))
 );
 
-
 --
 -- Name: TABLE tuning_proposals; Type: COMMENT; Schema: public; Owner: -
 --
 
 COMMENT ON TABLE public.tuning_proposals IS 'Auto-generated tuning proposals from feedback analysis. Require admin approval before applying to hot path.';
-
 
 --
 -- Name: tuning_proposals_id_seq; Type: SEQUENCE; Schema: public; Owner: -
@@ -16727,13 +15515,11 @@ CREATE SEQUENCE public.tuning_proposals_id_seq
     NO MAXVALUE
     CACHE 1;
 
-
 --
 -- Name: tuning_proposals_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
 --
 
 ALTER SEQUENCE public.tuning_proposals_id_seq OWNED BY public.tuning_proposals.id;
-
 
 --
 -- Name: tuning_signals; Type: TABLE; Schema: public; Owner: -
@@ -16764,13 +15550,11 @@ CREATE TABLE public.tuning_signals (
     CONSTRAINT tuning_signals_strategy_check CHECK ((strategy = ANY (ARRAY['baseline_heuristic'::text, 'pattern_layered'::text, 'llm_fallback'::text])))
 );
 
-
 --
 -- Name: TABLE tuning_signals; Type: COMMENT; Schema: public; Owner: -
 --
 
 COMMENT ON TABLE public.tuning_signals IS 'Implicit feedback signals for auto-route tuning. Written async per-request, analyzed daily by feedback_analyzer.';
-
 
 --
 -- Name: tuning_signals_5m; Type: MATERIALIZED VIEW; Schema: public; Owner: -
@@ -16795,7 +15579,6 @@ CREATE MATERIALIZED VIEW public.tuning_signals_5m AS
   GROUP BY (date_trunc('hour'::text, ts) + (floor((((EXTRACT(minute FROM ts))::integer / 5))::double precision) * '00:05:00'::interval)), task_type, classifier
   WITH NO DATA;
 
-
 --
 -- Name: tuning_signals_daily; Type: MATERIALIZED VIEW; Schema: public; Owner: -
 --
@@ -16819,7 +15602,6 @@ CREATE MATERIALIZED VIEW public.tuning_signals_daily AS
   GROUP BY (date_trunc('day'::text, ts)), task_type, classifier
   WITH NO DATA;
 
-
 --
 -- Name: tuning_signals_id_seq; Type: SEQUENCE; Schema: public; Owner: -
 --
@@ -16831,13 +15613,11 @@ CREATE SEQUENCE public.tuning_signals_id_seq
     NO MAXVALUE
     CACHE 1;
 
-
 --
 -- Name: tuning_signals_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
 --
 
 ALTER SEQUENCE public.tuning_signals_id_seq OWNED BY public.tuning_signals.id;
-
 
 --
 -- Name: upgrade_logs; Type: TABLE; Schema: public; Owner: -
@@ -16857,7 +15637,6 @@ CREATE TABLE public.upgrade_logs (
     CONSTRAINT upgrade_logs_status_check CHECK ((status = ANY (ARRAY['pending'::text, 'downloading'::text, 'ready_to_restart'::text, 'upgrading'::text, 'success'::text, 'failed'::text, 'rolled_back'::text])))
 );
 
-
 --
 -- Name: upgrade_logs_id_seq; Type: SEQUENCE; Schema: public; Owner: -
 --
@@ -16869,13 +15648,11 @@ CREATE SEQUENCE public.upgrade_logs_id_seq
     NO MAXVALUE
     CACHE 1;
 
-
 --
 -- Name: upgrade_logs_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
 --
 
 ALTER SEQUENCE public.upgrade_logs_id_seq OWNED BY public.upgrade_logs.id;
-
 
 --
 -- Name: upstream_5xx_distribution; Type: VIEW; Schema: public; Owner: -
@@ -16896,13 +15673,11 @@ CREATE VIEW public.upstream_5xx_distribution AS
   GROUP BY http_status, failure_hint
   ORDER BY (count(*)) DESC;
 
-
 --
 -- Name: VIEW upstream_5xx_distribution; Type: COMMENT; Schema: public; Owner: -
 --
 
 COMMENT ON VIEW public.upstream_5xx_distribution IS '最近 1 小时上游 5xx 错误分布。按状态码和 failure_hint 分组，列出受影响的凭据和模型。';
-
 
 --
 -- Name: ursm_node_snapshot_min; Type: TABLE; Schema: public; Owner: -
@@ -16943,7 +15718,6 @@ CREATE TABLE public.ursm_node_snapshot_min (
     payload jsonb
 );
 
-
 --
 -- Name: usage_ledger; Type: TABLE; Schema: public; Owner: -
 --
@@ -16971,7 +15745,6 @@ CREATE TABLE public.usage_ledger (
 )
 PARTITION BY RANGE (ts);
 
-
 --
 -- Name: usage_ledger_2026_07; Type: TABLE; Schema: public; Owner: -
 --
@@ -16998,7 +15771,6 @@ CREATE TABLE public.usage_ledger_2026_07 (
     error_kind text
 )
 WITH (autovacuum_enabled='true', autovacuum_vacuum_scale_factor='0.05', autovacuum_vacuum_threshold='10', autovacuum_analyze_scale_factor='0.02', autovacuum_analyze_threshold='50');
-
 
 SET default_table_access_method = columnar;
 
@@ -17028,7 +15800,6 @@ CREATE TABLE public.usage_ledger_2026_08 (
     error_kind text
 )
 WITH (autovacuum_enabled='true', autovacuum_vacuum_scale_factor='0.05', autovacuum_vacuum_threshold='10', autovacuum_analyze_scale_factor='0.02', autovacuum_analyze_threshold='50');
-
 
 SET default_table_access_method = heap;
 
@@ -17064,7 +15835,6 @@ CREATE TABLE public.usage_ledger_hot (
 )
 WITH (fillfactor='90', autovacuum_enabled='true', autovacuum_vacuum_scale_factor='0.05', autovacuum_vacuum_threshold='10', autovacuum_analyze_scale_factor='0.02', autovacuum_analyze_threshold='50');
 
-
 --
 -- Name: usage_ledger_old; Type: TABLE; Schema: public; Owner: -
 --
@@ -17090,7 +15860,6 @@ CREATE TABLE public.usage_ledger_old (
     success boolean,
     error_kind text
 );
-
 
 --
 -- Name: usage_ledger_with_current_month; Type: VIEW; Schema: public; Owner: -
@@ -17139,7 +15908,6 @@ UNION ALL
     usage_ledger.error_kind
    FROM public.usage_ledger;
 
-
 --
 -- Name: usage_minute; Type: TABLE; Schema: public; Owner: -
 --
@@ -17164,7 +15932,6 @@ CREATE TABLE public.usage_minute (
     errors bigint DEFAULT 0 NOT NULL
 );
 
-
 --
 -- Name: users; Type: TABLE; Schema: public; Owner: -
 --
@@ -17184,7 +15951,6 @@ CREATE TABLE public.users (
     must_change_password boolean DEFAULT false NOT NULL
 );
 
-
 --
 -- Name: users_id_seq; Type: SEQUENCE; Schema: public; Owner: -
 --
@@ -17197,13 +15963,11 @@ CREATE SEQUENCE public.users_id_seq
     NO MAXVALUE
     CACHE 1;
 
-
 --
 -- Name: users_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
 --
 
 ALTER SEQUENCE public.users_id_seq OWNED BY public.users.id;
-
 
 --
 -- Name: v_adaptive_probe_targets; Type: VIEW; Schema: public; Owner: -
@@ -17229,13 +15993,11 @@ CREATE VIEW public.v_adaptive_probe_targets AS
      LEFT JOIN public.model_probe_state mps ON (((mps.credential_id = cmb.credential_id) AND (mps.raw_model_name = pm.raw_model_name))))
   WHERE ((COALESCE(c.status, 'active'::text) = 'active'::text) AND (COALESCE(c.lifecycle_status, 'active'::text) = 'active'::text) AND (COALESCE(c.availability_state, 'ready'::text) <> 'suspended'::text) AND (COALESCE(c.quota_state, 'ok'::text) <> ALL (ARRAY['permanently_exhausted'::text, 'balance_exhausted'::text])) AND (COALESCE(p.enabled, false) = true) AND (COALESCE(p.manual_disabled, false) = false) AND (COALESCE(c.manual_disabled, false) = false) AND (COALESCE(cmb.unavailable_reason, ''::text) !~~ 'manual%'::text) AND (COALESCE(mps.state, 'unknown'::text) <> 'broken_confirmed'::text));
 
-
 --
 -- Name: VIEW v_adaptive_probe_targets; Type: COMMENT; Schema: public; Owner: -
 --
 
 COMMENT ON VIEW public.v_adaptive_probe_targets IS 'Per-(cred, model) row with adaptive scheduling fields (age, recent failures). The model probe runner selects from this view, ordered by urgency.';
-
 
 --
 -- Name: v_candidate_failure_logs_diagnosis; Type: VIEW; Schema: public; Owner: -
@@ -17272,7 +16034,6 @@ CREATE VIEW public.v_candidate_failure_logs_diagnosis AS
         END), COALESCE(NULLIF(upstream_response_body, ''::text), error_message, ''::text))) AS classification_disagrees
    FROM public.candidate_failure_logs cfl;
 
-
 --
 -- Name: VIEW v_candidate_failure_logs_diagnosis; Type: COMMENT; Schema: public; Owner: -
 --
@@ -17283,7 +16044,6 @@ COMMENT ON VIEW public.v_candidate_failure_logs_diagnosis IS '2026-06-30 (migrat
      error_message via the "upstream NNN:" regex. Side-by-side
      legacy_kind vs diagnosed_error_kind for incident review.
      Companion to v_request_failures_diagnosis (migration 056).';
-
 
 --
 -- Name: v_continuation_effectiveness; Type: VIEW; Schema: public; Owner: -
@@ -17301,7 +16061,6 @@ CREATE VIEW public.v_continuation_effectiveness AS
   GROUP BY (date_trunc('hour'::text, ts))
  HAVING (count(*) FILTER (WHERE (is_continuation = true)) > 0)
   ORDER BY (date_trunc('hour'::text, ts)) DESC;
-
 
 --
 -- Name: v_dashboard_access_stats; Type: VIEW; Schema: public; Owner: -
@@ -17326,7 +16085,6 @@ CREATE VIEW public.v_dashboard_access_stats AS
   GROUP BY api_path, event_type
   ORDER BY (count(*)) DESC;
 
-
 --
 -- Name: v_dashboard_errors; Type: VIEW; Schema: public; Owner: -
 --
@@ -17342,7 +16100,6 @@ CREATE VIEW public.v_dashboard_errors AS
   GROUP BY api_path, error_code
  HAVING (count(*) > 0)
   ORDER BY (count(*)) DESC;
-
 
 --
 -- Name: v_dashboard_slow_queries; Type: VIEW; Schema: public; Owner: -
@@ -17362,7 +16119,6 @@ CREATE VIEW public.v_dashboard_slow_queries AS
   ORDER BY response_time_ms DESC
  LIMIT 100;
 
-
 --
 -- Name: v_dashboard_user_activity; Type: VIEW; Schema: public; Owner: -
 --
@@ -17379,7 +16135,6 @@ CREATE VIEW public.v_dashboard_user_activity AS
   WHERE (("timestamp" > (now() - '7 days'::interval)) AND (user_id IS NOT NULL))
   GROUP BY user_id, tenant_id, user_role
   ORDER BY (max("timestamp")) DESC;
-
 
 --
 -- Name: v_format_anomaly_summary; Type: VIEW; Schema: public; Owner: -
@@ -17400,7 +16155,6 @@ CREATE VIEW public.v_format_anomaly_summary AS
    FROM public.response_format_anomalies
   WHERE (detected_at > (now() - '7 days'::interval))
   GROUP BY (date_trunc('hour'::text, detected_at)), provider_code, client_model, anomaly_type, severity;
-
 
 --
 -- Name: v_fp_slot_policy; Type: VIEW; Schema: public; Owner: -
@@ -17423,13 +16177,11 @@ CREATE VIEW public.v_fp_slot_policy AS
            FROM public.settings_kv
           WHERE ((settings_kv.key)::text = 'llmgw_fp_slot_max_total_clients'::text)), 10000) AS max_total_clients;
 
-
 --
 -- Name: VIEW v_fp_slot_policy; Type: COMMENT; Schema: public; Owner: -
 --
 
 COMMENT ON VIEW public.v_fp_slot_policy IS 'Active fingerprint-slot policy derived from settings_kv. Used by admin UI and the credentialfpslot manager at boot.';
-
 
 --
 -- Name: v_idle_credential_slots; Type: VIEW; Schema: public; Owner: -
@@ -17445,13 +16197,11 @@ CREATE VIEW public.v_idle_credential_slots AS
    FROM public.model_probe_state
   WHERE (state <> 'broken_confirmed'::text);
 
-
 --
 -- Name: VIEW v_idle_credential_slots; Type: COMMENT; Schema: public; Owner: -
 --
 
 COMMENT ON VIEW public.v_idle_credential_slots IS 'For monitoring: per-binding rows with last_attempt_at and idle_seconds. Used by admin dashboards to spot slots that need reclaim.';
-
 
 --
 -- Name: v_model_availability_timeline; Type: VIEW; Schema: public; Owner: -
@@ -17473,7 +16223,6 @@ CREATE VIEW public.v_model_availability_timeline AS
   WHERE (created_at >= (now() - '24:00:00'::interval))
   GROUP BY raw_model_name, (date_trunc('hour'::text, created_at))
   ORDER BY raw_model_name, (date_trunc('hour'::text, created_at)) DESC;
-
 
 --
 -- Name: v_model_health_dashboard; Type: VIEW; Schema: public; Owner: -
@@ -17568,7 +16317,6 @@ CREATE VIEW public.v_model_health_dashboard AS
             ELSE 4
         END, total_credentials DESC, raw_model_name;
 
-
 --
 -- Name: v_model_pricing_comparison; Type: VIEW; Schema: public; Owner: -
 --
@@ -17599,7 +16347,6 @@ CREATE VIEW public.v_model_pricing_comparison AS
      CROSS JOIN public.maas_settings ms)
   WHERE (mp.active = true)
   ORDER BY mp.provider, mp.tier DESC, mp.output_credits_per_1m;
-
 
 --
 -- Name: v_model_priority_details; Type: VIEW; Schema: public; Owner: -
@@ -17655,7 +16402,6 @@ CREATE VIEW public.v_model_priority_details AS
             ELSE 4
         END, c.id;
 
-
 --
 -- Name: v_node_switch_analysis; Type: VIEW; Schema: public; Owner: -
 --
@@ -17671,7 +16417,6 @@ CREATE VIEW public.v_node_switch_analysis AS
   WHERE ((ts > (now() - '24:00:00'::interval)) AND (node_switch_count >= 0))
   GROUP BY (date_trunc('hour'::text, ts)), node_switch_count
   ORDER BY (date_trunc('hour'::text, ts)) DESC, node_switch_count;
-
 
 --
 -- Name: v_probe_queue_snapshot; Type: VIEW; Schema: public; Owner: -
@@ -17711,7 +16456,6 @@ CREATE VIEW public.v_probe_queue_snapshot AS
             WHEN (probe_priority = 'watchdog'::text) THEN 4
             ELSE 5
         END, state;
-
 
 --
 -- Name: v_probe_system_health; Type: VIEW; Schema: public; Owner: -
@@ -17773,7 +16517,6 @@ CREATE VIEW public.v_probe_system_health AS
           WHERE ((model_probe_state.next_retry_at <= (now() + '00:05:00'::interval)) AND (model_probe_state.state <> 'probing'::text))) AS pending_probes_5min,
     now() AS snapshot_at;
 
-
 --
 -- Name: v_recent_model_probe_failures; Type: VIEW; Schema: public; Owner: -
 --
@@ -17788,13 +16531,11 @@ CREATE VIEW public.v_recent_model_probe_failures AS
   WHERE ((status <> 'ok'::text) AND (status <> 'skipped'::text) AND (created_at > (now() - '06:00:00'::interval)))
   GROUP BY raw_model_name, credential_id;
 
-
 --
 -- Name: VIEW v_recent_model_probe_failures; Type: COMMENT; Schema: public; Owner: -
 --
 
 COMMENT ON VIEW public.v_recent_model_probe_failures IS 'Last 6h failed probe count, grouped by (model, credential). Used by model discovery UI badge.';
-
 
 --
 -- Name: v_routable_credential_models; Type: VIEW; Schema: public; Owner: -
@@ -17841,13 +16582,11 @@ CREATE VIEW public.v_routable_credential_models AS
      JOIN public.providers p ON ((p.id = c.provider_id)))
      JOIN public.provider_models pm ON ((pm.id = cmb.provider_model_id)));
 
-
 --
 -- Name: VIEW v_routable_credential_models; Type: COMMENT; Schema: public; Owner: -
 --
 
 COMMENT ON VIEW public.v_routable_credential_models IS 'Routable credential-model bindings with quota/availability state gates. Sync with sql/objects/views/v_routable_credential_models.sql. Updated by migration 460 (2026-07-27) to add periodic_exhausted to quota_state check.';
-
 
 --
 -- Name: v_session_cache_by_model; Type: VIEW; Schema: public; Owner: -
@@ -17863,7 +16602,6 @@ CREATE VIEW public.v_session_cache_by_model AS
   WHERE ((expires_at > now()) AND (last_model IS NOT NULL))
   GROUP BY last_model
   ORDER BY (count(*)) DESC;
-
 
 --
 -- Name: v_session_cache_stats; Type: VIEW; Schema: public; Owner: -
@@ -17881,7 +16619,6 @@ CREATE VIEW public.v_session_cache_stats AS
   GROUP BY last_request_status
   ORDER BY (count(*)) DESC;
 
-
 --
 -- Name: v_sme_cache_hit_rate; Type: VIEW; Schema: public; Owner: -
 --
@@ -17894,7 +16631,6 @@ CREATE VIEW public.v_sme_cache_hit_rate AS
    FROM public.session_module_executions_hot
   WHERE (created_at > (now() - '24:00:00'::interval))
   GROUP BY module_name;
-
 
 --
 -- Name: v_sme_failures; Type: VIEW; Schema: public; Owner: -
@@ -17909,7 +16645,6 @@ CREATE VIEW public.v_sme_failures AS
   WHERE (((status)::text = 'failed'::text) AND (created_at > (now() - '24:00:00'::interval)))
   GROUP BY module_name
  HAVING (count(*) > 0);
-
 
 --
 -- Name: v_sme_module_stats; Type: VIEW; Schema: public; Owner: -
@@ -17929,8 +16664,16 @@ CREATE VIEW public.v_sme_module_stats AS
   WHERE (created_at > (now() - '24:00:00'::interval))
   GROUP BY module_name, status;
 
+--
 
 --
+-- Name: model_probe_credential_concurrency(bigint); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.model_probe_credential_concurrency(p_credential_id bigint) RETURNS integer
+    LANGUAGE sql STABLE
+    AS $$ SELECT COUNT(*)::INTEGER FROM model_probe_state WHERE credential_id = p_credential_id AND state = 'probing' AND probing_started_at > NOW() - INTERVAL '5 minutes'; $$;
+
 -- Name: v_suspicious_probe_targets; Type: VIEW; Schema: public; Owner: -
 --
 
@@ -17955,7 +16698,6 @@ CREATE VIEW public.v_suspicious_probe_targets AS
   ORDER BY (public.model_probe_credential_concurrency(mps.credential_id)), mps.marked_suspicious_at, mps.next_retry_at
  LIMIT 100;
 
-
 --
 -- Name: v_timeout_effectiveness; Type: VIEW; Schema: public; Owner: -
 --
@@ -17974,7 +16716,6 @@ CREATE VIEW public.v_timeout_effectiveness AS
   GROUP BY (date_trunc('hour'::text, ts)), timeout_mode
   ORDER BY (date_trunc('hour'::text, ts)) DESC;
 
-
 --
 -- Name: vibe_code_reviews; Type: TABLE; Schema: public; Owner: -
 --
@@ -17991,7 +16732,6 @@ CREATE TABLE public.vibe_code_reviews (
     created_at timestamp with time zone DEFAULT now() NOT NULL
 );
 
-
 --
 -- Name: vibe_code_reviews_id_seq; Type: SEQUENCE; Schema: public; Owner: -
 --
@@ -18003,13 +16743,11 @@ CREATE SEQUENCE public.vibe_code_reviews_id_seq
     NO MAXVALUE
     CACHE 1;
 
-
 --
 -- Name: vibe_code_reviews_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
 --
 
 ALTER SEQUENCE public.vibe_code_reviews_id_seq OWNED BY public.vibe_code_reviews.id;
-
 
 --
 -- Name: vibe_coding_projects; Type: TABLE; Schema: public; Owner: -
@@ -18030,7 +16768,6 @@ CREATE TABLE public.vibe_coding_projects (
     CONSTRAINT vibe_coding_projects_status_check CHECK ((status = ANY (ARRAY['active'::text, 'archived'::text, 'deleted'::text])))
 );
 
-
 --
 -- Name: vibe_coding_projects_id_seq; Type: SEQUENCE; Schema: public; Owner: -
 --
@@ -18042,13 +16779,11 @@ CREATE SEQUENCE public.vibe_coding_projects_id_seq
     NO MAXVALUE
     CACHE 1;
 
-
 --
 -- Name: vibe_coding_projects_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
 --
 
 ALTER SEQUENCE public.vibe_coding_projects_id_seq OWNED BY public.vibe_coding_projects.id;
-
 
 --
 -- Name: vibe_coding_sessions; Type: TABLE; Schema: public; Owner: -
@@ -18068,7 +16803,6 @@ CREATE TABLE public.vibe_coding_sessions (
     CONSTRAINT vibe_coding_sessions_status_check CHECK ((status = ANY (ARRAY['active'::text, 'completed'::text, 'failed'::text, 'cancelled'::text])))
 );
 
-
 --
 -- Name: vibe_coding_sessions_id_seq; Type: SEQUENCE; Schema: public; Owner: -
 --
@@ -18080,13 +16814,11 @@ CREATE SEQUENCE public.vibe_coding_sessions_id_seq
     NO MAXVALUE
     CACHE 1;
 
-
 --
 -- Name: vibe_coding_sessions_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
 --
 
 ALTER SEQUENCE public.vibe_coding_sessions_id_seq OWNED BY public.vibe_coding_sessions.id;
-
 
 --
 -- Name: work_type_config; Type: TABLE; Schema: public; Owner: -
@@ -18109,13 +16841,11 @@ CREATE TABLE public.work_type_config (
     CONSTRAINT work_type_config_default_profile_check CHECK ((default_profile = ANY (ARRAY['smart'::text, 'speed_first'::text, 'cost_first'::text])))
 );
 
-
 --
 -- Name: TABLE work_type_config; Type: COMMENT; Schema: public; Owner: -
 --
 
 COMMENT ON TABLE public.work_type_config IS 'Work type definitions (P1 seed; Phase 3 sync from ACC)';
-
 
 --
 -- Name: work_type_model_route; Type: TABLE; Schema: public; Owner: -
@@ -18134,13 +16864,11 @@ CREATE TABLE public.work_type_model_route (
     CONSTRAINT work_type_model_route_tier_check CHECK ((tier = ANY (ARRAY['primary'::text, 'secondary'::text, 'fallback'::text])))
 );
 
-
 --
 -- Name: TABLE work_type_model_route; Type: COMMENT; Schema: public; Owner: -
 --
 
 COMMENT ON TABLE public.work_type_model_route IS 'Preferred model routes per work type (L1 selection hints)';
-
 
 --
 -- Name: COLUMN work_type_model_route.weight; Type: COMMENT; Schema: public; Owner: -
@@ -18148,20 +16876,17 @@ COMMENT ON TABLE public.work_type_model_route IS 'Preferred model routes per wor
 
 COMMENT ON COLUMN public.work_type_model_route.weight IS '同 tier 内的排序权重（tier 间优先级：primary > secondary > fallback，tier 内按 weight DESC 排）';
 
-
 --
 -- Name: COLUMN work_type_model_route.tier; Type: COMMENT; Schema: public; Owner: -
 --
 
 COMMENT ON COLUMN public.work_type_model_route.tier IS '三级偏好：primary（首选）/ secondary（次选）/ fallback（兜底）。Index.Recommend 先推荐 primary，全挂时用 secondary，最后才 fallback';
 
-
 --
 -- Name: COLUMN work_type_model_route.task_quality_score; Type: COMMENT; Schema: public; Owner: -
 --
 
 COMMENT ON COLUMN public.work_type_model_route.task_quality_score IS '该模型在该任务上的人工评分覆盖（0-100）。0 表示用公式计算 scoreStrengthMatch；>0 则直接用该分数';
-
 
 --
 -- Name: work_type_model_route_id_seq; Type: SEQUENCE; Schema: public; Owner: -
@@ -18175,13 +16900,11 @@ CREATE SEQUENCE public.work_type_model_route_id_seq
     NO MAXVALUE
     CACHE 1;
 
-
 --
 -- Name: work_type_model_route_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
 --
 
 ALTER SEQUENCE public.work_type_model_route_id_seq OWNED BY public.work_type_model_route.id;
-
 
 --
 -- Name: credential_model_index_2026_07; Type: TABLE ATTACH; Schema: public; Owner: -
@@ -18189,13 +16912,11 @@ ALTER SEQUENCE public.work_type_model_route_id_seq OWNED BY public.work_type_mod
 
 ALTER TABLE ONLY public.credential_model_index ATTACH PARTITION public.credential_model_index_2026_07 FOR VALUES FROM ('2026-07-01 08:00:00+08') TO ('2026-08-01 08:00:00+08');
 
-
 --
 -- Name: credential_model_index_2026_08; Type: TABLE ATTACH; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.credential_model_index ATTACH PARTITION public.credential_model_index_2026_08 FOR VALUES FROM ('2026-08-01 08:00:00+08') TO ('2026-09-01 08:00:00+08');
-
 
 --
 -- Name: credit_ledger_2026_07; Type: TABLE ATTACH; Schema: public; Owner: -
@@ -18203,13 +16924,11 @@ ALTER TABLE ONLY public.credential_model_index ATTACH PARTITION public.credentia
 
 ALTER TABLE ONLY public.credit_ledger ATTACH PARTITION public.credit_ledger_2026_07 FOR VALUES FROM ('2026-07-01 08:00:00+08') TO ('2026-08-01 08:00:00+08');
 
-
 --
 -- Name: credit_ledger_2026_08; Type: TABLE ATTACH; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.credit_ledger ATTACH PARTITION public.credit_ledger_2026_08 FOR VALUES FROM ('2026-08-01 08:00:00+08') TO ('2026-09-01 08:00:00+08');
-
 
 --
 -- Name: dashboard_access_events_2026_07; Type: TABLE ATTACH; Schema: public; Owner: -
@@ -18217,13 +16936,11 @@ ALTER TABLE ONLY public.credit_ledger ATTACH PARTITION public.credit_ledger_2026
 
 ALTER TABLE ONLY public.dashboard_access_events ATTACH PARTITION public.dashboard_access_events_2026_07 FOR VALUES FROM ('2026-07-01 00:00:00+08') TO ('2026-08-01 00:00:00+08');
 
-
 --
 -- Name: dashboard_access_events_2026_08; Type: TABLE ATTACH; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.dashboard_access_events ATTACH PARTITION public.dashboard_access_events_2026_08 FOR VALUES FROM ('2026-08-01 00:00:00+08') TO ('2026-09-01 00:00:00+08');
-
 
 --
 -- Name: model_probe_runs_2026_07; Type: TABLE ATTACH; Schema: public; Owner: -
@@ -18231,13 +16948,11 @@ ALTER TABLE ONLY public.dashboard_access_events ATTACH PARTITION public.dashboar
 
 ALTER TABLE ONLY public.model_probe_runs ATTACH PARTITION public.model_probe_runs_2026_07 FOR VALUES FROM ('2026-07-01 00:00:00+08') TO ('2026-08-01 00:00:00+08');
 
-
 --
 -- Name: request_logs_2026_07; Type: TABLE ATTACH; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.request_logs ATTACH PARTITION public.request_logs_2026_07 FOR VALUES FROM ('2026-07-01 00:00:00+08') TO ('2026-08-01 00:00:00+08');
-
 
 --
 -- Name: request_logs_2026_08; Type: TABLE ATTACH; Schema: public; Owner: -
@@ -18245,13 +16960,11 @@ ALTER TABLE ONLY public.request_logs ATTACH PARTITION public.request_logs_2026_0
 
 ALTER TABLE ONLY public.request_logs ATTACH PARTITION public.request_logs_2026_08 FOR VALUES FROM ('2026-08-01 08:00:00+08') TO ('2026-09-01 08:00:00+08');
 
-
 --
 -- Name: request_logs_bodies_2026_07; Type: TABLE ATTACH; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.request_logs_bodies ATTACH PARTITION public.request_logs_bodies_2026_07 FOR VALUES FROM ('2026-07-01 00:00:00+08') TO ('2026-08-01 00:00:00+08');
-
 
 --
 -- Name: request_logs_bodies_2026_08; Type: TABLE ATTACH; Schema: public; Owner: -
@@ -18259,13 +16972,11 @@ ALTER TABLE ONLY public.request_logs_bodies ATTACH PARTITION public.request_logs
 
 ALTER TABLE ONLY public.request_logs_bodies ATTACH PARTITION public.request_logs_bodies_2026_08 FOR VALUES FROM ('2026-08-01 00:00:00+08') TO ('2026-09-01 00:00:00+08');
 
-
 --
 -- Name: request_logs_bodies_2026_09; Type: TABLE ATTACH; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.request_logs_bodies ATTACH PARTITION public.request_logs_bodies_2026_09 FOR VALUES FROM ('2026-09-01 00:00:00+08') TO ('2026-10-01 00:00:00+08');
-
 
 --
 -- Name: request_wal_2026_07; Type: TABLE ATTACH; Schema: public; Owner: -
@@ -18273,13 +16984,11 @@ ALTER TABLE ONLY public.request_logs_bodies ATTACH PARTITION public.request_logs
 
 ALTER TABLE ONLY public.request_wal ATTACH PARTITION public.request_wal_2026_07 FOR VALUES FROM ('2026-07-01 08:00:00+08') TO ('2026-08-01 08:00:00+08');
 
-
 --
 -- Name: request_wal_2026_08; Type: TABLE ATTACH; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.request_wal ATTACH PARTITION public.request_wal_2026_08 FOR VALUES FROM ('2026-08-01 08:00:00+08') TO ('2026-09-01 08:00:00+08');
-
 
 --
 -- Name: routing_decision_log_2026_07; Type: TABLE ATTACH; Schema: public; Owner: -
@@ -18287,13 +16996,11 @@ ALTER TABLE ONLY public.request_wal ATTACH PARTITION public.request_wal_2026_08 
 
 ALTER TABLE ONLY public.routing_decision_log ATTACH PARTITION public.routing_decision_log_2026_07 FOR VALUES FROM ('2026-07-01 08:00:00+08') TO ('2026-08-01 08:00:00+08');
 
-
 --
 -- Name: routing_decision_log_2026_08; Type: TABLE ATTACH; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.routing_decision_log ATTACH PARTITION public.routing_decision_log_2026_08 FOR VALUES FROM ('2026-08-01 08:00:00+08') TO ('2026-09-01 08:00:00+08');
-
 
 --
 -- Name: routing_decision_log_archive_2026_08; Type: TABLE ATTACH; Schema: public; Owner: -
@@ -18301,13 +17008,11 @@ ALTER TABLE ONLY public.routing_decision_log ATTACH PARTITION public.routing_dec
 
 ALTER TABLE ONLY public.routing_decision_log_archive ATTACH PARTITION public.routing_decision_log_archive_2026_08 FOR VALUES FROM ('2026-08-01 08:00:00+08') TO ('2026-09-01 08:00:00+08');
 
-
 --
 -- Name: session_bodies_2026_07; Type: TABLE ATTACH; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.session_bodies ATTACH PARTITION public.session_bodies_2026_07 FOR VALUES FROM ('2026-07-01') TO ('2026-08-01');
-
 
 --
 -- Name: session_bodies_2026_08; Type: TABLE ATTACH; Schema: public; Owner: -
@@ -18315,13 +17020,11 @@ ALTER TABLE ONLY public.session_bodies ATTACH PARTITION public.session_bodies_20
 
 ALTER TABLE ONLY public.session_bodies ATTACH PARTITION public.session_bodies_2026_08 FOR VALUES FROM ('2026-08-01') TO ('2026-09-01');
 
-
 --
 -- Name: session_module_executions_2026_07; Type: TABLE ATTACH; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.session_module_executions ATTACH PARTITION public.session_module_executions_2026_07 FOR VALUES FROM ('2026-07-01 00:00:00+08') TO ('2026-08-01 00:00:00+08');
-
 
 --
 -- Name: session_module_executions_2026_08; Type: TABLE ATTACH; Schema: public; Owner: -
@@ -18329,13 +17032,11 @@ ALTER TABLE ONLY public.session_module_executions ATTACH PARTITION public.sessio
 
 ALTER TABLE ONLY public.session_module_executions ATTACH PARTITION public.session_module_executions_2026_08 FOR VALUES FROM ('2026-08-01 00:00:00+08') TO ('2026-09-01 00:00:00+08');
 
-
 --
 -- Name: session_turns_2026_07; Type: TABLE ATTACH; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.session_turns ATTACH PARTITION public.session_turns_2026_07 FOR VALUES FROM ('2026-07-01') TO ('2026-08-01');
-
 
 --
 -- Name: session_turns_2026_08; Type: TABLE ATTACH; Schema: public; Owner: -
@@ -18343,13 +17044,11 @@ ALTER TABLE ONLY public.session_turns ATTACH PARTITION public.session_turns_2026
 
 ALTER TABLE ONLY public.session_turns ATTACH PARTITION public.session_turns_2026_08 FOR VALUES FROM ('2026-08-01') TO ('2026-09-01');
 
-
 --
 -- Name: sessions_2026_07; Type: TABLE ATTACH; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.sessions ATTACH PARTITION public.sessions_2026_07 FOR VALUES FROM ('2026-07-01') TO ('2026-08-01');
-
 
 --
 -- Name: sessions_2026_08; Type: TABLE ATTACH; Schema: public; Owner: -
@@ -18357,13 +17056,11 @@ ALTER TABLE ONLY public.sessions ATTACH PARTITION public.sessions_2026_07 FOR VA
 
 ALTER TABLE ONLY public.sessions ATTACH PARTITION public.sessions_2026_08 FOR VALUES FROM ('2026-08-01') TO ('2026-09-01');
 
-
 --
 -- Name: system_probe_runs_default; Type: TABLE ATTACH; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.system_probe_runs ATTACH PARTITION public.system_probe_runs_default DEFAULT;
-
 
 --
 -- Name: tool_usage_stats_2026_07; Type: TABLE ATTACH; Schema: public; Owner: -
@@ -18371,13 +17068,11 @@ ALTER TABLE ONLY public.system_probe_runs ATTACH PARTITION public.system_probe_r
 
 ALTER TABLE ONLY public.tool_usage_stats ATTACH PARTITION public.tool_usage_stats_2026_07 FOR VALUES FROM ('2026-07-01 08:00:00+08') TO ('2026-08-01 08:00:00+08');
 
-
 --
 -- Name: tool_usage_stats_2026_08; Type: TABLE ATTACH; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.tool_usage_stats ATTACH PARTITION public.tool_usage_stats_2026_08 FOR VALUES FROM ('2026-08-01 08:00:00+08') TO ('2026-09-01 08:00:00+08');
-
 
 --
 -- Name: usage_ledger_2026_07; Type: TABLE ATTACH; Schema: public; Owner: -
@@ -18385,13 +17080,11 @@ ALTER TABLE ONLY public.tool_usage_stats ATTACH PARTITION public.tool_usage_stat
 
 ALTER TABLE ONLY public.usage_ledger ATTACH PARTITION public.usage_ledger_2026_07 FOR VALUES FROM ('2026-07-01 08:00:00+08') TO ('2026-08-01 08:00:00+08');
 
-
 --
 -- Name: usage_ledger_2026_08; Type: TABLE ATTACH; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.usage_ledger ATTACH PARTITION public.usage_ledger_2026_08 FOR VALUES FROM ('2026-08-01 08:00:00+08') TO ('2026-09-01 08:00:00+08');
-
 
 --
 -- Name: agents id; Type: DEFAULT; Schema: public; Owner: -
@@ -18399,13 +17092,11 @@ ALTER TABLE ONLY public.usage_ledger ATTACH PARTITION public.usage_ledger_2026_0
 
 ALTER TABLE ONLY public.agents ALTER COLUMN id SET DEFAULT nextval('public.agents_id_seq'::regclass);
 
-
 --
 -- Name: analysis_events id; Type: DEFAULT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.analysis_events ALTER COLUMN id SET DEFAULT nextval('public.analysis_events_id_seq'::regclass);
-
 
 --
 -- Name: api_keys id; Type: DEFAULT; Schema: public; Owner: -
@@ -18413,13 +17104,11 @@ ALTER TABLE ONLY public.analysis_events ALTER COLUMN id SET DEFAULT nextval('pub
 
 ALTER TABLE ONLY public.api_keys ALTER COLUMN id SET DEFAULT nextval('public.api_keys_id_seq'::regclass);
 
-
 --
 -- Name: applications id; Type: DEFAULT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.applications ALTER COLUMN id SET DEFAULT nextval('public.applications_id_seq'::regclass);
-
 
 --
 -- Name: approval_routing_rules id; Type: DEFAULT; Schema: public; Owner: -
@@ -18427,13 +17116,11 @@ ALTER TABLE ONLY public.applications ALTER COLUMN id SET DEFAULT nextval('public
 
 ALTER TABLE ONLY public.approval_routing_rules ALTER COLUMN id SET DEFAULT nextval('public.approval_routing_rules_id_seq'::regclass);
 
-
 --
 -- Name: armor_judgments id; Type: DEFAULT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.armor_judgments ALTER COLUMN id SET DEFAULT nextval('public.armor_judgments_id_seq'::regclass);
-
 
 --
 -- Name: auto_tune_audit id; Type: DEFAULT; Schema: public; Owner: -
@@ -18441,13 +17128,11 @@ ALTER TABLE ONLY public.armor_judgments ALTER COLUMN id SET DEFAULT nextval('pub
 
 ALTER TABLE ONLY public.auto_tune_audit ALTER COLUMN id SET DEFAULT nextval('public.auto_tune_audit_id_seq'::regclass);
 
-
 --
 -- Name: background_tasks id; Type: DEFAULT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.background_tasks ALTER COLUMN id SET DEFAULT nextval('public.background_tasks_id_seq'::regclass);
-
 
 --
 -- Name: billing_orders id; Type: DEFAULT; Schema: public; Owner: -
@@ -18455,13 +17140,11 @@ ALTER TABLE ONLY public.background_tasks ALTER COLUMN id SET DEFAULT nextval('pu
 
 ALTER TABLE ONLY public.billing_orders ALTER COLUMN id SET DEFAULT nextval('public.billing_orders_id_seq'::regclass);
 
-
 --
 -- Name: canary_tokens id; Type: DEFAULT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.canary_tokens ALTER COLUMN id SET DEFAULT nextval('public.canary_tokens_id_seq'::regclass);
-
 
 --
 -- Name: center_commands id; Type: DEFAULT; Schema: public; Owner: -
@@ -18469,13 +17152,11 @@ ALTER TABLE ONLY public.canary_tokens ALTER COLUMN id SET DEFAULT nextval('publi
 
 ALTER TABLE ONLY public.center_commands ALTER COLUMN id SET DEFAULT nextval('public.center_commands_id_seq'::regclass);
 
-
 --
 -- Name: compression_bench_results id; Type: DEFAULT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.compression_bench_results ALTER COLUMN id SET DEFAULT nextval('public.compression_bench_results_id_seq'::regclass);
-
 
 --
 -- Name: credential_capabilities id; Type: DEFAULT; Schema: public; Owner: -
@@ -18483,13 +17164,11 @@ ALTER TABLE ONLY public.compression_bench_results ALTER COLUMN id SET DEFAULT ne
 
 ALTER TABLE ONLY public.credential_capabilities ALTER COLUMN id SET DEFAULT nextval('public.credential_capabilities_id_seq'::regclass);
 
-
 --
 -- Name: credential_health_checks id; Type: DEFAULT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.credential_health_checks ALTER COLUMN id SET DEFAULT nextval('public.credential_health_checks_id_seq'::regclass);
-
 
 --
 -- Name: credential_model_bindings id; Type: DEFAULT; Schema: public; Owner: -
@@ -18497,13 +17176,11 @@ ALTER TABLE ONLY public.credential_health_checks ALTER COLUMN id SET DEFAULT nex
 
 ALTER TABLE ONLY public.credential_model_bindings ALTER COLUMN id SET DEFAULT nextval('public.credential_model_bindings_id_seq'::regclass);
 
-
 --
 -- Name: credential_probe_configs id; Type: DEFAULT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.credential_probe_configs ALTER COLUMN id SET DEFAULT nextval('public.credential_probe_configs_id_seq'::regclass);
-
 
 --
 -- Name: credential_probe_model_log id; Type: DEFAULT; Schema: public; Owner: -
@@ -18511,13 +17188,11 @@ ALTER TABLE ONLY public.credential_probe_configs ALTER COLUMN id SET DEFAULT nex
 
 ALTER TABLE ONLY public.credential_probe_model_log ALTER COLUMN id SET DEFAULT nextval('public.credential_probe_model_log_id_seq'::regclass);
 
-
 --
 -- Name: credential_probes id; Type: DEFAULT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.credential_probes ALTER COLUMN id SET DEFAULT nextval('public.credential_probes_id_seq'::regclass);
-
 
 --
 -- Name: credential_quota_usage id; Type: DEFAULT; Schema: public; Owner: -
@@ -18525,13 +17200,11 @@ ALTER TABLE ONLY public.credential_probes ALTER COLUMN id SET DEFAULT nextval('p
 
 ALTER TABLE ONLY public.credential_quota_usage ALTER COLUMN id SET DEFAULT nextval('public.credential_quota_usage_id_seq'::regclass);
 
-
 --
 -- Name: credential_quotas id; Type: DEFAULT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.credential_quotas ALTER COLUMN id SET DEFAULT nextval('public.credential_quotas_id_seq'::regclass);
-
 
 --
 -- Name: credentials id; Type: DEFAULT; Schema: public; Owner: -
@@ -18539,13 +17212,11 @@ ALTER TABLE ONLY public.credential_quotas ALTER COLUMN id SET DEFAULT nextval('p
 
 ALTER TABLE ONLY public.credentials ALTER COLUMN id SET DEFAULT nextval('public.credentials_id_seq'::regclass);
 
-
 --
 -- Name: credit_ledger id; Type: DEFAULT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.credit_ledger ALTER COLUMN id SET DEFAULT nextval('public.credit_ledger_partitioned_id_seq'::regclass);
-
 
 --
 -- Name: credit_ledger_old id; Type: DEFAULT; Schema: public; Owner: -
@@ -18553,13 +17224,11 @@ ALTER TABLE ONLY public.credit_ledger ALTER COLUMN id SET DEFAULT nextval('publi
 
 ALTER TABLE ONLY public.credit_ledger_old ALTER COLUMN id SET DEFAULT nextval('public.credit_ledger_id_seq'::regclass);
 
-
 --
 -- Name: donations id; Type: DEFAULT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.donations ALTER COLUMN id SET DEFAULT nextval('public.donations_id_seq'::regclass);
-
 
 --
 -- Name: download_events id; Type: DEFAULT; Schema: public; Owner: -
@@ -18567,13 +17236,11 @@ ALTER TABLE ONLY public.donations ALTER COLUMN id SET DEFAULT nextval('public.do
 
 ALTER TABLE ONLY public.download_events ALTER COLUMN id SET DEFAULT nextval('public.download_events_id_seq'::regclass);
 
-
 --
 -- Name: download_publish_runs id; Type: DEFAULT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.download_publish_runs ALTER COLUMN id SET DEFAULT nextval('public.download_publish_runs_id_seq'::regclass);
-
 
 --
 -- Name: fault_action_logs id; Type: DEFAULT; Schema: public; Owner: -
@@ -18581,13 +17248,11 @@ ALTER TABLE ONLY public.download_publish_runs ALTER COLUMN id SET DEFAULT nextva
 
 ALTER TABLE ONLY public.fault_action_logs ALTER COLUMN id SET DEFAULT nextval('public.fault_action_logs_id_seq'::regclass);
 
-
 --
 -- Name: fault_events id; Type: DEFAULT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.fault_events ALTER COLUMN id SET DEFAULT nextval('public.fault_events_id_seq'::regclass);
-
 
 --
 -- Name: fault_rules id; Type: DEFAULT; Schema: public; Owner: -
@@ -18595,13 +17260,11 @@ ALTER TABLE ONLY public.fault_events ALTER COLUMN id SET DEFAULT nextval('public
 
 ALTER TABLE ONLY public.fault_rules ALTER COLUMN id SET DEFAULT nextval('public.fault_rules_id_seq'::regclass);
 
-
 --
 -- Name: goal_sessions id; Type: DEFAULT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.goal_sessions ALTER COLUMN id SET DEFAULT nextval('public.goal_sessions_id_seq'::regclass);
-
 
 --
 -- Name: gray_release_rules id; Type: DEFAULT; Schema: public; Owner: -
@@ -18609,13 +17272,11 @@ ALTER TABLE ONLY public.goal_sessions ALTER COLUMN id SET DEFAULT nextval('publi
 
 ALTER TABLE ONLY public.gray_release_rules ALTER COLUMN id SET DEFAULT nextval('public.gray_release_rules_id_seq'::regclass);
 
-
 --
 -- Name: handoff_logs id; Type: DEFAULT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.handoff_logs ALTER COLUMN id SET DEFAULT nextval('public.handoff_logs_id_seq'::regclass);
-
 
 --
 -- Name: injection_attack_vectors id; Type: DEFAULT; Schema: public; Owner: -
@@ -18623,13 +17284,11 @@ ALTER TABLE ONLY public.handoff_logs ALTER COLUMN id SET DEFAULT nextval('public
 
 ALTER TABLE ONLY public.injection_attack_vectors ALTER COLUMN id SET DEFAULT nextval('public.injection_attack_vectors_id_seq'::regclass);
 
-
 --
 -- Name: intent_analysis_adjustments id; Type: DEFAULT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.intent_analysis_adjustments ALTER COLUMN id SET DEFAULT nextval('public.intent_analysis_adjustments_id_seq'::regclass);
-
 
 --
 -- Name: intent_classification_feedback id; Type: DEFAULT; Schema: public; Owner: -
@@ -18637,13 +17296,11 @@ ALTER TABLE ONLY public.intent_analysis_adjustments ALTER COLUMN id SET DEFAULT 
 
 ALTER TABLE ONLY public.intent_classification_feedback ALTER COLUMN id SET DEFAULT nextval('public.intent_classification_feedback_id_seq'::regclass);
 
-
 --
 -- Name: intent_classifier_config id; Type: DEFAULT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.intent_classifier_config ALTER COLUMN id SET DEFAULT nextval('public.intent_classifier_config_id_seq'::regclass);
-
 
 --
 -- Name: ip_blocklist id; Type: DEFAULT; Schema: public; Owner: -
@@ -18651,13 +17308,11 @@ ALTER TABLE ONLY public.intent_classifier_config ALTER COLUMN id SET DEFAULT nex
 
 ALTER TABLE ONLY public.ip_blocklist ALTER COLUMN id SET DEFAULT nextval('public.ip_blocklist_id_seq'::regclass);
 
-
 --
 -- Name: license_devices id; Type: DEFAULT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.license_devices ALTER COLUMN id SET DEFAULT nextval('public.license_devices_id_seq'::regclass);
-
 
 --
 -- Name: license_holders id; Type: DEFAULT; Schema: public; Owner: -
@@ -18665,13 +17320,11 @@ ALTER TABLE ONLY public.license_devices ALTER COLUMN id SET DEFAULT nextval('pub
 
 ALTER TABLE ONLY public.license_holders ALTER COLUMN id SET DEFAULT nextval('public.license_holders_id_seq'::regclass);
 
-
 --
 -- Name: license_module_audit id; Type: DEFAULT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.license_module_audit ALTER COLUMN id SET DEFAULT nextval('public.license_module_audit_id_seq'::regclass);
-
 
 --
 -- Name: license_modules id; Type: DEFAULT; Schema: public; Owner: -
@@ -18679,13 +17332,11 @@ ALTER TABLE ONLY public.license_module_audit ALTER COLUMN id SET DEFAULT nextval
 
 ALTER TABLE ONLY public.license_modules ALTER COLUMN id SET DEFAULT nextval('public.license_modules_id_seq'::regclass);
 
-
 --
 -- Name: license_trial_consents id; Type: DEFAULT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.license_trial_consents ALTER COLUMN id SET DEFAULT nextval('public.license_trial_consents_id_seq'::regclass);
-
 
 --
 -- Name: licenses id; Type: DEFAULT; Schema: public; Owner: -
@@ -18693,13 +17344,11 @@ ALTER TABLE ONLY public.license_trial_consents ALTER COLUMN id SET DEFAULT nextv
 
 ALTER TABLE ONLY public.licenses ALTER COLUMN id SET DEFAULT nextval('public.licenses_id_seq'::regclass);
 
-
 --
 -- Name: local_models id; Type: DEFAULT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.local_models ALTER COLUMN id SET DEFAULT nextval('public.local_models_id_seq'::regclass);
-
 
 --
 -- Name: local_runtimes id; Type: DEFAULT; Schema: public; Owner: -
@@ -18707,13 +17356,11 @@ ALTER TABLE ONLY public.local_models ALTER COLUMN id SET DEFAULT nextval('public
 
 ALTER TABLE ONLY public.local_runtimes ALTER COLUMN id SET DEFAULT nextval('public.local_runtimes_id_seq'::regclass);
 
-
 --
 -- Name: model_aliases id; Type: DEFAULT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.model_aliases ALTER COLUMN id SET DEFAULT nextval('public.model_aliases_id_seq'::regclass);
-
 
 --
 -- Name: model_discovery_runs id; Type: DEFAULT; Schema: public; Owner: -
@@ -18721,13 +17368,11 @@ ALTER TABLE ONLY public.model_aliases ALTER COLUMN id SET DEFAULT nextval('publi
 
 ALTER TABLE ONLY public.model_discovery_runs ALTER COLUMN id SET DEFAULT nextval('public.model_discovery_runs_id_seq'::regclass);
 
-
 --
 -- Name: model_fingerprints id; Type: DEFAULT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.model_fingerprints ALTER COLUMN id SET DEFAULT nextval('public.model_fingerprints_id_seq'::regclass);
-
 
 --
 -- Name: model_integrity_events id; Type: DEFAULT; Schema: public; Owner: -
@@ -18735,13 +17380,11 @@ ALTER TABLE ONLY public.model_fingerprints ALTER COLUMN id SET DEFAULT nextval('
 
 ALTER TABLE ONLY public.model_integrity_events ALTER COLUMN id SET DEFAULT nextval('public.model_integrity_events_id_seq'::regclass);
 
-
 --
 -- Name: model_lifecycle_jobs id; Type: DEFAULT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.model_lifecycle_jobs ALTER COLUMN id SET DEFAULT nextval('public.model_lifecycle_jobs_id_seq'::regclass);
-
 
 --
 -- Name: model_name_mapping id; Type: DEFAULT; Schema: public; Owner: -
@@ -18749,13 +17392,11 @@ ALTER TABLE ONLY public.model_lifecycle_jobs ALTER COLUMN id SET DEFAULT nextval
 
 ALTER TABLE ONLY public.model_name_mapping ALTER COLUMN id SET DEFAULT nextval('public.model_name_mapping_id_seq'::regclass);
 
-
 --
 -- Name: model_reconcile_log id; Type: DEFAULT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.model_reconcile_log ALTER COLUMN id SET DEFAULT nextval('public.model_reconcile_log_id_seq'::regclass);
-
 
 --
 -- Name: models_canonical id; Type: DEFAULT; Schema: public; Owner: -
@@ -18763,13 +17404,11 @@ ALTER TABLE ONLY public.model_reconcile_log ALTER COLUMN id SET DEFAULT nextval(
 
 ALTER TABLE ONLY public.models_canonical ALTER COLUMN id SET DEFAULT nextval('public.models_canonical_id_seq'::regclass);
 
-
 --
 -- Name: node_stats id; Type: DEFAULT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.node_stats ALTER COLUMN id SET DEFAULT nextval('public.node_stats_id_seq'::regclass);
-
 
 --
 -- Name: offline_activation_requests id; Type: DEFAULT; Schema: public; Owner: -
@@ -18777,13 +17416,11 @@ ALTER TABLE ONLY public.node_stats ALTER COLUMN id SET DEFAULT nextval('public.n
 
 ALTER TABLE ONLY public.offline_activation_requests ALTER COLUMN id SET DEFAULT nextval('public.offline_activation_requests_id_seq'::regclass);
 
-
 --
 -- Name: ops_node_registrations id; Type: DEFAULT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.ops_node_registrations ALTER COLUMN id SET DEFAULT nextval('public.ops_node_registrations_id_seq'::regclass);
-
 
 --
 -- Name: output_compliance_audit id; Type: DEFAULT; Schema: public; Owner: -
@@ -18791,13 +17428,11 @@ ALTER TABLE ONLY public.ops_node_registrations ALTER COLUMN id SET DEFAULT nextv
 
 ALTER TABLE ONLY public.output_compliance_audit ALTER COLUMN id SET DEFAULT nextval('public.output_compliance_audit_id_seq'::regclass);
 
-
 --
 -- Name: output_compliance_custom_keywords id; Type: DEFAULT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.output_compliance_custom_keywords ALTER COLUMN id SET DEFAULT nextval('public.output_compliance_custom_keywords_id_seq'::regclass);
-
 
 --
 -- Name: output_compliance_feedback id; Type: DEFAULT; Schema: public; Owner: -
@@ -18805,13 +17440,11 @@ ALTER TABLE ONLY public.output_compliance_custom_keywords ALTER COLUMN id SET DE
 
 ALTER TABLE ONLY public.output_compliance_feedback ALTER COLUMN id SET DEFAULT nextval('public.output_compliance_feedback_id_seq'::regclass);
 
-
 --
 -- Name: output_compliance_policies id; Type: DEFAULT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.output_compliance_policies ALTER COLUMN id SET DEFAULT nextval('public.output_compliance_policies_id_seq'::regclass);
-
 
 --
 -- Name: output_compliance_review_queue id; Type: DEFAULT; Schema: public; Owner: -
@@ -18819,13 +17452,11 @@ ALTER TABLE ONLY public.output_compliance_policies ALTER COLUMN id SET DEFAULT n
 
 ALTER TABLE ONLY public.output_compliance_review_queue ALTER COLUMN id SET DEFAULT nextval('public.output_compliance_review_queue_id_seq'::regclass);
 
-
 --
 -- Name: pii_patterns id; Type: DEFAULT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.pii_patterns ALTER COLUMN id SET DEFAULT nextval('public.pii_patterns_id_seq'::regclass);
-
 
 --
 -- Name: pricing_plans id; Type: DEFAULT; Schema: public; Owner: -
@@ -18833,13 +17464,11 @@ ALTER TABLE ONLY public.pii_patterns ALTER COLUMN id SET DEFAULT nextval('public
 
 ALTER TABLE ONLY public.pricing_plans ALTER COLUMN id SET DEFAULT nextval('public.pricing_plans_id_seq'::regclass);
 
-
 --
 -- Name: pricing_refresh_log id; Type: DEFAULT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.pricing_refresh_log ALTER COLUMN id SET DEFAULT nextval('public.pricing_refresh_log_id_seq'::regclass);
-
 
 --
 -- Name: product_module_features id; Type: DEFAULT; Schema: public; Owner: -
@@ -18847,13 +17476,11 @@ ALTER TABLE ONLY public.pricing_refresh_log ALTER COLUMN id SET DEFAULT nextval(
 
 ALTER TABLE ONLY public.product_module_features ALTER COLUMN id SET DEFAULT nextval('public.product_module_features_id_seq'::regclass);
 
-
 --
 -- Name: product_modules id; Type: DEFAULT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.product_modules ALTER COLUMN id SET DEFAULT nextval('public.product_modules_id_seq'::regclass);
-
 
 --
 -- Name: prompt_injection_detections id; Type: DEFAULT; Schema: public; Owner: -
@@ -18861,13 +17488,11 @@ ALTER TABLE ONLY public.product_modules ALTER COLUMN id SET DEFAULT nextval('pub
 
 ALTER TABLE ONLY public.prompt_injection_detections ALTER COLUMN id SET DEFAULT nextval('public.prompt_injection_detections_id_seq'::regclass);
 
-
 --
 -- Name: prompt_injection_llm_engines id; Type: DEFAULT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.prompt_injection_llm_engines ALTER COLUMN id SET DEFAULT nextval('public.prompt_injection_llm_engines_id_seq'::regclass);
-
 
 --
 -- Name: prompt_injection_policies id; Type: DEFAULT; Schema: public; Owner: -
@@ -18875,13 +17500,11 @@ ALTER TABLE ONLY public.prompt_injection_llm_engines ALTER COLUMN id SET DEFAULT
 
 ALTER TABLE ONLY public.prompt_injection_policies ALTER COLUMN id SET DEFAULT nextval('public.prompt_injection_policies_id_seq'::regclass);
 
-
 --
 -- Name: prompt_injection_rules id; Type: DEFAULT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.prompt_injection_rules ALTER COLUMN id SET DEFAULT nextval('public.prompt_injection_rules_id_seq'::regclass);
-
 
 --
 -- Name: provider_cost_reconciliation id; Type: DEFAULT; Schema: public; Owner: -
@@ -18889,13 +17512,11 @@ ALTER TABLE ONLY public.prompt_injection_rules ALTER COLUMN id SET DEFAULT nextv
 
 ALTER TABLE ONLY public.provider_cost_reconciliation ALTER COLUMN id SET DEFAULT nextval('public.provider_cost_reconciliation_id_seq'::regclass);
 
-
 --
 -- Name: provider_credibility_tests id; Type: DEFAULT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.provider_credibility_tests ALTER COLUMN id SET DEFAULT nextval('public.provider_credibility_tests_id_seq'::regclass);
-
 
 --
 -- Name: provider_error_details id; Type: DEFAULT; Schema: public; Owner: -
@@ -18903,13 +17524,11 @@ ALTER TABLE ONLY public.provider_credibility_tests ALTER COLUMN id SET DEFAULT n
 
 ALTER TABLE ONLY public.provider_error_details ALTER COLUMN id SET DEFAULT nextval('public.provider_error_details_id_seq'::regclass);
 
-
 --
 -- Name: provider_header_profiles id; Type: DEFAULT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.provider_header_profiles ALTER COLUMN id SET DEFAULT nextval('public.provider_header_profiles_id_seq'::regclass);
-
 
 --
 -- Name: provider_health_events id; Type: DEFAULT; Schema: public; Owner: -
@@ -18917,13 +17536,11 @@ ALTER TABLE ONLY public.provider_header_profiles ALTER COLUMN id SET DEFAULT nex
 
 ALTER TABLE ONLY public.provider_health_events ALTER COLUMN id SET DEFAULT nextval('public.provider_health_events_id_seq'::regclass);
 
-
 --
 -- Name: provider_metrics_hour id; Type: DEFAULT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.provider_metrics_hour ALTER COLUMN id SET DEFAULT nextval('public.provider_metrics_hour_id_seq'::regclass);
-
 
 --
 -- Name: provider_metrics_minute id; Type: DEFAULT; Schema: public; Owner: -
@@ -18931,13 +17548,11 @@ ALTER TABLE ONLY public.provider_metrics_hour ALTER COLUMN id SET DEFAULT nextva
 
 ALTER TABLE ONLY public.provider_metrics_minute ALTER COLUMN id SET DEFAULT nextval('public.provider_metrics_minute_id_seq'::regclass);
 
-
 --
 -- Name: provider_models id; Type: DEFAULT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.provider_models ALTER COLUMN id SET DEFAULT nextval('public.provider_models_id_seq'::regclass);
-
 
 --
 -- Name: provider_profile_alerts id; Type: DEFAULT; Schema: public; Owner: -
@@ -18945,13 +17560,11 @@ ALTER TABLE ONLY public.provider_models ALTER COLUMN id SET DEFAULT nextval('pub
 
 ALTER TABLE ONLY public.provider_profile_alerts ALTER COLUMN id SET DEFAULT nextval('public.provider_profile_alerts_id_seq'::regclass);
 
-
 --
 -- Name: provider_profile_daily id; Type: DEFAULT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.provider_profile_daily ALTER COLUMN id SET DEFAULT nextval('public.provider_profile_daily_id_seq'::regclass);
-
 
 --
 -- Name: provider_profile_metrics id; Type: DEFAULT; Schema: public; Owner: -
@@ -18959,13 +17572,11 @@ ALTER TABLE ONLY public.provider_profile_daily ALTER COLUMN id SET DEFAULT nextv
 
 ALTER TABLE ONLY public.provider_profile_metrics ALTER COLUMN id SET DEFAULT nextval('public.provider_profile_metrics_id_seq'::regclass);
 
-
 --
 -- Name: provider_profile_whitelist id; Type: DEFAULT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.provider_profile_whitelist ALTER COLUMN id SET DEFAULT nextval('public.provider_profile_whitelist_id_seq'::regclass);
-
 
 --
 -- Name: provider_quality_configs id; Type: DEFAULT; Schema: public; Owner: -
@@ -18973,13 +17584,11 @@ ALTER TABLE ONLY public.provider_profile_whitelist ALTER COLUMN id SET DEFAULT n
 
 ALTER TABLE ONLY public.provider_quality_configs ALTER COLUMN id SET DEFAULT nextval('public.provider_quality_configs_id_seq'::regclass);
 
-
 --
 -- Name: provider_quality_profiles id; Type: DEFAULT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.provider_quality_profiles ALTER COLUMN id SET DEFAULT nextval('public.provider_quality_profiles_id_seq'::regclass);
-
 
 --
 -- Name: provider_scores id; Type: DEFAULT; Schema: public; Owner: -
@@ -18987,13 +17596,11 @@ ALTER TABLE ONLY public.provider_quality_profiles ALTER COLUMN id SET DEFAULT ne
 
 ALTER TABLE ONLY public.provider_scores ALTER COLUMN id SET DEFAULT nextval('public.provider_scores_id_seq'::regclass);
 
-
 --
 -- Name: provider_settings id; Type: DEFAULT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.provider_settings ALTER COLUMN id SET DEFAULT nextval('public.provider_settings_id_seq'::regclass);
-
 
 --
 -- Name: providers id; Type: DEFAULT; Schema: public; Owner: -
@@ -19001,13 +17608,11 @@ ALTER TABLE ONLY public.provider_settings ALTER COLUMN id SET DEFAULT nextval('p
 
 ALTER TABLE ONLY public.providers ALTER COLUMN id SET DEFAULT nextval('public.providers_id_seq'::regclass);
 
-
 --
 -- Name: release_artifacts id; Type: DEFAULT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.release_artifacts ALTER COLUMN id SET DEFAULT nextval('public.release_artifacts_id_seq'::regclass);
-
 
 --
 -- Name: releases id; Type: DEFAULT; Schema: public; Owner: -
@@ -19015,13 +17620,11 @@ ALTER TABLE ONLY public.release_artifacts ALTER COLUMN id SET DEFAULT nextval('p
 
 ALTER TABLE ONLY public.releases ALTER COLUMN id SET DEFAULT nextval('public.releases_id_seq'::regclass);
 
-
 --
 -- Name: request_attachments id; Type: DEFAULT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.request_attachments ALTER COLUMN id SET DEFAULT nextval('public.request_attachments_id_seq'::regclass);
-
 
 --
 -- Name: request_stage_events id; Type: DEFAULT; Schema: public; Owner: -
@@ -19029,13 +17632,11 @@ ALTER TABLE ONLY public.request_attachments ALTER COLUMN id SET DEFAULT nextval(
 
 ALTER TABLE ONLY public.request_stage_events ALTER COLUMN id SET DEFAULT nextval('public.request_stage_events_id_seq'::regclass);
 
-
 --
 -- Name: response_format_anomalies id; Type: DEFAULT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.response_format_anomalies ALTER COLUMN id SET DEFAULT nextval('public.response_format_anomalies_id_seq'::regclass);
-
 
 --
 -- Name: route_decisions id; Type: DEFAULT; Schema: public; Owner: -
@@ -19043,13 +17644,11 @@ ALTER TABLE ONLY public.response_format_anomalies ALTER COLUMN id SET DEFAULT ne
 
 ALTER TABLE ONLY public.route_decisions ALTER COLUMN id SET DEFAULT nextval('public.route_decisions_id_seq'::regclass);
 
-
 --
 -- Name: route_incident_events id; Type: DEFAULT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.route_incident_events ALTER COLUMN id SET DEFAULT nextval('public.route_incident_events_id_seq'::regclass);
-
 
 --
 -- Name: routing_audit_log id; Type: DEFAULT; Schema: public; Owner: -
@@ -19057,13 +17656,11 @@ ALTER TABLE ONLY public.route_incident_events ALTER COLUMN id SET DEFAULT nextva
 
 ALTER TABLE ONLY public.routing_audit_log ALTER COLUMN id SET DEFAULT nextval('public.routing_audit_log_id_seq'::regclass);
 
-
 --
 -- Name: routing_overrides id; Type: DEFAULT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.routing_overrides ALTER COLUMN id SET DEFAULT nextval('public.routing_overrides_id_seq'::regclass);
-
 
 --
 -- Name: routing_overrides_audit id; Type: DEFAULT; Schema: public; Owner: -
@@ -19071,13 +17668,11 @@ ALTER TABLE ONLY public.routing_overrides ALTER COLUMN id SET DEFAULT nextval('p
 
 ALTER TABLE ONLY public.routing_overrides_audit ALTER COLUMN id SET DEFAULT nextval('public.routing_overrides_audit_id_seq'::regclass);
 
-
 --
 -- Name: runtime_alert_events id; Type: DEFAULT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.runtime_alert_events ALTER COLUMN id SET DEFAULT nextval('public.runtime_alert_events_id_seq'::regclass);
-
 
 --
 -- Name: runtime_metrics id; Type: DEFAULT; Schema: public; Owner: -
@@ -19085,13 +17680,11 @@ ALTER TABLE ONLY public.runtime_alert_events ALTER COLUMN id SET DEFAULT nextval
 
 ALTER TABLE ONLY public.runtime_metrics ALTER COLUMN id SET DEFAULT nextval('public.runtime_metrics_id_seq'::regclass);
 
-
 --
 -- Name: runtime_telemetry_consent_events id; Type: DEFAULT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.runtime_telemetry_consent_events ALTER COLUMN id SET DEFAULT nextval('public.runtime_telemetry_consent_events_id_seq'::regclass);
-
 
 --
 -- Name: security_audit_log id; Type: DEFAULT; Schema: public; Owner: -
@@ -19099,13 +17692,11 @@ ALTER TABLE ONLY public.runtime_telemetry_consent_events ALTER COLUMN id SET DEF
 
 ALTER TABLE ONLY public.security_audit_log ALTER COLUMN id SET DEFAULT nextval('public.security_audit_log_id_seq'::regclass);
 
-
 --
 -- Name: security_detector_config id; Type: DEFAULT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.security_detector_config ALTER COLUMN id SET DEFAULT nextval('public.security_detector_config_id_seq'::regclass);
-
 
 --
 -- Name: session_audit_records id; Type: DEFAULT; Schema: public; Owner: -
@@ -19113,13 +17704,11 @@ ALTER TABLE ONLY public.security_detector_config ALTER COLUMN id SET DEFAULT nex
 
 ALTER TABLE ONLY public.session_audit_records ALTER COLUMN id SET DEFAULT nextval('public.session_audit_records_id_seq'::regclass);
 
-
 --
 -- Name: session_bodies id; Type: DEFAULT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.session_bodies ALTER COLUMN id SET DEFAULT nextval('public.session_bodies_id_seq'::regclass);
-
 
 --
 -- Name: session_intent_evolution id; Type: DEFAULT; Schema: public; Owner: -
@@ -19127,13 +17716,11 @@ ALTER TABLE ONLY public.session_bodies ALTER COLUMN id SET DEFAULT nextval('publ
 
 ALTER TABLE ONLY public.session_intent_evolution ALTER COLUMN id SET DEFAULT nextval('public.session_intent_evolution_id_seq'::regclass);
 
-
 --
 -- Name: session_module_executions_hot execution_id; Type: DEFAULT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.session_module_executions_hot ALTER COLUMN execution_id SET DEFAULT nextval('public.session_module_executions_hot_execution_id_seq'::regclass);
-
 
 --
 -- Name: session_turn_logs id; Type: DEFAULT; Schema: public; Owner: -
@@ -19141,13 +17728,11 @@ ALTER TABLE ONLY public.session_module_executions_hot ALTER COLUMN execution_id 
 
 ALTER TABLE ONLY public.session_turn_logs ALTER COLUMN id SET DEFAULT nextval('public.session_turn_logs_id_seq'::regclass);
 
-
 --
 -- Name: session_turn_snapshots id; Type: DEFAULT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.session_turn_snapshots ALTER COLUMN id SET DEFAULT nextval('public.session_turn_snapshots_id_seq'::regclass);
-
 
 --
 -- Name: session_turns id; Type: DEFAULT; Schema: public; Owner: -
@@ -19155,13 +17740,11 @@ ALTER TABLE ONLY public.session_turn_snapshots ALTER COLUMN id SET DEFAULT nextv
 
 ALTER TABLE ONLY public.session_turns ALTER COLUMN id SET DEFAULT nextval('public.session_turns_id_seq'::regclass);
 
-
 --
 -- Name: sessions id; Type: DEFAULT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.sessions ALTER COLUMN id SET DEFAULT nextval('public.sessions_id_seq'::regclass);
-
 
 --
 -- Name: settings_audit id; Type: DEFAULT; Schema: public; Owner: -
@@ -19169,13 +17752,11 @@ ALTER TABLE ONLY public.sessions ALTER COLUMN id SET DEFAULT nextval('public.ses
 
 ALTER TABLE ONLY public.settings_audit ALTER COLUMN id SET DEFAULT nextval('public.settings_audit_id_seq'::regclass);
 
-
 --
 -- Name: severity_action_matrix id; Type: DEFAULT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.severity_action_matrix ALTER COLUMN id SET DEFAULT nextval('public.severity_action_matrix_id_seq'::regclass);
-
 
 --
 -- Name: subscription_plans id; Type: DEFAULT; Schema: public; Owner: -
@@ -19183,13 +17764,11 @@ ALTER TABLE ONLY public.severity_action_matrix ALTER COLUMN id SET DEFAULT nextv
 
 ALTER TABLE ONLY public.subscription_plans ALTER COLUMN id SET DEFAULT nextval('public.subscription_plans_id_seq'::regclass);
 
-
 --
 -- Name: subscription_tiers id; Type: DEFAULT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.subscription_tiers ALTER COLUMN id SET DEFAULT nextval('public.subscription_tiers_id_seq'::regclass);
-
 
 --
 -- Name: system_settings id; Type: DEFAULT; Schema: public; Owner: -
@@ -19197,13 +17776,11 @@ ALTER TABLE ONLY public.subscription_tiers ALTER COLUMN id SET DEFAULT nextval('
 
 ALTER TABLE ONLY public.system_settings ALTER COLUMN id SET DEFAULT nextval('public.system_settings_id_seq'::regclass);
 
-
 --
 -- Name: tenant_model_policies id; Type: DEFAULT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.tenant_model_policies ALTER COLUMN id SET DEFAULT nextval('public.tenant_model_policies_id_seq'::regclass);
-
 
 --
 -- Name: tenant_model_policies_audit id; Type: DEFAULT; Schema: public; Owner: -
@@ -19211,13 +17788,11 @@ ALTER TABLE ONLY public.tenant_model_policies ALTER COLUMN id SET DEFAULT nextva
 
 ALTER TABLE ONLY public.tenant_model_policies_audit ALTER COLUMN id SET DEFAULT nextval('public.tenant_model_policies_audit_id_seq'::regclass);
 
-
 --
 -- Name: tenant_subscriptions id; Type: DEFAULT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.tenant_subscriptions ALTER COLUMN id SET DEFAULT nextval('public.tenant_subscriptions_id_seq'::regclass);
-
 
 --
 -- Name: tenant_tool_policies id; Type: DEFAULT; Schema: public; Owner: -
@@ -19225,13 +17800,11 @@ ALTER TABLE ONLY public.tenant_subscriptions ALTER COLUMN id SET DEFAULT nextval
 
 ALTER TABLE ONLY public.tenant_tool_policies ALTER COLUMN id SET DEFAULT nextval('public.tenant_tool_policies_id_seq'::regclass);
 
-
 --
 -- Name: token_audit_events id; Type: DEFAULT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.token_audit_events ALTER COLUMN id SET DEFAULT nextval('public.token_audit_events_id_seq'::regclass);
-
 
 --
 -- Name: tool_registry id; Type: DEFAULT; Schema: public; Owner: -
@@ -19239,13 +17812,11 @@ ALTER TABLE ONLY public.token_audit_events ALTER COLUMN id SET DEFAULT nextval('
 
 ALTER TABLE ONLY public.tool_registry ALTER COLUMN id SET DEFAULT nextval('public.tool_registry_id_seq'::regclass);
 
-
 --
 -- Name: tool_usage_stats id; Type: DEFAULT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.tool_usage_stats ALTER COLUMN id SET DEFAULT nextval('public.tool_usage_stats_partitioned_id_seq'::regclass);
-
 
 --
 -- Name: tool_usage_stats_old id; Type: DEFAULT; Schema: public; Owner: -
@@ -19253,13 +17824,11 @@ ALTER TABLE ONLY public.tool_usage_stats ALTER COLUMN id SET DEFAULT nextval('pu
 
 ALTER TABLE ONLY public.tool_usage_stats_old ALTER COLUMN id SET DEFAULT nextval('public.tool_usage_stats_id_seq'::regclass);
 
-
 --
 -- Name: topup_packages id; Type: DEFAULT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.topup_packages ALTER COLUMN id SET DEFAULT nextval('public.topup_packages_id_seq'::regclass);
-
 
 --
 -- Name: toxic_keywords id; Type: DEFAULT; Schema: public; Owner: -
@@ -19267,13 +17836,11 @@ ALTER TABLE ONLY public.topup_packages ALTER COLUMN id SET DEFAULT nextval('publ
 
 ALTER TABLE ONLY public.toxic_keywords ALTER COLUMN id SET DEFAULT nextval('public.toxic_keywords_id_seq'::regclass);
 
-
 --
 -- Name: tuning_proposals id; Type: DEFAULT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.tuning_proposals ALTER COLUMN id SET DEFAULT nextval('public.tuning_proposals_id_seq'::regclass);
-
 
 --
 -- Name: tuning_signals id; Type: DEFAULT; Schema: public; Owner: -
@@ -19281,13 +17848,11 @@ ALTER TABLE ONLY public.tuning_proposals ALTER COLUMN id SET DEFAULT nextval('pu
 
 ALTER TABLE ONLY public.tuning_signals ALTER COLUMN id SET DEFAULT nextval('public.tuning_signals_id_seq'::regclass);
 
-
 --
 -- Name: upgrade_logs id; Type: DEFAULT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.upgrade_logs ALTER COLUMN id SET DEFAULT nextval('public.upgrade_logs_id_seq'::regclass);
-
 
 --
 -- Name: users id; Type: DEFAULT; Schema: public; Owner: -
@@ -19295,13 +17860,11 @@ ALTER TABLE ONLY public.upgrade_logs ALTER COLUMN id SET DEFAULT nextval('public
 
 ALTER TABLE ONLY public.users ALTER COLUMN id SET DEFAULT nextval('public.users_id_seq'::regclass);
 
-
 --
 -- Name: vibe_code_reviews id; Type: DEFAULT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.vibe_code_reviews ALTER COLUMN id SET DEFAULT nextval('public.vibe_code_reviews_id_seq'::regclass);
-
 
 --
 -- Name: vibe_coding_projects id; Type: DEFAULT; Schema: public; Owner: -
@@ -19309,20 +17872,17 @@ ALTER TABLE ONLY public.vibe_code_reviews ALTER COLUMN id SET DEFAULT nextval('p
 
 ALTER TABLE ONLY public.vibe_coding_projects ALTER COLUMN id SET DEFAULT nextval('public.vibe_coding_projects_id_seq'::regclass);
 
-
 --
 -- Name: vibe_coding_sessions id; Type: DEFAULT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.vibe_coding_sessions ALTER COLUMN id SET DEFAULT nextval('public.vibe_coding_sessions_id_seq'::regclass);
 
-
 --
 -- Name: work_type_model_route id; Type: DEFAULT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.work_type_model_route ALTER COLUMN id SET DEFAULT nextval('public.work_type_model_route_id_seq'::regclass);
-
 
 --
 -- Name: agents agents_pkey; Type: CONSTRAINT; Schema: public; Owner: -
@@ -19331,14 +17891,12 @@ ALTER TABLE ONLY public.work_type_model_route ALTER COLUMN id SET DEFAULT nextva
 ALTER TABLE ONLY public.agents
     ADD CONSTRAINT agents_pkey PRIMARY KEY (id);
 
-
 --
 -- Name: analysis_events analysis_events_event_id_key; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.analysis_events
     ADD CONSTRAINT analysis_events_event_id_key UNIQUE (event_id);
-
 
 --
 -- Name: analysis_events analysis_events_pkey; Type: CONSTRAINT; Schema: public; Owner: -
@@ -19347,14 +17905,12 @@ ALTER TABLE ONLY public.analysis_events
 ALTER TABLE ONLY public.analysis_events
     ADD CONSTRAINT analysis_events_pkey PRIMARY KEY (id);
 
-
 --
 -- Name: api_keys api_keys_key_hash_key; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.api_keys
     ADD CONSTRAINT api_keys_key_hash_key UNIQUE (key_hash);
-
 
 --
 -- Name: api_keys api_keys_pkey; Type: CONSTRAINT; Schema: public; Owner: -
@@ -19363,14 +17919,12 @@ ALTER TABLE ONLY public.api_keys
 ALTER TABLE ONLY public.api_keys
     ADD CONSTRAINT api_keys_pkey PRIMARY KEY (id);
 
-
 --
 -- Name: applications applications_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.applications
     ADD CONSTRAINT applications_pkey PRIMARY KEY (id);
-
 
 --
 -- Name: applications applications_tenant_id_code_key; Type: CONSTRAINT; Schema: public; Owner: -
@@ -19379,14 +17933,12 @@ ALTER TABLE ONLY public.applications
 ALTER TABLE ONLY public.applications
     ADD CONSTRAINT applications_tenant_id_code_key UNIQUE (tenant_id, code);
 
-
 --
 -- Name: approval_queue approval_queue_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.approval_queue
     ADD CONSTRAINT approval_queue_pkey PRIMARY KEY (id);
-
 
 --
 -- Name: approval_routing_rules approval_routing_rules_pkey; Type: CONSTRAINT; Schema: public; Owner: -
@@ -19395,14 +17947,12 @@ ALTER TABLE ONLY public.approval_queue
 ALTER TABLE ONLY public.approval_routing_rules
     ADD CONSTRAINT approval_routing_rules_pkey PRIMARY KEY (id);
 
-
 --
 -- Name: armor_judgments armor_judgments_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.armor_judgments
     ADD CONSTRAINT armor_judgments_pkey PRIMARY KEY (id);
-
 
 --
 -- Name: background_tasks background_tasks_pkey; Type: CONSTRAINT; Schema: public; Owner: -
@@ -19411,14 +17961,12 @@ ALTER TABLE ONLY public.armor_judgments
 ALTER TABLE ONLY public.background_tasks
     ADD CONSTRAINT background_tasks_pkey PRIMARY KEY (id);
 
-
 --
 -- Name: billing_orders billing_orders_order_no_key; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.billing_orders
     ADD CONSTRAINT billing_orders_order_no_key UNIQUE (order_no);
-
 
 --
 -- Name: canary_tokens canary_tokens_pkey; Type: CONSTRAINT; Schema: public; Owner: -
@@ -19427,14 +17975,12 @@ ALTER TABLE ONLY public.billing_orders
 ALTER TABLE ONLY public.canary_tokens
     ADD CONSTRAINT canary_tokens_pkey PRIMARY KEY (id);
 
-
 --
 -- Name: center_commands center_commands_command_id_key; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.center_commands
     ADD CONSTRAINT center_commands_command_id_key UNIQUE (command_id);
-
 
 --
 -- Name: center_commands center_commands_pkey; Type: CONSTRAINT; Schema: public; Owner: -
@@ -19443,14 +17989,12 @@ ALTER TABLE ONLY public.center_commands
 ALTER TABLE ONLY public.center_commands
     ADD CONSTRAINT center_commands_pkey PRIMARY KEY (id);
 
-
 --
 -- Name: dashboard_access_events chk_dae_event_type; Type: CHECK CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE public.dashboard_access_events
     ADD CONSTRAINT chk_dae_event_type CHECK (((event_type)::text = ANY (ARRAY[('api_access'::character varying)::text, ('query'::character varying)::text, ('export'::character varying)::text, ('error'::character varying)::text]))) NOT VALID;
-
 
 --
 -- Name: dashboard_access_events_hot chk_dae_hot_event_type; Type: CHECK CONSTRAINT; Schema: public; Owner: -
@@ -19459,14 +18003,12 @@ ALTER TABLE public.dashboard_access_events
 ALTER TABLE public.dashboard_access_events_hot
     ADD CONSTRAINT chk_dae_hot_event_type CHECK (((event_type)::text = ANY (ARRAY[('api_access'::character varying)::text, ('query'::character varying)::text, ('export'::character varying)::text, ('error'::character varying)::text]))) NOT VALID;
 
-
 --
 -- Name: session_module_executions_hot chk_sme_hot_status; Type: CHECK CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE public.session_module_executions_hot
     ADD CONSTRAINT chk_sme_hot_status CHECK (((status)::text = ANY (ARRAY[('pending'::character varying)::text, ('running'::character varying)::text, ('completed'::character varying)::text, ('failed'::character varying)::text, ('skipped'::character varying)::text]))) NOT VALID;
-
 
 --
 -- Name: session_module_executions chk_sme_status; Type: CHECK CONSTRAINT; Schema: public; Owner: -
@@ -19475,14 +18017,12 @@ ALTER TABLE public.session_module_executions_hot
 ALTER TABLE public.session_module_executions
     ADD CONSTRAINT chk_sme_status CHECK (((status)::text = ANY (ARRAY[('pending'::character varying)::text, ('running'::character varying)::text, ('completed'::character varying)::text, ('failed'::character varying)::text, ('skipped'::character varying)::text]))) NOT VALID;
 
-
 --
 -- Name: credential_model_bindings cmb_unique_credential_model; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.credential_model_bindings
     ADD CONSTRAINT cmb_unique_credential_model UNIQUE (credential_id, provider_model_id);
-
 
 --
 -- Name: compression_bench_results compression_bench_results_pkey; Type: CONSTRAINT; Schema: public; Owner: -
@@ -19491,14 +18031,12 @@ ALTER TABLE ONLY public.credential_model_bindings
 ALTER TABLE ONLY public.compression_bench_results
     ADD CONSTRAINT compression_bench_results_pkey PRIMARY KEY (id);
 
-
 --
 -- Name: credential_capabilities credential_capabilities_credential_id_capability_key; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.credential_capabilities
     ADD CONSTRAINT credential_capabilities_credential_id_capability_key UNIQUE (credential_id, capability);
-
 
 --
 -- Name: credential_model_call_history credential_model_call_history_pkey; Type: CONSTRAINT; Schema: public; Owner: -
@@ -19507,14 +18045,12 @@ ALTER TABLE ONLY public.credential_capabilities
 ALTER TABLE ONLY public.credential_model_call_history
     ADD CONSTRAINT credential_model_call_history_pkey PRIMARY KEY (credential_id, raw_model, window_start);
 
-
 --
 -- Name: credential_probe_configs credential_probe_configs_credential_id_probe_model_key; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.credential_probe_configs
     ADD CONSTRAINT credential_probe_configs_credential_id_probe_model_key UNIQUE (credential_id, probe_model);
-
 
 --
 -- Name: credential_probe_configs credential_probe_configs_pkey; Type: CONSTRAINT; Schema: public; Owner: -
@@ -19523,14 +18059,12 @@ ALTER TABLE ONLY public.credential_probe_configs
 ALTER TABLE ONLY public.credential_probe_configs
     ADD CONSTRAINT credential_probe_configs_pkey PRIMARY KEY (id);
 
-
 --
 -- Name: credential_probe_model_log credential_probe_model_log_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.credential_probe_model_log
     ADD CONSTRAINT credential_probe_model_log_pkey PRIMARY KEY (id);
-
 
 --
 -- Name: credential_probes credential_probes_pkey; Type: CONSTRAINT; Schema: public; Owner: -
@@ -19539,14 +18073,12 @@ ALTER TABLE ONLY public.credential_probe_model_log
 ALTER TABLE ONLY public.credential_probes
     ADD CONSTRAINT credential_probes_pkey PRIMARY KEY (id);
 
-
 --
 -- Name: credential_quota_usage credential_quota_usage_quota_id_window_started_at_key; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.credential_quota_usage
     ADD CONSTRAINT credential_quota_usage_quota_id_window_started_at_key UNIQUE (quota_id, window_started_at);
-
 
 --
 -- Name: credential_quotas credential_quotas_credential_id_quota_name_key; Type: CONSTRAINT; Schema: public; Owner: -
@@ -19555,14 +18087,12 @@ ALTER TABLE ONLY public.credential_quota_usage
 ALTER TABLE ONLY public.credential_quotas
     ADD CONSTRAINT credential_quotas_credential_id_quota_name_key UNIQUE (credential_id, quota_name);
 
-
 --
 -- Name: credential_state_log credential_state_log_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.credential_state_log
     ADD CONSTRAINT credential_state_log_pkey PRIMARY KEY (credential_id, raw_model_name);
-
 
 --
 -- Name: credentials credentials_pkey; Type: CONSTRAINT; Schema: public; Owner: -
@@ -19571,14 +18101,12 @@ ALTER TABLE ONLY public.credential_state_log
 ALTER TABLE ONLY public.credentials
     ADD CONSTRAINT credentials_pkey PRIMARY KEY (id);
 
-
 --
 -- Name: credentials credentials_unique_provider_label; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.credentials
     ADD CONSTRAINT credentials_unique_provider_label UNIQUE (provider_id, tenant_id, label);
-
 
 --
 -- Name: credit_ledger credit_ledger_partitioned_pkey; Type: CONSTRAINT; Schema: public; Owner: -
@@ -19587,14 +18115,12 @@ ALTER TABLE ONLY public.credentials
 ALTER TABLE ONLY public.credit_ledger
     ADD CONSTRAINT credit_ledger_partitioned_pkey PRIMARY KEY (id, created_at);
 
-
 --
 -- Name: credit_ledger_2026_07 credit_ledger_2026_07_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.credit_ledger_2026_07
     ADD CONSTRAINT credit_ledger_2026_07_pkey PRIMARY KEY (id, created_at);
-
 
 --
 -- Name: credit_ledger_2026_08 credit_ledger_2026_08_pkey; Type: CONSTRAINT; Schema: public; Owner: -
@@ -19603,14 +18129,12 @@ ALTER TABLE ONLY public.credit_ledger_2026_07
 ALTER TABLE ONLY public.credit_ledger_2026_08
     ADD CONSTRAINT credit_ledger_2026_08_pkey PRIMARY KEY (id, created_at);
 
-
 --
 -- Name: dashboard_access_events dashboard_access_events_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.dashboard_access_events
     ADD CONSTRAINT dashboard_access_events_pkey PRIMARY KEY (event_id, created_at);
-
 
 --
 -- Name: dashboard_access_events_2026_07 dashboard_access_events_2026_07_pkey; Type: CONSTRAINT; Schema: public; Owner: -
@@ -19619,14 +18143,12 @@ ALTER TABLE ONLY public.dashboard_access_events
 ALTER TABLE ONLY public.dashboard_access_events_2026_07
     ADD CONSTRAINT dashboard_access_events_2026_07_pkey PRIMARY KEY (event_id, created_at);
 
-
 --
 -- Name: dashboard_access_events_2026_08 dashboard_access_events_2026_08_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.dashboard_access_events_2026_08
     ADD CONSTRAINT dashboard_access_events_2026_08_pkey PRIMARY KEY (event_id, created_at);
-
 
 --
 -- Name: dashboard_access_events_hot dashboard_access_events_hot_pkey; Type: CONSTRAINT; Schema: public; Owner: -
@@ -19635,14 +18157,12 @@ ALTER TABLE ONLY public.dashboard_access_events_2026_08
 ALTER TABLE ONLY public.dashboard_access_events_hot
     ADD CONSTRAINT dashboard_access_events_hot_pkey PRIMARY KEY (event_id);
 
-
 --
 -- Name: diagnostic_runs diagnostic_runs_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.diagnostic_runs
     ADD CONSTRAINT diagnostic_runs_pkey PRIMARY KEY (id);
-
 
 --
 -- Name: donations donations_order_no_key; Type: CONSTRAINT; Schema: public; Owner: -
@@ -19651,14 +18171,12 @@ ALTER TABLE ONLY public.diagnostic_runs
 ALTER TABLE ONLY public.donations
     ADD CONSTRAINT donations_order_no_key UNIQUE (order_no);
 
-
 --
 -- Name: donations donations_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.donations
     ADD CONSTRAINT donations_pkey PRIMARY KEY (id);
-
 
 --
 -- Name: download_events download_events_pkey; Type: CONSTRAINT; Schema: public; Owner: -
@@ -19667,14 +18185,12 @@ ALTER TABLE ONLY public.donations
 ALTER TABLE ONLY public.download_events
     ADD CONSTRAINT download_events_pkey PRIMARY KEY (id);
 
-
 --
 -- Name: download_events download_events_request_id_key; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.download_events
     ADD CONSTRAINT download_events_request_id_key UNIQUE (request_id);
-
 
 --
 -- Name: download_publish_runs download_publish_runs_pkey; Type: CONSTRAINT; Schema: public; Owner: -
@@ -19683,14 +18199,12 @@ ALTER TABLE ONLY public.download_events
 ALTER TABLE ONLY public.download_publish_runs
     ADD CONSTRAINT download_publish_runs_pkey PRIMARY KEY (id);
 
-
 --
 -- Name: fault_action_logs fault_action_logs_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.fault_action_logs
     ADD CONSTRAINT fault_action_logs_pkey PRIMARY KEY (id);
-
 
 --
 -- Name: fault_events fault_events_pkey; Type: CONSTRAINT; Schema: public; Owner: -
@@ -19699,14 +18213,12 @@ ALTER TABLE ONLY public.fault_action_logs
 ALTER TABLE ONLY public.fault_events
     ADD CONSTRAINT fault_events_pkey PRIMARY KEY (id);
 
-
 --
 -- Name: fault_rules fault_rules_name_key; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.fault_rules
     ADD CONSTRAINT fault_rules_name_key UNIQUE (name);
-
 
 --
 -- Name: fault_rules fault_rules_pkey; Type: CONSTRAINT; Schema: public; Owner: -
@@ -19715,14 +18227,12 @@ ALTER TABLE ONLY public.fault_rules
 ALTER TABLE ONLY public.fault_rules
     ADD CONSTRAINT fault_rules_pkey PRIMARY KEY (id);
 
-
 --
 -- Name: gateway_instances gateway_instances_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.gateway_instances
     ADD CONSTRAINT gateway_instances_pkey PRIMARY KEY (instance_id);
-
 
 --
 -- Name: goal_sessions goal_sessions_pkey; Type: CONSTRAINT; Schema: public; Owner: -
@@ -19731,14 +18241,12 @@ ALTER TABLE ONLY public.gateway_instances
 ALTER TABLE ONLY public.goal_sessions
     ADD CONSTRAINT goal_sessions_pkey PRIMARY KEY (id);
 
-
 --
 -- Name: goal_sessions goal_sessions_session_id_key; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.goal_sessions
     ADD CONSTRAINT goal_sessions_session_id_key UNIQUE (session_id);
-
 
 --
 -- Name: gray_release_rules gray_release_rules_pkey; Type: CONSTRAINT; Schema: public; Owner: -
@@ -19747,14 +18255,12 @@ ALTER TABLE ONLY public.goal_sessions
 ALTER TABLE ONLY public.gray_release_rules
     ADD CONSTRAINT gray_release_rules_pkey PRIMARY KEY (id);
 
-
 --
 -- Name: handoff_logs handoff_logs_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.handoff_logs
     ADD CONSTRAINT handoff_logs_pkey PRIMARY KEY (id);
-
 
 --
 -- Name: injection_attack_vectors injection_attack_vectors_pkey; Type: CONSTRAINT; Schema: public; Owner: -
@@ -19763,14 +18269,12 @@ ALTER TABLE ONLY public.handoff_logs
 ALTER TABLE ONLY public.injection_attack_vectors
     ADD CONSTRAINT injection_attack_vectors_pkey PRIMARY KEY (id);
 
-
 --
 -- Name: instance_heartbeats instance_heartbeats_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.instance_heartbeats
     ADD CONSTRAINT instance_heartbeats_pkey PRIMARY KEY (instance_id, "timestamp");
-
 
 --
 -- Name: instance_release_status instance_release_status_pkey; Type: CONSTRAINT; Schema: public; Owner: -
@@ -19779,14 +18283,12 @@ ALTER TABLE ONLY public.instance_heartbeats
 ALTER TABLE ONLY public.instance_release_status
     ADD CONSTRAINT instance_release_status_pkey PRIMARY KEY (instance_id);
 
-
 --
 -- Name: instance_status_reports instance_status_reports_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.instance_status_reports
     ADD CONSTRAINT instance_status_reports_pkey PRIMARY KEY (instance_id, "timestamp");
-
 
 --
 -- Name: integrity_fingerprint_baseline integrity_fingerprint_baseline_pkey; Type: CONSTRAINT; Schema: public; Owner: -
@@ -19795,14 +18297,12 @@ ALTER TABLE ONLY public.instance_status_reports
 ALTER TABLE ONLY public.integrity_fingerprint_baseline
     ADD CONSTRAINT integrity_fingerprint_baseline_pkey PRIMARY KEY (tenant_id, credential_id, raw_model_name);
 
-
 --
 -- Name: intent_aggregates intent_aggregates_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.intent_aggregates
     ADD CONSTRAINT intent_aggregates_pkey PRIMARY KEY (tenant_id, intent_kind);
-
 
 --
 -- Name: intent_analysis_adjustments intent_analysis_adjustments_pkey; Type: CONSTRAINT; Schema: public; Owner: -
@@ -19811,14 +18311,12 @@ ALTER TABLE ONLY public.intent_aggregates
 ALTER TABLE ONLY public.intent_analysis_adjustments
     ADD CONSTRAINT intent_analysis_adjustments_pkey PRIMARY KEY (id);
 
-
 --
 -- Name: intent_classification_feedback intent_classification_feedback_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.intent_classification_feedback
     ADD CONSTRAINT intent_classification_feedback_pkey PRIMARY KEY (id);
-
 
 --
 -- Name: intent_classifier_config intent_classifier_config_pkey; Type: CONSTRAINT; Schema: public; Owner: -
@@ -19827,14 +18325,12 @@ ALTER TABLE ONLY public.intent_classification_feedback
 ALTER TABLE ONLY public.intent_classifier_config
     ADD CONSTRAINT intent_classifier_config_pkey PRIMARY KEY (id);
 
-
 --
 -- Name: intent_classifier_config intent_classifier_config_unique_tenant; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.intent_classifier_config
     ADD CONSTRAINT intent_classifier_config_unique_tenant UNIQUE (tenant_id);
-
 
 --
 -- Name: intent_classification_feedback intent_feedback_unique_request; Type: CONSTRAINT; Schema: public; Owner: -
@@ -19843,14 +18339,12 @@ ALTER TABLE ONLY public.intent_classifier_config
 ALTER TABLE ONLY public.intent_classification_feedback
     ADD CONSTRAINT intent_feedback_unique_request UNIQUE (request_id);
 
-
 --
 -- Name: ip_blocklist ip_blocklist_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.ip_blocklist
     ADD CONSTRAINT ip_blocklist_pkey PRIMARY KEY (id);
-
 
 --
 -- Name: license_devices license_devices_license_id_hardware_hash_key; Type: CONSTRAINT; Schema: public; Owner: -
@@ -19859,14 +18353,12 @@ ALTER TABLE ONLY public.ip_blocklist
 ALTER TABLE ONLY public.license_devices
     ADD CONSTRAINT license_devices_license_id_hardware_hash_key UNIQUE (license_id, hardware_hash);
 
-
 --
 -- Name: license_devices license_devices_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.license_devices
     ADD CONSTRAINT license_devices_pkey PRIMARY KEY (id);
-
 
 --
 -- Name: license_holders license_holders_email_key; Type: CONSTRAINT; Schema: public; Owner: -
@@ -19875,14 +18367,12 @@ ALTER TABLE ONLY public.license_devices
 ALTER TABLE ONLY public.license_holders
     ADD CONSTRAINT license_holders_email_key UNIQUE (email);
 
-
 --
 -- Name: license_holders license_holders_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.license_holders
     ADD CONSTRAINT license_holders_pkey PRIMARY KEY (id);
-
 
 --
 -- Name: license_module_audit license_module_audit_pkey; Type: CONSTRAINT; Schema: public; Owner: -
@@ -19891,14 +18381,12 @@ ALTER TABLE ONLY public.license_holders
 ALTER TABLE ONLY public.license_module_audit
     ADD CONSTRAINT license_module_audit_pkey PRIMARY KEY (id);
 
-
 --
 -- Name: license_modules license_modules_license_id_module_key_key; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.license_modules
     ADD CONSTRAINT license_modules_license_id_module_key_key UNIQUE (license_id, module_key);
-
 
 --
 -- Name: license_modules license_modules_pkey; Type: CONSTRAINT; Schema: public; Owner: -
@@ -19907,14 +18395,12 @@ ALTER TABLE ONLY public.license_modules
 ALTER TABLE ONLY public.license_modules
     ADD CONSTRAINT license_modules_pkey PRIMARY KEY (id);
 
-
 --
 -- Name: license_trial_consents license_trial_consents_license_id_key; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.license_trial_consents
     ADD CONSTRAINT license_trial_consents_license_id_key UNIQUE (license_id);
-
 
 --
 -- Name: license_trial_consents license_trial_consents_pkey; Type: CONSTRAINT; Schema: public; Owner: -
@@ -19923,14 +18409,12 @@ ALTER TABLE ONLY public.license_trial_consents
 ALTER TABLE ONLY public.license_trial_consents
     ADD CONSTRAINT license_trial_consents_pkey PRIMARY KEY (id);
 
-
 --
 -- Name: licenses licenses_license_key_key; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.licenses
     ADD CONSTRAINT licenses_license_key_key UNIQUE (license_key);
-
 
 --
 -- Name: licenses licenses_pkey; Type: CONSTRAINT; Schema: public; Owner: -
@@ -19939,14 +18423,12 @@ ALTER TABLE ONLY public.licenses
 ALTER TABLE ONLY public.licenses
     ADD CONSTRAINT licenses_pkey PRIMARY KEY (id);
 
-
 --
 -- Name: llm_gateway_migration_checksums llm_gateway_migration_checksums_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.llm_gateway_migration_checksums
     ADD CONSTRAINT llm_gateway_migration_checksums_pkey PRIMARY KEY (version);
-
 
 --
 -- Name: local_models local_models_runtime_id_raw_name_key; Type: CONSTRAINT; Schema: public; Owner: -
@@ -19955,14 +18437,12 @@ ALTER TABLE ONLY public.llm_gateway_migration_checksums
 ALTER TABLE ONLY public.local_models
     ADD CONSTRAINT local_models_runtime_id_raw_name_key UNIQUE (runtime_id, raw_name);
 
-
 --
 -- Name: local_runtimes local_runtimes_host_code_runtime_type_base_url_key; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.local_runtimes
     ADD CONSTRAINT local_runtimes_host_code_runtime_type_base_url_key UNIQUE (host_code, runtime_type, base_url);
-
 
 --
 -- Name: maas_credit_consumption_buckets maas_credit_consumption_buckets_pkey; Type: CONSTRAINT; Schema: public; Owner: -
@@ -19971,14 +18451,12 @@ ALTER TABLE ONLY public.local_runtimes
 ALTER TABLE ONLY public.maas_credit_consumption_buckets
     ADD CONSTRAINT maas_credit_consumption_buckets_pkey PRIMARY KEY (tenant_id, bucket_start);
 
-
 --
 -- Name: maas_settings maas_settings_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.maas_settings
     ADD CONSTRAINT maas_settings_pkey PRIMARY KEY (id);
-
 
 --
 -- Name: model_fingerprints model_fingerprints_credential_id_canonical_id_key; Type: CONSTRAINT; Schema: public; Owner: -
@@ -19987,14 +18465,12 @@ ALTER TABLE ONLY public.maas_settings
 ALTER TABLE ONLY public.model_fingerprints
     ADD CONSTRAINT model_fingerprints_credential_id_canonical_id_key UNIQUE (credential_id, canonical_id);
 
-
 --
 -- Name: model_integrity_events model_integrity_events_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.model_integrity_events
     ADD CONSTRAINT model_integrity_events_pkey PRIMARY KEY (id);
-
 
 --
 -- Name: model_name_mapping model_name_mapping_pkey; Type: CONSTRAINT; Schema: public; Owner: -
@@ -20003,14 +18479,12 @@ ALTER TABLE ONLY public.model_integrity_events
 ALTER TABLE ONLY public.model_name_mapping
     ADD CONSTRAINT model_name_mapping_pkey PRIMARY KEY (id);
 
-
 --
 -- Name: model_name_mapping model_name_mapping_raw_unique; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.model_name_mapping
     ADD CONSTRAINT model_name_mapping_raw_unique UNIQUE (raw_model_name);
-
 
 --
 -- Name: model_probe_state model_probe_state_pkey; Type: CONSTRAINT; Schema: public; Owner: -
@@ -20019,14 +18493,12 @@ ALTER TABLE ONLY public.model_name_mapping
 ALTER TABLE ONLY public.model_probe_state
     ADD CONSTRAINT model_probe_state_pkey PRIMARY KEY (credential_id, raw_model_name);
 
-
 --
 -- Name: model_task_index model_task_index_bucket_canonical_task_key; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.model_task_index
     ADD CONSTRAINT model_task_index_bucket_canonical_task_key UNIQUE (bucket, canonical_id, task_type);
-
 
 --
 -- Name: models_canonical models_canonical_canonical_name_key; Type: CONSTRAINT; Schema: public; Owner: -
@@ -20035,14 +18507,12 @@ ALTER TABLE ONLY public.model_task_index
 ALTER TABLE ONLY public.models_canonical
     ADD CONSTRAINT models_canonical_canonical_name_key UNIQUE (canonical_name);
 
-
 --
 -- Name: node_probe_runs node_probe_runs_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.node_probe_runs
     ADD CONSTRAINT node_probe_runs_pkey PRIMARY KEY (id);
-
 
 --
 -- Name: node_probe_state node_probe_state_pkey; Type: CONSTRAINT; Schema: public; Owner: -
@@ -20051,14 +18521,12 @@ ALTER TABLE ONLY public.node_probe_runs
 ALTER TABLE ONLY public.node_probe_state
     ADD CONSTRAINT node_probe_state_pkey PRIMARY KEY (credential_id, raw_model_name);
 
-
 --
 -- Name: node_stats node_stats_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.node_stats
     ADD CONSTRAINT node_stats_pkey PRIMARY KEY (id);
-
 
 --
 -- Name: offline_activation_requests offline_activation_requests_pkey; Type: CONSTRAINT; Schema: public; Owner: -
@@ -20067,14 +18535,12 @@ ALTER TABLE ONLY public.node_stats
 ALTER TABLE ONLY public.offline_activation_requests
     ADD CONSTRAINT offline_activation_requests_pkey PRIMARY KEY (id);
 
-
 --
 -- Name: offline_activation_requests offline_activation_requests_request_id_key; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.offline_activation_requests
     ADD CONSTRAINT offline_activation_requests_request_id_key UNIQUE (request_id);
-
 
 --
 -- Name: ops_node_registrations ops_node_registrations_instance_id_key; Type: CONSTRAINT; Schema: public; Owner: -
@@ -20083,14 +18549,12 @@ ALTER TABLE ONLY public.offline_activation_requests
 ALTER TABLE ONLY public.ops_node_registrations
     ADD CONSTRAINT ops_node_registrations_instance_id_key UNIQUE (instance_id);
 
-
 --
 -- Name: ops_node_registrations ops_node_registrations_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.ops_node_registrations
     ADD CONSTRAINT ops_node_registrations_pkey PRIMARY KEY (id);
-
 
 --
 -- Name: output_compliance_audit output_compliance_audit_pkey; Type: CONSTRAINT; Schema: public; Owner: -
@@ -20099,14 +18563,12 @@ ALTER TABLE ONLY public.ops_node_registrations
 ALTER TABLE ONLY public.output_compliance_audit
     ADD CONSTRAINT output_compliance_audit_pkey PRIMARY KEY (id);
 
-
 --
 -- Name: output_compliance_custom_keywords output_compliance_custom_keywords_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.output_compliance_custom_keywords
     ADD CONSTRAINT output_compliance_custom_keywords_pkey PRIMARY KEY (id);
-
 
 --
 -- Name: output_compliance_feedback output_compliance_feedback_pkey; Type: CONSTRAINT; Schema: public; Owner: -
@@ -20115,14 +18577,12 @@ ALTER TABLE ONLY public.output_compliance_custom_keywords
 ALTER TABLE ONLY public.output_compliance_feedback
     ADD CONSTRAINT output_compliance_feedback_pkey PRIMARY KEY (id);
 
-
 --
 -- Name: output_compliance_policies output_compliance_policies_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.output_compliance_policies
     ADD CONSTRAINT output_compliance_policies_pkey PRIMARY KEY (id);
-
 
 --
 -- Name: output_compliance_review_queue output_compliance_review_queue_pkey; Type: CONSTRAINT; Schema: public; Owner: -
@@ -20131,14 +18591,12 @@ ALTER TABLE ONLY public.output_compliance_policies
 ALTER TABLE ONLY public.output_compliance_review_queue
     ADD CONSTRAINT output_compliance_review_queue_pkey PRIMARY KEY (id);
 
-
 --
 -- Name: passive_probe_state passive_probe_state_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.passive_probe_state
     ADD CONSTRAINT passive_probe_state_pkey PRIMARY KEY (credential_id, raw_model_name, error_kind);
-
 
 --
 -- Name: pii_patterns pii_patterns_pattern_name_key; Type: CONSTRAINT; Schema: public; Owner: -
@@ -20147,14 +18605,12 @@ ALTER TABLE ONLY public.passive_probe_state
 ALTER TABLE ONLY public.pii_patterns
     ADD CONSTRAINT pii_patterns_pattern_name_key UNIQUE (pattern_name);
 
-
 --
 -- Name: pii_patterns pii_patterns_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.pii_patterns
     ADD CONSTRAINT pii_patterns_pkey PRIMARY KEY (id);
-
 
 --
 -- Name: agent_relationships pk_agent_relationships; Type: CONSTRAINT; Schema: public; Owner: -
@@ -20163,14 +18619,12 @@ ALTER TABLE ONLY public.pii_patterns
 ALTER TABLE ONLY public.agent_relationships
     ADD CONSTRAINT pk_agent_relationships PRIMARY KEY (src_agent_id, dst_agent_id, rel);
 
-
 --
 -- Name: asset_relationships pk_asset_relationships; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.asset_relationships
     ADD CONSTRAINT pk_asset_relationships PRIMARY KEY (src_kind, src_ref_id, dst_kind, dst_ref_id, rel);
-
 
 --
 -- Name: assets pk_assets; Type: CONSTRAINT; Schema: public; Owner: -
@@ -20179,14 +18633,12 @@ ALTER TABLE ONLY public.asset_relationships
 ALTER TABLE ONLY public.assets
     ADD CONSTRAINT pk_assets PRIMARY KEY (kind, ref_id);
 
-
 --
 -- Name: product_module_features product_module_features_module_key_feature_key_key; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.product_module_features
     ADD CONSTRAINT product_module_features_module_key_feature_key_key UNIQUE (module_key, feature_key);
-
 
 --
 -- Name: product_module_features product_module_features_pkey; Type: CONSTRAINT; Schema: public; Owner: -
@@ -20195,14 +18647,12 @@ ALTER TABLE ONLY public.product_module_features
 ALTER TABLE ONLY public.product_module_features
     ADD CONSTRAINT product_module_features_pkey PRIMARY KEY (id);
 
-
 --
 -- Name: product_modules product_modules_key_key; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.product_modules
     ADD CONSTRAINT product_modules_key_key UNIQUE (key);
-
 
 --
 -- Name: product_modules product_modules_pkey; Type: CONSTRAINT; Schema: public; Owner: -
@@ -20211,14 +18661,12 @@ ALTER TABLE ONLY public.product_modules
 ALTER TABLE ONLY public.product_modules
     ADD CONSTRAINT product_modules_pkey PRIMARY KEY (id);
 
-
 --
 -- Name: prompt_injection_detections prompt_injection_detections_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.prompt_injection_detections
     ADD CONSTRAINT prompt_injection_detections_pkey PRIMARY KEY (id);
-
 
 --
 -- Name: prompt_injection_llm_engines prompt_injection_llm_engines_pkey; Type: CONSTRAINT; Schema: public; Owner: -
@@ -20227,14 +18675,12 @@ ALTER TABLE ONLY public.prompt_injection_detections
 ALTER TABLE ONLY public.prompt_injection_llm_engines
     ADD CONSTRAINT prompt_injection_llm_engines_pkey PRIMARY KEY (id);
 
-
 --
 -- Name: prompt_injection_policies prompt_injection_policies_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.prompt_injection_policies
     ADD CONSTRAINT prompt_injection_policies_pkey PRIMARY KEY (id);
-
 
 --
 -- Name: prompt_injection_rules prompt_injection_rules_pkey; Type: CONSTRAINT; Schema: public; Owner: -
@@ -20243,14 +18689,12 @@ ALTER TABLE ONLY public.prompt_injection_policies
 ALTER TABLE ONLY public.prompt_injection_rules
     ADD CONSTRAINT prompt_injection_rules_pkey PRIMARY KEY (id);
 
-
 --
 -- Name: prompt_injection_rules prompt_injection_rules_rule_name_key; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.prompt_injection_rules
     ADD CONSTRAINT prompt_injection_rules_rule_name_key UNIQUE (rule_name);
-
 
 --
 -- Name: provider_cost_reconciliation provider_cost_reconciliation_pkey; Type: CONSTRAINT; Schema: public; Owner: -
@@ -20259,14 +18703,12 @@ ALTER TABLE ONLY public.prompt_injection_rules
 ALTER TABLE ONLY public.provider_cost_reconciliation
     ADD CONSTRAINT provider_cost_reconciliation_pkey PRIMARY KEY (id);
 
-
 --
 -- Name: provider_cost_reconciliation provider_cost_reconciliation_provider_id_reconciliation_mon_key; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.provider_cost_reconciliation
     ADD CONSTRAINT provider_cost_reconciliation_provider_id_reconciliation_mon_key UNIQUE (provider_id, reconciliation_month);
-
 
 --
 -- Name: provider_credibility_tests provider_credibility_tests_pkey; Type: CONSTRAINT; Schema: public; Owner: -
@@ -20275,14 +18717,12 @@ ALTER TABLE ONLY public.provider_cost_reconciliation
 ALTER TABLE ONLY public.provider_credibility_tests
     ADD CONSTRAINT provider_credibility_tests_pkey PRIMARY KEY (id);
 
-
 --
 -- Name: provider_error_details provider_error_details_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.provider_error_details
     ADD CONSTRAINT provider_error_details_pkey PRIMARY KEY (id);
-
 
 --
 -- Name: provider_header_profiles provider_header_profiles_profile_code_key; Type: CONSTRAINT; Schema: public; Owner: -
@@ -20291,14 +18731,12 @@ ALTER TABLE ONLY public.provider_error_details
 ALTER TABLE ONLY public.provider_header_profiles
     ADD CONSTRAINT provider_header_profiles_profile_code_key UNIQUE (profile_code);
 
-
 --
 -- Name: provider_health_events provider_health_events_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.provider_health_events
     ADD CONSTRAINT provider_health_events_pkey PRIMARY KEY (id);
-
 
 --
 -- Name: provider_metrics_hour provider_metrics_hour_pkey; Type: CONSTRAINT; Schema: public; Owner: -
@@ -20307,14 +18745,12 @@ ALTER TABLE ONLY public.provider_health_events
 ALTER TABLE ONLY public.provider_metrics_hour
     ADD CONSTRAINT provider_metrics_hour_pkey PRIMARY KEY (id);
 
-
 --
 -- Name: provider_metrics_hour provider_metrics_hour_provider_id_model_name_endpoint_bucke_key; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.provider_metrics_hour
     ADD CONSTRAINT provider_metrics_hour_provider_id_model_name_endpoint_bucke_key UNIQUE (provider_id, model_name, endpoint, bucket);
-
 
 --
 -- Name: provider_metrics_minute provider_metrics_minute_pkey; Type: CONSTRAINT; Schema: public; Owner: -
@@ -20323,14 +18759,12 @@ ALTER TABLE ONLY public.provider_metrics_hour
 ALTER TABLE ONLY public.provider_metrics_minute
     ADD CONSTRAINT provider_metrics_minute_pkey PRIMARY KEY (id);
 
-
 --
 -- Name: provider_metrics_minute provider_metrics_minute_provider_id_model_name_endpoint_buc_key; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.provider_metrics_minute
     ADD CONSTRAINT provider_metrics_minute_provider_id_model_name_endpoint_buc_key UNIQUE (provider_id, model_name, endpoint, bucket);
-
 
 --
 -- Name: provider_models provider_models_unique_provider_model; Type: CONSTRAINT; Schema: public; Owner: -
@@ -20339,14 +18773,12 @@ ALTER TABLE ONLY public.provider_metrics_minute
 ALTER TABLE ONLY public.provider_models
     ADD CONSTRAINT provider_models_unique_provider_model UNIQUE (provider_id, raw_model_name);
 
-
 --
 -- Name: provider_models_v1000_backup provider_models_v1000_backup_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.provider_models_v1000_backup
     ADD CONSTRAINT provider_models_v1000_backup_pkey PRIMARY KEY (provider_model_id);
-
 
 --
 -- Name: provider_profile_alerts provider_profile_alerts_pkey; Type: CONSTRAINT; Schema: public; Owner: -
@@ -20355,14 +18787,12 @@ ALTER TABLE ONLY public.provider_models_v1000_backup
 ALTER TABLE ONLY public.provider_profile_alerts
     ADD CONSTRAINT provider_profile_alerts_pkey PRIMARY KEY (id);
 
-
 --
 -- Name: provider_profile_daily provider_profile_daily_credential_id_profile_date_key; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.provider_profile_daily
     ADD CONSTRAINT provider_profile_daily_credential_id_profile_date_key UNIQUE (credential_id, profile_date);
-
 
 --
 -- Name: provider_profile_daily provider_profile_daily_pkey; Type: CONSTRAINT; Schema: public; Owner: -
@@ -20371,14 +18801,12 @@ ALTER TABLE ONLY public.provider_profile_daily
 ALTER TABLE ONLY public.provider_profile_daily
     ADD CONSTRAINT provider_profile_daily_pkey PRIMARY KEY (id);
 
-
 --
 -- Name: provider_profile_metrics provider_profile_metrics_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.provider_profile_metrics
     ADD CONSTRAINT provider_profile_metrics_pkey PRIMARY KEY (id);
-
 
 --
 -- Name: provider_profile_whitelist provider_profile_whitelist_pkey; Type: CONSTRAINT; Schema: public; Owner: -
@@ -20387,14 +18815,12 @@ ALTER TABLE ONLY public.provider_profile_metrics
 ALTER TABLE ONLY public.provider_profile_whitelist
     ADD CONSTRAINT provider_profile_whitelist_pkey PRIMARY KEY (id);
 
-
 --
 -- Name: provider_profile_whitelist provider_profile_whitelist_provider_id_key; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.provider_profile_whitelist
     ADD CONSTRAINT provider_profile_whitelist_provider_id_key UNIQUE (provider_id);
-
 
 --
 -- Name: provider_quality_configs provider_quality_configs_pkey; Type: CONSTRAINT; Schema: public; Owner: -
@@ -20403,14 +18829,12 @@ ALTER TABLE ONLY public.provider_profile_whitelist
 ALTER TABLE ONLY public.provider_quality_configs
     ADD CONSTRAINT provider_quality_configs_pkey PRIMARY KEY (id);
 
-
 --
 -- Name: provider_quality_configs provider_quality_configs_provider_id_key; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.provider_quality_configs
     ADD CONSTRAINT provider_quality_configs_provider_id_key UNIQUE (provider_id);
-
 
 --
 -- Name: provider_quality_profiles provider_quality_profiles_pkey; Type: CONSTRAINT; Schema: public; Owner: -
@@ -20419,14 +18843,12 @@ ALTER TABLE ONLY public.provider_quality_configs
 ALTER TABLE ONLY public.provider_quality_profiles
     ADD CONSTRAINT provider_quality_profiles_pkey PRIMARY KEY (id);
 
-
 --
 -- Name: provider_quality_profiles provider_quality_profiles_provider_id_model_name_key; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.provider_quality_profiles
     ADD CONSTRAINT provider_quality_profiles_provider_id_model_name_key UNIQUE (provider_id, model_name);
-
 
 --
 -- Name: provider_quality_rollup provider_quality_rollup_pkey; Type: CONSTRAINT; Schema: public; Owner: -
@@ -20435,14 +18857,12 @@ ALTER TABLE ONLY public.provider_quality_profiles
 ALTER TABLE ONLY public.provider_quality_rollup
     ADD CONSTRAINT provider_quality_rollup_pkey PRIMARY KEY (provider_id, bucket_start);
 
-
 --
 -- Name: provider_settings provider_settings_unique_key; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.provider_settings
     ADD CONSTRAINT provider_settings_unique_key UNIQUE (provider_id, setting_key);
-
 
 --
 -- Name: providers providers_pkey; Type: CONSTRAINT; Schema: public; Owner: -
@@ -20451,14 +18871,12 @@ ALTER TABLE ONLY public.provider_settings
 ALTER TABLE ONLY public.providers
     ADD CONSTRAINT providers_pkey PRIMARY KEY (id);
 
-
 --
 -- Name: providers providers_tenant_id_code_key; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.providers
     ADD CONSTRAINT providers_tenant_id_code_key UNIQUE (tenant_id, code);
-
 
 --
 -- Name: release_artifacts release_artifacts_pkey; Type: CONSTRAINT; Schema: public; Owner: -
@@ -20467,14 +18885,12 @@ ALTER TABLE ONLY public.providers
 ALTER TABLE ONLY public.release_artifacts
     ADD CONSTRAINT release_artifacts_pkey PRIMARY KEY (id);
 
-
 --
 -- Name: release_artifacts release_artifacts_release_version_platform_arch_edition_art_key; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.release_artifacts
     ADD CONSTRAINT release_artifacts_release_version_platform_arch_edition_art_key UNIQUE (release_version, platform, arch, edition, artifact_name);
-
 
 --
 -- Name: releases releases_pkey; Type: CONSTRAINT; Schema: public; Owner: -
@@ -20483,14 +18899,12 @@ ALTER TABLE ONLY public.release_artifacts
 ALTER TABLE ONLY public.releases
     ADD CONSTRAINT releases_pkey PRIMARY KEY (id);
 
-
 --
 -- Name: releases releases_version_key; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.releases
     ADD CONSTRAINT releases_version_key UNIQUE (version);
-
 
 --
 -- Name: request_attachments request_attachments_pkey; Type: CONSTRAINT; Schema: public; Owner: -
@@ -20499,38 +18913,12 @@ ALTER TABLE ONLY public.releases
 ALTER TABLE ONLY public.request_attachments
     ADD CONSTRAINT request_attachments_pkey PRIMARY KEY (id);
 
-
 --
 -- Name: request_context_attrs request_context_attrs_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.request_context_attrs
     ADD CONSTRAINT request_context_attrs_pkey PRIMARY KEY (request_id);
-
-
---
--- Name: request_logs_2026_07 request_logs_2026_07_pkey; Type: CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.request_logs_2026_07
-    ADD CONSTRAINT request_logs_2026_07_pkey PRIMARY KEY (id, ts);
-
-
---
--- Name: request_logs_bodies_2026_07 request_logs_bodies_2026_07_pkey; Type: CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.request_logs_bodies_2026_07
-    ADD CONSTRAINT request_logs_bodies_2026_07_pkey PRIMARY KEY (request_id, ts);
-
-
---
--- Name: request_logs_bodies_2026_08 request_logs_bodies_2026_08_pkey; Type: CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY public.request_logs_bodies_2026_08
-    ADD CONSTRAINT request_logs_bodies_2026_08_pkey PRIMARY KEY (request_id, ts);
-
 
 --
 -- Name: request_logs_hot request_logs_hot_pkey; Type: CONSTRAINT; Schema: public; Owner: -
@@ -20539,14 +18927,12 @@ ALTER TABLE ONLY public.request_logs_bodies_2026_08
 ALTER TABLE ONLY public.request_logs_hot
     ADD CONSTRAINT request_logs_hot_pkey PRIMARY KEY (request_id);
 
-
 --
 -- Name: request_stage_events request_stage_events_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.request_stage_events
     ADD CONSTRAINT request_stage_events_pkey PRIMARY KEY (id);
-
 
 --
 -- Name: request_stats_dim_minute request_stats_dim_minute_pkey; Type: CONSTRAINT; Schema: public; Owner: -
@@ -20555,14 +18941,12 @@ ALTER TABLE ONLY public.request_stage_events
 ALTER TABLE ONLY public.request_stats_dim_minute
     ADD CONSTRAINT request_stats_dim_minute_pkey PRIMARY KEY (bucket, tenant_id, dim_type, dim_key);
 
-
 --
 -- Name: request_stats_error_drill_minute request_stats_error_drill_minute_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.request_stats_error_drill_minute
     ADD CONSTRAINT request_stats_error_drill_minute_pkey PRIMARY KEY (bucket, tenant_id, error_kind, model_name, provider_id, client_profile);
-
 
 --
 -- Name: request_stats_minute request_stats_minute_pkey; Type: CONSTRAINT; Schema: public; Owner: -
@@ -20571,14 +18955,12 @@ ALTER TABLE ONLY public.request_stats_error_drill_minute
 ALTER TABLE ONLY public.request_stats_minute
     ADD CONSTRAINT request_stats_minute_pkey PRIMARY KEY (bucket, tenant_id, provider_id, canonical_id);
 
-
 --
 -- Name: request_stats_rollup_cursor request_stats_rollup_cursor_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.request_stats_rollup_cursor
     ADD CONSTRAINT request_stats_rollup_cursor_pkey PRIMARY KEY (id);
-
 
 --
 -- Name: request_wal request_wal_pkey; Type: CONSTRAINT; Schema: public; Owner: -
@@ -20587,14 +18969,12 @@ ALTER TABLE ONLY public.request_stats_rollup_cursor
 ALTER TABLE ONLY public.request_wal
     ADD CONSTRAINT request_wal_pkey PRIMARY KEY (request_id, created_at);
 
-
 --
 -- Name: request_wal_2026_07 request_wal_2026_07_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.request_wal_2026_07
     ADD CONSTRAINT request_wal_2026_07_pkey PRIMARY KEY (request_id, created_at);
-
 
 --
 -- Name: request_wal_2026_08 request_wal_2026_08_pkey; Type: CONSTRAINT; Schema: public; Owner: -
@@ -20603,14 +18983,12 @@ ALTER TABLE ONLY public.request_wal_2026_07
 ALTER TABLE ONLY public.request_wal_2026_08
     ADD CONSTRAINT request_wal_2026_08_pkey PRIMARY KEY (request_id, created_at);
 
-
 --
 -- Name: request_wal_hot request_wal_hot_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.request_wal_hot
     ADD CONSTRAINT request_wal_hot_pkey PRIMARY KEY (request_id);
-
 
 --
 -- Name: response_format_anomalies response_format_anomalies_pkey; Type: CONSTRAINT; Schema: public; Owner: -
@@ -20619,14 +18997,12 @@ ALTER TABLE ONLY public.request_wal_hot
 ALTER TABLE ONLY public.response_format_anomalies
     ADD CONSTRAINT response_format_anomalies_pkey PRIMARY KEY (id);
 
-
 --
 -- Name: route_incident_events route_incident_events_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.route_incident_events
     ADD CONSTRAINT route_incident_events_pkey PRIMARY KEY (id);
-
 
 --
 -- Name: route_incidents route_incidents_pkey; Type: CONSTRAINT; Schema: public; Owner: -
@@ -20635,14 +19011,12 @@ ALTER TABLE ONLY public.route_incident_events
 ALTER TABLE ONLY public.route_incidents
     ADD CONSTRAINT route_incidents_pkey PRIMARY KEY (id);
 
-
 --
 -- Name: routing_health_checks routing_health_checks_check_id_unique_per_entity; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.routing_health_checks
     ADD CONSTRAINT routing_health_checks_check_id_unique_per_entity UNIQUE (check_id, entity_type, entity_id);
-
 
 --
 -- Name: routing_health_checks routing_health_checks_pkey; Type: CONSTRAINT; Schema: public; Owner: -
@@ -20651,14 +19025,12 @@ ALTER TABLE ONLY public.routing_health_checks
 ALTER TABLE ONLY public.routing_health_checks
     ADD CONSTRAINT routing_health_checks_pkey PRIMARY KEY (id);
 
-
 --
 -- Name: runtime_alert_events runtime_alert_events_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.runtime_alert_events
     ADD CONSTRAINT runtime_alert_events_pkey PRIMARY KEY (id);
-
 
 --
 -- Name: runtime_metrics runtime_metrics_pkey; Type: CONSTRAINT; Schema: public; Owner: -
@@ -20667,14 +19039,12 @@ ALTER TABLE ONLY public.runtime_alert_events
 ALTER TABLE ONLY public.runtime_metrics
     ADD CONSTRAINT runtime_metrics_pkey PRIMARY KEY (id);
 
-
 --
 -- Name: runtime_telemetry_consent_events runtime_telemetry_consent_events_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.runtime_telemetry_consent_events
     ADD CONSTRAINT runtime_telemetry_consent_events_pkey PRIMARY KEY (id);
-
 
 --
 -- Name: runtime_telemetry_preferences runtime_telemetry_preferences_pkey; Type: CONSTRAINT; Schema: public; Owner: -
@@ -20683,14 +19053,12 @@ ALTER TABLE ONLY public.runtime_telemetry_consent_events
 ALTER TABLE ONLY public.runtime_telemetry_preferences
     ADD CONSTRAINT runtime_telemetry_preferences_pkey PRIMARY KEY (hardware_hash);
 
-
 --
 -- Name: schema_migrations schema_migrations_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.schema_migrations
     ADD CONSTRAINT schema_migrations_pkey PRIMARY KEY (version);
-
 
 --
 -- Name: security_detector_config security_detector_config_pkey; Type: CONSTRAINT; Schema: public; Owner: -
@@ -20699,14 +19067,12 @@ ALTER TABLE ONLY public.schema_migrations
 ALTER TABLE ONLY public.security_detector_config
     ADD CONSTRAINT security_detector_config_pkey PRIMARY KEY (id);
 
-
 --
 -- Name: security_detector_config security_detector_config_unique_tenant; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.security_detector_config
     ADD CONSTRAINT security_detector_config_unique_tenant UNIQUE (tenant_id, config_name);
-
 
 --
 -- Name: self_check_round_results self_check_round_results_pkey; Type: CONSTRAINT; Schema: public; Owner: -
@@ -20715,14 +19081,12 @@ ALTER TABLE ONLY public.security_detector_config
 ALTER TABLE ONLY public.self_check_round_results
     ADD CONSTRAINT self_check_round_results_pkey PRIMARY KEY (id);
 
-
 --
 -- Name: self_check_runs self_check_runs_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.self_check_runs
     ADD CONSTRAINT self_check_runs_pkey PRIMARY KEY (id);
-
 
 --
 -- Name: self_check_settings self_check_settings_pkey; Type: CONSTRAINT; Schema: public; Owner: -
@@ -20731,14 +19095,12 @@ ALTER TABLE ONLY public.self_check_runs
 ALTER TABLE ONLY public.self_check_settings
     ADD CONSTRAINT self_check_settings_pkey PRIMARY KEY (id);
 
-
 --
 -- Name: session_audit_records session_audit_records_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.session_audit_records
     ADD CONSTRAINT session_audit_records_pkey PRIMARY KEY (id);
-
 
 --
 -- Name: session_bodies session_bodies_pkey; Type: CONSTRAINT; Schema: public; Owner: -
@@ -20747,14 +19109,12 @@ ALTER TABLE ONLY public.session_audit_records
 ALTER TABLE ONLY public.session_bodies
     ADD CONSTRAINT session_bodies_pkey PRIMARY KEY (id, partition_date);
 
-
 --
 -- Name: session_bodies_2026_07 session_bodies_2026_07_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.session_bodies_2026_07
     ADD CONSTRAINT session_bodies_2026_07_pkey PRIMARY KEY (id, partition_date);
-
 
 --
 -- Name: session_bodies session_bodies_request_id_partition_date_key; Type: CONSTRAINT; Schema: public; Owner: -
@@ -20763,14 +19123,12 @@ ALTER TABLE ONLY public.session_bodies_2026_07
 ALTER TABLE ONLY public.session_bodies
     ADD CONSTRAINT session_bodies_request_id_partition_date_key UNIQUE (request_id, partition_date);
 
-
 --
 -- Name: session_bodies_2026_07 session_bodies_2026_07_request_id_partition_date_key; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.session_bodies_2026_07
     ADD CONSTRAINT session_bodies_2026_07_request_id_partition_date_key UNIQUE (request_id, partition_date);
-
 
 --
 -- Name: session_bodies session_bodies_session_id_turn_no_partition_date_key; Type: CONSTRAINT; Schema: public; Owner: -
@@ -20779,14 +19137,12 @@ ALTER TABLE ONLY public.session_bodies_2026_07
 ALTER TABLE ONLY public.session_bodies
     ADD CONSTRAINT session_bodies_session_id_turn_no_partition_date_key UNIQUE (session_id, turn_no, partition_date);
 
-
 --
 -- Name: session_bodies_2026_07 session_bodies_2026_07_session_id_turn_no_partition_date_key; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.session_bodies_2026_07
     ADD CONSTRAINT session_bodies_2026_07_session_id_turn_no_partition_date_key UNIQUE (session_id, turn_no, partition_date);
-
 
 --
 -- Name: session_bodies_2026_08 session_bodies_2026_08_pkey; Type: CONSTRAINT; Schema: public; Owner: -
@@ -20795,14 +19151,12 @@ ALTER TABLE ONLY public.session_bodies_2026_07
 ALTER TABLE ONLY public.session_bodies_2026_08
     ADD CONSTRAINT session_bodies_2026_08_pkey PRIMARY KEY (id, partition_date);
 
-
 --
 -- Name: session_bodies_2026_08 session_bodies_2026_08_request_id_partition_date_key; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.session_bodies_2026_08
     ADD CONSTRAINT session_bodies_2026_08_request_id_partition_date_key UNIQUE (request_id, partition_date);
-
 
 --
 -- Name: session_bodies_2026_08 session_bodies_2026_08_session_id_turn_no_partition_date_key; Type: CONSTRAINT; Schema: public; Owner: -
@@ -20811,14 +19165,12 @@ ALTER TABLE ONLY public.session_bodies_2026_08
 ALTER TABLE ONLY public.session_bodies_2026_08
     ADD CONSTRAINT session_bodies_2026_08_session_id_turn_no_partition_date_key UNIQUE (session_id, turn_no, partition_date);
 
-
 --
 -- Name: session_intent_evolution session_intent_evolution_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.session_intent_evolution
     ADD CONSTRAINT session_intent_evolution_pkey PRIMARY KEY (id);
-
 
 --
 -- Name: session_intent_evolution session_intent_evolution_unique_turn; Type: CONSTRAINT; Schema: public; Owner: -
@@ -20827,14 +19179,12 @@ ALTER TABLE ONLY public.session_intent_evolution
 ALTER TABLE ONLY public.session_intent_evolution
     ADD CONSTRAINT session_intent_evolution_unique_turn UNIQUE (session_id, turn_number);
 
-
 --
 -- Name: session_last_requests session_last_requests_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.session_last_requests
     ADD CONSTRAINT session_last_requests_pkey PRIMARY KEY (session_id);
-
 
 --
 -- Name: session_module_executions session_module_executions_pkey; Type: CONSTRAINT; Schema: public; Owner: -
@@ -20843,14 +19193,12 @@ ALTER TABLE ONLY public.session_last_requests
 ALTER TABLE ONLY public.session_module_executions
     ADD CONSTRAINT session_module_executions_pkey PRIMARY KEY (execution_id, created_at);
 
-
 --
 -- Name: session_module_executions_2026_07 session_module_executions_2026_07_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.session_module_executions_2026_07
     ADD CONSTRAINT session_module_executions_2026_07_pkey PRIMARY KEY (execution_id, created_at);
-
 
 --
 -- Name: session_module_executions_2026_08 session_module_executions_2026_08_pkey; Type: CONSTRAINT; Schema: public; Owner: -
@@ -20859,14 +19207,12 @@ ALTER TABLE ONLY public.session_module_executions_2026_07
 ALTER TABLE ONLY public.session_module_executions_2026_08
     ADD CONSTRAINT session_module_executions_2026_08_pkey PRIMARY KEY (execution_id, created_at);
 
-
 --
 -- Name: session_module_executions_hot session_module_executions_hot_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.session_module_executions_hot
     ADD CONSTRAINT session_module_executions_hot_pkey PRIMARY KEY (execution_id);
-
 
 --
 -- Name: session_summaries session_summaries_pkey; Type: CONSTRAINT; Schema: public; Owner: -
@@ -20875,14 +19221,12 @@ ALTER TABLE ONLY public.session_module_executions_hot
 ALTER TABLE ONLY public.session_summaries
     ADD CONSTRAINT session_summaries_pkey PRIMARY KEY (session_key);
 
-
 --
 -- Name: session_turn_logs session_turn_logs_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.session_turn_logs
     ADD CONSTRAINT session_turn_logs_pkey PRIMARY KEY (id);
-
 
 --
 -- Name: session_turn_snapshots session_turn_snapshots_pkey; Type: CONSTRAINT; Schema: public; Owner: -
@@ -20891,14 +19235,12 @@ ALTER TABLE ONLY public.session_turn_logs
 ALTER TABLE ONLY public.session_turn_snapshots
     ADD CONSTRAINT session_turn_snapshots_pkey PRIMARY KEY (id);
 
-
 --
 -- Name: session_turns session_turns_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.session_turns
     ADD CONSTRAINT session_turns_pkey PRIMARY KEY (id, partition_date);
-
 
 --
 -- Name: session_turns_2026_07 session_turns_2026_07_pkey; Type: CONSTRAINT; Schema: public; Owner: -
@@ -20907,14 +19249,12 @@ ALTER TABLE ONLY public.session_turns
 ALTER TABLE ONLY public.session_turns_2026_07
     ADD CONSTRAINT session_turns_2026_07_pkey PRIMARY KEY (id, partition_date);
 
-
 --
 -- Name: session_turns session_turns_request_id_partition_date_key; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.session_turns
     ADD CONSTRAINT session_turns_request_id_partition_date_key UNIQUE (request_id, partition_date);
-
 
 --
 -- Name: session_turns_2026_07 session_turns_2026_07_request_id_partition_date_key; Type: CONSTRAINT; Schema: public; Owner: -
@@ -20923,14 +19263,12 @@ ALTER TABLE ONLY public.session_turns
 ALTER TABLE ONLY public.session_turns_2026_07
     ADD CONSTRAINT session_turns_2026_07_request_id_partition_date_key UNIQUE (request_id, partition_date);
 
-
 --
 -- Name: session_turns session_turns_session_id_turn_no_partition_date_key; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.session_turns
     ADD CONSTRAINT session_turns_session_id_turn_no_partition_date_key UNIQUE (session_id, turn_no, partition_date);
-
 
 --
 -- Name: session_turns_2026_07 session_turns_2026_07_session_id_turn_no_partition_date_key; Type: CONSTRAINT; Schema: public; Owner: -
@@ -20939,14 +19277,12 @@ ALTER TABLE ONLY public.session_turns
 ALTER TABLE ONLY public.session_turns_2026_07
     ADD CONSTRAINT session_turns_2026_07_session_id_turn_no_partition_date_key UNIQUE (session_id, turn_no, partition_date);
 
-
 --
 -- Name: session_turns_2026_08 session_turns_2026_08_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.session_turns_2026_08
     ADD CONSTRAINT session_turns_2026_08_pkey PRIMARY KEY (id, partition_date);
-
 
 --
 -- Name: session_turns_2026_08 session_turns_2026_08_request_id_partition_date_key; Type: CONSTRAINT; Schema: public; Owner: -
@@ -20955,14 +19291,12 @@ ALTER TABLE ONLY public.session_turns_2026_08
 ALTER TABLE ONLY public.session_turns_2026_08
     ADD CONSTRAINT session_turns_2026_08_request_id_partition_date_key UNIQUE (request_id, partition_date);
 
-
 --
 -- Name: session_turns_2026_08 session_turns_2026_08_session_id_turn_no_partition_date_key; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.session_turns_2026_08
     ADD CONSTRAINT session_turns_2026_08_session_id_turn_no_partition_date_key UNIQUE (session_id, turn_no, partition_date);
-
 
 --
 -- Name: sessions sessions_pkey; Type: CONSTRAINT; Schema: public; Owner: -
@@ -20971,14 +19305,12 @@ ALTER TABLE ONLY public.session_turns_2026_08
 ALTER TABLE ONLY public.sessions
     ADD CONSTRAINT sessions_pkey PRIMARY KEY (id, partition_date);
 
-
 --
 -- Name: sessions_2026_07 sessions_2026_07_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.sessions_2026_07
     ADD CONSTRAINT sessions_2026_07_pkey PRIMARY KEY (id, partition_date);
-
 
 --
 -- Name: sessions sessions_session_id_partition_date_key; Type: CONSTRAINT; Schema: public; Owner: -
@@ -20987,14 +19319,12 @@ ALTER TABLE ONLY public.sessions_2026_07
 ALTER TABLE ONLY public.sessions
     ADD CONSTRAINT sessions_session_id_partition_date_key UNIQUE (session_id, partition_date);
 
-
 --
 -- Name: sessions_2026_07 sessions_2026_07_session_id_partition_date_key; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.sessions_2026_07
     ADD CONSTRAINT sessions_2026_07_session_id_partition_date_key UNIQUE (session_id, partition_date);
-
 
 --
 -- Name: sessions_2026_08 sessions_2026_08_pkey; Type: CONSTRAINT; Schema: public; Owner: -
@@ -21003,14 +19333,12 @@ ALTER TABLE ONLY public.sessions_2026_07
 ALTER TABLE ONLY public.sessions_2026_08
     ADD CONSTRAINT sessions_2026_08_pkey PRIMARY KEY (id, partition_date);
 
-
 --
 -- Name: sessions_2026_08 sessions_2026_08_session_id_partition_date_key; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.sessions_2026_08
     ADD CONSTRAINT sessions_2026_08_session_id_partition_date_key UNIQUE (session_id, partition_date);
-
 
 --
 -- Name: settings_kv settings_kv_key_unique; Type: CONSTRAINT; Schema: public; Owner: -
@@ -21019,14 +19347,12 @@ ALTER TABLE ONLY public.sessions_2026_08
 ALTER TABLE ONLY public.settings_kv
     ADD CONSTRAINT settings_kv_key_unique UNIQUE (key);
 
-
 --
 -- Name: severity_action_matrix severity_action_matrix_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.severity_action_matrix
     ADD CONSTRAINT severity_action_matrix_pkey PRIMARY KEY (id);
-
 
 --
 -- Name: subscription_plans subscription_plans_code_key; Type: CONSTRAINT; Schema: public; Owner: -
@@ -21035,14 +19361,12 @@ ALTER TABLE ONLY public.severity_action_matrix
 ALTER TABLE ONLY public.subscription_plans
     ADD CONSTRAINT subscription_plans_code_key UNIQUE (code);
 
-
 --
 -- Name: subscription_tiers subscription_tiers_code_key; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.subscription_tiers
     ADD CONSTRAINT subscription_tiers_code_key UNIQUE (code);
-
 
 --
 -- Name: subscription_tiers subscription_tiers_pkey; Type: CONSTRAINT; Schema: public; Owner: -
@@ -21051,14 +19375,12 @@ ALTER TABLE ONLY public.subscription_tiers
 ALTER TABLE ONLY public.subscription_tiers
     ADD CONSTRAINT subscription_tiers_pkey PRIMARY KEY (id);
 
-
 --
 -- Name: system_identity_pool system_identity_pool_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.system_identity_pool
     ADD CONSTRAINT system_identity_pool_pkey PRIMARY KEY (id);
-
 
 --
 -- Name: system_probe_runs system_probe_runs_pkey; Type: CONSTRAINT; Schema: public; Owner: -
@@ -21067,14 +19389,12 @@ ALTER TABLE ONLY public.system_identity_pool
 ALTER TABLE ONLY public.system_probe_runs
     ADD CONSTRAINT system_probe_runs_pkey PRIMARY KEY (id, created_at);
 
-
 --
 -- Name: system_probe_runs_default system_probe_runs_default_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.system_probe_runs_default
     ADD CONSTRAINT system_probe_runs_default_pkey PRIMARY KEY (id, created_at);
-
 
 --
 -- Name: system_settings system_settings_key_key; Type: CONSTRAINT; Schema: public; Owner: -
@@ -21083,14 +19403,12 @@ ALTER TABLE ONLY public.system_probe_runs_default
 ALTER TABLE ONLY public.system_settings
     ADD CONSTRAINT system_settings_key_key UNIQUE (key);
 
-
 --
 -- Name: system_settings system_settings_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.system_settings
     ADD CONSTRAINT system_settings_pkey PRIMARY KEY (id);
-
 
 --
 -- Name: task_default_routing_audit task_default_routing_audit_pkey; Type: CONSTRAINT; Schema: public; Owner: -
@@ -21099,14 +19417,12 @@ ALTER TABLE ONLY public.system_settings
 ALTER TABLE ONLY public.task_default_routing_audit
     ADD CONSTRAINT task_default_routing_audit_pkey PRIMARY KEY (id);
 
-
 --
 -- Name: task_default_routing task_default_routing_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.task_default_routing
     ADD CONSTRAINT task_default_routing_pkey PRIMARY KEY (id);
-
 
 --
 -- Name: tenant_credit_wallets tenant_credit_wallets_pkey; Type: CONSTRAINT; Schema: public; Owner: -
@@ -21115,14 +19431,12 @@ ALTER TABLE ONLY public.task_default_routing
 ALTER TABLE ONLY public.tenant_credit_wallets
     ADD CONSTRAINT tenant_credit_wallets_pkey PRIMARY KEY (tenant_id);
 
-
 --
 -- Name: tenant_model_policies tenant_model_policies_tenant_id_canonical_name_key; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.tenant_model_policies
     ADD CONSTRAINT tenant_model_policies_tenant_id_canonical_name_key UNIQUE (tenant_id, canonical_name);
-
 
 --
 -- Name: tenants tenants_pkey; Type: CONSTRAINT; Schema: public; Owner: -
@@ -21131,14 +19445,12 @@ ALTER TABLE ONLY public.tenant_model_policies
 ALTER TABLE ONLY public.tenants
     ADD CONSTRAINT tenants_pkey PRIMARY KEY (code);
 
-
 --
 -- Name: tier_module_map tier_module_map_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.tier_module_map
     ADD CONSTRAINT tier_module_map_pkey PRIMARY KEY (tier_code, module_key);
-
 
 --
 -- Name: tool_registry tool_registry_tool_name_key; Type: CONSTRAINT; Schema: public; Owner: -
@@ -21147,14 +19459,12 @@ ALTER TABLE ONLY public.tier_module_map
 ALTER TABLE ONLY public.tool_registry
     ADD CONSTRAINT tool_registry_tool_name_key UNIQUE (tool_name);
 
-
 --
 -- Name: tool_usage_stats tool_usage_stats_partitioned_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.tool_usage_stats
     ADD CONSTRAINT tool_usage_stats_partitioned_pkey PRIMARY KEY (id, created_at);
-
 
 --
 -- Name: tool_usage_stats_2026_07 tool_usage_stats_2026_07_pkey; Type: CONSTRAINT; Schema: public; Owner: -
@@ -21163,14 +19473,12 @@ ALTER TABLE ONLY public.tool_usage_stats
 ALTER TABLE ONLY public.tool_usage_stats_2026_07
     ADD CONSTRAINT tool_usage_stats_2026_07_pkey PRIMARY KEY (id, created_at);
 
-
 --
 -- Name: tool_usage_stats tool_usage_stats_partitioned_tool_id_tenant_id_usage_date_c_key; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.tool_usage_stats
     ADD CONSTRAINT tool_usage_stats_partitioned_tool_id_tenant_id_usage_date_c_key UNIQUE (tool_id, tenant_id, usage_date, created_at);
-
 
 --
 -- Name: tool_usage_stats_2026_07 tool_usage_stats_2026_07_tool_id_tenant_id_usage_date_creat_key; Type: CONSTRAINT; Schema: public; Owner: -
@@ -21179,14 +19487,12 @@ ALTER TABLE ONLY public.tool_usage_stats
 ALTER TABLE ONLY public.tool_usage_stats_2026_07
     ADD CONSTRAINT tool_usage_stats_2026_07_tool_id_tenant_id_usage_date_creat_key UNIQUE (tool_id, tenant_id, usage_date, created_at);
 
-
 --
 -- Name: tool_usage_stats_2026_08 tool_usage_stats_2026_08_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.tool_usage_stats_2026_08
     ADD CONSTRAINT tool_usage_stats_2026_08_pkey PRIMARY KEY (id, created_at);
-
 
 --
 -- Name: tool_usage_stats_2026_08 tool_usage_stats_2026_08_tool_id_tenant_id_usage_date_creat_key; Type: CONSTRAINT; Schema: public; Owner: -
@@ -21195,14 +19501,12 @@ ALTER TABLE ONLY public.tool_usage_stats_2026_08
 ALTER TABLE ONLY public.tool_usage_stats_2026_08
     ADD CONSTRAINT tool_usage_stats_2026_08_tool_id_tenant_id_usage_date_creat_key UNIQUE (tool_id, tenant_id, usage_date, created_at);
 
-
 --
 -- Name: topup_packages topup_packages_code_key; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.topup_packages
     ADD CONSTRAINT topup_packages_code_key UNIQUE (code);
-
 
 --
 -- Name: toxic_keywords toxic_keywords_pkey; Type: CONSTRAINT; Schema: public; Owner: -
@@ -21211,14 +19515,12 @@ ALTER TABLE ONLY public.topup_packages
 ALTER TABLE ONLY public.toxic_keywords
     ADD CONSTRAINT toxic_keywords_pkey PRIMARY KEY (id);
 
-
 --
 -- Name: session_module_executions_hot uk_sme_hot_session_module_batch; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.session_module_executions_hot
     ADD CONSTRAINT uk_sme_hot_session_module_batch UNIQUE (gw_session_id, module_name, batch_key, started_at);
-
 
 --
 -- Name: tenant_tool_policies uk_tenant_tool_policy; Type: CONSTRAINT; Schema: public; Owner: -
@@ -21227,14 +19529,12 @@ ALTER TABLE ONLY public.session_module_executions_hot
 ALTER TABLE ONLY public.tenant_tool_policies
     ADD CONSTRAINT uk_tenant_tool_policy UNIQUE (tenant_id, tool_pattern);
 
-
 --
 -- Name: tool_usage_stats_old uk_tool_usage_stats; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.tool_usage_stats_old
     ADD CONSTRAINT uk_tool_usage_stats UNIQUE (tool_id, tenant_id, usage_date);
-
 
 --
 -- Name: injection_attack_vectors unique_attack_hash; Type: CONSTRAINT; Schema: public; Owner: -
@@ -21243,14 +19543,12 @@ ALTER TABLE ONLY public.tool_usage_stats_old
 ALTER TABLE ONLY public.injection_attack_vectors
     ADD CONSTRAINT unique_attack_hash UNIQUE (tenant_id, attack_hash);
 
-
 --
 -- Name: prompt_injection_llm_engines unique_engine_name; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.prompt_injection_llm_engines
     ADD CONSTRAINT unique_engine_name UNIQUE (tenant_id, engine_name);
-
 
 --
 -- Name: output_compliance_custom_keywords unique_output_compliance_keyword; Type: CONSTRAINT; Schema: public; Owner: -
@@ -21259,14 +19557,12 @@ ALTER TABLE ONLY public.prompt_injection_llm_engines
 ALTER TABLE ONLY public.output_compliance_custom_keywords
     ADD CONSTRAINT unique_output_compliance_keyword UNIQUE (tenant_id, keyword);
 
-
 --
 -- Name: output_compliance_policies unique_output_compliance_tenant; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.output_compliance_policies
     ADD CONSTRAINT unique_output_compliance_tenant UNIQUE (tenant_id);
-
 
 --
 -- Name: severity_action_matrix unique_severity_tenant; Type: CONSTRAINT; Schema: public; Owner: -
@@ -21275,14 +19571,12 @@ ALTER TABLE ONLY public.output_compliance_policies
 ALTER TABLE ONLY public.severity_action_matrix
     ADD CONSTRAINT unique_severity_tenant UNIQUE (tenant_id, severity_level);
 
-
 --
 -- Name: prompt_injection_policies unique_tenant_policy; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.prompt_injection_policies
     ADD CONSTRAINT unique_tenant_policy UNIQUE (tenant_id);
-
 
 --
 -- Name: canary_tokens unique_token_value; Type: CONSTRAINT; Schema: public; Owner: -
@@ -21291,14 +19585,12 @@ ALTER TABLE ONLY public.prompt_injection_policies
 ALTER TABLE ONLY public.canary_tokens
     ADD CONSTRAINT unique_token_value UNIQUE (token_value);
 
-
 --
 -- Name: upgrade_logs upgrade_logs_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.upgrade_logs
     ADD CONSTRAINT upgrade_logs_pkey PRIMARY KEY (id);
-
 
 --
 -- Name: session_turn_snapshots uq_session_turn_snapshot; Type: CONSTRAINT; Schema: public; Owner: -
@@ -21307,14 +19599,12 @@ ALTER TABLE ONLY public.upgrade_logs
 ALTER TABLE ONLY public.session_turn_snapshots
     ADD CONSTRAINT uq_session_turn_snapshot UNIQUE (tenant_id, gw_session_id, turn_no);
 
-
 --
 -- Name: session_turn_snapshots uq_session_turn_snapshot_request; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.session_turn_snapshots
     ADD CONSTRAINT uq_session_turn_snapshot_request UNIQUE (tenant_id, request_id);
-
 
 --
 -- Name: ursm_node_snapshot_min ursm_node_snapshot_min_pkey; Type: CONSTRAINT; Schema: public; Owner: -
@@ -21323,14 +19613,12 @@ ALTER TABLE ONLY public.session_turn_snapshots
 ALTER TABLE ONLY public.ursm_node_snapshot_min
     ADD CONSTRAINT ursm_node_snapshot_min_pkey PRIMARY KEY (snapshot_ts, credential_id, raw_model_name);
 
-
 --
 -- Name: usage_ledger usage_ledger_partitioned_request_id_ts_key; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.usage_ledger
     ADD CONSTRAINT usage_ledger_partitioned_request_id_ts_key UNIQUE (request_id, ts);
-
 
 --
 -- Name: usage_ledger_2026_07 usage_ledger_2026_07_request_id_ts_key; Type: CONSTRAINT; Schema: public; Owner: -
@@ -21339,14 +19627,12 @@ ALTER TABLE ONLY public.usage_ledger
 ALTER TABLE ONLY public.usage_ledger_2026_07
     ADD CONSTRAINT usage_ledger_2026_07_request_id_ts_key UNIQUE (request_id, ts);
 
-
 --
 -- Name: usage_ledger_2026_08 usage_ledger_2026_08_request_id_ts_key; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.usage_ledger_2026_08
     ADD CONSTRAINT usage_ledger_2026_08_request_id_ts_key UNIQUE (request_id, ts);
-
 
 --
 -- Name: usage_ledger_old usage_ledger_pkey; Type: CONSTRAINT; Schema: public; Owner: -
@@ -21355,14 +19641,12 @@ ALTER TABLE ONLY public.usage_ledger_2026_08
 ALTER TABLE ONLY public.usage_ledger_old
     ADD CONSTRAINT usage_ledger_pkey PRIMARY KEY (request_id);
 
-
 --
 -- Name: users users_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.users
     ADD CONSTRAINT users_pkey PRIMARY KEY (id);
-
 
 --
 -- Name: users users_username_key; Type: CONSTRAINT; Schema: public; Owner: -
@@ -21371,14 +19655,12 @@ ALTER TABLE ONLY public.users
 ALTER TABLE ONLY public.users
     ADD CONSTRAINT users_username_key UNIQUE (username);
 
-
 --
 -- Name: vibe_code_reviews vibe_code_reviews_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.vibe_code_reviews
     ADD CONSTRAINT vibe_code_reviews_pkey PRIMARY KEY (id);
-
 
 --
 -- Name: vibe_coding_projects vibe_coding_projects_pkey; Type: CONSTRAINT; Schema: public; Owner: -
@@ -21387,14 +19669,12 @@ ALTER TABLE ONLY public.vibe_code_reviews
 ALTER TABLE ONLY public.vibe_coding_projects
     ADD CONSTRAINT vibe_coding_projects_pkey PRIMARY KEY (id);
 
-
 --
 -- Name: vibe_coding_sessions vibe_coding_sessions_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.vibe_coding_sessions
     ADD CONSTRAINT vibe_coding_sessions_pkey PRIMARY KEY (id);
-
 
 --
 -- Name: work_type_config work_type_config_pkey; Type: CONSTRAINT; Schema: public; Owner: -
@@ -21403,14 +19683,12 @@ ALTER TABLE ONLY public.vibe_coding_sessions
 ALTER TABLE ONLY public.work_type_config
     ADD CONSTRAINT work_type_config_pkey PRIMARY KEY (key);
 
-
 --
 -- Name: work_type_model_route work_type_model_route_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.work_type_model_route
     ADD CONSTRAINT work_type_model_route_pkey PRIMARY KEY (id);
-
 
 --
 -- Name: work_type_model_route work_type_model_route_work_type_key_canonical_name_key; Type: CONSTRAINT; Schema: public; Owner: -
@@ -21419,13 +19697,11 @@ ALTER TABLE ONLY public.work_type_model_route
 ALTER TABLE ONLY public.work_type_model_route
     ADD CONSTRAINT work_type_model_route_work_type_key_canonical_name_key UNIQUE (work_type_key, canonical_name);
 
-
 --
 -- Name: credential_model_index_bucket_cred_model_key; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE UNIQUE INDEX credential_model_index_bucket_cred_model_key ON ONLY public.credential_model_index USING btree (bucket, credential_id, raw_model);
-
 
 --
 -- Name: credential_model_index_2026_0_bucket_credential_id_raw_mod_idx1; Type: INDEX; Schema: public; Owner: -
@@ -21433,13 +19709,11 @@ CREATE UNIQUE INDEX credential_model_index_bucket_cred_model_key ON ONLY public.
 
 CREATE UNIQUE INDEX credential_model_index_2026_0_bucket_credential_id_raw_mod_idx1 ON public.credential_model_index_2026_07 USING btree (bucket, credential_id, raw_model);
 
-
 --
 -- Name: credential_model_index_2026_0_bucket_credential_id_raw_mod_idx2; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE UNIQUE INDEX credential_model_index_2026_0_bucket_credential_id_raw_mod_idx2 ON public.credential_model_index_2026_08 USING btree (bucket, credential_id, raw_model);
-
 
 --
 -- Name: credential_model_index_hot_bucket_credential_id_raw_model_idx; Type: INDEX; Schema: public; Owner: -
@@ -21447,13 +19721,11 @@ CREATE UNIQUE INDEX credential_model_index_2026_0_bucket_credential_id_raw_mod_i
 
 CREATE UNIQUE INDEX credential_model_index_hot_bucket_credential_id_raw_model_idx ON public.credential_model_index_hot USING btree (bucket, credential_id, raw_model);
 
-
 --
 -- Name: credential_model_index_hot_canonical_id_idx; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX credential_model_index_hot_canonical_id_idx ON public.credential_model_index_hot USING btree (canonical_id);
-
 
 --
 -- Name: credential_model_index_hot_credential_id_idx; Type: INDEX; Schema: public; Owner: -
@@ -21461,13 +19733,11 @@ CREATE INDEX credential_model_index_hot_canonical_id_idx ON public.credential_mo
 
 CREATE INDEX credential_model_index_hot_credential_id_idx ON public.credential_model_index_hot USING btree (credential_id);
 
-
 --
 -- Name: credential_model_index_hot_unique_key; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE UNIQUE INDEX credential_model_index_hot_unique_key ON public.credential_model_index_hot USING btree (bucket, credential_id, raw_model);
-
 
 --
 -- Name: credential_model_index_hot_updated_at_idx; Type: INDEX; Schema: public; Owner: -
@@ -21475,13 +19745,11 @@ CREATE UNIQUE INDEX credential_model_index_hot_unique_key ON public.credential_m
 
 CREATE INDEX credential_model_index_hot_updated_at_idx ON public.credential_model_index_hot USING btree (updated_at DESC);
 
-
 --
 -- Name: idx_credit_ledger_part_created; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX idx_credit_ledger_part_created ON ONLY public.credit_ledger USING btree (created_at);
-
 
 --
 -- Name: credit_ledger_2026_07_created_at_idx; Type: INDEX; Schema: public; Owner: -
@@ -21489,13 +19757,11 @@ CREATE INDEX idx_credit_ledger_part_created ON ONLY public.credit_ledger USING b
 
 CREATE INDEX credit_ledger_2026_07_created_at_idx ON public.credit_ledger_2026_07 USING btree (created_at);
 
-
 --
 -- Name: idx_credit_ledger_part_ref; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX idx_credit_ledger_part_ref ON ONLY public.credit_ledger USING btree (ref_type, ref_id);
-
 
 --
 -- Name: credit_ledger_2026_07_ref_type_ref_id_idx; Type: INDEX; Schema: public; Owner: -
@@ -21503,13 +19769,11 @@ CREATE INDEX idx_credit_ledger_part_ref ON ONLY public.credit_ledger USING btree
 
 CREATE INDEX credit_ledger_2026_07_ref_type_ref_id_idx ON public.credit_ledger_2026_07 USING btree (ref_type, ref_id);
 
-
 --
 -- Name: idx_credit_ledger_part_tenant; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX idx_credit_ledger_part_tenant ON ONLY public.credit_ledger USING btree (tenant_id, created_at);
-
 
 --
 -- Name: credit_ledger_2026_07_tenant_id_created_at_idx; Type: INDEX; Schema: public; Owner: -
@@ -21517,13 +19781,11 @@ CREATE INDEX idx_credit_ledger_part_tenant ON ONLY public.credit_ledger USING bt
 
 CREATE INDEX credit_ledger_2026_07_tenant_id_created_at_idx ON public.credit_ledger_2026_07 USING btree (tenant_id, created_at);
 
-
 --
 -- Name: credit_ledger_2026_08_created_at_idx; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX credit_ledger_2026_08_created_at_idx ON public.credit_ledger_2026_08 USING btree (created_at);
-
 
 --
 -- Name: credit_ledger_2026_08_ref_type_ref_id_idx; Type: INDEX; Schema: public; Owner: -
@@ -21531,13 +19793,11 @@ CREATE INDEX credit_ledger_2026_08_created_at_idx ON public.credit_ledger_2026_0
 
 CREATE INDEX credit_ledger_2026_08_ref_type_ref_id_idx ON public.credit_ledger_2026_08 USING btree (ref_type, ref_id);
 
-
 --
 -- Name: credit_ledger_2026_08_tenant_id_created_at_idx; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX credit_ledger_2026_08_tenant_id_created_at_idx ON public.credit_ledger_2026_08 USING btree (tenant_id, created_at);
-
 
 --
 -- Name: credit_ledger_hot_created_at_idx; Type: INDEX; Schema: public; Owner: -
@@ -21545,13 +19805,11 @@ CREATE INDEX credit_ledger_2026_08_tenant_id_created_at_idx ON public.credit_led
 
 CREATE INDEX credit_ledger_hot_created_at_idx ON public.credit_ledger_hot USING btree (created_at);
 
-
 --
 -- Name: credit_ledger_hot_created_idx; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX credit_ledger_hot_created_idx ON public.credit_ledger_hot USING btree (created_at DESC);
-
 
 --
 -- Name: credit_ledger_hot_pool_idx; Type: INDEX; Schema: public; Owner: -
@@ -21559,13 +19817,11 @@ CREATE INDEX credit_ledger_hot_created_idx ON public.credit_ledger_hot USING btr
 
 CREATE INDEX credit_ledger_hot_pool_idx ON public.credit_ledger_hot USING btree (pool, tenant_id) WHERE (pool IS NOT NULL);
 
-
 --
 -- Name: credit_ledger_hot_ref_idx; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX credit_ledger_hot_ref_idx ON public.credit_ledger_hot USING btree (ref_type, ref_id) WHERE (ref_type IS NOT NULL);
-
 
 --
 -- Name: credit_ledger_hot_ref_type_ref_id_idx; Type: INDEX; Schema: public; Owner: -
@@ -21573,13 +19829,11 @@ CREATE INDEX credit_ledger_hot_ref_idx ON public.credit_ledger_hot USING btree (
 
 CREATE INDEX credit_ledger_hot_ref_type_ref_id_idx ON public.credit_ledger_hot USING btree (ref_type, ref_id);
 
-
 --
 -- Name: credit_ledger_hot_tenant_created_idx; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX credit_ledger_hot_tenant_created_idx ON public.credit_ledger_hot USING btree (tenant_id, created_at DESC);
-
 
 --
 -- Name: credit_ledger_hot_tenant_id_created_at_idx; Type: INDEX; Schema: public; Owner: -
@@ -21587,13 +19841,11 @@ CREATE INDEX credit_ledger_hot_tenant_created_idx ON public.credit_ledger_hot US
 
 CREATE INDEX credit_ledger_hot_tenant_id_created_at_idx ON public.credit_ledger_hot USING btree (tenant_id, created_at);
 
-
 --
 -- Name: idx_adjustments_active; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX idx_adjustments_active ON public.intent_analysis_adjustments USING btree (tenant_id, status) WHERE (status = 'active'::text);
-
 
 --
 -- Name: idx_adjustments_effectiveness; Type: INDEX; Schema: public; Owner: -
@@ -21601,13 +19853,11 @@ CREATE INDEX idx_adjustments_active ON public.intent_analysis_adjustments USING 
 
 CREATE INDEX idx_adjustments_effectiveness ON public.intent_analysis_adjustments USING btree (effectiveness_score DESC, tenant_id) WHERE (effectiveness_score IS NOT NULL);
 
-
 --
 -- Name: idx_adjustments_rolled_back; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX idx_adjustments_rolled_back ON public.intent_analysis_adjustments USING btree (tenant_id, rolled_back_at DESC) WHERE (status = 'rolled_back'::text);
-
 
 --
 -- Name: idx_adjustments_tenant; Type: INDEX; Schema: public; Owner: -
@@ -21615,13 +19865,11 @@ CREATE INDEX idx_adjustments_rolled_back ON public.intent_analysis_adjustments U
 
 CREATE INDEX idx_adjustments_tenant ON public.intent_analysis_adjustments USING btree (tenant_id, created_at DESC);
 
-
 --
 -- Name: idx_adjustments_type; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX idx_adjustments_type ON public.intent_analysis_adjustments USING btree (adjustment_type, status, created_at DESC);
-
 
 --
 -- Name: idx_agent_rel_dst; Type: INDEX; Schema: public; Owner: -
@@ -21629,13 +19877,11 @@ CREATE INDEX idx_adjustments_type ON public.intent_analysis_adjustments USING bt
 
 CREATE INDEX idx_agent_rel_dst ON public.agent_relationships USING btree (dst_agent_id);
 
-
 --
 -- Name: idx_agent_rel_src; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX idx_agent_rel_src ON public.agent_relationships USING btree (src_agent_id);
-
 
 --
 -- Name: idx_agents_capabilities; Type: INDEX; Schema: public; Owner: -
@@ -21643,13 +19889,11 @@ CREATE INDEX idx_agent_rel_src ON public.agent_relationships USING btree (src_ag
 
 CREATE INDEX idx_agents_capabilities ON public.agents USING gin (capabilities jsonb_path_ops);
 
-
 --
 -- Name: idx_agents_heartbeat; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX idx_agents_heartbeat ON public.agents USING btree (last_heartbeat) WHERE (last_heartbeat IS NOT NULL);
-
 
 --
 -- Name: idx_agents_kind; Type: INDEX; Schema: public; Owner: -
@@ -21657,13 +19901,11 @@ CREATE INDEX idx_agents_heartbeat ON public.agents USING btree (last_heartbeat) 
 
 CREATE INDEX idx_agents_kind ON public.agents USING btree (tenant_id, kind);
 
-
 --
 -- Name: idx_agents_tenant; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX idx_agents_tenant ON public.agents USING btree (tenant_id);
-
 
 --
 -- Name: idx_analysis_events_session; Type: INDEX; Schema: public; Owner: -
@@ -21671,13 +19913,11 @@ CREATE INDEX idx_agents_tenant ON public.agents USING btree (tenant_id);
 
 CREATE INDEX idx_analysis_events_session ON public.analysis_events USING btree (session_id, occurred_at DESC) WHERE (session_id IS NOT NULL);
 
-
 --
 -- Name: idx_analysis_events_tenant_type; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX idx_analysis_events_tenant_type ON public.analysis_events USING btree (tenant_id, type, occurred_at DESC);
-
 
 --
 -- Name: idx_analysis_events_unprocessed; Type: INDEX; Schema: public; Owner: -
@@ -21685,13 +19925,11 @@ CREATE INDEX idx_analysis_events_tenant_type ON public.analysis_events USING btr
 
 CREATE INDEX idx_analysis_events_unprocessed ON public.analysis_events USING btree (occurred_at) WHERE (processed_at IS NULL);
 
-
 --
 -- Name: idx_applications_tenant_code; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX idx_applications_tenant_code ON public.applications USING btree (tenant_id, code) WHERE (enabled = true);
-
 
 --
 -- Name: idx_approval_approvers_enabled; Type: INDEX; Schema: public; Owner: -
@@ -21699,13 +19937,11 @@ CREATE INDEX idx_applications_tenant_code ON public.applications USING btree (te
 
 CREATE INDEX idx_approval_approvers_enabled ON public.approval_approvers USING btree (tenant_id, enabled) WHERE (enabled = true);
 
-
 --
 -- Name: idx_approval_approvers_priority; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX idx_approval_approvers_priority ON public.approval_approvers USING btree (tenant_id, priority DESC);
-
 
 --
 -- Name: idx_approval_approvers_tenant; Type: INDEX; Schema: public; Owner: -
@@ -21713,13 +19949,11 @@ CREATE INDEX idx_approval_approvers_priority ON public.approval_approvers USING 
 
 CREATE INDEX idx_approval_approvers_tenant ON public.approval_approvers USING btree (tenant_id);
 
-
 --
 -- Name: idx_approval_configs_enabled; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX idx_approval_configs_enabled ON public.approval_configs USING btree (enabled) WHERE (enabled = true);
-
 
 --
 -- Name: idx_approval_configs_tenant; Type: INDEX; Schema: public; Owner: -
@@ -21727,13 +19961,11 @@ CREATE INDEX idx_approval_configs_enabled ON public.approval_configs USING btree
 
 CREATE INDEX idx_approval_configs_tenant ON public.approval_configs USING btree (tenant_id);
 
-
 --
 -- Name: idx_approval_queue_expires; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX idx_approval_queue_expires ON public.approval_queue USING btree (expires_at) WHERE (status = 'pending'::text);
-
 
 --
 -- Name: idx_approval_queue_session; Type: INDEX; Schema: public; Owner: -
@@ -21741,13 +19973,11 @@ CREATE INDEX idx_approval_queue_expires ON public.approval_queue USING btree (ex
 
 CREATE INDEX idx_approval_queue_session ON public.approval_queue USING btree (session_id, created_at DESC);
 
-
 --
 -- Name: idx_approval_queue_tenant_pending; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX idx_approval_queue_tenant_pending ON public.approval_queue USING btree (tenant_id, created_at DESC) WHERE (status = 'pending'::text);
-
 
 --
 -- Name: idx_approval_requests_created_at; Type: INDEX; Schema: public; Owner: -
@@ -21755,13 +19985,11 @@ CREATE INDEX idx_approval_queue_tenant_pending ON public.approval_queue USING bt
 
 CREATE INDEX idx_approval_requests_created_at ON public.approval_requests USING btree (created_at DESC);
 
-
 --
 -- Name: idx_approval_requests_expires_at; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX idx_approval_requests_expires_at ON public.approval_requests USING btree (expires_at) WHERE ((status)::text = 'pending'::text);
-
 
 --
 -- Name: idx_approval_requests_request_id; Type: INDEX; Schema: public; Owner: -
@@ -21769,13 +19997,11 @@ CREATE INDEX idx_approval_requests_expires_at ON public.approval_requests USING 
 
 CREATE UNIQUE INDEX idx_approval_requests_request_id ON public.approval_requests USING btree (request_id);
 
-
 --
 -- Name: idx_approval_requests_session_id; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX idx_approval_requests_session_id ON public.approval_requests USING btree (session_id);
-
 
 --
 -- Name: idx_approval_requests_status; Type: INDEX; Schema: public; Owner: -
@@ -21783,13 +20009,11 @@ CREATE INDEX idx_approval_requests_session_id ON public.approval_requests USING 
 
 CREATE INDEX idx_approval_requests_status ON public.approval_requests USING btree (status);
 
-
 --
 -- Name: idx_approval_requests_tenant_id; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX idx_approval_requests_tenant_id ON public.approval_requests USING btree (tenant_id);
-
 
 --
 -- Name: idx_approval_requests_tenant_status; Type: INDEX; Schema: public; Owner: -
@@ -21797,13 +20021,11 @@ CREATE INDEX idx_approval_requests_tenant_id ON public.approval_requests USING b
 
 CREATE INDEX idx_approval_requests_tenant_status ON public.approval_requests USING btree (tenant_id, status);
 
-
 --
 -- Name: idx_approval_routing_risk; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX idx_approval_routing_risk ON public.approval_routing_rules USING btree (tenant_id, risk_level) WHERE (enabled = true);
-
 
 --
 -- Name: idx_approval_routing_rules_tenant; Type: INDEX; Schema: public; Owner: -
@@ -21811,13 +20033,11 @@ CREATE INDEX idx_approval_routing_risk ON public.approval_routing_rules USING bt
 
 CREATE INDEX idx_approval_routing_rules_tenant ON public.approval_routing_rules USING btree (tenant_id, enabled);
 
-
 --
 -- Name: idx_approval_rules_enabled; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX idx_approval_rules_enabled ON public.approval_rules USING btree (tenant_id, enabled) WHERE (enabled = true);
-
 
 --
 -- Name: idx_approval_rules_priority; Type: INDEX; Schema: public; Owner: -
@@ -21825,13 +20045,11 @@ CREATE INDEX idx_approval_rules_enabled ON public.approval_rules USING btree (te
 
 CREATE INDEX idx_approval_rules_priority ON public.approval_rules USING btree (tenant_id, priority DESC);
 
-
 --
 -- Name: idx_approval_rules_tenant; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX idx_approval_rules_tenant ON public.approval_rules USING btree (tenant_id);
-
 
 --
 -- Name: idx_armor_judgments_request; Type: INDEX; Schema: public; Owner: -
@@ -21839,13 +20057,11 @@ CREATE INDEX idx_approval_rules_tenant ON public.approval_rules USING btree (ten
 
 CREATE INDEX idx_armor_judgments_request ON public.armor_judgments USING btree (request_id);
 
-
 --
 -- Name: idx_armor_judgments_stats; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX idx_armor_judgments_stats ON public.armor_judgments USING btree (check_type, decision);
-
 
 --
 -- Name: idx_armor_judgments_tenant_time; Type: INDEX; Schema: public; Owner: -
@@ -21853,13 +20069,11 @@ CREATE INDEX idx_armor_judgments_stats ON public.armor_judgments USING btree (ch
 
 CREATE INDEX idx_armor_judgments_tenant_time ON public.armor_judgments USING btree (tenant_id, created_at DESC);
 
-
 --
 -- Name: idx_asset_rel_dst; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX idx_asset_rel_dst ON public.asset_relationships USING btree (dst_kind, dst_ref_id);
-
 
 --
 -- Name: idx_asset_rel_src; Type: INDEX; Schema: public; Owner: -
@@ -21867,13 +20081,11 @@ CREATE INDEX idx_asset_rel_dst ON public.asset_relationships USING btree (dst_ki
 
 CREATE INDEX idx_asset_rel_src ON public.asset_relationships USING btree (src_kind, src_ref_id);
 
-
 --
 -- Name: idx_assets_tags; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX idx_assets_tags ON public.assets USING gin (tags jsonb_path_ops);
-
 
 --
 -- Name: idx_assets_tenant_kind; Type: INDEX; Schema: public; Owner: -
@@ -21881,13 +20093,11 @@ CREATE INDEX idx_assets_tags ON public.assets USING gin (tags jsonb_path_ops);
 
 CREATE INDEX idx_assets_tenant_kind ON public.assets USING btree (tenant_id, kind);
 
-
 --
 -- Name: idx_attachments_hash; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX idx_attachments_hash ON public.attachments USING btree (content_hash, tenant_id);
-
 
 --
 -- Name: idx_attachments_request; Type: INDEX; Schema: public; Owner: -
@@ -21895,13 +20105,11 @@ CREATE INDEX idx_attachments_hash ON public.attachments USING btree (content_has
 
 CREATE INDEX idx_attachments_request ON public.attachments USING btree (request_id);
 
-
 --
 -- Name: idx_attachments_tenant_created; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX idx_attachments_tenant_created ON public.attachments USING btree (tenant_id, created_at DESC);
-
 
 --
 -- Name: idx_attack_vectors_categories; Type: INDEX; Schema: public; Owner: -
@@ -21909,13 +20117,11 @@ CREATE INDEX idx_attachments_tenant_created ON public.attachments USING btree (t
 
 CREATE INDEX idx_attack_vectors_categories ON public.injection_attack_vectors USING gin (categories);
 
-
 --
 -- Name: idx_attack_vectors_tenant; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX idx_attack_vectors_tenant ON public.injection_attack_vectors USING btree (tenant_id, severity DESC);
-
 
 --
 -- Name: idx_billing_orders_status; Type: INDEX; Schema: public; Owner: -
@@ -21923,13 +20129,11 @@ CREATE INDEX idx_attack_vectors_tenant ON public.injection_attack_vectors USING 
 
 CREATE INDEX idx_billing_orders_status ON public.billing_orders USING btree (status, created_at DESC);
 
-
 --
 -- Name: idx_billing_orders_tenant; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX idx_billing_orders_tenant ON public.billing_orders USING btree (tenant_id, created_at DESC);
-
 
 --
 -- Name: idx_call_history_cred_time; Type: INDEX; Schema: public; Owner: -
@@ -21937,13 +20141,11 @@ CREATE INDEX idx_billing_orders_tenant ON public.billing_orders USING btree (ten
 
 CREATE INDEX idx_call_history_cred_time ON public.credential_model_call_history USING btree (credential_id, window_start DESC);
 
-
 --
 -- Name: idx_call_history_errors; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX idx_call_history_errors ON public.credential_model_call_history USING btree (credential_id, raw_model, window_start DESC) WHERE ((error_rate_limit_count > 0) OR (error_concurrent_count > 0));
-
 
 --
 -- Name: idx_call_history_model_time; Type: INDEX; Schema: public; Owner: -
@@ -21951,13 +20153,11 @@ CREATE INDEX idx_call_history_errors ON public.credential_model_call_history USI
 
 CREATE INDEX idx_call_history_model_time ON public.credential_model_call_history USING btree (raw_model, window_start DESC);
 
-
 --
 -- Name: idx_canary_tokens_tenant; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX idx_canary_tokens_tenant ON public.canary_tokens USING btree (tenant_id, active);
-
 
 --
 -- Name: idx_candidate_failure_logs_cred_ts; Type: INDEX; Schema: public; Owner: -
@@ -21965,13 +20165,11 @@ CREATE INDEX idx_canary_tokens_tenant ON public.canary_tokens USING btree (tenan
 
 CREATE INDEX idx_candidate_failure_logs_cred_ts ON public.candidate_failure_logs USING btree (credential_id, ts DESC);
 
-
 --
 -- Name: idx_candidate_failure_logs_model_ts; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX idx_candidate_failure_logs_model_ts ON public.candidate_failure_logs USING btree (raw_model_name, ts DESC);
-
 
 --
 -- Name: idx_candidate_failure_logs_provider_ts; Type: INDEX; Schema: public; Owner: -
@@ -21979,13 +20177,11 @@ CREATE INDEX idx_candidate_failure_logs_model_ts ON public.candidate_failure_log
 
 CREATE INDEX idx_candidate_failure_logs_provider_ts ON public.candidate_failure_logs USING btree (provider_id, ts DESC);
 
-
 --
 -- Name: idx_candidate_failure_logs_req; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX idx_candidate_failure_logs_req ON public.candidate_failure_logs USING btree (request_id);
-
 
 --
 -- Name: idx_cc_command_id; Type: INDEX; Schema: public; Owner: -
@@ -21993,13 +20189,11 @@ CREATE INDEX idx_candidate_failure_logs_req ON public.candidate_failure_logs USI
 
 CREATE INDEX idx_cc_command_id ON public.center_commands USING btree (command_id);
 
-
 --
 -- Name: idx_cc_instance; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX idx_cc_instance ON public.center_commands USING btree (instance_id, issued_at DESC);
-
 
 --
 -- Name: idx_cc_instance_command; Type: INDEX; Schema: public; Owner: -
@@ -22007,13 +20201,11 @@ CREATE INDEX idx_cc_instance ON public.center_commands USING btree (instance_id,
 
 CREATE UNIQUE INDEX idx_cc_instance_command ON public.center_commands USING btree (instance_id, command_id);
 
-
 --
 -- Name: idx_cc_status; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX idx_cc_status ON public.center_commands USING btree (status, issued_at DESC);
-
 
 --
 -- Name: idx_cmb_credential_provider_model; Type: INDEX; Schema: public; Owner: -
@@ -22021,13 +20213,11 @@ CREATE INDEX idx_cc_status ON public.center_commands USING btree (status, issued
 
 CREATE INDEX idx_cmb_credential_provider_model ON public.credential_model_bindings USING btree (credential_id, provider_model_id);
 
-
 --
 -- Name: idx_cmb_pending_verification; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX idx_cmb_pending_verification ON public.credential_model_bindings USING btree (credential_id) WHERE (pending_verification = true);
-
 
 --
 -- Name: idx_cmb_plan_type_origin; Type: INDEX; Schema: public; Owner: -
@@ -22035,13 +20225,11 @@ CREATE INDEX idx_cmb_pending_verification ON public.credential_model_bindings US
 
 CREATE INDEX idx_cmb_plan_type_origin ON public.credential_model_bindings USING btree (plan_type_origin);
 
-
 --
 -- Name: idx_cmb_unavailable_recover_at; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX idx_cmb_unavailable_recover_at ON public.credential_model_bindings USING btree (unavailable_recover_at) WHERE (available = false);
-
 
 --
 -- Name: idx_cmi_archive_bucket; Type: INDEX; Schema: public; Owner: -
@@ -22049,13 +20237,11 @@ CREATE INDEX idx_cmb_unavailable_recover_at ON public.credential_model_bindings 
 
 CREATE INDEX idx_cmi_archive_bucket ON ONLY public.credential_model_index_archive USING btree (bucket DESC);
 
-
 --
 -- Name: idx_cmi_archive_canonical; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX idx_cmi_archive_canonical ON ONLY public.credential_model_index_archive USING btree (canonical_id, bucket DESC) WHERE (canonical_id IS NOT NULL);
-
 
 --
 -- Name: idx_cmi_archive_cred_model; Type: INDEX; Schema: public; Owner: -
@@ -22063,13 +20249,11 @@ CREATE INDEX idx_cmi_archive_canonical ON ONLY public.credential_model_index_arc
 
 CREATE INDEX idx_cmi_archive_cred_model ON ONLY public.credential_model_index_archive USING btree (credential_id, raw_model, bucket DESC);
 
-
 --
 -- Name: idx_credential_probe_model_log_created; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX idx_credential_probe_model_log_created ON public.credential_probe_model_log USING btree (created_at);
-
 
 --
 -- Name: idx_credential_probes_cred_time; Type: INDEX; Schema: public; Owner: -
@@ -22077,13 +20261,11 @@ CREATE INDEX idx_credential_probe_model_log_created ON public.credential_probe_m
 
 CREATE INDEX idx_credential_probes_cred_time ON public.credential_probes USING btree (credential_id, created_at DESC);
 
-
 --
 -- Name: idx_credential_probes_success; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX idx_credential_probes_success ON public.credential_probes USING btree (success, created_at DESC);
-
 
 --
 -- Name: idx_credential_state_log_credential_id; Type: INDEX; Schema: public; Owner: -
@@ -22091,13 +20273,11 @@ CREATE INDEX idx_credential_probes_success ON public.credential_probes USING btr
 
 CREATE INDEX idx_credential_state_log_credential_id ON public.credential_state_log USING btree (credential_id);
 
-
 --
 -- Name: idx_credential_state_log_updated_at; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX idx_credential_state_log_updated_at ON public.credential_state_log USING btree (updated_at DESC);
-
 
 --
 -- Name: idx_credentials_auto_limit; Type: INDEX; Schema: public; Owner: -
@@ -22105,13 +20285,11 @@ CREATE INDEX idx_credential_state_log_updated_at ON public.credential_state_log 
 
 CREATE INDEX idx_credentials_auto_limit ON public.credentials USING btree (concurrency_limit_auto) WHERE (concurrency_limit_auto IS NOT NULL);
 
-
 --
 -- Name: idx_credentials_plan_type; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX idx_credentials_plan_type ON public.credentials USING btree (plan_type);
-
 
 --
 -- Name: idx_credit_ledger_tenant_ts; Type: INDEX; Schema: public; Owner: -
@@ -22119,13 +20297,11 @@ CREATE INDEX idx_credentials_plan_type ON public.credentials USING btree (plan_t
 
 CREATE INDEX idx_credit_ledger_tenant_ts ON public.credit_ledger_old USING btree (tenant_id, created_at DESC);
 
-
 --
 -- Name: idx_dae_hot_api_time; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX idx_dae_hot_api_time ON public.dashboard_access_events_hot USING btree (api_path, "timestamp" DESC);
-
 
 --
 -- Name: idx_dae_hot_cleanup; Type: INDEX; Schema: public; Owner: -
@@ -22133,13 +20309,11 @@ CREATE INDEX idx_dae_hot_api_time ON public.dashboard_access_events_hot USING bt
 
 CREATE INDEX idx_dae_hot_cleanup ON public.dashboard_access_events_hot USING btree (created_at);
 
-
 --
 -- Name: idx_dae_hot_errors; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX idx_dae_hot_errors ON public.dashboard_access_events_hot USING btree ("timestamp" DESC) WHERE (status_code >= 400);
-
 
 --
 -- Name: idx_dae_hot_event_type; Type: INDEX; Schema: public; Owner: -
@@ -22147,13 +20321,11 @@ CREATE INDEX idx_dae_hot_errors ON public.dashboard_access_events_hot USING btre
 
 CREATE INDEX idx_dae_hot_event_type ON public.dashboard_access_events_hot USING btree (event_type, "timestamp" DESC);
 
-
 --
 -- Name: idx_dae_hot_slow; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX idx_dae_hot_slow ON public.dashboard_access_events_hot USING btree (response_time_ms DESC, "timestamp" DESC) WHERE (response_time_ms > 1000);
-
 
 --
 -- Name: idx_dae_hot_tenant_time; Type: INDEX; Schema: public; Owner: -
@@ -22161,13 +20333,11 @@ CREATE INDEX idx_dae_hot_slow ON public.dashboard_access_events_hot USING btree 
 
 CREATE INDEX idx_dae_hot_tenant_time ON public.dashboard_access_events_hot USING btree (tenant_id, "timestamp" DESC);
 
-
 --
 -- Name: idx_dae_hot_timestamp; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX idx_dae_hot_timestamp ON public.dashboard_access_events_hot USING btree ("timestamp" DESC);
-
 
 --
 -- Name: idx_dae_hot_user_time; Type: INDEX; Schema: public; Owner: -
@@ -22175,13 +20345,11 @@ CREATE INDEX idx_dae_hot_timestamp ON public.dashboard_access_events_hot USING b
 
 CREATE INDEX idx_dae_hot_user_time ON public.dashboard_access_events_hot USING btree (user_id, "timestamp" DESC) WHERE (user_id IS NOT NULL);
 
-
 --
 -- Name: idx_dashboard_access_events_2026_07_tenant; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX idx_dashboard_access_events_2026_07_tenant ON public.dashboard_access_events_2026_07 USING btree (tenant_id, "timestamp" DESC);
-
 
 --
 -- Name: idx_dashboard_access_events_2026_08_tenant; Type: INDEX; Schema: public; Owner: -
@@ -22189,13 +20357,11 @@ CREATE INDEX idx_dashboard_access_events_2026_07_tenant ON public.dashboard_acce
 
 CREATE INDEX idx_dashboard_access_events_2026_08_tenant ON public.dashboard_access_events_2026_08 USING btree (tenant_id, "timestamp" DESC);
 
-
 --
 -- Name: idx_detections_approval; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX idx_detections_approval ON public.prompt_injection_detections USING btree (approval_id) WHERE (approval_id IS NOT NULL);
-
 
 --
 -- Name: idx_detections_categories; Type: INDEX; Schema: public; Owner: -
@@ -22203,13 +20369,11 @@ CREATE INDEX idx_detections_approval ON public.prompt_injection_detections USING
 
 CREATE INDEX idx_detections_categories ON public.prompt_injection_detections USING gin (categories);
 
-
 --
 -- Name: idx_detections_request; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX idx_detections_request ON public.prompt_injection_detections USING btree (request_id);
-
 
 --
 -- Name: idx_detections_risk; Type: INDEX; Schema: public; Owner: -
@@ -22217,13 +20381,11 @@ CREATE INDEX idx_detections_request ON public.prompt_injection_detections USING 
 
 CREATE INDEX idx_detections_risk ON public.prompt_injection_detections USING btree (tenant_id, risk_level) WHERE (blocked = true);
 
-
 --
 -- Name: idx_detections_session; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX idx_detections_session ON public.prompt_injection_detections USING btree (session_key);
-
 
 --
 -- Name: idx_detections_tenant_time; Type: INDEX; Schema: public; Owner: -
@@ -22231,13 +20393,11 @@ CREATE INDEX idx_detections_session ON public.prompt_injection_detections USING 
 
 CREATE INDEX idx_detections_tenant_time ON public.prompt_injection_detections USING btree (tenant_id, detected_at DESC);
 
-
 --
 -- Name: idx_diagnostic_runs_created; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX idx_diagnostic_runs_created ON public.diagnostic_runs USING btree (created_at DESC);
-
 
 --
 -- Name: idx_diagnostic_runs_incident; Type: INDEX; Schema: public; Owner: -
@@ -22245,13 +20405,11 @@ CREATE INDEX idx_diagnostic_runs_created ON public.diagnostic_runs USING btree (
 
 CREATE INDEX idx_diagnostic_runs_incident ON public.diagnostic_runs USING btree (incident_id);
 
-
 --
 -- Name: idx_diagnostic_runs_kind_state; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX idx_diagnostic_runs_kind_state ON public.diagnostic_runs USING btree (kind, state, started_at DESC);
-
 
 --
 -- Name: idx_diagnostic_runs_state; Type: INDEX; Schema: public; Owner: -
@@ -22259,13 +20417,11 @@ CREATE INDEX idx_diagnostic_runs_kind_state ON public.diagnostic_runs USING btre
 
 CREATE INDEX idx_diagnostic_runs_state ON public.diagnostic_runs USING btree (state) WHERE (state = ANY (ARRAY['pending'::text, 'running'::text]));
 
-
 --
 -- Name: idx_diagnostic_runs_tenant; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX idx_diagnostic_runs_tenant ON public.diagnostic_runs USING btree (tenant_id, created_at DESC);
-
 
 --
 -- Name: idx_diagnostic_runs_tenant_started; Type: INDEX; Schema: public; Owner: -
@@ -22273,13 +20429,11 @@ CREATE INDEX idx_diagnostic_runs_tenant ON public.diagnostic_runs USING btree (t
 
 CREATE INDEX idx_diagnostic_runs_tenant_started ON public.diagnostic_runs USING btree (tenant_id, started_at DESC);
 
-
 --
 -- Name: idx_donations_email; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX idx_donations_email ON public.donations USING btree (lower(email));
-
 
 --
 -- Name: idx_donations_status; Type: INDEX; Schema: public; Owner: -
@@ -22287,13 +20441,11 @@ CREATE INDEX idx_donations_email ON public.donations USING btree (lower(email));
 
 CREATE INDEX idx_donations_status ON public.donations USING btree (status, created_at DESC);
 
-
 --
 -- Name: idx_download_events_created; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX idx_download_events_created ON public.download_events USING btree (created_at DESC);
-
 
 --
 -- Name: idx_download_events_version; Type: INDEX; Schema: public; Owner: -
@@ -22301,13 +20453,11 @@ CREATE INDEX idx_download_events_created ON public.download_events USING btree (
 
 CREATE INDEX idx_download_events_version ON public.download_events USING btree (release_version, created_at DESC);
 
-
 --
 -- Name: idx_download_publish_runs_created; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX idx_download_publish_runs_created ON public.download_publish_runs USING btree (created_at DESC);
-
 
 --
 -- Name: idx_fal_event; Type: INDEX; Schema: public; Owner: -
@@ -22315,13 +20465,11 @@ CREATE INDEX idx_download_publish_runs_created ON public.download_publish_runs U
 
 CREATE INDEX idx_fal_event ON public.fault_action_logs USING btree (event_id);
 
-
 --
 -- Name: idx_fal_triggered; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX idx_fal_triggered ON public.fault_action_logs USING btree (triggered_at DESC);
-
 
 --
 -- Name: idx_fe_detected; Type: INDEX; Schema: public; Owner: -
@@ -22329,13 +20477,11 @@ CREATE INDEX idx_fal_triggered ON public.fault_action_logs USING btree (triggere
 
 CREATE INDEX idx_fe_detected ON public.fault_events USING btree (detected_at DESC);
 
-
 --
 -- Name: idx_fe_rule; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX idx_fe_rule ON public.fault_events USING btree (rule_id);
-
 
 --
 -- Name: idx_fe_severity; Type: INDEX; Schema: public; Owner: -
@@ -22343,13 +20489,11 @@ CREATE INDEX idx_fe_rule ON public.fault_events USING btree (rule_id);
 
 CREATE INDEX idx_fe_severity ON public.fault_events USING btree (severity);
 
-
 --
 -- Name: idx_fe_status; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX idx_fe_status ON public.fault_events USING btree (status);
-
 
 --
 -- Name: idx_feedback_annotated; Type: INDEX; Schema: public; Owner: -
@@ -22357,13 +20501,11 @@ CREATE INDEX idx_fe_status ON public.fault_events USING btree (status);
 
 CREATE INDEX idx_feedback_annotated ON public.intent_classification_feedback USING btree (annotated_at DESC) WHERE (annotated_at IS NOT NULL);
 
-
 --
 -- Name: idx_feedback_content_hash; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX idx_feedback_content_hash ON public.intent_classification_feedback USING btree (user_content_hash, predicted_intent) WHERE (user_content_hash IS NOT NULL);
-
 
 --
 -- Name: idx_feedback_correct; Type: INDEX; Schema: public; Owner: -
@@ -22371,13 +20513,11 @@ CREATE INDEX idx_feedback_content_hash ON public.intent_classification_feedback 
 
 CREATE INDEX idx_feedback_correct ON public.intent_classification_feedback USING btree (is_correct, predicted_intent, tenant_id) WHERE (is_correct IS NOT NULL);
 
-
 --
 -- Name: idx_feedback_session; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX idx_feedback_session ON public.intent_classification_feedback USING btree (session_id, created_at DESC);
-
 
 --
 -- Name: idx_feedback_tenant; Type: INDEX; Schema: public; Owner: -
@@ -22385,13 +20525,11 @@ CREATE INDEX idx_feedback_session ON public.intent_classification_feedback USING
 
 CREATE INDEX idx_feedback_tenant ON public.intent_classification_feedback USING btree (tenant_id, created_at DESC);
 
-
 --
 -- Name: idx_feedback_unannotated; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX idx_feedback_unannotated ON public.intent_classification_feedback USING btree (predicted_confidence, created_at DESC) WHERE (actual_intent IS NULL);
-
 
 --
 -- Name: idx_feedback_user_behavior; Type: INDEX; Schema: public; Owner: -
@@ -22399,13 +20537,11 @@ CREATE INDEX idx_feedback_unannotated ON public.intent_classification_feedback U
 
 CREATE INDEX idx_feedback_user_behavior ON public.intent_classification_feedback USING btree (user_retry_count DESC, tenant_id) WHERE (user_retry_count > 0);
 
-
 --
 -- Name: idx_fr_enabled; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX idx_fr_enabled ON public.fault_rules USING btree (enabled);
-
 
 --
 -- Name: idx_fr_metric; Type: INDEX; Schema: public; Owner: -
@@ -22413,13 +20549,11 @@ CREATE INDEX idx_fr_enabled ON public.fault_rules USING btree (enabled);
 
 CREATE INDEX idx_fr_metric ON public.fault_rules USING btree (metric);
 
-
 --
 -- Name: idx_gi_deployment; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX idx_gi_deployment ON public.gateway_instances USING btree (deployment_id);
-
 
 --
 -- Name: idx_gi_heartbeat; Type: INDEX; Schema: public; Owner: -
@@ -22427,13 +20561,11 @@ CREATE INDEX idx_gi_deployment ON public.gateway_instances USING btree (deployme
 
 CREATE INDEX idx_gi_heartbeat ON public.gateway_instances USING btree (last_heartbeat DESC);
 
-
 --
 -- Name: idx_gi_license; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX idx_gi_license ON public.gateway_instances USING btree (license_key_hash);
-
 
 --
 -- Name: idx_gi_refresh_token; Type: INDEX; Schema: public; Owner: -
@@ -22441,13 +20573,11 @@ CREATE INDEX idx_gi_license ON public.gateway_instances USING btree (license_key
 
 CREATE INDEX idx_gi_refresh_token ON public.gateway_instances USING btree (refresh_token);
 
-
 --
 -- Name: idx_gi_region; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX idx_gi_region ON public.gateway_instances USING btree (region);
-
 
 --
 -- Name: idx_gi_status; Type: INDEX; Schema: public; Owner: -
@@ -22455,13 +20585,11 @@ CREATE INDEX idx_gi_region ON public.gateway_instances USING btree (region);
 
 CREATE INDEX idx_gi_status ON public.gateway_instances USING btree (status);
 
-
 --
 -- Name: idx_gi_version; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX idx_gi_version ON public.gateway_instances USING btree (version);
-
 
 --
 -- Name: idx_goal_sessions_session; Type: INDEX; Schema: public; Owner: -
@@ -22469,13 +20597,11 @@ CREATE INDEX idx_gi_version ON public.gateway_instances USING btree (version);
 
 CREATE INDEX idx_goal_sessions_session ON public.goal_sessions USING btree (session_id);
 
-
 --
 -- Name: idx_goal_sessions_state; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX idx_goal_sessions_state ON public.goal_sessions USING btree (state, last_activity_at);
-
 
 --
 -- Name: idx_goal_sessions_tenant; Type: INDEX; Schema: public; Owner: -
@@ -22483,13 +20609,11 @@ CREATE INDEX idx_goal_sessions_state ON public.goal_sessions USING btree (state,
 
 CREATE INDEX idx_goal_sessions_tenant ON public.goal_sessions USING btree (tenant_id, state);
 
-
 --
 -- Name: idx_gray_rules_release; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX idx_gray_rules_release ON public.gray_release_rules USING btree (release_id);
-
 
 --
 -- Name: idx_gray_rules_status; Type: INDEX; Schema: public; Owner: -
@@ -22497,13 +20621,11 @@ CREATE INDEX idx_gray_rules_release ON public.gray_release_rules USING btree (re
 
 CREATE INDEX idx_gray_rules_status ON public.gray_release_rules USING btree (status, created_at DESC);
 
-
 --
 -- Name: idx_handoff_logs_session; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX idx_handoff_logs_session ON public.handoff_logs USING btree (session_id, created_at DESC);
-
 
 --
 -- Name: idx_handoff_logs_tenant; Type: INDEX; Schema: public; Owner: -
@@ -22511,13 +20633,11 @@ CREATE INDEX idx_handoff_logs_session ON public.handoff_logs USING btree (sessio
 
 CREATE INDEX idx_handoff_logs_tenant ON public.handoff_logs USING btree (tenant_id, created_at DESC);
 
-
 --
 -- Name: idx_handoff_logs_trigger_mode; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX idx_handoff_logs_trigger_mode ON public.handoff_logs USING btree (trigger_reason, created_at DESC);
-
 
 --
 -- Name: idx_ih_instance; Type: INDEX; Schema: public; Owner: -
@@ -22525,13 +20645,11 @@ CREATE INDEX idx_handoff_logs_trigger_mode ON public.handoff_logs USING btree (t
 
 CREATE INDEX idx_ih_instance ON public.instance_heartbeats USING btree (instance_id, "timestamp" DESC);
 
-
 --
 -- Name: idx_ih_timestamp; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX idx_ih_timestamp ON public.instance_heartbeats USING btree ("timestamp" DESC);
-
 
 --
 -- Name: idx_instance_status_release; Type: INDEX; Schema: public; Owner: -
@@ -22539,13 +20657,11 @@ CREATE INDEX idx_ih_timestamp ON public.instance_heartbeats USING btree ("timest
 
 CREATE INDEX idx_instance_status_release ON public.instance_release_status USING btree (release_id);
 
-
 --
 -- Name: idx_instance_status_status; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX idx_instance_status_status ON public.instance_release_status USING btree (status);
-
 
 --
 -- Name: idx_integrity_fingerprint_baseline_cred_model; Type: INDEX; Schema: public; Owner: -
@@ -22553,13 +20669,11 @@ CREATE INDEX idx_instance_status_status ON public.instance_release_status USING 
 
 CREATE INDEX idx_integrity_fingerprint_baseline_cred_model ON public.integrity_fingerprint_baseline USING btree (credential_id, raw_model_name);
 
-
 --
 -- Name: idx_intent_aggregates_tenant_updated; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX idx_intent_aggregates_tenant_updated ON public.intent_aggregates USING btree (tenant_id, last_updated DESC);
-
 
 --
 -- Name: idx_intent_config_strategy; Type: INDEX; Schema: public; Owner: -
@@ -22567,13 +20681,11 @@ CREATE INDEX idx_intent_aggregates_tenant_updated ON public.intent_aggregates US
 
 CREATE INDEX idx_intent_config_strategy ON public.intent_classifier_config USING btree (strategy, updated_at DESC);
 
-
 --
 -- Name: idx_intent_config_tenant; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX idx_intent_config_tenant ON public.intent_classifier_config USING btree (tenant_id) WHERE (tenant_id IS NOT NULL);
-
 
 --
 -- Name: idx_ip_blocklist_active_entry; Type: INDEX; Schema: public; Owner: -
@@ -22581,13 +20693,11 @@ CREATE INDEX idx_intent_config_tenant ON public.intent_classifier_config USING b
 
 CREATE UNIQUE INDEX idx_ip_blocklist_active_entry ON public.ip_blocklist USING btree (ip_or_cidr, scope) WHERE (enabled = true);
 
-
 --
 -- Name: idx_ip_blocklist_enabled; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX idx_ip_blocklist_enabled ON public.ip_blocklist USING btree (enabled, scope);
-
 
 --
 -- Name: idx_ip_blocklist_expires; Type: INDEX; Schema: public; Owner: -
@@ -22595,13 +20705,11 @@ CREATE INDEX idx_ip_blocklist_enabled ON public.ip_blocklist USING btree (enable
 
 CREATE INDEX idx_ip_blocklist_expires ON public.ip_blocklist USING btree (expires_at) WHERE (expires_at IS NOT NULL);
 
-
 --
 -- Name: idx_isr_instance; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX idx_isr_instance ON public.instance_status_reports USING btree (instance_id, "timestamp" DESC);
-
 
 --
 -- Name: idx_isr_timestamp; Type: INDEX; Schema: public; Owner: -
@@ -22609,13 +20717,11 @@ CREATE INDEX idx_isr_instance ON public.instance_status_reports USING btree (ins
 
 CREATE INDEX idx_isr_timestamp ON public.instance_status_reports USING btree ("timestamp" DESC);
 
-
 --
 -- Name: idx_ld_hardware; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX idx_ld_hardware ON public.license_devices USING btree (hardware_hash);
-
 
 --
 -- Name: idx_ld_license; Type: INDEX; Schema: public; Owner: -
@@ -22623,13 +20729,11 @@ CREATE INDEX idx_ld_hardware ON public.license_devices USING btree (hardware_has
 
 CREATE INDEX idx_ld_license ON public.license_devices USING btree (license_id);
 
-
 --
 -- Name: idx_ld_status; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX idx_ld_status ON public.license_devices USING btree (status);
-
 
 --
 -- Name: idx_license_holders_email_lower; Type: INDEX; Schema: public; Owner: -
@@ -22637,13 +20741,11 @@ CREATE INDEX idx_ld_status ON public.license_devices USING btree (status);
 
 CREATE UNIQUE INDEX idx_license_holders_email_lower ON public.license_holders USING btree (lower(email));
 
-
 --
 -- Name: idx_license_trial_consents_accepted_at; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX idx_license_trial_consents_accepted_at ON public.license_trial_consents USING btree (accepted_at DESC);
-
 
 --
 -- Name: idx_licenses_expires; Type: INDEX; Schema: public; Owner: -
@@ -22651,13 +20753,11 @@ CREATE INDEX idx_license_trial_consents_accepted_at ON public.license_trial_cons
 
 CREATE INDEX idx_licenses_expires ON public.licenses USING btree (expires_at) WHERE (expires_at IS NOT NULL);
 
-
 --
 -- Name: idx_licenses_holder; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX idx_licenses_holder ON public.licenses USING btree (holder_id) WHERE (holder_id IS NOT NULL);
-
 
 --
 -- Name: idx_licenses_key; Type: INDEX; Schema: public; Owner: -
@@ -22665,13 +20765,11 @@ CREATE INDEX idx_licenses_holder ON public.licenses USING btree (holder_id) WHER
 
 CREATE INDEX idx_licenses_key ON public.licenses USING btree (license_key);
 
-
 --
 -- Name: idx_llm_engines_tenant; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX idx_llm_engines_tenant ON public.prompt_injection_llm_engines USING btree (tenant_id, enabled, priority DESC);
-
 
 --
 -- Name: idx_lm_license; Type: INDEX; Schema: public; Owner: -
@@ -22679,13 +20777,11 @@ CREATE INDEX idx_llm_engines_tenant ON public.prompt_injection_llm_engines USING
 
 CREATE INDEX idx_lm_license ON public.license_modules USING btree (license_id);
 
-
 --
 -- Name: idx_lm_module; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX idx_lm_module ON public.license_modules USING btree (module_key);
-
 
 --
 -- Name: idx_lma_key; Type: INDEX; Schema: public; Owner: -
@@ -22693,13 +20789,11 @@ CREATE INDEX idx_lm_module ON public.license_modules USING btree (module_key);
 
 CREATE INDEX idx_lma_key ON public.license_module_audit USING btree (license_key, created_at DESC);
 
-
 --
 -- Name: idx_lma_module; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX idx_lma_module ON public.license_module_audit USING btree (module_key, created_at DESC);
-
 
 --
 -- Name: idx_mccb_recent; Type: INDEX; Schema: public; Owner: -
@@ -22707,13 +20801,11 @@ CREATE INDEX idx_lma_module ON public.license_module_audit USING btree (module_k
 
 CREATE INDEX idx_mccb_recent ON public.maas_credit_consumption_buckets USING btree (bucket_start DESC);
 
-
 --
 -- Name: idx_model_aliases_lower_raw_name_status; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX idx_model_aliases_lower_raw_name_status ON public.model_aliases USING btree (lower(raw_name), status) WHERE (status = 'active'::text);
-
 
 --
 -- Name: idx_model_integrity_events_bridge; Type: INDEX; Schema: public; Owner: -
@@ -22721,13 +20813,11 @@ CREATE INDEX idx_model_aliases_lower_raw_name_status ON public.model_aliases USI
 
 CREATE INDEX idx_model_integrity_events_bridge ON public.model_integrity_events USING btree (resolved, ts, anomaly_type, severity) WHERE (resolved = false);
 
-
 --
 -- Name: idx_model_integrity_events_cred_model_type; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX idx_model_integrity_events_cred_model_type ON public.model_integrity_events USING btree (credential_id, raw_model_name, anomaly_type, ts DESC);
-
 
 --
 -- Name: idx_model_integrity_events_provider_type; Type: INDEX; Schema: public; Owner: -
@@ -22735,13 +20825,11 @@ CREATE INDEX idx_model_integrity_events_cred_model_type ON public.model_integrit
 
 CREATE INDEX idx_model_integrity_events_provider_type ON public.model_integrity_events USING btree (provider_id, anomaly_type, ts DESC);
 
-
 --
 -- Name: idx_model_integrity_events_request_id; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX idx_model_integrity_events_request_id ON public.model_integrity_events USING btree (request_id) WHERE (request_id IS NOT NULL);
-
 
 --
 -- Name: idx_model_integrity_events_ts; Type: INDEX; Schema: public; Owner: -
@@ -22749,13 +20837,11 @@ CREATE INDEX idx_model_integrity_events_request_id ON public.model_integrity_eve
 
 CREATE INDEX idx_model_integrity_events_ts ON public.model_integrity_events USING btree (ts DESC);
 
-
 --
 -- Name: idx_model_name_mapping_standardized; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX idx_model_name_mapping_standardized ON public.model_name_mapping USING btree (standardized_name);
-
 
 --
 -- Name: idx_model_pricing_active; Type: INDEX; Schema: public; Owner: -
@@ -22763,13 +20849,11 @@ CREATE INDEX idx_model_name_mapping_standardized ON public.model_name_mapping US
 
 CREATE INDEX idx_model_pricing_active ON public.model_pricing USING btree (active) WHERE (active = true);
 
-
 --
 -- Name: idx_model_pricing_provider; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX idx_model_pricing_provider ON public.model_pricing USING btree (provider);
-
 
 --
 -- Name: idx_model_pricing_tier; Type: INDEX; Schema: public; Owner: -
@@ -22777,13 +20861,11 @@ CREATE INDEX idx_model_pricing_provider ON public.model_pricing USING btree (pro
 
 CREATE INDEX idx_model_pricing_tier ON public.model_pricing USING btree (tier);
 
-
 --
 -- Name: idx_model_probe_state_retry; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX idx_model_probe_state_retry ON public.model_probe_state USING btree (state, next_retry_at) WHERE (state = 'recovering'::text);
-
 
 --
 -- Name: idx_models_canonical_complexity_ceiling; Type: INDEX; Schema: public; Owner: -
@@ -22791,13 +20873,11 @@ CREATE INDEX idx_model_probe_state_retry ON public.model_probe_state USING btree
 
 CREATE INDEX idx_models_canonical_complexity_ceiling ON public.models_canonical USING btree (complexity_ceiling) WHERE (complexity_ceiling IS NOT NULL);
 
-
 --
 -- Name: idx_models_canonical_released; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX idx_models_canonical_released ON public.models_canonical USING btree (released_at DESC NULLS LAST);
-
 
 --
 -- Name: idx_models_canonical_strengths; Type: INDEX; Schema: public; Owner: -
@@ -22805,13 +20885,11 @@ CREATE INDEX idx_models_canonical_released ON public.models_canonical USING btre
 
 CREATE INDEX idx_models_canonical_strengths ON public.models_canonical USING gin (strengths);
 
-
 --
 -- Name: idx_models_canonical_version_rank; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX idx_models_canonical_version_rank ON public.models_canonical USING btree (version_rank);
-
 
 --
 -- Name: idx_mpr_hot_created_at; Type: INDEX; Schema: public; Owner: -
@@ -22819,13 +20897,11 @@ CREATE INDEX idx_models_canonical_version_rank ON public.models_canonical USING 
 
 CREATE INDEX idx_mpr_hot_created_at ON public.model_probe_runs_hot USING btree (created_at DESC);
 
-
 --
 -- Name: idx_mpr_hot_cred_created; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX idx_mpr_hot_cred_created ON public.model_probe_runs_hot USING btree (credential_id, created_at DESC);
-
 
 --
 -- Name: idx_mpr_hot_model_created; Type: INDEX; Schema: public; Owner: -
@@ -22833,13 +20909,11 @@ CREATE INDEX idx_mpr_hot_cred_created ON public.model_probe_runs_hot USING btree
 
 CREATE INDEX idx_mpr_hot_model_created ON public.model_probe_runs_hot USING btree (raw_model_name, created_at DESC);
 
-
 --
 -- Name: idx_mpr_hot_status_created; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX idx_mpr_hot_status_created ON public.model_probe_runs_hot USING btree (status, created_at DESC) WHERE (status <> 'ok'::text);
-
 
 --
 -- Name: idx_mpr_hot_tenant_created; Type: INDEX; Schema: public; Owner: -
@@ -22847,13 +20921,11 @@ CREATE INDEX idx_mpr_hot_status_created ON public.model_probe_runs_hot USING btr
 
 CREATE INDEX idx_mpr_hot_tenant_created ON public.model_probe_runs_hot USING btree (tenant_id, created_at DESC);
 
-
 --
 -- Name: idx_mps_due; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX idx_mps_due ON public.model_probe_state USING btree (next_retry_at) WHERE (state = ANY (ARRAY['unknown'::text, 'recovering'::text]));
-
 
 --
 -- Name: idx_mps_priority_next_retry; Type: INDEX; Schema: public; Owner: -
@@ -22861,13 +20933,11 @@ CREATE INDEX idx_mps_due ON public.model_probe_state USING btree (next_retry_at)
 
 CREATE INDEX idx_mps_priority_next_retry ON public.model_probe_state USING btree (probe_priority, next_retry_at) WHERE (state = ANY (ARRAY['suspicious'::text, 'failing'::text, 'recovering'::text]));
 
-
 --
 -- Name: idx_mps_probing; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX idx_mps_probing ON public.model_probe_state USING btree (probing_started_at) WHERE (state = 'probing'::text);
-
 
 --
 -- Name: idx_mps_success_rate; Type: INDEX; Schema: public; Owner: -
@@ -22875,13 +20945,11 @@ CREATE INDEX idx_mps_probing ON public.model_probe_state USING btree (probing_st
 
 CREATE INDEX idx_mps_success_rate ON public.model_probe_state USING btree (success_rate_7d);
 
-
 --
 -- Name: idx_mps_suspicious_expired; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX idx_mps_suspicious_expired ON public.model_probe_state USING btree (state_expires_at) WHERE ((state = ANY (ARRAY['available'::text, 'unavailable'::text])) AND (state_expires_at IS NOT NULL));
-
 
 --
 -- Name: idx_mps_suspicious_pending; Type: INDEX; Schema: public; Owner: -
@@ -22889,13 +20957,11 @@ CREATE INDEX idx_mps_suspicious_expired ON public.model_probe_state USING btree 
 
 CREATE INDEX idx_mps_suspicious_pending ON public.model_probe_state USING btree (marked_suspicious_at, next_retry_at) WHERE (state = 'suspicious'::text);
 
-
 --
 -- Name: idx_node_probe_runs_api_model; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX idx_node_probe_runs_api_model ON public.node_probe_runs USING btree (api_model, started_at DESC);
-
 
 --
 -- Name: idx_node_probe_runs_cred_model; Type: INDEX; Schema: public; Owner: -
@@ -22903,13 +20969,11 @@ CREATE INDEX idx_node_probe_runs_api_model ON public.node_probe_runs USING btree
 
 CREATE INDEX idx_node_probe_runs_cred_model ON public.node_probe_runs USING btree (credential_id, raw_model_name, started_at DESC);
 
-
 --
 -- Name: idx_node_probe_runs_provider; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX idx_node_probe_runs_provider ON public.node_probe_runs USING btree (provider_id, started_at DESC);
-
 
 --
 -- Name: idx_node_probe_runs_started; Type: INDEX; Schema: public; Owner: -
@@ -22917,13 +20981,11 @@ CREATE INDEX idx_node_probe_runs_provider ON public.node_probe_runs USING btree 
 
 CREATE INDEX idx_node_probe_runs_started ON public.node_probe_runs USING btree (started_at DESC);
 
-
 --
 -- Name: idx_node_probe_state_due; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX idx_node_probe_state_due ON public.node_probe_state USING btree (next_retry_at) WHERE (paused = false);
-
 
 --
 -- Name: idx_oar_created; Type: INDEX; Schema: public; Owner: -
@@ -22931,13 +20993,11 @@ CREATE INDEX idx_node_probe_state_due ON public.node_probe_state USING btree (ne
 
 CREATE INDEX idx_oar_created ON public.offline_activation_requests USING btree (created_at DESC);
 
-
 --
 -- Name: idx_oar_license; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX idx_oar_license ON public.offline_activation_requests USING btree (license_key);
-
 
 --
 -- Name: idx_oar_request; Type: INDEX; Schema: public; Owner: -
@@ -22945,13 +21005,11 @@ CREATE INDEX idx_oar_license ON public.offline_activation_requests USING btree (
 
 CREATE INDEX idx_oar_request ON public.offline_activation_requests USING btree (request_id);
 
-
 --
 -- Name: idx_onr_admin; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX idx_onr_admin ON public.ops_node_registrations USING btree (admin_user);
-
 
 --
 -- Name: idx_onr_license; Type: INDEX; Schema: public; Owner: -
@@ -22959,13 +21017,11 @@ CREATE INDEX idx_onr_admin ON public.ops_node_registrations USING btree (admin_u
 
 CREATE INDEX idx_onr_license ON public.ops_node_registrations USING btree (license_key);
 
-
 --
 -- Name: idx_onr_region; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX idx_onr_region ON public.ops_node_registrations USING btree (region, status);
-
 
 --
 -- Name: idx_output_audit_issue; Type: INDEX; Schema: public; Owner: -
@@ -22973,13 +21029,11 @@ CREATE INDEX idx_onr_region ON public.ops_node_registrations USING btree (region
 
 CREATE INDEX idx_output_audit_issue ON public.output_compliance_audit USING btree (tenant_id, issue_type, severity DESC);
 
-
 --
 -- Name: idx_output_audit_request; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX idx_output_audit_request ON public.output_compliance_audit USING btree (request_id);
-
 
 --
 -- Name: idx_output_audit_session; Type: INDEX; Schema: public; Owner: -
@@ -22987,13 +21041,11 @@ CREATE INDEX idx_output_audit_request ON public.output_compliance_audit USING bt
 
 CREATE INDEX idx_output_audit_session ON public.output_compliance_audit USING btree (session_key);
 
-
 --
 -- Name: idx_output_audit_tenant_time; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX idx_output_audit_tenant_time ON public.output_compliance_audit USING btree (tenant_id, detected_at DESC);
-
 
 --
 -- Name: idx_output_compliance_feedback_tenant; Type: INDEX; Schema: public; Owner: -
@@ -23001,13 +21053,11 @@ CREATE INDEX idx_output_audit_tenant_time ON public.output_compliance_audit USIN
 
 CREATE INDEX idx_output_compliance_feedback_tenant ON public.output_compliance_feedback USING btree (tenant_id, feedback_type, created_at DESC);
 
-
 --
 -- Name: idx_output_compliance_review_status; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX idx_output_compliance_review_status ON public.output_compliance_review_queue USING btree (tenant_id, status, created_at DESC);
-
 
 --
 -- Name: idx_passive_probe_reviewing; Type: INDEX; Schema: public; Owner: -
@@ -23015,13 +21065,11 @@ CREATE INDEX idx_output_compliance_review_status ON public.output_compliance_rev
 
 CREATE INDEX idx_passive_probe_reviewing ON public.passive_probe_state USING btree (in_reviewing, reviewing_until) WHERE (in_reviewing = true);
 
-
 --
 -- Name: idx_pcr_provider_month; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX idx_pcr_provider_month ON public.provider_cost_reconciliation USING btree (provider_id, reconciliation_month DESC);
-
 
 --
 -- Name: idx_pct_credential_time; Type: INDEX; Schema: public; Owner: -
@@ -23029,13 +21077,11 @@ CREATE INDEX idx_pcr_provider_month ON public.provider_cost_reconciliation USING
 
 CREATE INDEX idx_pct_credential_time ON public.provider_credibility_tests USING btree (credential_id, test_time DESC);
 
-
 --
 -- Name: idx_pct_model; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX idx_pct_model ON public.provider_credibility_tests USING btree (model_name, test_time DESC);
-
 
 --
 -- Name: idx_pct_provider; Type: INDEX; Schema: public; Owner: -
@@ -23043,13 +21089,11 @@ CREATE INDEX idx_pct_model ON public.provider_credibility_tests USING btree (mod
 
 CREATE INDEX idx_pct_provider ON public.provider_credibility_tests USING btree (provider_id, test_time DESC);
 
-
 --
 -- Name: idx_ped_last_seen; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX idx_ped_last_seen ON public.provider_error_details USING btree (last_seen_at DESC);
-
 
 --
 -- Name: idx_ped_provider_type; Type: INDEX; Schema: public; Owner: -
@@ -23057,13 +21101,11 @@ CREATE INDEX idx_ped_last_seen ON public.provider_error_details USING btree (las
 
 CREATE INDEX idx_ped_provider_type ON public.provider_error_details USING btree (provider_id, error_type);
 
-
 --
 -- Name: idx_ped_unresolved; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX idx_ped_unresolved ON public.provider_error_details USING btree (resolved) WHERE (NOT resolved);
-
 
 --
 -- Name: idx_phe_provider; Type: INDEX; Schema: public; Owner: -
@@ -23071,13 +21113,11 @@ CREATE INDEX idx_ped_unresolved ON public.provider_error_details USING btree (re
 
 CREATE INDEX idx_phe_provider ON public.provider_health_events USING btree (provider_id, created_at DESC);
 
-
 --
 -- Name: idx_phe_severity; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX idx_phe_severity ON public.provider_health_events USING btree (severity, created_at DESC);
-
 
 --
 -- Name: idx_phe_unresolved; Type: INDEX; Schema: public; Owner: -
@@ -23085,13 +21125,11 @@ CREATE INDEX idx_phe_severity ON public.provider_health_events USING btree (seve
 
 CREATE INDEX idx_phe_unresolved ON public.provider_health_events USING btree (resolved_at) WHERE (resolved_at IS NULL);
 
-
 --
 -- Name: idx_pm_category; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX idx_pm_category ON public.product_modules USING btree (category);
-
 
 --
 -- Name: idx_pm_setting; Type: INDEX; Schema: public; Owner: -
@@ -23099,13 +21137,11 @@ CREATE INDEX idx_pm_category ON public.product_modules USING btree (category);
 
 CREATE INDEX idx_pm_setting ON public.product_modules USING btree (setting_key);
 
-
 --
 -- Name: idx_pmf_module; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX idx_pmf_module ON public.product_module_features USING btree (module_key);
-
 
 --
 -- Name: idx_pmh_bucket; Type: INDEX; Schema: public; Owner: -
@@ -23113,13 +21149,11 @@ CREATE INDEX idx_pmf_module ON public.product_module_features USING btree (modul
 
 CREATE INDEX idx_pmh_bucket ON public.provider_metrics_hour USING btree (bucket DESC);
 
-
 --
 -- Name: idx_pmh_provider_bucket; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX idx_pmh_provider_bucket ON public.provider_metrics_hour USING btree (provider_id, bucket DESC);
-
 
 --
 -- Name: idx_pmm_bucket; Type: INDEX; Schema: public; Owner: -
@@ -23127,13 +21161,11 @@ CREATE INDEX idx_pmh_provider_bucket ON public.provider_metrics_hour USING btree
 
 CREATE INDEX idx_pmm_bucket ON public.provider_metrics_minute USING btree (bucket DESC);
 
-
 --
 -- Name: idx_pmm_model_bucket; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX idx_pmm_model_bucket ON public.provider_metrics_minute USING btree (provider_id, model_name, bucket DESC);
-
 
 --
 -- Name: idx_pmm_provider_bucket; Type: INDEX; Schema: public; Owner: -
@@ -23141,13 +21173,11 @@ CREATE INDEX idx_pmm_model_bucket ON public.provider_metrics_minute USING btree 
 
 CREATE INDEX idx_pmm_provider_bucket ON public.provider_metrics_minute USING btree (provider_id, bucket DESC);
 
-
 --
 -- Name: idx_ppa_credential; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX idx_ppa_credential ON public.provider_profile_alerts USING btree (credential_id, created_at DESC);
-
 
 --
 -- Name: idx_ppa_provider; Type: INDEX; Schema: public; Owner: -
@@ -23155,13 +21185,11 @@ CREATE INDEX idx_ppa_credential ON public.provider_profile_alerts USING btree (c
 
 CREATE INDEX idx_ppa_provider ON public.provider_profile_alerts USING btree (provider_id, created_at DESC);
 
-
 --
 -- Name: idx_ppa_type_level; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX idx_ppa_type_level ON public.provider_profile_alerts USING btree (alert_type, alert_level, created_at DESC);
-
 
 --
 -- Name: idx_ppa_unresolved; Type: INDEX; Schema: public; Owner: -
@@ -23169,13 +21197,11 @@ CREATE INDEX idx_ppa_type_level ON public.provider_profile_alerts USING btree (a
 
 CREATE INDEX idx_ppa_unresolved ON public.provider_profile_alerts USING btree (resolved_at) WHERE (resolved_at IS NULL);
 
-
 --
 -- Name: idx_ppd_credential_date; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX idx_ppd_credential_date ON public.provider_profile_daily USING btree (credential_id, profile_date DESC);
-
 
 --
 -- Name: idx_ppd_date; Type: INDEX; Schema: public; Owner: -
@@ -23183,13 +21209,11 @@ CREATE INDEX idx_ppd_credential_date ON public.provider_profile_daily USING btre
 
 CREATE INDEX idx_ppd_date ON public.provider_profile_daily USING btree (profile_date DESC);
 
-
 --
 -- Name: idx_ppd_provider_date; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX idx_ppd_provider_date ON public.provider_profile_daily USING btree (provider_id, profile_date DESC);
-
 
 --
 -- Name: idx_ppd_total_score; Type: INDEX; Schema: public; Owner: -
@@ -23197,13 +21221,11 @@ CREATE INDEX idx_ppd_provider_date ON public.provider_profile_daily USING btree 
 
 CREATE INDEX idx_ppd_total_score ON public.provider_profile_daily USING btree (total_score);
 
-
 --
 -- Name: idx_ppm_cleanup; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX idx_ppm_cleanup ON public.provider_profile_metrics USING btree (created_at);
-
 
 --
 -- Name: idx_ppm_credential_time; Type: INDEX; Schema: public; Owner: -
@@ -23211,13 +21233,11 @@ CREATE INDEX idx_ppm_cleanup ON public.provider_profile_metrics USING btree (cre
 
 CREATE INDEX idx_ppm_credential_time ON public.provider_profile_metrics USING btree (credential_id, metric_time DESC);
 
-
 --
 -- Name: idx_ppm_provider_time; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX idx_ppm_provider_time ON public.provider_profile_metrics USING btree (provider_id, metric_time DESC);
-
 
 --
 -- Name: idx_ppw_provider; Type: INDEX; Schema: public; Owner: -
@@ -23225,13 +21245,11 @@ CREATE INDEX idx_ppm_provider_time ON public.provider_profile_metrics USING btre
 
 CREATE INDEX idx_ppw_provider ON public.provider_profile_whitelist USING btree (provider_id);
 
-
 --
 -- Name: idx_pqp_provider_id; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX idx_pqp_provider_id ON public.provider_quality_profiles USING btree (provider_id);
-
 
 --
 -- Name: idx_pqp_provider_model; Type: INDEX; Schema: public; Owner: -
@@ -23239,13 +21257,11 @@ CREATE INDEX idx_pqp_provider_id ON public.provider_quality_profiles USING btree
 
 CREATE INDEX idx_pqp_provider_model ON public.provider_quality_profiles USING btree (provider_id, model_name) WHERE (model_name IS NOT NULL);
 
-
 --
 -- Name: idx_pqp_quality_score; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX idx_pqp_quality_score ON public.provider_quality_profiles USING btree (quality_score DESC);
-
 
 --
 -- Name: idx_pqp_updated_at; Type: INDEX; Schema: public; Owner: -
@@ -23253,13 +21269,11 @@ CREATE INDEX idx_pqp_quality_score ON public.provider_quality_profiles USING btr
 
 CREATE INDEX idx_pqp_updated_at ON public.provider_quality_profiles USING btree (updated_at);
 
-
 --
 -- Name: idx_pricing_history_date; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX idx_pricing_history_date ON public.model_pricing_history USING btree (effective_date DESC);
-
 
 --
 -- Name: idx_pricing_history_model; Type: INDEX; Schema: public; Owner: -
@@ -23267,13 +21281,11 @@ CREATE INDEX idx_pricing_history_date ON public.model_pricing_history USING btre
 
 CREATE INDEX idx_pricing_history_model ON public.model_pricing_history USING btree (model_canonical);
 
-
 --
 -- Name: idx_provider_models_canonical_id; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX idx_provider_models_canonical_id ON public.provider_models USING btree (canonical_id);
-
 
 --
 -- Name: idx_provider_models_canonical_raw_name; Type: INDEX; Schema: public; Owner: -
@@ -23281,13 +21293,11 @@ CREATE INDEX idx_provider_models_canonical_id ON public.provider_models USING bt
 
 CREATE INDEX idx_provider_models_canonical_raw_name ON public.provider_models USING btree (canonical_raw_name);
 
-
 --
 -- Name: idx_provider_models_lower_raw_model_name; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX idx_provider_models_lower_raw_model_name ON public.provider_models USING btree (lower(raw_model_name));
-
 
 --
 -- Name: idx_provider_models_lower_standardized_name; Type: INDEX; Schema: public; Owner: -
@@ -23295,13 +21305,11 @@ CREATE INDEX idx_provider_models_lower_raw_model_name ON public.provider_models 
 
 CREATE INDEX idx_provider_models_lower_standardized_name ON public.provider_models USING btree (lower(standardized_name));
 
-
 --
 -- Name: idx_provider_quality_rollup_bucket; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX idx_provider_quality_rollup_bucket ON public.provider_quality_rollup USING btree (bucket_start DESC);
-
 
 --
 -- Name: idx_provider_settings_key; Type: INDEX; Schema: public; Owner: -
@@ -23309,13 +21317,11 @@ CREATE INDEX idx_provider_quality_rollup_bucket ON public.provider_quality_rollu
 
 CREATE INDEX idx_provider_settings_key ON public.provider_settings USING btree (setting_key) WHERE (enabled = true);
 
-
 --
 -- Name: idx_provider_settings_provider; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX idx_provider_settings_provider ON public.provider_settings USING btree (provider_id) WHERE (enabled = true);
-
 
 --
 -- Name: idx_quality_profiles_calculated_at; Type: INDEX; Schema: public; Owner: -
@@ -23323,13 +21329,11 @@ CREATE INDEX idx_provider_settings_provider ON public.provider_settings USING bt
 
 CREATE INDEX idx_quality_profiles_calculated_at ON public.provider_quality_profiles USING btree (calculated_at DESC);
 
-
 --
 -- Name: idx_quality_profiles_model; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX idx_quality_profiles_model ON public.provider_quality_profiles USING btree (model_name);
-
 
 --
 -- Name: idx_quality_profiles_provider; Type: INDEX; Schema: public; Owner: -
@@ -23337,13 +21341,11 @@ CREATE INDEX idx_quality_profiles_model ON public.provider_quality_profiles USIN
 
 CREATE INDEX idx_quality_profiles_provider ON public.provider_quality_profiles USING btree (provider_id);
 
-
 --
 -- Name: idx_quality_profiles_quality_score; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX idx_quality_profiles_quality_score ON public.provider_quality_profiles USING btree (quality_score DESC);
-
 
 --
 -- Name: idx_rae_detected_at; Type: INDEX; Schema: public; Owner: -
@@ -23351,13 +21353,11 @@ CREATE INDEX idx_quality_profiles_quality_score ON public.provider_quality_profi
 
 CREATE INDEX idx_rae_detected_at ON public.runtime_alert_events USING btree (detected_at DESC);
 
-
 --
 -- Name: idx_rae_instance_status; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX idx_rae_instance_status ON public.runtime_alert_events USING btree (instance_id, status, detected_at DESC);
-
 
 --
 -- Name: idx_rae_rule_open; Type: INDEX; Schema: public; Owner: -
@@ -23365,13 +21365,11 @@ CREATE INDEX idx_rae_instance_status ON public.runtime_alert_events USING btree 
 
 CREATE INDEX idx_rae_rule_open ON public.runtime_alert_events USING btree (rule_key, instance_id) WHERE (status = ANY (ARRAY['triggered'::text, 'acknowledged'::text, 'suppressed'::text]));
 
-
 --
 -- Name: idx_rca_agent; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX idx_rca_agent ON public.request_context_attrs USING btree (agent_name);
-
 
 --
 -- Name: idx_rca_customer; Type: INDEX; Schema: public; Owner: -
@@ -23379,13 +21377,11 @@ CREATE INDEX idx_rca_agent ON public.request_context_attrs USING btree (agent_na
 
 CREATE INDEX idx_rca_customer ON public.request_context_attrs USING btree (customer_id);
 
-
 --
 -- Name: idx_rca_identity_hash; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX idx_rca_identity_hash ON public.request_context_attrs USING btree (identity_hash);
-
 
 --
 -- Name: idx_rca_probe; Type: INDEX; Schema: public; Owner: -
@@ -23393,13 +21389,11 @@ CREATE INDEX idx_rca_identity_hash ON public.request_context_attrs USING btree (
 
 CREATE INDEX idx_rca_probe ON public.request_context_attrs USING btree (is_probe) WHERE (is_probe = true);
 
-
 --
 -- Name: idx_rca_session_turn; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX idx_rca_session_turn ON public.request_context_attrs USING btree (gw_session_id, turn_no);
-
 
 --
 -- Name: idx_rca_tenant_ts; Type: INDEX; Schema: public; Owner: -
@@ -23407,13 +21401,11 @@ CREATE INDEX idx_rca_session_turn ON public.request_context_attrs USING btree (g
 
 CREATE INDEX idx_rca_tenant_ts ON public.request_context_attrs USING btree (tenant_id, ts DESC);
 
-
 --
 -- Name: idx_rca_ts; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX idx_rca_ts ON public.request_context_attrs USING btree (ts);
-
 
 --
 -- Name: idx_releases_channel; Type: INDEX; Schema: public; Owner: -
@@ -23421,13 +21413,11 @@ CREATE INDEX idx_rca_ts ON public.request_context_attrs USING btree (ts);
 
 CREATE INDEX idx_releases_channel ON public.releases USING btree (channel, build_seq DESC);
 
-
 --
 -- Name: idx_releases_published; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX idx_releases_published ON public.releases USING btree (published_at DESC) WHERE (published_at IS NOT NULL);
-
 
 --
 -- Name: idx_releases_version; Type: INDEX; Schema: public; Owner: -
@@ -23435,13 +21425,11 @@ CREATE INDEX idx_releases_published ON public.releases USING btree (published_at
 
 CREATE INDEX idx_releases_version ON public.releases USING btree (version);
 
-
 --
 -- Name: idx_request_attachments_created_at; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX idx_request_attachments_created_at ON public.request_attachments USING btree (created_at DESC);
-
 
 --
 -- Name: idx_request_attachments_hash; Type: INDEX; Schema: public; Owner: -
@@ -23449,13 +21437,11 @@ CREATE INDEX idx_request_attachments_created_at ON public.request_attachments US
 
 CREATE INDEX idx_request_attachments_hash ON public.request_attachments USING btree (hash) WHERE (hash IS NOT NULL);
 
-
 --
 -- Name: idx_request_attachments_request_id; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX idx_request_attachments_request_id ON public.request_attachments USING btree (request_id);
-
 
 --
 -- Name: idx_request_attachments_status_time; Type: INDEX; Schema: public; Owner: -
@@ -23463,13 +21449,11 @@ CREATE INDEX idx_request_attachments_request_id ON public.request_attachments US
 
 CREATE INDEX idx_request_attachments_status_time ON public.request_attachments USING btree (status, created_at DESC);
 
-
 --
 -- Name: idx_request_logs_agent_type; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX idx_request_logs_agent_type ON ONLY public.request_logs USING btree (agent_type);
-
 
 --
 -- Name: idx_request_logs_bodies_hot_request_id; Type: INDEX; Schema: public; Owner: -
@@ -23477,13 +21461,11 @@ CREATE INDEX idx_request_logs_agent_type ON ONLY public.request_logs USING btree
 
 CREATE UNIQUE INDEX idx_request_logs_bodies_hot_request_id ON public.request_logs_bodies_hot USING btree (request_id);
 
-
 --
 -- Name: idx_request_logs_cached_response; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX idx_request_logs_cached_response ON ONLY public.request_logs USING btree (cached_response_id) WHERE (cached_response_id IS NOT NULL);
-
 
 --
 -- Name: idx_request_logs_canonical_model_ts; Type: INDEX; Schema: public; Owner: -
@@ -23491,13 +21473,11 @@ CREATE INDEX idx_request_logs_cached_response ON ONLY public.request_logs USING 
 
 CREATE INDEX idx_request_logs_canonical_model_ts ON ONLY public.request_logs USING btree (canonical_model, ts DESC) WHERE (canonical_model IS NOT NULL);
 
-
 --
 -- Name: idx_request_logs_client_ip; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX idx_request_logs_client_ip ON ONLY public.request_logs USING btree (client_ip);
-
 
 --
 -- Name: idx_request_logs_client_model; Type: INDEX; Schema: public; Owner: -
@@ -23505,13 +21485,11 @@ CREATE INDEX idx_request_logs_client_ip ON ONLY public.request_logs USING btree 
 
 CREATE INDEX idx_request_logs_client_model ON ONLY public.request_logs USING btree (client_model);
 
-
 --
 -- Name: idx_request_logs_client_model_hash; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX idx_request_logs_client_model_hash ON ONLY public.request_logs USING hash (client_model);
-
 
 --
 -- Name: idx_request_logs_client_model_lower; Type: INDEX; Schema: public; Owner: -
@@ -23519,13 +21497,11 @@ CREATE INDEX idx_request_logs_client_model_hash ON ONLY public.request_logs USIN
 
 CREATE INDEX idx_request_logs_client_model_lower ON ONLY public.request_logs USING btree (lower(client_model));
 
-
 --
 -- Name: idx_request_logs_client_model_prefix; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX idx_request_logs_client_model_prefix ON ONLY public.request_logs USING btree (client_model text_pattern_ops);
-
 
 --
 -- Name: idx_request_logs_client_request_id; Type: INDEX; Schema: public; Owner: -
@@ -23533,13 +21509,11 @@ CREATE INDEX idx_request_logs_client_model_prefix ON ONLY public.request_logs US
 
 CREATE INDEX idx_request_logs_client_request_id ON ONLY public.request_logs USING btree (client_request_id, ts DESC) WHERE (client_request_id IS NOT NULL);
 
-
 --
 -- Name: idx_request_logs_credits_charged; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX idx_request_logs_credits_charged ON ONLY public.request_logs USING btree (tenant_id, ts DESC) WHERE ((credits_charged IS NOT NULL) AND (credits_charged > 0));
-
 
 --
 -- Name: idx_request_logs_customer_id; Type: INDEX; Schema: public; Owner: -
@@ -23547,13 +21521,11 @@ CREATE INDEX idx_request_logs_credits_charged ON ONLY public.request_logs USING 
 
 CREATE INDEX idx_request_logs_customer_id ON ONLY public.request_logs USING btree (customer_id);
 
-
 --
 -- Name: idx_request_logs_gw_session_ts; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX idx_request_logs_gw_session_ts ON ONLY public.request_logs USING btree (gw_session_id, ts DESC) WHERE ((gw_session_id IS NOT NULL) AND (gw_session_id <> ''::text));
-
 
 --
 -- Name: idx_request_logs_gw_task_ts; Type: INDEX; Schema: public; Owner: -
@@ -23561,13 +21533,11 @@ CREATE INDEX idx_request_logs_gw_session_ts ON ONLY public.request_logs USING bt
 
 CREATE INDEX idx_request_logs_gw_task_ts ON ONLY public.request_logs USING btree (gw_task_id, ts DESC) WHERE ((gw_task_id IS NOT NULL) AND (gw_task_id <> ''::text));
 
-
 --
 -- Name: idx_request_logs_has_trace_events; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX idx_request_logs_has_trace_events ON ONLY public.request_logs USING btree (request_id) WHERE (trace_events IS NOT NULL);
-
 
 --
 -- Name: idx_request_logs_hot_api_key_ts; Type: INDEX; Schema: public; Owner: -
@@ -23575,13 +21545,11 @@ CREATE INDEX idx_request_logs_has_trace_events ON ONLY public.request_logs USING
 
 CREATE INDEX idx_request_logs_hot_api_key_ts ON public.request_logs_hot USING btree (api_key_id, ts DESC) WHERE (api_key_id IS NOT NULL);
 
-
 --
 -- Name: idx_request_logs_hot_canonical_model_ts; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX idx_request_logs_hot_canonical_model_ts ON public.request_logs_hot USING btree (canonical_model, ts DESC) WHERE (canonical_model IS NOT NULL);
-
 
 --
 -- Name: idx_request_logs_hot_credential_model_ts; Type: INDEX; Schema: public; Owner: -
@@ -23589,13 +21557,11 @@ CREATE INDEX idx_request_logs_hot_canonical_model_ts ON public.request_logs_hot 
 
 CREATE INDEX idx_request_logs_hot_credential_model_ts ON public.request_logs_hot USING btree (credential_id, lower(COALESCE(outbound_model, client_model)), ts DESC);
 
-
 --
 -- Name: idx_request_logs_hot_has_trace_events; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX idx_request_logs_hot_has_trace_events ON public.request_logs_hot USING btree (request_id) WHERE (trace_events IS NOT NULL);
-
 
 --
 -- Name: idx_request_logs_hot_multimodal_usage; Type: INDEX; Schema: public; Owner: -
@@ -23603,13 +21569,11 @@ CREATE INDEX idx_request_logs_hot_has_trace_events ON public.request_logs_hot US
 
 CREATE INDEX idx_request_logs_hot_multimodal_usage ON public.request_logs_hot USING btree (tenant_id, ts DESC) WHERE ((image_tokens > 0) OR (audio_tokens > 0) OR (video_tokens > 0));
 
-
 --
 -- Name: idx_request_logs_hot_request_id; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX idx_request_logs_hot_request_id ON public.request_logs_hot USING btree (request_id);
-
 
 --
 -- Name: idx_request_logs_hot_routing_attempts; Type: INDEX; Schema: public; Owner: -
@@ -23617,13 +21581,11 @@ CREATE INDEX idx_request_logs_hot_request_id ON public.request_logs_hot USING bt
 
 CREATE INDEX idx_request_logs_hot_routing_attempts ON public.request_logs_hot USING gin (routing_attempts) WHERE (routing_attempts IS NOT NULL);
 
-
 --
 -- Name: idx_request_logs_hot_success_false_ts; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX idx_request_logs_hot_success_false_ts ON public.request_logs_hot USING btree (ts DESC, error_kind) WHERE (success = false);
-
 
 --
 -- Name: idx_request_logs_hot_success_true_ts; Type: INDEX; Schema: public; Owner: -
@@ -23631,13 +21593,11 @@ CREATE INDEX idx_request_logs_hot_success_false_ts ON public.request_logs_hot US
 
 CREATE INDEX idx_request_logs_hot_success_true_ts ON public.request_logs_hot USING btree (ts DESC) WHERE (success = true);
 
-
 --
 -- Name: idx_request_logs_hot_tenant_ts; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX idx_request_logs_hot_tenant_ts ON public.request_logs_hot USING btree (tenant_id, ts DESC);
-
 
 --
 -- Name: idx_request_logs_hot_ts; Type: INDEX; Schema: public; Owner: -
@@ -23645,13 +21605,11 @@ CREATE INDEX idx_request_logs_hot_tenant_ts ON public.request_logs_hot USING btr
 
 CREATE INDEX idx_request_logs_hot_ts ON public.request_logs_hot USING btree (ts DESC);
 
-
 --
 -- Name: idx_request_logs_node_switch; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX idx_request_logs_node_switch ON ONLY public.request_logs USING btree (node_switch_count, ts DESC) WHERE (node_switch_count > 0);
-
 
 --
 -- Name: idx_request_logs_outbound_msg_count; Type: INDEX; Schema: public; Owner: -
@@ -23659,13 +21617,11 @@ CREATE INDEX idx_request_logs_node_switch ON ONLY public.request_logs USING btre
 
 CREATE INDEX idx_request_logs_outbound_msg_count ON ONLY public.request_logs USING btree (tenant_id, ts DESC) WHERE ((outbound_msg_count IS NOT NULL) AND (outbound_msg_count > 0));
 
-
 --
 -- Name: idx_request_logs_parent_ts; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX idx_request_logs_parent_ts ON ONLY public.request_logs USING btree (parent_request_id, ts DESC) WHERE (parent_request_id IS NOT NULL);
-
 
 --
 -- Name: idx_request_logs_protocol_conversion; Type: INDEX; Schema: public; Owner: -
@@ -23673,13 +21629,11 @@ CREATE INDEX idx_request_logs_parent_ts ON ONLY public.request_logs USING btree 
 
 CREATE INDEX idx_request_logs_protocol_conversion ON ONLY public.request_logs USING btree (protocol_conversion) WHERE (protocol_conversion = true);
 
-
 --
 -- Name: idx_request_logs_provider_model; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX idx_request_logs_provider_model ON ONLY public.request_logs USING btree (provider_model, ts DESC) WHERE (provider_model IS NOT NULL);
-
 
 --
 -- Name: idx_request_logs_provider_quality; Type: INDEX; Schema: public; Owner: -
@@ -23687,13 +21641,11 @@ CREATE INDEX idx_request_logs_provider_model ON ONLY public.request_logs USING b
 
 CREATE INDEX idx_request_logs_provider_quality ON ONLY public.request_logs USING btree (provider_id, quality_score, ts DESC) WHERE (quality_score IS NOT NULL);
 
-
 --
 -- Name: idx_request_logs_provider_tool_calls; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX idx_request_logs_provider_tool_calls ON ONLY public.request_logs USING btree (provider_id, ts DESC) WHERE ((tool_calls IS NOT NULL) AND (jsonb_array_length(tool_calls) > 0));
-
 
 --
 -- Name: idx_request_logs_quality_flags; Type: INDEX; Schema: public; Owner: -
@@ -23701,13 +21653,11 @@ CREATE INDEX idx_request_logs_provider_tool_calls ON ONLY public.request_logs US
 
 CREATE INDEX idx_request_logs_quality_flags ON ONLY public.request_logs USING gin (quality_flags) WHERE (cardinality(quality_flags) > 0);
 
-
 --
 -- Name: idx_request_logs_rate_limit_status; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX idx_request_logs_rate_limit_status ON ONLY public.request_logs USING btree (rate_limit_status) WHERE ((rate_limit_status)::text = ANY ((ARRAY['exceeded'::character varying, 'approaching_limit'::character varying])::text[]));
-
 
 --
 -- Name: idx_request_logs_request_id_ts_unique; Type: INDEX; Schema: public; Owner: -
@@ -23715,13 +21665,11 @@ CREATE INDEX idx_request_logs_rate_limit_status ON ONLY public.request_logs USIN
 
 CREATE UNIQUE INDEX idx_request_logs_request_id_ts_unique ON ONLY public.request_logs USING btree (request_id, ts);
 
-
 --
 -- Name: idx_request_logs_session_outbound; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX idx_request_logs_session_outbound ON ONLY public.request_logs USING btree (gw_session_id, ts DESC) WHERE ((gw_session_id IS NOT NULL) AND (outbound_body IS NOT NULL));
-
 
 --
 -- Name: idx_request_logs_status_ts; Type: INDEX; Schema: public; Owner: -
@@ -23729,13 +21677,11 @@ CREATE INDEX idx_request_logs_session_outbound ON ONLY public.request_logs USING
 
 CREATE INDEX idx_request_logs_status_ts ON ONLY public.request_logs USING btree (request_status, ts DESC) WHERE ((request_status IS NOT NULL) AND (request_status <> ''::text));
 
-
 --
 -- Name: idx_request_logs_task_type; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX idx_request_logs_task_type ON ONLY public.request_logs USING btree (task_type);
-
 
 --
 -- Name: idx_request_logs_tenant_task_ts; Type: INDEX; Schema: public; Owner: -
@@ -23743,13 +21689,11 @@ CREATE INDEX idx_request_logs_task_type ON ONLY public.request_logs USING btree 
 
 CREATE INDEX idx_request_logs_tenant_task_ts ON ONLY public.request_logs USING btree (tenant_id, gw_task_id, ts DESC) WHERE ((gw_task_id IS NOT NULL) AND (gw_task_id <> ''::text));
 
-
 --
 -- Name: idx_request_logs_timeout_analysis; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX idx_request_logs_timeout_analysis ON ONLY public.request_logs USING btree (effective_timeout_seconds, latency_ms) WHERE (effective_timeout_seconds IS NOT NULL);
-
 
 --
 -- Name: idx_request_logs_tool_calls; Type: INDEX; Schema: public; Owner: -
@@ -23757,13 +21701,11 @@ CREATE INDEX idx_request_logs_timeout_analysis ON ONLY public.request_logs USING
 
 CREATE INDEX idx_request_logs_tool_calls ON ONLY public.request_logs USING gin (tool_calls) WHERE ((tool_calls IS NOT NULL) AND (tool_calls <> '[]'::jsonb));
 
-
 --
 -- Name: idx_request_logs_ts_desc; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX idx_request_logs_ts_desc ON ONLY public.request_logs USING btree (ts DESC);
-
 
 --
 -- Name: idx_request_logs_upstream_finish_reason; Type: INDEX; Schema: public; Owner: -
@@ -23771,13 +21713,11 @@ CREATE INDEX idx_request_logs_ts_desc ON ONLY public.request_logs USING btree (t
 
 CREATE INDEX idx_request_logs_upstream_finish_reason ON ONLY public.request_logs USING btree (upstream_finish_reason, ts DESC) WHERE ((upstream_finish_reason IS NOT NULL) AND (upstream_finish_reason <> ''::text));
 
-
 --
 -- Name: idx_request_logs_upstream_status; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX idx_request_logs_upstream_status ON ONLY public.request_logs USING btree (upstream_status_code, ts DESC) WHERE (upstream_status_code IS NOT NULL);
-
 
 --
 -- Name: idx_request_logs_work_type; Type: INDEX; Schema: public; Owner: -
@@ -23785,13 +21725,11 @@ CREATE INDEX idx_request_logs_upstream_status ON ONLY public.request_logs USING 
 
 CREATE INDEX idx_request_logs_work_type ON ONLY public.request_logs USING btree (work_type, ts DESC) WHERE ((work_type IS NOT NULL) AND (work_type <> ''::text));
 
-
 --
 -- Name: idx_request_wal_hot_created_at; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX idx_request_wal_hot_created_at ON public.request_wal_hot USING btree (created_at DESC);
-
 
 --
 -- Name: idx_request_wal_hot_tenant_created; Type: INDEX; Schema: public; Owner: -
@@ -23799,13 +21737,11 @@ CREATE INDEX idx_request_wal_hot_created_at ON public.request_wal_hot USING btre
 
 CREATE INDEX idx_request_wal_hot_tenant_created ON public.request_wal_hot USING btree (tenant_id, created_at DESC);
 
-
 --
 -- Name: idx_response_format_anomalies_bridge; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX idx_response_format_anomalies_bridge ON public.response_format_anomalies USING btree (resolved, detected_at, anomaly_type, severity) WHERE (NOT resolved);
-
 
 --
 -- Name: idx_response_format_anomalies_detected_at; Type: INDEX; Schema: public; Owner: -
@@ -23813,13 +21749,11 @@ CREATE INDEX idx_response_format_anomalies_bridge ON public.response_format_anom
 
 CREATE INDEX idx_response_format_anomalies_detected_at ON public.response_format_anomalies USING btree (detected_at DESC);
 
-
 --
 -- Name: idx_response_format_anomalies_provider; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX idx_response_format_anomalies_provider ON public.response_format_anomalies USING btree (provider_code, client_model) WHERE (provider_code IS NOT NULL);
-
 
 --
 -- Name: idx_response_format_anomalies_request_id; Type: INDEX; Schema: public; Owner: -
@@ -23827,13 +21761,11 @@ CREATE INDEX idx_response_format_anomalies_provider ON public.response_format_an
 
 CREATE INDEX idx_response_format_anomalies_request_id ON public.response_format_anomalies USING btree (request_id);
 
-
 --
 -- Name: idx_response_format_anomalies_type; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX idx_response_format_anomalies_type ON public.response_format_anomalies USING btree (anomaly_type, detected_at DESC);
-
 
 --
 -- Name: idx_response_format_anomalies_unresolved; Type: INDEX; Schema: public; Owner: -
@@ -23841,13 +21773,11 @@ CREATE INDEX idx_response_format_anomalies_type ON public.response_format_anomal
 
 CREATE INDEX idx_response_format_anomalies_unresolved ON public.response_format_anomalies USING btree (detected_at DESC) WHERE (NOT resolved);
 
-
 --
 -- Name: idx_rhc_check_id; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX idx_rhc_check_id ON public.routing_health_checks USING btree (check_id);
-
 
 --
 -- Name: idx_rhc_severity; Type: INDEX; Schema: public; Owner: -
@@ -23855,13 +21785,11 @@ CREATE INDEX idx_rhc_check_id ON public.routing_health_checks USING btree (check
 
 CREATE INDEX idx_rhc_severity ON public.routing_health_checks USING btree (severity, created_at DESC);
 
-
 --
 -- Name: idx_rhc_status; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX idx_rhc_status ON public.routing_health_checks USING btree (status) WHERE (status = 'open'::text);
-
 
 --
 -- Name: idx_route_incident_events_incident_created; Type: INDEX; Schema: public; Owner: -
@@ -23869,13 +21797,11 @@ CREATE INDEX idx_rhc_status ON public.routing_health_checks USING btree (status)
 
 CREATE INDEX idx_route_incident_events_incident_created ON public.route_incident_events USING btree (incident_id, created_at DESC);
 
-
 --
 -- Name: idx_route_incident_events_type_created; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX idx_route_incident_events_type_created ON public.route_incident_events USING btree (event_type, created_at DESC);
-
 
 --
 -- Name: idx_route_incidents_state_updated; Type: INDEX; Schema: public; Owner: -
@@ -23883,13 +21809,11 @@ CREATE INDEX idx_route_incident_events_type_created ON public.route_incident_eve
 
 CREATE INDEX idx_route_incidents_state_updated ON public.route_incidents USING btree (state, updated_at DESC);
 
-
 --
 -- Name: idx_route_incidents_tenant_state; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX idx_route_incidents_tenant_state ON public.route_incidents USING btree (tenant_id, state, updated_at DESC);
-
 
 --
 -- Name: idx_routing_audit_log_action; Type: INDEX; Schema: public; Owner: -
@@ -23897,13 +21821,11 @@ CREATE INDEX idx_route_incidents_tenant_state ON public.route_incidents USING bt
 
 CREATE INDEX idx_routing_audit_log_action ON public.routing_audit_log USING btree (action, ts DESC);
 
-
 --
 -- Name: idx_routing_audit_log_actor_created; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX idx_routing_audit_log_actor_created ON public.routing_audit_log USING btree (actor, created_at DESC);
-
 
 --
 -- Name: idx_routing_audit_log_idempotency; Type: INDEX; Schema: public; Owner: -
@@ -23911,13 +21833,11 @@ CREATE INDEX idx_routing_audit_log_actor_created ON public.routing_audit_log USI
 
 CREATE UNIQUE INDEX idx_routing_audit_log_idempotency ON public.routing_audit_log USING btree (idempotency_key);
 
-
 --
 -- Name: idx_routing_audit_log_incident; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX idx_routing_audit_log_incident ON public.routing_audit_log USING btree (incident_id);
-
 
 --
 -- Name: idx_routing_audit_log_incident_created; Type: INDEX; Schema: public; Owner: -
@@ -23925,13 +21845,11 @@ CREATE INDEX idx_routing_audit_log_incident ON public.routing_audit_log USING bt
 
 CREATE INDEX idx_routing_audit_log_incident_created ON public.routing_audit_log USING btree (incident_id, created_at DESC) WHERE (incident_id IS NOT NULL);
 
-
 --
 -- Name: idx_routing_audit_log_tenant_created; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX idx_routing_audit_log_tenant_created ON public.routing_audit_log USING btree (tenant_id, created_at DESC);
-
 
 --
 -- Name: idx_routing_audit_log_tenant_ts; Type: INDEX; Schema: public; Owner: -
@@ -23939,13 +21857,11 @@ CREATE INDEX idx_routing_audit_log_tenant_created ON public.routing_audit_log US
 
 CREATE INDEX idx_routing_audit_log_tenant_ts ON public.routing_audit_log USING btree (tenant_id, ts DESC);
 
-
 --
 -- Name: idx_routing_decision_log_hot_request_ts; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE UNIQUE INDEX idx_routing_decision_log_hot_request_ts ON public.routing_decision_log_hot USING btree (request_id, ts);
-
 
 --
 -- Name: idx_routing_decision_log_hot_tenant_ts; Type: INDEX; Schema: public; Owner: -
@@ -23953,13 +21869,11 @@ CREATE UNIQUE INDEX idx_routing_decision_log_hot_request_ts ON public.routing_de
 
 CREATE INDEX idx_routing_decision_log_hot_tenant_ts ON public.routing_decision_log_hot USING btree (tenant_id, ts DESC);
 
-
 --
 -- Name: idx_routing_decision_log_hot_ts; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX idx_routing_decision_log_hot_ts ON public.routing_decision_log_hot USING btree (ts DESC);
-
 
 --
 -- Name: idx_routing_decision_log_part_credential; Type: INDEX; Schema: public; Owner: -
@@ -23967,13 +21881,11 @@ CREATE INDEX idx_routing_decision_log_hot_ts ON public.routing_decision_log_hot 
 
 CREATE INDEX idx_routing_decision_log_part_credential ON ONLY public.routing_decision_log USING btree (chosen_credential_id, ts DESC) WHERE (chosen_credential_id IS NOT NULL);
 
-
 --
 -- Name: idx_routing_decision_log_part_model; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX idx_routing_decision_log_part_model ON ONLY public.routing_decision_log USING btree (model, ts DESC);
-
 
 --
 -- Name: idx_routing_decision_log_part_request_id; Type: INDEX; Schema: public; Owner: -
@@ -23981,13 +21893,11 @@ CREATE INDEX idx_routing_decision_log_part_model ON ONLY public.routing_decision
 
 CREATE INDEX idx_routing_decision_log_part_request_id ON ONLY public.routing_decision_log USING btree (request_id);
 
-
 --
 -- Name: idx_routing_decision_log_part_success; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX idx_routing_decision_log_part_success ON ONLY public.routing_decision_log USING btree (success, ts DESC);
-
 
 --
 -- Name: idx_routing_decision_log_part_tenant_ts; Type: INDEX; Schema: public; Owner: -
@@ -23995,13 +21905,11 @@ CREATE INDEX idx_routing_decision_log_part_success ON ONLY public.routing_decisi
 
 CREATE INDEX idx_routing_decision_log_part_tenant_ts ON ONLY public.routing_decision_log USING btree (tenant_id, ts DESC) WHERE (tenant_id IS NOT NULL);
 
-
 --
 -- Name: idx_routing_decision_log_part_ts; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX idx_routing_decision_log_part_ts ON ONLY public.routing_decision_log USING btree (ts DESC);
-
 
 --
 -- Name: idx_routing_overrides_audit_actor_ts; Type: INDEX; Schema: public; Owner: -
@@ -24009,13 +21917,11 @@ CREATE INDEX idx_routing_decision_log_part_ts ON ONLY public.routing_decision_lo
 
 CREATE INDEX idx_routing_overrides_audit_actor_ts ON public.routing_overrides_audit USING btree (actor, ts DESC) WHERE (actor IS NOT NULL);
 
-
 --
 -- Name: idx_routing_overrides_audit_override_ts; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX idx_routing_overrides_audit_override_ts ON public.routing_overrides_audit USING btree (override_id, ts DESC) WHERE (override_id IS NOT NULL);
-
 
 --
 -- Name: idx_routing_overrides_audit_ts; Type: INDEX; Schema: public; Owner: -
@@ -24023,13 +21929,11 @@ CREATE INDEX idx_routing_overrides_audit_override_ts ON public.routing_overrides
 
 CREATE INDEX idx_routing_overrides_audit_ts ON public.routing_overrides_audit USING btree (ts DESC);
 
-
 --
 -- Name: idx_routing_overrides_expires; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX idx_routing_overrides_expires ON public.routing_overrides USING btree (expires_at) WHERE (expires_at IS NOT NULL);
-
 
 --
 -- Name: idx_routing_overrides_task_profile; Type: INDEX; Schema: public; Owner: -
@@ -24037,13 +21941,11 @@ CREATE INDEX idx_routing_overrides_expires ON public.routing_overrides USING btr
 
 CREATE INDEX idx_routing_overrides_task_profile ON public.routing_overrides USING btree (task_type, profile);
 
-
 --
 -- Name: idx_routing_overrides_unique; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE UNIQUE INDEX idx_routing_overrides_unique ON public.routing_overrides USING btree (task_type, profile, COALESCE(model_chosen, ''::text), mode);
-
 
 --
 -- Name: idx_rsdm_bucket; Type: INDEX; Schema: public; Owner: -
@@ -24051,13 +21953,11 @@ CREATE UNIQUE INDEX idx_routing_overrides_unique ON public.routing_overrides USI
 
 CREATE INDEX idx_rsdm_bucket ON public.request_stats_dim_minute USING btree (bucket DESC);
 
-
 --
 -- Name: idx_rsdm_type_bucket; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX idx_rsdm_type_bucket ON public.request_stats_dim_minute USING btree (dim_type, bucket DESC);
-
 
 --
 -- Name: idx_rsedm_error_bucket; Type: INDEX; Schema: public; Owner: -
@@ -24065,13 +21965,11 @@ CREATE INDEX idx_rsdm_type_bucket ON public.request_stats_dim_minute USING btree
 
 CREATE INDEX idx_rsedm_error_bucket ON public.request_stats_error_drill_minute USING btree (error_kind, bucket DESC);
 
-
 --
 -- Name: idx_rsm_bucket; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX idx_rsm_bucket ON public.request_stats_minute USING btree (bucket DESC);
-
 
 --
 -- Name: idx_rsm_tenant_bucket; Type: INDEX; Schema: public; Owner: -
@@ -24079,13 +21977,11 @@ CREATE INDEX idx_rsm_bucket ON public.request_stats_minute USING btree (bucket D
 
 CREATE INDEX idx_rsm_tenant_bucket ON public.request_stats_minute USING btree (tenant_id, bucket DESC);
 
-
 --
 -- Name: idx_rt_instance_time; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX idx_rt_instance_time ON public.runtime_metrics USING btree (instance_id, "timestamp" DESC);
-
 
 --
 -- Name: idx_rt_time; Type: INDEX; Schema: public; Owner: -
@@ -24093,13 +21989,11 @@ CREATE INDEX idx_rt_instance_time ON public.runtime_metrics USING btree (instanc
 
 CREATE INDEX idx_rt_time ON public.runtime_metrics USING btree ("timestamp" DESC);
 
-
 --
 -- Name: idx_runtime_metrics_cpu_high; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX idx_runtime_metrics_cpu_high ON public.runtime_metrics USING btree ("timestamp" DESC) WHERE (cpu_usage_pct > (80)::double precision);
-
 
 --
 -- Name: idx_runtime_metrics_cpu_usage; Type: INDEX; Schema: public; Owner: -
@@ -24107,13 +22001,11 @@ CREATE INDEX idx_runtime_metrics_cpu_high ON public.runtime_metrics USING btree 
 
 CREATE INDEX idx_runtime_metrics_cpu_usage ON public.runtime_metrics USING btree (cpu_usage_pct);
 
-
 --
 -- Name: idx_runtime_metrics_instance; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX idx_runtime_metrics_instance ON public.runtime_metrics USING btree (instance_id, "timestamp" DESC);
-
 
 --
 -- Name: idx_runtime_metrics_mem_usage; Type: INDEX; Schema: public; Owner: -
@@ -24121,13 +22013,11 @@ CREATE INDEX idx_runtime_metrics_instance ON public.runtime_metrics USING btree 
 
 CREATE INDEX idx_runtime_metrics_mem_usage ON public.runtime_metrics USING btree (mem_used_mb);
 
-
 --
 -- Name: idx_runtime_metrics_timestamp; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX idx_runtime_metrics_timestamp ON public.runtime_metrics USING btree ("timestamp" DESC);
-
 
 --
 -- Name: idx_runtime_telemetry_consent_events_hardware_time; Type: INDEX; Schema: public; Owner: -
@@ -24135,13 +22025,11 @@ CREATE INDEX idx_runtime_metrics_timestamp ON public.runtime_metrics USING btree
 
 CREATE INDEX idx_runtime_telemetry_consent_events_hardware_time ON public.runtime_telemetry_consent_events USING btree (hardware_hash, occurred_at DESC);
 
-
 --
 -- Name: idx_runtime_telemetry_preferences_license; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX idx_runtime_telemetry_preferences_license ON public.runtime_telemetry_preferences USING btree (license_id);
-
 
 --
 -- Name: idx_security_config_tenant; Type: INDEX; Schema: public; Owner: -
@@ -24149,13 +22037,11 @@ CREATE INDEX idx_runtime_telemetry_preferences_license ON public.runtime_telemet
 
 CREATE INDEX idx_security_config_tenant ON public.security_detector_config USING btree (tenant_id) WHERE (enabled = true);
 
-
 --
 -- Name: idx_security_config_version; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX idx_security_config_version ON public.security_detector_config USING btree (version DESC, updated_at DESC);
-
 
 --
 -- Name: idx_self_check_rounds_run; Type: INDEX; Schema: public; Owner: -
@@ -24163,13 +22049,11 @@ CREATE INDEX idx_security_config_version ON public.security_detector_config USIN
 
 CREATE INDEX idx_self_check_rounds_run ON public.self_check_round_results USING btree (run_id);
 
-
 --
 -- Name: idx_self_check_runs_model; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX idx_self_check_runs_model ON public.self_check_runs USING btree (model_name);
-
 
 --
 -- Name: idx_self_check_runs_model_started; Type: INDEX; Schema: public; Owner: -
@@ -24177,13 +22061,11 @@ CREATE INDEX idx_self_check_runs_model ON public.self_check_runs USING btree (mo
 
 CREATE INDEX idx_self_check_runs_model_started ON public.self_check_runs USING btree (model_name, started_at DESC);
 
-
 --
 -- Name: idx_self_check_runs_started; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX idx_self_check_runs_started ON public.self_check_runs USING btree (started_at DESC);
-
 
 --
 -- Name: idx_self_check_runs_status; Type: INDEX; Schema: public; Owner: -
@@ -24191,13 +22073,11 @@ CREATE INDEX idx_self_check_runs_started ON public.self_check_runs USING btree (
 
 CREATE INDEX idx_self_check_runs_status ON public.self_check_runs USING btree (status);
 
-
 --
 -- Name: idx_session_audit_records_session; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX idx_session_audit_records_session ON public.session_audit_records USING btree (session_id, created_at DESC);
-
 
 --
 -- Name: idx_session_audit_records_status; Type: INDEX; Schema: public; Owner: -
@@ -24205,13 +22085,11 @@ CREATE INDEX idx_session_audit_records_session ON public.session_audit_records U
 
 CREATE INDEX idx_session_audit_records_status ON public.session_audit_records USING btree (status, created_at DESC) WHERE (status = 'need_approval'::text);
 
-
 --
 -- Name: idx_session_audit_records_tenant_created; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX idx_session_audit_records_tenant_created ON public.session_audit_records USING btree (tenant_id, created_at DESC);
-
 
 --
 -- Name: idx_session_bodies_request; Type: INDEX; Schema: public; Owner: -
@@ -24219,13 +22097,11 @@ CREATE INDEX idx_session_audit_records_tenant_created ON public.session_audit_re
 
 CREATE INDEX idx_session_bodies_request ON ONLY public.session_bodies USING btree (request_id);
 
-
 --
 -- Name: idx_session_bodies_session; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX idx_session_bodies_session ON ONLY public.session_bodies USING btree (session_id, turn_no DESC);
-
 
 --
 -- Name: idx_session_intent_changed; Type: INDEX; Schema: public; Owner: -
@@ -24233,13 +22109,11 @@ CREATE INDEX idx_session_bodies_session ON ONLY public.session_bodies USING btre
 
 CREATE INDEX idx_session_intent_changed ON public.session_intent_evolution USING btree (is_intent_changed, tenant_id) WHERE (is_intent_changed = true);
 
-
 --
 -- Name: idx_session_intent_content_hash; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX idx_session_intent_content_hash ON public.session_intent_evolution USING btree (user_content_hash) WHERE (user_content_hash IS NOT NULL);
-
 
 --
 -- Name: idx_session_intent_primary; Type: INDEX; Schema: public; Owner: -
@@ -24247,13 +22121,11 @@ CREATE INDEX idx_session_intent_content_hash ON public.session_intent_evolution 
 
 CREATE INDEX idx_session_intent_primary ON public.session_intent_evolution USING btree (primary_intent, tenant_id, classified_at DESC);
 
-
 --
 -- Name: idx_session_intent_session; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX idx_session_intent_session ON public.session_intent_evolution USING btree (session_id, turn_number DESC);
-
 
 --
 -- Name: idx_session_intent_tenant; Type: INDEX; Schema: public; Owner: -
@@ -24261,13 +22133,11 @@ CREATE INDEX idx_session_intent_session ON public.session_intent_evolution USING
 
 CREATE INDEX idx_session_intent_tenant ON public.session_intent_evolution USING btree (tenant_id, classified_at DESC);
 
-
 --
 -- Name: idx_session_last_requests_expires; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX idx_session_last_requests_expires ON public.session_last_requests USING btree (expires_at);
-
 
 --
 -- Name: idx_session_last_requests_status; Type: INDEX; Schema: public; Owner: -
@@ -24275,13 +22145,11 @@ CREATE INDEX idx_session_last_requests_expires ON public.session_last_requests U
 
 CREATE INDEX idx_session_last_requests_status ON public.session_last_requests USING btree (last_request_status, updated_at DESC);
 
-
 --
 -- Name: idx_session_memora_extraction_at; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX idx_session_memora_extraction_at ON public.session_memora_extraction_log USING btree (extracted_at DESC);
-
 
 --
 -- Name: idx_session_module_executions_2026_07_session; Type: INDEX; Schema: public; Owner: -
@@ -24289,13 +22157,11 @@ CREATE INDEX idx_session_memora_extraction_at ON public.session_memora_extractio
 
 CREATE INDEX idx_session_module_executions_2026_07_session ON public.session_module_executions_2026_07 USING btree (gw_session_id, module_name);
 
-
 --
 -- Name: idx_session_module_executions_2026_07_tenant; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX idx_session_module_executions_2026_07_tenant ON public.session_module_executions_2026_07 USING btree (tenant_id, created_at DESC);
-
 
 --
 -- Name: idx_session_module_executions_2026_08_session; Type: INDEX; Schema: public; Owner: -
@@ -24303,13 +22169,11 @@ CREATE INDEX idx_session_module_executions_2026_07_tenant ON public.session_modu
 
 CREATE INDEX idx_session_module_executions_2026_08_session ON public.session_module_executions_2026_08 USING btree (gw_session_id, module_name);
 
-
 --
 -- Name: idx_session_module_executions_2026_08_tenant; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX idx_session_module_executions_2026_08_tenant ON public.session_module_executions_2026_08 USING btree (tenant_id, created_at DESC);
-
 
 --
 -- Name: idx_session_summaries_compliance; Type: INDEX; Schema: public; Owner: -
@@ -24317,13 +22181,11 @@ CREATE INDEX idx_session_module_executions_2026_08_tenant ON public.session_modu
 
 CREATE INDEX idx_session_summaries_compliance ON public.session_summaries USING btree (tenant_id, compliance_status) WHERE ((compliance_status)::text <> 'compliant'::text);
 
-
 --
 -- Name: idx_session_summaries_cost; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX idx_session_summaries_cost ON public.session_summaries USING btree (tenant_id, total_cost_usd DESC);
-
 
 --
 -- Name: idx_session_summaries_handoff; Type: INDEX; Schema: public; Owner: -
@@ -24331,13 +22193,11 @@ CREATE INDEX idx_session_summaries_cost ON public.session_summaries USING btree 
 
 CREATE INDEX idx_session_summaries_handoff ON public.session_summaries USING btree (last_handoff_at) WHERE (handoff_count > 0);
 
-
 --
 -- Name: idx_session_summaries_intent; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX idx_session_summaries_intent ON public.session_summaries USING btree (tenant_id, user_intent) WHERE (user_intent IS NOT NULL);
-
 
 --
 -- Name: idx_session_summaries_models; Type: INDEX; Schema: public; Owner: -
@@ -24345,13 +22205,11 @@ CREATE INDEX idx_session_summaries_intent ON public.session_summaries USING btre
 
 CREATE INDEX idx_session_summaries_models ON public.session_summaries USING gin (models_used);
 
-
 --
 -- Name: idx_session_summaries_quality; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX idx_session_summaries_quality ON public.session_summaries USING btree (quality_score DESC) WHERE (quality_score IS NOT NULL);
-
 
 --
 -- Name: idx_session_summaries_tenant_time; Type: INDEX; Schema: public; Owner: -
@@ -24359,13 +22217,11 @@ CREATE INDEX idx_session_summaries_quality ON public.session_summaries USING btr
 
 CREATE INDEX idx_session_summaries_tenant_time ON public.session_summaries USING btree (tenant_id, last_request_at DESC);
 
-
 --
 -- Name: idx_session_summaries_topics; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX idx_session_summaries_topics ON public.session_summaries USING gin (key_topics);
-
 
 --
 -- Name: idx_session_titles_generated_at; Type: INDEX; Schema: public; Owner: -
@@ -24373,13 +22229,11 @@ CREATE INDEX idx_session_summaries_topics ON public.session_summaries USING gin 
 
 CREATE INDEX idx_session_titles_generated_at ON public.session_titles USING btree (generated_at DESC);
 
-
 --
 -- Name: idx_session_turn_logs_expires; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX idx_session_turn_logs_expires ON public.session_turn_logs USING btree (expires_at);
-
 
 --
 -- Name: idx_session_turn_logs_request; Type: INDEX; Schema: public; Owner: -
@@ -24387,13 +22241,11 @@ CREATE INDEX idx_session_turn_logs_expires ON public.session_turn_logs USING btr
 
 CREATE INDEX idx_session_turn_logs_request ON public.session_turn_logs USING btree (request_id);
 
-
 --
 -- Name: idx_session_turn_logs_session; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX idx_session_turn_logs_session ON public.session_turn_logs USING btree (session_id, turn_no, started_at DESC);
-
 
 --
 -- Name: idx_session_turn_snapshots_expiry; Type: INDEX; Schema: public; Owner: -
@@ -24401,13 +22253,11 @@ CREATE INDEX idx_session_turn_logs_session ON public.session_turn_logs USING btr
 
 CREATE INDEX idx_session_turn_snapshots_expiry ON public.session_turn_snapshots USING btree (expires_at);
 
-
 --
 -- Name: idx_session_turn_snapshots_session; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX idx_session_turn_snapshots_session ON public.session_turn_snapshots USING btree (tenant_id, gw_session_id, turn_no DESC);
-
 
 --
 -- Name: idx_session_turns_request; Type: INDEX; Schema: public; Owner: -
@@ -24415,13 +22265,11 @@ CREATE INDEX idx_session_turn_snapshots_session ON public.session_turn_snapshots
 
 CREATE INDEX idx_session_turns_request ON ONLY public.session_turns USING btree (request_id);
 
-
 --
 -- Name: idx_session_turns_session; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX idx_session_turns_session ON ONLY public.session_turns USING btree (session_id, turn_no DESC);
-
 
 --
 -- Name: idx_session_turns_tenant; Type: INDEX; Schema: public; Owner: -
@@ -24429,13 +22277,11 @@ CREATE INDEX idx_session_turns_session ON ONLY public.session_turns USING btree 
 
 CREATE INDEX idx_session_turns_tenant ON ONLY public.session_turns USING btree (tenant_id, ts DESC);
 
-
 --
 -- Name: idx_sessions_primary_request; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX idx_sessions_primary_request ON ONLY public.sessions USING btree (primary_request_id) WHERE (primary_request_id IS NOT NULL);
-
 
 --
 -- Name: idx_sessions_session_id; Type: INDEX; Schema: public; Owner: -
@@ -24443,13 +22289,11 @@ CREATE INDEX idx_sessions_primary_request ON ONLY public.sessions USING btree (p
 
 CREATE INDEX idx_sessions_session_id ON ONLY public.sessions USING btree (session_id);
 
-
 --
 -- Name: idx_sessions_status; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX idx_sessions_status ON ONLY public.sessions USING btree (status, updated_at DESC);
-
 
 --
 -- Name: idx_sessions_tenant; Type: INDEX; Schema: public; Owner: -
@@ -24457,13 +22301,11 @@ CREATE INDEX idx_sessions_status ON ONLY public.sessions USING btree (status, up
 
 CREATE INDEX idx_sessions_tenant ON ONLY public.sessions USING btree (tenant_id, created_at DESC);
 
-
 --
 -- Name: idx_settings_audit_created; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX idx_settings_audit_created ON public.settings_audit USING btree (created_at);
-
 
 --
 -- Name: idx_settings_audit_key_time; Type: INDEX; Schema: public; Owner: -
@@ -24471,13 +22313,11 @@ CREATE INDEX idx_settings_audit_created ON public.settings_audit USING btree (cr
 
 CREATE INDEX idx_settings_audit_key_time ON public.settings_audit USING btree (setting_key, created_at DESC);
 
-
 --
 -- Name: idx_settings_audit_operator; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX idx_settings_audit_operator ON public.settings_audit USING btree (operator_user, created_at DESC);
-
 
 --
 -- Name: idx_settings_audit_tenant_time; Type: INDEX; Schema: public; Owner: -
@@ -24485,13 +22325,11 @@ CREATE INDEX idx_settings_audit_operator ON public.settings_audit USING btree (o
 
 CREATE INDEX idx_settings_audit_tenant_time ON public.settings_audit USING btree (tenant_id, created_at DESC);
 
-
 --
 -- Name: idx_settings_kv_category; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX idx_settings_kv_category ON public.settings_kv USING btree (category);
-
 
 --
 -- Name: idx_settings_kv_scope; Type: INDEX; Schema: public; Owner: -
@@ -24499,13 +22337,11 @@ CREATE INDEX idx_settings_kv_category ON public.settings_kv USING btree (categor
 
 CREATE INDEX idx_settings_kv_scope ON public.settings_kv USING btree (scope);
 
-
 --
 -- Name: idx_settings_kv_updated; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX idx_settings_kv_updated ON public.settings_kv USING btree (updated_at DESC);
-
 
 --
 -- Name: idx_sme_hot_cleanup; Type: INDEX; Schema: public; Owner: -
@@ -24513,13 +22349,11 @@ CREATE INDEX idx_settings_kv_updated ON public.settings_kv USING btree (updated_
 
 CREATE INDEX idx_sme_hot_cleanup ON public.session_module_executions_hot USING btree (created_at);
 
-
 --
 -- Name: idx_sme_hot_lookup; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX idx_sme_hot_lookup ON public.session_module_executions_hot USING btree (gw_session_id, module_name, cache_key, status, expires_at) WHERE ((status)::text = 'completed'::text);
-
 
 --
 -- Name: idx_sme_hot_module_stats; Type: INDEX; Schema: public; Owner: -
@@ -24527,13 +22361,11 @@ CREATE INDEX idx_sme_hot_lookup ON public.session_module_executions_hot USING bt
 
 CREATE INDEX idx_sme_hot_module_stats ON public.session_module_executions_hot USING btree (module_name, status, completed_at DESC);
 
-
 --
 -- Name: idx_sme_hot_status; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX idx_sme_hot_status ON public.session_module_executions_hot USING btree (status, started_at) WHERE ((status)::text = ANY (ARRAY[('running'::character varying)::text, ('failed'::character varying)::text]));
-
 
 --
 -- Name: idx_sme_hot_tenant_time; Type: INDEX; Schema: public; Owner: -
@@ -24541,13 +22373,11 @@ CREATE INDEX idx_sme_hot_status ON public.session_module_executions_hot USING bt
 
 CREATE INDEX idx_sme_hot_tenant_time ON public.session_module_executions_hot USING btree (tenant_id, created_at DESC);
 
-
 --
 -- Name: idx_st_code; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX idx_st_code ON public.subscription_tiers USING btree (code);
-
 
 --
 -- Name: idx_stage_events_redis_miss; Type: INDEX; Schema: public; Owner: -
@@ -24555,13 +22385,11 @@ CREATE INDEX idx_st_code ON public.subscription_tiers USING btree (code);
 
 CREATE INDEX idx_stage_events_redis_miss ON public.request_stage_events USING btree (stage, event_timestamp DESC) WHERE (redis_hit = false);
 
-
 --
 -- Name: idx_stage_events_request_id; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX idx_stage_events_request_id ON public.request_stage_events USING btree (request_id, seq);
-
 
 --
 -- Name: idx_stage_events_stage_status; Type: INDEX; Schema: public; Owner: -
@@ -24569,13 +22397,11 @@ CREATE INDEX idx_stage_events_request_id ON public.request_stage_events USING bt
 
 CREATE INDEX idx_stage_events_stage_status ON public.request_stage_events USING btree (stage, status, event_timestamp DESC) WHERE (status = ANY (ARRAY['failed'::text, 'timeout'::text]));
 
-
 --
 -- Name: idx_stage_events_tenant_ts; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX idx_stage_events_tenant_ts ON public.request_stage_events USING btree (tenant_id, event_timestamp DESC);
-
 
 --
 -- Name: idx_stage_events_upstream_failure; Type: INDEX; Schema: public; Owner: -
@@ -24583,13 +22409,11 @@ CREATE INDEX idx_stage_events_tenant_ts ON public.request_stage_events USING btr
 
 CREATE INDEX idx_stage_events_upstream_failure ON public.request_stage_events USING btree (stage, http_status, event_timestamp DESC) WHERE ((stage = 'upstream_request'::text) AND (http_status >= 500));
 
-
 --
 -- Name: idx_system_probe_runs_automaticity; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX idx_system_probe_runs_automaticity ON ONLY public.system_probe_runs USING btree (automaticity, created_at DESC);
-
 
 --
 -- Name: idx_system_probe_runs_credential; Type: INDEX; Schema: public; Owner: -
@@ -24597,13 +22421,11 @@ CREATE INDEX idx_system_probe_runs_automaticity ON ONLY public.system_probe_runs
 
 CREATE INDEX idx_system_probe_runs_credential ON ONLY public.system_probe_runs USING btree (credential_id, created_at DESC);
 
-
 --
 -- Name: idx_system_probe_runs_model; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX idx_system_probe_runs_model ON ONLY public.system_probe_runs USING btree (raw_model, created_at DESC);
-
 
 --
 -- Name: idx_system_probe_runs_provider; Type: INDEX; Schema: public; Owner: -
@@ -24611,13 +22433,11 @@ CREATE INDEX idx_system_probe_runs_model ON ONLY public.system_probe_runs USING 
 
 CREATE INDEX idx_system_probe_runs_provider ON ONLY public.system_probe_runs USING btree (provider_id, created_at DESC);
 
-
 --
 -- Name: idx_system_probe_runs_skip; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX idx_system_probe_runs_skip ON ONLY public.system_probe_runs USING btree (skip_reason) WHERE (skip_reason IS NOT NULL);
-
 
 --
 -- Name: idx_system_probe_runs_status; Type: INDEX; Schema: public; Owner: -
@@ -24625,13 +22445,11 @@ CREATE INDEX idx_system_probe_runs_skip ON ONLY public.system_probe_runs USING b
 
 CREATE INDEX idx_system_probe_runs_status ON ONLY public.system_probe_runs USING btree (status, created_at DESC);
 
-
 --
 -- Name: idx_system_probe_runs_task_id; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX idx_system_probe_runs_task_id ON ONLY public.system_probe_runs USING btree (task_id);
-
 
 --
 -- Name: idx_system_settings_category; Type: INDEX; Schema: public; Owner: -
@@ -24639,13 +22457,11 @@ CREATE INDEX idx_system_probe_runs_task_id ON ONLY public.system_probe_runs USIN
 
 CREATE INDEX idx_system_settings_category ON public.system_settings USING btree (category);
 
-
 --
 -- Name: idx_system_settings_key; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX idx_system_settings_key ON public.system_settings USING btree (key);
-
 
 --
 -- Name: idx_system_settings_updated; Type: INDEX; Schema: public; Owner: -
@@ -24653,13 +22469,11 @@ CREATE INDEX idx_system_settings_key ON public.system_settings USING btree (key)
 
 CREATE INDEX idx_system_settings_updated ON public.system_settings USING btree (updated_at DESC);
 
-
 --
 -- Name: idx_task_default_routing_lookup; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX idx_task_default_routing_lookup ON public.task_default_routing USING btree (task_type, profile, tenant_id);
-
 
 --
 -- Name: idx_tenant_settings_kv_category; Type: INDEX; Schema: public; Owner: -
@@ -24667,13 +22481,11 @@ CREATE INDEX idx_task_default_routing_lookup ON public.task_default_routing USIN
 
 CREATE INDEX idx_tenant_settings_kv_category ON public.tenant_settings_kv USING btree (category);
 
-
 --
 -- Name: idx_tenant_settings_kv_tenant; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX idx_tenant_settings_kv_tenant ON public.tenant_settings_kv USING btree (tenant_id);
-
 
 --
 -- Name: idx_tenant_subscriptions_tenant; Type: INDEX; Schema: public; Owner: -
@@ -24681,13 +22493,11 @@ CREATE INDEX idx_tenant_settings_kv_tenant ON public.tenant_settings_kv USING bt
 
 CREATE INDEX idx_tenant_subscriptions_tenant ON public.tenant_subscriptions USING btree (tenant_id, status);
 
-
 --
 -- Name: idx_tenant_tool_policies_enabled; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX idx_tenant_tool_policies_enabled ON public.tenant_tool_policies USING btree (enabled);
-
 
 --
 -- Name: idx_tenant_tool_policies_tenant; Type: INDEX; Schema: public; Owner: -
@@ -24695,13 +22505,11 @@ CREATE INDEX idx_tenant_tool_policies_enabled ON public.tenant_tool_policies USI
 
 CREATE INDEX idx_tenant_tool_policies_tenant ON public.tenant_tool_policies USING btree (tenant_id) WHERE (enabled = true);
 
-
 --
 -- Name: idx_tenants_name; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX idx_tenants_name ON public.tenants USING btree (name);
-
 
 --
 -- Name: idx_tenants_status; Type: INDEX; Schema: public; Owner: -
@@ -24709,13 +22517,11 @@ CREATE INDEX idx_tenants_name ON public.tenants USING btree (name);
 
 CREATE INDEX idx_tenants_status ON public.tenants USING btree (status);
 
-
 --
 -- Name: idx_tmp_audit_tenant_ts; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX idx_tmp_audit_tenant_ts ON public.tenant_model_policies_audit USING btree (tenant_id, ts DESC);
-
 
 --
 -- Name: idx_tmp_audit_ts; Type: INDEX; Schema: public; Owner: -
@@ -24723,13 +22529,11 @@ CREATE INDEX idx_tmp_audit_tenant_ts ON public.tenant_model_policies_audit USING
 
 CREATE INDEX idx_tmp_audit_ts ON public.tenant_model_policies_audit USING btree (ts DESC);
 
-
 --
 -- Name: idx_tmp_canonical; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX idx_tmp_canonical ON public.tenant_model_policies USING btree (canonical_name);
-
 
 --
 -- Name: idx_tmp_tenant_active; Type: INDEX; Schema: public; Owner: -
@@ -24737,13 +22541,11 @@ CREATE INDEX idx_tmp_canonical ON public.tenant_model_policies USING btree (cano
 
 CREATE INDEX idx_tmp_tenant_active ON public.tenant_model_policies USING btree (tenant_id) WHERE (deleted_at IS NULL);
 
-
 --
 -- Name: idx_tool_call_events_called_at; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX idx_tool_call_events_called_at ON public.tool_call_events USING btree (called_at DESC);
-
 
 --
 -- Name: idx_tool_call_events_tenant_id; Type: INDEX; Schema: public; Owner: -
@@ -24751,13 +22553,11 @@ CREATE INDEX idx_tool_call_events_called_at ON public.tool_call_events USING btr
 
 CREATE INDEX idx_tool_call_events_tenant_id ON public.tool_call_events USING btree (tenant_id, called_at DESC);
 
-
 --
 -- Name: idx_tool_call_events_tool_id; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX idx_tool_call_events_tool_id ON public.tool_call_events USING btree (tool_id, called_at DESC);
-
 
 --
 -- Name: idx_tool_categories_order; Type: INDEX; Schema: public; Owner: -
@@ -24765,13 +22565,11 @@ CREATE INDEX idx_tool_call_events_tool_id ON public.tool_call_events USING btree
 
 CREATE INDEX idx_tool_categories_order ON public.tool_categories USING btree (display_order) WHERE (enabled = true);
 
-
 --
 -- Name: idx_tool_registry_category; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX idx_tool_registry_category ON public.tool_registry USING btree (category) WHERE (enabled = true);
-
 
 --
 -- Name: idx_tool_registry_deprecation; Type: INDEX; Schema: public; Owner: -
@@ -24779,13 +22577,11 @@ CREATE INDEX idx_tool_registry_category ON public.tool_registry USING btree (cat
 
 CREATE INDEX idx_tool_registry_deprecation ON public.tool_registry USING btree (deprecation_date) WHERE (deprecation_date IS NOT NULL);
 
-
 --
 -- Name: idx_tool_registry_name; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX idx_tool_registry_name ON public.tool_registry USING btree (tool_name) WHERE (enabled = true);
-
 
 --
 -- Name: idx_tool_registry_tenant_tool; Type: INDEX; Schema: public; Owner: -
@@ -24793,13 +22589,11 @@ CREATE INDEX idx_tool_registry_name ON public.tool_registry USING btree (tool_na
 
 CREATE INDEX idx_tool_registry_tenant_tool ON public.tool_registry USING btree (tenant_id, tool_id, version DESC);
 
-
 --
 -- Name: idx_tool_registry_unique_version; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE UNIQUE INDEX idx_tool_registry_unique_version ON public.tool_registry USING btree (tenant_id, tool_id, version);
-
 
 --
 -- Name: idx_tool_stats_part_created; Type: INDEX; Schema: public; Owner: -
@@ -24807,13 +22601,11 @@ CREATE UNIQUE INDEX idx_tool_registry_unique_version ON public.tool_registry USI
 
 CREATE INDEX idx_tool_stats_part_created ON ONLY public.tool_usage_stats USING btree (created_at);
 
-
 --
 -- Name: idx_tool_stats_part_date; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX idx_tool_stats_part_date ON ONLY public.tool_usage_stats USING btree (usage_date);
-
 
 --
 -- Name: idx_tool_stats_part_tenant; Type: INDEX; Schema: public; Owner: -
@@ -24821,13 +22613,11 @@ CREATE INDEX idx_tool_stats_part_date ON ONLY public.tool_usage_stats USING btre
 
 CREATE INDEX idx_tool_stats_part_tenant ON ONLY public.tool_usage_stats USING btree (tenant_id, usage_date);
 
-
 --
 -- Name: idx_tool_stats_part_tool; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX idx_tool_stats_part_tool ON ONLY public.tool_usage_stats USING btree (tool_id, usage_date);
-
 
 --
 -- Name: idx_tool_usage_stats_date; Type: INDEX; Schema: public; Owner: -
@@ -24835,13 +22625,11 @@ CREATE INDEX idx_tool_stats_part_tool ON ONLY public.tool_usage_stats USING btre
 
 CREATE INDEX idx_tool_usage_stats_date ON public.tool_usage_stats_old USING btree (usage_date DESC);
 
-
 --
 -- Name: idx_tool_usage_stats_tenant_id; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX idx_tool_usage_stats_tenant_id ON public.tool_usage_stats_old USING btree (tenant_id);
-
 
 --
 -- Name: idx_tool_usage_stats_tool_id; Type: INDEX; Schema: public; Owner: -
@@ -24849,13 +22637,11 @@ CREATE INDEX idx_tool_usage_stats_tenant_id ON public.tool_usage_stats_old USING
 
 CREATE INDEX idx_tool_usage_stats_tool_id ON public.tool_usage_stats_old USING btree (tool_id);
 
-
 --
 -- Name: idx_tool_usage_stats_tool_tenant; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX idx_tool_usage_stats_tool_tenant ON public.tool_usage_stats_old USING btree (tool_id, tenant_id, usage_date DESC);
-
 
 --
 -- Name: idx_tuning_proposals_cat; Type: INDEX; Schema: public; Owner: -
@@ -24863,13 +22649,11 @@ CREATE INDEX idx_tool_usage_stats_tool_tenant ON public.tool_usage_stats_old USI
 
 CREATE INDEX idx_tuning_proposals_cat ON public.tuning_proposals USING btree (category, task_type) WHERE (status = 'pending'::text);
 
-
 --
 -- Name: idx_tuning_proposals_created; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX idx_tuning_proposals_created ON public.tuning_proposals USING btree (created_at) WHERE (status = 'pending'::text);
-
 
 --
 -- Name: idx_tuning_proposals_status; Type: INDEX; Schema: public; Owner: -
@@ -24877,13 +22661,11 @@ CREATE INDEX idx_tuning_proposals_created ON public.tuning_proposals USING btree
 
 CREATE INDEX idx_tuning_proposals_status ON public.tuning_proposals USING btree (status, ts DESC);
 
-
 --
 -- Name: idx_tuning_signals_5m_pk; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE UNIQUE INDEX idx_tuning_signals_5m_pk ON public.tuning_signals_5m USING btree (bucket, task_type, classifier);
-
 
 --
 -- Name: idx_tuning_signals_5m_task_ts; Type: INDEX; Schema: public; Owner: -
@@ -24891,13 +22673,11 @@ CREATE UNIQUE INDEX idx_tuning_signals_5m_pk ON public.tuning_signals_5m USING b
 
 CREATE INDEX idx_tuning_signals_5m_task_ts ON public.tuning_signals_5m USING btree (task_type, classifier, bucket DESC);
 
-
 --
 -- Name: idx_tuning_signals_daily_pk; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE UNIQUE INDEX idx_tuning_signals_daily_pk ON public.tuning_signals_daily USING btree (bucket, task_type, classifier);
-
 
 --
 -- Name: idx_tuning_signals_daily_task_ts; Type: INDEX; Schema: public; Owner: -
@@ -24905,13 +22685,11 @@ CREATE UNIQUE INDEX idx_tuning_signals_daily_pk ON public.tuning_signals_daily U
 
 CREATE INDEX idx_tuning_signals_daily_task_ts ON public.tuning_signals_daily USING btree (task_type, classifier, bucket DESC);
 
-
 --
 -- Name: idx_tuning_signals_lowq; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX idx_tuning_signals_lowq ON public.tuning_signals USING btree (task_type, ts DESC) WHERE ((quality_score < 0.5) AND (classifier = 'heuristic'::text));
-
 
 --
 -- Name: idx_tuning_signals_session; Type: INDEX; Schema: public; Owner: -
@@ -24919,13 +22697,11 @@ CREATE INDEX idx_tuning_signals_lowq ON public.tuning_signals USING btree (task_
 
 CREATE INDEX idx_tuning_signals_session ON public.tuning_signals USING btree (session_id, ts DESC) WHERE (session_id IS NOT NULL);
 
-
 --
 -- Name: idx_tuning_signals_strategy_task; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX idx_tuning_signals_strategy_task ON public.tuning_signals USING btree (strategy, task_type, ts DESC) WHERE (task_type IS NOT NULL);
-
 
 --
 -- Name: idx_tuning_signals_strategy_ts; Type: INDEX; Schema: public; Owner: -
@@ -24933,13 +22709,11 @@ CREATE INDEX idx_tuning_signals_strategy_task ON public.tuning_signals USING btr
 
 CREATE INDEX idx_tuning_signals_strategy_ts ON public.tuning_signals USING btree (strategy, ts DESC);
 
-
 --
 -- Name: idx_tuning_signals_task_ts; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX idx_tuning_signals_task_ts ON public.tuning_signals USING btree (task_type, ts DESC);
-
 
 --
 -- Name: idx_upgrade_logs_failed; Type: INDEX; Schema: public; Owner: -
@@ -24947,13 +22721,11 @@ CREATE INDEX idx_tuning_signals_task_ts ON public.tuning_signals USING btree (ta
 
 CREATE INDEX idx_upgrade_logs_failed ON public.upgrade_logs USING btree (started_at DESC) WHERE (status = 'failed'::text);
 
-
 --
 -- Name: idx_upgrade_logs_instance; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX idx_upgrade_logs_instance ON public.upgrade_logs USING btree (instance_id, started_at DESC);
-
 
 --
 -- Name: idx_upgrade_logs_status; Type: INDEX; Schema: public; Owner: -
@@ -24961,13 +22733,11 @@ CREATE INDEX idx_upgrade_logs_instance ON public.upgrade_logs USING btree (insta
 
 CREATE INDEX idx_upgrade_logs_status ON public.upgrade_logs USING btree (status, started_at DESC);
 
-
 --
 -- Name: idx_usage_ledger_part_request_id; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX idx_usage_ledger_part_request_id ON ONLY public.usage_ledger USING btree (request_id);
-
 
 --
 -- Name: idx_usage_ledger_part_tenant; Type: INDEX; Schema: public; Owner: -
@@ -24975,13 +22745,11 @@ CREATE INDEX idx_usage_ledger_part_request_id ON ONLY public.usage_ledger USING 
 
 CREATE INDEX idx_usage_ledger_part_tenant ON ONLY public.usage_ledger USING btree (tenant_id, ts);
 
-
 --
 -- Name: idx_usage_ledger_part_ts; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX idx_usage_ledger_part_ts ON ONLY public.usage_ledger USING btree (ts);
-
 
 --
 -- Name: idx_users_tenant; Type: INDEX; Schema: public; Owner: -
@@ -24989,13 +22757,11 @@ CREATE INDEX idx_usage_ledger_part_ts ON ONLY public.usage_ledger USING btree (t
 
 CREATE INDEX idx_users_tenant ON public.users USING btree (tenant_id);
 
-
 --
 -- Name: idx_users_username; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX idx_users_username ON public.users USING btree (username);
-
 
 --
 -- Name: idx_wal_session; Type: INDEX; Schema: public; Owner: -
@@ -25003,13 +22769,11 @@ CREATE INDEX idx_users_username ON public.users USING btree (username);
 
 CREATE INDEX idx_wal_session ON ONLY public.request_wal USING btree (gw_session_id, created_at);
 
-
 --
 -- Name: idx_wal_status_stage; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX idx_wal_status_stage ON ONLY public.request_wal USING btree (status, stage);
-
 
 --
 -- Name: idx_wal_tenant_created; Type: INDEX; Schema: public; Owner: -
@@ -25017,13 +22781,11 @@ CREATE INDEX idx_wal_status_stage ON ONLY public.request_wal USING btree (status
 
 CREATE INDEX idx_wal_tenant_created ON ONLY public.request_wal USING btree (tenant_id, created_at DESC);
 
-
 --
 -- Name: idx_work_type_config_category; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX idx_work_type_config_category ON public.work_type_config USING btree (category, sort_order);
-
 
 --
 -- Name: idx_work_type_config_l1; Type: INDEX; Schema: public; Owner: -
@@ -25031,13 +22793,11 @@ CREATE INDEX idx_work_type_config_category ON public.work_type_config USING btre
 
 CREATE INDEX idx_work_type_config_l1 ON public.work_type_config USING btree (l1_task_type);
 
-
 --
 -- Name: idx_wtmr_tier; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX idx_wtmr_tier ON public.work_type_model_route USING btree (work_type_key, tier, weight DESC);
-
 
 --
 -- Name: idx_wtmr_work_type; Type: INDEX; Schema: public; Owner: -
@@ -25045,510 +22805,11 @@ CREATE INDEX idx_wtmr_tier ON public.work_type_model_route USING btree (work_typ
 
 CREATE INDEX idx_wtmr_work_type ON public.work_type_model_route USING btree (work_type_key);
 
-
---
--- Name: request_logs_2026_07_agent_type_idx; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE INDEX request_logs_2026_07_agent_type_idx ON public.request_logs_2026_07 USING btree (agent_type);
-
-
---
--- Name: request_logs_2026_07_cached_response_id_idx; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE INDEX request_logs_2026_07_cached_response_id_idx ON public.request_logs_2026_07 USING btree (cached_response_id) WHERE (cached_response_id IS NOT NULL);
-
-
---
--- Name: request_logs_2026_07_canonical_model_ts_idx; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE INDEX request_logs_2026_07_canonical_model_ts_idx ON public.request_logs_2026_07 USING btree (canonical_model, ts DESC) WHERE (canonical_model IS NOT NULL);
-
-
---
--- Name: request_logs_2026_07_client_ip_idx; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE INDEX request_logs_2026_07_client_ip_idx ON public.request_logs_2026_07 USING btree (client_ip);
-
-
---
--- Name: request_logs_2026_07_client_model_idx1; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE INDEX request_logs_2026_07_client_model_idx1 ON public.request_logs_2026_07 USING btree (client_model);
-
-
---
--- Name: request_logs_2026_07_client_model_idx2; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE INDEX request_logs_2026_07_client_model_idx2 ON public.request_logs_2026_07 USING hash (client_model);
-
-
---
--- Name: request_logs_2026_07_client_model_idx3; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE INDEX request_logs_2026_07_client_model_idx3 ON public.request_logs_2026_07 USING btree (client_model text_pattern_ops);
-
-
---
--- Name: request_logs_2026_07_client_request_id_ts_idx; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE INDEX request_logs_2026_07_client_request_id_ts_idx ON public.request_logs_2026_07 USING btree (client_request_id, ts DESC) WHERE (client_request_id IS NOT NULL);
-
-
---
--- Name: request_logs_2026_07_customer_id_idx; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE INDEX request_logs_2026_07_customer_id_idx ON public.request_logs_2026_07 USING btree (customer_id);
-
-
---
--- Name: request_logs_2026_07_effective_timeout_seconds_latency_ms_idx; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE INDEX request_logs_2026_07_effective_timeout_seconds_latency_ms_idx ON public.request_logs_2026_07 USING btree (effective_timeout_seconds, latency_ms) WHERE (effective_timeout_seconds IS NOT NULL);
-
-
---
--- Name: request_logs_2026_07_gw_session_id_ts_idx; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE INDEX request_logs_2026_07_gw_session_id_ts_idx ON public.request_logs_2026_07 USING btree (gw_session_id, ts DESC) WHERE ((gw_session_id IS NOT NULL) AND (gw_session_id <> ''::text));
-
-
---
--- Name: request_logs_2026_07_gw_session_id_ts_idx1; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE INDEX request_logs_2026_07_gw_session_id_ts_idx1 ON public.request_logs_2026_07 USING btree (gw_session_id, ts DESC) WHERE ((gw_session_id IS NOT NULL) AND (outbound_body IS NOT NULL));
-
-
---
--- Name: request_logs_2026_07_gw_task_id_ts_idx; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE INDEX request_logs_2026_07_gw_task_id_ts_idx ON public.request_logs_2026_07 USING btree (gw_task_id, ts DESC) WHERE ((gw_task_id IS NOT NULL) AND (gw_task_id <> ''::text));
-
-
---
--- Name: request_logs_2026_07_lower_idx; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE INDEX request_logs_2026_07_lower_idx ON public.request_logs_2026_07 USING btree (lower(client_model));
-
-
---
--- Name: request_logs_2026_07_node_switch_count_ts_idx; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE INDEX request_logs_2026_07_node_switch_count_ts_idx ON public.request_logs_2026_07 USING btree (node_switch_count, ts DESC) WHERE (node_switch_count > 0);
-
-
---
--- Name: request_logs_2026_07_parent_request_id_ts_idx; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE INDEX request_logs_2026_07_parent_request_id_ts_idx ON public.request_logs_2026_07 USING btree (parent_request_id, ts DESC) WHERE (parent_request_id IS NOT NULL);
-
-
---
--- Name: request_logs_2026_07_protocol_conversion_idx; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE INDEX request_logs_2026_07_protocol_conversion_idx ON public.request_logs_2026_07 USING btree (protocol_conversion) WHERE (protocol_conversion = true);
-
-
---
--- Name: request_logs_2026_07_provider_id_quality_score_ts_idx; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE INDEX request_logs_2026_07_provider_id_quality_score_ts_idx ON public.request_logs_2026_07 USING btree (provider_id, quality_score, ts DESC) WHERE (quality_score IS NOT NULL);
-
-
---
--- Name: request_logs_2026_07_provider_id_ts_idx; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE INDEX request_logs_2026_07_provider_id_ts_idx ON public.request_logs_2026_07 USING btree (provider_id, ts DESC) WHERE ((tool_calls IS NOT NULL) AND (jsonb_array_length(tool_calls) > 0));
-
-
---
--- Name: request_logs_2026_07_provider_model_ts_idx; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE INDEX request_logs_2026_07_provider_model_ts_idx ON public.request_logs_2026_07 USING btree (provider_model, ts DESC) WHERE (provider_model IS NOT NULL);
-
-
---
--- Name: request_logs_2026_07_quality_flags_idx; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE INDEX request_logs_2026_07_quality_flags_idx ON public.request_logs_2026_07 USING gin (quality_flags) WHERE (cardinality(quality_flags) > 0);
-
-
---
--- Name: request_logs_2026_07_rate_limit_status_idx; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE INDEX request_logs_2026_07_rate_limit_status_idx ON public.request_logs_2026_07 USING btree (rate_limit_status) WHERE ((rate_limit_status)::text = ANY ((ARRAY['exceeded'::character varying, 'approaching_limit'::character varying])::text[]));
-
-
---
--- Name: request_logs_2026_07_request_id_idx; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE INDEX request_logs_2026_07_request_id_idx ON public.request_logs_2026_07 USING btree (request_id) WHERE (trace_events IS NOT NULL);
-
-
---
--- Name: request_logs_2026_07_request_id_ts_idx; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE UNIQUE INDEX request_logs_2026_07_request_id_ts_idx ON public.request_logs_2026_07 USING btree (request_id, ts);
-
-
---
--- Name: request_logs_2026_07_request_status_ts_idx; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE INDEX request_logs_2026_07_request_status_ts_idx ON public.request_logs_2026_07 USING btree (request_status, ts DESC) WHERE ((request_status IS NOT NULL) AND (request_status <> ''::text));
-
-
---
--- Name: request_logs_2026_07_task_type_idx; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE INDEX request_logs_2026_07_task_type_idx ON public.request_logs_2026_07 USING btree (task_type);
-
-
---
--- Name: request_logs_2026_07_tenant_id_gw_task_id_ts_idx; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE INDEX request_logs_2026_07_tenant_id_gw_task_id_ts_idx ON public.request_logs_2026_07 USING btree (tenant_id, gw_task_id, ts DESC) WHERE ((gw_task_id IS NOT NULL) AND (gw_task_id <> ''::text));
-
-
---
--- Name: request_logs_2026_07_tenant_id_ts_idx; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE INDEX request_logs_2026_07_tenant_id_ts_idx ON public.request_logs_2026_07 USING btree (tenant_id, ts DESC) WHERE ((credits_charged IS NOT NULL) AND (credits_charged > 0));
-
-
---
--- Name: request_logs_2026_07_tenant_id_ts_idx1; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE INDEX request_logs_2026_07_tenant_id_ts_idx1 ON public.request_logs_2026_07 USING btree (tenant_id, ts DESC) WHERE ((outbound_msg_count IS NOT NULL) AND (outbound_msg_count > 0));
-
-
---
--- Name: request_logs_2026_07_tool_calls_idx; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE INDEX request_logs_2026_07_tool_calls_idx ON public.request_logs_2026_07 USING gin (tool_calls) WHERE ((tool_calls IS NOT NULL) AND (tool_calls <> '[]'::jsonb));
-
-
---
--- Name: request_logs_2026_07_ts_idx2; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE INDEX request_logs_2026_07_ts_idx2 ON public.request_logs_2026_07 USING btree (ts DESC);
-
-
---
--- Name: request_logs_2026_07_upstream_finish_reason_ts_idx; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE INDEX request_logs_2026_07_upstream_finish_reason_ts_idx ON public.request_logs_2026_07 USING btree (upstream_finish_reason, ts DESC) WHERE ((upstream_finish_reason IS NOT NULL) AND (upstream_finish_reason <> ''::text));
-
-
---
--- Name: request_logs_2026_07_upstream_status_code_ts_idx; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE INDEX request_logs_2026_07_upstream_status_code_ts_idx ON public.request_logs_2026_07 USING btree (upstream_status_code, ts DESC) WHERE (upstream_status_code IS NOT NULL);
-
-
---
--- Name: request_logs_2026_07_work_type_ts_idx; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE INDEX request_logs_2026_07_work_type_ts_idx ON public.request_logs_2026_07 USING btree (work_type, ts DESC) WHERE ((work_type IS NOT NULL) AND (work_type <> ''::text));
-
-
---
--- Name: request_logs_2026_08_agent_type_idx; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE INDEX request_logs_2026_08_agent_type_idx ON public.request_logs_2026_08 USING btree (agent_type);
-
-
---
--- Name: request_logs_2026_08_cached_response_id_idx; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE INDEX request_logs_2026_08_cached_response_id_idx ON public.request_logs_2026_08 USING btree (cached_response_id) WHERE (cached_response_id IS NOT NULL);
-
-
---
--- Name: request_logs_2026_08_canonical_model_ts_idx; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE INDEX request_logs_2026_08_canonical_model_ts_idx ON public.request_logs_2026_08 USING btree (canonical_model, ts DESC) WHERE (canonical_model IS NOT NULL);
-
-
---
--- Name: request_logs_2026_08_client_ip_idx; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE INDEX request_logs_2026_08_client_ip_idx ON public.request_logs_2026_08 USING btree (client_ip);
-
-
---
--- Name: request_logs_2026_08_client_model_idx; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE INDEX request_logs_2026_08_client_model_idx ON public.request_logs_2026_08 USING btree (client_model);
-
-
---
--- Name: request_logs_2026_08_client_model_idx1; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE INDEX request_logs_2026_08_client_model_idx1 ON public.request_logs_2026_08 USING btree (client_model text_pattern_ops);
-
-
---
--- Name: request_logs_2026_08_client_model_idx2; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE INDEX request_logs_2026_08_client_model_idx2 ON public.request_logs_2026_08 USING hash (client_model);
-
-
---
--- Name: request_logs_2026_08_client_request_id_ts_idx; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE INDEX request_logs_2026_08_client_request_id_ts_idx ON public.request_logs_2026_08 USING btree (client_request_id, ts DESC) WHERE (client_request_id IS NOT NULL);
-
-
---
--- Name: request_logs_2026_08_client_timeout_ts_idx; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE INDEX request_logs_2026_08_client_timeout_ts_idx ON public.request_logs_2026_08 USING btree (client_timeout, ts DESC) WHERE (client_timeout = true);
-
-
---
--- Name: request_logs_2026_08_customer_id_idx; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE INDEX request_logs_2026_08_customer_id_idx ON public.request_logs_2026_08 USING btree (customer_id);
-
-
---
--- Name: request_logs_2026_08_effective_timeout_seconds_latency_ms_idx; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE INDEX request_logs_2026_08_effective_timeout_seconds_latency_ms_idx ON public.request_logs_2026_08 USING btree (effective_timeout_seconds, latency_ms) WHERE (effective_timeout_seconds IS NOT NULL);
-
-
---
--- Name: request_logs_2026_08_gw_session_id_ts_idx; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE INDEX request_logs_2026_08_gw_session_id_ts_idx ON public.request_logs_2026_08 USING btree (gw_session_id, ts DESC) WHERE ((gw_session_id IS NOT NULL) AND (gw_session_id <> ''::text));
-
-
---
--- Name: request_logs_2026_08_gw_session_id_ts_idx1; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE INDEX request_logs_2026_08_gw_session_id_ts_idx1 ON public.request_logs_2026_08 USING btree (gw_session_id, ts DESC) WHERE ((gw_session_id IS NOT NULL) AND (outbound_body IS NOT NULL));
-
-
---
--- Name: request_logs_2026_08_gw_task_id_ts_idx; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE INDEX request_logs_2026_08_gw_task_id_ts_idx ON public.request_logs_2026_08 USING btree (gw_task_id, ts DESC) WHERE ((gw_task_id IS NOT NULL) AND (gw_task_id <> ''::text));
-
-
---
--- Name: request_logs_2026_08_lower_idx; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE INDEX request_logs_2026_08_lower_idx ON public.request_logs_2026_08 USING btree (lower(client_model));
-
-
---
--- Name: request_logs_2026_08_node_switch_count_ts_idx; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE INDEX request_logs_2026_08_node_switch_count_ts_idx ON public.request_logs_2026_08 USING btree (node_switch_count, ts DESC) WHERE (node_switch_count > 0);
-
-
---
--- Name: request_logs_2026_08_parent_request_id_ts_idx; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE INDEX request_logs_2026_08_parent_request_id_ts_idx ON public.request_logs_2026_08 USING btree (parent_request_id, ts DESC) WHERE (parent_request_id IS NOT NULL);
-
-
---
--- Name: request_logs_2026_08_protocol_conversion_idx; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE INDEX request_logs_2026_08_protocol_conversion_idx ON public.request_logs_2026_08 USING btree (protocol_conversion) WHERE (protocol_conversion = true);
-
-
---
--- Name: request_logs_2026_08_provider_id_quality_score_ts_idx; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE INDEX request_logs_2026_08_provider_id_quality_score_ts_idx ON public.request_logs_2026_08 USING btree (provider_id, quality_score, ts DESC) WHERE (quality_score IS NOT NULL);
-
-
---
--- Name: request_logs_2026_08_provider_id_ts_idx; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE INDEX request_logs_2026_08_provider_id_ts_idx ON public.request_logs_2026_08 USING btree (provider_id, ts DESC) WHERE ((tool_calls IS NOT NULL) AND (jsonb_array_length(tool_calls) > 0));
-
-
---
--- Name: request_logs_2026_08_provider_model_ts_idx; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE INDEX request_logs_2026_08_provider_model_ts_idx ON public.request_logs_2026_08 USING btree (provider_model, ts DESC) WHERE (provider_model IS NOT NULL);
-
-
---
--- Name: request_logs_2026_08_quality_flags_idx; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE INDEX request_logs_2026_08_quality_flags_idx ON public.request_logs_2026_08 USING gin (quality_flags) WHERE (cardinality(quality_flags) > 0);
-
-
---
--- Name: request_logs_2026_08_rate_limit_status_idx; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE INDEX request_logs_2026_08_rate_limit_status_idx ON public.request_logs_2026_08 USING btree (rate_limit_status) WHERE ((rate_limit_status)::text = ANY ((ARRAY['exceeded'::character varying, 'approaching_limit'::character varying])::text[]));
-
-
---
--- Name: request_logs_2026_08_request_id_idx; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE INDEX request_logs_2026_08_request_id_idx ON public.request_logs_2026_08 USING btree (request_id) WHERE (trace_events IS NOT NULL);
-
-
---
--- Name: request_logs_2026_08_request_id_ts_idx; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE UNIQUE INDEX request_logs_2026_08_request_id_ts_idx ON public.request_logs_2026_08 USING btree (request_id, ts);
-
-
---
--- Name: request_logs_2026_08_request_status_ts_idx; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE INDEX request_logs_2026_08_request_status_ts_idx ON public.request_logs_2026_08 USING btree (request_status, ts DESC) WHERE ((request_status IS NOT NULL) AND (request_status <> ''::text));
-
-
---
--- Name: request_logs_2026_08_stream_chunk_errors_ts_idx; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE INDEX request_logs_2026_08_stream_chunk_errors_ts_idx ON public.request_logs_2026_08 USING btree (stream_chunk_errors, ts DESC) WHERE ((stream_chunk_errors IS NOT NULL) AND (stream_chunk_errors > 0));
-
-
---
--- Name: request_logs_2026_08_task_type_idx; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE INDEX request_logs_2026_08_task_type_idx ON public.request_logs_2026_08 USING btree (task_type);
-
-
---
--- Name: request_logs_2026_08_tenant_id_gw_task_id_ts_idx; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE INDEX request_logs_2026_08_tenant_id_gw_task_id_ts_idx ON public.request_logs_2026_08 USING btree (tenant_id, gw_task_id, ts DESC) WHERE ((gw_task_id IS NOT NULL) AND (gw_task_id <> ''::text));
-
-
---
--- Name: request_logs_2026_08_tenant_id_ts_idx; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE INDEX request_logs_2026_08_tenant_id_ts_idx ON public.request_logs_2026_08 USING btree (tenant_id, ts DESC) WHERE ((outbound_msg_count IS NOT NULL) AND (outbound_msg_count > 0));
-
-
---
--- Name: request_logs_2026_08_tenant_id_ts_idx1; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE INDEX request_logs_2026_08_tenant_id_ts_idx1 ON public.request_logs_2026_08 USING btree (tenant_id, ts DESC) WHERE ((credits_charged IS NOT NULL) AND (credits_charged > 0));
-
-
---
--- Name: request_logs_2026_08_tool_calls_idx; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE INDEX request_logs_2026_08_tool_calls_idx ON public.request_logs_2026_08 USING gin (tool_calls) WHERE ((tool_calls IS NOT NULL) AND (tool_calls <> '[]'::jsonb));
-
-
---
--- Name: request_logs_2026_08_ts_idx; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE INDEX request_logs_2026_08_ts_idx ON public.request_logs_2026_08 USING btree (ts DESC);
-
-
---
--- Name: request_logs_2026_08_ts_idx1; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE INDEX request_logs_2026_08_ts_idx1 ON public.request_logs_2026_08 USING btree (ts DESC) WHERE (attachments IS NOT NULL);
-
-
---
--- Name: request_logs_2026_08_upstream_finish_reason_ts_idx; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE INDEX request_logs_2026_08_upstream_finish_reason_ts_idx ON public.request_logs_2026_08 USING btree (upstream_finish_reason, ts DESC) WHERE ((upstream_finish_reason IS NOT NULL) AND (upstream_finish_reason <> ''::text));
-
-
---
--- Name: request_logs_2026_08_upstream_status_code_ts_idx; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE INDEX request_logs_2026_08_upstream_status_code_ts_idx ON public.request_logs_2026_08 USING btree (upstream_status_code, ts DESC) WHERE (upstream_status_code IS NOT NULL);
-
-
---
--- Name: request_logs_2026_08_work_type_ts_idx; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE INDEX request_logs_2026_08_work_type_ts_idx ON public.request_logs_2026_08 USING btree (work_type, ts DESC) WHERE ((work_type IS NOT NULL) AND (work_type <> ''::text));
-
-
 --
 -- Name: request_logs_bodies_hot_request_id_idx; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX request_logs_bodies_hot_request_id_idx ON public.request_logs_bodies_hot USING btree (request_id);
-
 
 --
 -- Name: request_logs_bodies_hot_ts_idx; Type: INDEX; Schema: public; Owner: -
@@ -25556,13 +22817,11 @@ CREATE INDEX request_logs_bodies_hot_request_id_idx ON public.request_logs_bodie
 
 CREATE INDEX request_logs_bodies_hot_ts_idx ON public.request_logs_bodies_hot USING btree (ts DESC);
 
-
 --
 -- Name: request_wal_2026_07_gw_session_id_created_at_idx; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX request_wal_2026_07_gw_session_id_created_at_idx ON public.request_wal_2026_07 USING btree (gw_session_id, created_at);
-
 
 --
 -- Name: request_wal_2026_07_status_stage_idx; Type: INDEX; Schema: public; Owner: -
@@ -25570,13 +22829,11 @@ CREATE INDEX request_wal_2026_07_gw_session_id_created_at_idx ON public.request_
 
 CREATE INDEX request_wal_2026_07_status_stage_idx ON public.request_wal_2026_07 USING btree (status, stage);
 
-
 --
 -- Name: request_wal_2026_07_status_stage_idx2; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX request_wal_2026_07_status_stage_idx2 ON public.request_wal_2026_07 USING btree (status, stage);
-
 
 --
 -- Name: request_wal_2026_07_tenant_id_created_at_idx; Type: INDEX; Schema: public; Owner: -
@@ -25584,13 +22841,11 @@ CREATE INDEX request_wal_2026_07_status_stage_idx2 ON public.request_wal_2026_07
 
 CREATE INDEX request_wal_2026_07_tenant_id_created_at_idx ON public.request_wal_2026_07 USING btree (tenant_id, created_at DESC);
 
-
 --
 -- Name: request_wal_2026_07_tenant_id_created_at_idx2; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX request_wal_2026_07_tenant_id_created_at_idx2 ON public.request_wal_2026_07 USING btree (tenant_id, created_at DESC);
-
 
 --
 -- Name: request_wal_2026_08_gw_session_id_created_at_idx; Type: INDEX; Schema: public; Owner: -
@@ -25598,13 +22853,11 @@ CREATE INDEX request_wal_2026_07_tenant_id_created_at_idx2 ON public.request_wal
 
 CREATE INDEX request_wal_2026_08_gw_session_id_created_at_idx ON public.request_wal_2026_08 USING btree (gw_session_id, created_at);
 
-
 --
 -- Name: request_wal_2026_08_status_stage_idx; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX request_wal_2026_08_status_stage_idx ON public.request_wal_2026_08 USING btree (status, stage);
-
 
 --
 -- Name: request_wal_2026_08_tenant_id_created_at_idx; Type: INDEX; Schema: public; Owner: -
@@ -25612,13 +22865,11 @@ CREATE INDEX request_wal_2026_08_status_stage_idx ON public.request_wal_2026_08 
 
 CREATE INDEX request_wal_2026_08_tenant_id_created_at_idx ON public.request_wal_2026_08 USING btree (tenant_id, created_at DESC);
 
-
 --
 -- Name: request_wal_hot_status_stage_idx; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX request_wal_hot_status_stage_idx ON public.request_wal_hot USING btree (status, stage);
-
 
 --
 -- Name: request_wal_hot_tenant_id_created_at_idx; Type: INDEX; Schema: public; Owner: -
@@ -25626,13 +22877,11 @@ CREATE INDEX request_wal_hot_status_stage_idx ON public.request_wal_hot USING bt
 
 CREATE INDEX request_wal_hot_tenant_id_created_at_idx ON public.request_wal_hot USING btree (tenant_id, created_at DESC);
 
-
 --
 -- Name: routing_decision_log_2026_07_chosen_credential_id_ts_idx; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX routing_decision_log_2026_07_chosen_credential_id_ts_idx ON public.routing_decision_log_2026_07 USING btree (chosen_credential_id, ts DESC) WHERE (chosen_credential_id IS NOT NULL);
-
 
 --
 -- Name: routing_decision_log_2026_07_model_ts_idx; Type: INDEX; Schema: public; Owner: -
@@ -25640,13 +22889,11 @@ CREATE INDEX routing_decision_log_2026_07_chosen_credential_id_ts_idx ON public.
 
 CREATE INDEX routing_decision_log_2026_07_model_ts_idx ON public.routing_decision_log_2026_07 USING btree (model, ts DESC);
 
-
 --
 -- Name: routing_decision_log_2026_07_request_id_idx; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX routing_decision_log_2026_07_request_id_idx ON public.routing_decision_log_2026_07 USING btree (request_id);
-
 
 --
 -- Name: routing_decision_log_2026_07_success_ts_idx; Type: INDEX; Schema: public; Owner: -
@@ -25654,13 +22901,11 @@ CREATE INDEX routing_decision_log_2026_07_request_id_idx ON public.routing_decis
 
 CREATE INDEX routing_decision_log_2026_07_success_ts_idx ON public.routing_decision_log_2026_07 USING btree (success, ts DESC);
 
-
 --
 -- Name: routing_decision_log_2026_07_tenant_id_ts_idx; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX routing_decision_log_2026_07_tenant_id_ts_idx ON public.routing_decision_log_2026_07 USING btree (tenant_id, ts DESC) WHERE (tenant_id IS NOT NULL);
-
 
 --
 -- Name: routing_decision_log_2026_07_ts_idx; Type: INDEX; Schema: public; Owner: -
@@ -25668,13 +22913,11 @@ CREATE INDEX routing_decision_log_2026_07_tenant_id_ts_idx ON public.routing_dec
 
 CREATE INDEX routing_decision_log_2026_07_ts_idx ON public.routing_decision_log_2026_07 USING btree (ts DESC);
 
-
 --
 -- Name: routing_decision_log_2026_08_chosen_credential_id_ts_idx; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX routing_decision_log_2026_08_chosen_credential_id_ts_idx ON public.routing_decision_log_2026_08 USING btree (chosen_credential_id, ts DESC) WHERE (chosen_credential_id IS NOT NULL);
-
 
 --
 -- Name: routing_decision_log_2026_08_model_ts_idx; Type: INDEX; Schema: public; Owner: -
@@ -25682,13 +22925,11 @@ CREATE INDEX routing_decision_log_2026_08_chosen_credential_id_ts_idx ON public.
 
 CREATE INDEX routing_decision_log_2026_08_model_ts_idx ON public.routing_decision_log_2026_08 USING btree (model, ts DESC);
 
-
 --
 -- Name: routing_decision_log_2026_08_request_id_idx; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX routing_decision_log_2026_08_request_id_idx ON public.routing_decision_log_2026_08 USING btree (request_id);
-
 
 --
 -- Name: routing_decision_log_2026_08_success_ts_idx; Type: INDEX; Schema: public; Owner: -
@@ -25696,13 +22937,11 @@ CREATE INDEX routing_decision_log_2026_08_request_id_idx ON public.routing_decis
 
 CREATE INDEX routing_decision_log_2026_08_success_ts_idx ON public.routing_decision_log_2026_08 USING btree (success, ts DESC);
 
-
 --
 -- Name: routing_decision_log_2026_08_tenant_id_ts_idx; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX routing_decision_log_2026_08_tenant_id_ts_idx ON public.routing_decision_log_2026_08 USING btree (tenant_id, ts DESC) WHERE (tenant_id IS NOT NULL);
-
 
 --
 -- Name: routing_decision_log_2026_08_ts_idx; Type: INDEX; Schema: public; Owner: -
@@ -25710,13 +22949,11 @@ CREATE INDEX routing_decision_log_2026_08_tenant_id_ts_idx ON public.routing_dec
 
 CREATE INDEX routing_decision_log_2026_08_ts_idx ON public.routing_decision_log_2026_08 USING btree (ts DESC);
 
-
 --
 -- Name: routing_decision_log_hot_chosen_credential_id_ts_idx; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX routing_decision_log_hot_chosen_credential_id_ts_idx ON public.routing_decision_log_hot USING btree (chosen_credential_id, ts DESC) WHERE (chosen_credential_id IS NOT NULL);
-
 
 --
 -- Name: routing_decision_log_hot_model_ts_idx; Type: INDEX; Schema: public; Owner: -
@@ -25724,13 +22961,11 @@ CREATE INDEX routing_decision_log_hot_chosen_credential_id_ts_idx ON public.rout
 
 CREATE INDEX routing_decision_log_hot_model_ts_idx ON public.routing_decision_log_hot USING btree (model, ts DESC);
 
-
 --
 -- Name: routing_decision_log_hot_request_id_idx; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX routing_decision_log_hot_request_id_idx ON public.routing_decision_log_hot USING btree (request_id);
-
 
 --
 -- Name: routing_decision_log_hot_request_id_ts_key; Type: INDEX; Schema: public; Owner: -
@@ -25738,13 +22973,11 @@ CREATE INDEX routing_decision_log_hot_request_id_idx ON public.routing_decision_
 
 CREATE UNIQUE INDEX routing_decision_log_hot_request_id_ts_key ON public.routing_decision_log_hot USING btree (request_id, ts);
 
-
 --
 -- Name: routing_decision_log_hot_success_ts_idx; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX routing_decision_log_hot_success_ts_idx ON public.routing_decision_log_hot USING btree (success, ts DESC);
-
 
 --
 -- Name: routing_decision_log_hot_tenant_id_ts_idx; Type: INDEX; Schema: public; Owner: -
@@ -25752,13 +22985,11 @@ CREATE INDEX routing_decision_log_hot_success_ts_idx ON public.routing_decision_
 
 CREATE INDEX routing_decision_log_hot_tenant_id_ts_idx ON public.routing_decision_log_hot USING btree (tenant_id, ts DESC) WHERE (tenant_id IS NOT NULL);
 
-
 --
 -- Name: routing_decision_log_hot_ts_idx; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX routing_decision_log_hot_ts_idx ON public.routing_decision_log_hot USING btree (ts DESC);
-
 
 --
 -- Name: session_bodies_2026_07_request_id_idx; Type: INDEX; Schema: public; Owner: -
@@ -25766,13 +22997,11 @@ CREATE INDEX routing_decision_log_hot_ts_idx ON public.routing_decision_log_hot 
 
 CREATE INDEX session_bodies_2026_07_request_id_idx ON public.session_bodies_2026_07 USING btree (request_id);
 
-
 --
 -- Name: session_bodies_2026_07_session_id_turn_no_idx; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX session_bodies_2026_07_session_id_turn_no_idx ON public.session_bodies_2026_07 USING btree (session_id, turn_no DESC);
-
 
 --
 -- Name: session_bodies_2026_08_request_id_idx; Type: INDEX; Schema: public; Owner: -
@@ -25780,13 +23009,11 @@ CREATE INDEX session_bodies_2026_07_session_id_turn_no_idx ON public.session_bod
 
 CREATE INDEX session_bodies_2026_08_request_id_idx ON public.session_bodies_2026_08 USING btree (request_id);
 
-
 --
 -- Name: session_bodies_2026_08_session_id_turn_no_idx; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX session_bodies_2026_08_session_id_turn_no_idx ON public.session_bodies_2026_08 USING btree (session_id, turn_no DESC);
-
 
 --
 -- Name: session_turns_2026_07_request_id_idx; Type: INDEX; Schema: public; Owner: -
@@ -25794,13 +23021,11 @@ CREATE INDEX session_bodies_2026_08_session_id_turn_no_idx ON public.session_bod
 
 CREATE INDEX session_turns_2026_07_request_id_idx ON public.session_turns_2026_07 USING btree (request_id);
 
-
 --
 -- Name: session_turns_2026_07_session_id_turn_no_idx; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX session_turns_2026_07_session_id_turn_no_idx ON public.session_turns_2026_07 USING btree (session_id, turn_no DESC);
-
 
 --
 -- Name: session_turns_2026_07_tenant_id_ts_idx; Type: INDEX; Schema: public; Owner: -
@@ -25808,13 +23033,11 @@ CREATE INDEX session_turns_2026_07_session_id_turn_no_idx ON public.session_turn
 
 CREATE INDEX session_turns_2026_07_tenant_id_ts_idx ON public.session_turns_2026_07 USING btree (tenant_id, ts DESC);
 
-
 --
 -- Name: session_turns_2026_08_request_id_idx; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX session_turns_2026_08_request_id_idx ON public.session_turns_2026_08 USING btree (request_id);
-
 
 --
 -- Name: session_turns_2026_08_session_id_turn_no_idx; Type: INDEX; Schema: public; Owner: -
@@ -25822,13 +23045,11 @@ CREATE INDEX session_turns_2026_08_request_id_idx ON public.session_turns_2026_0
 
 CREATE INDEX session_turns_2026_08_session_id_turn_no_idx ON public.session_turns_2026_08 USING btree (session_id, turn_no DESC);
 
-
 --
 -- Name: session_turns_2026_08_tenant_id_ts_idx; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX session_turns_2026_08_tenant_id_ts_idx ON public.session_turns_2026_08 USING btree (tenant_id, ts DESC);
-
 
 --
 -- Name: sessions_2026_07_primary_request_id_idx; Type: INDEX; Schema: public; Owner: -
@@ -25836,13 +23057,11 @@ CREATE INDEX session_turns_2026_08_tenant_id_ts_idx ON public.session_turns_2026
 
 CREATE INDEX sessions_2026_07_primary_request_id_idx ON public.sessions_2026_07 USING btree (primary_request_id) WHERE (primary_request_id IS NOT NULL);
 
-
 --
 -- Name: sessions_2026_07_session_id_idx; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX sessions_2026_07_session_id_idx ON public.sessions_2026_07 USING btree (session_id);
-
 
 --
 -- Name: sessions_2026_07_status_updated_at_idx; Type: INDEX; Schema: public; Owner: -
@@ -25850,13 +23069,11 @@ CREATE INDEX sessions_2026_07_session_id_idx ON public.sessions_2026_07 USING bt
 
 CREATE INDEX sessions_2026_07_status_updated_at_idx ON public.sessions_2026_07 USING btree (status, updated_at DESC);
 
-
 --
 -- Name: sessions_2026_07_tenant_id_created_at_idx; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX sessions_2026_07_tenant_id_created_at_idx ON public.sessions_2026_07 USING btree (tenant_id, created_at DESC);
-
 
 --
 -- Name: sessions_2026_08_primary_request_id_idx; Type: INDEX; Schema: public; Owner: -
@@ -25864,13 +23081,11 @@ CREATE INDEX sessions_2026_07_tenant_id_created_at_idx ON public.sessions_2026_0
 
 CREATE INDEX sessions_2026_08_primary_request_id_idx ON public.sessions_2026_08 USING btree (primary_request_id) WHERE (primary_request_id IS NOT NULL);
 
-
 --
 -- Name: sessions_2026_08_session_id_idx; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX sessions_2026_08_session_id_idx ON public.sessions_2026_08 USING btree (session_id);
-
 
 --
 -- Name: sessions_2026_08_status_updated_at_idx; Type: INDEX; Schema: public; Owner: -
@@ -25878,13 +23093,11 @@ CREATE INDEX sessions_2026_08_session_id_idx ON public.sessions_2026_08 USING bt
 
 CREATE INDEX sessions_2026_08_status_updated_at_idx ON public.sessions_2026_08 USING btree (status, updated_at DESC);
 
-
 --
 -- Name: sessions_2026_08_tenant_id_created_at_idx; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX sessions_2026_08_tenant_id_created_at_idx ON public.sessions_2026_08 USING btree (tenant_id, created_at DESC);
-
 
 --
 -- Name: system_probe_runs_default_automaticity_created_at_idx; Type: INDEX; Schema: public; Owner: -
@@ -25892,13 +23105,11 @@ CREATE INDEX sessions_2026_08_tenant_id_created_at_idx ON public.sessions_2026_0
 
 CREATE INDEX system_probe_runs_default_automaticity_created_at_idx ON public.system_probe_runs_default USING btree (automaticity, created_at DESC);
 
-
 --
 -- Name: system_probe_runs_default_credential_id_created_at_idx; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX system_probe_runs_default_credential_id_created_at_idx ON public.system_probe_runs_default USING btree (credential_id, created_at DESC);
-
 
 --
 -- Name: system_probe_runs_default_provider_id_created_at_idx; Type: INDEX; Schema: public; Owner: -
@@ -25906,13 +23117,11 @@ CREATE INDEX system_probe_runs_default_credential_id_created_at_idx ON public.sy
 
 CREATE INDEX system_probe_runs_default_provider_id_created_at_idx ON public.system_probe_runs_default USING btree (provider_id, created_at DESC);
 
-
 --
 -- Name: system_probe_runs_default_raw_model_created_at_idx; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX system_probe_runs_default_raw_model_created_at_idx ON public.system_probe_runs_default USING btree (raw_model, created_at DESC);
-
 
 --
 -- Name: system_probe_runs_default_skip_reason_idx; Type: INDEX; Schema: public; Owner: -
@@ -25920,13 +23129,11 @@ CREATE INDEX system_probe_runs_default_raw_model_created_at_idx ON public.system
 
 CREATE INDEX system_probe_runs_default_skip_reason_idx ON public.system_probe_runs_default USING btree (skip_reason) WHERE (skip_reason IS NOT NULL);
 
-
 --
 -- Name: system_probe_runs_default_status_created_at_idx; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX system_probe_runs_default_status_created_at_idx ON public.system_probe_runs_default USING btree (status, created_at DESC);
-
 
 --
 -- Name: system_probe_runs_default_task_id_idx; Type: INDEX; Schema: public; Owner: -
@@ -25934,13 +23141,11 @@ CREATE INDEX system_probe_runs_default_status_created_at_idx ON public.system_pr
 
 CREATE INDEX system_probe_runs_default_task_id_idx ON public.system_probe_runs_default USING btree (task_id);
 
-
 --
 -- Name: tool_usage_stats_2026_07_created_at_idx; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX tool_usage_stats_2026_07_created_at_idx ON public.tool_usage_stats_2026_07 USING btree (created_at);
-
 
 --
 -- Name: tool_usage_stats_2026_07_tenant_id_usage_date_idx; Type: INDEX; Schema: public; Owner: -
@@ -25948,13 +23153,11 @@ CREATE INDEX tool_usage_stats_2026_07_created_at_idx ON public.tool_usage_stats_
 
 CREATE INDEX tool_usage_stats_2026_07_tenant_id_usage_date_idx ON public.tool_usage_stats_2026_07 USING btree (tenant_id, usage_date);
 
-
 --
 -- Name: tool_usage_stats_2026_07_tool_id_usage_date_idx; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX tool_usage_stats_2026_07_tool_id_usage_date_idx ON public.tool_usage_stats_2026_07 USING btree (tool_id, usage_date);
-
 
 --
 -- Name: tool_usage_stats_2026_07_usage_date_idx; Type: INDEX; Schema: public; Owner: -
@@ -25962,13 +23165,11 @@ CREATE INDEX tool_usage_stats_2026_07_tool_id_usage_date_idx ON public.tool_usag
 
 CREATE INDEX tool_usage_stats_2026_07_usage_date_idx ON public.tool_usage_stats_2026_07 USING btree (usage_date);
 
-
 --
 -- Name: tool_usage_stats_2026_08_created_at_idx; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX tool_usage_stats_2026_08_created_at_idx ON public.tool_usage_stats_2026_08 USING btree (created_at);
-
 
 --
 -- Name: tool_usage_stats_2026_08_tenant_id_usage_date_idx; Type: INDEX; Schema: public; Owner: -
@@ -25976,13 +23177,11 @@ CREATE INDEX tool_usage_stats_2026_08_created_at_idx ON public.tool_usage_stats_
 
 CREATE INDEX tool_usage_stats_2026_08_tenant_id_usage_date_idx ON public.tool_usage_stats_2026_08 USING btree (tenant_id, usage_date);
 
-
 --
 -- Name: tool_usage_stats_2026_08_tool_id_usage_date_idx; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX tool_usage_stats_2026_08_tool_id_usage_date_idx ON public.tool_usage_stats_2026_08 USING btree (tool_id, usage_date);
-
 
 --
 -- Name: tool_usage_stats_2026_08_usage_date_idx; Type: INDEX; Schema: public; Owner: -
@@ -25990,13 +23189,11 @@ CREATE INDEX tool_usage_stats_2026_08_tool_id_usage_date_idx ON public.tool_usag
 
 CREATE INDEX tool_usage_stats_2026_08_usage_date_idx ON public.tool_usage_stats_2026_08 USING btree (usage_date);
 
-
 --
 -- Name: tool_usage_stats_hot_created_at_idx; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX tool_usage_stats_hot_created_at_idx ON public.tool_usage_stats_hot USING btree (created_at);
-
 
 --
 -- Name: tool_usage_stats_hot_date_idx; Type: INDEX; Schema: public; Owner: -
@@ -26004,13 +23201,11 @@ CREATE INDEX tool_usage_stats_hot_created_at_idx ON public.tool_usage_stats_hot 
 
 CREATE INDEX tool_usage_stats_hot_date_idx ON public.tool_usage_stats_hot USING btree (usage_date DESC);
 
-
 --
 -- Name: tool_usage_stats_hot_tenant_date_idx; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX tool_usage_stats_hot_tenant_date_idx ON public.tool_usage_stats_hot USING btree (tenant_id, usage_date DESC);
-
 
 --
 -- Name: tool_usage_stats_hot_tenant_id_usage_date_idx; Type: INDEX; Schema: public; Owner: -
@@ -26018,13 +23213,11 @@ CREATE INDEX tool_usage_stats_hot_tenant_date_idx ON public.tool_usage_stats_hot
 
 CREATE INDEX tool_usage_stats_hot_tenant_id_usage_date_idx ON public.tool_usage_stats_hot USING btree (tenant_id, usage_date);
 
-
 --
 -- Name: tool_usage_stats_hot_tool_date_idx; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX tool_usage_stats_hot_tool_date_idx ON public.tool_usage_stats_hot USING btree (tool_id, usage_date DESC);
-
 
 --
 -- Name: tool_usage_stats_hot_tool_id_usage_date_idx; Type: INDEX; Schema: public; Owner: -
@@ -26032,13 +23225,11 @@ CREATE INDEX tool_usage_stats_hot_tool_date_idx ON public.tool_usage_stats_hot U
 
 CREATE INDEX tool_usage_stats_hot_tool_id_usage_date_idx ON public.tool_usage_stats_hot USING btree (tool_id, usage_date);
 
-
 --
 -- Name: tool_usage_stats_hot_tool_tenant_date_key; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE UNIQUE INDEX tool_usage_stats_hot_tool_tenant_date_key ON public.tool_usage_stats_hot USING btree (tool_id, tenant_id, usage_date);
-
 
 --
 -- Name: tool_usage_stats_hot_usage_date_idx; Type: INDEX; Schema: public; Owner: -
@@ -26046,13 +23237,11 @@ CREATE UNIQUE INDEX tool_usage_stats_hot_tool_tenant_date_key ON public.tool_usa
 
 CREATE INDEX tool_usage_stats_hot_usage_date_idx ON public.tool_usage_stats_hot USING btree (usage_date);
 
-
 --
 -- Name: udx_request_wal_hot_request_id; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE UNIQUE INDEX udx_request_wal_hot_request_id ON public.request_wal_hot USING btree (request_id);
-
 
 --
 -- Name: INDEX udx_request_wal_hot_request_id; Type: COMMENT; Schema: public; Owner: -
@@ -26060,13 +23249,11 @@ CREATE UNIQUE INDEX udx_request_wal_hot_request_id ON public.request_wal_hot USI
 
 COMMENT ON INDEX public.udx_request_wal_hot_request_id IS 'Enforces one request_wal_hot row per request so the early (arrival) and later (post-routing) CreateInitial calls collapse onto the same row instead of orphaning a pending row. Added by migration 461 (2026-07-27).';
 
-
 --
 -- Name: uq_provider_models_canonical_raw_name; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE UNIQUE INDEX uq_provider_models_canonical_raw_name ON public.provider_models USING btree (provider_id, canonical_raw_name, raw_model_name);
-
 
 --
 -- Name: uq_route_incident_events_idem; Type: INDEX; Schema: public; Owner: -
@@ -26074,13 +23261,11 @@ CREATE UNIQUE INDEX uq_provider_models_canonical_raw_name ON public.provider_mod
 
 CREATE UNIQUE INDEX uq_route_incident_events_idem ON public.route_incident_events USING btree (incident_id, request_id, terminal_status) WHERE (request_id IS NOT NULL);
 
-
 --
 -- Name: uq_route_incidents_active_route; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE UNIQUE INDEX uq_route_incidents_active_route ON public.route_incidents USING btree (tenant_id, endpoint_protocol, model, COALESCE(provider_id, (0)::bigint), COALESCE(credential_id, (0)::bigint)) WHERE (state = ANY (ARRAY['active'::text, 'recovering'::text]));
-
 
 --
 -- Name: uq_routing_audit_log_idem; Type: INDEX; Schema: public; Owner: -
@@ -26088,13 +23273,11 @@ CREATE UNIQUE INDEX uq_route_incidents_active_route ON public.route_incidents US
 
 CREATE UNIQUE INDEX uq_routing_audit_log_idem ON public.routing_audit_log USING btree (idempotency_key);
 
-
 --
 -- Name: uq_task_default_routing; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE UNIQUE INDEX uq_task_default_routing ON public.task_default_routing USING btree (task_type, profile, tier, COALESCE(tenant_id, ''::character varying));
-
 
 --
 -- Name: ursm_node_snapshot_min_ts_idx; Type: INDEX; Schema: public; Owner: -
@@ -26102,13 +23285,11 @@ CREATE UNIQUE INDEX uq_task_default_routing ON public.task_default_routing USING
 
 CREATE INDEX ursm_node_snapshot_min_ts_idx ON public.ursm_node_snapshot_min USING btree (snapshot_ts);
 
-
 --
 -- Name: usage_ledger_2026_07_request_id_idx; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX usage_ledger_2026_07_request_id_idx ON public.usage_ledger_2026_07 USING btree (request_id);
-
 
 --
 -- Name: usage_ledger_2026_07_tenant_id_ts_idx; Type: INDEX; Schema: public; Owner: -
@@ -26116,13 +23297,11 @@ CREATE INDEX usage_ledger_2026_07_request_id_idx ON public.usage_ledger_2026_07 
 
 CREATE INDEX usage_ledger_2026_07_tenant_id_ts_idx ON public.usage_ledger_2026_07 USING btree (tenant_id, ts);
 
-
 --
 -- Name: usage_ledger_2026_07_tenant_id_ts_idx2; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX usage_ledger_2026_07_tenant_id_ts_idx2 ON public.usage_ledger_2026_07 USING btree (tenant_id, ts);
-
 
 --
 -- Name: usage_ledger_2026_07_ts_idx; Type: INDEX; Schema: public; Owner: -
@@ -26130,13 +23309,11 @@ CREATE INDEX usage_ledger_2026_07_tenant_id_ts_idx2 ON public.usage_ledger_2026_
 
 CREATE INDEX usage_ledger_2026_07_ts_idx ON public.usage_ledger_2026_07 USING btree (ts);
 
-
 --
 -- Name: usage_ledger_2026_07_ts_idx2; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX usage_ledger_2026_07_ts_idx2 ON public.usage_ledger_2026_07 USING btree (ts);
-
 
 --
 -- Name: usage_ledger_2026_08_request_id_idx; Type: INDEX; Schema: public; Owner: -
@@ -26144,13 +23321,11 @@ CREATE INDEX usage_ledger_2026_07_ts_idx2 ON public.usage_ledger_2026_07 USING b
 
 CREATE INDEX usage_ledger_2026_08_request_id_idx ON public.usage_ledger_2026_08 USING btree (request_id);
 
-
 --
 -- Name: usage_ledger_2026_08_tenant_id_ts_idx; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX usage_ledger_2026_08_tenant_id_ts_idx ON public.usage_ledger_2026_08 USING btree (tenant_id, ts);
-
 
 --
 -- Name: usage_ledger_2026_08_ts_idx; Type: INDEX; Schema: public; Owner: -
@@ -26158,13 +23333,11 @@ CREATE INDEX usage_ledger_2026_08_tenant_id_ts_idx ON public.usage_ledger_2026_0
 
 CREATE INDEX usage_ledger_2026_08_ts_idx ON public.usage_ledger_2026_08 USING btree (ts);
 
-
 --
 -- Name: usage_ledger_hot_api_key_id_ts_idx; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX usage_ledger_hot_api_key_id_ts_idx ON public.usage_ledger_hot USING btree (api_key_id, ts DESC) WHERE (api_key_id IS NOT NULL);
-
 
 --
 -- Name: usage_ledger_hot_request_id_idx; Type: INDEX; Schema: public; Owner: -
@@ -26172,13 +23345,11 @@ CREATE INDEX usage_ledger_hot_api_key_id_ts_idx ON public.usage_ledger_hot USING
 
 CREATE INDEX usage_ledger_hot_request_id_idx ON public.usage_ledger_hot USING btree (request_id);
 
-
 --
 -- Name: usage_ledger_hot_tenant_id_ts_idx; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX usage_ledger_hot_tenant_id_ts_idx ON public.usage_ledger_hot USING btree (tenant_id, ts);
-
 
 --
 -- Name: usage_ledger_hot_ts_idx; Type: INDEX; Schema: public; Owner: -
@@ -26186,13 +23357,11 @@ CREATE INDEX usage_ledger_hot_tenant_id_ts_idx ON public.usage_ledger_hot USING 
 
 CREATE INDEX usage_ledger_hot_ts_idx ON public.usage_ledger_hot USING btree (ts);
 
-
 --
 -- Name: vcp_status; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX vcp_status ON public.vibe_coding_projects USING btree (status);
-
 
 --
 -- Name: vcp_tenant; Type: INDEX; Schema: public; Owner: -
@@ -26200,13 +23369,11 @@ CREATE INDEX vcp_status ON public.vibe_coding_projects USING btree (status);
 
 CREATE INDEX vcp_tenant ON public.vibe_coding_projects USING btree (tenant_id);
 
-
 --
 -- Name: vcr_session; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX vcr_session ON public.vibe_code_reviews USING btree (session_id);
-
 
 --
 -- Name: vcr_tenant; Type: INDEX; Schema: public; Owner: -
@@ -26214,13 +23381,11 @@ CREATE INDEX vcr_session ON public.vibe_code_reviews USING btree (session_id);
 
 CREATE INDEX vcr_tenant ON public.vibe_code_reviews USING btree (tenant_id, created_at DESC);
 
-
 --
 -- Name: vcs_project; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX vcs_project ON public.vibe_coding_sessions USING btree (project_id);
-
 
 --
 -- Name: vcs_session; Type: INDEX; Schema: public; Owner: -
@@ -26228,13 +23393,11 @@ CREATE INDEX vcs_project ON public.vibe_coding_sessions USING btree (project_id)
 
 CREATE INDEX vcs_session ON public.vibe_coding_sessions USING btree (session_id);
 
-
 --
 -- Name: vcs_tenant; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX vcs_tenant ON public.vibe_coding_sessions USING btree (tenant_id, created_at DESC);
-
 
 --
 -- Name: credential_model_index_2026_0_bucket_credential_id_raw_mod_idx1; Type: INDEX ATTACH; Schema: public; Owner: -
@@ -26242,13 +23405,11 @@ CREATE INDEX vcs_tenant ON public.vibe_coding_sessions USING btree (tenant_id, c
 
 ALTER INDEX public.credential_model_index_bucket_cred_model_key ATTACH PARTITION public.credential_model_index_2026_0_bucket_credential_id_raw_mod_idx1;
 
-
 --
 -- Name: credential_model_index_2026_0_bucket_credential_id_raw_mod_idx2; Type: INDEX ATTACH; Schema: public; Owner: -
 --
 
 ALTER INDEX public.credential_model_index_bucket_cred_model_key ATTACH PARTITION public.credential_model_index_2026_0_bucket_credential_id_raw_mod_idx2;
-
 
 --
 -- Name: credit_ledger_2026_07_created_at_idx; Type: INDEX ATTACH; Schema: public; Owner: -
@@ -26256,13 +23417,11 @@ ALTER INDEX public.credential_model_index_bucket_cred_model_key ATTACH PARTITION
 
 ALTER INDEX public.idx_credit_ledger_part_created ATTACH PARTITION public.credit_ledger_2026_07_created_at_idx;
 
-
 --
 -- Name: credit_ledger_2026_07_pkey; Type: INDEX ATTACH; Schema: public; Owner: -
 --
 
 ALTER INDEX public.credit_ledger_partitioned_pkey ATTACH PARTITION public.credit_ledger_2026_07_pkey;
-
 
 --
 -- Name: credit_ledger_2026_07_ref_type_ref_id_idx; Type: INDEX ATTACH; Schema: public; Owner: -
@@ -26270,13 +23429,11 @@ ALTER INDEX public.credit_ledger_partitioned_pkey ATTACH PARTITION public.credit
 
 ALTER INDEX public.idx_credit_ledger_part_ref ATTACH PARTITION public.credit_ledger_2026_07_ref_type_ref_id_idx;
 
-
 --
 -- Name: credit_ledger_2026_07_tenant_id_created_at_idx; Type: INDEX ATTACH; Schema: public; Owner: -
 --
 
 ALTER INDEX public.idx_credit_ledger_part_tenant ATTACH PARTITION public.credit_ledger_2026_07_tenant_id_created_at_idx;
-
 
 --
 -- Name: credit_ledger_2026_08_created_at_idx; Type: INDEX ATTACH; Schema: public; Owner: -
@@ -26284,13 +23441,11 @@ ALTER INDEX public.idx_credit_ledger_part_tenant ATTACH PARTITION public.credit_
 
 ALTER INDEX public.idx_credit_ledger_part_created ATTACH PARTITION public.credit_ledger_2026_08_created_at_idx;
 
-
 --
 -- Name: credit_ledger_2026_08_pkey; Type: INDEX ATTACH; Schema: public; Owner: -
 --
 
 ALTER INDEX public.credit_ledger_partitioned_pkey ATTACH PARTITION public.credit_ledger_2026_08_pkey;
-
 
 --
 -- Name: credit_ledger_2026_08_ref_type_ref_id_idx; Type: INDEX ATTACH; Schema: public; Owner: -
@@ -26298,13 +23453,11 @@ ALTER INDEX public.credit_ledger_partitioned_pkey ATTACH PARTITION public.credit
 
 ALTER INDEX public.idx_credit_ledger_part_ref ATTACH PARTITION public.credit_ledger_2026_08_ref_type_ref_id_idx;
 
-
 --
 -- Name: credit_ledger_2026_08_tenant_id_created_at_idx; Type: INDEX ATTACH; Schema: public; Owner: -
 --
 
 ALTER INDEX public.idx_credit_ledger_part_tenant ATTACH PARTITION public.credit_ledger_2026_08_tenant_id_created_at_idx;
-
 
 --
 -- Name: dashboard_access_events_2026_07_pkey; Type: INDEX ATTACH; Schema: public; Owner: -
@@ -26312,489 +23465,283 @@ ALTER INDEX public.idx_credit_ledger_part_tenant ATTACH PARTITION public.credit_
 
 ALTER INDEX public.dashboard_access_events_pkey ATTACH PARTITION public.dashboard_access_events_2026_07_pkey;
 
-
 --
 -- Name: dashboard_access_events_2026_08_pkey; Type: INDEX ATTACH; Schema: public; Owner: -
 --
 
 ALTER INDEX public.dashboard_access_events_pkey ATTACH PARTITION public.dashboard_access_events_2026_08_pkey;
 
-
 --
 -- Name: request_logs_2026_07_agent_type_idx; Type: INDEX ATTACH; Schema: public; Owner: -
 --
-
-ALTER INDEX public.idx_request_logs_agent_type ATTACH PARTITION public.request_logs_2026_07_agent_type_idx;
-
 
 --
 -- Name: request_logs_2026_07_cached_response_id_idx; Type: INDEX ATTACH; Schema: public; Owner: -
 --
 
-ALTER INDEX public.idx_request_logs_cached_response ATTACH PARTITION public.request_logs_2026_07_cached_response_id_idx;
-
-
 --
 -- Name: request_logs_2026_07_canonical_model_ts_idx; Type: INDEX ATTACH; Schema: public; Owner: -
 --
-
-ALTER INDEX public.idx_request_logs_canonical_model_ts ATTACH PARTITION public.request_logs_2026_07_canonical_model_ts_idx;
-
 
 --
 -- Name: request_logs_2026_07_client_ip_idx; Type: INDEX ATTACH; Schema: public; Owner: -
 --
 
-ALTER INDEX public.idx_request_logs_client_ip ATTACH PARTITION public.request_logs_2026_07_client_ip_idx;
-
-
 --
 -- Name: request_logs_2026_07_client_model_idx1; Type: INDEX ATTACH; Schema: public; Owner: -
 --
-
-ALTER INDEX public.idx_request_logs_client_model ATTACH PARTITION public.request_logs_2026_07_client_model_idx1;
-
 
 --
 -- Name: request_logs_2026_07_client_model_idx2; Type: INDEX ATTACH; Schema: public; Owner: -
 --
 
-ALTER INDEX public.idx_request_logs_client_model_hash ATTACH PARTITION public.request_logs_2026_07_client_model_idx2;
-
-
 --
 -- Name: request_logs_2026_07_client_model_idx3; Type: INDEX ATTACH; Schema: public; Owner: -
 --
-
-ALTER INDEX public.idx_request_logs_client_model_prefix ATTACH PARTITION public.request_logs_2026_07_client_model_idx3;
-
 
 --
 -- Name: request_logs_2026_07_client_request_id_ts_idx; Type: INDEX ATTACH; Schema: public; Owner: -
 --
 
-ALTER INDEX public.idx_request_logs_client_request_id ATTACH PARTITION public.request_logs_2026_07_client_request_id_ts_idx;
-
-
 --
 -- Name: request_logs_2026_07_customer_id_idx; Type: INDEX ATTACH; Schema: public; Owner: -
 --
-
-ALTER INDEX public.idx_request_logs_customer_id ATTACH PARTITION public.request_logs_2026_07_customer_id_idx;
-
 
 --
 -- Name: request_logs_2026_07_effective_timeout_seconds_latency_ms_idx; Type: INDEX ATTACH; Schema: public; Owner: -
 --
 
-ALTER INDEX public.idx_request_logs_timeout_analysis ATTACH PARTITION public.request_logs_2026_07_effective_timeout_seconds_latency_ms_idx;
-
-
 --
 -- Name: request_logs_2026_07_gw_session_id_ts_idx; Type: INDEX ATTACH; Schema: public; Owner: -
 --
-
-ALTER INDEX public.idx_request_logs_gw_session_ts ATTACH PARTITION public.request_logs_2026_07_gw_session_id_ts_idx;
-
 
 --
 -- Name: request_logs_2026_07_gw_session_id_ts_idx1; Type: INDEX ATTACH; Schema: public; Owner: -
 --
 
-ALTER INDEX public.idx_request_logs_session_outbound ATTACH PARTITION public.request_logs_2026_07_gw_session_id_ts_idx1;
-
-
 --
 -- Name: request_logs_2026_07_gw_task_id_ts_idx; Type: INDEX ATTACH; Schema: public; Owner: -
 --
-
-ALTER INDEX public.idx_request_logs_gw_task_ts ATTACH PARTITION public.request_logs_2026_07_gw_task_id_ts_idx;
-
 
 --
 -- Name: request_logs_2026_07_lower_idx; Type: INDEX ATTACH; Schema: public; Owner: -
 --
 
-ALTER INDEX public.idx_request_logs_client_model_lower ATTACH PARTITION public.request_logs_2026_07_lower_idx;
-
-
 --
 -- Name: request_logs_2026_07_node_switch_count_ts_idx; Type: INDEX ATTACH; Schema: public; Owner: -
 --
-
-ALTER INDEX public.idx_request_logs_node_switch ATTACH PARTITION public.request_logs_2026_07_node_switch_count_ts_idx;
-
 
 --
 -- Name: request_logs_2026_07_parent_request_id_ts_idx; Type: INDEX ATTACH; Schema: public; Owner: -
 --
 
-ALTER INDEX public.idx_request_logs_parent_ts ATTACH PARTITION public.request_logs_2026_07_parent_request_id_ts_idx;
-
-
 --
 -- Name: request_logs_2026_07_protocol_conversion_idx; Type: INDEX ATTACH; Schema: public; Owner: -
 --
-
-ALTER INDEX public.idx_request_logs_protocol_conversion ATTACH PARTITION public.request_logs_2026_07_protocol_conversion_idx;
-
 
 --
 -- Name: request_logs_2026_07_provider_id_quality_score_ts_idx; Type: INDEX ATTACH; Schema: public; Owner: -
 --
 
-ALTER INDEX public.idx_request_logs_provider_quality ATTACH PARTITION public.request_logs_2026_07_provider_id_quality_score_ts_idx;
-
-
 --
 -- Name: request_logs_2026_07_provider_id_ts_idx; Type: INDEX ATTACH; Schema: public; Owner: -
 --
-
-ALTER INDEX public.idx_request_logs_provider_tool_calls ATTACH PARTITION public.request_logs_2026_07_provider_id_ts_idx;
-
 
 --
 -- Name: request_logs_2026_07_provider_model_ts_idx; Type: INDEX ATTACH; Schema: public; Owner: -
 --
 
-ALTER INDEX public.idx_request_logs_provider_model ATTACH PARTITION public.request_logs_2026_07_provider_model_ts_idx;
-
-
 --
 -- Name: request_logs_2026_07_quality_flags_idx; Type: INDEX ATTACH; Schema: public; Owner: -
 --
-
-ALTER INDEX public.idx_request_logs_quality_flags ATTACH PARTITION public.request_logs_2026_07_quality_flags_idx;
-
 
 --
 -- Name: request_logs_2026_07_rate_limit_status_idx; Type: INDEX ATTACH; Schema: public; Owner: -
 --
 
-ALTER INDEX public.idx_request_logs_rate_limit_status ATTACH PARTITION public.request_logs_2026_07_rate_limit_status_idx;
-
-
 --
 -- Name: request_logs_2026_07_request_id_idx; Type: INDEX ATTACH; Schema: public; Owner: -
 --
-
-ALTER INDEX public.idx_request_logs_has_trace_events ATTACH PARTITION public.request_logs_2026_07_request_id_idx;
-
 
 --
 -- Name: request_logs_2026_07_request_id_ts_idx; Type: INDEX ATTACH; Schema: public; Owner: -
 --
 
-ALTER INDEX public.idx_request_logs_request_id_ts_unique ATTACH PARTITION public.request_logs_2026_07_request_id_ts_idx;
-
-
 --
 -- Name: request_logs_2026_07_request_status_ts_idx; Type: INDEX ATTACH; Schema: public; Owner: -
 --
-
-ALTER INDEX public.idx_request_logs_status_ts ATTACH PARTITION public.request_logs_2026_07_request_status_ts_idx;
-
 
 --
 -- Name: request_logs_2026_07_task_type_idx; Type: INDEX ATTACH; Schema: public; Owner: -
 --
 
-ALTER INDEX public.idx_request_logs_task_type ATTACH PARTITION public.request_logs_2026_07_task_type_idx;
-
-
 --
 -- Name: request_logs_2026_07_tenant_id_gw_task_id_ts_idx; Type: INDEX ATTACH; Schema: public; Owner: -
 --
-
-ALTER INDEX public.idx_request_logs_tenant_task_ts ATTACH PARTITION public.request_logs_2026_07_tenant_id_gw_task_id_ts_idx;
-
 
 --
 -- Name: request_logs_2026_07_tenant_id_ts_idx; Type: INDEX ATTACH; Schema: public; Owner: -
 --
 
-ALTER INDEX public.idx_request_logs_credits_charged ATTACH PARTITION public.request_logs_2026_07_tenant_id_ts_idx;
-
-
 --
 -- Name: request_logs_2026_07_tenant_id_ts_idx1; Type: INDEX ATTACH; Schema: public; Owner: -
 --
-
-ALTER INDEX public.idx_request_logs_outbound_msg_count ATTACH PARTITION public.request_logs_2026_07_tenant_id_ts_idx1;
-
 
 --
 -- Name: request_logs_2026_07_tool_calls_idx; Type: INDEX ATTACH; Schema: public; Owner: -
 --
 
-ALTER INDEX public.idx_request_logs_tool_calls ATTACH PARTITION public.request_logs_2026_07_tool_calls_idx;
-
-
 --
 -- Name: request_logs_2026_07_ts_idx2; Type: INDEX ATTACH; Schema: public; Owner: -
 --
-
-ALTER INDEX public.idx_request_logs_ts_desc ATTACH PARTITION public.request_logs_2026_07_ts_idx2;
-
 
 --
 -- Name: request_logs_2026_07_upstream_finish_reason_ts_idx; Type: INDEX ATTACH; Schema: public; Owner: -
 --
 
-ALTER INDEX public.idx_request_logs_upstream_finish_reason ATTACH PARTITION public.request_logs_2026_07_upstream_finish_reason_ts_idx;
-
-
 --
 -- Name: request_logs_2026_07_upstream_status_code_ts_idx; Type: INDEX ATTACH; Schema: public; Owner: -
 --
-
-ALTER INDEX public.idx_request_logs_upstream_status ATTACH PARTITION public.request_logs_2026_07_upstream_status_code_ts_idx;
-
 
 --
 -- Name: request_logs_2026_07_work_type_ts_idx; Type: INDEX ATTACH; Schema: public; Owner: -
 --
 
-ALTER INDEX public.idx_request_logs_work_type ATTACH PARTITION public.request_logs_2026_07_work_type_ts_idx;
-
-
 --
 -- Name: request_logs_2026_08_agent_type_idx; Type: INDEX ATTACH; Schema: public; Owner: -
 --
-
-ALTER INDEX public.idx_request_logs_agent_type ATTACH PARTITION public.request_logs_2026_08_agent_type_idx;
-
 
 --
 -- Name: request_logs_2026_08_cached_response_id_idx; Type: INDEX ATTACH; Schema: public; Owner: -
 --
 
-ALTER INDEX public.idx_request_logs_cached_response ATTACH PARTITION public.request_logs_2026_08_cached_response_id_idx;
-
-
 --
 -- Name: request_logs_2026_08_canonical_model_ts_idx; Type: INDEX ATTACH; Schema: public; Owner: -
 --
-
-ALTER INDEX public.idx_request_logs_canonical_model_ts ATTACH PARTITION public.request_logs_2026_08_canonical_model_ts_idx;
-
 
 --
 -- Name: request_logs_2026_08_client_ip_idx; Type: INDEX ATTACH; Schema: public; Owner: -
 --
 
-ALTER INDEX public.idx_request_logs_client_ip ATTACH PARTITION public.request_logs_2026_08_client_ip_idx;
-
-
 --
 -- Name: request_logs_2026_08_client_model_idx; Type: INDEX ATTACH; Schema: public; Owner: -
 --
-
-ALTER INDEX public.idx_request_logs_client_model ATTACH PARTITION public.request_logs_2026_08_client_model_idx;
-
 
 --
 -- Name: request_logs_2026_08_client_model_idx1; Type: INDEX ATTACH; Schema: public; Owner: -
 --
 
-ALTER INDEX public.idx_request_logs_client_model_prefix ATTACH PARTITION public.request_logs_2026_08_client_model_idx1;
-
-
 --
 -- Name: request_logs_2026_08_client_model_idx2; Type: INDEX ATTACH; Schema: public; Owner: -
 --
-
-ALTER INDEX public.idx_request_logs_client_model_hash ATTACH PARTITION public.request_logs_2026_08_client_model_idx2;
-
 
 --
 -- Name: request_logs_2026_08_client_request_id_ts_idx; Type: INDEX ATTACH; Schema: public; Owner: -
 --
 
-ALTER INDEX public.idx_request_logs_client_request_id ATTACH PARTITION public.request_logs_2026_08_client_request_id_ts_idx;
-
-
 --
 -- Name: request_logs_2026_08_customer_id_idx; Type: INDEX ATTACH; Schema: public; Owner: -
 --
-
-ALTER INDEX public.idx_request_logs_customer_id ATTACH PARTITION public.request_logs_2026_08_customer_id_idx;
-
 
 --
 -- Name: request_logs_2026_08_effective_timeout_seconds_latency_ms_idx; Type: INDEX ATTACH; Schema: public; Owner: -
 --
 
-ALTER INDEX public.idx_request_logs_timeout_analysis ATTACH PARTITION public.request_logs_2026_08_effective_timeout_seconds_latency_ms_idx;
-
-
 --
 -- Name: request_logs_2026_08_gw_session_id_ts_idx; Type: INDEX ATTACH; Schema: public; Owner: -
 --
-
-ALTER INDEX public.idx_request_logs_gw_session_ts ATTACH PARTITION public.request_logs_2026_08_gw_session_id_ts_idx;
-
 
 --
 -- Name: request_logs_2026_08_gw_session_id_ts_idx1; Type: INDEX ATTACH; Schema: public; Owner: -
 --
 
-ALTER INDEX public.idx_request_logs_session_outbound ATTACH PARTITION public.request_logs_2026_08_gw_session_id_ts_idx1;
-
-
 --
 -- Name: request_logs_2026_08_gw_task_id_ts_idx; Type: INDEX ATTACH; Schema: public; Owner: -
 --
-
-ALTER INDEX public.idx_request_logs_gw_task_ts ATTACH PARTITION public.request_logs_2026_08_gw_task_id_ts_idx;
-
 
 --
 -- Name: request_logs_2026_08_lower_idx; Type: INDEX ATTACH; Schema: public; Owner: -
 --
 
-ALTER INDEX public.idx_request_logs_client_model_lower ATTACH PARTITION public.request_logs_2026_08_lower_idx;
-
-
 --
 -- Name: request_logs_2026_08_node_switch_count_ts_idx; Type: INDEX ATTACH; Schema: public; Owner: -
 --
-
-ALTER INDEX public.idx_request_logs_node_switch ATTACH PARTITION public.request_logs_2026_08_node_switch_count_ts_idx;
-
 
 --
 -- Name: request_logs_2026_08_parent_request_id_ts_idx; Type: INDEX ATTACH; Schema: public; Owner: -
 --
 
-ALTER INDEX public.idx_request_logs_parent_ts ATTACH PARTITION public.request_logs_2026_08_parent_request_id_ts_idx;
-
-
 --
 -- Name: request_logs_2026_08_protocol_conversion_idx; Type: INDEX ATTACH; Schema: public; Owner: -
 --
-
-ALTER INDEX public.idx_request_logs_protocol_conversion ATTACH PARTITION public.request_logs_2026_08_protocol_conversion_idx;
-
 
 --
 -- Name: request_logs_2026_08_provider_id_quality_score_ts_idx; Type: INDEX ATTACH; Schema: public; Owner: -
 --
 
-ALTER INDEX public.idx_request_logs_provider_quality ATTACH PARTITION public.request_logs_2026_08_provider_id_quality_score_ts_idx;
-
-
 --
 -- Name: request_logs_2026_08_provider_id_ts_idx; Type: INDEX ATTACH; Schema: public; Owner: -
 --
-
-ALTER INDEX public.idx_request_logs_provider_tool_calls ATTACH PARTITION public.request_logs_2026_08_provider_id_ts_idx;
-
 
 --
 -- Name: request_logs_2026_08_provider_model_ts_idx; Type: INDEX ATTACH; Schema: public; Owner: -
 --
 
-ALTER INDEX public.idx_request_logs_provider_model ATTACH PARTITION public.request_logs_2026_08_provider_model_ts_idx;
-
-
 --
 -- Name: request_logs_2026_08_quality_flags_idx; Type: INDEX ATTACH; Schema: public; Owner: -
 --
-
-ALTER INDEX public.idx_request_logs_quality_flags ATTACH PARTITION public.request_logs_2026_08_quality_flags_idx;
-
 
 --
 -- Name: request_logs_2026_08_rate_limit_status_idx; Type: INDEX ATTACH; Schema: public; Owner: -
 --
 
-ALTER INDEX public.idx_request_logs_rate_limit_status ATTACH PARTITION public.request_logs_2026_08_rate_limit_status_idx;
-
-
 --
 -- Name: request_logs_2026_08_request_id_idx; Type: INDEX ATTACH; Schema: public; Owner: -
 --
-
-ALTER INDEX public.idx_request_logs_has_trace_events ATTACH PARTITION public.request_logs_2026_08_request_id_idx;
-
 
 --
 -- Name: request_logs_2026_08_request_id_ts_idx; Type: INDEX ATTACH; Schema: public; Owner: -
 --
 
-ALTER INDEX public.idx_request_logs_request_id_ts_unique ATTACH PARTITION public.request_logs_2026_08_request_id_ts_idx;
-
-
 --
 -- Name: request_logs_2026_08_request_status_ts_idx; Type: INDEX ATTACH; Schema: public; Owner: -
 --
-
-ALTER INDEX public.idx_request_logs_status_ts ATTACH PARTITION public.request_logs_2026_08_request_status_ts_idx;
-
 
 --
 -- Name: request_logs_2026_08_task_type_idx; Type: INDEX ATTACH; Schema: public; Owner: -
 --
 
-ALTER INDEX public.idx_request_logs_task_type ATTACH PARTITION public.request_logs_2026_08_task_type_idx;
-
-
 --
 -- Name: request_logs_2026_08_tenant_id_gw_task_id_ts_idx; Type: INDEX ATTACH; Schema: public; Owner: -
 --
-
-ALTER INDEX public.idx_request_logs_tenant_task_ts ATTACH PARTITION public.request_logs_2026_08_tenant_id_gw_task_id_ts_idx;
-
 
 --
 -- Name: request_logs_2026_08_tenant_id_ts_idx; Type: INDEX ATTACH; Schema: public; Owner: -
 --
 
-ALTER INDEX public.idx_request_logs_outbound_msg_count ATTACH PARTITION public.request_logs_2026_08_tenant_id_ts_idx;
-
-
 --
 -- Name: request_logs_2026_08_tenant_id_ts_idx1; Type: INDEX ATTACH; Schema: public; Owner: -
 --
-
-ALTER INDEX public.idx_request_logs_credits_charged ATTACH PARTITION public.request_logs_2026_08_tenant_id_ts_idx1;
-
 
 --
 -- Name: request_logs_2026_08_tool_calls_idx; Type: INDEX ATTACH; Schema: public; Owner: -
 --
 
-ALTER INDEX public.idx_request_logs_tool_calls ATTACH PARTITION public.request_logs_2026_08_tool_calls_idx;
-
-
 --
 -- Name: request_logs_2026_08_ts_idx; Type: INDEX ATTACH; Schema: public; Owner: -
 --
-
-ALTER INDEX public.idx_request_logs_ts_desc ATTACH PARTITION public.request_logs_2026_08_ts_idx;
-
 
 --
 -- Name: request_logs_2026_08_upstream_finish_reason_ts_idx; Type: INDEX ATTACH; Schema: public; Owner: -
 --
 
-ALTER INDEX public.idx_request_logs_upstream_finish_reason ATTACH PARTITION public.request_logs_2026_08_upstream_finish_reason_ts_idx;
-
-
 --
 -- Name: request_logs_2026_08_upstream_status_code_ts_idx; Type: INDEX ATTACH; Schema: public; Owner: -
 --
 
-ALTER INDEX public.idx_request_logs_upstream_status ATTACH PARTITION public.request_logs_2026_08_upstream_status_code_ts_idx;
-
-
 --
 -- Name: request_logs_2026_08_work_type_ts_idx; Type: INDEX ATTACH; Schema: public; Owner: -
 --
-
-ALTER INDEX public.idx_request_logs_work_type ATTACH PARTITION public.request_logs_2026_08_work_type_ts_idx;
-
 
 --
 -- Name: request_wal_2026_07_gw_session_id_created_at_idx; Type: INDEX ATTACH; Schema: public; Owner: -
@@ -26802,13 +23749,11 @@ ALTER INDEX public.idx_request_logs_work_type ATTACH PARTITION public.request_lo
 
 ALTER INDEX public.idx_wal_session ATTACH PARTITION public.request_wal_2026_07_gw_session_id_created_at_idx;
 
-
 --
 -- Name: request_wal_2026_07_pkey; Type: INDEX ATTACH; Schema: public; Owner: -
 --
 
 ALTER INDEX public.request_wal_pkey ATTACH PARTITION public.request_wal_2026_07_pkey;
-
 
 --
 -- Name: request_wal_2026_07_status_stage_idx; Type: INDEX ATTACH; Schema: public; Owner: -
@@ -26816,13 +23761,11 @@ ALTER INDEX public.request_wal_pkey ATTACH PARTITION public.request_wal_2026_07_
 
 ALTER INDEX public.idx_wal_status_stage ATTACH PARTITION public.request_wal_2026_07_status_stage_idx;
 
-
 --
 -- Name: request_wal_2026_07_tenant_id_created_at_idx; Type: INDEX ATTACH; Schema: public; Owner: -
 --
 
 ALTER INDEX public.idx_wal_tenant_created ATTACH PARTITION public.request_wal_2026_07_tenant_id_created_at_idx;
-
 
 --
 -- Name: request_wal_2026_08_gw_session_id_created_at_idx; Type: INDEX ATTACH; Schema: public; Owner: -
@@ -26830,13 +23773,11 @@ ALTER INDEX public.idx_wal_tenant_created ATTACH PARTITION public.request_wal_20
 
 ALTER INDEX public.idx_wal_session ATTACH PARTITION public.request_wal_2026_08_gw_session_id_created_at_idx;
 
-
 --
 -- Name: request_wal_2026_08_pkey; Type: INDEX ATTACH; Schema: public; Owner: -
 --
 
 ALTER INDEX public.request_wal_pkey ATTACH PARTITION public.request_wal_2026_08_pkey;
-
 
 --
 -- Name: request_wal_2026_08_status_stage_idx; Type: INDEX ATTACH; Schema: public; Owner: -
@@ -26844,13 +23785,11 @@ ALTER INDEX public.request_wal_pkey ATTACH PARTITION public.request_wal_2026_08_
 
 ALTER INDEX public.idx_wal_status_stage ATTACH PARTITION public.request_wal_2026_08_status_stage_idx;
 
-
 --
 -- Name: request_wal_2026_08_tenant_id_created_at_idx; Type: INDEX ATTACH; Schema: public; Owner: -
 --
 
 ALTER INDEX public.idx_wal_tenant_created ATTACH PARTITION public.request_wal_2026_08_tenant_id_created_at_idx;
-
 
 --
 -- Name: routing_decision_log_2026_07_chosen_credential_id_ts_idx; Type: INDEX ATTACH; Schema: public; Owner: -
@@ -26858,13 +23797,11 @@ ALTER INDEX public.idx_wal_tenant_created ATTACH PARTITION public.request_wal_20
 
 ALTER INDEX public.idx_routing_decision_log_part_credential ATTACH PARTITION public.routing_decision_log_2026_07_chosen_credential_id_ts_idx;
 
-
 --
 -- Name: routing_decision_log_2026_07_model_ts_idx; Type: INDEX ATTACH; Schema: public; Owner: -
 --
 
 ALTER INDEX public.idx_routing_decision_log_part_model ATTACH PARTITION public.routing_decision_log_2026_07_model_ts_idx;
-
 
 --
 -- Name: routing_decision_log_2026_07_request_id_idx; Type: INDEX ATTACH; Schema: public; Owner: -
@@ -26872,13 +23809,11 @@ ALTER INDEX public.idx_routing_decision_log_part_model ATTACH PARTITION public.r
 
 ALTER INDEX public.idx_routing_decision_log_part_request_id ATTACH PARTITION public.routing_decision_log_2026_07_request_id_idx;
 
-
 --
 -- Name: routing_decision_log_2026_07_success_ts_idx; Type: INDEX ATTACH; Schema: public; Owner: -
 --
 
 ALTER INDEX public.idx_routing_decision_log_part_success ATTACH PARTITION public.routing_decision_log_2026_07_success_ts_idx;
-
 
 --
 -- Name: routing_decision_log_2026_07_tenant_id_ts_idx; Type: INDEX ATTACH; Schema: public; Owner: -
@@ -26886,13 +23821,11 @@ ALTER INDEX public.idx_routing_decision_log_part_success ATTACH PARTITION public
 
 ALTER INDEX public.idx_routing_decision_log_part_tenant_ts ATTACH PARTITION public.routing_decision_log_2026_07_tenant_id_ts_idx;
 
-
 --
 -- Name: routing_decision_log_2026_07_ts_idx; Type: INDEX ATTACH; Schema: public; Owner: -
 --
 
 ALTER INDEX public.idx_routing_decision_log_part_ts ATTACH PARTITION public.routing_decision_log_2026_07_ts_idx;
-
 
 --
 -- Name: routing_decision_log_2026_08_chosen_credential_id_ts_idx; Type: INDEX ATTACH; Schema: public; Owner: -
@@ -26900,13 +23833,11 @@ ALTER INDEX public.idx_routing_decision_log_part_ts ATTACH PARTITION public.rout
 
 ALTER INDEX public.idx_routing_decision_log_part_credential ATTACH PARTITION public.routing_decision_log_2026_08_chosen_credential_id_ts_idx;
 
-
 --
 -- Name: routing_decision_log_2026_08_model_ts_idx; Type: INDEX ATTACH; Schema: public; Owner: -
 --
 
 ALTER INDEX public.idx_routing_decision_log_part_model ATTACH PARTITION public.routing_decision_log_2026_08_model_ts_idx;
-
 
 --
 -- Name: routing_decision_log_2026_08_request_id_idx; Type: INDEX ATTACH; Schema: public; Owner: -
@@ -26914,13 +23845,11 @@ ALTER INDEX public.idx_routing_decision_log_part_model ATTACH PARTITION public.r
 
 ALTER INDEX public.idx_routing_decision_log_part_request_id ATTACH PARTITION public.routing_decision_log_2026_08_request_id_idx;
 
-
 --
 -- Name: routing_decision_log_2026_08_success_ts_idx; Type: INDEX ATTACH; Schema: public; Owner: -
 --
 
 ALTER INDEX public.idx_routing_decision_log_part_success ATTACH PARTITION public.routing_decision_log_2026_08_success_ts_idx;
-
 
 --
 -- Name: routing_decision_log_2026_08_tenant_id_ts_idx; Type: INDEX ATTACH; Schema: public; Owner: -
@@ -26928,13 +23857,11 @@ ALTER INDEX public.idx_routing_decision_log_part_success ATTACH PARTITION public
 
 ALTER INDEX public.idx_routing_decision_log_part_tenant_ts ATTACH PARTITION public.routing_decision_log_2026_08_tenant_id_ts_idx;
 
-
 --
 -- Name: routing_decision_log_2026_08_ts_idx; Type: INDEX ATTACH; Schema: public; Owner: -
 --
 
 ALTER INDEX public.idx_routing_decision_log_part_ts ATTACH PARTITION public.routing_decision_log_2026_08_ts_idx;
-
 
 --
 -- Name: session_bodies_2026_07_pkey; Type: INDEX ATTACH; Schema: public; Owner: -
@@ -26942,13 +23869,11 @@ ALTER INDEX public.idx_routing_decision_log_part_ts ATTACH PARTITION public.rout
 
 ALTER INDEX public.session_bodies_pkey ATTACH PARTITION public.session_bodies_2026_07_pkey;
 
-
 --
 -- Name: session_bodies_2026_07_request_id_idx; Type: INDEX ATTACH; Schema: public; Owner: -
 --
 
 ALTER INDEX public.idx_session_bodies_request ATTACH PARTITION public.session_bodies_2026_07_request_id_idx;
-
 
 --
 -- Name: session_bodies_2026_07_request_id_partition_date_key; Type: INDEX ATTACH; Schema: public; Owner: -
@@ -26956,13 +23881,11 @@ ALTER INDEX public.idx_session_bodies_request ATTACH PARTITION public.session_bo
 
 ALTER INDEX public.session_bodies_request_id_partition_date_key ATTACH PARTITION public.session_bodies_2026_07_request_id_partition_date_key;
 
-
 --
 -- Name: session_bodies_2026_07_session_id_turn_no_idx; Type: INDEX ATTACH; Schema: public; Owner: -
 --
 
 ALTER INDEX public.idx_session_bodies_session ATTACH PARTITION public.session_bodies_2026_07_session_id_turn_no_idx;
-
 
 --
 -- Name: session_bodies_2026_07_session_id_turn_no_partition_date_key; Type: INDEX ATTACH; Schema: public; Owner: -
@@ -26970,13 +23893,11 @@ ALTER INDEX public.idx_session_bodies_session ATTACH PARTITION public.session_bo
 
 ALTER INDEX public.session_bodies_session_id_turn_no_partition_date_key ATTACH PARTITION public.session_bodies_2026_07_session_id_turn_no_partition_date_key;
 
-
 --
 -- Name: session_bodies_2026_08_pkey; Type: INDEX ATTACH; Schema: public; Owner: -
 --
 
 ALTER INDEX public.session_bodies_pkey ATTACH PARTITION public.session_bodies_2026_08_pkey;
-
 
 --
 -- Name: session_bodies_2026_08_request_id_idx; Type: INDEX ATTACH; Schema: public; Owner: -
@@ -26984,13 +23905,11 @@ ALTER INDEX public.session_bodies_pkey ATTACH PARTITION public.session_bodies_20
 
 ALTER INDEX public.idx_session_bodies_request ATTACH PARTITION public.session_bodies_2026_08_request_id_idx;
 
-
 --
 -- Name: session_bodies_2026_08_request_id_partition_date_key; Type: INDEX ATTACH; Schema: public; Owner: -
 --
 
 ALTER INDEX public.session_bodies_request_id_partition_date_key ATTACH PARTITION public.session_bodies_2026_08_request_id_partition_date_key;
-
 
 --
 -- Name: session_bodies_2026_08_session_id_turn_no_idx; Type: INDEX ATTACH; Schema: public; Owner: -
@@ -26998,13 +23917,11 @@ ALTER INDEX public.session_bodies_request_id_partition_date_key ATTACH PARTITION
 
 ALTER INDEX public.idx_session_bodies_session ATTACH PARTITION public.session_bodies_2026_08_session_id_turn_no_idx;
 
-
 --
 -- Name: session_bodies_2026_08_session_id_turn_no_partition_date_key; Type: INDEX ATTACH; Schema: public; Owner: -
 --
 
 ALTER INDEX public.session_bodies_session_id_turn_no_partition_date_key ATTACH PARTITION public.session_bodies_2026_08_session_id_turn_no_partition_date_key;
-
 
 --
 -- Name: session_module_executions_2026_07_pkey; Type: INDEX ATTACH; Schema: public; Owner: -
@@ -27012,13 +23929,11 @@ ALTER INDEX public.session_bodies_session_id_turn_no_partition_date_key ATTACH P
 
 ALTER INDEX public.session_module_executions_pkey ATTACH PARTITION public.session_module_executions_2026_07_pkey;
 
-
 --
 -- Name: session_module_executions_2026_08_pkey; Type: INDEX ATTACH; Schema: public; Owner: -
 --
 
 ALTER INDEX public.session_module_executions_pkey ATTACH PARTITION public.session_module_executions_2026_08_pkey;
-
 
 --
 -- Name: session_turns_2026_07_pkey; Type: INDEX ATTACH; Schema: public; Owner: -
@@ -27026,13 +23941,11 @@ ALTER INDEX public.session_module_executions_pkey ATTACH PARTITION public.sessio
 
 ALTER INDEX public.session_turns_pkey ATTACH PARTITION public.session_turns_2026_07_pkey;
 
-
 --
 -- Name: session_turns_2026_07_request_id_idx; Type: INDEX ATTACH; Schema: public; Owner: -
 --
 
 ALTER INDEX public.idx_session_turns_request ATTACH PARTITION public.session_turns_2026_07_request_id_idx;
-
 
 --
 -- Name: session_turns_2026_07_request_id_partition_date_key; Type: INDEX ATTACH; Schema: public; Owner: -
@@ -27040,13 +23953,11 @@ ALTER INDEX public.idx_session_turns_request ATTACH PARTITION public.session_tur
 
 ALTER INDEX public.session_turns_request_id_partition_date_key ATTACH PARTITION public.session_turns_2026_07_request_id_partition_date_key;
 
-
 --
 -- Name: session_turns_2026_07_session_id_turn_no_idx; Type: INDEX ATTACH; Schema: public; Owner: -
 --
 
 ALTER INDEX public.idx_session_turns_session ATTACH PARTITION public.session_turns_2026_07_session_id_turn_no_idx;
-
 
 --
 -- Name: session_turns_2026_07_session_id_turn_no_partition_date_key; Type: INDEX ATTACH; Schema: public; Owner: -
@@ -27054,13 +23965,11 @@ ALTER INDEX public.idx_session_turns_session ATTACH PARTITION public.session_tur
 
 ALTER INDEX public.session_turns_session_id_turn_no_partition_date_key ATTACH PARTITION public.session_turns_2026_07_session_id_turn_no_partition_date_key;
 
-
 --
 -- Name: session_turns_2026_07_tenant_id_ts_idx; Type: INDEX ATTACH; Schema: public; Owner: -
 --
 
 ALTER INDEX public.idx_session_turns_tenant ATTACH PARTITION public.session_turns_2026_07_tenant_id_ts_idx;
-
 
 --
 -- Name: session_turns_2026_08_pkey; Type: INDEX ATTACH; Schema: public; Owner: -
@@ -27068,13 +23977,11 @@ ALTER INDEX public.idx_session_turns_tenant ATTACH PARTITION public.session_turn
 
 ALTER INDEX public.session_turns_pkey ATTACH PARTITION public.session_turns_2026_08_pkey;
 
-
 --
 -- Name: session_turns_2026_08_request_id_idx; Type: INDEX ATTACH; Schema: public; Owner: -
 --
 
 ALTER INDEX public.idx_session_turns_request ATTACH PARTITION public.session_turns_2026_08_request_id_idx;
-
 
 --
 -- Name: session_turns_2026_08_request_id_partition_date_key; Type: INDEX ATTACH; Schema: public; Owner: -
@@ -27082,13 +23989,11 @@ ALTER INDEX public.idx_session_turns_request ATTACH PARTITION public.session_tur
 
 ALTER INDEX public.session_turns_request_id_partition_date_key ATTACH PARTITION public.session_turns_2026_08_request_id_partition_date_key;
 
-
 --
 -- Name: session_turns_2026_08_session_id_turn_no_idx; Type: INDEX ATTACH; Schema: public; Owner: -
 --
 
 ALTER INDEX public.idx_session_turns_session ATTACH PARTITION public.session_turns_2026_08_session_id_turn_no_idx;
-
 
 --
 -- Name: session_turns_2026_08_session_id_turn_no_partition_date_key; Type: INDEX ATTACH; Schema: public; Owner: -
@@ -27096,13 +24001,11 @@ ALTER INDEX public.idx_session_turns_session ATTACH PARTITION public.session_tur
 
 ALTER INDEX public.session_turns_session_id_turn_no_partition_date_key ATTACH PARTITION public.session_turns_2026_08_session_id_turn_no_partition_date_key;
 
-
 --
 -- Name: session_turns_2026_08_tenant_id_ts_idx; Type: INDEX ATTACH; Schema: public; Owner: -
 --
 
 ALTER INDEX public.idx_session_turns_tenant ATTACH PARTITION public.session_turns_2026_08_tenant_id_ts_idx;
-
 
 --
 -- Name: sessions_2026_07_pkey; Type: INDEX ATTACH; Schema: public; Owner: -
@@ -27110,13 +24013,11 @@ ALTER INDEX public.idx_session_turns_tenant ATTACH PARTITION public.session_turn
 
 ALTER INDEX public.sessions_pkey ATTACH PARTITION public.sessions_2026_07_pkey;
 
-
 --
 -- Name: sessions_2026_07_primary_request_id_idx; Type: INDEX ATTACH; Schema: public; Owner: -
 --
 
 ALTER INDEX public.idx_sessions_primary_request ATTACH PARTITION public.sessions_2026_07_primary_request_id_idx;
-
 
 --
 -- Name: sessions_2026_07_session_id_idx; Type: INDEX ATTACH; Schema: public; Owner: -
@@ -27124,13 +24025,11 @@ ALTER INDEX public.idx_sessions_primary_request ATTACH PARTITION public.sessions
 
 ALTER INDEX public.idx_sessions_session_id ATTACH PARTITION public.sessions_2026_07_session_id_idx;
 
-
 --
 -- Name: sessions_2026_07_session_id_partition_date_key; Type: INDEX ATTACH; Schema: public; Owner: -
 --
 
 ALTER INDEX public.sessions_session_id_partition_date_key ATTACH PARTITION public.sessions_2026_07_session_id_partition_date_key;
-
 
 --
 -- Name: sessions_2026_07_status_updated_at_idx; Type: INDEX ATTACH; Schema: public; Owner: -
@@ -27138,13 +24037,11 @@ ALTER INDEX public.sessions_session_id_partition_date_key ATTACH PARTITION publi
 
 ALTER INDEX public.idx_sessions_status ATTACH PARTITION public.sessions_2026_07_status_updated_at_idx;
 
-
 --
 -- Name: sessions_2026_07_tenant_id_created_at_idx; Type: INDEX ATTACH; Schema: public; Owner: -
 --
 
 ALTER INDEX public.idx_sessions_tenant ATTACH PARTITION public.sessions_2026_07_tenant_id_created_at_idx;
-
 
 --
 -- Name: sessions_2026_08_pkey; Type: INDEX ATTACH; Schema: public; Owner: -
@@ -27152,13 +24049,11 @@ ALTER INDEX public.idx_sessions_tenant ATTACH PARTITION public.sessions_2026_07_
 
 ALTER INDEX public.sessions_pkey ATTACH PARTITION public.sessions_2026_08_pkey;
 
-
 --
 -- Name: sessions_2026_08_primary_request_id_idx; Type: INDEX ATTACH; Schema: public; Owner: -
 --
 
 ALTER INDEX public.idx_sessions_primary_request ATTACH PARTITION public.sessions_2026_08_primary_request_id_idx;
-
 
 --
 -- Name: sessions_2026_08_session_id_idx; Type: INDEX ATTACH; Schema: public; Owner: -
@@ -27166,13 +24061,11 @@ ALTER INDEX public.idx_sessions_primary_request ATTACH PARTITION public.sessions
 
 ALTER INDEX public.idx_sessions_session_id ATTACH PARTITION public.sessions_2026_08_session_id_idx;
 
-
 --
 -- Name: sessions_2026_08_session_id_partition_date_key; Type: INDEX ATTACH; Schema: public; Owner: -
 --
 
 ALTER INDEX public.sessions_session_id_partition_date_key ATTACH PARTITION public.sessions_2026_08_session_id_partition_date_key;
-
 
 --
 -- Name: sessions_2026_08_status_updated_at_idx; Type: INDEX ATTACH; Schema: public; Owner: -
@@ -27180,13 +24073,11 @@ ALTER INDEX public.sessions_session_id_partition_date_key ATTACH PARTITION publi
 
 ALTER INDEX public.idx_sessions_status ATTACH PARTITION public.sessions_2026_08_status_updated_at_idx;
 
-
 --
 -- Name: sessions_2026_08_tenant_id_created_at_idx; Type: INDEX ATTACH; Schema: public; Owner: -
 --
 
 ALTER INDEX public.idx_sessions_tenant ATTACH PARTITION public.sessions_2026_08_tenant_id_created_at_idx;
-
 
 --
 -- Name: system_probe_runs_default_automaticity_created_at_idx; Type: INDEX ATTACH; Schema: public; Owner: -
@@ -27194,13 +24085,11 @@ ALTER INDEX public.idx_sessions_tenant ATTACH PARTITION public.sessions_2026_08_
 
 ALTER INDEX public.idx_system_probe_runs_automaticity ATTACH PARTITION public.system_probe_runs_default_automaticity_created_at_idx;
 
-
 --
 -- Name: system_probe_runs_default_credential_id_created_at_idx; Type: INDEX ATTACH; Schema: public; Owner: -
 --
 
 ALTER INDEX public.idx_system_probe_runs_credential ATTACH PARTITION public.system_probe_runs_default_credential_id_created_at_idx;
-
 
 --
 -- Name: system_probe_runs_default_pkey; Type: INDEX ATTACH; Schema: public; Owner: -
@@ -27208,13 +24097,11 @@ ALTER INDEX public.idx_system_probe_runs_credential ATTACH PARTITION public.syst
 
 ALTER INDEX public.system_probe_runs_pkey ATTACH PARTITION public.system_probe_runs_default_pkey;
 
-
 --
 -- Name: system_probe_runs_default_provider_id_created_at_idx; Type: INDEX ATTACH; Schema: public; Owner: -
 --
 
 ALTER INDEX public.idx_system_probe_runs_provider ATTACH PARTITION public.system_probe_runs_default_provider_id_created_at_idx;
-
 
 --
 -- Name: system_probe_runs_default_raw_model_created_at_idx; Type: INDEX ATTACH; Schema: public; Owner: -
@@ -27222,13 +24109,11 @@ ALTER INDEX public.idx_system_probe_runs_provider ATTACH PARTITION public.system
 
 ALTER INDEX public.idx_system_probe_runs_model ATTACH PARTITION public.system_probe_runs_default_raw_model_created_at_idx;
 
-
 --
 -- Name: system_probe_runs_default_skip_reason_idx; Type: INDEX ATTACH; Schema: public; Owner: -
 --
 
 ALTER INDEX public.idx_system_probe_runs_skip ATTACH PARTITION public.system_probe_runs_default_skip_reason_idx;
-
 
 --
 -- Name: system_probe_runs_default_status_created_at_idx; Type: INDEX ATTACH; Schema: public; Owner: -
@@ -27236,13 +24121,11 @@ ALTER INDEX public.idx_system_probe_runs_skip ATTACH PARTITION public.system_pro
 
 ALTER INDEX public.idx_system_probe_runs_status ATTACH PARTITION public.system_probe_runs_default_status_created_at_idx;
 
-
 --
 -- Name: system_probe_runs_default_task_id_idx; Type: INDEX ATTACH; Schema: public; Owner: -
 --
 
 ALTER INDEX public.idx_system_probe_runs_task_id ATTACH PARTITION public.system_probe_runs_default_task_id_idx;
-
 
 --
 -- Name: tool_usage_stats_2026_07_created_at_idx; Type: INDEX ATTACH; Schema: public; Owner: -
@@ -27250,13 +24133,11 @@ ALTER INDEX public.idx_system_probe_runs_task_id ATTACH PARTITION public.system_
 
 ALTER INDEX public.idx_tool_stats_part_created ATTACH PARTITION public.tool_usage_stats_2026_07_created_at_idx;
 
-
 --
 -- Name: tool_usage_stats_2026_07_pkey; Type: INDEX ATTACH; Schema: public; Owner: -
 --
 
 ALTER INDEX public.tool_usage_stats_partitioned_pkey ATTACH PARTITION public.tool_usage_stats_2026_07_pkey;
-
 
 --
 -- Name: tool_usage_stats_2026_07_tenant_id_usage_date_idx; Type: INDEX ATTACH; Schema: public; Owner: -
@@ -27264,13 +24145,11 @@ ALTER INDEX public.tool_usage_stats_partitioned_pkey ATTACH PARTITION public.too
 
 ALTER INDEX public.idx_tool_stats_part_tenant ATTACH PARTITION public.tool_usage_stats_2026_07_tenant_id_usage_date_idx;
 
-
 --
 -- Name: tool_usage_stats_2026_07_tool_id_tenant_id_usage_date_creat_key; Type: INDEX ATTACH; Schema: public; Owner: -
 --
 
 ALTER INDEX public.tool_usage_stats_partitioned_tool_id_tenant_id_usage_date_c_key ATTACH PARTITION public.tool_usage_stats_2026_07_tool_id_tenant_id_usage_date_creat_key;
-
 
 --
 -- Name: tool_usage_stats_2026_07_tool_id_usage_date_idx; Type: INDEX ATTACH; Schema: public; Owner: -
@@ -27278,13 +24157,11 @@ ALTER INDEX public.tool_usage_stats_partitioned_tool_id_tenant_id_usage_date_c_k
 
 ALTER INDEX public.idx_tool_stats_part_tool ATTACH PARTITION public.tool_usage_stats_2026_07_tool_id_usage_date_idx;
 
-
 --
 -- Name: tool_usage_stats_2026_07_usage_date_idx; Type: INDEX ATTACH; Schema: public; Owner: -
 --
 
 ALTER INDEX public.idx_tool_stats_part_date ATTACH PARTITION public.tool_usage_stats_2026_07_usage_date_idx;
-
 
 --
 -- Name: tool_usage_stats_2026_08_created_at_idx; Type: INDEX ATTACH; Schema: public; Owner: -
@@ -27292,13 +24169,11 @@ ALTER INDEX public.idx_tool_stats_part_date ATTACH PARTITION public.tool_usage_s
 
 ALTER INDEX public.idx_tool_stats_part_created ATTACH PARTITION public.tool_usage_stats_2026_08_created_at_idx;
 
-
 --
 -- Name: tool_usage_stats_2026_08_pkey; Type: INDEX ATTACH; Schema: public; Owner: -
 --
 
 ALTER INDEX public.tool_usage_stats_partitioned_pkey ATTACH PARTITION public.tool_usage_stats_2026_08_pkey;
-
 
 --
 -- Name: tool_usage_stats_2026_08_tenant_id_usage_date_idx; Type: INDEX ATTACH; Schema: public; Owner: -
@@ -27306,13 +24181,11 @@ ALTER INDEX public.tool_usage_stats_partitioned_pkey ATTACH PARTITION public.too
 
 ALTER INDEX public.idx_tool_stats_part_tenant ATTACH PARTITION public.tool_usage_stats_2026_08_tenant_id_usage_date_idx;
 
-
 --
 -- Name: tool_usage_stats_2026_08_tool_id_tenant_id_usage_date_creat_key; Type: INDEX ATTACH; Schema: public; Owner: -
 --
 
 ALTER INDEX public.tool_usage_stats_partitioned_tool_id_tenant_id_usage_date_c_key ATTACH PARTITION public.tool_usage_stats_2026_08_tool_id_tenant_id_usage_date_creat_key;
-
 
 --
 -- Name: tool_usage_stats_2026_08_tool_id_usage_date_idx; Type: INDEX ATTACH; Schema: public; Owner: -
@@ -27320,13 +24193,11 @@ ALTER INDEX public.tool_usage_stats_partitioned_tool_id_tenant_id_usage_date_c_k
 
 ALTER INDEX public.idx_tool_stats_part_tool ATTACH PARTITION public.tool_usage_stats_2026_08_tool_id_usage_date_idx;
 
-
 --
 -- Name: tool_usage_stats_2026_08_usage_date_idx; Type: INDEX ATTACH; Schema: public; Owner: -
 --
 
 ALTER INDEX public.idx_tool_stats_part_date ATTACH PARTITION public.tool_usage_stats_2026_08_usage_date_idx;
-
 
 --
 -- Name: usage_ledger_2026_07_request_id_idx; Type: INDEX ATTACH; Schema: public; Owner: -
@@ -27334,13 +24205,11 @@ ALTER INDEX public.idx_tool_stats_part_date ATTACH PARTITION public.tool_usage_s
 
 ALTER INDEX public.idx_usage_ledger_part_request_id ATTACH PARTITION public.usage_ledger_2026_07_request_id_idx;
 
-
 --
 -- Name: usage_ledger_2026_07_request_id_ts_key; Type: INDEX ATTACH; Schema: public; Owner: -
 --
 
 ALTER INDEX public.usage_ledger_partitioned_request_id_ts_key ATTACH PARTITION public.usage_ledger_2026_07_request_id_ts_key;
-
 
 --
 -- Name: usage_ledger_2026_07_tenant_id_ts_idx; Type: INDEX ATTACH; Schema: public; Owner: -
@@ -27348,13 +24217,11 @@ ALTER INDEX public.usage_ledger_partitioned_request_id_ts_key ATTACH PARTITION p
 
 ALTER INDEX public.idx_usage_ledger_part_tenant ATTACH PARTITION public.usage_ledger_2026_07_tenant_id_ts_idx;
 
-
 --
 -- Name: usage_ledger_2026_07_ts_idx; Type: INDEX ATTACH; Schema: public; Owner: -
 --
 
 ALTER INDEX public.idx_usage_ledger_part_ts ATTACH PARTITION public.usage_ledger_2026_07_ts_idx;
-
 
 --
 -- Name: usage_ledger_2026_08_request_id_idx; Type: INDEX ATTACH; Schema: public; Owner: -
@@ -27362,13 +24229,11 @@ ALTER INDEX public.idx_usage_ledger_part_ts ATTACH PARTITION public.usage_ledger
 
 ALTER INDEX public.idx_usage_ledger_part_request_id ATTACH PARTITION public.usage_ledger_2026_08_request_id_idx;
 
-
 --
 -- Name: usage_ledger_2026_08_request_id_ts_key; Type: INDEX ATTACH; Schema: public; Owner: -
 --
 
 ALTER INDEX public.usage_ledger_partitioned_request_id_ts_key ATTACH PARTITION public.usage_ledger_2026_08_request_id_ts_key;
-
 
 --
 -- Name: usage_ledger_2026_08_tenant_id_ts_idx; Type: INDEX ATTACH; Schema: public; Owner: -
@@ -27376,13 +24241,11 @@ ALTER INDEX public.usage_ledger_partitioned_request_id_ts_key ATTACH PARTITION p
 
 ALTER INDEX public.idx_usage_ledger_part_tenant ATTACH PARTITION public.usage_ledger_2026_08_tenant_id_ts_idx;
 
-
 --
 -- Name: usage_ledger_2026_08_ts_idx; Type: INDEX ATTACH; Schema: public; Owner: -
 --
 
 ALTER INDEX public.idx_usage_ledger_part_ts ATTACH PARTITION public.usage_ledger_2026_08_ts_idx;
-
 
 --
 -- Name: approval_approvers approval_approvers_updated_at; Type: TRIGGER; Schema: public; Owner: -
@@ -27418,7 +24281,6 @@ CREATE FUNCTION public.recent_success_rate(p_credential_id bigint, p_raw_model t
 		           COUNT(*)::int
 		    FROM recent;
 		$$;
-
 
 --
 -- Name: routing_overrides_audit_fn(); Type: FUNCTION; Schema: public; Owner: -
@@ -27469,36 +24331,7 @@ CREATE FUNCTION public.routing_overrides_audit_fn() RETURNS trigger
 		END;
 		$$;
 
-
---
--- Name: system_health_status(integer); Type: FUNCTION; Schema: public; Owner: -
---
-
-CREATE FUNCTION public.system_health_status(p_window_seconds integer DEFAULT 30) RETURNS TABLE(status text, success_rate numeric, sample_count bigint, failure_count bigint, last_check_at timestamp with time zone)
-    LANGUAGE sql STABLE
-    AS $$
-    WITH win AS (
-        SELECT
-            COUNT(*)::bigint                AS n,
-            COUNT(*) FILTER (WHERE success)::bigint AS ok,
-            COUNT(*) FILTER (WHERE NOT success)::bigint AS fail
-        FROM request_logs_hot
-        WHERE ts >= now() - make_interval(secs => p_window_seconds)
-    )
-    SELECT
-        CASE
-            WHEN n = 0                                  THEN 'suspect'
-            WHEN (ok::numeric / NULLIF(n,0)) >= 0.80    THEN 'ok'
-            ELSE 'degraded'
-        END                                            AS status,
-        ROUND( (ok::numeric / NULLIF(n,0))::numeric, 4) AS success_rate,
-        n                                              AS sample_count,
-        fail                                           AS failure_count,
-        now()                                          AS last_check_at
-    FROM win;
-$$;
 CREATE TRIGGER approval_approvers_updated_at BEFORE UPDATE ON public.approval_approvers FOR EACH ROW EXECUTE FUNCTION public.update_approval_updated_at();
-
 
 --
 -- Name: approval_configs approval_configs_updated_at; Type: TRIGGER; Schema: public; Owner: -
@@ -27506,13 +24339,11 @@ CREATE TRIGGER approval_approvers_updated_at BEFORE UPDATE ON public.approval_ap
 
 CREATE TRIGGER approval_configs_updated_at BEFORE UPDATE ON public.approval_configs FOR EACH ROW EXECUTE FUNCTION public.update_approval_updated_at();
 
-
 --
 -- Name: approval_rules approval_rules_updated_at; Type: TRIGGER; Schema: public; Owner: -
 --
 
 CREATE TRIGGER approval_rules_updated_at BEFORE UPDATE ON public.approval_rules FOR EACH ROW EXECUTE FUNCTION public.update_approval_updated_at();
-
 
 --
 -- Name: credential_model_bindings cmb_protect_manual_disable; Type: TRIGGER; Schema: public; Owner: -
@@ -27520,13 +24351,11 @@ CREATE TRIGGER approval_rules_updated_at BEFORE UPDATE ON public.approval_rules 
 
 CREATE TRIGGER cmb_protect_manual_disable BEFORE UPDATE ON public.credential_model_bindings FOR EACH ROW EXECUTE FUNCTION public.trg_cmb_protect_manual_disable();
 
-
 --
 -- Name: diagnostic_runs diagnostic_runs_touch; Type: TRIGGER; Schema: public; Owner: -
 --
 
 CREATE TRIGGER diagnostic_runs_touch BEFORE UPDATE ON public.diagnostic_runs FOR EACH ROW EXECUTE FUNCTION public.touch_route_incidents_updated_at();
-
 
 --
 -- Name: model_name_mapping model_name_mapping_updated_at; Type: TRIGGER; Schema: public; Owner: -
@@ -27534,13 +24363,11 @@ CREATE TRIGGER diagnostic_runs_touch BEFORE UPDATE ON public.diagnostic_runs FOR
 
 CREATE TRIGGER model_name_mapping_updated_at BEFORE UPDATE ON public.model_name_mapping FOR EACH ROW EXECUTE FUNCTION public.model_name_mapping_updated_at();
 
-
 --
 -- Name: model_offers model_offers_update; Type: TRIGGER; Schema: public; Owner: -
 --
 
 CREATE TRIGGER model_offers_update INSTEAD OF UPDATE ON public.model_offers FOR EACH ROW EXECUTE FUNCTION public.model_offers_update_trigger();
-
 
 --
 -- Name: model_pricing model_pricing_change_log; Type: TRIGGER; Schema: public; Owner: -
@@ -27548,13 +24375,11 @@ CREATE TRIGGER model_offers_update INSTEAD OF UPDATE ON public.model_offers FOR 
 
 CREATE TRIGGER model_pricing_change_log AFTER UPDATE ON public.model_pricing FOR EACH ROW EXECUTE FUNCTION public.log_model_pricing_change();
 
-
 --
 -- Name: model_pricing model_pricing_updated_at; Type: TRIGGER; Schema: public; Owner: -
 --
 
 CREATE TRIGGER model_pricing_updated_at BEFORE UPDATE ON public.model_pricing FOR EACH ROW EXECUTE FUNCTION public.update_model_pricing_updated_at();
-
 
 --
 -- Name: route_incidents route_incidents_touch; Type: TRIGGER; Schema: public; Owner: -
@@ -27562,13 +24387,11 @@ CREATE TRIGGER model_pricing_updated_at BEFORE UPDATE ON public.model_pricing FO
 
 CREATE TRIGGER route_incidents_touch BEFORE UPDATE ON public.route_incidents FOR EACH ROW EXECUTE FUNCTION public.touch_route_incidents_updated_at();
 
-
 --
 -- Name: routing_overrides routing_overrides_audit_trg; Type: TRIGGER; Schema: public; Owner: -
 --
 
 CREATE TRIGGER routing_overrides_audit_trg AFTER INSERT OR DELETE OR UPDATE ON public.routing_overrides FOR EACH ROW EXECUTE FUNCTION public.routing_overrides_audit_fn();
-
 
 --
 -- Name: session_audit_records session_audit_records_updated_at; Type: TRIGGER; Schema: public; Owner: -
@@ -27576,13 +24399,11 @@ CREATE TRIGGER routing_overrides_audit_trg AFTER INSERT OR DELETE OR UPDATE ON p
 
 CREATE TRIGGER session_audit_records_updated_at BEFORE UPDATE ON public.session_audit_records FOR EACH ROW EXECUTE FUNCTION public.trg_session_audit_records_updated_at();
 
-
 --
 -- Name: tenant_model_policies tenant_model_policies_audit_trg; Type: TRIGGER; Schema: public; Owner: -
 --
 
 CREATE TRIGGER tenant_model_policies_audit_trg AFTER INSERT OR DELETE OR UPDATE ON public.tenant_model_policies FOR EACH ROW EXECUTE FUNCTION public.tenant_model_policies_audit_fn();
-
 
 --
 -- Name: credentials trg_auto_fp_slot_limit_insert; Type: TRIGGER; Schema: public; Owner: -
@@ -27590,13 +24411,11 @@ CREATE TRIGGER tenant_model_policies_audit_trg AFTER INSERT OR DELETE OR UPDATE 
 
 CREATE TRIGGER trg_auto_fp_slot_limit_insert BEFORE INSERT ON public.credentials FOR EACH ROW EXECUTE FUNCTION public.auto_set_fp_slot_limit();
 
-
 --
 -- Name: credentials trg_check_credential_dates; Type: TRIGGER; Schema: public; Owner: -
 --
 
 CREATE TRIGGER trg_check_credential_dates BEFORE INSERT OR UPDATE ON public.credentials FOR EACH ROW EXECUTE FUNCTION public.check_credential_dates();
-
 
 --
 -- Name: key_applications trg_key_applications_updated_at; Type: TRIGGER; Schema: public; Owner: -
@@ -27604,13 +24423,11 @@ CREATE TRIGGER trg_check_credential_dates BEFORE INSERT OR UPDATE ON public.cred
 
 CREATE TRIGGER trg_key_applications_updated_at BEFORE UPDATE ON public.key_applications FOR EACH ROW EXECUTE FUNCTION public.key_applications_set_updated_at();
 
-
 --
 -- Name: api_keys trg_notify_auto_route_apikeys; Type: TRIGGER; Schema: public; Owner: -
 --
 
 CREATE TRIGGER trg_notify_auto_route_apikeys AFTER UPDATE OF rate_limit_rpm, budget_usd, enabled, status ON public.api_keys FOR EACH ROW WHEN ((old.* IS DISTINCT FROM new.*)) EXECUTE FUNCTION public.notify_auto_route_refresh();
-
 
 --
 -- Name: credential_model_bindings trg_notify_auto_route_cmb_insert_delete; Type: TRIGGER; Schema: public; Owner: -
@@ -27618,13 +24435,11 @@ CREATE TRIGGER trg_notify_auto_route_apikeys AFTER UPDATE OF rate_limit_rpm, bud
 
 CREATE TRIGGER trg_notify_auto_route_cmb_insert_delete AFTER INSERT OR DELETE ON public.credential_model_bindings FOR EACH ROW EXECUTE FUNCTION public.notify_auto_route_refresh();
 
-
 --
 -- Name: credential_model_bindings trg_notify_auto_route_cmb_update; Type: TRIGGER; Schema: public; Owner: -
 --
 
 CREATE TRIGGER trg_notify_auto_route_cmb_update AFTER UPDATE ON public.credential_model_bindings FOR EACH ROW WHEN (((old.available IS DISTINCT FROM new.available) OR (old.unavailable_reason IS DISTINCT FROM new.unavailable_reason) OR (old.unavailable_at IS DISTINCT FROM new.unavailable_at) OR (old.routing_tier IS DISTINCT FROM new.routing_tier) OR (old.weight IS DISTINCT FROM new.weight) OR (old.manual_priority IS DISTINCT FROM new.manual_priority) OR (old.active_sessions IS DISTINCT FROM new.active_sessions) OR (old.consecutive_failures IS DISTINCT FROM new.consecutive_failures))) EXECUTE FUNCTION public.notify_auto_route_refresh();
-
 
 --
 -- Name: credentials trg_notify_auto_route_creds; Type: TRIGGER; Schema: public; Owner: -
@@ -27632,13 +24447,11 @@ CREATE TRIGGER trg_notify_auto_route_cmb_update AFTER UPDATE ON public.credentia
 
 CREATE TRIGGER trg_notify_auto_route_creds AFTER UPDATE OF status, availability_state, quota_state, circuit_state, concurrency_limit, lifecycle_status, manual_disabled ON public.credentials FOR EACH ROW WHEN ((old.* IS DISTINCT FROM new.*)) EXECUTE FUNCTION public.notify_auto_route_refresh();
 
-
 --
 -- Name: providers trg_notify_auto_route_providers; Type: TRIGGER; Schema: public; Owner: -
 --
 
 CREATE TRIGGER trg_notify_auto_route_providers AFTER UPDATE OF enabled, manual_disabled ON public.providers FOR EACH ROW WHEN ((old.* IS DISTINCT FROM new.*)) EXECUTE FUNCTION public.notify_auto_route_refresh();
-
 
 --
 -- Name: intent_classification_feedback trigger_intent_feedback_correctness; Type: TRIGGER; Schema: public; Owner: -
@@ -27646,13 +24459,11 @@ CREATE TRIGGER trg_notify_auto_route_providers AFTER UPDATE OF enabled, manual_d
 
 CREATE TRIGGER trigger_intent_feedback_correctness BEFORE UPDATE ON public.intent_classification_feedback FOR EACH ROW EXECUTE FUNCTION public.update_intent_feedback_correctness();
 
-
 --
 -- Name: provider_settings trigger_provider_settings_updated_at; Type: TRIGGER; Schema: public; Owner: -
 --
 
 CREATE TRIGGER trigger_provider_settings_updated_at BEFORE UPDATE ON public.provider_settings FOR EACH ROW EXECUTE FUNCTION public.update_provider_settings_updated_at();
-
 
 --
 -- Name: session_last_requests trigger_session_last_requests_updated_at; Type: TRIGGER; Schema: public; Owner: -
@@ -27660,13 +24471,11 @@ CREATE TRIGGER trigger_provider_settings_updated_at BEFORE UPDATE ON public.prov
 
 CREATE TRIGGER trigger_session_last_requests_updated_at BEFORE UPDATE ON public.session_last_requests FOR EACH ROW EXECUTE FUNCTION public.update_session_last_requests_updated_at();
 
-
 --
 -- Name: system_settings trigger_system_settings_updated_at; Type: TRIGGER; Schema: public; Owner: -
 --
 
 CREATE TRIGGER trigger_system_settings_updated_at BEFORE UPDATE ON public.system_settings FOR EACH ROW EXECUTE FUNCTION public.update_system_settings_updated_at();
-
 
 --
 -- Name: canary_tokens update_canary_tokens_modtime; Type: TRIGGER; Schema: public; Owner: -
@@ -27674,13 +24483,11 @@ CREATE TRIGGER trigger_system_settings_updated_at BEFORE UPDATE ON public.system
 
 CREATE TRIGGER update_canary_tokens_modtime BEFORE UPDATE ON public.canary_tokens FOR EACH ROW EXECUTE FUNCTION public.update_modified_column();
 
-
 --
 -- Name: output_compliance_custom_keywords update_output_compliance_custom_keywords_modtime; Type: TRIGGER; Schema: public; Owner: -
 --
 
 CREATE TRIGGER update_output_compliance_custom_keywords_modtime BEFORE UPDATE ON public.output_compliance_custom_keywords FOR EACH ROW EXECUTE FUNCTION public.update_output_compliance_modified_column();
-
 
 --
 -- Name: prompt_injection_llm_engines update_prompt_injection_llm_engines_modtime; Type: TRIGGER; Schema: public; Owner: -
@@ -27688,13 +24495,11 @@ CREATE TRIGGER update_output_compliance_custom_keywords_modtime BEFORE UPDATE ON
 
 CREATE TRIGGER update_prompt_injection_llm_engines_modtime BEFORE UPDATE ON public.prompt_injection_llm_engines FOR EACH ROW EXECUTE FUNCTION public.update_modified_column();
 
-
 --
 -- Name: severity_action_matrix update_severity_action_matrix_modtime; Type: TRIGGER; Schema: public; Owner: -
 --
 
 CREATE TRIGGER update_severity_action_matrix_modtime BEFORE UPDATE ON public.severity_action_matrix FOR EACH ROW EXECUTE FUNCTION public.update_modified_column();
-
 
 --
 -- Name: credential_probe_configs credential_probe_configs_credential_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
@@ -27703,14 +24508,12 @@ CREATE TRIGGER update_severity_action_matrix_modtime BEFORE UPDATE ON public.sev
 ALTER TABLE ONLY public.credential_probe_configs
     ADD CONSTRAINT credential_probe_configs_credential_id_fkey FOREIGN KEY (credential_id) REFERENCES public.credentials(id);
 
-
 --
 -- Name: credential_probes credential_probes_credential_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.credential_probes
     ADD CONSTRAINT credential_probes_credential_id_fkey FOREIGN KEY (credential_id) REFERENCES public.credentials(id);
-
 
 --
 -- Name: donations donations_holder_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
@@ -27719,14 +24522,12 @@ ALTER TABLE ONLY public.credential_probes
 ALTER TABLE ONLY public.donations
     ADD CONSTRAINT donations_holder_id_fkey FOREIGN KEY (holder_id) REFERENCES public.license_holders(id) ON DELETE SET NULL;
 
-
 --
 -- Name: download_events download_events_holder_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.download_events
     ADD CONSTRAINT download_events_holder_id_fkey FOREIGN KEY (holder_id) REFERENCES public.license_holders(id) ON DELETE SET NULL;
-
 
 --
 -- Name: fault_action_logs fault_action_logs_event_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
@@ -27735,14 +24536,12 @@ ALTER TABLE ONLY public.download_events
 ALTER TABLE ONLY public.fault_action_logs
     ADD CONSTRAINT fault_action_logs_event_id_fkey FOREIGN KEY (event_id) REFERENCES public.fault_events(id) ON DELETE CASCADE;
 
-
 --
 -- Name: agent_relationships fk_agent_rel_dst; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.agent_relationships
     ADD CONSTRAINT fk_agent_rel_dst FOREIGN KEY (dst_agent_id) REFERENCES public.agents(id) ON DELETE CASCADE;
-
 
 --
 -- Name: agent_relationships fk_agent_rel_src; Type: FK CONSTRAINT; Schema: public; Owner: -
@@ -27751,14 +24550,12 @@ ALTER TABLE ONLY public.agent_relationships
 ALTER TABLE ONLY public.agent_relationships
     ADD CONSTRAINT fk_agent_rel_src FOREIGN KEY (src_agent_id) REFERENCES public.agents(id) ON DELETE CASCADE;
 
-
 --
 -- Name: asset_relationships fk_asset_rel_dst; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.asset_relationships
     ADD CONSTRAINT fk_asset_rel_dst FOREIGN KEY (dst_kind, dst_ref_id) REFERENCES public.assets(kind, ref_id) ON DELETE CASCADE;
-
 
 --
 -- Name: asset_relationships fk_asset_rel_src; Type: FK CONSTRAINT; Schema: public; Owner: -
@@ -27767,14 +24564,12 @@ ALTER TABLE ONLY public.asset_relationships
 ALTER TABLE ONLY public.asset_relationships
     ADD CONSTRAINT fk_asset_rel_src FOREIGN KEY (src_kind, src_ref_id) REFERENCES public.assets(kind, ref_id) ON DELETE CASCADE;
 
-
 --
 -- Name: output_compliance_policies fk_output_compliance_tenant; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.output_compliance_policies
     ADD CONSTRAINT fk_output_compliance_tenant FOREIGN KEY (tenant_id) REFERENCES public.tenants(code) ON DELETE CASCADE;
-
 
 --
 -- Name: prompt_injection_policies fk_prompt_injection_tenant; Type: FK CONSTRAINT; Schema: public; Owner: -
@@ -27783,14 +24578,12 @@ ALTER TABLE ONLY public.output_compliance_policies
 ALTER TABLE ONLY public.prompt_injection_policies
     ADD CONSTRAINT fk_prompt_injection_tenant FOREIGN KEY (tenant_id) REFERENCES public.tenants(code) ON DELETE CASCADE;
 
-
 --
 -- Name: session_summaries fk_session_tenant; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.session_summaries
     ADD CONSTRAINT fk_session_tenant FOREIGN KEY (tenant_id) REFERENCES public.tenants(code) ON DELETE CASCADE;
-
 
 --
 -- Name: gray_release_rules gray_release_rules_release_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
@@ -27799,14 +24592,12 @@ ALTER TABLE ONLY public.session_summaries
 ALTER TABLE ONLY public.gray_release_rules
     ADD CONSTRAINT gray_release_rules_release_id_fkey FOREIGN KEY (release_id) REFERENCES public.releases(id) ON DELETE CASCADE;
 
-
 --
 -- Name: instance_release_status instance_release_status_release_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.instance_release_status
     ADD CONSTRAINT instance_release_status_release_id_fkey FOREIGN KEY (release_id) REFERENCES public.releases(id) ON DELETE CASCADE;
-
 
 --
 -- Name: intent_analysis_adjustments intent_analysis_adjustments_superseded_by_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
@@ -27815,14 +24606,12 @@ ALTER TABLE ONLY public.instance_release_status
 ALTER TABLE ONLY public.intent_analysis_adjustments
     ADD CONSTRAINT intent_analysis_adjustments_superseded_by_fkey FOREIGN KEY (superseded_by) REFERENCES public.intent_analysis_adjustments(id);
 
-
 --
 -- Name: license_devices license_devices_license_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.license_devices
     ADD CONSTRAINT license_devices_license_id_fkey FOREIGN KEY (license_id) REFERENCES public.licenses(id) ON DELETE CASCADE;
-
 
 --
 -- Name: license_modules license_modules_license_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
@@ -27831,14 +24620,12 @@ ALTER TABLE ONLY public.license_devices
 ALTER TABLE ONLY public.license_modules
     ADD CONSTRAINT license_modules_license_id_fkey FOREIGN KEY (license_id) REFERENCES public.licenses(id) ON DELETE CASCADE;
 
-
 --
 -- Name: license_modules license_modules_module_key_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.license_modules
     ADD CONSTRAINT license_modules_module_key_fkey FOREIGN KEY (module_key) REFERENCES public.product_modules(key);
-
 
 --
 -- Name: license_trial_consents license_trial_consents_license_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
@@ -27847,14 +24634,12 @@ ALTER TABLE ONLY public.license_modules
 ALTER TABLE ONLY public.license_trial_consents
     ADD CONSTRAINT license_trial_consents_license_id_fkey FOREIGN KEY (license_id) REFERENCES public.licenses(id) ON DELETE CASCADE;
 
-
 --
 -- Name: licenses licenses_holder_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.licenses
     ADD CONSTRAINT licenses_holder_id_fkey FOREIGN KEY (holder_id) REFERENCES public.license_holders(id) ON DELETE SET NULL;
-
 
 --
 -- Name: ops_node_registrations ops_node_registrations_license_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
@@ -27863,14 +24648,12 @@ ALTER TABLE ONLY public.licenses
 ALTER TABLE ONLY public.ops_node_registrations
     ADD CONSTRAINT ops_node_registrations_license_id_fkey FOREIGN KEY (license_id) REFERENCES public.licenses(id) ON DELETE SET NULL;
 
-
 --
 -- Name: product_module_features product_module_features_module_key_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.product_module_features
     ADD CONSTRAINT product_module_features_module_key_fkey FOREIGN KEY (module_key) REFERENCES public.product_modules(key) ON DELETE CASCADE;
-
 
 --
 -- Name: prompt_injection_detections prompt_injection_detections_rule_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
@@ -27879,14 +24662,12 @@ ALTER TABLE ONLY public.product_module_features
 ALTER TABLE ONLY public.prompt_injection_detections
     ADD CONSTRAINT prompt_injection_detections_rule_id_fkey FOREIGN KEY (rule_id) REFERENCES public.prompt_injection_rules(id) ON DELETE SET NULL;
 
-
 --
 -- Name: provider_quality_configs provider_quality_configs_provider_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.provider_quality_configs
     ADD CONSTRAINT provider_quality_configs_provider_id_fkey FOREIGN KEY (provider_id) REFERENCES public.providers(id) ON DELETE CASCADE;
-
 
 --
 -- Name: provider_quality_profiles provider_quality_profiles_provider_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
@@ -27895,14 +24676,12 @@ ALTER TABLE ONLY public.provider_quality_configs
 ALTER TABLE ONLY public.provider_quality_profiles
     ADD CONSTRAINT provider_quality_profiles_provider_id_fkey FOREIGN KEY (provider_id) REFERENCES public.providers(id) ON DELETE CASCADE;
 
-
 --
 -- Name: route_incident_events route_incident_events_incident_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.route_incident_events
     ADD CONSTRAINT route_incident_events_incident_id_fkey FOREIGN KEY (incident_id) REFERENCES public.route_incidents(id) ON DELETE CASCADE;
-
 
 --
 -- Name: runtime_metrics runtime_metrics_license_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
@@ -27911,14 +24690,12 @@ ALTER TABLE ONLY public.route_incident_events
 ALTER TABLE ONLY public.runtime_metrics
     ADD CONSTRAINT runtime_metrics_license_id_fkey FOREIGN KEY (license_id) REFERENCES public.licenses(id) ON DELETE SET NULL;
 
-
 --
 -- Name: runtime_telemetry_consent_events runtime_telemetry_consent_events_license_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.runtime_telemetry_consent_events
     ADD CONSTRAINT runtime_telemetry_consent_events_license_id_fkey FOREIGN KEY (license_id) REFERENCES public.licenses(id) ON DELETE CASCADE;
-
 
 --
 -- Name: runtime_telemetry_preferences runtime_telemetry_preferences_license_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
@@ -27927,14 +24704,12 @@ ALTER TABLE ONLY public.runtime_telemetry_consent_events
 ALTER TABLE ONLY public.runtime_telemetry_preferences
     ADD CONSTRAINT runtime_telemetry_preferences_license_id_fkey FOREIGN KEY (license_id) REFERENCES public.licenses(id) ON DELETE CASCADE;
 
-
 --
 -- Name: self_check_round_results self_check_round_results_run_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.self_check_round_results
     ADD CONSTRAINT self_check_round_results_run_id_fkey FOREIGN KEY (run_id) REFERENCES public.self_check_runs(id) ON DELETE CASCADE;
-
 
 --
 -- Name: tier_module_map tier_module_map_module_key_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
@@ -27943,14 +24718,12 @@ ALTER TABLE ONLY public.self_check_round_results
 ALTER TABLE ONLY public.tier_module_map
     ADD CONSTRAINT tier_module_map_module_key_fkey FOREIGN KEY (module_key) REFERENCES public.product_modules(key) ON DELETE CASCADE;
 
-
 --
 -- Name: tier_module_map tier_module_map_tier_code_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.tier_module_map
     ADD CONSTRAINT tier_module_map_tier_code_fkey FOREIGN KEY (tier_code) REFERENCES public.subscription_tiers(code) ON DELETE CASCADE;
-
 
 --
 -- Name: vibe_code_reviews vibe_code_reviews_session_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
@@ -27959,14 +24732,12 @@ ALTER TABLE ONLY public.tier_module_map
 ALTER TABLE ONLY public.vibe_code_reviews
     ADD CONSTRAINT vibe_code_reviews_session_id_fkey FOREIGN KEY (session_id) REFERENCES public.vibe_coding_sessions(id) ON DELETE SET NULL;
 
-
 --
 -- Name: vibe_coding_sessions vibe_coding_sessions_project_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY public.vibe_coding_sessions
     ADD CONSTRAINT vibe_coding_sessions_project_id_fkey FOREIGN KEY (project_id) REFERENCES public.vibe_coding_projects(id) ON DELETE SET NULL;
-
 
 --
 -- Name: agent_relationships; Type: ROW SECURITY; Schema: public; Owner: -
@@ -27991,7 +24762,6 @@ ALTER TABLE public.analysis_events ENABLE ROW LEVEL SECURITY;
 --
 
 CREATE POLICY analysis_events_super_admin_bypass ON public.analysis_events USING (((current_setting('app.current_role'::text, true) = 'super_admin'::text) OR (current_setting('app.bypass_rls'::text, true) = 'true'::text)));
-
 
 --
 -- Name: approval_queue; Type: ROW SECURITY; Schema: public; Owner: -
@@ -28023,13 +24793,11 @@ ALTER TABLE public.assets ENABLE ROW LEVEL SECURITY;
 
 CREATE POLICY attack_vectors_super_admin ON public.injection_attack_vectors USING (((current_setting('app.current_role'::text, true) = 'super_admin'::text) OR (current_setting('app.bypass_rls'::text, true) = 'true'::text)));
 
-
 --
 -- Name: injection_attack_vectors attack_vectors_tenant; Type: POLICY; Schema: public; Owner: -
 --
 
 CREATE POLICY attack_vectors_tenant ON public.injection_attack_vectors USING (((tenant_id)::text = current_setting('app.current_tenant'::text, true)));
-
 
 --
 -- Name: billing_orders; Type: ROW SECURITY; Schema: public; Owner: -
@@ -28049,13 +24817,11 @@ ALTER TABLE public.canary_tokens ENABLE ROW LEVEL SECURITY;
 
 CREATE POLICY canary_tokens_super_admin ON public.canary_tokens USING (((current_setting('app.current_role'::text, true) = 'super_admin'::text) OR (current_setting('app.bypass_rls'::text, true) = 'true'::text)));
 
-
 --
 -- Name: canary_tokens canary_tokens_tenant; Type: POLICY; Schema: public; Owner: -
 --
 
 CREATE POLICY canary_tokens_tenant ON public.canary_tokens USING (((tenant_id)::text = current_setting('app.current_tenant'::text, true)));
-
 
 --
 -- Name: credit_ledger; Type: ROW SECURITY; Schema: public; Owner: -
@@ -28087,20 +24853,17 @@ ALTER TABLE public.intent_aggregates ENABLE ROW LEVEL SECURITY;
 
 CREATE POLICY intent_aggregates_super_admin_bypass ON public.intent_aggregates USING (((current_setting('app.current_role'::text, true) = 'super_admin'::text) OR (current_setting('app.bypass_rls'::text, true) = 'true'::text)));
 
-
 --
 -- Name: prompt_injection_llm_engines llm_engines_super_admin; Type: POLICY; Schema: public; Owner: -
 --
 
 CREATE POLICY llm_engines_super_admin ON public.prompt_injection_llm_engines USING (((current_setting('app.current_role'::text, true) = 'super_admin'::text) OR (current_setting('app.bypass_rls'::text, true) = 'true'::text)));
 
-
 --
 -- Name: prompt_injection_llm_engines llm_engines_tenant; Type: POLICY; Schema: public; Owner: -
 --
 
 CREATE POLICY llm_engines_tenant ON public.prompt_injection_llm_engines USING (((tenant_id)::text = current_setting('app.current_tenant'::text, true)));
-
 
 --
 -- Name: model_integrity_events; Type: ROW SECURITY; Schema: public; Owner: -
@@ -28114,13 +24877,11 @@ ALTER TABLE public.model_integrity_events ENABLE ROW LEVEL SECURITY;
 
 CREATE POLICY model_integrity_events_super_admin ON public.model_integrity_events USING ((current_setting('app.bypass_rls'::text, true) = 'true'::text)) WITH CHECK ((current_setting('app.bypass_rls'::text, true) = 'true'::text));
 
-
 --
 -- Name: model_integrity_events model_integrity_events_tenant_isolation; Type: POLICY; Schema: public; Owner: -
 --
 
 CREATE POLICY model_integrity_events_tenant_isolation ON public.model_integrity_events USING (((tenant_id IS NULL) OR (tenant_id = public.get_current_tenant()))) WITH CHECK (((tenant_id IS NULL) OR (tenant_id = public.get_current_tenant())));
-
 
 --
 -- Name: model_probe_runs; Type: ROW SECURITY; Schema: public; Owner: -
@@ -28146,13 +24907,11 @@ ALTER TABLE public.output_compliance_audit ENABLE ROW LEVEL SECURITY;
 
 CREATE POLICY output_compliance_audit_super_admin ON public.output_compliance_audit USING (((current_setting('app.current_role'::text, true) = 'super_admin'::text) OR (current_setting('app.bypass_rls'::text, true) = 'true'::text)));
 
-
 --
 -- Name: output_compliance_audit output_compliance_audit_tenant; Type: POLICY; Schema: public; Owner: -
 --
 
 CREATE POLICY output_compliance_audit_tenant ON public.output_compliance_audit USING (((tenant_id)::text = current_setting('app.current_tenant'::text, true)));
-
 
 --
 -- Name: output_compliance_custom_keywords; Type: ROW SECURITY; Schema: public; Owner: -
@@ -28166,13 +24925,11 @@ ALTER TABLE public.output_compliance_custom_keywords ENABLE ROW LEVEL SECURITY;
 
 CREATE POLICY output_compliance_custom_keywords_super_admin ON public.output_compliance_custom_keywords USING (((current_setting('app.current_role'::text, true) = 'super_admin'::text) OR (current_setting('app.bypass_rls'::text, true) = 'true'::text)));
 
-
 --
 -- Name: output_compliance_custom_keywords output_compliance_custom_keywords_tenant; Type: POLICY; Schema: public; Owner: -
 --
 
 CREATE POLICY output_compliance_custom_keywords_tenant ON public.output_compliance_custom_keywords USING (((tenant_id)::text = current_setting('app.current_tenant'::text, true)));
-
 
 --
 -- Name: output_compliance_policies; Type: ROW SECURITY; Schema: public; Owner: -
@@ -28186,13 +24943,11 @@ ALTER TABLE public.output_compliance_policies ENABLE ROW LEVEL SECURITY;
 
 CREATE POLICY output_compliance_policies_super_admin ON public.output_compliance_policies USING (((current_setting('app.current_role'::text, true) = 'super_admin'::text) OR (current_setting('app.bypass_rls'::text, true) = 'true'::text)));
 
-
 --
 -- Name: output_compliance_policies output_compliance_policies_tenant; Type: POLICY; Schema: public; Owner: -
 --
 
 CREATE POLICY output_compliance_policies_tenant ON public.output_compliance_policies USING (((tenant_id)::text = current_setting('app.current_tenant'::text, true)));
-
 
 --
 -- Name: prompt_injection_detections; Type: ROW SECURITY; Schema: public; Owner: -
@@ -28206,13 +24961,11 @@ ALTER TABLE public.prompt_injection_detections ENABLE ROW LEVEL SECURITY;
 
 CREATE POLICY prompt_injection_detections_super_admin ON public.prompt_injection_detections USING (((current_setting('app.current_role'::text, true) = 'super_admin'::text) OR (current_setting('app.bypass_rls'::text, true) = 'true'::text)));
 
-
 --
 -- Name: prompt_injection_detections prompt_injection_detections_tenant; Type: POLICY; Schema: public; Owner: -
 --
 
 CREATE POLICY prompt_injection_detections_tenant ON public.prompt_injection_detections USING (((tenant_id)::text = current_setting('app.current_tenant'::text, true)));
-
 
 --
 -- Name: prompt_injection_llm_engines; Type: ROW SECURITY; Schema: public; Owner: -
@@ -28232,13 +24985,11 @@ ALTER TABLE public.prompt_injection_policies ENABLE ROW LEVEL SECURITY;
 
 CREATE POLICY prompt_injection_policies_super_admin ON public.prompt_injection_policies USING (((current_setting('app.current_role'::text, true) = 'super_admin'::text) OR (current_setting('app.bypass_rls'::text, true) = 'true'::text)));
 
-
 --
 -- Name: prompt_injection_policies prompt_injection_policies_tenant; Type: POLICY; Schema: public; Owner: -
 --
 
 CREATE POLICY prompt_injection_policies_tenant ON public.prompt_injection_policies USING (((tenant_id)::text = current_setting('app.current_tenant'::text, true)));
-
 
 --
 -- Name: request_context_attrs; Type: ROW SECURITY; Schema: public; Owner: -
@@ -28252,13 +25003,11 @@ ALTER TABLE public.request_context_attrs ENABLE ROW LEVEL SECURITY;
 
 CREATE POLICY request_context_attrs_super_admin_bypass ON public.request_context_attrs USING (((current_setting('app.current_role'::text, true) = 'super_admin'::text) OR (current_setting('app.bypass_rls'::text, true) = 'true'::text)));
 
-
 --
 -- Name: request_context_attrs request_context_attrs_tenant_isolation; Type: POLICY; Schema: public; Owner: -
 --
 
 CREATE POLICY request_context_attrs_tenant_isolation ON public.request_context_attrs USING ((tenant_id = current_setting('app.current_tenant'::text, true)));
-
 
 --
 -- Name: request_logs; Type: ROW SECURITY; Schema: public; Owner: -
@@ -28284,13 +25033,11 @@ ALTER TABLE public.response_format_anomalies ENABLE ROW LEVEL SECURITY;
 
 CREATE POLICY response_format_anomalies_super_admin ON public.response_format_anomalies USING ((current_setting('app.bypass_rls'::text, true) = 'true'::text)) WITH CHECK ((current_setting('app.bypass_rls'::text, true) = 'true'::text));
 
-
 --
 -- Name: response_format_anomalies response_format_anomalies_tenant_isolation; Type: POLICY; Schema: public; Owner: -
 --
 
 CREATE POLICY response_format_anomalies_tenant_isolation ON public.response_format_anomalies USING ((tenant_id = public.get_current_tenant())) WITH CHECK ((tenant_id = public.get_current_tenant()));
-
 
 --
 -- Name: routing_decision_log_archive; Type: ROW SECURITY; Schema: public; Owner: -
@@ -28316,13 +25063,11 @@ ALTER TABLE public.session_bodies ENABLE ROW LEVEL SECURITY;
 
 CREATE POLICY session_bodies_super_admin_bypass ON public.session_bodies USING (((current_setting('app.current_role'::text, true) = 'super_admin'::text) OR (current_setting('app.bypass_rls'::text, true) = 'true'::text)));
 
-
 --
 -- Name: session_bodies session_bodies_tenant_isolation; Type: POLICY; Schema: public; Owner: -
 --
 
 CREATE POLICY session_bodies_tenant_isolation ON public.session_bodies USING (((tenant_id)::text = current_setting('app.current_tenant'::text, true)));
-
 
 --
 -- Name: session_summaries; Type: ROW SECURITY; Schema: public; Owner: -
@@ -28336,13 +25081,11 @@ ALTER TABLE public.session_summaries ENABLE ROW LEVEL SECURITY;
 
 CREATE POLICY session_summaries_super_admin_bypass ON public.session_summaries USING (((current_setting('app.current_role'::text, true) = 'super_admin'::text) OR (current_setting('app.bypass_rls'::text, true) = 'true'::text)));
 
-
 --
 -- Name: session_summaries session_summaries_tenant_isolation; Type: POLICY; Schema: public; Owner: -
 --
 
 CREATE POLICY session_summaries_tenant_isolation ON public.session_summaries USING (((tenant_id)::text = current_setting('app.current_tenant'::text, true)));
-
 
 --
 -- Name: session_turn_snapshots; Type: ROW SECURITY; Schema: public; Owner: -
@@ -28356,13 +25099,11 @@ ALTER TABLE public.session_turn_snapshots ENABLE ROW LEVEL SECURITY;
 
 CREATE POLICY session_turn_snapshots_super_admin_bypass ON public.session_turn_snapshots USING (((current_setting('app.current_role'::text, true) = 'super_admin'::text) OR (current_setting('app.bypass_rls'::text, true) = 'true'::text)));
 
-
 --
 -- Name: session_turn_snapshots session_turn_snapshots_tenant_isolation; Type: POLICY; Schema: public; Owner: -
 --
 
 CREATE POLICY session_turn_snapshots_tenant_isolation ON public.session_turn_snapshots USING (((tenant_id)::text = current_setting('app.current_tenant'::text, true)));
-
 
 --
 -- Name: session_turns; Type: ROW SECURITY; Schema: public; Owner: -
@@ -28376,13 +25117,11 @@ ALTER TABLE public.session_turns ENABLE ROW LEVEL SECURITY;
 
 CREATE POLICY session_turns_super_admin_bypass ON public.session_turns USING (((current_setting('app.current_role'::text, true) = 'super_admin'::text) OR (current_setting('app.bypass_rls'::text, true) = 'true'::text)));
 
-
 --
 -- Name: session_turns session_turns_tenant_isolation; Type: POLICY; Schema: public; Owner: -
 --
 
 CREATE POLICY session_turns_tenant_isolation ON public.session_turns USING (((tenant_id)::text = current_setting('app.current_tenant'::text, true)));
-
 
 --
 -- Name: sessions; Type: ROW SECURITY; Schema: public; Owner: -
@@ -28396,13 +25135,11 @@ ALTER TABLE public.sessions ENABLE ROW LEVEL SECURITY;
 
 CREATE POLICY sessions_super_admin_bypass ON public.sessions USING (((current_setting('app.current_role'::text, true) = 'super_admin'::text) OR (current_setting('app.bypass_rls'::text, true) = 'true'::text)));
 
-
 --
 -- Name: sessions sessions_tenant_isolation; Type: POLICY; Schema: public; Owner: -
 --
 
 CREATE POLICY sessions_tenant_isolation ON public.sessions USING (((tenant_id)::text = current_setting('app.current_tenant'::text, true)));
-
 
 --
 -- Name: settings_audit; Type: ROW SECURITY; Schema: public; Owner: -
@@ -28422,13 +25159,11 @@ ALTER TABLE public.severity_action_matrix ENABLE ROW LEVEL SECURITY;
 
 CREATE POLICY severity_matrix_super_admin ON public.severity_action_matrix USING (((current_setting('app.current_role'::text, true) = 'super_admin'::text) OR (current_setting('app.bypass_rls'::text, true) = 'true'::text)));
 
-
 --
 -- Name: severity_action_matrix severity_matrix_tenant; Type: POLICY; Schema: public; Owner: -
 --
 
 CREATE POLICY severity_matrix_tenant ON public.severity_action_matrix USING (((tenant_id)::text = current_setting('app.current_tenant'::text, true)));
-
 
 --
 -- Name: analysis_events super_admin_analysis_events; Type: POLICY; Schema: public; Owner: -
@@ -28436,13 +25171,11 @@ CREATE POLICY severity_matrix_tenant ON public.severity_action_matrix USING (((t
 
 CREATE POLICY super_admin_analysis_events ON public.analysis_events USING ((current_setting('app.is_super_admin'::text, true) = 'true'::text));
 
-
 --
 -- Name: intent_aggregates super_admin_intent_aggregates; Type: POLICY; Schema: public; Owner: -
 --
 
 CREATE POLICY super_admin_intent_aggregates ON public.intent_aggregates USING ((current_setting('app.is_super_admin'::text, true) = 'true'::text));
-
 
 --
 -- Name: tenant_credit_wallets; Type: ROW SECURITY; Schema: public; Owner: -
@@ -28460,13 +25193,11 @@ CREATE POLICY tenant_isolation_agent_relationships ON public.agent_relationships
    FROM public.agents a_dst
   WHERE ((a_dst.id = agent_relationships.dst_agent_id) AND (a_dst.tenant_id = public.get_current_tenant()))))));
 
-
 --
 -- Name: agents tenant_isolation_agents; Type: POLICY; Schema: public; Owner: -
 --
 
 CREATE POLICY tenant_isolation_agents ON public.agents USING ((tenant_id = public.get_current_tenant()));
-
 
 --
 -- Name: analysis_events tenant_isolation_analysis_events; Type: POLICY; Schema: public; Owner: -
@@ -28474,20 +25205,17 @@ CREATE POLICY tenant_isolation_agents ON public.agents USING ((tenant_id = publi
 
 CREATE POLICY tenant_isolation_analysis_events ON public.analysis_events USING ((tenant_id = public.get_current_tenant()));
 
-
 --
 -- Name: approval_queue tenant_isolation_approval_queue; Type: POLICY; Schema: public; Owner: -
 --
 
 CREATE POLICY tenant_isolation_approval_queue ON public.approval_queue USING (((COALESCE(NULLIF(current_setting('app.current_role'::text, true), ''::text), ''::text) = 'super_admin'::text) OR (tenant_id = COALESCE(NULLIF(current_setting('app.current_tenant'::text, true), ''::text), 'default'::text)))) WITH CHECK (((COALESCE(NULLIF(current_setting('app.current_role'::text, true), ''::text), ''::text) = 'super_admin'::text) OR (tenant_id = COALESCE(NULLIF(current_setting('app.current_tenant'::text, true), ''::text), 'default'::text))));
 
-
 --
 -- Name: armor_judgments tenant_isolation_armor_judgments; Type: POLICY; Schema: public; Owner: -
 --
 
 CREATE POLICY tenant_isolation_armor_judgments ON public.armor_judgments USING ((tenant_id = public.get_current_tenant()));
-
 
 --
 -- Name: asset_relationships tenant_isolation_asset_relationships; Type: POLICY; Schema: public; Owner: -
@@ -28499,13 +25227,11 @@ CREATE POLICY tenant_isolation_asset_relationships ON public.asset_relationships
    FROM public.assets a_dst
   WHERE ((a_dst.kind = asset_relationships.dst_kind) AND (a_dst.ref_id = asset_relationships.dst_ref_id) AND (a_dst.tenant_id = public.get_current_tenant()))))));
 
-
 --
 -- Name: assets tenant_isolation_assets; Type: POLICY; Schema: public; Owner: -
 --
 
 CREATE POLICY tenant_isolation_assets ON public.assets USING ((tenant_id = public.get_current_tenant()));
-
 
 --
 -- Name: attachments tenant_isolation_attachments; Type: POLICY; Schema: public; Owner: -
@@ -28513,13 +25239,11 @@ CREATE POLICY tenant_isolation_assets ON public.assets USING ((tenant_id = publi
 
 CREATE POLICY tenant_isolation_attachments ON public.attachments USING ((tenant_id = public.get_current_tenant()));
 
-
 --
 -- Name: billing_orders tenant_isolation_billing_orders; Type: POLICY; Schema: public; Owner: -
 --
 
 CREATE POLICY tenant_isolation_billing_orders ON public.billing_orders USING (((tenant_id)::text = public.get_current_tenant()));
-
 
 --
 -- Name: candidate_failure_logs tenant_isolation_candidate_failure_logs; Type: POLICY; Schema: public; Owner: -
@@ -28527,13 +25251,11 @@ CREATE POLICY tenant_isolation_billing_orders ON public.billing_orders USING (((
 
 CREATE POLICY tenant_isolation_candidate_failure_logs ON public.candidate_failure_logs USING ((tenant_id = public.get_current_tenant()));
 
-
 --
 -- Name: credit_ledger tenant_isolation_credit_ledger; Type: POLICY; Schema: public; Owner: -
 --
 
 CREATE POLICY tenant_isolation_credit_ledger ON public.credit_ledger USING (((tenant_id)::text = public.get_current_tenant()));
-
 
 --
 -- Name: credit_ledger_old tenant_isolation_credit_ledger; Type: POLICY; Schema: public; Owner: -
@@ -28541,13 +25263,11 @@ CREATE POLICY tenant_isolation_credit_ledger ON public.credit_ledger USING (((te
 
 CREATE POLICY tenant_isolation_credit_ledger ON public.credit_ledger_old USING (((tenant_id)::text = public.get_current_tenant()));
 
-
 --
 -- Name: intent_aggregates tenant_isolation_intent_aggregates; Type: POLICY; Schema: public; Owner: -
 --
 
 CREATE POLICY tenant_isolation_intent_aggregates ON public.intent_aggregates USING ((tenant_id = public.get_current_tenant()));
-
 
 --
 -- Name: model_probe_runs tenant_isolation_model_probe_runs; Type: POLICY; Schema: public; Owner: -
@@ -28555,13 +25275,11 @@ CREATE POLICY tenant_isolation_intent_aggregates ON public.intent_aggregates USI
 
 CREATE POLICY tenant_isolation_model_probe_runs ON public.model_probe_runs USING ((tenant_id = public.get_current_tenant()));
 
-
 --
 -- Name: POLICY tenant_isolation_model_probe_runs ON model_probe_runs; Type: COMMENT; Schema: public; Owner: -
 --
 
 COMMENT ON POLICY tenant_isolation_model_probe_runs ON public.model_probe_runs IS 'Round 47 (2026-06-18): per-tenant isolation for probe history. Closes L1 leak discovered by lint-pg-rls during v7 T1 prep. Required by docs/multi-tenant-standards.md §3.2 (Pattern A: tenant_id column requires ENABLE ROW LEVEL SECURITY).';
-
 
 --
 -- Name: model_probe_runs_hot tenant_isolation_model_probe_runs; Type: POLICY; Schema: public; Owner: -
@@ -28569,13 +25287,11 @@ COMMENT ON POLICY tenant_isolation_model_probe_runs ON public.model_probe_runs I
 
 CREATE POLICY tenant_isolation_model_probe_runs ON public.model_probe_runs_hot USING ((tenant_id = public.get_current_tenant()));
 
-
 --
 -- Name: request_logs tenant_isolation_request_logs; Type: POLICY; Schema: public; Owner: -
 --
 
 CREATE POLICY tenant_isolation_request_logs ON public.request_logs USING ((tenant_id = public.get_current_tenant()));
-
 
 --
 -- Name: request_logs_archive tenant_isolation_request_logs_archive; Type: POLICY; Schema: public; Owner: -
@@ -28583,13 +25299,11 @@ CREATE POLICY tenant_isolation_request_logs ON public.request_logs USING ((tenan
 
 CREATE POLICY tenant_isolation_request_logs_archive ON public.request_logs_archive USING ((tenant_id = public.get_current_tenant()));
 
-
 --
 -- Name: request_wal tenant_isolation_request_wal; Type: POLICY; Schema: public; Owner: -
 --
 
 CREATE POLICY tenant_isolation_request_wal ON public.request_wal USING (((tenant_id)::text = public.get_current_tenant()));
-
 
 --
 -- Name: routing_decision_log_archive tenant_isolation_routing_decision_log_archive; Type: POLICY; Schema: public; Owner: -
@@ -28597,13 +25311,11 @@ CREATE POLICY tenant_isolation_request_wal ON public.request_wal USING (((tenant
 
 CREATE POLICY tenant_isolation_routing_decision_log_archive ON public.routing_decision_log_archive USING ((tenant_id = public.get_current_tenant()));
 
-
 --
 -- Name: session_audit_records tenant_isolation_session_audit_records; Type: POLICY; Schema: public; Owner: -
 --
 
 CREATE POLICY tenant_isolation_session_audit_records ON public.session_audit_records USING (((COALESCE(NULLIF(current_setting('app.current_role'::text, true), ''::text), ''::text) = 'super_admin'::text) OR (tenant_id = COALESCE(NULLIF(current_setting('app.current_tenant'::text, true), ''::text), 'default'::text)))) WITH CHECK (((COALESCE(NULLIF(current_setting('app.current_role'::text, true), ''::text), ''::text) = 'super_admin'::text) OR (tenant_id = COALESCE(NULLIF(current_setting('app.current_tenant'::text, true), ''::text), 'default'::text))));
-
 
 --
 -- Name: settings_audit tenant_isolation_settings_audit; Type: POLICY; Schema: public; Owner: -
@@ -28611,13 +25323,11 @@ CREATE POLICY tenant_isolation_session_audit_records ON public.session_audit_rec
 
 CREATE POLICY tenant_isolation_settings_audit ON public.settings_audit USING ((((tenant_id)::text = public.get_current_tenant()) OR (tenant_id IS NULL)));
 
-
 --
 -- Name: tenant_credit_wallets tenant_isolation_tenant_credit_wallets; Type: POLICY; Schema: public; Owner: -
 --
 
 CREATE POLICY tenant_isolation_tenant_credit_wallets ON public.tenant_credit_wallets USING (((tenant_id)::text = public.get_current_tenant()));
-
 
 --
 -- Name: tenant_settings_kv tenant_isolation_tenant_settings_kv; Type: POLICY; Schema: public; Owner: -
@@ -28625,13 +25335,11 @@ CREATE POLICY tenant_isolation_tenant_credit_wallets ON public.tenant_credit_wal
 
 CREATE POLICY tenant_isolation_tenant_settings_kv ON public.tenant_settings_kv USING (((tenant_id)::text = public.get_current_tenant()));
 
-
 --
 -- Name: tenant_subscriptions tenant_isolation_tenant_subscriptions; Type: POLICY; Schema: public; Owner: -
 --
 
 CREATE POLICY tenant_isolation_tenant_subscriptions ON public.tenant_subscriptions USING (((tenant_id)::text = public.get_current_tenant()));
-
 
 --
 -- Name: tenant_tool_policies tenant_isolation_tenant_tool_policies; Type: POLICY; Schema: public; Owner: -
@@ -28639,13 +25347,11 @@ CREATE POLICY tenant_isolation_tenant_subscriptions ON public.tenant_subscriptio
 
 CREATE POLICY tenant_isolation_tenant_tool_policies ON public.tenant_tool_policies USING (((tenant_id)::text = public.get_current_tenant()));
 
-
 --
 -- Name: tenant_model_policies tenant_isolation_tmp; Type: POLICY; Schema: public; Owner: -
 --
 
 CREATE POLICY tenant_isolation_tmp ON public.tenant_model_policies USING (((tenant_id)::text = public.get_current_tenant()));
-
 
 --
 -- Name: tenant_model_policies_audit tenant_isolation_tmp_audit; Type: POLICY; Schema: public; Owner: -
@@ -28653,13 +25359,11 @@ CREATE POLICY tenant_isolation_tmp ON public.tenant_model_policies USING (((tena
 
 CREATE POLICY tenant_isolation_tmp_audit ON public.tenant_model_policies_audit USING (((tenant_id = public.get_current_tenant()) OR (tenant_id IS NULL)));
 
-
 --
 -- Name: tool_call_events tenant_isolation_tool_call_events; Type: POLICY; Schema: public; Owner: -
 --
 
 CREATE POLICY tenant_isolation_tool_call_events ON public.tool_call_events USING (((tenant_id)::text = public.get_current_tenant()));
-
 
 --
 -- Name: tool_registry tenant_isolation_tool_registry; Type: POLICY; Schema: public; Owner: -
@@ -28667,13 +25371,11 @@ CREATE POLICY tenant_isolation_tool_call_events ON public.tool_call_events USING
 
 CREATE POLICY tenant_isolation_tool_registry ON public.tool_registry USING ((((tenant_id)::text = public.get_current_tenant()) OR (tenant_id IS NULL) OR ((tenant_id)::text = 'default'::text)));
 
-
 --
 -- Name: tool_usage_stats tenant_isolation_tool_usage_stats; Type: POLICY; Schema: public; Owner: -
 --
 
 CREATE POLICY tenant_isolation_tool_usage_stats ON public.tool_usage_stats USING (((tenant_id)::text = public.get_current_tenant()));
-
 
 --
 -- Name: tool_usage_stats_old tenant_isolation_tool_usage_stats; Type: POLICY; Schema: public; Owner: -
@@ -28681,13 +25383,11 @@ CREATE POLICY tenant_isolation_tool_usage_stats ON public.tool_usage_stats USING
 
 CREATE POLICY tenant_isolation_tool_usage_stats ON public.tool_usage_stats_old USING (((tenant_id)::text = public.get_current_tenant()));
 
-
 --
 -- Name: users tenant_isolation_users; Type: POLICY; Schema: public; Owner: -
 --
 
 CREATE POLICY tenant_isolation_users ON public.users USING (((tenant_id)::text = public.get_current_tenant()));
-
 
 --
 -- Name: vibe_coding_projects tenant_isolation_vcp; Type: POLICY; Schema: public; Owner: -
@@ -28695,20 +25395,17 @@ CREATE POLICY tenant_isolation_users ON public.users USING (((tenant_id)::text =
 
 CREATE POLICY tenant_isolation_vcp ON public.vibe_coding_projects USING ((tenant_id = public.get_current_tenant()));
 
-
 --
 -- Name: vibe_code_reviews tenant_isolation_vcr; Type: POLICY; Schema: public; Owner: -
 --
 
 CREATE POLICY tenant_isolation_vcr ON public.vibe_code_reviews USING ((tenant_id = public.get_current_tenant()));
 
-
 --
 -- Name: vibe_coding_sessions tenant_isolation_vcs; Type: POLICY; Schema: public; Owner: -
 --
 
 CREATE POLICY tenant_isolation_vcs ON public.vibe_coding_sessions USING ((tenant_id = public.get_current_tenant()));
-
 
 --
 -- Name: tenant_model_policies; Type: ROW SECURITY; Schema: public; Owner: -
@@ -28790,3 +25487,183 @@ ALTER TABLE public.vibe_coding_sessions ENABLE ROW LEVEL SECURITY;
 
 --
 --
+
+--
+-- Name: columnar_insert_only_parents(); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.columnar_insert_only_parents() RETURNS text[]
+    LANGUAGE sql STABLE
+    AS $$
+    SELECT ARRAY['routing_decision_log'];
+$$;
+
+--
+-- Name: columnar_healthcheck(); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.columnar_healthcheck() RETURNS TABLE(parent_name text, partition_name text, storage text, expected text, compliant boolean, total_size_bytes bigint, n_live_tup bigint)
+    LANGUAGE sql STABLE
+    AS $$
+    WITH config AS (
+        SELECT
+            columnar_insert_only_parents() AS should_be_columnar,
+            ARRAY['request_logs','request_wal','usage_ledger',
+                  'request_logs_archive','request_wal_archive',
+                  'usage_ledger_archive']::text[] AS should_be_heap
+    ), partitions AS (
+        SELECT
+            p.relname AS parent_name,
+            c.relname AS partition_name,
+            CASE WHEN c.relam=(SELECT oid FROM pg_am WHERE amname='columnar') THEN 'columnar'
+                 WHEN c.relam=(SELECT oid FROM pg_am WHERE amname='heap') THEN 'heap'
+                 ELSE 'other' END AS storage,
+            pg_total_relation_size(c.oid) AS total_size_bytes,
+            (SELECT n_live_tup FROM pg_stat_user_tables WHERE relid=c.oid) AS n_live_tup
+        FROM pg_inherits i
+        JOIN pg_class p ON p.oid = i.inhparent
+        JOIN pg_class c ON c.oid = i.inhrelid
+        JOIN pg_namespace n ON n.oid = p.relnamespace
+        WHERE n.nspname = 'public'
+    )
+    SELECT
+        par.parent_name,
+        par.partition_name,
+        par.storage,
+        CASE
+            WHEN par.parent_name = ANY(cfg.should_be_columnar) THEN 'columnar'
+            WHEN par.parent_name = ANY(cfg.should_be_heap)     THEN 'heap'
+            ELSE 'unknown'
+        END::text AS expected,
+        (par.storage = CASE
+            WHEN par.parent_name = ANY(cfg.should_be_columnar) THEN 'columnar'
+            WHEN par.parent_name = ANY(cfg.should_be_heap)     THEN 'heap'
+            ELSE NULL END) AS compliant,
+        par.total_size_bytes,
+        COALESCE(par.n_live_tup, 0)
+    FROM partitions par, config cfg
+    ORDER BY par.parent_name, par.partition_name;
+$$;
+
+--
+-- Name: columnar_drift_report(); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.columnar_drift_report() RETURNS TABLE(parent_name text, compliant_count integer, noncompliant_count integer, total_size_bytes bigint, heap_size_bytes bigint, columnar_size_bytes bigint)
+    LANGUAGE sql STABLE
+    AS $$
+    SELECT
+        parent_name,
+        count(*) FILTER (WHERE compliant) AS compliant_count,
+        count(*) FILTER (WHERE NOT compliant) AS noncompliant_count,
+        sum(total_size_bytes)::bigint AS total_size_bytes,
+        sum(total_size_bytes) FILTER (WHERE storage='heap')::bigint AS heap_size_bytes,
+        sum(total_size_bytes) FILTER (WHERE storage='columnar')::bigint AS columnar_size_bytes
+    FROM columnar_healthcheck()
+    GROUP BY parent_name
+    ORDER BY parent_name;
+$$;
+
+--
+-- Name: credential_most_used_model(bigint, integer); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.credential_most_used_model(p_credential_id bigint, p_window_hours integer DEFAULT 24) RETURNS TABLE(raw_model_name text, call_count bigint)
+    LANGUAGE sql STABLE
+    AS $$
+    SELECT pm.raw_model_name, COUNT(*) AS call_count
+    FROM request_logs_hot rl
+    JOIN provider_models pm ON pm.id = rl.canonical_id
+    WHERE rl.credential_id = p_credential_id
+      AND rl.ts >= now() - make_interval(hours => p_window_hours)
+      AND rl.success = TRUE
+    GROUP BY pm.raw_model_name
+    ORDER BY call_count DESC, pm.raw_model_name ASC
+    LIMIT 1;
+$$;
+
+--
+-- Name: FUNCTION credential_most_used_model(p_credential_id bigint, p_window_hours integer); Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON FUNCTION public.credential_most_used_model(p_credential_id bigint, p_window_hours integer) IS '341: top-1 model by 24h successful traffic for a credential. Used by credential_selfcheck to pick the daily probe model.';
+
+--
+-- Name: get_model_state_summary(text); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.get_model_state_summary(p_raw_model_name text) RETURNS TABLE(state text, priority text, count bigint, avg_success_rate numeric, next_probe_in_seconds integer)
+    LANGUAGE sql STABLE
+    AS $$
+		    SELECT
+		        sub.state::TEXT,
+		        sub.priority::TEXT,
+		        COUNT(*) as count,
+		        ROUND(AVG(CASE WHEN sub.total_attempts > 0
+		                       THEN sub.consecutive_successes::float / sub.total_attempts * 100
+		                       ELSE NULL END)::numeric, 2) as avg_success_rate,
+		        EXTRACT(EPOCH FROM MIN(sub.next_retry_at - NOW()))::INTEGER as next_probe_in_seconds
+		    FROM (
+		        SELECT
+		            mps.state,
+		            mps.consecutive_successes,
+		            mps.total_attempts,
+		            mps.next_retry_at,
+		            CASE
+		                WHEN mps.consecutive_failures >= 3 THEN 'urgent'
+		                WHEN mps.state = 'suspicious' THEN 'suspicious'
+		                WHEN mps.state IN ('failing', 'recovering') THEN 'failing'
+		                ELSE 'watchdog'
+		            END as priority
+		        FROM model_probe_state mps
+		        JOIN credentials c ON c.id = mps.credential_id
+		        WHERE mps.raw_model_name = p_raw_model_name
+		          AND COALESCE(c.status, 'active') = 'active'
+		          AND COALESCE(c.lifecycle_status, 'active') = 'active'
+		          AND COALESCE(c.manual_disabled, FALSE) = FALSE
+		    ) sub
+		    GROUP BY sub.state, sub.priority
+		    ORDER BY
+		        CASE sub.priority
+		            WHEN 'urgent' THEN 1
+		            WHEN 'suspicious' THEN 2
+		            WHEN 'failing' THEN 3
+		            WHEN 'watchdog' THEN 4
+		            ELSE 5
+		        END,
+		        sub.state;
+		$$;
+
+--
+-- Name: system_health_status(integer); Type: FUNCTION; Schema: public; Owner: -
+--
+
+CREATE FUNCTION public.system_health_status(p_window_seconds integer DEFAULT 30) RETURNS TABLE(status text, success_rate numeric, sample_count bigint, failure_count bigint, last_check_at timestamp with time zone)
+    LANGUAGE sql STABLE
+    AS $$
+    WITH win AS (
+        SELECT
+            COUNT(*)::bigint                AS n,
+            COUNT(*) FILTER (WHERE success)::bigint AS ok,
+            COUNT(*) FILTER (WHERE NOT success)::bigint AS fail
+        FROM request_logs_hot
+        WHERE ts >= now() - make_interval(secs => p_window_seconds)
+    )
+    SELECT
+        CASE
+            WHEN n = 0                                  THEN 'suspect'
+            WHEN (ok::numeric / NULLIF(n,0)) >= 0.80    THEN 'ok'
+            ELSE 'degraded'
+        END                                            AS status,
+        ROUND( (ok::numeric / NULLIF(n,0))::numeric, 4) AS success_rate,
+        n                                              AS sample_count,
+        fail                                           AS failure_count,
+        now()                                          AS last_check_at
+    FROM win;
+$$;
+
+--
+-- Name: FUNCTION system_health_status(p_window_seconds integer); Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON FUNCTION public.system_health_status(p_window_seconds integer) IS '341: returns ok (>=80% success), degraded (<80%), or suspect (no traffic) over a sliding window. Consumed by bg/system_health.go and /api/health/system.';

@@ -85,6 +85,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - rollback 后重新 install: drop-in 恢复 + 业务 200 验证
   - 二次失败场景: 输出明确 "已半回滚, 请人工介入" + 提示 running 备份位置
 
+- **Docker 离线包: schema 完整还原 + citus 镜像 (2026-08-04)**:
+  - **目标**: 交付完全离线 Docker 部署包 (PostgreSQL 17 citus+vector+columnar + Redis 7 + LLM Gateway), 仅 arm64, 一键部署 + L1-L4 验证, 初始数据仅 admin
+  - **01-schema.sql 修复 (可完整重建)**:
+    - pg_dump 按 OID 排序破坏依赖序, 修复 8 个前置引用 SQL 函数: `get_current_tenant` / `columnar_insert_only_parents` / `columnar_healthcheck` / `columnar_drift_report` / `credential_most_used_model` / `get_model_state_summary` / `system_health_status` / `model_probe_credential_concurrency` 重排到依赖满足处
+    - columnar 分区 (request_logs_2026_07/08 等) 残留的 **gin 索引**导致 `unsupported access method for the index on columnar table` → 移除 columnar 分区全部残留索引 (139 块 + 3 个 pkey), 与生产 252 转列存前遗留状态一致
+    - 干净容器全量应用验证: 271 BASE TABLE / 55 views / 491 functions, exit=0
+  - **00-prereqs.sql**: citus / citus_columnar 的 `WITH SCHEMA` 改为 `pg_catalog` (Citus 强制要求)
+  - **离线包重构** (dist/docker-offline/v2.4.9/): DB 镜像 `postgres:17-alpine` → `kx-citus-pg17:offline-arm64` (生产 252 同款), Redis → `kx-redis:offline-arm64`; 新增 `schemas/` 挂载到 `/docker-entrypoint-initdb.d/` 自动初始化 (00-prereqs → 01-schema → 02-seed, 02-seed 仅含配置字典, 无生产业务数据/凭据)
+  - **端到端验证**: 消费者视角解压 → `--reset` 删卷全新初始化 → L1-L4 全通过; down+up 重启幂等 (schema 不重跑); admin/admin 登录 + /v1/models 正常
+  - 打包 `llm-gateway-go-docker-arm64-v2.4.9-offline.tar.gz` (337MB) + SHA256SUMS (dist/ 已 gitignore)
+
 ## [Unreleased] - 2026-07-29
 
 ### Fixed
