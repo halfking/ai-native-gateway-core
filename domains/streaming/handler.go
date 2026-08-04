@@ -76,7 +76,7 @@ type preStreamKeepalive struct {
 	paused atomic.Bool
 }
 
-func startPreStreamKeepalive(w http.ResponseWriter, interval time.Duration) (*preStreamKeepalive, bool) {
+func startPreStreamKeepalive(w http.ResponseWriter, interval time.Duration, requestID string) (*preStreamKeepalive, bool) {
 	flusher, ok := w.(http.Flusher)
 	if !ok {
 		return nil, false
@@ -100,6 +100,15 @@ func startPreStreamKeepalive(w http.ResponseWriter, interval time.Duration) (*pr
 	// path, where keepalive comments would be buffered and never reach the
 	// client, defeating the whole purpose.
 	w.Header().Set("X-Accel-Buffering", "no")
+	// 2026-08-04: stamp X-Request-Id here so the response carries the
+	// request id on the prewarmed path. Each protocol bridge sets it again
+	// later, but that happens AFTER its own WriteHeader — too late once we
+	// have already committed headers. The caller passes the already-resolved
+	// id as a parameter (see preStreamKeepalive call site) rather than
+	// re-reading r.Header, which may not be populated yet.
+	if requestID != "" {
+		w.Header().Set("X-Request-Id", requestID)
+	}
 	w.WriteHeader(http.StatusOK)
 	psk.writeComment(sseKeepaliveComment)
 	go psk.loop(interval)
@@ -2738,7 +2747,7 @@ func (h *ChatHandler) serveWithExecutor(
 	if isStream {
 		cfg := currentStreamRuntimeConfig()
 		if cfg.enablePreStreamKeepalive {
-			if psk, ok := startPreStreamKeepalive(w, cfg.keepaliveInterval); ok {
+			if psk, ok := startPreStreamKeepalive(w, cfg.keepaliveInterval, requestID); ok {
 				preStream = psk
 				preStreamPrepared = true
 			}

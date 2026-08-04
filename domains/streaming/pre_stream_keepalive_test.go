@@ -12,7 +12,7 @@ import (
 
 func TestStartPreStreamKeepalive_WritesInitialComment(t *testing.T) {
 	rec := httptest.NewRecorder()
-	psk, ok := startPreStreamKeepalive(rec, time.Hour)
+	psk, ok := startPreStreamKeepalive(rec, time.Hour, "req-initial")
 	if !ok {
 		t.Fatal("expected flusher-backed recorder")
 	}
@@ -23,6 +23,28 @@ func TestStartPreStreamKeepalive_WritesInitialComment(t *testing.T) {
 	}
 	if got := rec.Header().Get("Content-Type"); got != "text/event-stream" {
 		t.Fatalf("content-type = %q, want text/event-stream", got)
+	}
+	if got := rec.Header().Get("X-Request-Id"); got != "req-initial" {
+		t.Fatalf("x-request-id = %q, want req-initial (must be set before WriteHeader)", got)
+	}
+	if got := rec.Header().Get("X-Accel-Buffering"); got != "no" {
+		t.Fatalf("x-accel-buffering = %q, want no", got)
+	}
+}
+
+// TestStartPreStreamKeepalive_OmitsEmptyRequestID covers the case where the
+// caller has not yet resolved a request id (passes "") — we must NOT set the
+// header to an empty string, since some clients pattern-match on its presence.
+func TestStartPreStreamKeepalive_OmitsEmptyRequestID(t *testing.T) {
+	rec := httptest.NewRecorder()
+	psk, ok := startPreStreamKeepalive(rec, time.Hour, "")
+	if !ok {
+		t.Fatal("expected flusher-backed recorder")
+	}
+	psk.stop()
+
+	if got := rec.Header().Get("X-Request-Id"); got != "" {
+		t.Fatalf("x-request-id = %q, want absent when caller passes empty string", got)
 	}
 }
 
@@ -77,7 +99,7 @@ func TestPreStreamKeepalive_EnabledViaEnv(t *testing.T) {
 // is delivered without a separate WriteHeader.
 func TestPreStreamKeepalive_InitialCommentArrivesBeforeContent(t *testing.T) {
 	rec := httptest.NewRecorder()
-	psk, ok := startPreStreamKeepalive(rec, time.Hour)
+	psk, ok := startPreStreamKeepalive(rec, time.Hour, "req-test")
 	if !ok {
 		t.Fatal("expected flusher-backed recorder")
 	}
@@ -112,7 +134,7 @@ func TestPreStreamKeepalive_InitialCommentArrivesBeforeContent(t *testing.T) {
 // again from the deferred cleanup, so a double stop must be a no-op.
 func TestPreStreamKeepalive_StopIsIdempotent(t *testing.T) {
 	rec := httptest.NewRecorder()
-	psk, ok := startPreStreamKeepalive(rec, time.Hour)
+	psk, ok := startPreStreamKeepalive(rec, time.Hour, "req-test")
 	if !ok {
 		t.Fatal("expected flusher-backed recorder")
 	}
@@ -125,7 +147,7 @@ func TestPreStreamKeepalive_StopIsIdempotent(t *testing.T) {
 // (no JSON, no extra WriteHeader) because prewarm already committed 200.
 func TestPreStreamKeepalive_PrewarmThenSSEError(t *testing.T) {
 	rec := httptest.NewRecorder()
-	psk, ok := startPreStreamKeepalive(rec, time.Hour)
+	psk, ok := startPreStreamKeepalive(rec, time.Hour, "req-test")
 	if !ok {
 		t.Fatal("expected flusher-backed recorder")
 	}
