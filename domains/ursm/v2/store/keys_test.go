@@ -16,6 +16,20 @@ func TestWindowKeysDiffer(t *testing.T) {
 	}
 }
 
+func TestParseNodeKey(t *testing.T) {
+	legacy, ok := ParseNodeKey("ursm:v2:", "ursm:v2:node:12:model:with:colon")
+	if !ok || legacy.TenantID != "" || legacy.CredentialID != 12 || legacy.RawModel != "model:with:colon" {
+		t.Fatalf("legacy parse = %+v ok=%v", legacy, ok)
+	}
+	tenant, ok := ParseNodeKey("ursm:v2:", "ursm:v2:node:tenant-a:34:model:with:colon")
+	if !ok || tenant.TenantID != "tenant-a" || tenant.CredentialID != 34 || tenant.RawModel != "model:with:colon" {
+		t.Fatalf("tenant parse = %+v ok=%v", tenant, ok)
+	}
+	if _, ok := ParseNodeKey("ursm:v2:", "ursm:v2:node:tenant-a:not-a-number:model"); ok {
+		t.Fatal("invalid credential ID must not parse")
+	}
+}
+
 func TestReadyKey(t *testing.T) {
 	if k := ReadyKey("ursm:v2:"); k != "ursm:v2:meta:ready" {
 		t.Fatalf("unexpected ready key %q", k)

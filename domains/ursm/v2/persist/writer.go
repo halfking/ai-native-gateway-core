@@ -5,11 +5,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
-	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/redis/go-redis/v9"
+
+	"github.com/kaixuan/llm-gateway-go/domains/ursm/v2/store"
 )
 
 type Writer struct {
@@ -24,28 +25,28 @@ func New(rdb *redis.Client, prefix string, db *pgxpool.Pool) *Writer {
 }
 
 type Row struct {
-	SnapshotTS    time.Time
-	RecoveryEpoch int64
-	ProviderID    int
-	CredentialID  int
-	RawModel      string
-	CanonicalName string
-	TenantID      string
-	Available     bool
-	HealthStatus  string
-	FailStreak    int
-	CoolUntil     *time.Time // nullable: NULL when not in cooldown
-	SR1m          float64
-	SR5m          float64
-	SR30m         float64
-	Samples1m     int
-	Samples5m     int
-	Samples30m    int
-	LatP50Ms      int
-	Score         float64
+	SnapshotTS     time.Time
+	RecoveryEpoch  int64
+	ProviderID     int
+	CredentialID   int
+	RawModel       string
+	CanonicalName  string
+	TenantID       string
+	Available      bool
+	HealthStatus   string
+	FailStreak     int
+	CoolUntil      *time.Time // nullable: NULL when not in cooldown
+	SR1m           float64
+	SR5m           float64
+	SR30m          float64
+	Samples1m      int
+	Samples5m      int
+	Samples30m     int
+	LatP50Ms       int
+	Score          float64
 	SourcePriority int
-	Generation    int64
-	Payload       []byte
+	Generation     int64
+	Payload        []byte
 }
 
 func (w *Writer) Collect(ctx context.Context) ([]Row, error) {
@@ -53,12 +54,14 @@ func (w *Writer) Collect(ctx context.Context) ([]Row, error) {
 		return nil, fmt.Errorf("ursm.v2.persist: nil redis")
 	}
 
-	// 1. 获取 recovery_epoch 用于标识当前 Redis 实例周期
+	// 1. Read recovery_epoch from the hash written by recovery.Manager.
 	epochKey := fmt.Sprintf("%smeta:epoch", w.prefix)
-	epochStr, err := w.rdb.Get(ctx, epochKey).Result()
+	epochStr, err := w.rdb.HGet(ctx, epochKey, "counter").Result()
 	var recoveryEpoch int64
 	if err == nil {
 		recoveryEpoch = atoi64(epochStr)
+	} else if err != redis.Nil {
+		return nil, fmt.Errorf("ursm.v2.persist: read recovery epoch: %w", err)
 	}
 
 	// 2. 扫描所有 node keys
@@ -72,44 +75,36 @@ func (w *Writer) Collect(ctx context.Context) ([]Row, error) {
 	for iter.Next(ctx) {
 		k := iter.Val()
 
-		// 4. 解析 Redis key 提取主键字段
-		// key 格式: "ursm:v2:node:{credential_id}:{raw_model_name}"
-		// 例如: "ursm:v2:node:2:gpt-5.6-luna"
-		// SplitN 后: ["ursm", "v2", "node", "2", "gpt-5.6-luna"]
-		parts := strings.Split(k, ":")
-		if len(parts) < 5 {
-			slog.Warn("ursm.v2: persist skipped invalid key",
-				"key", k,
-				"reason", "too few segments",
-				"segments", len(parts))
-			continue // 格式不符，跳过
-		}
-
-		// parts[0] = "ursm", parts[1] = "v2", parts[2] = "node", parts[3] = credential_id
-		credentialID := atoi(parts[3])
-		// model 名称可能包含 ':'，需要 join 剩余部分
-		rawModel := strings.Join(parts[4:], ":")
-
-		if credentialID == 0 || rawModel == "" {
-			slog.Warn("ursm.v2: persist skipped invalid key", "key", k)
+		// 4. Decode the tenant-aware Redis key without losing colons in raw model.
+		parsed, ok := store.ParseNodeKey(w.prefix, k)
+		if !ok {
+			slog.Warn("ursm.v2: persist skipped invalid node key", "key", k)
 			continue
 		}
 
-		// 5. 读取 hash 中的所有字段
+		// 5. Read hash fields.
 		hash, err := w.rdb.HGetAll(ctx, k).Result()
 		if err != nil || len(hash) == 0 {
 			continue
 		}
+		tenantID := parsed.TenantID
+		if hashTenant := hash["tenant_id"]; hashTenant != "" {
+			if tenantID != "" && hashTenant != tenantID {
+				slog.Warn("ursm.v2: persist skipped tenant mismatch", "key", k, "key_tenant", tenantID, "hash_tenant", hashTenant)
+				continue
+			}
+			tenantID = hashTenant
+		}
 
-		// 6. 构造完整的 Row，包含所有必需字段
+		// 6. Construct the audit row from the authoritative key and hash.
 		row := Row{
 			SnapshotTS:     snapshotTS,
 			RecoveryEpoch:  recoveryEpoch,
-			CredentialID:   credentialID,
-			RawModel:       rawModel,
+			CredentialID:   parsed.CredentialID,
+			RawModel:       parsed.RawModel,
 			ProviderID:     atoi(hash["provider_id"]),
 			CanonicalName:  hash["canonical"],
-			TenantID:       hash["tenant_id"],
+			TenantID:       tenantID,
 			Available:      hash["available"] == "1",
 			HealthStatus:   hash["health"],
 			FailStreak:     atoi(hash["fail_streak"]),
@@ -126,7 +121,7 @@ func (w *Writer) Collect(ctx context.Context) ([]Row, error) {
 		}
 
 		// Parse cool_until if present (nullable)
-		if coolStr := hash["cool_until"]; coolStr != "" {
+		if coolStr := hash["cool_until_ms"]; coolStr != "" {
 			if coolMs := atoi64(coolStr); coolMs > 0 {
 				coolTime := time.UnixMilli(coolMs)
 				row.CoolUntil = &coolTime
@@ -196,7 +191,7 @@ INSERT INTO ursm_node_snapshot_min
    sr_1m, sr_5m, sr_30m, samples_1m, samples_5m, samples_30m,
    lat_p50_ms, score, source_priority, generation, payload)
 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22::text::jsonb)
-ON CONFLICT (snapshot_ts, credential_id, raw_model_name) DO NOTHING`,
+ON CONFLICT (snapshot_ts, tenant_id, credential_id, raw_model_name) DO NOTHING`,
 			r.SnapshotTS, r.RecoveryEpoch, r.ProviderID, r.CredentialID, r.RawModel,
 			r.CanonicalName, r.TenantID, r.Available, r.HealthStatus, r.FailStreak, r.CoolUntil,
 			r.SR1m, r.SR5m, r.SR30m, r.Samples1m, r.Samples5m, r.Samples30m,

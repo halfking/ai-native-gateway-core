@@ -2,6 +2,7 @@ package recovery
 
 import (
 	"context"
+	_ "embed"
 	"fmt"
 	"sync"
 	"time"
@@ -10,6 +11,11 @@ import (
 
 	"github.com/kaixuan/llm-gateway-go/domains/ursm/v2/store"
 )
+
+//go:embed transition_recovery.lua
+var transitionRecoverySrc string
+
+var transitionRecoveryScript = redis.NewScript(transitionRecoverySrc)
 
 type Manager struct {
 	rdb    *redis.Client
@@ -55,19 +61,14 @@ func (m *Manager) SetReady(ctx context.Context, ready bool) error {
 }
 
 func (m *Manager) EnterRecovery(ctx context.Context, reason string) error {
-	if err := m.SetReady(ctx, false); err != nil {
+	if m == nil || m.rdb == nil {
+		return fmt.Errorf("ursm.v2: nil manager / redis client")
+	}
+	if _, err := transitionRecoveryScript.Run(ctx, m.rdb,
+		[]string{store.ReadyKey(m.prefix), store.EpochKey(m.prefix)},
+		"close", reason, time.Now().UTC().Format(time.RFC3339Nano), "").Result(); err != nil {
 		m.recordError(err)
 		return fmt.Errorf("ursm.v2: enter recovery: %w", err)
-	}
-	pipe := m.rdb.Pipeline()
-	pipe.HIncrBy(ctx, store.EpochKey(m.prefix), "counter", 1)
-	pipe.HSet(ctx, store.EpochKey(m.prefix),
-		"reason", reason,
-		"started_at", time.Now().UTC().Format(time.RFC3339),
-	)
-	if _, err := pipe.Exec(ctx); err != nil {
-		m.recordError(err)
-		return fmt.Errorf("ursm.v2: enter recovery pipeline: %w", err)
 	}
 	return nil
 }
@@ -128,13 +129,20 @@ func (m *Manager) MarkClosedDebounced(ctx context.Context, reason string, deboun
 // (auto-close on persistent failure, auto-reopen on Redis recovery)
 // without operator intervention.
 //
-// Returns the number of node keys observed (informational; 0 is fine
-// if Redis was just initialised and the warmup step in main.go hasn't
-// run yet — in that case the gate still opens, but live traffic
-// doesn't see any node state until the first request writes it).
+// Returns the number of node keys observed. An empty Redis namespace is not
+// recoverable state: the gate remains closed so authoritative routing falls
+// back instead of rejecting every candidate as a missing node.
 func (m *Manager) WarmupFromExistingKeys(ctx context.Context) (int, error) {
 	if m == nil || m.rdb == nil {
 		return 0, fmt.Errorf("ursm.v2: nil manager / redis client")
+	}
+	observedEpoch, err := m.rdb.HGet(ctx, store.EpochKey(m.prefix), "counter").Result()
+	if err != nil && err != redis.Nil {
+		m.recordError(err)
+		return 0, fmt.Errorf("ursm.v2: read recovery epoch: %w", err)
+	}
+	if err == redis.Nil {
+		observedEpoch = ""
 	}
 	pattern := m.prefix + "node:*"
 	keys, err := m.scanNodeKeys(ctx, pattern)
@@ -142,19 +150,23 @@ func (m *Manager) WarmupFromExistingKeys(ctx context.Context) (int, error) {
 		m.recordError(err)
 		return 0, err
 	}
-	now := time.Now().UTC().Format(time.RFC3339Nano)
-	pipe := m.rdb.Pipeline()
-	if len(keys) > 0 {
-		pipe.HIncrBy(ctx, store.EpochKey(m.prefix), "recovery_counter", 1)
-	}
-	pipe.HSet(ctx, store.EpochKey(m.prefix),
-		"recovered_at", now,
-		"recovered_keys_count", intToString(len(keys)),
-	)
-	pipe.Set(ctx, store.ReadyKey(m.prefix), "1", 0)
-	if _, err := pipe.Exec(ctx); err != nil {
+	if len(keys) == 0 {
+		err := fmt.Errorf("ursm.v2: warmup refused: no node state")
 		m.recordError(err)
-		return 0, fmt.Errorf("ursm.v2: warmup pipeline: %w", err)
+		return 0, err
+	}
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	result, err := transitionRecoveryScript.Run(ctx, m.rdb,
+		[]string{store.ReadyKey(m.prefix), store.EpochKey(m.prefix)},
+		"open_if_epoch", "", now, observedEpoch, intToString(len(keys))).Text()
+	if err != nil {
+		m.recordError(err)
+		return 0, fmt.Errorf("ursm.v2: warmup transition: %w", err)
+	}
+	if result == "superseded" {
+		err := fmt.Errorf("ursm.v2: warmup superseded by newer recovery close")
+		m.recordError(err)
+		return 0, err
 	}
 	m.recordRecovery(len(keys))
 	m.clearError()
@@ -167,18 +179,9 @@ func (m *Manager) WarmupFromExistingKeys(ctx context.Context) (int, error) {
 // the gate is closed it re-warms from existing keys and returns the
 // observed count.
 //
-// The check + warmup is NOT atomic — between the Ready() check and
-// the Set(ready, "1") another instance could win the recovery race.
-// This is safe because:
-//   - WarmupFromExistingKeys is idempotent (HSet of the same
-//     epoch hash fields is harmless)
-//   - The Set(ready, "1") is a SETNX-style idempotent write
-//   - The race window is < 5ms in practice
-//
-// In the rare case of a race, two instances will both observe the
-// existing keys; the second writer's HSet overwrites with the same
-// recovered_at + recovered_keys_count (slightly later timestamp),
-// which is fine for audit purposes.
+// The final reopen is conditional on the epoch observed after the scan. A
+// concurrent close advances that epoch, so an older restore cannot reopen the
+// gate over a new incident.
 func (m *Manager) RestoreIfClosed(ctx context.Context) (int, error) {
 	if m == nil || m.rdb == nil {
 		return 0, fmt.Errorf("ursm.v2: nil manager / redis client")

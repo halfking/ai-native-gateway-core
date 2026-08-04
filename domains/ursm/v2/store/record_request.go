@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"crypto/sha256"
 	_ "embed"
 	"errors"
 	"fmt"
@@ -16,17 +17,18 @@ var recordRequestSrc string
 var RecordRequestScript = redis.NewScript(recordRequestSrc)
 
 type RecordOutcome struct {
-	Success       bool
-	ErrorKind     string
-	NowMs         int64
-	LatencyMs     int
-	RequestID     string
-	NodeTTL       time.Duration
-	Window5mTTL   time.Duration
-	Window30mTTL  time.Duration
-	AdminHold     bool
+	Success      bool
+	ErrorKind    string
+	NowMs        int64
+	LatencyMs    int
+	RequestID    string
+	DedupKey     string
+	NodeTTL      time.Duration
+	Window5mTTL  time.Duration
+	Window30mTTL time.Duration
+	AdminHold    bool
 	// Cooling parameters (P1: unify with credentialfpslot/node_state.go)
-	CoolSeconds    int // Seconds to cool when disabled (default 300 = 5min)
+	CoolSeconds     int // Seconds to cool when disabled (default 300 = 5min)
 	FailStreakLimit int // Failures before disabling (default 3)
 }
 
@@ -52,7 +54,7 @@ func (s *Store) RecordRequest(ctx context.Context, nodeKey, win1m, win5m, win30m
 		failStreakLimit = 3
 	}
 	res, err := RecordRequestScript.Run(ctx, s.rdb,
-		[]string{nodeKey, win1m, win5m, win30m},
+		[]string{nodeKey, win1m, win5m, win30m, requestDedupKey(nodeKey, o.DedupKey)},
 		BoolFlag(o.Success), o.ErrorKind, fmt.Sprintf("%d", o.NowMs),
 		fmt.Sprintf("%d", o.LatencyMs), o.RequestID,
 		fmt.Sprintf("%d", int64(o.NodeTTL/time.Second)),
@@ -61,6 +63,7 @@ func (s *Store) RecordRequest(ctx context.Context, nodeKey, win1m, win5m, win30m
 		BoolFlag(o.AdminHold),
 		fmt.Sprintf("%d", coolSeconds),
 		fmt.Sprintf("%d", failStreakLimit),
+		BoolFlag(o.DedupKey != ""),
 	).Slice()
 	if err != nil {
 		return RecordResult{}, fmt.Errorf("ursm.v2: record_request: %w", err)
@@ -69,6 +72,11 @@ func (s *Store) RecordRequest(ctx context.Context, nodeKey, win1m, win5m, win30m
 		return RecordResult{}, fmt.Errorf("ursm.v2: record_request: short reply")
 	}
 	return RecordResult{Status: asString(res[0]), FailNew: asInt64(res[1]), FailLast: asInt64(res[2])}, nil
+}
+
+func requestDedupKey(nodeKey, dedupKey string) string {
+	sum := sha256.Sum256([]byte(dedupKey))
+	return fmt.Sprintf("%s:request_dedup:%x", nodeKey, sum)
 }
 
 func BoolFlag(b bool) string {

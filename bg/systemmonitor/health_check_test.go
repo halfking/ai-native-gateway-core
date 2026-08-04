@@ -296,7 +296,24 @@ func TestCheckRedisHealthOnce_RestoreErrorDoesNotPanic(t *testing.T) {
 	}
 }
 
-// TestPublishRecoveryEvent_NilQueueIsNoop verifies that publishRecoveryEvent
+func TestRecoveryStatsConcurrentWithHealthChecks(t *testing.T) {
+	sm := newHealthCheckSystemMonitor(nil, 3, time.Minute, func(_ context.Context) error {
+		return errors.New("redis error")
+	})
+	var wg sync.WaitGroup
+	for i := 0; i < 16; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for j := 0; j < 100; j++ {
+				sm.checkRedisHealthOnce(context.Background())
+				_ = sm.RecoveryStats()
+			}
+		}()
+	}
+	wg.Wait()
+}
+
 // is safe when the queue is not wired (tests / disabled-Redis
 // deployments). Audit follow-up #5: the SSE event surface must
 // never panic the health-check loop.

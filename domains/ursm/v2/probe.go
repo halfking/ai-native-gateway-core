@@ -36,5 +36,6 @@ func (m *Manager) ApplyProbeForTenant(ctx context.Context, tenant string, p api.
 	if err != nil {
 		return fmt.Errorf("ursm.v2: apply_probe: %w", err)
 	}
+	m.invalidateNode(tenant, p.CredentialID, p.RawModel)
 	return nil
 }

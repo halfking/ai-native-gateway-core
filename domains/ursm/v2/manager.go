@@ -9,6 +9,8 @@ import (
 	"fmt"
 	"sort"
 	"strconv"
+	"strings"
+	stdsync "sync"
 	"time"
 
 	"github.com/redis/go-redis/v9"
@@ -66,7 +68,10 @@ type Manager struct {
 	// (M2, spec Decision 2). nil when LRUMirrorSize==0 (mirror disabled).
 	// Always a read-only replica of Redis; never written before a successful
 	// Redis Lua write.
-	nodeMirror *cache.NodeMirror
+	nodeMirror       *cache.NodeMirror
+	invalidationStop context.CancelFunc
+	invalidationWG   stdsync.WaitGroup
+	closeOnce        stdsync.Once
 }
 
 // New constructs a Manager. If d.Config.RedisKeyPrefix is empty the
@@ -104,6 +109,9 @@ func New(d Dependencies) *Manager {
 	// LRUMirrorSize==0 disables it (every read hits Redis).
 	if cfg.LRUMirrorSize > 0 {
 		m.nodeMirror = cache.NewNodeMirror(cfg.LRUMirrorSize, cfg.LRUMirrorSoftTTL)
+		if cfg.Mode != api.ModeOff {
+			m.startInvalidationSubscriber(d.Redis)
+		}
 	}
 	return m
 }
@@ -621,6 +629,74 @@ func seedKey(credentialID int, rawModel string) string {
 	return strconv.Itoa(credentialID) + "|" + rawModel
 }
 
+func (m *Manager) invalidateNode(tenant string, credentialID int, rawModel string) {
+	if m == nil || m.store == nil {
+		return
+	}
+	if m.nodeMirror != nil {
+		m.nodeMirror.InvalidateForTenant(tenant, credentialID, rawModel)
+	}
+	payload := fmt.Sprintf("%s\n%d\n%s", tenant, credentialID, rawModel)
+	publishCtx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+	if err := m.store.RawClient().Publish(publishCtx, store.NodeInvalidationChannel(m.cfg.RedisKeyPrefix), payload).Err(); err != nil {
+		m.log.Warn("ursm.v2: publish node invalidation failed", "error", err, "cid", credentialID)
+	}
+}
+
+func (m *Manager) startInvalidationSubscriber(rdb *redis.Client) {
+	if m == nil || m.nodeMirror == nil || rdb == nil {
+		return
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	m.invalidationStop = cancel
+	m.invalidationWG.Add(1)
+	go func() {
+		defer m.invalidationWG.Done()
+		pubsub := rdb.Subscribe(context.Background(), store.NodeInvalidationChannel(m.cfg.RedisKeyPrefix))
+		defer pubsub.Close()
+		closed := make(chan struct{})
+		defer close(closed)
+		go func() {
+			select {
+			case <-ctx.Done():
+				_ = pubsub.Close()
+			case <-closed:
+			}
+		}()
+		for {
+			msg, err := pubsub.ReceiveMessage(ctx)
+			if err != nil {
+				if ctx.Err() == nil {
+					m.log.Warn("ursm.v2: node invalidation subscriber stopped", "error", err)
+				}
+				return
+			}
+			parts := strings.SplitN(msg.Payload, "\n", 3)
+			if len(parts) != 3 {
+				continue
+			}
+			credentialID, err := strconv.Atoi(parts[1])
+			if err != nil || credentialID <= 0 {
+				continue
+			}
+			m.nodeMirror.InvalidateForTenant(parts[0], credentialID, parts[2])
+		}
+	}()
+}
+
+// Close releases the local invalidation subscriber. It is safe to call more
+// than once and does not alter Redis state.
+func (m *Manager) Close() {
+	if m == nil || m.invalidationStop == nil {
+		return
+	}
+	m.closeOnce.Do(func() {
+		m.invalidationStop()
+		m.invalidationWG.Wait()
+	})
+}
+
 // SetRedisForTest swaps the underlying redis client used by the v2
 // store. It is a test-only helper used by integration tests that need
 // to simulate a Redis restart (the store is rebuilt against a fresh
@@ -711,6 +787,7 @@ func (m *Manager) RecordRequest(ctx context.Context, ev api.RequestOutcome) erro
 			NowMs:        time.Now().UnixMilli(),
 			LatencyMs:    ev.LatencyMs,
 			RequestID:    ev.RequestID,
+			DedupKey:     ev.RequestID,
 			NodeTTL:      m.cfg.NodeTTL,
 			Window5mTTL:  m.cfg.Window5mTTL,
 			Window30mTTL: m.cfg.Window30mTTL,
@@ -723,6 +800,7 @@ func (m *Manager) RecordRequest(ctx context.Context, ev api.RequestOutcome) erro
 		m.log.Warn("ursm.v2: record failed", "error", err, "cid", ev.CredentialID)
 		return fmt.Errorf("ursm.v2: record: %w", err)
 	}
+	m.invalidateNode(ev.TenantID, ev.CredentialID, ev.RawModel)
 	metrics.Global().RecordURSMv2ShadowResult("recorded")
 	return nil
 }
