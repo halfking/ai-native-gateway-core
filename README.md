@@ -42,6 +42,7 @@
 | 能力维度 | 实现 |
 |----------|------|
 | **协议层** | OpenAI / Anthropic / Responses 兼容 + SSE 流式中继 + 请求体归档 |
+| **Agent 任务稳定性** | 全协议 pre-stream 心跳 + stall-only 超时(无 wall-clock cap)+ anthropic header 透传 + incremental integrity 掐流 |
 | **路由层** | 智能候选路由 + 粘性会话 + 自动路由（cost/quality 策略） |
 | **延迟感知** | p95 + 并发压力感知打分（design §2.1） + tier-plane SWRR |
 | **多租户** | 身份隧道（virtual IP/MAC/ClientID）+ 凭据池 + 38+ 表 RLS |
@@ -62,6 +63,7 @@
 |------|----------|------|
 | 网关入口 | `cmd/gateway/main.go`, `cmd/gateway/main_v2_pipeline.go` | 装配所有依赖、启动 HTTP/SSE |
 | 数据面 | `domains/streaming/`, `domains/streaming/executors/` | 流式中继 + 候选路由 + 重试 |
+| 流式完整性 | `domains/streaming/integrity/`, `domains/hooks/audit/stream_integrity.go` | 增量重复内容检测 + 异常事件审计(默认 record,abortable) |
 | 路由评分 | `domains/streaming/executors/router_scoring.go` | composite = penalties；P2C 取 min |
 | Goal 重试 | `domains/streaming/goal_retry_policy.go` | 租户策略 + `EffectiveMaxRetries()` |
 | 系统监测 | `bg/systemmonitor/{monitor,redis_queue,lua/claim}.go` | Redis 队列 + Lua 原子操作 |
