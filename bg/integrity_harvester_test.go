@@ -2,8 +2,11 @@ package bg
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/pashagolub/pgxmock/v4"
 )
@@ -171,5 +174,195 @@ func TestIntegrityHarvester_InsertUsesRealColumns(t *testing.T) {
 		if !strings.Contains(sql, "VALUES (0,") {
 			t.Errorf("INSERT must use rule_id literal 0\nSQL: %s", sql)
 		}
+	}
+}
+
+// metaCapture is a pgxmock.Argument that captures the metadata JSON argument
+// the high bridge passes to INSERT and verifies it decodes + contains the
+// expected keys. It records the decoded map on itself for the test to assert.
+type metaCapture struct {
+	got map[string]any
+}
+
+func (m *metaCapture) Match(v interface{}) bool {
+	raw, ok := v.([]byte)
+	if !ok {
+		return false
+	}
+	var decoded map[string]any
+	if err := json.Unmarshal(raw, &decoded); err != nil {
+		return false
+	}
+	m.got = decoded
+	return true
+}
+
+// highRowsHelper wires pgxmock for a single bridgeHigh cycle returning the
+// supplied rows, capturing the INSERT metadata. Returns the captured map.
+func highRowsHelper(t *testing.T, rows *pgxmock.Rows) map[string]any {
+	t.Helper()
+	mock, err := pgxmock.NewPool(pgxmock.QueryMatcherOption(pgxmock.QueryMatcherEqual))
+	if err != nil {
+		t.Fatalf("pgxmock.NewPool: %v", err)
+	}
+	defer mock.Close()
+
+	mock.ExpectBegin()
+	mock.ExpectExec(advisoryHighSQL).WithArgs("integrity_harvester:high").
+		WillReturnResult(pgxmock.NewResult("LOCK", 1))
+	mock.ExpectQuery(highSelectSQL).WithArgs(pgxmock.AnyArg(), pgxmock.AnyArg()).WillReturnRows(rows)
+
+	captured := &metaCapture{}
+	mock.ExpectExec(highInsertSQL).
+		WithArgs(
+			pgxmock.AnyArg(), // ruleName
+			pgxmock.AnyArg(), // severity
+			pgxmock.AnyArg(), // title
+			pgxmock.AnyArg(), // description
+			captured,         // metadata JSON (5th positional arg)
+			pgxmock.AnyArg(), // detected_at/lastSeen
+		).
+		WillReturnResult(pgxmock.NewResult("INSERT", 1))
+	mock.ExpectCommit()
+
+	h := &IntegrityHarvester{db: mock, cfg: DefaultIntegrityHarvesterConfig(), done: make(chan struct{})}
+	if err := h.bridgeHigh(context.Background()); err != nil {
+		t.Fatalf("bridgeHigh: %v", err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("pgxmock expectations: %v", err)
+	}
+	return captured.got
+}
+
+// A real high row writes metadata containing anomaly_type, credential_id and
+// raw_model_name — the three fields the WHERE NOT EXISTS dedup reads back.
+func TestIntegrityHarvester_HighWritesCompleteContext(t *testing.T) {
+	cred := int64(42)
+	ts := time.Date(2026, 8, 3, 12, 0, 0, 0, time.UTC)
+	rows := pgxmock.NewRows([]string{
+		"tenant_id", "anomaly_type", "provider_code", "credential_id",
+		"raw_model_name", "n", "first_ts", "last_ts", "sample_actual",
+	}).AddRow(
+		nil,                                 // tenant_id NULL
+		"repeated_content",                  // anomaly_type
+		"anthropic",                         // provider_code
+		&cred,                               // credential_id
+		"claude-opus-4-8",                   // raw_model_name
+		5,                                   // count
+		ts.Add(-time.Hour), ts, "loop-hash", // first/last/sample
+	)
+
+	meta := highRowsHelper(t, rows)
+	if meta["anomaly_type"] != "repeated_content" {
+		t.Errorf("anomaly_type = %v, want repeated_content", meta["anomaly_type"])
+	}
+	if meta["raw_model_name"] != "claude-opus-4-8" {
+		t.Errorf("raw_model_name = %v, want claude-opus-4-8", meta["raw_model_name"])
+	}
+	// credential_id is written as a numeric-string; JSON unmarshals numbers
+	// to float64, so compare by string form.
+	if fmt.Sprint(meta["credential_id"]) != "42" {
+		t.Errorf("credential_id = %v, want 42", meta["credential_id"])
+	}
+	// provider_code is part of the context too (operator dashboard).
+	if meta["provider_code"] != "anthropic" {
+		t.Errorf("provider_code = %v, want anthropic", meta["provider_code"])
+	}
+	if meta["event_count"].(float64) != 5 {
+		t.Errorf("event_count = %v, want 5", meta["event_count"])
+	}
+}
+
+// A NULL credential row writes credential_id == "" so it matches the dedup
+// subquery's COALESCE(...::text, ”) — the cluster is not re-bridged.
+func TestIntegrityHarvester_HighNullCredentialMatchesDedup(t *testing.T) {
+	ts := time.Date(2026, 8, 3, 12, 0, 0, 0, time.UTC)
+	rows := pgxmock.NewRows([]string{
+		"tenant_id", "anomaly_type", "provider_code", "credential_id",
+		"raw_model_name", "n", "first_ts", "last_ts", "sample_actual",
+	}).AddRow(
+		nil, nil, "openai", nil, // credential_id NULL
+		"gpt-4o", 3, ts.Add(-30*time.Minute), ts, "drift",
+	)
+
+	meta := highRowsHelper(t, rows)
+	// The metadata credential_id must be the empty string — exactly what
+	// COALESCE(a.credential_id::text, '') yields on the dedup side.
+	if got, ok := meta["credential_id"]; !ok || got != "" {
+		t.Errorf("credential_id = %v (ok=%v), want empty string to match dedup COALESCE", got, ok)
+	}
+	// rule_name encodes the anomaly so the dedup's rule_name clause matches.
+	// (Asserted via the captured args would need ruleName capture; the SQL
+	// text already pins 'integrity-high:' || a.anomaly_type, so the join is
+	// covered. Here we only assert the metadata half.)
+}
+
+// bridgeHigh bridges at most one row and increments highBridged once per row.
+func TestIntegrityHarvester_HighBridgedCounter(t *testing.T) {
+	mock, err := pgxmock.NewPool(pgxmock.QueryMatcherOption(pgxmock.QueryMatcherEqual))
+	if err != nil {
+		t.Fatalf("pgxmock.NewPool: %v", err)
+	}
+	defer mock.Close()
+
+	mock.ExpectBegin()
+	mock.ExpectExec(advisoryHighSQL).WithArgs("integrity_harvester:high").
+		WillReturnResult(pgxmock.NewResult("LOCK", 1))
+	ts := time.Date(2026, 8, 3, 12, 0, 0, 0, time.UTC)
+	cred := int64(7)
+	mock.ExpectQuery(highSelectSQL).WithArgs(pgxmock.AnyArg(), pgxmock.AnyArg()).WillReturnRows(
+		pgxmock.NewRows([]string{
+			"tenant_id", "anomaly_type", "provider_code", "credential_id",
+			"raw_model_name", "n", "first_ts", "last_ts", "sample_actual",
+		}).AddRow(nil, "fingerprint_drift", "openai", &cred, "gpt-4o", 2, ts, ts, "fp-x"),
+	)
+	mock.ExpectExec(highInsertSQL).
+		WithArgs(pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(),
+			pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg()).
+		WillReturnResult(pgxmock.NewResult("INSERT", 1))
+	mock.ExpectCommit()
+
+	h := &IntegrityHarvester{db: mock, cfg: DefaultIntegrityHarvesterConfig(), done: make(chan struct{})}
+	if err := h.bridgeHigh(context.Background()); err != nil {
+		t.Fatalf("bridgeHigh: %v", err)
+	}
+	if got := h.highBridged.Load(); got != 1 {
+		t.Errorf("highBridged = %d, want 1", got)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("pgxmock expectations: %v", err)
+	}
+}
+
+// When the SELECT returns no rows (dedup suppressed them all), no INSERT is
+// issued — pgxmock fails if any unexpected Exec fires.
+func TestIntegrityHarvester_HighEmptyIssuesNoInsert(t *testing.T) {
+	mock, err := pgxmock.NewPool(pgxmock.QueryMatcherOption(pgxmock.QueryMatcherEqual))
+	if err != nil {
+		t.Fatalf("pgxmock.NewPool: %v", err)
+	}
+	defer mock.Close()
+
+	mock.ExpectBegin()
+	mock.ExpectExec(advisoryHighSQL).WithArgs("integrity_harvester:high").
+		WillReturnResult(pgxmock.NewResult("LOCK", 1))
+	mock.ExpectQuery(highSelectSQL).WithArgs(pgxmock.AnyArg(), pgxmock.AnyArg()).WillReturnRows(
+		pgxmock.NewRows([]string{
+			"tenant_id", "anomaly_type", "provider_code", "credential_id",
+			"raw_model_name", "n", "first_ts", "last_ts", "sample_actual",
+		}),
+	)
+	mock.ExpectCommit()
+
+	h := &IntegrityHarvester{db: mock, cfg: DefaultIntegrityHarvesterConfig(), done: make(chan struct{})}
+	if err := h.bridgeHigh(context.Background()); err != nil {
+		t.Fatalf("bridgeHigh: %v", err)
+	}
+	if got := h.highBridged.Load(); got != 0 {
+		t.Errorf("highBridged = %d, want 0 on empty", got)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Errorf("pgxmock expectations: %v", err)
 	}
 }

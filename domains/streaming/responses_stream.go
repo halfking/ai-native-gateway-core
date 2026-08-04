@@ -5,12 +5,12 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/kaixuan/llm-gateway-go/errorsx"
 	"log/slog"
 	"net/http"
 	"runtime/debug"
 	"strings"
 	"time"
-	"github.com/kaixuan/llm-gateway-go/errorsx"
 
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/audit" //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 )
@@ -257,6 +257,14 @@ func StreamResponsesSSE(w http.ResponseWriter, resp *http.Response, clientModel,
 			continue
 		}
 		processLine(line)
+		// Incremental integrity breach: the text observer flagged a
+		// repeated-content loop mid-stream. Cut the stream so the executor's
+		// recoverable-interruption path can failover to another candidate.
+		// Mirrors stream.go's three ObserveChunk sites.
+		if capture != nil && capture.IntegrityBreached() {
+			writeResponsesIncomplete(w, flusher, respID, msgID, createdAt, clientModel, fullText, capture.IntegrityBreachReason())
+			return integrityBreachOutcome(capture, 0)
+		}
 	}
 
 	textDone := map[string]any{

@@ -6,13 +6,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/kaixuan/llm-gateway-go/errorsx"
 	"io"
 	"log/slog"
 	"net/http"
 	"runtime/debug"
 	"strings"
 	"time"
-	"github.com/kaixuan/llm-gateway-go/errorsx"
 
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/audit" //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/internal/ir"
@@ -470,6 +470,13 @@ func StreamAnthropicSSEToResponsesWithDiagnostics(
 		}
 
 		writeChunkIR(chunk)
+
+		// Incremental integrity breach (repeated-content loop): cut the
+		// stream so the executor can failover. Mirrors stream.go.
+		if capture != nil && capture.IntegrityBreached() {
+			scaffold.writeFinalEvents(fullText.String(), finishReason, inputTokens, outputTokens, inputTokens+outputTokens)
+			return integrityBreachOutcome(capture, chunkCount)
+		}
 	}
 }
 
@@ -707,5 +714,12 @@ func StreamOpenAIToResponsesSSEWithDiagnostics(
 		}
 
 		writeChunkIR(chunk)
+
+		// Incremental integrity breach (repeated-content loop): cut the
+		// stream so the executor can failover. Mirrors stream.go.
+		if capture != nil && capture.IntegrityBreached() {
+			scaffold.writeFinalEvents(fullText.String(), finishReason, inputTokens, outputTokens, inputTokens+outputTokens)
+			return integrityBreachOutcome(capture, chunkCount)
+		}
 	}
 }

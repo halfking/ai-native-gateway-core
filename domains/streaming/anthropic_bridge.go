@@ -458,6 +458,12 @@ func StreamAnthropicSSEToOpenAIWithDiagnostics(
 		if err != nil {
 			if err == io.EOF {
 				flushBufferedText()
+				// Incremental integrity breach on the flushed text: cut
+				// before emitting the closing usage/done chunks so the
+				// executor can failover. Mirrors stream.go.
+				if capture != nil && capture.IntegrityBreached() {
+					return integrityBreachOutcome(capture, chunkCount)
+				}
 				if inputTokens > 0 || outputTokens > 0 {
 					writeChunk(&ir.StreamChunk{
 						Type: ir.ChunkTypeUsage,
@@ -700,6 +706,12 @@ func StreamAnthropicSSEToOpenAIWithDiagnostics(
 			outcome.Kind = errorsx.KindUpstreamDown
 			outcome.ChunkCount = chunkCount
 			return outcome
+		}
+
+		// Incremental integrity breach (repeated-content loop): cut the
+		// stream so the executor can failover. Mirrors stream.go.
+		if capture != nil && capture.IntegrityBreached() {
+			return integrityBreachOutcome(capture, chunkCount)
 		}
 	}
 }
