@@ -65,6 +65,12 @@ func TestLoad_DefaultStreamingTimeouts(t *testing.T) {
 	if cfg.StreamChunkTimeout != 600 {
 		t.Fatalf("StreamChunkTimeout = %d, want 600", cfg.StreamChunkTimeout)
 	}
+	// 2026-08-04: pre-stream keepalive is ON by default for all streaming
+	// protocols — the primary fix for "agent task interrupted through the
+	// gateway". Override via LLM_GATEWAY_ENABLE_PRE_STREAM_KEEPALIVE=false.
+	if !cfg.EnablePreStreamKeepalive {
+		t.Fatal("EnablePreStreamKeepalive = false, want true (2026-08-04 default)")
+	}
 }
 
 func TestLoad_InvalidPendingTTLFallsBackToDefault(t *testing.T) {
