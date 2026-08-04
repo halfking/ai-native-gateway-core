@@ -320,6 +320,7 @@ type LiveStreamSSEHub struct {
 	cachedSnapshotBaselinePresent int64 // computeScopeDelta 时已有 delta baseline
 	cachedSnapshotBaselineAbsent  int64 // computeScopeDelta 时尚无 delta baseline
 	cachedSnapshotEmptySkips      int64 // 读出空 snapshot 触发早返的次数
+	cachedSnapshotDegradedSkips   int64 // 读出残缺 snapshot（total 远低于 cached）触发丢弃的次数
 	cachedSnapshotEvictions       int64 // evictStaleCachedSnapshots 累计清掉的 entry 数
 
 	// lastHealth tracks the previous Redis health state so we only
@@ -420,8 +421,10 @@ func (h *LiveStreamSSEHub) Run() {
 				// 原来用 200ms 超时，但 SnapshotFromDimensionQueues 内部需要
 				// SCAN 多次迭代 + 27+ 个 pipeline 读，200ms 不够，导致
 				// SCAN 第一次返回后 ctx 已超时，所有后续 SCAN/Pipeline 失败。
-				// 改为 2 秒，覆盖 SCAN 全量（27+ 维度队列）+ 详情批量读取。
-				ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+				// 2026-08-04 (方案B): 读取已 pipeline 化（2 次 RTT），超时从 2s
+				// 放宽到 liveStreamSnapshotReadTimeout(5s)，避免远程共享 Redis
+				// 下 ~40% 的读取被 deadline 截断导致泳道跳动。
+				ctx, cancel := context.WithTimeout(context.Background(), liveStreamSnapshotReadTimeout)
 				tenantDelta = h.computeScopeDelta(ctx, tenantID, false)
 				if hasSuperClient {
 					superDelta = h.computeScopeDelta(ctx, "", true)
@@ -490,6 +493,27 @@ func newLiveStreamScope(tenantID string, isSuper bool) liveStreamScope {
 	}
 }
 
+// Degraded-snapshot detection thresholds (方案A).
+// SnapshotFromDimensionQueues can return a partial snapshot when its context
+// deadline fires mid-scan (remaining dimension queues are skipped). Such a
+// degraded read has a far smaller Summary.Total than the real state. To avoid
+// pushing the shrunken lanes to the dashboard (the "swim lane jumps 20↔3"
+// symptom), computeScopeDelta drops a snapshot whose total falls below
+// threshold_pct % of the cached baseline, provided the baseline itself is at
+// least minBaseline (so the check only arms after steady state, not cold start).
+const (
+	degradedSnapshotMinBaseline  = 20
+	degradedSnapshotThresholdPct = 40
+)
+
+// liveStreamSnapshotReadTimeout bounds how long computeScopeDelta may spend
+// reading a full snapshot from Redis. SnapshotFromDimensionQueues pipelines
+// its reads (方案B), so even against a remote shared Redis a full scan of ~40
+// dimension queues + their detail fetches finishes well within this budget.
+// 5s is ample headroom; the previous 2s was the root cause of ~40% of reads
+// being truncated by a context deadline (production logs 2026-08-04).
+const liveStreamSnapshotReadTimeout = 5 * time.Second
+
 // computeScopeDelta reads a fresh snapshot for the given scope
 // (tenantID="" + isSuper=true for the global view, or tenantID+false
 // for a tenant view) and returns the delta against the cached snapshot
@@ -546,6 +570,28 @@ func (h *LiveStreamSSEHub) computeScopeDelta(ctx context.Context, tenantID strin
 	if entry := h.cachedSnapshot[scope.cacheKey]; entry != nil {
 		cached = entry.snapshot
 	}
+
+	// 2026-08-04: Degraded-snapshot guard (方案A).
+	// 生产实测发现：SnapshotFromDimensionQueues 在 2s 超时内读不完 42 个维度队列
+	// 时，ctx 取消后剩余队列被 continue 跳过，但已读成员仍组成"残缺" snapshot 返回
+	// （无 error）。这种残缺 snapshot 的 total 可能从正常的 ~258 掉到 8/34/165，
+	// 直接推给前端会导致泳道条数 20↔3 跳动。
+	//
+	// 检测策略：当 cached 已有非空基线（total≥20，排除冷启动），而本次 snapshot 的
+	// total 不到 cached 的 40% 时，判定为超时残缺读取 → 丢弃、不更新 cached、返回 nil。
+	// 前端 mergeDelta 不会因 nil delta 而清空，保留上一次的好数据，下一次完整 snapshot
+	// 会修正。流量真实暴跌不可能瞬间掉 60%+，阈值 40% 安全。
+	if cached != nil && cached.Summary.Total >= degradedSnapshotMinBaseline &&
+		snapshot.Summary.Total*100 < cached.Summary.Total*degradedSnapshotThresholdPct {
+		atomic.AddInt64(&h.cachedSnapshotDegradedSkips, 1)
+		slog.Warn("live stream: degraded snapshot skipped (likely Redis read timeout)",
+			"scope_tenant", scope.tenantID, "is_super", scope.isSuper,
+			"cached_total", cached.Summary.Total,
+			"incoming_total", snapshot.Summary.Total,
+			"threshold_pct", degradedSnapshotThresholdPct)
+		return nil
+	}
+
 	delta := ComputeDelta(cached, snapshot)
 	h.cachedSnapshot[scope.cacheKey] = &cachedSnapshotEntry{
 		snapshot:     snapshot,
@@ -631,7 +677,7 @@ func (h *LiveStreamSSEHub) PushFullSnapshots() {
 
 // pushScopeSnapshot reads a fresh snapshot for one scope and broadcasts it.
 func (h *LiveStreamSSEHub) pushScopeSnapshot(tenantID string, isSuper bool) {
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), liveStreamSnapshotReadTimeout)
 	defer cancel()
 
 	snapshot, err := h.store.SnapshotFromDimensionQueues(ctx, tenantID, isSuper)
@@ -956,7 +1002,8 @@ func (h *LiveStreamSSEHub) maybeEmitIdleMarker() {
 			continue
 		}
 		// 2026-07-23: 修复实时流只显示 1 个泳道的 bug（同上：从 200ms 改为 2s）
-		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		// 2026-08-04 (方案B): 放宽到 liveStreamSnapshotReadTimeout(5s)。
+		ctx, cancel := context.WithTimeout(context.Background(), liveStreamSnapshotReadTimeout)
 		deltaByCacheKey[sk] = h.computeScopeDelta(ctx, cs.tenantID, cs.isSuper)
 		cancel()
 	}
