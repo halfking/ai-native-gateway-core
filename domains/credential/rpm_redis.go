@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -46,8 +47,19 @@ func NewRedisRPMLimiter(client *redis.Client) *RedisRPMLimiter {
 // gateway-wide Redis address used by existing deployments.
 func NewRPMLimiterFromEnv() RPMLimiter {
 	url := strings.TrimSpace(os.Getenv("RPM_REDIS_URL"))
+	dbFromGateway := 0
 	if url == "" {
-		url = redisURLFromAddress(os.Getenv("LLM_GATEWAY_REDIS_ADDR"))
+		// 2026-08-04: 与主网关共享 db 选择（默认 2，与 LLM_GATEWAY_REDIS_DB 一致）。
+		// 防止 rpm_redis 错把限流 key 写到 db=0（与 PMS session 混在一起）。
+		// 优先读 RPM_REDIS_URL（运维已可显式指定 db 段）；回退到 LLM_GATEWAY_REDIS_DB。
+		if raw := strings.TrimSpace(os.Getenv("LLM_GATEWAY_REDIS_DB")); raw != "" {
+			if v, err := strconv.Atoi(raw); err == nil {
+				dbFromGateway = v
+			}
+		} else {
+			dbFromGateway = 2 // 2026-08-04 默认值，与 config.go 的 cfg.RedisDB 一致
+		}
+		url = redisURLFromAddress(os.Getenv("LLM_GATEWAY_REDIS_ADDR"), dbFromGateway)
 	}
 	if url == "" {
 		recordRPMMode(false)
@@ -65,15 +77,39 @@ func NewRPMLimiterFromEnv() RPMLimiter {
 	return NewRedisRPMLimiter(redis.NewClient(options))
 }
 
-func redisURLFromAddress(address string) string {
+// redisURLFromAddress converts a bare "host:port" into a redis:// URL,
+// optionally appending a "/db" path segment so the resulting client points
+// at the same Redis DB as the main gateway (cfg.RedisDB /
+// LLM_GATEWAY_REDIS_DB). If address already contains a scheme, db is
+// appended to the existing path; if it already contains a /db, the value
+// is left untouched (explicit URLs always win).
+func redisURLFromAddress(address string, db int) string {
 	address = strings.TrimSpace(address)
 	if address == "" {
 		return ""
 	}
-	if strings.Contains(address, "://") {
+	if !strings.Contains(address, "://") {
+		address = "redis://" + address
+	}
+	if db <= 0 {
 		return address
 	}
-	return "redis://" + address
+	// Find the path component (after the host's optional /auth@ segment).
+	// redis URL grammar: redis://[user:pass@]host:port[/db]
+	// We only append /db if the path is empty or missing.
+	slash := strings.Index(address, "://")
+	rest := address[slash+3:]
+	// rest is [user:pass@]host[:port][/db]
+	// Find the first "/" after the authority.
+	pathIdx := strings.Index(rest, "/")
+	if pathIdx < 0 {
+		return address + "/" + strconv.Itoa(db)
+	}
+	if pathIdx == len(rest)-1 {
+		return address + strconv.Itoa(db)
+	}
+	// Existing db segment — leave it alone (explicit URL wins).
+	return address
 }
 
 func (r *RedisRPMLimiter) redisKey(providerID, credentialID int) string {

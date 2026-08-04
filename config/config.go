@@ -295,6 +295,11 @@ func Load() *Config {
 		if v, err := strconv.Atoi(dbStr); err == nil {
 			cfg.RedisDB = v
 		}
+	} else {
+		// 2026-08-04: 默认 db=2，避免与共享 Redis 上其他系统（pms session
+		// 等 12 万 keys）混在 db=0。llmgw 的所有 Redis 客户端都通过 cfg.RedisDB
+		// 拿这个值。覆盖方式：env LLM_GATEWAY_REDIS_DB=<n>。
+		cfg.RedisDB = 2
 	}
 	applyPositiveIntEnv("LLM_GATEWAY_SESSION_TTL_HOURS", &cfg.SessionTTLHours)
 	applyPositiveIntEnv("LLM_GATEWAY_PENDING_TTL_SECONDS", &cfg.PendingTTLSeconds)
