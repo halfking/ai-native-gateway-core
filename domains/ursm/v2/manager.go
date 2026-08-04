@@ -9,7 +9,6 @@ import (
 	"fmt"
 	"sort"
 	"strconv"
-	"strings"
 	stdsync "sync"
 	"time"
 
@@ -636,7 +635,7 @@ func (m *Manager) invalidateNode(tenant string, credentialID int, rawModel strin
 	if m.nodeMirror != nil {
 		m.nodeMirror.InvalidateForTenant(tenant, credentialID, rawModel)
 	}
-	payload := fmt.Sprintf("%s\n%d\n%s", tenant, credentialID, rawModel)
+	payload := store.NodeInvalidationPayload{TenantID: tenant, CredentialID: credentialID, RawModel: rawModel}.String()
 	publishCtx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
 	defer cancel()
 	if err := m.store.RawClient().Publish(publishCtx, store.NodeInvalidationChannel(m.cfg.RedisKeyPrefix), payload).Err(); err != nil {
@@ -672,21 +671,18 @@ func (m *Manager) startInvalidationSubscriber(rdb *redis.Client) {
 				}
 				return
 			}
-			parts := strings.SplitN(msg.Payload, "\n", 3)
-			if len(parts) != 3 {
+			parsed, ok := store.ParseNodeInvalidation(msg.Payload)
+			if !ok {
 				continue
 			}
-			credentialID, err := strconv.Atoi(parts[1])
-			if err != nil || credentialID <= 0 {
-				continue
-			}
-			m.nodeMirror.InvalidateForTenant(parts[0], credentialID, parts[2])
+			m.nodeMirror.InvalidateForTenant(parsed.TenantID, parsed.CredentialID, parsed.RawModel)
 		}
 	}()
 }
 
 // Close releases the local invalidation subscriber. It is safe to call more
-// than once and does not alter Redis state.
+// than once and does not alter Redis state. When the LRU mirror is disabled
+// (LRUMirrorSize==0) the subscriber is never started and Close is a no-op.
 func (m *Manager) Close() {
 	if m == nil || m.invalidationStop == nil {
 		return

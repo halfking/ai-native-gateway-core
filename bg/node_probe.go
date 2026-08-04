@@ -124,6 +124,11 @@ type NodeProbeWorker struct {
 	probeClient   *http.Client // proxy-respecting, for probeDirect
 	stateObserver credentialstate.StateObserver
 	stateSink     NodeProbeStateSink
+	// tenantResolver looks up the tenant ID for a credential. Production
+	// wires it to credentials.tenant_id via (*pgxpool.Pool).QueryRow; tests
+	// can inject a stub to assert the backfill branch without spinning up
+	// a full PG container.
+	tenantResolver func(ctx context.Context, credID int) (string, error)
 	// stateProvider (2026-07-17) is the READ-side contract used by
 	// ProbeSync's reuse path: after a syncWaiter channel closes, we
 	// re-check IsAvailable for that (cred,model) so the function can
@@ -267,7 +272,29 @@ func NewNodeProbeWorker(db *pgxpool.Pool, encKey []byte, keyring *secret.Keyring
 		w.probeClient = w.client
 	}
 
+	// tenantResolver is the only path that contacts PG for tenant lookup.
+	// It is wired here so production always honours credentials.tenant_id;
+	// tests inject a stub via SetTenantResolver.
+	if w.db != nil {
+		w.tenantResolver = func(ctx context.Context, credID int) (string, error) {
+			var tenant string
+			err := w.db.QueryRow(ctx,
+				"SELECT COALESCE(tenant_id, '') FROM credentials WHERE id = $1", credID,
+			).Scan(&tenant)
+			return tenant, err
+		}
+	}
+
 	return w
+}
+
+// SetTenantResolver overrides the production PG-backed tenant lookup. Tests
+// use it to assert the backfill branch without spinning up a database.
+func (w *NodeProbeWorker) SetTenantResolver(fn func(ctx context.Context, credID int) (string, error)) {
+	if w == nil {
+		return
+	}
+	w.tenantResolver = fn
 }
 
 func (w *NodeProbeWorker) Start(ctx context.Context) {
@@ -1648,14 +1675,14 @@ func (w *NodeProbeWorker) updateURSMv2ProbeState(ctx context.Context, tenantID s
 	}
 	probeCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Second)
 	defer cancel()
-	if tenantID == "" && w.db != nil {
-		if err := w.db.QueryRow(probeCtx,
-			"SELECT COALESCE(tenant_id, '') FROM credentials WHERE id = $1", credID,
-		).Scan(&tenantID); err != nil {
+	if tenantID == "" && w.tenantResolver != nil {
+		resolved, err := w.tenantResolver(probeCtx, credID)
+		if err != nil {
 			slog.Warn("node_probe_worker: resolve URSM v2 tenant failed",
 				"credential_id", credID, "model", model, "error", err)
 			return
 		}
+		tenantID = resolved
 	}
 	if err := w.stateSink.ApplyProbeForTenant(probeCtx, tenantID, credID, model, success, latencyMs); err != nil {
 		slog.Warn("node_probe_worker: URSM v2 probe state write failed",
