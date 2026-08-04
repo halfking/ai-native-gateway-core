@@ -7,7 +7,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased] - 2026-08-04
 
+### Fixed
+
+- **Agent 多步任务过网关经常中断 (2026-08-04)**:
+  - **核心症状**: agent(Claude Code / Codex / Cursor)直连供应商正常,过网关就经常中断。表现为流被提前掐断、客户端 idle 重连、缺少 tool_use 块
+  - **根因 A** — pre-stream keepalive 只覆盖 openai-completions 协议,Anthropic Messages / Responses 协议的客户端首字节前无心跳,被客户端 idle 超时(或 nginx `proxy_read_timeout`)掐断
+    - 修复: 去掉 `clientProtocol == "openai-completions"` 限制;preStreamKeepalive 对**全部流式协议**启用
+    - 默认 `enable_pre_stream_keepalive: false → true`(通过 `LLM_GATEWAY_ENABLE_PRE_STREAM_KEEPALIVE=false` 可关闭)
+    - prewarm 时即设 `X-Accel-Buffering: no`(防 nginx 缓冲心跳)
+    - 审计补: `startPreStreamKeepalive` 新增 `requestID` 参数,WriteHeader 前显式设 `X-Request-Id`(避免 net/http 锁定 header 后被 bridge 静默忽略)
+  - **根因 B** — reasoning 模型首字节超默认 `first_byte_timeout=120s` 被掐
+    - 修复: 默认 `120s → 180s`(配合全协议保活后 180s 仍安全)
+  - **根因 C** — `upstreamContext` 流式路径套了 `StreamTimeout=900s` 总 deadline,长 agent 任务(多步推理 + 工具调用累计 >15min)被 age 掐断
+    - 修复: 流式路径 `WithTimeout → WithCancel`(无 wall-clock deadline),改由 `ResponseHeaderTimeout=120s` + `streamChunkTimeout=300s+` 两层**不活动**信号兜底
+    - 非流式路径保持总 deadline(无流读循环,需硬性 backstop)
+  - **根因 D** — `anthropic-version` 写死 `2023-06-01`,`anthropic-beta` 完全丢弃(IRExtensionExtractor 提取了但 Restore/BuildRequest 都不读,死链)
+    - 修复: 新增 `applyClientAnthropicHeaders` 白名单透传(version 优先客户端值;beta 多个值 join 成 CSV;空值/null header 安全跳过)
+    - 补全单元测试 6 子用例: 转发/默认保留/重复合并/空值过滤/全部空时不设头/nil header 安全
+  - **因素 E** — integrity `AbortMinHits=4` 对 agent 重复结构化输出(JSON/代码/base64)易误伤
+    - 修复: 默认 `4 → 8`(真死循环会重复数十次,仍能抓);abort 仍默认关闭(仅 record)
+  - **因素 F** — stream.go 现有 `IntegrityBreached()` 掐流 pattern 未覆盖 anthropic/responses bridge
+    - 修复: 在 `anthropic_bridge.go` / `responses_bridge.go` / `responses_stream.go` 补全同 pattern
+  - **测试**: build + vet + streaming/executors/integrity/config 全过;竞态检测通过
+  - **影响面**: 行为变更默认生效,无需 env 改动;`LLM_GATEWAY_ENABLE_PRE_STREAM_KEEPALIVE=false` 可一键回滚到旧行为
+
+- **增量流式完整性检测覆盖全部 bridge (2026-08-04)**:
+  - 将 stream.go 已有的 `IntegrityBreached()` 掐流 pattern 补全到所有协议 bridge (anthropic, responses, responses_stream),确保重复内容循环在任意 wire format 下都能被检测并触发 failover
+  - 新增/补全 3 个测试文件 (`stream_integrity_test.go` / `executor_adapter_test.go` / `stream_tracker_test.go`) + 2 处现有测试增量 (harvester metaCapture、detector incremental handoff)
+  - 8 个文件, +946/-2 行
+
 ### Added
+
+- **Dockerfile 镜像源参数化 + 新增发布构建脚本 (2026-08-04)**:
+  - Dockerfile 引入 `ARG BASE_REGISTRY / GO_BASE_IMAGE / RUNTIME_BASE_IMAGE`(默认 kx-base 内网镜像),`docker build --build-arg BASE_REGISTRY=...` 切换到公网仓库(CI / 外部构建)
+  - 新增 `scripts/build-release-images.sh`: 多架构 docker 镜像构建并导出 tar (`linux/amd64` + `linux/arm64`) + SHA256SUMS,`SKIP_BUILD=1` 仅生成契约元数据,供 ai-native-maintain `build-release-docker.sh` 调用
+  - 新增 `scripts/build-db-release-bundle.sh`: SQL 发布制品(`00-prereqs.sql` / `01-schema.sql` / `02-seed.sql` / `03-current-upgrade.sql` + `MANIFEST.json` + `SHA256SUMS`),支持 `SEED_DATABASE_URL` 模式从在线 DB 导出 seed(默认从仓库 `sql/schema/02-seed.sql` 读),凭据/密钥永不导出
+  - 两个脚本均 `set -euo pipefail`,带 `--help` / `--dry-run` 支持,符合仓库现有 `scripts/` 风格
+  - 3 个文件, +295/-2 行
 
 - **245 预生产磁盘清理 + stderr 日志轮转 (2026-08-04)**:
   - 修复 245 (8.136.114.245) 预生产服务器 `/dev/vda3` 磁盘撑爆（40G 已用 36G/97%，仅 1.5G 可用）
