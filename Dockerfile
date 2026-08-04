@@ -1,7 +1,11 @@
 # LLM Gateway Dockerfile
 
+ARG BASE_REGISTRY=registry.kxpms.cn/kx-base
+ARG GO_BASE_IMAGE=${BASE_REGISTRY}/golang:1.25-alpine
+ARG RUNTIME_BASE_IMAGE=${BASE_REGISTRY}/alpine:3.22
+
 # 构建阶段
-FROM golang:1.25-alpine AS builder
+FROM ${GO_BASE_IMAGE} AS builder
 
 WORKDIR /app
 
@@ -16,7 +20,7 @@ COPY . .
 RUN CGO_ENABLED=0 GOOS=linux go build -mod=mod -o /app/bin/llm-gateway ./cmd/gateway
 
 # 运行阶段
-FROM alpine:3.22
+FROM ${RUNTIME_BASE_IMAGE}
 
 RUN apk --no-cache add ca-certificates
 
