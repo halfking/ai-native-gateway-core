@@ -421,30 +421,72 @@ do_deploy() {
     fi
   fi
 
-  # 9.6 安装 logrotate 轮转配置 (stderr/stdout 100M/daily)
-  # 必做：服务已 healthz OK，再装 logrotate 即便失败也不影响 deploy。
-  # deploy/logrotate-llm-gateway-go 是仓内 SSOT；copytruncate 模式
-  # 与 systemd append: 配套 (systemd 持有 fd 不释放, create 模式会丢日志)。
-  log "[9.6/9] 安装 logrotate 轮转配置 (/etc/logrotate.d/llm-gateway-go)"
-  local lg_remote_dir="/tmp/llm-gw-deploy-helpers"
-  local lg_remote_cfg="$lg_remote_dir/llm-gateway-go.logrotate"
-  local lg_remote_script="$lg_remote_dir/install-logrotate.sh"
-  local lg_local_cfg="$PROJECT_ROOT/deploy/logrotate-llm-gateway-go"
-  local lg_local_script="$SCRIPT_DIR/install-logrotate.sh"
-  if [[ -f "$lg_local_cfg" && -f "$lg_local_script" ]]; then
-    if cat "$lg_local_cfg" | remote_ssh_pipe "mkdir -p '$lg_remote_dir' && cat > '$lg_remote_cfg'" \
-       && cat "$lg_local_script" | remote_ssh_pipe "cat > '$lg_remote_script'"; then
-      if remote_ssh "chmod +x '$lg_remote_script' && bash '$lg_remote_script' install '$lg_remote_cfg'"; then
-        ok "logrotate 配置已就绪"
+  # 9.6 安装日志轮转配置 (按 systemd unit 模式自动分支)
+  # 必做：服务已 healthz OK，再装轮转即便失败也不影响 deploy。
+  #   - StandardOutput=append:/var/log/... → logrotate + copytruncate (245)
+  #   - StandardOutput=journal / StandardError=inherit → systemd-journald drop-in (154)
+  #   - 其它 → warn skip (无标准轮转路径)
+  log "[9.6/9] 配置 stderr/stdout 日志轮转 (按 unit 模式自动分支)"
+  local _std_out _std_err _target_rotate
+  _std_out="$(remote_ssh "systemctl show $SERVICE_NAME --property=StandardOutput --value" 2>/dev/null | tail -1 || echo '')"
+  _std_err="$(remote_ssh "systemctl show $SERVICE_NAME --property=StandardError --value" 2>/dev/null | tail -1 || echo '')"
+  info "  unit mode: StandardOutput=${_std_out:-<unset>} StandardError=${_std_err:-<unset>}"
+  # decide: append: → logrotate; journal/inherit → journald drop-in; else skip
+  case "${_std_out}:${_std_err}" in
+    append:*:*) _target_rotate="logrotate" ;;
+    *:append:*) _target_rotate="logrotate" ;;
+    journal:*|*:journal|journal:*|*:inherit|*:*:inherit)
+      # journal:inherit / journal:journal / inherit:* / inherit:inherit / 空 → journald
+      _target_rotate="journald" ;;
+    *)
+      warn "  未识别的 unit 模式 (${_std_out:-<unset>}:${_std_err:-<unset>}), 跳过轮转配置"
+      _target_rotate="" ;;
+  esac
+
+  if [[ "$_target_rotate" == "logrotate" ]]; then
+    # ── logrotate 路径 (245 + 未来改 unit 走 append: 的服务器) ──
+    local lg_remote_dir="/tmp/llm-gw-deploy-helpers"
+    local lg_remote_cfg="$lg_remote_dir/llm-gateway-go.logrotate"
+    local lg_remote_script="$lg_remote_dir/install-logrotate.sh"
+    local lg_local_cfg="$PROJECT_ROOT/deploy/logrotate-llm-gateway-go"
+    local lg_local_script="$SCRIPT_DIR/install-logrotate.sh"
+    if [[ -f "$lg_local_cfg" && -f "$lg_local_script" ]]; then
+      if cat "$lg_local_cfg" | remote_ssh_pipe "mkdir -p '$lg_remote_dir' && cat > '$lg_remote_cfg'" \
+         && cat "$lg_local_script" | remote_ssh_pipe "cat > '$lg_remote_script'"; then
+        if remote_ssh "chmod +x '$lg_remote_script' && bash '$lg_remote_script' install '$lg_remote_cfg'"; then
+          ok "logrotate 配置已就绪"
+        else
+          warn "logrotate install 失败（不影响 deploy, 可手动: ssh $TARGET 'bash $lg_remote_script install $lg_remote_cfg'）"
+        fi
       else
-        warn "logrotate install 失败（不影响 deploy, 可手动: ssh $TARGET 'bash $lg_remote_script install $lg_remote_cfg'）"
+        warn "logrotate 文件传输失败（不影响 deploy）"
       fi
     else
-      warn "logrotate 文件传输失败（不影响 deploy）"
+      warn "logrotate 资源缺失: $lg_local_cfg 或 $lg_local_script 不存在"
     fi
-  else
-    warn "logrotate 资源缺失: $lg_local_cfg 或 $lg_local_script 不存在"
+  elif [[ "$_target_rotate" == "journald" ]]; then
+    # ── systemd-journald 路径 (154 + 未来改 unit 走 journal 的服务器) ──
+    local jd_remote_dir="/tmp/llm-gw-deploy-helpers"
+    local jd_remote_cfg="$jd_remote_dir/journald-conf-snippet.conf"
+    local jd_remote_script="$jd_remote_dir/configure-journald.sh"
+    local jd_local_cfg="$PROJECT_ROOT/deploy/journald-conf-snippet.conf"
+    local jd_local_script="$SCRIPT_DIR/configure-journald.sh"
+    if [[ -f "$jd_local_cfg" && -f "$jd_local_script" ]]; then
+      if cat "$jd_local_cfg" | remote_ssh_pipe "mkdir -p '$jd_remote_dir' && cat > '$jd_remote_cfg'" \
+         && cat "$jd_local_script" | remote_ssh_pipe "cat > '$jd_remote_script'"; then
+        if remote_ssh "chmod +x '$jd_remote_script' && bash '$jd_remote_script' install '$jd_remote_cfg'"; then
+          ok "journald drop-in 已就绪"
+        else
+          warn "configure-journald install 失败（不影响 deploy, 可手动: ssh $TARGET 'bash $jd_remote_script install $jd_remote_cfg'）"
+        fi
+      else
+        warn "journald 文件传输失败（不影响 deploy）"
+      fi
+    else
+      warn "journald 资源缺失: $jd_local_cfg 或 $jd_local_script 不存在"
+    fi
   fi
+  # else: 未识别 unit 模式, 已在前面 warn, 不动任何文件
 
   # 清理本地临时文件
   rm -f "$tmpbin"; rm -rf "$bundle_dir"

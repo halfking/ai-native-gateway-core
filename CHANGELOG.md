@@ -30,6 +30,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Docker 端到端 9/9 用例通过 (debian-slim + apt install logrotate)
   - 经验文档: [docs/changelogs/2026-08-04-stderr-logrotate-integration.md](docs/changelogs/2026-08-04-stderr-logrotate-integration.md)
 
+- **154 stderr 走 journald, 用 drop-in 限制 journal 大小 (2026-08-04)**:
+  - 实测发现 154 上 `llm-gateway-go.service` 是 `StandardOutput=journal` (systemd 默认),stderr 写 `/var/log/journal/` (4.0G),不是文件
+  - logrotate 管不到 journal (上次 commit 装的 logrotate 在 154 完全无效)
+  - 新增 `scripts/configure-journald.sh` + `deploy/journald-conf-snippet.conf`,drop-in 模式部署
+  - 新增 `/etc/systemd/journald.conf.d/llm-gateway-go.conf`: `SystemMaxUse=200M` + `MaxRetentionSec=14day`
+  - **实测结果**: journal 4.0G → 248M,主配置文件 md5 未变 (`61493a9d3062a5d0f9a2e7297ed9497d`),服务健康
+  - 改 `scripts/deploy-seamless.sh` [9.6/9] + `deploy-154.sh`: 加 `systemctl show` 检测分支
+    - `append:` → install-logrotate.sh (245 / 未来改 unit 的 154)
+    - `journal/inherit` → configure-journald.sh (154 现状)
+  - 部署前备案完整备份 (`/tmp/lg154-backup-20260804-094256/` 含 binary + journald.conf.orig + service.orig + drop-ins)
+  - 经验文档: [docs/changelogs/2026-08-04-stderr-journald-154.md](docs/changelogs/2026-08-04-stderr-journald-154.md)
+
 ## [Unreleased] - 2026-07-29
 
 ### Fixed
