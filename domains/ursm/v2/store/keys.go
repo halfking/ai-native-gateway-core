@@ -102,3 +102,31 @@ func RecoveryDebounceKey(prefix string) string {
 func NodeInvalidationChannel(prefix string) string {
 	return fmt.Sprintf("%smeta:node_invalidation", prefix)
 }
+
+// NodeInvalidationPayload is the wire format published on the
+// NodeInvalidationChannel. The first line is the tenant ID (may be empty
+// for legacy single-tenant deployments), the second the credential ID, and
+// the third the raw model name. Keeping the layout here in lockstep with
+// Manager.invalidateNode guarantees subscribers can decode without
+// speculative parsing.
+type NodeInvalidationPayload struct {
+	TenantID     string
+	CredentialID int
+	RawModel     string
+}
+
+func (p NodeInvalidationPayload) String() string {
+	return fmt.Sprintf("%s\n%d\n%s", p.TenantID, p.CredentialID, p.RawModel)
+}
+
+func ParseNodeInvalidation(payload string) (NodeInvalidationPayload, bool) {
+	parts := strings.SplitN(payload, "\n", 3)
+	if len(parts) != 3 {
+		return NodeInvalidationPayload{}, false
+	}
+	credentialID, err := strconv.Atoi(parts[1])
+	if err != nil || credentialID <= 0 || parts[2] == "" {
+		return NodeInvalidationPayload{}, false
+	}
+	return NodeInvalidationPayload{TenantID: parts[0], CredentialID: credentialID, RawModel: parts[2]}, true
+}
