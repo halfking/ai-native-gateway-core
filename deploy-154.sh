@@ -251,38 +251,84 @@ sshpass -e ssh -p "$SSH_PORT" -o StrictHostKeyChecking=no "$SSH_USER@$SSH_HOST" 
 
 ok "服务已重启"
 
-# ── 安装 logrotate 轮转配置 (stderr/stdout 100M/daily) ─────────
-# 必做：服务已 restart, 装 logrotate 即便失败也不影响 deploy 主体。
-# copytruncate 模式与 systemd append: 配套 (systemd 持有 fd 不释放, create 模式会丢日志)。
-phase "安装 logrotate 轮转配置"
+# ── 安装日志轮转配置 (按 systemd unit 模式自动分支) ─────────
+# 必做：服务已 restart, 装轮转即便失败也不影响 deploy 主体。
+#   - StandardOutput=append:/var/log/... → logrotate + copytruncate (245 / 改 unit 后 154)
+#   - StandardOutput=journal / StandardError=inherit → systemd-journald drop-in (154 现状)
+#   - 其它 → warn skip (无标准轮转路径)
+phase "配置 stderr/stdout 日志轮转 (按 unit 模式自动分支)"
 
 LG_REMOTE_DIR="/tmp/llm-gw-deploy-helpers"
-LG_REMOTE_CFG="$LG_REMOTE_DIR/llm-gateway-go.logrotate"
-LG_REMOTE_SCRIPT="$LG_REMOTE_DIR/install-logrotate.sh"
-LG_LOCAL_CFG="$(cd "$(dirname "$0")" && pwd)/deploy/logrotate-llm-gateway-go"
-LG_LOCAL_SCRIPT="$(cd "$(dirname "$0")" && pwd)/scripts/install-logrotate.sh"
+LG_STD_OUT="$(sshpass -e ssh -p "$SSH_PORT" -o StrictHostKeyChecking=no "$SSH_USER@$SSH_HOST" \
+  "systemctl show llm-gateway-go --property=StandardOutput --value" 2>/dev/null | tail -1)"
+LG_STD_ERR="$(sshpass -e ssh -p "$SSH_PORT" -o StrictHostKeyChecking=no "$SSH_USER@$SSH_HOST" \
+  "systemctl show llm-gateway-go --property=StandardError --value" 2>/dev/null | tail -1)"
+info "  unit mode: StandardOutput=${LG_STD_OUT:-<unset>} StandardError=${LG_STD_ERR:-<unset>}"
 
-if [[ -f "$LG_LOCAL_CFG" && -f "$LG_LOCAL_SCRIPT" ]]; then
-  info "上传 logrotate 配置和安装脚本到 154..."
-  sshpass -e ssh -p "$SSH_PORT" -o StrictHostKeyChecking=no "$SSH_USER@$SSH_HOST" \
-    "mkdir -p '$LG_REMOTE_DIR'" || warn "mkdir 远程目录失败, 继续尝试"
-  if sshpass -e ssh -p "$SSH_PORT" -o StrictHostKeyChecking=no "$SSH_USER@$SSH_HOST" \
-       "cat > '$LG_REMOTE_CFG'" < "$LG_LOCAL_CFG" \
-     && sshpass -e ssh -p "$SSH_PORT" -o StrictHostKeyChecking=no "$SSH_USER@$SSH_HOST" \
-       "cat > '$LG_REMOTE_SCRIPT' && chmod +x '$LG_REMOTE_SCRIPT'" < "$LG_LOCAL_SCRIPT"; then
-    info "在 154 上安装 logrotate..."
+# decide target rotate mode
+LG_TARGET=""
+case "${LG_STD_OUT}:${LG_STD_ERR}" in
+  append:*:*|*:append:*) LG_TARGET="logrotate" ;;
+  journal:*|*:journal|journal:*|*:inherit|*:*:inherit) LG_TARGET="journald" ;;
+  *) warn "  未识别的 unit 模式 (${LG_STD_OUT:-<unset>}:${LG_STD_ERR:-<unset>}), 跳过轮转配置" ;;
+esac
+
+if [[ "$LG_TARGET" == "logrotate" ]]; then
+  # ── logrotate 路径 (245 / 未来改 unit 走 append: 的服务器) ──
+  LG_REMOTE_CFG="$LG_REMOTE_DIR/llm-gateway-go.logrotate"
+  LG_REMOTE_SCRIPT="$LG_REMOTE_DIR/install-logrotate.sh"
+  LG_LOCAL_CFG="$(cd "$(dirname "$0")" && pwd)/deploy/logrotate-llm-gateway-go"
+  LG_LOCAL_SCRIPT="$(cd "$(dirname "$0")" && pwd)/scripts/install-logrotate.sh"
+  if [[ -f "$LG_LOCAL_CFG" && -f "$LG_LOCAL_SCRIPT" ]]; then
+    info "上传 logrotate 配置和安装脚本到 154..."
+    sshpass -e ssh -p "$SSH_PORT" -o StrictHostKeyChecking=no "$SSH_USER@$SSH_HOST" \
+      "mkdir -p '$LG_REMOTE_DIR'" || warn "mkdir 远程目录失败, 继续尝试"
     if sshpass -e ssh -p "$SSH_PORT" -o StrictHostKeyChecking=no "$SSH_USER@$SSH_HOST" \
-       "bash '$LG_REMOTE_SCRIPT' install '$LG_REMOTE_CFG'"; then
-      ok "logrotate 配置已就绪"
+         "cat > '$LG_REMOTE_CFG'" < "$LG_LOCAL_CFG" \
+       && sshpass -e ssh -p "$SSH_PORT" -o StrictHostKeyChecking=no "$SSH_USER@$SSH_HOST" \
+         "cat > '$LG_REMOTE_SCRIPT' && chmod +x '$LG_REMOTE_SCRIPT'" < "$LG_LOCAL_SCRIPT"; then
+      info "在 154 上安装 logrotate..."
+      if sshpass -e ssh -p "$SSH_PORT" -o StrictHostKeyChecking=no "$SSH_USER@$SSH_HOST" \
+         "bash '$LG_REMOTE_SCRIPT' install '$LG_REMOTE_CFG'"; then
+        ok "logrotate 配置已就绪"
+      else
+        warn "logrotate install 失败（不影响 deploy, 可手动: ssh $SSH_USER@$SSH_HOST 'bash $LG_REMOTE_SCRIPT install $LG_REMOTE_CFG'）"
+      fi
     else
-      warn "logrotate install 失败（不影响 deploy, 可手动: ssh $SSH_USER@$SSH_HOST 'bash $LG_REMOTE_SCRIPT install $LG_REMOTE_CFG'）"
+      warn "logrotate 文件传输失败（不影响 deploy）"
     fi
   else
-    warn "logrotate 文件传输失败（不影响 deploy）"
+    warn "logrotate 资源缺失: $LG_LOCAL_CFG 或 $LG_LOCAL_SCRIPT 不存在"
   fi
-else
-  warn "logrotate 资源缺失: $LG_LOCAL_CFG 或 $LG_LOCAL_SCRIPT 不存在"
+elif [[ "$LG_TARGET" == "journald" ]]; then
+  # ── systemd-journald 路径 (154 现状) ──
+  LG_REMOTE_CFG="$LG_REMOTE_DIR/journald-conf-snippet.conf"
+  LG_REMOTE_SCRIPT="$LG_REMOTE_DIR/configure-journald.sh"
+  LG_LOCAL_CFG="$(cd "$(dirname "$0")" && pwd)/deploy/journald-conf-snippet.conf"
+  LG_LOCAL_SCRIPT="$(cd "$(dirname "$0")" && pwd)/scripts/configure-journald.sh"
+  if [[ -f "$LG_LOCAL_CFG" && -f "$LG_LOCAL_SCRIPT" ]]; then
+    info "上传 journald snippet 和安装脚本到 154..."
+    sshpass -e ssh -p "$SSH_PORT" -o StrictHostKeyChecking=no "$SSH_USER@$SSH_HOST" \
+      "mkdir -p '$LG_REMOTE_DIR'" || warn "mkdir 远程目录失败, 继续尝试"
+    if sshpass -e ssh -p "$SSH_PORT" -o StrictHostKeyChecking=no "$SSH_USER@$SSH_HOST" \
+         "cat > '$LG_REMOTE_CFG'" < "$LG_LOCAL_CFG" \
+       && sshpass -e ssh -p "$SSH_PORT" -o StrictHostKeyChecking=no "$SSH_USER@$SSH_HOST" \
+         "cat > '$LG_REMOTE_SCRIPT' && chmod +x '$LG_REMOTE_SCRIPT'" < "$LG_LOCAL_SCRIPT"; then
+      info "在 154 上安装 journald drop-in..."
+      if sshpass -e ssh -p "$SSH_PORT" -o StrictHostKeyChecking=no "$SSH_USER@$SSH_HOST" \
+         "bash '$LG_REMOTE_SCRIPT' install '$LG_REMOTE_CFG'"; then
+        ok "journald drop-in 已就绪"
+      else
+        warn "configure-journald install 失败（不影响 deploy, 可手动: ssh $SSH_USER@$SSH_HOST 'bash $LG_REMOTE_SCRIPT install $LG_REMOTE_CFG'）"
+      fi
+    else
+      warn "journald 文件传输失败（不影响 deploy）"
+    fi
+  else
+    warn "journald 资源缺失: $LG_LOCAL_CFG 或 $LG_LOCAL_SCRIPT 不存在"
+  fi
 fi
+# else: 未识别 unit 模式, 已在前面 warn, 不动任何文件
 
 # ── 验证部署 ──────────────────────────────────────────────────
 phase "验证部署"
