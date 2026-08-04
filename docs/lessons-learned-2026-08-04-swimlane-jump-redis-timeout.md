@@ -265,3 +265,35 @@ if cached != nil && cached.Summary.Total >= degradedSnapshotMinBaseline &&
 | `llmgw:stats:*` | 7 | 10min-7day | ✅ |
 | `pending_response:gw_*` | 120 | ~2-5min | ✅ |
 | `llmgw:disguise:*` | 3 | `ttl=-1` 无过期 | ✅ **设计正确**（`disguise/pool.go:30-32`：UA 池/语言池/最后轮转时间是持久化系统元数据，不能过期）|
+---
+
+## 10. 后续行动：llmgw 切到 db=2 与共享 Redis 隔离（2026-08-04 落地）
+
+### 10.1 决策
+§7 P3 的"拆分 pms-redis 多实例"短期不可行（需要 PMS 团队协同+新资源），但可以**先在共享实例内做 db 隔离**——把 llmgw 切到 db=2，db=0 留给 PMS。这样：
+
+- 未来 `KEYS *` / `SCAN` 不再误扫到对方 keys
+- 共享 Redis 上的慢查询 SCAN 数量减半（llmgw 走索引，PMS 自己 SCAN）
+- 后续若要拆实例，llmgw 只需要把 `db=2` 改成一个独立实例的 `db=0`，无代码改动
+
+### 10.2 实施（commit `e94d7a55`）
+- `config/config.go`：`cfg.RedisDB` 默认值 0 → 2（env `LLM_GATEWAY_REDIS_DB` 仍可覆盖）
+- `domains/credential/rpm_redis.go`：rpm limiter 自动从 `LLM_GATEWAY_REDIS_DB` 拿 db，保证 rpm 与主网关 db 一致
+- 单测：`TestNewRPMLimiterFromEnvPicksGatewayDB` 验证 db=0/2/5 三种情况
+- `.env.example`：补 `LLM_GATEWAY_REDIS_ADDR/DB/PASSWORD` 文档
+
+### 10.3 部署
+- 245：`.env` 改 `LLM_GATEWAY_REDIS_DB=2`，seq=1436
+- 154：env 无 `LLM_GATEWAY_REDIS_DB`，走代码默认 db=2，seq=1437
+- 两个 release 都验证 healthz + DB + admin 密码同步通过
+
+### 10.4 验收（生产实测）
+- db=0 仅剩 PMS session（131422 keys），不再有 llmgw 新增
+- **db=2 收到 312 个 llmgw keys**（含 `llmgw:avail:*`、`llmgw:stats:*`、`llmgw:live:dim:index:global`、`llmgw:live:dim:index:tenant:default` 等）
+- 154 live stream 日志：`source=index`、`total_keys=6` 持续工作
+- rpm limiter 走 db=2（245 当前流量小未触发 key 产生，但单测覆盖了 db 传递逻辑）
+
+### 10.5 数据迁移策略
+- **不迁移** db=0 的 ~1800 个 llmgw 历史 key
+- 这些 key 全部有合理 TTL（4h-24h），最迟 24h 后自动过期清空
+- 过渡期内 db=0 仍有 llmgw "残影"，不影响功能
