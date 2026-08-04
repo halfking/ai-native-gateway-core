@@ -98,6 +98,36 @@ var _ ProtocolHandler = (*AnthropicExecutor)(nil)
 
 const anthropicVersion = "2023-06-01"
 
+// applyClientAnthropicHeaders forwards the client's anthropic-version and
+// anthropic-beta headers onto the upstream request (whitelist only — no
+// arbitrary client header leakage).
+//
+//   - anthropic-version: prefers the client value, falling back to whatever
+//     BuildRequest already set (the compiled anthropicVersion constant) when
+//     the client omitted it.
+//   - anthropic-beta: clients may send multiple comma-separated flags or
+//     repeat the header; non-empty values are joined into a single comma-
+//     separated string. Empty headers are skipped. If no non-empty beta
+//     values exist, no header is added.
+func applyClientAnthropicHeaders(dst, src http.Header) {
+	if dst == nil || src == nil {
+		return
+	}
+	if cv := strings.TrimSpace(src.Get("anthropic-version")); cv != "" {
+		dst.Set("anthropic-version", cv)
+	}
+	betaVals := src.Values("anthropic-beta")
+	var nonEmpty []string
+	for _, v := range betaVals {
+		if trimmed := strings.TrimSpace(v); trimmed != "" {
+			nonEmpty = append(nonEmpty, trimmed)
+		}
+	}
+	if len(nonEmpty) > 0 {
+		dst.Set("anthropic-beta", strings.Join(nonEmpty, ","))
+	}
+}
+
 func (a *AnthropicExecutor) BuildRequest(cand provider.Candidate, body []byte, isStream bool) (*http.Request, error) {
 	upstreamURL := upstreamurl.MessagesURL(cand.BaseURL)
 	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, upstreamURL, bytes.NewReader(body))
@@ -707,6 +737,17 @@ func (e *Executor) executeAnthropicOnce(
 	if err != nil {
 		return nil, err
 	}
+	// 2026-08-04: forward the client's anthropic-version and anthropic-beta
+	// headers instead of discarding them. Previously BuildRequest hardcoded
+	// anthropic-version to "2023-06-01" and dropped anthropic-beta entirely
+	// (IRExtensionExtractor captured both into ExtensionsBag.Headers, but
+	// IRExtensionRestorer explicitly skips Headers and BuildRequest never read
+	// them — a dead chain). Agent clients rely on beta features such as
+	// extended thinking, prompt caching and interleaved-thinking; losing the
+	// beta header caused the upstream to behave differently than a direct
+	// connection — early stop_reason, missing tool_use blocks — which the
+	// client experienced as a truncated/interrupted task.
+	applyClientAnthropicHeaders(req.Header, params.R.Header)
 	req.Header.Set("X-Request-Id", diagnosticRequestID(params))
 	// Track C C2 audit fix 3.1: propagate session headers (same
 	// rationale as executor_chat.go).

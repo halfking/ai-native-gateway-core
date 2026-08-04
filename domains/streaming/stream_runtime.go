@@ -29,7 +29,11 @@ func SetConfigStore(store *config.Store) {
 }
 
 func currentStreamRuntimeConfig() streamRuntimeConfig {
-	envKeepaliveEnabled := envBool("LLM_GATEWAY_ENABLE_PRE_STREAM_KEEPALIVE", false)
+	// 2026-08-04: default ON (was false). All-protocol pre-stream keepalive
+	// is the primary fix for "agent task interrupted through the gateway" —
+	// see handler.go startPreStreamKeepalive. Set the env to "false"/"0" to
+	// opt back out.
+	envKeepaliveEnabled := envBool("LLM_GATEWAY_ENABLE_PRE_STREAM_KEEPALIVE", true)
 	envEmptyGateEnabled := envBool("LLM_GATEWAY_ENABLE_EMPTY_STREAM_GATE", true)
 	if store := streamConfigStore.Load(); store != nil {
 		if cfg := store.Get(); cfg != nil {
@@ -37,10 +41,9 @@ func currentStreamRuntimeConfig() streamRuntimeConfig {
 				upstreamTimeout:    durationSecondsOrDefault(cfg.UpstreamTimeout, 120*time.Second),
 				streamTimeout:      durationSecondsOrDefault(cfg.StreamTimeout, 900*time.Second),
 				streamChunkTimeout: durationSecondsOrDefault(cfg.StreamChunkTimeout, 300*time.Second),
-				// 2026-07-23: 60→120s. NVIDIA/thinking models often take >60s
-				// before first byte; default raised to match ResponseHeaderTimeout.
-				// Override via LLM_GATEWAY_FIRST_BYTE_TIMEOUT or admin config.
-				firstByteTimeout:         durationSecondsOrDefault(cfg.FirstByteTimeout, 120*time.Second),
+				// 2026-08-04: 120→180s default. Reasoning models with large
+				// tool-call contexts often exceed 120s to first byte.
+				firstByteTimeout:         durationSecondsOrDefault(cfg.FirstByteTimeout, 180*time.Second),
 				keepaliveInterval:        durationSecondsOrDefault(cfg.KeepaliveInterval, 15*time.Second),
 				enablePreStreamKeepalive: cfg.EnablePreStreamKeepalive || envKeepaliveEnabled,
 				enableEmptyStreamGate:    cfg.EnableEmptyStreamGate && envEmptyGateEnabled,
@@ -51,8 +54,8 @@ func currentStreamRuntimeConfig() streamRuntimeConfig {
 		upstreamTimeout:    envDurationSeconds("LLM_GATEWAY_UPSTREAM_TIMEOUT", 120*time.Second),
 		streamTimeout:      envDurationSeconds("LLM_GATEWAY_STREAM_TIMEOUT", 900*time.Second),
 		streamChunkTimeout: envDurationSeconds("LLM_GATEWAY_STREAM_CHUNK_TIMEOUT", 300*time.Second),
-		// 2026-07-23: 60→120s default for thinking/long-running models.
-		firstByteTimeout:         envDurationSeconds("LLM_GATEWAY_FIRST_BYTE_TIMEOUT", 120*time.Second),
+		// 2026-08-04: 120→180s default for thinking/long-running models.
+		firstByteTimeout:         envDurationSeconds("LLM_GATEWAY_FIRST_BYTE_TIMEOUT", 180*time.Second),
 		keepaliveInterval:        envDurationSeconds("LLM_GATEWAY_KEEPALIVE_INTERVAL", 15*time.Second),
 		enablePreStreamKeepalive: envKeepaliveEnabled,
 		enableEmptyStreamGate:    envEmptyGateEnabled,

@@ -1618,9 +1618,22 @@ func hasSessionID(params *ExecParams) bool {
 // the "upstream does not cancel on client disconnect" building
 // block. The timeout is still respected, so a stuck vendor is
 // bounded regardless of client state.
+//
+// 2026-08-04: streaming requests no longer carry a wall-clock deadline.
+// Previously every stream was capped at StreamTimeout (900s), which silently
+// killed long-running agent tasks (multi-step reasoning + tool calls) whose
+// total streaming time exceeded 15 minutes even though data was flowing
+// normally. A stuck vendor is still bounded — independently of this context —
+// by two layers: ResponseHeaderTimeout (120s, awaits the first byte) on the
+// http.Transport, and streamChunkTimeout (300s+) on every read in the bridge
+// loop. Both fire on *inactivity*, which is the correct failure signal; a
+// pure wall-clock cap fires on age and causes false interruptions. We still
+// derive from WithoutCancel so a client disconnect never aborts an in-flight
+// vendor call (session/cache completion).
 func (e *Executor) upstreamContext(params *ExecParams, timeout time.Duration) (context.Context, context.CancelFunc) {
 	if hasSessionID(params) || params.IsStream {
-		return context.WithTimeout(context.WithoutCancel(params.R.Context()), timeout)
+		ctx, cancel := context.WithCancel(context.WithoutCancel(params.R.Context()))
+		return ctx, cancel
 	}
 	return context.WithTimeout(params.R.Context(), timeout)
 }
