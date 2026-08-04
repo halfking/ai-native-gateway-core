@@ -78,6 +78,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - 部署前备案完整备份 (`/tmp/lg154-backup-20260804-094256/` 含 binary + journald.conf.orig + service.orig + drop-ins)
   - 经验文档: [docs/changelogs/2026-08-04-stderr-journald-154.md](docs/changelogs/2026-08-04-stderr-journald-154.md)
 
+- **154 journald drop-in 独立回滚脚本 (2026-08-04)**:
+  - 新增 `scripts/rollback-journald-154.sh` (rule 03 §7.0 强制要求)
+  - 流程: 定位最新 backup → 二次确认 → 备份 running → rm drop-in → 还原 journald.conf → restart systemd-journald → L1-L4 验证
+  - 154 实操: rollback → drop-in 消失 + journald.conf md5 还原 (`61493a9d...`) + systemd-journald/llm-gateway-go 仍 active + L4 healthz 200
+  - rollback 后重新 install: drop-in 恢复 + 业务 200 验证
+  - 二次失败场景: 输出明确 "已半回滚, 请人工介入" + 提示 running 备份位置
+
 ## [Unreleased] - 2026-07-29
 
 ### Fixed
