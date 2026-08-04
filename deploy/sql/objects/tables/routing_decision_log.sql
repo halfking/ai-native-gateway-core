@@ -39,5 +39,15 @@ CREATE TABLE public.routing_decision_log (
     canonical_model text,
     resolution_raw_models jsonb,
     decision_trace jsonb
-);
+)
+PARTITION BY RANGE (ts);
 
+
+--
+-- Name: TABLE routing_decision_log; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON TABLE public.routing_decision_log IS 'Routing decision logs - partitioned by month (RANGE on ts). Current month uses heap storage. Historical months are archived to routing_decision_log_archive (columnar) via archive_routing_decision_log() function. Call this monthly on day 1.';
+
+
+SET default_table_access_method = columnar;

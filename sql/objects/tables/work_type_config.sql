@@ -19,3 +19,10 @@ CREATE TABLE public.work_type_config (
     CONSTRAINT work_type_config_default_profile_check CHECK ((default_profile = ANY (ARRAY['smart'::text, 'speed_first'::text, 'cost_first'::text])))
 );
 
+
+--
+-- Name: TABLE work_type_config; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON TABLE public.work_type_config IS 'Work type definitions (P1 seed; Phase 3 sync from ACC)';
+

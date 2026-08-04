@@ -11,5 +11,3 @@ BEGIN
 END;
 $$;
 
-
-SET default_table_access_method = heap;

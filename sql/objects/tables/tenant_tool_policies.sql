@@ -17,3 +17,10 @@ CREATE TABLE public.tenant_tool_policies (
 
 ALTER TABLE ONLY public.tenant_tool_policies FORCE ROW LEVEL SECURITY;
 
+
+--
+-- Name: TABLE tenant_tool_policies; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON TABLE public.tenant_tool_policies IS 'Tenant-level tool access policies (Phase 3.4: 权限控制)';
+

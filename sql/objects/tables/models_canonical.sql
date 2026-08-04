@@ -21,7 +21,17 @@ CREATE TABLE public.models_canonical (
     updated_at timestamp with time zone DEFAULT now() NOT NULL,
     input_price_cny numeric(10,4) DEFAULT 0,
     output_price_cny numeric(10,4) DEFAULT 0,
-    CONSTRAINT models_canonical_modality_check CHECK ((modality = ANY (ARRAY['text'::text, 'vision'::text, 'audio'::text, 'multimodal'::text, 'embedding'::text]))),
+    released_at date,
+    strengths text[] DEFAULT '{}'::text[] NOT NULL,
+    cost_tier text DEFAULT 'unknown'::text NOT NULL,
+    multimodal_caps text[] DEFAULT '{}'::text[] NOT NULL,
+    version_rank integer,
+    complexity_ceiling text,
+    min_complexity text,
+    CONSTRAINT models_canonical_complexity_ceiling_check CHECK (((complexity_ceiling IS NULL) OR (complexity_ceiling = ANY (ARRAY['easy'::text, 'medium'::text, 'hard'::text, 'frontier'::text])))),
+    CONSTRAINT models_canonical_cost_tier_check CHECK ((cost_tier = ANY (ARRAY['free'::text, 'low'::text, 'medium'::text, 'high'::text, 'premium'::text, 'unknown'::text]))),
+    CONSTRAINT models_canonical_min_complexity_check CHECK (((min_complexity IS NULL) OR (min_complexity = ANY (ARRAY['easy'::text, 'medium'::text, 'hard'::text, 'frontier'::text])))),
+    CONSTRAINT models_canonical_modality_check CHECK ((modality = ANY (ARRAY['text'::text, 'vision'::text, 'audio'::text, 'video'::text, 'multimodal'::text, 'embedding'::text]))),
     CONSTRAINT models_canonical_status_check CHECK ((status = ANY (ARRAY['active'::text, 'disabled'::text, 'deprecated'::text, 'hidden'::text])))
 );
 

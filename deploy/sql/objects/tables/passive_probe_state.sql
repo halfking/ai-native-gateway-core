@@ -18,3 +18,10 @@ CREATE TABLE public.passive_probe_state (
     last_response_body_preview text
 );
 
+
+--
+-- Name: TABLE passive_probe_state; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON TABLE public.passive_probe_state IS 'v5: Passive observation state for Layer 5. Accumulates consecutive errors from request_logs for the secondary-verification trigger (consecutive>=3 or error_rate>=0.6).';
+

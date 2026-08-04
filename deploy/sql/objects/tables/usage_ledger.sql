@@ -3,30 +3,25 @@
 --
 
 CREATE TABLE public.usage_ledger (
-    id bigint NOT NULL,
     request_id text NOT NULL,
-    ts timestamp with time zone DEFAULT now() NOT NULL,
-    tenant_id text DEFAULT 'default'::text NOT NULL,
-    application_id bigint,
-    api_key_id bigint,
+    ts timestamp with time zone NOT NULL,
+    tenant_id text NOT NULL,
+    application_id integer,
+    api_key_id integer,
     end_user_id text,
-    department text,
-    employee text,
-    "position" text,
-    credential_id bigint,
-    provider_id bigint,
-    canonical_id bigint,
+    credential_id integer,
+    provider_id integer,
+    canonical_id integer,
     raw_model_name text,
     prompt_tokens integer,
     completion_tokens integer,
-    total_tokens integer,
-    cost_usd numeric(14,8),
-    latency_ms integer,
-    success boolean,
-    error_kind text,
-    route_reason text,
     cache_read_tokens integer,
     cache_write_tokens integer,
-    cost_currency text
-);
+    total_tokens integer,
+    cost_usd numeric(12,6),
+    latency_ms integer,
+    success boolean,
+    error_kind text
+)
+PARTITION BY RANGE (ts);
 

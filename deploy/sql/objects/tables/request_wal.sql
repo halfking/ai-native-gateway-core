@@ -23,3 +23,10 @@ CREATE TABLE public.request_wal (
 )
 PARTITION BY RANGE (created_at);
 
+
+--
+-- Name: TABLE request_wal; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON TABLE public.request_wal IS 'Request WAL: synchronous initial log + async batch updates for request lifecycle';
+

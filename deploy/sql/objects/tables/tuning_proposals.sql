@@ -19,3 +19,10 @@ CREATE TABLE public.tuning_proposals (
     CONSTRAINT tuning_proposals_status_check CHECK ((status = ANY (ARRAY['pending'::text, 'approved'::text, 'rejected'::text, 'applied'::text, 'expired'::text])))
 );
 
+
+--
+-- Name: TABLE tuning_proposals; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON TABLE public.tuning_proposals IS 'Auto-generated tuning proposals from feedback analysis. Require admin approval before applying to hot path.';
+

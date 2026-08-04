@@ -20,12 +20,15 @@ CREATE TABLE public.credential_model_index (
     score_speed_first numeric(8,4),
     score_cost_first numeric(8,4),
     updated_at timestamp with time zone DEFAULT now()
-);
+)
+PARTITION BY RANGE (bucket);
 
 
 --
 -- Name: TABLE credential_model_index; Type: COMMENT; Schema: public; Owner: -
 --
 
-COMMENT ON TABLE public.credential_model_index IS 'Auto route: per-credential 5min rolled-up live score with 3 profile precomputed';
+COMMENT ON TABLE public.credential_model_index IS '5-min rollup of per-credential health metrics. Monthly partitions (heap). Data older than 7 days is archived to credential_model_index_archive (columnar) by archive_credential_model_index() — see migration 317.';
 
+
+SET default_table_access_method = columnar;

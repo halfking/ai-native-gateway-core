@@ -20,14 +20,19 @@ BEGIN
     ELSIF recent_count >= 2 THEN
         new_retry := p_now + INTERVAL '1 minute';
     ELSE
+        -- No boost; leave existing schedule alone.
         RETURN;
     END IF;
 
+    -- 2026-07-14 audit fix: skip healthy_confirmed bindings.
+    -- LEAST() in SQL returns the earlier timestamp, so without this guard
+    -- a healthy 2h-watchdog next_retry_at would be clobbered to now+30s
+    -- and trigger an immediate probe.
     UPDATE model_probe_state mps
     SET next_retry_at = LEAST(COALESCE(mps.next_retry_at, new_retry), new_retry)
     WHERE mps.credential_id = p_credential_id
       AND mps.raw_model_name = p_raw_model_name
-      AND COALESCE(mps.state, 'unknown') <> 'broken_confirmed';
+      AND COALESCE(mps.state, 'unknown') NOT IN ('broken_confirmed', 'healthy_confirmed');
 END;
 $$;
 

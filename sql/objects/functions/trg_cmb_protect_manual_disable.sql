@@ -26,7 +26,4 @@ BEGIN
     RETURN NEW;
 END;
 $$;
-CREATE TRIGGER cmb_protect_manual_disable BEFORE UPDATE ON public.credential_model_bindings FOR EACH ROW EXECUTE FUNCTION public.trg_cmb_protect_manual_disable();
-
-ALTER TABLE public.credential_model_bindings DISABLE TRIGGER cmb_protect_manual_disable;
 

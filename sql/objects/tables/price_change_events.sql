@@ -3,12 +3,14 @@
 --
 
 CREATE TABLE public.price_change_events (
-    id bigint NOT NULL,
+    id bigint,
     old_plan_id bigint,
-    new_plan_id bigint NOT NULL,
+    new_plan_id bigint,
     delta_json jsonb,
-    detected_at timestamp with time zone DEFAULT now() NOT NULL,
+    detected_at timestamp with time zone,
     notify_channel text,
-    applied boolean DEFAULT false NOT NULL
+    applied boolean
 );
 
+
+SET default_table_access_method = heap;
