@@ -3,10 +3,12 @@
 --
 
 CREATE TABLE public.provider_events (
-    id bigint NOT NULL,
-    credential_id bigint NOT NULL,
-    event_kind text NOT NULL,
+    id bigint,
+    credential_id bigint,
+    event_kind text,
     payload_json jsonb,
-    ts timestamp with time zone DEFAULT now() NOT NULL
+    ts timestamp with time zone
 );
 
+
+SET default_table_access_method = heap;

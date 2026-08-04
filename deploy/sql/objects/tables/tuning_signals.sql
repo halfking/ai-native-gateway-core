@@ -27,3 +27,10 @@ CREATE TABLE public.tuning_signals (
     CONSTRAINT tuning_signals_strategy_check CHECK ((strategy = ANY (ARRAY['baseline_heuristic'::text, 'pattern_layered'::text, 'llm_fallback'::text])))
 );
 
+
+--
+-- Name: TABLE tuning_signals; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON TABLE public.tuning_signals IS 'Implicit feedback signals for auto-route tuning. Written async per-request, analyzed daily by feedback_analyzer.';
+

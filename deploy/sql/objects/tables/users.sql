@@ -13,6 +13,7 @@ CREATE TABLE public.users (
     enabled boolean DEFAULT true NOT NULL,
     last_login_at timestamp with time zone,
     created_at timestamp with time zone DEFAULT now() NOT NULL,
-    updated_at timestamp with time zone DEFAULT now() NOT NULL
+    updated_at timestamp with time zone DEFAULT now() NOT NULL,
+    must_change_password boolean DEFAULT false NOT NULL
 );
 

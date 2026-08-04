@@ -9,3 +9,10 @@ CREATE TABLE public.request_wal_bodies (
     created_at timestamp with time zone DEFAULT now() NOT NULL
 );
 
+
+--
+-- Name: TABLE request_wal_bodies; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON TABLE public.request_wal_bodies IS 'Large outbound bodies separated for performance';
+

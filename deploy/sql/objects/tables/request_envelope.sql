@@ -17,3 +17,5 @@ CREATE TABLE public.request_envelope (
     expires_at timestamp with time zone NOT NULL
 );
 
+
+SET default_table_access_method = columnar;

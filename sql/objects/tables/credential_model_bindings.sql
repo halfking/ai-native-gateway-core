@@ -28,7 +28,11 @@ CREATE TABLE public.credential_model_bindings (
     unavailable_at timestamp with time zone,
     plan_meta jsonb DEFAULT '{}'::jsonb NOT NULL,
     admin_protected boolean DEFAULT false NOT NULL,
-    unavailable_recover_at timestamp with time zone
+    unavailable_recover_at timestamp with time zone,
+    transient_failure_count integer DEFAULT 0,
+    pending_verification boolean DEFAULT false,
+    plan_type_origin text,
+    plan_type_updated_at timestamp with time zone
 );
 
 

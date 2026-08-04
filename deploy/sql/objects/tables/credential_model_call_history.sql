@@ -23,3 +23,10 @@ CREATE TABLE public.credential_model_call_history (
     created_at timestamp with time zone DEFAULT now()
 );
 
+
+--
+-- Name: TABLE credential_model_call_history; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON TABLE public.credential_model_call_history IS 'Aggregated call history per (credential, model) in 1-minute windows. Used for intelligent availability tracking, continuous failure detection, and concurrency auto-tuning.';
+

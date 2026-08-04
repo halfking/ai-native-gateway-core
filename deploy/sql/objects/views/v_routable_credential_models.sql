@@ -1,9 +1,6 @@
 --
 -- Name: v_routable_credential_models; Type: VIEW; Schema: public; Owner: -
 --
--- 2026-07-09 audit: 更新以匹配 migration 332 的最新定义
--- 2026-07-26 audit fix: 确认 P1 审计项全部关闭（见 AUDIT-2026-07-26.md）
--- 新增 billing_mode/plan_type/plan_type_origin 列 + plan_type 兼容性检查
 
 CREATE VIEW public.v_routable_credential_models AS
  SELECT cmb.id AS binding_id,
@@ -17,39 +14,39 @@ CREATE VIEW public.v_routable_credential_models AS
     cmb.billing_mode,
     c.plan_type,
     cmb.plan_type_origin,
-        CASE
-            WHEN (NOT p.enabled) THEN false
-            WHEN COALESCE(p.manual_disabled, false) THEN false
-            WHEN COALESCE(c.manual_disabled, false) THEN false
-            WHEN (NOT pm.available) THEN false
-            WHEN (c.status NOT IN ('active'::text, 'cooling'::text, 'degraded'::text)) THEN false
-            WHEN (c.lifecycle_status <> 'active'::text) THEN false
-            WHEN (cmb.available IS NOT true) THEN false
-            WHEN (c.quota_state = 'periodic_exhausted'::text) THEN false
-            WHEN (((c.quota_state = 'exhausted'::text) AND (c.quota_recover_at IS NULL)) OR (c.quota_recover_at > now())) THEN false
-            WHEN (((c.availability_state = 'unavailable'::text) AND (c.availability_recover_at IS NULL)) OR (c.availability_recover_at > now())) THEN false
-            WHEN ((c.plan_type = ANY (ARRAY['token_plan'::text, 'code_plan'::text, 'agent_plan'::text])) AND (cmb.billing_mode <> ALL (ARRAY['token_plan'::text, 'code_plan'::text, 'agent_plan'::text]))) THEN false
-            WHEN ((cmb.billing_mode = ANY (ARRAY['token_plan'::text, 'code_plan'::text, 'agent_plan'::text])) AND (c.plan_type <> ALL (ARRAY['token_plan'::text, 'code_plan'::text, 'agent_plan'::text]))) THEN false
-            ELSE true
-        END AS is_routable,
+    (p.enabled AND (COALESCE(p.manual_disabled, false) = false) AND (c.status = 'active'::text) AND (c.lifecycle_status = 'active'::text) AND (COALESCE(c.manual_disabled, false) = false) AND (c.availability_state = 'ready'::text) AND (c.quota_state <> ALL (ARRAY['permanently_exhausted'::text, 'balance_exhausted'::text, 'periodic_exhausted'::text])) AND (pm.available = true) AND (cmb.available = true) AND (cmb.unavailable_reason IS DISTINCT FROM 'manual'::text) AND (COALESCE(c.health_status, 'unknown'::text) = ANY (ARRAY['healthy'::text, 'unknown'::text])) AND (NOT (EXISTS ( SELECT 1
+           FROM public.node_probe_state nps
+          WHERE ((nps.credential_id = cmb.credential_id) AND (nps.raw_model_name = pm.raw_model_name) AND (nps.last_direct_ok = false) AND (nps.next_retry_at > now())))))) AS is_routable,
         CASE
             WHEN (NOT p.enabled) THEN 'provider_disabled'::text
             WHEN COALESCE(p.manual_disabled, false) THEN 'provider_manual_disabled'::text
-            WHEN COALESCE(c.manual_disabled, false) THEN 'credential_manual_disabled'::text
-            WHEN (NOT pm.available) THEN 'model_unavailable'::text
-            WHEN (c.status NOT IN ('active'::text, 'cooling'::text, 'degraded'::text)) THEN ('credential_status_'::text || c.status)
+            WHEN (c.status <> 'active'::text) THEN ('credential_status_'::text || c.status)
             WHEN (c.lifecycle_status <> 'active'::text) THEN ('lifecycle_'::text || c.lifecycle_status)
-            WHEN (cmb.available IS NOT true) THEN 'binding_unavailable'::text
-            WHEN (c.quota_state = 'periodic_exhausted'::text) THEN 'quota_periodic_exhausted'::text
-            WHEN (c.quota_state = 'exhausted'::text) THEN 'quota_exhausted'::text
-            WHEN (c.availability_state = 'unavailable'::text) THEN 'availability_unavailable'::text
-            WHEN ((c.plan_type = ANY (ARRAY['token_plan'::text, 'code_plan'::text, 'agent_plan'::text])) AND (cmb.billing_mode <> ALL (ARRAY['token_plan'::text, 'code_plan'::text, 'agent_plan'::text]))) THEN ('plan_incompatible_cmb_requires_'::text || COALESCE(cmb.billing_mode, 'per_token'::text))
-            WHEN ((cmb.billing_mode = ANY (ARRAY['token_plan'::text, 'code_plan'::text, 'agent_plan'::text])) AND (c.plan_type <> ALL (ARRAY['token_plan'::text, 'code_plan'::text, 'agent_plan'::text]))) THEN ('plan_incompatible_credential_not_'::text || cmb.billing_mode)
+            WHEN COALESCE(c.manual_disabled, false) THEN 'credential_manual_disabled'::text
+            WHEN (c.availability_state = 'cooling'::text) THEN 'availability_cooling'::text
+            WHEN (c.availability_state = 'rate_limited'::text) THEN 'availability_rate_limited'::text
+            WHEN (c.availability_state = 'auth_failed'::text) THEN 'availability_auth_failed'::text
+            WHEN (c.availability_state = 'unreachable'::text) THEN 'availability_unreachable'::text
+            WHEN (c.availability_state = 'suspended'::text) THEN 'availability_suspended'::text
+            WHEN (c.quota_state = ANY (ARRAY['permanently_exhausted'::text, 'balance_exhausted'::text, 'periodic_exhausted'::text])) THEN ('quota_'::text || c.quota_state)
+            WHEN ((c.health_status = 'unreachable'::text) AND (c.health_checked_at > (now() - '01:00:00'::interval))) THEN 'recent_probe_unreachable'::text
+            WHEN (NOT pm.available) THEN 'model_unavailable'::text
+            WHEN (cmb.unavailable_reason = 'manual'::text) THEN 'model_manual_disabled'::text
+            WHEN (NOT cmb.available) THEN 'binding_unavailable'::text
+            WHEN (EXISTS ( SELECT 1
+               FROM public.node_probe_state nps
+              WHERE ((nps.credential_id = cmb.credential_id) AND (nps.raw_model_name = pm.raw_model_name) AND (nps.last_direct_ok = false) AND (nps.next_retry_at > now())))) THEN 'node_probe_failed'::text
             ELSE NULL::text
-        END AS unavailable_reason,
-    (((((cmb.manual_priority * 100))::numeric + (COALESCE(cmb.success_rate, 0.5) * (50)::numeric)) - (COALESCE(cmb.unit_price_in_per_1m, (0)::numeric) * 0.001)) - ((COALESCE(cmb.p95_latency_ms, 1000))::numeric * 0.01)) AS routing_score
+        END AS unavailable_reason
    FROM (((public.credential_model_bindings cmb
      JOIN public.credentials c ON ((c.id = cmb.credential_id)))
      JOIN public.providers p ON ((p.id = c.provider_id)))
      JOIN public.provider_models pm ON ((pm.id = cmb.provider_model_id)));
+
+
+--
+-- Name: VIEW v_routable_credential_models; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON VIEW public.v_routable_credential_models IS 'Routable credential-model bindings with quota/availability state gates. Sync with sql/objects/views/v_routable_credential_models.sql. Updated by migration 460 (2026-07-27) to add periodic_exhausted to quota_state check.';
 

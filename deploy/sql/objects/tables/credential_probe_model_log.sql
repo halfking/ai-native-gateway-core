@@ -12,5 +12,6 @@ CREATE TABLE public.credential_probe_model_log (
     actor text,
     reason text,
     created_at timestamp with time zone DEFAULT now() NOT NULL
-);
+)
+WITH (autovacuum_enabled='true', autovacuum_vacuum_scale_factor='0.05', autovacuum_vacuum_threshold='10', autovacuum_analyze_scale_factor='0.02', autovacuum_analyze_threshold='50');
 

@@ -15,6 +15,7 @@ CREATE TABLE public.applications (
     updated_at timestamp with time zone DEFAULT now() NOT NULL,
     default_client_profile text,
     allowed_models_json jsonb,
+    customer_id bigint,
     CONSTRAINT applications_data_sensitivity_check CHECK ((data_sensitivity = ANY (ARRAY['public'::text, 'internal'::text, 'confidential'::text])))
 );
 

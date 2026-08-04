@@ -15,7 +15,10 @@ CREATE TABLE public.provider_models (
     unavailable_at timestamp with time zone,
     last_seen_at timestamp with time zone DEFAULT now() NOT NULL,
     created_at timestamp with time zone DEFAULT now() NOT NULL,
-    updated_at timestamp with time zone DEFAULT now() NOT NULL
+    updated_at timestamp with time zone DEFAULT now() NOT NULL,
+    canonical_raw_name text NOT NULL,
+    modality text DEFAULT 'text'::text NOT NULL,
+    CONSTRAINT provider_models_modality_check CHECK ((modality = ANY (ARRAY['text'::text, 'vision'::text, 'audio'::text, 'video'::text, 'multimodal'::text, 'embedding'::text])))
 );
 
 

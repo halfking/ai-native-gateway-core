@@ -3,12 +3,19 @@
 --
 
 CREATE VIEW public.v_recent_model_probe_failures AS
- SELECT model_probe_runs.raw_model_name,
-    model_probe_runs.credential_id,
+ SELECT raw_model_name,
+    credential_id,
     count(*) AS failed_count,
-    max(model_probe_runs.created_at) AS last_failed_at,
-    min(model_probe_runs.error_code) AS sample_error_code
+    max(created_at) AS last_failed_at,
+    min(error_code) AS sample_error_code
    FROM public.model_probe_runs
-  WHERE ((model_probe_runs.status <> 'ok'::text) AND (model_probe_runs.status <> 'skipped'::text) AND (model_probe_runs.created_at > (now() - '06:00:00'::interval)))
-  GROUP BY model_probe_runs.raw_model_name, model_probe_runs.credential_id;
+  WHERE ((status <> 'ok'::text) AND (status <> 'skipped'::text) AND (created_at > (now() - '06:00:00'::interval)))
+  GROUP BY raw_model_name, credential_id;
+
+
+--
+-- Name: VIEW v_recent_model_probe_failures; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON VIEW public.v_recent_model_probe_failures IS 'Last 6h failed probe count, grouped by (model, credential). Used by model discovery UI badge.';
 

@@ -13,3 +13,10 @@ CREATE TABLE public.provider_settings (
     updated_at timestamp with time zone DEFAULT now() NOT NULL
 );
 
+
+--
+-- Name: TABLE provider_settings; Type: COMMENT; Schema: public; Owner: -
+--
+
+COMMENT ON TABLE public.provider_settings IS 'Provider级别的配置覆盖，优先级高于平台默认配置';
+
