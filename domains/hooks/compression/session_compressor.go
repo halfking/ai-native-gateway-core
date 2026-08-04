@@ -291,7 +291,7 @@ func (sc *SessionCompressor) Prepare(
 		} else {
 			// ── LOSSLESS_FIRST: try LLM summary ──────────────────────────
 			taskType := extractTaskType(ctx)
-			summarised, ok := sc.tryLLMSummary(ctx, outboundBody, protocol, taskType)
+			summarised, ok := sc.tryLLMSummary(ctx, outboundBody, tenantID, protocol, taskType)
 			if ok && len(summarised) > 0 && len(summarised) < len(outboundBody) {
 				// LLM summary succeeded — inject summary_marker.
 				marker, markedBody := injectSummaryMarker(summarised, protocol)
@@ -385,7 +385,7 @@ func (sc *SessionCompressor) resolveCompressionMode() Mode {
 	return LoadMode()
 }
 
-func (sc *SessionCompressor) tryLLMSummary(ctx context.Context, body []byte, protocol, taskType string) ([]byte, bool) {
+func (sc *SessionCompressor) tryLLMSummary(ctx context.Context, body []byte, tenantID, protocol, taskType string) ([]byte, bool) {
 	if sc.deps.CompactionDeps == nil {
 		return nil, false
 	}
@@ -397,7 +397,7 @@ func (sc *SessionCompressor) tryLLMSummary(ctx context.Context, body []byte, pro
 	conversation = trimTextToTokenBudget(conversation, 900_000)
 
 	dim := summarymodel.DimensionForTaskType(taskType)
-	summarizer := summarymodel.NewSummarizer(newSummaryClientAdapter(sc.deps.CompactionDeps, ""))
+	summarizer := summarymodel.NewSummarizer(newSummaryClientAdapter(sc.deps.CompactionDeps, "", tenantID))
 	summaryText, sumErr := summarizer.Summarize(ctx, dim, conversation)
 	if sumErr == nil && strings.TrimSpace(summaryText) != "" {
 		if rebuilt, ok := rebuildBodyAfterSummary(body, strings.TrimSpace(summaryText), protocol); ok {

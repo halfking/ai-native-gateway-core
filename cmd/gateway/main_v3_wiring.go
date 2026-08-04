@@ -354,11 +354,16 @@ func (p providerClientAdapter) ModelKnown(ctx context.Context, model string) boo
 }
 
 func (p providerClientAdapter) GetCandidates(ctx context.Context, model, profile string) ([]compression.ProviderCandidate, error) {
+	return p.GetCandidatesForTenant(ctx, model, profile, "")
+}
+
+// GetCandidatesForTenant preserves tenant-specific routing policy for callers
+// that can propagate the request tenant through the compression dependency.
+func (p providerClientAdapter) GetCandidatesForTenant(ctx context.Context, model, profile, tenantID string) ([]compression.ProviderCandidate, error) {
 	if p.r == nil {
 		return nil, fmt.Errorf("provider resolver nil")
 	}
-	// 2026-07-03: Bug #7 fix - pass empty tenantID for backward compatibility
-	raw, _, err := p.r.GetCandidates(ctx, model, profile, "")
+	raw, _, err := p.r.GetCandidates(ctx, model, profile, tenantID)
 	if err != nil {
 		return nil, err
 	}

@@ -13,12 +13,13 @@ import (
 )
 
 type summaryClientAdapter struct {
-	deps    *Dependencies
-	profile string
+	deps     *Dependencies
+	profile  string
+	tenantID string
 }
 
-func newSummaryClientAdapter(deps *Dependencies, profile string) summarymodel.LLMClient {
-	return &summaryClientAdapter{deps: deps, profile: profile}
+func newSummaryClientAdapter(deps *Dependencies, profile, tenantID string) summarymodel.LLMClient {
+	return &summaryClientAdapter{deps: deps, profile: profile, tenantID: tenantID}
 }
 
 func (a *summaryClientAdapter) Complete(ctx context.Context, prompt string, opts ...summarymodel.CompletionOption) (string, error) {
@@ -34,13 +35,16 @@ func (a *summaryClientAdapter) Complete(ctx context.Context, prompt string, opts
 		return "", errors.New("summary model empty")
 	}
 
-	candidates, err := a.deps.Provider.GetCandidates(ctx, cfg.Model, a.profile)
+	candidates, err := getSummaryCandidates(ctx, a.deps.Provider, cfg.Model, a.profile, a.tenantID)
 	if err != nil {
 		return "", err
 	}
 	for i := range candidates {
 		cand := candidates[i]
-		if !cand.Available || cand.ContextWindow == nil || *cand.ContextWindow < defaultCompactionMinWindow {
+		if !cand.Available {
+			continue
+		}
+		if cand.ContextWindow != nil && *cand.ContextWindow < defaultCompactionMinWindow {
 			continue
 		}
 		out, callErr := completeSummaryCandidate(ctx, &cand, prompt, cfg)
@@ -54,6 +58,15 @@ func (a *summaryClientAdapter) Complete(ctx context.Context, prompt string, opts
 		}
 	}
 	return "", fmt.Errorf("summary: all candidates failed for model %s", cfg.Model)
+}
+
+func getSummaryCandidates(ctx context.Context, provider ProviderClient, model, profile, tenantID string) ([]ProviderCandidate, error) {
+	if tenantAware, ok := provider.(interface {
+		GetCandidatesForTenant(context.Context, string, string, string) ([]ProviderCandidate, error)
+	}); ok {
+		return tenantAware.GetCandidatesForTenant(ctx, model, profile, tenantID)
+	}
+	return provider.GetCandidates(ctx, model, profile)
 }
 
 func completeSummaryCandidate(ctx context.Context, cand *ProviderCandidate, prompt string, cfg summarymodel.CompletionConfig) (string, error) {
