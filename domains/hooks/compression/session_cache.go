@@ -202,6 +202,16 @@ func NewSessionCache(redis SessionCacheBackend, db SessionCacheDB) *SessionCache
 	}
 }
 
+// SetTurnReader wires the Sessions V2 body reader used by the L3 cold-start
+// path. It is optional: when V2 tables are unavailable, loadFromDB falls back
+// to the legacy request_logs reader.
+func (c *SessionCache) SetTurnReader(reader *v2.TurnReader) {
+	if c == nil {
+		return
+	}
+	c.turnReader = reader
+}
+
 func l1Key(tenantID, gwSessionID string) string {
 	return tenantID + ":" + gwSessionID
 }
@@ -239,19 +249,46 @@ func (c *SessionCache) GetOrLoad(ctx context.Context, tenantID, gwSessionID stri
 	}
 	c.mu.Unlock()
 
-	// L2: Redis.
+	// L2: Redis. Redis intentionally stores metadata only, so a metadata hit
+	// must rehydrate the last outbound body from L3 before returning. Without
+	// this step an L1 eviction/process switch would look like a brand-new
+	// session and undo the previously compressed history.
 	if c.redis != nil {
 		st, body, rerr := c.loadFromRedis(ctx, tenantID, gwSessionID)
 		if rerr != nil {
 			slog.Warn("session_cache: redis load error", "session", gwSessionID, "error", rerr)
 		} else if st != nil {
+			if len(body) == 0 && (c.turnReader != nil || c.db != nil) {
+				_, persistedBody, derr := c.loadFromDB(ctx, tenantID, gwSessionID)
+				if derr != nil {
+					slog.Warn("session_cache: l2 body rehydrate failed", "session", gwSessionID, "error", derr)
+				} else if len(persistedBody) > 0 {
+					// V2 stores the message array rather than the full provider
+					// request envelope, so its serialized hash cannot be compared
+					// directly with the legacy full-body hash.
+					if c.turnReader != nil || st.LastOutboundHash == "" || sha256Hex(persistedBody) == st.LastOutboundHash {
+						body = persistedBody
+					} else {
+						slog.Warn("session_cache: l3 body hash mismatch, trying legacy source",
+							"session", gwSessionID)
+						_, legacyBody, legacyErr := c.loadFromLegacyDB(ctx, tenantID, gwSessionID)
+						if legacyErr != nil {
+							slog.Warn("session_cache: legacy body rehydrate failed",
+								"session", gwSessionID, "error", legacyErr)
+						} else if len(legacyBody) > 0 &&
+							(st.LastOutboundHash == "" || sha256Hex(legacyBody) == st.LastOutboundHash) {
+							body = legacyBody
+						}
+					}
+				}
+			}
 			c.setL1(key, st, body)
 			return st, body, nil
 		}
 	}
 
 	// L3: DB cold-start.
-	if c.db != nil {
+	if c.turnReader != nil || c.db != nil {
 		st, body, derr := c.loadFromDB(ctx, tenantID, gwSessionID)
 		if derr != nil {
 			slog.Warn("session_cache: db load error", "session", gwSessionID, "error", derr)
@@ -383,22 +420,51 @@ func (c *SessionCache) saveToRedis(ctx context.Context, tenantID, gwSessionID st
 
 func (c *SessionCache) loadFromDB(ctx context.Context, tenantID, gwSessionID string) (*SessionState, []byte, error) {
 	if c.turnReader != nil {
-		msgs, err := c.turnReader.LoadChain(ctx, tenantID, gwSessionID, 10)
+		// The latest outbound snapshot is the exact body previously forwarded to
+		// the upstream model, including any compression summary marker. Prefer it
+		// over reconstructing the uncompressed request/response deltas.
+		msgs, err := c.turnReader.LoadLatestOutbound(ctx, tenantID, gwSessionID)
 		if err != nil {
-			return nil, nil, err
+			slog.Warn("session_cache: v2 latest outbound load failed, falling back",
+				"session", gwSessionID, "error", err)
+		} else if len(msgs) > 0 {
+			body, marshalErr := json.Marshal(map[string]any{"messages": msgs})
+			if marshalErr != nil {
+				return nil, nil, fmt.Errorf("marshal latest outbound body: %w", marshalErr)
+			}
+			return &SessionState{
+				SchemaVersion:    schemaVersion,
+				LastOutboundHash: sha256Hex(body),
+				MsgCount:         len(msgs),
+				TokenEstimate:    estimateBodyTokens(body),
+			}, body, nil
 		}
-		if len(msgs) == 0 {
-			return nil, nil, nil
-		}
-		body, err := json.Marshal(msgs)
+
+		// Older/partial V2 rows may not have outbound_body. Reconstruct recent
+		// turns from deltas before falling back to legacy request_logs.
+		msgs, err = c.turnReader.LoadChain(ctx, tenantID, gwSessionID, 10)
 		if err != nil {
-			return nil, nil, fmt.Errorf("marshal reconstructed body: %w", err)
+			slog.Warn("session_cache: v2 delta chain load failed, falling back",
+				"session", gwSessionID, "error", err)
+		} else if len(msgs) > 0 {
+			body, marshalErr := json.Marshal(map[string]any{"messages": msgs})
+			if marshalErr != nil {
+				return nil, nil, fmt.Errorf("marshal reconstructed body: %w", marshalErr)
+			}
+			return &SessionState{
+				SchemaVersion:    schemaVersion,
+				LastOutboundHash: sha256Hex(body),
+				MsgCount:         len(msgs),
+				TokenEstimate:    estimateBodyTokens(body),
+			}, body, nil
 		}
-		return &SessionState{
-			SchemaVersion:    schemaVersion,
-			LastOutboundHash: sha256Hex(body),
-			MsgCount:         len(msgs),
-		}, body, nil
+	}
+	return c.loadFromLegacyDB(ctx, tenantID, gwSessionID)
+}
+
+func (c *SessionCache) loadFromLegacyDB(ctx context.Context, tenantID, gwSessionID string) (*SessionState, []byte, error) {
+	if c.db == nil {
+		return nil, nil, nil
 	}
 	row, err := c.db.LastOutboundForSession(ctx, tenantID, gwSessionID)
 	if err != nil || row == nil {

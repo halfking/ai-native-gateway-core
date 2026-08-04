@@ -7,12 +7,57 @@ import (
 	"encoding/json"
 	"fmt"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-type TurnReader struct{ db *pgxpool.Pool }
+type turnReaderDB interface {
+	Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error)
+	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
+}
 
-func NewTurnReader(db *pgxpool.Pool) *TurnReader { return &TurnReader{db: db} }
+type TurnReader struct{ db turnReaderDB }
+
+func NewTurnReader(db *pgxpool.Pool) *TurnReader {
+	if db == nil {
+		return &TurnReader{}
+	}
+	return newTurnReader(db)
+}
+
+func newTurnReader(db turnReaderDB) *TurnReader { return &TurnReader{db: db} }
+
+// LoadLatestOutbound returns the exact message body most recently forwarded to
+// the upstream model. Unlike LoadChain, this preserves gateway compression
+// summaries and markers stored in session_bodies.outbound_body.
+func (r *TurnReader) LoadLatestOutbound(ctx context.Context, tenantID, sessionID string) ([]Message, error) {
+	if r == nil || r.db == nil {
+		return nil, nil
+	}
+	var raw []byte
+	err := r.db.QueryRow(ctx, `
+		SELECT outbound_body
+		FROM gateway.session_bodies
+		WHERE tenant_id = $1 AND session_id = $2
+		  AND outbound_body IS NOT NULL
+		ORDER BY turn_no DESC, ts DESC
+		LIMIT 1
+	`, tenantID, sessionID).Scan(&raw)
+	if err == pgx.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("query latest outbound body: %w", err)
+	}
+	if len(raw) == 0 || string(raw) == "null" {
+		return nil, nil
+	}
+	var msgs []Message
+	if err := json.Unmarshal(raw, &msgs); err != nil {
+		return nil, fmt.Errorf("unmarshal latest outbound body: %w", err)
+	}
+	return msgs, nil
+}
 
 // LoadChain 返回最近 N 轮拼接后的消息（用于 L3 冷启动）。
 // 不持久化 panorama；仅按需计算。

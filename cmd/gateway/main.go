@@ -502,8 +502,8 @@ func main() {
 	// c.DBWriter.Stop() 安全共存，不会 panic on close-of-closed-channel。
 	var sessionStateForShutdown *SessionStateComponents
 	// sessionV2Writer is the V2 sessions shadow writer; Stop() drains its
-	// lifecycle-managed aggregate goroutine (spec §6.3). Nil when V2 shadow
-	// write is disabled or the pool is unavailable.
+	// lifecycle-managed aggregate goroutine (spec §6.3). It is constructed when
+	// the DB pool is available; the persisted hook applies live feature flags.
 	var sessionV2Writer *v2.SessionWriterV2
 	if cfg.RedisAddr != "" {
 		redisClient := session.NewRedisClient(cfg.RedisAddr, cfg.RedisPassword, cfg.RedisDB)
@@ -1658,7 +1658,8 @@ func main() {
 		sessionV2Writer = initSessionV2Writer(dbConn.Pool())
 		if sessionV2Writer != nil {
 			telemetryClient.AddOnRequestLogPersisted(sessionv2mirror.PersistHook(sessionV2Writer))
-			slog.Info("session V2 shadow write hook registered (gateway.sessions gateway.session_turns gateway.session_bodies gateway.session_turn_logs)")
+			slog.Info("session V2 shadow write hook registered (live feature-gated; gateway.sessions gateway.session_turns gateway.session_bodies gateway.session_turn_logs)")
+
 		}
 	}
 
@@ -1668,8 +1669,18 @@ func main() {
 	// LLM_GATEWAY_SESSION_COMPRESSOR_DISABLE so the deploy can roll back
 	// instantly without code change. Captures `exec` from the outer scope.
 	var scCache *compression.SessionCache // 2026-07-03: outer-scope for approval integration
-	if redisClientForCache != nil && dbConn != nil && dbConn.Enabled() && telemetryClient.Enabled() && !compressorSessionDisabled() {
-		scCache = compression.NewSessionCache(redisBackendFromClient(redisClientForCache), dbBackendFromPool(dbConn))
+	if !compressorSessionDisabled() {
+		// Keep proactive compression available even when Redis or PostgreSQL is
+		// temporarily unavailable. NewSessionCache accepts nil backends, so L1
+		// remains a useful per-process fallback instead of disabling the entire
+		// compressor because one lower tier is degraded.
+		scCache = compression.NewSessionCache(
+			redisBackendFromClient(redisClientForCache),
+			dbBackendFromPool(dbConn),
+		)
+		if dbConn != nil && dbConn.Enabled() && dbConn.Pool() != nil {
+			scCache.SetTurnReader(v2.NewTurnReader(dbConn.Pool()))
+		}
 		// Shared LLM-compaction dependencies: used by both the proactive
 		// SessionCompressor and the reactive RecoveryCoordinator so both
 		// paths run the same lossless summary. Built once here to avoid
@@ -1680,7 +1691,10 @@ func main() {
 			CompactionDeps: compactionDeps,
 		}
 		chatHandler.SetSessionCompressor(compression.NewSessionCompressor(scDeps))
-		slog.Info("v3 session-level compressor wired (L1 in-mem + L2 Redis + L3 PG)")
+		slog.Info("v3 session-level compressor wired",
+			"l1_in_memory", true,
+			"l2_redis", redisClientForCache != nil,
+			"l3_postgres", dbConn != nil && dbConn.Enabled())
 
 		// v5 (2026-06-25) session-aware smart recovery coordinator.
 		// Summarizer is wired so the reactive (4xx context_length_exceeded)
@@ -1689,15 +1703,17 @@ func main() {
 		// When compactionDeps has no Provider/Memora, NewSummaryFunc returns
 		// a func that always reports ok=false → falls back to mechanical trim,
 		// so deployments without an LLM endpoint keep existing behaviour.
-		rcDeps := compression.RecoveryDeps{
-			Cache:      scCache,
-			MaxRetries: 2,
-			Summarizer: compression.NewSummaryFunc(compactionDeps),
+		if routingExec != nil {
+			rcDeps := compression.RecoveryDeps{
+				Cache:      scCache,
+				MaxRetries: 2,
+				Summarizer: compression.NewSummaryFunc(compactionDeps),
+			}
+			routingExec.RecoveryCoord = compression.NewRecoveryCoordinator(rcDeps)
+			slog.Info("v5 smart recovery coordinator wired (session-aware incremental compression)")
 		}
-		routingExec.RecoveryCoord = compression.NewRecoveryCoordinator(rcDeps)
-		slog.Info("v5 smart recovery coordinator wired (session-aware incremental compression)")
 	} else {
-		slog.Info("v3 session-level compressor disabled (no Redis / no DB / env flag off)")
+		slog.Info("v3 session-level compressor disabled by LLM_GATEWAY_SESSION_COMPRESSOR_DISABLE")
 	}
 
 	// ── Prompt-cache optimization (rtk borrowing, 2026-07-06) ───────────────

@@ -15,8 +15,13 @@ import (
 //
 // Defined as an interface so unit tests can wire pgxmock without spinning up
 // a live PostgreSQL instance (mirrors the turnDB pattern in turn_writer.go).
-type aggregatorDB interface {
+type aggregateExecutor interface {
 	Exec(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error)
+}
+
+type aggregatorDB interface {
+	aggregateExecutor
+	Begin(ctx context.Context) (pgx.Tx, error)
 	Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error)
 	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
 }
@@ -29,15 +34,15 @@ type aggregatorDB interface {
 //
 // Idempotency (request-flow Step 3 / spec §6.2):
 //
-//	When SessionUpdate.RequestID is non-empty, UpdateSession treats the
-//	(session_id, tenant_id, request_id, partition_date) tuple as the dedup
-//	key. It probes gateway.session_turns (which has UNIQUE (request_id,
-//	partition_date)) and short-circuits to nil when an existing turn row
-//	is found. This guarantees replay of the same request_id cannot
-//	double-accumulate total_turns / total_tokens / total_cost_usd.
+//	When SessionUpdate.RequestID is non-empty, UpdateSession atomically claims
+//	the corresponding session_turns row by setting aggregate_applied_at inside
+//	the SAME transaction as the sessions upsert. Only a row whose marker is
+//	NULL can be claimed. Concurrent/replayed updates therefore do not double-
+//	accumulate counters, while a failed upsert rolls the claim back and remains
+//	retryable.
 //
-//	An empty RequestID bypasses the dedup probe and falls through to the
-//	plain aggregate INSERT, preserving legacy backfill / fan-in paths that
+//	An empty RequestID bypasses the claim and falls through to the plain
+//	aggregate INSERT, preserving legacy backfill / fan-in paths that
 //	intentionally aggregate without a single request_id.
 type SessionAggregator struct {
 	db aggregatorDB
@@ -78,31 +83,80 @@ type SessionUpdate struct {
 	UpdatedAt time.Time
 }
 
-// UpdateSession updates the session snapshot with incremental data
+// UpdateSession updates the session snapshot with incremental data.
 //
-// This uses INSERT ... ON CONFLICT DO UPDATE to handle both creation
-// and updates atomically. Counters are incremented, summaries are replaced.
+// This uses INSERT ... ON CONFLICT DO UPDATE to handle both creation and
+// updates atomically. Counters are incremented, summaries are replaced.
 //
-// When update.RequestID is non-empty, the call is idempotent on
-// (session_id, tenant_id, request_id, partition_date): a second call with
-// the same RequestID within the same partition is a no-op (returns nil
-// without touching gateway.sessions).
+// When update.RequestID is non-empty, the aggregate claim and snapshot upsert
+// share one transaction. A replay whose turn is already marked is a no-op.
 func (a *SessionAggregator) UpdateSession(ctx context.Context, update SessionUpdate) error {
 	partitionDate := update.UpdatedAt.Truncate(24 * time.Hour)
 
-	if update.RequestID != "" {
-		alreadyProcessed, err := a.requestAlreadyAggregated(ctx, update, partitionDate)
-		if err != nil {
-			return fmt.Errorf("check aggregate idempotency: %w", err)
-		}
-		if alreadyProcessed {
-			// Replay of the same request_id — spec §6.2 mandates that
-			// token / turn / cost counters MUST NOT be re-added.
-			return nil
-		}
+	if update.RequestID == "" {
+		return upsertSessionSnapshot(ctx, a.db, update, partitionDate)
 	}
 
-	_, err := a.db.Exec(ctx, `
+	tx, err := a.db.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("begin aggregate transaction: %w", err)
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			_ = tx.Rollback(ctx)
+		}
+	}()
+
+	claimed, err := claimAggregateTurn(ctx, tx, update, partitionDate)
+	if err != nil {
+		return fmt.Errorf("claim aggregate turn: %w", err)
+	}
+	if !claimed {
+		// The row was already claimed by a successful/concurrent aggregate.
+		if err := tx.Commit(ctx); err != nil {
+			return fmt.Errorf("commit duplicate aggregate transaction: %w", err)
+		}
+		committed = true
+		return nil
+	}
+
+	if err := upsertSessionSnapshot(ctx, tx, update, partitionDate); err != nil {
+		return err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("commit aggregate transaction: %w", err)
+	}
+	committed = true
+	return nil
+}
+
+// claimAggregateTurn marks one persisted turn as consumed by the session
+// snapshot. UPDATE ... WHERE aggregate_applied_at IS NULL is the durable,
+// concurrent-safe claim; pgx.ErrNoRows means another caller already won.
+func claimAggregateTurn(ctx context.Context, tx pgx.Tx, update SessionUpdate, partitionDate time.Time) (bool, error) {
+	var claimed int
+	err := tx.QueryRow(ctx, `
+		UPDATE gateway.session_turns
+		SET aggregate_applied_at = NOW()
+		WHERE session_id = $1
+		  AND tenant_id = $2
+		  AND request_id = $3
+		  AND partition_date = $4
+		  AND aggregate_applied_at IS NULL
+		RETURNING 1
+	`, update.SessionID, update.TenantID, update.RequestID, partitionDate).Scan(&claimed)
+	if err == pgx.ErrNoRows {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return claimed == 1, nil
+}
+
+func upsertSessionSnapshot(ctx context.Context, db aggregateExecutor, update SessionUpdate, partitionDate time.Time) error {
+	_, err := db.Exec(ctx, `
 		INSERT INTO gateway.sessions (
 			session_id, tenant_id,
 			created_at, updated_at, status,
@@ -137,41 +191,10 @@ func (a *SessionAggregator) UpdateSession(ctx context.Context, update SessionUpd
 		update.LastModel, update.LastProvider,
 		partitionDate,
 	)
-
 	if err != nil {
 		return fmt.Errorf("update session: %w", err)
 	}
-
 	return nil
-}
-
-// requestAlreadyAggregated probes gateway.session_turns for an existing
-// (session_id, tenant_id, request_id, partition_date) row. session_turns is
-// the dedup ledger for V2 sessions and carries UNIQUE (request_id,
-// partition_date); we therefore treat its presence as proof that this
-// request_id has already fed the aggregate once.
-//
-// Returns true when the row exists, false when it does not (or when the
-// probe fails for transient reasons — the caller will then surface the
-// error rather than silently double-aggregating).
-func (a *SessionAggregator) requestAlreadyAggregated(ctx context.Context, update SessionUpdate, partitionDate time.Time) (bool, error) {
-	var exists int
-	err := a.db.QueryRow(ctx, `
-		SELECT 1
-		FROM gateway.session_turns
-		WHERE session_id = $1
-		  AND tenant_id = $2
-		  AND request_id = $3
-		  AND partition_date = $4
-		LIMIT 1
-	`, update.SessionID, update.TenantID, update.RequestID, partitionDate).Scan(&exists)
-	if err == pgx.ErrNoRows {
-		return false, nil
-	}
-	if err != nil {
-		return false, err
-	}
-	return true, nil
 }
 
 // GetSession retrieves a session snapshot

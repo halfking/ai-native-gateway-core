@@ -8,6 +8,11 @@ import (
 	"time"
 )
 
+const (
+	aggregateMaxAttempts = 3
+	aggregateRetryDelay  = 25 * time.Millisecond
+)
+
 // sessionUpdater is the minimal surface of SessionAggregator that
 // SessionWriterV2 uses. Declared as an interface so unit tests can inject a
 // fake (e.g. a recording aggregator) and so the lifecycle code can be tested
@@ -206,13 +211,22 @@ func (w *SessionWriterV2) Write(ctx context.Context, req *ProcessedRequest) erro
 	// 1. Detect submit mode using the full detector
 	detector := NewSubmitModeDetector()
 
-	// Get previous turn's attachments for attachment-only detection
-	previousAttachments, err := w.getPreviousAttachments(ctx, req.SessionID, req.TenantID)
+	// Load the previous persisted turn once. Telemetry shadow writes do not
+	// carry the previous outbound body, but accurate submit-mode and delta
+	// detection require it. Explicit caller data wins; the DB snapshot is only
+	// a fallback. The same read also supplies previous attachments.
+	var previousAttachments []AttachmentRef
+	previousBody, err := w.getPreviousBody(ctx, req.SessionID, req.TenantID)
 	if err != nil {
-		// Log but don't fail - we can still detect other submit modes
-		slog.WarnContext(ctx, "failed to get previous attachments for submit mode detection",
+		// Log but don't fail - we can still detect other submit modes.
+		slog.WarnContext(ctx, "failed to get previous body for submit mode detection",
 			"session_id", req.SessionID,
 			"error", err)
+	} else if previousBody != nil {
+		previousAttachments = previousBody.RequestAttachments
+		if len(req.LastOutboundBody) == 0 {
+			req.LastOutboundBody = previousBody.OutboundBody
+		}
 	}
 
 	submitMode := string(detector.Detect(DetectionContext{
@@ -379,13 +393,12 @@ func (w *SessionWriterV2) Write(ctx context.Context, req *ProcessedRequest) erro
 			// the ctx isn't yet cancelled.
 			aggCtx, cancel := context.WithTimeout(w.lifecycleCtx, 30*time.Second)
 			defer cancel()
-			err := w.sessionAggregator.UpdateSession(aggCtx, SessionUpdate{
+			update := SessionUpdate{
 				SessionID: req.SessionID,
 				TenantID:  req.TenantID,
 				// 2026-07-28 request-flow Step 3 (spec §6.2): pass RequestID so
-				// the aggregator can dedup on (tenant_id, request_id,
-				// partition_date) and never double-accumulate token/turn/cost
-				// when the same request_id is replayed.
+				// the aggregator can claim this turn exactly once and never
+				// double-accumulate token/turn/cost on a replay.
 				RequestID:           req.RequestID,
 				LastTurnNo:          turnNo,
 				LastRequestSummary:  summarizeMessages(requestDelta),
@@ -396,11 +409,11 @@ func (w *SessionWriterV2) Write(ctx context.Context, req *ProcessedRequest) erro
 				TokensIncrement:     req.PromptTokens + req.CompletionTokens,
 				CostIncrement:       req.CostUSD,
 				UpdatedAt:           req.Timestamp,
-			})
-
-			if err != nil {
-				slog.Error("update session snapshot failed",
+			}
+			if err := w.updateSessionAggregate(aggCtx, update); err != nil {
+				slog.Error("update session snapshot failed after retries",
 					"session_id", req.SessionID,
+					"request_id", req.RequestID,
 					"error", err)
 			}
 		}()
@@ -409,25 +422,38 @@ func (w *SessionWriterV2) Write(ctx context.Context, req *ProcessedRequest) erro
 	return nil
 }
 
-// getPreviousAttachments retrieves attachments from the most recent turn
+func (w *SessionWriterV2) updateSessionAggregate(ctx context.Context, update SessionUpdate) error {
+	var lastErr error
+	for attempt := 1; attempt <= aggregateMaxAttempts; attempt++ {
+		if err := w.sessionAggregator.UpdateSession(ctx, update); err == nil {
+			return nil
+		} else {
+			lastErr = err
+		}
+		if attempt == aggregateMaxAttempts {
+			break
+		}
+		timer := time.NewTimer(time.Duration(attempt) * aggregateRetryDelay)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return ctx.Err()
+		case <-timer.C:
+		}
+	}
+	return lastErr
+}
+
+// getPreviousBody retrieves the most recent persisted turn body.
 //
-// This is used for attachment-only change detection. If we can't retrieve
-// the previous attachments, we return empty slice (detection will still work
-// for other submit modes).
-func (w *SessionWriterV2) getPreviousAttachments(ctx context.Context, sessionID, tenantID string) ([]AttachmentRef, error) {
-	// Query the most recent turn's bodies
-	bodies, err := w.bodiesWriter.ListAllBodies(ctx, tenantID, sessionID)
+// The caller uses both its outbound snapshot (for multi-turn delta detection)
+// and attachment references (for attachment-only submit-mode detection).
+func (w *SessionWriterV2) getPreviousBody(ctx context.Context, sessionID, tenantID string) (*BodiesRecord, error) {
+	body, err := w.bodiesWriter.GetLatestBodies(ctx, tenantID, sessionID)
 	if err != nil {
-		return nil, fmt.Errorf("list bodies: %w", err)
+		return nil, fmt.Errorf("get latest bodies: %w", err)
 	}
-
-	if len(bodies) == 0 {
-		return []AttachmentRef{}, nil // First turn, no previous attachments
-	}
-
-	// Get the last turn's attachments
-	lastBody := bodies[len(bodies)-1]
-	return lastBody.RequestAttachments, nil
+	return body, nil
 }
 
 // extractRequestDelta extracts incremental messages that are new in this turn

@@ -24,7 +24,8 @@ import (
 )
 
 // compressorSessionDisabled returns true when the v3 session compressor is
-// turned off via env. Default = enabled (when Redis + DB are both available).
+// explicitly turned off via env. Default = enabled; missing Redis/DB degrades
+// the cache to the tiers that are available (at minimum the in-process L1).
 func compressorSessionDisabled() bool {
 	v := strings.ToLower(strings.TrimSpace(os.Getenv("LLM_GATEWAY_SESSION_COMPRESSOR_DISABLE")))
 	return v == "1" || v == "true" || v == "yes"
