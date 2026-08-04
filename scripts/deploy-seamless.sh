@@ -430,7 +430,7 @@ do_deploy() {
   local _std_out _std_err _target_rotate
   _std_out="$(remote_ssh "systemctl show $SERVICE_NAME --property=StandardOutput --value" 2>/dev/null | tail -1 || echo '')"
   _std_err="$(remote_ssh "systemctl show $SERVICE_NAME --property=StandardError --value" 2>/dev/null | tail -1 || echo '')"
-  info "  unit mode: StandardOutput=${_std_out:-<unset>} StandardError=${_std_err:-<unset>}"
+  log "  unit mode: StandardOutput=${_std_out:-<unset>} StandardError=${_std_err:-<unset>}"
   # decide: append: → logrotate; journal/inherit → journald drop-in; else skip
   case "${_std_out}:${_std_err}" in
     append:*:*) _target_rotate="logrotate" ;;
