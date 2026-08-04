@@ -87,12 +87,23 @@ func TestWindow_StreamStarted(t *testing.T) {
 	}
 }
 
-// trigger-6: nil state → never trigger
-func TestWindow_NilState(t *testing.T) {
+// trigger-6: an overlong first request must trigger even before state exists.
+func TestWindow_NilStateOverlongBodyTriggers(t *testing.T) {
 	body := make([]byte, 100000)
 	res := ShouldTriggerWindow(body, nil, 1000, false, time.Now())
+	if !res.ShouldTrigger {
+		t.Fatal("expected token trigger for overlong new session")
+	}
+	if res.Reason != "sliding_window_token" {
+		t.Fatalf("reason = %q, want sliding_window_token", res.Reason)
+	}
+}
+
+func TestWindow_NilStateSmallBodyDoesNotTrigger(t *testing.T) {
+	body := []byte(`{"messages":[{"role":"user","content":"hello"}]}`)
+	res := ShouldTriggerWindow(body, nil, 1000, false, time.Now())
 	if res.ShouldTrigger {
-		t.Error("expected ShouldTrigger=false for nil state")
+		t.Fatalf("unexpected trigger for small new session: %q", res.Reason)
 	}
 }
 

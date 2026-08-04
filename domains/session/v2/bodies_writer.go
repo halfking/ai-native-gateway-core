@@ -268,6 +268,63 @@ func (w *SessionBodiesWriter) GetBodies(ctx context.Context, tenantID, sessionID
 	return &rec, nil
 }
 
+// GetLatestBodies retrieves the most recent turn body for a session without
+// scanning the full history. It is used on the per-request write path for
+// previous-outbound and attachment delta detection.
+func (w *SessionBodiesWriter) GetLatestBodies(ctx context.Context, tenantID, sessionID string) (*BodiesRecord, error) {
+	var rec BodiesRecord
+	var requestDeltaJSON, responseDeltaJSON, outboundBodyJSON []byte
+	var requestAttachmentsJSON, responseAttachmentsJSON []byte
+
+	err := w.db.QueryRow(ctx, `
+		SELECT
+			session_id, turn_no, tenant_id, request_id, ts,
+			request_delta, response_delta, outbound_body,
+			request_attachments, response_attachments
+		FROM gateway.session_bodies
+		WHERE tenant_id = $1 AND session_id = $2
+		ORDER BY turn_no DESC
+		LIMIT 1
+	`, tenantID, sessionID).Scan(
+		&rec.SessionID, &rec.TurnNo, &rec.TenantID, &rec.RequestID, &rec.Ts,
+		&requestDeltaJSON, &responseDeltaJSON, &outboundBodyJSON,
+		&requestAttachmentsJSON, &responseAttachmentsJSON,
+	)
+	if err == pgx.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("query latest bodies: %w", err)
+	}
+
+	if len(requestDeltaJSON) > 0 {
+		if err := json.Unmarshal(requestDeltaJSON, &rec.RequestDelta); err != nil {
+			return nil, fmt.Errorf("unmarshal latest request_delta: %w", err)
+		}
+	}
+	if len(responseDeltaJSON) > 0 {
+		if err := json.Unmarshal(responseDeltaJSON, &rec.ResponseDelta); err != nil {
+			return nil, fmt.Errorf("unmarshal latest response_delta: %w", err)
+		}
+	}
+	if len(outboundBodyJSON) > 0 {
+		if err := json.Unmarshal(outboundBodyJSON, &rec.OutboundBody); err != nil {
+			return nil, fmt.Errorf("unmarshal latest outbound_body: %w", err)
+		}
+	}
+	if len(requestAttachmentsJSON) > 0 {
+		if err := json.Unmarshal(requestAttachmentsJSON, &rec.RequestAttachments); err != nil {
+			return nil, fmt.Errorf("unmarshal latest request_attachments: %w", err)
+		}
+	}
+	if len(responseAttachmentsJSON) > 0 {
+		if err := json.Unmarshal(responseAttachmentsJSON, &rec.ResponseAttachments); err != nil {
+			return nil, fmt.Errorf("unmarshal latest response_attachments: %w", err)
+		}
+	}
+	return &rec, nil
+}
+
 // ListAllBodies retrieves all turn bodies for a session
 func (w *SessionBodiesWriter) ListAllBodies(ctx context.Context, tenantID, sessionID string) ([]BodiesRecord, error) {
 	query := `

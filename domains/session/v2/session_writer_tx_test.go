@@ -45,6 +45,26 @@ type noopAggregator struct{}
 
 func (noopAggregator) UpdateSession(context.Context, SessionUpdate) error { return nil }
 
+type flakyAggregator struct {
+	calls   int
+	failFor int
+}
+
+func (a *flakyAggregator) UpdateSession(context.Context, SessionUpdate) error {
+	a.calls++
+	if a.calls <= a.failFor {
+		return errors.New("transient aggregate failure")
+	}
+	return nil
+}
+
+func TestUpdateSessionAggregate_RetriesTransientFailure(t *testing.T) {
+	agg := &flakyAggregator{failFor: 1}
+	w := &SessionWriterV2{sessionAggregator: agg}
+	require.NoError(t, w.updateSessionAggregate(context.Background(), SessionUpdate{}))
+	require.Equal(t, 2, agg.calls)
+}
+
 func newMockedSessionWriter(t *testing.T) (*SessionWriterV2, pgxmock.PgxPoolIface) {
 	t.Helper()
 	mock, err := pgxmock.NewPool(pgxmock.QueryMatcherOption(pgxmock.QueryMatcherRegexp))
@@ -108,6 +128,54 @@ func sampleRequest() *ProcessedRequest {
 		StatusCode:   200,
 		Success:      true,
 	}
+}
+
+func TestWrite_LoadsPreviousOutboundForRequestDelta(t *testing.T) {
+	w, mock := newMockedSessionWriter(t)
+	req := sampleRequest()
+	req.RequestBody = []Message{
+		{Role: "user", Content: "old"},
+		{Role: "assistant", Content: "old response"},
+		{Role: "user", Content: "new"},
+	}
+
+	mock.ExpectQuery("FROM gateway.session_bodies").
+		WithArgs(req.TenantID, req.SessionID).
+		WillReturnRows(pgxmock.NewRows([]string{
+			"session_id", "turn_no", "tenant_id", "request_id", "ts",
+			"request_delta", "response_delta", "outbound_body",
+			"request_attachments", "response_attachments",
+		}).AddRow(
+			req.SessionID, 1, req.TenantID, "req_previous", req.Timestamp.Add(-time.Minute),
+			[]byte(`[{"role":"user","content":"old"}]`),
+			[]byte(`[{"role":"assistant","content":"old response"}]`),
+			[]byte(`[{"role":"user","content":"old"},{"role":"assistant","content":"old response"}]`),
+			[]byte(`[]`), []byte(`[]`),
+		))
+
+	mock.ExpectBegin()
+	mock.ExpectExec("pg_advisory_xact_lock").
+		WithArgs(pgxmock.AnyArg()).
+		WillReturnResult(pgxmock.NewResult("SELECT", 1))
+	mock.ExpectQuery("COALESCE\\(MAX\\(turn_no\\), 0\\) \\+ 1").
+		WithArgs(pgxmock.AnyArg(), pgxmock.AnyArg()).
+		WillReturnRows(pgxmock.NewRows([]string{"turn_no"}).AddRow(2))
+	mock.ExpectExec("INSERT INTO gateway.session_turns").
+		WithArgs(anyArgs(30)...).
+		WillReturnResult(pgxmock.NewResult("INSERT", 1))
+
+	bodyArgs := anyArgs(11)
+	bodyArgs[5] = `[{"role":"user","content":"new"}]`
+	mock.ExpectExec("INSERT INTO gateway.session_bodies").
+		WithArgs(bodyArgs...).
+		WillReturnResult(pgxmock.NewResult("INSERT", 1))
+	mock.ExpectCommit()
+
+	require.NoError(t, w.Write(context.Background(), req))
+	require.Len(t, req.LastOutboundBody, 2)
+	require.Equal(t, "old response", req.LastOutboundBody[1].Content)
+	require.NoError(t, w.Stop(context.Background()))
+	require.NoError(t, mock.ExpectationsWereMet())
 }
 
 // TestWrite_TurnAndBodiesAreAtomic_RollbackOnBodiesFailure (spec §6.2)

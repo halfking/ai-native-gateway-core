@@ -99,16 +99,22 @@ func entryToProcessedRequest(entry *telemetry.RequestLogEntry) *v2.ProcessedRequ
 		return nil
 	}
 
+	eventTime := time.Now()
+	if entry.EventAt != nil {
+		eventTime = *entry.EventAt
+	}
 	req := &v2.ProcessedRequest{
 		SessionID:   *entry.GwSessionID,
 		TenantID:    entry.TenantID,
 		RequestID:   entry.RequestID,
-		Timestamp:   time.Now(),
+		Timestamp:   eventTime,
 		ClientModel: strVal(entry.ClientModel),
 		ProviderID:  providerID(entry.ProviderID),
 		Success:     entry.Success,
 		ErrorKind:   strVal(entry.ErrorKind),
 		StatusCode:  statusCode(entry),
+		StartedAt:   eventTime,
+		CompletedAt: eventTime,
 	}
 
 	// Usage & cost
@@ -168,9 +174,10 @@ func entryToProcessedRequest(entry *telemetry.RequestLogEntry) *v2.ProcessedRequ
 	if len(entry.OutboundBody) > 0 {
 		req.OutboundBody = parseMessagesJSON(entry.OutboundBody)
 	}
-	if entry.OutboundMsgCount != nil {
-		req.LastOutboundBody = req.RequestBody
-	}
+	// LastOutboundBody deliberately remains empty here. SessionWriterV2 loads
+	// the previous turn's persisted outbound snapshot when the telemetry entry
+	// does not carry one; using the current request body as "previous" corrupts
+	// multi-turn delta detection.
 
 	// Attachments
 	if len(entry.Attachments) > 0 {

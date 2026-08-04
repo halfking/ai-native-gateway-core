@@ -221,13 +221,27 @@ func TestEntryToProcessedRequest_OutboundBodyParsing(t *testing.T) {
 		t.Fatalf("expected 1 outbound message, got %d", len(req.OutboundBody))
 	}
 	check(t, "OutboundBody[0].Content", req.OutboundBody[0].Content, "compressed hello")
-	if req.LastOutboundBody == nil {
-		t.Fatal("expected LastOutboundBody non-nil when OutboundMsgCount > 0")
+	if len(req.LastOutboundBody) != 0 {
+		t.Fatalf("expected LastOutboundBody to be loaded by SessionWriterV2, got %d messages", len(req.LastOutboundBody))
 	}
-	if len(req.LastOutboundBody) != 1 {
-		t.Fatalf("expected 1 LastOutboundBody message, got %d", len(req.LastOutboundBody))
+}
+
+func TestEntryToProcessedRequest_UsesEventTime(t *testing.T) {
+	eventAt := time.Date(2026, 8, 3, 23, 59, 58, 0, time.UTC)
+	entry := &telemetry.RequestLogEntry{
+		RequestID:   "req_event_time",
+		GwSessionID: gwSessionPtr("sess_event_time"),
+		EventAt:     &eventAt,
+		Success:     true,
 	}
-	check(t, "LastOutboundBody[0].Content", req.LastOutboundBody[0].Content, "original hello")
+
+	req := entryToProcessedRequest(entry)
+	if !req.Timestamp.Equal(eventAt) {
+		t.Fatalf("Timestamp = %v, want event time %v", req.Timestamp, eventAt)
+	}
+	if !req.StartedAt.Equal(eventAt) || !req.CompletedAt.Equal(eventAt) {
+		t.Fatalf("started/completed = %v/%v, want %v", req.StartedAt, req.CompletedAt, eventAt)
+	}
 }
 
 func TestEntryToProcessedRequest_AttachmentsParsing(t *testing.T) {

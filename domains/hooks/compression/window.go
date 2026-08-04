@@ -92,7 +92,7 @@ type WindowTriggerResult struct {
 // current outbound body and session state.
 //
 //   - outboundBody is the body to be forwarded (post-delta-append).
-//   - state is the current SessionState (nil = new session → never trigger).
+//   - state is the current SessionState (nil = new session; TOKEN/COUNT still apply).
 //   - contextWindow is the target model's context window in tokens
 //     (0 = unknown → TOKEN trigger is skipped).
 //   - streamStarted is true when the response stream has already emitted
@@ -114,10 +114,9 @@ func ShouldTriggerWindow(
 		return res
 	}
 
-	// New / unknown session: never trigger.
-	if state == nil {
-		return res
-	}
+	// New sessions may already contain an overlong client-supplied history, so
+	// TOKEN/COUNT triggers must evaluate the current body even when state is nil.
+	// Only IDLE and recent-compression guards require persisted state.
 
 	// Read env-configurable thresholds (cheap: cached by the runtime).
 	maxMsgCount := envInt("LLM_GATEWAY_WINDOW_MAX_MSG_COUNT", DefaultMaxMsgCount)
@@ -139,14 +138,21 @@ func ShouldTriggerWindow(
 	}
 
 	// ── COUNT trigger ─────────────────────────────────────────────────────
-	if res.Reason == "" && state.MsgCount >= maxMsgCount {
+	currentMsgCount := countMessages(outboundBody)
+	if currentMsgCount == 0 && state != nil {
+		// Defensive fallback for malformed/legacy bodies whose message array
+		// cannot be parsed; persisted metadata is still better than disabling
+		// the count/idle guards entirely.
+		currentMsgCount = state.MsgCount
+	}
+	if res.Reason == "" && currentMsgCount >= maxMsgCount {
 		res.Reason = "sliding_window_count"
 	}
 
 	// ── IDLE trigger ──────────────────────────────────────────────────────
-	if res.Reason == "" && state.LastCompressedAt > 0 {
+	if res.Reason == "" && state != nil && state.LastCompressedAt > 0 {
 		idleElapsed := now.Unix() - state.LastCompressedAt
-		if idleElapsed >= int64(idleSecs) && state.MsgCount >= minIdleMsgs {
+		if idleElapsed >= int64(idleSecs) && currentMsgCount >= minIdleMsgs {
 			res.Reason = "sliding_window_idle"
 		}
 	}
@@ -157,7 +163,7 @@ func ShouldTriggerWindow(
 	}
 
 	// ── Mutual-exclusion guard ────────────────────────────────────────────
-	if state.RecentlyCompressedAt > 0 {
+	if state != nil && state.RecentlyCompressedAt > 0 {
 		elapsed := now.Unix() - state.RecentlyCompressedAt
 		if elapsed < RecentCompressedGuardSecs {
 			// A proactive summary was written very recently. Degrade to

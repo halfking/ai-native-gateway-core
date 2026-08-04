@@ -29,7 +29,7 @@ func CompressionSpecs() []*Spec {
 			Category:        CategoryCompression,
 			Min:             &minFraction,
 			Max:             &maxFraction,
-			Default:         0.8,
+			Default:         0.85,
 			Description:     "压缩窗口阈值比例",
 			DescriptionLong: "触发压缩的 token 比例阈值（占模型上下文窗口的比例）。建议 0.7-0.85。",
 			Unit:            "比例",
