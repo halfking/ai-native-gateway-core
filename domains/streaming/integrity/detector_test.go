@@ -232,3 +232,74 @@ func TestDetector_AllSignals_NilRecorder(t *testing.T) {
 		TextContent: strings.Repeat("x", 600),
 	})
 }
+
+// RepeatedContentDetected (the incremental StreamTracker's finding) records
+// exactly one event tagged detection:"incremental" and does NOT rescan
+// TextContent — even when TextContent would itself trip the final pass.
+func TestDetector_RepeatedContent_IncrementalHandoff(t *testing.T) {
+	rec := &captureRecorder{}
+	d := NewDetector(rec)
+
+	// TextContent here is a long loop that the FINAL pass would also catch.
+	// The incremental path must suppress that rescan so only one event fires.
+	loopBlock := strings.Repeat("y", 256)
+	d.Observe(context.Background(), Candidate{
+		RequestID:                  "r-inc",
+		OutboundModel:              "glm-5.2",
+		TextContent:                loopBlock + loopBlock + loopBlock + loopBlock,
+		RepeatedContentDetected:    true,
+		RepeatedContentHash:        "deadbeef",
+		RepeatedContentHits:        4,
+		RepeatedContentBlockSize:   256,
+		RepeatedContentBlocksTotal: 4,
+		StreamAborted:              true,
+	})
+
+	ev := rec.byType(AnomalyRepeatedContent)
+	if len(ev) != 1 {
+		t.Fatalf("expected exactly 1 incremental event, got %d", len(ev))
+	}
+	got := ev[0]
+	if got.RequestID != "r-inc" {
+		t.Fatalf("RequestID = %q", got.RequestID)
+	}
+	if got.ActualValue != "deadbeef" {
+		t.Fatalf("ActualValue (hash) = %q, want deadbeef", got.ActualValue)
+	}
+	if got.Context["detection"] != "incremental" {
+		t.Fatalf("detection = %v, want incremental", got.Context["detection"])
+	}
+	if got.Context["aborted"] != true {
+		t.Fatalf("aborted = %v, want true", got.Context["aborted"])
+	}
+	if got.Context["block_hits"] != 4 {
+		t.Fatalf("block_hits = %v, want 4", got.Context["block_hits"])
+	}
+	if got.Context["block_size"] != 256 {
+		t.Fatalf("block_size = %v, want 256", got.Context["block_size"])
+	}
+}
+
+// Incremental handoff with StreamAborted=false records aborted=false.
+func TestDetector_RepeatedContent_IncrementalNotAborted(t *testing.T) {
+	rec := &captureRecorder{}
+	d := NewDetector(rec)
+	d.Observe(context.Background(), Candidate{
+		OutboundModel:            "glm-5.2",
+		RepeatedContentDetected:  true,
+		RepeatedContentHash:      "cafef00d",
+		RepeatedContentHits:      2,
+		RepeatedContentBlockSize: 256,
+		StreamAborted:            false,
+	})
+	ev := rec.byType(AnomalyRepeatedContent)
+	if len(ev) != 1 {
+		t.Fatalf("expected 1 event, got %d", len(ev))
+	}
+	if ev[0].Context["aborted"] != false {
+		t.Fatalf("aborted = %v, want false", ev[0].Context["aborted"])
+	}
+	if ev[0].Context["detection"] != "incremental" {
+		t.Fatalf("detection = %v, want incremental", ev[0].Context["detection"])
+	}
+}
