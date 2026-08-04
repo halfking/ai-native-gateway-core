@@ -41,8 +41,31 @@ func TestUpstreamContext_DetachesCancellationAndRetainsTenant(t *testing.T) {
 	if got := session.GetTenantIDFromContext(upstreamCtx); got != "tenant-a" {
 		t.Fatalf("tenant ID = %q, want tenant-a", got)
 	}
+	// 2026-08-04: streaming contexts deliberately carry NO wall-clock
+	// deadline. A long-running agent task is bounded by inactivity signals
+	// (ResponseHeaderTimeout on the transport, streamChunkTimeout in the
+	// bridge read loop) rather than total age, so it is not falsely
+	// interrupted simply for running longer than 15 minutes.
+	if _, ok := upstreamCtx.Deadline(); ok {
+		t.Fatal("streaming upstream context must NOT carry a wall-clock deadline (stall-based timeout only)")
+	}
+}
+
+// TestUpstreamContext_NonStreamRetainsDeadline verifies the 2026-08-04
+// change did not affect non-streaming requests: those still get the timeout
+// as a hard deadline (there is no streaming read loop to provide stall
+// detection, so a total deadline remains the correct backstop).
+func TestUpstreamContext_NonStreamRetainsDeadline(t *testing.T) {
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+	params := &ExecParams{
+		R:        req,
+		IsStream: false,
+		TenantID: "tenant-a",
+	}
+	upstreamCtx, upstreamCancel := (&Executor{}).upstreamContext(params, 5*time.Second)
+	defer upstreamCancel()
 	if _, ok := upstreamCtx.Deadline(); !ok {
-		t.Fatal("detached upstream context must retain timeout deadline")
+		t.Fatal("non-streaming upstream context must retain a timeout deadline")
 	}
 }
 func TestShouldAsyncFallback_DisabledWhenPreStreamPrepared(t *testing.T) {

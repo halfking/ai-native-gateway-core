@@ -93,6 +93,13 @@ func startPreStreamKeepalive(w http.ResponseWriter, interval time.Duration) (*pr
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
+	// 2026-08-04: set X-Accel-Buffering here so nginx/reverse proxies disable
+	// response buffering from the very first byte. Previously this header was
+	// only set inside each protocol bridge (stream.go/anthropic_bridge.go/
+	// responses_bridge.go) AFTER WriteHeader — too late for the prewarmed
+	// path, where keepalive comments would be buffered and never reach the
+	// client, defeating the whole purpose.
+	w.Header().Set("X-Accel-Buffering", "no")
 	w.WriteHeader(http.StatusOK)
 	psk.writeComment(sseKeepaliveComment)
 	go psk.loop(interval)
@@ -2715,7 +2722,20 @@ func (h *ChatHandler) serveWithExecutor(
 		detected, _, _ := ir.DetectProtocol(bodyBytes)
 		clientProtocol = detected
 	}
-	if isStream && clientProtocol == "openai-completions" {
+	// 2026-08-04: pre-stream keepalive now covers ALL streaming protocols,
+	// not just openai-completions. Agent clients using Anthropic Messages
+	// (/v1/messages) or Responses (/v1/responses) protocols previously got
+	// NO heartbeat before the upstream's first real chunk. Reasoning models
+	// (Claude thinking, o-series) routinely take 30-180s to first byte, so
+	// the client's idle timeout (or an intermediary proxy_read_timeout)
+	// fired first → the client dropped and reconnected mid-task. Direct
+	// connections work because the vendor endpoint emits pings during
+	// thinking; the gateway now fills that gap for every protocol.
+	//
+	// The keepalive emits pure SSE comments (": keep-alive\n\n") which every
+	// conformant SSE parser silently ignores, so this is wire-safe for all
+	// protocol shapes (see writeThinking comment re: opencode Zod union).
+	if isStream {
 		cfg := currentStreamRuntimeConfig()
 		if cfg.enablePreStreamKeepalive {
 			if psk, ok := startPreStreamKeepalive(w, cfg.keepaliveInterval); ok {

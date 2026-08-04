@@ -243,7 +243,12 @@ func Load() *Config {
 		UpstreamTimeout:         150,
 		StreamTimeout:           900,
 		StreamChunkTimeout:      600,
-		FirstByteTimeout:        120,
+		// 2026-08-04: 120→180s. Reasoning models (Claude thinking, o-series)
+		// with large tool-call contexts regularly exceed 120s to first byte.
+		// Combined with all-protocol pre-stream keepalive (now on by default),
+		// the client connection stays alive during the wait, so a 180s budget
+		// no longer risks client-side idle disconnects.
+		FirstByteTimeout:        180,
 		KeepaliveInterval:       15,
 		// 2026-07-23: Session TTL 从 168h (7d) 改为 72h (3d)。
 		// 7 天累计 23.6 万个 session hash keys 占用 91% 的 Redis 内存。
@@ -252,8 +257,14 @@ func Load() *Config {
 		SessionTTLHours:                    72,
 		PendingTTLSeconds:                  300,
 		SessionIDBodyKeys:                  parseCommaList(os.Getenv("LLM_GATEWAY_SESSION_ID_BODY_KEYS")),
-		StreamRetryThreshold:               50,    // Default: allow stream failover if < 50 chunks sent
-		EnablePreStreamKeepalive:           false, // opt-in; see LLM_GATEWAY_ENABLE_PRE_STREAM_KEEPALIVE
+	StreamRetryThreshold:               50,    // Default: allow stream failover if < 50 chunks sent
+	// 2026-08-04: ON by default for ALL streaming protocols. Previously
+	// opt-in and limited to openai-completions, which left Anthropic Messages
+	// and Responses clients with no heartbeat before the first upstream
+	// chunk — reasoning models' long thinking window then tripped client/
+	// proxy idle timeouts, causing the "agent task interrupted through the
+	// gateway" symptom. Disable via LLM_GATEWAY_ENABLE_PRE_STREAM_KEEPALIVE=false.
+	EnablePreStreamKeepalive:           true,
 		PoolGracePeriod:                    180,   // Default: 3 minutes grace period before marking pool as dead
 		DefaultCredentialConcurrency:       20,    // 2026-06-24: 5 → 20. 每个凭据 20 个 fp_slot，更宽松避免争抢。
 		EnableCredentialFpSlots:            true,

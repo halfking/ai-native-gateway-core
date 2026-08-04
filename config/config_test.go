@@ -58,8 +58,9 @@ func TestLoad_DefaultStreamingTimeouts(t *testing.T) {
 	if cfg.UpstreamTimeout != 150 {
 		t.Fatalf("UpstreamTimeout = %d, want 150", cfg.UpstreamTimeout)
 	}
-	if cfg.FirstByteTimeout != 120 {
-		t.Fatalf("FirstByteTimeout = %d, want 120", cfg.FirstByteTimeout)
+	// 2026-08-04: default raised 120 → 180 for reasoning models (see config.go).
+	if cfg.FirstByteTimeout != 180 {
+		t.Fatalf("FirstByteTimeout = %d, want 180", cfg.FirstByteTimeout)
 	}
 	if cfg.StreamChunkTimeout != 600 {
 		t.Fatalf("StreamChunkTimeout = %d, want 600", cfg.StreamChunkTimeout)

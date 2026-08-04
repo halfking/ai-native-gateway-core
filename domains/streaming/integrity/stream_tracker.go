@@ -15,7 +15,7 @@
 //	record  (default 2 hits) — parity with the final pass, so an
 //	                           incrementally-detected loop produces the
 //	                           same event the final pass would have.
-//	abort   (default 4 hits) — stricter, because cutting a paying
+//	abort   (default 8 hits) — stricter, because cutting a paying
 //	                          request on a false positive is worse than
 //	                          letting it finish. 256-byte aligned blocks
 //	                          repeat legitimately in code indentation,
@@ -57,10 +57,20 @@ type StreamTrackerConfig struct {
 
 // DefaultStreamTrackerConfig reads the env overrides once. Invalid or
 // absent values fall back to the safe defaults described above.
+//
+// 2026-08-04: the abort default was raised 4 → 8. The 256-byte aligned block
+// rule matches blocks *anywhere* in the stream (not just consecutively), so
+// legitimate agent output — repeated JSON keys in tool-call arguments, code
+// indentation, Markdown table rules, base64 payloads — routinely produces
+// 4–7 incidental matches of an identical block. Cutting a paying request on
+// those false positives caused the "agent task interrupted through the
+// gateway" symptom. A real model loop revisits the same block dozens of
+// times, so 8 still catches genuine loops with margin. Abort remains OFF by
+// default; this only affects deployments that opt in.
 func DefaultStreamTrackerConfig() StreamTrackerConfig {
 	cfg := StreamTrackerConfig{
 		AbortEnabled:  os.Getenv("LLM_GATEWAY_INTEGRITY_STREAM_ABORT") == "true",
-		AbortMinHits:  envIntAtLeast("LLM_GATEWAY_INTEGRITY_STREAM_ABORT_MIN_HITS", 4, 2),
+		AbortMinHits:  envIntAtLeast("LLM_GATEWAY_INTEGRITY_STREAM_ABORT_MIN_HITS", 8, 2),
 		RecordMinHits: envIntAtLeast("LLM_GATEWAY_INTEGRITY_STREAM_RECORD_MIN_HITS", 2, 2),
 	}
 	if cfg.AbortMinHits < cfg.RecordMinHits {

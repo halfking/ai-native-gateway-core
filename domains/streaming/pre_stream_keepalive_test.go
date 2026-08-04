@@ -41,11 +41,23 @@ func TestWritePrewarmedStreamError_WritesSSEError(t *testing.T) {
 	}
 }
 
-func TestPreStreamKeepalive_DisabledByDefault(t *testing.T) {
+// TestPreStreamKeepalive_EnabledByDefault verifies the 2026-08-04 change:
+// pre-stream keepalive is ON by default for ALL streaming protocols (was
+// opt-in + openai-completions-only). This is the primary fix for agent-task
+// interruptions through the gateway.
+func TestPreStreamKeepalive_EnabledByDefault(t *testing.T) {
 	t.Setenv("LLM_GATEWAY_ENABLE_PRE_STREAM_KEEPALIVE", "")
 	streamConfigStore.Store(config.NewStore(&config.Config{}))
+	if got := currentStreamRuntimeConfig().enablePreStreamKeepalive; !got {
+		t.Fatal("enable_pre_stream_keepalive should default to true (2026-08-04)")
+	}
+}
+
+func TestPreStreamKeepalive_DisabledViaEnv(t *testing.T) {
+	t.Setenv("LLM_GATEWAY_ENABLE_PRE_STREAM_KEEPALIVE", "false")
+	streamConfigStore.Store(config.NewStore(&config.Config{}))
 	if got := currentStreamRuntimeConfig().enablePreStreamKeepalive; got {
-		t.Fatal("enable_pre_stream_keepalive should default to false")
+		t.Fatal("enable_pre_stream_keepalive should be false when LLM_GATEWAY_ENABLE_PRE_STREAM_KEEPALIVE=false")
 	}
 }
 

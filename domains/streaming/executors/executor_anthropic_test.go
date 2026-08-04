@@ -99,6 +99,98 @@ func TestAnthropicExecutor_CheckSoftMismatch(t *testing.T) {
 	}
 }
 
+// TestApplyClientAnthropicHeaders verifies the 2026-08-04 fix: the client's
+// anthropic-version and anthropic-beta headers must reach the upstream,
+// overriding the hardcoded default version and restoring the (previously
+// dropped) beta flags that agent clients depend on.
+func TestApplyClientAnthropicHeaders(t *testing.T) {
+	t.Run("forwards version and beta", func(t *testing.T) {
+		dst := http.Header{}
+		dst.Set("anthropic-version", anthropicVersion) // simulate BuildRequest default
+		src := http.Header{}
+		src.Set("anthropic-version", "2024-10-22")
+		src.Set("anthropic-beta", "interleaved-thinking-2025-05-14,prompt-caching-2024-07-31")
+
+		applyClientAnthropicHeaders(dst, src)
+
+		if got := dst.Get("anthropic-version"); got != "2024-10-22" {
+			t.Fatalf("anthropic-version = %q, want client value 2024-10-22", got)
+		}
+		if got := dst.Get("anthropic-beta"); got != "interleaved-thinking-2025-05-14,prompt-caching-2024-07-31" {
+			t.Fatalf("anthropic-beta = %q, want client value forwarded", got)
+		}
+	})
+
+	t.Run("preserves default version when client omits it", func(t *testing.T) {
+		dst := http.Header{}
+		dst.Set("anthropic-version", anthropicVersion)
+		src := http.Header{} // no anthropic-* headers
+
+		applyClientAnthropicHeaders(dst, src)
+
+		if got := dst.Get("anthropic-version"); got != anthropicVersion {
+			t.Fatalf("anthropic-version = %q, want default %q preserved", got, anthropicVersion)
+		}
+		if got := dst.Get("anthropic-beta"); got != "" {
+			t.Fatalf("anthropic-beta = %q, want absent", got)
+		}
+	})
+
+	t.Run("joins repeated beta headers", func(t *testing.T) {
+		dst := http.Header{}
+		src := http.Header{}
+		src.Add("anthropic-beta", "prompt-caching-2024-07-31")
+		src.Add("anthropic-beta", "interleaved-thinking-2025-05-14")
+
+		applyClientAnthropicHeaders(dst, src)
+
+		got := dst.Get("anthropic-beta")
+		if !strings.Contains(got, "prompt-caching-2024-07-31") || !strings.Contains(got, "interleaved-thinking-2025-05-14") {
+			t.Fatalf("anthropic-beta = %q, want both flags joined", got)
+		}
+	})
+
+	t.Run("skips empty beta values", func(t *testing.T) {
+		dst := http.Header{}
+		src := http.Header{}
+		src.Add("anthropic-beta", "prompt-caching-2024-07-31")
+		src.Add("anthropic-beta", "  ") // whitespace-only
+		src.Add("anthropic-beta", "")   // empty
+		src.Add("anthropic-beta", "interleaved-thinking-2025-05-14")
+
+		applyClientAnthropicHeaders(dst, src)
+
+		got := dst.Get("anthropic-beta")
+		if !strings.Contains(got, "prompt-caching-2024-07-31") || !strings.Contains(got, "interleaved-thinking-2025-05-14") {
+			t.Fatalf("anthropic-beta = %q, want both non-empty flags", got)
+		}
+		// Ensure empty/whitespace values were NOT included
+		if strings.Contains(got, "  ") || strings.HasSuffix(got, ",") || strings.HasPrefix(got, ",") {
+			t.Fatalf("anthropic-beta = %q, should not contain empty values or trailing commas", got)
+		}
+	})
+
+	t.Run("no beta header when all values empty", func(t *testing.T) {
+		dst := http.Header{}
+		src := http.Header{}
+		src.Add("anthropic-beta", "")
+		src.Add("anthropic-beta", "  ")
+
+		applyClientAnthropicHeaders(dst, src)
+
+		if got := dst.Get("anthropic-beta"); got != "" {
+			t.Fatalf("anthropic-beta = %q, want absent when all values empty", got)
+		}
+	})
+
+	t.Run("handles nil headers gracefully", func(t *testing.T) {
+		// Should not panic
+		applyClientAnthropicHeaders(nil, nil)
+		applyClientAnthropicHeaders(http.Header{}, nil)
+		applyClientAnthropicHeaders(nil, http.Header{})
+	})
+}
+
 // TestExecutor_DispatchesAnthropic verifies the Q4 dispatcher in
 // executor.go: when a candidate has protocol=anthropic-messages, the
 // Executor.executeAnthropic() method must actually send the request to
