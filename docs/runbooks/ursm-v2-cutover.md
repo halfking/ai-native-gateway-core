@@ -51,14 +51,15 @@
 把 `public.node_probe_state` 的当前状态写到 URSM v2 Redis 命名空间。否则 URSM v2 在 shadow 模式会因 T4 保护性拒绝（"no observed telemetry = not available"）把所有候选视为不可用，shadow 对比窗口毫无意义。
 
 ```bash
-# 154 生产
-./bin/migrate-ursm-v2 --pg="$LLM_GATEWAY_DATABASE_URL" --redis="$REDIS_URL" --apply
+# 154 生产：默认读取 LLM_GATEWAY_REDIS_ADDR/PASSWORD/DB，默认 db=2。
+# 若设置 REDIS_URL，则 REDIS_URL 优先；也可通过 --redis 显式指定完整 URL。
+./bin/migrate-ursm-v2 --pg="$LLM_GATEWAY_DATABASE_URL" --apply
 
 # 默认 --dry-run，先看清楚要写多少
-./bin/migrate-ursm-v2 --pg="$LLM_GATEWAY_DATABASE_URL" --redis="$REDIS_URL"
+./bin/migrate-ursm-v2 --pg="$LLM_GATEWAY_DATABASE_URL"
 # → 输出：
 #   ✅ Connected to PG (postgres://***@host:5432/db)
-#   ✅ Connected to Redis (redis://***@host:6379/0)
+#   ✅ Connected to Redis (redis://***@host:6379/2)
 #   ✅ Read N legacy node_probe_state rows
 #   [DRY-RUN] would write N URSM v2 nodes:
 #     - available (healthy)         : X
@@ -67,7 +68,7 @@
 #   (no Redis writes; pass --apply to commit)
 
 # 实际跑（245 staging 先验证，再 154 生产）
-./bin/migrate-ursm-v2 --pg=... --redis=... --apply
+./bin/migrate-ursm-v2 --pg=... --redis=redis://host:6379/2 --apply
 # → 输出：
 #   ✓ wrote 100 / 287
 #   ✓ wrote 200 / 287
