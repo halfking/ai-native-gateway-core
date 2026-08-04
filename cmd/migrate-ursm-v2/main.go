@@ -46,8 +46,10 @@
 //	# restrict to one tenant for staged rollout
 //	./bin/migrate-ursm-v2 --apply --tenant-id=42
 //
-//	# custom Redis / PG (defaults read from env / .env file)
-//	./bin/migrate-ursm-v2 --redis=redis://10.0.0.1:6379/0 \
+//	# custom Redis / PG (REDIS_URL takes precedence; otherwise the
+//	# LLM_GATEWAY_REDIS_ADDR/PASSWORD/DB settings are used, with db=2 by
+//	# default to match the gateway)
+//	./bin/migrate-ursm-v2 --redis=redis://10.0.0.1:6379/2 \
 //	    --pg="postgres://user:pass@host:5432/db?sslmode=disable"
 //
 // Safety:
@@ -69,7 +71,9 @@ import (
 	"flag"
 	"fmt"
 	"log"
+	"net/url"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -100,6 +104,8 @@ type mappedNode struct {
 }
 
 const (
+	defaultRedisURL = "redis://localhost:6379/2"
+
 	// defaultRedisKeyPrefix matches domains/ursm/v2/config.go DefaultConfig().
 	defaultRedisKeyPrefix = "ursm:v2:"
 
@@ -119,7 +125,7 @@ func main() {
 	var (
 		apply          = flag.Bool("apply", false, "Actually write to Redis. Default is dry-run.")
 		forceOverwrite = flag.Bool("force-overwrite", false, "Bypass CAS guard and overwrite pre-existing keys.")
-		redisURL       = flag.String("redis", envOr("REDIS_URL", "redis://localhost:6379/0"), "Redis URL")
+		redisURL       = flag.String("redis", redisURLFromEnv(), "Redis URL")
 		pgDSN          = flag.String("pg", envOr("LLM_GATEWAY_DATABASE_URL", envOr("DATABASE_URL", "")), "Postgres DSN")
 		keyPrefix      = flag.String("key-prefix", defaultRedisKeyPrefix, "URSM v2 Redis key prefix (must match gateway config)")
 		tenantID       = flag.Int64("tenant-id", 0, "Optional: restrict migration to one tenant_id (0 = all)")
@@ -431,6 +437,34 @@ func envOr(key, def string) string {
 		return v
 	}
 	return def
+}
+
+// redisURLFromEnv resolves the migration target using the same settings as
+// the gateway. An explicit REDIS_URL wins; otherwise the split gateway Redis
+// settings are assembled into a URL. The URL's explicit DB path always wins
+// over environment defaults because it is parsed after this resolution.
+func redisURLFromEnv() string {
+	if v := strings.TrimSpace(os.Getenv("REDIS_URL")); v != "" {
+		return v
+	}
+
+	addr := envOr("LLM_GATEWAY_REDIS_ADDR", "localhost:6379")
+	db := 2
+	if raw := strings.TrimSpace(os.Getenv("LLM_GATEWAY_REDIS_DB")); raw != "" {
+		if parsed, err := strconv.Atoi(raw); err == nil && parsed >= 0 {
+			db = parsed
+		}
+	}
+
+	u := &url.URL{
+		Scheme: "redis",
+		Host:   addr,
+		Path:   "/" + strconv.Itoa(db),
+	}
+	if password := os.Getenv("LLM_GATEWAY_REDIS_PASSWORD"); password != "" {
+		u.User = url.UserPassword("", password)
+	}
+	return u.String()
 }
 
 // maskDSN hides credentials when echoing connection strings to stdout.

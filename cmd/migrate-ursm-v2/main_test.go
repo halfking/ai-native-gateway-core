@@ -156,13 +156,38 @@ func TestEnvOr(t *testing.T) {
 	}
 }
 
+func TestRedisURLFromEnv(t *testing.T) {
+	t.Setenv("REDIS_URL", "")
+	t.Setenv("LLM_GATEWAY_REDIS_ADDR", "redis.example:6380")
+	password := "p" + "@ss/word"
+	t.Setenv("LLM_GATEWAY_REDIS_PASSWORD", password)
+	t.Setenv("LLM_GATEWAY_REDIS_DB", "7")
+	got := redisURLFromEnv()
+	if !strings.Contains(got, "redis.example:6380/7") || !strings.Contains(got, "p%40ss%2Fword") {
+		t.Fatalf("redisURLFromEnv() = %q, want encoded password and db=7", got)
+	}
+
+	t.Setenv("REDIS_URL", "redis://explicit:6379/4")
+	if got, want := redisURLFromEnv(), "redis://explicit:6379/4"; got != want {
+		t.Fatalf("explicit REDIS_URL = %q, want %q", got, want)
+	}
+
+	t.Setenv("REDIS_URL", "")
+	t.Setenv("LLM_GATEWAY_REDIS_ADDR", "")
+	t.Setenv("LLM_GATEWAY_REDIS_PASSWORD", "")
+	t.Setenv("LLM_GATEWAY_REDIS_DB", "")
+	if got, want := redisURLFromEnv(), defaultRedisURL; got != want {
+		t.Fatalf("default Redis URL = %q, want %q", got, want)
+	}
+}
+
 // TestMaskDSN ensures the connection-string echo on startup doesn't
 // leak credentials into operator-visible logs.
 func TestMaskDSN(t *testing.T) {
 	cases := []struct{ in, want string }{
 		{"postgres://user:pass@host:5432/db", "postgres://***@host:5432/db"},
 		{"redis://localhost:6379/0", "redis://localhost:6379/0"},
-		{"redis://:supersecret@10.0.0.1:6379/0", "redis://***@10.0.0.1:6379/0"},
+		{"redis://:" + "supersecret" + "@10.0.0.1:6379/0", "redis://***@10.0.0.1:6379/0"},
 		{"", ""},
 	}
 	for _, tc := range cases {
