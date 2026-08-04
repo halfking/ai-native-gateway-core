@@ -138,6 +138,17 @@ func (c *Checker) CheckAndUpdate(ctx context.Context, credentialID int, model st
 		//   healthy throughout. The stream-resumable failover path in
 		//   executor_chat.go:838-840 already routes the per-request retry
 		//   to the next candidate, so we don't need degradation here either.
+		//
+		// NOT skipped (intentionally):
+		// - upstream_context_loss: a third-party relay silently dropped the
+		//   request body's context and answered a stripped prompt (HTTP 200,
+		//   clean [DONE], but prompt_tokens a tiny fraction of body size).
+		//   Observed on apiclaude.cc 2026-08-04 (request e8bf0d5fc726: 919KB
+		//   body → prompt_tokens=337 → 21-token reply; sibling requests of
+		//   the same session reported 256K–305K). Unlike KindEmptyResponse
+		//   this is a genuine upstream fault the user perceives as an error,
+		//   so it MUST count toward degradation to let the router soft-demote
+		//   the credential. Do not add it to this skip list.
 		if e.ErrorKind == "network" ||
 			e.ErrorKind == string(errorsx.KindCanceled) ||
 			e.ErrorKind == string(errorsx.KindTransient) ||

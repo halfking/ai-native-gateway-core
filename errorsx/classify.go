@@ -89,6 +89,29 @@ const (
 	// driven by payload shape, not by upstream capability — a
 	// different credential against the same provider would also fail.
 	KindConversion ErrorKind = "conversion_error"
+	// KindUpstreamContextLoss: upstream returned HTTP 200 with a clean
+	// stream ([DONE], stop_reason=end_turn), so the request looks
+	// "successful" at the protocol layer, but the prompt_tokens the
+	// upstream reported are a tiny fraction of what the request body
+	// implies — the upstream silently dropped most of the context before
+	// invoking the model (observed on third-party Claude relay
+	// apiclaude.cc: a ~919KB body produced prompt_tokens=337 while
+	// sibling requests of the same session reported 256K–305K).
+	//
+	// From the user's perspective this IS an error: the model answers a
+	// stripped-down context and returns a near-useless short reply.
+	//
+	// Classification rationale (deliberately different from KindEmptyResponse):
+	//   - NOT in IsClientBug: the client's request is valid.
+	//   - NOT in IsCredentialFatal: a single occurrence must not hard-exclude
+	//     the credential (it may be a transient relay hiccup).
+	//   - NOT in IsRetryable: the response has already streamed to the
+	//     client by the time we can detect the mismatch; retry would double
+	//     bill. Detection is post-hoc, feeding the quality pipeline.
+	//   - NOT skipped by credentialhealth (unlike KindEmptyResponse): this
+	//     is a real upstream fault and MUST count toward degradation so the
+	//     router can soft-demote / fail over the credential.
+	KindUpstreamContextLoss ErrorKind = "upstream_context_loss"
 )
 
 // contextLengthRe matches upstream error bodies that signal "prompt too

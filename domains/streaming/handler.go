@@ -3983,6 +3983,28 @@ func (h *ChatHandler) emitTelemetry(evt audit.Event, result *executors.ExecuteRe
 			}
 		}
 
+		// 2026-08-04: Detect upstream silent context loss.
+		// A relay/upstream can accept a large request body (HTTP 200, clean
+		// [DONE], stop_reason=end_turn) yet report prompt_tokens that are a
+		// tiny fraction of what the body implies — i.e. it silently dropped
+		// most of the context before invoking the model. The model then
+		// answers the stripped-down prompt and returns a near-useless short
+		// reply. Observed on apiclaude.cc (request e8bf0d5fc726: 919KB body
+		// → prompt_tokens=337 → 21-token reply; same-session siblings
+		// reported 256K–305K). From the user's perspective this is an error.
+		// Runs only when still marked success (after the empty-response
+		// check) so the two detectors don't clobber each other.
+		if reqLog.Success {
+			if detectUpstreamContextLoss(m, reqLog) {
+				reqLog.Success = false
+				reqLog.RequestStatus = strPtr(telemetry.RequestStatusFailure)
+				reqLog.ErrorKind = strPtr(string(errorsx.KindUpstreamContextLoss))
+				reqLog.FailureStage = strPtr(string(errorsx.KindUpstreamContextLoss))
+				reqLog.FailureDetailCode = strPtr("prompt_tokens_body_mismatch")
+				reqLog.QualityFlags = append(reqLog.QualityFlags, QualityFlagUpstreamContextLoss)
+			}
+		}
+
 		// 2026-06-19 T-NEW-7: split the semantic overload of failure_detail_code.
 		// audit/audit.go::SummaryAsMap now publishes the upstream finish_reason
 		// under the new "upstream_finish_reason" key (for BOTH success and
@@ -6219,6 +6241,94 @@ func detectEmptyStreamResponse(m map[string]any, reqLog *telemetry.RequestLogEnt
 	}
 
 	// All empty indicators present - this is truly an empty response
+	return true
+}
+
+// estimatePromptTokensFromBytes gives a rough lower-bound estimate of the
+// prompt token count implied by a request body of the given byte size. The
+// ratio (1 token ≈ 4 bytes) is deliberately conservative for mixed
+// English/CJK + JSON overhead: it tends to *over-estimate* tokens for pure
+// English (where 1 token ≈ 4-5 bytes is closer) and *under-estimate* for
+// CJK-heavy bodies (where 1 token ≈ 1.5-2 bytes). For the context-loss
+// detector we only need an order-of-magnitude floor; the 5% threshold in
+// detectUpstreamContextLoss is wide enough to absorb this variance.
+func estimatePromptTokensFromBytes(bodyBytes int) int {
+	if bodyBytes <= 0 {
+		return 0
+	}
+	return bodyBytes / 4
+}
+
+// detectUpstreamContextLoss reports whether the upstream silently dropped the
+// request context: it accepted a large body (HTTP 200, clean stream close)
+// but reported prompt_tokens that are a tiny fraction of the body's implied
+// token count, then returned only a handful of completion tokens. This is
+// the apiclaude.cc 2026-08-04 failure mode (request e8bf0d5fc726) and, to the
+// user, is indistinguishable from a broken model.
+//
+// The detector runs after detectEmptyStreamResponse and only on rows still
+// marked success, so a true empty_response (0 completion tokens) is never
+// double-counted here.
+//
+// Threshold rationale (calibrated against the e8bf0d5fc726 incident and its
+// same-session siblings):
+//   - body >= 50 KB before we engage: small requests legitimately yield few
+//     tokens and must not trip a context-loss alarm.
+//   - prompt_tokens < estimated/20 (i.e. < 5% of the body's implied tokens):
+//     the incident hit 337 vs an ~235K estimate (≈0.14%); healthy siblings
+//     sat at 256K–305K (≈100%+). 5% leaves a wide safety margin.
+//   - completion_tokens < 50: a model that actually read the context would
+//     typically produce a substantial reply; <50 tokens after a big prompt
+//     is the signature of an answered-but-wrong-context reply.
+//   - upstream finish_reason is a "clean" terminator (end_turn/stop/length/
+//     tool_calls): this is precisely what makes the failure deceptive — the
+//     stream closes normally, so the network/timeout detectors never fire.
+//     We read from the summary map m (not reqLog.UpstreamFinishReason) for
+//     the same timing reason as detectEmptyStreamResponse (the field is set
+//     after emitTelemetry).
+func detectUpstreamContextLoss(m map[string]any, reqLog *telemetry.RequestLogEntry) bool {
+	if reqLog == nil || reqLog.RequestBytes == nil {
+		return false
+	}
+	bodyBytes := *reqLog.RequestBytes
+	if bodyBytes < 50*1024 { // only engage for sizeable requests
+		return false
+	}
+
+	promptTokens := 0
+	if reqLog.PromptTokens != nil {
+		promptTokens = *reqLog.PromptTokens
+	}
+	if promptTokens <= 0 {
+		return false // no usage reported — can't judge a mismatch
+	}
+
+	estimated := estimatePromptTokensFromBytes(bodyBytes)
+	if estimated <= 0 || promptTokens >= estimated/20 {
+		return false // upstream reported a plausible share of the context
+	}
+
+	completionTokens := 0
+	if reqLog.CompletionTokens != nil {
+		completionTokens = *reqLog.CompletionTokens
+	}
+	if completionTokens >= 50 {
+		return false // substantial reply — assume the context was honoured
+	}
+
+	// Require a clean terminator: this fault class closes the stream
+	// normally, which is why no interruption detector catches it.
+	reason := ""
+	if v, ok := m["upstream_finish_reason"].(string); ok {
+		reason = v
+	}
+	switch reason {
+	case "end_turn", "stop", "length", "tool_calls":
+		// clean close — the deceptive case we are looking for
+	default:
+		return false
+	}
+
 	return true
 }
 
