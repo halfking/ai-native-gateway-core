@@ -2,6 +2,7 @@
 -- KEYS[2] = window 1m
 -- KEYS[3] = window 5m
 -- KEYS[4] = window 30m
+-- KEYS[5] = optional dedup key for a non-empty request ID
 -- ARGV[1] = "1"|"0"   (success)
 -- ARGV[2] = error_kind
 -- ARGV[3] = event_ts_ms
@@ -13,11 +14,13 @@
 -- ARGV[9] = admin_hold_flag ("1"|"0") [DEPRECATED: lua now reads manual_hold directly]
 -- ARGV[10] = cool_seconds (default 300 = 5min)
 -- ARGV[11] = fail_streak_limit (default 3)
+-- ARGV[12] = dedup enabled ("1"|"0")
 
 local node_key = KEYS[1]
 local w1 = KEYS[2]
 local w5 = KEYS[3]
 local w30 = KEYS[4]
+local dedup_key = KEYS[5]
 local success = ARGV[1]
 local err_kind = ARGV[2]
 local now_ms = tonumber(ARGV[3])
@@ -29,6 +32,7 @@ local w30_ttl = tonumber(ARGV[8])
 local admin_hold_arg = ARGV[9]
 local cool_seconds = tonumber(ARGV[10]) or 300
 local fail_streak_limit = tonumber(ARGV[11]) or 3
+local dedup_enabled = ARGV[12] == "1"
 
 -- M3 (2026-07-28): read manual_hold INSIDE the script so the short-circuit
 -- observes the live value at write time. Eliminates the prior TOCTOU race
@@ -40,6 +44,12 @@ local fail_streak_limit = tonumber(ARGV[11]) or 3
 local manual_hold = redis.call("HGET", node_key, "manual_hold")
 if manual_hold == "1" or admin_hold_arg == "1" then
   return {"ignored_manual_hold", "0", "0"}
+end
+
+if dedup_enabled then
+  if redis.call("SET", dedup_key, "1", "NX", "EX", node_ttl) == false then
+    return {"duplicate", "0", "0"}
+  end
 end
 
 -- Get current state

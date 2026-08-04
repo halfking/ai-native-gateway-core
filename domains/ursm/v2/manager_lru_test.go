@@ -193,7 +193,11 @@ func TestFilterAndScoreReady_RejectsMirrorWhenNotReady(t *testing.T) {
 		"mirror-cached availability must survive when ready=true")
 }
 
-// --- test helpers ---
+func TestManagerCloseIsIdempotent(t *testing.T) {
+	mgr, _, _ := newMirrorManager(t)
+	mgr.Close()
+	mgr.Close()
+}
 
 func apiNodeView(credID int, model string, gen int64, available bool) api.NodeView {
 	return api.NodeView{

@@ -59,7 +59,8 @@ type SystemMonitor struct {
 	recoveryGate          RecoveryGate
 	recoveryFailThreshold int           // consecutive ping failures to trigger; default 3
 	recoveryDebounceTTL   time.Duration // debounce window for cluster-wide MarkClosedDebounced; default 5m
-	consecutiveFailures   int           // private health-check state
+	healthMu              sync.Mutex
+	consecutiveFailures   int // protected by healthMu; never hold it across gate/Redis I/O
 
 	// pingFn is an optional test seam that overrides the production
 	// dedup.Ping. nil in production; tests inject a stub here to drive
@@ -810,7 +811,7 @@ func (sm *SystemMonitor) checkRedisHealthOnce(ctx context.Context) {
 	case pingErr == nil && sm.IsFallback():
 		slog.Info("system_monitor: redis recovered, exiting fallback mode")
 		sm.clearFallback()
-		sm.consecutiveFailures = 0
+		sm.resetConsecutiveFailures()
 		sm.maybeAutoRestoreRecoveryGate(ctx)
 		// Audit follow-up #2: drain the durable fallback backstop
 		// so tasks persisted during the fallback window get back
@@ -829,17 +830,36 @@ func (sm *SystemMonitor) checkRedisHealthOnce(ctx context.Context) {
 	case pingErr == nil && !sm.IsFallback():
 		// Healthy and not in fallback — nothing to do, but reset the
 		// failure counter so the next failure event starts from 0.
-		sm.consecutiveFailures = 0
+		sm.resetConsecutiveFailures()
 	case pingErr != nil && !sm.IsFallback():
 		slog.Warn("system_monitor: redis unhealthy, entering fallback mode",
 			"error", pingErr)
 		sm.markFallback()
-		sm.consecutiveFailures++
-		sm.maybeAutoCloseRecoveryGate(ctx, pingErr)
+		sm.maybeAutoCloseRecoveryGate(ctx, pingErr, sm.incrementConsecutiveFailures())
 	case pingErr != nil && sm.IsFallback():
-		sm.consecutiveFailures++
-		sm.maybeAutoCloseRecoveryGate(ctx, pingErr)
+		sm.maybeAutoCloseRecoveryGate(ctx, pingErr, sm.incrementConsecutiveFailures())
 	}
+}
+
+func (sm *SystemMonitor) resetConsecutiveFailures() {
+	sm.healthMu.Lock()
+	sm.consecutiveFailures = 0
+	sm.healthMu.Unlock()
+}
+
+func (sm *SystemMonitor) incrementConsecutiveFailures() int {
+	sm.healthMu.Lock()
+	sm.consecutiveFailures++
+	n := sm.consecutiveFailures
+	sm.healthMu.Unlock()
+	return n
+}
+
+func (sm *SystemMonitor) consecutiveFailureCount() int {
+	sm.healthMu.Lock()
+	n := sm.consecutiveFailures
+	sm.healthMu.Unlock()
+	return n
 }
 
 // maybeAutoCloseRecoveryGate calls MarkClosedDebounced when the
@@ -853,18 +873,18 @@ func (sm *SystemMonitor) checkRedisHealthOnce(ctx context.Context) {
 // Best-effort: failures are logged and swallowed so a single bad call
 // never blocks the health-check loop. RecoveryGate==nil is a no-op
 // (production wired default; tests can drive the path explicitly).
-func (sm *SystemMonitor) maybeAutoCloseRecoveryGate(ctx context.Context, pingErr error) {
+func (sm *SystemMonitor) maybeAutoCloseRecoveryGate(ctx context.Context, pingErr error, failures int) {
 	if sm.recoveryGate == nil {
 		return
 	}
-	if sm.consecutiveFailures < sm.recoveryFailThreshold {
+	if failures < sm.recoveryFailThreshold {
 		return
 	}
 	won, err := sm.recoveryGate.MarkClosedDebounced(ctx, "redis_unavailable", sm.recoveryDebounceTTL)
 	if err != nil {
 		slog.Warn("system_monitor: recovery gate auto-close failed",
 			"error", err,
-			"consecutive_failures", sm.consecutiveFailures,
+			"consecutive_failures", failures,
 			"threshold", sm.recoveryFailThreshold,
 			"ping_error", pingErr.Error(),
 		)
@@ -873,7 +893,7 @@ func (sm *SystemMonitor) maybeAutoCloseRecoveryGate(ctx context.Context, pingErr
 	if won {
 		slog.Warn("system_monitor: recovery gate closed by persistent redis failure",
 			"reason", "redis_unavailable",
-			"consecutive_failures", sm.consecutiveFailures,
+			"consecutive_failures", failures,
 			"threshold", sm.recoveryFailThreshold,
 			"debounce_ttl", sm.recoveryDebounceTTL.String(),
 			"ping_error", pingErr.Error(),
@@ -884,7 +904,7 @@ func (sm *SystemMonitor) maybeAutoCloseRecoveryGate(ctx context.Context, pingErr
 		// see the gate closure in real time.
 		sm.publishRecoveryEvent(ctx, "recovery_closed", map[string]any{
 			"reason":               "redis_unavailable",
-			"consecutive_failures": sm.consecutiveFailures,
+			"consecutive_failures": failures,
 			"threshold":            sm.recoveryFailThreshold,
 			"debounce_ttl":         sm.recoveryDebounceTTL.String(),
 			"ping_error":           pingErr.Error(),
@@ -961,7 +981,7 @@ func (sm *SystemMonitor) RecoveryStats() RecoveryStats {
 		return RecoveryStats{}
 	}
 	out := RecoveryStats{
-		ConsecutiveFailures: sm.consecutiveFailures,
+		ConsecutiveFailures: sm.consecutiveFailureCount(),
 		FailThreshold:       sm.recoveryFailThreshold,
 	}
 	if sm.recoveryGate != nil {

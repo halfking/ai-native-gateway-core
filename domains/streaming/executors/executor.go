@@ -2903,6 +2903,30 @@ func (e *Executor) Execute(params *ExecParams) (*ExecuteResult, error) {
 		failureCtx, failureCancel := runctx.DetachedTimeout(params.R.Context(), 5*time.Second)
 		defer failureCancel()
 
+		// URSM v2 is the sole request-health writer in authoritative mode.
+		// Keep this sidecar detached and bounded like the stream interruption
+		// path so a client cancellation cannot drop a normal failed attempt.
+		if e.URSMv2 != nil {
+			requestID := params.R.Header.Get("X-Request-Id")
+			if requestID == "" {
+				requestID = "async-" + time.Now().Format("20060102T150405.000")
+			}
+			if err := e.URSMv2.RecordRequest(params.R.Context(), ursmv2api.RequestOutcome{
+				CredentialID: cand.CredentialID,
+				RawModel:     cand.RawModel,
+				TenantID:     params.TenantID,
+				BillingMode:  cand.BillingMode,
+				Success:      false,
+				LatencyMs:    int(time.Since(attemptStart).Milliseconds()),
+				ErrorKind:    string(kind),
+				RequestID:    requestID,
+			}); err != nil {
+				slog.Warn("ursm.v2: record failure failed",
+					"error", err, "request_id", requestID,
+					"credential_id", cand.CredentialID, "error_kind", kind)
+			}
+		}
+
 		// Record failed call for health tracking
 		if e.HealthTracker != nil {
 			// PR-4 (T4 P0, 2026-06-23): real X-Request-Id so Redis

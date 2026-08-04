@@ -285,11 +285,11 @@ func TestRestoreIfClosed_WhenClosed(t *testing.T) {
 	}
 }
 
-// TestWarmupFromExistingKeys_EmptyRedisIsSafe verifies the empty-state
-// case: when Redis has just been initialised and no node keys exist
-// yet, WarmupFromExistingKeys still opens the gate (so the v2
-// pipeline can serve traffic) without error.
-func TestWarmupFromExistingKeys_EmptyRedisIsSafe(t *testing.T) {
+// TestWarmupFromExistingKeys_EmptyRedisKeepsGateClosed verifies that an empty
+// authoritative namespace is not mistaken for usable runtime state. Opening
+// the gate here would reject every candidate because missing nodes default to
+// unavailable.
+func TestWarmupFromExistingKeys_EmptyRedisKeepsGateClosed(t *testing.T) {
 	m := New(newMini(t), "ursm:v2:")
 	ctx := context.Background()
 	if err := m.SetReady(ctx, false); err != nil {
@@ -297,14 +297,14 @@ func TestWarmupFromExistingKeys_EmptyRedisIsSafe(t *testing.T) {
 	}
 
 	n, err := m.WarmupFromExistingKeys(ctx)
-	if err != nil {
-		t.Fatalf("warmup empty: %v", err)
+	if err == nil {
+		t.Fatal("warmup empty must refuse to open the gate")
 	}
 	if n != 0 {
 		t.Fatalf("warmup on empty redis returned %d, want 0", n)
 	}
-	if !m.Ready(ctx) {
-		t.Fatalf("gate must be open after warmup, even with 0 keys")
+	if m.Ready(ctx) {
+		t.Fatal("gate must remain closed without recoverable node state")
 	}
 }
 

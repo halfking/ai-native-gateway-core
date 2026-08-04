@@ -179,6 +179,23 @@ func (m *NodeMirror) PeekForTenant(tenant string, credID int, raw string) (NodeV
 	return m.shard(key).Peek(key)
 }
 
+// InvalidateForTenant drops one cached node after a successful authoritative
+// Redis transition. This is intentionally unconditional: Redis owns the
+// generation and a local cache entry must never outlive an admin/request/probe
+// write just because that write was initiated by this process.
+func (m *NodeMirror) InvalidateForTenant(tenant string, credID int, raw string) bool {
+	if m == nil {
+		return false
+	}
+	key := nodeMirrorKeyForTenant(tenant, credID, raw)
+	return m.shard(key).Delete(key)
+}
+
+// Invalidate retains the legacy non-tenant helper for operator tooling.
+func (m *NodeMirror) Invalidate(credID int, raw string) bool {
+	return m.InvalidateForTenant("", credID, raw)
+}
+
 // ApplyFromAPI backfills the mirror from an authoritative api.NodeView just
 // read from Redis (M2). It is the read path's only write entrypoint;
 // applyToLRU enforces the generation-monotonic contract so a stale Redis

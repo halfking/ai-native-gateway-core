@@ -104,6 +104,7 @@ type AdminAction struct {
 	ProviderID     int
 	CredentialID   int
 	RawModel       string
+	TenantID       string
 	ManualDisabled *bool
 	Reason         string
 	Actor          string

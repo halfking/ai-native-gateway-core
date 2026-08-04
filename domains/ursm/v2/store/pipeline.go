@@ -44,9 +44,19 @@ func (s *Store) PipelineNodeViews(ctx context.Context, prefix string, qs []NodeQ
 		v := api.NodeView{TenantID: qs[i].TenantID, CredentialID: qs[i].CredentialID, RawModel: qs[i].RawModel}
 		v.Available = raw["available"] == "1"
 		v.Reason = raw["last_err"]
+		v.HealthStatus = raw["health"]
 		v.SrcPriority = atoi(raw["source_priority"])
 		v.Generation = atoi64(raw["generation"])
 		v.FailStreak = int(atoi64(raw["fail_streak"]))
+		v.SR1m = parseFloat(raw["sr_1m"])
+		v.SR5m = parseFloat(raw["sr_5m"])
+		v.SR30m = parseFloat(raw["sr_30m"])
+		v.Samples1m = atoi(raw["samples_1m"])
+		v.Samples5m = atoi(raw["samples_5m"])
+		v.Samples30m = atoi(raw["samples_30m"])
+		v.LatP50Ms = atoi(raw["lat_p50_ms"])
+		v.LatP95Ms = atoi(raw["lat_p95_ms"])
+		v.LatEWMA = atoi(raw["lat_ewma_ms"])
 
 		// Parse cool_until_ms and check if node is in cooling period
 		if coolUntilMsStr := raw["cool_until_ms"]; coolUntilMsStr != "" {

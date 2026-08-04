@@ -854,6 +854,21 @@ func (h *Handler) handleEmergencyRepair(w http.ResponseWriter, r *http.Request) 
 	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 	defer cancel()
 
+	ursmTenantID := ""
+	if h.ursmV2 != nil && req.RawModel != "" {
+		if err := h.db.QueryRow(ctx,
+			"SELECT COALESCE(tenant_id, '') FROM credentials WHERE id = $1",
+			req.CredentialID,
+		).Scan(&ursmTenantID); err != nil {
+			if err == pgx.ErrNoRows {
+				writeError(w, http.StatusNotFound, "credential not found")
+			} else {
+				writeError(w, http.StatusInternalServerError, "credential tenant lookup failed: "+err.Error())
+			}
+			return
+		}
+	}
+
 	// Get actor for audit: prefer authenticated username from AuthContext,
 	// fallback to r.RemoteAddr when not available (C4 修复).
 	actor := r.RemoteAddr
@@ -862,10 +877,11 @@ func (h *Handler) handleEmergencyRepair(w http.ResponseWriter, r *http.Request) 
 	}
 
 	beforeAfter := map[string]any{
-		"credential_id": req.CredentialID,
-		"raw_model":     req.RawModel,
-		"action":        req.Action,
-		"reason":        req.Reason,
+		"credential_id":  req.CredentialID,
+		"raw_model":      req.RawModel,
+		"action":         req.Action,
+		"reason":         req.Reason,
+		"ursm_tenant_id": ursmTenantID,
 	}
 
 	switch req.Action {
@@ -1004,6 +1020,7 @@ func (h *Handler) handleEmergencyRepair(w http.ResponseWriter, r *http.Request) 
 				Scope:          api.ScopeNode,
 				CredentialID:   req.CredentialID,
 				RawModel:       req.RawModel,
+				TenantID:       ursmTenantID,
 				ManualDisabled: &disabled,
 				Reason:         req.Reason,
 				Actor:          actor,
@@ -1015,7 +1032,7 @@ func (h *Handler) handleEmergencyRepair(w http.ResponseWriter, r *http.Request) 
 			} else {
 				beforeAfter["ursm_v2_admin_applied"] = true
 			}
-			if err := h.ursmV2.ClearState(ctx, req.CredentialID, req.RawModel); err != nil {
+			if err := h.ursmV2.ClearStateForTenant(ctx, ursmTenantID, req.CredentialID, req.RawModel); err != nil {
 				slog.Warn("emergency_repair: ursm.v2 clear_state failed", "error", err, "cred", req.CredentialID)
 				beforeAfter["ursm_v2_cleared"] = false
 			} else {
@@ -1061,6 +1078,7 @@ func (h *Handler) handleEmergencyRepair(w http.ResponseWriter, r *http.Request) 
 				Scope:          api.ScopeNode,
 				CredentialID:   req.CredentialID,
 				RawModel:       req.RawModel,
+				TenantID:       ursmTenantID,
 				ManualDisabled: &disabled,
 				Reason:         req.Reason,
 				Actor:          actor,
@@ -1142,7 +1160,7 @@ func (h *Handler) handleEmergencyRepair(w http.ResponseWriter, r *http.Request) 
 
 		// Also clear cooling state in URSM v2 Redis
 		if h.ursmV2 != nil && req.RawModel != "" {
-			if err := h.ursmV2.ClearState(ctx, req.CredentialID, req.RawModel); err != nil {
+			if err := h.ursmV2.ClearStateForTenant(ctx, ursmTenantID, req.CredentialID, req.RawModel); err != nil {
 				slog.Warn("emergency_repair: ursm.v2 clear_state failed", "error", err, "cred", req.CredentialID)
 				beforeAfter["ursm_v2_cleared"] = false
 			} else {
@@ -1212,7 +1230,7 @@ func (h *Handler) handleEmergencyRepair(w http.ResponseWriter, r *http.Request) 
 
 		// Also clear fail counters in URSM v2 Redis
 		if h.ursmV2 != nil && req.RawModel != "" {
-			if err := h.ursmV2.ClearState(ctx, req.CredentialID, req.RawModel); err != nil {
+			if err := h.ursmV2.ClearStateForTenant(ctx, ursmTenantID, req.CredentialID, req.RawModel); err != nil {
 				slog.Warn("emergency_repair: ursm.v2 clear_state failed", "error", err, "cred", req.CredentialID)
 				beforeAfter["ursm_v2_cleared"] = false
 			} else {

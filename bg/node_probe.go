@@ -94,6 +94,10 @@ const (
 	nodeProbeSyncFanout = 8
 )
 
+type NodeProbeStateSink interface {
+	ApplyProbeForTenant(ctx context.Context, tenant string, credentialID int, rawModel string, success bool, latencyMs int) error
+}
+
 // NodeProbeWorker polls node_probe_state and executes the two-round
 // (direct + gateway) probe for each (credential, model) whose
 // next_retry_at has elapsed.
@@ -119,6 +123,7 @@ type NodeProbeWorker struct {
 	client        *http.Client // direct (no proxy), for probeGateway
 	probeClient   *http.Client // proxy-respecting, for probeDirect
 	stateObserver credentialstate.StateObserver
+	stateSink     NodeProbeStateSink
 	// stateProvider (2026-07-17) is the READ-side contract used by
 	// ProbeSync's reuse path: after a syncWaiter channel closes, we
 	// re-check IsAvailable for that (cred,model) so the function can
@@ -166,6 +171,15 @@ type nodeProbeTrigger struct {
 func (w *NodeProbeWorker) SetStateObserver(observer credentialstate.StateObserver) {
 	if w != nil {
 		w.stateObserver = observer
+	}
+}
+
+// SetNodeStateSink wires URSM v2 probe feedback without coupling bg to the
+// concrete v2 Manager. It is optional so legacy deployments retain their
+// existing credentialstate-only behavior.
+func (w *NodeProbeWorker) SetNodeStateSink(sink NodeProbeStateSink) {
+	if w != nil {
+		w.stateSink = sink
 	}
 }
 
@@ -1068,6 +1082,7 @@ func (w *NodeProbeWorker) runOne(ctx context.Context, credID int, model, trigger
 	gw := w.probeGateway(ctx, credID, model)
 
 	success := direct.ok && gw.ok
+	w.updateURSMv2ProbeState(ctx, trigger.tenantID, credID, model, success, direct.latencyMs)
 	w.emitProbe(ctx, credID, direct.providerID, model, direct.outboundModel, "direct", attempt, trigger, direct)
 	w.emitProbe(ctx, credID, direct.providerID, model, direct.outboundModel, "gateway", attempt, trigger, gw)
 	if !direct.ok {
@@ -1625,6 +1640,27 @@ func (w *NodeProbeWorker) updateCredentialHealth(ctx context.Context, credID int
 		  AND COALESCE(manual_disabled, FALSE) = FALSE
 		  AND COALESCE(quota_state, 'ok') NOT IN ('permanently_exhausted', 'balance_exhausted')
 	`, credID)
+}
+
+func (w *NodeProbeWorker) updateURSMv2ProbeState(ctx context.Context, tenantID string, credID int, model string, success bool, latencyMs int) {
+	if w == nil || w.stateSink == nil {
+		return
+	}
+	probeCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Second)
+	defer cancel()
+	if tenantID == "" && w.db != nil {
+		if err := w.db.QueryRow(probeCtx,
+			"SELECT COALESCE(tenant_id, '') FROM credentials WHERE id = $1", credID,
+		).Scan(&tenantID); err != nil {
+			slog.Warn("node_probe_worker: resolve URSM v2 tenant failed",
+				"credential_id", credID, "model", model, "error", err)
+			return
+		}
+	}
+	if err := w.stateSink.ApplyProbeForTenant(probeCtx, tenantID, credID, model, success, latencyMs); err != nil {
+		slog.Warn("node_probe_worker: URSM v2 probe state write failed",
+			"credential_id", credID, "model", model, "tenant_id", tenantID, "error", err)
+	}
 }
 
 func (w *NodeProbeWorker) updateObservedState(ctx context.Context, credID int, model string, available bool, lastError string, recoverAt time.Time) {

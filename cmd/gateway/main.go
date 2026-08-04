@@ -547,7 +547,10 @@ func main() {
 			Redis:  redisClientForCache.Client(),
 			Config: ursmv2.LoadFromEnv(),
 		})
-		if env := os.Getenv("URSM_V2_MODE"); env == "shadow" || env == "canary" || env == "authoritative" {
+		// Non-authoritative rollout modes may become ready immediately because
+		// they cannot reject a route. Authoritative mode stays closed until the
+		// migration below has established live node state.
+		if env := os.Getenv("URSM_V2_MODE"); env == "shadow" || env == "canary" {
 			if err := ursmV2Mgr.SetReady(context.Background(), true); err != nil {
 				slog.Warn("ursm.v2: ready set failed", "error", err)
 			}
@@ -562,16 +565,25 @@ func main() {
 	// 启动 FpSlots NodeState 一次性迁移 (URSM v2 过渡, Task 5)。
 	// 仅 mode != off 时执行; 幂等(已迁移 key generation>=1)。旧 key 保留 7d TTL。
 	if redisClientForCache != nil && ursmV2Mgr != nil && ursmV2Mgr.Mode() != ursmv2api.ModeOff {
-		go func() {
+		go func(mgr *ursmv2.Manager) {
 			ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 			defer cancel()
 			n, err := ursmcache.MigrateFpSlotsNodeStates(ctx, redisClientForCache.Client())
 			if err != nil {
 				slog.Warn("fpslots node-state migration failed", "error", err)
-			} else if n > 0 {
+				return
+			}
+			if n > 0 {
 				slog.Info("fpslots node states migrated to ursm:v2", "count", n)
 			}
-		}()
+			if mgr.Mode() == ursmv2api.ModeAuthoritative {
+				if count, err := mgr.WarmupFromExistingKeys(ctx); err != nil {
+					slog.Warn("ursm.v2: authoritative gate remains closed after warmup", "error", err)
+				} else {
+					slog.Info("ursm.v2: authoritative gate opened after warmup", "node_count", count)
+				}
+			}
+		}(ursmV2Mgr)
 	}
 
 	// URSM v2 persist writer (T15+L6): snapshot v2 Redis state to DB periodically
@@ -2636,6 +2648,9 @@ func main() {
 				// B. node_probe — error-triggered 5s/30s/60s/5m/1h/2h/24h
 				// backoff, direct + gateway two rounds.
 				nodeProbeWorker = bg.NewNodeProbeWorker(dbConn.Pool(), fernetKey, keyring, selfCheckAPIKey, "", upClient.Proxy().ProxyFunc())
+				if ursmV2Mgr != nil && ursmV2Mgr.Mode() == ursmv2api.ModeAuthoritative {
+					nodeProbeWorker.SetNodeStateSink(ursmV2ProbeSink{manager: ursmV2Mgr})
+				}
 				nodeProbeWorker.SetStateObserver(stateManager)
 				nodeProbeWorker.SetStateProvider(stateManager)
 				nodeProbeWorker.SetEmitter(bg.NewActiveProbeEmitter(telemetryClient))
@@ -2695,6 +2710,21 @@ func main() {
 				systemHealthWorker.Start(context.Background())
 				slog.Info("CHECKPOINT: system_health_worker started")
 			}
+		}
+
+		// Authoritative URSM v2 has no credentialstate.Manager by design, but
+		// active probes must continue to provide recovery evidence. Start the
+		// worker independently and route its final state through the v2 sink.
+		if stateManager == nil && ursmV2Mgr != nil && ursmV2Mgr.Mode() == ursmv2api.ModeAuthoritative && shouldStartNewProbeWorkers(selfCheckAPIKey) {
+			nodeProbeWorker = bg.NewNodeProbeWorker(dbConn.Pool(), fernetKey, keyring, selfCheckAPIKey, "", upClient.Proxy().ProxyFunc())
+			nodeProbeWorker.SetNodeStateSink(ursmV2ProbeSink{manager: ursmV2Mgr})
+			nodeProbeWorker.SetEmitter(bg.NewActiveProbeEmitter(telemetryClient))
+			nodeProbeWorker.SetInvalidateCandidateCache(provider.InvalidateCandidateCacheForCredential)
+			if routingExec != nil && routingExec.Circuit != nil {
+				nodeProbeWorker.SetCircuitRecovery(routingExec.Circuit.RecordSuccess)
+			}
+			nodeProbeWorker.Start(context.Background())
+			slog.Info("authoritative URSM v2 node_probe_worker started")
 		}
 
 		slog.Info("CHECKPOINT: before NewStickyCleaner")
@@ -4491,6 +4521,9 @@ func main() {
 		// 2026-07-22: 停止 URSM v2 persist writer（如果已启动）
 		if persistWriterStop != nil {
 			persistWriterStop()
+		}
+		if ursmV2Mgr != nil {
+			ursmV2Mgr.Close()
 		}
 
 		// Stop new probe/self-check workers before closing telemetry or the
