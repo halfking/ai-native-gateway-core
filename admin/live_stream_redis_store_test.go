@@ -2303,3 +2303,297 @@ func TestIdleMarker_BothMainAndDimQueueUpdated(t *testing.T) {
 		t.Fatalf("detail ModelCategory=%q want openai (vendor identity preserved)", req.ModelCategory)
 	}
 }
+
+// TestComputeScopeDelta_DropsDegradedSnapshot verifies 方案A: when a scope
+// already has a populated cached baseline, a clearly degraded incoming
+// snapshot (total far below 40% of the cached baseline — the signature of a
+// Redis read timeout that skipped most dimension queues) must be dropped
+// rather than pushed to clients, so swim-lane counts do not jump 20↔3.
+func TestComputeScopeDelta_DropsDegradedSnapshot(t *testing.T) {
+	mr := miniredis.RunT(t)
+	defer mr.Close()
+	rdb := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	defer rdb.Close()
+	hub := NewLiveStreamSSEHub(nil, LiveStreamConfig{RedisClient: rdb, InitialReplayLimit: 200})
+	ctx := context.Background()
+
+	// Seed a healthy baseline into Redis: 100 openai requests → snapshot total=100.
+	for i := 0; i < 100; i++ {
+		req := LiveRequest{
+			RequestID:     fmt.Sprintf("req-baseline-%d", i),
+			Ts:            time.Now().UTC().Format(time.RFC3339),
+			TenantID:      "tenant-deg",
+			Model:         "gpt-4o",
+			ModelCategory: "openai",
+			ProviderCode:  "openai",
+			Status:        "success",
+		}
+		if err := hub.store.Record(ctx, req); err != nil {
+			t.Fatalf("Record baseline %d: %v", i, err)
+		}
+	}
+	// First read populates the cached baseline.
+	delta0 := hub.computeScopeDelta(ctx, "tenant-deg", false)
+	if delta0 == nil {
+		t.Fatal("first delta must populate baseline")
+	}
+	cachedTotal := delta0.Summary.Total
+	if cachedTotal < degradedSnapshotMinBaseline {
+		t.Fatalf("baseline total=%d < min %d, test seed too small", cachedTotal, degradedSnapshotMinBaseline)
+	}
+	skipsBefore := atomic.LoadInt64(&hub.cachedSnapshotDegradedSkips)
+
+	// Wipe most dimension queues to simulate a timeout-degraded read that only
+	// retains a tiny fraction of the lanes. We delete all vendor/provider/model
+	// queues then re-insert just ONE vendor lane with 2 members, so the next
+	// SnapshotFromDimensionQueues returns total≈2 (well under 40% of baseline).
+	for _, key := range mr.Keys() {
+		if strings.Contains(key, ":dim:") {
+			mr.Del(key)
+		}
+	}
+	for i := 0; i < 2; i++ {
+		req := LiveRequest{
+			RequestID:     fmt.Sprintf("req-degraded-%d", i),
+			Ts:            time.Now().UTC().Format(time.RFC3339),
+			TenantID:      "tenant-deg",
+			Model:         "gpt-4o",
+			ModelCategory: "openai",
+			ProviderCode:  "openai",
+			Status:        "success",
+		}
+		if err := hub.store.Record(ctx, req); err != nil {
+			t.Fatalf("Record degraded %d: %v", i, err)
+		}
+	}
+
+	// The degraded read must be dropped, not pushed.
+	deltaDeg := hub.computeScopeDelta(ctx, "tenant-deg", false)
+	if deltaDeg != nil {
+		t.Fatalf("degraded snapshot must be dropped, got delta total=%d", deltaDeg.Summary.Total)
+	}
+	skipsAfter := atomic.LoadInt64(&hub.cachedSnapshotDegradedSkips)
+	if skipsAfter != skipsBefore+1 {
+		t.Fatalf("degraded skip counter: before=%d after=%d, want +1", skipsBefore, skipsAfter)
+	}
+
+	// The cached baseline must be UNCHANGED (degraded read must not overwrite it).
+	hub.cachedSnapshotMu.RLock()
+	entry := hub.cachedSnapshot["scope:tenant:tenant-deg"]
+	hub.cachedSnapshotMu.RUnlock()
+	if entry == nil || entry.snapshot == nil {
+		t.Fatal("cached baseline must be preserved after degraded read")
+	}
+	if entry.snapshot.Summary.Total != cachedTotal {
+		t.Fatalf("cached baseline overwritten: got total=%d want %d", entry.snapshot.Summary.Total, cachedTotal)
+	}
+}
+
+// TestComputeScopeDelta_AcceptsNonDegradedSnapshot verifies 方案A does NOT
+// misfire when traffic legitimately drops but stays above the 40% threshold,
+// or when there is no baseline yet (cold start).
+func TestComputeScopeDelta_AcceptsNonDegradedSnapshot(t *testing.T) {
+	mr := miniredis.RunT(t)
+	defer mr.Close()
+	rdb := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	defer rdb.Close()
+	hub := NewLiveStreamSSEHub(nil, LiveStreamConfig{RedisClient: rdb, InitialReplayLimit: 200})
+	ctx := context.Background()
+
+	// Cold start: no baseline → a small snapshot must NOT be dropped.
+	for i := 0; i < 3; i++ {
+		req := LiveRequest{
+			RequestID:     fmt.Sprintf("req-cold-%d", i),
+			Ts:            time.Now().UTC().Format(time.RFC3339),
+			TenantID:      "tenant-cold",
+			Model:         "gpt-4o",
+			ModelCategory: "openai",
+			ProviderCode:  "openai",
+			Status:        "success",
+		}
+		if err := hub.store.Record(ctx, req); err != nil {
+			t.Fatalf("Record cold %d: %v", i, err)
+		}
+	}
+	if d := hub.computeScopeDelta(ctx, "tenant-cold", false); d == nil {
+		t.Fatal("cold-start small snapshot must not be dropped")
+	}
+
+	// Moderate drop (above 40% threshold): baseline 60 → next 30 (50%) must pass.
+	for i := 0; i < 60; i++ {
+		req := LiveRequest{
+			RequestID:     fmt.Sprintf("req-mod-%d", i),
+			Ts:            time.Now().UTC().Format(time.RFC3339),
+			TenantID:      "tenant-mod",
+			Model:         "gpt-4o",
+			ModelCategory: "openai",
+			ProviderCode:  "openai",
+			Status:        "success",
+		}
+		if err := hub.store.Record(ctx, req); err != nil {
+			t.Fatalf("Record mod %d: %v", i, err)
+		}
+	}
+	if d := hub.computeScopeDelta(ctx, "tenant-mod", false); d == nil {
+		t.Fatal("moderate baseline must populate")
+	}
+}
+
+// TestLiveStreamDimIndex_PopulatedAndRead verifies 方案C: Record() registers
+// its dimension queue keys into the scope index SET, and discoverDimensionQueues
+// reads them via SMEMBERS (source=index) instead of SCANning the keyspace.
+func TestLiveStreamDimIndex_PopulatedAndRead(t *testing.T) {
+	mr := miniredis.RunT(t)
+	defer mr.Close()
+	rdb := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	defer rdb.Close()
+	store := NewLiveStreamRedisStore(rdb)
+	ctx := context.Background()
+
+	// Record one request: it should land in vendor/provider/model dim queues
+	// AND register those queues in both the global and tenant index SETs.
+	req := LiveRequest{
+		RequestID:     "req-idx-1",
+		Ts:            time.Now().UTC().Format(time.RFC3339),
+		TenantID:      "tenant-idx",
+		Model:         "gpt-4o",
+		CanonicalName: "gpt-4o",
+		ModelCategory: "openai",
+		ProviderCode:  "openai",
+		Status:        "success",
+	}
+	if err := store.Record(ctx, req); err != nil {
+		t.Fatalf("Record: %v", err)
+	}
+
+	// Tenant index must contain the tenant-scoped dim keys.
+	tenantMembers, err := rdb.SMembers(ctx, liveStreamDimIndexKey("tenant-idx", false)).Result()
+	if err != nil {
+		t.Fatalf("SMembers tenant index: %v", err)
+	}
+	wantTenantDim := []string{
+		tenantLiveStreamKey("tenant-idx", "dim:vendor:openai"),
+		tenantLiveStreamKey("tenant-idx", "dim:provider:openai"),
+		tenantLiveStreamKey("tenant-idx", "dim:model:gpt-4o"),
+	}
+	for _, want := range wantTenantDim {
+		if !sliceContainsString(tenantMembers, want) {
+			t.Errorf("tenant index missing dim key %q; got %v", want, tenantMembers)
+		}
+	}
+
+	// Global index must contain the global dim keys.
+	globalMembers, err := rdb.SMembers(ctx, liveStreamDimIndexKey("", true)).Result()
+	if err != nil {
+		t.Fatalf("SMembers global index: %v", err)
+	}
+	wantGlobalDim := []string{
+		liveStreamDimPrefix + "vendor:openai",
+		liveStreamDimPrefix + "provider:openai",
+		liveStreamDimPrefix + "model:gpt-4o",
+	}
+	for _, want := range wantGlobalDim {
+		if !sliceContainsString(globalMembers, want) {
+			t.Errorf("global index missing dim key %q; got %v", want, globalMembers)
+		}
+	}
+
+	// discoverDimensionQueues for the tenant scope must return exactly the 3
+	// tenant dim keys (post-sort) via the index path.
+	keys, err := store.discoverDimensionQueues(ctx, "tenant-idx", false)
+	if err != nil {
+		t.Fatalf("discoverDimensionQueues: %v", err)
+	}
+	if len(keys) != 3 {
+		t.Fatalf("tenant discover returned %d keys, want 3: %v", len(keys), keys)
+	}
+	for _, want := range wantTenantDim {
+		if !sliceContainsString(keys, want) {
+			t.Errorf("discoverDimensionQueues missing key %q; got %v", want, keys)
+		}
+	}
+
+	// Super scope must return the 3 global dim keys.
+	superKeys, err := store.discoverDimensionQueues(ctx, "", true)
+	if err != nil {
+		t.Fatalf("discoverDimensionQueues super: %v", err)
+	}
+	if len(superKeys) != 3 {
+		t.Fatalf("super discover returned %d keys, want 3: %v", len(superKeys), superKeys)
+	}
+}
+
+// sliceContainsString reports whether vals contains s. Small helper kept local
+// to the live-stream tests to avoid pulling in a broader slice util.
+func sliceContainsString(vals []string, s string) bool {
+	for _, v := range vals {
+		if v == s {
+			return true
+		}
+	}
+	return false
+}
+
+// TestLiveStreamDimIndex_FallbackToScan verifies 方案C degrades gracefully:
+// when the index SET is empty/absent (cold start, expiry), discoverDimensionQueues
+// falls back to SCAN so no lane is lost.
+func TestLiveStreamDimIndex_FallbackToScan(t *testing.T) {
+	mr := miniredis.RunT(t)
+	defer mr.Close()
+	rdb := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	defer rdb.Close()
+	store := NewLiveStreamRedisStore(rdb)
+	ctx := context.Background()
+
+	// Record so the dim queues exist in Redis but then DELETE the index SET,
+	// simulating an expired/absent index (pre-migration cold start).
+	req := LiveRequest{
+		RequestID:     "req-fb-1",
+		Ts:            time.Now().UTC().Format(time.RFC3339),
+		TenantID:      "tenant-fb",
+		Model:         "claude-3",
+		CanonicalName: "claude-3",
+		ModelCategory: "anthropic",
+		ProviderCode:  "anthropic",
+		Status:        "success",
+	}
+	if err := store.Record(ctx, req); err != nil {
+		t.Fatalf("Record: %v", err)
+	}
+	rdb.Del(ctx, liveStreamDimIndexKey("tenant-fb", false))
+
+	// discoverDimensionQueues must still find the 3 dim keys via SCAN fallback.
+	keys, err := store.discoverDimensionQueues(ctx, "tenant-fb", false)
+	if err != nil {
+		t.Fatalf("discoverDimensionQueues: %v", err)
+	}
+	if len(keys) != 3 {
+		t.Fatalf("fallback returned %d keys, want 3: %v", len(keys), keys)
+	}
+}
+
+// TestIsDimensionQueueKey covers the index filter that decides which queue
+// keys are registered and which SET members are kept.
+func TestIsDimensionQueueKey(t *testing.T) {
+	cases := []struct {
+		key  string
+		want bool
+	}{
+		{liveStreamDimPrefix + "vendor:openai", true},
+		{liveStreamDimPrefix + "provider:MiniMax", true},
+		{liveStreamDimPrefix + "model:gpt-4o", true},
+		{tenantLiveStreamKey("t1", "dim:vendor:openai"), true},
+		{tenantLiveStreamKey("t1", "dim:model:claude-3"), true},
+		{liveStreamMainKey, false},
+		{tenantLiveStreamKey("t1", "main"), false},
+		{liveStreamStatPrefix + "success", false},
+		{liveStreamDimIndexPrefix + "global", false}, // index SET itself is not a lane
+		{"llmgw:live:req:abc", false},
+		{"", false},
+	}
+	for _, c := range cases {
+		if got := isDimensionQueueKey(c.key); got != c.want {
+			t.Errorf("isDimensionQueueKey(%q)=%v want %v", c.key, got, c.want)
+		}
+	}
+}

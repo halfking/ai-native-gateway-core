@@ -69,52 +69,109 @@ func (s *LiveStreamRedisStore) SnapshotFromDimensionQueues(ctx context.Context, 
 	//     and legend counts by request_id.
 	//   - buildLiveStreamLanes dedupes per (dimension,lane,request_id) so a
 	//     request still appears only once inside a given lane.
+	//
+	// 2026-08-04 (方案B): Pipeline the reads. The previous implementation
+	// issued one ZRevRange per dimKey (42 round-trips) then one GET per member
+	// (~840 round-trips), all serial. Against a shared Redis on a remote host
+	// this blew past the 2s context deadline ~40% of the time (production
+	// logs), and on timeout the remaining dimKeys were skipped → a "degraded"
+	// snapshot whose total dropped from ~258 to single digits → swim lanes
+	// jumped 20↔3. Two pipelines collapse the ~882 round-trips into 2, leaving
+	// ample headroom under the (now widened) deadline. Per-command errors are
+	// still tolerated (continue), preserving the original degradation shape so
+	// computeScopeDelta's degraded-snapshot guard still catches any leftover.
 	var allRequests []LiveRequest
 
-	for _, key := range dimKeys {
-		// 2026-07-26: dimension queues store slim tile JSON members (see
-		// Record()), while main queues still store bare request ids. Decode
-		// each member before building the request-detail key.
-		members, err := s.rdb.ZRevRange(ctx, key, 0, int64(LiveStreamLaneVisibleLimit-1)).Result()
-		if err != nil {
-			slog.Debug("snapshot: failed to read dimension queue", "key", key, "err", err.Error())
+	// Phase 1: batch ZRevRange all dimension queue keys in a single pipeline.
+	pipe := s.rdb.Pipeline()
+	zrevCmds := make([]*redis.StringSliceCmd, len(dimKeys))
+	for i, key := range dimKeys {
+		zrevCmds[i] = pipe.ZRevRange(ctx, key, 0, int64(LiveStreamLaneVisibleLimit-1))
+	}
+	if _, err := pipe.Exec(ctx); err != nil && err != redis.Nil {
+		// A pipeline-level error (e.g. ctx already cancelled) fails every cmd;
+		// fall through so per-cmd errors are logged individually below.
+		slog.Debug("snapshot: zrevrange pipeline exec failed", "err", err.Error(), "dim_keys", len(dimKeys))
+	}
+
+	// Collect (requestID) in dimKey order, preserving original semantics. We
+	// dedupe request_ids across dimKeys only for the detail-fetch phase (same
+	// request legitimately appears in vendor/provider/model queues — fetching
+	// its detail once is correct and faster), while still appending the decoded
+	// request once per (dimKey, request_id) so each lane keeps its member.
+	type memberRef struct {
+		dimIdx    int
+		requestID string
+	}
+	var memberRefs []memberRef
+	seenDetail := make(map[string]int) // requestID → index into detail fetch list
+	var detailOrder []string           // requestIDs in first-seen order
+	for i, cmd := range zrevCmds {
+		members, err := cmd.Result()
+		if err != nil && err != redis.Nil {
+			slog.Debug("snapshot: failed to read dimension queue", "key", dimKeys[i], "err", err.Error())
 			continue
 		}
-
 		for _, member := range members {
 			requestID := requestIDFromDimensionQueueMember(member)
 			if requestID == "" {
 				continue
 			}
-
-			// Load request detail
-			detailKey := liveStreamGlobalRequestDetailKey(requestID)
-			if !isSuper && tenantID != "" {
-				detailKey = liveStreamRequestDetailKey(tenantID, requestID)
+			memberRefs = append(memberRefs, memberRef{dimIdx: i, requestID: requestID})
+			if _, ok := seenDetail[requestID]; !ok {
+				seenDetail[requestID] = len(detailOrder)
+				detailOrder = append(detailOrder, requestID)
 			}
-
-			data, err := s.rdb.Get(ctx, detailKey).Result()
-			if err == redis.Nil {
-				continue // request detail expired
-			}
-			if err != nil {
-				slog.Debug("snapshot: failed to load request detail", "request_id", requestID, "err", err.Error())
-				continue
-			}
-
-			req, err := unmarshalLiveRequestRedisPayload(data)
-			if err != nil {
-				slog.Debug("snapshot: failed to unmarshal request", "request_id", requestID, "err", err.Error())
-				continue
-			}
-
-			// Tenant filtering
-			if !isSuper && tenantID != "" && req.TenantID != tenantID {
-				continue
-			}
-
-			allRequests = append(allRequests, req)
 		}
+	}
+
+	// Phase 2: batch GET every distinct request detail in a single pipeline.
+	detailPipe := s.rdb.Pipeline()
+	detailCmds := make([]*redis.StringCmd, len(detailOrder))
+	for i, requestID := range detailOrder {
+		detailKey := liveStreamGlobalRequestDetailKey(requestID)
+		if !isSuper && tenantID != "" {
+			detailKey = liveStreamRequestDetailKey(tenantID, requestID)
+		}
+		detailCmds[i] = detailPipe.Get(ctx, detailKey)
+	}
+	if _, err := detailPipe.Exec(ctx); err != nil && err != redis.Nil {
+		slog.Debug("snapshot: detail pipeline exec failed", "err", err.Error(), "details", len(detailOrder))
+	}
+
+	// Decode each detail once; nil entries mean "expired/missing" (skip, as before).
+	details := make([]*LiveRequest, len(detailOrder))
+	for i, cmd := range detailCmds {
+		data, err := cmd.Result()
+		if err == redis.Nil {
+			continue // request detail expired
+		}
+		if err != nil {
+			slog.Debug("snapshot: failed to load request detail", "request_id", detailOrder[i], "err", err.Error())
+			continue
+		}
+		req, err := unmarshalLiveRequestRedisPayload(data)
+		if err != nil {
+			slog.Debug("snapshot: failed to unmarshal request", "request_id", detailOrder[i], "err", err.Error())
+			continue
+		}
+		// Tenant filtering
+		if !isSuper && tenantID != "" && req.TenantID != tenantID {
+			continue
+		}
+		details[i] = &req
+	}
+
+	// Append one decoded request per member reference. A request missing its
+	// detail is skipped here (matching the previous per-member continue), so a
+	// lane whose every member expired still contributes nothing.
+	allRequests = make([]LiveRequest, 0, len(memberRefs))
+	for _, ref := range memberRefs {
+		idx := seenDetail[ref.requestID]
+		if details[idx] == nil {
+			continue
+		}
+		allRequests = append(allRequests, *details[idx])
 	}
 
 	// Sort ASC by timestamp so this function's own output — the
@@ -181,10 +238,86 @@ func (s *LiveStreamRedisStore) SnapshotFromDimensionQueues(ctx context.Context, 
 	return BuildLiveStreamSnapshot(allRequests), nil
 }
 
-// discoverDimensionQueues scans Redis for all dimension queue keys.
-// Returns the list of keys to read from, sorted by most recent activity
-// to ensure stable snapshot windows across calls.
+// discoverDimensionQueues returns all swim-lane dimension queue keys for one
+// scope, sorted by most recent activity so snapshot windows stay stable across
+// calls.
+//
+// 2026-08-04 (方案C): the primary path now reads the scope's index SET
+// (maintained by Record()/ScanAndRecordIdleMarkers) via a single SMEMBERS,
+// replacing the per-snapshot SCAN over the whole keyspace that dominated the
+// Redis slowlog and slowed the shared instance. If the index is absent
+// (cold start, migration, or the SET expired) the method transparently falls
+// back to the original SCAN so no lane is ever lost.
 func (s *LiveStreamRedisStore) discoverDimensionQueues(ctx context.Context, tenantID string, isSuper bool) ([]string, error) {
+	var allKeys []string
+	source := "scan"
+
+	if indexKey := liveStreamDimIndexKey(tenantID, isSuper); indexKey != "" {
+		members, err := s.rdb.SMembers(ctx, indexKey).Result()
+		if err == nil && len(members) > 0 {
+			// Filter to genuine dim keys only: the SET is best-effort and may
+			// carry stale members (a lane queue can be evicted before the index
+			// SET itself expires). isDimensionQueueKey also rules out anything
+			// that is not vendor/provider/model. Stale members are harmless —
+			// the downstream ZRevRange simply returns empty for a missing key.
+			for _, m := range members {
+				if isDimensionQueueKey(m) {
+					allKeys = append(allKeys, m)
+				}
+			}
+			source = "index"
+		} else if err != nil && err != redis.Nil {
+			slog.Debug("dimension index SMembers failed, falling back to SCAN",
+				"index_key", indexKey, "err", err.Error())
+		}
+	}
+
+	if len(allKeys) == 0 {
+		// Fallback: SCAN the keyspace. Used before any Record() has populated
+		// the index (cold start), during a rolling deploy, or if the index SET
+		// expired (24h of no traffic).
+		scanKeys, err := s.discoverDimensionQueuesByScan(ctx, tenantID, isSuper)
+		if err != nil {
+			return nil, err
+		}
+		allKeys = scanKeys
+		source = "scan-fallback"
+	}
+
+	// 2026-07-20: Sort keys by last activity timestamp to stabilize snapshot
+	// windows. Redis SCAN order is non-deterministic, causing the same request
+	// to appear/disappear across consecutive snapshots when different dimension
+	// queues are scanned in different orders (the "swim-lane rolling" issue
+	// reported on 245). Sorting by recency ensures we consistently prioritize
+	// active lanes, and the deduplication logic produces stable results.
+	var sortErr error
+	allKeys, sortErr = s.sortKeysByActivity(ctx, allKeys)
+	if sortErr != nil {
+		slog.Debug("failed to sort by activity, using lexicographic order", "err", sortErr.Error())
+		sort.Strings(allKeys)
+	}
+
+	// 2026-07-21: Log dimension queue discovery details
+	slog.Info("dimension queues discovered",
+		"tenant_id", tenantID,
+		"is_super", isSuper,
+		"source", source,
+		"total_keys", len(allKeys),
+		"first_3_keys", func() string {
+			if len(allKeys) > 3 {
+				return strings.Join(allKeys[:3], ", ")
+			}
+			return strings.Join(allKeys, ", ")
+		}(),
+	)
+
+	return allKeys, nil
+}
+
+// discoverDimensionQueuesByScan is the legacy keyspace SCAN used as a fallback
+// when the dim index SET is unavailable. Behaviour is identical to the
+// pre-方案C discoverDimensionQueues.
+func (s *LiveStreamRedisStore) discoverDimensionQueuesByScan(ctx context.Context, tenantID string, isSuper bool) ([]string, error) {
 	var patterns []string
 
 	if isSuper {
@@ -212,33 +345,6 @@ func (s *LiveStreamRedisStore) discoverDimensionQueues(ctx context.Context, tena
 		}
 		allKeys = append(allKeys, keys...)
 	}
-
-	// 2026-07-20: Sort keys by last activity timestamp to stabilize snapshot
-	// windows. Redis SCAN order is non-deterministic, causing the same request
-	// to appear/disappear across consecutive snapshots when different dimension
-	// queues are scanned in different orders (the "swim-lane rolling" issue
-	// reported on 245). Sorting by recency ensures we consistently prioritize
-	// active lanes, and the deduplication logic produces stable results.
-	allKeys, err := s.sortKeysByActivity(ctx, allKeys)
-	if err != nil {
-		// Fallback to alphabetical sort if activity lookup fails
-		slog.Debug("failed to sort by activity, using lexicographic order", "err", err.Error())
-		sort.Strings(allKeys)
-	}
-
-	// 2026-07-21: Log dimension queue discovery details
-	slog.Info("dimension queues discovered",
-		"tenant_id", tenantID,
-		"is_super", isSuper,
-		"total_keys", len(allKeys),
-		"first_3_keys", func() string {
-			if len(allKeys) > 3 {
-				return strings.Join(allKeys[:3], ", ")
-			}
-			return strings.Join(allKeys, ", ")
-		}(),
-	)
-
 	return allKeys, nil
 }
 

@@ -218,6 +218,13 @@ const (
 	liveStreamStatPrefix     = "llmgw:live:status:"
 	liveStreamTenantSet      = "llmgw:live:tenants"
 	liveStreamActivityPrefix = "llmgw:live:activity:"
+	// 2026-08-04 (方案C): dimension-queue index SETs. discoverDimensionQueues
+	// previously SCANned the whole keyspace (300k+ keys) on every snapshot read,
+	// and those `scan count 10000` calls dominated the Redis slowlog and slowed
+	// the shared instance. Each Record()/idle-marker write now SADDs its dim
+	// queue keys into one of these SETs so the reader can SMEMBERS instead of
+	// SCAN. One SET per scope: super reads the global set, tenant reads its own.
+	liveStreamDimIndexPrefix = "llmgw:live:dim:index:"
 	// 2026-07-23: liveStreamTTL 仍指向 request detail 保持向后兼容
 	liveStreamTTL = LiveStreamRecordRetention
 	// 新增：分层 TTL 常量
@@ -437,6 +444,17 @@ func (s *LiveStreamRedisStore) recordLocked(ctx context.Context, req LiveRequest
 			} else {
 				// Fallback to request_id if slim marshal fails
 				pipe.ZAdd(ctx, key, redis.Z{Score: score, Member: req.RequestID})
+			}
+			// 2026-08-04 (方案C): register this dim queue key in the scope's
+			// index SET so discoverDimensionQueues can SMEMBERS instead of
+			// SCANning the whole keyspace. Global dim keys go to the global
+			// index; tenant dim keys go to the tenant index. Idempotent (SADD
+			// on an existing member is a no-op) and TTL-refreshed per write so
+			// the index outlives any single lane queue. See isDimensionQueueKey.
+			if isDimensionQueueKey(key) {
+				indexKey := liveStreamDimIndexKey(tenantID, isGlobalDimKey(key))
+				pipe.SAdd(ctx, indexKey, key)
+				pipe.Expire(ctx, indexKey, liveStreamLaneQueueTTL)
 			}
 		}
 		// 2026-07-23: 维度队列 24h TTL（泳道存在不超过 1 天）
@@ -1188,6 +1206,44 @@ func tenantLiveStreamKey(tenantID, suffix string) string {
 	return "llmgw:live:tenant:" + normalizeLiveStreamTenant(tenantID) + ":" + suffix
 }
 
+// liveStreamDimIndexKey returns the Redis SET key that indexes all dimension
+// queue keys for one scope (方案C). super-admin reads the global index; a
+// tenant reads its own. The SET's members are the full dim queue key names
+// (e.g. "llmgw:live:dim:vendor:minimax" or
+// "llmgw:live:tenant:default:dim:vendor:minimax").
+func liveStreamDimIndexKey(tenantID string, isSuper bool) string {
+	if isSuper {
+		return liveStreamDimIndexPrefix + "global"
+	}
+	return liveStreamDimIndexPrefix + "tenant:" + normalizeLiveStreamTenant(tenantID)
+}
+
+// isDimensionQueueKey reports whether a Redis key is a swim-lane dimension
+// queue (vendor/provider/model). Used by the index writer to decide which
+// queue keys to register, and by the reader to filter SET members down to
+// the requested dimensions. Only keys containing the ":dim:" segment and a
+// known dimension suffix are considered.
+func isDimensionQueueKey(key string) bool {
+	// Both global ("llmgw:live:dim:vendor:...") and tenant
+	// ("llmgw:live:tenant:<id>:dim:vendor:...") forms contain ":dim:".
+	idx := strings.Index(key, ":dim:")
+	if idx < 0 {
+		return false
+	}
+	rest := key[idx+len(":dim:"):]
+	return strings.HasPrefix(rest, "vendor:") ||
+		strings.HasPrefix(rest, "provider:") ||
+		strings.HasPrefix(rest, "model:")
+}
+
+// isGlobalDimKey reports whether a dim queue key is the global-scope form
+// ("llmgw:live:dim:...") rather than a tenant-scoped form
+// ("llmgw:live:tenant:<id>:dim:..."). The index writer routes a key into the
+// global vs tenant index SET based on this.
+func isGlobalDimKey(key string) bool {
+	return strings.HasPrefix(key, liveStreamDimPrefix)
+}
+
 func normalizeLiveStreamTenant(tenantID string) string {
 	tenantID = strings.TrimSpace(tenantID)
 	if tenantID == "" {
@@ -1392,6 +1448,14 @@ func (s *LiveStreamRedisStore) ScanAndRecordIdleMarkers(ctx context.Context, ts 
 			// 2026-07-23: idle marker 写入泳道队列，队列 TTL 用 24h（泳道存在 ≤ 1 天）
 			writePipe.Expire(ctx, qkey, liveStreamLaneQueueTTL)
 			trimLiveStreamQueue(writePipe, ctx, qkey, liveStreamQueueKeepLimit(qkey))
+			// 2026-08-04 (方案C): keep the dim index SET in sync when an idle
+			// marker creates a dim queue (idle-only lane). Routes the key to the
+			// global vs tenant index, matching the Record() path.
+			if isDimensionQueueKey(qkey) {
+				indexKey := liveStreamDimIndexKey(marker.TenantID, isGlobalDimKey(qkey))
+				writePipe.SAdd(ctx, indexKey, qkey)
+				writePipe.Expire(ctx, indexKey, liveStreamLaneQueueTTL)
+			}
 		}
 	}
 
