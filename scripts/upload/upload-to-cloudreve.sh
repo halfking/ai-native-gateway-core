@@ -1,25 +1,29 @@
 #!/usr/bin/env bash
-# scripts/upload/upload-to-cloudreve.sh - 上传文件到 Cloudreve
+# scripts/upload/upload-to-cloudreve.sh - 上传文件到 Cloudreve（v4 API + WebDAV）
 # 用法：bash upload-to-cloudreve.sh <archive_file> <version>
+#
+# 说明：
+#   生产 Cloudreve 为 v4.15.0，旧 v3 API（/api/v3/*）已全部 404，本脚本按 v4 重写。
+#   上传走 WebDAV PUT（用 dav_account 明文密码 Basic auth，不依赖 admin 主密码）；
+#   分享链接走 v4 API（PUT /api/v4/share，需 JWT，即 admin 主密码登录）。
+#   若未提供 CLOUDREVE_PASSWORD，则只上传不生成分享链接。
 
 set -euo pipefail
-
-# ============================================================================
-# 配置
-# ============================================================================
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 
 # Cloudreve 配置
-CLOUDREVE_URL="https://files.kxpms.cn"
-CLOUDREVE_EMAIL="56551681@qq.com"
-CLOUDREVE_PASSWORD="${CLOUDREVE_PASSWORD:-Veritrans&9527}"
+CLOUDREVE_URL="${CLOUDREVE_URL:-https://files.kxpms.cn}"
+CLOUDREVE_EMAIL="${CLOUDREVE_EMAIL:-admin@itestu.cn}"
+# dav_account 明文密码（WebDAV 上传用，非 admin 主密码）
+CLOUDREVE_DAV_PASSWORD="${CLOUDREVE_DAV_PASSWORD:-LLMOfflineDav@2026}"
+# admin 主密码（分享链接用，可选）
+CLOUDREVE_PASSWORD="${CLOUDREVE_PASSWORD:-}"
 
-# 上传目标目录
-UPLOAD_BASE_PATH="/llm-gateway-go/releases"
+# 上传目标 WebDAV 路径（对应 dav_account uri=cloudreve://my/）
+UPLOAD_WEBDAV_BASE="/dav/llm-gateway-go/releases"
 
-# 参数
 ARCHIVE_FILE="${1:?Usage: $0 <archive_file> <version>}"
 VERSION="${2:?Usage: $0 <archive_file> <version>}"
 
@@ -28,206 +32,97 @@ if [[ ! -f "$ARCHIVE_FILE" ]]; then
     exit 1
 fi
 
-# 日志
 UPLOAD_LOG="${PROJECT_ROOT}/build/logs/upload-$(date +%Y%m%d-%H%M%S).log"
 mkdir -p "$(dirname "$UPLOAD_LOG")"
 
-# ============================================================================
-# 日志函数
-# ============================================================================
-
-log() {
-    echo "[$(date +'%Y-%m-%d %H:%M:%S')] $*" | tee -a "$UPLOAD_LOG"
-}
-
-log_success() {
-    echo "[$(date +'%Y-%m-%d %H:%M:%S')] ✅ $*" | tee -a "$UPLOAD_LOG"
-}
-
-log_error() {
-    echo "[$(date +'%Y-%m-%d %H:%M:%S')] ❌ $*" | tee -a "$UPLOAD_LOG"
-}
-
-log_step() {
-    echo ""
-    echo "=========================================" | tee -a "$UPLOAD_LOG"
-    echo "[$(date +'%Y-%m-%d %H:%M:%S')] 📤 $*" | tee -a "$UPLOAD_LOG"
-    echo "=========================================" | tee -a "$UPLOAD_LOG"
-}
+log() { echo "[$(date +'%Y-%m-%d %H:%M:%S')] $*" | tee -a "$UPLOAD_LOG"; }
+log_ok() { echo "[$(date +'%Y-%m-%d %H:%M:%S')] ✅ $*" | tee -a "$UPLOAD_LOG"; }
+log_err() { echo "[$(date +'%Y-%m-%d %H:%M:%S')] ❌ $*" | tee -a "$UPLOAD_LOG"; }
 
 # ============================================================================
-# 会话管理
+# WebDAV 上传
 # ============================================================================
 
-SESSION_FILE="/tmp/cloudreve_session.txt"
+dav_auth() { echo "$CLOUDREVE_EMAIL:$CLOUDREVE_DAV_PASSWORD"; }
 
-# 登录 Cloudreve
-login_cloudreve() {
-    log_step "步骤 1: 登录 Cloudreve"
-    
-    local login_response=$(curl -s -X POST "${CLOUDREVE_URL}/api/v3/user/session" \
+upload_via_webdav() {
+    local src="$1" dst_path="$2"
+    local filename; filename=$(basename "$src")
+    local dir_path; dir_path=$(dirname "$dst_path")
+
+    log "确保目录存在: $dir_path"
+    mkcol_paths "$dir_path"
+
+    log "WebDAV PUT: $dst_path (size=$(stat -f%z "$src" 2>/dev/null || stat -c%s "$src"))"
+    local code
+    code=$(curl -s -o /tmp/cr-upload-resp.txt -w "%{http_code}" -X PUT \
+        "${CLOUDREVE_URL}${dst_path}" \
+        -u "$(dav_auth)" \
+        --data-binary @"$src" \
+        --max-time 3600)
+    if [[ "$code" == "201" ]] || [[ "$code" == "204" ]]; then
+        log_ok "上传成功 HTTP=$code"
+        return 0
+    fi
+    log_err "上传失败 HTTP=$code: $(cat /tmp/cr-upload-resp.txt 2>/dev/null)"
+    return 1
+}
+
+mkcol_paths() {
+    local dir="$1" rel=""
+    [[ "$dir" == "/" ]] && return 0
+    local base; base="/dav"
+    local rest; rest="${dir#/dav}"
+    [[ -n "$rest" ]] || return 0
+    local IFS='/'
+    for seg in $rest; do
+        [[ -z "$seg" ]] && continue
+        rel="$rel/$seg"
+        local code
+        code=$(curl -s -o /dev/null -w "%{http_code}" -X MKCOL "${CLOUDREVE_URL}${base}${rel}" -u "$(dav_auth)" --max-time 15)
+        if [[ "$code" != "201" ]] && [[ "$code" != "405" ]] && [[ "$code" != "409" ]]; then
+            log "MKCOL $rel → HTTP=$code"
+        fi
+    done
+}
+
+# ============================================================================
+# v4 API 分享链接
+# ============================================================================
+
+login_v4() {
+    local resp token
+    resp=$(curl -s -X POST "${CLOUDREVE_URL}/api/v4/session/token" \
         -H "Content-Type: application/json" \
-        -d "{\"userName\":\"${CLOUDREVE_EMAIL}\",\"Password\":\"${CLOUDREVE_PASSWORD}\"}")
-    
-    # 提取 token
-    local token=$(echo "$login_response" | jq -r '.data.token // empty')
-    
+        -d "{\"email\":\"${CLOUDREVE_EMAIL}\",\"password\":\"${CLOUDREVE_PASSWORD}\"}" \
+        --max-time 20)
+    token=$(echo "$resp" | jq -r '.data.token.access_token // empty')
     if [[ -z "$token" ]]; then
-        log_error "登录失败"
-        echo "$login_response" | jq '.' | tee -a "$UPLOAD_LOG"
-        exit 1
+        log_err "v4 登录失败: $(echo "$resp" | head -c 200)"
+        return 1
     fi
-    
-    echo "$token" > "$SESSION_FILE"
-    log_success "登录成功"
+    echo "$token"
 }
 
-# 获取 token
-get_token() {
-    if [[ ! -f "$SESSION_FILE" ]]; then
-        login_cloudreve
-    fi
-    cat "$SESSION_FILE"
-}
-
-# ============================================================================
-# 目录管理
-# ============================================================================
-
-# 创建目录（如果不存在）
-create_directory() {
-    local dir_path="$1"
-    local token=$(get_token)
-    
-    log "创建目录: $dir_path"
-    
-    # 获取父目录 ID
-    local parent_path=$(dirname "$dir_path")
-    local dir_name=$(basename "$dir_path")
-    
-    # 创建目录请求
-    local create_response=$(curl -s -X PUT "${CLOUDREVE_URL}/api/v3/directory" \
-        -H "Authorization: Bearer ${token}" \
+create_share_v4() {
+    local uri="$1" token
+    token=$(login_v4) || return 1
+    log "创建分享: $uri"
+    local resp
+    resp=$(curl -s -X PUT "${CLOUDREVE_URL}/api/v4/share" \
+        -H "Authorization: Bearer $token" \
         -H "Content-Type: application/json" \
-        -d "{\"path\":\"${parent_path}\",\"name\":\"${dir_name}\"}")
-    
-    local code=$(echo "$create_response" | jq -r '.code // 0')
-    
-    if [[ "$code" -eq 0 ]] || [[ "$code" -eq 40004 ]]; then
-        # 40004 = 目录已存在
-        log_success "目录准备完成: $dir_path"
+        -d "{\"uri\":\"${uri}\",\"is_private\":false,\"expire\":0,\"downloads\":0}" \
+        --max-time 20)
+    local url
+    url=$(echo "$resp" | jq -r '.data // empty')
+    if [[ "$url" == "https://"* ]]; then
+        log_ok "分享链接: $url"
+        echo "$url"
         return 0
-    else
-        log_error "创建目录失败: $dir_path"
-        echo "$create_response" | jq '.' | tee -a "$UPLOAD_LOG"
-        return 1
     fi
-}
-
-# ============================================================================
-# 文件上传
-# ============================================================================
-
-# 获取上传策略
-get_upload_policy() {
-    local file_path="$1"
-    local upload_path="$2"
-    local token=$(get_token)
-    
-    log "获取上传策略..."
-    
-    local filename=$(basename "$file_path")
-    local filesize=$(stat -f%z "$file_path" 2>/dev/null || stat -c%s "$file_path" 2>/dev/null)
-    
-    local policy_response=$(curl -s -X POST "${CLOUDREVE_URL}/api/v3/file/upload" \
-        -H "Authorization: Bearer ${token}" \
-        -H "Content-Type: application/json" \
-        -d "{\"path\":\"${upload_path}\",\"size\":${filesize},\"name\":\"${filename}\"}")
-    
-    local code=$(echo "$policy_response" | jq -r '.code // -1')
-    
-    if [[ "$code" -ne 0 ]]; then
-        log_error "获取上传策略失败"
-        echo "$policy_response" | jq '.' | tee -a "$UPLOAD_LOG"
-        return 1
-    fi
-    
-    echo "$policy_response" | jq -r '.data'
-}
-
-# 执行上传
-upload_file() {
-    local file_path="$1"
-    local upload_path="$2"
-    
-    log_step "步骤 2: 上传文件"
-    
-    # 创建目标目录
-    create_directory "$upload_path"
-    
-    # 获取上传策略
-    local policy=$(get_upload_policy "$file_path" "$upload_path")
-    
-    if [[ -z "$policy" ]]; then
-        log_error "无法获取上传策略"
-        return 1
-    fi
-    
-    # 解析策略
-    local upload_url=$(echo "$policy" | jq -r '.uploadURL')
-    local session_id=$(echo "$policy" | jq -r '.sessionID')
-    
-    log "上传URL: $upload_url"
-    log "Session ID: $session_id"
-    
-    # 上传文件
-    log "开始上传: $(basename "$file_path")"
-    
-    local upload_response=$(curl -s -X POST "$upload_url" \
-        -F "file=@${file_path}" \
-        -F "policy=${session_id}")
-    
-    local code=$(echo "$upload_response" | jq -r '.code // -1')
-    
-    if [[ "$code" -eq 0 ]]; then
-        log_success "上传成功"
-        echo "$upload_response" | jq -r '.data'
-        return 0
-    else
-        log_error "上传失败"
-        echo "$upload_response" | jq '.' | tee -a "$UPLOAD_LOG"
-        return 1
-    fi
-}
-
-# ============================================================================
-# 分享链接生成
-# ============================================================================
-
-# 创建分享链接
-create_share_link() {
-    local file_path="$1"
-    local token=$(get_token)
-    
-    log_step "步骤 3: 生成分享链接"
-    
-    local share_response=$(curl -s -X POST "${CLOUDREVE_URL}/api/v3/share" \
-        -H "Authorization: Bearer ${token}" \
-        -H "Content-Type: application/json" \
-        -d "{\"path\":\"${file_path}\",\"is_dir\":false,\"password\":\"\",\"expire\":0}")
-    
-    local code=$(echo "$share_response" | jq -r '.code // -1')
-    
-    if [[ "$code" -eq 0 ]]; then
-        local share_url=$(echo "$share_response" | jq -r '.data.url')
-        log_success "分享链接: $share_url"
-        echo "$share_url"
-        return 0
-    else
-        log_error "创建分享链接失败"
-        echo "$share_response" | jq '.' | tee -a "$UPLOAD_LOG"
-        return 1
-    fi
+    log_err "创建分享失败: $resp"
+    return 1
 }
 
 # ============================================================================
@@ -235,60 +130,52 @@ create_share_link() {
 # ============================================================================
 
 main() {
-    log_step "开始上传到 Cloudreve"
-    
-    log "文件: $(basename "$ARCHIVE_FILE")"
-    log "版本: $VERSION"
-    log "大小: $(du -h "$ARCHIVE_FILE" | cut -f1)"
-    
-    # 登录
-    login_cloudreve
-    
-    # 构建上传路径
-    local upload_path="${UPLOAD_BASE_PATH}/${VERSION}"
-    local filename=$(basename "$ARCHIVE_FILE")
-    
-    # 上传文件
-    local upload_result=$(upload_file "$ARCHIVE_FILE" "$upload_path")
-    
-    if [[ $? -ne 0 ]]; then
-        log_error "上传失败"
+    local filename version
+    filename=$(basename "$ARCHIVE_FILE")
+    version="$VERSION"
+
+    log "上传文件: $filename (version=$version)"
+    log "文件大小: $(du -h "$ARCHIVE_FILE" | cut -f1)"
+
+    local webdav_dir="${UPLOAD_WEBDAV_BASE}/${version}"
+    local webdav_full="${webdav_dir}/${filename}"
+
+    if ! upload_via_webdav "$ARCHIVE_FILE" "$webdav_full"; then
+        log_err "上传失败"
         exit 1
     fi
-    
-    # 生成分享链接
-    local full_path="${upload_path}/${filename}"
-    local share_url=$(create_share_link "$full_path")
-    
-    # 生成上传记录
-    cat > "${PROJECT_ROOT}/build/logs/upload-record-${VERSION}.json" << JSON
+
+    local share_url=""
+    if [[ -n "$CLOUDREVE_PASSWORD" ]]; then
+        # cloudreve URI: dav_account uri=cloudreve://my/ 前缀 + webdav 相对路径
+        local fs_uri="cloudreve://my${webdav_dir}/${filename}"
+        share_url=$(create_share_v4 "$fs_uri") || true
+    else
+        log "未提供 CLOUDREVE_PASSWORD，跳过分享链接生成"
+    fi
+
+    cat > "${PROJECT_ROOT}/build/logs/upload-record-${version}.json" << JSON
 {
-  "version": "$VERSION",
+  "version": "$version",
   "file": "$filename",
-  "upload_path": "$full_path",
+  "webdav_path": "$webdav_full",
   "share_url": "$share_url",
   "uploaded_at": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
   "uploaded_by": "$(whoami)@$(hostname)",
-  "file_size": $(stat -f%z "$ARCHIVE_FILE" 2>/dev/null || stat -c%s "$ARCHIVE_FILE" 2>/dev/null)
+  "file_size": $(stat -f%z "$ARCHIVE_FILE" 2>/dev/null || stat -c%s "$ARCHIVE_FILE")
 }
 JSON
-    
-    log_step "上传完成"
-    log_success "文件: $filename"
-    log_success "路径: $full_path"
-    log_success "分享链接: $share_url"
-    log_success "日志: $UPLOAD_LOG"
-    
+
+    log_ok "上传完成"
+    log_ok "WebDAV: ${CLOUDREVE_URL}${webdav_full}"
+    [[ -n "$share_url" ]] && log_ok "下载: $share_url"
     echo ""
     echo "🎉 上传成功!"
-    echo "   文件: $filename"
-    echo "   下载: $share_url"
+    echo "   WebDAV: ${CLOUDREVE_URL}${webdav_full}"
+    [[ -n "$share_url" ]] && echo "   下载: $share_url"
     echo ""
 }
 
-# 错误处理
-trap 'log_error "上传失败，查看日志: $UPLOAD_LOG"; exit 1' ERR
+trap 'log_err "上传失败，查看日志: $UPLOAD_LOG"; exit 1' ERR
 
-# 执行主流程
 main
-

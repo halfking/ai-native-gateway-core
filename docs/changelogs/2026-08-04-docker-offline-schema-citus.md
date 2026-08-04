@@ -71,4 +71,11 @@ request_logs_2026_07/08: relam=columnar，无索引
 
 ## 上传
 
-待确认 files.kxpms.cn（cloudreve）上传方式后执行。
+已上传至生产 Cloudreve（v4.15.0，154 服务器），通过 WebDAV PUT。
+
+- **分享链接**：`https://res.itestu.cn/s/qKFZ`（公开，无密码/过期/次数限制）
+- **WebDAV 路径**：`https://files.kxpms.cn/dav/llm-gateway-go/releases/llm-gateway-go-docker-arm64-v2.4.9-offline.tar.gz`（需认证）
+- **存储落点**：`/opt/resource/llm-gateway-go/releases/tiA70gcK_llm-gateway-go-docker-arm64-v2.4.9-offline.tar.gz`
+- **上传验证**：HTTP 201，SIZE=337501788 与本地一致；服务端 sha256 复核 = `6383b60c127d543ac07b9dd68e8963bcbee702a3c9d76f5d8cecd668cf471e59` 与 SHA256SUMS 一致；WebDAV 断点下载前 1MB hash 与本地一致
+- **上传方式**：WebDAV Basic auth（`admin@itestu.cn` + dav_account 临时账号），非 v3 API（生产已升级 v4）
+- **备注**：Cloudreve v4 登录端点 `POST /api/v4/session/token`（验证码未开）；分享 API `PUT /api/v4/share` 用 `Authorization: Bearer <jwt>`；dav_account 表独立存 WebDAV 明文密码（`uri=cloudreve://my/`），已保留该临时账号便于后续上传
