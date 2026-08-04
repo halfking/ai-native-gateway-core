@@ -698,3 +698,9 @@
 |-----------|------|
 | 462 | `462_model_integrity_events.sql` |
 
+## 2026-08-04T07:01:53Z — deploy 245 build_seq 1438 (4e3ae015)
+
+| Migration | File | SHA-256 | Status |
+|-----------|------|---------|--------|
+| 464 | `464_session_turns_aggregate_claim.sql` | `9ea33e5bd1eb82a0eaf2e7c0c5cc57785063aa7c834eb255a3e236656bd53b28` | applied+verified |
+
