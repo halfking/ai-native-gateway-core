@@ -271,6 +271,17 @@ func (w *Writer) WriteOnError(ctx context.Context, credentialID int, rawModel st
 		// model is restored.
 		recoverAt := time.Now().UTC().Add(7 * 24 * time.Hour)
 		return w.writeModelLevelFailureOnly(ctx, credentialID, rawModel, "auto_model_not_found", recoverAt, detail)
+	case errorsx.KindModelDeprecated:
+		// 2026-08-05 fix: upstream has permanently end-of-lifed the model
+		// (HTTP 410 Gone + "end of life" body, or 404/422 "has been
+		// deprecated"). Distinct from model_not_found: deprecation is an
+		// authoritative statement that the model will NOT come back, so we
+		// cool the per-(credential,model) binding for 30 days (vs 7 for
+		// model_not_found). Per-model scope only — the credential may serve
+		// other models fine, so we must NOT pollute credentials.
+		// availability_state (see writeModelLevelFailureOnly rationale).
+		recoverAt := time.Now().UTC().Add(30 * 24 * time.Hour)
+		return w.writeModelLevelFailureOnly(ctx, credentialID, rawModel, "auto_model_deprecated", recoverAt, detail)
 	case errorsx.KindContextLength:
 		// 2026-07-03 fix: Bug #2 - context_length_exceeded is per-request
 		// but indicates the model configuration may be wrong. Mark unavailable

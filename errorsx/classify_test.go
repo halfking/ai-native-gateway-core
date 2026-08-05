@@ -428,7 +428,12 @@ func TestClassifyErrorWithBody_Protocol4xx(t *testing.T) {
 		{"406_not_acceptable", 406, `not acceptable`, KindUnsupportedFeature},
 		{"415_unsupported_media_type", 415, `unsupported media type`, KindUnsupportedFeature},
 		{"409_conflict", 409, `conflict`, KindUnsupportedFeature},
-		{"410_gone", 410, `gone`, KindUnsupportedFeature},
+		// 2026-08-05: 410 removed from protocol-4xx switch. A bare 410 with no
+		// EOL/deprecation body now falls through to ClassifyResponseStatus →
+		// KindTransient (retryable on a sibling credential). A 410 WITH an EOL
+		// body is classified as KindModelDeprecated by the body-pattern path
+		// (see TestClassifyErrorWithBody_ModelDeprecated).
+		{"410_gone_no_body_now_transient", 410, `gone`, KindTransient},
 		// 2026-07-08: 422 removed from protocol-4xx switch. A bare
 		// "unprocessable entity" body does not match any known pattern
 		// (modelNotFoundRe, unsupportedFeatureRe, contentFilterRe,
@@ -753,5 +758,126 @@ func TestIsContentFilter(t *testing.T) {
 	}
 	if IsContentFilter(ErrorKind("")) {
 		t.Error("IsContentFilter('') = true, want false")
+	}
+}
+
+// TestClassifyErrorWithBody_ModelDeprecated verifies that an upstream
+// "model permanently removed / end-of-life" body is classified as
+// KindModelDeprecated, NOT KindUnsupportedFeature (the pre-2026-08-05
+// behaviour that caused the executor to hammer a dead model 22×).
+//
+// Regression context: request d679b7e7285a9bbe5fce953cd6c935a8 hit NVIDIA NIM
+// provider_id=18 / minimaxai/minimax-m2.7, which returned HTTP 410:
+//   {"detail":"The model 'minimaxai/minimax-m2.7' has reached its end of life
+//    on 2026-07-27T00:00:00Z and is no longer available."}
+// The gateway surfaced this as "unsupported_feature" (HTTP 400) and retried
+// the same dead credential for 20s because IsClientBug(KindUnsupportedFeature)
+// short-circuits cross-credential failover.
+func TestClassifyErrorWithBody_ModelDeprecated(t *testing.T) {
+	positive := []struct {
+		name   string
+		status int
+		body   string
+	}{
+		// Real production body (NVIDIA NIM, the request that triggered this fix).
+		{"nvidia_nim_410_eol", 410, `{"type":"about:blank","title":"Gone","status":410,"detail":"The model 'minimaxai/minimax-m2.7' has reached its end of life on 2026-07-27T00:00:00Z and is no longer available."}`},
+		// OpenAI-style deprecation advisory on 404.
+		{"openai_404_deprecated", 404, `{"error":{"message":"The model 'gpt-4' has been deprecated, please use gpt-4o","type":"invalid_request_error"}}`},
+		// 422 variant.
+		{"422_no_longer_available", 422, `{"error":"model foo is no longer available"}`},
+		// 400 variant.
+		{"400_retired", 400, `{"error":{"message":"model bar has been retired"}}`},
+		// Bare phrase, no JSON wrapper.
+		{"410_bare_end_of_life", 410, `this model has reached end of life`},
+		// CJK variant.
+		{"410_cjk_offline", 410, `该模型已下线`},
+	}
+	for _, tc := range positive {
+		t.Run("pos/"+tc.name, func(t *testing.T) {
+			got := ClassifyErrorWithBody(tc.status, []byte(tc.body))
+			if got != KindModelDeprecated {
+				t.Errorf("ClassifyErrorWithBody(%d, %q) = %q, want KindModelDeprecated",
+					tc.status, tc.body, got)
+			}
+			// A permanently-removed model must NOT be a client bug (else the
+			// executor skips failover) and must NOT be retryable.
+			if IsClientBug(got) {
+				t.Errorf("ClassifyErrorWithBody(%d, %q) = IsClientBug true, want false (must failover)",
+					tc.status, tc.body)
+			}
+			if IsRetryable(got) {
+				t.Errorf("ClassifyErrorWithBody(%d, %q) = IsRetryable true, want false (model is gone)",
+					tc.status, tc.body)
+			}
+		})
+	}
+
+	negative := []struct {
+		name   string
+		status int
+		body   string
+		want   ErrorKind
+	}{
+		// 410 with a non-EOL body must NOT be model_deprecated — falls through
+		// to KindTransient now that 410 is out of the protocol-4xx switch.
+		{"410_no_eol_body_transient", 410, `gone`, KindTransient},
+		// 200 OK advisory is not a model_deprecated (status out of gate);
+		// ClassifyErrorWithBody falls through to KindTransient for <400.
+		{"200_deprecation_advice_transient", 200, `model glm-4 has been deprecated`, KindTransient},
+		// 502 with EOL-ish body is connectivity, not deprecation (status out of gate).
+		{"502_with_retired_body_upstream_down", 502, `model has been retired`, KindUpstreamDown},
+	}
+	for _, tc := range negative {
+		t.Run("neg/"+tc.name, func(t *testing.T) {
+			got := ClassifyErrorWithBody(tc.status, []byte(tc.body))
+			if got != tc.want {
+				t.Errorf("ClassifyErrorWithBody(%d, %q) = %q, want %q",
+					tc.status, tc.body, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestClassifyResponseBody_ModelDeprecated mirrors the above for the
+// SSE-body classifier path (used by executor_chat.go / executor_anthropic.go
+// to decide whether to construct a modelNotFoundError).
+func TestClassifyResponseBody_ModelDeprecated(t *testing.T) {
+	cases := []struct {
+		name   string
+		status int
+		body   string
+		want   ErrorKind
+	}{
+		{"nvidia_410", 410, `reached its end of life`, KindModelDeprecated},
+		{"openai_404", 404, `has been deprecated`, KindModelDeprecated},
+		{"422_no_longer", 422, `no longer available`, KindModelDeprecated},
+		{"400_retired", 400, `has been retired`, KindModelDeprecated},
+		// 200 advisory → empty (not classified).
+		{"200_not_classified", 200, `has been deprecated`, ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := ClassifyResponseBody(tc.status, []byte(tc.body))
+			if got != tc.want {
+				t.Errorf("ClassifyResponseBody(%d, %q) = %q, want %q",
+					tc.status, tc.body, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestClassifyError_ModelDeprecated_ErrPath verifies the err.Error()-based
+// classifier (used when a typed *upstream.Error is re-wrapped via fmt.Errorf
+// and the body text survives in the message).
+func TestClassifyError_ModelDeprecated_ErrPath(t *testing.T) {
+	cases := []string{
+		`upstream 410: The model 'minimaxai/minimax-m2.7' has reached its end of life and is no longer available`,
+		`upstream 404: model gpt-4 has been deprecated`,
+	}
+	for _, msg := range cases {
+		kind := ClassifyError(errors.New(msg), nil)
+		if kind != KindModelDeprecated {
+			t.Errorf("ClassifyError(%q) = %q, want KindModelDeprecated", msg, kind)
+		}
 	}
 }

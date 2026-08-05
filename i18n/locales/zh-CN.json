@@ -38,6 +38,9 @@
   "invalid_model": {
     "other": "模型 '{{.Model}}' 不被此网关支持"
   },
+  "model_deprecated": {
+    "other": "请求的模型已被上游服务商永久下线（停止服务）。"
+  },
   "meta_tool_error": {
     "other": "元工具处理失败"
   },

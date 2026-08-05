@@ -864,13 +864,14 @@ func (e *Executor) executeAnthropicOnce(
 		// the remainder (capped) and every other branch ignores it.
 		errKind := errorsx.ClassifyErrorWithBody(resp.StatusCode, body[:n])
 
-		if bodyKind := errorsx.ClassifyResponseBody(resp.StatusCode, body[:n]); bodyKind == errorsx.KindModelNotFound {
+		if bodyKind := errorsx.ClassifyResponseBody(resp.StatusCode, body[:n]); bodyKind == errorsx.KindModelNotFound || bodyKind == errorsx.KindModelDeprecated {
 			// Step 4 (2026-06-18): removed the 10-second slow-upstream
 			// reclassification. See executor_chat.go for the rationale.
 			slog.Info("model_not_found skip offer",
 				"credential_id", cand.CredentialID,
 				"model", cand.RawModel,
 				"status", resp.StatusCode,
+				"kind", bodyKind,
 				"upstream_latency_ms", upstreamLatency.Milliseconds(),
 				"body_preview", string(body[:min(n, 120)]),
 			)
@@ -879,6 +880,7 @@ func (e *Executor) executeAnthropicOnce(
 				rawModel:     cand.RawModel,
 				body:         string(body[:n]),
 				status:       resp.StatusCode,
+				kind:         bodyKind,
 			}
 		}
 
