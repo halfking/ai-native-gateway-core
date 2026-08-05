@@ -40,6 +40,10 @@ const (
 	MsgNoCandidate        = "no_candidate"        // "No available provider for model '{{.Model}}'"
 	MsgInvalidModel       = "invalid_model"       // "Model '{{.Model}}' is not supported by this gateway"
 	MsgUnsupportedFeature = "unsupported_feature" // "The selected model does not support this request format or modality."
+	// MsgModelDeprecated: upstream provider has permanently end-of-lifed the
+	// requested model (HTTP 410 Gone). The handler appends the upstream's own
+	// EOL reason so the client knows which model was removed.
+	MsgModelDeprecated = "model_deprecated" // "The requested model has been permanently removed by the upstream provider."
 	MsgMetaToolError      = "meta_tool_error"     // "Meta-tool processing failed"
 	MsgProviderError      = "provider_error"      // "upstream request failed"
 

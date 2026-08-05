@@ -54,6 +54,18 @@ const (
 	// trim was applied.
 	KindContextLength      ErrorKind = "context_length_exceeded"
 	KindUnsupportedFeature ErrorKind = "unsupported_feature"
+	// KindModelDeprecated: upstream has permanently removed / end-of-lifed the
+	// requested model. Distinct from KindModelNotFound (where the model name is
+	// simply unknown / typo'd): deprecation is an authoritative upstream
+	// statement that the model will NOT come back, so the gateway applies a
+	// long (30-day) per-(credential,model) cooling and surfaces HTTP 410 Gone
+	// to the client with the upstream's EOL message. Typical signals:
+	//   - NVIDIA NIM: HTTP 410 {"detail":"...has reached its end of life..."}
+	//   - OpenAI:     404/422 "model ... has been deprecated, use ..."
+	//   - Anthropic:  404 "model is deprecated"
+	// Routed via a dedicated executor/handler path (NOT IsClientBug, NOT
+	// retryable) so the executor does not waste 22 attempts on a dead model.
+	KindModelDeprecated ErrorKind = "model_deprecated"
 	// KindContentFilter: upstream rejected the request based on content
 	// moderation / safety policy (e.g. MiniMax 422 "new_sensitive (1026)",
 	// OpenAI "content_filter", Anthropic content policy). This is
@@ -185,6 +197,33 @@ var unsupportedFeatureRe = regexp.MustCompile(
 		`(tool|function)[- _]?call(ing|s)? (is )?not supported|` +
 		`unsupported (parameter|model|feature).{0,20}(tools?|function|tool_choice)|` +
 		`当前模型不支持)`,
+)
+
+// modelDeprecatedRe matches upstream error bodies that signal the model has
+// been permanently removed / end-of-lifed / deprecated by the provider.
+//
+// This is intentionally checked BEFORE modelNotFoundRe: a body like
+// "model glm-5.1 has been deprecated, please use glm-5.2" historically fell
+// through to KindTransient (modelNotFoundRe deliberately excludes
+// "deprecated|retired|sunset" per its comment at L156-170, which explicitly
+// called out "Future work: a dedicated KindDeprecated kind for telemetry").
+// KindModelDeprecated is that dedicated kind.
+//
+// Matched vendor phrasings:
+//   - NVIDIA NIM (HTTP 410): "has reached its end of life ... and is no
+//     longer available"
+//   - OpenAI: "model ... has been deprecated", "decommissioned"
+//   - Anthropic: "model is deprecated"
+//   - Generic: "retired", "sunset", "discontinued", "permanently removed",
+//     "end of life", "end-of-life"
+var modelDeprecatedRe = regexp.MustCompile(
+	`(?i)(end[ _-]?of[ _-]?life|` +
+		`no longer available|` +
+		`has been deprecated|is deprecated|` +
+		`has been (retired|decommissioned|discontinued|sunset|permanently removed)|` +
+		`(retired|decommissioned|discontinued|sunset|permanently removed)|` +
+		`已(下线|停用|废弃|停止服务)|` +
+		`已(永久)?停用)`,
 )
 
 // budgetExceededRe detects permanent quota exhaustion (balance insufficient,
@@ -363,6 +402,9 @@ func ClassifyError(err error, resp *http.Response) ErrorKind {
 			strings.Contains(msg, "no such host") || strings.Contains(msg, "reset") {
 			return KindNetwork
 		}
+		if modelDeprecatedRe.MatchString(msg) {
+			return KindModelDeprecated
+		}
 		if modelNotFoundRe.MatchString(msg) {
 			return KindModelNotFound
 		}
@@ -464,6 +506,18 @@ func ClassifyErrorWithBody(status int, body []byte) ErrorKind {
 		if concurrentOverloadRe.Match(body) || concurrentOverloadCJKRe.Match(body) {
 			return KindConcurrent
 		}
+		// KindModelDeprecated (2026-08-05 P0): upstream permanently removed /
+		// end-of-lifed the model. Checked BEFORE model_not_found because a
+		// deprecation body ("has been deprecated, please use X") deliberately
+		// does NOT match modelNotFoundRe (see its L156-170 comment), and would
+		// otherwise fall through to KindTransient. Status gate includes 410
+		// (Gone) — the canonical EOL status (NVIDIA NIM, OpenAI deprecation
+		// proxies) — in addition to 400/404/422.
+		if !isGenericWebError &&
+			(status == 400 || status == 404 || status == 410 || status == 422) &&
+			modelDeprecatedRe.Match(body) {
+			return KindModelDeprecated
+		}
 		// P5 (2026-06-18): model_not_found only on 400/404/422, matching
 		// ClassifyResponseBody's status gate. A 5xx body that mentions
 		// "model not found" (e.g. a misconfigured proxy returning 502 with
@@ -536,10 +590,19 @@ func ClassifyErrorWithBody(status int, body []byte) ErrorKind {
 	// force-cast to KindUnsupportedFeature, which previously caused
 	// content-filter rejections to masquerade as "unsupported_feature"
 	// and be retried across every credential.
+	//
+	// 2026-08-05: REMOVED 410 (Gone) from this list. 410's semantics is
+	// "resource permanently removed", which for an LLM gateway almost always
+	// means the upstream model has been end-of-lifed. The body-pattern path
+	// above now classifies 410+EOL bodies as KindModelDeprecated; a bare 410
+	// with no recognizable body falls through to ClassifyResponseStatus
+	// (KindTransient) so the executor can retry a sibling credential — the
+	// previous mapping to KindUnsupportedFeature (IsClientBug=true) caused the
+	// executor to skip cross-credential retry and hammer the dead model 22x.
 	switch status {
 	case 408:
 		return KindTimeout
-	case 405, 406, 409, 410, 411, 412, 415, 416, 417, 418, 421, 423, 424, 425, 426, 428, 431:
+	case 405, 406, 409, 411, 412, 415, 416, 417, 418, 421, 423, 424, 425, 426, 428, 431:
 		return KindUnsupportedFeature
 	}
 	return ClassifyResponseStatus(&http.Response{StatusCode: status})
@@ -560,6 +623,13 @@ func ClassifyResponseBody(status int, body []byte) ErrorKind {
 	if len(body) > 0 {
 		if concurrentOverloadRe.Match(body) || concurrentOverloadCJKRe.Match(body) {
 			return KindConcurrent
+		}
+		// KindModelDeprecated: see ClassifyErrorWithBody. Checked before
+		// model_not_found for the same reason (deprecation bodies must not
+		// fall through to transient). Includes 410 in the status gate.
+		if (status == 400 || status == 404 || status == 410 || status == 422) &&
+			modelDeprecatedRe.Match(body) {
+			return KindModelDeprecated
 		}
 		if (status == 400 || status == 404 || status == 422) &&
 			(modelNotFoundRe.Match(body) || modelNotFoundCJKRe.Match(body)) {

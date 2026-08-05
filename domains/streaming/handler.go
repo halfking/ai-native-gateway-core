@@ -3353,6 +3353,43 @@ func (h *ChatHandler) serveWithExecutor(
 				return
 			}
 
+			if execErrTyped.LastKind == errorsx.KindModelDeprecated {
+				// 2026-08-05 P0: upstream has permanently end-of-lifed the
+				// model (HTTP 410 Gone + "end of life" body, or 404/422
+				// "has been deprecated"). Distinct from model_not_found
+				// (unknown/typo'd name): deprecation is authoritative and
+				// permanent, so we surface HTTP 410 Gone with the upstream's
+				// own EOL message rather than the misleading
+				// "unsupported_feature" (the pre-fix behaviour, caused by 410
+				// being lumped into the protocol-4xx → KindUnsupportedFeature
+				// switch). The executor has already cooled the per-(credential,
+				// model) binding for 30 days, so subsequent requests route
+				// around it.
+				reason := extractUpstreamReason(execErr)
+				msg := i18n.T(r.Context(), i18n.MsgModelDeprecated, nil)
+				if reason != "" {
+					msg = msg + " Reason: " + reason
+				}
+				logCtx.SetOutboundModel(explicitOutbound)
+				logCtx.failAndMark("model_deprecated", execErr.Error(), providerID, credentialID)
+				h.emitFailedDecisionLog(requestID, clientModel, keyInfo, clientID, tried, modelResolution, txResult, "model_deprecated", failTrace, int(time.Since(startTime).Milliseconds()))
+				markLogged()
+				w.Header().Set("X-Gateway-Last-Kind", string(execErrTyped.LastKind))
+				debugInfo := map[string]any{
+					"stage":     "execution",
+					"kind":      string(execErrTyped.LastKind),
+					"tried":     execErrTyped.Tried,
+					"retryable": false,
+					"reason":    reason,
+				}
+				if preStreamPrepared {
+					writePrewarmedStreamError(w, msg, "invalid_request_error", "model_deprecated")
+					return
+				}
+				writeErrorJSONWithKindProto(proto, w, http.StatusGone, requestID, msg, "invalid_request_error", "model_deprecated", string(execErrTyped.LastKind), debugInfo)
+				return
+			}
+
 			// = "model_not_found" but surface the REAL underlying
 			// kind in error.kind + X-Gateway-Last-Kind header. Many
 			// in-the-wild failures labeled model_not_found are
@@ -3616,6 +3653,13 @@ func (h *ChatHandler) serveWithExecutor(
 	markLogged()
 }
 
+func successUpstreamStatusCode(result *executors.ExecuteResult) int {
+	if result != nil && result.Response != nil && result.Response.StatusCode > 0 {
+		return result.Response.StatusCode
+	}
+	return http.StatusOK
+}
+
 func (h *ChatHandler) emitTelemetry(evt audit.Event, result *executors.ExecuteResult, endUser string, keyInfo *authentication.KeyInfo, capture *audit.StreamCapture, requestMode string, txResult *transformation.TransformResult, requestBody []byte, responseBody []byte, logCtx *RequestLogContext) {
 	if h.telemetryClient == nil || !h.telemetryClient.Enabled() {
 		return
@@ -3842,19 +3886,21 @@ func (h *ChatHandler) emitTelemetry(evt audit.Event, result *executors.ExecuteRe
 	}
 
 	reqLog := &telemetry.RequestLogEntry{
-		RequestID:       evt.RequestID,
-		EventAt:         &eventAt,
-		TenantID:        tenantID,
-		ApplicationID:   applicationID,
-		APIKeyID:        apiKeyID,
-		APIKeyPrefix:    strPtr(keyPrefix),
-		APIKeyOwnerUser: strPtr(keyOwner),
-		ApplicationCode: strPtr(appCode),
-		EndUserID:       strPtr(endUser),
-		ClientModel:     strPtr(evt.ClientModel),
-		OutboundModel:   strPtr(loggedOutbound),
-		CredentialID:    intPtr(result.Candidate.CredentialID),
-		ProviderID:      intPtr(result.Candidate.ProviderID),
+		RequestID:          evt.RequestID,
+		EventAt:            &eventAt,
+		TenantID:           tenantID,
+		ApplicationID:      applicationID,
+		APIKeyID:           apiKeyID,
+		APIKeyPrefix:       strPtr(keyPrefix),
+		APIKeyOwnerUser:    strPtr(keyOwner),
+		ApplicationCode:    strPtr(appCode),
+		EndUserID:          strPtr(endUser),
+		ClientModel:        strPtr(evt.ClientModel),
+		OutboundModel:      strPtr(loggedOutbound),
+		CredentialID:       intPtr(result.Candidate.CredentialID),
+		ProviderID:         intPtr(result.Candidate.ProviderID),
+		UpstreamStatusCode: intPtr(successUpstreamStatusCode(result)),
+
 		// 2026-07-27: 标准模型名 (canonical_name),见 migration 458。
 		CanonicalModel: strPtr(evt.CanonicalName),
 		ClientProfile:  strPtr(evt.ClientProfile),
@@ -5779,8 +5825,8 @@ func anthropicErrorType(errType, code string) string {
 		return "authentication_error"
 	case "permission_error", "blocked", "security_violation":
 		return "permission_error"
-	case "not_found", "model_not_found":
-		return "not_found_error"
+		case "not_found", "model_not_found", "model_deprecated":
+			return "not_found_error"
 	case "overloaded_error", "provider_error":
 		return "overloaded_error"
 	}

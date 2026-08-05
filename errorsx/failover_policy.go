@@ -86,7 +86,7 @@ func DecideFailover(status int, body []byte, retryAfterHeader string, clientOrig
 		decision.EnqueueProbe = true
 		decision.ProbeFanout = DefaultProbeFanout
 		decision.ReasonCode = "upstream_transient_failure"
-	case KindModelNotFound, KindUnsupportedFeature, KindContextLength, KindContentFilter, KindToolCallIdMismatch:
+	case KindModelNotFound, KindModelDeprecated, KindUnsupportedFeature, KindContextLength, KindContentFilter, KindToolCallIdMismatch:
 		decision.Scope = ScopeModel
 		decision.EnqueueProbe = false
 		decision.FrontendWait = 0
