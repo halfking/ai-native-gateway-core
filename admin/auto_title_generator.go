@@ -30,22 +30,22 @@ func NewAutoTitleGenerator(handler *Handler) *AutoTitleGenerator {
 
 // MaybeGenerateTitle checks if a session needs a title and generates one.
 // Called asynchronously after the first request in a session completes.
-// requestPreview is the in-memory preview from the just-completed request —
-// passing it here avoids a DB timing race (the request may not yet be written
-// to request_logs when the goroutine wakes up).
+// requestBody is the full (redacted) inbound request body JSON — used to
+// extract the actual user message for title generation. requestPreview is the
+// 320-byte summary used as fallback.
 // This function is fire-and-forget and will not block the main request path.
-func (g *AutoTitleGenerator) MaybeGenerateTitle(sessionID, tenantID, requestPreview string) {
+func (g *AutoTitleGenerator) MaybeGenerateTitle(sessionID, tenantID, requestBody, requestPreview string) {
 	if !g.enabled || g.handler == nil || g.handler.db == nil {
 		return
 	}
 
 	// Run in a separate goroutine to avoid blocking
-	go g.generateTitleAsync(sessionID, tenantID, requestPreview)
+	go g.generateTitleAsync(sessionID, tenantID, requestBody, requestPreview)
 }
 
-func (g *AutoTitleGenerator) generateTitleAsync(sessionID, tenantID, requestPreview string) {
+func (g *AutoTitleGenerator) generateTitleAsync(sessionID, tenantID, requestBody, requestPreview string) {
 	// Use background context with timeout (not tied to the request context)
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
 	defer cancel()
 
 	// Add structured logging for observability
@@ -66,18 +66,16 @@ func (g *AutoTitleGenerator) generateTitleAsync(sessionID, tenantID, requestPrev
 		return
 	}
 
-	// Step 2: Generate title.
-	// 2026-08-05: pass requestPreview in-memory to avoid a DB timing race —
-	// the row may not yet be flushed to request_logs when we wake up here.
-	// generateTitleFromFirstRequest will use the in-memory preview first, then
-	// fall back to DB logs if it needs more context.
-	title, model, keyID, err := g.generateTitleFromFirstRequest(ctx, sessionID, tenantID, requestPreview)
+	start := time.Now()
+	title, model, keyID, err := g.generateTitleFromFirstRequest(ctx, sessionID, tenantID, requestBody, requestPreview)
+	elapsed := time.Since(start)
 	if err != nil {
-		logger.Warn("failed to generate title from first request", "error", err)
+		logger.Warn("failed to generate title from first request", "error", err, "elapsed_ms", elapsed.Milliseconds())
 		return
 	}
+	logger.Info("auto_title: title generated", "title", title, "model", model, "elapsed_ms", elapsed.Milliseconds())
 
-	// Step 3: Save title to database (with conflict handling).
+	// Step 2: Save title to database (with conflict handling).
 	// ON CONFLICT DO NOTHING: if another goroutine already saved a title for
 	// this session, we keep theirs and discard ours (first writer wins).
 	if err := g.saveSessionTitle(ctx, sessionID, title, model, keyID); err != nil {
@@ -89,7 +87,7 @@ func (g *AutoTitleGenerator) generateTitleAsync(sessionID, tenantID, requestPrev
 		return
 	}
 
-	logger.Info("auto title generated successfully", "title", title, "length", len(title), "model", model)
+	logger.Info("auto title saved successfully", "title", title, "length", len(title), "model", model)
 }
 
 // checkSessionHasTitle checks if a session already has a title.
@@ -105,34 +103,48 @@ func (g *AutoTitleGenerator) checkSessionHasTitle(ctx context.Context, sessionID
 }
 
 // generateTitleFromFirstRequest loads session logs and generates a title using LLM.
-// v3 (2026-08-05): Accept in-memory requestPreview to fix DB timing race.
-// The requestPreview is the preview from the just-completed request passed
-// directly from the streaming handler — it's available before the DB write.
+// v4 (2026-08-05): Accept full requestBody to extract real user messages.
+// The requestPreview (320-byte summary) is used as fallback only.
 // Returns (title, model, apiKeyID, error). On fallback-extract paths model is
 // "auto-extract" and apiKeyID is 0.
-func (g *AutoTitleGenerator) generateTitleFromFirstRequest(ctx context.Context, sessionID, tenantID, requestPreview string) (string, string, int, error) {
-	// Step 1: Try to build corpus from in-memory preview first (avoids DB timing race)
+func (g *AutoTitleGenerator) generateTitleFromFirstRequest(ctx context.Context, sessionID, tenantID, requestBody, requestPreview string) (string, string, int, error) {
+	// Step 1: Build corpus — prefer full request body (has real user message),
+	// fall back to 320-byte preview, then best-effort DB logs.
 	corpus := ""
-	if requestPreview != "" {
-		corpus = requestPreview
-	}
 
-	// Step 2: Try to supplement/replace with full DB logs (best-effort, may be empty if write hasn't flushed yet)
-	if logs, err := g.loadSessionLogsForTitle(ctx, sessionID, tenantID); err == nil && len(logs) > 0 {
-		dbCorpus := buildSummaryCorpus(logs)
-		if len(strings.TrimSpace(dbCorpus)) > len(strings.TrimSpace(corpus)) {
-			corpus = dbCorpus // prefer richer DB corpus when available
+	// Try extracting a clean conversation summary from the full request body.
+	// This gives us the actual user message (not truncated to 320 bytes).
+	if requestBody != "" {
+		if extracted := extractMessagesForTitle(requestBody); extracted != "" {
+			corpus = extracted
 		}
 	}
 
-	if len(strings.TrimSpace(corpus)) < 40 {
-		// Fallback to simple extraction from in-memory preview
+	// Fall back to the 320-byte preview if full body extraction yielded nothing.
+	if corpus == "" && requestPreview != "" {
+		corpus = requestPreview
+	}
+
+	// Step 2: Only query DB logs if we don't already have a corpus from the
+	// in-memory request body. The DB JOIN on request_logs_bodies is expensive
+	// (bodies can be megabytes) and unnecessary when we already have the body.
+	if corpus == "" {
+		if logs, err := g.loadSessionLogsForTitle(ctx, sessionID, tenantID); err == nil && len(logs) > 0 {
+			dbCorpus := buildSummaryCorpus(logs)
+			if len(strings.TrimSpace(dbCorpus)) > len(strings.TrimSpace(corpus)) {
+				corpus = dbCorpus
+			}
+		}
+	}
+
+	if len(strings.TrimSpace(corpus)) < 10 {
+		// Fallback to simple extraction from preview
 		if requestPreview != "" {
 			if title := g.extractTitleFromPreview(requestPreview); title != "" {
 				return title, "auto-extract", 0, nil
 			}
 		}
-		return "", "", 0, fmt.Errorf("corpus too short for title generation (preview_len=%d)", len(requestPreview))
+		return "", "", 0, fmt.Errorf("corpus too short for title generation (body_len=%d, preview_len=%d)", len(requestBody), len(requestPreview))
 	}
 
 	// Get API key for LLM call
@@ -179,6 +191,78 @@ func (g *AutoTitleGenerator) generateTitleFromFirstRequest(ctx context.Context, 
 	}
 
 	return title, llmRes.ResolvedModel, keyID, nil
+}
+
+// extractMessagesForTitle parses a chat completion request body (JSON) and
+// extracts the conversation messages into a clean "role: content" text suitable
+// for title generation. It focuses on user/assistant messages and truncates
+// each message to avoid feeding megabytes of system prompt to the title LLM.
+// Returns "" if the body cannot be parsed or has no usable messages.
+func extractMessagesForTitle(requestBody string) string {
+	body := []byte(requestBody)
+	if len(body) == 0 {
+		return ""
+	}
+	var parsed struct {
+		Messages []struct {
+			Role    string `json:"role"`
+			Content any    `json:"content"`
+		} `json:"messages"`
+	}
+	if err := json.Unmarshal(body, &parsed); err != nil || len(parsed.Messages) == 0 {
+		return ""
+	}
+	const maxPerMsg = 500   // chars per message
+	const maxTotal = 3000   // total chars cap
+	const maxMsgs = 6       // at most first 6 messages
+	var parts []string
+	for i, msg := range parsed.Messages {
+		if i >= maxMsgs {
+			break
+		}
+		role := strings.TrimSpace(msg.Role)
+		text := contentToString(msg.Content)
+		text = strings.Join(strings.Fields(text), " ") // collapse whitespace
+		if text == "" {
+			continue
+		}
+		// Skip system messages that are just tool/IDE boilerplate — but keep
+		// short system messages since they may describe the task.
+		if role == "system" && len(text) > 200 {
+			// Truncate very long system prompts (e.g. IDE instructions)
+			text = text[:200] + "…"
+		}
+		if len(text) > maxPerMsg {
+			text = text[:maxPerMsg] + "…"
+		}
+		parts = append(parts, role+": "+text)
+	}
+	result := strings.Join(parts, "\n")
+	if len(result) > maxTotal {
+		result = result[:maxTotal] + "…"
+	}
+	return result
+}
+
+// contentToString converts a chat message content field (string or array of
+// content blocks) into plain text.
+func contentToString(content any) string {
+	switch v := content.(type) {
+	case string:
+		return v
+	case []any:
+		var parts []string
+		for _, item := range v {
+			if block, ok := item.(map[string]any); ok {
+				if text, ok := block["text"].(string); ok && text != "" {
+					parts = append(parts, text)
+				}
+			}
+		}
+		return strings.Join(parts, " ")
+	default:
+		return ""
+	}
 }
 
 // extractTitleFromPreview extracts a title from request_preview.
