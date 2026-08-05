@@ -21,8 +21,11 @@ mkdir -p "$RESULTS_DIR"
 GATEWAY="${GATEWAY:-http://localhost:8781}"
 # raw API keys (gateway 用 HMAC-SHA256 + secret_key 算 hash，去 api_keys 表查)
 # 默认使用 seed.sql 注入的 sk-loadtest-01..08 这 8 把 key + 1 把 admin sk-loadtest-admin-01
-API_KEYS="${API_KEYS:-sk-loadtest-01,sk-loadtest-02,sk-loadtest-03,sk-loadtest-04,sk-loadtest-05,sk-loadtest-06,sk-loadtest-07,sk-loadtest-08,sk-loadtest-admin-01}"
-ADMIN_API_KEY="${ADMIN_API_KEY:-sk-loadtest-admin-01}"
+API_KEYS="${API_KEYS:-sk-loadtest-01,sk-loadtest-02,sk-loadtest-03,sk-loadtest-04,sk-loadtest-05,sk-loadtest-06,sk-loadtest-07,sk-loadtest-08}"
+# 注: sk-loadtest-admin-01 不在 API_KEYS 列表 (DB 只有 8 个 client 域 key).
+# Admin API 用 LLM_GATEWAY_ADMIN_API_KEY env 静态 token 校验 (admin/auth.go),
+# 与 api_keys 表无关. ADMIN_API_KEY 变量给 S20.5 / S22.5 manual 触发保留.
+ADMIN_API_KEY="${ADMIN_API_KEY:-sk-test-admin-key-do-not-use-in-prod}"
 
 # Reset all suppliers to default state
 reset_all_suppliers() {
@@ -255,4 +258,13 @@ reset_mock_scripted_response() {
     local port="$1"
     curl -sS -m 3 -X POST -H "Content-Type: application/json" -d '{"content": ""}' \
         "http://127.0.0.1:$port/admin/scripted-response" 2>&1 | tail -1
+}
+
+
+# psql_count SQL — return scalar from SELECT count(*)
+# 不引双引号 SQL, 避免子 shell 中 INTERVAL '\'' 引号嵌套
+psql_count() {
+    local sql="$1"
+    PGPASSWORD="$PGPASSWORD" psql -h "$PGHOST" -p "$PGPORT" -U "$PGUSER" -d "$PGDB" \
+        -tA -c "$sql" 2>/dev/null
 }
