@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased] - 2026-08-04
 
+### Fixed
+
+- **end_user_id 在所有路径下都填充 (2026-08-06) — dc767386f... 事件根因**
+  - **症状**: `request_logs_hot.end_user_id` 在早失败路径（auth_unavailable / invalid_key / model_forbidden / session_forbidden 等）和 `/v1/messages` / `/v1/responses` 协议下长期为 NULL。dc767386f77450b89655d4855df41819 即为用户报告的典型样本
+  - **根因 A** — `RequestLogContext.buildEntry`（失败路径）从未给 `reqLog.EndUserID` 赋值；success 路径通过 `resolveEndUser(reqBody.User, r)` 拿值但 buildEntry 没有任何 EndUserID 字段。失败行一律 NULL
+  - **根因 B** — `resolveEndUser` 只查 `X-End-User-Id` header，不查 body；`messages.go::extractEndUser` 同样只查 header。两边都不嗅探 body 的 `"user"` 字段
+  - **根因 C** — `/v1/messages`（Anthropic）与 `/v1/responses`（OpenAI Responses）handler 不解析 OpenAI 风格的 `user` 字段；只依赖 `X-End-User-Id` header
+  - **修复**:
+    - 新增 `extractEndUserFromBody(body []byte) string`：严格 JSON 解析 + 宽松扫描（loose scan 容忍截断 JSON）
+    - 扩展 `resolveEndUser(bodyUser, r, bodyBytes...)` 为可变参数：bodyUser → X-End-User-Id → bodyBytes 嗅探 → r.Body 嗅探 → `"anonymous"`
+    - `RequestLogContext.buildEntry` 调用 `resolveEndUser("", c.Request, c.Body)` 并填入 `reqLog.EndUserID`
+    - `messages.go::extractEndUser` 改为统一调用 `resolveEndUser("", r)`
+  - **测试覆盖**: `TestResolveEndUser`（9 子用例）+ `TestExtractEndUserFromBody`（6 子用例）
+  - **验证**: `go test ./domains/streaming/` 全绿（含旧测试）
+  - **部署后实地验证**: `SELECT request_id, end_user_id, tenant_id, error_kind FROM request_logs_hot WHERE request_id = 'dc767386f77450b89655d4855df41819' OR error_kind IN ('auth_unavailable','invalid_key','model_forbidden','session_forbidden') AND ts > now() - interval '24 hours' ORDER BY ts DESC LIMIT 20;`
+
 ### Added
 
 - **自动标题/总结指标可观测性 (2026-08-06)**:

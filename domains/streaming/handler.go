@@ -5524,14 +5524,109 @@ func extractBearerToken(r *http.Request) string {
 	return ""
 }
 
-func resolveEndUser(bodyUser string, r *http.Request) string {
+// resolveEndUser picks the best end-user identifier available for this
+// request. Resolution order (highest priority first):
+//
+//	1. bodyUser — the OpenAI-style "user" field already parsed from the
+//	   request body. Empty when the body has no user field, when parsing
+//	   failed, or when the request never had a parsed body (early failure
+//	   paths).
+//	2. X-End-User-Id header — explicit end-user id header supported by all
+//	   protocols (chat-completions, Anthropic Messages, OpenAI Responses).
+//	3. bodyBytes sniff — extracts "user":"..." from the supplied body
+//	   bytes. Covers cases where the body was captured into RequestLogContext
+//	   but the typed handler never propagated bodyUser (Anthropic Messages,
+//	   OpenAI Responses, early-failure rows).
+//	4. r.Body sniff — best-effort fallback if r.Body is still readable
+//	   (only true before captureAttemptBody runs).
+//	5. "anonymous" — last-resort fallback so request_logs_hot.end_user_id
+//	   is always populated (operator dashboards can filter on it).
+//
+// 2026-08-06: previously only paths 1-2 existed. Failure-path callers
+// (buildEntry in request_log_pipeline.go) didn't have bodyUser, and the
+// /v1/messages handler didn't even try the body field — leading to NULL
+// end_user_id on every early-failure row and every Anthropic-message
+// request, including the dc767386f... incident.
+func resolveEndUser(bodyUser string, r *http.Request, bodyBytes ...[]byte) string {
 	if bodyUser != "" {
 		return bodyUser
+	}
+	if r == nil {
+		return "anonymous"
 	}
 	if header := r.Header.Get("X-End-User-Id"); header != "" {
 		return strings.TrimSpace(header)
 	}
+	for _, b := range bodyBytes {
+		if v := extractEndUserFromBody(b); v != "" {
+			return v
+		}
+	}
+	// Last-resort: try r.Body. By the time buildEntry runs this is
+	// almost always empty (already drained upstream), but it catches the
+	// narrow window where r.Body is still buffered and bodyBytes was nil.
+	if r.Body != nil {
+		buf, err := io.ReadAll(io.LimitReader(r.Body, 1<<20))
+		if err == nil && len(buf) > 0 {
+			if v := extractEndUserFromBody(buf); v != "" {
+				return v
+			}
+		}
+	}
 	return "anonymous"
+}
+
+// extractEndUserFromBody sniffs the request body for a JSON "user" string
+// field. Tolerates truncated / invalid JSON via a loose scan. Returns ""
+// when no user field is present so callers can fall through to the
+// "anonymous" sentinel.
+//
+// The caller passes the already-captured body bytes (typically
+// RequestLogContext.Body) rather than r.Body — by the time the failure-
+// path buildEntry runs, the original r.Body has already been consumed
+// upstream. BodyBytes may be nil/empty for early-failure paths where
+// the request never got past body parsing.
+func extractEndUserFromBody(body []byte) string {
+	if len(body) == 0 {
+		return ""
+	}
+	// Strict JSON first.
+	var parsed struct {
+		User string `json:"user"`
+	}
+	if err := json.Unmarshal(body, &parsed); err == nil {
+		if v := strings.TrimSpace(parsed.User); v != "" {
+			return v
+		}
+		return ""
+	}
+	// Loose scan for truncated JSON like {"model":"x","user":"al…
+	pattern := []byte(`"user"`)
+	idx := bytes.Index(body, pattern)
+	if idx < 0 {
+		return ""
+	}
+	after := body[idx+len(pattern):]
+	colonIdx := bytes.IndexByte(after, ':')
+	if colonIdx < 0 {
+		return ""
+	}
+	after = after[colonIdx+1:]
+	// Skip whitespace.
+	for len(after) > 0 && (after[0] == ' ' || after[0] == '\t' || after[0] == '\n' || after[0] == '\r') {
+		after = after[1:]
+	}
+	if len(after) == 0 || after[0] != '"' {
+		return ""
+	}
+	after = after[1:]
+	// Find the closing quote (handle escapes minimally — we only need
+	// a best-effort identifier; downstream SQL escaping handles the rest).
+	endIdx := bytes.IndexByte(after, '"')
+	if endIdx < 0 {
+		return ""
+	}
+	return strings.TrimSpace(string(after[:endIdx]))
 }
 
 func extractTokensFromResponseBody(body []byte) (promptTokens, completionTokens, cacheRead, cacheWrite int) {
