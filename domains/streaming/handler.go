@@ -247,9 +247,16 @@ func sanitizeGwSessionHeader(v string) string {
 	if s == "" {
 		return ""
 	}
-	// V2 gateway sessions are always gw_<uuid>. Treat plain UUID-style
-	// values as client metadata/session identifiers, not gateway session IDs.
-	if !strings.HasPrefix(s, "gw_") {
+	// Accept the three gateway-namespaced session-id prefixes:
+	//   gw_<uuid>  — user main session
+	//   gt_<...>   — auto-title branch session (admin/auto_title_generator.go)
+	//   gs_<...>   — auto-summary branch session (admin/auto_summary_generator.go)
+	// Treat plain UUID-style values as client metadata/session identifiers,
+	// not gateway session IDs. Branch prefixes MUST stay in sync with the
+	// X-Gw-Session-Id header set by the auto-title / auto-summary loopback
+	// callers; otherwise the loopback's session_id is silently dropped and
+	// the resulting request_logs_hot row shows a fresh gw_<uuid>.
+	if !strings.HasPrefix(s, "gw_") && !strings.HasPrefix(s, "gt_") && !strings.HasPrefix(s, "gs_") {
 		return ""
 	}
 	return s
@@ -472,6 +479,7 @@ func isRetriableError(err error) bool {
 			kind == errorsx.KindAuthRevoked ||
 			kind == errorsx.KindContentFilter ||
 			kind == errorsx.KindContextLength ||
+			kind == errorsx.KindModelDeprecated ||
 			kind == errorsx.KindQuotaPermanent {
 			return false
 		}
@@ -658,7 +666,18 @@ type ChatHandler struct {
 		// 2026-08-05: requestBody is the full (redacted) inbound body so the
 		// title LLM gets the actual user message. requestPreview is the
 		// 320-byte summary used as fallback.
-		MaybeGenerateTitle(sessionID, tenantID, requestBody, requestPreview string)
+		// 2026-08-06: parentRequestID is the user request_id that triggered
+		// this title generation; forwarded as X-Gw-Parent-Request-Id so
+		// request_logs_hot.parent_request_id makes the loopback joinable.
+		MaybeGenerateTitle(sessionID, tenantID, requestBody, requestPreview, parentRequestID string)
+	}
+
+	// autoSummaryGenerator (2026-08-06) incrementally rolls session
+	// summaries via map-reduce over the request path. nil disables
+	// auto-summary generation; the v2 dispatch background worker
+	// (domains/sessionsummary) still runs for session.closed events.
+	autoSummaryGenerator interface {
+		MaybeGenerateSummary(sessionID, tenantID, requestBody, requestPreview, parentRequestID string)
 	}
 
 	// armorJudge (Track A B1-5, 2026-06-25) scores prompts for security risks.
@@ -1007,10 +1026,21 @@ func (h *ChatHandler) newStreamCapture() *audit.StreamCapture {
 }
 
 // SetAutoTitleGenerator (2026-06-22) wires the auto title generator from admin package.
+// 2026-08-06: signature extended with parentRequestID for request_logs_hot.parent_request_id linkage.
 func (h *ChatHandler) SetAutoTitleGenerator(atg interface {
-	MaybeGenerateTitle(sessionID, tenantID, requestBody, requestPreview string)
+	MaybeGenerateTitle(sessionID, tenantID, requestBody, requestPreview, parentRequestID string)
 }) {
 	h.autoTitleGenerator = atg
+}
+
+// SetAutoSummaryGenerator (2026-08-06) wires the auto summary generator
+// from the admin package. Symmetric contract with SetAutoTitleGenerator:
+// the streaming handler fires MaybeGenerateSummary on every successful
+// user request, gated by the rolling N-turn threshold inside the generator.
+func (h *ChatHandler) SetAutoSummaryGenerator(asg interface {
+	MaybeGenerateSummary(sessionID, tenantID, requestBody, requestPreview, parentRequestID string)
+}) {
+	h.autoSummaryGenerator = asg
 }
 
 // SetArmor wires armor judge and logger for prompt security checks.
@@ -1151,6 +1181,17 @@ func (h *ChatHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// 在日志里全为 NULL，也无法在标题生成触发点排除自身（链式自触发风险）。
 	if strings.EqualFold(r.Header.Get(autoIsAutoHeader), "true") {
 		logCtx.IsAutoRequest = true
+	}
+	// 2026-08-06: 读取父子关联 header。auto_title_generator 在 loopback
+	// 请求中转发父请求的 request_id 与调用方 actor；handler 入口侧把它们
+	// 写入 logCtx，再经 applyParentCorrelationFields 持久化到
+	// request_logs_hot.parent_request_id / origin_actor。这是 "08aa2a8a →
+	// 3a03f7db" 父子链路 SQL JOIN 的关键。
+	if v := strings.TrimSpace(r.Header.Get(autoParentRequestIDHeader)); v != "" {
+		logCtx.ParentRequestID = v
+	}
+	if v := strings.TrimSpace(r.Header.Get(autoSourceActorHeader)); v != "" {
+		logCtx.OriginActor = v
 	}
 
 	// ── 2026-07-17: 请求链路追踪 — 注入 receive_request 事件 ───────────────
@@ -4393,6 +4434,9 @@ func (h *ChatHandler) emitTelemetry(evt audit.Event, result *executors.ExecuteRe
 	// v2.4 (2026-08-05): exclude gateway-internal auto requests (logCtx.IsAutoRequest,
 	// set from the X-Gw-Is-Auto header or model="auto") so the auto title generator
 	// does not re-trigger on its own title requests (chain self-triggering).
+	// v2.5 (2026-08-06): pass evt.RequestID as parentRequestID so the loopback
+	// LLM call's request_logs_hot.parent_request_id is filled — operators can
+	// SQL JOIN child ↔ parent to find "08aa2a8a → 3a03f7db".
 	// Fire-and-forget async call; never blocks the request path.
 	if h.autoTitleGenerator != nil && reqLog.Success && reqLog.GwSessionID != nil && *reqLog.GwSessionID != "" && !shouldSkipAutoTitleGeneration(logCtx) {
 		preview := ""
@@ -4403,7 +4447,26 @@ func (h *ChatHandler) emitTelemetry(evt audit.Event, result *executors.ExecuteRe
 		if reqLog.RequestBody != nil {
 			body = *reqLog.RequestBody
 		}
-		h.autoTitleGenerator.MaybeGenerateTitle(*reqLog.GwSessionID, tenantID, body, preview)
+		h.autoTitleGenerator.MaybeGenerateTitle(*reqLog.GwSessionID, tenantID, body, preview, evt.RequestID)
+	}
+
+	// 2026-08-06: auto-summary — fires after auto-title on the same
+	// success path. Internally gated by an incremental-rolling N-turn
+	// threshold, a per-tenant rate limit, and a worker-pool semaphore
+	// (see admin/auto_summary_generator.go). Chain-prevention via
+	// shouldSkipAutoSummaryGeneration keeps summary requests from
+	// re-triggering themselves — the loopback sets X-Gw-Is-Auto: true
+	// and the next pass sees logCtx.IsAutoRequest.
+	if h.autoSummaryGenerator != nil && reqLog.Success && reqLog.GwSessionID != nil && *reqLog.GwSessionID != "" && !shouldSkipAutoSummaryGeneration(logCtx) {
+		preview := ""
+		if reqLog.RequestPreview != nil {
+			preview = *reqLog.RequestPreview
+		}
+		body := ""
+		if reqLog.RequestBody != nil {
+			body = *reqLog.RequestBody
+		}
+		h.autoSummaryGenerator.MaybeGenerateSummary(*reqLog.GwSessionID, tenantID, body, preview, evt.RequestID)
 	}
 
 	// 2026-07-28: model-integrity detection (finish_refusal /
@@ -4458,6 +4521,16 @@ func (h *ChatHandler) emitTelemetry(evt audit.Event, result *executors.ExecuteRe
 // loopback title requests (chain self-triggering). A nil logCtx is treated
 // as a normal request (no skip).
 func shouldSkipAutoTitleGeneration(logCtx *RequestLogContext) bool {
+	return logCtx != nil && logCtx.IsAutoRequest
+}
+
+// shouldSkipAutoSummaryGeneration (2026-08-06) — symmetric companion to
+// shouldSkipAutoTitleGeneration. Excludes gateway-internal auto requests
+// (which include summary loopbacks and the title loopback that already
+// fired) so the auto-summary generator does not re-trigger on its own
+// loopback summary requests (chain self-triggering). A nil logCtx is
+// treated as a normal request (no skip).
+func shouldSkipAutoSummaryGeneration(logCtx *RequestLogContext) bool {
 	return logCtx != nil && logCtx.IsAutoRequest
 }
 
@@ -5083,6 +5156,9 @@ func (h *ChatHandler) recordInitialRequestLog(
 		reqLog.StreamChunksSent = &zero
 	}
 	applyAutoRouteFields(reqLog, autoCtx)
+	// 2026-08-06: flow X-Gw-Parent-Request-Id / X-Gw-Source-Actor into the
+	// persisted row. See applyParentCorrelationFields for rationale.
+	applyParentCorrelationFields(reqLog, autoCtx)
 	if h.requestLogHook != nil {
 		h.requestLogHook(reqLog)
 	}

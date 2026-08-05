@@ -368,6 +368,7 @@ func (m *Manager) UpdateOnFailure(ctx context.Context, credID int, model string,
 	isPermanent := errKind == errorsx.KindAuth ||
 		errKind == errorsx.KindAuthRevoked ||
 		errKind == errorsx.KindModelNotFound ||
+		errKind == errorsx.KindModelDeprecated ||
 		errKind == errorsx.KindQuotaPermanent
 
 	if isPermanent && state.ConsecutiveFails >= 2 {

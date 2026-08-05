@@ -2243,6 +2243,13 @@ func main() {
 			chatHandler.SetAutoTitleGenerator(autoTitleGen)
 			slog.Info("auto session title generator wired (async, fire-and-forget)")
 		}
+		// 2026-08-06: wire the auto summary generator — incremental rolling
+		// map-reduce over the request path. Symmetric to the title wiring.
+		autoSummaryGen := adminHandler.GetAutoSummaryGenerator()
+		if autoSummaryGen != nil {
+			chatHandler.SetAutoSummaryGenerator(autoSummaryGen)
+			slog.Info("auto session summary generator wired (incremental, map-reduce)")
+		}
 	}
 
 	// ── Route incident diagnosis (2026-07-13, Phase 1 read-only) ───────

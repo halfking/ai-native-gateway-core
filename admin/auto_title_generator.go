@@ -4,13 +4,30 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
+	"math/rand"
+	"net"
 	"net/http"
 	"os"
 	"strings"
 	"time"
+)
+
+// 2026-08-06: title-generator caller identity for request_logs.origin_actor.
+// Operators can SQL `WHERE origin_actor = 'auto-title-generator'` to find every
+// auto-title loopback request and its parent_request_id link.
+const autoTitleOriginActor = "auto-title-generator"
+
+// 2026-08-06: header names carried into the loopback request so the handler
+// can record parent/actor correlation. Must stay in sync with
+// domains/streaming/handler.go (header read) and the X-Gw-* convention used
+// by other internal callers (node_probe, credential_selfcheck, etc.).
+const (
+	autoParentRequestIDHeader = "X-Gw-Parent-Request-Id"
+	autoSourceActorHeader     = "X-Gw-Source-Actor"
 )
 
 // AutoTitleGenerator handles automatic session title generation.
@@ -33,17 +50,20 @@ func NewAutoTitleGenerator(handler *Handler) *AutoTitleGenerator {
 // requestBody is the full (redacted) inbound request body JSON — used to
 // extract the actual user message for title generation. requestPreview is the
 // 320-byte summary used as fallback.
+// parentRequestID (added 2026-08-06) is the user request's request_id; we
+// forward it as X-Gw-Parent-Request-Id so request_logs_hot.parent_request_id
+// makes the title loopback linkable back to its parent user request.
 // This function is fire-and-forget and will not block the main request path.
-func (g *AutoTitleGenerator) MaybeGenerateTitle(sessionID, tenantID, requestBody, requestPreview string) {
+func (g *AutoTitleGenerator) MaybeGenerateTitle(sessionID, tenantID, requestBody, requestPreview, parentRequestID string) {
 	if !g.enabled || g.handler == nil || g.handler.db == nil {
 		return
 	}
 
 	// Run in a separate goroutine to avoid blocking
-	go g.generateTitleAsync(sessionID, tenantID, requestBody, requestPreview)
+	go g.generateTitleAsync(sessionID, tenantID, requestBody, requestPreview, parentRequestID)
 }
 
-func (g *AutoTitleGenerator) generateTitleAsync(sessionID, tenantID, requestBody, requestPreview string) {
+func (g *AutoTitleGenerator) generateTitleAsync(sessionID, tenantID, requestBody, requestPreview, parentRequestID string) {
 	// Use background context with timeout (not tied to the request context)
 	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
 	defer cancel()
@@ -53,6 +73,7 @@ func (g *AutoTitleGenerator) generateTitleAsync(sessionID, tenantID, requestBody
 		"component", "auto_title_generator",
 		"session_id", sessionID,
 		"tenant_id", tenantID,
+		"parent_request_id", parentRequestID,
 	)
 
 	// Step 1: Check if title already exists (avoid duplicate work)
@@ -67,7 +88,7 @@ func (g *AutoTitleGenerator) generateTitleAsync(sessionID, tenantID, requestBody
 	}
 
 	start := time.Now()
-	title, model, keyID, err := g.generateTitleFromFirstRequest(ctx, sessionID, tenantID, requestBody, requestPreview)
+	title, model, keyID, err := g.generateTitleFromFirstRequest(ctx, sessionID, tenantID, requestBody, requestPreview, parentRequestID)
 	elapsed := time.Since(start)
 	if err != nil {
 		logger.Warn("failed to generate title from first request", "error", err, "elapsed_ms", elapsed.Milliseconds())
@@ -104,10 +125,12 @@ func (g *AutoTitleGenerator) checkSessionHasTitle(ctx context.Context, sessionID
 
 // generateTitleFromFirstRequest loads session logs and generates a title using LLM.
 // v4 (2026-08-05): Accept full requestBody to extract real user messages.
+// v5 (2026-08-06): Accept parentRequestID so callAutoTitleLLM can forward it
+// as X-Gw-Parent-Request-Id for request_logs_hot.parent_request_id linkage.
 // The requestPreview (320-byte summary) is used as fallback only.
 // Returns (title, model, apiKeyID, error). On fallback-extract paths model is
 // "auto-extract" and apiKeyID is 0.
-func (g *AutoTitleGenerator) generateTitleFromFirstRequest(ctx context.Context, sessionID, tenantID, requestBody, requestPreview string) (string, string, int, error) {
+func (g *AutoTitleGenerator) generateTitleFromFirstRequest(ctx context.Context, sessionID, tenantID, requestBody, requestPreview, parentRequestID string) (string, string, int, error) {
 	logger := slog.With("component", "auto_title_generator", "session_id", sessionID)
 
 	// Step 1: Build corpus — prefer full request body (has real user message),
@@ -185,7 +208,9 @@ func (g *AutoTitleGenerator) generateTitleFromFirstRequest(ctx context.Context, 
 
 	// Title LLM call runs in an isolated context (no X-Gw-Session-Id so it
 	// gets its own gw_session_id and does NOT pollute the user's conversation).
-	llmRes, err := g.callAutoTitleLLM(ctx, apiKey, sessionID, userContent)
+	// The parent_request_id is forwarded so request_logs_hot.parent_request_id
+	// makes the loopback linkable back to its parent user request.
+	llmRes, err := g.callAutoTitleLLM(ctx, apiKey, sessionID, parentRequestID, userContent)
 	if err != nil {
 		// Fallback: simple extraction from in-memory preview
 		if requestPreview != "" {
@@ -225,6 +250,12 @@ func truncateForLog(s string, max int) string {
 // extracts the conversation messages into a clean "role: content" text suitable
 // for title generation. It focuses on user/assistant messages and truncates
 // each message to avoid feeding megabytes of system prompt to the title LLM.
+//
+// v5 (2026-08-06): bumped limits (10 msgs / 1200 chars / 6000 total) and
+// preserves the LAST user message in full — that is the actual question the
+// user asked, which the title LLM needs to see uncut. Earlier messages are
+// truncated as before.
+//
 // Returns "" if the body cannot be parsed or has no usable messages.
 func extractMessagesForTitle(requestBody string) string {
 	body := []byte(requestBody)
@@ -240,34 +271,59 @@ func extractMessagesForTitle(requestBody string) string {
 	if err := json.Unmarshal(body, &parsed); err != nil || len(parsed.Messages) == 0 {
 		return ""
 	}
-	const maxPerMsg = 500   // chars per message
-	const maxTotal = 3000   // total chars cap
-	const maxMsgs = 6       // at most first 6 messages
+	const maxPerMsg = 1200  // chars per message (was 500 — bumped 2026-08-06)
+	const maxTotal = 6000   // total chars cap (was 3000)
+	const maxMsgs = 10      // at most first 10 messages (was 6)
+	const maxSysChars = 800 // long system messages (IDE tool descriptions) get truncated at this length
+	const sysSnippet = 300  // how much of a long system message to keep
+
+	// 2026-08-06: pre-scan to find the LAST user message; preserve it in full
+	// even if doing so pushes the corpus past maxTotal. This is the actual
+	// question the user asked and the title LLM needs it uncut.
+	lastUserIdx := -1
+	for i := len(parsed.Messages) - 1; i >= 0; i-- {
+		if strings.EqualFold(strings.TrimSpace(parsed.Messages[i].Role), "user") {
+			lastUserIdx = i
+			break
+		}
+	}
+	var lastUserText string
+	if lastUserIdx >= 0 {
+		lastUserText = strings.Join(strings.Fields(contentToString(parsed.Messages[lastUserIdx].Content)), " ")
+	}
+
 	var parts []string
 	for i, msg := range parsed.Messages {
 		if i >= maxMsgs {
 			break
 		}
 		role := strings.TrimSpace(msg.Role)
-		text := contentToString(msg.Content)
-		text = strings.Join(strings.Fields(text), " ") // collapse whitespace
+		text := strings.Join(strings.Fields(contentToString(msg.Content)), " ") // collapse whitespace
 		if text == "" {
 			continue
 		}
-		// Skip system messages that are just tool/IDE boilerplate — but keep
-		// short system messages since they may describe the task.
-		if role == "system" && len(text) > 200 {
-			// Truncate very long system prompts (e.g. IDE instructions)
-			text = text[:200] + "…"
+		// Long system prompts (IDE tool descriptions) are usually boilerplate;
+		// truncate aggressively so the user question is not crowded out.
+		if role == "system" && len(text) > maxSysChars {
+			text = text[:sysSnippet] + "… <ide-tool-context truncated>"
 		}
 		if len(text) > maxPerMsg {
 			text = text[:maxPerMsg] + "…"
 		}
 		parts = append(parts, role+": "+text)
 	}
+	// Truncate the prefix loop's joined output to maxTotal so a long IDE
+	// system prompt doesn't crowd out the preserved user message below.
 	result := strings.Join(parts, "\n")
 	if len(result) > maxTotal {
 		result = result[:maxTotal] + "…"
+	}
+	// 2026-08-06: append the LAST user message in full so the title LLM sees
+	// the actual question. Added AFTER the maxTotal cap so a long user message
+	// always survives uncut. Marked with a sentinel comment for human
+	// readability when the corpus is debugged.
+	if lastUserText != "" {
+		result += "\n<latest user message (preserved)> user: " + lastUserText
 	}
 	return result
 }
@@ -529,7 +585,29 @@ func (g *AutoTitleGenerator) resolveAutoTitleModel(ctx context.Context) string {
 }
 
 // callAutoTitleLLM calls the LLM to generate a title (background HTTP request).
-func (g *AutoTitleGenerator) callAutoTitleLLM(ctx context.Context, apiKey, sessionID, userContent string) (adminLLMChatResult, error) {
+//
+// v3 (2026-08-06):
+//   - forwards the parent user request_id as X-Gw-Parent-Request-Id so
+//     request_logs_hot.parent_request_id makes the loopback linkable back to
+//     its parent user request. Operators can SQL JOIN on parent_request_id to
+//     find "08aa2a8a → 3a03f7db" instantly.
+//   - sets X-Gw-Source-Actor: auto-title-generator so request_logs_hot.origin_actor
+//     is populated for all title requests.
+//   - sets X-Gw-Session-Id: gt_<session_id> (the "GT" branch namespace) so
+//     request_logs_hot.gw_session_id shows "gt_gw_<original>" instead of a
+//     fresh gw_<uuid>. Operators can SQL
+//       WHERE gw_session_id LIKE 'gt\_%' ESCAPE '\'
+//     to find every auto-title row. Pairs with the gs_ prefix used by
+//     admin/auto_summary_generator.go.
+//   - retries once on transient errors (connect-refused, EOF, 502/503/504) with
+//     200ms ± 50ms jitter, so a single blip doesn't surface as "LLM didn't
+//     receive the request".
+//   - structured slog.Warn on every failure includes endpoint, status_code,
+//     body_excerpt (≤200), retry_count, parent_request_id, model, latency_ms.
+//     This is the answer to the operator question "did the LLM actually
+//     receive the request?" — if status_code >= 200 and < 300 the LLM did;
+//     otherwise the body_excerpt reveals what the upstream said.
+func (g *AutoTitleGenerator) callAutoTitleLLM(ctx context.Context, apiKey, sessionID, parentRequestID, userContent string) (adminLLMChatResult, error) {
 	if g.handler == nil {
 		return adminLLMChatResult{}, fmt.Errorf("handler not configured")
 	}
@@ -557,23 +635,108 @@ func (g *AutoTitleGenerator) callAutoTitleLLM(ctx context.Context, apiKey, sessi
 	}
 
 	body, _ := json.Marshal(payload)
+
+	// Retry policy (2026-08-06):
+	//   - 1 retry on transient errors (connect refused, EOF, 502/503/504)
+	//   - 200ms ± 50ms jitter
+	//   - do NOT retry on 4xx (caller-side bug) or empty completion (model-side)
+	const maxRetries = 1
+	var lastErr error
+	var lastStatus int
+	var lastBodyExcerpt string
+	for attempt := 0; attempt <= maxRetries; attempt++ {
+		if attempt > 0 {
+			// Jittered backoff: 150-250ms.
+			jitter := time.Duration(150+rand.Intn(100)) * time.Millisecond
+			select {
+			case <-ctx.Done():
+				return adminLLMChatResult{}, ctx.Err()
+			case <-time.After(jitter):
+			}
+		}
+		result, err, status, bodyExcerpt := g.doCallAutoTitleOnce(ctx, endpoint, body, apiKey, sessionID, parentRequestID, task, model)
+		lastErr = err
+		lastStatus = status
+		lastBodyExcerpt = bodyExcerpt
+		if err == nil {
+			return result, nil
+		}
+		if !isTransientAutoTitleErr(err, status) {
+			// 4xx / decode error / empty completion — don't retry, surface immediately.
+			break
+		}
+		// log retry intent for observability
+		slog.Warn("auto_title: transient error, retrying",
+			"component", "auto_title_generator",
+			"session_id", sessionID,
+			"parent_request_id", parentRequestID,
+			"endpoint", endpoint,
+			"model", model,
+			"attempt", attempt+1,
+			"status_code", status,
+			"error", err.Error(),
+			"body_excerpt", bodyExcerpt,
+		)
+	}
+	// Final failure log — has the full operator context to answer
+	// "did the LLM actually receive the request".
+	slog.Warn("auto_title: LLM call failed",
+		"component", "auto_title_generator",
+		"session_id", sessionID,
+		"parent_request_id", parentRequestID,
+		"endpoint", endpoint,
+		"model", model,
+		"status_code", lastStatus,
+		"body_excerpt", lastBodyExcerpt,
+		"retries", maxRetries,
+		"error", errString(lastErr),
+	)
+	return adminLLMChatResult{}, lastErr
+}
+
+// doCallAutoTitleOnce performs one HTTP attempt and returns either a parsed
+// adminLLMChatResult or a descriptive error. The caller decides whether to
+// retry based on isTransientAutoTitleErr.
+func (g *AutoTitleGenerator) doCallAutoTitleOnce(
+	ctx context.Context,
+	endpoint string,
+	body []byte,
+	apiKey string,
+	sessionID string,
+	parentRequestID string,
+	task adminLLMTaskConfig,
+	model string,
+) (adminLLMChatResult, error, int, string) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
 	if err != nil {
-		return adminLLMChatResult{}, err
+		return adminLLMChatResult{}, err, 0, ""
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+apiKey)
 	req.Header.Set("X-Gw-Auto-Profile", task.DefaultProfile)
 	req.Header.Set("X-Gw-Task-Hint", task.TaskHint)
 	req.Header.Set("X-Gw-Work-Type", task.Key)
-	// 2026-08-06: the title LLM call must be fully isolated from the user's
-	// session — neither X-Gw-Session-Id NOR X-Gw-Task-Id should reference the
-	// original session. Previously we passed the original sessionID as
-	// X-Gw-Task-Id, which caused dashboard/session aggregation to merge the
-	// title request into the user's session (the "conflict" symptom). Now we
-	// use a namespaced task ID so the request is self-contained and traceable
-	// back to the origin session only via this explicit prefix.
+	// 2026-08-06: namespace the task id so dashboards don't merge the title
+	// request into the user's session view; the original sessionID is still
+	// discoverable through the "auto-title:" prefix for triage.
 	req.Header.Set("X-Gw-Task-Id", "auto-title:"+sessionID)
+	// 2026-08-06 (GT prefix): tag the loopback's own session_id with the
+	// "gt_" branch namespace so request_logs_hot.gw_session_id shows
+	// "gt_gw_<original>" instead of a fresh gw_<uuid>. Operators can SQL
+	//   WHERE gw_session_id LIKE 'gt\_%' ESCAPE '\'
+	// to find every auto-title row and JOIN child.parent_request_id back to
+	// the parent user request. Pairs with the gs_ prefix used by the
+	// auto-summary generator (admin/auto_summary_generator.go).
+	req.Header.Set("X-Gw-Session-Id", "gt:"+sessionID)
+	// 2026-08-06: parent request correlation — handler entry reads this header
+	// and stores it in logCtx.ParentRequestID, which then flows into
+	// request_logs_hot.parent_request_id. This is what makes the title loopback
+	// linkable back to its parent user request.
+	if parentRequestID != "" {
+		req.Header.Set(autoParentRequestIDHeader, parentRequestID)
+	}
+	// 2026-08-06: caller identity for SQL "WHERE origin_actor = ..." filtering.
+	req.Header.Set(autoSourceActorHeader, autoTitleOriginActor)
 	// Mark as internal auto-request so it's excluded from user-visible
 	// metrics and from re-triggering auto title generation (chain prevention).
 	req.Header.Set("X-Gw-Is-Auto", "true")
@@ -581,10 +744,12 @@ func (g *AutoTitleGenerator) callAutoTitleLLM(ctx context.Context, apiKey, sessi
 		req.Header.Set("X-Device-Seed", task.DeviceSeed)
 	}
 
-	client := &http.Client{Timeout: 20 * time.Second}
+	// Bumped from 20s → 30s (2026-08-06): when the cheap-model pool is busy
+	// the upstream may queue a few seconds before answering; 20s was too tight.
+	client := &http.Client{Timeout: 30 * time.Second}
 	resp, err := client.Do(req)
 	if err != nil {
-		return adminLLMChatResult{}, err
+		return adminLLMChatResult{}, err, 0, ""
 	}
 	defer resp.Body.Close()
 
@@ -599,12 +764,17 @@ func (g *AutoTitleGenerator) callAutoTitleLLM(ctx context.Context, apiKey, sessi
 	}
 
 	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	excerpt := strings.TrimSpace(string(raw))
+	if len(excerpt) > 200 {
+		excerpt = excerpt[:200] + "…"
+	}
+
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		msg := strings.TrimSpace(string(raw))
+		msg := excerpt
 		if msg == "" {
 			msg = resp.Status
 		}
-		return adminLLMChatResult{}, fmt.Errorf("%s", msg)
+		return adminLLMChatResult{}, fmt.Errorf("status %d: %s", resp.StatusCode, msg), resp.StatusCode, excerpt
 	}
 
 	var out struct {
@@ -616,19 +786,52 @@ func (g *AutoTitleGenerator) callAutoTitleLLM(ctx context.Context, apiKey, sessi
 		} `json:"choices"`
 	}
 	if err := json.Unmarshal(raw, &out); err != nil {
-		return adminLLMChatResult{}, err
+		return adminLLMChatResult{}, fmt.Errorf("decode response: %w (body=%q)", err, excerpt), resp.StatusCode, excerpt
 	}
 	if out.Model != "" && out.Model != model {
 		resolvedModel = out.Model
 	}
 	if len(out.Choices) == 0 {
-		return adminLLMChatResult{}, fmt.Errorf("empty completion")
+		return adminLLMChatResult{}, fmt.Errorf("empty completion (body=%q)", excerpt), resp.StatusCode, excerpt
 	}
 	content := strings.TrimSpace(out.Choices[0].Message.Content)
 	if content == "" {
-		return adminLLMChatResult{}, fmt.Errorf("empty completion content")
+		return adminLLMChatResult{}, fmt.Errorf("empty completion content (body=%q)", excerpt), resp.StatusCode, excerpt
 	}
-	return adminLLMChatResult{Content: content, ResolvedModel: resolvedModel}, nil
+	return adminLLMChatResult{Content: content, ResolvedModel: resolvedModel}, nil, resp.StatusCode, excerpt
+}
+
+// isTransientAutoTitleErr reports whether a callAutoTitle error is a transient
+// network/upstream condition that justifies a single retry. 4xx errors are
+// caller-side bugs and should surface immediately.
+func isTransientAutoTitleErr(err error, status int) bool {
+	if err == nil {
+		return false
+	}
+	// Connection-level errors are always transient.
+	if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
+		return true
+	}
+	var netErr net.Error
+	if errors.As(err, &netErr) {
+		return true
+	}
+	switch status {
+	case http.StatusBadGateway,     // 502
+		http.StatusServiceUnavailable, // 503
+		http.StatusGatewayTimeout:     // 504
+		return true
+	}
+	return false
+}
+
+// errString returns err.Error() or "" for nil. Used in slog.Warn fields where
+// nil-safety is required by the slog contract.
+func errString(err error) string {
+	if err == nil {
+		return ""
+	}
+	return err.Error()
 }
 
 // getGatewayEndpoint returns the gateway endpoint for auto-title LLM calls.

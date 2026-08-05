@@ -98,6 +98,15 @@ type RequestLogContext struct {
 	TurnNo      int    // 会话内轮次（best-effort，由 session 已知请求计数取）
 	OriginStage string // self_check/node_probe/system_health/business/probe_*
 
+	// 2026-08-06: 父子关联维度。Set from the X-Gw-Parent-Request-Id and
+	// X-Gw-Source-Actor headers at handler entry (admin/auto_title_generator.go
+	// forwards them on its loopback LLM call). Flow into
+	// request_logs_hot.parent_request_id / origin_actor so operators can SQL
+	// JOIN child ↔ parent and filter "all rows emitted by the auto-title
+	// generator".
+	ParentRequestID string // user request_id that triggered this loopback
+	OriginActor     string // emitting component, e.g. "auto-title-generator"
+
 	// 2026-07-17: 同步探测 hold 维度。executor 进入 no_candidate 分支时
 	// 通过 OnProbeHoldStart/End 回调更新这三个字段；request_logs 写入时
 	// 可序列化进 attachment JSON 用于运维追查。
@@ -346,6 +355,32 @@ func applyWorkTypeField(entry *telemetry.RequestLogEntry, c *RequestLogContext) 
 		return
 	}
 	entry.WorkType = strPtr(c.WorkType)
+}
+
+// applyParentCorrelationFields (2026-08-06) flows the X-Gw-Parent-Request-Id
+// and X-Gw-Source-Actor headers (read at handler entry into logCtx.ParentRequestID
+// / logCtx.OriginActor) into the persisted RequestLogEntry.
+//
+// This is what makes the auto-title loopback SQL-joinable to its parent user
+// request:
+//
+//   SELECT child.request_id, child.parent_request_id, child.origin_actor
+//   FROM request_logs_hot child
+//   WHERE child.origin_actor = 'auto-title-generator'
+//     AND child.ts > now() - interval '1 hour';
+//
+// Without this, request_logs_hot.parent_request_id is always NULL on title
+// rows and operators have no way to correlate "08aa2a8a → 3a03f7db".
+func applyParentCorrelationFields(entry *telemetry.RequestLogEntry, c *RequestLogContext) {
+	if entry == nil || c == nil {
+		return
+	}
+	if c.ParentRequestID != "" {
+		entry.ParentRequestID = strPtr(c.ParentRequestID)
+	}
+	if c.OriginActor != "" {
+		entry.OriginActor = strPtr(c.OriginActor)
+	}
 }
 
 func applyAutoRouteFields(entry *telemetry.RequestLogEntry, c *RequestLogContext) {
@@ -788,6 +823,10 @@ func (c *RequestLogContext) buildEntry(errCode, errMessage string, providerID, c
 	}
 	enrichRequestLogFromMeta(reqLog, c.KeyInfo, &c.meta)
 	applyAutoRouteFields(reqLog, c)
+	// 2026-08-06: flow X-Gw-Parent-Request-Id / X-Gw-Source-Actor into the
+	// persisted row so operators can SQL JOIN auto-title rows back to their
+	// parent user request.
+	applyParentCorrelationFields(reqLog, c)
 	if len(c.OutboundBody) > 0 {
 		reqLog.OutboundBody = json.RawMessage(c.OutboundBody)
 	}

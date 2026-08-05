@@ -228,6 +228,56 @@ func (h *Handler) loadSessionLogsForSummary(ctx context.Context, r *http.Request
 	return out, nil
 }
 
+// loadSessionLogsBySessionID (2026-08-06) loads up to `limit` successful
+// session request logs by gw_session_id, ordered ASC. It is a slim
+// Handler-level variant of admin/auto_title_generator.go's
+// loadSessionLogsForTitle (which lives on AutoTitleGenerator and accepts
+// only a fixed limit=5). The summary generator needs a configurable limit
+// because map-reduce pulls more rows than the title generator does.
+//
+// Returns nil, nil when h.db is nil so callers can be defensive without
+// a hard dependency on a configured DB.
+func (h *Handler) loadSessionLogsBySessionID(ctx context.Context, sessionID, tenantID string, limit int) ([]sessionLogForSummary, error) {
+	if h == nil || h.db == nil {
+		return nil, nil
+	}
+	if limit <= 0 {
+		limit = 50
+	}
+	rows, err := h.db.Query(ctx, `
+		SELECT rl.ts, rl.request_preview, rl.response_preview,
+		       COALESCE(rb.request_body::text, rl.request_body::text) AS request_body,
+		       COALESCE(rb.response_body::text, rl.response_body::text) AS response_body,
+		       `+requestLogStatusExpr+` AS request_status,
+		       rl.error_kind, rl.client_model
+		FROM request_logs_with_current_month rl
+		LEFT JOIN request_logs_bodies_with_current_month rb ON rb.request_id = rl.request_id
+		WHERE rl.gw_session_id = $1 AND rl.tenant_id = $2
+		ORDER BY rl.ts ASC
+		LIMIT $3
+	`, sessionID, tenantID, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var out []sessionLogForSummary
+	for rows.Next() {
+		var row sessionLogForSummary
+		var errKind *string
+		var clientModel *string
+		if err := rows.Scan(&row.Ts, &row.RequestPreview, &row.ResponsePreview,
+			&row.RequestBody, &row.ResponseBody,
+			&row.RequestStatus, &errKind, &clientModel); err != nil {
+			continue
+		}
+		row.ErrorKind = errKind
+		row.ClientModel = clientModel
+		out = append(out, row)
+	}
+	return out, rows.Err()
+}
+
 func (h *Handler) pickFirstAvailableAPIKey(ctx context.Context, r *http.Request) (id int, apiKey string, err error) {
 	args := []any{}
 	where := []string{

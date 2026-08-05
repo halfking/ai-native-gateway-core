@@ -23,6 +23,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/domains/session"         //nolint:depguard // session state manager
 	"github.com/kaixuan/llm-gateway-go/domains/sessionaudit"    //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/domains/stats"
+	"github.com/kaixuan/llm-gateway-go/internal/summarystore"   //nolint:depguard // 2026-08-06 auto summary persistence
 	"github.com/kaixuan/llm-gateway-go/domains/stats/boardcache"
 	"github.com/kaixuan/llm-gateway-go/domains/ursm/v2"
 	"github.com/kaixuan/llm-gateway-go/pending"
@@ -154,6 +155,7 @@ type Handler struct {
 	availabilityBackfill   *bg.AvailabilityCacheBackfill // 2026-06-29 on-demand DB→Redis cache rebuild
 	availabilityKeyCounter *bg.AvailabilityKeyCounter    // 2026-06-29 on-demand SCAN-based key count
 	autoTitleGen           *AutoTitleGenerator           // Auto session title generator (2026-06-22)
+	autoSummaryGen         *AutoSummaryGenerator         // 2026-08-06 incremental session summary via map-reduce
 	sessionManager         *session.Manager              // 2026-07-06 会话状态管理 (state, cred rotation, lifecycle)
 	sessionDBWriter        *session.DBWriter             // 2026-07-06 批量异步写 DB worker
 	sessionCleanupWorker   *session.CleanupWorker        // 2026-07-06 清理过期 stopped session
@@ -234,6 +236,10 @@ func NewHandler(db *pgxpool.Pool, secretKey string, encKey []byte) *Handler {
 	h := &Handler{db: db, secret: secretKey, encKey: encKey}
 	// Initialize auto title generator
 	h.autoTitleGen = NewAutoTitleGenerator(h)
+	// 2026-08-06: initialize incremental-rolling session summary generator.
+	// Persists via internal/summarystore so the v2 dispatch worker and the
+	// on-request path share one row shape.
+	h.autoSummaryGen = NewAutoSummaryGenerator(h, summarystore.NewStore(db))
 	// 2026-07-13: hot 表异步迁移任务注册表（内存）；异步任务状态由前端轮询查询
 	h.hotJobMgr = newHotJobManager()
 	// 2026-07-13: 通用异步任务注册表，管理 drop partition / vacuum / reindex 等任务
@@ -319,6 +325,13 @@ func (h *Handler) SetAvailabilityKeyCounter(k *bg.AvailabilityKeyCounter) {
 // GetAutoTitleGenerator (2026-06-22) returns the auto title generator for use by routing package.
 func (h *Handler) GetAutoTitleGenerator() *AutoTitleGenerator {
 	return h.autoTitleGen
+}
+
+// GetAutoSummaryGenerator (2026-08-06) returns the auto summary generator
+// for use by the streaming chat handler. Symmetric with
+// GetAutoTitleGenerator.
+func (h *Handler) GetAutoSummaryGenerator() *AutoSummaryGenerator {
+	return h.autoSummaryGen
 }
 
 // SetKeyring configures AES-256-GCM key rotation.  Call this at startup after
