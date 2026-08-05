@@ -4,11 +4,12 @@
   "checks": {
     "23_1_token_trigger": true,
     "23_2_count_trigger": true,
-    "23_3_map_reduce_chunked": "PENDING_bash_eof_bug",
+    "23_3_map_reduce_chunked": true,
     "23_4_real_map_reduce": "TODO_chunked_summarizer_not_implemented"
   },
   "metrics": {
-    "delta_23_1": 120,
-    "distribution_23_2": 106
+    "delta_23_1": 60,
+    "distribution_23_2": 56,
+    "delta_23_3": 116
   }
 }
