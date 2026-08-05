@@ -655,10 +655,10 @@ type ChatHandler struct {
 	// autoTitleGenerator (2026-06-22) automatically generates session titles
 	// after the first successful request. nil disables auto-title generation.
 	autoTitleGenerator interface {
-		// 2026-08-05: requestPreview is passed directly from the in-memory
-		// reqLog to avoid a DB timing race (the row may not yet be written
-		// to request_logs when the goroutine starts).
-		MaybeGenerateTitle(sessionID, tenantID, requestPreview string)
+		// 2026-08-05: requestBody is the full (redacted) inbound body so the
+		// title LLM gets the actual user message. requestPreview is the
+		// 320-byte summary used as fallback.
+		MaybeGenerateTitle(sessionID, tenantID, requestBody, requestPreview string)
 	}
 
 	// armorJudge (Track A B1-5, 2026-06-25) scores prompts for security risks.
@@ -1008,8 +1008,7 @@ func (h *ChatHandler) newStreamCapture() *audit.StreamCapture {
 
 // SetAutoTitleGenerator (2026-06-22) wires the auto title generator from admin package.
 func (h *ChatHandler) SetAutoTitleGenerator(atg interface {
-	// 2026-08-05: requestPreview added to fix DB timing race.
-	MaybeGenerateTitle(sessionID, tenantID, requestPreview string)
+	MaybeGenerateTitle(sessionID, tenantID, requestBody, requestPreview string)
 }) {
 	h.autoTitleGenerator = atg
 }
@@ -3906,6 +3905,28 @@ func (h *ChatHandler) emitTelemetry(evt audit.Event, result *executors.ExecuteRe
 		RequestBytes:  requestBytesFromLogCtx(logCtx),
 		ResponseBytes: intPtr(len(responseBody)),
 	}
+	// 2026-08-05 P0 fix: populate GwSessionID/GwTaskID on the success-path
+	// reqLog. The struct literal above (line ~3840) never set these fields,
+	// so reqLog.GwSessionID was always nil — which silently broke the
+	// auto-title trigger (guard: GwSessionID != nil && *GwSessionID != "").
+	// Recover the id from logCtx (Request header / Session / Provisional).
+	if reqLog.GwSessionID == nil && logCtx != nil {
+		var sess *session.Session
+		if logCtx.Session != nil {
+			sess = logCtx.Session
+		}
+		gwSID, gwTID := gwSessionTaskFromRequest(logCtx.Request, sess)
+		if gwSID == "" && logCtx.ProvisionalSessionID != "" {
+			gwSID = logCtx.ProvisionalSessionID
+		}
+		if gwSID != "" {
+			reqLog.GwSessionID = strPtr(gwSID)
+		}
+		if gwTID != "" {
+			reqLog.GwTaskID = strPtr(gwTID)
+		}
+	}
+
 	// v3: if v7 compression_strategy is empty but a session compressor strategy
 	// exists, prefer the session compressor value so the row is queryable.
 	// (v7 and v3 strategies are mutually exclusive in a single request.)
@@ -4315,14 +4336,19 @@ func (h *ChatHandler) emitTelemetry(evt audit.Event, result *executors.ExecuteRe
 	}
 
 	// v2.2 (2026-06-22): auto-generate session title after first successful request.
-	// v2.3 (2026-08-05): pass requestPreview in-memory to avoid DB timing race.
+	// v2.3 (2026-08-05): pass requestBody + requestPreview in-memory; also fixed
+	// GwSessionID being nil on the success-path reqLog (see assignment above).
 	// Fire-and-forget async call; never blocks the request path.
 	if h.autoTitleGenerator != nil && reqLog.Success && reqLog.GwSessionID != nil && *reqLog.GwSessionID != "" {
 		preview := ""
 		if reqLog.RequestPreview != nil {
 			preview = *reqLog.RequestPreview
 		}
-		h.autoTitleGenerator.MaybeGenerateTitle(*reqLog.GwSessionID, tenantID, preview)
+		body := ""
+		if reqLog.RequestBody != nil {
+			body = *reqLog.RequestBody
+		}
+		h.autoTitleGenerator.MaybeGenerateTitle(*reqLog.GwSessionID, tenantID, body, preview)
 	}
 
 	// 2026-07-28: model-integrity detection (finish_refusal /
