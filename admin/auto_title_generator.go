@@ -1,9 +1,14 @@
 package admin
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
+	"io"
 	"log/slog"
+	"net/http"
+	"os"
 	"strings"
 	"time"
 )
@@ -117,30 +122,78 @@ func (g *AutoTitleGenerator) countSessionRequests(ctx context.Context, sessionID
 	return count, err
 }
 
-// generateTitleFromFirstRequest extracts the first request and generates a title.
-// Strategy: Use request_preview first 50 chars (simplified version).
-// Future: Call LLM for intelligent summarization.
+// generateTitleFromFirstRequest loads session logs and generates a title using LLM.
+// v2 (2026-08-05): Call LLM with full conversation context for better titles.
 func (g *AutoTitleGenerator) generateTitleFromFirstRequest(ctx context.Context, sessionID, tenantID string) (string, error) {
-	var requestPreview string
-	err := g.handler.db.QueryRow(ctx, `
-		SELECT COALESCE(request_preview, '') 
-		FROM request_logs
-		WHERE gw_session_id = $1 
-		  AND tenant_id = $2
-		  AND request_preview IS NOT NULL
-		  AND request_preview != ''
-		ORDER BY ts ASC
-		LIMIT 1
-	`, sessionID, tenantID).Scan(&requestPreview)
+	// Load session logs (up to first few turns for quick title generation)
+	logs, err := g.loadSessionLogsForTitle(ctx, sessionID, tenantID)
 	if err != nil {
-		return "", fmt.Errorf("failed to load first request: %w", err)
+		return "", fmt.Errorf("failed to load session logs: %w", err)
+	}
+	if len(logs) < 1 {
+		return "", fmt.Errorf("no session logs found")
 	}
 
-	// Extract title from preview (simplified version)
-	title := g.extractTitleFromPreview(requestPreview)
-	if title == "" {
-		return "", fmt.Errorf("failed to extract title from preview (empty)")
+	// Build corpus from logs
+	corpus := buildSummaryCorpus(logs)
+	if len(strings.TrimSpace(corpus)) < 40 {
+		// Fallback to simple extraction if corpus is too short
+		if logs[0].RequestPreview != nil {
+			title := g.extractTitleFromPreview(*logs[0].RequestPreview)
+			if title != "" {
+				return title, nil
+			}
+		}
+		return "", fmt.Errorf("corpus too short for title generation")
 	}
+
+	// Get API key for LLM call
+	keyID, apiKey, err := g.handler.pickFirstAvailableAPIKeyForAuto(ctx, tenantID)
+	if err != nil {
+		// Fallback to simple extraction if no API key available
+		if logs[0].RequestPreview != nil {
+			title := g.extractTitleFromPreview(*logs[0].RequestPreview)
+			if title != "" {
+				return title, nil
+			}
+		}
+		return "", fmt.Errorf("no API key available: %w", err)
+	}
+
+	// Call LLM to generate title
+	turnHint := strings.Count(corpus, "\n[")
+	if turnHint < 1 {
+		turnHint = 1
+	}
+	userContent := fmt.Sprintf("以下会话共约 %d 条记录（语料已清洗）。请阅读全部内容后生成标题：\n%s", turnHint, corpus)
+
+	// Use a background HTTP request context (not tied to the original request)
+	llmRes, err := g.callAutoTitleLLM(ctx, apiKey, sessionID, userContent)
+	if err != nil {
+		// Fallback to simple extraction on LLM failure
+		if logs[0].RequestPreview != nil {
+			title := g.extractTitleFromPreview(*logs[0].RequestPreview)
+			if title != "" {
+				return title, nil
+			}
+		}
+		return "", fmt.Errorf("LLM title generation failed: %w", err)
+	}
+
+	title := normalizeSessionTitle(llmRes.Content)
+	if !isValidSessionTitle(title) {
+		// Fallback to simple extraction if LLM result is invalid
+		if logs[0].RequestPreview != nil {
+			fallbackTitle := g.extractTitleFromPreview(*logs[0].RequestPreview)
+			if fallbackTitle != "" {
+				return fallbackTitle, nil
+			}
+		}
+		return "", fmt.Errorf("LLM generated invalid title")
+	}
+
+	// Update the stored title with model info
+	_ = g.updateSessionTitleModel(ctx, sessionID, llmRes.ResolvedModel, keyID)
 
 	return title, nil
 }
@@ -310,8 +363,186 @@ func (g *AutoTitleGenerator) saveSessionTitle(ctx context.Context, sessionID, ti
 			model, 
 			api_key_id
 		)
-		VALUES ('auto', $1, $2, NOW(), 'auto-extract', 0)
+		VALUES ('auto', $1, $2, NOW(), 'auto-llm', 0)
 		ON CONFLICT (task_id, scoped_session_id) DO NOTHING
 	`, sessionID, title)
+	return err
+}
+
+// loadSessionLogsForTitle loads session request logs for title generation (first 5 turns).
+func (g *AutoTitleGenerator) loadSessionLogsForTitle(ctx context.Context, sessionID, tenantID string) ([]sessionLogForSummary, error) {
+	if g.handler == nil || g.handler.db == nil {
+		return nil, fmt.Errorf("database not configured")
+	}
+
+	rows, err := g.handler.db.Query(ctx, `
+		SELECT rl.ts, rl.request_preview, rl.response_preview,
+		       COALESCE(rb.request_body::text, rl.request_body::text) AS request_body,
+		       COALESCE(rb.response_body::text, rl.response_body::text) AS response_body,
+		       `+requestLogStatusExpr+` AS request_status,
+		       rl.error_kind, rl.client_model
+		FROM request_logs rl
+		LEFT JOIN request_logs_bodies rb ON rb.request_id = rl.request_id
+		WHERE rl.gw_session_id = $1 AND rl.tenant_id = $2
+		ORDER BY rl.ts ASC
+		LIMIT 5
+	`, sessionID, tenantID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var logs []sessionLogForSummary
+	for rows.Next() {
+		var row sessionLogForSummary
+		var errKind *string
+		var clientModel *string
+		if err := rows.Scan(&row.Ts, &row.RequestPreview, &row.ResponsePreview,
+			&row.RequestBody, &row.ResponseBody,
+			&row.RequestStatus, &errKind, &clientModel); err != nil {
+			continue
+		}
+		row.ErrorKind = errKind
+		row.ClientModel = clientModel
+		logs = append(logs, row)
+	}
+	return logs, rows.Err()
+}
+
+// callAutoTitleLLM calls the LLM to generate a title (background HTTP request).
+func (g *AutoTitleGenerator) callAutoTitleLLM(ctx context.Context, apiKey, sessionID, userContent string) (adminLLMChatResult, error) {
+	if g.handler == nil {
+		return adminLLMChatResult{}, fmt.Errorf("handler not configured")
+	}
+
+	task := g.handler.loadAdminLLMTask(ctx, adminLLMTaskSessionTitle)
+
+	// Make a synthetic HTTP request for the gateway endpoint
+	endpoint := g.getGatewayEndpoint() + "/v1/chat/completions"
+	
+	payload := map[string]any{
+		"model": adminLLMModelAuto,
+		"messages": []map[string]string{
+			{"role": "system", "content": task.SystemPrompt},
+			{"role": "user", "content": userContent},
+		},
+		"temperature": task.Temperature,
+	}
+	if task.MaxTokens > 0 {
+		payload["max_tokens"] = task.MaxTokens
+	}
+
+	body, _ := json.Marshal(payload)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
+	if err != nil {
+		return adminLLMChatResult{}, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+apiKey)
+	req.Header.Set("X-Gw-Auto-Profile", task.DefaultProfile)
+	req.Header.Set("X-Gw-Task-Hint", task.TaskHint)
+	req.Header.Set("X-Gw-Work-Type", task.Key)
+	req.Header.Set("X-Gw-Task-Id", sessionID)
+	if task.DeviceSeed != "" {
+		req.Header.Set("X-Device-Seed", task.DeviceSeed)
+	}
+
+	client := &http.Client{Timeout: 20 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return adminLLMChatResult{}, err
+	}
+	defer resp.Body.Close()
+
+	resolvedModel := adminLLMModelAuto
+	if hdr := strings.TrimSpace(resp.Header.Get("X-Gw-Auto-Decision")); hdr != "" {
+		var wire struct {
+			ChosenModel string `json:"chosen_model"`
+		}
+		if json.Unmarshal([]byte(hdr), &wire) == nil && wire.ChosenModel != "" {
+			resolvedModel = wire.ChosenModel
+		}
+	}
+
+	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		msg := strings.TrimSpace(string(raw))
+		if msg == "" {
+			msg = resp.Status
+		}
+		return adminLLMChatResult{}, fmt.Errorf("%s", msg)
+	}
+
+	var out struct {
+		Model   string `json:"model"`
+		Choices []struct {
+			Message struct {
+				Content string `json:"content"`
+			} `json:"message"`
+		} `json:"choices"`
+	}
+	if err := json.Unmarshal(raw, &out); err != nil {
+		return adminLLMChatResult{}, err
+	}
+	if out.Model != "" && out.Model != adminLLMModelAuto {
+		resolvedModel = out.Model
+	}
+	if len(out.Choices) == 0 {
+		return adminLLMChatResult{}, fmt.Errorf("empty completion")
+	}
+	content := strings.TrimSpace(out.Choices[0].Message.Content)
+	if content == "" {
+		return adminLLMChatResult{}, fmt.Errorf("empty completion content")
+	}
+	return adminLLMChatResult{Content: content, ResolvedModel: resolvedModel}, nil
+}
+
+// getGatewayEndpoint returns the gateway endpoint for auto-title LLM calls.
+func (g *AutoTitleGenerator) getGatewayEndpoint() string {
+	// Default to localhost, can be made configurable via env var
+	if endpoint := strings.TrimSpace(os.Getenv("LLM_GATEWAY_ENDPOINT")); endpoint != "" {
+		return endpoint
+	}
+	return "http://127.0.0.1:8080"
+}
+
+// pickFirstAvailableAPIKeyForAuto picks the first available API key for auto title generation.
+func (h *Handler) pickFirstAvailableAPIKeyForAuto(ctx context.Context, tenantID string) (id int, apiKey string, err error) {
+	if h == nil || h.db == nil {
+		return 0, "", fmt.Errorf("database not configured")
+	}
+
+	var ciphertext string
+	query := `SELECT ak.id, ak.key_ciphertext
+		FROM api_keys ak
+		WHERE ak.tenant_id = $1
+		  AND ak.enabled = TRUE
+		  AND COALESCE(ak.status, 'active') = 'active'
+		  AND (ak.expires_at IS NULL OR ak.expires_at > now())
+		ORDER BY ak.id ASC
+		LIMIT 1`
+	if err := h.db.QueryRow(ctx, query, tenantID).Scan(&id, &ciphertext); err != nil {
+		return 0, "", fmt.Errorf("no available API key for tenant %s", tenantID)
+	}
+	if !isRevealableKeyCiphertext(ciphertext) {
+		return 0, "", fmt.Errorf("no revealable API key")
+	}
+	apiKey, err = h.decryptCredStr(ciphertext)
+	if err != nil || strings.TrimSpace(apiKey) == "" {
+		return 0, "", fmt.Errorf("failed to decrypt API key")
+	}
+	return id, strings.TrimSpace(apiKey), nil
+}
+
+// updateSessionTitleModel updates the model and api_key_id for an existing auto-generated title.
+func (g *AutoTitleGenerator) updateSessionTitleModel(ctx context.Context, sessionID, model string, apiKeyID int) error {
+	if g.handler == nil || g.handler.db == nil {
+		return nil // Ignore if not configured
+	}
+	_, err := g.handler.db.Exec(ctx, `
+		UPDATE session_titles 
+		SET model = $1, api_key_id = $2, generated_at = NOW()
+		WHERE task_id = 'auto' AND scoped_session_id = $3
+	`, model, apiKeyID, sessionID)
 	return err
 }
