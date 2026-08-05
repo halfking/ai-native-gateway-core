@@ -71,15 +71,16 @@ func (g *AutoTitleGenerator) generateTitleAsync(sessionID, tenantID, requestPrev
 	// the row may not yet be flushed to request_logs when we wake up here.
 	// generateTitleFromFirstRequest will use the in-memory preview first, then
 	// fall back to DB logs if it needs more context.
-	title, err := g.generateTitleFromFirstRequest(ctx, sessionID, tenantID, requestPreview)
+	title, model, keyID, err := g.generateTitleFromFirstRequest(ctx, sessionID, tenantID, requestPreview)
 	if err != nil {
 		logger.Warn("failed to generate title from first request", "error", err)
 		return
 	}
 
-	// Step 3: Save title to database (with conflict handling)
-	if err := g.saveSessionTitle(ctx, sessionID, title); err != nil {
-		// Check if it's a duplicate key error (another goroutine already saved)
+	// Step 3: Save title to database (with conflict handling).
+	// ON CONFLICT DO NOTHING: if another goroutine already saved a title for
+	// this session, we keep theirs and discard ours (first writer wins).
+	if err := g.saveSessionTitle(ctx, sessionID, title, model, keyID); err != nil {
 		if strings.Contains(err.Error(), "duplicate key") || strings.Contains(err.Error(), "unique constraint") {
 			logger.Debug("title already saved by another goroutine")
 			return
@@ -88,7 +89,7 @@ func (g *AutoTitleGenerator) generateTitleAsync(sessionID, tenantID, requestPrev
 		return
 	}
 
-	logger.Info("auto title generated successfully", "title", title, "length", len(title))
+	logger.Info("auto title generated successfully", "title", title, "length", len(title), "model", model)
 }
 
 // checkSessionHasTitle checks if a session already has a title.
@@ -103,24 +104,13 @@ func (g *AutoTitleGenerator) checkSessionHasTitle(ctx context.Context, sessionID
 	return exists, err
 }
 
-// countSessionRequests counts successful requests for a session.
-// Uses request_logs_with_current_month to include the hot partition.
-func (g *AutoTitleGenerator) countSessionRequests(ctx context.Context, sessionID, tenantID string) (int, error) {
-	var count int
-	err := g.handler.db.QueryRow(ctx, `
-		SELECT COUNT(*) FROM request_logs_with_current_month
-		WHERE gw_session_id = $1 
-		  AND tenant_id = $2 
-		  AND success = true
-	`, sessionID, tenantID).Scan(&count)
-	return count, err
-}
-
 // generateTitleFromFirstRequest loads session logs and generates a title using LLM.
 // v3 (2026-08-05): Accept in-memory requestPreview to fix DB timing race.
 // The requestPreview is the preview from the just-completed request passed
 // directly from the streaming handler — it's available before the DB write.
-func (g *AutoTitleGenerator) generateTitleFromFirstRequest(ctx context.Context, sessionID, tenantID, requestPreview string) (string, error) {
+// Returns (title, model, apiKeyID, error). On fallback-extract paths model is
+// "auto-extract" and apiKeyID is 0.
+func (g *AutoTitleGenerator) generateTitleFromFirstRequest(ctx context.Context, sessionID, tenantID, requestPreview string) (string, string, int, error) {
 	// Step 1: Try to build corpus from in-memory preview first (avoids DB timing race)
 	corpus := ""
 	if requestPreview != "" {
@@ -138,12 +128,11 @@ func (g *AutoTitleGenerator) generateTitleFromFirstRequest(ctx context.Context, 
 	if len(strings.TrimSpace(corpus)) < 40 {
 		// Fallback to simple extraction from in-memory preview
 		if requestPreview != "" {
-			title := g.extractTitleFromPreview(requestPreview)
-			if title != "" {
-				return title, nil
+			if title := g.extractTitleFromPreview(requestPreview); title != "" {
+				return title, "auto-extract", 0, nil
 			}
 		}
-		return "", fmt.Errorf("corpus too short for title generation (preview_len=%d)", len(requestPreview))
+		return "", "", 0, fmt.Errorf("corpus too short for title generation (preview_len=%d)", len(requestPreview))
 	}
 
 	// Get API key for LLM call
@@ -152,10 +141,10 @@ func (g *AutoTitleGenerator) generateTitleFromFirstRequest(ctx context.Context, 
 		// Fallback: simple extraction from in-memory preview
 		if requestPreview != "" {
 			if title := g.extractTitleFromPreview(requestPreview); title != "" {
-				return title, nil
+				return title, "auto-extract", 0, nil
 			}
 		}
-		return "", fmt.Errorf("no API key available: %w", err)
+		return "", "", 0, fmt.Errorf("no API key available: %w", err)
 	}
 
 	// Call LLM to generate title
@@ -172,10 +161,10 @@ func (g *AutoTitleGenerator) generateTitleFromFirstRequest(ctx context.Context, 
 		// Fallback: simple extraction from in-memory preview
 		if requestPreview != "" {
 			if title := g.extractTitleFromPreview(requestPreview); title != "" {
-				return title, nil
+				return title, "auto-extract", 0, nil
 			}
 		}
-		return "", fmt.Errorf("LLM title generation failed: %w", err)
+		return "", "", 0, fmt.Errorf("LLM title generation failed: %w", err)
 	}
 
 	title := normalizeSessionTitle(llmRes.Content)
@@ -183,16 +172,13 @@ func (g *AutoTitleGenerator) generateTitleFromFirstRequest(ctx context.Context, 
 		// Fallback: simple extraction from in-memory preview
 		if requestPreview != "" {
 			if fallback := g.extractTitleFromPreview(requestPreview); fallback != "" {
-				return fallback, nil
+				return fallback, "auto-extract", 0, nil
 			}
 		}
-		return "", fmt.Errorf("LLM generated invalid title: %q", llmRes.Content)
+		return "", "", 0, fmt.Errorf("LLM generated invalid title: %q", llmRes.Content)
 	}
 
-	// Update the stored title with model info
-	_ = g.updateSessionTitleModel(ctx, sessionID, llmRes.ResolvedModel, keyID)
-
-	return title, nil
+	return title, llmRes.ResolvedModel, keyID, nil
 }
 
 // extractTitleFromPreview extracts a title from request_preview.
@@ -350,19 +336,24 @@ func (g *AutoTitleGenerator) extractUserPrompt(preview string) string {
 
 // saveSessionTitle saves the auto-generated title to session_titles table.
 // Uses task_id='auto' to indicate this was auto-generated.
-func (g *AutoTitleGenerator) saveSessionTitle(ctx context.Context, sessionID, title string) error {
+// ON CONFLICT DO NOTHING: first writer wins — concurrent goroutines for the
+// same session keep the earliest title and discard the rest.
+func (g *AutoTitleGenerator) saveSessionTitle(ctx context.Context, sessionID, title, model string, apiKeyID int) error {
+	if model == "" {
+		model = "auto-llm"
+	}
 	_, err := g.handler.db.Exec(ctx, `
 		INSERT INTO session_titles (
-			task_id, 
-			scoped_session_id, 
-			title, 
-			generated_at, 
-			model, 
+			task_id,
+			scoped_session_id,
+			title,
+			generated_at,
+			model,
 			api_key_id
 		)
-		VALUES ('auto', $1, $2, NOW(), 'auto-llm', 0)
+		VALUES ('auto', $1, $2, NOW(), $3, $4)
 		ON CONFLICT (task_id, scoped_session_id) DO NOTHING
-	`, sessionID, title)
+	`, sessionID, title, model, apiKeyID)
 	return err
 }
 
@@ -502,12 +493,13 @@ func (g *AutoTitleGenerator) callAutoTitleLLM(ctx context.Context, apiKey, sessi
 }
 
 // getGatewayEndpoint returns the gateway endpoint for auto-title LLM calls.
+// Matches the loopback convention used by bg/* internal callers
+// (http://127.0.0.1:8781). Override via LLM_GATEWAY_ENDPOINT if needed.
 func (g *AutoTitleGenerator) getGatewayEndpoint() string {
-	// Default to localhost, can be made configurable via env var
 	if endpoint := strings.TrimSpace(os.Getenv("LLM_GATEWAY_ENDPOINT")); endpoint != "" {
 		return endpoint
 	}
-	return "http://127.0.0.1:8080"
+	return "http://127.0.0.1:8781"
 }
 
 // pickFirstAvailableAPIKeyForAuto picks the first available API key for auto title generation.
@@ -536,17 +528,4 @@ func (h *Handler) pickFirstAvailableAPIKeyForAuto(ctx context.Context, tenantID 
 		return 0, "", fmt.Errorf("failed to decrypt API key")
 	}
 	return id, strings.TrimSpace(apiKey), nil
-}
-
-// updateSessionTitleModel updates the model and api_key_id for an existing auto-generated title.
-func (g *AutoTitleGenerator) updateSessionTitleModel(ctx context.Context, sessionID, model string, apiKeyID int) error {
-	if g.handler == nil || g.handler.db == nil {
-		return nil // Ignore if not configured
-	}
-	_, err := g.handler.db.Exec(ctx, `
-		UPDATE session_titles 
-		SET model = $1, api_key_id = $2, generated_at = NOW()
-		WHERE task_id = 'auto' AND scoped_session_id = $3
-	`, model, apiKeyID, sessionID)
-	return err
 }
