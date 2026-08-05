@@ -3653,6 +3653,13 @@ func (h *ChatHandler) serveWithExecutor(
 	markLogged()
 }
 
+func successUpstreamStatusCode(result *executors.ExecuteResult) int {
+	if result != nil && result.Response != nil && result.Response.StatusCode > 0 {
+		return result.Response.StatusCode
+	}
+	return http.StatusOK
+}
+
 func (h *ChatHandler) emitTelemetry(evt audit.Event, result *executors.ExecuteResult, endUser string, keyInfo *authentication.KeyInfo, capture *audit.StreamCapture, requestMode string, txResult *transformation.TransformResult, requestBody []byte, responseBody []byte, logCtx *RequestLogContext) {
 	if h.telemetryClient == nil || !h.telemetryClient.Enabled() {
 		return
@@ -3879,19 +3886,21 @@ func (h *ChatHandler) emitTelemetry(evt audit.Event, result *executors.ExecuteRe
 	}
 
 	reqLog := &telemetry.RequestLogEntry{
-		RequestID:       evt.RequestID,
-		EventAt:         &eventAt,
-		TenantID:        tenantID,
-		ApplicationID:   applicationID,
-		APIKeyID:        apiKeyID,
-		APIKeyPrefix:    strPtr(keyPrefix),
-		APIKeyOwnerUser: strPtr(keyOwner),
-		ApplicationCode: strPtr(appCode),
-		EndUserID:       strPtr(endUser),
-		ClientModel:     strPtr(evt.ClientModel),
-		OutboundModel:   strPtr(loggedOutbound),
-		CredentialID:    intPtr(result.Candidate.CredentialID),
-		ProviderID:      intPtr(result.Candidate.ProviderID),
+		RequestID:          evt.RequestID,
+		EventAt:            &eventAt,
+		TenantID:           tenantID,
+		ApplicationID:      applicationID,
+		APIKeyID:           apiKeyID,
+		APIKeyPrefix:       strPtr(keyPrefix),
+		APIKeyOwnerUser:    strPtr(keyOwner),
+		ApplicationCode:    strPtr(appCode),
+		EndUserID:          strPtr(endUser),
+		ClientModel:        strPtr(evt.ClientModel),
+		OutboundModel:      strPtr(loggedOutbound),
+		CredentialID:       intPtr(result.Candidate.CredentialID),
+		ProviderID:         intPtr(result.Candidate.ProviderID),
+		UpstreamStatusCode: intPtr(successUpstreamStatusCode(result)),
+
 		// 2026-07-27: 标准模型名 (canonical_name),见 migration 458。
 		CanonicalModel: strPtr(evt.CanonicalName),
 		ClientProfile:  strPtr(evt.ClientProfile),

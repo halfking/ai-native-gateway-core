@@ -16,6 +16,7 @@ import (
 	"context"
 	"encoding/json"
 	"log/slog"
+	"strings"
 	"time"
 
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/observability/telemetry"
@@ -45,6 +46,15 @@ func PersistHook(writer V2Writer) func(entry *telemetry.RequestLogEntry) {
 
 	return func(entry *telemetry.RequestLogEntry) {
 		if entry == nil || entry.GwSessionID == nil || *entry.GwSessionID == "" {
+			return
+		}
+
+		// request_logs emits an in_progress INSERT before upstream execution.
+		// V2 turns are idempotent on request_id and cannot be updated after the
+		// first insert, so mirroring that placeholder would permanently record
+		// success=false/status_code=500 and drop the later success enrichment.
+		// Only terminal entries are valid shadow-write inputs.
+		if !entry.Success && !isTerminalFailure(entry) {
 			return
 		}
 
@@ -386,6 +396,19 @@ func intStr(v int) string {
 		buf[i], buf[j] = buf[j], buf[i]
 	}
 	return string(buf)
+}
+
+func isTerminalFailure(entry *telemetry.RequestLogEntry) bool {
+	if entry == nil || entry.Success {
+		return false
+	}
+	if entry.RequestStatus != nil {
+		switch strings.TrimSpace(*entry.RequestStatus) {
+		case telemetry.RequestStatusFailure, telemetry.RequestStatusRateLimited:
+			return true
+		}
+	}
+	return entry.ErrorKind != nil && strings.TrimSpace(*entry.ErrorKind) != ""
 }
 
 func statusCode(entry *telemetry.RequestLogEntry) int {
