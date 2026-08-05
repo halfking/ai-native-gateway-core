@@ -4,6 +4,25 @@
 
 ---
 
+## 📌 最近一次本地完整执行 (2026-08-05)
+
+| 项 | 值 |
+|---|---|
+| 报告 | [`results/REPORT.md`](results/REPORT.md) |
+| 场景数 | 19  (S01–S19) |
+| 通过 | 19/19 ✅ (16 个真实 PASS + 3 个预期失败 PASS) |
+| 总请求 | 18,449 |
+| 实测最大 P99 | 3883 ms (S12 综合压测注入期) |
+| 实测环境 | main 分支 (1cf1448a) + 本地容器 (llm-gateway-pg 5432 / r112_redis 6379) |
+| 关键修复 | `body_size_tracker.go` 编译错误（`maxUpdateScript.Source` → `maxUpdateScriptSrc`） |
+| 文档改进 | `02-测试环境部署.md §3.1` (7 项必填环境变量) + `05-执行流程.md` (bash 显式调用) |
+
+> 历史报告保留为 `results/REPORT.md.bak-history` (2026-07-20 执行，覆盖 S01-S34/T1-T4)。
+
+---
+
+---
+
 ## 📋 测试体系架构
 
 ```
