@@ -17,6 +17,7 @@ import (
 
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/audit" //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/internal/ir"
+	"github.com/kaixuan/llm-gateway-go/metrics"
 )
 
 const (
@@ -756,8 +757,25 @@ func StreamChatWithPendingCaptureAndDiagnostics(
 					outcome.Interrupted = false
 					outcome.Reason = ""
 				}
+				// 2026-08-06 hot-patch: capture whether this branch had to
+				// synthesize the SSE terminator. The MiniMax API (~13% of
+				// streams as of 2026-07-28) ends without sending
+				// "data: [DONE]\n\n" — the gateway injects the trailing
+				// frame so SSE clients can finalize the stream. Decision
+				// "isBenignEOF" lives in executor_chat.go:975 + handler.go:5609;
+				// this signal only provides operator visibility, not
+				// classification.
+				synthesizedDone := !upstreamDoneReceived
 				safeWriteSSE(w, "data: [DONE]\n\n")
 				safeFlush(flusher)
+				if synthesizedDone {
+					slog.Warn("stream synthesized [DONE] terminator",
+						"client_model", clientModel,
+						"chunk_count", chunkCount,
+						"had_capture", capture != nil,
+					)
+					metrics.Global().RecordStreamSynthesizedDone()
+				}
 				if capture != nil && upstreamDoneReceived {
 					capture.ObserveChunk(&ir.StreamChunk{
 						Type:           ir.ChunkTypeDone,

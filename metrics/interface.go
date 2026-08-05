@@ -51,6 +51,16 @@ type Recorder interface {
 	RecordRingBufferDropped(count uint64)
 	RecordRawAuditWriteFailure()
 
+	// StreamSynthesizedDone (P1 hot-patch 2026-08-06): count streams where
+	// the gateway had to inject a trailing "data: [DONE]\n\n" frame because
+	// the upstream closed without one (observed on MiniMax provider 14 /
+	// credential 21 at ~13% of streams as of 2026-07-28). Excludes streams
+	// where the upstream sent [DONE] naturally. Lets operator dashboards
+	// split "real interruptions" from "minimax-expected-no-DONE" without
+	// changing the existing isBenignEOF classification in
+	// executor_chat.go:975 and handler.go:5609.
+	RecordStreamSynthesizedDone()
+
 	// URSMv2Shadow (P0-3): record what the shadow sidecar did with each
 	// outcome during the URSM v2 cutover comparison window. result is
 	// "recorded" (URSM v2 accepted the write) | "skipped" (ModeOff /
@@ -99,6 +109,10 @@ func (n *NoopRecorder) SetPoolHealthyCredentials(poolID string, count int)      
 func (n *NoopRecorder) RecordShadowWriteFailure(kind string) {}
 func (n *NoopRecorder) RecordRingBufferDropped(count uint64) {}
 func (n *NoopRecorder) RecordRawAuditWriteFailure()          {}
+
+// P1 hot-patch 2026-08-06: stream synthesized [DONE] terminator counter
+// (see Recorder interface comment for rationale).
+func (n *NoopRecorder) RecordStreamSynthesizedDone() {}
 
 // P0-3 URSMv2Shadow method — no-op fallback.
 func (n *NoopRecorder) RecordURSMv2ShadowResult(result string) {}
