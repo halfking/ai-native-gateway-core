@@ -85,16 +85,43 @@ else
     PASS=false
 fi
 
-set +e  # 22.3 块存在 bash 5 EOF bug, 暂时禁用严格模式
-# 22.3: 长 prompt token 触发器 — 跳过 (bash 5 子 shell 嵌套 EOF bug)
-#     已在 22.2 count 触发器覆盖压缩路径, token 触发器逻辑同源
-#     期望: 60 轮长 prompt 后 request_logs_bodies_hot delta >= 50
-#     TODO: 后续用 Python 重写整个 S22 块以避免 bash EOF bug
-SKIP_22_3_PENDING=1
-log "22.3 PENDING: 跳过 (bash 5 子 shell bug, 见 S22.sh line 22.3)"
-# 22.4: LLM 失败降级 — 跳过 (同上 bash bug)
-SKIP_22_4_PENDING=1
-log "22.4 PENDING: 跳过 (bash 5 子 shell bug)"
+set +e  # 22.3 / 22.4 调 Go driver (避免 bash 5 子 shell EOF bug)
+# 22.3: 60 轮长 prompt (token 触发器)
+log "22.3: 60 轮长 prompt (token 触发器, 调 Go driver)"
+S22_3_OUT="$(cd "$RESULTS_DIR/../../.." && go run ./cmd/scenario_driver \
+    --scenario s22-3 \
+    --gateway "$GATEWAY" \
+    --api-key "$(echo "$API_KEYS" | cut -d, -f1)" \
+    --rounds 60 \
+    --prompt medium 2>&1)"
+echo "$S22_3_OUT" | tail -2
+DELTA_22_3=$(echo "$S22_3_OUT" | python3 -c "import json,sys; print(json.load(sys.stdin).get('delta_bodies', 0))" 2>/dev/null || echo "0")
+DELTA_22_3=${DELTA_22_3:-0}
+if [ "$DELTA_22_3" -ge 50 ]; then
+    log "✅ 22.3 PASS: 长 prompt 60 轮落 DB (delta_bodies=$DELTA_22_3)"
+else
+    log "❌ 22.3 FAIL: 长 prompt 60 轮后 DB delta=$DELTA_22_3 远低于 50"
+    PASS=false
+fi
+
+# 22.4: 20 轮 + mock server_error
+log "22.4: 20 轮 chat + mock server_error (调 Go driver)"
+S22_4_OUT="$(cd "$RESULTS_DIR/../../.." && go run ./cmd/scenario_driver \
+    --scenario s22-4 \
+    --gateway "$GATEWAY" \
+    --api-key "$(echo "$API_KEYS" | cut -d, -f1)" \
+    --rounds 20 \
+    --prompt short 2>&1)"
+echo "$S22_4_OUT" | tail -2
+DELTA_22_4=$(echo "$S22_4_OUT" | python3 -c "import json,sys; print(json.load(sys.stdin).get('delta_fail', 0))" 2>/dev/null || echo "0")
+DELTA_22_4=${DELTA_22_4:-0}
+if [ "$DELTA_22_4" -ge 1 ]; then
+    log "✅ 22.4 PASS: LLM 失败时 gateway 落 server_error 状态 (delta_fail=$DELTA_22_4)"
+else
+    log "❌ 22.4 FAIL: LLM 失败时 DB 没有记录 success=false"
+    PASS=false
+fi
+set -e  # 恢复严格模式
 # 22.5 admin 手动总结 (TODO)
 log "22.5: admin 手动触发 session summary (TODO: 需要 JWT 登录)"
 log "    admin API: POST /api/admin/sessions/summary"
@@ -105,8 +132,8 @@ log "    暂列 S22_admin_TODO, 后续补"
 # 22.3 + 22.4 因 bash 5.3 EOF bug 跳过, 用静态 PENDING 标记
 CHECK_22_1=$([ "$DELTA_22_1" -ge 1 ] && echo true || echo false)
 CHECK_22_2=$([ "$DELTA_22_2" -ge 25 ] && echo true || echo false)
-CHECK_22_3="PENDING_bash_eof_bug"
-CHECK_22_4="PENDING_bash_eof_bug"
+CHECK_22_3=$([ "$DELTA_22_3" -ge 50 ] && echo true || echo false)
+CHECK_22_4=$([ "$DELTA_22_4" -ge 1 ] && echo true || echo false)
 cat > "$RESULT" <<EOF
 {
   "scenario": "$SCENARIO",
@@ -121,9 +148,9 @@ cat > "$RESULT" <<EOF
   "metrics": {
     "delta_22_1": $DELTA_22_1,
     "delta_22_2": $DELTA_22_2,
-    "delta_22_3": 0,
-    "fail_22_4": 0,
-    "skipped_22_3_22_4": "bash 5 子 shell EOF bug, 后续 Python 重写"
+    "delta_22_3": $DELTA_22_3,
+    "delta_22_4_fail": $DELTA_22_4,
+    "driver": "cmd/scenario_driver/main.go (Go) — 避免 bash 5 子 shell EOF bug"
   }
 }
 EOF

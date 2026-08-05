@@ -81,9 +81,22 @@ else
 fi
 
 # 23.3 80 轮 chat 触发 outbound_msg_count < 50 (count trigger, sliding_window_count 路径)
-log "23.3: 80 轮 chat 触发 sliding_window_count — 跳过 (bash 5 子 shell EOF bug, 同 S22)"
-SKIP_23_3_PENDING=1
-log "23.3 PENDING: 跳过, 见 S22.sh 注释"
+log "23.3: 80 轮 chat 触发 sliding_window_count (调 Go driver)"
+S23_3_OUT="$(cd "$RESULTS_DIR/../../.." && go run ./cmd/scenario_driver \
+    --scenario s23-3 \
+    --gateway "$GATEWAY" \
+    --api-key "$(echo "$API_KEYS" | cut -d, -f1)" \
+    --rounds 80 \
+    --prompt short 2>&1)"
+echo "$S23_3_OUT" | tail -2
+DELTA_23_3=$(echo "$S23_3_OUT" | python3 -c "import json,sys; print(json.load(sys.stdin).get('delta_bodies', 0))" 2>/dev/null || echo "0")
+DELTA_23_3=${DELTA_23_3:-0}
+if [ "$DELTA_23_3" -ge 70 ]; then
+    log "✅ 23.3 PASS: 80 轮落 DB (delta_bodies=$DELTA_23_3)"
+else
+    log "❌ 23.3 FAIL: 80 轮后 DB delta=$DELTA_23_3 远低于 70"
+    PASS=false
+fi
 
 # 23.4 真 map-reduce chunked summary
 log "23.4: 真 map-reduce chunked summary — TODO (需要 chunked_summarizer.go)"
@@ -93,6 +106,7 @@ log "    实现需新建 domains/hooks/compression/chunked_summarizer.go + setti
 # 写结果
 CHECK_23_1=$([ "$DELTA_23_1" -ge 50 ] && echo true || echo false)
 CHECK_23_2=$([ "$DISTRIBUTION" -ge 1 ] && echo true || echo false)
+CHECK_23_3=$([ "$DELTA_23_3" -ge 70 ] && echo true || echo false)
 cat > "$RESULT" <<EOF
 {
   "scenario": "$SCENARIO",
@@ -100,12 +114,13 @@ cat > "$RESULT" <<EOF
   "checks": {
     "23_1_token_trigger": $CHECK_23_1,
     "23_2_count_trigger": $CHECK_23_2,
-    "23_3_map_reduce_chunked": "PENDING_bash_eof_bug",
+    "23_3_map_reduce_chunked": $CHECK_23_3,
     "23_4_real_map_reduce": "TODO_chunked_summarizer_not_implemented"
   },
   "metrics": {
     "delta_23_1": $DELTA_23_1,
-    "distribution_23_2": $DISTRIBUTION
+    "distribution_23_2": $DISTRIBUTION,
+    "delta_23_3": $DELTA_23_3
   }
 }
 EOF
