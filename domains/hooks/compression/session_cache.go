@@ -49,20 +49,21 @@ const (
 	// fields change in a backward-incompatible way.
 	schemaVersion = 1
 
-	// redisKeyTTL is how long Redis keeps the session hash after the last
-	// write. 30 minutes covers the typical idle-between-turns gap; the
-	// sliding-window idle trigger fires at 5 minutes anyway, so 30 min is
-	// a generous safety margin.
+	// redisKeyTTL is the built-in fallback for cache.session_redis_ttl_minutes.
+	// 30 minutes covers the typical idle-between-turns gap; the sliding-window
+	// idle trigger fires at 5 minutes anyway, so 30 min is a generous safety
+	// margin. Use sessionCacheRedisTTL() instead of this constant in hot-path
+	// code so the value can be overridden via settings_kv without a restart.
 	redisKeyTTL = 30 * time.Minute
 
-	// l1MaxSessions is the maximum number of sessions held in the in-process
-	// L1. The L1 is a true O(1) LRU (container/list doubly-linked list +
-	// map), so when this capacity is exceeded the LEAST-RECENTLY-USED entry
-	// is evicted on the next access. This keeps hot sessions resident while
-	// bounding memory. (Previously a sync.Map with first-seen-first-evicted
-	// heuristic — replaced 2026-07-06 after borrowing rtk's emphasis on
-	// deterministic, recoverable state; the old heuristic could evict an
-	// active session and force an L2/L3 round-trip on its next turn.)
+	// l1MaxSessions is the built-in fallback for cache.session_l1_capacity.
+	// The L1 is a true O(1) LRU (container/list doubly-linked list + map), so
+	// when this capacity is exceeded the LEAST-RECENTLY-USED entry is evicted.
+	// Use sessionCacheL1Capacity() instead of this constant in hot-path code.
+	// (Previously a sync.Map with first-seen-first-evicted heuristic —
+	// replaced 2026-07-06 after borrowing rtk's emphasis on deterministic,
+	// recoverable state; the old heuristic could evict an active session and
+	// force an L2/L3 round-trip on its next turn.)
 	l1MaxSessions = 1024
 
 	// compactionMarkerPrefix is the content prefix used to identify summary
@@ -71,6 +72,32 @@ const (
 	// compacted summary and is skipped by the LCS diff.
 	CompactionMarkerPrefix = "[smm_v1:"
 )
+
+// sessionCacheRedisTTL returns the hot-reloadable Redis TTL for the session
+// cache. It reads cache.session_redis_ttl_minutes from settings_kv on every
+// call so that an operator can change the TTL without restarting the gateway.
+// The value is clamped to [5, 1440] minutes and falls back to redisKeyTTL
+// when settings.Global is unavailable.
+func sessionCacheRedisTTL() time.Duration {
+	minutes := settings.GetPlatformInt("cache.session_redis_ttl_minutes", int(redisKeyTTL.Minutes()))
+	if minutes < 5 {
+		minutes = 5
+	}
+	return time.Duration(minutes) * time.Minute
+}
+
+// sessionCacheL1Capacity returns the hot-reloadable L1 LRU capacity. It reads
+// cache.session_l1_capacity from settings_kv on every call. The value is
+// clamped to [64, 16384] and falls back to l1MaxSessions when settings.Global
+// is unavailable. Note: reducing capacity takes effect gradually (entries are
+// only evicted when a new Set pushes the list over the limit).
+func sessionCacheL1Capacity() int {
+	cap := settings.GetPlatformInt("cache.session_l1_capacity", l1MaxSessions)
+	if cap < 64 {
+		return 64
+	}
+	return cap
+}
 
 // SessionState is the per-session state persisted in L1/L2/L3.
 type SessionState struct {
@@ -372,7 +399,7 @@ func (c *SessionCache) setL1(key string, state *SessionState, body []byte) {
 	entry := &l1Entry{key: key, state: &st, body: body}
 	entry.elem = c.ll.PushFront(entry)
 	c.l1[key] = entry
-	for c.ll.Len() > l1MaxSessions {
+	for c.ll.Len() > sessionCacheL1Capacity() {
 		// Evict least-recently-used (back of the list).
 		if back := c.ll.Back(); back != nil {
 			if ev, ok := back.Value.(*l1Entry); ok {
@@ -415,7 +442,7 @@ func (c *SessionCache) saveToRedis(ctx context.Context, tenantID, gwSessionID st
 	if err := c.redis.HSet(ctx, key, fields...); err != nil {
 		return err
 	}
-	return c.redis.Expire(ctx, key, redisKeyTTL)
+	return c.redis.Expire(ctx, key, sessionCacheRedisTTL())
 }
 
 func (c *SessionCache) loadFromDB(ctx context.Context, tenantID, gwSessionID string) (*SessionState, []byte, error) {
