@@ -77,3 +77,48 @@ func TestModelNotFoundError_UnwrapNilSafe(t *testing.T) {
 		t.Errorf("nil modelNotFoundError.Unwrap() = %v, want nil", got)
 	}
 }
+
+// TestModelNotFoundError_DeprecatedKind verifies the 2026-08-05 generalization:
+// when the upstream returned an end-of-life body (HTTP 410 / "has been
+// deprecated"), the executor sets kind=KindModelDeprecated on the struct so
+// Unwrap surfaces the precise kind (driving the 30-day cooling in the writer
+// and the HTTP 410 model_deprecated response in the handler) instead of the
+// default KindModelNotFound.
+func TestModelNotFoundError_DeprecatedKind(t *testing.T) {
+	mnf := &modelNotFoundError{
+		credentialID: 8,
+		rawModel:     "minimaxai/minimax-m2.7",
+		body:         `{"detail":"The model 'minimaxai/minimax-m2.7' has reached its end of life"}`,
+		status:       410,
+		kind:         errorsx.KindModelDeprecated,
+	}
+	if got := mnf.resolvedKind(); got != errorsx.KindModelDeprecated {
+		t.Errorf("resolvedKind() = %q, want %q", got, errorsx.KindModelDeprecated)
+	}
+	var ue *upstreampkg.Error
+	if !errors.As(mnf, &ue) {
+		t.Fatalf("errors.As did not surface *upstreampkg.Error")
+	}
+	if ue.Kind != errorsx.KindModelDeprecated {
+		t.Errorf("Unwrap Kind = %q, want %q", ue.Kind, errorsx.KindModelDeprecated)
+	}
+	if ue.StatusCode != 410 {
+		t.Errorf("Unwrap StatusCode = %d, want 410", ue.StatusCode)
+	}
+}
+
+// TestModelNotFoundError_DefaultKindBackCompat ensures the zero-value kind
+// field still resolves to KindModelNotFound, so the many existing construction
+// sites that omit `kind` keep their historical behaviour.
+func TestModelNotFoundError_DefaultKindBackCompat(t *testing.T) {
+	mnf := &modelNotFoundError{
+		credentialID: 1,
+		rawModel:     "foo",
+		body:         "not found",
+		status:       404,
+		// kind intentionally unset (zero value)
+	}
+	if got := mnf.resolvedKind(); got != errorsx.KindModelNotFound {
+		t.Errorf("zero-value resolvedKind() = %q, want %q", got, errorsx.KindModelNotFound)
+	}
+}

@@ -2533,12 +2533,15 @@ func (e *Executor) Execute(params *ExecParams) (*ExecuteResult, error) {
 		if mnf, ok := execErr.(*modelNotFoundError); ok {
 			mnfCtx, mnfCancel := runctx.DetachedTimeout(params.R.Context(), 5*time.Second)
 			defer mnfCancel()
-			// ModelNotFound is a provider/model compatibility failure, not a
-			// client bug. Record it at model-binding scope immediately so this
-			// credential/model pair leaves the candidate pool while the probe
-			// worker determines whether the offer has recovered.
-			e.recordModelNotFound(mnfCtx, mnf.credentialID, mnf.rawModel, mnf.body)
-			e.writeCredentialStateOnError(mnfCtx, mnf.credentialID, cand.StandardizedName, errorsx.KindModelNotFound, execErr)
+			// ModelNotFound / ModelDeprecated is a provider/model compatibility
+			// failure, not a client bug. Record it at model-binding scope
+			// immediately so this credential/model pair leaves the candidate
+			// pool while the probe worker determines whether the offer has
+			// recovered. mnfKind distinguishes "model name unknown" (7-day
+			// cooling) from "model permanently end-of-lifed" (30-day cooling).
+			mnfKind := mnf.resolvedKind()
+			e.recordModelNotFound(mnfCtx, mnf.credentialID, mnf.rawModel, mnf.body, mnf.status, mnfKind)
+			e.writeCredentialStateOnError(mnfCtx, mnf.credentialID, cand.StandardizedName, mnfKind, execErr)
 			// Step 6 (2026-06-18): MnfStreak — client hot-path break
 			// for persistent (not intermittent) model_not_found. The
 			// background probe consensus (bg/model_probe.go) owns
@@ -2548,12 +2551,12 @@ func (e *Executor) Execute(params *ExecParams) (*ExecuteResult, error) {
 			e.recordMnfStreak(params, cand.CredentialID)
 
 			lastErr = execErr
-			lastKind = errorsx.KindModelNotFound
+			lastKind = mnfKind
 			attempts = append(attempts, AttemptRecord{
 				ProviderID:   cand.ProviderID,
 				CredentialID: cand.CredentialID,
 				RawModel:     cand.RawModel,
-				Kind:         errorsx.KindModelNotFound,
+				Kind:         mnfKind,
 				Reason:       mnf.body,
 			})
 			continue
@@ -3361,16 +3364,21 @@ func (e *Executor) Execute(params *ExecParams) (*ExecuteResult, error) {
 	return nil, &ExecuteError{LastErr: lastErr, Tried: tried, Exhausted: true, Trace: trace, Attempts: attempts, LastKind: lastKind}
 }
 
-// recordModelNotFound logs a single upstream model_not_found 404 to the
-// model_probe_runs table so that the /api/routing/recent-model-failures
-// admin endpoint and the probe history badge can surface it. The probe
-// background worker will pick the binding up and run targeted probes
-// (consensus + backoff) to decide whether to mark it broken_confirmed.
+// recordModelNotFound logs a single upstream model_not_found (or
+// model_deprecated) 4xx to the model_probe_runs table so that the
+// /api/routing/recent-model-failures admin endpoint and the probe history
+// badge can surface it. The probe background worker will pick the binding up
+// and run targeted probes (consensus + backoff) to decide whether to mark it
+// broken_confirmed.
 //
 // This records the evidence row only. The executor's MNF branch separately
 // writes the per-model binding state through the credential Writer; the probe
 // worker remains responsible for confirming recovery or a persistent outage.
-func (e *Executor) recordModelNotFound(ctx context.Context, credentialID int, rawModel, body string) {
+//
+// 2026-08-05: status and errorCode are now passed in (previously hardcoded
+// 404 / 'model_not_found') so a model_deprecated (HTTP 410) is recorded
+// accurately rather than mislabeled as a 404.
+func (e *Executor) recordModelNotFound(ctx context.Context, credentialID int, rawModel, body string, status int, kind errorsx.ErrorKind) {
 	if e.DB == nil || !e.DB.Enabled() {
 		return
 	}
@@ -3378,15 +3386,21 @@ func (e *Executor) recordModelNotFound(ctx context.Context, credentialID int, ra
 	if len(preview) > 500 {
 		preview = preview[:500]
 	}
-	httpStatus := 404
+	if status <= 0 {
+		status = 404
+	}
+	errorCode := "model_not_found"
+	if kind == errorsx.KindModelDeprecated {
+		errorCode = "model_deprecated"
+	}
 	_, err := e.DB.Pool().Exec(ctx, `
 		INSERT INTO model_probe_runs_hot
 		    (tenant_id, credential_id, raw_model_name, status,
 		     http_status, error_code, error_message, latency_ms,
 		     state_change, state_applied, triggered_by)
-		VALUES ($1, $2, $3, 'http_4xx', $4, 'model_not_found', NULLIF($5, ''), 0,
-		        'unchanged', FALSE, 'routing_404')
-	`, "default", credentialID, rawModel, httpStatus, preview)
+		VALUES ($1, $2, $3, 'http_4xx', $4, $5, NULLIF($6, ''), 0,
+		        'unchanged', FALSE, 'routing_4xx')
+	`, "default", credentialID, rawModel, status, errorCode, preview)
 	if err != nil {
 		slog.Warn("record_model_not_found: insert failed",
 			"credential_id", credentialID,
@@ -3838,6 +3852,13 @@ func (e *Executor) recordBanditFailure(credentialID int, kind errorsx.ErrorKind)
 		kind == errorsx.KindUpstreamDown {
 		return
 	}
+	// Skip per-model permanent failures (model deprecated / not found). The
+	// credential may serve other models fine; penalizing its bandit score
+	// would unfairly demote a healthy credential for an upstream model-level
+	// decision it cannot control.
+	if kind == errorsx.KindModelDeprecated || kind == errorsx.KindModelNotFound {
+		return
+	}
 
 	credID := fmt.Sprintf("%d", credentialID)
 	e.Router.Bandit.RecordFailure(credID)
@@ -3954,6 +3975,7 @@ func (e *Executor) shouldAsyncFallback(params *ExecParams, tTotal time.Time, tri
 	if tried >= 3 &&
 		lastKind != errorsx.KindContentFilter &&
 		lastKind != errorsx.KindModelNotFound &&
+		lastKind != errorsx.KindModelDeprecated &&
 		!errorsx.IsClientBug(lastKind) {
 		return true
 	}
@@ -4502,15 +4524,34 @@ type modelNotFoundError struct {
 	credentialID int
 	rawModel     string
 	body         string
-	// status is the upstream HTTP status (typically 404) captured at the
-	// construction site. Carried through Unwrap() into *upstreampkg.Error so
-	// the typed error chain exposes the same (Kind, StatusCode, Body) triple
-	// as contextLengthHTTPError / contextLengthExhaustedError.
+	// status is the upstream HTTP status (typically 404, but 410 for
+	// end-of-life / deprecated models) captured at the construction site.
+	// Carried through Unwrap() into *upstreampkg.Error so the typed error
+	// chain exposes the same (Kind, StatusCode, Body) triple as
+	// contextLengthHTTPError / contextLengthExhaustedError.
 	status int
+	// kind is the precise errorsx kind this failure should be recorded as.
+	// Defaults to KindModelNotFound (the historical behaviour) when the
+	// upstream returned a plain 404 / unknown-model body. Set to
+	// KindModelDeprecated when the upstream body matched modelDeprecatedRe
+	// (HTTP 410 Gone + "end of life", 404/422 + "has been deprecated", etc.)
+	// so the writer applies the longer 30-day cooling and the handler
+	// surfaces HTTP 410 + code=model_deprecated to the client.
+	kind errorsx.ErrorKind
 }
 
 func (e *modelNotFoundError) Error() string {
-	return "model_not_found: " + e.rawModel
+	return string(e.resolvedKind()) + ": " + e.rawModel
+}
+
+// resolvedKind returns the effective kind, defaulting to KindModelNotFound
+// when the caller did not set one (back-compat for the many construction
+// sites that rely on the zero value).
+func (e *modelNotFoundError) resolvedKind() errorsx.ErrorKind {
+	if e != nil && e.kind != "" {
+		return e.kind
+	}
+	return errorsx.KindModelNotFound
 }
 
 // Unwrap surfaces the upstream (Kind, StatusCode, Body) triple so
@@ -4525,7 +4566,7 @@ func (e *modelNotFoundError) Unwrap() error {
 		return nil
 	}
 	return &upstreampkg.Error{
-		Kind:       errorsx.KindModelNotFound,
+		Kind:       e.resolvedKind(),
 		Body:       []byte(e.body),
 		StatusCode: e.status,
 		Message:    e.Error(),
@@ -4631,7 +4672,7 @@ func shouldWriteCredentialState(kind errorsx.ErrorKind) bool {
 	case errorsx.KindAuth, errorsx.KindAuthRevoked,
 		errorsx.KindQuota, errorsx.KindQuotaPeriodic, errorsx.KindQuotaBalance, errorsx.KindQuotaPermanent,
 		errorsx.KindConcurrent, errorsx.KindRateLimit,
-		errorsx.KindStreamTimeout, errorsx.KindModelNotFound:
+		errorsx.KindStreamTimeout, errorsx.KindModelNotFound, errorsx.KindModelDeprecated:
 		return true
 	default:
 		return false
