@@ -655,7 +655,10 @@ type ChatHandler struct {
 	// autoTitleGenerator (2026-06-22) automatically generates session titles
 	// after the first successful request. nil disables auto-title generation.
 	autoTitleGenerator interface {
-		MaybeGenerateTitle(sessionID, tenantID string)
+		// 2026-08-05: requestPreview is passed directly from the in-memory
+		// reqLog to avoid a DB timing race (the row may not yet be written
+		// to request_logs when the goroutine starts).
+		MaybeGenerateTitle(sessionID, tenantID, requestPreview string)
 	}
 
 	// armorJudge (Track A B1-5, 2026-06-25) scores prompts for security risks.
@@ -1005,7 +1008,8 @@ func (h *ChatHandler) newStreamCapture() *audit.StreamCapture {
 
 // SetAutoTitleGenerator (2026-06-22) wires the auto title generator from admin package.
 func (h *ChatHandler) SetAutoTitleGenerator(atg interface {
-	MaybeGenerateTitle(sessionID, tenantID string)
+	// 2026-08-05: requestPreview added to fix DB timing race.
+	MaybeGenerateTitle(sessionID, tenantID, requestPreview string)
 }) {
 	h.autoTitleGenerator = atg
 }
@@ -4306,9 +4310,14 @@ func (h *ChatHandler) emitTelemetry(evt audit.Event, result *executors.ExecuteRe
 	}
 
 	// v2.2 (2026-06-22): auto-generate session title after first successful request.
+	// v2.3 (2026-08-05): pass requestPreview in-memory to avoid DB timing race.
 	// Fire-and-forget async call; never blocks the request path.
 	if h.autoTitleGenerator != nil && reqLog.Success && reqLog.GwSessionID != nil && *reqLog.GwSessionID != "" {
-		h.autoTitleGenerator.MaybeGenerateTitle(*reqLog.GwSessionID, tenantID)
+		preview := ""
+		if reqLog.RequestPreview != nil {
+			preview = *reqLog.RequestPreview
+		}
+		h.autoTitleGenerator.MaybeGenerateTitle(*reqLog.GwSessionID, tenantID, preview)
 	}
 
 	// 2026-07-28: model-integrity detection (finish_refusal /
