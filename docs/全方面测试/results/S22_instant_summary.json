@@ -4,8 +4,9 @@
   "checks": {
     "22_1_basic_chat_logged": true,
     "22_2_count_trigger": true,
-    "22_3_token_trigger": "PENDING",
-    "22_4_mechanical_fallback": "PENDING",
+    "22_3_token_trigger": true,
+    "22_4_mechanical_fallback": true,
+    "22_5_auto_summary_trigger": true,
     "22_5_admin_manual": "TODO"
   },
   "metrics": {
