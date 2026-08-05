@@ -13,6 +13,7 @@ func TestShouldWriteCredentialState(t *testing.T) {
 		want bool
 	}{
 		{name: "model not found writes model state", kind: errorsx.KindModelNotFound, want: true},
+		{name: "model deprecated writes model state", kind: errorsx.KindModelDeprecated, want: true},
 		{name: "auth writes credential state", kind: errorsx.KindAuth, want: true},
 		{name: "client cancellation is ignored", kind: errorsx.KindCanceled, want: false},
 		{name: "tool mismatch is ignored", kind: errorsx.KindToolCallIdMismatch, want: false},
