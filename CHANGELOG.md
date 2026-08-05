@@ -9,6 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **标题生成隔离到低优先级模型池 + 防链式自触发 (2026-08-05)**:
+  - **根因 A** — 标题生成 `model:"auto"` 被 V2 decider 选到用户的昂贵 relay（事故窗口 4 次标题请求 3/4 次 claude-opus-5/provider 587/cred 17，其中 1 次卡死 in_progress）
+    - 修复: `callAutoTitleLLM` 改为 `resolveAutoTitleModel()` — pin 到 `work_type_model_route` 的 session_title 便宜池（minimax-m2.7 等），复用 `resolveAdminLLMFallbackModel`，env `LLM_GATEWAY_ADMIN_LLM_FALLBACK_MODEL` 可覆盖，池空回退 `auto`。显式便宜模型也完全绕过 decider，标题请求不再占用用户热路径
+  - **根因 B** — 标题请求自身满足 `Success && GwSessionID != ""`，会在新隔离 session 内再次触发标题生成（链式自触发）
+    - 修复: 标题生成触发点加 `!shouldSkipAutoTitleGeneration(logCtx)` — `logCtx.IsAutoRequest` 为 true 时跳过
+  - **根因 C** — 发起方设 `X-Gw-Is-Auto: true`，但入口侧从不读取，`is_auto_request` 日志全为 NULL
+    - 修复: 入口侧读取该 header → `logCtx.IsAutoRequest = true`
+  - 补全单元测试: `TestResolveAutoTitleModel` + `TestShouldSkipAutoTitleGeneration`
+  - 详见 `docs/changelogs/2026-08-05-auto-title-isolate-and-anti-chain.md`
+
 - **Agent 多步任务过网关经常中断 (2026-08-04)**:
   - **核心症状**: agent(Claude Code / Codex / Cursor)直连供应商正常,过网关就经常中断。表现为流被提前掐断、客户端 idle 重连、缺少 tool_use 块
   - **根因 A** — pre-stream keepalive 只覆盖 openai-completions 协议,Anthropic Messages / Responses 协议的客户端首字节前无心跳,被客户端 idle 超时(或 nginx `proxy_read_timeout`)掐断

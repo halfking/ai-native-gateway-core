@@ -23,6 +23,25 @@ func TestDetectEmptyStreamResponse_EmptyStreamIsEmpty(t *testing.T) {
 	}
 }
 
+func TestShouldSkipAutoTitleGeneration(t *testing.T) {
+	tests := []struct {
+		name     string
+		logCtx   *RequestLogContext
+		expected bool
+	}{
+		{name: "nil logCtx treated as normal request", logCtx: nil, expected: false},
+		{name: "normal request not skipped", logCtx: &RequestLogContext{}, expected: false},
+		{name: "auto request skipped", logCtx: &RequestLogContext{IsAutoRequest: true}, expected: true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := shouldSkipAutoTitleGeneration(tc.logCtx); got != tc.expected {
+				t.Fatalf("shouldSkipAutoTitleGeneration() = %v, want %v", got, tc.expected)
+			}
+		})
+	}
+}
+
 func TestDetectUpstreamContextLoss(t *testing.T) {
 	tests := []struct {
 		name            string
