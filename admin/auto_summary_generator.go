@@ -17,6 +17,7 @@ import (
 	"golang.org/x/time/rate"
 
 	"github.com/kaixuan/llm-gateway-go/internal/summarystore"
+	"github.com/kaixuan/llm-gateway-go/metrics"
 )
 
 // Auto-summary design (2026-08-06) — pairs with auto_title_generator.go
@@ -155,6 +156,7 @@ func (g *AutoSummaryGenerator) runSummaryAsync(sessionID, tenantID, requestBody,
 		logger.Warn("summary trigger gate error; falling back to always-run", "error", err)
 	}
 	if !shouldRun {
+		metrics.AutoSummaryGateSkip.WithLabelValues(reason).Inc()
 		logger.Debug("summary skipped by rolling gate", "reason", reason,
 			"last_summarized_at", lastSum)
 		return
@@ -164,6 +166,7 @@ func (g *AutoSummaryGenerator) runSummaryAsync(sessionID, tenantID, requestBody,
 	// empty we drop this trigger. The user-visible summary just won't update
 	// this minute; better than blocking the request goroutine.
 	if !g.allowTenant(tenantID) {
+		metrics.AutoSummaryTrigger.WithLabelValues("rate_limited").Inc()
 		logger.Info("summary rate-limited; skipping this trigger")
 		return
 	}
@@ -174,6 +177,7 @@ func (g *AutoSummaryGenerator) runSummaryAsync(sessionID, tenantID, requestBody,
 	case g.workerSlots <- struct{}{}:
 		defer func() { <-g.workerSlots }()
 	default:
+		metrics.AutoSummaryTrigger.WithLabelValues("saturated").Inc()
 		logger.Info("summary worker pool saturated; skipping this trigger")
 		return
 	}
@@ -182,6 +186,7 @@ func (g *AutoSummaryGenerator) runSummaryAsync(sessionID, tenantID, requestBody,
 	title, summary, keyTopics, userIntent, model, err := g.generateSummary(ctx, sessionID, tenantID, requestBody, requestPreview, parentRequestID)
 	elapsed := time.Since(start)
 	if err != nil {
+		metrics.AutoSummaryTrigger.WithLabelValues("error").Inc()
 		logger.Warn("failed to generate summary", "error", err, "elapsed_ms", elapsed.Milliseconds())
 		return
 	}
@@ -202,9 +207,11 @@ func (g *AutoSummaryGenerator) runSummaryAsync(sessionID, tenantID, requestBody,
 		UserIntent:     userIntent,
 		LastSummarized: time.Now(),
 	}); err != nil {
+		metrics.AutoSummaryTrigger.WithLabelValues("db_error").Inc()
 		logger.Error("failed to persist summary", "error", err)
 		return
 	}
+	metrics.AutoSummaryTrigger.WithLabelValues("ok").Inc()
 	logger.Info("auto_summary saved",
 		"title", title,
 		"summary_len", len(summary),
@@ -298,6 +305,7 @@ func (g *AutoSummaryGenerator) generateSummary(ctx context.Context, sessionID, t
 
 	// Map-reduce: split corpus into N chunks → N partial summaries → merge.
 	chunks := splitCorpusIntoChunks(corpus, autoSummaryChunkApproxChars)
+	metrics.AutoSummaryChunks.Observe(float64(len(chunks)))
 	if len(chunks) < 2 {
 		// safety net — if the splitter couldn't make ≥2 chunks, just do
 		// a single-shot (we'd rather degrade to a slow call than break).
@@ -324,13 +332,31 @@ func (g *AutoSummaryGenerator) generateSummary(ctx context.Context, sessionID, t
 	}
 	wg.Wait()
 
-	// Collect partials; abort on hard failure.
+	// Collect partials; tolerate up to (but not including) total failure.
+	// 2026-08-06: previous version hard-aborted on any chunk failure,
+	// which meant a single transient chunk LLM error dropped the entire
+	// summary. Now we degrade: keep all successful partials, log a
+	// warning, bump the partial-fail counter, and reduce over what we
+	// have. If ALL chunks failed we still hard-abort so callers fall
+	// back to the auto-extract / DB persist error path.
 	var partials []string
+	var failedIdx []int
 	for i, r := range results {
 		if r.err != nil {
-			return "", "", nil, "", "", fmt.Errorf("map_reduce partial %d: %w", i, r.err)
+			failedIdx = append(failedIdx, i)
+			continue
 		}
 		partials = append(partials, r.text)
+	}
+	if len(failedIdx) > 0 {
+		metrics.AutoSummaryMapReducePartialFail.Inc()
+		logger.Warn("auto_summary: map_reduce partial failure, degrading",
+			"failed_count", len(failedIdx),
+			"total_chunks", len(chunks),
+			"failed_indices", failedIdx)
+	}
+	if len(partials) == 0 {
+		return "", "", nil, "", "", fmt.Errorf("map_reduce: all %d chunks failed", len(chunks))
 	}
 
 	merged := strings.Join(partials, "\n\n---\n\n")
@@ -410,6 +436,7 @@ func (g *AutoSummaryGenerator) callSummaryOnceWithMode(ctx context.Context, apiK
 	var lastErr error
 	var lastStatus int
 	var lastBody string
+	llmStart := time.Now()
 	for attempt := 0; attempt <= maxRetries; attempt++ {
 		if attempt > 0 {
 			jitter := time.Duration(150+g.rng.Intn(100)) * time.Millisecond
@@ -425,11 +452,14 @@ func (g *AutoSummaryGenerator) callSummaryOnceWithMode(ctx context.Context, apiK
 		lastBody = bodyExcerpt
 		if err == nil {
 			title, summary, topics, intent, modelOut := parseSummaryJSON(res.Content, model)
+			metrics.AutoSummaryLLMCall.WithLabelValues(mode, "ok").Inc()
+			metrics.AutoSummaryLLMLatency.WithLabelValues(mode).Observe(time.Since(llmStart).Seconds())
 			return title, summary, topics, intent, modelOut, nil
 		}
 		if !isTransientAutoTitleErr(err, status) {
 			break
 		}
+		metrics.AutoSummaryLLMCall.WithLabelValues(mode, "transient_retry").Inc()
 		slog.Warn("auto_summary: transient error, retrying",
 			"component", "auto_summary_generator",
 			"session_id", sessionID,
@@ -443,6 +473,15 @@ func (g *AutoSummaryGenerator) callSummaryOnceWithMode(ctx context.Context, apiK
 			"body_excerpt", bodyExcerpt,
 		)
 	}
+	// Final failure — bucket as invalid_response for 4xx / decode error
+	// and error for everything else. Operators can split by status_code
+	// later via slog if needed.
+	result := "error"
+	if lastStatus >= 400 && lastStatus < 500 {
+		result = "invalid_response"
+	}
+	metrics.AutoSummaryLLMCall.WithLabelValues(mode, result).Inc()
+	metrics.AutoSummaryLLMLatency.WithLabelValues(mode).Observe(time.Since(llmStart).Seconds())
 	slog.Warn("auto_summary: LLM call failed",
 		"component", "auto_summary_generator",
 		"session_id", sessionID,
@@ -551,15 +590,29 @@ func (g *AutoSummaryGenerator) doCallSummaryOnce(
 	return adminLLMChatResult{Content: content, ResolvedModel: resolvedModel}, nil, resp.StatusCode, excerpt
 }
 
-// parseSummaryJSON tolerates both strict JSON and "plain summary with
-// optional trailing JSON". Returns the fields the dashboard needs; missing
-// fields stay empty.
+// parseSummaryJSON tolerates, in order of likelihood:
+//   1. strict JSON:                                 {"summary":...}
+//   2. JSON wrapped in a markdown fence:           ```json\n{...}\n```
+//   3. JSON wrapped in a generic markdown fence:    ```\n{...}\n```
+//   4. JSON preceded by prose ("好的，以下是总结：\n{...}"):
+//   5. pure prose (last-resort: treat whole response as summary text)
+//
+// Returns the fields the dashboard needs; missing fields stay empty.
 func parseSummaryJSON(raw, fallbackModel string) (title, summary string, keyTopics []string, userIntent, modelOut string) {
 	modelOut = fallbackModel
 	raw = strings.TrimSpace(raw)
 	if raw == "" {
 		return
 	}
+
+	// Strip markdown fences first — the LLM often wraps its JSON in a
+	// ```json … ``` block. We accept both ```json and bare ``` because
+	// cheap models don't always include the language hint.
+	stripped := stripMarkdownFence(raw)
+	if stripped != raw {
+		raw = stripped
+	}
+
 	// Look for a JSON object in the response — the system prompt mandates
 	// {"summary":..., "key_points":[...]} but cheap models sometimes wrap
 	// it in prose. Find the first '{' and last matching '}'.
@@ -576,10 +629,10 @@ func parseSummaryJSON(raw, fallbackModel string) (title, summary string, keyTopi
 		return
 	}
 	var parsed struct {
-		Summary   string   `json:"summary"`
-		KeyPoints []string `json:"key_points"`
-		UserIntent string  `json:"user_intent"`
-		Title     string   `json:"title"`
+		Summary    string   `json:"summary"`
+		KeyPoints  []string `json:"key_points"`
+		UserIntent string   `json:"user_intent"`
+		Title      string   `json:"title"`
 	}
 	if err := json.Unmarshal([]byte(raw[start:end+1]), &parsed); err != nil {
 		// Fall back to prose parsing.
@@ -602,6 +655,27 @@ func parseSummaryJSON(raw, fallbackModel string) (title, summary string, keyTopi
 	keyTopics = parsed.KeyPoints
 	userIntent = parsed.UserIntent
 	return
+}
+
+// stripMarkdownFence removes a leading ```json (or bare ```) line and the
+// trailing ``` line if both are present. Returns the original string if
+// no fence is detected. Tolerates Windows line endings (\r\n).
+func stripMarkdownFence(s string) string {
+	s = strings.TrimSpace(s)
+	if !strings.HasPrefix(s, "```") {
+		return s
+	}
+	// Drop the opening fence line.
+	if idx := strings.Index(s, "\n"); idx > 0 {
+		s = s[idx+1:]
+	} else {
+		return s // malformed fence — let downstream JSON parser try
+	}
+	// Drop the closing fence line.
+	if idx := strings.LastIndex(s, "```"); idx > 0 {
+		s = s[:idx]
+	}
+	return strings.TrimSpace(s)
 }
 
 // splitCorpusIntoChunks splits corpus into chunks of approximately

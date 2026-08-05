@@ -9,6 +9,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **自动标题/总结指标可观测性 (2026-08-06)**:
+  - 新文件 `metrics/auto_summary_metrics.go`：Prometheus counter + histogram 完整覆盖 auto-title 与 auto-summary 两条 pipeline
+  - 关键 metric:
+    - `auto_summary_trigger_total{result}` — ok / error / rate_limited / saturated / db_error
+    - `auto_summary_llm_call_total{mode, result}` — summary / map / reduce × ok / transient_retry / error / invalid_response
+    - `auto_summary_llm_latency_seconds{mode}` — LLM 调用延迟直方图（50ms..200s）
+    - `auto_summary_gate_skip_total{reason}` — 滚动闸门跳过的原因
+    - `auto_summary_map_reduce_partial_fail_total` — map-reduce 部分失败计数
+    - `auto_summary_chunks` — chunk 分布直方图
+    - `auto_title_trigger_total{result}` / `auto_title_llm_call_total{result}` / `auto_title_llm_latency_seconds`
+  - 标签基数受控（result / mode 是闭合枚举）
+
+- **map-reduce 部分失败容忍 (2026-08-06)**:
+  - 旧行为: 任一 chunk LLM 调用失败 → 整次 summary 硬终止
+  - 新行为: N-1/N chunks 失败时记录 slog.Warn + 增加 `auto_summary_map_reduce_partial_fail_total`，继续 reduce 成功的 partials；仅全部 chunks 失败才硬终止
+  - 副作用: 减少单点抖动导致的总结丢失
+
+- **markdown fence 解析兼容 (2026-08-06)**:
+  - `parseSummaryJSON` 此前只接受裸 JSON；廉价模型经常包裹在 ```json ... ``` 块中
+  - 新增 `stripMarkdownFence` helper，剥离 ```json 与 ``` 围栏；接受 CRLF
+  - 兼容严格 JSON / prose 包裹 / fence 包裹 / 纯 prose 四种格式
+
+### Added
+
 - **会话即时总结增量滚动 + map-reduce 分段 (2026-08-06)**:
   - **场景**: 用户报告每个会话仅首 turn 生成标题后无任何自动总结；超长会话（>12k chars）单次塞给 LLM 会超出模型上下文。新增与 auto-title 平行的 request-path 自动总结分支
   - **触发**: handler emitTelemetry 成功路径，紧跟 auto-title 调用。`AutoSummaryGenerator.shouldTriggerSummary` 走**增量滚动闸门**：自 `session_summaries.last_summarized_at` 起 ≥ 3 个新 turn 才重做

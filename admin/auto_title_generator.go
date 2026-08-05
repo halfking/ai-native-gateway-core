@@ -14,6 +14,8 @@ import (
 	"os"
 	"strings"
 	"time"
+
+	"github.com/kaixuan/llm-gateway-go/metrics"
 )
 
 // 2026-08-06: title-generator caller identity for request_logs.origin_actor.
@@ -91,10 +93,12 @@ func (g *AutoTitleGenerator) generateTitleAsync(sessionID, tenantID, requestBody
 	title, model, keyID, err := g.generateTitleFromFirstRequest(ctx, sessionID, tenantID, requestBody, requestPreview, parentRequestID)
 	elapsed := time.Since(start)
 	if err != nil {
+		metrics.AutoTitleTrigger.WithLabelValues("error").Inc()
 		logger.Warn("failed to generate title from first request", "error", err, "elapsed_ms", elapsed.Milliseconds())
 		return
 	}
 	logger.Info("auto_title: title generated", "title", title, "model", model, "elapsed_ms", elapsed.Milliseconds())
+	metrics.AutoTitleTrigger.WithLabelValues("ok").Inc()
 
 	// Step 2: Save title to database (with conflict handling).
 	// ON CONFLICT DO NOTHING: if another goroutine already saved a title for
@@ -644,6 +648,7 @@ func (g *AutoTitleGenerator) callAutoTitleLLM(ctx context.Context, apiKey, sessi
 	var lastErr error
 	var lastStatus int
 	var lastBodyExcerpt string
+	llmStart := time.Now()
 	for attempt := 0; attempt <= maxRetries; attempt++ {
 		if attempt > 0 {
 			// Jittered backoff: 150-250ms.
@@ -659,12 +664,15 @@ func (g *AutoTitleGenerator) callAutoTitleLLM(ctx context.Context, apiKey, sessi
 		lastStatus = status
 		lastBodyExcerpt = bodyExcerpt
 		if err == nil {
+			metrics.AutoTitleLLMCall.WithLabelValues("ok").Inc()
+			metrics.AutoTitleLLMLatency.Observe(time.Since(llmStart).Seconds())
 			return result, nil
 		}
 		if !isTransientAutoTitleErr(err, status) {
 			// 4xx / decode error / empty completion — don't retry, surface immediately.
 			break
 		}
+		metrics.AutoTitleLLMCall.WithLabelValues("transient_retry").Inc()
 		// log retry intent for observability
 		slog.Warn("auto_title: transient error, retrying",
 			"component", "auto_title_generator",
@@ -678,6 +686,12 @@ func (g *AutoTitleGenerator) callAutoTitleLLM(ctx context.Context, apiKey, sessi
 			"body_excerpt", bodyExcerpt,
 		)
 	}
+	result := "error"
+	if lastStatus >= 400 && lastStatus < 500 {
+		result = "invalid_response"
+	}
+	metrics.AutoTitleLLMCall.WithLabelValues(result).Inc()
+	metrics.AutoTitleLLMLatency.Observe(time.Since(llmStart).Seconds())
 	// Final failure log — has the full operator context to answer
 	// "did the LLM actually receive the request".
 	slog.Warn("auto_title: LLM call failed",
