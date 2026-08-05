@@ -896,11 +896,14 @@ $48,
 		$80::text::jsonb,
 		-- 2026-07-14 (migration 341): client-side origin.
 		$81, $82, $83, $84,
-		$85::text::jsonb, $86,
+			$85::text::jsonb, $86,
 			-- 2026-07-27: 客户端感知字段(主表 INSERT 必填)。
 			$87, $88, $89, $90
 		)
-				ON CONFLICT (request_id) DO UPDATE SET
+				-- 2026-08-06 fix: request_logs 是分区表, 唯一约束是 (request_id, ts) 复合
+				-- 之前 ON CONFLICT (request_id) 单列触发 42P10 "no unique or exclusion constraint matching"
+				-- 改用 (request_id, ts) 与分区 UNIQUE INDEX 对齐.
+				ON CONFLICT (request_id, ts) DO UPDATE SET
 				ts = EXCLUDED.ts,
 			tenant_id = EXCLUDED.tenant_id,
 			application_id = EXCLUDED.application_id,
@@ -1542,15 +1545,17 @@ func (c *Client) upsertRequestLogBodies(ctx context.Context, tx pgx.Tx, requestI
 	// captured by the initial or successful request-log write.
 	reqJSON := requestBodyJSON
 	respJSON := responseBodyJSON
-	// Use now() as ts for the hot table (UNIQUE on request_id, ts is non-unique).
+	// Use now() as ts for the hot table. UNIQUE on (request_id, ts) — must
+	// include ts since the table is partitioned by ts (PostgreSQL requires
+	// unique constraints on partitioned tables to include the partition key).
 	// The UPDATE clause only replaces a body when this write supplied one.
 	_, err := tx.Exec(ctx, `
 		INSERT INTO request_logs_bodies_hot (request_id, ts, request_body, response_body)
 		VALUES ($1, now(), NULLIF($2, 'null')::jsonb, NULLIF($3, 'null')::jsonb)
-		ON CONFLICT (request_id) DO UPDATE
+		ON CONFLICT (request_id, ts) DO UPDATE
 			SET request_body = COALESCE(EXCLUDED.request_body, request_logs_bodies_hot.request_body),
-			    response_body = COALESCE(EXCLUDED.response_body, request_logs_bodies_hot.response_body),
-			    ts = EXCLUDED.ts
+				    response_body = COALESCE(EXCLUDED.response_body, request_logs_bodies_hot.response_body),
+				    ts = EXCLUDED.ts
 	`, requestID, reqJSON, respJSON)
 	return err
 }
