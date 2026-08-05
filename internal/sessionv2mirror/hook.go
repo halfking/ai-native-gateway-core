@@ -174,6 +174,13 @@ func entryToProcessedRequest(entry *telemetry.RequestLogEntry) *v2.ProcessedRequ
 	if len(entry.OutboundBody) > 0 {
 		req.OutboundBody = parseMessagesJSON(entry.OutboundBody)
 	}
+
+	// Submit-mode header (X-Gw-Submit-Mode). This is the SubmitModeDetector's
+	// P0 (authoritative) signal; without it the detector can only infer
+	// "inferred_compressed" via LCS rather than emit a true "delta".
+	if entry.SubmitModeHeader != nil {
+		req.SubmitModeHeader = *entry.SubmitModeHeader
+	}
 	// LastOutboundBody deliberately remains empty here. SessionWriterV2 loads
 	// the previous turn's persisted outbound snapshot when the telemetry entry
 	// does not carry one; using the current request body as "previous" corrupts
@@ -234,12 +241,29 @@ func parseResponseBody(body string) []v2.Message {
 	return msgs
 }
 
+// parseMessagesJSON extracts messages from the session compressor's
+// OutboundBody. That value is the FULL upstream request object
+// ({"model":...,"messages":[...]} — see compression.spliceBodyMessages), so we
+// try the object shape first and fall back to a bare [] array for callers /
+// tests that pass just the messages slice.
+//
+// 2026-08-05 (v2 mirror bug): the previous implementation only handled the bare
+// array. In production OutboundBody is always the object form, so the unmarshal
+// failed silently and req.OutboundBody was always empty — every
+// session_bodies.outbound_body persisted NULL, which in turn broke multi-turn
+// submit-mode/delta detection (getPreviousBody found no prior outbound).
 func parseMessagesJSON(raw json.RawMessage) []v2.Message {
-	var p []msgProbe
-	if err := json.Unmarshal(raw, &p); err != nil {
-		return nil
+	// Object form: {"messages":[...]} (also tolerates model/tools/etc.).
+	var obj requestProbe
+	if err := json.Unmarshal(raw, &obj); err == nil && len(obj.Messages) > 0 {
+		return toMessages(obj.Messages)
 	}
-	return toMessages(p)
+	// Bare array form: [{"role":...,"content":...}, ...].
+	var arr []msgProbe
+	if err := json.Unmarshal(raw, &arr); err == nil && len(arr) > 0 {
+		return toMessages(arr)
+	}
+	return nil
 }
 
 func toMessages(raw []msgProbe) []v2.Message {
