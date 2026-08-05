@@ -2867,7 +2867,7 @@ func main() {
 			slog.Info("boardcache service started")
 
 			// 2026-07-25: Body size tracker for real-time dashboard stats
-			bodyTracker := stats.NewBodySizeTracker(fpSlotRedis)
+			bodyTracker := stats.NewBodySizeTracker(fpSlotRedis, slog.Default())
 			adminHandler.SetBodySizeTracker(bodyTracker)
 			if telemetryClient.Enabled() {
 				telemetryClient.AddOnRequestLogPersisted(bodyTracker.Record)
