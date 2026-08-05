@@ -120,7 +120,7 @@ func (rc *RecoveryCoordinator) Recover(
 	if attempt == 0 && rc.deps.Cache != nil && gwSessionID != "" {
 		if state, _, _ := rc.deps.Cache.GetOrLoad(ctx, tenantID, gwSessionID); state != nil && state.HasCutMarker {
 			marker := state.ToCutMarker("")
-			if marker != nil && !marker.IsExpired(redisKeyTTL) {
+			if marker != nil && !marker.IsExpired(sessionCacheRedisTTL()) {
 				// The summary text is in L1 only; try to get it from cache.
 				_, l1Body, _ := rc.deps.Cache.GetOrLoad(ctx, tenantID, gwSessionID)
 				if l1Body != nil {
