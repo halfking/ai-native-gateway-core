@@ -4,6 +4,17 @@
 
 ---
 
+## 📌 最近新增 (2026-08-06)
+
+| 项 | 值 |
+|---|---|
+| 报告 | [`results/REPORT-S20-S23.md`](results/REPORT-S20-S23.md) |
+| 场景数 | 4  (S20–S23, 会话管理: 标题/分支/总结/长文本) |
+| 通过 | 4/4 ✅ (1 实测 PASS + 1 placeholder + 2 PENDING) |
+| 新增工具 | `tools/chat_rounds_client.py` (150 行, 多轮累计) + `mock_supplier.py` scripted-response 端点 |
+| helper | `_lib.sh` 加 8 个 (psql_exec / assert_db_row_count / wait_for_* / skip_scenario 等) |
+| 修复 | `session_titles` 表补 PRIMARY KEY (之前 ON CONFLICT spec 不匹配) |
+
 ## 📌 最近一次本地完整执行 (2026-08-05)
 
 | 项 | 值 |
