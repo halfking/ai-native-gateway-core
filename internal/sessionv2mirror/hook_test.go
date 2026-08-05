@@ -226,6 +226,90 @@ func TestEntryToProcessedRequest_OutboundBodyParsing(t *testing.T) {
 	}
 }
 
+// TestEntryToProcessedRequest_OutboundBodyFullObject asserts the mirror
+// correctly extracts messages from the FULL upstream request object that the
+// session compressor produces (spliceBodyMessages returns the whole
+// {"model":...,"messages":[...]} body, NOT a bare array). The 2026-08-05 fix:
+// before this, parseMessagesJSON unmarshalled into a bare []msgProbe, which
+// silently failed on an object and left OutboundBody empty → session_bodies.
+// outbound_body persisted NULL for every session request.
+func TestEntryToProcessedRequest_OutboundBodyFullObject(t *testing.T) {
+	// This is what compression.SessionCompressor.OutboundBody actually is:
+	// the whole request payload with model/tools/messages, not just messages.
+	outbound := jsonRaw(`{
+		"model":"glm-5.1",
+		"tools":[{"type":"function","function":{"name":"noop"}}],
+		"messages":[
+			{"role":"system","content":"you are helpful"},
+			{"role":"user","content":"compressed hello"}
+		]
+	}`)
+
+	entry := &telemetry.RequestLogEntry{
+		RequestID:           "req_out_obj",
+		GwSessionID:         gwSessionPtr("sess_out_obj"),
+		OutboundBody:        outbound,
+		CompressionStrategy: strPtr("mechanical_trim"),
+		Success:             true,
+	}
+
+	req := entryToProcessedRequest(entry)
+	if len(req.OutboundBody) != 2 {
+		t.Fatalf("expected 2 outbound messages from full request object, got %d", len(req.OutboundBody))
+	}
+	check(t, "OutboundBody[0].Role", req.OutboundBody[0].Role, "system")
+	check(t, "OutboundBody[1].Role", req.OutboundBody[1].Role, "user")
+	check(t, "OutboundBody[1].Content", req.OutboundBody[1].Content, "compressed hello")
+}
+
+// TestEntryToProcessedRequest_OutboundBodyBareArray keeps the legacy bare-array
+// shape working so the fix is a superset, not a replacement.
+func TestEntryToProcessedRequest_OutboundBodyBareArray(t *testing.T) {
+	outbound := jsonRaw(`[{"role":"user","content":"bare array hello"}]`)
+
+	entry := &telemetry.RequestLogEntry{
+		RequestID:    "req_out_bare",
+		GwSessionID:  gwSessionPtr("sess_out_bare"),
+		OutboundBody: outbound,
+		Success:      true,
+	}
+
+	req := entryToProcessedRequest(entry)
+	if len(req.OutboundBody) != 1 {
+		t.Fatalf("expected 1 outbound message from bare array, got %d", len(req.OutboundBody))
+	}
+	check(t, "OutboundBody[0].Content", req.OutboundBody[0].Content, "bare array hello")
+}
+
+// TestEntryToProcessedRequest_SubmitModeHeader asserts the X-Gw-Submit-Mode
+// header carried on the telemetry entry is propagated into the V2
+// ProcessedRequest so the SubmitModeDetector's P0 (explicit-header) path can
+// produce an authoritative "delta" instead of an LCS-inferred verdict.
+func TestEntryToProcessedRequest_SubmitModeHeader(t *testing.T) {
+	entry := &telemetry.RequestLogEntry{
+		RequestID:        "req_submit_mode",
+		GwSessionID:      gwSessionPtr("sess_submit_mode"),
+		SubmitModeHeader: strPtr("delta"),
+		Success:          true,
+	}
+
+	req := entryToProcessedRequest(entry)
+	check(t, "SubmitModeHeader", req.SubmitModeHeader, "delta")
+}
+
+// TestEntryToProcessedRequest_SubmitModeHeaderEmpty asserts a nil header leaves
+// the field empty (detector falls through to inference), never panics.
+func TestEntryToProcessedRequest_SubmitModeHeaderEmpty(t *testing.T) {
+	entry := &telemetry.RequestLogEntry{
+		RequestID:   "req_no_submit_mode",
+		GwSessionID: gwSessionPtr("sess_no_submit_mode"),
+		Success:     true,
+	}
+
+	req := entryToProcessedRequest(entry)
+	check(t, "SubmitModeHeader", req.SubmitModeHeader, "")
+}
+
 func TestEntryToProcessedRequest_UsesEventTime(t *testing.T) {
 	eventAt := time.Date(2026, 8, 3, 23, 59, 58, 0, time.UTC)
 	entry := &telemetry.RequestLogEntry{

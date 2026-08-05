@@ -240,6 +240,53 @@ func (w *TurnWriter) AppendTurnInTx(ctx context.Context, tx pgx.Tx, rec TurnReco
 		if err != nil {
 			return 0, fmt.Errorf("read existing turn_no: %w", err)
 		}
+
+		// 2026-08-05 (v2 mirror bug): the mirror fires this write TWICE per
+		// request via telemetry onPersisted — once for the INSERT-persist
+		// (before the session compressor has run, so compression_strategy is
+		// empty and submit_mode is only LCS-inferred) and once for the
+		// UPDATE-persist (after compression, carrying the real
+		// compression_strategy and the authoritative X-Gw-Submit-Mode verdict).
+		// The initial insert wins the ON CONFLICT DO NOTHING above, so the
+		// second fire's fields were silently dropped: session_turns.
+		// compression_strategy stayed empty for every row and submit_mode was
+		// pinned to the first-fire value. Backfill those late-arriving fields
+		// on the conflict path. COALESCE(NULLIF(...)) guarantees a later empty
+		// fire can never blank a value an earlier fire populated (monotonic
+		// enrichment), so this stays idempotent under retries.
+			_, err = tx.Exec(ctx, `
+				UPDATE gateway.session_turns
+				   SET compression_applied      = $5 OR compression_applied,
+				       compression_strategy     = COALESCE(NULLIF($6, ''), compression_strategy),
+				       compression_meta         = CASE
+				                                      WHEN $7 <> '' AND $7 <> 'null'
+				                                      THEN $7::text::jsonb
+				                                      ELSE compression_meta
+				                                  END,
+				       compression_tokens_saved = CASE
+				                                      WHEN $8 <> 0 THEN $8
+				                                      ELSE compression_tokens_saved
+				                                  END,
+				       -- submit_mode: only an informative (non-default) verdict may
+				       -- overwrite. rec.SubmitMode defaults to 'full', so a later
+				       -- fire that lacks the header/previous-body context (e.g. a
+				       -- failure-path UPDATE) can never regress a 'delta' /
+				       -- 'inferred_compressed' verdict an earlier fire established.
+				       submit_mode              = CASE
+				                                      WHEN $9 <> '' AND $9 <> 'full'
+				                                      THEN $9
+				                                      ELSE submit_mode
+				                                  END
+				 WHERE session_id = $1 AND tenant_id = $2
+				   AND request_id = $3 AND partition_date = $4
+			`,
+			rec.SessionID, rec.TenantID, rec.RequestID, partitionDate,
+			rec.CompressionApplied, rec.CompressionStrategy, compressionMetaStr,
+			rec.TokensSaved, rec.SubmitMode,
+		)
+		if err != nil {
+			return 0, fmt.Errorf("backfill turn compression/submit_mode: %w", err)
+		}
 	}
 
 	return turnNo, nil

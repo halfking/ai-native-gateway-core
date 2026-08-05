@@ -936,6 +936,27 @@ func applySessionCompressorFields(entry *telemetry.RequestLogEntry, c *RequestLo
 	}
 }
 
+// submitModeHeaderName is the client-supplied header the SubmitModeDetector
+// treats as its P0 (authoritative) signal. Distinct from SessionHeadersPriority
+// (which the gateway strips + reassigns); this one is read-only passthrough.
+const submitModeHeaderName = "X-Gw-Submit-Mode"
+
+// applySubmitModeHeader copies the X-Gw-Submit-Mode request header onto the
+// telemetry entry so the v2 mirror can forward it to the SubmitModeDetector.
+// Best-effort: absent header leaves the field nil and the detector falls back
+// to LCS inference. Only the recognised values are forwarded so a malformed
+// header cannot poison the turn's submit_mode.
+func applySubmitModeHeader(entry *telemetry.RequestLogEntry, c *RequestLogContext) {
+	if entry == nil || c == nil || c.Request == nil {
+		return
+	}
+	v := strings.ToLower(strings.TrimSpace(c.Request.Header.Get(submitModeHeaderName)))
+	switch v {
+	case "delta", "snapshot", "full", "attachment_only":
+		entry.SubmitModeHeader = strPtr(v)
+	}
+}
+
 // mergeCompressionMetaV3 adds window_triggered and summary_marker to the
 // existing compression_meta JSONB without clobbering v7 fields.
 //

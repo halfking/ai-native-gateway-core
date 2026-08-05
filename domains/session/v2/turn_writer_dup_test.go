@@ -139,6 +139,21 @@ func expectAppendTurn(mock pgxmock.PgxPoolIface, rec TurnRecord, nextTurn int, i
 		mock.ExpectQuery("SELECT turn_no[[:space:]]+FROM gateway.session_turns").
 			WithArgs(rec.SessionID, rec.TenantID, rec.RequestID, partitionDate).
 			WillReturnRows(pgxmock.NewRows([]string{"turn_no"}).AddRow(existingTurn))
+		// 2026-08-05 (v2 mirror bug): on the conflict path the writer backfills
+		// the late-arriving compression_strategy / compression_meta / submit_mode
+		// that the initial INSERT could not carry (the mirror fires this write
+		// twice — INSERT-persist then UPDATE-persist — and ON CONFLICT DO NOTHING
+		// dropped the second fire's fields). Args mirror the production Exec:
+		//   $1 session_id $2 tenant_id $3 request_id $4 partition_date
+		//   $5 compression_applied $6 compression_strategy $7 compression_meta
+		//   $8 compression_tokens_saved $9 submit_mode
+		mock.ExpectExec("UPDATE gateway.session_turns").
+			WithArgs(
+				rec.SessionID, rec.TenantID, rec.RequestID, partitionDate,
+				rec.CompressionApplied, rec.CompressionStrategy, compressionMetaStr,
+				rec.TokensSaved, rec.SubmitMode,
+			).
+			WillReturnResult(pgxmock.NewResult("UPDATE", 1))
 	}
 	mock.ExpectCommit()
 }
@@ -188,6 +203,15 @@ func expectExistingTurn(mock pgxmock.PgxPoolIface, rec TurnRecord, nextTurn, exi
 	mock.ExpectQuery("SELECT turn_no[[:space:]]+FROM gateway.session_turns").
 		WithArgs(rec.SessionID, rec.TenantID, rec.RequestID, partitionDate).
 		WillReturnRows(pgxmock.NewRows([]string{"turn_no"}).AddRow(existingTurn))
+	// 2026-08-05 (v2 mirror bug): conflict-path backfill UPDATE (see
+	// expectAppendTurn for the arg contract).
+	mock.ExpectExec("UPDATE gateway.session_turns").
+		WithArgs(
+			rec.SessionID, rec.TenantID, rec.RequestID, partitionDate,
+			rec.CompressionApplied, rec.CompressionStrategy, compressionMetaStr,
+			rec.TokensSaved, rec.SubmitMode,
+		).
+		WillReturnResult(pgxmock.NewResult("UPDATE", 1))
 	mock.ExpectCommit()
 }
 

@@ -224,6 +224,13 @@ type RequestLogEntry struct {
 	OutboundTokenEst  *int            `json:"outbound_token_est,omitempty"`
 	OutboundMsgHashes json.RawMessage `json:"outbound_msg_hashes,omitempty"`
 
+	// 2026-08-05: X-Gw-Submit-Mode client header (delta | snapshot | full |
+	// attachment_only). Carried through so the sessionv2mirror hook can feed
+	// the V2 SubmitModeDetector's P0 (explicit-header) path instead of relying
+	// solely on LCS inference. NOT a request_logs column — mirror-only transport
+	// field; the telemetry persist path ignores it.
+	SubmitModeHeader *string `json:"submit_mode_header,omitempty"`
+
 	// 2026-06-19: tool_call quality signals (017_quality_fix_mode.sql).
 	// QualityFlags is the array of detected issues (empty_tool_name,
 	// duplicate_tool_call_id, …). QualityFixActions is the JSON

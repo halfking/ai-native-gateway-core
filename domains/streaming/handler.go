@@ -4274,6 +4274,11 @@ func (h *ChatHandler) emitTelemetry(evt audit.Event, result *executors.ExecuteRe
 	enrichRequestLogFromMeta(reqLog, keyInfo, &logCtx.meta)
 	// v3: merge session compressor outbound fields into the log entry.
 	applySessionCompressorFields(reqLog, logCtx)
+	// 2026-08-05: propagate the X-Gw-Submit-Mode header to the v2 mirror so the
+	// SubmitModeDetector's P0 (authoritative) path can emit a true "delta"
+	// instead of an LCS-inferred verdict. The header never survives to the hook
+	// otherwise — the hook only sees the telemetry entry, not the request.
+	applySubmitModeHeader(reqLog, logCtx)
 
 	// 2026-07-19: 填充路由尝试追踪数据到 telemetry
 	// 2026-07-20: Try result.RoutingTracker first (populated by the executor),
