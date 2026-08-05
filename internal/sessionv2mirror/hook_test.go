@@ -1,6 +1,7 @@
 package sessionv2mirror
 
 import (
+	"context"
 	"encoding/json"
 	"testing"
 	"time"
@@ -46,7 +47,105 @@ func TestPersistHook_EmptyGwSessionIDIsNoOp(t *testing.T) {
 	hook(&telemetry.RequestLogEntry{RequestID: "x", GwSessionID: gwSessionPtr("")})
 }
 
-// ────────────────────── entryToProcessedRequest ──────────────────────
+func TestPersistHook_SkipsInProgressEntry(t *testing.T) {
+	called := 0
+	writer := captureWriterV2{fn: func(*v2.ProcessedRequest) { called++ }}
+	hook := PersistHook(writer)
+	withShadowFlags(t, func() {
+		hook(&telemetry.RequestLogEntry{
+			RequestID:     "req-in-progress",
+			GwSessionID:   gwSessionPtr("sess-in-progress"),
+			Success:       false,
+			RequestStatus: strPtr(telemetry.RequestStatusInProgress),
+		})
+	})
+	if called != 0 {
+		t.Fatalf("in-progress entry reached V2 writer %d times, want 0", called)
+	}
+}
+
+func TestPersistHook_MirrorsTerminalSuccess(t *testing.T) {
+	var got *v2.ProcessedRequest
+	writer := captureWriterV2{fn: func(req *v2.ProcessedRequest) { got = req }}
+	hook := PersistHook(writer)
+	prompt, completion := 123, 45
+	hookEntry := &telemetry.RequestLogEntry{
+		RequestID:          "req-terminal-success",
+		GwSessionID:        gwSessionPtr("sess-terminal-success"),
+		Success:            true,
+		RequestStatus:      strPtr(telemetry.RequestStatusSuccess),
+		PromptTokens:       &prompt,
+		CompletionTokens:   &completion,
+		UpstreamStatusCode: intPtr(200),
+	}
+	withShadowFlags(t, func() { hook(hookEntry) })
+	if got == nil {
+		t.Fatal("terminal success entry did not reach V2 writer")
+	}
+	if !got.Success || got.StatusCode != 200 {
+		t.Fatalf("V2 result = success=%v status=%d, want true/200", got.Success, got.StatusCode)
+	}
+	if got.PromptTokens != prompt || got.CompletionTokens != completion {
+		t.Fatalf("V2 tokens = %d/%d, want %d/%d", got.PromptTokens, got.CompletionTokens, prompt, completion)
+	}
+}
+
+func TestPersistHook_MirrorsTerminalFailure(t *testing.T) {
+	var got *v2.ProcessedRequest
+	writer := captureWriterV2{fn: func(req *v2.ProcessedRequest) { got = req }}
+	hook := PersistHook(writer)
+	hookEntry := &telemetry.RequestLogEntry{
+		RequestID:     "req-terminal-failure",
+		GwSessionID:   gwSessionPtr("sess-terminal-failure"),
+		Success:       false,
+		RequestStatus: strPtr(telemetry.RequestStatusFailure),
+		ErrorKind:     strPtr("rate_limit"),
+	}
+	withShadowFlags(t, func() { hook(hookEntry) })
+	if got == nil {
+		t.Fatal("terminal failure entry did not reach V2 writer")
+	}
+	if got.Success {
+		t.Fatalf("V2 result success = true, want false for failure")
+	}
+	if got.ErrorKind != "rate_limit" {
+		t.Fatalf("V2 error_kind = %q, want rate_limit", got.ErrorKind)
+	}
+}
+
+func TestPersistHook_MirrorsTerminalRateLimited(t *testing.T) {
+	var got *v2.ProcessedRequest
+	writer := captureWriterV2{fn: func(req *v2.ProcessedRequest) { got = req }}
+	hook := PersistHook(writer)
+	hookEntry := &telemetry.RequestLogEntry{
+		RequestID:     "req-rate-limited",
+		GwSessionID:   gwSessionPtr("sess-rate-limited"),
+		Success:       false,
+		RequestStatus: strPtr(telemetry.RequestStatusRateLimited),
+		ErrorKind:     strPtr("gw_rpm_exceeded"),
+	}
+	withShadowFlags(t, func() { hook(hookEntry) })
+	if got == nil {
+		t.Fatal("rate-limited entry did not reach V2 writer")
+	}
+	if got.Success {
+		t.Fatalf("V2 result success = true, want false for rate_limited")
+	}
+	if got.ErrorKind != "gw_rpm_exceeded" {
+		t.Fatalf("V2 error_kind = %q, want gw_rpm_exceeded", got.ErrorKind)
+	}
+}
+
+type captureWriterV2 struct {
+	fn func(*v2.ProcessedRequest)
+}
+
+func (w captureWriterV2) Write(_ context.Context, req *v2.ProcessedRequest) error {
+	if w.fn != nil {
+		w.fn(req)
+	}
+	return nil
+}
 
 func TestEntryToProcessedRequest_NilEntry(t *testing.T) {
 	req := entryToProcessedRequest(nil)

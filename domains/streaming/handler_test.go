@@ -1,10 +1,24 @@
 package streaming
 
 import (
+	"net/http"
 	"testing"
 
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/observability/telemetry"
+	"github.com/kaixuan/llm-gateway-go/domains/streaming/executors"
 )
+
+func TestSuccessUpstreamStatusCode(t *testing.T) {
+	if got := successUpstreamStatusCode(&executors.ExecuteResult{Response: &http.Response{StatusCode: http.StatusCreated}}); got != http.StatusCreated {
+		t.Fatalf("successUpstreamStatusCode() = %d, want %d", got, http.StatusCreated)
+	}
+	if got := successUpstreamStatusCode(&executors.ExecuteResult{}); got != http.StatusOK {
+		t.Fatalf("successUpstreamStatusCode() without response = %d, want %d", got, http.StatusOK)
+	}
+	if got := successUpstreamStatusCode(nil); got != http.StatusOK {
+		t.Fatalf("successUpstreamStatusCode(nil) = %d, want %d", got, http.StatusOK)
+	}
+}
 
 func TestDetectEmptyStreamResponse_ToolOnlyStructuredCallIsNotEmpty(t *testing.T) {
 	entry := &telemetry.RequestLogEntry{}
