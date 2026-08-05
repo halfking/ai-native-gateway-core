@@ -482,6 +482,24 @@ func (g *AutoTitleGenerator) loadSessionLogsForTitle(ctx context.Context, sessio
 	return logs, rows.Err()
 }
 
+// resolveAutoTitleModel returns the model used for auto title generation.
+// 2026-08-05: pins to the work_type_model_route cheap pool for session_title
+// (minimax-m2.7 / glm-5.1 / …) instead of model="auto". Sending "auto" let
+// the V2 decider route title-gen to the user's expensive relay (observed in
+// the 08-05 apiclaude incident: claude-opus-5 / provider 587, two title
+// requests stuck in_progress). An explicit cheap model also bypasses the
+// decider entirely, keeping title-gen off the user's hot path. Falls back
+// to "auto" only when the routing pool is empty.
+func (g *AutoTitleGenerator) resolveAutoTitleModel(ctx context.Context) string {
+	if g.handler == nil {
+		return adminLLMModelAuto
+	}
+	if m := strings.TrimSpace(g.handler.resolveAdminLLMFallbackModel(ctx, adminLLMTaskSessionTitle)); m != "" {
+		return m
+	}
+	return adminLLMModelAuto
+}
+
 // callAutoTitleLLM calls the LLM to generate a title (background HTTP request).
 func (g *AutoTitleGenerator) callAutoTitleLLM(ctx context.Context, apiKey, sessionID, userContent string) (adminLLMChatResult, error) {
 	if g.handler == nil {
@@ -490,11 +508,16 @@ func (g *AutoTitleGenerator) callAutoTitleLLM(ctx context.Context, apiKey, sessi
 
 	task := g.handler.loadAdminLLMTask(ctx, adminLLMTaskSessionTitle)
 
+	// 2026-08-05: use the pinned cheap model for session_title (see
+	// resolveAutoTitleModel) instead of model="auto" so the V2 decider cannot
+	// select the user's expensive relay for title-gen.
+	model := g.resolveAutoTitleModel(ctx)
+
 	// Make a synthetic HTTP request for the gateway endpoint
 	endpoint := g.getGatewayEndpoint() + "/v1/chat/completions"
-	
+
 	payload := map[string]any{
-		"model": adminLLMModelAuto,
+		"model": model,
 		"messages": []map[string]string{
 			{"role": "system", "content": task.SystemPrompt},
 			{"role": "user", "content": userContent},
@@ -533,7 +556,7 @@ func (g *AutoTitleGenerator) callAutoTitleLLM(ctx context.Context, apiKey, sessi
 	}
 	defer resp.Body.Close()
 
-	resolvedModel := adminLLMModelAuto
+	resolvedModel := model
 	if hdr := strings.TrimSpace(resp.Header.Get("X-Gw-Auto-Decision")); hdr != "" {
 		var wire struct {
 			ChosenModel string `json:"chosen_model"`
@@ -563,7 +586,7 @@ func (g *AutoTitleGenerator) callAutoTitleLLM(ctx context.Context, apiKey, sessi
 	if err := json.Unmarshal(raw, &out); err != nil {
 		return adminLLMChatResult{}, err
 	}
-	if out.Model != "" && out.Model != adminLLMModelAuto {
+	if out.Model != "" && out.Model != model {
 		resolvedModel = out.Model
 	}
 	if len(out.Choices) == 0 {

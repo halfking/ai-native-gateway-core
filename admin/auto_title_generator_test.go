@@ -201,3 +201,33 @@ You are Zoo, a helpful assistant
 		})
 	}
 }
+
+func TestResolveAutoTitleModel(t *testing.T) {
+	t.Setenv("LLM_GATEWAY_ADMIN_LLM_FALLBACK_MODEL", "")
+
+	t.Run("nil handler falls back to auto", func(t *testing.T) {
+		gen := &AutoTitleGenerator{}
+		if got := gen.resolveAutoTitleModel(t.Context()); got != adminLLMModelAuto {
+			t.Fatalf("resolveAutoTitleModel() = %q, want %q", got, adminLLMModelAuto)
+		}
+	})
+
+	t.Run("handler without db pins cheap pool default", func(t *testing.T) {
+		gen := &AutoTitleGenerator{handler: &Handler{}}
+		got := gen.resolveAutoTitleModel(t.Context())
+		if got == adminLLMModelAuto {
+			t.Fatalf("resolveAutoTitleModel() = %q, want pinned cheap model (not auto)", got)
+		}
+		if got != "minimax-m2.7" {
+			t.Fatalf("resolveAutoTitleModel() = %q, want %q", got, "minimax-m2.7")
+		}
+	})
+
+	t.Run("env override wins", func(t *testing.T) {
+		t.Setenv("LLM_GATEWAY_ADMIN_LLM_FALLBACK_MODEL", "deepseek-chat")
+		gen := &AutoTitleGenerator{handler: &Handler{}}
+		if got := gen.resolveAutoTitleModel(t.Context()); got != "deepseek-chat" {
+			t.Fatalf("resolveAutoTitleModel() = %q, want %q", got, "deepseek-chat")
+		}
+	})
+}

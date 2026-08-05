@@ -1146,6 +1146,12 @@ func (h *ChatHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if wt := strings.TrimSpace(r.Header.Get(autoWorkTypeHeader)); wt != "" {
 		logCtx.SetWorkType(wt)
 	}
+	// 2026-08-05: 识别网关内部自动请求（auto title/summary 发起者设置的
+	// X-Gw-Is-Auto）。此前入口侧从未读取此 header，导致 is_auto_request
+	// 在日志里全为 NULL，也无法在标题生成触发点排除自身（链式自触发风险）。
+	if strings.EqualFold(r.Header.Get(autoIsAutoHeader), "true") {
+		logCtx.IsAutoRequest = true
+	}
 
 	// ── 2026-07-17: 请求链路追踪 — 注入 receive_request 事件 ───────────────
 	// 在 requestID 生成后第一时刻记录,便于运维在 trace 视图里看到
@@ -4338,8 +4344,11 @@ func (h *ChatHandler) emitTelemetry(evt audit.Event, result *executors.ExecuteRe
 	// v2.2 (2026-06-22): auto-generate session title after first successful request.
 	// v2.3 (2026-08-05): pass requestBody + requestPreview in-memory; also fixed
 	// GwSessionID being nil on the success-path reqLog (see assignment above).
+	// v2.4 (2026-08-05): exclude gateway-internal auto requests (logCtx.IsAutoRequest,
+	// set from the X-Gw-Is-Auto header or model="auto") so the auto title generator
+	// does not re-trigger on its own title requests (chain self-triggering).
 	// Fire-and-forget async call; never blocks the request path.
-	if h.autoTitleGenerator != nil && reqLog.Success && reqLog.GwSessionID != nil && *reqLog.GwSessionID != "" {
+	if h.autoTitleGenerator != nil && reqLog.Success && reqLog.GwSessionID != nil && *reqLog.GwSessionID != "" && !shouldSkipAutoTitleGeneration(logCtx) {
 		preview := ""
 		if reqLog.RequestPreview != nil {
 			preview = *reqLog.RequestPreview
@@ -4394,6 +4403,16 @@ func (h *ChatHandler) emitTelemetry(evt audit.Event, result *executors.ExecuteRe
 			StreamAborted:              capture.IntegrityBreachReason() == "integrity_repeated_content",
 		})
 	}
+}
+
+// shouldSkipAutoTitleGeneration reports whether auto title generation must be
+// skipped for this request. 2026-08-05: gateway-internal auto requests
+// (logCtx.IsAutoRequest — set from the X-Gw-Is-Auto header or model="auto")
+// are excluded so the auto title generator does not re-trigger on its own
+// loopback title requests (chain self-triggering). A nil logCtx is treated
+// as a normal request (no skip).
+func shouldSkipAutoTitleGeneration(logCtx *RequestLogContext) bool {
+	return logCtx != nil && logCtx.IsAutoRequest
 }
 
 // streamRespModelForIntegrity returns the upstream-returned model
