@@ -84,6 +84,13 @@ STATE_DEFAULTS = {
     "truncated_response": False,     # Response cut off mid-stream
     "slow_header_delay_ms": 0,       # Header send delay
     "invalid_json_response": False,   # Return invalid JSON
+    # 2026-08-06: scripted-content for deterministic LLM responses.
+    # When set (non-empty string), /v1/chat/completions returns this exact
+    # content instead of the default `[group/instance] mock-pong: ...` echo.
+    # Used by S20 (auto-title), S22 (instant summary), S23 (long-text)
+    # to assert on deterministic title/summary text in DB.
+    "scripted_content": "",
+    "scripted_model_override": "",    # optional: override the `model` field in response
 }
 
 STATE: dict = dict(STATE_DEFAULTS)
@@ -332,6 +339,31 @@ async def admin_set_state_full(request):
     return web.json_response({"ok": True, "applied": {k: STATE[k] for k in body.keys() if k in valid_fields}})
 
 
+# 2026-08-06: scripted-response admin endpoint. When `scripted_content` is set
+# (non-empty), chat completions return this content verbatim instead of the
+# default echo. Used by S20/S22/S23 to assert on deterministic LLM text.
+async def admin_set_scripted_response(request):
+    try:
+        body = await request.json()
+    except Exception:
+        return web.json_response({"error": "invalid json"}, status=400)
+    if "content" not in body:
+        return web.json_response({"error": "missing content"}, status=400)
+    if not isinstance(body["content"], str):
+        return web.json_response({"error": "content must be string"}, status=400)
+    STATE["scripted_content"] = body["content"]
+    if "model_override" in body and isinstance(body["model_override"], str):
+        STATE["scripted_model_override"] = body["model_override"]
+    STATE["state_change_at"] = now()
+    return web.json_response({
+        "ok": True,
+        "applied": {
+            "scripted_content": STATE["scripted_content"],
+            "scripted_model_override": STATE["scripted_model_override"],
+        },
+    })
+
+
 # ── Business endpoints ─────────────────────────────────────────────────────
 
 
@@ -459,6 +491,14 @@ async def _do_chat_completions(request):
     reply = f"[{ARGS.group}/{ARGS.instance}] mock-pong: {last_user[:140]}".replace(
         "\n", " "
     )
+
+    # 2026-08-06: scripted-content override (S20/S22/S23 deterministic LLM response).
+    # When set, return the scripted content verbatim. This bypasses the echo
+    # template so callers can assert on exact title/summary text.
+    if STATE.get("scripted_content", ""):
+        reply = STATE["scripted_content"]
+    if STATE.get("scripted_model_override", ""):
+        model = STATE["scripted_model_override"]
 
     if STATE["huge_response"]:
         reply = reply + (" x" * (6 * 1024 * 1024))
@@ -673,6 +713,7 @@ def build_app():
     app.router.add_post("/admin/connlimit", admin_set_connlimit)
     app.router.add_post("/admin/fault-mode", admin_set_fault_mode)
     app.router.add_post("/admin/state-full", admin_set_state_full)
+    app.router.add_post("/admin/scripted-response", admin_set_scripted_response)
     return app
 
 

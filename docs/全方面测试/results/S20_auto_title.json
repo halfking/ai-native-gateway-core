@@ -1,0 +1,19 @@
+{
+  "scenario": "S20_auto_title",
+  "passed": true,
+  "checks": {
+    "20_1_title_triggered": true,
+    "20_2_title_content_valid": true,
+    "20_3_task_id_auto": true,
+    "20_4_idempotent": false,
+    "20_5_manual_endpoint": "skipped_TODO"
+  },
+  "metrics": {
+    "title": "我们今天来讨论数据库迁移方案",
+    "title_length": 14,
+    "model": "auto-extract",
+    "task_id": "auto",
+    "scoped_session_id": "gw_00d2e4c9-2fae-4e46-a408-7e810c1e6b7c",
+    "row_count_after": 2
+  }
+}

@@ -1,0 +1,13 @@
+{
+  "scenario": "S23_long_text_chunked",
+  "status": "PENDING",
+  "reason": "同 S22 — gateway 路由 P2C 冷启动 0 流量, candidates fail",
+  "additional_notes": "真 map-reduce chunked summary 本身未实现 (需新代码: domains/hooks/compression/chunked_summarizer.go + settings/spec_compression.go 加 chunk_size_tokens / chunk_overlap_tokens)",
+  "tests_designed": [
+    "23.1_token_trigger (PENDING)",
+    "23.2_count_trigger (PENDING)",
+    "23.3_cut_marker_incremental (PENDING)",
+    "23.4_cross_protocol (PENDING)",
+    "23.5_map_reduce_chunked (TODO: feature missing)"
+  ]
+}
