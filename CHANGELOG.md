@@ -7,7 +7,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased] - 2026-08-04
 
+### Added
+
+- **会话即时总结增量滚动 + map-reduce 分段 (2026-08-06)**:
+  - **场景**: 用户报告每个会话仅首 turn 生成标题后无任何自动总结；超长会话（>12k chars）单次塞给 LLM 会超出模型上下文。新增与 auto-title 平行的 request-path 自动总结分支
+  - **触发**: handler emitTelemetry 成功路径，紧跟 auto-title 调用。`AutoSummaryGenerator.shouldTriggerSummary` 走**增量滚动闸门**：自 `session_summaries.last_summarized_at` 起 ≥ 3 个新 turn 才重做
+  - **执行模式**:
+    - 语料 ≤ 12k chars → 单次 LLM 调用（同 title 路径的 retry / structured log）
+    - 语料 > 12k chars → map-reduce：按 3000 chars / chunk 切片 → 并发 partial → reduce 合并
+  - **资源保护**:
+    - 每租户 `golang.org/x/time/rate` 令牌桶：6/min（可经 `SetRatePerMinute` 调）
+    - 全局 worker slot 信号量：4 并发（`SetWorkerSlots`）
+    - 链式自触发防护：`X-Gw-Is-Auto: true` → `shouldSkipAutoSummaryGeneration` → 自身不再递归
+  - **分支命名空间 gs_**: 即时总结 loopback 的 `X-Gw-Session-Id` 形如 `gs:<原 session_id>` → `request_logs_hot.gw_session_id` = `gs_gw_xxx`。运维可 SQL `WHERE gw_session_id LIKE 'gs\_%' ESCAPE '\'` 找出所有总结 loopback，`JOIN child.parent_request_id = parent.request_id` 反查父请求
+  - **持久化共享**: 提取 `domains/sessionsummary/summarizer.go::saveSummaryToDB` 到新包 `internal/summarystore` (`Upsert` + `LastSummarized` + `CountNewTurns`)，v2 dispatch worker 与 request-path 自动总结共用同一行结构。`summary_version` 字段单调递增（`COALESCE(...)+1`）
+  - **关联列（request_logs_hot）**: 自动总结 loopback 同样填 `parent_request_id` / `origin_actor` / `is_auto_request` / `work_type`，与标题 loopback 一致
+
+- **会话命名空间三段式前缀 (2026-08-06)**:
+  - **`gw_<uuid>`** — 用户主会话（既有）
+  - **`gt_<原 session_id>`** — auto-title 分支会话（新增；由 `callAutoTitleLLM` 在 loopback 上设 `X-Gw-Session-Id: gt:<原 session_id>`）
+  - **`gs_<原 session_id>`** — auto-summary 分支会话（新增；同上）
+  - **`sanitizeGwSessionHeader`** 扩展为同时接受三种前缀；剥掉 `gt_` / `gs_` 即可恢复父 session_id。运维 SQL：`SUBSTRING(child.gw_session_id FROM 4)` 取父
+  - **测试**: `TestSanitizeGwSessionHeader`（12 子用例：空 / 纯 UUID 拒绝 / 大写 GW 拒绝 / 三前缀接受 / 空白裁剪等）
+
 ### Fixed
+
+- **标题请求父子关联 + 失败可观测 (2026-08-06)**:
+  - **症状**: 用户报告"LLM 好像没收到请求 / 没带上上下文"。`request_logs_hot.parent_request_id` / `origin_actor` 长期为 NULL，运维无法 SQL JOIN 父子请求；corpus 过度截断丢用户真实问题；标题生成 HTTP 失败只 return error，slog 看不到 endpoint/status_code/body_excerpt/retry_count
+  - **根因 A** — `callAutoTitleLLM` 未向 loopback 请求转发父请求 request_id 与调用方 actor；handler 入口也从未读取相关 header
+    - 修复: 标题 LLM 调用新增 `X-Gw-Parent-Request-Id` + `X-Gw-Source-Actor: auto-title-generator` 两个 header；handler 入口补读 → `logCtx.ParentRequestID` / `OriginActor`；新加 `applyParentCorrelationFields` helper 把这两个字段写入 `request_logs_hot.parent_request_id` / `origin_actor`。运维可 `WHERE origin_actor = 'auto-title-generator'` 一键定位全部标题请求，再 `JOIN child.parent_request_id = parent.request_id` 反查父请求
+  - **根因 B** — `extractMessagesForTitle` 截断过度（6 msgs / 500 chars / 3000 total），IDE 长 system prompt + 多轮历史挤掉用户真实问题
+    - 修复: 上限提升到 10/1200/6000；**末条 user message 全文保留**（即使超出 maxTotal）并打上 `<latest user message (preserved)>` 哨兵；长 system 消息加 `<ide-tool-context truncated>` 标记
+  - **根因 C** — 标题生成 HTTP client timeout = 20s、无 retry，slog 日志缺少 endpoint/status_code/body_excerpt/retry_count
+    - 修复: 拆出 `doCallAutoTitleOnce` + `isTransientAutoTitleErr` 辅助；503/504/EOF 等瞬态错误 1 次重试（200ms ± 50ms jitter）；失败 slog.Warn 必含 endpoint / status_code / body_excerpt(≤200) / retries / parent_request_id / model；timeout 20s → 30s
+  - 签名扩展: `MaybeGenerateTitle(sessionID, tenantID, requestBody, requestPreview, parentRequestID string)`
+  - 补全单元测试: `TestExtractMessagesForTitle_LastUserPreserved` / `TestExtractMessagesForTitle_BumpedLimits` / `TestExtractMessagesForTitle_LongSystemTruncated` / `TestCallAutoTitleLLM_EmitsParentHeaders` / `TestCallAutoTitleLLM_RetriesOn503` / `TestCallAutoTitleLLM_NoRetryOn400` / `TestIsTransientAutoTitleErr` / `TestApplyParentCorrelationFields`
+  - 验证: `go build ./...` ✅ / `go vet ./...` ✅ / `go test ./admin/ ./domains/streaming/` 全绿
 
 - **标题生成隔离到低优先级模型池 + 防链式自触发 (2026-08-05)**:
   - **根因 A** — 标题生成 `model:"auto"` 被 V2 decider 选到用户的昂贵 relay（事故窗口 4 次标题请求 3/4 次 claude-opus-5/provider 587/cred 17，其中 1 次卡死 in_progress）

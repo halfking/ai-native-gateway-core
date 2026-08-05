@@ -53,6 +53,20 @@ const autoWorkTypeHeader = "X-Gw-Work-Type"
 // title-gen chaining and to flag it as internal in request metrics.
 const autoIsAutoHeader = "X-Gw-Is-Auto"
 
+// autoParentRequestIDHeader (2026-08-06) carries the parent user request_id
+// for gateway-internal loopback calls (auto title / auto summary). Handler
+// entry reads it into logCtx.ParentRequestID, which flows into
+// request_logs_hot.parent_request_id so operators can SQL JOIN the loopback
+// row back to the parent user request that triggered it.
+const autoParentRequestIDHeader = "X-Gw-Parent-Request-Id"
+
+// autoSourceActorHeader (2026-08-06) names the emitting component for a
+// gateway-internal loopback call (e.g. "auto-title-generator"). Handler
+// entry reads it into logCtx.OriginActor, which flows into
+// request_logs_hot.origin_actor so operators can SQL
+// `WHERE origin_actor = 'auto-title-generator'` to find every auto-title row.
+const autoSourceActorHeader = "X-Gw-Source-Actor"
+
 // autoRequestMagic is the model name that triggers auto-route mode.
 // Chosen to be OpenAI/Anthropic reserved-name-safe: "auto" is not a
 // real model name (yet — Anthropic uses "auto" for tool_choice but

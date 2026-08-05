@@ -56,6 +56,135 @@ func TestShouldSkipAutoTitleGeneration(t *testing.T) {
 	}
 }
 
+// TestApplyParentCorrelationFields (2026-08-06) — guards the flow from
+// logCtx.ParentRequestID / OriginActor into the persisted RequestLogEntry.
+// Without this, request_logs_hot.parent_request_id is always NULL on
+// auto-title loopback rows, so operators cannot SQL JOIN
+// "08aa2a8a → 3a03f7db".
+func TestApplyParentCorrelationFields(t *testing.T) {
+	tests := []struct {
+		name           string
+		logCtx         *RequestLogContext
+		wantParentID   *string
+		wantOriginActor *string
+	}{
+		{
+			name:    "nil logCtx is no-op",
+			logCtx:  nil,
+			wantParentID: nil,
+			wantOriginActor: nil,
+		},
+		{
+			name:           "empty fields → nil entry pointers",
+			logCtx:         &RequestLogContext{},
+			wantParentID:   nil,
+			wantOriginActor: nil,
+		},
+		{
+			name: "both fields populated → both entry pointers filled",
+			logCtx: &RequestLogContext{
+				ParentRequestID: "08aa2a8af42ef05eb87c97973f467519",
+				OriginActor:     "auto-title-generator",
+			},
+			wantParentID:   strPtrLocal("08aa2a8af42ef05eb87c97973f467519"),
+			wantOriginActor: strPtrLocal("auto-title-generator"),
+		},
+		{
+			name: "only parent → origin stays nil",
+			logCtx: &RequestLogContext{
+				ParentRequestID: "p",
+			},
+			wantParentID:   strPtrLocal("p"),
+			wantOriginActor: nil,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			entry := &telemetry.RequestLogEntry{}
+			applyParentCorrelationFields(entry, tc.logCtx)
+			if !ptrEqualString(entry.ParentRequestID, tc.wantParentID) {
+				t.Errorf("ParentRequestID = %v, want %v", entry.ParentRequestID, tc.wantParentID)
+			}
+			if !ptrEqualString(entry.OriginActor, tc.wantOriginActor) {
+				t.Errorf("OriginActor = %v, want %v", entry.OriginActor, tc.wantOriginActor)
+			}
+		})
+	}
+}
+
+func strPtrLocal(s string) *string { return &s }
+
+// ptrEqualString reports whether two *string are both nil or both point to
+// the same string value (Go pointer comparison is fine for *string built by
+// strPtrLocal in this test scope).
+func ptrEqualString(a, b *string) bool {
+	if a == nil || b == nil {
+		return a == nil && b == nil
+	}
+	return *a == *b
+}
+
+// TestSanitizeGwSessionHeader (2026-08-06) — guards the three gateway
+// session-id namespaces:
+//   gw_<uuid>  — user main session (legacy)
+//   gt_<...>   — auto-title branch (admin/auto_title_generator.go)
+//   gs_<...>   — auto-summary branch (admin/auto_summary_generator.go)
+//
+// Strip the prefix to recover the parent user session id:
+//
+//   strings.TrimPrefix("gt_gw_abc", "gt_") == "gw_abc"
+//   strings.TrimPrefix("gs_gw_abc", "gs_") == "gw_abc"
+func TestSanitizeGwSessionHeader(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{name: "empty stays empty", input: "", want: ""},
+		{name: "whitespace stays empty", input: "   ", want: ""},
+		{name: "plain uuid is rejected", input: "abc-123-def", want: ""},
+		{name: "random session-tag-like is rejected", input: "sess_abc", want: ""},
+		{name: "uppercase GW is rejected (case-sensitive)", input: "GW_abc", want: ""},
+		{name: "main gw_ accepted", input: "gw_abc-123", want: "gw_abc-123"},
+		{name: "title branch gt_ accepted", input: "gt_gw_abc-123", want: "gt_gw_abc-123"},
+		{name: "summary branch gs_ accepted", input: "gs_gw_abc-123", want: "gs_gw_abc-123"},
+		{name: "gt_ without trailing chars accepted", input: "gt_x", want: "gt_x"},
+		{name: "gs_ without trailing chars accepted", input: "gs_x", want: "gs_x"},
+		{name: "trailing whitespace trimmed", input: "  gw_abc  ", want: "gw_abc"},
+		{name: "gt_ with whitespace preserved on content", input: "  gt_gw_abc  ", want: "gt_gw_abc"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := sanitizeGwSessionHeader(tc.input); got != tc.want {
+				t.Fatalf("sanitizeGwSessionHeader(%q) = %q, want %q", tc.input, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestShouldSkipAutoSummaryGeneration (2026-08-06) — symmetric to
+// TestShouldSkipAutoTitleGeneration. The summary loopback sets
+// X-Gw-Is-Auto: true so on its own emitTelemetry pass IsAutoRequest is
+// true and the generator skips itself.
+func TestShouldSkipAutoSummaryGeneration(t *testing.T) {
+	tests := []struct {
+		name     string
+		logCtx   *RequestLogContext
+		expected bool
+	}{
+		{name: "nil logCtx treated as normal request", logCtx: nil, expected: false},
+		{name: "normal request not skipped", logCtx: &RequestLogContext{}, expected: false},
+		{name: "auto request skipped", logCtx: &RequestLogContext{IsAutoRequest: true}, expected: true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := shouldSkipAutoSummaryGeneration(tc.logCtx); got != tc.expected {
+				t.Fatalf("shouldSkipAutoSummaryGeneration() = %v, want %v", got, tc.expected)
+			}
+		})
+	}
+}
+
 func TestDetectUpstreamContextLoss(t *testing.T) {
 	tests := []struct {
 		name            string

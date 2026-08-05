@@ -58,7 +58,9 @@ func shouldHeuristicCompact(status int, kind errorsx.ErrorKind, bodyLen int, con
 	case 401, 402, 403, 429:
 		return false
 	}
-	if kind == errorsx.KindConcurrent || kind == errorsx.KindModelNotFound {
+	if kind == errorsx.KindConcurrent ||
+		kind == errorsx.KindModelNotFound ||
+		kind == errorsx.KindModelDeprecated {
 		return false
 	}
 	// 413 Request Entity Too Large is a strong signal of context length issue.

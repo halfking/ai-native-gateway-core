@@ -169,12 +169,14 @@ upgrade="$DB_DIR/03-current-upgrade.sql"
 )
 
 python3 - <<PY >"$DB_DIR/MANIFEST.json"
-import json, os, pathlib
+import hashlib, json, pathlib
 root = pathlib.Path("$DB_DIR")
+names = ["00-prereqs.sql", "01-schema.sql", "02-seed.sql", "03-current-upgrade.sql", "SHA256SUMS"]
 items = []
-for name in ["00-prereqs.sql", "01-schema.sql", "02-seed.sql", "03-current-upgrade.sql", "SHA256SUMS"]:
+for name in names:
     p = root / name
-    items.append({"name": name, "size_bytes": p.stat().st_size})
+    digest = hashlib.sha256(p.read_bytes()).hexdigest()
+    items.append({"name": name, "size_bytes": p.stat().st_size, "sha256": digest})
 print(json.dumps({
     "app": "llm-gateway-go",
     "version": "v${VERSION}",
@@ -183,6 +185,12 @@ print(json.dumps({
     "files": items,
 }, ensure_ascii=False, indent=2))
 PY
+
+# The manifest itself is intentionally outside SHA256SUMS to avoid a circular
+# checksum. The verifier checks both independently and requires this file.
+if [[ -f "$ROOT/../ai-native-maintain/scripts/lib/verify-db-release-bundle.py" ]]; then
+  python3 "$ROOT/../ai-native-maintain/scripts/lib/verify-db-release-bundle.py" "$DB_DIR" "${VERSION}"
+fi
 
 echo "[db] release database bundle: $DB_DIR"
 ls -la "$DB_DIR"
