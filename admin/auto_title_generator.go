@@ -111,10 +111,11 @@ func (g *AutoTitleGenerator) checkSessionHasTitle(ctx context.Context, sessionID
 }
 
 // countSessionRequests counts successful requests for a session.
+// Uses request_logs_with_current_month to include the hot partition.
 func (g *AutoTitleGenerator) countSessionRequests(ctx context.Context, sessionID, tenantID string) (int, error) {
 	var count int
 	err := g.handler.db.QueryRow(ctx, `
-		SELECT COUNT(*) FROM request_logs
+		SELECT COUNT(*) FROM request_logs_with_current_month
 		WHERE gw_session_id = $1 
 		  AND tenant_id = $2 
 		  AND success = true
@@ -370,6 +371,7 @@ func (g *AutoTitleGenerator) saveSessionTitle(ctx context.Context, sessionID, ti
 }
 
 // loadSessionLogsForTitle loads session request logs for title generation (first 5 turns).
+// Uses request_logs_with_current_month view to include the hot partition.
 func (g *AutoTitleGenerator) loadSessionLogsForTitle(ctx context.Context, sessionID, tenantID string) ([]sessionLogForSummary, error) {
 	if g.handler == nil || g.handler.db == nil {
 		return nil, fmt.Errorf("database not configured")
@@ -381,8 +383,8 @@ func (g *AutoTitleGenerator) loadSessionLogsForTitle(ctx context.Context, sessio
 		       COALESCE(rb.response_body::text, rl.response_body::text) AS response_body,
 		       `+requestLogStatusExpr+` AS request_status,
 		       rl.error_kind, rl.client_model
-		FROM request_logs rl
-		LEFT JOIN request_logs_bodies rb ON rb.request_id = rl.request_id
+		FROM request_logs_with_current_month rl
+		LEFT JOIN request_logs_bodies_with_current_month rb ON rb.request_id = rl.request_id
 		WHERE rl.gw_session_id = $1 AND rl.tenant_id = $2
 		ORDER BY rl.ts ASC
 		LIMIT 5
@@ -443,6 +445,11 @@ func (g *AutoTitleGenerator) callAutoTitleLLM(ctx context.Context, apiKey, sessi
 	req.Header.Set("X-Gw-Task-Hint", task.TaskHint)
 	req.Header.Set("X-Gw-Work-Type", task.Key)
 	req.Header.Set("X-Gw-Task-Id", sessionID)
+	// 2026-08-05: pass session ID so the title LLM call is linked to the same
+	// gateway session as the original user request (not orphaned in a new session).
+	req.Header.Set("X-Gw-Session-Id", sessionID)
+	// Mark as auto/internal request so it's excluded from user-visible billing.
+	req.Header.Set("X-Gw-Is-Auto", "true")
 	if task.DeviceSeed != "" {
 		req.Header.Set("X-Device-Seed", task.DeviceSeed)
 	}
