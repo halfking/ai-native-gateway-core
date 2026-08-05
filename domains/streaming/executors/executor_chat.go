@@ -656,7 +656,7 @@ func (e *Executor) executeOpenAI(
 				_, _ = io.Copy(io.Discard, resp.Body)
 				errKind := errorsx.ClassifyErrorWithBody(resp.StatusCode, body[:n])
 
-				if bodyKind := errorsx.ClassifyResponseBody(resp.StatusCode, body[:n]); bodyKind == errorsx.KindModelNotFound {
+				if bodyKind := errorsx.ClassifyResponseBody(resp.StatusCode, body[:n]); bodyKind == errorsx.KindModelNotFound || bodyKind == errorsx.KindModelDeprecated {
 					// Internal retry for model_not_found (2026-06-20):
 					// When upstream returns model_not_found, it may be transient instability
 					// rather than a permanent model removal. We retry once on the same
@@ -698,29 +698,32 @@ func (e *Executor) executeOpenAI(
 							rawModel:     cand.RawModel,
 							body:         string(body[:n]),
 							status:       resp.StatusCode,
+							kind:         bodyKind,
 						}}
 					}
 
-					// Step 4 (2026-06-18): removed the "if upstreamLatency > 10s
-					// reclassify as transient" branch. A slow 404 is still a 404;
-					// re-routing it as a retryable transient just makes the same
-					// credential re-dialed, wasting RTT and hiding the real cause
-					// from the caller. The classifier now requires a matching 4xx
-					// status (P5) and a tightened regex, so this branch is the
-					// canonical model_not_found path.
-					slog.Info("model_not_found skip offer (after retry)",
-						"credential_id", cand.CredentialID,
-						"model", cand.RawModel,
-						"status", resp.StatusCode,
-						"upstream_latency_ms", upstreamLatency.Milliseconds(),
-						"body_preview", string(body[:min(n, 120)]),
-					)
-					return nil, &modelNotFoundError{
-						credentialID: cand.CredentialID,
-						rawModel:     cand.RawModel,
-						body:         string(body[:n]),
-						status:       resp.StatusCode,
-					}
+				// Step 4 (2026-06-18): removed the "if upstreamLatency > 10s
+				// reclassify as transient" branch. A slow 404 is still a 404;
+				// re-routing it as a retryable transient just makes the same
+				// credential re-dialed, wasting RTT and hiding the real cause
+				// from the caller. The classifier now requires a matching 4xx
+				// status (P5) and a tightened regex, so this branch is the
+				// canonical model_not_found path.
+				slog.Info("model_not_found skip offer (after retry)",
+					"credential_id", cand.CredentialID,
+					"model", cand.RawModel,
+					"status", resp.StatusCode,
+					"kind", bodyKind,
+					"upstream_latency_ms", upstreamLatency.Milliseconds(),
+					"body_preview", string(body[:min(n, 120)]),
+				)
+				return nil, &modelNotFoundError{
+					credentialID: cand.CredentialID,
+					rawModel:     cand.RawModel,
+					body:         string(body[:n]),
+					status:       resp.StatusCode,
+					kind:         bodyKind,
+				}
 				}
 
 				if resp.StatusCode >= 400 && resp.StatusCode < 500 &&
