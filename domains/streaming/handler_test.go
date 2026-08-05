@@ -2,6 +2,7 @@ package streaming
 
 import (
 	"net/http"
+	"strings"
 	"testing"
 
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/observability/telemetry"
@@ -157,6 +158,150 @@ func TestSanitizeGwSessionHeader(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			if got := sanitizeGwSessionHeader(tc.input); got != tc.want {
 				t.Fatalf("sanitizeGwSessionHeader(%q) = %q, want %q", tc.input, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestResolveEndUser (2026-08-06) — guards the end-user resolver that
+// closes the "no user info at all" gap (dc767386f... incident). The
+// priority chain must be:
+//
+//	1. bodyUser argument (already-parsed typed request body)
+//	2. X-End-User-Id header
+//	3. bodyBytes sniff for "user":"..."
+//	4. r.Body sniff (fallback when body not yet drained)
+//	5. "anonymous"
+func TestResolveEndUser(t *testing.T) {
+	mkReq := func(body string, header string) *http.Request {
+		r, _ := http.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(body))
+		if header != "" {
+			r.Header.Set("X-End-User-Id", header)
+		}
+		return r
+	}
+	tests := []struct {
+		name     string
+		bodyUser string
+		req      *http.Request
+		body     []byte
+		want     string
+	}{
+		{
+			name:     "bodyUser wins over header",
+			bodyUser: "alice@corp.com",
+			req:      mkReq(`{"user":"bob"}`, "carol"),
+			want:     "alice@corp.com",
+		},
+		{
+			name:     "X-End-User-Id header wins when bodyUser empty",
+			bodyUser: "",
+			req:      mkReq(`{"user":"bob"}`, "carol@corp.com"),
+			want:     "carol@corp.com",
+		},
+		{
+			name:     "body sniff wins when header absent",
+			bodyUser: "",
+			req:      mkReq(`{"user":"dave@corp.com"}`, ""),
+			want:     "dave@corp.com",
+		},
+		{
+			name:     "anonymous fallback when nothing available",
+			bodyUser: "",
+			req:      mkReq(`{"model":"gpt-4o"}`, ""),
+			want:     "anonymous",
+		},
+		{
+			name:     "header whitespace trimmed",
+			bodyUser: "",
+			req:      mkReq("", "  eve@corp.com  "),
+			want:     "eve@corp.com",
+		},
+		{
+			name:     "bodyBytes arg beats r.Body when header empty",
+			bodyUser: "",
+			req:      mkReq(`{"user":"from-r-body"}`, ""),
+			body:     []byte(`{"user":"from-bodyBytes"}`),
+			want:     "from-bodyBytes",
+		},
+		{
+			name:     "nil request returns anonymous",
+			bodyUser: "",
+			req:      nil,
+			want:     "anonymous",
+		},
+{
+			name:     "loose scan — body with malformed JSON but user field present",
+			bodyUser: "",
+			req:      mkReq(`{"model":"gpt-4o","user":"trun"`, ""),
+			want:     "trun",
+		},
+		{
+			name:     "body with non-string user field falls through to anonymous",
+			bodyUser: "",
+			req:      mkReq(`{"user":12345}`, ""),
+			want:     "anonymous",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			var got string
+			if tc.body != nil {
+				got = resolveEndUser(tc.bodyUser, tc.req, tc.body)
+			} else {
+				got = resolveEndUser(tc.bodyUser, tc.req)
+			}
+			if got != tc.want {
+				t.Fatalf("resolveEndUser() = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestExtractEndUserFromBody (2026-08-06) — unit-tests the JSON body
+// sniffer used by the failure-path buildEntry to recover end-user
+// identity from the captured body.
+func TestExtractEndUserFromBody(t *testing.T) {
+	tests := []struct {
+		name string
+		body string
+		want string
+	}{
+		{
+			name: "empty body",
+			body: "",
+			want: "",
+		},
+		{
+			name: "valid JSON with user",
+			body: `{"model":"gpt-4o","user":"alice@corp.com"}`,
+			want: "alice@corp.com",
+		},
+		{
+			name: "no user field",
+			body: `{"model":"gpt-4o"}`,
+			want: "",
+		},
+		{
+			name: "loose scan — body with malformed JSON but user field present",
+			body: `{"model":"gpt-4o","user":"trun"`,
+			want: "trun",
+		},
+		{
+			name: "loose scan — no closing quote returns empty",
+			body: `{"user":abc`,
+			want: "",
+		},
+		{
+			name: "non-string user falls through to empty",
+			body: `{"user":12345}`,
+			want: "",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := extractEndUserFromBody([]byte(tc.body)); got != tc.want {
+				t.Fatalf("extractEndUserFromBody(%q) = %q, want %q", tc.body, got, tc.want)
 			}
 		})
 	}
