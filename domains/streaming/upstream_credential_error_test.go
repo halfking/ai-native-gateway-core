@@ -96,6 +96,7 @@ func TestClassifyUpstreamCredentialFailure_NegativeCases(t *testing.T) {
 		errorsx.KindQuotaPeriodic,
 		errorsx.KindQuotaBalance,
 		errorsx.KindModelNotFound,
+		errorsx.KindModelDeprecated,
 		errorsx.KindStreamTimeout,
 		errorsx.KindToolCallIdMismatch,
 		errorsx.KindContextLength,

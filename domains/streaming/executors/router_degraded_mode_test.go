@@ -235,6 +235,7 @@ func TestIsTransientUnavailableReason(t *testing.T) {
 		{"state:" + string(errorsx.KindAuth), false},
 		{"state:" + string(errorsx.KindAuthRevoked), false},
 		{"state:" + string(errorsx.KindModelNotFound), false},
+		{"state:" + string(errorsx.KindModelDeprecated), false},
 		{"state:" + string(errorsx.KindQuotaPermanent), false},
 
 		// 永久原因
@@ -337,6 +338,7 @@ func TestTryDegradedMode_StateManagerTransient(t *testing.T) {
 		{"state:auth 不降级", errorsx.KindAuth, 0},
 		{"state:auth_revoked 不降级", errorsx.KindAuthRevoked, 0},
 		{"state:model_not_found 不降级", errorsx.KindModelNotFound, 0},
+		{"state:model_deprecated 不降级", errorsx.KindModelDeprecated, 0},
 		{"state:quota_permanent 不降级", errorsx.KindQuotaPermanent, 0},
 	}
 
@@ -452,6 +454,7 @@ func TestFreeCredentialsTolerateTransient(t *testing.T) {
 		// 免费 + 永久 → 不容忍（仍硬剔，坏 key 不拖垮路由）
 		{"free+auth", "free", errorsx.KindAuth, false},
 		{"free+model_not_found", "free", errorsx.KindModelNotFound, false},
+		{"free+model_deprecated", "free", errorsx.KindModelDeprecated, false},
 		{"free+quota_permanent", "free", errorsx.KindQuotaPermanent, false},
 		// 付费 → 永远 false（走原硬剔路径）
 		{"paid+timeout", "", errorsx.KindTimeout, false},

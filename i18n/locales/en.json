@@ -38,6 +38,9 @@
   "invalid_model": {
     "other": "Model '{{.Model}}' is not supported by this gateway"
   },
+  "model_deprecated": {
+    "other": "The requested model has been permanently removed (end-of-life) by the upstream provider."
+  },
   "meta_tool_error": {
     "other": "Meta-tool processing failed"
   },

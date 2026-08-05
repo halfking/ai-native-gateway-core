@@ -110,6 +110,7 @@ func TestForceUnpinOnFatalKind_BlipKindsKeepsPin(t *testing.T) {
 		errorsx.KindRateLimit,
 		errorsx.KindContextLength,
 		errorsx.KindModelNotFound,
+		errorsx.KindModelDeprecated,
 		errorsx.KindCanceled,
 	}
 	for _, kind := range nonFatalKinds {
