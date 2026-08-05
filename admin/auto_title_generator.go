@@ -108,21 +108,30 @@ func (g *AutoTitleGenerator) checkSessionHasTitle(ctx context.Context, sessionID
 // Returns (title, model, apiKeyID, error). On fallback-extract paths model is
 // "auto-extract" and apiKeyID is 0.
 func (g *AutoTitleGenerator) generateTitleFromFirstRequest(ctx context.Context, sessionID, tenantID, requestBody, requestPreview string) (string, string, int, error) {
+	logger := slog.With("component", "auto_title_generator", "session_id", sessionID)
+
 	// Step 1: Build corpus — prefer full request body (has real user message),
 	// fall back to 320-byte preview, then best-effort DB logs.
 	corpus := ""
+	corpusSource := ""
 
 	// Try extracting a clean conversation summary from the full request body.
 	// This gives us the actual user message (not truncated to 320 bytes).
 	if requestBody != "" {
 		if extracted := extractMessagesForTitle(requestBody); extracted != "" {
 			corpus = extracted
+			corpusSource = "request_body"
+		} else {
+			logger.Debug("extractMessagesForTitle returned empty from request body",
+				"body_len", len(requestBody),
+				"body_head", truncateForLog(requestBody, 200))
 		}
 	}
 
 	// Fall back to the 320-byte preview if full body extraction yielded nothing.
 	if corpus == "" && requestPreview != "" {
 		corpus = requestPreview
+		corpusSource = "request_preview"
 	}
 
 	// Step 2: Only query DB logs if we don't already have a corpus from the
@@ -133,9 +142,17 @@ func (g *AutoTitleGenerator) generateTitleFromFirstRequest(ctx context.Context, 
 			dbCorpus := buildSummaryCorpus(logs)
 			if len(strings.TrimSpace(dbCorpus)) > len(strings.TrimSpace(corpus)) {
 				corpus = dbCorpus
+				corpusSource = "db_logs"
 			}
 		}
 	}
+
+	logger.Info("auto_title: corpus built",
+		"source", corpusSource,
+		"corpus_len", len(corpus),
+		"body_len", len(requestBody),
+		"preview_len", len(requestPreview),
+		"corpus_head", truncateForLog(corpus, 150))
 
 	if len(strings.TrimSpace(corpus)) < 10 {
 		// Fallback to simple extraction from preview
@@ -191,6 +208,17 @@ func (g *AutoTitleGenerator) generateTitleFromFirstRequest(ctx context.Context, 
 	}
 
 	return title, llmRes.ResolvedModel, keyID, nil
+}
+
+// truncateForLog returns a shortened, log-safe preview of s (replaces newlines).
+func truncateForLog(s string, max int) string {
+	s = strings.ReplaceAll(s, "\n", " ")
+	s = strings.ReplaceAll(s, "\r", " ")
+	s = strings.Join(strings.Fields(s), " ")
+	if len(s) > max {
+		return s[:max] + "…"
+	}
+	return s
 }
 
 // extractMessagesForTitle parses a chat completion request body (JSON) and
@@ -538,12 +566,16 @@ func (g *AutoTitleGenerator) callAutoTitleLLM(ctx context.Context, apiKey, sessi
 	req.Header.Set("X-Gw-Auto-Profile", task.DefaultProfile)
 	req.Header.Set("X-Gw-Task-Hint", task.TaskHint)
 	req.Header.Set("X-Gw-Work-Type", task.Key)
-	req.Header.Set("X-Gw-Task-Id", sessionID)
-	// 2026-08-05: intentionally NOT setting X-Gw-Session-Id so the title LLM
-	// call gets its own isolated gw_session_id and does NOT appear in the
-	// user's conversation history. The X-Gw-Task-Id links it to the session
-	// for billing/analytics without polluting the conversation context.
-	// Mark as internal auto-request so it's excluded from user-visible metrics.
+	// 2026-08-06: the title LLM call must be fully isolated from the user's
+	// session — neither X-Gw-Session-Id NOR X-Gw-Task-Id should reference the
+	// original session. Previously we passed the original sessionID as
+	// X-Gw-Task-Id, which caused dashboard/session aggregation to merge the
+	// title request into the user's session (the "conflict" symptom). Now we
+	// use a namespaced task ID so the request is self-contained and traceable
+	// back to the origin session only via this explicit prefix.
+	req.Header.Set("X-Gw-Task-Id", "auto-title:"+sessionID)
+	// Mark as internal auto-request so it's excluded from user-visible
+	// metrics and from re-triggering auto title generation (chain prevention).
 	req.Header.Set("X-Gw-Is-Auto", "true")
 	if task.DeviceSeed != "" {
 		req.Header.Set("X-Device-Seed", task.DeviceSeed)

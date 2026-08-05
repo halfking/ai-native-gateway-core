@@ -58,6 +58,14 @@ func PersistHook(writer V2Writer) func(entry *telemetry.RequestLogEntry) {
 			return
 		}
 
+		// 2026-08-06: skip gateway-internal auto requests (auto title/summary
+		// loopback calls marked via X-Gw-Is-Auto). These are ephemeral and must
+		// not be mirrored into the session V2 tables — doing so pollutes the
+		// session's turn history with title-generation traffic.
+		if entry.IsAutoRequest != nil && *entry.IsAutoRequest {
+			return
+		}
+
 		// Check feature flags via the shadowWriteEnabled seam (defaults to
 		// the settings-backed reader; tests override it because
 		// settings.Global is nil in the unit-test binary).
