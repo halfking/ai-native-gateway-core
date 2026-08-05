@@ -89,7 +89,11 @@ class Stats:
     async def record(self, status: int, kind: str, dur_ms: float):
         async with self.lock:
             self.total += 1
-            if 200 <= status < 300:
+            # 2026-08-05 fix: 区分 200 OK vs 2xx 范围。
+            # 之前 `200 <= status < 300` 把 202 Accepted (async_pending continuation) 也算 succ，
+            # 导致 S13_no_candidate 等故障注入场景看起来有 ~3.5% 泄漏。
+            # 真实 succ 应仅算 200 OK；2xx 的 202/204 等是控制响应。
+            if status == 200:
                 self.succ += 1
             else:
                 self.fail_by_status[status] += 1

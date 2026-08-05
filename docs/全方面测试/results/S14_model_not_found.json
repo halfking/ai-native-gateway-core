@@ -1,6 +1,6 @@
 {
   "scenario": "S14_model_not_found",
-  "gateway": "http://127.0.0.1:8781",
+  "gateway": "http://127.0.0.1:8793",
   "models": [
     "loadtest-nonexistent-xyz"
   ],
@@ -11,22 +11,25 @@
   "sticky_ratio": 0.0,
   "stream_ratio": 0.0,
   "fault_inject_cancel": 0.0,
+  "compression": null,
+  "no_cache": false,
+  "protocol": null,
   "metrics": {
-    "total": 870,
+    "total": 840,
     "succ": 0,
-    "fail": 870,
+    "fail": 840,
     "success_rate": 0.0,
-    "p50_ms": 9.906708961352706,
-    "p95_ms": 21.01412496995181,
-    "p99_ms": 206.57000003848225,
-    "max_ms": 213.09833403211087,
-    "throughput_rps": 26.354865550628777,
-    "elapsed_sec": 33.01098229200579,
+    "p50_ms": 19.700707984156907,
+    "p95_ms": 31.89537499565631,
+    "p99_ms": 302.34141694381833,
+    "max_ms": 304.6735409880057,
+    "throughput_rps": 25.447004112236076,
+    "elapsed_sec": 33.00977970904205,
     "fail_by_status": {
-      "400": 870
+      "400": 840
     },
     "fail_by_kind": {
-      "invalid_request_error": 870
+      "invalid_request_error": 840
     }
   }
 }

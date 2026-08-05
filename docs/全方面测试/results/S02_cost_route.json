@@ -1,6 +1,6 @@
 {
   "scenario": "S02_cost_route",
-  "gateway": "http://127.0.0.1:8781",
+  "gateway": "http://127.0.0.1:8793",
   "models": [
     "loadtest-mini-alpha",
     "loadtest-mini-beta",
@@ -19,17 +19,20 @@
   "sticky_ratio": 0.0,
   "stream_ratio": 0.0,
   "fault_inject_cancel": 0.0,
+  "compression": null,
+  "no_cache": false,
+  "protocol": null,
   "metrics": {
-    "total": 836,
-    "succ": 836,
+    "total": 791,
+    "succ": 791,
     "fail": 0,
     "success_rate": 1.0,
-    "p50_ms": 22.855916991829872,
-    "p95_ms": 35.298542003147304,
-    "p99_ms": 268.4866249328479,
-    "max_ms": 315.3992498992011,
-    "throughput_rps": 25.327376443338885,
-    "elapsed_sec": 33.00776145805139,
+    "p50_ms": 32.29687490966171,
+    "p95_ms": 74.79179196525365,
+    "p99_ms": 348.66620891261846,
+    "max_ms": 390.33516601193696,
+    "throughput_rps": 23.96516728077277,
+    "elapsed_sec": 33.006237374967895,
     "fail_by_status": {},
     "fail_by_kind": {}
   }

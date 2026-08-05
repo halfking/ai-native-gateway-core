@@ -1,6 +1,6 @@
 {
   "scenario": "S11_quota_recovery",
-  "gateway": "http://127.0.0.1:8781",
+  "gateway": "http://127.0.0.1:8793",
   "models": [
     "loadtest-mini-alpha",
     "loadtest-standard-alpha",
@@ -13,23 +13,21 @@
   "sticky_ratio": 0.0,
   "stream_ratio": 0.0,
   "fault_inject_cancel": 0.0,
+  "compression": null,
+  "no_cache": false,
+  "protocol": null,
   "metrics": {
-    "total": 2737,
-    "succ": 2720,
-    "fail": 17,
-    "success_rate": 0.9937888198757764,
-    "p50_ms": 14.566874946467578,
-    "p95_ms": 43.30658307299018,
-    "p99_ms": 165.49929196480662,
-    "max_ms": 326.6078330343589,
-    "throughput_rps": 152.01057520421963,
-    "elapsed_sec": 18.005326249985956,
-    "fail_by_status": {
-      "503": 9,
-      "500": 8
-    },
-    "fail_by_kind": {
-      "server_error": 17
-    }
+    "total": 2026,
+    "succ": 2026,
+    "fail": 0,
+    "success_rate": 1.0,
+    "p50_ms": 81.02679194416851,
+    "p95_ms": 222.30895794928074,
+    "p99_ms": 392.7515840623528,
+    "max_ms": 551.3318330049515,
+    "throughput_rps": 112.51709580597759,
+    "elapsed_sec": 18.00615262496285,
+    "fail_by_status": {},
+    "fail_by_kind": {}
   }
 }
