@@ -30,17 +30,20 @@ func NewAutoTitleGenerator(handler *Handler) *AutoTitleGenerator {
 
 // MaybeGenerateTitle checks if a session needs a title and generates one.
 // Called asynchronously after the first request in a session completes.
+// requestPreview is the in-memory preview from the just-completed request —
+// passing it here avoids a DB timing race (the request may not yet be written
+// to request_logs when the goroutine wakes up).
 // This function is fire-and-forget and will not block the main request path.
-func (g *AutoTitleGenerator) MaybeGenerateTitle(sessionID, tenantID string) {
+func (g *AutoTitleGenerator) MaybeGenerateTitle(sessionID, tenantID, requestPreview string) {
 	if !g.enabled || g.handler == nil || g.handler.db == nil {
 		return
 	}
 
 	// Run in a separate goroutine to avoid blocking
-	go g.generateTitleAsync(sessionID, tenantID)
+	go g.generateTitleAsync(sessionID, tenantID, requestPreview)
 }
 
-func (g *AutoTitleGenerator) generateTitleAsync(sessionID, tenantID string) {
+func (g *AutoTitleGenerator) generateTitleAsync(sessionID, tenantID, requestPreview string) {
 	// Use background context with timeout (not tied to the request context)
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
@@ -63,28 +66,18 @@ func (g *AutoTitleGenerator) generateTitleAsync(sessionID, tenantID string) {
 		return
 	}
 
-	// Step 2: Wait for stream to complete (avoid generating title mid-stream)
-	time.Sleep(3 * time.Second)
-
-	// Step 3: Check if session has enough requests (at least 1 successful)
-	count, err := g.countSessionRequests(ctx, sessionID, tenantID)
-	if err != nil {
-		logger.Warn("failed to count session requests", "error", err)
-		return
-	}
-	if count < 1 {
-		logger.Debug("session has no successful requests yet", "count", count)
-		return
-	}
-
-	// Step 4: Generate title from first request
-	title, err := g.generateTitleFromFirstRequest(ctx, sessionID, tenantID)
+	// Step 2: Generate title.
+	// 2026-08-05: pass requestPreview in-memory to avoid a DB timing race —
+	// the row may not yet be flushed to request_logs when we wake up here.
+	// generateTitleFromFirstRequest will use the in-memory preview first, then
+	// fall back to DB logs if it needs more context.
+	title, err := g.generateTitleFromFirstRequest(ctx, sessionID, tenantID, requestPreview)
 	if err != nil {
 		logger.Warn("failed to generate title from first request", "error", err)
 		return
 	}
 
-	// Step 5: Save title to database (with conflict handling)
+	// Step 3: Save title to database (with conflict handling)
 	if err := g.saveSessionTitle(ctx, sessionID, title); err != nil {
 		// Check if it's a duplicate key error (another goroutine already saved)
 		if strings.Contains(err.Error(), "duplicate key") || strings.Contains(err.Error(), "unique constraint") {
@@ -124,37 +117,41 @@ func (g *AutoTitleGenerator) countSessionRequests(ctx context.Context, sessionID
 }
 
 // generateTitleFromFirstRequest loads session logs and generates a title using LLM.
-// v2 (2026-08-05): Call LLM with full conversation context for better titles.
-func (g *AutoTitleGenerator) generateTitleFromFirstRequest(ctx context.Context, sessionID, tenantID string) (string, error) {
-	// Load session logs (up to first few turns for quick title generation)
-	logs, err := g.loadSessionLogsForTitle(ctx, sessionID, tenantID)
-	if err != nil {
-		return "", fmt.Errorf("failed to load session logs: %w", err)
-	}
-	if len(logs) < 1 {
-		return "", fmt.Errorf("no session logs found")
+// v3 (2026-08-05): Accept in-memory requestPreview to fix DB timing race.
+// The requestPreview is the preview from the just-completed request passed
+// directly from the streaming handler — it's available before the DB write.
+func (g *AutoTitleGenerator) generateTitleFromFirstRequest(ctx context.Context, sessionID, tenantID, requestPreview string) (string, error) {
+	// Step 1: Try to build corpus from in-memory preview first (avoids DB timing race)
+	corpus := ""
+	if requestPreview != "" {
+		corpus = requestPreview
 	}
 
-	// Build corpus from logs
-	corpus := buildSummaryCorpus(logs)
+	// Step 2: Try to supplement/replace with full DB logs (best-effort, may be empty if write hasn't flushed yet)
+	if logs, err := g.loadSessionLogsForTitle(ctx, sessionID, tenantID); err == nil && len(logs) > 0 {
+		dbCorpus := buildSummaryCorpus(logs)
+		if len(strings.TrimSpace(dbCorpus)) > len(strings.TrimSpace(corpus)) {
+			corpus = dbCorpus // prefer richer DB corpus when available
+		}
+	}
+
 	if len(strings.TrimSpace(corpus)) < 40 {
-		// Fallback to simple extraction if corpus is too short
-		if logs[0].RequestPreview != nil {
-			title := g.extractTitleFromPreview(*logs[0].RequestPreview)
+		// Fallback to simple extraction from in-memory preview
+		if requestPreview != "" {
+			title := g.extractTitleFromPreview(requestPreview)
 			if title != "" {
 				return title, nil
 			}
 		}
-		return "", fmt.Errorf("corpus too short for title generation")
+		return "", fmt.Errorf("corpus too short for title generation (preview_len=%d)", len(requestPreview))
 	}
 
 	// Get API key for LLM call
 	keyID, apiKey, err := g.handler.pickFirstAvailableAPIKeyForAuto(ctx, tenantID)
 	if err != nil {
-		// Fallback to simple extraction if no API key available
-		if logs[0].RequestPreview != nil {
-			title := g.extractTitleFromPreview(*logs[0].RequestPreview)
-			if title != "" {
+		// Fallback: simple extraction from in-memory preview
+		if requestPreview != "" {
+			if title := g.extractTitleFromPreview(requestPreview); title != "" {
 				return title, nil
 			}
 		}
@@ -168,13 +165,13 @@ func (g *AutoTitleGenerator) generateTitleFromFirstRequest(ctx context.Context, 
 	}
 	userContent := fmt.Sprintf("以下会话共约 %d 条记录（语料已清洗）。请阅读全部内容后生成标题：\n%s", turnHint, corpus)
 
-	// Use a background HTTP request context (not tied to the original request)
+	// Title LLM call runs in an isolated context (no X-Gw-Session-Id so it
+	// gets its own gw_session_id and does NOT pollute the user's conversation).
 	llmRes, err := g.callAutoTitleLLM(ctx, apiKey, sessionID, userContent)
 	if err != nil {
-		// Fallback to simple extraction on LLM failure
-		if logs[0].RequestPreview != nil {
-			title := g.extractTitleFromPreview(*logs[0].RequestPreview)
-			if title != "" {
+		// Fallback: simple extraction from in-memory preview
+		if requestPreview != "" {
+			if title := g.extractTitleFromPreview(requestPreview); title != "" {
 				return title, nil
 			}
 		}
@@ -183,14 +180,13 @@ func (g *AutoTitleGenerator) generateTitleFromFirstRequest(ctx context.Context, 
 
 	title := normalizeSessionTitle(llmRes.Content)
 	if !isValidSessionTitle(title) {
-		// Fallback to simple extraction if LLM result is invalid
-		if logs[0].RequestPreview != nil {
-			fallbackTitle := g.extractTitleFromPreview(*logs[0].RequestPreview)
-			if fallbackTitle != "" {
-				return fallbackTitle, nil
+		// Fallback: simple extraction from in-memory preview
+		if requestPreview != "" {
+			if fallback := g.extractTitleFromPreview(requestPreview); fallback != "" {
+				return fallback, nil
 			}
 		}
-		return "", fmt.Errorf("LLM generated invalid title")
+		return "", fmt.Errorf("LLM generated invalid title: %q", llmRes.Content)
 	}
 
 	// Update the stored title with model info
@@ -445,10 +441,11 @@ func (g *AutoTitleGenerator) callAutoTitleLLM(ctx context.Context, apiKey, sessi
 	req.Header.Set("X-Gw-Task-Hint", task.TaskHint)
 	req.Header.Set("X-Gw-Work-Type", task.Key)
 	req.Header.Set("X-Gw-Task-Id", sessionID)
-	// 2026-08-05: pass session ID so the title LLM call is linked to the same
-	// gateway session as the original user request (not orphaned in a new session).
-	req.Header.Set("X-Gw-Session-Id", sessionID)
-	// Mark as auto/internal request so it's excluded from user-visible billing.
+	// 2026-08-05: intentionally NOT setting X-Gw-Session-Id so the title LLM
+	// call gets its own isolated gw_session_id and does NOT appear in the
+	// user's conversation history. The X-Gw-Task-Id links it to the session
+	// for billing/analytics without polluting the conversation context.
+	// Mark as internal auto-request so it's excluded from user-visible metrics.
 	req.Header.Set("X-Gw-Is-Auto", "true")
 	if task.DeviceSeed != "" {
 		req.Header.Set("X-Device-Seed", task.DeviceSeed)
