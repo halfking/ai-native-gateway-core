@@ -181,6 +181,40 @@ func TestNoopRecorder_ShadowWriteNoCrash(t *testing.T) {
 	})
 }
 
+// TestNoopRecorder_StreamSynthesizedDoneNoCrash pins that the
+// NoopRecorder exposes RecordStreamSynthesizedDone without panic —
+// mirrors TestNoopRecorder_ShadowWriteNoCrash contract test
+// (P1 hot-patch 2026-08-06).
+func TestNoopRecorder_StreamSynthesizedDoneNoCrash(t *testing.T) {
+	r := NewNoopRecorder()
+	assert.NotPanics(t, func() {
+		r.RecordStreamSynthesizedDone()
+		r.RecordStreamSynthesizedDone()
+	})
+}
+
+// TestPrometheusRecorder_StreamSynthesizedDoneCounter mirrors
+// TestPrometheusRecorder_ShadowWriteCounters for the P1 2026-08-06
+// hot-patch: confirms the PrometheusRecorder increments the
+// llm_gateway_stream_synthesized_done_total counter by exactly 1 per
+// RecordStreamSynthesizedDone call.
+func TestPrometheusRecorder_StreamSynthesizedDoneCounter(t *testing.T) {
+	r := testRecorder
+
+	readCounter := func(counter interface{ Write(*dto.Metric) error }) float64 {
+		m := &dto.Metric{}
+		if err := counter.Write(m); err != nil {
+			t.Fatalf("counter.Write: %v", err)
+		}
+		return m.GetCounter().GetValue()
+	}
+
+	before := readCounter(r.streamSynthDoneTotal)
+	r.RecordStreamSynthesizedDone()
+	after := readCounter(r.streamSynthDoneTotal)
+	assert.Equal(t, before+1, after, "streamSynthDoneTotal must increment by 1")
+}
+
 // TestGlobalRecorder 测试全局 Recorder
 func TestGlobalRecorder(t *testing.T) {
 	// 默认是 NoopRecorder

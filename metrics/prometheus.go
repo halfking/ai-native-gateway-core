@@ -69,9 +69,16 @@ type PrometheusRecorder struct {
 	// rawAuditFailed     : raw audit JSONL write/rotate/sync failed. CRITICAL
 	//                      because audit JSONL is the only immutable local copy
 	//                      before cross-machine replication (P2-2).
-	shadowWriteFailed   *prometheus.CounterVec
-	ringBufferDropped   prometheus.Counter
-	rawAuditWriteFailed prometheus.Counter
+	shadowWriteFailed    *prometheus.CounterVec
+	ringBufferDropped    prometheus.Counter
+	rawAuditWriteFailed  prometheus.Counter
+
+	// streamSynthDoneTotal (P1 hot-patch 2026-08-06): counts streams
+	// where the gateway had to inject "data: [DONE]\n\n" because the
+	// upstream closed without one (MiniMax API ~13% rate as of
+	// 2026-07-28). Excludes streams where upstream sent [DONE]
+	// naturally. See Recorder interface for classifier notes.
+	streamSynthDoneTotal prometheus.Counter
 
 	// URSMv2Shadow (P0-3)
 	//
@@ -342,6 +349,14 @@ func NewPrometheusRecorder() *PrometheusRecorder {
 			},
 		),
 
+		// P1 hot-patch 2026-08-06: stream synthesized [DONE] counter.
+		streamSynthDoneTotal: promauto.NewCounter(
+			prometheus.CounterOpts{
+				Name: "llm_gateway_stream_synthesized_done_total",
+				Help: "Streams where the gateway had to inject a trailing 'data: [DONE]\\n\\n' because the upstream closed without one (MiniMax API ~13% rate as of 2026-07-28).",
+			},
+		),
+
 		// URSMv2Shadow (P0-3)
 		ursmv2ShadowResult: promauto.NewCounterVec(
 			prometheus.CounterOpts{
@@ -535,10 +550,23 @@ func (p *PrometheusRecorder) RecordRingBufferDropped(count uint64) {
 
 // RecordRawAuditWriteFailure counts one write/rotate/sync failure
 // from the raw audit JSONL pipeline. Single failure already matters
-// because JSONL is the only immutable local audit copy before
+// because JSONL is the only immutable local copy before
 // cross-machine replication lands (P2-2).
 func (p *PrometheusRecorder) RecordRawAuditWriteFailure() {
 	p.rawAuditWriteFailed.Inc()
+}
+
+// RecordStreamSynthesizedDone (P1 hot-patch 2026-08-06) increments the
+// counter when domains/streaming/stream.go has to inject a trailing
+// "data: [DONE]\n\n" because the upstream closed without one.
+// Excludes streams where upstream sent [DONE] naturally.
+//
+// Counters are incremented on the hot path; never block. Used by
+// operator dashboards to split "real stream interruptions" from
+// "minimax-style expected-no-[DONE]" without touching the existing
+// isBenignEOF classification in executor_chat.go:975 / handler.go:5609.
+func (p *PrometheusRecorder) RecordStreamSynthesizedDone() {
+	p.streamSynthDoneTotal.Inc()
 }
 
 // RecordURSMv2ShadowResult (P0-3) classifies each shadow sidecar
