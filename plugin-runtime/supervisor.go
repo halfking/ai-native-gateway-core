@@ -66,6 +66,15 @@ func (s *Supervisor) Start(ctx context.Context, m *Manifest) (*PluginState, erro
 	if len(s.cfg.ContextSecret) > 0 {
 		env = append(env, "AI_SESSION_MANAGER_GATEWAY_CONTEXT_SECRET="+string(s.cfg.ContextSecret))
 	}
+	// 显式透传插件所需的数据库 DSN。newExecCommand.Start 会以 append(os.Environ(),
+	// env...) 作为子进程环境，所以 supervisor 进程继承的 DATABASE_URL 也会兜底到达；
+	// 这里显式注入是为了：1) 让配置来源可观测（manifest/env 而非隐式继承）；
+	// 2) 在测试中可通过 SupervisorConfig 控制而非依赖全局 os.Getenv 污染。
+	// 见 cmd/session-manager/main.go 的 dbFromEnv() —— 插件侧用同一个 DSN 打开
+	// session_projection + session_state 表做本地读与 shadow 对账。
+	if v := os.Getenv("AI_SESSION_MANAGER_DATABASE_URL"); v != "" {
+		env = append(env, "AI_SESSION_MANAGER_DATABASE_URL="+v)
+	}
 	cmd := s.commandFactory(socketPath, m.Runtime.Entrypoint, env)
 	if err := cmd.Start(ctx); err != nil {
 		return nil, fmt.Errorf("start plugin %s: %w", m.PluginID, err)
