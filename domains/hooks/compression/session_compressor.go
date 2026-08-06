@@ -671,22 +671,26 @@ func sha256Hash(data any) string { //nolint:unused
 //
 // Returns true when:
 //  1. V2 components (CacheV2 + Builder) are available, AND
-//  2. Feature Flag "sessions_v2_compression_read" is enabled for tenant
+//  2. Feature flag "sessions_v2_compression_read" is enabled
+//
+// The flag is platform-scoped (read via settings.GetPlatformBool) and
+// defaults to false, so V2 only activates when an operator opts in.
+// If the flag is ever promoted to tenant scope, switch the reader here.
 func (sc *SessionCompressor) shouldUseV2(tenantID string) bool {
-	if sc == nil || false {
+	if sc == nil {
 		return false
 	}
 
-	// Check V2 components availability
+	// V2 components must both be wired at startup.
 	if sc.deps.CacheV2 == nil || sc.deps.Builder == nil {
 		return false
 	}
 
-	// Feature Flag check - disabled by default until fully implemented
-	// TODO: Enable after full integration and testing
-	// return settings.GetTenantBool(tenantID, "sessions_v2_compression_read", false)
-
-	return false // Disabled by default
+	// Feature flag gate. tenantID is accepted for forward-compatibility
+	// with a future tenant-scoped reader; unused for now to avoid an
+	// "unused parameter" lint warning.
+	_ = tenantID
+	return settings.GetPlatformBool("sessions_v2_compression_read", false)
 }
 
 // tryLoadV2State attempts to load session state from V2 architecture.
