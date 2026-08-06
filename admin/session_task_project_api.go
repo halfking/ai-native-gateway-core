@@ -247,12 +247,13 @@ query := `
 
 // queryTaskSessions 查询任务中的所有会话
 func (h *Handler) queryTaskSessions(ctx context.Context, taskID, tenantID string) ([]TaskSessionItem, error) {
+	// 注意：v_session_flow 视图不包含 key_topics 列，需要在基本查询后
+	// 单独 JOIN session_summaries 获取，或直接从 v_session_flow 查询可用字段。
 	query := `
 		SELECT 
 			session_key, title, COALESCE(summary, ''), user_intent, session_status,
 			session_order_in_task, first_request_at, last_request_at,
-			duration_seconds, request_count, total_cost_usd, total_tokens,
-			key_topics
+			duration_seconds, request_count, total_cost_usd, total_tokens
 		FROM v_session_flow
 		WHERE gw_task_id = $1
 	`
@@ -288,7 +289,6 @@ func (h *Handler) queryTaskSessions(ctx context.Context, taskID, tenantID string
 			&item.RequestCount,
 			&item.CostUSD,
 			&item.Tokens,
-			&item.KeyTopics,
 		)
 		if err != nil {
 			return nil, err
