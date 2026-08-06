@@ -75,6 +75,57 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **v2 dispatch summarizer 迁移到 *pgxpool.Pool + summarystore (2026-08-06)**:
+  承接审计 agent 标记的架构债 — `domains/sessionsummary/summarizer.go` 此前用
+  `*sql.DB` 走自己的 `saveSummaryToDB`，与 `internal/summarystore.Upsert`
+  并存，重复 SQL 且对 NULL summary_version 处理不一致。
+  - `Summarizer` struct 改用 `*summarystore.Store` 字段替代 `*sql.DB`
+  - `NewSummarizer(db, redis, llm)` → `NewSummarizer(pool *pgxpool.Pool, redis, llm)`，nil-safe
+  - 5 个 DB 读方法（`getPrevSummary` / `getMessagesSince` / `getSessionMessages` /
+    `updateSessionTitle` / `saveSummaryToDB`）改用 `pgxpool.Pool.Query/Exec`
+  - `saveSummaryToDB` 委托给 `summarystore.Upsert`，消除与 admin
+    auto_summary_generator.go 的 SQL 重复；摘要写入现在也走
+    `RETURNING summary_version, (xmax = 0) AS inserted` 一致路径
+  - `internal/summarystore.NewStore` 加 `Pool()` getter，让 v2 dispatch
+    复用同一 *pgxpool.Pool 引用做读查询
+  - `cmd/gateway/main_pipeline.go` 去掉对 summarizer 的
+    `stdlib.OpenDB(*pool.Config().ConnConfig)` 桥接（仅 EnhancedPIPlugin
+    仍需 *sql.DB），节省一个 connection pool
+  - `UpdateHandoffMetrics(ctx, db, m)` 签名**保持** `*sql.DB`：
+    handoff trigger hook (domains/hooks/handoff/trigger_hook.go) 是
+    唯一调用方且仍用 *sql.DB。迁移 hook 是更大的重构，本次保留接口
+    稳定。文档注释里说明这一点
+  - 新增测试 `TestSummarizer_NilPoolIsSafe`（5 个 nil-pool 路径全覆盖）
+    + `TestSummarizer_PassesPoolToStore`（结构测试，确认构造器接受
+    *pgxpool.Pool 而不 panic）
+  - 验证：go build / vet 全仓通过；admin / summarystore / streaming /
+    metrics / middleware / sessionsummary 测试全绿
+
+- **Audit fixes for commits 9207d5c1..b19b7bbd (2026-08-06)**:
+  修复审计 agent 发现的 1 critical / 7 moderate / 9 minor 问题：
+  - **[CRITICAL] AdminTokenMiddleware fail-open in production**:
+    `middleware/admin_token_mw.go` 之前 token 为空时直接放行（pass-through），让 `/metrics` 在生产无 token 时完全暴露。本轮按 `LLM_GATEWAY_ENV` 区分行为：`production|staging|prod` 时返回 503 + ERROR 日志（启动时），`dev|local|unset` 仍 fail-open。prometheus.yml 注释也补充了这一点
+  - **[CRITICAL] AutoSummaryRateLimited 误用 tenant 标签**:
+    `auto_summary_trigger_total` 没有 `tenant` 标签（只有 `result`），但 alert 用了 `sum by (tenant)`，导致 `{{$labels.tenant}}` 永远为空。删除 by 子句，alert 改为全局聚合（任意租户触发都告警，per-tenant 排查走 request_logs）
+  - **[CRITICAL] docker-compose.yml 缺 secrets mount**:
+    之前的 prometheus.yml 用 `bearer_token_file: /etc/prometheus/secrets/admin_token`，但 docker-compose.yml 没挂载 `./secrets` 到该路径。补上 `./secrets:/etc/prometheus/secrets:ro` 挂载；service 间对齐后未挂载 token 会被 prometheus 警告并丢弃 Authorization header（与新 fail-closed /metrics 联动 → 401 错误）
+  - **[CRITICAL] prometheus.yml 目标主机 `host.docker.internal:8781` 在 Linux Docker 不可用**:
+    改为服务名 `llm-gateway:8781`（在 compose 同一 network 内自动 DNS 解析），并新增 `llm-gateway` 占位 service 到 docker-compose.yml，本地开发者 `docker compose up` 即端到端可工作
+  - **[MODERATE] readSettingInt 文档与代码矛盾**:
+    之前的 doc-comment 误把"env"说成是 layer 2 且"高于 spec default"，但实际 settings.GetPlatformInt 内部已经把 env 与 DB 合并，env 仅在 settings.Global 为 nil 时生效。重写文档为 2-tier 链（settings chain → env fallback → hardcoded constant）
+  - **[MODERATE] v2 dispatch saveSummaryToDB 漏 COALESCE**:
+    `summary_version = session_summaries.summary_version + 1` 改成 `COALESCE(session_summaries.summary_version, 0) + 1`，避免手动插入的 NULL 行被 UPDATE 成 NULL。summarystore.Upsert 之前已用 COALESCE，现在两边对齐
+  - **[MODERATE] xmax=0 注释与实际行为不符**:
+    之前的注释暗示 `xmax=0` 能检测 "concurrent same-version writers"，但实际它只能区分"首次 INSERT"和"UPDATE 已有行"，并发写仍被 PG 在行级别串行化。重写注释明确"lost the race hint, not precise race detector"
+  - **[MODERATE] workerSlots 静默 clamp 隐藏配置错误**:
+    `if workerSlots < 1 { workerSlots = autoSummaryDefaultWorkerSlots }` 之前静默替换。改为 `slog.Warn` 显式记 raw_value / fallback / key，让 admin UI 显示 4 workers 但 operator 配了 8 时能立即发现
+  - **[MINOR] 改进 race-detect 日志**:
+    `logger.Debug("auto_summary: upsert raced...")` 改为 `logger.Info` + 加 `session_id` / `tenant_id` 字段，operator 排查 race 时能直接关联 request_logs
+  - **[MINOR] 更新过时的测试目录引用**:
+    `TestLastSummarized_NilPoolIsError` 注释原本说 "Real DB integration tests live under tests/db_integration/"，但该目录不存在。改为明确说明 SQL 由手动部署到 252 验证
+  - **[MINOR] 简化 intStrPtr 测试 helper**:
+    自手写的 itoa 算法用 `strconv.Itoa(*v)` 替代（stdlib 已可用），代码更简洁，意图更清晰
+
 - **summarystore.Upsert 返回 summary_version + upsert flag (2026-08-06)**:
   - **背景**: `internal/summarystore/store.go::Upsert` 此前只返回 `error`，调用方无法识别"INSERT vs UPDATE"以及"当前 summary_version"。当 v2 dispatch 与 request-path 自动总结并发写同一 session_key 时，无法检测"输掉 racing"或"写过时数据"
   - **修改**:

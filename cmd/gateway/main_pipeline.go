@@ -1258,9 +1258,12 @@ func SetV2DispatchAnalysisResources(
 				analysisClient = sessionanalytics.NewOpenAIClientWithNetworkPolicy(validatedURL, analysisAPIKey, 30*time.Second, allowInsecureLocal)
 				slog.Info("session analytics model client enabled", "base_url", validatedURL)
 				if deps.SessionSummarizer == nil {
-					sqlDB := stdlib.OpenDB(*pool.Config().ConnConfig)
-					deps.AnalysisSQLDBs = append(deps.AnalysisSQLDBs, sqlDB)
-					summaryService := sessionsummary.NewSummarizer(sqlDB, redisClient, sessionSummaryLLMAdapter{client: analysisClient})
+					// 2026-08-06: pass *pgxpool.Pool directly to NewSummarizer
+					// instead of bridging to *sql.DB. The summarizer now
+					// uses summarystore.Upsert for the write path and
+					// pgxpool for reads — no more sql.DB involvement in
+					// the v2 dispatch path.
+					summaryService := sessionsummary.NewSummarizer(pool, redisClient, sessionSummaryLLMAdapter{client: analysisClient})
 					summaryService.SetModel(cfg.ModelFor(sessionanalytics.StageSummary))
 					deps.SessionSummarizer = sessionSummaryWorkerAdapter{summarizer: summaryService}
 				}
