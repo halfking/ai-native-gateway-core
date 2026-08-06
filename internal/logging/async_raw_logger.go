@@ -543,10 +543,12 @@ func (l *AsyncRawDataLogger) flushBatch() {
 // subtracting the JSON-line length from currentOffset (which points
 // past the end of the last write). When a rotation happens inside
 // the batch, the second batch segment lands in a different file —
-// we don't currently split that case; the recorded location will
-// still point into the file the entry landed in because we look up
-// the file per-entry via the base logger's path before the entry's
-// own write completes. Best-effort; not worth a per-entry lock.
+// we detect this by checking if cursor goes negative and stop indexing
+// the remaining entries (they're in a prior file we no longer have handle to).
+// Best-effort; not worth a per-entry lock.
+//
+// 2026-08-06 FIX (P1-2): Stop indexing when cursor goes negative to avoid
+// incorrect file/offset pairs when batch crosses rotation boundary.
 func (l *AsyncRawDataLogger) recordFrameLocations(entries []RawDataEntry) {
 	if l == nil || l.baseLogger == nil || len(entries) == 0 {
 		return
@@ -564,10 +566,16 @@ func (l *AsyncRawDataLogger) recordFrameLocations(entries []RawDataEntry) {
 			// empty RawData; treat as one byte placeholder.
 			lineSize = 1
 		}
-		cursor -= lineSize
-		if cursor < 0 {
-			cursor = 0
+		nextCursor := cursor - lineSize
+		if nextCursor < 0 {
+			// Batch crosses file rotation boundary. The remaining entries
+			// are in a prior file; stop indexing to avoid incorrect location.
+			slog.Debug("recordFrameLocations: batch crosses rotation boundary, stopping early",
+				"entries_indexed", len(entries)-i-1,
+				"entries_total", len(entries))
+			break
 		}
+		cursor = nextCursor
 		key := entries[i].RequestID + "|" + entries[i].Direction
 		l.frameIndex.Store(key, rawFrameLocation{File: file, Offset: cursor})
 	}
