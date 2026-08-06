@@ -641,11 +641,14 @@ func (g *AutoTitleGenerator) callAutoTitleLLM(ctx context.Context, apiKey, sessi
 	// Make a synthetic HTTP request for the gateway endpoint
 	endpoint := g.getGatewayEndpoint() + "/v1/chat/completions"
 
+	// 2026-08-06: 包裹 XML 标签防止 prompt injection。
+	wrappedUserContent := "<session_transcript>\n" + userContent + "\n</session_transcript>"
+
 	payload := map[string]any{
 		"model": model,
 		"messages": []map[string]string{
 			{"role": "system", "content": task.SystemPrompt},
-			{"role": "user", "content": userContent},
+			{"role": "user", "content": wrappedUserContent},
 		},
 		"temperature": task.Temperature,
 	}

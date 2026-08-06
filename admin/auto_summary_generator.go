@@ -56,7 +56,7 @@ import (
 const (
 	autoSummaryOriginActor      = "auto-summary-generator"
 	autoSummarySessionIDPrefix  = "gs" // appended before ":" to form "gs:gw_xxx" → "gs_gw_xxx"
-	autoSummaryChunkApproxTurns = 5  // each chunk target turn count
+	autoSummaryChunkApproxTurns = 5    // each chunk target turn count
 	autoSummaryHTTPTimeout      = 30 * time.Second
 )
 
@@ -139,15 +139,15 @@ type AutoSummaryGenerator struct {
 	enabled bool
 
 	// Per-tenant token bucket. ratePerMin/minute. lazy-created on first use.
-	rateMu      sync.Mutex
-	rateByTnt   map[string]*rate.Limiter
-	ratePerMin  int
+	rateMu     sync.Mutex
+	rateByTnt  map[string]*rate.Limiter
+	ratePerMin int
 
 	// Concurrent in-flight slot semaphore. Capacity = workerSlots.
 	workerSlots chan struct{}
 
 	// Sleep jitter seeded once so retries don't all fire at the same instant.
-	rng *rand.Rand
+	rng   *rand.Rand
 	rngMu sync.Mutex
 }
 
@@ -481,8 +481,8 @@ func (g *AutoSummaryGenerator) generateSummary(ctx context.Context, sessionID, t
 
 // buildSummaryCorpus assembles the per-turn text the summary LLM sees.
 // Order of preference:
-//   1. extractMessagesForTitle(requestBody) — freshest turn, full content
-//   2. loadSessionLogsForTitle (DB JOIN) — earlier turns
+//  1. extractMessagesForTitle(requestBody) — freshest turn, full content
+//  2. loadSessionLogsForTitle (DB JOIN) — earlier turns
 //
 // We deliberately reuse extractMessagesForTitle / loadSessionLogsForTitle
 // from auto_title_generator.go because the corpus-cleanliness logic is
@@ -530,11 +530,14 @@ func (g *AutoSummaryGenerator) callSummaryOnceWithMode(ctx context.Context, apiK
 
 	endpoint := g.getGatewayEndpoint() + "/v1/chat/completions"
 
+	// 2026-08-06: 包裹 XML 标签防止 prompt injection。
+	wrappedUserContent := "<session_transcript>\n" + userContent + "\n</session_transcript>"
+
 	payload := map[string]any{
 		"model": model,
 		"messages": []map[string]string{
 			{"role": "system", "content": task.SystemPrompt},
-			{"role": "user", "content": userContent},
+			{"role": "user", "content": wrappedUserContent},
 		},
 		"temperature": task.Temperature,
 	}
@@ -703,11 +706,11 @@ func (g *AutoSummaryGenerator) doCallSummaryOnce(
 }
 
 // parseSummaryJSON tolerates, in order of likelihood:
-//   1. strict JSON:                                 {"summary":...}
-//   2. JSON wrapped in a markdown fence:           ```json\n{...}\n```
-//   3. JSON wrapped in a generic markdown fence:    ```\n{...}\n```
-//   4. JSON preceded by prose ("好的，以下是总结：\n{...}"):
-//   5. pure prose (last-resort: treat whole response as summary text)
+//  1. strict JSON:                                 {"summary":...}
+//  2. JSON wrapped in a markdown fence:           ```json\n{...}\n```
+//  3. JSON wrapped in a generic markdown fence:    ```\n{...}\n```
+//  4. JSON preceded by prose ("好的，以下是总结：\n{...}"):
+//  5. pure prose (last-resort: treat whole response as summary text)
 //
 // Returns the fields the dashboard needs; missing fields stay empty.
 func parseSummaryJSON(raw, fallbackModel string) (title, summary string, keyTopics []string, userIntent, modelOut string) {
