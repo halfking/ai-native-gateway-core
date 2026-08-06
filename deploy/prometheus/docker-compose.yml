@@ -10,6 +10,14 @@ services:
     volumes:
       - ./prometheus.yml:/etc/prometheus/prometheus.yml
       - ./rules:/etc/prometheus/rules
+      # 2026-08-06: secrets/admin_token is required by the new
+      # llm-gateway scrape job (bearer_token_file in prometheus.yml).
+      # Create the file with `echo "$LLM_GATEWAY_ADMIN_API_KEY" > secrets/admin_token`
+      # and chmod 600. Without this mount, prometheus logs a warning
+      # and drops the Authorization header — combined with the new
+      # fail-closed /metrics (admin_token_mw.go), the gateway's
+      # /metrics endpoint rejects the scrape with 401.
+      - ./secrets:/etc/prometheus/secrets:ro
       - prometheus-data:/prometheus
     command:
       - '--config.file=/etc/prometheus/prometheus.yml'
@@ -72,6 +80,28 @@ services:
       - /:/rootfs:ro
     networks:
       - monitoring
+
+  # 2026-08-06: llm-gateway itself (placeholder for local dev scrape).
+  # Production deployments will point prometheus.yml at the real gateway
+  # host (LLM_GATEWAY_LISTEN:8781). The service name "llm-gateway"
+  # matches the scrape target in prometheus.yml's `llm-gateway` job so
+  # docker-compose up works end-to-end on a developer laptop without
+  # needing host.docker.internal (which is Docker-Desktop-only and
+  # silently fails on standard Linux Docker engine).
+  llm-gateway:
+    image: ghcr.io/your-org/llm-gateway-go:dev
+    container_name: llm-gateway-go
+    restart: unless-stopped
+    ports:
+      - "8781:8781"
+    environment:
+      - LLM_GATEWAY_LISTEN=:8781
+      - LLM_GATEWAY_ADMIN_API_KEY=${LLM_GATEWAY_ADMIN_API_KEY:?set LLM_GATEWAY_ADMIN_API_KEY in .env so prometheus can scrape /metrics}
+      - LLM_GATEWAY_ENV=dev
+      - LLM_GATEWAY_DATABASE_URL=postgres://llm_gateway:llm_gateway@pg-252-pg17:5432/llm_gateway?sslmode=disable
+    networks:
+      - monitoring
+    depends_on: []
 
 volumes:
   prometheus-data:

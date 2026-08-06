@@ -121,12 +121,19 @@ groups:
           runbook: "Bump auto_summary.default_worker_slots from 4 to 8 (or higher). Requires process restart since chan capacity is constructed once."
 
       - alert: AutoSummaryRateLimited
-        expr: sum by (tenant) (rate(auto_summary_trigger_total{result="rate_limited"}[5m])) > 1/60
+        # 2026-08-06 audit fix: AutoSummaryTrigger does NOT have a tenant
+        # label (metrics/auto_summary_metrics.go declares labels=["result"]
+        # only). The previous `sum by (tenant)` produced a single series
+        # with `tenant=""` and the {{$labels.tenant}} template always
+        # rendered empty. Drop the by-clause so the rule fires on the
+        # global aggregate (any tenant saturating the per-tenant bucket).
+        # Per-tenant drill-down happens via request_logs, not this alert.
+        expr: sum(rate(auto_summary_trigger_total{result="rate_limited"}[5m])) > 1/60
         for: 10m
         labels:
           severity: info
           metric_version: "2026-08-06"
         annotations:
-          summary: "auto_summary rate-limited tenant={{\"{{$labels.tenant}}\"}} (>1/min for 10m)"
-          description: "A single tenant exceeds 6/min summary triggers (the default per-tenant budget). Bump auto_summary.default_rate_per_min in settings_kv and restart."
-          runbook: "Check the tenant's session traffic; if legitimate, bump rate from 6 to 12 or higher. Requires process restart."
+          summary: "auto_summary rate-limited (>1/min for 10m)"
+          description: "The per-tenant rate limiter is rejecting summary triggers (default 6/min/tenant). Bump auto_summary.default_rate_per_min in settings_kv and restart."
+          runbook: "Find the offending tenant via request_logs filter on is_auto_summary AND X-Request-Id in last 10m; if legitimate, bump rate from 6 to 12 or higher. Requires process restart."
