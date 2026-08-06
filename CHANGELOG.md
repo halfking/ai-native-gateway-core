@@ -79,6 +79,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - **验证**: `go test ./domains/streaming/executors/ -run TestContinuationTrim` 3 用例全绿（含 corpus 含 continue 被误删的回归 + 短语料不触发的对照）；全包测试 5.3s 通过；`go build ./...` / `go vet` 通过
   - 详见 `docs/changelogs/2026-08-06-auto-title-continuation-trim.md`
 
+- **`/api/logs` 列表查询超时 (2026-08-06)**:
+  - **症状**: 请求日志页列表空、接口返回 `query failed`。`listLogs` 查询实测 9943ms，超出接口 5s 硬超时（admin/logs.go:340）
+  - **根因**: `requestLogsJoins` 中的 `LEFT JOIN LATERAL mo_pick` 引用外层 `rl.*` 列，阻止 planner 将 `ORDER BY rl.ts DESC LIMIT 50` 下推；LATERAL 对全部命中行（7387 行）各跑一次 `provider_models` 全表扫描（675 行 × 7387 ≈ 550 万行 + cmb 索引 3.6 万次），606k buffers
+  - **修复**: 两段式查询。内层子查询先按 `rl.ts` 排序 + `LIMIT/OFFSET` 截断到一页（仅取 `rl.*` 窄列，WHERE 过滤全部下推）；外层只对这少量行做辅助表 LEFT JOIN + LATERAL。所有 filter 均为 `rl.*` 前缀，语义不变
+  - **验证**: 生产库 EXPLAIN ANALYZE（无过滤 53.8ms，带 `success=false` + `q` 过滤 44.9ms），LATERAL 从 7387 次降到 ≤50 次；`go build` / `go vet` / `go test ./admin/` 全绿
+  - 详见 `docs/changelogs/2026-08-06-logs-list-lateral-pagination.md`
+
 - **标题请求父子关联 + 失败可观测 (2026-08-06)**:
   - **症状**: 用户报告"LLM 好像没收到请求 / 没带上上下文"。`request_logs_hot.parent_request_id` / `origin_actor` 长期为 NULL，运维无法 SQL JOIN 父子请求；corpus 过度截断丢用户真实问题；标题生成 HTTP 失败只 return error，slog 看不到 endpoint/status_code/body_excerpt/retry_count
   - **根因 A** — `callAutoTitleLLM` 未向 loopback 请求转发父请求 request_id 与调用方 actor；handler 入口也从未读取相关 header
