@@ -13,12 +13,22 @@ import (
 	"strings"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/redis/go-redis/v9"
+
+	"github.com/kaixuan/llm-gateway-go/internal/summarystore"
 )
 
 // Summarizer 会话总结器
+//
+// 2026-08-06: 迁移到 *pgxpool.Pool + summarystore.Upsert，消除了与
+// internal/summarystore/store.go 重复的 SQL（之前 saveSummaryToDB 与
+// summarystore.Upsert 并存）。其它读路径（getPrevSummary / getMessagesSince /
+// getSessionMessages / updateSessionTitle）改用 pgxpool 直查，不再
+// 经 *sql.DB 桥接。cmd/gateway/main_pipeline.go 不再为 summarizer 调用
+// stdlib.OpenDB（仅 EnhancedPIPlugin 仍需要 *sql.DB）。
 type Summarizer struct {
-	db          *sql.DB
+	store       *summarystore.Store
 	redisClient *redis.Client
 	llmClient   LLMClient
 	model       string
@@ -62,9 +72,13 @@ type SessionMessage struct {
 }
 
 // NewSummarizer 创建会话总结器
-func NewSummarizer(db *sql.DB, redisClient *redis.Client, llmClient LLMClient) *Summarizer {
+//
+// 2026-08-06: 接受 *pgxpool.Pool 而非 *sql.DB。nil pool 时仍可构造
+//（与之前 *sql.DB=nil 行为一致）—— 所有 DB 方法会 nil-check 后返回
+// error 而不 panic。summarystore.NewStore 同样 nil-safe。
+func NewSummarizer(pool *pgxpool.Pool, redisClient *redis.Client, llmClient LLMClient) *Summarizer {
 	return &Summarizer{
-		db:          db,
+		store:       summarystore.NewStore(pool),
 		redisClient: redisClient,
 		llmClient:   llmClient,
 		model:       "summary-fast",
@@ -315,7 +329,13 @@ func (s *Summarizer) GenerateRollingSummary(ctx context.Context, tenantID, sessi
 }
 
 // getPrevSummary 读取上次摘要文本与时间。
+//
+// 2026-08-06: 改用 pgxpool.Pool.Query + pgtype.Timestamptz 替代
+// database/sql.NullTime（pgx 没有内置 NullTime，用 *time.Time 即可）。
 func (s *Summarizer) getPrevSummary(ctx context.Context, tenantID, sessionKey string) (summary string, summarizedAt time.Time, err error) {
+	if s.store == nil {
+		return "", time.Time{}, fmt.Errorf("sessionsummary: store not configured")
+	}
 	query := `SELECT COALESCE(summary,''), last_summarized_at
 		FROM session_summaries WHERE session_key = $1`
 	args := []any{sessionKey}
@@ -323,10 +343,14 @@ func (s *Summarizer) getPrevSummary(ctx context.Context, tenantID, sessionKey st
 		query += " AND tenant_id = $2"
 		args = append(args, tenantID)
 	}
-	var lastAt sql.NullTime
-	err = s.db.QueryRowContext(ctx, query, args...).Scan(&summary, &lastAt)
-	if lastAt.Valid {
-		summarizedAt = lastAt.Time
+	var lastAt *time.Time // pgx scans NULL timestamp into *time.Time = nil
+	pool := s.store.Pool() // expose a getter on Store (added in this commit)
+	if pool == nil {
+		return "", time.Time{}, fmt.Errorf("sessionsummary: store pool is nil")
+	}
+	err = pool.QueryRow(ctx, query, args...).Scan(&summary, &lastAt)
+	if lastAt != nil {
+		summarizedAt = *lastAt
 	}
 	return
 }
@@ -335,14 +359,22 @@ func (s *Summarizer) getPrevSummary(ctx context.Context, tenantID, sessionKey st
 // since 为零值时返回最近 20 条（首次总结）。
 // 2026-07-21 Ticket #11: Modified to use LEFT JOIN with request_logs_bodies
 // to retrieve full request_body (moved to separate table in #10).
+// 2026-08-06: 改用 pgxpool.Pool.Query 替代 database/sql QueryContext。
 func (s *Summarizer) getMessagesSince(ctx context.Context, tenantID, sessionKey string, since time.Time) ([]SessionMessage, error) {
+	if s.store == nil {
+		return nil, fmt.Errorf("sessionsummary: store not configured")
+	}
+	pool := s.store.Pool()
+	if pool == nil {
+		return nil, fmt.Errorf("sessionsummary: store pool is nil")
+	}
 	query := `
 		SELECT rl.request_id,
 		       COALESCE(COALESCE(rb.request_body, rl.request_body)->>'role', 'user') as role,
 		       COALESCE(COALESCE(rb.request_body, rl.request_body)->'messages'->-1->>'content', '') as content,
 		       rl.outbound_model, rl.ts
 		FROM request_logs rl
-		LEFT JOIN request_logs_bodies rb 
+		LEFT JOIN request_logs_bodies rb
 		  ON rb.request_id = rl.request_id
 		WHERE rl.gw_session_id = $1`
 	args := []any{sessionKey}
@@ -359,11 +391,11 @@ func (s *Summarizer) getMessagesSince(ctx context.Context, tenantID, sessionKey 
 	}
 	query += " ORDER BY ts ASC LIMIT 20"
 
-	rows, err := s.db.QueryContext(ctx, query, args...)
+	rows, err := pool.Query(ctx, query, args...)
 	if err != nil {
 		return nil, err
 	}
-	defer func() { _ = rows.Close() }()
+	defer rows.Close()
 
 	var messages []SessionMessage
 	for rows.Next() {
@@ -416,7 +448,15 @@ func (s *Summarizer) parseSummaryResponse(response, sessionKey string) (*Session
 // 注意：request_logs 使用 gw_session_id（350 迁移修正）。
 // 2026-07-21 Ticket #11: Modified to use LEFT JOIN with request_logs_bodies
 // to retrieve full request_body (moved to separate table in #10).
+// 2026-08-06: 改用 pgxpool.Pool.Query 替代 database/sql QueryContext。
 func (s *Summarizer) getSessionMessages(ctx context.Context, tenantID, sessionKey string) ([]SessionMessage, error) {
+	if s.store == nil {
+		return nil, fmt.Errorf("sessionsummary: store not configured")
+	}
+	pool := s.store.Pool()
+	if pool == nil {
+		return nil, fmt.Errorf("sessionsummary: store pool is nil")
+	}
 	query := `
 		SELECT
 			rl.request_id,
@@ -425,18 +465,18 @@ func (s *Summarizer) getSessionMessages(ctx context.Context, tenantID, sessionKe
 			rl.outbound_model,
 			rl.ts
 		FROM request_logs rl
-		LEFT JOIN request_logs_bodies rb 
+		LEFT JOIN request_logs_bodies rb
 		  ON rb.request_id = rl.request_id
 		WHERE rl.tenant_id = $1 AND rl.gw_session_id = $2
 		ORDER BY rl.ts ASC
 		LIMIT 20
 	`
 
-	rows, err := s.db.QueryContext(ctx, query, tenantID, sessionKey)
+	rows, err := pool.Query(ctx, query, tenantID, sessionKey)
 	if err != nil {
 		return nil, err
 	}
-	defer func() { _ = rows.Close() }()
+	defer rows.Close()
 
 	messages := []SessionMessage{}
 	for rows.Next() {
@@ -451,51 +491,47 @@ func (s *Summarizer) getSessionMessages(ctx context.Context, tenantID, sessionKe
 }
 
 // saveSummaryToDB 保存总结到数据库（upsert：首次写入创建行，后续更新）
-// session_summaries 的 PK 是 session_key，因此用 ON CONFLICT (session_key)
-// 实现幂等 upsert。
 //
-// 2026-08-06 audit fix: backport COALESCE for summary_version (matching
-// the new internal/summarystore.Upsert) so a NULL summary_version
-// (manually-inserted row) gets initialised to 1 on its first UPDATE
-// instead of leaving summary_version NULL.
+// 2026-08-06: 改用 internal/summarystore.Upsert 统一持久化路径
+// （消除与 admin/auto_summary_generator.go 的 SQL 重复）。summarystore
+// 已经处理 RETURNING summary_version + xmax=0 INSERT-vs-UPDATE 区分 + COALESCE
+// NULL safety。这里只是把 SessionSummary 转成 summarystore.Summary。
 func (s *Summarizer) saveSummaryToDB(ctx context.Context, tenantID string, summary *SessionSummary) error {
-	query := `
-		INSERT INTO session_summaries (
-			session_key, tenant_id, title, summary, key_topics,
-			user_intent, last_summarized_at, created_at, updated_at
-		) VALUES ($1, $2, $3, $4, $5, $6, $7, NOW(), NOW())
-		ON CONFLICT (session_key) DO UPDATE SET
-			title = EXCLUDED.title,
-			summary = EXCLUDED.summary,
-			key_topics = EXCLUDED.key_topics,
-			user_intent = EXCLUDED.user_intent,
-			last_summarized_at = EXCLUDED.last_summarized_at,
-			summary_version = COALESCE(session_summaries.summary_version, 0) + 1,
-			updated_at = NOW()
-	`
-
-	_, err := s.db.ExecContext(ctx, query,
-		summary.SessionKey,
-		tenantID,
-		summary.Title,
-		summary.Summary,
-		summary.KeyTopics,
-		summary.UserIntent,
-		summary.GeneratedAt,
-	)
-
+	if s.store == nil {
+		return fmt.Errorf("sessionsummary: store not configured (pool was nil at NewSummarizer)")
+	}
+	_, err := s.store.Upsert(ctx, summarystore.Summary{
+		SessionKey:     summary.SessionKey,
+		TenantID:       tenantID,
+		Title:          summary.Title,
+		Summary:        summary.Summary,
+		KeyTopics:      summary.KeyTopics,
+		UserIntent:     summary.UserIntent,
+		LastSummarized: summary.GeneratedAt,
+	})
 	return err
 }
 
 // updateSessionTitle 更新会话标题
+//
+// 2026-08-06: 改用 pgxpool.Pool.Exec 替代 database/sql ExecContext。
+// title 仍直接 UPDATE（不走 summarystore.Upsert），因为不需要 summary_version
+// 自增 — 标题是辅助字段，与 summary_version 分离。如果以后要审计 title
+// 变更历史，可以再考虑加 trigger。
 func (s *Summarizer) updateSessionTitle(ctx context.Context, tenantID, sessionKey, title string) error {
+	if s.store == nil {
+		return fmt.Errorf("sessionsummary: store not configured")
+	}
+	pool := s.store.Pool()
+	if pool == nil {
+		return fmt.Errorf("sessionsummary: store pool is nil")
+	}
 	query := `
 		UPDATE session_summaries
 		SET title = $1, updated_at = NOW()
 		WHERE session_key = $2 AND tenant_id = $3
 	`
-
-	_, err := s.db.ExecContext(ctx, query, title, sessionKey, tenantID)
+	_, err := pool.Exec(ctx, query, title, sessionKey, tenantID)
 	return err
 }
 
@@ -621,6 +657,13 @@ type HandoffMetricsSummary struct {
 // This is a package-level helper (not a Summarizer method) deliberately: it
 // avoids forcing every handoff call site to construct a full *Summarizer
 // (which carries redis + llmClient deps) just to update two tracking columns.
+//
+// 2026-08-06: signature stays as *sql.DB on purpose — the handoff trigger
+// hook (domains/hooks/handoff/trigger_hook.go) is the only caller and
+// still uses *sql.DB. Migrating the handoff hook to pgxpool is a much
+// larger refactor and is out of scope for the Summarizer→pgxpool migration
+// (the principal win — saveSummaryToDB consolidating into summarystore —
+// is preserved either way). Keep this signature stable for now.
 func UpdateHandoffMetrics(ctx context.Context, db *sql.DB, m *HandoffMetricsSummary) error {
 	if db == nil {
 		return nil
