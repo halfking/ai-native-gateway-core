@@ -11,10 +11,10 @@
 --   - 此脚本可能需要较长时间（取决于数据量），建议在低峰期执行
 --   - 使用 ON CONFLICT DO UPDATE 确保幂等性
 
--- 创建临时函数来回填 task_id
+-- 创建临时函数来回填 task_id（注意：session_key 类型需要匹配 session_summaries 表定义）
 CREATE OR REPLACE FUNCTION backfill_session_task_ids()
 RETURNS TABLE(
-  session_key text,
+  session_key character varying(255),
   old_task_id text,
   new_task_id text,
   request_count bigint
