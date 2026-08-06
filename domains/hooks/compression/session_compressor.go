@@ -194,8 +194,8 @@ func (sc *SessionCompressor) Prepare(
 	}
 
 	// ── Phase 4: v4 Smart modes ──────────────────────────────────────────
-	// For delta_only mode: just delta-append, no compression
-	if mode == ModeDeltaOnly {
+	// delta_only and legacy/off modes never compress: delta-append only.
+	if mode == ModeDeltaOnly || (mode != ModeSmart && mode != ModeAggressive) {
 		if !diffResult.Unchanged && !diffResult.IsNewSess {
 			res.OutboundBody = outboundBody
 			res.CompressionStrategy = "delta_append"
@@ -204,34 +204,60 @@ func (sc *SessionCompressor) Prepare(
 		return res
 	}
 
-	// Legacy modes are controlled by the existing Compressor/executor paths.
-	// The session compressor only owns v4 smart/aggressive proactive work.
-	// In particular, off must never fall through to the window trigger.
-	if mode != ModeSmart && mode != ModeAggressive {
-		if !diffResult.Unchanged && !diffResult.IsNewSess {
-			res.OutboundBody = outboundBody
-			res.CompressionStrategy = "delta_append"
-		}
-		sc.updateCache(ctx, tenantID, gwSessionID, state, outboundBody, res, false)
-		return res
-	}
-
-	// For smart/aggressive modes: apply tool/thinking stripping + task analysis
+	// 2026-08-06: split thinking-block strip (always safe) from tool-round
+	// strip (destructive, only when compression will actually run). The
+	// previous code ran StripToolInfo unconditionally in smart/aggressive
+	// mode, which deleted ~97% of an agent's tool history on every request
+	// even when the body was far under the context budget. Tool outputs are
+	// only safe to drop once an LLM summary has captured them; stripping
+	// before the window check destroyed history that the later summary
+	// (which may fail) was supposed to preserve.
+	//
+	// Order is now:
+	//   4a. StripThinkingBlocksOnly — always, cheap, non-destructive.
+	//   4b. ShouldTriggerWindow — evaluate on the thinking-stripped body.
+	//   4c. If triggered: StripToolInfo (completed rounds) right before
+	//       the summary/trim that will replace the dropped content.
+	//   4d. Task analysis (aggressive only), on the stripped body.
 	if mode == ModeSmart || mode == ModeAggressive {
-		// ── Phase 4a: Tool/thinking strip ──────────────────────────────────
-		strippedBody, stripResult := StripToolInfo(outboundBody, protocol)
-		if stripResult.DidStrip {
-			slog.Info("v4: tool info stripped",
-				"tools_removed", stripResult.ToolCallsRemoved,
-				"thinking_removed", stripResult.ThinkingRemoved,
-				"bytes_before", stripResult.BytesBefore,
-				"bytes_after", stripResult.BytesAfter)
-			outboundBody = strippedBody
+		if stripped, sr := StripThinkingBlocksOnly(outboundBody); sr.DidStrip {
+			slog.Info("v4: thinking blocks stripped",
+				"thinking_removed", sr.ThinkingRemoved,
+				"bytes_before", sr.BytesBefore,
+				"bytes_after", sr.BytesAfter)
+			outboundBody = stripped
 			res.MsgCount = countMessages(outboundBody)
 			res.TokenEst = estimateBodyTokens(outboundBody)
 			res.MsgHashes = marshalHashes(computeHashes(mustExtractMessages(outboundBody)))
+		}
+	}
 
-			// Update state tracking
+	// ── Phase 5: Window trigger check ─────────────────────────────────────
+	winResult := ShouldTriggerWindow(outboundBody, state, contextWindow, streamStarted, time.Now())
+
+	if winResult.SkipStream {
+		if !diffResult.Unchanged && !diffResult.IsNewSess {
+			res.OutboundBody = outboundBody
+			res.CompressionStrategy = "delta_append"
+		}
+		sc.updateCache(ctx, tenantID, gwSessionID, state, outboundBody, res, false)
+		return res
+	}
+
+	if winResult.ShouldTrigger && (mode == ModeSmart || mode == ModeAggressive) {
+		// Only now is it safe to strip completed tool rounds: the window
+		// has fired, so a summary or mechanical trim will follow and
+		// capture/replace the dropped tool output.
+		if stripped, sr := StripToolInfo(outboundBody, protocol); sr.DidStrip {
+			slog.Info("v4: tool info stripped",
+				"tools_removed", sr.ToolCallsRemoved,
+				"thinking_removed", sr.ThinkingRemoved,
+				"bytes_before", sr.BytesBefore,
+				"bytes_after", sr.BytesAfter)
+			outboundBody = stripped
+			res.MsgCount = countMessages(outboundBody)
+			res.TokenEst = estimateBodyTokens(outboundBody)
+			res.MsgHashes = marshalHashes(computeHashes(mustExtractMessages(outboundBody)))
 			if state != nil {
 				state.StripsApplied++
 				state.MessagesAfterStrip = res.MsgCount
@@ -240,7 +266,7 @@ func (sc *SessionCompressor) Prepare(
 			}
 		}
 
-		// ── Phase 4b: Task analysis (aggressive mode only) ────────────
+		// ── Task analysis (aggressive mode only) ──────────────────────
 		if mode == ModeAggressive {
 			msgs := mustExtractMessages(outboundBody)
 			msgMaps := make([]map[string]any, 0, len(msgs))
@@ -260,21 +286,7 @@ func (sc *SessionCompressor) Prepare(
 				}
 			}
 		}
-	}
 
-	// ── Phase 5: Window trigger check ─────────────────────────────────────
-	winResult := ShouldTriggerWindow(outboundBody, state, contextWindow, streamStarted, time.Now())
-
-	if winResult.SkipStream {
-		if !diffResult.Unchanged && !diffResult.IsNewSess {
-			res.OutboundBody = outboundBody
-			res.CompressionStrategy = "delta_append"
-		}
-		sc.updateCache(ctx, tenantID, gwSessionID, state, outboundBody, res, false)
-		return res
-	}
-
-	if winResult.ShouldTrigger {
 		res.WindowTriggered = winResult.Reason
 
 		if winResult.Degraded {

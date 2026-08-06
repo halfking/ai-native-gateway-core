@@ -1774,20 +1774,17 @@ func (e *Executor) Execute(params *ExecParams) (*ExecuteResult, error) {
 	// empty-messages body upstream → Ark 400 InvalidParameter → circuit break.
 	isAutoReq := params.R != nil &&
 		strings.EqualFold(params.R.Header.Get("X-Gw-Is-Auto"), "true")
-	// 2026-08-06 (second layer): exempt tool-calling sessions outright.
-	// Continuation trim exists for plain chat, where "继续" is a throwaway
-	// nudge and dropping it plus the previous answer lets the model resume
-	// cleanly. In an agent session the history is a tool-call chain, and
-	// removing the last user+assistant turn destroys the tool_call /
-	// tool_result pairing the agent depends on — the model then answers
-	// from a truncated transcript and fabricates state it never saw.
-	// ToolsRequested means the inbound body carried a non-empty `tools`
-	// array, i.e. an agent loop rather than a plain conversation.
-	if !isAutoReq && !params.ToolsRequested &&
-		params.SessionID != "" && e.PendingStore != nil && params.W != nil && len(params.BodyBytes) > 0 {
+	// 2026-08-06: tool sessions skip continuation TRIM only, not retry
+	// replay. Trim drops the last user+assistant turn, which destroys
+	// tool_call/tool_result pairing in an agent loop. Retry replay is a
+	// safe cache hit — it doesn't modify the body — so keeping it for
+	// tool sessions is correct and matches the original intent.
+	if params.SessionID != "" && e.PendingStore != nil && params.W != nil && len(params.BodyBytes) > 0 {
 		hotCfg := LoadHotConfig()
 		isContinue, isRetry := IsContinuationOrRetry(params.BodyBytes, hotCfg)
-		if isContinue {
+		// Trim is destructive: only auto requests and non-tool sessions
+		// may enter this branch. Tool sessions skip straight to retry.
+		if isContinue && !isAutoReq && !params.ToolsRequested {
 			modified, err := trimOneMessageFromBody(params.BodyBytes)
 			if err == nil && len(modified) > 0 {
 				params.BodyBytes = modified
