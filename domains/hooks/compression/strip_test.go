@@ -348,3 +348,124 @@ func TestStripToolInfo_FailOpenOnCorruption(t *testing.T) {
 		t.Error("toolChainIntact must pass for a valid tool chain")
 	}
 }
+
+// TestStripToolInfo_KeepsLastNRounds_WithIncompleteRound 是 2026-08-06
+// 审计回归测试。
+//
+// 旧 filterMessages 的 keep-last-N 逻辑混用了 complete 和 incomplete
+// round 计数：len(rounds)-keepLast 用 round 总数，但 `completed` 只计
+// complete round。当 incomplete round 存在时阈值偏移，导致本应保留的
+// complete round 被过度删除。
+//
+// 本测试构造 5 complete + 1 incomplete round，断言只删 3 轮（5-2），
+// 末 2 complete round 必须完整存活。
+func TestStripToolInfo_KeepsLastNRounds_WithIncompleteRound(t *testing.T) {
+	msgs := []map[string]any{{"role": "system", "content": "sys"}}
+	for i := 0; i < 5; i++ {
+		id := fmt.Sprintf("c%d", i)
+		msgs = append(msgs,
+			map[string]any{"role": "assistant", "content": nil, "tool_calls": []any{
+				map[string]any{"id": id, "type": "function", "function": map[string]any{"name": "f"}}}},
+			map[string]any{"role": "tool", "tool_call_id": id, "content": "r" + id},
+		)
+	}
+	// 不完整 round：assistant 发起 tool_call 但无 result
+	msgs = append(msgs, map[string]any{"role": "assistant", "content": nil, "tool_calls": []any{
+		map[string]any{"id": "incomplete", "type": "function", "function": map[string]any{"name": "f"}}}})
+	msgs = append(msgs, map[string]any{"role": "user", "content": "final"})
+
+	body, _ := json.Marshal(map[string]any{"model": "m", "messages": msgs})
+	out, res := StripToolInfo(body, "openai")
+
+	var obj struct {
+		Messages []map[string]any `json:"messages"`
+	}
+	if err := json.Unmarshal(out, &obj); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+
+	// 收集存活的 tool_call ids
+	alive := map[string]bool{}
+	for _, m := range obj.Messages {
+		if tcs, ok := m["tool_calls"].([]any); ok {
+			for _, tc := range tcs {
+				if tm, ok := tc.(map[string]any); ok {
+					if id, _ := tm["id"].(string); id != "" {
+						alive[id] = true
+					}
+				}
+			}
+		}
+	}
+
+	// c3, c4 是末 2 complete round，必须存活。
+	for _, id := range []string{"c3", "c4"} {
+		if !alive[id] {
+			t.Errorf("keepLast=2: complete round %s must survive, alive=%v", id, alive)
+		}
+	}
+	// c0,c1,c2 是前 3 complete round，应被删除。
+	for _, id := range []string{"c0", "c1", "c2"} {
+		if alive[id] {
+			t.Errorf("round %s should be stripped (5 complete - keepLast 2 = 3 removed)", id)
+		}
+	}
+	// incomplete round 必须保留。
+	if !alive["incomplete"] {
+		t.Errorf("incomplete round must always survive")
+	}
+
+	// 预期删除数：3 complete round 的 anchor + results = 6 消息。
+	if res.MessagesRemoved != 6 {
+		t.Errorf("expected 6 messages removed (3 anchors + 3 results), got %d", res.MessagesRemoved)
+	}
+}
+
+// TestStripToolInfo_KeepsLastNRounds_NoIncomplete 对比组：无 incomplete
+// round 时行为不变。5 complete round → 删 3 留 2。
+func TestStripToolInfo_KeepsLastNRounds_NoIncomplete(t *testing.T) {
+	msgs := []map[string]any{{"role": "system", "content": "sys"}}
+	for i := 0; i < 5; i++ {
+		id := fmt.Sprintf("c%d", i)
+		msgs = append(msgs,
+			map[string]any{"role": "assistant", "content": nil, "tool_calls": []any{
+				map[string]any{"id": id, "type": "function", "function": map[string]any{"name": "f"}}}},
+			map[string]any{"role": "tool", "tool_call_id": id, "content": "r" + id},
+		)
+	}
+	msgs = append(msgs, map[string]any{"role": "user", "content": "final"})
+
+	body, _ := json.Marshal(map[string]any{"model": "m", "messages": msgs})
+	out, _ := StripToolInfo(body, "openai")
+
+	var obj struct {
+		Messages []map[string]any `json:"messages"`
+	}
+	if err := json.Unmarshal(out, &obj); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	alive := map[string]bool{}
+	for _, m := range obj.Messages {
+		if tcs, ok := m["tool_calls"].([]any); ok {
+			for _, tc := range tcs {
+				if tm, ok := tc.(map[string]any); ok {
+					if id, _ := tm["id"].(string); id != "" {
+						alive[id] = true
+					}
+				}
+			}
+		}
+	}
+	// 末 2 complete round 必须存活。
+	for _, id := range []string{"c3", "c4"} {
+		if !alive[id] {
+			t.Errorf("keepLast=2: %s must survive, alive=%v", id, alive)
+		}
+	}
+	// 前 3 应被删除。
+	for _, id := range []string{"c0", "c1", "c2"} {
+		if alive[id] {
+			t.Errorf("round %s should be stripped", id)
+		}
+	}
+}
