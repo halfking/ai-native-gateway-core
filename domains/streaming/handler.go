@@ -669,7 +669,9 @@ type ChatHandler struct {
 		// 2026-08-06: parentRequestID is the user request_id that triggered
 		// this title generation; forwarded as X-Gw-Parent-Request-Id so
 		// request_logs_hot.parent_request_id makes the loopback joinable.
-		MaybeGenerateTitle(sessionID, tenantID, requestBody, requestPreview, parentRequestID string)
+		// 2026-08-06: taskID is the request's gw_task_id so the stored title
+		// row matches request_logs on (task_id, scoped_session_id).
+		MaybeGenerateTitle(sessionID, tenantID, taskID, requestBody, requestPreview, parentRequestID string)
 	}
 
 	// autoSummaryGenerator (2026-08-06) incrementally rolls session
@@ -1027,8 +1029,10 @@ func (h *ChatHandler) newStreamCapture() *audit.StreamCapture {
 
 // SetAutoTitleGenerator (2026-06-22) wires the auto title generator from admin package.
 // 2026-08-06: signature extended with parentRequestID for request_logs_hot.parent_request_id linkage.
+// 2026-08-06: signature extended with taskID so the stored title row matches
+// request_logs on (task_id, scoped_session_id).
 func (h *ChatHandler) SetAutoTitleGenerator(atg interface {
-	MaybeGenerateTitle(sessionID, tenantID, requestBody, requestPreview, parentRequestID string)
+	MaybeGenerateTitle(sessionID, tenantID, taskID, requestBody, requestPreview, parentRequestID string)
 }) {
 	h.autoTitleGenerator = atg
 }
@@ -4447,7 +4451,11 @@ func (h *ChatHandler) emitTelemetry(evt audit.Event, result *executors.ExecuteRe
 		if reqLog.RequestBody != nil {
 			body = *reqLog.RequestBody
 		}
-		h.autoTitleGenerator.MaybeGenerateTitle(*reqLog.GwSessionID, tenantID, body, preview, evt.RequestID)
+		taskID := ""
+		if reqLog.GwTaskID != nil {
+			taskID = *reqLog.GwTaskID
+		}
+		h.autoTitleGenerator.MaybeGenerateTitle(*reqLog.GwSessionID, tenantID, taskID, body, preview, evt.RequestID)
 	}
 
 	// 2026-08-06: auto-summary — fires after auto-title on the same
@@ -5527,20 +5535,20 @@ func extractBearerToken(r *http.Request) string {
 // resolveEndUser picks the best end-user identifier available for this
 // request. Resolution order (highest priority first):
 //
-//	1. bodyUser — the OpenAI-style "user" field already parsed from the
-//	   request body. Empty when the body has no user field, when parsing
-//	   failed, or when the request never had a parsed body (early failure
-//	   paths).
-//	2. X-End-User-Id header — explicit end-user id header supported by all
-//	   protocols (chat-completions, Anthropic Messages, OpenAI Responses).
-//	3. bodyBytes sniff — extracts "user":"..." from the supplied body
-//	   bytes. Covers cases where the body was captured into RequestLogContext
-//	   but the typed handler never propagated bodyUser (Anthropic Messages,
-//	   OpenAI Responses, early-failure rows).
-//	4. r.Body sniff — best-effort fallback if r.Body is still readable
-//	   (only true before captureAttemptBody runs).
-//	5. "anonymous" — last-resort fallback so request_logs_hot.end_user_id
-//	   is always populated (operator dashboards can filter on it).
+//  1. bodyUser — the OpenAI-style "user" field already parsed from the
+//     request body. Empty when the body has no user field, when parsing
+//     failed, or when the request never had a parsed body (early failure
+//     paths).
+//  2. X-End-User-Id header — explicit end-user id header supported by all
+//     protocols (chat-completions, Anthropic Messages, OpenAI Responses).
+//  3. bodyBytes sniff — extracts "user":"..." from the supplied body
+//     bytes. Covers cases where the body was captured into RequestLogContext
+//     but the typed handler never propagated bodyUser (Anthropic Messages,
+//     OpenAI Responses, early-failure rows).
+//  4. r.Body sniff — best-effort fallback if r.Body is still readable
+//     (only true before captureAttemptBody runs).
+//  5. "anonymous" — last-resort fallback so request_logs_hot.end_user_id
+//     is always populated (operator dashboards can filter on it).
 //
 // 2026-08-06: previously only paths 1-2 existed. Failure-path callers
 // (buildEntry in request_log_pipeline.go) didn't have bodyUser, and the
@@ -6068,8 +6076,8 @@ func anthropicErrorType(errType, code string) string {
 		return "authentication_error"
 	case "permission_error", "blocked", "security_violation":
 		return "permission_error"
-		case "not_found", "model_not_found", "model_deprecated":
-			return "not_found_error"
+	case "not_found", "model_not_found", "model_deprecated":
+		return "not_found_error"
 	case "overloaded_error", "provider_error":
 		return "overloaded_error"
 	}

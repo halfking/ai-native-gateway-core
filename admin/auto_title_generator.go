@@ -55,17 +55,24 @@ func NewAutoTitleGenerator(handler *Handler) *AutoTitleGenerator {
 // parentRequestID (added 2026-08-06) is the user request's request_id; we
 // forward it as X-Gw-Parent-Request-Id so request_logs_hot.parent_request_id
 // makes the title loopback linkable back to its parent user request.
+// taskID (added 2026-08-06) is the session's gw_task_id from request_logs.
+// It is stored alongside the title so the request-logs list JOIN
+// (admin/logs.go requestLogsJoins) can match on (task_id, scoped_session_id);
+// historically auto titles were hardcoded to task_id='auto', which never
+// matched the request's actual gw_task_id (typically 'default') and made the
+// list show no titles. Empty taskID falls back to 'auto' to keep the legacy
+// marker for any caller that cannot resolve a real task.
 // This function is fire-and-forget and will not block the main request path.
-func (g *AutoTitleGenerator) MaybeGenerateTitle(sessionID, tenantID, requestBody, requestPreview, parentRequestID string) {
+func (g *AutoTitleGenerator) MaybeGenerateTitle(sessionID, tenantID, taskID, requestBody, requestPreview, parentRequestID string) {
 	if !g.enabled || g.handler == nil || g.handler.db == nil {
 		return
 	}
 
 	// Run in a separate goroutine to avoid blocking
-	go g.generateTitleAsync(sessionID, tenantID, requestBody, requestPreview, parentRequestID)
+	go g.generateTitleAsync(sessionID, tenantID, taskID, requestBody, requestPreview, parentRequestID)
 }
 
-func (g *AutoTitleGenerator) generateTitleAsync(sessionID, tenantID, requestBody, requestPreview, parentRequestID string) {
+func (g *AutoTitleGenerator) generateTitleAsync(sessionID, tenantID, taskID, requestBody, requestPreview, parentRequestID string) {
 	// Use background context with timeout (not tied to the request context)
 	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
 	defer cancel()
@@ -103,7 +110,7 @@ func (g *AutoTitleGenerator) generateTitleAsync(sessionID, tenantID, requestBody
 	// Step 2: Save title to database (with conflict handling).
 	// ON CONFLICT DO NOTHING: if another goroutine already saved a title for
 	// this session, we keep theirs and discard ours (first writer wins).
-	if err := g.saveSessionTitle(ctx, sessionID, title, model, keyID); err != nil {
+	if err := g.saveSessionTitle(ctx, sessionID, taskID, title, model, keyID); err != nil {
 		if strings.Contains(err.Error(), "duplicate key") || strings.Contains(err.Error(), "unique constraint") {
 			logger.Debug("title already saved by another goroutine")
 			return
@@ -507,10 +514,18 @@ func (g *AutoTitleGenerator) extractUserPrompt(preview string) string {
 }
 
 // saveSessionTitle saves the auto-generated title to session_titles table.
-// Uses task_id='auto' to indicate this was auto-generated.
+// taskID is the session's gw_task_id from request_logs so the request-logs
+// list JOIN (admin/logs.go requestLogsJoins) can match on
+// (task_id, scoped_session_id). taskID='auto' was the historical hardcoded
+// marker and never matched the request's real gw_task_id (typically 'default');
+// we now store the real task when known and fall back to 'auto' only when the
+// caller could not resolve one.
 // ON CONFLICT DO NOTHING: first writer wins — concurrent goroutines for the
 // same session keep the earliest title and discard the rest.
-func (g *AutoTitleGenerator) saveSessionTitle(ctx context.Context, sessionID, title, model string, apiKeyID int) error {
+func (g *AutoTitleGenerator) saveSessionTitle(ctx context.Context, sessionID, taskID, title, model string, apiKeyID int) error {
+	if taskID == "" {
+		taskID = "auto"
+	}
 	if model == "" {
 		model = "auto-llm"
 	}
@@ -523,9 +538,9 @@ func (g *AutoTitleGenerator) saveSessionTitle(ctx context.Context, sessionID, ti
 			model,
 			api_key_id
 		)
-		VALUES ('auto', $1, $2, NOW(), $3, $4)
+		VALUES ($1, $2, $3, NOW(), $4, $5)
 		ON CONFLICT (task_id, scoped_session_id) DO NOTHING
-	`, sessionID, title, model, apiKeyID)
+	`, taskID, sessionID, title, model, apiKeyID)
 	return err
 }
 
@@ -600,7 +615,7 @@ func (g *AutoTitleGenerator) resolveAutoTitleModel(ctx context.Context) string {
 //   - sets X-Gw-Session-Id: gt_<session_id> (the "GT" branch namespace) so
 //     request_logs_hot.gw_session_id shows "gt_gw_<original>" instead of a
 //     fresh gw_<uuid>. Operators can SQL
-//       WHERE gw_session_id LIKE 'gt\_%' ESCAPE '\'
+//     WHERE gw_session_id LIKE 'gt\_%' ESCAPE '\'
 //     to find every auto-title row. Pairs with the gs_ prefix used by
 //     admin/auto_summary_generator.go.
 //   - retries once on transient errors (connect-refused, EOF, 502/503/504) with
@@ -831,7 +846,7 @@ func isTransientAutoTitleErr(err error, status int) bool {
 		return true
 	}
 	switch status {
-	case http.StatusBadGateway,     // 502
+	case http.StatusBadGateway, // 502
 		http.StatusServiceUnavailable, // 503
 		http.StatusGatewayTimeout:     // 504
 		return true

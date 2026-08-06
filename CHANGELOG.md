@@ -52,6 +52,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - **同步**: `sql/objects/tables/{request_logs,request_logs_hot}.sql` + `deploy/sql/objects/tables/*` + `sql/schema/01-schema.sql` + `deploy/sql/schemas/baseline/01-schema.sql` 约束定义同步为放宽形态
   - **验证**: PG17 本地临时实例全流程测试通过（up 放宽 4 个关系 × 分区传播、loopback 插入成功、孤儿 parent 仍拒绝、down 恢复严格且清理关联行）；245 预发布 → 154 生产部署后 journal 不再出现 23514
 
+- **request-logs 列表显示 auto 会话标题 (2026-08-06)**:
+  - **背景**: 会话标题功能上线后，auto 生成的标题始终无法在 request-logs 列表/详情展示——`requestLogsJoins` 要求 `st.task_id = rl.gw_task_id` 精确匹配，但 auto 标题历史上硬编码 `task_id='auto'`，而请求的真实 `gw_task_id` 通常是 `default`，两者永不相交，列表该列恒为空
+  - **修复**:
+    - `admin/auto_title_generator.go`：`MaybeGenerateTitle` / `generateTitleAsync` / `saveSessionTitle` 透传请求的 `gw_task_id`，`session_titles` 行写入真实 task_id（空则回退 `'auto'` 保留旧标记）
+    - `domains/streaming/handler.go`：字段接口 + `SetAutoTitleGenerator` 签名扩展 taskID；`emitTelemetry` 调用点从 `reqLog.GwTaskID`（*string）nil 安全取值传入
+    - `admin/logs.go requestLogsJoins`：改为先按 scoped_session_id 匹配，接受 `st.task_id = rl.gw_task_id OR st.task_id = 'auto'`；为避免同一会话同时存在 legacy `('auto', S)` 与 manual/新 auto `(gw_task_id, S)` 两行时 OR-join 把请求行复制成两行，改用 `LATERAL + LIMIT 1`，优先真实 task 标题、fallback legacy 'auto'
+  - **验证**: `go build` / `go vet` / gofmt 全部通过；admin + streaming 包测试全绿
+  - **注**: 未部署（本次仅提交推送）；上线待 245 → 154
+
 ## [Unreleased] - 2026-08-04
 
 ### Fixed
