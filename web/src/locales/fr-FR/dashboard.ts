@@ -118,7 +118,11 @@ v2: {
     providers: "Fournisseurs / identifiants",
     enabledCredentials: "Activés {enabled} · identifiants {total}",
     offline: "Ressources hors ligne",
-    modelsCredentials: "Modèles {models} · identifiants {creds}"
+    modelsCredentials: "Modèles {models} · identifiants {creds}",
+    // 2026-08-06 : Taille moyenne de requête / Taille moyenne de réponse / Pic (aligné avec zh-CN)
+    avgRequestSize: "Taille moyenne de requête",
+    avgResponseSize: "Taille moyenne de réponse",
+    maxLabel: "Pic",
   },
   table: {
     hotKeysTitle: "Classement des clés API à forte utilisation",
@@ -222,6 +226,11 @@ v2: {
     modeLargeTitle: 'Mode grand : cartes avec plus de détails sur les requêtes',
     probeAll: 'Tous', probeOnly: 'Sondes uniquement',
     probeAllTitle: 'Afficher toutes les requêtes (par défaut)', probeOnlyTitle: 'Afficher uniquement les requêtes de sonde',
+    // 2026-08-06 : filtres métier / sonde + titres (aligné avec zh-CN)
+    business: 'Métier',
+    probe: 'Sonde',
+    businessTitle: 'Afficher uniquement les vraies requêtes métier',
+    probeTitle: 'Afficher uniquement les requêtes de sonde',
     cacheWindow: 'Cache / fenêtre', connectionDetailTitle: 'Cliquer pour les détails de connexion',
     dimensionVendor: 'Fournisseur', dimensionProvider: 'Fournisseur', dimensionModel: 'Modèle',
     statusOpen: 'Connecté', statusConnecting: 'Connexion en cours', statusReconnecting: 'Reconnexion',
@@ -272,6 +281,7 @@ v2: {
     filterModel: 'Modèle',
     filterProvider: 'Fournisseur',
     filterVendor: 'Vendor',
+    filterAgent: 'Client',  // 2026-08-06 aligné avec zh-CN
     clearFilters: 'Effacer les filtres',
     status: {
       in_progress: 'En cours',

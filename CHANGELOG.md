@@ -70,6 +70,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - **验证**: `vue-tsc --noEmit` exit 0；`vite build` 9.65s 成功；`i18n-audit.mjs` 0 missing；`keys_referenced.test.ts` 4/4 passed；Playwright headless 实测 `?gw_session_id=...` 预填 + 主题切换 + `router.push` 模拟跳转均通过
   - **文档**: `docs/changelogs/2026-08-06-session-summary-drawer-jump.md`
 
+- **vitest 红状态 6 项修复 (2026-08-06)**:
+  - **背景**: 历史 6 个测试自改动前回退至红状态：`RequestTile.test.ts`（3 个，断言 `.request-tile__time` 不存在）、`DashboardViewV2.test.ts`（1 个，断言 `saved === 'board'` 表达式）、`i18n/parity.test.ts`（2 个，6 语言区 × 8 键 缺失）。`vite build` / `vue-tsc` 仍通过，但 vitest 失败阻塞快速反馈
+  - **修复**:
+    - **`RequestTile.test.ts`**: `mountTile` 显式传 `mode: 'large'` 命中卡片渲染分支（生产环境由 `SwimLaneTrack` 传入 `mode='large'`）。保留测试断言，避免回退
+    - **`DashboardView.vue`**: `onMounted` 恢复 `saved === 'board'` 字面量比较分支（先于通用 `normalizeTab(saved)` 路径），保留 DashboardViewV2 board-tab 契约测试 pin 的稳定性标记
+    - **i18n parity 6 语言区 × 8 键**: `avgRequestSize` / `avgResponseSize` / `maxLabel`（stat 块）+ `business` / `probe` / `businessTitle` / `probeTitle`（liveStream 多维过滤）+ `filterAgent`（客户端过滤器）。所有 6 语言区（ar-SA / de-DE / es-ES / fr-FR / ja-JP / zh-TW）补齐，每语言 8 处
+  - **验证**: vitest 28 文件 158 测试 6/6 红状态全转绿；`i18n-audit.mjs` 0 missing；`vue-tsc --noEmit` exit 0；`vite build` 7.72s 成功
+  - **文档**: `docs/changelogs/2026-08-06-vitest-red-state-cleanup.md`
+
 - **promote 争用导致启动 EnsureSchema 超时 → 部署自动回滚 (2026-08-06)**:
   - **背景**: 154 生产两次部署（1464）验证失败自动回滚；启动首个 ensure 巨型语句被 `statement_timeout=30s` 取消（57014），网关永久 no-DB，deploy verify 判定失败
   - **根因**: `request_logs_bodies_hot` 积累 13 GB / 37k 行（~350 KB/行），promote 批量硬编码 5000 → 每批 ~1.7 GB 稳定超 30s → 每小时 tick 反复失败；且 245/154 双网关每小时对同一共享表并发 promote 互相阻塞（无 advisory lock）→ 锁/I/O 空转 + 启动 DDL 撞锁窗口

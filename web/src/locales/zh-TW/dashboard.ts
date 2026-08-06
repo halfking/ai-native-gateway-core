@@ -108,9 +108,13 @@ tabs: {
     activeInDays: "近 {days} 天活躍 {n}",
     providers: "供應商 / 憑證",
     enabledCredentials: "啟用 {enabled} · 憑證 {total}",
-    offline: "下線資源",
-    modelsCredentials: "模型 {models} · 憑證 {creds}"
-  },
+offline: "下線資源",
+     modelsCredentials: "模型 {models} · 憑證 {creds}",
+     // 2026-08-06: 平均請求體 / 平均回應體 / 峰值（與 zh-CN 對齊）
+     avgRequestSize: "平均請求體",
+     avgResponseSize: "平均回應體",
+     maxLabel: "峰值",
+   },
   table: {
     hotKeysTitle: "高用量 API Key 排行",
     byModelTitle: "依模型統計",
@@ -213,6 +217,11 @@ tabs: {
     modeLargeTitle: '大模式：卡片顯示，包含更多請求詳情',
     probeAll: '全部', probeOnly: '僅探測',
     probeAllTitle: '顯示所有請求（預設）', probeOnlyTitle: '僅顯示探測請求',
+    // 2026-08-06: 業務 / 探測過濾 + 標題（與 zh-CN 對齊）
+    business: '業務',
+    probe: '探測',
+    businessTitle: '僅顯示真實業務請求',
+    probeTitle: '僅顯示探測請求',
     cacheWindow: '快取 / 視窗', connectionDetailTitle: '點擊查看連線詳情',
     dimensionVendor: '原廠', dimensionProvider: '供應商', dimensionModel: '模型',
     statusOpen: '已連線', statusConnecting: '連線中', statusReconnecting: '重新連線中',
@@ -263,6 +272,7 @@ tabs: {
     filterModel: '模型',
     filterProvider: '供應商',
     filterVendor: '原廠',
+    filterAgent: '客戶端',  // 2026-08-06 與 zh-CN 對齊
     clearFilters: '清除過濾',
     status: {
       in_progress: '進行中',

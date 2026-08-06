@@ -118,7 +118,11 @@ v2: {
     providers: "Anbieter / Anmeldedaten",
     enabledCredentials: "Aktiviert {enabled} · Anmeldedaten {total}",
     offline: "Offline-Ressourcen",
-    modelsCredentials: "Modelle {models} · Anmeldedaten {creds}"
+    modelsCredentials: "Modelle {models} · Anmeldedaten {creds}",
+    // 2026-08-06: Durchschn. Anfragegröße / Durchschn. Antwortgröße / Spitze (Abgleich mit zh-CN)
+    avgRequestSize: "Durchschn. Anfragegröße",
+    avgResponseSize: "Durchschn. Antwortgröße",
+    maxLabel: "Spitze",
   },
   table: {
     hotKeysTitle: "Rangliste der API-Schlüssel mit hoher Nutzung",
@@ -222,6 +226,11 @@ v2: {
     modeLargeTitle: 'Großer Modus: Karten mit mehr Anfragedetails',
     probeAll: 'Alle', probeOnly: 'Nur Probes',
     probeAllTitle: 'Alle Anfragen anzeigen (Standard)', probeOnlyTitle: 'Nur Probe-Anfragen anzeigen',
+    // 2026-08-06: Geschäfts- / Probe-Filter + Titel (Abgleich mit zh-CN)
+    business: 'Geschäft',
+    probe: 'Probe',
+    businessTitle: 'Nur echte Geschäftsanfragen anzeigen',
+    probeTitle: 'Nur Probe-Anfragen anzeigen',
     cacheWindow: 'Cache / Fenster', connectionDetailTitle: 'Klicken für Verbindungsdetails',
     dimensionVendor: 'Anbieter', dimensionProvider: 'Provider', dimensionModel: 'Modell',
     statusOpen: 'Verbunden', statusConnecting: 'Verbinden', statusReconnecting: 'Wiederverbinden',
@@ -272,6 +281,7 @@ v2: {
     filterModel: 'Modell',
     filterProvider: 'Anbieter',
     filterVendor: 'Vendor',
+    filterAgent: 'Client',  // 2026-08-06 Abgleich mit zh-CN
     clearFilters: 'Filter löschen',
     status: {
       in_progress: 'In Bearbeitung',
