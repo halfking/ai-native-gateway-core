@@ -56,6 +56,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Grafana dashboard + alert rules for auto_title / auto_summary (2026-08-06)**:
+  - **dashboard**: `deploy/grafana/dashboards/auto-summary-monitoring.json`（同时拷贝到 `deploy/prometheus/grafana/provisioning/dashboards/` 让 docker-compose Grafana 自动 provisioner 加载）。10 个面板覆盖：
+    - Auto-Summary / Auto-Title 触发速率（按 result）
+    - 失败占比 stat
+    - Auto-Summary LLM 调用延迟 P50/P95/P99（按 mode）
+    - Auto-Title LLM 调用延迟 P50/P95/P99
+    - Auto-Summary LLM 调用结果堆叠（按 mode × result）
+    - 滚动闸门跳过原因
+    - Map-reduce 部分失败（per hour）
+    - Map-reduce chunk 分布直方图
+    - Last-hour 健康概览表
+  - **alerts**: `deploy/monitoring/grafana-alerts/auto-summary-failures.yaml`（7 个告警规则覆盖 trigger error、LLM call error、map-reduce degraded、gate DB error、worker saturation、tenant rate-limit）。Severity 分级：warning / info，与 `shadow-write-failures.yaml` 风格一致
+  - **命名约定**: dashboard 顶部 annotation 明确标注 `auto_summary_*` / `auto_title_*` 打破了 `llm_gateway_*` 标准前缀（这是 metrics/auto_summary_metrics.go 的有意偏离）
+  - **运维闭环**: alert rule 直接给出 `runbook` 字段指向 settings_kv 调优点（worker_slots / rate_per_min / map_reduce_threshold）
+
 - **auto_summary 运行时常量接入 settings_kv 热更新 (2026-08-06)**:
   - **背景**: admin/auto_summary_generator.go 中 5 个硬编码常量（rolling_turn_gate=3、map_reduce_threshold=12000、chunk_approx_chars=3000、default_rate_per_min=6、default_worker_slots=4）运维侧无法调整，需重启进程才生效
   - **修改**:
