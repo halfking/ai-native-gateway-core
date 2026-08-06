@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **KeyInfo 字段 parity 锁死 (2026-08-06)**:
+  - **背景**: end-user 修复审计 agent 提到风险 — success 路径 (emitTelemetry) 与 failure 路径 (buildEntry) 通过**不同代码路径**填充 API key 显示字段（applyKeyInfoToRequestLog vs enrichRequestLogFromMeta）。如果 refactor 中断了其中一条路径，两种 row 会悄悄失配
+  - **调查结论**: 经实际测试验证，当 keyInfo 完整时两条路径都通过 `formatKeyPrefixDisplay` + `meta` 流水线正确填充 `APIKeyPrefix` / `APIKeyOwnerUser` / `ApplicationCode`。parity 当前成立
+  - **测试固化**: 新增 `TestRequestLogContext_KeyInfoParity`（7 字段对比）+ `TestRequestLogContext_BuildFailureEntry_KeyMetaParity`（失败路径单测）。未来 refactor 误删 `enrichRequestLogFromMeta` 或 `resolveKeyMeta` 调用会被 CI 立即拦截
+  - **文档**: 失败路径 `buildEntry` 不直接设 APIKeyPrefix 等 3 字段，依赖 `enrichRequestLogFromMeta(c.Request, c.KeyInfo, &c.meta)` + `c.refreshMeta()` 链条。这是审计提到的脆弱点但当前正确，测试将锁死它
+
 - **end_user_id 在所有路径下都填充 (2026-08-06) — dc767386f... 事件根因**
   - **症状**: `request_logs_hot.end_user_id` 在早失败路径（auth_unavailable / invalid_key / model_forbidden / session_forbidden 等）和 `/v1/messages` / `/v1/responses` 协议下长期为 NULL。dc767386f77450b89655d4855df41819 即为用户报告的典型样本
   - **第一轮根因**:
