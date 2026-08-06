@@ -28,6 +28,7 @@ const props = defineProps<{
 
 const emit = defineEmits<{
   close: []
+  generateSessionSummary: [sessionId: string]
 }>()
 
 const loading = ref(false)
@@ -357,6 +358,17 @@ function routingAttempts(): RequestLogDetail['routing_attempts'] {
               :title="t('trace.modal.tooltip')"
             >
               {{ showTrace ? '✕ ' + t('trace.modal.close') : t('trace.modal.openButton') }}
+            </button>
+            <!-- 2026-08-06: 会话总结按钮 — 仅在有 session_id 时显示，
+                 用于生成整个会话的总结（一对多关系）。 -->
+            <button
+              v-if="detail.gw_session_id"
+              class="btn btn-sm"
+              type="button"
+              @click="$emit('generateSessionSummary', detail.gw_session_id)"
+              title="生成会话总结"
+            >
+              📝 会话总结
             </button>
           </div>
         </div>

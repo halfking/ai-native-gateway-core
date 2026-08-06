@@ -313,6 +313,10 @@ func extractMessagesForTitle(requestBody string) string {
 		if text == "" {
 			continue
 		}
+		// Skip tool/function messages - they contain output data, not user intent
+		if role == "tool" || role == "function" {
+			continue
+		}
 		// Long system prompts (IDE tool descriptions) are usually boilerplate;
 		// truncate aggressively so the user question is not crowded out.
 		if role == "system" && len(text) > maxSysChars {
