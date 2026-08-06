@@ -12,7 +12,7 @@ set_group B server_error
 run_loadtest S15_cross_group_failover \
     --n-clients 10 --rps-per-client 3 --duration 30 \
     --models tier --prompt short
-print_summary S15_cross_group
+print_summary S15_cross_group_failover
 
 reset_all_suppliers
 echo "  期望：100% 成功，A/B 组流量 0%"

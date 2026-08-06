@@ -224,6 +224,8 @@ async def cmd_set_group(args):
         )
     n_ok = sum(1 for r in results if r.get("ok"))
     print(f"  ok: {n_ok}/{len(ports)}")
+    if n_ok != len(ports):
+        raise SystemExit(1)
 
 
 async def cmd_reset_group(args):
@@ -260,6 +262,8 @@ async def cmd_reset_all(args):
         )
     print("\nreset-all (every group forced to healthy):")
     print(f"  ok: {sum(1 for r in results if r.get('ok'))}/{len(ports_all)}")
+    if sum(1 for r in results if r.get("ok")) != len(ports_all):
+        raise SystemExit(1)
     print("\nreset-all: done")
 
 
@@ -282,6 +286,8 @@ async def cmd_set_group_quota(args):
         f"set-group-quota {args.group} tokens={args.tokens} window={args.window_sec}s: "
         f"{n_ok}/{len(ports)} ok"
     )
+    if n_ok != len(ports):
+        raise SystemExit(1)
 
 
 async def cmd_set(args):

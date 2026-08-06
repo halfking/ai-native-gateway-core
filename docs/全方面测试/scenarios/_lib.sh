@@ -5,7 +5,8 @@
 set -euo pipefail
 
 TOOLS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")/../tools" && pwd)"
-RESULTS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")/.." && pwd)/results"
+export PYTHONPATH="$TOOLS_DIR${PYTHONPATH:+:$PYTHONPATH}"
+RESULTS_DIR="${RESULTS_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")/.." && pwd)/results}"
 mkdir -p "$RESULTS_DIR"
 
 # 2026-08-06 修订: 默认 DB 连接参数与 02-测试环境部署.md §3.1 实战配置对齐。
@@ -81,6 +82,57 @@ run_loadtest() {
         --output "$RESULTS_DIR/${scenario}.json" \
         $extra_args 2>&1
     cd "$RESULTS_DIR/.."
+}
+
+# write_scenario_result SCENARIO CATEGORY STATUS CHECKS_JSON METRICS_JSON EVIDENCE_JSON FAILURES_JSON PARAMETERS_JSON
+# Write one strict, atomic result envelope. All JSON arguments must already be valid JSON.
+write_scenario_result() {
+    local scenario="$1" category="$2" status="$3" checks="$4" metrics="$5"
+    local evidence="$6" failures="$7" parameters="$8"
+    python3 - "$RESULTS_DIR/${scenario}.json" "$scenario" "$category" "$status" \
+        "$checks" "$metrics" "$evidence" "$failures" "$parameters" <<'PY'
+import json, os, sys
+from result_contract import envelope, write_result
+
+path, scenario, category, status, checks, metrics, evidence, failures, parameters = sys.argv[1:]
+result = envelope(
+    scenario,
+    category,
+    status,
+    checks=json.loads(checks),
+    metrics=json.loads(metrics),
+    evidence=json.loads(evidence),
+    failures=json.loads(failures),
+    parameters=json.loads(parameters),
+)
+write_result(path, result)
+PY
+}
+
+# finalize_load_result SCENARIO CATEGORY CHECKS_JSON [FAILURES_JSON]
+# Convert a loadtest observation into an acceptance result.
+finalize_load_result() {
+    local scenario="$1" category="$2" checks="$3" failures="${4:-[]}"
+    python3 - "$RESULTS_DIR/${scenario}.json" "$scenario" "$category" "$checks" "$failures" <<'PY'
+import json, sys
+from result_contract import envelope, write_result
+path, scenario, category, checks_raw, failures_raw = sys.argv[1:]
+with open(path, encoding="utf-8") as stream:
+    observed = json.load(stream)
+checks = json.loads(checks_raw)
+failures = json.loads(failures_raw)
+status = "PASS" if all(checks.values()) and not failures else "FAIL"
+result = envelope(
+    scenario, category, status,
+    checks=checks,
+    metrics=observed.get("metrics", {}),
+    evidence={"loadtest": observed, "observed_status": observed.get("status")},
+    failures=failures,
+    parameters=observed.get("parameters", {}),
+    reason="all acceptance checks passed" if status == "PASS" else "; ".join(failures),
+)
+write_result(path, result)
+PY
 }
 
 # Pretty print summary line

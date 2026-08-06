@@ -1,257 +1,233 @@
 #!/usr/bin/env python3
-# docs/全方面测试/tools/validation_report.py
-#
-# 把 results/*.json 聚合成 docs/全方面测试/06-验收标准.md 中定义的验收报告。
-# 输出 Markdown 表格 + 总体通过率 + 风险点。
-#
-# 用法：
-#   python3 tools/validation_report.py --results ./results > ./results/REPORT.md
+"""Strict, run-scoped acceptance report for the gateway test suites."""
+
+from __future__ import annotations
 
 import argparse
 import glob
 import json
 import os
 import sys
-from collections import defaultdict
+from datetime import datetime, timezone
+from typing import Any
 
-# 场景验收阈值（与 docs/全方面测试/06-验收标准.md 一致）
+from result_contract import STATUSES, normalize_legacy_result, validate_result
+
+# Legacy load-test gates retained as a compatibility reference. Strict scenario
+# checks are authoritative when a result uses schema_version 1.0.
 GATES = {
     "S01_baseline": {"succ_pct": 99, "p99_ms": 1500, "label": "基准性能"},
     "S02_cost_route": {"succ_pct": 99, "p99_ms": 1500, "label": "成本优化路由"},
     "S03_concurrency_diff": {"succ_pct": 99, "p99_ms": 1500, "label": "并发能力差异化"},
     "S04_quota_failover": {"succ_pct": 99, "p99_ms": 1500, "label": "配额耗尽与恢复"},
-    "S05_quality_penalty": {"succ_pct": 97, "p99_ms": 5000, "label": "延迟/质量降权 (G组2-4s注入)"},
-    "S06_mixed_fault": {"succ_pct": 94, "p99_ms": 5000, "label": "混合故障韧性 (G慢/J抖/B错同发)"},
+    "S05_quality_penalty": {"succ_pct": 97, "p99_ms": 5000, "label": "延迟/质量降权"},
+    "S06_mixed_fault": {"succ_pct": 94, "p99_ms": 5000, "label": "混合故障韧性"},
     "S07_peak_dispatch": {"succ_pct": 99, "p99_ms": 2500, "label": "高峰动态调度"},
     "S08_sticky": {"succ_pct": 95, "p99_ms": 1500, "label": "Sticky 连续性"},
     "S09_streaming": {"succ_pct": 90, "p99_ms": 1500, "label": "流式 SSE"},
     "S10_long_prompt": {"succ_pct": 92, "p99_ms": 2500, "label": "长 Prompt"},
     "S11_quota_recovery": {"succ_pct": 99, "p99_ms": 1500, "label": "周期性配额恢复"},
-    "S12_comprehensive": {"succ_pct": 98, "p99_ms": 5000, "label": "全场景综合压测 (G组2-4s注入)"},
-    "S12_post_recovery": {
-        "succ_pct": 98,
-        "p99_ms": 2500,
-        "label": "全场景综合压测 (恢复)",
-    },
-    # S17-S19: scripts produce pass/fail via 'extra.pass' boolean in their JSON,
-    # so we treat the gate as "pass flag in extra" rather than success_rate threshold.
-    "S17_stream_continuation": {
-        "extra_pass": True,
-        "label": "流式断连续传 (按脚本 extra.pass 判定)",
-    },
-    "S18_null_handling": {
-        "extra_pass": True,
-        "label": "空值/边界请求处理 (按脚本判定)",
-    },
-    "S19_tenant_isolation": {
-        "extra_pass": True,
-        "label": "多租户隔离 (按脚本判定)",
-    },
-    # 期望失败的场景
-    "S13_no_candidate": {
-        "succ_pct": 0,
-        "p99_ms": 5000,
-        "label": "无可用节点",
-        "fail_expected": True,
-    },
-    "S14_model_not_found": {
-        "succ_pct": 0,
-        "p99_ms": 100,
-        "label": "模型不存在",
-        "fail_expected": True,
-    },
-    "S15_cross_group_failover": {
-        "succ_pct": 99,
-        "p99_ms": 3000,
-        "label": "跨组故障迁移",
-    },
-    "S16_before_recharge": {
-        "succ_pct": 99,
-        "p99_ms": 2500,
-        "label": "配额快速恢复 (前)",
-    },
-    "S16_after_recharge": {
-        "succ_pct": 99,
-        "p99_ms": 2500,
-        "label": "配额快速恢复 (后)",
-    },
-    # wave1/wave2 双 wave 形式 (实际 run 输出)
-    "S16_precharge_w1": {
-        "succ_pct": 99,
-        "p99_ms": 2500,
-        "label": "S16 wave1 (pre-charge)",
-    },
-    "S16_recovery_w2": {
-        "succ_pct": 99,
-        "p99_ms": 2500,
-        "label": "S16 wave2 (recovery)",
-    },
+    "S12_comprehensive": {"succ_pct": 98, "p99_ms": 5000, "label": "综合压测"},
+    "S13_no_candidate": {"succ_pct": 0, "p99_ms": 5000, "label": "无可用节点", "fail_expected": True},
+    "S14_model_not_found": {"succ_pct": 0, "p99_ms": 100, "label": "模型不存在", "fail_expected": True},
+    "S15_cross_group_failover": {"succ_pct": 99, "p99_ms": 3000, "label": "跨组故障迁移"},
+    "S16_before_recharge": {"succ_pct": 99, "p99_ms": 2500, "label": "配额恢复前"},
+    "S16_after_recharge": {"succ_pct": 99, "p99_ms": 2500, "label": "配额恢复后"},
+    "S17_stream_continuation": {"label": "流式断连续传"},
+    "S18_null_handling": {"label": "空值/边界请求"},
+    "S19_tenant_isolation": {"label": "多租户隔离"},
+    "S20_auto_title": {"label": "自动标题"},
+    "S21_branch_session": {"label": "分支会话"},
+    "S22_instant_summary": {"label": "即时总结"},
+    "S23_long_text_chunked": {"label": "长文本压缩"},
+    "C01_concurrency": {"label": "并发阶梯"},
+    "P01_performance": {"label": "性能基线"},
+    "R01_reliability": {"label": "可靠性与恢复"},
 }
 
 
-def evaluate(scenario_key: str, m: dict, d: dict = None) -> dict:
-    g = GATES.get(scenario_key, {})
-    if not g:
-        return {"status": "unknown", "reason": "no gate"}
+def _legacy_evaluate(name: str, data: dict[str, Any]) -> tuple[str, str]:
+    gate = GATES.get(name)
+    if not gate:
+        return "INVALID", "unknown scenario"
+    metrics = data.get("metrics") or {}
+    pct = float(metrics.get("success_rate", 0)) * 100
+    p99 = float(metrics.get("p99_ms", 999999))
+    expected_failure = bool(gate.get("fail_expected"))
+    pct_ok = pct <= gate["succ_pct"] if expected_failure else pct >= gate.get("succ_pct", 0)
+    p99_ok = p99 <= gate.get("p99_ms", 999999)
+    return ("PASS" if pct_ok and p99_ok else "FAIL"), (
+        f"legacy success_rate={pct:.1f}% p99={p99:.0f}ms"
+    )
 
-    label = g.get("label", scenario_key)
 
-    # S17-S19 等：scenario scripts 把 'extra.pass' 作为权威 pass/fail 验收，
-    # 它们有自己的多步不变量（超出 loadtest 的 success-rate/p99 判定）。
-    # extra 写在 JSON 顶层（与 metrics 同级），所以从 d 取；metrics.extra 兜底。
-    if g.get("extra_pass"):
-        extra = (d or {}).get("extra") or m.get("extra") or {}
-        script_pass = bool(extra.get("pass"))
+def _evaluate_gates(name: str, data: dict[str, Any]) -> tuple[bool, list[str]]:
+    gate = GATES.get(name)
+    if not gate:
+        return True, []
+    metrics = data.get("metrics") or {}
+    failures: list[str] = []
+    success_pct = float(metrics.get("success_rate", 0)) * 100
+    p99_ms = float(metrics.get("p99_ms", 999999))
+    if gate.get("fail_expected"):
+        if success_pct > gate.get("succ_pct", 0):
+            failures.append(f"success_rate={success_pct:.1f}% exceeds expected maximum")
+    elif "succ_pct" in gate and success_pct < gate["succ_pct"]:
+        failures.append(f"success_rate={success_pct:.1f}% below {gate['succ_pct']}%")
+    if "p99_ms" in gate and p99_ms > gate["p99_ms"]:
+        failures.append(f"p99_ms={p99_ms:.0f} exceeds {gate['p99_ms']}ms")
+    if name == "S09_streaming":
+        completion = float(metrics.get("stream_completion_rate", 0)) * 100
+        if metrics.get("stream_total", 0) and completion < 95:
+            failures.append(f"stream_completion_rate={completion:.1f}% below 95%")
+    return not failures, failures
+
+
+def evaluate_file(path: str, expected: str | None = None) -> dict[str, Any]:
+    name = os.path.splitext(os.path.basename(path))[0]
+    try:
+        with open(path, encoding="utf-8") as stream:
+            data = json.load(stream)
+    except (OSError, json.JSONDecodeError) as exc:
+        return {"scenario": name, "status": "INVALID", "reason": f"parse error: {exc}"}
+
+    errors = validate_result(data, expected)
+    if errors:
+        data = normalize_legacy_result(data, expected or name)
+        errors = validate_result(data, expected)
+    if errors:
+        return {"scenario": name, "status": "INVALID", "reason": "; ".join(errors)}
+
+    status = data["status"]
+    checks = data.get("checks") or {}
+    false_checks = [key for key, value in checks.items() if value is False]
+    failures = data.get("failures") or []
+    gate_ok, gate_failures = _evaluate_gates(data["scenario"], data)
+    if status == "PASS" and (false_checks or failures or not gate_ok):
+        failures = failures + gate_failures
         return {
-            "status": "PASS" if script_pass else "FAIL",
-            "script_pass": script_pass,
-            "label": label,
-            "note": "script-extra.pass",
-            "total": m.get("total", 0),
+            "scenario": name,
+            "status": "FAIL",
+            "run_id": data.get("run_id"),
+            "category": data.get("category"),
+            "checks": checks,
+            "metrics": data.get("metrics") or {},
+            "reason": "; ".join(
+                [f"false checks: {', '.join(false_checks)}" if false_checks else ""]
+                + failures
+                + gate_failures
+            ).strip("; "),
+            "failures": failures,
         }
-
-    pct = m.get("success_rate", 0) * 100
-    p99 = m.get("p99_ms", 9999)
-    fail_expected = g.get("fail_expected", False)
-
-    ok_pct = pct >= g["succ_pct"] if not fail_expected else pct <= g["succ_pct"]
-    # 期望失败的场景（S13/S14）：调用方预期 gateway 拒绝/无候选，
-    # p99 反映"快速 fail" 的尾延迟，不应再受 p99_ms gate 约束。
-    ok_p99 = True if fail_expected else p99 <= g["p99_ms"]
+    if status not in STATUSES:
+        return {"scenario": name, "status": "INVALID", "reason": "invalid status"}
     return {
-        "status": "PASS" if (ok_pct and ok_p99) else "FAIL",
-        "fail_expected": fail_expected,
-        "succ_pct": pct,
-        "succ_pct_target": g["succ_pct"],
-        "p99_ms": p99,
-        "p99_ms_target": g["p99_ms"],
-        "ok_pct": ok_pct,
-        "ok_p99": ok_p99,
-        "label": label,
+        "scenario": name,
+        "status": status,
+        "run_id": data.get("run_id"),
+        "category": data.get("category"),
+        "checks": checks,
+        "metrics": data.get("metrics") or {},
+        "reason": data.get("reason", ""),
+        "failures": failures,
     }
 
 
-def main():
+def load_manifest(path: str | None) -> list[str] | None:
+    if not path:
+        return None
+    try:
+        with open(path, encoding="utf-8") as stream:
+            manifest = json.load(stream)
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ValueError(f"invalid manifest: {exc}") from exc
+    scenarios = manifest.get("scenarios") if isinstance(manifest, dict) else None
+    if not isinstance(scenarios, list) or not all(isinstance(item, str) for item in scenarios):
+        raise ValueError("manifest.scenarios must be an array of names")
+    return scenarios
+
+
+def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--results", default="./results", help="results/*.json dir")
+    parser.add_argument("--results", default="./results")
+    parser.add_argument("--manifest", help="JSON manifest containing declared scenario names")
     parser.add_argument("--format", choices=["md", "json"], default="md")
+    parser.add_argument("--allow-skipped", action="store_true")
     args = parser.parse_args()
 
-    files = sorted(glob.glob(os.path.join(args.results, "*.json")))
-    if not files:
-        print(f"# no results in {args.results}", file=sys.stderr)
-        return 1
+    try:
+        declared = load_manifest(args.manifest)
+    except ValueError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
 
-    rows = []
-    for f in files:
-        name = os.path.splitext(os.path.basename(f))[0]
-        try:
-            d = json.load(open(f))
-        except Exception as e:
-            rows.append({"scenario": name, "status": "PARSE-ERROR", "error": str(e)})
+    if declared is None:
+        files = sorted(glob.glob(os.path.join(args.results, "*.json")))
+        expected_by_file = {path: None for path in files}
+    else:
+        expected_by_file = {
+            os.path.join(args.results, f"{scenario}.json"): scenario for scenario in declared
+        }
+
+    rows: list[dict[str, Any]] = []
+    for path, expected in expected_by_file.items():
+        if not os.path.exists(path):
+            rows.append({
+                "scenario": expected or os.path.basename(path),
+                "status": "INVALID",
+                "reason": "missing result file",
+            })
             continue
-        m = d.get("metrics", {})
-        # S17–S19 把 'extra' 写在 JSON 顶层（与 metrics 同级），不是 metrics 里；
-        # 把整份 d 也传给 evaluate 以便 extra_pass gate 能取到。
-        ev = evaluate(name, m, d)
-        ev["scenario"] = name
-        ev["total"] = m.get("total", 0)
-        ev["label"] = ev.get("label", name)
-        rows.append(ev)
+        rows.append(evaluate_file(path, expected))
 
-    # 计数
-    n_pass = sum(1 for r in rows if r.get("status") == "PASS")
-    n_fail = sum(1 for r in rows if r.get("status") == "FAIL")
+    counts = {status: sum(1 for row in rows if row["status"] == status) for status in STATUSES}
+    blocking = counts["FAIL"] + counts["INVALID"]
+    incomplete = counts["SKIPPED"] + counts["BLOCKED_ENVIRONMENT"]
+    if blocking:
+        overall = "FAIL"
+    elif incomplete and not args.allow_skipped:
+        overall = "INCOMPLETE"
+    else:
+        overall = "PASS"
 
-    # === Markdown 输出 ===
-    print("# LLM Gateway 全场景测试报告\n")
-    print(f"- 生成时间: {os.popen('date -Iseconds').read().strip()}")
-    print(f"- 测试结果目录: `{args.results}`")
-    print(f"- 总场景数: {len(rows)}  通过: {n_pass}  失败: {n_fail}\n")
-
-    print("## 总体状态\n")
-    icon = "🟢" if n_fail == 0 else "🟡"
-    print(f"{icon} 总通过率：{n_pass}/{len(rows)}\n")
-
-    print("## 各场景验收详情\n")
-    print("| 状态 | 场景 | 总请求 | 成功率(%) | 目标 | P99(ms) | 目标 | 描述 |")
-    print("|---|---|---|---|---|---|---|---|")
-    for r in rows:
-        if r.get("status") == "PARSE-ERROR":
-            print(
-                f"| ❌ | {r['scenario']} | _"
-                + f" | _ | _ | _ | _ | parse error: {r.get('error', '')} |"
-            )
-            continue
-        ok_pct = "✓" if r.get("ok_pct", False) else "✗"
-        ok_p99 = "✓" if r.get("ok_p99", False) else "✗"
-        fail_str = "  (预期失败)" if r.get("fail_expected") else ""
-        if r.get("status") == "unknown":
-            print(
-                f"| ⚠️ | `{r['scenario']}` | {r.get('total', 0)} | _ | _ | _ | _ | {r.get('label', r['scenario'])}{fail_str} (no gate defined) |"
-            )
-            continue
-        # script-extra.pass gate path (e.g. S17–S19) — 没有 succ_pct/p99 gate,
-        # 直接用脚本自身的 pass 标记判定。
-        if r.get("note") == "script-extra.pass":
-            mark = "✅" if r.get("status") == "PASS" else "❌"
-            print(
-                f"| {mark} | `{r['scenario']}` | {r.get('total', 0)} | _ | _ | _ | _ | "
-                f"{r['label']} (script pass={r.get('script_pass', False)}) |"
-            )
-            continue
-        print(
-            f"| {r['status']} | `{r['scenario']}` | {r['total']} | "
-            f"{r['succ_pct']:.1f} {ok_pct} | {r['succ_pct_target']} | "
-            f"{r['p99_ms']:.0f} {ok_p99} | {r['p99_ms_target']} | "
-            f"{r['label']}{fail_str} |"
-        )
-
-    # 失败详情
-    fails = [r for r in rows if r.get("status") == "FAIL"]
-    if fails:
-        print("\n## 失败场景详情\n")
-        for r in fails:
-            print(f"### ❌ {r['scenario']} — {r['label']}")
-            if r.get("note") == "script-extra.pass":
-                print(f"- 脚本判定: pass={r.get('script_pass', False)}")
-                fail_path = os.path.join(args.results, f"{r['scenario']}.json")
-                print(f"- 原始数据: `{fail_path}`")
-                print()
-                continue
-            print(
-                f"- 成功率: {r['succ_pct']:.1f}%  (目标 {r['succ_pct_target']}%, "
-                f"{'通过' if r['ok_pct'] else '不通过'})"
-            )
-            print(
-                f"- P99:    {r['p99_ms']:.0f}ms  (目标 {r['p99_ms_target']}ms, "
-                f"{'通过' if r['ok_p99'] else '不通过'})"
-            )
-            fail_path = os.path.join(args.results, f"{r['scenario']}.json")
-            print(f"- 原始数据: `{fail_path}`")
-            print()
-
-    print("\n## 故障模式覆盖矩阵\n")
-    faul_matrix = {
-        "S04/S11": ["429 quota_exceeded"],
-        "S05": ["slow upstream (2-4s 延迟)"],
-        "S06": ["slow + flaky + server_error + rate_limited 同发"],
-        "S07": ["tier-3 高峰启用"],
-        "S09": ["broken_stream (SSE 写一半断流)"],
-        "S10": ["context_length_exceeded"],
-        "S11/S16": ["quota 短窗口 → 恢复"],
-        "S12": ["15 model × 150 client × 6 min"],
-        "S13": ["全部供应商故障 → no_candidate"],
-        "S14": ["model_not_found"],
-        "S15": ["跨组故障迁移"],
+    report = {
+        "schema_version": "1.0",
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "results_dir": os.path.abspath(args.results),
+        "overall_status": overall,
+        "counts": counts,
+        "rows": rows,
+        "allow_skipped": args.allow_skipped,
     }
-    print("| 场景 | 验证的故障模式 |")
-    print("|---|---|")
-    for s, fs in faul_matrix.items():
-        print(f"| {s} | {', '.join(fs)} |")
+    if args.format == "json":
+        print(json.dumps(report, ensure_ascii=False, indent=2))
+    else:
+        print("# LLM Gateway 严格测试报告\n")
+        print(f"- 生成时间: {report['generated_at']}")
+        print(f"- 结果目录: `{report['results_dir']}`")
+        print(f"- 总体状态: **{overall}**")
+        print(
+            "- 统计: "
+            + ", ".join(f"{status}={counts[status]}" for status in sorted(counts))
+            + "\n"
+        )
+        print("## 场景明细\n")
+        print("| 状态 | 场景 | 类别 | Run ID | 说明 |")
+        print("|---|---|---|---|---|")
+        for row in rows:
+            print(
+                f"| {row['status']} | `{row['scenario']}` | "
+                f"{row.get('category', '_')} | `{row.get('run_id', '-')}` | "
+                f"{row.get('reason', '')} |"
+            )
+        if overall != "PASS":
+            print("\n## 验收阻断原因\n")
+            for row in rows:
+                if row["status"] != "PASS":
+                    print(f"- `{row['scenario']}`: {row['status']} — {row.get('reason', '')}")
 
-    return 0
+    return 0 if overall == "PASS" else 1
 
 
 if __name__ == "__main__":
-    sys.exit(main() or 0)
+    sys.exit(main())
