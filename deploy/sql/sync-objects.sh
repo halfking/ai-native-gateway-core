@@ -24,7 +24,7 @@ fi
 
 # 创建目标目录结构
 echo "[1/3] 创建目录结构..."
-mkdir -p "$TARGET_DIR"/{tables,views,functions,sequences,triggers,indexes,constraints,policies}
+mkdir -p "$TARGET_DIR"/{tables,views,functions,sequences,triggers,indexes,constraints,policies,other}
 
 # 统计变量
 TOTAL_FILES=0
@@ -52,7 +52,22 @@ sync_objects() {
     echo "  同步 $object_type/: $file_count 个文件..."
     
     # 复制所有 SQL 文件
-    find "$source_path" -name "*.sql" -exec cp -v {} "$target_path/" \; 2>/dev/null | wc -l | xargs | read copied
+    find "$source_path" -name "*.sql" -exec cp -f {} "$target_path/" \;
+    
+    # 删除目标目录中源已不存在的文件（保持与源完全一致）
+    local stale_count=0
+    while IFS= read -r stale; do
+        local base
+        base=$(basename "$stale")
+        if [ ! -f "$source_path/$base" ]; then
+            rm -f "$stale"
+            stale_count=$((stale_count + 1))
+        fi
+    done < <(find "$target_path" -name "*.sql" 2>/dev/null)
+    if [ "$stale_count" -gt 0 ]; then
+        echo "  ✕ 清理 $object_type/: 删除 $stale_count 个源中已不存在的文件"
+    fi
+    
     COPIED_FILES=$((COPIED_FILES + file_count))
 }
 
@@ -68,12 +83,13 @@ sync_objects "triggers"
 sync_objects "indexes"
 sync_objects "constraints"
 sync_objects "policies"
+sync_objects "other"
 
 echo ""
 echo "[3/3] 创建对象索引文件..."
 
 # 为每个对象类型创建 README
-for obj_type in tables views functions sequences triggers indexes constraints policies; do
+for obj_type in tables views functions sequences triggers indexes constraints policies other; do
     target_path="$TARGET_DIR/$obj_type"
     
     if [ ! -d "$target_path" ]; then
@@ -149,7 +165,7 @@ echo "同步完成"
 echo "========================================"
 echo ""
 echo "对象统计:"
-for obj_type in tables views functions sequences triggers indexes constraints policies; do
+for obj_type in tables views functions sequences triggers indexes constraints policies other; do
     target_path="$TARGET_DIR/$obj_type"
     if [ -d "$target_path" ]; then
         count=$(find "$target_path" -name "*.sql" 2>/dev/null | wc -l | xargs)

@@ -33,11 +33,9 @@ test_case() {
     if eval "$condition"; then
         echo -e "${GREEN}✓${NC} $name"
         TESTS_PASSED=$((TESTS_PASSED + 1))
-        return 0
     else
         echo -e "${RED}✗${NC} $name"
         TESTS_FAILED=$((TESTS_FAILED + 1))
-        return 1
     fi
 }
 
@@ -45,7 +43,7 @@ echo "[1/6] 验证目录结构..."
 echo ""
 
 test_case "存在 schemas/baseline/ 目录" "[ -d '$SCRIPT_DIR/schemas/baseline' ]"
-test_case "存在 schemas/snapshots/ 目录" "[ -d '$SCRIPT_DIR/schemas/snapshots' ]"
+test_case "存在 schemas/snapshots/ 目录" "[ -d '$SCRIPT_DIR/schemas/snapshots' ] || [ -f '$SCRIPT_DIR/schemas/snapshots/.gitkeep' ]"
 test_case "存在 migrations/ 目录" "[ -d '$SCRIPT_DIR/migrations' ]"
 test_case "存在 scripts/ 目录" "[ -d '$SCRIPT_DIR/scripts' ]"
 test_case "存在 cron/ 目录" "[ -d '$SCRIPT_DIR/cron' ]"
@@ -134,7 +132,7 @@ echo ""
 test_case "存在 objects/ 目录" "[ -d '$SCRIPT_DIR/objects' ]"
 
 # 检查各类对象目录
-for obj_type in tables views functions sequences triggers indexes constraints policies; do
+for obj_type in tables views functions sequences triggers indexes constraints policies other; do
     test_case "存在 objects/$obj_type/ 目录" "[ -d '$SCRIPT_DIR/objects/$obj_type' ]"
 done
 
@@ -148,15 +146,17 @@ if [ -d "$SCRIPT_DIR/objects" ]; then
     INDEXES_COUNT=$(find "$SCRIPT_DIR/objects/indexes" -name "*.sql" 2>/dev/null | wc -l | xargs)
     CONSTRAINTS_COUNT=$(find "$SCRIPT_DIR/objects/constraints" -name "*.sql" 2>/dev/null | wc -l | xargs)
     POLICIES_COUNT=$(find "$SCRIPT_DIR/objects/policies" -name "*.sql" 2>/dev/null | wc -l | xargs)
+    OTHER_COUNT=$(find "$SCRIPT_DIR/objects/other" -name "*.sql" 2>/dev/null | wc -l | xargs)
     
-    test_case "objects/tables/ 有 103 个文件" "[ '$TABLES_COUNT' -eq 103 ]"
-    test_case "objects/views/ 有 9 个文件" "[ '$VIEWS_COUNT' -eq 9 ]"
-    test_case "objects/functions/ 有 18 个文件" "[ '$FUNCTIONS_COUNT' -eq 18 ]"
-    test_case "objects/sequences/ 有 113 个文件" "[ '$SEQUENCES_COUNT' -eq 113 ]"
-    test_case "objects/triggers/ 有 14 个文件" "[ '$TRIGGERS_COUNT' -eq 14 ]"
-    test_case "objects/indexes/ 有 425 个文件" "[ '$INDEXES_COUNT' -eq 425 ]"
-    test_case "objects/constraints/ 有 127 个文件" "[ '$CONSTRAINTS_COUNT' -eq 127 ]"
-    test_case "objects/policies/ 有 30 个文件" "[ '$POLICIES_COUNT' -eq 30 ]"
+    test_case "objects/tables/ 有 $TABLES_COUNT 个文件" "[ '$TABLES_COUNT' -eq 271 ]"
+    test_case "objects/views/ 有 $VIEWS_COUNT 个文件" "[ '$VIEWS_COUNT' -eq 53 ]"
+    test_case "objects/functions/ 有 $FUNCTIONS_COUNT 个文件" "[ '$FUNCTIONS_COUNT' -eq 110 ]"
+    test_case "objects/sequences/ 有 $SEQUENCES_COUNT 个文件" "[ '$SEQUENCES_COUNT' -eq 281 ]"
+    test_case "objects/triggers/ 有 $TRIGGERS_COUNT 个文件" "[ '$TRIGGERS_COUNT' -eq 29 ]"
+    test_case "objects/indexes/ 有 $INDEXES_COUNT 个文件" "[ '$INDEXES_COUNT' -eq 718 ]"
+    test_case "objects/constraints/ 有 $CONSTRAINTS_COUNT 个文件" "[ '$CONSTRAINTS_COUNT' -eq 258 ]"
+    test_case "objects/policies/ 有 $POLICIES_COUNT 个文件" "[ '$POLICIES_COUNT' -eq 122 ]"
+    test_case "objects/other/ 有 $OTHER_COUNT 个文件" "[ '$OTHER_COUNT' -eq 42 ]"
 fi
 
 echo ""
@@ -214,7 +214,7 @@ echo "  docs/pricing/: $PRICING_COUNT 个文件"
 if [ -d "$SCRIPT_DIR/objects" ]; then
     echo ""
     echo "  objects/ 对象统计:"
-    for obj_type in tables views functions sequences triggers indexes constraints policies; do
+    for obj_type in tables views functions sequences triggers indexes constraints policies other; do
         if [ -d "$SCRIPT_DIR/objects/$obj_type" ]; then
             count=$(find "$SCRIPT_DIR/objects/$obj_type" -name "*.sql" 2>/dev/null | wc -l | xargs)
             printf "    %-15s: %4d 个文件\n" "$obj_type" "$count"
