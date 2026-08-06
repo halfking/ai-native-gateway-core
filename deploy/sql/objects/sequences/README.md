@@ -4,7 +4,7 @@
 
 ## 统计
 
-- **文件数量**: 299
+- **文件数量**: 281
 - **同步来源**: `sql/objects/sequences/`
 - **同步方式**: 通过 `sync-objects.sh` 自动同步
 
@@ -35,8 +35,6 @@ billing_orders_id_seq.sql
 billing_orders_id.sql
 canary_tokens_id_seq.sql
 canary_tokens_id.sql
-candidate_failure_logs_id_seq.sql
-candidate_failure_logs_id.sql
 center_commands_id_seq.sql
 center_commands_id.sql
 compression_bench_results_id_seq.sql
@@ -120,14 +118,8 @@ model_lifecycle_jobs_id_seq.sql
 model_lifecycle_jobs_id.sql
 model_name_mapping_id_seq.sql
 model_name_mapping_id.sql
-model_offer_events_id_seq.sql
-model_offer_events_id.sql
-model_offers_id_seq.sql
-model_offers_legacy_id.sql
 model_pricing_history_id_seq.sql
 model_pricing_id_seq.sql
-model_probe_runs_id_seq.sql
-model_probe_runs_id.sql
 model_reconcile_log_id_seq.sql
 model_reconcile_log_id.sql
 models_canonical_id_seq.sql
@@ -137,8 +129,6 @@ node_stats_id_seq.sql
 node_stats_id.sql
 offline_activation_requests_id_seq.sql
 offline_activation_requests_id.sql
-ops_model_offers_backup_backup_id_seq.sql
-ops_model_offers_backup_backup_id.sql
 ops_node_registrations_id_seq.sql
 ops_node_registrations_id.sql
 output_compliance_audit_id_seq.sql
@@ -153,8 +143,6 @@ output_compliance_review_queue_id_seq.sql
 output_compliance_review_queue_id.sql
 pii_patterns_id_seq.sql
 pii_patterns_id.sql
-price_change_events_id_seq.sql
-price_change_events_id.sql
 pricing_plans_id_seq.sql
 pricing_plans_id.sql
 pricing_refresh_log_id_seq.sql
@@ -177,8 +165,6 @@ provider_credibility_tests_id_seq.sql
 provider_credibility_tests_id.sql
 provider_error_details_id_seq.sql
 provider_error_details_id.sql
-provider_events_id_seq.sql
-provider_events_id.sql
 provider_header_profiles_id_seq.sql
 provider_header_profiles_id.sql
 provider_health_events_id_seq.sql
@@ -280,8 +266,6 @@ tenant_tool_policies_id_seq.sql
 tenant_tool_policies_id.sql
 token_audit_events_id_seq.sql
 token_audit_events_id.sql
-tool_call_events_id_seq.sql
-tool_call_events_id.sql
 tool_registry_id_seq.sql
 tool_registry_id.sql
 tool_usage_stats_id_seq.sql
@@ -298,8 +282,6 @@ tuning_signals_id_seq.sql
 tuning_signals_id.sql
 upgrade_logs_id_seq.sql
 upgrade_logs_id.sql
-usage_ledger_id_seq.sql
-usage_ledger_id.sql
 users_id_seq.sql
 users_id.sql
 vibe_code_reviews_id_seq.sql

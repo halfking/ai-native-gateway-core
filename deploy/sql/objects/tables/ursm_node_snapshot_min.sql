@@ -9,7 +9,7 @@ CREATE TABLE public.ursm_node_snapshot_min (
     credential_id integer NOT NULL,
     raw_model_name text NOT NULL,
     canonical_name text,
-    tenant_id text,
+    tenant_id text DEFAULT ''::text NOT NULL,
     available boolean NOT NULL,
     health_status text,
     fail_streak integer,

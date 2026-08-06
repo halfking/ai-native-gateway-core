@@ -4,7 +4,7 @@
 
 ## 统计
 
-- **文件数量**: 279
+- **文件数量**: 271
 - **同步来源**: `sql/objects/tables/`
 - **同步方式**: 通过 `sync-objects.sh` 自动同步
 
@@ -108,7 +108,6 @@ model_integrity_events.sql
 model_lifecycle_jobs.sql
 model_name_mapping.sql
 model_offer_events.sql
-model_offers_legacy.sql
 model_pricing_history.sql
 model_pricing.sql
 model_probe_runs_2026_07.sql
@@ -122,7 +121,6 @@ node_probe_runs.sql
 node_probe_state.sql
 node_stats.sql
 offline_activation_requests.sql
-ops_model_offers_backup.sql
 ops_node_registrations.sql
 output_compliance_audit.sql
 output_compliance_custom_keywords.sql
@@ -166,9 +164,6 @@ releases.sql
 request_attachments.sql
 request_context_attrs.sql
 request_envelope.sql
-request_logs_2026_04.sql
-request_logs_2026_05.sql
-request_logs_2026_06.sql
 request_logs_2026_07.sql
 request_logs_2026_08.sql
 request_logs_archive.sql
@@ -177,7 +172,6 @@ request_logs_bodies_2026_08.sql
 request_logs_bodies_2026_09.sql
 request_logs_bodies_hot.sql
 request_logs_bodies.sql
-request_logs_default.sql
 request_logs_hot.sql
 request_logs.sql
 request_stage_events.sql
@@ -185,7 +179,6 @@ request_stats_dim_minute.sql
 request_stats_error_drill_minute.sql
 request_stats_minute.sql
 request_stats_rollup_cursor.sql
-request_wal_2026_06.sql
 request_wal_2026_07.sql
 request_wal_2026_08.sql
 request_wal_archive.sql
@@ -243,7 +236,6 @@ sessions.sql
 settings_audit.sql
 settings_kv.sql
 severity_action_matrix.sql
-state_change_log.sql
 sticky_sessions.sql
 subscription_plans.sql
 subscription_tiers.sql

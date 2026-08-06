@@ -4,7 +4,7 @@
 
 ## 统计
 
-- **文件数量**: 33
+- **文件数量**: 29
 - **同步来源**: `sql/objects/triggers/`
 - **同步方式**: 通过 `sync-objects.sh` 自动同步
 
@@ -19,7 +19,6 @@ canary_tokens_update_canary_tokens_modtime.sql
 credential_model_bindings_cmb_protect_manual_disable.sql
 credential_model_bindings_trg_notify_auto_route_cmb_insert_delete.sql
 credential_model_bindings_trg_notify_auto_route_cmb_update.sql
-credential_model_bindings_trg_notify_auto_route_cmb.sql
 credentials_trg_auto_fp_slot_limit_insert.sql
 credentials_trg_check_credential_dates.sql
 credentials_trg_notify_auto_route_creds.sql
@@ -27,8 +26,6 @@ diagnostic_runs_diagnostic_runs_touch.sql
 intent_classification_feedback_trigger_intent_feedback_correctness.sql
 key_applications_trg_key_applications_updated_at.sql
 model_name_mapping_model_name_mapping_updated_at.sql
-model_offers_model_offers_delete.sql
-model_offers_model_offers_insert.sql
 model_offers_model_offers_update.sql
 model_pricing_model_pricing_change_log.sql
 model_pricing_model_pricing_updated_at.sql
@@ -36,7 +33,6 @@ output_compliance_custom_keywords_update_output_compliance_custom_keywords_modti
 prompt_injection_llm_engines_update_prompt_injection_llm_engines_modtime.sql
 provider_settings_trigger_provider_settings_updated_at.sql
 providers_trg_notify_auto_route_providers.sql
-request_logs_trg_update_api_key_model_cost.sql
 route_incidents_route_incidents_touch.sql
 routing_overrides_routing_overrides_audit_trg.sql
 session_audit_records_session_audit_records_updated_at.sql
