@@ -217,9 +217,28 @@ const requestLogsJoins = `
 	-- composite key (task_id, scoped_session_id) matches the unique
 	-- index on session_titles. scoped_session_id falls back to '' to
 	-- cover request_logs rows where gw_session_id is NULL.
-	LEFT JOIN session_titles st
-	       ON st.task_id = rl.gw_task_id
-	      AND st.scoped_session_id = COALESCE(NULLIF(rl.gw_session_id, ''), '')
+	-- 2026-08-06: previously the JOIN required st.task_id = rl.gw_task_id
+	-- exactly, but auto-generated titles were hardcoded to task_id='auto'
+	-- while the request's real gw_task_id is typically 'default' — the two
+	-- never matched, so the list showed no titles for auto-generated ones.
+	-- Now we match on scoped_session_id first and accept st.task_id = 'auto'
+	-- (legacy auto-title rows) OR the real gw_task_id (post-fix rows and
+	-- manually-edited titles). Empty gw_session_id rows still fall back to ''
+	-- and only match legacy notopic titles (which have empty session ids).
+	-- 2026-08-06 dedup: a session can hold BOTH a legacy ('auto', S) row and a
+	-- manual/post-fix (gw_task_id, S) row (manual PUT writes the real task_id).
+	-- A plain OR-join would match both and duplicate the request row in the
+	-- list/detail. LATERAL + LIMIT 1 picks exactly one title per row,
+	-- preferring the real-task title over the legacy 'auto' marker.
+	LEFT JOIN LATERAL (
+		SELECT st.title
+		FROM session_titles st
+		WHERE st.scoped_session_id = COALESCE(NULLIF(rl.gw_session_id, ''), '')
+		  AND st.scoped_session_id <> ''
+		  AND (st.task_id = rl.gw_task_id OR st.task_id = 'auto')
+		ORDER BY CASE WHEN st.task_id = rl.gw_task_id THEN 0 ELSE 1 END
+		LIMIT 1
+	) st ON TRUE
 	LEFT JOIN LATERAL (
 		SELECT COALESCE(
 			NULLIF(TRIM(mo.outbound_model_name), ''),
