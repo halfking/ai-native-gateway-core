@@ -710,3 +710,9 @@
 |-----------|------|---------|--------|
 | 465 | `465_session_titles_pkey.sql` | `99c2776ec07168c52188e3b9513cd38a7499833e15d98103baea853c1dd32e85` | applied+verified |
 
+## 2026-08-06T02:52:19Z — deploy 245 build_seq 1460 (fc395aac)
+
+| Migration | File | SHA-256 | Status |
+|-----------|------|---------|--------|
+| 466 | `466_relax_compression_parent_check.sql` | `d1b7fbd10e77715017bc54462e463e76b83ff8f25e1e1f61be7828255c8401f6` | applied+verified |
+
