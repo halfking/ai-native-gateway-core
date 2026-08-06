@@ -96,35 +96,37 @@ func chunkApproxChars() int {
 	return readSettingInt("auto_summary.chunk_approx_chars", "LLM_GATEWAY_AUTO_SUMMARY_CHUNK_APPROX_CHARS", autoSummaryChunkApproxChars)
 }
 
-// readSettingInt implements the priority chain: settings.GetPlatformInt
-// → env var → hardcoded fallback. The settings lookup itself goes
-// DB → env → default internally, so this helper also serves as a
-// single entry point that future code paths (per-tenant, cluster-wide)
-// can be slotted into.
+// readSettingInt implements the 2-tier fallback chain for hot-reloadable
+// numeric settings. The full settings chain (DB → env → spec default) is
+// already absorbed by Layer 1 via settings.GetPlatformInt, so the env
+// fallback here is only reached when settings.Global is nil (i.e.
+// local dev / unit tests without a settings backend initialised).
+//
+// Priority:
+//   - Layer 1: settings.GetPlatformInt — reads live settings_kv or, if
+//     the key is absent, the spec's Default field. Returns 0 when
+//     Global is nil or the key is unknown. Treat 0 as "missing" so
+//     local-dev unit tests (no DB, no Global) can override via env
+//     instead of hard-coding.
+//   - Layer 2: explicit env override (LLM_GATEWAY_AUTO_SUMMARY_* envs)
+//     — let test harnesses bypass the settings backend without touching
+//     the DB. Only reached when Layer 1 returned 0.
+//   - Layer 3: hardcoded constant (last-resort fallback).
 //
 // Read at use sites (not at construction) so changes in settings_kv
 // take effect on the next call without a process restart.
 func readSettingInt(key, envName string, fallback int) int {
-	// Layer 1: live settings_kv / settings spec default
+	// Layer 1: live settings_kv / settings spec default.
 	if v := settings.GetPlatformInt(key, 0); v > 0 {
-		// 0 means "missing or zero"; treat 0 as missing so env can
-		// override (env is higher-priority in the operator's mental
-		// model: explicit > implicit). GetPlatformInt returns 0 when
-		// Global is nil or the key is unknown — both are legitimate
-		// fallback conditions for unit tests.
-		_ = envName // env read is below; kept for symmetry / explicit doc
 		return v
 	}
-	// Layer 2: explicit env override (lets test harnesses bypass the
-	// settings backend without touching DB). The settings helper
-	// itself prefers env over spec-default, so if Global is initialized
-	// but the env is set, layer 1 already returned it.
+	// Layer 2: env override for unit tests / local dev only.
 	if v := os.Getenv(envName); v != "" {
 		if n, err := strconv.Atoi(v); err == nil && n > 0 {
 			return n
 		}
 	}
-	// Layer 3: hardcoded constant
+	// Layer 3: hardcoded constant.
 	return fallback
 }
 
@@ -173,7 +175,16 @@ func NewAutoSummaryGenerator(handler *Handler, store *summarystore.Store) *AutoS
 		"LLM_GATEWAY_AUTO_SUMMARY_WORKER_SLOTS",
 		autoSummaryDefaultWorkerSlots,
 	)
+	// 2026-08-06 audit fix: silent clamp hides config errors. If an
+	// operator sets worker_slots=0 (or any value < 1) in settings_kv
+	// the spec validator should reject it, but a config desync could
+	// still slip through. Warn loudly so the admin UI doesn't lie about
+	// "4 workers" while the operator thinks they configured 8.
 	if workerSlots < 1 {
+		slog.Warn("auto_summary_generator: worker_slots out of range, falling back to default",
+			"raw_value", workerSlots,
+			"fallback", autoSummaryDefaultWorkerSlots,
+			"key", "auto_summary.default_worker_slots")
 		workerSlots = autoSummaryDefaultWorkerSlots
 	}
 	return &AutoSummaryGenerator{
@@ -304,8 +315,13 @@ func (g *AutoSummaryGenerator) runSummaryAsync(sessionID, tenantID, requestBody,
 		return
 	}
 	if upsertRes.Updated {
-		logger.Debug("auto_summary: upsert raced with another writer",
-			"summary_version", upsertRes.Version)
+		// 2026-08-06 audit fix: bump from Debug → Info (rares are diagnostic
+		// signal, not noise), and add session/tenant context so an
+		// operator can correlate the race with request_logs.
+		logger.Info("auto_summary: upsert updated existing row (row existed before this call)",
+			"summary_version", upsertRes.Version,
+			"session_id", sessionID,
+			"tenant_id", tenantID)
 	}
 	metrics.AutoSummaryTrigger.WithLabelValues("ok").Inc()
 	logger.Info("auto_summary saved",
