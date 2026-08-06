@@ -2,6 +2,7 @@ package ir
 
 import (
 	"log/slog"
+	"strconv"
 	"strings"
 )
 
@@ -195,7 +196,7 @@ func fixToolCallStructure(messages []Message) []Message {
 
 			// Ensure ID is not empty
 			if tc.ID == "" {
-				tc.ID = generateToolCallID(j)
+				tc.ID = generateToolCallID(i, j)
 				slog.Warn("validate_and_fix: generated missing tool_call_id",
 					"message_index", i,
 					"tool_call_index", j,
@@ -314,7 +315,19 @@ func normalizeSystemMessages(messages []Message) []Message {
 	return append(systemMsgs, otherMsgs...)
 }
 
-// generateToolCallID generates a deterministic tool_call_id.
-func generateToolCallID(index int) string {
-	return string([]byte{'c', 'a', 'l', 'l', '_', 'g', 'e', 'n', 'e', 'r', 'a', 't', 'e', 'd', '_', byte('0' + (index % 10))})
+// generateToolCallID generates a deterministic, collision-resistant tool_call_id
+// for assistant tool_calls that arrived without one.
+//
+// The previous implementation reduced the index modulo 10 and rendered a single
+// digit, so it could only ever produce 10 distinct ids ("call_generated_0"..
+// "call_generated_9"). With more than 10 tool_calls — or two assistant messages
+// whose first tool_call was both missing an id — distinct calls collapsed onto
+// the same id, which providers reject or silently mis-pair with tool results.
+//
+// The id is keyed on (messageIndex, toolCallIndex) so it is unique across the
+// whole request while remaining stable for a given input (call sites rely on
+// determinism for log correlation). It is not intended to match any real
+// provider-assigned id; it only needs to be non-empty and internally unique.
+func generateToolCallID(messageIndex, toolCallIndex int) string {
+	return "call_generated_" + strconv.Itoa(messageIndex) + "_" + strconv.Itoa(toolCallIndex)
 }

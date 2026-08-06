@@ -1,0 +1,155 @@
+# 06 — 优化路线图（P0–P3）
+
+> 把 01–05 的建议按**依赖关系**和**风险**排成阶段。每个阶段有：目标、条目、前置、验收门禁、回滚。所有新能力默认**按租户灰度 + flag 默认关**。
+
+## 阶段总览
+
+```
+P0 去债 + 安全 + 前置统一（独立、低风险）
+   ├─ 删旧压缩副本（C5/01-M6）
+   ├─ 修 tool_call_id 生成器（E2）
+   ├─ LLM 摘要前 secret mask（C2）
+   └─ 统一消息指纹（A2）+ 摘要读源抽象（A6）   ← V2 读放开的前置
+        ↓
+P1 V2 读灰度放开（总开关）+ 接线归纳
+   ├─ shouldUseV2 真读 flag + 灰度（A1）
+   ├─ 统一 token 估算（C4）← 多处依赖
+   ├─ 会话元数据聚合器接线归纳（M1）+ 结构化 tag（M3）
+   ├─ 引擎/摘要熔断（C1）+ 缓存感知压缩/cache-safe 注入（C8/01-M4）
+   ├─ prompt-cache 前缀分析器（D7）+ 统一 cache 指标（D2）
+   ├─ 旧内联图片裁剪（A3）+ 上下文窗口自校正（A4）
+   ├─ 声明式 provider 变换 DSL（E1）+ role/Responses 净化补齐（E3/E4/E5）
+   └─ V2 Message 强类型化（A5/E6）
+        ↓
+P2 收敛 + 工程化
+   ├─ 统一元数据事实源（M2，依赖 A1 全量）
+   ├─ 摘要衰减/归档（M5）+ 首轮即时 task_type（M7）
+   ├─ 压缩结果 memo（C3）+ 压缩预览 endpoint（C7）
+   ├─ L1 byte 限制（D3）+ 收敛 sticky 实现（D4/D5）
+   └─ 删 Estimator.NeedsCompression 死代码（C6）
+        ↓
+P3 退役 V1
+   └─ request_logs bodies 退役（摘要/压缩全切 session_bodies）
+```
+
+---
+
+## P0 — 去债 + 安全 + 前置统一
+
+**目标**：消除已知 bug 回退风险与安全泄漏；为 V2 读放开做前置。全部独立、可并行、低风险。
+
+| 条目 | 来源 | 工作量 | 风险 | 验收 |
+|---|---|---|---|---|
+| 删 `_to-be-deprecated/compressor/`（审计确认无外部引用） | C5/M6 | S | 低 | 编译通过；`grep` 无残留引用 |
+| 修 `generateToolCallID`（>10 不碰撞） | E2 | S | 低 | 单测：100 个 tool_calls id 唯一 |
+| LLM 摘要前 secret mask | C2 | M | 中（误 mask 破坏内容） | 含假 key 的 body 摘要不含原 key；正例/负例回归 |
+| 统一消息指纹（V2 用 SHA256(512B)） | A2 | S | 低 | V1/V2 同会话 delta 边界一致 |
+| 摘要读源抽象（`MessageSource` 接口） | A6 | M | 中 | V1/V2 两个实现可切换；摘要输出一致 |
+| **D8 命名空间调查**（`domain/analysis` vs `domains/analysis` 哪个活跃；旧 `cache/*` 是否可退役） | D8/审计§2.5 | S | 低 | 出结论：活跃包与弃用包清单 |
+
+**回滚**：均为代码级，git revert。secret mask 可加 flag `compression.summary_secret_mask` 默认开。
+
+**门禁**：P0 全部合并且测试绿后，才进入 P1 的 V2 读放开。
+
+---
+
+## P1 — V2 读灰度放开 + 接线归纳（主阶段）
+
+**目标**：打通“V2 读 → 增量重建 → 摘要 → 归纳写回 live 元数据”的现代化主链路；吸收 omniroute 的门禁/熔断/缓存感知/前缀分析。
+
+### P1.1 V2 读灰度（A1）— 关键路径
+- 改 `shouldUseV2` 真读 flag（`session_compressor.go:691`）。
+- 灰度：1–2 个低风险租户 → 监控重建一致性（V1 LCS vs V2 delta 的 outbound hash diff）→ 扩量。
+- 前置：P0 的 A2/A6。
+- 回滚：flag 关。
+- 验收：灰度租户压缩触发、token 节省、错误率与 V1 持平 ±5%。
+
+### P1.2 基础设施
+| 条目 | 来源 | 前置 |
+|---|---|---|
+| 统一 token 估算（含图片 PNG 数学） | C4 | 无 |
+| prompt-cache 前缀分析器 | D7 | C4 |
+| 统一 cache 指标表 | D2 | 无 |
+
+### P1.3 压缩增强
+| 条目 | 来源 | 前置 |
+|---|---|---|
+| 引擎/摘要熔断 | C1 | 无 |
+| 缓存感知压缩 + cache-safe marker 注入 | C8/01-M4 | D7 |
+| 旧内联图片按预算裁剪 | A3 | C4 |
+| 上下文窗口自校正 | A4 | 无 |
+
+### P1.4 会话元数据接线
+| 条目 | 来源 | 前置 |
+|---|---|---|
+| 元数据聚合器（摘要/intent/cluster → `SetSessionMetadata`） | M1 | A1 |
+| 结构化 tag + 自动打标 | M3 | M1 |
+
+### P1.5 IR / 变换
+| 条目 | 来源 | 前置 |
+|---|---|---|
+| 声明式 provider 变换 DSL | E1 | 无 |
+| enforceRoleAlternation 可选修复 | E3 | 无 |
+| GLM 版本感知 + Responses 净化补齐 | E4/E5 | 无 |
+| V2 Message 强类型化（复用 ir.Message） | A5/E6 | 迁移兼容读 |
+
+**P1 整体验收门禁**：
+- 灰度租户：`sessions.task_type/topic/intent` 非空且与摘要一致；压缩 token 节省不退化；provider 400 率不升。
+- flag 全部默认关；新能力按租户开启。
+- 全套指标（D2）可见。
+
+---
+
+## P2 — 收敛 + 工程化
+
+**目标**：V2 读全量后，收敛双轨、补工程化能力。依赖 P1 的 A1 全量。
+
+| 条目 | 来源 | 前置 |
+|---|---|---|
+| 统一元数据事实源（V2 为准，Redis 降缓存） | M2 | A1 全量 |
+| 摘要衰减/归档 | M5 | M2 |
+| 首轮即时 task_type | M7 | M1 |
+| 压缩结果 memo | C3 | C4 |
+| 压缩预览 endpoint | C7 | 无 |
+| L1 byte 限制 | D3 | 无 |
+| 收敛 sticky 实现（删旧版） | D4/D5 | 无 |
+| 旧缓存包退役（`cache/semantic\|prefix\|delta\|kv`，随 V1） | D8 | 无生产引用确认 |
+| 删 `Estimator.NeedsCompression` 死代码 | C6 | C4 |
+
+---
+
+## P3 — 退役 V1
+
+**目标**：V2 全量稳定后退役 `request_logs_bodies` 的全量存储。
+
+- 条件：摘要、压缩、重建全部走 `session_bodies`（A6 + A1 全量）且稳定 ≥1 个计费周期。
+- 动作：停止写 `request_logs_bodies`（保留 `request_logs` 元数据）；归档/分区清理。
+- 风险：高（不可逆存储变更）→ 需独立评审 + 双写期 + 可回滚（恢复写）。
+
+---
+
+## 跨阶段不变量清单（每个 PR 自检）
+
+1. ☐ fail-open：压缩/摘要/净化出错回退原始 body。
+2. ☐ NeverWorse：上送 body 不劣于原始（`handler.go:2561` 守卫不被绕过）。
+3. ☐ toolChainIntact：裁剪后工具链完整。
+4. ☐ RLS / 认证上下文：无跨租户泄漏；缓存 key 带 tenant 维度。
+5. ☐ 迁移号：新增前 `ls sql/migrations/startup/ | sort -n | tail` 重检。
+6. ☐ flag 默认关：新能力按租户灰度。
+7. ☐ 不破坏 `executor` 依赖边界（不依赖 mcp/a2a/fusion）。
+
+## 优先级速查（按“性价比”）
+
+| 最高性价比（低风险高收益，先做） | 说明 |
+|---|---|
+| 删旧压缩副本（C5） | 防 bug 回退 |
+| 修 tool_call_id（E2） | 防 provider 混乱 |
+| secret mask（C2） | 安全 |
+| 统一 token 估算（C4） | 多处依赖、消除误触发 |
+| 删 Estimator 死代码（C6） | 降认知负担 |
+
+| 高价值但高风险（需评审） | 说明 |
+|---|---|
+| V2 读放开（A1） | 总开关，依赖多 |
+| 统一元数据事实源（M2） | 不可逆语义变更 |
+| V1 退役（P3） | 存储不可逆 |

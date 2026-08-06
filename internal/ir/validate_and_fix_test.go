@@ -39,6 +39,72 @@ func TestValidateAndFixRequest_MissingToolCallID(t *testing.T) {
 	}
 }
 
+// TestValidateAndFixRequest_ToolCallIDUniqueness guards against the old
+// generateToolCallID(index) which reduced index%10 and therefore collided
+// once a request carried more than 10 missing-id tool_calls, or two assistant
+// messages whose first tool_call both lacked an id. The ids must be unique
+// across the whole request.
+func TestValidateAndFixRequest_ToolCallIDUniqueness(t *testing.T) {
+	// 12 tool_calls on one assistant message — all without ids.
+	const n = 12
+	calls := make([]ToolCall, n)
+	for i := range calls {
+		calls[i] = ToolCall{
+			ID: "", Type: "function",
+			Function: struct {
+				Name      string `json:"name"`
+				Arguments string `json:"arguments"`
+			}{Name: "search", Arguments: "{}"},
+		}
+	}
+	// A second assistant message whose first call also lacks an id; with the old
+	// impl both first-calls would map to "call_generated_0".
+	msgs := []Message{
+		{Role: "assistant", ToolCalls: calls},
+		{Role: "assistant", ToolCalls: []ToolCall{{
+			ID: "", Type: "function",
+			Function: struct {
+				Name      string `json:"name"`
+				Arguments string `json:"arguments"`
+			}{Name: "search", Arguments: "{}"},
+		}}},
+	}
+
+	fixed := ValidateAndFixRequest(&InternalRequest{Messages: msgs}, "")
+
+	seen := make(map[string]int)
+	for _, m := range fixed.Messages {
+		for _, tc := range m.ToolCalls {
+			if tc.ID == "" {
+				t.Fatal("found a tool_call whose id is still empty after fix")
+			}
+			if prev, ok := seen[tc.ID]; ok {
+				t.Fatalf("duplicate tool_call_id %q (first at msg %d)", tc.ID, prev)
+			}
+			seen[tc.ID] = -1
+		}
+	}
+
+	if want := n + 1; len(seen) != want {
+		t.Errorf("expected %d unique generated ids, got %d", want, len(seen))
+	}
+}
+
+// TestGenerateToolCallID_Deterministic verifies the id is stable for a given
+// (message, call) pair, which log correlation and replay rely on.
+func TestGenerateToolCallID_Deterministic(t *testing.T) {
+	if got, want := generateToolCallID(0, 0), "call_generated_0_0"; got != want {
+		t.Errorf("generateToolCallID(0,0) = %q, want %q", got, want)
+	}
+	if got, want := generateToolCallID(3, 11), "call_generated_3_11"; got != want {
+		t.Errorf("generateToolCallID(3,11) = %q, want %q", got, want)
+	}
+	// Beyond the old 10-bucket limit, ids must still differ.
+	if generateToolCallID(0, 9) == generateToolCallID(0, 10) {
+		t.Error("ids collide at the old index%10 boundary (9 vs 10)")
+	}
+}
+
 func TestValidateAndFixRequest_EmptyFunctionName(t *testing.T) {
 	req := &InternalRequest{
 		Messages: []Message{

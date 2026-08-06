@@ -2,6 +2,7 @@ package v2
 
 import (
 	"context"
+	"crypto/sha256"
 	"fmt"
 	"log/slog"
 	"sync"
@@ -502,14 +503,29 @@ func buildMessageSet(messages []Message) map[string]bool {
 	return set
 }
 
-// messageKey generates a unique key for a message (for deduplication)
+// messageKey generates a unique key for a message (for delta extraction /
+// deduplication).
+//
+// It mirrors the V1 compression fingerprint domains/hooks/compression/diff.go
+// msgHash: sha256(role + \x00 + first-512-bytes-content + \x00 + toolCallID),
+// truncated to 16 bytes (32 hex). Keeping the two schemes aligned is a hard
+// prerequisite for unifying the V1 (LCS) and V2 (delta) read paths — see
+// docs/omni-ref3/03-MULTITURN-ASSEMBLY.md A2.
+//
+// The previous implementation used "role:first-100-chars", which (a) collided
+// on any two tool results sharing a 100-char prefix despite different
+// tool_call_ids — exactly the mis-pairing SanitizeToolMessages exists to
+// prevent — and (b) used a plain ":" separator that the content itself could
+// contain. Both are fixed here.
 func messageKey(msg Message) string {
-	// Simple key: role + first 100 chars of content
-	content := msg.Content
-	if len(content) > 100 {
-		content = content[:100]
+	contentKey := msg.Content
+	if len(contentKey) > 512 {
+		contentKey = contentKey[:512]
 	}
-	return fmt.Sprintf("%s:%s", msg.Role, content)
+	// NUL bytes separate the fields so no legal content can spoof a different
+	// (role, content, toolCallID) triple, matching the V1 scheme.
+	h := sha256.Sum256([]byte(msg.Role + "\x00" + contentKey + "\x00" + msg.ToolCallID))
+	return fmt.Sprintf("%x", h[:16])
 }
 
 // extractRequestAttachments extracts attachment references from request
