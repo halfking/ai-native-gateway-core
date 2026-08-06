@@ -394,7 +394,11 @@ func (h *ResponsesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			slog.Warn("request_logger: responses session merge failed", "request_id", requestID, "error", err)
 		}
 	}
-	endUser := extractEndUser(r)
+	// 2026-08-06 audit fix: extractEndUser only checks X-End-User-Id and
+	// r.Body (which is already drained at this point). The original
+	// request body bytes are in bodyBytes — pass them in so we recover
+	// the OpenAI Responses "user" top-level field on the success path.
+	endUser := resolveEndUser("", r, bodyBytes)
 	clientID := identity.BuildIdentityFromRequest(r, tenant(keyInfo), appID(keyInfo), apiKeyIDPtr(keyInfo), clientProfileFromKey(keyInfo))
 
 	auditBuilder := newAuditEvent(requestID).

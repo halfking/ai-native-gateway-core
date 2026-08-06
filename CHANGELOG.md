@@ -11,16 +11,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **end_user_id 在所有路径下都填充 (2026-08-06) — dc767386f... 事件根因**
   - **症状**: `request_logs_hot.end_user_id` 在早失败路径（auth_unavailable / invalid_key / model_forbidden / session_forbidden 等）和 `/v1/messages` / `/v1/responses` 协议下长期为 NULL。dc767386f77450b89655d4855df41819 即为用户报告的典型样本
-  - **根因 A** — `RequestLogContext.buildEntry`（失败路径）从未给 `reqLog.EndUserID` 赋值；success 路径通过 `resolveEndUser(reqBody.User, r)` 拿值但 buildEntry 没有任何 EndUserID 字段。失败行一律 NULL
-  - **根因 B** — `resolveEndUser` 只查 `X-End-User-Id` header，不查 body；`messages.go::extractEndUser` 同样只查 header。两边都不嗅探 body 的 `"user"` 字段
-  - **根因 C** — `/v1/messages`（Anthropic）与 `/v1/responses`（OpenAI Responses）handler 不解析 OpenAI 风格的 `user` 字段；只依赖 `X-End-User-Id` header
+  - **第一轮根因**:
+    - **A** — `RequestLogContext.buildEntry`（失败路径）从未给 `reqLog.EndUserID` 赋值
+    - **B** — `resolveEndUser` 只查 `X-End-User-Id` header，不查 body
+    - **C** — `/v1/messages` 与 `/v1/responses` handler 不解析 OpenAI 风格的 `user` 字段
+  - **第二轮（audit）根因**:
+    - **D** — `/v1/responses` handler 在 body 已被消费后才调用 `extractEndUser(r)`，body 嗅探永远返回空
+    - **E** — `/v1/messages` 同上
+    - **F** — `resolveEndUser` 直接 `io.ReadAll(r.Body)` 破坏性地消费 `r.Body`，可能截断大型请求的下游解析/转发
+    - **G** — 宽松扫描不验证 JSON 转义、不拒绝嵌套 "user" 字段（如 `{"messages":[{"user":"nested"}]}`）
+    - **H** — `r == nil` 时直接返回 "anonymous"，忽略仍可用的 bodyBytes 缓存
+    - **I** — `logCtx.EndUser` 字段从未被赋值，导致 disconnect-probe + request_context_attrs 与主请求行不一致
   - **修复**:
-    - 新增 `extractEndUserFromBody(body []byte) string`：严格 JSON 解析 + 宽松扫描（loose scan 容忍截断 JSON）
-    - 扩展 `resolveEndUser(bodyUser, r, bodyBytes...)` 为可变参数：bodyUser → X-End-User-Id → bodyBytes 嗅探 → r.Body 嗅探 → `"anonymous"`
-    - `RequestLogContext.buildEntry` 调用 `resolveEndUser("", c.Request, c.Body)` 并填入 `reqLog.EndUserID`
-    - `messages.go::extractEndUser` 改为统一调用 `resolveEndUser("", r)`
-  - **测试覆盖**: `TestResolveEndUser`（9 子用例）+ `TestExtractEndUserFromBody`（6 子用例）
-  - **验证**: `go test ./domains/streaming/` 全绿（含旧测试）
+    - `extractEndUserFromBody` 重写：严格 JSON 优先；宽松扫描仅在 body 以 `{` 开头时触发；要求候选位置前一个字符为 `{` 或 `,`（拒绝嵌套）；走 JSON 转义以正确处理转义引号；上限 1MB
+    - `resolveEndUser` 重写：移除破坏性 `r.Body` 读取；按优先级 bodyUser → X-End-User-Id → bodyBytes 嗅探 → "anonymous"；`r == nil` 仍可走 bodyBytes 路径；trim 空白
+    - `RequestLogContext.buildEntry` 调用 `resolveEndUser("", c.Request, c.Body)` 并填入 `reqLog.EndUserID` + `c.EndUser`，使 disconnect-probe 和 context_attrs 与主行一致
+    - `/v1/responses` 改为 `resolveEndUser("", r, bodyBytes)`（直接传捕获的 body）
+    - `/v1/messages` 改为 `resolveEndUser("", r, bodyBytes)`（保留 metadata.user_id 原生优先级）
+    - `messages.go::extractEndUser` 包装函数已无调用方，移除避免误用
+  - **测试覆盖**: `TestResolveEndUser`（12 子用例）+ `TestResolveEndUser_DoesNotConsumeRBody`（验证 r.Body 未被消费）+ `TestExtractEndUserFromBody`（11 子用例，覆盖空白、nil、转义、嵌套拒绝、顶层强制、`{` 起始 gate 等）
+  - **验证**: `go build / vet` 全仓通过；`./domains/streaming` 测试全绿（含旧测试）
   - **部署后实地验证**: `SELECT request_id, end_user_id, tenant_id, error_kind FROM request_logs_hot WHERE request_id = 'dc767386f77450b89655d4855df41819' OR error_kind IN ('auth_unavailable','invalid_key','model_forbidden','session_forbidden') AND ts > now() - interval '24 hours' ORDER BY ts DESC LIMIT 20;`
 
 ### Added

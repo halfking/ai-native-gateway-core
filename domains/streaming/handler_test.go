@@ -1,6 +1,7 @@
 package streaming
 
 import (
+	"io"
 	"net/http"
 	"strings"
 	"testing"
@@ -194,15 +195,29 @@ func TestResolveEndUser(t *testing.T) {
 			want:     "alice@corp.com",
 		},
 		{
+			name:     "bodyUser whitespace falls through to header",
+			bodyUser: "   ",
+			req:      mkReq("", "header@corp.com"),
+			want:     "header@corp.com",
+		},
+		{
 			name:     "X-End-User-Id header wins when bodyUser empty",
 			bodyUser: "",
 			req:      mkReq(`{"user":"bob"}`, "carol@corp.com"),
 			want:     "carol@corp.com",
 		},
 		{
+			name:     "header whitespace-only falls through to body sniff",
+			bodyUser: "",
+			req:      mkReq("", "   "),
+			body:     []byte(`{"user":"dave@corp.com"}`),
+			want:     "dave@corp.com",
+		},
+		{
 			name:     "body sniff wins when header absent",
 			bodyUser: "",
-			req:      mkReq(`{"user":"dave@corp.com"}`, ""),
+			req:      mkReq("", ""),
+			body:     []byte(`{"user":"dave@corp.com"}`),
 			want:     "dave@corp.com",
 		},
 		{
@@ -225,15 +240,23 @@ func TestResolveEndUser(t *testing.T) {
 			want:     "from-bodyBytes",
 		},
 		{
-			name:     "nil request returns anonymous",
+			name:     "nil request with valid bodyBytes returns user (audit fix)",
+			bodyUser: "",
+			req:      nil,
+			body:     []byte(`{"user":"alice@corp.com"}`),
+			want:     "alice@corp.com",
+		},
+		{
+			name:     "nil request and no bodyBytes returns anonymous",
 			bodyUser: "",
 			req:      nil,
 			want:     "anonymous",
 		},
-{
-			name:     "loose scan — body with malformed JSON but user field present",
+		{
+			name:     "loose scan — body bytes with malformed JSON but user field present",
 			bodyUser: "",
-			req:      mkReq(`{"model":"gpt-4o","user":"trun"`, ""),
+			req:      nil, // r is nil so we don't confuse with the r.Body path
+			body:     []byte(`{"model":"gpt-4o","user":"trun"`),
 			want:     "trun",
 		},
 		{
@@ -255,6 +278,32 @@ func TestResolveEndUser(t *testing.T) {
 				t.Fatalf("resolveEndUser() = %q, want %q", got, tc.want)
 			}
 		})
+	}
+}
+
+// TestResolveEndUser_DoesNotConsumeRBody (2026-08-06 audit fix) —
+// the audit identified that the previous resolveEndUser read r.Body
+// directly via io.ReadAll, which silently drained the body. After
+// the audit fix, the function only reads caller-supplied bodyBytes.
+// This test pins that contract by verifying r.Body is still readable
+// after resolveEndUser returns.
+func TestResolveEndUser_DoesNotConsumeRBody(t *testing.T) {
+	body := `{"model":"gpt-4o","user":"alice"}`
+	r, _ := http.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(body))
+
+	// Call resolveEndUser — must NOT consume r.Body.
+	got := resolveEndUser("", r, []byte(body))
+	if got != "alice" {
+		t.Fatalf("resolveEndUser returned %q, want alice", got)
+	}
+
+	// Verify r.Body is still readable end-to-end.
+	rest, err := io.ReadAll(r.Body)
+	if err != nil {
+		t.Fatalf("read r.Body: %v", err)
+	}
+	if string(rest) != body {
+		t.Fatalf("r.Body was consumed/drained: got %q, want %q", rest, body)
 	}
 }
 
@@ -296,6 +345,30 @@ func TestExtractEndUserFromBody(t *testing.T) {
 			name: "non-string user falls through to empty",
 			body: `{"user":12345}`,
 			want: "",
+		},
+		{
+			// Strict-JSON path unescapes the value, so "a\"b" in the
+			// body becomes the Go string `a"b` (3 bytes). Loose scan
+			// would return the raw 4-byte sequence, but it never
+			// triggers because strict unmarshal succeeds.
+			name: "escaped quote inside user value (audit fix)",
+			body: "{\"user\":\"a\\\"b\",\"model\":\"gpt-4o\"}",
+			want: "a\"b",
+		},
+		{
+			name: "nested user field is rejected (audit fix)",
+			body: `{"messages":[{"role":"user","content":"hi","user":"nested"}]}`,
+			want: "",
+		},
+		{
+			name: "loose-scan gate — body not starting with '{' is rejected",
+			body: `[{"user":"alice"}]`,
+			want: "",
+		},
+		{
+			name: "top-level user wins over nested user (audit fix)",
+			body: `{"user":"top","messages":[{"user":"nested"}]}`,
+			want: "top",
 		},
 	}
 	for _, tc := range tests {
