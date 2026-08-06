@@ -256,22 +256,25 @@ func detectToolRounds(msgs []json.RawMessage) []toolRound {
 // anchor of the last round but kept one of its tool results, creating
 // an orphan tool_call_id that downstream sanitisation silently deleted.
 func filterMessages(msgs []json.RawMessage, rounds []toolRound, result *StripResult) []json.RawMessage {
+	// 2026-08-06 audit fix: the keep-last-N check previously mixed
+	// complete and incomplete rounds in its bounds math
+	// (len(rounds)-keepLast used total rounds, but `completed` only
+	// counted complete ones). When incomplete rounds were present, the
+	// threshold shifted and stripped rounds that should have been kept.
+	// Fix: compute keepLast against the number of COMPLETED rounds only.
+	var completedRounds []toolRound
+	for _, r := range rounds {
+		if r.complete {
+			completedRounds = append(completedRounds, r)
+		}
+	}
 	keepLast := keepLastRounds
-	if keepLast > len(rounds) {
-		keepLast = len(rounds)
+	if keepLast > len(completedRounds) {
+		keepLast = len(completedRounds)
 	}
 	remove := make(map[int]bool)
-	completed := 0
-	for idx, r := range rounds {
-		if !r.complete {
-			continue
-		}
-		completed++
-		// Keep the last `keepLast` completed rounds verbatim (anchor +
-		// results) so the most recent tool exchange stays intact.
-		if completed > len(rounds)-keepLast && idx >= len(rounds)-keepLast {
-			continue
-		}
+	for i := 0; i < len(completedRounds)-keepLast; i++ {
+		r := completedRounds[i]
 		remove[r.anchor] = true
 		for _, ri := range r.results {
 			remove[ri] = true
