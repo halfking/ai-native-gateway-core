@@ -236,6 +236,24 @@ func NodeTimeout(hotCfg *hotconfig.Config) time.Duration {
 	return time.Duration(cfg.NodeTimeoutSeconds) * time.Second
 }
 
+// continuationMaxRuneLen bounds how long the trailing user message may be
+// before it stops being treated as a bare "continue" / "retry" nudge.
+//
+// 2026-08-06 incident: the previous implementation ran a case-insensitive
+// SUBSTRING match over the whole trailing user message. In agent sessions
+// that is catastrophic — the default keyword list contains "go" and
+// "continue", so ordinary content matched constantly ("golang", "go test",
+// "django", "algorithm", "good", a pasted `continue` statement, a log line
+// containing "continue keyword detected", ...). Every hit dropped the last
+// user+assistant turn from the upstream body (trimOneMessageFromBody), so
+// the model silently lost the most recent exchange and answered from a
+// truncated history. Production measured 187 trims in a 2-hour window.
+//
+// A genuine nudge is short ("继续", "请继续", "continue", "keep going").
+// 32 runes leaves room for light punctuation and phrasing ("请继续下一步")
+// while excluding real instructions and pasted content.
+const continuationMaxRuneLen = 32
+
 func IsContinuationOrRetry(body []byte, hotCfg *hotconfig.Config) (isContinue bool, isRetry bool) {
 	continueKw, retryKw := LoadRetryKeywords(hotCfg)
 
@@ -257,24 +275,55 @@ func IsContinuationOrRetry(body []byte, hotCfg *hotconfig.Config) (isContinue bo
 		}
 	}
 
-	if lastUserContent == "" {
+	trimmed := strings.TrimSpace(lastUserContent)
+	if trimmed == "" {
+		return false, false
+	}
+
+	// Length gate: anything longer than a bare nudge is real content, never
+	// a continuation marker. This alone kills the agent-session false
+	// positives, because tool transcripts and code are always far longer.
+	if len([]rune(trimmed)) > continuationMaxRuneLen {
+		return false, false
+	}
+
+	// Exact match after normalisation. Substring containment — and even
+	// word-boundary containment — is unsafe here: "go" is a default
+	// keyword, so "go test ./..." tokenises "go" as a standalone word and
+	// would still be trimmed. Only a message that is *nothing but* a nudge
+	// may trigger the trim, because trimming discards both the nudge and
+	// the previous assistant turn. "继续修复这个 bug" and "请继续下一步"
+	// carry real instructions, so dropping them loses information.
+	normalised := normaliseNudge(trimmed)
+	if normalised == "" {
 		return false, false
 	}
 
 	for _, kw := range continueKw {
-		if containsFold(lastUserContent, kw) {
+		if normalised == normaliseNudge(kw) {
 			return true, false
 		}
 	}
 
 	for _, kw := range retryKw {
-		if containsFold(lastUserContent, kw) {
+		if normalised == normaliseNudge(kw) {
 			return false, true
 		}
 	}
 
 	return false, false
 }
+
+// normaliseNudge lowercases and strips surrounding whitespace plus trailing
+// or leading punctuation, so "Continue.", "继续。" and "  continue  " all
+// reduce to the bare keyword. Interior content is preserved, which is what
+// keeps "go test" distinct from "go".
+func normaliseNudge(s string) string {
+	return strings.Trim(strings.ToLower(strings.TrimSpace(s)), nudgeCutset)
+}
+
+// nudgeCutset is the punctuation allowed to surround a bare nudge.
+const nudgeCutset = " \t\r\n.,!?;:~-—…。，！？；：、"
 
 func contains(s, substr string) bool {
 	return len(s) >= len(substr) && containsStr(s, substr)
