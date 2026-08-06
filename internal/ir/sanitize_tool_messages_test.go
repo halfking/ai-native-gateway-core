@@ -157,3 +157,49 @@ func TestSanitizeToolMessages_RealWorldMiniMaxBug(t *testing.T) {
 		t.Errorf("expected last message to be user, got %s", result[len(result)-1].Role)
 	}
 }
+
+// TestValidateAndFix_EmptyUserBetweenToolResults 是 2026-08-06 审计回归测试。
+//
+// 旧 validateAndFixMessages 先跑 SanitizeToolMessages 再跑 removeEmptyMessages。
+// 当空 user 消息夹在 tool results 之间时（某些 SDK 如 Vercel AI SDK 会产生
+// 这种序列），sanitize 先看到 user 消息并关闭 tool-call scope，导致后续合法
+// tool result 被误判为孤儿删除。修复：先 removeEmptyMessages 清除噪音，
+// 再 SanitizeToolMessages 分析清理后的序列。
+func TestValidateAndFix_EmptyUserBetweenToolResults(t *testing.T) {
+	messages := []Message{
+		{Role: "user", Content: []ContentBlock{{Type: "text", Text: "run the tool"}}},
+		{Role: "assistant", Content: []ContentBlock{{Type: "text", Text: "calling"}}, ToolCalls: []ToolCall{
+			{ID: "call_1", Type: "function", Function: struct {
+				Name      string `json:"name"`
+				Arguments string `json:"arguments"`
+			}{Name: "do_work", Arguments: "{}"}},
+		}},
+		{Role: "tool", ToolCallID: "call_1", Content: []ContentBlock{{Type: "text", Text: "result_a"}}},
+		// 空 user 消息 — SDK 噪音
+		{Role: "user", Content: []ContentBlock{}},
+		{Role: "tool", ToolCallID: "call_1", Content: []ContentBlock{{Type: "text", Text: "result_b"}}},
+	}
+
+	result := ValidateAndFixRequest(&InternalRequest{Messages: messages}, "test_req")
+
+	// 两条 tool result 都应存活（call_1 合法）
+	toolCount := 0
+	for _, m := range result.Messages {
+		if m.Role == "tool" {
+			toolCount++
+		}
+	}
+	if toolCount != 2 {
+		t.Errorf("expected 2 tool results preserved, got %d", toolCount)
+		for i, m := range result.Messages {
+			t.Logf("  [%d] role=%s tool_call_id=%s", i, m.Role, m.ToolCallID)
+		}
+	}
+
+	// 空 user 消息应被删除
+	for i, m := range result.Messages {
+		if m.Role == "user" && len(m.Content) == 0 {
+			t.Errorf("empty user message at index %d should have been removed", i)
+		}
+	}
+}

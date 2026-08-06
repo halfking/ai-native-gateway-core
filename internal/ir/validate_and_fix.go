@@ -49,11 +49,24 @@ func validateAndFixMessages(messages []Message, requestID string) []Message {
 		return messages
 	}
 
-	// Step 1: Remove orphaned tool messages (existing SanitizeToolMessages)
-	messages = SanitizeToolMessages(messages, requestID)
-
-	// Step 2: Fix empty content
+	// Step 1: Remove empty messages FIRST.
+	//
+	// 2026-08-06 audit fix: this step previously ran AFTER SanitizeToolMessages.
+	// When an empty user message sat between tool results (a pattern some SDKs
+	// emit, e.g. Vercel AI SDK), SanitizeToolMessages saw the user message
+	// first and closed the tool-call scope, wrongly removing subsequent tool
+	// results that referenced a still-valid call id. By removing empty
+	// messages first, the sanitize step sees the cleaned sequence and the
+	// tool results survive.
+	//
+	// Safety: removeEmptyMessages only deletes messages with no content AND
+	// no tool_calls — it never touches a message carrying tool_call_id or
+	// tool_calls. An empty user message has no semantic role as a scope
+	// delimiter; it's SDK noise that should be cleaned before analysis.
 	messages = removeEmptyMessages(messages)
+
+	// Step 2: Remove orphaned tool messages (existing SanitizeToolMessages)
+	messages = SanitizeToolMessages(messages, requestID)
 
 	// Step 3: Fix tool call structure
 	messages = fixToolCallStructure(messages)
