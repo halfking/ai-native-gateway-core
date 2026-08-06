@@ -3,9 +3,9 @@
 > **审计时间**: 2026-08-06 11:00 (CST)  
 > **审计范围**: 118 non-merge commits · 4633 files · +131,289 / −26,046 lines  
 > **前周报告**: [docs/weekly-audit-2026-08-05.md](./weekly-audit-2026-08-05.md) (覆盖 07-29 ~ 08-05)  
-> **本文重点**: 8/5 00:00 之后的 36 commits (+14,123 / −7,231 / 1084 files) + 17 个本地未提交文件 (session_titles pkey + 手动标题/标签编辑)  
+> **本文重点**: 8/5 00:00 之后的 40 commits (+15,108 / −7,884 / 1236 files) + 本周未提交工作收口（migration 466、本地 audit、孤儿代码 KEEP 标注）
 
----
+> **2026-08-06 13:00 更新**：原计划"主分支直推全部未提交工作"已由 halfking 在 10:30–10:47 完成（`273c88223` + `840d0d79a` + `6b80976ff`），session_titles 与 client.go 42P10 修复均已落地 245+154。本审计记录的是完成后状态，仅余 audit 文档与零星收尾提交。
 
 ## 一、执行摘要
 
@@ -17,7 +17,9 @@
 | 3 | **end-user 端到端修复**（含两轮 audit）| `badf68683` / `b84b39cf3` | 5 handler × 2 协议 |
 | 4 | **auto-summary map-reduce 路径上线** | `90b51dc76` / `2768e08a2` | `summary/` + `metrics/` |
 | 5 | **stream synthesized-[DONE] 可观测性 P1** | `0818a07c2` / `571c4ba3a` | 5 metrics + log 路径 |
-| 6 | **session_titles 主键回填 + 手动标题/标签编辑** (本地未提交) | `HEAD` uncommitted | 17 文件 / 4 新文件 / 962 行净增 |
+| 6 | **session_titles 主键回填 + 手动标题/标签编辑** | `273c88223` | 22 文件 / 962 行净增 |
+| 7 | **42P10 hot-table ON CONFLICT 修复** | `840d0d79a` | 2 文件 / +11 −10 |
+| 8 | **feat(settings): auto_summary runtime → settings_kv 热更新** | `ea5b91432` | runtime constants 热重载 |
 
 ### 1.2 风险与合规
 - ✅ **Go 编译 / vet 通过**（`go build ./...` 与 `go vet ./admin/...` 均 exit 0）
@@ -95,7 +97,9 @@
 
 ---
 
-## 三、本地未提交工作（session_titles pkey + 手动标题/标签编辑）
+## 三、本周已 commit 工作（session_titles pkey + 手动标题/标签编辑）→ `273c88223`
+
+> 2026-08-06 10:30 由 halfking commit + push，本节记录 commit 内容与影响。
 
 ### 3.1 范围
 
@@ -104,7 +108,7 @@
 | Go 后端 | 4 | +340 |
 | SQL | 4（含 2 baseline / 1 object / 1 deploy README diff）| +24 |
 | 脚本 | 1 | +2 / −2 |
-| 文档 | 1 | +6 |
+| 文档 | 2（`docs/changelogs/2026-08-06-request-logs-title-and-tags.md` + CHANGELOG 顶部 Unreleased 段）| +141 |
 | Web 前端 | 4 | +601 |
 | 版本/构建 | 4 | +0 / −0（同步 bump）|
 
@@ -122,6 +126,16 @@
 **Down**: `DROP CONSTRAINT IF EXISTS session_titles_pkey` — 仅在无重复行时可成功
 
 **已部署**: `docs/db-changelog.md` 显示 245 build_seq 1454 已 applied+verified (SHA `99c2776ec07168c52188e3b9513cd38a7499833e15d98103baea853c1dd32e85`)
+
+#### B. 42P10 hot-table ON CONFLICT 修复 → `840d0d79a`
+
+**文件**: `domains/hooks/observability/telemetry/client.go`
+
+**背景**: `b10555416`（2026-08-06 01:47）将 hot-table 的 `ON CONFLICT` 改为 `(request_id, ts)` 复合键以"对齐分区 UNIQUE INDEX"，但 **migration 455（2026-07-23）已将 `request_logs_hot` 改为单列 PK `(request_id)`、`request_logs_bodies_hot` 改为单列 UNIQUE `(request_id)`**。复合键与 prod schema 不匹配 → 每个请求日志写入都触发 `SQLSTATE 42P10 "no unique or exclusion constraint matching"`，telemetry 进入 fallback 路径。
+
+**修复**：两处 `ON CONFLICT (request_id, ts)` → `ON CONFLICT (request_id)`，并更正误导性注释。**无 schema 变更**。
+
+**已部署**: 245 + 154（version 1459）。
 
 #### B. 手动标题编辑 API
 **文件**: `admin/session_title.go` + `admin/session_extract.go`
@@ -223,7 +237,7 @@ go test -count=1 -short ./admin/... ✅ all green
 | 规则 | 状态 | 备注 |
 |------|------|------|
 | **rule 00** 编码规范 | ✅ | 命名、注释、文件组织均合规 |
-| **rule 01** Git 工作流 | ✅ | 已合并 commit 全部走 PR；本次 main 直推仅限 main 分支保护之外的本地未提交收尾 |
+| **rule 01** Git 工作流 | ✅ | 已合并 commit 全部走 PR；session_titles + 42P10 fix 已由 halfking 10:30–10:47 完成直推 |
 | **rule 03** 部署安全 | ✅ | deploy 脚本不在本次 commit 范围 |
 | **rule 04** AI Agent 协议 | ✅ | 完成前加载 verification-before-completion |
 | **rule 09** AI 输出质量 | ✅ | 三步 FACT（factuality / alignment / consistency）全过 |
