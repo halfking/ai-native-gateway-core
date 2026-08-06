@@ -12,6 +12,7 @@ package summarystore
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"strings"
 	"time"
 
@@ -148,6 +149,14 @@ func (s *Store) Upsert(ctx context.Context, sum Summary) (UpsertResult, error) {
 	title := sanitiseUTF8(sum.Title)
 	summaryText := sanitiseUTF8(sum.Summary)
 	userIntent := sanitiseUTF8(sum.UserIntent)
+	if title != sum.Title || summaryText != sum.Summary || userIntent != sum.UserIntent {
+		slog.Warn("summarystore: UTF-8 sanitization applied",
+			"session_key", sum.SessionKey,
+			"title_changed", title != sum.Title,
+			"summary_changed", summaryText != sum.Summary,
+			"user_intent_changed", userIntent != sum.UserIntent,
+		)
+	}
 
 	const query = `
 		INSERT INTO session_summaries (
