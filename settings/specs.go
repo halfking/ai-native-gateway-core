@@ -40,5 +40,6 @@ func TenantSpecs() []*Spec {
 	out := RateLimitTenantSpecs()
 	// 会话全景分析模块的租户级调优配置（model/strategy/cluster 等）。
 	out = append(out, SessionAnalyticsTenantSpecs()...)
+	out = append(out, SessionsV2CompressionTenantSpecs()...)
 	return out
 }

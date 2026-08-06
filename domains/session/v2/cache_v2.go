@@ -13,15 +13,16 @@ import (
 // SessionCacheV2 is the V2 cache architecture that reads from session_turns
 //
 // Cache Levels:
-//   L0: Turn delta storage (incremental messages in session_bodies)
-//   L1: Compression metadata cache (in-memory LRU, no full body)
-//   L2: Governance cache (Redis, verdicts only)
-//   L3: Cold start (read from session_turns, not request_logs)
+//
+//	L0: Turn delta storage (incremental messages in session_bodies)
+//	L1: Compression metadata cache (in-memory LRU, no full body)
+//	L2: Governance cache (Redis, verdicts only)
+//	L3: Cold start (read from session_turns, not request_logs)
 //
 // This replaces the legacy SessionCache which reads from request_logs.
 type SessionCacheV2 struct {
 	l1 *CompressionMetaCache
-	l2 *GovernanceCache
+	l2 *RedisGovernanceCache
 	l3 *SessionTurnsReader
 
 	db *pgxpool.Pool
@@ -30,8 +31,8 @@ type SessionCacheV2 struct {
 // NewSessionCacheV2 creates a new V2 cache instance
 func NewSessionCacheV2(db *pgxpool.Pool, redisAddr string) *SessionCacheV2 {
 	return &SessionCacheV2{
-		l1: NewCompressionMetaCache(1024), // 1024 sessions in memory
-		l2: NewGovernanceCache(redisAddr),
+		l1: NewCompressionMetaCache(1024),         // 1024 sessions in memory
+		l2: NewRedisGovernanceCache(redisAddr, 0), // Use default TTL
 		l3: NewSessionTurnsReader(db),
 		db: db,
 	}
@@ -287,60 +288,6 @@ func (l *lruList) remove(node *lruNode) {
 		node.next.prev = node.prev
 	}
 	l.size--
-}
-
-// ─────────────────────────────────────────────────────────────
-// L2: GovernanceCache (Redis-based, verdicts only)
-// ─────────────────────────────────────────────────────────────
-
-// GovernanceCache stores governance verdicts in Redis
-//
-// This is separate from compression metadata because:
-//   - Different TTL (governance metadata may live longer)
-//   - Different access patterns (read by security modules)
-//   - Can be disabled independently
-type GovernanceCache struct {
-	// TODO: Implement Redis client
-	// For now, this is a placeholder
-	enabled bool
-}
-
-// NewGovernanceCache creates a new governance cache
-func NewGovernanceCache(redisAddr string) *GovernanceCache {
-	// TODO: Initialize Redis connection
-	return &GovernanceCache{
-		enabled: false, // Disabled until Redis is connected
-	}
-}
-
-// Get retrieves governance metadata from Redis
-func (g *GovernanceCache) Get(ctx context.Context, tenantID, sessionID string) (*GovernanceMeta, error) {
-	if !g.enabled {
-		return nil, fmt.Errorf("governance cache disabled")
-	}
-
-	// TODO: Implement Redis HGETALL
-	return nil, fmt.Errorf("not implemented")
-}
-
-// Set stores governance metadata in Redis
-func (g *GovernanceCache) Set(ctx context.Context, tenantID, sessionID string, meta *GovernanceMeta) error {
-	if !g.enabled {
-		return nil // Silently skip if disabled
-	}
-
-	// TODO: Implement Redis HSET with 30min TTL
-	return nil
-}
-
-// Delete removes governance metadata from Redis
-func (g *GovernanceCache) Delete(ctx context.Context, tenantID, sessionID string) error {
-	if !g.enabled {
-		return nil
-	}
-
-	// TODO: Implement Redis DEL
-	return nil
 }
 
 // ─────────────────────────────────────────────────────────────
