@@ -45,6 +45,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - **修复**: `domains/hooks/observability/telemetry/client.go` 两处 `ON CONFLICT (request_id, ts)` → `ON CONFLICT (request_id)`（insertRequestLog 的 request_logs_hot 插入 + upsertRequestLogBodies），并修正误导性注释。无 schema 变更，无需 migration
   - **验证**: `go build ./...` / `go vet` / telemetry 包测试全部通过；245 预发布 → 154 生产部署后 journal 不再出现 42P10
 
+- **loopback 关联行落库 23514 修复 (2026-08-06)**:
+  - **背景**: 42P10 修复上线后复查 journal，发现仍存在 `telemetry request db persist failed` 的 fallback WARN（25/26 条），但错误已变为 `SQLSTATE 23514 ... violates check constraint "chk_compression_parent_single"`，只影响 auto-title / auto-summary loopback 关联行（请求本身正常，仅日志行落库失败）
+  - **根因**: `chk_compression_parent_single`（migration 013，Round 47 compression v7）本意是 "parent_request_id = compression 子行标记，必须说明压缩原因"。2026-08-06 新增的 loopback 关联功能（`admin/auto_title_generator.go` / `admin/auto_summary_generator.go` 转发 `X-Gw-Parent-Request-Id` + `X-Gw-Source-Actor`，`applyParentCorrelationFields` 写入 `parent_request_id` + `origin_actor`）复用了 `parent_request_id` 做父子关联，但不写 `compression_reason` → 违反 CHECK → 23514
+  - **修复（schema 放宽，老板确认）**: 新增 `sql/migrations/startup/466_relax_compression_parent_check.sql`（up + down），CHECK 放宽为 `parent_request_id IS NULL OR compression_reason IS NOT NULL OR origin_actor IS NOT NULL` —— 压缩子行仍必须说明原因（压缩不变量保留），loopback 关联行凭 `origin_actor IS NOT NULL` 合法化。down 迁移会先把关联行 `parent_request_id` 置 NULL 再恢复严格 CHECK（否则严格 CHECK 无法重加）
+  - **同步**: `sql/objects/tables/{request_logs,request_logs_hot}.sql` + `deploy/sql/objects/tables/*` + `sql/schema/01-schema.sql` + `deploy/sql/schemas/baseline/01-schema.sql` 约束定义同步为放宽形态
+  - **验证**: PG17 本地临时实例全流程测试通过（up 放宽 4 个关系 × 分区传播、loopback 插入成功、孤儿 parent 仍拒绝、down 恢复严格且清理关联行）；245 预发布 → 154 生产部署后 journal 不再出现 23514
+
 ## [Unreleased] - 2026-08-04
 
 ### Fixed
