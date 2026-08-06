@@ -19,6 +19,7 @@ import (
 
 	"github.com/kaixuan/llm-gateway-go/internal/summarystore"
 	"github.com/kaixuan/llm-gateway-go/metrics"
+	"github.com/kaixuan/llm-gateway-go/settings"
 )
 
 // Auto-summary design (2026-08-06) — pairs with auto_title_generator.go
@@ -53,16 +54,79 @@ import (
 // Public constants for the loopback headers. Keep in sync with
 // auto_title_generator.go's autoParentRequestIDHeader / autoSourceActorHeader.
 const (
-	autoSummaryOriginActor         = "auto-summary-generator"
-	autoSummarySessionIDPrefix     = "gs" // appended before ":" to form "gs:gw_xxx" → "gs_gw_xxx"
-	autoSummaryRollingTurnGate     = 3    // need ≥ N new turns since last summary to re-trigger
-	autoSummaryMapReduceThreshold  = 12000
-	autoSummaryChunkApproxChars    = 3000 // each map-reduce chunk target size
-	autoSummaryChunkApproxTurns    = 5    // each chunk target turn count
-	autoSummaryDefaultRatePerMin   = 6    // per-tenant rate limit
-	autoSummaryDefaultWorkerSlots  = 4    // concurrent in-flight LLM calls
-	autoSummaryHTTPTimeout         = 30 * time.Second
+	autoSummaryOriginActor      = "auto-summary-generator"
+	autoSummarySessionIDPrefix  = "gs" // appended before ":" to form "gs:gw_xxx" → "gs_gw_xxx"
+	autoSummaryChunkApproxTurns = 5  // each chunk target turn count
+	autoSummaryHTTPTimeout      = 30 * time.Second
 )
+
+// Hardcoded fallbacks for when settings.Global is nil (local dev / unit
+// tests without a settings backend). The authoritative defaults now live
+// in settings/auto_summary_specs.go and are pulled live via
+// settings.GetPlatformInt — these constants are only the last-resort
+// fallback. Operators tune the live values in settings_kv (hot-reload)
+// or via env (LLM_GATEWAY_AUTO_SUMMARY_*).
+const (
+	autoSummaryRollingTurnGate    = 3
+	autoSummaryMapReduceThreshold = 12000
+	autoSummaryChunkApproxChars   = 3000
+	autoSummaryDefaultRatePerMin  = 6
+	autoSummaryDefaultWorkerSlots = 4
+)
+
+// rollingTurnGate returns the current rolling-gate threshold. Live read
+// from settings.Global (auto_summary.rolling_turn_gate); falls back to
+// the env override, then to the hardcoded constant. Safe to call inside
+// the per-request hot path: GetPlatformInt returns immediately if the
+// spec is missing and otherwise does one DB round-trip.
+//
+// 2026-08-06: lifted from a package-level constant so the value is
+// hot-reloadable. The previous code read the const once at compile time.
+func rollingTurnGate() int {
+	return readSettingInt("auto_summary.rolling_turn_gate", "LLM_GATEWAY_AUTO_SUMMARY_ROLLING_TURN_GATE", autoSummaryRollingTurnGate)
+}
+
+// mapReduceThreshold returns the current map-reduce trigger threshold.
+func mapReduceThreshold() int {
+	return readSettingInt("auto_summary.map_reduce_threshold", "LLM_GATEWAY_AUTO_SUMMARY_MAP_REDUCE_THRESHOLD", autoSummaryMapReduceThreshold)
+}
+
+// chunkApproxChars returns the current per-chunk size for map-reduce.
+func chunkApproxChars() int {
+	return readSettingInt("auto_summary.chunk_approx_chars", "LLM_GATEWAY_AUTO_SUMMARY_CHUNK_APPROX_CHARS", autoSummaryChunkApproxChars)
+}
+
+// readSettingInt implements the priority chain: settings.GetPlatformInt
+// → env var → hardcoded fallback. The settings lookup itself goes
+// DB → env → default internally, so this helper also serves as a
+// single entry point that future code paths (per-tenant, cluster-wide)
+// can be slotted into.
+//
+// Read at use sites (not at construction) so changes in settings_kv
+// take effect on the next call without a process restart.
+func readSettingInt(key, envName string, fallback int) int {
+	// Layer 1: live settings_kv / settings spec default
+	if v := settings.GetPlatformInt(key, 0); v > 0 {
+		// 0 means "missing or zero"; treat 0 as missing so env can
+		// override (env is higher-priority in the operator's mental
+		// model: explicit > implicit). GetPlatformInt returns 0 when
+		// Global is nil or the key is unknown — both are legitimate
+		// fallback conditions for unit tests.
+		_ = envName // env read is below; kept for symmetry / explicit doc
+		return v
+	}
+	// Layer 2: explicit env override (lets test harnesses bypass the
+	// settings backend without touching DB). The settings helper
+	// itself prefers env over spec-default, so if Global is initialized
+	// but the env is set, layer 1 already returned it.
+	if v := os.Getenv(envName); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			return n
+		}
+	}
+	// Layer 3: hardcoded constant
+	return fallback
+}
 
 // AutoSummaryGenerator runs incremental session-summary generation in the
 // background after a request succeeds. It is the streaming-handler's
@@ -89,15 +153,28 @@ type AutoSummaryGenerator struct {
 // nil — store methods are nil-safe and surface a clear error in that case
 // so the rest of the gateway can boot without a DB during local dev.
 //
-// 2026-08-06: read LLM_GATEWAY_AUTO_SUMMARY_RATE_PER_MIN env var (default 6/min)
-// to allow test environments to bypass the 6/min rate limit and trigger
-// the map-reduce path more frequently.
+// 2026-08-06: rate-per-min and worker-slot capacity are read from
+// settings_kv (auto_summary.default_rate_per_min / default_worker_slots)
+// at construction time. They are snapshotted because the chan struct{}
+// capacity is fixed for the lifetime of the generator and the rate
+// limiter tokens-per-bucket must match the contract. The settings
+// system still lets operators tune them via the admin UI or SQL:
+// a process restart is required for these two values to take effect.
+// rolling_turn_gate / map_reduce_threshold / chunk_approx_chars remain
+// live (read at every decision point — see rollingTurnGate() etc.).
 func NewAutoSummaryGenerator(handler *Handler, store *summarystore.Store) *AutoSummaryGenerator {
-	ratePerMin := autoSummaryDefaultRatePerMin
-	if v := os.Getenv("LLM_GATEWAY_AUTO_SUMMARY_RATE_PER_MIN"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil && n > 0 {
-			ratePerMin = n
-		}
+	ratePerMin := readSettingInt(
+		"auto_summary.default_rate_per_min",
+		"LLM_GATEWAY_AUTO_SUMMARY_RATE_PER_MIN",
+		autoSummaryDefaultRatePerMin,
+	)
+	workerSlots := readSettingInt(
+		"auto_summary.default_worker_slots",
+		"LLM_GATEWAY_AUTO_SUMMARY_WORKER_SLOTS",
+		autoSummaryDefaultWorkerSlots,
+	)
+	if workerSlots < 1 {
+		workerSlots = autoSummaryDefaultWorkerSlots
 	}
 	return &AutoSummaryGenerator{
 		handler:     handler,
@@ -105,7 +182,7 @@ func NewAutoSummaryGenerator(handler *Handler, store *summarystore.Store) *AutoS
 		enabled:     true, // TODO: env var
 		rateByTnt:   make(map[string]*rate.Limiter),
 		ratePerMin:  ratePerMin,
-		workerSlots: make(chan struct{}, autoSummaryDefaultWorkerSlots),
+		workerSlots: make(chan struct{}, workerSlots),
 		rng:         rand.New(rand.NewSource(time.Now().UnixNano())),
 	}
 }
@@ -251,7 +328,7 @@ func (g *AutoSummaryGenerator) shouldTriggerSummary(ctx context.Context, session
 	if err != nil {
 		return true, "db_error", last, err
 	}
-	if n < autoSummaryRollingTurnGate {
+	if n < rollingTurnGate() {
 		return false, fmt.Sprintf("only_%d_new_turns_since_last_summary", n), last, nil
 	}
 	return true, "rolling_gate_open", last, nil
@@ -306,7 +383,7 @@ func (g *AutoSummaryGenerator) generateSummary(ctx context.Context, sessionID, t
 	}
 
 	// Step 3: single-shot vs map-reduce.
-	if len(corpus) <= autoSummaryMapReduceThreshold {
+	if len(corpus) <= mapReduceThreshold() {
 		title, summary, topics, intent, model, err := g.callSummaryOnce(ctx, apiKey, sessionID, parentRequestID, corpus, keyID)
 		if err != nil {
 			return "", "", nil, "", "", err
@@ -315,7 +392,7 @@ func (g *AutoSummaryGenerator) generateSummary(ctx context.Context, sessionID, t
 	}
 
 	// Map-reduce: split corpus into N chunks → N partial summaries → merge.
-	chunks := splitCorpusIntoChunks(corpus, autoSummaryChunkApproxChars)
+	chunks := splitCorpusIntoChunks(corpus, chunkApproxChars())
 	metrics.AutoSummaryChunks.Observe(float64(len(chunks)))
 	if len(chunks) < 2 {
 		// safety net — if the splitter couldn't make ≥2 chunks, just do
@@ -399,7 +476,7 @@ func (g *AutoSummaryGenerator) buildSummaryCorpus(ctx context.Context, sessionID
 	if corpus == "" {
 		// Pull the recent history so map-reduce has more than the just-finished
 		// turn to work with. 50 rows ≈ 5k-10k chars on average — comfortably
-		// above autoSummaryMapReduceThreshold for an active session.
+		// above mapReduceThreshold() for an active session.
 		logs, err := g.handler.loadSessionLogsBySessionID(ctx, sessionID, tenantID, 50)
 		if err != nil {
 			return "", err

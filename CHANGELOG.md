@@ -9,6 +9,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **auto_summary 运行时常量接入 settings_kv 热更新 (2026-08-06)**:
+  - **背景**: admin/auto_summary_generator.go 中 5 个硬编码常量（rolling_turn_gate=3、map_reduce_threshold=12000、chunk_approx_chars=3000、default_rate_per_min=6、default_worker_slots=4）运维侧无法调整，需重启进程才生效
+  - **修改**:
+    - 新增 `settings/auto_summary_specs.go`：5 个 PlatformScope、HotReload=true、TypeInt 的 spec，含 Min/Max 范围与 DangerLevel（worker_slots / rate_per_min 为 Dangerous，其他为 Warning）
+    - 注册到 `settings/specs.go::PlatformSpecs()`
+    - `admin/auto_summary_generator.go` 新增 `rollingTurnGate()` / `mapReduceThreshold()` / `chunkApproxChars()` 三个 use-site 读取函数（每次决策读取，热更新即时生效）
+    - `NewAutoSummaryGenerator` 改读 settings（rate_per_min + worker_slots 在构造时读取，chan 容量构造后不可变 — 这是设计上的妥协，避免重设 chan 容量的并发风险）
+    - 引入 `readSettingInt(key, envName, fallback)` 统一 3 级优先级链：`settings.Global.EffectiveValue` → env → 硬编码 fallback
+    - env var `LLM_GATEWAY_AUTO_SUMMARY_*` 保留为向后兼容
+  - **测试**:
+    - `settings/auto_summary_specs_test.go`（4 测试）：5 keys 齐全、defaults 与代码常量一致、Min/Max 操作合理、已注册到 PlatformSpecs
+    - `admin/auto_summary_generator_test.go`（4 测试）：3-tier priority chain + 3 个 use-site 函数回落到硬编码常量
+  - **验证**: `go build / vet` 全仓通过；admin / settings / metrics / streaming / summarystore 测试全绿
+  - **部署后实地验证**: `SELECT key, value FROM settings_kv WHERE key LIKE 'auto_summary.%';` 应返回当前生效值；通过 `UPDATE settings_kv SET value = '5' WHERE key = 'auto_summary.rolling_turn_gate';` 修改后下一个会话触发的总结应立即按新闸门判定
+
 - **KeyInfo 字段 parity 锁死 (2026-08-06)**:
   - **背景**: end-user 修复审计 agent 提到风险 — success 路径 (emitTelemetry) 与 failure 路径 (buildEntry) 通过**不同代码路径**填充 API key 显示字段（applyKeyInfoToRequestLog vs enrichRequestLogFromMeta）。如果 refactor 中断了其中一条路径，两种 row 会悄悄失配
   - **调查结论**: 经实际测试验证，当 keyInfo 完整时两条路径都通过 `formatKeyPrefixDisplay` + `meta` 流水线正确填充 `APIKeyPrefix` / `APIKeyOwnerUser` / `ApplicationCode`。parity 当前成立
