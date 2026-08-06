@@ -54,8 +54,10 @@
 - 修复点：两条 tool_result 若前 100 字符相同但 `tool_call_id` 不同，旧实现会误判为重复（与 `SanitizeToolMessages` 防的同一类 bug）；新实现区分。
 - 验收：见 `TestMessageKey_V1V2Parity`（V2 指纹与 V1 `msgHash` 在等价输入上产出相同前 32 hex）；`TestMessageKey_ToolCallIDDisambiguates`。
 
-### A6（P0）摘要读源抽象 `NEW-DESIGN`
-在 `summarizer` 与 `summarystore` 之间引入 `MessageSource` 接口：V1 实现 `request_logs`，V2 实现 `session_bodies`（经 `OutboundBuilder`）。由 flag 选择。这是 A1 的前置。
+### A6（P0）摘要读源抽象 `NEW-DESIGN` → 已实现（接口层）
+在 `summarizer` 与存储之间引入 `MessageSource` 接口（`GetSessionMessages` / `GetMessagesSince`，`domains/sessionsummary/summarizer.go`）。
+- **已落地**：① 默认实现 `pgRequestLogsSource`（原 `request_logs`/`request_logs_bodies` SQL 原样搬入，行为不变）；② `Summarizer` 新增 `messageSource` 字段，`NewSummarizer` 自动装默认源；③ `SetMessageSource(src)` 注入器（nil 忽略）；④ `getSessionMessages`/`getMessagesSince` 改为委托。测试覆盖：可替换性、nil 忽略、错误透传、默认源类型。
+- **未落地（待 A1 时）**：V2 `session_bodies` 实现（经 `OutboundBuilder`）。当前接口层已就绪，A1 灰度时只需 `SetMessageSource(v2Source)` 即可切换读源，不动 `GenerateSummary`/`GenerateRollingSummary`。
 
 ### A5（P1）V2 Message 强类型化 `NEW-DESIGN`
 把 `v2.Message` 的 `Content string` / `ToolCalls []map[string]any` 替换为复用 `ir.Message`（或 `[]ir.ContentBlock`）。`sessionv2mirror/hook.go` 的 `toMessage` 改为无损转换。涉及迁移（旧 JSONB 兼容读）。

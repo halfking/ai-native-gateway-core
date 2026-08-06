@@ -28,10 +28,33 @@ import (
 // 经 *sql.DB 桥接。cmd/gateway/main_pipeline.go 不再为 summarizer 调用
 // stdlib.OpenDB（仅 EnhancedPIPlugin 仍需要 *sql.DB）。
 type Summarizer struct {
-	store       *summarystore.Store
-	redisClient *redis.Client
-	llmClient   LLMClient
-	model       string
+	store         *summarystore.Store
+	redisClient   *redis.Client
+	llmClient     LLMClient
+	model         string
+	messageSource MessageSource // where conversation messages are read from; defaults to request_logs
+}
+
+// MessageSource is the storage-agnostic read surface for a session's messages.
+//
+// Historically the summarizer read directly from request_logs /
+// request_logs_bodies (the V1 per-turn full-body store). A2/A6 in
+// docs/omni-ref3 require the summarizer to keep working once V1 request bodies
+// are retired in favor of the V2 incremental session_bodies store. Extracting
+// these two reads behind an interface lets a V2 implementation be registered
+// (SetMessageSource) without touching GenerateSummary / GenerateRollingSummary.
+//
+// Implementations must be safe for concurrent use (multiple summaries may run
+// in parallel goroutines). Both methods return up to 20 messages in ascending
+// chronological order, matching the original request_logs query semantics.
+type MessageSource interface {
+	// GetSessionMessages returns the most recent messages for a session
+	// (the full-summary input).
+	GetSessionMessages(ctx context.Context, tenantID, sessionKey string) ([]SessionMessage, error)
+	// GetMessagesSince returns messages newer than `since`; when since is the
+	// zero time, implementations return the most recent messages (first-summary
+	// input). This is the rolling-summary delta input.
+	GetMessagesSince(ctx context.Context, tenantID, sessionKey string, since time.Time) ([]SessionMessage, error)
 }
 
 // LLMClient 定义 LLM 客户端接口（便于测试和替换）
@@ -74,15 +97,30 @@ type SessionMessage struct {
 // NewSummarizer 创建会话总结器
 //
 // 2026-08-06: 接受 *pgxpool.Pool 而非 *sql.DB。nil pool 时仍可构造
-//（与之前 *sql.DB=nil 行为一致）—— 所有 DB 方法会 nil-check 后返回
+// （与之前 *sql.DB=nil 行为一致）—— 所有 DB 方法会 nil-check 后返回
 // error 而不 panic。summarystore.NewStore 同样 nil-safe。
 func NewSummarizer(pool *pgxpool.Pool, redisClient *redis.Client, llmClient LLMClient) *Summarizer {
-	return &Summarizer{
+	s := &Summarizer{
 		store:       summarystore.NewStore(pool),
 		redisClient: redisClient,
 		llmClient:   llmClient,
 		model:       "summary-fast",
 	}
+	// Default MessageSource reads from request_logs / request_logs_bodies (V1),
+	// preserving the pre-A6 behavior exactly. Call SetMessageSource to swap in
+	// a V2 session_bodies implementation once V2 read is enabled (A1).
+	s.messageSource = &pgRequestLogsSource{pool: pool}
+	return s
+}
+
+// SetMessageSource overrides where the summarizer reads conversation messages
+// from. Intended for registering a V2 session_bodies-backed MessageSource; nil
+// is ignored to avoid a nil-dereference on the read path.
+func (s *Summarizer) SetMessageSource(src MessageSource) {
+	if src == nil {
+		return
+	}
+	s.messageSource = src
 }
 
 // SetModel 设置总结使用的稳定模型别名。
@@ -343,7 +381,7 @@ func (s *Summarizer) getPrevSummary(ctx context.Context, tenantID, sessionKey st
 		query += " AND tenant_id = $2"
 		args = append(args, tenantID)
 	}
-	var lastAt *time.Time // pgx scans NULL timestamp into *time.Time = nil
+	var lastAt *time.Time  // pgx scans NULL timestamp into *time.Time = nil
 	pool := s.store.Pool() // expose a getter on Store (added in this commit)
 	if pool == nil {
 		return "", time.Time{}, fmt.Errorf("sessionsummary: store pool is nil")
@@ -355,57 +393,14 @@ func (s *Summarizer) getPrevSummary(ctx context.Context, tenantID, sessionKey st
 	return
 }
 
-// getMessagesSince 读取自指定时间以来的新消息（rolling 用）。
-// since 为零值时返回最近 20 条（首次总结）。
-// 2026-07-21 Ticket #11: Modified to use LEFT JOIN with request_logs_bodies
-// to retrieve full request_body (moved to separate table in #10).
-// 2026-08-06: 改用 pgxpool.Pool.Query 替代 database/sql QueryContext。
+// getMessagesSince delegates to the configured MessageSource (rolling-summary
+// delta input). See the MessageSource docs for the V1→V2 migration rationale
+// (docs/omni-ref3 A6).
 func (s *Summarizer) getMessagesSince(ctx context.Context, tenantID, sessionKey string, since time.Time) ([]SessionMessage, error) {
-	if s.store == nil {
-		return nil, fmt.Errorf("sessionsummary: store not configured")
+	if s.messageSource == nil {
+		return nil, fmt.Errorf("sessionsummary: message source not configured")
 	}
-	pool := s.store.Pool()
-	if pool == nil {
-		return nil, fmt.Errorf("sessionsummary: store pool is nil")
-	}
-	query := `
-		SELECT rl.request_id,
-		       COALESCE(COALESCE(rb.request_body, rl.request_body)->>'role', 'user') as role,
-		       COALESCE(COALESCE(rb.request_body, rl.request_body)->'messages'->-1->>'content', '') as content,
-		       rl.outbound_model, rl.ts
-		FROM request_logs rl
-		LEFT JOIN request_logs_bodies rb
-		  ON rb.request_id = rl.request_id
-		WHERE rl.gw_session_id = $1`
-	args := []any{sessionKey}
-	argN := 2
-	if tenantID != "" {
-		query += " AND tenant_id = $" + strconv.Itoa(argN)
-		args = append(args, tenantID)
-		argN++
-	}
-	if !since.IsZero() {
-		query += " AND ts > $" + strconv.Itoa(argN)
-		args = append(args, since)
-		argN++
-	}
-	query += " ORDER BY ts ASC LIMIT 20"
-
-	rows, err := pool.Query(ctx, query, args...)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	var messages []SessionMessage
-	for rows.Next() {
-		var msg SessionMessage
-		if err := rows.Scan(&msg.RequestID, &msg.Role, &msg.Content, &msg.Model, &msg.Timestamp); err != nil {
-			return nil, err
-		}
-		messages = append(messages, msg)
-	}
-	return messages, rows.Err()
+	return s.messageSource.GetMessagesSince(ctx, tenantID, sessionKey, since)
 }
 
 // parseSummaryResponse 解析 LLM 响应
@@ -444,20 +439,29 @@ func (s *Summarizer) parseSummaryResponse(response, sessionKey string) (*Session
 	}, nil
 }
 
-// getSessionMessages 从数据库获取会话消息。
-// 注意：request_logs 使用 gw_session_id（350 迁移修正）。
-// 2026-07-21 Ticket #11: Modified to use LEFT JOIN with request_logs_bodies
-// to retrieve full request_body (moved to separate table in #10).
-// 2026-08-06: 改用 pgxpool.Pool.Query 替代 database/sql QueryContext。
+// getSessionMessages delegates to the configured MessageSource (full-summary
+// input). See the MessageSource docs for the V1→V2 migration rationale
+// (docs/omni-ref3 A6).
 func (s *Summarizer) getSessionMessages(ctx context.Context, tenantID, sessionKey string) ([]SessionMessage, error) {
-	if s.store == nil {
-		return nil, fmt.Errorf("sessionsummary: store not configured")
+	if s.messageSource == nil {
+		return nil, fmt.Errorf("sessionsummary: message source not configured")
 	}
-	pool := s.store.Pool()
-	if pool == nil {
-		return nil, fmt.Errorf("sessionsummary: store pool is nil")
-	}
-	query := `
+	return s.messageSource.GetSessionMessages(ctx, tenantID, sessionKey)
+}
+
+// pgRequestLogsSource is the default MessageSource: it reads from the V1
+// request_logs / request_logs_bodies tables. The SQL is the exact code the
+// summarizer ran before A6, moved here verbatim so behavior is unchanged when
+// the default source is in use (NewSummarizer installs it automatically).
+//
+// A nil pool yields errors rather than panics, matching the prior nil-safety
+// contract. Safe for concurrent use: each Query opens its own rows.
+type pgRequestLogsSource struct {
+	pool *pgxpool.Pool
+}
+
+func (m *pgRequestLogsSource) getSessionMessagesQuery() string {
+	return `
 		SELECT
 			rl.request_id,
 			COALESCE(COALESCE(rb.request_body, rl.request_body)->>'role', 'user') as role,
@@ -471,8 +475,13 @@ func (s *Summarizer) getSessionMessages(ctx context.Context, tenantID, sessionKe
 		ORDER BY rl.ts ASC
 		LIMIT 20
 	`
+}
 
-	rows, err := pool.Query(ctx, query, tenantID, sessionKey)
+func (m *pgRequestLogsSource) GetSessionMessages(ctx context.Context, tenantID, sessionKey string) ([]SessionMessage, error) {
+	if m.pool == nil {
+		return nil, fmt.Errorf("sessionsummary: store pool is nil")
+	}
+	rows, err := m.pool.Query(ctx, m.getSessionMessagesQuery(), tenantID, sessionKey)
 	if err != nil {
 		return nil, err
 	}
@@ -486,7 +495,53 @@ func (s *Summarizer) getSessionMessages(ctx context.Context, tenantID, sessionKe
 		}
 		messages = append(messages, msg)
 	}
+	return messages, rows.Err()
+}
 
+// 注意：request_logs 使用 gw_session_id（350 迁移修正）。
+// 2026-07-21 Ticket #11: Modified to use LEFT JOIN with request_logs_bodies
+// to retrieve full request_body (moved to separate table in #10).
+func (m *pgRequestLogsSource) GetMessagesSince(ctx context.Context, tenantID, sessionKey string, since time.Time) ([]SessionMessage, error) {
+	if m.pool == nil {
+		return nil, fmt.Errorf("sessionsummary: store pool is nil")
+	}
+	query := `
+		SELECT rl.request_id,
+		       COALESCE(COALESCE(rb.request_body, rl.request_body)->>'role', 'user') as role,
+		       COALESCE(COALESCE(rb.request_body, rl.request_body)->'messages'->-1->>'content', '') as content,
+		       rl.outbound_model, rl.ts
+		FROM request_logs rl
+		LEFT JOIN request_logs_bodies rb
+		  ON rb.request_id = rl.request_id
+		WHERE rl.gw_session_id = $1`
+	args := []any{sessionKey}
+	argN := 2
+	if tenantID != "" {
+		query += " AND tenant_id = $" + strconv.Itoa(argN)
+		args = append(args, tenantID)
+		argN++
+	}
+	if !since.IsZero() {
+		query += " AND ts > $" + strconv.Itoa(argN)
+		args = append(args, since)
+		argN++
+	}
+	query += " ORDER BY ts ASC LIMIT 20"
+
+	rows, err := m.pool.Query(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var messages []SessionMessage
+	for rows.Next() {
+		var msg SessionMessage
+		if err := rows.Scan(&msg.RequestID, &msg.Role, &msg.Content, &msg.Model, &msg.Timestamp); err != nil {
+			return nil, err
+		}
+		messages = append(messages, msg)
+	}
 	return messages, rows.Err()
 }
 
