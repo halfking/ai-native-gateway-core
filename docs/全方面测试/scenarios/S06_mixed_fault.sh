@@ -10,7 +10,7 @@ echo "[S06] mixed fault: G=slow, J=flaky, B=server_error, K=rate_limited"
 set_group G slow
 set_group J flaky
 set_group B server_error
-set_group K rate_limited
+set_group K quota_429
 run_loadtest S06_mixed_fault \
     --n-clients 10 --rps-per-client 3 --duration 30 \
     --models tok3 --prompt short

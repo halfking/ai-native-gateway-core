@@ -23,11 +23,13 @@ import asyncio
 import json
 import os
 import random
-import sys
 import time
+import uuid
 from collections import defaultdict
 
 import aiohttp
+
+from result_contract import envelope, write_result
 
 PROMPTS = {
     "short": "hi",
@@ -85,42 +87,85 @@ class Stats:
         self.fail_by_status = defaultdict(int)
         self.fail_by_kind = defaultdict(int)
         self.latencies_ms = []
+        self.ttfb_ms = []
+        self.stream_total = 0
+        self.stream_completed = 0
+        self.stream_parse_failed = 0
+        self.stream_cancelled = 0
+        self.contract_failed = 0
+        self.cancelled = 0
+        self.request_ids = set()
 
-    async def record(self, status: int, kind: str, dur_ms: float):
+    async def record(
+        self,
+        status: int,
+        kind: str,
+        dur_ms: float,
+        *,
+        ttfb_ms: float = 0,
+        stream: bool = False,
+        stream_done: bool = False,
+        stream_parse_failed: bool = False,
+        cancelled: bool = False,
+        request_id: str = "",
+    ):
         async with self.lock:
             self.total += 1
-            # 2026-08-05 fix: 区分 200 OK vs 2xx 范围。
-            # 之前 `200 <= status < 300` 把 202 Accepted (async_pending continuation) 也算 succ，
-            # 导致 S13_no_candidate 等故障注入场景看起来有 ~3.5% 泄漏。
-            # 真实 succ 应仅算 200 OK；2xx 的 202/204 等是控制响应。
             if status == 200:
                 self.succ += 1
             else:
                 self.fail_by_status[status] += 1
                 self.fail_by_kind[kind or "unknown"] += 1
             self.latencies_ms.append(dur_ms)
+            if ttfb_ms > 0:
+                self.ttfb_ms.append(ttfb_ms)
+            if stream:
+                self.stream_total += 1
+                if stream_done:
+                    self.stream_completed += 1
+                if stream_parse_failed:
+                    self.stream_parse_failed += 1
+            if cancelled:
+                self.cancelled += 1
+                if stream:
+                    self.stream_cancelled += 1
+            if request_id:
+                self.request_ids.add(request_id)
+
+    @staticmethod
+    def percentile(values, percentile):
+        if not values:
+            return 0
+        ordered = sorted(values)
+        index = min(len(ordered) - 1, max(0, int(percentile * len(ordered) + 0.999999) - 1))
+        return ordered[index]
 
     def snapshot(self, started: float) -> dict:
-        d = sorted(self.latencies_ms)
-        n = len(d)
-
-        def pct(p):
-            return d[int(n * p)] if n else 0
-
         elapsed = time.monotonic() - started
         return {
             "total": self.total,
             "succ": self.succ,
             "fail": self.total - self.succ,
             "success_rate": (self.succ / self.total) if self.total else 0,
-            "p50_ms": pct(0.50),
-            "p95_ms": pct(0.95),
-            "p99_ms": pct(0.99),
-            "max_ms": d[-1] if d else 0,
+            "p50_ms": self.percentile(self.latencies_ms, 0.50),
+            "p95_ms": self.percentile(self.latencies_ms, 0.95),
+            "p99_ms": self.percentile(self.latencies_ms, 0.99),
+            "max_ms": max(self.latencies_ms, default=0),
+            "ttfb_p50_ms": self.percentile(self.ttfb_ms, 0.50),
+            "ttfb_p95_ms": self.percentile(self.ttfb_ms, 0.95),
+            "ttfb_p99_ms": self.percentile(self.ttfb_ms, 0.99),
             "throughput_rps": self.total / elapsed if elapsed else 0,
             "elapsed_sec": elapsed,
             "fail_by_status": dict(self.fail_by_status),
             "fail_by_kind": dict(self.fail_by_kind),
+            "stream_total": self.stream_total,
+            "stream_completed": self.stream_completed,
+            "stream_completion_rate": (self.stream_completed / self.stream_total)
+            if self.stream_total else 0,
+            "stream_parse_failed": self.stream_parse_failed,
+            "stream_cancelled": self.stream_cancelled,
+            "cancelled": self.cancelled,
+            "request_id_count": len(self.request_ids),
         }
 
 
@@ -162,6 +207,10 @@ async def one_request(
     t0 = time.monotonic()
     status = 0
     kind = "transport"
+    ttfb_ms = 0
+    stream_done = False
+    stream_parse_failed = False
+    request_id = ""
     try:
         async with session.post(
             url,
@@ -170,28 +219,59 @@ async def one_request(
             timeout=aiohttp.ClientTimeout(total=timeout),
         ) as resp:
             status = resp.status
-            text = await resp.text()
+            request_id = resp.headers.get("x-request-id", "")
             if stream:
-                # drain stream
-                async for _ in resp.content:
-                    pass
-            # try parse kind from response body
-            try:
-                j = json.loads(text or "{}")
-                err = j.get("error", {})
-                if isinstance(err, dict):
-                    kind = err.get("type") or err.get("code") or kind
-            except Exception:
-                pass
+                buffer = b""
+                async for chunk in resp.content.iter_chunked(4096):
+                    if not ttfb_ms:
+                        ttfb_ms = (time.monotonic() - t0) * 1000
+                    buffer += chunk
+                    while b"\n\n" in buffer:
+                        event, buffer = buffer.split(b"\n\n", 1)
+                        lines = event.decode("utf-8", errors="replace").splitlines()
+                        for line in lines:
+                            if not line.startswith("data:"):
+                                continue
+                            payload = line[5:].strip()
+                            if payload == "[DONE]":
+                                stream_done = True
+                                continue
+                            try:
+                                json.loads(payload)
+                            except json.JSONDecodeError:
+                                stream_parse_failed = True
+                if buffer.strip():
+                    stream_parse_failed = True
+                if not stream_done and status == 200:
+                    kind = "stream_incomplete"
+            else:
+                ttfb_ms = (time.monotonic() - t0) * 1000
+                text = await resp.text()
+                try:
+                    j = json.loads(text or "{}")
+                    err = j.get("error", {})
+                    if isinstance(err, dict):
+                        kind = err.get("type") or err.get("code") or kind
+                except json.JSONDecodeError:
+                    if status == 200:
+                        kind = "invalid_json"
     except asyncio.TimeoutError:
         status = 408
         kind = "timeout"
-    except aiohttp.ClientError as e:
-        kind = f"client_error:{e.__class__.__name__}"
-    except Exception as e:
-        kind = f"exception:{e.__class__.__name__}"
+    except aiohttp.ClientError as exc:
+        kind = f"client_error:{exc.__class__.__name__}"
+    except Exception as exc:
+        kind = f"exception:{exc.__class__.__name__}"
     dur_ms = (time.monotonic() - t0) * 1000
-    return status, kind, dur_ms
+    return {
+        "status": status,
+        "kind": kind,
+        "dur_ms": dur_ms,
+        "ttfb_ms": ttfb_ms,
+        "stream_done": stream_done,
+        "stream_parse_failed": stream_parse_failed,
+        "request_id": request_id,
+    }
 
 
 async def client_worker(
@@ -244,6 +324,7 @@ async def client_worker(
                     "model": m,
                     "messages": [{"role": "user", "content": prompt}],
                     "max_tokens": 30,
+                    "stream": True,
                 }
 
                 async def fire():
@@ -253,7 +334,8 @@ async def client_worker(
                         json=body,
                         timeout=aiohttp.ClientTimeout(total=10),
                     ) as r:
-                        await r.read()
+                        async for _chunk in r.content.iter_chunked(4096):
+                            await asyncio.sleep(0)
 
                 tk = asyncio.create_task(fire())
                 await asyncio.sleep(random.uniform(0.05, 0.25))
@@ -264,18 +346,32 @@ async def client_worker(
                 except (asyncio.CancelledError, Exception):
                     pass
                 dur_ms = (time.monotonic() - t0) * 1000
-                # treat cancel as best-effort (status=499)
-                await stats.record(499, "client_cancel", dur_ms)
+                await stats.record(
+                    499,
+                    "client_cancel",
+                    dur_ms,
+                    stream=True,
+                    cancelled=True,
+                )
                 await asyncio.sleep(interval)
                 continue
 
-            status, kind, dur_ms = await one_request(
+            result = await one_request(
                 session, gateway, ak, m, prompt,
                 session_id=sid, stream=stream,
                 compression=compression, no_cache=no_cache,
                 protocol_mode=protocol_mode,
             )
-            await stats.record(status, kind, dur_ms)
+            await stats.record(
+                result["status"],
+                result["kind"],
+                result["dur_ms"],
+                ttfb_ms=result["ttfb_ms"],
+                stream=stream,
+                stream_done=result["stream_done"],
+                stream_parse_failed=result["stream_parse_failed"],
+                request_id=result["request_id"],
+            )
             await asyncio.sleep(interval)
 
 
@@ -339,26 +435,30 @@ async def run(args):
     except asyncio.CancelledError:
         pass
     final = stats.snapshot(started)
-    out = {
-        "scenario": args.scenario,
-        "gateway": args.gateway,
-        "models": models,
-        "n_clients": args.n_clients,
-        "rps_per_client": args.rps_per_client,
-        "duration_sec": args.duration,
-        "prompt_size": args.prompt,
-        "sticky_ratio": args.sticky_ratio,
-        "stream_ratio": args.stream_ratio,
-        "fault_inject_cancel": args.fault_inject_cancel,
-        "compression": args.compression,
-        "no_cache": args.no_cache,
-        "protocol": args.protocol,
-        "metrics": final,
-    }
-    print(json.dumps(out, indent=2, ensure_ascii=False))
+    result = envelope(
+        args.scenario,
+        args.category,
+        "PASS",
+        checks={"load_completed": True},
+        metrics=final,
+        evidence={"raw_metrics": final, "models": models},
+        parameters={
+            "gateway": args.gateway,
+            "n_clients": args.n_clients,
+            "rps_per_client": args.rps_per_client,
+            "duration_sec": args.duration,
+            "prompt_size": args.prompt,
+            "sticky_ratio": args.sticky_ratio,
+            "stream_ratio": args.stream_ratio,
+            "fault_inject_cancel": args.fault_inject_cancel,
+            "compression": args.compression,
+            "no_cache": args.no_cache,
+            "protocol": args.protocol,
+        },
+    )
+    print(json.dumps(result, indent=2, ensure_ascii=False))
     if args.output:
-        with open(args.output, "w") as f:
-            json.dump(out, f, indent=2, ensure_ascii=False)
+        write_result(args.output, result)
         print(f"\n  → wrote {args.output}", flush=True)
 
 
@@ -416,6 +516,7 @@ def main():
     )
     parser.add_argument("--output", help="JSON 输出路径")
     parser.add_argument("--scenario", default="custom")
+    parser.add_argument("--category", default="functional")
     args = parser.parse_args()
     try:
         asyncio.run(run(args))

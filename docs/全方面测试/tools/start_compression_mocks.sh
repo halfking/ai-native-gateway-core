@@ -69,11 +69,9 @@ start_mock() {
     # 启动 mock
     python3 "$MOCK_SCRIPT" \
         --port "$port" \
-        --mode healthy \
-        --model "$model" \
-        --context-window "$context_window" \
-        --latency-ms 100 \
+        --state healthy \
         --group "$group" \
+        --instance "$((port - 19200))" \
         > "$LOG_FILE" 2>&1 &
     
     local pid=$!
@@ -95,7 +93,7 @@ health_check() {
     local failed=0
     
     for port in {19200..19214}; do
-        if curl -s -f "http://localhost:$port/health" > /dev/null 2>&1; then
+        if curl -s -f "http://localhost:$port/healthz" > /dev/null 2>&1; then
             echo -e "  ${GREEN}✓${NC} :$port OK"
         else
             echo -e "  ${RED}✗${NC} :$port FAIL"

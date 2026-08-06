@@ -395,6 +395,8 @@ async def _do_chat_completions(request):
         await asyncio.sleep(STATE["slow_connect_delay_ms"] / 1000.0)
 
     s = STATE["state"]
+    if s == "rate_limited":
+        s = "quota_429"
     body = {}
     try:
         body = await request.json()

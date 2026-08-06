@@ -10,6 +10,6 @@ set_group E context_too_long
 run_loadtest S10_long_prompt \
     --n-clients 10 --rps-per-client 3 --duration 30 \
     --models tok3 --prompt long
-print_summary S10_long
+print_summary S10_long_prompt
 reset_all_suppliers
 echo "  期望：>95% 成功（context_too_long 应该 failover）"
