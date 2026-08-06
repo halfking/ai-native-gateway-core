@@ -87,6 +87,9 @@ type StickyCache struct {
 	items      map[string]stickyEntry
 	dbPool     *pgxpool.Pool
 	redisStore StickyRedisStore
+	// 2026-08-06 FIX (P2-4): Add goroutine lifecycle management
+	stopSweep chan struct{}
+	sweepDone sync.WaitGroup
 }
 
 type stickyEntry struct {
@@ -102,7 +105,10 @@ type stickyEntry struct {
 }
 
 func NewStickyCache() *StickyCache {
-	c := &StickyCache{items: make(map[string]stickyEntry)}
+	c := &StickyCache{
+		items:     make(map[string]stickyEntry),
+		stopSweep: make(chan struct{}),
+	}
 	// Clear all bindings when the rate-limit gate transitions to disabled.
 	// This avoids stale sticky entries from before the gate-off interval
 	// affecting routing once the gate is re-enabled.
@@ -114,19 +120,25 @@ func NewStickyCache() *StickyCache {
 	// Background sweeper: prevent unbounded memory growth from lazy-only TTL
 	// expiry. Expired entries that are never Get'd again accumulate in items
 	// indefinitely without this periodic cleanup.
+	// 2026-08-06 FIX (P2-4): Track goroutine lifecycle for graceful shutdown.
+	c.sweepDone.Add(1)
 	go c.sweepLoop()
 	return c
 }
 
 // sweepLoop periodically removes expired entries from the in-memory map.
-// Runs for the lifetime of the process. Tests that create throwaway
-// StickyCache instances should not rely on this goroutine — expiry is
-// guaranteed within one sweep interval (5 min).
+// 2026-08-06 FIX (P2-4): Now supports graceful shutdown via stopSweep channel.
 func (s *StickyCache) sweepLoop() {
+	defer s.sweepDone.Done()
 	ticker := time.NewTicker(5 * time.Minute)
 	defer ticker.Stop()
-	for range ticker.C {
-		s.sweepExpired()
+	for {
+		select {
+		case <-s.stopSweep:
+			return
+		case <-ticker.C:
+			s.sweepExpired()
+		}
 	}
 }
 
@@ -148,6 +160,23 @@ func (s *StickyCache) Clear() {
 	defer s.mu.Unlock()
 	for k := range s.items {
 		delete(s.items, k)
+	}
+}
+
+// Close gracefully shuts down the StickyCache background goroutines.
+// 2026-08-06 FIX (P2-4): Prevent goroutine leak in tests and shutdown scenarios.
+// Safe to call multiple times (stopSweep close is idempotent via sync.Once pattern).
+func (s *StickyCache) Close() {
+	if s == nil {
+		return
+	}
+	select {
+	case <-s.stopSweep:
+		// Already closed
+		return
+	default:
+		close(s.stopSweep)
+		s.sweepDone.Wait()
 	}
 }
 
