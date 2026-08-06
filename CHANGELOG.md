@@ -9,6 +9,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **抽取 useLiveStreamFilters composable (2026-08-06)**:
+  - **背景**: `LiveRequestStreamV2.vue` (1425 行) 包含 ~150 行过滤器状态管理逻辑：5 个维度（status / model / provider / vendor / agent）+ 1 个请求类型（business / probe）过滤器，包含状态声明、apply 函数、available* computed、filteredLanes computed 等，导致组件内部状态膨胀（10+ ref + 22 computed + 68 函数）
+  - **重构**:
+    - **`web/src/composables/useLiveStreamFilters.ts`**（新建，261 行）— 集中管理过滤器状态：
+      - 接收 `lanes: Ref<SwimLane[]>` 作为数据源
+      - 暴露 6 个状态 ref（requestTypeFilter / statusFilter / modelFilter / providerFilter / vendorFilter / agentFilter）
+      - 暴露 5 个 apply 函数（弹窗选择后应用）+ 1 个 toggleRequestType + 1 个 clearAllFilters
+      - 暴露 5 个 available* computed（从 lanes 实时提取可选项）
+      - 暴露 5 个 *FilterSelected computed（供弹窗回显）
+      - 暴露 1 个 filteredLanes computed（核心过滤逻辑，AND 组合所有维度）
+      - 暴露 1 个 activeFilterCount computed（统计活跃过滤器数量）
+    - **`web/src/composables/useLiveStreamFilters.test.ts`**（新建，277 行）— 16 个单元测试：
+      - 初始化状态校验（空过滤器 = 显示全部）
+      - toggleRequestType 边界场景（不允许全空）
+      - apply* 函数正确更新状态
+      - 模型过滤器 case-insensitive 标准化
+      - clearAllFilters 重置所有维度
+      - available* 从 lanes 提取唯一值 + 去重
+      - filteredLanes 按单维度过滤（requestType / status / model / provider / vendor / agent）
+      - filteredLanes 移除空泳道
+      - filteredLanes 多维度 AND 组合
+      - activeFilterCount 正确计数
+    - **`web/src/components/LiveRequestStreamV2.vue`** 接入 composable：
+      - 移除 48-82 行旧过滤器状态声明（requestTypeFilter / statusFilter / modelFilter / providerFilter / vendorFilter / agentFilter / normalizedModelFilter / toggleRequestType / openFilterDialog / standardModelName）
+      - 移除 330-499 行旧过滤逻辑（filteredLanes / available* / apply* / *FilterSelected / activeFilterCount）
+      - 保留 filterDialog ref（UI 控制，仅弹窗显隐状态）
+      - 保留 openFilterDialog / statusOptionLabel / vendorOptionLabel 函数（UI 辅助，i18n 翻译）
+      - 新增 `const { ... } = useLiveStreamFilters({ lanes })`（98-137 行）— 解构所有过滤器状态和方法
+      - 净减 ~150 行，组件从 1425 → 1280 行
+  - **验证**: vitest 30 文件 / 179 测试全绿（+16 用例 vs 上次 163）；vue-tsc exit 0；vite build 7.52s 成功
+  - **文档**: `docs/changelogs/2026-08-06-extract-live-stream-filters-composable.md`
+
 - **Request-logs 显示会话标题 + 项目/任务标签可人工增改 (2026-08-06)**:
   - **背景**: llmgo.kxpms.cn/request-logs 列表只显示 session_id / task_id 短哈希，看不出"这次会话是干什么的"；现有 `session_titles`（LLM 自动生成标题）和 `session_tags`（多维 tag）数据已落库，但 request-logs 详情抽屉没有任何编辑入口，人工补充只能绕到 /session-analytics 全景页
   - **后端新增 5 个 API**:
