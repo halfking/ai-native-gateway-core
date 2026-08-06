@@ -250,8 +250,9 @@ func NodeTimeout(hotCfg *hotconfig.Config) time.Duration {
 // truncated history. Production measured 187 trims in a 2-hour window.
 //
 // A genuine nudge is short ("继续", "请继续", "continue", "keep going").
-// 32 runes leaves room for light punctuation and phrasing ("请继续下一步")
-// while excluding real instructions and pasted content.
+// 32 runes leaves room for light punctuation and bare phrasing, while
+// excluding real instructions ("继续修复这个 bug", "请继续下一步") that
+// must not be dropped along with the previous turn.
 const continuationMaxRuneLen = 32
 
 func IsContinuationOrRetry(body []byte, hotCfg *hotconfig.Config) (isContinue bool, isRetry bool) {
@@ -324,20 +325,3 @@ func normaliseNudge(s string) string {
 
 // nudgeCutset is the punctuation allowed to surround a bare nudge.
 const nudgeCutset = " \t\r\n.,!?;:~-—…。，！？；：、"
-
-func contains(s, substr string) bool {
-	return len(s) >= len(substr) && containsStr(s, substr)
-}
-
-func containsFold(s, substr string) bool {
-	return strings.Contains(strings.ToLower(s), strings.ToLower(substr))
-}
-
-func containsStr(s, substr string) bool {
-	for i := 0; i <= len(s)-len(substr); i++ {
-		if s[i:i+len(substr)] == substr {
-			return true
-		}
-	}
-	return false
-}

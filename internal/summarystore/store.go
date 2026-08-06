@@ -22,6 +22,14 @@ import (
 // sql/init-complete-minimal.sql + the LLM-specific columns added by
 // migration 358 (title, summary, key_topics, user_intent,
 // last_summarized_at, summary_version).
+//
+// 2026-08-06: FirstRequestAt / LastRequestAt added because
+// session_summaries.first_request_at and last_request_at are NOT NULL
+// (migration 310). The previous Upsert omitted them from INSERT, so
+// every first-insert failed with "null value in column first_request_at"
+// (SQLSTATE 23502) — production measured 161/161 summary persist failures.
+// Callers that don't know the timestamps can leave them zero; Upsert
+// falls back to LastSummarized / NOW() so the NOT NULL constraint holds.
 type Summary struct {
 	SessionKey     string    // gw_session_id (PK)
 	TenantID       string    // tenant namespace
@@ -30,6 +38,8 @@ type Summary struct {
 	KeyTopics      []string  // 3-5 key points (15-40 字 each)
 	UserIntent     string    // user's underlying goal
 	LastSummarized time.Time // when this row was last generated (read by the rolling gate)
+	FirstRequestAt time.Time // first request ts for this session (NOT NULL column)
+	LastRequestAt  time.Time // last request ts for this session (NOT NULL column)
 }
 
 // Store persists Summary rows. Construct with NewStore; nil-safe methods
@@ -110,17 +120,38 @@ func (s *Store) Upsert(ctx context.Context, sum Summary) (UpsertResult, error) {
 	if s == nil || s.pool == nil {
 		return UpsertResult{}, fmt.Errorf("summarystore: pool not configured")
 	}
+
+	// 2026-08-06: session_summaries.first_request_at and last_request_at
+	// are NOT NULL (migration 310). When the caller doesn't supply them
+	// (zero value), fall back to LastSummarized for first and NOW() for
+	// last so the INSERT always satisfies the constraint. This fixes the
+	// 161/161 production persist failures where every first-insert was
+	// rejected with SQLSTATE 23502.
+	firstReq := sum.FirstRequestAt
+	lastReq := sum.LastRequestAt
+	if firstReq.IsZero() {
+		firstReq = sum.LastSummarized
+	}
+	if firstReq.IsZero() {
+		firstReq = time.Now()
+	}
+	if lastReq.IsZero() {
+		lastReq = time.Now()
+	}
+
 	const query = `
 		INSERT INTO session_summaries (
 			session_key, tenant_id, title, summary, key_topics,
-			user_intent, last_summarized_at, created_at, updated_at
-		) VALUES ($1, $2, $3, $4, $5, $6, $7, NOW(), NOW())
+			user_intent, last_summarized_at, created_at, updated_at,
+			first_request_at, last_request_at
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, NOW(), NOW(), $8, $9)
 		ON CONFLICT (session_key) DO UPDATE SET
 			title = EXCLUDED.title,
 			summary = EXCLUDED.summary,
 			key_topics = EXCLUDED.key_topics,
 			user_intent = EXCLUDED.user_intent,
 			last_summarized_at = EXCLUDED.last_summarized_at,
+			last_request_at = GREATEST(session_summaries.last_request_at, EXCLUDED.last_request_at),
 			summary_version = COALESCE(session_summaries.summary_version, 0) + 1,
 			updated_at = NOW()
 		RETURNING summary_version, (xmax = 0) AS inserted
@@ -135,6 +166,8 @@ func (s *Store) Upsert(ctx context.Context, sum Summary) (UpsertResult, error) {
 		sum.KeyTopics,
 		sum.UserIntent,
 		sum.LastSummarized,
+		firstReq,
+		lastReq,
 	).Scan(&result.Version, &inserted)
 	if err != nil {
 		return UpsertResult{}, err

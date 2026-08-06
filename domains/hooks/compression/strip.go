@@ -51,10 +51,18 @@ type StripResult struct {
 // StripToolInfo removes completed tool rounds and thinking blocks from
 // a messages array. Returns the stripped body and a result summary.
 //
-// "Completed tool round" = tool_call (assistant) + tool_result (tool)
-// + ack (user). Once all three exist, the round is considered complete
-// and can be safely removed from the compressed context. The tool
-// outputs are captured in the LLM summary as "Key References".
+// "Completed tool round" = an assistant message carrying tool_calls
+// where every call id has at least one matching tool result. Once all
+// results exist the round is self-contained and can be removed from the
+// compressed context — the tool outputs are captured in the LLM summary
+// as "Key References". Incomplete rounds (missing results) are always
+// preserved, because dropping the call would orphan the results that do
+// exist and dropping the results would leave the call unanswered.
+//
+// 2026-08-06 fix: integrity is verified AFTER stripping. If any
+// surviving tool result lacks a preceding assistant.tool_calls with a
+// matching id, the strip is rejected and the original body is returned
+// unchanged (fail-open). Data loss is preferable to corruption.
 func StripToolInfo(body []byte, protocol string) ([]byte, *StripResult) {
 	if len(body) == 0 {
 		return body, &StripResult{DidStrip: false}
@@ -69,19 +77,21 @@ func StripToolInfo(body []byte, protocol string) ([]byte, *StripResult) {
 		return body, result
 	}
 
-	// Phase 1: Identify completed tool round boundaries
-	// A completed round = sequential:
-	//   assistant[tool_calls] → tool[tool_result] → user[acknowledgement]
-	toolRounds := detectToolRounds(msgs)
-
-	// Phase 2: Filter messages, removing completed rounds
-	// But keep the LAST completed round for context continuity
-	filtered := filterMessages(msgs, toolRounds, result)
+	rounds := detectToolRounds(msgs)
+	filtered := filterMessages(msgs, rounds, result)
 	if len(filtered) == len(msgs) && result.ThinkingRemoved == 0 {
 		return body, result
 	}
 
-	// Rebuild body with filtered messages
+	// Integrity guard: after filtering, every tool result must still have
+	// a preceding assistant.tool_calls with a matching id. If the filter
+	// produced an orphan, abandon the strip and return the original body
+	// verbatim. This is the fail-open path — we never ship a body whose
+	// tool chain we broke, even if it means carrying more context.
+	if !toolChainIntact(filtered) {
+		return body, &StripResult{BytesBefore: len(body), BytesAfter: len(body), DidStrip: false}
+	}
+
 	newMsgsRaw, err := json.Marshal(filtered)
 	if err != nil {
 		return body, result
@@ -97,58 +107,206 @@ func StripToolInfo(body []byte, protocol string) ([]byte, *StripResult) {
 	return newBody, result
 }
 
-// detectToolRounds scans messages for completed tool invocation rounds.
-// Returns a set of message indices to remove.
-func detectToolRounds(msgs []json.RawMessage) map[int]bool {
-	remove := make(map[int]bool)
-	i := 0
-	for i < len(msgs) {
-		// Look for assistant[tool_calls] → tool[tool_result] → user[ack]
-		if hasToolCalls(msgs[i]) {
-			// Count how many tool_calls in this assistant message
-			toolIDs := extractToolCallIDs(msgs[i])
-			if len(toolIDs) == 0 {
-				i++
-				continue
-			}
-
-			// Find matching tool_results
-			resultsFound := 0
-			j := i + 1
-			for j < len(msgs) && resultsFound < len(toolIDs) {
-				if isToolResult(msgs[j]) {
-					// Check if this result matches one of our calls
-					if matchesAnyToolCall(msgs[j], toolIDs) {
-						resultsFound++
-					}
-				}
-				j++
-			}
-
-			if resultsFound >= len(toolIDs) {
-				// Round completed (all tool_calls have matching results)
-				// Mark all completed rounds; filterMessages later keeps the
-				// LAST round's assistant tool_call for context continuity
-				// (and skips its matching tool_results, see filterMessages).
-				remove[i] = true // assistant with tool_calls
-				for k := i + 1; k <= i+len(toolIDs) && k < len(msgs); k++ {
-					if isToolResult(msgs[k]) {
-						remove[k] = true
-					}
-				}
-				i = j
-				continue
-			}
-		}
-		i++
+// StripThinkingBlocksOnly removes Anthropic "thinking" content blocks
+// without touching tool rounds. Safe to run unconditionally (even when
+// the compression window has not triggered), because it only deletes a
+// non-semantic block type and never breaks tool_call/tool_result
+// pairing. Returns the cleaned body and a result summary.
+func StripThinkingBlocksOnly(body []byte) ([]byte, *StripResult) {
+	if len(body) == 0 {
+		return body, &StripResult{DidStrip: false}
 	}
-
-	return remove
+	result := &StripResult{BytesBefore: len(body)}
+	msgs, err := extractMessages(body)
+	if err != nil || len(msgs) == 0 {
+		return body, result
+	}
+	if !hasThinkingBlocks(msgs) {
+		return body, result
+	}
+	filtered := make([]json.RawMessage, 0, len(msgs))
+	for _, msg := range msgs {
+		cleaned := stripThinkingBlocks(msg)
+		if cleaned == nil {
+			result.ThinkingRemoved++
+			continue
+		}
+		filtered = append(filtered, cleaned)
+	}
+	if len(filtered) == len(msgs) {
+		return body, result
+	}
+	newMsgsRaw, err := json.Marshal(filtered)
+	if err != nil {
+		return body, result
+	}
+	newBody, ok := spliceBodyMessages(body, newMsgsRaw)
+	if !ok {
+		return body, result
+	}
+	result.BytesAfter = len(newBody)
+	result.DidStrip = true
+	return newBody, result
 }
 
+// toolChainIntact reports whether every tool result in msgs has a
+// preceding assistant message whose tool_calls contain the result's
+// tool_call_id. Used as a post-condition after stripping.
+func toolChainIntact(msgs []json.RawMessage) bool {
+	active := make(map[string]bool)
+	for _, raw := range msgs {
+		role := messageRole(raw)
+		switch role {
+		case "assistant":
+			active = make(map[string]bool)
+			for _, id := range extractToolCallIDs(raw) {
+				if id != "" {
+					active[id] = true
+				}
+			}
+		case "user":
+			active = make(map[string]bool)
+		case "tool":
+			id := toolCallIDOf(raw)
+			if id == "" || !active[id] {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+// toolRound describes one assistant tool-call message together with the
+// tool-result messages that resolve its calls. A round is "complete" when
+// every call id has at least one matching tool result.
+//
+// 2026-08-06 fix: detectToolRounds previously returned a flat
+// map[int]bool mixing assistant anchors and tool results from different
+// rounds. filterMessages then tried to "keep the last round" by deleting
+// the single highest index from that map — which kept a tool result
+// whose assistant.tool_calls anchor was still deleted, producing an
+// orphan that SanitizeToolMessages later removed. Structured rounds make
+// preservation atomic and let the filter verify integrity.
+type toolRound struct {
+	anchor   int   // index of the assistant message carrying tool_calls
+	results  []int // indexes of tool results matching the anchor's call ids
+	complete bool  // every call id has at least one matching result
+}
+
+// detectToolRounds scans messages for assistant tool-call rounds.
+//
+// A round starts at an assistant message that carries tool_calls and
+// spans the anchor plus every consecutive tool result whose
+// tool_call_id matches one of the anchor's call ids. Parallel calls
+// (multiple ids in one assistant message) form a single round, because
+// the provider requires all of their results together. A round is
+// complete when every call id has at least one matching result;
+// incomplete rounds are never stripped.
+func detectToolRounds(msgs []json.RawMessage) []toolRound {
+	var rounds []toolRound
+	i := 0
+	for i < len(msgs) {
+		if !hasToolCalls(msgs[i]) {
+			i++
+			continue
+		}
+		callIDs := extractToolCallIDs(msgs[i])
+		if len(callIDs) == 0 {
+			i++
+			continue
+		}
+		need := make(map[string]bool, len(callIDs))
+		for _, id := range callIDs {
+			need[id] = true
+		}
+		r := toolRound{anchor: i}
+		j := i + 1
+		for j < len(msgs) {
+			if !isToolResult(msgs[j]) {
+				break
+			}
+			if matchesAnyToolCall(msgs[j], callIDs) {
+				r.results = append(r.results, j)
+				id := toolCallIDOf(msgs[j])
+				if id != "" {
+					delete(need, id)
+				}
+			}
+			j++
+		}
+		r.complete = len(need) == 0
+		rounds = append(rounds, r)
+		i = j
+	}
+	return rounds
+}
+
+// filterMessages applies the strip rules:
+//  1. Remove COMPLETED tool rounds, keeping the last `keepLastRounds`.
+//  2. Remove thinking content blocks from otherwise-preserved messages.
+//
+// A round is removed as an atomic unit: the assistant anchor and every
+// one of its result messages. Keeping a round keeps both the anchor and
+// all of its results, so no tool result is ever left without its call.
+//
+// 2026-08-06 fix: the previous implementation removed the assistant
+// anchor of the last round but kept one of its tool results, creating
+// an orphan tool_call_id that downstream sanitisation silently deleted.
+func filterMessages(msgs []json.RawMessage, rounds []toolRound, result *StripResult) []json.RawMessage {
+	keepLast := keepLastRounds
+	if keepLast > len(rounds) {
+		keepLast = len(rounds)
+	}
+	remove := make(map[int]bool)
+	completed := 0
+	for idx, r := range rounds {
+		if !r.complete {
+			continue
+		}
+		completed++
+		// Keep the last `keepLast` completed rounds verbatim (anchor +
+		// results) so the most recent tool exchange stays intact.
+		if completed > len(rounds)-keepLast && idx >= len(rounds)-keepLast {
+			continue
+		}
+		remove[r.anchor] = true
+		for _, ri := range r.results {
+			remove[ri] = true
+		}
+	}
+
+	if len(remove) == 0 && !hasThinkingBlocks(msgs) {
+		return msgs
+	}
+
+	filtered := make([]json.RawMessage, 0, len(msgs))
+	for i, msg := range msgs {
+		if remove[i] {
+			result.MessagesRemoved++
+			if isToolResult(msg) {
+				result.ToolResultsRemoved++
+			} else {
+				result.ToolCallsRemoved++
+			}
+			continue
+		}
+		cleaned := stripThinkingBlocks(msg)
+		if cleaned == nil {
+			result.ThinkingRemoved++
+			continue
+		}
+		filtered = append(filtered, cleaned)
+	}
+	return filtered
+}
+
+// keepLastRounds is the number of completed tool rounds preserved for
+// context continuity when stripping older rounds. Two (not one) keeps
+// the immediately previous exchange plus its predecessor, which is what
+// the model needs to continue a multi-step task without re-asking.
+const keepLastRounds = 2
+
 // hasAnyToolCallsAfter is unused but kept for future use.
-// (Removed detectToolRounds "skip last round" optimization because
-// filterMessages already handles "keep last round" correctly.)
 func hasAnyToolCallsAfter(msgs []json.RawMessage, start int) bool { //nolint:unused
 	for k := start; k < len(msgs); k++ {
 		if hasToolCalls(msgs[k]) {
@@ -158,47 +316,13 @@ func hasAnyToolCallsAfter(msgs []json.RawMessage, start int) bool { //nolint:unu
 	return false
 }
 
-// filterMessages applies the strip rules:
-// 1. Remove completed tool rounds (but keep last one)
-// 2. Remove thinking content blocks
-// 3. Preserve all other messages
-func filterMessages(msgs []json.RawMessage, remove map[int]bool, result *StripResult) []json.RawMessage {
-	if len(remove) == 0 && !hasThinkingBlocks(msgs) {
-		return msgs
+// toolCallIDOf returns the tool_call_id of a tool message, or "".
+func toolCallIDOf(raw json.RawMessage) string {
+	var m struct {
+		ToolCallID string `json:"tool_call_id"`
 	}
-
-	// Keep track of the last completed round (for continuity)
-	lastCompletedRoundEnd := 0
-	for idx := range remove {
-		if idx > lastCompletedRoundEnd {
-			lastCompletedRoundEnd = idx
-		}
-	}
-
-	// Remove last round from the removal set (keep it for continuity)
-	delete(remove, lastCompletedRoundEnd)
-	for k := range remove {
-		if k >= lastCompletedRoundEnd-2 && k <= lastCompletedRoundEnd { //nolint:staticcheck // placeholder, near-last-round branch reserved for future use
-			// Keep this round too (it's near the last one)
-		}
-	}
-
-	filtered := make([]json.RawMessage, 0, len(msgs))
-	for i, msg := range msgs {
-		if remove[i] {
-			result.ToolCallsRemoved++
-			result.MessagesRemoved++
-			continue
-		}
-
-		// Strip thinking blocks from message content
-		cleaned := stripThinkingBlocks(msg)
-		if len(cleaned) > 0 {
-			filtered = append(filtered, cleaned)
-		}
-	}
-
-	return filtered
+	_ = json.Unmarshal(raw, &m)
+	return m.ToolCallID
 }
 
 // hasToolCalls checks if an assistant message contains tool_calls.
