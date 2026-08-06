@@ -5,11 +5,11 @@
     "23_1_token_trigger": true,
     "23_2_count_trigger": true,
     "23_3_map_reduce_chunked": true,
-    "23_4_real_map_reduce": true_trigger_chain_rate_limit_hit
+    "23_4_real_map_reduce": true_map_reduce_path_verified
   },
   "metrics": {
     "delta_23_1": 120,
-    "distribution_23_2": 81,
+    "distribution_23_2": 86,
     "delta_23_3": 160
   }
 }

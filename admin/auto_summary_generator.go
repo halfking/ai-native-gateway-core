@@ -10,6 +10,7 @@ import (
 	"math/rand"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -86,13 +87,23 @@ type AutoSummaryGenerator struct {
 // NewAutoSummaryGenerator constructs an AutoSummaryGenerator. pool may be
 // nil — store methods are nil-safe and surface a clear error in that case
 // so the rest of the gateway can boot without a DB during local dev.
+//
+// 2026-08-06: read LLM_GATEWAY_AUTO_SUMMARY_RATE_PER_MIN env var (default 6/min)
+// to allow test environments to bypass the 6/min rate limit and trigger
+// the map-reduce path more frequently.
 func NewAutoSummaryGenerator(handler *Handler, store *summarystore.Store) *AutoSummaryGenerator {
+	ratePerMin := autoSummaryDefaultRatePerMin
+	if v := os.Getenv("LLM_GATEWAY_AUTO_SUMMARY_RATE_PER_MIN"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			ratePerMin = n
+		}
+	}
 	return &AutoSummaryGenerator{
 		handler:     handler,
 		store:       store,
 		enabled:     true, // TODO: env var
 		rateByTnt:   make(map[string]*rate.Limiter),
-		ratePerMin:  autoSummaryDefaultRatePerMin,
+		ratePerMin:  ratePerMin,
 		workerSlots: make(chan struct{}, autoSummaryDefaultWorkerSlots),
 		rng:         rand.New(rand.NewSource(time.Now().UnixNano())),
 	}
