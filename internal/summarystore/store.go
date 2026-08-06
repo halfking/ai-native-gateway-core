@@ -45,6 +45,26 @@ func NewStore(pool *pgxpool.Pool) *Store {
 	return &Store{pool: pool}
 }
 
+// UpsertResult is the outcome of an Upsert. Returned so call sites that
+// race (e.g. concurrent auto-summary + summary workers) can detect
+// staleness via Version and Updated.
+//
+// 2026-08-06: added so the v2 dispatch summarizer can finally compare
+// incoming vs persisted summary_version — previously it just called
+// saveSummaryToDB and hoped for the best, which made concurrent
+// overwrites silent.
+type UpsertResult struct {
+	// Version is the summary_version after the upsert. For a fresh insert
+	// it's 1 (the column default is 1); for an update it's the
+	// previous value + 1 (computed via COALESCE(...)+1 in the query).
+	Version int
+	// Updated is true when the row already existed and was updated by
+	// this call, false when a new row was inserted. Useful for emitting
+	// a "lost the race" metric when two writers serialize on the same
+	// session_key.
+	Updated bool
+}
+
 // Upsert writes the summary row, creating it on first insert and bumping
 // summary_version on subsequent updates. Mirrors the schema of the v2
 // dispatch writer (domains/sessionsummary/summarizer.go::saveSummaryToDB)
@@ -52,11 +72,22 @@ func NewStore(pool *pgxpool.Pool) *Store {
 //
 // Idempotent: safe to call concurrently from many goroutines for the same
 // session; PG's UPSERT handles the race. summary_version is monotonically
-// incremented via session_summaries.summary_version + 1.
-func (s *Store) Upsert(ctx context.Context, sum Summary) error {
+// incremented via session_summaries.summary_version + 1. The returned
+// UpsertResult carries the post-upsert version and an INSERT-vs-UPDATE
+// flag so callers can detect races and stale writes.
+//
+// 2026-08-06: changed return type from error to (UpsertResult, error)
+// so the result carries summary_version. This is a breaking change for
+// caller signatures — fix by replacing `if err := summarystore.Upsert(...)`
+// with `if _, err := summarystore.Upsert(...)` (or destructure into
+// `result, err := ...` when version is needed).
+func (s *Store) Upsert(ctx context.Context, sum Summary) (UpsertResult, error) {
 	if s == nil || s.pool == nil {
-		return fmt.Errorf("summarystore: pool not configured")
+		return UpsertResult{}, fmt.Errorf("summarystore: pool not configured")
 	}
+	// xmax = 0 means the row was just inserted (PG's standard trick).
+	// Distinct from "summary_version" so callers can detect lost races
+	// even when both writers submitted the same summary_version.
 	const query = `
 		INSERT INTO session_summaries (
 			session_key, tenant_id, title, summary, key_topics,
@@ -70,8 +101,14 @@ func (s *Store) Upsert(ctx context.Context, sum Summary) error {
 			last_summarized_at = EXCLUDED.last_summarized_at,
 			summary_version = COALESCE(session_summaries.summary_version, 0) + 1,
 			updated_at = NOW()
+		RETURNING summary_version, (xmax = 0) AS inserted
 	`
-	_, err := s.pool.Exec(ctx, query,
+	var result UpsertResult
+	// inserted is true when the row was just inserted (PG's xmax = 0),
+	// false when an existing row was updated. We invert it into the
+	// more intuitive UpsertResult.Updated.
+	var inserted bool
+	err := s.pool.QueryRow(ctx, query,
 		sum.SessionKey,
 		sum.TenantID,
 		sum.Title,
@@ -79,8 +116,12 @@ func (s *Store) Upsert(ctx context.Context, sum Summary) error {
 		sum.KeyTopics,
 		sum.UserIntent,
 		sum.LastSummarized,
-	)
-	return err
+	).Scan(&result.Version, &inserted)
+	if err != nil {
+		return UpsertResult{}, err
+	}
+	result.Updated = !inserted
+	return result, nil
 }
 
 // LastSummarized returns the last_summarized_at timestamp for the session

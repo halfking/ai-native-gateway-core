@@ -65,6 +65,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **summarystore.Upsert 返回 summary_version + upsert flag (2026-08-06)**:
+  - **背景**: `internal/summarystore/store.go::Upsert` 此前只返回 `error`，调用方无法识别"INSERT vs UPDATE"以及"当前 summary_version"。当 v2 dispatch 与 request-path 自动总结并发写同一 session_key 时，无法检测"输掉 racing"或"写过时数据"
+  - **修改**:
+    - `Upsert` 签名从 `error` 改为 `(UpsertResult, error)`（breaking change）
+    - `UpsertResult.Version` = upsert 后的 `summary_version`（首次 INSERT = 1，后续 UPDATE = 上一次 + 1）
+    - `UpsertResult.Updated` = bool（true = 已有行被 UPDATE，false = 首次 INSERT）
+    - SQL 末尾加 `RETURNING summary_version, (xmax = 0) AS inserted`，由 Go 端 invert 成 `Updated`
+    - nil-pool 路径仍返回零值 `UpsertResult{}` + error（无 panic）
+  - **调用方更新**: `admin/auto_summary_generator.go` 改用新签名；当 `Updated=true` 时记一行 Debug 日志（"raced with another writer"），便于排查
+  - **测试**: `summarystore/store_test.go` 更新 `TestUpsert_NilPoolIsError` + 新增 `TestUpsertResult_ZeroValueValid`
+  - **遗留**: v2 dispatch summarizer (domains/sessionsummary/summarizer.go) 仍用 `*sql.DB` 直接 Exec 自己的 `saveSummaryToDB`（不走 summarystore），有重复 SQL。迁移到 summarystore 需要把 v2 dispatch 的 `*sql.DB` 改为 `*pgxpool.Pool`，是单独的大型重构，本次不做
+
+- **Prometheus scrape job + alert routing wiring (2026-08-06)**:
+  - **背景**: commit 87e4a5d5 交付的 dashboard + alert rules 还需要 Prometheus 实际抓取 `/metrics` 才会显示数据 + 才会触发告警。本 commit 补上 audit 指出的两个 wiring gap
+  - **scrape config**: `deploy/prometheus/prometheus.yml` 新增 `llm-gateway` job（15s 间隔），通过 `bearer_token_file` 读 `LLM_GATEWAY_ADMIN_API_KEY`（不把 token 写进 yml）；`/metrics` 由 `middleware.NewAdminTokenMiddleware` 守门
+  - **alert rules routing**: `deploy/prometheus/rules/auto-summary-failures.yml`（从 `deploy/monitoring/grafana-alerts/` 同步过来）—— prometheus.yml 的 `rule_files: /etc/prometheus/rules/*.yml` 现在能加载。`grafana-alerts/` 路径仍保留供 Grafana Unified Alerting 加载
+  - **运维 setup**:
+    - 把 `LLM_GATEWAY_ADMIN_API_KEY` 写到 Prometheus 容器的 `/etc/prometheus/secrets/admin_token`，起 chmod 600
+    - 容器编排时把 secrets 路径挂进 Prometheus
+    - 若 `LLM_GATEWAY_ADMIN_API_KEY` 为空（local dev），`AdminTokenMiddleware` fail-open，scrape 仍可成功
+
 - **Grafana dashboard + alert rules for auto_title / auto_summary (2026-08-06)**:
   - **dashboard**: `deploy/grafana/dashboards/auto-summary-monitoring.json`（同时拷贝到 `deploy/prometheus/grafana/provisioning/dashboards/` 让 docker-compose Grafana 自动 provisioner 加载）。10 个面板覆盖：
     - Auto-Summary / Auto-Title 触发速率（按 result）
