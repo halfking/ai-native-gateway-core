@@ -40,12 +40,13 @@ P3 退役 V1
 
 | 条目 | 来源 | 工作量 | 风险 | 验收 |
 |---|---|---|---|---|
-| 删 `_to-be-deprecated/compressor/`（审计确认无外部引用） | C5/M6 | S | 低 | 编译通过；`grep` 无残留引用 |
-| 修 `generateToolCallID`（>10 不碰撞） | E2 | S | 低 | 单测：100 个 tool_calls id 唯一 |
-| LLM 摘要前 secret mask | C2 | M | 中（误 mask 破坏内容） | 含假 key 的 body 摘要不含原 key；正例/负例回归 |
-| 统一消息指纹（V2 用 SHA256(512B)） | A2 | S | 低 | V1/V2 同会话 delta 边界一致 |
-| 摘要读源抽象（`MessageSource` 接口） | A6 | M | 中 | V1/V2 两个实现可切换；摘要输出一致 |
-| **D8 命名空间调查**（`domain/analysis` vs `domains/analysis` 哪个活跃；旧 `cache/*` 是否可退役） | D8/审计§2.5 | S | 低 | 出结论：活跃包与弃用包清单 |
+| ✅ 删 `_to-be-deprecated/compressor/`（审计确认无外部引用） | C5/M6 | S | 低 | 编译通过；`grep` 无残留引用 — **已实现** |
+| ✅ 修 `generateToolCallID`（>10 不碰撞） | E2 | S | 低 | 单测：>10 个 tool_calls id 唯一 — **已实现** |
+| ✅ 统一消息指纹（V2 用 SHA256(512B)） | A2 | S | 低 | V1/V2 同会话 delta 边界一致 — **已实现** |
+| ✅ 摘要读源抽象（`MessageSource` 接口 + V1 默认实现） | A6 | M | 中 | 接口层 + 默认源可切换；V2 实现待 A1 — **接口层已实现** |
+| ✅ **D8 命名空间调查**（`domain/analysis` vs `domains/analysis` 均活跃有意分层；旧 `cache/{semantic,delta,kv}` 孤立可删，`cache/prefix` 保留） | D8/审计§2.5 | S | 低 | 结论见 07 §2B — **已结案** |
+| ✅ 接线 `Engines.TitleGenerator`（首请求标题不再静默跳过） | M7 | S | 低 | 类型断言编译期保证；配置开后 title 非空 — **已实现** |
+| ⬜ LLM 摘要前 secret mask | C2 | M | 中（误 mask 破坏内容） | 含假 key 的 body 摘要不含原 key；正例/负例回归 |
 
 **回滚**：均为代码级，git revert。secret mask 可加 flag `compression.summary_secret_mask` 默认开。
 

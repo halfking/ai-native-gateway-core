@@ -95,12 +95,11 @@
 ### M6（P0）删除 `_to-be-deprecated/compressor/` `TARGET-BOUNDARY`
 **已确认无外部引用**（`grep` + `go build ./...` 均无）。删除即可。与 M1 解耦，先行。
 
-### M7（P0→P1）接线 Engines.TitleGenerator `NEW-DESIGN`（改：这是真实小修）
-`main_pipeline.go:1272-1279` 构造 `Engines` 时**未设 `TitleGenerator`**，导致 `AnalysisHook` 首请求标题实际跳过。接口已在 `hook.go:36` 就绪（`GenerateTitle(ctx,tenant,session,firstMsg)`），由 `sessionsummary.Summarizer.GenerateTitle` 实现。
-- 建议：在 `main_pipeline.go` 构造 `Engines` 处注入一个适配 `sessionsummary.Summarizer` 的 `TitleGenerator`（或直接传 `*Summarizer` 若其已实现该接口）。
-- 受 `cfg.TitleOnFirstRequest()` 控制，默认行为可保持原状（按租户开）。
-- 验收：开启配置后，首请求会话的 `session_summaries.title` 非空。
-- 低风险、高收益，可独立先行。
+### M7（P0→P1）接线 Engines.TitleGenerator `SOURCE-VERIFIED` → 已实现
+`main_pipeline.go` 构造 `Engines` 时**未设 `TitleGenerator`**，导致 `AnalysisHook` 首请求标题实际跳过。
+- **实现**：`sessionSummaryWorkerAdapter`（`cmd/gateway/main_pipeline.go`，已持有 `*sessionsummary.Summarizer`）新增 `GenerateTitle(ctx,tenant,session,firstMsg) error` 方法以满足 `sessionanalysis.TitleGenerator` 接口（`Summarizer.GenerateTitle` 返回 `(string,error)` 且自身已落库+缓存，故丢弃 title 仅返回 err）；`engines` 构造处通过 `deps.SessionSummarizer.(sessionanalysis.TitleGenerator)` 类型断言注入。无 summarizer（分析 URL/key 缺失）时 slot 保持 nil，行为与原先一致。
+- 受 `cfg.TitleOnFirstRequest()` 控制，默认行为不变。
+- 验收：编译期类型断言即保证接口满足；运行期开启配置后首请求会话 `session_summaries.title` 非空。
 
 ## 6. 不做（明确非目标）
 
