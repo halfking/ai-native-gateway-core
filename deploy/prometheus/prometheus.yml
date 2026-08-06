@@ -48,3 +48,31 @@ scrape_configs:
   #       labels:
   #         cluster: 'kaixuan-1'
   #         gpu_type: 'rtx4090'
+
+  # 2026-08-06: LLM Gateway itself — scrapes /metrics on the main
+  # gateway container. Auth: /metrics is gated by the AdminTokenMiddleware
+  # (middleware.NewAdminTokenMiddleware in middleware/admin_token_mw.go),
+  # which requires Authorization: Bearer <LLM_GATEWAY_ADMIN_API_KEY>.
+  # Failure-open if the token is empty (local dev only).
+  #
+  # Operator setup — point this at the gateway container's published
+  # port (default 8781, env LLM_GATEWAY_LISTEN). Two deployment modes:
+  #
+  #   1. Local docker-compose (deploy/prometheus/docker-compose.yml):
+  #      the gateway runs in the same network as Prometheus, so use the
+  #      service name (host.docker.internal is the bridge to host).
+  #   2. Production external: the gateway is on a different host.
+  #      change `host.docker.internal:8781` to `llm-gateway-host:8781`
+  #      (or use a real service-discovery entry).
+  #
+  # The bearer_token_file path reads the admin token from disk so the
+  # token never sits in the prometheus.yml file. Mount the secret file
+  # into the Prometheus container at /etc/prometheus/secrets/admin_token.
+  - job_name: 'llm-gateway'
+    scrape_interval: 15s
+    static_configs:
+      - targets: ['host.docker.internal:8781']
+        labels:
+          service: 'llm-gateway'
+          component: 'gateway'
+    bearer_token_file: '/etc/prometheus/secrets/admin_token'

@@ -285,8 +285,11 @@ func (g *AutoSummaryGenerator) runSummaryAsync(sessionID, tenantID, requestBody,
 		"elapsed_ms", elapsed.Milliseconds())
 
 	// Persist via the shared summarystore so the v2 dispatch path sees the
-	// same row shape.
-	if err := g.store.Upsert(ctx, summarystore.Summary{
+	// same row shape. The 2026-08-06 Upsert signature returns
+	// (UpsertResult, error) so the rolling gate can detect concurrent
+	// overwrites — if Updated=true another writer raced us, which is
+	// expected under load but worth tagging in logs.
+	upsertRes, err := g.store.Upsert(ctx, summarystore.Summary{
 		SessionKey:     sessionID,
 		TenantID:       tenantID,
 		Title:          title,
@@ -294,10 +297,15 @@ func (g *AutoSummaryGenerator) runSummaryAsync(sessionID, tenantID, requestBody,
 		KeyTopics:      keyTopics,
 		UserIntent:     userIntent,
 		LastSummarized: time.Now(),
-	}); err != nil {
+	})
+	if err != nil {
 		metrics.AutoSummaryTrigger.WithLabelValues("db_error").Inc()
 		logger.Error("failed to persist summary", "error", err)
 		return
+	}
+	if upsertRes.Updated {
+		logger.Debug("auto_summary: upsert raced with another writer",
+			"summary_version", upsertRes.Version)
 	}
 	metrics.AutoSummaryTrigger.WithLabelValues("ok").Inc()
 	logger.Info("auto_summary saved",

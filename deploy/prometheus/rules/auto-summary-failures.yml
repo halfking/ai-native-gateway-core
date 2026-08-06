@@ -1,0 +1,132 @@
+# Grafana alert rules — auto_title / auto_summary pipeline failures (2026-08-06)
+#
+# Origin: commits 614e824d (metrics) + ea5b9143 (settings hot-reload) +
+#         this dashboard rollout. The auto-title / auto-summary pipeline
+#         fires on every successful chat completion and writes to
+#         session_titles / session_summaries. A sustained failure here
+#         silently breaks operator dashboards (titles don't appear, the
+#         session-summary panel shows "(empty)").
+#
+# Plan: docs/changelogs/2026-08-06-gt-prefix-and-auto-summary.md
+#       sections 8 (call failure modes) + 9 (map_reduce degradation)
+#
+# IMPORTANT: rules below use the metric labels introduced in
+# metrics/auto_summary_metrics.go. Do not rename labels without updating
+# both the metric and these rules together.
+#
+# Metric → alert mapping:
+#
+#   auto_summary_trigger_total{result="error|db_error"}
+#     → summarizeAsync failed; operator dashboards show "(empty)"
+#   auto_summary_llm_call_total{mode,result=~"error|invalid_response"}
+#     → upstream LLM call failed; map-reduce may degrade
+#   auto_summary_map_reduce_partial_fail_total
+#     → at least one chunk LLM call failed but reduce still produced
+#       a (partial) summary — degraded but not fatal
+#   auto_title_trigger_total{result="error"}
+#     → title generation failed; users see "(untitled)" sessions
+#   auto_summary_gate_skip_total{reason="db_error"}
+#     → rolling-gate check DB error; falls back to "always run"
+
+groups:
+  - name: auto_summary_failures
+    interval: 30s
+    rules:
+      # Auto-summary totally failed — no row written to session_summaries.
+      # Pages on 5/min sustained 5m — matches the title-gen incident threshold
+      # from the 08-05 apiclaude audit. WARN because the primary request
+      # succeeded; only the background summary is broken.
+      - alert: AutoSummaryTriggerFailing
+        expr: sum(rate(auto_summary_trigger_total{result=~"error|db_error"}[5m])) > 5/60
+        for: 5m
+        labels:
+          severity: warning
+          metric_version: "2026-08-06"
+        annotations:
+          summary: "auto_summary trigger failing >5/min (last 5m)"
+          description: "Auto-summary pipeline emits errors. session_summaries row write is failing. Operators need to check request_logs for end_user_id + session_summaries.last_summarized_at lag."
+          runbook: "Check admin/auto_summary_generator.go logs; verify summarystore.NewStore is wired; check pg-252-pg17 connectivity."
+
+      # Auto-title totally failed — users see "(untitled)" sessions.
+      # Even a small rate matters because title is user-facing.
+      - alert: AutoTitleTriggerFailing
+        expr: sum(rate(auto_title_trigger_total{result="error"}[5m])) > 1/60
+        for: 5m
+        labels:
+          severity: warning
+          metric_version: "2026-08-06"
+        annotations:
+          summary: "auto_title trigger failing >1/min (last 5m)"
+          description: "auto_title_generator emits errors. session_titles rows are missing. New chat sessions show up untitled in the dashboard."
+          runbook: "Check admin/auto_title_generator.go logs; verify session_titles PK constraint (task_id, scoped_session_id) is applied; check model fallback pool."
+
+      # LLM upstream call failures. Distinct from the trigger-error above
+      # because map-reduce may still succeed via partial results. The
+      # threshold is intentionally tighter (3/min) so transient blips don't
+      # page, but a sustained upstream outage lights up within ~2m.
+      - alert: AutoSummaryLLMCallFailing
+        expr: sum by (mode) (rate(auto_summary_llm_call_total{result=~"error|invalid_response"}[5m])) > 3/60
+        for: 5m
+        labels:
+          severity: warning
+          metric_version: "2026-08-06"
+        annotations:
+          summary: "auto_summary LLM call failing >3/min in mode={{\"{{$labels.mode}}\"}}"
+          description: "LLM upstream is returning non-2xx or invalid JSON. Cross-check with the auto_summary_map_reduce_partial_fail_total panel — if non-zero, map-reduce is degrading gracefully."
+          runbook: "Check the upstream provider's status page; verify the cheap-pool model fallback in settings/auto_summary_specs.go; check X-Gw-Auto-Decision headers in the recent failed request_logs."
+
+      # Map-reduce partial failure — graceful degradation but signal of trouble.
+      # Threshold of 3/hour sustained so noise doesn't page, but any non-zero
+      # rate during normal operation indicates the cheap model is unstable.
+      - alert: AutoSummaryMapReduceDegraded
+        expr: increase(auto_summary_map_reduce_partial_fail_total[1h]) > 3
+        for: 30m
+        labels:
+          severity: info
+          metric_version: "2026-08-06"
+        annotations:
+          summary: "auto_summary map_reduce had >3 partial failures in the last hour"
+          description: "At least one chunk LLM call failed during map_reduce but reduce still produced output (using N-1 partials). Indicates the cheap model is unstable OR a transient network blip."
+          runbook: "Check provider health; if sustained >10/h, escalate the cheap model fallback in settings/auto_summary_specs.go."
+
+      # Rolling-gate DB error — the gate falls back to "always run" so the
+      # blast radius is "summary runs more often than needed" (cheap, fine).
+      # But a sustained DB error means session_summaries.last_summarized_at
+      # is never updated, which throws off the rolling-gate math.
+      - alert: AutoSummaryGateDBErroring
+        expr: sum(rate(auto_summary_gate_skip_total{reason="db_error"}[5m])) > 1/60
+        for: 10m
+        labels:
+          severity: warning
+          metric_version: "2026-08-06"
+        annotations:
+          summary: "auto_summary rolling gate DB erroring >1/min for 10m"
+          description: "summarystore.LastSummarized / CountNewTurns failing. The gate falls back to 'always run' (safe) but session_summaries.last_summarized_at is stale, so summary churn is higher than needed."
+          runbook: "Check pg-252-pg17 health; verify tenant_settings_kv readable; check for missing migrations (session_summaries table)."
+
+      # Worker-pool / rate-limit saturation — both indicate operators have
+      # under-provisioned the pipeline for the current traffic. INFO severity
+      # because the impact is "summary delayed by N minutes", not lost.
+      # Operators should bump auto_summary.default_worker_slots / rate_per_min
+      # in settings_kv and restart the process.
+      - alert: AutoSummarySaturated
+        expr: sum(rate(auto_summary_trigger_total{result="saturated"}[5m])) > 0
+        for: 10m
+        labels:
+          severity: info
+          metric_version: "2026-08-06"
+        annotations:
+          summary: "auto_summary worker pool saturated (last 10m)"
+          description: "All 4 worker slots (default) are continuously busy and new triggers are being dropped. Increase auto_summary.default_worker_slots in settings_kv and restart."
+          runbook: "Bump auto_summary.default_worker_slots from 4 to 8 (or higher). Requires process restart since chan capacity is constructed once."
+
+      - alert: AutoSummaryRateLimited
+        expr: sum by (tenant) (rate(auto_summary_trigger_total{result="rate_limited"}[5m])) > 1/60
+        for: 10m
+        labels:
+          severity: info
+          metric_version: "2026-08-06"
+        annotations:
+          summary: "auto_summary rate-limited tenant={{\"{{$labels.tenant}}\"}} (>1/min for 10m)"
+          description: "A single tenant exceeds 6/min summary triggers (the default per-tenant budget). Bump auto_summary.default_rate_per_min in settings_kv and restart."
+          runbook: "Check the tenant's session traffic; if legitimate, bump rate from 6 to 12 or higher. Requires process restart."
