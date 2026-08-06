@@ -339,6 +339,13 @@ func (h *Handler) handleKeys(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) handleKeysRoot(w http.ResponseWriter, r *http.Request) {
+	// 2026-08-06: 与 handleKeys(带尾斜杠) 保持一致。无尾斜杠根路由
+	// 此前缺少 nil-db 守卫，DB 不可用(no-DB 模式)时 listKeys 空指针 panic，
+	// 恢复中间件将其转成 {"code":"panic"} 500。
+	if h.db == nil {
+		writeError(w, http.StatusServiceUnavailable, "database not configured")
+		return
+	}
 	switch r.Method {
 	case http.MethodPost:
 		h.createKey(w, r)
