@@ -37,6 +37,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     - `deploy/sql/schemas/baseline/01-schema.sql` 在 `CREATE TABLE session_titles` 之后补 `ALTER TABLE ... ADD CONSTRAINT session_titles_pkey PRIMARY KEY (task_id, scoped_session_id)` — 防止新部署再缺这个 PK
   - **部署触发的 245 紧急修复**: 上述 schema 修复 + 一行 SQL（DELETE 去重 + ADD CONSTRAINT）已手动跑过，PK 已生效
 
+### Fixed
+
+- **telemetry 请求日志落库 42P10 修复 (2026-08-06)**:
+  - **背景**: 154 生产日志持续报 `telemetry request db persist failed; fallback written`，错误为 `SQLSTATE 42P10 there is no unique or exclusion constraint matching the ON CONFLICT specification`，导致 request_logs 完全无法落库
+  - **根因**: commit `b10555416` 误将 `client.go` 的 `ON CONFLICT` 从 `(request_id)` 改回 `(request_id, ts)`。但 migration 455 (2026-07-23) 已明确把两个热表唯一键改为单列 `(request_id)`（`request_logs_hot` PK、`request_logs_bodies_hot` UNIQUE），生产库 252 与 schema SSOT 均为此形态。代码写的是 `request_logs_hot`（普通 heap 表），不是按 ts 分区的 `request_logs` 父表，故复合 `(request_id, ts)` 与约束不匹配 → 42P10
+  - **修复**: `domains/hooks/observability/telemetry/client.go` 两处 `ON CONFLICT (request_id, ts)` → `ON CONFLICT (request_id)`（insertRequestLog 的 request_logs_hot 插入 + upsertRequestLogBodies），并修正误导性注释。无 schema 变更，无需 migration
+  - **验证**: `go build ./...` / `go vet` / telemetry 包测试全部通过；245 预发布 → 154 生产部署后 journal 不再出现 42P10
+
 ## [Unreleased] - 2026-08-04
 
 ### Fixed

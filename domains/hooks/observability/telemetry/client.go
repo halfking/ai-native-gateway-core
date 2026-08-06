@@ -793,9 +793,9 @@ func (c *Client) insertRequestLog(entry *RequestLogEntry) error {
 	// 将冷数据（>7 天）迁移到月度分区。热表采用 heap 存储，支持高频写入；
 	// 月度分区采用 columnar 存储，优化归档查询性能。
 	//
-	// The ON CONFLICT (request_id, ts) clause catches same-row upserts
+	// The ON CONFLICT (request_id) clause catches same-row upserts
 	// from race conditions (e.g. async retry landing on the same
-	// request_id). 热表的 UNIQUE 约束覆盖冲突目标。
+	// request_id). 热表 PRIMARY KEY (request_id) (migration 455) 覆盖冲突目标。
 	// 2026-07-16: JSONB columns use $N::text::jsonb to fix pgx binary protocol 22P02.
 	_, err = tx.Exec(ctx, `
 		INSERT INTO request_logs_hot (
@@ -900,10 +900,11 @@ $48,
 			-- 2026-07-27: 客户端感知字段(主表 INSERT 必填)。
 			$87, $88, $89, $90
 		)
-				-- 2026-08-06 fix: request_logs 是分区表, 唯一约束是 (request_id, ts) 复合
-				-- 之前 ON CONFLICT (request_id) 单列触发 42P10 "no unique or exclusion constraint matching"
-				-- 改用 (request_id, ts) 与分区 UNIQUE INDEX 对齐.
-				ON CONFLICT (request_id, ts) DO UPDATE SET
+				-- 2026-08-06 fix: INSERT targets request_logs_hot (NOT the partitioned parent).
+				-- Migration 455 (2026-07-23) gave request_logs_hot PRIMARY KEY (request_id),
+				-- so ON CONFLICT must be (request_id). Using (request_id, ts) here triggers
+				-- SQLSTATE 42P10 "no unique or exclusion constraint matching the ON CONFLICT specification".
+				ON CONFLICT (request_id) DO UPDATE SET
 				ts = EXCLUDED.ts,
 			tenant_id = EXCLUDED.tenant_id,
 			application_id = EXCLUDED.application_id,
@@ -1545,14 +1546,14 @@ func (c *Client) upsertRequestLogBodies(ctx context.Context, tx pgx.Tx, requestI
 	// captured by the initial or successful request-log write.
 	reqJSON := requestBodyJSON
 	respJSON := responseBodyJSON
-	// Use now() as ts for the hot table. UNIQUE on (request_id, ts) — must
-	// include ts since the table is partitioned by ts (PostgreSQL requires
-	// unique constraints on partitioned tables to include the partition key).
+	// Use now() as ts for the hot table. Migration 455 (2026-07-23) changed the
+	// unique key to UNIQUE(request_id); ON CONFLICT must be (request_id), NOT
+	// (request_id, ts) — the composite form triggers 42P10 at runtime.
 	// The UPDATE clause only replaces a body when this write supplied one.
 	_, err := tx.Exec(ctx, `
 		INSERT INTO request_logs_bodies_hot (request_id, ts, request_body, response_body)
 		VALUES ($1, now(), NULLIF($2, 'null')::jsonb, NULLIF($3, 'null')::jsonb)
-		ON CONFLICT (request_id, ts) DO UPDATE
+		ON CONFLICT (request_id) DO UPDATE
 			SET request_body = COALESCE(EXCLUDED.request_body, request_logs_bodies_hot.request_body),
 				    response_body = COALESCE(EXCLUDED.response_body, request_logs_bodies_hot.response_body),
 				    ts = EXCLUDED.ts
