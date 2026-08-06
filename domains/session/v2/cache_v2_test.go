@@ -132,8 +132,8 @@ func TestCompressionMetaCache_LRUEviction(t *testing.T) {
 
 	// Add one more item (should evict LRU)
 	state4 := &SessionStateV2{
-		SessionID: "session_004",
-		TenantID:  "tenant_001",
+		SessionID:  "session_004",
+		TenantID:   "tenant_001",
 		LastTurnNo: 4,
 	}
 	cache.Set(state4)
@@ -186,16 +186,16 @@ func TestCompressionMetaCache_MultiTenant(t *testing.T) {
 
 	// Insert for tenant_001
 	state1 := &SessionStateV2{
-		SessionID: "session_shared",
-		TenantID:  "tenant_001",
+		SessionID:  "session_shared",
+		TenantID:   "tenant_001",
 		LastTurnNo: 1,
 	}
 	cache.Set(state1)
 
 	// Insert for tenant_002 with same session_id
 	state2 := &SessionStateV2{
-		SessionID: "session_shared",
-		TenantID:  "tenant_002",
+		SessionID:  "session_shared",
+		TenantID:   "tenant_002",
 		LastTurnNo: 2,
 	}
 	cache.Set(state2)
@@ -230,14 +230,14 @@ func TestCompressionMetaCache_Concurrent(t *testing.T) {
 	for g := 0; g < numGoroutines; g++ {
 		go func(goroutineID int) {
 			defer func() { done <- true }()
-			
+
 			for i := 0; i < numOperations; i++ {
 				sessionID := fmt.Sprintf("session_%d_%d", goroutineID, i)
 
 				// Set
 				state := &SessionStateV2{
-					SessionID: sessionID,
-					TenantID:  "tenant_001",
+					SessionID:  sessionID,
+					TenantID:   "tenant_001",
 					LastTurnNo: i,
 				}
 				cache.Set(state)
@@ -272,8 +272,8 @@ func TestCompressionMetaCache_Concurrent(t *testing.T) {
 
 	// Verify cache is still functional after concurrent operations
 	testState := &SessionStateV2{
-		SessionID: "final_test",
-		TenantID:  "tenant_001",
+		SessionID:  "final_test",
+		TenantID:   "tenant_001",
 		LastTurnNo: 999,
 	}
 	cache.Set(testState)
@@ -338,7 +338,7 @@ func TestCompressionMetaCache_ZeroCapacity(t *testing.T) {
 	// However, the current implementation doesn't check capacity on Set
 	// so it may actually store the item. Let's just verify no crash.
 	retrieved := cache.Get("tenant_001", "session_001")
-	
+
 	// With current implementation, it might store it or might not
 	// The important thing is no crash occurs
 	_ = retrieved
@@ -375,8 +375,8 @@ func TestSessionCacheV2_SetAndInvalidate(t *testing.T) {
 	cache := NewCompressionMetaCache(10)
 
 	state := &SessionStateV2{
-		SessionID: "session_001",
-		TenantID:  "tenant_001",
+		SessionID:  "session_001",
+		TenantID:   "tenant_001",
 		LastTurnNo: 5,
 	}
 
@@ -418,8 +418,8 @@ func TestCompressionMetaCache_SetMoveToFront(t *testing.T) {
 	// Fill cache
 	for i := 1; i <= 3; i++ {
 		state := &SessionStateV2{
-			SessionID: fmt.Sprintf("session_%d", i),
-			TenantID:  "tenant_001",
+			SessionID:  fmt.Sprintf("session_%d", i),
+			TenantID:   "tenant_001",
 			LastTurnNo: i,
 		}
 		cache.Set(state)
@@ -427,8 +427,8 @@ func TestCompressionMetaCache_SetMoveToFront(t *testing.T) {
 
 	// Update session_1 (should move it to front)
 	updatedState := &SessionStateV2{
-		SessionID: "session_1",
-		TenantID:  "tenant_001",
+		SessionID:  "session_1",
+		TenantID:   "tenant_001",
 		LastTurnNo: 100,
 	}
 	cache.Set(updatedState)
@@ -451,12 +451,12 @@ func TestCompressionMetaCache_SetMoveToFront(t *testing.T) {
 
 // TestGovernanceCache_Disabled tests governance cache when disabled
 func TestGovernanceCache_Disabled(t *testing.T) {
-	cache := NewGovernanceCache("")
+	cache := NewRedisGovernanceCache("", 0)
 	ctx := context.Background()
 
-	// Get should return error when disabled
+	// Get should return nil (not error) when disabled
 	meta, err := cache.Get(ctx, "tenant_001", "session_001")
-	assert.Error(t, err)
+	assert.NoError(t, err)
 	assert.Nil(t, meta)
 
 	// Set should not error (silent skip)

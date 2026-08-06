@@ -39,9 +39,22 @@ import (
 // SessionCompressorDeps are the external dependencies of SessionCompressor.
 // All fields are optional (nil = feature disabled).
 type SessionCompressorDeps struct {
-	// Cache is the three-tier session state cache. When nil, every request
+	// Cache is the three-tier session state cache (V1, legacy). When nil, every request
 	// is treated as a fresh session (no delta-append).
+	// DEPRECATED: Use CacheV2 instead. Kept for fallback during V2 migration.
 	Cache *SessionCache
+
+	// CacheV2 is the V2 cache architecture that reads from session_turns.
+	// When non-nil and Feature Flag is enabled, this takes precedence over Cache.
+	CacheV2 interface {
+		Get(ctx context.Context, tenantID, sessionID string) (interface{}, error)
+	}
+
+	// Builder is the V2 outbound message builder that reconstructs full context
+	// from incremental deltas stored in session_bodies.
+	Builder interface {
+		BuildFromLatestOutbound(ctx context.Context, tenantID, sessionID string) ([]byte, interface{}, error)
+	}
 
 	// CompactionDeps provides the Memora + Provider clients needed by
 	// tryLLMContextCompaction. When nil, LLM summary is skipped and the
@@ -162,7 +175,26 @@ func (sc *SessionCompressor) Prepare(
 		state            *SessionState
 		lastOutboundBody []byte
 	)
-	if sc.deps.Cache != nil {
+
+	// ── V2 Integration: Try V2 cache first if enabled ────────────────────
+	if sc.shouldUseV2(tenantID) {
+		slog.InfoContext(ctx, "session_compressor: using v2 cache",
+			"session", gwSessionID, "tenant", tenantID)
+
+		v2Body, ok := sc.tryLoadV2State(ctx, tenantID, gwSessionID)
+		if ok {
+			lastOutboundBody = v2Body
+			slog.InfoContext(ctx, "session_compressor: v2 cache loaded successfully",
+				"session", gwSessionID, "body_size", len(v2Body))
+		} else {
+			slog.WarnContext(ctx, "session_compressor: v2 cache failed, falling back to v1",
+				"session", gwSessionID)
+			// Continue to V1 path below
+		}
+	}
+
+	// ── V1 Path (existing logic or fallback) ─────────────────────────────
+	if len(lastOutboundBody) == 0 && sc.deps.Cache != nil {
 		var err error
 		state, lastOutboundBody, err = sc.deps.Cache.GetOrLoad(ctx, tenantID, gwSessionID)
 		if err != nil {
@@ -632,4 +664,65 @@ func sha256Hash(data any) string { //nolint:unused
 	}
 	h := sha256.Sum256(b)
 	return hex.EncodeToString(h[:])
+}
+
+// ─────────────────────────────────────────────────────────────
+// V2 Integration Helpers (Phase V2-2.4)
+// ─────────────────────────────────────────────────────────────
+
+// shouldUseV2 determines whether to use V2 cache architecture.
+//
+// Returns true when:
+//  1. V2 components (CacheV2 + Builder) are available, AND
+//  2. Feature Flag "sessions_v2_compression_read" is enabled for tenant
+func (sc *SessionCompressor) shouldUseV2(tenantID string) bool {
+	if sc == nil || false {
+		return false
+	}
+
+	// Check V2 components availability
+	if sc.deps.CacheV2 == nil || sc.deps.Builder == nil {
+		return false
+	}
+
+	// Feature Flag check - disabled by default until fully implemented
+	// TODO: Enable after full integration and testing
+	// return settings.GetTenantBool(tenantID, "sessions_v2_compression_read", false)
+
+	return false // Disabled by default
+}
+
+// tryLoadV2State attempts to load session state from V2 architecture.
+//
+// Returns:
+//   - lastOutboundBody: the message array last sent to LLM (JSON marshaled)
+//   - ok: true if V2 load succeeded, false to fallback to V1
+//
+// On V2 error, automatically logs and returns ok=false for V1 fallback.
+func (sc *SessionCompressor) tryLoadV2State(
+	ctx context.Context,
+	tenantID, sessionID string,
+) (lastOutboundBody []byte, ok bool) {
+	// Call CacheV2.Get() - returns interface{}
+	stateInterface, err := sc.deps.CacheV2.Get(ctx, tenantID, sessionID)
+	if err != nil {
+		slog.WarnContext(ctx, "v2 cache get failed, fallback to v1",
+			"session", sessionID, "tenant", tenantID, "error", err)
+		return nil, false
+	}
+
+	if stateInterface == nil {
+		// New session, no previous state
+		return nil, true
+	}
+
+	// Call Builder.BuildFromLatestOutbound() - returns ([]byte, interface{}, error)
+	outboundBody, _, err := sc.deps.Builder.BuildFromLatestOutbound(ctx, tenantID, sessionID)
+	if err != nil {
+		slog.WarnContext(ctx, "v2 build from outbound failed, fallback to v1",
+			"session", sessionID, "tenant", tenantID, "error", err)
+		return nil, false
+	}
+
+	return outboundBody, true
 }
