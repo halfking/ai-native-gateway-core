@@ -32,6 +32,7 @@ import (
 	"time"
 
 	summarymodel "github.com/kaixuan/llm-gateway-go/domains/hooks/compression/summary"
+	v2 "github.com/kaixuan/llm-gateway-go/domains/session/v2"
 	"github.com/kaixuan/llm-gateway-go/domains/transformation" //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/settings"
 )
@@ -46,15 +47,11 @@ type SessionCompressorDeps struct {
 
 	// CacheV2 is the V2 cache architecture that reads from session_turns.
 	// When non-nil and Feature Flag is enabled, this takes precedence over Cache.
-	CacheV2 interface {
-		Get(ctx context.Context, tenantID, sessionID string) (interface{}, error)
-	}
+	CacheV2 *v2.SessionCacheV2
 
 	// Builder is the V2 outbound message builder that reconstructs full context
 	// from incremental deltas stored in session_bodies.
-	Builder interface {
-		BuildFromLatestOutbound(ctx context.Context, tenantID, sessionID string) ([]byte, interface{}, error)
-	}
+	Builder *v2.OutboundBuilder
 
 	// CompactionDeps provides the Memora + Provider clients needed by
 	// tryLLMContextCompaction. When nil, LLM summary is skipped and the
@@ -703,23 +700,31 @@ func (sc *SessionCompressor) tryLoadV2State(
 	ctx context.Context,
 	tenantID, sessionID string,
 ) (lastOutboundBody []byte, ok bool) {
-	// Call CacheV2.Get() - returns interface{}
-	stateInterface, err := sc.deps.CacheV2.Get(ctx, tenantID, sessionID)
+	// Call CacheV2.Get() - returns *SessionStateV2
+	state, err := sc.deps.CacheV2.Get(ctx, tenantID, sessionID)
 	if err != nil {
 		slog.WarnContext(ctx, "v2 cache get failed, fallback to v1",
 			"session", sessionID, "tenant", tenantID, "error", err)
 		return nil, false
 	}
 
-	if stateInterface == nil {
+	if state == nil {
 		// New session, no previous state
 		return nil, true
 	}
 
-	// Call Builder.BuildFromLatestOutbound() - returns ([]byte, interface{}, error)
-	outboundBody, _, err := sc.deps.Builder.BuildFromLatestOutbound(ctx, tenantID, sessionID)
+	// Call Builder.BuildFromLatestOutbound() - returns ([]Message, *BuildMeta, error)
+	messages, _, err := sc.deps.Builder.BuildFromLatestOutbound(ctx, tenantID, sessionID)
 	if err != nil {
 		slog.WarnContext(ctx, "v2 build from outbound failed, fallback to v1",
+			"session", sessionID, "tenant", tenantID, "error", err)
+		return nil, false
+	}
+
+	// Marshal messages to JSON
+	outboundBody, err := json.Marshal(messages)
+	if err != nil {
+		slog.WarnContext(ctx, "v2 marshal messages failed, fallback to v1",
 			"session", sessionID, "tenant", tenantID, "error", err)
 		return nil, false
 	}
