@@ -205,37 +205,35 @@ func (h *Handler) queryTaskSummary(ctx context.Context, taskID, tenantID string)
 	}{}
 	
 	var projectID sql.NullString
-	query := `
-		SELECT 
-			gw_project_id, session_count, total_cost_usd, total_tokens,
-			total_requests, total_success, total_errors,
-			task_started_at, task_last_activity_at, task_duration_seconds,
-			task_status, models_used, all_user_tags
-		FROM v_task_summary
-		WHERE gw_task_id = $1
-	`
-	
-	args := []interface{}{taskID}
-	if tenantID != "" {
-		query += " AND tenant_id = $2"
-		args = append(args, tenantID)
-	}
-	
-	err := h.db.QueryRow(ctx, query, args...).Scan(
-		&projectID,
-		&result.Summary.SessionCount,
-		&result.Summary.TotalCostUSD,
-		&result.Summary.TotalTokens,
-		&result.Summary.TotalRequests,
-		&result.Summary.TotalSuccess,
-		&result.Summary.TotalErrors,
-		&result.Summary.StartedAt,
-		&result.Summary.LastActivityAt,
-		&result.Summary.DurationSeconds,
-		&result.Summary.Status,
-		&result.Summary.ModelsUsed,
-		&result.Summary.AllUserTags,
-	)
+query := `
+			SELECT 
+				gw_project_id, session_count, total_cost_usd, total_tokens,
+				total_requests, total_success, total_errors,
+				task_started_at, task_last_activity_at, task_duration_seconds,
+				task_status
+			FROM v_task_summary
+			WHERE gw_task_id = $1
+		`
+		
+		args := []interface{}{taskID}
+		if tenantID != "" {
+			query += " AND tenant_id = $2"
+			args = append(args, tenantID)
+		}
+		
+		err := h.db.QueryRow(ctx, query, args...).Scan(
+			&projectID,
+			&result.Summary.SessionCount,
+			&result.Summary.TotalCostUSD,
+			&result.Summary.TotalTokens,
+			&result.Summary.TotalRequests,
+			&result.Summary.TotalSuccess,
+			&result.Summary.TotalErrors,
+			&result.Summary.StartedAt,
+			&result.Summary.LastActivityAt,
+			&result.Summary.DurationSeconds,
+			&result.Summary.Status,
+		)
 	if err != nil {
 		return result, err
 	}
