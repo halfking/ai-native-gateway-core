@@ -2,11 +2,12 @@
 import { ref, onMounted, onUnmounted, computed, watch, inject, type Ref, type ComputedRef } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { localeRef } from '../i18n'
-import { RouterLink, useRouter } from 'vue-router'
+import { RouterLink } from 'vue-router'
 import MemoraStatusButton from '../components/MemoraStatusButton.vue'
 import LiveRequestStream from '../components/LiveRequestStream.vue'
 import RequestLogDrawer from '../components/RequestLogDrawer.vue'
 import TenantDashboardView from './TenantDashboardView.vue'
+import { useSessionSummaryJump } from '../composables/useSessionSummaryJump'
 import {
   getUsageSummary,
   getUsageByModel,
@@ -27,7 +28,6 @@ import { type LiveRequest } from '../composables/useLiveStream'
 import { isSuperAdmin, isDefaultTenant, getCurrentTenantId } from '../store'
 
 const { t } = useI18n()
-const router = useRouter()
 
 // 从父组件注入版本切换器
 const versionSwitcher = inject<{
@@ -207,11 +207,11 @@ function closeRequestDrawer() {
 }
 
 // 2026-08-06: 详情抽屉的「会话总结」按钮 → 跳到请求日志页并预填会话筛选。
-function openSessionSummary(sessionId: string) {
-  if (!sessionId) return
-  closeRequestDrawer()
-  router.push({ path: '/request-logs', query: { gw_session_id: sessionId } })
-}
+// 2026-08-06 (later): 重构为 useSessionSummaryJump composable，与其它父视图共享一处
+// 实现；onBeforeJump 钩子用于关闭抽屉。
+const { jumpToSessionSummary: openSessionSummary } = useSessionSummaryJump({
+  onBeforeJump: () => closeRequestDrawer(),
+})
 
 const seenLiveRequestIds = new Set<string>()
 

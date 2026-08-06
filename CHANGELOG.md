@@ -79,6 +79,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - **验证**: vitest 28 文件 158 测试 6/6 红状态全转绿；`i18n-audit.mjs` 0 missing；`vue-tsc --noEmit` exit 0；`vite build` 7.72s 成功
   - **文档**: `docs/changelogs/2026-08-06-vitest-red-state-cleanup.md`
 
+- **抽取 useSessionSummaryJump composable (2026-08-06)**:
+  - **背景**: 上次 commit 把「详情抽屉 → 跳到 /request-logs 预填会话」接通后，三个父视图（DashboardViewV2 / DashboardViewLegacy / TenantDashboardView）各自重复实现了 7 行 `openSessionSummary` 函数：短路校验 + 关抽屉 + router.push。按 rule 00 §11.4「加新功能 = 加新类/新策略，老代码零改动」原则，应抽出共享 composable
+  - **修复**:
+    - `composables/useSessionSummaryJump.ts` 新建：暴露 `jumpToSessionSummary(sessionId)`，空 / null / undefined / 空白字符串 静默 no-op；`onBeforeJump` 钩子用于关闭抽屉等副作用（try-catch 吞错，不阻塞跳转）
+    - 5 个单元测试覆盖：非空时 push / 空白自动 trim / 空值 no-op / 钩子在 push 之前 / 钩子 throw 不阻塞
+    - 三个父视图接入：移除 `useRouter` 引用（不再各自 import）、`openSessionSummary` 改用 `useSessionSummaryJump({ onBeforeJump: closeRequestDrawer })` 重新绑定；语义不变
+  - **验证**: vitest 29 文件 163 测试全绿（+5 用例）；`vue-tsc --noEmit` exit 0；`i18n-audit.mjs` 0 missing；`vite build` 9.28s 成功
+  - **文档**: `docs/changelogs/2026-08-06-extract-session-summary-jump-composable.md`
+
 - **promote 争用导致启动 EnsureSchema 超时 → 部署自动回滚 (2026-08-06)**:
   - **背景**: 154 生产两次部署（1464）验证失败自动回滚；启动首个 ensure 巨型语句被 `statement_timeout=30s` 取消（57014），网关永久 no-DB，deploy verify 判定失败
   - **根因**: `request_logs_bodies_hot` 积累 13 GB / 37k 行（~350 KB/行），promote 批量硬编码 5000 → 每批 ~1.7 GB 稳定超 30s → 每小时 tick 反复失败；且 245/154 双网关每小时对同一共享表并发 promote 互相阻塞（无 advisory lock）→ 锁/I/O 空转 + 启动 DDL 撞锁窗口
