@@ -1774,7 +1774,17 @@ func (e *Executor) Execute(params *ExecParams) (*ExecuteResult, error) {
 	// empty-messages body upstream → Ark 400 InvalidParameter → circuit break.
 	isAutoReq := params.R != nil &&
 		strings.EqualFold(params.R.Header.Get("X-Gw-Is-Auto"), "true")
-	if !isAutoReq && params.SessionID != "" && e.PendingStore != nil && params.W != nil && len(params.BodyBytes) > 0 {
+	// 2026-08-06 (second layer): exempt tool-calling sessions outright.
+	// Continuation trim exists for plain chat, where "继续" is a throwaway
+	// nudge and dropping it plus the previous answer lets the model resume
+	// cleanly. In an agent session the history is a tool-call chain, and
+	// removing the last user+assistant turn destroys the tool_call /
+	// tool_result pairing the agent depends on — the model then answers
+	// from a truncated transcript and fabricates state it never saw.
+	// ToolsRequested means the inbound body carried a non-empty `tools`
+	// array, i.e. an agent loop rather than a plain conversation.
+	if !isAutoReq && !params.ToolsRequested &&
+		params.SessionID != "" && e.PendingStore != nil && params.W != nil && len(params.BodyBytes) > 0 {
 		hotCfg := LoadHotConfig()
 		isContinue, isRetry := IsContinuationOrRetry(params.BodyBytes, hotCfg)
 		if isContinue {
