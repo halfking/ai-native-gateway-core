@@ -2,6 +2,7 @@ package bg
 
 import (
 	"context"
+	"hash/fnv"
 	"log/slog"
 	"sync"
 	"time"
@@ -39,8 +40,17 @@ const DefaultRetentionWindow = 24 * time.Hour
 // CTE. Keeps per-tx memory bounded so a backlog cannot OOM the gateway.
 //
 // Per-table promote batch sizes can be overridden via settings_kv:
-//   - probe.promote_batch_size (default 5000)
+//   - lifecycle.promote_batch_size (default 5000)
 const promoteBatchSize = 5000
+
+// requestLogsBodiesPromoteBatchSize is the default per-call LIMIT for the
+// request_logs_bodies promote. Bodies rows are TOAST-heavy (~350 KB avg; the
+// hot table was 13 GB / 37k rows), so the generic 5000-row batch moves
+// ~1.7 GB per call and consistently exceeds PG statement_timeout=30s on the
+// shared DB — promote then never makes progress and every hourly tick adds
+// lock/I/O contention. 500 rows (~175 MB/batch) stays well under the cap.
+// Override via lifecycle.request_logs_bodies_promote_batch_size.
+const requestLogsBodiesPromoteBatchSize = 500
 
 // PartitionManager automatically creates next month's partition,
 // archives old partitions to columnar storage, continuously migrates
@@ -721,6 +731,19 @@ func promoteSpecs() []archiveSpec {
 // `promoteBatchSize` rows (caller loops) or 0 rows (caller breaks
 // out). On error we log and move to the next table so one broken
 // function does not starve the others.
+// promoteLockKey returns a stable advisory-lock key for a hot-table label.
+// Both gateway instances (e.g. 245 + 154) share the same PostgreSQL, so two
+// concurrent hourly promote cycles can race the same *_hot table and one
+// ends up blocked into PG statement_timeout. pg_try_advisory_xact_lock on
+// this key makes the loser skip the table for that tick instead of waiting.
+// The key is derived with FNV-1a so it is identical across instances.
+func promoteLockKey(label string) int64 {
+	const prefix = "llm-gateway:promote:"
+	h := fnv.New64a()
+	h.Write([]byte(prefix + label))
+	return int64(h.Sum64())
+}
+
 func (pm *PartitionManager) promoteDefaultToPartitions(ctx context.Context) {
 	if pm.promoteInterval == 0 {
 		// Disabled via SetPromoteInterval(0) — used by tests.
@@ -728,16 +751,46 @@ func (pm *PartitionManager) promoteDefaultToPartitions(ctx context.Context) {
 	}
 	for _, s := range promoteSpecs() {
 		retention, batchSize := resolvePromoteConfig(s.label)
+		lockKey := promoteLockKey(s.label)
 		for {
 			if ctx.Err() != nil {
 				return
 			}
 			timeoutCtx, cancel := context.WithTimeout(ctx, 60*time.Second)
+			tx, err := pm.db.Begin(timeoutCtx)
+			if err != nil {
+				cancel()
+				slog.Error("partition_manager: promote begin failed",
+					"label", s.label, "error", err)
+				break
+			}
+			// Serialize against the peer gateway's promote on the same
+			// shared table. pg_try_advisory_xact_lock never blocks: if the
+			// other instance holds the key, skip this table for this tick
+			// instead of waiting into PG statement_timeout=30s.
+			var locked bool
+			if err := tx.QueryRow(timeoutCtx,
+				"SELECT pg_try_advisory_xact_lock($1)", lockKey,
+			).Scan(&locked); err != nil {
+				tx.Rollback(timeoutCtx)
+				cancel()
+				slog.Error("partition_manager: promote lock failed",
+					"label", s.label, "error", err)
+				break
+			}
+			if !locked {
+				tx.Rollback(timeoutCtx)
+				cancel()
+				slog.Debug("partition_manager: promote skipped (peer holds lock)",
+					"label", s.label)
+				break
+			}
 			var n int64
-			err := pm.db.QueryRow(timeoutCtx,
+			err = tx.QueryRow(timeoutCtx,
 				"SELECT "+s.fnName+"($1::interval, $2::int)",
 				retention, batchSize,
 			).Scan(&n)
+			commitErr := tx.Commit(timeoutCtx) // releases the xact lock
 			cancel()
 			if err != nil {
 				slog.Error("partition_manager: promote failed",
@@ -745,6 +798,11 @@ func (pm *PartitionManager) promoteDefaultToPartitions(ctx context.Context) {
 					"retention", retention, "batch_size", batchSize,
 					"error", err)
 				break // move on to the next table
+			}
+			if commitErr != nil {
+				slog.Error("partition_manager: promote commit failed",
+					"label", s.label, "error", commitErr)
+				break
 			}
 			if n == 0 {
 				slog.Debug("partition_manager: promote done",
@@ -818,7 +876,14 @@ func resolvePromoteConfig(label string) (time.Duration, int) {
 		if retention < time.Hour {
 			retention = time.Hour // safety floor — at least 1h
 		}
-		return retention, promoteBatchSize
+		batchSize := settingsGetPlatformInt(
+			"lifecycle.request_logs_bodies_promote_batch_size",
+			requestLogsBodiesPromoteBatchSize,
+		)
+		if batchSize < 100 {
+			batchSize = 100 // safety floor — avoid pathological micro-batches
+		}
+		return retention, batchSize
 	default:
 		hours := settingsGetPlatformInt("lifecycle.hot_retention_hours", int(DefaultRetentionWindow.Hours()))
 		retention := time.Duration(hours) * time.Hour

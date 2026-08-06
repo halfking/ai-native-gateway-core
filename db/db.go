@@ -71,8 +71,37 @@ func Open(ctx context.Context, databaseURL string) (*DB, error) {
 // Idempotent: safe to run repeatedly. Auto-called by Open() at startup.
 // Also called by `gateway migrate` subcommand so launcher can run
 // migrations while old version still serves traffic.
-// Timeout: 3 minutes (production PG under disk pressure can exceed 60s for ensure*).
+//
+// 2026-08-06 retry: production PG (252) sets statement_timeout=30s and the
+// shared DB is contended by a second gateway's hourly promote cron. A single
+// ensure* statement can be canceled with SQLSTATE 57014 while it waits on a
+// lock; treating that as fatal permanently bricks the process into
+// no-DB mode ("postgres disabled") and trips deploy auto-rollback. Retrying
+// once after a short backoff (bounded well under systemd TimeoutStartSec=90s:
+// worst case ≈ 30s statement_timeout + 5s + 30s) lets a transient lock window
+// resolve instead of killing the boot.
 func (db *DB) ApplyMigrations(ctx context.Context) error {
+	const maxAttempts = 2
+	var lastErr error
+	for attempt := 1; attempt <= maxAttempts; attempt++ {
+		if attempt > 1 {
+			select {
+			case <-time.After(5 * time.Second):
+			case <-ctx.Done():
+				return ctx.Err()
+			}
+			slog.Warn("schema migrations failed transiently, retrying",
+				"attempt", attempt, "max", maxAttempts, "error", lastErr)
+		}
+		lastErr = db.applyMigrationsOnce(ctx)
+		if lastErr == nil {
+			return nil
+		}
+	}
+	return lastErr
+}
+
+func (db *DB) applyMigrationsOnce(ctx context.Context) error {
 	// Use the parent ctx (no 3s timeout) for schema migrations. The
 	// pingCtx above is only for the initial Ping() check; reusing it
 	// for the migrations makes a real DB with many tables (15+ ALTER/
