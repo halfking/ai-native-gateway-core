@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"strings"
 	"time"
 
@@ -36,15 +37,15 @@ func NewBenchmarkExecutor(invoker ModelInvoker, timeout time.Duration) *DefaultB
 // Execute 执行完整基准测试
 func (e *DefaultBenchmarkExecutor) Execute(ctx context.Context, modelName string, provider string, suite *BenchmarkSuite) (*BenchmarkReport, error) {
 	report := &BenchmarkReport{
-		ID:            uuid.New().String(),
-		BenchmarkType: suite.Type,
-		ModelName:     modelName,
-		Provider:      provider,
+		ID:             uuid.New().String(),
+		BenchmarkType:  suite.Type,
+		ModelName:      modelName,
+		Provider:       provider,
 		TotalQuestions: len(suite.Questions),
-		StartTime:     time.Now(),
-		Results:       make([]TestResult, 0, len(suite.Questions)),
-		SubjectScores: make(map[string]float64),
-		Status:        "running",
+		StartTime:      time.Now(),
+		Results:        make([]TestResult, 0, len(suite.Questions)),
+		SubjectScores:  make(map[string]float64),
+		Status:         "running",
 	}
 
 	// 按学科统计
@@ -96,14 +97,19 @@ func (e *DefaultBenchmarkExecutor) Execute(ctx context.Context, modelName string
 
 		// 进度日志 (每10题打印一次)
 		if (i+1)%10 == 0 || i == len(suite.Questions)-1 {
-			fmt.Printf("[Benchmark Progress] %d/%d questions completed\n", i+1, len(suite.Questions))
+			slog.Debug("benchmark progress",
+				"completed", i+1,
+				"total", len(suite.Questions),
+				"model", modelName)
 		}
 	}
 
 	// 计算最终指标
 	report.EndTime = time.Now()
 	report.Duration = report.EndTime.Sub(report.StartTime)
-	report.Accuracy = float64(report.CorrectCount) / float64(report.TotalQuestions) * 100
+	if report.TotalQuestions > 0 {
+		report.Accuracy = float64(report.CorrectCount) / float64(report.TotalQuestions) * 100
+	}
 
 	// 计算平均延迟
 	var totalLatency int64
@@ -176,19 +182,19 @@ func (e *DefaultBenchmarkExecutor) ExecuteQuestion(ctx context.Context, modelNam
 // buildPrompt 构造测试prompt
 func (e *DefaultBenchmarkExecutor) buildPrompt(q Question) string {
 	var sb strings.Builder
-	
+
 	sb.WriteString("Answer the following multiple choice question by selecting the correct option (A, B, C, or D).\n\n")
 	sb.WriteString("Question: ")
 	sb.WriteString(q.Question)
 	sb.WriteString("\n\nOptions:\n")
-	
+
 	for i, opt := range q.Options {
 		letter := string(rune('A' + i))
 		sb.WriteString(fmt.Sprintf("%s. %s\n", letter, opt))
 	}
-	
+
 	sb.WriteString("\nPlease respond with ONLY the letter of the correct answer (A, B, C, or D). Do not include any explanation.")
-	
+
 	return sb.String()
 }
 
@@ -196,7 +202,7 @@ func (e *DefaultBenchmarkExecutor) buildPrompt(q Question) string {
 func (e *DefaultBenchmarkExecutor) parseAnswer(response string) string {
 	// 清理响应
 	response = strings.TrimSpace(response)
-	
+
 	// 策略0: JSON格式 {"answer": "A"} (在大写转换前检查)
 	if strings.HasPrefix(response, "{") && strings.HasSuffix(response, "}") {
 		var jsonResp map[string]interface{}
@@ -209,15 +215,15 @@ func (e *DefaultBenchmarkExecutor) parseAnswer(response string) string {
 			}
 		}
 	}
-	
+
 	// 转换为大写用于后续匹配
 	responseUpper := strings.ToUpper(response)
-	
+
 	// 策略1: 直接匹配单个字母
 	if len(responseUpper) == 1 && responseUpper >= "A" && responseUpper <= "D" {
 		return responseUpper
 	}
-	
+
 	// 策略2: 匹配 "答案是A" 或 "The answer is A"
 	if strings.Contains(responseUpper, "ANSWER IS ") {
 		parts := strings.Split(responseUpper, "ANSWER IS ")
@@ -228,12 +234,12 @@ func (e *DefaultBenchmarkExecutor) parseAnswer(response string) string {
 			}
 		}
 	}
-	
+
 	// 策略3: 匹配开头的字母
 	if len(responseUpper) > 0 && responseUpper[0] >= 'A' && responseUpper[0] <= 'D' {
 		return string(responseUpper[0])
 	}
-	
+
 	// 无法解析,返回空字符串
 	return ""
 }
