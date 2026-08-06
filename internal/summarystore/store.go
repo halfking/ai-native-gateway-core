@@ -245,9 +245,13 @@ func (s *Store) CountNewTurns(ctx context.Context, sessionKey string, since time
 }
 
 // CountTotalTurns returns the total number of successful request_logs rows
-// for the session (all time). Used by the minimum-turns gate (P0 2026-08-06)
-// to enforce the 5-turn minimum before allowing summary generation. This
-// prevents premature summaries on short exploratory sessions and saves cost.
+// for the session (all time). Used by the rolling-gate trigger to enforce
+// the minimum session length requirement before allowing summary generation.
+//
+// 2026-08-06: added to implement the 5-turn minimum gate — summaries should
+// only be generated for sessions with at least 5 successful turns, regardless
+// of when the last summary was generated. This prevents premature summaries
+// on short exploratory sessions and reduces cost waste.
 func (s *Store) CountTotalTurns(ctx context.Context, sessionKey string) (int, error) {
 	if s == nil || s.pool == nil {
 		return 0, fmt.Errorf("summarystore: pool not configured")
