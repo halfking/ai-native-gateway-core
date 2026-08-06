@@ -30,6 +30,8 @@ func PlatformSpecs() []*Spec {
 	out = append(out, ProviderProfileSpecs()...)
 	// 2026-08-06: 即时会话总结 pipeline 的运行时常量
 	out = append(out, AutoSummarySpecs()...)
+	// 2026-08-06: Model Quality Monitoring (模型质量监控) - MMLU benchmark testing for featured models
+	out = append(out, ModelQualitySpecs()...)
 	return out
 }
 
