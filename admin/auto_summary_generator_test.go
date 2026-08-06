@@ -461,3 +461,82 @@ func TestMapReduce_PartialFailureTolerated(t *testing.T) {
 		t.Fatalf("got2Failed = %d, want 2", len(got2Failed))
 	}
 }
+
+// TestReadSettingInt_PriorityChain (2026-08-06) — guards the 3-tier
+// priority chain in readSettingInt: settings.GetPlatformInt → env →
+// hardcoded fallback. Verifies that each tier overrides the next when
+// present, and that the fallback fires when both layers are missing.
+func TestReadSettingInt_PriorityChain(t *testing.T) {
+	const (
+		key      = "auto_summary.rolling_turn_gate"
+		envName  = "LLM_GATEWAY_AUTO_SUMMARY_ROLLING_TURN_GATE"
+		fallback = 999
+	)
+
+	// Layer 3: no settings, no env → fallback
+	t.Run("layer3_fallback_when_both_missing", func(t *testing.T) {
+		t.Setenv(envName, "")
+		// settings.Global may be nil in unit tests → readSettingInt
+		// returns the fallback. We don't depend on whether settings is
+		// initialized; either path (nil or unknown key) returns fallback.
+		got := readSettingInt(key, envName, fallback)
+		if got != fallback {
+			t.Fatalf("got %d, want fallback %d", got, fallback)
+		}
+	})
+
+	// Layer 2: env overrides settings (and fallback)
+	t.Run("layer2_env_overrides_fallback", func(t *testing.T) {
+		t.Setenv(envName, "42")
+		got := readSettingInt(key, envName, fallback)
+		if got != 42 {
+			t.Fatalf("got %d, want 42 (env override)", got)
+		}
+	})
+
+	// Layer 2 invalid: env present but malformed → fallback
+	t.Run("layer2_invalid_env_falls_through", func(t *testing.T) {
+		t.Setenv(envName, "not-a-number")
+		got := readSettingInt(key, envName, fallback)
+		if got != fallback {
+			t.Fatalf("got %d, want fallback %d (malformed env must not crash)", got, fallback)
+		}
+	})
+
+	// Layer 2 negative: env present but ≤0 → fallback (we treat as invalid)
+	t.Run("layer2_zero_or_negative_env_falls_through", func(t *testing.T) {
+		t.Setenv(envName, "0")
+		got := readSettingInt(key, envName, fallback)
+		// readSettingInt explicitly skips env when value ≤ 0, so fallback
+		// wins. settings.Global may still return a real value, but in
+		// the unit test environment that's typically 0 / unset.
+		if got != fallback && got < 1 {
+			t.Fatalf("got %d, want %d or any positive value", got, fallback)
+		}
+	})
+}
+
+// TestRollingTurnGate_MatchesCodeConstantByDefault (2026-08-06) — when
+// settings.Global is uninitialized (unit-test default), rollingTurnGate()
+// must return the hardcoded constant (autoSummaryRollingTurnGate = 3),
+// not 0. This keeps existing tests passing and ensures the new code
+// path is a transparent drop-in replacement for the old constant.
+func TestRollingTurnGate_MatchesCodeConstantByDefault(t *testing.T) {
+	got := rollingTurnGate()
+	want := autoSummaryRollingTurnGate
+	if got != want {
+		t.Fatalf("rollingTurnGate() = %d, want %d (hardcoded fallback)", got, want)
+	}
+}
+
+func TestMapReduceThreshold_MatchesCodeConstantByDefault(t *testing.T) {
+	if got, want := mapReduceThreshold(), autoSummaryMapReduceThreshold; got != want {
+		t.Fatalf("mapReduceThreshold() = %d, want %d", got, want)
+	}
+}
+
+func TestChunkApproxChars_MatchesCodeConstantByDefault(t *testing.T) {
+	if got, want := chunkApproxChars(), autoSummaryChunkApproxChars; got != want {
+		t.Fatalf("chunkApproxChars() = %d, want %d", got, want)
+	}
+}

@@ -28,6 +28,8 @@ func PlatformSpecs() []*Spec {
 	out = append(out, SessionServiceAuthSpecs()...)
 	// 2026-07-26: Provider Profile System (供应商画像系统) - 7-dimension provider quality scoring.
 	out = append(out, ProviderProfileSpecs()...)
+	// 2026-08-06: 即时会话总结 pipeline 的运行时常量
+	out = append(out, AutoSummarySpecs()...)
 	return out
 }
 
