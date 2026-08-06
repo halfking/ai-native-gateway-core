@@ -21,34 +21,34 @@ type SessionManagementAPI struct {
 
 // SessionManagementItem 会话列表项
 type SessionManagementItem struct {
-	SessionKey         string    `json:"session_key"`
-	TenantID           string    `json:"tenant_id"`
-	Title              string    `json:"title"`
-	Summary            string    `json:"summary,omitempty"`
-	ProjectID          *string   `json:"project_id,omitempty"`
-	TaskID             *string   `json:"task_id,omitempty"`
-	UserTags           []string  `json:"user_tags"`
-	UserIntent         *string   `json:"user_intent,omitempty"`
-	Status             string    `json:"status"`
-	FirstRequestAt     time.Time `json:"first_request_at"`
-	LastRequestAt      time.Time `json:"last_request_at"`
-	DurationSeconds    int       `json:"duration_seconds"`
-	RequestCount       int       `json:"request_count"`
-	SuccessCount       int       `json:"success_count"`
-	ErrorCount         int       `json:"error_count"`
-	TotalCostUSD       float64   `json:"total_cost_usd"`
-	TotalTokens        int64     `json:"total_tokens"`
-	ModelsUsed         []string  `json:"models_used"`
-	PrimaryModel       *string   `json:"primary_model,omitempty"`
-	LastSummarizedAt   *time.Time `json:"last_summarized_at,omitempty"`
+	SessionKey       string     `json:"session_key"`
+	TenantID         string     `json:"tenant_id"`
+	Title            string     `json:"title"`
+	Summary          string     `json:"summary,omitempty"`
+	ProjectID        *string    `json:"project_id,omitempty"`
+	TaskID           *string    `json:"task_id,omitempty"`
+	UserTags         []string   `json:"user_tags"`
+	UserIntent       *string    `json:"user_intent,omitempty"`
+	Status           string     `json:"status"`
+	FirstRequestAt   time.Time  `json:"first_request_at"`
+	LastRequestAt    time.Time  `json:"last_request_at"`
+	DurationSeconds  int        `json:"duration_seconds"`
+	RequestCount     int        `json:"request_count"`
+	SuccessCount     int        `json:"success_count"`
+	ErrorCount       int        `json:"error_count"`
+	TotalCostUSD     float64    `json:"total_cost_usd"`
+	TotalTokens      int64      `json:"total_tokens"`
+	ModelsUsed       []string   `json:"models_used"`
+	PrimaryModel     *string    `json:"primary_model,omitempty"`
+	LastSummarizedAt *time.Time `json:"last_summarized_at,omitempty"`
 }
 
 // SessionManagementResponse 会话列表响应
 type SessionManagementResponse struct {
 	Sessions []SessionManagementItem `json:"sessions"`
-	Total    int               `json:"total"`
-	Page     int               `json:"page"`
-	PageSize int               `json:"page_size"`
+	Total    int                     `json:"total"`
+	Page     int                     `json:"page"`
+	PageSize int                     `json:"page_size"`
 }
 
 // SessionDetailResponse 会话详情响应
@@ -95,14 +95,14 @@ func (h *Handler) handleSessionsList(w http.ResponseWriter, r *http.Request) {
 	}
 
 	ctx := r.Context()
-	
+
 	// 解析查询参数
 	filters := parseSessionFilters(r)
-	
+
 	// 构建查询
-	query, args := buildSessionListQuery(filters)
-	countQuery, countArgs := buildSessionCountQuery(filters)
-	
+	query, args := buildSessionListQueryForRequest(r, filters)
+	countQuery, countArgs := buildSessionCountQueryForRequest(r, filters)
+
 	// 获取总数
 	var total int
 	err := h.db.QueryRow(ctx, countQuery, countArgs...).Scan(&total)
@@ -110,7 +110,7 @@ func (h *Handler) handleSessionsList(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, fmt.Sprintf("failed to count sessions: %v", err), http.StatusInternalServerError)
 		return
 	}
-	
+
 	// 查询会话列表
 	rows, err := h.db.Query(ctx, query, args...)
 	if err != nil {
@@ -118,13 +118,13 @@ func (h *Handler) handleSessionsList(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer rows.Close()
-	
+
 	sessions := make([]SessionManagementItem, 0)
 	for rows.Next() {
 		var item SessionManagementItem
 		var projectID, taskID, userIntent, primaryModel sql.NullString
 		var lastSummarizedAt sql.NullTime
-		
+
 		err := rows.Scan(
 			&item.SessionKey,
 			&item.TenantID,
@@ -151,7 +151,7 @@ func (h *Handler) handleSessionsList(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, fmt.Sprintf("failed to scan session: %v", err), http.StatusInternalServerError)
 			return
 		}
-		
+
 		if projectID.Valid {
 			item.ProjectID = &projectID.String
 		}
@@ -167,22 +167,22 @@ func (h *Handler) handleSessionsList(w http.ResponseWriter, r *http.Request) {
 		if lastSummarizedAt.Valid {
 			item.LastSummarizedAt = &lastSummarizedAt.Time
 		}
-		
+
 		sessions = append(sessions, item)
 	}
-	
+
 	if err := rows.Err(); err != nil {
 		http.Error(w, fmt.Sprintf("error iterating sessions: %v", err), http.StatusInternalServerError)
 		return
 	}
-	
+
 	response := SessionManagementResponse{
 		Sessions: sessions,
 		Total:    total,
 		Page:     filters.Page,
 		PageSize: filters.PageSize,
 	}
-	
+
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(response)
 }
@@ -201,27 +201,36 @@ func (h *Handler) handleSessionDetail(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "session_key required", http.StatusBadRequest)
 		return
 	}
-	
+
 	// 查询会话基本信息
 	var detail SessionDetailResponse
 	var projectID, taskID, userIntent, primaryModel sql.NullString
 	var lastSummarizedAt sql.NullTime
 	var qualityScore sql.NullInt32
-	
+
 	query := `
-		SELECT 
-			session_key, tenant_id, title, summary, gw_project_id, gw_task_id,
-			user_tags, user_intent, session_status, first_request_at, last_request_at,
-			duration_seconds, request_count, success_count, error_count,
-			total_cost_usd, total_tokens, models_used, primary_model,
-			last_summarized_at, key_topics, quality_score,
-			total_prompt_tokens, total_completion_tokens
-		FROM session_summaries
-		WHERE session_key = $1
-	`
-	
+			SELECT
+				ss.session_key, ss.tenant_id, ss.title, ss.summary, ss.gw_project_id, sd.task_id,
+				ss.user_tags, ss.user_intent, ss.session_status, ss.first_request_at, ss.last_request_at,
+				ss.duration_seconds, ss.request_count, ss.success_count, ss.error_count,
+				ss.total_cost_usd, ss.total_tokens, ss.models_used, ss.primary_model,
+				ss.last_summarized_at, ss.key_topics, ss.quality_score,
+				ss.total_prompt_tokens, ss.total_completion_tokens
+			FROM session_summaries ss
+			LEFT JOIN session_dim sd ON sd.gw_session_id = ss.session_key AND sd.tenant_id = ss.tenant_id
+			WHERE ss.session_key = $1
+		`
+	args := []interface{}{sessionKey}
+	if tenantID := effectiveScopeTenant(r); tenantID != "" {
+		query += " AND ss.tenant_id = $2"
+		args = append(args, tenantID)
+	}
+	ownerFrag, ownerArgs, _ := ownerScopeClause(r, "sd.owner_user", len(args)+1)
+	query += ownerFrag
+	args = append(args, ownerArgs...)
+
 	var totalPromptTokens, totalCompletionTokens int64
-	err := h.db.QueryRow(ctx, query, sessionKey).Scan(
+	err := h.db.QueryRow(ctx, query, args...).Scan(
 		&detail.SessionKey,
 		&detail.TenantID,
 		&detail.Title,
@@ -255,7 +264,7 @@ func (h *Handler) handleSessionDetail(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, fmt.Sprintf("failed to query session: %v", err), http.StatusInternalServerError)
 		return
 	}
-	
+
 	if projectID.Valid {
 		detail.ProjectID = &projectID.String
 	}
@@ -275,18 +284,26 @@ func (h *Handler) handleSessionDetail(w http.ResponseWriter, r *http.Request) {
 		score := int(qualityScore.Int32)
 		detail.QualityScore = &score
 	}
-	
+
 	// 查询会话中的请求列表（最近50条）
 	requestsQuery := `
-		SELECT request_id, ts, client_model, request_preview, success, 
-		       total_tokens, cost_usd, latency_ms
-		FROM request_logs_hot
-		WHERE gw_session_id = $1
-		ORDER BY ts DESC
-		LIMIT 50
-	`
-	
-	rows, err := h.db.Query(ctx, requestsQuery, sessionKey)
+			SELECT request_id, ts, client_model, request_preview, success,
+			       total_tokens, cost_usd, latency_ms
+			FROM request_logs_hot
+			WHERE gw_session_id = $1
+		`
+	requestArgs := []interface{}{sessionKey}
+	if tenantID := effectiveScopeTenant(r); tenantID != "" {
+		requestsQuery += " AND tenant_id = $2"
+		requestArgs = append(requestArgs, tenantID)
+	}
+	if IsRegularUser(r) {
+		requestsQuery += fmt.Sprintf(" AND EXISTS (SELECT 1 FROM session_dim sd_scope WHERE sd_scope.gw_session_id = request_logs_hot.gw_session_id AND sd_scope.tenant_id = request_logs_hot.tenant_id AND sd_scope.owner_user = $%d)", len(requestArgs)+1)
+		requestArgs = append(requestArgs, GetAuthContext(r).Username)
+	}
+	requestsQuery += " ORDER BY ts DESC LIMIT 50"
+
+	rows, err := h.db.Query(ctx, requestsQuery, requestArgs...)
 	if err != nil {
 		// 非关键错误，继续返回基本信息
 		detail.Requests = []SessionRequestBrief{}
@@ -297,7 +314,7 @@ func (h *Handler) handleSessionDetail(w http.ResponseWriter, r *http.Request) {
 			var req SessionRequestBrief
 			var clientModel, requestPreview sql.NullString
 			var latencyMs sql.NullInt32
-			
+
 			err := rows.Scan(
 				&req.RequestID,
 				&req.Timestamp,
@@ -324,12 +341,12 @@ func (h *Handler) handleSessionDetail(w http.ResponseWriter, r *http.Request) {
 		}
 		detail.Requests = requests
 	}
-	
+
 	// 查询相关会话（同任务下的前后会话）
 	if detail.TaskID != nil {
-		detail.RelatedSessions = h.queryRelatedSessions(ctx, sessionKey, *detail.TaskID, detail.TenantID, detail.FirstRequestAt)
+		detail.RelatedSessions = h.queryRelatedSessions(ctx, r, sessionKey, *detail.TaskID, detail.TenantID, detail.FirstRequestAt)
 	}
-	
+
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(detail)
 }
@@ -341,6 +358,9 @@ func (h *Handler) handleSessionUpdate(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "database not configured", http.StatusServiceUnavailable)
 		return
 	}
+	if RequireSuperAdminForWrite(w, r) {
+		return
+	}
 
 	ctx := r.Context()
 	sessionKey := strings.TrimPrefix(r.URL.Path, "/api/sessions/update/")
@@ -348,18 +368,18 @@ func (h *Handler) handleSessionUpdate(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "session_key required", http.StatusBadRequest)
 		return
 	}
-	
+
 	var req SessionUpdateRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, fmt.Sprintf("invalid request body: %v", err), http.StatusBadRequest)
 		return
 	}
-	
+
 	// 构建更新语句
 	updates := make([]string, 0)
 	args := make([]interface{}, 0)
 	argIdx := 1
-	
+
 	if req.ProjectID != nil {
 		updates = append(updates, fmt.Sprintf("gw_project_id = $%d", argIdx))
 		args = append(args, *req.ProjectID)
@@ -380,27 +400,44 @@ func (h *Handler) handleSessionUpdate(w http.ResponseWriter, r *http.Request) {
 		args = append(args, *req.Status)
 		argIdx++
 	}
-	
+
 	if len(updates) == 0 {
 		http.Error(w, "no fields to update", http.StatusBadRequest)
 		return
 	}
-	
+
 	updates = append(updates, "updated_at = NOW()")
 	args = append(args, sessionKey)
-	
+	sessionArg := argIdx
+	argIdx++
+	whereParts := []string{fmt.Sprintf("ss.session_key = $%d", sessionArg)}
+	if tenantID := effectiveScopeTenant(r); tenantID != "" {
+		whereParts = append(whereParts, fmt.Sprintf("ss.tenant_id = $%d", argIdx))
+		args = append(args, tenantID)
+		argIdx++
+	}
+	if IsRegularUser(r) {
+		whereParts = append(whereParts, fmt.Sprintf("EXISTS (SELECT 1 FROM session_dim sd_scope WHERE sd_scope.gw_session_id = ss.session_key AND sd_scope.tenant_id = ss.tenant_id AND sd_scope.owner_user = $%d)", argIdx))
+		args = append(args, GetAuthContext(r).Username)
+		argIdx++
+	}
+
 	query := fmt.Sprintf(`
-		UPDATE session_summaries
-		SET %s
-		WHERE session_key = $%d
-	`, strings.Join(updates, ", "), argIdx)
-	
-	_, err := h.db.Exec(ctx, query, args...)
+			UPDATE session_summaries ss
+			SET %s
+			WHERE %s
+		`, strings.Join(updates, ", "), strings.Join(whereParts, " AND "))
+
+	result, err := h.db.Exec(ctx, query, args...)
 	if err != nil {
 		http.Error(w, fmt.Sprintf("failed to update session: %v", err), http.StatusInternalServerError)
 		return
 	}
-	
+	if result.RowsAffected() == 0 {
+		http.Error(w, "session not found", http.StatusNotFound)
+		return
+	}
+
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]interface{}{
 		"success":     true,
@@ -409,23 +446,33 @@ func (h *Handler) handleSessionUpdate(w http.ResponseWriter, r *http.Request) {
 }
 
 // queryRelatedSessions 查询相关会话（同任务下的前后会话）
-func (h *Handler) queryRelatedSessions(ctx context.Context, sessionKey, taskID, tenantID string, firstRequestAt time.Time) *RelatedSessions {
+func (h *Handler) queryRelatedSessions(ctx context.Context, r *http.Request, sessionKey, taskID, tenantID string, firstRequestAt time.Time) *RelatedSessions {
 	related := &RelatedSessions{}
-	
+
 	// 查询前一个会话
 	prevQuery := `
-		SELECT session_key, tenant_id, title, gw_project_id, gw_task_id, user_tags,
-		       session_status, first_request_at, last_request_at, duration_seconds,
-		       request_count, success_count, error_count, total_cost_usd, total_tokens
-		FROM session_summaries
-		WHERE tenant_id = $1 AND gw_task_id = $2 AND first_request_at < $3
-		ORDER BY first_request_at DESC
-		LIMIT 1
-	`
-	
+			SELECT ss.session_key, ss.tenant_id, ss.title, ss.gw_project_id, sd.task_id, ss.user_tags,
+			       ss.session_status, ss.first_request_at, ss.last_request_at, ss.duration_seconds,
+			       ss.request_count, ss.success_count, ss.error_count, ss.total_cost_usd, ss.total_tokens
+			FROM session_summaries ss
+			LEFT JOIN session_dim sd ON sd.gw_session_id = ss.session_key AND sd.tenant_id = ss.tenant_id
+			WHERE ss.tenant_id = $1 AND sd.task_id = $2 AND ss.first_request_at < $3
+			ORDER BY ss.first_request_at DESC
+			LIMIT 1
+		`
+	if ownerFrag, _, _ := ownerScopeClause(r, "sd.owner_user", 4); ownerFrag != "" {
+		prevQuery = strings.Replace(prevQuery, "\t\t\tORDER BY", ownerFrag+"\n\t\t\tORDER BY", 1)
+	}
+
 	var prev SessionManagementItem
 	var projectID, taskIDPrev sql.NullString
-	err := h.db.QueryRow(ctx, prevQuery, tenantID, taskID, firstRequestAt).Scan(
+	prevArgs := []interface{}{tenantID, taskID, firstRequestAt}
+	if IsRegularUser(r) {
+		prevQuery = strings.Replace(prevQuery, " AND sd.owner_user = $4", "", 1)
+		prevQuery = strings.Replace(prevQuery, "\n\t\t\tORDER BY", " AND sd.owner_user = $4\n\t\t\tORDER BY", 1)
+		prevArgs = append(prevArgs, GetAuthContext(r).Username)
+	}
+	err := h.db.QueryRow(ctx, prevQuery, prevArgs...).Scan(
 		&prev.SessionKey, &prev.TenantID, &prev.Title, &projectID, &taskIDPrev,
 		&prev.UserTags, &prev.Status, &prev.FirstRequestAt, &prev.LastRequestAt,
 		&prev.DurationSeconds, &prev.RequestCount, &prev.SuccessCount, &prev.ErrorCount,
@@ -440,21 +487,26 @@ func (h *Handler) queryRelatedSessions(ctx context.Context, sessionKey, taskID, 
 		}
 		related.Prev = &prev
 	}
-	
+
 	// 查询后一个会话
 	nextQuery := `
-		SELECT session_key, tenant_id, title, gw_project_id, gw_task_id, user_tags,
-		       session_status, first_request_at, last_request_at, duration_seconds,
-		       request_count, success_count, error_count, total_cost_usd, total_tokens
-		FROM session_summaries
-		WHERE tenant_id = $1 AND gw_task_id = $2 AND first_request_at > $3
-		ORDER BY first_request_at ASC
-		LIMIT 1
-	`
-	
+			SELECT ss.session_key, ss.tenant_id, ss.title, ss.gw_project_id, sd.task_id, ss.user_tags,
+			       ss.session_status, ss.first_request_at, ss.last_request_at, ss.duration_seconds,
+			       ss.request_count, ss.success_count, ss.error_count, ss.total_cost_usd, ss.total_tokens
+			FROM session_summaries ss
+			LEFT JOIN session_dim sd ON sd.gw_session_id = ss.session_key AND sd.tenant_id = ss.tenant_id
+			WHERE ss.tenant_id = $1 AND sd.task_id = $2 AND ss.first_request_at > $3
+		`
+	nextArgs := []interface{}{tenantID, taskID, firstRequestAt}
+	if IsRegularUser(r) {
+		nextQuery += " AND sd.owner_user = $4"
+		nextArgs = append(nextArgs, GetAuthContext(r).Username)
+	}
+	nextQuery += " ORDER BY ss.first_request_at ASC LIMIT 1"
+
 	var next SessionManagementItem
 	var projectIDNext, taskIDNext sql.NullString
-	err = h.db.QueryRow(ctx, nextQuery, tenantID, taskID, firstRequestAt).Scan(
+	err = h.db.QueryRow(ctx, nextQuery, nextArgs...).Scan(
 		&next.SessionKey, &next.TenantID, &next.Title, &projectIDNext, &taskIDNext,
 		&next.UserTags, &next.Status, &next.FirstRequestAt, &next.LastRequestAt,
 		&next.DurationSeconds, &next.RequestCount, &next.SuccessCount, &next.ErrorCount,
@@ -469,17 +521,18 @@ func (h *Handler) queryRelatedSessions(ctx context.Context, sessionKey, taskID, 
 		}
 		related.Next = &next
 	}
-	
+
 	if related.Prev == nil && related.Next == nil {
 		return nil
 	}
-	
+
 	return related
 }
 
 // SessionFilters 会话过滤条件
 type SessionFilters struct {
 	TenantID  string
+	OwnerUser string
 	ProjectID string
 	TaskID    string
 	Tags      []string
@@ -496,9 +549,9 @@ type SessionFilters struct {
 // parseSessionFilters 解析查询参数
 func parseSessionFilters(r *http.Request) SessionFilters {
 	q := r.URL.Query()
-	
+
 	filters := SessionFilters{
-		TenantID:  strings.TrimSpace(q.Get("tenant_id")),
+		TenantID:  effectiveScopeTenant(r),
 		ProjectID: strings.TrimSpace(q.Get("project_id")),
 		TaskID:    strings.TrimSpace(q.Get("task_id")),
 		Status:    strings.TrimSpace(q.Get("status")),
@@ -508,12 +561,12 @@ func parseSessionFilters(r *http.Request) SessionFilters {
 		Page:      1,
 		PageSize:  20,
 	}
-	
+
 	// 解析标签（逗号分隔）
 	if tagsStr := strings.TrimSpace(q.Get("tags")); tagsStr != "" {
 		filters.Tags = strings.Split(tagsStr, ",")
 	}
-	
+
 	// 解析日期范围
 	if fromStr := strings.TrimSpace(q.Get("from_date")); fromStr != "" {
 		if t, err := time.Parse("2006-01-02", fromStr); err == nil {
@@ -525,7 +578,7 @@ func parseSessionFilters(r *http.Request) SessionFilters {
 			filters.ToDate = &t
 		}
 	}
-	
+
 	// 解析分页
 	if pageStr := q.Get("page"); pageStr != "" {
 		if page, err := strconv.Atoi(pageStr); err == nil && page > 0 {
@@ -537,7 +590,7 @@ func parseSessionFilters(r *http.Request) SessionFilters {
 			filters.PageSize = pageSize
 		}
 	}
-	
+
 	// 默认排序
 	if filters.SortBy == "" {
 		filters.SortBy = "last_request_at"
@@ -545,149 +598,179 @@ func parseSessionFilters(r *http.Request) SessionFilters {
 	if filters.SortOrder == "" {
 		filters.SortOrder = "desc"
 	}
-	
+
 	return filters
 }
 
 // buildSessionListQuery 构建会话列表查询
 func buildSessionListQuery(filters SessionFilters) (string, []interface{}) {
+	return buildSessionListQueryForRequest(nil, filters)
+}
+
+func buildSessionListQueryForRequest(r *http.Request, filters SessionFilters) (string, []interface{}) {
 	where := make([]string, 0)
 	args := make([]interface{}, 0)
 	argIdx := 1
-	
-	// 租户过滤
+
+	if r != nil {
+		filters.TenantID = effectiveScopeTenant(r)
+	}
 	if filters.TenantID != "" {
-		where = append(where, fmt.Sprintf("tenant_id = $%d", argIdx))
+		where = append(where, fmt.Sprintf("ss.tenant_id = $%d", argIdx))
 		args = append(args, filters.TenantID)
 		argIdx++
 	}
-	
-	// 项目过滤
+	if r != nil {
+		ownerFrag, ownerArgs, next := ownerScopeClause(r, "sd.owner_user", argIdx)
+		if ownerFrag != "" {
+			where = append(where, strings.TrimPrefix(ownerFrag, " AND "))
+			args = append(args, ownerArgs...)
+			argIdx = next
+		}
+	}
+
 	if filters.ProjectID != "" {
-		where = append(where, fmt.Sprintf("gw_project_id = $%d", argIdx))
+		where = append(where, fmt.Sprintf("ss.gw_project_id = $%d", argIdx))
 		args = append(args, filters.ProjectID)
 		argIdx++
 	}
-	
-	// 任务过滤
 	if filters.TaskID != "" {
-		where = append(where, fmt.Sprintf("gw_task_id = $%d", argIdx))
+		where = append(where, fmt.Sprintf("sd.task_id = $%d", argIdx))
 		args = append(args, filters.TaskID)
 		argIdx++
 	}
-	
-	// 标签过滤（包含任一标签）
 	if len(filters.Tags) > 0 {
-		where = append(where, fmt.Sprintf("user_tags && $%d", argIdx))
+		where = append(where, fmt.Sprintf("ss.user_tags && $%d", argIdx))
 		args = append(args, filters.Tags)
 		argIdx++
 	}
-	
-	// 状态过滤
 	if filters.Status != "" {
-		where = append(where, fmt.Sprintf("session_status = $%d", argIdx))
+		where = append(where, fmt.Sprintf("ss.session_status = $%d", argIdx))
 		args = append(args, filters.Status)
 		argIdx++
 	}
-	
-	// 全文搜索
 	if filters.Search != "" {
-		where = append(where, fmt.Sprintf("search_vector @@ plainto_tsquery('simple', $%d)", argIdx))
+		where = append(where, fmt.Sprintf("ss.search_vector @@ plainto_tsquery('simple', $%d)", argIdx))
 		args = append(args, filters.Search)
 		argIdx++
 	}
-	
-	// 日期范围
 	if filters.FromDate != nil {
-		where = append(where, fmt.Sprintf("first_request_at >= $%d", argIdx))
+		where = append(where, fmt.Sprintf("ss.first_request_at >= $%d", argIdx))
 		args = append(args, *filters.FromDate)
 		argIdx++
 	}
 	if filters.ToDate != nil {
-		where = append(where, fmt.Sprintf("last_request_at <= $%d", argIdx))
+		where = append(where, fmt.Sprintf("ss.last_request_at <= $%d", argIdx))
 		args = append(args, *filters.ToDate)
 		argIdx++
 	}
-	
+
 	whereClause := ""
 	if len(where) > 0 {
 		whereClause = "WHERE " + strings.Join(where, " AND ")
 	}
-	
-	// 排序
-	orderBy := fmt.Sprintf("ORDER BY %s %s", filters.SortBy, strings.ToUpper(filters.SortOrder))
-	
-	// 分页
+
+	allowedSort := map[string]bool{
+		"last_request_at": true, "first_request_at": true, "total_cost_usd": true,
+		"request_count": true, "title": true,
+	}
+	if !allowedSort[filters.SortBy] {
+		filters.SortBy = "last_request_at"
+	}
+	orderDir := strings.ToUpper(filters.SortOrder)
+	if orderDir != "ASC" && orderDir != "DESC" {
+		orderDir = "DESC"
+	}
+	orderBy := fmt.Sprintf("ORDER BY ss.%s %s", filters.SortBy, orderDir)
+
 	offset := (filters.Page - 1) * filters.PageSize
-	limit := filters.PageSize
-	
 	query := fmt.Sprintf(`
-		SELECT 
-			session_key, tenant_id, title, COALESCE(summary, ''), gw_project_id, gw_task_id,
-			user_tags, user_intent, session_status, first_request_at, last_request_at,
-			duration_seconds, request_count, success_count, error_count,
-			total_cost_usd, total_tokens, models_used, primary_model, last_summarized_at
-		FROM session_summaries
+		SELECT
+			ss.session_key, ss.tenant_id, ss.title, COALESCE(ss.summary, ''), ss.gw_project_id, sd.task_id,
+			ss.user_tags, ss.user_intent, ss.session_status, ss.first_request_at, ss.last_request_at,
+			ss.duration_seconds, ss.request_count, ss.success_count, ss.error_count,
+			ss.total_cost_usd, ss.total_tokens, ss.models_used, ss.primary_model, ss.last_summarized_at
+		FROM session_summaries ss
+		LEFT JOIN session_dim sd ON sd.gw_session_id = ss.session_key AND sd.tenant_id = ss.tenant_id
 		%s
 		%s
 		LIMIT %d OFFSET %d
-	`, whereClause, orderBy, limit, offset)
-	
+	`, whereClause, orderBy, filters.PageSize, offset)
+
 	return query, args
 }
 
 // buildSessionCountQuery 构建会话计数查询
 func buildSessionCountQuery(filters SessionFilters) (string, []interface{}) {
+	return buildSessionCountQueryForRequest(nil, filters)
+}
+
+func buildSessionCountQueryForRequest(r *http.Request, filters SessionFilters) (string, []interface{}) {
 	where := make([]string, 0)
 	args := make([]interface{}, 0)
 	argIdx := 1
-	
+
+	if r != nil {
+		filters.TenantID = effectiveScopeTenant(r)
+	}
 	if filters.TenantID != "" {
-		where = append(where, fmt.Sprintf("tenant_id = $%d", argIdx))
+		where = append(where, fmt.Sprintf("ss.tenant_id = $%d", argIdx))
 		args = append(args, filters.TenantID)
 		argIdx++
 	}
+	if r != nil {
+		ownerFrag, ownerArgs, next := ownerScopeClause(r, "sd.owner_user", argIdx)
+		if ownerFrag != "" {
+			where = append(where, strings.TrimPrefix(ownerFrag, " AND "))
+			args = append(args, ownerArgs...)
+			argIdx = next
+		}
+	}
 	if filters.ProjectID != "" {
-		where = append(where, fmt.Sprintf("gw_project_id = $%d", argIdx))
+		where = append(where, fmt.Sprintf("ss.gw_project_id = $%d", argIdx))
 		args = append(args, filters.ProjectID)
 		argIdx++
 	}
 	if filters.TaskID != "" {
-		where = append(where, fmt.Sprintf("gw_task_id = $%d", argIdx))
+		where = append(where, fmt.Sprintf("sd.task_id = $%d", argIdx))
 		args = append(args, filters.TaskID)
 		argIdx++
 	}
 	if len(filters.Tags) > 0 {
-		where = append(where, fmt.Sprintf("user_tags && $%d", argIdx))
+		where = append(where, fmt.Sprintf("ss.user_tags && $%d", argIdx))
 		args = append(args, filters.Tags)
 		argIdx++
 	}
 	if filters.Status != "" {
-		where = append(where, fmt.Sprintf("session_status = $%d", argIdx))
+		where = append(where, fmt.Sprintf("ss.session_status = $%d", argIdx))
 		args = append(args, filters.Status)
 		argIdx++
 	}
 	if filters.Search != "" {
-		where = append(where, fmt.Sprintf("search_vector @@ plainto_tsquery('simple', $%d)", argIdx))
+		where = append(where, fmt.Sprintf("ss.search_vector @@ plainto_tsquery('simple', $%d)", argIdx))
 		args = append(args, filters.Search)
 		argIdx++
 	}
 	if filters.FromDate != nil {
-		where = append(where, fmt.Sprintf("first_request_at >= $%d", argIdx))
+		where = append(where, fmt.Sprintf("ss.first_request_at >= $%d", argIdx))
 		args = append(args, *filters.FromDate)
 		argIdx++
 	}
 	if filters.ToDate != nil {
-		where = append(where, fmt.Sprintf("last_request_at <= $%d", argIdx))
+		where = append(where, fmt.Sprintf("ss.last_request_at <= $%d", argIdx))
 		args = append(args, *filters.ToDate)
 		argIdx++
 	}
-	
+
 	whereClause := ""
 	if len(where) > 0 {
 		whereClause = "WHERE " + strings.Join(where, " AND ")
 	}
-	
-	query := fmt.Sprintf("SELECT COUNT(*) FROM session_summaries %s", whereClause)
+	query := fmt.Sprintf(`
+		SELECT COUNT(*)
+		FROM session_summaries ss
+		LEFT JOIN session_dim sd ON sd.gw_session_id = ss.session_key AND sd.tenant_id = ss.tenant_id
+		%s
+	`, whereClause)
 	return query, args
 }
