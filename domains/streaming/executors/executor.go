@@ -2323,8 +2323,17 @@ func (e *Executor) Execute(params *ExecParams) (*ExecuteResult, error) {
 		// `credential_model_bindings.unavailable_recover_at` and
 		// `v_routable_credential_models.is_routable` already provide
 		// safety net — the kill-switch is for emergencies only.
-		circuitOpen := !settings.IsEnabled("circuit_degradation") ||
-			!e.Circuit.Allow(cand.ProviderID, cand.CredentialID)
+		circuitOpen := !settings.IsEnabled("circuit_degradation")
+		// 2026-07-03 incident fix: Allow() consumes the single half-open
+		// probe slot. Track whether WE consumed it so early-exit paths
+		// (limiter reject / mnf / client-bug / context-length /
+		// content-filter / client_write_failed) can ReleaseProbe() instead
+		// of leaking the slot and wedging the breaker in HALF_OPEN forever.
+		probeConsumed := false
+		if !circuitOpen {
+			probeConsumed = e.Circuit.Allow(cand.ProviderID, cand.CredentialID)
+			circuitOpen = !probeConsumed
+		}
 		if circuitOpen {
 			if settings.IsEnabled("circuit_degradation") {
 				slog.Debug("executor: circuit open, skipping candidate",
@@ -2354,6 +2363,13 @@ func (e *Executor) Execute(params *ExecParams) (*ExecuteResult, error) {
 			)
 			lastErr = acquireErr
 			releaseFpLease(e.FpSlots, fpLease)
+			// 2026-07-03 incident root cause: the probe slot was consumed by
+			// Allow() above but never released here — the breaker stayed in
+			// HALF_OPEN until process restart. Release it so the next request
+			// can probe again.
+			if probeConsumed && e.Circuit != nil {
+				e.Circuit.ReleaseProbe(cand.ProviderID, cand.CredentialID)
+			}
 			continue
 		}
 
@@ -2566,6 +2582,11 @@ func (e *Executor) Execute(params *ExecParams) (*ExecuteResult, error) {
 				Kind:         mnfKind,
 				Reason:       mnf.body,
 			})
+			// 2026-07-03 incident fix: mnf is a credential-healthy skip (no
+			// RecordFailure), so release a consumed half-open probe here.
+			if probeConsumed && e.Circuit != nil {
+				e.Circuit.ReleaseProbe(cand.ProviderID, cand.CredentialID)
+			}
 			continue
 		}
 
@@ -2605,6 +2626,11 @@ func (e *Executor) Execute(params *ExecParams) (*ExecuteResult, error) {
 					Kind:         kind,
 					Reason:       execErr.Error(),
 				})
+				// 2026-07-03 incident fix: client-bug is a credential-healthy
+				// skip (no RecordFailure), so release a consumed half-open probe.
+				if probeConsumed && e.Circuit != nil {
+					e.Circuit.ReleaseProbe(cand.ProviderID, cand.CredentialID)
+				}
 				continue
 			}
 		}
@@ -2641,6 +2667,11 @@ func (e *Executor) Execute(params *ExecParams) (*ExecuteResult, error) {
 				Kind:         errorsx.KindContextLength,
 				Reason:       cle.body,
 			})
+			// 2026-07-03 incident fix: context-length is a credential-healthy
+			// skip (no RecordFailure), so release a consumed half-open probe.
+			if probeConsumed && e.Circuit != nil {
+				e.Circuit.ReleaseProbe(cand.ProviderID, cand.CredentialID)
+			}
 			continue
 		}
 
@@ -2694,6 +2725,11 @@ func (e *Executor) Execute(params *ExecParams) (*ExecuteResult, error) {
 			// OPT-3: record the provider so remaining siblings can be
 			// skipped without re-running classifyContentFilterError.
 			contentFilterProviders[cand.ProviderID] = struct{}{}
+			// 2026-07-03 incident fix: content_filter is a credential-healthy
+			// skip (no RecordFailure), so release a consumed half-open probe.
+			if probeConsumed && e.Circuit != nil {
+				e.Circuit.ReleaseProbe(cand.ProviderID, cand.CredentialID)
+			}
 			// Skip siblings of the same provider. Use continue-with-label
 			// so the outer for loop can iterate to the next provider.
 			continue
@@ -2708,6 +2744,11 @@ func (e *Executor) Execute(params *ExecParams) (*ExecuteResult, error) {
 					"credential_id", cand.CredentialID,
 					"provider_id", cand.ProviderID,
 				)
+				// 2026-07-03 incident fix: no Record* on this path, so release a
+				// consumed half-open probe before returning.
+				if probeConsumed && e.Circuit != nil {
+					e.Circuit.ReleaseProbe(cand.ProviderID, cand.CredentialID)
+				}
 				return nil, execErr
 			}
 			kind := sie.kind
@@ -2782,6 +2823,12 @@ func (e *Executor) Execute(params *ExecParams) (*ExecuteResult, error) {
 				// authoritative before that next lookup.
 				if !freeCredentialsTolerateTransient(cand.BillingMode, kind) {
 					e.Circuit.RecordFailure(cand.ProviderID, cand.CredentialID, kind)
+				} else {
+					// 2026-07-03 incident fix: free-cred transient skips RecordFailure
+					// (soft-downgrade only), so a consumed half-open probe would leak.
+					if probeConsumed && e.Circuit != nil {
+						e.Circuit.ReleaseProbe(cand.ProviderID, cand.CredentialID)
+					}
 				}
 				e.recordBanditFailure(cand.CredentialID, kind)
 				if kind == errorsx.KindConcurrent {
@@ -2823,6 +2870,12 @@ func (e *Executor) Execute(params *ExecParams) (*ExecuteResult, error) {
 				// consistent and ensures the kind is recorded.
 				if !freeCredentialsTolerateTransient(cand.BillingMode, kind) {
 					e.Circuit.RecordFailure(cand.ProviderID, cand.CredentialID, kind)
+				} else {
+					// 2026-07-03 incident fix: free-cred transient skips
+					// RecordFailure, so release a consumed half-open probe.
+					if probeConsumed && e.Circuit != nil {
+						e.Circuit.ReleaseProbe(cand.ProviderID, cand.CredentialID)
+					}
 				}
 				e.recordBanditFailure(cand.CredentialID, kind)
 				if e.shouldWriteCredentialStateOnConfirmedFailure(cand.ProviderID, cand.CredentialID, kind) {
@@ -3012,6 +3065,12 @@ func (e *Executor) Execute(params *ExecParams) (*ExecuteResult, error) {
 		// breaker OPEN 硬剔），仅靠 RecentSuccessRate 软降权。永久错误仍记录。
 		if !freeCredentialsTolerateTransient(cand.BillingMode, kind) {
 			e.Circuit.RecordFailure(cand.ProviderID, cand.CredentialID, kind)
+		} else {
+			// 2026-07-03 incident fix: free-cred transient skips RecordFailure
+			// (soft-downgrade only), so a consumed half-open probe would leak.
+			if probeConsumed && e.Circuit != nil {
+				e.Circuit.ReleaseProbe(cand.ProviderID, cand.CredentialID)
+			}
 		}
 		e.recordBanditFailure(cand.CredentialID, kind)
 		trace.BlockedCandidates = append(trace.BlockedCandidates, TraceCandidate{
@@ -3213,9 +3272,13 @@ func (e *Executor) Execute(params *ExecParams) (*ExecuteResult, error) {
 
 			// 2026-07-03: Bug #12 fix - 如果所有候选都是circuit open，提前退出
 			// 避免白等3轮 × 1s = 3s（之前是15s）
+			// 2026-07-03 incident fix: use PeekAllowed() (read-only, does NOT
+			// consume the half-open probe slot) here — calling Allow() in this
+			// pre-check would consume the probe and then the recursive
+			// Execute() below would see it as still-open, wasting the probe.
 			allCircuitOpen := true
 			for _, cand := range subCandidates {
-				if e.Circuit != nil && e.Circuit.Allow(cand.ProviderID, cand.CredentialID) {
+				if e.Circuit != nil && e.Circuit.PeekAllowed(cand.ProviderID, cand.CredentialID) {
 					allCircuitOpen = false
 					break
 				}
