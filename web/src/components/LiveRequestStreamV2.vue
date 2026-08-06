@@ -9,6 +9,7 @@ import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useLiveStream, type LiveStatus, type LiveModelCategory } from '../composables/useLiveStream'
 import { useSwimLane } from '../composables/useSwimLane'
+import { useLiveStreamFilters } from '../composables/useLiveStreamFilters'
 import { isSuperAdmin, authBearer, getCurrentTenantId } from '../store'
 import { redisHealthyRef, redisErrorRef } from '../composables/liveStreamStore'
 import { fetchProviderLatency } from '../api/provider-probe'
@@ -45,42 +46,6 @@ function handleRequestFromDrawer(requestId: string) {
   emit('openDetail', requestId)
 }
 
-// 2026-07-24: 请求类型过滤。两项都选中表示显示全部请求。
-const requestTypeFilter = ref<Set<'business' | 'probe'>>(new Set(['business', 'probe']))
-// 2026-07-24: 筛选改为弹窗（状态/模型/供应商/原厂）
-// 2026-07-27: 加 "客户端" 维度 (agent_name: zcode/claude-code/opencode/...)
-const filterDialog = ref<'status' | 'model' | 'provider' | 'vendor' | 'agent' | null>(null)
-
-// 2026-07-24: 多维过滤状态
-const statusFilter = ref<Set<LiveStatus>>(new Set())
-const modelFilter = ref<Set<string>>(new Set())
-const providerFilter = ref<Set<string>>(new Set())
-const vendorFilter = ref<Set<LiveModelCategory>>(new Set())
-const agentFilter = ref<Set<string>>(new Set())  // 2026-07-27
-
-// Normalize model filter for case-insensitive comparison
-const normalizedModelFilter = computed(() => 
-  Array.from(modelFilter.value).map(m => m.toLowerCase().trim())
-)
-
-function toggleRequestType(type: 'business' | 'probe') {
-  const next = new Set(requestTypeFilter.value)
-  if (next.has(type)) {
-    if (next.size > 1) next.delete(type)
-  } else {
-    next.add(type)
-  }
-  requestTypeFilter.value = next
-}
-
-function openFilterDialog(kind: 'status' | 'model' | 'provider' | 'vendor' | 'agent') {
-  filterDialog.value = kind
-}
-
-/** 模型维度一律用标准名（tile.model 后端已优先 canonical） */
-function standardModelName(model: string | undefined | null): string {
-  return (model || '').trim()
-}
 // 解构出 reconnect —— 保存新 URL 后立即用新地址重连，不再只是 localStorage 默默记住
 const {
   snapshot: liveSnapshot,
@@ -102,6 +67,42 @@ const {
   toggleLegend,
   clearLegendSelection,
 } = useSwimLane(liveSnapshot)
+
+// 2026-08-06: 过滤器状态管理抽到 useLiveStreamFilters composable
+const {
+  requestTypeFilter,
+  statusFilter,
+  modelFilter,
+  providerFilter,
+  vendorFilter,
+  agentFilter,
+  toggleRequestType,
+  applyStatusFilter,
+  applyModelFilter,
+  applyProviderFilter,
+  applyVendorFilter,
+  applyAgentFilter,
+  clearAllFilters,
+  availableStatuses,
+  availableModels,
+  availableProviders,
+  availableVendors,
+  availableAgents,
+  statusFilterSelected,
+  modelFilterSelected,
+  providerFilterSelected,
+  vendorFilterSelected,
+  agentFilterSelected,
+  activeFilterCount,
+  filteredLanes,
+} = useLiveStreamFilters({ lanes })
+
+// 2026-07-24: 筛选弹窗状态（保留在组件内，仅 UI 控制）
+const filterDialog = ref<'status' | 'model' | 'provider' | 'vendor' | 'agent' | null>(null)
+
+function openFilterDialog(kind: 'status' | 'model' | 'provider' | 'vendor' | 'agent') {
+  filterDialog.value = kind
+}
 
 // 2026-07-23: 供应商 HTTP 延时（子项②）。仅在 provider 维度展示。
 // providerLatencyMap: { [providerCode(字符串)]: latency_ms }
@@ -326,55 +327,6 @@ function handleToggleLegend(key: string) {
 }
 
 // 2026-07-13: 过滤泳道（"仅探测"过滤器）
-// 2026-07-24: 扩展为多维过滤（请求类型、状态、模型、供应商、原厂）
-const filteredLanes = computed(() => {
-  return lanes.value
-    .map(lane => ({
-      ...lane,
-      requests: lane.requests.filter(r => {
-        // 请求类型过滤
-        const requestType = r.is_probe === true ? 'probe' : 'business'
-        if (!requestTypeFilter.value.has(requestType)) {
-          return false
-        }
-        
-        // 状态过滤
-        if (statusFilter.value.size > 0 && (!r.status || !statusFilter.value.has(r.status as LiveStatus))) {
-          return false
-        }
-        
-        // 模型过滤（标准名，case-insensitive）
-        if (normalizedModelFilter.value.length > 0) {
-          const stdModel = standardModelName(r.model).toLowerCase().trim()
-          if (!stdModel || !normalizedModelFilter.value.includes(stdModel)) {
-            return false
-          }
-        }
-        
-        // 供应商过滤（使用 provider 字段）
-        if (providerFilter.value.size > 0 && (!r.provider || !providerFilter.value.has(r.provider))) {
-          return false
-        }
-        
-        // 原厂过滤（使用 vendor 字段）
-        if (vendorFilter.value.size > 0 && (!r.vendor || !vendorFilter.value.has(r.vendor as LiveModelCategory))) {
-          return false
-        }
-
-        // 2026-07-27: 客户端过滤 (使用 agent_name,全小写)
-        if (agentFilter.value.size > 0) {
-          const reqAgent = (r.agent_name || '').trim().toLowerCase()
-          if (!reqAgent || !agentFilter.value.has(reqAgent)) {
-            return false
-          }
-        }
-
-        return true
-      }),
-    }))
-    .filter(lane => lane.requests.length > 0)
-})
-
 // 2026-07-13: 冷启动检测 — 后端尚未推送任何泳道
 // "仅探测" 过滤后为空不算冷启动（已有泳道只是被过滤）
 // 2026-07-13 修正：只有 filteredLanes 也为空时才显示空态（避免有泳道显示时仍显示"暂无请求数据"）
@@ -382,102 +334,7 @@ const isColdStart = computed(() => {
   return lanes.value.length === 0 && filteredLanes.value.length === 0
 })
 
-// 2026-07-24: 从当前所有请求中提取可选项（用于下拉框）
-const availableStatuses = computed(() => {
-  const statuses = new Set<LiveStatus>()
-  for (const lane of lanes.value) {
-    for (const req of lane.requests) {
-      if (req.status) statuses.add(req.status as LiveStatus)
-    }
-  }
-  return Array.from(statuses).sort()
-})
-
-const availableModels = computed(() => {
-  const modelMap = new Map<string, string>() // lowercase key -> canonical display name
-  for (const lane of lanes.value) {
-    for (const req of lane.requests) {
-      const name = standardModelName(req.model)
-      if (name && name !== '[空闲]') {
-        const key = name.toLowerCase().trim()
-        // Keep first occurrence (prefer backend canonical name)
-        if (!modelMap.has(key)) {
-          modelMap.set(key, name)
-        }
-      }
-    }
-  }
-  // Sort case-insensitively by the lowercase key
-  return Array.from(modelMap.values()).sort((a, b) => 
-    a.localeCompare(b, 'zh-CN', { sensitivity: 'base' })
-  )
-})
-
-const availableProviders = computed(() => {
-  const providers = new Set<string>()
-  for (const lane of lanes.value) {
-    for (const req of lane.requests) {
-      if (req.provider) providers.add(req.provider)
-    }
-  }
-  return Array.from(providers).sort()
-})
-
-const availableVendors = computed(() => {
-  const vendors = new Set<LiveModelCategory>()
-  for (const lane of lanes.value) {
-    for (const req of lane.requests) {
-      if (req.vendor) vendors.add(req.vendor as LiveModelCategory)
-    }
-  }
-  return Array.from(vendors).sort()
-})
-
-// 2026-07-27: 客户端可选项 (从 SSE 实时收到的 agent_name 提取,全小写)
-const availableAgents = computed(() => {
-  const agents = new Set<string>()
-  for (const lane of lanes.value) {
-    for (const req of lane.requests) {
-      const a = (req.agent_name || '').trim().toLowerCase()
-      if (a) agents.add(a)
-    }
-  }
-  return Array.from(agents).sort()
-})
-
-// 2026-07-24: 弹窗筛选 apply
-function applyStatusFilter(selected: string[]) {
-  statusFilter.value = new Set(selected as LiveStatus[])
-}
-function applyModelFilter(selected: string[]) {
-  modelFilter.value = new Set(selected)
-}
-function applyProviderFilter(selected: string[]) {
-  providerFilter.value = new Set(selected)
-}
-function applyVendorFilter(selected: string[]) {
-  vendorFilter.value = new Set(selected as LiveModelCategory[])
-}
-// 2026-07-27: 客户端筛选 apply
-function applyAgentFilter(selected: string[]) {
-  agentFilter.value = new Set(selected.map(s => s.toLowerCase()))
-}
-
-function clearAllFilters() {
-  requestTypeFilter.value = new Set(['business', 'probe'])
-  statusFilter.value = new Set()
-  modelFilter.value = new Set()
-  providerFilter.value = new Set()
-  vendorFilter.value = new Set()
-}
-
-const statusFilterSelected = computed(() => Array.from(statusFilter.value))
-const modelFilterSelected = computed(() => Array.from(modelFilter.value))
-const providerFilterSelected = computed(() => Array.from(providerFilter.value))
-const vendorFilterSelected = computed(() => Array.from(vendorFilter.value) as string[])
-// 2026-07-27: 客户端筛选 — 全小写匹配 (SSE 已保证 lowercase)
-const agentFilterSelected = computed(() => Array.from(agentFilter.value))
-
+// 2026-08-06: 保留 UI label 辅助函数（i18n 翻译）
 function statusOptionLabel(v: string) {
   return t(`dashboard.liveStream.status.${v}`)
 }
@@ -487,15 +344,6 @@ function vendorOptionLabel(v: string) {
   return labeled === key ? v : labeled
 }
 
-const activeFilterCount = computed(() => {
-  let count = 0
-  if (requestTypeFilter.value.size < 2) count++
-  count += statusFilter.value.size
-  count += modelFilter.value.size
-  count += providerFilter.value.size
-  count += vendorFilter.value.size
-  return count
-})
 </script>
 
 <template>
