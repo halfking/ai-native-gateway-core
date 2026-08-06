@@ -12,6 +12,7 @@ package summarystore
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -139,6 +140,15 @@ func (s *Store) Upsert(ctx context.Context, sum Summary) (UpsertResult, error) {
 		lastReq = time.Now()
 	}
 
+	// 2026-08-06: LLM-generated text occasionally contains invalid UTF-8
+	// (truncated multibyte CJK sequences like 0xe5 0xe2 0x80). PostgreSQL
+	// rejects these with SQLSTATE 22021. Sanitise all text fields before
+	// INSERT by replacing invalid byte sequences with U+FFFD. Production
+	// measured 157 such failures in 3 hours.
+	title := sanitiseUTF8(sum.Title)
+	summaryText := sanitiseUTF8(sum.Summary)
+	userIntent := sanitiseUTF8(sum.UserIntent)
+
 	const query = `
 		INSERT INTO session_summaries (
 			session_key, tenant_id, title, summary, key_topics,
@@ -161,10 +171,10 @@ func (s *Store) Upsert(ctx context.Context, sum Summary) (UpsertResult, error) {
 	err := s.pool.QueryRow(ctx, query,
 		sum.SessionKey,
 		sum.TenantID,
-		sum.Title,
-		sum.Summary,
+		title,
+		summaryText,
 		sum.KeyTopics,
-		sum.UserIntent,
+		userIntent,
 		sum.LastSummarized,
 		firstReq,
 		lastReq,
@@ -174,6 +184,18 @@ func (s *Store) Upsert(ctx context.Context, sum Summary) (UpsertResult, error) {
 	}
 	result.Updated = !inserted
 	return result, nil
+}
+
+// sanitiseUTF8 returns s with all invalid UTF-8 byte sequences replaced by
+// the Unicode replacement character (U+FFFD). This prevents PostgreSQL
+// from rejecting the INSERT with SQLSTATE 22021 when the LLM produces
+// truncated or corrupted multibyte characters (observed in production
+// with CJK text: 0xe5 0xe2 0x80).
+//
+// strings.ToValidUTF8 is the standard library function for this; it is
+// available since Go 1.13.
+func sanitiseUTF8(s string) string {
+	return strings.ToValidUTF8(s, "\ufffd")
 }
 
 // LastSummarized returns the last_summarized_at timestamp for the session

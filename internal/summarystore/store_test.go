@@ -2,6 +2,7 @@ package summarystore
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 )
@@ -67,5 +68,39 @@ func TestSummary_ZeroValueValid(t *testing.T) {
 	var s Summary
 	if s.SessionKey != "" || s.Title != "" || s.LastSummarized != (time.Time{}) {
 		t.Fatalf("zero Summary should be all-empty, got %+v", s)
+	}
+}
+// TestSanitiseUTF8_InvalidBytesReplaced verifies that invalid UTF-8 byte
+// sequences (truncated CJK multibyte, as observed in production error
+// 0xe5 0xe2 0x80) are replaced with U+FFFD so PostgreSQL accepts the row.
+func TestSanitiseUTF8_InvalidBytesReplaced(t *testing.T) {
+	// 0xe5 starts a 3-byte CJK sequence; 0xe2 0x80 is a truncated 3-byte
+	// sequence. Both are invalid on their own.
+	invalid := "\xe5\xe2\x80"
+	sanitised := sanitiseUTF8(invalid)
+	if strings.Contains(sanitised, "\xe5\xe2\x80") {
+		t.Errorf("invalid bytes still present after sanitisation: %q", sanitised)
+	}
+	for _, r := range sanitised {
+		if r == '\ufffd' {
+			return // at least one replacement char, test passes
+		}
+	}
+	t.Errorf("expected at least one U+FFFD replacement, got %q", sanitised)
+}
+
+// TestSanitiseUTF8_ValidUnchanged verifies that valid UTF-8 (including
+// CJK and emoji) passes through untouched.
+func TestSanitiseUTF8_ValidUnchanged(t *testing.T) {
+	cases := []string{
+		"hello world",
+		"继续修复这个 bug",
+		"🎉 emoji test",
+		"", // empty stays empty
+	}
+	for _, s := range cases {
+		if got := sanitiseUTF8(s); got != s {
+			t.Errorf("valid UTF-8 changed: input %q → output %q", s, got)
+		}
 	}
 }
