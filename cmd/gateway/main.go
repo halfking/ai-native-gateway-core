@@ -2319,6 +2319,7 @@ func main() {
 	var dailyProbeAudit *bg.DailyProbeAudit
 	// 2026-07-14: 30s system-health monitor (GDRT H badge).
 	var systemHealthWorker *bg.SystemHealthWorker
+	var modelQualityWorker *bg.ModelQualityWorker
 	var stickyCleaner *bg.StickyCleaner
 	var envelopeCleaner *bg.EnvelopeCleaner
 	var settingsAuditCleaner *bg.SettingsAuditCleaner
@@ -2732,6 +2733,25 @@ func main() {
 				systemHealthWorker = bg.NewSystemHealthWorker(dbConn.Pool())
 				systemHealthWorker.Start(context.Background())
 				slog.Info("CHECKPOINT: system_health_worker started")
+
+				// 2026-08-06: Model Quality Monitoring worker (MMLU benchmark
+				// against featured models to detect provider model degradation).
+				// Gated behind env LLM_GATEWAY_MODEL_QUALITY_ENABLED (default off)
+				// so it does not consume tokens unless explicitly enabled.
+				if os.Getenv("LLM_GATEWAY_MODEL_QUALITY_ENABLED") == "true" {
+					mqDataDir := os.Getenv("LLM_GATEWAY_MODEL_QUALITY_DATA_DIR")
+					if mqDataDir == "" {
+						mqDataDir = "./data"
+					}
+					mqBaseURL := os.Getenv("LLM_GATEWAY_MODEL_QUALITY_BASE_URL")
+					if mqBaseURL == "" {
+						mqBaseURL = "http://localhost:8787" // 默认本地网关
+					}
+					modelQualityWorker = bg.NewModelQualityWorker(mqDataDir, selfCheckAPIKey, mqBaseURL)
+					modelQualityWorker.Start(context.Background())
+					slog.Info("CHECKPOINT: model_quality_worker started",
+						"data_dir", mqDataDir, "base_url", mqBaseURL)
+				}
 			}
 		}
 
@@ -4562,6 +4582,9 @@ func main() {
 		}
 		if systemHealthWorker != nil {
 			systemHealthWorker.Stop()
+		}
+		if modelQualityWorker != nil {
+			modelQualityWorker.Stop()
 		}
 
 		// Stop probe/state services before closing their shared dependencies.

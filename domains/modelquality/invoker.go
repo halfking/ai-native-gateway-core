@@ -1,9 +1,13 @@
 package modelquality
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
+	"io"
 	"math/rand"
+	"net/http"
 	"strings"
 	"time"
 )
@@ -159,28 +163,104 @@ func extractCorrectAnswerFromPrompt(prompt string) string {
 }
 
 // GatewayModelInvoker 网关模型调用器(真实实现)
-// 这个实现需要对接网关的实际streaming执行逻辑
+// 通过HTTP调用网关API进行测试
 type GatewayModelInvoker struct {
-	// TODO: 注入网关的实际依赖
-	// executor *streaming.Executor
-	// credPool *credential.Pool
+	baseURL    string
+	apiKey     string
+	httpClient *http.Client
 }
 
 // NewGatewayModelInvoker 创建网关模型调用器
-func NewGatewayModelInvoker() *GatewayModelInvoker {
-	return &GatewayModelInvoker{}
+func NewGatewayModelInvoker(baseURL, apiKey string) *GatewayModelInvoker {
+	if baseURL == "" {
+		baseURL = "http://localhost:8787" // 默认本地网关
+	}
+	
+	return &GatewayModelInvoker{
+		baseURL: strings.TrimSpace(baseURL),
+		apiKey:  strings.TrimSpace(apiKey),
+		httpClient: &http.Client{
+			Timeout: 30 * time.Second,
+			Transport: &http.Transport{
+				MaxIdleConns:        100,
+				MaxIdleConnsPerHost: 10,
+				IdleConnTimeout:     90 * time.Second,
+			},
+		},
+	}
 }
 
 // InvokeModel 调用网关模型
 func (g *GatewayModelInvoker) InvokeModel(ctx context.Context, provider string, modelName string, prompt string) (response string, tokenUsage int, latency time.Duration, err error) {
-	// TODO: 实现真实的网关调用逻辑
-	// 1. 构造请求体(OpenAI格式)
-	// 2. 通过网关的路由系统选择凭据和供应商
-	// 3. 执行实际的模型调用
-	// 4. 解析响应并返回
+	startTime := time.Now()
 	
-	// 当前返回未实现错误
-	return "", 0, 0, fmt.Errorf("GatewayModelInvoker not implemented yet - use MockModelInvoker for testing")
+	// 构造OpenAI格式的请求
+	payload := map[string]interface{}{
+		"model": modelName,
+		"messages": []map[string]string{
+			{"role": "user", "content": prompt},
+		},
+		"max_tokens":  50, // 质量测试只需要简短回答
+		"temperature": 0.1, // 低温度保证稳定性
+		"stream":      false,
+	}
+	
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return "", 0, time.Since(startTime), fmt.Errorf("marshal request: %w", err)
+	}
+	
+	// 构造请求URL
+	url := g.baseURL + "/v1/chat/completions"
+	req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(body))
+	if err != nil {
+		return "", 0, time.Since(startTime), fmt.Errorf("create request: %w", err)
+	}
+	
+	// 设置请求头
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+g.apiKey)
+	req.Header.Set("X-Gateway-Quality-Test", "true") // 标识为质量测试请求
+	
+	// 发送请求
+	resp, err := g.httpClient.Do(req)
+	latency = time.Since(startTime)
+	
+	if err != nil {
+		return "", 0, latency, fmt.Errorf("http request failed: %w", err)
+	}
+	defer resp.Body.Close()
+	
+	// 检查HTTP状态码
+	if resp.StatusCode != http.StatusOK {
+		bodyBytes, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		return "", 0, latency, fmt.Errorf("gateway returned HTTP %d: %s", resp.StatusCode, string(bodyBytes))
+	}
+	
+	// 解析响应
+	var result struct {
+		Choices []struct {
+			Message struct {
+				Content string `json:"content"`
+			} `json:"message"`
+		} `json:"choices"`
+		Usage struct {
+			TotalTokens int `json:"total_tokens"`
+		} `json:"usage"`
+	}
+	
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return "", 0, latency, fmt.Errorf("decode response: %w", err)
+	}
+	
+	if len(result.Choices) == 0 {
+		return "", 0, latency, fmt.Errorf("no choices in response")
+	}
+	
+	response = strings.TrimSpace(result.Choices[0].Message.Content)
+	tokenUsage = result.Usage.TotalTokens
+	
+	return response, tokenUsage, latency, nil
 }
 
 // HTTPModelInvoker HTTP直连模型调用器(绕过网关,直接调用供应商API)
