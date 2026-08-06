@@ -7,7 +7,7 @@
 //   - 所有文案走 i18n
 import { ref, computed, onMounted, onUnmounted, inject, type Ref } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { RouterLink, useRouter } from 'vue-router'
+import { RouterLink } from 'vue-router'
 import { localeRef } from '../i18n'
 import {
   getMaasUsageSummary,
@@ -22,9 +22,9 @@ import LiveRequestStream from '../components/LiveRequestStream.vue'
 import LiveRequestStreamV2 from '../components/LiveRequestStreamV2.vue'
 import RequestLogDrawer from '../components/RequestLogDrawer.vue'
 import { useLiveStream } from '../composables/useLiveStream'
+import { useSessionSummaryJump } from '../composables/useSessionSummaryJump'
 
 const { t } = useI18n()
-const router = useRouter()
 
 const days = ref(7)
 const summary = ref<MaasUsageSummary | null>(null)
@@ -197,11 +197,11 @@ function closeRequestDrawer() {
 }
 
 // 2026-08-06: 详情抽屉的「会话总结」按钮 → 跳到请求日志页并预填会话筛选。
-function openSessionSummary(sessionId: string) {
-  if (!sessionId) return
-  closeRequestDrawer()
-  router.push({ path: '/request-logs', query: { gw_session_id: sessionId } })
-}
+// 2026-08-06 (later): 重构为 useSessionSummaryJump composable，与其它父视图共享一处
+// 实现；onBeforeJump 钩子用于关闭抽屉。
+const { jumpToSessionSummary: openSessionSummary } = useSessionSummaryJump({
+  onBeforeJump: () => closeRequestDrawer(),
+})
 
 // Tab 控制（与 DashboardViewV2 对齐：stream / stats）
 const STORAGE_KEY_TAB = 'tenant_dashboard_active_tab'
