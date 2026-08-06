@@ -704,3 +704,9 @@
 |-----------|------|---------|--------|
 | 464 | `464_session_turns_aggregate_claim.sql` | `9ea33e5bd1eb82a0eaf2e7c0c5cc57785063aa7c834eb255a3e236656bd53b28` | applied+verified |
 
+## 2026-08-06T02:09:43Z — deploy 245 build_seq 1454 (e7635431)
+
+| Migration | File | SHA-256 | Status |
+|-----------|------|---------|--------|
+| 465 | `465_session_titles_pkey.sql` | `99c2776ec07168c52188e3b9513cd38a7499833e15d98103baea853c1dd32e85` | applied+verified |
+

@@ -154,7 +154,7 @@ if [ -d "$SCRIPT_DIR/objects" ]; then
     test_case "objects/sequences/ 有 $SEQUENCES_COUNT 个文件" "[ '$SEQUENCES_COUNT' -eq 281 ]"
     test_case "objects/triggers/ 有 $TRIGGERS_COUNT 个文件" "[ '$TRIGGERS_COUNT' -eq 29 ]"
     test_case "objects/indexes/ 有 $INDEXES_COUNT 个文件" "[ '$INDEXES_COUNT' -eq 718 ]"
-    test_case "objects/constraints/ 有 $CONSTRAINTS_COUNT 个文件" "[ '$CONSTRAINTS_COUNT' -eq 258 ]"
+    test_case "objects/constraints/ 有 $CONSTRAINTS_COUNT 个文件" "[ '$CONSTRAINTS_COUNT' -eq 259 ]"
     test_case "objects/policies/ 有 $POLICIES_COUNT 个文件" "[ '$POLICIES_COUNT' -eq 122 ]"
     test_case "objects/other/ 有 $OTHER_COUNT 个文件" "[ '$OTHER_COUNT' -eq 42 ]"
 fi

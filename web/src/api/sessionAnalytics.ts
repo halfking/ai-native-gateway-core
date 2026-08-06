@@ -183,6 +183,19 @@ export function deleteSessionTag(gwSessionId: string, tagId: number) {
   return req('DELETE', `/api/admin/session-analytics/${gwSessionId}/tags/${tagId}`)
 }
 
+/** 2026-08-06: 改标签 key/value. Pass empty `tagKey` to keep the current key. */
+export function updateSessionTag(
+  gwSessionId: string,
+  tagId: number,
+  body: { tag_key?: string; tag_value: string },
+) {
+  return req(
+    'PUT',
+    `/api/admin/session-analytics/${gwSessionId}/tags/${tagId}`,
+    body,
+  )
+}
+
 /** 优化建议列表 */
 export function getSessionSuggestions(gwSessionId: string) {
   return req<{ suggestions: SessionOptimizationSugg[] }>('GET', `/api/admin/session-analytics/${gwSessionId}/suggestions`)

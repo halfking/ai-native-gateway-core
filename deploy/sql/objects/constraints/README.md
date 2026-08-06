@@ -4,7 +4,7 @@
 
 ## 统计
 
-- **文件数量**: 258
+- **文件数量**: 259
 - **同步来源**: `sql/objects/constraints/`
 - **同步方式**: 通过 `sync-objects.sh` 自动同步
 
@@ -208,6 +208,7 @@ session_module_executions_hot_session_module_executions_hot_pkey.sql
 session_module_executions_hot_uk_sme_hot_session_module_batch.sql
 session_module_executions_session_module_executions_pkey.sql
 session_summaries_session_summaries_pkey.sql
+session_titles_session_titles_pkey.sql
 session_turn_logs_session_turn_logs_pkey.sql
 session_turn_snapshots_session_turn_snapshots_pkey.sql
 session_turn_snapshots_uq_session_turn_snapshot_request.sql

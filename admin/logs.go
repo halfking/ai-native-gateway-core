@@ -94,6 +94,11 @@ type requestLogRow struct {
 	// 2026-07-01: 附件数量 (migration 325)。列表接口返回，
 	// 0 表示无附件（omitempty 省略 0，前端按 undefined/falsey 处理为无角标）。
 	AttachmentCount int `json:"attachment_count,omitempty"`
+	// 2026-08-06: session_titles.title joined on (gw_task_id,
+	// COALESCE(NULLIF(gw_session_id,''),'')). Frontend uses this in
+	// the request-logs list and detail drawer; nil when no title has
+	// been generated or manually set.
+	SessionTitle *string `json:"session_title,omitempty"`
 }
 
 type requestLogDetail struct {
@@ -180,7 +185,11 @@ const requestLogsListCols = `
 	CASE WHEN jsonb_typeof(rl.attachments) = 'array'
 	     THEN jsonb_array_length(rl.attachments)
 	     ELSE 0
-	END AS attachment_count
+	END AS attachment_count,
+	-- 2026-08-06: session title. LEFT JOIN session_titles keyed by
+	-- (task_id, scoped_session_id) where scoped_session_id falls back to ''
+	-- when the request has no gw_session_id, matching the upsert path.
+	st.title AS session_title
 `
 
 // requestLogsDetailCols extends the list columns with the three JSONB blobs
@@ -203,6 +212,14 @@ const requestLogsJoins = `
 	LEFT JOIN api_keys ak ON ak.id = rl.api_key_id
 	LEFT JOIN applications app ON app.id = ak.application_id
 	LEFT JOIN models_canonical mc ON mc.id = rl.canonical_id
+	-- 2026-08-06: join session_titles to surface auto-generated /
+	-- manually-edited session titles in the request-logs list. The
+	-- composite key (task_id, scoped_session_id) matches the unique
+	-- index on session_titles. scoped_session_id falls back to '' to
+	-- cover request_logs rows where gw_session_id is NULL.
+	LEFT JOIN session_titles st
+	       ON st.task_id = rl.gw_task_id
+	      AND st.scoped_session_id = COALESCE(NULLIF(rl.gw_session_id, ''), '')
 	LEFT JOIN LATERAL (
 		SELECT COALESCE(
 			NULLIF(TRIM(mo.outbound_model_name), ''),
@@ -315,6 +332,8 @@ func scanRequestListRow(rows interface {
 		&l.CompressionStrategy, &l.CompressionReason, &l.ParentRequestID,
 		// 2026-07-01: attachment_count (migration 325)。
 		&l.AttachmentCount,
+		// 2026-08-06: session_titles.title join (see requestLogsJoins).
+		&l.SessionTitle,
 	}
 	if withTraceSeq {
 		dest = append(dest, &l.TraceSeq)
@@ -660,6 +679,8 @@ func (h *Handler) getLog(w http.ResponseWriter, r *http.Request) {
 		// as the list query; re-evaluated here so the detail payload also
 		// exposes the count without forcing the client to parse attachments.
 		&detail.AttachmentCount,
+		// 2026-08-06: session_titles.title (see requestLogsListCols).
+		&detail.SessionTitle,
 		&detail.OutboundBody,
 		&detail.OutboundMsgHashes,
 		&detail.CompressionMeta,

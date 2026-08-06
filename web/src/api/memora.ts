@@ -317,3 +317,82 @@ export function getNoTopicSessionExtractionStatus(params: NoTopicSessionParams):
   if (params.hour_start) qs.set('hour_start', params.hour_start)
   return req<SessionExtractionStatusResponse>('GET', `/api/system/no-topic-session/extraction-status?${qs.toString()}`)
 }
+
+// ── Session title — manual override + bulk lookup (2026-08-06) ────────
+
+/** Body for PUT /api/system/session-context/{taskId}/title. */
+export interface SessionTitleUpdateRequest {
+  title: string
+  scoped_session_id?: string
+}
+
+/** Response for PUT/DELETE on .../title. */
+export interface SessionTitleUpdateResponse {
+  task_id: string
+  scoped_session_id: string
+  title: string
+  model: string
+  updated_at: string
+}
+
+/** Body for POST /api/system/session-context/titles/batch. */
+export interface SessionTitlesBatchRequest {
+  keys: Array<{ task_id: string; scoped_session_id?: string }>
+}
+
+/** Response for the batch lookup. Keys are `task_id + "\x00" + scoped_session_id`. */
+export interface SessionTitlesBatchResponse {
+  titles: Record<string, string>
+}
+
+/**
+ * Manually override the auto-generated session title for a task.
+ * Stamps model="manual" so future summarize-title calls can still refresh
+ * the row without losing the human intent (the LLM call simply wins).
+ */
+export function updateSessionTitle(
+  taskId: string,
+  body: SessionTitleUpdateRequest,
+): Promise<SessionTitleUpdateResponse> {
+  return req<SessionTitleUpdateResponse>(
+    'PUT',
+    `/api/system/session-context/${encodeURIComponent(taskId)}/title`,
+    body,
+  )
+}
+
+/**
+ * Clear the stored session title so the UI falls back to the short-id
+ * display and a fresh summarize-title can run unblocked. Idempotent:
+ * returns `deleted:false` if no row existed.
+ */
+export function deleteSessionTitle(
+  taskId: string,
+  scopedSessionID = '',
+): Promise<{ task_id: string; scoped_session_id: string; deleted: boolean }> {
+  const qs = scopedSessionID ? `?scoped_session_id=${encodeURIComponent(scopedSessionID)}` : ''
+  return req(
+    'DELETE',
+    `/api/system/session-context/${encodeURIComponent(taskId)}/title${qs}`,
+  )
+}
+
+/**
+ * Bulk lookup of session titles keyed by (task_id, scoped_session_id).
+ * Used by the request-logs list to enrich each row in a single
+ * round-trip. Server-side caps at 500 keys per call.
+ *
+ * KEEP: 前端暂未直接调用（RequestLogsView 通过后端 SQL LEFT JOIN 实现），
+ *       保留作未来 list 预加载 / 自定义视图批量预热入口。
+ *       对应后端 handleSessionTitlesBatch (admin/session_title.go)。
+ *       若 90 天内仍无引用，触发 rule 09 §5.2.4 评估保留或下线。
+ */
+export function batchGetSessionTitles(
+  keys: Array<{ task_id: string; scoped_session_id?: string }>,
+): Promise<SessionTitlesBatchResponse> {
+  return req<SessionTitlesBatchResponse>(
+    'POST',
+    '/api/system/session-context/titles/batch',
+    { keys },
+  )
+}

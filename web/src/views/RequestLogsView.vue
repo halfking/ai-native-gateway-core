@@ -21,6 +21,19 @@ import {
 import ModelPicker from '../components/ModelPicker.vue'
 import RequestTracePanel from '../components/RequestTracePanel.vue'
 import { isSuperAdmin, isDefaultTenant, getCurrentTenantId } from '../store'
+// 2026-08-06: 会话标题 + 标签编辑面板（详情抽屉内联）。
+import {
+  updateSessionTitle,
+  deleteSessionTitle,
+  summarizeSessionTitle,
+} from '../api/memora'
+import {
+  getSessionTags,
+  addSessionTag,
+  updateSessionTag,
+  deleteSessionTag,
+  type SessionTag,
+} from '../api/sessionAnalytics'
 
 const rows = ref<RequestLogRow[]>([])
 const keys = ref<ApiKey[]>([])
@@ -109,6 +122,28 @@ const traceRequestId = ref<string | null>(null)
 // 控制大图预览遮罩，attachmentsLightboxSrc 为当前大图的 URL。
 const attachmentsLightbox = ref(false)
 const attachmentsLightboxSrc = ref('')
+
+// 2026-08-06: 会话标题 / 标签 内联编辑状态。
+// 设计：进入详情后异步加载 tags；title 直接从 detail.session_title 读取，
+// 避免冗余 GET。编辑态用 editingTitle flag + draftTitle 缓冲，提交时 PUT。
+const sessionTags = ref<SessionTag[]>([])
+const sessionTagsLoading = ref(false)
+const sessionTagsError = ref<string | null>(null)
+const editingTitle = ref(false)
+const draftTitle = ref('')
+const titleSaving = ref(false)
+const titleError = ref<string | null>(null)
+const regeneratingTitle = ref(false)
+// 新增 tag 的临时草稿；为空表示未在新增态。
+const addingTag = ref(false)
+const newTagKey = ref('')
+const newTagValue = ref('')
+const newTagSaving = ref(false)
+// 正在编辑的 tag id (key) + 草稿。
+const editingTagId = ref<number | null>(null)
+const editTagDraftKey = ref('')
+const editTagDraftValue = ref('')
+const editTagSaving = ref(false)
 
 // 2026-07-02: 接入 vue-i18n，附件相关文案走 t() 键
 // （键定义在 web/src/locales/*.ts，对齐参考文档 §6）。
@@ -365,11 +400,12 @@ const traceMode = computed(() =>
   Boolean(gwTaskFilter.value.trim() || gwSessionFilter.value.trim()),
 )
 
-// listColCount — 列表表头/空态占位的列数。基础 9 列（时间/脉络/调用方/路由/Token/
-// 延迟/压缩/状态/附件），trace 模式多一个序号列，非默认租户多一个积分列，
-// super_admin 额外多一个「流程详情」列。
+// listColCount — 列表表头/空态占位的列数。基础 10 列（时间/脉络/会话标题/调用方/
+// 路由/Token/延迟/压缩/状态/附件），trace 模式多一个序号列，非默认租户多一个
+// 积分列，super_admin 额外多一个「流程详情」列。
+// 2026-08-06: 加了「会话标题」列 (col-title) — session_titles.title 注入。
 const listColCount = computed(() =>
-  9 + (traceMode.value ? 1 : 0) + (isDefaultTenant() ? 0 : 1) + (isSuperAdmin() ? 1 : 0),
+  10 + (traceMode.value ? 1 : 0) + (isDefaultTenant() ? 0 : 1) + (isSuperAdmin() ? 1 : 0),
 )
 
 const taskSummary = computed(() => {
@@ -683,8 +719,14 @@ async function showDetail(requestId: string) {
   detail.value = null
   detailTab.value = 'request'
   closeLightbox()
+  // 重置内联编辑态，避免上次详情残留到新行。
+  resetSessionMetaState()
   try {
     detail.value = await getRequestLogDetail(requestId)
+    // detail 加载完成后，再异步拉取 tags（不阻塞详情打开）。
+    if (detail.value?.gw_session_id) {
+      void loadSessionTags(detail.value.gw_session_id)
+    }
   } catch (e: unknown) {
     error.value = e instanceof Error ? e.message : String(e)
   } finally {
@@ -696,6 +738,176 @@ function closeDetail() {
   detailVisible.value = false
   detail.value = null
   closeLightbox()
+  resetSessionMetaState()
+}
+
+// 2026-08-06: 重置会话标题 + tags 编辑态。
+function resetSessionMetaState() {
+  sessionTags.value = []
+  sessionTagsLoading.value = false
+  sessionTagsError.value = null
+  editingTitle.value = false
+  draftTitle.value = ''
+  titleSaving.value = false
+  titleError.value = null
+  regeneratingTitle.value = false
+  addingTag.value = false
+  newTagKey.value = ''
+  newTagValue.value = ''
+  newTagSaving.value = false
+  editingTagId.value = null
+  editTagDraftKey.value = ''
+  editTagDraftValue.value = ''
+  editTagSaving.value = false
+}
+
+// 2026-08-06: 拉取 session tags。失败用 toast 展示但不阻塞详情。
+async function loadSessionTags(gwSessionId: string) {
+  sessionTagsLoading.value = true
+  sessionTagsError.value = null
+  try {
+    const resp = await getSessionTags(gwSessionId)
+    sessionTags.value = resp.tags ?? []
+  } catch (e: unknown) {
+    sessionTagsError.value = e instanceof Error ? e.message : String(e)
+  } finally {
+    sessionTagsLoading.value = false
+  }
+}
+
+// ── 会话标题 内联编辑 ─────────────────────────────────────────────
+function startEditTitle() {
+  if (!detail.value) return
+  draftTitle.value = detail.value.session_title ?? ''
+  editingTitle.value = true
+  titleError.value = null
+}
+function cancelEditTitle() {
+  editingTitle.value = false
+  draftTitle.value = ''
+  titleError.value = null
+}
+async function saveEditTitle() {
+  if (!detail.value || !detail.value.gw_task_id) return
+  const next = draftTitle.value.trim()
+  if (!next) {
+    titleError.value = '标题不能为空'
+    return
+  }
+  titleSaving.value = true
+  titleError.value = null
+  try {
+    await updateSessionTitle(detail.value.gw_task_id, {
+      title: next,
+      scoped_session_id: detail.value.gw_session_id ?? '',
+    })
+    // 把新值写回 detail，让 UI 立即反映；同时让列表同步刷新由调用方负责。
+    detail.value.session_title = next
+    editingTitle.value = false
+  } catch (e: unknown) {
+    titleError.value = e instanceof Error ? e.message : String(e)
+  } finally {
+    titleSaving.value = false
+  }
+}
+async function regenerateTitle() {
+  if (!detail.value || !detail.value.gw_task_id) return
+  regeneratingTitle.value = true
+  titleError.value = null
+  try {
+    const r = await summarizeSessionTitle(detail.value.gw_task_id, {
+      session_id: detail.value.gw_session_id ?? undefined,
+    })
+    detail.value.session_title = r.title
+  } catch (e: unknown) {
+    titleError.value = e instanceof Error ? e.message : String(e)
+  } finally {
+    regeneratingTitle.value = false
+  }
+}
+async function clearTitle() {
+  if (!detail.value || !detail.value.gw_task_id) return
+  if (!confirm('确认清空此会话的标题？')) return
+  titleSaving.value = true
+  titleError.value = null
+  try {
+    await deleteSessionTitle(detail.value.gw_task_id, detail.value.gw_session_id ?? '')
+    detail.value.session_title = null
+    editingTitle.value = false
+  } catch (e: unknown) {
+    titleError.value = e instanceof Error ? e.message : String(e)
+  } finally {
+    titleSaving.value = false
+  }
+}
+
+// ── Tag 增/改/删 ──────────────────────────────────────────────────
+function startAddTag() {
+  addingTag.value = true
+  newTagKey.value = ''
+  newTagValue.value = ''
+}
+function cancelAddTag() {
+  addingTag.value = false
+  newTagKey.value = ''
+  newTagValue.value = ''
+}
+async function submitAddTag() {
+  if (!detail.value?.gw_session_id) return
+  const key = newTagKey.value.trim()
+  const value = newTagValue.value.trim()
+  if (!key || !value) return
+  newTagSaving.value = true
+  try {
+    await addSessionTag(detail.value.gw_session_id, key, value)
+    addingTag.value = false
+    newTagKey.value = ''
+    newTagValue.value = ''
+    await loadSessionTags(detail.value.gw_session_id)
+  } catch (e: unknown) {
+    sessionTagsError.value = e instanceof Error ? e.message : String(e)
+  } finally {
+    newTagSaving.value = false
+  }
+}
+function startEditTag(t: SessionTag) {
+  editingTagId.value = t.id
+  editTagDraftKey.value = t.tag_key
+  editTagDraftValue.value = t.tag_value
+}
+function cancelEditTag() {
+  editingTagId.value = null
+  editTagDraftKey.value = ''
+  editTagDraftValue.value = ''
+}
+async function submitEditTag() {
+  if (!detail.value?.gw_session_id || editingTagId.value == null) return
+  const newKey = editTagDraftKey.value.trim()
+  const newValue = editTagDraftValue.value.trim()
+  if (!newValue) return
+  editTagSaving.value = true
+  try {
+    await updateSessionTag(detail.value.gw_session_id, editingTagId.value, {
+      tag_key: newKey,
+      tag_value: newValue,
+    })
+    editingTagId.value = null
+    await loadSessionTags(detail.value.gw_session_id)
+  } catch (e: unknown) {
+    sessionTagsError.value = e instanceof Error ? e.message : String(e)
+  } finally {
+    editTagSaving.value = false
+  }
+}
+async function removeTag(tag: SessionTag) {
+  if (!detail.value?.gw_session_id) return
+  if (!confirm(`删除标签 ${tag.tag_key}: ${tag.tag_value}？`)) return
+  try {
+    await deleteSessionTag(detail.value.gw_session_id, tag.id)
+    await loadSessionTags(detail.value.gw_session_id)
+  } catch (e: unknown) {
+    sessionTagsError.value = e instanceof Error ? e.message : String(e)
+  }
 }
 
 // ── 附件辅助 (migration 325) ──────────────────────────────────────
@@ -1202,6 +1414,7 @@ onMounted(async () => {
             <th v-if="traceMode" class="col-seq">#</th>
             <th class="col-time">时间</th>
             <th class="col-trace">脉络</th>
+            <th class="col-title">会话标题</th>
             <th class="col-caller">调用方</th>
             <th class="col-route">路由</th>
             <th class="col-tokens">Token</th>
@@ -1243,6 +1456,10 @@ onMounted(async () => {
                 @click.stop="filterByTask(r.gw_task_id)"
               >任务 {{ ellipsize(r.gw_task_id, 36) }}</div>
               <span v-if="!r.gw_task_id && !r.gw_session_id" class="cell-line2" style="color:var(--muted)">—</span>
+            </td>
+            <td class="col-title" :title="r.session_title || '尚无会话标题 — 点击详情查看'">
+              <div v-if="r.session_title" class="cell-line1 cell-clip title-text">{{ r.session_title }}</div>
+              <div v-else class="cell-line1 muted">—</div>
             </td>
             <td class="col-caller">
               <div class="cell-line1 cell-clip" :title="callerUserTitle(r)">{{ ellipsize(callerUserLine(r), 18) }}</div>
@@ -1400,6 +1617,166 @@ onMounted(async () => {
                   {{ compressExplainText(detail) }}
                 </div>
               </template>
+            </div>
+          </div>
+
+          <!-- 2026-08-06: 会话标题 + 标签 内联编辑区段。
+               设计：紧贴基础字段（请求ID/会话/任务）下方，
+               用户进入详情就能看到并可编辑。tags 是 session 级别，
+               由 getSessionTags 异步加载；title 来自 detail.session_title。 -->
+          <div class="drawer-section session-meta-section">
+            <div class="session-meta-title">
+              <strong>会话标题:</strong>
+              <template v-if="!editingTitle">
+                <span class="title-value" :class="{ 'title-missing': !detail.session_title }">
+                  {{ detail.session_title || '尚无标题' }}
+                </span>
+                <button
+                  v-if="detail.gw_task_id"
+                  class="btn btn-sm btn-ghost"
+                  :disabled="titleSaving || regeneratingTitle"
+                  @click="startEditTitle"
+                >编辑</button>
+                <button
+                  v-if="detail.gw_task_id && detail.session_title"
+                  class="btn btn-sm btn-ghost"
+                  :disabled="titleSaving || regeneratingTitle"
+                  @click="regenerateTitle"
+                >{{ regeneratingTitle ? '重新生成中…' : '重新生成' }}</button>
+                <button
+                  v-if="detail.gw_task_id && detail.session_title"
+                  class="btn btn-sm btn-ghost btn-danger-ghost"
+                  :disabled="titleSaving || regeneratingTitle"
+                  @click="clearTitle"
+                >清空</button>
+              </template>
+              <template v-else>
+                <input
+                  v-model="draftTitle"
+                  class="title-input"
+                  maxlength="80"
+                  placeholder="2-80 字符，不含 XML 标签"
+                  @keydown.enter="saveEditTitle"
+                  @keydown.esc="cancelEditTitle"
+                />
+                <button
+                  class="btn btn-sm btn-primary"
+                  :disabled="titleSaving"
+                  @click="saveEditTitle"
+                >{{ titleSaving ? '保存中…' : '保存' }}</button>
+                <button
+                  class="btn btn-sm btn-ghost"
+                  :disabled="titleSaving"
+                  @click="cancelEditTitle"
+                >取消</button>
+              </template>
+              <span v-if="titleError" class="meta-error">{{ titleError }}</span>
+            </div>
+
+            <div class="session-meta-tags">
+              <div class="tags-header">
+                <strong>项目 / 任务等标签:</strong>
+                <span v-if="detail.gw_session_id" class="muted" style="font-size:11px">
+                  （绑定 session: {{ ellipsize(detail.gw_session_id, 24) }}）
+                </span>
+                <button
+                  v-if="detail.gw_session_id && !addingTag"
+                  class="btn btn-sm btn-ghost"
+                  @click="startAddTag"
+                >+ 添加标签</button>
+                <button
+                  v-if="addingTag"
+                  class="btn btn-sm btn-ghost"
+                  :disabled="newTagSaving"
+                  @click="cancelAddTag"
+                >取消</button>
+              </div>
+
+              <div v-if="!detail.gw_session_id" class="muted" style="font-size:11px">
+                此请求未绑定会话，无法关联标签。
+              </div>
+              <div v-else-if="sessionTagsLoading" class="muted" style="font-size:11px">
+                加载中…
+              </div>
+              <div v-else-if="sessionTagsError" class="meta-error">{{ sessionTagsError }}</div>
+              <div v-else-if="!sessionTags.length && !addingTag" class="muted" style="font-size:11px">
+                暂无标签。可添加 project / task / client 等维度。
+              </div>
+              <div v-else class="tags-list">
+                <div v-for="t in sessionTags" :key="t.id" class="tag-row">
+                  <template v-if="editingTagId === t.id">
+                    <input
+                      v-model="editTagDraftKey"
+                      class="tag-input tag-input-key"
+                      maxlength="50"
+                      placeholder="key"
+                      @keydown.enter="submitEditTag"
+                      @keydown.esc="cancelEditTag"
+                    />
+                    <span class="tag-sep">:</span>
+                    <input
+                      v-model="editTagDraftValue"
+                      class="tag-input tag-input-value"
+                      placeholder="value"
+                      @keydown.enter="submitEditTag"
+                      @keydown.esc="cancelEditTag"
+                    />
+                    <button
+                      class="btn btn-sm btn-primary"
+                      :disabled="editTagSaving"
+                      @click="submitEditTag"
+                    >{{ editTagSaving ? '保存中…' : '保存' }}</button>
+                    <button
+                      class="btn btn-sm btn-ghost"
+                      :disabled="editTagSaving"
+                      @click="cancelEditTag"
+                    >取消</button>
+                  </template>
+                  <template v-else>
+                    <span class="tag-key">{{ t.tag_key }}</span>
+                    <span class="tag-sep">:</span>
+                    <span class="tag-value">{{ t.tag_value }}</span>
+                    <span v-if="t.tag_source === 'manual'" class="tag-source">manual</span>
+                    <span v-else-if="t.tag_source" class="tag-source tag-source-auto">{{ t.tag_source }}</span>
+                    <span class="tag-actions">
+                      <button
+                        class="btn btn-sm btn-ghost"
+                        :disabled="editingTagId !== null || addingTag"
+                        @click="startEditTag(t)"
+                      >编辑</button>
+                      <button
+                        class="btn btn-sm btn-ghost btn-danger-ghost"
+                        :disabled="editingTagId !== null || addingTag"
+                        @click="removeTag(t)"
+                      >删除</button>
+                    </span>
+                  </template>
+                </div>
+
+                <div v-if="addingTag" class="tag-row tag-row-add">
+                  <input
+                    v-model="newTagKey"
+                    class="tag-input tag-input-key"
+                    maxlength="50"
+                    placeholder="key (project/task/client/custom)"
+                    @keydown.enter="submitAddTag"
+                    @keydown.esc="cancelAddTag"
+                  />
+                  <span class="tag-sep">:</span>
+                  <input
+                    v-model="newTagValue"
+                    class="tag-input tag-input-value"
+                    placeholder="value"
+                    @keydown.enter="submitAddTag"
+                    @keydown.esc="cancelAddTag"
+                  />
+                  <button
+                    class="btn btn-sm btn-primary"
+                    :disabled="newTagSaving || !newTagKey.trim() || !newTagValue.trim()"
+                    @click="submitAddTag"
+                  >{{ newTagSaving ? '添加中…' : '添加' }}</button>
+                </div>
+              </div>
             </div>
           </div>
 
@@ -1612,6 +1989,130 @@ onMounted(async () => {
   min-width: 9rem;
   max-width: 14rem;
   cursor: pointer;
+}
+/* 2026-08-06: 会话标题列（session_titles.title joined）。 */
+/* 设计思路：紧凑显示，hover 显示完整 title；为空时显示 "—" */
+/* 不放按钮入口 — 编辑入口在请求详情抽屉里（点行打开），避免列表噪声。 */
+.col-title {
+  min-width: 9rem;
+  max-width: 16rem;
+}
+.title-text {
+  color: var(--kx-text-primary);
+  font-weight: 500;
+}
+
+/* ── 详情抽屉内的会话标题 + 标签编辑面板（2026-08-06）─────────────── */
+.session-meta-section {
+  background: var(--surface-primary);
+  border-radius: 6px;
+  padding: 8px 12px;
+  margin-top: 8px;
+}
+.session-meta-title {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  margin-bottom: 8px;
+}
+.title-value {
+  font-weight: 500;
+  color: var(--kx-text-primary);
+}
+.title-missing {
+  color: var(--muted);
+  font-style: italic;
+}
+.title-input {
+  flex: 1 1 200px;
+  min-width: 180px;
+  padding: 4px 8px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--kx-bg-base);
+  color: var(--kx-text-primary);
+  font-size: 12px;
+}
+.session-meta-tags {
+  border-top: 1px dashed var(--border);
+  padding-top: 8px;
+  font-size: 12px;
+}
+.tags-header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+.tags-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.tag-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 8px;
+  background: var(--kx-bg-container, transparent);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+}
+.tag-row-add {
+  border-style: dashed;
+}
+.tag-key {
+  font-weight: 600;
+  color: var(--kx-text-primary);
+  font-family: ui-monospace, SFMono-Regular, monospace;
+  font-size: 11px;
+}
+.tag-sep {
+  color: var(--muted);
+}
+.tag-value {
+  color: var(--kx-text-primary);
+  word-break: break-word;
+}
+.tag-source {
+  font-size: 10px;
+  padding: 1px 6px;
+  border-radius: 8px;
+  background: var(--accent);
+  color: var(--kx-bg-base);
+  text-transform: lowercase;
+}
+.tag-source-auto {
+  background: var(--muted);
+}
+.tag-actions {
+  margin-left: auto;
+  display: flex;
+  gap: 4px;
+}
+.tag-input {
+  padding: 3px 6px;
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  background: var(--kx-bg-base);
+  color: var(--kx-text-primary);
+  font-size: 12px;
+  min-width: 80px;
+}
+.tag-input-value {
+  flex: 1 1 160px;
+  min-width: 120px;
+}
+.meta-error {
+  color: var(--danger);
+  font-size: 11px;
+}
+.btn-danger-ghost {
+  color: var(--danger);
 }
 .col-caller {
   min-width: 7rem;
