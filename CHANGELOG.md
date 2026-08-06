@@ -65,6 +65,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **v2 dispatch summarizer 迁移到 *pgxpool.Pool + summarystore (2026-08-06)**:
+  承接审计 agent 标记的架构债 — `domains/sessionsummary/summarizer.go` 此前用
+  `*sql.DB` 走自己的 `saveSummaryToDB`，与 `internal/summarystore.Upsert`
+  并存，重复 SQL 且对 NULL summary_version 处理不一致。
+  - `Summarizer` struct 改用 `*summarystore.Store` 字段替代 `*sql.DB`
+  - `NewSummarizer(db, redis, llm)` → `NewSummarizer(pool *pgxpool.Pool, redis, llm)`，nil-safe
+  - 5 个 DB 读方法（`getPrevSummary` / `getMessagesSince` / `getSessionMessages` /
+    `updateSessionTitle` / `saveSummaryToDB`）改用 `pgxpool.Pool.Query/Exec`
+  - `saveSummaryToDB` 委托给 `summarystore.Upsert`，消除与 admin
+    auto_summary_generator.go 的 SQL 重复；摘要写入现在也走
+    `RETURNING summary_version, (xmax = 0) AS inserted` 一致路径
+  - `internal/summarystore.NewStore` 加 `Pool()` getter，让 v2 dispatch
+    复用同一 *pgxpool.Pool 引用做读查询
+  - `cmd/gateway/main_pipeline.go` 去掉对 summarizer 的
+    `stdlib.OpenDB(*pool.Config().ConnConfig)` 桥接（仅 EnhancedPIPlugin
+    仍需 *sql.DB），节省一个 connection pool
+  - `UpdateHandoffMetrics(ctx, db, m)` 签名**保持** `*sql.DB`：
+    handoff trigger hook (domains/hooks/handoff/trigger_hook.go) 是
+    唯一调用方且仍用 *sql.DB。迁移 hook 是更大的重构，本次保留接口
+    稳定。文档注释里说明这一点
+  - 新增测试 `TestSummarizer_NilPoolIsSafe`（5 个 nil-pool 路径全覆盖）
+    + `TestSummarizer_PassesPoolToStore`（结构测试，确认构造器接受
+    *pgxpool.Pool 而不 panic）
+  - 验证：go build / vet 全仓通过；admin / summarystore / streaming /
+    metrics / middleware / sessionsummary 测试全绿
+
 - **Audit fixes for commits 9207d5c1..b19b7bbd (2026-08-06)**:
   修复审计 agent 发现的 1 critical / 7 moderate / 9 minor 问题：
   - **[CRITICAL] AdminTokenMiddleware fail-open in production**:

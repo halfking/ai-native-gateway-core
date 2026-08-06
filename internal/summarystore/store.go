@@ -45,6 +45,17 @@ func NewStore(pool *pgxpool.Pool) *Store {
 	return &Store{pool: pool}
 }
 
+// Pool exposes the underlying *pgxpool.Pool so callers (e.g. the v2
+// dispatch summarizer after its 2026-08-06 migration) can run read
+// queries directly without holding a second pool reference. Returns nil
+// if the store was constructed with a nil pool.
+func (s *Store) Pool() *pgxpool.Pool {
+	if s == nil {
+		return nil
+	}
+	return s.pool
+}
+
 // UpsertResult is the outcome of an Upsert. Returned so call sites that
 // race (e.g. concurrent auto-summary + summary workers) can detect
 // staleness via Version and Updated.
