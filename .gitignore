@@ -223,3 +223,8 @@ gateway.new
 .worktrees/
 migrate-ursm-v2
 scripts/sync-to-252.sh
+# Model quality monitoring: local build artifact + demo/test score data
+quality-monitor
+demo-history/
+test-data/
+test-history-demo.sh

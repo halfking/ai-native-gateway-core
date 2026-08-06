@@ -59,6 +59,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/observability/telemetry"       //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	sessionaudithook "github.com/kaixuan/llm-gateway-go/domains/hooks/sessionaudit" //nolint:depguard
 	"github.com/kaixuan/llm-gateway-go/domains/integration"                         //nolint:depguard // clientprofile worker wiring
+	"github.com/kaixuan/llm-gateway-go/domains/modelquality"                        //nolint:depguard // 模型质量监控
 	"github.com/kaixuan/llm-gateway-go/domains/notification"                        //nolint:depguard // 审批通知器
 	"github.com/kaixuan/llm-gateway-go/domains/routeincident"                       //nolint:depguard // 2026-07-13 route incident diagnosis (Phase 1)
 	"github.com/kaixuan/llm-gateway-go/domains/routingstate"
@@ -2734,6 +2735,7 @@ func main() {
 				systemHealthWorker.Start(context.Background())
 				slog.Info("CHECKPOINT: system_health_worker started")
 
+			}
 			// 2026-08-06: Model Quality Monitoring worker (MMLU benchmark
 			// against featured models to detect provider model degradation).
 			// Controlled by settings.model_quality.enabled (default false).
@@ -2742,10 +2744,14 @@ func main() {
 			if len(mqEnabledRaw) > 0 {
 				_ = json.Unmarshal(mqEnabledRaw, &mqEnabled)
 			}
-			
+
 			if mqEnabled {
 				var mqDataDir, mqBaseURL, mqAPIKey string
-				
+				mqIntervalHours := 24
+				mqUseLite := true
+				mqAlertThreshold := 5.0
+				mqTimeoutSec := 30
+
 				// 读取data_dir
 				if raw, _, _ := settings.Global.EffectiveValue(settings.ScopePlatform, "model_quality.data_dir", ""); len(raw) > 0 {
 					_ = json.Unmarshal(raw, &mqDataDir)
@@ -2753,7 +2759,7 @@ func main() {
 				if mqDataDir == "" {
 					mqDataDir = "./data"
 				}
-				
+
 				// 读取base_url
 				if raw, _, _ := settings.Global.EffectiveValue(settings.ScopePlatform, "model_quality.base_url", ""); len(raw) > 0 {
 					_ = json.Unmarshal(raw, &mqBaseURL)
@@ -2761,24 +2767,68 @@ func main() {
 				if mqBaseURL == "" {
 					mqBaseURL = "http://localhost:8787"
 				}
-				
+
 				// 读取api_key
 				if raw, _, _ := settings.Global.EffectiveValue(settings.ScopePlatform, "model_quality.api_key", ""); len(raw) > 0 {
 					_ = json.Unmarshal(raw, &mqAPIKey)
 				}
 				useDedicatedKey := mqAPIKey != ""
 				if mqAPIKey == "" {
-					// 如果未配置专用API key，使用系统API key
 					mqAPIKey = selfCheckAPIKey
 				}
-				
-				modelQualityWorker = bg.NewModelQualityWorker(mqDataDir, mqAPIKey, mqBaseURL)
-				modelQualityWorker.Start(context.Background())
+
+				// 读取interval_hours
+				if raw, _, _ := settings.Global.EffectiveValue(settings.ScopePlatform, "model_quality.interval_hours", ""); len(raw) > 0 {
+					_ = json.Unmarshal(raw, &mqIntervalHours)
+				}
+				if mqIntervalHours < 1 {
+					mqIntervalHours = 24
+				}
+
+				// 读取use_lite_benchmark
+				if raw, _, _ := settings.Global.EffectiveValue(settings.ScopePlatform, "model_quality.use_lite_benchmark", ""); len(raw) > 0 {
+					_ = json.Unmarshal(raw, &mqUseLite)
+				}
+
+				// 读取alert_threshold
+				if raw, _, _ := settings.Global.EffectiveValue(settings.ScopePlatform, "model_quality.alert_threshold", ""); len(raw) > 0 {
+					_ = json.Unmarshal(raw, &mqAlertThreshold)
+				}
+				if mqAlertThreshold < 1.0 {
+					mqAlertThreshold = 5.0
+				}
+
+				// 读取test_timeout_seconds
+				if raw, _, _ := settings.Global.EffectiveValue(settings.ScopePlatform, "model_quality.test_timeout_seconds", ""); len(raw) > 0 {
+					_ = json.Unmarshal(raw, &mqTimeoutSec)
+				}
+				if mqTimeoutSec < 10 {
+					mqTimeoutSec = 30
+				}
+
+				// 构造MonitorConfig
+				mqConfig := &modelquality.MonitorConfig{
+					EnableScheduled:      true,
+					ScheduleInterval:     time.Duration(mqIntervalHours) * time.Hour,
+					UseLiteBenchmark:     mqUseLite,
+					EnableAnomalyTrigger: true,
+					ErrorRateThreshold:   0.3,
+					LatencyThreshold:     5000,
+					AlertOnQualityDrop:   true,
+					QualityDropThreshold: mqAlertThreshold,
+					TargetModels:         modelquality.GetDefaultMonitorModels(),
+				}
+
+				modelQualityWorker = bg.NewModelQualityWorker(mqDataDir, mqAPIKey, mqBaseURL, time.Duration(mqTimeoutSec)*time.Second)
+				modelQualityWorker.Start(context.Background(), mqConfig)
 				slog.Info("CHECKPOINT: model_quality_worker started",
 					"data_dir", mqDataDir,
 					"base_url", mqBaseURL,
-					"use_dedicated_key", useDedicatedKey)
-			}
+					"use_dedicated_key", useDedicatedKey,
+					"interval_hours", mqIntervalHours,
+					"alert_threshold", mqAlertThreshold,
+					"timeout_seconds", mqTimeoutSec,
+					"use_lite", mqUseLite)
 			}
 		}
 

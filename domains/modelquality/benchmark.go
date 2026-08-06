@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"sort"
 	"time"
 )
 
@@ -95,16 +96,20 @@ type ScoreCalculator struct{}
 // CalculateScore 计算质量评分
 func (sc *ScoreCalculator) CalculateScore(report *BenchmarkReport) *QualityScore {
 	score := &QualityScore{
-		ModelName:  report.ModelName,
-		Provider:   report.Provider,
-		Accuracy:   report.Accuracy,
-		Timestamp:  time.Now(),
+		ModelName:   report.ModelName,
+		Provider:    report.Provider,
+		Accuracy:    report.Accuracy,
+		Timestamp:   time.Now(),
 		BenchmarkID: report.ID,
 	}
 
 	// 计算稳定性 (成功率)
-	successCount := report.TotalQuestions - report.ErrorCount
-	score.Stability = float64(successCount) / float64(report.TotalQuestions) * 100
+	if report.TotalQuestions > 0 {
+		successCount := report.TotalQuestions - report.ErrorCount
+		score.Stability = float64(successCount) / float64(report.TotalQuestions) * 100
+	} else {
+		score.Stability = 100
+	}
 
 	// 计算P95延迟
 	score.Latency = sc.calculateP95Latency(report.Results)
@@ -137,24 +142,17 @@ func (sc *ScoreCalculator) calculateP95Latency(results []TestResult) float64 {
 		return 0
 	}
 
-	// 简单排序取95分位
-	// 生产环境建议使用更高效的算法
-	sorted := make([]int64, len(latencies))
-	copy(sorted, latencies)
-	for i := 0; i < len(sorted); i++ {
-		for j := i + 1; j < len(sorted); j++ {
-			if sorted[i] > sorted[j] {
-				sorted[i], sorted[j] = sorted[j], sorted[i]
-			}
-		}
+	// 排序取95分位
+	sort.Slice(latencies, func(i, j int) bool {
+		return latencies[i] < latencies[j]
+	})
+
+	p95Index := int(float64(len(latencies)) * 0.95)
+	if p95Index >= len(latencies) {
+		p95Index = len(latencies) - 1
 	}
 
-	p95Index := int(float64(len(sorted)) * 0.95)
-	if p95Index >= len(sorted) {
-		p95Index = len(sorted) - 1
-	}
-
-	return float64(sorted[p95Index])
+	return float64(latencies[p95Index])
 }
 
 // latencyToScore 延迟转评分

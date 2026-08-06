@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"math/rand"
 	"net/http"
 	"strings"
@@ -132,16 +133,18 @@ func (m *MockModelInvoker) SimulateQualityDrop(provider string, accuracyDrop flo
 		quality.BaseAccuracy -= accuracyDrop
 		quality.BaseLatency += latencyIncrease
 		quality.ErrorRate += accuracyDrop * 0.5
-		
+
 		if quality.BaseAccuracy < 0 {
 			quality.BaseAccuracy = 0.1
 		}
 		if quality.ErrorRate > 0.3 {
 			quality.ErrorRate = 0.3
 		}
-		
-		fmt.Printf("[MockInvoker] Simulated quality drop for %s: accuracy=%.2f, latency=%dms\n", 
-			provider, quality.BaseAccuracy, quality.BaseLatency)
+
+		slog.Info("mock model quality drop simulated",
+			"provider", provider,
+			"accuracy", quality.BaseAccuracy,
+			"latency_ms", quality.BaseLatency)
 	}
 }
 
@@ -151,14 +154,14 @@ func extractCorrectAnswerFromPrompt(prompt string) string {
 	// 这里简化处理：随机返回一个答案
 	// 真实场景中，这个函数不应该存在，模型需要真正推理
 	options := []string{"A", "B", "C", "D"}
-	
+
 	// 使用prompt的hash作为种子，确保同一问题返回相同答案
 	seed := int64(0)
 	for _, ch := range prompt {
 		seed += int64(ch)
 	}
 	rng := rand.New(rand.NewSource(seed))
-	
+
 	return options[rng.Intn(len(options))]
 }
 
@@ -171,16 +174,20 @@ type GatewayModelInvoker struct {
 }
 
 // NewGatewayModelInvoker 创建网关模型调用器
-func NewGatewayModelInvoker(baseURL, apiKey string) *GatewayModelInvoker {
+// timeout: HTTP客户端超时，0则使用默认30秒
+func NewGatewayModelInvoker(baseURL, apiKey string, timeout time.Duration) *GatewayModelInvoker {
 	if baseURL == "" {
 		baseURL = "http://localhost:8787" // 默认本地网关
 	}
-	
+	if timeout <= 0 {
+		timeout = 30 * time.Second
+	}
+
 	return &GatewayModelInvoker{
 		baseURL: strings.TrimSpace(baseURL),
 		apiKey:  strings.TrimSpace(apiKey),
 		httpClient: &http.Client{
-			Timeout: 30 * time.Second,
+			Timeout: timeout,
 			Transport: &http.Transport{
 				MaxIdleConns:        100,
 				MaxIdleConnsPerHost: 10,
@@ -193,50 +200,50 @@ func NewGatewayModelInvoker(baseURL, apiKey string) *GatewayModelInvoker {
 // InvokeModel 调用网关模型
 func (g *GatewayModelInvoker) InvokeModel(ctx context.Context, provider string, modelName string, prompt string) (response string, tokenUsage int, latency time.Duration, err error) {
 	startTime := time.Now()
-	
+
 	// 构造OpenAI格式的请求
 	payload := map[string]interface{}{
 		"model": modelName,
 		"messages": []map[string]string{
 			{"role": "user", "content": prompt},
 		},
-		"max_tokens":  50, // 质量测试只需要简短回答
+		"max_tokens":  50,  // 质量测试只需要简短回答
 		"temperature": 0.1, // 低温度保证稳定性
 		"stream":      false,
 	}
-	
+
 	body, err := json.Marshal(payload)
 	if err != nil {
 		return "", 0, time.Since(startTime), fmt.Errorf("marshal request: %w", err)
 	}
-	
+
 	// 构造请求URL
 	url := g.baseURL + "/v1/chat/completions"
 	req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(body))
 	if err != nil {
 		return "", 0, time.Since(startTime), fmt.Errorf("create request: %w", err)
 	}
-	
+
 	// 设置请求头
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+g.apiKey)
 	req.Header.Set("X-Gateway-Quality-Test", "true") // 标识为质量测试请求
-	
+
 	// 发送请求
 	resp, err := g.httpClient.Do(req)
 	latency = time.Since(startTime)
-	
+
 	if err != nil {
 		return "", 0, latency, fmt.Errorf("http request failed: %w", err)
 	}
 	defer resp.Body.Close()
-	
+
 	// 检查HTTP状态码
 	if resp.StatusCode != http.StatusOK {
 		bodyBytes, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
 		return "", 0, latency, fmt.Errorf("gateway returned HTTP %d: %s", resp.StatusCode, string(bodyBytes))
 	}
-	
+
 	// 解析响应
 	var result struct {
 		Choices []struct {
@@ -248,35 +255,35 @@ func (g *GatewayModelInvoker) InvokeModel(ctx context.Context, provider string, 
 			TotalTokens int `json:"total_tokens"`
 		} `json:"usage"`
 	}
-	
+
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
 		return "", 0, latency, fmt.Errorf("decode response: %w", err)
 	}
-	
+
 	if len(result.Choices) == 0 {
 		return "", 0, latency, fmt.Errorf("no choices in response")
 	}
-	
+
 	response = strings.TrimSpace(result.Choices[0].Message.Content)
 	tokenUsage = result.Usage.TotalTokens
-	
+
 	return response, tokenUsage, latency, nil
 }
 
 // HTTPModelInvoker HTTP直连模型调用器(绕过网关,直接调用供应商API)
 type HTTPModelInvoker struct {
-	apiKeys map[string]string // provider -> api_key
+	apiKeys  map[string]string // provider -> api_key
 	baseURLs map[string]string // provider -> base_url
 }
 
 // NewHTTPModelInvoker 创建HTTP调用器
 func NewHTTPModelInvoker(apiKeys map[string]string) *HTTPModelInvoker {
 	baseURLs := map[string]string{
-		"openai":  "https://api.openai.com/v1",
+		"openai":    "https://api.openai.com/v1",
 		"anthropic": "https://api.anthropic.com/v1",
 		// 可以添加更多供应商
 	}
-	
+
 	return &HTTPModelInvoker{
 		apiKeys:  apiKeys,
 		baseURLs: baseURLs,
@@ -290,7 +297,7 @@ func (h *HTTPModelInvoker) InvokeModel(ctx context.Context, provider string, mod
 	// 2. 发送HTTP POST请求
 	// 3. 解析响应
 	// 4. 提取answer和token使用量
-	
+
 	return "", 0, 0, fmt.Errorf("HTTPModelInvoker not implemented yet - use MockModelInvoker for testing")
 }
 
@@ -298,15 +305,15 @@ func (h *HTTPModelInvoker) InvokeModel(ctx context.Context, provider string, mod
 func extractAnswerFromResponse(response string) string {
 	response = strings.TrimSpace(response)
 	response = strings.ToUpper(response)
-	
+
 	// 尝试多种解析策略
 	if len(response) == 1 && response >= "A" && response <= "D" {
 		return response
 	}
-	
+
 	if len(response) > 0 && response[0] >= 'A' && response[0] <= 'D' {
 		return string(response[0])
 	}
-	
+
 	return ""
 }
