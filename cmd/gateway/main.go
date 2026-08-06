@@ -2734,24 +2734,51 @@ func main() {
 				systemHealthWorker.Start(context.Background())
 				slog.Info("CHECKPOINT: system_health_worker started")
 
-				// 2026-08-06: Model Quality Monitoring worker (MMLU benchmark
-				// against featured models to detect provider model degradation).
-				// Gated behind env LLM_GATEWAY_MODEL_QUALITY_ENABLED (default off)
-				// so it does not consume tokens unless explicitly enabled.
-				if os.Getenv("LLM_GATEWAY_MODEL_QUALITY_ENABLED") == "true" {
-					mqDataDir := os.Getenv("LLM_GATEWAY_MODEL_QUALITY_DATA_DIR")
-					if mqDataDir == "" {
-						mqDataDir = "./data"
-					}
-					mqBaseURL := os.Getenv("LLM_GATEWAY_MODEL_QUALITY_BASE_URL")
-					if mqBaseURL == "" {
-						mqBaseURL = "http://localhost:8787" // 默认本地网关
-					}
-					modelQualityWorker = bg.NewModelQualityWorker(mqDataDir, selfCheckAPIKey, mqBaseURL)
-					modelQualityWorker.Start(context.Background())
-					slog.Info("CHECKPOINT: model_quality_worker started",
-						"data_dir", mqDataDir, "base_url", mqBaseURL)
+			// 2026-08-06: Model Quality Monitoring worker (MMLU benchmark
+			// against featured models to detect provider model degradation).
+			// Controlled by settings.model_quality.enabled (default false).
+			mqEnabledRaw, _, _ := settings.Global.EffectiveValue(settings.ScopePlatform, "model_quality.enabled", "")
+			var mqEnabled bool
+			if len(mqEnabledRaw) > 0 {
+				_ = json.Unmarshal(mqEnabledRaw, &mqEnabled)
+			}
+			
+			if mqEnabled {
+				var mqDataDir, mqBaseURL, mqAPIKey string
+				
+				// 读取data_dir
+				if raw, _, _ := settings.Global.EffectiveValue(settings.ScopePlatform, "model_quality.data_dir", ""); len(raw) > 0 {
+					_ = json.Unmarshal(raw, &mqDataDir)
 				}
+				if mqDataDir == "" {
+					mqDataDir = "./data"
+				}
+				
+				// 读取base_url
+				if raw, _, _ := settings.Global.EffectiveValue(settings.ScopePlatform, "model_quality.base_url", ""); len(raw) > 0 {
+					_ = json.Unmarshal(raw, &mqBaseURL)
+				}
+				if mqBaseURL == "" {
+					mqBaseURL = "http://localhost:8787"
+				}
+				
+				// 读取api_key
+				if raw, _, _ := settings.Global.EffectiveValue(settings.ScopePlatform, "model_quality.api_key", ""); len(raw) > 0 {
+					_ = json.Unmarshal(raw, &mqAPIKey)
+				}
+				useDedicatedKey := mqAPIKey != ""
+				if mqAPIKey == "" {
+					// 如果未配置专用API key，使用系统API key
+					mqAPIKey = selfCheckAPIKey
+				}
+				
+				modelQualityWorker = bg.NewModelQualityWorker(mqDataDir, mqAPIKey, mqBaseURL)
+				modelQualityWorker.Start(context.Background())
+				slog.Info("CHECKPOINT: model_quality_worker started",
+					"data_dir", mqDataDir,
+					"base_url", mqBaseURL,
+					"use_dedicated_key", useDedicatedKey)
+			}
 			}
 		}
 

@@ -65,5 +65,45 @@ func ModelQualitySpecs() []*Spec {
 			DangerLevel: Safe,
 			HotReload:   false, // 数据目录不支持热更新
 		},
+		{
+			Key:         "model_quality.api_key",
+			Type:        TypeString,
+			Scope:       ScopePlatform,
+			Category:    CategoryModelQuality,
+			Default:     "",
+			Description: "质量测试专用API Key（为空则使用系统API Key）",
+			DescriptionLong: "用于调用网关进行质量测试的API Key。" +
+				"留空则使用系统默认的selfCheckAPIKey。" +
+				"建议为质量测试创建专用的API Key以便单独追踪token消耗。",
+			DangerLevel: Warning, // API Key属于敏感配置
+			HotReload:   true,
+		},
+		{
+			Key:         "model_quality.base_url",
+			Type:        TypeString,
+			Scope:       ScopePlatform,
+			Category:    CategoryModelQuality,
+			Default:     "http://localhost:8787",
+			Description: "网关基础URL（用于质量测试调用）",
+			DescriptionLong: "模型质量测试时调用的网关地址。" +
+				"本地开发: http://localhost:8787\n" +
+				"测试环境245: http://10.177.48.245:8787\n" +
+				"生产环境154: http://10.177.48.154:8787",
+			DangerLevel: Safe,
+			HotReload:   true,
+		},
+		{
+			Key:         "model_quality.test_timeout_seconds",
+			Type:        TypeInt,
+			Scope:       ScopePlatform,
+			Category:    CategoryModelQuality,
+			Default:     30,
+			Min:         floatPtr(10),
+			Max:         floatPtr(120),
+			Description: "单个测试请求超时时间（秒）",
+			Unit:        "秒",
+			DangerLevel: Safe,
+			HotReload:   true,
+		},
 	}
 }
