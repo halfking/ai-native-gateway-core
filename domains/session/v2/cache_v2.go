@@ -158,14 +158,21 @@ type lruList struct {
 }
 
 // NewCompressionMetaCache creates a new in-memory cache
+// 2026-08-06 FIX (P2-3): Initialize LRU list head/tail pointers eagerly
+// to avoid race condition in concurrent addToFront calls.
 func NewCompressionMetaCache(capacity int) *CompressionMetaCache {
+	lru := &lruList{
+		head: &lruNode{},
+		tail: &lruNode{},
+	}
+	// Eagerly initialize head/tail pointers to avoid lazy init race
+	lru.head.next = lru.tail
+	lru.tail.prev = lru.head
+
 	return &CompressionMetaCache{
 		capacity: capacity,
 		items:    make(map[string]*cacheEntry),
-		lru: &lruList{
-			head: &lruNode{},
-			tail: &lruNode{},
-		},
+		lru:      lru,
 	}
 }
 
@@ -250,16 +257,16 @@ func cacheKey(tenantID, sessionID string) string {
 }
 
 // LRU list operations
+// 2026-08-06 NOTE: init() is no longer called lazily; NewCompressionMetaCache
+// initializes head/tail eagerly to avoid race condition.
 func (l *lruList) init() {
 	l.head.next = l.tail
 	l.tail.prev = l.head
 }
 
 func (l *lruList) addToFront(node *lruNode) {
-	if l.head.next == nil {
-		l.init()
-	}
-
+	// 2026-08-06 FIX (P2-3): Removed lazy init check - NewCompressionMetaCache
+	// now initializes head/tail pointers eagerly.
 	node.next = l.head.next
 	node.prev = l.head
 	l.head.next.prev = node
