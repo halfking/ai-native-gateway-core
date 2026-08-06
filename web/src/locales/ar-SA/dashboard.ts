@@ -118,7 +118,11 @@ v2: {
     providers: "المزودون / بيانات الاعتماد",
     enabledCredentials: "مفعّل {enabled} · بيانات اعتماد {total}",
     offline: "الموارد غير المتصلة",
-    modelsCredentials: "نماذج {models} · بيانات اعتماد {creds}"
+    modelsCredentials: "نماذج {models} · بيانات اعتماد {creds}",
+    // 2026-08-06: متوسط حجم الطلب / متوسط حجم الاستجابة / الذروة (محاذاة مع zh-CN)
+    avgRequestSize: "متوسط حجم الطلب",
+    avgResponseSize: "متوسط حجم الاستجابة",
+    maxLabel: "ذروة",
   },
   table: {
     hotKeysTitle: "ترتيب مفاتيح API الأكثر استخدامًا",
@@ -222,6 +226,11 @@ v2: {
     modeLargeTitle: 'وضع كبير: بطاقات بتفاصيل طلب أكثر',
     probeAll: 'الكل', probeOnly: 'عمليات الفحص فقط',
     probeAllTitle: 'عرض جميع الطلبات (افتراضي)', probeOnlyTitle: 'عرض طلبات الفحص فقط',
+    // 2026-08-06: فلاتر الأعمال / الفحص + العناوين (محاذاة مع zh-CN)
+    business: 'الأعمال',
+    probe: 'فحص',
+    businessTitle: 'عرض طلبات الأعمال الحقيقية فقط',
+    probeTitle: 'عرض طلبات الفحص فقط',
     cacheWindow: 'ذاكرة التخزين المؤقت / النافذة', connectionDetailTitle: 'انقر لعرض تفاصيل الاتصال',
     dimensionVendor: 'المورّد', dimensionProvider: 'المزوّد', dimensionModel: 'النموذج',
     statusOpen: 'متصل', statusConnecting: 'جارٍ الاتصال', statusReconnecting: 'جارٍ إعادة الاتصال',
@@ -272,6 +281,7 @@ v2: {
     filterModel: 'النموذج',
     filterProvider: 'المزود',
     filterVendor: 'المورّد',
+    filterAgent: 'العميل',  // 2026-08-06 محاذاة مع zh-CN
     clearFilters: 'مسح الفلاتر',
     status: {
       in_progress: 'قيد التنفيذ',

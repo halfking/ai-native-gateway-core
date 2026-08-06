@@ -109,7 +109,11 @@ tabs: {
     providers: "プロバイダー / 認証情報",
     enabledCredentials: "有効 {enabled} · 認証情報 {total}",
     offline: "オフラインリソース",
-    modelsCredentials: "モデル {models} · 認証情報 {creds}"
+    modelsCredentials: "モデル {models} · 認証情報 {creds}",
+    // 2026-08-06: 平均リクエストサイズ / 平均レスポンスサイズ / ピーク（zh-CN との整合）
+    avgRequestSize: "平均リクエストサイズ",
+    avgResponseSize: "平均レスポンスサイズ",
+    maxLabel: "ピーク",
   },
   table: {
     hotKeysTitle: "使用量が多い API キーのランキング",
@@ -213,6 +217,11 @@ tabs: {
     modeLargeTitle: '大モード：カード表示、より詳細なリクエスト情報',
     probeAll: 'すべて', probeOnly: 'プローブのみ',
     probeAllTitle: 'すべてのリクエストを表示（デフォルト）', probeOnlyTitle: 'プローブリクエストのみ表示',
+    // 2026-08-06: 業務 / プローブフィルタ + タイトル（zh-CN との整合）
+    business: '業務',
+    probe: 'プローブ',
+    businessTitle: '実業務の请求のみ表示',
+    probeTitle: 'プローブ请求のみ表示',
     cacheWindow: 'キャッシュ / ウィンドウ', connectionDetailTitle: 'クリックで接続詳細を表示',
     dimensionVendor: 'ベンダー', dimensionProvider: 'プロバイダー', dimensionModel: 'モデル',
     statusOpen: '接続済み', statusConnecting: '接続中', statusReconnecting: '再接続中',
@@ -263,6 +272,7 @@ tabs: {
     filterModel: 'モデル',
     filterProvider: 'プロバイダー',
     filterVendor: 'ベンダー',
+    filterAgent: 'クライアント',  // 2026-08-06 zh-CN との整合
     clearFilters: 'フィルターをクリア',
     status: {
       in_progress: '処理中',

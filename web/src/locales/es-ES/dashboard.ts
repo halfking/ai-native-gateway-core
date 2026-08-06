@@ -118,7 +118,11 @@ v2: {
     providers: "Proveedores / credenciales",
     enabledCredentials: "Activados {enabled} · credenciales {total}",
     offline: "Recursos offline",
-    modelsCredentials: "Modelos {models} · credenciales {creds}"
+    modelsCredentials: "Modelos {models} · credenciales {creds}",
+    // 2026-08-06: Tamaño medio de petición / Tamaño medio de respuesta / Pico (alineado con zh-CN)
+    avgRequestSize: "Tamaño medio de petición",
+    avgResponseSize: "Tamaño medio de respuesta",
+    maxLabel: "Pico",
   },
   table: {
     hotKeysTitle: "Ranking de claves API por uso",
@@ -222,6 +226,11 @@ v2: {
     modeLargeTitle: 'Modo grande: tarjetas con más detalle de solicitud',
     probeAll: 'Todos', probeOnly: 'Solo sondas',
     probeAllTitle: 'Mostrar todas las solicitudes (predeterminado)', probeOnlyTitle: 'Mostrar solo solicitudes de sonda',
+    // 2026-08-06: filtros de negocio / sonda + títulos (alineado con zh-CN)
+    business: 'Negocio',
+    probe: 'Sonda',
+    businessTitle: 'Mostrar solo solicitudes de negocio reales',
+    probeTitle: 'Mostrar solo solicitudes de sonda',
     cacheWindow: 'Caché / ventana', connectionDetailTitle: 'Clic para ver detalles de la conexión',
     dimensionVendor: 'Proveedor', dimensionProvider: 'Proveedor', dimensionModel: 'Modelo',
     statusOpen: 'Conectado', statusConnecting: 'Conectando', statusReconnecting: 'Reconectando',
@@ -272,6 +281,7 @@ v2: {
     filterModel: 'Modelo',
     filterProvider: 'Proveedor',
     filterVendor: 'Vendor',
+    filterAgent: 'Cliente',  // 2026-08-06 alineado con zh-CN
     clearFilters: 'Borrar filtros',
     status: {
       in_progress: 'En curso',

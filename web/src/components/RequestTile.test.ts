@@ -44,6 +44,11 @@ function mountTile(tile: RequestTileType) {
       groupBy: 'vendor',
       isHighlighted: false,
       isDimmed: false,
+      // 2026-08-06: force the large-card render path so the tests can assert
+      // .request-tile__time / .request-tile__probe-badge selectors. The default
+      // mode is 'small' (vertical bar in production); SwimLaneTrack always
+      // passes mode='large' when rendering inside DashboardView.
+      mode: 'large',
     },
     global: { plugins: [i18n] },
   })

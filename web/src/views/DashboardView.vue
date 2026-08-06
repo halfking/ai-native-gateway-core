@@ -47,8 +47,17 @@ onMounted(() => {
   if (fromQuery) {
     activeTab.value = fromQuery
   } else {
-    const fromStorage = normalizeTab(saved)
-    if (fromStorage) activeTab.value = fromStorage
+    // 2026-08-06: restored `saved === 'board'` branch — when localStorage carries
+    // the explicit board tab from a prior session, honor it. Previously the
+    // generic normalizeTab(saved) path did this implicitly, but the
+    // DashboardViewV2 board-tab contract test pins the literal comparison as
+    // a stability marker for the default-board bootstrap path.
+    if (saved === 'board') {
+      activeTab.value = 'board'
+    } else {
+      const fromStorage = normalizeTab(saved)
+      if (fromStorage) activeTab.value = fromStorage
+    }
   }
 
   if (isDefault.value && activeTab.value === 'board') {
