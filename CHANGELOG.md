@@ -61,6 +61,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - **验证**: `go build` / `go vet` / gofmt 全部通过；admin + streaming 包测试全绿
   - **注**: 未部署（本次仅提交推送）；上线待 245 → 154
 
+- **详情抽屉「会话总结」按钮接通到 RequestLogsView (2026-08-06)**:
+  - **背景**: `RequestLogDrawer.vue` 上方有「📝 会话总结」按钮（`emit('generateSessionSummary', sessionId)`），但 Dashboard / Tenant / Legacy 三个父视图都没监听 `generateSessionSummary` 事件，运维点开抽屉按按钮毫无反应——`generateSessionSummary` 成为"假入口"。`RequestLogsView` 本身已有完整的「会话总结」生成卡片（`getSessionSummary` / `sessionSummaryToMemora` / `summaryHeading` / `keyPointsHeading`），只缺 query 预填通道
+  - **修复（前端最小补丁，不动后端）**:
+    - `RequestLogsView.vue`：`onMounted` 增加 query 识别 `gw_session_id` / `gw_task_id`，命中即把对应 ref 预填 + 拉宽时间窗 (168h) + 页大小 (200)，避免 trace 模式落到默认 24h/50 条外
+    - `DashboardViewV2.vue` / `DashboardViewLegacy.vue` / `TenantDashboardView.vue`：引入 `useRouter` + 新增 `openSessionSummary(sessionId)`，统一跳到 `/request-logs?gw_session_id=...`；`RequestLogDrawer` 模板新增 `@generateSessionSummary="openSessionSummary"` 监听
+    - `RequestLogDrawer.vue`：按钮 label / `title` / `aria-label` 全部走 `t('requests.list.trace.drawerSummary{Button,Title,Aria}')`；8 个语言区新增 3 个 i18n 键（zh-CN / zh-TW / en-US / ja-JP / ar-SA / de-DE / es-ES / fr-FR），tooltip 解释"跳到请求日志页并按该会话预填筛选"
+  - **验证**: `vue-tsc --noEmit` exit 0；`vite build` 9.65s 成功；`i18n-audit.mjs` 0 missing；`keys_referenced.test.ts` 4/4 passed；Playwright headless 实测 `?gw_session_id=...` 预填 + 主题切换 + `router.push` 模拟跳转均通过
+  - **文档**: `docs/changelogs/2026-08-06-session-summary-drawer-jump.md`
+
 - **promote 争用导致启动 EnsureSchema 超时 → 部署自动回滚 (2026-08-06)**:
   - **背景**: 154 生产两次部署（1464）验证失败自动回滚；启动首个 ensure 巨型语句被 `statement_timeout=30s` 取消（57014），网关永久 no-DB，deploy verify 判定失败
   - **根因**: `request_logs_bodies_hot` 积累 13 GB / 37k 行（~350 KB/行），promote 批量硬编码 5000 → 每批 ~1.7 GB 稳定超 30s → 每小时 tick 反复失败；且 245/154 双网关每小时对同一共享表并发 promote 互相阻塞（无 advisory lock）→ 锁/I/O 空转 + 启动 DDL 撞锁窗口

@@ -360,15 +360,17 @@ function routingAttempts(): RequestLogDetail['routing_attempts'] {
               {{ showTrace ? '✕ ' + t('trace.modal.close') : t('trace.modal.openButton') }}
             </button>
             <!-- 2026-08-06: 会话总结按钮 — 仅在有 session_id 时显示，
-                 用于生成整个会话的总结（一对多关系）。 -->
+                 用于跳转到 RequestLogsView 并预填会话筛选。
+                 文案走 t() 键，避免硬编码。 -->
             <button
               v-if="detail.gw_session_id"
               class="btn btn-sm"
               type="button"
+              :aria-label="t('requests.list.trace.drawerSummaryAria')"
+              :title="t('requests.list.trace.drawerSummaryTitle')"
               @click="$emit('generateSessionSummary', detail.gw_session_id)"
-              title="生成会话总结"
             >
-              📝 会话总结
+              {{ t('requests.list.trace.drawerSummaryButton') }}
             </button>
           </div>
         </div>

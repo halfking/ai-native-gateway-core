@@ -103,6 +103,10 @@ export default {
       clear: '清除脈絡篩選',
       sessionSummary: '會話總結',
       sessionSummaryHint: '僅在會話 ID 篩選下可用',
+      // 2026-08-06: detail drawer「會話總結」按鈕標題與跳轉提示。
+      drawerSummaryButton: '📝 會話總結',
+      drawerSummaryTitle: '跳到「請求日誌」並按該會話預填篩選',
+      drawerSummaryAria: '開啟會話總結視圖',
       generating: '總結中…',
       generate: '產生總結',
       exportMd: '匯出 Markdown',

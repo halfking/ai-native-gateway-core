@@ -94,6 +94,10 @@ export default {
       clear: 'Clear trace filter',
       sessionSummary: 'Session summary',
       sessionSummaryHint: 'Only available when a session ID filter is active',
+      // 2026-08-06: detail drawer "Session summary" button label + tooltip.
+      drawerSummaryButton: '📝 Session summary',
+      drawerSummaryTitle: 'Open the request log filtered by this session',
+      drawerSummaryAria: 'Open the session summary view',
       generating: 'Summarizing…',
       generate: 'Generate summary',
       exportMd: 'Export Markdown',

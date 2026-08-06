@@ -3,6 +3,7 @@
 
 import { ref, computed, inject, type Ref } from 'vue'
 import { useI18n } from 'vue-i18n'
+import { useRouter } from 'vue-router'
 import MemoraStatusButton from '../components/MemoraStatusButton.vue'
 import LiveRequestStreamV2 from '../components/LiveRequestStreamV2.vue'
 import StatsDrawer from '../components/StatsDrawer.vue'
@@ -16,6 +17,7 @@ import type { DashboardTabId } from './DashboardView.vue'
 import { isSuperAdmin, isDefaultTenant, getCurrentTenantId } from '../store'
 
 const { t } = useI18n()
+const router = useRouter()
 
 const boardState = inject<{
   board: Ref<BoardPayload | null>
@@ -67,6 +69,14 @@ function openRequestDetail(id: string) {
 
 function closeRequestDrawer() {
   activeRequestId.value = null
+}
+
+// 2026-08-06: RequestLogDrawer 上的「会话总结」按钮 → 跳到请求日志页并预填
+// 会话筛选。RequestLogsView 已有「会话总结」生成卡片，可直接复用。
+function openSessionSummary(sessionId: string) {
+  if (!sessionId) return
+  closeRequestDrawer()
+  router.push({ path: '/request-logs', query: { gw_session_id: sessionId } })
 }
 
 async function openStatsDrawer(tab: 'apikeys' | 'models') {
@@ -198,7 +208,11 @@ async function onRefresh() {
     />
 
     <!-- 请求详情抽屉 -->
-    <RequestLogDrawer :request-id="activeRequestId" @close="closeRequestDrawer" />
+    <RequestLogDrawer
+      :request-id="activeRequestId"
+      @close="closeRequestDrawer"
+      @generateSessionSummary="openSessionSummary"
+    />
   </div>
 </template>
 
