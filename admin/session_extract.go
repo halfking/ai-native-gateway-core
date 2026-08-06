@@ -24,6 +24,9 @@ const sessionContextPrefix = "/api/system/session-context/"
 //   - POST .../{taskId}/extract-to-memora
 //   - GET  .../{taskId}/extraction-status
 //   - POST .../{taskId}/summarize-title
+//   - PUT  .../{taskId}/title             (manual title override)
+//   - DELETE .../{taskId}/title           (clear manual title)
+//   - POST .../titles/batch               (bulk lookup, for request-logs list)
 func (h *Handler) handleSessionContextRoutes(w http.ResponseWriter, r *http.Request) {
 	rest := strings.TrimPrefix(r.URL.Path, sessionContextPrefix)
 	rest = strings.Trim(rest, "/")
@@ -32,6 +35,19 @@ func (h *Handler) handleSessionContextRoutes(w http.ResponseWriter, r *http.Requ
 		return
 	}
 	parts := strings.Split(rest, "/")
+
+	// Special case: POST .../titles/batch — bulk title lookup keyed by
+	// (task_id, scoped_session_id). Routed before the {taskId}/... fan-out
+	// so the literal "titles" segment is not mistaken for a task id.
+	if parts[0] == "titles" && len(parts) == 2 && parts[1] == "batch" {
+		if r.Method != http.MethodPost {
+			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+			return
+		}
+		h.handleSessionTitlesBatch(w, r)
+		return
+	}
+
 	taskID := strings.TrimSpace(parts[0])
 	if taskID == "" {
 		writeError(w, http.StatusBadRequest, "task_id required")
@@ -60,6 +76,15 @@ func (h *Handler) handleSessionContextRoutes(w http.ResponseWriter, r *http.Requ
 			return
 		}
 		h.handleSessionSummarizeTitle(w, r, taskID)
+	case "title":
+		switch r.Method {
+		case http.MethodPut:
+			h.handleSessionTitleUpdate(w, r, taskID)
+		case http.MethodDelete:
+			h.handleSessionTitleDelete(w, r, taskID)
+		default:
+			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		}
 	default:
 		writeError(w, http.StatusNotFound, "unknown session-context route")
 	}

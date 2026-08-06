@@ -8,7 +8,9 @@ package admin
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"strconv"
 	"strings"
@@ -191,14 +193,18 @@ func isValidSessionTitle(title string) bool {
 	if strings.Contains(lower, "无足够") || strings.Contains(lower, "信息不足") {
 		return false
 	}
-	// Reject titles that are mostly ASCII (likely tag names / placeholders).
-	ascii := 0
+	// 2026-08-06: human-edited titles (PUT /title) must contain at least
+	// one non-ASCII rune so we don't store "P3-001" or "BUGFIX" as a
+	// "title". Pure-ASCII strings used to be rejected by a "mostly ASCII"
+	// check (ascii*2 <= total); that was too strict — it also rejected
+	// reasonable mixed titles like "测试标题 2026-08-06". Allow any mix
+	// as long as one CJK rune anchors the title.
 	for _, r := range s {
-		if r < 128 {
-			ascii++
+		if r >= 128 {
+			return true
 		}
 	}
-	return ascii*2 <= len([]rune(s))
+	return false
 }
 
 func scopedSessionIDKey(sessionID string) string {
@@ -277,4 +283,180 @@ func (h *Handler) loadSessionTitlesBatch(ctx context.Context, keys [][2]string) 
 
 func sessionTitleMapKey(taskID, scopedSessionID string) string {
 	return taskID + "\x00" + scopedSessionIDKey(scopedSessionID)
+}
+
+// titleUpdateRequest is the body shape for PUT
+// /api/system/session-context/{taskId}/title (manual override).
+type titleUpdateRequest struct {
+	Title           string `json:"title"`
+	ScopedSessionID string `json:"scoped_session_id,omitempty"`
+}
+
+// handleSessionTitleUpdate implements PUT
+// /api/system/session-context/{taskId}/title.
+//
+// Lets a human override the LLM-generated title in session_titles.
+// Stores the title under (task_id, scoped_session_id) and stamps
+// generated_at=now(), model="manual" so it is distinguishable from
+// auto-generated titles. Empty/whitespace titles are rejected so we
+// never overwrite a usable title with empty data.
+func (h *Handler) handleSessionTitleUpdate(w http.ResponseWriter, r *http.Request, taskID string) {
+	if taskID == "" {
+		writeError(w, http.StatusBadRequest, "task_id required")
+		return
+	}
+	if h.db == nil {
+		writeError(w, http.StatusServiceUnavailable, "database not configured")
+		return
+	}
+
+	var body titleUpdateRequest
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid body: "+err.Error())
+		return
+	}
+	cleaned := normalizeSessionTitle(body.Title)
+	if !isValidSessionTitle(cleaned) {
+		writeError(w, http.StatusBadRequest, "title must be 2-80 runes, no XML tags, and not all-ASCII")
+		return
+	}
+
+	scopedKey := scopedSessionIDKey(body.ScopedSessionID)
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	defer cancel()
+
+	if !requireSessionTaskAccess(w, r, ctx, h.db, taskID) {
+		return
+	}
+
+	// Manual overrides are stamped with model="manual" so future
+	// summarize-title calls can preserve the human intent (caller can
+	// re-run summarize-title to refresh; the next LLM call will win).
+	_, err := h.db.Exec(ctx, `
+		INSERT INTO session_titles (task_id, scoped_session_id, title, generated_at, model, api_key_id)
+		VALUES ($1, $2, $3, NOW(), 'manual', NULL)
+		ON CONFLICT (task_id, scoped_session_id) DO UPDATE SET
+			title = EXCLUDED.title,
+			generated_at = EXCLUDED.generated_at,
+			model = EXCLUDED.model
+	`, taskID, scopedKey, cleaned)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "save title: "+err.Error())
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"task_id":           taskID,
+		"scoped_session_id": scopedKey,
+		"title":             cleaned,
+		"model":             "manual",
+		"updated_at":        time.Now().UTC().Format(time.RFC3339),
+	})
+}
+
+// handleSessionTitleDelete implements DELETE
+// /api/system/session-context/{taskId}/title?scoped_session_id=...
+//
+// Removes the title row so the next list render falls back to the
+// short-id display, and so a fresh summarize-title can run unblocked.
+// No-op if the row doesn't exist (200 + deleted:false).
+func (h *Handler) handleSessionTitleDelete(w http.ResponseWriter, r *http.Request, taskID string) {
+	if taskID == "" {
+		writeError(w, http.StatusBadRequest, "task_id required")
+		return
+	}
+	if h.db == nil {
+		writeError(w, http.StatusServiceUnavailable, "database not configured")
+		return
+	}
+
+	scopedKey := scopedSessionIDKey(r.URL.Query().Get("scoped_session_id"))
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	defer cancel()
+
+	if !requireSessionTaskAccess(w, r, ctx, h.db, taskID) {
+		return
+	}
+
+	tag, err := h.db.Exec(ctx, `
+		DELETE FROM session_titles
+		WHERE task_id = $1 AND scoped_session_id = $2
+	`, taskID, scopedKey)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "delete title: "+err.Error())
+		return
+	}
+	rows := tag.RowsAffected()
+	writeJSON(w, http.StatusOK, map[string]any{
+		"task_id":           taskID,
+		"scoped_session_id": scopedKey,
+		"deleted":           rows > 0,
+	})
+}
+
+// titlesBatchRequest is the body shape for POST
+// /api/system/session-context/titles/batch. Keys are repeated
+// (task_id, scoped_session_id) pairs — the same row may be requested
+// for many rows in the request-logs list.
+type titlesBatchRequest struct {
+	Keys []struct {
+		TaskID          string `json:"task_id"`
+		ScopedSessionID string `json:"scoped_session_id,omitempty"`
+	} `json:"keys"`
+}
+
+// handleSessionTitlesBatch implements POST
+// /api/system/session-context/titles/batch.
+//
+// Bulk lookup keyed by (task_id, scoped_session_id). Used by the
+// request-logs list to enrich each row with its session title in a
+// single round-trip. Returns a map keyed by the same sessionTitleMapKey
+// shape so the client can correlate results cheaply. Keys that don't
+// have a stored title are simply omitted from the response map.
+func (h *Handler) handleSessionTitlesBatch(w http.ResponseWriter, r *http.Request) {
+	if h.db == nil {
+		writeError(w, http.StatusServiceUnavailable, "database not configured")
+		return
+	}
+
+	var body titlesBatchRequest
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid body: "+err.Error())
+		return
+	}
+	if len(body.Keys) == 0 {
+		writeJSON(w, http.StatusOK, map[string]any{"titles": map[string]string{}})
+		return
+	}
+	if len(body.Keys) > 500 {
+		writeError(w, http.StatusBadRequest, "too many keys (max 500)")
+		return
+	}
+
+	pairs := make([][2]string, 0, len(body.Keys))
+	seen := make(map[string]struct{}, len(body.Keys))
+	for _, k := range body.Keys {
+		taskID := strings.TrimSpace(k.TaskID)
+		if taskID == "" {
+			continue
+		}
+		scoped := scopedSessionIDKey(k.ScopedSessionID)
+		key := sessionTitleMapKey(taskID, scoped)
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		pairs = append(pairs, [2]string{taskID, scoped})
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	defer cancel()
+
+	titles := h.loadSessionTitlesBatch(ctx, pairs)
+	slog.Debug("admin titles batch lookup",
+		"requested", len(body.Keys), "unique", len(pairs), "found", len(titles))
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"titles": titles,
+	})
 }

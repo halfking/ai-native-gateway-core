@@ -265,11 +265,24 @@ func (h *Handler) HandleSessionTags(w http.ResponseWriter, r *http.Request) {
 }
 
 // HandleSessionTagDelete DELETE /api/admin/session-analytics/<id>/tags/<tag_id>
+// HandleSessionTagUpdate PUT     /api/admin/session-analytics/<id>/tags/<tag_id>
+//
+// Both handlers dispatch on r.Method from the same route
+// `/<gw_session_id>/tags/<tag_id>`. PUT accepts {tag_value, tag_key?}
+// to rename the tag's value (and optionally its key). Rejects empty
+// values to keep the row meaningful.
 func (h *Handler) HandleSessionTagDelete(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodDelete {
+	switch r.Method {
+	case http.MethodPut:
+		h.handleSessionTagUpdate(w, r)
+	case http.MethodDelete:
+		h.handleSessionTagDelete(w, r)
+	default:
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
-		return
 	}
+}
+
+func (h *Handler) handleSessionTagDelete(w http.ResponseWriter, r *http.Request) {
 	if RequireSuperAdminForWrite(w, r) {
 		return
 	}
@@ -299,6 +312,90 @@ func (h *Handler) HandleSessionTagDelete(w http.ResponseWriter, r *http.Request)
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"status": "ok"})
 }
+
+// handleSessionTagUpdate is the PUT half of
+// /<gw_session_id>/tags/<tag_id>. Lets a human edit a tag's value or
+// rename its key (e.g. project -> task). The session_tags UNIQUE
+// constraint on (gw_session_id, tag_key, tag_value) is preserved by
+// catching unique-violation explicitly so the caller gets a 409 with
+// a useful hint instead of a generic 500.
+func (h *Handler) handleSessionTagUpdate(w http.ResponseWriter, r *http.Request) {
+	if RequireSuperAdminForWrite(w, r) {
+		return
+	}
+	gwSessionID := pathSegment(r.URL.Path, "/api/admin/session-analytics/", 0)
+	tagIDStr := pathSegment(r.URL.Path, "/api/admin/session-analytics/", 2)
+	if !requireSessionOwnerAccess(w, r, r.Context(), h.db, gwSessionID) {
+		return
+	}
+	tagID, err := strconv.ParseInt(tagIDStr, 10, 64)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid tag id")
+		return
+	}
+
+	var body struct {
+		TagKey   string `json:"tag_key"`
+		TagValue string `json:"tag_value"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid body")
+		return
+	}
+	if strings.TrimSpace(body.TagValue) == "" {
+		writeError(w, http.StatusBadRequest, "tag_value required")
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+	defer cancel()
+
+	// Fetch current row to fall back on missing fields (partial update).
+	var curKey string
+	var curValue string
+	err = h.db.QueryRow(ctx, `
+		SELECT tag_key, tag_value FROM session_tags
+		WHERE id=$1 AND gw_session_id=$2
+	`, tagID, gwSessionID).Scan(&curKey, &curValue)
+	if err != nil {
+		if err == pgx.ErrNoRows {
+			writeError(w, http.StatusNotFound, "tag not found")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "load tag: "+err.Error())
+		return
+	}
+	newKey := curKey
+	if strings.TrimSpace(body.TagKey) != "" {
+		newKey = strings.TrimSpace(body.TagKey)
+	}
+	newValue := strings.TrimSpace(body.TagValue)
+
+	_, err = h.db.Exec(ctx, `
+		UPDATE session_tags
+		SET tag_key=$3, tag_value=$4, tag_source='manual', created_by=$5
+		WHERE id=$1 AND gw_session_id=$2
+	`, tagID, gwSessionID, newKey, newValue, getUsername(r))
+	if err != nil {
+		if isUniqueViolation(err) {
+			writeError(w, http.StatusConflict, "tag with this key+value already exists on this session")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "update failed: "+err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"status":    "ok",
+		"id":        tagID,
+		"tag_key":   newKey,
+		"tag_value": newValue,
+	})
+}
+
+// isUniqueViolation returns true for PostgreSQL error code 23505
+// (unique_violation), used by the tag UPSERT/PUT path to map dup
+// inserts into 409 instead of 500.
+// (Implementation lives in admin/auto_route_defaults.go.)
 
 // ── Suggestions ───────────────────────────────────────────────────────
 

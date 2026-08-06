@@ -5,6 +5,38 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased] - 2026-08-06
+
+### Added
+
+- **Request-logs 显示会话标题 + 项目/任务标签可人工增改 (2026-08-06)**:
+  - **背景**: llmgo.kxpms.cn/request-logs 列表只显示 session_id / task_id 短哈希，看不出"这次会话是干什么的"；现有 `session_titles`（LLM 自动生成标题）和 `session_tags`（多维 tag）数据已落库，但 request-logs 详情抽屉没有任何编辑入口，人工补充只能绕到 /session-analytics 全景页
+  - **后端新增 5 个 API**:
+    - `PUT /api/system/session-context/{taskId}/title` — 手动写入/覆写 title，`model='manual'` 标识
+    - `DELETE /api/system/session-context/{taskId}/title?scoped_session_id=...` — 清空 title（让后续 summarize-title 可重跑）
+    - `POST /api/system/session-context/titles/batch` — 批量查询（key = `task_id + \x00 + scoped_session_id`），上限 500 keys/请求
+    - `PUT /api/admin/session-analytics/{gwSessionId}/tags/{tagId}` — 改 tag key/value（新增，编辑入口）
+    - `PUT/DELETE` 在同一个 `HandleSessionTagDelete` handler 内按 method 分发（路由不变）
+  - **后端修改**:
+    - `request_logs` 列表 / 详情接口 `LEFT JOIN session_titles` 在 `requestLogRow` 注入 `SessionTitle *string` 字段，response key 为 `session_title`
+    - title 校验 `isValidSessionTitle` 从"ascii ≤ 50%"放宽为"必须含 ≥1 个 CJK rune"——之前会拒绝"测试标题 2026-08-06"这种合理的中英混合标题（实测踩坑，老板手动输入即触发）
+  - **前端**:
+    - `web/src/api/memora.ts` 新增 `updateSessionTitle` / `deleteSessionTitle` / `batchGetSessionTitles`
+    - `web/src/api/sessionAnalytics.ts` 新增 `updateSessionTag` (PUT)
+    - `web/src/api/logs.ts` `RequestLogRow.session_title?: string | null`
+    - **列表新增「会话标题」列** (老板决策)，列头在「脉络」和「调用方」之间，hover 显示完整 title，空值显示"—"
+    - 详情抽屉新增「会话元信息」区段，紧贴基础字段下方：
+      - **会话标题**: inline 编辑 (input + 保存/取消)，3 个按钮 = `编辑` / `重新生成` / `清空`（仅在已有 title 时显示后两个）
+      - **项目/任务等标签**: 列表渲染 + 每行 `编辑`/`删除` 按钮 + 顶部 `+ 添加标签` 按钮（显示 key+value 双 input + 添加/取消）
+      - 异步加载 tags（不阻塞详情打开），失败用 inline 错误展示但不阻塞
+- **baseline schema 修复 (2026-08-06) — session_titles_pkey backfill**:
+  - **背景**: deploy/sql/objects/tables/session_titles.sql 自创建以来从未声明 PRIMARY KEY，deploy/sql/schemas/baseline/01-schema.sql 也漏了。245 上跑了几个月后 4 组 (task_id, scoped_session_id) 重复（每个 4 行）累积，导致任何 `INSERT ... ON CONFLICT (task_id, scoped_session_id)` 都 SQLSTATE 42P10 直接失败。本次 PUT /title 实现时撞雷，老板手动 title 无法写入
+  - **修复**:
+    - 新增 `sql/migrations/startup/465_session_titles_pkey.sql`（up + down）：去重（保留最大 ctid）+ 添加 `PRIMARY KEY (task_id, scoped_session_id)`，幂等可重跑
+    - `deploy/sql/objects/constraints/session_titles_session_titles_pkey.sql` 新建（同步到 sql/objects/constraints/，deploy 系统自动分发）
+    - `deploy/sql/schemas/baseline/01-schema.sql` 在 `CREATE TABLE session_titles` 之后补 `ALTER TABLE ... ADD CONSTRAINT session_titles_pkey PRIMARY KEY (task_id, scoped_session_id)` — 防止新部署再缺这个 PK
+  - **部署触发的 245 紧急修复**: 上述 schema 修复 + 一行 SQL（DELETE 去重 + ADD CONSTRAINT）已手动跑过，PK 已生效
+
 ## [Unreleased] - 2026-08-04
 
 ### Fixed

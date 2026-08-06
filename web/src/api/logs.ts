@@ -99,6 +99,11 @@ export interface RequestLogRow {
   // 2026-07-01 (migration 325): 附件数量。列表接口返回，0/undefined 表示无附件。
   // 前端据此在"状态"列后渲染附件角标 (📎 N)。详情接口额外返回完整 attachments 数组。
   attachment_count?: number
+
+  // 2026-08-06: session_titles.title joined on (gw_task_id, gw_session_id).
+  // Present when an LLM-generated or manually-edited title exists for the
+  // row's task; undefined when no title has been recorded.
+  session_title?: string | null
 }
 
 // AttachmentInfo 描述单个附件的元数据 (migration 325, request_logs.attachments 元素)。
