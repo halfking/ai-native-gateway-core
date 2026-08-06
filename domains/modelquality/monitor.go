@@ -3,6 +3,7 @@ package modelquality
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"sync"
 	"time"
 )
@@ -10,20 +11,20 @@ import (
 // MonitorConfig 监控配置
 type MonitorConfig struct {
 	// 定时检测配置
-	EnableScheduled     bool          `json:"enable_scheduled"`
-	ScheduleInterval    time.Duration `json:"schedule_interval"`     // 定时检测间隔(如每天)
-	UseLiteBenchmark    bool          `json:"use_lite_benchmark"`    // 是否使用精简版测试
-	
+	EnableScheduled  bool          `json:"enable_scheduled"`
+	ScheduleInterval time.Duration `json:"schedule_interval"`  // 定时检测间隔(如每天)
+	UseLiteBenchmark bool          `json:"use_lite_benchmark"` // 是否使用精简版测试
+
 	// 异常触发配置
 	EnableAnomalyTrigger bool    `json:"enable_anomaly_trigger"` // 启用异常触发
 	ErrorRateThreshold   float64 `json:"error_rate_threshold"`   // 错误率阈值(如0.3表示30%)
 	LatencyThreshold     int64   `json:"latency_threshold_ms"`   // 延迟阈值(毫秒)
-	
+
 	// 测试目标
 	TargetModels []ModelTarget `json:"target_models"` // 要监控的模型列表
-	
+
 	// 告警配置
-	AlertOnQualityDrop bool    `json:"alert_on_quality_drop"` // 质量下降时告警
+	AlertOnQualityDrop   bool    `json:"alert_on_quality_drop"`  // 质量下降时告警
 	QualityDropThreshold float64 `json:"quality_drop_threshold"` // 质量下降阈值(如5表示下降5%)
 }
 
@@ -36,28 +37,28 @@ type ModelTarget struct {
 
 // QualityMonitor 质量监控器
 type QualityMonitor struct {
-	config    *MonitorConfig
-	executor  BenchmarkExecutor
-	storage   MonitorStorage
-	alerter   Alerter
-	
-	mu            sync.RWMutex
-	running       bool
-	stopChan      chan struct{}
-	lastScores    map[string]*QualityScore // key: provider:model
+	config   *MonitorConfig
+	executor BenchmarkExecutor
+	storage  MonitorStorage
+	alerter  Alerter
+
+	mu         sync.RWMutex
+	running    bool
+	stopChan   chan struct{}
+	lastScores map[string]*QualityScore // key: provider:model
 }
 
 // MonitorStorage 监控数据存储接口
 type MonitorStorage interface {
 	// SaveReport 保存测试报告
 	SaveReport(ctx context.Context, report *BenchmarkReport) error
-	
+
 	// SaveScore 保存质量评分
 	SaveScore(ctx context.Context, score *QualityScore) error
-	
+
 	// GetLatestScore 获取最新评分
 	GetLatestScore(ctx context.Context, provider string, modelName string) (*QualityScore, error)
-	
+
 	// GetScoreHistory 获取历史评分
 	GetScoreHistory(ctx context.Context, provider string, modelName string, limit int) ([]*QualityScore, error)
 }
@@ -98,7 +99,7 @@ func (m *QualityMonitor) Start(ctx context.Context) error {
 		go m.scheduledCheckLoop(ctx)
 	}
 
-	fmt.Printf("[QualityMonitor] Started with %d target models\n", len(m.config.TargetModels))
+	slog.Info("quality monitor started", "target_models", len(m.config.TargetModels))
 	return nil
 }
 
@@ -106,14 +107,14 @@ func (m *QualityMonitor) Start(ctx context.Context) error {
 func (m *QualityMonitor) Stop() {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	
+
 	if !m.running {
 		return
 	}
-	
+
 	m.running = false
 	close(m.stopChan)
-	fmt.Println("[QualityMonitor] Stopped")
+	slog.Info("quality monitor stopped")
 }
 
 // scheduledCheckLoop 定时检测循环
@@ -138,7 +139,8 @@ func (m *QualityMonitor) scheduledCheckLoop(ctx context.Context) {
 
 // runScheduledCheck 执行定时检测
 func (m *QualityMonitor) runScheduledCheck(ctx context.Context) {
-	fmt.Printf("[QualityMonitor] Starting scheduled quality check at %s\n", time.Now().Format(time.RFC3339))
+	slog.Info("quality monitor: starting scheduled check",
+		"time", time.Now().Format(time.RFC3339))
 
 	// 选择测试套件
 	var suite *BenchmarkSuite
@@ -160,7 +162,8 @@ func (m *QualityMonitor) TriggerAnomalyCheck(ctx context.Context, provider strin
 		return fmt.Errorf("anomaly trigger is disabled")
 	}
 
-	fmt.Printf("[QualityMonitor] Anomaly triggered for %s:%s, reason: %s\n", provider, modelName, reason)
+	slog.Info("quality monitor: anomaly triggered",
+		"provider", provider, "model", modelName, "reason", reason)
 
 	// 找到目标模型
 	var target *ModelTarget
@@ -187,18 +190,20 @@ func (m *QualityMonitor) testModel(ctx context.Context, target ModelTarget, suit
 		displayName = fmt.Sprintf("%s:%s", target.Provider, target.ModelName)
 	}
 
-	fmt.Printf("[QualityMonitor] Testing model: %s (trigger: %s)\n", displayName, trigger)
+	slog.Info("quality monitor: testing model",
+		"model", displayName, "trigger", trigger)
 
 	// 执行测试
 	report, err := m.executor.Execute(ctx, target.ModelName, target.Provider, suite)
 	if err != nil {
-		fmt.Printf("[QualityMonitor] Test failed for %s: %v\n", displayName, err)
+		slog.Warn("quality monitor: test failed",
+			"model", displayName, "error", err)
 		return err
 	}
 
 	// 保存报告
 	if err := m.storage.SaveReport(ctx, report); err != nil {
-		fmt.Printf("[QualityMonitor] Failed to save report: %v\n", err)
+		slog.Warn("quality monitor: failed to save report", "error", err)
 	}
 
 	// 计算评分
@@ -207,14 +212,17 @@ func (m *QualityMonitor) testModel(ctx context.Context, target ModelTarget, suit
 
 	// 保存评分
 	if err := m.storage.SaveScore(ctx, score); err != nil {
-		fmt.Printf("[QualityMonitor] Failed to save score: %v\n", err)
+		slog.Warn("quality monitor: failed to save score", "error", err)
 	}
 
 	// 输出结果
-	fmt.Printf("[QualityMonitor] Test completed for %s:\n", displayName)
-	fmt.Printf("  Accuracy: %.2f%%, Stability: %.2f%%, Latency P95: %.0fms\n", 
-		score.Accuracy, score.Stability, score.Latency)
-	fmt.Printf("  Overall Score: %.2f (%s)\n", score.OverallScore, score.Grade)
+	slog.Info("quality monitor: test completed",
+		"model", displayName,
+		"accuracy", score.Accuracy,
+		"stability", score.Stability,
+		"latency_p95", score.Latency,
+		"overall_score", score.OverallScore,
+		"grade", score.Grade)
 
 	// 检查质量下降
 	if m.config.AlertOnQualityDrop {
@@ -233,7 +241,7 @@ func (m *QualityMonitor) testModel(ctx context.Context, target ModelTarget, suit
 // checkQualityDrop 检查质量下降
 func (m *QualityMonitor) checkQualityDrop(ctx context.Context, target ModelTarget, newScore *QualityScore) {
 	key := fmt.Sprintf("%s:%s", target.Provider, target.ModelName)
-	
+
 	m.mu.RLock()
 	lastScore, exists := m.lastScores[key]
 	m.mu.RUnlock()
@@ -252,16 +260,16 @@ func (m *QualityMonitor) checkQualityDrop(ctx context.Context, target ModelTarge
 
 		alertMsg := fmt.Sprintf(
 			"模型 %s 质量下降检测!\n"+
-			"准确率: %.2f%% -> %.2f%% (下降 %.2f%%)\n"+
-			"综合评分: %.2f (%s) -> %.2f (%s)\n"+
-			"建议: 检查供应商模型是否更新或降级",
+				"准确率: %.2f%% -> %.2f%% (下降 %.2f%%)\n"+
+				"综合评分: %.2f (%s) -> %.2f (%s)\n"+
+				"建议: 检查供应商模型是否更新或降级",
 			displayName,
 			lastScore.Accuracy, newScore.Accuracy, accuracyDrop,
 			lastScore.OverallScore, lastScore.Grade, newScore.OverallScore, newScore.Grade,
 		)
 
 		if err := m.alerter.Alert(ctx, "warning", "LLM模型质量下降告警", alertMsg); err != nil {
-			fmt.Printf("[QualityMonitor] Failed to send alert: %v\n", err)
+			slog.Warn("quality monitor: failed to send alert", "error", err)
 		}
 	}
 }
@@ -284,7 +292,7 @@ func (m *QualityMonitor) loadLastScores(ctx context.Context) {
 func (m *QualityMonitor) GetCurrentScores() map[string]*QualityScore {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	
+
 	scores := make(map[string]*QualityScore)
 	for k, v := range m.lastScores {
 		scores[k] = v

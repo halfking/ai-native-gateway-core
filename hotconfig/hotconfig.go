@@ -221,18 +221,33 @@ func (c *Config) Set(ctx context.Context, key string, value interface{}) error {
 	}
 
 	_, err = c.pool.Exec(ctx, `
-		INSERT INTO settings_kv (key, value, updated_at)
-		VALUES ($1, $2, now())
+		INSERT INTO settings_kv (key, value, value_type, scope, category, updated_at)
+		VALUES ($1, $2, $3, 'platform', 'general', now())
 		ON CONFLICT (key) DO UPDATE SET
 			value = EXCLUDED.value,
+			value_type = EXCLUDED.value_type,
 			updated_at = now()
-	`, key, valueJSON)
+	`, key, valueJSON, settingValueType(value))
 	if err != nil {
 		return err
 	}
 
 	// Immediate reload so the change takes effect without waiting 30s
 	return c.reload(ctx)
+}
+
+// settingValueType returns the database type label used by settings_kv.
+func settingValueType(value interface{}) string {
+	switch value.(type) {
+	case bool:
+		return "bool"
+	case int, int8, int16, int32, int64, uint, uint8, uint16, uint32, uint64:
+		return "int"
+	case float32, float64:
+		return "float"
+	default:
+		return "string"
+	}
 }
 
 // Delete removes a setting.
