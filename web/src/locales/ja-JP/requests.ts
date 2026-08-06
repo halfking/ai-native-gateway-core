@@ -103,6 +103,10 @@ export default {
       clear: 'トレースフィルターをクリア',
       sessionSummary: 'セッション要約',
       sessionSummaryHint: 'セッション ID フィルターでのみ利用可能',
+      // 2026-08-06: detail drawer "Session summary" ボタンのラベルとツールチップ。
+      drawerSummaryButton: '📝 セッション要約',
+      drawerSummaryTitle: 'このセッションでフィルタされたリクエストログを開く',
+      drawerSummaryAria: 'セッション要約ビューを開く',
       generating: '要約中…',
       generate: '要約を生成',
       exportMd: 'Markdown をエクスポート',

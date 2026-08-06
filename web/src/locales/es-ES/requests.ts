@@ -94,6 +94,10 @@ export default {
       clear: 'Borrar filtro de traza',
       sessionSummary: 'Resumen de sesión',
       sessionSummaryHint: 'Solo disponible con un filtro de ID de sesión activo',
+      // 2026-08-06: etiqueta y tooltip del botón "Resumen de sesión" en el cajetín de detalle.
+      drawerSummaryButton: '📝 Resumen de sesión',
+      drawerSummaryTitle: 'Abrir el registro de peticiones filtrado por esta sesión',
+      drawerSummaryAria: 'Abrir la vista de resumen de sesión',
       generating: 'Resumiendo…',
       generate: 'Generar resumen',
       exportMd: 'Exportar Markdown',

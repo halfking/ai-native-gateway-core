@@ -7,7 +7,7 @@
 //   - 所有文案走 i18n
 import { ref, computed, onMounted, onUnmounted, inject, type Ref } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { RouterLink } from 'vue-router'
+import { RouterLink, useRouter } from 'vue-router'
 import { localeRef } from '../i18n'
 import {
   getMaasUsageSummary,
@@ -24,6 +24,7 @@ import RequestLogDrawer from '../components/RequestLogDrawer.vue'
 import { useLiveStream } from '../composables/useLiveStream'
 
 const { t } = useI18n()
+const router = useRouter()
 
 const days = ref(7)
 const summary = ref<MaasUsageSummary | null>(null)
@@ -193,6 +194,13 @@ function openRequestDetail(id: string) {
 }
 function closeRequestDrawer() {
   activeRequestId.value = null
+}
+
+// 2026-08-06: 详情抽屉的「会话总结」按钮 → 跳到请求日志页并预填会话筛选。
+function openSessionSummary(sessionId: string) {
+  if (!sessionId) return
+  closeRequestDrawer()
+  router.push({ path: '/request-logs', query: { gw_session_id: sessionId } })
 }
 
 // Tab 控制（与 DashboardViewV2 对齐：stream / stats）
@@ -559,7 +567,11 @@ onUnmounted(() => {
     </div>
 
     <!-- 请求详情抽屉 -->
-    <RequestLogDrawer :request-id="activeRequestId" @close="closeRequestDrawer" />
+    <RequestLogDrawer
+      :request-id="activeRequestId"
+      @close="closeRequestDrawer"
+      @generateSessionSummary="openSessionSummary"
+    />
   </div>
 </template>
 

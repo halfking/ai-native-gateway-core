@@ -96,6 +96,10 @@ export default {
       clear: 'Effacer le filtre de trace',
       sessionSummary: 'Résumé de session',
       sessionSummaryHint: 'Disponible uniquement quand un filtre ID de session est actif',
+      // 2026-08-06: libellé et info-bulle du bouton « Résumé de session » dans le tiroir de détail.
+      drawerSummaryButton: '📝 Résumé de session',
+      drawerSummaryTitle: 'Ouvrir le journal des requêtes filtré par cette session',
+      drawerSummaryAria: 'Ouvrir la vue Résumé de session',
       generating: 'Résumé en cours…',
       generate: 'Générer le résumé',
       exportMd: 'Exporter en Markdown',

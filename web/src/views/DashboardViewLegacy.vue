@@ -2,7 +2,7 @@
 import { ref, onMounted, onUnmounted, computed, watch, inject, type Ref, type ComputedRef } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { localeRef } from '../i18n'
-import { RouterLink } from 'vue-router'
+import { RouterLink, useRouter } from 'vue-router'
 import MemoraStatusButton from '../components/MemoraStatusButton.vue'
 import LiveRequestStream from '../components/LiveRequestStream.vue'
 import RequestLogDrawer from '../components/RequestLogDrawer.vue'
@@ -27,6 +27,7 @@ import { type LiveRequest } from '../composables/useLiveStream'
 import { isSuperAdmin, isDefaultTenant, getCurrentTenantId } from '../store'
 
 const { t } = useI18n()
+const router = useRouter()
 
 // 从父组件注入版本切换器
 const versionSwitcher = inject<{
@@ -203,6 +204,13 @@ function openRequestDetail(id: string) {
 }
 function closeRequestDrawer() {
   activeRequestId.value = null
+}
+
+// 2026-08-06: 详情抽屉的「会话总结」按钮 → 跳到请求日志页并预填会话筛选。
+function openSessionSummary(sessionId: string) {
+  if (!sessionId) return
+  closeRequestDrawer()
+  router.push({ path: '/request-logs', query: { gw_session_id: sessionId } })
 }
 
 const seenLiveRequestIds = new Set<string>()
@@ -522,7 +530,11 @@ scheduleStatsRecalibrate()
   </div>
 
   <!-- 2026-07-03: tile 点击 → 详情抽屉。复用现有 RequestLogDrawer。 -->
-  <RequestLogDrawer :request-id="activeRequestId" @close="closeRequestDrawer" />
+  <RequestLogDrawer
+    :request-id="activeRequestId"
+    @close="closeRequestDrawer"
+    @generateSessionSummary="openSessionSummary"
+  />
 </template>
 
 <style scoped>

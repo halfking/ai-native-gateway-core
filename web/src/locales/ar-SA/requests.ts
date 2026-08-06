@@ -103,6 +103,10 @@ export default {
       clear: 'مسح تصفية المسار',
       sessionSummary: 'ملخص الجلسة',
       sessionSummaryHint: 'متاح فقط في تصفية معرّف الجلسة',
+      // 2026-08-06: تسمية زر "ملخص الجلسة" في درج التفاصيل ونص التلميح.
+      drawerSummaryButton: '📝 ملخص الجلسة',
+      drawerSummaryTitle: 'افتح سجل الطلبات مع تصفية حسب هذه الجلسة',
+      drawerSummaryAria: 'افتح عرض ملخص الجلسة',
       generating: 'جاري التلخيص…',
       generate: 'إنشاء ملخص',
       exportMd: 'تصدير Markdown',

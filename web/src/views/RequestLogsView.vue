@@ -1155,6 +1155,24 @@ onMounted(async () => {
   if (typeof q.hours === 'string' && /^\d+$/.test(q.hours)) {
     hours.value = Number(q.hours)
   }
+  // 2026-08-06: 允许从其他视图（如 Dashboard 的"会话总结"按钮）通过 query 预填
+  // 会话/任务筛选。任一参数存在即拉宽时间窗与页大小，避免汇总结果落在默认
+  // 24h/50 条外。
+  const fromQuery = (key: string) =>
+    typeof q[key] === 'string' && (q[key] as string).trim() ? (q[key] as string).trim() : ''
+  const sessionId = fromQuery('gw_session_id')
+  const taskId = fromQuery('gw_task_id')
+  if (sessionId || taskId) {
+    if (sessionId) {
+      gwSessionFilter.value = sessionId
+      gwTaskFilter.value = ''
+    } else {
+      gwTaskFilter.value = taskId
+      gwSessionFilter.value = ''
+    }
+    if (hours.value < 168) hours.value = 168
+    if (pageSize.value < 200) pageSize.value = 200
+  }
   // 2026-07-02: 注册全局 ESC keydown 监听，用于关闭附件 lightbox
   // （参考文档 §5.2）。清理在 onBeforeUnmount（line ~75）。
   window.addEventListener('keydown', handleKeydown)
