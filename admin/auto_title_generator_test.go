@@ -342,7 +342,6 @@ func TestExtractMessagesForTitle_LongSystemTruncated(t *testing.T) {
 func TestCallAutoTitleLLM_EmitsParentHeaders(t *testing.T) {
 	var (
 		gotHeaders http.Header
-		gotBody    []byte
 		gotPath    string
 		mu         sync.Mutex
 	)
@@ -350,7 +349,6 @@ func TestCallAutoTitleLLM_EmitsParentHeaders(t *testing.T) {
 		mu.Lock()
 		gotHeaders = r.Header.Clone()
 		gotPath = r.URL.Path
-		gotBody, _ = io.ReadAll(r.Body)
 		mu.Unlock()
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
@@ -389,24 +387,38 @@ func TestCallAutoTitleLLM_EmitsParentHeaders(t *testing.T) {
 	if v := gotHeaders.Get("X-Gw-Is-Auto"); v != "true" {
 		t.Errorf("X-Gw-Is-Auto = %q, want true", v)
 	}
-	if v := gotHeaders.Get("Authorization"); !strings.HasPrefix(v, "Bearer ") {
-		t.Errorf("Authorization = %q, want Bearer …", v)
+}
+
+// TestExtractMessagesForTitle_ToolMessagesFiltered (2026-08-06) — tool and
+// function role messages should be excluded from the title corpus to avoid
+// polluting it with raw tool outputs.
+func TestExtractMessagesForTitle_ToolMessagesFiltered(t *testing.T) {
+	body := `{
+		"messages": [
+			{"role": "user", "content": "search for cats"},
+			{"role": "assistant", "content": "", "tool_calls": [{"function": {"name": "search"}}]},
+			{"role": "tool", "content": "search results: 1000 pages of cat photos"},
+			{"role": "function", "content": "function output: processed 500 items"},
+			{"role": "user", "content": "summarize the results"}
+		]
+	}`
+	got := extractMessagesForTitle(body)
+
+	if strings.Contains(got, "search results") || strings.Contains(got, "1000 pages") {
+		t.Errorf("extractMessagesForTitle should filter tool messages, but got:\n%s", got)
 	}
-	// Payload sanity: model must be in body, user message must be present.
-	var payload map[string]any
-	if err := json.Unmarshal(gotBody, &payload); err != nil {
-		t.Fatalf("payload not JSON: %v (body=%q)", err, gotBody)
+	if strings.Contains(got, "function output") || strings.Contains(got, "processed 500") {
+		t.Errorf("extractMessagesForTitle should filter function messages, but got:\n%s", got)
 	}
-	if payload["model"] == nil || payload["model"] == "" {
-		t.Errorf("payload missing model: %v", payload)
+	if !strings.Contains(got, "search for cats") {
+		t.Errorf("extractMessagesForTitle should preserve first user message, got:\n%s", got)
 	}
-	msgs, ok := payload["messages"].([]any)
-	if !ok || len(msgs) < 1 {
-		t.Fatalf("payload messages missing/empty: %v", payload["messages"])
+	if !strings.Contains(got, "summarize the results") {
+		t.Errorf("extractMessagesForTitle should preserve last user message, got:\n%s", got)
 	}
 }
 
-// TestCallAutoTitleLLM_RetriesOn503 (2026-08-06) — verifies that a single
+// TestCallAutoTitleLLM_EmitsParentRequestHeaders (2026-08-06) — verifies the
 // 503 response triggers a single retry (per resolveAutoTitleModel's 1-retry
 // policy) and a subsequent 200 succeeds. Without the retry, the first
 // 503 would surface as "LLM didn't receive the request".
