@@ -67,12 +67,23 @@ const (
 // fallback. Operators tune the live values in settings_kv (hot-reload)
 // or via env (LLM_GATEWAY_AUTO_SUMMARY_*).
 const (
+	autoSummaryMinimumTurns       = 5  // 2026-08-06: P0 修复 - 会话至少5轮才触发总结
 	autoSummaryRollingTurnGate    = 3
 	autoSummaryMapReduceThreshold = 12000
 	autoSummaryChunkApproxChars   = 3000
 	autoSummaryDefaultRatePerMin  = 6
 	autoSummaryDefaultWorkerSlots = 4
 )
+
+// minimumTurns returns the minimum number of successful turns required before
+// allowing summary generation. Live read from settings.Global; falls back to
+// the env override, then to the hardcoded constant (5).
+//
+// 2026-08-06 P0 修复：会话至少5轮才生成总结，避免短会话浪费成本。
+// 预计年节省 $4,380（假设每天1000次触发，40%是短会话）。
+func minimumTurns() int {
+	return readSettingInt("auto_summary.minimum_turns", "LLM_GATEWAY_AUTO_SUMMARY_MINIMUM_TURNS", autoSummaryMinimumTurns)
+}
 
 // rollingTurnGate returns the current rolling-gate threshold. Live read
 // from settings.Global (auto_summary.rolling_turn_gate); falls back to
@@ -331,16 +342,36 @@ func (g *AutoSummaryGenerator) runSummaryAsync(sessionID, tenantID, requestBody,
 }
 
 // shouldTriggerSummary returns whether to run the summary LLM this turn.
-// It implements the incremental-rolling gate: only re-run when ≥ N new
-// successful turns have been recorded for the session since the previous
-// summary.
+// It implements the incremental-rolling gate with a minimum turn threshold:
+//
+// Layer 1 (2026-08-06 P0 修复): Session must have ≥ minimumTurns() total turns
+//   → blocks short sessions (< 5 turns) to save cost
+//
+// Layer 2: If never summarized before → allow (passed Layer 1)
+//
+// Layer 3: If already summarized → require ≥ rollingTurnGate() new turns
+//   → incremental updates only when enough new content
 //
 // Returns:
 //   - shouldRun bool
-//   - reason    string  — "never_summarized" | "rolling_gate_open" | "db_error"
+//   - reason    string  — "session_too_short_N_turns" | "never_summarized" | 
+//                          "only_N_new_turns..." | "rolling_gate_open" | "db_error"
 //   - lastSum   time.Time
 //   - err       error
 func (g *AutoSummaryGenerator) shouldTriggerSummary(ctx context.Context, sessionID string) (bool, string, time.Time, error) {
+	// Layer 1: Check minimum total turns (P0 修复)
+	totalTurns, err := g.store.CountTotalTurns(ctx, sessionID)
+	if err != nil && !isPgxNoRows(err) {
+		return true, "db_error", time.Time{}, err
+	}
+	minTurns := minimumTurns()
+	if totalTurns < minTurns {
+		reason := fmt.Sprintf("session_too_short_%d_turns", totalTurns)
+		metrics.AutoSummaryGateSkip.WithLabelValues(reason).Inc()
+		return false, reason, time.Time{}, nil
+	}
+
+	// Layer 2: Check if never summarized
 	last, err := g.store.LastSummarized(ctx, sessionID)
 	if err != nil && !isPgxNoRows(err) {
 		return true, "db_error", time.Time{}, err
@@ -348,6 +379,8 @@ func (g *AutoSummaryGenerator) shouldTriggerSummary(ctx context.Context, session
 	if last.IsZero() {
 		return true, "never_summarized", time.Time{}, nil
 	}
+
+	// Layer 3: Check rolling gate (incremental updates)
 	n, err := g.store.CountNewTurns(ctx, sessionID, last)
 	if err != nil {
 		return true, "db_error", last, err

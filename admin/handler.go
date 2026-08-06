@@ -750,6 +750,15 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/admin/sessions", admin(h.handleListSessions))
 	mux.HandleFunc("/api/admin/sessions/", admin(h.handleSessionSubrouter))
 
+	// 2026-08-06: session management endpoints (project/task/tag dimensions)
+	// These new endpoints complement the existing session list/detail APIs
+	// with enhanced filtering by project_id, task_id, user_tags, and full-text search.
+	mux.HandleFunc("/api/sessions/list", admin(h.HandleSessionManagementList))
+	mux.HandleFunc("/api/sessions/detail/", admin(h.HandleSessionManagementDetail))
+	mux.HandleFunc("/api/sessions/update/", admin(h.HandleSessionManagementUpdate))
+	mux.HandleFunc("/api/sessions/task-flow/", admin(h.HandleTaskFlow))
+	mux.HandleFunc("/api/sessions/project-costs/", admin(h.HandleProjectCosts))
+
 	// 2026-07-10: 数据库降级和备份恢复端点
 	if h.dbMonitor != nil {
 		mux.HandleFunc("/api/admin/db-status", admin(h.handleDBStatus))
