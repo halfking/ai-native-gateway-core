@@ -32,7 +32,6 @@ import (
 	"time"
 
 	summarymodel "github.com/kaixuan/llm-gateway-go/domains/hooks/compression/summary"
-	v2 "github.com/kaixuan/llm-gateway-go/domains/session/v2"
 	"github.com/kaixuan/llm-gateway-go/domains/transformation" //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/settings"
 )
@@ -45,13 +44,18 @@ type SessionCompressorDeps struct {
 	// DEPRECATED: Use CacheV2 instead. Kept for fallback during V2 migration.
 	Cache *SessionCache
 
-	// CacheV2 is the V2 cache architecture that reads from session_turns.
-	// When non-nil and Feature Flag is enabled, this takes precedence over Cache.
-	CacheV2 *v2.SessionCacheV2
+	// CacheV2 is the V2 session-state reader. Non-nil + feature flag on
+	// makes the V2 read path take precedence over Cache.
+	//
+	// Defined as a local interface (not *v2.SessionCacheV2) so the
+	// compression package does not import the v2 package and so tests
+	// can inject a stub without a live database.
+	CacheV2 V2StateReader
 
-	// Builder is the V2 outbound message builder that reconstructs full context
-	// from incremental deltas stored in session_bodies.
-	Builder *v2.OutboundBuilder
+	// Builder rebuilds the last outbound body (JSON messages array) from
+	// the V2 incremental tables. Defined as a local interface for the
+	// same reasons as CacheV2.
+	Builder V2OutboundBuilder
 
 	// CompactionDeps provides the Memora + Provider clients needed by
 	// tryLLMContextCompaction. When nil, LLM summary is skipped and the
@@ -61,6 +65,24 @@ type SessionCompressorDeps struct {
 	// Disabled completely disables the session compressor when true.
 	// Reads LLM_GATEWAY_SESSION_COMPRESSOR_DISABLE env var at startup.
 	Disabled bool
+}
+
+// V2StateReader is the minimal slice of *v2.SessionCacheV2 that
+// tryLoadV2State consumes: it only needs to know whether prior state
+// exists for a session and whether that lookup errored.
+type V2StateReader interface {
+	// HasState reports whether any prior turn state exists for the
+	// session. A (false, nil) result means "new session" and is NOT
+	// an error — tryLoadV2State treats it as ok=true with an empty
+	// body so the caller proceeds as a fresh session.
+	HasState(ctx context.Context, tenantID, sessionID string) (bool, error)
+}
+
+// V2OutboundBuilder rebuilds the most recent outbound body (the exact
+// message array last forwarded to the upstream model, including any
+// compression markers) as a JSON-marshaled []byte.
+type V2OutboundBuilder interface {
+	BuildLatestOutbound(ctx context.Context, tenantID, sessionID string) ([]byte, error)
 }
 
 // PrepareResult is the output of SessionCompressor.Prepare.
@@ -704,31 +726,24 @@ func (sc *SessionCompressor) tryLoadV2State(
 	ctx context.Context,
 	tenantID, sessionID string,
 ) (lastOutboundBody []byte, ok bool) {
-	// Call CacheV2.Get() - returns *SessionStateV2
-	state, err := sc.deps.CacheV2.Get(ctx, tenantID, sessionID)
+	// Ask the V2 reader whether prior state exists. A "no" (new session)
+	// is not an error: we return ok=true with an empty body so the caller
+	// proceeds as a fresh session rather than falling back to V1.
+	has, err := sc.deps.CacheV2.HasState(ctx, tenantID, sessionID)
 	if err != nil {
 		slog.WarnContext(ctx, "v2 cache get failed, fallback to v1",
 			"session", sessionID, "tenant", tenantID, "error", err)
 		return nil, false
 	}
-
-	if state == nil {
+	if !has {
 		// New session, no previous state
 		return nil, true
 	}
 
-	// Call Builder.BuildFromLatestOutbound() - returns ([]Message, *BuildMeta, error)
-	messages, _, err := sc.deps.Builder.BuildFromLatestOutbound(ctx, tenantID, sessionID)
+	// Rebuild the last outbound body (JSON) via the V2 builder.
+	outboundBody, err := sc.deps.Builder.BuildLatestOutbound(ctx, tenantID, sessionID)
 	if err != nil {
 		slog.WarnContext(ctx, "v2 build from outbound failed, fallback to v1",
-			"session", sessionID, "tenant", tenantID, "error", err)
-		return nil, false
-	}
-
-	// Marshal messages to JSON
-	outboundBody, err := json.Marshal(messages)
-	if err != nil {
-		slog.WarnContext(ctx, "v2 marshal messages failed, fallback to v1",
 			"session", sessionID, "tenant", tenantID, "error", err)
 		return nil, false
 	}
