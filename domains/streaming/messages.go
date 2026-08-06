@@ -1207,11 +1207,17 @@ func writeAnthropicError(w http.ResponseWriter, statusCode int, errType, message
 	})
 }
 
+// extractEndUser is the /v1/messages (Anthropic Messages) end-user
+// resolver. Delegates to the streaming-package-wide helper so the
+// priority chain (parsed body user → X-End-User-Id → body sniff →
+// "anonymous") is identical across chat-completions, anthropic
+// messages, and openai responses handlers. 2026-08-06: previously this
+// function only checked X-End-User-Id and skipped the body entirely,
+// which is why Anthropic Messages requests on platforms that don't
+// set X-End-User-Id always showed end_user_id="anonymous" (or NULL
+// on the failure-path).
 func extractEndUser(r *http.Request) string {
-	if v := r.Header.Get("X-End-User-Id"); v != "" {
-		return v
-	}
-	return "anonymous"
+	return resolveEndUser("", r)
 }
 
 func tenant(ki *authentication.KeyInfo) string {

@@ -98,8 +98,32 @@ ORDER BY child.ts DESC;
 
 - **rolling 闸门常量 3 hard-coded**：后续可下沉为 `session_analytics` settings 的可调参数（与 v2 dispatch 共用）
 - **worker slot 默认 4**：在 session.closed 高并发窗口下可能成为瓶颈；后续接入 metrics 后按 P95 调优
-- **summary JSON 容错**：`parseSummaryJSON` 已支持 prose 包裹，但模型返回 markdown fence 时仍可能解析失败 —— 下一轮可加 markdown fence 剥离
+- **summary JSON 容错**：`parseSummaryJSON` 已支持 prose 包裹 + markdown fence 剥离（见 2026-08-06 后续补丁）
 - **summarystore 写入未触发 conflict 时不返回错误**：保持 v2 dispatch 行为一致；如需 conflict metrics，下一轮加 `RETURNING summary_version`
+
+---
+
+## 后续补丁 (2026-08-06 同一 commit chain)
+
+### 指标可观测性
+
+- `metrics/auto_summary_metrics.go` 新增 Prometheus counter + histogram：
+  - `auto_summary_trigger_total{result}` — ok / error / rate_limited / saturated / db_error
+  - `auto_summary_llm_call_total{mode, result}` — summary / map / reduce × ok / transient_retry / error / invalid_response
+  - `auto_summary_llm_latency_seconds{mode}` — LLM 调用延迟直方图
+  - `auto_summary_gate_skip_total{reason}` — 滚动闸门跳过原因
+  - `auto_summary_map_reduce_partial_fail_total` — map-reduce 部分失败计数
+  - `auto_summary_chunks` — chunk 分布直方图
+  - 对称：`auto_title_trigger_total{result}` / `auto_title_llm_call_total{result}` / `auto_title_llm_latency_seconds`
+
+### map-reduce 部分失败容忍
+
+旧行为：任一 chunk LLM 失败 → 整次总结硬终止  
+新行为：N-1/N 失败时降级 — 记录 slog.Warn + 增加 partial_fail 计数 + reduce 成功的 partials；仅全部 chunks 失败才硬终止
+
+### markdown fence 解析兼容
+
+`parseSummaryJSON` + 新增 `stripMarkdownFence`：剥离 ```json / 围栏；接受 CRLF；兼容严格 JSON / prose 包裹 / fence 包裹 / 纯 prose 四种格式
 
 ## 部署后实地验证 SQL
 

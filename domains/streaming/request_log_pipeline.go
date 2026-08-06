@@ -786,12 +786,26 @@ func (c *RequestLogContext) buildEntry(errCode, errMessage string, providerID, c
 		c.recordMetadataLoss("attachments", attachmentsErr)
 	}
 
+	// 2026-08-06: populate end_user_id from the unified resolver so
+	// failure-path rows (auth_unavailable / invalid_key / model_forbidden /
+	// session_forbidden / etc.) carry the same end-user identity as the
+	// success-path emits. Previously this column was NULL on every
+	// failure-row because buildEntry had no EndUserID field — the
+	// dc767386f... incident is the user-facing symptom. See resolveEndUser
+	// in handler.go for the full priority chain.
+	endUser := resolveEndUser("", c.Request, c.Body)
+	var endUserPtr *string
+	if endUser != "" {
+		endUserPtr = &endUser
+	}
+
 	reqLog := &telemetry.RequestLogEntry{
 		RequestID:         c.RequestID,
 		EventAt:           &eventAt,
 		TenantID:          tenantID,
 		ApplicationID:     applicationID,
 		APIKeyID:          apiKeyID,
+		EndUserID:         endUserPtr,
 		ClientModel:       strPtr(clientModel),
 		OutboundModel:     strPtr(outboundModel),
 		ProviderID:        c.ProviderID,
