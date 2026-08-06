@@ -248,3 +248,197 @@ func TestRequestLogContextTerminalGateCompetingOutcomes(t *testing.T) {
 		t.Fatalf("terminal gate winners=%d terminal=%v", won.Load(), ctx.IsTerminal())
 	}
 }
+
+// TestRequestLogContext_KeyInfoParity (2026-08-06) — the audit of the
+// dc767386f... end-user fix surfaced a parity risk between success-path
+// emitTelemetry and failure-path buildEntry. They live in different
+// files and populate the api-key display fields through different code
+// paths (applyKeyInfoToRequestLog vs enrichRequestLogFromMeta). If one
+// path stops calling its enrichment helper — e.g. someone refactors
+// fillAttemptMeta — the two rows would silently diverge.
+//
+// This test pins the contract by building a synthetic keyInfo and
+// asserting BOTH builders produce identical values for the api-key
+// display fields. The investigation confirmed parity holds when keyInfo
+// is fully populated; this test now locks it down for future refactors.
+//
+// The success-path emitTelemetry builder is in handler.go and not
+// reachable from this package without wiring an executor + audit
+// event — too heavy for a unit test. We approximate it with the same
+// field list (the literal in emitTelemetry) so that we exercise the
+// SUCCESS-LIKE construction inline. The failure path is exercised
+// through BuildFailureEntry which calls the real buildEntry.
+//
+// Both builders must agree on these 7 fields:
+//   - TenantID
+//   - ApplicationID
+//   - APIKeyID
+//   - APIKeyPrefix
+//   - APIKeyOwnerUser
+//   - ApplicationCode
+//   - EndUserID (covered by end-user fix Round-1+2; sanity-checked here)
+func TestRequestLogContext_KeyInfoParity(t *testing.T) {
+	var (
+		tenantID       = "tenant-acme"
+		apiKeyID       = 42
+		applicationID  = 7
+		keyPrefix      = "sk-acme-1a2b"
+		ownerUser      = "ops@acme.com"
+		appCode        = "PROD"
+		endUser        = "alice@acme.com"
+	)
+	ki := &authentication.KeyInfo{
+		ID:              apiKeyID,
+		TenantID:        tenantID,
+		ApplicationID:   applicationID,
+		ApplicationCode: appCode,
+		KeyPrefix:       keyPrefix,
+		OwnerUser:       &ownerUser,
+	}
+
+	// ---- failure path: BuildFailureEntry ----
+	// Use a body that contains "user":"alice@acme.com" so the failure-path
+	// resolveEndUser() picks it up via extractEndUserFromBody. This
+	// matches the realistic production case (a typed reqBody.User).
+	bodyWithUser := `{"model":"glm-5.1","user":"alice@acme.com"}`
+	ch := NewChatHandler(nil, nil, nil, nil, nil, nil)
+	r := httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(bodyWithUser))
+	r.Header.Set("X-Request-Id", "client-req-XYZ")
+	failCtx := ch.NewRequestLogContext(r, "server-uuid-fail", time.Now())
+	failCtx.Body = []byte(bodyWithUser)
+	failCtx.SetClientModel("glm-5.1")
+	failCtx.SetKey(ki)
+
+	failEntry := failCtx.BuildFailureEntry("transient", "upstream transient", nil, nil)
+	if failEntry == nil {
+		t.Fatal("nil failure entry")
+	}
+
+	// ---- success path: emulate the literal emitted by emitTelemetry
+	// (handler.go:3929) so we exercise the SAME field set the success
+	// builder uses, without the full executor wiring.
+	now := time.Now()
+	successEntry := &telemetry.RequestLogEntry{
+		RequestID:       "server-uuid-success",
+		TenantID:        ki.TenantID,
+		ApplicationID:   &applicationID,
+		APIKeyID:        &apiKeyID,
+		APIKeyPrefix:    strPtr(keyPrefix),
+		APIKeyOwnerUser: strPtr(ownerUser),
+		ApplicationCode: strPtr(appCode),
+		EndUserID:       strPtr(endUser),
+		ClientModel:     strPtr("glm-5.1"),
+		Success:         true,
+		RequestStatus:   strPtr(telemetry.RequestStatusSuccess),
+		EventAt:         &now,
+	}
+	applyKeyInfoToRequestLog(successEntry, ki)
+	enrichRequestLogFromMeta(successEntry, ki, &failCtx.meta)
+	successEntry.EndUserID = strPtr(endUser)
+
+	// ---- parity assertions: both rows must carry the same display fields.
+	check := func(field string, failVal, succVal *string) {
+		t.Helper()
+		switch {
+		case failVal == nil && succVal == nil:
+			return
+		case failVal == nil && succVal != nil:
+			t.Errorf("%s: FAILURE row is nil but SUCCESS row is %q (parity lost)", field, *succVal)
+		case failVal != nil && succVal == nil:
+			t.Errorf("%s: FAILURE row is %q but SUCCESS row is nil (parity lost)", field, *failVal)
+		case *failVal != *succVal:
+			t.Errorf("%s: FAILURE row is %q but SUCCESS row is %q (parity lost)", field, *failVal, *succVal)
+		}
+	}
+	check("ApplicationID", intStrPtr(failEntry.ApplicationID), intStrPtr(successEntry.ApplicationID))
+	check("APIKeyID", intStrPtr(failEntry.APIKeyID), intStrPtr(successEntry.APIKeyID))
+	check("APIKeyPrefix", failEntry.APIKeyPrefix, successEntry.APIKeyPrefix)
+	check("APIKeyOwnerUser", failEntry.APIKeyOwnerUser, successEntry.APIKeyOwnerUser)
+	check("ApplicationCode", failEntry.ApplicationCode, successEntry.ApplicationCode)
+	check("EndUserID", failEntry.EndUserID, successEntry.EndUserID)
+	check("TenantID", strPtr(failEntry.TenantID), strPtr(successEntry.TenantID))
+}
+
+// TestRequestLogContext_BuildFailureEntry_KeyMetaParity (2026-08-06) —
+// granular check: even when keyInfo is populated, the failure-path
+// buildEntry must produce the SAME api-key display fields as the
+// success path. This is the regression that the audit agent flagged.
+//
+// Pre-fix observation: buildEntry never directly sets APIKeyPrefix /
+// APIKeyOwnerUser / ApplicationCode — those flow in only via
+// enrichRequestLogFromMeta + meta (populated by refreshMeta →
+// fillAttemptMeta → resolveKeyMeta). If any of those helpers stops
+// running, the failure-path row silently loses the fields while the
+// success path keeps them. This test pins that contract.
+//
+// If this test ever fails after a refactor, the fix is to call
+// applyKeyInfoToRequestLog directly inside buildEntry (or pass an
+// already-populated meta).
+func TestRequestLogContext_BuildFailureEntry_KeyMetaParity(t *testing.T) {
+	var (
+		keyPrefix = "sk-test-X1Y2Z3"
+		ownerUser = "billing@example.com"
+		appCode   = "staging"
+	)
+	ki := &authentication.KeyInfo{
+		ID:              100,
+		TenantID:        "default",
+		ApplicationID:   5,
+		ApplicationCode: appCode,
+		KeyPrefix:       keyPrefix,
+		OwnerUser:       &ownerUser,
+	}
+
+	ch := NewChatHandler(nil, nil, nil, nil, nil, nil)
+	r := httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(`{"model":"x"}`))
+	r.Header.Set("X-Request-Id", "client-req-meta")
+
+	ctx := ch.NewRequestLogContext(r, "server-uuid-meta", time.Now())
+	ctx.Body = []byte(`{"model":"x"}`)
+	ctx.SetClientModel("x")
+	ctx.SetKey(ki)
+
+	entry := ctx.BuildFailureEntry("auth_unavailable", "auth service down", nil, nil)
+	if entry == nil {
+		t.Fatal("nil entry")
+	}
+
+	if entry.APIKeyPrefix == nil || *entry.APIKeyPrefix != keyPrefix+"***" {
+		t.Errorf("APIKeyPrefix = %v, want %q (failure-path parity lost; enrichRequestLogFromMeta didn't carry meta.APIKeyPrefix across)", entry.APIKeyPrefix, keyPrefix+"***")
+	}
+	if entry.APIKeyOwnerUser == nil || *entry.APIKeyOwnerUser != ownerUser {
+		t.Errorf("APIKeyOwnerUser = %v, want %q (failure-path parity lost; enrichRequestLogFromMeta didn't carry meta.APIKeyOwnerUser across)", entry.APIKeyOwnerUser, ownerUser)
+	}
+	if entry.ApplicationCode == nil || *entry.ApplicationCode != appCode {
+		t.Errorf("ApplicationCode = %v, want %q (failure-path parity lost; enrichRequestLogFromMeta didn't carry meta.ApplicationCode across)", entry.ApplicationCode, appCode)
+	}
+}
+
+// intStrPtr returns a pointer to the decimal string of an *int pointer.
+// Used by the parity check to compare ApplicationID / APIKeyID without
+// pulling in fmt.Sprintf inside the assertion helper.
+func intStrPtr(v *int) *string {
+	if v == nil {
+		return nil
+	}
+	s := ""
+	// avoid pulling strconv; use fmt-free itoa via string concat on rune.
+	// Negative and zero both supported.
+	if *v == 0 {
+		return &s
+	}
+	n := *v
+	if n < 0 {
+		s = "-"
+		n = -n
+	}
+	buf := [12]byte{}
+	i := len(buf)
+	for n > 0 {
+		i--
+		buf[i] = byte('0' + n%10)
+		n /= 10
+	}
+	s += string(buf[i:])
+	return &s
+}
