@@ -196,7 +196,7 @@ func (h *Handler) handleSessionDetail(w http.ResponseWriter, r *http.Request) {
 	}
 
 	ctx := r.Context()
-	sessionKey := strings.TrimPrefix(r.URL.Path, "/api/sessions/")
+	sessionKey := strings.TrimPrefix(r.URL.Path, "/api/sessions/detail/")
 	if sessionKey == "" {
 		http.Error(w, "session_key required", http.StatusBadRequest)
 		return
@@ -343,7 +343,7 @@ func (h *Handler) handleSessionUpdate(w http.ResponseWriter, r *http.Request) {
 	}
 
 	ctx := r.Context()
-	sessionKey := strings.TrimPrefix(r.URL.Path, "/api/sessions/")
+	sessionKey := strings.TrimPrefix(r.URL.Path, "/api/sessions/update/")
 	if sessionKey == "" {
 		http.Error(w, "session_key required", http.StatusBadRequest)
 		return
