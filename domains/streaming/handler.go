@@ -5548,31 +5548,33 @@ func extractBearerToken(r *http.Request) string {
 // end_user_id on every early-failure row and every Anthropic-message
 // request, including the dc767386f... incident.
 func resolveEndUser(bodyUser string, r *http.Request, bodyBytes ...[]byte) string {
-	if bodyUser != "" {
-		return bodyUser
+	// 1. Caller-supplied bodyUser (e.g. parsed reqBody.User from chat-completions)
+	if v := strings.TrimSpace(bodyUser); v != "" {
+		return v
 	}
-	if r == nil {
-		return "anonymous"
+	// 2. X-End-User-Id header (works on all protocols)
+	if r != nil {
+		if v := strings.TrimSpace(r.Header.Get("X-End-User-Id")); v != "" {
+			return v
+		}
 	}
-	if header := r.Header.Get("X-End-User-Id"); header != "" {
-		return strings.TrimSpace(header)
-	}
+	// 3. Captured body bytes (typically logCtx.Body). Loops over the
+	// variadic so callers can pass multiple captured snapshots (e.g.
+	// original + redacted) and we accept whichever first yields a user.
 	for _, b := range bodyBytes {
 		if v := extractEndUserFromBody(b); v != "" {
 			return v
 		}
 	}
-	// Last-resort: try r.Body. By the time buildEntry runs this is
-	// almost always empty (already drained upstream), but it catches the
-	// narrow window where r.Body is still buffered and bodyBytes was nil.
-	if r.Body != nil {
-		buf, err := io.ReadAll(io.LimitReader(r.Body, 1<<20))
-		if err == nil && len(buf) > 0 {
-			if v := extractEndUserFromBody(buf); v != "" {
-				return v
-			}
-		}
-	}
+	// NOTE (2026-08-06 audit fix): we intentionally do NOT read r.Body
+	// here. By the time buildEntry / disconnect-probe / context-attrs
+	// fire, r.Body has typically already been drained by upstream body
+	// capture (captureAttemptBody / attemptRequestBody). Destructive
+	// reading here would silently strip the suffix of any large body
+	// and break downstream consumers (decode, forward to upstream). If
+	// a future caller needs body-based resolution AND has not yet
+	// captured into c.Body, it must pass the bytes explicitly via the
+	// variadic.
 	return "anonymous"
 }
 
@@ -5586,6 +5588,17 @@ func resolveEndUser(bodyUser string, r *http.Request, bodyBytes ...[]byte) strin
 // path buildEntry runs, the original r.Body has already been consumed
 // upstream. BodyBytes may be nil/empty for early-failure paths where
 // the request never got past body parsing.
+//
+// Loose-scan safety (2026-08-06 audit fix):
+//   - Only triggers on bodies where strict-JSON unmarshal fails AND
+//     the body starts with `{` (i.e. it looks like a top-level JSON
+//     object — multipart/binary bodies and attachment payloads are
+//     rejected by this gate to prevent false positives).
+//   - Walks past JSON string escapes when finding the closing quote,
+//     so {"user":"a\"b","x":1} yields "a\"b" (downstream SQL handles
+//     the actual escaping).
+//   - Caps total scan at the first 1 MB to bound worst-case cost on
+//     huge bodies.
 func extractEndUserFromBody(body []byte) string {
 	if len(body) == 0 {
 		return ""
@@ -5600,19 +5613,51 @@ func extractEndUserFromBody(body []byte) string {
 		}
 		return ""
 	}
-	// Loose scan for truncated JSON like {"model":"x","user":"al…
+	// Loose-scan gate: only sniff if the body STARTS with '{' so we
+	// don't false-positive on multipart/binary/attachment payloads that
+	// happen to contain a literal "user" substring.
+	firstNonSpace := 0
+	for firstNonSpace < len(body) && (body[firstNonSpace] == ' ' || body[firstNonSpace] == '\t' || body[firstNonSpace] == '\n' || body[firstNonSpace] == '\r') {
+		firstNonSpace++
+	}
+	if firstNonSpace >= len(body) || body[firstNonSpace] != '{' {
+		return ""
+	}
+	// Loose scan for truncated / malformed JSON like {"model":"x","user":"al…
+	const maxScan = 1 << 20 // 1 MB
+	scanBody := body
+	if len(scanBody) > maxScan {
+		scanBody = scanBody[:maxScan]
+	}
 	pattern := []byte(`"user"`)
-	idx := bytes.Index(body, pattern)
+	idx := bytes.Index(scanBody, pattern)
 	if idx < 0 {
 		return ""
 	}
-	after := body[idx+len(pattern):]
+	// Reject nested occurrences: only accept `"user"` when it sits at
+	// the top level of the JSON object — i.e. the byte preceding it is
+	// `{` or `,` (not `"`/`[`/`{`/`:` which would indicate we're inside
+	// another value, key, or container).
+	if idx == 0 || !isTopLevelJSONContext(scanBody, idx-1) {
+		// Try one more position to avoid false positives on edge cases
+		// where the FIRST "user" is nested. We don't recurse indefinitely
+		// to keep worst-case bounded.
+		idx2 := bytes.Index(scanBody[idx+len(pattern):], pattern)
+		if idx2 < 0 {
+			return ""
+		}
+		idx = idx + len(pattern) + idx2
+		if idx == 0 || !isTopLevelJSONContext(scanBody, idx-1) {
+			return ""
+		}
+	}
+	after := scanBody[idx+len(pattern):]
 	colonIdx := bytes.IndexByte(after, ':')
 	if colonIdx < 0 {
 		return ""
 	}
 	after = after[colonIdx+1:]
-	// Skip whitespace.
+	// Skip whitespace between colon and value.
 	for len(after) > 0 && (after[0] == ' ' || after[0] == '\t' || after[0] == '\n' || after[0] == '\r') {
 		after = after[1:]
 	}
@@ -5620,13 +5665,40 @@ func extractEndUserFromBody(body []byte) string {
 		return ""
 	}
 	after = after[1:]
-	// Find the closing quote (handle escapes minimally — we only need
-	// a best-effort identifier; downstream SQL escaping handles the rest).
-	endIdx := bytes.IndexByte(after, '"')
+	// Walk past JSON escapes to find the true closing quote. A naive
+	// bytes.IndexByte('"') would mis-cut on inputs like {"user":"a\"b"}.
+	endIdx := -1
+	for i := 0; i < len(after); i++ {
+		if after[i] == '\\' && i+1 < len(after) {
+			i++ // skip the escaped byte
+			continue
+		}
+		if after[i] == '"' {
+			endIdx = i
+			break
+		}
+	}
 	if endIdx < 0 {
 		return ""
 	}
 	return strings.TrimSpace(string(after[:endIdx]))
+}
+
+// isTopLevelJSONContext reports whether byte at position pos is a valid
+// JSON boundary immediately before a top-level object key. The byte at
+// pos must be either '{' (object start) or ',' (key separator). Any
+// other byte means the preceding token is a nested value, container, or
+// non-JSON text — disqualifying the candidate.
+func isTopLevelJSONContext(b []byte, pos int) bool {
+	if pos < 0 || pos >= len(b) {
+		return false
+	}
+	switch b[pos] {
+	case '{', ',':
+		return true
+	default:
+		return false
+	}
 }
 
 func extractTokensFromResponseBody(body []byte) (promptTokens, completionTokens, cacheRead, cacheWrite int) {

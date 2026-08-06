@@ -793,7 +793,14 @@ func (c *RequestLogContext) buildEntry(errCode, errMessage string, providerID, c
 	// failure-row because buildEntry had no EndUserID field — the
 	// dc767386f... incident is the user-facing symptom. See resolveEndUser
 	// in handler.go for the full priority chain.
+	//
+	// Audit fix: also stash the resolved value into c.EndUser so the
+	// client-disconnect probe and request_context_attrs side-table
+	// (which both read c.EndUser) match the main request row. Previously
+	// c.EndUser was a dead field (no production assignment), causing
+	// parity divergence between the main row and side paths.
 	endUser := resolveEndUser("", c.Request, c.Body)
+	c.EndUser = endUser
 	var endUserPtr *string
 	if endUser != "" {
 		endUserPtr = &endUser

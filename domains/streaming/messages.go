@@ -427,11 +427,17 @@ func (h *MessagesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			slog.Warn("request_logger: messages session merge failed", "request_id", requestID, "error", err)
 		}
 	}
+	// 2026-08-06 audit fix: Anthropic Messages native metadata.user_id
+	// remains highest priority; the unified resolver handles the
+	// remaining cases (X-End-User-Id header, OpenAI-style body
+	// "user" field via loose scan). bodyBytes is the captured request
+	// body — passing it lets the resolver recover the "user" field
+	// even after r.Body has been drained by upstream parsing.
 	var endUser string
 	if reqBody.Metadata != nil && reqBody.Metadata.UserID != "" {
 		endUser = reqBody.Metadata.UserID
 	} else {
-		endUser = extractEndUser(r)
+		endUser = resolveEndUser("", r, bodyBytes)
 	}
 	clientID := identity.BuildIdentityFromRequest(r, tenant(keyInfo), appID(keyInfo), apiKeyIDPtr(keyInfo), clientProfileFromKey(keyInfo))
 
@@ -1216,9 +1222,13 @@ func writeAnthropicError(w http.ResponseWriter, statusCode int, errType, message
 // which is why Anthropic Messages requests on platforms that don't
 // set X-End-User-Id always showed end_user_id="anonymous" (or NULL
 // on the failure-path).
-func extractEndUser(r *http.Request) string {
-	return resolveEndUser("", r)
-}
+// 2026-08-06 audit cleanup: extractEndUser removed. Both /v1/messages
+// and /v1/responses now call resolveEndUser directly with the captured
+// body bytes, so the wrapper serves no callers. The function was
+// previously a thin alias that only consulted X-End-User-Id (see
+// extractEndUserFromBody + resolveEndUser in handler.go for the
+// unified priority chain: bodyUser → X-End-User-Id → body sniff →
+// "anonymous").
 
 func tenant(ki *authentication.KeyInfo) string {
 	if ki != nil {
