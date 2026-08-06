@@ -41,8 +41,12 @@ var defaultAdminLLMTasks = map[string]adminLLMTaskConfig{
 		DefaultProfile: "cost_first",
 		TaskHint:       "creative",
 		SystemPrompt: "你是会话标题生成助手。根据下方完整多轮会话日志，用中文生成一个简短准确的标题（不超过18字），概括用户目标与会话结果。" +
-			"只输出标题纯文本：不要引号、编号、解释、XML/HTML 标签、thinking/redacted 标记或英文占位符。",
-		MaxTokens:   48,
+			"只输出标题纯文本：不要引号、编号、解释、XML/HTML 标签、thinking/redacted 标记或英文占位符。" +
+			"标题长度上限 18 个汉字（不到 48 tokens），不要超过。",
+		// 2026-08-06: 不再硬限 max_tokens=48。OpenAI 协议下 max_tokens 是
+		// reasoning+content+tool_calls 的总预算；48 会被 thinking 占满导致
+		// content 为空。改为不设上限，标题长度只由 system prompt 约束。
+		MaxTokens:   0,
 		Temperature: 0.2,
 		DeviceSeed:  "admin-session-title",
 	},
