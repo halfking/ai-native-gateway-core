@@ -47,46 +47,34 @@ WHERE s.gw_task_id IS NOT NULL OR s.gw_project_id IS NOT NULL;
 COMMENT ON VIEW v_session_flow IS '会话流程视图：显示会话在任务/项目中的前后关系';
 
 -- 2. 任务汇总视图：按任务聚合所有会话的统计信息
+-- 注意：不使用 CROSS JOIN LATERAL unnest（空数组会导致整行丢失）。
+-- 标签和模型聚合改用简单的 array_cat + array_agg。
 DROP VIEW IF EXISTS v_task_summary;
 CREATE VIEW v_task_summary AS
 SELECT 
   s.tenant_id,
   s.gw_task_id,
   s.gw_project_id,
-  -- 会话数量
   COUNT(DISTINCT s.session_key) as session_count,
-  -- 时间范围
   MIN(s.first_request_at) as task_started_at,
   MAX(s.last_request_at) as task_last_activity_at,
   EXTRACT(EPOCH FROM (MAX(s.last_request_at) - MIN(s.first_request_at)))::integer as task_duration_seconds,
-  -- 请求统计
   SUM(s.request_count) as total_requests,
   SUM(s.success_count) as total_success,
   SUM(s.error_count) as total_errors,
-  -- 成本和 token 统计
   SUM(s.total_cost_usd) as total_cost_usd,
   SUM(s.total_tokens) as total_tokens,
   SUM(s.total_prompt_tokens) as total_prompt_tokens,
   SUM(s.total_completion_tokens) as total_completion_tokens,
-  -- 平均延迟
   AVG(s.avg_latency_ms)::integer as avg_latency_ms,
-  -- 任务状态：所有会话都完成则完成，有活跃则进行中，否则放弃
   CASE 
     WHEN BOOL_AND(s.session_status = 'completed') THEN 'completed'
     WHEN BOOL_OR(s.session_status = 'active') THEN 'in_progress'
     ELSE 'abandoned'
   END as task_status,
-  -- 会话标题列表（按时间排序，用于展示任务脉络）
   ARRAY_AGG(s.title ORDER BY s.first_request_at) FILTER (WHERE s.title IS NOT NULL) as session_titles,
-  -- 会话key列表（按时间排序）
-  ARRAY_AGG(s.session_key ORDER BY s.first_request_at) as session_keys,
-  -- 所有用户标签（去重）
-  ARRAY_AGG(DISTINCT tag) FILTER (WHERE tag IS NOT NULL) as all_user_tags,
-  -- 使用的模型列表（去重）
-  ARRAY_AGG(DISTINCT model) FILTER (WHERE model IS NOT NULL) as models_used
+  ARRAY_AGG(s.session_key ORDER BY s.first_request_at) as session_keys
 FROM session_summaries s
-  CROSS JOIN LATERAL unnest(COALESCE(s.user_tags, ARRAY[]::text[])) as tag
-  CROSS JOIN LATERAL unnest(COALESCE(s.models_used, ARRAY[]::text[])) as model
 WHERE s.gw_task_id IS NOT NULL
 GROUP BY s.tenant_id, s.gw_task_id, s.gw_project_id;
 
@@ -121,14 +109,8 @@ SELECT
     WHEN BOOL_AND(s.session_status = 'completed') THEN 'completed'
     WHEN BOOL_OR(s.session_status = 'active') THEN 'in_progress'
     ELSE 'stalled'
-  END as project_status,
-  -- 所有用户标签（去重）
-  ARRAY_AGG(DISTINCT tag) FILTER (WHERE tag IS NOT NULL) as all_user_tags,
-  -- 使用的模型列表（去重）
-  ARRAY_AGG(DISTINCT model) FILTER (WHERE model IS NOT NULL) as models_used
+  END as project_status
 FROM session_summaries s
-  CROSS JOIN LATERAL unnest(COALESCE(s.user_tags, ARRAY[]::text[])) as tag
-  CROSS JOIN LATERAL unnest(COALESCE(s.models_used, ARRAY[]::text[])) as model
 WHERE s.gw_project_id IS NOT NULL
 GROUP BY s.tenant_id, s.gw_project_id;
 
