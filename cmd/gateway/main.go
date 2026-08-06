@@ -1679,8 +1679,25 @@ func main() {
 			redisBackendFromClient(redisClientForCache),
 			dbBackendFromPool(dbConn),
 		)
+		
+		// V2 components initialization (Phase V2-2.4)
+		var sessionCacheV2 *v2.SessionCacheV2
+		var outboundBuilder *v2.OutboundBuilder
 		if dbConn != nil && dbConn.Enabled() && dbConn.Pool() != nil {
 			scCache.SetTurnReader(v2.NewTurnReader(dbConn.Pool()))
+			
+			// Initialize V2 components for compression
+			turnReader := v2.NewTurnReader(dbConn.Pool())
+			outboundBuilder = v2.NewOutboundBuilder(turnReader)
+			
+			// Initialize SessionCacheV2 with Redis support
+			// Use cfg.RedisAddr from outer scope
+			sessionCacheV2 = v2.NewSessionCacheV2(dbConn.Pool(), cfg.RedisAddr)
+			
+			slog.Info("v2 session components initialized",
+				"outbound_builder", outboundBuilder != nil,
+				"session_cache_v2", sessionCacheV2 != nil,
+				"redis_addr", cfg.RedisAddr)
 		}
 		// Shared LLM-compaction dependencies: used by both the proactive
 		// SessionCompressor and the reactive RecoveryCoordinator so both
@@ -1689,6 +1706,8 @@ func main() {
 		compactionDeps := NewDependenciesFromExecutor(routingExec)
 		scDeps := compression.SessionCompressorDeps{
 			Cache:          scCache,
+			CacheV2:        sessionCacheV2,    // V2 cache (Phase V2-2.4)
+			Builder:        outboundBuilder,   // V2 builder (Phase V2-2.4)
 			CompactionDeps: compactionDeps,
 		}
 		chatHandler.SetSessionCompressor(compression.NewSessionCompressor(scDeps))
