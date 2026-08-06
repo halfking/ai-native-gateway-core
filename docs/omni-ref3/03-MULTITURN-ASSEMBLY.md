@@ -54,10 +54,11 @@
 - 修复点：两条 tool_result 若前 100 字符相同但 `tool_call_id` 不同，旧实现会误判为重复（与 `SanitizeToolMessages` 防的同一类 bug）；新实现区分。
 - 验收：见 `TestMessageKey_V1V2Parity`（V2 指纹与 V1 `msgHash` 在等价输入上产出相同前 32 hex）；`TestMessageKey_ToolCallIDDisambiguates`。
 
-### A6（P0）摘要读源抽象 `NEW-DESIGN` → 已实现（接口层）
+### A6（P0）摘要读源抽象 `NEW-DESIGN` → 已实现（接口层 + V2 实现）
 在 `summarizer` 与存储之间引入 `MessageSource` 接口（`GetSessionMessages` / `GetMessagesSince`，`domains/sessionsummary/summarizer.go`）。
-- **已落地**：① 默认实现 `pgRequestLogsSource`（原 `request_logs`/`request_logs_bodies` SQL 原样搬入，行为不变）；② `Summarizer` 新增 `messageSource` 字段，`NewSummarizer` 自动装默认源；③ `SetMessageSource(src)` 注入器（nil 忽略）；④ `getSessionMessages`/`getMessagesSince` 改为委托。测试覆盖：可替换性、nil 忽略、错误透传、默认源类型。
-- **未落地（待 A1 时）**：V2 `session_bodies` 实现（经 `OutboundBuilder`）。当前接口层已就绪，A1 灰度时只需 `SetMessageSource(v2Source)` 即可切换读源，不动 `GenerateSummary`/`GenerateRollingSummary`。
+- **已落地（接口层）**：① 默认实现 `pgRequestLogsSource`（原 `request_logs`/`request_logs_bodies` SQL 原样搬入，行为不变）；② `Summarizer` 新增 `messageSource` 字段，`NewSummarizer` 自动装默认源；③ `SetMessageSource(src)` 注入器（nil 忽略）；④ `getSessionMessages`/`getMessagesSince` 改为委托。测试覆盖：可替换性、nil 忽略、错误透传、默认源类型。
+- **已落地（V2 实现）**：`v2SessionBodiesSource`（`message_source_v2.go`）join `gateway.session_bodies` + `gateway.session_turns`（取 `model`），把每轮 `request_delta` 折叠为**最后一条消息**——与 V1 的 `messages->-1` 语义对齐，保证两源喂给摘要器的输入可比。nil-safety / 角色默认 `user` / 不可用 turn 跳过 / 升序 / LIMIT 20 全部与 V1 对齐。测试覆盖：折叠选最后一条、角色默认、不可用 payload 跳过、升序+跳过、nil pool 报错、接口实现编译期保证。
+- **未落地（待 A1 灰度时）**：在 `main_pipeline` 里按 `sessions_v2_compression_read` flag 调 `summaryService.SetMessageSource(&v2SessionBodiesSource{pool})`。代码层已就绪，A1 只需翻 flag + 接线一行。
 
 ### A5（P1）V2 Message 强类型化 `NEW-DESIGN`
 把 `v2.Message` 的 `Content string` / `ToolCalls []map[string]any` 替换为复用 `ir.Message`（或 `[]ir.ContentBlock`）。`sessionv2mirror/hook.go` 的 `toMessage` 改为无损转换。涉及迁移（旧 JSONB 兼容读）。
