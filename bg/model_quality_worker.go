@@ -92,9 +92,17 @@ func (w *ModelQualityWorker) Start(ctx context.Context) {
 		return
 	}
 
-	// TODO: 使用真实的网关调用器替换MockInvoker
-	// 当前使用Mock进行演示
-	invoker := modelquality.NewMockModelInvoker()
+	// 使用真实的网关调用器
+	var invoker modelquality.ModelInvoker
+	if w.apiKey != "" {
+		// 有API key，使用真实网关调用
+		slog.Info("model quality worker: using real gateway invoker", "base_url", w.baseURL)
+		invoker = modelquality.NewGatewayModelInvoker(w.baseURL, w.apiKey)
+	} else {
+		// 没有API key，使用Mock调用器（用于测试）
+		slog.Warn("model quality worker: no API key provided, using mock invoker for testing only")
+		invoker = modelquality.NewMockModelInvoker()
+	}
 	executor := modelquality.NewBenchmarkExecutor(invoker, 30*time.Second)
 
 	// 配置监控
