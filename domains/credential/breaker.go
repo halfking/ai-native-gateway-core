@@ -71,6 +71,14 @@ const (
 	autoRecoveryFailureThreshold        int32 = 2 // 从 3 降到 2，更激进地降级不稳定凭据（如 NVIDIA NIM）
 	exponentialRecoveryFailureThreshold int32 = 2
 	permanentRecoveryFailureThreshold   int32 = 2
+
+	// halfOpenProbeTimeout is how long a half-open probe may hold its single
+	// slot before it is auto-released. Guards against a leaked probe slot
+	// (Allow() consumed but no Record*/ReleaseProbe ever called, e.g. a probe
+	// blocked by the concurrency/RPM limiter) permanently wedging the breaker
+	// in HALF_OPEN. Set longer than a realistic single upstream call so a
+	// genuinely slow probe is not force-released.
+	halfOpenProbeTimeout = 5 * time.Minute
 )
 
 // ---------------------------------------------------------------------------
@@ -174,21 +182,93 @@ func (b *Breaker) ConsecutiveFailures() int { return int(b.consecutive.Load()) }
 
 // Allow checks whether a request should be allowed through the credential.
 func (b *Breaker) Allow() bool {
-	state := b.State()
-	switch state {
+	switch b.State() {
 	case StateClosed:
 		return true
 	case StateQuarantined:
 		return false
 	case StateOpen:
 		if b.tryTransitionToHalfOpen() {
-			return b.halfOpenProbes.Add(1) <= 1
+			return b.claimProbe()
 		}
 		return false
 	case StateHalfOpen:
-		return b.halfOpenProbes.Add(1) == 1
+		return b.claimProbe()
 	default:
 		return false
+	}
+}
+
+// claimProbe attempts to claim the single half-open probe slot. Returns true
+// only if this caller is admitted as the probe. If a previously-held probe has
+// exceeded halfOpenProbeTimeout without any Record*/ReleaseProbe call (i.e. it
+// leaked — the request that consumed Allow() exited without recording a
+// result), the slot is force-reclaimed so the breaker cannot stay wedged in
+// HALF_OPEN indefinitely (2026-07-03 incident: probe blocked by the limiter at
+// executor.go AcquireAll-fail path, breaker stuck HALF_OPEN for hours until
+// process restart).
+//
+// The whole claim is serialized under b.mu: a lock-free fast path (e.g.
+// halfOpenProbes.Add(1)==1) would race the timeout-reclaim path — two
+// concurrent Allow() calls right after an OPEN→HALF_OPEN transition could both
+// be admitted as "the" probe (one via the fast path, one via a slow-path
+// timeout check that fires against tryTransitionToHalfOpen's fresh
+// nextProbeAt=time.Now()), admitting two probes to a degraded credential.
+func (b *Breaker) claimProbe() bool {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	if b.State() != StateHalfOpen {
+		return false
+	}
+	now := time.Now()
+	if b.halfOpenProbes.Load() == 0 || now.After(b.nextProbeAt) {
+		b.halfOpenProbes.Store(1)
+		b.nextProbeAt = now.Add(halfOpenProbeTimeout)
+		return true
+	}
+	return false
+}
+
+// PeekAllowed reports whether a request would currently be allowed through
+// WITHOUT consuming the half-open probe slot. Read-only: safe to call from
+// pre-checks that must not steal the probe from the real attempt that follows
+// (e.g. the sync-retry allCircuitOpen pre-scan).
+func (b *Breaker) PeekAllowed() bool {
+	switch b.State() {
+	case StateClosed:
+		return true
+	case StateQuarantined:
+		return false
+	case StateHalfOpen:
+		b.mu.Lock()
+		defer b.mu.Unlock()
+		return b.halfOpenProbes.Load() == 0 || time.Now().After(b.nextProbeAt)
+	case StateOpen:
+		b.mu.Lock()
+		defer b.mu.Unlock()
+		return time.Now().After(b.coolingExpires)
+	default:
+		return false
+	}
+}
+
+// ReleaseProbe releases the half-open probe slot without recording a result.
+// Called when a request consumed the probe via Allow() but exits before
+// RecordSuccess/RecordFailure — e.g. the limiter rejected it, or an
+// early-continue skip path (model-not-found / client-bug / content-filter /
+// stream-interrupt) decided the error is not a credential-health signal.
+// Releasing the slot lets the next request probe the credential again instead
+// of wedging the breaker in HALF_OPEN.
+func (b *Breaker) ReleaseProbe() {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.State() != StateHalfOpen {
+		return
+	}
+	if b.halfOpenProbes.Load() > 0 {
+		b.halfOpenProbes.Store(0)
+		b.nextProbeAt = time.Time{}
 	}
 }
 
@@ -438,6 +518,24 @@ func (m *Manager) Get(providerID, credentialID int) *Breaker {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	return m.breakers[key]
+}
+
+// ReleaseProbe releases the half-open probe slot for the given
+// provider/credential without recording a result. See Breaker.ReleaseProbe.
+func (m *Manager) ReleaseProbe(providerID, credentialID int) {
+	if b := m.Get(providerID, credentialID); b != nil {
+		b.ReleaseProbe()
+	}
+}
+
+// PeekAllowed reports whether a request would currently be allowed through
+// WITHOUT consuming the half-open probe slot. Read-only pre-check; the caller
+// must still call Allow() on the real attempt. See Breaker.PeekAllowed.
+func (m *Manager) PeekAllowed(providerID, credentialID int) bool {
+	if b := m.Get(providerID, credentialID); b != nil {
+		return b.PeekAllowed()
+	}
+	return true
 }
 
 // Stats returns diagnostic information for all breakers.

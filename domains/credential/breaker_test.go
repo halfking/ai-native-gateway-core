@@ -432,3 +432,151 @@ func TestConcurrentOverloadFiveMinuteCooling(t *testing.T) {
 		t.Fatalf("expected closed after probe success, got %s", b.State())
 	}
 }
+
+// TestProbeLeakRecoveryViaReleaseProbe reproduces the 2026-07-03 incident:
+// the half-open probe slot is consumed by Allow(), the request exits without
+// calling RecordSuccess/RecordFailure (e.g. blocked by the concurrency/RPM
+// limiter), and the breaker would be wedged in HALF_OPEN until process restart.
+// ReleaseProbe() must free the slot so the next request can probe again.
+func TestProbeLeakRecoveryViaReleaseProbe(t *testing.T) {
+	b := New(1, 1)
+	b.RecordFailure(KindTransient)
+	b.RecordFailure(KindTransient)
+	b.RecordFailure(KindTransient)
+	b.mu.Lock()
+	b.coolingExpires = time.Now().Add(-1 * time.Second)
+	b.mu.Unlock()
+
+	// First Allow() consumes the probe slot (OPEN → HALF_OPEN).
+	if !b.Allow() {
+		t.Fatal("should allow probe after cooling expiry")
+	}
+	if b.State() != StateHalfOpen {
+		t.Fatalf("expected half_open, got %s", b.State())
+	}
+
+	// Without a release, a second Allow() must be rejected (probe still held).
+	if b.Allow() {
+		t.Fatal("second Allow() should be rejected while first probe is in flight")
+	}
+
+	// Simulate the request exiting without recording (limiter reject path).
+	b.ReleaseProbe()
+	if b.State() != StateHalfOpen {
+		t.Fatalf("ReleaseProbe should not change state, got %s", b.State())
+	}
+
+	// Next request can probe again.
+	if !b.Allow() {
+		t.Fatal("Allow() should succeed after ReleaseProbe")
+	}
+
+	// Closing the probe with a success must clear the circuit.
+	b.RecordSuccess()
+	if b.State() != StateClosed {
+		t.Fatalf("expected closed after probe success, got %s", b.State())
+	}
+}
+
+// TestProbeLeakRecoveryViaTimeout verifies the belt-and-suspenders safety net:
+// even if a leaked probe is never explicitly released, claimProbe force-reclaims
+// the slot once halfOpenProbeTimeout elapses, so the breaker cannot stay wedged
+// in HALF_OPEN forever.
+func TestProbeLeakRecoveryViaTimeout(t *testing.T) {
+	b := New(1, 1)
+	b.RecordFailure(KindTransient)
+	b.RecordFailure(KindTransient)
+	b.RecordFailure(KindTransient)
+	b.mu.Lock()
+	b.coolingExpires = time.Now().Add(-1 * time.Second)
+	b.mu.Unlock()
+
+	if !b.Allow() {
+		t.Fatal("should allow probe after cooling expiry")
+	}
+
+	// Simulate the probe holder leaking past the timeout.
+	b.mu.Lock()
+	b.nextProbeAt = time.Now().Add(-1 * time.Second)
+	b.mu.Unlock()
+
+	if !b.Allow() {
+		t.Fatal("Allow() should reclaim the leaked probe slot after timeout")
+	}
+	if b.State() != StateHalfOpen {
+		t.Fatalf("expected half_open, got %s", b.State())
+	}
+}
+
+// TestPeekAllowedDoesNotConsumeProbe ensures the sync-retry allCircuitOpen
+// pre-check can inspect a half-open breaker without stealing its probe slot.
+func TestPeekAllowedDoesNotConsumeProbe(t *testing.T) {
+	b := New(1, 1)
+	b.RecordFailure(KindTransient)
+	b.RecordFailure(KindTransient)
+	b.RecordFailure(KindTransient)
+	b.mu.Lock()
+	b.coolingExpires = time.Now().Add(-1 * time.Second)
+	b.mu.Unlock()
+
+	if !b.PeekAllowed() {
+		t.Fatal("PeekAllowed should report allowed after cooling expiry")
+	}
+	// PeekAllowed is read-only: it must NOT transition OPEN → HALF_OPEN.
+	if b.State() != StateOpen {
+		t.Fatalf("PeekAllowed must not transition state, got %s", b.State())
+	}
+
+	// PeekAllowed must NOT have consumed the probe: the real Allow() still
+	// gets through as the probe.
+	if !b.Allow() {
+		t.Fatal("Allow() should still succeed after PeekAllowed (probe not consumed)")
+	}
+	if b.State() != StateHalfOpen {
+		t.Fatalf("Allow() should transition to half_open, got %s", b.State())
+	}
+}
+
+func TestManagerReleaseProbe(t *testing.T) {
+	m := NewManager()
+	m.RecordFailure(1, 1, KindTransient)
+	m.RecordFailure(1, 1, KindTransient)
+	m.RecordFailure(1, 1, KindTransient)
+	b := m.Get(1, 1)
+	b.mu.Lock()
+	b.coolingExpires = time.Now().Add(-1 * time.Second)
+	b.mu.Unlock()
+
+	if !m.Allow(1, 1) {
+		t.Fatal("should allow probe after cooling expiry")
+	}
+	if m.Allow(1, 1) {
+		t.Fatal("second Allow() should be rejected while probe in flight")
+	}
+
+	m.ReleaseProbe(1, 1)
+	if !m.Allow(1, 1) {
+		t.Fatal("Allow() should succeed after manager-level ReleaseProbe")
+	}
+}
+
+func TestManagerPeekAllowedDoesNotConsumeProbe(t *testing.T) {
+	m := NewManager()
+	m.RecordFailure(1, 1, KindTransient)
+	m.RecordFailure(1, 1, KindTransient)
+	m.RecordFailure(1, 1, KindTransient)
+	b := m.Get(1, 1)
+	b.mu.Lock()
+	b.coolingExpires = time.Now().Add(-1 * time.Second)
+	b.mu.Unlock()
+
+	if !m.PeekAllowed(1, 1) {
+		t.Fatal("manager PeekAllowed should report allowed after cooling expiry")
+	}
+	if b.State() != StateOpen {
+		t.Fatalf("manager PeekAllowed must not transition state, got %s", b.State())
+	}
+	if !m.Allow(1, 1) {
+		t.Fatal("Allow() should still succeed after manager PeekAllowed (probe not consumed)")
+	}
+}

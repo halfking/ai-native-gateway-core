@@ -449,6 +449,12 @@ func (e *Executor) doCompactionUpstream(
 	if e.Limiter != nil && params != nil {
 		rel, err := e.Limiter.AcquireAll(ctx, cand.ProviderID, cand.CredentialID, params.ClientID.IdentityHash, params.KeyID, params.KeyConcurrentLimit, cand.RPMLimit)
 		if err != nil {
+			// 2026-07-03 incident fix: Allow() above consumed a half-open probe
+			// that is never released on this early return — release it so the
+			// breaker is not wedged in HALF_OPEN.
+			if e.Circuit != nil {
+				e.Circuit.ReleaseProbe(cand.ProviderID, cand.CredentialID)
+			}
 			return nil, fmt.Errorf("compaction: limiter: %w", err)
 		}
 		releaseLimiter = rel
@@ -474,6 +480,10 @@ func (e *Executor) doCompactionUpstream(
 	if err != nil {
 		if e.Circuit != nil && !freeCredentialsTolerateTransient(cand.BillingMode, errorsx.KindNetwork) {
 			e.Circuit.RecordFailure(cand.ProviderID, cand.CredentialID, errorsx.KindNetwork)
+		} else if e.Circuit != nil {
+			// 2026-07-03 incident fix: free-cred transient skips RecordFailure,
+			// so release a consumed half-open probe.
+			e.Circuit.ReleaseProbe(cand.ProviderID, cand.CredentialID)
 		}
 		return nil, err
 	}
@@ -482,6 +492,10 @@ func (e *Executor) doCompactionUpstream(
 			kind := errorsx.ClassifyErrorWithBody(resp.StatusCode, nil)
 			if !freeCredentialsTolerateTransient(cand.BillingMode, kind) {
 				e.Circuit.RecordFailure(cand.ProviderID, cand.CredentialID, kind)
+			} else {
+				// 2026-07-03 incident fix: free-cred transient skips
+				// RecordFailure, so release a consumed half-open probe.
+				e.Circuit.ReleaseProbe(cand.ProviderID, cand.CredentialID)
 			}
 		} else if resp.StatusCode < 400 {
 			e.Circuit.RecordSuccess(cand.ProviderID, cand.CredentialID)
