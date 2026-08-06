@@ -1767,7 +1767,14 @@ func (e *Executor) Execute(params *ExecParams) (*ExecuteResult, error) {
 	}
 
 	// ── 2026-07-22: Session-aware continuation/retry detection ───────
-	if params.SessionID != "" && e.PendingStore != nil && params.W != nil && len(params.BodyBytes) > 0 {
+	// 2026-08-06: exempt gateway-internal auto requests (auto title / auto
+	// summary). Their corpus is the concatenated session transcript, which
+	// routinely contains the literal "continue"/"retry" keyword; running
+	// IsContinuationOrRetry here trims the user corpus message and sends an
+	// empty-messages body upstream → Ark 400 InvalidParameter → circuit break.
+	isAutoReq := params.R != nil &&
+		strings.EqualFold(params.R.Header.Get("X-Gw-Is-Auto"), "true")
+	if !isAutoReq && params.SessionID != "" && e.PendingStore != nil && params.W != nil && len(params.BodyBytes) > 0 {
 		hotCfg := LoadHotConfig()
 		isContinue, isRetry := IsContinuationOrRetry(params.BodyBytes, hotCfg)
 		if isContinue {

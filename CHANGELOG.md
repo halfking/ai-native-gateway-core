@@ -72,6 +72,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **auto-title loopback 误触发 continuation trim → 出站空 messages → Ark 400 (2026-08-06)**:
+  - **症状**: 标题池 `minimax-m2.7` 间歇性上游 400 `InvalidParameter`，credential 熔断 → 标题请求 503；部分 session 有标题、部分没有
+  - **根因**: `Executor.Execute` 的 session-aware continuation 检测（executor.go:1770）用 `IsContinuationOrRetry` 匹配最后一条 user 消息内容，命中 "continue"/"继续" 等关键字即调用 `trimOneMessageFromBody` 删掉 user + assistant 消息。auto-title loopback 的 corpus 是**整个会话转录拼接**，天然含 "continue"（ZCode 场景尤甚）；且 loopback 带了 `X-Gw-Session-Id: gt:<session>` 使 `params.SessionID` 非空，检测被触发 → 出站 body 仅剩 system（`finalizeOpenAIUpstreamBody pre_messages=0`）→ Ark 400 → 熔断。生产日志 `executor: continue keyword detected, trimmed one message turn` 与失败 finalize 同毫秒级相邻（07:54:26.736 → .758）
+  - **修复**: continuation/retry 检测对网关内部 auto 请求（`X-Gw-Is-Auto: true`，auto-title / auto-summary loopback 均已设置）整体豁免。此逻辑本就只面向**真实用户**的 "继续" / "重试" 语义
+  - **验证**: `go test ./domains/streaming/executors/ -run TestContinuationTrim` 3 用例全绿（含 corpus 含 continue 被误删的回归 + 短语料不触发的对照）；全包测试 5.3s 通过；`go build ./...` / `go vet` 通过
+  - 详见 `docs/changelogs/2026-08-06-auto-title-continuation-trim.md`
+
 - **标题请求父子关联 + 失败可观测 (2026-08-06)**:
   - **症状**: 用户报告"LLM 好像没收到请求 / 没带上上下文"。`request_logs_hot.parent_request_id` / `origin_actor` 长期为 NULL，运维无法 SQL JOIN 父子请求；corpus 过度截断丢用户真实问题；标题生成 HTTP 失败只 return error，slog 看不到 endpoint/status_code/body_excerpt/retry_count
   - **根因 A** — `callAutoTitleLLM` 未向 loopback 请求转发父请求 request_id 与调用方 actor；handler 入口也从未读取相关 header
