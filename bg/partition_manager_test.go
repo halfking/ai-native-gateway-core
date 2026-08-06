@@ -140,3 +140,35 @@ func TestArchiveOldPartitionsDayWindow(t *testing.T) {
 	// spec wiring.
 	_ = now
 }
+
+// TestResolvePromoteConfigBodiesBatchSize pins the request_logs_bodies
+// promote default batch. Bodies rows are TOAST-heavy (~350 KB avg), so the
+// generic 5000-row batch moves ~1.7 GB per call and exceeded PG
+// statement_timeout=30s on the shared prod DB (2026-08-06 incident). The
+// default must stay small and be overridable via settings_kv.
+func TestResolvePromoteConfigBodiesBatchSize(t *testing.T) {
+	retention, batch := resolvePromoteConfig("request_logs_bodies")
+	if batch >= promoteBatchSize {
+		t.Fatalf("request_logs_bodies default batch = %d, want < %d", batch, promoteBatchSize)
+	}
+	if batch < 100 {
+		t.Fatalf("request_logs_bodies default batch = %d, want >= safety floor 100", batch)
+	}
+	if retention <= 0 || retention > 24*time.Hour {
+		t.Fatalf("request_logs_bodies retention = %v, want (0, 24h]", retention)
+	}
+}
+
+// TestPromoteLockKeyDeterministic pins that the advisory-lock key for a
+// hot-table label is stable across gateway instances — both 245 and 154
+// share one PG and must derive the same key to serialize promote cycles.
+func TestPromoteLockKeyDeterministic(t *testing.T) {
+	a := promoteLockKey("request_logs_bodies")
+	b := promoteLockKey("request_logs_bodies")
+	if a != b {
+		t.Fatalf("promoteLockKey not deterministic: %d != %d", a, b)
+	}
+	if a == promoteLockKey("request_logs_hot") {
+		t.Fatalf("promoteLockKey collision between distinct labels")
+	}
+}

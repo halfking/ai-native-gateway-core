@@ -61,6 +61,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - **验证**: `go build` / `go vet` / gofmt 全部通过；admin + streaming 包测试全绿
   - **注**: 未部署（本次仅提交推送）；上线待 245 → 154
 
+- **promote 争用导致启动 EnsureSchema 超时 → 部署自动回滚 (2026-08-06)**:
+  - **背景**: 154 生产两次部署（1464）验证失败自动回滚；启动首个 ensure 巨型语句被 `statement_timeout=30s` 取消（57014），网关永久 no-DB，deploy verify 判定失败
+  - **根因**: `request_logs_bodies_hot` 积累 13 GB / 37k 行（~350 KB/行），promote 批量硬编码 5000 → 每批 ~1.7 GB 稳定超 30s → 每小时 tick 反复失败；且 245/154 双网关每小时对同一共享表并发 promote 互相阻塞（无 advisory lock）→ 锁/I/O 空转 + 启动 DDL 撞锁窗口
+  - **修复**（三处协同，详见 `docs/changelogs/2026-08-06-promote-contention-boot-timeout.md`）:
+    - `db/db.go`：`ApplyMigrations` 有界重试（2 次，backoff 5s，最坏 ~65s < systemd 90s），瞬态 57014 不再 brick 进程；原函数体改名 `applyMigrationsOnce`
+    - `bg/partition_manager.go`：`request_logs_bodies` promote 批量改可配置 `lifecycle.request_logs_bodies_promote_batch_size`，默认 500（~175 MB/批）
+    - `bg/partition_manager.go`：promote 每批包事务级 `pg_try_advisory_xact_lock`，双网关按热表序列化，未抢到锁本 tick 跳过
+  - **验证**: `go build` / `go vet` / `go test ./bg/ ./db/` 全绿；新增无 DB 单测（bodies 批量默认值 + lock key 确定性）
+  - **注**: 未部署（human_only）；上线待 245 → 154
+
 ## [Unreleased] - 2026-08-04
 
 ### Fixed
