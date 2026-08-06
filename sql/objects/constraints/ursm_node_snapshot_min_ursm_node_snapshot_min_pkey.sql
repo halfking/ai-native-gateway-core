@@ -3,5 +3,5 @@
 --
 
 ALTER TABLE ONLY public.ursm_node_snapshot_min
-    ADD CONSTRAINT ursm_node_snapshot_min_pkey PRIMARY KEY (snapshot_ts, credential_id, raw_model_name);
+    ADD CONSTRAINT ursm_node_snapshot_min_pkey PRIMARY KEY (snapshot_ts, tenant_id, credential_id, raw_model_name);
 

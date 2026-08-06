@@ -16915,7 +16915,7 @@ CREATE TABLE public.ursm_node_snapshot_min (
     credential_id integer NOT NULL,
     raw_model_name text NOT NULL,
     canonical_name text,
-    tenant_id text,
+    tenant_id text DEFAULT ''::text NOT NULL,
     available boolean NOT NULL,
     health_status text,
     fail_streak integer,
@@ -21321,7 +21321,7 @@ ALTER TABLE ONLY public.session_turn_snapshots
 --
 
 ALTER TABLE ONLY public.ursm_node_snapshot_min
-    ADD CONSTRAINT ursm_node_snapshot_min_pkey PRIMARY KEY (snapshot_ts, credential_id, raw_model_name);
+    ADD CONSTRAINT ursm_node_snapshot_min_pkey PRIMARY KEY (snapshot_ts, tenant_id, credential_id, raw_model_name);
 
 
 --
