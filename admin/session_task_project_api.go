@@ -112,9 +112,12 @@ func (h *Handler) handleTaskFlow(w http.ResponseWriter, r *http.Request) {
 	}
 
 	summary, err := h.queryTaskSummary(ctx, r, taskID)
-
 	if err != nil {
 		http.Error(w, fmt.Sprintf("failed to query task summary: %v", err), http.StatusInternalServerError)
+		return
+	}
+	if summary.Summary.SessionCount == 0 {
+		http.Error(w, "task not found", http.StatusNotFound)
 		return
 	}
 
@@ -162,6 +165,10 @@ func (h *Handler) handleProjectCosts(w http.ResponseWriter, r *http.Request) {
 	summary, err := h.queryProjectSummary(ctx, r, projectID)
 	if err != nil {
 		http.Error(w, fmt.Sprintf("failed to query project summary: %v", err), http.StatusInternalServerError)
+		return
+	}
+	if summary.SessionCount == 0 {
+		http.Error(w, "project not found", http.StatusNotFound)
 		return
 	}
 
