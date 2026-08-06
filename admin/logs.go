@@ -456,10 +456,12 @@ func (h *Handler) listLogs(w http.ResponseWriter, r *http.Request) {
 	hasSessionFilter := strings.TrimSpace(queryString(r, "gw_session_id")) != ""
 	chrono := queryString(r, "chrono") == "1" || hasTaskFilter || hasSessionFilter
 	orderBy := "rl.ts DESC"
-	traceSeqCol := ""
+	traceSeqInner := ""
+	traceSeqOuter := ""
 	if chrono {
 		orderBy = "rl.ts ASC"
-		traceSeqCol = ", ROW_NUMBER() OVER (ORDER BY rl.ts ASC) AS trace_seq"
+		traceSeqInner = ", ROW_NUMBER() OVER (ORDER BY rl.ts ASC) AS trace_seq"
+		traceSeqOuter = ", rl.trace_seq"
 	}
 
 	where := strings.Join(clauses, " AND ")
@@ -492,14 +494,24 @@ func (h *Handler) listLogs(w http.ResponseWriter, r *http.Request) {
 	// endpoint: omit outbound_body / outbound_msg_hashes / compression_meta
 	// JSONB blobs. Those are only loaded by the detail drawer via getLog.
 	// 2026-07-06: 使用视图查询，避免遗漏 hot 表数据（migration 341）
-	rows, err := h.db.Query(ctx, fmt.Sprintf(`
-		SELECT %s%s
+	// 2026-08-06 perf: LATERAL mo_pick 会随外层行数逐行执行。原查询在
+	// WHERE 之后对全部命中行做 JOIN 再 LIMIT，导致 LATERAL 对数千行各跑
+	// 一次 provider_models 全表扫描（实测 9.9s，接口 5s 超时）。改为两段式：
+	// 先在内层子查询按 ts 排序 LIMIT 截断到一页（只取 rl.* 窄列），
+	// 外层再对少量行做辅助表 LEFT JOIN + LATERAL。
+	innerSQL := fmt.Sprintf(`
+		SELECT rl.*%s
 		FROM request_logs_with_current_month rl
-		%s
 		WHERE %s
 		ORDER BY %s
 		LIMIT $%d OFFSET $%d
-	`, requestLogsListCols, traceSeqCol, requestLogsJoins, where, orderBy, limitIdx, offsetIdx), listArgs...)
+	`, traceSeqInner, where, orderBy, limitIdx, offsetIdx)
+	rows, err := h.db.Query(ctx, fmt.Sprintf(`
+		SELECT %s%s
+		FROM (%s) rl
+		%s
+		ORDER BY %s
+	`, requestLogsListCols, traceSeqOuter, innerSQL, requestLogsJoins, orderBy), listArgs...)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "query failed")
 		return
