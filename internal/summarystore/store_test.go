@@ -43,8 +43,9 @@ func TestUpsertResult_ZeroValueValid(t *testing.T) {
 }
 
 // TestLastSummarized_NilPoolIsError — same nil-safety contract for the
-// reader path. Real DB integration tests live under tests/db_integration/
-// and require a running pg-252-pg17 container.
+// reader path. NOTE: there are no DB integration tests for this package
+// in-tree today (no tests/db_integration/ directory exists). The SQL is
+// covered by manual deployment verification on 252.
 func TestLastSummarized_NilPoolIsError(t *testing.T) {
 	s := &Store{}
 	if _, err := s.LastSummarized(context.Background(), "gw_x"); err == nil {

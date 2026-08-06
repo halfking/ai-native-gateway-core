@@ -3,6 +3,7 @@ package streaming
 import (
 	"encoding/json"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -316,21 +317,22 @@ func TestRequestLogContext_KeyInfoParity(t *testing.T) {
 
 	// ---- success path: emulate the literal emitted by emitTelemetry
 	// (handler.go:3929) so we exercise the SAME field set the success
-	// builder uses, without the full executor wiring.
+	// builder uses, without the full executor wiring. The literal
+	// intentionally leaves APIKeyPrefix / APIKeyOwnerUser / ApplicationCode
+	// as nil pointers — applyKeyInfoToRequestLog below populates them
+	// from keyInfo (and adds the "***" display suffix on the prefix).
+	// Setting them here would be a no-op overwritten by the helper.
 	now := time.Now()
 	successEntry := &telemetry.RequestLogEntry{
-		RequestID:       "server-uuid-success",
-		TenantID:        ki.TenantID,
-		ApplicationID:   &applicationID,
-		APIKeyID:        &apiKeyID,
-		APIKeyPrefix:    strPtr(keyPrefix),
-		APIKeyOwnerUser: strPtr(ownerUser),
-		ApplicationCode: strPtr(appCode),
-		EndUserID:       strPtr(endUser),
-		ClientModel:     strPtr("glm-5.1"),
-		Success:         true,
-		RequestStatus:   strPtr(telemetry.RequestStatusSuccess),
-		EventAt:         &now,
+		RequestID:     "server-uuid-success",
+		TenantID:      ki.TenantID,
+		ApplicationID: &applicationID,
+		APIKeyID:      &apiKeyID,
+		EndUserID:     strPtr(endUser),
+		ClientModel:   strPtr("glm-5.1"),
+		Success:       true,
+		RequestStatus: strPtr(telemetry.RequestStatusSuccess),
+		EventAt:       &now,
 	}
 	applyKeyInfoToRequestLog(successEntry, ki)
 	enrichRequestLogFromMeta(successEntry, ki, &failCtx.meta)
@@ -415,30 +417,13 @@ func TestRequestLogContext_BuildFailureEntry_KeyMetaParity(t *testing.T) {
 }
 
 // intStrPtr returns a pointer to the decimal string of an *int pointer.
-// Used by the parity check to compare ApplicationID / APIKeyID without
-// pulling in fmt.Sprintf inside the assertion helper.
+// Used by the parity check to compare ApplicationID / APIKeyID. Uses
+// stdlib strconv.Itoa — the previous hand-rolled itoa was a premature
+// micro-optimisation that hid intent.
 func intStrPtr(v *int) *string {
 	if v == nil {
 		return nil
 	}
-	s := ""
-	// avoid pulling strconv; use fmt-free itoa via string concat on rune.
-	// Negative and zero both supported.
-	if *v == 0 {
-		return &s
-	}
-	n := *v
-	if n < 0 {
-		s = "-"
-		n = -n
-	}
-	buf := [12]byte{}
-	i := len(buf)
-	for n > 0 {
-		i--
-		buf[i] = byte('0' + n%10)
-		n /= 10
-	}
-	s += string(buf[i:])
+	s := strconv.Itoa(*v)
 	return &s
 }

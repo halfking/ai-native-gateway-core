@@ -453,6 +453,11 @@ func (s *Summarizer) getSessionMessages(ctx context.Context, tenantID, sessionKe
 // saveSummaryToDB 保存总结到数据库（upsert：首次写入创建行，后续更新）
 // session_summaries 的 PK 是 session_key，因此用 ON CONFLICT (session_key)
 // 实现幂等 upsert。
+//
+// 2026-08-06 audit fix: backport COALESCE for summary_version (matching
+// the new internal/summarystore.Upsert) so a NULL summary_version
+// (manually-inserted row) gets initialised to 1 on its first UPDATE
+// instead of leaving summary_version NULL.
 func (s *Summarizer) saveSummaryToDB(ctx context.Context, tenantID string, summary *SessionSummary) error {
 	query := `
 		INSERT INTO session_summaries (
@@ -465,7 +470,7 @@ func (s *Summarizer) saveSummaryToDB(ctx context.Context, tenantID string, summa
 			key_topics = EXCLUDED.key_topics,
 			user_intent = EXCLUDED.user_intent,
 			last_summarized_at = EXCLUDED.last_summarized_at,
-			summary_version = session_summaries.summary_version + 1,
+			summary_version = COALESCE(session_summaries.summary_version, 0) + 1,
 			updated_at = NOW()
 	`
 

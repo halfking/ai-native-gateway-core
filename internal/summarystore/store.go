@@ -72,22 +72,33 @@ type UpsertResult struct {
 //
 // Idempotent: safe to call concurrently from many goroutines for the same
 // session; PG's UPSERT handles the race. summary_version is monotonically
-// incremented via session_summaries.summary_version + 1. The returned
-// UpsertResult carries the post-upsert version and an INSERT-vs-UPDATE
-// flag so callers can detect races and stale writes.
+// incremented via COALESCE(session_summaries.summary_version, 0) + 1.
+// The returned UpsertResult carries the post-upsert version and an
+// INSERT-vs-UPDATE flag so callers can detect races and stale writes.
 //
 // 2026-08-06: changed return type from error to (UpsertResult, error)
 // so the result carries summary_version. This is a breaking change for
 // caller signatures — fix by replacing `if err := summarystore.Upsert(...)`
 // with `if _, err := summarystore.Upsert(...)` (or destructure into
 // `result, err := ...` when version is needed).
+//
+// What (xmax = 0) tells you — and what it doesn't:
+//
+// PG's xmax column on the candidate row is 0 when INSERT wrote a new
+// physical tuple, and the new xid of the transaction when an UPDATE
+// touched an existing row. So `xmax = 0` distinguishes "this Upsert
+// was the very first insert" from "this Upsert updated an existing row".
+//
+// It does NOT distinguish "this Upsert raced with a concurrent
+// same-version writer" — two writers serialise on the unique key at
+// the row level, so the second writer ALWAYS hits the UPDATE branch.
+// The `Updated=true` flag is therefore a "row existed before me" hint,
+// useful for emitting a 'lost the race' log line on the request-path
+// auto-summary, not a precise race detector.
 func (s *Store) Upsert(ctx context.Context, sum Summary) (UpsertResult, error) {
 	if s == nil || s.pool == nil {
 		return UpsertResult{}, fmt.Errorf("summarystore: pool not configured")
 	}
-	// xmax = 0 means the row was just inserted (PG's standard trick).
-	// Distinct from "summary_version" so callers can detect lost races
-	// even when both writers submitted the same summary_version.
 	const query = `
 		INSERT INTO session_summaries (
 			session_key, tenant_id, title, summary, key_topics,
@@ -104,9 +115,6 @@ func (s *Store) Upsert(ctx context.Context, sum Summary) (UpsertResult, error) {
 		RETURNING summary_version, (xmax = 0) AS inserted
 	`
 	var result UpsertResult
-	// inserted is true when the row was just inserted (PG's xmax = 0),
-	// false when an existing row was updated. We invert it into the
-	// more intuitive UpsertResult.Updated.
 	var inserted bool
 	err := s.pool.QueryRow(ctx, query,
 		sum.SessionKey,
