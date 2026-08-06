@@ -59,10 +59,13 @@ type StripResult struct {
 // preserved, because dropping the call would orphan the results that do
 // exist and dropping the results would leave the call unanswered.
 //
-// 2026-08-06 fix: integrity is verified AFTER stripping. If any
-// surviving tool result lacks a preceding assistant.tool_calls with a
-// matching id, the strip is rejected and the original body is returned
-// unchanged (fail-open). Data loss is preferable to corruption.
+	// 2026-08-06 fix: integrity is verified AFTER stripping. If any
+	// surviving tool result lacks a preceding assistant.tool_calls with a
+	// matching id, the strip is rejected and the original body is returned
+	// unchanged (fail-open). This prevents shipping a corrupted tool chain
+	// to the upstream model, which would cause inference errors or silent
+	// hallucinations. Keeping oversized history is safer than breaking the
+	// tool_call/tool_result protocol contract.
 func StripToolInfo(body []byte, protocol string) ([]byte, *StripResult) {
 	if len(body) == 0 {
 		return body, &StripResult{DidStrip: false}
@@ -304,6 +307,15 @@ func filterMessages(msgs []json.RawMessage, rounds []toolRound, result *StripRes
 // context continuity when stripping older rounds. Two (not one) keeps
 // the immediately previous exchange plus its predecessor, which is what
 // the model needs to continue a multi-step task without re-asking.
+//
+// Hard-coded as 2 rather than configurable because:
+//  - Fewer than 2 risks the model losing track of multi-step workflows.
+//  - More than 2 defeats the purpose of strip (agent sessions routinely
+//    accumulate 50+ rounds; keeping 3+ wouldn't meaningfully reduce size).
+//  - The value interacts with window triggers (token/count/idle), which
+//    are already tunable via env. Adding another knob increases the
+//    chance of mis-configuration (e.g. keepLastRounds=10 + maxMsgCount=50
+//    would only strip when >60 rounds exist, making the feature inert).
 const keepLastRounds = 2
 
 // hasAnyToolCallsAfter is unused but kept for future use.
