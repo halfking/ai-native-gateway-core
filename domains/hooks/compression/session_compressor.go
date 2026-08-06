@@ -203,6 +203,15 @@ func (sc *SessionCompressor) Prepare(
 		v2Body, ok := sc.tryLoadV2State(ctx, tenantID, gwSessionID)
 		if ok {
 			lastOutboundBody = v2Body
+			// BuildOutboundMessages treats a nil state as "new session" and
+			// discards lastOutboundBody, so we MUST provide a non-nil state
+			// for the delta-append path to engage. The V2 reader does not
+			// populate the legacy SessionState fields; an empty struct is
+			// sufficient because diff.go only checks state != nil here.
+			// Tools-caching / strip bookkeeping later in Prepare will see a
+			// zero-valued state and no-op, which is the correct conservative
+			// behaviour until those features are migrated to V2 metadata.
+			state = &SessionState{}
 			slog.InfoContext(ctx, "session_compressor: v2 cache loaded successfully",
 				"session", gwSessionID, "body_size", len(v2Body))
 		} else {
