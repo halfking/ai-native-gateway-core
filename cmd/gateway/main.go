@@ -38,6 +38,8 @@ import (
 	"github.com/kaixuan/llm-gateway-go/autoroute"
 	"github.com/kaixuan/llm-gateway-go/autoupdate"
 	"github.com/kaixuan/llm-gateway-go/bg"
+	"github.com/kaixuan/llm-gateway-go/bg/freequotacleanup"
+	"github.com/kaixuan/llm-gateway-go/bg/freequotareset"
 	"github.com/kaixuan/llm-gateway-go/bg/systemmonitor"
 	"github.com/kaixuan/llm-gateway-go/center"
 	"github.com/kaixuan/llm-gateway-go/config"
@@ -51,9 +53,11 @@ import (
 	"github.com/kaixuan/llm-gateway-go/domains/assets"                              //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/domains/attachments"                         //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/domains/authentication"                      //nolint:depguard // historical violation, B1 routing.go CQRS will fix
+	"github.com/kaixuan/llm-gateway-go/domains/autocombo"                           //nolint:depguard // OmniFree virtual auto/* routing
 	"github.com/kaixuan/llm-gateway-go/domains/credential"                          //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/domains/credentialstate"                     //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/domains/dbdegradation"                       //nolint:depguard // 数据库降级模块
+	"github.com/kaixuan/llm-gateway-go/domains/freeresource"                        //nolint:depguard // OmniFree quota tracker
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/audit"                         //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/compression"                   //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/observability/telemetry"       //nolint:depguard // historical violation, B1 routing.go CQRS will fix
@@ -1463,6 +1467,24 @@ func main() {
 
 		chatHandler.SetExecutor(routingExec, providerClient, stickyCache)
 		chatHandler.SetSessionRouting(lastSystemSession, sessionPref)
+
+		// ── 2026-08-07 OmniFree (Phase 4) ────────────────────────────────
+		// 装配 auto/* 虚拟路由: Resolver + VirtualFactory + QuotaTracker.
+		// 默认仅当 OMNIFREE_ENABLED=true 才启用, 避免生产环境未准备好
+		// 时影响常规流量; 关闭时 ChatHandler.shouldTryOmniFree 直接
+		// 返回 false, 走原 provider resolver.
+		if dbConn != nil && dbConn.Enabled() && os.Getenv("OMNIFREE_ENABLED") == "true" {
+			stdlibDB := dbConn.Stdlib()
+			if stdlibDB != nil {
+				resolver := autocombo.NewResolver(stdlibDB)
+				tracker := freeresource.NewQuotaTracker(stdlibDB)
+				factory := autocombo.NewVirtualFactory(stdlibDB, tracker)
+				chatHandler.SetOmniFree(resolver, factory, tracker)
+				slog.Info("omnifree: virtual auto/* routing enabled",
+					"resolver_db", stdlibDB != nil,
+					"tracker_enabled", true)
+			}
+		}
 
 		// ── 2026-07-17: 请求链路追踪 ──────────────────────────────────────
 		// 创建 trace.Recorder (Redis 暂存 + JSONB 持久化),注入到 ChatHandler
@@ -2915,6 +2937,26 @@ func main() {
 		slog.Info("CHECKPOINT: before partitionManager.Start")
 		partitionManager.Start(context.Background())
 		slog.Info("CHECKPOINT: after partitionManager.Start")
+		// 2026-08-07 OmniFree: free quota reset/cleanup background workers. 只有
+		// OMNIFREE_ENABLED=true 且 dbConn 可用时才启动; 与 chatHandler.SetOmniFree
+		// 协同工作 (records/校正 free_resource 配额窗口).
+		if dbConn != nil && dbConn.Enabled() && os.Getenv("OMNIFREE_ENABLED") == "true" {
+			stdlibDB := dbConn.Stdlib()
+			if stdlibDB != nil {
+				quotaResetWorker := freequotareset.NewWorker(stdlibDB, 5*time.Minute)
+				quotaResetCtx, quotaResetCancel := context.WithCancel(context.Background())
+				go quotaResetWorker.Run(quotaResetCtx)
+				defer quotaResetCancel()
+				slog.Info("omnifree: free quota reset worker started (5m interval)")
+
+				quotaCleanupWorker := freequotacleanup.NewWorker(stdlibDB, 24*time.Hour)
+				quotaCleanupCtx, quotaCleanupCancel := context.WithCancel(context.Background())
+				go quotaCleanupWorker.Run(quotaCleanupCtx)
+				defer quotaCleanupCancel()
+				slog.Info("omnifree: free quota cleanup worker started (24h interval)")
+			}
+		}
+
 		envelopeCleaner = bg.NewEnvelopeCleaner(dbConn.Pool())
 
 		// settings-management: 7-day audit retention worker (Q6: C).
