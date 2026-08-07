@@ -165,3 +165,39 @@ func TestSummaryClientAdapterUsesTenantAwareProvider(t *testing.T) {
 		t.Fatalf("candidates=%v tenant=%q, want one candidate for tenant-a", candidates, provider.tenantID)
 	}
 }
+
+// TestBuildCompactionRequestNoDoubleV1 guards against the double-/v1 URL
+// regression: providers whose base URL already ends in /v1 (minimax, vapeur,
+// xiaomi) must NOT get /v1/v1/chat/completions. URL construction must go
+// through upstreamurl.Build (the SSoT), never naive string concatenation.
+func TestBuildCompactionRequestNoDoubleV1(t *testing.T) {
+	cases := []struct {
+		name      string
+		baseURL   string
+		anthropic bool
+		wantPath  string
+	}{
+		{"minimax-openai-v1-suffix", "https://api.minimaxi.com/v1", false, "/v1/chat/completions"},
+		{"vapeur-openai-v1-suffix", "https://api.vapeur.ai/v1", false, "/v1/chat/completions"},
+		{"bare-openai", "https://example.invalid", false, "/v1/chat/completions"},
+		{"full-openai-endpoint", "https://api.openai.com/v1/chat/completions", false, "/v1/chat/completions"},
+		{"anthropic-bare", "https://anthropic.invalid", true, "/v1/messages"},
+		{"anthropic-v1-suffix", "https://api.anthropic.com/v1", true, "/v1/messages"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			req, err := buildCompactionRequest(context.Background(), &ProviderCandidate{
+				BaseURL: tc.baseURL, APIKey: "key", RawModel: "model",
+			}, []byte(`{}`), tc.anthropic)
+			if err != nil {
+				t.Fatalf("buildCompactionRequest: %v", err)
+			}
+			if req.URL.Path != tc.wantPath {
+				t.Fatalf("path = %q, want %q (full URL %q)", req.URL.Path, tc.wantPath, req.URL.String())
+			}
+			if strings.Contains(req.URL.Path, "/v1/v1/") {
+				t.Fatalf("double /v1 in path: %q", req.URL.Path)
+			}
+		})
+	}
+}
