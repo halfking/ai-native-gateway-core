@@ -11,16 +11,18 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func getTestDBURL() string {
-	if url := os.Getenv("TEST_DATABASE_URL"); url != "" {
-		return url
+func getTestDBURL(t *testing.T) string {
+	t.Helper()
+	url := os.Getenv("TEST_DATABASE_URL")
+	if url == "" {
+		t.Skip("TEST_DATABASE_URL not set; skipping PostgreSQL integration test")
 	}
-	return "postgres://postgres:postgres@localhost:5432/llm_gateway_test?sslmode=disable"
+	return url
 }
 
 func setupTestStore(t *testing.T) (*PgxStore, context.Context, func()) {
 	ctx := context.Background()
-	dbURL := getTestDBURL()
+	dbURL := getTestDBURL(t)
 
 	pool, err := pgxpool.New(ctx, dbURL)
 	require.NoError(t, err, "failed to connect to test database")
@@ -32,14 +34,26 @@ func setupTestStore(t *testing.T) (*PgxStore, context.Context, func()) {
 	store := NewPgxStore(pool)
 
 	cleanup := func() {
-		// Clean up test data
+		// Clean up test data in dependency order.
 		pool.Exec(ctx, "DELETE FROM instance_release_status WHERE instance_id LIKE 'test-%'")
 		pool.Exec(ctx, "DELETE FROM upgrade_logs WHERE instance_id LIKE 'test-%'")
+		pool.Exec(ctx, "DELETE FROM gateway_instances WHERE instance_id LIKE 'test-%'")
 		pool.Exec(ctx, "DELETE FROM releases WHERE version LIKE 'test-%'")
 		pool.Close()
 	}
 
 	return store, ctx, cleanup
+}
+
+func seedTestInstance(t *testing.T, store *PgxStore, instanceID string) {
+	t.Helper()
+	_, err := store.db.Exec(context.Background(), `
+		INSERT INTO gateway_instances (
+			instance_id, hostname, ip_address, region, version, build_seq,
+			status, started_at, last_heartbeat
+		) VALUES ($1, $2, $3, $4, $5, $6, 'online', now(), now())
+	`, instanceID, "test-host", "127.0.0.1", "test", "v1.0.0", 1)
+	require.NoError(t, err)
 }
 
 func TestPgxStore_CreateRelease(t *testing.T) {
@@ -209,6 +223,34 @@ func TestPgxStore_RecordUpdateReport(t *testing.T) {
 	err := store.CreateRelease(ctx, release)
 	require.NoError(t, err)
 
+	for _, report := range []*UpdateReportData{
+		{
+			InstanceID:  "test-instance-success-" + baseTime,
+			FromVersion: "v1.4.0",
+			ToVersion:   release.Version,
+			Status:      StatusSuccess,
+			DurationMS:  5000,
+		},
+		{
+			InstanceID:  "test-instance-failed-" + baseTime,
+			FromVersion: "v1.4.0",
+			ToVersion:   release.Version,
+			Status:      StatusFailed,
+			DurationMS:  2000,
+			Error:       "download failed",
+		},
+		{
+			InstanceID:  "test-instance-rollback-" + baseTime,
+			FromVersion: release.Version,
+			ToVersion:   "v1.4.0",
+			Status:      StatusRollback,
+			DurationMS:  1000,
+			Error:       "health check failed",
+		},
+	} {
+		seedTestInstance(t, store, report.InstanceID)
+	}
+
 	tests := []struct {
 		name    string
 		report  *UpdateReportData
@@ -276,6 +318,7 @@ func TestPgxStore_GetUpgradeHistory(t *testing.T) {
 	defer cleanup()
 
 	instanceID := "test-instance-history-" + time.Now().Format("20060102150405")
+	seedTestInstance(t, store, instanceID)
 
 	// Create multiple upgrade logs
 	versions := []struct {

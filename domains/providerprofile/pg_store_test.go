@@ -2,6 +2,7 @@ package providerprofile_test
 
 import (
 	"context"
+	"os"
 	"testing"
 	"time"
 
@@ -14,10 +15,17 @@ import (
 func setupTestDB(t *testing.T) *pgxpool.Pool {
 	t.Helper()
 
-	// 使用本地Docker测试数据库连接
-	connString := "postgres://maintain:maintain@localhost:5432/llm_gateway?sslmode=disable"
+	connString := os.Getenv("TEST_DATABASE_URL")
+	if connString == "" {
+		t.Skip("TEST_DATABASE_URL not set; skipping PostgreSQL integration test")
+	}
+
 	pool, err := pgxpool.New(context.Background(), connString)
 	require.NoError(t, err)
+	if err := pool.Ping(context.Background()); err != nil {
+		pool.Close()
+		t.Skipf("integration database unavailable: %v", err)
+	}
 
 	t.Cleanup(func() {
 		pool.Close()
