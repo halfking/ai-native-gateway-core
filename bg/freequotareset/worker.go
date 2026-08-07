@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"log"
+	"sort"
 	"time"
 )
 
@@ -149,6 +150,7 @@ func (w *Worker) listTenants(ctx context.Context) ([]string, error) {
 	for tenant := range seen {
 		out = append(out, tenant)
 	}
+	sort.Strings(out)
 	return out, nil
 }
 

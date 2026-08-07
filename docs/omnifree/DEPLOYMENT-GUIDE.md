@@ -34,29 +34,33 @@ export OMNIFREE_ENABLED=true
 
 ## 2. 导入种子数据
 
-表结构创建后，运行种子数据命令填充 `free_resource_catalog`：
+表结构创建后，运行种子数据命令填充 15 个免费资源、6 个 Auto Combo 模板和 3 个 Keyless 提供商：
 
 ```bash
-# 方式 1: 从应用内置 JSON 导入（推荐）
-go run cmd/seed-free-resources/main.go \
+go run ./cmd/seed-free-resources \
   --db-url="$DB_URL" \
-  --tenant=default
+  --tenant-id=default \
+  --catalog=docs/omnifree/seed/free_resource_catalog.json \
+  --templates=docs/omnifree/seed/auto_combo_templates.json \
+  --keyless=docs/omnifree/seed/keyless_providers.json
+```
 
-# 方式 2: 从外部 JSON 文件导入
-go run cmd/seed-free-resources/main.go \
+试运行只解析文件并检查数据库连接，不会写入种子数据：
+
+```bash
+go run ./cmd/seed-free-resources \
   --db-url="$DB_URL" \
-  --tenant=default \
-  --seed-file=./scripts/omnifree/seed/free-resources-2024.json
+  --tenant-id=default \
+  --catalog=docs/omnifree/seed/free_resource_catalog.json \
+  --templates=docs/omnifree/seed/auto_combo_templates.json \
+  --keyless=docs/omnifree/seed/keyless_providers.json \
+  --dry-run
 ```
 
 ### 环境变量
 
-种子命令支持从环境变量读取数据库 URL：
-
-```bash
-export DATABASE_URL="postgres://user:pass@localhost/gateway?sslmode=disable"
-go run cmd/seed-free-resources/main.go --tenant=default
-```
+种子命令通过 `--db-url` 接收数据库连接字符串；它不会隐式读取
+`DATABASE_URL`。租户通过 `--tenant-id` 指定，默认值为 `default`。
 
 ### 验证导入
 
@@ -181,7 +185,15 @@ WHERE credential_id = 123
 - 或者 `tos_filter` 配置过严（例如只允许 `ok`，但目录里都是 `caution`）
 
 **解决**：
-1. 运行种子命令：`go run cmd/seed-free-resources/main.go`
+1. 运行种子命令（需提供数据库 URL 和三个 seed 文件）：
+   ```bash
+   go run ./cmd/seed-free-resources \
+     --db-url="$DB_URL" \
+     --tenant-id=default \
+     --catalog=docs/omnifree/seed/free_resource_catalog.json \
+     --templates=docs/omnifree/seed/auto_combo_templates.json \
+     --keyless=docs/omnifree/seed/keyless_providers.json
+   ```
 2. 确认目录有启用条目：
    ```sql
    SELECT COUNT(*) FROM free_resource_catalog
@@ -246,4 +258,4 @@ systemctl start llm-gateway
 - **Auto Combo**：`docs/omnifree/03-AUTO-COMBO.md`
 - **集成计划**：`docs/omnifree/INTEGRATION-PLAN.md`
 - **迁移 SQL**：`sql/migrations/075-omnifree-schema.sql`
-- **种子数据**：`scripts/omnifree/seed/`
+- **种子数据**：`docs/omnifree/seed/`
