@@ -22,9 +22,11 @@ import (
 	"github.com/google/uuid"
 	"github.com/kaixuan/llm-gateway-go/autoroute"
 	"github.com/kaixuan/llm-gateway-go/cache/prefix"
-	"github.com/kaixuan/llm-gateway-go/domains/attachments"                         //nolint:depguard // historical violation, B1 routing.go CQRS will fix
-	"github.com/kaixuan/llm-gateway-go/domains/authentication"                      //nolint:depguard // historical violation, B1 routing.go CQRS will fix
+	"github.com/kaixuan/llm-gateway-go/domains/attachments"    //nolint:depguard // historical violation, B1 routing.go CQRS will fix
+	"github.com/kaixuan/llm-gateway-go/domains/authentication" //nolint:depguard // historical violation, B1 routing.go CQRS will fix
+	"github.com/kaixuan/llm-gateway-go/domains/autocombo"
 	"github.com/kaixuan/llm-gateway-go/domains/credential"                          //nolint:depguard // historical violation, B1 routing.go CQRS will fix
+	"github.com/kaixuan/llm-gateway-go/domains/freeresource"                        //nolint:depguard // OmniFree quota tracker
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/audit"                         //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/compression"                   //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/handoff"                       //nolint:depguard // request-side session handoff hook
@@ -758,6 +760,15 @@ type ChatHandler struct {
 	// formatCache (2026-07-26) caches detected format patterns per session in Redis.
 	// Avoids repeated detection for same client. nil disables caching (detect every request).
 	formatCache FormatCache
+
+	// OmniFree (Phase 4, 2026-08-07) - optional virtual auto/* routing.
+	// When autoComboResolver + autoComboFactory are wired, requests with
+	// client model starting with "auto/" (excluding the exact "auto"
+	// magic handled by maybeResolveAuto) are routed through VirtualFactory.
+	// quotaTracker records per-credential request usage for free-tier providers.
+	autoComboResolver *autocombo.Resolver
+	autoComboFactory  *autocombo.VirtualFactory
+	quotaTracker      *freeresource.QuotaTracker
 }
 
 // ToolRegistryService is the interface for tool registry access.
@@ -1169,6 +1180,19 @@ func (h *ChatHandler) SetFormatAnomalyRecorder(recorder *FormatAnomalyRecorder) 
 // nil disables attachment extraction (attachments remain inline).
 func (h *ChatHandler) SetAttachmentExtractor(extractor *attachments.Extractor) {
 	h.attachmentExtractor = extractor
+}
+
+// SetOmniFree (2026-08-07) wires the optional OmniFree auto-combo stack:
+// resolver + factory + quota tracker. Any argument may be nil to skip that
+// component. With resolver nil, auto/* requests are treated as model_not_found.
+func (h *ChatHandler) SetOmniFree(
+	resolver *autocombo.Resolver,
+	factory *autocombo.VirtualFactory,
+	tracker *freeresource.QuotaTracker,
+) {
+	h.autoComboResolver = resolver
+	h.autoComboFactory = factory
+	h.quotaTracker = tracker
 }
 
 // ServeHTTP handles /v1/chat/completions and /v1/completions.
@@ -2357,7 +2381,43 @@ func (h *ChatHandler) serveWithExecutor(
 	if keyInfo != nil {
 		tenantID = keyInfo.TenantID
 	}
-	candidates, policy, requestModality, err := resolveCandidatesForRequest(r.Context(), h.provider, clientModel, clientID.Fingerprint.ClientProfile, tenantID, bodyBytes)
+
+	var (
+		candidates      []provider.Candidate
+		policy          *provider.Policy
+		requestModality string
+	)
+	if h.shouldTryOmniFree(clientModel) {
+		// OmniFree (Phase 4, 2026-08-07): 解析 auto/* 虚拟路由.
+		// helper 返回 found=true 时, 直接采用其结果; 否则走普通 provider resolver.
+		var (
+			omniCandidates []provider.Candidate
+			omniPolicy     *provider.Policy
+			omniModality   string
+			found          bool
+			omniErr        error
+		)
+		omniCandidates, omniPolicy, omniModality, found, omniErr = h.resolveOmniFreeCandidates(
+			r.Context(), clientModel, clientID.Fingerprint.ClientProfile, tenantID, bodyBytes,
+		)
+		if found {
+			candidates = omniCandidates
+			policy = omniPolicy
+			requestModality = omniModality
+		} else {
+			if omniErr != nil {
+				slog.Debug("omnifree resolve failed, fall back to provider resolver",
+					"error", omniErr, "model", clientModel, "request_id", requestID)
+			}
+			candidates, policy, requestModality, err = resolveCandidatesForRequest(
+				r.Context(), h.provider, clientModel, clientID.Fingerprint.ClientProfile, tenantID, bodyBytes,
+			)
+		}
+	} else {
+		candidates, policy, requestModality, err = resolveCandidatesForRequest(
+			r.Context(), h.provider, clientModel, clientID.Fingerprint.ClientProfile, tenantID, bodyBytes,
+		)
+	}
 
 	// 2026-07-18: structured log of routing_resolve so journald can
 	// correlate req_id → chosen providers. The minmax-m3 incident
@@ -3240,6 +3300,11 @@ func (h *ChatHandler) serveWithExecutor(
 				"",
 			))
 	}
+
+	// 2026-08-07 OmniFree: 对 auto/* 请求记录免费资源配额, 429 时
+	// 校正配额上限与 reset_at. 仅在 executor 返回结果时处理 (success 或
+	// 失败但至少选出了 candidate).
+	h.recordOmniFreeQuota(r.Context(), clientModel, tenantID, result, execErr)
 
 	if execErr != nil {
 		if preStream != nil {
