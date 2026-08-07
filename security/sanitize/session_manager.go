@@ -52,12 +52,57 @@ func (m *SessionSanitizeManager) GetSessionKey(tenantID, sessionID string) strin
 	return fmt.Sprintf("%s:%s:%s", SessionSanitizeKeyPrefix, tenantID, sessionID)
 }
 
+// mergeLuaScript 原子合并映射表的Lua脚本
+// 参数：KEYS[1]=redis key, ARGV[1]=新映射JSON, ARGV[2]=TTL秒数
+// 行为：读取现有JSON → 反序列化 → 合并（不覆盖已有键）→ 序列化 → SET with TTL
+// 返回：合并后的总条目数
+const mergeLuaScript = `
+local key = KEYS[1]
+local new_json = ARGV[1]
+local ttl = tonumber(ARGV[2])
+
+local existing = redis.call('GET', key)
+local merged = {}
+
+-- 解析现有映射表
+if existing then
+  local ok, parsed = pcall(cjson.decode, existing)
+  if ok and type(parsed) == "table" then
+    for k, v in pairs(parsed) do
+      merged[k] = v
+    end
+  end
+end
+
+-- 解析新映射表并合并（不覆盖已有键）
+local ok2, new_map = pcall(cjson.decode, new_json)
+if ok2 and type(new_map) == "table" then
+  for k, v in pairs(new_map) do
+    if merged[k] == nil then
+      merged[k] = v
+    end
+  end
+end
+
+-- 序列化并写回
+local out_json = cjson.encode(merged)
+if ttl > 0 then
+  redis.call('SET', key, out_json, 'EX', ttl)
+else
+  redis.call('SET', key, out_json)
+end
+
+return #merged
+`
+
 // MergeSanitizeMap 将当前轮次的映射表合并到会话级映射表
 //
-// 策略：
+// 策略（原子操作，通过Lua脚本实现）：
 //   - 读取现有映射表
 //   - 合并新映射（键已存在则保留旧值，避免覆盖）
 //   - 写回Redis并刷新TTL
+//
+// 并发安全：同一会话的并发请求不会导致数据丢失
 func (m *SessionSanitizeManager) MergeSanitizeMap(
 	ctx context.Context,
 	tenantID, sessionID string,
@@ -66,57 +111,33 @@ func (m *SessionSanitizeManager) MergeSanitizeMap(
 	if m == nil || m.redis == nil {
 		return fmt.Errorf("session sanitize manager not initialized")
 	}
-	
+
 	if len(currentMap) == 0 {
 		return nil // 没有新映射，无需操作
 	}
-	
+
 	key := m.GetSessionKey(tenantID, sessionID)
-	
-	// 1. 读取现有映射表
-	existingJSON, err := m.redis.Get(ctx, key).Result()
-	if err != nil && err != redis.Nil {
-		return fmt.Errorf("get existing map from redis: %w", err)
-	}
-	
-	existingMap := make(SanitizeMap)
-	if existingJSON != "" && existingJSON != "{}" {
-		if err := json.Unmarshal([]byte(existingJSON), &existingMap); err != nil {
-			m.logger.WarnContext(ctx, "failed to unmarshal existing map, starting fresh",
-				"error", err,
-				"session_id", sessionID,
-			)
-			existingMap = make(SanitizeMap)
-		}
-	}
-	
-	// 2. 合并新映射（避免覆盖已存在的键）
-	mergedCount := 0
-	for placeholder, value := range currentMap {
-		if _, exists := existingMap[placeholder]; !exists {
-			existingMap[placeholder] = value
-			mergedCount++
-		}
-	}
-	
-	// 3. 写回Redis
-	mergedJSON, err := json.Marshal(existingMap)
+
+	// 序列化新映射表
+	newJSON, err := json.Marshal(currentMap)
 	if err != nil {
-		return fmt.Errorf("marshal merged map: %w", err)
+		return fmt.Errorf("marshal current map: %w", err)
 	}
-	
-	if err := m.redis.Set(ctx, key, mergedJSON, m.ttl).Err(); err != nil {
-		return fmt.Errorf("set merged map to redis: %w", err)
+
+	// 执行原子合并
+	ttlSeconds := int64(m.ttl.Seconds())
+	result, err := m.redis.Eval(ctx, mergeLuaScript, []string{key}, string(newJSON), ttlSeconds).Int()
+	if err != nil {
+		return fmt.Errorf("redis eval merge script: %w", err)
 	}
-	
+
 	m.logger.DebugContext(ctx, "merged sanitize map to session cache",
 		"tenant_id", tenantID,
 		"session_id", sessionID,
 		"new_count", len(currentMap),
-		"merged_count", mergedCount,
-		"total_count", len(existingMap),
+		"total_count", result,
 	)
-	
+
 	return nil
 }
 
