@@ -110,7 +110,15 @@ jobs:
             || { echo "gateway.session_bodies missing — apply migration 430 to the CI DB"; exit 1; }
 
       - name: Run Sessions V2 integration tests
-        run: go test ./domains/session/v2 -run '_RealDB' -count=1 -v
+        # Scoped to the V2 read/write round-trip tests for outbound_body
+        # (the data source the V2 compression path consumes). We do NOT
+        # run the whole v2 package here: turn_writer/attachment_count
+        # tests currently depend on migration 431+ which not every CI DB
+        # carries, and turning that pre-existing drift into a red on this
+        # job would obscure the outbound_body contract we are guarding.
+        # Run 'go test ./domains/session/v2' locally with a full migration
+        # chain for broader coverage.
+        run: go test ./domains/session/v2 -run '_RealDB|_RoundTrip' -count=1 -v
 
   lint:
     name: Lint
