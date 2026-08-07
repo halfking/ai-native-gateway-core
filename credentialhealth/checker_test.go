@@ -2,6 +2,9 @@ package credentialhealth
 
 import (
 	"context"
+	"os"
+	"regexp"
+	"strings"
 	"testing"
 	"time"
 
@@ -496,4 +499,68 @@ func TestRecoverExpired_SkipsModelProbeBroken(t *testing.T) {
 	if err := mockDB.ExpectationsWereMet(); err != nil {
 		t.Errorf("model_probe_broken not excluded: %v", err)
 	}
+}
+
+// TestRecoverExpired_SuspendedSQLGuard pins the 2026-08-07 P0 fix
+// to RecoverExpired(): the third UPDATE (credentials.availability_state)
+// must whitelist 'suspended' AND refuse to flip it while quota_state
+// is still hard-failed.
+//
+// Production deadlock (cred 22 zhipu-roocode-v2, cred 34 zhima-1):
+//
+//	availability_state='suspended' with availability_recover_at
+//	elapsed — but the original RecoverExpired() did not include
+//	'suspended' in its IN list. Same one-way lock as the 60s ticker.
+//	Defence-in-depth: RecoverExpired must be a true backup of the
+//	60s recover() path.
+//
+// We assert by reading the source: the credentials UPDATE must
+// (a) include 'suspended' in availability_state IN(...) and
+// (b) gate it on quota_state NOT IN (permanently_exhausted,
+//     balance_exhausted) so true hard-quota creds cannot be flipped
+//     by a single RecoverExpired tick.
+func TestRecoverExpired_SuspendedSQLGuard(t *testing.T) {
+	src, err := os.ReadFile("checker.go")
+	if err != nil {
+		t.Fatalf("read source: %v", err)
+	}
+	body := string(src)
+	// (a) 'suspended' must be in the availability_state whitelist.
+	pattern := regexp.MustCompile(`availability_state\s+IN\s*\([^)]*'suspended'[^)]*\)`)
+	if !pattern.MatchString(body) {
+		t.Fatalf("RecoverExpired availability_state IN(...) does NOT include 'suspended' — 2026-08-07 P0 regression")
+	}
+	// (b) Hard-quota guard present in the suspended branch.
+	guardPattern := regexp.MustCompile(
+		`availability_state\s*<>\s*'suspended'\s*` +
+			`OR\s+COALESCE\(quota_state,\s*'ok'\)\s*NOT\s+IN\s*\(\s*'permanently_exhausted',\s*'balance_exhausted'\s*\)`,
+	)
+	if !guardPattern.MatchString(body) {
+		t.Fatalf("RecoverExpired suspended hard-quota guard missing — balance/permanent creds would auto-recover:\n%s",
+			extractSnippet(body, "suspended"))
+	}
+	// (c) Original whitelist states still present.
+	for _, s := range []string{"'cooling'", "'rate_limited'", "'unreachable'"} {
+		if !strings.Contains(body, s) {
+			t.Fatalf("RecoverExpired whitelist lost %s — regression of pre-existing recovery path", s)
+		}
+	}
+}
+
+// extractSnippet returns a 200-char window around the first occurrence
+// of needle in body, for nicer test failure messages.
+func extractSnippet(body, needle string) string {
+	idx := strings.Index(body, needle)
+	if idx < 0 {
+		return "<needle not found>"
+	}
+	from := idx - 80
+	to := idx + 200
+	if from < 0 {
+		from = 0
+	}
+	if to > len(body) {
+		to = len(body)
+	}
+	return body[from:to]
 }
