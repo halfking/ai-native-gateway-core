@@ -9,6 +9,11 @@ import (
 )
 
 // Resolver Auto Combo 解析器
+//
+// tenantID 在数据层统一为 TEXT (free_resource_catalog.tenant_id,
+// auto_combo_templates.tenant_id), 与 streaming handler / keyInfo.TenantID
+// 的字符串语义保持一致; 旧实现使用 int64 会触发 PG 操作符不匹配, 已在
+// 2026-08-07 修正.
 type Resolver struct {
 	db *sql.DB
 }
@@ -18,43 +23,67 @@ func NewResolver(db *sql.DB) *Resolver {
 	return &Resolver{db: db}
 }
 
-// Resolve 解析 auto/* 模型 ID 到 AutoComboSpec
-func (r *Resolver) Resolve(ctx context.Context, modelID string, tenantID int64) (*AutoComboSpec, error) {
-	// 1. 检查是否为 auto/* 模式
+// Resolve 解析 auto/* 模型 ID 到 AutoComboSpec。
+//
+// 查询顺序:
+//  1. 若 !strings.HasPrefix(modelID, "auto/"), 返回 (nil, nil), 由调用方
+//     视为非虚拟路由.
+//  2. 在当前租户查找 auto_combo_templates 行; 命中即返回.
+//  3. 命中不到时, 回退到内置 builtinMap, 该 map 不带租户信息但仅支持
+//     OmniFree 已约定的稳定模型名.
+func (r *Resolver) Resolve(ctx context.Context, modelID string, tenantID string) (*AutoComboSpec, error) {
 	if !strings.HasPrefix(modelID, "auto/") {
-		return nil, nil // 不是 auto combo
+		return nil, nil
 	}
 
-	// 2. 查找数据库模板
-	var spec AutoComboSpec
-	err := r.db.QueryRowContext(ctx, `
-        SELECT 
-            id, combo_name, variant, tier_filter, free_type_filter,
-            tos_filter, provider_allowlist, provider_denylist,
-            model_pattern, scoring_weights_json, max_candidates, 
-            exploration_rate, enabled, tenant_id
-        FROM auto_combo_templates
-        WHERE combo_name = $1 AND enabled = TRUE AND tenant_id = $2
-    `, modelID, tenantID).Scan(
-		&spec.ID, &spec.ComboName, &spec.Variant, &spec.TierFilter,
-		&spec.FreeTypeFilter, &spec.ToSFilter, &spec.ProviderAllowlist,
-		&spec.ProviderDenylist, &spec.ModelPattern, &spec.ScoringWeightsJSON,
-		&spec.MaxCandidates, &spec.ExplorationRate, &spec.Enabled, &spec.TenantID)
-
-	if err == sql.ErrNoRows {
-		// 3. 回退到内置模板
-		return r.getBuiltinTemplate(modelID)
+	spec, err := r.queryDB(ctx, modelID, tenantID)
+	if err == nil && spec != nil {
+		return spec, nil
 	}
-	if err != nil {
+	if err != nil && err != sql.ErrNoRows {
 		return nil, fmt.Errorf("query auto combo template: %w", err)
 	}
 
+	return r.getBuiltinTemplate(modelID, tenantID)
+}
+
+// queryDB 在数据库中查找模板；空 tenant 时回退到 default 行, 兼容历史数据。
+func (r *Resolver) queryDB(ctx context.Context, modelID, tenantID string) (*AutoComboSpec, error) {
+	if r.db == nil {
+		return nil, sql.ErrNoRows
+	}
+	tenantFilter := tenantID
+	if tenantFilter == "" {
+		tenantFilter = "default"
+	}
+
+	const q = `
+        SELECT
+            id, combo_name, variant, tier_filter, free_type_filter,
+            tos_filter, provider_allowlist, provider_denylist,
+            model_pattern, scoring_weights_json, max_candidates,
+            exploration_rate, enabled, tenant_id
+        FROM auto_combo_templates
+        WHERE combo_name = $1
+          AND enabled = TRUE
+          AND tenant_id = $2
+    `
+
+	var spec AutoComboSpec
+	err := r.db.QueryRowContext(ctx, q, modelID, tenantFilter).Scan(
+		&spec.ID, &spec.ComboName, &spec.Variant, &spec.TierFilter,
+		&spec.FreeTypeFilter, &spec.ToSFilter, &spec.ProviderAllowlist,
+		&spec.ProviderDenylist, &spec.ModelPattern, &spec.ScoringWeightsJSON,
+		&spec.MaxCandidates, &spec.ExplorationRate, &spec.Enabled, &spec.TenantID,
+	)
+	if err != nil {
+		return nil, err
+	}
 	return &spec, nil
 }
 
 // getBuiltinTemplate 内置模板回退
-func (r *Resolver) getBuiltinTemplate(modelID string) (*AutoComboSpec, error) {
-	// 映射常见模式
+func (r *Resolver) getBuiltinTemplate(modelID, tenantID string) (*AutoComboSpec, error) {
 	builtinMap := map[string]Variant{
 		"auto/free":           VariantCheap,
 		"auto/best-free":      VariantCheap,
@@ -111,5 +140,6 @@ func (r *Resolver) getBuiltinTemplate(modelID string) (*AutoComboSpec, error) {
 		MaxCandidates:      50,
 		ExplorationRate:    0.05,
 		Enabled:            true,
+		TenantID:           tenantID,
 	}, nil
 }

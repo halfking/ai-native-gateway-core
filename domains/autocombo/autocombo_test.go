@@ -167,7 +167,7 @@ func TestResolver_BuiltinTemplates(t *testing.T) {
 
 	for _, tc := range testCases {
 		t.Run(tc.modelID, func(t *testing.T) {
-			spec, err := resolver.getBuiltinTemplate(tc.modelID)
+			spec, err := resolver.getBuiltinTemplate(tc.modelID, "default")
 			if err != nil {
 				t.Fatalf("getBuiltinTemplate failed: %v", err)
 			}
@@ -201,7 +201,7 @@ func TestResolver_BuiltinTemplates(t *testing.T) {
 func TestResolver_UnknownCombo(t *testing.T) {
 	resolver := &Resolver{}
 
-	_, err := resolver.getBuiltinTemplate("auto/unknown")
+	_, err := resolver.getBuiltinTemplate("auto/unknown", "default")
 	if err == nil {
 		t.Error("expected error for unknown combo")
 	}
