@@ -2,6 +2,7 @@ package ir
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 )
 
@@ -478,5 +479,183 @@ func TestSerializeResponsesRequest_Metadata(t *testing.T) {
 	m := meta.(map[string]any)
 	if m["user_id"] != "u_123" {
 		t.Errorf("metadata.user_id = %v, want u_123", m["user_id"])
+	}
+}
+
+// =============================================================================
+// E5: Responses API sanitization (docs/omni-ref3 §7.3)
+// =============================================================================
+
+func TestSanitizeResponsesFunctionName(t *testing.T) {
+	cases := []struct {
+		name string
+		in   string
+		want string
+	}{
+		// Pass-through cases.
+		{"empty stays empty", "", ""},
+		{"simple ascii", "search_web", "search_web"},
+		{"with dash", "get-weather", "get-weather"},
+		{"mixed case", "GetWeather", "GetWeather"},
+		{"with digits", "tool_v2", "tool_v2"},
+
+		// Truncation.
+		{"long name truncated", "x" + strings.Repeat("a", 100), "x" + strings.Repeat("a", 63)},
+		{"long with special chars truncated", strings.Repeat("a.", 50), strings.Repeat("a_", 32)},
+
+		// Character replacement.
+		{"dot replaced", "search.web", "search_web"},
+		{"space replaced", "search web", "search_web"},
+		{"slash replaced", "search/web", "search_web"},
+		{"unicode replaced (6 bytes → 6 underscores)", "search日本", "search______"},
+		{"parentheses replaced", "foo()", "foo__"},
+
+		// Leading digit gets fn_ prefix.
+		{"leading digit gets prefix", "2tool", "fn_2tool"},
+		{"leading digit preserved after prefix", "9x", "fn_9x"},
+
+		// All-special collapses to underscores (still valid).
+		{"all dots", "....", "____"},
+
+		// Truncation after prefix.
+		{"leading digit with long name", "2" + strings.Repeat("a", 100), "fn_2" + strings.Repeat("a", 60)},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := SanitizeResponsesFunctionName(c.in)
+			if got != c.want {
+				t.Errorf("SanitizeResponsesFunctionName(%q) = %q, want %q", c.in, got, c.want)
+			}
+			// Idempotency: re-sanitizing returns the same value.
+			if got != "" && SanitizeResponsesFunctionName(got) != got {
+				t.Errorf("not idempotent: %q -> sanitize -> %q -> sanitize -> %q", c.in, got, SanitizeResponsesFunctionName(got))
+			}
+			// Constraint: result fits API limits.
+			if len(got) > responsesMaxFunctionNameLen {
+				t.Errorf("output exceeds %d chars: %d", responsesMaxFunctionNameLen, len(got))
+			}
+		})
+	}
+}
+
+func TestEnsureResponsesItemIDPrefix(t *testing.T) {
+	cases := []struct {
+		name     string
+		id       string
+		typeHint string
+		want     string
+	}{
+		// Empty stays empty.
+		{"empty stays empty", "", "", ""},
+		{"empty with hint", "", "function_call", ""},
+
+		// Existing prefixes are preserved.
+		{"fc_ preserved", "fc_abc123", "function_call", "fc_abc123"},
+		{"msg_ preserved", "msg_xyz", "message", "msg_xyz"},
+		{"fco_ preserved", "fco_long_id", "function_call_output", "fco_long_id"},
+		{"rs_ preserved", "rs_response", "", "rs_response"},
+		{"item_ preserved", "item_456", "", "item_456"},
+
+		// Missing prefix is added based on hint.
+		{"function_call hint", "abc123", "function_call", "fc_abc123"},
+		{"function_call_output hint", "abc123", "function_call_output", "fco_abc123"},
+		{"message hint", "abc123", "message", "msg_abc123"},
+		{"unknown hint defaults to item_", "abc123", "wat", "item_abc123"},
+		{"empty hint defaults to item_", "abc123", "", "item_abc123"},
+
+		// Edge: prefix-like but not at start.
+		{"prefix in middle not detected", "xfc_abc", "function_call", "fc_xfc_abc"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := EnsureResponsesItemIDPrefix(c.id, c.typeHint)
+			if got != c.want {
+				t.Errorf("EnsureResponsesItemIDPrefix(%q, %q) = %q, want %q",
+					c.id, c.typeHint, got, c.want)
+			}
+		})
+	}
+}
+
+// TestSerializeResponsesRequest_ToolNameSanitized verifies that function/tool
+// names flow through SanitizeResponsesFunctionName before hitting the wire.
+func TestSerializeResponsesRequest_ToolNameSanitized(t *testing.T) {
+	req := &InternalRequest{
+		Model:    "gpt-4o",
+		Messages: []Message{{Role: "user", Content: []ContentBlock{{Type: "text", Text: "hi"}}}},
+		Tools: []ToolDefinition{
+			{Name: "search web"}, // space → underscore
+			{Name: strings.Repeat("a", 100)}, // too long → truncated
+			{Name: "2leading"},               // digit prefix → fn_2leading
+		},
+	}
+	body, err := SerializeResponsesRequest(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out map[string]any
+	_ = json.Unmarshal(body, &out)
+
+	tools, ok := out["tools"].([]any)
+	if !ok || len(tools) != 3 {
+		t.Fatalf("expected 3 tools, got %v", out["tools"])
+	}
+	wantNames := []string{"search_web", strings.Repeat("a", 64), "fn_2leading"}
+	for i, want := range wantNames {
+		got := tools[i].(map[string]any)["name"].(string)
+		if got != want {
+			t.Errorf("tool[%d].name = %q, want %q", i, got, want)
+		}
+	}
+}
+
+// TestSerializeResponsesRequest_AssistantToolCallSanitized verifies that the
+// assistant tool_calls' function name AND id flow through E5 sanitization.
+func TestSerializeResponsesRequest_AssistantToolCallSanitized(t *testing.T) {
+	req := &InternalRequest{
+		Model: "gpt-4o",
+		Messages: []Message{
+			{Role: "user", Content: []ContentBlock{{Type: "text", Text: "weather?"}}},
+			{Role: "assistant", Content: []ContentBlock{{Type: "text", Text: ""}}, ToolCalls: []ToolCall{
+				{ID: "call_xyz", Function: struct {
+					Name      string `json:"name"`
+					Arguments string `json:"arguments"`
+				}{Name: "get weather", Arguments: `{"city":"SF"}`}},
+			}},
+		},
+	}
+	body, err := SerializeResponsesRequest(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out map[string]any
+	_ = json.Unmarshal(body, &out)
+
+	input, ok := out["input"].([]any)
+	if !ok || len(input) < 2 {
+		t.Fatalf("expected at least 2 input items, got %v", out["input"])
+	}
+
+	// Find the function_call item (not the user message).
+	var fc map[string]any
+	for _, item := range input {
+		m := item.(map[string]any)
+		if m["type"] == "function_call" {
+			fc = m
+			break
+		}
+	}
+	if fc == nil {
+		t.Fatalf("expected function_call item, got input=%v", input)
+	}
+	if fc["name"] != "get_weather" {
+		t.Errorf("function_call.name = %q, want get_weather", fc["name"])
+	}
+	if fc["id"] != "fc_call_xyz" {
+		t.Errorf("function_call.id = %q, want fc_call_xyz (E5 prefix added)", fc["id"])
+	}
+	// call_id stays unchanged (used for matching with function_call_output).
+	if fc["call_id"] != "call_xyz" {
+		t.Errorf("function_call.call_id = %q, want call_xyz", fc["call_id"])
 	}
 }
