@@ -71,7 +71,7 @@ P3 退役 V1
 |---|---|---|---|
 | ✅ 统一 token 估算（`tokenest` 包，3.5 统一；修 V2 builder /4 离群） | C4 | 无 | **已实现** |
 | ✅ prompt-cache 前缀分析器（`cache/prefix` 新增 `PrefixHash`/`computePrefixHash`） | D7 | C4 | **已实现** |
-| 统一 cache 指标表 | D2 | 无 | 待 |
+| ✅ 统一 cache 指标表（`cache_metrics` 表 + `cachemetrics.Recorder` + admin API） | D2 | 无 | **已实现** |
 
 ### P1.3 压缩增强
 | 条目 | 来源 | 前置 | 状态 |
