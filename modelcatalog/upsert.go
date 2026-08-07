@@ -14,6 +14,8 @@ import (
 // UpsertCredentialModel inserts or updates one credential→model binding.
 //
 // Lifecycle rules on duplicate (credential_id, provider_model_id):
+//   - Admin-protected bindings (admin_protected=TRUE, i.e. manually added)
+//     are skipped entirely: batch/auto refresh must not update these records.
 //   - Manually disabled bindings (available=false AND unavailable_reason LIKE 'manual%')
 //     keep their availability flags unchanged.
 //   - All other states (including legacy soft-delete reason='deleted') are re-enabled.
@@ -114,6 +116,9 @@ ON CONFLICT (credential_id, provider_model_id) DO UPDATE SET
         THEN credential_model_bindings.unavailable_at
         ELSE NULL
     END
+    -- Batch/auto refresh must not update admin-protected (manually-added)
+    -- bindings at all: skip them entirely so even updated_at is untouched.
+    WHERE COALESCE(credential_model_bindings.admin_protected, FALSE) = FALSE
 `
 
 // ClearProviderBindings hard-deletes all credential_model_bindings for a

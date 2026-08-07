@@ -530,6 +530,7 @@ func (r *ModelProbeRunner) reconcileBrokenConfirmedBindings(ctx context.Context)
 		WHERE cmb.provider_model_id = pm.id
 		  AND cmb.available = TRUE
 		  AND COALESCE(cmb.unavailable_reason, '') NOT LIKE 'manual%'
+		  AND COALESCE(cmb.admin_protected, FALSE) = FALSE
 		  AND EXISTS (
 		      SELECT 1 FROM model_probe_state mps
 		      WHERE mps.credential_id = cmb.credential_id
@@ -677,6 +678,7 @@ func (r *ModelProbeRunner) applyResult(
 			  AND pm.raw_model_name     = $2
 			  AND cmb.available         = TRUE
 			  AND COALESCE(cmb.unavailable_reason, '') NOT LIKE 'manual%'
+			  AND COALESCE(cmb.admin_protected, FALSE) = FALSE
 		`, t.CredentialID, t.RawModel)
 		if err != nil {
 			slog.Warn("model probe: broken_confirmed binding update failed",
@@ -698,6 +700,7 @@ func (r *ModelProbeRunner) applyResult(
 			  AND pm.raw_model_name     = $2
 			  AND cmb.available         = FALSE
 			  AND cmb.unavailable_reason = 'model_probe_broken'
+			  AND COALESCE(cmb.admin_protected, FALSE) = FALSE
 		`, t.CredentialID, t.RawModel)
 		if err != nil {
 			slog.Warn("model probe: healthy_confirmed binding restore failed",

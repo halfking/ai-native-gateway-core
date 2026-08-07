@@ -2616,7 +2616,8 @@ CREATE FUNCTION public.model_probe_mark_available(p_credential_id bigint, p_raw_
 		    WHERE cmb.provider_model_id = pm.id
 		      AND cmb.credential_id = p_credential_id
 		      AND pm.raw_model_name = p_raw_model_name
-		      AND COALESCE(cmb.unavailable_reason, '') NOT LIKE 'manual%';
+		      AND COALESCE(cmb.unavailable_reason, '') NOT LIKE 'manual%'
+		      AND COALESCE(cmb.admin_protected, FALSE) = FALSE;
 		END;
 		$$;
 
@@ -2664,7 +2665,8 @@ CREATE FUNCTION public.model_probe_mark_unavailable(p_credential_id bigint, p_ra
 		    WHERE cmb.provider_model_id = pm.id
 		      AND cmb.credential_id = p_credential_id
 		      AND pm.raw_model_name = p_raw_model_name
-		      AND COALESCE(cmb.unavailable_reason, '') NOT LIKE 'manual%';
+		      AND COALESCE(cmb.unavailable_reason, '') NOT LIKE 'manual%'
+		      AND COALESCE(cmb.admin_protected, FALSE) = FALSE;
 		END;
 		$$;
 
@@ -3627,7 +3629,8 @@ CREATE FUNCTION public.unified_probe_mark_failing(p_credential_id bigint, p_raw_
 		    WHERE cmb.provider_model_id = pm.id
 		      AND cmb.credential_id = p_credential_id
 		      AND pm.raw_model_name = p_raw_model_name
-		      AND COALESCE(cmb.unavailable_reason, '') NOT LIKE 'manual%';
+		      AND COALESCE(cmb.unavailable_reason, '') NOT LIKE 'manual%'
+		      AND COALESCE(cmb.admin_protected, FALSE) = FALSE;
 		END;
 		$$;
 
@@ -3694,7 +3697,8 @@ CREATE FUNCTION public.unified_probe_mark_healthy(p_credential_id bigint, p_raw_
 		    WHERE cmb.provider_model_id = pm.id
 		      AND cmb.credential_id = p_credential_id
 		      AND pm.raw_model_name = p_raw_model_name
-		      AND COALESCE(cmb.unavailable_reason, '') NOT LIKE 'manual%';
+		      AND COALESCE(cmb.unavailable_reason, '') NOT LIKE 'manual%'
+		      AND COALESCE(cmb.admin_protected, FALSE) = FALSE;
 		END;
 		$$;
 
@@ -17958,7 +17962,7 @@ CREATE VIEW public.v_suspicious_probe_targets AS
      JOIN public.providers p ON ((p.id = c.provider_id)))
      JOIN public.provider_models pm ON (((pm.raw_model_name = mps.raw_model_name) AND (EXISTS ( SELECT 1
            FROM public.credential_model_bindings cmb
-          WHERE ((cmb.credential_id = mps.credential_id) AND (cmb.provider_model_id = pm.id)))))))
+          WHERE ((cmb.credential_id = mps.credential_id) AND (cmb.provider_model_id = pm.id) AND (COALESCE(cmb.admin_protected, false) = false)))))))
   WHERE ((mps.state = 'suspicious'::text) AND (mps.next_retry_at <= now()) AND (COALESCE(c.status, 'active'::text) = 'active'::text) AND (COALESCE(c.lifecycle_status, 'active'::text) = 'active'::text) AND (COALESCE(c.manual_disabled, false) = false) AND (COALESCE(p.enabled, false) = true) AND (COALESCE(p.manual_disabled, false) = false) AND (public.model_probe_credential_concurrency(mps.credential_id) < 2))
   ORDER BY (public.model_probe_credential_concurrency(mps.credential_id)), mps.marked_suspicious_at, mps.next_retry_at
  LIMIT 100;

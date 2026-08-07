@@ -158,3 +158,27 @@ func TestUpsertSQL_DerivesBillingModeFromPlanType(t *testing.T) {
 		t.Errorf("ON CONFLICT branch must not reassign billing_mode (manual overrides would be clobbered)")
 	}
 }
+
+// TestUpsertSQL_AdminProtectedGuard pins the "manual records are only
+// manually deletable" contract: the ON CONFLICT branch of the upsert must
+// skip admin-protected bindings entirely, so batch/auto refresh never
+// touches manually-added records — not even updated_at or availability.
+func TestUpsertSQL_AdminProtectedGuard(t *testing.T) {
+	s := upsertCredentialModelSQL
+
+	guard := "WHERE COALESCE(credential_model_bindings.admin_protected, FALSE) = FALSE"
+	if !strings.Contains(s, guard) {
+		t.Errorf("upsert SQL missing admin_protected skip guard %q (auto refresh would update manual records)", guard)
+	}
+
+	// The guard must be the trailing clause of the DO UPDATE, positioned after
+	// all SET assignments so it gates the whole branch.
+	idx := strings.Index(s, guard)
+	if idx < 0 {
+		return
+	}
+	tail := strings.TrimSpace(s[idx+len(guard):])
+	if tail != "" {
+		t.Errorf("admin_protected guard must be the last clause of the ON CONFLICT branch, got trailing SQL: %q", tail)
+	}
+}
