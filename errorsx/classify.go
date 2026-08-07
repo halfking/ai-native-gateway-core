@@ -11,14 +11,14 @@ import (
 type ErrorKind string
 
 const (
-	KindTransient      ErrorKind = "transient"
-	KindTimeout        ErrorKind = "timeout"
-	KindNetwork        ErrorKind = "network"
-	KindRateLimit      ErrorKind = "rate_limit"
-	KindAuth           ErrorKind = "auth"
-	KindQuota          ErrorKind = "quota"
-	KindUpstreamDown   ErrorKind = "upstream_down"
-	KindCanceled       ErrorKind = "canceled"
+	KindTransient    ErrorKind = "transient"
+	KindTimeout      ErrorKind = "timeout"
+	KindNetwork      ErrorKind = "network"
+	KindRateLimit    ErrorKind = "rate_limit"
+	KindAuth         ErrorKind = "auth"
+	KindQuota        ErrorKind = "quota"
+	KindUpstreamDown ErrorKind = "upstream_down"
+	KindCanceled     ErrorKind = "canceled"
 	// KindClientBug (2026-07-28 §5.6) covers client-side mistakes that
 	// look like a KindCanceled from the upstream's perspective but
 	// originate from the caller's protocol (e.g. echoing a stale
@@ -283,6 +283,14 @@ var quotaResetsRe = regexp.MustCompile(
 		`try[_ -]?again[_ -]?(at|in|after)|` +
 		`available[_ -]?(at|in|from)|` +
 		`recover[s]?[_ -]?(at|by|until)|` +
+		// 2026-08-07 P0 fix: 智码(zhima) 的配额用尽报文用 window_type 标注
+		// 窗口语义，而不是给 reset 时间戳。实测（154 生产 cred 34 zhima-1）：
+		//   HTTP 429 {"error":"usage limit exceeded","window_type":"total"}
+		// 旧逻辑把它落到 KindQuotaPermanent → recover_at=NULL → 永久卡死。
+		// 但 window_type（无论 total/daily/weekly/monthly）都表明这是
+		// 一个会按周期重置的用量窗口，应走 KindQuotaPeriodic 的恢复通道，
+		// 由 balance_quota_probe 实测探活后自动翻回。
+		`window[_ -]?type|"window_type"|` +
 		// Chinese "重置" with up to 80 chars between the noun and 重置
 		// (covers 智谱AI "...限额将在 YYYY-MM-DD HH:MM:SS 重置。").
 		`(限额|使用量|配额|额度|余额).{0,80}重置|` +

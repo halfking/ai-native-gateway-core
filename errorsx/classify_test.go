@@ -460,6 +460,13 @@ func TestClassifyErrorWithBody_Protocol4xx(t *testing.T) {
 		{"429_zhipu_1310_with_reset_now_periodic", 429, `{"error":{"code":"1310","message":"您已达到每周/每月使用上限，您的限额将在 2026-07-19 21:32:20 重置。"}}`, KindQuotaPeriodic},
 		{"429_anthropic_budget_exceeded_no_reset_still_permanent", 429, `{"error":{"message":"Organization balance insufficient","type":"rate_limit_error","code":"budget_exceeded"}}`, KindQuotaPermanent},
 		{"429_quota_exceeded_with_reset_now_periodic", 429, `quota exceeded, will reset at 2026-08-01 00:00:00`, KindQuotaPeriodic},
+		// 2026-08-07 P0 fix: 智码(zhima) 的配额用尽报文用 window_type 标注
+		// 窗口语义（total/daily/weekly/monthly），不给显式 reset 时间戳。
+		// 实测（154 生产 cred 34）：HTTP 429 {"error":"usage limit exceeded","window_type":"total"}
+		// 旧逻辑落到 KindQuotaPermanent → recover_at=NULL → 永久卡死。但
+		// window_type 表明这是会按周期重置的用量窗口，应走 KindQuotaPeriodic。
+		{"429_zhima_window_type_total_now_periodic", 429, `{"error":"usage limit exceeded","window_type":"total"}`, KindQuotaPeriodic},
+		{"429_window_type_daily_now_periodic", 429, `usage limit exceeded, window_type: "daily"`, KindQuotaPeriodic},
 		{"500_still_upstream_down", 500, `internal server error`, KindUpstreamDown},
 		{"502_still_upstream_down", 502, `bad gateway`, KindUpstreamDown},
 		{"503_still_concurrent", 503, `service unavailable`, KindConcurrent},
@@ -768,8 +775,10 @@ func TestIsContentFilter(t *testing.T) {
 //
 // Regression context: request d679b7e7285a9bbe5fce953cd6c935a8 hit NVIDIA NIM
 // provider_id=18 / minimaxai/minimax-m2.7, which returned HTTP 410:
-//   {"detail":"The model 'minimaxai/minimax-m2.7' has reached its end of life
-//    on 2026-07-27T00:00:00Z and is no longer available."}
+//
+//	{"detail":"The model 'minimaxai/minimax-m2.7' has reached its end of life
+//	 on 2026-07-27T00:00:00Z and is no longer available."}
+//
 // The gateway surfaced this as "unsupported_feature" (HTTP 400) and retried
 // the same dead credential for 20s because IsClientBug(KindUnsupportedFeature)
 // short-circuits cross-credential failover.
