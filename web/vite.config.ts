@@ -22,7 +22,9 @@ export default defineConfig({
   build: {
     outDir: 'dist',
     emptyOutDir: true,
+    reportCompressedSize: false,
     rollupOptions: {
+      maxParallelFileOps: 128,
       output: {
         manualChunks: {
           // Split vendor libraries into separate chunks to improve caching

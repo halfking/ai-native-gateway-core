@@ -335,21 +335,17 @@ do_deploy() {
   local seq_val=$(python3 -c "import json;print(json.load(open('version.json'))['build_seq'])")
   ok "version=$full_version seq=$seq_val"
 
-  # 2–3. 前端 + 后端并行构建（默认同时部署前后端）
-  log "[2/9] 前端 + 后端并行构建"
+  # 2–3. 前端 + 后端串行构建（降低 2GB 主机峰值内存）
+  log "[2/9] 前端 + 后端串行构建"
   local tmpbin="/tmp/__seamless_${TARGET}_binary"
-  local fe_pid=""
   if [[ "$SKIP_FRONTEND" == "false" ]]; then
-    (cd web && npm run build 2>&1 | tail -5) &
-    fe_pid=$!
+    (cd web && npm run build 2>&1 | tail -5)
+    ok "web/dist 已生成"
   else
     warn "跳过前端 (--no-frontend)，仅更新二进制"
   fi
   CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags="-s -w" \
-    -o "$tmpbin" ./cmd/gateway &
-  local go_pid=$!
-  [[ -n "$fe_pid" ]] && wait "$fe_pid" && ok "web/dist 已生成"
-  wait "$go_pid"
+    -o "$tmpbin" ./cmd/gateway
   ok "编译完成 ($(du -h "$tmpbin" | cut -f1))"
 
   # 4. stage bundle (本地)
