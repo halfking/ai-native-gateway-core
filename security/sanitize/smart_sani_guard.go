@@ -293,17 +293,22 @@ func (m *SanitizeInputMiddleware) saveMapAndOffsets(ctx context.Context, session
 // 顺序契约：本拦截器必须在 OutputComplianceInterceptor 之后注册，
 // 确保安全检查先看到占位符，还原后再把真实值返回给用户。
 //
-// 流式响应限制（2026-08-07, 已知限制）：
+// 流式响应（2026-08-07 P2 修复）：
 //
-//	当前 chatHandler 流式响应路径不调用 response.InterceptorChain
-//	的 InterceptStreamChunk（链存在但未被 chatHandler 接入），因此
-//	流式 chunk 已在 chunk-by-chunk 阶段发给客户端，无法再做还原。
-//	本拦截器的 InterceptStreamEnd 仍被调用，对持久化/审计层还原
-//	完整 body（即 streamCapture.textContent 重组结果）。
+//	此前 chatHandler 流式响应路径不调用 InterceptorChain.InterceptStreamChunk，
+//	客户端拿到的 SSE chunk 是脱敏后的占位符文本，敏感值被「永久加密」在
+//	Redis 里但用户看不到。本次升级：实现 chunk-level 还原，解析 SSE
+//	data 行 → JSON 反序列化 → 在 choices[].delta.content / content_block_delta
+//	等字段上做占位符替换 → 重新序列化 → 返回 ModifiedChunk。流式 chunk
+//	在写入客户端前经 InterceptorChain 拦截（见 domains/streaming 的
+//	interceptingStreamWriter 接入点），还原后用户看到真实值。
 //
-//	客户端实际拿到的流式响应中，{SENSITIVE:type:idx} 占位符仍是
-//	占位符形态。完整流式还原需要 chatHandler 接入 chunk-level 拦截
-//	链，是独立 PR 的范围（见 docs/smart_sani_guard_known_limits.md）。
+//	单个 SSE 事件内部的多次 Write 会由 streaming.interceptingStreamWriter
+//	先组装完整后再调用本拦截器；但如果上游把一个 placeholder 拆到多个
+//	独立 SSE 事件，当前接口不会跨事件重组，相关文本会按事件原样透传。
+//
+//	降级：chain 为 nil / Redis 不可用 / chunk JSON 解析失败时均返回 nil，
+//	原样透传 chunk 到客户端。
 type SanitizeRestoreInterceptor struct {
 	sanitizer *Sanitizer
 	redis     *redis.Client
@@ -364,9 +369,40 @@ func (it *SanitizeRestoreInterceptor) InterceptNonStream(ctx context.Context, re
 	}, nil
 }
 
-// InterceptStreamChunk 流式 chunk 级还原为未来增强，本轮透传。
+// InterceptStreamChunk 流式 chunk 级还原：解析 SSE data 行 JSON，
+// 在 delta.content / text 等字段上做占位符替换，返回 ModifiedChunk。
+// chain 调用方（InterceptorChain.InterceptStreamChunk）会用 ModifiedChunk
+// 替换原 chunk 写入客户端。
+//
+// 降级：chain 为 nil / Redis 不可用 / 不含 sessionID / 无 placeholder 时
+// 返回 nil，原样透传。
 func (it *SanitizeRestoreInterceptor) InterceptStreamChunk(ctx context.Context, chunk []byte, meta *response.StreamMeta) (*response.ChunkResult, error) {
-	return nil, nil
+	if it == nil || it.sanitizer == nil || len(chunk) == 0 {
+		return nil, nil
+	}
+	if meta == nil || meta.SessionID == "" {
+		return nil, nil
+	}
+
+	sm, err := it.loadMap(ctx, meta.SessionID)
+	if err != nil {
+		it.logger.Warn("sanitize_restore: stream chunk load map failed, passthrough",
+			"error", err, "session_id", meta.SessionID)
+		return nil, nil
+	}
+	if len(sm) == 0 {
+		return nil, nil
+	}
+
+	modified, changed, err := it.restoreStreamChunk(ctx, chunk, sm)
+	if err != nil || !changed {
+		// 解析失败 / 无 placeholder → 原样透传（不要因为格式问题阻断流式）
+		return nil, nil
+	}
+
+	return &response.ChunkResult{
+		ModifiedChunk: modified,
+	}, nil
 }
 
 // InterceptStreamEnd 流结束时 body 已重组为非流式形态，复用非流式还原。
@@ -393,6 +429,171 @@ func (it *SanitizeRestoreInterceptor) InterceptStreamEnd(ctx context.Context, me
 			"placeholder_count": len(sm),
 		},
 	}, nil
+}
+
+// restoreStreamChunk 解析单条 SSE chunk（"data: <json>\n\n" 格式），
+// 在所有可能的 content 字段上做占位符替换，返回完整的 reframed chunk
+// （保留原始 SSE 帧结构：注释行 / event: 行 / data: 前缀 / 末尾 \n\n）。
+//
+// 协议适配（2026-08-07）：
+//   - OpenAI chat completion delta：choices[].delta.content
+//   - OpenAI Responses API delta：response.output_text.delta / content_part.delta
+//   - Anthropic Messages delta：content_block_delta.delta.text
+//
+// 解析失败 / 不识别 schema → 返回 (nil, false, nil)，由 caller 原样透传。
+// 成功但无 placeholder → 返回 (nil, false, nil)，同样原样透传（避免无谓的
+// JSON 重序列化引入额外 marshal/unmarshal 噪声）。
+//
+// 跨 chunk 占位符：RestoreOutputOrMask 是纯字符串替换，未匹配部分由下一个
+// chunk 继续处理，因此 chunk-by-chunk 处理是安全的。
+func (it *SanitizeRestoreInterceptor) restoreStreamChunk(ctx context.Context, chunk []byte, sm SanitizeMap) ([]byte, bool, error) {
+	// 1. 按行扫描。SSE 帧结构：注释行（:...）/ event: 行 / data: 行 + 末尾 \n\n。
+	//    LLM 流式 chunk 实际只发一条 data 行；遇到多 data 行时退化为「拼接所有
+	//    data 内容」，但 framing（event:/注释/末尾 \n\n）单独保留。
+	var jsonPayload []byte
+	var trailing []byte // 末尾 \n\n 之类的尾缀
+
+	rest := chunk
+	// SSE 帧分隔：行以单个 \n 分隔，事件终止符是裸 \n\n（空行）。
+	// 我们需要保留「行分隔符 + 末尾空白」，否则重组时帧结构会丢 \n\n。
+	// 因此 data: 行的 \n 不立即消费，留在 rest 中作为 trailing 一部分。
+	var prefixBuf bytes.Buffer
+
+	for {
+		lineEnd := -1
+		for i := 0; i < len(rest); i++ {
+			if rest[i] == '\n' {
+				lineEnd = i
+				break
+			}
+		}
+		if lineEnd == -1 {
+			break
+		}
+		line := rest[:lineEnd]
+
+		if bytes.HasPrefix(line, []byte("data: ")) {
+			data := bytes.TrimPrefix(line, []byte("data: "))
+			if len(data) > 0 && !bytes.Equal(data, []byte("[DONE]")) {
+				if len(jsonPayload) > 0 {
+					jsonPayload = append(jsonPayload, ' ')
+				}
+				jsonPayload = append(jsonPayload, data...)
+				// rest 保留为 trailing（含 data 行的 \n + 后续空行 + 帧终止符 \n\n）
+				rest = rest[lineEnd:]
+				break
+			}
+			// [DONE] 帧：保留在 prefixBuf（+ \n 一起）
+			prefixBuf.Write(line)
+			prefixBuf.WriteByte('\n')
+		} else {
+			prefixBuf.Write(line)
+			prefixBuf.WriteByte('\n')
+		}
+		rest = rest[lineEnd+1:]
+	}
+	if len(jsonPayload) == 0 {
+		return nil, false, nil
+	}
+	// 此时 rest 是「data: 行换行符之后剩余的内容」。SSE 帧分隔符
+	// （\n\n 或 \n<空行>\n）就在这里。直接保留为尾缀，无需进一步解析。
+	trailing = rest
+
+	// 2. JSON 反序列化为通用结构。失败 → 透传（不要因为单 chunk 格式问题
+	//    阻断整条流；典型场景：chunk 携带的是控制字段而非 content 增量）。
+	var raw map[string]any
+	if err := json.Unmarshal(jsonPayload, &raw); err != nil {
+		return nil, false, nil
+	}
+
+	// 3. 在三种 delta schema 中做占位符替换
+	changed := false
+	changed = it.restoreStreamOpenAIDelta(ctx, raw, sm) || changed
+	changed = it.restoreStreamAnthropicDelta(ctx, raw, sm) || changed
+	changed = it.restoreStreamResponsesDelta(ctx, raw, sm) || changed
+	if !changed {
+		return nil, false, nil
+	}
+
+	out, err := json.Marshal(raw)
+	if err != nil {
+		return nil, false, nil
+	}
+
+	// 4. 重组 framing：注释行 + event: 行 + data: + 重新序列化的 JSON + 尾缀
+	var buf bytes.Buffer
+	buf.Write(prefixBuf.Bytes())
+	buf.WriteString("data: ")
+	buf.Write(out)
+	if len(trailing) > 0 {
+		buf.Write(trailing)
+	}
+	return buf.Bytes(), true, nil
+}
+
+// restoreStreamOpenAIDelta 处理 OpenAI chat completion delta schema
+// (choices[].delta.content)。返回是否替换了占位符。
+func (it *SanitizeRestoreInterceptor) restoreStreamOpenAIDelta(ctx context.Context, raw map[string]any, sm SanitizeMap) bool {
+	choices, ok := raw["choices"].([]any)
+	if !ok {
+		return false
+	}
+	changed := false
+	for _, cAny := range choices {
+		c, ok := cAny.(map[string]any)
+		if !ok {
+			continue
+		}
+		delta, ok := c["delta"].(map[string]any)
+		if !ok {
+			continue
+		}
+		if !restoreStringField(ctx, it.sanitizer, delta, "content", sm) {
+			continue
+		}
+		changed = true
+	}
+	return changed
+}
+
+// restoreStreamAnthropicDelta 处理 Anthropic Messages delta schema
+// (type="content_block_delta" + delta.text)。返回是否替换了占位符。
+func (it *SanitizeRestoreInterceptor) restoreStreamAnthropicDelta(ctx context.Context, raw map[string]any, sm SanitizeMap) bool {
+	// Anthropic 在 SSE 流中既发送 type="content_block_start" 等控制事件，
+	// 也发送 type="content_block_delta" 携带 delta.text 文本增量。
+	// 只处理 content_block_delta，避免误改控制字段。
+	if t, _ := raw["type"].(string); t != "content_block_delta" {
+		return false
+	}
+	delta, ok := raw["delta"].(map[string]any)
+	if !ok {
+		return false
+	}
+	return restoreStringField(ctx, it.sanitizer, delta, "text", sm)
+}
+
+// restoreStreamResponsesDelta 处理 OpenAI Responses API delta schema
+// (type="response.output_text.delta" + delta)。返回是否替换了占位符。
+func (it *SanitizeRestoreInterceptor) restoreStreamResponsesDelta(ctx context.Context, raw map[string]any, sm SanitizeMap) bool {
+	if t, _ := raw["type"].(string); t != "response.output_text.delta" {
+		return false
+	}
+	return restoreStringField(ctx, it.sanitizer, raw, "delta", sm)
+}
+
+// restoreStringField 把 m[field]（必须为 string）做占位符替换后写回。
+// 替换成功（内容变化）返回 true；字段不存在/非 string/无 placeholder 返回 false。
+func restoreStringField(ctx context.Context, s *Sanitizer, m map[string]any, field string, sm SanitizeMap) bool {
+	v, ok := m[field].(string)
+	if !ok {
+		return false
+	}
+	restored, err := s.RestoreOutputOrMask(ctx, v, sm)
+	if err != nil || restored == v {
+		return false
+	}
+	m[field] = restored
+	return true
 }
 
 // loadMap 从 Redis 读取会话级映射表。

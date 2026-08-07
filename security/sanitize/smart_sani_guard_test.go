@@ -656,25 +656,24 @@ func TestSanitizeInputMiddleware_MultiRound_OffsetKeyAccumulation(t *testing.T) 
 
 // ── 2026-08-07 文档化：流式响应还原限制 ────────────────────────────
 
-// TestSanitizeRestoreInterceptor_StreamChunk_TransparentPassThrough
-// 流式 chunk-level 拦截本 PR 不实现还原（chatHandler 流式路径未接入
-// InterceptorChain.InterceptStreamChunk），必须以透明透传保证不影响
-// 流式响应。任何修改 chunk 内容的尝试都是 bug。
-func TestSanitizeRestoreInterceptor_StreamChunk_TransparentPassThrough(t *testing.T) {
+// TestSanitizeRestoreInterceptor_StreamChunk_TransparentPassThrough_EmptyMap
+// 流式 chunk-level 拦截在无映射表（Redis 中无 placeholder 数据）时
+// 必须透明透传 — 既保证不影响未脱敏会话，也避免无 placeholder 时的
+// JSON 重序列化噪声。
+func TestSanitizeRestoreInterceptor_StreamChunk_TransparentPassThrough_EmptyMap(t *testing.T) {
 	rdb := setupSaniGuardRedis(t)
 	s, err := NewSanitizer(NewPatternDetector())
 	require.NoError(t, err)
 	it, err := NewSanitizeRestoreInterceptor(s, rdb, 30*time.Minute)
 	require.NoError(t, err)
 
-	chunk := []byte(`data: {"id":"chatcmpl-x","choices":[{"delta":{"content":"hello {SENSITIVE:phone:1}"}}]}`)
+	chunk := []byte(`data: {"id":"chatcmpl-x","choices":[{"delta":{"content":"hello world"}}]}`)
 
 	result, err := it.InterceptStreamChunk(context.Background(), chunk, &response.StreamMeta{
-		SessionID: "sess-stream",
+		SessionID: "sess-stream-no-map",
 	})
 	require.NoError(t, err)
-	// 当前 PR 文档承诺流式 chunk 透传；任何修改都是 bug
-	assert.Nil(t, result, "流式 chunk 必须透传（本 PR 限制，参见 smart_sani_guard.go 注释）")
+	assert.Nil(t, result, "无 placeholder 映射表时必须透传")
 }
 
 // TestSanitizeRestoreInterceptor_StreamEnd_RecoversAuditBody
@@ -788,6 +787,143 @@ func TestSanitizeInputMiddleware_SessionHeaderPriority(t *testing.T) {
 		require.NoError(t, err)
 		assert.Empty(t, loserVals, "低优先级 header 不应被误用作 sessionID (loser=%s)", loser)
 	}
+}
+
+// ── 2026-08-07 P2 修复：流式 chunk 还原测试 ──────────────────────────
+
+// TestSanitizeRestoreInterceptor_StreamChunk_OpenAIDeltaRestore
+// OpenAI chat completion delta chunk 含占位符时，必须在写入客户端前还原。
+func TestSanitizeRestoreInterceptor_StreamChunk_OpenAIDeltaRestore(t *testing.T) {
+	rdb := setupSaniGuardRedis(t)
+	ctx := context.Background()
+	require.NoError(t, rdb.HSet(ctx, SanitizeRedisKey("sess-oai"),
+		"{SENSITIVE:phone:1}", "13800138000").Err())
+
+	s, err := NewSanitizer(NewPatternDetector())
+	require.NoError(t, err)
+	it, err := NewSanitizeRestoreInterceptor(s, rdb, 30*time.Minute)
+	require.NoError(t, err)
+
+	chunk := []byte(`data: {"id":"chatcmpl-x","choices":[{"delta":{"content":"您的手机号{SENSITIVE:phone:1}"}}]}` + "\n\n")
+	result, err := it.InterceptStreamChunk(ctx, chunk, &response.StreamMeta{SessionID: "sess-oai"})
+	require.NoError(t, err)
+	require.NotNil(t, result, "含占位符的 chunk 必须返回 ModifiedChunk")
+	assert.Contains(t, string(result.ModifiedChunk), "13800138000", "占位符必须还原为真实值")
+	assert.NotContains(t, string(result.ModifiedChunk), "{SENSITIVE:phone:1}", "占位符文本必须被替换")
+	// SSE 帧结构保留（data: 前缀 + 末尾 \n\n）
+	assert.True(t, bytes.HasPrefix(result.ModifiedChunk, []byte("data: ")))
+	assert.True(t, bytes.HasSuffix(result.ModifiedChunk, []byte("\n\n")))
+}
+
+// TestSanitizeRestoreInterceptor_StreamChunk_AnthropicDeltaRestore
+// Anthropic content_block_delta 类型 chunk 的 delta.text 还原。
+func TestSanitizeRestoreInterceptor_StreamChunk_AnthropicDeltaRestore(t *testing.T) {
+	rdb := setupSaniGuardRedis(t)
+	ctx := context.Background()
+	require.NoError(t, rdb.HSet(ctx, SanitizeRedisKey("sess-ant"),
+		"{SENSITIVE:phone:1}", "13800138000").Err())
+
+	s, err := NewSanitizer(NewPatternDetector())
+	require.NoError(t, err)
+	it, err := NewSanitizeRestoreInterceptor(s, rdb, 30*time.Minute)
+	require.NoError(t, err)
+
+	chunk := []byte(`data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"phone: {SENSITIVE:phone:1}"}}` + "\n\n")
+	result, err := it.InterceptStreamChunk(ctx, chunk, &response.StreamMeta{SessionID: "sess-ant"})
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	assert.Contains(t, string(result.ModifiedChunk), "13800138000")
+}
+
+// TestSanitizeRestoreInterceptor_StreamChunk_AnthropicNonDelta_NoOp
+// Anthropic 流式 chunk 不是 content_block_delta 时（如 message_start、ping），
+// 必须原样透传，不得误改其他类型字段。
+func TestSanitizeRestoreInterceptor_StreamChunk_AnthropicNonDelta_NoOp(t *testing.T) {
+	rdb := setupSaniGuardRedis(t)
+	ctx := context.Background()
+	require.NoError(t, rdb.HSet(ctx, SanitizeRedisKey("sess-ant-ctrl"),
+		"{SENSITIVE:phone:1}", "13800138000").Err())
+
+	s, err := NewSanitizer(NewPatternDetector())
+	require.NoError(t, err)
+	it, err := NewSanitizeRestoreInterceptor(s, rdb, 30*time.Minute)
+	require.NoError(t, err)
+
+	chunk := []byte(`data: {"type":"message_start","message":{"id":"msg_x"}}` + "\n\n")
+	result, err := it.InterceptStreamChunk(ctx, chunk, &response.StreamMeta{SessionID: "sess-ant-ctrl"})
+	require.NoError(t, err)
+	assert.Nil(t, result, "非 content_block_delta 类型必须透传")
+}
+
+// TestSanitizeRestoreInterceptor_StreamChunk_ResponsesDeltaRestore
+// OpenAI Responses API response.output_text.delta chunk 还原。
+func TestSanitizeRestoreInterceptor_StreamChunk_ResponsesDeltaRestore(t *testing.T) {
+	rdb := setupSaniGuardRedis(t)
+	ctx := context.Background()
+	require.NoError(t, rdb.HSet(ctx, SanitizeRedisKey("sess-resp"),
+		"{SENSITIVE:phone:1}", "13800138000").Err())
+
+	s, err := NewSanitizer(NewPatternDetector())
+	require.NoError(t, err)
+	it, err := NewSanitizeRestoreInterceptor(s, rdb, 30*time.Minute)
+	require.NoError(t, err)
+
+	chunk := []byte(`data: {"type":"response.output_text.delta","item_id":"msg_x","output_index":0,"content_index":0,"delta":"phone {SENSITIVE:phone:1}"}` + "\n\n")
+	result, err := it.InterceptStreamChunk(ctx, chunk, &response.StreamMeta{SessionID: "sess-resp"})
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	assert.Contains(t, string(result.ModifiedChunk), "13800138000")
+}
+
+// TestSanitizeRestoreInterceptor_StreamChunk_NoDataLine_Passthrough
+// chunk 不含 data: 行（如控制帧 [DONE]）时必须原样透传。
+func TestSanitizeRestoreInterceptor_StreamChunk_NoDataLine_Passthrough(t *testing.T) {
+	rdb := setupSaniGuardRedis(t)
+	ctx := context.Background()
+	require.NoError(t, rdb.HSet(ctx, SanitizeRedisKey("sess-done"),
+		"{SENSITIVE:phone:1}", "13800138000").Err())
+
+	s, err := NewSanitizer(NewPatternDetector())
+	require.NoError(t, err)
+	it, err := NewSanitizeRestoreInterceptor(s, rdb, 30*time.Minute)
+	require.NoError(t, err)
+
+	// [DONE] 终止帧
+	chunk := []byte("data: [DONE]\n\n")
+	result, err := it.InterceptStreamChunk(ctx, chunk, &response.StreamMeta{SessionID: "sess-done"})
+	require.NoError(t, err)
+	assert.Nil(t, result, "[DONE] 帧必须透传")
+
+	// 空行（心跳注释）
+	chunk2 := []byte("\n")
+	result2, err := it.InterceptStreamChunk(ctx, chunk2, &response.StreamMeta{SessionID: "sess-done"})
+	require.NoError(t, err)
+	assert.Nil(t, result2, "空 chunk 必须透传")
+}
+
+// TestSanitizeRestoreInterceptor_StreamChunk_UnknownPlaceholderMasked
+// chunk 中含映射表里没有的占位符 → 该占位符替换为 [REDACTED]，防止
+// 上游注入的 raw 占位符文本泄漏到客户端。
+func TestSanitizeRestoreInterceptor_StreamChunk_UnknownPlaceholderMasked(t *testing.T) {
+	rdb := setupSaniGuardRedis(t)
+	ctx := context.Background()
+	// 只放 phone:1 的映射，phone:99 不存在
+	require.NoError(t, rdb.HSet(ctx, SanitizeRedisKey("sess-unknown"),
+		"{SENSITIVE:phone:1}", "13800138000").Err())
+
+	s, err := NewSanitizer(NewPatternDetector())
+	require.NoError(t, err)
+	it, err := NewSanitizeRestoreInterceptor(s, rdb, 30*time.Minute)
+	require.NoError(t, err)
+
+	chunk := []byte(`data: {"id":"x","choices":[{"delta":{"content":"已知{SENSITIVE:phone:1} 未知{SENSITIVE:phone:99}"}}]}` + "\n\n")
+	result, err := it.InterceptStreamChunk(ctx, chunk, &response.StreamMeta{SessionID: "sess-unknown"})
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	str := string(result.ModifiedChunk)
+	assert.Contains(t, str, "13800138000", "已知占位符必须还原")
+	assert.Contains(t, str, "[REDACTED]", "未知占位符必须 mask")
+	assert.NotContains(t, str, "{SENSITIVE:phone:99}", "raw 占位符文本必须消失")
 }
 
 // ── 2026-08-07 回归：response chain append 行为（修复#1 依赖）────────
