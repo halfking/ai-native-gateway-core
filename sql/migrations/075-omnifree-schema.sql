@@ -243,24 +243,35 @@ COMMENT ON TABLE keyless_providers IS '无认证提供商注册表 - 零成本�
 -- 扩展 provider_catalog
 DO $$
 BEGIN
-    IF NOT EXISTS (SELECT 1 FROM information_schema.columns
-                   WHERE table_name='provider_catalog' AND column_name='has_free_tier') THEN
-        ALTER TABLE public.provider_catalog ADD COLUMN has_free_tier BOOLEAN DEFAULT FALSE;
-    END IF;
+    -- 仅在 provider_catalog 表存在时执行扩展
+    IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name='provider_catalog') THEN
+        IF NOT EXISTS (SELECT 1 FROM information_schema.columns
+                       WHERE table_name='provider_catalog' AND column_name='has_free_tier') THEN
+            ALTER TABLE public.provider_catalog ADD COLUMN has_free_tier BOOLEAN DEFAULT FALSE;
+        END IF;
 
-    IF NOT EXISTS (SELECT 1 FROM information_schema.columns
-                   WHERE table_name='provider_catalog' AND column_name='free_tier_notes') THEN
-        ALTER TABLE public.provider_catalog ADD COLUMN free_tier_notes TEXT;
-    END IF;
+        IF NOT EXISTS (SELECT 1 FROM information_schema.columns
+                       WHERE table_name='provider_catalog' AND column_name='free_tier_notes') THEN
+            ALTER TABLE public.provider_catalog ADD COLUMN free_tier_notes TEXT;
+        END IF;
 
-    IF NOT EXISTS (SELECT 1 FROM information_schema.columns
-                   WHERE table_name='provider_catalog' AND column_name='official_free_docs_url') THEN
-        ALTER TABLE public.provider_catalog ADD COLUMN official_free_docs_url TEXT;
+        IF NOT EXISTS (SELECT 1 FROM information_schema.columns
+                       WHERE table_name='provider_catalog' AND column_name='official_free_docs_url') THEN
+            ALTER TABLE public.provider_catalog ADD COLUMN official_free_docs_url TEXT;
+        END IF;
+    ELSE
+        RAISE NOTICE 'provider_catalog 表不存在，跳过扩展步骤';
     END IF;
 END $$;
 
-CREATE INDEX IF NOT EXISTS idx_provider_catalog_free_tier
-    ON provider_catalog(code) WHERE has_free_tier = TRUE;
+-- 索引创建也需要保护
+DO $$
+BEGIN
+    IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name='provider_catalog') THEN
+        CREATE INDEX IF NOT EXISTS idx_provider_catalog_free_tier
+            ON provider_catalog(code) WHERE has_free_tier = TRUE;
+    END IF;
+END $$;
 
 -- 扩展 credentials (如果表存在)
 DO $$
@@ -346,6 +357,27 @@ BEGIN
     RETURN NEW;
 END;
 $$;
+
+-- 确保 get_current_tenant() 函数存在（用于 RLS 策略）
+-- 如果数据库中尚未定义此函数，则创建一个简化版本
+DO $outer$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_proc p
+        JOIN pg_namespace n ON n.oid = p.pronamespace
+        WHERE n.nspname = 'public' AND p.proname = 'get_current_tenant'
+    ) THEN
+        EXECUTE $func$
+            CREATE FUNCTION public.get_current_tenant() RETURNS text
+                LANGUAGE sql STABLE
+                AS $body$ SELECT COALESCE(NULLIF(current_setting('app.current_tenant', true), ''), 'default'); $body$;
+        $func$;
+        RAISE NOTICE '已创建 get_current_tenant() 函数';
+    ELSE
+        RAISE NOTICE 'get_current_tenant() 函数已存在，跳过创建';
+    END IF;
+END
+$outer$;
 
 DO $$
 DECLARE
