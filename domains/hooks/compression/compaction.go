@@ -48,6 +48,7 @@ import (
 	"time"
 
 	"github.com/kaixuan/llm-gateway-go/domains/memory" //nolint:depguard // historical violation, B1 routing.go CQRS will fix
+	"github.com/kaixuan/llm-gateway-go/internal/upstreamurl"
 	"github.com/kaixuan/llm-gateway-go/settings"
 )
 
@@ -744,12 +745,18 @@ func invokeAnthropicSummarize(ctx context.Context, deps *Dependencies, cand *Pro
 
 // buildCompactionRequest constructs the http.Request to the summarization
 // model. Supports both OpenAI chat completions and Anthropic messages.
+//
+// URL construction MUST go through upstreamurl.Build — a naive
+// TrimRight(base,"/") + "/v1/chat/completions" double-appends /v1 for
+// providers whose base URL already ends in /v1 (minimax, vapeur, xiaomi),
+// yielding e.g. https://api.minimaxi.com/v1/v1/chat/completions → 404.
+// See internal/upstreamurl/upstreamurl.go (SSoT) for the cleanup rules.
 func buildCompactionRequest(ctx context.Context, cand *ProviderCandidate, payload []byte, anthropic bool) (*http.Request, error) {
 	var url string
 	if anthropic {
-		url = strings.TrimRight(cand.BaseURL, "/") + "/v1/messages"
+		url = upstreamurl.Build(cand.BaseURL, upstreamurl.EpMessages)
 	} else {
-		url = strings.TrimRight(cand.BaseURL, "/") + "/v1/chat/completions"
+		url = upstreamurl.Build(cand.BaseURL, upstreamurl.EpChatCompletions)
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(payload))
 	if err != nil {
