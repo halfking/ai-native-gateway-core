@@ -219,6 +219,9 @@ type v2DispatchDeps struct {
 	ProviderStore    *provider.InMemoryStore
 	ProviderProber   *provider.Prober
 
+	// Redis 客户端（用于会话级脱敏映射表持久化）
+	Redis *redis.Client
+
 	// ── v1 references (the actual data plane) ──────────────────────
 	// ChatHandler is the production v1 chat dispatcher. The Pipeline
 	// wrapper delegates the LLM call to it so the integration is
@@ -326,6 +329,12 @@ func buildV2DispatchPipeline(deps *v2DispatchDeps) *pipeline.RequestPipeline {
 	// SmartSaniGuard: init sanitizer early so both input and output hooks can share it
 	sanitizerDetector := sanitize.NewPatternDetector()
 	sanitizer, _ := sanitize.NewSanitizer(sanitizerDetector)
+	
+	// 【新增】初始化会话级映射表管理器（依赖Redis）
+	var sessionSanitizeMgr *sanitize.SessionSanitizeManager
+	if deps.Redis != nil {
+		sessionSanitizeMgr = sanitize.NewSessionSanitizeManager(deps.Redis, 30*time.Minute)
+	}
 
 	if deps.Config.EnableSecurity {
 		p.AddStage(&pipeline.PipelineStage{
@@ -340,7 +349,16 @@ func buildV2DispatchPipeline(deps *v2DispatchDeps) *pipeline.RequestPipeline {
 	// PhasePreRouting — 在 security hook 之后执行，确保脱敏发生在安全检查之后。
 	// 脱敏结果存入 Metadata["sanitize_map"]，输出侧 hook 读取后还原。
 	if sanitizer != nil {
-		inputHook, hErr := sanitize.NewSanitizerInputHook(sanitizer)
+		var inputHook pipeline.Hook
+		var hErr error
+		
+		// 【修改】如果有会话管理器，使用增强版Hook
+		if sessionSanitizeMgr != nil {
+			inputHook, hErr = sanitize.NewSanitizerInputHookWithSessionManager(sanitizer, sessionSanitizeMgr)
+		} else {
+			inputHook, hErr = sanitize.NewSanitizerInputHook(sanitizer)
+		}
+		
 		if hErr == nil {
 			p.AddStage(&pipeline.PipelineStage{
 				Name: "sanitizer_input", Phase: pipeline.PhasePreRouting, Mode: pipeline.ModeSequential,
@@ -485,10 +503,19 @@ func buildV2DispatchPipeline(deps *v2DispatchDeps) *pipeline.RequestPipeline {
 
 	if deps.Config.EnableStreaming {
 		// SmartSaniGuard: 输出侧还原（占位符 → 原始敏感值）
-		// PhasePostUpstream — 在 output compliance 之前执行，
+		// PhasePostUpstream — Priority 50，在 output compliance (Priority 100) 之前执行，
 		// 先还原占位符，再让 compliance checker 审查还原后的内容。
 		if sanitizer != nil {
-			outputHook, hErr := sanitize.NewSanitizerOutputHook(sanitizer)
+			var outputHook pipeline.Hook
+			var hErr error
+			
+			// 【修改】如果有会话管理器，使用增强版Hook（支持跨轮次还原）
+			if sessionSanitizeMgr != nil {
+				outputHook, hErr = sanitize.NewSanitizerOutputHookWithSessionManager(sanitizer, sessionSanitizeMgr)
+			} else {
+				outputHook, hErr = sanitize.NewSanitizerOutputHook(sanitizer)
+			}
+			
 			if hErr == nil {
 				p.AddStage(&pipeline.PipelineStage{
 					Name: "sanitizer_output", Phase: pipeline.PhasePostUpstream, Mode: pipeline.ModeSequential,
@@ -498,7 +525,7 @@ func buildV2DispatchPipeline(deps *v2DispatchDeps) *pipeline.RequestPipeline {
 		}
 
 		// PR-V4-11: output compliance hook（可选；deps.OutputComplianceChecker 非 nil 时启用）。
-		// 放在 streaming 之前——这样 redaction 发生在 SSE 切片之前。
+		// Priority 100，在 sanitizer_output (Priority 50) 之后执行，检查还原后的真实内容。
 		if deps.OutputComplianceChecker != nil {
 			p.AddStage(&pipeline.PipelineStage{
 				Name: "post_upstream_output_compliance", Phase: pipeline.PhasePostUpstream, Mode: pipeline.ModeSequential,
@@ -1243,6 +1270,10 @@ func SetV2DispatchAnalysisResources(
 	}
 	if summarizer != nil {
 		deps.SessionSummarizer = summarizer
+	}
+	// 注入 Redis 客户端（用于会话级脱敏映射表持久化）
+	if redisClient != nil {
+		deps.Redis = redisClient
 	}
 
 	// 增强版提示词注入检测插件初始化
