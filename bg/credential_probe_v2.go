@@ -757,7 +757,27 @@ func (c *CredentialProbeV2) writeHealth(ctx context.Context, credID int, pr prob
 		WHERE id = $10
 		  AND lifecycle_status = 'active'
 		  AND COALESCE(manual_disabled, FALSE) = FALSE
-		  AND quota_state NOT IN ('permanently_exhausted', 'balance_exhausted')
+		  -- 2026-08-07 P0 死锁修复：硬配额守卫必须让"探活实测成功"通过。
+		  --
+		  -- 旧条件是无条件的 quota_state NOT IN ('permanently_exhausted',
+		  -- 'balance_exhausted')，造成一个无法自愈的闭环：
+		  --   1. 上游 429 "usage limit exceeded" 被分类为 KindQuotaPermanent
+		  --      → quota_state='permanently_exhausted' + availability='suspended'
+		  --   2. balance_quota_probe 会挑中它去探测（目标状态就含
+		  --      permanently_exhausted），探测甚至返回 200 健康
+		  --   3. 但成功分支要写的 quota_state='ok' / availability='ready'
+		  --      被这条 WHERE 直接过滤掉 → 0 rows affected
+		  --   4. 凭据永久卡死，只能靠 admin force_enable 人工救
+		  -- 实测证据（154 生产，2026-08-07）：cred 34 (zhima-1)
+		  -- health_status='healthy' 却仍是 permanently_exhausted/suspended。
+		  --
+		  -- 新语义：只有在"本次探测仍未恢复"时才保留硬配额守卫。
+		  -- 探活成功（$8='ok'）说明上游实际已可用（额度重置或用户已充值），
+		  -- 这是比历史 quota_state 更新的事实，必须允许翻回 ready。
+		  AND (
+		      COALESCE($8, '') = 'ok'
+		      OR quota_state NOT IN ('permanently_exhausted', 'balance_exhausted')
+		  )
 	`, pr.HealthStatus, pr.HealthError, pr.HealthLatencyMs, pr.HealthProbeModel,
 		pr.HealthSource, pr.AvailabilityState, recoverAt,
 		quotaState, stateReason, credID); err != nil {

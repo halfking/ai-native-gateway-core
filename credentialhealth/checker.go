@@ -366,14 +366,28 @@ func RecoverExpired(ctx context.Context, db DBQuerier) (int, error) {
 	// permanently broken — the probe worker only un-marks a binding via
 	// a manual nudge (TriggerManual), so guarding here cannot strand a
 	// credential that has actually recovered.
+	// 2026-08-07 P0 死锁修复：与 bg/credential_recovery.go 保持一致地
+	// 认领 'suspended'。此前两处恢复路径都不含 suspended，导致
+	// quota_periodic 写入的 suspended 无法自动恢复（详见
+	// bg/credential_recovery.go 同名修复的注释与 154 生产 cred 22 证据）。
+	//
+	// suspended 的守卫比其它状态严格：
+	//   1. 必须有已到期的 availability_recover_at（下方 IS NOT NULL 已保证）。
+	//      auth_revoked / quota_balance 写 NULL，因此不会被误救。
+	//   2. 硬配额（余额/永久用尽）仍未解除时不放行；那类凭据只能由
+	//      balance_quota_probe 探活成功后经 probe writeHealth 翻回。
 	credTag, err := db.Exec(ctx, `
 		UPDATE credentials
 		SET availability_state      = 'ready',
 		    availability_recover_at = NULL,
 		    state_updated_at        = now()
-		WHERE availability_state IN ('cooling','rate_limited','unreachable')
+		WHERE availability_state IN ('cooling','rate_limited','unreachable','suspended')
 		  AND availability_recover_at IS NOT NULL
 		  AND availability_recover_at <= now()
+		  AND (
+		      availability_state <> 'suspended'
+		      OR COALESCE(quota_state, 'ok') NOT IN ('permanently_exhausted', 'balance_exhausted')
+		  )
 		  AND lifecycle_status = 'active'
 		  AND NOT EXISTS (
 		      SELECT 1

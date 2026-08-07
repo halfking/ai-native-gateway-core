@@ -96,12 +96,18 @@ func (r *CredentialRecovery) recover(ctx context.Context) {
 	timeoutCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 
+	// 2026-08-07 P0 修复：availability 恢复必须先于 quota 恢复执行。
+	// 原因：suspended 恢复的条件要求 quota_state 当前不是硬配额（见下方
+	// suspended 守卫）。若 quota SQL 先跑把 periodic_exhausted 清成 'ok'，
+	// availability 恢复就分不清"本次刚到期的 periodic"与"本来就 ok"，
+	// 无法正确联动。先跑 availability（读到真实 quota_state），再跑 quota
+	// （按 quota_recover_at 到期清除）才能各取所需。
 	tag, err := r.db.Exec(timeoutCtx, `
 		UPDATE credentials
 		SET availability_state = 'ready',
 		    availability_recover_at = NULL,
 		    state_updated_at = now()
-		WHERE availability_state IN ('cooling','rate_limited','unreachable','auth_failed')
+		WHERE availability_state IN ('cooling','rate_limited','unreachable','auth_failed','suspended')
 		  AND (
 		      -- 2026-07-27 fix: auth_failed never sets availability_recover_at
 		      -- (credential_probe_v2.go sets it to NULL), so we allow auth_failed
@@ -112,6 +118,26 @@ func (r *CredentialRecovery) recover(ctx context.Context) {
 		          availability_recover_at IS NOT NULL
 		          AND availability_recover_at <= now()
 		      )
+		  )
+		  -- 2026-08-07 P0 死锁修复：'suspended' 之前不在上面的 IN 列表里，
+		  -- 导致 quota_periodic 写入的 suspended 永远无法自动恢复。
+		  --
+		  -- 实测证据（154 生产）：cred 22 (zhipu-roocode-v2) 的
+		  -- availability_state='suspended' / availability_recover_at=2026-08-10，
+		  -- 而 quota_state 已被 stale-cleanup 清成 'ok' —— 状态自相矛盾，
+		  -- 且没有任何自动路径能把它翻回 ready，只能靠 admin 人工 force_enable。
+		  -- 这就是 zhima-max/zhipu 反复"可用↔不可用"翻转的根因：人工救回后
+		  -- 又被下一次 quota 命中打回 suspended，循环往复。
+		  --
+		  -- suspended 的恢复必须比其它状态更严格，因为它同时被
+		  -- quota_balance / quota_permanent / auth_revoked 使用：
+		  --   1. 必须有到期的 availability_recover_at（由上面的 OR 分支保证）。
+		  --      auth_revoked / quota_balance 写的是 NULL，因此不会被误救。
+		  --   2. 硬配额（余额/永久用尽）仍未解除时不放行 —— 那类凭据只能由
+		  --      balance_quota_probe 探活成功后经 writeHealth 翻回。
+		  AND (
+		      availability_state <> 'suspended'
+		      OR COALESCE(quota_state, 'ok') NOT IN ('permanently_exhausted', 'balance_exhausted')
 		  )
 		  AND lifecycle_status = 'active'
 		  -- 2026-06-22 defect (4): do NOT auto-restore a credential to 'ready'
@@ -303,12 +329,34 @@ func (r *CredentialRecovery) recover(ctx context.Context) {
 // 使用 2 小时窗口是因为 probe-v2 探测在每小时 :30 分运行 (nextHalfHour)，
 // 两次探测间隔最大 90 分钟，1 小时窗口在边界情况下可能漏判。
 // 同时重置 quota_recover_at = NULL 和 state_reason_code = NULL，避免残留数据影响下次状态判断。
+// 2026-08-07 P0 补强：同时清除 quota_periodic 连带写入的
+// availability_state='suspended' / availability_recover_at。
+//
+// 缺陷证据（154 生产，cred 22 zhipu-roocode-v2）：本 SQL 把 quota_state
+// 清成 'ok' 后，availability_state 仍是 'suspended'、availability_recover_at
+// 仍指向 2026-08-10。因为 domains/credential/writer.go 的 KindQuotaPeriodic
+// 分支会同时写这两个 surface，而这里只回滚了其中一个，凭据于是卡在
+// "quota 已恢复但 availability 仍挂起" 的矛盾态 —— 三维可用性
+// (provider + credential + model) 判定里 v_routable_credential_models
+// 要求 availability_state='ready'，所以它依旧不可路由，且没有任何
+// 自动路径能救（那条 60s availability 恢复 SQL 原先不认 'suspended'）。
+//
+// 既然判定依据是"探活已确认健康"，就必须把该次 quota 事件写入的
+// 全部 surface 一并回滚，保持 quota_state 与 availability_state 同进同退。
 func stalePeriodicExhaustedCleanupSQL() string {
 	return `
 		UPDATE credentials
 		SET quota_state         = 'ok',
 		    quota_recover_at    = NULL,
 		    state_reason_code   = NULL,
+		    availability_state      = CASE
+		        WHEN availability_state = 'suspended' THEN 'ready'
+		        ELSE availability_state
+		    END,
+		    availability_recover_at = CASE
+		        WHEN availability_state = 'suspended' THEN NULL
+		        ELSE availability_recover_at
+		    END,
 		    state_updated_at    = now()
 		WHERE quota_state = 'periodic_exhausted'
 		  AND health_status = 'healthy'
