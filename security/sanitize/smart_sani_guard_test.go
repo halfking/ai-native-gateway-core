@@ -704,3 +704,152 @@ func TestSanitizeRestoreInterceptor_StreamEnd_RecoversAuditBody(t *testing.T) {
 	assert.Equal(t, "sanitize_restore", result.Action)
 	assert.NotNil(t, result.Metadata)
 }
+
+// ── 2026-08-07 回归：sessionID header 优先级（与 chatHandler 对齐）───
+
+// TestSanitizeInputMiddleware_AlternativeSessionHeaders
+// 客户端如果使用 X-Conversation-Id / X-Chat-Session-Id / X-Thread-Id
+// 作为 sessionID header（这些是 chatHandler 默认支持的候选），
+// 中间件也必须能识别，并写入对应的 Redis key。
+// Bug：之前中间件只读 X-Gw-Session-Id / X-Session-Id 两个 header，
+// 导致使用替代 header 的客户端脱敏后无法被还原。
+func TestSanitizeInputMiddleware_AlternativeSessionHeaders(t *testing.T) {
+	rdb := setupSaniGuardRedis(t)
+	s, err := NewSanitizer(NewPatternDetector())
+	require.NoError(t, err)
+	mw, err := NewSanitizeInputMiddleware(s, rdb, 30*time.Minute)
+	require.NoError(t, err)
+
+	cases := []struct {
+		name   string
+		header string
+		value  string
+	}{
+		{"X-Gw-Session-Id", "X-Gw-Session-Id", "session-A"},
+		{"X-Session-Id", "X-Session-Id", "session-B"},
+		{"X-Conversation-Id", "X-Conversation-Id", "session-C"},
+		{"X-Chat-Session-Id", "X-Chat-Session-Id", "session-D"},
+		{"X-Thread-Id", "X-Thread-Id", "session-E"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			handler := mw.Wrap(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.WriteHeader(http.StatusOK)
+			}))
+			req := httptest.NewRequest("POST", "/v1/chat/completions",
+				strings.NewReader(`{"model":"gpt-4","messages":[{"role":"user","content":"我的手机号是13800138000"}]}`))
+			req.Header.Set("Content-Type", "application/json")
+			req.Header.Set(tc.header, tc.value)
+			handler.ServeHTTP(httptest.NewRecorder(), req)
+
+			// 验证 Redis key 用的是 header 里的 sessionID
+			key := SanitizeRedisKey(tc.value)
+			vals, err := rdb.HGetAll(context.Background(), key).Result()
+			require.NoError(t, err)
+			assert.Contains(t, vals, "{SENSITIVE:phone:1}",
+				"header=%s 应被识别为 sessionID 并写入 Redis", tc.header)
+			assert.Equal(t, "13800138000", vals["{SENSITIVE:phone:1}"])
+		})
+	}
+}
+
+// TestSanitizeInputMiddleware_SessionHeaderPriority
+// 当多个 sessionID header 同时存在时，应按 X-Gw-Session-Id >
+// X-Session-Id > X-Conversation-Id > X-Chat-Session-Id > X-Thread-Id
+// 的顺序取最高优先级（与 chatHandler SessionHeadersPriority 一致）。
+func TestSanitizeInputMiddleware_SessionHeaderPriority(t *testing.T) {
+	rdb := setupSaniGuardRedis(t)
+	s, err := NewSanitizer(NewPatternDetector())
+	require.NoError(t, err)
+	mw, err := NewSanitizeInputMiddleware(s, rdb, 30*time.Minute)
+	require.NoError(t, err)
+
+	handler := mw.Wrap(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	// 同时设 5 个 header — 应优先用 X-Gw-Session-Id
+	req := httptest.NewRequest("POST", "/v1/chat/completions",
+		strings.NewReader(`{"model":"gpt-4","messages":[{"role":"user","content":"我的手机号是13800138000"}]}`))
+	req.Header.Set("X-Gw-Session-Id", "winner")
+	req.Header.Set("X-Session-Id", "loser-1")
+	req.Header.Set("X-Conversation-Id", "loser-2")
+	req.Header.Set("X-Chat-Session-Id", "loser-3")
+	req.Header.Set("X-Thread-Id", "loser-4")
+	handler.ServeHTTP(httptest.NewRecorder(), req)
+
+	winnerVals, err := rdb.HGetAll(context.Background(), SanitizeRedisKey("winner")).Result()
+	require.NoError(t, err)
+	assert.Contains(t, winnerVals, "{SENSITIVE:phone:1}", "X-Gw-Session-Id 应胜出")
+
+	for _, loser := range []string{"loser-1", "loser-2", "loser-3", "loser-4"} {
+		loserVals, err := rdb.HGetAll(context.Background(), SanitizeRedisKey(loser)).Result()
+		require.NoError(t, err)
+		assert.Empty(t, loserVals, "低优先级 header 不应被误用作 sessionID (loser=%s)", loser)
+	}
+}
+
+// ── 2026-08-07 回归：response chain append 行为（修复#1 依赖）────────
+
+// TestResponseChain_ListAndAppend_SafeCopy
+// 验证 InterceptorChain.ListInterceptors 返回副本（修改不影响原 chain），
+// 且可以基于返回的副本 + 还原拦截器重建一个等价的 chain。
+// 这是 installSmartSaniGuard 的核心依赖：append 到现有 chain 末尾。
+func TestResponseChain_ListAndAppend_SafeCopy(t *testing.T) {
+	outputCompliance := newFakeInterceptor("output_compliance")
+	restoreHook := newFakeInterceptor("sanitize_restore")
+
+	original := response.NewInterceptorChain(outputCompliance)
+	list := original.ListInterceptors()
+	require.Len(t, list, 1)
+	assert.Equal(t, "output_compliance", namedAs(list[0]),
+		"原 chain 应含 1 个 output_compliance")
+
+	// 修改 list 不应影响 original
+	list[0] = newFakeInterceptor("tampered")
+	list2 := original.ListInterceptors()
+	assert.Equal(t, "output_compliance", namedAs(list2[0]),
+		"ListInterceptors 必须返回独立副本（防止外部 mutate 内部状态）")
+
+	// 重建 chain：append 还原拦截器
+	expanded := response.NewInterceptorChain(append(original.ListInterceptors(), restoreHook)...)
+	expandedList := expanded.ListInterceptors()
+	require.Len(t, expandedList, 2, "append 后应有 2 个拦截器")
+	assert.Equal(t, "output_compliance", namedAs(expandedList[0]),
+		"原拦截器必须在最前面（output_compliance → sanitize_restore 顺序）")
+	assert.Equal(t, "sanitize_restore", namedAs(expandedList[1]),
+		"sanitize_restore 必须在 output_compliance 之后（用户要求'先安全检查再还原'）")
+}
+
+// namedAs 提取拦截器名（response.ResponseInterceptor 接口本身没有 Name()，
+// 需要类型断言；fakeInterceptor 实现 Name()）。
+func namedAs(it response.ResponseInterceptor) string {
+	if n, ok := it.(interface{ Name() string }); ok {
+		return n.Name()
+	}
+	return ""
+}
+
+// fakeInterceptor 测试用 ResponseInterceptor stub。
+type fakeInterceptor struct {
+	name string
+}
+
+func newFakeInterceptor(name string) response.ResponseInterceptor {
+	return &fakeInterceptor{name: name}
+}
+
+func (f *fakeInterceptor) Name() string { return f.name }
+
+func (f *fakeInterceptor) InterceptNonStream(_ context.Context, _ *response.InterceptRequest) (*response.InterceptResult, error) {
+	return nil, nil
+}
+
+func (f *fakeInterceptor) InterceptStreamChunk(_ context.Context, chunk []byte, _ *response.StreamMeta) (*response.ChunkResult, error) {
+	return nil, nil
+}
+
+func (f *fakeInterceptor) InterceptStreamEnd(_ context.Context, _ *response.StreamMeta) (*response.EndResult, error) {
+	return nil, nil
+}

@@ -17,6 +17,19 @@ func NewInterceptorChain(interceptors ...ResponseInterceptor) *InterceptorChain 
 	}
 }
 
+// ListInterceptors returns a copy of the underlying interceptor slice,
+// in registration order. Useful for code that needs to extend the
+// chain without mutating the existing slice (e.g. SmartSaniGuard
+// appending a restore interceptor onto a chain built by initGoalControl).
+func (c *InterceptorChain) ListInterceptors() []ResponseInterceptor {
+	if c == nil || len(c.interceptors) == 0 {
+		return nil
+	}
+	out := make([]ResponseInterceptor, len(c.interceptors))
+	copy(out, c.interceptors)
+	return out
+}
+
 // InterceptNonStream executes all interceptors in the chain for non-streaming responses.
 func (c *InterceptorChain) InterceptNonStream(ctx context.Context, req *InterceptRequest) (*InterceptResult, error) {
 	if c == nil || len(c.interceptors) == 0 {

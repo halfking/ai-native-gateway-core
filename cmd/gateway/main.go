@@ -3154,13 +3154,18 @@ func main() {
 			// called. Runs after autoroute so the audit follow-up can reuse
 			// the autoroute model selection. The goal stores use database/sql,
 			// so bridge the app's pgxpool via dbConn.Stdlib().
-			// 2026-08-07: pass redisClient so SmartSaniGuard (input sanitize
-			// middleware + restore interceptor) can be wired into the chain.
+			initGoalControl(dbConn.Stdlib(), chatHandler)
+
+			// ── SmartSaniGuard (2026-08-07) ─────────────────────────
+			// 输入脱敏 + 占位符还原（仅依赖 Redis）。必须放在 initGoalControl
+			// 之后调用：append 模式需要现有 chain 已注册到 chatHandler。
+			// bgDataPlaneOnly=true 模式下 initGoalControl 不会执行，
+			// 但 SmartSaniGuard 不需要 DB，因此也能独立启用。
 			var redisForGuard *redis.Client
 			if redisClientForCache != nil {
 				redisForGuard = redisClientForCache.Client()
 			}
-			initGoalControl(dbConn.Stdlib(), chatHandler, redisForGuard)
+			installSmartSaniGuard(chatHandler, redisForGuard)
 
 			autoIndexRefresher = bg.NewAutoIndexRefresher(dbConn.Pool(), autoIdx)
 			autoIndexRefresher.Start(context.Background())
