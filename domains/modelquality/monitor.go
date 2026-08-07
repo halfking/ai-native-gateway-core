@@ -119,7 +119,15 @@ func (m *QualityMonitor) Stop() {
 
 // scheduledCheckLoop 定时检测循环
 func (m *QualityMonitor) scheduledCheckLoop(ctx context.Context) {
-	ticker := time.NewTicker(m.config.ScheduleInterval)
+	// 2026-08-07 audit fix: guard against ScheduleInterval == 0, which causes
+	// time.NewTicker to panic. The main.go production path floors mqIntervalHours
+	// to >=1 (main.go:2803), but UpdateConfig or future callers could pass 0.
+	// Floor to 24h instead of panicking.
+	interval := m.config.ScheduleInterval
+	if interval <= 0 {
+		interval = 24 * time.Hour
+	}
+	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 
 	// 启动时立即执行一次
@@ -139,6 +147,18 @@ func (m *QualityMonitor) scheduledCheckLoop(ctx context.Context) {
 
 // runScheduledCheck 执行定时检测
 func (m *QualityMonitor) runScheduledCheck(ctx context.Context) {
+	// 2026-08-07 audit fix: check ctx.Done() at the start so Stop() can
+	// interrupt before the (multi-minute, synchronous) benchmark loop starts.
+	// Without this, Stop() during the startup benchmark waits indefinitely
+	// because the ctx passed from main.go was context.Background() (never
+	// cancels) — now it's WithCancel and Stop() calls cancel().
+	select {
+	case <-ctx.Done():
+		slog.Info("quality monitor: scheduled check cancelled before start")
+		return
+	default:
+	}
+
 	slog.Info("quality monitor: starting scheduled check",
 		"time", time.Now().Format(time.RFC3339))
 
@@ -185,6 +205,14 @@ func (m *QualityMonitor) TriggerAnomalyCheck(ctx context.Context, provider strin
 
 // testModel 测试单个模型
 func (m *QualityMonitor) testModel(ctx context.Context, target ModelTarget, suite *BenchmarkSuite, trigger string) error {
+	// 2026-08-07 audit fix: check ctx.Done() before launching the (potentially
+	// multi-minute) benchmark so Stop() can interrupt between models in the loop.
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	default:
+	}
+
 	displayName := target.Alias
 	if displayName == "" {
 		displayName = fmt.Sprintf("%s:%s", target.Provider, target.ModelName)

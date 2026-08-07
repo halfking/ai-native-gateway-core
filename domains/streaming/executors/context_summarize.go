@@ -471,6 +471,13 @@ func (e *Executor) doCompactionUpstream(
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(payload))
 	if err != nil {
+		// 2026-08-07 audit fix: if request construction fails after Allow()
+		// consumed the half-open probe (line 444), release it before returning.
+		// This path is rare (only on URL/header construction failure) but the
+		// same 5-minute wedge applies. Mirrors the limiter-reject path at 455-457.
+		if e.Circuit != nil {
+			e.Circuit.ReleaseProbe(cand.ProviderID, cand.CredentialID)
+		}
 		return nil, err
 	}
 	req.Header.Set("Content-Type", "application/json")
@@ -499,6 +506,15 @@ func (e *Executor) doCompactionUpstream(
 			}
 		} else if resp.StatusCode < 400 {
 			e.Circuit.RecordSuccess(cand.ProviderID, cand.CredentialID)
+		} else {
+			// 2026-08-07 audit fix: 4xx (except 429, handled above) is not
+			// recorded as a failure (ambiguous for compaction: could be
+			// auth/quota/bad-request, not necessarily circuit-worthy), but
+			// the half-open probe consumed by Allow() at line 444 must be
+			// released to prevent the breaker wedging in HALF_OPEN until
+			// the 5-minute timeout reclaims it. This completes the 70fe6d81
+			// fix which missed this branch.
+			e.Circuit.ReleaseProbe(cand.ProviderID, cand.CredentialID)
 		}
 	}
 	return resp, nil
