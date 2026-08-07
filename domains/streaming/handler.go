@@ -709,6 +709,13 @@ type ChatHandler struct {
 	// use this path; handoff executes before provider dispatch via handoffHook.
 	responseInterceptor ResponseInterceptor
 
+	// sanitizeInputMiddleware (2026-08-07, SmartSaniGuard) wraps the
+	// chatHandler entry point to replace sensitive info in the request body
+	// with {SENSITIVE:type:index} placeholders before the request reaches
+	// the executor. The reverse mapping is persisted to Redis and consumed
+	// by SanitizeRestoreInterceptor on the response path. nil = disabled.
+	sanitizeInputMiddleware func(http.Handler) http.Handler
+
 	// handoffHook prepares a trusted resume packet and rotates the gateway
 	// session before the provider receives a near-limit request.
 	handoffHook *handoff.TriggerHook
@@ -872,6 +879,14 @@ func (h *ChatHandler) SetSessionCompressor(sc *compression.SessionCompressor) {
 // before session compression sends the request upstream.
 func (h *ChatHandler) SetHandoffHook(hook *handoff.TriggerHook) {
 	h.handoffHook = hook
+}
+
+// SetSanitizeInputMiddleware wires the SmartSaniGuard input-side sanitizer.
+// The middleware runs at the chatHandler entry, replacing sensitive info
+// in the request body with placeholders and persisting the reverse map to
+// Redis. Pass nil to disable.
+func (h *ChatHandler) SetSanitizeInputMiddleware(mw func(http.Handler) http.Handler) {
+	h.sanitizeInputMiddleware = mw
 }
 
 // SetPromptCacheStabilize toggles request-body prefix stabilization
@@ -1141,7 +1156,19 @@ func (h *ChatHandler) SetAttachmentExtractor(extractor *attachments.Extractor) {
 }
 
 // ServeHTTP handles /v1/chat/completions and /v1/completions.
+//
+// 2026-08-07 (SmartSaniGuard): the request-side input middleware (when set)
+// wraps the real handler so sensitive info in r.Body is replaced with
+// placeholders + persisted to Redis before any request processing.
 func (h *ChatHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if h.sanitizeInputMiddleware != nil {
+		h.sanitizeInputMiddleware(http.HandlerFunc(h.serveHTTPInner)).ServeHTTP(w, r)
+		return
+	}
+	h.serveHTTPInner(w, r)
+}
+
+func (h *ChatHandler) serveHTTPInner(w http.ResponseWriter, r *http.Request) {
 	// ── requestAttempt safety-net: every request that reaches this
 	//    handler must produce exactly one request_logs row, regardless
 	//    of which early-return path it takes.  attemptErrCode is
