@@ -1,4 +1,4 @@
--- Migration 470: session_summaries archival — decay old inactive summaries (M5)
+-- Migration 471: session_summaries archival — decay old inactive summaries (M5)
 --
 -- docs/omni-ref3 M5: add archived_at + last_accessed_at columns to enable
 -- archival of old inactive summaries. Summaries not accessed for N days

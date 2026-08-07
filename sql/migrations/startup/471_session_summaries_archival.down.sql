@@ -1,4 +1,4 @@
--- Migration 470 down: remove session_summaries archival columns
+-- Migration 471 down: remove session_summaries archival columns
 
 BEGIN;
 
