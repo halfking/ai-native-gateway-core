@@ -58,18 +58,42 @@ ALTER TABLE gateway.session_turns
   ADD CONSTRAINT session_turns_submit_mode_check
   CHECK (submit_mode IN ('full', 'delta', 'snapshot', 'inferred_compressed', 'attachment_only'));
 
--- 3. Verify the constraint accepts attachment_only
+-- 3. Verify the constraint contains exactly the five supported modes.
+-- Checking only for attachment_only is insufficient: a malformed or stale
+-- constraint could still contain that token while omitting another supported
+-- mode or allowing an unintended value. Extract the quoted literals from the
+-- rendered CHECK expression and compare the complete set on each schema.
 DO $$
+DECLARE
+  expected text[] := ARRAY[
+    'attachment_only', 'delta', 'full', 'inferred_compressed', 'snapshot'
+  ];
+  actual text[];
+  relation_name regclass;
 BEGIN
-  PERFORM 1 FROM pg_constraint
-    WHERE conname = 'session_turns_submit_mode_check'
-      AND conrelid IN ('public.session_turns'::regclass, 'gateway.session_turns'::regclass)
-      AND pg_get_constraintdef(oid) LIKE '%attachment_only%';
+  FOREACH relation_name IN ARRAY ARRAY[
+    'public.session_turns'::regclass,
+    'gateway.session_turns'::regclass
+  ] LOOP
+    SELECT COALESCE(array_agg(match[1] ORDER BY match[1]), ARRAY[]::text[])
+      INTO actual
+    FROM pg_constraint c
+    CROSS JOIN LATERAL regexp_matches(
+      pg_get_constraintdef(c.oid),
+      $regex$'([^']+)'$regex$,
+      'g'
+    ) AS match
+    WHERE c.conname = 'session_turns_submit_mode_check'
+      AND c.conrelid = relation_name;
 
-  IF NOT FOUND THEN
-    RAISE EXCEPTION 'session_turns_submit_mode_check not extended with attachment_only';
-  END IF;
-  RAISE NOTICE '✓ session_turns_submit_mode_check OK on both public + gateway';
+    IF actual IS DISTINCT FROM expected THEN
+      RAISE EXCEPTION
+        '% has unexpected submit_mode constraint values: %, expected %',
+        relation_name, actual, expected;
+    END IF;
+
+    RAISE NOTICE 'submit_mode constraint OK on %: %', relation_name, actual;
+  END LOOP;
 END $$;
 
 COMMIT;

@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"log"
+	"sort"
 	"time"
 )
 
@@ -52,10 +53,11 @@ func (w *Worker) Run(ctx context.Context) {
 // cleanupOldWindows 清理过期的配额追踪记录.
 //
 // 跨租户修复 (2026-08-07):
-//  旧实现直接 DELETE FROM free_quota_tracker WHERE window_end < ..., 在
-//  BYPASSRLS 角色下会跨租户删除, 违反 RLS 隔离语义. 新实现按 tenant_id
-//  分组循环, 每个事务内 SET LOCAL app.current_tenant = '<tenant>', 让
-//  RLS policy 实际生效.
+//
+//	旧实现直接 DELETE FROM free_quota_tracker WHERE window_end < ..., 在
+//	BYPASSRLS 角色下会跨租户删除, 违反 RLS 隔离语义. 新实现按 tenant_id
+//	分组循环, 每个事务内 SET LOCAL app.current_tenant = '<tenant>', 让
+//	RLS policy 实际生效.
 func (w *Worker) cleanupOldWindows(ctx context.Context) error {
 	tenants, err := w.listTenants(ctx)
 	if err != nil {
@@ -141,6 +143,7 @@ func (w *Worker) listTenants(ctx context.Context) ([]string, error) {
 	for tenant := range seen {
 		out = append(out, tenant)
 	}
+	sort.Strings(out)
 	return out, nil
 }
 
