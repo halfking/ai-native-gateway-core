@@ -223,6 +223,19 @@ describe('useLiveStreamFilters', () => {
     expect(filtered.map(r => r.request_id).sort()).toEqual(['r1', 'r3'])
   })
 
+  it('applyAgentFilter normalizes selections to lowercase', () => {
+    // Regression: the extracted composable dropped the .toLowerCase() that the
+    // in-component code had. Matching still works (filteredLanes lowercases the
+    // request side), but the stored set must stay lowercase so the filter
+    // dialog's checkbox state (draft.has(opt), opt always lowercase) stays in
+    // sync. Pass mixed-case input and assert lowercase storage.
+    const lanes = ref<SwimLane[]>([makeLane('lane1', [])])
+    const filters = useLiveStreamFilters({ lanes })
+
+    filters.applyAgentFilter(['ZCODE', 'OpenCode'])
+    expect([...filters.agentFilter.value]).toEqual(['zcode', 'opencode'])
+  })
+
   it('filteredLanes removes empty lanes after filtering', () => {
     const lanes = ref<SwimLane[]>([
       makeLane('lane1', [makeRequest({ request_id: 'r1', status: 'success' })]),

@@ -2,11 +2,13 @@ package v2
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"sync"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -36,6 +38,15 @@ func NewSessionCacheV2(db *pgxpool.Pool, redisAddr string) *SessionCacheV2 {
 		l3: NewSessionTurnsReader(db),
 		db: db,
 	}
+}
+
+// Close releases the underlying L2 Redis connection pool. Safe to call on a
+// cache whose L2 is disabled (nil client). Called during gateway shutdown.
+func (c *SessionCacheV2) Close() error {
+	if c == nil || c.l2 == nil {
+		return nil
+	}
+	return c.l2.Close()
 }
 
 // SessionStateV2 represents cached session state in V2 architecture
@@ -346,6 +357,14 @@ func (r *SessionTurnsReader) LoadState(ctx context.Context, tenantID, sessionID 
 		&state.GovernanceMeta.LastOutputVerdict,
 	)
 
+	// A genuinely new session has no rows yet. This is not an error: HasState
+	// relies on LoadState returning (nil, nil) here so the caller classifies it
+	// as "no prior state" rather than a hard failure that forces V1 fallback.
+	// Without this, every new session would hit the err != nil branch in
+	// tryLoadV2State and bypass V2 entirely. Mirrors TurnReader.LoadLatestOutbound.
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, nil
+	}
 	if err != nil {
 		return nil, fmt.Errorf("load session state: %w", err)
 	}

@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased] - 2026-08-06
 
+### Fixed
+
+- **48h 审计修正 (2026-08-07)** — 详见 `docs/audit-2026-08-07-48h-review.md`:
+  - **[P1] V2 新会话永远回退 V1**: `domains/session/v2/cache_v2.go` `SessionTurnsReader.LoadState` 把 `pgx.ErrNoRows` 当硬错返回 `(nil, err)`，经 `HasState → Get → LoadState` 传导，`tryLoadV2State` 命中 `err != nil` 分支 → 每个新会话都 `ok=false` 回退 V1，V2「新会话」分支不可达。修复：包装前先判 `errors.Is(err, pgx.ErrNoRows) { return nil, nil }`（对齐兄弟读取器 `TurnReader.LoadLatestOutbound`）。新增真库回归测试 `TestSessionTurnsReader_LoadState_RealDB_NoRows`
+  - **[P1] applyAgentFilter 丢失大小写归一化**: `web/src/composables/useLiveStreamFilters.ts` 抽取时 `applyAgentFilter` 写成 `new Set(selected)`，丢失原组件的 `selected.map(s => s.toLowerCase())`。过滤本身仍命中（`filteredLanes` 小写化请求侧），但弹窗勾选状态会与非全小写输入错位。修复：恢复 `.toLowerCase()`，新增回归测试 `applyAgentFilter normalizes selections to lowercase`
+  - **[P2] SessionCacheV2 缺 Close()**: 新增 `SessionCacheV2.Close()`（nil-safe 转发 `l2.Close()`）为 V2 Redis 连接池提供优雅释放入口（暂未接入 main.go 关停序列：`sessionCacheV2` 作用域受限且与既有 `redisClientForCache` 进程退出回收模式一致；`Close()` API 已就位，留待关停序列重构时接入）
+
 ### Added
 
 - **抽取 useLiveStreamUrl composable (2026-08-06)**:
