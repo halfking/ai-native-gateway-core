@@ -115,7 +115,7 @@ P3 退役 V1
 | ✅ 统一元数据事实源（V2 为准，title/user_tags 已迁移；Redis 降缓存待双写期） | M2 | A1 全量 | **部分完成**（列已添加，双写/迁移待实施） |
 | ✅ 摘要衰减/归档（archived_at + last_accessed_at 列 + Archiver + admin API） | M5 | M2 | **已实现** |
 | 首轮即时 task_type | M7 | M1 | 待 |
-| 压缩结果 memo | C3 | C4 | 待 |
+| ✅ 压缩结果 memo（`ResultMemo`：tenant+session+mode+protocol+ctxWindow+bodyHash 键；仅缓存 trim/sliding_window；`compression_memo_total` 指标；默认关，`LLM_GATEWAY_COMPRESSION_MEMO_TTL` 开启） | C3 | C4 | **已实现** |
 | 压缩预览 endpoint | C7 | 无 | 待 |
 | L1 byte 限制 | D3 | 无 | 待 |
 | 收敛 sticky 实现（删旧版） | D4/D5 | 无 | 待 |
