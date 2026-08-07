@@ -4417,6 +4417,12 @@ func main() {
 		sessionArchiveHandler.RegisterRoutes(mux, wrapAdmin)
 		slog.Info("M5 session archive API enabled (/api/admin/session-archive/trigger, /stats)")
 
+		// C7 (2026-08-07): Compression Preview API
+		// Dry-run compression pipeline: reports what would happen to a given body
+		compressionPreviewHandler := admin.NewCompressionPreviewHandler()
+		compressionPreviewHandler.RegisterRoutes(mux, wrapAdmin)
+		slog.Info("C7 compression preview API enabled (/api/admin/compression/preview)")
+
 		// Phase 3.6.5 (2026-07-24): Sessions V2 Detail & Summary API
 		// Provides session detail query from gateway.session_* tables and LLM-powered session summary
 		sessionDetailAPI := admin.NewSessionDetailV2API(dbConn.Pool())
