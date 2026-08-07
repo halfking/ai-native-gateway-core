@@ -9,6 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **24h 审计修正 — 分区自动化 (2026-08-07 19:30)** — 详见 `AUDIT_REPORT_24H_20260807.md` §8.1 + `PARTITION_AUTOMATION_FIX_SUMMARY.md`:
+  - **[P2] 14+ 张 RANGE 分区表无自动分区，2026-11-01 会全面宕机**: 24h 审计发现 `bg.PartitionManager.ensureSpecs()` 仅覆盖 6 张表，迁移 473 是 2026_09/10 一次性补丁。进一步调查更严重：迁移 334/335/382/383 的 `ensure_*_partition()` 函数从未进入生产库（与 431/432 同类的 silent skip 问题），把函数名注册到 Go 端也会因 "function does not exist" 报错。修复分三层：
+    1. **SQL 迁移 475** (`475_restore_missing_ensure_partition_functions.sql`)：用 `CREATE OR REPLACE FUNCTION` 幂等重建 5 个生产缺失的函数 —— `ensure_credit_ledger_partition(timestamptz)` ← 334、`ensure_tool_usage_stats_partition(timestamptz)` ← 335、`ensure_session_module_executions_partition(date)` ← 382、`ensure_dashboard_events_partition(date)` ← 383、`ensure_cache_metrics_partition(date)` ← 新建。`session_module_executions` / `dashboard_access_events` 在生产无父表索引，函数内显式建分区级索引对齐命名约定；其余 3 张表索引父表级自动传播。迁移末尾 `DO $$` 块立即为当月 + 下月执行 `PERFORM ensure_*()`，无需等待 PartitionManager 下次 tick
+    2. **Go 端 `bg/partition_manager.go`**：`archiveSpec` 新增 `argExpr` 字段支持 `$1::date` cast（pgx 默认发 timestamptz，date 签名函数需显式转换）；`ensureNextMonthPartitions` 循环从硬编码 `"$1"` 改为动态拼接；`ensureSpecs()` 新增 6 个条目 → 覆盖 11 张物理表（12 个逻辑表，`ensure_sessions_v2_partitions` 一次覆盖 sessions/session_turns/session_bodies）
+    3. **测试 `bg/partition_manager_test.go`**：`TestEnsureSpecsCoversAllPartitionedTables` 期望 map 同步新增 6 个 fnName
+  - **明确排除（不接入）**: `model_probe_runs`（2026-07-14 退役为纯 hot 表 + TTL DELETE）、`routing_decision_log_archive`（archive job 自建目标分区）、`candidate_failure_logs`（ensure 是空 body，走 hot + promote 架构）
+  - **验证**: ✅ `go build ./...` 编译通过；✅ `go test ./bg/ -v` 全部 PASS；✅ Docker Postgres 16 上 475 up：5 函数 + 当月/下月分区正确创建；✅ 幂等性：二次运行返回 "already exists"，无重复建表；✅ down 文件对称：删除 5 函数，不动已建分区（防数据丢失）
+
 - **48h 审计修正 第二轮 (2026-08-07 11:30)** — 生产热路径深入审计，详见 `docs/audit-2026-08-07-48h-review.md` §四:
   - **[P1] 压缩上游 4xx 探针槽位泄漏**: `domains/streaming/executors/context_summarize.go` `doCompactionUpstream` 只覆盖 `>= 500 || == 429` 和 `< 400`，但 4xx（除 429）跳过两个分支 → 探针持有未释放 → 熔断器在 HALF_OPEN 楔住 5 分钟。正是 commit 70fe6d81（2026-07-03 事故修复）应该但**遗漏**的 bug 类。修复：添加 `else` 分支（`>= 400`）调用 `ReleaseProbe`
   - **[P1] ScheduleInterval==0 panic**: `domains/modelquality/monitor.go:122` `time.NewTicker(0)` panic。主要生产路径有防护（main.go:2803 floor 到 >=1h），但 `UpdateConfig` 或未来调用方可触发。修复：守卫 `if interval <= 0 { interval = 24 * time.Hour }`
