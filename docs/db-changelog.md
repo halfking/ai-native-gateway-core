@@ -738,3 +738,33 @@
 | 473 | `473_partition_precreate_2026_09_10.sql` | `2adc06f310153fd514f665b8c85c3dd9c55e7c4423c5fa096d938592e1f4212b` | applied+verified |
 | 474 | `474_session_turns_attachment_indexes_and_constraint.sql` | `07c9b6e62a57f2ef7b7db27f447c1667734792a4a9029c3de38c086c434f8452` | applied+verified |
 
+## 2026-08-07T19:30:00Z — audit fix: partition automation (24h audit follow-up)
+
+| Migration | File | SHA-256 | Status |
+|-----------|------|---------|--------|
+| 475 | `475_restore_missing_ensure_partition_functions.sql` | `355f9b3b82e68ccce08e89e681ad7f121ef4e3c6fb47ea4b0406a2021cb56c1a` | pending (this commit) |
+
+**背景**: 24h 审计 (`AUDIT_REPORT_24H_20260807.md`) 发现：
+1. `bg.PartitionManager.ensureSpecs()` 只覆盖 6 张表，14+ 张 RANGE 分区表无自动化
+2. 迁移 473 只是补到 2026_10 的一次性补丁，2026-11-01 后会再次因「no partition of relation found for row」全面写入失败
+3. 进一步调查发现：迁移 334/335/382/383 的 `ensure_*_partition()` 函数从未进入生产库（与 431/432 同类的 silent skip 问题），导致即使把函数名加入 Go 端也会因 "function does not exist" 报错
+
+**修复**:
+- 迁移 475 用 `CREATE OR REPLACE FUNCTION` 幂等重建 5 个生产缺失的函数：
+  - `ensure_credit_ledger_partition(timestamptz)` ← 334
+  - `ensure_tool_usage_stats_partition(timestamptz)` ← 335
+  - `ensure_session_module_executions_partition(date)` ← 382
+  - `ensure_dashboard_events_partition(date)` ← 383
+  - `ensure_cache_metrics_partition(date)` ← 新建
+- 迁移末尾 `DO $$` 块立即为当月 + 下月执行 `PERFORM ensure_*()`，无需等待 PartitionManager 下次 tick
+- Go 端 `bg/partition_manager.go`：
+  - `archiveSpec` 新增 `argExpr` 字段支持 `$1::date` cast（pgx 默认发 timestamptz，date 签名函数需显式转换）
+  - `ensureSpecs()` 新增 6 个条目 → 覆盖 11 张物理表（12 个逻辑表，`ensure_sessions_v2_partitions` 一次覆盖 sessions/session_turns/session_bodies）
+
+**验证**:
+- ✅ `go build ./...` 编译通过
+- ✅ `go test ./bg/ -v` 全部 PASS
+- ✅ Docker Postgres 16 上 475 up 验证：5 函数 + 当月/下月分区正确创建
+- ✅ 幂等性：二次运行返回 "already exists"，无重复建表
+- ✅ down 文件对称：删除 5 函数，不动已建分区（防数据丢失）
+
