@@ -117,7 +117,7 @@ P3 退役 V1
 | 首轮即时 task_type | M7 | M1 | 待 |
 | ✅ 压缩结果 memo（`ResultMemo`：tenant+session+mode+protocol+ctxWindow+bodyHash 键；仅缓存 trim/sliding_window；`compression_memo_total` 指标；默认关，`LLM_GATEWAY_COMPRESSION_MEMO_TTL` 开启） | C3 | C4 | **已实现** |
 | ✅ 压缩预览 endpoint（`POST /api/admin/compression/preview`：`Preview()` 纯函数，逐阶段分解 + LLM honesty flag；不调 Prepare，无副作用；8 MiB 上限） | C7 | 无 | **已实现** |
-| L1 byte 限制 | D3 | 无 | 待 |
+| ✅ L1 byte 限制（`l1MaxBytes` 256 MiB 默认 + `cache.session_l1_max_bytes` 热加载；`l1Entry.bytes` + `SessionCache.curBytes`；evict on count OR bytes；防止巨 body OOM） | D3 | 无 | **已实现** |
 | 收敛 sticky 实现（删旧版） | D4/D5 | 无 | 待 |
 | 旧缓存包退役（`cache/semantic\|prefix\|delta\|kv`，随 V1） | D8 | 无生产引用确认 | 待 |
 | 删 `Estimator.NeedsCompression` 死代码 | C6 | C4 | 待 |
