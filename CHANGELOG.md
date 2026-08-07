@@ -20,6 +20,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - **[P1] applyAgentFilter 丢失大小写归一化**: `web/src/composables/useLiveStreamFilters.ts` 抽取时 `applyAgentFilter` 写成 `new Set(selected)`，丢失原组件的 `selected.map(s => s.toLowerCase())`。过滤本身仍命中（`filteredLanes` 小写化请求侧），但弹窗勾选状态会与非全小写输入错位。修复：恢复 `.toLowerCase()`，新增回归测试 `applyAgentFilter normalizes selections to lowercase`
   - **[P2] SessionCacheV2 缺 Close()**: 新增 `SessionCacheV2.Close()`（nil-safe 转发 `l2.Close()`）为 V2 Redis 连接池提供优雅释放入口（暂未接入 main.go 关停序列：`sessionCacheV2` 作用域受限且与既有 `redisClientForCache` 进程退出回收模式一致；`Close()` API 已就位，留待关停序列重构时接入）
 
+- **build 1474 生产全量宕机 hotfix (2026-08-07 15:08, commit 28a058b4)**: 13:29:21 重启到 build 1474（含今日 sanitize + V2 cache 改动）后，252 PG `request_logs_hot` 成功请求数归零持续宕机；两类新错误此前 5 小时均为 0：`internal_panic` 36 次、`json_parse_error` 4 次
+  - **[P0] V2 缓存 nil 解引用全量宕机**（f8b10499 二阶缺陷）: `domains/session/v2/cache_v2.go` — `f8b10499` 让 `SessionTurnsReader.LoadState` 对新会话返回 `(nil, nil)`（正确），但 `SessionCacheV2.Get` 未判空即 `c.l1.Set(state)`，命中 `CompressionMetaCache.Set` 内 `state.TenantID` 解引用 → nil pointer panic。栈帧 `CompressionMetaCache.Set(..., 0x0)` 印证。修复：Get 早返回 `(nil, nil)` + L1/L2 Set 加 nil 守卫；新增 `TestSessionCacheV2_NilState_NoDereference` 回归
+  - **[P0] 脱敏中间件吞 body → json_parse_error**: `security/sanitize/smart_sani_guard.go` — `readBody` 注释声称「读取并恢复请求体」但只读不恢复 `r.Body`。三条 passthrough 路径（无敏感信息 / 脱敏失败 / 读取失败）把空 body 交给下游 `chatHandler`，命中 `json.Unmarshal` 失败 → 400 `json_parse_error`。客户端看到的 `model=claude-opus-5` / `provider=<uuid>` 是误导：请求从未走到路由与 provider 选择，model 是从空 body 宽松提取的残留，PG `client_model` 字段空可印证。修复：readBody 读取后立即 `bytes.Reader` 重建 `r.Body`；脱敏改写时同步 `r.ContentLength`；与 `armor/middleware.withReplayedBody` 对齐不调 `r.Body.Close()`；新增 5 个回归测试锁定 body passthrough 完整性
+  - **诊断盲点**: `domains/streaming/handler.go:1699` `json.Unmarshal` 错误此前被丢弃，json_parse_error 行不带 offset/原因，导致「上游中间件吞了 body」与「客户端 JSON 真坏了」无法区分（本次排查耗时的直接原因）。补充 `slog.Warn` 带 `error` / `body_bytes` / `content_length`，与相邻 `request body read failed` 字段顺序对齐
+
 ### Added
 
 - **admin_protected 手工凭据模型记录只允许手工删除 (2026-08-07)**:
@@ -64,6 +69,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - **写入入口**: `domains/cachemetrics/recorder.go` 暴露 `Recorder.Write(layer, eventType, tokensSaved, ...)` 统一入口；各 cache layer 接入中
   - **查询入口**: `cmd/gateway/main.go:4383` 暴露 `/api/admin/cache-metrics/summary` 与 `/timeline`
   - **验证**: `go build` / `go vet` exit 0；表创建幂等
+
+- **【审计+修复 2026-08-07 16:10】partition 全表预创建 + 431/432 silent skip 补齐**:
+  - **审计发现**：
+    - 15 个 RANGE 分区表**只有 2026_07 + 2026_08 分区**（cache_metrics 例外），缺 2026_09 + 2026_10。当 2026-08-31 23:59 切月后 INSERT 会全面失败（sessions/session_turns/request_wal/usage_ledger 等核心路径宕机）
+    - 同 version 多文件导致 deploy script 静默 skip：431_session_turns_add_attachment_columns 的两个 GIN/BTREE 索引未创建；432_fix_submit_mode_constraint 的 CHECK 扩展未应用 → 任何 submit_mode='attachment_only' 的 INSERT 会被约束拒绝（domains/session/v2/turn_writer.go:57 + submit_mode_detector.go:15 已用此模式）
+  - **修复**：
+    - **migration 473 `473_partition_precreate_2026_09_10.sql`**：14 个 RANGE 表一次性补 2026_09 + 2026_10 + default 三件套（rule 33 §6.1 + §2）；cursor + pg_class.relname 替代 regclass cast 避免幂等性 bug（教训来自 472）
+    - **migration 474 `474_session_turns_attachment_indexes_and_constraint.sql`**：建 gateway.session_turns 上缺失的 2 索引（GIN multimodal_types + BTREE attachment_count WHERE > 0）；扩展 public + gateway 两套 schema 的 session_turns_submit_mode_check 至 5 模式（含 attachment_only）；DO 块 verify 强约束
+  - **覆盖表**：credential_model_index, credit_ledger, dashboard_access_events, model_probe_runs, request_logs, request_wal, routing_decision_log, routing_decision_log_archive, session_bodies, session_module_executions, session_turns, sessions, tool_usage_stats, usage_ledger
+  - **验证**：本地 psql dry-run 通过；idx 跑创建成功；gateway.session_turns 接受 submit_mode='attachment_only'（实测 INSERT 成功）
+  - **未部署**：本次仅本地测试成功（手动 scp + psql），正式 deploy 流程需要在 build/release 时同步进 bundle
+
+- **会话摘要归档 M5 (2026-08-07)**:
+  - **背景**: `session_summaries` 长期累积不活跃记录（30+ 天无访问、session 已结束），挤占活动表空间且影响 ANALYZE 计划质量。需求：可归档老摘要，活跃视图自动过滤
+  - **机制**: 新增 startup 迁移 471 `sql/migrations/startup/471_session_summaries_archival.sql`（注：原 commit `7f88c931c` 使用了与 `cache_metrics` 重复的 470 编号，本次审计时重命名以避免同 version 多文件导致的部署拒绝），给 `public.session_summaries` 加 `last_accessed_at timestamptz` + `archived_at timestamptz` 两列（IF NOT EXISTS 守卫）+ 部分索引 `idx_session_summaries_archival ON (archived_at, last_accessed_at, last_request_at) WHERE archived_at IS NULL`
+  - **回填**: 新装时 `last_accessed_at = last_request_at`（已有数据无访问记录，用最后请求时间回填）
+  - **归档策略**（外部 job，脚本待补）：session ended 30+ 天 + last_accessed_at 30+ 天/NULL + archived_at IS NULL → SET archived_at = NOW()
+  - **读路径**: 现有 `GetSessionMetadata` / analytics query 需追加 `WHERE archived_at IS NULL`（后续 task 接入）
+  - **验证**: `go build` / `go vet` exit 0
+
+- **D2 cache_metrics 分区补齐 (2026-08-07)**:
+  - **背景**: 迁移 470 `cache_metrics` 创建为 `PARTITION BY RANGE (partition_date)` 父表，但未创建任何 default / monthly 分区。每次 `DBRecorder.Record` INSERT 都会因 `no partition of relation "cache_metrics" found for row` 失败，cache layer 的 hit/miss 遥测**静默丢失**。本次审计时实测复现该失败
+  - **机制**: 新增 startup 迁移 472 `sql/migrations/startup/472_cache_metrics_partitions.sql`，建 3 个分区对齐 rule 33 §2「写 default 表」铁律：
+    - `cache_metrics_default` PARTITION OF cache_metrics DEFAULT（写入兜底）
+    - `cache_metrics_2026_08` FOR VALUES FROM ('2026-08-01') TO ('2026-09-01')（当月）
+    - `cache_metrics_2026_09` FOR VALUES FROM ('2026-09-01') TO ('2026-10-01')（次月预创建）
+  - **索引自动传播**: 父表的 `idx_cache_metrics_tenant_layer_ts` / `idx_cache_metrics_event_type` 在分区创建时自动传播到子表；额外手动加 default 上的 `(tenant_id, cache_layer, recorded_at DESC)` 索引（兜底场景的查询性能）
+  - **未来 lifecycle**: 30 天分区 drop 走 `scripts/partitions/migrate-default-to-monthly.sh`（rule 33 §6.1，运维侧脚本后续接入）
+  - **验证**: `go build` / `go vet` exit 0；本次审计时实测 INSERT 失败 → 472 部署后预期通过
 
 - **抽取 useConnectionDetail composable (2026-08-06)**:
   - **背景**: `LiveRequestStreamV2.vue` 的连接详情弹窗状态块（`showConnectionDetail` ref + `toggleConnectionDetail`）内联在组件里，切换逻辑依赖 `isAdmin` computed 与 `isEditingUrl`（来自 `useLiveStreamUrl`）

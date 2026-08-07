@@ -33,7 +33,7 @@ type AutoComboSpec struct {
 	MaxCandidates      int
 	ExplorationRate    float64
 	Enabled            bool
-	TenantID           int64
+	TenantID           string
 }
 
 // ScoringWeights 评分权重
