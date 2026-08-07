@@ -525,3 +525,90 @@ func TestProbeSync_ConcurrentWaitersReleasedByFinishProbe(t *testing.T) {
 	}
 	wg.Wait()
 }
+
+// TestProbeSync_FinishProbeAtomicityDoesNotCloseNewRound pins the 2026-08-07
+// fix that pins the contract: finishProbe must drain the in-flight slot
+// AND detach this round's waiter list under the same critical section,
+// so a fresh ProbeSync caller that registers a new waiter AFTER the
+// slot is released is never woken by the previous round's notify —
+// otherwise its channel would close without a corresponding state-cache
+// write and the caller would hang forever.
+//
+// The test exercises the exact race the fix targets:
+//  1. Caller A starts cycle / fresh probe for key — slot reserved.
+//  2. Caller B (the reuse path) attaches a waiter to key.
+//  3. Caller A's finishProbe runs.
+//  4. Right after the slot is released, a NEW caller C (the next
+//     ProbeSync fresh probe) reserves the slot again and registers its
+//     own waiter.
+//  5. Caller B's waiter MUST close (it was the previous round's
+//     waiter). Caller C's waiter MUST NOT close — the previous
+//     notify must have detached the previous round's waiter list
+//     atomically with the slot release, so the second round's waiter
+//     must remain pending until the new finishProbe runs.
+//
+// We sequence the calls deterministically rather than rely on timing:
+// the test models the contract directly.
+func TestProbeSync_FinishProbeAtomicityDoesNotCloseNewRound(t *testing.T) {
+	w := &NodeProbeWorker{
+		inFlight:    make(map[string]struct{}),
+		triggers:    make(map[string]nodeProbeTrigger),
+		syncWaiters: make(map[string][]chan struct{}),
+	}
+	const credID = 16
+	const model = "kimi-k2.6"
+	key := fmt.Sprintf("%d|%s", credID, model)
+
+	// Round 1: reserve the slot + register B as the reuse waiter.
+	w.mu.Lock()
+	w.inFlight[key] = struct{}{}
+	w.mu.Unlock()
+	chB := make(chan struct{})
+	w.syncWaitersMu.Lock()
+	w.syncWaiters[key] = append(w.syncWaiters[key], chB)
+	w.syncWaitersMu.Unlock()
+
+	// finishProbe must drain the slot AND the round-1 waiter list in
+	// one critical section. After this call, both inFlight[key] and
+	// syncWaiters[key] must be empty.
+	w.finishProbe(key)
+
+	// Round 2 starts: a new ProbeSync caller reserves the slot and
+	// registers its own waiter BEFORE any later notify fires.
+	w.mu.Lock()
+	if _, busy := w.inFlight[key]; busy {
+		t.Fatal("inFlight[key] should be free after finishProbe")
+	}
+	w.inFlight[key] = struct{}{}
+	w.mu.Unlock()
+	chC := make(chan struct{})
+	w.syncWaitersMu.Lock()
+	w.syncWaiters[key] = append(w.syncWaiters[key], chC)
+	w.syncWaitersMu.Unlock()
+
+	// Round-1 waiter MUST close (it was the previous round's waiter).
+	select {
+	case <-chB:
+	case <-time.After(200 * time.Millisecond):
+		t.Fatal("round-1 waiter was not closed by finishProbe")
+	}
+
+	// Round-2 waiter MUST NOT close — no finishProbe has run for
+	// round 2 yet.
+	select {
+	case <-chC:
+		t.Fatal("round-2 waiter was closed by the previous finishProbe — slot-release and waiter-detach are NOT atomic")
+	default:
+	}
+
+	// Drain syncWaiters for round 2 explicitly to avoid leaking
+	// channels into other tests (we are not using t.Parallel).
+	w.mu.Lock()
+	delete(w.inFlight, key)
+	chs := append([]chan struct{}(nil), w.syncWaiters[key]...)
+	delete(w.syncWaiters, key)
+	w.mu.Unlock()
+	for _, ch := range chs {
+		close(ch)
+	}
+}

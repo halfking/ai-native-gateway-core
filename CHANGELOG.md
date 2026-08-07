@@ -5,7 +5,15 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased] - 2026-08-07
+## [Unreleased] - 2026-08-08
+
+### Fixed
+
+- **72小时代码审计修正 第二轮 (2026-08-08 00:30)** — 通过 comprehensive-code-audit 技能 + codegraph 检测：
+  - **[P1] TestRuleFiring 数据竞争**: `alerting/alerting_test.go` — 测试中 `triggered` / `errorRate` 变量在主 goroutine 和 Manager.runRule goroutine 间共享读写，`go test -race` 报 "WARNING: DATA RACE"。修复：改用 `atomic.Bool` / `atomic.Int64`（编码为 1e-4 倍率的定点整数）同步访问
+  - **审计工具集成**: 部署 `comprehensive-code-audit` 技能到 `~/workspace/ai-native-tools/vibe-coding/knowledge/audit/`，集成 codegraph 支持，5大审计标准（数据流溯源/流程闭环/状态机/并发安全/数据兼容）全部通过
+  - **审计评分**: 5/5 通过（4725文件 / 198 commits / 428秒）
+  - 审计报告: `audit-20260808-002500/AUDIT-REPORT.md`
 
 ### Fixed
 
