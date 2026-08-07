@@ -12,6 +12,7 @@ import { useSwimLane } from '../composables/useSwimLane'
 import { useLiveStreamFilters } from '../composables/useLiveStreamFilters'
 import { useLiveStreamUrl } from '../composables/useLiveStreamUrl'
 import { useProviderLatency } from '../composables/useProviderLatency'
+import { useEmergencyDiagnostic } from '../composables/useEmergencyDiagnostic'
 import { isSuperAdmin, authBearer, getCurrentTenantId } from '../store'
 import { redisHealthyRef, redisErrorRef } from '../composables/liveStreamStore'
 import SwimLane from './SwimLane.vue'
@@ -111,27 +112,16 @@ const { providerLatencyMap } = useProviderLatency({ groupBy })
 const showConnectionDetail = ref(false)
 const isAdmin = computed(() => isSuperAdmin())
 
-// 应急诊断弹窗
-const showEmergencyDiagnostic = ref(false)
-const emergencyCredentialId = ref(0)
-const emergencyModel = ref('')
-const emergencyLaneName = ref('')
-
-function handleEmergencyDiagnose(data: { credentialId: number; model: string; laneName: string }) {
-  emergencyCredentialId.value = data.credentialId
-  emergencyModel.value = data.model
-  emergencyLaneName.value = data.laneName
-  showEmergencyDiagnostic.value = true
-}
-
-function handleEmergencyClose() {
-  showEmergencyDiagnostic.value = false
-}
-
-function handleEmergencyRecovered() {
-  // 恢复成功后，可以选择刷新泳道或显示通知
-  console.log('Credential recovered successfully')
-}
+// 2026-08-06: 应急诊断弹窗状态抽到 useEmergencyDiagnostic composable
+const {
+  showEmergencyDiagnostic,
+  emergencyCredentialId,
+  emergencyModel,
+  emergencyLaneName,
+  handleEmergencyDiagnose,
+  handleEmergencyClose,
+  handleEmergencyRecovered,
+} = useEmergencyDiagnostic()
 
 // 2026-08-06: SSE endpoint URL 管理抽到 useLiveStreamUrl composable
 // （localStorage 持久化 / 编辑状态机 / 保存重连 / 连接测试）
