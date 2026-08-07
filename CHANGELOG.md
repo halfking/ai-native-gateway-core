@@ -9,7 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- **48h 审计修正 (2026-08-07)** — 详见 `docs/audit-2026-08-07-48h-review.md`:
+- **48h 审计修正 第二轮 (2026-08-07 11:30)** — 生产热路径深入审计，详见 `docs/audit-2026-08-07-48h-review.md` §四:
+  - **[P1] 压缩上游 4xx 探针槽位泄漏**: `domains/streaming/executors/context_summarize.go` `doCompactionUpstream` 只覆盖 `>= 500 || == 429` 和 `< 400`，但 4xx（除 429）跳过两个分支 → 探针持有未释放 → 熔断器在 HALF_OPEN 楔住 5 分钟。正是 commit 70fe6d81（2026-07-03 事故修复）应该但**遗漏**的 bug 类。修复：添加 `else` 分支（`>= 400`）调用 `ReleaseProbe`
+  - **[P1] ScheduleInterval==0 panic**: `domains/modelquality/monitor.go:122` `time.NewTicker(0)` panic。主要生产路径有防护（main.go:2803 floor 到 >=1h），但 `UpdateConfig` 或未来调用方可触发。修复：守卫 `if interval <= 0 { interval = 24 * time.Hour }`
+  - **[P1] Stop() 无法中断基准测试**: `bg/model_quality_worker.go` + `monitor.go` — `scheduledCheckLoop` 在进入 select 前同步调用 `runScheduledCheck`（多分钟基准测试），`ctx` 是 `context.Background()`（永不取消）→ `Stop()` 在启动基准测试期间无法中断，stop/restart 会有两个并发 goroutine 写同一文件。修复：worker 创建 `WithCancel` ctx 传给 monitor，`Stop()` 调用 `cancel()`，`runScheduledCheck`/`testModel` 开始时检查 `ctx.Done()`
+  - **[P2] NewRequestWithContext 失败探针泄漏**: `context_summarize.go:472-474` — 如果 `http.NewRequestWithContext` 在 `Allow()` 后失败，早期返回未释放探针（触发罕见）。修复：返回前调用 `ReleaseProbe`
+
+- **48h 审计修正 初轮 (2026-08-07 09:00)** — 详见 `docs/audit-2026-08-07-48h-review.md` §二:
   - **[P1] V2 新会话永远回退 V1**: `domains/session/v2/cache_v2.go` `SessionTurnsReader.LoadState` 把 `pgx.ErrNoRows` 当硬错返回 `(nil, err)`，经 `HasState → Get → LoadState` 传导，`tryLoadV2State` 命中 `err != nil` 分支 → 每个新会话都 `ok=false` 回退 V1，V2「新会话」分支不可达。修复：包装前先判 `errors.Is(err, pgx.ErrNoRows) { return nil, nil }`（对齐兄弟读取器 `TurnReader.LoadLatestOutbound`）。新增真库回归测试 `TestSessionTurnsReader_LoadState_RealDB_NoRows`
   - **[P1] applyAgentFilter 丢失大小写归一化**: `web/src/composables/useLiveStreamFilters.ts` 抽取时 `applyAgentFilter` 写成 `new Set(selected)`，丢失原组件的 `selected.map(s => s.toLowerCase())`。过滤本身仍命中（`filteredLanes` 小写化请求侧），但弹窗勾选状态会与非全小写输入错位。修复：恢复 `.toLowerCase()`，新增回归测试 `applyAgentFilter normalizes selections to lowercase`
   - **[P2] SessionCacheV2 缺 Close()**: 新增 `SessionCacheV2.Close()`（nil-safe 转发 `l2.Close()`）为 V2 Redis 连接池提供优雅释放入口（暂未接入 main.go 关停序列：`sessionCacheV2` 作用域受限且与既有 `redisClientForCache` 进程退出回收模式一致；`Close()` API 已就位，留待关停序列重构时接入）

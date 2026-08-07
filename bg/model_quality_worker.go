@@ -29,11 +29,12 @@ type ModelQualityWorker struct {
 	config  *modelquality.MonitorConfig
 	monitor *modelquality.QualityMonitor
 
-	mu       sync.RWMutex
-	running  bool
-	stopping bool
-	stopCh   chan struct{}
-	doneCh   chan struct{}
+	mu         sync.RWMutex
+	running    bool
+	stopping   bool
+	stopCh     chan struct{}
+	doneCh     chan struct{}
+	cancelFunc context.CancelFunc // 2026-08-07: cancel monitor ctx on Stop
 }
 
 // NewModelQualityWorker 创建模型质量监控worker
@@ -132,13 +133,24 @@ func (w *ModelQualityWorker) Start(ctx context.Context, config *modelquality.Mon
 	// 创建监控器
 	w.monitor = modelquality.NewQualityMonitor(w.config, executor, storage, alerter)
 
+	// 2026-08-07 audit fix: create a cancellable context for the monitor so
+	// Stop() can interrupt an in-flight runScheduledCheck / testModel / Execute.
+	// The parent ctx (typically context.Background() from main.go:2842) never
+	// cancels, so without this a Stop() during the startup benchmark (which runs
+	// synchronously before the select loop) would wait indefinitely. Store the
+	// cancel func so Stop() can call it.
+	monitorCtx, cancel := context.WithCancel(ctx)
+	w.cancelFunc = cancel
+
 	// 启动监控
-	if err := w.monitor.Start(ctx); err != nil {
+	if err := w.monitor.Start(monitorCtx); err != nil {
 		slog.Error("model quality worker: failed to start monitor", "error", err)
 		w.running = false
 		w.monitor = nil
 		w.stopCh = nil
 		w.doneCh = nil
+		w.cancelFunc = nil
+		cancel() // clean up the ctx
 		w.mu.Unlock()
 		return
 	}
@@ -172,9 +184,17 @@ func (w *ModelQualityWorker) Stop() {
 	stopCh := w.stopCh
 	doneCh := w.doneCh
 	monitor := w.monitor
+	cancel := w.cancelFunc
 	w.mu.Unlock()
 
 	slog.Info("stopping model quality worker...")
+	// 2026-08-07 audit fix: cancel the monitor ctx to interrupt in-flight
+	// runScheduledCheck / testModel / Execute. This makes Stop() responsive
+	// even if called during the startup benchmark (which runs synchronously
+	// before scheduledCheckLoop enters the select).
+	if cancel != nil {
+		cancel()
+	}
 	close(stopCh)
 	<-doneCh
 	if monitor != nil {
