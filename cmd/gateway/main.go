@@ -3132,7 +3132,13 @@ func main() {
 			// called. Runs after autoroute so the audit follow-up can reuse
 			// the autoroute model selection. The goal stores use database/sql,
 			// so bridge the app's pgxpool via dbConn.Stdlib().
-			initGoalControl(dbConn.Stdlib(), chatHandler)
+			// 2026-08-07: pass redisClient so SmartSaniGuard (input sanitize
+			// middleware + restore interceptor) can be wired into the chain.
+			var redisForGuard *redis.Client
+			if redisClientForCache != nil {
+				redisForGuard = redisClientForCache.Client()
+			}
+			initGoalControl(dbConn.Stdlib(), chatHandler, redisForGuard)
 
 			autoIndexRefresher = bg.NewAutoIndexRefresher(dbConn.Pool(), autoIdx)
 			autoIndexRefresher.Start(context.Background())
