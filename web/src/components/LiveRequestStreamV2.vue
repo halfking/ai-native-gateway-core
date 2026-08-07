@@ -5,15 +5,15 @@
 // 2026-07-07: 管理员可编辑远端SSE地址
 // 2026-07-13: 转发泳道诊断事件，承载 RouteIncidentDrawer
 
-import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
+import { ref, computed } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useLiveStream, type LiveStatus, type LiveModelCategory } from '../composables/useLiveStream'
 import { useSwimLane } from '../composables/useSwimLane'
 import { useLiveStreamFilters } from '../composables/useLiveStreamFilters'
 import { useLiveStreamUrl } from '../composables/useLiveStreamUrl'
+import { useProviderLatency } from '../composables/useProviderLatency'
 import { isSuperAdmin, authBearer, getCurrentTenantId } from '../store'
 import { redisHealthyRef, redisErrorRef } from '../composables/liveStreamStore'
-import { fetchProviderLatency } from '../api/provider-probe'
 import SwimLane from './SwimLane.vue'
 import LiveStreamLegend from './LiveStreamLegend.vue'
 import EmergencyDiagnosticModal from './EmergencyDiagnosticModal.vue'
@@ -105,34 +105,9 @@ function openFilterDialog(kind: 'status' | 'model' | 'provider' | 'vendor' | 'ag
   filterDialog.value = kind
 }
 
-// 2026-07-23: 供应商 HTTP 延时（子项②）。仅在 provider 维度展示。
-// providerLatencyMap: { [providerCode(字符串)]: latency_ms }
-// key 用 provider_code（不是 provider_id），因为 lane.id = req.ProviderCode
-const providerLatencyMap = ref<Record<string, number>>({})
-let latencyTimer: ReturnType<typeof setInterval> | null = null
-
-async function refreshProviderLatency() {
-  // 仅 provider 维度拉取，减少不必要的请求
-  if (groupBy.value !== 'provider') return
-  try {
-    const res = await fetchProviderLatency()
-    const map: Record<string, number> = {}
-    for (const e of res.entries || []) {
-      if (e.latency_ms <= 0) continue
-      // 优先用 provider_code（与 lane.id 完全一致），回退到 name 作为容错
-      if (e.provider_code) map[e.provider_code] = e.latency_ms
-      if (e.provider_name) map[e.provider_name] = e.latency_ms
-    }
-    providerLatencyMap.value = map
-  } catch {
-    // 接口可能在新探测模式未启用时不存在，静默失败
-  }
-}
-
-// 维度切换到 provider 时立即拉取一次
-watch(groupBy, (g) => {
-  if (g === 'provider') void refreshProviderLatency()
-})
+// 2026-08-06: 供应商 HTTP 延时轮询抽到 useProviderLatency composable
+// （providerLatencyMap / 5 分钟轮询 / groupBy 联动，由 composable 管理生命周期）
+const { providerLatencyMap } = useProviderLatency({ groupBy })
 const showConnectionDetail = ref(false)
 const isAdmin = computed(() => isSuperAdmin())
 
@@ -170,19 +145,6 @@ const {
   cancelEditUrl,
   testConnection,
 } = useLiveStreamUrl({ connection, reconnect: reconnectStream, t })
-
-onMounted(() => {
-  // 2026-07-23: 供应商延时轮询（5 分钟一次，与探测节奏对齐）
-  void refreshProviderLatency()
-  latencyTimer = setInterval(() => void refreshProviderLatency(), 5 * 60 * 1000)
-})
-
-onUnmounted(() => {
-  if (latencyTimer) {
-    clearInterval(latencyTimer)
-    latencyTimer = null
-  }
-})
 
 // 切换连接详情弹窗
 function toggleConnectionDetail() {

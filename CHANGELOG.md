@@ -16,6 +16,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **抽取 useProviderLatency composable (2026-08-06)**:
+  - **背景**: `LiveRequestStreamV2.vue` 的供应商 HTTP 延时轮询块（`providerLatencyMap` / 5 分钟 `setInterval` / `groupBy` 联动）内联在组件里，且 `onMounted`/`onUnmounted` 生命周期 + `watch(groupBy)` 散在组件顶层；上一次抽取后 `onMounted` 只剩轮询逻辑
+  - **重构**:
+    - **`web/src/composables/useProviderLatency.ts`**（新建，62 行）— 集中管理供应商延时轮询：
+      - 接收 `groupBy: Ref<GroupByDimension>`（来自 `useSwimLane`）作为维度信号，仅 provider 维度才拉取
+      - 暴露 `providerLatencyMap`（key = provider_code，回退 provider_name，与 lane.id 对齐）+ `refreshProviderLatency`
+      - `onMounted` 首次拉取 + 5 分钟轮询；`onUnmounted` 清理定时器；`watch(groupBy)` 切到 provider 时立即拉取
+      - 静默失败（接口可能在新探测模式未启用时不存在）
+    - **`web/src/composables/useProviderLatency.test.ts`**（新建，180 行）— 10 个单元测试：非 provider 维度不拉取 / provider 维度首拉 / code+name 双 key map 构建 / 非正延时过滤 / 静默失败 / groupBy 切换触发 + 切走不重拉 / 5 分钟轮询 / unmount 清理定时器 / 轮询时 guard 拦截
+    - **`web/src/components/LiveRequestStreamV2.vue`** 接入 composable：移除 ~38 行内联延时逻辑 + 空的 `onMounted`/`onUnmounted` 生命周期块；组件从 1183 → 1145 行
+  - **验证**: vitest 32 文件 / 200 测试全绿（+10 用例）；vue-tsc exit 0；i18n-audit ✅ 0 missing（随测试运行）；vite build 8.90s 成功
+  - **文档**: `docs/changelogs/2026-08-06-extract-provider-latency-composable.md`
+
 - **抽取 useLiveStreamUrl composable (2026-08-06)**:
   - **背景**: `LiveRequestStreamV2.vue` 的 SSE endpoint URL 管理块（localStorage 持久化 / 编辑状态机 / 保存重连 / 连接测试）内联在组件里，与过滤器状态一样造成组件膨胀；且组件内有一对 `buildFinalUrl` / `liveUrl`（`?token=` 降级 + 暴露给 store），但 store 通过 `getCustomEndpoint()` 直接读 localStorage（`liveStreamStore.ts`），组件里的 `buildFinalUrl`/`liveUrl` **零消费**（属冗余复制，抽取时一并移除）
   - **重构**:
