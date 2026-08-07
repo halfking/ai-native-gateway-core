@@ -65,7 +65,8 @@ import (
 	"github.com/kaixuan/llm-gateway-go/domains/routingstate"
 	"github.com/kaixuan/llm-gateway-go/domains/session" //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	v2 "github.com/kaixuan/llm-gateway-go/domains/session/v2"
-	"github.com/kaixuan/llm-gateway-go/domains/sessionaudit" //nolint:depguard // historical violation, B1 routing.go CQRS will fix
+	"github.com/kaixuan/llm-gateway-go/domains/sessionarchive" //nolint:depguard // M5: session_summaries archival
+	"github.com/kaixuan/llm-gateway-go/domains/sessionaudit"   //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/domains/stats"
 	"github.com/kaixuan/llm-gateway-go/domains/stats/boardcache"
 	streaming "github.com/kaixuan/llm-gateway-go/domains/streaming"   //nolint:depguard
@@ -4381,6 +4382,13 @@ func main() {
 		cacheMetricsHandler := admin.NewCacheMetricsHandler(dbConn.Pool())
 		cacheMetricsHandler.RegisterRoutes(mux, wrapAdmin)
 		slog.Info("D2 cache metrics API enabled (/api/admin/cache-metrics/summary, /timeline)")
+
+		// M5 (2026-08-07): Session Archive API
+		// Archival of old inactive session_summaries to reduce active table size
+		sessionArchiver := sessionarchive.NewArchiver(dbConn.Pool())
+		sessionArchiveHandler := admin.NewSessionArchiveHandler(sessionArchiver)
+		sessionArchiveHandler.RegisterRoutes(mux, wrapAdmin)
+		slog.Info("M5 session archive API enabled (/api/admin/session-archive/trigger, /stats)")
 
 		// Phase 3.6.5 (2026-07-24): Sessions V2 Detail & Summary API
 		// Provides session detail query from gateway.session_* tables and LLM-powered session summary

@@ -113,7 +113,7 @@ P3 退役 V1
 | 条目 | 来源 | 前置 | 状态 |
 |---|---|---|---|
 | ✅ 统一元数据事实源（V2 为准，title/user_tags 已迁移；Redis 降缓存待双写期） | M2 | A1 全量 | **部分完成**（列已添加，双写/迁移待实施） |
-| 摘要衰减/归档 | M5 | M2 | 待 |
+| ✅ 摘要衰减/归档（archived_at + last_accessed_at 列 + Archiver + admin API） | M5 | M2 | **已实现** |
 | 首轮即时 task_type | M7 | M1 | 待 |
 | 压缩结果 memo | C3 | C4 | 待 |
 | 压缩预览 endpoint | C7 | 无 | 待 |
