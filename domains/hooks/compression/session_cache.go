@@ -66,6 +66,28 @@ const (
 	// force an L2/L3 round-trip on its next turn.)
 	l1MaxSessions = 1024
 
+	// l1MaxBytes is the built-in fallback for cache.session_l1_max_bytes
+	// (docs/omni-ref3 D3). The L1 evicts on EITHER the count limit
+	// (l1MaxSessions) OR this aggregate byte budget, whichever binds first.
+	//
+	// Rationale: a single agent session with a large tool history can hold a
+	// multi-MB outbound body. 1024 such entries (the count limit alone) would
+	// be gigabytes of RAM. The byte budget bounds worst-case memory regardless
+	// of how few sessions are cached. 256 MiB is a conservative default: ~256
+	// sessions at 1 MiB each, well under the count limit, but it caps a
+	// pathological fleet of huge bodies. Use sessionCacheL1MaxBytes() in
+	// hot-path code so operators can retune without a restart.
+	l1MaxBytes = 256 << 20 // 256 MiB
+
+	// l1EntryOverheadBytes is a flat per-entry accounting charge added on top
+	// of the body + key length. It approximates the SessionState struct, the
+	// list.Element, the map bucket, and pointer overhead so that many tiny
+	// entries still cost something against the byte budget (otherwise the byte
+	// limit would never bind for small-body sessions and only the count limit
+	// would matter — which is fine, but the charge keeps the accounting honest
+	// and monotonic). Not a precise sizeof; a deliberately generous estimate.
+	l1EntryOverheadBytes = 512
+
 	// compactionMarkerPrefix is the content prefix used to identify summary
 	// boundary messages injected by the session compression. Any message
 	// whose "content" field starts with this prefix is treated as a
@@ -97,6 +119,23 @@ func sessionCacheL1Capacity() int {
 		return 64
 	}
 	return cap
+}
+
+// sessionCacheL1MaxBytes returns the hot-reloadable L1 aggregate byte budget
+// (docs/omni-ref3 D3). Reads cache.session_l1_max_bytes from settings_kv on
+// every call. Clamped to [16 MiB, 2 GiB] and falls back to l1MaxBytes (256 MiB)
+// when settings.Global is unavailable. Together with sessionCacheL1Capacity(),
+// the L1 evicts on EITHER count OR bytes — whichever binds first. The byte
+// budget prevents a small number of huge-body sessions from consuming gigabytes.
+func sessionCacheL1MaxBytes() int {
+	mb := settings.GetPlatformInt("cache.session_l1_max_bytes", l1MaxBytes)
+	if mb < (16 << 20) {
+		return 16 << 20 // 16 MiB floor
+	}
+	if mb > (2 << 30) {
+		return 2 << 30 // 2 GiB ceiling
+	}
+	return mb
 }
 
 // SessionState is the per-session state persisted in L1/L2/L3.
@@ -200,6 +239,7 @@ type l1Entry struct {
 	key   string // tenantID + ":" + gwSessionID (back-reference for eviction)
 	state *SessionState
 	body  []byte // last outbound body bytes (nil if evicted from L1 to save RAM)
+	bytes int    // len(body) + len(key) + l1EntryOverheadBytes (D3: byte-budget tracking)
 	elem  *list.Element
 }
 
@@ -210,9 +250,10 @@ type l1Entry struct {
 // l1 maps the key to its list.Element for O(1) lookup + promotion. An access
 // moves the element to the front; eviction pops the back element.
 type SessionCache struct {
-	mu sync.Mutex
-	ll *list.List          // front = MRU, back = LRU; O(1) promote/evict
-	l1 map[string]*l1Entry // key = tenantID+":"+gwSessionID → entry (entry.elem is the list node)
+	mu       sync.Mutex
+	ll       *list.List          // front = MRU, back = LRU; O(1) promote/evict
+	l1       map[string]*l1Entry // key = tenantID+":"+gwSessionID → entry (entry.elem is the list node)
+	curBytes int                 // aggregate bytes across all l1 entries (D3: enforces l1MaxBytes)
 
 	redis      SessionCacheBackend // nil = L2 disabled (tests / no Redis)
 	db         SessionCacheDB      // nil = L3 disabled (tests / no DB)
@@ -371,6 +412,7 @@ func (c *SessionCache) Invalidate(ctx context.Context, tenantID, gwSessionID str
 	if e, ok := c.l1[key]; ok {
 		c.ll.Remove(e.elem)
 		delete(c.l1, key)
+		c.curBytes -= e.bytes // D3: decrement aggregate byte tracker
 	}
 	c.mu.Unlock()
 	if c.redis != nil {
@@ -388,29 +430,41 @@ func (c *SessionCache) setL1(key string, state *SessionState, body []byte) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	st := *state // copy
+	entryBytes := len(body) + len(key) + l1EntryOverheadBytes
+
 	// Update-in-place + promote to front if the key already exists.
 	if existing, ok := c.l1[key]; ok {
+		// Adjust curBytes for the delta (new - old).
+		c.curBytes -= existing.bytes
+		c.curBytes += entryBytes
 		existing.state = &st
 		existing.body = body
+		existing.bytes = entryBytes
 		c.ll.MoveToFront(existing.elem)
 		return
 	}
-	// New entry: push to front, evict the LRU (back) if over capacity.
-	entry := &l1Entry{key: key, state: &st, body: body}
+
+	// New entry: push to front, evict the LRU (back) if over capacity OR bytes.
+	entry := &l1Entry{key: key, state: &st, body: body, bytes: entryBytes}
 	entry.elem = c.ll.PushFront(entry)
 	c.l1[key] = entry
-	for c.ll.Len() > sessionCacheL1Capacity() {
-		// Evict least-recently-used (back of the list).
-		if back := c.ll.Back(); back != nil {
-			if ev, ok := back.Value.(*l1Entry); ok {
-				c.ll.Remove(back)
-				delete(c.l1, ev.key)
-			} else {
-				break // defensive: should never happen
-			}
-		} else {
+	c.curBytes += entryBytes
+
+	maxCount := sessionCacheL1Capacity()
+	maxBytes := sessionCacheL1MaxBytes()
+	// Evict least-recently-used entries while EITHER limit is exceeded.
+	for c.ll.Len() > maxCount || c.curBytes > maxBytes {
+		back := c.ll.Back()
+		if back == nil {
 			break
 		}
+		ev, ok := back.Value.(*l1Entry)
+		if !ok {
+			break // defensive: should never happen
+		}
+		c.ll.Remove(back)
+		delete(c.l1, ev.key)
+		c.curBytes -= ev.bytes
 	}
 }
 
