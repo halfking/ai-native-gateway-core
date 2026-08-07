@@ -5,6 +5,9 @@ import (
 	"fmt"
 	"math/rand"
 	"sort"
+	"strings"
+
+	"github.com/kaixuan/llm-gateway-go/provider"
 )
 
 // Engine 评分与选择引擎
@@ -22,7 +25,7 @@ func NewEngine(weightsJSON json.RawMessage) (*Engine, error) {
 	return &Engine{weights: weights}, nil
 }
 
-// SelectCandidate 从候选池选择一个候选
+// SelectCandidate 从候选池选择一个候选（保留以兼容 autocombo.Candidate 单元测试）
 func (e *Engine) SelectCandidate(pool []Candidate) (*Candidate, error) {
 	if len(pool) == 0 {
 		return nil, fmt.Errorf("empty candidate pool")
@@ -56,7 +59,7 @@ func (e *Engine) SelectCandidate(pool []Candidate) (*Candidate, error) {
 	return nil, fmt.Errorf("no viable candidates")
 }
 
-// scoreAll 计算所有候选的评分
+// scoreAll 计算所有候选的评分（保留以兼容 autocombo.Candidate 单元测试）
 func (e *Engine) scoreAll(pool []Candidate) []ScoredCandidate {
 	scored := make([]ScoredCandidate, len(pool))
 
@@ -161,6 +164,122 @@ func (e *Engine) getTierAffinity(c Candidate) float64 {
 	}
 	// Keyless 次之
 	if c.IsKeyless {
+		return 0.9
+	}
+	return 0.5
+}
+
+// ScoredProvider 评分后的 provider.Candidate
+type ScoredProvider struct {
+	Candidate provider.Candidate
+	Score     float64
+}
+
+// sortCandidates 在 provider.Candidate 上跑评分排序，返回按分数降序的副本。
+//
+// 评分使用和旧 Engine 相同的 6 维权重 (HealthScore / LatencyP95 /
+// QuotaRemaining / Cost / TaskFit / TierAffinity)，但映射到 provider.Candidate
+// 的实际字段：P95 延迟、RecentSuccessRate (作为 HealthScore)、单位价格
+// (Cost)；BillingMode 决定 tier affinity；其余权重留给 task fit 等
+// 后续扩展维度。
+func (e *Engine) sortCandidates(pool []provider.Candidate) []provider.Candidate {
+	if len(pool) <= 1 {
+		return append([]provider.Candidate(nil), pool...)
+	}
+
+	maxLatency := 0
+	for _, c := range pool {
+		if c.P95LatencyMs > maxLatency {
+			maxLatency = c.P95LatencyMs
+		}
+	}
+	if maxLatency == 0 {
+		maxLatency = 1000
+	}
+
+	maxCost := 0.0
+	for _, c := range pool {
+		cost := priceAvg(c)
+		if cost > maxCost {
+			maxCost = cost
+		}
+	}
+	if maxCost == 0 {
+		maxCost = 1.0
+	}
+
+	scored := make([]ScoredProvider, len(pool))
+	for i, c := range pool {
+		normLatency := float64(c.P95LatencyMs) / float64(maxLatency)
+		normCost := priceAvg(c) / maxCost
+		health := c.SuccessRate
+		if c.RecentSuccessRate != nil {
+			health = *c.RecentSuccessRate
+		}
+		if health <= 0 {
+			health = c.SuccessRate
+		}
+		if health > 1 {
+			health = 1
+		}
+		score := e.weights.HealthScore*health +
+			e.weights.LatencyP95*(1-normLatency) +
+			e.weights.Cost*(1-normCost) +
+			e.weights.TierAffinity*providerTierAffinity(c)
+		if score > 1 {
+			score = 1
+		}
+		if score < 0 {
+			score = 0
+		}
+		scored[i] = ScoredProvider{Candidate: c, Score: score}
+	}
+
+	sort.SliceStable(scored, func(i, j int) bool {
+		if scored[i].Score == scored[j].Score {
+			// Tie-break: stable ordering by ProviderID/CredentialID/RawModel.
+			a, b := scored[i].Candidate, scored[j].Candidate
+			if a.ProviderID != b.ProviderID {
+				return a.ProviderID < b.ProviderID
+			}
+			if a.CredentialID != b.CredentialID {
+				return a.CredentialID < b.CredentialID
+			}
+			return a.RawModel < b.RawModel
+		}
+		return scored[i].Score > scored[j].Score
+	})
+
+	out := make([]provider.Candidate, len(scored))
+	for i, s := range scored {
+		out[i] = s.Candidate
+	}
+	return out
+}
+
+// priceAvg 估算单 token 平均价, 兼容 PriceIn/Out 任一为空的情况.
+func priceAvg(c provider.Candidate) float64 {
+	var in, out float64
+	if c.PriceInPer1M != nil {
+		in = *c.PriceInPer1M
+	}
+	if c.PriceOutPer1M != nil {
+		out = *c.PriceOutPer1M
+	}
+	if in == 0 && out == 0 {
+		return 0
+	}
+	return (in + out) / 2
+}
+
+// providerTierAffinity 给出与 billing mode 相关的亲和度: free / keyless 最高,
+// token_plan / code_plan 次之, 其他 0.5; 与 autocombo.Engine.getTierAffinity
+// 保持相同取值, 让旧 spec 评分在新代码下保持单调一致.
+func providerTierAffinity(c provider.Candidate) float64 {
+	switch strings.ToLower(strings.TrimSpace(c.BillingMode)) {
+	case "free", "keyless":
+		return 1.0
+	case "token_plan", "code_plan":
 		return 0.9
 	}
 	return 0.5
