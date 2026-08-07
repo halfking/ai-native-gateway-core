@@ -209,20 +209,30 @@ type ProcessingStage struct {
 // Lifecycle (spec §6.3): the aggregate snapshot update runs in a goroutine
 // tracked by aggWg and bound to lifecycleCtx; Stop() awaits it.
 func (w *SessionWriterV2) Write(ctx context.Context, req *ProcessedRequest) error {
-	// 1. Detect submit mode using the full detector
-	detector := NewSubmitModeDetector()
-
-	// Load the previous persisted turn once. Telemetry shadow writes do not
-	// carry the previous outbound body, but accurate submit-mode and delta
-	// detection require it. Explicit caller data wins; the DB snapshot is only
-	// a fallback. The same read also supplies previous attachments.
-	var previousAttachments []AttachmentRef
-	previousBody, err := w.getPreviousBody(ctx, req.SessionID, req.TenantID)
+	// Begin the transaction before reading the previous body. AppendTurnInTx
+	// uses the same transaction-scoped advisory lock; acquiring it here makes
+	// delta derivation observe the exact state that this turn will follow.
+	tx, err := w.turnWriter.BeginTx(ctx)
 	if err != nil {
-		// Log but don't fail - we can still detect other submit modes.
+		return fmt.Errorf("begin tx: %w", err)
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			_ = tx.Rollback(ctx)
+		}
+	}()
+	if err := w.turnWriter.LockSessionInTx(ctx, tx, req.TenantID, req.SessionID); err != nil {
+		return err
+	}
+
+	// 1. Detect submit mode using the latest locked body.
+	detector := NewSubmitModeDetector()
+	var previousAttachments []AttachmentRef
+	previousBody, err := w.bodiesWriter.GetLatestBodiesInTx(ctx, tx, req.TenantID, req.SessionID)
+	if err != nil {
 		slog.WarnContext(ctx, "failed to get previous body for submit mode detection",
-			"session_id", req.SessionID,
-			"error", err)
+			"session_id", req.SessionID, "error", err)
 	} else if previousBody != nil {
 		previousAttachments = previousBody.RequestAttachments
 		if len(req.LastOutboundBody) == 0 {
@@ -239,11 +249,12 @@ func (w *SessionWriterV2) Write(ctx context.Context, req *ProcessedRequest) erro
 		PreviousAttachments: previousAttachments,
 	}))
 
-	// 2. Extract request delta (incremental messages)
+	// 2. Extract request delta after the locked previous-body read.
 	requestDelta := extractRequestDelta(req, submitMode)
 
-	// 3. Build the turn record and bodies record (computed before the tx so a
-	// marshalling error fails fast without holding a transaction open).
+	// 3. Build the turn record and bodies record (computed before the insert so
+	// marshalling errors fail fast while the lock remains held).
+
 	requestAttachments := extractRequestAttachments(req)
 	responseAttachments := extractResponseAttachments(req)
 	attachmentCount := len(requestAttachments) + len(responseAttachments)
@@ -294,26 +305,9 @@ func (w *SessionWriterV2) Write(ctx context.Context, req *ProcessedRequest) erro
 		MultimodalTypes:      req.MultimodalTypes,
 	}
 
-	// 4. Atomic turn + bodies write (spec §6.2).
-	//
-	// A SINGLE transaction wraps AppendTurnInTx + WriteBodiesInTx. If bodies
-	// fails after turn succeeded, the whole tx rolls back — no orphan turn.
-	tx, err := w.turnWriter.BeginTx(ctx)
-	if err != nil {
-		return fmt.Errorf("begin tx: %w", err)
-	}
-	// tx.Rollback is safe to call after Commit (pgx returns ErrTxClosed,
-	// which we ignore). Using a named return + the closure lets us surface
-	// the original error from the happy path while still guaranteeing the
-	// tx is torn down on any early return.
-	committed := false
-	defer func() {
-		if !committed {
-			_ = tx.Rollback(ctx)
-		}
-	}()
-
-	turnNo, err := w.turnWriter.AppendTurnInTx(ctx, tx, turnRec)
+	// 4. Atomic turn + bodies write (spec §6.2). The transaction and lock were
+	// opened before the previous-body read, so AppendTurnInTx reuses them.
+	turnNo, err := w.turnWriter.appendTurnInLockedTx(ctx, tx, turnRec)
 	if err != nil {
 		return fmt.Errorf("write turn: %w", err)
 	}

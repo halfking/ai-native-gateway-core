@@ -112,6 +112,12 @@ func expectListAllBodiesEmpty(mock pgxmock.PgxPoolIface) {
 		}))
 }
 
+func expectSessionLock(mock pgxmock.PgxPoolIface) {
+	mock.ExpectExec("pg_advisory_xact_lock").
+		WithArgs(pgxmock.AnyArg()).
+		WillReturnResult(pgxmock.NewResult("SELECT", 1))
+}
+
 // sampleRequest builds a minimal ProcessedRequest that is enough to drive the
 // Write happy path (one user message in, one assistant message out, no
 // attachments, no compression).
@@ -139,6 +145,8 @@ func TestWrite_LoadsPreviousOutboundForRequestDelta(t *testing.T) {
 		{Role: "user", Content: "new"},
 	}
 
+	mock.ExpectBegin()
+	expectSessionLock(mock)
 	mock.ExpectQuery("FROM gateway.session_bodies").
 		WithArgs(req.TenantID, req.SessionID).
 		WillReturnRows(pgxmock.NewRows([]string{
@@ -152,11 +160,6 @@ func TestWrite_LoadsPreviousOutboundForRequestDelta(t *testing.T) {
 			[]byte(`[{"role":"user","content":"old"},{"role":"assistant","content":"old response"}]`),
 			[]byte(`[]`), []byte(`[]`),
 		))
-
-	mock.ExpectBegin()
-	mock.ExpectExec("pg_advisory_xact_lock").
-		WithArgs(pgxmock.AnyArg()).
-		WillReturnResult(pgxmock.NewResult("SELECT", 1))
 	mock.ExpectQuery("COALESCE\\(MAX\\(turn_no\\), 0\\) \\+ 1").
 		WithArgs(pgxmock.AnyArg(), pgxmock.AnyArg()).
 		WillReturnRows(pgxmock.NewRows([]string{"turn_no"}).AddRow(2))
@@ -186,16 +189,12 @@ func TestWrite_LoadsPreviousOutboundForRequestDelta(t *testing.T) {
 func TestWrite_TurnAndBodiesAreAtomic_RollbackOnBodiesFailure(t *testing.T) {
 	w, mock := newMockedSessionWriter(t)
 
-	// 1. getPreviousAttachments runs first (on the pool, not in tx).
+	// 1. Begin and lock before reading the previous body.
+	mock.ExpectBegin()
+	expectSessionLock(mock)
 	expectListAllBodiesEmpty(mock)
 
-	// 2. Single tx begins.
-	mock.ExpectBegin()
-
-	// 3. AppendTurnInTx inside the tx: advisory lock + MAX(turn_no) + INSERT.
-	mock.ExpectExec("pg_advisory_xact_lock").
-		WithArgs(pgxmock.AnyArg()).
-		WillReturnResult(pgxmock.NewResult("SELECT", 1))
+	// 2. AppendTurnInTx.
 	mock.ExpectQuery("COALESCE\\(MAX\\(turn_no\\), 0\\) \\+ 1").
 		WithArgs(pgxmock.AnyArg(), pgxmock.AnyArg()).
 		WillReturnRows(pgxmock.NewRows([]string{"turn_no"}).AddRow(1))
@@ -227,16 +226,13 @@ func TestWrite_TurnAndBodiesAreAtomic_RollbackOnBodiesFailure(t *testing.T) {
 func TestWrite_TurnAndBodiesAreAtomic_CommitOnSuccess(t *testing.T) {
 	w, mock := newMockedSessionWriter(t)
 
-	// 1. getPreviousAttachments.
+	// 1. Begin and lock before reading the previous body.
+	mock.ExpectBegin()
+	expectSessionLock(mock)
 	expectListAllBodiesEmpty(mock)
 
-	// 2. Single tx.
-	mock.ExpectBegin()
+	// 2. AppendTurnInTx.
 
-	// 3. AppendTurnInTx.
-	mock.ExpectExec("pg_advisory_xact_lock").
-		WithArgs(pgxmock.AnyArg()).
-		WillReturnResult(pgxmock.NewResult("SELECT", 1))
 	mock.ExpectQuery("COALESCE\\(MAX\\(turn_no\\), 0\\) \\+ 1").
 		WithArgs(pgxmock.AnyArg(), pgxmock.AnyArg()).
 		WillReturnRows(pgxmock.NewRows([]string{"turn_no"}).AddRow(1))
@@ -333,11 +329,9 @@ func TestWrite_AggregateGoroutineManagedByLifecycle(t *testing.T) {
 	}
 
 	// Drive a successful atomic write so the aggregate goroutine is spawned.
-	expectListAllBodiesEmpty(mock)
 	mock.ExpectBegin()
-	mock.ExpectExec("pg_advisory_xact_lock").
-		WithArgs(pgxmock.AnyArg()).
-		WillReturnResult(pgxmock.NewResult("SELECT", 1))
+	expectSessionLock(mock)
+	expectListAllBodiesEmpty(mock)
 	mock.ExpectQuery("COALESCE\\(MAX\\(turn_no\\), 0\\) \\+ 1").
 		WithArgs(pgxmock.AnyArg(), pgxmock.AnyArg()).
 		WillReturnRows(pgxmock.NewRows([]string{"turn_no"}).AddRow(1))

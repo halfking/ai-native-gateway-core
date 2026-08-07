@@ -511,6 +511,7 @@ func main() {
 	// lifecycle-managed aggregate goroutine (spec §6.3). It is constructed when
 	// the DB pool is available; the persisted hook applies live feature flags.
 	var sessionV2Writer *v2.SessionWriterV2
+	var sessionCacheV2ForShutdown *v2.SessionCacheV2
 	if cfg.RedisAddr != "" {
 		redisClient := session.NewRedisClient(cfg.RedisAddr, cfg.RedisPassword, cfg.RedisDB)
 		pingCtx, pingCancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -1716,6 +1717,7 @@ func main() {
 			// Initialize SessionCacheV2 with Redis support
 			// Use cfg.RedisAddr from outer scope
 			sessionCacheV2 = v2.NewSessionCacheV2(dbConn.Pool(), cfg.RedisAddr)
+			sessionCacheV2ForShutdown = sessionCacheV2
 
 			slog.Info("v2 session components initialized",
 				"outbound_builder", outboundBuilder != nil,
@@ -4776,6 +4778,12 @@ func main() {
 		}
 		if ursmV2Mgr != nil {
 			ursmV2Mgr.Close()
+		}
+
+		if sessionCacheV2ForShutdown != nil {
+			if err := sessionCacheV2ForShutdown.Close(); err != nil {
+				slog.Warn("session cache v2 close failed", "error", err)
+			}
 		}
 
 		// Stop new probe/self-check workers before closing telemetry or the

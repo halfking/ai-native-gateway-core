@@ -65,8 +65,9 @@ const v2SessionBodiesBaseQuery = `
 		b.ts,
 		b.request_delta
 	FROM gateway.session_bodies b
-	LEFT JOIN gateway.session_turns t
-	  ON t.request_id = b.request_id
+		LEFT JOIN gateway.session_turns t
+		  ON t.tenant_id = b.tenant_id
+		 AND t.request_id = b.request_id
 	WHERE b.session_id = $1
 `
 
