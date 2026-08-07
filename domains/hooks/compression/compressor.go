@@ -34,6 +34,7 @@ import (
 
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/compression/caveman"
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/compression/lite"
+	"github.com/kaixuan/llm-gateway-go/domains/tokenest"
 	"github.com/kaixuan/llm-gateway-go/settings"
 )
 
@@ -379,8 +380,8 @@ func (c *Compressor) Compress(body []byte, contextWindow int) (newBody []byte, r
 	// Mechanical succeeded.
 	before := len(body)
 	after := len(trimmed)
-	tokensBefore := before * 10 / 35 // chars/3.5 → ×10/35 → approx tokens
-	tokensAfter := after * 10 / 35
+	tokensBefore := tokenest.FromChars(before) // docs/omni-ref3 C4: shared /3.5 estimate
+	tokensAfter := tokenest.FromChars(after)
 	dropped := countDroppedMessages(body, trimmed)
 	meta.BytesAfter = after
 	meta.TokensBefore = &tokensBefore
@@ -453,8 +454,8 @@ func (c *Compressor) CompressAfter4xx(body []byte, contextWindow int) (newBody [
 	before := len(body)
 	after := len(trimmed)
 	meta.BytesAfter = after
-	meta.TokensBefore = ptrInt(before * 10 / 35)
-	meta.TokensAfter = ptrInt(after * 10 / 35)
+	meta.TokensBefore = ptrInt(tokenest.FromChars(before))
+	meta.TokensAfter = ptrInt(tokenest.FromChars(after))
 	meta.DroppedMessages = ptrInt(countDroppedMessages(body, trimmed))
 	meta.ContextWindowUsed = &contextWindow
 	meta.ThresholdBytes = (contextWindow * 8 / 10) * 35 / 10

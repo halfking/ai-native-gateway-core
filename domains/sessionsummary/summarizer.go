@@ -16,6 +16,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/redis/go-redis/v9"
 
+	"github.com/kaixuan/llm-gateway-go/domains/secretmask"
 	"github.com/kaixuan/llm-gateway-go/internal/summarystore"
 )
 
@@ -267,6 +268,11 @@ func (s *Summarizer) buildSummaryPrompt(messages []SessionMessage) string {
 		if len(content) > 500 {
 			content = content[:500] + "..."
 		}
+
+		// docs/omni-ref3 C2: redact pasted API keys / bearer tokens before this
+		// content reaches the summary LLM. Masks the summary input only; the
+		// persisted session messages are unaffected.
+		content = secretmask.MaskSecrets(content)
 
 		fmt.Fprintf(&sb, "\n[消息 %d - %s]:\n%s\n", i+1, role, content)
 	}
