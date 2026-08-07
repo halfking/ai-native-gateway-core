@@ -4376,6 +4376,12 @@ func main() {
 		contextWindowHandler.RegisterRoutes(mux, wrapAdmin)
 		slog.Info("A4 Phase 1 context window calibration enabled (/api/admin/models/context-window/{id})")
 
+		// D2 (2026-08-07): Cache Metrics API
+		// Unified cache observability for semantic/prefix/delta/kv/session_state layers
+		cacheMetricsHandler := admin.NewCacheMetricsHandler(dbConn.Pool())
+		cacheMetricsHandler.RegisterRoutes(mux, wrapAdmin)
+		slog.Info("D2 cache metrics API enabled (/api/admin/cache-metrics/summary, /timeline)")
+
 		// Phase 3.6.5 (2026-07-24): Sessions V2 Detail & Summary API
 		// Provides session detail query from gateway.session_* tables and LLM-powered session summary
 		sessionDetailAPI := admin.NewSessionDetailV2API(dbConn.Pool())
