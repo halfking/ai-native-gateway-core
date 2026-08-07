@@ -13,6 +13,7 @@ import { useLiveStreamFilters } from '../composables/useLiveStreamFilters'
 import { useLiveStreamUrl } from '../composables/useLiveStreamUrl'
 import { useProviderLatency } from '../composables/useProviderLatency'
 import { useEmergencyDiagnostic } from '../composables/useEmergencyDiagnostic'
+import { useIncidentDiagnosis } from '../composables/useIncidentDiagnosis'
 import { isSuperAdmin, authBearer, getCurrentTenantId } from '../store'
 import { redisHealthyRef, redisErrorRef } from '../composables/liveStreamStore'
 import SwimLane from './SwimLane.vue'
@@ -29,24 +30,16 @@ const emit = defineEmits<{
   openDetail: [requestId: string]
 }>()
 
-// 2026-07-13: 诊断工作台 state
-const activeIncidentId = ref<string | null>(null)
-const activeIncidentPreview = ref<RouteIncident | null>(null)
-
-function handleDiagnose(incidentId: string, preview: RouteIncident) {
-  activeIncidentId.value = incidentId
-  activeIncidentPreview.value = preview
-}
-
-function closeDiagnose() {
-  activeIncidentId.value = null
-  activeIncidentPreview.value = null
-}
-
-function handleRequestFromDrawer(requestId: string) {
-  closeDiagnose()
-  emit('openDetail', requestId)
-}
+// 2026-08-06: 诊断工作台（RouteIncidentDrawer）状态抽到 useIncidentDiagnosis composable
+const {
+  activeIncidentId,
+  activeIncidentPreview,
+  handleDiagnose,
+  closeDiagnose,
+  handleRequestFromDrawer,
+} = useIncidentDiagnosis({
+  onOpenRequest: (requestId: string) => emit('openDetail', requestId),
+})
 
 // 解构出 reconnect —— 保存新 URL 后立即用新地址重连，不再只是 localStorage 默默记住
 const {

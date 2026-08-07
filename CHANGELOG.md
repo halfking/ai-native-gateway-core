@@ -22,6 +22,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **抽取 useIncidentDiagnosis composable (2026-08-06)**:
+  - **背景**: `LiveRequestStreamV2.vue` 的诊断工作台状态块（`activeIncidentId` / `activeIncidentPreview` + `handleDiagnose` / `closeDiagnose` / `handleRequestFromDrawer`）内联在组件里，承载 RouteIncidentDrawer（2026-07-13 Phase 1 只读）；唯一副作用是通过 `emit('openDetail')` 跳转
+  - **重构**:
+    - **`web/src/composables/useIncidentDiagnosis.ts`**（新建，49 行）— 集中管理诊断工作台：
+      - 接收 `onOpenRequest: (requestId: string) => void` 注入回调（组件 emit 的包装），无直接 emit 依赖
+      - 暴露 `activeIncidentId` / `activeIncidentPreview` ref + `handleDiagnose`（打开填充）/ `closeDiagnose`（关闭清空）/ `handleRequestFromDrawer`（先关闭再跳转）
+    - **`web/src/composables/useIncidentDiagnosis.test.ts`**（新建）— 4 个单元测试：初始状态 / handleDiagnose 打开填充 / closeDiagnose 清空 / handleRequestFromDrawer 先关闭再触发注入回调
+    - **`web/src/components/LiveRequestStreamV2.vue`** 接入 composable：替换 18 行内联诊断状态为解构行（`onOpenRequest` 包装 emit）；组件从 1135 → 1128 行
+  - **验证**: vitest 34 文件 / 209 测试全绿（+4 用例）；vue-tsc exit 0；i18n-audit ✅ 0 missing（随测试运行）；vite build 8.60s 成功
+  - **文档**: `docs/changelogs/2026-08-06-extract-incident-diagnosis-composable.md`
+
 - **抽取 useEmergencyDiagnostic composable (2026-08-06)**:
   - **背景**: `LiveRequestStreamV2.vue` 的应急诊断弹窗状态块（`showEmergencyDiagnostic` / `emergencyCredentialId` / `emergencyModel` / `emergencyLaneName` + 3 个事件函数）内联在组件里，与前几个 composable 不同，该块**零依赖**（不依赖 i18n / store / 生命周期钩子），是纯 UI 状态
   - **重构**:
