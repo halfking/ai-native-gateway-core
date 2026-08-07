@@ -56,8 +56,9 @@ func NewHook(checker Checker) *Hook {
 // Name 实现 pipeline.Hook。
 func (h *Hook) Name() string { return "output_compliance.check" }
 
-// Priority 在 PostUpstream 阶段中先执行（50）。
-func (h *Hook) Priority() int { return 50 }
+// Priority 在 PostUpstream 阶段中，在 SanitizerOutputHook (50) 之后执行（100）。
+// 这样可以检查还原后的真实内容，而不是占位符。
+func (h *Hook) Priority() int { return 100 }
 
 // Enabled 当 checker 非 nil 且 FinalResponse 非空时启用。
 func (h *Hook) Enabled(_ context.Context, env *domain.PipelineRequest) bool {
