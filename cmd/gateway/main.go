@@ -1679,21 +1679,21 @@ func main() {
 			redisBackendFromClient(redisClientForCache),
 			dbBackendFromPool(dbConn),
 		)
-		
+
 		// V2 components initialization (Phase V2-2.4)
 		var sessionCacheV2 *v2.SessionCacheV2
 		var outboundBuilder *v2.OutboundBuilder
 		if dbConn != nil && dbConn.Enabled() && dbConn.Pool() != nil {
 			scCache.SetTurnReader(v2.NewTurnReader(dbConn.Pool()))
-			
+
 			// Initialize V2 components for compression
 			turnReader := v2.NewTurnReader(dbConn.Pool())
 			outboundBuilder = v2.NewOutboundBuilder(turnReader)
-			
+
 			// Initialize SessionCacheV2 with Redis support
 			// Use cfg.RedisAddr from outer scope
 			sessionCacheV2 = v2.NewSessionCacheV2(dbConn.Pool(), cfg.RedisAddr)
-			
+
 			slog.Info("v2 session components initialized",
 				"outbound_builder", outboundBuilder != nil,
 				"session_cache_v2", sessionCacheV2 != nil,
@@ -1706,8 +1706,8 @@ func main() {
 		compactionDeps := NewDependenciesFromExecutor(routingExec)
 		scDeps := compression.SessionCompressorDeps{
 			Cache:          scCache,
-			CacheV2:        sessionCacheV2,    // V2 cache (Phase V2-2.4)
-			Builder:        outboundBuilder,   // V2 builder (Phase V2-2.4)
+			CacheV2:        sessionCacheV2,  // V2 cache (Phase V2-2.4)
+			Builder:        outboundBuilder, // V2 builder (Phase V2-2.4)
 			CompactionDeps: compactionDeps,
 		}
 		chatHandler.SetSessionCompressor(compression.NewSessionCompressor(scDeps))
@@ -4369,6 +4369,12 @@ func main() {
 		mux.HandleFunc("/api/admin/credential-success-rates", wrapAdmin(admin.HandleCredentialSuccessRates(dbConn.Pool())))
 		mux.HandleFunc("/api/admin/credential-success-rates/reset", wrapAdmin(admin.HandleResetCredentialSuccessRate(dbConn.Pool())))
 		slog.Info("Phase 3.6 credential success rate management enabled (/api/admin/credential-success-rates)")
+
+		// A4 Phase 1 (2026-08-07): Context Window Calibration API
+		// Allows manual override of model context_window when providers mis-declare (虚标)
+		contextWindowHandler := admin.NewContextWindowCalibrationHandler(dbConn.Pool())
+		contextWindowHandler.RegisterRoutes(mux, wrapAdmin)
+		slog.Info("A4 Phase 1 context window calibration enabled (/api/admin/models/context-window/{id})")
 
 		// Phase 3.6.5 (2026-07-24): Sessions V2 Detail & Summary API
 		// Provides session detail query from gateway.session_* tables and LLM-powered session summary

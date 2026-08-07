@@ -997,7 +997,7 @@ func (c *Client) loadCandidatesByModalityDB(ctx context.Context, clientModel, te
 			COALESCE(mo.currency, 'USD') AS currency,
 			COALESCE(mo.billing_mode, 'per_token') AS billing_mode,
 			mo.raw_model_name,
-			mc.context_window,
+			COALESCE(mc.context_window_override, mc.context_window) AS context_window,
 			-- 2026-06-19 quality fix mode (017_quality_fix_mode.sql).
 			-- Read from providers so the routing executor can pass the
 			-- per-provider mode through to the relay stream reader and
