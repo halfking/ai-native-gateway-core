@@ -31,6 +31,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/kaixuan/llm-gateway-go/cache/prefix"
 	summarymodel "github.com/kaixuan/llm-gateway-go/domains/hooks/compression/summary"
 	"github.com/kaixuan/llm-gateway-go/domains/transformation" //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/settings"
@@ -112,6 +113,13 @@ type PrepareResult struct {
 
 	// SummaryMarker is the smm_v1 marker if an LLM summary was written.
 	SummaryMarker string
+
+	// CompressedPrefixHash is the SHA256 hex of the stable prefix (System +
+	// Tool + History, excluding TailClass) computed by cache/prefix.Stabilize.
+	// docs/omni-ref3 C8/D7: this hash is the key for semantic cache lookups
+	// and is persisted in cache_v2.CompressedPrefixHash. Empty when Stabilize
+	// was not called or the prefix is all-tail.
+	CompressedPrefixHash string
 
 	// Degraded is true when the mutual-exclusion window was active and
 	// mechanical trim was used instead of LLM summary.
@@ -428,6 +436,18 @@ func (sc *SessionCompressor) Prepare(
 	res.Lossiness = classifyLossiness(res.CompressionStrategy, res.SummaryMarker)
 	if res.CompressionStrategy != "" {
 		RecordLossiness(res.Lossiness)
+	}
+
+	// ── Compute stable prefix hash (docs/omni-ref3 C8/D7) ─────────────────
+	// Call cache/prefix.Stabilize on the outbound body to get a hash of the
+	// stable prefix (System + Tool + History, excluding volatile Tail). This
+	// hash is the key for semantic cache lookups and cache-aware compression.
+	// Empty when the prefix is all-tail or Stabilize fails gracefully.
+	if len(outboundBody) > 0 {
+		_, report, _ := prefix.Stabilize(outboundBody, prefix.Options{TailTurns: 1})
+		if report != nil {
+			res.CompressedPrefixHash = report.PrefixHash
+		}
 	}
 
 	// ── Persist updated cache state ──────────────────────────────────────
