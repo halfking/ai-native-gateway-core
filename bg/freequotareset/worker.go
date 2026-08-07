@@ -101,10 +101,11 @@ func (w *Worker) resetTenant(ctx context.Context, tenantID string) (int64, error
         UPDATE free_quota_tracker
         SET is_exhausted = FALSE,
             exhausted_at = NULL
-        WHERE is_exhausted = TRUE
-          AND auto_reset_at IS NOT NULL
-          AND auto_reset_at <= now()
-    `)
+		WHERE tenant_id = $1
+		  AND is_exhausted = TRUE
+		  AND auto_reset_at IS NOT NULL
+		  AND auto_reset_at <= now()
+	`, tenantID)
 	if err != nil {
 		return 0, err
 	}

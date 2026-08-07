@@ -93,12 +93,13 @@ func (w *Worker) cleanupTenant(ctx context.Context, tenantID string) (int64, err
 	}
 
 	result, err := tx.ExecContext(ctx, `
-        DELETE FROM free_quota_tracker
-        WHERE (window_type = 'hour-5' AND window_end < now() - interval '48 hours')
-           OR (window_type = 'day-1' AND window_end < now() - interval '30 days')
-           OR (window_type = 'day-7' AND window_end < now() - interval '90 days')
-           OR (window_type = 'month-1' AND window_end < now() - interval '12 months')
-    `)
+		DELETE FROM free_quota_tracker
+		WHERE tenant_id = $1
+		  AND ((window_type = 'hour-5' AND window_end < now() - interval '48 hours')
+		    OR (window_type = 'day-1' AND window_end < now() - interval '30 days')
+		    OR (window_type = 'day-7' AND window_end < now() - interval '90 days')
+		    OR (window_type = 'month-1' AND window_end < now() - interval '12 months'))
+	`, tenantID)
 	if err != nil {
 		return 0, err
 	}

@@ -120,6 +120,17 @@ func (w *TurnWriter) AppendTurn(ctx context.Context, rec TurnRecord) (turnNo int
 	return turnNo, nil
 }
 
+// LockSessionInTx serializes all turn state reads and writes for one tenant/session.
+// Callers that derive a delta from the latest persisted body must acquire this
+// lock before the read so the derivation and appended turn share one snapshot.
+func (w *TurnWriter) LockSessionInTx(ctx context.Context, tx pgx.Tx, tenantID, sessionID string) error {
+	lockKey := hashSessionKey(tenantID, sessionID)
+	if _, err := tx.Exec(ctx, "SELECT pg_advisory_xact_lock($1)", lockKey); err != nil {
+		return fmt.Errorf("acquire advisory lock: %w", err)
+	}
+	return nil
+}
+
 // AppendTurnInTx appends a new turn within a caller-managed transaction.
 //
 // It does NOT begin or commit; the caller controls the tx lifecycle so the
@@ -141,6 +152,15 @@ func (w *TurnWriter) AppendTurn(ctx context.Context, rec TurnRecord) (turnNo int
 // + RowsAffected==0 post-read is sufficient and avoids a redundant round
 // trip on the hot path.
 func (w *TurnWriter) AppendTurnInTx(ctx context.Context, tx pgx.Tx, rec TurnRecord) (turnNo int, err error) {
+	if err := w.LockSessionInTx(ctx, tx, rec.TenantID, rec.SessionID); err != nil {
+		return 0, err
+	}
+	return w.appendTurnInLockedTx(ctx, tx, rec)
+}
+
+// appendTurnInLockedTx appends a turn after the caller has acquired the
+// tenant/session advisory lock in the same transaction.
+func (w *TurnWriter) appendTurnInLockedTx(ctx context.Context, tx pgx.Tx, rec TurnRecord) (turnNo int, err error) {
 	if rec.SubmitMode == "" {
 		rec.SubmitMode = "full"
 	}
@@ -155,13 +175,6 @@ func (w *TurnWriter) AppendTurnInTx(ctx context.Context, tx pgx.Tx, rec TurnReco
 	}
 	if rec.Quality == "" {
 		rec.Quality = "verified"
-	}
-
-	// 1. Acquire advisory lock
-	lockKey := hashSessionKey(rec.TenantID, rec.SessionID)
-	_, err = tx.Exec(ctx, "SELECT pg_advisory_xact_lock($1)", lockKey)
-	if err != nil {
-		return 0, fmt.Errorf("acquire advisory lock: %w", err)
 	}
 
 	// 2. Get next turn_no
@@ -210,7 +223,7 @@ func (w *TurnWriter) AppendTurnInTx(ctx context.Context, tx pgx.Tx, rec TurnReco
 			$27, $28, $29,
 			$30
 		)
-		ON CONFLICT (request_id, partition_date) DO NOTHING
+		ON CONFLICT (tenant_id, request_id, partition_date) DO NOTHING
 	`,
 		rec.SessionID, turnNo, rec.TenantID, rec.RequestID, rec.Ts,
 		rec.SubmitMode,
@@ -254,7 +267,7 @@ func (w *TurnWriter) AppendTurnInTx(ctx context.Context, tx pgx.Tx, rec TurnReco
 		// on the conflict path. COALESCE(NULLIF(...)) guarantees a later empty
 		// fire can never blank a value an earlier fire populated (monotonic
 		// enrichment), so this stays idempotent under retries.
-			_, err = tx.Exec(ctx, `
+		_, err = tx.Exec(ctx, `
 				UPDATE gateway.session_turns
 				   SET compression_applied      = $5 OR compression_applied,
 				       compression_strategy     = COALESCE(NULLIF($6, ''), compression_strategy),

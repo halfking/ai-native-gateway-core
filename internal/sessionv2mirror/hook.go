@@ -229,7 +229,7 @@ type choiceProbe struct {
 
 type msgProbe struct {
 	Role       string                   `json:"role"`
-	Content    string                   `json:"content"`
+	Content    json.RawMessage          `json:"content"`
 	ToolCallID string                   `json:"tool_call_id"`
 	Name       string                   `json:"name"`
 	ToolCalls  []map[string]interface{} `json:"tool_calls"`
@@ -295,9 +295,15 @@ func toMessages(raw []msgProbe) []v2.Message {
 func toMessage(r msgProbe) v2.Message {
 	m := v2.Message{
 		Role:       r.Role,
-		Content:    r.Content,
 		ToolCallID: r.ToolCallID,
 		Name:       r.Name,
+	}
+	if len(r.Content) > 0 && string(r.Content) != "null" {
+		if err := json.Unmarshal(r.Content, &m.Content); err != nil {
+			m.ContentRaw = append(json.RawMessage(nil), r.Content...)
+		}
+	} else if len(r.Content) > 0 {
+		m.ContentRaw = append(json.RawMessage(nil), r.Content...)
 	}
 	if len(r.ToolCalls) > 0 {
 		m.ToolCalls = r.ToolCalls

@@ -166,6 +166,9 @@ func (b *OutboundBuilder) hasCompressionMarker(msgs []Message) bool {
 //   - content 以 "[summary:" 开头（legacy format）
 func (b *OutboundBuilder) isCompressionMarker(msg Message) bool {
 	content := msg.Content
+	if content == "" && len(msg.ContentRaw) > 0 {
+		content = string(msg.ContentRaw)
+	}
 	return strings.HasPrefix(content, "[smm_v1:") || strings.HasPrefix(content, "[summary:")
 }
 
@@ -180,8 +183,12 @@ func estimateTokens(msgs []Message) int {
 		// Estimate role tokens
 		totalChars += 10 // role + structure overhead
 
-		// Estimate content tokens
-		totalChars += len(msg.Content)
+		// Estimate content tokens while preserving structured provider content.
+		if msg.Content != "" {
+			totalChars += len(msg.Content)
+		} else {
+			totalChars += len(msg.ContentRaw)
+		}
 
 		// Estimate tool calls tokens
 		if len(msg.ToolCalls) > 0 {

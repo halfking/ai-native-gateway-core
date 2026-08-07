@@ -317,14 +317,20 @@ func mergeConsecutiveSameRoleMessages(messages []Message) []Message {
 		lastMsg := &result[len(result)-1]
 		currMsg := messages[i]
 
-		// Never merge system or tool messages
-		if currMsg.Role == "system" || currMsg.Role == "tool" {
+		// Never merge system/tool messages or messages carrying tool metadata.
+		// Merging assistant tool calls would otherwise silently discard calls.
+		if currMsg.Role == "system" || currMsg.Role == "tool" ||
+			lastMsg.Role == "system" || lastMsg.Role == "tool" ||
+			(currMsg.Role != "user" && currMsg.Role != "assistant") ||
+			(lastMsg.Role != "user" && lastMsg.Role != "assistant") ||
+			len(currMsg.ToolCalls) > 0 || len(lastMsg.ToolCalls) > 0 ||
+			currMsg.ToolCallID != "" || lastMsg.ToolCallID != "" {
 			result = append(result, currMsg)
 			continue
 		}
 
-		// Merge if roles match and are not system/tool
-		if lastMsg.Role == currMsg.Role && lastMsg.Role != "system" && lastMsg.Role != "tool" {
+		// Merge only the explicitly supported alternating roles.
+		if lastMsg.Role == currMsg.Role {
 			// Concatenate Content arrays
 			lastMsg.Content = append(lastMsg.Content, currMsg.Content...)
 			mergedCount++

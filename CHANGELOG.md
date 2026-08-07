@@ -9,6 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **72小时消息与会话链路审计修正 (2026-08-08)**:
+  - 修复 V2 outbound 裸数组与压缩 diff 请求对象协议不一致，避免多轮续接丢失已压缩历史。
+  - V2 shadow-write 保留多模态/Anthropic block/null content；同 session delta 计算移入 advisory transaction lock；最终 outbound 快照覆盖工具恢复与 prefix stabilization。
+  - E3 role merge 不再丢弃 assistant tool calls；V2 turn/body 唯一键、summary join 和 OmniFree quota worker 均补充租户边界。
+  - 统一 OmniFree startup/migration RLS policy，并接入 SessionCacheV2 graceful shutdown。
+  - 审计报告：`CODE_AUDIT_72H_20260808.md`。针对性测试通过；真实 DB/RLS、全量 race 仍需部署环境验证。
+
+### Fixed
+
 - **72小时代码审计修正 第二轮 (2026-08-08 00:30)** — 通过 comprehensive-code-audit 技能 + codegraph 检测：
   - **[P1] TestRuleFiring 数据竞争**: `alerting/alerting_test.go` — 测试中 `triggered` / `errorRate` 变量在主 goroutine 和 Manager.runRule goroutine 间共享读写，`go test -race` 报 "WARNING: DATA RACE"。修复：改用 `atomic.Bool` / `atomic.Int64`（编码为 1e-4 倍率的定点整数）同步访问
   - **审计工具集成**: 部署 `comprehensive-code-audit` 技能到 `~/workspace/ai-native-tools/vibe-coding/knowledge/audit/`，集成 codegraph 支持，5大审计标准（数据流溯源/流程闭环/状态机/并发安全/数据兼容）全部通过

@@ -24,7 +24,15 @@
 
 依赖 Memora 接口扩展，估时 1-2 个迭代。
 
-## 3. 低优先级（业务增强）
+## 2.3 72小时消息/会话审计收尾（2026-08-08）
+
+已完成：V2 outbound 协议兼容、结构化 content round-trip、锁内 delta 计算、最终 outbound 快照、租户唯一键/summary join、OmniFree worker tenant guard、RLS policy 对齐和 V2 cache shutdown。
+
+待真实环境验证：
+- PostgreSQL 执行 migration 476 up/down，并验证历史重复键处理与跨租户同 session/request ID。
+- 启动 DDL 与 migration 075 的 RLS policy 等价性、BYPASSRLS 角色隔离测试。
+- 同 session 并发请求的真实 DB 重建顺序与 `go test -race ./...` 全量结果。
+
 
 ### 3.1 Community Mode 完整实施
 

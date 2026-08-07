@@ -242,26 +242,23 @@ func (d *DB) ensureOmniFreeSchema(ctx context.Context) error {
 
 	// ── 5. Create RLS policies ────────────────────────────────────────────
 	_, err = d.pool.Exec(ctx, `
-		ALTER TABLE free_resource_catalog ENABLE ROW LEVEL SECURITY;
-		ALTER TABLE free_quota_tracker ENABLE ROW LEVEL SECURITY;
-		ALTER TABLE auto_combo_templates ENABLE ROW LEVEL SECURITY;
-		ALTER TABLE keyless_providers ENABLE ROW LEVEL SECURITY;
-
-		DROP POLICY IF EXISTS tenant_isolation_policy ON free_resource_catalog;
-		CREATE POLICY tenant_isolation_policy ON free_resource_catalog
-			USING (tenant_id = coalesce(current_setting('app.current_tenant', true), 'default'));
-
-		DROP POLICY IF EXISTS tenant_isolation_policy ON free_quota_tracker;
-		CREATE POLICY tenant_isolation_policy ON free_quota_tracker
-			USING (tenant_id = coalesce(current_setting('app.current_tenant', true), 'default'));
-
-		DROP POLICY IF EXISTS tenant_isolation_policy ON auto_combo_templates;
-		CREATE POLICY tenant_isolation_policy ON auto_combo_templates
-			USING (tenant_id = coalesce(current_setting('app.current_tenant', true), 'default'));
-
-		DROP POLICY IF EXISTS tenant_isolation_policy ON keyless_providers;
-		CREATE POLICY tenant_isolation_policy ON keyless_providers
-			USING (tenant_id = coalesce(current_setting('app.current_tenant', true), 'default'));
+		DO $$
+		DECLARE
+			table_name text;
+		BEGIN
+			FOREACH table_name IN ARRAY ARRAY[
+				'free_resource_catalog', 'free_quota_tracker',
+				'auto_combo_templates', 'keyless_providers'
+			] LOOP
+				EXECUTE format('ALTER TABLE %I ENABLE ROW LEVEL SECURITY', table_name);
+				EXECUTE format('DROP POLICY IF EXISTS tenant_isolation_policy ON %I', table_name);
+				EXECUTE format('DROP POLICY IF EXISTS tenant_isolation_%I ON %I', table_name, table_name);
+				EXECUTE format(
+					'CREATE POLICY tenant_isolation_%I ON %I USING (tenant_id = public.get_current_tenant() OR current_setting(''app.current_role'', true) = ''super_admin'' OR current_setting(''app.bypass_rls'', true) = ''true'') WITH CHECK (tenant_id = public.get_current_tenant() OR current_setting(''app.current_role'', true) = ''super_admin'' OR current_setting(''app.bypass_rls'', true) = ''true'')',
+					table_name, table_name
+				);
+			END LOOP;
+		END $$;
 	`)
 	if err != nil {
 		return fmt.Errorf("ensureOmniFreeSchema: create RLS policies: %w", err)

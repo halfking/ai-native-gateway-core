@@ -152,8 +152,8 @@ CREATE TABLE IF NOT EXISTS gateway.session_turns (
     partition_date DATE NOT NULL DEFAULT CURRENT_DATE,
     
     PRIMARY KEY (id, partition_date),
-    UNIQUE (session_id, turn_no, partition_date),
-    UNIQUE (request_id, partition_date)
+    UNIQUE (tenant_id, session_id, turn_no, partition_date),
+    UNIQUE (tenant_id, request_id, partition_date)
 ) PARTITION BY RANGE (partition_date);
 
 CREATE INDEX IF NOT EXISTS idx_session_turns_session ON gateway.session_turns 
@@ -209,8 +209,8 @@ CREATE TABLE IF NOT EXISTS gateway.session_bodies (
     partition_date DATE NOT NULL DEFAULT CURRENT_DATE,
     
     PRIMARY KEY (id, partition_date),
-    UNIQUE (session_id, turn_no, partition_date),
-    UNIQUE (request_id, partition_date)
+    UNIQUE (tenant_id, session_id, turn_no, partition_date),
+    UNIQUE (tenant_id, request_id, partition_date)
 ) PARTITION BY RANGE (partition_date);
 
 CREATE INDEX IF NOT EXISTS idx_session_bodies_session ON gateway.session_bodies 

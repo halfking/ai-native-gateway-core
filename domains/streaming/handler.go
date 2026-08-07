@@ -2856,6 +2856,12 @@ func (h *ChatHandler) serveWithExecutor(
 		}
 	}
 
+	// Persist the exact body that will be sent upstream. Compression may have
+	// restored cached tools after producing scResult.OutboundBody.
+	if len(bodyBytes) > 0 {
+		logCtx.OutboundBody = append(logCtx.OutboundBody[:0], bodyBytes...)
+	}
+
 	// ── Request WAL: initial synchronous log at request arrival ─────────────
 	if h.requestLogger != nil {
 		tenantID := "default"

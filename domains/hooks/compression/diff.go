@@ -213,14 +213,22 @@ func BuildOutboundMessages(
 // ──────────────────────────────────────────────────────────────────────────────
 
 // extractMessages parses the "messages" array from an OpenAI or Anthropic body.
+// V2OutboundBuilder returns the persisted message array directly, so accept
+// that shape as well. Keeping the compatibility here makes the builder/cache
+// contract explicit without requiring the compression package to import V2.
 func extractMessages(body []byte) ([]rawMsg, error) {
 	var probe struct {
 		Messages []rawMsg `json:"messages"`
 	}
-	if err := json.Unmarshal(body, &probe); err != nil {
+	if err := json.Unmarshal(body, &probe); err == nil && probe.Messages != nil {
+		return probe.Messages, nil
+	}
+
+	var messages []rawMsg
+	if err := json.Unmarshal(body, &messages); err != nil {
 		return nil, err
 	}
-	return probe.Messages, nil
+	return messages, nil
 }
 
 // msgHash computes sha256(role + \x00 + contentKey + \x00 + toolID).

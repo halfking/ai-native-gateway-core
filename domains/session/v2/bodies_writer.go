@@ -41,13 +41,77 @@ func newSessionBodiesWriter(db bodiesDB) *SessionBodiesWriter {
 	return &SessionBodiesWriter{db: db}
 }
 
-// Message represents a single message in the conversation
+// Message represents a single message in the conversation.
+// Content keeps the legacy text projection used by submit-mode detection and
+// token estimation; ContentRaw preserves array/null/structured provider content.
 type Message struct {
 	Role       string                   `json:"role"`
-	Content    string                   `json:"content,omitempty"`
+	Content    string                   `json:"-"`
+	ContentRaw json.RawMessage          `json:"-"`
 	ToolCalls  []map[string]interface{} `json:"tool_calls,omitempty"`
 	ToolCallID string                   `json:"tool_call_id,omitempty"`
 	Name       string                   `json:"name,omitempty"`
+}
+
+// MarshalJSON writes structured content back to the provider's original JSON
+// shape while retaining the string-compatible in-memory projection.
+func (m Message) MarshalJSON() ([]byte, error) {
+	content := m.ContentRaw
+	if len(content) == 0 && m.Content != "" {
+		var err error
+		content, err = json.Marshal(m.Content)
+		if err != nil {
+			return nil, err
+		}
+	}
+	type wire struct {
+		Role       string                   `json:"role"`
+		Content    json.RawMessage          `json:"content,omitempty"`
+		ToolCalls  []map[string]interface{} `json:"tool_calls,omitempty"`
+		ToolCallID string                   `json:"tool_call_id,omitempty"`
+		Name       string                   `json:"name,omitempty"`
+	}
+	return json.Marshal(wire{
+		Role:       m.Role,
+		Content:    content,
+		ToolCalls:  m.ToolCalls,
+		ToolCallID: m.ToolCallID,
+		Name:       m.Name,
+	})
+}
+
+// UnmarshalJSON accepts both legacy string content and provider content arrays.
+func (m *Message) UnmarshalJSON(data []byte) error {
+	type wire struct {
+		Role       string                   `json:"role"`
+		Content    json.RawMessage          `json:"content"`
+		ToolCalls  []map[string]interface{} `json:"tool_calls"`
+		ToolCallID string                   `json:"tool_call_id"`
+		Name       string                   `json:"name"`
+	}
+	var w wire
+	if err := json.Unmarshal(data, &w); err != nil {
+		return err
+	}
+	*m = Message{
+		Role:       w.Role,
+		ToolCalls:  w.ToolCalls,
+		ToolCallID: w.ToolCallID,
+		Name:       w.Name,
+	}
+	if len(w.Content) == 0 || string(w.Content) == "null" {
+		if len(w.Content) > 0 {
+			m.ContentRaw = append(json.RawMessage(nil), w.Content...)
+		}
+		return nil
+	}
+	var text string
+	if err := json.Unmarshal(w.Content, &text); err == nil {
+		m.Content = text
+		return nil
+	}
+	m.ContentRaw = append(json.RawMessage(nil), w.Content...)
+	return nil
 }
 
 // AttachmentRef represents an attachment reference (no base64 data)
@@ -188,12 +252,12 @@ func (w *SessionBodiesWriter) WriteBodiesInTx(ctx context.Context, tx bodiesDB, 
 			$6::text::jsonb, $7::text::jsonb, $8::text::jsonb,
 			$9::text::jsonb, $10::text::jsonb,
 			$11
-		)
-		ON CONFLICT (session_id, turn_no, partition_date)
-		DO UPDATE SET
-			response_delta = EXCLUDED.response_delta,
-			outbound_body = EXCLUDED.outbound_body,
-			response_attachments = EXCLUDED.response_attachments
+			)
+			ON CONFLICT (tenant_id, session_id, turn_no, partition_date)
+			DO UPDATE SET
+				response_delta = EXCLUDED.response_delta,
+				outbound_body = EXCLUDED.outbound_body,
+				response_attachments = EXCLUDED.response_attachments
 	`,
 		rec.SessionID, rec.TurnNo, rec.TenantID, rec.RequestID, rec.Ts,
 		jsonTextOrNull(requestDeltaJSON), jsonTextOrNull(responseDeltaJSON), jsonTextOrNull(outboundBodyJSON),
@@ -271,12 +335,24 @@ func (w *SessionBodiesWriter) GetBodies(ctx context.Context, tenantID, sessionID
 // GetLatestBodies retrieves the most recent turn body for a session without
 // scanning the full history. It is used on the per-request write path for
 // previous-outbound and attachment delta detection.
+//
+// GetLatestBodiesInTx retrieves the latest body through a caller-managed
+// transaction. It is used after LockSessionInTx so delta derivation cannot race
+// another turn append for the same tenant/session.
+func (w *SessionBodiesWriter) GetLatestBodiesInTx(ctx context.Context, tx bodiesDB, tenantID, sessionID string) (*BodiesRecord, error) {
+	return getLatestBodies(ctx, tx, tenantID, sessionID)
+}
+
 func (w *SessionBodiesWriter) GetLatestBodies(ctx context.Context, tenantID, sessionID string) (*BodiesRecord, error) {
+	return getLatestBodies(ctx, w.db, tenantID, sessionID)
+}
+
+func getLatestBodies(ctx context.Context, db bodiesDB, tenantID, sessionID string) (*BodiesRecord, error) {
 	var rec BodiesRecord
 	var requestDeltaJSON, responseDeltaJSON, outboundBodyJSON []byte
 	var requestAttachmentsJSON, responseAttachmentsJSON []byte
 
-	err := w.db.QueryRow(ctx, `
+	err := db.QueryRow(ctx, `
 		SELECT
 			session_id, turn_no, tenant_id, request_id, ts,
 			request_delta, response_delta, outbound_body,
