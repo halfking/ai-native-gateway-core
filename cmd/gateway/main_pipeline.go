@@ -309,11 +309,7 @@ func buildV2DispatchPipeline(deps *v2DispatchDeps) *pipeline.RequestPipeline {
 	})
 
 	// === Phase: Session Loader (priority 30) ===
-	// TODO: Extract session logic from ChatHandler to session.Hook
-	// p.AddStage(&pipeline.PipelineStage{
-	// 	Name: "session_loader", Phase: pipeline.PhasePreRouting, Mode: pipeline.ModeSequential,
-	// 	Hooks: []pipeline.Hook{session.NewSessionLoaderHook(...)},
-	// })
+	// Session loading is handled inline by ChatHandler (no separate hook).
 
 	if deps.Config.EnableObserv && deps.Tracer != nil {
 		p.AddStage(&pipeline.PipelineStage{
