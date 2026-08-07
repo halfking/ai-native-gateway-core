@@ -576,6 +576,28 @@ func (w *NodeProbeWorker) notifySyncWaiters(key string) {
 	}
 }
 
+// finishProbe releases the inFlight slot for key and THEN wakes every
+// ProbeSync caller that attached as a syncWaiter for key. It is the
+// single completion hook used by both cycle() (background probe) and the
+// fresh-job goroutine in ProbeSync (synchronous probe), guaranteeing a
+// uniform release→notify order across the two completion paths.
+//
+// Order matters: the slot must be released before the waiters are
+// notified. A waiter that wakes and immediately retries ProbeSync must
+// find the slot free and start a fresh probe. If the slot were still
+// held, the retry would register a new waiter whose channel can never
+// be closed (notifySyncWaiters deletes the map entry when it fires),
+// burning the caller's entire ctx budget.
+func (w *NodeProbeWorker) finishProbe(key string) {
+	if w == nil {
+		return
+	}
+	w.mu.Lock()
+	delete(w.inFlight, key)
+	w.mu.Unlock()
+	w.notifySyncWaiters(key)
+}
+
 // ProbeSync fans out parallel direct→gateway probes for the supplied
 // candidates and reports whether at least one pair recovered.
 //
@@ -639,23 +661,29 @@ func (w *NodeProbeWorker) ProbeSync(
 		}
 		key := fmt.Sprintf("%d|%s", c.CredentialID, c.RawModel)
 
+		// Single critical section for check + (register waiter | reserve
+		// slot). 2026-08-07 fix: the inFlight check and the waiter
+		// registration / slot reservation used to be two separate w.mu
+		// critical sections, so two concurrent ProbeSync callers for the
+		// same key could BOTH observe the slot free and both launch a
+		// fresh probe (duplicate direct probes), and a waiter registering
+		// between the owner's release and notify would be attached to a
+		// map entry that notifySyncWaiters had already deleted — its
+		// channel could never close. Merging the check, the waiter
+		// registration and the reservation under one w.mu critical
+		// section makes "one in-flight probe per (cred,model)" hold for
+		// synchronous callers too. Lock order: w.mu → syncWaitersMu.
 		w.mu.Lock()
-		_, busy := w.inFlight[key]
-		w.mu.Unlock()
-
-		if busy {
+		if _, busy := w.inFlight[key]; busy {
 			ch := make(chan struct{})
 			w.syncWaitersMu.Lock()
 			w.syncWaiters[key] = append(w.syncWaiters[key], ch)
 			w.syncWaitersMu.Unlock()
+			w.mu.Unlock()
 			nodeProbeSyncInflightWaiters.Inc()
 			jobs = append(jobs, syncJob{key: key, credID: c.CredentialID, model: c.RawModel, reuse: true, waitCh: ch})
 			continue
 		}
-
-		// Reserve the in-flight slot ourselves so a concurrent
-		// background cycle() does not race us into a duplicate probe.
-		w.mu.Lock()
 		w.inFlight[key] = struct{}{}
 		w.triggers[key] = nodeProbeTrigger{tenantID: tenantID, parentID: parentReqID}
 		w.mu.Unlock()
@@ -663,15 +691,6 @@ func (w *NodeProbeWorker) ProbeSync(
 		freshJobs = append(freshJobs, syncJob{key: key, credID: c.CredentialID, model: c.RawModel})
 		jobs = append(jobs, freshJobs[len(freshJobs)-1])
 	}
-	defer func() {
-		// Release in-flight slots we reserved for fresh jobs only.
-		// Reuse jobs were never inserted by us; cycle() owns their slot.
-		for _, j := range freshJobs {
-			w.mu.Lock()
-			delete(w.inFlight, j.key)
-			w.mu.Unlock()
-		}
-	}()
 
 	type freshResult struct {
 		job     syncJob
@@ -689,12 +708,15 @@ func (w *NodeProbeWorker) ProbeSync(
 		go func() {
 			defer wg.Done()
 			defer func() { <-sem }()
-			// Ensure syncWaiters for THIS key are released even if a
-			// concurrent ProbeSync caller attached as a reuse waiter
-			// after we reserved inFlight. cycle() would not fire for
-			// this key (we own the slot), so without this notify the
-			// waiter would burn its entire ctx budget.
-			defer w.notifySyncWaiters(j.key)
+			// Ensure the in-flight slot for THIS key is released and any
+			// concurrent ProbeSync caller that attached as a reuse waiter
+			// is woken once the probe completes. cycle() would not fire
+			// for this key (we own the slot), so without this the waiter
+			// would burn its entire ctx budget. finishProbe releases the
+			// slot BEFORE notifying, so a woken caller that immediately
+			// retries finds the slot free (fresh path) instead of
+			// re-registering a waiter that can never be closed.
+			defer w.finishProbe(j.key)
 			res := freshResult{job: j}
 			res.direct = w.probeDirect(ctx, j.credID, j.model)
 			if res.direct.ok {
@@ -949,22 +971,22 @@ func (w *NodeProbeWorker) cycle(ctx context.Context) bool {
 	trigger := w.triggers[key]
 	delete(w.triggers, key)
 	w.mu.Unlock()
-	defer func() {
-		w.mu.Lock()
-		delete(w.inFlight, key)
-		w.mu.Unlock()
-	}()
+
+	// Release the slot and wake any ProbeSync callers that were waiting
+	// on this in-flight background probe to complete (dedup reuse).
+	// finishProbe releases inFlight BEFORE notifying, so a woken caller
+	// that immediately retries finds the slot free (fresh path) instead
+	// of re-registering a waiter whose channel could never be closed.
+	// runOne's state-manager cache writes are visible to a waiter's
+	// subsequent re-PlanCandidates because runOne completes before this
+	// deferred call runs.
+	defer w.finishProbe(key)
 
 	if err := w.runOne(ctx, credID, model, "", trigger); err != nil {
 		slog.Warn("node_probe_worker: runOne failed",
 			"credential_id", credID, "model", model, "error", err)
 	}
 
-	// Notify any ProbeSync callers that were waiting on this in-flight
-	// background probe to complete (dedup reuse). Closing happens AFTER
-	// runOne so the state-manager cache writes are visible to a waiter's
-	// subsequent re-PlanCandidates.
-	w.notifySyncWaiters(key)
 	return true
 }
 

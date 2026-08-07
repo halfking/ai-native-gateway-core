@@ -278,10 +278,10 @@ func TestProbeSync_ReusePathDetectsRecovery(t *testing.T) {
 	time.Sleep(20 * time.Millisecond)
 
 	// Simulate cycle() finishing: mark available in the state cache,
-	// then notify waiters (this is what the production code does in
-	// cycle() after runOne completes).
+	// then release the slot + notify waiters (this is what production
+	// cycle() does via finishProbe after runOne completes).
 	fp.setAvailable(credID, model, true)
-	w.notifySyncWaiters(key)
+	w.finishProbe(key)
 
 	select {
 	case got := <-gotCh:
@@ -289,7 +289,16 @@ func TestProbeSync_ReusePathDetectsRecovery(t *testing.T) {
 			t.Fatal("reuse-path ProbeSync returned false after cycle marked pair available; expected true")
 		}
 	case <-time.After(1 * time.Second):
-		t.Fatal("reuse-path ProbeSync did not return after notifySyncWaiters")
+		t.Fatal("reuse-path ProbeSync did not return after finishProbe")
+	}
+
+	// finishProbe must have released the slot: a retrying caller would
+	// otherwise re-register a waiter that can never be closed.
+	w.mu.Lock()
+	_, stillBusy := w.inFlight[key]
+	w.mu.Unlock()
+	if stillBusy {
+		t.Fatal("finishProbe left the inFlight slot held; a retry would attach a never-closed waiter")
 	}
 
 	// Sanity: IsAvailable was actually consulted (otherwise the fix is
@@ -328,9 +337,10 @@ func TestProbeSync_ReusePathStillReturnsFalseWhenStillUnavailable(t *testing.T) 
 	}()
 	time.Sleep(20 * time.Millisecond)
 
-	// Pair stays unavailable; just notify (cycle finished but probe failed).
+	// Pair stays unavailable; just release the slot + notify (cycle
+	// finished but the probe failed).
 	fp.setAvailable(credID, model, false)
-	w.notifySyncWaiters(key)
+	w.finishProbe(key)
 
 	select {
 	case got := <-gotCh:
@@ -338,7 +348,7 @@ func TestProbeSync_ReusePathStillReturnsFalseWhenStillUnavailable(t *testing.T) 
 			t.Fatal("reuse-path ProbeSync returned true when pair still unavailable; expected false")
 		}
 	case <-time.After(1 * time.Second):
-		t.Fatal("reuse-path ProbeSync did not return after notifySyncWaiters")
+		t.Fatal("reuse-path ProbeSync did not return after finishProbe")
 	}
 }
 
@@ -399,4 +409,119 @@ func TestProbeSync_FreshJobNotifiesWaiters(t *testing.T) {
 
 	// Second notify must not panic on a nil/empty slice.
 	w.notifySyncWaiters(key) // idempotent
+}
+
+// TestProbeSync_FinishProbeReleasesSlotAndNotifies pins the contract of
+// finishProbe — the single completion hook shared by cycle() and the
+// fresh-job goroutine. 2026-08-07 fix: the slot MUST be released and the
+// waiter channels MUST be closed, so a retrying caller finds the slot
+// free (fresh path) instead of registering a waiter that can never be
+// closed.
+func TestProbeSync_FinishProbeReleasesSlotAndNotifies(t *testing.T) {
+	w := &NodeProbeWorker{
+		inFlight:    make(map[string]struct{}),
+		triggers:    make(map[string]nodeProbeTrigger),
+		syncWaiters: make(map[string][]chan struct{}),
+	}
+	const credID = 14
+	const model = "deepseek-v4-flash"
+	key := fmt.Sprintf("%d|%s", credID, model)
+
+	// Simulate an in-flight probe owned by cycle() or a fresh job.
+	w.mu.Lock()
+	w.inFlight[key] = struct{}{}
+	w.mu.Unlock()
+	ch1 := make(chan struct{})
+	ch2 := make(chan struct{})
+	w.syncWaitersMu.Lock()
+	w.syncWaiters[key] = append(w.syncWaiters[key], ch1, ch2)
+	w.syncWaitersMu.Unlock()
+
+	w.finishProbe(key)
+
+	for i, ch := range []chan struct{}{ch1, ch2} {
+		select {
+		case <-ch:
+		default:
+			t.Errorf("waiter %d was not closed by finishProbe", i)
+		}
+	}
+
+	w.mu.Lock()
+	_, stillBusy := w.inFlight[key]
+	w.mu.Unlock()
+	if stillBusy {
+		t.Error("finishProbe did not release the inFlight slot; a retrying caller would register a never-closed waiter")
+	}
+
+	w.syncWaitersMu.Lock()
+	remaining := len(w.syncWaiters[key])
+	w.syncWaitersMu.Unlock()
+	if remaining != 0 {
+		t.Errorf("syncWaiters[key] not cleared; got %d entries", remaining)
+	}
+}
+
+// TestProbeSync_ConcurrentWaitersReleasedByFinishProbe stresses the
+// merged single-critical-section registration (2026-08-07 fix) under
+// -race: N concurrent ProbeSync callers against a busy slot must all
+// attach as reuse waiters (never duplicate fresh probes) and must all be
+// released promptly by the owner's finishProbe.
+func TestProbeSync_ConcurrentWaitersReleasedByFinishProbe(t *testing.T) {
+	w := &NodeProbeWorker{
+		inFlight:    make(map[string]struct{}),
+		triggers:    make(map[string]nodeProbeTrigger),
+		syncWaiters: make(map[string][]chan struct{}),
+	}
+	fp := newFakeStateProvider()
+	w.stateProvider = fp
+
+	const credID = 15
+	const model = "gpt-5.6"
+	key := fmt.Sprintf("%d|%s", credID, model)
+	w.mu.Lock()
+	w.inFlight[key] = struct{}{}
+	w.mu.Unlock()
+
+	const n = 8
+	cands := []credentialstate.NoCandidatesCandidate{
+		{CredentialID: credID, RawModel: model},
+	}
+	returned := make(chan struct{}, n)
+	var wg sync.WaitGroup
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_ = w.ProbeSync(context.Background(), cands, "default", "req-concurrent")
+			returned <- struct{}{}
+		}()
+	}
+
+	// All N must attach as reuse waiters (the slot is busy), never
+	// launch a fresh probe.
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		w.syncWaitersMu.Lock()
+		nw := len(w.syncWaiters[key])
+		w.syncWaitersMu.Unlock()
+		if nw >= n {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("expected %d waiters, got %d", n, nw)
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+
+	// Owner finishes: mark available, release the slot + notify.
+	fp.setAvailable(credID, model, true)
+	w.finishProbe(key)
+
+	select {
+	case <-returned:
+	case <-time.After(2 * time.Second):
+		t.Fatal("not all concurrent ProbeSync callers returned after finishProbe")
+	}
+	wg.Wait()
 }
