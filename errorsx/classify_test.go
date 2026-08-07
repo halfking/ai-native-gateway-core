@@ -467,6 +467,21 @@ func TestClassifyErrorWithBody_Protocol4xx(t *testing.T) {
 		// window_type 表明这是会按周期重置的用量窗口，应走 KindQuotaPeriodic。
 		{"429_zhima_window_type_total_now_periodic", 429, `{"error":"usage limit exceeded","window_type":"total"}`, KindQuotaPeriodic},
 		{"429_window_type_daily_now_periodic", 429, `usage limit exceeded, window_type: "daily"`, KindQuotaPeriodic},
+		// 2026-08-08 P0 fix: apiclaude.cc / 智码 / OneAPI-family relays
+		// return HTTP 403 with body {"code":"INSUFFICIENT_BALANCE",
+		// "message":"Insufficient account balance"} when the user's
+		// account balance is exhausted. Previously classified as
+		// KindAuth because the status gate was 429-only, surfacing the
+		// misleading "Upstream credential API key invalid" message and
+		// opening the circuit breaker with exponential backoff on a
+		// healthy-looking key. Now correctly routed to KindQuotaPermanent.
+		{"403_apiclaude_insufficient_balance_now_permanent", 403, `{"code":"INSUFFICIENT_BALANCE","message":"Insufficient account balance"}`, KindQuotaPermanent},
+		{"403_insufficient_account_balance_now_permanent", 403, `{"error":{"message":"Insufficient account balance","type":"insufficient_credit"}}`, KindQuotaPermanent},
+		{"402_payment_required_quota_now_permanent", 402, `{"error":{"message":"Your account balance is insufficient for this operation.","type":"insufficient_quota"}}`, KindQuotaPermanent},
+		// Defensive: a bare 403 with no quota-suggesting body still
+		// falls through to ClassifyResponseStatus → KindAuth (the
+		// pre-fix behaviour for plain 403s).
+		{"403_bare_no_body_still_auth", 403, `forbidden`, KindAuth},
 		{"500_still_upstream_down", 500, `internal server error`, KindUpstreamDown},
 		{"502_still_upstream_down", 502, `bad gateway`, KindUpstreamDown},
 		{"503_still_concurrent", 503, `service unavailable`, KindConcurrent},
@@ -971,6 +986,63 @@ func TestQuotaResetClassification(t *testing.T) {
 			if kind != tt.expected {
 				t.Errorf("ClassifyErrorWithBody() = %v, want %v\nBody: %s",
 					kind, tt.expected, tt.body)
+			}
+		})
+	}
+}
+
+// 2026-08-08 P0 fix (defense-in-depth): when an upstream.Error is
+// re-wrapped via fmt.Errorf("upstream %d: %s", status, body), the body
+// text is collapsed into err.Error() and ClassifyError (the no-body
+// variant) is called. budgetExceededRe should now fire on that text so
+// balance-exhaustion is not classified as KindTransient and silently
+// retried. This regression test pins the wrapped-err path; previously
+// this case returned KindTransient, surfacing the wrong circuit breaker
+// policy and confusing operators with "transient" logs for what was
+// actually a balance issue.
+func TestClassifyError_WrappedBudgetExceeded(t *testing.T) {
+	cases := []struct {
+		name string
+		err  error
+		want ErrorKind
+	}{
+		{
+			name: "apiclaude.cc INS-403 wrapped",
+			err:  fmt.Errorf(`[auth] upstream 403: {"code":"INSUFFICIENT_BALANCE","message":"Insufficient account balance"}: <nil>`),
+			want: KindQuotaPermanent,
+		},
+		{
+			name: "anthropic budget_exceeded wrapped",
+			err:  fmt.Errorf(`[quota] upstream 429: {"error":{"message":"Organization balance insufficient","type":"rate_limit_error","code":"budget_exceeded"}}: <nil>`),
+			want: KindQuotaPermanent,
+		},
+		{
+			name: "chinese quota exhausted wrapped",
+			err:  fmt.Errorf(`[quota] upstream 429: {"error":"您的余额已用尽，请充值。"}`),
+			want: KindQuotaPermanent,
+		},
+		{
+			name: "balance insufficient wrapped",
+			err:  fmt.Errorf(`[auth] upstream 403: balance insufficient for group`),
+			want: KindQuotaPermanent,
+		},
+		{
+			// Without a body that mentions balance/quota/credit, a
+			// generic auth error falls through to KindTransient. The
+			// upstream.Error path (where the typed Kind field is set)
+			// still routes this correctly; this defense-in-depth
+			// test only pins the budget patterns.
+			name: "non-budget auth error still transient (no body signal)",
+			err:  fmt.Errorf(`[auth] upstream 401: invalid api key`),
+			want: KindTransient,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := ClassifyError(tc.err, nil)
+			if got != tc.want {
+				t.Errorf("ClassifyError(%q) = %q, want %q",
+					tc.err.Error(), got, tc.want)
 			}
 		})
 	}

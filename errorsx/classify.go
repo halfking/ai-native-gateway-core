@@ -240,14 +240,45 @@ var modelDeprecatedRe = regexp.MustCompile(
 // 2026-07-19 P0 fix: 智谱AI 429 with "您已达到每周/每月使用上限" (code: 1310)
 // was misclassified as KindRateLimit because Chinese quota messages weren't
 // matched. Extended regex to support Chinese patterns.
+//
+// 2026-08-08 P0 fix: extend to also match "Insufficient account balance" (apiclaude.cc /
+// 智码转发 / OpenAI-compatible balance-exhaustion responses that report on HTTP 403
+// instead of 429). Previous patterns required the noun to immediately precede "balance"
+// (`balance insufficient` / `insufficient balance`), but the upstream body is:
+//   {"code":"INSUFFICIENT_BALANCE","message":"Insufficient account balance"}
+// which has "account" between "Insufficient" and "balance". Without the
+// `(?:.{0,20}balance.{0,20}insufficient|insufficient.{0,20}balance)` window, the
+// body-pattern check at the 403/402/429 status gates fell through to KindAuth.
+// That misclassification produced the user-facing error "Upstream credential API
+// key invalid" for what was actually a balance/budget exhaustion event — and
+// because KindAuth opens the circuit breaker with exponential backoff (5min → 24h
+// cap), it also took the bad credential out of the rotation with no recovery
+// signal for the OTHER sibling credentials.
+//
+// Added patterns:
+//   - `insufficient.{0,20}balance` / `balance.{0,20}insufficient`: non-adjacent
+//     English phrasing
+//   - `"code"\s*:\s*"INSUFFICIENT_BALANCE"` / `"code"\s*:\s*"insufficient_balance"`:
+//     explicit OpenAI-style codes (apiclaude.cc, 智码, OneAPI-family relays)
+//   - `account.{0,20}(exhausted|depleted|low)`: "Account exhausted", etc.
 var budgetExceededRe = regexp.MustCompile(
 	`(?i)(budget[_ -]?exceeded|` +
 		`balance[_ -]?insufficient|` +
 		`insufficient[_ -]?(credit|balance|funds)|` +
+		// 2026-08-08 P0 fix: non-adjacent English variants
+		// ("Insufficient account balance", "Your balance is currently insufficient").
+		`insufficient.{0,20}balance|` +
+		`balance.{0,20}insufficient|` +
+		`account.{0,20}(exhausted|depleted|low)|` +
 		`credit[s]?[_ -]?(exhausted|depleted|insufficient)|` +
 		`account[_ -]?balance[_ -]?(low|insufficient|exhausted)|` +
 		`quota[_ -]?exceeded|` +
 		`usage[_ -]?limit[_ -]?exceeded|` +
+		// 2026-08-08 P0 fix: explicit OpenAI-style balance code from
+		// apiclaude.cc / 智码 / OneAPI-family relays that report
+		// {"code":"INSUFFICIENT_BALANCE","message":"..."} with HTTP 403.
+		`"code"\s*:\s*"INSUFFICIENT_BALANCE"|` +
+		`"code"\s*:\s*"insufficient_balance"|` +
 		// Chinese quota exhaustion patterns (智谱AI, etc.)
 		`达到.{0,10}(每周|每月|每日|使用)?上限|` +
 		`(配额|额度|余额).{0,10}(用尽|耗尽|不足|超限)|` +
@@ -443,6 +474,20 @@ func ClassifyError(err error, resp *http.Response) ErrorKind {
 		if toolCallIdMismatchRe.MatchString(msg) {
 			return KindToolCallIdMismatch
 		}
+		// 2026-08-08 P0 fix (defense in depth): budget_exceeded / balance
+		// insufficient / account-low can also appear in the wrapped
+		// error.Error() string when an upstream.Error is re-wrapped via
+		// fmt.Errorf. Without this check, those calls fall through to
+		// KindTransient and the executor treats a balance-exhaustion
+		// signal as a recoverable retry. Since this path has no status
+		// code, the periodic/permanent split is unavailable — we route
+		// any budget pattern to KindQuotaPermanent so writeCredentialStateOnError
+		// sets availability_state='suspended' instead of cascading
+		// retries. Periodic recovery (quotaResetsRe) is handled by the
+		// typed *upstream.Error path with full body access.
+		if budgetExceededRe.MatchString(msg) {
+			return KindQuotaPermanent
+		}
 		return KindTransient
 	}
 	if resp == nil {
@@ -571,7 +616,26 @@ func ClassifyErrorWithBody(status int, body []byte) ErrorKind {
 		// 智谱AI 1310 returns "...限额将在 YYYY-MM-DD HH:MM:SS 重置" which
 		// signals "wait for the quota window to reset" — periodic, not
 		// permanent.
-		if status == 429 && budgetExceededRe.Match(body) {
+		//
+		// 2026-08-08 P0 fix: extend the status gate to include 402 (Payment
+		// Required — explicit semantic match) and 403 (apiclaude.cc / 智码 /
+		// OneAPI-family relays that return HTTP 403 {"code":"INSUFFICIENT_BALANCE",
+		// "message":"Insufficient account balance"} when the user's account
+		// balance is exhausted). Without this gate, the body-pattern match
+		// is skipped for 403 → falls through to ClassifyResponseStatus →
+		// KindAuth → user-facing error "Upstream credential API key invalid"
+		// (which is misleading; the upstream is saying the account is out of
+		// credit, not that the API key was rejected) → circuit breaker
+		// exponential backoff 5min→24h cap, removing the credential from
+		// rotation with no clear recovery signal. Status codes 402 and 403
+		// were selected because:
+		//   - 402 is the canonical "payment required / balance exhausted" code.
+		//   - 403 is what most 智码 / apiclaude.cc / OneAPI-family relays use
+		//     when balance runs out (instead of the canonical 402).
+		// Both cases are body-driven, so we still require the budget pattern
+		// to match — a 403 with no body or unrelated body text falls through
+		// to KindAuth as before.
+		if (status == 402 || status == 403 || status == 429) && budgetExceededRe.Match(body) {
 			if quotaResetsRe.Match(body) {
 				return KindQuotaPeriodic
 			}
@@ -662,7 +726,17 @@ func ClassifyResponseBody(status int, body []byte) ErrorKind {
 		// 2026-07-16 P0 fix: budget_exceeded on 429 → KindQuotaPermanent.
 		// 2026-07-21 P0 fix: when the body carries a reset timestamp, route
 		// to KindQuotaPeriodic instead so the credential can recover.
-		if status == 429 && budgetExceededRe.Match(body) {
+		//
+		// 2026-08-08 P0 fix: extend status gate to 402 (Payment Required) and
+		// 403 (apiclaude.cc / 智码 / OneAPI-family relays that return
+		// HTTP 403 {"code":"INSUFFICIENT_BALANCE", "message":"Insufficient account balance"}
+		// when the user's account balance is exhausted). Without this gate,
+		// the body-pattern match is skipped for 403 → falls through to
+		// ClassifyResponseStatus → KindAuth, which misleads users into
+		// thinking the API key is invalid when it's actually a balance
+		// issue. See the matching comment in ClassifyErrorWithBody for the
+		// full rationale.
+		if (status == 402 || status == 403 || status == 429) && budgetExceededRe.Match(body) {
 			if quotaResetsRe.Match(body) {
 				return KindQuotaPeriodic
 			}
