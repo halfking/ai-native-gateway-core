@@ -105,6 +105,15 @@ func (c *SessionCacheV2) Get(ctx context.Context, tenantID, sessionID string) (*
 		return nil, fmt.Errorf("cache v2 l3 load failed: %w", err)
 	}
 
+	// A genuinely new session yields (nil, nil) from LoadState (pgx.ErrNoRows
+	// is not a hard error — see SessionTurnsReader.LoadState). Return early:
+	// there is nothing to merge or warm, and dereferencing state below would
+	// panic. HasState treats a nil state as "no prior state".
+	if state == nil {
+		slog.DebugContext(ctx, "cache v2 l3 no prior state", "session_id", sessionID)
+		return nil, nil
+	}
+
 	// Populate governance metadata from L2 if available
 	if govMeta != nil {
 		state.GovernanceMeta = *govMeta
@@ -117,8 +126,12 @@ func (c *SessionCacheV2) Get(ctx context.Context, tenantID, sessionID string) (*
 	return state, nil
 }
 
-// Set updates cache at all levels
+// Set updates cache at all levels. A nil state is a no-op (see
+// CompressionMetaCache.Set) rather than a nil-deref on state.TenantID.
 func (c *SessionCacheV2) Set(ctx context.Context, state *SessionStateV2) error {
+	if c == nil || state == nil {
+		return nil
+	}
 	// Update L1 (in-memory)
 	c.l1.Set(state)
 
@@ -218,8 +231,14 @@ func (c *CompressionMetaCache) Get(tenantID, sessionID string) *SessionStateV2 {
 	return entry.state
 }
 
-// Set stores state in L1 cache
+// Set stores state in L1 cache. A nil state is ignored: LoadState returns
+// (nil, nil) for a brand-new session, and a nil-deref here took down the
+// whole chat path on 2026-08-07. Callers should skip the warm-up entirely,
+// but this guard keeps a nil from being fatal.
 func (c *CompressionMetaCache) Set(state *SessionStateV2) {
+	if c == nil || state == nil {
+		return
+	}
 	key := cacheKey(state.TenantID, state.SessionID)
 
 	c.mu.Lock()

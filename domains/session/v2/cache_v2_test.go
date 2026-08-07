@@ -471,3 +471,40 @@ func TestGovernanceCache_Disabled(t *testing.T) {
 	err = cache.Delete(ctx, "tenant_001", "session_001")
 	assert.NoError(t, err)
 }
+
+// ── 2026-08-07 回归：nil state 不得 panic ───────────────────────────────
+//
+// 事故背景：commit f8b10499 让 SessionTurnsReader.LoadState 对新会话返回
+// (nil, nil)，但 SessionCacheV2.Get 未判空就 c.l1.Set(state)，在
+// CompressionMetaCache.Set 里解引用 state.TenantID → nil pointer panic。
+// 每个新会话请求都 panic，生产 chat 链路全量宕机（13:29 起成功数归零）。
+
+// TestCompressionMetaCache_SetNilState_NoPanic 锁定 L1 Set 对 nil 的容忍。
+func TestCompressionMetaCache_SetNilState_NoPanic(t *testing.T) {
+	cache := NewCompressionMetaCache(10)
+
+	require.NotPanics(t, func() {
+		cache.Set(nil)
+	}, "nil state 必须被忽略而不是 panic")
+
+	// nil 不应污染缓存
+	assert.Nil(t, cache.Get("", ""), "nil state 不应写入任何条目")
+
+	// 后续正常写入仍然可用
+	state := &SessionStateV2{SessionID: "s1", TenantID: "t1", UpdatedAt: time.Now()}
+	require.NotPanics(t, func() { cache.Set(state) })
+	got := cache.Get("t1", "s1")
+	require.NotNil(t, got)
+	assert.Equal(t, "s1", got.SessionID)
+}
+
+// TestSessionCacheV2_SetNilState_NoPanic 锁定多级 Set 对 nil 的容忍。
+// 用零值 SessionCacheV2 即可覆盖：nil 应在触及 l1/l2 之前就返回。
+func TestSessionCacheV2_SetNilState_NoPanic(t *testing.T) {
+	c := &SessionCacheV2{}
+
+	require.NotPanics(t, func() {
+		err := c.Set(context.Background(), nil)
+		assert.NoError(t, err)
+	}, "nil state 必须是 no-op 而不是 panic")
+}
