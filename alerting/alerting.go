@@ -117,6 +117,10 @@ func (m *Manager) runRule(rule *Rule) {
 }
 
 // evaluateRule 评估规则
+//
+// 2026-08-08 audit review: 此函数使用 Lock/Unlock 配对（非 defer 形式），
+// 适用于简单的 read-modify-write 短临界区。当前代码没有早期返回，
+// 未来修改时若添加 `return` 必须把对应 Unlock 改为 defer Unlock。
 func (m *Manager) evaluateRule(rule *Rule) {
 	alertID := rule.Name
 

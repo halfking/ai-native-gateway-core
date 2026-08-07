@@ -592,10 +592,31 @@ func (w *NodeProbeWorker) finishProbe(key string) {
 	if w == nil {
 		return
 	}
+	// 2026-08-07 fix: drain the in-flight slot AND the waiters for the
+	// round we just completed in one critical section. Doing the two
+	// ops under separate locks would let a fresh ProbeSync caller
+	// re-register on the same key after the slot was released but
+	// before the waiter list was detached — the deferred notify would
+	// then close the new round's waiter and leave the new round
+	// hanging forever (notifySyncWaiters already deleted the map
+	// entry, so its channel could never be closed again).
+	//
+	// notifySyncWaiters is still called OUTSIDE the w.mu critical
+	// section: closing the channels can take arbitrarily long and we
+	// must not hold w.mu while doing it. notifySyncWaiters itself
+	// takes syncWaitersMu to manipulate the map, so the deferred
+	// snapshot we hand it is safe — no further goroutine can race
+	// in and append to this round's waiter slice.
 	w.mu.Lock()
 	delete(w.inFlight, key)
+	w.syncWaitersMu.Lock()
+	chs := append([]chan struct{}(nil), w.syncWaiters[key]...)
+	delete(w.syncWaiters, key)
+	w.syncWaitersMu.Unlock()
 	w.mu.Unlock()
-	w.notifySyncWaiters(key)
+	for _, ch := range chs {
+		close(ch)
+	}
 }
 
 // ProbeSync fans out parallel direct→gateway probes for the supplied
