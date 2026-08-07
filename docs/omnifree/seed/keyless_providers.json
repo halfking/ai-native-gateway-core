@@ -1,0 +1,41 @@
+[
+  {
+    "provider_code": "opencode",
+    "display_name": "OpenCode AI (Keyless)",
+    "auth_hint": "无需认证，直接调用公开端点",
+    "bootstrap_method": "none",
+    "rpm_limit": 20,
+    "rpd_limit": 1000,
+    "concurrent_limit": 5,
+    "reliability_score": 0.80,
+    "enabled": true,
+    "allowlist_in_auto_combo": true,
+    "notes": "OpenCode 提供无需 API Key 的公开端点，适合快速测试和低量使用"
+  },
+  {
+    "provider_code": "duckduckgo-web",
+    "display_name": "DuckDuckGo Chat (Keyless)",
+    "auth_hint": "通过网页 API 调用，自动生成会话 token",
+    "bootstrap_method": "device-fingerprint",
+    "rpm_limit": 10,
+    "rpd_limit": 500,
+    "concurrent_limit": 3,
+    "reliability_score": 0.70,
+    "enabled": false,
+    "allowlist_in_auto_combo": false,
+    "notes": "DuckDuckGo Chat 网页版接口，需模拟浏览器指纹，稳定性一般"
+  },
+  {
+    "provider_code": "felo-web",
+    "display_name": "Felo Search (Keyless)",
+    "auth_hint": "Felo 搜索引擎内置 AI 对话",
+    "bootstrap_method": "embedded-browser",
+    "rpm_limit": 10,
+    "rpd_limit": 300,
+    "concurrent_limit": 2,
+    "reliability_score": 0.65,
+    "enabled": false,
+    "allowlist_in_auto_combo": false,
+    "notes": "需嵌入 Playwright 模拟浏览器会话，开销较大"
+  }
+]

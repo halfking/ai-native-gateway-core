@@ -1,0 +1,140 @@
+[
+  {
+    "combo_name": "auto/free",
+    "display_name": "自动免费池",
+    "description": "聚合所有可用免费资源，优先低延迟",
+    "variant": "cheap",
+    "tier_filter": ["free"],
+    "free_type_filter": ["recurring-daily", "recurring-monthly", "keyless"],
+    "tos_filter": ["ok", "caution"],
+    "provider_allowlist": [],
+    "provider_denylist": [],
+    "scoring_weights_json": {
+      "health_score": 0.3,
+      "latency_p95": 0.3,
+      "quota_remaining": 0.2,
+      "cost": 0.0,
+      "task_fit": 0.1,
+      "tier_affinity": 0.1
+    },
+    "max_candidates": 50,
+    "exploration_rate": 0.05,
+    "enabled": true,
+    "priority": 100
+  },
+  {
+    "combo_name": "auto/best-free",
+    "display_name": "最佳免费资源",
+    "description": "仅选择 ToS 合规的高质量免费提供商",
+    "variant": "cheap",
+    "tier_filter": ["free"],
+    "free_type_filter": ["recurring-daily", "recurring-monthly"],
+    "tos_filter": ["ok"],
+    "provider_allowlist": ["openrouter", "mistral", "gemini", "groq", "cerebras", "sambanova"],
+    "provider_denylist": [],
+    "scoring_weights_json": {
+      "health_score": 0.35,
+      "latency_p95": 0.25,
+      "quota_remaining": 0.25,
+      "cost": 0.0,
+      "task_fit": 0.1,
+      "tier_affinity": 0.05
+    },
+    "max_candidates": 30,
+    "exploration_rate": 0.03,
+    "enabled": true,
+    "priority": 90
+  },
+  {
+    "combo_name": "auto/coding:free",
+    "display_name": "免费编程助手",
+    "description": "优化代码生成任务的免费资源池",
+    "variant": "coding",
+    "tier_filter": ["free"],
+    "free_type_filter": ["recurring-daily", "recurring-monthly", "recurring-uncapped"],
+    "tos_filter": ["ok", "caution"],
+    "provider_allowlist": ["groq", "cerebras", "deepseek", "siliconflow"],
+    "provider_denylist": [],
+    "scoring_weights_json": {
+      "health_score": 0.25,
+      "latency_p95": 0.2,
+      "quota_remaining": 0.15,
+      "cost": 0.0,
+      "task_fit": 0.35,
+      "tier_affinity": 0.05
+    },
+    "max_candidates": 20,
+    "exploration_rate": 0.05,
+    "enabled": true,
+    "priority": 80
+  },
+  {
+    "combo_name": "auto/fast:free",
+    "display_name": "极速免费响应",
+    "description": "优先低延迟的免费提供商",
+    "variant": "fast",
+    "tier_filter": ["free"],
+    "free_type_filter": ["recurring-daily", "recurring-monthly", "recurring-uncapped"],
+    "tos_filter": ["ok", "caution"],
+    "provider_allowlist": ["groq", "cerebras", "cloudflare-ai"],
+    "provider_denylist": [],
+    "scoring_weights_json": {
+      "health_score": 0.2,
+      "latency_p95": 0.5,
+      "quota_remaining": 0.15,
+      "cost": 0.0,
+      "task_fit": 0.1,
+      "tier_affinity": 0.05
+    },
+    "max_candidates": 15,
+    "exploration_rate": 0.02,
+    "enabled": true,
+    "priority": 85
+  },
+  {
+    "combo_name": "auto/reasoning:free",
+    "display_name": "免费推理模型",
+    "description": "适合复杂推理任务的免费大模型",
+    "variant": "smart",
+    "tier_filter": ["free"],
+    "free_type_filter": ["recurring-monthly"],
+    "tos_filter": ["ok"],
+    "provider_allowlist": ["mistral", "gemini", "deepseek"],
+    "provider_denylist": [],
+    "scoring_weights_json": {
+      "health_score": 0.3,
+      "latency_p95": 0.15,
+      "quota_remaining": 0.2,
+      "cost": 0.0,
+      "task_fit": 0.3,
+      "tier_affinity": 0.05
+    },
+    "max_candidates": 10,
+    "exploration_rate": 0.05,
+    "enabled": true,
+    "priority": 75
+  },
+  {
+    "combo_name": "auto/keyless",
+    "display_name": "零配置免费调用",
+    "description": "仅使用无需 API Key 的免费提供商",
+    "variant": "cheap",
+    "tier_filter": ["free"],
+    "free_type_filter": ["keyless"],
+    "tos_filter": ["ok", "caution", "ambiguous"],
+    "provider_allowlist": ["opencode", "duckduckgo-web", "felo-web"],
+    "provider_denylist": [],
+    "scoring_weights_json": {
+      "health_score": 0.4,
+      "latency_p95": 0.3,
+      "quota_remaining": 0.0,
+      "cost": 0.0,
+      "task_fit": 0.2,
+      "tier_affinity": 0.1
+    },
+    "max_candidates": 10,
+    "exploration_rate": 0.1,
+    "enabled": true,
+    "priority": 60
+  }
+]
