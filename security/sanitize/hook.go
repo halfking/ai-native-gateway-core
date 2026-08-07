@@ -141,8 +141,9 @@ func (h *SanitizerOutputHook) Enabled(_ context.Context, env *domain.PipelineReq
 	if env == nil || len(env.UpstreamResponse) == 0 {
 		return false
 	}
+	// 当前轮次有映射表，或者有会话管理器（可能从Redis加载历史映射表）
 	_, ok := env.Metadata[MetadataKeySanitizeMap]
-	return ok
+	return ok || h.sessionManager != nil
 }
 
 func (h *SanitizerOutputHook) Execute(ctx context.Context, env *domain.PipelineRequest) error {
