@@ -95,7 +95,7 @@ P3 退役 V1
 | 条目 | 来源 | 前置 |
 |---|---|---|
 | 声明式 provider 变换 DSL | E1 | 无 |
-| enforceRoleAlternation 可选修复 | E3 | 无 |
+| ✅ enforceRoleAlternation 可选修复（`LLM_GATEWAY_FIX_ROLE_ALTERNATION` 环境变量；默认 warn，true 时合并连续同角色消息；system/tool 不合并） | E3 | 无 | **已实现** |
 | GLM 版本感知 + Responses 净化补齐 | E4/E5 | 无 |
 | V2 Message 强类型化（复用 ir.Message） | A5/E6 | 迁移兼容读 |
 
