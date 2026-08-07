@@ -41,6 +41,8 @@
 package prefix
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -128,12 +130,15 @@ func Stabilize(body []byte, opts Options) ([]byte, *Report, error) {
 		return body, &Report{Changed: false, Reason: "messages not array"}, nil
 	}
 	if len(msgs) <= 1 {
-		return body, &Report{Changed: false, Reason: "single or empty messages", Classes: classifyAll(msgs, opts)}, nil
+		classes := classifyAll(msgs, opts)
+		hash := computePrefixHash(msgs, classes)
+		return body, &Report{Changed: false, Reason: "single or empty messages", Classes: classes, PrefixHash: hash}, nil
 	}
 	classes := classifyAll(msgs, opts)
 	reordered, changed := reorderByClass(msgs, classes)
 	if !changed {
-		return body, &Report{Changed: false, Reason: "already stable", Classes: classes}, nil
+		hash := computePrefixHash(msgs, classes)
+		return body, &Report{Changed: false, Reason: "already stable", Classes: classes, PrefixHash: hash}, nil
 	}
 	newMsgsRaw, err := json.Marshal(reordered)
 	if err != nil {
@@ -144,15 +149,21 @@ func Stabilize(body []byte, opts Options) ([]byte, *Report, error) {
 	if err != nil {
 		return body, &Report{Changed: false, Reason: "final marshal failed", Classes: classes}, err
 	}
-	return out, &Report{Changed: true, Reason: "reordered by stability class", Classes: classes}, nil
+	// docs/omni-ref3 D7: hash the STABILIZED output, not the input, so the hash
+	// is byte-stable across requests. Re-classify the reordered messages so the
+	// stable prefix (system + history, minus tail) is correctly identified.
+	reorderedClasses := classifyAll(reordered, opts)
+	hash := computePrefixHash(reordered, reorderedClasses)
+	return out, &Report{Changed: true, Reason: "reordered by stability class", Classes: classes, PrefixHash: hash}, nil
 }
 
 // Report describes what Stabilize did (or didn't), for telemetry + debugging.
 // Callers log this; it must never contain prompt content.
 type Report struct {
-	Changed bool        // true if bytes were modified
-	Reason  string      // why changed or not (human-readable, no secrets)
-	Classes []Stability // per-message stability class of the INPUT (not output)
+	Changed    bool        // true if bytes were modified
+	Reason     string      // why changed or not (human-readable, no secrets)
+	Classes    []Stability // per-message stability class of the INPUT (not output)
+	PrefixHash string      // docs/omni-ref3 D7: SHA256 hex of the stable prefix (System+Tool+History), empty if no stable prefix
 }
 
 // classifyAll assigns a Stability class to every message. Rules:
@@ -236,4 +247,43 @@ func StabilizeStrict(body []byte, opts Options) ([]byte, *Report, error) {
 		return body, nil, ErrInvalidBody
 	}
 	return Stabilize(body, opts)
+}
+
+// computePrefixHash returns a SHA256 hex digest of the stable prefix (all
+// messages whose Stability class is < TailClass). This hash is byte-stable
+// across requests that share the same system/tool/history prefix, even as new
+// tail turns are appended.
+//
+// docs/omni-ref3 D7: the prefix hash is the key for semantic cache lookups and
+// the dormant CompressedPrefixHash field (domains/session/cache_v2.go). It
+// mirrors the omniroute contextManager's prefix-hash logic: hash the stable
+// portion, ignore the volatile tail.
+//
+// msgs must be in the STABILIZED order (System, Tool, History, Tail). classes
+// must be parallel to msgs (classes[i] is the stability of msgs[i]). Returns
+// empty string if there is no stable prefix (all messages are TailClass).
+func computePrefixHash(msgs []map[string]any, classes []Stability) string {
+	if len(msgs) == 0 || len(classes) != len(msgs) {
+		return ""
+	}
+	// Collect the stable prefix: every message whose class is NOT TailClass.
+	prefix := make([]map[string]any, 0, len(msgs))
+	for i, c := range classes {
+		if c < TailClass {
+			prefix = append(prefix, msgs[i])
+		}
+	}
+	if len(prefix) == 0 {
+		return "" // no stable prefix
+	}
+	// Canonical JSON serialization → SHA256 → hex. The JSON must be stable
+	// (Go's map iteration is deterministic post-1.12 for map[string]any when
+	// marshaled via encoding/json), so repeated calls with the same prefix
+	// produce the same hash.
+	b, err := json.Marshal(prefix)
+	if err != nil {
+		return "" // fail open: no hash better than a wrong hash
+	}
+	h := sha256.Sum256(b)
+	return hex.EncodeToString(h[:])
 }

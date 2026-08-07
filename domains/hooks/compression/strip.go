@@ -42,6 +42,7 @@ type StripResult struct {
 	ToolCallsRemoved   int  `json:"tool_calls_removed"`
 	ToolResultsRemoved int  `json:"tool_results_removed"`
 	ThinkingRemoved    int  `json:"thinking_removed"`
+	MediaBlocksPruned  int  `json:"media_blocks_pruned"` // docs/omni-ref3 A3: inline image/audio blocks replaced with placeholders
 	MessagesRemoved    int  `json:"messages_removed"`
 	BytesBefore        int  `json:"bytes_before"`
 	BytesAfter         int  `json:"bytes_after"`
@@ -59,13 +60,13 @@ type StripResult struct {
 // preserved, because dropping the call would orphan the results that do
 // exist and dropping the results would leave the call unanswered.
 //
-	// 2026-08-06 fix: integrity is verified AFTER stripping. If any
-	// surviving tool result lacks a preceding assistant.tool_calls with a
-	// matching id, the strip is rejected and the original body is returned
-	// unchanged (fail-open). This prevents shipping a corrupted tool chain
-	// to the upstream model, which would cause inference errors or silent
-	// hallucinations. Keeping oversized history is safer than breaking the
-	// tool_call/tool_result protocol contract.
+// 2026-08-06 fix: integrity is verified AFTER stripping. If any
+// surviving tool result lacks a preceding assistant.tool_calls with a
+// matching id, the strip is rejected and the original body is returned
+// unchanged (fail-open). This prevents shipping a corrupted tool chain
+// to the upstream model, which would cause inference errors or silent
+// hallucinations. Keeping oversized history is safer than breaking the
+// tool_call/tool_result protocol contract.
 func StripToolInfo(body []byte, protocol string) ([]byte, *StripResult) {
 	if len(body) == 0 {
 		return body, &StripResult{DidStrip: false}
@@ -150,6 +151,175 @@ func StripThinkingBlocksOnly(body []byte) ([]byte, *StripResult) {
 	result.BytesAfter = len(newBody)
 	result.DidStrip = true
 	return newBody, result
+}
+
+// DefaultKeepLatestMedia is how many of the most-recent inline media blocks to
+// preserve when pruning (docs/omni-ref3 A3, mirrors omniroute contextManager's
+// DEFAULT_KEEP_LATEST_IMAGES=2). Older media — base64 screenshots/audio pasted
+// in earlier turns — is the dominant token cost in multimodal sessions, yet is
+// rarely referenced again. Pruning them to a placeholder keeps the turn
+// structure and text intact while reclaiming the bulk of the bytes.
+const DefaultKeepLatestMedia = 2
+
+// mediaPlaceholder replaces a pruned inline image/audio block. Kept short and
+// bracketed so the model treats it as commentary, not content.
+const mediaPlaceholder = "[Earlier image/audio removed to fit context window]"
+
+// mediaBlockTypes are the content-block types eligible for pruning. This covers
+// the four provider shapes unified into the IR (image / input_audio / audio)
+// plus the raw OpenAI image_url and Anthropic source.base64 forms that appear
+// when the body bypassed IR parsing. text / tool_use / tool_result / thinking
+// are never pruned here.
+var mediaBlockTypes = map[string]bool{
+	"image":       true, // IR-normalized image block
+	"input_audio": true, // OpenAI chat audio input
+	"audio":       true, // OpenAI/Anthropic/Qwen audio
+	"image_url":   true, // raw OpenAI image_url part
+}
+
+// PruneOldMediaBlocks replaces inline image/audio content blocks older than the
+// most-recent `keepLatest` with a short text placeholder. It is safe to run on
+// the un-windowed body: it never drops a whole message (only swaps media
+// content blocks for text), so tool_call/tool_result pairing and role
+// alternation are preserved. Returns the pruned body and a result summary.
+//
+// docs/omni-ref3 A3: multimodal sessions accumulate large base64 payloads in
+// early turns (screenshots, audio clips). Leaving them in forces the compression
+// window to fire earlier and wastes the upstream model's context budget on
+// media the conversation has moved past. Pruning the oldest, keeping the latest
+// 2, is the omniroute contextManager pattern (DEFAULT_KEEP_LATEST_IMAGES=2),
+// adapted to walk our raw-message form.
+//
+// keepLatest <= 0 is clamped to DefaultKeepLatestMedia.
+func PruneOldMediaBlocks(body []byte, keepLatest int) ([]byte, *StripResult) {
+	if keepLatest <= 0 {
+		keepLatest = DefaultKeepLatestMedia
+	}
+	result := &StripResult{BytesBefore: len(body)}
+	if len(body) == 0 {
+		return body, result
+	}
+	msgs, err := extractMessages(body)
+	if err != nil || len(msgs) == 0 {
+		return body, result
+	}
+
+	// First pass: count total media blocks across all messages so we know how
+	// many of the oldest to cull. We cull (total - keepLatest) of them, walking
+	// oldest-first.
+	total := countMediaBlocks(msgs)
+	cull := total - keepLatest
+	if cull <= 0 {
+		return body, result // nothing to prune (fewer media blocks than the keep window)
+	}
+
+	filtered := make([]json.RawMessage, 0, len(msgs))
+	pruned := 0
+	for _, msg := range msgs {
+		cleaned, msgPruned := pruneMediaInMessage(msg, &cull)
+		pruned += msgPruned
+		filtered = append(filtered, cleaned)
+	}
+	if pruned == 0 {
+		return body, result
+	}
+
+	newMsgsRaw, err := json.Marshal(filtered)
+	if err != nil {
+		return body, result
+	}
+	newBody, ok := spliceBodyMessages(body, newMsgsRaw)
+	if !ok {
+		return body, result
+	}
+	result.MediaBlocksPruned = pruned
+	result.BytesAfter = len(newBody)
+	result.DidStrip = true
+	return newBody, result
+}
+
+// countMediaBlocks sums inline media content blocks across messages. Only
+// array-form content is inspected (string content carries no blocks).
+func countMediaBlocks(msgs []json.RawMessage) int {
+	total := 0
+	for _, raw := range msgs {
+		var m struct {
+			Content json.RawMessage `json:"content"`
+		}
+		if err := json.Unmarshal(raw, &m); err != nil {
+			continue
+		}
+		var parts []json.RawMessage
+		if json.Unmarshal(m.Content, &parts) != nil {
+			continue // string content, not an array of blocks
+		}
+		for _, p := range parts {
+			var b struct {
+				Type string `json:"type"`
+			}
+			if json.Unmarshal(p, &b) == nil && mediaBlockTypes[b.Type] {
+				total++
+			}
+		}
+	}
+	return total
+}
+
+// pruneMediaInMessage replaces media content blocks in a single message with
+// placeholders while `remaining` (pointer so the caller's budget decrements
+// across messages) is > 0. Once the budget is exhausted, remaining media is
+// kept verbatim (these are the most-recent blocks). Returns the (possibly
+// rewritten) message and how many blocks were pruned. A message with string
+// content is returned unchanged.
+func pruneMediaInMessage(raw json.RawMessage, remaining *int) (json.RawMessage, int) {
+	var m struct {
+		Content json.RawMessage `json:"content"`
+	}
+	if err := json.Unmarshal(raw, &m); err != nil {
+		return raw, 0
+	}
+	var parts []json.RawMessage
+	if json.Unmarshal(m.Content, &parts) != nil {
+		return raw, 0 // string content
+	}
+
+	rewritten := false
+	pruned := 0
+	out := make([]json.RawMessage, 0, len(parts))
+	for _, p := range parts {
+		var b struct {
+			Type string `json:"type"`
+		}
+		isMedia := json.Unmarshal(p, &b) == nil && mediaBlockTypes[b.Type]
+		if isMedia && *remaining > 0 {
+			out = append(out, json.RawMessage(`{"type":"text","text":"`+mediaPlaceholder+`"}`))
+			*remaining--
+			pruned++
+			rewritten = true
+			continue
+		}
+		out = append(out, p)
+	}
+	if !rewritten {
+		return raw, 0
+	}
+
+	// Re-serialize the message with the pruned content array, preserving every
+	// other field (role, tool_calls, tool_call_id, name, ...).
+	var obj map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &obj); err != nil {
+		return raw, pruned // fall back to original rather than dropping the message
+	}
+	newContent, err := json.Marshal(out)
+	if err != nil {
+		return raw, pruned
+	}
+	obj["content"] = newContent
+	rebuilt, err := json.Marshal(obj)
+	if err != nil {
+		return raw, pruned
+	}
+	return rebuilt, pruned
 }
 
 // toolChainIntact reports whether every tool result in msgs has a
@@ -312,13 +482,13 @@ func filterMessages(msgs []json.RawMessage, rounds []toolRound, result *StripRes
 // the model needs to continue a multi-step task without re-asking.
 //
 // Hard-coded as 2 rather than configurable because:
-//  - Fewer than 2 risks the model losing track of multi-step workflows.
-//  - More than 2 defeats the purpose of strip (agent sessions routinely
-//    accumulate 50+ rounds; keeping 3+ wouldn't meaningfully reduce size).
-//  - The value interacts with window triggers (token/count/idle), which
-//    are already tunable via env. Adding another knob increases the
-//    chance of mis-configuration (e.g. keepLastRounds=10 + maxMsgCount=50
-//    would only strip when >60 rounds exist, making the feature inert).
+//   - Fewer than 2 risks the model losing track of multi-step workflows.
+//   - More than 2 defeats the purpose of strip (agent sessions routinely
+//     accumulate 50+ rounds; keeping 3+ wouldn't meaningfully reduce size).
+//   - The value interacts with window triggers (token/count/idle), which
+//     are already tunable via env. Adding another knob increases the
+//     chance of mis-configuration (e.g. keepLastRounds=10 + maxMsgCount=50
+//     would only strip when >60 rounds exist, making the feature inert).
 const keepLastRounds = 2
 
 // hasAnyToolCallsAfter is unused but kept for future use.
