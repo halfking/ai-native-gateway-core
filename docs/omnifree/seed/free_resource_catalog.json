@@ -1,0 +1,306 @@
+[
+  {
+    "provider_code": "openrouter",
+    "model_id": "openai/gpt-3.5-turbo:free",
+    "display_name": "GPT-3.5 Turbo (Free)",
+    "display_name_en": "GPT-3.5 Turbo (Free)",
+    "free_type": "recurring-daily",
+    "monthly_tokens": 0,
+    "daily_tokens": 200000,
+    "credit_tokens": 0,
+    "pool_key": "openrouter-free-pool",
+    "tos_verdict": "ok",
+    "tos_notes": "OpenRouter 官方允许代理使用，免费层每日 50 次请求（base）或 1000 次（充值 $10 后）",
+    "constraints_json": {
+      "rpd": 50,
+      "rpm": 20,
+      "window": "UTC-day"
+    },
+    "discovery_method": "official-docs",
+    "verified_at": "2026-08-01T00:00:00Z",
+    "enabled": true
+  },
+  {
+    "provider_code": "openrouter",
+    "model_id": "openai/gpt-4o-mini:free",
+    "display_name": "GPT-4o Mini (Free)",
+    "display_name_en": "GPT-4o Mini (Free)",
+    "free_type": "recurring-daily",
+    "monthly_tokens": 0,
+    "daily_tokens": 150000,
+    "credit_tokens": 0,
+    "pool_key": "openrouter-free-pool",
+    "tos_verdict": "ok",
+    "tos_notes": "与 gpt-3.5-turbo:free 共享日配额池",
+    "constraints_json": {
+      "rpd": 50,
+      "rpm": 20,
+      "window": "UTC-day"
+    },
+    "discovery_method": "official-docs",
+    "verified_at": "2026-08-01T00:00:00Z",
+    "enabled": true
+  },
+  {
+    "provider_code": "mistral",
+    "model_id": "mistral-large-latest",
+    "display_name": "Mistral Large (Free Tier)",
+    "display_name_en": "Mistral Large (Free Tier)",
+    "free_type": "recurring-monthly",
+    "monthly_tokens": 1000000000,
+    "daily_tokens": 0,
+    "credit_tokens": 0,
+    "pool_key": "mistral-free",
+    "tos_verdict": "ok",
+    "tos_notes": "Mistral 官方提供 1B tokens/月免费额度，需注册账号",
+    "constraints_json": {
+      "rpm": 60,
+      "window": "calendar-month"
+    },
+    "discovery_method": "official-docs",
+    "verified_at": "2026-08-01T00:00:00Z",
+    "enabled": true
+  },
+  {
+    "provider_code": "groq",
+    "model_id": "llama-3.3-70b-versatile",
+    "display_name": "Llama 3.3 70B (Groq Free)",
+    "display_name_en": "Llama 3.3 70B (Groq Free)",
+    "free_type": "recurring-daily",
+    "monthly_tokens": 0,
+    "daily_tokens": 14400000,
+    "credit_tokens": 0,
+    "pool_key": "groq-free",
+    "tos_verdict": "caution",
+    "tos_notes": "Groq 未明确禁止但也未明确允许代理使用，社区广泛使用中",
+    "constraints_json": {
+      "rpd": 14400,
+      "rpm": 30,
+      "window": "UTC-day"
+    },
+    "discovery_method": "community",
+    "verified_at": "2026-08-01T00:00:00Z",
+    "enabled": true
+  },
+  {
+    "provider_code": "gemini",
+    "model_id": "gemini-2.0-flash-exp",
+    "display_name": "Gemini 2.0 Flash (Free)",
+    "display_name_en": "Gemini 2.0 Flash (Free)",
+    "free_type": "recurring-monthly",
+    "monthly_tokens": 60000000,
+    "daily_tokens": 0,
+    "credit_tokens": 0,
+    "pool_key": "gemini-free",
+    "tos_verdict": "ok",
+    "tos_notes": "Google AI Studio 提供每月 60M tokens 免费配额",
+    "constraints_json": {
+      "rpm": 15,
+      "rpd": 1500,
+      "window": "calendar-month"
+    },
+    "discovery_method": "official-docs",
+    "verified_at": "2026-08-01T00:00:00Z",
+    "enabled": true
+  },
+  {
+    "provider_code": "cerebras",
+    "model_id": "llama3.1-8b",
+    "display_name": "Llama 3.1 8B (Cerebras Free)",
+    "display_name_en": "Llama 3.1 8B (Cerebras Free)",
+    "free_type": "recurring-monthly",
+    "monthly_tokens": 30000000,
+    "daily_tokens": 0,
+    "credit_tokens": 0,
+    "pool_key": "cerebras-free",
+    "tos_verdict": "ok",
+    "tos_notes": "Cerebras 提供每月 1M 请求或 30M tokens 免费额度",
+    "constraints_json": {
+      "rpm": 30,
+      "window": "calendar-month"
+    },
+    "discovery_method": "official-docs",
+    "verified_at": "2026-08-01T00:00:00Z",
+    "enabled": true
+  },
+  {
+    "provider_code": "sambanova",
+    "model_id": "Meta-Llama-3.1-8B-Instruct",
+    "display_name": "Llama 3.1 8B (SambaNova Free)",
+    "display_name_en": "Llama 3.1 8B (SambaNova Free)",
+    "free_type": "recurring-monthly",
+    "monthly_tokens": 30000000,
+    "daily_tokens": 0,
+    "credit_tokens": 0,
+    "pool_key": "sambanova-free",
+    "tos_verdict": "ok",
+    "tos_notes": "SambaNova 提供每月免费额度",
+    "constraints_json": {
+      "rpm": 20,
+      "window": "calendar-month"
+    },
+    "discovery_method": "official-docs",
+    "verified_at": "2026-08-01T00:00:00Z",
+    "enabled": true
+  },
+  {
+    "provider_code": "cloudflare-ai",
+    "model_id": "@cf/meta/llama-3.1-8b-instruct",
+    "display_name": "Llama 3.1 8B (Cloudflare Workers AI)",
+    "display_name_en": "Llama 3.1 8B (Cloudflare Workers AI)",
+    "free_type": "recurring-daily",
+    "monthly_tokens": 30000000,
+    "daily_tokens": 1000000,
+    "credit_tokens": 0,
+    "pool_key": "cloudflare-ai-free",
+    "tos_verdict": "ok",
+    "tos_notes": "Cloudflare Workers AI 提供每日 10,000 neurons 免费额度",
+    "constraints_json": {
+      "rpd": 10000,
+      "window": "UTC-day"
+    },
+    "discovery_method": "official-docs",
+    "verified_at": "2026-08-01T00:00:00Z",
+    "enabled": true
+  },
+  {
+    "provider_code": "siliconflow",
+    "model_id": "deepseek-ai/DeepSeek-V3",
+    "display_name": "DeepSeek-V3 (SiliconFlow Free)",
+    "display_name_en": "DeepSeek-V3 (SiliconFlow Free)",
+    "free_type": "recurring-uncapped",
+    "monthly_tokens": 0,
+    "daily_tokens": 0,
+    "credit_tokens": 0,
+    "pool_key": "siliconflow-free",
+    "tos_verdict": "ok",
+    "tos_notes": "SiliconFlow 提供永久免费调用但无官方配额上限，实际受速率限制",
+    "constraints_json": {
+      "rpm": 60,
+      "rpd": 5000
+    },
+    "discovery_method": "community",
+    "verified_at": "2026-08-01T00:00:00Z",
+    "enabled": true
+  },
+  {
+    "provider_code": "glm-cn",
+    "model_id": "glm-4-flash",
+    "display_name": "GLM-4-Flash (智谱免费)",
+    "display_name_en": "GLM-4-Flash (Free)",
+    "free_type": "recurring-uncapped",
+    "monthly_tokens": 0,
+    "daily_tokens": 0,
+    "credit_tokens": 0,
+    "pool_key": "glm-cn-free",
+    "tos_verdict": "ok",
+    "tos_notes": "智谱 AI 提供 GLM-4-Flash 永久免费调用",
+    "constraints_json": {
+      "rpm": 60,
+      "rpd": 10000
+    },
+    "discovery_method": "official-docs",
+    "verified_at": "2026-08-01T00:00:00Z",
+    "enabled": true
+  },
+  {
+    "provider_code": "opencode",
+    "model_id": "gpt-4o-mini",
+    "display_name": "GPT-4o Mini (OpenCode Keyless)",
+    "display_name_en": "GPT-4o Mini (OpenCode Keyless)",
+    "free_type": "keyless",
+    "monthly_tokens": 24000000,
+    "daily_tokens": 800000,
+    "credit_tokens": 0,
+    "pool_key": "opencode-keyless",
+    "tos_verdict": "caution",
+    "tos_notes": "无需认证，通过 OpenCode 公共端点调用，稳定性未知",
+    "constraints_json": {
+      "rpm": 20,
+      "rpd": 1000
+    },
+    "discovery_method": "community",
+    "verified_at": "2026-08-01T00:00:00Z",
+    "enabled": true
+  },
+  {
+    "provider_code": "duckduckgo-web",
+    "model_id": "gpt-4o-mini",
+    "display_name": "GPT-4o Mini (DuckDuckGo Chat)",
+    "display_name_en": "GPT-4o Mini (DuckDuckGo Chat)",
+    "free_type": "keyless",
+    "monthly_tokens": 12000000,
+    "daily_tokens": 400000,
+    "credit_tokens": 0,
+    "pool_key": "duckduckgo-keyless",
+    "tos_verdict": "ambiguous",
+    "tos_notes": "DuckDuckGo Chat 网页版提供免费调用，未明确 API 使用条款",
+    "constraints_json": {
+      "rpm": 10,
+      "rpd": 500
+    },
+    "discovery_method": "community",
+    "verified_at": "2026-08-01T00:00:00Z",
+    "enabled": false
+  },
+  {
+    "provider_code": "felo-web",
+    "model_id": "gpt-4o-mini",
+    "display_name": "GPT-4o Mini (Felo Search)",
+    "display_name_en": "GPT-4o Mini (Felo Search)",
+    "free_type": "keyless",
+    "monthly_tokens": 6000000,
+    "daily_tokens": 200000,
+    "credit_tokens": 0,
+    "pool_key": "felo-keyless",
+    "tos_verdict": "ambiguous",
+    "tos_notes": "Felo 搜索引擎提供免费 AI 对话，未明确 API 使用条款",
+    "constraints_json": {
+      "rpm": 10,
+      "rpd": 300
+    },
+    "discovery_method": "community",
+    "verified_at": "2026-08-01T00:00:00Z",
+    "enabled": false
+  },
+  {
+    "provider_code": "deepseek",
+    "model_id": "deepseek-chat",
+    "display_name": "DeepSeek Chat (Free Tier)",
+    "display_name_en": "DeepSeek Chat (Free Tier)",
+    "free_type": "recurring-monthly",
+    "monthly_tokens": 50000000,
+    "daily_tokens": 0,
+    "credit_tokens": 0,
+    "pool_key": "deepseek-free",
+    "tos_verdict": "ok",
+    "tos_notes": "DeepSeek 提供每月免费配额（需验证具体数值）",
+    "constraints_json": {
+      "rpm": 60,
+      "window": "calendar-month"
+    },
+    "discovery_method": "official-docs",
+    "verified_at": "2026-08-01T00:00:00Z",
+    "enabled": true
+  },
+  {
+    "provider_code": "huggingface",
+    "model_id": "meta-llama/Llama-3.2-3B-Instruct",
+    "display_name": "Llama 3.2 3B (HuggingFace Inference)",
+    "display_name_en": "Llama 3.2 3B (HuggingFace Inference)",
+    "free_type": "recurring-monthly",
+    "monthly_tokens": 10000000,
+    "daily_tokens": 0,
+    "credit_tokens": 0,
+    "pool_key": "huggingface-free",
+    "tos_verdict": "ok",
+    "tos_notes": "HuggingFace Inference API 提供免费额度",
+    "constraints_json": {
+      "rpm": 30,
+      "window": "calendar-month"
+    },
+    "discovery_method": "official-docs",
+    "verified_at": "2026-08-01T00:00:00Z",
+    "enabled": true
+  }
+]
