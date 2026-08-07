@@ -85,10 +85,11 @@ P3 退役 V1
 | 上下文窗口自校正 | A4 | 无 |
 
 ### P1.4 会话元数据接线
-| 条目 | 来源 | 前置 |
-|---|---|---|
-| 元数据聚合器（摘要/intent/cluster → `SetSessionMetadata`） | M1 | A1 |
-| 结构化 tag + 自动打标 | M3 | M1 |
+| 条目 | 来源 | 前置 | 状态 |
+|---|---|---|---|
+| ✅ 元数据聚合器（摘要/intent/cluster → `SetSessionMetadata`） | M1 | A1 | **已实现** |
+| ✅ 统一元数据事实源（V2 `gateway.sessions` 为准，title/user_tags 列，双读双写） | M2 | A1 | **已实现** |
+| ✅ 结构化 tag + 自动打标桥接（`GetSessionMetadata` 合并 user_tags + session_tags） | M3 | M1 | **已实现** |
 
 ### P1.5 IR / 变换
 | 条目 | 来源 | 前置 |
@@ -109,17 +110,17 @@ P3 退役 V1
 
 **目标**：V2 读全量后，收敛双轨、补工程化能力。依赖 P1 的 A1 全量。
 
-| 条目 | 来源 | 前置 |
-|---|---|---|
-| 统一元数据事实源（V2 为准，Redis 降缓存） | M2 | A1 全量 |
-| 摘要衰减/归档 | M5 | M2 |
-| 首轮即时 task_type | M7 | M1 |
-| 压缩结果 memo | C3 | C4 |
-| 压缩预览 endpoint | C7 | 无 |
-| L1 byte 限制 | D3 | 无 |
-| 收敛 sticky 实现（删旧版） | D4/D5 | 无 |
-| 旧缓存包退役（`cache/semantic\|prefix\|delta\|kv`，随 V1） | D8 | 无生产引用确认 |
-| 删 `Estimator.NeedsCompression` 死代码 | C6 | C4 |
+| 条目 | 来源 | 前置 | 状态 |
+|---|---|---|---|
+| ✅ 统一元数据事实源（V2 为准，title/user_tags 已迁移；Redis 降缓存待双写期） | M2 | A1 全量 | **部分完成**（列已添加，双写/迁移待实施） |
+| 摘要衰减/归档 | M5 | M2 | 待 |
+| 首轮即时 task_type | M7 | M1 | 待 |
+| 压缩结果 memo | C3 | C4 | 待 |
+| 压缩预览 endpoint | C7 | 无 | 待 |
+| L1 byte 限制 | D3 | 无 | 待 |
+| 收敛 sticky 实现（删旧版） | D4/D5 | 无 | 待 |
+| 旧缓存包退役（`cache/semantic\|prefix\|delta\|kv`，随 V1） | D8 | 无生产引用确认 | 待 |
+| 删 `Estimator.NeedsCompression` 死代码 | C6 | C4 | 待 |
 
 ---
 

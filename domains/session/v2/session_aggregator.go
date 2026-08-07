@@ -292,9 +292,10 @@ func (a *SessionAggregator) CloseSession(ctx context.Context, tenantID, sessionI
 	return err
 }
 
-// SetSessionMetadata sets session-level metadata (task_type, topic, intent, etc.)
+// SetSessionMetadata sets session-level metadata (task_type, topic, intent, title, user_tags, etc.)
 //
-// This is typically called by async analysis workers after session closes.
+// This is typically called by async analysis workers after session closes, or by
+// the auto-title generator / user tag updates (M2/M3).
 func (a *SessionAggregator) SetSessionMetadata(ctx context.Context, tenantID, sessionID string, meta SessionMetadata) error {
 	_, err := a.db.Exec(ctx, `
 		UPDATE gateway.sessions
@@ -302,9 +303,11 @@ func (a *SessionAggregator) SetSessionMetadata(ctx context.Context, tenantID, se
 			task_type = COALESCE(NULLIF($3, ''), task_type),
 			client_type = COALESCE(NULLIF($4, ''), client_type),
 			topic = COALESCE(NULLIF($5, ''), topic),
-			intent = COALESCE(NULLIF($6, ''), intent)
+			intent = COALESCE(NULLIF($6, ''), intent),
+			title = COALESCE(NULLIF($7, ''), title),
+			user_tags = CASE WHEN $8::text[] IS NOT NULL THEN $8 ELSE user_tags END
 		WHERE tenant_id = $1 AND session_id = $2
-	`, tenantID, sessionID, meta.TaskType, meta.ClientType, meta.Topic, meta.Intent)
+	`, tenantID, sessionID, meta.TaskType, meta.ClientType, meta.Topic, meta.Intent, meta.Title, meta.UserTags)
 
 	return err
 }
@@ -315,4 +318,80 @@ type SessionMetadata struct {
 	ClientType string
 	Topic      string
 	Intent     string
+	Title      string   // docs/omni-ref3 M2: unified fact source (from Redis/session_titles)
+	UserTags   []string // docs/omni-ref3 M3: user-supplied tags (X-Gw-Tags), distinct from session_tags (auto)
+}
+
+// GetSessionMetadata retrieves session metadata from gateway.sessions, optionally
+// merging auto-generated tags from session_tags (M3).
+//
+// Returns nil if the session does not exist. Auto tags (tag_source='auto') are
+// merged with user_tags if mergeAutoTags is true.
+func (a *SessionAggregator) GetSessionMetadata(ctx context.Context, tenantID, sessionID string, mergeAutoTags bool) (*SessionMetadata, error) {
+	var meta SessionMetadata
+	var userTags []string
+
+	err := a.db.QueryRow(ctx, `
+		SELECT 
+			COALESCE(task_type, ''),
+			COALESCE(client_type, ''),
+			COALESCE(topic, ''),
+			COALESCE(intent, ''),
+			COALESCE(title, ''),
+			COALESCE(user_tags, ARRAY[]::text[])
+		FROM gateway.sessions
+		WHERE tenant_id = $1 AND session_id = $2
+	`, tenantID, sessionID).Scan(
+		&meta.TaskType, &meta.ClientType, &meta.Topic,
+		&meta.Intent, &meta.Title, &userTags,
+	)
+
+	if err != nil {
+		if err.Error() == "no rows in result set" {
+			return nil, nil // session does not exist
+		}
+		return nil, err
+	}
+
+	meta.UserTags = userTags
+
+	// M3: merge auto tags from session_tags if requested
+	if mergeAutoTags {
+		var autoTags []string
+		rows, err := a.db.Query(ctx, `
+			SELECT DISTINCT tag_value
+			FROM gateway.session_tags
+			WHERE tenant_id = $1 AND session_id = $2 AND tag_source = 'auto'
+			ORDER BY tag_value
+		`, tenantID, sessionID)
+		if err != nil {
+			return nil, err
+		}
+		defer rows.Close()
+
+		for rows.Next() {
+			var tag string
+			if err := rows.Scan(&tag); err != nil {
+				return nil, err
+			}
+			autoTags = append(autoTags, tag)
+		}
+		if err := rows.Err(); err != nil {
+			return nil, err
+		}
+
+		// Merge and deduplicate: user tags + auto tags
+		seen := make(map[string]bool)
+		for _, tag := range meta.UserTags {
+			seen[tag] = true
+		}
+		for _, tag := range autoTags {
+			if !seen[tag] {
+				meta.UserTags = append(meta.UserTags, tag)
+				seen[tag] = true
+			}
+		}
+	}
+
+	return &meta, nil
 }
