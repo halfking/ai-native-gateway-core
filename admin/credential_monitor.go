@@ -218,12 +218,25 @@ func (m *CredentialMonitorHandlers) handleMonitorSummary(w http.ResponseWriter, 
 	providerID := queryInt(r, "provider_id", 0)
 	credentialID := queryInt(r, "credential_id", 0)
 	detailMode := credentialID > 0
+	// 2026-08-07: tenant_admin must only see their own credentials.
+	// Without this filter, the WHERE clause exposes every tenant's
+	// provider/credential names + IDs to anyone calling the endpoint.
+	// We pass an additional placeholder ($3) only for tenant_admin; the
+	// super_admin path keeps the original 2-arg form. The recent_success_rate
+	// LATERAL function is keyed by credential_id (which is already tenant-
+	// scoped by virtue of being a row in `credentials`), so it does not
+	// leak across tenants.
+	tenantID := ""
+	if IsTenantAdmin(r) {
+		tenantID = GetTenantID(r)
+	}
 	startedAt := time.Now()
 
 	// 30s cache: the page auto-refreshes every 10-60s and the per-model
-	// LATERAL success-rate join is the heaviest part. Cache key excludes
-	// nothing but provider_id (the only variable input).
-	cacheKey := fmt.Sprintf("p%d:c%d:d%t:v%d", providerID, credentialID, detailMode, monitorSummarySchemaVersion)
+	// LATERAL success-rate join is the heaviest part. Cache key includes the
+	// caller's tenant scope so concurrent super_admin and tenant_admin
+	// callers do not share a cached payload that leaks cross-tenant rows.
+	cacheKey := fmt.Sprintf("p%d:c%d:d%t:t=%s:v%d", providerID, credentialID, detailMode, tenantID, monitorSummarySchemaVersion)
 	if cached, created, expires, ok := monitorSummaryCache.get(cacheKey); ok {
 		cached["meta"] = monitorSummaryMeta(created, expires, true, 0)
 		writeJSON(w, http.StatusOK, cached)
@@ -278,6 +291,7 @@ func (m *CredentialMonitorHandlers) handleMonitorSummary(w http.ResponseWriter, 
 		WHERE ($1 = 0 OR c.provider_id = $1)
 		  AND ($2 = 0 OR c.id = $2)
 		  AND c.lifecycle_status != 'retired'
+		  AND ($3 = '' OR c.tenant_id = $3)
 		ORDER BY c.provider_id, c.id
 	`
 
@@ -362,7 +376,7 @@ func (m *CredentialMonitorHandlers) handleMonitorSummary(w http.ResponseWriter, 
 	}
 	query = fmt.Sprintf(query, modelsSelect)
 
-	rows, err := m.h.db.Query(ctx, query, providerID, credentialID)
+	rows, err := m.h.db.Query(ctx, query, providerID, credentialID, tenantID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, fmt.Sprintf("query failed: %v", err))
 		return

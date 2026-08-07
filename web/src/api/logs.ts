@@ -146,9 +146,27 @@ export interface RoutingAttempt {
 	error_message?: string
 }
 
+// RequestLogsAggregate carries totals over the rows matching the listLogs
+// filter set, independent of pagination. The /request-logs page renders
+// these as top-of-page summary cards. Sums are computed in PostgreSQL
+// via COALESCE(..., 0); null on the wire means the aggregate query
+// failed and the backend short-circuited to a zero-valued payload so
+// the list endpoint still succeeds with items + count.
+export interface RequestLogsAggregate {
+  total_requests: number
+  prompt_tokens: number | null
+  completion_tokens: number | null
+  cache_read_tokens: number | null
+  cache_write_tokens: number | null
+  total_tokens: number | null
+  cost_usd: number | null
+  credits_charged: number | null
+}
+
 export interface RequestLogsResponse {
   items: RequestLogRow[]
   count: number
+  aggregate?: RequestLogsAggregate
 }
 
 export interface SessionSummaryMeta {
