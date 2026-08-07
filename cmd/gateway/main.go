@@ -1705,11 +1705,32 @@ func main() {
 		// paths run the same lossless summary. Built once here to avoid
 		// constructing two adapter chains.
 		compactionDeps := NewDependenciesFromExecutor(routingExec)
+
+		// docs/omni-ref3 C3: compression result memo. OFF by default — set
+		// LLM_GATEWAY_COMPRESSION_MEMO_TTL to a positive duration (e.g. "5m")
+		// to enable. Requires Redis; without a client the memo stays disabled.
+		var resultMemo *compression.ResultMemo
+		if memoTTLRaw := os.Getenv("LLM_GATEWAY_COMPRESSION_MEMO_TTL"); memoTTLRaw != "" {
+			memoTTL, memoErr := time.ParseDuration(memoTTLRaw)
+			switch {
+			case memoErr != nil || memoTTL <= 0:
+				slog.Warn("compression memo disabled: invalid LLM_GATEWAY_COMPRESSION_MEMO_TTL",
+					"value", memoTTLRaw, "error", memoErr)
+			case fpSlotRedis == nil:
+				slog.Warn("compression memo disabled: no Redis client available",
+					"requested_ttl", memoTTL.String())
+			default:
+				resultMemo = compression.NewResultMemo(fpSlotRedis, memoTTL)
+				slog.Info("compression result memo enabled (C3)", "ttl", memoTTL.String())
+			}
+		}
+
 		scDeps := compression.SessionCompressorDeps{
 			Cache:          scCache,
 			CacheV2:        sessionCacheV2,  // V2 cache (Phase V2-2.4)
 			Builder:        outboundBuilder, // V2 builder (Phase V2-2.4)
 			CompactionDeps: compactionDeps,
+			ResultMemo:     resultMemo, // nil = memo disabled (C3)
 		}
 		chatHandler.SetSessionCompressor(compression.NewSessionCompressor(scDeps))
 		slog.Info("v3 session-level compressor wired",

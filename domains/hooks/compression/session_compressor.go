@@ -63,6 +63,10 @@ type SessionCompressorDeps struct {
 	// compressor falls back to mechanical trim.
 	CompactionDeps *Dependencies
 
+	// ResultMemo caches compression results to avoid redundant computation
+	// (docs/omni-ref3 C3). When nil, memo is disabled.
+	ResultMemo *ResultMemo
+
 	// Disabled completely disables the session compressor when true.
 	// Reads LLM_GATEWAY_SESSION_COMPRESSOR_DISABLE env var at startup.
 	Disabled bool
@@ -258,6 +262,11 @@ func (sc *SessionCompressor) Prepare(
 	res.TokenEst = diffResult.TokenEst
 	res.MsgHashes = marshalHashes(diffResult.MsgHashes)
 
+	// memoInputForStore is the body as it entered the expensive compression
+	// stage; it is the memo key input (docs/omni-ref3 C3). Set right before the
+	// summary/trim so the store path keys on exactly what the lookup path did.
+	var memoInputForStore []byte
+
 	// ── Phase 3: Tools caching ────────────────────────────────────────────
 	var toolsCached bool
 	if state != nil {
@@ -363,6 +372,65 @@ func (sc *SessionCompressor) Prepare(
 
 		res.WindowTriggered = winResult.Reason
 
+		// ── Result memo lookup (docs/omni-ref3 C3) ─────────────────────
+		// Everything below this point is the expensive work: an LLM summary
+		// (seconds + upstream quota) or a mechanical trim over a large body.
+		// Key on the body AS IT ENTERS compression (post strip/tools-caching)
+		// plus tenant+session+mode+protocol+contextWindow, so a retry of the
+		// same turn replays the previous result instead of paying again.
+		memoParts := MemoKeyParts{
+			TenantID:      tenantID,
+			SessionID:     gwSessionID,
+			Mode:          mode.String(),
+			Protocol:      protocol,
+			ContextWindow: contextWindow,
+		}
+		memoInputForStore = outboundBody
+		if sc.deps.ResultMemo.enabled() {
+			cached, err := sc.deps.ResultMemo.Get(ctx, memoParts, memoInputForStore)
+			if err != nil {
+				// Treat any memo error as a miss: the compression path below is
+				// always correct, the memo is only an optimisation.
+				slog.WarnContext(ctx, "session_compressor: memo lookup failed, recomputing",
+					"session", gwSessionID, "error", err)
+			}
+			if cached != nil {
+				RecordMemo(MemoResultHit)
+				slog.InfoContext(ctx, "session_compressor: memo hit, skipping summary/trim",
+					"session", gwSessionID, "strategy", cached.Strategy,
+					"cached_at", cached.CachedAt.Format(time.RFC3339))
+
+				outboundBody = cached.CompressedBody
+				res.OutboundBody = outboundBody
+				res.CompressionStrategy = cached.Strategy
+				res.SummaryMarker = cached.SummaryMarker
+				res.Degraded = cached.Degraded
+				res.MsgCount = cached.MsgCount
+				res.TokenEst = cached.TokenEst
+				if len(cached.MsgHashes) > 0 {
+					res.MsgHashes = cached.MsgHashes
+				}
+				if cached.WindowTriggered != "" {
+					res.WindowTriggered = cached.WindowTriggered
+				}
+
+				res.Lossiness = classifyLossiness(res.CompressionStrategy, res.SummaryMarker)
+				RecordLossiness(res.Lossiness)
+
+				res.CompressedPrefixHash = cached.CompressedPrefixHash
+				if res.CompressedPrefixHash == "" && len(outboundBody) > 0 {
+					if _, report, _ := prefix.Stabilize(outboundBody, prefix.Options{TailTurns: 1}); report != nil {
+						res.CompressedPrefixHash = report.PrefixHash
+					}
+				}
+
+				didCompressCached := !cached.Degraded && cached.SummaryMarker != ""
+				sc.updateCache(ctx, tenantID, gwSessionID, state, outboundBody, res, didCompressCached, fromV2)
+				return res
+			}
+			RecordMemo(MemoResultMiss)
+		}
+
 		if winResult.Degraded {
 			res.Degraded = true
 			trimmed := mechanicalTrim(outboundBody, contextWindow, protocol)
@@ -450,11 +518,46 @@ func (sc *SessionCompressor) Prepare(
 		}
 	}
 
+	// ── Result memo store (docs/omni-ref3 C3) ────────────────────────────
+	// Only cache results that actually cost something to produce: a summary
+	// or a mechanical trim. delta_append is cheap and its input changes every
+	// turn, so caching it would only churn Redis.
+	if sc.deps.ResultMemo.enabled() && len(memoInputForStore) > 0 &&
+		memoStorable(res.CompressionStrategy) && len(res.OutboundBody) > 0 {
+		err := sc.deps.ResultMemo.Set(ctx, MemoKeyParts{
+			TenantID:      tenantID,
+			SessionID:     gwSessionID,
+			Mode:          mode.String(),
+			Protocol:      protocol,
+			ContextWindow: contextWindow,
+		}, memoInputForStore, &MemoValue{
+			CompressedBody:       res.OutboundBody,
+			Strategy:             res.CompressionStrategy,
+			SummaryMarker:        res.SummaryMarker,
+			WindowTriggered:      res.WindowTriggered,
+			Degraded:             res.Degraded,
+			MsgCount:             res.MsgCount,
+			TokenEst:             res.TokenEst,
+			MsgHashes:            res.MsgHashes,
+			CompressedPrefixHash: res.CompressedPrefixHash,
+		})
+		if err != nil {
+			slog.WarnContext(ctx, "session_compressor: memo store failed",
+				"session", gwSessionID, "error", err)
+		}
+	}
+
 	// ── Persist updated cache state ──────────────────────────────────────
 	didCompress := winResult.ShouldTrigger && !winResult.Degraded && res.SummaryMarker != ""
 	sc.updateCache(ctx, tenantID, gwSessionID, state, outboundBody, res, didCompress, fromV2)
 
 	return res
+}
+
+// memoStorable reports whether a strategy is worth memoising. Only the
+// expensive post-window strategies qualify (docs/omni-ref3 C3).
+func memoStorable(strategy string) bool {
+	return strategy == "mechanical_trim" || strings.HasPrefix(strategy, "sliding_window_")
 }
 
 // classifyLossiness maps a compression strategy to a recoverability class.

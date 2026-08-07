@@ -66,6 +66,19 @@ var lossinessCounter = prometheus.NewCounterVec(
 	[]string{"lossiness"},
 )
 
+// memoCounter tracks compression result memo outcomes (docs/omni-ref3 C3).
+// result is "hit" (a cached compression was replayed, so the LLM summary /
+// mechanical trim was skipped) or "miss" (the memo was consulted and empty, so
+// the full compression path ran). Requests where the memo is disabled emit
+// nothing, so hit/(hit+miss) is the true memo hit rate.
+var memoCounter = prometheus.NewCounterVec(
+	prometheus.CounterOpts{
+		Name: "compression_memo_total",
+		Help: "Compression result memo lookups by outcome (hit|miss). A hit skips the LLM summary / mechanical trim for an identical (tenant, session, mode, protocol, context_window, body).",
+	},
+	[]string{"result"},
+)
+
 func newMetrics() *metrics {
 	return &metrics{
 		triggered: prometheus.NewCounterVec(
@@ -108,6 +121,7 @@ func init() {
 		defaultMetrics.latency,
 		defaultMetrics.ratio,
 		lossinessCounter,
+		memoCounter,
 	}
 	for _, c := range collectors {
 		if err := prometheus.Register(c); err != nil {
@@ -133,6 +147,33 @@ func RecordLossiness(lossiness string) {
 // lossiness class. Production callers should scrape the Prometheus endpoint.
 func LossinessCount(lossiness string) float64 {
 	m, err := lossinessCounter.GetMetricWithLabelValues(lossiness)
+	if err != nil || m == nil {
+		return 0
+	}
+	pb := &dto.Metric{}
+	_ = m.(prometheus.Metric).Write(pb)
+	if pb.Counter != nil && pb.Counter.Value != nil {
+		return *pb.Counter.Value
+	}
+	return 0
+}
+
+// Memo outcome labels for compression_memo_total (docs/omni-ref3 C3).
+const (
+	MemoResultHit  = "hit"
+	MemoResultMiss = "miss"
+)
+
+// RecordMemo emits one compression_memo_total{result} sample. Called only when
+// the memo is enabled, so hit/(hit+miss) is the memo hit rate.
+func RecordMemo(result string) {
+	memoCounter.WithLabelValues(result).Inc()
+}
+
+// MemoCount is a test helper returning the current memo counter value for an
+// outcome. Production callers should scrape the Prometheus endpoint.
+func MemoCount(result string) float64 {
+	m, err := memoCounter.GetMetricWithLabelValues(result)
 	if err != nil || m == nil {
 		return 0
 	}
@@ -183,6 +224,7 @@ func ResetMetrics() {
 	defaultMetrics.latency.Reset()
 	defaultMetrics.ratio.Reset()
 	lossinessCounter.Reset()
+	memoCounter.Reset()
 }
 
 // TriggeredCount returns the current value of compression_triggered_total
