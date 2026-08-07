@@ -22,6 +22,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **抽取 useConnectionDetail composable (2026-08-06)**:
+  - **背景**: `LiveRequestStreamV2.vue` 的连接详情弹窗状态块（`showConnectionDetail` ref + `toggleConnectionDetail`）内联在组件里，切换逻辑依赖 `isAdmin` computed 与 `isEditingUrl`（来自 `useLiveStreamUrl`）
+  - **重构**:
+    - **`web/src/composables/useConnectionDetail.ts`**（新建）— 通过依赖注入接收 `isAdmin: Ref<boolean>` 与 `isEditingUrl: Ref<boolean>`，暴露 `showConnectionDetail` + `toggleConnectionDetail`（非管理员点击无效；关闭弹窗时同步退出编辑态）。仅暴露被使用的 API，YAGNI
+    - **`web/src/composables/useConnectionDetail.test.ts`**（新建）— 4 个单元测试：初始关闭 / 管理员展开 / 管理员关闭并退出编辑态 / 非管理员无效果
+    - **`web/src/components/LiveRequestStreamV2.vue`** 接入 composable：`isAdmin` computed 保留（模板仍直接使用），`isEditingUrl` 依赖 `useLiveStreamUrl`，因此调用置于 `useLiveStreamUrl` 之后规避 TDZ；组件从 1128 → 1125 行
+  - **验证**: vitest 35 文件 / 213 测试全绿（+4 用例）；vue-tsc exit 0；vite build 8.76s 成功
+  - **文档**: `docs/changelogs/2026-08-06-extract-connection-detail-composable.md`
+  - **Task B 收尾**: LiveRequestStreamV2 已抽取 6 个 composable，组件从 1425 → 1125 行（-300 行）
+
 - **抽取 useIncidentDiagnosis composable (2026-08-06)**:
   - **背景**: `LiveRequestStreamV2.vue` 的诊断工作台状态块（`activeIncidentId` / `activeIncidentPreview` + `handleDiagnose` / `closeDiagnose` / `handleRequestFromDrawer`）内联在组件里，承载 RouteIncidentDrawer（2026-07-13 Phase 1 只读）；唯一副作用是通过 `emit('openDetail')` 跳转
   - **重构**:
