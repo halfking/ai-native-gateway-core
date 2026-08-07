@@ -119,7 +119,7 @@ P3 退役 V1
 | ✅ 压缩预览 endpoint（`POST /api/admin/compression/preview`：`Preview()` 纯函数，逐阶段分解 + LLM honesty flag；不调 Prepare，无副作用；8 MiB 上限） | C7 | 无 | **已实现** |
 | ✅ L1 byte 限制（`l1MaxBytes` 256 MiB 默认 + `cache.session_l1_max_bytes` 热加载；`l1Entry.bytes` + `SessionCache.curBytes`；evict on count OR bytes；防止巨 body OOM） | D3 | 无 | **已实现** |
 | ✅ 收敛 sticky 实现（删除旧版 `session.StickyRouter`；统一到 `routing.StickyRouter` + `executors.StickyCache` + `ursmcache.StickyStore` 多级实现） | D4/D5 | 无 | **已实现** |
-| 旧缓存包退役（`cache/semantic\|prefix\|delta\|kv`，随 V1） | D8 | 无生产引用确认 | 待 |
+| ✅ 旧缓存包退役（删除 `cache/semantic|delta|kv` 孤立簇；保留 `cache/prefix` 用于 C8/D7 稳定化） | D8 | 无生产引用确认 | **已实现** |
 | 删 `Estimator.NeedsCompression` 死代码 | C6 | C4 | 待 |
 
 ---
