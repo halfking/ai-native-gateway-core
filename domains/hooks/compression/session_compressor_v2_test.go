@@ -32,10 +32,31 @@ func withPlatformFlag(t *testing.T, flagKey string, val bool) {
 	settings.Global = registry
 }
 
-// TestSessionCompressor_ShouldUseV2_FlagDisabled covers the default path:
-// flag off (or unset) → V2 never activates even when components are wired.
-func TestSessionCompressor_ShouldUseV2_FlagDisabled(t *testing.T) {
-	// No flag injected → GetPlatformBool falls back to false.
+// TestSessionCompressor_ShouldUseV2_DefaultOn covers the A1 decision: with
+// no flag set, shouldUseV2 falls back to TRUE, so V2 reads are on by default
+// (compress+summary cut over together). The kill-switch is the explicit
+// false case, exercised by TestSessionCompressor_ShouldUseV2_KillSwitchFalse.
+func TestSessionCompressor_ShouldUseV2_DefaultOn(t *testing.T) {
+	// No flag injected → GetPlatformBool falls back to the default (true).
+	cacheV2 := v2.NewSessionCacheV2(nil, "")
+	builder := v2.NewOutboundBuilder(v2.NewTurnReader(nil))
+
+	sc := &SessionCompressor{deps: SessionCompressorDeps{
+		CacheV2: cacheV2,
+		Builder: builder,
+	}}
+
+	if !sc.shouldUseV2("t1") {
+		t.Fatal("expected shouldUseV2=true when flag is unset (A1 default-on)")
+	}
+}
+
+// TestSessionCompressor_ShouldUseV2_KillSwitchFalse verifies the kill-switch:
+// when the platform flag is explicitly false, reads revert to V1 immediately
+// (hot-reloadable, no redeploy).
+func TestSessionCompressor_ShouldUseV2_KillSwitchFalse(t *testing.T) {
+	withPlatformFlag(t, "sessions_v2_compression_read", false)
+
 	cacheV2 := v2.NewSessionCacheV2(nil, "")
 	builder := v2.NewOutboundBuilder(v2.NewTurnReader(nil))
 
@@ -45,7 +66,7 @@ func TestSessionCompressor_ShouldUseV2_FlagDisabled(t *testing.T) {
 	}}
 
 	if sc.shouldUseV2("t1") {
-		t.Fatal("expected shouldUseV2=false when flag is unset")
+		t.Fatal("expected shouldUseV2=false when kill-switch is false")
 	}
 }
 
