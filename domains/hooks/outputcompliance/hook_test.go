@@ -22,8 +22,10 @@ func TestHook_NamePriority(t *testing.T) {
 	if h.Name() != "output_compliance.check" {
 		t.Fatalf("Name = %q", h.Name())
 	}
-	if h.Priority() != 50 {
-		t.Fatalf("Priority = %d", h.Priority())
+	if h.Priority() != 100 {
+		// Priority 改为 100：在 SanitizerOutputHook (Priority 50) 之后执行，
+		// 检查还原后的真实内容，而不是占位符。
+		t.Fatalf("Priority = %d, want 100", h.Priority())
 	}
 }
 
