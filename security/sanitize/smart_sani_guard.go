@@ -25,6 +25,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/response"
@@ -71,13 +72,32 @@ func NewSanitizeInputMiddleware(s *Sanitizer, redis *redis.Client, ttl time.Dura
 		redis:     redis,
 		ttl:       ttl,
 		logger:    slog.Default().With("component", "sanitize_middleware"),
+		// 与 chatHandler（domains/streaming/session_routing.go 的
+		// SessionHeadersPriority）保持一致的 5 个候选 header 顺序。
+		// 不读 body 里的 session_id：中间件先于 chatHandler 解析 session，
+		// body 解析属于 chatHandler 的核心职责，且 body 里 session_id 可能
+		// 出现在 messages content 里（被中间件当作 PII 替换掉），会让中间件
+		// 误读自身内容 — 因此本中间件只接受 header 形式的 sessionID。
 		getSessionID: func(r *http.Request) string {
-			if id := r.Header.Get("X-Gw-Session-Id"); id != "" {
-				return id
+			for _, header := range sessionIDHeaderPriority {
+				if v := strings.TrimSpace(r.Header.Get(header)); v != "" {
+					return v
+				}
 			}
-			return r.Header.Get("X-Session-Id")
+			return ""
 		},
 	}, nil
+}
+
+// sessionIDHeaderPriority 与 chatHandler 一致的会话 ID header 候选。
+// 顺序与重要性递减对齐：X-Gw-Session-Id > X-Session-Id >
+// X-Conversation-Id > X-Chat-Session-Id > X-Thread-Id。
+var sessionIDHeaderPriority = []string{
+	"X-Gw-Session-Id",
+	"X-Session-Id",
+	"X-Conversation-Id",
+	"X-Chat-Session-Id",
+	"X-Thread-Id",
 }
 
 // Wrap 返回一个 http.Handler 包装器。

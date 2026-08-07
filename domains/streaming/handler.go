@@ -1115,6 +1115,22 @@ func (h *ChatHandler) SetResponseInterceptor(interceptor ResponseInterceptor) {
 	h.responseInterceptor = interceptor
 }
 
+// ResponseInterceptorForWire returns the current response interceptor
+// as a *response.InterceptorChain when it is one. Returns nil otherwise.
+//
+// 2026-08-07: SmartSaniGuard needs to append a restore interceptor onto
+// the existing chain (after output_compliance). Use this getter to inspect
+// what is already wired without exposing the chain's internal slice.
+func (h *ChatHandler) ResponseInterceptorForWire() *response.InterceptorChain {
+	if h == nil {
+		return nil
+	}
+	if chain, ok := h.responseInterceptor.(*response.InterceptorChain); ok {
+		return chain
+	}
+	return nil
+}
+
 // SetGoalRetryPolicyResolver (2026-07-23) wires the tenant-scoped retry
 // policy resolver. When set, the handler resolves a fresh policy per
 // request based on tenant settings and cost-mode presets, replacing the
