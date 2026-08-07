@@ -22,16 +22,20 @@ import (
 	"database/sql"
 	"encoding/json"
 	"log/slog"
+	"net/http"
 	"os"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/kaixuan/llm-gateway-go/autoroute"
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/goal"
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/handoff"
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/response"
 	streaming "github.com/kaixuan/llm-gateway-go/domains/streaming"
+	"github.com/kaixuan/llm-gateway-go/security/sanitize"
 	"github.com/kaixuan/llm-gateway-go/settings"
+	"github.com/redis/go-redis/v9"
 )
 
 // settingsAdapter adapts the global settings registry to goal.SettingsGetter.
@@ -120,7 +124,7 @@ func (a settingsAdapter) GetString(tenantID, key string, def string) string {
 // unconditionally via registerAutoControlSettings so admins can configure
 // handoff.* via the UI even in data-plane mode (where the runtime hook is
 // not wired).
-func initGoalControl(db *sql.DB, chatHandler *streaming.ChatHandler) {
+func initGoalControl(db *sql.DB, chatHandler *streaming.ChatHandler, redisClient *redis.Client) {
 	if db == nil {
 		slog.Info("goal_control: disabled (no DB)")
 		return
@@ -314,8 +318,29 @@ func initGoalControl(db *sql.DB, chatHandler *streaming.ChatHandler) {
 		interceptors = append(interceptors, ocHook)
 	}
 
+	// 7c. SmartSaniGuard 还原拦截器（2026-08-07）：
+	// 在 output_compliance 之后执行 — 安全检查先看占位符（敏感信息不暴露
+	// 给安全检查服务），通过后再把占位符还原为真实敏感值返回给用户。
+	// Redis 不可用时退化为单轮（仅当次请求 Metadata 内的映射表有效）。
+	if sanitizeRestore, restoreErr := buildSanitizeRestoreInterceptor(redisClient); restoreErr == nil && sanitizeRestore != nil {
+		interceptors = append(interceptors, sanitizeRestore)
+	}
+
 	chain := response.NewInterceptorChain(interceptors...)
 	chatHandler.SetResponseInterceptor(chain)
+
+	// 7d. SmartSaniGuard 输入脱敏中间件（2026-08-07）：
+	// 包装在 chatHandler 之前，对请求体里的敏感信息做替换 + Redis 持久化。
+	// 这是 request 路径上的入口；与 response 路径的 SanitizeRestoreInterceptor
+	// 配对，确保 LLM 只看到占位符，客户端只看到还原后的真实值。
+	if redisClient != nil {
+		if sanitizeMw, mwErr := buildSanitizeInputMiddleware(redisClient); mwErr == nil && sanitizeMw != nil {
+			chatHandler.SetSanitizeInputMiddleware(sanitizeMw)
+		} else if mwErr != nil {
+			slog.Warn("goal_control: sanitize input middleware init failed, skip",
+				"error", mwErr)
+		}
+	}
 
 	// 7a. Handoff fallback API key (2026-07-11, handoff self-call fix).
 	chatHandler.SetHandoffFallbackAPIKey(strings.TrimSpace(os.Getenv("LLM_GATEWAY_HANDOFF_FALLBACK_API_KEY")))
@@ -376,6 +401,39 @@ func parseModelList(s string) []string {
 // shared LLMGatewayAutoLLM* env vars. When no endpoint is set, returns a no-op
 // caller so the feature can be enabled (keyword detection / continue logic
 // don't need an LLM) without a hard runtime dependency.
+// buildSanitizeRestoreInterceptor 构造 SmartSaniGuard 占位符还原拦截器。
+// 返回 nil 时表示该能力未启用（Redis 不可用或 sanitizer 失败）。
+func buildSanitizeRestoreInterceptor(redisClient *redis.Client) (response.ResponseInterceptor, error) {
+	if redisClient == nil {
+		return nil, nil
+	}
+	detector := sanitize.NewPatternDetector()
+	s, err := sanitize.NewSanitizer(detector)
+	if err != nil {
+		return nil, err
+	}
+	return sanitize.NewSanitizeRestoreInterceptor(s, redisClient, 30*time.Minute)
+}
+
+// buildSanitizeInputMiddleware 构造 SmartSaniGuard 输入脱敏中间件。
+// 返回的函数可直接传给 chatHandler.SetSanitizeInputMiddleware。
+func buildSanitizeInputMiddleware(redisClient *redis.Client) (func(http.Handler) http.Handler, error) {
+	if redisClient == nil {
+		return nil, nil
+	}
+	detector := sanitize.NewPatternDetector()
+	s, err := sanitize.NewSanitizer(detector)
+	if err != nil {
+		return nil, err
+	}
+	mw, err := sanitize.NewSanitizeInputMiddleware(s, redisClient, 30*time.Minute)
+	if err != nil {
+		return nil, err
+	}
+	return mw.Wrap, nil
+}
+
+// buildGoalLLMCaller builds the LLMCaller used by completion detection + audit.
 func buildGoalLLMCaller() goal.LLMCaller {
 	cfg, ok := buildGoalLLMConfig()
 	if !ok {

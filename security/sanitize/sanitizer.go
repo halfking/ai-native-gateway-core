@@ -46,7 +46,24 @@ func (s *Sanitizer) Name() string { return "sanitize" }
 //  1. 检测敏感信息
 //  2. 替换为 {SENSITIVE:type:index} 占位符
 //  3. 返回脱敏文本 + 映射表
+//
+// typeIndex 每轮局部自增，跨轮次会撞号（不同轮次都有 phone:1），
+// 多轮会话应使用 SanitizeInputWithOffset。
 func (s *Sanitizer) SanitizeInput(ctx context.Context, text string) (*SanitizeResult, error) {
+	return s.sanitizeInput(ctx, text, nil)
+}
+
+// SanitizeInputWithOffset 与会话级偏移量配合使用，避免跨轮次占位符撞号。
+//
+// offset 为每类敏感信息从几开始编号（由调用方从 Redis 查询现有计数），
+// 例如上一轮已用了 phone:1~phone:3，则 offset 传 map[TypePhone]4。
+// offset 为 nil 或空时等效于 SanitizeInput。
+func (s *Sanitizer) SanitizeInputWithOffset(ctx context.Context, text string, offset map[SensitiveType]int) (*SanitizeResult, error) {
+	return s.sanitizeInput(ctx, text, offset)
+}
+
+// sanitizeInput 内部实现
+func (s *Sanitizer) sanitizeInput(ctx context.Context, text string, offset map[SensitiveType]int) (*SanitizeResult, error) {
 	if s == nil {
 		return nil, ErrNilSanitizer
 	}
@@ -76,6 +93,12 @@ func (s *Sanitizer) SanitizeInput(ctx context.Context, text string) (*SanitizeRe
 
 		typeIndex[f.Type]++
 		idx := typeIndex[f.Type]
+		// 叠加会话级偏移量，确保跨轮次不撞号
+		if offset != nil {
+			if base, ok := offset[f.Type]; ok {
+				idx += base
+			}
+		}
 		ph := Placeholder{Type: f.Type, Index: idx}
 		placeholderStr := ph.String()
 

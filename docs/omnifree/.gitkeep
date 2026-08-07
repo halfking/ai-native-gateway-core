@@ -1,0 +1,16 @@
+# OmniFree: 免费 LLM 资源自动配置系统
+
+此目录包含从 OmniRoute 学习并适配到 SI-LLM-Gateway 的免费资源管理方案。
+
+## 快速导航
+
+- **总览**: README.md
+- **设计文档**: 00-OVERVIEW.md, 01-DATA-MODEL.md, 02-QUOTA-TRACKING.md, 03-AUTO-COMBO.md
+- **审计报告**: 12-AUDIT-REPORT.md
+- **实施计划**: 11-IMPLEMENTATION-PLAN.md
+- **种子数据**: seed/
+
+## 当前状态
+
+✅ 方案设计完成 (2026-08-07)
+⏳ 等待 Phase 1 实施启动
