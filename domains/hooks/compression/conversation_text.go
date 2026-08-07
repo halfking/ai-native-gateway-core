@@ -17,6 +17,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+
+	"github.com/kaixuan/llm-gateway-go/domains/secretmask"
 )
 
 // extractConversationText returns a flat-text rendering of the chat
@@ -30,11 +32,25 @@ import (
 //
 // Tool calls and tool results are folded into the parent message's
 // text via formatOpenAIToolCalls / formatAnthropicToolBlocks.
+//
+// docs/omni-ref3 C2: the returned text is fed to the summarizer LLM, so it is
+// passed through secretmask.MaskSecrets to redact provider API keys / bearer
+// tokens that users may have pasted. This masks the summary input only — the
+// outbound body forwarded upstream is untouched and remains byte-faithful.
 func extractConversationText(body []byte, clientProtocol string) (string, error) {
+	var (
+		text string
+		err  error
+	)
 	if clientProtocol == "anthropic-messages" {
-		return extractAnthropicConversationText(body)
+		text, err = extractAnthropicConversationText(body)
+	} else {
+		text, err = extractOpenAIConversationText(body)
 	}
-	return extractOpenAIConversationText(body)
+	if err != nil {
+		return "", err
+	}
+	return secretmask.MaskSecrets(text), nil
 }
 
 func extractOpenAIConversationText(body []byte) (string, error) {

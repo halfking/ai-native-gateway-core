@@ -14,6 +14,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+
+	"github.com/kaixuan/llm-gateway-go/domains/tokenest"
 )
 
 // OutboundBuilder 从增量重建完整会话上下文
@@ -169,8 +171,9 @@ func (b *OutboundBuilder) isCompressionMarker(msg Message) bool {
 
 // estimateTokens 估算消息数组的 token 数
 //
-// 简单估算：1 token ≈ 4 字符（英文）或 1.5 字符（中文）
-// 更精确的估算需要使用 tiktoken，但这里为了性能使用简单规则
+// 简单估算：1 token ≈ 3.5 字符（混合中英文），经 tokenest.FromChars 统一
+// 与压缩路径一致（docs/omni-ref3 C4）。更精确的估算需要 tiktoken，但为
+// 性能这里用简单规则。
 func estimateTokens(msgs []Message) int {
 	totalChars := 0
 	for _, msg := range msgs {
@@ -200,6 +203,8 @@ func estimateTokens(msgs []Message) int {
 		}
 	}
 
-	// Rough estimation: 1 token ≈ 3.5 characters (mixed English/Chinese)
-	return totalChars / 4
+	// docs/omni-ref3 C4: use the shared tokenest helper so the V2 builder agrees
+	// with the compression path (previously this divided by 4 while its own
+	// comment — and every other site — used 3.5).
+	return tokenest.FromChars(totalChars)
 }

@@ -41,6 +41,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+
+	"github.com/kaixuan/llm-gateway-go/domains/tokenest"
 )
 
 // OutboundResult is the output of BuildOutboundMessages.
@@ -326,9 +328,11 @@ func computeHashes(msgs []rawMsg) []MsgHash {
 	return out
 }
 
-// estimateBodyTokens is a cheap heuristic: bytes / 3.5.
+// estimateBodyTokens is a cheap heuristic. docs/omni-ref3 C4: delegates to the
+// shared tokenest helper so the delta-append path and the V2 outbound builder
+// use one canonical chars-per-token ratio (previously hardcoded /3.5 here).
 func estimateBodyTokens(body []byte) int {
-	return int(float64(len(body)) / 3.5)
+	return tokenest.FromChars(len(body))
 }
 
 // spliceBodyMessages is the diff.go internal splice helper. It delegates to
