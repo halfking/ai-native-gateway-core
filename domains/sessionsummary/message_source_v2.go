@@ -32,6 +32,15 @@ type v2SessionBodiesSource struct {
 	pool *pgxpool.Pool
 }
 
+// NewV2SessionBodiesSource constructs a MessageSource that reads from the V2
+// gateway.session_bodies (+ session_turns for the model) tables. Intended for
+// Summarizer.SetMessageSource when the sessions_v2_compression_read flag is on
+// (docs/omni-ref3 A1). A nil pool yields per-call errors rather than a panic,
+// matching the V1 source's nil-safety contract.
+func NewV2SessionBodiesSource(pool *pgxpool.Pool) MessageSource {
+	return &v2SessionBodiesSource{pool: pool}
+}
+
 // v2TurnRow is the per-turn projection decoded from the joined
 // session_turns/session_bodies query.
 type v2TurnRow struct {
