@@ -78,6 +78,92 @@ type preStreamKeepalive struct {
 	paused atomic.Bool
 }
 
+// interceptingStreamWriter applies the response interceptor chain to complete
+// SSE events before they reach the client. Upstream bridges may split an SSE
+// event across multiple Write calls, so the writer buffers until the event
+// delimiter (\n\n) is present.
+type interceptingStreamWriter struct {
+	w        http.ResponseWriter
+	flusher  http.Flusher
+	chain    ResponseInterceptor
+	ctx      context.Context
+	meta     response.StreamMeta
+	pending  []byte
+	writeErr error
+}
+
+func newInterceptingStreamWriter(w http.ResponseWriter, chain ResponseInterceptor, ctx context.Context, meta response.StreamMeta) *interceptingStreamWriter {
+	writer := &interceptingStreamWriter{w: w, chain: chain, ctx: ctx, meta: meta}
+	if f, ok := w.(http.Flusher); ok {
+		writer.flusher = f
+	}
+	return writer
+}
+
+func (w *interceptingStreamWriter) Header() http.Header        { return w.w.Header() }
+func (w *interceptingStreamWriter) WriteHeader(statusCode int) { w.w.WriteHeader(statusCode) }
+
+func (w *interceptingStreamWriter) Write(p []byte) (int, error) {
+	if w.writeErr != nil {
+		return 0, w.writeErr
+	}
+	w.pending = append(w.pending, p...)
+	w.drain()
+	if w.writeErr != nil {
+		return 0, w.writeErr
+	}
+	return len(p), nil
+}
+
+func (w *interceptingStreamWriter) Flush() {
+	w.drain()
+	if w.flusher != nil {
+		w.flusher.Flush()
+	}
+}
+
+func (w *interceptingStreamWriter) finish() {
+	w.drain()
+	if len(w.pending) > 0 && w.writeErr == nil {
+		_, w.writeErr = w.w.Write(w.pending)
+		w.pending = nil
+	}
+}
+
+func (w *interceptingStreamWriter) drain() {
+	for w.writeErr == nil {
+		idx := bytes.Index(w.pending, []byte("\n\n"))
+		if idx < 0 {
+			return
+		}
+		frameEnd := idx + 2
+		frame := append([]byte(nil), w.pending[:frameEnd]...)
+		w.pending = w.pending[frameEnd:]
+		w.writeFrame(frame)
+	}
+}
+
+func (w *interceptingStreamWriter) writeFrame(frame []byte) {
+	final := frame
+	if w.chain != nil {
+		result, err := w.chain.InterceptStreamChunk(w.ctx, frame, &w.meta)
+		if err == nil && result != nil {
+			if result.ShouldBlock {
+				return
+			}
+			if len(result.ModifiedChunk) > 0 {
+				final = result.ModifiedChunk
+			}
+			if len(result.InjectAfter) > 0 {
+				final = append(append([]byte(nil), final...), result.InjectAfter...)
+			}
+		}
+	}
+	if _, err := w.w.Write(final); err != nil {
+		w.writeErr = err
+	}
+}
+
 func startPreStreamKeepalive(w http.ResponseWriter, interval time.Duration, requestID string) (*preStreamKeepalive, bool) {
 	flusher, ok := w.(http.Flusher)
 	if !ok {
@@ -3042,8 +3128,19 @@ func (h *ChatHandler) serveWithExecutor(
 		}
 
 		// Execute the request
+		streamWriter := w
+		var interceptedWriter *interceptingStreamWriter
+		if isStream && h.responseInterceptor != nil {
+			interceptedWriter = newInterceptingStreamWriter(w, h.responseInterceptor, r.Context(), response.StreamMeta{
+				SessionID:   gwSessionID,
+				RequestID:   requestID,
+				TenantID:    tenantID,
+				ClientModel: clientModel,
+			})
+			streamWriter = interceptedWriter
+		}
 		result, execErr = h.executor.Execute(&executors.ExecParams{
-			W:                 w,
+			W:                 streamWriter,
 			R:                 r,
 			BodyBytes:         upstreamBody,
 			IsStream:          isStream,
@@ -3178,6 +3275,9 @@ func (h *ChatHandler) serveWithExecutor(
 			// request_logs.routing_attempts captures ALL routing rounds.
 			RoutingTracker: candTracker,
 		})
+		if interceptedWriter != nil {
+			interceptedWriter.finish()
+		}
 
 		// Success or non-retriable error - exit retry loop immediately
 		if execErr == nil || !isRetriableError(execErr) {

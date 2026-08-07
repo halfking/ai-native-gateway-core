@@ -1,12 +1,61 @@
 package streaming
 
 import (
+	"bytes"
 	"context"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/kaixuan/llm-gateway-go/domains/hooks/response"
 )
+
+// streamChunkTestInterceptor verifies that the handler writer sends complete
+// SSE frames through the response interceptor even when upstream splits a
+// frame across multiple Write calls.
+type streamChunkTestInterceptor struct {
+	calls int
+}
+
+func (i *streamChunkTestInterceptor) InterceptNonStream(context.Context, *response.InterceptRequest) (*response.InterceptResult, error) {
+	return nil, nil
+}
+
+func (i *streamChunkTestInterceptor) InterceptStreamChunk(_ context.Context, chunk []byte, _ *response.StreamMeta) (*response.ChunkResult, error) {
+	i.calls++
+	return &response.ChunkResult{ModifiedChunk: bytes.Replace(chunk, []byte("placeholder"), []byte("restored"), 1)}, nil
+}
+
+func (i *streamChunkTestInterceptor) InterceptStreamEnd(context.Context, *response.StreamMeta) (*response.EndResult, error) {
+	return nil, nil
+}
+
+func TestInterceptingStreamWriterBuffersAndInterceptsSSEFrame(t *testing.T) {
+	recorder := httptest.NewRecorder()
+	interceptor := &streamChunkTestInterceptor{}
+	writer := newInterceptingStreamWriter(recorder, interceptor, context.Background(), response.StreamMeta{SessionID: "sess-writer"})
+
+	part1 := []byte("data: {\"content\":\"place")
+	part2 := []byte("holder\"}\n\n")
+	if n, err := writer.Write(part1); err != nil || n != len(part1) {
+		t.Fatalf("first Write = (%d, %v), want (%d, nil)", n, err, len(part1))
+	}
+	if recorder.Body.Len() != 0 {
+		t.Fatalf("partial SSE frame was written before delimiter: %q", recorder.Body.String())
+	}
+	if n, err := writer.Write(part2); err != nil || n != len(part2) {
+		t.Fatalf("second Write = (%d, %v), want (%d, nil)", n, err, len(part2))
+	}
+	writer.finish()
+
+	if interceptor.calls != 1 {
+		t.Fatalf("interceptor calls = %d, want 1", interceptor.calls)
+	}
+	if got := recorder.Body.String(); got != "data: {\"content\":\"restored\"}\n\n" {
+		t.Fatalf("output = %q, want restored SSE frame", got)
+	}
+}
 
 // TestInjectFollowUpCarriesAuthorizationHeader is the core regression test
 // for the 2026-07-11 handoff self-call fix: every synthetic follow-up
