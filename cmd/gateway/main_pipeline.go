@@ -1280,6 +1280,14 @@ func SetV2DispatchAnalysisResources(
 					// the v2 dispatch path.
 					summaryService := sessionsummary.NewSummarizer(pool, redisClient, sessionSummaryLLMAdapter{client: analysisClient})
 					summaryService.SetModel(cfg.ModelFor(sessionanalytics.StageSummary))
+					// docs/omni-ref3 A1 (decision: compress+summary cut over
+					// together, default-on, same kill-switch as compression read):
+					// read session messages from gateway.session_bodies instead of
+					// request_logs. Same platform flag as shouldUseV2, default true,
+					// hot-reloadable to false to revert to V1 reads.
+					if settings.GetPlatformBool("sessions_v2_compression_read", true) {
+						summaryService.SetMessageSource(sessionsummary.NewV2SessionBodiesSource(pool))
+					}
 					deps.SessionSummarizer = sessionSummaryWorkerAdapter{summarizer: summaryService}
 				}
 			}
