@@ -1,4 +1,4 @@
--- Migration 469 down: remove cache_metrics table
+-- Migration 470 down: remove cache_metrics table
 
 BEGIN;
 

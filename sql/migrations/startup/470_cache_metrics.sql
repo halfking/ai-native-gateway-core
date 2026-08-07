@@ -1,4 +1,4 @@
--- Migration 469: cache_metrics — unified cache observability (D2)
+-- Migration 470: cache_metrics — unified cache observability (D2)
 --
 -- docs/omni-ref3 D2: create unified cache_metrics table for all cache layers
 -- (semantic/prefix/delta/kv/session-state). Enables answering "overall cache

@@ -45,6 +45,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     3/3 PASS；相关包全量回归全绿
   - **文档**: `docs/changelogs/2026-08-07-admin-protected-manual-record-guard.md`
 
+- **会话元数据收敛 M2/M3 (2026-08-07)**:
+  - **背景**: 会话元数据（标题 + 用户标签）历来分散在 Redis（session_titles / session_tags）和 gateway.sessions 两处事实源，导致「同一字段在不同视图查到不同值」。M2（title）+ M3（user_tags）统一收敛到 gateway.sessions 表为唯一事实源
+  - **机制**: 新增 startup 迁移 467 `sql/migrations/startup/467_sessions_title_user_tags.sql`，给 `public.sessions` 加 `title text` + `user_tags text[]` 列（IF NOT EXISTS 守卫）。`session_tags` 表（自动生成的结构化 tag，tag_source='auto'）保留独立，读路径 `GetSessionMetadata` 在两侧合并（M3）
+  - **验证**: `go build` / `go vet` exit 0；相关回归测试通过
+  - **影响**: M2 命中路径仅 session-analytics / request-logs 详情面板；M3 user_tags 字段当前仅写入（X-Gw-Tags header 接收），下游读取将在后续 milestone 接入
+
+- **A4 上下文窗口手动校准 (2026-08-07)**:
+  - **背景**: 部分供应商虚标 context window（实际 8k，标 32k），导致 V2 会话压缩触发过早。新增「人工 override」机制：管理员可设置某 canonical model 的实际 context window，运行时优先取该值
+  - **机制**: 新增 startup 迁移 469 `sql/migrations/startup/469_context_window_override.sql`，给 `public.models_canonical` 加 `context_window_override integer` + `context_window_source text`（provenance: catalog/discovery/manual/probe）+ `context_window_updated_at timestamptz` 三列（IF NOT EXISTS 守卫）
+  - **读路径**: `provider/client.go:1000` `COALESCE(mc.context_window_override, mc.context_window)` — override 优先；`admin/context_window_calibration.go` 提供手工 upsert 接口
+  - **Phase 2 预留**: discovery 服务将从 provider `/v1/models` 自动写入 override（source='discovery'），本 milestone 仅开放手工入口
+  - **验证**: `go build` / `go vet` exit 0
+
+- **D2 缓存统一观测 (2026-08-07)**:
+  - **背景**: 各 cache layer（semantic/prefix/delta/kv/session_state）hit/miss 计数器散落在多个 domain 包，无法回答「整体缓存命中率」与「缓存节省 token 数」两个高层问题
+  - **机制**: 新增 startup 迁移 470 `sql/migrations/startup/470_cache_metrics.sql`，建 `public.cache_metrics` 表（按 `partition_date` RANGE 分区，dailydrop 30 天可配）+ 索引 `(tenant_id, cache_layer, recorded_at DESC)` 和 `(event_type, recorded_at DESC)` + `cache_layer IN ('semantic','prefix','delta','kv','session_state')` + `event_type IN ('hit','miss')` CHECK 约束
+  - **写入入口**: `domains/cachemetrics/recorder.go` 暴露 `Recorder.Write(layer, eventType, tokensSaved, ...)` 统一入口；各 cache layer 接入中
+  - **查询入口**: `cmd/gateway/main.go:4383` 暴露 `/api/admin/cache-metrics/summary` 与 `/timeline`
+  - **验证**: `go build` / `go vet` exit 0；表创建幂等
+
 - **抽取 useConnectionDetail composable (2026-08-06)**:
   - **背景**: `LiveRequestStreamV2.vue` 的连接详情弹窗状态块（`showConnectionDetail` ref + `toggleConnectionDetail`）内联在组件里，切换逻辑依赖 `isAdmin` computed 与 `isEditingUrl`（来自 `useLiveStreamUrl`）
   - **重构**:
