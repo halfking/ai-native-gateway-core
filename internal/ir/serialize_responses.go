@@ -234,11 +234,14 @@ func buildResponsesInput(messages []Message) []map[string]any {
 				if args == "" {
 					args = "{}"
 				}
+				// E5: sanitize name + ensure item-id prefix for Responses wire shape.
+				sanitizedName := SanitizeResponsesFunctionName(call.Function.Name)
+				prefixedID := EnsureResponsesItemIDPrefix(call.ID, "function_call")
 				input = append(input, map[string]any{
 					"type":      "function_call",
-					"id":        call.ID,
+					"id":        prefixedID,
 					"call_id":   call.ID,
-					"name":      call.Function.Name,
+					"name":      sanitizedName,
 					"arguments": args,
 				})
 			}
@@ -460,7 +463,10 @@ func buildResponsesTools(tools []ToolDefinition) []map[string]any {
 		}
 		entry := map[string]any{
 			"type": "function",
-			"name": tool.Name,
+			// E5: sanitize function name for Responses API constraints
+			// (≤64 chars, [a-zA-Z0-9_-]). Skipped when name is empty (caller
+			// should pre-validate tool definition).
+			"name": SanitizeResponsesFunctionName(tool.Name),
 		}
 		if tool.Description != "" {
 			entry["description"] = tool.Description
@@ -489,7 +495,8 @@ func buildResponsesToolChoice(tc *ToolChoice) any {
 	case "tool":
 		return map[string]any{
 			"type": "function",
-			"name": tc.Name,
+			// E5: sanitize function name to match Responses API constraints.
+			"name": SanitizeResponsesFunctionName(tc.Name),
 		}
 	}
 	return tc.Type
@@ -532,7 +539,100 @@ func buildResponsesReasoning(r *ReasoningConfig) map[string]any {
 	return out
 }
 
-// reportSerializeResponsesLosses records IR fields the OpenAI Responses API
+// Responses API sanitization constants (E5 / docs/omni-ref3 §7.3).
+//
+// Per platform.openai.com/docs/api-reference/responses:
+//   - tool/function names: ≤64 chars, allowed chars [a-zA-Z0-9_-]
+//   - item IDs use server-assigned prefixes: rs_* (response), fc_* (function_call),
+//     msg_* (message), fco_* (function_call_output). Client-supplied IDs must
+//     match the prefix the server expects, otherwise the request is rejected.
+const (
+	// responsesMaxFunctionNameLen matches the OpenAI Responses API limit.
+	responsesMaxFunctionNameLen = 64
+	// responsesItemIDPrefixes mirrors server-side item type tags.
+	responsesItemIDPrefixes = "rs_|fc_|msg_|fco_|item_"
+)
+
+// SanitizeResponsesFunctionName normalizes a function/tool name for use in the
+// Responses API. The OpenAI Responses API rejects names that exceed 64 chars
+// or contain characters outside [a-zA-Z0-9_-].
+//
+// Rules:
+//   - truncate to 64 chars
+//   - replace disallowed chars with '_'
+//   - prefix with 'fn_' if the result would otherwise be empty or start with
+//     a digit (Responses also rejects names starting with a digit in some
+//     modes; the prefix is harmless when already present)
+//
+// This is safe to call repeatedly (idempotent). Returns "" only when input is
+// "" (caller can decide to skip the tool).
+func SanitizeResponsesFunctionName(name string) string {
+	if name == "" {
+		return ""
+	}
+
+	// Replace disallowed chars with '_'.
+	out := make([]byte, 0, len(name))
+	for i := 0; i < len(name); i++ {
+		c := name[i]
+		switch {
+		case c >= 'a' && c <= 'z',
+			c >= 'A' && c <= 'Z',
+			c >= '0' && c <= '9',
+			c == '_', c == '-':
+			out = append(out, c)
+		default:
+			out = append(out, '_')
+		}
+	}
+
+	// If leading char is a digit, prefix with 'fn_' (collisions are harmless).
+	if len(out) > 0 && out[0] >= '0' && out[0] <= '9' {
+		out = append([]byte("fn_"), out...)
+	}
+
+	// Truncate to max length last (after prefixing) so the prefix is preserved.
+	if len(out) > responsesMaxFunctionNameLen {
+		out = out[:responsesMaxFunctionNameLen]
+	}
+
+	return string(out)
+}
+
+// EnsureResponsesItemIDPrefix rewrites a client-supplied item id to carry one
+// of the recognized server-side prefixes (rs_, fc_, msg_, fco_, item_).
+//
+// The Responses API rejects item ids that don't carry a known prefix. This
+// helper:
+//   - detects an existing recognized prefix and returns the id unchanged
+//   - otherwise infers the type from call shape and prepends the matching tag
+//
+// typeHint is one of "function_call", "function_call_output", "message", or
+// "" (no hint → defaults to "item_"). Returns the original id when it is
+// already prefixed or empty.
+func EnsureResponsesItemIDPrefix(id, typeHint string) string {
+	if id == "" {
+		return id
+	}
+	// Known server-side prefixes. Match by full-length prefix.
+	knownPrefixes := []string{"rs_", "fc_", "msg_", "fco_", "item_"}
+	for _, p := range knownPrefixes {
+		if len(id) >= len(p) && id[:len(p)] == p {
+			return id
+		}
+	}
+
+	switch typeHint {
+	case "function_call":
+		return "fc_" + id
+	case "function_call_output":
+		return "fco_" + id
+	case "message":
+		return "msg_" + id
+	default:
+		return "item_" + id
+	}
+}
 // request wire format cannot faithfully represent. Spec §10 Step 4.10.
 //
 // Same-protocol guard: when the IR source is itself the Responses API
