@@ -65,6 +65,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - **查询入口**: `cmd/gateway/main.go:4383` 暴露 `/api/admin/cache-metrics/summary` 与 `/timeline`
   - **验证**: `go build` / `go vet` exit 0；表创建幂等
 
+- **会话摘要归档 M5 (2026-08-07)**:
+  - **背景**: `session_summaries` 长期累积不活跃记录（30+ 天无访问、session 已结束），挤占活动表空间且影响 ANALYZE 计划质量。需求：可归档老摘要，活跃视图自动过滤
+  - **机制**: 新增 startup 迁移 471 `sql/migrations/startup/471_session_summaries_archival.sql`（注：原 commit `7f88c931c` 使用了与 `cache_metrics` 重复的 470 编号，本次审计时重命名以避免同 version 多文件导致的部署拒绝），给 `public.session_summaries` 加 `last_accessed_at timestamptz` + `archived_at timestamptz` 两列（IF NOT EXISTS 守卫）+ 部分索引 `idx_session_summaries_archival ON (archived_at, last_accessed_at, last_request_at) WHERE archived_at IS NULL`
+  - **回填**: 新装时 `last_accessed_at = last_request_at`（已有数据无访问记录，用最后请求时间回填）
+  - **归档策略**（外部 job，脚本待补）：session ended 30+ 天 + last_accessed_at 30+ 天/NULL + archived_at IS NULL → SET archived_at = NOW()
+  - **读路径**: 现有 `GetSessionMetadata` / analytics query 需追加 `WHERE archived_at IS NULL`（后续 task 接入）
+  - **验证**: `go build` / `go vet` exit 0
+
+- **D2 cache_metrics 分区补齐 (2026-08-07)**:
+  - **背景**: 迁移 470 `cache_metrics` 创建为 `PARTITION BY RANGE (partition_date)` 父表，但未创建任何 default / monthly 分区。每次 `DBRecorder.Record` INSERT 都会因 `no partition of relation "cache_metrics" found for row` 失败，cache layer 的 hit/miss 遥测**静默丢失**。本次审计时实测复现该失败
+  - **机制**: 新增 startup 迁移 472 `sql/migrations/startup/472_cache_metrics_partitions.sql`，建 3 个分区对齐 rule 33 §2「写 default 表」铁律：
+    - `cache_metrics_default` PARTITION OF cache_metrics DEFAULT（写入兜底）
+    - `cache_metrics_2026_08` FOR VALUES FROM ('2026-08-01') TO ('2026-09-01')（当月）
+    - `cache_metrics_2026_09` FOR VALUES FROM ('2026-09-01') TO ('2026-10-01')（次月预创建）
+  - **索引自动传播**: 父表的 `idx_cache_metrics_tenant_layer_ts` / `idx_cache_metrics_event_type` 在分区创建时自动传播到子表；额外手动加 default 上的 `(tenant_id, cache_layer, recorded_at DESC)` 索引（兜底场景的查询性能）
+  - **未来 lifecycle**: 30 天分区 drop 走 `scripts/partitions/migrate-default-to-monthly.sh`（rule 33 §6.1，运维侧脚本后续接入）
+  - **验证**: `go build` / `go vet` exit 0；本次审计时实测 INSERT 失败 → 472 部署后预期通过
+
 - **抽取 useConnectionDetail composable (2026-08-06)**:
   - **背景**: `LiveRequestStreamV2.vue` 的连接详情弹窗状态块（`showConnectionDetail` ref + `toggleConnectionDetail`）内联在组件里，切换逻辑依赖 `isAdmin` computed 与 `isEditingUrl`（来自 `useLiveStreamUrl`）
   - **重构**:
