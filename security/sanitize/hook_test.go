@@ -155,8 +155,10 @@ func TestSanitizerOutputHook_Name(t *testing.T) {
 
 func TestSanitizerOutputHook_Priority(t *testing.T) {
 	h, _ := NewSanitizerOutputHook(NewNoopSanitizer())
-	if h.Priority() != 190 {
-		t.Errorf("Priority() = %d, want 190", h.Priority())
+	// Priority 改为 50：先于 OutputComplianceHook (Priority 100) 执行还原，
+	// 让 compliance checker 审查还原后的真实内容，而不是占位符。
+	if h.Priority() != 50 {
+		t.Errorf("Priority() = %d, want 50", h.Priority())
 	}
 }
 
