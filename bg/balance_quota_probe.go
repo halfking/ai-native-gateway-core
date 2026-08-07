@@ -113,6 +113,7 @@ func (p *BalanceQuotaProbe) probeBalanceExhausted(ctx context.Context) error {
 		  AND COALESCE(p.manual_disabled, FALSE) = FALSE
 		  AND p.enabled = TRUE
 		  AND COALESCE(c.default_probe_model, '') <> ''
+		ORDER BY c.id
 		LIMIT 100
 	`)
 	if err != nil {

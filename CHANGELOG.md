@@ -5,7 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased] - 2026-08-06
+## [Unreleased] - 2026-08-07
+
+### Fixed
+
+- **72小时代码审计修正 (2026-08-07 22:00)** — 详见 `CODE_AUDIT_72H_20260807.md`:
+  - **[P2] SQL查询性能优化**: `bg/balance_quota_probe.go:106` — 查询添加 `ORDER BY c.id` 确保结果可预测性，避免LIMIT无序选择导致的不一致行为
+  - **[P2] 测试覆盖补充**: `errorsx/classify_test.go` — 新增 `TestQuotaResetClassification` 测试 `quotaResetsRe` 正则表达式的中文"重置"模式和 window_type 场景，覆盖审计发现的测试缺口
+  - **审计结论**: 代码质量评级 **优秀(A)** — 无安全漏洞，3个P0修复彻底，注释文档完善；发现2个P2改进项已修复
 
 ### Fixed
 

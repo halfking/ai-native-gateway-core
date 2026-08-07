@@ -890,3 +890,89 @@ func TestClassifyError_ModelDeprecated_ErrPath(t *testing.T) {
 		}
 	}
 }
+
+// TestQuotaResetClassification tests the quotaResetsRe pattern matching
+// for periodic quota exhaustion with recovery timestamps.
+//
+// 2026-08-07 audit fix: 补充正则表达式边界测试，覆盖中文"重置"模式
+// 和 window_type 场景（P2-3 测试覆盖缺口）。
+func TestQuotaResetClassification(t *testing.T) {
+	tests := []struct {
+		name     string
+		status   int
+		body     string
+		expected ErrorKind
+	}{
+		{
+			name:     "zhipu periodic quota with reset timestamp",
+			status:   429,
+			body:     `{"error":"usage limit exceeded，您的限额将在 2026-08-10 12:00:00 重置。"}`,
+			expected: KindQuotaPeriodic,
+		},
+		{
+			name:     "zhima window_type total",
+			status:   429,
+			body:     `{"error":"usage limit exceeded","window_type":"total"}`,
+			expected: KindQuotaPeriodic,
+		},
+		{
+			name:     "zhima window_type daily",
+			status:   429,
+			body:     `{"error":"usage limit exceeded","window_type":"daily"}`,
+			expected: KindQuotaPeriodic,
+		},
+		{
+			name:     "permanent balance insufficient without reset",
+			status:   429,
+			body:     `{"error":"balance insufficient"}`,
+			expected: KindQuotaPermanent,
+		},
+		{
+			name:     "periodic with English reset and quota exceeded",
+			status:   429,
+			body:     `{"error":"usage limit exceeded. Will reset at 2026-08-10 00:00:00"}`,
+			expected: KindQuotaPeriodic,
+		},
+		{
+			name:     "periodic with retry_after",
+			status:   429,
+			body:     `{"error":"Quota exceeded. Retry after 2026-08-10T12:00:00Z"}`,
+			expected: KindQuotaPeriodic,
+		},
+		{
+			name:     "permanent budget_exceeded without reset hint",
+			status:   429,
+			body:     `{"error":"budget exceeded"}`,
+			expected: KindQuotaPermanent,
+		},
+		{
+			name:     "chinese quota exhausted with reset",
+			status:   429,
+			body:     `配额用尽，将在 2026-08-15 重置`,
+			expected: KindQuotaPeriodic,
+		},
+		{
+			name:     "ISO timestamp format with quota exceeded",
+			status:   429,
+			body:     `{"error":"usage limit exceeded","reset":"2026-08-10 15:30:45"}`,
+			expected: KindQuotaPeriodic,
+		},
+		{
+			name:     "anthropic budget_exceeded with reset",
+			status:   429,
+			body:     `{"error":{"message":"Organization balance insufficient, will reset at 2026-08-10","type":"rate_limit_error","code":"budget_exceeded"}}`,
+			expected: KindQuotaPeriodic,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			kind := ClassifyErrorWithBody(tt.status, []byte(tt.body))
+			if kind != tt.expected {
+				t.Errorf("ClassifyErrorWithBody() = %v, want %v\nBody: %s",
+					kind, tt.expected, tt.body)
+			}
+		})
+	}
+}
+
