@@ -22,6 +22,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **admin_protected 手工凭据模型记录只允许手工删除 (2026-08-07)**:
+  - **背景**: 用户手工添加的供应商凭据下模型记录是主动维护的数据，但批量处理
+    （自动刷新 / discovery）、探针（model_probe）、健康检查等自动路径的
+    `credential_model_bindings` UPDATE 会无差别覆盖这些手工记录（改
+    available / unavailable_reason / updated_at）。需求：**手工记录只能由
+    管理员显式操作修改/删除，任何自动路径不得更新**
+  - **机制**: `cmb.admin_protected`（TRUE=手工添加）作守卫标记。自动路径
+    UPDATE 一律加 `AND COALESCE(cmb.admin_protected,FALSE)=FALSE`；
+    `modelcatalog.UpsertCredentialModel` ON CONFLICT 整体跳过
+    admin_protected 记录（连 updated_at 都不动）；`v_suspicious_probe_targets`
+    视图排除 admin_protected 记录（自动探针选不到）
+  - **写入口打标**: 3 处手工 INSERT（free_pool_extra / routing 两处）写
+    `admin_protected=TRUE` 并调 `pinAdminProtectedOffers`
+  - **自动路径守卫**: `db.go` 4 个 probe 函数 + 2 处 backfill；
+    `bg/model_probe.go` 3 处；已核实 node_probe / credential_recovery /
+    credentialhealth / discovery 既有守卫
+  - **视图重放**: 新增 startup 迁移 468 重定义
+    `v_suspicious_probe_targets`，四副本同步（sql/schema、deploy baseline、
+    sql/objects、deploy objects）
+  - **验证**: `go build` / `go vet` exit 0；新增 upsert + probe 守卫契约测试
+    3/3 PASS；相关包全量回归全绿
+  - **文档**: `docs/changelogs/2026-08-07-admin-protected-manual-record-guard.md`
+
 - **抽取 useConnectionDetail composable (2026-08-06)**:
   - **背景**: `LiveRequestStreamV2.vue` 的连接详情弹窗状态块（`showConnectionDetail` ref + `toggleConnectionDetail`）内联在组件里，切换逻辑依赖 `isAdmin` computed 与 `isEditingUrl`（来自 `useLiveStreamUrl`）
   - **重构**:
