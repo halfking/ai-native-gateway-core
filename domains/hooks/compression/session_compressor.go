@@ -196,6 +196,10 @@ func (sc *SessionCompressor) Prepare(
 	)
 
 	// ── V2 Integration: Try V2 cache first if enabled ────────────────────
+	// fromV2 records whether THIS request was served from the V2 read path,
+	// so updateCache can skip writing back into the V1 cache (see rationale
+	// in updateCache). It stays false for the V1 path and any fallback.
+	fromV2 := false
 	if sc.shouldUseV2(tenantID) {
 		slog.InfoContext(ctx, "session_compressor: using v2 cache",
 			"session", gwSessionID, "tenant", tenantID)
@@ -212,6 +216,7 @@ func (sc *SessionCompressor) Prepare(
 			// zero-valued state and no-op, which is the correct conservative
 			// behaviour until those features are migrated to V2 metadata.
 			state = &SessionState{}
+			fromV2 = true
 			slog.InfoContext(ctx, "session_compressor: v2 cache loaded successfully",
 				"session", gwSessionID, "body_size", len(v2Body))
 		} else {
@@ -260,7 +265,7 @@ func (sc *SessionCompressor) Prepare(
 			res.OutboundBody = outboundBody
 			res.CompressionStrategy = "delta_append"
 		}
-		sc.updateCache(ctx, tenantID, gwSessionID, state, outboundBody, res, false)
+		sc.updateCache(ctx, tenantID, gwSessionID, state, outboundBody, res, false, fromV2)
 		return res
 	}
 
@@ -300,7 +305,7 @@ func (sc *SessionCompressor) Prepare(
 			res.OutboundBody = outboundBody
 			res.CompressionStrategy = "delta_append"
 		}
-		sc.updateCache(ctx, tenantID, gwSessionID, state, outboundBody, res, false)
+		sc.updateCache(ctx, tenantID, gwSessionID, state, outboundBody, res, false, fromV2)
 		return res
 	}
 
@@ -410,7 +415,7 @@ func (sc *SessionCompressor) Prepare(
 
 	// ── Persist updated cache state ──────────────────────────────────────
 	didCompress := winResult.ShouldTrigger && !winResult.Degraded && res.SummaryMarker != ""
-	sc.updateCache(ctx, tenantID, gwSessionID, state, outboundBody, res, didCompress)
+	sc.updateCache(ctx, tenantID, gwSessionID, state, outboundBody, res, didCompress, fromV2)
 
 	return res
 }
@@ -509,7 +514,19 @@ func (sc *SessionCompressor) updateCache(
 	outboundBody []byte,
 	res *PrepareResult,
 	didCompress bool,
+	fromV2 bool,
 ) {
+	// When the request was served from the V2 read path, do NOT write the
+	// reconstructed state back into the V1 cache. The V2 path supplies an
+	// empty placeholder SessionState (see Prepare), so persisting a derived
+	// newState here would poison the V1 cache with a LastCompressedAt=now
+	// entry that has no SummaryMarker / ToolsHash — and the next request
+	// that falls back to V1 would read this corrupted state. V2 owns its
+	// own write side (session_bodies via the DualWriter); the two caches
+	// must stay independent.
+	if fromV2 {
+		return
+	}
 	if sc.deps.Cache == nil {
 		return
 	}
