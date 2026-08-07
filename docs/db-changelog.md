@@ -731,3 +731,10 @@
 |-----------|------|---------|--------|
 | 472 | `472_cache_metrics_partitions.sql` | `a2667ef1a5436ed01272a4d8260840e486d6c00ed1e4b6552b27e48887e95053` | applied+verified |
 
+## 2026-08-07T08:45:23Z — deploy 245 build_seq 1472 (26478d73)
+
+| Migration | File | SHA-256 | Status |
+|-----------|------|---------|--------|
+| 473 | `473_partition_precreate_2026_09_10.sql` | `2adc06f310153fd514f665b8c85c3dd9c55e7c4423c5fa096d938592e1f4212b` | applied+verified |
+| 474 | `474_session_turns_attachment_indexes_and_constraint.sql` | `07c9b6e62a57f2ef7b7db27f447c1667734792a4a9029c3de38c086c434f8452` | applied+verified |
+
