@@ -1,8 +1,30 @@
-# 08 — A1 RFC：V2 会话读路径按租户灰度放开
+# 08 — A1：V2 会话读路径放开（决策 + 执行记录）
 
-> 状态：**草案，待评审**。本文件只产出方案与代码改动清单，**不翻生产开关**。评审通过后才执行 §6 的代码改动，并按 §5 的租户序列灰度。
+> 状态：**已执行（2026-08-07）**。原为灰度 RFC；用户决策"压缩+摘要一起切、默认开、可关、不灰度"（用户量小），故按平台级 kill-switch 直接全量放开。下文保留原灰度方案作为回滚/未来参考，§0 记录最终决策与执行结果。
 >
-> 关联：`omni-ref3/03-MULTITURN-ASSEMBLY.md` A1；前置 A2（指纹统一）、A6（摘要读源接口层 + V2 实现）、M7（标题接线）均已落地。
+> 关联：`omni-ref3/03-MULTITURN-ASSEMBLY.md` A1；前置 A2/A6/M7 均已落地。
+
+## 0. 决策与执行结果（2026-08-07）
+
+**决策**（用户）：压缩读 + 摘要读**一起切**到 V2；**默认开启**；保留**平台级 kill-switch**（可一键关回 V1，热加载，无需 redeploy）；**不灰度**（用户量小，灰度观测价值低于开销）。
+
+**已执行的代码改动**：
+| 文件 | 改动 | 测试 |
+|---|---|---|
+| `domains/hooks/compression/session_compressor.go` | `shouldUseV2` 删除硬编码 `return false`，改为 `settings.GetPlatformBool("sessions_v2_compression_read", true)`；保留 nil-component 守卫 | `should_use_v2_test.go`（5 例：默认开/kill-switch false/显式 true/nil 组件/nil receiver） |
+| `cmd/gateway/main_pipeline.go` | 构造 `summaryService` 后，按**同一 flag** 调 `SetMessageSource(NewV2SessionBodiesSource(pool))`（压缩+摘要同开同关） | `cmd/gateway` 全量测试通过 |
+| `settings/spec_sessions_v2_compression.go` | spec 从 `ScopeTenant/Default false` 改为 `ScopePlatform/Default true`，函数改名 `SessionsV2CompressionPlatformSpecs`，加 `EnvName` 与 `DangerLevel: Warning` | `settings` 全量测试通过 |
+| `settings/specs.go` | 注册从 `TenantSpecs()` 移到 `PlatformSpecs()` | — |
+
+**关键修正（执行中发现）**：原 spec 是 `ScopeTenant`，而 `GetPlatformBool` 只读 `ScopePlatform`——两者作用域不匹配，导致 kill-switch 形同虚设（永远走 fallback）。改为 `ScopePlatform` 后，admin 在 platform 设置 `false` 才真正生效。执行中 fail-open 仍在（`tryLoadV2State` 任一步出错回退 V1）。
+
+**验证**：gofmt / go vet / `go build ./...` 全净；settings / hooks/compression / sessionsummary / session/v2 / ir / cmd/gateway 全套测试通过。
+
+**回滚**：platform 设置 `sessions_v2_compression_read=false`（热加载，秒级）→ 压缩与摘要同回 V1。无需 redeploy。
+
+---
+
+## 1.（原 RFC，作为参考保留）目标与非目标
 
 ## 1. 目标与非目标
 

@@ -667,26 +667,29 @@ func sha256Hash(data any) string { //nolint:unused
 // V2 Integration Helpers (Phase V2-2.4)
 // ─────────────────────────────────────────────────────────────
 
-// shouldUseV2 determines whether to use V2 cache architecture.
+// shouldUseV2 determines whether to read session state from the V2 store
+// (gateway.session_bodies) instead of V1 (request_logs LCS delta).
 //
 // Returns true when:
-//  1. V2 components (CacheV2 + Builder) are available, AND
-//  2. Feature Flag "sessions_v2_compression_read" is enabled for tenant
+//  1. V2 components (CacheV2 + Builder) are wired, AND
+//  2. The platform flag "sessions_v2_compression_read" is true.
+//
+// The flag defaults to TRUE (docs/omni-ref3 A1 — decision: compress+summary
+// cut over together, default-on, no canary). It is a kill-switch: setting it
+// to false in settings_kv hot-reloads V1 reads back immediately, no redeploy.
+// The tenantID arg is retained for a future per-tenant override; today the
+// decision is platform-wide (no per-tenant bool setting exists).
+//
+// Fail-open: if V2 read itself errors, tryLoadV2State returns ok=false and the
+// caller falls back to V1 for that request regardless of this flag.
 func (sc *SessionCompressor) shouldUseV2(tenantID string) bool {
-	if sc == nil || false {
+	if sc == nil {
 		return false
 	}
-
-	// Check V2 components availability
 	if sc.deps.CacheV2 == nil || sc.deps.Builder == nil {
 		return false
 	}
-
-	// Feature Flag check - disabled by default until fully implemented
-	// TODO: Enable after full integration and testing
-	// return settings.GetTenantBool(tenantID, "sessions_v2_compression_read", false)
-
-	return false // Disabled by default
+	return settings.GetPlatformBool("sessions_v2_compression_read", true)
 }
 
 // tryLoadV2State attempts to load session state from V2 architecture.

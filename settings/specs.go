@@ -32,6 +32,9 @@ func PlatformSpecs() []*Spec {
 	out = append(out, AutoSummarySpecs()...)
 	// 2026-08-06: Model Quality Monitoring (模型质量监控) - MMLU benchmark testing for featured models
 	out = append(out, ModelQualitySpecs()...)
+	// 2026-08-07: V2 session read-path master switch (docs/omni-ref3 A1).
+	// Platform-scoped, default on, kill-switch via admin/platform settings.
+	out = append(out, SessionsV2CompressionPlatformSpecs()...)
 	return out
 }
 
@@ -40,6 +43,5 @@ func TenantSpecs() []*Spec {
 	out := RateLimitTenantSpecs()
 	// 会话全景分析模块的租户级调优配置（model/strategy/cluster 等）。
 	out = append(out, SessionAnalyticsTenantSpecs()...)
-	out = append(out, SessionsV2CompressionTenantSpecs()...)
 	return out
 }

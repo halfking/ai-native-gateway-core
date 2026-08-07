@@ -58,12 +58,13 @@ P3 退役 V1
 
 **目标**：打通“V2 读 → 增量重建 → 摘要 → 归纳写回 live 元数据”的现代化主链路；吸收 omniroute 的门禁/熔断/缓存感知/前缀分析。
 
-### P1.1 V2 读灰度（A1）— 关键路径
-- 改 `shouldUseV2` 真读 flag（`session_compressor.go:691`）。
-- 灰度：1–2 个低风险租户 → 监控重建一致性（V1 LCS vs V2 delta 的 outbound hash diff）→ 扩量。
-- 前置：P0 的 A2/A6。
-- 回滚：flag 关。
-- 验收：灰度租户压缩触发、token 节省、错误率与 V1 持平 ±5%。
+### P1.1 V2 读放开（A1）— 关键路径 ✅ 已执行（2026-08-07）
+- **决策**：压缩读 + 摘要读一起切，默认开，平台级 kill-switch，不灰度（用户量小）。
+- 改 `shouldUseV2` 删硬编码 `return false` → `GetPlatformBool("sessions_v2_compression_read", true)`；摘要 `SetMessageSource(NewV2SessionBodiesSource)` 同 flag 接线；spec 改 `ScopePlatform/Default true`。
+- 前置 A2/A6/M7 均已满足。
+- 回滚：platform 设 `sessions_v2_compression_read=false`（热加载，秒级）。
+- 验收：`should_use_v2_test.go` 5 例 + 全套测试通过。详见 `08-A1-V2-READ-CANARY-RFC.md` §0。
+- **遗留**：V1/LCS 与 V2/delta 在边缘（attachment-only、orphan tool）算法不同，default-on 后理论上个别会话的 outbound 内容会变。fail-open 兜底已在；若线上观察到异常，kill-switch 即回 V1。
 
 ### P1.2 基础设施
 | 条目 | 来源 | 前置 |
