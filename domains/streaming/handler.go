@@ -1697,6 +1697,17 @@ func (h *ChatHandler) serveWithExecutor(
 
 	var reqBody chatRequestBody
 	if err := json.Unmarshal(bodyBytes, &reqBody); err != nil {
+		// 2026-08-07: log the unmarshal error itself. Without it a
+		// json_parse_error row carries no offset/reason, and an empty
+		// bodyBytes (drained by an upstream middleware) is indistinguishable
+		// from genuinely malformed client JSON.
+		slog.Warn("request body JSON parse failed",
+			"request_id", requestID,
+			"error", err,
+			"body_bytes", len(bodyBytes),
+			"content_length", r.ContentLength,
+			"latency_ms", time.Since(startTime).Milliseconds(),
+		)
 		// json_parse_error already has body captured (it's in bodyBytes)
 		logCtx.SetError("json_parse_error", "invalid JSON in request body")
 		if logCtx.ClientModel == "" {

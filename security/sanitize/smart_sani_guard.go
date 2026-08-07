@@ -25,6 +25,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"strconv"
 	"time"
 
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/response"
@@ -94,6 +95,8 @@ func (m *SanitizeInputMiddleware) Wrap(next http.Handler) http.Handler {
 		}
 
 		sessionID := m.getSessionID(r)
+		// readBody 恢复 r.Body，因此下面每条 passthrough 路径都安全：
+		// 无脱敏、脱敏失败、读取失败都会把原始 body 交给下游。
 		body, err := readBody(r)
 		if err != nil {
 			m.logger.Warn("sanitize_middleware: read body failed, passthrough",
@@ -111,9 +114,14 @@ func (m *SanitizeInputMiddleware) Wrap(next http.Handler) http.Handler {
 			return
 		}
 
-		// 有脱敏内容 → 重写 r.Body，并把映射表放入请求 Context
+		// 有脱敏内容 → 用脱敏后的 body 覆盖，并把映射表放入请求 Context。
+		// 无脱敏内容时 r.Body 已由 readBody 恢复为原始 body，无需处理。
 		if sanitizedBody != nil {
 			r.Body = io.NopCloser(bytes.NewReader(sanitizedBody))
+			// 脱敏后长度变化，同步 ContentLength 与 Content-Length 头，
+			// 避免下游按旧长度截断或拒绝。
+			r.ContentLength = int64(len(sanitizedBody))
+			r.Header.Set("Content-Length", strconv.Itoa(len(sanitizedBody)))
 			*r = *r.WithContext(WithSanitizeMap(r.Context(), sm))
 		}
 
@@ -428,14 +436,24 @@ func SanitizeMapFromContext(ctx context.Context) (SanitizeMap, bool) {
 
 type sanitizeMapCtxKey struct{}
 
-// readBody 读取并恢复请求体（允许后续 handler 重复读取）。
+// readBody 读取请求体并把它恢复回 r.Body，使后续 handler 仍能完整读取。
+//
+// 2026-08-07 事故修复：此前只读取、不恢复，导致下游 chatHandler 读到空 body
+// 并以 json_parse_error 400 拒绝请求。恢复动作必须在读取后立即完成 —
+// 包含读取失败的情况（已消费的字节数不可退回，但把已读部分接回去比留一个
+// 耗尽的 Body 更接近原状，且下游会给出准确的 body_read_error）。
 func readBody(r *http.Request) ([]byte, error) {
 	if r == nil || r.Body == nil {
 		return nil, nil
 	}
 	buf := new(bytes.Buffer)
-	if _, err := buf.ReadFrom(r.Body); err != nil {
+	_, err := buf.ReadFrom(r.Body)
+	b := buf.Bytes()
+	// 无论成功与否都把已读字节接回 r.Body，避免下游拿到耗尽的 Body。
+	_ = r.Body.Close()
+	r.Body = io.NopCloser(bytes.NewReader(b))
+	if err != nil {
 		return nil, err
 	}
-	return buf.Bytes(), nil
+	return b, nil
 }
