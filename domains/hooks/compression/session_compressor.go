@@ -32,7 +32,6 @@ import (
 	"time"
 
 	summarymodel "github.com/kaixuan/llm-gateway-go/domains/hooks/compression/summary"
-	v2 "github.com/kaixuan/llm-gateway-go/domains/session/v2"
 	"github.com/kaixuan/llm-gateway-go/domains/transformation" //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/settings"
 )
@@ -45,13 +44,18 @@ type SessionCompressorDeps struct {
 	// DEPRECATED: Use CacheV2 instead. Kept for fallback during V2 migration.
 	Cache *SessionCache
 
-	// CacheV2 is the V2 cache architecture that reads from session_turns.
-	// When non-nil and Feature Flag is enabled, this takes precedence over Cache.
-	CacheV2 *v2.SessionCacheV2
+	// CacheV2 is the V2 session-state reader. Non-nil + feature flag on
+	// makes the V2 read path take precedence over Cache.
+	//
+	// Defined as a local interface (not *v2.SessionCacheV2) so the
+	// compression package does not import the v2 package and so tests
+	// can inject a stub without a live database.
+	CacheV2 V2StateReader
 
-	// Builder is the V2 outbound message builder that reconstructs full context
-	// from incremental deltas stored in session_bodies.
-	Builder *v2.OutboundBuilder
+	// Builder rebuilds the last outbound body (JSON messages array) from
+	// the V2 incremental tables. Defined as a local interface for the
+	// same reasons as CacheV2.
+	Builder V2OutboundBuilder
 
 	// CompactionDeps provides the Memora + Provider clients needed by
 	// tryLLMContextCompaction. When nil, LLM summary is skipped and the
@@ -61,6 +65,24 @@ type SessionCompressorDeps struct {
 	// Disabled completely disables the session compressor when true.
 	// Reads LLM_GATEWAY_SESSION_COMPRESSOR_DISABLE env var at startup.
 	Disabled bool
+}
+
+// V2StateReader is the minimal slice of *v2.SessionCacheV2 that
+// tryLoadV2State consumes: it only needs to know whether prior state
+// exists for a session and whether that lookup errored.
+type V2StateReader interface {
+	// HasState reports whether any prior turn state exists for the
+	// session. A (false, nil) result means "new session" and is NOT
+	// an error — tryLoadV2State treats it as ok=true with an empty
+	// body so the caller proceeds as a fresh session.
+	HasState(ctx context.Context, tenantID, sessionID string) (bool, error)
+}
+
+// V2OutboundBuilder rebuilds the most recent outbound body (the exact
+// message array last forwarded to the upstream model, including any
+// compression markers) as a JSON-marshaled []byte.
+type V2OutboundBuilder interface {
+	BuildLatestOutbound(ctx context.Context, tenantID, sessionID string) ([]byte, error)
 }
 
 // PrepareResult is the output of SessionCompressor.Prepare.
@@ -174,6 +196,10 @@ func (sc *SessionCompressor) Prepare(
 	)
 
 	// ── V2 Integration: Try V2 cache first if enabled ────────────────────
+	// fromV2 records whether THIS request was served from the V2 read path,
+	// so updateCache can skip writing back into the V1 cache (see rationale
+	// in updateCache). It stays false for the V1 path and any fallback.
+	fromV2 := false
 	if sc.shouldUseV2(tenantID) {
 		slog.InfoContext(ctx, "session_compressor: using v2 cache",
 			"session", gwSessionID, "tenant", tenantID)
@@ -181,6 +207,16 @@ func (sc *SessionCompressor) Prepare(
 		v2Body, ok := sc.tryLoadV2State(ctx, tenantID, gwSessionID)
 		if ok {
 			lastOutboundBody = v2Body
+			// BuildOutboundMessages treats a nil state as "new session" and
+			// discards lastOutboundBody, so we MUST provide a non-nil state
+			// for the delta-append path to engage. The V2 reader does not
+			// populate the legacy SessionState fields; an empty struct is
+			// sufficient because diff.go only checks state != nil here.
+			// Tools-caching / strip bookkeeping later in Prepare will see a
+			// zero-valued state and no-op, which is the correct conservative
+			// behaviour until those features are migrated to V2 metadata.
+			state = &SessionState{}
+			fromV2 = true
 			slog.InfoContext(ctx, "session_compressor: v2 cache loaded successfully",
 				"session", gwSessionID, "body_size", len(v2Body))
 		} else {
@@ -229,7 +265,7 @@ func (sc *SessionCompressor) Prepare(
 			res.OutboundBody = outboundBody
 			res.CompressionStrategy = "delta_append"
 		}
-		sc.updateCache(ctx, tenantID, gwSessionID, state, outboundBody, res, false)
+		sc.updateCache(ctx, tenantID, gwSessionID, state, outboundBody, res, false, fromV2)
 		return res
 	}
 
@@ -269,7 +305,7 @@ func (sc *SessionCompressor) Prepare(
 			res.OutboundBody = outboundBody
 			res.CompressionStrategy = "delta_append"
 		}
-		sc.updateCache(ctx, tenantID, gwSessionID, state, outboundBody, res, false)
+		sc.updateCache(ctx, tenantID, gwSessionID, state, outboundBody, res, false, fromV2)
 		return res
 	}
 
@@ -379,7 +415,7 @@ func (sc *SessionCompressor) Prepare(
 
 	// ── Persist updated cache state ──────────────────────────────────────
 	didCompress := winResult.ShouldTrigger && !winResult.Degraded && res.SummaryMarker != ""
-	sc.updateCache(ctx, tenantID, gwSessionID, state, outboundBody, res, didCompress)
+	sc.updateCache(ctx, tenantID, gwSessionID, state, outboundBody, res, didCompress, fromV2)
 
 	return res
 }
@@ -478,7 +514,19 @@ func (sc *SessionCompressor) updateCache(
 	outboundBody []byte,
 	res *PrepareResult,
 	didCompress bool,
+	fromV2 bool,
 ) {
+	// When the request was served from the V2 read path, do NOT write the
+	// reconstructed state back into the V1 cache. The V2 path supplies an
+	// empty placeholder SessionState (see Prepare), so persisting a derived
+	// newState here would poison the V1 cache with a LastCompressedAt=now
+	// entry that has no SummaryMarker / ToolsHash — and the next request
+	// that falls back to V1 would read this corrupted state. V2 owns its
+	// own write side (session_bodies via the DualWriter); the two caches
+	// must stay independent.
+	if fromV2 {
+		return
+	}
 	if sc.deps.Cache == nil {
 		return
 	}
@@ -677,18 +725,22 @@ func sha256Hash(data any) string { //nolint:unused
 // The flag defaults to TRUE (docs/omni-ref3 A1 — decision: compress+summary
 // cut over together, default-on, no canary). It is a kill-switch: setting it
 // to false in settings_kv hot-reloads V1 reads back immediately, no redeploy.
-// The tenantID arg is retained for a future per-tenant override; today the
-// decision is platform-wide (no per-tenant bool setting exists).
-//
 // Fail-open: if V2 read itself errors, tryLoadV2State returns ok=false and the
 // caller falls back to V1 for that request regardless of this flag.
+//
+// tenantID is accepted for forward-compatibility with a future tenant-scoped
+// reader; unused for now to avoid an "unused parameter" lint warning.
 func (sc *SessionCompressor) shouldUseV2(tenantID string) bool {
 	if sc == nil {
 		return false
 	}
+
+	// V2 components must both be wired at startup.
 	if sc.deps.CacheV2 == nil || sc.deps.Builder == nil {
 		return false
 	}
+
+	_ = tenantID
 	return settings.GetPlatformBool("sessions_v2_compression_read", true)
 }
 
@@ -703,31 +755,24 @@ func (sc *SessionCompressor) tryLoadV2State(
 	ctx context.Context,
 	tenantID, sessionID string,
 ) (lastOutboundBody []byte, ok bool) {
-	// Call CacheV2.Get() - returns *SessionStateV2
-	state, err := sc.deps.CacheV2.Get(ctx, tenantID, sessionID)
+	// Ask the V2 reader whether prior state exists. A "no" (new session)
+	// is not an error: we return ok=true with an empty body so the caller
+	// proceeds as a fresh session rather than falling back to V1.
+	has, err := sc.deps.CacheV2.HasState(ctx, tenantID, sessionID)
 	if err != nil {
 		slog.WarnContext(ctx, "v2 cache get failed, fallback to v1",
 			"session", sessionID, "tenant", tenantID, "error", err)
 		return nil, false
 	}
-
-	if state == nil {
+	if !has {
 		// New session, no previous state
 		return nil, true
 	}
 
-	// Call Builder.BuildFromLatestOutbound() - returns ([]Message, *BuildMeta, error)
-	messages, _, err := sc.deps.Builder.BuildFromLatestOutbound(ctx, tenantID, sessionID)
+	// Rebuild the last outbound body (JSON) via the V2 builder.
+	outboundBody, err := sc.deps.Builder.BuildLatestOutbound(ctx, tenantID, sessionID)
 	if err != nil {
 		slog.WarnContext(ctx, "v2 build from outbound failed, fallback to v1",
-			"session", sessionID, "tenant", tenantID, "error", err)
-		return nil, false
-	}
-
-	// Marshal messages to JSON
-	outboundBody, err := json.Marshal(messages)
-	if err != nil {
-		slog.WarnContext(ctx, "v2 marshal messages failed, fallback to v1",
 			"session", sessionID, "tenant", tenantID, "error", err)
 		return nil, false
 	}

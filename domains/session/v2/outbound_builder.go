@@ -11,6 +11,7 @@ package v2
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 )
@@ -117,6 +118,22 @@ func (b *OutboundBuilder) BuildFromLatestOutbound(
 	}
 
 	return messages, meta, nil
+}
+
+// BuildLatestOutbound is the JSON-marshaled form of BuildFromLatestOutbound,
+// matching the compression.V2OutboundBuilder interface. It returns the
+// exact message array last forwarded to the upstream model (including
+// compression markers) as a JSON []byte so the compression package does
+// not need to import the v2 Message type.
+func (b *OutboundBuilder) BuildLatestOutbound(
+	ctx context.Context,
+	tenantID, sessionID string,
+) ([]byte, error) {
+	messages, _, err := b.BuildFromLatestOutbound(ctx, tenantID, sessionID)
+	if err != nil {
+		return nil, err
+	}
+	return json.Marshal(messages)
 }
 
 // filterCompressionMarkers 过滤掉压缩 marker 消息
