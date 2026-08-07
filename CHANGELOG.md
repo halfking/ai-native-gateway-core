@@ -70,6 +70,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - **查询入口**: `cmd/gateway/main.go:4383` 暴露 `/api/admin/cache-metrics/summary` 与 `/timeline`
   - **验证**: `go build` / `go vet` exit 0；表创建幂等
 
+- **【审计+修复 2026-08-07 16:10】partition 全表预创建 + 431/432 silent skip 补齐**:
+  - **审计发现**：
+    - 15 个 RANGE 分区表**只有 2026_07 + 2026_08 分区**（cache_metrics 例外），缺 2026_09 + 2026_10。当 2026-08-31 23:59 切月后 INSERT 会全面失败（sessions/session_turns/request_wal/usage_ledger 等核心路径宕机）
+    - 同 version 多文件导致 deploy script 静默 skip：431_session_turns_add_attachment_columns 的两个 GIN/BTREE 索引未创建；432_fix_submit_mode_constraint 的 CHECK 扩展未应用 → 任何 submit_mode='attachment_only' 的 INSERT 会被约束拒绝（domains/session/v2/turn_writer.go:57 + submit_mode_detector.go:15 已用此模式）
+  - **修复**：
+    - **migration 473 `473_partition_precreate_2026_09_10.sql`**：14 个 RANGE 表一次性补 2026_09 + 2026_10 + default 三件套（rule 33 §6.1 + §2）；cursor + pg_class.relname 替代 regclass cast 避免幂等性 bug（教训来自 472）
+    - **migration 474 `474_session_turns_attachment_indexes_and_constraint.sql`**：建 gateway.session_turns 上缺失的 2 索引（GIN multimodal_types + BTREE attachment_count WHERE > 0）；扩展 public + gateway 两套 schema 的 session_turns_submit_mode_check 至 5 模式（含 attachment_only）；DO 块 verify 强约束
+  - **覆盖表**：credential_model_index, credit_ledger, dashboard_access_events, model_probe_runs, request_logs, request_wal, routing_decision_log, routing_decision_log_archive, session_bodies, session_module_executions, session_turns, sessions, tool_usage_stats, usage_ledger
+  - **验证**：本地 psql dry-run 通过；idx 跑创建成功；gateway.session_turns 接受 submit_mode='attachment_only'（实测 INSERT 成功）
+  - **未部署**：本次仅本地测试成功（手动 scp + psql），正式 deploy 流程需要在 build/release 时同步进 bundle
+
 - **会话摘要归档 M5 (2026-08-07)**:
   - **背景**: `session_summaries` 长期累积不活跃记录（30+ 天无访问、session 已结束），挤占活动表空间且影响 ANALYZE 计划质量。需求：可归档老摘要，活跃视图自动过滤
   - **机制**: 新增 startup 迁移 471 `sql/migrations/startup/471_session_summaries_archival.sql`（注：原 commit `7f88c931c` 使用了与 `cache_metrics` 重复的 470 编号，本次审计时重命名以避免同 version 多文件导致的部署拒绝），给 `public.session_summaries` 加 `last_accessed_at timestamptz` + `archived_at timestamptz` 两列（IF NOT EXISTS 守卫）+ 部分索引 `idx_session_summaries_archival ON (archived_at, last_accessed_at, last_request_at) WHERE archived_at IS NULL`
