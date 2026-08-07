@@ -1,6 +1,7 @@
 package ir
 
 import (
+	"os"
 	"testing"
 )
 
@@ -210,5 +211,127 @@ func TestValidateAndFixRequest_EmptyRequest(t *testing.T) {
 
 	if len(fixed.Messages) != 0 {
 		t.Errorf("expected empty messages to stay empty")
+	}
+}
+
+// TestEnforceRoleAlternation_WarnOnly tests E3 default behavior (warn, no merge).
+func TestEnforceRoleAlternation_WarnOnly(t *testing.T) {
+	// Ensure fix is disabled (default)
+	originalEnv := os.Getenv("LLM_GATEWAY_FIX_ROLE_ALTERNATION")
+	os.Setenv("LLM_GATEWAY_FIX_ROLE_ALTERNATION", "false")
+	defer os.Setenv("LLM_GATEWAY_FIX_ROLE_ALTERNATION", originalEnv)
+
+	req := &InternalRequest{
+		Messages: []Message{
+			{Role: "user", Content: []ContentBlock{{Type: "text", Text: "A"}}},
+			{Role: "user", Content: []ContentBlock{{Type: "text", Text: "B"}}},
+			{Role: "assistant", Content: []ContentBlock{{Type: "text", Text: "C"}}},
+		},
+	}
+
+	fixed := ValidateAndFixRequest(req, "test_warn")
+
+	// Should NOT merge — 3 messages remain
+	if len(fixed.Messages) != 3 {
+		t.Errorf("expected 3 messages (warn-only mode), got %d", len(fixed.Messages))
+	}
+
+	// First two should still be separate user messages
+	if fixed.Messages[0].Role != "user" || fixed.Messages[1].Role != "user" {
+		t.Errorf("expected two consecutive user messages to remain unmerged")
+	}
+}
+
+// TestEnforceRoleAlternation_MergeEnabled tests E3 merge behavior (fix enabled).
+func TestEnforceRoleAlternation_MergeEnabled(t *testing.T) {
+	// Enable fix
+	originalEnv := os.Getenv("LLM_GATEWAY_FIX_ROLE_ALTERNATION")
+	os.Setenv("LLM_GATEWAY_FIX_ROLE_ALTERNATION", "true")
+	defer os.Setenv("LLM_GATEWAY_FIX_ROLE_ALTERNATION", originalEnv)
+
+	req := &InternalRequest{
+		Messages: []Message{
+			{Role: "user", Content: []ContentBlock{{Type: "text", Text: "A"}}},
+			{Role: "user", Content: []ContentBlock{{Type: "text", Text: "B"}}},
+			{Role: "assistant", Content: []ContentBlock{{Type: "text", Text: "C"}}},
+		},
+	}
+
+	fixed := ValidateAndFixRequest(req, "test_merge")
+
+	// Should merge the two consecutive user messages → 2 messages total
+	if len(fixed.Messages) != 2 {
+		t.Errorf("expected 2 messages after merge, got %d", len(fixed.Messages))
+	}
+
+	// First message should be user with 2 content blocks
+	if fixed.Messages[0].Role != "user" {
+		t.Errorf("expected first message to be user, got %s", fixed.Messages[0].Role)
+	}
+	if len(fixed.Messages[0].Content) != 2 {
+		t.Errorf("expected merged user message to have 2 content blocks, got %d", len(fixed.Messages[0].Content))
+	}
+
+	// Content should be concatenated
+	if fixed.Messages[0].Content[0].Text != "A" || fixed.Messages[0].Content[1].Text != "B" {
+		t.Errorf("expected content blocks [A, B], got [%s, %s]",
+			fixed.Messages[0].Content[0].Text, fixed.Messages[0].Content[1].Text)
+	}
+
+	// Second message should be assistant
+	if fixed.Messages[1].Role != "assistant" || fixed.Messages[1].Content[0].Text != "C" {
+		t.Errorf("expected second message to be assistant:C")
+	}
+}
+
+// TestEnforceRoleAlternation_SystemToolPreserved tests that system and tool
+// messages are never merged (E3).
+func TestEnforceRoleAlternation_SystemToolPreserved(t *testing.T) {
+	originalEnv := os.Getenv("LLM_GATEWAY_FIX_ROLE_ALTERNATION")
+	os.Setenv("LLM_GATEWAY_FIX_ROLE_ALTERNATION", "true")
+	defer os.Setenv("LLM_GATEWAY_FIX_ROLE_ALTERNATION", originalEnv)
+
+	req := &InternalRequest{
+		Messages: []Message{
+			{Role: "system", Content: []ContentBlock{{Type: "text", Text: "S1"}}},
+			{Role: "system", Content: []ContentBlock{{Type: "text", Text: "S2"}}},
+			{Role: "user", Content: []ContentBlock{{Type: "text", Text: "U"}}},
+			{Role: "assistant", Content: []ContentBlock{{Type: "text", Text: "A"}}, ToolCalls: []ToolCall{
+				{ID: "call_1", Type: "function", Function: struct {
+					Name      string `json:"name"`
+					Arguments string `json:"arguments"`
+				}{Name: "search", Arguments: "{}"}},
+				{ID: "call_2", Type: "function", Function: struct {
+					Name      string `json:"name"`
+					Arguments string `json:"arguments"`
+				}{Name: "fetch", Arguments: "{}"}},
+			}},
+			{Role: "tool", Content: []ContentBlock{{Type: "text", Text: "T1"}}, ToolCallID: "call_1"},
+			{Role: "tool", Content: []ContentBlock{{Type: "text", Text: "T2"}}, ToolCallID: "call_2"},
+		},
+	}
+
+	fixed := ValidateAndFixRequest(req, "test_preserve")
+
+	// System messages should NOT be merged (even consecutive)
+	systemCount := 0
+	for _, msg := range fixed.Messages {
+		if msg.Role == "system" {
+			systemCount++
+		}
+	}
+	if systemCount != 2 {
+		t.Errorf("expected 2 separate system messages, got %d", systemCount)
+	}
+
+	// Tool messages should NOT be merged
+	toolCount := 0
+	for _, msg := range fixed.Messages {
+		if msg.Role == "tool" {
+			toolCount++
+		}
+	}
+	if toolCount != 2 {
+		t.Errorf("expected 2 separate tool messages, got %d", toolCount)
 	}
 }

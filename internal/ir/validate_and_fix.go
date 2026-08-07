@@ -2,6 +2,7 @@ package ir
 
 import (
 	"log/slog"
+	"os"
 	"strconv"
 	"strings"
 )
@@ -234,12 +235,37 @@ func fixToolCallStructure(messages []Message) []Message {
 }
 
 // enforceRoleAlternation ensures proper role alternation (user/assistant).
-// This is a soft enforcement - we only warn, don't remove messages.
+//
+// Behavior is controlled by the LLM_GATEWAY_FIX_ROLE_ALTERNATION environment
+// variable (docs/omni-ref3 E3):
+//   - "false" or unset (default): soft enforcement — warn only, do not modify
+//   - "true": merge consecutive same-role messages (excluding system/tool)
+//
+// When merging is enabled, consecutive messages with the same role (user or
+// assistant) are combined by concatenating their Content arrays. This ensures
+// compatibility with providers (e.g., some OpenAI models) that require strict
+// user/assistant alternation.
 func enforceRoleAlternation(messages []Message) []Message {
 	if len(messages) < 2 {
 		return messages
 	}
 
+	// Check if auto-fix is enabled (E3: default false, opt-in per provider)
+	shouldFix := os.Getenv("LLM_GATEWAY_FIX_ROLE_ALTERNATION") == "true"
+
+	if !shouldFix {
+		// Legacy behavior: warn only, do not modify
+		return warnRoleAlternationViolations(messages)
+	}
+
+	// E3: merge consecutive same-role messages
+	return mergeConsecutiveSameRoleMessages(messages)
+}
+
+// warnRoleAlternationViolations detects role alternation violations and logs
+// warnings without modifying the message array. This is the default behavior
+// (E3: soft enforcement).
+func warnRoleAlternationViolations(messages []Message) []Message {
 	violations := 0
 	lastRole := ""
 
@@ -248,7 +274,7 @@ func enforceRoleAlternation(messages []Message) []Message {
 			continue // System and tool messages don't affect alternation
 		}
 
-		if lastRole != "" && lastRole == msg.Role && msg.Role != "tool" {
+		if lastRole != "" && lastRole == msg.Role {
 			slog.Warn("validate_and_fix: role alternation violation detected",
 				"index", i,
 				"role", msg.Role,
@@ -267,6 +293,53 @@ func enforceRoleAlternation(messages []Message) []Message {
 	}
 
 	return messages
+}
+
+// mergeConsecutiveSameRoleMessages combines consecutive messages with the same
+// role (user or assistant) by concatenating their Content arrays. System and
+// tool messages are never merged (docs/omni-ref3 E3).
+//
+// Example:
+//
+//	[user: "A", user: "B", assistant: "C"]
+//	→ [user: ["A", "B"], assistant: "C"]
+//
+// This ensures compliance with providers that enforce strict role alternation.
+func mergeConsecutiveSameRoleMessages(messages []Message) []Message {
+	if len(messages) == 0 {
+		return messages
+	}
+
+	result := []Message{messages[0]}
+	mergedCount := 0
+
+	for i := 1; i < len(messages); i++ {
+		lastMsg := &result[len(result)-1]
+		currMsg := messages[i]
+
+		// Never merge system or tool messages
+		if currMsg.Role == "system" || currMsg.Role == "tool" {
+			result = append(result, currMsg)
+			continue
+		}
+
+		// Merge if roles match and are not system/tool
+		if lastMsg.Role == currMsg.Role && lastMsg.Role != "system" && lastMsg.Role != "tool" {
+			// Concatenate Content arrays
+			lastMsg.Content = append(lastMsg.Content, currMsg.Content...)
+			mergedCount++
+		} else {
+			result = append(result, currMsg)
+		}
+	}
+
+	if mergedCount > 0 {
+		slog.Info("validate_and_fix: merged consecutive same-role messages",
+			"count", mergedCount,
+		)
+	}
+
+	return result
 }
 
 // normalizeSystemMessages moves all system messages to the beginning.
