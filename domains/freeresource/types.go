@@ -57,7 +57,7 @@ type RecordRequest struct {
 	TokenCount   int64
 	Success      bool
 	WindowTypes  []WindowType
-	TenantID     int64
+	TenantID     string
 	Timestamp    time.Time
 }
 
