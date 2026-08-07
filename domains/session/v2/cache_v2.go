@@ -126,6 +126,18 @@ func (c *SessionCacheV2) Invalidate(ctx context.Context, tenantID, sessionID str
 	return c.l2.Delete(ctx, tenantID, sessionID)
 }
 
+// HasState reports whether any prior session state exists. It is the
+// minimal surface the compression layer needs to decide "new session vs
+// continuation" without pulling the full SessionStateV2. Implemented in
+// terms of Get so L1/L2/L3 semantics stay consistent.
+func (c *SessionCacheV2) HasState(ctx context.Context, tenantID, sessionID string) (bool, error) {
+	state, err := c.Get(ctx, tenantID, sessionID)
+	if err != nil {
+		return false, err
+	}
+	return state != nil, nil
+}
+
 // ─────────────────────────────────────────────────────────────
 // L1: CompressionMetaCache (in-memory LRU)
 // ─────────────────────────────────────────────────────────────

@@ -10,11 +10,8 @@ package settings
 // (domains/hooks/compression) and the summarizer's SetMessageSource wiring
 // (cmd/gateway/main_pipeline) read this single platform key.
 //
-// Previously this was a tenant-scoped key defaulting to false, which (a)
-// couldn't be set platform-wide and (b) left shouldUseV2 unable to honour a
-// kill-switch because GetPlatformBool reads the platform scope. The tenant
-// scope was never actually consumed — shouldUseV2 ignored its tenantID arg —
-// so widening to platform loses nothing.
+// Platform-scoped because SessionCompressor reads it via settings.GetPlatformBool;
+// promoting to tenant scope would need a per-tenant resolver on the compressor hot path.
 func SessionsV2CompressionPlatformSpecs() []*Spec {
 	return []*Spec{
 		{
