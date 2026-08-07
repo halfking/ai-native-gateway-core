@@ -76,8 +76,10 @@ type PipelineRequest struct {
 	//     读：（暂无消费方；供 admin/telemetry 观测）
 	//
 	//   "sanitize_map" (sanitize.SanitizeMap)
-	//     写：sanitize.SanitizerInputHook.Execute（PreRouting）
-	//     读：sanitize.SanitizerOutputHook.Execute（PostUpstream）
+	//     写：sanitize.SanitizerInputHook.Execute（PreRouting，V2 Pipeline 中使用）
+	//     读：sanitize.SanitizerOutputHook.Execute（PostUpstream，V2 Pipeline 中使用）
+	//     注：真实主链路通过 ResponseInterceptor 链接入，见 cmd/gateway/goal_control.go
+	//         和 security/sanitize/smart_sani_guard.go。不再依赖 Metadata 传递。
 	//
 	//   "optimization_applied" (string: strip_tools|compress_thinking|summarize)
 	//     写：compression/strip 阶段

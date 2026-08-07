@@ -3,6 +3,9 @@
 // 输入侧将敏感信息（手机号/身份证/邮箱等）替换为 {SENSITIVE:type:index}
 // 占位符，LLM 只看到脱敏文本；输出侧检测占位符精确还原。
 // 实现"敏感信息不出网关，用户体验无损"。
+//
+// 主链路接入见 smart_sani_guard.go（SanitizeInputMiddleware +
+// SanitizeRestoreInterceptor）。本文件仅保留数据类型与基础 API。
 package sanitize
 
 import (
@@ -38,8 +41,11 @@ func (p Placeholder) String() string {
 	return fmt.Sprintf("{SENSITIVE:%s:%d}", p.Type, p.Index)
 }
 
-// SanitizeMap 占位符→原始值的映射表
-// 存储在 PipelineRequest.Metadata["sanitize_map"] 中
+// SanitizeMap 占位符→原始值的映射表。
+//
+// 生产路径（见 smart_sani_guard.go）：输入侧写入 Redis Hash
+// session:{sessionID}:sanitize（field=占位符, value=原始值），
+// 输出侧从同一 Hash 读取并还原。
 type SanitizeMap map[string]string
 
 // ParsePlaceholder 从字符串解析占位符

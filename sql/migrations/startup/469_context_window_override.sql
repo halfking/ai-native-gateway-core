@@ -1,4 +1,4 @@
--- Migration 468: context_window_override — manual calibration for A4
+-- Migration 469: context_window_override — manual calibration for A4
 --
 -- docs/omni-ref3 A4 Phase 1: add override column for manual context window
 -- calibration. When providers mis-declare their context window (虚标), ops
