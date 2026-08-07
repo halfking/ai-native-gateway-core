@@ -88,6 +88,14 @@ type archiveSpec struct {
 	fnName  string // SQL function name, e.g. "archive_request_logs"
 	label   string // human label for logs
 	enabled bool   //nolint:unused
+
+	// argExpr is the placeholder expression passed to fnName in
+	// ensureNextMonthPartitions. Empty means "$1" (timestamptz, the
+	// original convention). Functions declared with a `date` parameter
+	// need "$1::date" — pgx sends a Go time.Time as timestamptz, and PG
+	// will not implicitly down-cast timestamptz → date when resolving
+	// the function, so the call fails with "function does not exist".
+	argExpr string
 }
 
 func NewPartitionManager(db *pgxpool.Pool, interval time.Duration) *PartitionManager {
@@ -161,9 +169,13 @@ func (pm *PartitionManager) ensureNextMonthPartitions(ctx context.Context) {
 	for offset := 0; offset <= 1; offset++ {
 		targetMonth := time.Now().AddDate(0, offset, 0)
 		for _, s := range specs {
+			argExpr := s.argExpr
+			if argExpr == "" {
+				argExpr = "$1"
+			}
 			timeoutCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 			_, err := pm.db.Exec(timeoutCtx,
-				"SELECT "+s.fnName+"($1)", targetMonth)
+				"SELECT "+s.fnName+"("+argExpr+")", targetMonth)
 			cancel()
 			if err != nil {
 				slog.Error("partition_manager: ensure partition failed",
@@ -664,9 +676,37 @@ func ensureSpecs() []archiveSpec {
 		{fnName: "ensure_routing_decision_log_partition", label: "routing_decision_log"},
 		{fnName: "ensure_credential_model_index_partition", label: "credential_model_index"},
 		{fnName: "ensure_usage_ledger_partition", label: "usage_ledger"}, // Migration 330
+
+		// ── 2026-08-07 审计补齐 ────────────────────────────────────────
+		// 迁移 473 一次性补了 2026_09 + 2026_10 分区，但这些表从未接入
+		// ensureSpecs()，到 2026-11-01 会再次因「no partition of relation
+		// found for row」全面写入失败。函数本身早已随各自迁移安装，
+		// 这里只是把它们接入 24h 定时轮转。
+		//
+		// timestamptz 签名（默认 argExpr="$1"）
+		{fnName: "ensure_credit_ledger_partition", label: "credit_ledger"},      // Migration 334
+		{fnName: "ensure_tool_usage_stats_partition", label: "tool_usage_stats"}, // Migration 335
+
+		// date 签名 —— pgx 传 time.Time 为 timestamptz，需显式 ::date 转换，
+		// 否则 PG 报 "function does not exist"。
+		//
+		// ensure_sessions_v2_partitions 一次调用同时覆盖 gateway.sessions /
+		// session_turns / session_bodies 三张表（见 Migration 430）。这三张
+		// 表是 V2 会话主链路的写入目标，缺分区等于聊天全挂。
+		{fnName: "ensure_sessions_v2_partitions", label: "sessions_v2 (sessions/session_turns/session_bodies)", argExpr: "$1::date"}, // Migration 430
+		{fnName: "ensure_session_module_executions_partition", label: "session_module_executions", argExpr: "$1::date"},              // Migration 382
+		{fnName: "ensure_dashboard_events_partition", label: "dashboard_access_events", argExpr: "$1::date"},                         // Migration 383
+		{fnName: "ensure_cache_metrics_partition", label: "cache_metrics", argExpr: "$1::date"},                                      // Migration 475
+
 		// model_probe_runs 已切换为纯 hot 表策略（2026-07-14），
 		// 不再 promote 到 columnar 分区，所以也不需要 ensure。
 		// {fnName: "ensure_model_probe_runs_partition", label: "model_probe_runs"}, // Migration 385 (retired)
+		//
+		// 以下两张表有意不接入：
+		//   routing_decision_log_archive —— 仅 archive job（每月 1-3 日）写入，
+		//     archive_routing_decision_log() 自建目标分区。
+		//   candidate_failure_logs —— ensure 函数是空 body（见 sql/objects/
+		//     functions/），实际走 hot 表 + promote 架构。
 	}
 }
 
