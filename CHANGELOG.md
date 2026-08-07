@@ -22,6 +22,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **抽取 useEmergencyDiagnostic composable (2026-08-06)**:
+  - **背景**: `LiveRequestStreamV2.vue` 的应急诊断弹窗状态块（`showEmergencyDiagnostic` / `emergencyCredentialId` / `emergencyModel` / `emergencyLaneName` + 3 个事件函数）内联在组件里，与前几个 composable 不同，该块**零依赖**（不依赖 i18n / store / 生命周期钩子），是纯 UI 状态
+  - **重构**:
+    - **`web/src/composables/useEmergencyDiagnostic.ts`**（新建，45 行）— 集中管理应急诊断弹窗：
+      - 暴露 4 个状态 ref（show / credentialId / model / laneName）+ `handleEmergencyDiagnose`（填充 payload 并打开）/ `handleEmergencyClose` / `handleEmergencyRecovered`
+      - `EmergencyDiagnosePayload` 接口定义诊断入参形状
+    - **`web/src/composables/useEmergencyDiagnostic.test.ts`**（新建，47 行）— 4 个单元测试：初始状态 / 打开时填充 payload / 关闭保留字段 / recovered 回调日志
+    - **`web/src/components/LiveRequestStreamV2.vue`** 接入 composable：替换 20 行内联弹窗状态为解构行；组件从 1145 → 1135 行
+  - **验证**: vitest 33 文件 / 205 测试全绿（+4 用例）；vue-tsc exit 0；i18n-audit ✅ 0 missing（随测试运行）；vite build 8.67s 成功
+  - **文档**: `docs/changelogs/2026-08-06-extract-emergency-diagnostic-composable.md`
+
 - **抽取 useProviderLatency composable (2026-08-06)**:
   - **背景**: `LiveRequestStreamV2.vue` 的供应商 HTTP 延时轮询块（`providerLatencyMap` / 5 分钟 `setInterval` / `groupBy` 联动）内联在组件里，且 `onMounted`/`onUnmounted` 生命周期 + `watch(groupBy)` 散在组件顶层；上一次抽取后 `onMounted` 只剩轮询逻辑
   - **重构**:
