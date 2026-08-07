@@ -716,3 +716,12 @@
 |-----------|------|---------|--------|
 | 466 | `466_relax_compression_parent_check.sql` | `d1b7fbd10e77715017bc54462e463e76b83ff8f25e1e1f61be7828255c8401f6` | applied+verified |
 
+## 2026-08-07T04:48:12Z — deploy 245 build_seq 1471 (a7b840e3)
+
+| Migration | File | SHA-256 | Status |
+|-----------|------|---------|--------|
+| 467 | `467_sessions_title_user_tags.sql` | `506c155e773dbc30df2568f52b86922bcf5637354cd5091a29ee7e7f6fd89954` | applied+verified |
+| 468 | `468_v_suspicious_probe_targets_admin_protected.sql` | `ca1bf0753e232736f1c41973c69f14a17e4e9d201aeff381880e3a6284fc43d6` | applied+verified |
+| 469 | `469_context_window_override.sql` | `b540ad02c5f23368a96a50fdb0cff3c786e676618d58cd5fd3100a9352bb8b0b` | applied+verified |
+| 470 | `470_cache_metrics.sql` | `f07644b71a6f62652b0ada201afb4125b8fe6c5398172d110e960722d7372846` | applied+verified |
+
