@@ -1,4 +1,4 @@
--- Migration 468 down: remove context_window_override columns
+-- Migration 469 down: remove context_window_override columns
 
 BEGIN;
 
