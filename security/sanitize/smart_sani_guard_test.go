@@ -317,3 +317,148 @@ func extractPlaceholder(body string) string {
 	}
 	return ""
 }
+
+// ── 2026-08-07 回归：body passthrough 完整性 ────────────────────────────
+//
+// 事故背景：readBody 只读取不恢复 r.Body，导致所有"无需脱敏"的请求都以
+// 空 body 抵达下游 chatHandler，被 json_parse_error 400 拒绝（生产全量宕机）。
+// 以下测试锁定三条 passthrough 路径都必须把原始 body 完整交给下游。
+
+// TestSanitizeInputMiddleware_NoSensitive_BodyIntact 无敏感信息时 body 必须原样透传。
+func TestSanitizeInputMiddleware_NoSensitive_BodyIntact(t *testing.T) {
+	rdb := setupSaniGuardRedis(t)
+	s, err := NewSanitizer(NewPatternDetector())
+	require.NoError(t, err)
+	mw, err := NewSanitizeInputMiddleware(s, rdb, 30*time.Minute)
+	require.NoError(t, err)
+
+	original := `{"model":"claude-opus-5","messages":[{"role":"user","content":"帮我写一个快速排序"}]}`
+
+	var got []byte
+	handler := mw.Wrap(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got, _ = io.ReadAll(r.Body)
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	req := httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(original))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Gw-Session-Id", "sess-no-sensitive")
+	handler.ServeHTTP(httptest.NewRecorder(), req)
+
+	assert.JSONEq(t, original, string(got),
+		"无敏感信息时下游必须收到原始 body")
+
+	// 下游必须能成功反序列化（这正是生产 json_parse_error 的判据）
+	var parsed struct {
+		Model string `json:"model"`
+	}
+	require.NoError(t, json.Unmarshal(got, &parsed))
+	assert.Equal(t, "claude-opus-5", parsed.Model)
+}
+
+// TestSanitizeInputMiddleware_NoMessagesField_BodyIntact 无 messages 字段时原样透传。
+func TestSanitizeInputMiddleware_NoMessagesField_BodyIntact(t *testing.T) {
+	rdb := setupSaniGuardRedis(t)
+	s, err := NewSanitizer(NewPatternDetector())
+	require.NoError(t, err)
+	mw, err := NewSanitizeInputMiddleware(s, rdb, 30*time.Minute)
+	require.NoError(t, err)
+
+	original := `{"model":"claude-opus-5","prompt":"hello"}`
+
+	var got []byte
+	handler := mw.Wrap(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got, _ = io.ReadAll(r.Body)
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	req := httptest.NewRequest("POST", "/v1/completions", strings.NewReader(original))
+	req.Header.Set("X-Gw-Session-Id", "sess-no-messages")
+	handler.ServeHTTP(httptest.NewRecorder(), req)
+
+	assert.JSONEq(t, original, string(got), "无 messages 字段时必须原样透传")
+}
+
+// TestSanitizeInputMiddleware_MalformedJSON_BodyIntact 请求体非法 JSON 时，
+// 中间件降级放行，但必须把原始字节交给下游，让下游给出准确的错误。
+func TestSanitizeInputMiddleware_MalformedJSON_BodyIntact(t *testing.T) {
+	rdb := setupSaniGuardRedis(t)
+	s, err := NewSanitizer(NewPatternDetector())
+	require.NoError(t, err)
+	mw, err := NewSanitizeInputMiddleware(s, rdb, 30*time.Minute)
+	require.NoError(t, err)
+
+	original := `{"model":"claude-opus-5","messages":[{"role":"user",` // 截断
+
+	var got []byte
+	handler := mw.Wrap(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got, _ = io.ReadAll(r.Body)
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	req := httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(original))
+	req.Header.Set("X-Gw-Session-Id", "sess-malformed")
+	handler.ServeHTTP(httptest.NewRecorder(), req)
+
+	assert.Equal(t, original, string(got),
+		"非法 JSON 也必须原样透传，由下游判定错误")
+}
+
+// TestSanitizeInputMiddleware_LargeBody_Intact 大 body（生产事故是 1.64 MiB）
+// 必须完整透传，不被截断。
+func TestSanitizeInputMiddleware_LargeBody_Intact(t *testing.T) {
+	rdb := setupSaniGuardRedis(t)
+	s, err := NewSanitizer(NewPatternDetector())
+	require.NoError(t, err)
+	mw, err := NewSanitizeInputMiddleware(s, rdb, 30*time.Minute)
+	require.NoError(t, err)
+
+	filler := strings.Repeat("正常的代码上下文内容 no secrets here. ", 40000)
+	original := `{"model":"claude-opus-5","messages":[{"role":"user","content":"` + filler + `"}]}`
+	require.Greater(t, len(original), 1<<20, "构造的 body 应超过 1 MiB")
+
+	var got []byte
+	handler := mw.Wrap(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got, _ = io.ReadAll(r.Body)
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	req := httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(original))
+	req.Header.Set("X-Gw-Session-Id", "sess-large")
+	handler.ServeHTTP(httptest.NewRecorder(), req)
+
+	assert.Equal(t, len(original), len(got), "大 body 必须完整透传")
+
+	var parsed struct {
+		Model string `json:"model"`
+	}
+	require.NoError(t, json.Unmarshal(got, &parsed))
+	assert.Equal(t, "claude-opus-5", parsed.Model)
+}
+
+// TestSanitizeInputMiddleware_Sanitized_ContentLengthSynced 脱敏改写 body 后，
+// ContentLength 必须与新 body 一致。
+func TestSanitizeInputMiddleware_Sanitized_ContentLengthSynced(t *testing.T) {
+	rdb := setupSaniGuardRedis(t)
+	s, err := NewSanitizer(NewPatternDetector())
+	require.NoError(t, err)
+	mw, err := NewSanitizeInputMiddleware(s, rdb, 30*time.Minute)
+	require.NoError(t, err)
+
+	original := `{"model":"claude-opus-5","messages":[{"role":"user","content":"我的手机号是13800138000"}]}`
+
+	var got []byte
+	var gotLen int64
+	handler := mw.Wrap(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got, _ = io.ReadAll(r.Body)
+		gotLen = r.ContentLength
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	req := httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(original))
+	req.Header.Set("X-Gw-Session-Id", "sess-clen")
+	handler.ServeHTTP(httptest.NewRecorder(), req)
+
+	assert.NotContains(t, string(got), "13800138000", "敏感信息应已替换")
+	assert.Equal(t, int64(len(got)), gotLen, "ContentLength 必须与改写后的 body 一致")
+}
