@@ -101,6 +101,17 @@ type requestLogRow struct {
 	SessionTitle *string `json:"session_title,omitempty"`
 }
 
+type requestLogAggregate struct {
+	TotalRequests    int64    `json:"total_requests"`
+	PromptTokens     *int64   `json:"prompt_tokens"`
+	CompletionTokens *int64   `json:"completion_tokens"`
+	CacheReadTokens  *int64   `json:"cache_read_tokens"`
+	CacheWriteTokens *int64   `json:"cache_write_tokens"`
+	TotalTokens      *int64   `json:"total_tokens"`
+	CostUSD          *float64 `json:"cost_usd"`
+	CreditsCharged   *int64   `json:"credits_charged"`
+}
+
 type requestLogDetail struct {
 	requestLogRow
 	RequestBody  any `json:"request_body"`
@@ -511,22 +522,80 @@ func (h *Handler) listLogs(w http.ResponseWriter, r *http.Request) {
 
 	where := strings.Join(clauses, " AND ")
 
-	// For COUNT, we need the same JOINs to filter by ak.tenant_id for tenant_admin
+// For COUNT, we need the same JOINs to filter by ak.tenant_id for tenant_admin
 	// 2026-07-06: 使用视图查询，避免遗漏 hot 表数据（migration 341）
 	var count int
+	var agg requestLogAggregate
+	// Super-admin path keeps the original narrow shape (no api_keys join —
+	// api_keys is not needed for the row count or for the SUM aggregate and
+	// adding it would inflate the query plan on the busiest list endpoint).
+	// Tenant-admin path retains the LEFT JOIN against api_keys so the WHERE
+	// clause on rl.tenant_id is matched by the same row set used for COUNT
+	// and the SUM aggregate below.
+	superCountSQL := "SELECT COUNT(*) FROM request_logs_with_current_month rl WHERE " + where
+	tenantCountSQL := "SELECT COUNT(*) FROM request_logs_with_current_month rl LEFT JOIN api_keys ak ON ak.id = rl.api_key_id WHERE " + where
 	if IsTenantAdmin(r) {
-		// COUNT with api_keys join so ak.tenant_id filter works
-		if err := h.db.QueryRow(ctx, `
-			SELECT COUNT(*) FROM request_logs_with_current_month rl
-			LEFT JOIN api_keys ak ON ak.id = rl.api_key_id
-			WHERE `+where, args...).Scan(&count); err != nil {
+		if err := h.db.QueryRow(ctx, tenantCountSQL, args...).Scan(&count); err != nil {
 			writeError(w, http.StatusInternalServerError, "query failed: "+err.Error())
 			return
 		}
 	} else {
-		if err := h.db.QueryRow(ctx, "SELECT COUNT(*) FROM request_logs_with_current_month rl WHERE "+where, args...).Scan(&count); err != nil {
+		if err := h.db.QueryRow(ctx, superCountSQL, args...).Scan(&count); err != nil {
 			writeError(w, http.StatusInternalServerError, "query failed: "+err.Error())
 			return
+		}
+	}
+
+	// Aggregate totals over the same filter set (independent of pagination).
+	// Failure here MUST NOT take down the page; the list endpoint still has
+	// valid items / count, so we log and ship zero-valued aggregate fields.
+	// The SUM query reuses the same row-shape as the matching COUNT above
+	// (super-admin vs tenant-admin) to guarantee the totals describe the
+	// same row set the user is paginating over.
+	var (
+		promptSum     int64
+		completionSum int64
+		cacheReadSum  int64
+		cacheWriteSum int64
+		totalTokens   int64
+		costSum       float64
+		creditsSum    int64
+	)
+	aggSelect := `
+		SELECT
+			COALESCE(SUM(rl.prompt_tokens), 0)::bigint,
+			COALESCE(SUM(rl.completion_tokens), 0)::bigint,
+			COALESCE(SUM(rl.cache_read_tokens), 0)::bigint,
+			COALESCE(SUM(rl.cache_write_tokens), 0)::bigint,
+			COALESCE(SUM(rl.total_tokens), 0)::bigint,
+			COALESCE(SUM(rl.cost_usd), 0)::float8,
+			COALESCE(SUM(rl.credits_charged), 0)::bigint
+		`
+	var aggFromSQL string
+	if IsTenantAdmin(r) {
+		aggFromSQL = " FROM request_logs_with_current_month rl LEFT JOIN api_keys ak ON ak.id = rl.api_key_id WHERE " + where
+	} else {
+		aggFromSQL = " FROM request_logs_with_current_month rl WHERE " + where
+	}
+	if err := h.db.QueryRow(ctx, aggSelect+aggFromSQL, args...).Scan(
+		&promptSum, &completionSum, &cacheReadSum, &cacheWriteSum,
+		&totalTokens, &costSum, &creditsSum,
+	); err != nil {
+		slog.Warn("admin listLogs aggregate scan failed",
+			"err", err.Error(),
+			"count", count,
+		)
+		// Keep aggregate zero-valued; the page still renders list + count.
+	} else {
+		agg = requestLogAggregate{
+			TotalRequests:    int64(count),
+			PromptTokens:     &promptSum,
+			CompletionTokens: &completionSum,
+			CacheReadTokens:  &cacheReadSum,
+			CacheWriteTokens: &cacheWriteSum,
+			TotalTokens:      &totalTokens,
+			CostUSD:          &costSum,
+			CreditsCharged:   &creditsSum,
 		}
 	}
 
@@ -589,8 +658,9 @@ func (h *Handler) listLogs(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{
-		"items": items,
-		"count": count,
+		"items":     items,
+		"count":     count,
+		"aggregate": agg,
 	})
 }
 

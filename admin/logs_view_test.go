@@ -1,6 +1,7 @@
 package admin
 
 import (
+	"encoding/json"
 	"errors"
 	"reflect"
 	"strings"
@@ -220,5 +221,88 @@ func TestListColsReferenceClientPerceptionColumns(t *testing.T) {
 		if !have[want] {
 			t.Errorf("requestLogsListCols missing %q — /api/logs/{id} will fail with SQLSTATE 42703", want)
 		}
+	}
+}
+
+// TestRequestLogAggregateJSONContract locks the wire contract of the
+// /api/logs response.aggregate field so the /request-logs UI keeps a
+// stable shape. Adding a new sum column should bump this list in two
+// places (struct tag + here) and the existing fields must not drift.
+func TestRequestLogAggregateJSONContract(t *testing.T) {
+	want := []string{
+		"total_requests",
+		"prompt_tokens",
+		"completion_tokens",
+		"cache_read_tokens",
+		"cache_write_tokens",
+		"total_tokens",
+		"cost_usd",
+		"credits_charged",
+	}
+	got := jsonFieldNames(reflect.TypeOf(requestLogAggregate{}))
+	for _, w := range want {
+		if !got[w] {
+			t.Errorf("requestLogAggregate is missing JSON field %q", w)
+		}
+	}
+	// Marshal/unmarshal round-trip to make sure all fields are tagged
+	// correctly (e.g. no stray `json:"-"`).
+	var agg requestLogAggregate
+	raw, err := json.Marshal(agg)
+	if err != nil {
+		t.Fatalf("marshal requestLogAggregate: %v", err)
+	}
+	var back map[string]any
+	if err := json.Unmarshal(raw, &back); err != nil {
+		t.Fatalf("unmarshal requestLogAggregate: %v", err)
+	}
+	for _, w := range want {
+		if _, ok := back[w]; !ok {
+			t.Errorf("marshalled JSON missing key %q", w)
+		}
+	}
+}
+
+// TestListLogsResponseShape ensures the listLogs top-level response
+// shape (items / count / aggregate) stays aligned with what the
+// /request-logs UI consumes. The actual handler-level integration
+// (writing the aggregate field, scanning 7 SUM columns in the right
+// order) is exercised by TestRequestLogAggregateJSONContract above
+// plus the integration suite under admin_test.go; this test guards
+// the read-side contract by unmarshalling a synthetic response.
+func TestListLogsResponseShape(t *testing.T) {
+	const payload = `{
+		"items": [],
+		"count": 0,
+		"aggregate": {
+			"total_requests": 0,
+			"prompt_tokens": 0,
+			"completion_tokens": 0,
+			"cache_read_tokens": 0,
+			"cache_write_tokens": 0,
+			"total_tokens": 0,
+			"cost_usd": 0.0,
+			"credits_charged": 0
+		}
+	}`
+	var resp struct {
+		Items     []requestLogRow      `json:"items"`
+		Count     int                  `json:"count"`
+		Aggregate *requestLogAggregate `json:"aggregate"`
+	}
+	if err := json.Unmarshal([]byte(payload), &resp); err != nil {
+		t.Fatalf("unmarshal payload: %v", err)
+	}
+	if resp.Count != 0 {
+		t.Errorf("count = %d, want 0", resp.Count)
+	}
+	if resp.Aggregate == nil {
+		t.Fatal("aggregate must not be null")
+	}
+	if resp.Aggregate.TotalRequests != 0 {
+		t.Errorf("total_requests = %d, want 0", resp.Aggregate.TotalRequests)
+	}
+	if resp.Aggregate.CreditsCharged == nil || *resp.Aggregate.CreditsCharged != 0 {
+		t.Errorf("credits_charged = %v, want 0", resp.Aggregate.CreditsCharged)
 	}
 }

@@ -15,9 +15,12 @@ import {
   type AttachmentInfo,
   type ApiKey,
   type RequestLogsResponse,
+  type RequestLogsAggregate,
   type SessionSummaryResponse,
   type SessionSummaryToMemoraResponse,
 } from '../api'
+import { getCredentialMonitorSummary } from '../api/credential-monitor'
+import { getProviders, getProviderCredentials } from '../api/providers'
 import ModelPicker from '../components/ModelPicker.vue'
 import RequestTracePanel from '../components/RequestTracePanel.vue'
 import { isSuperAdmin, isDefaultTenant, getCurrentTenantId } from '../store'
@@ -58,8 +61,17 @@ const memoraResult = ref<SessionSummaryToMemoraResponse['memora'] | null>(null)
 const page = ref(1)
 const pageSize = ref(50)
 const total = ref(0)
+const aggregate = ref<RequestLogsAggregate | null>(null)
 const autoRefresh = ref(false)
 let autoRefreshTimer: ReturnType<typeof setInterval> | null = null
+
+// 供应商/凭据下拉筛选：单一数据源 /api/credentials/monitor-summary，
+// 该端点允许 tenant_admin 调用，前端从 credentials 数组派生 provider 列表。
+// 切换 provider 时若当前 credentialFilter 不在派生选项里则清空，避免错位。
+const providerFilter = ref<number | ''>('')
+const credentialFilter = ref<number | ''>('')
+const providerOptions = ref<{ id: number; name: string }[]>([])
+const credentialOptions = ref<{ id: number; providerId: number; label: string }[]>([])
 
 function startAutoRefresh() {
   stopAutoRefresh()
@@ -181,6 +193,88 @@ async function loadKeys() {
   } catch {
     keys.value = []
   }
+}
+
+// 供应商/凭据下拉数据源按角色分流：
+//   - super_admin 调 /api/providers + /api/providers/{id}/credentials，
+//     数据契约与 /providers 页面一致；
+//   - tenant_admin 调 /api/credentials/monitor-summary，后端对该端点加
+//     了 c.tenant_id 过滤，仅返回当前租户范围内的凭据；
+// 任一来源失败都不阻塞日志列表渲染，下拉回退为空。
+async function loadCredentialOptions() {
+  if (isSuperAdmin()) {
+    try {
+      const providers = await getProviders()
+      providerOptions.value = providers
+        .map((p) => ({ id: p.id, name: p.display_name || p.catalog_code }))
+        .sort((a, b) => a.name.localeCompare(b.name))
+      // 并发拉每个 provider 的 credential 列表。provider 数量一般较小（数十），
+      // 这里全量加载与 /providers 页面策略一致。失败时该 provider 的凭据下拉
+      // 退化为空，但其它 provider 不受影响。
+      const allCreds: { id: number; providerId: number; label: string }[] = []
+      await Promise.all(
+        providers.map(async (p) => {
+          try {
+            const creds = await getProviderCredentials(p.id)
+            for (const c of creds) {
+              allCreds.push({ id: c.id, providerId: c.provider_id, label: c.label })
+            }
+          } catch {
+            // 单个 provider 的凭据失败不影响其它 provider；保持当前已收集项。
+          }
+        }),
+      )
+      credentialOptions.value = allCreds
+    } catch {
+      providerOptions.value = []
+      credentialOptions.value = []
+    }
+    return
+  }
+
+  // tenant_admin 路径
+  try {
+    const resp = await getCredentialMonitorSummary()
+    const creds = resp.credentials ?? []
+    credentialOptions.value = creds.map((c) => ({
+      id: c.id,
+      providerId: c.provider_id,
+      label: c.label,
+    }))
+    const map = new Map<number, string>()
+    for (const c of creds) {
+      if (!map.has(c.provider_id)) {
+        map.set(c.provider_id, c.provider_name)
+      }
+    }
+    providerOptions.value = Array.from(map.entries())
+      .map(([id, name]) => ({ id, name }))
+      .sort((a, b) => a.name.localeCompare(b.name))
+  } catch {
+    providerOptions.value = []
+    credentialOptions.value = []
+  }
+}
+
+// 凭据下拉按当前 providerFilter 收敛；切 provider 时若 credentialFilter
+// 已不在新选项里，自动清空，避免请求带一个与 provider 不匹配的 credential_id。
+const filteredCredentialOptions = computed(() => {
+  if (providerFilter.value === '') return credentialOptions.value
+  return credentialOptions.value.filter((c) => c.providerId === providerFilter.value)
+})
+
+function onProviderFilterChange() {
+  if (credentialFilter.value === '') return
+  const stillVisible = filteredCredentialOptions.value.some((c) => c.id === credentialFilter.value)
+  if (!stillVisible) credentialFilter.value = ''
+}
+
+// 脉络模式（按 gw_session_id / gw_task_id 追踪）应单独看一组请求，
+// 不与供应商/凭据过滤叠加，避免出现"按供应商筛选后点击会话脉络，结果为 0 条"
+// 这种矛盾组合。脉络进入与脉络清除都强制重置这两个过滤。
+function clearProviderCredentialFilter() {
+  providerFilter.value = ''
+  credentialFilter.value = ''
 }
 
 function timeRange() {
@@ -437,6 +531,7 @@ function filterByTrace(row: RequestLogRow) {
   // 脉络视图拉宽时间窗与页大小，避免同脉络记录落在默认 24h/50 条外
   if (hours.value < 168) hours.value = 168
   if (pageSize.value < 200) pageSize.value = 200
+  clearProviderCredentialFilter()
   resetPageAndLoad()
 }
 
@@ -446,6 +541,7 @@ function filterByTask(taskId: string | null | undefined) {
   gwSessionFilter.value = ''
   if (hours.value < 168) hours.value = 168
   if (pageSize.value < 200) pageSize.value = 200
+  clearProviderCredentialFilter()
   resetPageAndLoad()
 }
 
@@ -455,6 +551,7 @@ function filterBySession(sessionId: string | null | undefined) {
   gwTaskFilter.value = ''
   if (hours.value < 168) hours.value = 168
   if (pageSize.value < 200) pageSize.value = 200
+  clearProviderCredentialFilter()
   resetPageAndLoad()
 }
 
@@ -633,6 +730,8 @@ async function load() {
     const range = timeRange()
     const resp: RequestLogsResponse = await getRequestLogs({
       api_key_id: apiKeyId.value === '' ? undefined : Number(apiKeyId.value),
+      provider_id: providerFilter.value === '' ? undefined : Number(providerFilter.value),
+      credential_id: credentialFilter.value === '' ? undefined : Number(credentialFilter.value),
       from: range.from,
       to: range.to,
       q: keyword.value.trim() || undefined,
@@ -648,6 +747,7 @@ async function load() {
     })
     rows.value = resp.items
     total.value = resp.count
+    aggregate.value = resp.aggregate ?? null
   } catch (e: unknown) {
     error.value = e instanceof Error ? e.message : String(e)
   } finally {
@@ -707,6 +807,17 @@ function costDisplay(v: number | string | null | undefined, currency: string | n
 function creditsDisplay(v: number | null | undefined): string {
   if (v == null || v <= 0) return t('requests.none')
   return v.toLocaleString()
+}
+
+// 统计卡数字格式化：null/0 都显示 —，与其它 token 列保持一致的可读风格。
+function formatStatNumber(v: number | null | undefined): string {
+  if (v == null) return '—'
+  return v.toLocaleString()
+}
+
+function formatStatCost(v: number | null | undefined): string {
+  if (v == null) return '—'
+  return Number(v).toFixed(4)
 }
 
 function shortHash(v: string | null | undefined) {
@@ -1185,6 +1296,10 @@ onMounted(async () => {
     keys.value = []
   }
 
+  // 供应商/凭据下拉加载失败由 loadCredentialOptions() 内部兜底，
+  // 此处不需再包一层 try/catch。
+  await loadCredentialOptions()
+
   try {
     await load()
   } catch (e) {
@@ -1213,6 +1328,52 @@ onMounted(async () => {
 
     <div v-if="!isDefaultTenant()" class="tenant-notice" style="margin-bottom:12px;padding:8px 12px;background:rgba(59,130,246,0.1);border:1px solid rgba(59,130,246,0.3);border-radius:6px;font-size:12px;color:#3b82f6">
       非 default 租户只能查看最近 3 天的请求日志
+    </div>
+
+    <!-- 当前过滤条件下的全量命中行统计（与分页无关）。
+         数据由 /api/logs 的 aggregate 字段返回，任一查询失败时整块隐藏。 -->
+    <div
+      v-if="aggregate"
+      class="stats-grid"
+      style="margin-bottom:12px;display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:10px"
+    >
+      <div class="stat-card" style="padding:8px 12px;background:var(--surface-secondary);border:1px solid var(--border);border-radius:6px;font-size:12px">
+        <div style="color:var(--text-secondary);font-size:11px">总请求数</div>
+        <div style="font-size:18px;font-weight:600;margin-top:2px">{{ aggregate.total_requests.toLocaleString() }}</div>
+      </div>
+      <div class="stat-card" style="padding:8px 12px;background:var(--surface-secondary);border:1px solid var(--border);border-radius:6px;font-size:12px">
+        <div style="color:var(--text-secondary);font-size:11px">输入 token</div>
+        <div style="font-size:18px;font-weight:600;margin-top:2px">{{ formatStatNumber(aggregate.prompt_tokens) }}</div>
+      </div>
+      <div class="stat-card" style="padding:8px 12px;background:var(--surface-secondary);border:1px solid var(--border);border-radius:6px;font-size:12px">
+        <div style="color:var(--text-secondary);font-size:11px">输出 token</div>
+        <div style="font-size:18px;font-weight:600;margin-top:2px">{{ formatStatNumber(aggregate.completion_tokens) }}</div>
+      </div>
+      <div class="stat-card" style="padding:8px 12px;background:var(--surface-secondary);border:1px solid var(--border);border-radius:6px;font-size:12px">
+        <div style="color:var(--text-secondary);font-size:11px">缓存读 token</div>
+        <div style="font-size:18px;font-weight:600;margin-top:2px">{{ formatStatNumber(aggregate.cache_read_tokens) }}</div>
+      </div>
+      <div class="stat-card" style="padding:8px 12px;background:var(--surface-secondary);border:1px solid var(--border);border-radius:6px;font-size:12px">
+        <div style="color:var(--text-secondary);font-size:11px">缓存写 token</div>
+        <div style="font-size:18px;font-weight:600;margin-top:2px">{{ formatStatNumber(aggregate.cache_write_tokens) }}</div>
+      </div>
+      <div class="stat-card" style="padding:8px 12px;background:var(--surface-secondary);border:1px solid var(--border);border-radius:6px;font-size:12px">
+        <div style="color:var(--text-secondary);font-size:11px">总 token</div>
+        <div style="font-size:18px;font-weight:600;margin-top:2px">{{ formatStatNumber(aggregate.total_tokens) }}</div>
+      </div>
+      <div
+        v-if="!isDefaultTenant()"
+        class="stat-card"
+        style="padding:8px 12px;background:var(--surface-secondary);border:1px solid var(--border);border-radius:6px;font-size:12px"
+        title="本次请求扣除的积分合计（仅按当前筛选条件下的全量命中行聚合）"
+      >
+        <div style="color:var(--text-secondary);font-size:11px">积分</div>
+        <div style="font-size:18px;font-weight:600;margin-top:2px">{{ formatStatNumber(aggregate.credits_charged) }}</div>
+      </div>
+      <div class="stat-card" style="padding:8px 12px;background:var(--surface-secondary);border:1px solid var(--border);border-radius:6px;font-size:12px">
+        <div style="color:var(--text-secondary);font-size:11px">成本 USD</div>
+        <div style="font-size:18px;font-weight:600;margin-top:2px">{{ formatStatCost(aggregate.cost_usd) }}</div>
+      </div>
     </div>
 
     <!-- v3 压缩说明卡片 (2026-06-20) -->
@@ -1271,6 +1432,19 @@ onMounted(async () => {
         <select v-model="apiKeyId" class="cf-select cf-cred" title="API Key">
           <option value="">全部 Key</option>
           <option v-for="k in keys" :key="k.id" :value="k.id">{{ k.key_prefix }} ({{ k.application_code }})</option>
+        </select>
+        <select
+          v-model="providerFilter"
+          class="cf-select cf-provider"
+          title="供应商（数据源 /api/credentials/monitor-summary）"
+          @change="onProviderFilterChange"
+        >
+          <option value="">全部供应商</option>
+          <option v-for="p in providerOptions" :key="p.id" :value="p.id">{{ p.name }}</option>
+        </select>
+        <select v-model="credentialFilter" class="cf-select cf-credential" title="凭据">
+          <option value="">全部凭据</option>
+          <option v-for="c in filteredCredentialOptions" :key="c.id" :value="c.id">{{ c.label }}</option>
         </select>
         <select v-model="hours" class="cf-select cf-hours" title="时间范围" @change="validateHours">
           <option :value="1">1小时</option>
