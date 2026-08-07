@@ -3370,8 +3370,8 @@ func (h *Handler) handleFreePoolRegister(w http.ResponseWriter, r *http.Request)
 	}
 
 	// Insert model offers
+	var freeCredID int
 	for _, model := range req.Models {
-		var freeCredID int
 		if err := h.db.QueryRow(ctx, `SELECT id FROM credentials WHERE provider_id = $1 AND pool_group = 'free' LIMIT 1`, providerID).Scan(&freeCredID); err != nil {
 			continue
 		}
@@ -3379,10 +3379,13 @@ func (h *Handler) handleFreePoolRegister(w http.ResponseWriter, r *http.Request)
 		h.db.Exec(ctx, `
 			INSERT INTO model_offers (credential_id, raw_model_name, available,
 				routing_tier, billing_mode, currency, unit_price_in_per_1m, unit_price_out_per_1m,
-				pricing_source, pricing_updated_at)
-			VALUES ($1, $2, true, 9, 'free', 'CNY', 0, 0, 'free_pool', NOW())
+				pricing_source, pricing_updated_at, admin_protected)
+			VALUES ($1, $2, true, 9, 'free', 'CNY', 0, 0, 'free_pool', NOW(), TRUE)
 		`, freeCredID, model)
 	}
+	// Manually-registered offers are admin-protected so batch/auto refresh
+	// never updates them.
+	h.pinAdminProtectedOffers(ctx, freeCredID, req.Models)
 
 	h.logAudit(r, "free_pool_register", map[string]any{
 		"catalog_code": req.CatalogCode,
@@ -3971,10 +3974,14 @@ func (h *Handler) registerFreeProvider(w http.ResponseWriter, r *http.Request, c
 		h.db.Exec(ctx, `
 			INSERT INTO model_offers (credential_id, canonical_id, raw_model_name,
 				available, routing_tier, billing_mode, currency,
-				unit_price_in_per_1m, unit_price_out_per_1m, pricing_source, pricing_updated_at)
-			VALUES ($1, $2, $3, true, 9, 'free', 'CNY', 0, 0, 'pool_manager', NOW())
+				unit_price_in_per_1m, unit_price_out_per_1m, pricing_source, pricing_updated_at,
+				admin_protected)
+			VALUES ($1, $2, $3, true, 9, 'free', 'CNY', 0, 0, 'pool_manager', NOW(), TRUE)
 		`, credID, canonID, model)
 	}
+	// Manually-registered offers are admin-protected so batch/auto refresh
+	// never updates them.
+	h.pinAdminProtectedOffers(ctx, credID, cfg.models)
 
 	h.logAudit(r, "free_pool_register", map[string]any{
 		"catalog_code": cfg.catalogCode,

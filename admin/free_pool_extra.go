@@ -1013,7 +1013,7 @@ func (h *Handler) handleFreePoolQuickEntry(w http.ResponseWriter, r *http.Reques
 		// 2026-07-15: look up the free-pool template rpmLimit so the
 		// registering endpoint can persist it via migration 407. Falls
 		// back to 0 (unlimited) for unknown catalog codes.
-		rpmLimit:          lookupFreePoolRPMLimit(catalogCode),
+		rpmLimit: lookupFreePoolRPMLimit(catalogCode),
 	}
 
 	h.logAudit(r, "free_pool_quick_entry", map[string]any{
@@ -1458,12 +1458,16 @@ func (h *Handler) registerFreeProviderWithCtx(ctx context.Context, cfg freeProvi
 		if _, ierr := h.db.Exec(ctx, `
 			INSERT INTO model_offers (credential_id, canonical_id, raw_model_name,
 				available, routing_tier, billing_mode, currency,
-				unit_price_in_per_1m, unit_price_out_per_1m, pricing_source, pricing_updated_at)
-			VALUES ($1, $2, $3, true, 9, 'free', 'CNY', 0, 0, 'pool_manager', NOW())
+				unit_price_in_per_1m, unit_price_out_per_1m, pricing_source, pricing_updated_at,
+				admin_protected)
+			VALUES ($1, $2, $3, true, 9, 'free', 'CNY', 0, 0, 'pool_manager', NOW(), TRUE)
 		`, credID, canonID, model); ierr == nil {
 			offerCount++
 		}
 	}
+	// Manually-registered offers are admin-protected so batch/auto refresh
+	// (expireStaleModels, vendor re-fetch, probes) never updates them.
+	h.pinAdminProtectedOffers(ctx, credID, cfg.models)
 
 	return map[string]any{
 		"catalog_code":  cfg.catalogCode,

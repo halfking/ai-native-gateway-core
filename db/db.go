@@ -1249,7 +1249,8 @@ func (d *DB) ensureProbeStateFunctionFixes(ctx context.Context) error {
 		    WHERE cmb.provider_model_id = pm.id
 		      AND cmb.credential_id = p_credential_id
 		      AND pm.raw_model_name = p_raw_model_name
-		      AND COALESCE(cmb.unavailable_reason, '') NOT LIKE 'manual%';
+		      AND COALESCE(cmb.unavailable_reason, '') NOT LIKE 'manual%'
+		      AND COALESCE(cmb.admin_protected, FALSE) = FALSE;
 		END;
 		$$;
 
@@ -1298,7 +1299,8 @@ func (d *DB) ensureProbeStateFunctionFixes(ctx context.Context) error {
 		    WHERE cmb.provider_model_id = pm.id
 		      AND cmb.credential_id = p_credential_id
 		      AND pm.raw_model_name = p_raw_model_name
-		      AND COALESCE(cmb.unavailable_reason, '') NOT LIKE 'manual%';
+		      AND COALESCE(cmb.unavailable_reason, '') NOT LIKE 'manual%'
+		      AND COALESCE(cmb.admin_protected, FALSE) = FALSE;
 		END;
 		$$;
 
@@ -1365,7 +1367,8 @@ func (d *DB) ensureProbeStateFunctionFixes(ctx context.Context) error {
 		    WHERE cmb.provider_model_id = pm.id
 		      AND cmb.credential_id = p_credential_id
 		      AND pm.raw_model_name = p_raw_model_name
-		      AND COALESCE(cmb.unavailable_reason, '') NOT LIKE 'manual%';
+		      AND COALESCE(cmb.unavailable_reason, '') NOT LIKE 'manual%'
+		      AND COALESCE(cmb.admin_protected, FALSE) = FALSE;
 		END;
 		$$;
 
@@ -1431,7 +1434,8 @@ func (d *DB) ensureProbeStateFunctionFixes(ctx context.Context) error {
 		    WHERE cmb.provider_model_id = pm.id
 		      AND cmb.credential_id = p_credential_id
 		      AND pm.raw_model_name = p_raw_model_name
-		      AND COALESCE(cmb.unavailable_reason, '') NOT LIKE 'manual%';
+		      AND COALESCE(cmb.unavailable_reason, '') NOT LIKE 'manual%'
+		      AND COALESCE(cmb.admin_protected, FALSE) = FALSE;
 		END;
 		$$;
 	`)
@@ -1935,6 +1939,7 @@ func (d *DB) ensureRoutingRecentSuccessRate(ctx context.Context) error {
 		WHERE cmb.provider_model_id = pm.id
 		  AND cmb.available = TRUE
 		  AND COALESCE(cmb.unavailable_reason, '') NOT LIKE 'manual%'
+		  AND COALESCE(cmb.admin_protected, FALSE) = FALSE
 		  AND EXISTS (
 		      SELECT 1 FROM model_probe_state mps
 		      WHERE mps.credential_id = cmb.credential_id
@@ -2004,6 +2009,7 @@ func (d *DB) ensureUnavailableRecoverAtSchema(ctx context.Context) error {
 		        ELSE INTERVAL '30 seconds'
 		    END)
 		WHERE available = FALSE AND unavailable_recover_at IS NULL AND unavailable_at IS NOT NULL
+		  AND COALESCE(admin_protected, FALSE) = FALSE
 		  AND (unavailable_reason LIKE 'auto\_%' OR unavailable_reason = 'continuous_failure');
 
 		CREATE INDEX IF NOT EXISTS idx_cmb_unavailable_recover_at

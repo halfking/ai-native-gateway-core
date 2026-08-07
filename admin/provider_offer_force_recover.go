@@ -319,6 +319,32 @@ func (h *Handler) toggleModelOfferState(w http.ResponseWriter, r *http.Request, 
 	})
 }
 
+// pinAdminProtectedOffers flags the bindings for (credentialID, rawModelNames)
+// as admin-protected so batch/auto paths (expireStaleModels, vendor re-fetch,
+// probes, health checks, credential recovery) never update or expire them.
+//
+// The model_offers INSERT trigger propagates admin_protected on fresh rows;
+// this call also covers the ON CONFLICT case where the row already existed
+// unprotected (the trigger's conflict branch leaves admin_protected as-is).
+func (h *Handler) pinAdminProtectedOffers(ctx context.Context, credentialID int, rawModelNames []string) {
+	if h == nil || h.db == nil || len(rawModelNames) == 0 {
+		return
+	}
+	if _, err := h.db.Exec(ctx, `
+		UPDATE credential_model_bindings cmb
+		SET admin_protected = TRUE
+		FROM provider_models pm
+		WHERE cmb.provider_model_id = pm.id
+		  AND cmb.credential_id = $1
+		  AND pm.raw_model_name = ANY($2)
+	`, credentialID, rawModelNames); err != nil {
+		slog.Warn("pin admin_protected failed",
+			"credential_id", credentialID,
+			"model_count", len(rawModelNames),
+			"error", err)
+	}
+}
+
 func (h *Handler) handleForceRecover(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
