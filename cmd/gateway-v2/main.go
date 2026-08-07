@@ -1104,7 +1104,6 @@ var (
 	_ *identity.IdentityBuilder
 	_ *authentication.Verifier
 	_ *session.SessionStore
-	_ session.SessionLoaderHook
 	_ *integration.MinimalDeps
 	_ pipeline.Hook = (*observability.TracingHook)(nil)
 	_ *credential.HealthCheckHook
