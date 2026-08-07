@@ -20,6 +20,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - **[P1] applyAgentFilter 丢失大小写归一化**: `web/src/composables/useLiveStreamFilters.ts` 抽取时 `applyAgentFilter` 写成 `new Set(selected)`，丢失原组件的 `selected.map(s => s.toLowerCase())`。过滤本身仍命中（`filteredLanes` 小写化请求侧），但弹窗勾选状态会与非全小写输入错位。修复：恢复 `.toLowerCase()`，新增回归测试 `applyAgentFilter normalizes selections to lowercase`
   - **[P2] SessionCacheV2 缺 Close()**: 新增 `SessionCacheV2.Close()`（nil-safe 转发 `l2.Close()`）为 V2 Redis 连接池提供优雅释放入口（暂未接入 main.go 关停序列：`sessionCacheV2` 作用域受限且与既有 `redisClientForCache` 进程退出回收模式一致；`Close()` API 已就位，留待关停序列重构时接入）
 
+- **build 1474 生产全量宕机 hotfix (2026-08-07 15:08, commit 28a058b4)**: 13:29:21 重启到 build 1474（含今日 sanitize + V2 cache 改动）后，252 PG `request_logs_hot` 成功请求数归零持续宕机；两类新错误此前 5 小时均为 0：`internal_panic` 36 次、`json_parse_error` 4 次
+  - **[P0] V2 缓存 nil 解引用全量宕机**（f8b10499 二阶缺陷）: `domains/session/v2/cache_v2.go` — `f8b10499` 让 `SessionTurnsReader.LoadState` 对新会话返回 `(nil, nil)`（正确），但 `SessionCacheV2.Get` 未判空即 `c.l1.Set(state)`，命中 `CompressionMetaCache.Set` 内 `state.TenantID` 解引用 → nil pointer panic。栈帧 `CompressionMetaCache.Set(..., 0x0)` 印证。修复：Get 早返回 `(nil, nil)` + L1/L2 Set 加 nil 守卫；新增 `TestSessionCacheV2_NilState_NoDereference` 回归
+  - **[P0] 脱敏中间件吞 body → json_parse_error**: `security/sanitize/smart_sani_guard.go` — `readBody` 注释声称「读取并恢复请求体」但只读不恢复 `r.Body`。三条 passthrough 路径（无敏感信息 / 脱敏失败 / 读取失败）把空 body 交给下游 `chatHandler`，命中 `json.Unmarshal` 失败 → 400 `json_parse_error`。客户端看到的 `model=claude-opus-5` / `provider=<uuid>` 是误导：请求从未走到路由与 provider 选择，model 是从空 body 宽松提取的残留，PG `client_model` 字段空可印证。修复：readBody 读取后立即 `bytes.Reader` 重建 `r.Body`；脱敏改写时同步 `r.ContentLength`；与 `armor/middleware.withReplayedBody` 对齐不调 `r.Body.Close()`；新增 5 个回归测试锁定 body passthrough 完整性
+  - **诊断盲点**: `domains/streaming/handler.go:1699` `json.Unmarshal` 错误此前被丢弃，json_parse_error 行不带 offset/原因，导致「上游中间件吞了 body」与「客户端 JSON 真坏了」无法区分（本次排查耗时的直接原因）。补充 `slog.Warn` 带 `error` / `body_bytes` / `content_length`，与相邻 `request body read failed` 字段顺序对齐
+
 ### Added
 
 - **admin_protected 手工凭据模型记录只允许手工删除 (2026-08-07)**:

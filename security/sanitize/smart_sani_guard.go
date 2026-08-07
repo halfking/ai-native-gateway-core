@@ -25,7 +25,6 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
-	"strconv"
 	"time"
 
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/response"
@@ -118,10 +117,11 @@ func (m *SanitizeInputMiddleware) Wrap(next http.Handler) http.Handler {
 		// 无脱敏内容时 r.Body 已由 readBody 恢复为原始 body，无需处理。
 		if sanitizedBody != nil {
 			r.Body = io.NopCloser(bytes.NewReader(sanitizedBody))
-			// 脱敏后长度变化，同步 ContentLength 与 Content-Length 头，
-			// 避免下游按旧长度截断或拒绝。
+			// 脱敏改写后长度变化，同步 ContentLength（仅此一项；
+			// Content-Length header 是 server 端 Go 解析时填入的，下游
+			// 全部走 r.ContentLength 字段，不再回读 header）。
+			// 与 armor middleware.withReplayedBody 保持一致。
 			r.ContentLength = int64(len(sanitizedBody))
-			r.Header.Set("Content-Length", strconv.Itoa(len(sanitizedBody)))
 			*r = *r.WithContext(WithSanitizeMap(r.Context(), sm))
 		}
 
@@ -449,8 +449,10 @@ func readBody(r *http.Request) ([]byte, error) {
 	buf := new(bytes.Buffer)
 	_, err := buf.ReadFrom(r.Body)
 	b := buf.Bytes()
-	// 无论成功与否都把已读字节接回 r.Body，避免下游拿到耗尽的 Body。
-	_ = r.Body.Close()
+	// 把已读字节接回 r.Body，避免下游拿到耗尽的 Body。
+	// 不调用 r.Body.Close()：Go server 端 *http.Request 的 Body.Close 是
+	// no-op（eofReader 链），关闭原 reader 不会归还连接；保持与 armor
+	// middleware.withReplayedBody 一致即可。
 	r.Body = io.NopCloser(bytes.NewReader(b))
 	if err != nil {
 		return nil, err
