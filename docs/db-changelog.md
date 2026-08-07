@@ -725,3 +725,9 @@
 | 469 | `469_context_window_override.sql` | `b540ad02c5f23368a96a50fdb0cff3c786e676618d58cd5fd3100a9352bb8b0b` | applied+verified |
 | 470 | `470_cache_metrics.sql` | `f07644b71a6f62652b0ada201afb4125b8fe6c5398172d110e960722d7372846` | applied+verified |
 
+## 2026-08-07T08:15:14Z — deploy 245 build_seq 1473 (006e4901)
+
+| Migration | File | SHA-256 | Status |
+|-----------|------|---------|--------|
+| 472 | `472_cache_metrics_partitions.sql` | `a2667ef1a5436ed01272a4d8260840e486d6c00ed1e4b6552b27e48887e95053` | applied+verified |
+
