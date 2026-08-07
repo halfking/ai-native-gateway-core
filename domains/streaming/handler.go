@@ -2619,11 +2619,12 @@ func (h *ChatHandler) serveWithExecutor(
 			// ── Request WAL: async update on compression success ──────────────
 			if h.requestLogger != nil && scResult != nil {
 				meta := map[string]interface{}{
-					"strategy":         scResult.CompressionStrategy,
-					"msg_count":        scResult.MsgCount,
-					"token_est":        scResult.TokenEst,
-					"window_triggered": scResult.WindowTriggered,
-					"lossiness":        scResult.Lossiness,
+					"strategy":               scResult.CompressionStrategy,
+					"msg_count":              scResult.MsgCount,
+					"token_est":              scResult.TokenEst,
+					"window_triggered":       scResult.WindowTriggered,
+					"lossiness":              scResult.Lossiness,
+					"compressed_prefix_hash": scResult.CompressedPrefixHash, // docs/omni-ref3 C8/D7
 				}
 				h.requestLogger.Update(&telemetry.LogUpdate{
 					RequestID:           requestID,
