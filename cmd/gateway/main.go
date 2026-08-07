@@ -2331,6 +2331,7 @@ func main() {
 	var credCycler *bg.CredentialCycler
 	var credProbeV2 *bg.CredentialProbeV2
 	var periodicQuotaProbe *bg.PeriodicQuotaProbe
+	var balanceQuotaProbe *bg.BalanceQuotaProbe
 	var pendingSweeper *bg.PendingSweeper
 	var candidateFailureMonitor *bg.CandidateFailureMonitor
 
@@ -2517,6 +2518,18 @@ func main() {
 			}
 			periodicQuotaProbe.Start(context.Background())
 			slog.Info("CHECKPOINT: periodicQuotaProbe started")
+
+			// 2026-08-07: balance quota probe for balance_exhausted and permanently_exhausted credentials
+			// Probes credentials in balance/permanently exhausted state every N minutes (default 2min)
+			// to detect recharge recovery faster. These require actual account top-up to recover,
+			// so we use a shorter interval than periodic quota (5min) to provide faster feedback
+			// after users add credits. Configurable via LLM_GATEWAY_BALANCE_QUOTA_PROBE_INTERVAL.
+			balanceQuotaProbe = bg.NewBalanceQuotaProbe(dbConn.Pool())
+			if credProbeV2 != nil {
+				balanceQuotaProbe.SetProbeSubmitter(credProbeV2.SubmitFastProbe)
+			}
+			balanceQuotaProbe.Start(context.Background())
+			slog.Info("CHECKPOINT: balanceQuotaProbe started")
 
 			// 900-series: default probe model picker (spec §4.2.1) — daily 0:00
 			slog.Info("CHECKPOINT: before NewDefaultProbePicker")
