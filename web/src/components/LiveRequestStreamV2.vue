@@ -14,6 +14,7 @@ import { useLiveStreamUrl } from '../composables/useLiveStreamUrl'
 import { useProviderLatency } from '../composables/useProviderLatency'
 import { useEmergencyDiagnostic } from '../composables/useEmergencyDiagnostic'
 import { useIncidentDiagnosis } from '../composables/useIncidentDiagnosis'
+import { useConnectionDetail } from '../composables/useConnectionDetail'
 import { isSuperAdmin, authBearer, getCurrentTenantId } from '../store'
 import { redisHealthyRef, redisErrorRef } from '../composables/liveStreamStore'
 import SwimLane from './SwimLane.vue'
@@ -102,7 +103,6 @@ function openFilterDialog(kind: 'status' | 'model' | 'provider' | 'vendor' | 'ag
 // 2026-08-06: 供应商 HTTP 延时轮询抽到 useProviderLatency composable
 // （providerLatencyMap / 5 分钟轮询 / groupBy 联动，由 composable 管理生命周期）
 const { providerLatencyMap } = useProviderLatency({ groupBy })
-const showConnectionDetail = ref(false)
 const isAdmin = computed(() => isSuperAdmin())
 
 // 2026-08-06: 应急诊断弹窗状态抽到 useEmergencyDiagnostic composable
@@ -129,15 +129,12 @@ const {
   testConnection,
 } = useLiveStreamUrl({ connection, reconnect: reconnectStream, t })
 
-// 切换连接详情弹窗
-function toggleConnectionDetail() {
-  if (isAdmin.value) {
-    showConnectionDetail.value = !showConnectionDetail.value
-    if (!showConnectionDetail.value) {
-      isEditingUrl.value = false
-    }
-  }
-}
+// 2026-08-06: 连接详情弹窗状态抽到 useConnectionDetail composable
+// （isAdmin 仍在本组件模板使用，isEditingUrl 由 useLiveStreamUrl 提供）
+const {
+  showConnectionDetail,
+  toggleConnectionDetail,
+} = useConnectionDetail({ isAdmin, isEditingUrl })
 
 // 缓存/窗口统计 — 驱动自服务端 snapshot
 const bufferCount = computed(() => {
