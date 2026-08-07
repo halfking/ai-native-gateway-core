@@ -22,6 +22,16 @@ func TestEnsureSpecsCoversAllPartitionedTables(t *testing.T) {
 		"ensure_routing_decision_log_partition":   false,
 		"ensure_credential_model_index_partition": false,
 		"ensure_usage_ledger_partition":           false, // Migration 330
+
+		// 2026-08-07 审计补齐：这些函数早已随各自迁移安装，
+		// 但从未被 ensureSpecs() 调用。迁移 473 只是手工补了
+		// 2026_09 + 2026_10，此处把它们接入自动轮转。
+		"ensure_credit_ledger_partition":             false, // Migration 334
+		"ensure_tool_usage_stats_partition":          false, // Migration 335
+		"ensure_sessions_v2_partitions":              false, // Migration 430 (covers sessions/session_turns/session_bodies)
+		"ensure_session_module_executions_partition": false, // Migration 382
+		"ensure_dashboard_events_partition":          false, // Migration 383
+		"ensure_cache_metrics_partition":             false, // Migration 475
 	}
 	for _, s := range specs {
 		if _, ok := expected[s.fnName]; !ok {
