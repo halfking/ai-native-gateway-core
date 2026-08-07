@@ -158,17 +158,20 @@ func (w *Writer) WriteOnError(ctx context.Context, credentialID int, rawModel st
 	detail := trimDetail(failure.Detail)
 	switch failure.Kind {
 	case errorsx.KindQuotaPeriodic:
+		recoverAt := inferQuotaRecoverAt(failure.Detail)
 		_, err := w.dbPool.Exec(ctx, `
 			UPDATE credentials
-			SET quota_state         = 'periodic_exhausted',
-			    quota_recover_at    = $1,
-			    state_reason_code   = $2,
-			    state_reason_detail = $3,
-			    state_updated_at    = now()
+			SET quota_state             = 'periodic_exhausted',
+			    quota_recover_at        = $1,
+			    availability_state      = 'suspended',
+			    availability_recover_at = $1,
+			    state_reason_code       = $2,
+			    state_reason_detail     = $3,
+			    state_updated_at        = now()
 			WHERE id = $4
 			  AND lifecycle_status = 'active'
 			  AND quota_state NOT IN ('balance_exhausted', 'permanently_exhausted')
-		`, inferQuotaRecoverAt(failure.Detail), string(failure.Kind), detail, credentialID)
+		`, recoverAt, string(failure.Kind), detail, credentialID)
 		return err
 	case errorsx.KindQuotaPermanent:
 		_, err := w.dbPool.Exec(ctx, `
