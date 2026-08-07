@@ -40,10 +40,12 @@ import (
 // pre-request gate would pre-empt at 80% to leave buffer for upstream response
 // generation + model internal overhead. Do NOT "unify" these to the same value.
 //
-// NOTE: NeedsCompression currently has NO live caller (ShouldCompressPreRequest
-// is wired on the Executor but never invoked from cmd/ or domains/streaming/).
-// The live proactive threshold is ShouldTriggerWindow (window.go). This value
-// is retained for the dormant API and future pre-request gating work.
+// NOTE (corrected 2026-08-07): NeedsCompression IS live — Compressor.
+// ShouldCompressPreRequest (compressor.go:261) calls est.NeedsCompression and
+// is itself invoked on the pre-request path (compressor.go:318). The proactive
+// in-request threshold is ShouldTriggerWindow (window.go, default 0.85). The
+// 5-point gap between 0.80 (pre-request) and 0.85 (in-request) is intentional:
+// the pre-request gate fires earlier to leave headroom for response generation.
 const defaultWindowFraction = 0.8
 
 // envFraction reads LLM_GATEWAY_COMPRESSION_WINDOW_FRACTION. Falls back to

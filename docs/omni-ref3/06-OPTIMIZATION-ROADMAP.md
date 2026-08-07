@@ -67,18 +67,21 @@ P3 退役 V1
 - **遗留**：V1/LCS 与 V2/delta 在边缘（attachment-only、orphan tool）算法不同，default-on 后理论上个别会话的 outbound 内容会变。fail-open 兜底已在；若线上观察到异常，kill-switch 即回 V1。
 
 ### P1.2 基础设施
-| 条目 | 来源 | 前置 |
-|---|---|---|
-| 统一 token 估算（含图片 PNG 数学） | C4 | 无 |
-| prompt-cache 前缀分析器 | D7 | C4 |
-| 统一 cache 指标表 | D2 | 无 |
+| 条目 | 来源 | 前置 | 状态 |
+|---|---|---|---|
+| ✅ 统一 token 估算（`tokenest` 包，3.5 统一；修 V2 builder /4 离群） | C4 | 无 | **已实现**（图片 PNG 数学待 A3 时加） |
+| prompt-cache 前缀分析器 | D7 | C4 | 待 |
+| 统一 cache 指标表 | D2 | 无 | 待 |
 
 ### P1.3 压缩增强
-| 条目 | 来源 | 前置 |
-|---|---|---|
-| 引擎/摘要熔断 | C1 | 无 |
-| 缓存感知压缩 + cache-safe marker 注入 | C8/01-M4 | D7 |
-| 旧内联图片按预算裁剪 | A3 | C4 |
+| 条目 | 来源 | 前置 | 状态 |
+|---|---|---|---|
+| ✅ 摘要熔断（`summaryBreaker`：3 次失败/30s cooldown/half-open 探测/可 disable） | C1 | 无 | **已实现** |
+| ✅ 摘要前 secret mask（`secretmask` 包，两处 LLM 入口） | C2 | 无 | **已实现** |
+| 缓存感知压缩 + cache-safe marker 注入 | C8/01-M4 | D7 | 待 |
+| 旧内联图片按预算裁剪 | A3 | C4 | 待 |
+
+> C6 调整结论（2026-08-07）：`Estimator.NeedsCompression` **非死代码**——`Compressor.ShouldCompressPreRequest`（compressor.go:261）经 compressor.go:318 在 pre-request 路径实时调用它。原 omni-ref3 标"删 dead code"作废；仅修正了 estimator.go:43 的误导性注释（原称"无 live caller"）。
 | 上下文窗口自校正 | A4 | 无 |
 
 ### P1.4 会话元数据接线

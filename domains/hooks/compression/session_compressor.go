@@ -146,12 +146,13 @@ const (
 
 // SessionCompressor orchestrates v3 session-level compression.
 type SessionCompressor struct {
-	deps SessionCompressorDeps
+	deps    SessionCompressorDeps
+	breaker *summaryBreaker // docs/omni-ref3 C1: gates the LLM-summary path
 }
 
 // NewSessionCompressor builds a SessionCompressor. Call once at startup.
 func NewSessionCompressor(deps SessionCompressorDeps) *SessionCompressor {
-	return &SessionCompressor{deps: deps}
+	return &SessionCompressor{deps: deps, breaker: newSummaryBreaker()}
 }
 
 // Prepare is the main entry point. Call it after reading the client body
@@ -367,8 +368,24 @@ func (sc *SessionCompressor) Prepare(
 			}
 		} else {
 			// ── LOSSLESS_FIRST: try LLM summary ──────────────────────────
+			// docs/omni-ref3 C1: circuit-breaker the LLM-summary path. If the
+			// summary model is erroring, skip the call (and its quota/latency
+			// cost) and go straight to mechanical trim until the breaker resets.
 			taskType := extractTaskType(ctx)
-			summarised, ok := sc.tryLLMSummary(ctx, outboundBody, tenantID, protocol, taskType)
+			now := time.Now()
+			allow, _ := sc.breaker.allowDecide(now)
+			var (
+				summarised []byte
+				ok         bool
+			)
+			if !allow {
+				slog.Warn("session_compressor: summary breaker open, skipping LLM summary",
+					"session", gwSessionID, "trigger", winResult.Reason)
+			} else {
+				summarised, ok = sc.tryLLMSummary(ctx, outboundBody, tenantID, protocol, taskType)
+				// Record outcome: success only when it produced a usable, smaller body.
+				sc.breaker.RecordResult(ok && len(summarised) > 0 && len(summarised) < len(outboundBody), time.Now())
+			}
 			if ok && len(summarised) > 0 && len(summarised) < len(outboundBody) {
 				// LLM summary succeeded — inject summary_marker.
 				marker, markedBody := injectSummaryMarker(summarised, protocol)
