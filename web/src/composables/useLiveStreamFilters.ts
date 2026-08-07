@@ -69,7 +69,11 @@ export function useLiveStreamFilters(options: LiveStreamFiltersOptions) {
     vendorFilter.value = new Set(selected as LiveModelCategory[])
   }
   function applyAgentFilter(selected: string[]) {
-    agentFilter.value = new Set(selected)
+    // agent_name is matched case-insensitively (see filteredLanes, which
+    // lowercases r.agent_name). Normalize incoming selections to lowercase so
+    // the stored set stays consistent with availableAgents (always lowercase)
+    // and the filter dialog checkbox state (draft.has(opt)) stays in sync.
+    agentFilter.value = new Set(selected.map(s => s.toLowerCase()))
   }
 
   // ========== 清空所有过滤器 ==========

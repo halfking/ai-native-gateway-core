@@ -107,3 +107,28 @@ func TestOutboundBuilder_BuildLatestOutbound_RealDB_NoRows(t *testing.T) {
 	require.NoError(t, json.Unmarshal(got, &gotMsgs))
 	require.Empty(t, gotMsgs, "no rows → empty message array")
 }
+
+// TestSessionTurnsReader_LoadState_RealDB_NoRows guards the regression where
+// SessionTurnsReader.LoadState wrapped pgx.ErrNoRows and returned (nil, err).
+// HasState → Get → LoadState relies on LoadState returning (nil, nil) for a
+// brand-new session so the caller classifies it as "no prior state" (ok=true,
+// fresh session) instead of a hard error that forces a V1 fallback.
+func TestSessionTurnsReader_LoadState_RealDB_NoRows(t *testing.T) {
+	pool := setupTestDB(t)
+	t.Cleanup(func() { pool.Close() })
+
+	ctx := context.Background()
+	const (
+		tenantID  = "test_tenant"
+		sessionID = "gw_loadstate_norows01"
+	)
+	// No session_turns rows exist for this session.
+	_, err := pool.Exec(ctx, `DELETE FROM gateway.session_turns
+		WHERE tenant_id=$1 AND session_id=$2`, tenantID, sessionID)
+	require.NoError(t, err)
+
+	reader := NewSessionTurnsReader(pool)
+	state, err := reader.LoadState(ctx, tenantID, sessionID)
+	require.NoError(t, err, "ErrNoRows must surface as (nil,nil), not an error")
+	require.Nil(t, state, "no prior state → nil state, nil error")
+}
