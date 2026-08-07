@@ -9,6 +9,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **抽取 useLiveStreamUrl composable (2026-08-06)**:
+  - **背景**: `LiveRequestStreamV2.vue` 的 SSE endpoint URL 管理块（localStorage 持久化 / 编辑状态机 / 保存重连 / 连接测试）内联在组件里，与过滤器状态一样造成组件膨胀；且组件内有一对 `buildFinalUrl` / `liveUrl`（`?token=` 降级 + 暴露给 store），但 store 通过 `getCustomEndpoint()` 直接读 localStorage（`liveStreamStore.ts`），组件里的 `buildFinalUrl`/`liveUrl` **零消费**（属冗余复制，抽取时一并移除）
+  - **重构**:
+    - **`web/src/composables/useLiveStreamUrl.ts`**（新建）— 集中管理 SSE endpoint URL：
+      - 接收 `connection: Ref<ConnectionState>` + `reconnect`（调用方注入 `useLiveStream().reconnect`）+ `t`（i18n）
+      - 管理 `defaultStreamUrl`（origin 派生）/ `streamUrl` / `isEditingUrl` / `editUrlValue` 状态
+      - `onMounted` 从 localStorage 恢复自定义 URL；`watch(defaultStreamUrl)` 跟随 window.location 变化
+      - `startEditUrl` / `saveUrl`（持久化 + 重连）/ `resetUrl`（清除 + 重连）/ `cancelEditUrl` / `testConnection`
+      - 移除冗余的 `buildFinalUrl` / `liveUrl`（token 逻辑 store 端 `buildUrl` 已处理）
+    - **`web/src/composables/useLiveStreamUrl.test.ts`**（新建）— 11 个单元测试：default URL 回退 / localStorage 恢复 / 编辑状态机 / saveUrl 持久化+重连 / 空 URL 不保存 / resetUrl 清除+重连 / cancelEditUrl 不持久化 / testConnection OK+FAIL 弹窗 / defaultStreamUrl watch 不覆盖已保存 URL
+    - **`web/src/components/LiveRequestStreamV2.vue`** 接入 composable：移除 ~120 行内联 URL 管理逻辑，`onMounted` 只剩供应商延时轮询；组件从 1273 → 1184 行
+  - **验证**: vitest 31 文件 / 190 测试全绿（+11 用例）；vue-tsc exit 0；i18n-audit ✅ no missing keys；vite build 8.76s 成功
+  - **文档**: `docs/changelogs/2026-08-06-extract-live-stream-url-composable.md`
+
 - **抽取 useLiveStreamFilters composable (2026-08-06)**:
   - **背景**: `LiveRequestStreamV2.vue` (1425 行) 包含 ~150 行过滤器状态管理逻辑：5 个维度（status / model / provider / vendor / agent）+ 1 个请求类型（business / probe）过滤器，包含状态声明、apply 函数、available* computed、filteredLanes computed 等，导致组件内部状态膨胀（10+ ref + 22 computed + 68 函数）
   - **重构**:

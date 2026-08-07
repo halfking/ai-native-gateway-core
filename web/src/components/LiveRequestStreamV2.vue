@@ -10,6 +10,7 @@ import { useI18n } from 'vue-i18n'
 import { useLiveStream, type LiveStatus, type LiveModelCategory } from '../composables/useLiveStream'
 import { useSwimLane } from '../composables/useSwimLane'
 import { useLiveStreamFilters } from '../composables/useLiveStreamFilters'
+import { useLiveStreamUrl } from '../composables/useLiveStreamUrl'
 import { isSuperAdmin, authBearer, getCurrentTenantId } from '../store'
 import { redisHealthyRef, redisErrorRef } from '../composables/liveStreamStore'
 import { fetchProviderLatency } from '../api/provider-probe'
@@ -157,45 +158,20 @@ function handleEmergencyRecovered() {
   console.log('Credential recovered successfully')
 }
 
-// SSE endpoint address - 可编辑
-// 行为：
-//  1) 默认值走 window.location.origin + ENDPOINT
-//  2) localStorage 里允许管理员保存一个自定义 URL（比如反向代理 / 内网穿透）
-//  3) 保存后立即关闭旧连接、打开新地址，刷新整个流
-const STORAGE_KEY = 'llmgw_sse_endpoint'
-const ENDPOINT_PATH = '/api/admin/live-stream'
-const defaultStreamUrl = computed(() => `${window.location.origin}${ENDPOINT_PATH}`)
-const streamUrl = ref('')
-const isEditingUrl = ref(false)
-const editUrlValue = ref('')
-
-// 把 string → URL 转换成一个 EventSource 可用的最终地址
-// 优先使用 withCredentials 发送 HttpOnly cookie，仅在 cookie 不可用时降级为 ?token=
-function buildFinalUrl(url: string): string {
-  const trimmed = url.trim()
-  if (!trimmed) return defaultStreamUrl.value
-  // 仅当 localStorage 的 api_key 明确标记为非 cookie 模式时才用 ?token= 降级
-  let apiKeySuffix = ''
-  try {
-    const apiKey = localStorage.getItem('llmgw_api_key')
-    if (apiKey && apiKey.startsWith('token:')) {
-      apiKeySuffix = (trimmed.includes('?') ? '&' : '?') + 'token=' + encodeURIComponent(apiKey.slice(6))
-    }
-  } catch {
-    /* SSR / storage disabled */
-  }
-  return trimmed + apiKeySuffix
-}
+// 2026-08-06: SSE endpoint URL 管理抽到 useLiveStreamUrl composable
+// （localStorage 持久化 / 编辑状态机 / 保存重连 / 连接测试）
+const {
+  streamUrl,
+  isEditingUrl,
+  editUrlValue,
+  startEditUrl,
+  saveUrl,
+  resetUrl,
+  cancelEditUrl,
+  testConnection,
+} = useLiveStreamUrl({ connection, reconnect: reconnectStream, t })
 
 onMounted(() => {
-  const saved = (() => {
-    try {
-      return localStorage.getItem(STORAGE_KEY) || ''
-    } catch {
-      return ''
-    }
-  })()
-  streamUrl.value = saved || defaultStreamUrl.value
   // 2026-07-23: 供应商延时轮询（5 分钟一次，与探测节奏对齐）
   void refreshProviderLatency()
   latencyTimer = setInterval(() => void refreshProviderLatency(), 5 * 60 * 1000)
@@ -208,18 +184,6 @@ onUnmounted(() => {
   }
 })
 
-// 如果用户修改了 window.location（多 tab 测试），默认地址也跟着变
-watch(defaultStreamUrl, (cur) => {
-  const saved = (() => {
-    try {
-      return localStorage.getItem(STORAGE_KEY) || ''
-    } catch {
-      return ''
-    }
-  })()
-  if (!saved) streamUrl.value = cur
-})
-
 // 切换连接详情弹窗
 function toggleConnectionDetail() {
   if (isAdmin.value) {
@@ -229,60 +193,6 @@ function toggleConnectionDetail() {
     }
   }
 }
-
-// 开始编辑URL
-function startEditUrl() {
-  editUrlValue.value = streamUrl.value
-  isEditingUrl.value = true
-}
-
-// 保存URL —— 立刻用新地址重连 SSE
-function saveUrl() {
-  const url = editUrlValue.value.trim()
-  if (url) {
-    streamUrl.value = url
-    try {
-      localStorage.setItem(STORAGE_KEY, url)
-    } catch {
-      /* ignore */
-    }
-    reconnectStream()
-  }
-  isEditingUrl.value = false
-}
-
-// 重置为默认URL
-function resetUrl() {
-  streamUrl.value = defaultStreamUrl.value
-  try {
-    localStorage.removeItem(STORAGE_KEY)
-  } catch {
-    /* ignore */
-  }
-  isEditingUrl.value = false
-  reconnectStream()
-}
-
-// 取消编辑
-function cancelEditUrl() {
-  isEditingUrl.value = false
-}
-
-// 测试 SSE 连接
-function testConnection() {
-  if (connection.value === 'open') {
-    window.alert(t('dashboard.liveStream.sseTestOk', { url: streamUrl.value }))
-  } else {
-    window.alert(t('dashboard.liveStream.sseTestFail', { status: connection.value, url: streamUrl.value }))
-  }
-}
-
-// 连接成功后立即把当前 URL 喂给 store（让 store 切换到新 ENDPOINT）
-// 这里通过调用 reconnectStream 已经触发了 store 内部的 close + openConnection()
-// 但 openConnection() 写死了 ENDPOINT；要想自定义 URL，需要 store 暴露 setter。
-// 为最小改动，我们让 store 优先读 localStorage 里的自定义地址（见 liveStreamStore.ts）。
-// 暴露给 store 的"当前目标 URL"：
-const liveUrl = computed(() => buildFinalUrl(streamUrl.value))
 
 // 缓存/窗口统计 — 驱动自服务端 snapshot
 const bufferCount = computed(() => {

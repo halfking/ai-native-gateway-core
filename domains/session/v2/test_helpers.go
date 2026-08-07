@@ -53,11 +53,20 @@ func cleanupTestDB(t *testing.T, db *pgxpool.Pool) {
 	db.Close()
 }
 
-// getTestDBURL returns the test database URL from environment
+// getTestDBURL returns the test database URL from environment.
 //
-// This is shared across all V2 tests to avoid duplication.
+// Preference: TEST_DB_URL (legacy v2-suite convention) first, then
+// TEST_DATABASE_URL (the variable the CI 'gateway-rls' job injects via
+// secrets). Accepting both lets these integration tests run under the
+// existing CI job without duplicating the secret, while keeping the
+// shorter name working for local runs.
+//
+// An explicit URL is required either way: a local DB with an
+// incompatible schema must not silently make the default unit-test
+// command fail.
 func getTestDBURL() string {
-	// Require an explicit URL so local databases with an incompatible schema do
-	// not make the default unit-test command fail unexpectedly.
-	return os.Getenv("TEST_DB_URL")
+	if v := os.Getenv("TEST_DB_URL"); v != "" {
+		return v
+	}
+	return os.Getenv("TEST_DATABASE_URL")
 }
