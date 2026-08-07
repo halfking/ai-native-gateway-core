@@ -53,7 +53,7 @@ if [ ! -f "$MIGRATION_FILE" ]; then
     warn "迁移文件不存在: $MIGRATION_FILE"
     info "将在 Phase 1 实施时创建"
 else
-    psql "$DB_URL" -f "$MIGRATION_FILE" || error "数据库迁移失败"
+    psql "$DB_URL" -v ON_ERROR_STOP=1 -f "$MIGRATION_FILE" || error "数据库迁移失败"
     success "数据库迁移完成"
 fi
 

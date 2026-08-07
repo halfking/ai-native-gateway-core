@@ -25,7 +25,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
-	"strconv"
+	"strings"
 	"time"
 
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/response"
@@ -72,13 +72,32 @@ func NewSanitizeInputMiddleware(s *Sanitizer, redis *redis.Client, ttl time.Dura
 		redis:     redis,
 		ttl:       ttl,
 		logger:    slog.Default().With("component", "sanitize_middleware"),
+		// 与 chatHandler（domains/streaming/session_routing.go 的
+		// SessionHeadersPriority）保持一致的 5 个候选 header 顺序。
+		// 不读 body 里的 session_id：中间件先于 chatHandler 解析 session，
+		// body 解析属于 chatHandler 的核心职责，且 body 里 session_id 可能
+		// 出现在 messages content 里（被中间件当作 PII 替换掉），会让中间件
+		// 误读自身内容 — 因此本中间件只接受 header 形式的 sessionID。
 		getSessionID: func(r *http.Request) string {
-			if id := r.Header.Get("X-Gw-Session-Id"); id != "" {
-				return id
+			for _, header := range sessionIDHeaderPriority {
+				if v := strings.TrimSpace(r.Header.Get(header)); v != "" {
+					return v
+				}
 			}
-			return r.Header.Get("X-Session-Id")
+			return ""
 		},
 	}, nil
+}
+
+// sessionIDHeaderPriority 与 chatHandler 一致的会话 ID header 候选。
+// 顺序与重要性递减对齐：X-Gw-Session-Id > X-Session-Id >
+// X-Conversation-Id > X-Chat-Session-Id > X-Thread-Id。
+var sessionIDHeaderPriority = []string{
+	"X-Gw-Session-Id",
+	"X-Session-Id",
+	"X-Conversation-Id",
+	"X-Chat-Session-Id",
+	"X-Thread-Id",
 }
 
 // Wrap 返回一个 http.Handler 包装器。
@@ -118,10 +137,11 @@ func (m *SanitizeInputMiddleware) Wrap(next http.Handler) http.Handler {
 		// 无脱敏内容时 r.Body 已由 readBody 恢复为原始 body，无需处理。
 		if sanitizedBody != nil {
 			r.Body = io.NopCloser(bytes.NewReader(sanitizedBody))
-			// 脱敏后长度变化，同步 ContentLength 与 Content-Length 头，
-			// 避免下游按旧长度截断或拒绝。
+			// 脱敏改写后长度变化，同步 ContentLength（仅此一项；
+			// Content-Length header 是 server 端 Go 解析时填入的，下游
+			// 全部走 r.ContentLength 字段，不再回读 header）。
+			// 与 armor middleware.withReplayedBody 保持一致。
 			r.ContentLength = int64(len(sanitizedBody))
-			r.Header.Set("Content-Length", strconv.Itoa(len(sanitizedBody)))
 			*r = *r.WithContext(WithSanitizeMap(r.Context(), sm))
 		}
 
@@ -193,9 +213,9 @@ func (m *SanitizeInputMiddleware) sanitizeRequestBody(ctx context.Context, body 
 		return nil, nil, nil
 	}
 
-	// 持久化映射表到 Redis
+	// 持久化映射表到 Redis（同时把每类本轮最大编号刷回 offset key）
 	if m.redis != nil && sessionID != "" {
-		if err := m.saveMapAndOffsets(ctx, sessionID, sm, offset, usedCount); err != nil {
+		if err := m.saveMapAndOffsets(ctx, sessionID, sm, usedCount); err != nil {
 			m.logger.Warn("sanitize_middleware: save map failed (restore degraded to single-turn)",
 				"error", err, "session_id", sessionID)
 		}
@@ -211,44 +231,59 @@ func (m *SanitizeInputMiddleware) sanitizeRequestBody(ctx context.Context, body 
 }
 
 // loadOffsets 从 Redis 加载每类已用最大编号作为偏移量。
+//
+// 偏移量单独存于 session:{sid}:sanitize:offsets（Redis Hash，
+// field=类型字符串, value=本类型已用最大编号）。每次请求只读一个
+// 紧凑 hash，不再扫描整个 sanitize map。
 func (m *SanitizeInputMiddleware) loadOffsets(ctx context.Context, sessionID string) map[SensitiveType]int {
 	if m.redis == nil || sessionID == "" {
 		return nil
 	}
-	key := SanitizeRedisKey(sessionID)
-	vals, err := m.redis.HGetAll(ctx, key).Result()
-	if err != nil {
+	vals, err := m.redis.HGetAll(ctx, SanitizeOffsetRedisKey(sessionID)).Result()
+	if err != nil || len(vals) == 0 {
 		return nil
 	}
-	// vals 是 {placeholder: value}，从中推导每类最大编号
-	maxIdx := make(map[SensitiveType]int)
-	for ph := range vals {
-		if p, ok := ParsePlaceholder(ph); ok {
-			if p.Index > maxIdx[p.Type] {
-				maxIdx[p.Type] = p.Index
-			}
+	maxIdx := make(map[SensitiveType]int, len(vals))
+	for tStr, v := range vals {
+		var idx int
+		if _, scanErr := fmt.Sscanf(v, "%d", &idx); scanErr != nil || idx <= 0 {
+			continue
 		}
+		maxIdx[SensitiveType(tStr)] = idx
 	}
 	return maxIdx
 }
 
-// saveMapAndOffsets 把映射表写入 Redis，并记录每类最新编号。
-func (m *SanitizeInputMiddleware) saveMapAndOffsets(ctx context.Context, sessionID string, sm SanitizeMap, offset map[SensitiveType]int, usedCount map[string]int) error {
-	key := SanitizeRedisKey(sessionID)
+// saveMapAndOffsets 把映射表写入 Redis，并刷新每类最大编号到 offset key。
+func (m *SanitizeInputMiddleware) saveMapAndOffsets(ctx context.Context, sessionID string, sm SanitizeMap, usedCount map[string]int) error {
+	mapKey := SanitizeRedisKey(sessionID)
 
-	// 把占位符→原始值写入 Hash（field=占位符, value=原始值）
-	fields := make(map[string]any, len(sm))
-	for ph, val := range sm {
-		fields[ph] = val
-	}
-	if len(fields) > 0 {
-		if err := m.redis.HSet(ctx, key, fields).Err(); err != nil {
+	// 写占位符→原始值
+	if len(sm) > 0 {
+		fields := make(map[string]any, len(sm))
+		for ph, val := range sm {
+			fields[ph] = val
+		}
+		if err := m.redis.HSet(ctx, mapKey, fields).Err(); err != nil {
 			return err
 		}
 	}
 
-	// 刷新 TTL
-	return m.redis.Expire(ctx, key, m.ttl).Err()
+	// 刷新每类最大编号到 offset key（仅写入用过的类型，未用类型保留）
+	if len(usedCount) > 0 {
+		offsetFields := make(map[string]any, len(usedCount))
+		for tStr, idx := range usedCount {
+			offsetFields[tStr] = idx
+		}
+		offsetKey := SanitizeOffsetRedisKey(sessionID)
+		if err := m.redis.HSet(ctx, offsetKey, offsetFields).Err(); err != nil {
+			return err
+		}
+		_ = m.redis.Expire(ctx, offsetKey, m.ttl).Err()
+	}
+
+	// 刷新主 hash 的 TTL
+	return m.redis.Expire(ctx, mapKey, m.ttl).Err()
 }
 
 // SanitizeRestoreInterceptor 实现 response.ResponseInterceptor。
@@ -257,6 +292,18 @@ func (m *SanitizeInputMiddleware) saveMapAndOffsets(ctx context.Context, session
 //
 // 顺序契约：本拦截器必须在 OutputComplianceInterceptor 之后注册，
 // 确保安全检查先看到占位符，还原后再把真实值返回给用户。
+//
+// 流式响应限制（2026-08-07, 已知限制）：
+//
+//	当前 chatHandler 流式响应路径不调用 response.InterceptorChain
+//	的 InterceptStreamChunk（链存在但未被 chatHandler 接入），因此
+//	流式 chunk 已在 chunk-by-chunk 阶段发给客户端，无法再做还原。
+//	本拦截器的 InterceptStreamEnd 仍被调用，对持久化/审计层还原
+//	完整 body（即 streamCapture.textContent 重组结果）。
+//
+//	客户端实际拿到的流式响应中，{SENSITIVE:type:idx} 占位符仍是
+//	占位符形态。完整流式还原需要 chatHandler 接入 chunk-level 拦截
+//	链，是独立 PR 的范围（见 docs/smart_sani_guard_known_limits.md）。
 type SanitizeRestoreInterceptor struct {
 	sanitizer *Sanitizer
 	redis     *redis.Client
@@ -371,6 +418,12 @@ func (it *SanitizeRestoreInterceptor) loadMap(ctx context.Context, sessionID str
 }
 
 // restoreResponseBody 还原 OpenAI 响应体 choices[].message.content 中的占位符。
+//
+// 还原策略（统一使用 RestoreOutputOrMask）：
+//   - role=assistant：还原为真实敏感值；映射表中没有的占位符用 [REDACTED] 替换
+//     防止上游注入的占位符文本泄漏
+//   - role=user/tool/function 等：还原 + mask（语义同 assistant，但生产路径上
+//     这些 role 的响应消息通常不含 placeholder）
 func (it *SanitizeRestoreInterceptor) restoreResponseBody(ctx context.Context, body []byte, sm SanitizeMap) ([]byte, error) {
 	var raw map[string]any
 	if err := json.Unmarshal(body, &raw); err != nil {
@@ -390,15 +443,14 @@ func (it *SanitizeRestoreInterceptor) restoreResponseBody(ctx context.Context, b
 		if !ok {
 			continue
 		}
-		role, _ := msg["role"].(string)
-		if role != "assistant" && role != "" {
-			continue
-		}
 		content, ok := msg["content"].(string)
 		if !ok {
 			continue
 		}
-		restored, err := it.sanitizer.RestoreOutput(ctx, content, sm)
+
+		// 一律用 RestoreOutputOrMask：已知占位符还原 + 未知占位符 mask，
+		// 防止 {SENSITIVE:type:99} 这种 raw 文本泄漏到客户端。
+		restored, err := it.sanitizer.RestoreOutputOrMask(ctx, content, sm)
 		if err != nil {
 			continue
 		}
@@ -421,6 +473,14 @@ func (it *SanitizeRestoreInterceptor) restoreResponseBody(ctx context.Context, b
 // 与 domains/session/sanitize.go 保持一致的命名空间。
 func SanitizeRedisKey(sessionID string) string {
 	return fmt.Sprintf("session:%s:sanitize", sessionID)
+}
+
+// SanitizeOffsetRedisKey 生成会话级 offset（每类已用最大编号）的 Redis key。
+//
+// 独立于主 sanitize map：loadOffsets 时只读这个紧凑 hash，避免扫描整个 map。
+// TTL 与主 hash 同步刷新。
+func SanitizeOffsetRedisKey(sessionID string) string {
+	return fmt.Sprintf("session:%s:sanitize:offsets", sessionID)
 }
 
 // WithSanitizeMap 把 SanitizeMap 放入 Context（供同请求内下游读取）。
@@ -449,8 +509,10 @@ func readBody(r *http.Request) ([]byte, error) {
 	buf := new(bytes.Buffer)
 	_, err := buf.ReadFrom(r.Body)
 	b := buf.Bytes()
-	// 无论成功与否都把已读字节接回 r.Body，避免下游拿到耗尽的 Body。
-	_ = r.Body.Close()
+	// 把已读字节接回 r.Body，避免下游拿到耗尽的 Body。
+	// 不调用 r.Body.Close()：Go server 端 *http.Request 的 Body.Close 是
+	// no-op（eofReader 链），关闭原 reader 不会归还连接；保持与 armor
+	// middleware.withReplayedBody 一致即可。
 	r.Body = io.NopCloser(bytes.NewReader(b))
 	if err != nil {
 		return nil, err

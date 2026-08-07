@@ -9,7 +9,7 @@ import (
 	"os"
 	"time"
 
-	_ "github.com/lib/pq"
+	"github.com/lib/pq"
 )
 
 // FreeResourceEntry 免费资源条目
@@ -70,7 +70,7 @@ func main() {
 	catalogFile := flag.String("catalog", "", "免费资源目录 JSON 文件")
 	templatesFile := flag.String("templates", "", "Auto Combo 模板 JSON 文件")
 	keylessFile := flag.String("keyless", "", "Keyless 提供商 JSON 文件")
-	tenantID := flag.Int64("tenant-id", 1, "租户 ID (默认 1)")
+	tenantID := flag.String("tenant-id", "default", "租户 ID")
 	dryRun := flag.Bool("dry-run", false, "试运行模式（不实际写入数据库）")
 
 	flag.Parse()
@@ -116,7 +116,7 @@ func main() {
 	log.Println("🎉 所有种子数据导入完成！")
 }
 
-func importFreeResources(db *sql.DB, filename string, tenantID int64, dryRun bool) error {
+func importFreeResources(db *sql.DB, filename string, tenantID string, dryRun bool) error {
 	log.Printf("📊 导入免费资源目录: %s", filename)
 
 	data, err := os.ReadFile(filename)
@@ -187,7 +187,7 @@ func importFreeResources(db *sql.DB, filename string, tenantID int64, dryRun boo
 	return nil
 }
 
-func importAutoComboTemplates(db *sql.DB, filename string, tenantID int64, dryRun bool) error {
+func importAutoComboTemplates(db *sql.DB, filename string, tenantID string, dryRun bool) error {
 	log.Printf("🔀 导入 Auto Combo 模板: %s", filename)
 
 	data, err := os.ReadFile(filename)
@@ -252,7 +252,7 @@ func importAutoComboTemplates(db *sql.DB, filename string, tenantID int64, dryRu
 	return nil
 }
 
-func importKeylessProviders(db *sql.DB, filename string, tenantID int64, dryRun bool) error {
+func importKeylessProviders(db *sql.DB, filename string, tenantID string, dryRun bool) error {
 	log.Printf("🔓 导入 Keyless 提供商: %s", filename)
 
 	data, err := os.ReadFile(filename)
@@ -278,7 +278,7 @@ func importKeylessProviders(db *sql.DB, filename string, tenantID int64, dryRun 
 			rpm_limit, rpd_limit, concurrent_limit, reliability_score,
 			enabled, allowlist_in_auto_combo, notes, tenant_id
 		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
-		ON CONFLICT (provider_code)
+		ON CONFLICT (provider_code, tenant_id)
 		DO UPDATE SET
 			display_name = EXCLUDED.display_name,
 			auth_hint = EXCLUDED.auth_hint,
@@ -319,8 +319,5 @@ func nullString(s string) interface{} {
 }
 
 func pqArray(arr []string) interface{} {
-	if len(arr) == 0 {
-		return "{}"
-	}
-	return arr
+	return pq.Array(arr)
 }

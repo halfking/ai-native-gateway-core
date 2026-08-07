@@ -124,7 +124,7 @@ func (a settingsAdapter) GetString(tenantID, key string, def string) string {
 // unconditionally via registerAutoControlSettings so admins can configure
 // handoff.* via the UI even in data-plane mode (where the runtime hook is
 // not wired).
-func initGoalControl(db *sql.DB, chatHandler *streaming.ChatHandler, redisClient *redis.Client) {
+func initGoalControl(db *sql.DB, chatHandler *streaming.ChatHandler) {
 	if db == nil {
 		slog.Info("goal_control: disabled (no DB)")
 		return
@@ -318,29 +318,13 @@ func initGoalControl(db *sql.DB, chatHandler *streaming.ChatHandler, redisClient
 		interceptors = append(interceptors, ocHook)
 	}
 
-	// 7c. SmartSaniGuard 还原拦截器（2026-08-07）：
-	// 在 output_compliance 之后执行 — 安全检查先看占位符（敏感信息不暴露
-	// 给安全检查服务），通过后再把占位符还原为真实敏感值返回给用户。
-	// Redis 不可用时退化为单轮（仅当次请求 Metadata 内的映射表有效）。
-	if sanitizeRestore, restoreErr := buildSanitizeRestoreInterceptor(redisClient); restoreErr == nil && sanitizeRestore != nil {
-		interceptors = append(interceptors, sanitizeRestore)
-	}
+	// SmartSaniGuard 的输入/输出接入已迁移到 installSmartSaniGuard
+	// （在 initGoalControl 返回后由 main.go 显式调用），不再受本函数
+	// 的 db!=nil gate 限制——data-plane 模式（bgDataPlaneOnly=true）
+	// 下也能启用脱敏能力。
 
 	chain := response.NewInterceptorChain(interceptors...)
 	chatHandler.SetResponseInterceptor(chain)
-
-	// 7d. SmartSaniGuard 输入脱敏中间件（2026-08-07）：
-	// 包装在 chatHandler 之前，对请求体里的敏感信息做替换 + Redis 持久化。
-	// 这是 request 路径上的入口；与 response 路径的 SanitizeRestoreInterceptor
-	// 配对，确保 LLM 只看到占位符，客户端只看到还原后的真实值。
-	if redisClient != nil {
-		if sanitizeMw, mwErr := buildSanitizeInputMiddleware(redisClient); mwErr == nil && sanitizeMw != nil {
-			chatHandler.SetSanitizeInputMiddleware(sanitizeMw)
-		} else if mwErr != nil {
-			slog.Warn("goal_control: sanitize input middleware init failed, skip",
-				"error", mwErr)
-		}
-	}
 
 	// 7a. Handoff fallback API key (2026-07-11, handoff self-call fix).
 	chatHandler.SetHandoffFallbackAPIKey(strings.TrimSpace(os.Getenv("LLM_GATEWAY_HANDOFF_FALLBACK_API_KEY")))
@@ -431,6 +415,59 @@ func buildSanitizeInputMiddleware(redisClient *redis.Client) (func(http.Handler)
 		return nil, err
 	}
 	return mw.Wrap, nil
+}
+
+// installSmartSaniGuard 在 chatHandler 上挂载 SmartSaniGuard 的请求侧
+// 中间件（输入脱敏）与响应侧占位符还原拦截器。
+//
+// 设计要点：
+//   - 仅依赖 Redis，与 DB / goal / audit / output_compliance 完全解耦
+//   - 因此可以在 bgDataPlaneOnly=true（纯数据面模式）下也启用，
+//     不被 initGoalControl 的 db!=nil gate 限制
+//   - 当 redisClient 为 nil 时为 no-op（不挂任何东西）
+//   - 输入中间件 + 还原拦截器同时挂上，二者缺一不可（中间件负责
+//     写 Redis map，还原拦截器负责读 Redis map + 还原响应）
+//
+// 入口：main.go 在调用 initGoalControl 之外单独调用本函数，
+//       bgDataPlaneOnly 与 !bgDataPlaneOnly 两个分支都会执行。
+func installSmartSaniGuard(chatHandler *streaming.ChatHandler, redisClient *redis.Client) {
+	if chatHandler == nil || redisClient == nil {
+		return
+	}
+
+	// 1. 输入侧中间件（chatHandler.ServeHTTP 入口处生效）
+	mwFn, mwErr := buildSanitizeInputMiddleware(redisClient)
+	if mwErr != nil || mwFn == nil {
+		slog.Warn("smart_sani_guard: input middleware init failed, skip request-side",
+			"error", mwErr)
+	} else {
+		chatHandler.SetSanitizeInputMiddleware(mwFn)
+		slog.Info("smart_sani_guard: input middleware wired")
+	}
+
+	// 2. 响应侧还原拦截器：把链挂到 chatHandler 已有的 response chain
+	//    之后（保证 output_compliance 先于 sanitize_restore 执行）。
+	restoreHook, restoreErr := buildSanitizeRestoreInterceptor(redisClient)
+	if restoreErr != nil || restoreHook == nil {
+		slog.Warn("smart_sani_guard: restore interceptor init failed, skip response-side",
+			"error", restoreErr)
+		return
+	}
+
+	// 把现有 chain + 还原拦截器重组成新 chain，保持插入顺序。
+	// chain.go.NewInterceptorChain 内部只是把切片存起来，不做其他副作用，
+	// 因此可以安全重建。
+	existing := chatHandler.ResponseInterceptorForWire()
+	if existing == nil {
+		// 无现有 chain（例如 data-plane 模式未注册 goal/audit），
+		// 单独创建一个只含 sanitize_restore 的 chain。
+		chatHandler.SetResponseInterceptor(response.NewInterceptorChain(restoreHook))
+	} else {
+		// 追加到现有 chain 末尾（在 output_compliance 之后）。
+		chatHandler.SetResponseInterceptor(response.NewInterceptorChain(append(existing.ListInterceptors(), restoreHook)...))
+	}
+	slog.Info("smart_sani_guard: restore interceptor wired",
+		"chain_length", len(existing.ListInterceptors())+1)
 }
 
 // buildGoalLLMCaller builds the LLMCaller used by completion detection + audit.

@@ -24,7 +24,7 @@ func NewVirtualFactory(db *sql.DB, quotaTracker *freeresource.QuotaTracker) *Vir
 }
 
 // Build 动态构建虚拟 combo 的候选池
-func (vf *VirtualFactory) Build(ctx context.Context, spec *AutoComboSpec, tenantID int64) (*VirtualCombo, error) {
+func (vf *VirtualFactory) Build(ctx context.Context, spec *AutoComboSpec, tenantID string) (*VirtualCombo, error) {
 	var candidates []Candidate
 
 	// 1. 加载已连接的免费凭据
@@ -59,7 +59,7 @@ func (vf *VirtualFactory) Build(ctx context.Context, spec *AutoComboSpec, tenant
 }
 
 // loadCredentialCandidates 加载凭据候选
-func (vf *VirtualFactory) loadCredentialCandidates(ctx context.Context, spec *AutoComboSpec, tenantID int64) ([]Candidate, error) {
+func (vf *VirtualFactory) loadCredentialCandidates(ctx context.Context, spec *AutoComboSpec, tenantID string) ([]Candidate, error) {
 	query := `
         SELECT 
             c.id AS credential_id,
@@ -115,7 +115,7 @@ func (vf *VirtualFactory) loadCredentialCandidates(ctx context.Context, spec *Au
 }
 
 // loadKeylessCandidates 加载 keyless 候选
-func (vf *VirtualFactory) loadKeylessCandidates(ctx context.Context, spec *AutoComboSpec, tenantID int64) ([]Candidate, error) {
+func (vf *VirtualFactory) loadKeylessCandidates(ctx context.Context, spec *AutoComboSpec, tenantID string) ([]Candidate, error) {
 	query := `
         SELECT 
             kp.provider_code,
@@ -162,7 +162,7 @@ func (vf *VirtualFactory) loadKeylessCandidates(ctx context.Context, spec *AutoC
 }
 
 // filterByQuota 配额预检过滤
-func (vf *VirtualFactory) filterByQuota(ctx context.Context, candidates []Candidate, tenantID int64) []Candidate {
+func (vf *VirtualFactory) filterByQuota(ctx context.Context, candidates []Candidate, tenantID string) []Candidate {
 	filtered := make([]Candidate, 0, len(candidates))
 
 	for _, c := range candidates {

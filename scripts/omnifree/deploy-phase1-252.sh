@@ -10,8 +10,14 @@ echo "🚀 OmniFree Phase 1 部署脚本"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 echo ""
 
-# 设置数据库连接
-export DB_252="postgres://kxuser:kxuser123@172.16.2.210:5432/llm_gateway?sslmode=disable"
+# 必须从环境变量读取数据库连接，不允许硬编码凭据
+if [ -z "$OMNIFREE_DATABASE_URL" ]; then
+    echo "❌ 错误: 必须设置环境变量 OMNIFREE_DATABASE_URL"
+    echo "   示例: export OMNIFREE_DATABASE_URL='postgres://user:pass@host:port/db?sslmode=disable'"
+    exit 1
+fi
+
+DB_252="$OMNIFREE_DATABASE_URL"
 
 echo "📋 Phase 1 部署步骤："
 echo "  1. 测试数据库连接"
@@ -26,7 +32,7 @@ echo ""
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 echo "📡 Step 1: 测试数据库连接..."
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-if ! psql $DB_252 -c "SELECT version();" > /dev/null 2>&1; then
+if ! psql "$DB_252" -c "SELECT version();" > /dev/null 2>&1; then
     echo "❌ 数据库连接失败！"
     echo "   请检查："
     echo "   - 网络连接是否正常"
@@ -61,7 +67,7 @@ echo ""
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 echo "🗄️  Step 3: 执行数据库迁移..."
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-if ! psql $DB_252 -f sql/migrations/075-omnifree-schema.sql; then
+if ! psql "$DB_252" -v ON_ERROR_STOP=1 -f sql/migrations/075-omnifree-schema.sql; then
     echo "❌ 数据库迁移失败！"
     echo "   查看上方错误信息进行排查"
     echo "   如需回滚，执行: psql \$DB_252 -f sql/migrations/075-omnifree-schema.down.sql"
@@ -72,7 +78,7 @@ echo ""
 
 # 验证表创建
 echo "🔍 验证表创建..."
-TABLE_COUNT=$(psql $DB_252 -tAc "
+TABLE_COUNT=$(psql "$DB_252" -tAc "
   SELECT COUNT(*) 
   FROM information_schema.tables 
   WHERE table_name IN ('free_resource_catalog', 'free_quota_tracker', 
@@ -121,11 +127,11 @@ echo "✅ Step 6: 验证数据完整性..."
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
 # 验证免费资源
-RESOURCE_COUNT=$(psql $DB_252 -tAc "SELECT COUNT(*) FROM free_resource_catalog WHERE enabled=TRUE;")
+RESOURCE_COUNT=$(psql "$DB_252" -tAc "SELECT COUNT(*) FROM free_resource_catalog WHERE enabled=TRUE;")
 echo "📊 免费资源数量: $RESOURCE_COUNT (预期: 15)"
 
 # 验证配额总量
-MONTHLY_QUOTA=$(psql $DB_252 -tAc "
+MONTHLY_QUOTA=$(psql "$DB_252" -tAc "
   SELECT ROUND(SUM(monthly_tokens)/1000000000.0, 2)
   FROM free_resource_catalog 
   WHERE free_type='recurring-monthly' AND enabled=TRUE;
@@ -133,18 +139,18 @@ MONTHLY_QUOTA=$(psql $DB_252 -tAc "
 echo "📊 月度配额总量: ${MONTHLY_QUOTA}B tokens (预期: ~1.27B)"
 
 # 验证 Auto Combo
-TEMPLATE_COUNT=$(psql $DB_252 -tAc "SELECT COUNT(*) FROM auto_combo_templates WHERE enabled=TRUE;")
+TEMPLATE_COUNT=$(psql "$DB_252" -tAc "SELECT COUNT(*) FROM auto_combo_templates WHERE enabled=TRUE;")
 echo "📊 Auto Combo 模板: $TEMPLATE_COUNT (预期: 6)"
 
 # 验证 Keyless
-KEYLESS_COUNT=$(psql $DB_252 -tAc "SELECT COUNT(*) FROM keyless_providers WHERE enabled=TRUE;")
+KEYLESS_COUNT=$(psql "$DB_252" -tAc "SELECT COUNT(*) FROM keyless_providers WHERE enabled=TRUE;")
 echo "📊 Keyless 提供商: $KEYLESS_COUNT (预期: 3)"
 
 echo ""
 
 # 验证 ToS 分布
 echo "📊 ToS 合规分布:"
-psql $DB_252 -c "
+psql "$DB_252" -c "
   SELECT tos_verdict, COUNT(*) as count
   FROM free_resource_catalog 
   WHERE enabled=TRUE 

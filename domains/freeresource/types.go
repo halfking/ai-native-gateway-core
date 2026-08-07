@@ -57,7 +57,7 @@ type RecordRequest struct {
 	TokenCount   int64
 	Success      bool
 	WindowTypes  []WindowType
-	TenantID     int64
+	TenantID     string
 	Timestamp    time.Time
 }
 
@@ -67,7 +67,7 @@ type CorrectionRequest struct {
 	ProviderCode string
 	ModelID      string
 	Headers      map[string]string // HTTP响应头
-	TenantID     int64
+	TenantID     string
 }
 
 // PreflightRequest 配额预检请求参数
@@ -78,7 +78,7 @@ type PreflightRequest struct {
 	WindowType      WindowType
 	DefaultLimit    int64
 	MinRemainingPct float64 // 最少剩余百分比（如0.1表示10%）
-	TenantID        int64
+	TenantID        string
 }
 
 // FreeResourceEntry 免费资源目录条目
@@ -95,5 +95,5 @@ type FreeResourceEntry struct {
 	ToSVerdict    ToSVerdict
 	ToSNotes      string
 	Enabled       bool
-	TenantID      int64
+	TenantID      string
 }

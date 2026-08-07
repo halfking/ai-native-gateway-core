@@ -462,3 +462,394 @@ func TestSanitizeInputMiddleware_Sanitized_ContentLengthSynced(t *testing.T) {
 	assert.NotContains(t, string(got), "13800138000", "敏感信息应已替换")
 	assert.Equal(t, int64(len(got)), gotLen, "ContentLength 必须与改写后的 body 一致")
 }
+
+// ── 2026-08-07 回归：role 过滤 + 未知占位符 mask（Bug#2）───────────
+
+// TestSanitizeInputMiddleware_NonUserNonSystemRolesSkipped
+// assistant / tool / function 角色的消息不应被脱敏（属于上游生成）。
+func TestSanitizeInputMiddleware_NonUserNonSystemRolesSkipped(t *testing.T) {
+	rdb := setupSaniGuardRedis(t)
+	s, err := NewSanitizer(NewPatternDetector())
+	require.NoError(t, err)
+	mw, err := NewSanitizeInputMiddleware(s, rdb, 30*time.Minute)
+	require.NoError(t, err)
+
+	original := `{"model":"gpt-4","messages":[
+		{"role":"user","content":"hi"},
+		{"role":"assistant","content":"我的手机号是13800138000"},
+		{"role":"tool","content":"call result, my email is foo@bar.com"}
+	]}`
+
+	var got []byte
+	handler := mw.Wrap(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got, _ = io.ReadAll(r.Body)
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	req := httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(original))
+	req.Header.Set("X-Gw-Session-Id", "sess-role-skip")
+	handler.ServeHTTP(httptest.NewRecorder(), req)
+
+	gotStr := string(got)
+	assert.Contains(t, gotStr, `"role":"assistant","content":"我的手机号是13800138000"`,
+		"assistant 消息不应被改动")
+	assert.Contains(t, gotStr, `"role":"tool","content":"call result, my email is foo@bar.com"`,
+		"tool 消息不应被改动")
+	assert.NotContains(t, gotStr, "{SENSITIVE:", "不应产出占位符")
+}
+
+// TestRestoreResponseBody_NonAssistantRole_UnknownPlaceholderMasked
+// 非 assistant role 的响应消息若含未知占位符（sm 找不到），
+// 必须 mask 而非透传 — 防止上游注入的 raw placeholder 泄漏给客户端。
+//
+// 注：sm 中已知的占位符在非 assistant role 下也会还原（统一
+// RestoreOutputOrMask），因为那代表真实值。
+func TestRestoreResponseBody_NonAssistantRole_UnknownPlaceholderMasked(t *testing.T) {
+	rdb := setupSaniGuardRedis(t)
+	s, err := NewSanitizer(NewPatternDetector())
+	require.NoError(t, err)
+	it, err := NewSanitizeRestoreInterceptor(s, rdb, 30*time.Minute)
+	require.NoError(t, err)
+
+	// 准备映射表：phone:1 → 13800138000（email:99 不在 sm）
+	ctx := context.Background()
+	require.NoError(t, rdb.HSet(ctx, SanitizeRedisKey("sess-mask"),
+		"{SENSITIVE:phone:1}", "13800138000").Err())
+
+	// 响应体中含 role=tool 的消息，文本里同时有已知占位符与未知占位符
+	body := []byte(`{
+		"id":"chatcmpl-x",
+		"choices":[{
+			"message":{"role":"tool","content":"phone {SENSITIVE:phone:1} mail {SENSITIVE:email:99}"}
+		}]
+	}`)
+
+	result, err := it.InterceptNonStream(ctx, &response.InterceptRequest{
+		SessionID:    "sess-mask",
+		ResponseBody: body,
+	})
+	require.NoError(t, err)
+	require.NotNil(t, result, "tool role 应被处理而非跳过")
+
+	var resp struct {
+		Choices []struct {
+			Message struct {
+				Role    string `json:"role"`
+				Content string `json:"content"`
+			} `json:"message"`
+		} `json:"choices"`
+	}
+	require.NoError(t, json.Unmarshal(result.ModifiedBody, &resp))
+
+	msg := resp.Choices[0].Message
+	assert.Equal(t, "tool", msg.Role)
+	assert.Contains(t, msg.Content, "13800138000",
+		"已知占位符应还原（无论 role）")
+	assert.NotContains(t, msg.Content, "{SENSITIVE:email:99}",
+		"未知占位符必须被 mask，不能泄漏给客户端")
+	assert.Contains(t, msg.Content, "[REDACTED]",
+		"未知占位符的 mask 文本")
+}
+
+// TestRestoreResponseBody_UnknownPlaceholderMasked
+// 映射表中不存在的占位符，response 里出现时必须 mask，
+// 不能让 {SENSITIVE:phone:99} 这种 raw 占位符泄漏到客户端。
+func TestRestoreResponseBody_UnknownPlaceholderMasked(t *testing.T) {
+	rdb := setupSaniGuardRedis(t)
+	s, err := NewSanitizer(NewPatternDetector())
+	require.NoError(t, err)
+	it, err := NewSanitizeRestoreInterceptor(s, rdb, 30*time.Minute)
+	require.NoError(t, err)
+
+	ctx := context.Background()
+	// 只放 phone:1
+	require.NoError(t, rdb.HSet(ctx, SanitizeRedisKey("sess-unknown"),
+		"{SENSITIVE:phone:1}", "13800138000").Err())
+
+	body := []byte(`{
+		"id":"chatcmpl-y",
+		"choices":[{
+			"message":{
+				"role":"assistant",
+				"content":"你的手机号是 {SENSITIVE:phone:1}，邮箱 {SENSITIVE:email:99}"
+			}
+		}]
+	}`)
+
+	result, err := it.InterceptNonStream(ctx, &response.InterceptRequest{
+		SessionID:    "sess-unknown",
+		ResponseBody: body,
+	})
+	require.NoError(t, err)
+	require.NotNil(t, result)
+
+	var resp struct {
+		Choices []struct {
+			Message struct {
+				Content string `json:"content"`
+			} `json:"message"`
+		} `json:"choices"`
+	}
+	require.NoError(t, json.Unmarshal(result.ModifiedBody, &resp))
+	content := resp.Choices[0].Message.Content
+	assert.Contains(t, content, "13800138000", "已知占位符应还原")
+	assert.NotContains(t, content, "{SENSITIVE:email:99}",
+		"未知占位符必须被 mask，不能透传")
+	assert.Contains(t, content, "[REDACTED]", "未知占位符的 mask 文本")
+}
+
+// ── 2026-08-07 回归：offset key 拆 key 修复（Bug#4）──────────────────
+
+// TestSanitizeInputMiddleware_MultiRound_OffsetKeyAccumulation
+// 跨多轮请求，每类的 offset 必须单调递增（避免占位符撞号 / 覆盖）。
+// Bug#4 修复后：offset 存在独立 key session:{sid}:sanitize:offsets，
+// 不再依赖扫整个 sanitize map 推导。
+func TestSanitizeInputMiddleware_MultiRound_OffsetKeyAccumulation(t *testing.T) {
+	rdb := setupSaniGuardRedis(t)
+	s, err := NewSanitizer(NewPatternDetector())
+	require.NoError(t, err)
+	mw, err := NewSanitizeInputMiddleware(s, rdb, 30*time.Minute)
+	require.NoError(t, err)
+
+	var lastBody []byte
+	handler := mw.Wrap(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		lastBody, _ = io.ReadAll(r.Body)
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	send := func(content string) {
+		req := httptest.NewRequest("POST", "/v1/chat/completions",
+			strings.NewReader(`{"model":"gpt-4","messages":[{"role":"user","content":"`+content+`"}]}`))
+		req.Header.Set("X-Gw-Session-Id", "sess-offset-1")
+		handler.ServeHTTP(httptest.NewRecorder(), req)
+	}
+
+	// 第 1 轮：1 个 phone
+	send("我的手机号是13800138000")
+	body1 := string(lastBody)
+	assert.Contains(t, body1, "{SENSITIVE:phone:1}", "第 1 轮应是 phone:1")
+
+	// 第 2 轮：再 1 个 phone（不同号码）→ 应是 phone:2
+	send("另一个手机13900139000")
+	body2 := string(lastBody)
+	assert.Contains(t, body2, "{SENSITIVE:phone:2}", "第 2 轮应是 phone:2（不撞号）")
+
+	// 第 3 轮：1 个 email → 应是 email:1（独立计数，phone 不递增）
+	send("我的邮箱是 foo@bar.com")
+	body3 := string(lastBody)
+	assert.Contains(t, body3, "{SENSITIVE:email:1}", "第 3 轮 email 应是 email:1")
+	assert.NotContains(t, body3, "{SENSITIVE:phone:",
+		"第 3 轮没出现 phone，phone 编号不应增加")
+
+	// 验证 offset key 单独存在，且字段正确
+	ctx := context.Background()
+	offsets, err := rdb.HGetAll(ctx, SanitizeOffsetRedisKey("sess-offset-1")).Result()
+	require.NoError(t, err)
+	assert.Equal(t, "2", offsets["phone"], "phone offset 应累计到 2（第 3 轮无 phone）")
+	assert.Equal(t, "1", offsets["email"], "email offset 应为 1")
+
+	// 验证主 map 里有 2 个 phone + 1 个 email
+	mapVals, err := rdb.HGetAll(ctx, SanitizeRedisKey("sess-offset-1")).Result()
+	require.NoError(t, err)
+	assert.Len(t, mapVals, 3, "主 map 应有 3 个占位符")
+}
+
+// ── 2026-08-07 文档化：流式响应还原限制 ────────────────────────────
+
+// TestSanitizeRestoreInterceptor_StreamChunk_TransparentPassThrough
+// 流式 chunk-level 拦截本 PR 不实现还原（chatHandler 流式路径未接入
+// InterceptorChain.InterceptStreamChunk），必须以透明透传保证不影响
+// 流式响应。任何修改 chunk 内容的尝试都是 bug。
+func TestSanitizeRestoreInterceptor_StreamChunk_TransparentPassThrough(t *testing.T) {
+	rdb := setupSaniGuardRedis(t)
+	s, err := NewSanitizer(NewPatternDetector())
+	require.NoError(t, err)
+	it, err := NewSanitizeRestoreInterceptor(s, rdb, 30*time.Minute)
+	require.NoError(t, err)
+
+	chunk := []byte(`data: {"id":"chatcmpl-x","choices":[{"delta":{"content":"hello {SENSITIVE:phone:1}"}}]}`)
+
+	result, err := it.InterceptStreamChunk(context.Background(), chunk, &response.StreamMeta{
+		SessionID: "sess-stream",
+	})
+	require.NoError(t, err)
+	// 当前 PR 文档承诺流式 chunk 透传；任何修改都是 bug
+	assert.Nil(t, result, "流式 chunk 必须透传（本 PR 限制，参见 smart_sani_guard.go 注释）")
+}
+
+// TestSanitizeRestoreInterceptor_StreamEnd_RecoversAuditBody
+// InterceptStreamEnd 对持久化/观测层的 body 做还原；
+// 不返回 ModifiedBody（end-result 接口没有该字段），
+// 但 action/metadata 用于审计可见性。
+func TestSanitizeRestoreInterceptor_StreamEnd_RecoversAuditBody(t *testing.T) {
+	rdb := setupSaniGuardRedis(t)
+	s, err := NewSanitizer(NewPatternDetector())
+	require.NoError(t, err)
+	it, err := NewSanitizeRestoreInterceptor(s, rdb, 30*time.Minute)
+	require.NoError(t, err)
+
+	ctx := context.Background()
+	require.NoError(t, rdb.HSet(ctx, SanitizeRedisKey("sess-stream-end"),
+		"{SENSITIVE:phone:1}", "13800138000").Err())
+
+	// stream-end 时 streamCapture 已重组为完整 body
+	meta := &response.StreamMeta{
+		SessionID:    "sess-stream-end",
+		ResponseBody: []byte(`{"choices":[{"message":{"role":"assistant","content":"your phone is {SENSITIVE:phone:1}"}}]}`),
+	}
+
+	result, err := it.InterceptStreamEnd(ctx, meta)
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	assert.Equal(t, "sanitize_restore", result.Action)
+	assert.NotNil(t, result.Metadata)
+}
+
+// ── 2026-08-07 回归：sessionID header 优先级（与 chatHandler 对齐）───
+
+// TestSanitizeInputMiddleware_AlternativeSessionHeaders
+// 客户端如果使用 X-Conversation-Id / X-Chat-Session-Id / X-Thread-Id
+// 作为 sessionID header（这些是 chatHandler 默认支持的候选），
+// 中间件也必须能识别，并写入对应的 Redis key。
+// Bug：之前中间件只读 X-Gw-Session-Id / X-Session-Id 两个 header，
+// 导致使用替代 header 的客户端脱敏后无法被还原。
+func TestSanitizeInputMiddleware_AlternativeSessionHeaders(t *testing.T) {
+	rdb := setupSaniGuardRedis(t)
+	s, err := NewSanitizer(NewPatternDetector())
+	require.NoError(t, err)
+	mw, err := NewSanitizeInputMiddleware(s, rdb, 30*time.Minute)
+	require.NoError(t, err)
+
+	cases := []struct {
+		name   string
+		header string
+		value  string
+	}{
+		{"X-Gw-Session-Id", "X-Gw-Session-Id", "session-A"},
+		{"X-Session-Id", "X-Session-Id", "session-B"},
+		{"X-Conversation-Id", "X-Conversation-Id", "session-C"},
+		{"X-Chat-Session-Id", "X-Chat-Session-Id", "session-D"},
+		{"X-Thread-Id", "X-Thread-Id", "session-E"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			handler := mw.Wrap(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.WriteHeader(http.StatusOK)
+			}))
+			req := httptest.NewRequest("POST", "/v1/chat/completions",
+				strings.NewReader(`{"model":"gpt-4","messages":[{"role":"user","content":"我的手机号是13800138000"}]}`))
+			req.Header.Set("Content-Type", "application/json")
+			req.Header.Set(tc.header, tc.value)
+			handler.ServeHTTP(httptest.NewRecorder(), req)
+
+			// 验证 Redis key 用的是 header 里的 sessionID
+			key := SanitizeRedisKey(tc.value)
+			vals, err := rdb.HGetAll(context.Background(), key).Result()
+			require.NoError(t, err)
+			assert.Contains(t, vals, "{SENSITIVE:phone:1}",
+				"header=%s 应被识别为 sessionID 并写入 Redis", tc.header)
+			assert.Equal(t, "13800138000", vals["{SENSITIVE:phone:1}"])
+		})
+	}
+}
+
+// TestSanitizeInputMiddleware_SessionHeaderPriority
+// 当多个 sessionID header 同时存在时，应按 X-Gw-Session-Id >
+// X-Session-Id > X-Conversation-Id > X-Chat-Session-Id > X-Thread-Id
+// 的顺序取最高优先级（与 chatHandler SessionHeadersPriority 一致）。
+func TestSanitizeInputMiddleware_SessionHeaderPriority(t *testing.T) {
+	rdb := setupSaniGuardRedis(t)
+	s, err := NewSanitizer(NewPatternDetector())
+	require.NoError(t, err)
+	mw, err := NewSanitizeInputMiddleware(s, rdb, 30*time.Minute)
+	require.NoError(t, err)
+
+	handler := mw.Wrap(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	// 同时设 5 个 header — 应优先用 X-Gw-Session-Id
+	req := httptest.NewRequest("POST", "/v1/chat/completions",
+		strings.NewReader(`{"model":"gpt-4","messages":[{"role":"user","content":"我的手机号是13800138000"}]}`))
+	req.Header.Set("X-Gw-Session-Id", "winner")
+	req.Header.Set("X-Session-Id", "loser-1")
+	req.Header.Set("X-Conversation-Id", "loser-2")
+	req.Header.Set("X-Chat-Session-Id", "loser-3")
+	req.Header.Set("X-Thread-Id", "loser-4")
+	handler.ServeHTTP(httptest.NewRecorder(), req)
+
+	winnerVals, err := rdb.HGetAll(context.Background(), SanitizeRedisKey("winner")).Result()
+	require.NoError(t, err)
+	assert.Contains(t, winnerVals, "{SENSITIVE:phone:1}", "X-Gw-Session-Id 应胜出")
+
+	for _, loser := range []string{"loser-1", "loser-2", "loser-3", "loser-4"} {
+		loserVals, err := rdb.HGetAll(context.Background(), SanitizeRedisKey(loser)).Result()
+		require.NoError(t, err)
+		assert.Empty(t, loserVals, "低优先级 header 不应被误用作 sessionID (loser=%s)", loser)
+	}
+}
+
+// ── 2026-08-07 回归：response chain append 行为（修复#1 依赖）────────
+
+// TestResponseChain_ListAndAppend_SafeCopy
+// 验证 InterceptorChain.ListInterceptors 返回副本（修改不影响原 chain），
+// 且可以基于返回的副本 + 还原拦截器重建一个等价的 chain。
+// 这是 installSmartSaniGuard 的核心依赖：append 到现有 chain 末尾。
+func TestResponseChain_ListAndAppend_SafeCopy(t *testing.T) {
+	outputCompliance := newFakeInterceptor("output_compliance")
+	restoreHook := newFakeInterceptor("sanitize_restore")
+
+	original := response.NewInterceptorChain(outputCompliance)
+	list := original.ListInterceptors()
+	require.Len(t, list, 1)
+	assert.Equal(t, "output_compliance", namedAs(list[0]),
+		"原 chain 应含 1 个 output_compliance")
+
+	// 修改 list 不应影响 original
+	list[0] = newFakeInterceptor("tampered")
+	list2 := original.ListInterceptors()
+	assert.Equal(t, "output_compliance", namedAs(list2[0]),
+		"ListInterceptors 必须返回独立副本（防止外部 mutate 内部状态）")
+
+	// 重建 chain：append 还原拦截器
+	expanded := response.NewInterceptorChain(append(original.ListInterceptors(), restoreHook)...)
+	expandedList := expanded.ListInterceptors()
+	require.Len(t, expandedList, 2, "append 后应有 2 个拦截器")
+	assert.Equal(t, "output_compliance", namedAs(expandedList[0]),
+		"原拦截器必须在最前面（output_compliance → sanitize_restore 顺序）")
+	assert.Equal(t, "sanitize_restore", namedAs(expandedList[1]),
+		"sanitize_restore 必须在 output_compliance 之后（用户要求'先安全检查再还原'）")
+}
+
+// namedAs 提取拦截器名（response.ResponseInterceptor 接口本身没有 Name()，
+// 需要类型断言；fakeInterceptor 实现 Name()）。
+func namedAs(it response.ResponseInterceptor) string {
+	if n, ok := it.(interface{ Name() string }); ok {
+		return n.Name()
+	}
+	return ""
+}
+
+// fakeInterceptor 测试用 ResponseInterceptor stub。
+type fakeInterceptor struct {
+	name string
+}
+
+func newFakeInterceptor(name string) response.ResponseInterceptor {
+	return &fakeInterceptor{name: name}
+}
+
+func (f *fakeInterceptor) Name() string { return f.name }
+
+func (f *fakeInterceptor) InterceptNonStream(_ context.Context, _ *response.InterceptRequest) (*response.InterceptResult, error) {
+	return nil, nil
+}
+
+func (f *fakeInterceptor) InterceptStreamChunk(_ context.Context, chunk []byte, _ *response.StreamMeta) (*response.ChunkResult, error) {
+	return nil, nil
+}
+
+func (f *fakeInterceptor) InterceptStreamEnd(_ context.Context, _ *response.StreamMeta) (*response.EndResult, error) {
+	return nil, nil
+}

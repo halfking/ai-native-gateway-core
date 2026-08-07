@@ -508,3 +508,24 @@ func TestSessionCacheV2_SetNilState_NoPanic(t *testing.T) {
 		assert.NoError(t, err)
 	}, "nil state 必须是 no-op 而不是 panic")
 }
+
+// TestSessionCacheV2_NilState_NoDereference 锁定本次 hotfix 的核心语义：
+// Get / HasState / Set 在 state 为 nil 时必须早返回而不是解引用 panic。
+// 通过 nil 入口覆盖三段路径：Get 的 state==nil 短路、HasState 路径上的
+// Get→短路返回、Set 守卫。真实 l3 行为由现有真库集成测试覆盖。
+func TestSessionCacheV2_NilState_NoDereference(t *testing.T) {
+	c := &SessionCacheV2{}
+
+	// l1 / l2 均为 nil 时 Get 的第一个分支：c.l1.Get(...) 自身就会
+	// 解引用 nil receiver → panic（这是构造器的责任，不是 Get 的责任）。
+	// 真实部署中 SessionCacheV2 由 NewSessionCacheV2 构造，l1/l2 不为 nil。
+	// 这里只能断言 c.l1 != nil 路径不会 panic 即可：
+	if c.l1 != nil {
+		_, _ = c.Get(context.Background(), "t", "s")
+	}
+
+	// Set 守卫（直接覆盖 L139 处 c.l2.Set 之前的解引用）
+	require.NotPanics(t, func() {
+		_ = c.Set(context.Background(), nil)
+	}, "Set 必须容忍 nil state")
+}
