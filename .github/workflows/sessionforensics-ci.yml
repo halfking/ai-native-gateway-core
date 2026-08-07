@@ -77,6 +77,41 @@ jobs:
       - name: Run RLS integration tests
         run: go test ./admin -run '^Test(RLS_|AssertSessionOwnerAccessInTx_RealDB)' -count=1 -v
 
+  gateway-session-v2:
+    # Integration tests for the Sessions V2 read path (OutboundBuilder,
+    # TurnReader) against a live PostgreSQL with migration 430 applied.
+    # Shares the TEST_DATABASE_URL secret with gateway-rls; the v2 test
+    # helper also accepts TEST_DB_URL for local runs.
+    name: Sessions V2 integration
+    runs-on: [self-hosted, postgresql-low-priv]
+    timeout-minutes: 15
+    env:
+      TEST_DATABASE_URL: ${{ secrets.TEST_DATABASE_URL }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.25'
+          cache: true
+
+      - name: Require database DSN
+        run: test -n "$TEST_DATABASE_URL"
+
+      - name: Verify migration 430 schema is present
+        # Fail loudly (rather than skip) if the CI DB lacks the V2 tables.
+        # A silent skip is how the V2 integration tests went unrun in CI
+        # before this job; this guard makes a missing schema a visible
+        # CI failure instead of a green-but-meaningless skip.
+        run: |
+          psql "$TEST_DATABASE_URL" -c "\d gateway.session_bodies" \
+            | grep -q "session_bodies" \
+            || { echo "gateway.session_bodies missing — apply migration 430 to the CI DB"; exit 1; }
+
+      - name: Run Sessions V2 integration tests
+        run: go test ./domains/session/v2 -run '_RealDB' -count=1 -v
+
   lint:
     name: Lint
     runs-on: ubuntu-latest
