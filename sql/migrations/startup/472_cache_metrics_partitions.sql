@@ -17,7 +17,9 @@
 --   Future partition lifecycle (daily drop) lives in
 --   scripts/partitions/migrate-default-to-monthly.sh per rule 33.
 --
--- Idempotent: IF NOT EXISTS guards; safe to re-run.
+-- Idempotent: pg_class name check (NOT regclass cast — `::regclass` raises
+--             "relation does not exist" instead of returning NULL on missing
+--             target, which would block the idempotency contract). Safe to re-run.
 --
 -- Rollback: DROP TABLE cache_metrics_default CASCADE (does not drop the
 --           already-applied migration 470 schema/constraints).
@@ -26,11 +28,15 @@ BEGIN;
 
 DO $$
 BEGIN
-  -- 1. Default partition — catches all writes until daily/monthly partitions exist
+  -- 1. Default partition — catches all writes until daily/monthly partitions exist.
+  --    Use pg_class.relname lookup (NOT ::regclass cast) so missing targets
+  --    return NULL (idempotent guard works) instead of ERROR.
   IF NOT EXISTS (
-    SELECT 1 FROM pg_inherits
-    WHERE inhparent = 'public.cache_metrics'::regclass
-      AND inhrelid = 'public.cache_metrics_default'::regclass
+    SELECT 1 FROM pg_inherits inh
+    JOIN pg_class c ON c.oid = inh.inhrelid
+    JOIN pg_class p ON p.oid = inh.inhparent
+    WHERE p.relname = 'cache_metrics' AND p.relnamespace = 'public'::regnamespace
+      AND c.relname = 'cache_metrics_default'
   ) THEN
     CREATE TABLE public.cache_metrics_default
       PARTITION OF public.cache_metrics DEFAULT;
@@ -39,9 +45,11 @@ BEGIN
 
   -- 2. Monthly partitions — 2026_08 (deploy month) + 2026_09 (next month)
   IF NOT EXISTS (
-    SELECT 1 FROM pg_inherits
-    WHERE inhparent = 'public.cache_metrics'::regclass
-      AND inhrelid = 'public.cache_metrics_2026_08'::regclass
+    SELECT 1 FROM pg_inherits inh
+    JOIN pg_class c ON c.oid = inh.inhrelid
+    JOIN pg_class p ON p.oid = inh.inhparent
+    WHERE p.relname = 'cache_metrics' AND p.relnamespace = 'public'::regnamespace
+      AND c.relname = 'cache_metrics_2026_08'
   ) THEN
     CREATE TABLE public.cache_metrics_2026_08
       PARTITION OF public.cache_metrics
@@ -50,9 +58,11 @@ BEGIN
   END IF;
 
   IF NOT EXISTS (
-    SELECT 1 FROM pg_inherits
-    WHERE inhparent = 'public.cache_metrics'::regclass
-      AND inhrelid = 'public.cache_metrics_2026_09'::regclass
+    SELECT 1 FROM pg_inherits inh
+    JOIN pg_class c ON c.oid = inh.inhrelid
+    JOIN pg_class p ON p.oid = inh.inhparent
+    WHERE p.relname = 'cache_metrics' AND p.relnamespace = 'public'::regnamespace
+      AND c.relname = 'cache_metrics_2026_09'
   ) THEN
     CREATE TABLE public.cache_metrics_2026_09
       PARTITION OF public.cache_metrics
@@ -62,13 +72,15 @@ BEGIN
 
   -- 3. Ensure indexes propagate to new partitions (PG auto-propagates parent
   --    indexes on partition creation, but explicit recreation here makes
-  --    the migration re-runnable after manual partition drops)
-  CREATE INDEX IF NOT EXISTS idx_cache_metrics_default_tenant_ts
-    ON public.cache_metrics_default (tenant_id, cache_layer, recorded_at DESC);
-  CREATE INDEX IF NOT EXISTS idx_cache_metrics_2026_08_event_type
-    ON public.cache_metrics_2026_08 (event_type, recorded_at DESC);
-  CREATE INDEX IF NOT EXISTS idx_cache_metrics_2026_09_event_type
-    ON public.cache_metrics_2026_09 (event_type, recorded_at DESC);
+  --    the migration re-runnable after manual partition drops).
+  --    CREATE INDEX IF NOT EXISTS will skip silently if the index already
+  --    exists (including when auto-propagated from the parent table).
+  EXECUTE 'CREATE INDEX IF NOT EXISTS idx_cache_metrics_default_tenant_ts
+           ON public.cache_metrics_default (tenant_id, cache_layer, recorded_at DESC)';
+  EXECUTE 'CREATE INDEX IF NOT EXISTS idx_cache_metrics_2026_08_event_type
+           ON public.cache_metrics_2026_08 (event_type, recorded_at DESC)';
+  EXECUTE 'CREATE INDEX IF NOT EXISTS idx_cache_metrics_2026_09_event_type
+           ON public.cache_metrics_2026_09 (event_type, recorded_at DESC)';
 END $$;
 
 COMMIT;
