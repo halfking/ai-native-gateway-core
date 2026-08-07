@@ -5,8 +5,8 @@
 //   - CacheSaveHook     → PhasePostResponse (PostResponse 阶段保存响应到缓存)
 //
 // 与旧 cache/ 包的关系：
-//   - 本包是新抽象（与 Hook Pipeline 对齐），不依赖旧 cache/semantic、cache/prefix、sessions/session_cache.go
-//   - 旧代码保持不变；未来如需彻底替换旧实现，由协调 Agent 决定迁移策略
+//   - 本包是新抽象（与 Hook Pipeline 对齐），不依赖旧 cache/* 或 sessions/session_cache.go
+//   - cache/prefix 保留（用于 prompt-cache 前缀稳定化）
 //   - 本包只定义 CacheKey/Entry/Store 接口和一个进程内 InMemoryStore 实现
 //
 // 多租户隔离：
