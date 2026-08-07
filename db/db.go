@@ -244,6 +244,12 @@ func (db *DB) applyMigrationsOnce(ctx context.Context) error {
 	if err := db.ensurePartitionAutovacuumSchema(migCtx); err != nil {
 		return err
 	}
+	// OmniFree schema (2026-08-07): 4 tables + extensions + RLS + triggers.
+	// Equivalent to sql/migrations/075-omnifree-schema.sql but idempotent
+	// and startup-safe.
+	if err := db.ensureOmniFreeSchema(migCtx); err != nil {
+		return err
+	}
 	// Dashboard views are derived data for the admin UI, not critical-path.
 	// A failure here logs a warning but does NOT block startup — the gateway
 	// must still serve traffic even if /probe-health renders empty.
