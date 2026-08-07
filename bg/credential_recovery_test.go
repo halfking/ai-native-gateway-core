@@ -335,6 +335,129 @@ func TestStalePeriodicExhaustedCleanupSQLGuards(t *testing.T) {
 	}
 }
 
+// TestSuspendedRecoverySQLGuard pins the 2026-08-07 P0 fix for
+// the credential-state deadlock. Production evidence:
+//
+//	cred 22 (zhipu-roocode-v2): quota_state='ok' but
+//	  availability_state='suspended' (status self-contradiction).
+//	cred 34 (zhima-1): quota_state='permanently_exhausted' +
+//	  availability_state='suspended', probe returns 200 healthy but
+//	  state cannot recover.
+//
+// Without 'suspended' in the recover() IN list AND the hard-quota
+// guard, the 60-second ticker is the only recovery path and it
+// silently skips these credentials — the loop is:
+//   1. Quota event writes suspended
+//   2. stale-cleanup clears quota → availability hangs suspended
+//   3. Admin force-enables → re-enters on next quota → loop
+//
+// The guard is mandatory (suspended can mean balance/permanent/
+// auth_revoked too) so the test enforces both:
+//
+//	availability_state IN (..., 'suspended')
+//	AND (
+//	    availability_state <> 'suspended'
+//	    OR COALESCE(quota_state, 'ok') NOT IN ('permanently_exhausted', 'balance_exhausted')
+//	)
+//
+// Without the guard, a true balance_exhausted credential would
+// auto-recover just because recover_at elapsed — that's the
+// permanently_exhausted cred-34 looping on its own. The guard
+// ensures balance/permanent must be flipped to 'ok' first (via
+// balance_quota_probe success path) before availability flips.
+func TestSuspendedRecoverySQLGuard(t *testing.T) {
+	src, err := os.ReadFile("credential_recovery.go")
+	if err != nil {
+		t.Fatalf("read source: %v", err)
+	}
+	body := string(src)
+	// (a) 'suspended' must be in the recover() availability_state whitelist.
+	pattern := regexp.MustCompile(`availability_state\s+IN\s*\([^)]*'suspended'[^)]*\)`)
+	if !pattern.MatchString(body) {
+		t.Fatalf("availability_state IN(...) clause does NOT include 'suspended' — 2026-08-07 P0 regression:\n%s",
+			extractSnippet(body, "availability_state"))
+	}
+	// (b) The hard-quota guard must be present (otherwise permanently_
+	// exhausted creds would auto-flip on availability_recover_at, the
+	// exact deadlock we are guarding against).
+	guardPattern := regexp.MustCompile(
+		`availability_state\s*<>\s*'suspended'\s*` +
+			`OR\s+COALESCE\(quota_state,\s*'ok'\)\s*NOT\s+IN\s*\(\s*'permanently_exhausted',\s*'balance_exhausted'\s*\)`,
+	)
+	if !guardPattern.MatchString(body) {
+		t.Fatalf("suspended recovery hard-quota guard missing — balance/permanent creds would auto-recover on availability_recover_at alone:\n%s",
+			extractSnippet(body, "suspended"))
+	}
+	// (c) Original whitelist states must still be present (no regression).
+	for _, s := range []string{"'cooling'", "'rate_limited'", "'unreachable'", "'auth_failed'"} {
+		if !strings.Contains(body, s) {
+			t.Fatalf("recovery whitelist lost %s — regression of pre-existing recovery path", s)
+		}
+	}
+}
+
+// TestStalePeriodicSyncAvailabilitySQLGuard pins the 2026-08-07 P0 fix
+// to stalePeriodicExhaustedCleanupSQL — when probe confirms healthy,
+// the SQL must clear availability_state='suspended' together with
+// quota_state. Otherwise credentials enter the
+// "quota='ok' but availability='suspended'" self-contradiction (cred 22
+// production snapshot), which is unroutable AND unrecoverable via any
+// auto path.
+//
+// Contract:
+//   - availability_state='suspended' is flipped to 'ready'
+//   - availability_recover_at is cleared (NULL)
+//   - non-suspended availability_state is left untouched
+func TestStalePeriodicSyncAvailabilitySQLGuard(t *testing.T) {
+	sql := stalePeriodicExhaustedCleanupSQL()
+	mustContain := []string{
+		// availability_state='suspended' → 'ready'
+		"availability_state      = CASE",
+		"WHEN availability_state = 'suspended' THEN 'ready'",
+		// availability_recover_at cleared when previously suspended
+		"availability_recover_at = CASE",
+		"WHEN availability_state = 'suspended' THEN NULL",
+	}
+	for _, want := range mustContain {
+		if !strings.Contains(sql, want) {
+			t.Fatalf("stalePeriodicExhaustedCleanupSQL missing %q — 2026-08-07 P0 regression:\n%s", want, sql)
+		}
+	}
+}
+
+// TestRecoverOrdering_AvailabilityBeforeQuota pins the 2026-08-07 P0
+// execution-order constraint: the 60s recover() tick must run the
+// availability recovery SQL BEFORE the quota recovery SQL.
+//
+// Why this matters: the new suspended-recovery guard checks
+// quota_state to refuse auto-flip while quota is still hard-failed.
+// If the quota SQL runs first and clears periodic_exhausted → 'ok',
+// the subsequent availability SQL can no longer distinguish
+// "periodic whose recover_at just elapsed" from "originally ok" —
+// suspended credentials would lose their guard context and the
+// ticker could mis-fire on rows that should stay suspended.
+//
+// We assert by reading the source and checking that
+// `availability_state = 'ready'` (the SET target of the first UPDATE)
+// appears earlier in recover() than the string `quota_state = 'ok'`
+// (the SET target of the second UPDATE).
+func TestRecoverOrdering_AvailabilityBeforeQuota(t *testing.T) {
+	src, err := os.ReadFile("credential_recovery.go")
+	if err != nil {
+		t.Fatalf("read source: %v", err)
+	}
+	body := string(src)
+	availIdx := strings.Index(body, "availability_state = 'ready'")
+	quotaIdx := strings.Index(body, "quota_state = 'ok'")
+	if availIdx < 0 || quotaIdx < 0 {
+		t.Fatalf("could not locate both availability and quota SET targets in credential_recovery.go")
+	}
+	if availIdx >= quotaIdx {
+		t.Fatalf("availability recovery must run BEFORE quota recovery in recover(); got availability@%d quota@%d",
+			availIdx, quotaIdx)
+	}
+}
+
 // TestRecoverExpiredBindingsIgnoresBackoffState verifies that expired cmb rows
 // are eligible for recovery regardless of their node_probe_state.next_retry_at,
 // preventing indefinite strandings after transient failures.

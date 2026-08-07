@@ -1,6 +1,8 @@
 package bg
 
 import (
+	"os"
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -65,5 +67,49 @@ func TestClassifyProbeFailure_Network_Unreachable(t *testing.T) {
 	}
 	if pr.AvailabilityRecoverAt == nil {
 		t.Errorf("network error should set AvailabilityRecoverAt")
+	}
+}
+
+// TestWriteHealth_HardQuotaBypassOnSuccess pins the 2026-08-07 P0 fix
+// to writeHealth(). Production evidence (cred 34 zhima-1):
+//
+//	quota_state='permanently_exhausted' + availability_state='suspended'
+//	balance_quota_probe probes it every 2 min, returns 200 healthy,
+//	but the WHERE clause unconditionally filtered out hard-quota
+//	credentials → 0 rows affected → permanent deadlock.
+//
+// New contract: a successful probe (writing quota_state='ok') MUST
+// bypass the hard-quota guard. The probe's 200 response is fresher
+// evidence than the historical quota_state (which records "exhausted
+// at probe time T0"); once we see a healthy response at T1, we must
+// allow the flip regardless of quota_state's history.
+//
+// Conversely, a failed probe (writing quota_state='permanently_exhausted'
+// or NULL) MUST still be filtered for hard-quota credentials so we
+// don't accidentally clear their state on transient errors.
+//
+// We assert this by reading the source and verifying the WHERE guard
+// uses an OR with the probe-success branch.
+func TestWriteHealth_HardQuotaBypassOnSuccess(t *testing.T) {
+	src, err := os.ReadFile("credential_probe_v2.go")
+	if err != nil {
+		t.Fatalf("read source: %v", err)
+	}
+	body := string(src)
+	// The bypass clause: probe success ($8='ok') OR not a hard-quota cred.
+	pattern := regexp.MustCompile(
+		`COALESCE\(\$8,\s*''\)\s*=\s*'ok'\s*` +
+			`OR\s+quota_state\s+NOT\s+IN\s*\(\s*'permanently_exhausted',\s*'balance_exhausted'\s*\)`,
+	)
+	if !pattern.MatchString(body) {
+		t.Fatalf("writeHealth hard-quota guard missing OR-bypass for probe success — 2026-08-07 P0 regression")
+	}
+	// Tolerant negative: the OLD unconditional quota_state NOT IN(...)
+	// must no longer be the entire WHERE clause (without the OR-bypass).
+	oldPattern := regexp.MustCompile(
+		`AND\s+quota_state\s+NOT\s+IN\s*\(\s*'permanently_exhausted',\s*'balance_exhausted'\s*\)`,
+	)
+	if oldPattern.MatchString(body) {
+		t.Fatalf("writeHealth still has unconditional hard-quota guard without OR-bypass — deadlock regression")
 	}
 }
