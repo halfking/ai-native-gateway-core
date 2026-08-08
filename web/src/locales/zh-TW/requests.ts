@@ -59,6 +59,10 @@ export default {
     },
     filter: {
       keyAll: '全部 Key',
+      providerTitle: '供應商',
+      providerAll: '全部供應商',
+      credentialTitle: '憑據',
+      credentialAll: '全部憑據',
       timeTitle: '時間範圍',
       timeOptions: {
         h1: '1小時',
@@ -66,7 +70,21 @@ export default {
         h24: '24小時',
         d3: '3天',
         d7: '7天',
+        // 2026-08-09: 自然日曆 preset
+        today: '今天',
+        thisWeek: '本週',
+        thisMonth: '本月',
+        thisYear: '今年',
+        custom: '自訂',
       },
+      // 2026-08-09: stats-overview + stats-grid 細分標籤
+      inputTokenLabel: '輸入 token',
+      outputTokenLabel: '輸出 token',
+      cacheReadLabel: '緩存讀 token',
+      cacheWriteLabel: '緩存寫 token',
+      costLabel: '成本 USD',
+      resetTime: '重置時間範圍',
+      timeReset: '重置',
       resultTitle: '結果',
       resultAll: '全部',
       resultInProgress: '請求中',
@@ -165,6 +183,15 @@ export default {
       summaryHeading: '## 摘要',
       keyPointsHeading: '## 關鍵要點',
     },
+    // 2026-08-09: 頂部突出顯示的 stats-overview 三聯概覽卡
+    stats: {
+      totalRequests: '總請求數',
+      totalTokens: '總 Token',
+      totalCredits: '總積分',
+      totalCreditsTitle: '當前過濾條件下全量命中列的積分合計',
+      scopeAll: '全量命中列 · 與分頁無關',
+    },
+    dateRangePlaceholder: '選擇開始 / 結束時間',
   },
   detail: {
     drawerTitle: '原始請求詳情',
