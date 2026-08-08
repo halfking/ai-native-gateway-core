@@ -250,7 +250,7 @@ func (w *Writer) WriteOnError(ctx context.Context, credentialID int, rawModel st
 			  AND lifecycle_status = 'active'
 		`, string(failure.Kind), detail, credentialID)
 		return err
-	case errorsx.KindConcurrent, errorsx.KindRateLimit, errorsx.KindTimeout, errorsx.KindUpstreamDown, errorsx.KindUpstreamOverloaded, errorsx.KindStreamTimeout:
+	case errorsx.KindConcurrent, errorsx.KindRateLimit, errorsx.KindTimeout, errorsx.KindUpstreamDown, errorsx.KindUpstreamOverloaded, errorsx.KindStreamTimeout, errorsx.KindNoAvailableChannel:
 		// Per-model kind. Update the specific (credential, model) binding
 		// in BOTH cmb (production router) and model_offers (/api/routing/
 		// resolve "test route" + admin UI). Sibling models on the same
@@ -398,6 +398,14 @@ func coolingDuration(kind errorsx.ErrorKind, retryAfter time.Duration) time.Dura
 	case errorsx.KindRateLimit:
 		// 15 minutes cooling for rate limit errors (unless upstream provides retry_after)
 		return 900 * time.Second
+	case errorsx.KindNoAvailableChannel:
+		// 2026-08-09: distributor group has no channel for this model. 15
+		// minutes gives the group time to restore its channel without holding
+		// the (credential, model) binding out of v_routable for the repeated
+		// 5-minute concurrent window that re-hammered the same broken node
+		// (server-154 incident). credentialstate's active probe (consecutive
+		// >= 2) flips the binding back sooner once the channel is healthy.
+		return 15 * time.Minute
 	case errorsx.KindStreamTimeout:
 		// 2026-07-09 修正（问题2 - NVIDIA NIM 流式无反馈长时间未熔断）：
 		// 流式无反馈（first_byte_timeout / stream_timeout / EOF-without-DONE）
