@@ -24,6 +24,7 @@ const autoRouteMagicExact = "auto"
 // ErrOmniFreeNoCandidates 是 resolveOmniFreeCandidates 在以下场景返回的 sentinel:
 //   - spec 解析成功 (catalog/template 命中了用户的 auto/* 路由)
 //   - 但经过 catalog 匹配、配额预检、模型过滤后, 没有可执行候选
+//
 // (例如: 全部免费资源今日配额耗尽, 或模型被过滤规则剔出).
 //
 // 这与 spec=nil (路由未命中) 不同 — 后者意味着 OmniFree 不接管, 由
@@ -292,7 +293,7 @@ func (h *ChatHandler) recordOmniFreeQuota(
 	//
 	// round 4 L5: 同时接入 OmniFreeAutoSuccessTotal (成功计数).
 	if success {
-		metrics.OmniFreeAutoSuccessTotal.WithLabelValues(clientModel, tenantID).Inc()
+		metrics.OmniFreeAutoSuccessTotal.WithLabelValues(tenantID).Inc()
 	}
 	for _, wt := range windowTypes {
 		metrics.OmniFreeQuotaRecordsTotal.WithLabelValues(string(wt), strconv.FormatBool(success)).Inc()
