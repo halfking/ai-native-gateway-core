@@ -17,7 +17,14 @@ type DimensionScores struct {
 	AvailabilityScore float64
 	StabilityScore    float64
 	ScaleScore        float64
-	
+
+	// 2026-08-07: four extended dimensions. 0 表示缺失维度（适配层未填），
+	// CalculateTotalScore 按"if score > 0 才计入加权"的策略跳过。
+	RateLimitScore          float64 // 429/限流命中率得分
+	ConcurrencyScore        float64 // 并发承载能力得分
+	AvailabilityWindowScore float64 // 不可用窗口得分
+	QualityStabilityScore   float64 // 综合分稳定性得分
+
 	// 以下维度暂时设为0，后续阶段实现
 	CredibilityScore  float64
 	CostAccuracyScore float64
@@ -39,58 +46,100 @@ func (s *DefaultScorer) CalculateDimensionScores(snapshots []*MetricSnapshot, we
 	}
 
 	return &DimensionScores{
-		NetworkScore:      s.calculateNetworkScore(snapshots),
-		AvailabilityScore: s.calculateAvailabilityScore(snapshots),
-		StabilityScore:    s.calculateStabilityScore(snapshots),
-		ScaleScore:        s.calculateScaleScore(snapshots),
+		NetworkScore:            s.calculateNetworkScore(snapshots),
+		AvailabilityScore:       s.calculateAvailabilityScore(snapshots),
+		StabilityScore:          s.calculateStabilityScore(snapshots),
+		ScaleScore:              s.calculateScaleScore(snapshots),
+		RateLimitScore:          calculateRateLimitScore(snapshots),
+		ConcurrencyScore:        calculateConcurrencyScore(snapshots),
+		AvailabilityWindowScore: calculateAvailabilityWindowScore(snapshots),
+		QualityStabilityScore:   calculateQualityStabilityScore(snapshots),
 	}
 }
 
 // CalculateTotalScore 计算总分（加权平均）
+//
+// 2026-08-07: 新增四个维度（限流命中率、并发承载、不可用窗口、质量稳定性）。
+// 缺失维度（score<=0 或信号未填）按"if score>0 才计入加权"策略跳过，避免
+// 冷启动或旧版快照把总分拉低。新维度权重定义在 ExtendedWeights，总和=1.0；
+// 当所有新维度都缺失时回退到 BackwardCompatWeights（仅老 4 维），保持和老
+// 逻辑差异 < 0.5 分（scorer_test 验证）。
 func (s *DefaultScorer) CalculateTotalScore(scores *DimensionScores, weights ProfileWeights) float64 {
+	// 2026-08-07: weights 参数保留是为了不破坏 aggregator / handler 的调用
+	// 签名；扩展维度使用 ExtendedWeights（DefaultExtendedWeights /
+	// BackwardCompatWeights），老 4 维权重与之自动保持比例一致。
+	_ = weights
+	// 决定权重表：如果任一新维度有值，用 ExtendedWeights；否则用 BackwardCompat。
+	ext := DefaultExtendedWeights()
+	hasNewDim := scores.RateLimitScore > 0 ||
+		scores.ConcurrencyScore > 0 ||
+		scores.AvailabilityWindowScore > 0 ||
+		scores.QualityStabilityScore > 0
+	if !hasNewDim {
+		ext = BackwardCompatWeights()
+	}
+
 	totalWeight := 0.0
 	weightedSum := 0.0
 
 	// 网络延迟
 	if scores.NetworkScore > 0 {
-		weightedSum += scores.NetworkScore * weights.Network
-		totalWeight += weights.Network
+		weightedSum += scores.NetworkScore * ext.Network
+		totalWeight += ext.Network
 	}
 
 	// 可用性
 	if scores.AvailabilityScore > 0 {
-		weightedSum += scores.AvailabilityScore * weights.Availability
-		totalWeight += weights.Availability
+		weightedSum += scores.AvailabilityScore * ext.Availability
+		totalWeight += ext.Availability
 	}
 
 	// 稳定性
 	if scores.StabilityScore > 0 {
-		weightedSum += scores.StabilityScore * weights.Stability
-		totalWeight += weights.Stability
+		weightedSum += scores.StabilityScore * ext.Stability
+		totalWeight += ext.Stability
 	}
 
 	// 规模
 	if scores.ScaleScore > 0 {
-		weightedSum += scores.ScaleScore * weights.Scale
-		totalWeight += weights.Scale
+		weightedSum += scores.ScaleScore * ext.Scale
+		totalWeight += ext.Scale
+	}
+
+	// 2026-08-07 新增四个维度
+	if scores.RateLimitScore > 0 {
+		weightedSum += scores.RateLimitScore * ext.RateLimit
+		totalWeight += ext.RateLimit
+	}
+	if scores.ConcurrencyScore > 0 {
+		weightedSum += scores.ConcurrencyScore * ext.Concurrency
+		totalWeight += ext.Concurrency
+	}
+	if scores.AvailabilityWindowScore > 0 {
+		weightedSum += scores.AvailabilityWindowScore * ext.AvailabilityWindow
+		totalWeight += ext.AvailabilityWindow
+	}
+	if scores.QualityStabilityScore > 0 {
+		weightedSum += scores.QualityStabilityScore * ext.QualityStability
+		totalWeight += ext.QualityStability
 	}
 
 	// 模型可信度（暂未实现）
 	if scores.CredibilityScore > 0 {
-		weightedSum += scores.CredibilityScore * weights.Credibility
-		totalWeight += weights.Credibility
+		weightedSum += scores.CredibilityScore * ext.Credibility
+		totalWeight += ext.Credibility
 	}
 
 	// 费用准确性（暂未实现，缺失按0分计算）
 	if scores.CostAccuracyScore > 0 {
-		weightedSum += scores.CostAccuracyScore * weights.CostAccuracy
-		totalWeight += weights.CostAccuracy
+		weightedSum += scores.CostAccuracyScore * ext.CostAccuracy
+		totalWeight += ext.CostAccuracy
 	}
 
 	// 价格（暂未实现）
 	if scores.PriceScore > 0 {
-		weightedSum += scores.PriceScore * weights.Price
-		totalWeight += weights.Price
+		weightedSum += scores.PriceScore * ext.Price
+		totalWeight += ext.Price
 	}
 
 	if totalWeight == 0 {

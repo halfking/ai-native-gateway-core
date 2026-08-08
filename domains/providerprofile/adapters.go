@@ -117,9 +117,14 @@ func NewGatewayRequestAnalyzer(db *pgxpool.Pool) *GatewayRequestAnalyzer {
 }
 
 // AnalyzeRequests 分析最近N小时的请求统计
+//
+// 2026-08-07 audit fix: 之前只算成功率和错误类型分布，忽略限流命中和不可用
+// 窗口。补充两项：
+//   - RateLimitMetrics：429 命中次数 + 总请求，用于"限流命中率"维度
+//   - AvailabilityWindow：按 5 分钟桶聚合成功率，识别连续低成功率段
 func (a *GatewayRequestAnalyzer) AnalyzeRequests(ctx context.Context, credentialID int64, hours int) (*RequestStats, error) {
 	query := `
-		SELECT 
+		SELECT
 			COUNT(*) AS total_requests,
 			COUNT(*) FILTER (WHERE success) AS success_requests,
 			COUNT(*) FILTER (WHERE NOT success) AS error_count,
@@ -178,8 +183,116 @@ func (a *GatewayRequestAnalyzer) AnalyzeRequests(ctx context.Context, credential
 		}
 		stats.ErrorTypes[errorType] = count
 	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate error types: %w", err)
+	}
+
+	// 2026-08-07: 限流命中率（429）—— 单独聚合，避免被 ErrorTypes 的 5xx
+	// 前缀判断"埋掉"。
+	rlQuery := `
+		SELECT COUNT(*) FILTER (WHERE upstream_status_code = 429) AS rl_hits,
+		       COUNT(*) AS total
+		FROM request_logs_hot
+		WHERE credential_id = $1
+		  AND ts >= NOW() - INTERVAL '1 hour' * $2
+	`
+	var rlHits, rlTotal int
+	if err := a.db.QueryRow(ctx, rlQuery, credentialID, hours).Scan(&rlHits, &rlTotal); err != nil {
+		return nil, fmt.Errorf("query rate limit hits: %w", err)
+	}
+	rl := &RateLimitMetrics{
+		RateLimitHits: rlHits,
+		TotalRequests: rlTotal,
+	}
+	if rlTotal > 0 {
+		rl.HitsRatio = float64(rlHits) / float64(rlTotal)
+	}
+	stats.RateLimitMetrics = rl
+
+	// 2026-08-07: 不可用窗口（连续低成功率段）。按 5 分钟桶聚合成功率，
+	// 在 Go 端扫描找出连续 sr<90% 段。
+	window, err := a.BucketSuccessRates(ctx, credentialID, hours, 5)
+	if err != nil {
+		return nil, fmt.Errorf("query availability window: %w", err)
+	}
+	stats.AvailabilityWindow = window
 
 	return &stats, rows.Err()
+}
+
+// BucketSuccessRates 按指定分钟粒度聚合成功率，返回"不可用窗口"统计。
+//
+// DowntimeBucket 阈值：成功率 < 90%。文档里 "连续 5 分钟成功率 < 90% 视为
+// downtime" 的定义（供应商画像设计文档 §3.1.3）保持一致。
+func (a *GatewayRequestAnalyzer) BucketSuccessRates(
+	ctx context.Context,
+	credentialID int64,
+	hours int,
+	bucketSizeMin int,
+) (*AvailabilityWindow, error) {
+	if bucketSizeMin <= 0 {
+		bucketSizeMin = 5
+	}
+	query := `
+		SELECT
+		  FLOOR(EXTRACT(EPOCH FROM ts) / ($3 * 60)) * ($3 * 60) AS bucket_epoch,
+		  100.0 * COUNT(*) FILTER (WHERE success) / NULLIF(COUNT(*), 0) AS sr,
+		  COUNT(*) AS req
+		FROM request_logs_hot
+		WHERE credential_id = $1
+		  AND ts >= NOW() - INTERVAL '1 hour' * $2
+		GROUP BY 1
+		ORDER BY 1
+	`
+
+	rows, err := a.db.Query(ctx, query, credentialID, hours, bucketSizeMin)
+	if err != nil {
+		return nil, fmt.Errorf("query bucket success rates: %w", err)
+	}
+	defer rows.Close()
+
+	type bucketRow struct {
+		bucketEpoch int64
+		sr          float64
+		req         int
+	}
+	var buckets []bucketRow
+	for rows.Next() {
+		var b bucketRow
+		var sr *float64
+		if err := rows.Scan(&b.bucketEpoch, &sr, &b.req); err != nil {
+			return nil, fmt.Errorf("scan bucket row: %w", err)
+		}
+		if sr != nil {
+			b.sr = *sr
+		}
+		buckets = append(buckets, b)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate bucket rows: %w", err)
+	}
+
+	// 在 Go 端扫描连续 sr<90% 段。注意：sr<90 但 req=0 的桶（无请求）不计为
+	// downtime——空桶不能算"不可用"，否则冷启动的供应商都会被扣成 0 分。
+	window := &AvailabilityWindow{
+		TotalBuckets: len(buckets),
+	}
+	var run int
+	for _, b := range buckets {
+		if b.req > 0 && b.sr < 90.0 {
+			window.DowntimeBuckets++
+			run++
+			if run > window.LongestRun {
+				window.LongestRun = run
+			}
+		} else {
+			run = 0
+		}
+	}
+	if window.TotalBuckets > 0 {
+		window.DowntimeRatio = float64(window.DowntimeBuckets) / float64(window.TotalBuckets)
+	}
+	return window, nil
 }
 
 // GatewayScaleProvider 规模数据提供者适配器
@@ -195,18 +308,51 @@ func NewGatewayScaleProvider(db *pgxpool.Pool) *GatewayScaleProvider {
 }
 
 // GetModelScale 获取供应商的模型规模数据
+//
+// 2026-08-07 audit fix: 增加 ConcurrencyCapacity（来自 credentials 表的
+// concurrency_limit / concurrency_limit_auto）。这是新"并发承载能力"维度
+// 的数据源——之前的评分完全忽略了供应商的并发上限，导致容量不足的供应商
+// 与无限流的供应商获得相同的可用性评分。
 func (p *GatewayScaleProvider) GetModelScale(ctx context.Context, credentialID int64) (*ScaleData, error) {
-	// 首先获取 provider_id
+	// 首先获取 provider_id 与并发限制
 	var providerID int64
+	var concLimit, concLimitAuto *int
 	err := p.db.QueryRow(ctx, `
-		SELECT provider_id FROM credentials WHERE id = $1
-	`, credentialID).Scan(&providerID)
+		SELECT provider_id, concurrency_limit, concurrency_limit_auto
+		FROM credentials
+		WHERE id = $1
+	`, credentialID).Scan(&providerID, &concLimit, &concLimitAuto)
 	if err != nil {
-		return nil, fmt.Errorf("get provider_id: %w", err)
+		return nil, fmt.Errorf("get provider_id and concurrency: %w", err)
+	}
+
+	capacity := &ConcurrencyCapacity{}
+	if concLimit != nil {
+		capacity.ConcurrencyLimit = *concLimit
+	}
+	if concLimitAuto != nil {
+		capacity.ConcurrencyLimitAuto = *concLimitAuto
+	}
+	// EffLimit：auto 优先（auto 反映系统动态调整后的实际承载）
+	effLimit := 0
+	switch {
+	case capacity.ConcurrencyLimitAuto > 0:
+		effLimit = capacity.ConcurrencyLimitAuto
+	case capacity.ConcurrencyLimit > 0:
+		effLimit = capacity.ConcurrencyLimit
+	}
+	capacity.EffLimit = effLimit
+	// IsCapped：auto 被压低，说明曾因 503 触发降级（Tuner.decreaseConcurrency）
+	if capacity.ConcurrencyLimit > 0 && capacity.ConcurrencyLimitAuto > 0 && capacity.ConcurrencyLimitAuto < capacity.ConcurrencyLimit {
+		capacity.IsCapped = true
+	}
+	if effLimit == 0 {
+		// 未配置并发上限：标记缺失维度（scorer 看到 EffLimit=0 会给中性分）
+		capacity = nil
 	}
 
 	query := `
-		SELECT 
+		SELECT
 			COUNT(*) AS total_models,
 			COUNT(*) FILTER (WHERE available) AS available_models
 		FROM provider_models
@@ -215,6 +361,7 @@ func (p *GatewayScaleProvider) GetModelScale(ctx context.Context, credentialID i
 
 	var data ScaleData
 	data.ProviderID = providerID
+	data.ConcurrencyCapacity = capacity
 
 	err = p.db.QueryRow(ctx, query, providerID).Scan(
 		&data.TotalModels,
