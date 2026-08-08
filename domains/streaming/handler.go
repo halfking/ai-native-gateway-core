@@ -6497,9 +6497,16 @@ func classifyUpstreamCredentialFailure(kind errorsx.ErrorKind, upstreamStatus in
 
 // defaultOverloadRetryAfterSeconds is the client-facing wait advertised when
 // every candidate returned an overload-shaped 5xx and the upstream gave no
-// Retry-After of its own. Five seconds matches the recovery window observed
-// on the apiclaude.cc relay (2026-08-08: the same credential succeeded on a
-// retry ~10s later) without parking the caller for long.
+// Retry-After of its own. Five seconds is a conservative default that:
+//   - matches the few seconds the apiclaude.cc relay takes to clear a load
+//     spike (single sample at 2026-08-08: same credential succeeded on the
+//     retry ~9.6s after the 502; n=1, not a statistical claim);
+//   - is short enough that a retried caller is unlikely to hit the same
+//     overload window again, but long enough to absorb the per-credential
+//     backoff schedule (default 500ms * 2^attempt = 1s at attempt 1).
+//
+// If a tighter empirical value is needed, change this constant and rerun
+// the prewarmed / non-prewarmed overload tests in PrestreamExhaustion.
 const defaultOverloadRetryAfterSeconds = 5
 
 // overloadRetryAfterSeconds returns the Retry-After value, in seconds, for an
