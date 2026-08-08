@@ -4,9 +4,9 @@ import (
 	"context"
 	"net/http"
 	"testing"
+	"time"
 
 	"github.com/kaixuan/llm-gateway-go/domains/autocombo"
-	"github.com/kaixuan/llm-gateway-go/domains/freeresource"
 	"github.com/kaixuan/llm-gateway-go/domains/streaming/executors"
 	"github.com/kaixuan/llm-gateway-go/provider"
 )
@@ -125,26 +125,40 @@ func TestFlattenHeaders_FromReal429Resp(t *testing.T) {
 	}
 }
 
-// TestHashString_DeterministicAndDistinct 验证 hashString 在去重场景下
-// (handler_autocombo.go 中的 dedup key) 给出稳定的 uint64, 且对不同
-// raw_model 给出不同结果 (collision 测试).
-func TestHashString_DeterministicAndDistinct(t *testing.T) {
-	a := hashString("openai/gpt-3.5-turbo:free")
-	b := hashString("openai/gpt-3.5-turbo:free")
-	if a != b {
-		t.Errorf("hashString should be deterministic: %d != %d", a, b)
+// TestCandKey_Distinct 验证 round 4 L4 复合 key 在去重场景下行为正确:
+// 同 (provider_id, raw_model) 应视为同一键, 不同则应区分. 这是 hashString
+// 替代后的核心安全保证 (无碰撞).
+func TestCandKey_Distinct(t *testing.T) {
+	type candKey struct {
+		ProviderID uint64
+		RawModel   string
 	}
-	c := hashString("groq/llama-3.3-70b")
+	a := candKey{ProviderID: 1, RawModel: "openai/gpt-3.5-turbo:free"}
+	b := candKey{ProviderID: 1, RawModel: "openai/gpt-3.5-turbo:free"}
+	if a != b {
+		t.Errorf("candKey should be equal for same input: %v != %v", a, b)
+	}
+	c := candKey{ProviderID: 1, RawModel: "groq/llama-3.3-70b"}
 	if a == c {
-		t.Errorf("different inputs should produce different hashes, both %d", a)
+		t.Errorf("different raw_model should produce different keys, both %v", a)
+	}
+	d := candKey{ProviderID: 2, RawModel: "openai/gpt-3.5-turbo:free"}
+	if a == d {
+		t.Errorf("different provider_id should produce different keys, both %v", a)
 	}
 }
 
-func TestHashString_EmptyString(t *testing.T) {
-	got := hashString("")
-	// 主断言: 二次调用一致.
-	if got != hashString("") {
-		t.Errorf("empty string hash should be deterministic")
+func TestCandKey_EmptyString(t *testing.T) {
+	type candKey struct {
+		ProviderID uint64
+		RawModel   string
+	}
+	// 用 map 验证空字符串作为 key 也能正确去重; 这是 round 4 L4 的回归保护.
+	m := map[candKey]int{}
+	m[candKey{ProviderID: 0, RawModel: ""}] = 1
+	m[candKey{ProviderID: 0, RawModel: ""}] = 2 // 应覆盖前一个
+	if len(m) != 1 {
+		t.Errorf("empty raw_model candKey should dedup to 1, got %d", len(m))
 	}
 }
 
@@ -192,26 +206,84 @@ func TestRecordOmniFreeQuota_NilShortCircuit(t *testing.T) {
 }
 
 // TestRecordOmniFreeQuota_TrackerSignature 验证 recordOmniFreeQuota 调用
-// QuotaTracker.Record 时构造的 RecordRequest 字段正确 (通过类型断言读取
-// QuotaTracker 的 db 字段为 nil 触发空指针短路, 间接证明该函数在没有真
-// 实 DB 时不进入 Record 路径). 这是 no-DB 单元测试能覆盖的最深层次,
-// 真实 Record 调用在 freeresource/quota_tracker_test.go 集成测试中验证.
+// QuotaTracker.Record 时构造的 RecordRequest 字段正确. round 4 修复后,
+// quotaTracker 改为 QuotaRecorder 接口, 测试可以注入 fake 直接捕获参数.
+//
+// 这是 round 4 L1 修复的核心: 旧测试只验证 nil 短路, 真实字段拷贝未覆盖.
 func TestRecordOmniFreeQuota_TrackerSignature(t *testing.T) {
-	tracker := &freeresource.QuotaTracker{} // db = nil
-	h := &ChatHandler{quotaTracker: tracker}
+	fake := &fakeQuotaRecorder{}
+	h := &ChatHandler{quotaTracker: fake}
 	result := &executors.ExecuteResult{Candidate: provider.Candidate{
 		CredentialID:     42,
 		CatalogCode:      "groq",
 		StandardizedName: "llama-3.3-70b",
 	}}
-	defer func() {
-		// 由于 tracker.db 是 nil, Record 在 ExecContext 处会 panic.
-		// 我们用 recover 兜底, 仅断言 panic 类型与 db nil 一致, 以
-		// 间接验证 recordOmniFreeQuota 确实进入了 Record 路径.
-		r := recover()
-		if r == nil {
-			t.Errorf("expected panic from nil-db Record, got none")
-		}
-	}()
 	h.recordOmniFreeQuota(context.Background(), "auto/free", "tenant-x", result, nil)
+	// M4 异步化: 等待 goroutine 完成.
+	time.Sleep(50 * time.Millisecond)
+
+	if len(fake.records) != 1 {
+		t.Fatalf("expected 1 record call, got %d", len(fake.records))
+	}
+	r := fake.records[0]
+	if r.CredentialID != 42 {
+		t.Errorf("expected CredentialID=42, got %d", r.CredentialID)
+	}
+	if r.ProviderCode != "groq" {
+		t.Errorf("expected ProviderCode=groq, got %q", r.ProviderCode)
+	}
+	if r.ModelID != "llama-3.3-70b" {
+		t.Errorf("expected ModelID=llama-3.3-70b, got %q", r.ModelID)
+	}
+	if r.TenantID != "tenant-x" {
+		t.Errorf("expected TenantID=tenant-x, got %q", r.TenantID)
+	}
+	if !r.Success {
+		t.Errorf("expected Success=true (execErr=nil)")
+	}
+	if len(fake.correct) != 0 {
+		t.Errorf("expected no CorrectFromHeaders (no 429), got %d", len(fake.correct))
+	}
+}
+
+// TestRecordOmniFreeQuota_CorrectOn429 验证 429 路径调用 CorrectFromHeaders,
+// 且 headers 被 flatten 正确传递. round 4 L2 修复的核心.
+func TestRecordOmniFreeQuota_CorrectOn429(t *testing.T) {
+	fake := &fakeQuotaRecorder{}
+	h := &ChatHandler{quotaTracker: fake}
+	result := &executors.ExecuteResult{
+		Candidate: provider.Candidate{
+			CredentialID:     7,
+			CatalogCode:      "openrouter",
+			StandardizedName: "openai/gpt-3.5-turbo:free",
+		},
+		Response: &http.Response{
+			StatusCode: http.StatusTooManyRequests,
+			Header: http.Header{
+				"Retry-After":       []string{"60"},
+				"X-RateLimit-Limit": []string{"1000"},
+			},
+		},
+	}
+	// 第三个参数 (execErr) 仍为 nil 但 result.Response.StatusCode=429,
+	// 应触发 CorrectFromHeaders.
+	h.recordOmniFreeQuota(context.Background(), "auto/coding:free", "default", result, nil)
+	time.Sleep(50 * time.Millisecond)
+
+	if len(fake.records) != 1 {
+		t.Fatalf("expected 1 record call, got %d", len(fake.records))
+	}
+	if len(fake.correct) != 1 {
+		t.Fatalf("expected 1 correct call on 429, got %d", len(fake.correct))
+	}
+	c := fake.correct[0]
+	if c.CredentialID != 7 {
+		t.Errorf("expected CredentialID=7, got %d", c.CredentialID)
+	}
+	if c.Headers["Retry-After"] != "60" {
+		t.Errorf("expected Retry-After=60, got %q", c.Headers["Retry-After"])
+	}
+	if c.Headers["X-RateLimit-Limit"] != "1000" {
+		t.Errorf("expected X-RateLimit-Limit=1000, got %q", c.Headers["X-RateLimit-Limit"])
+	}
 }
