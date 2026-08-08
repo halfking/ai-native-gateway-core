@@ -16,10 +16,23 @@ type Engine struct {
 }
 
 // NewEngine 创建引擎
+//
+// round 3 audit M2 修复: 在 unmarshal 后校验 sum(weights) ∈ [0.99, 1.01],
+// 否则返回 error. 旧实现对全 0 weights 静默生成全 0 评分, 候选平局, 行为
+// 不可预测. 真实生产中 weights 一般由 resolver 内置模板或 DB 行提供,
+// 校验后能给运维更明确的错误信息 ("weight sum 0.85, expected ~1.0").
 func NewEngine(weightsJSON json.RawMessage) (*Engine, error) {
 	var weights ScoringWeights
 	if err := json.Unmarshal(weightsJSON, &weights); err != nil {
 		return nil, fmt.Errorf("unmarshal scoring weights: %w", err)
+	}
+
+	total := weights.HealthScore + weights.LatencyP95 +
+		weights.QuotaRemaining + weights.Cost +
+		weights.TaskFit + weights.TierAffinity
+	if total < 0.99 || total > 1.01 {
+		return nil, fmt.Errorf("scoring weights sum %.3f outside [0.99, 1.01] (raw: %+v)",
+			total, weights)
 	}
 
 	return &Engine{weights: weights}, nil
