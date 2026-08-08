@@ -124,6 +124,37 @@ const (
 	//     is a real upstream fault and MUST count toward degradation so the
 	//     router can soft-demote / fail over the credential.
 	KindUpstreamContextLoss ErrorKind = "upstream_context_loss"
+	// KindUpstreamOverloaded: upstream returned a 500/502 whose body says it
+	// is overloaded and to retry later (observed on the apiclaude.cc relay:
+	// HTTP 502 {"error":{"message":"Our servers are currently overloaded.
+	// Please try again later.","type":"upstream_error"}}).
+	//
+	// Split out of KindUpstreamDown so operators can tell "the provider is
+	// shedding load" apart from "the provider is broken" — both used to log
+	// as upstream_down, which made the two indistinguishable on dashboards.
+	//
+	// Deliberately NOT KindConcurrent, even though the body matches
+	// concurrentOverloadRe. KindConcurrent carries three side effects that
+	// are wrong for a 502:
+	//   1. It is absent from the transient continue-list in
+	//      executors/executor.go, which is streaming's ONLY failover
+	//      safeguard (streaming never enters the sync-retry loop).
+	//   2. router.go's isTransientUnavailableReason has no state:concurrent
+	//      case, so single-candidate degraded-mode rescue stops working.
+	//   3. credentialhealth/tuner.go ratchets down concurrency_limit_auto
+	//      for KindConcurrent — correct for a 503 "engine busy", wrong for a
+	//      502, and it only recovers via the hourly scaleup worker.
+	//
+	// Routing behaviour is therefore kept at full parity with
+	// KindUpstreamDown (same continue-list, same free-credential tolerance,
+	// same bandit/probe treatment). What differs is diagnosis and timing:
+	// its own detail code, and a shorter breaker ceiling than
+	// upstream_down's 30min because load shedding self-heals in seconds.
+	//
+	// Scope is intentionally narrow — only 500/502 with an overload-shaped
+	// body. 503/529 stay KindConcurrent: those statuses are a genuine
+	// concurrency signal and tuner.go's ratchet is the correct response.
+	KindUpstreamOverloaded ErrorKind = "upstream_overloaded"
 )
 
 // contextLengthRe matches upstream error bodies that signal "prompt too
@@ -353,6 +384,31 @@ var concurrentOverloadCJKRe = regexp.MustCompile(
 		`稍后重试|限流`,
 )
 
+// overloadKindForStatus splits an overload-shaped body into the two
+// distinct kinds by HTTP status. Both body classifiers must agree, so
+// the rule lives here rather than being duplicated.
+//
+// 500/502 → KindUpstreamOverloaded. A relay that answers "our servers are
+// overloaded, try again later" behind a 500/502 is reporting ITS OWN
+// capacity problem. It is not telling us we sent too much concurrency, so
+// it must not ratchet down credentials.concurrency_limit_auto
+// (credentialhealth/tuner.go only reacts to KindConcurrent) and it must
+// keep KindUpstreamDown's routing rights — above all the transient
+// continue-list in executors/executor.go, which is the ONLY failover
+// safeguard a streaming request has.
+//
+// 429/503/529 → KindConcurrent, unchanged. Those statuses are the
+// upstream's canonical "too many concurrent requests" signal, and
+// tuner.go's concurrency auto-tune deliberately keys on them.
+func overloadKindForStatus(status int) ErrorKind {
+	switch status {
+	case http.StatusInternalServerError, http.StatusBadGateway:
+		return KindUpstreamOverloaded
+	default:
+		return KindConcurrent
+	}
+}
+
 // eofWithoutDoneRe is a Go-level signal: the SSE stream closed before
 // the [DONE] sentinel. When combined with provider-known overload (or
 // repeated across the same credential) this is treated as concurrent
@@ -557,7 +613,7 @@ func ClassifyErrorWithBody(status int, body []byte) ErrorKind {
 			strings.Contains(bodyLower, "resource not found")
 
 		if concurrentOverloadRe.Match(body) || concurrentOverloadCJKRe.Match(body) {
-			return KindConcurrent
+			return overloadKindForStatus(status)
 		}
 		// KindModelDeprecated (2026-08-05 P0): upstream permanently removed /
 		// end-of-lifed the model. Checked BEFORE model_not_found because a
@@ -694,7 +750,7 @@ func ClassifyErrorWithBody(status int, body []byte) ErrorKind {
 func ClassifyResponseBody(status int, body []byte) ErrorKind {
 	if len(body) > 0 {
 		if concurrentOverloadRe.Match(body) || concurrentOverloadCJKRe.Match(body) {
-			return KindConcurrent
+			return overloadKindForStatus(status)
 		}
 		// KindModelDeprecated: see ClassifyErrorWithBody. Checked before
 		// model_not_found for the same reason (deprecation bodies must not
@@ -766,7 +822,7 @@ func IsModelNotFound(kind ErrorKind) bool {
 
 func IsRetryable(kind ErrorKind) bool {
 	switch kind {
-	case KindTransient, KindTimeout, KindNetwork, KindUpstreamDown, KindConcurrent, KindStreamTimeout:
+	case KindTransient, KindTimeout, KindNetwork, KindUpstreamDown, KindUpstreamOverloaded, KindConcurrent, KindStreamTimeout:
 		return true
 	// KindContextLength is intentionally NOT in this list. The executor
 	// handles context-length 4xx via a dedicated path: it tries one

@@ -1087,6 +1087,10 @@ func isTransientUnavailableReason(reason string) bool {
 		"state:" + string(errorsx.KindStreamTimeout),
 		"state:" + string(errorsx.KindRateLimit),
 		"state:" + string(errorsx.KindUpstreamDown),
+		// Without this the single-candidate degraded-mode rescue stops
+		// covering overload-shaped 502s and the request fails with no
+		// candidates even though the upstream is only shedding load.
+		"state:" + string(errorsx.KindUpstreamOverloaded),
 		"state:" + string(errorsx.KindEmptyResponse),
 		"state:probe_direct_timeout":
 		return true

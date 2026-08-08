@@ -538,7 +538,8 @@ func isRetriableError(err error) bool {
 		// Network-related errors (transient)
 		if kind == errorsx.KindNetwork ||
 			kind == errorsx.KindTimeout ||
-			kind == errorsx.KindUpstreamDown {
+			kind == errorsx.KindUpstreamDown ||
+			kind == errorsx.KindUpstreamOverloaded {
 			return true
 		}
 
@@ -3694,6 +3695,14 @@ func (h *ChatHandler) serveWithExecutor(
 			if realKind != "" {
 				w.Header().Set("X-Gateway-Last-Kind", realKind)
 			}
+			// Overload exhaustion is the one all-candidates-failed cause that
+			// is genuinely worth retrying on a short clock, so tell the client
+			// when instead of leaving it to guess. Prefer the upstream's own
+			// hint; fall back to a conservative default.
+			if execErrTyped.LastKind == errorsx.KindUpstreamOverloaded {
+				retryAfter := overloadRetryAfterSeconds(execErr)
+				w.Header().Set("Retry-After", strconv.Itoa(retryAfter))
+			}
 			if preStreamPrepared {
 				writePrewarmedStreamError(w,
 					fmt.Sprintf("No available provider for model '%s'. All %d candidates failed.", clientModel, execErrTyped.Tried),
@@ -6133,6 +6142,12 @@ func streamErrorKindForDetailCode(outcome *StreamOutcome, detailCode string) str
 			return "client_cancel"
 		case errorsx.KindUpstreamDown, errorsx.KindNetwork:
 			return "upstream_error"
+		case errorsx.KindUpstreamOverloaded:
+			// Distinct from upstream_error on purpose: an overloaded relay
+			// recovers on its own in seconds, a dead one does not. Sharing
+			// one bucket made "provider is busy" indistinguishable from
+			// "provider is down" on the operator dashboard.
+			return "upstream_overloaded"
 		case errorsx.KindConversion:
 			return "conversion_error"
 		}
@@ -6478,6 +6493,34 @@ func classifyUpstreamCredentialFailure(kind errorsx.ErrorKind, upstreamStatus in
 		return "upstream_quota_permanent", i18n.MsgUpstreamQuotaPermanent, http.StatusBadGateway, "insufficient_quota"
 	}
 	return "", "", 0, ""
+}
+
+// defaultOverloadRetryAfterSeconds is the client-facing wait advertised when
+// every candidate returned an overload-shaped 5xx and the upstream gave no
+// Retry-After of its own. Five seconds matches the recovery window observed
+// on the apiclaude.cc relay (2026-08-08: the same credential succeeded on a
+// retry ~10s later) without parking the caller for long.
+const defaultOverloadRetryAfterSeconds = 5
+
+// overloadRetryAfterSeconds returns the Retry-After value, in seconds, for an
+// exhausted overload failure. It prefers the upstream's own hint and bounds it
+// to the in-flight ceiling so one malformed header cannot advertise a
+// multi-day wait to the client. Sub-second hints round up to 1 rather than
+// down to 0, which would invite an immediate hot retry.
+func overloadRetryAfterSeconds(err error) int {
+	ue, ok := extractUpstreamError(err)
+	if !ok || ue.RetryAfter <= 0 {
+		return defaultOverloadRetryAfterSeconds
+	}
+	capped := upstreampkg.ClampInFlightRetryAfter(ue.RetryAfter)
+	if capped <= 0 {
+		return defaultOverloadRetryAfterSeconds
+	}
+	secs := int((capped + time.Second - 1) / time.Second)
+	if secs < 1 {
+		secs = 1
+	}
+	return secs
 }
 
 // extractUpstreamReason returns the human-readable upstream rejection

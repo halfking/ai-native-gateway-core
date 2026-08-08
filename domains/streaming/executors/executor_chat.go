@@ -368,6 +368,15 @@ func (e *Executor) executeOpenAI(
 	for attempt := 0; attempt <= effectiveMaxRetries+mnfBonus; attempt++ {
 		if attempt > 0 {
 			delay := time.Duration(500*(1<<(attempt-1))) * time.Millisecond
+			// 2026-08-08: prefer the upstream's own Retry-After over the
+			// blind exponential guess. An overloaded relay that asks for 3s
+			// gets 3s; without this the gateway either hammered it 500ms
+			// too early or idled 8s too long. Bounded by the in-flight cap
+			// (NOT clampRetryAfter's 31 days, which is sized for DB cooling
+			// windows and would hang a live request).
+			if hinted := upstreamRetryAfterHint(lastErr); hinted > 0 {
+				delay = hinted
+			}
 			// BUG-5 design note (2026-06-19): for session requests the upstream
 			// HTTP call uses context.Background() (C1) so client disconnect does
 			// NOT cancel the vendor call. However, the backoff select below still
@@ -638,8 +647,35 @@ func (e *Executor) executeOpenAI(
 
 			if uErr != nil && (resp == nil || resp.StatusCode >= 500) {
 				errKind := uErr.Kind
+				// 2026-08-08: a 5xx whose body says "overloaded / try again
+				// later" is a load signal, not a dead upstream. upstream.Do
+				// already classifies from the body, but this branch also runs
+				// when e.Upstream is nil (uErr built from doErr alone), so
+				// re-check the captured body here. StatusCode==0 (pure network
+				// error) can never yield KindUpstreamOverloaded, so the guard
+				// below is safe for the bodyless case.
+				if len(uErr.Body) > 0 {
+					if bodyKind := errorsx.ClassifyErrorWithBody(uErr.StatusCode, uErr.Body); bodyKind == errorsx.KindUpstreamOverloaded {
+						errKind = bodyKind
+						uErr.Kind = bodyKind
+					}
+				}
 				if errKind == errorsx.KindRateLimit {
 					e.Limiter.Shrink(cand.ProviderID, cand.CredentialID)
+				}
+				// Overload → failover-first. Do NOT spend another attempt on
+				// the credential that just told us it is saturated; returning
+				// unwrapped (not *retryableError) exits the per-credential
+				// loop so the candidate loop fails over to a sibling via the
+				// transient continue-list in executor.go.
+				if errKind == errorsx.KindUpstreamOverloaded {
+					slog.Warn("upstream overloaded, failing over to next candidate",
+						"credential_id", cand.CredentialID,
+						"provider_id", cand.ProviderID,
+						"upstream_status", uErr.StatusCode,
+						"retry_after_ms", uErr.RetryAfter.Milliseconds(),
+					)
+					return nil, uErr
 				}
 				if !errorsx.IsRetryable(errKind) || attempt >= effectiveMaxRetries {
 					return nil, uErr

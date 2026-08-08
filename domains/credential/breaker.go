@@ -124,10 +124,15 @@ var defaultPolicies = map[ErrorKind]CoolingPolicy{
 	// pinned forever. After 24h of cooling the credential is
 	// effectively permanent-by-time, matching the old UX.
 	// 2026-07-24: Auth InitialCooling 从 15分钟 改为 5分钟，减少多轮对话中的长时间中断
-	KindAuth:          {InitialCooling: 5 * time.Minute, MaxCooling: 24 * time.Hour, RecoveryType: RecoveryExponential, ShrinkFactor: 0.5},
-	KindQuota:         {InitialCooling: 0, MaxCooling: 0, RecoveryType: RecoveryPermanent, ShrinkFactor: 0},
-	KindUpstreamDown:  {InitialCooling: 30 * time.Second, MaxCooling: 1800 * time.Second, RecoveryType: RecoveryExponential, ShrinkFactor: 0.5},
-	KindStreamTimeout: {InitialCooling: 30 * time.Second, MaxCooling: 30 * time.Second, RecoveryType: RecoveryAuto, ShrinkFactor: 0},
+	KindAuth:         {InitialCooling: 5 * time.Minute, MaxCooling: 24 * time.Hour, RecoveryType: RecoveryExponential, ShrinkFactor: 0.5},
+	KindQuota:        {InitialCooling: 0, MaxCooling: 0, RecoveryType: RecoveryPermanent, ShrinkFactor: 0},
+	KindUpstreamDown: {InitialCooling: 30 * time.Second, MaxCooling: 1800 * time.Second, RecoveryType: RecoveryExponential, ShrinkFactor: 0.5},
+	// 2026-08-08: overload-shaped 5xx recovers far faster than a real
+	// outage, so the exponential ceiling stops at 5 min instead of
+	// KindUpstreamDown's 30 min. Keeping it exponential (not RecoveryAuto)
+	// still punishes a relay that stays overloaded across many rounds.
+	errorsx.KindUpstreamOverloaded: {InitialCooling: 30 * time.Second, MaxCooling: 5 * time.Minute, RecoveryType: RecoveryExponential, ShrinkFactor: 0.5},
+	KindStreamTimeout:              {InitialCooling: 30 * time.Second, MaxCooling: 30 * time.Second, RecoveryType: RecoveryAuto, ShrinkFactor: 0},
 	// 2026-07-24: Concurrent 从 5分钟 改为 2分钟，减少多轮对话中的长时间中断
 	errorsx.KindConcurrent: {InitialCooling: 2 * time.Minute, MaxCooling: 2 * time.Minute, RecoveryType: RecoveryAuto, ShrinkFactor: 0.5},
 }
