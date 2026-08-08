@@ -236,27 +236,77 @@ type msgProbe struct {
 }
 
 func parseRequestBody(body string) []v2.Message {
-	var p requestProbe
-	if err := json.Unmarshal([]byte(body), &p); err != nil {
-		return nil
-	}
-	return toMessages(p.Messages)
+	return parseProtocolMessages(json.RawMessage(body), false)
 }
 
 func parseResponseBody(body string) []v2.Message {
-	var p responseProbe
-	if err := json.Unmarshal([]byte(body), &p); err != nil {
+	return parseProtocolMessages(json.RawMessage(body), true)
+}
+
+// parseProtocolMessages normalizes the common request/response envelopes before
+// handing message content to the shared IR decoder. This keeps legacy string
+// messages and native multimodal protocol bodies on one parsing path.
+func parseProtocolMessages(raw json.RawMessage, response bool) []v2.Message {
+	if len(raw) == 0 {
 		return nil
 	}
-	msgs := make([]v2.Message, 0, len(p.Choices))
-	for _, ch := range p.Choices {
-		m := toMessage(ch.Message)
-		if m.Role == "" {
-			m.Role = "assistant"
-		}
-		msgs = append(msgs, m)
+	var root map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &root); err != nil {
+		return nil
 	}
-	return msgs
+	var items []json.RawMessage
+	if !response {
+		if b := root["messages"]; len(b) > 0 {
+			_ = json.Unmarshal(b, &items)
+		} else if b := root["contents"]; len(b) > 0 {
+			_ = json.Unmarshal(b, &items)
+		}
+	} else if b := root["choices"]; len(b) > 0 {
+		var choices []struct {
+			Message json.RawMessage `json:"message"`
+		}
+		if json.Unmarshal(b, &choices) == nil {
+			for _, c := range choices {
+				if len(c.Message) > 0 {
+					items = append(items, c.Message)
+				}
+			}
+		}
+	} else if b := root["content"]; len(b) > 0 {
+		// Anthropic response content is a block array; wrap it as one message.
+		items = []json.RawMessage{json.RawMessage(`{"role":"assistant","content":` + string(b) + `}`)}
+	} else if b := root["candidates"]; len(b) > 0 {
+		var candidates []struct {
+			Content json.RawMessage `json:"content"`
+		}
+		if json.Unmarshal(b, &candidates) == nil {
+			for _, c := range candidates {
+				if len(c.Content) > 0 {
+					var content map[string]json.RawMessage
+					if json.Unmarshal(c.Content, &content) == nil {
+						content["role"] = json.RawMessage(`"model"`)
+						items = append(items, marshalObject(content))
+					}
+				}
+			}
+		}
+	} else if b := root["output"]; len(b) > 0 {
+		// Responses API output items already carry type/role/content fields.
+		_ = json.Unmarshal(b, &items)
+	}
+	if len(items) == 0 {
+		return nil
+	}
+	canonical, err := json.Marshal(map[string]any{"messages": items})
+	if err != nil {
+		return nil
+	}
+	return v2.IRMessagesToV2(v2.IRMessagesFromJSON(canonical))
+}
+
+func marshalObject(obj map[string]json.RawMessage) json.RawMessage {
+	b, _ := json.Marshal(obj)
+	return b
 }
 
 // parseMessagesJSON extracts messages from the session compressor's
@@ -314,15 +364,22 @@ func toMessage(r msgProbe) v2.Message {
 // ── Attachment parsing ─────────────────────────────────────────────────────
 
 type attachProbe struct {
-	Name           string `json:"name"`
-	ObjectKey      string `json:"object_key"`
-	MIMEType       string `json:"mime_type"`
-	SizeBytes      int64  `json:"size_bytes"`
-	SHA256         string `json:"sha256"`
-	SourceProtocol string `json:"source_protocol"`
-	DeclaredMIME   string `json:"declared_mime"`
-	SniffedMIME    string `json:"sniffed_mime"`
-	ProviderFileID string `json:"provider_file_id"`
+	Name           string    `json:"name"`
+	ObjectKey      string    `json:"object_key"`
+	LegacyPath     string    `json:"path"`
+	MIMEType       string    `json:"mime_type"`
+	ContentType    string    `json:"content_type"`
+	SizeBytes      int64     `json:"size_bytes"`
+	LegacySize     int64     `json:"size"`
+	SHA256         string    `json:"sha256"`
+	LegacyHash     string    `json:"hash"`
+	OriginalURL    string    `json:"original_url"`
+	SourceProtocol string    `json:"source_protocol"`
+	DeclaredMIME   string    `json:"declared_mime"`
+	SniffedMIME    string    `json:"sniffed_mime"`
+	ProviderFileID string    `json:"provider_file_id"`
+	ExpiresAt      time.Time `json:"expires_at"`
+	Replayable     bool      `json:"replayable"`
 }
 
 func parseAttachments(raw json.RawMessage) []v2.AttachmentRef {
@@ -333,18 +390,39 @@ func parseAttachments(raw json.RawMessage) []v2.AttachmentRef {
 	refs := make([]v2.AttachmentRef, 0, len(probes))
 	for _, p := range probes {
 		refs = append(refs, v2.AttachmentRef{
-			Name:           p.Name,
-			ObjectKey:      p.ObjectKey,
-			MIMEType:       p.MIMEType,
-			SizeBytes:      p.SizeBytes,
-			SHA256:         p.SHA256,
+			Name:      p.Name,
+			ObjectKey: firstNonEmpty(p.ObjectKey, p.LegacyPath),
+			MIMEType:  firstNonEmpty(p.MIMEType, p.ContentType),
+			SizeBytes: firstNonZero(p.SizeBytes, p.LegacySize),
+			SHA256:    firstNonEmpty(p.SHA256, p.LegacyHash),
+
 			SourceProtocol: p.SourceProtocol,
 			DeclaredMIME:   p.DeclaredMIME,
 			SniffedMIME:    p.SniffedMIME,
 			ProviderFileID: p.ProviderFileID,
+			ExpiresAt:      p.ExpiresAt,
+			Replayable:     p.Replayable,
 		})
 	}
 	return refs
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if value != "" {
+			return value
+		}
+	}
+	return ""
+}
+
+func firstNonZero(values ...int64) int64 {
+	for _, value := range values {
+		if value != 0 {
+			return value
+		}
+	}
+	return 0
 }
 
 func multimodalTypes(attachments []v2.AttachmentRef) []string {

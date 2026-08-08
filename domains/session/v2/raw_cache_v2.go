@@ -34,7 +34,7 @@ type rawEntry struct {
 type RawCacheV2 struct {
 	capacity int
 	mu       sync.Mutex
-	ll       *list.List          // front = most recent
+	ll       *list.List               // front = most recent
 	index    map[string]*list.Element // "tenantID|sessionID" → ll element
 }
 

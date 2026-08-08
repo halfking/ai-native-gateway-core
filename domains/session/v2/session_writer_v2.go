@@ -470,6 +470,12 @@ func (w *SessionWriterV2) getPreviousBody(ctx context.Context, sessionID, tenant
 //   - If submit_mode is "full": extract messages not present in LastOutboundBody
 //   - If LastOutboundBody is empty: entire RequestBody is the delta (first turn)
 func extractRequestDelta(req *ProcessedRequest, submitMode string) []Message {
+	// Attachment-only turns carry no new message body; persist an empty delta
+	// while retaining attachment metadata on the turn row.
+	if submitMode == "attachment_only" {
+		return nil
+	}
+
 	// If client explicitly sent delta or snapshot, trust it
 	if submitMode == "delta" || submitMode == "snapshot" || submitMode == "inferred_compressed" {
 		return req.RequestBody
