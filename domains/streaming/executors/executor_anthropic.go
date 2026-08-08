@@ -855,17 +855,17 @@ func (e *Executor) executeAnthropicOnce(
 		if errKind == errorsx.KindRateLimit {
 			e.Limiter.Shrink(cand.ProviderID, cand.CredentialID)
 		}
-		// Overload → failover-first: unwrapped return exits the
-		// per-credential retry loop so the candidate loop switches
-		// credential instead of re-hitting the saturated one.
+		// Overload uses the ordinary retryable path — see the long note in
+		// executor_chat.go. Returning unwrapped here to force an immediate
+		// credential switch broke single-candidate models in production
+		// (empty 200 where the same-credential retry had been succeeding).
 		if errKind == errorsx.KindUpstreamOverloaded {
-			slog.Warn("upstream overloaded, failing over to next candidate",
+			slog.Warn("upstream overloaded",
 				"credential_id", cand.CredentialID,
 				"provider_id", cand.ProviderID,
 				"upstream_status", uErr.StatusCode,
 				"retry_after_ms", uErr.RetryAfter.Milliseconds(),
 			)
-			return nil, uErr
 		}
 		return nil, &retryableError{err: uErr}
 	}

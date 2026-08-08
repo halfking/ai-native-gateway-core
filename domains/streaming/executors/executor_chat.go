@@ -663,19 +663,34 @@ func (e *Executor) executeOpenAI(
 				if errKind == errorsx.KindRateLimit {
 					e.Limiter.Shrink(cand.ProviderID, cand.CredentialID)
 				}
-				// Overload → failover-first. Do NOT spend another attempt on
-				// the credential that just told us it is saturated; returning
-				// unwrapped (not *retryableError) exits the per-credential
-				// loop so the candidate loop fails over to a sibling via the
-				// transient continue-list in executor.go.
+				// Overload deliberately uses the ORDINARY retryable path.
+				//
+				// 2026-08-08: an earlier revision of this fix returned
+				// unwrapped here to force an immediate credential switch
+				// ("failover-first"), on the assumption that re-hitting a
+				// saturated relay was wasted effort. Production disproved it.
+				// gpt-5.6-luna routes to a single candidate, so there was
+				// nothing to fail over to: the candidate loop ran out and the
+				// client got an empty 200 (stream_chunks=0, success=false)
+				// where the previous build had recovered. In the 24h before
+				// that change, the same-credential retry rescued 8 of 8
+				// overloaded requests — it is the FASTEST recovery for this
+				// failure, not a waste.
+				//
+				// Cross-credential failover still happens, just in the right
+				// order: once the per-credential budget is spent this returns
+				// unwrapped (below), and KindUpstreamOverloaded is in the
+				// transient continue-list in executor.go, so the candidate
+				// loop advances to a sibling.
 				if errKind == errorsx.KindUpstreamOverloaded {
-					slog.Warn("upstream overloaded, failing over to next candidate",
+					slog.Warn("upstream overloaded",
 						"credential_id", cand.CredentialID,
 						"provider_id", cand.ProviderID,
 						"upstream_status", uErr.StatusCode,
 						"retry_after_ms", uErr.RetryAfter.Milliseconds(),
+						"attempt", attempt,
+						"will_retry_same_credential", attempt < effectiveMaxRetries,
 					)
-					return nil, uErr
 				}
 				if !errorsx.IsRetryable(errKind) || attempt >= effectiveMaxRetries {
 					return nil, uErr
