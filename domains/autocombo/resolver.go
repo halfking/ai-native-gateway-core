@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
+
+	"github.com/lib/pq"
 )
 
 // Resolver Auto Combo 解析器
@@ -91,9 +93,10 @@ func (r *Resolver) queryDB(ctx context.Context, modelID, tenantID string) (*Auto
 
 	var spec AutoComboSpec
 	err := r.db.QueryRowContext(ctx, q, modelID, tenantFilter).Scan(
-		&spec.ID, &spec.ComboName, &spec.Variant, &spec.TierFilter,
-		&spec.FreeTypeFilter, &spec.ToSFilter, &spec.ProviderAllowlist,
-		&spec.ProviderDenylist, &spec.ModelPattern, &spec.ScoringWeightsJSON,
+		&spec.ID, &spec.ComboName, &spec.Variant, pq.Array(&spec.TierFilter),
+		pq.Array(&spec.FreeTypeFilter), pq.Array(&spec.ToSFilter),
+		pq.Array(&spec.ProviderAllowlist), pq.Array(&spec.ProviderDenylist),
+		&spec.ModelPattern, &spec.ScoringWeightsJSON,
 		&spec.MaxCandidates, &spec.ExplorationRate, &spec.Enabled, &spec.TenantID,
 	)
 	if err != nil {
