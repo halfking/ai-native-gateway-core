@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/kaixuan/llm-gateway-go/domains/freeresource"
 	"github.com/kaixuan/llm-gateway-go/domains/streaming/executors"
@@ -34,10 +35,24 @@ const autoRouteMagicExact = "auto"
 // 区分方式: caller 用 errors.Is(err, ErrOmniFreeNoCandidates).
 var ErrOmniFreeNoCandidates = errors.New("omnifree: no free candidates available")
 
+// ErrOmniFreeInfraFailure 是 resolveOmniFreeCandidates 在基础设施/配置层面
+// 出错时返回的 sentinel (第四轮审计 P1 修复):
+//   - Resolver.Resolve 数据库查询失败 (非 sql.ErrNoRows)
+//   - VirtualFactory.LoadCatalogForBuild / BuildFromCandidates 数据库查询失败
+//
+// 这与 spec == nil (OmniFree 主动判定"不接管此模型") 不同 — 后者才允许
+// 降级到普通 provider resolver; 基础设施故障绝不能被误判为"未接管"而
+// 静默路由到可能收费的 provider, 否则一次 DB/RLS 故障会看起来像是正常
+// 的付费请求成功, 运维完全看不到 OmniFree 已经故障。
+//
+// 区分方式: caller 用 errors.Is(err, ErrOmniFreeInfraFailure)。
+var ErrOmniFreeInfraFailure = errors.New("omnifree: infrastructure failure")
+
 // round 4 L1+L2: 测试用 fake QuotaRecorder, 注入 handler 后捕获 Record /
 // CorrectFromHeaders 的参数. 真实 QuotaTracker 隐式实现 QuotaRecorder
 // (定义在 handler.go); fake 直接实现 QuotaRecorder 接口即可.
 type fakeQuotaRecorder struct {
+	mu      sync.Mutex
 	records []recordedCall
 	correct []correctedCall
 }
@@ -61,6 +76,8 @@ type correctedCall struct {
 }
 
 func (f *fakeQuotaRecorder) Record(_ context.Context, req freeresource.RecordRequest) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.records = append(f.records, recordedCall{
 		CredentialID: req.CredentialID,
 		ProviderCode: req.ProviderCode,
@@ -74,6 +91,8 @@ func (f *fakeQuotaRecorder) Record(_ context.Context, req freeresource.RecordReq
 }
 
 func (f *fakeQuotaRecorder) CorrectFromHeaders(_ context.Context, req freeresource.CorrectionRequest) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.correct = append(f.correct, correctedCall{
 		CredentialID: req.CredentialID,
 		ProviderCode: req.ProviderCode,
@@ -130,9 +149,13 @@ func (h *ChatHandler) resolveOmniFreeCandidates(
 ) ([]provider.Candidate, *provider.Policy, string, bool, error) {
 	spec, err := h.autoComboResolver.Resolve(ctx, clientModel, tenantID)
 	if err != nil {
-		slog.Warn("omnifree: resolve template failed",
+		// 第四轮审计 P1: Resolver.Resolve 出错 (DB 查询失败/RLS 拒绝等)
+		// 是基础设施故障, 不是"这个模型不归 OmniFree 管". 用
+		// ErrOmniFreeInfraFailure 包裹, 让 caller 返回明确的 5xx 而不是
+		// 静默降级到可能收费的 provider resolver.
+		slog.Error("omnifree: resolve template failed (infra)",
 			"error", err, "model", clientModel, "tenant_id", tenantID)
-		return nil, nil, "", false, err
+		return nil, nil, "", false, fmt.Errorf("%w: resolve template: %v", ErrOmniFreeInfraFailure, err)
 	}
 	if spec == nil {
 		return nil, nil, "", false, nil
@@ -143,8 +166,8 @@ func (h *ChatHandler) resolveOmniFreeCandidates(
 	// 收集 catalog 中的具体 model_id, 通过 provider.Client 获取可执行候选.
 	entries, err := h.autoComboFactory.LoadCatalogForBuild(ctx, tenantID, spec)
 	if err != nil {
-		slog.Warn("omnifree: load catalog failed", "error", err, "tenant_id", tenantID)
-		return nil, nil, "", false, err
+		slog.Error("omnifree: load catalog failed (infra)", "error", err, "tenant_id", tenantID)
+		return nil, nil, "", false, fmt.Errorf("%w: load catalog: %v", ErrOmniFreeInfraFailure, err)
 	}
 	if len(entries) == 0 {
 		// spec 命中但 catalog 没有任何行: 用户请求了 auto/* 路由但当前租户
@@ -176,7 +199,12 @@ func (h *ChatHandler) resolveOmniFreeCandidates(
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			cands, pol, err := h.provider.GetCandidates(ctx, e.ModelID, profile, tenantID)
+			// round 4 审计补充修复: modality 之前只计算出来用于日志/返回值,
+			// 从未真正传给 provider 层, 导致 vision/audio/video 请求会被
+			// GetCandidates 按纯文本模型解析, 可能选中不支持该模态的候选。
+			// 这里改用 GetCandidatesByModality, 与非 OmniFree 路径
+			// (resolveCandidatesForRequest) 的行为保持一致.
+			cands, pol, err := h.provider.GetCandidatesByModality(ctx, e.ModelID, profile, tenantID, modality)
 			if err != nil {
 				mu.Lock()
 				slog.Debug("omnifree: provider resolve failed",
@@ -228,7 +256,8 @@ func (h *ChatHandler) resolveOmniFreeCandidates(
 	filtered, err := h.autoComboFactory.BuildFromCandidates(ctx, spec, pool, tenantID)
 	if err != nil {
 		slog.Warn("omnifree: factory build failed", "error", err, "model", clientModel)
-		return nil, nil, modality, false, err
+		return nil, nil, modality, false, fmt.Errorf("%w: spec=%s factory-build-failed tenant=%s: %v",
+			ErrOmniFreeInfraFailure, spec.ComboName, tenantID, err)
 	}
 	if len(filtered) == 0 {
 		// catalog 命中但全部被配额/过滤剔出. 同样不能让 caller 降级到 paid.
@@ -257,10 +286,12 @@ func (h *ChatHandler) resolveOmniFreeCandidates(
 //     *http.Response 时才能获取上游 Retry-After / X-RateLimit-* 头部;
 //     流式 chunked 路径上 headers 已被透传给客户端, 这里不再读.
 //
-// round 4 M4 优化: 把 Record 放入 fire-and-forget goroutine, 不阻塞主请求
-// 路径. 高 QPS 场景下, Record 涉及 2~4 个 UPSERT (每个窗口一个) 会消耗
-// 5~10ms DB 时间, 串行调用会让 auto/* 请求 P99 latency 受影响. 失败仅记
-// WARN (不阻塞, 与原有"配额错误不阻塞请求"原则一致).
+// round 4 审计补充修复 (L3): 改用 bounded worker queue (h.quotaRecordQueue)
+// 替代 fire-and-forget goroutine. 旧实现每个请求都 go func() 直接 fork,
+// 高并发时可能积压上万个未完成 goroutine + context / DB 连接, 导致 pgx
+// pool 耗尽. 现在任务投递到固定容量的 channel (默认 256 缓冲), 由固定
+// 数量的 worker (默认 16) 消费; 队列满时非阻塞丢弃 + WARN 日志 (配额
+// 记录本身不是关键路径, 丢弃仍优于阻塞请求响应).
 func (h *ChatHandler) recordOmniFreeQuota(
 	ctx context.Context,
 	clientModel, tenantID string,
@@ -280,16 +311,6 @@ func (h *ChatHandler) recordOmniFreeQuota(
 	}
 	success := execErr == nil
 
-	// Record: 失败也累加 request_count 与 error_count; 不阻塞请求路径.
-	// round 4 M4: 改为 fire-and-forget goroutine, 主请求路径不等 DB.
-	//
-	// 设计权衡:
-	//   - 旧实现同步调用 Record + CorrectFromHeaders, 单次 2~4 个 UPSERT
-	//     约 5~10ms, 在 1000 RPS 场景下会拉高 auto/* 请求 P99 latency.
-	//   - 异步化后 P99 latency 下降, 但 Record 失败时仅记 WARN (与原
-	//     "配额错误不阻塞"原则一致). 用 ctx 派生避免泄漏; 主请求 ctx
-	//     取消时 record 会被尽早中断.
-	//
 	// round 4 L5: 同时接入 OmniFreeAutoSuccessTotal (成功计数).
 	if success {
 		metrics.OmniFreeAutoSuccessTotal.WithLabelValues(clientModel, tenantID).Inc()
@@ -297,7 +318,8 @@ func (h *ChatHandler) recordOmniFreeQuota(
 	for _, wt := range windowTypes {
 		metrics.OmniFreeQuotaRecordsTotal.WithLabelValues(string(wt), strconv.FormatBool(success)).Inc()
 	}
-	// 拷贝必要字段到 goroutine, 避免 result 指针在主路径释放后 race.
+
+	// 拷贝必要字段避免 result 指针在主路径释放后 race.
 	captured := struct {
 		CredentialID int
 		CatalogCode  string
@@ -313,23 +335,18 @@ func (h *ChatHandler) recordOmniFreeQuota(
 	}
 	if captured.HasResponse {
 		captured.StatusCode = result.Response.StatusCode
-		captured.Header = result.Response.Header
+		captured.Header = result.Response.Header.Clone()
 	}
-	go func(recordCtx context.Context) {
-		// 防御: goroutine 内的 panic 会让 Go runtime 终止整个 test binary
-		// (生产不会, 但测试会). recover 把 panic 转成 slog.
-		defer func() {
-			if r := recover(); r != nil {
-				slog.Error("omnifree: panic in record goroutine",
-					"panic", r, "model", clientModel, "tenant_id", tenantID)
-				metrics.OmniFreeQuotaRecordErrorsTotal.Inc()
-			}
-		}()
-		// 单元测试可能注入 db=nil 的 QuotaTracker; 防御性早退避免 panic.
-		if h.quotaTracker == nil {
-			return
-		}
-		recErr := h.quotaTracker.Record(recordCtx, freeresource.RecordRequest{
+
+	// 构造 Record 任务并投递到 bounded queue. 5s context timeout 防止
+	// 单个 Record 调用长时间占用 worker (DB 死锁/慢查询).
+	recordCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+	_ = cancel // defer cancel() 由 worker 在消费完任务后执行 (通过闭包捕获).
+
+	recordTask := quotaRecordTask{
+		ctx:      recordCtx,
+		isRecord: true,
+		recordReq: freeresource.RecordRequest{
 			CredentialID: int64(captured.CredentialID),
 			ProviderCode: captured.CatalogCode,
 			ModelID:      captured.StdName,
@@ -337,30 +354,48 @@ func (h *ChatHandler) recordOmniFreeQuota(
 			TokenCount:   0, // token 用量在 telemetry/audit 阶段另有统计, 避免重复.
 			Success:      success,
 			TenantID:     tenantID,
-		})
-		if recErr != nil {
-			metrics.OmniFreeQuotaRecordErrorsTotal.Inc()
-			slog.Debug("omnifree: quota record failed",
-				"error", recErr, "model", clientModel, "tenant_id", tenantID)
-		}
+		},
+	}
 
-		// 429 校准: 仅当上游响应可直接访问 (非流式或流式 start 阶段).
-		if captured.HasResponse && captured.StatusCode == http.StatusTooManyRequests {
-			metrics.OmniFreeQuotaCorrectTotal.Inc()
-			headers := flattenHeaders(captured.Header)
-			corrErr := h.quotaTracker.CorrectFromHeaders(recordCtx, freeresource.CorrectionRequest{
+	select {
+	case h.quotaRecordQueue <- recordTask:
+		// 投递成功, worker 会消费.
+	default:
+		// 队列满, 丢弃任务 (配额记录非关键路径, 丢弃优于阻塞请求响应).
+		metrics.OmniFreeQuotaRecordErrorsTotal.Inc()
+		slog.Warn("omnifree: quota record queue full, dropping task",
+			"model", clientModel, "tenant_id", tenantID, "queue_depth", cap(h.quotaRecordQueue))
+		cancel()
+	}
+
+	// 429 校准: 仅当上游响应可直接访问 (非流式或流式 start 阶段).
+	if captured.HasResponse && captured.StatusCode == http.StatusTooManyRequests {
+		metrics.OmniFreeQuotaCorrectTotal.Inc()
+		headers := flattenHeaders(captured.Header)
+		correctCtx, cancelCorrect := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+		_ = cancelCorrect
+
+		correctTask := quotaRecordTask{
+			ctx:      correctCtx,
+			isRecord: false,
+			correctReq: freeresource.CorrectionRequest{
 				CredentialID: int64(captured.CredentialID),
 				ProviderCode: captured.CatalogCode,
 				ModelID:      captured.StdName,
 				Headers:      headers,
 				TenantID:     tenantID,
-			})
-			if corrErr != nil {
-				slog.Debug("omnifree: quota 429 correct failed",
-					"error", corrErr, "model", clientModel, "tenant_id", tenantID)
-			}
+			},
 		}
-	}(context.WithoutCancel(ctx))
+
+		select {
+		case h.quotaRecordQueue <- correctTask:
+			// 投递成功.
+		default:
+			slog.Warn("omnifree: quota correct queue full, dropping task",
+				"model", clientModel, "tenant_id", tenantID)
+			cancelCorrect()
+		}
+	}
 }
 
 // flattenHeaders 将 http.Header 折叠成 map[string]string (取第一个值),

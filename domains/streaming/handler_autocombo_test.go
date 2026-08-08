@@ -210,18 +210,29 @@ func TestRecordOmniFreeQuota_NilShortCircuit(t *testing.T) {
 // quotaTracker 改为 QuotaRecorder 接口, 测试可以注入 fake 直接捕获参数.
 //
 // 这是 round 4 L1 修复的核心: 旧测试只验证 nil 短路, 真实字段拷贝未覆盖.
+//
+// round 4 L3 补充: recordOmniFreeQuota 改用 bounded worker queue 后,
+// 测试必须先调用 SetOmniFree 初始化队列 + worker, 否则任务无法投递.
 func TestRecordOmniFreeQuota_TrackerSignature(t *testing.T) {
 	fake := &fakeQuotaRecorder{}
-	h := &ChatHandler{quotaTracker: fake}
+	h := &ChatHandler{}
+	h.SetOmniFree(nil, nil, fake) // 初始化 quotaRecordQueue + workers.
+	defer func() {
+		close(h.quotaWorkersClose)
+		h.quotaWorkersDone.Wait()
+	}()
+
 	result := &executors.ExecuteResult{Candidate: provider.Candidate{
 		CredentialID:     42,
 		CatalogCode:      "groq",
 		StandardizedName: "llama-3.3-70b",
 	}}
 	h.recordOmniFreeQuota(context.Background(), "auto/free", "tenant-x", result, nil)
-	// M4 异步化: 等待 goroutine 完成.
-	time.Sleep(50 * time.Millisecond)
+	// L3 bounded queue: 等待 worker 消费队列.
+	time.Sleep(100 * time.Millisecond)
 
+	fake.mu.Lock()
+	defer fake.mu.Unlock()
 	if len(fake.records) != 1 {
 		t.Fatalf("expected 1 record call, got %d", len(fake.records))
 	}
@@ -248,9 +259,17 @@ func TestRecordOmniFreeQuota_TrackerSignature(t *testing.T) {
 
 // TestRecordOmniFreeQuota_CorrectOn429 验证 429 路径调用 CorrectFromHeaders,
 // 且 headers 被 flatten 正确传递. round 4 L2 修复的核心.
+//
+// round 4 L3 补充: 同样需要先调用 SetOmniFree 初始化队列.
 func TestRecordOmniFreeQuota_CorrectOn429(t *testing.T) {
 	fake := &fakeQuotaRecorder{}
-	h := &ChatHandler{quotaTracker: fake}
+	h := &ChatHandler{}
+	h.SetOmniFree(nil, nil, fake)
+	defer func() {
+		close(h.quotaWorkersClose)
+		h.quotaWorkersDone.Wait()
+	}()
+
 	result := &executors.ExecuteResult{
 		Candidate: provider.Candidate{
 			CredentialID:     7,
@@ -268,8 +287,10 @@ func TestRecordOmniFreeQuota_CorrectOn429(t *testing.T) {
 	// 第三个参数 (execErr) 仍为 nil 但 result.Response.StatusCode=429,
 	// 应触发 CorrectFromHeaders.
 	h.recordOmniFreeQuota(context.Background(), "auto/coding:free", "default", result, nil)
-	time.Sleep(50 * time.Millisecond)
+	time.Sleep(100 * time.Millisecond)
 
+	fake.mu.Lock()
+	defer fake.mu.Unlock()
 	if len(fake.records) != 1 {
 		t.Fatalf("expected 1 record call, got %d", len(fake.records))
 	}
