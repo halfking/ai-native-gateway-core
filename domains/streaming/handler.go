@@ -3419,6 +3419,17 @@ func (h *ChatHandler) serveWithExecutor(
 	}
 	// ── End of retry loop ────────────────────────────────────────────────
 
+	// 2026-08-09: attach the executor's StreamCapture to the log context so
+	// the client-disconnect probe (deferred in the handler safety net) can
+	// read StreamCapture.SummaryAsMap()["upstream_finish_reason"] and
+	// distinguish an upstream timeout (e.g. first_byte_timeout →
+	// KindStreamTimeout) from a genuine client cancel. Without this the
+	// probe always fell back to r.Context().Err() and mislabelled
+	// upstream timeouts as "client_cancel".
+	if logCtx != nil && streamCapture != nil {
+		logCtx.StreamCapture = streamCapture
+	}
+
 	// Record retry outcome metrics (2026-07-23)
 	retryDuration := time.Since(retryStartTime)
 	var outcome string
