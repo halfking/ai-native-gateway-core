@@ -162,6 +162,73 @@ func TestClassifyErrorWithBody_503_Overload(t *testing.T) {
 	}
 }
 
+// TestClassifyErrorWithBody_503_NoAvailableChannel is the 2026-08-09 server-154
+// incident regression. A OneAPI/new-api distributor answering 503 with
+// "No available channel for model X under group Y" (plus its own
+// `"code":"model_not_found"` label) was being classified as KindConcurrent —
+// which IsRetryable, so the executor re-tried the SAME broken credential
+// instead of failing over to a sibling distributor (62 occurrences/24h;
+// provider 9271 accumulated 387 failed upstream attempts). It must classify as
+// KindNoAvailableChannel: non-retryable, per-(credential,model), sibling
+// failover.
+func TestClassifyErrorWithBody_503_NoAvailableChannel(t *testing.T) {
+	incidentBody := []byte(`{"error":{"message":"No available channel for model gpt-5.6-luna under group Codex-特价 (distributor)","type":"new_api_error","code":"model_not_found"}}`)
+	if kind := ClassifyErrorWithBody(503, incidentBody); kind != KindNoAvailableChannel {
+		t.Errorf("expected KindNoAvailableChannel for 503+no-available-channel body, got %q", kind)
+	}
+
+	// Core behavioral contract of the fix: the kind must NOT be retryable,
+	// otherwise the same-credential retry loop that caused the incident is
+	// preserved.
+	if IsRetryable(KindNoAvailableChannel) {
+		t.Error("KindNoAvailableChannel must NOT be retryable (would re-try the same broken credential)")
+	}
+
+	// "to serve model" phrasing variant.
+	alt := []byte(`{"error":{"message":"No available channel to serve model gpt-5.6-luna","type":"new_api_error","code":"model_not_found"}}`)
+	if kind := ClassifyErrorWithBody(503, alt); kind != KindNoAvailableChannel {
+		t.Errorf("expected KindNoAvailableChannel for 'to serve model' variant, got %q", kind)
+	}
+}
+
+// TestClassifyErrorWithBody_503_PlainOverloadStillConcurrent guards against
+// over-broadening: a 503 whose body is a genuine overload message must STILL
+// be KindConcurrent (the tuner.go concurrency ratchet is the correct response).
+func TestClassifyErrorWithBody_503_PlainOverloadStillConcurrent(t *testing.T) {
+	kind := ClassifyErrorWithBody(503, []byte(`{"error":{"message":"concurrent limit exceeded for this account","type":"rate_limit_error"}}`))
+	if kind != KindConcurrent {
+		t.Errorf("expected KindConcurrent for plain 503 overload, got %q", kind)
+	}
+}
+
+// TestClassifyErrorWithBody_NoAvailableChannel_StatusGate verifies the 5xx gate:
+// a 404 "no available channel" body must NOT be KindNoAvailableChannel (falls
+// through to the transient path), and a 502 overload body must stay
+// KindUpstreamOverloaded (never NoAvailableChannel).
+func TestClassifyErrorWithBody_NoAvailableChannel_StatusGate(t *testing.T) {
+	body := []byte(`No available channel for model gpt-5.6-luna under group Codex-特价`)
+	if kind := ClassifyErrorWithBody(404, body); kind == KindNoAvailableChannel {
+		t.Error("ClassifyErrorWithBody(404, no-available-channel) must NOT be KindNoAvailableChannel (5xx-only gate)")
+	}
+	overload := []byte(`{"error":{"message":"Our servers are currently overloaded. Please try again later.","type":"upstream_error"}}`)
+	if kind := ClassifyErrorWithBody(502, overload); kind != KindUpstreamOverloaded {
+		t.Errorf("expected KindUpstreamOverloaded for 502 overload, got %q", kind)
+	}
+}
+
+// TestClassifyResponseBody_NoAvailableChannel ensures the body-only classifier
+// agrees with ClassifyErrorWithBody on the same body (SSE error chunks,
+// relayed body capture).
+func TestClassifyResponseBody_NoAvailableChannel(t *testing.T) {
+	incident := `{"error":{"message":"No available channel for model gpt-5.6-luna under group Codex-特价 (distributor)","type":"new_api_error","code":"model_not_found"}}`
+	if got := ClassifyResponseBody(503, []byte(incident)); got != KindNoAvailableChannel {
+		t.Errorf("ClassifyResponseBody(503, no-available-channel) = %q, want KindNoAvailableChannel", got)
+	}
+	if got := ClassifyResponseBody(429, []byte(incident)); got == KindNoAvailableChannel {
+		t.Error("ClassifyResponseBody(429, no-available-channel) must NOT be KindNoAvailableChannel (5xx-only gate)")
+	}
+}
+
 func TestClassifyError_ConcurrentErrMessage(t *testing.T) {
 	tests := []string{
 		"concurrent limit exceeded",
@@ -1064,4 +1131,3 @@ func TestClassifyError_WrappedBudgetExceeded(t *testing.T) {
 		})
 	}
 }
-

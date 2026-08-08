@@ -1685,7 +1685,8 @@ func isTransientFailoverKind(kind errorsx.ErrorKind) bool {
 		errorsx.KindStreamTimeout,
 		errorsx.KindUpstreamDown,
 		errorsx.KindUpstreamOverloaded,
-		errorsx.KindEmptyResponse:
+		errorsx.KindEmptyResponse,
+		errorsx.KindNoAvailableChannel:
 		return true
 	}
 	return false
@@ -4105,7 +4106,10 @@ func (e *Executor) recordBanditFailure(credentialID int, kind errorsx.ErrorKind)
 	// credential may serve other models fine; penalizing its bandit score
 	// would unfairly demote a healthy credential for an upstream model-level
 	// decision it cannot control.
-	if kind == errorsx.KindModelDeprecated || kind == errorsx.KindModelNotFound {
+	// 2026-08-09: KindNoAvailableChannel joins this group — a distributor
+	// group having no channel for THIS model says nothing about the
+	// credential's quality for other models.
+	if kind == errorsx.KindModelDeprecated || kind == errorsx.KindModelNotFound || kind == errorsx.KindNoAvailableChannel {
 		return
 	}
 
@@ -4941,7 +4945,8 @@ func shouldWriteCredentialState(kind errorsx.ErrorKind) bool {
 	case errorsx.KindAuth, errorsx.KindAuthRevoked,
 		errorsx.KindQuota, errorsx.KindQuotaPeriodic, errorsx.KindQuotaBalance, errorsx.KindQuotaPermanent,
 		errorsx.KindConcurrent, errorsx.KindRateLimit,
-		errorsx.KindStreamTimeout, errorsx.KindModelNotFound, errorsx.KindModelDeprecated:
+		errorsx.KindStreamTimeout, errorsx.KindModelNotFound, errorsx.KindModelDeprecated,
+		errorsx.KindNoAvailableChannel:
 		return true
 	default:
 		return false
@@ -4963,7 +4968,8 @@ func (e *Executor) shouldWriteCredentialStateOnConfirmedFailure(providerID, cred
 	// → <30s propagation via candidate cache invalidation
 	switch kind {
 	case errorsx.KindQuota, errorsx.KindQuotaBalance, errorsx.KindQuotaPeriodic, errorsx.KindQuotaPermanent,
-		errorsx.KindAuth, errorsx.KindAuthRevoked:
+		errorsx.KindAuth, errorsx.KindAuthRevoked,
+		errorsx.KindNoAvailableChannel:
 		return true
 	}
 	// Other error kinds (RateLimit, Concurrent, StreamTimeout) still require

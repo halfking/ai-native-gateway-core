@@ -81,6 +81,19 @@ func DecideFailover(status int, body []byte, retryAfterHeader string, clientOrig
 		decision.EnqueueProbe = true
 		decision.ProbeFanout = DefaultProbeFanout
 		decision.ReasonCode = "provider_concurrent_overload"
+	case KindNoAvailableChannel:
+		// 2026-08-09: OneAPI/new-api distributor "no available channel for
+		// model X under group Y" (5xx). Per-(credential,model) gap, recoverable
+		// once the group's channel returns, sibling credentials can serve the
+		// model. 15-minute cooling gives the distributor time to restore the
+		// channel while the credentialstate active_probe (consecutive>=2)
+		// flips the binding back as soon as it is healthy.
+		decision.Scope = ScopeModel
+		decision.RetryAfter = 15 * time.Minute
+		decision.EnqueueProbe = true
+		decision.ProbeFanout = 1
+		decision.FrontendWait = 0
+		decision.ReasonCode = "no_available_channel"
 	case KindTransient, KindTimeout, KindNetwork, KindUpstreamDown, KindStreamTimeout:
 		decision.Scope = ScopeModel
 		decision.EnqueueProbe = true
