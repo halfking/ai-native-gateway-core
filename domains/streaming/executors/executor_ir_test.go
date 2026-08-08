@@ -6,6 +6,7 @@ import (
 	"reflect"
 	"testing"
 
+	"github.com/kaixuan/llm-gateway-go/domains/transformation" //nolint:depguard // test mirrors executor_chat.go's use for circuit-open fallback repro
 	"github.com/kaixuan/llm-gateway-go/internal/ir"
 	"github.com/kaixuan/llm-gateway-go/provider"
 )
@@ -471,6 +472,90 @@ func TestIRConverter_LegacyPath(t *testing.T) {
 	}
 	if !reflect.DeepEqual(origObj, gotObj) {
 		t.Errorf("legacy path must preserve JSON semantics\nwant: %s\ngot:  %s", openAIBody, string(result))
+	}
+}
+
+// circuitOpenIRAdapter wraps irAdapterForTest but forces ParseOpenAI to
+// return transformation.ErrConverterCircuitOpen, simulating the
+// StreamCircuitBreaker being OPEN. Used to reproduce the
+// tool_call_id_mismatch regression from request
+// cb103844b742b0611478cd033ad3c187 (model gpt-5.6-luna, provider 314):
+// when e.IR.ParseOpenAI fails with a circuit-open error, the legacy
+// (e.IR != nil) branch of finalizeOpenAIUpstreamBody must still run
+// SanitizeToolMessages/ValidateAndFixRequest via the breaker-independent
+// package-level ir functions, instead of forwarding the raw body upstream
+// unsanitized.
+type circuitOpenIRAdapter struct {
+	irAdapterForTest
+}
+
+func (a *circuitOpenIRAdapter) ParseOpenAI(body []byte) (*ir.InternalRequest, error) {
+	return nil, transformation.ErrConverterCircuitOpen
+}
+
+// TestIRConverter_LegacyPath_CircuitOpen_StillSanitizesOrphanedToolCall
+// reproduces the 2026-08-09 P0 incident (req cb103844b742b0611478cd033ad3c187,
+// gpt-5.6-luna → apiclaude.cc): when the IR converter's process-local
+// circuit breaker is OPEN, e.IR.ParseOpenAI returns ErrConverterCircuitOpen.
+// Before the fix, finalizeOpenAIUpstreamBody's legacy-with-IR branch logged
+// "legacy path: IR parse failed, skipping validation" and forwarded the
+// client's raw body untouched, letting an orphaned tool_call_id reach
+// upstream and trigger a tool_call_id_mismatch 400. After the fix, the
+// breaker-independent package-level ir.ParseOpenAI/ValidateAndFixRequest/
+// SerializeOpenAI still run, stripping the orphaned tool message.
+func TestIRConverter_LegacyPath_CircuitOpen_StillSanitizesOrphanedToolCall(t *testing.T) {
+	executor := &Executor{IR: &circuitOpenIRAdapter{}}
+
+	// Orphaned tool message: "call_orphaned_999" does not match any
+	// preceding assistant tool_calls[].id.
+	openAIBody := `{
+		"model": "gpt-5.6-luna",
+		"messages": [
+			{"role": "user", "content": "what's the weather?"},
+			{"role": "tool", "tool_call_id": "call_orphaned_999", "content": "sunny, 25C"},
+			{"role": "user", "content": "thanks"}
+		]
+	}`
+
+	req := httptest.NewRequest("POST", "/v1/chat/completions", nil)
+	cand := provider.Candidate{
+		ProviderID:   314,
+		CredentialID: 2,
+		Protocol:     "openai-completions",
+		RawModel:     "gpt-5.6-luna",
+	}
+	params := &ExecParams{
+		R:           req,
+		BodyBytes:   []byte(openAIBody),
+		ClientModel: "gpt-5.6-luna",
+		RequestID:   "test-cb103844-repro",
+	}
+
+	result, err := executor.finalizeOpenAIUpstreamBody(params, cand, []byte(openAIBody))
+	if err != nil {
+		t.Fatalf("finalizeOpenAIUpstreamBody failed: %v", err)
+	}
+
+	var got map[string]any
+	if err := json.Unmarshal(result, &got); err != nil {
+		t.Fatalf("result is not valid JSON: %v (body=%s)", err, string(result))
+	}
+
+	msgs, ok := got["messages"].([]any)
+	if !ok {
+		t.Fatalf("messages missing or not array in result: %s", string(result))
+	}
+	for _, m := range msgs {
+		msg, ok := m.(map[string]any)
+		if !ok {
+			continue
+		}
+		if msg["role"] == "tool" && msg["tool_call_id"] == "call_orphaned_999" {
+			t.Fatalf("orphaned tool message with tool_call_id=call_orphaned_999 was forwarded upstream unsanitized despite circuit-open fallback: %s", string(result))
+		}
+	}
+	if len(msgs) != 2 {
+		t.Errorf("expected orphaned tool message to be stripped (2 messages remaining), got %d: %s", len(msgs), string(result))
 	}
 }
 
