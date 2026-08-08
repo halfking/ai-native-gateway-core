@@ -107,7 +107,7 @@ func calculateRateLimitScore(snapshots []*MetricSnapshot) float64 {
 		return 0 // 标记缺失维度
 	}
 	if totalReq == 0 {
-		return 100 // 没有流量就谈不上限流
+		return 100 // 没有流量就谈不上限流；presence 位会将其视为未测量
 	}
 
 	ratio := float64(totalHits) / float64(totalReq)
@@ -216,7 +216,7 @@ func calculateAvailabilityWindowScore(snapshots []*MetricSnapshot) float64 {
 		return 0 // 缺失维度
 	}
 	if totalBuckets == 0 {
-		return 100 // 没有时间桶可判断，按满分
+		return 100 // 没有时间桶可判断；presence 位会将其视为未测量
 	}
 
 	ratio := float64(totalDowntime) / float64(totalBuckets)
@@ -331,4 +331,53 @@ func meanStddevCV(values []float64) (mean, stddev, cv float64) {
 		cv = stddev / mean
 	}
 	return mean, stddev, cv
+}
+
+// extendedWeightsFor 决定使用哪个权重表：如果任一新维度有数据，用
+// DefaultExtendedWeights；否则用 BackwardCompatWeights。
+//
+// 通过 MeasuredDimensions 位掩码判断是否存在新维度数据，比旧版的 score>0
+// 判断更准确（能区分"缺失"和"合法的零分"）。当 MeasuredDimensions 字段
+// 为零时（旧代码路径或测试直接构造 DimensionScores），回退到 score>0 判断。
+func extendedWeightsFor(weights ProfileWeights, scores *DimensionScores) ExtendedWeights {
+	_ = weights // 保留参数签名，未来可能用于自定义权重
+	if scores == nil {
+		return BackwardCompatWeights()
+	}
+
+	// 优先使用 MeasuredDimensions 位掩码判断
+	if scores.MeasuredDimensions != 0 {
+		hasNewDim := (scores.MeasuredDimensions&dimensionRateLimit) != 0 ||
+			(scores.MeasuredDimensions&dimensionConcurrency) != 0 ||
+			(scores.MeasuredDimensions&dimensionAvailabilityWindow) != 0 ||
+			(scores.MeasuredDimensions&dimensionQualityStability) != 0
+		if hasNewDim {
+			return DefaultExtendedWeights()
+		}
+		return BackwardCompatWeights()
+	}
+
+	// 回退：兼容旧测试和直接构造 DimensionScores 的代码路径
+	hasNewDim := scores.RateLimitScore > 0 ||
+		scores.ConcurrencyScore > 0 ||
+		scores.AvailabilityWindowScore > 0 ||
+		scores.QualityStabilityScore > 0
+	if hasNewDim {
+		return DefaultExtendedWeights()
+	}
+	return BackwardCompatWeights()
+}
+
+// dimensionMeasured 判断某个维度是否有可用数据。优先检查 MeasuredDimensions
+// 位掩码；当位掩码为零时（旧代码路径），回退到 score>0 判断。
+func dimensionMeasured(scores *DimensionScores, dimBit uint16, score float64) bool {
+	if scores == nil {
+		return false
+	}
+	// 优先使用显式的 MeasuredDimensions 位掩码
+	if scores.MeasuredDimensions != 0 {
+		return (scores.MeasuredDimensions & dimBit) != 0
+	}
+	// 回退：兼容旧测试和直接构造 DimensionScores 的代码路径
+	return score > 0
 }
