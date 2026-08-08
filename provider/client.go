@@ -1094,18 +1094,29 @@ func (c *Client) loadCandidatesByModalityDB(ctx context.Context, clientModel, te
 			            AND COALESCE(c_sibling.quota_state, 'ok') NOT IN ('permanently_exhausted', 'balance_exhausted')
 			            AND COALESCE(p_sibling.enabled, FALSE) = TRUE
 			            AND COALESCE(p_sibling.manual_disabled, FALSE) = FALSE
-			            AND (
-			                mo_sibling.standardized_name = mo.standardized_name
-			                OR mo_sibling.canonical_raw_name = mo.canonical_raw_name
-			            )
-			            AND NOT EXISTS (
-			                SELECT 1 FROM model_probe_state mps_sibling
-			                WHERE mps_sibling.credential_id = mo_sibling.credential_id
-			                  AND mps_sibling.raw_model_name = mo_sibling.raw_model_name
-			                  AND mps_sibling.state = 'broken_confirmed'
-			            )
-			      )
-			  )
+AND (
+				                mo_sibling.standardized_name = mo.standardized_name
+				                OR mo_sibling.canonical_raw_name = mo.canonical_raw_name
+)
+					            /* 2026-08-08 P0 Fix: a sibling that admin has explicitly
+					               disabled via the binding-level unavailable_reason='manual'
+					               (or via credentials.manual_disabled / providers.manual_disabled)
+					               must NOT count as a live failover. Without this guard, the
+					               sibling EXISTS subquery returns TRUE while no real sibling
+					               can take traffic — the lone routable candidate gets hard-
+					               excluded by the recent_success_rate gate below, producing
+					               candidates_count=0 and 503 for every Claude/GPT request. */
+					            AND COALESCE(mo_sibling.unavailable_reason, '') NOT LIKE 'manual%'
+					            AND COALESCE(c_sibling.manual_disabled, FALSE) = FALSE
+					            AND COALESCE(p_sibling.manual_disabled, FALSE) = FALSE
+					            AND NOT EXISTS (
+				                SELECT 1 FROM model_probe_state mps_sibling
+				                WHERE mps_sibling.credential_id = mo_sibling.credential_id
+				                  AND mps_sibling.raw_model_name = mo_sibling.raw_model_name
+				                  AND mps_sibling.state = 'broken_confirmed'
+				            )
+				      )
+				  )
 
 		  AND (
 		      -- (1) exact match on the offer's canonical_raw_name (lowercase)

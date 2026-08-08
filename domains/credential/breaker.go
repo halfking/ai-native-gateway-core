@@ -56,15 +56,16 @@ func (s State) String() string {
 type ErrorKind = errorsx.ErrorKind
 
 var (
-	KindTransient     = errorsx.KindTransient
-	KindTimeout       = errorsx.KindTimeout
-	KindNetwork       = errorsx.KindNetwork
-	KindRateLimit     = errorsx.KindRateLimit
-	KindAuth          = errorsx.KindAuth
-	KindQuota         = errorsx.KindQuota
-	KindUpstreamDown  = errorsx.KindUpstreamDown
-	KindStreamTimeout = errorsx.KindStreamTimeout
-	KindConcurrent    = errorsx.KindConcurrent
+	KindTransient          = errorsx.KindTransient
+	KindTimeout            = errorsx.KindTimeout
+	KindNetwork            = errorsx.KindNetwork
+	KindRateLimit          = errorsx.KindRateLimit
+	KindAuth               = errorsx.KindAuth
+	KindQuota              = errorsx.KindQuota
+	KindUpstreamDown       = errorsx.KindUpstreamDown
+	KindUpstreamOverloaded = errorsx.KindUpstreamOverloaded
+	KindStreamTimeout      = errorsx.KindStreamTimeout
+	KindConcurrent         = errorsx.KindConcurrent
 )
 
 const (
@@ -388,8 +389,14 @@ func (b *Breaker) RecordFailure(kind ErrorKind) {
 			}
 		} else {
 			b.coolingExpires = now.Add(policy.InitialCooling)
-			// Escalate: 3 consecutive transient/timeout/network → use exponential policy
-			if kind == KindTransient || kind == KindTimeout || kind == KindNetwork || kind == KindStreamTimeout {
+			// Escalate: 3 consecutive transient/timeout/network → use exponential policy.
+			// 2026-08-08 P0 Fix: do NOT escalate upstream_overloaded here. Overloaded
+			// is a supplier-side short-lived condition that already gets its own
+			// RecoveryExponential path (KindUpstreamOverloaded policy). Locking the
+			// circuit for 30 minutes because the supplier is briefly over capacity
+			// is the wrong response — and was the direct cause of every Claude/GPT
+			// request failing for half an hour after a single overload blip.
+			if (kind == KindTransient || kind == KindTimeout || kind == KindNetwork || kind == KindStreamTimeout) && kind != KindUpstreamOverloaded {
 				if consecutive >= autoRecoveryFailureThreshold {
 					escalated := defaultPolicies[KindUpstreamDown]
 					b.coolingExpires = now.Add(escalated.InitialCooling)
