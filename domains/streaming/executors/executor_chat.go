@@ -1496,6 +1496,56 @@ func (e *Executor) finalizeOpenAIUpstreamBody(params *ExecParams, cand provider.
 				"pre_messages", preMsgs,
 				"post_messages", len(irReq.Messages),
 			)
+		} else if errors.Is(parseErr, transformation.ErrConverterCircuitOpen) {
+			// 2026-08-09 P0 fix (req cb103844b742b0611478cd033ad3c187,
+			// tool_call_id_mismatch on gpt-5.6-luna/apiclaude.cc): when the
+			// breaker-wrapped e.IR.ParseOpenAI trips OPEN, do NOT skip
+			// validation outright — that let an orphaned tool_call_id
+			// reach upstream unsanitized. Instead fall back to the
+			// breaker-independent package-level ir.ParseOpenAI /
+			// ValidateAndFixRequest / SerializeOpenAI (the same functions
+			// applyInlineValidation already uses for the e.IR == nil case),
+			// so SanitizeToolMessages still runs regardless of breaker state.
+			if irReq2, err2 := ir.ParseOpenAI(bodyBytes); err2 == nil {
+				preMsgs = len(irReq2.Messages)
+				irReq2 = ir.ValidateAndFixRequest(irReq2, params.RequestID)
+				irReq2.Model = resolveOutboundModel(params, cand)
+				if fixedBytes, err3 := ir.SerializeOpenAI(irReq2); err3 == nil {
+					bodyBytes = fixedBytes
+					slog.Warn("finalizeOpenAIUpstreamBody: IR circuit open, validated via breaker-independent fallback",
+						"request_id", params.RequestID,
+						"path", "legacy_with_ir_circuit_open_fallback",
+						"model", params.Model,
+						"provider_id", cand.ProviderID,
+						"credential_id", cand.CredentialID,
+						"raw_model", cand.RawModel,
+						"pre_body_bytes", preBodyBytes,
+						"post_body_bytes", len(bodyBytes),
+						"pre_messages", preMsgs,
+						"post_messages", len(irReq2.Messages),
+					)
+				} else {
+					slog.Warn("legacy path: IR circuit open, fallback serialize failed, skipping validation",
+						"request_id", params.RequestID,
+						"path", "legacy_with_ir_circuit_open_fallback_serialize_failed",
+						"model", params.Model,
+						"provider_id", cand.ProviderID,
+						"raw_model", cand.RawModel,
+						"pre_body_bytes", preBodyBytes,
+						"error", err3.Error(),
+					)
+				}
+			} else {
+				slog.Warn("legacy path: IR circuit open, fallback parse failed, skipping validation",
+					"request_id", params.RequestID,
+					"path", "legacy_with_ir_circuit_open_fallback_parse_failed",
+					"model", params.Model,
+					"provider_id", cand.ProviderID,
+					"raw_model", cand.RawModel,
+					"pre_body_bytes", preBodyBytes,
+					"error", err2.Error(),
+				)
+			}
 		} else {
 			slog.Warn("legacy path: IR parse failed, skipping validation",
 				"request_id", params.RequestID,
