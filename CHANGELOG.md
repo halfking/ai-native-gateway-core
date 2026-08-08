@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased] - 2026-08-08
 
+### Added
+
+- **路由失败自动切换 + 无节点模型选择 (2026-08-09, commit `fde71690`)**: `domains/streaming/model_alternatives.go`、`handler.go`、`cmd/gateway/main.go` — 当请求模型零候选时，`writeNoCandidateWithAlternatives` 在 503 body 的 `error.alternatives` 里附上当前真正可路由的模型列表（`v_routable_credential_models.is_routable` 过滤，非 admin catalog 的浅过滤），供客户端选择或等待原模型恢复。排序：会话任务类型匹配 > 特色模型 > 近 7 天热门。任务类型三级回退：`X-Gw-Task-Hint` 头 → autoroute Redis 会话意图缓存 → 内联启发式分类（零 LLM 调用）。协议感知：Anthropic `/v1/messages` 客户端收到 `{"type":"error",...}` 信封而非 OpenAI 信封。列表为空时字段整体省略，保持历史响应字节不变。12 个测试覆盖三级任务类型解析、nil 降级、两种协议信封、SQL 契约断言。
+
+### Fixed
+
+- **路由失败切换审计修正 (2026-08-09, session-audit-gate)** — 针对 24h 审计报告中"故障转移能力边界"的后续修正:
+  - **[P0] SQL 语法致命错误** (`f338f611`): `provider/client.go` — 上一轮"加注释"误用 Go `//` 语法写进 SQL 原始字符串，PostgreSQL 无法解析该注释，导致 `loadCandidatesByModalityDB` 永远报错、路由器拿到零候选、每个请求返回 500 `routing_database_error`。`go build`/`go vet` 全程无感（纯字符串）。已改回 `/* */` 块注释，并纠正注释内容本身的事实错误。用 `pglast`（真 PostgreSQL grammar）解析验证通过。
+  - **[CI 护栏]** (`46349372`): 新增 `internal/sqlguard/`，用 Go AST 扫描全仓 SQL 原始字符串字面量，检测其中的 Go `//` 注释。扫描 1827 处字面量，负向控制（重新注入原始缺陷）验证有效，精确定位到注入行。
+  - **[P1] 余额耗尽误报为模型不存在** (`2e95c552`): `domains/streaming/handler.go` — `classifyUpstreamCredentialFailure` 只映射了 `IsCredentialFatal` 6 个 kind 中的 4 个，`KindQuota`（裸 402）与 `KindQuotaBalance` 缺失，导致这两种真实的余额耗尽场景被报成 503 `model_not_found` "No available provider"。补充 `upstream_quota_balance`/`upstream_quota_generic` 两个 i18n key（8 语言全覆盖：ar/de/en/es/fr/ja/zh-CN/zh-TW），新增 `TestClassifyUpstreamCredentialFailure_CoversEveryCredentialFatalKind` 从 `IsCredentialFatal` 派生用例，防止未来新增 credential-fatal kind 时再次漏配。
+  - **[P1] lastKind 归因错误** (`14d6e443`): `domains/streaming/executors/executor.go` — 候选循环内 `lastKind` 是纯粹的 last-writer-wins（8 处赋值点），一次 [额度耗尽, 瞬时故障] 混合失败会把最终报给客户端的 kind 定为最后一个候选的 transient，掩盖真实的"全员额度耗尽"原因。改用 `recordLastKind` 按诊断价值折叠（credential-fatal=3 > binding-level=2 > client-caused=1 > transient=0），同分保留先到者以保持跨重试轮次的稳定归因。13 个用例 + 顺序无关性质测试 + rank 守卫。
+  - **[文档修正]** (`4e6496b3`): `executor.go` — 纠正 `isTransientFailoverKind` 上一条误导性注释（声称该 `continue` 是"流式请求唯一的 failover 保障"，实为循环体末尾的 no-op，`KindNetwork`/`KindConcurrent` 靠隐式路径已经正确 failover）。新增 AST 结构护栏 `TestCandidateLoopFailsOverForEveryRetryableKind`，锁定"循环体尾部结构不能被追加语句破坏"这个真实不变量，负向控制验证有效。
+  - **已知未覆盖（本轮不修，留档）**：
+    - 流式响应发出超过 50 个 chunk 后中断（`executor.go:3016-3043` non-resumable 分支），即使仍有健康候选也直接 `return nil, execErr` 给客户端，不切候选。字节已在线上，重试需要跨 chunk 去重设计（参考 `docs/changelogs/2026-07-29-stream-timeout-and-retry-thresholds.md` 的 `StreamRetryThreshold=50` 放宽）。
+    - `executor.go:3747` 执行器耗尽出口（`Exhausted==true` 路径）未接入 alternatives 列表，仅零候选出口（`handler.go:2660`）接入，因为耗尽路径可能在 headers 已提交后才失败。
+
 ### Fixed
 
 - **24h 修改审计修正 (2026-08-08 23:30, audit session)** — 详见 `docs/session-logs/2026/08/2026-08-08-24h-change-audit.md`:
