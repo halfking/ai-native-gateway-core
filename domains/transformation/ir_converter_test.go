@@ -103,6 +103,14 @@ func (m *mockIRAdapter) SerializeResponsesResponse(resp *ir.InternalResponse, cl
 	return []byte(`{}`), nil
 }
 
+// WithProviderScope returns the mock itself since test mocks are stateless.
+// Added 2026-08-09 to satisfy the updated IRConverterAdapter interface.
+// Note: returns IRConverterAdapter (not executors.IRConverter) because mocks
+// are used internally and don't need to satisfy the public interface.
+func (m *mockIRAdapter) WithProviderScope(providerID int) IRConverterAdapter {
+	return m
+}
+
 // --- 测试：Parse 提取 extensions ---
 
 func TestTransportIRConverter_ParseOpenAI_ExtractsExtensions(t *testing.T) {
@@ -284,18 +292,20 @@ func TestTransportIRConverter_CircuitBreaker_Trips(t *testing.T) {
 		state:     CircuitClosed,
 	}
 	conv := NewTransportIRConverter(inner)
-	conv.SetCircuitBreaker(cb)
+	// Set the circuit breaker for providerID 587 (apiclaude from the incident)
+	conv.SetCircuitBreaker(587, cb)
 
 	// 2 次解析错误应触发熔断
-	_, _ = conv.ParseOpenAI([]byte(`{}`))
-	_, _ = conv.ParseOpenAI([]byte(`{}`))
+	scoped := conv.WithProviderScope(587)
+	_, _ = scoped.ParseOpenAI([]byte(`{}`))
+	_, _ = scoped.ParseOpenAI([]byte(`{}`))
 
 	if cb.State() != CircuitOpen {
 		t.Fatalf("after 2 errors state = %s, want open", cb.State())
 	}
 
 	// 第 3 次应被熔断器拒绝
-	_, err := conv.ParseOpenAI([]byte(`{}`))
+	_, err := scoped.ParseOpenAI([]byte(`{}`))
 	if err != ErrConverterCircuitOpen {
 		t.Fatalf("expected ErrConverterCircuitOpen, got %v", err)
 	}
@@ -323,14 +333,16 @@ func TestTransportIRConverter_CircuitBreaker_RecordsSuccess(t *testing.T) {
 		state:     CircuitClosed,
 	}
 	conv := NewTransportIRConverter(inner)
-	conv.SetCircuitBreaker(cb)
+	conv.SetCircuitBreaker(100, cb)
+
+	scoped := conv.WithProviderScope(100)
 
 	// Parse 成功不记录错误
-	_, _ = conv.ParseOpenAI([]byte(`{"model":"gpt-4o"}`))
+	_, _ = scoped.ParseOpenAI([]byte(`{"model":"gpt-4o"}`))
 
 	// Serialize 成功应 RecordSuccess
 	req := &ir.InternalRequest{Model: "gpt-4o"}
-	_, _ = conv.SerializeOpenAI(req)
+	_, _ = scoped.SerializeOpenAI(req)
 
 	// 熔断器应仍为 Closed
 	if cb.State() != CircuitClosed {
