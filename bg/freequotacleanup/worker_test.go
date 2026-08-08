@@ -10,6 +10,39 @@ import (
 	"github.com/DATA-DOG/go-sqlmock"
 )
 
+// expectListTenantsTx 验证 listTenants 在事务内设 app.current_role 后做
+// DISTINCT 查询. 失败/空回退由 expectListTenantsFallback 表达.
+func expectListTenantsTx(mock sqlmock.Sqlmock, tenants ...string) {
+	mock.ExpectBegin()
+	mock.ExpectExec(regexp.QuoteMeta("SELECT set_config('app.current_role'")).
+		WithArgs("super_admin", true).
+		WillReturnResult(sqlmock.NewResult(0, 0))
+	rows := sqlmock.NewRows([]string{"tenant_id"})
+	for _, tn := range tenants {
+		rows.AddRow(tn)
+	}
+	mock.ExpectQuery(regexp.QuoteMeta(`SELECT DISTINCT tenant_id FROM free_quota_tracker`)).
+		WillReturnRows(rows)
+	mock.ExpectCommit()
+}
+
+// expectListTenantsFallback 验证 listTenants 失败/空时退化为 ['default']
+// (BeginTx + Query 失败 → Rollback, 然后开始 tenant=default 事务).
+func expectListTenantsFallback(mock sqlmock.Sqlmock, queryErr error) {
+	mock.ExpectBegin()
+	mock.ExpectExec(regexp.QuoteMeta("SELECT set_config('app.current_role'")).
+		WithArgs("super_admin", true).
+		WillReturnResult(sqlmock.NewResult(0, 0))
+	if queryErr != nil {
+		mock.ExpectQuery(regexp.QuoteMeta(`SELECT DISTINCT tenant_id FROM free_quota_tracker`)).
+			WillReturnError(queryErr)
+	} else {
+		mock.ExpectQuery(regexp.QuoteMeta(`SELECT DISTINCT tenant_id FROM free_quota_tracker`)).
+			WillReturnRows(sqlmock.NewRows([]string{"tenant_id"}))
+	}
+	mock.ExpectRollback()
+}
+
 // TestCleanupOldWindows_MultipleTenants 验证按 tenant 循环并对每个租户设置
 // app.current_tenant 后执行 DELETE.
 func TestCleanupOldWindows_MultipleTenants(t *testing.T) {
@@ -19,10 +52,7 @@ func TestCleanupOldWindows_MultipleTenants(t *testing.T) {
 	}
 	defer db.Close()
 
-	mock.ExpectQuery(regexp.QuoteMeta(`SELECT DISTINCT tenant_id FROM free_quota_tracker`)).
-		WillReturnRows(sqlmock.NewRows([]string{"tenant_id"}).
-			AddRow("default").
-			AddRow("tenant-b"))
+	expectListTenantsTx(mock, "default", "tenant-b")
 
 	// tenant=default
 	mock.ExpectBegin()
@@ -59,8 +89,7 @@ func TestCleanupOldWindows_EmptyTable(t *testing.T) {
 	}
 	defer db.Close()
 
-	mock.ExpectQuery(regexp.QuoteMeta(`SELECT DISTINCT tenant_id FROM free_quota_tracker`)).
-		WillReturnRows(sqlmock.NewRows([]string{"tenant_id"}))
+	expectListTenantsTx(mock) // no rows
 
 	mock.ExpectBegin()
 	mock.ExpectExec("SELECT set_config").
@@ -88,8 +117,7 @@ func TestCleanupOldWindows_ListTenantsFailsBackToDefault(t *testing.T) {
 	}
 	defer db.Close()
 
-	mock.ExpectQuery(regexp.QuoteMeta(`SELECT DISTINCT tenant_id FROM free_quota_tracker`)).
-		WillReturnError(sql.ErrConnDone)
+	expectListTenantsFallback(mock, sql.ErrConnDone)
 
 	mock.ExpectBegin()
 	mock.ExpectExec("SELECT set_config").

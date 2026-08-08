@@ -194,7 +194,18 @@ func (h *Handler) handleSessionSubrouter(w http.ResponseWriter, r *http.Request)
 			return
 		}
 		h.HandleSessionRecycle(w, r)
+	case "turns":
+		h.serveSessionTurnsList(w, r, sessionID)
+	case "snapshot":
+		h.serveSessionSnapshot(w, r, sessionID)
+	case "instant-summary":
+		h.serveSessionInstantSummary(w, r, sessionID)
 	default:
+		// /turns/<turnNo> 单轮详情，或 /turns/<turnNo>/attachments/<id>/url|revoke
+		if strings.HasPrefix(action, "turns/") {
+			h.serveSessionTurnSubroute(w, r, sessionID, action)
+			return
+		}
 		writeError(w, http.StatusNotFound, "unknown action: "+action)
 	}
 }

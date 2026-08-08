@@ -24,12 +24,13 @@ const (
 //   - Inferred compression (gateway detects client already compressed)
 //
 // Priority order (high to low):
-//   P0: X-Gw-Submit-Mode header (explicit)
-//   P1: Message count regression (compressed)
-//   P2: Summary marker detection (compressed)
-//   P3: Orphaned tool_result (compressed)
-//   P4: LCS stable prefix (full)
-//   P5: No previous outbound (first turn)
+//
+//	P0: X-Gw-Submit-Mode header (explicit)
+//	P1: Message count regression (compressed)
+//	P2: Summary marker detection (compressed)
+//	P3: Orphaned tool_result (compressed)
+//	P4: LCS stable prefix (full)
+//	P5: No previous outbound (first turn)
 type SubmitModeDetector struct {
 	// Configuration
 	LCSThreshold float64 // Minimum overlap ratio to consider "full" mode (default 0.7)
@@ -53,7 +54,7 @@ type DetectionContext struct {
 
 	// Compression metadata
 	CompressionApplied bool
-	
+
 	// Attachment metadata
 	CurrentAttachments  []AttachmentRef // Current turn's attachments
 	PreviousAttachments []AttachmentRef // Previous turn's attachments
@@ -70,7 +71,7 @@ func (d *SubmitModeDetector) Detect(ctx DetectionContext) SubmitMode {
 	if len(ctx.LastOutboundBody) == 0 {
 		return SubmitModeFull
 	}
-	
+
 	// P1.5: Attachment-only change detection (new priority)
 	if d.checkAttachmentOnlyChange(ctx) {
 		return SubmitModeAttachmentOnly
@@ -149,24 +150,24 @@ func (d *SubmitModeDetector) checkAttachmentOnlyChange(ctx DetectionContext) boo
 	if len(ctx.CurrentAttachments) == 0 && len(ctx.PreviousAttachments) == 0 {
 		return false // No attachments at all
 	}
-	
+
 	// Attachments must have changed
 	if !d.attachmentsChanged(ctx.CurrentAttachments, ctx.PreviousAttachments) {
 		return false
 	}
-	
+
 	// Messages must be very similar (high overlap)
 	if len(ctx.ClientMessages) == 0 || len(ctx.LastOutboundBody) == 0 {
 		return false
 	}
-	
+
 	overlap := d.calculateLCSOverlap(ctx.ClientMessages, ctx.LastOutboundBody)
-	
+
 	// High message overlap (>= 90%) + attachment change = attachment-only change
 	if overlap >= 0.9 {
 		return true
 	}
-	
+
 	// Also check if message count and text content are nearly identical
 	if len(ctx.ClientMessages) == len(ctx.LastOutboundBody) {
 		// Count how many messages have identical content
@@ -177,13 +178,13 @@ func (d *SubmitModeDetector) checkAttachmentOnlyChange(ctx DetectionContext) boo
 				matchCount++
 			}
 		}
-		
+
 		// If 90% or more messages are identical
 		if float64(matchCount)/float64(len(ctx.ClientMessages)) >= 0.9 {
 			return true
 		}
 	}
-	
+
 	return false
 }
 
@@ -193,7 +194,7 @@ func (d *SubmitModeDetector) attachmentsChanged(current, previous []AttachmentRe
 	if len(current) != len(previous) {
 		return true
 	}
-	
+
 	// Build set of previous attachment keys
 	prevSet := make(map[string]bool)
 	for _, att := range previous {
@@ -201,7 +202,7 @@ func (d *SubmitModeDetector) attachmentsChanged(current, previous []AttachmentRe
 		key := att.ObjectKey + ":" + att.SHA256
 		prevSet[key] = true
 	}
-	
+
 	// Check if any current attachment is not in previous set
 	for _, att := range current {
 		key := att.ObjectKey + ":" + att.SHA256
@@ -209,7 +210,7 @@ func (d *SubmitModeDetector) attachmentsChanged(current, previous []AttachmentRe
 			return true // Found different attachment
 		}
 	}
-	
+
 	return false // All attachments are the same
 }
 

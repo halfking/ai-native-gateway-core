@@ -396,7 +396,8 @@ func (b *Breaker) RecordFailure(kind ErrorKind) {
 			// circuit for 30 minutes because the supplier is briefly over capacity
 			// is the wrong response — and was the direct cause of every Claude/GPT
 			// request failing for half an hour after a single overload blip.
-			if (kind == KindTransient || kind == KindTimeout || kind == KindNetwork || kind == KindStreamTimeout) && kind != KindUpstreamOverloaded {
+			switch kind {
+			case KindTransient, KindTimeout, KindNetwork, KindStreamTimeout:
 				if consecutive >= autoRecoveryFailureThreshold {
 					escalated := defaultPolicies[KindUpstreamDown]
 					b.coolingExpires = now.Add(escalated.InitialCooling)

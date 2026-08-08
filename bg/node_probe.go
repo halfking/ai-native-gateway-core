@@ -552,42 +552,22 @@ func MarkNodeProbeHealthy(ctx context.Context, db *pgxpool.Pool, credentialID in
 	return err
 }
 
-// notifySyncWaiters closes every ProbeSync waiter channel registered
-// for `key` and removes the entry. It is called from BOTH
-// cycle() (after runOne completes for a background-triggered probe)
-// AND ProbeSync's fresh-job goroutine (after the synchronous probe
-// completes), so a concurrent ProbeSync caller that attached as a
-// syncWaiter is released as soon as EITHER path finishes — it does
-// not have to wait for ctx to expire.
-//
-// Closing happens AFTER the state-cache writes done inside runOne /
-// the fresh-job body, so any waiter's subsequent re-PlanCandidates
-// observes the recovered availability.
-func (w *NodeProbeWorker) notifySyncWaiters(key string) {
-	if w == nil {
-		return
-	}
-	w.syncWaitersMu.Lock()
-	chs := w.syncWaiters[key]
-	delete(w.syncWaiters, key)
-	w.syncWaitersMu.Unlock()
-	for _, ch := range chs {
-		close(ch)
-	}
-}
-
-// finishProbe releases the inFlight slot for key and THEN wakes every
-// ProbeSync caller that attached as a syncWaiter for key. It is the
-// single completion hook used by both cycle() (background probe) and the
-// fresh-job goroutine in ProbeSync (synchronous probe), guaranteeing a
-// uniform release→notify order across the two completion paths.
+// finishProbe releases the inFlight slot for key AND detaches every
+// ProbeSync caller that attached as a syncWaiter for key, all under a
+// single critical section. It is the single completion hook used by
+// both cycle() (background probe) and the fresh-job goroutine in
+// ProbeSync (synchronous probe), guaranteeing a uniform
+// release→detach→close order across the two completion paths.
 //
 // Order matters: the slot must be released before the waiters are
-// notified. A waiter that wakes and immediately retries ProbeSync must
+// detached. A waiter that wakes and immediately retries ProbeSync must
 // find the slot free and start a fresh probe. If the slot were still
 // held, the retry would register a new waiter whose channel can never
-// be closed (notifySyncWaiters deletes the map entry when it fires),
+// be closed (this routine deletes the map entry when it fires),
 // burning the caller's entire ctx budget.
+//
+// Closing happens AFTER the in-flight slot release, so any waiter's
+// subsequent re-PlanCandidates observes the recovered availability.
 func (w *NodeProbeWorker) finishProbe(key string) {
 	if w == nil {
 		return
@@ -596,17 +576,17 @@ func (w *NodeProbeWorker) finishProbe(key string) {
 	// round we just completed in one critical section. Doing the two
 	// ops under separate locks would let a fresh ProbeSync caller
 	// re-register on the same key after the slot was released but
-	// before the waiter list was detached — the deferred notify would
-	// then close the new round's waiter and leave the new round
-	// hanging forever (notifySyncWaiters already deleted the map
-	// entry, so its channel could never be closed again).
+	// before the waiter list was detached — the close loop below
+	// would then close the new round's waiter and leave the new
+	// round hanging forever (the map entry was deleted, so its
+	// channel could never be closed again).
 	//
-	// notifySyncWaiters is still called OUTSIDE the w.mu critical
-	// section: closing the channels can take arbitrarily long and we
-	// must not hold w.mu while doing it. notifySyncWaiters itself
-	// takes syncWaitersMu to manipulate the map, so the deferred
-	// snapshot we hand it is safe — no further goroutine can race
-	// in and append to this round's waiter slice.
+	// The close loop runs OUTSIDE the w.mu critical section: closing
+	// the channels can take arbitrarily long and we must not hold
+	// w.mu while doing it. The snapshot we hand it is safe — no
+	// further goroutine can race in and append to this round's
+	// waiter slice because the map entry was deleted under
+	// syncWaitersMu first.
 	w.mu.Lock()
 	delete(w.inFlight, key)
 	w.syncWaitersMu.Lock()
@@ -689,11 +669,11 @@ func (w *NodeProbeWorker) ProbeSync(
 		// same key could BOTH observe the slot free and both launch a
 		// fresh probe (duplicate direct probes), and a waiter registering
 		// between the owner's release and notify would be attached to a
-		// map entry that notifySyncWaiters had already deleted — its
-		// channel could never close. Merging the check, the waiter
-		// registration and the reservation under one w.mu critical
-		// section makes "one in-flight probe per (cred,model)" hold for
-		// synchronous callers too. Lock order: w.mu → syncWaitersMu.
+		// map entry that finishProbe had already deleted — its channel
+		// could never close. Merging the check, the waiter registration
+		// and the reservation under one w.mu critical section makes
+		// "one in-flight probe per (cred,model)" hold for synchronous
+		// callers too. Lock order: w.mu → syncWaitersMu.
 		w.mu.Lock()
 		if _, busy := w.inFlight[key]; busy {
 			ch := make(chan struct{})

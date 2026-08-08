@@ -276,7 +276,9 @@ var modelDeprecatedRe = regexp.MustCompile(
 // 智码转发 / OpenAI-compatible balance-exhaustion responses that report on HTTP 403
 // instead of 429). Previous patterns required the noun to immediately precede "balance"
 // (`balance insufficient` / `insufficient balance`), but the upstream body is:
-//   {"code":"INSUFFICIENT_BALANCE","message":"Insufficient account balance"}
+//
+//	{"code":"INSUFFICIENT_BALANCE","message":"Insufficient account balance"}
+//
 // which has "account" between "Insufficient" and "balance". Without the
 // `(?:.{0,20}balance.{0,20}insufficient|insufficient.{0,20}balance)` window, the
 // body-pattern check at the 403/402/429 status gates fell through to KindAuth.

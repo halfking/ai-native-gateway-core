@@ -56,14 +56,14 @@ func ConvertBatch(metas []AttachmentMetadata) []AttachmentRef {
 // Returns a deduplicated list of types: ["image", "audio", "video", "document"]
 func ExtractMultimodalTypes(attachments []AttachmentRef) []string {
 	typeSet := make(map[string]bool)
-	
+
 	for _, att := range attachments {
 		contentType := categorizeContentType(att.MIMEType)
 		if contentType != "" {
 			typeSet[contentType] = true
 		}
 	}
-	
+
 	// Convert set to sorted list
 	types := make([]string, 0, len(typeSet))
 	order := []string{"image", "audio", "video", "document"} // Stable order
@@ -72,7 +72,7 @@ func ExtractMultimodalTypes(attachments []AttachmentRef) []string {
 			types = append(types, t)
 		}
 	}
-	
+
 	return types
 }
 
@@ -81,7 +81,7 @@ func categorizeContentType(mimeType string) string {
 	if len(mimeType) == 0 {
 		return ""
 	}
-	
+
 	// Check prefix
 	if len(mimeType) >= 6 {
 		switch mimeType[:6] {
@@ -93,7 +93,7 @@ func categorizeContentType(mimeType string) string {
 			return "video"
 		}
 	}
-	
+
 	// Check common document types
 	switch mimeType {
 	case "application/pdf":
@@ -107,7 +107,7 @@ func categorizeContentType(mimeType string) string {
 	case "application/json", "application/xml":
 		return "document"
 	}
-	
+
 	return ""
 }
 
@@ -124,7 +124,7 @@ func ComputeStats(attachments []AttachmentRef) AttachmentStats {
 	for _, att := range attachments {
 		totalBytes += att.SizeBytes
 	}
-	
+
 	return AttachmentStats{
 		Count:      len(attachments),
 		TotalBytes: totalBytes,
