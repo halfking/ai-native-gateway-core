@@ -115,7 +115,11 @@ func (f *fakeQuotaRecorder) CorrectFromHeaders(_ context.Context, req freeresour
 //
 // nil 状态下 / 不带 "auto" 前缀的请求保持原行为.
 func (h *ChatHandler) shouldTryOmniFree(clientModel string) bool {
-	if h.autoComboResolver == nil || h.autoComboFactory == nil {
+	h.omniFreeMu.RLock()
+	resolver := h.autoComboResolver
+	factory := h.autoComboFactory
+	h.omniFreeMu.RUnlock()
+	if resolver == nil || factory == nil {
 		return false
 	}
 	if clientModel == autoRouteMagicExact {
@@ -148,7 +152,14 @@ func (h *ChatHandler) resolveOmniFreeCandidates(
 	clientModel, profile, tenantID string,
 	bodyBytes []byte,
 ) ([]provider.Candidate, *provider.Policy, string, bool, error) {
-	spec, err := h.autoComboResolver.Resolve(ctx, clientModel, tenantID)
+	h.omniFreeMu.RLock()
+	resolver := h.autoComboResolver
+	factory := h.autoComboFactory
+	h.omniFreeMu.RUnlock()
+	if resolver == nil || factory == nil {
+		return nil, nil, "", false, nil
+	}
+	spec, err := resolver.Resolve(ctx, clientModel, tenantID)
 	if err != nil {
 		// 第四轮审计 P1: Resolver.Resolve 出错 (DB 查询失败/RLS 拒绝等)
 		// 是基础设施故障, 不是"这个模型不归 OmniFree 管". 用
@@ -165,7 +176,7 @@ func (h *ChatHandler) resolveOmniFreeCandidates(
 	modality := detectRequestModality(bodyBytes)
 
 	// 收集 catalog 中的具体 model_id, 通过 provider.Client 获取可执行候选.
-	entries, err := h.autoComboFactory.LoadCatalogForBuild(ctx, tenantID, spec)
+	entries, err := factory.LoadCatalogForBuild(ctx, tenantID, spec)
 	if err != nil {
 		slog.Error("omnifree: load catalog failed (infra)", "error", err, "tenant_id", tenantID)
 		return nil, nil, "", false, fmt.Errorf("%w: load catalog: %v", ErrOmniFreeInfraFailure, err)
@@ -254,7 +265,7 @@ func (h *ChatHandler) resolveOmniFreeCandidates(
 			ErrOmniFreeNoCandidates, spec.ComboName, tenantID)
 	}
 
-	filtered, err := h.autoComboFactory.BuildFromCandidates(ctx, spec, pool, tenantID)
+	filtered, err := factory.BuildFromCandidates(ctx, spec, pool, tenantID)
 	if err != nil {
 		slog.Warn("omnifree: factory build failed", "error", err, "model", clientModel)
 		return nil, nil, modality, false, fmt.Errorf("%w: spec=%s factory-build-failed tenant=%s: %v",
@@ -299,13 +310,20 @@ func (h *ChatHandler) recordOmniFreeQuota(
 	result *executors.ExecuteResult,
 	execErr error,
 ) {
-	if h.quotaTracker == nil || !strings.HasPrefix(clientModel, "auto/") {
+	if !strings.HasPrefix(clientModel, "auto/") {
+		return
+	}
+	h.quotaQueueMu.Lock()
+	tracker := h.quotaTracker
+	accepting := h.quotaAccepting
+	queue := h.quotaRecordQueue
+	h.quotaQueueMu.Unlock()
+	if tracker == nil || !accepting || queue == nil {
 		return
 	}
 	if result == nil {
 		return
 	}
-
 	windowTypes := []freeresource.WindowType{
 		freeresource.WindowTypeDay1,
 		freeresource.WindowTypeMonth1,
@@ -346,6 +364,8 @@ func (h *ChatHandler) recordOmniFreeQuota(
 
 	recordTask := quotaRecordTask{
 		ctx:      recordCtx,
+		cancel:   cancel,
+		recorder: tracker,
 		isRecord: true,
 		recordReq: freeresource.RecordRequest{
 			CredentialID: int64(captured.CredentialID),
@@ -358,14 +378,10 @@ func (h *ChatHandler) recordOmniFreeQuota(
 		},
 	}
 
-	select {
-	case h.quotaRecordQueue <- recordTask:
-		// 投递成功, worker 会消费.
-	default:
-		// 队列满, 丢弃任务 (配额记录非关键路径, 丢弃优于阻塞请求响应).
+	if !h.enqueueQuotaTask(recordTask) {
 		metrics.OmniFreeQuotaRecordErrorsTotal.Inc()
-		slog.Warn("omnifree: quota record queue full, dropping task",
-			"model", clientModel, "tenant_id", tenantID, "queue_depth", cap(h.quotaRecordQueue))
+		slog.Warn("omnifree: quota record queue full or stopped, dropping task",
+			"model", clientModel, "tenant_id", tenantID)
 		cancel()
 	}
 
@@ -374,10 +390,11 @@ func (h *ChatHandler) recordOmniFreeQuota(
 		metrics.OmniFreeQuotaCorrectTotal.Inc()
 		headers := flattenHeaders(captured.Header)
 		correctCtx, cancelCorrect := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
-		_ = cancelCorrect
 
 		correctTask := quotaRecordTask{
 			ctx:      correctCtx,
+			cancel:   cancelCorrect,
+			recorder: tracker,
 			isRecord: false,
 			correctReq: freeresource.CorrectionRequest{
 				CredentialID: int64(captured.CredentialID),
@@ -388,11 +405,8 @@ func (h *ChatHandler) recordOmniFreeQuota(
 			},
 		}
 
-		select {
-		case h.quotaRecordQueue <- correctTask:
-			// 投递成功.
-		default:
-			slog.Warn("omnifree: quota correct queue full, dropping task",
+		if !h.enqueueQuotaTask(correctTask) {
+			slog.Warn("omnifree: quota correct queue full or stopped, dropping task",
 				"model", clientModel, "tenant_id", tenantID)
 			cancelCorrect()
 		}

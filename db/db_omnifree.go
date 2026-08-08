@@ -189,26 +189,35 @@ func (d *DB) ensureOmniFreeSchema(ctx context.Context) error {
 	_, err = d.pool.Exec(ctx, `
 		DO $$
 		BEGIN
-			IF EXISTS (
-				SELECT 1 FROM information_schema.columns
-				 WHERE table_schema='public' AND table_name='auto_combo_templates' AND column_name='template_key'
-			) AND NOT EXISTS (
-				SELECT 1 FROM information_schema.columns
-				 WHERE table_schema='public' AND table_name='auto_combo_templates' AND column_name='combo_name'
-			) THEN
-				ALTER TABLE public.auto_combo_templates ADD COLUMN combo_name TEXT;
-				UPDATE public.auto_combo_templates SET combo_name = template_key WHERE combo_name IS NULL;
-				ALTER TABLE public.auto_combo_templates ALTER COLUMN combo_name SET NOT NULL;
-			END IF;
-			IF NOT EXISTS (
-				SELECT 1 FROM information_schema.columns
-				 WHERE table_schema='public' AND table_name='auto_combo_templates' AND column_name='variant'
-			) THEN
-				ALTER TABLE public.auto_combo_templates ADD COLUMN variant TEXT NOT NULL DEFAULT 'cheap';
-			END IF;
-			IF NOT EXISTS (
-				SELECT 1 FROM information_schema.columns
-				 WHERE table_schema='public' AND table_name='auto_combo_templates' AND column_name='tier_filter'
+				IF EXISTS (
+					SELECT 1 FROM information_schema.columns
+					 WHERE table_schema='public' AND table_name='auto_combo_templates' AND column_name='template_key'
+				) AND NOT EXISTS (
+					SELECT 1 FROM information_schema.columns
+					 WHERE table_schema='public' AND table_name='auto_combo_templates' AND column_name='combo_name'
+				) THEN
+					ALTER TABLE public.auto_combo_templates ADD COLUMN combo_name TEXT;
+					UPDATE public.auto_combo_templates SET combo_name = template_key WHERE combo_name IS NULL;
+					ALTER TABLE public.auto_combo_templates ALTER COLUMN combo_name SET NOT NULL;
+				END IF;
+				-- New seed/import contracts use combo_name. Retain template_key for
+				-- old readers, but make it nullable so legacy NOT NULL does not
+				-- reject inserts that intentionally omit the retired column.
+				IF EXISTS (
+					SELECT 1 FROM information_schema.columns
+					 WHERE table_schema='public' AND table_name='auto_combo_templates' AND column_name='template_key'
+				) THEN
+					ALTER TABLE public.auto_combo_templates ALTER COLUMN template_key DROP NOT NULL;
+				END IF;
+				IF NOT EXISTS (
+					SELECT 1 FROM information_schema.columns
+					 WHERE table_schema='public' AND table_name='auto_combo_templates' AND column_name='variant'
+				) THEN
+					ALTER TABLE public.auto_combo_templates ADD COLUMN variant TEXT NOT NULL DEFAULT 'cheap';
+				END IF;
+				IF NOT EXISTS (
+					SELECT 1 FROM information_schema.columns
+					 WHERE table_schema='public' AND table_name='auto_combo_templates' AND column_name='tier_filter'
 			) THEN
 				ALTER TABLE public.auto_combo_templates ADD COLUMN tier_filter TEXT[] DEFAULT ARRAY['free'];
 			END IF;
@@ -285,6 +294,29 @@ func (d *DB) ensureOmniFreeSchema(ctx context.Context) error {
 	`)
 	if err != nil {
 		return fmt.Errorf("ensureOmniFreeSchema: reconcile auto_combo_templates legacy columns: %w", err)
+	}
+
+	// Replace the early bootstrap ToS CHECK with the current seed contract.
+	_, err = d.pool.Exec(ctx, `
+		DO $$
+		DECLARE constraint_name TEXT;
+		BEGIN
+			IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema='public' AND table_name='free_resource_catalog') THEN
+				FOR constraint_name IN
+					SELECT conname FROM pg_constraint
+					WHERE conrelid = 'public.free_resource_catalog'::regclass
+					  AND contype = 'c' AND pg_get_constraintdef(oid) LIKE '%tos_verdict%'
+				LOOP
+					EXECUTE format('ALTER TABLE public.free_resource_catalog DROP CONSTRAINT %I', constraint_name);
+				END LOOP;
+				ALTER TABLE public.free_resource_catalog
+					ADD CONSTRAINT free_resource_catalog_tos_verdict_check
+					CHECK (tos_verdict IN ('ok','caution','ambiguous','avoid','unknown'));
+			END IF;
+		END $$;
+	`)
+	if err != nil {
+		return fmt.Errorf("ensureOmniFreeSchema: reconcile tos_verdict constraint: %w", err)
 	}
 
 	// ── 2. Extend provider_catalog + credentials (与 075-omnifree-schema.sql §5 一致) ──
