@@ -78,6 +78,12 @@ func (a *DailyAggregator) aggregateForCredential(ctx context.Context, credential
 		return nil // 当天无数据，跳过
 	}
 
+	// 2026-08-07: 依据当日 snapshot 序列反推"综合分序列"，计算当日 CV 并
+	// 写回到最后一个 snapshot，供后续 scorer 在 calculateQualityStabilityScore
+	// 中读取。这个过程无需 schema 迁移（信号留在内存对象里），每日聚合时
+	// 覆写一次。
+	a.stampQualityStability(snapshots)
+
 	// 2. 计算各维度分数
 	dimensionScores := a.scorer.CalculateDimensionScores(snapshots, a.weights)
 
@@ -212,11 +218,52 @@ func (a *DailyAggregator) buildRawStats(snapshots []*MetricSnapshot) map[string]
 		successRate = float64(successRequests) / float64(totalRequests) * 100
 	}
 
-	return map[string]interface{}{
+	stats := map[string]interface{}{
 		"snapshot_count":   len(snapshots),
 		"total_requests":   totalRequests,
 		"success_requests": successRequests,
 		"total_errors":     totalErrors,
 		"success_rate":     successRate,
 	}
+
+	// 2026-08-07: 把当日 QualityStabilitySignal 也写入 raw_stats，便于
+	// 排查和历史回溯；前端不直接消费，但 debug 接口能用到。
+	for _, snap := range snapshots {
+		if snap != nil && snap.QualityStabilitySignal != nil {
+			s := snap.QualityStabilitySignal
+			stats["quality_stability"] = map[string]interface{}{
+				"mean":        s.Mean,
+				"stddev":      s.Stddev,
+				"cv":          s.CV,
+				"is_volatile": s.IsVolatile,
+				"sample_n":    s.SampleN,
+			}
+			break
+		}
+	}
+
+	return stats
+}
+
+// stampQualityStability 在聚合时计算当日综合分序列的均值/标准差/CV，
+// 写到最后一个 snapshot.QualityStabilitySignal。
+//
+// 算法：复用 DefaultScorer 的 4 维计算（不引入新维度依赖，避免循环调用），
+// 对每个 snapshot 算一次当日总评分估计，得到一个 len(snapshots) 的小序列。
+// CV>0.10 标记 IsVolatile，scorer 据此扣分。
+func (a *DailyAggregator) stampQualityStability(snapshots []*MetricSnapshot) {
+	if len(snapshots) == 0 {
+		return
+	}
+	scores := calculateDailySnapshotScores(snapshots)
+	mean, stddev, cv := meanStddevCV(scores)
+	sig := &QualityStabilitySignal{
+		Mean:       mean,
+		Stddev:     stddev,
+		CV:         cv,
+		IsVolatile: cv > 0.10,
+		SampleN:    len(scores),
+	}
+	// 只在最后一个 snapshot 上写，前面的不必携带（scorer 用最新一条）。
+	snapshots[len(snapshots)-1].QualityStabilitySignal = sig
 }

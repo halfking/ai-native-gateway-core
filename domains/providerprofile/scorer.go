@@ -6,7 +6,7 @@ import "math"
 type Scorer interface {
 	// CalculateDimensionScores 计算各维度分数
 	CalculateDimensionScores(snapshots []*MetricSnapshot, weights ProfileWeights) *DimensionScores
-	
+
 	// CalculateTotalScore 计算总分
 	CalculateTotalScore(scores *DimensionScores, weights ProfileWeights) float64
 }
@@ -17,12 +17,39 @@ type DimensionScores struct {
 	AvailabilityScore float64
 	StabilityScore    float64
 	ScaleScore        float64
-	
+
+	// 2026-08-07: four extended dimensions. 0 表示缺失维度（适配层未填），
+	// CalculateTotalScore 按"if score > 0 才计入加权"的策略跳过。
+	RateLimitScore          float64 // 429/限流命中率得分
+	ConcurrencyScore        float64 // 并发承载能力得分
+	AvailabilityWindowScore float64 // 不可用窗口得分
+	QualityStabilityScore   float64 // 综合分稳定性得分
+
 	// 以下维度暂时设为0，后续阶段实现
 	CredibilityScore  float64
 	CostAccuracyScore float64
 	PriceScore        float64
+
+	// MeasuredDimensions records which dimensions had usable input data. A
+	// measured dimension is included even when its score is legitimately zero.
+	// Zero preserves compatibility with callers that construct this struct
+	// directly; those callers use score>0 as the legacy presence signal.
+	MeasuredDimensions uint16
 }
+
+const (
+	dimensionNetwork uint16 = 1 << iota
+	dimensionAvailability
+	dimensionStability
+	dimensionScale
+	dimensionRateLimit
+	dimensionConcurrency
+	dimensionAvailabilityWindow
+	dimensionQualityStability
+	dimensionCredibility
+	dimensionCostAccuracy
+	dimensionPrice
+)
 
 // DefaultScorer 默认评分器实现
 type DefaultScorer struct{}
@@ -38,59 +65,122 @@ func (s *DefaultScorer) CalculateDimensionScores(snapshots []*MetricSnapshot, we
 		return &DimensionScores{}
 	}
 
-	return &DimensionScores{
-		NetworkScore:      s.calculateNetworkScore(snapshots),
-		AvailabilityScore: s.calculateAvailabilityScore(snapshots),
-		StabilityScore:    s.calculateStabilityScore(snapshots),
-		ScaleScore:        s.calculateScaleScore(snapshots),
+	result := &DimensionScores{
+		NetworkScore:            s.calculateNetworkScore(snapshots),
+		AvailabilityScore:       s.calculateAvailabilityScore(snapshots),
+		StabilityScore:          s.calculateStabilityScore(snapshots),
+		ScaleScore:              s.calculateScaleScore(snapshots),
+		RateLimitScore:          calculateRateLimitScore(snapshots),
+		ConcurrencyScore:        calculateConcurrencyScore(snapshots),
+		AvailabilityWindowScore: calculateAvailabilityWindowScore(snapshots),
+		QualityStabilityScore:   calculateQualityStabilityScore(snapshots),
 	}
+	for _, snap := range snapshots {
+		if snap == nil {
+			continue
+		}
+		if snap.NetworkMetrics != nil && snap.NetworkMetrics.P95 > 0 {
+			result.MeasuredDimensions |= dimensionNetwork
+		}
+		if snap.AvailabilityMetrics != nil && snap.AvailabilityMetrics.TotalRequests > 0 {
+			result.MeasuredDimensions |= dimensionAvailability | dimensionStability
+		}
+		if snap.ScaleMetrics != nil && snap.ScaleMetrics.TotalModels > 0 {
+			result.MeasuredDimensions |= dimensionScale
+		}
+		// RateLimitMetrics 存在即算"已测量"（TotalRequests=0 时返回中性 100 分）
+		if snap.RateLimitMetrics != nil {
+			result.MeasuredDimensions |= dimensionRateLimit
+		}
+		if snap.ConcurrencyCapacity != nil && snap.ConcurrencyCapacity.EffLimit > 0 {
+			result.MeasuredDimensions |= dimensionConcurrency
+		}
+		// AvailabilityWindow 存在即算"已测量"（TotalBuckets=0 时返回中性 100 分）
+		if snap.AvailabilityWindow != nil {
+			result.MeasuredDimensions |= dimensionAvailabilityWindow
+		}
+		if snap.QualityStabilitySignal != nil && snap.QualityStabilitySignal.SampleN > 0 {
+			result.MeasuredDimensions |= dimensionQualityStability
+		}
+	}
+	return result
 }
 
 // CalculateTotalScore 计算总分（加权平均）
+//
+// 2026-08-07: 新增四个维度（限流命中率、并发承载、不可用窗口、质量稳定性）。
+// 缺失维度（score<=0 或信号未填）按"if score>0 才计入加权"策略跳过，避免
+// 冷启动或旧版快照把总分拉低。新维度权重定义在 ExtendedWeights，总和=1.0；
+// 当所有新维度都缺失时回退到 BackwardCompatWeights（仅老 4 维），保持和老
+// 逻辑差异 < 0.5 分（scorer_test 验证）。
 func (s *DefaultScorer) CalculateTotalScore(scores *DimensionScores, weights ProfileWeights) float64 {
+	if scores == nil {
+		return 0
+	}
+
+	ext := extendedWeightsFor(weights, scores)
+
 	totalWeight := 0.0
 	weightedSum := 0.0
 
 	// 网络延迟
-	if scores.NetworkScore > 0 {
-		weightedSum += scores.NetworkScore * weights.Network
-		totalWeight += weights.Network
+	if dimensionMeasured(scores, dimensionNetwork, scores.NetworkScore) {
+		weightedSum += scores.NetworkScore * ext.Network
+		totalWeight += ext.Network
 	}
 
 	// 可用性
-	if scores.AvailabilityScore > 0 {
-		weightedSum += scores.AvailabilityScore * weights.Availability
-		totalWeight += weights.Availability
+	if dimensionMeasured(scores, dimensionAvailability, scores.AvailabilityScore) {
+		weightedSum += scores.AvailabilityScore * ext.Availability
+		totalWeight += ext.Availability
 	}
 
 	// 稳定性
-	if scores.StabilityScore > 0 {
-		weightedSum += scores.StabilityScore * weights.Stability
-		totalWeight += weights.Stability
+	if dimensionMeasured(scores, dimensionStability, scores.StabilityScore) {
+		weightedSum += scores.StabilityScore * ext.Stability
+		totalWeight += ext.Stability
 	}
 
 	// 规模
-	if scores.ScaleScore > 0 {
-		weightedSum += scores.ScaleScore * weights.Scale
-		totalWeight += weights.Scale
+	if dimensionMeasured(scores, dimensionScale, scores.ScaleScore) {
+		weightedSum += scores.ScaleScore * ext.Scale
+		totalWeight += ext.Scale
+	}
+
+	// 2026-08-07 新增四个维度
+	if dimensionMeasured(scores, dimensionRateLimit, scores.RateLimitScore) {
+		weightedSum += scores.RateLimitScore * ext.RateLimit
+		totalWeight += ext.RateLimit
+	}
+	if dimensionMeasured(scores, dimensionConcurrency, scores.ConcurrencyScore) {
+		weightedSum += scores.ConcurrencyScore * ext.Concurrency
+		totalWeight += ext.Concurrency
+	}
+	if dimensionMeasured(scores, dimensionAvailabilityWindow, scores.AvailabilityWindowScore) {
+		weightedSum += scores.AvailabilityWindowScore * ext.AvailabilityWindow
+		totalWeight += ext.AvailabilityWindow
+	}
+	if dimensionMeasured(scores, dimensionQualityStability, scores.QualityStabilityScore) {
+		weightedSum += scores.QualityStabilityScore * ext.QualityStability
+		totalWeight += ext.QualityStability
 	}
 
 	// 模型可信度（暂未实现）
-	if scores.CredibilityScore > 0 {
-		weightedSum += scores.CredibilityScore * weights.Credibility
-		totalWeight += weights.Credibility
+	if dimensionMeasured(scores, dimensionCredibility, scores.CredibilityScore) {
+		weightedSum += scores.CredibilityScore * ext.Credibility
+		totalWeight += ext.Credibility
 	}
 
 	// 费用准确性（暂未实现，缺失按0分计算）
-	if scores.CostAccuracyScore > 0 {
-		weightedSum += scores.CostAccuracyScore * weights.CostAccuracy
-		totalWeight += weights.CostAccuracy
+	if dimensionMeasured(scores, dimensionCostAccuracy, scores.CostAccuracyScore) {
+		weightedSum += scores.CostAccuracyScore * ext.CostAccuracy
+		totalWeight += ext.CostAccuracy
 	}
 
 	// 价格（暂未实现）
-	if scores.PriceScore > 0 {
-		weightedSum += scores.PriceScore * weights.Price
-		totalWeight += weights.Price
+	if dimensionMeasured(scores, dimensionPrice, scores.PriceScore) {
+		weightedSum += scores.PriceScore * ext.Price
+		totalWeight += ext.Price
 	}
 
 	if totalWeight == 0 {
