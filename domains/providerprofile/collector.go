@@ -38,6 +38,11 @@ type RequestAnalyzer interface {
 }
 
 // RequestStats 请求统计数据
+//
+// 2026-08-07: 扩展 RateLimitMetrics 和 AvailabilityWindow 字段，用于
+// DefaultScorer 的新增维度（限流命中率、不可用窗口）。这两个字段在
+// AnalyzeRequests 中一并填充，调用方（LightweightCollector）负责把
+// 它们挂到 MetricSnapshot 上。
 type RequestStats struct {
 	TotalRequests   int
 	SuccessRequests int
@@ -45,6 +50,10 @@ type RequestStats struct {
 	ErrorTypes      map[string]int
 	AvgTTFTMs       int
 	AvgDurationMs   int
+
+	// 2026-08-07 新增
+	RateLimitMetrics   *RateLimitMetrics
+	AvailabilityWindow *AvailabilityWindow
 }
 
 // ScaleProvider 规模数据提供者接口
@@ -54,10 +63,14 @@ type ScaleProvider interface {
 }
 
 // ScaleData 规模数据
+//
+// 2026-08-07: ConcurrencyCapacity 是可选字段，nil 表示未查询到（适配器
+// 旧版本或单元测试场景），scorer 会按缺失维度处理。
 type ScaleData struct {
-	ProviderID      int64
-	TotalModels     int
-	AvailableModels int
+	ProviderID          int64
+	TotalModels         int
+	AvailableModels     int
+	ConcurrencyCapacity *ConcurrencyCapacity
 }
 
 // CredentialLister 凭证列表提供者接口
@@ -190,6 +203,12 @@ func (c *LightweightCollector) collectForCredential(ctx context.Context, credent
 		AvailabilityMetrics: availabilityMetrics,
 		StabilityMetrics:    stabilityMetrics,
 		ScaleMetrics:        scaleMetrics,
+		// 2026-08-07: 携带 429 命中、不可用窗口和并发承载，供 scorer 使用。
+		// nil-safe：旧版适配器（未升级的 AnalyzeRequests / GetModelScale）
+		// 会把这些字段留 nil，scorer 按缺失维度处理。
+		RateLimitMetrics:    requestStats.RateLimitMetrics,
+		AvailabilityWindow:  requestStats.AvailabilityWindow,
+		ConcurrencyCapacity: scaleData.ConcurrencyCapacity,
 	}
 
 	// 5. 保存到数据库
