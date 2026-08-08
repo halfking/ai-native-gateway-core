@@ -240,7 +240,45 @@ COMMENT ON TABLE keyless_providers IS '无认证提供商注册表 - 零成本�
 -- 5. 扩展现有表 (如果列不存在则添加)
 -- ============================================================================
 
--- 扩展 provider_catalog
+-- Reconcile tables created by early Go bootstrap versions. CREATE IF NOT EXISTS
+-- does not alter an existing table, so explicitly add the contract columns and
+-- retire legacy NOT NULL/check constraints before seed/import runs.
+DO $$
+DECLARE
+    constraint_name text;
+BEGIN
+    IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema='public' AND table_name='auto_combo_templates') THEN
+        IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema='public' AND table_name='auto_combo_templates' AND column_name='template_key')
+           AND NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema='public' AND table_name='auto_combo_templates' AND column_name='combo_name') THEN
+            ALTER TABLE public.auto_combo_templates ADD COLUMN combo_name TEXT;
+            UPDATE public.auto_combo_templates SET combo_name = template_key WHERE combo_name IS NULL;
+        END IF;
+        IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema='public' AND table_name='auto_combo_templates' AND column_name='template_key') THEN
+            ALTER TABLE public.auto_combo_templates ALTER COLUMN template_key DROP NOT NULL;
+        END IF;
+        IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema='public' AND table_name='auto_combo_templates' AND column_name='combo_name') THEN
+            ALTER TABLE public.auto_combo_templates ALTER COLUMN combo_name SET NOT NULL;
+        END IF;
+        IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema='public' AND table_name='auto_combo_templates' AND column_name='variant') THEN ALTER TABLE public.auto_combo_templates ADD COLUMN variant TEXT NOT NULL DEFAULT 'cheap'; END IF;
+        IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema='public' AND table_name='auto_combo_templates' AND column_name='tier_filter') THEN ALTER TABLE public.auto_combo_templates ADD COLUMN tier_filter TEXT[] DEFAULT ARRAY['free']; END IF;
+        IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema='public' AND table_name='auto_combo_templates' AND column_name='provider_allowlist') THEN ALTER TABLE public.auto_combo_templates ADD COLUMN provider_allowlist TEXT[]; END IF;
+        IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema='public' AND table_name='auto_combo_templates' AND column_name='provider_denylist') THEN ALTER TABLE public.auto_combo_templates ADD COLUMN provider_denylist TEXT[]; END IF;
+        IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema='public' AND table_name='auto_combo_templates' AND column_name='scoring_weights_json') THEN ALTER TABLE public.auto_combo_templates ADD COLUMN scoring_weights_json JSONB DEFAULT '{}'::jsonb; END IF;
+        IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema='public' AND table_name='auto_combo_templates' AND column_name='max_candidates') THEN ALTER TABLE public.auto_combo_templates ADD COLUMN max_candidates INT DEFAULT 50; END IF;
+        IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema='public' AND table_name='auto_combo_templates' AND column_name='exploration_rate') THEN ALTER TABLE public.auto_combo_templates ADD COLUMN exploration_rate FLOAT DEFAULT 0.05; END IF;
+        IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema='public' AND table_name='auto_combo_templates' AND column_name='priority') THEN ALTER TABLE public.auto_combo_templates ADD COLUMN priority INT DEFAULT 100; END IF;
+        IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema='public' AND table_name='auto_combo_templates' AND column_name='denylist_codes') THEN UPDATE public.auto_combo_templates SET provider_denylist = denylist_codes WHERE provider_denylist IS NULL; END IF;
+    END IF;
+
+    IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema='public' AND table_name='free_resource_catalog') THEN
+        FOR constraint_name IN SELECT conname FROM pg_constraint WHERE conrelid='public.free_resource_catalog'::regclass AND contype='c' AND pg_get_constraintdef(oid) LIKE '%tos_verdict%' LOOP
+            EXECUTE format('ALTER TABLE public.free_resource_catalog DROP CONSTRAINT %I', constraint_name);
+        END LOOP;
+        ALTER TABLE public.free_resource_catalog ADD CONSTRAINT free_resource_catalog_tos_verdict_check CHECK (tos_verdict IN ('ok','caution','ambiguous','avoid','unknown'));
+    END IF;
+END $$;
+
+
 DO $$
 BEGIN
     -- 仅在 provider_catalog 表存在时执行扩展
@@ -427,8 +465,11 @@ COMMENT ON VIEW v_free_resource_summary IS '免费资源租户级汇总 - 仪表
 -- ============================================================================
 
 -- 池去重配额计算
--- Drop the old BIGINT overload when upgrading early OmniFree builds.
-DROP FUNCTION IF EXISTS fn_compute_deduped_quota(BIGINT, TEXT[]);
+-- Drop legacy overloads before creating the contract signatures.
+DROP FUNCTION IF EXISTS public.fn_compute_deduped_quota(TEXT);
+DROP FUNCTION IF EXISTS public.fn_compute_deduped_quota(BIGINT, TEXT[]);
+DROP FUNCTION IF EXISTS public.fn_quota_preflight_check(BIGINT, TEXT, TEXT, FLOAT);
+DROP FUNCTION IF EXISTS public.fn_quota_preflight_check(BIGINT, TEXT, TEXT, INT, FLOAT, TEXT);
 
 CREATE OR REPLACE FUNCTION fn_compute_deduped_quota(
     p_tenant_id TEXT DEFAULT 'default',
@@ -455,7 +496,7 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql STABLE;
 
-COMMENT ON FUNCTION fn_compute_deduped_quota IS '池去重配额计算 - 避免共享池重复计数';
+COMMENT ON FUNCTION public.fn_compute_deduped_quota(TEXT, TEXT[]) IS '池去重配额计算 - 避免共享池重复计数';
 
 -- 配额预检
 CREATE OR REPLACE FUNCTION fn_quota_preflight_check(
@@ -491,7 +532,7 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql STABLE;
 
-COMMENT ON FUNCTION fn_quota_preflight_check IS '配额预检 - 过滤近耗尽凭据';
+COMMENT ON FUNCTION public.fn_quota_preflight_check(BIGINT, TEXT, TEXT, FLOAT) IS '配额预检 - 过滤近耗尽凭据';
 
 -- ============================================================================
 -- 7.5. round 3 audit M7: 添加 trains_on_prompts 字段 (OmniRoute 对标)

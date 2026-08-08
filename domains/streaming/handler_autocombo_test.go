@@ -4,7 +4,6 @@ import (
 	"context"
 	"net/http"
 	"testing"
-	"time"
 
 	"github.com/kaixuan/llm-gateway-go/domains/autocombo"
 	"github.com/kaixuan/llm-gateway-go/domains/streaming/executors"
@@ -17,8 +16,10 @@ func TestChatHandler_ShouldTryOmniFree(t *testing.T) {
 		t.Errorf("nil resolver/factory should disable OmniFree")
 	}
 
+	h.omniFreeMu.Lock()
 	h.autoComboResolver = autocombo.NewResolver(nil)
 	h.autoComboFactory = autocombo.NewVirtualFactory(nil, nil)
+	h.omniFreeMu.Unlock()
 
 	cases := map[string]bool{
 		"":                 false,
@@ -216,11 +217,8 @@ func TestRecordOmniFreeQuota_NilShortCircuit(t *testing.T) {
 func TestRecordOmniFreeQuota_TrackerSignature(t *testing.T) {
 	fake := &fakeQuotaRecorder{}
 	h := &ChatHandler{}
-	h.SetOmniFree(nil, nil, fake) // 初始化 quotaRecordQueue + workers.
-	defer func() {
-		close(h.quotaWorkersClose)
-		h.quotaWorkersDone.Wait()
-	}()
+	h.SetOmniFree(nil, nil, fake)
+	defer h.ShutdownOmniFree()
 
 	result := &executors.ExecuteResult{Candidate: provider.Candidate{
 		CredentialID:     42,
@@ -228,8 +226,7 @@ func TestRecordOmniFreeQuota_TrackerSignature(t *testing.T) {
 		StandardizedName: "llama-3.3-70b",
 	}}
 	h.recordOmniFreeQuota(context.Background(), "auto/free", "tenant-x", result, nil)
-	// L3 bounded queue: 等待 worker 消费队列.
-	time.Sleep(100 * time.Millisecond)
+	h.ShutdownOmniFree()
 
 	fake.mu.Lock()
 	defer fake.mu.Unlock()
@@ -265,10 +262,7 @@ func TestRecordOmniFreeQuota_CorrectOn429(t *testing.T) {
 	fake := &fakeQuotaRecorder{}
 	h := &ChatHandler{}
 	h.SetOmniFree(nil, nil, fake)
-	defer func() {
-		close(h.quotaWorkersClose)
-		h.quotaWorkersDone.Wait()
-	}()
+	defer h.ShutdownOmniFree()
 
 	result := &executors.ExecuteResult{
 		Candidate: provider.Candidate{
@@ -287,7 +281,7 @@ func TestRecordOmniFreeQuota_CorrectOn429(t *testing.T) {
 	// 第三个参数 (execErr) 仍为 nil 但 result.Response.StatusCode=429,
 	// 应触发 CorrectFromHeaders.
 	h.recordOmniFreeQuota(context.Background(), "auto/coding:free", "default", result, nil)
-	time.Sleep(100 * time.Millisecond)
+	h.ShutdownOmniFree()
 
 	fake.mu.Lock()
 	defer fake.mu.Unlock()

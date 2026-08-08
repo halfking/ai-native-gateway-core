@@ -4814,8 +4814,12 @@ func main() {
 	defer stopCancel()
 	stopDone := make(chan struct{}, 1)
 
-	go func() {
-		// 2026-07-22: 停止 URSM v2 persist writer（如果已启动）
+		go func() {
+			// Stop accepting quota tasks and drain the bounded OmniFree worker queue
+			// before the shared database pool is closed.
+			chatHandler.ShutdownOmniFree()
+
+			// 2026-07-22: 停止 URSM v2 persist writer（如果已启动）
 		if persistWriterStop != nil {
 			persistWriterStop()
 		}

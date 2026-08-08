@@ -5,9 +5,11 @@ BEGIN;
 
 -- 删除函数
 DROP FUNCTION IF EXISTS public.omnifree_touch_updated_at();
-DROP FUNCTION IF EXISTS fn_quota_preflight_check(BIGINT, TEXT, TEXT, FLOAT);
-DROP FUNCTION IF EXISTS fn_compute_deduped_quota(TEXT, TEXT[]);
-DROP FUNCTION IF EXISTS fn_compute_deduped_quota(BIGINT, TEXT[]);
+DROP FUNCTION IF EXISTS public.fn_quota_preflight_check(BIGINT, TEXT, TEXT, FLOAT);
+DROP FUNCTION IF EXISTS public.fn_quota_preflight_check(BIGINT, TEXT, TEXT, INT, FLOAT, TEXT);
+DROP FUNCTION IF EXISTS public.fn_compute_deduped_quota(TEXT, TEXT[]);
+DROP FUNCTION IF EXISTS public.fn_compute_deduped_quota(TEXT);
+DROP FUNCTION IF EXISTS public.fn_compute_deduped_quota(BIGINT, TEXT[]);
 
 -- 删除视图
 DROP VIEW IF EXISTS v_free_resource_summary;

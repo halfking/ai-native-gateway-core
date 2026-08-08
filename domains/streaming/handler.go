@@ -885,6 +885,7 @@ type ChatHandler struct {
 	autoComboResolver *autocombo.Resolver
 	autoComboFactory  *autocombo.VirtualFactory
 	quotaTracker      QuotaRecorder
+	omniFreeMu        sync.RWMutex
 
 	// round 4 审计补充修复 (L3): quotaRecordQueue + quotaWorkersDone 为
 	// recordOmniFreeQuota 提供 bounded 异步队列, 防止无限制启动 goroutine
@@ -892,9 +893,10 @@ type ChatHandler struct {
 	// goroutine + 数据库连接, 导致 pgx pool 耗尽 / context 泄漏).
 	// SetOmniFree 时启动固定数量的 worker, quotaRecordQueue 缓冲 N 个待处理
 	// 任务; 溢出时 recordOmniFreeQuota 非阻塞丢弃 + 打 WARN 日志.
-	quotaRecordQueue  chan quotaRecordTask
-	quotaWorkersDone  sync.WaitGroup
-	quotaWorkersClose chan struct{}
+	quotaRecordQueue chan quotaRecordTask
+	quotaWorkersDone sync.WaitGroup
+	quotaQueueMu     sync.Mutex
+	quotaAccepting   bool
 }
 
 // ToolRegistryService is the interface for tool registry access.
@@ -1314,28 +1316,68 @@ func (h *ChatHandler) SetAttachmentExtractor(extractor *attachments.Extractor) {
 //
 // round 4 审计补充修复 (L3): 当 tracker != nil 时, 启动 bounded worker pool
 // (默认 16 workers + 256 缓冲队列) 处理 recordOmniFreeQuota 的异步任务,
-// 防止高并发时无限制 fork goroutine. 调用方应在 graceful shutdown 时先
-// close(h.quotaWorkersClose) 再 h.quotaWorkersDone.Wait() 等待队列排空.
+// 防止高并发时无限制 fork goroutine. SetOmniFree 可安全重复调用, 会先
+// drain 并停止旧 worker, 再安装新 tracker.
 func (h *ChatHandler) SetOmniFree(
 	resolver *autocombo.Resolver,
 	factory *autocombo.VirtualFactory,
 	tracker QuotaRecorder,
 ) {
+	h.ShutdownOmniFree()
+	h.omniFreeMu.Lock()
 	h.autoComboResolver = resolver
 	h.autoComboFactory = factory
+	h.omniFreeMu.Unlock()
+	h.quotaQueueMu.Lock()
 	h.quotaTracker = tracker
+	if tracker == nil {
+		h.quotaQueueMu.Unlock()
+		return
+	}
 
-	if tracker != nil {
-		const (
-			quotaWorkers    = 16
-			quotaQueueDepth = 256
-		)
-		h.quotaRecordQueue = make(chan quotaRecordTask, quotaQueueDepth)
-		h.quotaWorkersClose = make(chan struct{})
-		h.quotaWorkersDone.Add(quotaWorkers)
-		for i := 0; i < quotaWorkers; i++ {
-			go h.quotaRecordWorker()
-		}
+	const (
+		quotaWorkers    = 16
+		quotaQueueDepth = 256
+	)
+	queue := make(chan quotaRecordTask, quotaQueueDepth)
+	h.quotaRecordQueue = queue
+	h.quotaAccepting = true
+	h.quotaWorkersDone.Add(quotaWorkers)
+	h.quotaQueueMu.Unlock()
+	for i := 0; i < quotaWorkers; i++ {
+		go h.quotaRecordWorker(queue)
+	}
+}
+
+// ShutdownOmniFree stops accepting new quota tasks, drains queued tasks, and
+// waits for all quota workers to finish. It is idempotent and should run before
+// the database pool used by QuotaRecorder is closed.
+func (h *ChatHandler) ShutdownOmniFree() {
+	h.quotaQueueMu.Lock()
+	if !h.quotaAccepting {
+		h.quotaQueueMu.Unlock()
+		return
+	}
+	h.quotaAccepting = false
+	queue := h.quotaRecordQueue
+	if queue != nil {
+		close(queue)
+	}
+	h.quotaQueueMu.Unlock()
+	h.quotaWorkersDone.Wait()
+}
+
+func (h *ChatHandler) enqueueQuotaTask(task quotaRecordTask) bool {
+	h.quotaQueueMu.Lock()
+	defer h.quotaQueueMu.Unlock()
+	if !h.quotaAccepting || h.quotaRecordQueue == nil {
+		return false
+	}
+	select {
+	case h.quotaRecordQueue <- task:
+		return true
+	default:
+		return false
 	}
 }
 
@@ -1343,33 +1385,47 @@ func (h *ChatHandler) SetOmniFree(
 // CorrectFromHeaders 调用的完整参数.
 type quotaRecordTask struct {
 	ctx        context.Context
+	cancel     context.CancelFunc
+	recorder   QuotaRecorder
 	isRecord   bool // true=Record, false=CorrectFromHeaders
 	recordReq  freeresource.RecordRequest
 	correctReq freeresource.CorrectionRequest
 }
 
-// quotaRecordWorker 从 quotaRecordQueue 消费任务直到 quotaWorkersClose
-// 被关闭. 每个任务带有独立的 context (detached from request context),
-// 超时由 recordOmniFreeQuota 注入的 5s timeout context 控制.
-func (h *ChatHandler) quotaRecordWorker() {
+// quotaRecordWorker 从 quotaRecordQueue 消费任务. 收到关闭信号后仍会排空
+// 已经入队的任务, 确保 graceful shutdown 不丢弃已接受的 quota 记录.
+func (h *ChatHandler) quotaRecordWorker(queue <-chan quotaRecordTask) {
 	defer h.quotaWorkersDone.Done()
-	for {
-		select {
-		case <-h.quotaWorkersClose:
-			return
-		case task := <-h.quotaRecordQueue:
-			if task.isRecord {
-				if err := h.quotaTracker.Record(task.ctx, task.recordReq); err != nil {
-					slog.Debug("omnifree: quota record failed (worker)",
-						"error", err, "credential_id", task.recordReq.CredentialID)
-				}
-			} else {
-				if err := h.quotaTracker.CorrectFromHeaders(task.ctx, task.correctReq); err != nil {
-					slog.Debug("omnifree: quota 429 correct failed (worker)",
-						"error", err, "credential_id", task.correctReq.CredentialID)
-				}
-			}
+	for task := range queue {
+		h.processQuotaRecordTask(task)
+	}
+}
+
+func (h *ChatHandler) processQuotaRecordTask(task quotaRecordTask) {
+	if task.cancel != nil {
+		defer task.cancel()
+	}
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			slog.Error("omnifree: quota worker task panicked", "panic", recovered)
+			metrics.OmniFreeQuotaRecordErrorsTotal.Inc()
 		}
+	}()
+	if task.recorder == nil {
+		return
+	}
+	if task.isRecord {
+		if err := task.recorder.Record(task.ctx, task.recordReq); err != nil {
+			metrics.OmniFreeQuotaRecordErrorsTotal.Inc()
+			slog.Debug("omnifree: quota record failed (worker)",
+				"error", err, "credential_id", task.recordReq.CredentialID)
+		}
+		return
+	}
+	if err := task.recorder.CorrectFromHeaders(task.ctx, task.correctReq); err != nil {
+		metrics.OmniFreeQuotaRecordErrorsTotal.Inc()
+		slog.Debug("omnifree: quota 429 correct failed (worker)",
+			"error", err, "credential_id", task.correctReq.CredentialID)
 	}
 }
 
