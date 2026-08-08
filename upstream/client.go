@@ -56,6 +56,9 @@ type Error struct {
 	// StatusCode is the upstream HTTP status code when the response
 	// was readable (0 for pure network errors like connection reset).
 	StatusCode int
+	// RetryAfter is the upstream-requested wait duration parsed from
+	// X-RateLimit-Reset or Retry-After response headers.
+	RetryAfter time.Duration
 }
 
 // Error renders the upstream failure. The receiver is nil-checked so
@@ -222,7 +225,7 @@ func (c *Client) Do(req *http.Request) (*http.Response, *Error) {
 					msg = fmt.Sprintf("HTTP %d (empty body)", resp.StatusCode)
 				}
 			}
-			return resp, &Error{Kind: kind, Message: msg, Err: doErr, Body: bodyBytes, StatusCode: statusCode}
+			return resp, &Error{Kind: kind, Message: msg, Err: doErr, Body: bodyBytes, StatusCode: statusCode, RetryAfter: retryAfterFromResponse(resp)}
 		}
 		// Retryable error — capture body from this attempt too so the
 		// final "retry exhausted" Error carries the diagnostic message.
@@ -234,18 +237,75 @@ func (c *Client) Do(req *http.Request) (*http.Response, *Error) {
 			bodyBytes = body
 		}
 		if doErr != nil {
-			uErr = &Error{Kind: kind, Message: doErr.Error(), Err: doErr, Body: bodyBytes, StatusCode: statusCode}
+			uErr = &Error{Kind: kind, Message: doErr.Error(), Err: doErr, Body: bodyBytes, StatusCode: statusCode, RetryAfter: retryAfterFromResponse(resp)}
 		} else if len(bodyBytes) > 0 {
 			msg := strings.TrimSpace(string(bodyBytes))
 			if msg == "" {
 				msg = fmt.Sprintf("HTTP %d (empty body)", statusCode)
 			}
-			uErr = &Error{Kind: kind, Message: msg, Err: doErr, Body: bodyBytes, StatusCode: statusCode}
+			uErr = &Error{Kind: kind, Message: msg, Err: doErr, Body: bodyBytes, StatusCode: statusCode, RetryAfter: retryAfterFromResponse(resp)}
 		} else {
-			uErr = &Error{Kind: kind, Message: "retry exhausted", Err: doErr, Body: bodyBytes, StatusCode: statusCode}
+			uErr = &Error{Kind: kind, Message: "retry exhausted", Err: doErr, Body: bodyBytes, StatusCode: statusCode, RetryAfter: retryAfterFromResponse(resp)}
 		}
 	}
 	return resp, uErr
+}
+
+// maxRetryAfter caps the parsed retry delay so a malicious or buggy upstream
+// cannot advertise an unbounded back-off. Thirty-one days bounds the wait while
+// preserving providers' longer quota-reset windows.
+const maxRetryAfter = 31 * 24 * time.Hour
+
+// RetryAfterFromHeaders parses the provider's requested retry delay. A valid
+// X-RateLimit-Reset Unix timestamp takes precedence over Retry-After. The
+// latter accepts both delta-seconds and RFC 7231 HTTP-date values. Past or
+// malformed values return zero; values above maxRetryAfter are clamped.
+func RetryAfterFromHeaders(headers http.Header) time.Duration {
+	if headers == nil {
+		return 0
+	}
+	now := time.Now()
+	if reset := strings.TrimSpace(headers.Get("X-RateLimit-Reset")); reset != "" {
+		if ts, err := strconv.ParseInt(reset, 10, 64); err == nil {
+			if delay := time.Unix(ts, 0).Sub(now); delay > 0 {
+				return clampRetryAfter(delay)
+			}
+			return 0
+		}
+	}
+
+	value := strings.TrimSpace(headers.Get("Retry-After"))
+	if value == "" {
+		return 0
+	}
+	if seconds, err := strconv.ParseInt(value, 10, 64); err == nil {
+		if seconds > 0 {
+			return clampRetryAfter(time.Duration(seconds) * time.Second)
+		}
+		return 0
+	}
+	if resetAt, err := http.ParseTime(value); err == nil {
+		if delay := resetAt.Sub(now); delay > 0 {
+			return clampRetryAfter(delay)
+		}
+	}
+	return 0
+}
+
+// clampRetryAfter caps the delay to a sane upper bound so an upstream cannot
+// stall the routing loop by advertising multi-month back-offs.
+func clampRetryAfter(d time.Duration) time.Duration {
+	if d > maxRetryAfter {
+		return maxRetryAfter
+	}
+	return d
+}
+
+func retryAfterFromResponse(resp *http.Response) time.Duration {
+	if resp == nil {
+		return 0
+	}
+	return RetryAfterFromHeaders(resp.Header)
 }
 
 // captureErrorBody consumes an error response once and restores a readable

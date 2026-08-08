@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -3645,6 +3646,10 @@ func (e *Executor) writeCredentialStateOnError(ctx context.Context, credentialID
 	failure := credential.Failure{Kind: kind}
 	if err != nil {
 		failure.Detail = err.Error()
+		var upstreamErr *upstreampkg.Error
+		if errors.As(err, &upstreamErr) && upstreamErr != nil {
+			failure.RetryAfter = upstreamErr.RetryAfter
+		}
 	}
 	if err := e.State.WriteOnError(ctx, credentialID, canonicalModel, failure); err != nil {
 		slog.Debug("credential state error write failed", "credential_id", credentialID, "kind", kind, "error", err)
@@ -4695,6 +4700,7 @@ func (e *contextLengthHTTPError) Unwrap() error {
 		Kind:       errorsx.KindContextLength,
 		Body:       append([]byte(nil), e.body...),
 		StatusCode: e.status,
+		RetryAfter: upstreampkg.RetryAfterFromHeaders(e.headers),
 		Message:    e.Error(),
 	}
 }

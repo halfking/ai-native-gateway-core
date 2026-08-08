@@ -895,7 +895,13 @@ func (e *Executor) executeAnthropicOnce(
 			e.Limiter.Shrink(cand.ProviderID, cand.CredentialID)
 		} else if errKind == errorsx.KindConcurrent {
 			e.writeCredentialStateOnError(params.R.Context(), cand.CredentialID, cand.StandardizedName, errorsx.KindConcurrent,
-				fmt.Errorf("upstream %d concurrent overload: %s", resp.StatusCode, string(body[:min(n, 200)])))
+				&upstreampkg.Error{
+					Kind:       errorsx.KindConcurrent,
+					Message:    fmt.Sprintf("upstream %d concurrent overload", resp.StatusCode),
+					Body:       append([]byte(nil), body[:n]...),
+					StatusCode: resp.StatusCode,
+					RetryAfter: upstreampkg.RetryAfterFromHeaders(resp.Header),
+				})
 			e.forceUnpinOnFatalKind(params.R.Context(), fpLease.Holder, cand.CredentialID, errorsx.KindConcurrent)
 		}
 		if !errorsx.IsRetryable(errKind) {
@@ -918,6 +924,7 @@ func (e *Executor) executeAnthropicOnce(
 				Message:    fmt.Sprintf("upstream %d", resp.StatusCode),
 				Body:       append([]byte(nil), body[:n]...),
 				StatusCode: resp.StatusCode,
+				RetryAfter: upstreampkg.RetryAfterFromHeaders(resp.Header),
 			}
 			if params.PreStreamPrepared {
 				return nil, upstreamErr
@@ -991,6 +998,7 @@ func (e *Executor) executeAnthropicOnce(
 			Message:    fmt.Sprintf("upstream %d", resp.StatusCode),
 			Body:       append([]byte(nil), body[:n]...),
 			StatusCode: resp.StatusCode,
+			RetryAfter: upstreampkg.RetryAfterFromHeaders(resp.Header),
 		}}
 	}
 
