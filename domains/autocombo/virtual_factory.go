@@ -153,12 +153,30 @@ func (vf *VirtualFactory) queryCatalog(ctx context.Context, tenantID string, spe
 	if vf.db == nil {
 		return nil, nil
 	}
-	if tenantID != "" {
-		if _, err := vf.db.ExecContext(ctx,
-			fmt.Sprintf("SET app.current_tenant = '%s'", escapeTenant(tenantID))); err != nil {
-			slog.Warn("omnifree: failed to set app.current_tenant before queryCatalog",
-				"tenant_id", tenantID, "error", err)
-		}
+
+	// round 4 追加修复: 空 tenant 归一为 'default'. 旧实现把裸空字符串
+	// 当成查询参数 (tenant_id = ''), 与 Resolver.queryDB 的 'default'
+	// fallback 语义不一致 —— Resolver 命中内置模板后, 若 catalog 用空
+	// tenant 查询, 会因 tenant_id 不匹配任何行而返回空目录, 即使
+	// 'default' 租户下确实有已启用的免费资源.
+	tenantFilter := tenantID
+	if tenantFilter == "" {
+		tenantFilter = "default"
+	}
+
+	tx, err := vf.db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+	if err != nil {
+		return nil, fmt.Errorf("begin tx for queryCatalog: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	// round 4 追加修复 (同 resolver.go queryDB): SET LOCAL 必须与后续
+	// SELECT 在同一个事务/连接上执行, 否则 database/sql 连接池可能把
+	// 两次调用分配到不同物理连接, RLS 静默按 'default' 过滤.
+	if _, err := tx.ExecContext(ctx,
+		fmt.Sprintf("SET LOCAL app.current_tenant = '%s'", escapeTenant(tenantFilter))); err != nil {
+		slog.Warn("omnifree: failed to set app.current_tenant before queryCatalog",
+			"tenant_id", tenantFilter, "error", err)
 	}
 
 	query := strings.Builder{}
@@ -169,7 +187,7 @@ func (vf *VirtualFactory) queryCatalog(ctx context.Context, tenantID string, spe
         WHERE enabled = TRUE
           AND tenant_id = $1
     `)
-	args := []interface{}{tenantID}
+	args := []interface{}{tenantFilter}
 	if len(spec.ToSFilter) > 0 {
 		args = append(args, pq.Array(spec.ToSFilter))
 		query.WriteString(fmt.Sprintf(" AND tos_verdict = ANY($%d)", len(args)))
@@ -179,7 +197,7 @@ func (vf *VirtualFactory) queryCatalog(ctx context.Context, tenantID string, spe
 		query.WriteString(fmt.Sprintf(" AND free_type = ANY($%d)", len(args)))
 	}
 
-	rows, err := vf.db.QueryContext(ctx, query.String(), args...)
+	rows, err := tx.QueryContext(ctx, query.String(), args...)
 	if err != nil {
 		return nil, err
 	}
@@ -196,6 +214,9 @@ func (vf *VirtualFactory) queryCatalog(ctx context.Context, tenantID string, spe
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("commit queryCatalog tx: %w", err)
 	}
 	return catalog, nil
 }
@@ -262,8 +283,14 @@ func (vf *VirtualFactory) filterCandidates(
 	filtered := make([]provider.Candidate, 0, len(candidates))
 	seen := make(map[string]struct{}, len(candidates))
 	for _, c := range candidates {
-		key := catalogKey(c.CatalogCode, c.StandardizedName)
-		if _, ok := index[key]; !ok {
+		// round 4 审计补充修复: catalog.model_id 通常填写的是上游/原始模型名
+		// (例如 "openai/gpt-4o-mini:free"), 而 provider.Candidate 上可能
+		// 只有 RawModel/OfferRawModel 与之精确匹配, StandardizedName 是
+		// provider 层归一化后的名字 (可能不含 ":free" 后缀等). 旧实现只按
+		// StandardizedName 匹配, 会让合法的 catalog 行永远匹配不到候选,
+		// 导致 auto/free 静默丢失可用资源. 现在依次尝试
+		// StandardizedName → RawModel → OfferRawModel, 命中任意一个即可.
+		if !candidateMatchesCatalog(c, index) {
 			continue
 		}
 		if len(allow) > 0 {
@@ -280,6 +307,15 @@ func (vf *VirtualFactory) filterCandidates(
 		if variantHint != "" && !candidateMatchesVariant(c, variantHint) {
 			continue
 		}
+		// round 4 审计补充修复: spec.TierFilter 之前只被 Resolver 构造出来
+		// 却从未被 filterCandidates 消费 — "auto/free" 模板声明
+		// tier_filter=["free"] 但实际上任何 catalog 命中的候选 (包括
+		// billing_mode=paid/per_token 的候选) 都会通过, 违反模板承诺的
+		// tier 语义. 这里显式校验候选的 tier 归属 (由 BillingMode 映射)
+		// 必须 ∈ spec.TierFilter (非空时).
+		if len(spec.TierFilter) > 0 && !candidateMatchesTierFilter(c, spec.TierFilter) {
+			continue
+		}
 		// 去重: 同一 (credential, raw_model) 只保留一次, 避免 catalog 命中重复插入.
 		dupKey := fmt.Sprintf("%d|%s", c.CredentialID, c.RawModel)
 		if _, dup := seen[dupKey]; dup {
@@ -289,6 +325,61 @@ func (vf *VirtualFactory) filterCandidates(
 		filtered = append(filtered, c)
 	}
 	return filtered
+}
+
+// candidateMatchesCatalog 判断候选是否命中 catalog index (由
+// catalogKey(provider_code, model_id) 索引). 依次尝试
+// StandardizedName / RawModel / OfferRawModel 三个字段, 命中任意一个
+// 即视为匹配. 这弥补了 catalog.model_id 与 provider 层字段命名不完全
+// 对齐的问题 (见 filterCandidates 调用处注释).
+func candidateMatchesCatalog(c provider.Candidate, index map[string]CatalogEntry) bool {
+	candidates := []string{c.StandardizedName, c.RawModel, c.OfferRawModel}
+	for _, name := range candidates {
+		if name == "" {
+			continue
+		}
+		if _, ok := index[catalogKey(c.CatalogCode, name)]; ok {
+			return true
+		}
+	}
+	return false
+}
+
+// candidateMatchesTierFilter 判断候选的计费层级是否落在 spec.TierFilter
+// 允许的集合内. tierFilter 语义 (与 Resolver.getBuiltinTemplate 保持一致):
+//   - "free"    → isFreeBilling(c.BillingMode) == true
+//   - "keyless" → c.BillingMode == "keyless"
+//   - "cheap"   → free 或 billing mode 明确标为 "cheap"
+//   - "paid"/"pro" → 非 free (即付费层)
+//
+// 未知 tier 字面量默认放行 (向后兼容自定义模板新增 tier 值), 但已知
+// tier 字面量必须严格匹配, 不允许静默放行 paid 候选进 free 模板.
+func candidateMatchesTierFilter(c provider.Candidate, tierFilter []string) bool {
+	for _, tier := range tierFilter {
+		switch strings.ToLower(strings.TrimSpace(tier)) {
+		case "free":
+			if isFreeBilling(c.BillingMode) {
+				return true
+			}
+		case "keyless":
+			if strings.EqualFold(strings.TrimSpace(c.BillingMode), "keyless") {
+				return true
+			}
+		case "cheap":
+			if isFreeBilling(c.BillingMode) || strings.EqualFold(strings.TrimSpace(c.BillingMode), "cheap") {
+				return true
+			}
+		case "paid", "pro", "premium":
+			if !isFreeBilling(c.BillingMode) {
+				return true
+			}
+		default:
+			// 未知 tier 字面量: 放行, 避免自定义模板因新增 tier 值被
+			// 意外全量拒绝 (fail-open 仅对未知配置生效, 已知 tier 严格).
+			return true
+		}
+	}
+	return false
 }
 
 // preflightQuota 对 free 候选在多个窗口上跑 Preflight; 全部通过才放行.

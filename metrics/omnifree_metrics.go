@@ -34,6 +34,16 @@ var (
 		Help: "Total 503 responses due to no_free_candidates (catalog empty / exhausted).",
 	}, []string{"model", "tenant", "reason"})
 
+	// OmniFreeInfraFailureTotal 统计基础设施/配置层面失败 (DB 错误、RLS
+	// GUC 失败、factory 构建失败). 与 no_candidates (用户意图明确失败)
+	// 区分, 用于运维快速定位 "OmniFree 是不是挂了" 而不是 "配额是不是
+	// 耗尽了". round 4 补充审计: 这些错误此前会静默 fallback 到普通
+	// provider resolver, 掩盖了真实故障.
+	OmniFreeInfraFailureTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "omnifree_infra_failure_total",
+		Help: "Total 503 responses due to OmniFree infrastructure failure (DB/RLS/factory errors).",
+	}, []string{"model", "tenant"})
+
 	// OmniFreeQuotaRecordsTotal 按 window_type 统计 Record 调用次数.
 	OmniFreeQuotaRecordsTotal = promauto.NewCounterVec(prometheus.CounterOpts{
 		Name: "omnifree_quota_records_total",

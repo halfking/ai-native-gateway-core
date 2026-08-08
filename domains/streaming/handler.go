@@ -885,6 +885,16 @@ type ChatHandler struct {
 	autoComboResolver *autocombo.Resolver
 	autoComboFactory  *autocombo.VirtualFactory
 	quotaTracker      QuotaRecorder
+
+	// round 4 审计补充修复 (L3): quotaRecordQueue + quotaWorkersDone 为
+	// recordOmniFreeQuota 提供 bounded 异步队列, 防止无限制启动 goroutine
+	// (旧实现每个请求都 go func() 直接 fork, 高并发时可能积压上万个未完成
+	// goroutine + 数据库连接, 导致 pgx pool 耗尽 / context 泄漏).
+	// SetOmniFree 时启动固定数量的 worker, quotaRecordQueue 缓冲 N 个待处理
+	// 任务; 溢出时 recordOmniFreeQuota 非阻塞丢弃 + 打 WARN 日志.
+	quotaRecordQueue  chan quotaRecordTask
+	quotaWorkersDone  sync.WaitGroup
+	quotaWorkersClose chan struct{}
 }
 
 // ToolRegistryService is the interface for tool registry access.
@@ -1301,6 +1311,11 @@ func (h *ChatHandler) SetAttachmentExtractor(extractor *attachments.Extractor) {
 // SetOmniFree (2026-08-07) wires the optional OmniFree auto-combo stack:
 // resolver + factory + quota tracker. Any argument may be nil to skip that
 // component. With resolver nil, auto/* requests are treated as model_not_found.
+//
+// round 4 审计补充修复 (L3): 当 tracker != nil 时, 启动 bounded worker pool
+// (默认 16 workers + 256 缓冲队列) 处理 recordOmniFreeQuota 的异步任务,
+// 防止高并发时无限制 fork goroutine. 调用方应在 graceful shutdown 时先
+// close(h.quotaWorkersClose) 再 h.quotaWorkersDone.Wait() 等待队列排空.
 func (h *ChatHandler) SetOmniFree(
 	resolver *autocombo.Resolver,
 	factory *autocombo.VirtualFactory,
@@ -1309,6 +1324,53 @@ func (h *ChatHandler) SetOmniFree(
 	h.autoComboResolver = resolver
 	h.autoComboFactory = factory
 	h.quotaTracker = tracker
+
+	if tracker != nil {
+		const (
+			quotaWorkers    = 16
+			quotaQueueDepth = 256
+		)
+		h.quotaRecordQueue = make(chan quotaRecordTask, quotaQueueDepth)
+		h.quotaWorkersClose = make(chan struct{})
+		h.quotaWorkersDone.Add(quotaWorkers)
+		for i := 0; i < quotaWorkers; i++ {
+			go h.quotaRecordWorker()
+		}
+	}
+}
+
+// quotaRecordTask 是 quotaRecordQueue 中的任务单元: 包含一个 Record 或
+// CorrectFromHeaders 调用的完整参数.
+type quotaRecordTask struct {
+	ctx        context.Context
+	isRecord   bool // true=Record, false=CorrectFromHeaders
+	recordReq  freeresource.RecordRequest
+	correctReq freeresource.CorrectionRequest
+}
+
+// quotaRecordWorker 从 quotaRecordQueue 消费任务直到 quotaWorkersClose
+// 被关闭. 每个任务带有独立的 context (detached from request context),
+// 超时由 recordOmniFreeQuota 注入的 5s timeout context 控制.
+func (h *ChatHandler) quotaRecordWorker() {
+	defer h.quotaWorkersDone.Done()
+	for {
+		select {
+		case <-h.quotaWorkersClose:
+			return
+		case task := <-h.quotaRecordQueue:
+			if task.isRecord {
+				if err := h.quotaTracker.Record(task.ctx, task.recordReq); err != nil {
+					slog.Debug("omnifree: quota record failed (worker)",
+						"error", err, "credential_id", task.recordReq.CredentialID)
+				}
+			} else {
+				if err := h.quotaTracker.CorrectFromHeaders(task.ctx, task.correctReq); err != nil {
+					slog.Debug("omnifree: quota 429 correct failed (worker)",
+						"error", err, "credential_id", task.correctReq.CredentialID)
+				}
+			}
+		}
+	}
 }
 
 // QuotaRecorder 是 recordOmniFreeQuota 内部的隐式接口. *freeresource.QuotaTracker
@@ -2564,6 +2626,21 @@ func (h *ChatHandler) serveWithExecutor(
 			writeErrorJSONCtx(r.Context(), w, http.StatusServiceUnavailable, requestID,
 				"no_free_candidates", "No available free resources for "+clientModel+
 					"; try a specific model or wait for quota reset", nil)
+			return
+		} else if errors.Is(omniErr, ErrOmniFreeInfraFailure) {
+			// round 4 审计补充修复: resolver/catalog/factory 层面的基础设施
+			// 错误 (DB 连接失败、RLS 拒绝、engine 构建失败等) 之前会落到
+			// 下面的 else 分支, 静默 fallback 到普通 provider resolver —
+			// 一次 OmniFree 数据库故障会让 auto/free 悄悄变成付费路由,
+			// 且没有任何告警信号. 现在显式返回 503, 与 no_free_candidates
+			// 语义区分 (infra_failure vs 用户配额耗尽).
+			metrics.OmniFreeAutoNoCandidatesTotal.WithLabelValues(clientModel, tenantID, "infra_failure").Inc()
+			slog.Error("omnifree: infrastructure failure, refusing to fall back to paid routing",
+				"model", clientModel, "tenant_id", tenantID, "request_id", requestID,
+				"error", omniErr)
+			writeErrorJSONCtx(r.Context(), w, http.StatusServiceUnavailable, requestID,
+				"omnifree_infra_failure", "OmniFree routing is temporarily unavailable for "+clientModel+
+					"; please retry shortly", nil)
 			return
 		} else {
 			if omniErr != nil {

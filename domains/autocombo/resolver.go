@@ -52,14 +52,18 @@ func (r *Resolver) Resolve(ctx context.Context, modelID string, tenantID string)
 
 // queryDB 在数据库中查找模板；空 tenant 时回退到 default 行, 兼容历史数据。
 //
-// RLS contract (2026-08-09 audit round 3):
+// RLS contract (2026-08-09 audit round 3, 追加修复):
 //
 //   - auto_combo_templates 表启用了 RLS, USING 子句检查
 //     tenant_id = public.get_current_tenant().
-//   - 我们用 SQL SET app.current_tenant 在执行 SELECT 前把当前请求的
-//     tenant 推给 PG session, 让 RLS 真正生效. SQL SET 而非
-//     set_config(...) 是为了避免 lib/pq 驱动 prepared-statement 路径下
-//     GUC 不生效的已知问题.
+//   - 旧实现分别用 r.db.ExecContext(SET ...) 和 r.db.QueryRowContext(SELECT
+//     ...) 两次独立调用. database/sql 的连接池可能为这两次调用分配不同的
+//     物理连接 —— SET 设置的 GUC 落在连接 A 上, 但 SELECT 可能从连接 B
+//     执行, RLS 会静默按 'default' 过滤, 而非请求的真实 tenant. 该问题在
+//     32-conn 连接池下(db.go MaxConns=32)几乎必然触发.
+//   - 新实现把 SET LOCAL 与 SELECT 都放在同一个显式事务 (BeginTx) 里,
+//     保证同一物理连接; SET LOCAL 的作用域仅限当前事务, 事务结束自动
+//     还原, 不会污染连接池.
 //   - 空 tenantID 时跳过 SET, 让 get_current_tenant() 函数自身走
 //     'default' fallback (与旧 behavior 兼容).
 //   - SET 调用失败时仅记 WARN, 不让 GUC 失败阻塞 routing 路径.
@@ -67,9 +71,16 @@ func (r *Resolver) queryDB(ctx context.Context, modelID, tenantID string) (*Auto
 	if r.db == nil {
 		return nil, sql.ErrNoRows
 	}
+
+	tx, err := r.db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+	if err != nil {
+		return nil, fmt.Errorf("begin tx for queryDB: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
 	if tenantID != "" {
-		if _, err := r.db.ExecContext(ctx,
-			fmt.Sprintf("SET app.current_tenant = '%s'", escapeTenant(tenantID))); err != nil {
+		if _, err := tx.ExecContext(ctx,
+			fmt.Sprintf("SET LOCAL app.current_tenant = '%s'", escapeTenant(tenantID))); err != nil {
 			slog.Warn("omnifree: failed to set app.current_tenant before queryDB",
 				"tenant_id", tenantID, "error", err)
 		}
@@ -92,7 +103,7 @@ func (r *Resolver) queryDB(ctx context.Context, modelID, tenantID string) (*Auto
     `
 
 	var spec AutoComboSpec
-	err := r.db.QueryRowContext(ctx, q, modelID, tenantFilter).Scan(
+	err = tx.QueryRowContext(ctx, q, modelID, tenantFilter).Scan(
 		&spec.ID, &spec.ComboName, &spec.Variant, pq.Array(&spec.TierFilter),
 		pq.Array(&spec.FreeTypeFilter), pq.Array(&spec.ToSFilter),
 		pq.Array(&spec.ProviderAllowlist), pq.Array(&spec.ProviderDenylist),
@@ -101,6 +112,9 @@ func (r *Resolver) queryDB(ctx context.Context, modelID, tenantID string) (*Auto
 	)
 	if err != nil {
 		return nil, err
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("commit queryDB tx: %w", err)
 	}
 	return &spec, nil
 }
