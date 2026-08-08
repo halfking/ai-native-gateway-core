@@ -44,14 +44,14 @@ func TestSessionBodiesWriter_OutboundBody_RoundTrip(t *testing.T) {
 		{Role: "user", Content: "current turn"},
 	}
 	rec := BodiesRecord{
-		SessionID:          sessionID,
-		TurnNo:             1,
-		TenantID:           tenantID,
-		RequestID:          "req_outbound_rt_01",
-		Ts:                 time.Now(),
-		RequestDelta:       []Message{{Role: "user", Content: "current turn"}},
-		ResponseDelta:      []Message{{Role: "assistant", Content: "reply"}},
-		OutboundBody:       wantOutbound,
+		SessionID:           sessionID,
+		TurnNo:              1,
+		TenantID:            tenantID,
+		RequestID:           "req_outbound_rt_01",
+		Ts:                  time.Now(),
+		RequestDelta:        []Message{{Role: "user", Content: "current turn"}},
+		ResponseDelta:       []Message{{Role: "assistant", Content: "reply"}},
+		OutboundBody:        wantOutbound,
 		RequestAttachments:  []AttachmentRef{},
 		ResponseAttachments: []AttachmentRef{},
 	}

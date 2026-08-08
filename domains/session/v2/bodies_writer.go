@@ -51,10 +51,15 @@ type Message struct {
 	ToolCalls  []map[string]interface{} `json:"tool_calls,omitempty"`
 	ToolCallID string                   `json:"tool_call_id,omitempty"`
 	Name       string                   `json:"name,omitempty"`
+	// RawContent preserves a provider-native or IR-shaped content payload when
+	// Content cannot represent it as a string. It is encoded by MarshalJSON.
+	RawContent interface{} `json:"-"`
 }
 
 // MarshalJSON writes structured content back to the provider's original JSON
 // shape while retaining the string-compatible in-memory projection.
+// ContentRaw (json.RawMessage) is the primary source; RawContent (interface{})
+// is a fallback for the IR pipeline.
 func (m Message) MarshalJSON() ([]byte, error) {
 	content := m.ContentRaw
 	if len(content) == 0 && m.Content != "" {
@@ -62,6 +67,11 @@ func (m Message) MarshalJSON() ([]byte, error) {
 		content, err = json.Marshal(m.Content)
 		if err != nil {
 			return nil, err
+		}
+	}
+	if len(content) == 0 {
+		if raw, ok := m.RawContent.(json.RawMessage); ok && len(raw) > 0 {
+			content = raw
 		}
 	}
 	type wire struct {
@@ -81,6 +91,7 @@ func (m Message) MarshalJSON() ([]byte, error) {
 }
 
 // UnmarshalJSON accepts both legacy string content and provider content arrays.
+// Sets both ContentRaw (for sessionv2mirror) and RawContent (for IR pipeline).
 func (m *Message) UnmarshalJSON(data []byte) error {
 	type wire struct {
 		Role       string                   `json:"role"`
@@ -101,7 +112,9 @@ func (m *Message) UnmarshalJSON(data []byte) error {
 	}
 	if len(w.Content) == 0 || string(w.Content) == "null" {
 		if len(w.Content) > 0 {
-			m.ContentRaw = append(json.RawMessage(nil), w.Content...)
+			raw := append(json.RawMessage(nil), w.Content...)
+			m.ContentRaw = raw
+			m.RawContent = raw
 		}
 		return nil
 	}
@@ -110,7 +123,9 @@ func (m *Message) UnmarshalJSON(data []byte) error {
 		m.Content = text
 		return nil
 	}
-	m.ContentRaw = append(json.RawMessage(nil), w.Content...)
+	raw := append(json.RawMessage(nil), w.Content...)
+	m.ContentRaw = raw
+	m.RawContent = raw
 	return nil
 }
 
@@ -239,7 +254,7 @@ func (w *SessionBodiesWriter) WriteBodiesInTx(ctx context.Context, tx bodiesDB, 
 		return fmt.Errorf("marshal response_attachments: %w", err)
 	}
 
-	partitionDate := rec.Ts.Truncate(24 * time.Hour)
+	partitionDate := calendarDate(rec.Ts)
 
 	_, err = tx.Exec(ctx, `
 		INSERT INTO gateway.session_bodies (
@@ -317,13 +332,13 @@ func (w *SessionBodiesWriter) GetBodies(ctx context.Context, tenantID, sessionID
 		}
 	}
 
-	if len(requestAttachmentsJSON) > 0 {
+	if len(requestAttachmentsJSON) > 0 && string(requestAttachmentsJSON) != "null" {
 		if err := json.Unmarshal(requestAttachmentsJSON, &rec.RequestAttachments); err != nil {
 			return nil, fmt.Errorf("unmarshal request_attachments: %w", err)
 		}
 	}
 
-	if len(responseAttachmentsJSON) > 0 {
+	if len(responseAttachmentsJSON) > 0 && string(responseAttachmentsJSON) != "null" {
 		if err := json.Unmarshal(responseAttachmentsJSON, &rec.ResponseAttachments); err != nil {
 			return nil, fmt.Errorf("unmarshal response_attachments: %w", err)
 		}
@@ -388,12 +403,12 @@ func getLatestBodies(ctx context.Context, db bodiesDB, tenantID, sessionID strin
 			return nil, fmt.Errorf("unmarshal latest outbound_body: %w", err)
 		}
 	}
-	if len(requestAttachmentsJSON) > 0 {
+	if len(requestAttachmentsJSON) > 0 && string(requestAttachmentsJSON) != "null" {
 		if err := json.Unmarshal(requestAttachmentsJSON, &rec.RequestAttachments); err != nil {
 			return nil, fmt.Errorf("unmarshal latest request_attachments: %w", err)
 		}
 	}
-	if len(responseAttachmentsJSON) > 0 {
+	if len(responseAttachmentsJSON) > 0 && string(responseAttachmentsJSON) != "null" {
 		if err := json.Unmarshal(responseAttachmentsJSON, &rec.ResponseAttachments); err != nil {
 			return nil, fmt.Errorf("unmarshal latest response_attachments: %w", err)
 		}

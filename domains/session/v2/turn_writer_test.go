@@ -154,7 +154,7 @@ func TestTurnWriter_ConcurrentWrites(t *testing.T) {
 	for i := 0; i < numGoroutines; i++ {
 		res := <-results
 		require.NoError(t, res.err)
-		
+
 		// Verify turn_no is unique
 		assert.False(t, turnNos[res.turnNo], "Duplicate turn_no detected: %d", res.turnNo)
 		turnNos[res.turnNo] = true
@@ -304,9 +304,9 @@ func TestTurnWriter_ListTurns_WithAttachments(t *testing.T) {
 			PromptTokens:         100,
 			SourceKind:           "live",
 			Quality:              "verified",
-			AttachmentCount:      i,                  // 1, 2, 3 attachments
-			AttachmentTotalBytes: int64(i * 1024),    // 1KB, 2KB, 3KB
-			MultimodalTypes:      []string{"image"},  // All have images
+			AttachmentCount:      i,                 // 1, 2, 3 attachments
+			AttachmentTotalBytes: int64(i * 1024),   // 1KB, 2KB, 3KB
+			MultimodalTypes:      []string{"image"}, // All have images
 		}
 
 		turnNo, err := writer.AppendTurn(ctx, rec)

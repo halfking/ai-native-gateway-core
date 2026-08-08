@@ -202,8 +202,8 @@ func (w *TurnLogsWriter) AggregateSessionLogs(ctx context.Context, tenantID, ses
 	}
 
 	summary := map[string]interface{}{
-		"total_turns": len(turnLogs),
-		"turns":       turnLogs,
+		"total_turns":  len(turnLogs),
+		"turns":        turnLogs,
 		"generated_at": time.Now().Format(time.RFC3339),
 	}
 

@@ -130,8 +130,8 @@ func TestSessionAggregator_IncrementalUpdate(t *testing.T) {
 	snap, err := aggregator.GetSession(ctx, tenantID, sessionID)
 	require.NoError(t, err)
 
-	assert.Equal(t, 3, snap.TotalTurns)           // 1 + 1 + 1
-	assert.Equal(t, 450, snap.TotalTokens)        // 100 + 200 + 150
+	assert.Equal(t, 3, snap.TotalTurns)                 // 1 + 1 + 1
+	assert.Equal(t, 450, snap.TotalTokens)              // 100 + 200 + 150
 	assert.InDelta(t, 0.007, snap.TotalCostUSD, 0.0001) // 0.002 + 0.004 + 0.001
 
 	// Last turn values should be from turn 3
@@ -362,10 +362,10 @@ func TestSessionAggregator_PartialMetadata(t *testing.T) {
 	snap, err := aggregator.GetSession(ctx, tenantID, sessionID)
 	require.NoError(t, err)
 
-	assert.Equal(t, "chat", snap.TaskType)      // Updated
-	assert.Equal(t, "vscode", snap.ClientType)  // Preserved
-	assert.Equal(t, "golang", snap.Topic)       // Preserved
-	assert.Equal(t, "debug", snap.Intent)       // Preserved
+	assert.Equal(t, "chat", snap.TaskType)     // Updated
+	assert.Equal(t, "vscode", snap.ClientType) // Preserved
+	assert.Equal(t, "golang", snap.Topic)      // Preserved
+	assert.Equal(t, "debug", snap.Intent)      // Preserved
 }
 
 // TestSessionAggregator_GetNonExistentSession tests querying non-existent session

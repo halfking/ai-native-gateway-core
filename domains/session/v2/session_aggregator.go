@@ -91,7 +91,7 @@ type SessionUpdate struct {
 // When update.RequestID is non-empty, the aggregate claim and snapshot upsert
 // share one transaction. A replay whose turn is already marked is a no-op.
 func (a *SessionAggregator) UpdateSession(ctx context.Context, update SessionUpdate) error {
-	partitionDate := update.UpdatedAt.Truncate(24 * time.Hour)
+	partitionDate := calendarDate(update.UpdatedAt)
 
 	if update.RequestID == "" {
 		return upsertSessionSnapshot(ctx, a.db, update, partitionDate)

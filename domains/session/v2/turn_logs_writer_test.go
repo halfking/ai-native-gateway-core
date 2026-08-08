@@ -143,8 +143,8 @@ func TestTurnLogsWriter_ErrorStage(t *testing.T) {
 		Stage:       "llm_call",
 		StageStatus: "failed",
 		EventData: map[string]interface{}{
-			"provider":   "openai",
-			"model":      "gpt-4",
+			"provider":    "openai",
+			"model":       "gpt-4",
 			"status_code": 500,
 		},
 		ErrorMsg:    "Connection timeout",
@@ -279,7 +279,7 @@ func TestTurnLogsWriter_AggregateSessionLogs(t *testing.T) {
 
 	// Verify turn logs
 	turns := summary["turns"].(map[int][]map[string]interface{})
-	
+
 	// Turn 1 should have 2 stages
 	assert.Len(t, turns[1], 2)
 	assert.Equal(t, "routing", turns[1][0]["stage"])
