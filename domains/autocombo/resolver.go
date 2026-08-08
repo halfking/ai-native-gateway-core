@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"strings"
 )
 
@@ -48,9 +49,28 @@ func (r *Resolver) Resolve(ctx context.Context, modelID string, tenantID string)
 }
 
 // queryDB 在数据库中查找模板；空 tenant 时回退到 default 行, 兼容历史数据。
+//
+// RLS contract (2026-08-09 audit round 3):
+//
+//   - auto_combo_templates 表启用了 RLS, USING 子句检查
+//     tenant_id = public.get_current_tenant().
+//   - 我们用 SQL SET app.current_tenant 在执行 SELECT 前把当前请求的
+//     tenant 推给 PG session, 让 RLS 真正生效. SQL SET 而非
+//     set_config(...) 是为了避免 lib/pq 驱动 prepared-statement 路径下
+//     GUC 不生效的已知问题.
+//   - 空 tenantID 时跳过 SET, 让 get_current_tenant() 函数自身走
+//     'default' fallback (与旧 behavior 兼容).
+//   - SET 调用失败时仅记 WARN, 不让 GUC 失败阻塞 routing 路径.
 func (r *Resolver) queryDB(ctx context.Context, modelID, tenantID string) (*AutoComboSpec, error) {
 	if r.db == nil {
 		return nil, sql.ErrNoRows
+	}
+	if tenantID != "" {
+		if _, err := r.db.ExecContext(ctx,
+			fmt.Sprintf("SET app.current_tenant = '%s'", escapeTenant(tenantID))); err != nil {
+			slog.Warn("omnifree: failed to set app.current_tenant before queryDB",
+				"tenant_id", tenantID, "error", err)
+		}
 	}
 	tenantFilter := tenantID
 	if tenantFilter == "" {
@@ -82,21 +102,62 @@ func (r *Resolver) queryDB(ctx context.Context, modelID, tenantID string) (*Auto
 	return &spec, nil
 }
 
-// getBuiltinTemplate 内置模板回退
+// escapeTenant 与 freeresource.escapeTenant 同语义; 这里独立实现避免
+// 跨包依赖引发的循环引用. 仅允许 [A-Za-z0-9_-] 且长度 <=64, 不合法 ID
+// 返回 'default' 防止 SET 语句注入.
+func escapeTenant(id string) string {
+	if id == "" || len(id) > 64 {
+		return "default"
+	}
+	for _, c := range id {
+		if !((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+			(c >= '0' && c <= '9') || c == '_' || c == '-') {
+			return "default"
+		}
+	}
+	return id
+}
+
+// getBuiltinTemplate 内置模板回退.
+//
+// round 3 audit M8 修复: builtinMap 扩展到 12 个变体, 镜像 OmniRoute 的
+// AUTO_SUFFIX_VARIANTS (open-sse/services/autoCombo/builtinCatalog.ts).
+// 新增 auto/coding:cheap, auto/coding:pro, auto/reasoning:pro, auto/vision,
+// auto/multimodal, auto/fast 等.
+//
+// tier suffix 解析: "auto/<cat>:free" 强制 free tier; "auto/<cat>:pro"
+// 允许 paid; "auto/<cat>:cheap" 强调 cost. 模式在 Resolver.Resolve 入口
+// 解析, 这里只负责 Variant + weights.
 func (r *Resolver) getBuiltinTemplate(modelID, tenantID string) (*AutoComboSpec, error) {
-	builtinMap := map[string]Variant{
-		"auto/free":           VariantCheap,
-		"auto/best-free":      VariantCheap,
-		"auto/coding:free":    VariantCoding,
-		"auto/reasoning:free": VariantReasoning,
-		"auto/fast:free":      VariantFast,
-		"auto/creative:free":  VariantCreative,
+	builtinMap := map[string]struct {
+		variant Variant
+		tier    string // "" | "free" | "pro" | "cheap" | "smart"
+	}{
+		// free tier 全家桶 (旧有).
+		"auto/free":           {VariantCheap, "free"},
+		"auto/best-free":      {VariantCheap, "free"},
+		"auto/coding:free":    {VariantCoding, "free"},
+		"auto/reasoning:free": {VariantReasoning, "free"},
+		"auto/fast:free":      {VariantFast, "free"},
+		"auto/creative:free":  {VariantCreative, "free"},
+
+		// round 3 M8 新增变体.
+		"auto/coding":         {VariantCoding, ""},
+		"auto/coding:cheap":   {VariantCoding, "cheap"},
+		"auto/coding:pro":     {VariantCoding, "pro"},
+		"auto/reasoning":      {VariantReasoning, ""},
+		"auto/reasoning:pro":  {VariantReasoning, "pro"},
+		"auto/fast":           {VariantFast, ""},
+		"auto/vision":         {VariantSmart, ""},
+		"auto/multimodal":     {VariantSmart, ""},
 	}
 
-	variant, ok := builtinMap[modelID]
+	entry, ok := builtinMap[modelID]
 	if !ok {
 		return nil, fmt.Errorf("unknown auto combo: %s", modelID)
 	}
+
+	variant := entry.variant
 
 	// 默认权重（总和 = 1.0）
 	weights := ScoringWeights{
@@ -125,14 +186,52 @@ func (r *Resolver) getBuiltinTemplate(modelID, tenantID string) (*AutoComboSpec,
 		weights = ScoringWeights{
 			HealthScore: 0.4, QuotaRemaining: 0.2, TaskFit: 0.4,
 		}
+	case VariantSmart:
+		// vision/multimodal: Health 0.5 + Latency 0.2 + TaskFit 0.3 = 1.0
+		weights = ScoringWeights{
+			HealthScore: 0.5, LatencyP95: 0.2, TaskFit: 0.3,
+		}
 	}
 
 	weightsJSON, _ := json.Marshal(weights)
 
+	// tier 解析: free → TierFilter=[free]; pro → [] (所有); cheap →
+	// 强调 Cost; smart/"" → 不限.
+	var tierFilter []string
+	switch entry.tier {
+	case "free":
+		tierFilter = []string{"free"}
+	case "pro":
+		tierFilter = []string{} // paid OK
+	case "cheap":
+		tierFilter = []string{"cheap", "free"}
+	default:
+		tierFilter = []string{} // any
+	}
+
+// pro / cheap tier 启用 Cost 维度: 在 variant 默认权重基础上重新分配
+// 0.15 给 Cost, 把剩余 0.85 按 variant 原始 (非 Cost) 比例归一化.
+// 严格保持 NewEngine 校验通过 (sum ∈ [0.99, 1.01]).
+	if entry.tier == "pro" || entry.tier == "cheap" {
+		const costShare = 0.15
+		nonCost := weights.HealthScore + weights.LatencyP95 +
+			weights.QuotaRemaining + weights.TaskFit + weights.TierAffinity
+		if nonCost > 0 {
+			scale := (1.0 - costShare) / nonCost
+			weights.Cost = costShare
+			weights.HealthScore *= scale
+			weights.LatencyP95 *= scale
+			weights.QuotaRemaining *= scale
+			weights.TaskFit *= scale
+			weights.TierAffinity *= scale
+			weightsJSON, _ = json.Marshal(weights)
+		}
+	}
+
 	return &AutoComboSpec{
 		ComboName:          modelID,
 		Variant:            variant,
-		TierFilter:         []string{"free"},
+		TierFilter:         tierFilter,
 		ToSFilter:          []string{"ok", "caution"},
 		ProviderAllowlist:  []string{},
 		ProviderDenylist:   []string{},

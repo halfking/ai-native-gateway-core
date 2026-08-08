@@ -57,8 +57,15 @@ func (d *DB) ensureOmniFreeSchema(ctx context.Context) error {
 			created_at TIMESTAMPTZ DEFAULT now(),
 			updated_at TIMESTAMPTZ DEFAULT now(),
 			tenant_id TEXT NOT NULL DEFAULT 'default',
+			-- round 3 M7: OmniRoute freeModelCatalog.trainsOnPrompts 对标字段.
+			trains_on_prompts BOOLEAN NOT NULL DEFAULT FALSE,
 			UNIQUE (tenant_id, provider_code, model_id)
 		);
+
+		-- round 3 M7: 对存量表做 ADD COLUMN IF NOT EXISTS (在已部署 schema
+		-- 上保持幂等). 上面 CREATE 已包含新列, 此分支是 historical bootstrap.
+		ALTER TABLE public.free_resource_catalog
+			ADD COLUMN IF NOT EXISTS trains_on_prompts BOOLEAN NOT NULL DEFAULT FALSE;
 
 		CREATE TABLE IF NOT EXISTS public.free_quota_tracker (
 			id BIGSERIAL PRIMARY KEY,
