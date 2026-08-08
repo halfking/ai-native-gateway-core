@@ -59,6 +59,10 @@ export default {
     },
     filter: {
       keyAll: 'すべてのキー',
+      providerTitle: 'プロバイダー',
+      providerAll: 'すべてのプロバイダー',
+      credentialTitle: '認証情報',
+      credentialAll: 'すべての認証情報',
       timeTitle: '時間範囲',
       timeOptions: {
         h1: '1時間',
@@ -66,7 +70,21 @@ export default {
         h24: '24時間',
         d3: '3日',
         d7: '7日',
+        // 2026-08-09: 自然カレンダー preset
+        today: '今日',
+        thisWeek: '今週',
+        thisMonth: '今月',
+        thisYear: '今年',
+        custom: 'カスタム',
       },
+      // 2026-08-09: stats-overview + stats-grid 内訳ラベル
+      inputTokenLabel: '入力 token',
+      outputTokenLabel: '出力 token',
+      cacheReadLabel: 'キャッシュ読み取り token',
+      cacheWriteLabel: 'キャッシュ書き込み token',
+      costLabel: 'コスト USD',
+      resetTime: '時間範囲をリセット',
+      timeReset: 'リセット',
       resultTitle: '結果',
       resultAll: 'すべて',
       resultInProgress: 'リクエスト中',
@@ -165,6 +183,15 @@ export default {
       summaryHeading: '## 要約',
       keyPointsHeading: '## 重要ポイント',
     },
+    // 2026-08-09: 上部に強調表示する stats-overview 三連概要カード
+    stats: {
+      totalRequests: '総リクエスト数',
+      totalTokens: '総トークン',
+      totalCredits: '総クレジット',
+      totalCreditsTitle: '現在のフィルタ条件に一致する全行のクレジット合計',
+      scopeAll: '全一致行 · ページネーションと無関係',
+    },
+    dateRangePlaceholder: '開始 / 終了時間を選択',
   },
   detail: {
     drawerTitle: '元のリクエスト詳細',

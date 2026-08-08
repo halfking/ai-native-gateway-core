@@ -59,6 +59,10 @@ export default {
     },
     filter: {
       keyAll: 'كل المفاتيح',
+      providerTitle: 'المزوّد',
+      providerAll: 'كل المزوّدين',
+      credentialTitle: 'بيانات الاعتماد',
+      credentialAll: 'كل بيانات الاعتماد',
       timeTitle: 'النطاق الزمني',
       timeOptions: {
         h1: 'ساعة واحدة',
@@ -66,7 +70,21 @@ export default {
         h24: '24 ساعة',
         d3: '3 أيام',
         d7: '7 أيام',
+        // 2026-08-09: إعدادات التقويم
+        today: 'اليوم',
+        thisWeek: 'هذا الأسبوع',
+        thisMonth: 'هذا الشهر',
+        thisYear: 'هذا العام',
+        custom: 'مخصص',
       },
+      // 2026-08-09: تسميات stats-overview + stats-grid
+      inputTokenLabel: 'tokens الإدخال',
+      outputTokenLabel: 'tokens الإخراج',
+      cacheReadLabel: 'tokens قراءة ذاكرة التخزين المؤقت',
+      cacheWriteLabel: 'tokens كتابة ذاكرة التخزين المؤقت',
+      costLabel: 'التكلفة USD',
+      resetTime: 'إعادة تعيين النطاق الزمني',
+      timeReset: 'إعادة تعيين',
       resultTitle: 'النتيجة',
       resultAll: 'الكل',
       resultInProgress: 'قيد الطلب',
@@ -166,6 +184,15 @@ export default {
       summaryHeading: '## ملخص',
       keyPointsHeading: '## نقاط رئيسية',
     },
+    // 2026-08-09: بطاقات stats-overview الثلاثية البارزة في الأعلى
+    stats: {
+      totalRequests: 'إجمالي الطلبات',
+      totalTokens: 'إجمالي الـ tokens',
+      totalCredits: 'إجمالي الأرصدة',
+      totalCreditsTitle: 'مجموع الأرصدة المخصومة عبر جميع الصفوف المطابقة للمرشح الحالي',
+      scopeAll: 'كل الصفوف المطابقة · مستقل عن التقسيم إلى صفحات',
+    },
+    dateRangePlaceholder: 'اختر وقت البدء / الانتهاء',
   },
   detail: {
     // يستخدم RequestLogDrawer.vue
