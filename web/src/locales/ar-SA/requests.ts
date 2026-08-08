@@ -59,6 +59,7 @@ export default {
     },
     filter: {
       keyAll: 'كل المفاتيح',
+      keyTitle: 'API Key',
       providerTitle: 'المزوّد',
       providerAll: 'كل المزوّدين',
       credentialTitle: 'بيانات الاعتماد',

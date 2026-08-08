@@ -59,6 +59,7 @@ export default {
     },
     filter: {
       keyAll: 'すべてのキー',
+      keyTitle: 'API Key',
       providerTitle: 'プロバイダー',
       providerAll: 'すべてのプロバイダー',
       credentialTitle: '認証情報',
