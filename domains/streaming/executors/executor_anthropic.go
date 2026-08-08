@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -442,6 +443,27 @@ func (e *Executor) prepareAnthropicRequestBody(params *ExecParams, cand provider
 		// Parse OpenAI body → IR → Serialize Anthropic
 		irReq, err := e.IR.ParseOpenAI(sourceBody)
 		if err != nil {
+			// 2026-08-08 P0 Fix: when the IR stream-side circuit breaker is
+			// OPEN (process-local counter, see
+			// domains/transformation/circuit_breaker.go), factory.Pick()
+			// already routes stream requests to the legacy path, but the
+			// non-stream conversion path here runs the IR converter
+			// unconditionally and returns a hard error — producing 503 for
+			// every Claude-sonnet-5 request whose sole credential trips
+			// the IR circuit. Fall back to the legacy ChatToAnthropic
+			// callback (set up by cmd/gateway/main.go:984) so the request
+			// still reaches upstream while the IR layer recovers.
+			if errors.Is(err, transformation.ErrConverterCircuitOpen) && e.ChatToAnthropic != nil {
+				slog.Warn("ir_converter_circuit_open_fallback_to_legacy_anthropic",
+					"request_id", params.RequestID,
+					"provider_id", cand.ProviderID,
+					"credential_id", cand.CredentialID,
+					"raw_model", cand.RawModel,
+					"client_model", params.ClientModel,
+					"stage", "parse_openai",
+				)
+				return e.legacyAnthropicBody(params, cand, sourceBody)
+			}
 			return nil, fmt.Errorf("ir parse openai: %w", err)
 		}
 		// Override model to outbound model (matching existing behavior)
@@ -453,6 +475,21 @@ func (e *Executor) prepareAnthropicRequestBody(params *ExecParams, cand provider
 		irReq.TargetProvider = cand.CatalogCode
 		bodyBytes, err := e.IR.SerializeAnthropic(irReq)
 		if err != nil {
+			// 2026-08-08 P0 Fix: same IR-circuit-open fallback as ParseOpenAI.
+			// SerializeAnthropic routes through the same process-local
+			// breaker; on OPEN we drop back to the legacy ChatToAnthropic
+			// callback so the upstream still receives a well-formed body.
+			if errors.Is(err, transformation.ErrConverterCircuitOpen) && e.ChatToAnthropic != nil {
+				slog.Warn("ir_converter_circuit_open_fallback_to_legacy_anthropic",
+					"request_id", params.RequestID,
+					"provider_id", cand.ProviderID,
+					"credential_id", cand.CredentialID,
+					"raw_model", cand.RawModel,
+					"client_model", params.ClientModel,
+					"stage", "serialize_anthropic",
+				)
+				return e.legacyAnthropicBody(params, cand, sourceBody)
+			}
 			return nil, fmt.Errorf("ir serialize anthropic: %w", err)
 		}
 		// Apply remaining Anthropic-path transforms (sanitize, fix, validate)
@@ -474,6 +511,13 @@ func (e *Executor) prepareAnthropicRequestBody(params *ExecParams, cand provider
 	}
 
 	// Legacy path (no IR converter set): use existing callbacks
+	return e.legacyAnthropicBody(params, cand, sourceBody)
+}
+
+// legacyAnthropicBody performs the legacy ChatToAnthropic conversion path.
+// Extracted so the IR-converter circuit-open fallback above can reuse the
+// same logic instead of duplicating it.
+func (e *Executor) legacyAnthropicBody(params *ExecParams, cand provider.Candidate, sourceBody []byte) ([]byte, error) {
 	bodyBytes := append([]byte(nil), sourceBody...)
 
 	if cand.ContextWindow != nil {
@@ -487,6 +531,9 @@ func (e *Executor) prepareAnthropicRequestBody(params *ExecParams, cand provider
 	// Q3 conversion: OpenAI /v1/chat/completions → Anthropic /v1/messages.
 	// FIX (2026-06-23): Only convert when upstream protocol is anthropic-messages.
 	// This prevents converting OpenAI→Anthropic when talking to OpenAI-compatible upstreams like MiniMax.
+	needsConversion := params.ClientProtocol != "anthropic-messages" &&
+		params.ClientProtocol != "" &&
+		cand.Protocol == "anthropic-messages"
 	if needsConversion {
 		// Phase 3.2: Check format_conversion.enabled (provider-level override)
 		if e.ProviderSettings != nil {
