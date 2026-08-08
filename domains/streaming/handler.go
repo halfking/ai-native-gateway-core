@@ -2498,8 +2498,12 @@ func (h *ChatHandler) serveWithExecutor(
 		requestModality string
 	)
 	if h.shouldTryOmniFree(clientModel) {
-		// OmniFree (Phase 4, 2026-08-07): 解析 auto/* 虚拟路由.
-		// helper 返回 found=true 时, 直接采用其结果; 否则走普通 provider resolver.
+		// OmniFree (Phase 4, 2026-08-07; round 3 audit H1 2026-08-09): 解析
+		// auto/* 虚拟路由.
+		//   - found=true → 直接采用 OmniFree 结果.
+		//   - found=false 且 err 包裹 ErrOmniFreeNoCandidates → 用户明确请求
+		//     了 auto/* 路由但 OmniFree 内部耗尽, 返回 503 而非降级到 paid.
+		//   - found=false 且 err 为 nil/其他 → OmniFree 不接管, 走普通 resolver.
 		var (
 			omniCandidates []provider.Candidate
 			omniPolicy     *provider.Policy
@@ -2514,6 +2518,17 @@ func (h *ChatHandler) serveWithExecutor(
 			candidates = omniCandidates
 			policy = omniPolicy
 			requestModality = omniModality
+		} else if errors.Is(omniErr, ErrOmniFreeNoCandidates) {
+			// round 3 H1: 用户请求 auto/* 但 OmniFree 没有候选 (catalog 空 /
+			// 全部耗尽 / provider resolve 全失败). 直接 503 终止, 避免降级
+			// 到可能收费的 provider.
+			slog.Warn("omnifree: no free candidates, refusing to fall back",
+				"model", clientModel, "tenant_id", tenantID, "request_id", requestID,
+				"error", omniErr)
+			writeErrorJSONCtx(r.Context(), w, http.StatusServiceUnavailable, requestID,
+				"no_free_candidates", "No available free resources for "+clientModel+
+					"; try a specific model or wait for quota reset", nil)
+			return
 		} else {
 			if omniErr != nil {
 				slog.Debug("omnifree resolve failed, fall back to provider resolver",

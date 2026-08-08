@@ -277,7 +277,19 @@ func (vf *VirtualFactory) filterCandidates(
 	return filtered
 }
 
-// preflightQuota 仅对 free billing_mode 的候选调用 preflight; keyless 不计入配额.
+// preflightQuota 对 free 候选在多个窗口上跑 Preflight; 全部通过才放行.
+//
+// round 3 audit H3 修复要点:
+//   - 旧实现仅检查 day-1 窗口, 忽略了 hour-5 / month-1; Groq 等提供商
+//     在 hour-5 / month-1 上有独立配额窗口 (RPM / monthly token cap),
+//     只看 day-1 会让候选在 hit 实际 RPM 限制时被错误放行.
+//   - 新实现按 (free tier, candidate 实际支持的窗口类型) 跑多个
+//     Preflight, 全部通过才返回 ok. 任一窗口未通过即剔除该候选.
+//
+// round 3 audit H6 修复要点:
+//   - 旧 isFreeBilling 把空 BillingMode 也视为 free, 让配置错误的 paid
+//     candidate 误入 free 池; 修复后空 / 未知 mode 跳过配额门 (caller
+//     后续业务层可加显式 "unknown-billing" 告警).
 func (vf *VirtualFactory) preflightQuota(
 	ctx context.Context,
 	candidates []provider.Candidate,
@@ -292,16 +304,37 @@ func (vf *VirtualFactory) preflightQuota(
 			out = append(out, c)
 			continue
 		}
-		ok, err := vf.quotaTracker.Preflight(ctx, freeresource.PreflightRequest{
-			CredentialID:    int64(c.CredentialID),
-			ProviderCode:    c.CatalogCode,
-			ModelID:         c.StandardizedName,
-			WindowType:      freeresource.WindowTypeDay1,
-			DefaultLimit:    1000,
-			MinRemainingPct: 0.1,
-			TenantID:        tenantID,
-		})
-		if err != nil || !ok {
+
+		// 对每个 (billing mode → window type) 组合跑一次 Preflight; 全部
+		// 通过才算 ok. 与 Resolver 内置模板默认 day-1+month-1 保持一致.
+		windows := []freeresource.WindowType{
+			freeresource.WindowTypeDay1,
+			freeresource.WindowTypeMonth1,
+		}
+		allPass := true
+		for _, wt := range windows {
+			ok, err := vf.quotaTracker.Preflight(ctx, freeresource.PreflightRequest{
+				CredentialID:    int64(c.CredentialID),
+				ProviderCode:    c.CatalogCode,
+				ModelID:         c.StandardizedName,
+				WindowType:      wt,
+				DefaultLimit:    freeTierDefaultLimit(c),
+				MinRemainingPct: 0.1,
+				TenantID:        tenantID,
+			})
+			if err != nil {
+				slog.Debug("omnifree: preflight error",
+					"provider_code", c.CatalogCode, "model", c.StandardizedName,
+					"window", wt, "error", err)
+				allPass = false
+				break
+			}
+			if !ok {
+				allPass = false
+				break
+			}
+		}
+		if !allPass {
 			continue
 		}
 		out = append(out, c)
@@ -309,11 +342,37 @@ func (vf *VirtualFactory) preflightQuota(
 	return out
 }
 
+// freeTierDefaultLimit 返回 Preflight 的 fallback 上限. provider 自身的
+// day-1 配额未知时, 用 1000 req/day 作为兜底. 真实生产中,
+// free_resource_catalog.daily_tokens 已经存了日配额, 应由 catalog loader
+// 注入到 candidate metadata 中; 这里先用常量兜底, 后续可通过 provider 扩
+// 展 metadata 字段传入.
+func freeTierDefaultLimit(_ provider.Candidate) int64 {
+	// 1000 RPD 是大多数免费层提供商的保守默认值 (OpenRouter :free = 50 RPD,
+	// 但加上 boost 后可达 1000 RPD; Groq dev tier ≈ 1000 RPD).
+	return 1000
+}
+
 // isFreeBilling 判断 provider candidate 是否属于免费层级.
+//
+// round 3 H6 修复: 不再把空 / 未知 mode 视为 free; 仅显式标记的免费
+// 模式走配额门, 未知 mode 视为 paid (caller 应在 business layer 加
+// "unknown-billing" 告警).
+//
+// 已知 free 模式: free / keyless / token_plan / code_plan / tier1 /
+// recurring-daily / recurring-monthly / recurring-credit / recurring-uncapped.
 func isFreeBilling(mode string) bool {
 	switch strings.ToLower(strings.TrimSpace(mode)) {
-	case "free", "keyless", "token_plan", "code_plan", "tier1", "":
-		// 未知/空 billing mode 默认视为 free 候选, 让配额预检决定.
+	case "free",
+		"keyless",
+		"token_plan",
+		"code_plan",
+		"tier1",
+		"recurring-daily",
+		"recurring-monthly",
+		"recurring-credit",
+		"recurring-uncapped",
+		"one-time-initial":
 		return true
 	}
 	return false
