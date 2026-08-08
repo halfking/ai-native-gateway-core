@@ -349,10 +349,13 @@ func escapeTenant(id string) string {
 //
 // 这样 rolling 窗口内所有请求共享同一 conflict key, 多次 Record 会累加
 // 而不是新建行.
+//
+// round 4 M1 优化: 预分配 slice 容量, 减少 alloc churn. 高 QPS 场景
+// (例如 1000 RPS × 4 窗口 = 4000 alloc/秒) 下显著降低 GC 压力.
 func (qt *QuotaTracker) computeWindows(ts time.Time, types []WindowType) []QuotaWindow {
 	ts = ts.UTC()
 
-	var windows []QuotaWindow
+	windows := make([]QuotaWindow, 0, len(types))
 	for _, wt := range types {
 		var start, end time.Time
 		switch wt {
