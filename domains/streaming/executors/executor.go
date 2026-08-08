@@ -1654,16 +1654,29 @@ func freeCredentialsTolerateTransient(billingMode string, kind errorsx.ErrorKind
 	return false
 }
 
-// isTransientFailoverKind reports whether a failed candidate should hand off
-// to the next candidate in the main loop rather than ending the walk.
+// isTransientFailoverKind reports whether a failed candidate's kind is a
+// transient upstream condition.
 //
-// This is load-bearing for streaming: streaming requests never enter the sync
-// retry loop below, so the `continue` this predicate guards is their ONLY
-// failover safeguard. A kind that is retryable but missing from this list
-// silently becomes all_candidates_failed for a streaming client while
-// non-streaming callers are still rescued by sync retry — a discrepancy that
-// is invisible in unit tests of the retry loop itself. Extracted from the
-// inline condition (2026-08-08) so membership is directly assertable.
+// Scope, precisely (corrected 2026-08-09): the `continue` this predicate guards
+// is the LAST statement in the candidate-loop body, so it does not decide
+// whether failover happens — falling off the end of the loop body advances to
+// the next candidate either way. The two effects that are real:
+//
+//   - it records lastTransientCred for the sync retry loop's inline probe
+//   - it emits the "trying next candidate" log line
+//
+// The previous comment here claimed this was "streaming's ONLY failover
+// safeguard" and that a missing kind "silently becomes all_candidates_failed".
+// That was wrong and actively misleading: KindNetwork and KindConcurrent are
+// IsRetryable and absent from this list, yet they fail over correctly today —
+// purely because of where the closing brace sits. Anyone adding a kind here
+// expecting to switch failover on would be changing nothing.
+//
+// The flip side is the real hazard: appending any statement after that
+// `continue` converts both it and the credential-fatal `continue` above it from
+// no-ops into load-bearing control flow, and every kind NOT in this list (or in
+// IsCredentialFatal) would start ending the walk early. TestCandidateLoopFailsOverForEveryRetryableKind
+// in failover_completeness_test.go pins that invariant structurally.
 func isTransientFailoverKind(kind errorsx.ErrorKind) bool {
 	switch kind {
 	case errorsx.KindTransient,
@@ -1672,7 +1685,8 @@ func isTransientFailoverKind(kind errorsx.ErrorKind) bool {
 		errorsx.KindStreamTimeout,
 		errorsx.KindUpstreamDown,
 		errorsx.KindUpstreamOverloaded,
-		errorsx.KindEmptyResponse:
+		errorsx.KindEmptyResponse,
+		errorsx.KindNoAvailableChannel:
 		return true
 	}
 	return false
@@ -4092,7 +4106,10 @@ func (e *Executor) recordBanditFailure(credentialID int, kind errorsx.ErrorKind)
 	// credential may serve other models fine; penalizing its bandit score
 	// would unfairly demote a healthy credential for an upstream model-level
 	// decision it cannot control.
-	if kind == errorsx.KindModelDeprecated || kind == errorsx.KindModelNotFound {
+	// 2026-08-09: KindNoAvailableChannel joins this group — a distributor
+	// group having no channel for THIS model says nothing about the
+	// credential's quality for other models.
+	if kind == errorsx.KindModelDeprecated || kind == errorsx.KindModelNotFound || kind == errorsx.KindNoAvailableChannel {
 		return
 	}
 
@@ -4928,7 +4945,8 @@ func shouldWriteCredentialState(kind errorsx.ErrorKind) bool {
 	case errorsx.KindAuth, errorsx.KindAuthRevoked,
 		errorsx.KindQuota, errorsx.KindQuotaPeriodic, errorsx.KindQuotaBalance, errorsx.KindQuotaPermanent,
 		errorsx.KindConcurrent, errorsx.KindRateLimit,
-		errorsx.KindStreamTimeout, errorsx.KindModelNotFound, errorsx.KindModelDeprecated:
+		errorsx.KindStreamTimeout, errorsx.KindModelNotFound, errorsx.KindModelDeprecated,
+		errorsx.KindNoAvailableChannel:
 		return true
 	default:
 		return false
@@ -4950,7 +4968,8 @@ func (e *Executor) shouldWriteCredentialStateOnConfirmedFailure(providerID, cred
 	// → <30s propagation via candidate cache invalidation
 	switch kind {
 	case errorsx.KindQuota, errorsx.KindQuotaBalance, errorsx.KindQuotaPeriodic, errorsx.KindQuotaPermanent,
-		errorsx.KindAuth, errorsx.KindAuthRevoked:
+		errorsx.KindAuth, errorsx.KindAuthRevoked,
+		errorsx.KindNoAvailableChannel:
 		return true
 	}
 	// Other error kinds (RateLimit, Concurrent, StreamTimeout) still require

@@ -1,5 +1,9 @@
 // Package v2: RawCacheV2 是 L0 原始缓存（与 session_turns/session_bodies 写入同步）
 // 仅存储本轮 delta；不做 LCS、不存完整 outbound body。
+//
+// KEEP: L0 原始缓存预留 — 当前无 package 外消费者，仅在写入 pipeline
+// 「写前快速读取」加速链路就绪后接入（docs/design/2026-08-09 三层缓存）。
+// 勿按死代码清理。 @acc review 2026-11-09
 package v2
 
 import (

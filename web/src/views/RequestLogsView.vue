@@ -45,7 +45,15 @@ const error = ref<string | null>(null)
 const apiKeyId = ref<number | ''>('')
 const keyword = ref('')
 const modelFilter = ref('')
-const hours = ref(24)
+// 2026-08-09: 时间筛选升级为 preset + 自定义范围，替代旧的固定小时数下拉。
+// 类型覆盖原 [1h/6h/24h/3d/7d] 与新增的 [今天/本周/本月/今年/自定义]。
+type TimePreset =
+  | 'h1' | 'h6' | 'h24' | 'd3' | 'd7'
+  | 'today' | 'thisWeek' | 'thisMonth' | 'thisYear'
+  | 'custom'
+type DateRange = [Date | string, Date | string]
+const timePreset = ref<TimePreset>('h24')
+const customDateRange = ref<DateRange | null>(null)
 const successFilter = ref<'' | 'success' | 'failure' | 'rate_limited' | 'in_progress'>('')
 const errorKindFilter = ref('')
 const usageSourceFilter = ref<'' | 'llm' | 'estimated'>('')
@@ -176,15 +184,38 @@ const tenantLabel = computed(() => {
   }
 })
 
-// Non-default tenants can only view last 3 days (72 hours)
-const maxHoursForTenant = computed(() => isDefaultTenant() ? 168 : 72)
+// 2026-08-09: 非 default 租户最多查看最近 3 天；宽于 3 天的 preset 自动降级。
+// default 租户可使用全部 preset，包括 d7/thisWeek/thisMonth/thisYear。
+const PRESETS_NON_DEFAULT_DOWNSHIFT: Partial<Record<TimePreset, TimePreset>> = {
+  thisWeek: 'd3',
+  thisMonth: 'd3',
+  thisYear: 'd3',
+  d7: 'd3',
+}
 
-// Validate hours when tenant changes
-function validateHours() {
-  const maxHours = maxHoursForTenant.value
-  if (hours.value > maxHours) {
-    hours.value = maxHours
-  }
+// Validate preset when tenant changes / user toggles preset.
+// Non-default tenants can't widen past 3 days; if they hold a wider preset,
+// silently drop to d3 instead of trampling their selection with an error.
+function clampCustomDateRange() {
+  if (timePreset.value !== 'custom' || !customDateRange.value || isDefaultTenant()) return
+  const [startValue, endValue] = customDateRange.value
+  const start = new Date(startValue)
+  const end = new Date(endValue)
+  if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime()) || end <= start) return
+  const maxEnd = new Date(start.getTime() + 3 * 24 * 3600 * 1000)
+  if (end > maxEnd) customDateRange.value = [start, maxEnd]
+}
+
+function normalizeTimePresetForTenant() {
+  if (isDefaultTenant()) return
+  const next = PRESETS_NON_DEFAULT_DOWNSHIFT[timePreset.value]
+  if (next) timePreset.value = next
+  clampCustomDateRange()
+}
+
+function onTimePresetChange() {
+  normalizeTimePresetForTenant()
+  if (timePreset.value !== 'custom') resetPageAndLoad()
 }
 
 async function loadKeys() {
@@ -269,6 +300,21 @@ function onProviderFilterChange() {
   if (!stillVisible) credentialFilter.value = ''
 }
 
+// 2026-08-09: 用户自定义日期范围变更后自动重发请求。
+// 注意 el-date-picker 的 value-format="YYYY-MM-DDTHH:mm:ssZ" 给的是 ISO 字符串，
+// timeRange() 中再 .toISOString() 一次是幂等的（毫秒精度不会有偏移）。
+function onCustomRangeChange() {
+  normalizeTimePresetForTenant()
+  resetPageAndLoad()
+}
+
+// 一键回到默认 24h
+function resetTimeFilter() {
+  timePreset.value = 'h24'
+  customDateRange.value = null
+  resetPageAndLoad()
+}
+
 // 脉络模式（按 gw_session_id / gw_task_id 追踪）应单独看一组请求，
 // 不与供应商/凭据过滤叠加，避免出现"按供应商筛选后点击会话脉络，结果为 0 条"
 // 这种矛盾组合。脉络进入与脉络清除都强制重置这两个过滤。
@@ -277,9 +323,53 @@ function clearProviderCredentialFilter() {
   credentialFilter.value = ''
 }
 
+// 2026-08-09: 从 preset + customRange 计算 from/to。
+// - h1/h6/h24/d3/d7 → 滑窗
+// - today/thisWeek/thisMonth/thisYear → 自然日历年边界（本地时区）
+// - custom → 走 customDateRange，未选时回退到 24h 以保证请求不空
 function timeRange() {
-  const end = new Date()
-  const start = new Date(end.getTime() - hours.value * 3600 * 1000)
+  const now = new Date()
+  const end = new Date(now)
+  let start: Date
+  switch (timePreset.value) {
+    case 'h1':
+      start = new Date(end.getTime() - 1 * 3600 * 1000); break
+    case 'h6':
+      start = new Date(end.getTime() - 6 * 3600 * 1000); break
+    case 'h24':
+      start = new Date(end.getTime() - 24 * 3600 * 1000); break
+    case 'd3':
+      start = new Date(end.getTime() - 3 * 24 * 3600 * 1000); break
+    case 'd7':
+      start = new Date(end.getTime() - 7 * 24 * 3600 * 1000); break
+    case 'today':
+      start = new Date(); start.setHours(0, 0, 0, 0)
+      end.setHours(23, 59, 59, 999); break
+    case 'thisWeek': {
+      // 本地时区的"周一到今天"。getDay(): 0=Sun..6=Sat；映射到 ISO 周一基准。
+      start = new Date()
+      const dow = start.getDay() || 7
+      start.setDate(start.getDate() - (dow - 1))
+      start.setHours(0, 0, 0, 0)
+      break
+    }
+    case 'thisMonth':
+      start = new Date(now.getFullYear(), now.getMonth(), 1); break
+    case 'thisYear':
+      start = new Date(now.getFullYear(), 0, 1); break
+    case 'custom': {
+      if (customDateRange.value) {
+        const [s, e] = customDateRange.value
+        return {
+          from: new Date(s).toISOString(),
+          to: new Date(e).toISOString(),
+        }
+      }
+      // 自定义但未选范围时的兜底，避免发出一个无 from/to 的请求
+      start = new Date(end.getTime() - 24 * 3600 * 1000)
+      break
+    }
+  }
   return { from: start.toISOString(), to: end.toISOString() }
 }
 
@@ -528,9 +618,7 @@ function filterByTrace(row: RequestLogRow) {
   } else {
     return
   }
-  // 脉络视图拉宽时间窗与页大小，避免同脉络记录落在默认 24h/50 条外
-  if (hours.value < 168) hours.value = 168
-  if (pageSize.value < 200) pageSize.value = 200
+  widenRangeForTrace()
   clearProviderCredentialFilter()
   resetPageAndLoad()
 }
@@ -539,8 +627,7 @@ function filterByTask(taskId: string | null | undefined) {
   if (!taskId) return
   gwTaskFilter.value = taskId
   gwSessionFilter.value = ''
-  if (hours.value < 168) hours.value = 168
-  if (pageSize.value < 200) pageSize.value = 200
+  widenRangeForTrace()
   clearProviderCredentialFilter()
   resetPageAndLoad()
 }
@@ -549,10 +636,20 @@ function filterBySession(sessionId: string | null | undefined) {
   if (!sessionId) return
   gwSessionFilter.value = sessionId
   gwTaskFilter.value = ''
-  if (hours.value < 168) hours.value = 168
-  if (pageSize.value < 200) pageSize.value = 200
+  widenRangeForTrace()
   clearProviderCredentialFilter()
   resetPageAndLoad()
+}
+
+// 2026-08-09: 脉络视图拉宽时间窗与页大小到「本月」/200 条。
+// 用户已选 custom 时保留精确范围；非 default 租户仍由 normalizeTimePresetForTenant()
+// 强制遵守最近 3 天上限。
+function widenRangeForTrace() {
+  if (timePreset.value !== 'custom' && !['thisMonth', 'thisYear'].includes(timePreset.value)) {
+    timePreset.value = 'thisMonth'
+  }
+  normalizeTimePresetForTenant()
+  if (pageSize.value < 200) pageSize.value = 200
 }
 
 function clearTraceFilter() {
@@ -1263,9 +1360,25 @@ onMounted(async () => {
   if (typeof q.error_kind === 'string' && q.error_kind.trim()) {
     errorKindFilter.value = q.error_kind.trim()
   }
-  if (typeof q.hours === 'string' && /^\d+$/.test(q.hours)) {
-    hours.value = Number(q.hours)
+  // 2026-08-09: 时间范围 query 兼容。
+  // 优先级: 新版 ?preset=... > 旧版 ?hours=N (向后兼容, 仅识别 1/6/24/72/168) > 自定义 from/to。
+  const hourToPreset: Record<number, TimePreset> = {
+    1: 'h1', 6: 'h6', 24: 'h24', 72: 'd3', 168: 'd7',
   }
+  if (typeof q.preset === 'string' && (['h1','h6','h24','d3','d7','today','thisWeek','thisMonth','thisYear','custom'] as TimePreset[]).includes(q.preset as TimePreset)) {
+    timePreset.value = q.preset as TimePreset
+  } else if (typeof q.hours === 'string' && /^\d+$/.test(q.hours)) {
+    const mapped = hourToPreset[Number(q.hours)]
+    if (mapped) timePreset.value = mapped
+  }
+  if (timePreset.value === 'custom' && typeof q.from === 'string' && typeof q.to === 'string') {
+    const s = new Date(q.from)
+    const e = new Date(q.to)
+    if (!isNaN(s.getTime()) && !isNaN(e.getTime())) {
+      customDateRange.value = [s, e]
+    }
+  }
+  normalizeTimePresetForTenant()
   // 2026-08-06: 允许从其他视图（如 Dashboard 的"会话总结"按钮）通过 query 预填
   // 会话/任务筛选。任一参数存在即拉宽时间窗与页大小，避免汇总结果落在默认
   // 24h/50 条外。
@@ -1281,7 +1394,10 @@ onMounted(async () => {
       gwTaskFilter.value = taskId
       gwSessionFilter.value = ''
     }
-    if (hours.value < 168) hours.value = 168
+    if (!['thisMonth', 'thisYear'].includes(timePreset.value)) {
+      timePreset.value = 'thisMonth'
+    }
+    normalizeTimePresetForTenant()
     if (pageSize.value < 200) pageSize.value = 200
   }
   // 2026-07-02: 注册全局 ESC keydown 监听，用于关闭附件 lightbox
@@ -1330,49 +1446,71 @@ onMounted(async () => {
       非 default 租户只能查看最近 3 天的请求日志
     </div>
 
-    <!-- 当前过滤条件下的全量命中行统计（与分页无关）。
-         数据由 /api/logs 的 aggregate 字段返回，任一查询失败时整块隐藏。 -->
+    <!-- 2026-08-09: 突出显示三联概览卡 (总请求数 / 总 token / 积分)。
+         视觉权重高于下方细分 token 网格，作为 "本次过滤条件下" 的关键指标。
+         数据由 /api/logs 的 aggregate 字段返回，与分页无关。
+         非 default 租户只显示 "总请求数 / 总 token"。 -->
     <div
       v-if="aggregate"
-      class="stats-grid"
-      style="margin-bottom:12px;display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:10px"
+      class="stats-overview"
+      :style="{
+        marginBottom: '10px',
+        display: 'grid',
+        gridTemplateColumns: isDefaultTenant() ? 'repeat(3, 1fr)' : 'repeat(2, 1fr)',
+        gap: '10px',
+      }"
     >
-      <div class="stat-card" style="padding:8px 12px;background:var(--surface-secondary);border:1px solid var(--border);border-radius:6px;font-size:12px">
-        <div style="color:var(--text-secondary);font-size:11px">总请求数</div>
-        <div style="font-size:18px;font-weight:600;margin-top:2px">{{ aggregate.total_requests.toLocaleString() }}</div>
+      <div class="stat-overview-card" data-stat="total-requests">
+        <div class="stat-overview-label">{{ t('requests.list.stats.totalRequests') }}</div>
+        <div class="stat-overview-value">{{ aggregate.total_requests.toLocaleString() }}</div>
+        <div class="stat-overview-sub">{{ t('requests.list.stats.scopeAll') }}</div>
       </div>
-      <div class="stat-card" style="padding:8px 12px;background:var(--surface-secondary);border:1px solid var(--border);border-radius:6px;font-size:12px">
-        <div style="color:var(--text-secondary);font-size:11px">输入 token</div>
-        <div style="font-size:18px;font-weight:600;margin-top:2px">{{ formatStatNumber(aggregate.prompt_tokens) }}</div>
-      </div>
-      <div class="stat-card" style="padding:8px 12px;background:var(--surface-secondary);border:1px solid var(--border);border-radius:6px;font-size:12px">
-        <div style="color:var(--text-secondary);font-size:11px">输出 token</div>
-        <div style="font-size:18px;font-weight:600;margin-top:2px">{{ formatStatNumber(aggregate.completion_tokens) }}</div>
-      </div>
-      <div class="stat-card" style="padding:8px 12px;background:var(--surface-secondary);border:1px solid var(--border);border-radius:6px;font-size:12px">
-        <div style="color:var(--text-secondary);font-size:11px">缓存读 token</div>
-        <div style="font-size:18px;font-weight:600;margin-top:2px">{{ formatStatNumber(aggregate.cache_read_tokens) }}</div>
-      </div>
-      <div class="stat-card" style="padding:8px 12px;background:var(--surface-secondary);border:1px solid var(--border);border-radius:6px;font-size:12px">
-        <div style="color:var(--text-secondary);font-size:11px">缓存写 token</div>
-        <div style="font-size:18px;font-weight:600;margin-top:2px">{{ formatStatNumber(aggregate.cache_write_tokens) }}</div>
-      </div>
-      <div class="stat-card" style="padding:8px 12px;background:var(--surface-secondary);border:1px solid var(--border);border-radius:6px;font-size:12px">
-        <div style="color:var(--text-secondary);font-size:11px">总 token</div>
-        <div style="font-size:18px;font-weight:600;margin-top:2px">{{ formatStatNumber(aggregate.total_tokens) }}</div>
+      <div class="stat-overview-card" data-stat="total-tokens">
+        <div class="stat-overview-label">{{ t('requests.list.stats.totalTokens') }}</div>
+        <div class="stat-overview-value">{{ formatStatNumber(aggregate.total_tokens) }}</div>
+        <div class="stat-overview-sub">{{ t('requests.list.stats.scopeAll') }}</div>
       </div>
       <div
         v-if="!isDefaultTenant()"
-        class="stat-card"
-        style="padding:8px 12px;background:var(--surface-secondary);border:1px solid var(--border);border-radius:6px;font-size:12px"
-        title="本次请求扣除的积分合计（仅按当前筛选条件下的全量命中行聚合）"
+        class="stat-overview-card"
+        data-stat="total-credits"
+        :title="t('requests.list.stats.totalCreditsTitle')"
       >
-        <div style="color:var(--text-secondary);font-size:11px">积分</div>
-        <div style="font-size:18px;font-weight:600;margin-top:2px">{{ formatStatNumber(aggregate.credits_charged) }}</div>
+        <div class="stat-overview-label">{{ t('requests.list.stats.totalCredits') }}</div>
+        <div class="stat-overview-value">{{ formatStatNumber(aggregate.credits_charged) }}</div>
+        <div class="stat-overview-sub">{{ t('requests.list.stats.scopeAll') }}</div>
       </div>
-      <div class="stat-card" style="padding:8px 12px;background:var(--surface-secondary);border:1px solid var(--border);border-radius:6px;font-size:12px">
-        <div style="color:var(--text-secondary);font-size:11px">成本 USD</div>
-        <div style="font-size:18px;font-weight:600;margin-top:2px">{{ formatStatCost(aggregate.cost_usd) }}</div>
+    </div>
+
+    <!-- 当前过滤条件下的全量命中行统计（与分页无关）。
+         数据由 /api/logs 的 aggregate 字段返回，任一查询失败时整块隐藏。
+         2026-08-09: 三个核心指标上移到 stats-overview 后，本块视觉降权 (更小字号、
+         紧凑 padding)，用于展示 token 拆分 (输入/输出/缓存读/缓存写) 与成本。 -->
+    <div
+      v-if="aggregate"
+      class="stats-grid stats-grid--compact"
+      style="margin-bottom:12px;display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:8px"
+    >
+      <!-- 总请求数 / 总 token / 积分 上移到上方 stats-overview；此处只保留 token 拆分 + 成本 -->
+      <div class="stat-card stat-card--compact">
+        <div style="color:var(--text-secondary);font-size:11px">{{ t('requests.list.filter.inputTokenLabel') }}</div>
+        <div style="font-size:16px;font-weight:600;margin-top:2px">{{ formatStatNumber(aggregate.prompt_tokens) }}</div>
+      </div>
+      <div class="stat-card stat-card--compact">
+        <div style="color:var(--text-secondary);font-size:11px">{{ t('requests.list.filter.outputTokenLabel') }}</div>
+        <div style="font-size:16px;font-weight:600;margin-top:2px">{{ formatStatNumber(aggregate.completion_tokens) }}</div>
+      </div>
+      <div class="stat-card stat-card--compact">
+        <div style="color:var(--text-secondary);font-size:11px">{{ t('requests.list.filter.cacheReadLabel') }}</div>
+        <div style="font-size:16px;font-weight:600;margin-top:2px">{{ formatStatNumber(aggregate.cache_read_tokens) }}</div>
+      </div>
+      <div class="stat-card stat-card--compact">
+        <div style="color:var(--text-secondary);font-size:11px">{{ t('requests.list.filter.cacheWriteLabel') }}</div>
+        <div style="font-size:16px;font-weight:600;margin-top:2px">{{ formatStatNumber(aggregate.cache_write_tokens) }}</div>
+      </div>
+      <div class="stat-card stat-card--compact">
+        <div style="color:var(--text-secondary);font-size:11px">{{ t('requests.list.filter.costLabel') }}</div>
+        <div style="font-size:16px;font-weight:600;margin-top:2px">{{ formatStatCost(aggregate.cost_usd) }}</div>
       </div>
     </div>
 
@@ -1429,39 +1567,85 @@ onMounted(async () => {
 
     <div class="compact-filter-bar compact-filter-bar--stacked">
       <div class="cf-row">
-        <select v-model="apiKeyId" class="cf-select cf-cred" title="API Key">
-          <option value="">全部 Key</option>
+        <select
+          v-model="apiKeyId"
+          class="cf-select cf-cred"
+          :title="t('requests.list.filter.keyTitle')"
+        >
+          <option value="">{{ t('requests.list.filter.keyAll') }}</option>
           <option v-for="k in keys" :key="k.id" :value="k.id">{{ k.key_prefix }} ({{ k.application_code }})</option>
         </select>
         <select
           v-model="providerFilter"
           class="cf-select cf-provider"
-          title="供应商（数据源 /api/credentials/monitor-summary）"
+          :title="t('requests.list.filter.providerTitle')"
           @change="onProviderFilterChange"
         >
-          <option value="">全部供应商</option>
+          <option value="">{{ t('requests.list.filter.providerAll') }}</option>
           <option v-for="p in providerOptions" :key="p.id" :value="p.id">{{ p.name }}</option>
         </select>
-        <select v-model="credentialFilter" class="cf-select cf-credential" title="凭据">
-          <option value="">全部凭据</option>
+        <select
+          v-model="credentialFilter"
+          class="cf-select cf-credential"
+          :title="t('requests.list.filter.credentialTitle')"
+        >
+          <option value="">{{ t('requests.list.filter.credentialAll') }}</option>
           <option v-for="c in filteredCredentialOptions" :key="c.id" :value="c.id">{{ c.label }}</option>
         </select>
-        <select v-model="hours" class="cf-select cf-hours" title="时间范围" @change="validateHours">
-          <option :value="1">1小时</option>
-          <option :value="6">6小时</option>
-          <option :value="24">24小时</option>
-          <option :value="72">3天</option>
-          <option :value="168" :disabled="!isDefaultTenant()">7天</option>
+        <!-- 2026-08-09: 时间范围 preset 下拉。
+             选项拆成两组：自然日历 (今天/本周/本月/今年/自定义) + 滑窗 (1h/6h/24h/3d/7d)。
+             selected preset 切换到 custom 时，下面会行内渲染 el-date-picker。
+             非 default 租户的 d7 / thisYear 仍强制降级，见 onTimePresetChange()。 -->
+        <select v-model="timePreset" class="cf-select cf-hours" :title="t('requests.list.filter.timeTitle')" @change="onTimePresetChange">
+          <option value="today">{{ t('requests.list.filter.timeOptions.today') }}</option>
+          <option value="thisWeek">{{ t('requests.list.filter.timeOptions.thisWeek') }}</option>
+          <option value="thisMonth">{{ t('requests.list.filter.timeOptions.thisMonth') }}</option>
+          <option value="thisYear">{{ t('requests.list.filter.timeOptions.thisYear') }}</option>
+          <option value="custom">{{ t('requests.list.filter.timeOptions.custom') }}</option>
+          <option disabled>──────</option>
+          <option value="h1">{{ t('requests.list.filter.timeOptions.h1') }}</option>
+          <option value="h6">{{ t('requests.list.filter.timeOptions.h6') }}</option>
+          <option value="h24">{{ t('requests.list.filter.timeOptions.h24') }}</option>
+          <option value="d3">{{ t('requests.list.filter.timeOptions.d3') }}</option>
+          <option value="d7" :disabled="!isDefaultTenant()">{{ t('requests.list.filter.timeOptions.d7') }}</option>
         </select>
-        <select v-model="successFilter" class="cf-select cf-status" title="结果">
-          <option value="">全部</option>
+        <el-date-picker
+          v-if="timePreset === 'custom'"
+          v-model="customDateRange"
+          type="datetimerange"
+          :placeholder="t('requests.list.dateRangePlaceholder')"
+          range-separator="→"
+          format="YYYY-MM-DD HH:mm"
+          value-format="YYYY-MM-DDTHH:mm:ssZ"
+          :clearable="false"
+          style="height: 28px; width: 360px"
+          @change="onCustomRangeChange"
+        />
+        <button
+          v-if="timePreset !== 'h24'"
+          class="btn btn-sm"
+          :title="t('requests.list.filter.resetTime')"
+          @click="resetTimeFilter"
+        >
+          ⟲ {{ t('requests.list.filter.timeReset') }}
+        </button>
+        <select
+          v-model="successFilter"
+          class="cf-select cf-status"
+          :title="t('requests.list.filter.resultTitle')"
+        >
+          <option value="">{{ t('requests.list.filter.resultAll') }}</option>
           <option value="in_progress">请求中</option>
           <option value="success">成功</option>
           <option value="failure">失败</option>
           <option value="rate_limited">限流</option>
         </select>
-        <select v-model="errorKindFilter" class="cf-select cf-error" title="错误类型">
-          <option value="">全部错误</option>
+        <select
+          v-model="errorKindFilter"
+          class="cf-select cf-error"
+          :title="t('requests.list.filter.errorTitle')"
+        >
+          <option value="">{{ t('requests.list.filter.errorAll') }}</option>
           <option value="model_not_found">模型未找到</option>
           <option value="provider_error">供应商错误</option>
           <option value="timeout">超时</option>

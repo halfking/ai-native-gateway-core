@@ -210,7 +210,7 @@ func (h *Handler) handleSessionDetail(w http.ResponseWriter, r *http.Request) {
 
 	query := `
 			SELECT
-				ss.session_key, ss.tenant_id, ss.title, ss.summary, ss.gw_project_id, sd.task_id,
+				ss.session_key, ss.tenant_id, COALESCE(ss.title, ''), COALESCE(ss.summary, ''), ss.gw_project_id, sd.task_id,
 				ss.user_tags, ss.user_intent, ss.session_status, ss.first_request_at, ss.last_request_at,
 				ss.duration_seconds, ss.request_count, ss.success_count, ss.error_count,
 				ss.total_cost_usd, ss.total_tokens, ss.models_used, ss.primary_model,
@@ -451,7 +451,7 @@ func (h *Handler) queryRelatedSessions(ctx context.Context, r *http.Request, ses
 
 	// 查询前一个会话
 	prevQuery := `
-			SELECT ss.session_key, ss.tenant_id, ss.title, ss.gw_project_id, sd.task_id, ss.user_tags,
+			SELECT ss.session_key, ss.tenant_id, COALESCE(ss.title, ''), ss.gw_project_id, sd.task_id, ss.user_tags,
 			       ss.session_status, ss.first_request_at, ss.last_request_at, ss.duration_seconds,
 			       ss.request_count, ss.success_count, ss.error_count, ss.total_cost_usd, ss.total_tokens
 			FROM session_summaries ss
@@ -490,7 +490,7 @@ func (h *Handler) queryRelatedSessions(ctx context.Context, r *http.Request, ses
 
 	// 查询后一个会话
 	nextQuery := `
-			SELECT ss.session_key, ss.tenant_id, ss.title, ss.gw_project_id, sd.task_id, ss.user_tags,
+			SELECT ss.session_key, ss.tenant_id, COALESCE(ss.title, ''), ss.gw_project_id, sd.task_id, ss.user_tags,
 			       ss.session_status, ss.first_request_at, ss.last_request_at, ss.duration_seconds,
 			       ss.request_count, ss.success_count, ss.error_count, ss.total_cost_usd, ss.total_tokens
 			FROM session_summaries ss
@@ -686,7 +686,7 @@ func buildSessionListQueryForRequest(r *http.Request, filters SessionFilters) (s
 	offset := (filters.Page - 1) * filters.PageSize
 	query := fmt.Sprintf(`
 		SELECT
-			ss.session_key, ss.tenant_id, ss.title, COALESCE(ss.summary, ''), ss.gw_project_id, sd.task_id,
+			ss.session_key, ss.tenant_id, COALESCE(ss.title, ''), COALESCE(ss.summary, ''), ss.gw_project_id, sd.task_id,
 			ss.user_tags, ss.user_intent, ss.session_status, ss.first_request_at, ss.last_request_at,
 			ss.duration_seconds, ss.request_count, ss.success_count, ss.error_count,
 			ss.total_cost_usd, ss.total_tokens, ss.models_used, ss.primary_model, ss.last_summarized_at
