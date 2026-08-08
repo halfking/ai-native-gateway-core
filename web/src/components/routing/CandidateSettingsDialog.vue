@@ -104,13 +104,22 @@ async function confirmEmergencyRepair() {
   emergencyOk.value = ''
   emergencyRepairing.value = pending.action
   try {
-    await emergencyRepair({
+    const result = await emergencyRepair({
       credential_id: props.candidate.credential_id,
       raw_model: props.candidate.model_name,
       action: pending.action,
       reason: `admin via routing-v2 resolve dialog: ${pending.label}`,
     })
-    emergencyOk.value = `「${pending.label}」执行成功`
+    const warnings: string[] = []
+    if (pending.action === 'force_enable' && result.cmb_rows_updated === 0) {
+      warnings.push('模型绑定未更新，请检查 raw model 映射')
+    }
+    if (pending.action === 'force_enable' && result.ursm_v2_cleared === false) {
+      warnings.push('URSM 状态未清理，运行态可能仍需重试')
+    }
+    emergencyOk.value = warnings.length
+      ? `「${pending.label}」已执行；${warnings.join('；')}`
+      : `「${pending.label}」执行成功`
     pendingRepair.value = null
     emit('applied', { credential_id: props.candidate.credential_id, raw_model: props.candidate.model_name })
     window.setTimeout(() => emit('close'), 600)

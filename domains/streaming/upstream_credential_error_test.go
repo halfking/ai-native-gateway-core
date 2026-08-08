@@ -51,6 +51,15 @@ func TestClassifyUpstreamCredentialFailure_PositiveCases(t *testing.T) {
 			wantErrType:    "authentication_error",
 		},
 		{
+			name:           "KindQuotaPeriodic → upstream_quota_periodic",
+			kind:           errorsx.KindQuotaPeriodic,
+			upstreamStatus: http.StatusTooManyRequests,
+			wantCode:       "upstream_quota_periodic",
+			wantI18nKey:    i18n.MsgUpstreamQuotaPeriodic,
+			wantHTTPStatus: http.StatusBadGateway,
+			wantErrType:    "insufficient_quota",
+		},
+		{
 			name:           "KindQuotaPermanent → upstream_quota_permanent",
 			kind:           errorsx.KindQuotaPermanent,
 			upstreamStatus: http.StatusPaymentRequired,
@@ -93,7 +102,6 @@ func TestClassifyUpstreamCredentialFailure_NegativeCases(t *testing.T) {
 		errorsx.KindCanceled,
 		errorsx.KindConcurrent,
 		errorsx.KindQuota,
-		errorsx.KindQuotaPeriodic,
 		errorsx.KindQuotaBalance,
 		errorsx.KindModelNotFound,
 		errorsx.KindModelDeprecated,
@@ -125,6 +133,7 @@ func TestClassifyFailureStage_UpstreamCredentialIsUpstream(t *testing.T) {
 	upstreamCredCodes := []string{
 		"upstream_credential_invalid",
 		"upstream_credential_revoked",
+		"upstream_quota_periodic",
 		"upstream_quota_permanent",
 	}
 	for _, code := range upstreamCredCodes {
@@ -148,6 +157,7 @@ func TestMapGatewayErrorToDetail_UpstreamCredentialPassthrough(t *testing.T) {
 	}{
 		{"upstream_credential_invalid", "upstream_credential_invalid"},
 		{"upstream_credential_revoked", "upstream_credential_revoked"},
+		{"upstream_quota_periodic", "upstream_quota_periodic"},
 		{"upstream_quota_permanent", "upstream_quota_permanent"},
 	}
 	for _, tt := range tests {
@@ -178,6 +188,7 @@ func TestClientVsUpstreamKeyCodes_AreDistinct(t *testing.T) {
 	upstreamSide := map[string]string{
 		"upstream_credential_invalid": "upstream",
 		"upstream_credential_revoked": "upstream",
+		"upstream_quota_periodic":     "upstream",
 		"upstream_quota_permanent":    "upstream",
 	}
 

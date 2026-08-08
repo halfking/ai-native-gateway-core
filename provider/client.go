@@ -517,8 +517,7 @@ func (c *Client) GetPolicy(ctx context.Context) (*Policy, error) {
 
 // GetProbeCandidates returns valid provider/credential/model bindings for
 // diagnostics when normal routing has no executable candidates. It includes
-// transiently unavailable nodes but excludes manual, disabled, and permanently
-// exhausted credentials.
+// transiently unavailable nodes but excludes manual, disabled, and quota-exhausted credentials.
 //
 // The lookup is restricted to the calling tenant: a request that comes in
 // for `tenant=X` will never probe a credential owned by `tenant=default`,
@@ -576,7 +575,7 @@ func (c *Client) GetProbeCandidates(ctx context.Context, model, profile, tenantI
 		  AND COALESCE(c.status, 'active') = 'active'
 		  AND COALESCE(c.lifecycle_status, 'active') = 'active'
 		  AND COALESCE(c.manual_disabled, FALSE) = FALSE
-		  AND COALESCE(c.quota_state, 'ok') NOT IN ('permanently_exhausted', 'balance_exhausted')
+		  AND COALESCE(c.quota_state, 'ok') NOT IN ('permanently_exhausted', 'balance_exhausted', 'periodic_exhausted')
 		  AND COALESCE(mo.unavailable_reason, '') NOT LIKE 'manual%'
 		  AND (
 		    mo.canonical_raw_name = $1

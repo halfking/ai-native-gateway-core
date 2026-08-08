@@ -1,7 +1,8 @@
 <script setup lang="ts">
 import { useI18n } from 'vue-i18n'
-import { computed, nextTick, onMounted, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { deleteGatewaySession, getAvailableModels, type PopularModel } from '../api'
+import { projectAvailableModels } from '../utils/availableModels'
 import {
   copyToClipboard,
   downloadTextFile,
@@ -120,14 +121,30 @@ const currentKeyLabel = computed(() => {
 })
 
 const hasMessages = computed(() => messages.value.length > 0)
+let availableModelsGeneration = 0
 
-onMounted(async () => {
+async function refreshAvailableModels() {
+  const generation = ++availableModelsGeneration
   try {
     const data = await getAvailableModels()
-    popularModels.value = data.popular ?? []
+    if (generation !== availableModelsGeneration) return
+    popularModels.value = projectAvailableModels(data)
   } catch {
-    popularModels.value = []
+    if (generation === availableModelsGeneration) popularModels.value = []
   }
+}
+
+function onModelsUpdated() {
+  void refreshAvailableModels()
+}
+
+onMounted(async () => {
+  window.addEventListener('llm-gateway:models-updated', onModelsUpdated)
+  await refreshAvailableModels()
+})
+
+onBeforeUnmount(() => {
+  window.removeEventListener('llm-gateway:models-updated', onModelsUpdated)
 })
 
 watch(activeId, async () => {

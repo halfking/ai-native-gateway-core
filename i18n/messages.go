@@ -44,8 +44,8 @@ const (
 	// requested model (HTTP 410 Gone). The handler appends the upstream's own
 	// EOL reason so the client knows which model was removed.
 	MsgModelDeprecated = "model_deprecated" // "The requested model has been permanently removed by the upstream provider."
-	MsgMetaToolError      = "meta_tool_error"     // "Meta-tool processing failed"
-	MsgProviderError      = "provider_error"      // "upstream request failed"
+	MsgMetaToolError   = "meta_tool_error"  // "Meta-tool processing failed"
+	MsgProviderError   = "provider_error"   // "upstream request failed"
 
 	// Upstream credential errors — the gateway's stored credential for an
 	// upstream provider was rejected by that provider (HTTP 401/403/402).
@@ -57,6 +57,7 @@ const (
 	// tells the client "this is an ops problem, not your key".
 	MsgUpstreamCredentialInvalid = "upstream_credential_invalid" // "Upstream credential API key invalid"
 	MsgUpstreamCredentialRevoked = "upstream_credential_revoked" // "Upstream credential API key revoked"
+	MsgUpstreamQuotaPeriodic     = "upstream_quota_periodic"     // "Upstream credential periodic quota exhausted"
 	MsgUpstreamQuotaPermanent    = "upstream_quota_permanent"    // "Upstream credential quota permanently exhausted"
 
 	// Generic.
