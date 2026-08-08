@@ -169,6 +169,38 @@ func TestBuildClientDisconnectProbeEntry_FirstByteTimeout(t *testing.T) {
 	}
 }
 
+// TestBuildClientDisconnectProbeEntry_NonTimeoutReason: when the capture
+// records a client-side interruption reason (e.g. client_disconnected), the
+// probe must stay "client_cancel" even on a canceled context — only supplier
+// timeout reasons are reclassified as probe_timeout.
+//
+// 2026-08-09 审计: 边界保证 —— StreamCapture reason 非超时类时不误伤。
+func TestBuildClientDisconnectProbeEntry_NonTimeoutReason(t *testing.T) {
+	credID := 19
+	logCtx := &RequestLogContext{
+		ClientModel:  "gpt-5.6-luna",
+		CredentialID: &credID,
+	}
+
+	capture := &audit.StreamCapture{}
+	capture.MarkInterruptedWithReason("client_disconnected")
+	logCtx.StreamCapture = capture
+
+	r := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader("{}"))
+	ctx, cancel := context.WithCancel(r.Context())
+	cancel()
+	r = r.WithContext(ctx)
+
+	entry, ok := buildClientDisconnectProbeEntry("req-def", r, logCtx)
+	if !ok {
+		t.Fatal("expected probe entry to be built on a canceled context")
+	}
+	// 客户端主动断连（非超时）→ 必须保持 client_cancel
+	if entry.ErrorKind == nil || *entry.ErrorKind != "client_cancel" {
+		t.Errorf("ErrorKind must stay client_cancel for client_disconnected, got %v", entry.ErrorKind)
+	}
+}
+
 // TestBuildClientDisconnectProbeEntry_NoErrorReturnsFalse: when the context
 // is still alive there is nothing to probe.
 func TestBuildClientDisconnectProbeEntry_NoErrorReturnsFalse(t *testing.T) {
