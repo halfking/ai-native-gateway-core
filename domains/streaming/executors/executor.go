@@ -1678,6 +1678,64 @@ func isTransientFailoverKind(kind errorsx.ErrorKind) bool {
 	return false
 }
 
+// kindDiagnosticRank scores how much an error kind explains a failed request.
+// Higher wins when several candidates fail with different kinds.
+//
+//	3  credential-fatal (auth / quota) — names a specific broken credential and
+//	   a concrete operator action (rotate the key, top up the account)
+//	2  binding-level (model_not_found / model_deprecated) — the model is gone
+//	   from this provider; actionable against the catalog
+//	1  client-caused (context_length, content_filter, unsupported_feature,
+//	   tool_call_id_mismatch) — the caller can fix the request itself
+//	0  transient (5xx, timeout, rate limit, overload) — says only "try again"
+//
+// Rationale: the executor walks every candidate, so a request that fails
+// entirely can carry several different kinds. Reporting whichever one happened
+// to come last tells the client about an arbitrary candidate.
+//
+// Concretely, with candidates [quota-exhausted, transiently-down] the client
+// used to be told "No available provider" (transient, ranked 0) and the real
+// cause — every credential is out of quota — was dropped. The reverse also
+// happened: one 5xx on the last candidate masked a genuine
+// all-credentials-exhausted event.
+func kindDiagnosticRank(kind errorsx.ErrorKind) int {
+	switch {
+	case errorsx.IsCredentialFatal(kind):
+		return 3
+	case kind == errorsx.KindModelNotFound, kind == errorsx.KindModelDeprecated:
+		return 2
+	case kind == errorsx.KindContextLength,
+		kind == errorsx.KindContentFilter,
+		kind == errorsx.KindUnsupportedFeature,
+		kind == errorsx.KindToolCallIdMismatch:
+		return 1
+	default:
+		return 0
+	}
+}
+
+// recordLastKind folds a candidate's failure kind into the running lastKind,
+// keeping the most diagnostic one (see kindDiagnosticRank).
+//
+// Ties keep the earlier kind: with two equally-ranked failures the first is
+// the one that actually decided the request's fate for that candidate, and
+// keeping it makes the reported kind stable across retry rounds.
+//
+// A kind that is empty is treated as "no information" and never overwrites a
+// known one.
+func recordLastKind(current, incoming errorsx.ErrorKind) errorsx.ErrorKind {
+	if incoming == "" {
+		return current
+	}
+	if current == "" {
+		return incoming
+	}
+	if kindDiagnosticRank(incoming) > kindDiagnosticRank(current) {
+		return incoming
+	}
+	return current
+}
+
 // fpReleaseJob pairs a Manager and a Lease for the background release worker.
 type fpReleaseJob struct {
 	m     *credentialfpslot.Manager
@@ -2222,6 +2280,10 @@ func (e *Executor) Execute(params *ExecParams) (*ExecuteResult, error) {
 	tTotal := time.Now()
 	retryPerCred := params.Policy.RetryPerCredential
 	var lastErr error
+	// lastKind is the kind reported to the client and used to pick the sync
+	// retry's sticky policy. It is NOT plain last-writer-wins: see
+	// recordLastKind for why the most diagnostic kind wins instead of the
+	// chronologically last one.
 	var lastKind errorsx.ErrorKind
 	var attempts []AttemptRecord
 	// Track the last transient-failed credential so the sync retry loop
@@ -2643,7 +2705,7 @@ func (e *Executor) Execute(params *ExecParams) (*ExecuteResult, error) {
 			e.recordMnfStreak(params, cand.CredentialID)
 
 			lastErr = execErr
-			lastKind = mnfKind
+			lastKind = recordLastKind(lastKind, mnfKind)
 			attempts = append(attempts, AttemptRecord{
 				ProviderID:   cand.ProviderID,
 				CredentialID: cand.CredentialID,
@@ -2687,7 +2749,7 @@ func (e *Executor) Execute(params *ExecParams) (*ExecuteResult, error) {
 					"err", execErr.Error(),
 				)
 				lastErr = execErr
-				lastKind = kind
+				lastKind = recordLastKind(lastKind, kind)
 				attempts = append(attempts, AttemptRecord{
 					ProviderID:   cand.ProviderID,
 					CredentialID: cand.CredentialID,
@@ -2728,7 +2790,7 @@ func (e *Executor) Execute(params *ExecParams) (*ExecuteResult, error) {
 				"body_preview", cle.body,
 			)
 			lastErr = execErr
-			lastKind = errorsx.KindContextLength
+			lastKind = recordLastKind(lastKind, errorsx.KindContextLength)
 			attempts = append(attempts, AttemptRecord{
 				ProviderID:   cand.ProviderID,
 				CredentialID: cand.CredentialID,
@@ -2775,7 +2837,7 @@ func (e *Executor) Execute(params *ExecParams) (*ExecuteResult, error) {
 				"err", execErr.Error(),
 			)
 			lastErr = execErr
-			lastKind = kind
+			lastKind = recordLastKind(lastKind, kind)
 			// 2026-07-24: URSM v2 authoritative 模式下跳过 RoutingStateShadow
 			if e.RoutingStateShadow != nil && e.legacyWritersEnabled() {
 				e.observeRoutingStateFailure(params, cand, kind)
@@ -2914,7 +2976,7 @@ func (e *Executor) Execute(params *ExecParams) (*ExecuteResult, error) {
 				}
 
 				lastErr = execErr
-				lastKind = kind
+				lastKind = recordLastKind(lastKind, kind)
 				attempts = append(attempts, AttemptRecord{
 					ProviderID:   cand.ProviderID,
 					CredentialID: cand.CredentialID,
@@ -2991,7 +3053,7 @@ func (e *Executor) Execute(params *ExecParams) (*ExecuteResult, error) {
 		} else {
 			kind = errorsx.ClassifyError(execErr, nil)
 		}
-		lastKind = kind
+		lastKind = recordLastKind(lastKind, kind)
 
 		// ── 2026-07-19: trace.upstream_failure 详细记录上游错误 ────────────
 		// 记录 upstream.Error 的完整上下文（StatusCode + Body），不只是 5xx 标签。
@@ -3395,10 +3457,14 @@ func (e *Executor) Execute(params *ExecParams) (*ExecuteResult, error) {
 				)
 				return result, nil
 			}
-			// 更新 lastErr/LastKind（递归返回的是 ExecuteError 类型）
+			// 更新 lastErr/LastKind（递归返回的是 ExecuteError 类型）。
+			// LastKind 用 recordLastKind 折叠而不是直接覆写：子 Execute 内部
+			// 已经做过同样的折叠，但父层这一轮可能已经见过更有诊断价值的
+			// kind（例如父层 quota 耗尽、子层重试只碰到 transient 5xx），
+			// 直接覆写会把真实原因降级成"稍后重试"。
 			if execErrTyped, ok := retryErr.(*ExecuteError); ok {
 				lastErr = execErrTyped.LastErr
-				lastKind = execErrTyped.LastKind
+				lastKind = recordLastKind(lastKind, execErrTyped.LastKind)
 				attempts = append(attempts, execErrTyped.Attempts...)
 				tried += execErrTyped.Tried
 				if execErrTyped.Trace != nil {
@@ -3487,10 +3553,13 @@ func (e *Executor) Execute(params *ExecParams) (*ExecuteResult, error) {
 				)
 				return result, nil
 			}
-			// Accumulate failure details from the fallback attempt
+			// Accumulate failure details from the fallback attempt. LastKind is
+			// folded rather than overwritten for the same reason as the sync
+			// retry path above — the fallback model's transient failure must not
+			// mask a credential-fatal kind already seen on the primary model.
 			if execErrTyped, ok := fbExecErr.(*ExecuteError); ok {
 				lastErr = execErrTyped.LastErr
-				lastKind = execErrTyped.LastKind
+				lastKind = recordLastKind(lastKind, execErrTyped.LastKind)
 				attempts = append(attempts, execErrTyped.Attempts...)
 				tried += execErrTyped.Tried
 				if execErrTyped.Trace != nil {
