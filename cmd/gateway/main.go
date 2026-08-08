@@ -2511,6 +2511,25 @@ func main() {
 					pendingSweepInterval = time.Duration(n) * time.Second
 				}
 			}
+			// Second-round audit (2026-08-07): under default config
+			// pendingStaleTimeout (10m) > cfg.PendingTTLSeconds (5m), so Redis
+			// evicts a stuck in_progress row via TTL before the sweeper's
+			// staleness window ever considers it — the entry just vanishes
+			// instead of being marked failed, and a client poll gets 404
+			// instead of a terminal status. Clamp staleTimeout below the
+			// pending TTL so the sweeper always gets a chance to run first.
+			if pendingTTL := time.Duration(cfg.PendingTTLSeconds) * time.Second; pendingTTL > 0 && pendingStaleTimeout >= pendingTTL {
+				clamped := pendingTTL - pendingSweepInterval
+				if clamped <= 0 {
+					clamped = pendingTTL / 2
+				}
+				slog.Warn("pending_sweeper: staleTimeout >= pendingTTL, clamping to avoid entries expiring before sweep",
+					"stale_timeout", pendingStaleTimeout,
+					"pending_ttl", pendingTTL,
+					"clamped_stale_timeout", clamped,
+				)
+				pendingStaleTimeout = clamped
+			}
 			slog.Info("CHECKPOINT: before NewPendingSweeper")
 			pendingSweeper = bg.NewPendingSweeper(pendingStore, pendingStaleTimeout, pendingSweepInterval)
 			slog.Info("CHECKPOINT: before pendingSweeper.Start")
