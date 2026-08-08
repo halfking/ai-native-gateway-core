@@ -59,6 +59,12 @@
   "upstream_quota_permanent": {
     "other": "Upstream credential quota permanently exhausted (provider returned 402 / quota_exceeded). This is a credential configuration issue — top up the upstream account or rotate the credential."
   },
+  "upstream_quota_balance": {
+    "other": "Upstream credential account balance exhausted (the provider reported insufficient balance). This is a credential configuration issue — top up the upstream account, then the credential recovers automatically."
+  },
+  "upstream_quota_generic": {
+    "other": "Upstream credential quota exhausted (the provider reported a quota limit without saying whether it resets). This credential is temporarily out of rotation; contact the gateway administrator if it does not recover."
+  },
   "internal_error": {
     "other": "Internal server error"
   },

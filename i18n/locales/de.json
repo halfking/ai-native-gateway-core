@@ -56,6 +56,12 @@
   "upstream_quota_permanent": {
     "other": "Upstream-Anmeldedaten-Kontingent dauerhaft erschöpft (Anbieter hat 402 / quota_exceeded zurückgegeben). Dies ist ein Konfigurationsproblem — laden Sie das Upstream-Konto auf oder rotieren Sie die Anmeldedaten."
   },
+  "upstream_quota_balance": {
+    "other": "Guthaben des Upstream-Anbieterkontos erschöpft (der Anbieter meldet ein unzureichendes Guthaben). Dies ist ein Konfigurationsproblem der Zugangsdaten — laden Sie das Upstream-Konto auf, danach erholt sich die Zugangsdaten automatisch."
+  },
+  "upstream_quota_generic": {
+    "other": "Upstream-Kontingent erschöpft (der Anbieter meldet ein Limit, ohne anzugeben, ob es zurückgesetzt wird). Diese Zugangsdaten sind vorübergehend nicht in Rotation; wenden Sie sich an den Gateway-Administrator, falls sie sich nicht erholen."
+  },
   "internal_error": {
     "other": "Interner Serverfehler"
   },

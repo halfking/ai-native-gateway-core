@@ -59,6 +59,14 @@ const (
 	MsgUpstreamCredentialRevoked = "upstream_credential_revoked" // "Upstream credential API key revoked"
 	MsgUpstreamQuotaPeriodic     = "upstream_quota_periodic"     // "Upstream credential periodic quota exhausted"
 	MsgUpstreamQuotaPermanent    = "upstream_quota_permanent"    // "Upstream credential quota permanently exhausted"
+	// 2026-08-09: KindQuota / KindQuotaBalance previously had no key of their
+	// own, so classifyUpstreamCredentialFailure returned "" for them and the
+	// caller fell through to the 503 model_not_found "No available provider"
+	// branch — a balance-exhaustion event was reported to the client as a
+	// missing model. Balance is kept separate from Permanent because the ops
+	// action differs: top up the account vs. rotate the credential.
+	MsgUpstreamQuotaBalance = "upstream_quota_balance" // "Upstream credential account balance exhausted"
+	MsgUpstreamQuotaGeneric = "upstream_quota_generic" // "Upstream credential quota exhausted"
 
 	// Generic.
 	MsgInternalError = "internal_error"

@@ -56,6 +56,12 @@
   "upstream_quota_permanent": {
     "other": "Cuota de credencial ascendente agotada permanentemente (el proveedor devolvió 402 / quota_exceeded). Este es un problema de configuración — recargue la cuenta ascendente o rote la credencial."
   },
+  "upstream_quota_balance": {
+    "other": "Saldo de la cuenta del proveedor ascendente agotado (el proveedor informa saldo insuficiente). Es un problema de configuración de credenciales: recargue la cuenta ascendente y la credencial se recuperará automáticamente."
+  },
+  "upstream_quota_generic": {
+    "other": "Cuota del proveedor ascendente agotada (el proveedor informa un límite sin indicar si se restablece). Esta credencial está temporalmente fuera de rotación; contacte al administrador de la puerta de enlace si no se recupera."
+  },
   "internal_error": {
     "other": "Error interno del servidor"
   },

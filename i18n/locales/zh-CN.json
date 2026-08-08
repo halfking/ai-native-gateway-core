@@ -59,6 +59,12 @@
   "upstream_quota_permanent": {
     "other": "上游供应商额度已永久耗尽（供应商返回 402 / quota_exceeded）。这是供应商凭据配置问题——请向上游账户充值或轮换凭据。"
   },
+  "upstream_quota_balance": {
+    "other": "上游供应商账户余额不足（供应商报告余额已用尽）。这是供应商凭据配置问题——请向上游账户充值，充值后凭据会自动恢复。"
+  },
+  "upstream_quota_generic": {
+    "other": "上游供应商额度已用尽（供应商返回了额度限制，但未说明是否会重置）。该凭据已暂时移出轮换；如果长时间未恢复，请联系网关管理员。"
+  },
   "internal_error": {
     "other": "内部服务器错误"
   },
