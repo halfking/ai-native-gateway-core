@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"fmt"
 	"net/http"
+	"net/textproto"
 	"strconv"
 	"strings"
 	"time"
@@ -93,10 +94,10 @@ func (qt *QuotaTracker) CorrectFromHeaders(ctx context.Context, req CorrectionRe
 	retryAfterSec, resetAt := parseRetryAfter(now, req.Headers)
 
 	limit := int64(0)
-	if lim, ok := req.Headers["X-RateLimit-Limit"]; ok && lim != "" {
+	if lim, ok := lookupHeader(req.Headers, "X-RateLimit-Limit"); ok && lim != "" {
 		limit, _ = strconv.ParseInt(lim, 10, 64)
 	}
-	limitHeader := req.Headers["X-RateLimit-Limit"]
+	limitHeader := lookupHeaderValue(req.Headers, "X-RateLimit-Limit")
 
 	_, err := qt.db.ExecContext(ctx, `
         INSERT INTO free_quota_tracker (
@@ -138,7 +139,7 @@ func (qt *QuotaTracker) CorrectFromHeaders(ctx context.Context, req CorrectionRe
 // parseRetryAfter 解析 Retry-After 与 X-RateLimit-Reset 头部, 返回 retryAfter (秒) 与 resetAt.
 // 优先使用 X-RateLimit-Reset (Unix timestamp 秒), 否则解析 Retry-After (秒或 HTTP-date).
 func parseRetryAfter(now time.Time, headers map[string]string) (int, time.Time) {
-	if reset, ok := headers["X-RateLimit-Reset"]; ok && reset != "" {
+	if reset, ok := lookupHeader(headers, "X-RateLimit-Reset"); ok && reset != "" {
 		if ts, err := strconv.ParseInt(reset, 10, 64); err == nil {
 			resetAt := time.Unix(ts, 0).UTC()
 			retry := int(resetAt.Sub(now).Seconds())
@@ -148,7 +149,7 @@ func parseRetryAfter(now time.Time, headers map[string]string) (int, time.Time) 
 			return retry, resetAt
 		}
 	}
-	if ra, ok := headers["Retry-After"]; ok && ra != "" {
+	if ra, ok := lookupHeader(headers, "Retry-After"); ok && ra != "" {
 		// 优先尝试整数秒, 但只有当整段都是数字时才视为秒数, 避免
 		// "Thu, 15 Aug 2024 14:30:45 GMT" 这种 HTTP-date 截断为 15.
 		if sec, ok := parseRetryAfterSeconds(ra); ok {
@@ -285,4 +286,42 @@ func (qt *QuotaTracker) computeWindows(ts time.Time, types []WindowType) []Quota
 		})
 	}
 	return windows
+}
+
+// lookupHeader 在 headers map 中大小写不敏感地查找 header key.
+//
+// 背景: 当上游 http.Response.Header 通过 flattenHeaders 转成
+// map[string]string 时, http.Header.Add/Set 会调用
+// textproto.CanonicalMIMEHeaderKey 把 "X-RateLimit-Limit" 规范化为
+// "X-Ratelimit-Limit" (注意 'l' 变小写). 原实现按字面键查找,
+// 真实 429 响应走 streaming handler 时 silent miss, 配额校准不生效.
+//
+// 这里显式做 MIME canonical 大小写折叠, 与 net/http 内部一致, 兼容
+// 直接传 "X-RateLimit-Limit" 字面键的旧调用方 (例如 quota_tracker_test.go).
+func lookupHeader(headers map[string]string, key string) (string, bool) {
+	if v, ok := headers[key]; ok {
+		return v, true
+	}
+	canonical := textproto.CanonicalMIMEHeaderKey(key)
+	if canonical == key {
+		return "", false
+	}
+	if v, ok := headers[canonical]; ok {
+		return v, true
+	}
+	// 兜底: 折半查找常见的大小写变体 (前缀大小写)
+	for k, v := range headers {
+		if strings.EqualFold(k, key) {
+			return v, true
+		}
+	}
+	return "", false
+}
+
+// lookupHeaderValue 是 lookupHeader 的便捷包装, 用于不在意 bool 命中、
+// 仅需字符串值的场景 (例如写入 DB 字段 last_429_limit_header).
+// 未命中返回 "".
+func lookupHeaderValue(headers map[string]string, key string) string {
+	v, _ := lookupHeader(headers, key)
+	return v
 }

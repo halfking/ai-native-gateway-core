@@ -170,6 +170,108 @@ func TestParseRetryAfter_NoHeaders(t *testing.T) {
 	}
 }
 
+// TestParseRetryAfter_AcceptsCanonicalMIMEKeys 验证 parseRetryAfter 在
+// http.Header 经过 CanonicalMIMEHeaderKey 规范化后 (例如 "X-Ratelimit-Reset")
+// 仍能正确命中, 修复 streaming.handler_autocombo.flattenHeaders 路径
+// 上的 silent miss. streaming 层 handler 测试 (handler_autocombo_test.go)
+// 通过 X-Ratelimit-Reset 形式传头, 这里做直接覆盖.
+func TestParseRetryAfter_AcceptsCanonicalMIMEKeys(t *testing.T) {
+	now := time.Unix(1700000000, 0).UTC()
+	headers := map[string]string{
+		"X-Ratelimit-Reset": "1800000000", // 已经是 canonical form
+	}
+	retry, reset := parseRetryAfter(now, headers)
+	if reset.Unix() != 1800000000 {
+		t.Errorf("canonical X-Ratelimit-Reset should win, got reset %v", reset)
+	}
+	if retry <= 0 {
+		t.Errorf("retry should be positive, got %d", retry)
+	}
+
+	// 反向: 大小写混写也应命中.
+	headersLower := map[string]string{
+		"x-ratelimit-reset": "1800000000",
+	}
+	retry2, reset2 := parseRetryAfter(now, headersLower)
+	if reset2.Unix() != 1800000000 || retry2 <= 0 {
+		t.Errorf("lowercase header should also match, got retry=%d reset=%v", retry2, reset2)
+	}
+
+	// Retry-After canonical form.
+	headersRetry := map[string]string{
+		"Retry-After": "45",
+	}
+	retry3, reset3 := parseRetryAfter(now, headersRetry)
+	if retry3 != 45 {
+		t.Errorf("Retry-After canonical should give 45s, got %d", retry3)
+	}
+	if reset3.Unix() != now.Add(45*time.Second).Unix() {
+		t.Errorf("reset should be now+45s, got %v", reset3)
+	}
+}
+
+// TestLookupHeader_CaseInsensitive 验证 lookupHeader 对大小写折叠
+// 各种情形都能正确命中, 是 429 校准路径修复的关键守门.
+func TestLookupHeader_CaseInsensitive(t *testing.T) {
+	cases := []struct {
+		name    string
+		headers map[string]string
+		key     string
+		want    string
+		wantOK  bool
+	}{
+		{
+			name:    "exact_match",
+			headers: map[string]string{"X-RateLimit-Limit": "100"},
+			key:     "X-RateLimit-Limit",
+			want:    "100",
+			wantOK:  true,
+		},
+		{
+			name:    "canonical_lookup",
+			headers: map[string]string{"X-Ratelimit-Limit": "100"},
+			key:     "X-RateLimit-Limit",
+			want:    "100",
+			wantOK:  true,
+		},
+		{
+			name:    "lowercase_key",
+			headers: map[string]string{"x-ratelimit-limit": "100"},
+			key:     "X-RateLimit-Limit",
+			want:    "100",
+			wantOK:  true,
+		},
+		{
+			name:    "missing",
+			headers: map[string]string{"X-Other": "v"},
+			key:     "X-RateLimit-Limit",
+			want:    "",
+			wantOK:  false,
+		},
+		{
+			name:    "nil_map",
+			headers: nil,
+			key:     "X-RateLimit-Limit",
+			want:    "",
+			wantOK:  false,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, ok := lookupHeader(tc.headers, tc.key)
+			if ok != tc.wantOK {
+				t.Errorf("ok mismatch: got %v want %v", ok, tc.wantOK)
+			}
+			if got != tc.want {
+				t.Errorf("value mismatch: got %q want %q", got, tc.want)
+			}
+			if v := lookupHeaderValue(tc.headers, tc.key); v != tc.want {
+				t.Errorf("lookupHeaderValue mismatch: got %q want %q", v, tc.want)
+			}
+		})
+	}
+}
+
 const httpTimeFormat = "Mon, 02 Jan 2006 15:04:05 GMT"
 
 func TestQuotaTracker_Record(t *testing.T) {
