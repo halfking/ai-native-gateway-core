@@ -642,9 +642,10 @@ function filterBySession(sessionId: string | null | undefined) {
 }
 
 // 2026-08-09: 脉络视图拉宽时间窗与页大小到「本月」/200 条。
-// 不动 custom 模式（用户已表达精确范围）。
+// 用户已选 custom 时保留精确范围；非 default 租户仍由 normalizeTimePresetForTenant()
+// 强制遵守最近 3 天上限。
 function widenRangeForTrace() {
-  if (!['thisMonth', 'thisYear'].includes(timePreset.value)) {
+  if (timePreset.value !== 'custom' && !['thisMonth', 'thisYear'].includes(timePreset.value)) {
     timePreset.value = 'thisMonth'
   }
   normalizeTimePresetForTenant()
@@ -1455,7 +1456,7 @@ onMounted(async () => {
       :style="{
         marginBottom: '10px',
         display: 'grid',
-        gridTemplateColumns: isDefaultTenant() ? 'repeat(2, 1fr)' : 'repeat(3, 1fr)',
+        gridTemplateColumns: isDefaultTenant() ? 'repeat(3, 1fr)' : 'repeat(2, 1fr)',
         gap: '10px',
       }"
     >
