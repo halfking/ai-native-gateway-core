@@ -43,3 +43,38 @@ seq 1478 补齐两件事：(1) 部署自动化 (deploy-154.sh) 跑过 → 154 bi
 - 真实空-200 场景下 frame 字节的 wire-format 验证 — 还没发生过载爆发期
 - 新指标 24h 验证无指标误增
 - seq 1478 release 是否引发任何 priority 0 反馈
+
+## 11. P0 状态修正 — 154 production seq 1478 metric 并未真实上线（pointer）
+
+### TL;DR
+
+本会话 (`2026-08-09 00:23+ CST`) 核验 handoff §6 状态时发现：
+- 154 running binary (`releases/1478-3c98ac6c/llm-gateway-go`, SHA `52c23fcb…`)
+  内**没有 `recordPrewarmedExhaustion` 符号、没有 `prewarmed_exhaustion_frames_total`
+  字面量、没有 `overload_exhaustion_metrics.go` 编译痕迹**。
+- `releases/1478-c4ab07de/llm-gateway-go` (`56d06b87…`) 反而含这些字符串 — 即
+  真实含 `c4ab07de` 指标的 binary 已上传到 154，但**从未被 `current` symlink 指向**。
+- handoff §6 "binary 含 recordPrewarmedExhaustion 符号" 断言**不成立**。
+
+### 完整诊断 + 一次 deploy 尝试 + 回滚
+
+详见 companion audit doc:
+**`docs/audits/AUDIT-2026-08-09-seq1479-symlink-mislabel-and-audit-sql-regression.md`**
+
+要点：
+- 另一 follow-up session 在 00:28 曾尝试把 `current` 切到 `releases/1478-c4ab07de/`
+  修复 deploy mismatch，但该 binary 在生产**立刻触发 `audit` keyword SQL error (42601)**
+  — 79.2% HTTP 500 / 7 分钟；用户授权回滚后 `current` 又指向回 `1478-3c98ac6c/`。
+- 因此本任务 (seq 1478 Prometheus metrics 暴露) **在 154 production 上仍然处于
+  "代码已就绪、binary 已构建但未上线" 状态**。
+- 下次上线前必须先修 audit-keyword SQL regression（PG `log_min_duration_statement=0`
+  + 245 preprod staging 上抓 offending SQL）。
+
+### 本次 832c389a commit 的边界
+
+- 仅文档（changelog follow-up）落地，**未触碰任何生产 binary / sysmlink**。
+- handoff §3 "24h 实测 14 个空-200 ... 现在 `/metrics` 上 5 个 `real_kind` 标签维度都可区分"
+  与 handoff §4 "Prometheus 计数器 0 时不显示行（待真实事件触发后自动显现）" — 与 154
+  实测不符，按 §11.1 物理证据修正。
+- 24h 验证"无指标误增"暂时**不可证伪**（因为 154 metrics 端根本无相关计数器 — 永远是
+  0，不能区分"无误增"与"无指标"）。
