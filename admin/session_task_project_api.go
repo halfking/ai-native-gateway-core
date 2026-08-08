@@ -247,7 +247,7 @@ func (h *Handler) queryTaskSessions(ctx context.Context, r *http.Request, taskID
 	where, args := scopedDimensionWhere(r, "sd.task_id", taskID)
 	query := fmt.Sprintf(`
 		SELECT
-			ss.session_key, ss.title, COALESCE(ss.summary, ''), ss.user_intent, ss.session_status,
+			ss.session_key, COALESCE(ss.title, ''), COALESCE(ss.summary, ''), ss.user_intent, ss.session_status,
 			ROW_NUMBER() OVER (ORDER BY ss.first_request_at ASC)::int,
 			ss.first_request_at, ss.last_request_at, ss.duration_seconds,
 			ss.request_count, ss.total_cost_usd, ss.total_tokens, ss.key_topics
