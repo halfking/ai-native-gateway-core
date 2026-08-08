@@ -43,6 +43,27 @@ type Message struct {
 	Content string
 }
 
+// AlignmentInfo 原始消息到压缩后消息的位置映射（docs/design/2026-08-09 O-2）。
+//
+// 每条原始（压缩前）消息对应一个 AlignmentInfo，语义：
+//   - 保留消息（1:1）：IsCompressed=false，CompressedIndex=压缩输出中的位置。
+//   - 被 LLM 摘要折叠的消息：IsCompressed=true，CompressedIndex / CompressedInto
+//     都指向摘要消息在压缩输出中的位置。
+//   - 被机械裁剪丢弃的消息：IsCompressed=true，CompressedIndex / CompressedInto=-1
+//     （没有单一替代消息）。
+type AlignmentInfo struct {
+	// OriginalIndex 原始（压缩前）消息数组中的下标。
+	OriginalIndex int `json:"original_index"`
+	// CompressedIndex 该消息在压缩后数组中的下标；-1 表示已丢弃。
+	CompressedIndex int `json:"compressed_index"`
+	// IsCompressed 是否被压缩（true=折叠进摘要或被丢弃，false=原样保留）。
+	IsCompressed bool `json:"is_compressed"`
+	// CompressedInto 该消息被压缩进的目标消息下标；-1 表示无替代（机械裁剪丢弃）。
+	CompressedInto int `json:"compressed_into"`
+	// Hash 该消息的内容指纹（msgHash 的 32 位 hex）。
+	Hash string `json:"hash,omitempty"`
+}
+
 // Context 压缩器输入上下文。
 //
 // 注意：与 Go 标准库 context.Context 不同；Pipeline 的 Go context 走

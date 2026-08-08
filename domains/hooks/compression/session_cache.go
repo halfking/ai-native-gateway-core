@@ -192,6 +192,12 @@ type SessionState struct {
 	ApprovalStatus      string `json:"app_st,omitempty"`  // pending|approved|rejected|""
 	ApprovalID          string `json:"app_id,omitempty"`  // approval_queue row UUID
 	OptimizationApplied string `json:"opt_app,omitempty"` // strip_tools|compress_thinking|summarize
+
+	// v7 (O-2, 2026-08-09): original→compressed message index mapping from
+	// the most recent compression. Populated only when a window-triggered
+	// rewrite (summary/trim) fired; nil otherwise. Non-breaking addition —
+	// a missing "algn" hash key decodes to nil for legacy entries.
+	AlignmentMap []AlignmentInfo `json:"alignment_map,omitempty"`
 }
 
 // MsgHash is one entry in the outbound_msg_hashes JSONB array.
@@ -663,6 +669,12 @@ func encodeSessionStateFields(st *SessionState) []any {
 	if st.OptimizationApplied != "" {
 		fields = append(fields, "opt_app", st.OptimizationApplied)
 	}
+	// v7 (O-2): AlignmentMap — serialized as a JSON array under "algn".
+	if len(st.AlignmentMap) > 0 {
+		if b, err := json.Marshal(st.AlignmentMap); err == nil {
+			fields = append(fields, "algn", string(b))
+		}
+	}
 	return fields
 }
 
@@ -709,6 +721,13 @@ func decodeSessionStateFields(fields map[string]string, st *SessionState) error 
 	st.ApprovalStatus = fields["app_st"]
 	st.ApprovalID = fields["app_id"]
 	st.OptimizationApplied = fields["opt_app"]
+	// v7 (O-2): AlignmentMap — best-effort parse; a corrupt entry degrades
+	// to nil rather than failing the whole state decode.
+	if raw, ok := fields["algn"]; ok && raw != "" {
+		if err := json.Unmarshal([]byte(raw), &st.AlignmentMap); err != nil {
+			st.AlignmentMap = nil
+		}
+	}
 	return nil
 }
 
