@@ -5,6 +5,7 @@ import (
 	"errors"
 	"log/slog"
 
+	"sync"
 	"github.com/kaixuan/llm-gateway-go/domain" //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/internal/ir"
 )
@@ -15,6 +16,9 @@ import (
 //
 // Method signatures must stay identical to streaming.IRConverter so that
 // TransportIRConverter also satisfies streaming.IRConverter (structural).
+//
+// Added 2026-08-09: WithProviderScope returns a scoped converter for
+// per-provider circuit breaker isolation.
 type IRConverterAdapter interface {
 	ParseOpenAI(body []byte) (*ir.InternalRequest, error)
 	ParseAnthropic(body []byte) (*ir.InternalRequest, error)
@@ -56,8 +60,18 @@ type TransportIRConverter struct {
 	inner     IRConverterAdapter
 	extractor *IRExtensionExtractor
 	restorer  *IRExtensionRestorer
-	cb        *StreamCircuitBreaker
-	context   *domain.TransportContext // optional; used for catalog-aware restoration
+
+	// cbs is a sync.Map[int]*StreamCircuitBreaker keyed by providerID.
+	// Lazy-initialized on first access via breakerFor(providerID).
+	// Added 2026-08-09 to replace the single process-wide cb field.
+	cbs sync.Map
+
+	// defaultCB is used when providerID is 0 (unknown/unscoped).
+	// Provides backward compatibility for call sites that haven't been
+	// migrated to WithProviderScope yet.
+	defaultCB *StreamCircuitBreaker
+
+	context *domain.TransportContext // optional; used for catalog-aware restoration
 }
 
 // NewTransportIRConverter creates a converter that wraps inner with
@@ -67,15 +81,55 @@ func NewTransportIRConverter(inner IRConverterAdapter) *TransportIRConverter {
 		inner:     inner,
 		extractor: NewIRExtensionExtractor(),
 		restorer:  NewIRExtensionRestorer(),
-		cb:        NewStreamCircuitBreaker(),
+		defaultCB: NewStreamCircuitBreaker(),
 	}
 }
 
-// SetCircuitBreaker replaces the circuit breaker (testing/injection).
-func (c *TransportIRConverter) SetCircuitBreaker(cb *StreamCircuitBreaker) {
-	if cb != nil {
-		c.cb = cb
+// SetCircuitBreaker replaces the circuit breaker for a specific providerID
+// (testing/injection). Pass providerID=0 to set the default breaker.
+func (c *TransportIRConverter) SetCircuitBreaker(providerID int, cb *StreamCircuitBreaker) {
+	if cb == nil {
+		return
 	}
+	if providerID == 0 {
+		c.defaultCB = cb
+	} else {
+		c.cbs.Store(providerID, cb)
+	}
+}
+
+// WithProviderScope returns a scoped converter that binds a specific providerID
+// to this converter for the duration of the request. All Parse/Serialize calls
+// on the returned scopedConverter will use the circuit breaker for that provider.
+//
+// Usage:
+//   scoped := e.IR.WithProviderScope(cand.ProviderID)
+//   req, err := scoped.ParseOpenAI(body)
+//
+// The returned scopedConverter is lightweight (holds only a providerID int and
+// a pointer to the parent TransportIRConverter) and should not be reused across
+// requests for different providers.
+//
+// Added 2026-08-09 to enable per-provider circuit breaker isolation.
+func (c *TransportIRConverter) WithProviderScope(providerID int) *scopedConverter {
+	return &scopedConverter{
+		parent:     c,
+		providerID: providerID,
+	}
+}
+
+// breakerFor returns the circuit breaker for the given providerID, creating it
+// lazily on first access. Returns defaultCB when providerID is 0.
+func (c *TransportIRConverter) breakerFor(providerID int) *StreamCircuitBreaker {
+	if providerID == 0 {
+		return c.defaultCB
+	}
+	if v, ok := c.cbs.Load(providerID); ok {
+		return v.(*StreamCircuitBreaker)
+	}
+	cb := NewStreamCircuitBreaker()
+	actual, _ := c.cbs.LoadOrStore(providerID, cb)
+	return actual.(*StreamCircuitBreaker)
 }
 
 // SetContext injects TransportContext for catalog-aware extension restoration.
@@ -84,21 +138,206 @@ func (c *TransportIRConverter) SetContext(ctx *domain.TransportContext) {
 }
 
 func (c *TransportIRConverter) circuitCheck() error {
-	if c.cb != nil && c.cb.ShouldFallback() {
+	if c.defaultCB != nil && c.defaultCB.ShouldFallback() {
 		return ErrConverterCircuitOpen
 	}
 	return nil
 }
 
 func (c *TransportIRConverter) recordErr() {
-	if c.cb != nil {
-		c.cb.RecordError()
+	if c.defaultCB != nil {
+		c.defaultCB.RecordError()
 	}
 }
 
 func (c *TransportIRConverter) recordOK() {
-	if c.cb != nil {
-		c.cb.RecordSuccess()
+	if c.defaultCB != nil {
+		c.defaultCB.RecordSuccess()
+	}
+}
+
+// scopedConverter is a lightweight wrapper that binds a providerID to a
+// TransportIRConverter for the duration of a request. All Parse/Serialize
+// calls on this wrapper use the per-provider circuit breaker.
+//
+// Created via TransportIRConverter.WithProviderScope(providerID).
+// Added 2026-08-09 for per-provider circuit breaker isolation.
+type scopedConverter struct {
+	parent     *TransportIRConverter
+	providerID int
+}
+
+func (s *scopedConverter) circuitCheck() error {
+	cb := s.parent.breakerFor(s.providerID)
+	if cb != nil && cb.ShouldFallback() {
+		return ErrConverterCircuitOpen
+	}
+	return nil
+}
+
+func (s *scopedConverter) recordErr() {
+	if cb := s.parent.breakerFor(s.providerID); cb != nil {
+		cb.RecordError()
+	}
+}
+
+func (s *scopedConverter) recordOK() {
+	if cb := s.parent.breakerFor(s.providerID); cb != nil {
+		cb.RecordSuccess()
+	}
+}
+
+func (s *scopedConverter) ParseOpenAI(body []byte) (*ir.InternalRequest, error) {
+	if err := s.circuitCheck(); err != nil {
+		return nil, err
+	}
+	req, err := s.parent.inner.ParseOpenAI(body)
+	if err != nil {
+		s.recordErr()
+		return nil, err
+	}
+	s.parent.extractRequestExtensions(body, req)
+	return req, nil
+}
+
+func (s *scopedConverter) ParseAnthropic(body []byte) (*ir.InternalRequest, error) {
+	if err := s.circuitCheck(); err != nil {
+		return nil, err
+	}
+	req, err := s.parent.inner.ParseAnthropic(body)
+	if err != nil {
+		s.recordErr()
+		return nil, err
+	}
+	s.parent.extractRequestExtensions(body, req)
+	return req, nil
+}
+
+func (s *scopedConverter) ParseResponses(body []byte) (*ir.InternalRequest, error) {
+	if err := s.circuitCheck(); err != nil {
+		return nil, err
+	}
+	req, err := s.parent.inner.ParseResponses(body)
+	if err != nil {
+		s.recordErr()
+		return nil, err
+	}
+	s.parent.extractRequestExtensions(body, req)
+	return req, nil
+}
+
+func (s *scopedConverter) SerializeOpenAI(req *ir.InternalRequest) ([]byte, error) {
+	if err := s.circuitCheck(); err != nil {
+		return nil, err
+	}
+	body, err := s.parent.inner.SerializeOpenAI(req)
+	if err != nil {
+		s.recordErr()
+		return nil, err
+	}
+	body = s.parent.restoreRequestExtensions(body, req, ir.ProtocolOpenAIChat)
+	s.recordOK()
+	return body, nil
+}
+
+func (s *scopedConverter) SerializeAnthropic(req *ir.InternalRequest) ([]byte, error) {
+	if err := s.circuitCheck(); err != nil {
+		return nil, err
+	}
+	body, err := s.parent.inner.SerializeAnthropic(req)
+	if err != nil {
+		s.recordErr()
+		return nil, err
+	}
+	body = s.parent.restoreRequestExtensions(body, req, ir.ProtocolOpenAIChat)
+	s.recordOK()
+	return body, nil
+}
+
+func (s *scopedConverter) ParseOpenAIResponse(body []byte) (*ir.InternalResponse, error) {
+	if err := s.circuitCheck(); err != nil {
+		return nil, err
+	}
+	resp, err := s.parent.inner.ParseOpenAIResponse(body)
+	if err != nil {
+		s.recordErr()
+		return nil, err
+	}
+	s.parent.extractResponseExtensions(body, resp)
+	s.recordOK()
+	return resp, nil
+}
+
+func (s *scopedConverter) ParseAnthropicResponse(body []byte) (*ir.InternalResponse, error) {
+	if err := s.circuitCheck(); err != nil {
+		return nil, err
+	}
+	resp, err := s.parent.inner.ParseAnthropicResponse(body)
+	if err != nil {
+		s.recordErr()
+		return nil, err
+	}
+	s.parent.extractResponseExtensions(body, resp)
+	s.recordOK()
+	return resp, nil
+}
+
+func (s *scopedConverter) SerializeOpenAIResponse(r *ir.InternalResponse, clientModel string) ([]byte, error) {
+	if err := s.circuitCheck(); err != nil {
+		return nil, ErrConverterCircuitOpen
+	}
+	out, err := s.parent.inner.SerializeOpenAIResponse(r, clientModel)
+	if err != nil {
+		s.recordErr()
+		return nil, err
+	}
+	out = s.parent.restoreExtensions(out, r.Extensions)
+	s.recordOK()
+	return out, nil
+}
+
+func (s *scopedConverter) SerializeAnthropicResponse(r *ir.InternalResponse, clientModel string) ([]byte, error) {
+	if err := s.circuitCheck(); err != nil {
+		return nil, ErrConverterCircuitOpen
+	}
+	out, err := s.parent.inner.SerializeAnthropicResponse(r, clientModel)
+	if err != nil {
+		s.recordErr()
+		return nil, err
+	}
+	out = s.parent.restoreExtensions(out, r.Extensions)
+	s.recordOK()
+	return out, nil
+}
+
+func (s *scopedConverter) SerializeResponses(chunk *ir.StreamChunk, itemID string) string {
+	if err := s.circuitCheck(); err != nil {
+		return ""
+	}
+	out := s.parent.inner.SerializeResponses(chunk, itemID)
+	s.recordOK()
+	return out
+}
+
+func (s *scopedConverter) SerializeResponsesResponse(r *ir.InternalResponse, clientModel string) ([]byte, error) {
+	if err := s.circuitCheck(); err != nil {
+		return nil, ErrConverterCircuitOpen
+	}
+	out, err := s.parent.inner.SerializeResponsesResponse(r, clientModel)
+	if err != nil {
+		s.recordErr()
+		return nil, err
+	}
+	out = s.parent.restoreExtensions(out, r.Extensions)
+	s.recordOK()
+	return out, nil
+}
+
+func (s *scopedConverter) WithProviderScope(providerID int) *scopedConverter {
+	// Already scoped, return a new scope with the new providerID
+	return &scopedConverter{
+		parent:     s.parent,
+		providerID: providerID,
 	}
 }
 

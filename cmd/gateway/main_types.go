@@ -258,3 +258,13 @@ func (a *irAdapter) SerializeResponses(chunk *ir.StreamChunk, itemID string) str
 func (a *irAdapter) SerializeResponsesResponse(irResp *ir.InternalResponse, clientModel string) ([]byte, error) {
 	return ir.SerializeResponsesResponse(irResp, clientModel)
 }
+
+// WithProviderScope returns the adapter itself since irAdapter doesn't
+// have circuit breaker state (it's a stateless wrapper around ir package
+// functions). The per-provider circuit breaker isolation is implemented
+// in transformation.TransportIRConverter, which wraps irAdapter.
+//
+// Added 2026-08-09 to satisfy the updated IRConverter interface.
+func (a *irAdapter) WithProviderScope(providerID int) streaming.IRConverter {
+	return a
+}

@@ -510,6 +510,21 @@ type IRConverter interface {
 	SerializeResponsesResponse(ir *ir.InternalResponse, clientModel string) ([]byte, error)
 }
 
+// Per-provider circuit breaker isolation (2026-08-09):
+// Implementations that support per-provider isolation (like TransportIRConverter)
+// expose a WithProviderScope(providerID int) method. Callers should use type
+// assertion to access it:
+//
+//   if scoped, ok := e.IR.(interface{ WithProviderScope(int) IRConverter }); ok {
+//       ir := scoped.WithProviderScope(cand.ProviderID)
+//       req, err := ir.ParseOpenAI(body)
+//   } else {
+//       req, err := e.IR.ParseOpenAI(body)
+//   }
+//
+// Note: WithProviderScope is not part of the IRConverter interface to avoid
+// import cycles (transformation cannot import executors).
+
 // RequestLogEmitter (2026-06-20) is the minimum interface needed by
 // runAsyncRetry to update request_logs when a backgrounded retry
 // eventually succeeds. Implemented by *telemetry.Client in

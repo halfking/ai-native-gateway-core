@@ -28,6 +28,14 @@ type TransportContext struct {
 	// candidate. Set by the executor after candidate selection.
 	UpstreamCatalogCode string
 
+	// ProviderID is the provider_id of the chosen upstream candidate.
+	// Added 2026-08-09 to support per-provider circuit breaker isolation
+	// in TransportIRConverter (previously a single process-wide breaker
+	// caused one unstable provider to take down all IR conversions).
+	// Set by the executor after candidate selection, alongside
+	// UpstreamCatalogCode.
+	ProviderID int
+
 	Transform      *TransformResult
 	ToolsRequested bool
 

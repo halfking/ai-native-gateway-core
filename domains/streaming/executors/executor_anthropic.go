@@ -93,6 +93,10 @@ type AnthropicExecutor struct {
 	// the legacy ChatResponseConverter callback. Nil falls back to the
 	// callback path.
 	IR IRConverter
+	// ProviderID is the provider_id of the upstream candidate, used for
+	// per-provider circuit breaker isolation in IR conversions (added
+	// 2026-08-09). Set during AnthropicExecutor construction from cand.ProviderID.
+	ProviderID int
 }
 
 var _ ProtocolHandler = (*AnthropicExecutor)(nil)
@@ -182,14 +186,20 @@ func (a *AnthropicExecutor) WriteNonStreamResponse(w http.ResponseWriter, resp *
 	// IR.SerializeResponsesResponse when ClientProtocol == "openai-responses".
 	if a.ClientProtocol != "anthropic-messages" {
 		if a.IR != nil {
-			irResp, irErr := a.IR.ParseAnthropicResponse(body)
+			var irScoped IRConverter
+		if scoped, ok := a.IR.(interface{ WithProviderScope(int) IRConverter }); ok {
+			irScoped = scoped.WithProviderScope(a.ProviderID)
+		} else {
+			irScoped = a.IR
+		}
+			irResp, irErr := irScoped.ParseAnthropicResponse(body)
 			if irErr == nil {
 				var converted []byte
 				var serErr error
 				if a.ClientProtocol == "openai-responses" {
-					converted, serErr = a.IR.SerializeResponsesResponse(irResp, clientModel)
+					converted, serErr = irScoped.SerializeResponsesResponse(irResp, clientModel)
 				} else {
-					converted, serErr = a.IR.SerializeOpenAIResponse(irResp, clientModel)
+					converted, serErr = irScoped.SerializeOpenAIResponse(irResp, clientModel)
 				}
 				if serErr == nil {
 					body = converted
@@ -436,12 +446,19 @@ func (e *Executor) prepareAnthropicRequestBody(params *ExecParams, cand provider
 		}); ok {
 			ctx := &domain.TransportContext{
 				UpstreamCatalogCode: cand.CatalogCode,
+				ProviderID:          cand.ProviderID,
 				// ClientCatalogCode remains empty until routing layer tracks it
 			}
 			converter.SetContext(ctx)
 		}
-		// Parse OpenAI body → IR → Serialize Anthropic
-		irReq, err := e.IR.ParseOpenAI(sourceBody)
+		// Parse OpenAI body → IR → Serialize Anthropic (with per-provider circuit breaker)
+		var irScoped IRConverter
+		if scoped, ok := e.IR.(interface{ WithProviderScope(int) IRConverter }); ok {
+			irScoped = scoped.WithProviderScope(cand.ProviderID)
+		} else {
+			irScoped = e.IR
+		}
+		irReq, err := irScoped.ParseOpenAI(sourceBody)
 		if err != nil {
 			// 2026-08-08 P0 Fix: when the IR stream-side circuit breaker is
 			// OPEN (process-local counter, see
@@ -473,7 +490,7 @@ func (e *Executor) prepareAnthropicRequestBody(params *ExecParams, cand provider
 		// instead of the Anthropic-standard tool_use_id for tool_result blocks).
 		// Fixes MiniMax-M3 tool_call_id not found (2013) bug.
 		irReq.TargetProvider = cand.CatalogCode
-		bodyBytes, err := e.IR.SerializeAnthropic(irReq)
+		bodyBytes, err := irScoped.SerializeAnthropic(irReq)
 		if err != nil {
 			// 2026-08-08 P0 Fix: same IR-circuit-open fallback as ParseOpenAI.
 			// SerializeAnthropic routes through the same process-local
@@ -644,7 +661,8 @@ func (e *Executor) executeAnthropic(
 		// Phase D (2026-06-22): IR response converter for Q3 non-stream.
 		// When set, WriteNonStreamResponse uses IR instead of the legacy
 		// ChatResponseConverter callback.
-		IR: e.IR,
+		IR:         e.IR,
+		ProviderID: cand.ProviderID,
 	}
 	if e.AnthropicPassthroughStream != nil {
 		clientModel := params.ClientModel
