@@ -343,6 +343,35 @@ func (r *CredentialRecovery) recover(ctx context.Context) {
 //
 // 既然判定依据是"探活已确认健康"，就必须把该次 quota 事件写入的
 // 全部 surface 一并回滚，保持 quota_state 与 availability_state 同进同退。
+//
+// 2026-08-08 P0 修复（quota_recover_at 守卫）：防止误杀"业务模型仍
+// 配额耗尽"的 periodic 凭据。
+//
+// 缺陷证据（154 生产，cred 35 zhima-max）：业务流量对
+// gpt-5.6-sol / claude-opus-5 持续命中 upstream 429
+// `{"error":"usage limit exceeded","window_type":"five_hour"}`，
+// writer.go 正确写入 periodic_exhausted + suspended + quota_recover_at
+// （=inferQuotaRecoverAt，指向 5 小时后）。但 periodic_quota_probe
+// 每 5 分钟用 default_probe_model（claude-fable-5）探测成功 → 把
+// health_status 写成 'healthy'。claude-fable-5 探测成功只能证明"该
+// 凭据能用低消耗 probe 模型请求"，并不代表业务模型（gpt-5.6-sol）的
+// 5 小时窗口配额已恢复 —— 上游按模型/凭据计费，probe 模型不消耗
+// 业务模型的配额池。60s recovery ticker 随后看到
+// `periodic_exhausted AND health_status='healthy'`，无条件把
+// quota_state 清回 'ok' + availability_state 清回 'ready'，路由立刻
+// 重新选中该凭据，下一次业务请求再次 429 → 死循环：
+//
+//	429 → periodic_exhausted+suspended → probe(claude-fable-5) 成功
+//	     → health healthy → stale-cleanup 清回 ok+ready
+//	     → 路由重选 → 再 429 → ...
+//
+// 修复：仅当 quota_recover_at 已到期（或从未设置，即 probe-v2 402
+// 路径）才清除。writer 路径设置了 recover_at（5 小时后），到期前
+// 保持 suspended，避免循环；到期后由 60s ticker 的 quota 恢复 SQL
+// （quota_recover_at <= now()）统一翻回 ok。probe-v2 对 402 写入
+// periodic_exhausted 时不设 quota_recover_at（本文件注释根因 1），
+// 因此 `quota_recover_at IS NULL` 分支保留原有"探活健康即恢复"的
+// 兜底语义，两条路径互不干扰。
 func stalePeriodicExhaustedCleanupSQL() string {
 	return `
 		UPDATE credentials
@@ -361,6 +390,10 @@ func stalePeriodicExhaustedCleanupSQL() string {
 		WHERE quota_state = 'periodic_exhausted'
 		  AND health_status = 'healthy'
 		  AND health_checked_at > now() - INTERVAL '2 hours'
+		  -- 2026-08-08 P0 守卫：writer 路径写了 quota_recover_at
+		  -- （=inferQuotaRecoverAt，5 小时窗口），到期前不清除，避免
+		  -- probe(probe_model) 健康被当成业务模型配额恢复 → 死循环。
+		  AND (quota_recover_at IS NULL OR quota_recover_at <= now())
 		  AND lifecycle_status = 'active'
 	`
 }

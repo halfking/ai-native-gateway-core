@@ -316,6 +316,10 @@ func extractSnippet(body, needle string) string {
 //  2. health_checked_at 必须在 2 小时内（确保探测数据是新鲜的）
 //  3. 必须重置 quota_recover_at 和 state_reason_code（防止状态不一致）
 //  4. 必须排除非 active 凭据（避免恢复 lifecycle 异常的凭据）
+//  5. 2026-08-08 P0: writer 路径设置了 quota_recover_at（5 小时窗口），
+//     到期前必须拒绝清除 —— 否则 periodic_quota_probe 用 probe_model
+//     探测健康被当成业务模型配额恢复，导致 429→suspended→cleared→
+//     re-route→429 死循环（cred 35 zhima-max 生产现场）。
 func TestStalePeriodicExhaustedCleanupSQLGuards(t *testing.T) {
 	sql := stalePeriodicExhaustedCleanupSQL()
 	mustContain := []string{
@@ -326,6 +330,8 @@ func TestStalePeriodicExhaustedCleanupSQLGuards(t *testing.T) {
 		"quota_state = 'periodic_exhausted'",
 		"health_status = 'healthy'",
 		"health_checked_at > now() - INTERVAL '2 hours'",
+		// 2026-08-08 P0 guard: 未到期的 quota_recover_at 不得清除
+		"quota_recover_at IS NULL OR quota_recover_at <= now()",
 		"lifecycle_status = 'active'",
 	}
 	for _, want := range mustContain {
@@ -347,9 +353,9 @@ func TestStalePeriodicExhaustedCleanupSQLGuards(t *testing.T) {
 // Without 'suspended' in the recover() IN list AND the hard-quota
 // guard, the 60-second ticker is the only recovery path and it
 // silently skips these credentials — the loop is:
-//   1. Quota event writes suspended
-//   2. stale-cleanup clears quota → availability hangs suspended
-//   3. Admin force-enables → re-enters on next quota → loop
+//  1. Quota event writes suspended
+//  2. stale-cleanup clears quota → availability hangs suspended
+//  3. Admin force-enables → re-enters on next quota → loop
 //
 // The guard is mandatory (suspended can mean balance/permanent/
 // auth_revoked too) so the test enforces both:
