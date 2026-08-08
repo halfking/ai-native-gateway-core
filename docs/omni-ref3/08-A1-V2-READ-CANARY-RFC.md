@@ -71,7 +71,7 @@ if settings.GetPlatformBool("sessions_v2_compression_read", false) {
 	summaryService.SetMessageSource(sessionsummary.NewV2SessionBodiesSource(pool))
 }
 ```
-> ⚠️ 摘要是单例（`deps.SessionSummarizer`，`SOURCE-VERIFIED`：`main_pipeline.go:1245/1283` 仅赋值一次、跨请求复用），而压缩是 per-request 读 tenant flag。两者粒度不同——见 §7 R3，这是本 RFC 最大的设计待决点。故此处用 `GetPlatformBool`（全有或全无），不用 `GetTenantBool`。
+> ⚠️ 摘要是单例（`deps.SessionSummarizer`，`SOURCE-VERIFIED`：`main_pipeline.go:1245/1283` 仅赋值一次、跨请求复用），而压缩是 per-request 读 tenant flag。两者粒度不同——见 §7 R3。**已决策（§0，2026-08-07）**：按方案 A 解决，压缩与摘要统一用同一**平台级** flag（`GetPlatformBool`）一起切，不区分租户。
 
 ### 3.3 无第三处
 写路径（shadow write）与本 RFC 解耦，不动。
@@ -112,11 +112,11 @@ if settings.GetPlatformBool("sessions_v2_compression_read", false) {
 
 | 文件 | 改动 | 状态 | 风险 |
 |---|---|---|---|
-| `domains/hooks/compression/session_compressor.go` | `shouldUseV2` 改为读 flag（§3.1） | 待执行 | 低（默认 false，行为不变；fail-open 已在） |
+| `domains/hooks/compression/session_compressor.go` | `shouldUseV2` 改为读 flag（§3.1） | **已执行**（见 §0，改为 `GetPlatformBool` 默认 true） | 低（fail-open 已在） |
 | `domains/sessionsummary/message_source_v2.go` | 导出 `NewV2SessionBodiesSource(pool)` 构造器（供跨包构造） | **已就绪** | 无 |
-| `cmd/gateway/main_pipeline.go` | `summaryService.SetMessageSource(NewV2SessionBodiesSource(pool))` 按 flag 接线（§3.2） | 待执行 | 中（见 §7 R3 粒度问题） |
-| `cmd/compression-bench/main.go` | 加 `--compare-v2` 双算模式（§4.1） | 待执行 | 无（离线工具） |
-| （灰度期）`session_compressor.go` | shadow-compare 异步打点（§4.2） | 待执行 | 低（异步、flag 控） |
+| `cmd/gateway/main_pipeline.go` | `summaryService.SetMessageSource(NewV2SessionBodiesSource(pool))` 按 flag 接线（§3.2） | **已执行**（见 §0，R3 采用方案 A：平台级 flag 与压缩同开同关） | 低 |
+| `cmd/compression-bench/main.go` | 加 `--compare-v2` 双算模式（§4.1） | 未执行（不灰度决策后无需求，保留为未来一致性核查工具） | 无（离线工具） |
+| （灰度期）`session_compressor.go` | shadow-compare 异步打点（§4.2） | 未执行（不灰度决策后不需要） | — |
 
 **无 DB 迁移**（schema 430 已存在）；**无新表**。V2-source 构造器已导出并经测试，§3.2 接线是唯一跨包改动。
 
@@ -126,20 +126,22 @@ if settings.GetPlatformBool("sessions_v2_compression_read", false) {
 |---|---|---|
 | R1 | V2 读出历史与 V1 不一致 → 上送内容变化 | §4 双算 + 阈值；fail-open 已在 |
 | R2 | `CacheV2`/`Builder` 在生产从未被真正读过（dead code 首次激活）→ 隐藏 bug | S0 离线双算即首次大规模激活，会暴露；fail-open 兜底 |
-| **R3** | **摘要器是单例，flag 是 per-tenant** → §3.2 的接线粒度不匹配（要么全租户切摘要源，要么改架构） | **待评审决定**：方案 A 摘要按平台级 flag 切（简单，但全有或全无）；方案 B 摘要 per-request 读 tenant flag（需改 summarizer 为无状态/工厂）；方案 C 摘要暂不切、仅切压缩读（缩小 A1 范围，摘要留 A1.5） |
+| **R3** | **摘要器是单例，flag 是 per-tenant** → §3.2 的接线粒度不匹配（要么全租户切摘要源，要么改架构） | **已决策并执行（§0，2026-08-07）**：方案 A —— 摘要按平台级 flag 切，与压缩读同开同关（全有或全无）。选择理由：用户量小，per-tenant 精细灰度（方案 B/C）的额外复杂度不值当。 |
 | R4 | V2 读增加一次 DB 查询（join session_bodies+session_turns）→ 延迟 | L1/L2 cache 命中时短路；仅 L3 冷启动多一查；S1 监控延迟 |
 | R5 | flag 误开（如平台级误设 true）→ 全量突变 | flag 默认 false + 按租户灰度；shadow-compare 报警 |
 
-## 8. 评审清单（请逐项确认）
+## 8. 评审清单（已决议，历史存档）
 
-- [ ] §3.2 摘要源切换的粒度问题（R3）选哪个方案？**建议方案 C**（A1 只切压缩读，摘要切源留独立小步 A1.5），降低本 RFC 复杂度与风险。
-- [ ] §4.1 的 99% 一致率阈值是否可接受？
-- [ ] §4.2 在线 shadow-compare 是否做？（建议做，是灰度期唯一真实信号）
-- [ ] §5 灰度租户选哪些？（需运维提供 1–3 个低风险租户 ID）
-- [ ] §6 改动是否认可？
+> 以下清单为决策前的原始待办；§0 记录了实际决议结果，均已按用户决策执行，不再是待办项。
 
-## 9. 决议后路径
+- [x] §3.2 摘要源切换的粒度问题（R3）选哪个方案？→ **决议：方案 A**（摘要与压缩用同一平台级 flag 一起切），未采纳"建议方案 C"（仅切压缩读、摘要留 A1.5）。
+- [x] §4.1 的 99% 一致率阈值是否可接受？→ **决议：不灰度**，跳过离线双算门槛，直接平台级全量放开（用户量小，灰度观测价值低于开销）。
+- [x] §4.2 在线 shadow-compare 是否做？→ **决议：不做**（不灰度决策后失去意义）；fail-open 兜底保留。
+- [x] §5 灰度租户选哪些？→ **决议：不灰度**，此项作废。
+- [x] §6 改动是否认可？→ **认可并已执行**，见 §0 表格。
 
-- 评审通过 → 执行 §6（按 §5 灰度）。
-- 若选 R3 方案 C → 本 RFC 的 §3.2 删除，A1 仅含压缩读；摘要切源另起 A1.5（代码已就绪，仅接线）。
-- A1 全量稳定后 → 进 P3（退役 `request_logs_bodies`），独立 RFC。
+## 9. 决议后路径（已完成）
+
+- ~~评审通过 → 执行 §6（按 §5 灰度）。~~ 实际决策跳过灰度，直接全量执行 §6（§0 已记录）。
+- ~~若选 R3 方案 C → 本 RFC 的 §3.2 删除...~~ 实际选择方案 A，§3.2 接线按平台级 flag 保留并执行，摘要未拆分出 A1.5。
+- 下一步：A1 全量稳定运行满 1 个计费周期后 → 进 P3（退役 `request_logs_bodies`），另起独立 RFC。
