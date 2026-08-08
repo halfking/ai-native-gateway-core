@@ -59,6 +59,7 @@ export default {
     },
     filter: {
       keyAll: '全部 Key',
+      keyTitle: 'API Key',
       providerTitle: '供應商',
       providerAll: '全部供應商',
       credentialTitle: '憑據',

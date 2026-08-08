@@ -1567,8 +1567,12 @@ onMounted(async () => {
 
     <div class="compact-filter-bar compact-filter-bar--stacked">
       <div class="cf-row">
-        <select v-model="apiKeyId" class="cf-select cf-cred" title="API Key">
-          <option value="">全部 Key</option>
+        <select
+          v-model="apiKeyId"
+          class="cf-select cf-cred"
+          :title="t('requests.list.filter.keyTitle')"
+        >
+          <option value="">{{ t('requests.list.filter.keyAll') }}</option>
           <option v-for="k in keys" :key="k.id" :value="k.id">{{ k.key_prefix }} ({{ k.application_code }})</option>
         </select>
         <select
@@ -1625,15 +1629,23 @@ onMounted(async () => {
         >
           ⟲ {{ t('requests.list.filter.timeReset') }}
         </button>
-        <select v-model="successFilter" class="cf-select cf-status" title="结果">
-          <option value="">全部</option>
+        <select
+          v-model="successFilter"
+          class="cf-select cf-status"
+          :title="t('requests.list.filter.resultTitle')"
+        >
+          <option value="">{{ t('requests.list.filter.resultAll') }}</option>
           <option value="in_progress">请求中</option>
           <option value="success">成功</option>
           <option value="failure">失败</option>
           <option value="rate_limited">限流</option>
         </select>
-        <select v-model="errorKindFilter" class="cf-select cf-error" title="错误类型">
-          <option value="">全部错误</option>
+        <select
+          v-model="errorKindFilter"
+          class="cf-select cf-error"
+          :title="t('requests.list.filter.errorTitle')"
+        >
+          <option value="">{{ t('requests.list.filter.errorAll') }}</option>
           <option value="model_not_found">模型未找到</option>
           <option value="provider_error">供应商错误</option>
           <option value="timeout">超时</option>
