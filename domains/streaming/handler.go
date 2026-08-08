@@ -52,6 +52,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/resolve"
 	"github.com/kaixuan/llm-gateway-go/security/armor"
 	upstreampkg "github.com/kaixuan/llm-gateway-go/upstream"
+	"github.com/kaixuan/llm-gateway-go/metrics"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/trace"
 )
@@ -878,7 +879,7 @@ type ChatHandler struct {
 	// quotaTracker records per-credential request usage for free-tier providers.
 	autoComboResolver *autocombo.Resolver
 	autoComboFactory  *autocombo.VirtualFactory
-	quotaTracker      *freeresource.QuotaTracker
+	quotaTracker      QuotaRecorder
 }
 
 // ToolRegistryService is the interface for tool registry access.
@@ -1298,11 +1299,22 @@ func (h *ChatHandler) SetAttachmentExtractor(extractor *attachments.Extractor) {
 func (h *ChatHandler) SetOmniFree(
 	resolver *autocombo.Resolver,
 	factory *autocombo.VirtualFactory,
-	tracker *freeresource.QuotaTracker,
+	tracker QuotaRecorder,
 ) {
 	h.autoComboResolver = resolver
 	h.autoComboFactory = factory
 	h.quotaTracker = tracker
+}
+
+// QuotaRecorder 是 recordOmniFreeQuota 内部的隐式接口. *freeresource.QuotaTracker
+// 隐式满足该接口 (Record + CorrectFromHeaders 两个方法). 让 handler 测试
+// 可以注入 fake, 验证 RecordRequest / CorrectionRequest 字段是否被正确构造.
+//
+// round 4 L1+L2 修复: 旧实现 quotaTracker 是具体类型 *freeresource.QuotaTracker,
+// 单元测试只能验证 nil 短路; 真实 Record 调用未覆盖. 接口化后 fake 可注入.
+type QuotaRecorder interface {
+	Record(ctx context.Context, req freeresource.RecordRequest) error
+	CorrectFromHeaders(ctx context.Context, req freeresource.CorrectionRequest) error
 }
 
 // ServeHTTP handles /v1/chat/completions and /v1/completions.
@@ -2504,6 +2516,10 @@ func (h *ChatHandler) serveWithExecutor(
 		//   - found=false 且 err 包裹 ErrOmniFreeNoCandidates → 用户明确请求
 		//     了 auto/* 路由但 OmniFree 内部耗尽, 返回 503 而非降级到 paid.
 		//   - found=false 且 err 为 nil/其他 → OmniFree 不接管, 走普通 resolver.
+		//
+		// round 4 L5: 接入 Prometheus 指标.
+		metrics.OmniFreeAutoRequestsTotal.WithLabelValues(clientModel, tenantID).Inc()
+
 		var (
 			omniCandidates []provider.Candidate
 			omniPolicy     *provider.Policy
@@ -2511,9 +2527,11 @@ func (h *ChatHandler) serveWithExecutor(
 			found          bool
 			omniErr        error
 		)
+		omniStart := time.Now()
 		omniCandidates, omniPolicy, omniModality, found, omniErr = h.resolveOmniFreeCandidates(
 			r.Context(), clientModel, clientID.Fingerprint.ClientProfile, tenantID, bodyBytes,
 		)
+		metrics.OmniFreeGetCandidatesDuration.Observe(time.Since(omniStart).Seconds())
 		if found {
 			candidates = omniCandidates
 			policy = omniPolicy
@@ -2522,9 +2540,22 @@ func (h *ChatHandler) serveWithExecutor(
 			// round 3 H1: 用户请求 auto/* 但 OmniFree 没有候选 (catalog 空 /
 			// 全部耗尽 / provider resolve 全失败). 直接 503 终止, 避免降级
 			// 到可能收费的 provider.
+			// round 4 L5: 区分 no_free_candidates 的 reason 用于监控告警.
+			reason := "unknown"
+			if omniErr != nil {
+				if strings.Contains(omniErr.Error(), "catalog-empty") {
+					reason = "catalog-empty"
+				} else if strings.Contains(omniErr.Error(), "provider-resolve-failed") {
+					reason = "provider-resolve-failed"
+				} else if strings.Contains(omniErr.Error(), "quota-exhausted") {
+					reason = "quota-exhausted"
+				}
+			}
+			metrics.OmniFreeAutoNoCandidatesTotal.WithLabelValues(clientModel, tenantID, reason).Inc()
+
 			slog.Warn("omnifree: no free candidates, refusing to fall back",
 				"model", clientModel, "tenant_id", tenantID, "request_id", requestID,
-				"error", omniErr)
+				"reason", reason, "error", omniErr)
 			writeErrorJSONCtx(r.Context(), w, http.StatusServiceUnavailable, requestID,
 				"no_free_candidates", "No available free resources for "+clientModel+
 					"; try a specific model or wait for quota reset", nil)
