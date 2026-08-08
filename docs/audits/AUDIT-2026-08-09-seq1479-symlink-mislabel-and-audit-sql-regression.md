@@ -171,13 +171,17 @@ window **closed**.
 | Working directory | `/Users/xutaohuang/workspace/ai-native-tools/llm-gateway/llm-gateway-go-3` |
 | Branch | `main` |
 | Last commit on remote | `0e51e49b docs(audit): 154 Claude/GPT sole-candidate 503 postmortem` |
-| Uncommitted | this file (`AUDIT-2026-08-09-…md`) |
+| Uncommitted | this file (`AUDIT-2026-08-09-…md`), §10 follow-up pending |
 | 154 binary symlink | `/opt/llm-gateway-go/current -> /opt/llm-gateway-go/releases/1478-3c98ac6c/` |
 | 154 running PID | 16838 |
 | 154 running binary SHA | `52c23fcb…` |
 | 154 active since | 2026-08-09 00:36:50 CST |
-| seq 1479 fix status | **NOT live** on 154 (binary lacks cddb9956 warn strings) |
-| Outstanding regression | audit-keyword SQL error (resolved by rollback) |
+| 245 binary symlink | `/opt/llm-gateway-go/current -> /opt/llm-gateway-go/releases/1479-3c98ac6c/` |
+| 245 running PID | 4093118 |
+| 245 running binary SHA | `52c23fcb…` (same artifact as 154, just renamed to `gateway`) |
+| 245 active since | 2026-08-08 23:52:44 CST |
+| seq 1479 fix status | **NOT live** on either 154 or 245 (both run sha `52c23fcb` lacking fix strings) |
+| Outstanding regression | audit-keyword SQL error (resolved by rollback on 154; root cause still unknown) |
 
 ## 7. Outstanding risks
 
@@ -199,11 +203,14 @@ window **closed**.
 
 ## 8. Recommended next steps (prioritized)
 
-1. **Pin down the audit-keyword regression.** Enable PG `log_min_duration_statement = 0`
-   in the maintenance window for 245 (preprod), deploy the `56d06b87` binary
-   there, capture the offending query from `pg_stat_statements`, fix forward
-   in source (likely one of the hypotheses in §4), re-build, re-test, then
-   re-deploy to 154.
+1. **Pin down the audit-keyword regression.** **Pre-requisite**: get SSH/psql
+   access to the 172.16.2.210 PG host so PG statement logs are reachable
+   (see §10.5). Once logs flow, enable PG-side
+   `log_min_duration_statement = 0` for the duration of a 245 maintenance
+   window, deploy the `56d06b87` binary to 245, capture the offending query
+   from PG stderr, fix forward in source, re-build, re-test, then re-deploy
+   to 154. Do **not** attempt Stage B before the prerequisite is met
+   (the 245 swap will recur the regression with no diagnostic value).
 2. **Re-establish the deploy guard.** Add a pre-deploy `sha256sum` + string-grep
    check to whatever wrapper script flips `current` so we never silently
    swap a binary that lacks expected fix strings.
@@ -222,6 +229,88 @@ window **closed**.
   `current` swap and rollback in this session.
 - systemd journal: `journalctl -u llm-gateway-go --since "2026-08-08 23:30"`
   documents the two SIGKILLs at 23:48:27 / 23:52:40.
+
+## 10. Stage B repro attempt — follow-up session 2026-08-09 00:47 CST
+
+This session also attempted Stage B (reproduce the regression on 245 preprod
+with PG statement logging enabled) as a next step. Findings:
+
+### 10.1 245 environment observed
+- `/opt/llm-gateway-go/current` → `releases/1479-3c98ac6c/gateway` (binary
+  name on 245 is `gateway`, not `llm-gateway-go`).
+- Running binary SHA `52c23fcb…` (44.7 MB), same artifact as 154 had.
+  **245 also runs the binary that lacks the seq 1479 fix strings.**
+- systemd unit: `ExecStart=/opt/llm-gateway-go/gateway`,
+  `Environment=LLM_GATEWAY_USE_NEW_PROBE_MODE=false`,
+  `TimeoutStopSec` unset (defaults to 90s).
+- PG DSN in `/opt/llm-gateway-go/.env`:
+  `postgres://llm_gateway:4Q92cFTaYY8Z3AO07XTBBH-1g7kceaxg@172.16.2.210:5432/llm_gateway`
+  — PG is on a remote host (172.16.2.210, NOT local on 245 or 154).
+
+### 10.2 PG side
+- PG version: `PostgreSQL 17.10 (Debian 17.10-1.pgdg13+1)`.
+- `log_statement = all`, `log_min_duration_statement = -1`, but
+  `logging_collector = off`. So PG is configured to log every statement to
+  stderr, but stderr goes to wherever the PG process is running — which we
+  cannot reach from either 245 or 154 via SSH (no credentials to the 172.16.2.210
+  host in this session's env-injector pool).
+- `pg_stat_statements` is loaded with `track = top`, `track_utility = on`,
+  `save = on`, ~1139 queries tracked.
+
+### 10.3 Why `pg_stat_statements` couldn't reveal the offending query
+The regression triggered `syntax error at or near "audit" (SQLSTATE 42601)`,
+which is a **parse-time** error. `pg_stat_statements` only tracks successfully
+parsed-and-planned statements; parse errors never enter the table. Surveyed
+top 50 most-called statements and 11 audit-token matches; **every audit-token
+match was inside a SQL comment** (e.g. `-- audit-ir-multimodal (2026-07-13): …`,
+`-- Spec: 2026-06-12-credential-availability-audit-design §3.1`). None were
+bare `audit` identifiers. Therefore the offending query **is not** sitting in
+`pg_stat_statements` and cannot be recovered from this side.
+
+### 10.4 Why I did NOT cut 245 to the broken binary
+245 is the shared preprod (`llmgo.kxpms.cn`). Cutting to the broken
+`56d06b87` binary would mean ~79% of preprod traffic goes to 500 for ~7 min
+until detected and reverted — same blast radius I just caused on 154 prod.
+Without a way to capture the offending query (no PG log access, no
+query-capture proxy in place), the rollback signal would be a hot second
+swap with no extra diagnostic value. **Therefore Stage B was not executed.**
+This is the principled non-action; do not read the absence of evidence here as
+the absence of a regression.
+
+### 10.5 Concrete next steps for whoever picks this up
+1. **Get SSH / psql access to the 172.16.2.210 PG host.** Without that, every
+   Stage B attempt is blindsight. The PG logs (`log_statement = all` is
+   already set) will reveal the offending query the moment the binary runs
+   it again.
+2. **Alternative: deploy a Postgres-aware query-capture sidecar**
+   (e.g. `pgcat`, `pgbouncer` with `log_connections = on` +
+   `log_min_duration_statement = 0`, or a tcpdump tap with `pg-query-logger`)
+   in front of the gateway. This is heavier infrastructure; only do it if (1)
+   fails.
+3. **Alternative: pre-deploy grep of the binary for any unquoted SQL token.**
+   `strings llm-gateway-go | grep -E '\b(audit|select|insert|update|delete|where|join|group|order|having)\b'`
+   to surface every `audit`/other-reserved-keyword token. Then manually
+   decide which ones are inside comments and which are SQL strings with
+   unquoted identifiers. This is what got me to "string grep works for the
+   reverse direction"; the forward direction (bad query not in any obvious
+   place) suggests the bug is in a runtime query-construction path — i.e.
+   the SQL is built dynamically with a parameter or branch I haven't yet
+   found.
+4. **Once the query is captured, fix forward and rebuild.** The diff is
+   likely a column-identifier that needs `"audit"` (quoted) escaping, or an
+   audit-keyword in a CTE/alias clause that needs renaming.
+
+### 10.6 245 release-dir identity notes
+- 245's binary is named `gateway` rather than `llm-gateway-go`. The
+  `releases/` directory on 245 has `1478-3c98ac6c` and `1479-3c98ac6c`
+  release-dirs, both with binaries that **lack** the seq 1479 warn strings.
+- The release-dir labelled `1478-c4ab07de` does NOT exist on 245. To re-deploy
+  seq 1479 there for repro, the actual artifact (`sha 56d06b87`, the 62.6 MB
+  binary, or its source tree at HEAD ~ `b2c2e0fb`+`cddb9956`) needs to be
+  uploaded to `releases/1478-c4ab07de/gateway` first.
+- 245's systemd unit config (current state): `TimeoutStopSec` is unset, so
+  the same SIGKILL-on-stop behaviour I saw on 154 is also latent on 245.
+
 - Source diff for the seq 1479 fix: `git show cddb9956` — purely an executor
   change; no SQL touched by that commit, which is why the audit-keyword bug
   is *not* cddb9956-introduced directly (it's a latent pathology exposed by
