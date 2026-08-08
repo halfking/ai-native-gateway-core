@@ -67,6 +67,15 @@ type MetricSnapshot struct {
 	AvailabilityMetrics *AvailabilityMetrics
 	StabilityMetrics    *StabilityMetrics
 	ScaleMetrics        *ScaleMetrics
+
+	// 2026-08-07: extended quality signals. All optional; nil means "not
+	// measured" and the scorer treats it as a missing dimension (excluded
+	// from weighted total, per the existing if-score>0 contract in
+	// scorer.go:CalculateTotalScore).
+	RateLimitMetrics       *RateLimitMetrics       // 429/限流命中率
+	ConcurrencyCapacity    *ConcurrencyCapacity    // 供应商并发承载能力
+	AvailabilityWindow     *AvailabilityWindow     // 不可用窗口（连续低成功率段）
+	QualityStabilitySignal *QualityStabilitySignal // 评分自身稳定性（综合分 CV）
 }
 
 // NetworkMetrics 网络延迟指标
@@ -123,4 +132,57 @@ type DailyProfile struct {
 	RawStats map[string]interface{}
 
 	CreatedAt time.Time
+}
+
+// 2026-08-07: extended quality-signal structs. They live next to the
+// original snapshot types so adapters, scorer, and aggregator can share
+// the same vocabulary without an extra file hop.
+
+// RateLimitMetrics 限流命中率（429）
+//
+// 数据来源：request_logs_hot.upstream_status_code，按 credential + 时间窗口
+// 聚合得到。HitsRatio = RateLimitHits / TotalRequests（窗口内）。
+type RateLimitMetrics struct {
+	RateLimitHits int     // 窗口内 429 命中次数
+	TotalRequests int     // 窗口内总请求（用于算 HitsRatio）
+	HitsRatio     float64 // 命中率 0-1，TotalRequests=0 时为 0
+}
+
+// ConcurrencyCapacity 供应商并发承载能力
+//
+// 来自 credentials.concurrency_limit / concurrency_limit_auto：
+//   - EffLimit  = COALESCE(concurrency_limit_auto, concurrency_limit, 0)
+//   - IsCapped  = (concurrency_limit_auto < concurrency_limit)
+//     表示上游曾因 503 把自动上限压低过，是"被限流到降级"的关键证据。
+//
+// EffLimit=0 表示未配置并发上限，scorer 会返回中性分 60 并标记缺失维度。
+type ConcurrencyCapacity struct {
+	ConcurrencyLimit     int  // 用户配置的硬上限（credentials.concurrency_limit）
+	ConcurrencyLimitAuto int  // 自动调优后的当前上限（credentials.concurrency_limit_auto）
+	EffLimit             int  // 实际生效上限（auto 优先）
+	IsCapped             bool // true=auto < hard，被自动降级过
+}
+
+// AvailabilityWindow 不可用窗口（连续低成功率段）
+//
+// 从最近 N 小时的 request_logs_hot 按 5 分钟桶聚合成功率得到。
+// DowntimeBucket = 成功率 < 90% 的桶；LongestRun = 单次连续低成功率的最长桶数。
+// 一个 5 分钟桶 ≈ 30 分钟连续不可用时 LongestRun=6。
+type AvailabilityWindow struct {
+	DowntimeBuckets int     // 窗口内成功率<90%的桶数
+	TotalBuckets    int     // 窗口内总桶数（含成功+失败+空桶）
+	DowntimeRatio   float64 // DowntimeBuckets/TotalBuckets（TotalBuckets=0 时为 0）
+	LongestRun      int     // 单次最长连续低成功率桶数
+}
+
+// QualityStabilitySignal 评分自身的稳定性（综合分变异系数）
+//
+// 在聚合层用当日的 snapshot 序列反推综合分序列，再算 stddev/CV。CV<0.05
+// 视为稳定，CV>0.20 视为剧烈抖动。样本不足时 CV=0，IsVolatile=false。
+type QualityStabilitySignal struct {
+	Mean       float64 // 综合分均值
+	Stddev     float64 // 综合分标准差
+	CV         float64 // 变异系数 Stddev/Mean（Mean=0 时为 0）
+	IsVolatile bool    // CV > 0.10
+	SampleN    int     // 参与计算的 snapshot 数（用于排除冷启动噪声）
 }

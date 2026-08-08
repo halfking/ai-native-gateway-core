@@ -303,3 +303,84 @@ func TestDailyAggregator_ReportsCredentialErrors(t *testing.T) {
 	assert.Contains(t, err.Error(), "credential 1")
 	profileStore.AssertNotCalled(t, "SaveDailyProfile")
 }
+
+// 2026-08-07: verify stampQualityStability is called and writes the CV
+// signal into RawStats["quality_stability"]. Uses real DefaultScorer (not
+// mock) so stampQualityStability can compute the daily CV from the real
+// scoring formula.
+func TestDailyAggregator_StampsQualityStability(t *testing.T) {
+	ctx := context.Background()
+	testDate := time.Date(2026, 7, 26, 0, 0, 0, 0, time.UTC)
+
+	metricsStore := new(MockMetricsStore)
+	profileStore := new(MockProfileStore)
+	credentialLister := new(MockCredentialLister)
+
+	credentialLister.On("ListActiveCredentials", ctx).Return([]int64{1}, nil)
+	startOfDay := testDate
+	endOfDay := startOfDay.Add(24 * time.Hour)
+
+	// Two snapshots: one healthy, one degraded. Resulting daily CV should
+	// be > 0 (non-trivial volatility).
+	snapshots := []*providerprofile.MetricSnapshot{
+		{
+			CredentialID:        1,
+			ProviderID:          10,
+			MetricTime:          testDate.Add(2 * time.Hour),
+			TimeSlot:            providerprofile.TimeSlotDawn,
+			NetworkMetrics:      &providerprofile.NetworkMetrics{P50: 80, P95: 100, P99: 150},
+			AvailabilityMetrics: &providerprofile.AvailabilityMetrics{TotalRequests: 1000, SuccessRequests: 999, AvgTTFTMs: 300, AvgDurationMs: 3000},
+			StabilityMetrics:    &providerprofile.StabilityMetrics{ErrorCount: 1, ErrorTypes: map[string]int{"400": 1}},
+			ScaleMetrics:        &providerprofile.ScaleMetrics{TotalModels: 30, AvailableModels: 30},
+		},
+		{
+			CredentialID:        1,
+			ProviderID:          10,
+			MetricTime:          testDate.Add(8 * time.Hour),
+			TimeSlot:            providerprofile.TimeSlotMorning,
+			NetworkMetrics:      &providerprofile.NetworkMetrics{P50: 800, P95: 2500, P99: 4000},
+			AvailabilityMetrics: &providerprofile.AvailabilityMetrics{TotalRequests: 1000, SuccessRequests: 700, AvgTTFTMs: 4500, AvgDurationMs: 20000},
+			StabilityMetrics:    &providerprofile.StabilityMetrics{ErrorCount: 300, ErrorTypes: map[string]int{"500": 300}},
+			ScaleMetrics:        &providerprofile.ScaleMetrics{TotalModels: 30, AvailableModels: 30},
+		},
+	}
+	metricsStore.On("GetSnapshotsByDateRange", ctx, int64(1), startOfDay, endOfDay).Return(snapshots, nil)
+
+	// Capture the saved profile to inspect RawStats.
+	var savedProfile *providerprofile.DailyProfile
+	profileStore.On("SaveDailyProfile", ctx, mock.MatchedBy(func(p *providerprofile.DailyProfile) bool {
+		savedProfile = p
+		return true
+	})).Return(nil)
+
+	aggregator := providerprofile.NewDailyAggregator(
+		metricsStore,
+		profileStore,
+		providerprofile.NewDefaultScorer(),
+		providerprofile.DefaultWeights(),
+		credentialLister,
+	)
+
+	err := aggregator.AggregateDailyProfiles(ctx, testDate)
+	require.NoError(t, err)
+	require.NotNil(t, savedProfile)
+
+	// RawStats must contain quality_stability from stampQualityStability
+	require.NotNil(t, savedProfile.RawStats)
+	qsRaw, ok := savedProfile.RawStats["quality_stability"]
+	require.True(t, ok, "RawStats should contain quality_stability after aggregation")
+
+	qs, ok := qsRaw.(map[string]interface{})
+	require.True(t, ok, "quality_stability should be a map")
+
+	// sample_n should be 2 (we passed 2 snapshots)
+	assert.InDelta(t, float64(2), qs["sample_n"], 1e-9)
+	// mean should be > 0
+	mean, hasMean := qs["mean"]
+	require.True(t, hasMean)
+	assert.Greater(t, mean.(float64), 0.0)
+	// CV should be > 0 because the two snapshots have very different scores
+	cv, hasCV := qs["cv"]
+	require.True(t, hasCV)
+	assert.Greater(t, cv.(float64), 0.0, "two snapshots with different scores should yield CV > 0")
+}
