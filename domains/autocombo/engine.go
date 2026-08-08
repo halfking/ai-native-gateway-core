@@ -13,6 +13,9 @@ import (
 // Engine 评分与选择引擎
 type Engine struct {
 	weights ScoringWeights
+	// variant: 用于 TaskFit 维度的 keyword 启发式. 不传时 TaskFit 退化为
+	// 常量 0.85 (round 4 L7 之前的旧 behavior, 保持向后兼容).
+	variant Variant
 }
 
 // NewEngine 创建引擎
@@ -22,6 +25,12 @@ type Engine struct {
 // 不可预测. 真实生产中 weights 一般由 resolver 内置模板或 DB 行提供,
 // 校验后能给运维更明确的错误信息 ("weight sum 0.85, expected ~1.0").
 func NewEngine(weightsJSON json.RawMessage) (*Engine, error) {
+	return NewEngineWithVariant(weightsJSON, "")
+}
+
+// NewEngineWithVariant 创建带 variant 的引擎. variant 用于 TaskFit 启发式,
+// 是 round 4 L7 的扩展; 旧调用 NewEngine 等价于 variant="" 通用模式.
+func NewEngineWithVariant(weightsJSON json.RawMessage, variant Variant) (*Engine, error) {
 	var weights ScoringWeights
 	if err := json.Unmarshal(weightsJSON, &weights); err != nil {
 		return nil, fmt.Errorf("unmarshal scoring weights: %w", err)
@@ -35,7 +44,7 @@ func NewEngine(weightsJSON json.RawMessage) (*Engine, error) {
 			total, weights)
 	}
 
-	return &Engine{weights: weights}, nil
+	return &Engine{weights: weights, variant: variant}, nil
 }
 
 // SelectCandidate 从候选池选择一个候选（保留以兼容 autocombo.Candidate 单元测试）
@@ -159,14 +168,55 @@ func (e *Engine) roundRobin(tier []ScoredCandidate) *Candidate {
 	return &tier[idx].Candidate
 }
 
-// estimateTaskFit 估算任务适配度
+// estimateTaskFit 估算任务适配度 (旧 autocombo.Candidate 路径)
+//
+// round 4 L7: 实现 keyword 启发式 — 让 TaskFit 维度真实影响评分. 后续可
+// 替换为基于历史任务表现数据的统计模型; 当前用简单 substring 匹配
+// (与 candidateMatchesVariant 同源思路).
 func (e *Engine) estimateTaskFit(c Candidate) float64 {
-	// TODO: 根据模型特性和任务类型计算适配度
-	// 目前简单返回 1.0
-	// 未来可以基于：
-	// - 模型 ID 包含的关键词 (coding, chat, reasoning 等)
-	// - 历史任务表现数据
-	return 1.0
+	return taskFitFromKeywords(c.ModelID+" "+c.DisplayName, e.variant)
+}
+
+// taskFitFromKeywords 给定 haystack (model id + display name) 与 variant,
+// 按变体类型关键词匹配返回 0~1 适配分. 0.85 是通用 fallback; 命中关键词
+// 给 1.0; 明显不匹配给 0.6~0.7. 这是 round 4 L7 的简单启发式; 真实生产
+// 应该用历史任务表现统计, 但当前阶段足够让 TaskFit 维度不再退化为常量.
+func taskFitFromKeywords(haystack string, variant Variant) float64 {
+	haystack = strings.ToLower(haystack)
+	switch variant {
+	case VariantCoding:
+		if strings.Contains(haystack, "code") || strings.Contains(haystack, "coder") ||
+			strings.Contains(haystack, "starcoder") {
+			return 1.0
+		}
+		return 0.6
+	case VariantReasoning:
+		if strings.Contains(haystack, "reason") || strings.Contains(haystack, "o1") ||
+			strings.Contains(haystack, "o3") || strings.Contains(haystack, "deep") {
+			return 1.0
+		}
+		return 0.6
+	case VariantCreative:
+		if strings.Contains(haystack, "creative") || strings.Contains(haystack, "story") ||
+			strings.Contains(haystack, "writer") {
+			return 1.0
+		}
+		return 0.7
+	case VariantFast:
+		if strings.Contains(haystack, "fast") || strings.Contains(haystack, "mini") ||
+			strings.Contains(haystack, "instant") || strings.Contains(haystack, "haiku") {
+			return 1.0
+		}
+		return 0.7
+	}
+	return 0.85 // generic / no variant
+}
+
+// estimateTaskFitProvider 同样的启发式但作用于 provider.Candidate; sortCandidates
+// 使用它. 字段映射: StandardizedName + RawModel (取第一个非空).
+func (e *Engine) estimateTaskFitProvider(c provider.Candidate) float64 {
+	haystack := c.StandardizedName + " " + c.RawModel
+	return taskFitFromKeywords(haystack, e.variant)
 }
 
 // getTierAffinity 获取层级亲和度
@@ -238,6 +288,7 @@ func (e *Engine) sortCandidates(pool []provider.Candidate) []provider.Candidate 
 		score := e.weights.HealthScore*health +
 			e.weights.LatencyP95*(1-normLatency) +
 			e.weights.Cost*(1-normCost) +
+			e.weights.TaskFit*e.estimateTaskFitProvider(c) +
 			e.weights.TierAffinity*providerTierAffinity(c)
 		if score > 1 {
 			score = 1
