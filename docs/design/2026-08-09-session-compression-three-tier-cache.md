@@ -128,10 +128,24 @@ HTTP 入口脱敏 (SanitizeInputMiddleware, handler.go:1326-1328)
 2. `updateCache`（session_compressor.go:695）写入时，因脱敏在压缩前已生效，默认置 `Audited=true` 并记录时间。
 3. `cmd/gateway/goal_control.go` 还原拦截器成功执行时，回写 `audited=true`（证明"还原环节也跑过"）。
 
+#### 最终实施范围（2026-08-09 审计后重定）
+
+**简化决策**：仅实施步骤 2（`updateCache` 补 `AuditedAt` 默认标记），不做步骤 1 的 `Audited bool` 字段与步骤 3 的 `goal_control` 回写。
+
+**理由**：
+- `AuditedAt>0` 已足够表示"缓存状态已过审计管线"（非零 Unix 时间戳即为真），`Audited bool` 冗余且浪费 Redis 字段。
+- `goal_control` 回写属流出路径审计（非本次优化重点），暂不接线（降低风险）。
+- v6 审计字段集（`AuditScore`/`ApprovalStatus` 等）保持不变，不新增冗余字段。
+
+**实际改动**：
+1. `SessionState` 新增 `AuditedAt int64`（session_cache.go:195，Redis hash `aud_at` 键）。
+2. `updateCache` 写入时默认 `newState.AuditedAt = now`（session_compressor.go:703）。
+3. 注释说明："脱敏中间件先于缓存写入，`aud_at` 表示缓存状态已过审计管线"。
+
 #### 验证
 
-- `go test ./domains/hooks/compression/...` 通过。
-- 发一次请求后查 Redis `session:sc:{tenant}:{session}:v1`，`audited=true`。
+- `go test ./domains/hooks/compression/...` 通过（含 `TestUpdateCache_StampsAuditedAt_PersistsAlignmentMap`）。
+- 发一次请求后查 Redis `session:sc:{tenant}:{session}:v1`，`aud_at` 字段存在且 >0。
 
 #### 回滚
 
