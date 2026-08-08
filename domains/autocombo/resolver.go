@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"strings"
 )
 
@@ -48,9 +49,28 @@ func (r *Resolver) Resolve(ctx context.Context, modelID string, tenantID string)
 }
 
 // queryDB 在数据库中查找模板；空 tenant 时回退到 default 行, 兼容历史数据。
+//
+// RLS contract (2026-08-09 audit round 3):
+//
+//   - auto_combo_templates 表启用了 RLS, USING 子句检查
+//     tenant_id = public.get_current_tenant().
+//   - 我们用 SQL SET app.current_tenant 在执行 SELECT 前把当前请求的
+//     tenant 推给 PG session, 让 RLS 真正生效. SQL SET 而非
+//     set_config(...) 是为了避免 lib/pq 驱动 prepared-statement 路径下
+//     GUC 不生效的已知问题.
+//   - 空 tenantID 时跳过 SET, 让 get_current_tenant() 函数自身走
+//     'default' fallback (与旧 behavior 兼容).
+//   - SET 调用失败时仅记 WARN, 不让 GUC 失败阻塞 routing 路径.
 func (r *Resolver) queryDB(ctx context.Context, modelID, tenantID string) (*AutoComboSpec, error) {
 	if r.db == nil {
 		return nil, sql.ErrNoRows
+	}
+	if tenantID != "" {
+		if _, err := r.db.ExecContext(ctx,
+			fmt.Sprintf("SET app.current_tenant = '%s'", escapeTenant(tenantID))); err != nil {
+			slog.Warn("omnifree: failed to set app.current_tenant before queryDB",
+				"tenant_id", tenantID, "error", err)
+		}
 	}
 	tenantFilter := tenantID
 	if tenantFilter == "" {
@@ -80,6 +100,22 @@ func (r *Resolver) queryDB(ctx context.Context, modelID, tenantID string) (*Auto
 		return nil, err
 	}
 	return &spec, nil
+}
+
+// escapeTenant 与 freeresource.escapeTenant 同语义; 这里独立实现避免
+// 跨包依赖引发的循环引用. 仅允许 [A-Za-z0-9_-] 且长度 <=64, 不合法 ID
+// 返回 'default' 防止 SET 语句注入.
+func escapeTenant(id string) string {
+	if id == "" || len(id) > 64 {
+		return "default"
+	}
+	for _, c := range id {
+		if !((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+			(c >= '0' && c <= '9') || c == '_' || c == '-') {
+			return "default"
+		}
+	}
+	return id
 }
 
 // getBuiltinTemplate 内置模板回退

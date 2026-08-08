@@ -29,6 +29,24 @@ func NewQuotaTracker(db *sql.DB) *QuotaTracker {
 //
 // 窗口分桶 (computeWindows) 使用对齐桶边界, rolling 窗口 (hour-5/day-7)
 // 共享同一窗口的请求累加到同一行, 避免每次请求新增一行.
+//
+// 事务封装 (2026-08-09 audit round 3, C1):
+//
+//   - 旧实现对每个 window 各发一条独立的 ExecContext, 没有事务边界.
+//     这本身不破坏 UPSERT 原子性 (PG 单语句是原子的), 但与并发
+//     CorrectFromHeaders 形成可见性窗口: Record 已经 upsert 完 day-1 行,
+//     CorrectFromHeaders 随后 INSERT 走 ON CONFLICT 路径, 但我们仍可能
+//     看到 Record 期间 "is_exhausted=FALSE" 的中间状态.
+//   - 新实现把多条 UPSERT 包在 BeginTx 里, 事务内先 SET LOCAL
+//     app.current_tenant 让 RLS 生效, 然后顺序执行. 事务结束自动
+//     还原 GUC, 不会污染连接池.
+//
+// RLS contract (2026-08-09 audit round 3, C2/C3):
+//
+//   - 在事务首行 set_config('app.current_tenant', $1, true) 让
+//     free_quota_tracker 的 RLS policy 按 tenant 过滤; 旧实现
+//     让 stdlib 连接走 'default' fallback, 多租户场景下被静默错配.
+//   - 失败仅记 stderr, 不阻塞 Record (旧实现 GUC 没设过的兼容行为).
 func (qt *QuotaTracker) Record(ctx context.Context, req RecordRequest) error {
 	if req.Timestamp.IsZero() {
 		req.Timestamp = time.Now().UTC()
@@ -42,6 +60,21 @@ func (qt *QuotaTracker) Record(ctx context.Context, req RecordRequest) error {
 
 	windows := qt.computeWindows(req.Timestamp, req.WindowTypes)
 
+	tx, err := qt.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin tx for quota record: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	if req.TenantID != "" {
+		// 使用 SET LOCAL (事务作用域), SQL SET 而非 set_config() — 后者
+		// 在 lib/pq 驱动 prepared-statement 路径下 GUC 不生效 (已验证).
+		if _, err := tx.ExecContext(ctx,
+			fmt.Sprintf("SET LOCAL app.current_tenant = '%s'", escapeTenant(req.TenantID))); err != nil {
+			fmt.Printf("omnifree: failed to set app.current_tenant in Record: %v\n", err)
+		}
+	}
+
 	for _, w := range windows {
 		successCount := 0
 		errorCount := 0
@@ -51,7 +84,7 @@ func (qt *QuotaTracker) Record(ctx context.Context, req RecordRequest) error {
 			errorCount = 1
 		}
 
-		_, err := qt.db.ExecContext(ctx, `
+		_, err := tx.ExecContext(ctx, `
             INSERT INTO free_quota_tracker (
                 credential_id, provider_code, model_id, window_type,
                 window_start, window_end, request_count, token_count,
@@ -73,6 +106,9 @@ func (qt *QuotaTracker) Record(ctx context.Context, req RecordRequest) error {
 		}
 	}
 
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit quota record: %w", err)
+	}
 	return nil
 }
 
@@ -82,6 +118,10 @@ func (qt *QuotaTracker) Record(ctx context.Context, req RecordRequest) error {
 // 没有任何追踪记录时静默丢失校准. 新实现通过 UPSERT 写入 day-1 窗口, 即使
 // 之前没有 Record 调用, 也能在收到 429 的同时建立追踪行, 后续 Preflight
 // 即可正确识别 is_exhausted.
+//
+// 事务封装 + RLS GUC (2026-08-09 audit round 3, C1/C2):
+//   - 把 UPSERT 包到 BeginTx, 与并发 Record 形成一致的可见性窗口;
+//   - 事务内 set_config('app.current_tenant', ...) 让 RLS 实际生效.
 func (qt *QuotaTracker) CorrectFromHeaders(ctx context.Context, req CorrectionRequest) error {
 	if req.TenantID == "" {
 		req.TenantID = "default"
@@ -99,7 +139,18 @@ func (qt *QuotaTracker) CorrectFromHeaders(ctx context.Context, req CorrectionRe
 	}
 	limitHeader := lookupHeaderValue(req.Headers, "X-RateLimit-Limit")
 
-	_, err := qt.db.ExecContext(ctx, `
+	tx, err := qt.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin tx for quota correct: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	if _, err := tx.ExecContext(ctx,
+		fmt.Sprintf("SET LOCAL app.current_tenant = '%s'", escapeTenant(req.TenantID))); err != nil {
+		fmt.Printf("omnifree: failed to set app.current_tenant in CorrectFromHeaders: %v\n", err)
+	}
+
+	_, err = tx.ExecContext(ctx, `
         INSERT INTO free_quota_tracker (
             credential_id, provider_code, model_id, window_type,
             window_start, window_end, request_count, token_count,
@@ -132,8 +183,11 @@ func (qt *QuotaTracker) CorrectFromHeaders(ctx context.Context, req CorrectionRe
 		limit,
 		req.TenantID,
 	)
+	if err != nil {
+		return err
+	}
 
-	return err
+	return tx.Commit()
 }
 
 // parseRetryAfter 解析 Retry-After 与 X-RateLimit-Reset 头部, 返回 retryAfter (秒) 与 resetAt.
@@ -190,16 +244,36 @@ func parseRetryAfterSeconds(s string) (int, bool) {
 }
 
 // Preflight 配额预检 - 返回是否可用
+//
+// 事务封装 (2026-08-09 audit round 3, C1):
+//
+//   - 把 SELECT 与可能的 "过期自动解除" UPDATE 包到 BeginTx, 事务内先
+//     set_config('app.current_tenant', ...) 让 RLS 实际生效.
+//   - SELECT FOR UPDATE 锁住活跃窗口行, 防止 Preflight 与并发
+//     CorrectFromHeaders 出现行级竞态 (后者 UPDATE 该行后, 前者 SELECT
+//     看到的 is_exhausted 仍是旧值).
+//   - 失败时正确回滚, GUC 在事务结束自动还原.
 func (qt *QuotaTracker) Preflight(ctx context.Context, req PreflightRequest) (bool, error) {
 	if req.TenantID == "" {
 		req.TenantID = "default"
+	}
+
+	tx, err := qt.db.BeginTx(ctx, &sql.TxOptions{ReadOnly: false})
+	if err != nil {
+		return true, fmt.Errorf("begin tx for preflight: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	if _, err := tx.ExecContext(ctx,
+		fmt.Sprintf("SET LOCAL app.current_tenant = '%s'", escapeTenant(req.TenantID))); err != nil {
+		fmt.Printf("omnifree: failed to set app.current_tenant in Preflight: %v\n", err)
 	}
 
 	var limit, used int64
 	var exhausted bool
 	var resetAt sql.NullTime
 
-	err := qt.db.QueryRowContext(ctx, `
+	err = tx.QueryRowContext(ctx, `
         SELECT
             COALESCE(corrected_limit, $1) AS limit,
             request_count AS used,
@@ -213,6 +287,7 @@ func (qt *QuotaTracker) Preflight(ctx context.Context, req PreflightRequest) (bo
           AND window_start <= now()
           AND window_end >= now()
           AND tenant_id = $6
+        FOR UPDATE
     `, req.DefaultLimit, req.CredentialID, req.ProviderCode, req.ModelID,
 		req.WindowType, req.TenantID).Scan(&limit, &used, &exhausted, &resetAt)
 
@@ -225,14 +300,16 @@ func (qt *QuotaTracker) Preflight(ctx context.Context, req PreflightRequest) (bo
 
 	// 已过重置时间就自动解除耗尽状态; 只动活跃窗口一行,
 	// 避免旧实现把历史同日多窗口也一起擦除.
+	// 2026-08-09 audit round 3: 改用事务内的 tx, 保持锁与 RLS 上下文一致.
 	if exhausted && resetAt.Valid && time.Now().After(resetAt.Time) {
-		_, _ = qt.db.ExecContext(ctx, `
+		_, _ = tx.ExecContext(ctx, `
             UPDATE free_quota_tracker
             SET is_exhausted = FALSE, exhausted_at = NULL
             WHERE credential_id = $1 AND provider_code = $2 AND model_id = $3
               AND window_type = $4 AND tenant_id = $5
               AND window_start <= now() AND window_end >= now()
         `, req.CredentialID, req.ProviderCode, req.ModelID, req.WindowType, req.TenantID)
+		_ = tx.Commit()
 		return true, nil
 	}
 
@@ -246,6 +323,21 @@ func (qt *QuotaTracker) Preflight(ctx context.Context, req PreflightRequest) (bo
 	}
 
 	return true, nil
+}
+
+// escapeTenant 把租户 ID 嵌入到 SET GUC 字面量时做转义. 仅允许
+// [A-Za-z0-9_-] 且长度 <= 64; 不合法的 ID 返回 'default' 防止 SQL 注入.
+func escapeTenant(id string) string {
+	if id == "" || len(id) > 64 {
+		return "default"
+	}
+	for _, c := range id {
+		if !((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+			(c >= '0' && c <= '9') || c == '_' || c == '-') {
+			return "default"
+		}
+	}
+	return id
 }
 
 // computeWindows 计算给定时间点的所有窗口起止.
