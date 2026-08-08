@@ -2,9 +2,12 @@ package streaming
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"strings"
+	"sync"
 
 	"github.com/kaixuan/llm-gateway-go/domains/freeresource"
 	"github.com/kaixuan/llm-gateway-go/domains/streaming/executors"
@@ -15,6 +18,19 @@ import (
 // the existing autoroute.Decider path. Anything strictly longer with the
 // "auto/" prefix belongs to OmniFree's virtual auto/* routes.
 const autoRouteMagicExact = "auto"
+
+// ErrOmniFreeNoCandidates 是 resolveOmniFreeCandidates 在以下场景返回的 sentinel:
+//   - spec 解析成功 (catalog/template 命中了用户的 auto/* 路由)
+//   - 但经过 catalog 匹配、配额预检、模型过滤后, 没有可执行候选
+// (例如: 全部免费资源今日配额耗尽, 或模型被过滤规则剔出).
+//
+// 这与 spec=nil (路由未命中) 不同 — 后者意味着 OmniFree 不接管, 由
+// caller 走普通 provider resolver. 前者意味着 OmniFree 接管但失败,
+// 应该向客户端返回 503 no_free_candidates, 而不是降级到普通路由
+// (round 3 audit H1 修复).
+//
+// 区分方式: caller 用 errors.Is(err, ErrOmniFreeNoCandidates).
+var ErrOmniFreeNoCandidates = errors.New("omnifree: no free candidates available")
 
 // shouldTryOmniFree reports whether the request model name should be
 // routed through the OmniFree VirtualFactory.
@@ -42,14 +58,19 @@ func (h *ChatHandler) shouldTryOmniFree(clientModel string) bool {
 //  1. autoComboResolver.Resolve(model, tenantID) 获取 AutoComboSpec; 未知 combo
 //     返回 (nil, nil, "", false, nil) — 表示 OmniFree 不负责, 由调用方降级.
 //  2. 从 free_resource_catalog 中读取当前租户启用的 (provider_code, model_id) 集合.
-//  3. 对 catalog 中的每个 model_id, 调用 provider.Client.GetCandidates 取得完整
-//     可执行的 provider.Candidate 池 (含 BaseURL / Protocol / RawModel / APIKey).
+//  3. 对 catalog 中的每个 model_id, 并行 (errgroup) 调用 provider.Client
+//     .GetCandidates 取得完整可执行的 provider.Candidate 池.
 //  4. 合并去重, 交给 VirtualFactory.BuildFromCandidates 做过滤/排序.
+//
+// round 3 audit H5: 改用 errgroup 把 for-loop 内串行 GetCandidates 改成
+// 并行, 减少 N+1 延迟.
 //
 // 返回值:
 //   - candidates / policy / modality: 已过滤可执行候选; 当 found=true 时有效.
 //   - found: true 表示 OmniFree 接管并返回了非空候选; false 表示未接管 (降级给
 //     普通 provider resolver); err 在 found=false 时携带详细信息.
+//   - 当 spec 命中但 catalog/配额过滤后为空时, found=false 且 err 包裹
+//     ErrOmniFreeNoCandidates — caller 用 errors.Is 区分, 返回 503 而非 fallback.
 func (h *ChatHandler) resolveOmniFreeCandidates(
 	ctx context.Context,
 	clientModel, profile, tenantID string,
@@ -74,26 +95,57 @@ func (h *ChatHandler) resolveOmniFreeCandidates(
 		return nil, nil, "", false, err
 	}
 	if len(entries) == 0 {
-		return nil, nil, modality, false, nil
+		// spec 命中但 catalog 没有任何行: 用户请求了 auto/* 路由但当前租户
+		// 没有可用免费资源. 这是用户意图明确的失败, 不能 fallback 到 paid.
+		slog.Warn("omnifree: spec hit but catalog empty",
+			"model", clientModel, "tenant_id", tenantID)
+		return nil, nil, modality, false, fmt.Errorf("%w: spec=%s tenant=%s",
+			ErrOmniFreeNoCandidates, spec.ComboName, tenantID)
 	}
+
+	// round 3 H5: 并行调用 provider.GetCandidates, 取代原 N+1 串行循环.
+	type candResult struct {
+		cands []provider.Candidate
+		pol   *provider.Policy
+	}
+
+	results := make([]candResult, len(entries))
+	var (
+		wg       sync.WaitGroup
+		mu       sync.Mutex // 保护 slog 并发写
+		emptySet = make(map[int]struct{})
+	)
+	for i, e := range entries {
+		if e.ProviderCode == "" || e.ModelID == "" {
+			emptySet[i] = struct{}{}
+			continue
+		}
+		i, e := i, e
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			cands, pol, err := h.provider.GetCandidates(ctx, e.ModelID, profile, tenantID)
+			if err != nil {
+				mu.Lock()
+				slog.Debug("omnifree: provider resolve failed",
+					"error", err, "provider_code", e.ProviderCode, "model", e.ModelID)
+				mu.Unlock()
+				return
+			}
+			results[i] = candResult{cands: cands, pol: pol}
+		}()
+	}
+	wg.Wait()
+	_ = emptySet // skip-list 在外层 len() 检查处理
 
 	pool := make([]provider.Candidate, 0, len(entries)*2)
 	policyRef := (*provider.Policy)(nil)
 	seen := make(map[uint64]struct{}, len(entries)*2)
-	for _, e := range entries {
-		if e.ProviderCode == "" || e.ModelID == "" {
-			continue
+	for _, r := range results {
+		if r.pol != nil && policyRef == nil {
+			policyRef = r.pol
 		}
-		cands, pol, err := h.provider.GetCandidates(ctx, e.ModelID, profile, tenantID)
-		if err != nil {
-			slog.Debug("omnifree: provider resolve failed",
-				"error", err, "provider_code", e.ProviderCode, "model", e.ModelID)
-			continue
-		}
-		if policyRef == nil && pol != nil {
-			policyRef = pol
-		}
-		for _, c := range cands {
+		for _, c := range r.cands {
 			// 去重: 同一 (provider_id, raw_model) 不重复添加.
 			key := uint64(uint32(c.ProviderID))<<32 | hashString(c.RawModel)
 			if _, dup := seen[key]; dup {
@@ -105,7 +157,13 @@ func (h *ChatHandler) resolveOmniFreeCandidates(
 	}
 
 	if len(pool) == 0 {
-		return nil, nil, modality, false, nil
+		// catalog 命中但 provider.GetCandidates 全部失败 — 也属用户意图明确
+		// 失败, 返回 sentinel 让上层走 503 路径.
+		slog.Warn("omnifree: catalog hit but no provider candidates",
+			"model", clientModel, "tenant_id", tenantID,
+			"catalog_entries", len(entries))
+		return nil, nil, modality, false, fmt.Errorf("%w: spec=%s provider-resolve-failed tenant=%s",
+			ErrOmniFreeNoCandidates, spec.ComboName, tenantID)
 	}
 
 	filtered, err := h.autoComboFactory.BuildFromCandidates(ctx, spec, pool, tenantID)
@@ -114,9 +172,12 @@ func (h *ChatHandler) resolveOmniFreeCandidates(
 		return nil, nil, modality, false, err
 	}
 	if len(filtered) == 0 {
-		// catalog 命中但全部被配额/过滤剔出, 与 provider resolver 的 no_candidate
-		// 等价; 上层将其按 "未命中" 处理.
-		return nil, nil, modality, false, nil
+		// catalog 命中但全部被配额/过滤剔出. 同样不能让 caller 降级到 paid.
+		slog.Warn("omnifree: catalog hit but quota/filter exhausted all candidates",
+			"model", clientModel, "tenant_id", tenantID,
+			"catalog_entries", len(entries), "pool_size", len(pool))
+		return nil, nil, modality, false, fmt.Errorf("%w: spec=%s quota-exhausted tenant=%s",
+			ErrOmniFreeNoCandidates, spec.ComboName, tenantID)
 	}
 	return filtered, policyRef, modality, true, nil
 }

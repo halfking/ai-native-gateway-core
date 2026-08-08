@@ -154,15 +154,27 @@ func TestResolver_BuiltinTemplates(t *testing.T) {
 	resolver := &Resolver{}
 
 	testCases := []struct {
-		modelID string
-		variant Variant
+		modelID   string
+		variant   Variant
+		wantTier  string // expected TierFilter's first item ("" if any)
 	}{
-		{"auto/free", VariantCheap},
-		{"auto/best-free", VariantCheap},
-		{"auto/coding:free", VariantCoding},
-		{"auto/reasoning:free", VariantReasoning},
-		{"auto/fast:free", VariantFast},
-		{"auto/creative:free", VariantCreative},
+		// round 2 已有的 free tier 家族.
+		{"auto/free", VariantCheap, "free"},
+		{"auto/best-free", VariantCheap, "free"},
+		{"auto/coding:free", VariantCoding, "free"},
+		{"auto/reasoning:free", VariantReasoning, "free"},
+		{"auto/fast:free", VariantFast, "free"},
+		{"auto/creative:free", VariantCreative, "free"},
+
+		// round 3 M8 新增.
+		{"auto/coding", VariantCoding, ""},     // 任意 tier
+		{"auto/coding:cheap", VariantCoding, "cheap"},
+		{"auto/coding:pro", VariantCoding, ""}, // pro 表示允许 paid
+		{"auto/reasoning", VariantReasoning, ""},
+		{"auto/reasoning:pro", VariantReasoning, ""},
+		{"auto/fast", VariantFast, ""},
+		{"auto/vision", VariantSmart, ""},
+		{"auto/multimodal", VariantSmart, ""},
 	}
 
 	for _, tc := range testCases {
@@ -180,19 +192,30 @@ func TestResolver_BuiltinTemplates(t *testing.T) {
 				t.Errorf("expected combo_name %s, got %s", tc.modelID, spec.ComboName)
 			}
 
-			// 验证权重
+			// 验证权重和约为 1.0
 			var weights ScoringWeights
 			if err := json.Unmarshal(spec.ScoringWeightsJSON, &weights); err != nil {
 				t.Fatalf("unmarshal weights failed: %v", err)
 			}
 
-			// 验证权重和约为 1.0
 			total := weights.HealthScore + weights.LatencyP95 +
 				weights.QuotaRemaining + weights.Cost +
 				weights.TaskFit + weights.TierAffinity
 
 			if total < 0.99 || total > 1.01 {
 				t.Errorf("weights sum to %.2f, expected ~1.0", total)
+			}
+
+			// 校验 tier 过滤 (只取 TierFilter 的第一个非空项作为代表)
+			firstTier := ""
+			for _, t := range spec.TierFilter {
+				if t != "" {
+					firstTier = t
+					break
+				}
+			}
+			if firstTier != tc.wantTier {
+				t.Errorf("expected first tier %q, got %q", tc.wantTier, firstTier)
 			}
 		})
 	}
@@ -204,5 +227,30 @@ func TestResolver_UnknownCombo(t *testing.T) {
 	_, err := resolver.getBuiltinTemplate("auto/unknown", "default")
 	if err == nil {
 		t.Error("expected error for unknown combo")
+	}
+}
+
+// TestNewEngine_RejectsBadWeights 验证 round 3 M2 权重和校验.
+func TestNewEngine_RejectsBadWeights(t *testing.T) {
+	badCases := []ScoringWeights{
+		{HealthScore: 0.5, LatencyP95: 0.3},                   // 0.8 < 0.99
+		{HealthScore: 0.5, LatencyP95: 0.7},                   // 1.2 > 1.01
+		{HealthScore: 0.0, LatencyP95: 0.0, QuotaRemaining: 0.0}, // 0
+	}
+	for _, w := range badCases {
+		j, _ := json.Marshal(w)
+		if _, err := NewEngine(j); err == nil {
+			t.Errorf("NewEngine should reject weights %+v", w)
+		}
+	}
+
+	// 合法权重.
+	good := ScoringWeights{
+		HealthScore: 0.3, LatencyP95: 0.2, QuotaRemaining: 0.25,
+		Cost: 0.0, TaskFit: 0.15, TierAffinity: 0.1,
+	}
+	j, _ := json.Marshal(good)
+	if _, err := NewEngine(j); err != nil {
+		t.Errorf("NewEngine should accept valid weights: %v", err)
 	}
 }

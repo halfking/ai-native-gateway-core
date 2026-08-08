@@ -314,13 +314,27 @@ func TestEngine_SortProviderCandidates_PrefersLowLatency(t *testing.T) {
 
 func TestIsFreeBilling(t *testing.T) {
 	cases := map[string]bool{
-		"free":       true,
-		"FREE":       true,
-		"keyless":    true,
-		"token_plan": true,
-		"per_token":  false,
-		"paid":       false,
-		"":           true,
+		// 已知 free 模式 — 走配额门.
+		"free":               true,
+		"FREE":               true,
+		"keyless":            true,
+		"token_plan":         true,
+		"code_plan":          true,
+		"tier1":              true,
+		"recurring-daily":    true,
+		"recurring-monthly":  true,
+		"recurring-credit":   true,
+		"recurring-uncapped": true,
+		"one-time-initial":   true,
+		// 已知 paid 模式 — 跳过配额门.
+		"per_token": false,
+		"paid":      false,
+		"premium":   false,
+		"pro":       false,
+		// round 3 H6: 空 / 未知模式不再默认 free (避免 misconfig 漏到 free 池).
+		"":      false,
+		"junk":  false,
+		"OTHER": false,
 	}
 	for mode, want := range cases {
 		if got := isFreeBilling(mode); got != want {
