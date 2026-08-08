@@ -774,3 +774,12 @@
 |-----------|------|---------|--------|
 | 476 | `476_session_v2_tenant_unique_keys.sql` | `6ab1179688a27f11f28fe2696fcbbcf267e28ad3df2248d92c659fec14b86c42` | applied+verified |
 
+> **2026-08-08 24h 审计笔记**：commit `c13ee3c6a4` 的 commit message
+> 把 476 写成 `476_routes_incidents_audit_safety`，与实际文件名
+> `476_session_v2_tenant_unique_keys.sql` 不一致 —— 上面表格才是
+> 真实文件名（事务级 tenant 唯一键）。运维按 commit message 找迁移
+> 会找不到，必须按 commit SHA 反查。`c13ee3c6a4` 仅是回填 db-changelog
+> 条目的 doc commit，没有改迁移文件本身，因此 sha256 仍是
+> `6ab117...`。`c13ee3c6a4` 提交历史不可改，但请把本 note 视为权威
+> 文件名映射。
+

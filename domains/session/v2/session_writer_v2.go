@@ -209,27 +209,39 @@ type ProcessingStage struct {
 // Lifecycle (spec §6.3): the aggregate snapshot update runs in a goroutine
 // tracked by aggWg and bound to lifecycleCtx; Stop() awaits it.
 func (w *SessionWriterV2) Write(ctx context.Context, req *ProcessedRequest) error {
+	// 2026-08-08 audit fix: bound the advisory-lock + body-read critical
+	// section. r.Context() in telemetry / node-probe paths can be very long,
+	// so a slow DB during GetLatestBodiesInTx would hold the per-session
+	// advisory lock for unbounded time, blocking every other concurrent
+	// write for that session. A 5s deadline matches the per-credential
+	// probe timeout (see bg/node_probe.go) — same order of magnitude, same
+	// operational expectation. The outer ctx is preserved for the rest of
+	// the turn (detector, marshal, WriteBodiesInTx) which has no shared
+	// lock that would cascade.
+	lockCtx, cancelLock := context.WithTimeout(ctx, 5*time.Second)
+	defer cancelLock()
+
 	// Begin the transaction before reading the previous body. AppendTurnInTx
 	// uses the same transaction-scoped advisory lock; acquiring it here makes
 	// delta derivation observe the exact state that this turn will follow.
-	tx, err := w.turnWriter.BeginTx(ctx)
+	tx, err := w.turnWriter.BeginTx(lockCtx)
 	if err != nil {
 		return fmt.Errorf("begin tx: %w", err)
 	}
 	committed := false
 	defer func() {
 		if !committed {
-			_ = tx.Rollback(ctx)
+			_ = tx.Rollback(lockCtx)
 		}
 	}()
-	if err := w.turnWriter.LockSessionInTx(ctx, tx, req.TenantID, req.SessionID); err != nil {
+	if err := w.turnWriter.LockSessionInTx(lockCtx, tx, req.TenantID, req.SessionID); err != nil {
 		return err
 	}
 
 	// 1. Detect submit mode using the latest locked body.
 	detector := NewSubmitModeDetector()
 	var previousAttachments []AttachmentRef
-	previousBody, err := w.bodiesWriter.GetLatestBodiesInTx(ctx, tx, req.TenantID, req.SessionID)
+	previousBody, err := w.bodiesWriter.GetLatestBodiesInTx(lockCtx, tx, req.TenantID, req.SessionID)
 	if err != nil {
 		slog.WarnContext(ctx, "failed to get previous body for submit mode detection",
 			"session_id", req.SessionID, "error", err)
@@ -307,7 +319,7 @@ func (w *SessionWriterV2) Write(ctx context.Context, req *ProcessedRequest) erro
 
 	// 4. Atomic turn + bodies write (spec §6.2). The transaction and lock were
 	// opened before the previous-body read, so AppendTurnInTx reuses them.
-	turnNo, err := w.turnWriter.appendTurnInLockedTx(ctx, tx, turnRec)
+	turnNo, err := w.turnWriter.appendTurnInLockedTx(lockCtx, tx, turnRec)
 	if err != nil {
 		return fmt.Errorf("write turn: %w", err)
 	}
@@ -326,11 +338,11 @@ func (w *SessionWriterV2) Write(ctx context.Context, req *ProcessedRequest) erro
 		RequestAttachments:  requestAttachments,
 		ResponseAttachments: responseAttachments,
 	}
-	if err := w.bodiesWriter.WriteBodiesInTx(ctx, tx, bodiesRec); err != nil {
+	if err := w.bodiesWriter.WriteBodiesInTx(lockCtx, tx, bodiesRec); err != nil {
 		return fmt.Errorf("write bodies: %w", err)
 	}
 
-	if err := tx.Commit(ctx); err != nil {
+	if err := tx.Commit(lockCtx); err != nil {
 		return fmt.Errorf("commit tx: %w", err)
 	}
 	committed = true
