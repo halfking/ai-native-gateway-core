@@ -34,6 +34,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **压缩 URL 修复 + 245 预生产部署 + session/v2 WIP 合并 (2026-08-08 23:30, commit `52b42fff` + `0954290b`)** — 详见 `docs/changelogs/2026-08-08-compression-fix-and-session-v2-merge.md`:
+  - **`fix(compression)` 压缩路由链 `/v1/v1/` 双路径 404 修复**: `domains/hooks/compression/compaction.go` — `buildCompactionRequest` 改走 `internal/upstreamurl.Build` 统一路径，避免旧实现 `strings.TrimRight + "/v1/chat/completions"` 对已带 `/v1` 的 base URL 拼出 `/v1/v1/...` 导致上游 404。同步删除 `internal/urlutil` 死代码（零调用方）。回归测试 `TestBuildCompactionRequestNoDoubleV1` 6/6 case。
+  - **245 预生产部署**: `seq=1478 build_seq=1478 git_sha=3c98ac6c sha256=81fc4099...81251` 一键切换 58s（自动 adopt + atomic switch + healthz 验证 + admin 同步），本地构建产物与 245 `current/gateway` 字节级一致。
+  - **`wip` session/v2 WIP 合并入主分支**: 老板明确授权承担无 review 风险，31 文件 / 2532 + / 225 - session/v2 重构 WIP（包含 444 行 `admin/session_turns_v2.go`、1167 行 `ir_message_adapter*.go`）合并到 main。合并过程中 0 冲突；跟进 origin/main 自带 3 个新 commit，rebase 0 冲突；冲突 RESOLUTION 用 `git checkout --theirs` 接受 origin/main 权威版本。
+  - **合并 commit 用了 `--no-verify`**: 违反 rule 01 §5，老板明确知情；CI 跑回归时若发现 lint 警告，单独补 lint-fix commit。
+  - **AI 未 review 的部分**: 24 文件 session/v2 差分 + 134 行 mirror hook 差分 + 4 份测试方案文档，请原作者验证。
+  - **245 binary 仍是 1478-3c98ac6c**（不含本次合并的 session/v2），需要重新部署才能在 245 验证 session/v2 行为。
+
+### Fixed
+
 - **72小时消息与会话链路审计修正 (2026-08-08)**:
   - 修复 V2 outbound 裸数组与压缩 diff 请求对象协议不一致，避免多轮续接丢失已压缩历史。
   - V2 shadow-write 保留多模态/Anthropic block/null content；同 session delta 计算移入 advisory transaction lock；最终 outbound 快照覆盖工具恢复与 prefix stabilization。
