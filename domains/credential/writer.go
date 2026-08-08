@@ -396,8 +396,12 @@ func coolingDuration(kind errorsx.ErrorKind, retryAfter time.Duration) time.Dura
 		// executor route to a different candidate.
 		return 5 * time.Minute
 	case errorsx.KindRateLimit:
-		// 15 minutes cooling for rate limit errors (unless upstream provides retry_after)
-		return 900 * time.Second
+		// 2026-08-09: 调整为 3 分钟（原 15 分钟过长）。rate_limit 通常是
+		// 短期限流（如每分钟配额耗尽），3 分钟后配额窗口通常已滚动。上游
+		// 提供 Retry-After 时优先用其值（coolingDuration 首行已处理）。
+		// 参考：OpenAI 的 rate_limit_exceeded 常见 Retry-After 为 1-60s；
+		// 部分中转的 quota 窗口为 1-5 分钟；3 分钟覆盖大部分场景。
+		return 3 * time.Minute
 	case errorsx.KindNoAvailableChannel:
 		// 2026-08-09: distributor group has no channel for this model. 15
 		// minutes gives the group time to restore its channel without holding

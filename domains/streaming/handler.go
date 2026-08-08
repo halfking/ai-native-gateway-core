@@ -5021,8 +5021,29 @@ func buildClientDisconnectProbeEntry(originalRequestID string, r *http.Request, 
 	}
 
 	// Distinguish cancel vs timeout so the lane legend can tell them apart.
+	// 2026-08-09: 修复问题 —— 上游 first_byte_timeout 会导致客户端取消，
+	// 但这是"供应商超时导致的客户端取消"，应该归类为 timeout 并触发凭据降级，
+	// 而非 client_cancel（客户端主动取消，不应降级供应商）。
+	//
+	// 检查顺序（优先级从高到低）：
+	//   1. StreamCapture.finalFinish == "first_byte_timeout" | "stream_timeout" 等
+	//      → probe_timeout（供应商超时，需降级）
+	//   2. context.DeadlineExceeded → probe_timeout
+	//   3. 其他 context.Canceled → client_cancel
 	errorKind := "client_cancel"
-	if errors.Is(ctxErr, context.DeadlineExceeded) {
+	if logCtx != nil && logCtx.StreamCapture != nil {
+		summary := logCtx.StreamCapture.SummaryAsMap()
+		if reason, ok := summary["upstream_finish_reason"].(string); ok {
+			// first_byte_timeout / stream_timeout / stream_chunk_timeout /
+			// chunk_timeout 都是供应商端超时，应归类为 probe_timeout。
+			// 这些 reason 会触发 KindStreamTimeout / KindTimeout 降级。
+			switch reason {
+			case "first_byte_timeout", "stream_timeout", "stream_chunk_timeout", "chunk_timeout":
+				errorKind = "probe_timeout"
+			}
+		}
+	}
+	if errorKind == "client_cancel" && errors.Is(ctxErr, context.DeadlineExceeded) {
 		errorKind = "probe_timeout"
 	}
 
