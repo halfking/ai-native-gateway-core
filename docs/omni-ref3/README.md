@@ -21,7 +21,7 @@
 | `05-DATA-STRUCTURE-IR.md` | IR、消息净化、provider 变换 DSL 的对比与优化 | IR owner |
 | `06-OPTIMIZATION-ROADMAP.md` | 分阶段优化路线图（P0–P3）、门禁、回滚、验收 | PM / Tech Lead |
 | `07-AUDIT-REPORT.md` | 方案自审计：缺口、矛盾、风险、遗留问题 | 评审 |
-| `08-A1-V2-READ-CANARY-RFC.md` | A1：V2 会话读路径按租户灰度放开的 RFC（草案，待评审，不翻开关） | 会话域 owner / 运维 |
+| `08-A1-V2-READ-CANARY-RFC.md` | A1：V2 会话读路径放开（**已执行，2026-08-07**：压缩+摘要一起切、默认开、平台级 kill-switch、不灰度；文中原灰度方案保留作参考） | 会话域 owner / 运维 |
 
 ## 2. 阅读顺序
 
