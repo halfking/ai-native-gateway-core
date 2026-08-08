@@ -128,7 +128,7 @@ func (vf *VirtualFactory) BuildFromCandidates(
 		return nil, nil
 	}
 
-	engine, err := NewEngine(spec.ScoringWeightsJSON)
+	engine, err := NewEngineWithVariant(spec.ScoringWeightsJSON, spec.Variant)
 	if err != nil {
 		return nil, fmt.Errorf("build engine: %w", err)
 	}
@@ -232,6 +232,12 @@ func (vf *VirtualFactory) filterCandidates(
 			continue
 		}
 		if len(spec.FreeTypeFilter) > 0 && !containsString(spec.FreeTypeFilter, entry.FreeType) {
+			continue
+		}
+		// round 4 M7: 当 spec.HideTrainableModels 为 true, 直接剔除
+		// 训练型提供商 (entry.TrainsOnPrompts). 这让 tenant 通过 spec
+		// 配置 "我的 prompt 不被训练" 的隐私偏好.
+		if spec.HideTrainableModels && entry.TrainsOnPrompts {
 			continue
 		}
 		index[catalogKey(entry.ProviderCode, entry.ModelID)] = entry

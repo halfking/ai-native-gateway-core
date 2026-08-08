@@ -34,6 +34,12 @@ type AutoComboSpec struct {
 	ExplorationRate    float64
 	Enabled            bool
 	TenantID           string
+
+	// HideTrainableModels (round 4 M7): 当 true, 过滤 trains_on_prompts=TRUE
+	// 的 catalog 行. 用户隐私偏好 (例如"我的 prompt 不能被用来训练")
+	// 通过 spec 字段传给 factory, 与 OmniRoute hidePaidModels (#6512)
+	// 设计对齐.
+	HideTrainableModels bool
 }
 
 // ScoringWeights 评分权重

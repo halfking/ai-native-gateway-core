@@ -254,3 +254,42 @@ func TestNewEngine_RejectsBadWeights(t *testing.T) {
 		t.Errorf("NewEngine should accept valid weights: %v", err)
 	}
 }
+
+// TestEstimateTaskFit_Keyword 验证 round 4 L7 estimateTaskFit 的 keyword
+// 启发式. 不依赖 DB, 纯函数测试.
+func TestEstimateTaskFit_Keyword(t *testing.T) {
+	tests := []struct {
+		variant Variant
+		modelID string
+		wantMin float64 // 期望 task fit 至少这个值
+	}{
+		// coding 变体: 模型名包含 code/coder 给 1.0, 否则 0.6.
+		{VariantCoding, "openai/gpt-code", 1.0},
+		{VariantCoding, "starcoder2", 1.0},
+		{VariantCoding, "openai/gpt-4o", 0.6},
+
+		// reasoning 变体.
+		{VariantReasoning, "openai/o1-preview", 1.0},
+		{VariantReasoning, "deepseek-r1", 1.0},
+		{VariantReasoning, "openai/gpt-4o", 0.6},
+
+		// fast 变体.
+		{VariantFast, "claude-haiku-3", 1.0},
+		{VariantFast, "gpt-4o-mini", 1.0},
+		{VariantFast, "gpt-4o", 0.7},
+
+		// creative 变体.
+		{VariantCreative, "storyteller-llm", 1.0},
+		{VariantCreative, "gpt-4o", 0.7},
+
+		// 空 variant: 通用 0.85.
+		{"", "gpt-4o", 0.85},
+	}
+	for _, tc := range tests {
+		score := taskFitFromKeywords(tc.modelID, tc.variant)
+		if score < tc.wantMin-0.01 {
+			t.Errorf("variant=%q modelID=%q: got %.3f, want >= %.3f",
+				tc.variant, tc.modelID, score, tc.wantMin)
+		}
+	}
+}
