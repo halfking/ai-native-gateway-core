@@ -44,6 +44,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/internal/observability"
 	gwtrace "github.com/kaixuan/llm-gateway-go/internal/trace"
 	"github.com/kaixuan/llm-gateway-go/maas"
+	"github.com/kaixuan/llm-gateway-go/metrics"
 	"github.com/kaixuan/llm-gateway-go/modelname"
 	"github.com/kaixuan/llm-gateway-go/pool"
 	"github.com/kaixuan/llm-gateway-go/provider"
@@ -52,7 +53,6 @@ import (
 	"github.com/kaixuan/llm-gateway-go/resolve"
 	"github.com/kaixuan/llm-gateway-go/security/armor"
 	upstreampkg "github.com/kaixuan/llm-gateway-go/upstream"
-	"github.com/kaixuan/llm-gateway-go/metrics"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/trace"
 )
@@ -2585,7 +2585,7 @@ func (h *ChatHandler) serveWithExecutor(
 		//   - found=false 且 err 为 nil/其他 → OmniFree 不接管, 走普通 resolver.
 		//
 		// round 4 L5: 接入 Prometheus 指标.
-		metrics.OmniFreeAutoRequestsTotal.WithLabelValues(clientModel, tenantID).Inc()
+		metrics.OmniFreeAutoRequestsTotal.WithLabelValues(tenantID).Inc()
 
 		var (
 			omniCandidates []provider.Candidate
@@ -2618,7 +2618,7 @@ func (h *ChatHandler) serveWithExecutor(
 					reason = "quota-exhausted"
 				}
 			}
-			metrics.OmniFreeAutoNoCandidatesTotal.WithLabelValues(clientModel, tenantID, reason).Inc()
+			metrics.OmniFreeAutoNoCandidatesTotal.WithLabelValues(tenantID, reason).Inc()
 
 			slog.Warn("omnifree: no free candidates, refusing to fall back",
 				"model", clientModel, "tenant_id", tenantID, "request_id", requestID,
@@ -3495,6 +3495,17 @@ func (h *ChatHandler) serveWithExecutor(
 		}
 	}
 	// ── End of retry loop ────────────────────────────────────────────────
+
+	// 2026-08-09: attach the executor's StreamCapture to the log context so
+	// the client-disconnect probe (deferred in the handler safety net) can
+	// read StreamCapture.SummaryAsMap()["upstream_finish_reason"] and
+	// distinguish an upstream timeout (e.g. first_byte_timeout →
+	// KindStreamTimeout) from a genuine client cancel. Without this the
+	// probe always fell back to r.Context().Err() and mislabelled
+	// upstream timeouts as "client_cancel".
+	if logCtx != nil && streamCapture != nil {
+		logCtx.StreamCapture = streamCapture
+	}
 
 	// Record retry outcome metrics (2026-07-23)
 	retryDuration := time.Since(retryStartTime)
@@ -5098,8 +5109,29 @@ func buildClientDisconnectProbeEntry(originalRequestID string, r *http.Request, 
 	}
 
 	// Distinguish cancel vs timeout so the lane legend can tell them apart.
+	// 2026-08-09: 修复问题 —— 上游 first_byte_timeout 会导致客户端取消，
+	// 但这是"供应商超时导致的客户端取消"，应该归类为 timeout 并触发凭据降级，
+	// 而非 client_cancel（客户端主动取消，不应降级供应商）。
+	//
+	// 检查顺序（优先级从高到低）：
+	//   1. StreamCapture.finalFinish == "first_byte_timeout" | "stream_timeout" 等
+	//      → probe_timeout（供应商超时，需降级）
+	//   2. context.DeadlineExceeded → probe_timeout
+	//   3. 其他 context.Canceled → client_cancel
 	errorKind := "client_cancel"
-	if errors.Is(ctxErr, context.DeadlineExceeded) {
+	if logCtx != nil && logCtx.StreamCapture != nil {
+		summary := logCtx.StreamCapture.SummaryAsMap()
+		if reason, ok := summary["upstream_finish_reason"].(string); ok {
+			// first_byte_timeout / stream_timeout / stream_chunk_timeout /
+			// chunk_timeout 都是供应商端超时，应归类为 probe_timeout。
+			// 这些 reason 会触发 KindStreamTimeout / KindTimeout 降级。
+			switch reason {
+			case "first_byte_timeout", "stream_timeout", "stream_chunk_timeout", "chunk_timeout":
+				errorKind = "probe_timeout"
+			}
+		}
+	}
+	if errorKind == "client_cancel" && errors.Is(ctxErr, context.DeadlineExceeded) {
 		errorKind = "probe_timeout"
 	}
 
