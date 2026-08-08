@@ -59,6 +59,11 @@ export default {
     },
     filter: {
       keyAll: '全部 Key',
+      keyTitle: 'API Key',
+      providerTitle: '供应商',
+      providerAll: '全部供应商',
+      credentialTitle: '凭据',
+      credentialAll: '全部凭据',
       timeTitle: '时间范围',
       timeOptions: {
         h1: '1小时',
@@ -66,7 +71,21 @@ export default {
         h24: '24小时',
         d3: '3天',
         d7: '7天',
+        // 2026-08-09: 自然日历 preset (与上方滑窗并列显示在下拉中)
+        today: '今天',
+        thisWeek: '本周',
+        thisMonth: '本月',
+        thisYear: '今年',
+        custom: '自定义',
       },
+      // 2026-08-09: stats-overview 概览条 + stats-grid 拆分条 本地化
+      inputTokenLabel: '输入 token',
+      outputTokenLabel: '输出 token',
+      cacheReadLabel: '缓存读 token',
+      cacheWriteLabel: '缓存写 token',
+      costLabel: '成本 USD',
+      resetTime: '重置时间范围',
+      timeReset: '重置',
       resultTitle: '结果',
       resultAll: '全部',
       resultInProgress: '请求中',
@@ -91,6 +110,15 @@ export default {
       taskPlaceholder: '输入任务 ID…',
       totalMeta: '共 {n} 条',
     },
+    // 2026-08-09: 顶部突出显示的 stats-overview 三联概览卡
+    stats: {
+      totalRequests: '总请求数',
+      totalTokens: '总 Token',
+      totalCredits: '总积分',
+      totalCreditsTitle: '当前过滤条件下全量命中行的积分合计',
+      scopeAll: '全量命中行 · 与分页无关',
+    },
+    dateRangePlaceholder: '选择开始 / 结束时间',
     trace: {
       title: '任务脉络',
       summaryTemplate: '共 {total} 步（本页 {n}）',

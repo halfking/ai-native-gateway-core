@@ -1487,6 +1487,30 @@ func main() {
 			}
 		}
 
+		// ── 2026-08-09: zero-candidate model suggestions ─────────────────
+		// When the requested model has no routable node, offer the models that
+		// ARE routable so the caller can switch instead of polling a dead
+		// model. Availability is judged by v_routable_credential_models, the
+		// same gate the router uses, so a suggestion is genuinely reachable.
+		//
+		// The intent cache is a second handle on the same Redis key space the
+		// autoroute Decider uses (10min TTL), so a session already classified
+		// by a model="auto" request yields task-matched suggestions without
+		// reclassifying. Wired independently of the Decider because the
+		// Decider is constructed inside a deeply-nested DB-enabled branch,
+		// and this path must also work when that branch is skipped.
+		if dbConn != nil && dbConn.Enabled() && dbConn.Pool() != nil {
+			altFinder := streaming.NewModelAlternativesFinder(dbConn.Pool())
+			if redisClientForCache != nil && redisClientForCache.Client() != nil {
+				altFinder.SetIntentCache(
+					autoroute.NewRedisSessionIntentCache(redisClientForCache.Client(), 10*time.Minute),
+				)
+			}
+			chatHandler.SetModelAlternativesFinder(altFinder)
+			slog.Info("model_alternatives: zero-candidate suggestions enabled",
+				"intent_cache", redisClientForCache != nil && redisClientForCache.Client() != nil)
+		}
+
 		// ── 2026-07-17: 请求链路追踪 ──────────────────────────────────────
 		// 创建 trace.Recorder (Redis 暂存 + JSONB 持久化),注入到 ChatHandler
 		// 与 routingExec。Redis 不可用时降级 NoopRecorder (零开销)。

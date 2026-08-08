@@ -145,6 +145,11 @@ type PrepareResult struct {
 	// summarized" notice. It is recorded in the compression_meta JSONB and
 	// in the compression_lossiness_total{lossiness} Prometheus counter.
 	Lossiness string
+
+	// AlignmentMap (O-2, 2026-08-09) is the original→compressed message
+	// index mapping when a window-triggered rewrite (summary/trim) fired.
+	// Nil otherwise. Persisted into SessionState for audit tracing.
+	AlignmentMap []AlignmentInfo
 }
 
 // Lossiness classification values. Kept as string constants (not a typed
@@ -410,6 +415,12 @@ func (sc *SessionCompressor) Prepare(
 				if len(cached.MsgHashes) > 0 {
 					res.MsgHashes = cached.MsgHashes
 				}
+				if len(cached.AlignmentMap) > 0 {
+					var am []AlignmentInfo
+					if json.Unmarshal(cached.AlignmentMap, &am) == nil {
+						res.AlignmentMap = am
+					}
+				}
 				if cached.WindowTriggered != "" {
 					res.WindowTriggered = cached.WindowTriggered
 				}
@@ -433,6 +444,7 @@ func (sc *SessionCompressor) Prepare(
 
 		if winResult.Degraded {
 			res.Degraded = true
+			before := outboundBody
 			trimmed := mechanicalTrim(outboundBody, contextWindow, protocol)
 			if len(trimmed) < len(outboundBody) {
 				outboundBody = trimmed
@@ -441,6 +453,7 @@ func (sc *SessionCompressor) Prepare(
 				res.MsgCount = countMessages(outboundBody)
 				res.TokenEst = estimateBodyTokens(outboundBody)
 				res.MsgHashes = marshalHashes(computeHashes(mustExtractMessages(outboundBody)))
+				res.AlignmentMap = buildAlignmentMap(before, outboundBody, -1)
 			}
 		} else {
 			// ── LOSSLESS_FIRST: try LLM summary ──────────────────────────
@@ -464,6 +477,7 @@ func (sc *SessionCompressor) Prepare(
 			}
 			if ok && len(summarised) > 0 && len(summarised) < len(outboundBody) {
 				// LLM summary succeeded — inject summary_marker.
+				before := outboundBody
 				marker, markedBody := injectSummaryMarker(summarised, protocol)
 				if markedBody != nil {
 					outboundBody = markedBody
@@ -476,10 +490,12 @@ func (sc *SessionCompressor) Prepare(
 				res.MsgCount = countMessages(outboundBody)
 				res.TokenEst = estimateBodyTokens(outboundBody)
 				res.MsgHashes = marshalHashes(computeHashes(mustExtractMessages(outboundBody)))
+				res.AlignmentMap = buildAlignmentMap(before, outboundBody, firstAssistantIndex(outboundBody))
 			} else {
 				// LLM summary failed or didn't shrink — fall back to mechanical trim.
 				slog.Info("session_compressor: LLM summary failed/no-op, falling back to mechanical trim",
 					"session", gwSessionID, "trigger", winResult.Reason)
+				before := outboundBody
 				trimmed := mechanicalTrim(outboundBody, contextWindow, protocol)
 				if len(trimmed) < len(outboundBody) {
 					outboundBody = trimmed
@@ -488,6 +504,7 @@ func (sc *SessionCompressor) Prepare(
 					res.MsgCount = countMessages(outboundBody)
 					res.TokenEst = estimateBodyTokens(outboundBody)
 					res.MsgHashes = marshalHashes(computeHashes(mustExtractMessages(outboundBody)))
+					res.AlignmentMap = buildAlignmentMap(before, outboundBody, -1)
 				}
 			}
 		}
@@ -540,6 +557,7 @@ func (sc *SessionCompressor) Prepare(
 			TokenEst:             res.TokenEst,
 			MsgHashes:            res.MsgHashes,
 			CompressedPrefixHash: res.CompressedPrefixHash,
+			AlignmentMap:         marshalAlignment(res.AlignmentMap),
 		})
 		if err != nil {
 			slog.WarnContext(ctx, "session_compressor: memo store failed",
@@ -677,6 +695,15 @@ func (sc *SessionCompressor) updateCache(
 		MsgCount:         res.MsgCount,
 		TokenEstimate:    res.TokenEst,
 		SummaryMarker:    res.SummaryMarker,
+		// O-1 (2026-08-09): the cache write happens strictly after the
+		// sanitize middleware (handler.go:1326), so the persisted body is
+		// always the sanitised/audited form. Stamping aud_at here makes
+		// "this cached state passed the audit pipeline" explicit for ops
+		// and audit queries — without adding a redundant Audited bool field.
+		AuditedAt: now,
+		// O-2 (2026-08-09): persist the current turn's alignment map
+		// (nil when no window-triggered rewrite happened).
+		AlignmentMap: res.AlignmentMap,
 	}
 	if prevState != nil {
 		newState.LastCompressedAt = prevState.LastCompressedAt

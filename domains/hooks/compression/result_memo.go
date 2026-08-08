@@ -66,6 +66,12 @@ type MemoValue struct {
 	// CompressedPrefixHash is the C8/D7 stable-prefix hash of CompressedBody.
 	CompressedPrefixHash string `json:"compressed_prefix_hash,omitempty"`
 
+	// AlignmentMap (O-2, 2026-08-09) is the json.Marshal of the
+	// original→compressed message mapping, restored on a memo hit so a
+	// retried turn keeps the same alignment trace. Nil when the original
+	// run had no window-triggered rewrite.
+	AlignmentMap json.RawMessage `json:"alignment_map,omitempty"`
+
 	// CachedAt is set by Set; used for staleness debugging.
 	CachedAt time.Time `json:"cached_at"`
 }

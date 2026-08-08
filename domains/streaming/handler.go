@@ -44,6 +44,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/internal/observability"
 	gwtrace "github.com/kaixuan/llm-gateway-go/internal/trace"
 	"github.com/kaixuan/llm-gateway-go/maas"
+	"github.com/kaixuan/llm-gateway-go/metrics"
 	"github.com/kaixuan/llm-gateway-go/modelname"
 	"github.com/kaixuan/llm-gateway-go/pool"
 	"github.com/kaixuan/llm-gateway-go/provider"
@@ -52,7 +53,6 @@ import (
 	"github.com/kaixuan/llm-gateway-go/resolve"
 	"github.com/kaixuan/llm-gateway-go/security/armor"
 	upstreampkg "github.com/kaixuan/llm-gateway-go/upstream"
-	"github.com/kaixuan/llm-gateway-go/metrics"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/trace"
 )
@@ -691,6 +691,11 @@ type ChatHandler struct {
 	// requests with model="auto" trigger task classification + 6-dim
 	// scoring. When nil, model="auto" falls back to default chat model.
 	decider *autoroute.Decider
+	// altFinder (2026-08-09) supplies the "you could use these instead" list
+	// on the zero-candidate exit. Optional: nil means that exit keeps its
+	// historical bare 503, so a deployment that has not wired it loses the
+	// suggestion but nothing else.
+	altFinder *ModelAlternativesFinder
 	// requestLogHook is an optional test sink.  When set, every
 	// request_logs row the gateway emits is also passed to the hook
 	// function so unit tests can assert on the safety-net coverage.
@@ -2518,7 +2523,7 @@ func (h *ChatHandler) serveWithExecutor(
 		//   - found=false 且 err 为 nil/其他 → OmniFree 不接管, 走普通 resolver.
 		//
 		// round 4 L5: 接入 Prometheus 指标.
-		metrics.OmniFreeAutoRequestsTotal.WithLabelValues(clientModel, tenantID).Inc()
+		metrics.OmniFreeAutoRequestsTotal.WithLabelValues(tenantID).Inc()
 
 		var (
 			omniCandidates []provider.Candidate
@@ -2551,7 +2556,7 @@ func (h *ChatHandler) serveWithExecutor(
 					reason = "quota-exhausted"
 				}
 			}
-			metrics.OmniFreeAutoNoCandidatesTotal.WithLabelValues(clientModel, tenantID, reason).Inc()
+			metrics.OmniFreeAutoNoCandidatesTotal.WithLabelValues(tenantID, reason).Inc()
 
 			slog.Warn("omnifree: no free candidates, refusing to fall back",
 				"model", clientModel, "tenant_id", tenantID, "request_id", requestID,
@@ -2657,7 +2662,15 @@ func (h *ChatHandler) serveWithExecutor(
 		logCtx.failAndMark("no_candidate",
 			fmt.Sprintf("No available provider for model '%s'", clientModel), nil, nil)
 		markLogged()
-		writeErrorJSONCtx(r.Context(), w, http.StatusServiceUnavailable, requestID, "server_error", i18n.MsgNoCandidate, map[string]any{"Model": clientModel})
+		// 2026-08-09: the requested model has no routable node, but other
+		// models often do. Offer them so the caller can switch instead of
+		// polling a dead model. Task-type-aware when the session's type is
+		// known (header → autoroute session cache → inline heuristic), else
+		// ordered featured-then-popular. Availability is judged by
+		// v_routable_credential_models.is_routable — the same gate the router
+		// uses — so a suggested model is genuinely reachable right now.
+		alts := h.findModelAlternatives(r, &reqBody, bodyBytes, clientModel, keyInfo)
+		writeNoCandidateWithAlternatives(r.Context(), w, r, requestID, clientModel, alts)
 		return
 	}
 	if len(candidates) > 0 {
@@ -5008,8 +5021,29 @@ func buildClientDisconnectProbeEntry(originalRequestID string, r *http.Request, 
 	}
 
 	// Distinguish cancel vs timeout so the lane legend can tell them apart.
+	// 2026-08-09: 修复问题 —— 上游 first_byte_timeout 会导致客户端取消，
+	// 但这是"供应商超时导致的客户端取消"，应该归类为 timeout 并触发凭据降级，
+	// 而非 client_cancel（客户端主动取消，不应降级供应商）。
+	//
+	// 检查顺序（优先级从高到低）：
+	//   1. StreamCapture.finalFinish == "first_byte_timeout" | "stream_timeout" 等
+	//      → probe_timeout（供应商超时，需降级）
+	//   2. context.DeadlineExceeded → probe_timeout
+	//   3. 其他 context.Canceled → client_cancel
 	errorKind := "client_cancel"
-	if errors.Is(ctxErr, context.DeadlineExceeded) {
+	if logCtx != nil && logCtx.StreamCapture != nil {
+		summary := logCtx.StreamCapture.SummaryAsMap()
+		if reason, ok := summary["upstream_finish_reason"].(string); ok {
+			// first_byte_timeout / stream_timeout / stream_chunk_timeout /
+			// chunk_timeout 都是供应商端超时，应归类为 probe_timeout。
+			// 这些 reason 会触发 KindStreamTimeout / KindTimeout 降级。
+			switch reason {
+			case "first_byte_timeout", "stream_timeout", "stream_chunk_timeout", "chunk_timeout":
+				errorKind = "probe_timeout"
+			}
+		}
+	}
+	if errorKind == "client_cancel" && errors.Is(ctxErr, context.DeadlineExceeded) {
 		errorKind = "probe_timeout"
 	}
 
@@ -6369,6 +6403,103 @@ func writeErrorJSONWithKind(w http.ResponseWriter, status int, requestID, msg, e
 	//nolint:errcheck // HTTP write error non-recoverable
 	json.NewEncoder(w).Encode(map[string]any{
 		"error": errObj,
+	})
+}
+
+// writeNoCandidateWithAlternatives writes the 503 no_candidate response and,
+// when the gateway can offer other routable models, attaches them so the client
+// can switch instead of giving up.
+//
+// Shape (OpenAI envelope; Anthropic gets its own via writeErrorAnthropic):
+//
+//	{"error": {
+//	   "message": "No available provider for model 'X'",
+//	   "type": "server_error", "code": "no_candidate", "kind": "no_candidate",
+//	   "request_id": "...",
+//	   "alternatives": {
+//	     "requested_model": "X",
+//	     "task_type": "code",
+//	     "alternatives": [
+//	       {"model": "claude-sonnet-4-6", "display_name": "...",
+//	        "family": "claude", "context_window": 200000,
+//	        "featured": true, "reason": "task_match"}
+//	     ]
+//	   }
+//	 }}
+//
+// "alternatives" is additive and lives inside the existing error object, so
+// clients that do not know the field are unaffected. It is omitted entirely
+// when the list is empty — an empty array would read as "we looked and there is
+// nothing", which is true, but the absent field keeps the response identical to
+// the historical one for callers that cannot use it anyway.
+//
+// This is the one no-candidate exit where a rich body is possible: it runs
+// before startPreStreamKeepalive commits HTTP 200, so both the status code and
+// the body shape are still ours to choose, for streaming and non-streaming
+// requests alike.
+func writeNoCandidateWithAlternatives(
+	ctx context.Context,
+	w http.ResponseWriter,
+	r *http.Request,
+	requestID, clientModel string,
+	alts ModelAlternativesResult,
+) {
+	msg := i18n.T(ctx, i18n.MsgNoCandidate, map[string]any{"Model": clientModel})
+
+	if len(alts.Alternatives) == 0 {
+		// Nothing to offer: keep the exact legacy response.
+		writeErrorJSONWithKindProto(protocolOfRequest(r), w, http.StatusServiceUnavailable,
+			requestID, msg, "server_error", "no_candidate", "no_candidate", nil)
+		return
+	}
+
+	if protocolOfRequest(r) == "anthropic" {
+		writeErrorAnthropicWithAlternatives(w, http.StatusServiceUnavailable,
+			requestID, msg, "no_candidate", alts)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	if requestID != "" {
+		w.Header().Set("X-Request-Id", requestID)
+	}
+	w.WriteHeader(http.StatusServiceUnavailable)
+	//nolint:errcheck // HTTP write error non-recoverable
+	json.NewEncoder(w).Encode(map[string]any{
+		"error": map[string]any{
+			"message":      msg,
+			"type":         "server_error",
+			"code":         "no_candidate",
+			"kind":         "no_candidate",
+			"request_id":   requestID,
+			"alternatives": alts,
+		},
+	})
+}
+
+// writeErrorAnthropicWithAlternatives mirrors writeErrorAnthropic and adds the
+// alternatives payload. Anthropic SDKs type-check error.type against a closed
+// set, so the type is mapped through anthropicErrorType; the extra key sits
+// beside it and is ignored by clients that do not read it.
+func writeErrorAnthropicWithAlternatives(
+	w http.ResponseWriter,
+	status int,
+	requestID, msg, code string,
+	alts ModelAlternativesResult,
+) {
+	w.Header().Set("Content-Type", "application/json")
+	if requestID != "" {
+		w.Header().Set("X-Request-Id", requestID)
+	}
+	w.WriteHeader(status)
+	//nolint:errcheck // HTTP write error non-recoverable
+	json.NewEncoder(w).Encode(map[string]any{
+		"type": "error",
+		"error": map[string]any{
+			"type":         anthropicErrorType("server_error", code),
+			"message":      msg,
+			"alternatives": alts,
+		},
 	})
 }
 

@@ -16,23 +16,31 @@ import (
 //   - 429 校准触发率 (上游限流信号)
 
 var (
-	// OmniFreeAutoRequestsTotal 按 model 维度统计 auto/* 路由尝试.
+	// OmniFreeAutoRequestsTotal 按 tenant 统计 auto/* 路由尝试.
+	//
+	// 2026-08-09: 移除 model label 以符合 GW-00 低基数规范 (model 名空间大,
+	// 100+ 模型会导致时序爆炸). 保留 tenant 维度用于租户级流量监控.
 	OmniFreeAutoRequestsTotal = promauto.NewCounterVec(prometheus.CounterOpts{
 		Name: "omnifree_auto_requests_total",
-		Help: "Total auto/* routing attempts by virtual model name.",
-	}, []string{"model", "tenant"})
+		Help: "Total auto/* routing attempts by tenant (model dimension removed per GW-00).",
+	}, []string{"tenant"})
 
-	// OmniFreeAutoSuccessTotal 按 model 统计成功调用 (executor 返回无 err).
+	// OmniFreeAutoSuccessTotal 按 tenant 统计成功调用 (executor 返回无 err).
+	//
+	// 2026-08-09: 同上移除 model label. 与 requests 比值 = 租户成功率.
 	OmniFreeAutoSuccessTotal = promauto.NewCounterVec(prometheus.CounterOpts{
 		Name: "omnifree_auto_success_total",
-		Help: "Total auto/* requests that completed without executor error.",
-	}, []string{"model", "tenant"})
+		Help: "Total auto/* requests completed without error by tenant (model dimension removed per GW-00).",
+	}, []string{"tenant"})
 
 	// OmniFreeAutoNoCandidatesTotal 统计 503 no_free_candidates 触发次数.
+	//
+	// 2026-08-09: 移除 model label, 保留 tenant + reason (reason 为低基数枚举:
+	// catalog-empty / provider-resolve-failed / quota-exhausted / unknown).
 	OmniFreeAutoNoCandidatesTotal = promauto.NewCounterVec(prometheus.CounterOpts{
 		Name: "omnifree_auto_no_candidates_total",
-		Help: "Total 503 responses due to no_free_candidates (catalog empty / exhausted).",
-	}, []string{"model", "tenant", "reason"})
+		Help: "Total 503 no_free_candidates by tenant and reason (model dimension removed per GW-00).",
+	}, []string{"tenant", "reason"})
 
 	// OmniFreeQuotaRecordsTotal 按 window_type 统计 Record 调用次数.
 	OmniFreeQuotaRecordsTotal = promauto.NewCounterVec(prometheus.CounterOpts{

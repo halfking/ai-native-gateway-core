@@ -155,6 +155,34 @@ const (
 	// body. 503/529 stay KindConcurrent: those statuses are a genuine
 	// concurrency signal and tuner.go's ratchet is the correct response.
 	KindUpstreamOverloaded ErrorKind = "upstream_overloaded"
+	// KindNoAvailableChannel (2026-08-09): upstream is a OneAPI/new-api style
+	// relay (distributor) reporting that NO channel in its group can currently
+	// serve the requested model:
+	//
+	//	503 {"error":{"message":"No available channel for model gpt-5.6-luna
+	//	    under group Codex-特价 (distributor)","type":"new_api_error",
+	//	    "code":"model_not_found"}}
+	//
+	// Surfaces as 5xx (commonly 503) with the "No available channel for model
+	// X under group Y" message; the relay's own code field says model_not_found
+	// but that label is new-api's "no channel mapped" shorthand, NOT the P5
+	// "model name is unknown" signal.
+	//
+	// Classification rationale:
+	//   - NOT KindModelNotFound: the P5 path (modelNotFoundRe) is status-gated
+	//     to 400/404/422 and hard-shorts routing to a 404. This is a transient
+	//     routing gap on ONE distributor group — a sibling credential (different
+	//     distributor, or the direct provider) can serve the same model, and the
+	//     binding recovers once the group's channel returns.
+	//   - NOT retryable (absent from IsRetryable): the pre-fix incident
+	//     (2026-08-09, server 154) saw these 503 bodies mis-classified as
+	//     KindConcurrent → IsRetryable → the executor re-tried the SAME broken
+	//     credential instead of failing over (62 "No available channel" lines
+	//     in 24h; provider 9271 accumulated 387 failed upstream attempts).
+	//   - NOT in IsCredentialFatal / freeCredentialsTolerateTransient: the
+	//     failure is (credential, model)-scoped and recoverable; handled by the
+	//     per-model state write + isTransientFailoverKind sibling failover.
+	KindNoAvailableChannel ErrorKind = "no_available_channel"
 )
 
 // contextLengthRe matches upstream error bodies that signal "prompt too
@@ -219,6 +247,20 @@ var modelNotFoundRe = regexp.MustCompile(
 )
 var modelNotFoundCJKRe = regexp.MustCompile(
 	`模型不存在|模型.{0,10}不存在|模型.{0,10}未找到`,
+)
+
+// noAvailableChannelRe matches the OneAPI/new-api relay body that reports "no
+// channel in this distributor group can serve the requested model":
+//
+//	"No available channel for model gpt-5.6-luna under group Codex-特价 (distributor)"
+//
+// We require the "for model"/"to serve model" fragment after the phrase so a
+// bare "no available channel" (a generic relay-capacity message) still falls
+// through to the overload classifier. The match is scoped to 5xx statuses by
+// the callers (see ClassifyErrorWithBody / ClassifyResponseBody): a 4xx
+// "no available channel" body should keep the existing status-driven path.
+var noAvailableChannelRe = regexp.MustCompile(
+	`(?i)no available channel[^\n]{0,160}(for model|for the model|to serve model|serving model)`,
 )
 
 var unsupportedFeatureRe = regexp.MustCompile(
@@ -614,6 +656,18 @@ func ClassifyErrorWithBody(status int, body []byte) ErrorKind {
 			strings.Contains(bodyLower, "page not found") ||
 			strings.Contains(bodyLower, "resource not found")
 
+		// 2026-08-09: OneAPI/new-api distributor "no available channel for model
+		// X under group Y" on a 5xx. Checked BEFORE the overload branch because
+		// this body can also carry the relay's `"code":"model_not_found"` label,
+		// and the "no channel mapped" reading must win over both the concurrent
+		// classifier and the 4xx-gated modelNotFoundRe. Sibling credentials can
+		// serve the model, so this is NOT KindModelNotFound (which hard-shorts
+		// routing to a 404) and NOT KindConcurrent (which IsRetryable → re-tries
+		// the same broken credential).
+		if status >= 500 && noAvailableChannelRe.Match(body) {
+			return KindNoAvailableChannel
+		}
+
 		if concurrentOverloadRe.Match(body) || concurrentOverloadCJKRe.Match(body) {
 			return overloadKindForStatus(status)
 		}
@@ -751,6 +805,13 @@ func ClassifyErrorWithBody(status int, body []byte) ErrorKind {
 // connectivity, not the model's existence.
 func ClassifyResponseBody(status int, body []byte) ErrorKind {
 	if len(body) > 0 {
+		// 2026-08-09: distributor "no available channel" — see the matching
+		// comment in ClassifyErrorWithBody. Body-only classifier (SSE error
+		// chunks, relayed body capture) gets the same 5xx-gated treatment so
+		// the two classifiers cannot diverge on the same body.
+		if status >= 500 && noAvailableChannelRe.Match(body) {
+			return KindNoAvailableChannel
+		}
 		if concurrentOverloadRe.Match(body) || concurrentOverloadCJKRe.Match(body) {
 			return overloadKindForStatus(status)
 		}
