@@ -279,13 +279,35 @@ func (p *preStreamKeepalive) stop() {
 }
 
 func writePrewarmedStreamError(w http.ResponseWriter, message, errType, code string) {
+	writePrewarmedStreamErrorWithKind(w, message, errType, code, "")
+}
+
+// writePrewarmedStreamErrorWithKind is the variant that carries the real
+// upstream error kind so the SDK can distinguish "the model does not
+// exist" from "the relay is overloaded". When kind is empty the envelope
+// is byte-identical to the historical 3-field shape, keeping the seven
+// existing call sites backwards-compatible.
+//
+// The reasoning behind exposing kind only here (and not on the non-prewarmed
+// JSON path, which already includes it via writeErrorJSONWithKind) is that
+// the prewarmed path is the only one where the existing code field is a
+// lie: the underlying failure is not "model not found" but an exhausted
+// upstream, and the SDK benefits from knowing that. The other six models
+// that did not have a code-vs-kind mismatch before the fix continue to
+// write kind="", so nobody sees a new field they did not expect.
+func writePrewarmedStreamErrorWithKind(w http.ResponseWriter, message, errType, code, kind string) {
 	if errType == "" {
 		errType = "server_error"
 	}
 	if code == "" {
 		code = "provider_error"
 	}
-	safeWriteSSE(w, fmt.Sprintf("data: {\"error\":{\"message\":%q,\"type\":%q,\"code\":%q}}\n\n", message, errType, code))
+	body := fmt.Sprintf("data: {\"error\":{\"message\":%q,\"type\":%q,\"code\":%q", message, errType, code)
+	if kind != "" {
+		body += fmt.Sprintf(",\"kind\":%q", kind)
+	}
+	body += "}}\n\n"
+	safeWriteSSE(w, body)
 	if flusher, ok := w.(http.Flusher); ok {
 		safeFlush(flusher)
 	}
@@ -3704,9 +3726,14 @@ func (h *ChatHandler) serveWithExecutor(
 				w.Header().Set("Retry-After", strconv.Itoa(retryAfter))
 			}
 			if preStreamPrepared {
-				writePrewarmedStreamError(w,
+				// Carry the real upstream error kind so SDKs can act on
+				// overload/rate_limit instead of chasing a "model not found"
+				// that the model_not_found code never actually meant. The
+				// code field is preserved for backwards compatibility — see
+				// writePrewarmedStreamErrorWithKind for the wire format.
+				writePrewarmedStreamErrorWithKind(w,
 					fmt.Sprintf("No available provider for model '%s'. All %d candidates failed.", clientModel, execErrTyped.Tried),
-					"server_error", "model_not_found")
+					"server_error", "model_not_found", string(execErrTyped.LastKind))
 				return
 			}
 			writeErrorJSONWithKindProto(proto, w, http.StatusServiceUnavailable, requestID,

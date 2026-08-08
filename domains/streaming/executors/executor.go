@@ -2249,6 +2249,14 @@ func (e *Executor) Execute(params *ExecParams) (*ExecuteResult, error) {
 	// the real execution path after earlier filters.
 	predictiveDecisionMade := false
 
+	// 2026-08-08 P0 Fix: when only ONE candidate was returned by the router,
+	// every sibling failover path is gone. If the lone credential's circuit
+	// is open (or the recent_success_rate hard-filter already dropped the
+	// only other sibling), we must NOT skip this candidate — that would
+	// produce an immediate 503 for every Claude/GPT request. We surface the
+	// "sole candidate" flag here so the circuit-open branch below can
+	// fail-open instead of continue.
+	totalCandidates := len(candidates)
 	for candidateIndex, cand := range candidates {
 		// OPT-3: skip siblings of providers that already returned
 		// content_filter. The credential is healthy; the content is
@@ -2369,13 +2377,41 @@ func (e *Executor) Execute(params *ExecParams) (*ExecuteResult, error) {
 		}
 		if circuitOpen {
 			if settings.IsEnabled("circuit_degradation") {
-				slog.Debug("executor: circuit open, skipping candidate",
-					"credential_id", cand.CredentialID,
-					"provider_id", cand.ProviderID,
-				)
-				lastErr = fmt.Errorf("circuit open for credential %d", cand.CredentialID)
-				releaseFpLease(e.FpSlots, fpLease)
-				continue
+				// 2026-08-08 P0 Fix: fail-open for sole-candidate models.
+				// When the router returned only ONE candidate, no sibling
+				// credential can take this request. Skipping on circuit
+				// produces an immediate 503 for every Claude/GPT request
+				// (apiclaude/apigpt each have exactly one routable sibling
+				// after manual_disabled tightened the candidate pool).
+				// We honor the probe slot already consumed (probeConsumed)
+				// and fall through to Limiter.AcquireAll + a real attempt,
+				// letting node_probe_worker / circuit half-open recover the
+				// route naturally on the next cycle.
+				if totalCandidates == 1 {
+					slog.Warn("executor: circuit open on sole candidate, failing open",
+						"credential_id", cand.CredentialID,
+						"provider_id", cand.ProviderID,
+						"raw_model", cand.RawModel,
+						"client_model", params.ClientModel,
+						"request_id", params.RequestID,
+					)
+					trace.BlockedCandidates = append(trace.BlockedCandidates, TraceCandidate{
+						ProviderID:   cand.ProviderID,
+						CredentialID: cand.CredentialID,
+						RawModel:     cand.RawModel,
+						Tier:         cand.Tier,
+						Reason:       "circuit_open_sole_candidate_fail_open",
+					})
+					// intentionally fall through — Limiter + real attempt below
+				} else {
+					slog.Debug("executor: circuit open, skipping candidate",
+						"credential_id", cand.CredentialID,
+						"provider_id", cand.ProviderID,
+					)
+					lastErr = fmt.Errorf("circuit open for credential %d", cand.CredentialID)
+					releaseFpLease(e.FpSlots, fpLease)
+					continue
+				}
 			}
 			// Kill-switch path: skip circuit and fall through to Limiter.AcquireAll.
 		}
@@ -2854,11 +2890,16 @@ func (e *Executor) Execute(params *ExecParams) (*ExecuteResult, error) {
 				// because the executor's outer loop now drives the failover
 				// to the next candidate, and we want the DB state to be
 				// authoritative before that next lookup.
-				if !freeCredentialsTolerateTransient(cand.BillingMode, kind) {
+				// 2026-08-08 P0 Fix: sole-candidate models must NOT escalate
+				// their own circuit breaker on every transient failure —
+				// otherwise a single transient blip wedges the only Claude/
+				// GPT route for the entire 30-minute cooling window. We
+				// still write the credential-state row above (admins see
+				// it), still record bandit context, but skip the breaker
+				// escalation so the next request can try again.
+				if !freeCredentialsTolerateTransient(cand.BillingMode, kind) && totalCandidates > 1 {
 					e.Circuit.RecordFailure(cand.ProviderID, cand.CredentialID, kind)
 				} else {
-					// 2026-07-03 incident fix: free-cred transient skips RecordFailure
-					// (soft-downgrade only), so a consumed half-open probe would leak.
 					if probeConsumed && e.Circuit != nil {
 						e.Circuit.ReleaseProbe(cand.ProviderID, cand.CredentialID)
 					}
@@ -2901,11 +2942,11 @@ func (e *Executor) Execute(params *ExecParams) (*ExecuteResult, error) {
 				// The inner tryCandidate already wrote the credential state
 				// with the correct kind; this branch keeps the circuit counter
 				// consistent and ensures the kind is recorded.
-				if !freeCredentialsTolerateTransient(cand.BillingMode, kind) {
+				// 2026-08-08 P0 Fix: sole-candidate models must NOT escalate
+				// their circuit breaker — see mirror comment above.
+				if !freeCredentialsTolerateTransient(cand.BillingMode, kind) && totalCandidates > 1 {
 					e.Circuit.RecordFailure(cand.ProviderID, cand.CredentialID, kind)
 				} else {
-					// 2026-07-03 incident fix: free-cred transient skips
-					// RecordFailure, so release a consumed half-open probe.
 					if probeConsumed && e.Circuit != nil {
 						e.Circuit.ReleaseProbe(cand.ProviderID, cand.CredentialID)
 					}
@@ -3096,7 +3137,10 @@ func (e *Executor) Execute(params *ExecParams) (*ExecuteResult, error) {
 
 		// 2026-07-14: 免费凭据 transient 错误不 RecordFailure（避免 circuit
 		// breaker OPEN 硬剔），仅靠 RecentSuccessRate 软降权。永久错误仍记录。
-		if !freeCredentialsTolerateTransient(cand.BillingMode, kind) {
+		// 2026-08-08 P0 Fix: sole-candidate models also skip the breaker
+		// escalation so a transient blip doesn't lock the only Claude/GPT
+		// route for 30 minutes.
+		if !freeCredentialsTolerateTransient(cand.BillingMode, kind) && totalCandidates > 1 {
 			e.Circuit.RecordFailure(cand.ProviderID, cand.CredentialID, kind)
 		} else {
 			// 2026-07-03 incident fix: free-cred transient skips RecordFailure
@@ -3312,12 +3356,29 @@ func (e *Executor) Execute(params *ExecParams) (*ExecuteResult, error) {
 				}
 			}
 			if allCircuitOpen {
-				slog.Info("sync_retry_stopped",
+				// 2026-08-08 P0 Fix: do NOT break the sync retry when the
+				// router only returned ONE candidate. Otherwise every
+				// Claude/GPT request stalls inside a circuit that the
+				// outer loop already failed-open for, but the sync-retry
+				// loop refuses to admit the recursive attempt. With a
+				// sole candidate, "all_circuit_open" is the only signal
+				// we have — keep retrying via the recursive Execute so
+				// the active_probe / node_probe_worker can drive recovery
+				// on the next cycle instead of 503ing immediately.
+				if len(subCandidates) > 1 {
+					slog.Info("sync_retry_stopped",
+						"model", params.ClientModel,
+						"reason", "all_circuit_open",
+						"elapsed_ms", time.Since(tTotal).Milliseconds(),
+					)
+					break syncRetryLoop
+				}
+				slog.Warn("sync_retry_continuing_sole_candidate_all_circuit_open",
 					"model", params.ClientModel,
-					"reason", "all_circuit_open",
+					"credential_id", subCandidates[0].CredentialID,
+					"request_id", params.RequestID,
 					"elapsed_ms", time.Since(tTotal).Milliseconds(),
 				)
-				break syncRetryLoop
 			}
 
 			// 递归执行 Execute()

@@ -120,3 +120,62 @@ func TestNonPrewarmedExhaustion_RetryAfterHeaderIsDelivered(t *testing.T) {
 		t.Errorf("body = %q, want the precise kind for client-side alerting", rec.Body.String())
 	}
 }
+
+// TestPreStreamExhaustion_FrameCarriesRealKind is the third (and most
+// consequential) of the trio. The prewarmed SSE error frame currently
+// hardcodes code="model_not_found", which tells an SDK "the model does not
+// exist" when the actual cause is "upstream is overloaded". The 51 empty-200
+// failures on 2026-08-08 belong to 5 models across one relay, so the wrong
+// hint is not theoretical: it would send an operator debugging a degraded
+// relay chasing ghost model names.
+//
+// The fix writes a kind field into the envelope when the caller knows the
+// real cause. This test pins the new wire format and asserts that the
+// existing model_not_found code is preserved as a backwards-compatible
+// machine-readable code, exactly the same shape the non-prewarmed JSON path
+// at handler.go:3714 already takes.
+func TestPreStreamExhaustion_FrameCarriesRealKind(t *testing.T) {
+	rec := httptest.NewRecorder()
+	psk, ok := startPreStreamKeepalive(rec, time.Hour, "req-overload-kind")
+	if !ok {
+		t.Fatal("expected a flusher-backed recorder")
+	}
+	psk.stop()
+
+	// Production path (handler.go:3707-3709) writes an exhaustion frame
+	// for the prewarmed stream. After the fix, writePrewarmedStreamError
+	// takes the real ErrorKind so the frame can carry it. We pin the exact
+	// shape of that frame here.
+	writePrewarmedStreamErrorWithKind(rec,
+		"No available provider for model 'gpt-5.6-luna'. All 1 candidates failed.",
+		"server_error",
+		"model_not_found",
+		"upstream_overloaded",
+	)
+
+	body := rec.Body.String()
+	if !strings.Contains(body, `"code":"model_not_found"`) {
+		t.Errorf("body = %q; existing code field must be preserved for backwards compatibility", body)
+	}
+	if !strings.Contains(body, `"kind":"upstream_overloaded"`) {
+		t.Errorf("body = %q; expected a kind field carrying the real upstream cause", body)
+	}
+}
+
+// TestWritePrewarmedStreamError_BackCompat is the safety net for the other
+// seven call sites: they must keep producing the existing 3-field envelope.
+// The non-prewarmed JSON path (handler.go:3714) already includes kind; an
+// SDK that gained a kind field pre-streamed and lost it non-prewarmed
+// would be a regression, so this test makes the asymmetry explicit.
+func TestWritePrewarmedStreamError_BackCompat(t *testing.T) {
+	rec := httptest.NewRecorder()
+	// Old call shape with kind="" — must still produce the historical envelope.
+	writePrewarmedStreamErrorWithKind(rec, "msg", "server_error", "model_not_found", "")
+	body := rec.Body.String()
+	if strings.Contains(body, `"kind"`) {
+		t.Errorf("body = %q; an empty kind must be omitted (historical wire format)", body)
+	}
+	if !strings.Contains(body, `"code":"model_not_found"`) {
+		t.Errorf("body = %q; code field must still be present", body)
+	}
+}
