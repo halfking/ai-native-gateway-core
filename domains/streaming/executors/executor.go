@@ -30,7 +30,7 @@ import (
 	ursmv2 "github.com/kaixuan/llm-gateway-go/domains/ursm/v2"
 	ursmv2api "github.com/kaixuan/llm-gateway-go/domains/ursm/v2/api"
 	"github.com/kaixuan/llm-gateway-go/errorsx"
-	"github.com/kaixuan/llm-gateway-go/internal/ir"
+	"github.com/kaixuan/llm-gateway-go/internal/irconv"
 	"github.com/kaixuan/llm-gateway-go/internal/runctx"
 	gwtrace "github.com/kaixuan/llm-gateway-go/internal/trace"
 	"github.com/kaixuan/llm-gateway-go/pending"
@@ -471,59 +471,14 @@ type QualityProcessNonStreamFunc func(body []byte, mode string) (outBody []byte,
 type QualitySetModeFunc func(ctx context.Context, mode string) context.Context
 
 // IRConverter is the unified protocol-conversion interface (Phase B, 2026-06-22).
-// It replaces the 6 scattered callbacks (ChatToAnthropic, AnthropicToOpenAI,
-// AnthropicToOpenAIStream, AnthropicToChatResponse, SanitizeAnthropicTools,
-// NormalizeOpenAITools) with a single Parse→IR→Serialize pipeline.
-//
-// Protocol coverage (request direction):
-//   - ParseOpenAI: OpenAI Chat Completions → IR
-//   - ParseAnthropic: Anthropic Messages → IR
-//   - SerializeOpenAI: IR → OpenAI Chat Completions (for Q2: anthropic client → openai upstream)
-//   - SerializeAnthropic: IR → Anthropic Messages (for Q3: openai client → anthropic upstream)
-//
-// Protocol coverage (response direction, Phase D):
-//   - ParseAnthropicResponse: Anthropic Messages response → IR
-//   - ParseOpenAIResponse: OpenAI Chat Completions response → IR
-//   - SerializeOpenAIResponse: IR → OpenAI Chat Completions response (Q3 non-stream)
-//   - SerializeAnthropicResponse: IR → Anthropic Messages response (Q2 non-stream)
-//
-// Complexity reduced from O(N²) to O(N): adding a new protocol only requires
-// one Parser + one Serializer.
-type IRConverter interface {
-	ParseOpenAI(body []byte) (*ir.InternalRequest, error)
-	ParseAnthropic(body []byte) (*ir.InternalRequest, error)
-	// Spec §7.1 IR main-path extension (2026-08-02): Responses API input.
-	ParseResponses(body []byte) (*ir.InternalRequest, error)
-	SerializeOpenAI(req *ir.InternalRequest) ([]byte, error)
-	SerializeAnthropic(req *ir.InternalRequest) ([]byte, error)
-	// Response direction (Phase D)
-	ParseAnthropicResponse(body []byte) (*ir.InternalResponse, error)
-	ParseOpenAIResponse(body []byte) (*ir.InternalResponse, error)
-	SerializeOpenAIResponse(ir *ir.InternalResponse, clientModel string) ([]byte, error)
-	SerializeAnthropicResponse(ir *ir.InternalResponse, clientModel string) ([]byte, error)
-	// Stream direction (Phase E, 2026-07-01): Responses API slot.
-	// Adds the /v1/responses client target to the IR matrix; the parser
-	// is intentionally absent because no upstream speaks Responses API
-	// yet (gateway-to-gateway Responses→Responses is a future Phase).
-	SerializeResponses(chunk *ir.StreamChunk, itemID string) string
-	// Non-stream response direction (Phase E, 2026-07-01).
-	SerializeResponsesResponse(ir *ir.InternalResponse, clientModel string) ([]byte, error)
-}
+// The dependency-free contract lives in internal/irconv so transformation and
+// executors share the exact method types without an import cycle.
+type IRConverter = irconv.Converter
 
-// Per-provider circuit breaker isolation (2026-08-09):
-// Implementations that support per-provider isolation (like TransportIRConverter)
-// expose a WithProviderScope(providerID int) method. Callers should use type
-// assertion to access it:
-//
-//   if scoped, ok := e.IR.(interface{ WithProviderScope(int) IRConverter }); ok {
-//       ir := scoped.WithProviderScope(cand.ProviderID)
-//       req, err := ir.ParseOpenAI(body)
-//   } else {
-//       req, err := e.IR.ParseOpenAI(body)
-//   }
-//
-// Note: WithProviderScope is not part of the IRConverter interface to avoid
-// import cycles (transformation cannot import executors).
+// ProviderScoped is implemented by converters that isolate circuit-breaker
+// state by provider. It is separate from IRConverter so stateless converters
+// remain valid implementations.
+type ProviderScoped = irconv.ScopedConverter
 
 // RequestLogEmitter (2026-06-20) is the minimum interface needed by
 // runAsyncRetry to update request_logs when a backgrounded retry

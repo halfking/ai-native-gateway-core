@@ -19,6 +19,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/domains/session"
 	streaming "github.com/kaixuan/llm-gateway-go/domains/streaming"
 	"github.com/kaixuan/llm-gateway-go/internal/ir"
+	"github.com/kaixuan/llm-gateway-go/internal/irconv"
 	"github.com/kaixuan/llm-gateway-go/pending"
 )
 
@@ -265,6 +266,6 @@ func (a *irAdapter) SerializeResponsesResponse(irResp *ir.InternalResponse, clie
 // in transformation.TransportIRConverter, which wraps irAdapter.
 //
 // Added 2026-08-09 to satisfy the updated IRConverter interface.
-func (a *irAdapter) WithProviderScope(providerID int) streaming.IRConverter {
+func (a *irAdapter) WithProviderScope(providerID int) irconv.Converter {
 	return a
 }
