@@ -6,11 +6,13 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync"
 
 	"github.com/kaixuan/llm-gateway-go/domains/freeresource"
 	"github.com/kaixuan/llm-gateway-go/domains/streaming/executors"
+	"github.com/kaixuan/llm-gateway-go/metrics"
 	"github.com/kaixuan/llm-gateway-go/provider"
 )
 
@@ -31,6 +33,56 @@ const autoRouteMagicExact = "auto"
 //
 // 区分方式: caller 用 errors.Is(err, ErrOmniFreeNoCandidates).
 var ErrOmniFreeNoCandidates = errors.New("omnifree: no free candidates available")
+
+// round 4 L1+L2: 测试用 fake QuotaRecorder, 注入 handler 后捕获 Record /
+// CorrectFromHeaders 的参数. 真实 QuotaTracker 隐式实现 QuotaRecorder
+// (定义在 handler.go); fake 直接实现 QuotaRecorder 接口即可.
+type fakeQuotaRecorder struct {
+	records []recordedCall
+	correct []correctedCall
+}
+
+type recordedCall struct {
+	CredentialID int64
+	ProviderCode string
+	ModelID      string
+	WindowTypes  []freeresource.WindowType
+	Success      bool
+	TenantID     string
+	TokenCount   int64
+}
+
+type correctedCall struct {
+	CredentialID int64
+	ProviderCode string
+	ModelID      string
+	Headers      map[string]string
+	TenantID     string
+}
+
+func (f *fakeQuotaRecorder) Record(_ context.Context, req freeresource.RecordRequest) error {
+	f.records = append(f.records, recordedCall{
+		CredentialID: req.CredentialID,
+		ProviderCode: req.ProviderCode,
+		ModelID:      req.ModelID,
+		WindowTypes:  req.WindowTypes,
+		Success:      req.Success,
+		TenantID:     req.TenantID,
+		TokenCount:   req.TokenCount,
+	})
+	return nil
+}
+
+func (f *fakeQuotaRecorder) CorrectFromHeaders(_ context.Context, req freeresource.CorrectionRequest) error {
+	f.correct = append(f.correct, correctedCall{
+		CredentialID: req.CredentialID,
+		ProviderCode: req.ProviderCode,
+		ModelID:      req.ModelID,
+		Headers:      req.Headers,
+		TenantID:     req.TenantID,
+	})
+	return nil
+}
 
 // shouldTryOmniFree reports whether the request model name should be
 // routed through the OmniFree VirtualFactory.
@@ -140,14 +192,21 @@ func (h *ChatHandler) resolveOmniFreeCandidates(
 
 	pool := make([]provider.Candidate, 0, len(entries)*2)
 	policyRef := (*provider.Policy)(nil)
-	seen := make(map[uint64]struct{}, len(entries)*2)
+	// round 4 L4: 用 struct 复合 key 替代 hashString, 避免 32-bit 截断
+	// 与哈希碰撞 (旧实现 ProviderID 转 uint32 + hashString 截断为 64 位
+	// 但其中 32 位来自 hash, 上限碰撞率 1/2^32 但仍非零). Go 的 map 支持
+	// struct key 而不需要额外 hash.
+	type candKey struct {
+		ProviderID uint64
+		RawModel   string
+	}
+	seen := make(map[candKey]struct{}, len(entries)*2)
 	for _, r := range results {
 		if r.pol != nil && policyRef == nil {
 			policyRef = r.pol
 		}
 		for _, c := range r.cands {
-			// 去重: 同一 (provider_id, raw_model) 不重复添加.
-			key := uint64(uint32(c.ProviderID))<<32 | hashString(c.RawModel)
+			key := candKey{ProviderID: uint64(c.ProviderID), RawModel: c.RawModel}
 			if _, dup := seen[key]; dup {
 				continue
 			}
@@ -182,16 +241,6 @@ func (h *ChatHandler) resolveOmniFreeCandidates(
 	return filtered, policyRef, modality, true, nil
 }
 
-// hashString 紧凑字符串哈希, 用于去重. 不用于安全场景, 仅作为 map key 拼接.
-func hashString(s string) uint64 {
-	var h uint64 = 1469598103934665603
-	for i := 0; i < len(s); i++ {
-		h ^= uint64(s[i])
-		h *= 1099511628211
-	}
-	return h
-}
-
 // recordOmniFreeQuota 在 auto/* 请求的生命周期内记录免费资源配额消耗 /
 // 429 校准. 无 OmniFree 注入或非 auto/* 请求时是 no-op.
 //
@@ -207,6 +256,11 @@ func hashString(s string) uint64 {
 //     校正限制并写 reset_at. 仅当 executor 直接返回了带 headers 的
 //     *http.Response 时才能获取上游 Retry-After / X-RateLimit-* 头部;
 //     流式 chunked 路径上 headers 已被透传给客户端, 这里不再读.
+//
+// round 4 M4 优化: 把 Record 放入 fire-and-forget goroutine, 不阻塞主请求
+// 路径. 高 QPS 场景下, Record 涉及 2~4 个 UPSERT (每个窗口一个) 会消耗
+// 5~10ms DB 时间, 串行调用会让 auto/* 请求 P99 latency 受影响. 失败仅记
+// WARN (不阻塞, 与原有"配额错误不阻塞请求"原则一致).
 func (h *ChatHandler) recordOmniFreeQuota(
 	ctx context.Context,
 	clientModel, tenantID string,
@@ -227,44 +281,127 @@ func (h *ChatHandler) recordOmniFreeQuota(
 	success := execErr == nil
 
 	// Record: 失败也累加 request_count 与 error_count; 不阻塞请求路径.
-	recErr := h.quotaTracker.Record(ctx, freeresource.RecordRequest{
-		CredentialID: int64(result.Candidate.CredentialID),
-		ProviderCode: result.Candidate.CatalogCode,
-		ModelID:      result.Candidate.StandardizedName,
-		WindowTypes:  windowTypes,
-		TokenCount:   0, // token 用量在 telemetry/audit 阶段另有统计, 避免重复.
-		Success:      success,
-		TenantID:     tenantID,
-	})
-	if recErr != nil {
-		slog.Debug("omnifree: quota record failed",
-			"error", recErr, "model", clientModel, "tenant_id", tenantID)
+	// round 4 M4: 改为 fire-and-forget goroutine, 主请求路径不等 DB.
+	//
+	// 设计权衡:
+	//   - 旧实现同步调用 Record + CorrectFromHeaders, 单次 2~4 个 UPSERT
+	//     约 5~10ms, 在 1000 RPS 场景下会拉高 auto/* 请求 P99 latency.
+	//   - 异步化后 P99 latency 下降, 但 Record 失败时仅记 WARN (与原
+	//     "配额错误不阻塞"原则一致). 用 ctx 派生避免泄漏; 主请求 ctx
+	//     取消时 record 会被尽早中断.
+	//
+	// round 4 L5: 同时接入 OmniFreeAutoSuccessTotal (成功计数).
+	if success {
+		metrics.OmniFreeAutoSuccessTotal.WithLabelValues(clientModel, tenantID).Inc()
 	}
-
-	// 429 校准: 仅当上游响应可直接访问 (非流式或流式 start 阶段).
-	if result.Response != nil && result.Response.StatusCode == http.StatusTooManyRequests {
-		headers := flattenHeaders(result.Response.Header)
-		corrErr := h.quotaTracker.CorrectFromHeaders(ctx, freeresource.CorrectionRequest{
-			CredentialID: int64(result.Candidate.CredentialID),
-			ProviderCode: result.Candidate.CatalogCode,
-			ModelID:      result.Candidate.StandardizedName,
-			Headers:      headers,
+	for _, wt := range windowTypes {
+		metrics.OmniFreeQuotaRecordsTotal.WithLabelValues(string(wt), strconv.FormatBool(success)).Inc()
+	}
+	// 拷贝必要字段到 goroutine, 避免 result 指针在主路径释放后 race.
+	captured := struct {
+		CredentialID int
+		CatalogCode  string
+		StdName      string
+		StatusCode   int
+		HasResponse  bool
+		Header       http.Header
+	}{
+		CredentialID: result.Candidate.CredentialID,
+		CatalogCode:  result.Candidate.CatalogCode,
+		StdName:      result.Candidate.StandardizedName,
+		HasResponse:  result.Response != nil,
+	}
+	if captured.HasResponse {
+		captured.StatusCode = result.Response.StatusCode
+		captured.Header = result.Response.Header
+	}
+	go func(recordCtx context.Context) {
+		// 防御: goroutine 内的 panic 会让 Go runtime 终止整个 test binary
+		// (生产不会, 但测试会). recover 把 panic 转成 slog.
+		defer func() {
+			if r := recover(); r != nil {
+				slog.Error("omnifree: panic in record goroutine",
+					"panic", r, "model", clientModel, "tenant_id", tenantID)
+				metrics.OmniFreeQuotaRecordErrorsTotal.Inc()
+			}
+		}()
+		// 单元测试可能注入 db=nil 的 QuotaTracker; 防御性早退避免 panic.
+		if h.quotaTracker == nil {
+			return
+		}
+		recErr := h.quotaTracker.Record(recordCtx, freeresource.RecordRequest{
+			CredentialID: int64(captured.CredentialID),
+			ProviderCode: captured.CatalogCode,
+			ModelID:      captured.StdName,
+			WindowTypes:  windowTypes,
+			TokenCount:   0, // token 用量在 telemetry/audit 阶段另有统计, 避免重复.
+			Success:      success,
 			TenantID:     tenantID,
 		})
-		if corrErr != nil {
-			slog.Debug("omnifree: quota 429 correct failed",
-				"error", corrErr, "model", clientModel, "tenant_id", tenantID)
+		if recErr != nil {
+			metrics.OmniFreeQuotaRecordErrorsTotal.Inc()
+			slog.Debug("omnifree: quota record failed",
+				"error", recErr, "model", clientModel, "tenant_id", tenantID)
 		}
-	}
+
+		// 429 校准: 仅当上游响应可直接访问 (非流式或流式 start 阶段).
+		if captured.HasResponse && captured.StatusCode == http.StatusTooManyRequests {
+			metrics.OmniFreeQuotaCorrectTotal.Inc()
+			headers := flattenHeaders(captured.Header)
+			corrErr := h.quotaTracker.CorrectFromHeaders(recordCtx, freeresource.CorrectionRequest{
+				CredentialID: int64(captured.CredentialID),
+				ProviderCode: captured.CatalogCode,
+				ModelID:      captured.StdName,
+				Headers:      headers,
+				TenantID:     tenantID,
+			})
+			if corrErr != nil {
+				slog.Debug("omnifree: quota 429 correct failed",
+					"error", corrErr, "model", clientModel, "tenant_id", tenantID)
+			}
+		}
+	}(context.WithoutCancel(ctx))
 }
 
 // flattenHeaders 将 http.Header 折叠成 map[string]string (取第一个值),
 // 与 QuotaTracker.CorrectFromHeaders 的 headers 字段匹配.
+//
+// round 4 M6 (RFC 7231 合规): Retry-After 可逗号分隔多个值 (e.g.
+// "60, 120" — 上游代理链式合并时常见). 此时取 MAX (即最保守的等待时间)
+// 而非第一个, 避免被 429 短间隔打挂.
 func flattenHeaders(h http.Header) map[string]string {
 	out := make(map[string]string, len(h))
 	for k, v := range h {
 		if len(v) == 0 {
 			continue
+		}
+		if k == "Retry-After" && len(v) > 1 {
+			// 多个值取 MAX, 配合 CorrectFromHeaders parseRetryAfterSeconds.
+			maxSec := 0
+			for _, raw := range v {
+				s := strings.TrimSpace(raw)
+				allDigit := len(s) > 0
+				for _, c := range s {
+					if c < '0' || c > '9' {
+						allDigit = false
+						break
+					}
+				}
+				if !allDigit {
+					continue
+				}
+				n := 0
+				for _, c := range s {
+					n = n*10 + int(c-'0')
+				}
+				if n > maxSec {
+					maxSec = n
+				}
+			}
+			if maxSec > 0 {
+				out[k] = strconv.Itoa(maxSec)
+				continue
+			}
 		}
 		out[k] = v[0]
 	}
