@@ -4,36 +4,17 @@ import (
 	"encoding/json"
 	"errors"
 	"log/slog"
-
 	"sync"
+
 	"github.com/kaixuan/llm-gateway-go/domain" //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/internal/ir"
+	"github.com/kaixuan/llm-gateway-go/internal/irconv"
 )
 
-// IRConverterAdapter mirrors streaming.IRConverter's method set without
-// importing routing (avoids transport→routing dependency). The production
-// irAdapter (cmd/gateway/main.go) satisfies this via Go structural typing.
-//
-// Method signatures must stay identical to streaming.IRConverter so that
-// TransportIRConverter also satisfies streaming.IRConverter (structural).
-//
-// Added 2026-08-09: WithProviderScope returns a scoped converter for
-// per-provider circuit breaker isolation.
-type IRConverterAdapter interface {
-	ParseOpenAI(body []byte) (*ir.InternalRequest, error)
-	ParseAnthropic(body []byte) (*ir.InternalRequest, error)
-	ParseResponses(body []byte) (*ir.InternalRequest, error)
-	SerializeOpenAI(req *ir.InternalRequest) ([]byte, error)
-	SerializeAnthropic(req *ir.InternalRequest) ([]byte, error)
-	ParseAnthropicResponse(body []byte) (*ir.InternalResponse, error)
-	ParseOpenAIResponse(body []byte) (*ir.InternalResponse, error)
-	SerializeOpenAIResponse(ir *ir.InternalResponse, clientModel string) ([]byte, error)
-	SerializeAnthropicResponse(ir *ir.InternalResponse, clientModel string) ([]byte, error)
-	// Stream direction (Phase E, 2026-07-01): Responses API slot.
-	SerializeResponses(chunk *ir.StreamChunk, itemID string) string
-	// Non-stream response direction (Phase E, 2026-07-01).
-	SerializeResponsesResponse(ir *ir.InternalResponse, clientModel string) ([]byte, error)
-}
+// IRConverterAdapter is the dependency-free conversion contract shared with
+// callers. It is an alias so provider-scoped return types remain exact across
+// packages.
+type IRConverterAdapter = irconv.Converter
 
 // ErrConverterCircuitOpen is returned when the transport converter circuit
 // is open due to repeated conversion failures. Callers should treat this as
@@ -71,7 +52,8 @@ type TransportIRConverter struct {
 	// migrated to WithProviderScope yet.
 	defaultCB *StreamCircuitBreaker
 
-	context *domain.TransportContext // optional; used for catalog-aware restoration
+	contextMu sync.RWMutex
+	context   *domain.TransportContext // optional; used for catalog-aware restoration
 }
 
 // NewTransportIRConverter creates a converter that wraps inner with
@@ -103,15 +85,16 @@ func (c *TransportIRConverter) SetCircuitBreaker(providerID int, cb *StreamCircu
 // on the returned scopedConverter will use the circuit breaker for that provider.
 //
 // Usage:
-//   scoped := e.IR.WithProviderScope(cand.ProviderID)
-//   req, err := scoped.ParseOpenAI(body)
+//
+//	scoped := e.IR.WithProviderScope(cand.ProviderID)
+//	req, err := scoped.ParseOpenAI(body)
 //
 // The returned scopedConverter is lightweight (holds only a providerID int and
 // a pointer to the parent TransportIRConverter) and should not be reused across
 // requests for different providers.
 //
 // Added 2026-08-09 to enable per-provider circuit breaker isolation.
-func (c *TransportIRConverter) WithProviderScope(providerID int) *scopedConverter {
+func (c *TransportIRConverter) WithProviderScope(providerID int) irconv.Converter {
 	return &scopedConverter{
 		parent:     c,
 		providerID: providerID,
@@ -134,7 +117,23 @@ func (c *TransportIRConverter) breakerFor(providerID int) *StreamCircuitBreaker 
 
 // SetContext injects TransportContext for catalog-aware extension restoration.
 func (c *TransportIRConverter) SetContext(ctx *domain.TransportContext) {
-	c.context = ctx
+	c.contextMu.Lock()
+	c.context = cloneTransportContext(ctx)
+	c.contextMu.Unlock()
+}
+
+func cloneTransportContext(ctx *domain.TransportContext) *domain.TransportContext {
+	if ctx == nil {
+		return nil
+	}
+	copy := *ctx
+	return &copy
+}
+
+func (c *TransportIRConverter) contextSnapshot() *domain.TransportContext {
+	c.contextMu.RLock()
+	defer c.contextMu.RUnlock()
+	return cloneTransportContext(c.context)
 }
 
 func (c *TransportIRConverter) circuitCheck() error {
@@ -165,6 +164,12 @@ func (c *TransportIRConverter) recordOK() {
 type scopedConverter struct {
 	parent     *TransportIRConverter
 	providerID int
+	context    *domain.TransportContext
+}
+
+// SetContext binds request metadata to this scope without mutating the parent.
+func (s *scopedConverter) SetContext(ctx *domain.TransportContext) {
+	s.context = cloneTransportContext(ctx)
 }
 
 func (s *scopedConverter) circuitCheck() error {
@@ -197,6 +202,7 @@ func (s *scopedConverter) ParseOpenAI(body []byte) (*ir.InternalRequest, error) 
 		return nil, err
 	}
 	s.parent.extractRequestExtensions(body, req)
+	s.recordOK()
 	return req, nil
 }
 
@@ -210,6 +216,7 @@ func (s *scopedConverter) ParseAnthropic(body []byte) (*ir.InternalRequest, erro
 		return nil, err
 	}
 	s.parent.extractRequestExtensions(body, req)
+	s.recordOK()
 	return req, nil
 }
 
@@ -223,6 +230,7 @@ func (s *scopedConverter) ParseResponses(body []byte) (*ir.InternalRequest, erro
 		return nil, err
 	}
 	s.parent.extractRequestExtensions(body, req)
+	s.recordOK()
 	return req, nil
 }
 
@@ -235,7 +243,7 @@ func (s *scopedConverter) SerializeOpenAI(req *ir.InternalRequest) ([]byte, erro
 		s.recordErr()
 		return nil, err
 	}
-	body = s.parent.restoreRequestExtensions(body, req, ir.ProtocolOpenAIChat)
+	body = s.parent.restoreRequestExtensionsWithContext(body, req, ir.ProtocolOpenAIChat, s.context)
 	s.recordOK()
 	return body, nil
 }
@@ -249,7 +257,7 @@ func (s *scopedConverter) SerializeAnthropic(req *ir.InternalRequest) ([]byte, e
 		s.recordErr()
 		return nil, err
 	}
-	body = s.parent.restoreRequestExtensions(body, req, ir.ProtocolOpenAIChat)
+	body = s.parent.restoreRequestExtensionsWithContext(body, req, ir.ProtocolAnthropicMessages, s.context)
 	s.recordOK()
 	return body, nil
 }
@@ -333,11 +341,11 @@ func (s *scopedConverter) SerializeResponsesResponse(r *ir.InternalResponse, cli
 	return out, nil
 }
 
-func (s *scopedConverter) WithProviderScope(providerID int) *scopedConverter {
-	// Already scoped, return a new scope with the new providerID
+func (s *scopedConverter) WithProviderScope(providerID int) irconv.Converter {
 	return &scopedConverter{
 		parent:     s.parent,
 		providerID: providerID,
+		context:    cloneTransportContext(s.context),
 	}
 }
 
@@ -462,15 +470,15 @@ func (c *TransportIRConverter) restoreExtensions(body []byte, ext map[string]jso
 // restoreRequestExtensions conditionally restores request extensions based on
 // SourceProtocol and catalog code hints.
 func (c *TransportIRConverter) restoreRequestExtensions(body []byte, req *ir.InternalRequest, targetProtocol string) []byte {
+	return c.restoreRequestExtensionsWithContext(body, req, targetProtocol, c.contextSnapshot())
+}
+
+func (c *TransportIRConverter) restoreRequestExtensionsWithContext(body []byte, req *ir.InternalRequest, targetProtocol string, ctx *domain.TransportContext) []byte {
 	if req == nil || (req.SourceProtocol != "" && req.SourceProtocol != targetProtocol) {
 		return body
 	}
-	// Check catalog code hint if available
-	if c.context != nil && c.context.ClientCatalogCode != "" && c.context.UpstreamCatalogCode != "" {
-		if c.context.ClientCatalogCode != c.context.UpstreamCatalogCode {
-			// Cross-provider: do not restore extensions even if protocols match
-			return body
-		}
+	if ctx != nil && ctx.ClientCatalogCode != "" && ctx.UpstreamCatalogCode != "" && ctx.ClientCatalogCode != ctx.UpstreamCatalogCode {
+		return body
 	}
 	return c.restoreExtensions(body, req.Extensions)
 }

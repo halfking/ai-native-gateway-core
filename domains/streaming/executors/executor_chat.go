@@ -1217,18 +1217,18 @@ func (e *Executor) executeOpenAI(
 			//
 			// Prefer the IR path when the feature flag is on; otherwise
 			// fall back to the legacy hook. 2026-06-29 fix — see
-				// docs/2026-06-29-protocol-conversion-matrix.md.
-				if params.ClientProtocol == "anthropic-messages" && cand.Protocol != "anthropic-messages" {
-					if e.IR != nil {
-						var irScoped IRConverter
-		if scoped, ok := e.IR.(interface{ WithProviderScope(int) IRConverter }); ok {
-			irScoped = scoped.WithProviderScope(cand.ProviderID)
-		} else {
-			irScoped = e.IR
-		}
-						if irResp, irErr := irScoped.ParseOpenAIResponse(respBody); irErr == nil {
-							if converted, serErr := irScoped.SerializeAnthropicResponse(irResp, params.ClientModel); serErr == nil {
-								respBody = converted
+			// docs/2026-06-29-protocol-conversion-matrix.md.
+			if params.ClientProtocol == "anthropic-messages" && cand.Protocol != "anthropic-messages" {
+				if e.IR != nil {
+					var irScoped IRConverter
+					if scoped, ok := e.IR.(ProviderScoped); ok {
+						irScoped = scoped.WithProviderScope(cand.ProviderID)
+					} else {
+						irScoped = e.IR
+					}
+					if irResp, irErr := irScoped.ParseOpenAIResponse(respBody); irErr == nil {
+						if converted, serErr := irScoped.SerializeAnthropicResponse(irResp, params.ClientModel); serErr == nil {
+							respBody = converted
 						} else {
 							slog.Warn("q2 ir serialize anthropic response failed; forwarding raw body",
 								"error", serErr, "request_id", params.R.Header.Get("X-Request-Id"))
@@ -1366,25 +1366,23 @@ func (e *Executor) finalizeOpenAIUpstreamBody(params *ExecParams, cand provider.
 				return nil, fmt.Errorf("format conversion disabled for provider %d (anthropic→openai)", cand.ProviderID)
 			}
 		}
-			// Inject catalog code context for same-provider extension restoration
-			if converter, ok := e.IR.(interface {
-				SetContext(*domain.TransportContext)
-			}); ok {
-				ctx := &domain.TransportContext{
-					UpstreamCatalogCode: cand.CatalogCode,
-					ProviderID:          cand.ProviderID,
-					// ClientCatalogCode remains empty until routing layer tracks it
-				}
-				converter.SetContext(ctx)
-			}
-			// Parse Anthropic body → IR → Serialize OpenAI (with per-provider circuit breaker)
-			var irScoped IRConverter
-		if scoped, ok := e.IR.(interface{ WithProviderScope(int) IRConverter }); ok {
+		// Select a provider-scoped converter before injecting request metadata.
+		var irScoped IRConverter
+		if scoped, ok := e.IR.(ProviderScoped); ok {
 			irScoped = scoped.WithProviderScope(cand.ProviderID)
 		} else {
 			irScoped = e.IR
 		}
-			irReq, err := irScoped.ParseAnthropic(sourceBody)
+		if converter, ok := irScoped.(interface {
+			SetContext(*domain.TransportContext)
+		}); ok {
+			converter.SetContext(&domain.TransportContext{
+				UpstreamCatalogCode: cand.CatalogCode,
+				ProviderID:          cand.ProviderID,
+			})
+		}
+		// Parse Anthropic body → IR → Serialize OpenAI
+		irReq, err := irScoped.ParseAnthropic(sourceBody)
 		if err != nil {
 			// 2026-08-08 P0 Fix: when the IR stream-side circuit breaker is
 			// OPEN, fall back to the legacy AnthropicToOpenAI callback (set
@@ -1435,10 +1433,10 @@ func (e *Executor) finalizeOpenAIUpstreamBody(params *ExecParams, cand provider.
 				"model", params.Model,
 				"messages", lf,
 			)
-			}
-			bodyBytes, err := irScoped.SerializeOpenAI(irReq)
-			if err != nil {
-				// 2026-08-08 P0 Fix: same IR-circuit-open fallback as ParseAnthropic.
+		}
+		bodyBytes, err := irScoped.SerializeOpenAI(irReq)
+		if err != nil {
+			// 2026-08-08 P0 Fix: same IR-circuit-open fallback as ParseAnthropic.
 			// SerializeOpenAI shares the same process-local breaker; on OPEN
 			// we drop back to the legacy AnthropicToOpenAI callback so the
 			// request still reaches upstream.
@@ -1489,7 +1487,7 @@ func (e *Executor) finalizeOpenAIUpstreamBody(params *ExecParams, cand provider.
 	// making it impossible to confirm whether the sanitizer was hit.
 	if e.IR != nil {
 		var irScoped IRConverter
-		if scoped, ok := e.IR.(interface{ WithProviderScope(int) IRConverter }); ok {
+		if scoped, ok := e.IR.(ProviderScoped); ok {
 			irScoped = scoped.WithProviderScope(cand.ProviderID)
 		} else {
 			irScoped = e.IR

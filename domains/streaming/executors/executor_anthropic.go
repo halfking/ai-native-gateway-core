@@ -187,11 +187,11 @@ func (a *AnthropicExecutor) WriteNonStreamResponse(w http.ResponseWriter, resp *
 	if a.ClientProtocol != "anthropic-messages" {
 		if a.IR != nil {
 			var irScoped IRConverter
-		if scoped, ok := a.IR.(interface{ WithProviderScope(int) IRConverter }); ok {
-			irScoped = scoped.WithProviderScope(a.ProviderID)
-		} else {
-			irScoped = a.IR
-		}
+			if scoped, ok := a.IR.(ProviderScoped); ok {
+				irScoped = scoped.WithProviderScope(a.ProviderID)
+			} else {
+				irScoped = a.IR
+			}
 			irResp, irErr := irScoped.ParseAnthropicResponse(body)
 			if irErr == nil {
 				var converted []byte
@@ -440,24 +440,22 @@ func (e *Executor) prepareAnthropicRequestBody(params *ExecParams, cand provider
 				return nil, fmt.Errorf("format conversion disabled for provider %d (openai→anthropic)", cand.ProviderID)
 			}
 		}
-		// Inject catalog code context for same-provider extension restoration
-		if converter, ok := e.IR.(interface {
-			SetContext(*domain.TransportContext)
-		}); ok {
-			ctx := &domain.TransportContext{
-				UpstreamCatalogCode: cand.CatalogCode,
-				ProviderID:          cand.ProviderID,
-				// ClientCatalogCode remains empty until routing layer tracks it
-			}
-			converter.SetContext(ctx)
-		}
-		// Parse OpenAI body → IR → Serialize Anthropic (with per-provider circuit breaker)
+		// Select a provider-scoped converter before injecting request metadata.
 		var irScoped IRConverter
-		if scoped, ok := e.IR.(interface{ WithProviderScope(int) IRConverter }); ok {
+		if scoped, ok := e.IR.(ProviderScoped); ok {
 			irScoped = scoped.WithProviderScope(cand.ProviderID)
 		} else {
 			irScoped = e.IR
 		}
+		if converter, ok := irScoped.(interface {
+			SetContext(*domain.TransportContext)
+		}); ok {
+			converter.SetContext(&domain.TransportContext{
+				UpstreamCatalogCode: cand.CatalogCode,
+				ProviderID:          cand.ProviderID,
+			})
+		}
+		// Parse OpenAI body → IR → Serialize Anthropic
 		irReq, err := irScoped.ParseOpenAI(sourceBody)
 		if err != nil {
 			// 2026-08-08 P0 Fix: when the IR stream-side circuit breaker is
