@@ -40,12 +40,35 @@ func (s *PGMetricsStore) SaveSnapshot(ctx context.Context, snapshot *MetricSnaps
 	var err error
 	if snapshot.StabilityMetrics != nil {
 		errCount = snapshot.StabilityMetrics.ErrorCount
-		errorTypesJSON, err = marshalJSON(snapshot.StabilityMetrics.ErrorTypes)
+		errTypes := map[string]interface{}{}
+		for k, v := range snapshot.StabilityMetrics.ErrorTypes {
+			errTypes[k] = v
+		}
+		if snapshot.RateLimitMetrics != nil {
+			errTypes["_provider_profile_rate_limit"] = snapshot.RateLimitMetrics
+		}
+		if snapshot.AvailabilityWindow != nil {
+			errTypes["_provider_profile_availability_window"] = snapshot.AvailabilityWindow
+		}
+		errorTypesJSON, err = marshalJSON(errTypes)
 		if err != nil {
 			return fmt.Errorf("marshal error types: %w", err)
 		}
 	} else {
-		errorTypesJSON = []byte("{}")
+		errTypes := map[string]interface{}{}
+		if snapshot.RateLimitMetrics != nil {
+			errTypes["_provider_profile_rate_limit"] = snapshot.RateLimitMetrics
+		}
+		if snapshot.AvailabilityWindow != nil {
+			errTypes["_provider_profile_availability_window"] = snapshot.AvailabilityWindow
+		}
+		if len(errTypes) == 0 {
+			errTypes["_provider_profile_empty"] = true
+		}
+		errorTypesJSON, err = marshalJSON(errTypes)
+		if err != nil {
+			return fmt.Errorf("marshal error types: %w", err)
+		}
 	}
 	var totalModels, availModels int
 	if snapshot.ScaleMetrics != nil {
@@ -141,8 +164,34 @@ func (s *PGMetricsStore) GetSnapshotsByDateRange(ctx context.Context, credential
 		snapshot.TimeSlot = TimeSlot(timeSlotStr)
 
 		if len(errorTypesJSON) > 0 {
-			if err := json.Unmarshal(errorTypesJSON, &snapshot.StabilityMetrics.ErrorTypes); err != nil {
+			var persisted map[string]json.RawMessage
+			if err := json.Unmarshal(errorTypesJSON, &persisted); err != nil {
 				return nil, fmt.Errorf("unmarshal error types: %w", err)
+			}
+			snapshot.StabilityMetrics.ErrorTypes = make(map[string]int)
+			for errorType, raw := range persisted {
+				switch errorType {
+				case "_provider_profile_rate_limit":
+					var signal RateLimitMetrics
+					if err := json.Unmarshal(raw, &signal); err != nil {
+						return nil, fmt.Errorf("unmarshal rate limit metrics: %w", err)
+					}
+					snapshot.RateLimitMetrics = &signal
+				case "_provider_profile_availability_window":
+					var signal AvailabilityWindow
+					if err := json.Unmarshal(raw, &signal); err != nil {
+						return nil, fmt.Errorf("unmarshal availability window: %w", err)
+					}
+					snapshot.AvailabilityWindow = &signal
+				case "_provider_profile_empty":
+					continue
+				default:
+					var count int
+					if err := json.Unmarshal(raw, &count); err != nil {
+						return nil, fmt.Errorf("unmarshal error type %q: %w", errorType, err)
+					}
+					snapshot.StabilityMetrics.ErrorTypes[errorType] = count
+				}
 			}
 		}
 
