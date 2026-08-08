@@ -84,13 +84,11 @@ func TestPickBodies_MultimodalIRSurvivesRoundTrip(t *testing.T) {
 // Phase 2 acceptance criterion: "wire JSON shape is preserved for the
 // dominant case".
 //
-// Note on multimodal payloads: Phase 2 ships the IR Message in memory
-// (hook → pickBodies → consumer) but does NOT yet persist the envelope
-// under RawContent on disk — that requires the MarshalJSON/UnmarshalJSON
-// migration in the wire shape, which is out of scope for the Phase-2
-// risk envelope. The wire shape is intentionally unchanged here so
-// existing on-disk rows remain readable. Multimodal round-trip coverage
-// lives in TestPickBodies_MultimodalIRSurvivesRoundTrip.
+// Multimodal payloads now persist too: MarshalJSON writes the IR content-block
+// array into the `content` column, so the blocks survive a DB round-trip.
+// Text-only rows are unaffected and stay byte-identical. Full block-by-block
+// coverage lives in ir_message_adapter_lossless_test.go; this test only pins
+// the two shapes' wire skeleton.
 func TestBodiesRecord_IRFieldsRoundTripThroughSafeJSONMarshal(t *testing.T) {
 	cases := []struct {
 		name       string
@@ -108,7 +106,7 @@ func TestBodiesRecord_IRFieldsRoundTripThroughSafeJSONMarshal(t *testing.T) {
 			wantSubstr: []string{`"role":"user"`, `"content":"hi"`},
 		},
 		{
-			name:   "multimodal IR (collapsed to empty content — no wire envelope yet)",
+			name:   "multimodal IR persists its content block array",
 			legacy: nil,
 			irShadow: []ir.Message{{
 				Role: "user",
@@ -117,10 +115,9 @@ func TestBodiesRecord_IRFieldsRoundTripThroughSafeJSONMarshal(t *testing.T) {
 					{Type: "image", Image: &ir.ImageSource{Type: "url", URL: "https://example.com/y.png"}},
 				},
 			}},
-			// Empty content string and role present; the envelope is
-			// held in RawContent (json:"-") until the wire-shape
-			// migration ships in a follow-up Phase.
-			wantSubstr: []string{`"role":"user"`},
+			// The block array lands in `content`, so the image URL is on the
+			// wire rather than living only in the in-memory RawContent.
+			wantSubstr: []string{`"role":"user"`, `"image"`, `https://example.com/y.png`},
 		},
 	}
 	for _, c := range cases {

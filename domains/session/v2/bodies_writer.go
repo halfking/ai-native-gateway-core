@@ -58,8 +58,18 @@ type Message struct {
 
 // MarshalJSON writes structured content back to the provider's original JSON
 // shape while retaining the string-compatible in-memory projection.
-// ContentRaw (json.RawMessage) is the primary source; RawContent (interface{})
-// is a fallback for the IR pipeline.
+//
+// Source precedence for the `content` field:
+//  1. ContentRaw — the provider-native value, kept byte-for-byte.
+//  2. Content — the legacy string projection.
+//  3. RawContent — the IR envelope. Only its *content block array* is written,
+//     never the envelope itself: writing the whole envelope produced
+//     {"role":"user","content":{"role":"user","content":[...]}}, a nested
+//     message that no reader expects.
+//
+// The envelope's message-level payload (ir.Message.RawContent) is written to a
+// sibling `raw` key rather than being folded into `content`, so a provider-native
+// payload the IR parser could not model is not silently dropped on write.
 func (m Message) MarshalJSON() ([]byte, error) {
 	content := m.ContentRaw
 	if len(content) == 0 && m.Content != "" {
@@ -69,10 +79,12 @@ func (m Message) MarshalJSON() ([]byte, error) {
 			return nil, err
 		}
 	}
+	// messageRaw is extracted unconditionally: `content` may legitimately come
+	// from ContentRaw (the byte-identical provider value) while the envelope
+	// still carries a message-level payload that must not be dropped.
+	envContent, messageRaw := irEnvelopeContent(m.RawContent)
 	if len(content) == 0 {
-		if raw, ok := m.RawContent.(json.RawMessage); ok && len(raw) > 0 {
-			content = raw
-		}
+		content = envContent
 	}
 	type wire struct {
 		Role       string                   `json:"role"`
@@ -80,6 +92,7 @@ func (m Message) MarshalJSON() ([]byte, error) {
 		ToolCalls  []map[string]interface{} `json:"tool_calls,omitempty"`
 		ToolCallID string                   `json:"tool_call_id,omitempty"`
 		Name       string                   `json:"name,omitempty"`
+		Raw        json.RawMessage          `json:"raw,omitempty"`
 	}
 	return json.Marshal(wire{
 		Role:       m.Role,
@@ -87,6 +100,7 @@ func (m Message) MarshalJSON() ([]byte, error) {
 		ToolCalls:  m.ToolCalls,
 		ToolCallID: m.ToolCallID,
 		Name:       m.Name,
+		Raw:        messageRaw,
 	})
 }
 
@@ -99,6 +113,7 @@ func (m *Message) UnmarshalJSON(data []byte) error {
 		ToolCalls  []map[string]interface{} `json:"tool_calls"`
 		ToolCallID string                   `json:"tool_call_id"`
 		Name       string                   `json:"name"`
+		Raw        json.RawMessage          `json:"raw"`
 	}
 	var w wire
 	if err := json.Unmarshal(data, &w); err != nil {
@@ -116,17 +131,34 @@ func (m *Message) UnmarshalJSON(data []byte) error {
 			m.ContentRaw = raw
 			m.RawContent = raw
 		}
+		m.adoptMessageRaw(w.Raw)
 		return nil
 	}
 	var text string
 	if err := json.Unmarshal(w.Content, &text); err == nil {
 		m.Content = text
+		m.adoptMessageRaw(w.Raw)
 		return nil
 	}
 	raw := append(json.RawMessage(nil), w.Content...)
 	m.ContentRaw = raw
 	m.RawContent = raw
+	m.adoptMessageRaw(w.Raw)
 	return nil
+}
+
+// adoptMessageRaw restores the sibling `raw` key written by MarshalJSON.
+//
+// It rebuilds a content-free IR envelope in RawContent so ToIR's envelope path
+// recovers the message-level ir.Message.RawContent. ContentRaw is left
+// untouched and remains the authoritative content source — ToIR merges the two,
+// so a provider-native content array is not re-encoded through the envelope's
+// narrower block struct.
+func (m *Message) adoptMessageRaw(raw json.RawMessage) {
+	if len(raw) == 0 {
+		return
+	}
+	m.RawContent = buildIREnvelope(m.Role, m.ToolCallID, m.Name, raw, m.ToolCalls)
 }
 
 // AttachmentRef represents an attachment reference (no base64 data)
