@@ -3731,6 +3731,19 @@ func (h *ChatHandler) serveWithExecutor(
 				// that the model_not_found code never actually meant. The
 				// code field is preserved for backwards compatibility — see
 				// writePrewarmedStreamErrorWithKind for the wire format.
+				//
+				// 2026-08-08: also bump the prewarmed exhaustion counter so
+				// /metrics surfaces this branch. Without the counter the
+				// fact that a client got an empty 200 only surfaced inside
+				// journal logs, which means an alert is set up days after
+				// the incident, not in time to act.
+				recordPrewarmedExhaustion(
+					string(execErrTyped.LastKind),
+					"model_not_found",
+					strconv.Itoa(candidates[0].ProviderID),
+					strconv.Itoa(candidates[0].CredentialID),
+					clientModel,
+				)
 				writePrewarmedStreamErrorWithKind(w,
 					fmt.Sprintf("No available provider for model '%s'. All %d candidates failed.", clientModel, execErrTyped.Tried),
 					"server_error", "model_not_found", string(execErrTyped.LastKind))
