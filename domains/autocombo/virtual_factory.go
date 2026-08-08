@@ -34,11 +34,17 @@ type QuotaPreflighter interface {
 // CatalogEntry is a denormalised view of a free_resource_catalog row
 // surfaced to the factory. ModelID matches the standardized/canonical
 // model id used by the provider layer.
+//
+// round 3 M7: 新增 TrainsOnPrompts 字段, 镜像 OmniRoute
+// freeModelCatalog.trainsOnPrompts. factory 可选过滤掉训练型提供商.
 type CatalogEntry struct {
-	ProviderCode string
-	ModelID      string
-	FreeType     string
-	ToSVerdict   string
+	ProviderCode     string
+	ModelID          string
+	FreeType         string
+	ToSVerdict       string
+	TrainsOnPrompts  bool
+	DailyTokens      int64
+	MonthlyTokens    int64
 }
 
 // VirtualFactory 虚拟 Combo 工厂
@@ -157,7 +163,8 @@ func (vf *VirtualFactory) queryCatalog(ctx context.Context, tenantID string, spe
 
 	query := strings.Builder{}
 	query.WriteString(`
-        SELECT provider_code, model_id, free_type, tos_verdict
+        SELECT provider_code, model_id, free_type, tos_verdict,
+               trains_on_prompts, COALESCE(daily_tokens, 0), COALESCE(monthly_tokens, 0)
         FROM free_resource_catalog
         WHERE enabled = TRUE
           AND tenant_id = $1
@@ -181,7 +188,8 @@ func (vf *VirtualFactory) queryCatalog(ctx context.Context, tenantID string, spe
 	var catalog []CatalogEntry
 	for rows.Next() {
 		var entry CatalogEntry
-		if err := rows.Scan(&entry.ProviderCode, &entry.ModelID, &entry.FreeType, &entry.ToSVerdict); err != nil {
+		if err := rows.Scan(&entry.ProviderCode, &entry.ModelID, &entry.FreeType, &entry.ToSVerdict,
+			&entry.TrainsOnPrompts, &entry.DailyTokens, &entry.MonthlyTokens); err != nil {
 			return nil, err
 		}
 		catalog = append(catalog, entry)

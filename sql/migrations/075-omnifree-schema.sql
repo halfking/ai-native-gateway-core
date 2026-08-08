@@ -494,6 +494,15 @@ $$ LANGUAGE plpgsql STABLE;
 COMMENT ON FUNCTION fn_quota_preflight_check IS '配额预检 - 过滤近耗尽凭据';
 
 -- ============================================================================
+-- 7.5. round 3 audit M7: 添加 trains_on_prompts 字段 (OmniRoute 对标)
+-- ============================================================================
+ALTER TABLE free_resource_catalog
+    ADD COLUMN IF NOT EXISTS trains_on_prompts BOOLEAN NOT NULL DEFAULT FALSE;
+
+COMMENT ON COLUMN free_resource_catalog.trains_on_prompts IS
+    'round 3 M7: 是否将用户 prompt 用于模型训练 (OmniRoute freeModelCatalog.trainsOnPrompts 对标字段). TRUE 时可被运维层根据用户偏好自动剔除.';
+
+-- ============================================================================
 -- 8. 完成消息
 -- ============================================================================
 
