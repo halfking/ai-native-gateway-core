@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 
 	"github.com/lib/pq"
@@ -136,9 +137,22 @@ func (vf *VirtualFactory) BuildFromCandidates(
 //
 // 仅返回当前租户启用且 ToS 允许的目录行; rows.Err 在循环结束后判断,
 // 用于在 SQL 中断时立即报告而不是在数据已经返回后静默吞掉.
+//
+// RLS contract (2026-08-09 audit round 3): free_resource_catalog 表启用
+// 了 RLS policy, USING 子句依赖 public.get_current_tenant(). 我们在
+// SELECT 前用 set_config('app.current_tenant', $1, true) 注入当前请求
+// 的 tenant, 让 RLS 在 stdlib 连接上也生效. 空 tenantID 时不设 GUC, 由
+// get_current_tenant() 走 'default' fallback (兼容旧 behavior).
 func (vf *VirtualFactory) queryCatalog(ctx context.Context, tenantID string, spec *AutoComboSpec) ([]CatalogEntry, error) {
 	if vf.db == nil {
 		return nil, nil
+	}
+	if tenantID != "" {
+		if _, err := vf.db.ExecContext(ctx,
+			fmt.Sprintf("SET app.current_tenant = '%s'", escapeTenant(tenantID))); err != nil {
+			slog.Warn("omnifree: failed to set app.current_tenant before queryCatalog",
+				"tenant_id", tenantID, "error", err)
+		}
 	}
 
 	query := strings.Builder{}
