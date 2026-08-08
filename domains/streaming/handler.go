@@ -44,6 +44,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/internal/observability"
 	gwtrace "github.com/kaixuan/llm-gateway-go/internal/trace"
 	"github.com/kaixuan/llm-gateway-go/maas"
+	"github.com/kaixuan/llm-gateway-go/metrics"
 	"github.com/kaixuan/llm-gateway-go/modelname"
 	"github.com/kaixuan/llm-gateway-go/pool"
 	"github.com/kaixuan/llm-gateway-go/provider"
@@ -52,7 +53,6 @@ import (
 	"github.com/kaixuan/llm-gateway-go/resolve"
 	"github.com/kaixuan/llm-gateway-go/security/armor"
 	upstreampkg "github.com/kaixuan/llm-gateway-go/upstream"
-	"github.com/kaixuan/llm-gateway-go/metrics"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/trace"
 )
@@ -2523,7 +2523,7 @@ func (h *ChatHandler) serveWithExecutor(
 		//   - found=false 且 err 为 nil/其他 → OmniFree 不接管, 走普通 resolver.
 		//
 		// round 4 L5: 接入 Prometheus 指标.
-		metrics.OmniFreeAutoRequestsTotal.WithLabelValues(clientModel, tenantID).Inc()
+		metrics.OmniFreeAutoRequestsTotal.WithLabelValues(tenantID).Inc()
 
 		var (
 			omniCandidates []provider.Candidate
@@ -2556,7 +2556,7 @@ func (h *ChatHandler) serveWithExecutor(
 					reason = "quota-exhausted"
 				}
 			}
-			metrics.OmniFreeAutoNoCandidatesTotal.WithLabelValues(clientModel, tenantID, reason).Inc()
+			metrics.OmniFreeAutoNoCandidatesTotal.WithLabelValues(tenantID, reason).Inc()
 
 			slog.Warn("omnifree: no free candidates, refusing to fall back",
 				"model", clientModel, "tenant_id", tenantID, "request_id", requestID,
