@@ -53,6 +53,9 @@
   "upstream_credential_revoked": {
     "other": "Upstream credential API key revoked (provider reported the key is no longer active). This is a credential configuration issue — contact the gateway administrator to rotate the upstream credential."
   },
+  "upstream_quota_periodic": {
+    "other": "Upstream credential periodic quota exhausted (the provider reported a resettable usage window). This credential is temporarily unavailable and will recover after the quota window resets."
+  },
   "upstream_quota_permanent": {
     "other": "Upstream credential quota permanently exhausted (provider returned 402 / quota_exceeded). This is a credential configuration issue — top up the upstream account or rotate the credential."
   },

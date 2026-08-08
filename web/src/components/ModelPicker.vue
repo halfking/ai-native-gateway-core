@@ -31,20 +31,29 @@ const emit = defineEmits<{
 
 let _cache: AvailableModelsResponse | null = null
 let _inflight: Promise<AvailableModelsResponse> | null = null
+let _cacheGeneration = 0
 
 async function loadCached(): Promise<AvailableModelsResponse> {
   if (_cache) return _cache
   if (_inflight) return _inflight
-  _inflight = getAvailableModels()
-    .then((r) => { _cache = r; return r })
-    .finally(() => { _inflight = null })
-  return _inflight
+  const generation = _cacheGeneration
+  const request = getAvailableModels().then((r) => {
+    if (generation === _cacheGeneration) _cache = r
+    return r
+  })
+  _inflight = request
+  request.then(
+    () => { if (_inflight === request) _inflight = null },
+    () => { if (_inflight === request) _inflight = null },
+  )
+  return request
 }
 
 const popular = ref<PopularModel[]>([])
 const vendorGroups = ref<{ vendor: string; versions: AvailableVersion[] }[]>([])
 const loading = ref(false)
 const loadErr = ref('')
+let modelsGeneration = 0
 
 const mainOpen = ref(false)
 const vendorOpen = ref<{ vendor: string; versions: AvailableVersion[] } | null>(null)
@@ -101,19 +110,24 @@ function buildVendorGroups(families: AvailableModelsResponse['families']) {
 
 async function refreshModels(force = false) {
   if (force) {
+    _cacheGeneration++
     _cache = null
     _inflight = null
   }
+  const generation = ++modelsGeneration
   loading.value = true
   loadErr.value = ''
   try {
     const data = await loadCached()
+    if (generation !== modelsGeneration) return
     popular.value = data.popular || []
     vendorGroups.value = buildVendorGroups(data.families)
   } catch (e: unknown) {
-    loadErr.value = e instanceof Error ? e.message : '加载模型失败'
+    if (generation === modelsGeneration) {
+      loadErr.value = e instanceof Error ? e.message : '加载模型失败'
+    }
   } finally {
-    loading.value = false
+    if (generation === modelsGeneration) loading.value = false
   }
 }
 

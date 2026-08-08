@@ -568,6 +568,7 @@ func isRetriableError(err error) bool {
 			kind == errorsx.KindContentFilter ||
 			kind == errorsx.KindContextLength ||
 			kind == errorsx.KindModelDeprecated ||
+			kind == errorsx.KindQuotaPeriodic ||
 			kind == errorsx.KindQuotaPermanent {
 			return false
 		}
@@ -5172,7 +5173,8 @@ func capturePartialBodyOnReadError(body []byte, attemptRequestBody *[]byte, atte
 //	upstream 429/503          → "concurrent"        (unchanged)
 //	upstream 401/403          → "upstream_credential_invalid"
 //	                            "upstream_credential_revoked"     (unchanged)
-//	upstream 402 quota        → "upstream_quota_permanent"        (unchanged)
+//	upstream 402/429 quota    → "upstream_quota_periodic"         (unchanged)
+//	                            "upstream_quota_permanent"        (unchanged)
 //	other early-exits         → errCode passthrough
 func mapGatewayErrorToDetail(errCode string) string {
 	switch errCode {
@@ -5212,7 +5214,8 @@ func mapGatewayErrorToDetail(errCode string) string {
 		return "gw_auto_route_decider_failed"
 	default:
 		// Upstream-originated codes (e.g. upstream_credential_invalid,
-		// upstream_credential_revoked, upstream_quota_permanent,
+		// upstream_credential_revoked, upstream_quota_periodic,
+		// upstream_quota_permanent,
 		// rate_limit, concurrent, model_not_found) fall through
 		// unchanged — they are NOT gateway failures.
 		return errCode
@@ -5235,7 +5238,8 @@ func mapGatewayErrorToDetail(errCode string) string {
 // gateway; everything else is upstream.
 //
 // Note (2026-07-12): upstream_credential_invalid / upstream_credential_revoked
-// / upstream_quota_permanent fall into the "upstream" bucket because they
+// / upstream_quota_periodic / upstream_quota_permanent fall into the
+// "upstream" bucket because they
 // originate from the upstream provider rejecting our stored credential.
 // The earlier Stage distinction ("client key problem" vs "upstream
 // credential problem") is carried by the error.code itself, not by the
@@ -6447,15 +6451,20 @@ func extractUpstreamError(err error) (*upstreampkg.Error, bool) {
 //
 // Mapping:
 //
-//	KindAuth            → upstream_credential_invalid / 401 / authentication_error
-//	KindAuthRevoked     → upstream_credential_revoked / 401 / authentication_error
-//	KindQuotaPermanent  → upstream_quota_permanent    / 402 / insufficient_quota
+//	KindAuth            → upstream_credential_invalid / 502 / authentication_error
+//	KindAuthRevoked     → upstream_credential_revoked / 502 / authentication_error
+//	KindQuotaPeriodic   → upstream_quota_periodic     / 502 / insufficient_quota
+//	KindQuotaPermanent  → upstream_quota_permanent    / 502 / insufficient_quota
 //
-// 401 is reused for both auth kinds because the gateway cannot reliably
-// tell "invalid key" from "revoked key" without parsing the upstream
-// message body, and clients care about the actionable distinction (key
-// invalid vs. quota exhausted) more than the precise status mapping.
-// The HTTP body and i18n message carry the precise reason.
+// Every kind maps to 502: the failure is the gateway's own upstream
+// credential, not the caller's key, so echoing the upstream's 401/402
+// would tell the client to fix something it does not control. The
+// distinction the caller acts on (key invalid vs. quota exhausted) is
+// carried by error.code and the localized message, not the status.
+//
+// KindQuotaPeriodic is a resettable usage window rather than a spent
+// account, so it gets its own code: operators must not top up or rotate
+// a credential that will recover on its own at the next window reset.
 func classifyUpstreamCredentialFailure(kind errorsx.ErrorKind, upstreamStatus int) (code, i18nKey string, httpStatus int, errType string) {
 	switch kind {
 	case errorsx.KindAuth:
@@ -6463,6 +6472,8 @@ func classifyUpstreamCredentialFailure(kind errorsx.ErrorKind, upstreamStatus in
 		return "upstream_credential_invalid", i18n.MsgUpstreamCredentialInvalid, http.StatusBadGateway, "authentication_error"
 	case errorsx.KindAuthRevoked:
 		return "upstream_credential_revoked", i18n.MsgUpstreamCredentialRevoked, http.StatusBadGateway, "authentication_error"
+	case errorsx.KindQuotaPeriodic:
+		return "upstream_quota_periodic", i18n.MsgUpstreamQuotaPeriodic, http.StatusBadGateway, "insufficient_quota"
 	case errorsx.KindQuotaPermanent:
 		return "upstream_quota_permanent", i18n.MsgUpstreamQuotaPermanent, http.StatusBadGateway, "insufficient_quota"
 	}

@@ -50,6 +50,9 @@
   "upstream_credential_revoked": {
     "other": "Clave de API de credencial ascendente revocada (el proveedor informa que la clave ya no está activa). Este es un problema de configuración de credenciales — contacte al administrador de la pasarela para rotar la credencial ascendente."
   },
+  "upstream_quota_periodic": {
+    "other": "Cuota periódica de credencial ascendente agotada (el proveedor indicó una ventana de uso reiniciable). Esta credencial no está disponible temporalmente y se recuperará cuando se reinicie la ventana de cuota."
+  },
   "upstream_quota_permanent": {
     "other": "Cuota de credencial ascendente agotada permanentemente (el proveedor devolvió 402 / quota_exceeded). Este es un problema de configuración — recargue la cuenta ascendente o rote la credencial."
   },

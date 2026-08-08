@@ -2,6 +2,8 @@ package i18n
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -22,28 +24,74 @@ func TestLocalizerLoadsAllLocales(t *testing.T) {
 	}
 }
 
-// TestLocalizerLoadsAllLocales_UpstreamCredentialKeys extends the
-// invariant from TestLocalizerLoadsAllLocales to the 2026-07-12 upstream
-// credential error codes. These codes are emitted to clients whenever
-// the upstream provider rejects our stored credential; if a locale
-// falls back to the raw key the user only sees
-// "upstream_credential_invalid" instead of a localised explanation,
-// which defeats the whole point of the 2026-07-12 fix.
-func TestLocalizerLoadsAllLocales_UpstreamCredentialKeys(t *testing.T) {
-	keys := []string{
-		MsgUpstreamCredentialInvalid,
-		MsgUpstreamCredentialRevoked,
-		MsgUpstreamQuotaPermanent,
+// upstreamCredentialKeys are the client-facing codes emitted when the
+// upstream provider rejects the gateway's own stored credential.
+var upstreamCredentialKeys = []string{
+	MsgUpstreamCredentialInvalid,
+	MsgUpstreamCredentialRevoked,
+	MsgUpstreamQuotaPeriodic,
+	MsgUpstreamQuotaPermanent,
+}
+
+// localeCatalogKeys reads the embedded catalog for loc and returns its
+// top-level message keys.
+//
+// This deliberately bypasses T(): go-i18n falls back to the English
+// catalog for any key a locale is missing, so a T()-based assertion
+// returns the English sentence — non-empty and different from the raw
+// key — and therefore CANNOT distinguish "translated" from "missing and
+// silently served in English". Reading the catalog file is the only way
+// to assert real per-locale coverage.
+func localeCatalogKeys(t *testing.T, loc Locale) map[string]struct{} {
+	t.Helper()
+	raw, err := embeddedLocales.ReadFile(fmt.Sprintf("locales/%s.json", loc))
+	if err != nil {
+		t.Fatalf("locale %s: embedded catalog unreadable: %v", loc, err)
 	}
+	var catalog map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &catalog); err != nil {
+		t.Fatalf("locale %s: catalog is not valid JSON: %v", loc, err)
+	}
+	keys := make(map[string]struct{}, len(catalog))
+	for k := range catalog {
+		keys[k] = struct{}{}
+	}
+	return keys
+}
+
+// TestLocaleCatalogsCoverUpstreamCredentialKeys asserts every shipped
+// locale carries its OWN translation for each upstream-credential code.
+//
+// Regression guarded (2026-08-08): MsgUpstreamQuotaPeriodic was added to
+// seven locales but omitted from zh-TW. The previous T()-based test
+// passed anyway because zh-TW silently fell back to the English string,
+// so a Traditional Chinese client would have been shown English text
+// with no test failure anywhere.
+func TestLocaleCatalogsCoverUpstreamCredentialKeys(t *testing.T) {
+	for _, loc := range Supported() {
+		keys := localeCatalogKeys(t, loc)
+		for _, key := range upstreamCredentialKeys {
+			if _, ok := keys[key]; !ok {
+				t.Errorf("locale %s: catalog is missing key %q (T() would silently serve English)", loc, key)
+			}
+		}
+	}
+}
+
+// TestLocalizerLoadsAllLocales_UpstreamCredentialKeys keeps the runtime
+// invariant: T() must resolve each code to a non-empty, non-raw-key
+// string. TestLocaleCatalogsCoverUpstreamCredentialKeys covers the
+// per-locale completeness this cannot see.
+func TestLocalizerLoadsAllLocales_UpstreamCredentialKeys(t *testing.T) {
 	for _, loc := range Supported() {
 		ctx := WithLocale(context.Background(), loc)
-		for _, key := range keys {
+		for _, key := range upstreamCredentialKeys {
 			got := T(ctx, key)
 			if got == "" {
 				t.Errorf("locale %s: %s resolved empty", loc, key)
 			}
 			if got == key {
-				t.Errorf("locale %s: %s fell back to raw key (translation missing)", loc, key)
+				t.Errorf("locale %s: %s fell back to raw key (catalog not loaded)", loc, key)
 			}
 		}
 	}

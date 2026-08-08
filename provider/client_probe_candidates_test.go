@@ -102,6 +102,30 @@ func TestGetProbeCandidates(t *testing.T) {
 		}
 	}
 
+	// Keep one otherwise-routable credential in a periodic quota state.
+	// Probe candidates must not revive it while the reset window is open.
+	var periodicProviderID, periodicCredID int
+	if err = tx.QueryRow(ctx, `
+		INSERT INTO providers (tenant_id, name, base_url, protocol, enabled)
+		VALUES ('default', 'probe-test-periodic', 'https://api.example.com', 'openai', TRUE)
+		RETURNING id
+	`).Scan(&periodicProviderID); err != nil {
+		t.Fatalf("failed to create periodic provider: %v", err)
+	}
+	if err = tx.QueryRow(ctx, `
+		INSERT INTO credentials (provider_id, lifecycle_status, availability_state, status, quota_state)
+		VALUES ($1, 'active', 'ready', 'active', 'periodic_exhausted')
+		RETURNING id
+	`, periodicProviderID).Scan(&periodicCredID); err != nil {
+		t.Fatalf("failed to create periodic credential: %v", err)
+	}
+	_, err = tx.Exec(ctx, `
+		INSERT INTO model_offers (credential_id, raw_model_name, canonical_raw_name, canonical_id, billing_mode)
+		VALUES ($1, 'probe-test-alias', 'probe-test-alias', $2, 'per_token')
+	`, periodicCredID, canonicalID)
+	if err != nil {
+		t.Fatalf("failed to create periodic offer: %v", err)
+	}
 	if err := tx.Commit(ctx); err != nil {
 		t.Fatalf("failed to commit test data: %v", err)
 	}
@@ -109,11 +133,12 @@ func TestGetProbeCandidates(t *testing.T) {
 		cctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		_, _ = pool.Exec(cctx, `DELETE FROM model_offers WHERE raw_model_name = 'probe-test-alias'`)
-		_, _ = pool.Exec(cctx, `DELETE FROM credentials WHERE id IN ($1, $2)`, defCredID, otherCredID)
-		_, _ = pool.Exec(cctx, `DELETE FROM providers WHERE id IN ($1, $2)`, defProviderID, otherProviderID)
+		_, _ = pool.Exec(cctx, `DELETE FROM credentials WHERE id IN ($1, $2, $3)`, defCredID, otherCredID, periodicCredID)
+		_, _ = pool.Exec(cctx, `DELETE FROM providers WHERE id IN ($1, $2, $3)`, defProviderID, otherProviderID, periodicProviderID)
 		_, _ = pool.Exec(cctx, `DELETE FROM model_aliases WHERE canonical_id = $1`, canonicalID)
 		_, _ = pool.Exec(cctx, `DELETE FROM models_canonical WHERE id = $1`, canonicalID)
 	}
+
 	defer cleanup()
 
 	// (1) P0: the query must not error on the bad column reference.
@@ -134,10 +159,14 @@ func TestGetProbeCandidates(t *testing.T) {
 		t.Errorf("default tenant probe missing own credential (alias match path). got=%v", cands)
 	}
 
-	// (3) tenant isolation: the other-tenant offer must NOT leak in.
+	// (3) tenant isolation and quota gating: other-tenant and periodic-quota
+	// credentials must not be returned for the default tenant.
 	for _, c := range cands {
 		if c.CredentialID == otherCredID {
 			t.Errorf("probe leaked other-tenant credential %d into default tenant", otherCredID)
+		}
+		if c.CredentialID == periodicCredID {
+			t.Errorf("probe returned periodic-exhausted credential %d", periodicCredID)
 		}
 	}
 

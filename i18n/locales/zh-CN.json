@@ -53,6 +53,9 @@
   "upstream_credential_revoked": {
     "other": "上游供应商 API 密钥已被吊销（供应商返回该密钥不再有效）。这是供应商凭据配置问题——请联系网关管理员轮换上游供应商凭据。"
   },
+  "upstream_quota_periodic": {
+    "other": "上游供应商周期性额度已用尽（供应商返回了可重置的用量窗口）。该凭据暂时不可用，额度窗口重置后会自动恢复。"
+  },
   "upstream_quota_permanent": {
     "other": "上游供应商额度已永久耗尽（供应商返回 402 / quota_exceeded）。这是供应商凭据配置问题——请向上游账户充值或轮换凭据。"
   },

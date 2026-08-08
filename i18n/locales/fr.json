@@ -50,6 +50,9 @@
   "upstream_credential_revoked": {
     "other": "Clé API d'identifiant en amont révoquée (le fournisseur signale que la clé n'est plus active). Il s'agit d'un problème de configuration des identifiants — contactez l'administrateur de la passerelle pour faire pivoter l'identifiant en amont."
   },
+  "upstream_quota_periodic": {
+    "other": "Quota périodique de l'identifiant en amont épuisé (le fournisseur a signalé une fenêtre d'utilisation réinitialisable). Cet identifiant est temporairement indisponible et sera rétabli après la réinitialisation du quota."
+  },
   "upstream_quota_permanent": {
     "other": "Quota d'identifiant en amont définitivement épuisé (le fournisseur a renvoyé 402 / quota_exceeded). Il s'agit d'un problème de configuration — rechargez le compte en amont ou faites pivoter l'identifiant."
   },

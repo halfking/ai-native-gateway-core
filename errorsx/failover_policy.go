@@ -63,10 +63,10 @@ func DecideFailover(status int, body []byte, retryAfterHeader string, clientOrig
 		decision.Permanent = true
 		decision.EnqueueProbe = false
 		decision.ReasonCode = "credential_auth_failed"
-	case KindQuotaPermanent, KindQuotaBalance, KindQuota:
+	case KindQuotaPermanent, KindQuotaPeriodic, KindQuotaBalance, KindQuota:
 		decision.Scope = ScopeCredential
 		decision.Fuse = true
-		decision.Permanent = true
+		decision.Permanent = kind != KindQuotaPeriodic
 		decision.EnqueueProbe = false
 		decision.ReasonCode = "credential_quota_exhausted"
 	case KindRateLimit:

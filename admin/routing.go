@@ -1242,8 +1242,12 @@ func (h *Handler) handleEmergencyRepair(w http.ResponseWriter, r *http.Request) 
 	// Write audit log
 	h.logAudit(r, "emergency_repair."+req.Action, beforeAfter)
 
-	// Invalidate routing caches so changes take effect immediately
+	// Invalidate routing caches so changes take effect immediately.
 	invalidateRoutingCaches(ctx, h.db, "credentials", req.CredentialID)
+	// The available-models catalog has an independent process-local cache.
+	// Emergency repair changes credential/CMB visibility, so leave no stale
+	// taxonomy response behind for the UI's next refresh.
+	InvalidateAvailableModelsCache()
 
 	// M2 修复: surface the URSM v2 outcome in the response so the UI
 	// can warn when PG was updated but Redis state was skipped.
@@ -2128,7 +2132,9 @@ func (h *Handler) handleRoutingAvailableModels(w http.ResponseWriter, r *http.Re
 
 // invalidateAvailableModelsCache is called by paths that mutate the
 // data this endpoint aggregates: featured-model policy edit, provider
-// refresh, and the model_offer standardized_name PATCH in admin/providers.go.
+// refresh, the model_offer standardized_name PATCH in admin/providers.go,
+// and emergency repair (which flips credential/CMB visibility and would
+// otherwise leave the UI reading a stale catalog for up to the 30s TTL).
 // Keep this exported so the post-deploy hot-paths above can simply call
 // admin.InvalidateAvailableModelsCache() without importing the cache.
 func InvalidateAvailableModelsCache() {

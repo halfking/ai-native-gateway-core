@@ -50,6 +50,9 @@
   "upstream_credential_revoked": {
     "other": "Upstream-Anmeldedaten-API-Schlüssel widerrufen (Anbieter meldet, der Schlüssel ist nicht mehr aktiv). Dies ist ein Konfigurationsproblem — wenden Sie sich an den Gateway-Administrator, um die Upstream-Anmeldedaten zu rotieren."
   },
+  "upstream_quota_periodic": {
+    "other": "Upstream-Anmeldedaten-Kontingent für das Nutzungsfenster erschöpft (der Anbieter meldet ein zurücksetzbares Nutzungsfenster). Diese Anmeldedaten sind vorübergehend nicht verfügbar und werden nach dem Zurücksetzen des Kontingents wiederhergestellt."
+  },
   "upstream_quota_permanent": {
     "other": "Upstream-Anmeldedaten-Kontingent dauerhaft erschöpft (Anbieter hat 402 / quota_exceeded zurückgegeben). Dies ist ein Konfigurationsproblem — laden Sie das Upstream-Konto auf oder rotieren Sie die Anmeldedaten."
   },

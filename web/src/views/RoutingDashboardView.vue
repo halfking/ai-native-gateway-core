@@ -418,8 +418,11 @@ function openCandidateSettings(c: RoutingCandidate) {
   settingsCandidate.value = c
 }
 async function onCandidateSettingsApplied() {
-  // 写完直接重查当前模型，让 admin 看到新排序生效
+  // 写完直接重查当前模型，让 admin 看到新排序生效。
+  // 同时通知当前页面上所有 ModelPicker/ChatView 实例丢弃目录缓存，
+  // 否则 force_enable 后 resolve 已更新，模型下拉列表仍可能长期使用旧快照。
   await doResolve()
+  window.dispatchEvent(new CustomEvent('llm-gateway:models-updated'))
 }
 
 const resolveFunnelStages = computed<AnalyticsFunnelStage[]>(() => {

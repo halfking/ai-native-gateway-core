@@ -50,6 +50,9 @@
   "upstream_credential_revoked": {
     "other": "上游供應商 API 金鑰已被撤銷（供應商回報該金鑰不再有效）。這是供應商憑證設定問題——請聯絡閘道管理員輪換上游供應商憑證。"
   },
+  "upstream_quota_periodic": {
+    "other": "上游供應商週期性額度已用盡（供應商回傳了可重設的用量視窗）。該憑證暫時不可用，額度視窗重設後會自動恢復。"
+  },
   "upstream_quota_permanent": {
     "other": "上游供應商額度已永久耗盡（供應商回傳 402 / quota_exceeded）。這是供應商憑證設定問題——請向上游帳戶儲值或輪換憑證。"
   },

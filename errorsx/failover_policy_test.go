@@ -21,6 +21,7 @@ func TestDecideFailover(t *testing.T) {
 		{"upstream auth ejects credential", 401, `{"error":"invalid api key"}`, "", false, ScopeCredential, true, false, 0, DefaultFrontendWait},
 		{"client auth does not eject credential", 401, `unauthorized`, "", true, ScopeNone, false, false, 0, DefaultFrontendWait},
 		{"permanent quota ejects credential", 429, `{"error":{"message":"quota exceeded"}}`, "", false, ScopeCredential, true, false, 0, DefaultFrontendWait},
+		{"periodic quota ejects only credential and skips node probe", 429, `{"error":{"message":"usage limit exceeded","window_type":"total"}}`, "", false, ScopeCredential, true, false, 0, DefaultFrontendWait},
 		{"rate limit honors retry after", 429, `rate limit`, "7", false, ScopeModel, false, true, 1, DefaultFrontendWait},
 		{"concurrent failure probes backups", 503, `service overloaded`, "", false, ScopeModel, false, true, DefaultProbeFanout, DefaultFrontendWait},
 		{"model error does not probe", 404, `model foo is not found`, "", false, ScopeModel, false, false, 0, 0},
@@ -35,6 +36,17 @@ func TestDecideFailover(t *testing.T) {
 				t.Fatalf("retry after=%s, want 7s", got.RetryAfter)
 			}
 		})
+	}
+}
+
+func TestDecideFailoverPeriodicQuotaIsCredentialScoped(t *testing.T) {
+	body := []byte(`{"error":{"message":"usage limit exceeded","window_type":"total"}}`)
+	got := DecideFailover(429, body, "", false)
+	if got.Kind != KindQuotaPeriodic {
+		t.Fatalf("kind=%q, want %q", got.Kind, KindQuotaPeriodic)
+	}
+	if got.Scope != ScopeCredential || !got.Fuse || got.Permanent || got.EnqueueProbe || got.ProbeFanout != 0 {
+		t.Fatalf("periodic quota decision=%+v, want credential-scoped fuse without permanent quarantine or node probe", got)
 	}
 }
 
