@@ -31,6 +31,11 @@ var upstreamCredentialKeys = []string{
 	MsgUpstreamCredentialRevoked,
 	MsgUpstreamQuotaPeriodic,
 	MsgUpstreamQuotaPermanent,
+	// 2026-08-09: added when KindQuota / KindQuotaBalance were finally mapped
+	// in classifyUpstreamCredentialFailure. Before that, both kinds produced
+	// 503 model_not_found "No available provider" and needed no message.
+	MsgUpstreamQuotaBalance,
+	MsgUpstreamQuotaGeneric,
 }
 
 // localeCatalogKeys reads the embedded catalog for loc and returns its

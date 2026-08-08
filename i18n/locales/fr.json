@@ -56,6 +56,12 @@
   "upstream_quota_permanent": {
     "other": "Quota d'identifiant en amont définitivement épuisé (le fournisseur a renvoyé 402 / quota_exceeded). Il s'agit d'un problème de configuration — rechargez le compte en amont ou faites pivoter l'identifiant."
   },
+  "upstream_quota_balance": {
+    "other": "Solde du compte fournisseur en amont épuisé (le fournisseur signale un solde insuffisant). Il s'agit d'un problème de configuration des identifiants — rechargez le compte en amont, les identifiants récupèrent ensuite automatiquement."
+  },
+  "upstream_quota_generic": {
+    "other": "Quota du fournisseur en amont épuisé (le fournisseur signale une limite sans préciser si elle se réinitialise). Ces identifiants sont temporairement retirés de la rotation ; contactez l'administrateur de la passerelle s'ils ne récupèrent pas."
+  },
   "internal_error": {
     "other": "Erreur interne du serveur"
   },

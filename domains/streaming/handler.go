@@ -6556,6 +6556,8 @@ func extractUpstreamError(err error) (*upstreampkg.Error, bool) {
 //	KindAuthRevoked     → upstream_credential_revoked / 502 / authentication_error
 //	KindQuotaPeriodic   → upstream_quota_periodic     / 502 / insufficient_quota
 //	KindQuotaPermanent  → upstream_quota_permanent    / 502 / insufficient_quota
+//	KindQuotaBalance    → upstream_quota_balance      / 502 / insufficient_quota
+//	KindQuota           → upstream_quota_generic      / 502 / insufficient_quota
 //
 // Every kind maps to 502: the failure is the gateway's own upstream
 // credential, not the caller's key, so echoing the upstream's 401/402
@@ -6566,6 +6568,20 @@ func extractUpstreamError(err error) (*upstreampkg.Error, bool) {
 // KindQuotaPeriodic is a resettable usage window rather than a spent
 // account, so it gets its own code: operators must not top up or rotate
 // a credential that will recover on its own at the next window reset.
+//
+// 2026-08-09 fix: KindQuota and KindQuotaBalance were missing. Both are
+// IsCredentialFatal (errorsx/classify.go), and KindQuota is what a bare
+// HTTP 402 with no recognizable body produces. Because this helper returned
+// ("", "", 0, "") for them, the caller fell through to the generic
+// all-candidates-failed branch and reported a genuine balance-exhaustion
+// event to the client as 503 model_not_found "No available provider" — an
+// operator reading that would go looking for a missing model instead of a
+// spent account. Balance keeps a distinct code from Permanent because the
+// remedy differs: top up the account vs. rotate the credential.
+//
+// The switch must stay in sync with errorsx.IsCredentialFatal; the coverage
+// test in upstream_credential_error_test.go asserts that every kind that
+// function accepts is mapped here.
 func classifyUpstreamCredentialFailure(kind errorsx.ErrorKind, upstreamStatus int) (code, i18nKey string, httpStatus int, errType string) {
 	switch kind {
 	case errorsx.KindAuth:
@@ -6577,6 +6593,11 @@ func classifyUpstreamCredentialFailure(kind errorsx.ErrorKind, upstreamStatus in
 		return "upstream_quota_periodic", i18n.MsgUpstreamQuotaPeriodic, http.StatusBadGateway, "insufficient_quota"
 	case errorsx.KindQuotaPermanent:
 		return "upstream_quota_permanent", i18n.MsgUpstreamQuotaPermanent, http.StatusBadGateway, "insufficient_quota"
+	case errorsx.KindQuotaBalance:
+		return "upstream_quota_balance", i18n.MsgUpstreamQuotaBalance, http.StatusBadGateway, "insufficient_quota"
+	case errorsx.KindQuota:
+		// Bare quota signal with no periodic/permanent/balance evidence.
+		return "upstream_quota_generic", i18n.MsgUpstreamQuotaGeneric, http.StatusBadGateway, "insufficient_quota"
 	}
 	return "", "", 0, ""
 }

@@ -101,8 +101,12 @@ func TestClassifyUpstreamCredentialFailure_NegativeCases(t *testing.T) {
 		errorsx.KindUpstreamDown,
 		errorsx.KindCanceled,
 		errorsx.KindConcurrent,
-		errorsx.KindQuota,
-		errorsx.KindQuotaBalance,
+		// 2026-08-09: KindQuota and KindQuotaBalance were listed here as
+		// expected fall-throughs, which encoded the defect as a contract.
+		// Both are IsCredentialFatal, so falling through sent a real
+		// balance-exhaustion event to the client as 503 model_not_found
+		// "No available provider". They are now mapped and asserted in
+		// TestClassifyUpstreamCredentialFailure_CoversEveryCredentialFatalKind.
 		errorsx.KindModelNotFound,
 		errorsx.KindModelDeprecated,
 		errorsx.KindStreamTimeout,
@@ -123,6 +127,70 @@ func TestClassifyUpstreamCredentialFailure_NegativeCases(t *testing.T) {
 	}
 }
 
+// TestClassifyUpstreamCredentialFailure_CoversEveryCredentialFatalKind pins the
+// invariant that broke in production on 2026-08-09: any kind that
+// errorsx.IsCredentialFatal accepts MUST get a dedicated client-facing code
+// here.
+//
+// When a credential-fatal kind is missing, classifyUpstreamCredentialFailure
+// returns an empty tuple, the caller falls through to the generic
+// all-candidates-failed branch, and the client is told 503 model_not_found
+// "No available provider" for what was actually a spent account or a rejected
+// key. KindQuota (bare HTTP 402) and KindQuotaBalance were both unmapped for
+// this reason.
+//
+// Deriving the kind list from IsCredentialFatal rather than hardcoding it means
+// adding a new credential-fatal kind fails this test until it is also given a
+// user-facing message, instead of silently regressing to "No available
+// provider".
+func TestClassifyUpstreamCredentialFailure_CoversEveryCredentialFatalKind(t *testing.T) {
+	// Every kind declared in errorsx. The test asserts the credential-fatal
+	// subset is fully mapped; the rest are covered by the negative test above.
+	allKinds := []errorsx.ErrorKind{
+		errorsx.KindTransient, errorsx.KindTimeout, errorsx.KindNetwork,
+		errorsx.KindRateLimit, errorsx.KindAuth, errorsx.KindAuthRevoked,
+		errorsx.KindQuota, errorsx.KindQuotaPeriodic, errorsx.KindQuotaBalance,
+		errorsx.KindQuotaPermanent, errorsx.KindUpstreamDown,
+		errorsx.KindUpstreamOverloaded, errorsx.KindStreamTimeout,
+		errorsx.KindConcurrent, errorsx.KindModelNotFound,
+		errorsx.KindModelDeprecated, errorsx.KindContentFilter,
+		errorsx.KindContextLength, errorsx.KindUnsupportedFeature,
+		errorsx.KindToolCallIdMismatch, errorsx.KindCanceled,
+		errorsx.KindEmptyResponse,
+	}
+
+	fatalSeen := 0
+	for _, kind := range allKinds {
+		if !errorsx.IsCredentialFatal(kind) {
+			continue
+		}
+		fatalSeen++
+		t.Run(string(kind), func(t *testing.T) {
+			code, i18nKey, httpStatus, errType := classifyUpstreamCredentialFailure(kind, 402)
+			if code == "" {
+				t.Fatalf("kind=%q is IsCredentialFatal but has no client-facing "+
+					"code; it will surface as 503 model_not_found "+
+					"\"No available provider\" instead of a quota/auth message", kind)
+			}
+			if i18nKey == "" {
+				t.Errorf("kind=%q: empty i18n key (client gets no localized reason)", kind)
+			}
+			if httpStatus != http.StatusBadGateway {
+				t.Errorf("kind=%q: status=%d, want 502 — the caller's key is fine, "+
+					"ours is not", kind, httpStatus)
+			}
+			if errType == "" {
+				t.Errorf("kind=%q: empty OpenAI error type", kind)
+			}
+		})
+	}
+
+	if fatalSeen == 0 {
+		t.Fatal("no credential-fatal kinds found — the kind list is stale, " +
+			"not the mapping")
+	}
+}
+
 // TestClassifyFailureStage_UpstreamCredentialIsUpstream ensures the new
 // codes are NOT classified as "gateway" failures. They originate from
 // the upstream provider, so the request_log.failure_stage column must
@@ -135,6 +203,9 @@ func TestClassifyFailureStage_UpstreamCredentialIsUpstream(t *testing.T) {
 		"upstream_credential_revoked",
 		"upstream_quota_periodic",
 		"upstream_quota_permanent",
+		// 2026-08-09: added with the KindQuota / KindQuotaBalance mapping.
+		"upstream_quota_balance",
+		"upstream_quota_generic",
 	}
 	for _, code := range upstreamCredCodes {
 		t.Run(code, func(t *testing.T) {
@@ -159,6 +230,8 @@ func TestMapGatewayErrorToDetail_UpstreamCredentialPassthrough(t *testing.T) {
 		{"upstream_credential_revoked", "upstream_credential_revoked"},
 		{"upstream_quota_periodic", "upstream_quota_periodic"},
 		{"upstream_quota_permanent", "upstream_quota_permanent"},
+		{"upstream_quota_balance", "upstream_quota_balance"},
+		{"upstream_quota_generic", "upstream_quota_generic"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.in, func(t *testing.T) {

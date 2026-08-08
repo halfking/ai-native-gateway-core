@@ -56,6 +56,12 @@
   "upstream_quota_permanent": {
     "other": "上游供應商額度已永久耗盡（供應商回傳 402 / quota_exceeded）。這是供應商憑證設定問題——請向上游帳戶儲值或輪換憑證。"
   },
+  "upstream_quota_balance": {
+    "other": "上游供應商帳戶餘額不足（供應商報告餘額已用盡）。這是供應商憑據設定問題——請為上游帳戶充值，充值後憑據會自動恢復。"
+  },
+  "upstream_quota_generic": {
+    "other": "上游供應商額度已用盡（供應商回傳了額度限制，但未說明是否會重置）。該憑據已暫時移出輪換；如果長時間未恢復，請聯絡閘道管理員。"
+  },
   "internal_error": {
     "other": "內部伺服器錯誤"
   },
