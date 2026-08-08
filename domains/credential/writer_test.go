@@ -19,7 +19,10 @@ func TestCoolingDurationMatchesPythonDefaults(t *testing.T) {
 		// same credential would be re-picked and re-fail in a tight
 		// loop, masking the actual provider outage.
 		{errorsx.KindConcurrent, 5 * time.Minute},
-		{errorsx.KindRateLimit, 900 * time.Second},
+		// 2026-08-09: KindRateLimit cooling 调整为 3 分钟（原 15 分钟）。
+		// rate_limit 通常是短期限流（每分钟配额耗尽），3 分钟后配额窗口
+		// 通常已滚动。上游提供 Retry-After 时优先用其值。
+		{errorsx.KindRateLimit, 3 * time.Minute},
 		// 2026-07-09 (问题2): KindStreamTimeout now uses 5-minute cooling
 		// (was 30s, shared with Transient/Timeout). Stream-no-feedback
 		// failures (first_byte_timeout / stream_timeout / EOF-without-DONE)
