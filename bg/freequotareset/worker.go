@@ -8,8 +8,7 @@ import (
 	"time"
 )
 
-// ensure time package is referenced even when only used in tests.
-var _ = time.Now
+const superAdminRole = "super_admin"
 
 // Worker 配额重置后台任务
 type Worker struct {
@@ -50,19 +49,16 @@ func (w *Worker) Run(ctx context.Context) {
 
 // resetExpiredWindows 重置已过期的耗尽状态。
 //
-// 设计要点 (2026-08-07 跨租户修复):
+// 设计要点 (2026-08-07 跨租户修复 + 2026-08-08 H1 闭合):
 //  1. free_quota_tracker 表启用了 RLS, policy 限定
 //     `tenant_id = coalesce(current_setting('app.current_tenant', true), 'default')`.
 //  2. 旧实现直接 UPDATE 全表, 在 BYPASSRLS 角色 (表 owner / superuser) 下
 //     会跨租户读取并修改所有租户的 exhausted 标志, 违反租户隔离.
-//  3. 新实现: 先 SELECT DISTINCT tenant_id (绕过 RLS, 因为是运维表查询;
-//     这里直接对 free_quota_tracker 做 DISTINCT 仍然受 RLS 限制, 所以我们
-//     改用 information_schema 风格的元数据查询 -- 实际上更稳妥的做法是
-//     通过 pg_class 元数据或 sysadmin 上下文拉取所有租户列表).
-//
-// 简化方案: 我们假设 gateway 数据库角色至少在 RLS 下能读取 default 租户;
-// 对于多租户部署, 应当让运维在 db 上维护一个 tenant registry 表 (例如
-// tenants). 在没有注册表时, 我们退化为仅处理 default 租户并打印警告.
+//  3. 新实现: 事务内 SET LOCAL app.current_role = 'super_admin' 走 RLS
+//     policy 显式放行的 super_admin 通道枚举所有 tenant, 然后对每个
+//     tenant 开新事务 SET LOCAL app.current_tenant = '<tenant>' 让
+//     RLS 实际生效. super_admin 是 policy 已经显式白名单的角色, 不依赖
+//     BYPASSRLS 隐式放行, 审计链路可追溯.
 func (w *Worker) resetExpiredWindows(ctx context.Context) error {
 	tenants, err := w.listTenants(ctx)
 	if err != nil {
@@ -117,9 +113,30 @@ func (w *Worker) resetTenant(ctx context.Context, tenantID string) (int64, error
 	return affected, nil
 }
 
-// listTenants 列出需要处理的租户 ID. 没有专用注册表时退化为 ['default'].
+// listTenants 枚举 free_quota_tracker 中实际存在的租户 ID. 在事务内
+// SET LOCAL app.current_role = 'super_admin' (is_local=true 让 GUC 只
+// 作用于当前事务), 借 RLS policy 显式白名单的 super_admin 通道跨租户
+// 枚举. 这样既保留多租户支持, 又不污染连接级 GUC, 也不依赖 BYPASSRLS
+// 的隐式放行. 退化: RLS 拒绝/表为空 → ['default'] (与旧 fallback 一致).
 func (w *Worker) listTenants(ctx context.Context) ([]string, error) {
-	rows, err := w.db.QueryContext(ctx, `
+	tx, err := w.db.BeginTx(ctx, nil)
+	if err != nil {
+		return []string{"default"}, nil
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			_ = tx.Rollback()
+		}
+	}()
+
+	if _, err := tx.ExecContext(ctx,
+		"SELECT set_config('app.current_role', $1, true)",
+		superAdminRole, true); err != nil {
+		return []string{"default"}, nil
+	}
+
+	rows, err := tx.QueryContext(ctx, `
         SELECT DISTINCT tenant_id
         FROM free_quota_tracker
     `)
@@ -127,12 +144,12 @@ func (w *Worker) listTenants(ctx context.Context) ([]string, error) {
 		// RLS-restricted 角色可能 SELECT 不到任何行; 此时仅处理 default.
 		return []string{"default"}, nil
 	}
-	defer rows.Close()
 
 	seen := map[string]bool{}
 	for rows.Next() {
 		var tenant string
 		if err := rows.Scan(&tenant); err != nil {
+			rows.Close()
 			return nil, err
 		}
 		if tenant != "" && !seen[tenant] {
@@ -140,7 +157,13 @@ func (w *Worker) listTenants(ctx context.Context) ([]string, error) {
 		}
 	}
 	if err := rows.Err(); err != nil {
+		rows.Close()
 		return nil, err
+	}
+	rows.Close()
+
+	if err := tx.Commit(); err == nil {
+		committed = true
 	}
 
 	if len(seen) == 0 {
@@ -154,6 +177,3 @@ func (w *Worker) listTenants(ctx context.Context) ([]string, error) {
 	sort.Strings(out)
 	return out, nil
 }
-
-// ensure time package is referenced even when only used in tests.
-var _ = time.Now

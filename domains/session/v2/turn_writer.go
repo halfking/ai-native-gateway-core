@@ -187,7 +187,7 @@ func (w *TurnWriter) appendTurnInLockedTx(ctx context.Context, tx pgx.Tx, rec Tu
 		return 0, fmt.Errorf("get next turn_no: %w", err)
 	}
 
-	partitionDate := rec.Ts.Truncate(24 * time.Hour)
+	partitionDate := calendarDate(rec.Ts)
 
 	// 3. Serialize compression_meta to JSONB
 	compressionMetaJSON, err := json.Marshal(rec.CompressionMeta)

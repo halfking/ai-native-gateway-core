@@ -11,7 +11,6 @@ package v2
 
 import (
 	"context"
-	"encoding/json"
 	"strconv"
 	"time"
 
@@ -85,32 +84,7 @@ func parseRequestBodyMessages(body []byte) []Message {
 	if len(body) == 0 {
 		return nil
 	}
-	var p struct {
-		Messages []msgProbe `json:"messages"`
-	}
-	if err := json.Unmarshal(body, &p); err != nil {
-		return nil
-	}
-	msgs := make([]Message, 0, len(p.Messages))
-	for _, r := range p.Messages {
-		m := Message{
-			Role:    r.Role,
-			Content: r.Content,
-		}
-		if len(r.ToolCalls) > 0 {
-			m.ToolCalls = r.ToolCalls
-		}
-		msgs = append(msgs, m)
-	}
-	return msgs
-}
-
-type msgProbe struct {
-	Role       string                   `json:"role"`
-	Content    string                   `json:"content"`
-	ToolCallID string                   `json:"tool_call_id"`
-	Name       string                   `json:"name"`
-	ToolCalls  []map[string]interface{} `json:"tool_calls"`
+	return IRMessagesToV2(IRMessagesFromJSON(body))
 }
 
 // safeMessageParse parses a JSON body and returns the messages array.

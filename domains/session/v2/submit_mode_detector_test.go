@@ -128,14 +128,14 @@ func TestSubmitModeDetector_SummaryMarker(t *testing.T) {
 			},
 			want: SubmitModeInferredCompressed,
 		},
-	{
-		name: "no marker with overlap",
-		messages: []Message{
-			{Role: "user", Content: "Normal message"},
-			{Role: "user", Content: "Previous"},
+		{
+			name: "no marker with overlap",
+			messages: []Message{
+				{Role: "user", Content: "Normal message"},
+				{Role: "user", Content: "Previous"},
+			},
+			want: SubmitModeFull,
 		},
-		want: SubmitModeFull,
-	},
 	}
 
 	for _, tt := range tests {
@@ -266,20 +266,20 @@ func TestSubmitModeDetector_CalculateLCSOverlap(t *testing.T) {
 			wantMin: 0.0,
 			wantMax: 0.1,
 		},
-	{
-		name: "partial overlap",
-		client: []Message{
-			{Role: "user", Content: "Message 1"},
-			{Role: "user", Content: "Message 2"},
-			{Role: "user", Content: "Message 3"},
+		{
+			name: "partial overlap",
+			client: []Message{
+				{Role: "user", Content: "Message 1"},
+				{Role: "user", Content: "Message 2"},
+				{Role: "user", Content: "Message 3"},
+			},
+			lastOutbound: []Message{
+				{Role: "user", Content: "Message 1"},
+				{Role: "user", Content: "Message 2"},
+			},
+			wantMin: 0.9,
+			wantMax: 1.1,
 		},
-		lastOutbound: []Message{
-			{Role: "user", Content: "Message 1"},
-			{Role: "user", Content: "Message 2"},
-		},
-		wantMin: 0.9,
-		wantMax: 1.1,
-	},
 	}
 
 	for _, tt := range tests {

@@ -12,8 +12,8 @@ import (
 // owner-user RLS policies added by migration 457.
 //
 // Without TEST_DB_URL the test skips. With it, we verify that:
-//   1. setting app.current_user to a non-matching user yields 0 rows
-//   2. setting app.current_role=super_admin yields all rows (bypass)
+//  1. setting app.current_user to a non-matching user yields 0 rows
+//  2. setting app.current_role=super_admin yields all rows (bypass)
 //
 // We rely on the V2 tables and the owner_user join path that migration 457
 // introduces. No fixture rows are inserted; we just observe policy behavior.

@@ -62,6 +62,9 @@ func (r *TurnReader) LoadLatestOutbound(ctx context.Context, tenantID, sessionID
 // LoadChain 返回最近 N 轮拼接后的消息（用于 L3 冷启动）。
 // 不持久化 panorama；仅按需计算。
 func (r *TurnReader) LoadChain(ctx context.Context, tenantID, sessionID string, lastN int) ([]Message, error) {
+	if r == nil || r.db == nil {
+		return nil, nil
+	}
 	if lastN <= 0 {
 		lastN = 10
 	}
