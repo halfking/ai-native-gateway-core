@@ -250,7 +250,7 @@ func (w *Writer) WriteOnError(ctx context.Context, credentialID int, rawModel st
 			  AND lifecycle_status = 'active'
 		`, string(failure.Kind), detail, credentialID)
 		return err
-	case errorsx.KindConcurrent, errorsx.KindRateLimit, errorsx.KindTimeout, errorsx.KindUpstreamDown, errorsx.KindStreamTimeout:
+	case errorsx.KindConcurrent, errorsx.KindRateLimit, errorsx.KindTimeout, errorsx.KindUpstreamDown, errorsx.KindUpstreamOverloaded, errorsx.KindStreamTimeout:
 		// Per-model kind. Update the specific (credential, model) binding
 		// in BOTH cmb (production router) and model_offers (/api/routing/
 		// resolve "test route" + admin UI). Sibling models on the same
@@ -410,6 +410,14 @@ func coolingDuration(kind errorsx.ErrorKind, retryAfter time.Duration) time.Dura
 	case errorsx.KindTransient, errorsx.KindTimeout:
 		return 30 * time.Second
 	case errorsx.KindUpstreamDown:
+		return 60 * time.Second
+	case errorsx.KindUpstreamOverloaded:
+		// 2026-08-08: an upstream that answers "currently overloaded, try
+		// again later" is reporting a seconds-scale load spike, not an
+		// outage. 60s matches KindUpstreamDown rather than KindConcurrent's
+		// 5 minutes: holding the binding out of v_routable for five minutes
+		// over a transient spike needlessly shrinks the candidate pool. A
+		// provider-supplied Retry-After still wins (handled above).
 		return 60 * time.Second
 	case errorsx.KindNetwork:
 		return 120 * time.Second

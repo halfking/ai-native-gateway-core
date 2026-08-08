@@ -1647,7 +1647,32 @@ func freeCredentialsTolerateTransient(billingMode string, kind errorsx.ErrorKind
 		errorsx.KindNetwork,
 		errorsx.KindRateLimit,
 		errorsx.KindUpstreamDown,
+		errorsx.KindUpstreamOverloaded,
 		errorsx.KindTransient:
+		return true
+	}
+	return false
+}
+
+// isTransientFailoverKind reports whether a failed candidate should hand off
+// to the next candidate in the main loop rather than ending the walk.
+//
+// This is load-bearing for streaming: streaming requests never enter the sync
+// retry loop below, so the `continue` this predicate guards is their ONLY
+// failover safeguard. A kind that is retryable but missing from this list
+// silently becomes all_candidates_failed for a streaming client while
+// non-streaming callers are still rescued by sync retry — a discrepancy that
+// is invisible in unit tests of the retry loop itself. Extracted from the
+// inline condition (2026-08-08) so membership is directly assertable.
+func isTransientFailoverKind(kind errorsx.ErrorKind) bool {
+	switch kind {
+	case errorsx.KindTransient,
+		errorsx.KindRateLimit,
+		errorsx.KindTimeout,
+		errorsx.KindStreamTimeout,
+		errorsx.KindUpstreamDown,
+		errorsx.KindUpstreamOverloaded,
+		errorsx.KindEmptyResponse:
 		return true
 	}
 	return false
@@ -3118,12 +3143,7 @@ func (e *Executor) Execute(params *ExecParams) (*ExecuteResult, error) {
 		// 场景：credential 21 (MiniMax prod-v2) rate_limit → credential 19
 		// (NVIDIA endless) transient → credential 23 (NVIDIA nvidia-latest)
 		// → 成功！
-		if kind == errorsx.KindTransient ||
-			kind == errorsx.KindRateLimit ||
-			kind == errorsx.KindTimeout ||
-			kind == errorsx.KindStreamTimeout ||
-			kind == errorsx.KindUpstreamDown ||
-			kind == errorsx.KindEmptyResponse {
+		if isTransientFailoverKind(kind) {
 
 			// Track the last KindTransient credential for inline probe
 			// in the sync retry loop. We specifically track KindTransient
@@ -3927,11 +3947,15 @@ func (e *Executor) recordBanditFailure(credentialID int, kind errorsx.ErrorKind)
 		return
 	}
 
-	// Skip transient network errors
+	// Skip transient network errors. KindUpstreamOverloaded belongs here
+	// for the same reason as KindUpstreamDown: the upstream shedding load
+	// says nothing about this credential's quality, so a bandit penalty
+	// would demote a healthy credential for a provider-side condition.
 	if kind == errorsx.KindCanceled ||
 		kind == errorsx.KindNetwork ||
 		kind == errorsx.KindTimeout ||
-		kind == errorsx.KindUpstreamDown {
+		kind == errorsx.KindUpstreamDown ||
+		kind == errorsx.KindUpstreamOverloaded {
 		return
 	}
 	// Skip per-model permanent failures (model deprecated / not found). The
@@ -4664,6 +4688,25 @@ type streamInterruptedError struct {
 
 func (e *streamInterruptedError) Error() string {
 	return "stream_interrupted: " + e.reason
+}
+
+// upstreamRetryAfterHint extracts an upstream-requested retry delay from
+// err, bounded by upstreampkg's in-flight cap. Returns 0 when err carries
+// no usable hint, so callers keep their exponential backoff.
+//
+// The bound matters: upstream.Error.RetryAfter is clamped for a DB cooling
+// window (up to 31 days). Sleeping on that value with the client's
+// connection still open would hang the request, so the in-flight path needs
+// its own much tighter ceiling.
+func upstreamRetryAfterHint(err error) time.Duration {
+	if err == nil {
+		return 0
+	}
+	var ue *upstreampkg.Error
+	if !errors.As(err, &ue) || ue == nil {
+		return 0
+	}
+	return upstreampkg.ClampInFlightRetryAfter(ue.RetryAfter)
 }
 
 type retryableError struct {

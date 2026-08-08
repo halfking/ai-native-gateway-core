@@ -32,7 +32,8 @@ func ClassifyFailureToStage(errCode string) Stage {
 		"connection_reset", "hangup", "write_failed",
 		"provider_error", "model_not_found",
 		"upstream_credential_invalid", "upstream_credential_revoked",
-		"upstream_quota_periodic", "upstream_quota_permanent":
+		"upstream_quota_periodic", "upstream_quota_permanent",
+		"upstream_overloaded":
 		return StageUpstreamRequest
 	// Stream
 	case "stream_error", "stream_timeout", "eof_without_done",

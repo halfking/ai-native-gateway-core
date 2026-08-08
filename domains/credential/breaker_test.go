@@ -3,6 +3,8 @@ package credential
 import (
 	"testing"
 	"time"
+
+	"github.com/kaixuan/llm-gateway-go/errorsx"
 )
 
 func TestNewBreakerIsClosed(t *testing.T) {
@@ -394,12 +396,17 @@ func TestUpstreamDownExponentialBackoff(t *testing.T) {
 	}
 }
 
-func TestConcurrentOverloadFiveMinuteCooling(t *testing.T) {
+func TestConcurrentOverloadTwoMinuteCooling(t *testing.T) {
 	// KindConcurrent represents "service overloaded / too many concurrent
-	// requests". The credential should be taken out of rotation for
-	// 5 minutes to let the upstream's concurrency window clear.
-	// RecoveryAuto uses autoRecoveryFailureThreshold=3, so we record
-	// three failures to confirm the circuit opening.
+	// requests". The credential is taken out of rotation for 2 minutes to
+	// let the upstream's concurrency window clear.
+	//
+	// 2026-08-08: renamed from TestConcurrentOverloadFiveMinuteCooling and
+	// the comment corrected. The name, the "5 minutes" prose, and the
+	// "threshold=3" claim were all stale: the policy at breaker.go has been
+	// 2 min since 2026-07-24, the assertion below has always checked
+	// 118-122s, and autoRecoveryFailureThreshold is 2. Only the extra
+	// RecordFailure calls (harmless, threshold is a floor) kept it passing.
 	b := New(1, 1)
 	b.RecordFailure(KindConcurrent)
 	b.RecordFailure(KindConcurrent)
@@ -578,5 +585,83 @@ func TestManagerPeekAllowedDoesNotConsumeProbe(t *testing.T) {
 	}
 	if !m.Allow(1, 1) {
 		t.Fatal("Allow() should still succeed after manager PeekAllowed (probe not consumed)")
+	}
+}
+
+// TestUpstreamOverloadedCoolingCapsAtFiveMinutes pins the breaker policy for
+// KindUpstreamOverloaded (added 2026-08-08).
+//
+// The policy deliberately shares KindUpstreamDown's 30s start and exponential
+// shape but caps at 5 min instead of 30 min: a relay answering "our servers
+// are currently overloaded, please try again later" recovers on a seconds-to-
+// minutes scale, so quarantining it for half an hour shrinks the candidate
+// pool far longer than the fault lasts. This test drives enough rounds to
+// reach the ceiling, which is the only place the two policies diverge.
+func TestUpstreamOverloadedCoolingCapsAtFiveMinutes(t *testing.T) {
+	b := New(1, 1)
+
+	// exponentialRecoveryFailureThreshold is 2, so two consecutive failures
+	// confirm the first opening at InitialCooling (30s).
+	b.RecordFailure(errorsx.KindUpstreamOverloaded)
+	b.RecordFailure(errorsx.KindUpstreamOverloaded)
+	if b.State() != StateOpen {
+		t.Fatalf("expected open after 2 confirmed overload failures, got %s", b.State())
+	}
+	b.mu.Lock()
+	first := time.Until(b.coolingExpires)
+	b.mu.Unlock()
+	if first < 28*time.Second || first > 32*time.Second {
+		t.Fatalf("first overload cooling = %v, want ~30s", first)
+	}
+
+	// Drive further rounds: 60s, 120s, 240s, then the 5-min ceiling.
+	for _, want := range []time.Duration{60 * time.Second, 120 * time.Second, 240 * time.Second} {
+		b.mu.Lock()
+		b.coolingExpires = time.Now().Add(-1 * time.Second)
+		b.mu.Unlock()
+		b.Allow()
+		b.RecordFailure(errorsx.KindUpstreamOverloaded)
+
+		b.mu.Lock()
+		got := time.Until(b.coolingExpires)
+		b.mu.Unlock()
+		if got < want-2*time.Second || got > want+2*time.Second {
+			t.Fatalf("overload cooling = %v, want ~%v", got, want)
+		}
+	}
+
+	// Two more rounds would be 480s then 960s under KindUpstreamDown's
+	// 30-min ceiling; KindUpstreamOverloaded must clamp both to 5 min.
+	for round := 0; round < 2; round++ {
+		b.mu.Lock()
+		b.coolingExpires = time.Now().Add(-1 * time.Second)
+		b.mu.Unlock()
+		b.Allow()
+		b.RecordFailure(errorsx.KindUpstreamOverloaded)
+
+		b.mu.Lock()
+		got := time.Until(b.coolingExpires)
+		b.mu.Unlock()
+		if got < 298*time.Second || got > 302*time.Second {
+			t.Fatalf("round %d overload cooling = %v, want ~300s (5-min cap)", round, got)
+		}
+	}
+}
+
+// TestUpstreamOverloadedIsNotQuarantined guards the single most important
+// property of the new kind: it must never reach StateQuarantined. Quarantine
+// is manual-recovery-only, and an overloaded upstream recovers by itself —
+// pinning it there would need an operator to clear a fault that already
+// healed.
+func TestUpstreamOverloadedIsNotQuarantined(t *testing.T) {
+	b := New(1, 1)
+	for i := 0; i < 10; i++ {
+		b.RecordFailure(errorsx.KindUpstreamOverloaded)
+	}
+	if b.State() == StateQuarantined {
+		t.Fatal("overload must not quarantine the credential; it recovers on its own")
+	}
+	if b.State() != StateOpen {
+		t.Fatalf("expected open after repeated overload failures, got %s", b.State())
 	}
 }

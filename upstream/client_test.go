@@ -435,3 +435,169 @@ func TestError_NonNilReceiver_2026_07_20(t *testing.T) {
 		t.Fatalf("(*Error).Unwrap() returned %v, want non-nil with %q", err, "429 hit")
 	}
 }
+
+// The 2026-08-08 apiclaude.cc body, verbatim from 154's journald. Kept as a
+// package-level literal so the classification and body-preservation tests
+// cannot drift apart from each other.
+const overloadBody = `{"error":{"message":"Our servers are currently overloaded. Please try again later.","type":"upstream_error"}}`
+
+// TestDo_OverloadBodyOn502IsUpstreamOverloaded pins the 2026-08-08 fix.
+//
+// Do() classified 5xx responses from the status code alone, so a relay that
+// answered 502 with "our servers are currently overloaded, please try again
+// later" was indistinguishable from a relay that was actually down: both
+// became KindUpstreamDown. 154 logged 14 such responses in 24h as
+// err_kind=upstream_down while the very next attempt on the same credential
+// returned 200 — the body said "transient" and we threw it away.
+func TestDo_OverloadBodyOn502IsUpstreamOverloaded(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadGateway)
+		_, _ = w.Write([]byte(overloadBody))
+	}))
+	defer server.Close()
+
+	client := NewWithRetries(0)
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, server.URL, strings.NewReader(`{}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, uErr := client.Do(req)
+	if uErr == nil {
+		t.Fatal("expected an error for 502")
+	}
+	if uErr.Kind != errorsx.KindUpstreamOverloaded {
+		t.Errorf("Kind = %q, want %q", uErr.Kind, errorsx.KindUpstreamOverloaded)
+	}
+	// The diagnostic message must carry the upstream's own words, otherwise
+	// request_logs.response_preview is useless for post-mortems.
+	if !strings.Contains(uErr.Message, "currently overloaded") {
+		t.Errorf("Message = %q, want it to contain the upstream text", uErr.Message)
+	}
+	// captureErrorBody must have restored the stream: downstream diagnostic
+	// readers run after classification and would otherwise see an empty body.
+	if resp == nil || resp.Body == nil {
+		t.Fatal("expected a readable response body after classification")
+	}
+	rest, _ := io.ReadAll(resp.Body)
+	if !strings.Contains(string(rest), "currently overloaded") {
+		t.Errorf("restored body = %q, want the original payload", string(rest))
+	}
+}
+
+// TestDo_5xxClassificationBoundaries locks the scope of the new kind. Only
+// 500/502 with an overload-shaped body may become KindUpstreamOverloaded:
+// 503/529 remain KindConcurrent because those statuses are a genuine
+// concurrency signal that credentialhealth's tuner deliberately reacts to by
+// ratcheting concurrency_limit_auto down, and a 5xx with an ordinary body
+// remains KindUpstreamDown.
+func TestDo_5xxClassificationBoundaries(t *testing.T) {
+	cases := []struct {
+		name   string
+		status int
+		body   string
+		want   errorsx.ErrorKind
+	}{
+		{"500_overload_body", 500, overloadBody, errorsx.KindUpstreamOverloaded},
+		{"502_overload_body", 502, overloadBody, errorsx.KindUpstreamOverloaded},
+		{"502_ordinary_body_stays_upstream_down", 502, `bad gateway`, errorsx.KindUpstreamDown},
+		{"500_ordinary_body_stays_upstream_down", 500, `internal server error`, errorsx.KindUpstreamDown},
+		{"503_overload_body_stays_concurrent", 503, overloadBody, errorsx.KindConcurrent},
+		{"529_overload_body_stays_concurrent", 529, overloadBody, errorsx.KindConcurrent},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.WriteHeader(tc.status)
+				_, _ = w.Write([]byte(tc.body))
+			}))
+			defer server.Close()
+
+			client := NewWithRetries(0)
+			req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, server.URL, strings.NewReader(`{}`))
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, uErr := client.Do(req)
+			if uErr == nil {
+				t.Fatalf("status %d: expected an error", tc.status)
+			}
+			if uErr.Kind != tc.want {
+				t.Errorf("status %d body %q: Kind = %q, want %q", tc.status, tc.body, uErr.Kind, tc.want)
+			}
+		})
+	}
+}
+
+// TestClampInFlightRetryAfter guards the second, tighter bound added in
+// 2026-08-08. clampRetryAfter's 31-day ceiling is sized for a credential
+// cooling window written to the DB; reusing it to time a sleep while the
+// caller's connection is open would let one malformed header hang a live
+// request for weeks.
+func TestClampInFlightRetryAfter(t *testing.T) {
+	cases := []struct {
+		name string
+		in   time.Duration
+		want time.Duration
+	}{
+		{"zero means no hint", 0, 0},
+		{"negative means no hint", -3 * time.Second, 0},
+		{"short hint passes through", 3 * time.Second, 3 * time.Second},
+		{"at the ceiling", maxInFlightRetryAfter, maxInFlightRetryAfter},
+		{"long hint is capped", 600 * time.Second, maxInFlightRetryAfter},
+		{"absurd hint is capped", maxRetryAfter, maxInFlightRetryAfter},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := ClampInFlightRetryAfter(tc.in); got != tc.want {
+				t.Errorf("ClampInFlightRetryAfter(%s) = %s, want %s", tc.in, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestDo_HonorsRetryAfterForBackoff verifies the provider sets the pace.
+// Before this fix every delay was a blind 500ms*2^attempt, so an upstream
+// asking for 1s was retried at 500ms — too early to help, and the wasted
+// attempt counted against the retry budget.
+func TestDo_HonorsRetryAfterForBackoff(t *testing.T) {
+	var attempts atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attempts.Add(1)
+		w.Header().Set("Retry-After", "1")
+		w.WriteHeader(http.StatusBadGateway)
+		_, _ = w.Write([]byte(overloadBody))
+	}))
+	defer server.Close()
+
+	// baseDelay is deliberately 10ms: if the Retry-After hint were ignored
+	// the second attempt would fire almost immediately and the elapsed-time
+	// assertion below would fail.
+	client := &Client{
+		hc:         &http.Client{Timeout: 5 * time.Second},
+		maxRetries: 1,
+		baseDelay:  10 * time.Millisecond,
+	}
+	body := []byte(`{}`)
+	req, _ := http.NewRequestWithContext(context.Background(), http.MethodPost, server.URL, bytes.NewReader(body))
+	req.GetBody = func() (io.ReadCloser, error) {
+		return io.NopCloser(bytes.NewReader(body)), nil
+	}
+
+	start := time.Now()
+	_, uErr := client.Do(req)
+	elapsed := time.Since(start)
+
+	if uErr == nil {
+		t.Fatal("expected an error after exhausting retries")
+	}
+	if attempts.Load() != 2 {
+		t.Fatalf("attempts = %d, want 2 (1 + 1 retry)", attempts.Load())
+	}
+	if elapsed < time.Second {
+		t.Errorf("elapsed = %s, want >= 1s (the upstream's Retry-After was ignored)", elapsed)
+	}
+	// Sanity bound: honouring the hint must not compound into a long stall.
+	if elapsed > 4*time.Second {
+		t.Errorf("elapsed = %s, want < 4s", elapsed)
+	}
+}

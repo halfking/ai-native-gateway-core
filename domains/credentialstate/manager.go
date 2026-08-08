@@ -322,6 +322,7 @@ func (m *Manager) UpdateOnFailure(ctx context.Context, credID int, model string,
 	// 下面 permanent 分支会正常翻 false。
 	isTransient := errKind == errorsx.KindRateLimit ||
 		errKind == errorsx.KindUpstreamDown ||
+		errKind == errorsx.KindUpstreamOverloaded ||
 		errKind == errorsx.KindTimeout ||
 		errKind == errorsx.KindStreamTimeout
 
@@ -347,6 +348,7 @@ func (m *Manager) UpdateOnFailure(ctx context.Context, credID int, model string,
 	probeImmediately := errKind == errorsx.KindNetwork ||
 		errKind == errorsx.KindTimeout ||
 		errKind == errorsx.KindUpstreamDown ||
+		errKind == errorsx.KindUpstreamOverloaded ||
 		errKind == errorsx.KindStreamTimeout ||
 		errKind == errorsx.KindTransient
 	if m.activeProbeSubmitter != nil &&

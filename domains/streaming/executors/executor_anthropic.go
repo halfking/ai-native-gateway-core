@@ -844,8 +844,28 @@ func (e *Executor) executeAnthropicOnce(
 
 	if uErr != nil && (resp == nil || resp.StatusCode >= 500) {
 		errKind := uErr.Kind
+		// 2026-08-08: see executor_chat.go — an overload-shaped 5xx body is a
+		// load signal, not a dead upstream.
+		if len(uErr.Body) > 0 {
+			if bodyKind := errorsx.ClassifyErrorWithBody(uErr.StatusCode, uErr.Body); bodyKind == errorsx.KindUpstreamOverloaded {
+				errKind = bodyKind
+				uErr.Kind = bodyKind
+			}
+		}
 		if errKind == errorsx.KindRateLimit {
 			e.Limiter.Shrink(cand.ProviderID, cand.CredentialID)
+		}
+		// Overload → failover-first: unwrapped return exits the
+		// per-credential retry loop so the candidate loop switches
+		// credential instead of re-hitting the saturated one.
+		if errKind == errorsx.KindUpstreamOverloaded {
+			slog.Warn("upstream overloaded, failing over to next candidate",
+				"credential_id", cand.CredentialID,
+				"provider_id", cand.ProviderID,
+				"upstream_status", uErr.StatusCode,
+				"retry_after_ms", uErr.RetryAfter.Milliseconds(),
+			)
+			return nil, uErr
 		}
 		return nil, &retryableError{err: uErr}
 	}

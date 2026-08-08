@@ -485,6 +485,22 @@ func TestClassifyErrorWithBody_Protocol4xx(t *testing.T) {
 		{"500_still_upstream_down", 500, `internal server error`, KindUpstreamDown},
 		{"502_still_upstream_down", 502, `bad gateway`, KindUpstreamDown},
 		{"503_still_concurrent", 503, `service unavailable`, KindConcurrent},
+		// 2026-08-08: a 5xx whose BODY reports transient load is not the
+		// same failure as a dead upstream. Observed on 154 against the
+		// apiclaude.cc relay: 14 occurrences in 24h, every one logged as
+		// err_kind=upstream_down because classification never looked at the
+		// body. 500/502 now carry KindUpstreamOverloaded so the cooling
+		// window, breaker policy, and dashboards can tell "busy" from
+		// "down"; routing behaviour stays identical to KindUpstreamDown.
+		{"502_overload_body_now_overloaded", 502, `{"error":{"message":"Our servers are currently overloaded. Please try again later.","type":"upstream_error"}}`, KindUpstreamOverloaded},
+		{"500_overload_body_now_overloaded", 500, `{"error":{"message":"server is overloaded, please try again later"}}`, KindUpstreamOverloaded},
+		// Scope boundary: 503/529 keep KindConcurrent even with the same
+		// body. Those statuses ARE the upstream stating a concurrency
+		// limit, and credentialhealth/tuner.go deliberately ratchets
+		// concurrency_limit_auto down on KindConcurrent. Widening the new
+		// kind to cover them would silently disable that ratchet.
+		{"503_overload_body_still_concurrent", 503, `{"error":{"message":"Our servers are currently overloaded. Please try again later."}}`, KindConcurrent},
+		{"529_overload_body_still_concurrent", 529, `{"type":"error","error":{"type":"overloaded_error","message":"Overloaded, try again later"}}`, KindConcurrent},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -498,6 +514,7 @@ func TestClassifyErrorWithBody_Protocol4xx(t *testing.T) {
 			retryable := IsRetryable(got)
 			retryableWant := tc.want == KindTimeout ||
 				tc.want == KindUpstreamDown ||
+				tc.want == KindUpstreamOverloaded ||
 				tc.want == KindConcurrent ||
 				tc.want == KindTransient
 			if retryable != retryableWant {

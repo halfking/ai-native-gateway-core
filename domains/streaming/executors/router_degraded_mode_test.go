@@ -228,6 +228,10 @@ func TestIsTransientUnavailableReason(t *testing.T) {
 		{"state:" + string(errorsx.KindStreamTimeout), true},
 		{"state:" + string(errorsx.KindRateLimit), true},
 		{"state:" + string(errorsx.KindUpstreamDown), true},
+		// 2026-08-08: overload-shaped 5xx 必须与 upstream_down 同权。漏掉这行
+		// 会让「仅剩一个候选且该候选处于 overload 内存态」的请求直接无候选失败，
+		// 而不是走降级救援重试。
+		{"state:" + string(errorsx.KindUpstreamOverloaded), true},
 		{"state:" + string(errorsx.KindEmptyResponse), true},
 		{"state:probe_direct_timeout", true},
 
@@ -450,6 +454,9 @@ func TestFreeCredentialsTolerateTransient(t *testing.T) {
 		{"free+network", "free", errorsx.KindNetwork, true},
 		{"free+rate_limit", "free", errorsx.KindRateLimit, true},
 		{"free+upstream_down", "free", errorsx.KindUpstreamDown, true},
+		// 2026-08-08: 免费凭据遇到上游过载不应被硬剔——过载是上游的秒级抖动，
+		// 与凭据本身的健康无关。
+		{"free+upstream_overloaded", "free", errorsx.KindUpstreamOverloaded, true},
 		{"free+transient", "free", errorsx.KindTransient, true},
 		// 免费 + 永久 → 不容忍（仍硬剔，坏 key 不拖垮路由）
 		{"free+auth", "free", errorsx.KindAuth, false},

@@ -183,6 +183,12 @@ func (c *Client) Do(req *http.Request) (*http.Response, *Error) {
 		resp *http.Response
 		uErr *Error
 	)
+	// nextDelay carries the previous attempt's upstream-requested wait
+	// (Retry-After / X-RateLimit-Reset). When the provider tells us how
+	// long to wait, honouring it beats a blind exponential guess: an
+	// overloaded relay that asks for 3s is answered in 3s instead of
+	// 500ms-too-early or 8s-too-late. Zero means "no hint, use backoff".
+	var nextDelay time.Duration
 	for attempt := 0; attempt <= c.maxRetries; attempt++ {
 		if attempt > 0 {
 			if req.GetBody != nil {
@@ -193,6 +199,9 @@ func (c *Client) Do(req *http.Request) (*http.Response, *Error) {
 				req.Body = body
 			}
 			delay := c.baseDelay * (1 << (attempt - 1))
+			if nextDelay > 0 {
+				delay = nextDelay
+			}
 			slog.Debug("upstream retry", "attempt", attempt, "delay_ms", delay.Milliseconds())
 			select {
 			case <-req.Context().Done():
@@ -207,7 +216,27 @@ func (c *Client) Do(req *http.Request) (*http.Response, *Error) {
 			return resp, nil
 		}
 
+		// 2026-08-08: capture the 5xx body BEFORE classifying. The status
+		// code alone is a lossy signal — a relay that answers
+		//   502 {"error":{"message":"Our servers are currently overloaded.
+		//                 Please try again later."}}
+		// is reporting transient load, not a dead upstream, and only the
+		// body says so. Classifying status-only flattened every such 502
+		// into KindUpstreamDown, so the gateway could neither distinguish
+		// overload from an outage in its logs nor apply an overload-shaped
+		// cooling window. captureErrorBody restores resp.Body, so the
+		// diagnostic branches below and any downstream reader still see it.
+		var earlyBody []byte
+		bodyAvailable := false
+		if doErr == nil && resp != nil {
+			earlyBody = captureErrorBody(resp, true)
+			bodyAvailable = true
+		}
+
 		kind := errorsx.ClassifyError(doErr, resp)
+		if bodyAvailable && len(earlyBody) > 0 {
+			kind = errorsx.ClassifyErrorWithBody(resp.StatusCode, earlyBody)
+		}
 		if !errorsx.IsRetryable(kind) {
 			msg := ""
 			var bodyBytes []byte
@@ -218,9 +247,8 @@ func (c *Client) Do(req *http.Request) (*http.Response, *Error) {
 				statusCode = resp.StatusCode
 				// 2026-06-23 P0: capture upstream body (4KB cap) so transient
 				// errors have a diagnostic message in request_logs.
-				body := captureErrorBody(resp, true)
-				bodyBytes = body
-				msg = strings.TrimSpace(string(body))
+				bodyBytes = earlyBody
+				msg = strings.TrimSpace(string(earlyBody))
 				if msg == "" {
 					msg = fmt.Sprintf("HTTP %d (empty body)", resp.StatusCode)
 				}
@@ -233,9 +261,13 @@ func (c *Client) Do(req *http.Request) (*http.Response, *Error) {
 		statusCode := 0
 		if resp != nil {
 			statusCode = resp.StatusCode
-			body := captureErrorBody(resp, attempt == c.maxRetries)
-			bodyBytes = body
+			bodyBytes = earlyBody
 		}
+		// Let the provider set the pace for the next attempt, bounded by a
+		// far tighter cap than clampRetryAfter's 31 days: that bound is
+		// sized for a DB cooling window, and sleeping anywhere near it with
+		// a client connection open would hang the request.
+		nextDelay = ClampInFlightRetryAfter(retryAfterFromResponse(resp))
 		if doErr != nil {
 			uErr = &Error{Kind: kind, Message: doErr.Error(), Err: doErr, Body: bodyBytes, StatusCode: statusCode, RetryAfter: retryAfterFromResponse(resp)}
 		} else if len(bodyBytes) > 0 {
@@ -290,6 +322,28 @@ func RetryAfterFromHeaders(headers http.Header) time.Duration {
 		}
 	}
 	return 0
+}
+
+// maxInFlightRetryAfter bounds an upstream-requested wait that we honour
+// while the caller's request is still open. maxRetryAfter (31 days) is
+// sized for a credential cooling window written to the DB; reusing it for
+// an in-flight sleep would let one malformed header stall a live request
+// indefinitely. Ten seconds keeps a genuine overload hint useful while
+// staying inside typical client timeouts.
+const maxInFlightRetryAfter = 10 * time.Second
+
+// ClampInFlightRetryAfter returns d bounded by maxInFlightRetryAfter, or
+// zero when the upstream gave no usable hint (so callers fall back to
+// exponential backoff). Exported because the routing executors run their
+// own retry loops and must apply the same in-flight bound.
+func ClampInFlightRetryAfter(d time.Duration) time.Duration {
+	if d <= 0 {
+		return 0
+	}
+	if d > maxInFlightRetryAfter {
+		return maxInFlightRetryAfter
+	}
+	return d
 }
 
 // clampRetryAfter caps the delay to a sane upper bound so an upstream cannot

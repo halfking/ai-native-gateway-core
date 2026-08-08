@@ -69,7 +69,8 @@ func isTransientRouteNodeFailure(kind errorsx.ErrorKind) bool {
 	if kind == errorsx.KindCanceled ||
 		kind == errorsx.KindNetwork ||
 		kind == errorsx.KindTimeout ||
-		kind == errorsx.KindUpstreamDown {
+		kind == errorsx.KindUpstreamDown ||
+		kind == errorsx.KindUpstreamOverloaded {
 		return true
 	}
 	return errorsx.IsClientBug(kind)
