@@ -768,3 +768,9 @@
 - ✅ 幂等性：二次运行返回 "already exists"，无重复建表
 - ✅ down 文件对称：删除 5 函数，不动已建分区（防数据丢失）
 
+## 2026-08-08T04:14:33Z — deploy 245 build_seq 1473 (da253d3d)
+
+| Migration | File | SHA-256 | Status |
+|-----------|------|---------|--------|
+| 476 | `476_session_v2_tenant_unique_keys.sql` | `6ab1179688a27f11f28fe2696fcbbcf267e28ad3df2248d92c659fec14b86c42` | applied+verified |
+
