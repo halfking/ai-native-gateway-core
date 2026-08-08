@@ -8,7 +8,12 @@ import (
 	"github.com/kaixuan/llm-gateway-go/errorsx"
 )
 
-func TestCoolingDurationMatchesPythonDefaults(t *testing.T) {
+// TestCoolingDurationPerKind verifies coolingDuration() returns the expected
+// Go-side default cooling window for each ErrorKind. Note: despite the old
+// name ("MatchesPythonDefaults"), this table asserts the Go implementation's
+// intended defaults, NOT a Python reference implementation — renamed 2026-08-09
+// to stop implying a cross-language contract that does not exist.
+func TestCoolingDurationPerKind(t *testing.T) {
 	tests := []struct {
 		kind errorsx.ErrorKind
 		want time.Duration
