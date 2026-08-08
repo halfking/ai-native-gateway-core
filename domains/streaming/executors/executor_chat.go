@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -1372,6 +1373,23 @@ func (e *Executor) finalizeOpenAIUpstreamBody(params *ExecParams, cand provider.
 		// Parse Anthropic body → IR → Serialize OpenAI
 		irReq, err := e.IR.ParseAnthropic(sourceBody)
 		if err != nil {
+			// 2026-08-08 P0 Fix: when the IR stream-side circuit breaker is
+			// OPEN, fall back to the legacy AnthropicToOpenAI callback (set
+			// by cmd/gateway/main.go). Without this fallback, a single IR
+			// parse failure (e.g. malformed client body) trips the breaker
+			// and every subsequent Anthropic→OpenAI request gets 503'd
+			// before the legacy path even runs.
+			if errors.Is(err, transformation.ErrConverterCircuitOpen) && e.AnthropicToOpenAI != nil {
+				slog.Warn("ir_converter_circuit_open_fallback_to_legacy_chat",
+					"request_id", params.RequestID,
+					"provider_id", cand.ProviderID,
+					"credential_id", cand.CredentialID,
+					"raw_model", cand.RawModel,
+					"client_model", params.ClientModel,
+					"stage", "parse_anthropic",
+				)
+				return e.legacyChatToOpenAIBody(params, cand, sourceBody)
+			}
 			return nil, fmt.Errorf("ir parse anthropic: %w", err)
 		}
 		// Override model to outbound model (matching existing behavior)
@@ -1407,6 +1425,21 @@ func (e *Executor) finalizeOpenAIUpstreamBody(params *ExecParams, cand provider.
 		}
 		bodyBytes, err := e.IR.SerializeOpenAI(irReq)
 		if err != nil {
+			// 2026-08-08 P0 Fix: same IR-circuit-open fallback as ParseAnthropic.
+			// SerializeOpenAI shares the same process-local breaker; on OPEN
+			// we drop back to the legacy AnthropicToOpenAI callback so the
+			// request still reaches upstream.
+			if errors.Is(err, transformation.ErrConverterCircuitOpen) && e.AnthropicToOpenAI != nil {
+				slog.Warn("ir_converter_circuit_open_fallback_to_legacy_chat",
+					"request_id", params.RequestID,
+					"provider_id", cand.ProviderID,
+					"credential_id", cand.CredentialID,
+					"raw_model", cand.RawModel,
+					"client_model", params.ClientModel,
+					"stage", "serialize_openai",
+				)
+				return e.legacyChatToOpenAIBody(params, cand, sourceBody)
+			}
 			return nil, fmt.Errorf("ir serialize openai: %w", err)
 		}
 		// Apply remaining OpenAI-path transforms (disguise, prompt cache)
@@ -1515,6 +1548,43 @@ func (e *Executor) finalizeOpenAIUpstreamBody(params *ExecParams, cand provider.
 			}
 			bodyBytes = converted
 		}
+	}
+	return e.applyOpenAITailTransforms(params, cand, bodyBytes)
+}
+
+// legacyChatToOpenAIBody performs the legacy Anthropic→OpenAI body conversion
+// without using the IR converter. Extracted so the IR-circuit-open fallback
+// path can reuse it without duplicating the format_conversion / disguise /
+// prompt-cache tail logic.
+func (e *Executor) legacyChatToOpenAIBody(params *ExecParams, cand provider.Candidate, sourceBody []byte) ([]byte, error) {
+	// 2026-08-08 P0 Fix: extracted from finalizeOpenAIUpstreamBody so the
+	// IR-circuit-open fallback has a single, audited implementation.
+	p := *params
+	p.BodyBytes = sourceBody
+	bodyBytes := prepareRequestBody(&p, cand)
+	if params.ClientProtocol == "anthropic-messages" {
+		if e.ProviderSettings != nil {
+			if enabled, ok := e.ProviderSettings.GetBool(params.R.Context(), cand.ProviderID, "format_conversion.enabled"); ok && !enabled {
+				return nil, fmt.Errorf("format conversion disabled for provider %d (anthropic→openai)", cand.ProviderID)
+			}
+		}
+		if e.AnthropicToOpenAI != nil {
+			converted, err := e.AnthropicToOpenAI(bodyBytes)
+			if err != nil {
+				return nil, fmt.Errorf("convert anthropic body to openai: %w", err)
+			}
+			bodyBytes = converted
+		}
+	}
+	return e.applyOpenAITailTransforms(params, cand, bodyBytes)
+}
+
+// applyOpenAITailTransforms runs the format-agnostic tail steps of the OpenAI
+// upstream body pipeline: tool normalization, disguise, prompt-cache injection.
+// Lives in its own helper so the IR path and the legacy path share it.
+func (e *Executor) applyOpenAITailTransforms(params *ExecParams, cand provider.Candidate, bodyBytes []byte) ([]byte, error) {
+	if e.NormalizeOpenAITools != nil {
+		bodyBytes = e.NormalizeOpenAITools(bodyBytes)
 	}
 	if disguise.IsEnabled() && disguise.ShouldApply(bodyBytes) {
 		profileName := ""
