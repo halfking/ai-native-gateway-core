@@ -356,7 +356,7 @@ func TestProbeSync_ReusePathStillReturnsFalseWhenStillUnavailable(t *testing.T) 
 // fix for the FRESH path: when a ProbeSync caller reserves the inFlight
 // slot itself and runs probeDirect/probeGateway, any concurrent caller
 // that attached as a syncWaiter must be released by the fresh-job's
-// defer-notifySyncWaiters — NOT by burning its ctx budget.
+// defer-finishProbe — NOT by burning its ctx budget.
 //
 // We can't run a real probeDirect (needs DB + network), so we stub
 // probeDirect/probeGateway by intercepting at the stateProvider level:
@@ -366,7 +366,7 @@ func TestProbeSync_ReusePathStillReturnsFalseWhenStillUnavailable(t *testing.T) 
 //
 // Since we cannot easily monkeypatch probeDirect, this test instead
 // drives the inFlight + syncWaiters plumbing directly to assert the
-// notifySyncWaiters helper does the right thing for both readers.
+// finishProbe helper does the right thing for both readers.
 func TestProbeSync_FreshJobNotifiesWaiters(t *testing.T) {
 	w := &NodeProbeWorker{
 		inFlight:    make(map[string]struct{}),
@@ -388,14 +388,14 @@ func TestProbeSync_FreshJobNotifiesWaiters(t *testing.T) {
 	w.syncWaiters[key] = append(w.syncWaiters[key], ch1, ch2)
 	w.syncWaitersMu.Unlock()
 
-	// notifySyncWaiters must close BOTH channels and clear the map entry.
-	w.notifySyncWaiters(key)
+	// finishProbe must close BOTH channels and clear the map entry.
+	w.finishProbe(key)
 
 	for i, ch := range []chan struct{}{ch1, ch2} {
 		select {
 		case <-ch:
 		default:
-			t.Errorf("waiter %d was not closed by notifySyncWaiters", i)
+			t.Errorf("waiter %d was not closed by finishProbe", i)
 		}
 	}
 
@@ -407,8 +407,8 @@ func TestProbeSync_FreshJobNotifiesWaiters(t *testing.T) {
 		t.Errorf("syncWaiters[key] not cleared; got %d entries", remaining)
 	}
 
-	// Second notify must not panic on a nil/empty slice.
-	w.notifySyncWaiters(key) // idempotent
+	// Second finishProbe must not panic on a nil/empty slice.
+	w.finishProbe(key) // idempotent
 }
 
 // TestProbeSync_FinishProbeReleasesSlotAndNotifies pins the contract of

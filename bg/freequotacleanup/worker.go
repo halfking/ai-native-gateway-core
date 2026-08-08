@@ -8,6 +8,8 @@ import (
 	"time"
 )
 
+const superAdminRole = "super_admin"
+
 // Worker 配额历史清理后台任务
 type Worker struct {
 	db       *sql.DB
@@ -111,21 +113,48 @@ func (w *Worker) cleanupTenant(ctx context.Context, tenantID string) (int64, err
 	return affected, nil
 }
 
-// listTenants 列出需要处理的租户 ID. 没有专用注册表时退化为 ['default'].
+// listTenants 枚举 free_quota_tracker 中实际存在的租户 ID. RLS policy
+// (db/db_omnifree.go) 允许 app.current_role = 'super_admin' 跨租户读取,
+// 我们在事务内 SET LOCAL 该 GUC, 既能枚举所有 tenant, 又不污染连接级
+// 设置 (is_local=true 让 GUC 只作用于当前事务). 旧实现直接
+// SELECT DISTINCT 在 BYPASSRLS 角色下自身就是跨租户读取, 是 H1 残留风险;
+// 新实现借由显式 super_admin 通道让 policy 显式放行, 审计链路可追溯.
+//
+// 退化: 当 RLS policy 拒绝 (例如某些部署未启用 bypass_rls 但也无
+// super_admin 通道) 或表为空时, 退化为 ['default'] 仅处理 bootstrap 租户,
+// 与旧 fallback 行为一致.
 func (w *Worker) listTenants(ctx context.Context) ([]string, error) {
-	rows, err := w.db.QueryContext(ctx, `
+	tx, err := w.db.BeginTx(ctx, nil)
+	if err != nil {
+		return []string{"default"}, nil
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			_ = tx.Rollback()
+		}
+	}()
+
+	if _, err := tx.ExecContext(ctx,
+		"SELECT set_config('app.current_role', $1, true)",
+		superAdminRole, true); err != nil {
+		return []string{"default"}, nil
+	}
+
+	rows, err := tx.QueryContext(ctx, `
         SELECT DISTINCT tenant_id
         FROM free_quota_tracker
     `)
 	if err != nil {
+		// RLS-restricted 角色可能 SELECT 不到任何行; 此时仅处理 default.
 		return []string{"default"}, nil
 	}
-	defer rows.Close()
 
 	seen := map[string]bool{}
 	for rows.Next() {
 		var tenant string
 		if err := rows.Scan(&tenant); err != nil {
+			rows.Close()
 			return nil, err
 		}
 		if tenant != "" && !seen[tenant] {
@@ -133,7 +162,13 @@ func (w *Worker) listTenants(ctx context.Context) ([]string, error) {
 		}
 	}
 	if err := rows.Err(); err != nil {
+		rows.Close()
 		return nil, err
+	}
+	rows.Close()
+
+	if err := tx.Commit(); err == nil {
+		committed = true
 	}
 
 	if len(seen) == 0 {
@@ -147,6 +182,3 @@ func (w *Worker) listTenants(ctx context.Context) ([]string, error) {
 	sort.Strings(out)
 	return out, nil
 }
-
-// ensure time package is referenced even when only used in tests.
-var _ = time.Now

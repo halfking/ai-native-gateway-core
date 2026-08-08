@@ -926,6 +926,50 @@ func TestSanitizeRestoreInterceptor_StreamChunk_UnknownPlaceholderMasked(t *test
 	assert.NotContains(t, str, "{SENSITIVE:phone:99}", "raw 占位符文本必须消失")
 }
 
+// TestSanitizeRestoreInterceptor_StreamChunk_FrameSplitAcrossChunks
+// 2026-08-08 audit: SSE framing 在 chunk 边界上是经典坑位. 上游可能把
+// 同一 SSE 帧 (data: <json>\n\n) 拆到两次 Write 调用里:
+//   chunk1 = "data: {\"id\":\"x\",\"choices\":[{\"delta\":{\"content\":\"phone "
+//   chunk2 = "{SENSITIVE:phone:1}\"}}]}\n\n"
+// 当前实现是按 chunk 独立做 SSE framing + JSON 解析; chunk1 没有完整
+// JSON, 命中 lineEnd == -1 路径 → 返回 (nil, false, nil) 透传;
+// chunk2 开头没有 data: 前缀, 也走不出 data: 行 → 同样透传.
+// 净效果: 这一帧不会被还原 (占位符文本泄漏到客户端).
+//
+// 本测试钉住当前行为, 把"已知缺陷"显式化为回归 — 防止后续开发者
+// "修复" 跨 chunk 路径时不慎引入更糟的 bug (例如把第二个 chunk
+// 错当成完整 data 行解析). 修复需要 streaming handler.go 层加
+// cross-chunk 帧缓冲 (interceptingStreamWriter 的 follow-up 范围),
+// 而不是改 restoreStreamChunk 单 chunk 内部行为.
+func TestSanitizeRestoreInterceptor_StreamChunk_FrameSplitAcrossChunks(t *testing.T) {
+	rdb := setupSaniGuardRedis(t)
+	ctx := context.Background()
+	require.NoError(t, rdb.HSet(ctx, SanitizeRedisKey("sess-split"),
+		"{SENSITIVE:phone:1}", "13800138000").Err())
+
+	s, err := NewSanitizer(NewPatternDetector())
+	require.NoError(t, err)
+	it, err := NewSanitizeRestoreInterceptor(s, rdb, 30*time.Minute)
+	require.NoError(t, err)
+
+	chunk1 := []byte(`data: {"id":"x","choices":[{"delta":{"content":"phone `)
+	result1, err := it.InterceptStreamChunk(ctx, chunk1, &response.StreamMeta{SessionID: "sess-split"})
+	require.NoError(t, err)
+	// 当前实现: chunk1 没有完整 data: 行 → 返回 nil 透传, 不修改原 chunk.
+	assert.Nil(t, result1, "chunk1 (无完整 data 行) 必须透传")
+
+	chunk2 := []byte(`{SENSITIVE:phone:1}\"}}]}` + "\n\n")
+	result2, err := it.InterceptStreamChunk(ctx, chunk2, &response.StreamMeta{SessionID: "sess-split"})
+	require.NoError(t, err)
+	// chunk2 也没有 data: 前缀, 但它自身能解析成一个"完整 JSON 帧":
+	// 行扫描找不到 data: 行 → jsonPayload 空 → 返回 nil 透传.
+	assert.Nil(t, result2, "chunk2 (无 data: 前缀) 必须透传")
+
+	// 已知限制: 跨 chunk 拆分场景下占位符不会被还原, raw 占位符
+	// 文本会进入客户端. 这个限制需要在 streaming handler 层加 SSE
+	// 帧缓冲解决 (interceptingStreamWriter 的 follow-up #1).
+}
+
 // ── 2026-08-07 回归：response chain append 行为（修复#1 依赖）────────
 
 // TestResponseChain_ListAndAppend_SafeCopy
