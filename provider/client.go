@@ -1090,18 +1090,18 @@ func (c *Client) loadCandidatesByModalityDB(ctx context.Context, clientModel, te
 			            AND COALESCE(v_sibling.is_routable, FALSE) = TRUE
 			            AND COALESCE(c_sibling.status, 'active') = 'active'
 			            AND COALESCE(c_sibling.lifecycle_status, 'active') = 'active'
-			            AND COALESCE(c_sibling.manual_disabled, FALSE) = FALSE
-			            // 2026-08-08 audit note: c_sibling.quota_state predicate
-				            // deliberately excludes periodic_exhausted, while
-				            // loadCandidatesByModalityDB (line ~578) DOES exclude it.
-				            // This is intentional — this query checks if ANY sibling
-				            // binding exists that COULD take traffic (sibling EXISTS
-				            // gate for the lone-candidate fail-open path), not which
-				            // siblings to actually route to. A periodic-exhausted
-				            // sibling is still a potential failover target (it will
-				            // recover in minutes/hours); routing-time selection is
-				            // separately filtered in the upstream query.
-				            AND COALESCE(c_sibling.quota_state, 'ok') NOT IN ('permanently_exhausted', 'balance_exhausted')
+				            AND COALESCE(c_sibling.manual_disabled, FALSE) = FALSE
+				            -- 2026-08-08 audit note: c_sibling.quota_state predicate
+					            -- deliberately excludes periodic_exhausted, while
+					            -- loadCandidatesByModalityDB (line ~578) DOES exclude it.
+					            -- This is intentional — this query checks if ANY sibling
+					            -- binding exists that COULD take traffic (sibling EXISTS
+					            -- gate for the lone-candidate fail-open path), not which
+					            -- siblings to actually route to. A periodic-exhausted
+					            -- sibling is still a potential failover target (it will
+					            -- recover in minutes/hours); routing-time selection is
+					            -- separately filtered in the upstream query.
+					            AND COALESCE(c_sibling.quota_state, 'ok') NOT IN ('permanently_exhausted', 'balance_exhausted')
 			            AND COALESCE(p_sibling.enabled, FALSE) = TRUE
 			            AND COALESCE(p_sibling.manual_disabled, FALSE) = FALSE
 AND (
