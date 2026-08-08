@@ -3,12 +3,27 @@ package executors
 import (
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/kaixuan/llm-gateway-go/errorsx"
 	upstreampkg "github.com/kaixuan/llm-gateway-go/upstream"
 )
 
-// TestModelNotFoundError_UnwrapBareSurfaceUpstreamError guards the 2026-07-17
+func TestRetryableError_UnwrapPreservesRetryAfter(t *testing.T) {
+	want := 17 * time.Second
+	wrapped := &retryableError{err: &upstreampkg.Error{
+		Kind:       errorsx.KindRateLimit,
+		RetryAfter: want,
+	}}
+	var ue *upstreampkg.Error
+	if !errors.As(wrapped, &ue) || ue == nil {
+		t.Fatal("errors.As did not surface upstream error")
+	}
+	if ue.RetryAfter != want {
+		t.Fatalf("RetryAfter = %s, want %s", ue.RetryAfter, want)
+	}
+}
+
 // P2 fix: modelNotFoundError now implements Unwrap() returning a
 // *upstreampkg.Error with the captured status/body, so it participates in the
 // typed error chain like its siblings (retryableError /

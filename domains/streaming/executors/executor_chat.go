@@ -702,28 +702,29 @@ func (e *Executor) executeOpenAI(
 						}}
 					}
 
-				// Step 4 (2026-06-18): removed the "if upstreamLatency > 10s
-				// reclassify as transient" branch. A slow 404 is still a 404;
-				// re-routing it as a retryable transient just makes the same
-				// credential re-dialed, wasting RTT and hiding the real cause
-				// from the caller. The classifier now requires a matching 4xx
-				// status (P5) and a tightened regex, so this branch is the
-				// canonical model_not_found path.
-				slog.Info("model_not_found skip offer (after retry)",
-					"credential_id", cand.CredentialID,
-					"model", cand.RawModel,
-					"status", resp.StatusCode,
-					"kind", bodyKind,
-					"upstream_latency_ms", upstreamLatency.Milliseconds(),
-					"body_preview", string(body[:min(n, 120)]),
-				)
-				return nil, &modelNotFoundError{
-					credentialID: cand.CredentialID,
-					rawModel:     cand.RawModel,
-					body:         string(body[:n]),
-					status:       resp.StatusCode,
-					kind:         bodyKind,
-				}
+					// Step 4 (2026-06-18): removed the "if upstreamLatency > 10s
+					// reclassify as transient" branch. A slow 404 is still a 404;
+					// re-routing it as a retryable transient just makes the same
+					// credential re-dialed, wasting RTT and hiding the real cause
+					// from the caller. The classifier now requires a matching 4xx
+					// status (P5) and a tightened regex, so this branch is the
+					// canonical model_not_found path.
+					slog.Info("model_not_found skip offer (after retry)",
+						"credential_id", cand.CredentialID,
+						"model", cand.RawModel,
+						"status", resp.StatusCode,
+						"kind", bodyKind,
+						"upstream_latency_ms", upstreamLatency.Milliseconds(),
+						"body_preview", string(body[:min(n, 120)]),
+					)
+					return nil, &modelNotFoundError{
+						credentialID: cand.CredentialID,
+						rawModel:     cand.RawModel,
+						body:         string(body[:n]),
+						status:       resp.StatusCode,
+						kind:         bodyKind,
+					}
+
 				}
 
 				if resp.StatusCode >= 400 && resp.StatusCode < 500 &&
@@ -745,7 +746,13 @@ func (e *Executor) executeOpenAI(
 					e.Limiter.Shrink(cand.ProviderID, cand.CredentialID)
 				} else if errKind == errorsx.KindConcurrent {
 					e.writeCredentialStateOnError(params.R.Context(), cand.CredentialID, cand.StandardizedName, errorsx.KindConcurrent,
-						fmt.Errorf("upstream %d concurrent overload: %s", resp.StatusCode, string(body[:min(n, 200)])))
+						&upstreampkg.Error{
+							Kind:       errorsx.KindConcurrent,
+							Message:    fmt.Sprintf("upstream %d concurrent overload", resp.StatusCode),
+							Body:       append([]byte(nil), body[:n]...),
+							StatusCode: resp.StatusCode,
+							RetryAfter: upstreampkg.RetryAfterFromHeaders(resp.Header),
+						})
 					e.forceUnpinOnFatalKind(params.R.Context(), fpLease.Holder, cand.CredentialID, errorsx.KindConcurrent)
 					slog.Warn("credential concurrent-overload, failing over to next candidate",
 						"credential_id", cand.CredentialID,
@@ -791,6 +798,7 @@ func (e *Executor) executeOpenAI(
 								Message:    fmt.Sprintf("upstream %d (context-length recovery retry)", resp.StatusCode),
 								Body:       append([]byte(nil), body[:n]...),
 								StatusCode: resp.StatusCode,
+								RetryAfter: upstreampkg.RetryAfterFromHeaders(resp.Header),
 							}}
 						case ctxLenGiveUp:
 							// Return a typed error so the outer Execute
@@ -828,6 +836,7 @@ func (e *Executor) executeOpenAI(
 						Message:    fmt.Sprintf("upstream %d: %s", resp.StatusCode, string(body[:min(n, 200)])),
 						Body:       append([]byte(nil), body[:n]...),
 						StatusCode: resp.StatusCode,
+						RetryAfter: upstreampkg.RetryAfterFromHeaders(resp.Header),
 					}
 				}
 				// Same fix for the retryable path: keep the precise kind
@@ -838,6 +847,7 @@ func (e *Executor) executeOpenAI(
 					Message:    fmt.Sprintf("upstream %d", resp.StatusCode),
 					Body:       append([]byte(nil), body[:n]...),
 					StatusCode: resp.StatusCode,
+					RetryAfter: upstreampkg.RetryAfterFromHeaders(resp.Header),
 				}}
 			}
 
@@ -1106,6 +1116,7 @@ func (e *Executor) executeOpenAI(
 					Message:    "upstream returned empty response (zero content)",
 					Body:       append([]byte(nil), respBody...),
 					StatusCode: resp.StatusCode,
+					RetryAfter: upstreampkg.RetryAfterFromHeaders(resp.Header),
 				}
 			}
 			// 2026-06-19 quality fix mode (017_quality_fix_mode.sql).

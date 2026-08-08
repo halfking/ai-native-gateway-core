@@ -15,6 +15,86 @@ import (
 	"github.com/kaixuan/llm-gateway-go/errorsx"
 )
 
+func TestRetryAfterFromHeaders(t *testing.T) {
+	t.Run("delta seconds", func(t *testing.T) {
+		got := RetryAfterFromHeaders(http.Header{"Retry-After": []string{"7"}})
+		if got != 7*time.Second {
+			t.Fatalf("retry-after = %s, want 7s", got)
+		}
+	})
+	t.Run("reset timestamp wins", func(t *testing.T) {
+		reset := time.Now().Add(11 * time.Second).Unix()
+		headers := make(http.Header)
+		headers.Set("X-RateLimit-Reset", fmt.Sprintf("%d", reset))
+		headers.Set("Retry-After", "1")
+		got := RetryAfterFromHeaders(headers)
+		if got < 10*time.Second || got > 11*time.Second {
+			t.Fatalf("reset retry-after = %s, want about 11s", got)
+		}
+	})
+	t.Run("http date", func(t *testing.T) {
+		reset := time.Now().Add(9 * time.Second)
+		got := RetryAfterFromHeaders(http.Header{"Retry-After": []string{reset.UTC().Format(http.TimeFormat)}})
+		if got < 8*time.Second || got > 9*time.Second {
+			t.Fatalf("date retry-after = %s, want about 9s", got)
+		}
+	})
+	t.Run("invalid and past values return zero", func(t *testing.T) {
+		if got := RetryAfterFromHeaders(http.Header{"Retry-After": []string{"nope"}}); got != 0 {
+			t.Fatalf("invalid retry-after = %s, want zero", got)
+		}
+		if got := RetryAfterFromHeaders(http.Header{"Retry-After": []string{"0"}}); got != 0 {
+			t.Fatalf("zero retry-after = %s, want zero", got)
+		}
+	})
+	t.Run("huge delta capped at 31 days", func(t *testing.T) {
+		got := RetryAfterFromHeaders(http.Header{"Retry-After": []string{"99999999"}})
+		const maxCap = 31 * 24 * time.Hour
+		if got != maxCap {
+			t.Fatalf("huge retry-after = %s, want %s (31d cap)", got, maxCap)
+		}
+	})
+}
+
+func TestDo_PreservesRetryAfterOn429(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Retry-After", "13")
+		w.WriteHeader(http.StatusTooManyRequests)
+	}))
+	defer server.Close()
+
+	client := NewWithRetries(0)
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, server.URL, strings.NewReader(`{}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, uErr := client.Do(req)
+	if resp == nil || uErr != nil {
+		t.Fatalf("Do() response/error = %v/%v, want response and nil error", resp, uErr)
+	}
+	if got := RetryAfterFromHeaders(resp.Header); got != 13*time.Second {
+		t.Fatalf("retry-after = %s, want 13s", got)
+	}
+}
+
+func TestDo_PreservesRetryAfterOnRetryExhaustion(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Retry-After", "5")
+		w.WriteHeader(http.StatusBadGateway)
+	}))
+	defer server.Close()
+
+	client := NewWithRetries(0)
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, server.URL, strings.NewReader(`{}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, uErr := client.Do(req)
+	if uErr == nil || uErr.RetryAfter != 5*time.Second {
+		t.Fatalf("error retry-after = %v, want 5s", uErr)
+	}
+}
+
 func TestDo_SuccessFirstTry(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
