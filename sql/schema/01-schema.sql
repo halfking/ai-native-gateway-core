@@ -11351,6 +11351,20 @@ CREATE TABLE public.provider_profile_metrics (
     stability_error_types jsonb,
     scale_total_models integer,
     scale_available_models integer,
+    rate_limit_hits integer,
+    rate_limit_total_requests integer,
+    concurrency_limit integer,
+    concurrency_limit_auto integer,
+    concurrency_eff_limit integer,
+    concurrency_is_capped boolean,
+    downtime_buckets integer,
+    downtime_total_buckets integer,
+    longest_downtime_run integer,
+    quality_stability_mean double precision,
+    quality_stability_stddev double precision,
+    quality_stability_cv double precision,
+    quality_stability_is_volatile boolean,
+    quality_stability_sample_n integer,
     created_at timestamp with time zone DEFAULT now()
 );
 

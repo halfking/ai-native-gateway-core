@@ -2,6 +2,7 @@ package providerprofile_test
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -17,6 +18,8 @@ type stubActor struct {
 	manualDisabled map[int64]bool
 	whitelist      map[int64]bool
 	events         int
+	eventErr       error
+	enableErr      error
 	lifecycle      map[int64]string // credential_id -> lifecycle status (default "active")
 }
 
@@ -34,6 +37,9 @@ func (s *stubActor) Disable(_ context.Context, id int64, reason string) error {
 	return nil
 }
 func (s *stubActor) Enable(_ context.Context, id int64, reason string) error {
+	if s.enableErr != nil {
+		return s.enableErr
+	}
 	if s.manualDisabled[id] {
 		return providerprofile.ErrManualDisabled
 	}
@@ -56,17 +62,18 @@ func (s *stubActor) CurrentLifecycle(_ context.Context, id int64) (*providerprof
 }
 func (s *stubActor) RecordEvent(context.Context, int64, string, map[string]interface{}) error {
 	s.events++
-	return nil
+	return s.eventErr
 }
 
 // stubAlertStore records saved alerts in memory.
 type stubAlertStore struct {
 	saved []*providerprofile.Alert
+	err   error
 }
 
 func (s *stubAlertStore) SaveIfNew(_ context.Context, a *providerprofile.Alert) error {
 	s.saved = append(s.saved, a)
-	return nil
+	return s.err
 }
 func (s *stubAlertStore) HasUnresolved(context.Context, int64, providerprofile.AlertType, time.Time) (bool, error) {
 	return false, nil
@@ -166,6 +173,55 @@ func TestAlertEngine_DoesNotEnableIfAlreadyActive(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "none", got.Action, "must not enable an already-active credential")
 	assert.NotContains(t, actor.enabled, int64(42))
+}
+
+func TestAlertEngine_SaveFailureIsReturned(t *testing.T) {
+	actor := newStubActor()
+	store := &stubAlertStore{err: errors.New("alert store unavailable")}
+	now := time.Date(2026, 7, 26, 0, 0, 0, 0, time.UTC)
+	src := &stubProfileSource{profiles: map[int64][]providerprofile.DailyProfile{
+		42: {mkEngineProfile(now, 30), mkEngineProfile(now.AddDate(0, 0, -1), 30), mkEngineProfile(now.AddDate(0, 0, -2), 30)},
+	}}
+	eng := providerprofile.NewAlertEngine(src, store, actor, providerprofile.DefaultAlertConfig())
+	eng.SetClock(func() time.Time { return now })
+
+	_, err := eng.EvaluateCredential(context.Background(), 42)
+	require.Error(t, err)
+	assert.ErrorContains(t, err, "save auto-disabled alert")
+}
+
+func TestAlertEngine_EventFailureIsReturned(t *testing.T) {
+	actor := newStubActor()
+	actor.eventErr = errors.New("event store unavailable")
+	store := &stubAlertStore{}
+	now := time.Date(2026, 7, 26, 0, 0, 0, 0, time.UTC)
+	src := &stubProfileSource{profiles: map[int64][]providerprofile.DailyProfile{
+		42: {mkEngineProfile(now, 30), mkEngineProfile(now.AddDate(0, 0, -1), 30), mkEngineProfile(now.AddDate(0, 0, -2), 30)},
+	}}
+	eng := providerprofile.NewAlertEngine(src, store, actor, providerprofile.DefaultAlertConfig())
+	eng.SetClock(func() time.Time { return now })
+
+	got, err := eng.EvaluateCredential(context.Background(), 42)
+	require.Error(t, err)
+	assert.ErrorContains(t, err, "record auto-disabled event")
+	assert.Equal(t, "none", got.Action)
+}
+
+func TestAlertEngine_EnableFailureIsReturned(t *testing.T) {
+	actor := newStubActor()
+	actor.lifecycle[42] = "disabled"
+	actor.enableErr = errors.New("credential update failed")
+	store := &stubAlertStore{}
+	now := time.Date(2026, 7, 26, 0, 0, 0, 0, time.UTC)
+	src := &stubProfileSource{profiles: map[int64][]providerprofile.DailyProfile{
+		42: {mkEngineProfile(now, 75), mkEngineProfile(now.AddDate(0, 0, -1), 75), mkEngineProfile(now.AddDate(0, 0, -2), 75)},
+	}}
+	eng := providerprofile.NewAlertEngine(src, store, actor, providerprofile.DefaultAlertConfig())
+	eng.SetClock(func() time.Time { return now })
+
+	_, err := eng.EvaluateCredential(context.Background(), 42)
+	require.Error(t, err)
+	assert.ErrorContains(t, err, "enable credential")
 }
 
 func TestAlertEngine_NoDataNoAction(t *testing.T) {
