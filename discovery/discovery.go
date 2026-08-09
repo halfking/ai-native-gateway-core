@@ -696,7 +696,30 @@ func (s *Service) upsertModel(ctx context.Context, cred credential, rawName stri
 				ELSE models_canonical.tags
 			END,
 			status = 'active',
-			modality = COALESCE(models_canonical.modality, $4)
+			/* 2026-08-09 sticky-modality fix.
+			   The previous expression was
+			     modality = COALESCE(models_canonical.modality, $4)
+			   which is dead code: models_canonical.modality is
+			   NOT NULL DEFAULT 'text', so the left operand is never NULL and
+			   COALESCE always returned the stored value. Any row seeded before
+			   an inference-rule fix therefore kept its stale modality forever —
+			   re-discovery could not repair it. Because
+			   loadCandidatesByModalityDB only admits modality IN
+			   ('vision','multimodal') for an image request, a model stuck at
+			   'text' is dropped from the candidate set and the request 503s.
+
+			   Upgrade-only semantics: adopt the freshly inferred value ONLY
+			   when the stored value is still the column default 'text' AND
+			   inference now claims a richer modality. This repairs stale rows
+			   while never downgrading a row and never trampling a Layer-3
+			   super_admin override (which always sets a non-'text' value; see
+			   admin/model_modality.go). There is no override-marker column, so
+			   "stored = 'text'" is the only safe repair predicate available. */
+			modality = CASE
+				WHEN models_canonical.modality = 'text' AND $4 <> 'text'
+				THEN $4
+				ELSE models_canonical.modality
+			END
 		RETURNING id
 	`, canonicalName, family, splitFamilyIDs, inferredModality).Scan(&canonicalID)
 	if err != nil {
