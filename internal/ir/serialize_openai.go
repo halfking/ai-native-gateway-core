@@ -643,7 +643,11 @@ func serializeOpenAIDocumentBlock(doc *DocumentBlock) map[string]any {
 		}
 		fileInner["file_data"] = "data:" + mt + ";base64," + doc.Source.Data
 	case "url":
-		fileInner["file_data"] = doc.Source.Data
+		url := doc.Source.URL
+		if url == "" { // compatibility with pre-canonical IR rows
+			url = doc.Source.Data
+		}
+		fileInner["file_data"] = url
 	case "file_id":
 		fileInner["file_id"] = doc.Source.Data
 	case "text":
@@ -666,19 +670,19 @@ func serializeOpenAIDocumentBlock(doc *DocumentBlock) map[string]any {
 // 2026-07-28 (BLOCK review): same-protocol false-positive guards. The
 // BLOCK review identified three false-positive classes:
 //
-//   1. Anthropic-only fields (cache_control / mcp_servers / thinking.signature
-//      / documents / context_management / container) being reported when the
-//      IR source is itself OpenAI Chat (same-protocol, target=OpenAI Chat).
-//      Note: Anthropic source + OpenAI target IS cross-protocol and we
-//      still report there (e.g. the original
-//      TestAnomaly_AnthropicThinkingSig_LostOnOpenAITarget fixture).
-//   2. OpenAI-only fields (frequency_penalty / presence_penalty / logprobs
-//      / top_logprobs / n / response_format / logit_bias / store /
-//      service_tier / prediction / verbosity / web_search_options /
-//      safety_identifier / parallel_tool_calls / modalities / audio) being
-//      reported when the IR source is itself OpenAI Chat (same-protocol).
-//   3. previous_response_id being reported when the IR source is already
-//      OpenAI Chat or OpenAI Responses (both accept it natively).
+//  1. Anthropic-only fields (cache_control / mcp_servers / thinking.signature
+//     / documents / context_management / container) being reported when the
+//     IR source is itself OpenAI Chat (same-protocol, target=OpenAI Chat).
+//     Note: Anthropic source + OpenAI target IS cross-protocol and we
+//     still report there (e.g. the original
+//     TestAnomaly_AnthropicThinkingSig_LostOnOpenAITarget fixture).
+//  2. OpenAI-only fields (frequency_penalty / presence_penalty / logprobs
+//     / top_logprobs / n / response_format / logit_bias / store /
+//     service_tier / prediction / verbosity / web_search_options /
+//     safety_identifier / parallel_tool_calls / modalities / audio) being
+//     reported when the IR source is itself OpenAI Chat (same-protocol).
+//  3. previous_response_id being reported when the IR source is already
+//     OpenAI Chat or OpenAI Responses (both accept it natively).
 //
 // An empty SourceProtocol is treated as "unknown / cross-protocol default"
 // to preserve historical fixture behavior for tests that build IR directly

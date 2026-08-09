@@ -498,7 +498,8 @@ func parseAnthropicDocumentBlock(block map[string]any) *DocumentBlock {
 		doc.Source.MediaType, _ = source["media_type"].(string)
 		doc.Source.Data, _ = source["data"].(string)
 		if url, ok := source["url"].(string); ok {
-			doc.Source.Data = url // URL stored in Data field
+			doc.Source.URL = url
+			doc.Source.Data = url // legacy projection; serializers prefer URL
 		}
 		doc.MIMEType = doc.Source.MediaType
 	}
