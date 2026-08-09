@@ -3,6 +3,7 @@ package v2
 import (
 	"encoding/json"
 	"reflect"
+	"strings"
 
 	"github.com/kaixuan/llm-gateway-go/internal/ir"
 )
@@ -902,7 +903,9 @@ func decodeContentBlock(raw json.RawMessage) *ir.ContentBlock {
 		ImageURL   json.RawMessage `json:"image_url"`
 		InputAudio json.RawMessage `json:"input_audio"`
 		// Source is Anthropic's carrier for image and document payloads.
-		Source json.RawMessage `json:"source"`
+		Source    json.RawMessage `json:"source"`
+		File      json.RawMessage `json:"file"`
+		InputFile json.RawMessage `json:"input_file"`
 		// cache_control and index are cross-cutting Anthropic wire fields: they
 		// ride on a block of *any* type, including plain text, so they are
 		// decoded outside the type switch (mirroring
@@ -943,13 +946,18 @@ func decodeContentBlock(raw json.RawMessage) *ir.ContentBlock {
 		// leaving "image_url" here means the block matches no case and the
 		// image is dropped on the way back to the provider.
 		b.Type = "image"
-	case "document":
-		// Without a decoded Document, serialize_anthropic's validator rejects
-		// the whole request ("source is missing"), so a block we cannot model
-		// must not keep the "document" discriminant — preserving it verbatim
-		// lets the serializers' default branch re-emit it untouched.
-		if doc := decodeDocumentBlock(probe.Source, raw); doc != nil {
+	case "document", "file", "input_file":
+		carrier := probe.Source
+		if len(carrier) == 0 {
+			if probe.Type == "file" {
+				carrier = probe.File
+			} else {
+				carrier = probe.InputFile
+			}
+		}
+		if doc := decodeDocumentBlock(carrier, raw); doc != nil {
 			b.Document = doc
+			b.Type = "document"
 		} else {
 			b.Type = "raw"
 			b.RawContent = string(raw)
@@ -957,9 +965,15 @@ func decodeContentBlock(raw json.RawMessage) *ir.ContentBlock {
 	case "input_audio":
 		var in ir.InputAudioBlock
 		if len(probe.InputAudio) > 0 {
-			if err := json.Unmarshal(probe.InputAudio, &in); err == nil {
+			if err := json.Unmarshal(probe.InputAudio, &in); err == nil && (in.Data != "" || in.Format != "") {
 				b.InputAudio = &in
+			} else {
+				b.Type = "raw"
+				b.RawContent = string(raw)
 			}
+		} else {
+			b.Type = "raw"
+			b.RawContent = string(raw)
 		}
 	default:
 		// Same string contract as internal/ir's own parsers
@@ -974,26 +988,58 @@ func decodeContentBlock(raw json.RawMessage) *ir.ContentBlock {
 // carrier. Returns nil when there is no usable source, so the caller can fall
 // back to verbatim preservation.
 func decodeDocumentBlock(source, whole json.RawMessage) *ir.DocumentBlock {
-	if len(source) == 0 || source[0] != '{' {
+	if len(source) == 0 {
 		return nil
 	}
-	var src ir.DocumentSource
+	var src struct {
+		Type      string `json:"type"`
+		MediaType string `json:"media_type"`
+		URL       string `json:"url"`
+		Data      string `json:"data"`
+		FileData  string `json:"file_data"`
+		FileID    string `json:"file_id"`
+		Filename  string `json:"filename"`
+	}
 	if err := json.Unmarshal(source, &src); err != nil {
 		return nil
+	}
+	if src.FileData != "" {
+		if strings.HasPrefix(src.FileData, "data:") {
+			if i := strings.Index(src.FileData, "base64,"); i >= 0 {
+				src.Type = "base64"
+				src.Data = src.FileData[i+len("base64,"):]
+				if src.MediaType == "" {
+					src.MediaType = strings.TrimSuffix(strings.TrimPrefix(src.FileData[:i], "data:"), ";")
+				}
+			}
+		} else if strings.HasPrefix(src.FileData, "http") {
+			src.Type, src.URL = "url", src.FileData
+		} else {
+			src.Type, src.Data = "text", src.FileData
+		}
+	}
+	if src.FileID != "" {
+		src.Type, src.Data = "file_id", src.FileID
+	}
+	if src.Type == "" {
+		src.Type = "text"
 	}
 	if src.Data == "" && src.URL == "" {
 		return nil
 	}
 	var meta struct {
-		Title   string `json:"title"`
-		Context string `json:"context"`
+		Title    string `json:"title"`
+		Context  string `json:"context"`
+		Filename string `json:"filename"`
 	}
 	_ = json.Unmarshal(whole, &meta)
+	if meta.Title == "" {
+		meta.Title = meta.Filename
+	}
 	return &ir.DocumentBlock{
 		MIMEType: src.MediaType,
-		Source:   &src,
-		Title:    meta.Title,
-		Context:  meta.Context,
+		Source:   &ir.DocumentSource{Type: src.Type, MediaType: src.MediaType, URL: src.URL, Data: src.Data},
+		Title:    meta.Title, Context: meta.Context,
 	}
 }
 

@@ -299,6 +299,9 @@ func messageFingerprint(msg Message) string {
 	if len(content) > 200 {
 		content = content[:200]
 	}
+	if structured := structuredMessagePayload(msg); structured != "" {
+		content += "\x00structured:" + structured
+	}
 
 	fingerprint := msg.Role + ":" + content
 

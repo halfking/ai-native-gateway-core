@@ -313,19 +313,49 @@ func parseOpenAIContentBlocks(blocks []any) ([]ContentBlock, error) {
 			// {type:"input_audio", input_audio:{data, format}}
 			ia := parseOpenAIInputAudioBlock(blockMap)
 			irBlock.InputAudio = ia
-		case "image", "audio", "video", "document":
-			// audit-provider-multimodal (2026-07-13): pass-through multimodal blocks
-			if img := parseOpenAIImageBlock(blockMap); img != nil {
+		case "image":
+			if img := parseOpenAIImageBlock(blockMap); img != nil && imageSourceHasPayload(img) {
 				irBlock.Image = img
+			} else {
+				irBlock.Type = "raw"
+				irBlock.RawContent = mustMarshalString(blockMap)
+			}
+		case "audio", "video":
+			if media := parseOpenAIMediaBlock(blockMap, blockType); media != nil {
+				if blockType == "audio" {
+					irBlock.Audio = media
+				} else {
+					irBlock.Video = media
+				}
+			} else {
+				irBlock.Type = "raw"
+				irBlock.RawContent = mustMarshalString(blockMap)
+			}
+		case "document":
+			if doc := parseOpenAIFileBlock(blockMap); doc != nil {
+				irBlock.Document = doc
+			} else {
+				irBlock.Type = "raw"
+				irBlock.RawContent = mustMarshalString(blockMap)
 			}
 		case "file":
 			// OpenAI file input via Responses API
 			irBlock.Document = parseOpenAIFileBlock(blockMap)
-			irBlock.Type = "document" // Normalize to our internal type
+			if irBlock.Document == nil {
+				irBlock.Type = "raw"
+				irBlock.RawContent = mustMarshalString(blockMap)
+			} else {
+				irBlock.Type = "document" // Normalize to our internal type
+			}
 		case "input_file":
 			// OpenAI Responses API file input variant
 			irBlock.Document = parseOpenAIFileBlock(blockMap)
-			irBlock.Type = "document"
+			if irBlock.Document == nil {
+				irBlock.Type = "raw"
+				irBlock.RawContent = mustMarshalString(blockMap)
+			} else {
+				irBlock.Type = "document"
+			}
 		default:
 			raw, _ := json.Marshal(blockMap)
 			irBlock.RawContent = string(raw)
@@ -375,7 +405,46 @@ func parseOpenAIImageBlock(block map[string]any) *ImageSource {
 	return img
 }
 
-// parseOpenAIDataURI 尽力解析 data URI，返回 (mediaType, base64Data, ok)。
+func imageSourceHasPayload(img *ImageSource) bool {
+	return img != nil && (img.URL != "" || img.Data != "" || img.FileID != "" || img.FileURI != "")
+}
+
+func mustMarshalString(v any) string {
+	b, _ := json.Marshal(v)
+	return string(b)
+}
+
+func parseOpenAIMediaBlock(block map[string]any, kind string) *MediaSource {
+	media := &MediaSource{Kind: kind}
+	carrier := block[kind+"_url"]
+	if carrier == nil {
+		carrier = block[kind]
+	}
+	if obj, ok := carrier.(map[string]any); ok {
+		media.URL, _ = obj["url"].(string)
+		media.Data, _ = obj["data"].(string)
+		media.FileID, _ = obj["file_id"].(string)
+		media.FileURI, _ = obj["file_uri"].(string)
+		media.MediaType, _ = obj["mime_type"].(string)
+		media.Format, _ = obj["format"].(string)
+	} else if s, ok := carrier.(string); ok {
+		media.URL = s
+	}
+	if media.URL != "" {
+		media.Type = "url"
+	} else if media.Data != "" {
+		media.Type = "base64"
+	} else if media.FileID != "" {
+		media.Type = "file_id"
+	} else if media.FileURI != "" {
+		media.Type = "file_uri"
+	}
+	if media.Type == "" {
+		return nil
+	}
+	return media
+}
+
 // 非严格校验：即使格式略有偏差也尽量提取 media type 和 data。
 // 非 data URI 直接返回 ok=false。
 //
@@ -650,11 +719,13 @@ func parseOpenAIInputAudioBlock(block map[string]any) *InputAudioBlock {
 		}
 	}
 
+	if ia.Data == "" && ia.Format == "" {
+		return nil
+	}
 	return ia
 }
 
-// parseOpenAIFileBlock parses an OpenAI file input block (Responses API).
-// audit-provider-multimodal (2026-07-13): PDF/text file input via Responses API.
+// parseOpenAIFileBlock parses an OpenAI file input block
 // Shape: { type:"file", file:{ filename, file_data } }
 //
 //	{ type:"input_file", input_file:{...} }
@@ -675,23 +746,31 @@ func parseOpenAIFileBlock(block map[string]any) *DocumentBlock {
 		db.Title = fn
 	}
 	if fd, ok := inner["file_data"].(string); ok {
-		if strings.HasPrefix(fd, "data:") {
+		switch {
+		case strings.HasPrefix(fd, "data:"):
 			idx := strings.Index(fd, "base64,")
 			if idx >= 0 {
 				src.MediaType = strings.TrimSuffix(strings.TrimPrefix(fd[:idx], "data:"), ";")
 				src.Data = fd[idx+len("base64,"):]
 				src.Type = "base64"
 			}
-		} else if strings.HasPrefix(fd, "http") {
+		case strings.HasPrefix(fd, "http"):
 			src.Type = "url"
-			src.Data = fd
-		} else {
+			src.URL = fd
+		default:
 			src.Type = "text"
 			src.Data = fd
 		}
 	}
 	if mt, ok := inner["mime_type"].(string); ok && src.MediaType == "" {
 		src.MediaType = mt
+	}
+	if fid, ok := inner["file_id"].(string); ok && fid != "" {
+		src.Type = "file_id"
+		src.Data = fid
+	}
+	if src.Type == "file" {
+		return nil
 	}
 	db.Source = src
 	return db

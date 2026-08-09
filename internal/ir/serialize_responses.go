@@ -390,7 +390,11 @@ func buildResponsesInputFile(doc *DocumentBlock) map[string]any {
 		}
 		inner["file_data"] = "data:" + mt + ";base64," + doc.Source.Data
 	case "url":
-		inner["file_data"] = doc.Source.URL
+		url := doc.Source.URL
+		if url == "" { // compatibility with pre-canonical IR rows
+			url = doc.Source.Data
+		}
+		inner["file_data"] = url
 	case "file_id":
 		inner["file_id"] = doc.Source.Data
 	default:
@@ -633,6 +637,7 @@ func EnsureResponsesItemIDPrefix(id, typeHint string) string {
 		return "item_" + id
 	}
 }
+
 // request wire format cannot faithfully represent. Spec §10 Step 4.10.
 //
 // Same-protocol guard: when the IR source is itself the Responses API

@@ -3,6 +3,7 @@ package v2
 import (
 	"context"
 	"crypto/sha256"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"sync"
@@ -534,13 +535,32 @@ func messageKey(msg Message) string {
 	if len(contentKey) > 512 {
 		contentKey = contentKey[:512]
 	}
+	if structured := structuredMessagePayload(msg); structured != "" {
+		contentKey += "\x00structured:" + structured
+	}
 	// NUL bytes separate the fields so no legal content can spoof a different
 	// (role, content, toolCallID) triple, matching the V1 scheme.
 	h := sha256.Sum256([]byte(msg.Role + "\x00" + contentKey + "\x00" + msg.ToolCallID))
 	return fmt.Sprintf("%x", h[:16])
 }
 
-// extractRequestAttachments extracts attachment references from request
+func structuredMessagePayload(msg Message) string {
+	payload := struct {
+		ContentRaw json.RawMessage          `json:"content,omitempty"`
+		RawContent any                      `json:"raw,omitempty"`
+		ToolCalls  []map[string]interface{} `json:"tool_calls,omitempty"`
+		Name       string                   `json:"name,omitempty"`
+	}{ContentRaw: msg.ContentRaw, RawContent: msg.RawContent, ToolCalls: msg.ToolCalls, Name: msg.Name}
+	if len(payload.ContentRaw) == 0 && payload.RawContent == nil && len(payload.ToolCalls) == 0 && payload.Name == "" {
+		return ""
+	}
+	b, err := json.Marshal(payload)
+	if err != nil {
+		return ""
+	}
+	return string(b)
+}
+
 func extractRequestAttachments(req *ProcessedRequest) []AttachmentRef {
 	// Return the attachments that were already extracted and stored
 	// In the full pipeline, this comes from the attachment extraction layer

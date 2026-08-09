@@ -626,8 +626,14 @@ func serializeAnthropicContentBlock(block ContentBlock, targetProvider string, m
 				}
 				if block.Document.Source.Type == "base64" && block.Document.Source.Data != "" {
 					source["data"] = block.Document.Source.Data
-				} else if block.Document.Source.Type == "url" && block.Document.Source.Data != "" {
-					source["url"] = block.Document.Source.Data
+				} else if block.Document.Source.Type == "url" {
+					url := block.Document.Source.URL
+					if url == "" { // compatibility with pre-canonical IR rows
+						url = block.Document.Source.Data
+					}
+					if url != "" {
+						source["url"] = url
+					}
 				}
 				out["source"] = source
 			}
