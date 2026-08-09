@@ -5,7 +5,11 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased] - 2026-08-08
+## [Unreleased] - 2026-08-09
+
+### Fixed
+
+- **deploy-245.sh 部署脚本修复 (2026-08-09, commit `a277c0086`)**: `scripts/deploy-245.sh` — commit 47dd7d80f 意外将完整部署脚本替换为简化版本，导致以下能力丢失：实际二进制部署、服务重启、健康检查、DB 迁移、原子符号链接切换、前端构建。简化版本只执行 `go build` 并打印手动操作说明，无自动化能力。已恢复原设计：委托给 `deploy-seamless.sh` 执行完整无感部署流程（前后端同时构建 + 切换前 DB 迁移 + 原子符号链接切换 + L1→L4 健康检查 + 失败自动回滚 + build_seq 管理）。同时删除过时文档 `docs/deployment-245-guide.md` 和 `scripts/verify-245.sh`（功能已集成到 deploy-seamless.sh）。用户应参考 `scripts/deploy-seamless.sh` 文档进行部署。
 
 ### Added
 
