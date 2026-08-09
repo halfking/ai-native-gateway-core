@@ -287,6 +287,16 @@ func TestSessionBodiesWriter_UpdateConflict(t *testing.T) {
 		ResponseDelta: []Message{
 			{Role: "assistant", Content: "Original response"},
 		},
+		OutboundBody: []Message{
+			{Role: "user", Content: "Original outbound"},
+		},
+		ResponseAttachments: []AttachmentRef{
+			{
+				Name:      "response.txt",
+				ObjectKey: "attachments/response.txt",
+				MIMEType:  "text/plain",
+			},
+		},
 	}
 
 	err := writer.WriteBodies(ctx, rec1)
@@ -310,9 +320,26 @@ func TestSessionBodiesWriter_UpdateConflict(t *testing.T) {
 	err = writer.WriteBodies(ctx, rec2)
 	require.NoError(t, err)
 
-	// Retrieve and verify it was updated
+	// A later mirror update can contain no response-side payload. It must not
+	// erase values that were persisted by the earlier, richer write.
+	rec3 := BodiesRecord{
+		SessionID: sessionID,
+		TurnNo:    turnNo,
+		TenantID:  tenantID,
+		RequestID: "req_conflict_001",
+		Ts:        time.Now(),
+		RequestDelta: []Message{
+			{Role: "user", Content: "Original request"},
+		},
+	}
+	err = writer.WriteBodies(ctx, rec3)
+	require.NoError(t, err)
+
 	retrieved, err := writer.GetBodies(ctx, tenantID, sessionID, turnNo)
 	require.NoError(t, err)
 
 	assert.Equal(t, "Updated response", retrieved.ResponseDelta[0].Content)
+	assert.Equal(t, "Original outbound", retrieved.OutboundBody[0].Content)
+	require.Len(t, retrieved.ResponseAttachments, 1)
+	assert.Equal(t, "response.txt", retrieved.ResponseAttachments[0].Name)
 }

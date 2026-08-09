@@ -289,7 +289,7 @@ func (w *SessionBodiesWriter) WriteBodiesInTx(ctx context.Context, tx bodiesDB, 
 	partitionDate := calendarDate(rec.Ts)
 
 	_, err = tx.Exec(ctx, `
-		INSERT INTO gateway.session_bodies (
+		INSERT INTO gateway.session_bodies AS existing (
 			session_id, turn_no, tenant_id, request_id, ts,
 			request_delta, response_delta, outbound_body,
 			request_attachments, response_attachments,
@@ -299,12 +299,24 @@ func (w *SessionBodiesWriter) WriteBodiesInTx(ctx context.Context, tx bodiesDB, 
 			$6::text::jsonb, $7::text::jsonb, $8::text::jsonb,
 			$9::text::jsonb, $10::text::jsonb,
 			$11
-			)
-			ON CONFLICT (tenant_id, session_id, turn_no, partition_date)
-			DO UPDATE SET
-				response_delta = EXCLUDED.response_delta,
-				outbound_body = EXCLUDED.outbound_body,
-				response_attachments = EXCLUDED.response_attachments
+		)
+		ON CONFLICT (tenant_id, session_id, turn_no, partition_date)
+		DO UPDATE SET
+			response_delta = CASE
+				WHEN EXCLUDED.response_delta IS NULL OR EXCLUDED.response_delta = 'null'::jsonb
+				THEN existing.response_delta
+				ELSE EXCLUDED.response_delta
+			END,
+			outbound_body = CASE
+				WHEN EXCLUDED.outbound_body IS NULL OR EXCLUDED.outbound_body = 'null'::jsonb
+				THEN existing.outbound_body
+				ELSE EXCLUDED.outbound_body
+			END,
+			response_attachments = CASE
+				WHEN EXCLUDED.response_attachments IS NULL OR EXCLUDED.response_attachments = 'null'::jsonb
+				THEN existing.response_attachments
+				ELSE EXCLUDED.response_attachments
+			END
 	`,
 		rec.SessionID, rec.TurnNo, rec.TenantID, rec.RequestID, rec.Ts,
 		jsonTextOrNull(requestDeltaJSON), jsonTextOrNull(responseDeltaJSON), jsonTextOrNull(outboundBodyJSON),

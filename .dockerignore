@@ -19,3 +19,7 @@ _to-be-deprecated/
 # OS noise
 .DS_Store
 Thumbs.db
+
+# Local tooling / codegraph
+codegraph/
+.codegraph/

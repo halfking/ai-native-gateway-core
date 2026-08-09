@@ -1,6 +1,7 @@
 package telemetry
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -407,6 +408,8 @@ func (c *Client) ReplayFallback(ctx context.Context, record dbdegradation.Backup
 // SetOnRequestLogPersisted registers the sole persisted hook (replaces any prior hooks).
 // Prefer AddOnRequestLogPersisted when multiple consumers are needed.
 func (c *Client) SetOnRequestLogPersisted(fn func(entry *RequestLogEntry)) {
+	c.lifecycleMu.Lock()
+	defer c.lifecycleMu.Unlock()
 	if fn == nil {
 		c.onPersisted = nil
 		return
@@ -705,8 +708,11 @@ func (c *Client) persistRequestLog(entry *RequestLogEntry) error {
 	} else {
 		err = c.insertRequestLog(entry)
 	}
-	if err == nil && len(c.onPersisted) > 0 {
-		for _, hook := range c.onPersisted {
+	if err == nil {
+		c.lifecycleMu.RLock()
+		hooks := append([]func(*RequestLogEntry){}, c.onPersisted...)
+		c.lifecycleMu.RUnlock()
+		for _, hook := range hooks {
 			func(h func(*RequestLogEntry)) {
 				defer func() {
 					if r := recover(); r != nil {
@@ -2108,9 +2114,7 @@ func mergeRequestLogBatch(batch []any) []any {
 		}
 		cp := *entry
 		pending[entry.RequestID] = &cp
-	}
-	for _, entry := range pending {
-		merged = append(merged, entry)
+		merged = append(merged, &cp)
 	}
 	return merged
 }
@@ -2122,19 +2126,71 @@ func mergeRequestLogEntry(dst, src *RequestLogEntry) {
 	dst.Op = RequestLogUpdate
 	mergeStringPtr(&dst.ClientModel, src.ClientModel)
 	mergeStringPtr(&dst.OutboundModel, src.OutboundModel)
+	mergeStringPtr(&dst.CanonicalModel, src.CanonicalModel)
 	mergeIntPtr(&dst.CredentialID, src.CredentialID)
 	mergeIntPtr(&dst.ProviderID, src.ProviderID)
 	mergeIntPtr(&dst.CanonicalID, src.CanonicalID)
 	mergeStringPtr(&dst.ClientProfile, src.ClientProfile)
 	mergeStringPtr(&dst.RequestMode, src.RequestMode)
+	mergeBoolPtr(&dst.AffinityHit, src.AffinityHit)
 	mergeStringPtr(&dst.EndUserID, src.EndUserID)
 	mergeIntPtr(&dst.PromptTokens, src.PromptTokens)
 	mergeIntPtr(&dst.CompletionTokens, src.CompletionTokens)
 	mergeIntPtr(&dst.CacheReadTokens, src.CacheReadTokens)
 	mergeIntPtr(&dst.CacheWriteTokens, src.CacheWriteTokens)
+	mergeIntPtr(&dst.ReasoningTokens, src.ReasoningTokens)
+	mergeIntPtr(&dst.ImageTokens, src.ImageTokens)
+	mergeIntPtr(&dst.AudioTokens, src.AudioTokens)
+	mergeIntPtr(&dst.VideoTokens, src.VideoTokens)
+	mergeIntPtr(&dst.ProviderTokens, src.ProviderTokens)
 	mergeFloatPtr(&dst.CostUSD, src.CostUSD)
 	mergeFloatPtr(&dst.CostDisplay, src.CostDisplay)
 	mergeStringPtr(&dst.CostCurrency, src.CostCurrency)
+	mergeIntPtr(&dst.LatencyMs, src.LatencyMs)
+	mergeBoolPtr(&dst.IsAutoRequest, src.IsAutoRequest)
+	mergeStringPtr(&dst.TaskType, src.TaskType)
+	mergeStringPtr(&dst.AutoProfile, src.AutoProfile)
+	mergeStringPtr(&dst.AutoDecision, src.AutoDecision)
+	mergeFloatPtr(&dst.AutoConfidence, src.AutoConfidence)
+	mergeStringPtr(&dst.WorkType, src.WorkType)
+	mergeStringPtr(&dst.TaskTypeChosen, src.TaskTypeChosen)
+	mergeFloatPtr(&dst.ConfidenceNum, src.ConfidenceNum)
+	mergeStringPtr(&dst.ModelChosen, src.ModelChosen)
+	mergeStringPtr(&dst.StrategyUsed, src.StrategyUsed)
+	mergeInt64Ptr(&dst.CreditsCharged, src.CreditsCharged)
+	mergeStringPtr(&dst.ParentRequestID, src.ParentRequestID)
+	mergeStringPtr(&dst.CompressionReason, src.CompressionReason)
+	mergeStringPtr(&dst.CompressionStrategy, src.CompressionStrategy)
+	mergeRawJSON(&dst.CompressionMeta, src.CompressionMeta)
+	mergeRawJSON(&dst.OutboundBody, src.OutboundBody)
+	mergeIntPtr(&dst.OutboundMsgCount, src.OutboundMsgCount)
+	mergeIntPtr(&dst.OutboundTokenEst, src.OutboundTokenEst)
+	mergeRawJSON(&dst.OutboundMsgHashes, src.OutboundMsgHashes)
+	mergeStringPtr(&dst.SubmitModeHeader, src.SubmitModeHeader)
+	if len(src.QualityFlags) > 0 {
+		dst.QualityFlags = append([]string(nil), src.QualityFlags...)
+	}
+	mergeRawJSON(&dst.QualityFixActions, src.QualityFixActions)
+	mergeFloatPtr(&dst.QualityScore, src.QualityScore)
+	mergeStringPtr(&dst.UpstreamFinishReason, src.UpstreamFinishReason)
+	mergeRawJSON(&dst.ToolCalls, src.ToolCalls)
+	mergeIntPtr(&dst.UpstreamStatusCode, src.UpstreamStatusCode)
+	mergeBoolPtr(&dst.ClientTimeout, src.ClientTimeout)
+	mergeStringPtr(&dst.ClientEndpoint, src.ClientEndpoint)
+	mergeIntPtr(&dst.StreamChunkErrors, src.StreamChunkErrors)
+	mergeRawJSON(&dst.Attachments, src.Attachments)
+	mergeStringPtr(&dst.ClientIP, src.ClientIP)
+	mergeStringPtr(&dst.ClientForwardedFor, src.ClientForwardedFor)
+	mergeStringPtr(&dst.OriginStage, src.OriginStage)
+	mergeStringPtr(&dst.OriginActor, src.OriginActor)
+	mergeRawJSON(&dst.RoutingAttempts, src.RoutingAttempts)
+	mergeStringPtr(&dst.RoutingSummary, src.RoutingSummary)
+	mergeStringPtr(&dst.AgentName, src.AgentName)
+	mergeStringPtr(&dst.AgentType, src.AgentType)
+	mergeStringPtr(&dst.ClientProtocol, src.ClientProtocol)
+	mergeStringPtr(&dst.VirtualClientID, src.VirtualClientID)
+	mergeIntPtr(&dst.RequestBytes, src.RequestBytes)
+	mergeIntPtr(&dst.ResponseBytes, src.ResponseBytes)
 	mergeIntPtr(&dst.StreamFirstChunkMs, src.StreamFirstChunkMs)
 	mergeIntPtr(&dst.StreamChunkCount, src.StreamChunkCount)
 	mergeIntPtr(&dst.StreamChunksSent, src.StreamChunksSent)
@@ -2153,19 +2209,13 @@ func mergeRequestLogEntry(dst, src *RequestLogEntry) {
 	mergeStringPtr(&dst.UsageSource, src.UsageSource)
 	mergeStringPtr(&dst.ErrorKind, src.ErrorKind)
 	mergeStringPtr(&dst.RequestStatus, src.RequestStatus)
-	mergeIntPtr(&dst.LatencyMs, src.LatencyMs)
 	mergeStringPtr(&dst.IdentityHash, src.IdentityHash)
 	mergeStringPtr(&dst.GwSessionID, src.GwSessionID)
 	mergeStringPtr(&dst.GwTaskID, src.GwTaskID)
 	mergeStringPtr(&dst.APIKeyPrefix, src.APIKeyPrefix)
 	mergeStringPtr(&dst.APIKeyOwnerUser, src.APIKeyOwnerUser)
 	mergeStringPtr(&dst.ApplicationCode, src.ApplicationCode)
-	mergeInt64Ptr(&dst.CreditsCharged, src.CreditsCharged)
 	mergeTimePtr(&dst.EventAt, src.EventAt)
-	// 2026-06-26: keep first non-empty client_request_id across merges
-	// so a follow-up UPDATE never blanks the value the initial INSERT
-	// captured. Critical for debugging client-side retry storms where
-	// the same X-Request-Id appears 5 times in the audit trail.
 	mergeStringPtr(&dst.ClientRequestID, src.ClientRequestID)
 	// 2026-07-27: preserve client perception metadata across batched updates.
 	mergeStringPtr(&dst.AgentName, src.AgentName)
@@ -2185,14 +2235,20 @@ func mergeRequestLogEntry(dst, src *RequestLogEntry) {
 		v := RequestStatusFailure
 		dst.RequestStatus = &v
 	}
-	// 2026-06-20: when a later success update arrives, the SQL CASE
-	// (`WHEN EXCLUDED.success = TRUE THEN NULL`) will correctly clear
-	// error_kind in the DB. We mirror that here so the merged entry
-	// is internally consistent — important for log/debug paths that
-	// inspect the in-memory batched entry before it is persisted.
 	if dst.Success {
 		dst.ErrorKind = nil
 	}
+}
+
+func mergeRawJSON(dst *json.RawMessage, src json.RawMessage) {
+	if len(src) == 0 {
+		return
+	}
+	trimmed := bytes.TrimSpace(src)
+	if len(trimmed) == 0 || bytes.Equal(trimmed, []byte("null")) || bytes.Equal(trimmed, []byte("{}")) || bytes.Equal(trimmed, []byte("[]")) {
+		return
+	}
+	*dst = append((*dst)[:0], src...)
 }
 
 func mergeStringPtr(dst **string, src *string) {

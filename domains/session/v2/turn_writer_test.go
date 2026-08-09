@@ -97,12 +97,10 @@ func TestTurnWriter_Idempotency(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, 1, turnNo1)
 
-	// Duplicate request_id - should not error (ON CONFLICT DO NOTHING)
-	// But turn_no should still increment
+	// Duplicate request_id - should return the existing turn number
 	turnNo2, err := writer.AppendTurn(ctx, rec)
 	require.NoError(t, err)
-	// Because of ON CONFLICT DO NOTHING, it still returns the next turn_no
-	assert.Equal(t, 2, turnNo2)
+	assert.Equal(t, turnNo1, turnNo2)
 }
 
 // TestTurnWriter_ConcurrentWrites tests concurrent turn appending

@@ -130,7 +130,7 @@ curl -s -X POST "https://llmgo.kxpms.cn/api/free-pool/probe" \
 ```
 继续会话：Grok/Groq Free-Pool 注册 — 探活失败分析与后续
 
-请执行 docs/待处理任务/05-grok-groq-free-pool-registration.md 中的所有步骤。
+请执行 docs/omnifree/05-grok-groq-free-pool-registration.md 中的所有步骤。
 
 关键上下文：
 - Groq API Key 返回 403 Forbidden（无效）
