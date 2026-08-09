@@ -110,6 +110,18 @@ type requestLogAggregate struct {
 	TotalTokens      *int64   `json:"total_tokens"`
 	CostUSD          *float64 `json:"cost_usd"`
 	CreditsCharged   *int64   `json:"credits_charged"`
+	// 2026-08-09: 按模型分组的统计（当未指定具体模型筛选时）
+	ByModel []modelAggregate `json:"by_model,omitempty"`
+}
+
+// modelAggregate 按单个模型的统计数据
+type modelAggregate struct {
+	Model            string  `json:"model"`
+	Requests         int64   `json:"requests"`
+	PromptTokens     int64   `json:"prompt_tokens"`
+	CompletionTokens int64   `json:"completion_tokens"`
+	TotalTokens      int64   `json:"total_tokens"`
+	CostUSD          float64 `json:"cost_usd"`
 }
 
 type requestLogDetail struct {
@@ -586,20 +598,85 @@ func (h *Handler) listLogs(w http.ResponseWriter, r *http.Request) {
 			"count", count,
 		)
 		// Keep aggregate zero-valued; the page still renders list + count.
-	} else {
-		agg = requestLogAggregate{
-			TotalRequests:    int64(count),
-			PromptTokens:     &promptSum,
-			CompletionTokens: &completionSum,
-			CacheReadTokens:  &cacheReadSum,
-			CacheWriteTokens: &cacheWriteSum,
-			TotalTokens:      &totalTokens,
-			CostUSD:          &costSum,
-			CreditsCharged:   &creditsSum,
+		} else {
+			agg = requestLogAggregate{
+				TotalRequests:    int64(count),
+				PromptTokens:     &promptSum,
+				CompletionTokens: &completionSum,
+				CacheReadTokens:  &cacheReadSum,
+				CacheWriteTokens: &cacheWriteSum,
+				TotalTokens:      &totalTokens,
+				CostUSD:          &costSum,
+				CreditsCharged:   &creditsSum,
+			}
 		}
-	}
 
-	offset := (page - 1) * pageSize
+		// 2026-08-09: 当未指定具体模型筛选时，提供按模型分组的统计数据。
+		// 这让前端可以在统计卡片中展示不同模型的请求次数和token量分布。
+		//
+		// 2026-08-09 audit fix: 分组必须与列表/详情使用相同的 canonical 归并
+		// 语义，否则同一模型会被拆成多张卡（历史分区 canonical_model 可能为
+		// NULL，只能通过 canonical_id JOIN models_canonical 解析）。这里通过
+		// LEFT JOIN models_canonical mc 取 mc.canonical_name 作为首选模型名，
+		// 与 requestLogsJoins 的展示口径一致。
+		//
+		// 另外分组查询会在 5s 处理器预算内再做一次全表遍历。宽时间窗（>7 天）
+		// 或未命中索引的过滤下，为保护列表主查询不超时，这里显式跳过分组。
+		modelFilterSpecified := strings.TrimSpace(queryString(r, "model")) != "" ||
+			queryIntPtr(r, "canonical_id") != nil
+		timeSpan := end.Sub(start)
+		const maxByModelWindow = 7 * 24 * time.Hour
+		if !modelFilterSpecified && count > 0 && timeSpan <= maxByModelWindow {
+			// 与 aggFromSQL 同构，额外 JOIN models_canonical 以解析 canonical 名。
+			// tenant_admin 路径保留 api_keys JOIN 以匹配同一行集。
+			var byModelFromSQL string
+			if IsTenantAdmin(r) {
+				byModelFromSQL = " FROM request_logs_with_current_month rl" +
+					" LEFT JOIN api_keys ak ON ak.id = rl.api_key_id" +
+					" LEFT JOIN models_canonical mc ON mc.id = rl.canonical_id WHERE " + where
+			} else {
+				byModelFromSQL = " FROM request_logs_with_current_month rl" +
+					" LEFT JOIN models_canonical mc ON mc.id = rl.canonical_id WHERE " + where
+			}
+			modelExpr := `COALESCE(mc.canonical_name, rl.canonical_model, rl.client_model, '未知')`
+			byModelSQL := `
+				SELECT ` + modelExpr + ` AS model,
+					COUNT(*) AS requests,
+					COALESCE(SUM(rl.prompt_tokens), 0)::bigint AS prompt_tokens,
+					COALESCE(SUM(rl.completion_tokens), 0)::bigint AS completion_tokens,
+					COALESCE(SUM(rl.total_tokens), 0)::bigint AS total_tokens,
+					COALESCE(SUM(rl.cost_usd), 0)::float8 AS cost_usd
+				` + byModelFromSQL + `
+				GROUP BY ` + modelExpr + `
+				ORDER BY requests DESC
+				LIMIT 20
+			`
+			byModelRows, err := h.db.Query(ctx, byModelSQL, args...)
+			if err != nil {
+				slog.Warn("admin listLogs by_model aggregate failed", "err", err.Error())
+			} else {
+				defer byModelRows.Close()
+				byModel := make([]modelAggregate, 0)
+				for byModelRows.Next() {
+					var m modelAggregate
+					if err := byModelRows.Scan(&m.Model, &m.Requests, &m.PromptTokens, &m.CompletionTokens, &m.TotalTokens, &m.CostUSD); err != nil {
+						slog.Warn("admin listLogs by_model scan failed", "err", err.Error())
+						continue
+					}
+					byModel = append(byModel, m)
+				}
+				// 2026-08-09 audit fix: 游标中途出错必须显式检查，否则会返回
+				// 残缺的 by_model 并被前端当作完整分布展示。出错时整体省略。
+				if err := byModelRows.Err(); err != nil {
+					slog.Warn("admin listLogs by_model rows.Err after iteration", "err", err.Error())
+					agg.ByModel = nil
+				} else if len(byModel) > 0 {
+					agg.ByModel = byModel
+				}
+			}
+		}
+
+		offset := (page - 1) * pageSize
 	listArgs := append(append([]any{}, args...), pageSize, offset)
 	limitIdx := argIdx
 	offsetIdx := argIdx + 1

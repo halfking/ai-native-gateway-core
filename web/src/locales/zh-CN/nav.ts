@@ -36,6 +36,7 @@ export default {
     keyApplications: '密钥申请',
     auditLogs: '审计日志',
     requestLogs: '请求日志',
+    turns: '轮次列表',
     sessions: '会话列表',
     pluginSessions: '插件会话列表',
     sessionManagement: '会话管理',

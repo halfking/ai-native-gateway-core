@@ -33,6 +33,7 @@ export default {
     keyApplications: "金鑰申請",
     auditLogs: "稽核記錄",
     requestLogs: "請求記錄",
+    turns: "輪次列表",
     requestTrace: "請求鏈路追蹤",
     sessions: "會話清單",
     pluginSessions: "插件會話列表",

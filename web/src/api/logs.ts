@@ -161,6 +161,18 @@ export interface RequestLogsAggregate {
   total_tokens: number | null
   cost_usd: number | null
   credits_charged: number | null
+  // 2026-08-09: 按模型分组的统计（当未指定具体模型筛选时）
+  by_model?: ModelAggregate[]
+}
+
+// 2026-08-09: 按单个模型的统计数据
+export interface ModelAggregate {
+  model: string
+  requests: number
+  prompt_tokens: number
+  completion_tokens: number
+  total_tokens: number
+  cost_usd: number
 }
 
 export interface RequestLogsResponse {

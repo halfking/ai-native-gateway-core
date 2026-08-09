@@ -112,6 +112,8 @@ onBeforeUnmount(() => {
 })
 
 const showCompressionGuide = ref(false)
+// 2026-08-09: 按模型分组统计的收拢/展开状态，默认收拢以节省空间
+const showByModelStats = ref(false)
 
 // Compute compression statistics for the info bar at the top.
 const compressionStats = computed(() => {
@@ -1482,6 +1484,59 @@ onMounted(async () => {
       </div>
     </div>
 
+    <!-- 2026-08-09: 按模型分组的统计卡片（当未指定具体模型筛选时展示）。
+         默认收拢，点击可展开/收拢，以节省垂直空间。 -->
+    <div v-if="aggregate && aggregate.by_model && aggregate.by_model.length" class="by-model-stats-card" style="margin-bottom:12px;border:1px solid var(--border);border-radius:8px;overflow:hidden;font-size:12px">
+      <div
+        style="display:flex;justify-content:space-between;align-items:center;padding:8px 12px;cursor:pointer;background:var(--surface-secondary)"
+        @click="showByModelStats = !showByModelStats"
+      >
+        <span style="font-weight:600;display:flex;align-items:center;gap:6px">
+          <span>📊 按模型统计</span>
+          <span class="badge" style="font-size:10px;padding:2px 6px">
+            {{ aggregate.by_model.length }} 个模型
+          </span>
+        </span>
+        <span style="color:var(--text-secondary);font-size:11px">{{ showByModelStats ? '收拢 ▲' : '展开 ▼' }}</span>
+      </div>
+      <div v-if="showByModelStats" style="padding:12px;border-top:1px solid var(--border)">
+        <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:10px">
+          <div
+            v-for="m in aggregate.by_model"
+            :key="m.model"
+            class="model-stat-card"
+            style="border:1px solid var(--border);border-radius:6px;padding:10px;background:var(--surface-primary)"
+          >
+            <div style="font-weight:600;margin-bottom:6px;color:var(--accent);font-size:13px" :title="m.model">
+              {{ m.model.length > 24 ? m.model.slice(0, 24) + '…' : m.model }}
+            </div>
+            <div style="display:grid;grid-template-columns:repeat(2,1fr);gap:6px;font-size:11px">
+              <div>
+                <div style="color:var(--text-secondary)">请求次数</div>
+                <div style="font-weight:600;margin-top:2px">{{ m.requests.toLocaleString() }}</div>
+              </div>
+              <div>
+                <div style="color:var(--text-secondary)">总Token</div>
+                <div style="font-weight:600;margin-top:2px">{{ formatStatNumber(m.total_tokens) }}</div>
+              </div>
+              <div>
+                <div style="color:var(--text-secondary)">输入Token</div>
+                <div style="font-weight:600;margin-top:2px">{{ formatStatNumber(m.prompt_tokens) }}</div>
+              </div>
+              <div>
+                <div style="color:var(--text-secondary)">输出Token</div>
+                <div style="font-weight:600;margin-top:2px">{{ formatStatNumber(m.completion_tokens) }}</div>
+              </div>
+            </div>
+            <div v-if="m.cost_usd > 0" style="margin-top:6px;padding-top:6px;border-top:1px solid var(--border);font-size:11px">
+              <div style="color:var(--text-secondary)">成本 (USD)</div>
+              <div style="font-weight:600;margin-top:2px">${{ m.cost_usd.toFixed(4) }}</div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
     <!-- 当前过滤条件下的全量命中行统计（与分页无关）。
          数据由 /api/logs 的 aggregate 字段返回，任一查询失败时整块隐藏。
          2026-08-09: 三个核心指标上移到 stats-overview 后，本块视觉降权 (更小字号、
@@ -1565,49 +1620,37 @@ onMounted(async () => {
       </div>
     </div>
 
-    <div class="compact-filter-bar compact-filter-bar--stacked">
-      <div class="cf-row">
-        <select
-          v-model="apiKeyId"
-          class="cf-select cf-cred"
-          :title="t('requests.list.filter.keyTitle')"
-        >
+    <!-- 2026-08-09: 筛选条件区重新布局 - 更紧凑合理的两行设计 -->
+    <div class="filter-section" style="margin-bottom:16px;border:1px solid var(--border);border-radius:8px;padding:12px;background:var(--surface-primary)">
+      <!-- 第一行：常用筛选 + 查询按钮 -->
+      <div style="display:flex;gap:8px;margin-bottom:10px;flex-wrap:wrap;align-items:center">
+        <select v-model="apiKeyId" class="filter-select" style="min-width:180px" title="按API密钥筛选">
           <option value="">{{ t('requests.list.filter.keyAll') }}</option>
           <option v-for="k in keys" :key="k.id" :value="k.id">{{ k.key_prefix }} ({{ k.application_code }})</option>
         </select>
-        <select
-          v-model="providerFilter"
-          class="cf-select cf-provider"
-          :title="t('requests.list.filter.providerTitle')"
-          @change="onProviderFilterChange"
-        >
+        <select v-model="providerFilter" class="filter-select" style="min-width:140px" title="按供应商筛选" @change="onProviderFilterChange">
           <option value="">{{ t('requests.list.filter.providerAll') }}</option>
           <option v-for="p in providerOptions" :key="p.id" :value="p.id">{{ p.name }}</option>
         </select>
-        <select
-          v-model="credentialFilter"
-          class="cf-select cf-credential"
-          :title="t('requests.list.filter.credentialTitle')"
-        >
+        <select v-model="credentialFilter" class="filter-select" style="min-width:140px" title="按凭据筛选">
           <option value="">{{ t('requests.list.filter.credentialAll') }}</option>
           <option v-for="c in filteredCredentialOptions" :key="c.id" :value="c.id">{{ c.label }}</option>
         </select>
-        <!-- 2026-08-09: 时间范围 preset 下拉。
-             选项拆成两组：自然日历 (今天/本周/本月/今年/自定义) + 滑窗 (1h/6h/24h/3d/7d)。
-             selected preset 切换到 custom 时，下面会行内渲染 el-date-picker。
-             非 default 租户的 d7 / thisYear 仍强制降级，见 onTimePresetChange()。 -->
-        <select v-model="timePreset" class="cf-select cf-hours" :title="t('requests.list.filter.timeTitle')" @change="onTimePresetChange">
-          <option value="today">{{ t('requests.list.filter.timeOptions.today') }}</option>
-          <option value="thisWeek">{{ t('requests.list.filter.timeOptions.thisWeek') }}</option>
-          <option value="thisMonth">{{ t('requests.list.filter.timeOptions.thisMonth') }}</option>
-          <option value="thisYear">{{ t('requests.list.filter.timeOptions.thisYear') }}</option>
-          <option value="custom">{{ t('requests.list.filter.timeOptions.custom') }}</option>
-          <option disabled>──────</option>
-          <option value="h1">{{ t('requests.list.filter.timeOptions.h1') }}</option>
-          <option value="h6">{{ t('requests.list.filter.timeOptions.h6') }}</option>
-          <option value="h24">{{ t('requests.list.filter.timeOptions.h24') }}</option>
-          <option value="d3">{{ t('requests.list.filter.timeOptions.d3') }}</option>
-          <option value="d7" :disabled="!isDefaultTenant()">{{ t('requests.list.filter.timeOptions.d7') }}</option>
+        <select v-model="timePreset" class="filter-select" style="min-width:120px" title="时间范围" @change="onTimePresetChange">
+          <optgroup label="自然日历">
+            <option value="today">{{ t('requests.list.filter.timeOptions.today') }}</option>
+            <option value="thisWeek">{{ t('requests.list.filter.timeOptions.thisWeek') }}</option>
+            <option value="thisMonth">{{ t('requests.list.filter.timeOptions.thisMonth') }}</option>
+            <option value="thisYear">{{ t('requests.list.filter.timeOptions.thisYear') }}</option>
+            <option value="custom">{{ t('requests.list.filter.timeOptions.custom') }}</option>
+          </optgroup>
+          <optgroup label="滑动窗口">
+            <option value="h1">{{ t('requests.list.filter.timeOptions.h1') }}</option>
+            <option value="h6">{{ t('requests.list.filter.timeOptions.h6') }}</option>
+            <option value="h24">{{ t('requests.list.filter.timeOptions.h24') }}</option>
+            <option value="d3">{{ t('requests.list.filter.timeOptions.d3') }}</option>
+            <option value="d7" :disabled="!isDefaultTenant()">{{ t('requests.list.filter.timeOptions.d7') }}</option>
+          </optgroup>
         </select>
         <el-date-picker
           v-if="timePreset === 'custom'"
@@ -1618,33 +1661,20 @@ onMounted(async () => {
           format="YYYY-MM-DD HH:mm"
           value-format="YYYY-MM-DDTHH:mm:ssZ"
           :clearable="false"
-          style="height: 28px; width: 360px"
+          style="height: 32px; width: 360px"
           @change="onCustomRangeChange"
         />
-        <button
-          v-if="timePreset !== 'h24'"
-          class="btn btn-sm"
-          :title="t('requests.list.filter.resetTime')"
-          @click="resetTimeFilter"
-        >
-          ⟲ {{ t('requests.list.filter.timeReset') }}
+        <button v-if="timePreset !== 'h24'" class="btn btn-sm" title="重置为24小时" @click="resetTimeFilter">
+          ⟲ 重置
         </button>
-        <select
-          v-model="successFilter"
-          class="cf-select cf-status"
-          :title="t('requests.list.filter.resultTitle')"
-        >
+        <select v-model="successFilter" class="filter-select" style="min-width:100px" title="按状态筛选">
           <option value="">{{ t('requests.list.filter.resultAll') }}</option>
           <option value="in_progress">请求中</option>
           <option value="success">成功</option>
           <option value="failure">失败</option>
           <option value="rate_limited">限流</option>
         </select>
-        <select
-          v-model="errorKindFilter"
-          class="cf-select cf-error"
-          :title="t('requests.list.filter.errorTitle')"
-        >
+        <select v-model="errorKindFilter" class="filter-select" style="min-width:120px" title="按错误类型筛选">
           <option value="">{{ t('requests.list.filter.errorAll') }}</option>
           <option value="model_not_found">模型未找到</option>
           <option value="provider_error">供应商错误</option>
@@ -1653,20 +1683,19 @@ onMounted(async () => {
           <option value="rate_limit_exceeded">网关RPM限流</option>
           <option value="key_throttled">密钥节流</option>
         </select>
-        <select
-          v-model="usageSourceFilter"
-          class="cf-select cf-source"
-          title="estimated = 本地估算（上游未返回 usage）"
-        >
-          <option value="">Token来源</option>
-          <option value="llm">LLM返回</option>
-          <option value="estimated">本地估算</option>
+        <select v-model="usageSourceFilter" class="filter-select" style="min-width:110px" :title="t('requests.list.filter.tokenSourceTitle')">
+          <option value="">{{ t('requests.list.filter.tokenSourceAll') }}</option>
+          <option value="llm">{{ t('requests.list.filter.tokenSourceLlm') }}</option>
+          <option value="estimated">{{ t('requests.list.filter.tokenSourceEstimated') }}</option>
         </select>
-        <span class="cf-meta">共 {{ total }} 条</span>
+        <button class="btn btn-primary btn-sm" style="margin-left:auto" @click="resetPageAndLoad">🔍 查询</button>
+        <span style="color:var(--text-secondary);font-size:12px;white-space:nowrap">共 {{ total }} 条</span>
       </div>
-      <div class="cf-row cf-row--secondary">
-        <div class="cf-field cf-field--model">
-          <span class="cf-label">模型（可选）</span>
+
+      <!-- 第二行：高级筛选（模型/关键词/会话ID/任务ID） -->
+      <div style="display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:8px;align-items:end">
+        <div>
+          <label style="display:block;font-size:11px;color:var(--text-secondary);margin-bottom:4px">模型（可选）</label>
           <ModelPicker
             v-model="modelFilter"
             placeholder="选择模型…"
@@ -1674,37 +1703,36 @@ onMounted(async () => {
             @update:model-value="onModelFilterChange"
           />
         </div>
-        <div class="cf-field cf-field--grow">
-          <span class="cf-label">消息片段</span>
+        <div>
+          <label style="display:block;font-size:11px;color:var(--text-secondary);margin-bottom:4px">消息片段</label>
           <input
             v-model="keyword"
             type="text"
-            class="cf-input"
+            class="filter-input"
             placeholder="搜索请求消息内容…"
             @keyup.enter="resetPageAndLoad"
           />
         </div>
-        <div class="cf-field cf-field--grow">
-          <span class="cf-label">会话 ID</span>
+        <div>
+          <label style="display:block;font-size:11px;color:var(--text-secondary);margin-bottom:4px">会话 ID</label>
           <input
             v-model="gwSessionFilter"
             type="text"
-            class="cf-input"
+            class="filter-input"
             placeholder="X-Gw-Session-Id…"
             @keyup.enter="resetPageAndLoad"
           />
         </div>
-        <div class="cf-field cf-field--grow">
-          <span class="cf-label">任务 ID</span>
+        <div>
+          <label style="display:block;font-size:11px;color:var(--text-secondary);margin-bottom:4px">任务 ID</label>
           <input
             v-model="gwTaskFilter"
             type="text"
-            class="cf-input"
+            class="filter-input"
             placeholder="X-Gw-Task-Id…"
             @keyup.enter="resetPageAndLoad"
           />
         </div>
-        <button class="btn btn-primary btn-sm" @click="resetPageAndLoad">查询</button>
       </div>
     </div>
 
@@ -2887,5 +2915,41 @@ onMounted(async () => {
   position: fixed;
   top: 16px;
   right: 24px;
+}
+
+/* 2026-08-09: 新筛选区样式 */
+.filter-section .filter-select {
+  height: 32px;
+  padding: 4px 8px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text);
+  font-size: 13px;
+  cursor: pointer;
+}
+.filter-section .filter-select:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.1);
+}
+.filter-section .filter-input {
+  width: 100%;
+  height: 32px;
+  padding: 4px 8px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text);
+  font-size: 13px;
+}
+.filter-section .filter-input:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.1);
+}
+.filter-section .filter-input::placeholder {
+  color: var(--text-secondary);
+  opacity: 0.6;
 }
 </style>
