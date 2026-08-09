@@ -2,7 +2,6 @@ package telemetry
 
 import (
 	"context"
-	"encoding/json"
 	"strings"
 	"testing"
 	"time"
@@ -448,11 +447,11 @@ func TestMergeRequestLogEntry_PreservesClientPerceptionFields(t *testing.T) {
 	protocol := "anthropic-messages"
 	virtualID := "client-123"
 	dst := &RequestLogEntry{
-		RequestID:        "req-client-fields",
-		AgentName:        &agentName,
-		AgentType:        &agentType,
-		ClientProtocol:   &protocol,
-		VirtualClientID:  &virtualID,
+		RequestID:       "req-client-fields",
+		AgentName:       &agentName,
+		AgentType:       &agentType,
+		ClientProtocol:  &protocol,
+		VirtualClientID: &virtualID,
 	}
 
 	mergeRequestLogEntry(dst, &RequestLogEntry{RequestID: dst.RequestID, Success: false})
