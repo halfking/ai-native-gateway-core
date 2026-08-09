@@ -49,8 +49,8 @@ var (
 	// provider resolver, 掩盖了真实故障.
 	OmniFreeInfraFailureTotal = promauto.NewCounterVec(prometheus.CounterOpts{
 		Name: "omnifree_infra_failure_total",
-		Help: "Total 503 responses due to OmniFree infrastructure failure (DB/RLS/factory errors).",
-	}, []string{"model", "tenant"})
+		Help: "Total 503 responses due to OmniFree infrastructure failure by tenant (DB/RLS/factory errors).",
+	}, []string{"tenant"})
 
 	// OmniFreeQuotaRecordsTotal 按 window_type 统计 Record 调用次数.
 	OmniFreeQuotaRecordsTotal = promauto.NewCounterVec(prometheus.CounterOpts{

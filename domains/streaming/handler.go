@@ -2690,7 +2690,7 @@ func (h *ChatHandler) serveWithExecutor(
 			// 一次 OmniFree 数据库故障会让 auto/free 悄悄变成付费路由,
 			// 且没有任何告警信号. 现在显式返回 503, 与 no_free_candidates
 			// 语义区分 (infra_failure vs 用户配额耗尽).
-			metrics.OmniFreeAutoNoCandidatesTotal.WithLabelValues(clientModel, tenantID, "infra_failure").Inc()
+			metrics.OmniFreeInfraFailureTotal.WithLabelValues(tenantID).Inc()
 			slog.Error("omnifree: infrastructure failure, refusing to fall back to paid routing",
 				"model", clientModel, "tenant_id", tenantID, "request_id", requestID,
 				"error", omniErr)
