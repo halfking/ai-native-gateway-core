@@ -34,6 +34,22 @@ CREATE TABLE IF NOT EXISTS provider_profile_metrics (
     -- 规模维度
     scale_total_models INTEGER,
     scale_available_models INTEGER,
+
+    -- 扩展评分维度的小时级原始信号
+    rate_limit_hits INTEGER,
+    rate_limit_total_requests INTEGER,
+    concurrency_limit INTEGER,
+    concurrency_limit_auto INTEGER,
+    concurrency_eff_limit INTEGER,
+    concurrency_is_capped BOOLEAN,
+    downtime_buckets INTEGER,
+    downtime_total_buckets INTEGER,
+    longest_downtime_run INTEGER,
+    quality_stability_mean DOUBLE PRECISION,
+    quality_stability_stddev DOUBLE PRECISION,
+    quality_stability_cv DOUBLE PRECISION,
+    quality_stability_is_volatile BOOLEAN,
+    quality_stability_sample_n INTEGER,
     
     created_at TIMESTAMPTZ DEFAULT NOW()
 );

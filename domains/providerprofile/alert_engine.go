@@ -2,6 +2,7 @@ package providerprofile
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 )
@@ -76,17 +77,27 @@ func (e *AlertEngine) EvaluateCredential(ctx context.Context, credentialID int64
 		if wl {
 			a.ActionTaken = "none"
 			a.Details = map[string]interface{}{"suppressed": "whitelist"}
-			_ = e.alerts.SaveIfNew(ctx, &a)
-			_ = e.actor.RecordEvent(ctx, credentialID, "profile_alert_suppressed", map[string]interface{}{"type": string(a.Type), "reason": "whitelist"})
+			if err := e.alerts.SaveIfNew(ctx, &a); err != nil {
+				return res, fmt.Errorf("save suppressed alert: %w", err)
+			}
+			if err := e.actor.RecordEvent(ctx, credentialID, "profile_alert_suppressed", map[string]interface{}{"type": string(a.Type), "reason": "whitelist"}); err != nil {
+				return res, fmt.Errorf("record suppressed alert event: %w", err)
+			}
 			res.Action = "none"
 			return res, nil
 		}
+
 		if err := e.actor.Disable(ctx, credentialID, a.Message); err != nil {
 			return res, fmt.Errorf("disable credential: %w", err)
 		}
 		a.ActionTaken = "disabled"
-		_ = e.alerts.SaveIfNew(ctx, &a)
-		_ = e.actor.RecordEvent(ctx, credentialID, "profile_auto_disabled", map[string]interface{}{"reason": a.Message, "dimension": a.Dimension, "score": a.CurrentScore})
+		if err := e.alerts.SaveIfNew(ctx, &a); err != nil {
+			return res, fmt.Errorf("save auto-disabled alert: %w", err)
+		}
+		if err := e.actor.RecordEvent(ctx, credentialID, "profile_auto_disabled", map[string]interface{}{"reason": a.Message, "dimension": a.Dimension, "score": a.CurrentScore}); err != nil {
+			return res, fmt.Errorf("record auto-disabled event: %w", err)
+		}
+
 		res.Action = "disabled"
 		return res, nil
 	}
@@ -108,18 +119,30 @@ func (e *AlertEngine) EvaluateCredential(ctx context.Context, credentialID int64
 			// 管理员手动禁用，不自动恢复；记录但不动作
 			a.ActionTaken = "none"
 			a.Details = map[string]interface{}{"suppressed": "manual_disabled"}
-			_ = e.alerts.SaveIfNew(ctx, &a)
+			if err := e.alerts.SaveIfNew(ctx, &a); err != nil {
+				return res, fmt.Errorf("save manually suppressed alert: %w", err)
+			}
+
 			continue
 		}
 		if err := e.actor.Enable(ctx, credentialID, a.Message); err != nil {
-			// ErrManualDisabled 等视为"不动作"
-			a.ActionTaken = "none"
-			_ = e.alerts.SaveIfNew(ctx, &a)
-			continue
+			if errors.Is(err, ErrManualDisabled) {
+				a.ActionTaken = "none"
+				if saveErr := e.alerts.SaveIfNew(ctx, &a); saveErr != nil {
+					return res, fmt.Errorf("save manually suppressed alert: %w", saveErr)
+				}
+				continue
+			}
+			return res, fmt.Errorf("enable credential: %w", err)
 		}
 		a.ActionTaken = "enabled"
-		_ = e.alerts.SaveIfNew(ctx, &a)
-		_ = e.actor.RecordEvent(ctx, credentialID, "profile_auto_enabled", map[string]interface{}{"reason": a.Message, "score": a.CurrentScore})
+		if err := e.alerts.SaveIfNew(ctx, &a); err != nil {
+			return res, fmt.Errorf("save auto-enabled alert: %w", err)
+		}
+		if err := e.actor.RecordEvent(ctx, credentialID, "profile_auto_enabled", map[string]interface{}{"reason": a.Message, "score": a.CurrentScore}); err != nil {
+			return res, fmt.Errorf("record auto-enabled event: %w", err)
+		}
+
 		res.Action = "enabled"
 		return res, nil
 	}
@@ -130,7 +153,10 @@ func (e *AlertEngine) EvaluateCredential(ctx context.Context, credentialID int64
 			continue
 		}
 		a.ActionTaken = "none"
-		_ = e.alerts.SaveIfNew(ctx, &a)
+		if err := e.alerts.SaveIfNew(ctx, &a); err != nil {
+			return res, fmt.Errorf("save alert: %w", err)
+		}
+
 	}
 
 	return res, nil

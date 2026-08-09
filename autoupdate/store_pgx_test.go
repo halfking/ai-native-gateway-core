@@ -223,32 +223,14 @@ func TestPgxStore_RecordUpdateReport(t *testing.T) {
 	err := store.CreateRelease(ctx, release)
 	require.NoError(t, err)
 
-	for _, report := range []*UpdateReportData{
-		{
-			InstanceID:  "test-instance-success-" + baseTime,
-			FromVersion: "v1.4.0",
-			ToVersion:   release.Version,
-			Status:      StatusSuccess,
-			DurationMS:  5000,
-		},
-		{
-			InstanceID:  "test-instance-failed-" + baseTime,
-			FromVersion: "v1.4.0",
-			ToVersion:   release.Version,
-			Status:      StatusFailed,
-			DurationMS:  2000,
-			Error:       "download failed",
-		},
-		{
-			InstanceID:  "test-instance-rollback-" + baseTime,
-			FromVersion: release.Version,
-			ToVersion:   "v1.4.0",
-			Status:      StatusRollback,
-			DurationMS:  1000,
-			Error:       "health check failed",
-		},
-	} {
-		seedTestInstance(t, store, report.InstanceID)
+	// Seed test instances for foreign key constraints
+	testInstances := []string{
+		"test-instance-success-" + baseTime,
+		"test-instance-failed-" + baseTime,
+		"test-instance-rollback-" + baseTime,
+	}
+	for _, instanceID := range testInstances {
+		seedTestInstance(t, store, instanceID)
 	}
 
 	tests := []struct {
