@@ -1991,9 +1991,33 @@ func main() {
 		// 2026-07-01 (migration 325): 为 admin mux 注入附件下载/列表 handler，
 		// 使 GET /api/attachments/{path...} 与 GET /api/logs/{id}/attachments 可用。
 		// attachmentStorage 可能为 nil（启动时存储初始化失败），admin 端点对此 nil-safe。
+		//
+		// 2026-08-09: 支持 API Key 认证（Phase 2）。根据环境变量配置认证模式。
 		if attachmentStorage != nil {
 			adminHandler.SetAttachmentStorage(attachmentStorage)
-			adminHandler.SetAttachmentHandler(attachments.NewHandler(attachmentStorage, dbConn.Pool()))
+
+			// 创建 attachment handler
+			attachmentHandler := attachments.NewHandler(attachmentStorage, dbConn.Pool())
+
+			// 加载认证配置
+			attachmentCfg := attachments.LoadConfigFromEnv()
+			slog.Info("attachment access config loaded",
+				"auth_mode", attachmentCfg.AuthMode,
+				"public_url", attachmentCfg.PublicURL)
+
+			// 如果配置了 API Key 认证，注入 KeyVerifier
+			if attachmentCfg.AuthMode == attachments.AuthModeAPIKey {
+				if keyVerifier != nil && keyVerifier.Enabled() {
+					keyVerifierAdapter := attachments.NewKeyVerifierAdapter(keyVerifier)
+					authenticator := attachments.NewAuthenticator(attachmentCfg.AuthMode, keyVerifierAdapter)
+					attachmentHandler.SetAuthenticator(authenticator)
+					slog.Info("attachment API Key authentication enabled")
+				} else {
+					slog.Warn("attachment auth_mode=apikey but KeyVerifier not available, falling back to no auth")
+				}
+			}
+
+			adminHandler.SetAttachmentHandler(attachmentHandler)
 			slog.Info("attachment download/list handler wired",
 				"dir", attachmentStorage.BaseDir())
 		}
@@ -4814,12 +4838,12 @@ func main() {
 	defer stopCancel()
 	stopDone := make(chan struct{}, 1)
 
-		go func() {
-			// Stop accepting quota tasks and drain the bounded OmniFree worker queue
-			// before the shared database pool is closed.
-			chatHandler.ShutdownOmniFree()
+	go func() {
+		// Stop accepting quota tasks and drain the bounded OmniFree worker queue
+		// before the shared database pool is closed.
+		chatHandler.ShutdownOmniFree()
 
-			// 2026-07-22: 停止 URSM v2 persist writer（如果已启动）
+		// 2026-07-22: 停止 URSM v2 persist writer（如果已启动）
 		if persistWriterStop != nil {
 			persistWriterStop()
 		}

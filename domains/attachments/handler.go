@@ -23,14 +23,26 @@ import (
 //	GET /api/logs/{request_id}/attachments 列出某请求的所有附件元数据
 //
 // 安全：下载路径做了目录遍历防护；列表查询受 tenant 隔离（调用方应叠加 admin 中间件）。
+//
+// 认证：支持多种认证模式（none/apikey/signed/admin），通过 SetAuthenticator 配置。
 type Handler struct {
-	storage *Storage
-	dbPool  *pgxpool.Pool
+	storage       *Storage
+	dbPool        *pgxpool.Pool
+	authenticator *Authenticator
 }
 
 // NewHandler 构造附件 HTTP handler。dbPool 可为 nil（仅禁用列表查询，下载仍可用）。
 func NewHandler(storage *Storage, dbPool *pgxpool.Pool) *Handler {
-	return &Handler{storage: storage, dbPool: dbPool}
+	return &Handler{
+		storage:       storage,
+		dbPool:        dbPool,
+		authenticator: nil, // 默认无认证，需调用 SetAuthenticator 配置
+	}
+}
+
+// SetAuthenticator 设置认证器（可选）。
+func (h *Handler) SetAuthenticator(auth *Authenticator) {
+	h.authenticator = auth
 }
 
 // ServeHTTP 处理 GET /api/attachments/{path...} 下载请求。
@@ -42,6 +54,26 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, http.StatusMethodNotAllowed, "method_not_allowed",
 			"only GET is supported")
 		return
+	}
+
+	// 认证检查（如果配置了 authenticator）
+	if h.authenticator != nil {
+		authCtx, err := h.authenticator.Authenticate(r)
+		if err != nil {
+			slog.Warn("attachments: authentication failed",
+				"path", r.URL.Path,
+				"error", err,
+				"remote_addr", r.RemoteAddr)
+			writeJSONError(w, http.StatusUnauthorized, "unauthorized",
+				"authentication failed: "+err.Error())
+			return
+		}
+		if !authCtx.Authenticated {
+			writeJSONError(w, http.StatusUnauthorized, "unauthorized",
+				"authentication required")
+			return
+		}
+		// TODO: 审计日志记录 authCtx.TenantID / KeyPrefix
 	}
 
 	// 提取路径：去掉 /api/attachments/ 前缀
