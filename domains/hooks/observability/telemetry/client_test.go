@@ -35,12 +35,16 @@ func (m stringPointerMatcher) Match(value interface{}) bool {
 }
 
 func requestLogUpdateArgs(entry RequestLogEntry) []interface{} {
-	args := make([]interface{}, 77)
+	args := make([]interface{}, 81)
 	for index := range args {
 		args[index] = pgxmock.AnyArg()
 	}
 	args[36] = boolPointerMatcher{want: entry.Success}
 	args[37] = stringPointerMatcher{want: entry.RequestStatus}
+	args[77] = stringPointerMatcher{want: entry.AgentName}
+	args[78] = stringPointerMatcher{want: entry.AgentType}
+	args[79] = stringPointerMatcher{want: entry.ClientProtocol}
+	args[80] = stringPointerMatcher{want: entry.VirtualClientID}
 	return args
 }
 
@@ -437,8 +441,30 @@ func TestMergeRequestLogEntry_PreservesBodiesOnEmptyUpdate(t *testing.T) {
 	}
 }
 
+func TestMergeRequestLogEntry_PreservesClientPerceptionFields(t *testing.T) {
+	agentName := "zcode"
+	agentType := "ide-agent"
+	protocol := "anthropic-messages"
+	virtualID := "client-123"
+	dst := &RequestLogEntry{
+		RequestID:        "req-client-fields",
+		AgentName:        &agentName,
+		AgentType:        &agentType,
+		ClientProtocol:   &protocol,
+		VirtualClientID:  &virtualID,
+	}
+
+	mergeRequestLogEntry(dst, &RequestLogEntry{RequestID: dst.RequestID, Success: false})
+
+	require.Equal(t, agentName, *dst.AgentName)
+	require.Equal(t, agentType, *dst.AgentType)
+	require.Equal(t, protocol, *dst.ClientProtocol)
+	require.Equal(t, virtualID, *dst.VirtualClientID)
+}
+
 func TestMergeRequestLogEntry_ClearsErrorKindOnSuccess(t *testing.T) {
 	// 2026-06-20 audit fix: when a failure entry is merged with
+
 	// a success entry, the merged entry's ErrorKind should be
 	// nil (matching the SQL CASE that clears it in the DB).
 	// This prevents stale error_kind from being logged by any
@@ -478,6 +504,7 @@ func TestMergeRequestLogEntry_ClearsErrorKindOnSuccess(t *testing.T) {
 }
 
 func TestMergeRequestLogEntry_KeepsErrorKindOnFailure(t *testing.T) {
+
 	// If both entries are failures, error_kind from the latest
 	// update wins. This is intentional: each new entry fully
 	// overwrites dst via mergeStringPtr's *dst = &v pattern, so

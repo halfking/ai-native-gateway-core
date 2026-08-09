@@ -1370,9 +1370,17 @@ func (c *Client) updateRequestLog(entry *RequestLogEntry) error {
 	   -- probe workers set origin_stage / origin_actor on probe rows.
 	   client_ip            = COALESCE($74, client_ip),
 	   client_forwarded_for = COALESCE($75, client_forwarded_for),
-	   origin_stage         = COALESCE($76, origin_stage),
-	   origin_actor         = COALESCE($77, origin_actor)
+		   origin_stage         = COALESCE($76, origin_stage),
+		   origin_actor         = COALESCE($77, origin_actor),
+		   -- 2026-07-27: client perception fields. First-write-wins keeps
+		   -- values extracted on the inbound row when a later completion,
+		   -- failure, or disconnect update carries only partial metadata.
+		   agent_name           = COALESCE(agent_name, $78),
+		   agent_type           = COALESCE(agent_type, $79),
+		   client_protocol      = COALESCE(client_protocol, $80),
+		   virtual_client_id    = COALESCE(virtual_client_id, $81)
 		   WHERE request_id = $1
+
 		     AND NOT (
 				request_logs_hot.request_status = 'failure'
 				OR (
@@ -1478,7 +1486,12 @@ func (c *Client) updateRequestLog(entry *RequestLogEntry) error {
 		entry.ClientForwardedFor,
 		entry.OriginStage,
 		entry.OriginActor,
+		entry.AgentName,
+		entry.AgentType,
+		entry.ClientProtocol,
+		entry.VirtualClientID,
 	)
+
 	if err != nil {
 		return err
 	}
@@ -2154,6 +2167,11 @@ func mergeRequestLogEntry(dst, src *RequestLogEntry) {
 	// captured. Critical for debugging client-side retry storms where
 	// the same X-Request-Id appears 5 times in the audit trail.
 	mergeStringPtr(&dst.ClientRequestID, src.ClientRequestID)
+	// 2026-07-27: preserve client perception metadata across batched updates.
+	mergeStringPtr(&dst.AgentName, src.AgentName)
+	mergeStringPtr(&dst.AgentType, src.AgentType)
+	mergeStringPtr(&dst.ClientProtocol, src.ClientProtocol)
+	mergeStringPtr(&dst.VirtualClientID, src.VirtualClientID)
 	if src.Success {
 		dst.Success = true
 	}
