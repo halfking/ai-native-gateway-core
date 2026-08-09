@@ -46,46 +46,52 @@ func (s *LocalStorageBackend) SetBaseDir(dir string) error {
 
 // Save stores file content
 func (s *LocalStorageBackend) Save(ctx context.Context, key string, data []byte) error {
-	filePath := s.getFilePath(key)
-	
+	filePath, err := s.getFilePath(key)
+	if err != nil {
+		return err
+	}
+
 	// Ensure target directory exists
 	targetDir := filepath.Dir(filePath)
 	if err := os.MkdirAll(targetDir, 0755); err != nil {
 		return fmt.Errorf("failed to create target directory: %w", err)
 	}
-	
+
 	// Write file atomically using temp file + rename
 	tmpFile, err := os.CreateTemp(targetDir, ".tmp-*")
 	if err != nil {
 		return fmt.Errorf("failed to create temp file: %w", err)
 	}
 	tmpPath := tmpFile.Name()
-	
+
 	defer func() {
 		tmpFile.Close()
 		os.Remove(tmpPath)
 	}()
-	
+
 	if _, err := tmpFile.Write(data); err != nil {
 		return fmt.Errorf("failed to write temp file: %w", err)
 	}
-	
+
 	if err := tmpFile.Close(); err != nil {
 		return fmt.Errorf("failed to close temp file: %w", err)
 	}
-	
+
 	// Atomic rename
 	if err := os.Rename(tmpPath, filePath); err != nil {
 		return fmt.Errorf("failed to rename temp file: %w", err)
 	}
-	
+
 	return nil
 }
 
 // Get retrieves file content
 func (s *LocalStorageBackend) Get(ctx context.Context, key string) ([]byte, error) {
-	filePath := s.getFilePath(key)
-	
+	filePath, err := s.getFilePath(key)
+	if err != nil {
+		return nil, err
+	}
+
 	data, err := os.ReadFile(filePath)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -93,7 +99,7 @@ func (s *LocalStorageBackend) Get(ctx context.Context, key string) ([]byte, erro
 		}
 		return nil, fmt.Errorf("failed to read file: %w", err)
 	}
-	
+
 	return data, nil
 }
 
@@ -104,76 +110,85 @@ func (s *LocalStorageBackend) Load(ctx context.Context, key string) ([]byte, err
 
 // Delete removes a file
 func (s *LocalStorageBackend) Delete(ctx context.Context, key string) error {
-	filePath := s.getFilePath(key)
-	
+	filePath, err := s.getFilePath(key)
+	if err != nil {
+		return err
+	}
+
 	if err := os.Remove(filePath); err != nil {
 		if os.IsNotExist(err) {
 			return nil // Already deleted
 		}
 		return fmt.Errorf("failed to delete file: %w", err)
 	}
-	
+
 	return nil
 }
 
 // Exists checks if a file exists
 func (s *LocalStorageBackend) Exists(ctx context.Context, key string) (bool, error) {
-	filePath := s.getFilePath(key)
-	
-	_, err := os.Stat(filePath)
+	filePath, err := s.getFilePath(key)
+	if err != nil {
+		return false, err
+	}
+
+	_, err = os.Stat(filePath)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return false, nil
 		}
 		return false, fmt.Errorf("failed to check file existence: %w", err)
 	}
-	
+
 	return true, nil
 }
 
 // List lists all files with optional prefix filter
 func (s *LocalStorageBackend) List(ctx context.Context, prefix string) ([]string, error) {
 	var keys []string
-	
+
 	err := filepath.Walk(s.baseDir, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
 			return err
 		}
-		
+
 		// Skip directories
 		if info.IsDir() {
 			return nil
 		}
-		
+
 		// Get relative path from base dir
 		relPath, err := filepath.Rel(s.baseDir, path)
 		if err != nil {
 			return err
 		}
-		
+
 		// Convert to storage key format (use forward slashes)
 		storageKey := filepath.ToSlash(relPath)
-		
+
 		// Apply prefix filter if specified
 		if prefix != "" && !strings.HasPrefix(storageKey, prefix) {
 			return nil
 		}
-		
+
 		keys = append(keys, storageKey)
 		return nil
 	})
-	
+
 	if err != nil {
 		return nil, fmt.Errorf("failed to list files: %w", err)
 	}
-	
+
 	return keys, nil
 }
 
 // GetReader retrieves a file reader
 func (s *LocalStorageBackend) GetReader(ctx context.Context, key string) (io.ReadCloser, error) {
-	filePath := s.getFilePath(key)
-	
+	filePath, err := s.getFilePath(key)
+	if err != nil {
+		return nil, err
+	}
+
 	file, err := os.Open(filePath)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -181,52 +196,58 @@ func (s *LocalStorageBackend) GetReader(ctx context.Context, key string) (io.Rea
 		}
 		return nil, fmt.Errorf("failed to open file: %w", err)
 	}
-	
+
 	return file, nil
 }
 
 // SaveReader stores content from a reader
 func (s *LocalStorageBackend) SaveReader(ctx context.Context, key string, reader io.Reader, size int64) error {
-	filePath := s.getFilePath(key)
-	
+	filePath, err := s.getFilePath(key)
+	if err != nil {
+		return err
+	}
+
 	// Ensure target directory exists
 	targetDir := filepath.Dir(filePath)
 	if err := os.MkdirAll(targetDir, 0755); err != nil {
 		return fmt.Errorf("failed to create target directory: %w", err)
 	}
-	
+
 	// Write file atomically using temp file + rename
 	tmpFile, err := os.CreateTemp(targetDir, ".tmp-*")
 	if err != nil {
 		return fmt.Errorf("failed to create temp file: %w", err)
 	}
 	tmpPath := tmpFile.Name()
-	
+
 	defer func() {
 		tmpFile.Close()
 		os.Remove(tmpPath)
 	}()
-	
+
 	if _, err := io.Copy(tmpFile, reader); err != nil {
 		return fmt.Errorf("failed to write temp file: %w", err)
 	}
-	
+
 	if err := tmpFile.Close(); err != nil {
 		return fmt.Errorf("failed to close temp file: %w", err)
 	}
-	
+
 	// Atomic rename
 	if err := os.Rename(tmpPath, filePath); err != nil {
 		return fmt.Errorf("failed to rename temp file: %w", err)
 	}
-	
+
 	return nil
 }
 
 // GetMetadata retrieves file metadata
 func (s *LocalStorageBackend) GetMetadata(ctx context.Context, key string) (*FileMetadata, error) {
-	filePath := s.getFilePath(key)
-	
+	filePath, err := s.getFilePath(key)
+	if err != nil {
+		return nil, err
+	}
+
 	info, err := os.Stat(filePath)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -234,7 +255,7 @@ func (s *LocalStorageBackend) GetMetadata(ctx context.Context, key string) (*Fil
 		}
 		return nil, fmt.Errorf("failed to get file info: %w", err)
 	}
-	
+
 	return &FileMetadata{
 		Key:          key,
 		Size:         info.Size(),
@@ -256,7 +277,7 @@ func (s *LocalStorageBackend) HealthCheck(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("base directory not accessible: %w", err)
 	}
-	
+
 	// Try to create a temp file to ensure write permission
 	tmpFile, err := os.CreateTemp(s.baseDir, ".healthcheck-*")
 	if err != nil {
@@ -264,11 +285,47 @@ func (s *LocalStorageBackend) HealthCheck(ctx context.Context) error {
 	}
 	tmpFile.Close()
 	os.Remove(tmpFile.Name())
-	
+
 	return nil
 }
 
-// getFilePath converts a storage key to an absolute file path
-func (s *LocalStorageBackend) getFilePath(storageKey string) string {
-	return filepath.Join(s.baseDir, filepath.FromSlash(storageKey))
+// getFilePath converts a storage key to an absolute file path confined to
+// baseDir.
+//
+// 2026-08-09 traversal fix: the previous implementation was a bare
+// filepath.Join(baseDir, key). A key containing ".." segments resolved
+// outside baseDir, and the HTTP download path (Handler.ServeHTTP →
+// OpenStream) passed the raw URL path straight through — so a request such
+// as `/api/attachments/../../etc/passwd` read arbitrary files from disk.
+// The remote backends (OSS/S3/Cloudreve) already guard keys with
+// sanitizeKey; the local backend now confines the resolved path under
+// baseDir and returns an error for anything that escapes. Callers translate
+// the error into a 404 for the download endpoint.
+func (s *LocalStorageBackend) getFilePath(storageKey string) (string, error) {
+	// Normalize separators and clean the key. filepath.Clean collapses ".."
+	// but can still produce a path that escapes baseDir, so we verify the
+	// result stays inside it.
+	clean := filepath.Clean(filepath.FromSlash(storageKey))
+
+	// A key that is absolute, empty, or resolves to baseDir itself is not a
+	// valid attachment key.
+	if filepath.IsAbs(clean) || clean == "." || clean == string(filepath.Separator) || clean == "" {
+		return "", fmt.Errorf("attachments: invalid key %q", storageKey)
+	}
+
+	full := filepath.Join(s.baseDir, clean)
+
+	// Defence-in-depth: after joining, ensure the lexically-resolved path is
+	// still strictly under baseDir. This catches any ".." that survived
+	// cleaning.
+	absBase, err1 := filepath.Abs(s.baseDir)
+	absFull, err2 := filepath.Abs(full)
+	if err1 != nil || err2 != nil {
+		return "", fmt.Errorf("attachments: resolve path for key %q: %v", storageKey, err1)
+	}
+	base := strings.TrimSuffix(absBase, string(filepath.Separator))
+	if !strings.HasPrefix(absFull, base+string(filepath.Separator)) {
+		return "", fmt.Errorf("attachments: key %q escapes base directory", storageKey)
+	}
+	return full, nil
 }

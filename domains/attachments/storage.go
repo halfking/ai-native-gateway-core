@@ -384,9 +384,13 @@ func (s *Storage) Stat(relPath string) (os.FileInfo, error) {
 
 	backend := s.GetBackend()
 
-	// 如果是本地存储后端，直接调用 Stat
+	// 如果是本地存储后端，直接调用 Stat。
+	// 2026-08-09: 走 getFilePath 做路径限定，避免 ".." 逃逸出 BaseDir。
 	if local, ok := backend.(*LocalStorageBackend); ok {
-		fullPath := filepath.Join(local.BaseDir(), relPath)
+		fullPath, err := local.getFilePath(relPath)
+		if err != nil {
+			return nil, err
+		}
 		return os.Stat(fullPath)
 	}
 
@@ -403,9 +407,13 @@ func (s *Storage) OpenStream(relPath string) (io.ReadCloser, string, error) {
 
 	backend := s.GetBackend()
 
-	// 如果是本地存储后端，直接打开文件
+	// 如果是本地存储后端，直接打开文件。
+	// 2026-08-09: 走 getFilePath 做路径限定，避免 ".." 逃逸出 BaseDir。
 	if local, ok := backend.(*LocalStorageBackend); ok {
-		fullPath := filepath.Join(local.BaseDir(), relPath)
+		fullPath, err := local.getFilePath(relPath)
+		if err != nil {
+			return nil, "", err
+		}
 		f, err := os.Open(fullPath)
 		if err != nil {
 			return nil, "", fmt.Errorf("attachments: open: %w", err)
@@ -432,7 +440,11 @@ func (s *Storage) FullPath(relPath string) (string, error) {
 
 	backend := s.GetBackend()
 	if local, ok := backend.(*LocalStorageBackend); ok {
-		fullPath := filepath.Join(local.BaseDir(), relPath)
+		// 2026-08-09: 走 getFilePath 做路径限定，避免 ".." 逃逸出 BaseDir。
+		fullPath, err := local.getFilePath(relPath)
+		if err != nil {
+			return "", err
+		}
 		return fullPath, nil
 	}
 
