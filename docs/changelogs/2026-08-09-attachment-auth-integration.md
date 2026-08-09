@@ -1,4 +1,4 @@
-# 2026-08-09 — 附件访问 API Key 认证集成 + 245 预生产部署脚本
+# 2026-08-09 — 附件访问 API Key 认证集成
 
 ## 背景
 
@@ -47,9 +47,6 @@
 | `cmd/gateway/main.go` | 认证配置注入 + attachment handler 装配 |
 | `.env.example` | 新环境变量文档 |
 | `docs/attachment-auth-integration.md` | 集成文档（快速开始/架构/安全/FAQ/部署清单） |
-| `scripts/deploy-245.sh` | 245 预生产自动化部署脚本 |
-| `scripts/verify-245.sh` | 245 验证脚本（4 组：healthz / 路径遍历 / apikey / 模态路由） |
-| `docs/deployment-245-guide.md` | 245 部署指南 |
 
 ## 验证
 
@@ -59,7 +56,7 @@
 
 ## 部署路径
 
-- **Phase 1（245 测试环境）**：默认 `none`，验证后启用 `apikey`
+- **Phase 1（245 测试环境）**：默认 `none`，验证后启用 `apikey`。245 部署统一走 `scripts/deploy-seamless.sh deploy 245`（`scripts/deploy-245.sh` 为委托包装，含健康检查 / 路径遍历 / apikey / 模态路由验证）
 - **Phase 2（生产）**：灰度 → 全量，通知客户端使用同一 Bearer token
 
 ## 遗留
