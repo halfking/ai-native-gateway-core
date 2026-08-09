@@ -27,7 +27,7 @@ async function load(reset = true) {
       items.value = []
       nextCursor.value = ''
     }
-    const params: any = { limit: 50 }
+    const params: Parameters<typeof listTurns>[0] = { limit: 50 }
     if (nextCursor.value) params.cursor = nextCursor.value
     if (modelFilter.value) params.model = modelFilter.value
     if (providerFilter.value) params.provider = providerFilter.value
@@ -37,8 +37,8 @@ async function load(reset = true) {
     items.value = [...items.value, ...res.items]
     hasMore.value = res.has_more
     nextCursor.value = res.next_cursor
-  } catch (e: any) {
-    error.value = e.message || '加载失败'
+  } catch (e: unknown) {
+    error.value = e instanceof Error ? e.message : String(e)
   } finally {
     loading.value = false
   }
