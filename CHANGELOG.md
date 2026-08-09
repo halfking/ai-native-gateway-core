@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **附件访问 API Key 认证集成 (2026-08-09, commits `80d4484d1` + `47dd7d80f`)**: `domains/attachments/{auth,auth_adapter,config}.go`、`handler.go`、`cmd/gateway/main.go`、`.env.example` — 附件下载/列表与聊天共用同一 API Key 认证，消除客户端分离认证机制。4 种认证模式框架：`none`（默认，向后兼容）、`apikey`（Bearer token，复用 `domains/authentication.KeyVerifier` + 60s 缓存 + tenant 隔离）、`signed`/`admin`（TODO，Phase 3）。`attachments` 包通过最小 `KeyVerifier` 接口解耦，避免与 authentication 包循环依赖；`apikey` 模式下 KeyVerifier 不可用则降级无认证并告警。新增环境变量 `LLM_GATEWAY_ATTACHMENT_AUTH_MODE` / `PUBLIC_URL` / `CORS_ORIGINS`。配套 245 预生产部署脚本 `scripts/deploy-245.sh` / `verify-245.sh`（含健康检查、路径遍历 CVE 验证、apikey 认证验证、模态路由验证四组）与指南 `docs/deployment-245-guide.md`、集成文档 `docs/attachment-auth-integration.md`。7 个新认证测试 + 集成测试全过，向后兼容验证通过。
+
 - **路由失败自动切换 + 无节点模型选择 (2026-08-09, commit `fde71690`)**: `domains/streaming/model_alternatives.go`、`handler.go`、`cmd/gateway/main.go` — 当请求模型零候选时，`writeNoCandidateWithAlternatives` 在 503 body 的 `error.alternatives` 里附上当前真正可路由的模型列表（`v_routable_credential_models.is_routable` 过滤，非 admin catalog 的浅过滤），供客户端选择或等待原模型恢复。排序：会话任务类型匹配 > 特色模型 > 近 7 天热门。任务类型三级回退：`X-Gw-Task-Hint` 头 → autoroute Redis 会话意图缓存 → 内联启发式分类（零 LLM 调用）。协议感知：Anthropic `/v1/messages` 客户端收到 `{"type":"error",...}` 信封而非 OpenAI 信封。列表为空时字段整体省略，保持历史响应字节不变。12 个测试覆盖三级任务类型解析、nil 降级、两种协议信封、SQL 契约断言。
 
 ### Fixed
