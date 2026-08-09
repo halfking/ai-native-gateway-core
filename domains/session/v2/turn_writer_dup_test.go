@@ -158,64 +158,8 @@ func expectAppendTurn(mock pgxmock.PgxPoolIface, rec TurnRecord, nextTurn int, i
 	mock.ExpectCommit()
 }
 
-// expectExistingTurn was the legacy fast-path used by round 1/2 tests where
-// the pre-INSERT probe returned the existing turn number and the code
-// short-circuited. Round 3 removed the pre-INSERT probe; callers must
-// instead route through expectAppendTurn with inserted=false to exercise
-// the post-conflict re-read. This helper is kept as a no-op assertion so
-// any leftover tests that referenced it fail loudly rather than silently
-// skipping the insert.
-func expectExistingTurn(mock pgxmock.PgxPoolIface, rec TurnRecord, nextTurn, existingTurn int) {
-	partitionDate := rec.Ts.Truncate(24 * time.Hour)
-	mock.ExpectBegin()
-	mock.ExpectExec(regexp.QuoteMeta("SELECT pg_advisory_xact_lock($1)")).
-		WithArgs(hashSessionKey(rec.TenantID, rec.SessionID)).
-		WillReturnResult(pgxmock.NewResult("SELECT", 1))
-	mock.ExpectQuery("SELECT COALESCE\\(MAX\\(turn_no\\), 0\\) \\+ 1").
-		WithArgs(rec.TenantID, rec.SessionID).
-		WillReturnRows(pgxmock.NewRows([]string{"turn_no"}).AddRow(nextTurn))
-	// Pre-INSERT probe is gone in Round 3. We deliberately do NOT register
-	// a SELECT for the existing request_id before the INSERT — if the
-	// production code re-introduces a probe, the INSERT mock below will
-	// fail with "next expectation is ... expecting call to Query/QueryRow".
-	rowsAffected := int64(0)
-	compressionMetaStr := "null"
-	if len(rec.CompressionMeta) > 0 {
-		compressionMetaStr = "{}"
-	}
-	// See expectAppendTurn for why multimodalArg is AnyArg here.
-	multimodalArg := pgxmock.AnyArg()
-	mock.ExpectExec("INSERT INTO gateway.session_turns").
-		WithArgs(
-			rec.SessionID, nextTurn, rec.TenantID, rec.RequestID, rec.Ts,
-			rec.SubmitMode,
-			rec.CompressionApplied, rec.CompressionStrategy, compressionMetaStr, rec.TokensSaved,
-			rec.InjectionVerdict, rec.OutputVerdict,
-			rec.Model, rec.Provider, rec.CredentialID,
-			rec.PromptTokens, rec.CompletionTokens, rec.CacheReadTokens, rec.CacheWriteTokens, rec.CostUSD,
-			rec.LatencyMs, rec.StatusCode, rec.Success, rec.ErrorKind,
-			rec.SourceKind, rec.Quality,
-			rec.AttachmentCount, rec.AttachmentTotalBytes, multimodalArg,
-			partitionDate,
-		).
-		WillReturnResult(pgxmock.NewResult("INSERT", rowsAffected))
-	// Post-conflict re-read returns the existing turn number.
-	mock.ExpectQuery("SELECT turn_no[[:space:]]+FROM gateway.session_turns").
-		WithArgs(rec.SessionID, rec.TenantID, rec.RequestID, partitionDate).
-		WillReturnRows(pgxmock.NewRows([]string{"turn_no"}).AddRow(existingTurn))
-	// 2026-08-05 (v2 mirror bug): conflict-path backfill UPDATE (see
-	// expectAppendTurn for the arg contract).
-	mock.ExpectExec("UPDATE gateway.session_turns").
-		WithArgs(
-			rec.SessionID, rec.TenantID, rec.RequestID, partitionDate,
-			rec.CompressionApplied, rec.CompressionStrategy, compressionMetaStr,
-			rec.TokensSaved, rec.SubmitMode,
-		).
-		WillReturnResult(pgxmock.NewResult("UPDATE", 1))
-	mock.ExpectCommit()
-}
-
 func TestTurnWriterAppendTurnDuplicateReturnsExistingTurnNo(t *testing.T) {
+
 	writer, mock := newMockTurnWriter(t)
 	rec := TurnRecord{SessionID: "s1", TenantID: "t1", RequestID: "r1", Ts: time.Date(2026, 7, 28, 12, 0, 0, 0, time.UTC)}
 	// First call: brand-new request — INSERT succeeds with RowsAffected=1

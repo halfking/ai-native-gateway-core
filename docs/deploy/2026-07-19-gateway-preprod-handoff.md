@@ -98,7 +98,7 @@ run its L1-L4 validation and record the results in a dated deployment report.
 
 ```text
 Continue the LLM Gateway 245 pre-production release gate from
-docs/待处理任务/2026-07-19-gateway-preprod-handoff.md.
+docs/deploy/2026-07-19-gateway-preprod-handoff.md.
 
 Start by reading the handoff, checking Git status and origin/main divergence,
 then load env-injector, deploy-245, llm-gateway-deploy-test, and

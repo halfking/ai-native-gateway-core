@@ -105,6 +105,9 @@ func sessionCacheRedisTTL() time.Duration {
 	if minutes < 5 {
 		minutes = 5
 	}
+	if minutes > 1440 {
+		minutes = 1440
+	}
 	return time.Duration(minutes) * time.Minute
 }
 
@@ -117,6 +120,9 @@ func sessionCacheL1Capacity() int {
 	cap := settings.GetPlatformInt("cache.session_l1_capacity", l1MaxSessions)
 	if cap < 64 {
 		return 64
+	}
+	if cap > 16384 {
+		return 16384
 	}
 	return cap
 }
