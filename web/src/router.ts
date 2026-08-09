@@ -56,6 +56,8 @@ const OutputComplianceView = () => import('./views/OutputComplianceView.vue')
 const UsageCostView = () => import('./views/admin/UsageCost.vue')
 // 2026-07-24: V2-P4 admin session detail page (dual-column turns + drawer).
 const SessionDetailView = () => import('./views/admin/SessionDetailPage.vue')
+// 2026-08-09: 跨会话轮次列表页
+const TurnsListView = () => import('./views/TurnsListView.vue')
 const ClientAnalyticsView = () => import('./views/ClientAnalyticsView.vue')
 const TaskAnalyticsView = () => import('./views/TaskAnalyticsView.vue')
 const UserProfileListView = () => import('./views/UserProfileListView.vue')
@@ -208,6 +210,7 @@ export const router = createRouter({
     { path: '/admin/output-compliance', component: OutputComplianceView, meta: { requiresSuper: true } },
     { path: '/admin/usage',        component: UsageCostView }, // 用量成本视图 (T2.4)
     { path: '/admin/sessions/:id', component: SessionDetailView, meta: { requiresSuper: true } }, // 2026-07-24: V2-P4 session detail
+    { path: '/admin/turns',        component: TurnsListView, meta: { requiresSuper: true } }, // 2026-08-09: 跨会话轮次列表
     { path: '/examples',           component: ExamplesView },
     { path: '/chat',               component: ChatView },
 

@@ -35,6 +35,7 @@ export default {
     keyApplications: 'Key Applications',
     auditLogs: 'Audit Logs',
     requestLogs: 'Request Logs',
+    turns: 'Turns List',
     sessions: 'Sessions',
     pluginSessions: 'Plugin Sessions',
     sessionManagement: 'Session Management',

@@ -98,6 +98,7 @@ export const NAV_GROUPS: NavGroup[] = [
     labelKey: 'nav.group.requestsSessions',
     items: [
       { path: '/request-logs', label: '请求日志', labelKey: 'nav.item.requestLogs', icon: '📋' },
+      { path: '/admin/turns', label: '轮次列表', labelKey: 'nav.item.turns', icon: '🔄', super: true, hideForTenant: true },
       // 2026-07-23: ai-session-manager plugin 入口
       // Plugin 模式：完整页面跳转（同 opsPlatform 的 external 机制）
       { path: '/plugins/ai-session-manager/sessions', label: '会话列表', labelKey: 'nav.item.pluginSessions', icon: '💬', super: true, hideForTenant: true, external: true, plugin: 'ai-session-manager' },

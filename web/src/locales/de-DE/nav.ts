@@ -33,6 +33,7 @@ export default {
     keyApplications: "Schlüssel-Anträge",
     auditLogs: "Audit-Logs",
     requestLogs: "Anfrage-Logs",
+    turns: "Turns-Liste",
     requestTrace: "Anfrage-Verfolgung",
     sessions: "Sitzungen",
     pluginSessions: "Plugin-Sitzungen",
