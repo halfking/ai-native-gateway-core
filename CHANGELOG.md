@@ -9,6 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **modality sticky-upsert 修复 + backfill 工具 (2026-08-09, commit `c2a7629fa`)**: `discovery/discovery.go`、`cmd/tools/backfill-modality/main.go`、`docs/modality-sticky-upsert-fix.md` — `upsertModel` 的 `modality = COALESCE(models_canonical.modality, $4)` 是**死代码**：该列是 `NOT NULL DEFAULT 'text'`，左操作数永不为 NULL，COALESCE 永远返回旧值。后果是 `4639d4ae5` 修好的 50+ 条推断规则**无法回灌到已注册的行** —— 生产库里 8-09 之前注册的 `glm-4.5v`/`qwen2.5-vl-*` 等仍是 `text`，而 `loadCandidatesByModalityDB` 对图片请求只接纳 `modality IN ('vision','multimodal')`，被误标的模型直接从候选集消失，请求 503 而非降级。修复为 upgrade-only `CASE`：仅当存量值仍是列默认 `text` 且新推断非 `text` 时采纳新值 —— 既修复存量，又不降级、不覆盖 Layer-3 super_admin 人工覆盖（后者必为非 `text`，见 `admin/model_modality.go`）。SQL 用 pglast（真 PostgreSQL grammar）解析验证。另新增 `cmd/tools/backfill-modality` 一次性工具修复存量行：直接 import `modelname.InferModality`（单一真相源，不把 100+ 条规则复制成 SQL），upgrade-only + 幂等 + 默认 dry-run + 单事务提交。分两阶段部署：Phase 1 部署代码（新模型再发现时自动升级），Phase 2 逐环境跑 backfill。
+- **`go vet` 门禁修复 (2026-08-09, commit `1db70a556`)**: `domains/hooks/observability/telemetry/client_test.go` — HEAD 上 `encoding/json` 未使用导致 `go vet` 失败，阻塞所有后续 commit 的 pre-commit 门禁（与本次 modality 工作无关）。拆成独立 commit 以保持归因清晰。
+
 - **deploy-245.sh 部署脚本修复 (2026-08-09, commit `a277c0086`)**: `scripts/deploy-245.sh` — commit 47dd7d80f 意外将完整部署脚本替换为简化版本，导致以下能力丢失：实际二进制部署、服务重启、健康检查、DB 迁移、原子符号链接切换、前端构建。简化版本只执行 `go build` 并打印手动操作说明，无自动化能力。已恢复原设计：委托给 `deploy-seamless.sh` 执行完整无感部署流程（前后端同时构建 + 切换前 DB 迁移 + 原子符号链接切换 + L1→L4 健康检查 + 失败自动回滚 + build_seq 管理）。同时删除过时文档 `docs/deployment-245-guide.md` 和 `scripts/verify-245.sh`（功能已集成到 deploy-seamless.sh）。用户应参考 `scripts/deploy-seamless.sh` 文档进行部署。
 
 ### Added
