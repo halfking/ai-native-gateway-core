@@ -4,6 +4,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus"
 	dto "github.com/prometheus/client_model/go"
 	"github.com/stretchr/testify/assert"
 )
@@ -260,4 +261,27 @@ func BenchmarkPrometheusRecorder_Safety(b *testing.B) {
 		testRecorder.RecordSafetyCheck("request", time.Microsecond)
 		testRecorder.RecordSafetyAction("allow", "low")
 	}
+}
+
+func TestOmniFreeInfraFailureMetricContract(t *testing.T) {
+	// Keep the label contract aligned with the WithLabelValues call site.
+	OmniFreeInfraFailureTotal.WithLabelValues("tenant-test").Inc()
+
+	families, err := prometheus.DefaultGatherer.Gather()
+	if err != nil {
+		t.Fatalf("gather Prometheus metrics: %v", err)
+	}
+
+	for _, family := range families {
+		if family.GetName() != "omnifree_infra_failure_total" {
+			continue
+		}
+		if got := family.GetMetric()[0].GetLabel(); len(got) != 1 {
+			t.Fatalf("omnifree_infra_failure_total label count = %d, want 1", len(got))
+		}
+		assert.Equal(t, "tenant", family.GetMetric()[0].GetLabel()[0].GetName())
+		return
+	}
+
+	t.Fatal("omnifree_infra_failure_total was not registered")
 }
