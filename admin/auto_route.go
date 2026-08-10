@@ -101,6 +101,9 @@ func (h *AutoRouteHandlers) RegisterAutoRouteRoutes(mux *http.ServeMux, adminWra
 	// Explicit default routing (task_type × profile × tier × tenant)
 	mux.HandleFunc("/api/admin/auto-route/defaults", adminWrap(h.HandleDefaultRoutingCollection))
 	mux.HandleFunc("/api/admin/auto-route/defaults/", adminWrap(h.HandleDefaultRoutingItem))
+	// Migration 478: learned affinity ranking read-only endpoints.
+	mux.HandleFunc("/api/admin/auto-route/affinity", adminWrap(h.HandleAffinityRanking))
+	mux.HandleFunc("/api/admin/auto-route/affinity/selections", adminWrap(h.handleAffinitySelections))
 }
 
 // handleDecisions returns the most recent N auto-route decisions from
@@ -845,4 +848,216 @@ func writeJSONErrCtx(w http.ResponseWriter, r *http.Request, status int, message
 func writeInternalErr(w http.ResponseWriter, err error) {
 	slog.Error("admin auto-route internal error", "error", err.Error())
 	writeJSONErr(w, http.StatusInternalServerError, "internal error (see server logs)")
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// Migration 478: affinity ranking endpoints
+// ─────────────────────────────────────────────────────────────────────────
+
+// affinityRankingRow is one row from task_model_affinity + view metadata.
+// Mirrors v_task_model_ranking's column list; trimmed to what an operator
+// reads: ranking, model, the numbers that explain it, currently_routable.
+type affinityRankingRow struct {
+	TaskType          string  `json:"task_type"`
+	Profile           string  `json:"profile"`
+	TenantID          string  `json:"tenant_id"`
+	Rank              *int    `json:"rank,omitempty"`
+	CanonicalID       int64   `json:"canonical_id"`
+	CanonicalModel    string  `json:"canonical_model"`
+	Affinity          float64 `json:"affinity"`
+	Confidence        float64 `json:"confidence"`
+	SampleCount       int     `json:"sample_count"`
+	SuccessRate       float64 `json:"success_rate,omitempty"`
+	AvgReward         float64 `json:"avg_reward,omitempty"`
+	EMAReward         float64 `json:"ema_reward,omitempty"`
+	AvgLatencyMs      *int    `json:"avg_latency_ms,omitempty"`
+	AvgCostUSD        float64 `json:"avg_cost_usd,omitempty"`
+	AvgHealth         float64 `json:"avg_health,omitempty"`
+	CurrentlyRoutable bool    `json:"currently_routable"`
+	LastSampledAt     string  `json:"last_sampled_at,omitempty"`
+	UpdatedAt         string  `json:"updated_at,omitempty"`
+}
+
+// HandleAffinityRanking returns the learned task→model ranking.
+//
+// Query params:
+//
+//	task_type — required (e.g. "code", "chat")
+//	profile   — optional (default: all profiles)
+//	tenant_id — optional (default: "" = platform-level)
+//
+// Default limit is 50 rows (operator UI). Higher limits require an explicit
+// `limit` param. Validation: profile must be one of "", smart, speed_first,
+// cost_first when present.
+func (h *AutoRouteHandlers) HandleAffinityRanking(w http.ResponseWriter, r *http.Request) {
+	taskType := strings.TrimSpace(r.URL.Query().Get("task_type"))
+	if taskType == "" {
+		writeJSONErr(w, http.StatusBadRequest, "task_type query param is required")
+		return
+	}
+	profile := r.URL.Query().Get("profile")
+	if profile != "" && profile != "smart" && profile != "speed_first" && profile != "cost_first" {
+		writeJSONErr(w, http.StatusBadRequest, "profile must be one of '', smart, speed_first, cost_first")
+		return
+	}
+	tenantID := strings.TrimSpace(r.URL.Query().Get("tenant_id"))
+
+	limit := 50
+	if v := r.URL.Query().Get("limit"); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil || n < 1 || n > 500 {
+			writeJSONErr(w, http.StatusBadRequest, "limit must be 1..500")
+			return
+		}
+		limit = n
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), 3*time.Second)
+	defer cancel()
+
+	rows, err := h.db.Query(ctx, `
+			SELECT task_type, profile, tenant_id, rank,
+			       canonical_id, canonical_model,
+			       affinity, confidence,
+			       sample_count, COALESCE(success_rate, 0),
+			       COALESCE(avg_reward, 0), COALESCE(ema_reward, 0),
+			       avg_latency_ms, COALESCE(avg_cost_usd, 0),
+			       COALESCE(avg_health, 0), currently_routable,
+			       COALESCE(last_sampled_at::text, ''), COALESCE(updated_at::text, '')
+			FROM v_task_model_ranking
+			WHERE task_type = $1
+			  AND ($2 = '' OR profile = $2)
+			  AND ($3 = '' OR tenant_id = $3)
+			ORDER BY affinity DESC, sample_count DESC
+			LIMIT $4
+		`, taskType, profile, tenantID, limit)
+	if err != nil {
+		writeInternalErr(w, err)
+		return
+	}
+	defer rows.Close()
+
+	out := make([]affinityRankingRow, 0, limit)
+	for rows.Next() {
+		var r affinityRankingRow
+		if err := rows.Scan(
+			&r.TaskType, &r.Profile, &r.TenantID, &r.Rank,
+			&r.CanonicalID, &r.CanonicalModel,
+			&r.Affinity, &r.Confidence,
+			&r.SampleCount, &r.SuccessRate,
+			&r.AvgReward, &r.EMAReward,
+			&r.AvgLatencyMs, &r.AvgCostUSD,
+			&r.AvgHealth, &r.CurrentlyRoutable,
+			&r.LastSampledAt, &r.UpdatedAt,
+		); err != nil {
+			writeInternalErr(w, err)
+			return
+		}
+		out = append(out, r)
+	}
+	if err := rows.Err(); err != nil {
+		writeInternalErr(w, err)
+		return
+	}
+
+	writeJSONOk(w, map[string]any{
+		"task_type": taskType,
+		"profile":   profile,
+		"tenant_id": tenantID,
+		"rows":      out,
+	})
+}
+
+// handleAffinitySelections returns the most recent auto_route_selections rows
+// for a session, with the recorded decision snapshot and outcome. Used to
+// trace the loop on a per-session basis during debugging.
+//
+// Query params:
+//
+//	session_id — required
+//	limit      — optional, default 50, max 500
+func (h *AutoRouteHandlers) handleAffinitySelections(w http.ResponseWriter, r *http.Request) {
+	sessionID := strings.TrimSpace(r.URL.Query().Get("session_id"))
+	if sessionID == "" {
+		writeJSONErr(w, http.StatusBadRequest, "session_id query param is required")
+		return
+	}
+	limit := 50
+	if v := r.URL.Query().Get("limit"); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil || n < 1 || n > 500 {
+			writeJSONErr(w, http.StatusBadRequest, "limit must be 1..500")
+			return
+		}
+		limit = n
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), 3*time.Second)
+	defer cancel()
+
+	rows, err := h.db.Query(ctx, `
+			SELECT request_id, task_type, profile, classifier,
+			       confidence, canonical_id, chosen_model, candidate_rank,
+			       composite_score, affinity_score, affinity_applied, explore,
+			       fallback_used,
+			       success, latency_ms, cost_usd, reward, reward_source,
+			       ts::text, settled_at::text
+			FROM auto_route_selections
+			WHERE session_id = $1
+			ORDER BY ts DESC
+			LIMIT $2
+		`, sessionID, limit)
+	if err != nil {
+		writeInternalErr(w, err)
+		return
+	}
+	defer rows.Close()
+
+	type selRow struct {
+		RequestID       string   `json:"request_id"`
+		TaskType        string   `json:"task_type"`
+		Profile         string   `json:"profile"`
+		Classifier      string   `json:"classifier"`
+		Confidence      float64  `json:"confidence"`
+		CanonicalID     *int64   `json:"canonical_id"`
+		ChosenModel     string   `json:"chosen_model"`
+		CandidateRank   int      `json:"candidate_rank"`
+		CompositeScore  *float64 `json:"composite_score"`
+		AffinityScore   *float64 `json:"affinity_score"`
+		AffinityApplied bool     `json:"affinity_applied"`
+		Explore         bool     `json:"explore"`
+		FallbackUsed    bool     `json:"fallback_used"`
+		Success         *bool    `json:"success"`
+		LatencyMs       *int     `json:"latency_ms"`
+		CostUSD         *float64 `json:"cost_usd"`
+		Reward          *float64 `json:"reward"`
+		RewardSource    *string  `json:"reward_source"`
+		TS              string   `json:"ts"`
+		SettledAt       string   `json:"settled_at,omitempty"`
+	}
+	out := make([]selRow, 0, limit)
+	for rows.Next() {
+		var x selRow
+		if err := rows.Scan(
+			&x.RequestID, &x.TaskType, &x.Profile, &x.Classifier,
+			&x.Confidence, &x.CanonicalID, &x.ChosenModel, &x.CandidateRank,
+			&x.CompositeScore, &x.AffinityScore, &x.AffinityApplied, &x.Explore,
+			&x.FallbackUsed,
+			&x.Success, &x.LatencyMs, &x.CostUSD, &x.Reward, &x.RewardSource,
+			&x.TS, &x.SettledAt,
+		); err != nil {
+			writeInternalErr(w, err)
+			return
+		}
+		out = append(out, x)
+	}
+	if err := rows.Err(); err != nil {
+		writeInternalErr(w, err)
+		return
+	}
+
+	writeJSONOk(w, map[string]any{
+		"session_id": sessionID,
+		"rows":       out,
+	})
 }
