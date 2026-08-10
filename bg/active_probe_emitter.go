@@ -28,15 +28,58 @@ import (
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/observability/telemetry"
 )
 
+// ProbeEventSink is the interface a self-check SSE hub satisfies. bg cannot
+// import admin (admin imports bg), so the wiring is structural: *admin.ProbeSSEHub
+// implements PublishProbeEvent(bg.ProbeStreamEvent) directly, satisfying this
+// interface. main.go wires the concrete hub via ActiveProbeEmitter.SetProbeSink.
+// This mirrors the existing NodeProbeStateSink / ActiveProbeEmitter pattern.
+type ProbeEventSink interface {
+	PublishProbeEvent(task ProbeStreamEvent)
+}
+
+// ProbeStreamEvent is the bg-side projection of a probe lifecycle transition.
+// It is converted to admin.ProbeStreamTask by the adapter in main.go. Keeping
+// the bg-side shape free of admin imports preserves the dependency direction.
+type ProbeStreamEvent struct {
+	ID           string // unique run id
+	TaskType     string // node_probe | integrity_verify | selfcheck
+	Source       string // node_probe | integrity | selfcheck
+	Status       string // pending | in-flight | ok | fail
+	CredentialID int64
+	ProviderID   int64
+	ProviderCode string
+	RawModel     string
+	Attempt      int
+	LatencyMs    *int
+	HTTPStatus   *int
+	ErrCode      string
+	ErrDetail    string
+	Scheduled    bool
+	Reason       string
+	TimestampMs  int64
+}
+
 // ActiveProbeEmitter pushes probe results into the live request stream.
 type ActiveProbeEmitter struct {
 	telemetry *telemetry.Client
+	probeSink ProbeEventSink // optional SSE hook (2026-08-11 自检队列 SSE)
 }
 
 // NewActiveProbeEmitter constructs an emitter. Passing a nil telemetry
 // client is safe (emits become no-ops).
 func NewActiveProbeEmitter(tc *telemetry.Client) *ActiveProbeEmitter {
 	return &ActiveProbeEmitter{telemetry: tc}
+}
+
+// SetProbeSink wires an optional SSE sink for the self-check queue stream.
+// The emitter publishes a completed/failed transition on every Emit so the
+// 自检 tab mirrors node-probe and integrity-probe outcomes in real time.
+// Safe to call with nil (the hook becomes a no-op).
+func (e *ActiveProbeEmitter) SetProbeSink(sink ProbeEventSink) {
+	if e == nil {
+		return
+	}
+	e.probeSink = sink
 }
 
 // Emit builds a RequestLogEntry for the probe result and feeds it to the
@@ -53,20 +96,32 @@ func (e *ActiveProbeEmitter) Emit(
 	attempt int,
 	result *ProbeResult,
 ) {
-	if e == nil || e.telemetry == nil || !e.telemetry.Enabled() || result == nil {
+	if e == nil || result == nil {
 		return
 	}
 	if origin == "" {
 		origin = "direct"
 	}
 
-	if tenantID == "" {
-		tenantID = "default"
-	}
-
 	success := result.Status == ProbeStatusSuccess
 	ts := result.StartedAt
 	latencyMs := result.LatencyMs
+	requestID := buildProbeRequestID(credID, rawModel, attempt, success, ts)
+
+	// 2026-08-11: mirror this probe outcome to the self-check SSE stream so
+	// the 自检 tab updates in real time, INDEPENDENTLY of the telemetry path.
+	// The SSE stream is a separate surface — a probe that can't reach telemetry
+	// (e.g. telemetry disabled, transient DB error) must still update the
+	// 自检 queue view.
+	e.publishSink(requestID, credID, providerID, origin, parentReqID, attempt, rawModel, success, ts, latencyMs, result)
+
+	if e.telemetry == nil || !e.telemetry.Enabled() {
+		return
+	}
+
+	if tenantID == "" {
+		tenantID = "default"
+	}
 
 	var errKind *string
 	if !success {
@@ -74,7 +129,6 @@ func (e *ActiveProbeEmitter) Emit(
 		errKind = &k
 	}
 
-	requestID := buildProbeRequestID(credID, rawModel, attempt, success, ts)
 	// 2026-07-17: failure_stage is now derived from the real failure
 	// point instead of a hardcoded "upstream". A decrypt/endpoint_build
 	// failure is gateway-side and must read "gateway"; only faults that
@@ -144,6 +198,78 @@ func (e *ActiveProbeEmitter) Emit(
 	}
 
 	e.telemetry.EmitRequestLogInsert(entry)
+}
+
+// publishSink mirrors a probe outcome to the self-check SSE stream. It is
+// called from Emit INDEPENDENTLY of the telemetry path so the 自检 tab stays
+// live even when telemetry is disabled or transiently failing. The sink is
+// optional; when unset (older wiring / tests) this is a no-op.
+func (e *ActiveProbeEmitter) publishSink(
+	requestID string,
+	credID, providerID int,
+	origin, parentReqID string,
+	attempt int,
+	rawModel string,
+	success bool,
+	ts time.Time,
+	latencyMs int,
+	result *ProbeResult,
+) {
+	if e == nil || e.probeSink == nil || result == nil {
+		return
+	}
+	status := "ok"
+	if !success {
+		status = "fail"
+	}
+	var latPtr *int
+	if latencyMs > 0 {
+		latPtr = &latencyMs
+	}
+	var httpPtr *int
+	if result.HTTPStatus != 0 {
+		hs := result.HTTPStatus
+		httpPtr = &hs
+	}
+	e.probeSink.PublishProbeEvent(ProbeStreamEvent{
+		ID:           requestID,
+		TaskType:     "node_probe",
+		Source:       probeSourceForOrigin(origin),
+		Status:       status,
+		CredentialID: int64(credID),
+		ProviderID:   int64(providerID),
+		RawModel:     rawModel,
+		Attempt:      attempt,
+		LatencyMs:    latPtr,
+		HTTPStatus:   httpPtr,
+		ErrCode:      result.ErrCode,
+		ErrDetail:    truncateErrDetail(result.ErrMsg),
+		Reason:       parentReqID,
+		TimestampMs:  ts.UnixMilli(),
+	})
+}
+
+// probeSourceForOrigin maps the emitter's origin string to the SSE source
+// badge consumed by the 自检 tab (node_probe | integrity | selfcheck).
+func probeSourceForOrigin(origin string) string {
+	switch origin {
+	case "integrity", "integrity_verify":
+		return "integrity"
+	case "selfcheck", "self_check":
+		return "selfcheck"
+	default:
+		return "node_probe"
+	}
+}
+
+// truncateErrDetail caps the error detail so a verbose upstream body does not
+// blow up the SSE envelope. 512 bytes is plenty for the err_code context.
+func truncateErrDetail(s string) string {
+	const max = 512
+	if len(s) <= max {
+		return s
+	}
+	return s[:max] + "…"
 }
 
 // buildProbeRequestLogEntry assembles the telemetry.RequestLogEntry for a

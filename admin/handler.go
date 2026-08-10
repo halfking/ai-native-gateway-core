@@ -53,6 +53,10 @@ type Handler struct {
 	// nil 时 /api/admin/system-monitor/* 端点 503；探测仍可能由旧 worker 跑。
 	systemMonitor    SystemMonitorBackend
 	systemMonitorSSE *SystemMonitorSSEHub
+	// probeStreamHub (2026-08-11) fans out self-check / node-probe lifecycle
+	// events to the dashboard 自检 tab over SSE, mirroring the live request
+	// stream. nil when Redis is not wired — the route is then not registered.
+	probeStreamHub *ProbeSSEHub
 	// 2026-06-23 Phase 2/3: backs /api/candidate-failures* endpoints.
 	// Wired from cmd/gateway/main.go via SetCandidateFailureHandlers so
 	// /alerts can read live data from the CandidateFailureMonitor.
@@ -1232,4 +1236,10 @@ func (h *Handler) SetSystemMonitor(sm SystemMonitorBackend) {
 // stream. Pass nil to disable.
 func (h *Handler) SetSystemMonitorSSE(hub *SystemMonitorSSEHub) {
 	h.systemMonitorSSE = hub
+}
+
+// SetProbeStreamSSE wires the dashboard SSE hub for the self-check / node-probe
+// queue stream (自检 tab). Pass nil to disable.
+func (h *Handler) SetProbeStreamSSE(hub *ProbeSSEHub) {
+	h.probeStreamHub = hub
 }
