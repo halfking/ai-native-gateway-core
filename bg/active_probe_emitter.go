@@ -232,7 +232,12 @@ func (e *ActiveProbeEmitter) publishSink(
 		httpPtr = &hs
 	}
 	e.probeSink.PublishProbeEvent(ProbeStreamEvent{
-		ID:           requestID,
+		// Use the same stable ID format as NodeProbeWorker.publishProbeEvent
+		// (node_probe:<credID>:<model>) so the pending / in-flight / terminal
+		// transitions collapse into one SSE tile. The high-cardinality
+		// telemetry request_id stays separate (kept in auto_decision / the
+		// request_logs row) and is NOT used for the SSE key.
+		ID:           buildNodeProbeTaskID(credID, rawModel),
 		TaskType:     "node_probe",
 		Source:       probeSourceForOrigin(origin),
 		Status:       status,
@@ -247,6 +252,15 @@ func (e *ActiveProbeEmitter) publishSink(
 		Reason:       parentReqID,
 		TimestampMs:  ts.UnixMilli(),
 	})
+}
+
+// buildNodeProbeTaskID returns the stable SSE task identifier used by all
+// node-probe lifecycle transitions (pending / in-flight / completed / failed)
+// so the dashboard can collapse them into one tile. The attempt is NOT part
+// of the key because backoff re-arms produce a new in-flight wave for the
+// same (credential, model) — they should update the same row, not fork.
+func buildNodeProbeTaskID(credID int, model string) string {
+	return fmt.Sprintf("node_probe:%d:%s", credID, sanitizeModelForID(model))
 }
 
 // probeSourceForOrigin maps the emitter's origin string to the SSE source

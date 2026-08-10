@@ -19,9 +19,13 @@ package admin
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"net/http"
+	"os"
 	"sync"
 	"time"
 
@@ -32,9 +36,17 @@ import (
 // ProbeStreamTask is the unified probe-lifecycle event payload emitted by the
 // probe workers (node_probe / integrity / selfcheck) and carried in SSE
 // envelopes. One taskID maps to one (credential, model, run) lifecycle; status
-// transitions update the same taskID in place.
+// transitions update the same taskID in place so the dashboard can collapse
+// pending → in-flight → ok/fail into a single tile.
+//
+// ID conventions (audit-enforced 2026-08-12):
+//   - node_probe: buildNodeProbeTaskID(credID, model)  → "node_probe:<cred>:<model>"
+//   - integrity:  task.DedupKey (preserved across retries)
+//   - selfcheck:  "selfcheck:<credID>:<unixnano>"  (daily run, distinct per run)
+// The high-cardinality telemetry request_id (request_logs row) is unrelated
+// to this SSE key — it stays distinct and is recorded in auto_decision.
 type ProbeStreamTask struct {
-	ID           string  `json:"id"`            // unique run id (e.g. node_probe_runs id or <cred>:<model>:<attempt>)
+	ID           string  `json:"id"`            // stable lifecycle id (see conventions above)
 	TaskType     string  `json:"task_type"`     // node_probe | integrity_verify | selfcheck
 	Source       string  `json:"source"`        // node_probe | integrity | selfcheck
 	Status       string  `json:"status"`        // pending | in-flight | ok | fail
@@ -93,6 +105,13 @@ func eventTypeForStatus(status string) string {
 type ProbeSSEHub struct {
 	rdb   *redis.Client
 	store *ProbeRedisStore
+	// instanceID tags every Publish() so the local Redis subscriber
+	// (run loop) can drop events that originated from this same hub
+	// instead of double-fanning-out to connected SSE clients.
+	// 2026-08-12 audit fix: without this gate the hub delivered every
+	// transition twice — once from Publish()'s local fanOut, once from
+	// the Redis pub/sub round-trip back to its own subscriber.
+	instanceID string
 
 	mu        sync.Mutex
 	clients   map[chan ProbeStreamEnvelope]struct{}
@@ -108,16 +127,50 @@ type ProbeSSEHub struct {
 func NewProbeSSEHub(rdb *redis.Client) *ProbeSSEHub {
 	store := NewProbeRedisStore(rdb)
 	hub := &ProbeSSEHub{
-		rdb:       rdb,
-		store:     store,
-		clients:   map[chan ProbeStreamEnvelope]struct{}{},
-		broadcast: make(chan ProbeStreamEnvelope, 256),
-		stop:      make(chan struct{}),
+		rdb:        rdb,
+		store:      store,
+		instanceID: newProbeInstanceID(),
+		clients:    map[chan ProbeStreamEnvelope]struct{}{},
+		broadcast:  make(chan ProbeStreamEnvelope, 256),
+		stop:       make(chan struct{}),
 	}
 	if rdb != nil {
 		go hub.run()
 	}
 	return hub
+}
+
+// newProbeInstanceID returns a per-process tag embedded in notify messages so
+// the hub's own subscriber can skip them. Encoded as 8 hex chars from crypto
+// rand to avoid collisions across restarts.
+func newProbeInstanceID() string {
+	var b [4]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		return fmt.Sprintf("p-%d", os.Getpid())
+	}
+	return fmt.Sprintf("p-%s", hex.EncodeToString(b[:]))
+}
+
+// shouldSkipNotification reports whether a Pub/Sub payload originated from
+// this hub and should therefore be dropped (the local fanOut already
+// delivered it). Exposed for unit tests.
+//
+// 2026-08-12 audit: before this filter existed, every probe transition was
+// delivered to SSE clients twice on every gateway instance (once from
+// Publish's local fanOut, once from the Redis pub/sub round-trip echoing
+// back to its own subscriber).
+func (h *ProbeSSEHub) shouldSkipNotification(payload string) bool {
+	if h == nil || h.instanceID == "" {
+		return false
+	}
+	var n struct {
+		TaskID     string `json:"task_id"`
+		InstanceID string `json:"instance_id"`
+	}
+	if err := json.Unmarshal([]byte(payload), &n); err != nil || n.TaskID == "" {
+		return false
+	}
+	return n.InstanceID != "" && n.InstanceID == h.instanceID
 }
 
 // Enabled reports whether the hub is backed by Redis (cross-instance mode).
@@ -147,8 +200,12 @@ func (h *ProbeSSEHub) run() {
 			if !ok {
 				return
 			}
+			if h.shouldSkipNotification(msg.Payload) {
+				continue
+			}
 			var n struct {
-				TaskID string `json:"task_id"`
+				TaskID     string `json:"task_id"`
+				InstanceID string `json:"instance_id"`
 			}
 			if json.Unmarshal([]byte(msg.Payload), &n) != nil || n.TaskID == "" {
 				continue
@@ -210,7 +267,7 @@ func (h *ProbeSSEHub) Publish(task ProbeStreamTask) {
 	}
 	if h.store.Enabled() {
 		ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
-		_ = h.store.Record(ctx, task)
+		_ = h.store.RecordWithOrigin(ctx, task, h.instanceID)
 		cancel()
 	}
 	// Local fan-out so same-instance clients see the update immediately even

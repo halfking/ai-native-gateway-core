@@ -541,13 +541,16 @@ func (w *NodeProbeWorker) Submit(credID int, model, tenantID, parentReqID string
 // publishProbeEvent is the shared hook for node-probe lifecycle events that
 // are NOT the terminal completed/failed (those go through ActiveProbeEmitter).
 // It is best-effort: a nil sink or a publish error never blocks the worker.
+//
+// The task ID is shared with ActiveProbeEmitter.publishSink via
+// buildNodeProbeTaskID so the SSE tile is updated in place across the full
+// pending → in-flight → completed/failed lifecycle.
 func (w *NodeProbeWorker) publishProbeEvent(credID int, model, status, source, reason string, attempt int) {
 	if w == nil || w.probeSink == nil {
 		return
 	}
-	id := fmt.Sprintf("node_probe:%d:%s", credID, model)
 	w.probeSink.PublishProbeEvent(ProbeStreamEvent{
-		ID:           id,
+		ID:           buildNodeProbeTaskID(credID, model),
 		TaskType:     "node_probe",
 		Source:       source,
 		Status:       status,
