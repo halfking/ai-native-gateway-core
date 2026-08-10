@@ -367,6 +367,8 @@ func (h *ChatHandler) recordOmniFreeQuota(
 		var upstreamErr *upstreampkg.Error
 		if errors.As(execErr, &upstreamErr) && upstreamErr.Body != nil {
 			captured.Body = upstreamErr.Body
+		} else if len(result.ResponseBody) > 0 {
+			captured.Body = append([]byte(nil), result.ResponseBody...)
 		}
 	}
 

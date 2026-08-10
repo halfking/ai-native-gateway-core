@@ -128,3 +128,15 @@ func TestNextQuotaReset(t *testing.T) {
 		})
 	}
 }
+
+func TestNextQuotaReset_UsesInjectedNowForTimestampStaleness(t *testing.T) {
+	// This timestamp is long before the real wall clock used in CI, but it is in
+	// the future relative to the injected `now`. NextQuotaReset must therefore
+	// accept it; using time.Now() internally would incorrectly discard it.
+	now := time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC)
+	want := time.Date(2020, 1, 1, 0, 5, 0, 0, time.UTC)
+	got := NextQuotaReset(`{"error":"quota resets at 2020-01-01 00:05:00"}`, now)
+	if !got.Equal(want) {
+		t.Fatalf("NextQuotaReset uses wall clock? got %v, want %v", got, want)
+	}
+}

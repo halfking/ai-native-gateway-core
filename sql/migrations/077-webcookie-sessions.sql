@@ -50,5 +50,15 @@ CREATE TRIGGER trg_webcookie_sessions_touch_updated_at
 
 ALTER TABLE public.webcookie_sessions ENABLE ROW LEVEL SECURITY;
 
-CREATE OR REPLACE POLICY tenant_isolation_webcookie_sessions ON public.webcookie_sessions
-    USING (tenant_id = public.get_current_tenant());
+DROP POLICY IF EXISTS tenant_isolation_webcookie_sessions ON public.webcookie_sessions;
+CREATE POLICY tenant_isolation_webcookie_sessions ON public.webcookie_sessions
+    USING (
+        tenant_id = public.get_current_tenant()
+        OR current_setting('app.current_role', true) = 'super_admin'
+        OR current_setting('app.bypass_rls', true) = 'true'
+    )
+    WITH CHECK (
+        tenant_id = public.get_current_tenant()
+        OR current_setting('app.current_role', true) = 'super_admin'
+        OR current_setting('app.bypass_rls', true) = 'true'
+    );

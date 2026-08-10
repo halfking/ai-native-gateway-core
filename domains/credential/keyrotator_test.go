@@ -136,3 +136,25 @@ func TestKeyRotator_ResetKey(t *testing.T) {
 		t.Fatal("key 0 not eligible after ResetKey")
 	}
 }
+
+func TestKeyRotator_ResetCredential(t *testing.T) {
+	kr := NewKeyRotator()
+	kr.EnsureCred(80, 3)
+	for i := 0; i < 3; i++ {
+		kr.RecordKeyFailure(80, i, errorsx.KindQuotaPermanent)
+	}
+	if !kr.AllKeysInvalid(80) {
+		t.Fatal("expected all keys invalid before reset")
+	}
+
+	kr.ResetCredential(80)
+	if got := kr.KeyCount(80); got != 0 {
+		t.Fatalf("KeyCount after ResetCredential = %d, want 0", got)
+	}
+	if kr.AllKeysInvalid(80) {
+		t.Fatal("ResetCredential should clear all-invalid state")
+	}
+	if idx := kr.ResolveKey(80, -1); idx != 0 {
+		t.Fatalf("unregistered after ResetCredential should resolve primary 0, got %d", idx)
+	}
+}

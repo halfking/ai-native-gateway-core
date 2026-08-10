@@ -250,6 +250,12 @@ func (db *DB) applyMigrationsOnce(ctx context.Context) error {
 	if err := db.ensureOmniFreeSchema(migCtx); err != nil {
 		return err
 	}
+	if err := db.ensureCredentialKeysSchema(migCtx); err != nil {
+		return err
+	}
+	if err := db.ensureWebCookieSessionsSchema(migCtx); err != nil {
+		return err
+	}
 	// Dashboard views are derived data for the admin UI, not critical-path.
 	// A failure here logs a warning but does NOT block startup — the gateway
 	// must still serve traffic even if /probe-health renders empty.
@@ -3262,6 +3268,158 @@ func (d *DB) ensureDistributionSchema(ctx context.Context) error {
 		return err
 	}
 	slog.Info("distribution schema ensured (license_holders, download_events, donations, release_artifacts)")
+	return nil
+}
+
+// ensureCredentialKeysSchema mirrors sql/migrations/076-credential-keys.sql.
+// It is idempotent and startup-safe so multi-key admin/runtime paths do not
+// depend on an external file runner applying root sql/migrations/*.sql.
+func (d *DB) ensureCredentialKeysSchema(ctx context.Context) error {
+	if d == nil || d.pool == nil {
+		return nil
+	}
+	_, err := d.pool.Exec(ctx, `
+		CREATE TABLE IF NOT EXISTS public.credential_keys (
+		    id                BIGSERIAL PRIMARY KEY,
+		    credential_id     BIGINT NOT NULL REFERENCES public.credentials(id) ON DELETE CASCADE,
+		    kid_index         INT NOT NULL,
+		    label             TEXT,
+		    secret_ciphertext BYTEA NOT NULL,
+		    status            TEXT NOT NULL DEFAULT 'active',
+		    last_used_at      TIMESTAMPTZ,
+		    last_failed_at    TIMESTAMPTZ,
+		    created_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
+		    updated_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
+		    tenant_id         TEXT NOT NULL DEFAULT public.get_current_tenant(),
+		    CONSTRAINT credential_keys_cred_kid_key UNIQUE (credential_id, kid_index),
+		    CONSTRAINT credential_keys_status_chk CHECK (status IN ('active','invalid')),
+		    CONSTRAINT credential_keys_kid_pos_chk CHECK (kid_index >= 1)
+		);
+
+		CREATE INDEX IF NOT EXISTS idx_credential_keys_credential
+		    ON public.credential_keys(credential_id)
+		    WHERE status = 'active';
+		CREATE INDEX IF NOT EXISTS idx_credential_keys_tenant
+		    ON public.credential_keys(tenant_id);
+
+		CREATE OR REPLACE FUNCTION public.credential_keys_enforce_parent_tenant()
+		RETURNS TRIGGER AS $fn$
+		DECLARE
+		    parent_tenant text;
+		BEGIN
+		    SELECT tenant_id INTO parent_tenant
+		    FROM public.credentials
+		    WHERE id = NEW.credential_id;
+
+		    IF parent_tenant IS NULL OR NEW.tenant_id <> parent_tenant THEN
+		        RAISE EXCEPTION 'credential_keys tenant_id must match parent credential'
+		            USING ERRCODE = '23514';
+		    END IF;
+		    RETURN NEW;
+		END;
+		$fn$ LANGUAGE plpgsql;
+
+		DROP TRIGGER IF EXISTS trg_credential_keys_enforce_parent_tenant ON public.credential_keys;
+		CREATE TRIGGER trg_credential_keys_enforce_parent_tenant
+		    BEFORE INSERT OR UPDATE OF credential_id, tenant_id ON public.credential_keys
+		    FOR EACH ROW EXECUTE FUNCTION public.credential_keys_enforce_parent_tenant();
+
+		CREATE OR REPLACE FUNCTION public.credential_keys_touch_updated_at()
+		RETURNS TRIGGER AS $fn$
+		BEGIN
+		    NEW.updated_at = now();
+		    RETURN NEW;
+		END;
+		$fn$ LANGUAGE plpgsql;
+
+		DROP TRIGGER IF EXISTS trg_credential_keys_touch_updated_at ON public.credential_keys;
+		CREATE TRIGGER trg_credential_keys_touch_updated_at
+		    BEFORE UPDATE ON public.credential_keys
+		    FOR EACH ROW EXECUTE FUNCTION public.credential_keys_touch_updated_at();
+
+		ALTER TABLE public.credential_keys ENABLE ROW LEVEL SECURITY;
+
+		DROP POLICY IF EXISTS tenant_isolation_credential_keys ON public.credential_keys;
+		CREATE POLICY tenant_isolation_credential_keys ON public.credential_keys
+		    USING (
+		        tenant_id = public.get_current_tenant()
+		        OR current_setting('app.current_role', true) = 'super_admin'
+		        OR current_setting('app.bypass_rls', true) = 'true'
+		    )
+		    WITH CHECK (
+		        tenant_id = public.get_current_tenant()
+		        OR current_setting('app.current_role', true) = 'super_admin'
+		        OR current_setting('app.bypass_rls', true) = 'true'
+		    );
+	`)
+	if err != nil {
+		return err
+	}
+	slog.Info("credential_keys schema ensured")
+	return nil
+}
+
+// ensureWebCookieSessionsSchema mirrors sql/migrations/077-webcookie-sessions.sql.
+func (d *DB) ensureWebCookieSessionsSchema(ctx context.Context) error {
+	if d == nil || d.pool == nil {
+		return nil
+	}
+	_, err := d.pool.Exec(ctx, `
+		CREATE TABLE IF NOT EXISTS public.webcookie_sessions (
+		    id              BIGSERIAL    PRIMARY KEY,
+		    provider_code   TEXT         NOT NULL,
+		    account_label   TEXT         NOT NULL DEFAULT 'default',
+		    cookies_json    JSONB        NOT NULL DEFAULT '{}'::jsonb,
+		    session_meta    JSONB        NOT NULL DEFAULT '{}'::jsonb,
+		    status          TEXT         NOT NULL DEFAULT 'active',
+		    last_used_at    TIMESTAMPTZ,
+		    last_refresh_at TIMESTAMPTZ,
+		    expires_at      TIMESTAMPTZ,
+		    created_at      TIMESTAMPTZ  NOT NULL DEFAULT now(),
+		    updated_at      TIMESTAMPTZ  NOT NULL DEFAULT now(),
+		    tenant_id       TEXT         NOT NULL DEFAULT public.get_current_tenant(),
+		    CONSTRAINT webcookie_sessions_provider_account_key UNIQUE (provider_code, account_label, tenant_id),
+		    CONSTRAINT webcookie_sessions_status_chk CHECK (status IN ('active','expired','banned','refreshing'))
+		);
+
+		CREATE INDEX IF NOT EXISTS idx_webcookie_sessions_provider
+		    ON public.webcookie_sessions(provider_code)
+		    WHERE status = 'active';
+		CREATE INDEX IF NOT EXISTS idx_webcookie_sessions_tenant
+		    ON public.webcookie_sessions(tenant_id);
+
+		CREATE OR REPLACE FUNCTION public.webcookie_sessions_touch_updated_at()
+		RETURNS TRIGGER AS $fn$
+		BEGIN
+		    NEW.updated_at = now();
+		    RETURN NEW;
+		END;
+		$fn$ LANGUAGE plpgsql;
+
+		DROP TRIGGER IF EXISTS trg_webcookie_sessions_touch_updated_at ON public.webcookie_sessions;
+		CREATE TRIGGER trg_webcookie_sessions_touch_updated_at
+		    BEFORE UPDATE ON public.webcookie_sessions
+		    FOR EACH ROW EXECUTE FUNCTION public.webcookie_sessions_touch_updated_at();
+
+		ALTER TABLE public.webcookie_sessions ENABLE ROW LEVEL SECURITY;
+
+		DROP POLICY IF EXISTS tenant_isolation_webcookie_sessions ON public.webcookie_sessions;
+		CREATE POLICY tenant_isolation_webcookie_sessions ON public.webcookie_sessions
+		    USING (
+		        tenant_id = public.get_current_tenant()
+		        OR current_setting('app.current_role', true) = 'super_admin'
+		        OR current_setting('app.bypass_rls', true) = 'true'
+		    )
+		    WITH CHECK (
+		        tenant_id = public.get_current_tenant()
+		        OR current_setting('app.current_role', true) = 'super_admin'
+		        OR current_setting('app.bypass_rls', true) = 'true'
+		    );
+	`)
+	if err != nil {
+		return err
+	}
+	slog.Info("webcookie_sessions schema ensured")
 	return nil
 }
 

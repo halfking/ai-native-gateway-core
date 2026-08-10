@@ -848,7 +848,7 @@ func ClassifyQuota429Body(body []byte) ErrorKind {
 // semantics. `now` is accepted as a parameter for deterministic tests.
 func NextQuotaReset(body string, now time.Time) time.Time {
 	now = now.UTC()
-	if t, ok := scanQuotaResetTimestamp(body); ok {
+	if t, ok := scanQuotaResetTimestamp(body, now); ok {
 		return t.UTC()
 	}
 	lower := strings.ToLower(body)
@@ -870,7 +870,7 @@ func NextQuotaReset(body string, now time.Time) time.Time {
 // the same logic as domains/credential/writer.parseQuotaResetTimestamp but
 // lives here so errorsx.NextQuotaReset has no dependency on the credential
 // domain. Kept in sync; prefer editing both together when patterns change.
-func scanQuotaResetTimestamp(detail string) (time.Time, bool) {
+func scanQuotaResetTimestamp(detail string, now time.Time) (time.Time, bool) {
 	for _, layout := range []string{
 		"2006-01-02 15:04:05",
 		"2006-01-02T15:04:05",
@@ -887,7 +887,7 @@ func scanQuotaResetTimestamp(detail string) (time.Time, bool) {
 			if err != nil {
 				continue
 			}
-			if t.Before(time.Now().Add(-1 * time.Minute)) {
+			if t.Before(now.UTC().Add(-1 * time.Minute)) {
 				continue
 			}
 			return t, true

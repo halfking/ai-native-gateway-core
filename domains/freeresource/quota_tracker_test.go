@@ -157,15 +157,15 @@ func TestParseRetryAfter_RetryAfterHTTPDate(t *testing.T) {
 func TestParseRetryAfter_RelativeUnits(t *testing.T) {
 	now := time.Unix(1700000000, 0).UTC()
 	tests := []struct {
-		header string
+		header  string
 		wantSec int
 	}{
 		{"6s", 6},
 		{"5m", 300},
 		{"2h", 7200},
 		{"1d", 86400},
-		{" 30s ", 30},   // whitespace tolerated
-		{"10M", 600},    // uppercase unit
+		{" 30s ", 30}, // whitespace tolerated
+		{"10M", 600},  // uppercase unit
 	}
 	for _, tt := range tests {
 		t.Run(tt.header, func(t *testing.T) {

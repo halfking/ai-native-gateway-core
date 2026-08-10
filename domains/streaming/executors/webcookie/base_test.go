@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"testing"
 	"time"
 
@@ -46,6 +47,9 @@ func TestRegistry_RegisterAndGet(t *testing.T) {
 	codes := r.Codes()
 	if len(codes) != 2 {
 		t.Fatalf("Codes() = %v, want 2 entries", codes)
+	}
+	if codes[0] != "alpha" || codes[1] != "beta" {
+		t.Fatalf("Codes() = %v, want sorted [alpha beta]", codes)
 	}
 }
 
@@ -98,6 +102,32 @@ func TestSessionManager_NilPutNoop(t *testing.T) {
 	m.Put(nil) // must not panic
 }
 
+func TestSessionClient_DefaultTransportForNilFactory(t *testing.T) {
+	s := &Session{
+		ProviderCode: "deepseek-web",
+		AccountLabel: "acct",
+		Cookies:      []*http.Cookie{{Name: "token", Value: "abc"}},
+	}
+	client := s.Client(nil)
+	if client == nil {
+		t.Fatal("Client(nil) returned nil")
+	}
+	if client.Transport == nil {
+		t.Fatal("Client(nil) should use a default transport")
+	}
+	if got := client.Jar.Cookies(&url.URL{Scheme: "https", Host: "chat.deepseek.com"}); len(got) != 1 || got[0].Name != "token" {
+		t.Fatalf("cookie jar not initialized for provider scope: %#v", got)
+	}
+}
+
+func TestSessionClient_NilReturningFactoryUsesDefaultTransport(t *testing.T) {
+	s := &Session{ProviderCode: "deepseek-web", AccountLabel: "acct"}
+	client := s.Client(func() http.RoundTripper { return nil })
+	if client == nil || client.Transport == nil {
+		t.Fatalf("nil-returning factory should fall back to default transport: %#v", client)
+	}
+}
+
 func TestHostForProvider(t *testing.T) {
 	tests := []struct {
 		code string
@@ -107,7 +137,7 @@ func TestHostForProvider(t *testing.T) {
 		{"chatgpt-web", "chatgpt.com"},
 		{"gemini-web", "gemini.google.com"},
 		{"claude-web", "claude.ai"},
-		{"unknown-web", "unknown-web.example.com"}, // fallback
+		{"unknown-web", ""}, // unknown providers must define an explicit cookie scope
 	}
 	for _, tt := range tests {
 		t.Run(tt.code, func(t *testing.T) {
