@@ -24,6 +24,7 @@ import {
   type ProviderRefreshRun,
   type RoutingBlockedDiagnostic,
 } from '../../api'
+import { getModelIQHistory, triggerModelIQTest, type IQHistoryPoint } from '../../api/model-iq'
 
 const { t: td } = useI18n()
 const pm = (k: string, params?: Record<string, unknown>): string =>
@@ -103,6 +104,60 @@ interface EditDraft {
   saveErr: string
 }
 const draft = reactive<Partial<EditDraft>>({})
+
+// 2026-08-11: node IQ history for the drawer (time-series chart) + on-demand test.
+const iqHistory = ref<IQHistoryPoint[]>([])
+const iqHistoryLoading = ref(false)
+const iqTestLoading = ref(false)
+const iqTestError = ref('')
+
+function iqBadgeClass(iq: number): string {
+  if (iq >= 80) return 'iq-good'
+  if (iq >= 60) return 'iq-ok'
+  if (iq >= 40) return 'iq-warn'
+  return 'iq-bad'
+}
+
+function nodeIqTitle(o: ModelOffer): string {
+  const parts: string[] = []
+  if (o.node_iq_avg != null) parts.push(pm('iqAvg', { v: o.node_iq_avg.toFixed(1) }))
+  if (o.node_iq_sample_count) parts.push(pm('iqSamples', { n: o.node_iq_sample_count }))
+  if (o.node_iq_tested_at) parts.push(pm('iqTestedAt', { t: timeText(o.node_iq_tested_at) }))
+  return parts.join(' · ')
+}
+
+async function loadIQHistory() {
+  const o = selected.value
+  if (!o) return
+  iqHistoryLoading.value = true
+  iqTestError.value = ''
+  try {
+    iqHistory.value = await getModelIQHistory(o.credential_id, o.raw_model_name, 50)
+  } catch (e: unknown) {
+    iqHistory.value = []
+  } finally {
+    iqHistoryLoading.value = false
+  }
+}
+
+async function runIQTest() {
+  const o = selected.value
+  if (!o || iqTestLoading.value) return
+  iqTestLoading.value = true
+  iqTestError.value = ''
+  try {
+    await triggerModelIQTest(o.credential_id, o.raw_model_name)
+    await loadIQHistory()
+    // Refresh the offers list so the new node_iq reflects in the table.
+    await load()
+    const refreshed = offers.value.find(x => x.id === o.id)
+    if (refreshed) selected.value = refreshed
+  } catch (e: unknown) {
+    iqTestError.value = e instanceof Error ? e.message : pm('iqTestFailed')
+  } finally {
+    iqTestLoading.value = false
+  }
+}
 
 async function load() {
   loading.value = true
@@ -363,6 +418,9 @@ function resetDraft(o: ModelOffer) {
 async function openDrawer(o: ModelOffer) {
   selected.value = o
   resetDraft(o)
+  iqHistory.value = []
+  iqTestError.value = ''
+  loadIQHistory()  // fire-and-forget; chart fills in when ready
   draft.loadingSuggest = true
   try {
     draft.suggest = await getModelOfferSuggestions(props.providerId, o.id)
@@ -376,6 +434,8 @@ async function openDrawer(o: ModelOffer) {
 function closeDrawer() {
   selected.value = null
   modelCheckResults.value = null  // Clear check results when closing
+  iqHistory.value = []
+  iqTestError.value = ''
 }
 
 // Phase 3.2: Check model availability across all credentials with 2-phase validation
@@ -801,11 +861,13 @@ load()
             <th>{{ pm('table.source') }}</th>
             <th>{{ pm('table.latencyP95') }}</th>
             <th>{{ pm('table.successRate') }}</th>
+            <th>{{ pm('table.standardIq') }}</th>
+            <th>{{ pm('table.nodeIq') }}</th>
           </tr>
         </thead>
         <tbody>
-          <tr v-if="loading"><td colspan="7">{{ pm('tableLoading') }}</td></tr>
-          <tr v-else-if="!offers.length"><td colspan="7">{{ pm('tableEmpty') }}</td></tr>
+          <tr v-if="loading"><td colspan="9">{{ pm('tableLoading') }}</td></tr>
+          <tr v-else-if="!offers.length"><td colspan="9">{{ pm('tableEmpty') }}</td></tr>
           <tr
             v-for="o in offers"
             :key="o.id"
@@ -832,6 +894,21 @@ load()
             </td>
             <td>{{ o.p95_latency_ms != null ? o.p95_latency_ms + 'ms' : '—' }}</td>
             <td>{{ o.success_rate != null ? (o.success_rate * 100).toFixed(1) + '%' : '—' }}</td>
+            <td>
+              <span v-if="o.canonical_standard_iq != null" class="iq-cell" :title="pm('standardIqHint')">
+                {{ o.canonical_standard_iq.toFixed(1) }}
+              </span>
+              <span v-else class="cell-muted">—</span>
+            </td>
+            <td>
+              <span
+                v-if="o.node_iq != null"
+                class="iq-cell"
+                :class="iqBadgeClass(o.node_iq)"
+                :title="nodeIqTitle(o)"
+              >{{ o.node_iq.toFixed(1) }}<span v-if="o.node_iq_avg != null" class="iq-avg"> / avg {{ o.node_iq_avg.toFixed(1) }}</span></span>
+              <span v-else class="cell-muted">—</span>
+            </td>
           </tr>
         </tbody>
       </table>
@@ -945,6 +1022,59 @@ load()
             </div>
           </div>
 
+          <!-- 2026-08-11: Model IQ — standard + node history + on-demand test -->
+          <div class="drawer-section">
+            <div class="drawer-section-title">
+              {{ pm('drawerSectionIq') }}
+              <button
+                class="btn btn-sm btn-outline"
+                style="margin-left:auto"
+                :disabled="iqTestLoading"
+                :title="pm('iqTestBtnTitle')"
+                @click="runIQTest"
+              >{{ iqTestLoading ? pm('iqTestRunning') : pm('iqTestBtn') }}</button>
+            </div>
+            <div class="iq-summary">
+              <div class="iq-summary-item">
+                <span class="cell-sub">{{ pm('standardIqLabel') }}</span>
+                <b>{{ selected.canonical_standard_iq != null ? selected.canonical_standard_iq.toFixed(1) : '—' }}</b>
+              </div>
+              <div class="iq-summary-item">
+                <span class="cell-sub">{{ pm('nodeIqLabel') }}</span>
+                <b>{{ selected.node_iq != null ? selected.node_iq.toFixed(1) : '—' }}</b>
+              </div>
+              <div class="iq-summary-item">
+                <span class="cell-sub">{{ pm('nodeIqAvgLabel') }}</span>
+                <b>{{ selected.node_iq_avg != null ? selected.node_iq_avg.toFixed(1) : '—' }}</b>
+              </div>
+            </div>
+            <div v-if="iqTestError" class="alert alert-danger" style="margin:8px 0;padding:6px 10px">{{ iqTestError }}</div>
+            <div v-if="iqHistoryLoading" class="cell-muted" style="margin-top:8px">{{ pm('iqHistoryLoading') }}</div>
+            <div v-else-if="!iqHistory.length" class="cell-muted" style="margin-top:8px">{{ pm('iqHistoryEmpty') }}</div>
+            <div v-else class="iq-history" style="margin-top:8px">
+              <table class="data-table iq-history-table">
+                <thead>
+                  <tr>
+                    <th>{{ pm('iqColTestedAt') }}</th>
+                    <th>{{ pm('iqColScore') }}</th>
+                    <th>{{ pm('iqColGrade') }}</th>
+                    <th>{{ pm('iqColAccuracy') }}</th>
+                    <th>{{ pm('iqColTrigger') }}</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr v-for="(h, i) in iqHistory" :key="i">
+                    <td>{{ timeText(h.tested_at) }}</td>
+                    <td><span class="iq-cell" :class="iqBadgeClass(h.overall_score)">{{ h.overall_score.toFixed(1) }}</span></td>
+                    <td>{{ h.grade || '—' }}</td>
+                    <td>{{ h.accuracy != null ? h.accuracy.toFixed(1) + '%' : '—' }}</td>
+                    <td><span class="badge" :class="h.trigger_kind === 'on_demand' ? 'badge-blue' : h.trigger_kind === 'anomaly' ? 'badge-red' : ''">{{ h.trigger_kind }}</span></td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+
           <!-- Phase 3.2: Batch credential check results -->
           <div v-if="modelCheckResults" class="drawer-section">
             <div class="drawer-section-title">
@@ -1027,6 +1157,54 @@ load()
 .model-table {
   width: 100%;
   font-size: 12px;
+}
+/* 2026-08-11: model IQ cells + drawer history */
+.iq-cell {
+  display: inline-block;
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+  padding: 1px 6px;
+  border-radius: 4px;
+  font-size: 11px;
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+  color: var(--text);
+}
+.iq-cell.iq-good { background: rgba(34, 197, 94, 0.14); color: #16a34a; }
+.iq-cell.iq-ok   { background: rgba(59, 130, 246, 0.14); color: #2563eb; }
+.iq-cell.iq-warn { background: rgba(245, 158, 11, 0.14); color: #d97706; }
+.iq-cell.iq-bad  { background: rgba(239, 68, 68, 0.14); color: #dc2626; }
+.iq-avg {
+  font-weight: 400;
+  color: var(--muted);
+  font-size: 10px;
+}
+.iq-summary {
+  display: flex;
+  gap: 18px;
+  flex-wrap: wrap;
+  margin-top: 4px;
+}
+.iq-summary-item {
+  display: flex;
+  flex-direction: column;
+}
+.iq-summary-item .cell-sub {
+  font-size: 11px;
+}
+.iq-summary-item b {
+  font-size: 16px;
+  font-variant-numeric: tabular-nums;
+}
+.iq-history-table {
+  width: 100%;
+  font-size: 11px;
+}
+.iq-history-table th {
+  font-weight: 500;
+}
+.drawer-section-title {
+  display: flex;
+  align-items: center;
 }
 .refresh-hint {
   display: inline-flex;

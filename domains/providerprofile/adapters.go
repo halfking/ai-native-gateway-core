@@ -373,6 +373,24 @@ func (p *GatewayScaleProvider) GetModelScale(ctx context.Context, credentialID i
 		return nil, fmt.Errorf("query model scale: %w", err)
 	}
 
+	// 2026-08-11: 节点智商维度。聚合该凭据下所有节点的最新智商（node_iq_latest），
+	// 取 overall_score 的样本数加权平均。无数据（表为空 / 该凭据无测试记录）时
+	// 返回 nil，scorer 视为缺失维度跳过，不影响冷启动总分。
+	// 用 credential_id 而非 provider_id：品质评分是按凭据计算的。
+	var iqSum, iqAvg float64
+	var iqN int
+	err = p.db.QueryRow(ctx, `
+		SELECT COALESCE(sum(overall_score), 0),
+		       CASE WHEN count(*) > 0 THEN sum(overall_score)/count(*) ELSE 0 END,
+		       count(*)
+		FROM node_iq_latest
+		WHERE credential_id = $1 AND overall_score IS NOT NULL`, credentialID).
+		Scan(&iqSum, &iqAvg, &iqN)
+	if err == nil && iqN > 0 {
+		data.ModelIQSignal = &ModelIQSignal{AvgIQ: iqAvg, SampleN: iqN}
+	}
+	// 查询失败（表不存在/临时不可用）非致命：留 nil，scorer 跳过该维度。
+
 	return &data, nil
 }
 

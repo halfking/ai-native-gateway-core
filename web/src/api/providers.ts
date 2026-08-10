@@ -413,6 +413,13 @@ export interface ModelOffer {
    * in the request body instead of raw_model_name.  null when unset.
    */
   outbound_model_name?: string | null
+  /** 2026-08-11: model IQ fields (standard IQ from benchmarks + per-node measured IQ). */
+  canonical_standard_iq?: number | null
+  canonical_name?: string
+  node_iq?: number | null
+  node_iq_avg?: number | null
+  node_iq_sample_count?: number
+  node_iq_tested_at?: string | null
 }
 
 export interface QueryModelsResponse {

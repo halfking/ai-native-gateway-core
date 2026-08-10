@@ -30,6 +30,11 @@ type DimensionScores struct {
 	CostAccuracyScore float64
 	PriceScore        float64
 
+	// 2026-08-11: 模型智商维度。来自 node_iq_latest（每节点智商均值映射到 0-100）。
+	// 当适配层未填（冷启动）时 ModelIQScore=0 且 MeasuredDimensions 不含该位，
+	// CalculateTotalScore 自动跳过，对现有总分零影响。
+	ModelIQScore float64
+
 	// MeasuredDimensions records which dimensions had usable input data. A
 	// measured dimension is included even when its score is legitimately zero.
 	// Zero preserves compatibility with callers that construct this struct
@@ -49,6 +54,7 @@ const (
 	dimensionCredibility
 	dimensionCostAccuracy
 	dimensionPrice
+	dimensionModelIQ
 )
 
 // DefaultScorer 默认评分器实现
@@ -74,6 +80,7 @@ func (s *DefaultScorer) CalculateDimensionScores(snapshots []*MetricSnapshot, we
 		ConcurrencyScore:        calculateConcurrencyScore(snapshots),
 		AvailabilityWindowScore: calculateAvailabilityWindowScore(snapshots),
 		QualityStabilityScore:   calculateQualityStabilityScore(snapshots),
+		ModelIQScore:            calculateModelIQScore(snapshots),
 	}
 	for _, snap := range snapshots {
 		if snap == nil {
@@ -102,8 +109,35 @@ func (s *DefaultScorer) CalculateDimensionScores(snapshots []*MetricSnapshot, we
 		if snap.QualityStabilitySignal != nil && snap.QualityStabilitySignal.SampleN > 0 {
 			result.MeasuredDimensions |= dimensionQualityStability
 		}
+		if snap.ModelIQSignal != nil && snap.ModelIQSignal.SampleN > 0 {
+			result.MeasuredDimensions |= dimensionModelIQ
+		}
 	}
 	return result
+}
+
+// calculateModelIQScore 计算模型智商维度得分（0-100）。
+//
+// 取所有快照中 ModelIQSignal.AvgIQ 的样本数加权平均（每个快照代表一个采集点）。
+// 缺失（SampleN=0 或 nil）的快照不参与。返回 0 表示该维度未测量，会被
+// CalculateTotalScore 跳过。
+func calculateModelIQScore(snapshots []*MetricSnapshot) float64 {
+	if len(snapshots) == 0 {
+		return 0
+	}
+	var sum float64
+	var totalN int
+	for _, snap := range snapshots {
+		if snap == nil || snap.ModelIQSignal == nil || snap.ModelIQSignal.SampleN <= 0 {
+			continue
+		}
+		sum += snap.ModelIQSignal.AvgIQ * float64(snap.ModelIQSignal.SampleN)
+		totalN += snap.ModelIQSignal.SampleN
+	}
+	if totalN == 0 {
+		return 0
+	}
+	return sum / float64(totalN)
 }
 
 // CalculateTotalScore 计算总分（加权平均）
@@ -181,6 +215,13 @@ func (s *DefaultScorer) CalculateTotalScore(scores *DimensionScores, weights Pro
 	if dimensionMeasured(scores, dimensionPrice, scores.PriceScore) {
 		weightedSum += scores.PriceScore * ext.Price
 		totalWeight += ext.Price
+	}
+
+	// 2026-08-11 模型智商：节点智商均值（0-100）。缺失（适配层未填或冷启动）
+	// 自动跳过，不影响总分。
+	if dimensionMeasured(scores, dimensionModelIQ, scores.ModelIQScore) {
+		weightedSum += scores.ModelIQScore * ext.ModelIQ
+		totalWeight += ext.ModelIQ
 	}
 
 	if totalWeight == 0 {

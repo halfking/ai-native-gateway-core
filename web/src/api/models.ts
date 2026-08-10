@@ -74,6 +74,8 @@ export interface ModelCanonical {
   updated_at: string | null
   offer_count: number
   alias_count: number
+  /** 2026-08-11: standard IQ from benchmarks (Artificial Analysis Intelligence Index). */
+  standard_iq?: number | null
 }
 
 export interface ModelAlias {

@@ -2980,6 +2980,12 @@ func main() {
 					slog.Warn("model_quality_worker: enable_per_node=true but DB/keyring unavailable, falling back to gateway-only")
 					mqConfig.EnablePerNodeTesting = false
 				}
+				// 2026-08-11: persist node IQ runs to model_iq_runs / node_iq_latest
+				// (migration 350) so the admin API + provider model list can read
+				// them. Falls back to pure file storage when DB is unavailable.
+				if dbConn != nil {
+					modelQualityWorker.SetDBStorage(modelquality.NewDBStorage(dbConn.Pool()))
+				}
 				modelQualityWorker.Start(context.Background(), mqConfig)
 				slog.Info("CHECKPOINT: model_quality_worker started",
 					"data_dir", mqDataDir,
@@ -3448,6 +3454,13 @@ func main() {
 			slog.Info("CHECKPOINT: after SetFpSlots")
 			adminHandler.SetPeakCollector(peakCollector)
 			slog.Info("CHECKPOINT: after SetPeakCollector")
+			// 2026-08-11: expose the on-demand node IQ test endpoint. Only wire
+			// when the worker is running with a node source (per-node direct
+			// testing enabled); otherwise the trigger endpoint 503s and the
+			// read-only catalog/history/node-latest endpoints still work.
+			if modelQualityWorker != nil {
+				adminHandler.SetModelQualityBackend(modelQualityWorker)
+			}
 			// Wire redis for credential monitor endpoints (2026-06-22).
 			if fpSlotRedis != nil {
 				adminHandler.SetRedisClient(fpSlotRedis)

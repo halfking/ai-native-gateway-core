@@ -431,3 +431,45 @@ func TestDefaultScorer_CalculateTotalScore_BackwardsCompat(t *testing.T) {
 	assert.Greater(t, total, 70.0)
 	assert.LessOrEqual(t, total, 100.0)
 }
+
+// TestDefaultScorer_ModelIQDimension verifies that the model-IQ dimension
+// (added 2026-08-11) is scored from ModelIQSignal, marks itself measured, and
+// is skipped entirely when absent so cold-start profiles are unaffected. It
+// also confirms that, holding all other dimensions equal, raising IQ raises
+// the total — i.e. the dimension contributes directionally.
+func TestDefaultScorer_ModelIQDimension(t *testing.T) {
+	scorer := providerprofile.NewDefaultScorer()
+	weights := providerprofile.DefaultWeights()
+	const modelIQBit = uint16(1) << 11 // dimensionModelIQ (see const block)
+
+	// 1. Absent IQ -> not measured, score 0.
+	base := []*providerprofile.MetricSnapshot{{
+		NetworkMetrics:      &providerprofile.NetworkMetrics{P95: 150},
+		AvailabilityMetrics: &providerprofile.AvailabilityMetrics{TotalRequests: 100, SuccessRequests: 98, AvgTTFTMs: 400, AvgDurationMs: 4000},
+		StabilityMetrics:    &providerprofile.StabilityMetrics{ErrorCount: 2, ErrorTypes: map[string]int{"400": 2}},
+		ScaleMetrics:        &providerprofile.ScaleMetrics{TotalModels: 30, AvailableModels: 28},
+	}}
+	baseScores := scorer.CalculateDimensionScores(base, weights)
+	assert.Equal(t, 0.0, baseScores.ModelIQScore)
+	assert.Equal(t, false, baseScores.MeasuredDimensions&modelIQBit != 0)
+
+	// 2. With IQ=low vs IQ=high on the SAME non-IQ baseline, higher IQ wins.
+	//    This isolates the directional contribution of the dimension.
+	snap := func(iq float64) []*providerprofile.MetricSnapshot {
+		return []*providerprofile.MetricSnapshot{{
+			NetworkMetrics:      &providerprofile.NetworkMetrics{P95: 150},
+			AvailabilityMetrics: &providerprofile.AvailabilityMetrics{TotalRequests: 100, SuccessRequests: 98, AvgTTFTMs: 400, AvgDurationMs: 4000},
+			StabilityMetrics:    &providerprofile.StabilityMetrics{ErrorCount: 2, ErrorTypes: map[string]int{"400": 2}},
+			ScaleMetrics:        &providerprofile.ScaleMetrics{TotalModels: 30, AvailableModels: 28},
+			ModelIQSignal:       &providerprofile.ModelIQSignal{AvgIQ: iq, SampleN: 5},
+		}}
+	}
+	lowScores := scorer.CalculateDimensionScores(snap(30), weights)
+	highScores := scorer.CalculateDimensionScores(snap(95), weights)
+	assert.Greater(t, highScores.ModelIQScore, lowScores.ModelIQScore)
+	assert.Equal(t, true, highScores.MeasuredDimensions&modelIQBit != 0, "dimensionModelIQ should be measured")
+	assert.Greater(t,
+		scorer.CalculateTotalScore(highScores, weights),
+		scorer.CalculateTotalScore(lowScores, weights),
+		"higher IQ should yield a higher total when other dimensions are equal")
+}

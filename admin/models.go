@@ -182,7 +182,8 @@ func (h *Handler) listModels(w http.ResponseWriter, r *http.Request) {
 		       mc.released_at,
 		       mc.strengths,
 		       mc.version_rank,
-		       mc.cost_tier
+		       mc.cost_tier,
+		       mc.standard_iq::float8
 		FROM models_canonical mc
 		LEFT JOIN model_families mf ON mf.id = mc.family AND COALESCE(mf.status, 'active') = 'active'
 		LEFT JOIN LATERAL (
@@ -229,6 +230,8 @@ func (h *Handler) listModels(w http.ResponseWriter, r *http.Request) {
 		Strengths   []string   `json:"strengths"`
 		VersionRank *int       `json:"version_rank"`
 		CostTier    *string    `json:"cost_tier"`
+		// 2026-08-11: 标准智商（来自评测站点）
+		StandardIQ *float64 `json:"standard_iq"`
 	}
 	models := make([]model, 0)
 	for rows.Next() {
@@ -241,6 +244,7 @@ func (h *Handler) listModels(w http.ResponseWriter, r *http.Request) {
 			&m.Tags, &m.TagsLocked, &m.TagsUpdatedAt, &m.UpdatedAt,
 			&dbVendor, &m.AliasCount, &m.OfferCount,
 			&m.ReleasedAt, &m.Strengths, &m.VersionRank, &m.CostTier,
+			&m.StandardIQ,
 		); err != nil {
 			slog.Error("listModels scan failed", "error", err)
 			continue
