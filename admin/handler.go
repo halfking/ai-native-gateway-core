@@ -857,6 +857,8 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/admin/turns", admin(h.handleTurnsList))
 	// 2026-08-10: 会话分组轮次列表端点（最外层会话 + 内层轮次，分层展示）
 	mux.HandleFunc("/api/admin/turns/sessions", admin(h.handleTurnsSessions))
+	// 2026-08-10: 轮次列表页各筛选维度的热门可选值（供前端 filterable 下拉）
+	mux.HandleFunc("/api/admin/turns/sessions/filter-options", admin(h.handleTurnsFilterOptions))
 	// 2026-07-01 (migration 325): attachment file download.
 	// GET /api/attachments/{path...} streams an attachment file from the
 	// configured storage dir. Admin-authenticated so attachments are not

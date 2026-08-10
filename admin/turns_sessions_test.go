@@ -121,13 +121,25 @@ func TestBuildTurnsSessionWhere(t *testing.T) {
 }
 
 func TestBuildTurnsSessionWhere_Empty(t *testing.T) {
-	now := time.Now().UTC()
 	req := httptest.NewRequest(http.MethodGet, "/api/admin/turns/sessions", nil)
-	where, args, nextArg := buildTurnsSessionWhere(req, "", now.Add(-time.Hour), now, time.Time{}, "", 1)
-	if nextArg != 3 || len(args) != 2 {
-		t.Fatalf("expected nextArg=3 args=2, got %d %d", nextArg, len(args))
+	where, args, nextArg := buildTurnsSessionWhere(req, "", time.Time{}, time.Time{}, time.Time{}, "", 1)
+	// 无任何条件（含时间未指定）→ 无子句，供"默认最近 20 个会话"
+	if nextArg != 1 || len(args) != 0 || where != "" {
+		t.Fatalf("expected nextArg=1 args=0 where='', got %d %d %q", nextArg, len(args), where)
 	}
-	if strings.Contains(where, "tenant_id") || strings.Contains(where, "gw_project_id") {
-		t.Fatalf("empty filters should not add extra clauses: %s", where)
+}
+
+func TestBuildTurnsSessionWhere_NoTimeWindowStillCursor(t *testing.T) {
+	now := time.Now().UTC()
+	req := httptest.NewRequest(http.MethodGet, "/api/admin/turns/sessions?project_id=p1", nil)
+	where, args, nextArg := buildTurnsSessionWhere(req, "", time.Time{}, time.Time{}, now.Add(-time.Minute), "gw_s1", 1)
+	if !strings.Contains(where, "ss.gw_project_id = $1") {
+		t.Fatalf("project clause should be $1 when no time window: %s", where)
+	}
+	if !strings.Contains(where, "(s.updated_at, s.session_id) < ($2, $3)") {
+		t.Fatalf("cursor should follow at $2,$3: %s", where)
+	}
+	if nextArg != 4 || len(args) != 3 {
+		t.Fatalf("expected nextArg=4 args=3, got %d %d", nextArg, len(args))
 	}
 }
