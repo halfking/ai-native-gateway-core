@@ -3490,6 +3490,53 @@ func main() {
 				return tid
 			})
 
+			// ── Auto-route feedback loop (docs/AUTO_ROUTE_FEEDBACK_OPTIMIZATION.md) ──
+			// AffinityStore is the 5th scoring dimension: a learned, per-(task,
+			// profile, model) score that reorders candidates which already passed
+			// the hard availability filter. It is additive — never revives a
+			// banned/unavailable model — and defaults to shadow mode, where it is
+			// computed and recorded but cannot change any routing decision.
+			//
+			// AUTO_AFFINITY_MODE: off | shadow (default) | on
+			// AUTO_AFFINITY_EXPLORE_RATIO: 0..1 (default 0.10)
+			affinityMode := autoroute.ParseAffinityMode(os.Getenv("AUTO_AFFINITY_MODE"))
+			affinityExploreRatio := autoroute.AffinityDefaultExploreRatio
+			if v := strings.TrimSpace(os.Getenv("AUTO_AFFINITY_EXPLORE_RATIO")); v != "" {
+				if f, err := strconv.ParseFloat(v, 64); err == nil && f >= 0 && f <= 1 {
+					affinityExploreRatio = f
+				}
+			}
+			affinityStore := autoroute.NewAffinityStore(dbConn.Pool(), affinityMode, affinityExploreRatio)
+			if affinityMode != autoroute.AffinityOff {
+				if err := affinityStore.Reload(context.Background()); err != nil {
+					slog.Warn("affinity store initial reload failed (will retry on schedule)", "error", err)
+				}
+				affinityRefresher := bg.NewAffinityStoreRefresher(affinityStore, 5*time.Minute)
+				affinityRefresher.Start(context.Background())
+				defer affinityRefresher.Stop()
+			}
+			// Reuse the same apiKeyID→tenantID resolver the Decider uses, so
+			// tenant-scoped affinity rows resolve consistently with default routing.
+			autoIdx.SetAffinityStore(affinityStore, decider.TenantResolver)
+			slog.Info("auto-route affinity loop wired",
+				"mode", affinityMode, "explore_ratio", affinityExploreRatio)
+
+			// The async writers and settle/affinity workers run unconditionally
+			// (even in shadow/off mode): recording selections and computing
+			// rewards is what produces the data to validate before flipping to
+			// `on`. They are no-ops without the tables; the tables come from
+			// migration 478.
+			telemetry.StartSelectionWriter()
+			defer telemetry.StopSelectionWriter()
+
+			settleWorker := bg.NewAutoRouteSettleWorker(dbConn.Pool())
+			settleWorker.Start(context.Background())
+			defer settleWorker.Stop()
+
+			affinityWorker := bg.NewAutoRouteAffinityWorker(dbConn.Pool())
+			affinityWorker.Start(context.Background())
+			defer affinityWorker.Stop()
+
 			// v2.2 (P8.8): AuditTrimmer caps growth of the two
 			// audit tables (routing_overrides_audit from P7.9
 			// trigger, routing_audit_log from P7.9.1 app-level
