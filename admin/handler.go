@@ -23,9 +23,9 @@ import (
 	"github.com/kaixuan/llm-gateway-go/domains/session"         //nolint:depguard // session state manager
 	"github.com/kaixuan/llm-gateway-go/domains/sessionaudit"    //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/domains/stats"
-	"github.com/kaixuan/llm-gateway-go/internal/summarystore"   //nolint:depguard // 2026-08-06 auto summary persistence
 	"github.com/kaixuan/llm-gateway-go/domains/stats/boardcache"
 	"github.com/kaixuan/llm-gateway-go/domains/ursm/v2"
+	"github.com/kaixuan/llm-gateway-go/internal/summarystore" //nolint:depguard // 2026-08-06 auto summary persistence
 	"github.com/kaixuan/llm-gateway-go/pending"
 	"github.com/kaixuan/llm-gateway-go/secret"
 	"github.com/kaixuan/llm-gateway-go/security/ipblocklist"
@@ -855,6 +855,8 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/logs/", admin(h.handleLogs))
 	// 2026-08-09: 跨会话轮次列表端点（复用 session_turns 表）
 	mux.HandleFunc("/api/admin/turns", admin(h.handleTurnsList))
+	// 2026-08-10: 会话分组轮次列表端点（最外层会话 + 内层轮次，分层展示）
+	mux.HandleFunc("/api/admin/turns/sessions", admin(h.handleTurnsSessions))
 	// 2026-07-01 (migration 325): attachment file download.
 	// GET /api/attachments/{path...} streams an attachment file from the
 	// configured storage dir. Admin-authenticated so attachments are not

@@ -114,6 +114,10 @@ onBeforeUnmount(() => {
 const showCompressionGuide = ref(false)
 // 2026-08-09: 按模型分组统计的收拢/展开状态，默认收拢以节省空间
 const showByModelStats = ref(false)
+// 2026-08-10: 统计概览 + 按模型统计合并为同一行卡片，两段各自独立展开/收拢。
+const showOverviewStats = ref(false)
+// 2026-08-10: 筛选条件区可折叠，默认收拢以最大化列表展示空间。
+const showFilters = ref(false)
 
 // Compute compression statistics for the info bar at the top.
 const compressionStats = computed(() => {
@@ -218,6 +222,72 @@ function normalizeTimePresetForTenant() {
 function onTimePresetChange() {
   normalizeTimePresetForTenant()
   if (timePreset.value !== 'custom') resetPageAndLoad()
+}
+
+// 2026-08-10: 时间范围预设项（滑动窗口 + 自然日历）。
+// 非 default 租户最多查看 3 天，跨上限的选项（thisWeek/thisMonth/thisYear/d7）禁用。
+interface TimePresetOption {
+  value: TimePreset
+  label: string
+  group: 'window' | 'calendar'
+  disabled?: boolean
+  separator?: boolean
+}
+const timePresetOptions = computed<TimePresetOption[]>(() => [
+  { value: 'h1', label: t('requests.list.filter.timeOptions.h1'), group: 'window' },
+  { value: 'h6', label: t('requests.list.filter.timeOptions.h6'), group: 'window' },
+  { value: 'h24', label: t('requests.list.filter.timeOptions.h24'), group: 'window' },
+  { value: 'd3', label: t('requests.list.filter.timeOptions.d3'), group: 'window' },
+  { value: 'd7', label: t('requests.list.filter.timeOptions.d7'), group: 'window', disabled: !isDefaultTenant() },
+  { value: 'today', label: t('requests.list.filter.timeOptions.today'), group: 'calendar', separator: true },
+  { value: 'thisWeek', label: t('requests.list.filter.timeOptions.thisWeek'), group: 'calendar', disabled: !isDefaultTenant() },
+  { value: 'thisMonth', label: t('requests.list.filter.timeOptions.thisMonth'), group: 'calendar', disabled: !isDefaultTenant() },
+  { value: 'thisYear', label: t('requests.list.filter.timeOptions.thisYear'), group: 'calendar', disabled: !isDefaultTenant() },
+  { value: 'custom', label: t('requests.list.filter.timeOptions.custom'), group: 'calendar' },
+])
+
+// 2026-08-10: 「按模型统计」段是否因选择了单一模型过滤而隐藏。只有
+// 该场景下才隐藏按钮；无模型过滤（含宽时间窗导致 by_model 为空）时
+// 仍保持可见可展开。
+const isSingleModelFiltered = computed(() => modelFilter.value !== '')
+
+// 2026-08-10: 当前生效的筛选条件数（不含时间范围——h24 是始终存在的默认，
+// 也不含分页），用于折叠时头部 badge 提示。
+const activeFilterCount = computed(() => {
+  let count = 0
+  if (apiKeyId.value !== '') count++
+  if (providerFilter.value !== '') count++
+  if (credentialFilter.value !== '') count++
+  if (successFilter.value !== '') count++
+  if (errorKindFilter.value !== '') count++
+  if (usageSourceFilter.value !== '') count++
+  if (modelFilter.value !== '') count++
+  if (keyword.value.trim() !== '') count++
+  if (gwSessionFilter.value.trim() !== '') count++
+  if (gwTaskFilter.value.trim() !== '') count++
+  return count
+})
+
+// 点击预设 chip 选择时间范围，复用 onTimePresetChange 的租户降级逻辑。
+function selectPreset(value: TimePreset) {
+  if (value === timePreset.value) return
+  timePreset.value = value
+  onTimePresetChange()
+}
+
+// 一键清空全部条件：重置到默认 h24 并重载。
+function clearAllFilters() {
+  apiKeyId.value = ''
+  providerFilter.value = ''
+  credentialFilter.value = ''
+  successFilter.value = ''
+  errorKindFilter.value = ''
+  usageSourceFilter.value = ''
+  modelFilter.value = ''
+  keyword.value = ''
+  gwSessionFilter.value = ''
+  gwTaskFilter.value = ''
+  resetTimeFilter()
 }
 
 async function loadKeys() {
@@ -1448,59 +1518,109 @@ onMounted(async () => {
       非 default 租户只能查看最近 3 天的请求日志
     </div>
 
-    <!-- 2026-08-09: 突出显示三联概览卡 (总请求数 / 总 token / 积分)。
-         视觉权重高于下方细分 token 网格，作为 "本次过滤条件下" 的关键指标。
-         数据由 /api/logs 的 aggregate 字段返回，与分页无关。
-         非 default 租户只显示 "总请求数 / 总 token"。 -->
+    <!-- 2026-08-10: 统计概览 + 按模型统计合并为同一行卡片。
+         头部两段各自独立展开/收拢，默认收拢只占一行，最大化列表展示空间。
+         数据由 /api/logs 的 aggregate 字段返回，与分页无关。 -->
     <div
       v-if="aggregate"
-      class="stats-overview"
-      :style="{
-        marginBottom: '10px',
-        display: 'grid',
-        gridTemplateColumns: isDefaultTenant() ? 'repeat(3, 1fr)' : 'repeat(2, 1fr)',
-        gap: '10px',
-      }"
+      class="stats-card"
+      style="margin-bottom:12px;border:1px solid var(--border);border-radius:8px;overflow:hidden;font-size:12px"
     >
-      <div class="stat-overview-card" data-stat="total-requests">
-        <div class="stat-overview-label">{{ t('requests.list.stats.totalRequests') }}</div>
-        <div class="stat-overview-value">{{ aggregate.total_requests.toLocaleString() }}</div>
-        <div class="stat-overview-sub">{{ t('requests.list.stats.scopeAll') }}</div>
-      </div>
-      <div class="stat-overview-card" data-stat="total-tokens">
-        <div class="stat-overview-label">{{ t('requests.list.stats.totalTokens') }}</div>
-        <div class="stat-overview-value">{{ formatStatNumber(aggregate.total_tokens) }}</div>
-        <div class="stat-overview-sub">{{ t('requests.list.stats.scopeAll') }}</div>
-      </div>
-      <div
-        v-if="!isDefaultTenant()"
-        class="stat-overview-card"
-        data-stat="total-credits"
-        :title="t('requests.list.stats.totalCreditsTitle')"
-      >
-        <div class="stat-overview-label">{{ t('requests.list.stats.totalCredits') }}</div>
-        <div class="stat-overview-value">{{ formatStatNumber(aggregate.credits_charged) }}</div>
-        <div class="stat-overview-sub">{{ t('requests.list.stats.scopeAll') }}</div>
-      </div>
-    </div>
-
-    <!-- 2026-08-09: 按模型分组的统计卡片（当未指定具体模型筛选时展示）。
-         默认收拢，点击可展开/收拢，以节省垂直空间。 -->
-    <div v-if="aggregate && aggregate.by_model && aggregate.by_model.length" class="by-model-stats-card" style="margin-bottom:12px;border:1px solid var(--border);border-radius:8px;overflow:hidden;font-size:12px">
-      <div
-        style="display:flex;justify-content:space-between;align-items:center;padding:8px 12px;cursor:pointer;background:var(--surface-secondary)"
-        @click="showByModelStats = !showByModelStats"
-      >
-        <span style="font-weight:600;display:flex;align-items:center;gap:6px">
-          <span>📊 按模型统计</span>
-          <span class="badge" style="font-size:10px;padding:2px 6px">
-            {{ aggregate.by_model.length }} 个模型
+      <div style="display:flex;align-items:stretch">
+        <!-- 段1：统计概览 -->
+        <div
+          class="stats-segment"
+          :class="{ 'stats-segment--active': showOverviewStats }"
+          :style="{ flex: '1', borderRight: !isSingleModelFiltered ? '1px solid var(--border)' : 'none' }"
+          role="button"
+          :aria-expanded="showOverviewStats"
+          @click="showOverviewStats = !showOverviewStats"
+        >
+          <span style="font-weight:600;display:flex;align-items:center;gap:6px;white-space:nowrap">
+            <span>📊 统计概览</span>
+            <span class="badge badge-blue" style="font-size:10px;padding:2px 6px;white-space:nowrap">
+              {{ formatStatNumber(aggregate.total_requests) }} 请求
+            </span>
           </span>
-        </span>
-        <span style="color:var(--text-secondary);font-size:11px">{{ showByModelStats ? '收拢 ▲' : '展开 ▼' }}</span>
+          <span style="color:var(--text-secondary);font-size:11px;white-space:nowrap">{{ showOverviewStats ? '收拢 ▲' : '展开 ▼' }}</span>
+        </div>
+        <!-- 段2：按模型统计 -->
+        <div
+          v-if="!isSingleModelFiltered"
+          class="stats-segment"
+          :class="{ 'stats-segment--active': showByModelStats }"
+          style="flex:1"
+          role="button"
+          :aria-expanded="showByModelStats"
+          @click="showByModelStats = !showByModelStats"
+        >
+          <span style="font-weight:600;display:flex;align-items:center;gap:6px;white-space:nowrap">
+            <span>📈 按模型统计</span>
+            <span v-if="aggregate.by_model && aggregate.by_model.length" class="badge badge-blue" style="font-size:10px;padding:2px 6px;white-space:nowrap">
+              {{ aggregate.by_model.length }} 个模型
+            </span>
+          </span>
+          <span style="color:var(--text-secondary);font-size:11px;white-space:nowrap">{{ showByModelStats ? '收拢 ▲' : '展开 ▼' }}</span>
+        </div>
       </div>
-      <div v-if="showByModelStats" style="padding:12px;border-top:1px solid var(--border)">
-        <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:10px">
+
+      <!-- 概览详情：三联指标 + token 拆分/成本 -->
+      <div v-if="showOverviewStats" style="padding:12px;border-top:1px solid var(--border)">
+        <div
+          style="display:grid;gap:10px"
+          :style="{ gridTemplateColumns: isDefaultTenant() ? 'repeat(3, 1fr)' : 'repeat(2, 1fr)' }"
+        >
+          <div class="stat-overview-card" data-stat="total-requests">
+            <div class="stat-overview-label">{{ t('requests.list.stats.totalRequests') }}</div>
+            <div class="stat-overview-value">{{ aggregate.total_requests.toLocaleString() }}</div>
+            <div class="stat-overview-sub">{{ t('requests.list.stats.scopeAll') }}</div>
+          </div>
+          <div class="stat-overview-card" data-stat="total-tokens">
+            <div class="stat-overview-label">{{ t('requests.list.stats.totalTokens') }}</div>
+            <div class="stat-overview-value">{{ formatStatNumber(aggregate.total_tokens) }}</div>
+            <div class="stat-overview-sub">{{ t('requests.list.stats.scopeAll') }}</div>
+          </div>
+          <div
+            v-if="!isDefaultTenant()"
+            class="stat-overview-card"
+            data-stat="total-credits"
+            :title="t('requests.list.stats.totalCreditsTitle')"
+          >
+            <div class="stat-overview-label">{{ t('requests.list.stats.totalCredits') }}</div>
+            <div class="stat-overview-value">{{ formatStatNumber(aggregate.credits_charged) }}</div>
+            <div class="stat-overview-sub">{{ t('requests.list.stats.scopeAll') }}</div>
+          </div>
+        </div>
+        <div class="stats-grid stats-grid--compact" style="margin-top:10px;display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:8px">
+          <div class="stat-card stat-card--compact">
+            <div style="color:var(--text-secondary);font-size:11px">{{ t('requests.list.filter.inputTokenLabel') }}</div>
+            <div style="font-size:16px;font-weight:600;margin-top:2px">{{ formatStatNumber(aggregate.prompt_tokens) }}</div>
+          </div>
+          <div class="stat-card stat-card--compact">
+            <div style="color:var(--text-secondary);font-size:11px">{{ t('requests.list.filter.outputTokenLabel') }}</div>
+            <div style="font-size:16px;font-weight:600;margin-top:2px">{{ formatStatNumber(aggregate.completion_tokens) }}</div>
+          </div>
+          <div class="stat-card stat-card--compact">
+            <div style="color:var(--text-secondary);font-size:11px">{{ t('requests.list.filter.cacheReadLabel') }}</div>
+            <div style="font-size:16px;font-weight:600;margin-top:2px">{{ formatStatNumber(aggregate.cache_read_tokens) }}</div>
+          </div>
+          <div class="stat-card stat-card--compact">
+            <div style="color:var(--text-secondary);font-size:11px">{{ t('requests.list.filter.cacheWriteLabel') }}</div>
+            <div style="font-size:16px;font-weight:600;margin-top:2px">{{ formatStatNumber(aggregate.cache_write_tokens) }}</div>
+          </div>
+          <div class="stat-card stat-card--compact">
+            <div style="color:var(--text-secondary);font-size:11px">{{ t('requests.list.filter.costLabel') }}</div>
+            <div style="font-size:16px;font-weight:600;margin-top:2px">{{ formatStatCost(aggregate.cost_usd) }}</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- 按模型详情 -->
+      <div v-if="showByModelStats && !isSingleModelFiltered" style="padding:12px;border-top:1px solid var(--border)">
+        <div v-if="!aggregate.by_model || !aggregate.by_model.length" style="color:var(--text-secondary);font-size:12px;text-align:center;padding:8px">
+          当前条件无按模型统计数据
+        </div>
+        <div v-else style="display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:10px">
           <div
             v-for="m in aggregate.by_model"
             :key="m.model"
@@ -1534,38 +1654,6 @@ onMounted(async () => {
             </div>
           </div>
         </div>
-      </div>
-    </div>
-
-    <!-- 当前过滤条件下的全量命中行统计（与分页无关）。
-         数据由 /api/logs 的 aggregate 字段返回，任一查询失败时整块隐藏。
-         2026-08-09: 三个核心指标上移到 stats-overview 后，本块视觉降权 (更小字号、
-         紧凑 padding)，用于展示 token 拆分 (输入/输出/缓存读/缓存写) 与成本。 -->
-    <div
-      v-if="aggregate"
-      class="stats-grid stats-grid--compact"
-      style="margin-bottom:12px;display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:8px"
-    >
-      <!-- 总请求数 / 总 token / 积分 上移到上方 stats-overview；此处只保留 token 拆分 + 成本 -->
-      <div class="stat-card stat-card--compact">
-        <div style="color:var(--text-secondary);font-size:11px">{{ t('requests.list.filter.inputTokenLabel') }}</div>
-        <div style="font-size:16px;font-weight:600;margin-top:2px">{{ formatStatNumber(aggregate.prompt_tokens) }}</div>
-      </div>
-      <div class="stat-card stat-card--compact">
-        <div style="color:var(--text-secondary);font-size:11px">{{ t('requests.list.filter.outputTokenLabel') }}</div>
-        <div style="font-size:16px;font-weight:600;margin-top:2px">{{ formatStatNumber(aggregate.completion_tokens) }}</div>
-      </div>
-      <div class="stat-card stat-card--compact">
-        <div style="color:var(--text-secondary);font-size:11px">{{ t('requests.list.filter.cacheReadLabel') }}</div>
-        <div style="font-size:16px;font-weight:600;margin-top:2px">{{ formatStatNumber(aggregate.cache_read_tokens) }}</div>
-      </div>
-      <div class="stat-card stat-card--compact">
-        <div style="color:var(--text-secondary);font-size:11px">{{ t('requests.list.filter.cacheWriteLabel') }}</div>
-        <div style="font-size:16px;font-weight:600;margin-top:2px">{{ formatStatNumber(aggregate.cache_write_tokens) }}</div>
-      </div>
-      <div class="stat-card stat-card--compact">
-        <div style="color:var(--text-secondary);font-size:11px">{{ t('requests.list.filter.costLabel') }}</div>
-        <div style="font-size:16px;font-weight:600;margin-top:2px">{{ formatStatCost(aggregate.cost_usd) }}</div>
       </div>
     </div>
 
@@ -1620,116 +1708,129 @@ onMounted(async () => {
       </div>
     </div>
 
-    <!-- 2026-08-09: 筛选条件区重新布局 - 更紧凑合理的两行设计 -->
-    <div class="filter-section" style="margin-bottom:16px;border:1px solid var(--border);border-radius:8px;padding:12px;background:var(--surface-primary)">
-      <!-- 第一行：常用筛选 + 查询按钮 -->
-      <div style="display:flex;gap:8px;margin-bottom:10px;flex-wrap:wrap;align-items:center">
-        <select v-model="apiKeyId" class="filter-select" style="min-width:180px" title="按API密钥筛选">
-          <option value="">{{ t('requests.list.filter.keyAll') }}</option>
-          <option v-for="k in keys" :key="k.id" :value="k.id">{{ k.key_prefix }} ({{ k.application_code }})</option>
-        </select>
-        <select v-model="providerFilter" class="filter-select" style="min-width:140px" title="按供应商筛选" @change="onProviderFilterChange">
-          <option value="">{{ t('requests.list.filter.providerAll') }}</option>
-          <option v-for="p in providerOptions" :key="p.id" :value="p.id">{{ p.name }}</option>
-        </select>
-        <select v-model="credentialFilter" class="filter-select" style="min-width:140px" title="按凭据筛选">
-          <option value="">{{ t('requests.list.filter.credentialAll') }}</option>
-          <option v-for="c in filteredCredentialOptions" :key="c.id" :value="c.id">{{ c.label }}</option>
-        </select>
-        <select v-model="timePreset" class="filter-select" style="min-width:120px" title="时间范围" @change="onTimePresetChange">
-          <optgroup label="自然日历">
-            <option value="today">{{ t('requests.list.filter.timeOptions.today') }}</option>
-            <option value="thisWeek">{{ t('requests.list.filter.timeOptions.thisWeek') }}</option>
-            <option value="thisMonth">{{ t('requests.list.filter.timeOptions.thisMonth') }}</option>
-            <option value="thisYear">{{ t('requests.list.filter.timeOptions.thisYear') }}</option>
-            <option value="custom">{{ t('requests.list.filter.timeOptions.custom') }}</option>
-          </optgroup>
-          <optgroup label="滑动窗口">
-            <option value="h1">{{ t('requests.list.filter.timeOptions.h1') }}</option>
-            <option value="h6">{{ t('requests.list.filter.timeOptions.h6') }}</option>
-            <option value="h24">{{ t('requests.list.filter.timeOptions.h24') }}</option>
-            <option value="d3">{{ t('requests.list.filter.timeOptions.d3') }}</option>
-            <option value="d7" :disabled="!isDefaultTenant()">{{ t('requests.list.filter.timeOptions.d7') }}</option>
-          </optgroup>
-        </select>
-        <el-date-picker
-          v-if="timePreset === 'custom'"
-          v-model="customDateRange"
-          type="datetimerange"
-          :placeholder="t('requests.list.dateRangePlaceholder')"
-          range-separator="→"
-          format="YYYY-MM-DD HH:mm"
-          value-format="YYYY-MM-DDTHH:mm:ssZ"
-          :clearable="false"
-          style="height: 32px; width: 360px"
-          @change="onCustomRangeChange"
-        />
-        <button v-if="timePreset !== 'h24'" class="btn btn-sm" title="重置为24小时" @click="resetTimeFilter">
-          ⟲ 重置
-        </button>
-        <select v-model="successFilter" class="filter-select" style="min-width:100px" title="按状态筛选">
-          <option value="">{{ t('requests.list.filter.resultAll') }}</option>
-          <option value="in_progress">请求中</option>
-          <option value="success">成功</option>
-          <option value="failure">失败</option>
-          <option value="rate_limited">限流</option>
-        </select>
-        <select v-model="errorKindFilter" class="filter-select" style="min-width:120px" title="按错误类型筛选">
-          <option value="">{{ t('requests.list.filter.errorAll') }}</option>
-          <option value="model_not_found">模型未找到</option>
-          <option value="provider_error">供应商错误</option>
-          <option value="timeout">超时</option>
-          <option value="rate_limit">供应商限流</option>
-          <option value="rate_limit_exceeded">网关RPM限流</option>
-          <option value="key_throttled">密钥节流</option>
-        </select>
-        <select v-model="usageSourceFilter" class="filter-select" style="min-width:110px" :title="t('requests.list.filter.tokenSourceTitle')">
-          <option value="">{{ t('requests.list.filter.tokenSourceAll') }}</option>
-          <option value="llm">{{ t('requests.list.filter.tokenSourceLlm') }}</option>
-          <option value="estimated">{{ t('requests.list.filter.tokenSourceEstimated') }}</option>
-        </select>
-        <button class="btn btn-primary btn-sm" style="margin-left:auto" @click="resetPageAndLoad">🔍 查询</button>
+    <!-- 2026-08-10: 筛选条件区可折叠卡片。
+         头部栏常驻（折叠开关 + 生效条件数 + 总数 + 查询 + 清空），
+         展开后：时间范围独立成行（预设 chips + custom 日期选择器），
+         其余条件按自然宽度 flex-wrap 流式排布，放满自动折行。 -->
+    <div class="filter-section" style="margin-bottom:16px;border:1px solid var(--border);border-radius:8px;overflow:hidden;background:var(--surface-primary)">
+      <div
+        class="filter-bar"
+        style="display:flex;align-items:center;gap:8px;padding:8px 12px;cursor:pointer;background:var(--surface-secondary)"
+        @click="showFilters = !showFilters"
+      >
+        <span style="font-weight:600;display:flex;align-items:center;gap:6px;white-space:nowrap">
+          <span>⚙️ 筛选条件</span>
+          <span v-if="activeFilterCount > 0" class="badge badge-blue" style="font-size:10px;padding:2px 6px;white-space:nowrap">{{ activeFilterCount }} 项生效</span>
+        </span>
+        <span style="flex:1"></span>
         <span style="color:var(--text-secondary);font-size:12px;white-space:nowrap">共 {{ total }} 条</span>
+        <button class="btn btn-primary btn-sm" style="cursor:pointer;white-space:nowrap" @click.stop="resetPageAndLoad">🔍 查询</button>
+        <button class="btn btn-sm" style="cursor:pointer;white-space:nowrap" title="清空全部条件" @click.stop="clearAllFilters">⟲ 清空条件</button>
+        <span style="color:var(--text-secondary);font-size:11px;white-space:nowrap">{{ showFilters ? '收拢 ▲' : '展开 ▼' }}</span>
       </div>
 
-      <!-- 第二行：高级筛选（模型/关键词/会话ID/任务ID） -->
-      <div style="display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:8px;align-items:end">
-        <div>
-          <label style="display:block;font-size:11px;color:var(--text-secondary);margin-bottom:4px">模型（可选）</label>
-          <ModelPicker
-            v-model="modelFilter"
-            placeholder="选择模型…"
-            title="筛选请求日志模型"
-            @update:model-value="onModelFilterChange"
+      <div v-show="showFilters" style="padding:12px;border-top:1px solid var(--border)">
+        <!-- 时间范围独立行：预设 chips + custom 日期选择器 -->
+        <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin-bottom:10px">
+          <span style="font-size:11px;color:var(--text-secondary);white-space:nowrap">时间范围</span>
+          <template v-for="opt in timePresetOptions" :key="opt.value">
+            <span v-if="opt.separator" aria-hidden="true" style="width:1px;height:22px;background:var(--border);margin:0 4px"></span>
+            <button
+              v-else
+              class="preset-chip"
+              :class="{ 'preset-chip--active': timePreset === opt.value, 'preset-chip--disabled': opt.disabled }"
+              :disabled="opt.disabled"
+              :title="opt.disabled ? '非 default 租户最多查看最近 3 天' : ''"
+              @click="selectPreset(opt.value)"
+            >
+              {{ opt.label }}
+            </button>
+          </template>
+          <el-date-picker
+            v-if="timePreset === 'custom'"
+            v-model="customDateRange"
+            type="datetimerange"
+            :placeholder="t('requests.list.dateRangePlaceholder')"
+            range-separator="→"
+            format="YYYY-MM-DD HH:mm"
+            value-format="YYYY-MM-DDTHH:mm:ssZ"
+            :clearable="false"
+            style="height: 32px; width: 360px"
+            @change="onCustomRangeChange"
           />
+          <button v-if="timePreset !== 'h24'" class="btn btn-sm" style="cursor:pointer;white-space:nowrap" title="重置为24小时" @click="resetTimeFilter">
+            ⟲ 重置
+          </button>
         </div>
-        <div>
-          <label style="display:block;font-size:11px;color:var(--text-secondary);margin-bottom:4px">消息片段</label>
+
+        <!-- 条件流式行：各控件按自然宽度排布，放满自动折行 -->
+        <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+          <select v-model="apiKeyId" class="filter-select" style="width:180px" title="按API密钥筛选">
+            <option value="">{{ t('requests.list.filter.keyAll') }}</option>
+            <option v-for="k in keys" :key="k.id" :value="k.id">{{ k.key_prefix }} ({{ k.application_code }})</option>
+          </select>
+          <select v-model="providerFilter" class="filter-select" style="width:130px" title="按供应商筛选" @change="onProviderFilterChange">
+            <option value="">{{ t('requests.list.filter.providerAll') }}</option>
+            <option v-for="p in providerOptions" :key="p.id" :value="p.id">{{ p.name }}</option>
+          </select>
+          <select v-model="credentialFilter" class="filter-select" style="width:130px" title="按凭据筛选">
+            <option value="">{{ t('requests.list.filter.credentialAll') }}</option>
+            <option v-for="c in filteredCredentialOptions" :key="c.id" :value="c.id">{{ c.label }}</option>
+          </select>
+          <select v-model="successFilter" class="filter-select" style="width:100px" title="按状态筛选">
+            <option value="">{{ t('requests.list.filter.resultAll') }}</option>
+            <option value="in_progress">请求中</option>
+            <option value="success">成功</option>
+            <option value="failure">失败</option>
+            <option value="rate_limited">限流</option>
+          </select>
+          <select v-model="errorKindFilter" class="filter-select" style="width:120px" title="按错误类型筛选">
+            <option value="">{{ t('requests.list.filter.errorAll') }}</option>
+            <option value="model_not_found">模型未找到</option>
+            <option value="provider_error">供应商错误</option>
+            <option value="timeout">超时</option>
+            <option value="rate_limit">供应商限流</option>
+            <option value="rate_limit_exceeded">网关RPM限流</option>
+            <option value="key_throttled">密钥节流</option>
+          </select>
+          <select v-model="usageSourceFilter" class="filter-select" style="width:110px" :title="t('requests.list.filter.tokenSourceTitle')">
+            <option value="">{{ t('requests.list.filter.tokenSourceAll') }}</option>
+            <option value="llm">{{ t('requests.list.filter.tokenSourceLlm') }}</option>
+            <option value="estimated">{{ t('requests.list.filter.tokenSourceEstimated') }}</option>
+          </select>
+          <div style="width:240px">
+            <ModelPicker
+              v-model="modelFilter"
+              placeholder="选择模型…"
+              title="筛选请求日志模型"
+              @update:model-value="onModelFilterChange"
+            />
+          </div>
           <input
             v-model="keyword"
             type="text"
             class="filter-input"
+            style="width:220px"
             placeholder="搜索请求消息内容…"
+            title="消息片段"
             @keyup.enter="resetPageAndLoad"
           />
-        </div>
-        <div>
-          <label style="display:block;font-size:11px;color:var(--text-secondary);margin-bottom:4px">会话 ID</label>
           <input
             v-model="gwSessionFilter"
             type="text"
             class="filter-input"
+            style="width:190px"
             placeholder="X-Gw-Session-Id…"
+            title="会话 ID"
             @keyup.enter="resetPageAndLoad"
           />
-        </div>
-        <div>
-          <label style="display:block;font-size:11px;color:var(--text-secondary);margin-bottom:4px">任务 ID</label>
           <input
             v-model="gwTaskFilter"
             type="text"
             class="filter-input"
+            style="width:190px"
             placeholder="X-Gw-Task-Id…"
+            title="任务 ID"
             @keyup.enter="resetPageAndLoad"
           />
         </div>
@@ -2952,4 +3053,45 @@ onMounted(async () => {
   color: var(--text-secondary);
   opacity: 0.6;
 }
+
+/* 2026-08-10: 统计卡片（概览 + 按模型）合并单行两段式头部 */
+.stats-card .stats-segment {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  cursor: pointer;
+  background: var(--surface-primary);
+  transition: background 0.12s ease;
+}
+.stats-card .stats-segment:hover { background: var(--surface-secondary); }
+.stats-card .stats-segment--active {
+  background: color-mix(in srgb, var(--accent) 6%, var(--surface-primary));
+}
+
+/* 2026-08-10: 时间范围预设 chips */
+.preset-chip {
+  height: 30px;
+  padding: 0 12px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--text);
+  font-size: 12px;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: border-color 0.12s ease, color 0.12s ease, background 0.12s ease;
+}
+.preset-chip:hover { border-color: var(--accent); color: var(--accent-h); }
+.preset-chip--active {
+  border-color: var(--accent);
+  color: var(--accent-h);
+  background: rgba(59, 130, 246, 0.12);
+}
+.preset-chip--disabled { opacity: 0.45; cursor: not-allowed; }
+.preset-chip--disabled:hover { border-color: var(--border); color: var(--text); }
+
+/* 2026-08-10: 折叠筛选头部栏按钮去除按住拖拽文本选择 */
+.filter-section .filter-bar .btn { user-select: none; }
 </style>
