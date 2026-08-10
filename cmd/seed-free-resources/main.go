@@ -28,7 +28,10 @@ type FreeResourceEntry struct {
 	ConstraintsJSON json.RawMessage `json:"constraints_json"`
 	DiscoveryMethod string          `json:"discovery_method"`
 	VerifiedAt      string          `json:"verified_at"`
-	Enabled         bool            `json:"enabled"`
+	// TrainsOnPrompts marks providers known to train on user prompts (privacy flag).
+	// Default false; callers routing privacy-sensitive traffic should filter these out.
+	TrainsOnPrompts bool `json:"trains_on_prompts"`
+	Enabled         bool `json:"enabled"`
 }
 
 // AutoComboTemplate Auto Combo 模板
@@ -141,8 +144,8 @@ func importFreeResources(db *sql.DB, filename string, tenantID string, dryRun bo
 			provider_code, model_id, display_name, display_name_en,
 			free_type, monthly_tokens, daily_tokens, credit_tokens,
 			pool_key, tos_verdict, tos_notes, constraints_json,
-			discovery_method, verified_at, enabled, tenant_id
-		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
+			discovery_method, verified_at, trains_on_prompts, enabled, tenant_id
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)
 		ON CONFLICT (provider_code, model_id, tenant_id)
 		DO UPDATE SET
 			display_name = EXCLUDED.display_name,
@@ -157,6 +160,7 @@ func importFreeResources(db *sql.DB, filename string, tenantID string, dryRun bo
 			constraints_json = EXCLUDED.constraints_json,
 			discovery_method = EXCLUDED.discovery_method,
 			verified_at = EXCLUDED.verified_at,
+			trains_on_prompts = EXCLUDED.trains_on_prompts,
 			enabled = EXCLUDED.enabled,
 			updated_at = now()
 	`
@@ -175,7 +179,7 @@ func importFreeResources(db *sql.DB, filename string, tenantID string, dryRun bo
 			entry.ProviderCode, entry.ModelID, entry.DisplayName, nullString(entry.DisplayNameEN),
 			entry.FreeType, entry.MonthlyTokens, entry.DailyTokens, entry.CreditTokens,
 			nullString(entry.PoolKey), entry.ToSVerdict, nullString(entry.ToSNotes), entry.ConstraintsJSON,
-			entry.DiscoveryMethod, verifiedAt, entry.Enabled, tenantID,
+			entry.DiscoveryMethod, verifiedAt, entry.TrainsOnPrompts, entry.Enabled, tenantID,
 		)
 		if err != nil {
 			return fmt.Errorf("插入 %s/%s 失败: %w", entry.ProviderCode, entry.ModelID, err)

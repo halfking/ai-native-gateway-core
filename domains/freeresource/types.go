@@ -67,6 +67,7 @@ type CorrectionRequest struct {
 	ProviderCode string
 	ModelID      string
 	Headers      map[string]string // HTTP响应头
+	Body         []byte            // HTTP响应体（可选，用于 body 关键词甄别 rate_limit vs quota_exhausted）
 	TenantID     string
 }
 

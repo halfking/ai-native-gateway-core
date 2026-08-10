@@ -9,6 +9,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/kaixuan/llm-gateway-go/errorsx"
 )
 
 // QuotaTracker 配额追踪器
@@ -112,12 +114,25 @@ func (qt *QuotaTracker) Record(ctx context.Context, req RecordRequest) error {
 	return nil
 }
 
-// CorrectFromHeaders 从429响应头校准配额限制.
+// CorrectFromHeaders 从429响应头+响应体校准配额限制.
 //
 // 行为变更 (2026-08-07): 旧实现仅 UPDATE 当前已存在的 day-1 行, 首次 429
 // 没有任何追踪记录时静默丢失校准. 新实现通过 UPSERT 写入 day-1 窗口, 即使
 // 之前没有 Record 调用, 也能在收到 429 的同时建立追踪行, 后续 Preflight
 // 即可正确识别 is_exhausted.
+//
+// body 关键词甄别 (OmniRoute classify429.ts 对齐, 2026-08-10):
+//   - 旧实现只看 HTTP header (Retry-After / X-RateLimit-Reset). 很多 provider
+//     (Google Gemini, Cloudflare Workers AI, Groq) 把配额耗尽信号放在响应体
+//     里, 没有任何 reset header → parseRetryAfter 返回 (0, now) →
+//     auto_reset_at=now() → Preflight 立即解除耗尽 → 配额耗尽的 key 被反复重试.
+//   - 新实现: 若 req.Body 非空, 调 errorsx.ClassifyQuota429Body 区分:
+//   - KindQuotaPeriodic  → 周期性耗尽, 用 errorsx.NextQuotaReset(body)
+//     算出 next UTC midnight / next month (除非 header 有更准的 reset).
+//   - KindQuotaPermanent → 永久耗尽 (余额不足), auto_reset_at 设为远未来
+//     (now + 365 天) 避免被自动解除, 需人工介入.
+//   - KindRateLimit      → 瞬时限流, 保持原有短退避行为.
+//     优先级: 真实 upstream reset header > body 推断的周期重置 > 默认 now.
 //
 // 事务封装 + RLS GUC (2026-08-09 audit round 3, C1/C2):
 //   - 把 UPSERT 包到 BeginTx, 与并发 Record 形成一致的可见性窗口;
@@ -132,6 +147,25 @@ func (qt *QuotaTracker) CorrectFromHeaders(ctx context.Context, req CorrectionRe
 	dayEnd := dayStart.Add(24 * time.Hour)
 
 	retryAfterSec, resetAt := parseRetryAfter(now, req.Headers)
+	headerHadReset := !resetAt.Equal(now) // parseRetryAfter fallback returns now when no header
+
+	// body 关键词甄别: 当 header 没有给出 reset 时间时, 从 body 推断.
+	classification := errorsx.ClassifyQuota429Body(req.Body)
+	if !headerHadReset && len(req.Body) > 0 {
+		switch classification {
+		case errorsx.KindQuotaPeriodic:
+			resetAt = errorsx.NextQuotaReset(string(req.Body), now)
+		case errorsx.KindQuotaPermanent:
+			// Permanent exhaustion has no known auto-recovery time; keep it
+			// exhausted until an explicit operator/provider state change.
+			resetAt = time.Time{}
+		}
+	}
+
+	var autoReset any
+	if !resetAt.IsZero() {
+		autoReset = resetAt
+	}
 
 	limit := int64(0)
 	if lim, ok := lookupHeader(req.Headers, "X-RateLimit-Limit"); ok && lim != "" {
@@ -176,9 +210,9 @@ func (qt *QuotaTracker) CorrectFromHeaders(ctx context.Context, req CorrectionRe
             last_429_limit_header = EXCLUDED.last_429_limit_header,
             corrected_limit = COALESCE(EXCLUDED.corrected_limit, free_quota_tracker.corrected_limit),
             updated_at = now()
-    `, req.CredentialID, req.ProviderCode, req.ModelID,
+	`, req.CredentialID, req.ProviderCode, req.ModelID,
 		dayStart, dayEnd,
-		resetAt,
+		autoReset,
 		retryAfterSec, limitHeader,
 		limit,
 		req.TenantID,
@@ -212,6 +246,16 @@ func parseRetryAfter(now time.Time, headers map[string]string) (int, time.Time) 
 			}
 			return sec, now.Add(time.Duration(sec) * time.Second)
 		}
+		// 2026-08-10: 相对时间单位 (Groq "6s", "5m", "2h", "1d").
+		// RFC 7231 Retry-After 只定义了 delta-seconds 或 HTTP-date, 但 Groq
+		// 等厂商在 Retry-After 里返回相对单位. 不解析会导致 fallback 到
+		// HTTP-date (失败) → (0, now) → 配额耗尽 key 被立即重试.
+		if sec, ok := parseRetryAfterRelative(ra); ok {
+			if sec < 0 {
+				sec = 0
+			}
+			return sec, now.Add(time.Duration(sec) * time.Second)
+		}
 		if t, err := http.ParseTime(ra); err == nil {
 			resetAt := t.UTC()
 			retry := int(resetAt.Sub(now).Seconds())
@@ -225,7 +269,8 @@ func parseRetryAfter(now time.Time, headers map[string]string) (int, time.Time) 
 }
 
 // parseRetryAfterSeconds 仅当字符串全为数字 (允许前后空白) 时返回秒数.
-// 用于 Retry-After 的 "30" / "30s" / " 60 " 形式, 避免 HTTP-date 被截断误判.
+// 用于 Retry-After 的 "30" / " 60 " 形式 (RFC 7231 delta-seconds), 避免
+// HTTP-date 被截断误判. 带 unit 后缀的形式 ("30s"/"5m") 由 parseRetryAfterRelative 处理.
 func parseRetryAfterSeconds(s string) (int, bool) {
 	s = strings.TrimSpace(s)
 	if s == "" {
@@ -241,6 +286,42 @@ func parseRetryAfterSeconds(s string) (int, bool) {
 		return 0, false
 	}
 	return n, true
+}
+
+// parseRetryAfterRelative parses Groq-style relative Retry-After values with a
+// unit suffix: "6s", "5m", "2h", "1d" (case-insensitive). These are non-RFC but
+// emitted by Groq and some other providers. Returns seconds + true on match,
+// false otherwise (caller falls back to HTTP-date parsing).
+//
+// Mirrors OmniRoute classify429.ts parseRetryAfter relative-unit handling.
+// Supported units: s (seconds), m (minutes), h (hours), d (days).
+func parseRetryAfterRelative(s string) (int, bool) {
+	s = strings.TrimSpace(s)
+	if len(s) < 2 { // need at least "Ns"
+		return 0, false
+	}
+	unit := s[len(s)-1]
+	// unit must be a letter; the rest must be all digits.
+	if !((unit >= 'a' && unit <= 'z') || (unit >= 'A' && unit <= 'Z')) {
+		return 0, false
+	}
+	numPart := s[:len(s)-1]
+	n, err := strconv.Atoi(numPart)
+	if err != nil || n < 0 {
+		return 0, false
+	}
+	switch strings.ToLower(string(unit)) {
+	case "s":
+		return n, true
+	case "m":
+		return n * 60, true
+	case "h":
+		return n * 3600, true
+	case "d":
+		return n * 86400, true
+	default:
+		return 0, false
+	}
 }
 
 // Preflight 配额预检 - 返回是否可用

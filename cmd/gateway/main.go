@@ -94,7 +94,6 @@ import (
 	"github.com/kaixuan/llm-gateway-go/internal/observability"
 	"github.com/kaixuan/llm-gateway-go/internal/quality"
 	"github.com/kaixuan/llm-gateway-go/internal/sessionv2mirror"
-	"github.com/kaixuan/llm-gateway-go/internal/specbundle"
 	gwtrace "github.com/kaixuan/llm-gateway-go/internal/trace"
 	"github.com/kaixuan/llm-gateway-go/licensing"
 	"github.com/kaixuan/llm-gateway-go/maas"
@@ -3713,29 +3712,6 @@ func main() {
 		// Wire armor into chat handler
 		chatHandler.SetArmor(armorJudge, armorLogger)
 	}
-
-	// ── Spec-bundle (spec-enforcement Phase 1, 2026-08-10) ──────────────
-	// Loads the compiled spec-bundle and wires the fail-open telemetry hook
-	// into the chat handler. Phase 1 is observe-only: the hook computes the
-	// would-be injection and emits llm_gateway_spec_lookup_total, but never
-	// mutates the request. The kill switch (LLM_GATEWAY_SPEC_INJECT_ENABLED)
-	// provides a runtime master override; the regex guard runs Class-B checks
-	// in warn-only mode.
-	//
-	// Bundle path is read from LLM_GATEWAY_SPEC_BUNDLE_PATH (matches the
-	// LLM_GATEWAY_CONFIG_FILE inline-env convention at line 97). An unset
-	// path is not an error: the gateway runs in passthrough (no bundle) and
-	// the hook still emits "skipped" telemetry so the GO gate G5 can be
-	// evaluated even before a bundle is published.
-	specCache := specbundle.NewCache()
-	specKS := specbundle.NewKillSwitch(slog.Default())
-	if path := os.Getenv("LLM_GATEWAY_SPEC_BUNDLE_PATH"); path != "" {
-		if res := specbundle.LoadAndActivate(path, specCache, slog.Default()); res.Err != nil {
-			metrics.SpecBundleLoadFailureTotal.Inc()
-		}
-	}
-	specGuard := specbundle.NewRegexGuard(specCache, specKS, slog.Default())
-	chatHandler.SetSpecBundle(specCache, specKS, specGuard)
 
 	slog.Info("CHECKPOINT: before static handler init")
 

@@ -150,6 +150,49 @@ func TestParseRetryAfter_RetryAfterHTTPDate(t *testing.T) {
 	}
 }
 
+// TestParseRetryAfter_RelativeUnits covers Groq-style "6s"/"5m"/"2h"/"1d"
+// Retry-After values (non-RFC but emitted by several providers). Without
+// parseRetryAfterRelative these fall through to HTTP-date parse (fail) →
+// (0, now) → exhausted keys retried immediately.
+func TestParseRetryAfter_RelativeUnits(t *testing.T) {
+	now := time.Unix(1700000000, 0).UTC()
+	tests := []struct {
+		header  string
+		wantSec int
+	}{
+		{"6s", 6},
+		{"5m", 300},
+		{"2h", 7200},
+		{"1d", 86400},
+		{" 30s ", 30}, // whitespace tolerated
+		{"10M", 600},  // uppercase unit
+	}
+	for _, tt := range tests {
+		t.Run(tt.header, func(t *testing.T) {
+			retry, reset := parseRetryAfter(now, map[string]string{"Retry-After": tt.header})
+			if retry != tt.wantSec {
+				t.Errorf("Retry-After %q: retry = %d, want %d", tt.header, retry, tt.wantSec)
+			}
+			wantReset := now.Add(time.Duration(tt.wantSec) * time.Second)
+			if !reset.Equal(wantReset) {
+				t.Errorf("Retry-After %q: reset = %v, want %v", tt.header, reset, wantReset)
+			}
+		})
+	}
+}
+
+// TestParseRetryAfter_RelativeUnitsRejected ensures non-duration suffixes
+// don't get mis-parsed as relative units (e.g. an HTTP-date fragment like
+// "GMT" trailing must not be read as a unit).
+func TestParseRetryAfter_RelativeUnitsRejected(t *testing.T) {
+	now := time.Unix(1700000000, 0).UTC()
+	// "5x" is not a recognized unit → should fall through, not return 5s.
+	retry, _ := parseRetryAfter(now, map[string]string{"Retry-After": "5x"})
+	if retry == 5 {
+		t.Fatal("unrecognized unit 'x' was treated as seconds")
+	}
+}
+
 func TestParseRetryAfter_NegativeRetryClamped(t *testing.T) {
 	headers := map[string]string{"Retry-After": "-10"}
 	now := time.Unix(1700000000, 0).UTC()

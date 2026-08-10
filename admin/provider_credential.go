@@ -35,11 +35,12 @@ import (
 
 func (h *Handler) addCredential(w http.ResponseWriter, r *http.Request, providerID int) {
 	var req struct {
-		Label            *string `json:"label"`
-		APIKey           string  `json:"api_key"`
-		ConcurrencyLimit *int    `json:"concurrency_limit"`
-		FpSlotLimit      *int    `json:"fp_slot_limit"`
-		PlanType         *string `json:"plan_type"`
+		Label            *string  `json:"label"`
+		APIKey           string   `json:"api_key"`
+		ExtraAPIKeys     []string `json:"extra_api_keys"` // 2026-08-10: multi-key rotation (N 倍放大免费额度)
+		ConcurrencyLimit *int     `json:"concurrency_limit"`
+		FpSlotLimit      *int     `json:"fp_slot_limit"`
+		PlanType         *string  `json:"plan_type"`
 	}
 	if err := readJSON(r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid body")
@@ -62,6 +63,22 @@ func (h *Handler) addCredential(w http.ResponseWriter, r *http.Request, provider
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "encryption failed")
 		return
+	}
+
+	// 加密 extra keys (用于 per-credential 多 key 轮转). 主 key 存 credentials,
+	// extras 存 credential_keys 子表 (migration 076).
+	var extraEncrypted [][]byte
+	for i, k := range req.ExtraAPIKeys {
+		k = strings.TrimSpace(k)
+		if k == "" {
+			continue
+		}
+		enc, encErr := h.encryptCred([]byte(k))
+		if encErr != nil {
+			writeError(w, http.StatusInternalServerError, fmt.Sprintf("encrypt extra key %d failed: %v", i, encErr))
+			return
+		}
+		extraEncrypted = append(extraEncrypted, []byte(enc))
 	}
 
 	label := "default"
@@ -89,6 +106,19 @@ func (h *Handler) addCredential(w http.ResponseWriter, r *http.Request, provider
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "create failed: "+err.Error())
 		return
+	}
+
+	// 插入 extra keys 到 credential_keys 子表 (kid_index 从 1 起).
+	for i, enc := range extraEncrypted {
+		_, err = h.db.Exec(ctx, `
+			INSERT INTO credential_keys (credential_id, kid_index, secret_ciphertext, status, tenant_id)
+			VALUES ($1, $2, $3, 'active', public.get_current_tenant())
+			ON CONFLICT (credential_id, kid_index) DO UPDATE SET secret_ciphertext = EXCLUDED.secret_ciphertext, status = 'active'
+		`, id, i+1, enc)
+		if err != nil {
+			slog.Warn("addCredential: insert extra key failed", "credential_id", id, "kid_index", i+1, "error", err)
+			// non-fatal: credential 已建, extra keys 可后续补.
+		}
 	}
 
 	// ── Auto probe: fire-and-forget health check after credential creation ──
