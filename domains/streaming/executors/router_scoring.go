@@ -43,10 +43,10 @@ func DefaultLoadScoreWeights() LoadScoreWeights {
 func calculateLoadScore(c provider.Candidate, r *Router, ctx context.Context, weights LoadScoreWeights) float64 {
 	concurrencyScore := calculateConcurrencyScore(c, r, ctx)
 	identityScore := calculateIdentityScore(c, r)
-	latencyScore := calculateLatencyScore(c)
+	latencyScore := calculateLatencyScore(c, r)
 	qualityScore := calculateQualityScore(c)
 
-	headroom := calculateHeadroom(c)
+	headroom := calculateHeadroom(c, r)
 	headroomWeight := envFloat("LLM_GATEWAY_ROUTING_W_HEADROOM", 0.05)
 	latencyPenalty := 1.0 - latencyScore
 	headroomPenalty := 1.0 - headroom
@@ -124,8 +124,8 @@ func calculateIdentityScore(c provider.Candidate, r *Router) float64 {
 // 使用饱和曲线：快速增长后趋于平缓
 // 2026-07-20 P2-#5: concurrency-aware latency score (docs/design/2026-07-20-latency-aware-routing.md §2.1)
 // idle slope × queue-amplification
-func calculateLatencyScore(c provider.Candidate) float64 {
-	pressure := candidatePressure(c) // 复用 headroom 计算
+func calculateLatencyScore(c provider.Candidate, r *Router) float64 {
+	pressure := candidatePressure(c, r) // 复用 headroom 计算
 	p95 := c.P95LatencyMs
 	if p95 < 100 {
 		return 0.0
@@ -183,19 +183,40 @@ func envFloat(key string, fallback float64) float64 {
 
 // candidatePressure 计算 candidate 当前的并发压力
 // (在 0-1.5 范围: 1.0+ 表示超载)
-func candidatePressure(c provider.Candidate) float64 {
-	if c.ConcurrencyLimit == nil || *c.ConcurrencyLimit <= 0 {
-		return 0.5 // 无限流: 假设中等
+//
+// Realtime concurrency is read from Router.Limiter (the same source used by
+// calculateConcurrencyScore/calculateIdentityScore). When no limiter is
+// available, or the credential has no usable capacity, we fall back to the
+// static ConcurrencyLimit and ultimately a neutral 0.5 — preserving the prior
+// "unknown ⇒ medium" semantics instead of a hard constant.
+func candidatePressure(c provider.Candidate, r *Router) float64 {
+	// Prefer realtime in-flight pressure from the global limiter.
+	if r != nil && r.Limiter != nil {
+		cred := r.Limiter.Credential(c.ProviderID, c.CredentialID)
+		capacity := cred.Capacity()
+		if capacity > 0 {
+			return float64(cred.Used()) / float64(capacity)
+		}
 	}
-	// 从全局 limiter 取实时 (Limiter 在 Router 上下文, 这里简化)
-	// P1: 估计 pressure, 实际在 planByTier 时取
-	return 0.5
+	// Fall back to static config: if a concurrency limit is known but we have
+	// no realtime count, ActiveSessions (if reported) gives a coarse estimate.
+	if c.ConcurrencyLimit != nil && *c.ConcurrencyLimit > 0 {
+		if c.ActiveSessions > 0 {
+			p := float64(c.ActiveSessions) / float64(*c.ConcurrencyLimit)
+			if p > 1.0 {
+				p = 1.0
+			}
+			return p
+		}
+		return 0.5 // 有限流但无实时数据: 假设中等
+	}
+	return 0.5 // 无限流: 假设中等
 }
 
 // calculateHeadroom bonus (P2-#5 §3.1): 奖励并发富裕的 candidate
-func calculateHeadroom(c provider.Candidate) float64 {
+func calculateHeadroom(c provider.Candidate, r *Router) float64 {
 	gamma := envFloat("LLM_GATEWAY_HEADROOM_GAMMA", 1.0)
-	pressure := candidatePressure(c)
+	pressure := candidatePressure(c, r)
 	if pressure > 1.0 {
 		return 0.0
 	}

@@ -252,19 +252,36 @@ func buildGeminiContents(messages []Message) []map[string]any {
 				}
 			case "image":
 				if block.Image != nil {
-					parts = append(parts, irImageToGeminiPart(block.Image))
+					if part := irImageToGeminiPart(block.Image); part != nil {
+						parts = append(parts, part)
+					}
 				}
 			case "audio":
 				if block.Audio != nil {
-					parts = append(parts, irAudioToGeminiPart(block.Audio))
+					if part := irAudioToGeminiPart(block.Audio); part != nil {
+						parts = append(parts, part)
+					}
+				}
+			case "input_audio":
+				// OpenAI Chat/Responses input_audio block. No canonicalization
+				// converts this to type="audio", so without an explicit case it
+				// would be silently dropped when routed to a Gemini upstream.
+				if block.InputAudio != nil {
+					if part := irInputAudioToGeminiPart(block.InputAudio); part != nil {
+						parts = append(parts, part)
+					}
 				}
 			case "video":
 				if block.Video != nil {
-					parts = append(parts, irVideoToGeminiPart(block.Video))
+					if part := irVideoToGeminiPart(block.Video); part != nil {
+						parts = append(parts, part)
+					}
 				}
 			case "document":
 				if block.Document != nil && block.Document.Source != nil {
-					parts = append(parts, irDocumentToGeminiPart(block.Document))
+					if part := irDocumentToGeminiPart(block.Document); part != nil {
+						parts = append(parts, part)
+					}
 				}
 			case "tool_use":
 				if block.ToolUse != nil {
@@ -315,23 +332,21 @@ func irImageToGeminiPart(img *ImageSource) map[string]any {
 			},
 		}
 	}
-	if img.Type == "file_uri" || img.URL != "" {
-		uri := img.URL
-		if img.FileURI != "" {
-			uri = img.FileURI
-		}
-		return map[string]any{
-			"fileData": map[string]any{
-				"mimeType": imageMIME(img),
-				"fileUri":  uri,
-			},
-		}
+	uri := img.URL
+	if img.FileURI != "" {
+		uri = img.FileURI
 	}
-	// Plain URL
+	// Cross-protocol file_id (OpenAI/Anthropic) → Gemini fileUri requires a
+	// Files-API registry, out of scope here. Don't emit a fileData part with an
+	// empty fileUri — it produces a malformed request. Returning nil lets the
+	// caller skip this part rather than send a broken one.
+	if uri == "" {
+		return nil
+	}
 	return map[string]any{
 		"fileData": map[string]any{
 			"mimeType": imageMIME(img),
-			"fileUri":  img.URL,
+			"fileUri":  uri,
 		},
 	}
 }
@@ -353,10 +368,34 @@ func irAudioToGeminiPart(audio *MediaSource) map[string]any {
 	if uri == "" {
 		uri = audio.URL
 	}
+	// Don't emit a fileData part with an empty fileUri (file_id-only media
+	// cannot be resolved without a Files-API registry). See irImageToGeminiPart.
+	if uri == "" {
+		return nil
+	}
 	return map[string]any{
 		"fileData": map[string]any{
 			"mimeType": mt,
 			"fileUri":  uri,
+		},
+	}
+}
+
+// irInputAudioToGeminiPart converts an OpenAI input_audio block to a Gemini
+// inlineData part. InputAudioBlock.Data is already base64 (no prefix); Format
+// is "wav"/"mp3"/etc. Returns nil if there is no payload to emit.
+func irInputAudioToGeminiPart(ia *InputAudioBlock) map[string]any {
+	if ia == nil || ia.Data == "" {
+		return nil
+	}
+	mt := "audio/wav"
+	if ia.Format != "" {
+		mt = "audio/" + ia.Format
+	}
+	return map[string]any{
+		"inlineData": map[string]any{
+			"mimeType": mt,
+			"data":     ia.Data,
 		},
 	}
 }
@@ -377,6 +416,11 @@ func irVideoToGeminiPart(video *MediaSource) map[string]any {
 	uri := video.FileURI
 	if uri == "" {
 		uri = video.URL
+	}
+	// Don't emit a fileData part with an empty fileUri (file_id-only media
+	// cannot be resolved without a Files-API registry). See irImageToGeminiPart.
+	if uri == "" {
+		return nil
 	}
 	return map[string]any{
 		"fileData": map[string]any{
@@ -400,10 +444,56 @@ func irDocumentToGeminiPart(doc *DocumentBlock) map[string]any {
 				"data":     src.Data,
 			},
 		}
+	case "text", "csv", "":
+		// Inline text payload. Gemini's inlineData.data is a string field, so
+		// raw text is acceptable and far safer than stuffing the whole document
+		// body into fileData.fileUri (which expects a URL and produces a
+		// malformed request).
+		if mt == "" {
+			if src.Type == "csv" {
+				mt = "text/csv"
+			} else {
+				mt = "text/plain"
+			}
+		}
+		return map[string]any{
+			"inlineData": map[string]any{
+				"mimeType": mt,
+				"data":     src.Data,
+			},
+		}
+	case "url":
+		uri := src.URL
+		if uri == "" {
+			uri = src.Data
+		}
+		return map[string]any{
+			"fileData": map[string]any{
+				"mimeType": mt,
+				"fileUri":  uri,
+			},
+		}
+	case "file_id":
+		// Cross-protocol file_id → Gemini fileUri requires a Files-API
+		// registry mapping, which is out of scope here. Emit a fileData part
+		// only if a resolvable URI was carried alongside the id.
+		uri := src.URL
+		if uri == "" {
+			return nil
+		}
+		return map[string]any{
+			"fileData": map[string]any{
+				"mimeType": mt,
+				"fileUri":  uri,
+			},
+		}
 	default:
-		uri := src.Data
-		if src.URL != "" {
-			uri = src.URL
+		uri := src.URL
+		if uri == "" {
+			uri = src.Data
+		}
+		if uri == "" {
+			return nil
 		}
 		return map[string]any{
 			"fileData": map[string]any{

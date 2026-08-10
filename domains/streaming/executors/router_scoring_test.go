@@ -101,7 +101,7 @@ func TestLatencyScore_SaturationCurve(t *testing.T) {
 			candidate := provider.Candidate{
 				P95LatencyMs: tt.latencyMs,
 			}
-			score := calculateLatencyScore(candidate)
+			score := calculateLatencyScore(candidate, nil)
 			assert.InDelta(t, tt.expected, score, tt.delta)
 		})
 	}
@@ -165,7 +165,7 @@ func TestCalculateLatencyScore_PiecewiseNoPressure(t *testing.T) {
 	for _, tc := range candidates {
 		t.Run(tc.name, func(t *testing.T) {
 			c := provider.Candidate{P95LatencyMs: tc.p95}
-			got := calculateLatencyScore(c)
+			got := calculateLatencyScore(c, nil)
 			if math.Abs(got-tc.want) > 0.01 {
 				t.Errorf("latency_score(p95=%d) = %f, want %f", tc.p95, got, tc.want)
 			}
@@ -174,25 +174,55 @@ func TestCalculateLatencyScore_PiecewiseNoPressure(t *testing.T) {
 }
 
 func TestCalculateHeadroom_DefaultGamma1(t *testing.T) {
-	// candidatePressure returns 0.5 default when ConcurrencyLimit nil;
-	// headroom = max(0, 1-0.5)^1 = 0.5
+	// candidatePressure returns 0.5 default when ConcurrencyLimit nil and no
+	// limiter; headroom = max(0, 1-0.5)^1 = 0.5
 	c := provider.Candidate{}
-	got := calculateHeadroom(c)
+	got := calculateHeadroom(c, nil)
 	if got < 0.49 || got > 0.51 {
 		t.Errorf("headroom default = %f, want 0.5", got)
 	}
 }
 
 func TestCalculateHeadroom_SaturatedZero(t *testing.T) {
-	// Pressure 1.0 → headroom = 0
-	lim := 10
-	c := provider.Candidate{ConcurrencyLimit: &lim}
-	// candidatePressure returns 0.5 default fallback (limiter not in scope here).
-	// In production it's read from Limiter.Stats(). We just assert non-negative.
-	got := calculateHeadroom(c)
-	if got < 0 || got > 1.0 {
-		t.Errorf("headroom = %f, expected [0,1]", got)
+	// With a saturated limiter, pressure=1.0 → headroom = 0.
+	limiter := credential.NewWithLimits(10, 10, 4, 2)
+	defer limiter.Stop()
+	sem := limiter.Credential(1, 1)
+	for i := 0; i < sem.Capacity(); i++ {
+		if !sem.TryAcquire() {
+			t.Fatalf("could not acquire token %d", i)
+		}
 	}
+	lim := 10
+	c := provider.Candidate{ProviderID: 1, CredentialID: 1, ConcurrencyLimit: &lim}
+	got := calculateHeadroom(c, &Router{Limiter: limiter})
+	if got > 1e-9 {
+		t.Errorf("headroom saturated = %f, want 0", got)
+	}
+}
+
+// TestCandidatePressure_UsesRealtimeLimiter verifies candidatePressure now reads
+// realtime in-flight concurrency from Router.Limiter instead of the hardcoded 0.5.
+func TestCandidatePressure_UsesRealtimeLimiter(t *testing.T) {
+	limiter := credential.NewWithLimits(10, 10, 4, 2)
+	defer limiter.Stop()
+	sem := limiter.Credential(5, 6) // capacity 4 (credentialLimit)
+	if !sem.TryAcquire() {
+		t.Fatal("expected token")
+	}
+	c := provider.Candidate{ProviderID: 5, CredentialID: 6}
+	r := &Router{Limiter: limiter}
+
+	got := candidatePressure(c, r)
+	// 1 of 4 used → 0.25
+	assert.InDelta(t, 0.25, got, 1e-9)
+}
+
+// TestCandidatePressure_NilRouterFallback verifies the neutral fallback when no
+// realtime limiter is available (preserves prior "unknown ⇒ medium" semantics).
+func TestCandidatePressure_NilRouterFallback(t *testing.T) {
+	c := provider.Candidate{}
+	assert.InDelta(t, 0.5, candidatePressure(c, nil), 1e-9)
 }
 
 func TestMathPow(t *testing.T) {
