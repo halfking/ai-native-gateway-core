@@ -27,6 +27,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"strings"
 	"time"
@@ -150,6 +151,10 @@ type PrepareResult struct {
 	// index mapping when a window-triggered rewrite (summary/trim) fired.
 	// Nil otherwise. Persisted into SessionState for audit tracing.
 	AlignmentMap []AlignmentInfo
+
+	// skipV1Cache remains internal: V2 owns its write side, so a final handler
+	// commit must not back-fill the legacy cache for a V2-sourced request.
+	skipV1Cache bool
 }
 
 // Lossiness classification values. Kept as string constants (not a typed
@@ -235,6 +240,7 @@ func (sc *SessionCompressor) Prepare(
 			// behaviour until those features are migrated to V2 metadata.
 			state = &SessionState{}
 			fromV2 = true
+			res.skipV1Cache = true
 			slog.InfoContext(ctx, "session_compressor: v2 cache loaded successfully",
 				"session", gwSessionID, "body_size", len(v2Body))
 		} else {
@@ -688,40 +694,75 @@ func (sc *SessionCompressor) updateCache(
 	if sc.deps.Cache == nil {
 		return
 	}
-	now := time.Now().Unix()
-	newState := &SessionState{
-		SchemaVersion:    schemaVersion,
-		LastOutboundHash: sha256Hex(outboundBody),
-		MsgCount:         res.MsgCount,
-		TokenEstimate:    res.TokenEst,
-		SummaryMarker:    res.SummaryMarker,
-		// O-1 (2026-08-09): the cache write happens strictly after the
-		// sanitize middleware (handler.go:1326), so the persisted body is
-		// always the sanitised/audited form. Stamping aud_at here makes
-		// "this cached state passed the audit pipeline" explicit for ops
-		// and audit queries — without adding a redundant Audited bool field.
-		AuditedAt: now,
-		// O-2 (2026-08-09): persist the current turn's alignment map
-		// (nil when no window-triggered rewrite happened).
-		AlignmentMap: res.AlignmentMap,
-	}
-	if prevState != nil {
-		newState.LastCompressedAt = prevState.LastCompressedAt
-		newState.RecentlyCompressedAt = prevState.RecentlyCompressedAt
-		// ── Phase 1 optimization: preserve tools cache fields ──
-		newState.ToolsHash = prevState.ToolsHash
-		newState.SystemPrompt = prevState.SystemPrompt
-	}
-	// Always track LastCompressedAt so Redis lcat reflects the last cache
-	// update time, even for pure delta-append (no LLM summary). This lets
-	// operators distinguish "session has been touched" from "never visited".
-	newState.LastCompressedAt = now
-	if didCompress {
-		newState.RecentlyCompressedAt = now
-	}
+	newState := buildSessionState(prevState, outboundBody, res, didCompress, time.Now().Unix())
 	if err := sc.deps.Cache.Set(ctx, tenantID, gwSessionID, newState, outboundBody); err != nil {
 		slog.Warn("session_compressor: cache set failed", "session", gwSessionID, "error", err)
 	}
+}
+
+// CommitFinal overwrites the compatible Prepare-time cache entry with the
+// exact client-protocol body entering provider dispatch after NeverWorse,
+// tools restoration, prefix stabilization, and cache-parameter injection.
+// It also refreshes res in place so handler telemetry describes that same body.
+func (sc *SessionCompressor) CommitFinal(
+	ctx context.Context,
+	tenantID, gwSessionID string,
+	finalBody []byte,
+	res *PrepareResult,
+) error {
+	if sc == nil || sc.deps.Cache == nil || gwSessionID == "" || len(finalBody) == 0 || res == nil {
+		return nil
+	}
+	if res.skipV1Cache {
+		slog.DebugContext(ctx, "session_compressor: skipping V1 final commit for V2 source",
+			"session", gwSessionID, "tenant", tenantID)
+		return nil
+	}
+	if err := ValidateSessionID(gwSessionID); err != nil {
+		return fmt.Errorf("commit final session cache failed: %w (session_id=%s)", err, gwSessionID)
+	}
+	prevState, _, err := sc.deps.Cache.GetOrLoad(ctx, tenantID, gwSessionID)
+	if err != nil {
+		return fmt.Errorf("load session cache before final commit failed: %w (session_id=%s)", err, gwSessionID)
+	}
+
+	res.OutboundBody = append(res.OutboundBody[:0], finalBody...)
+	res.MsgCount = countMessages(finalBody)
+	res.TokenEst = estimateBodyTokens(finalBody)
+	res.MsgHashes = marshalHashes(computeHashes(mustExtractMessages(finalBody)))
+	res.CompressedPrefixHash = ""
+	if _, report, err := prefix.Stabilize(finalBody, prefix.Options{TailTurns: 1}); err == nil && report != nil {
+		res.CompressedPrefixHash = report.PrefixHash
+	}
+	state := buildSessionState(prevState, finalBody, res, res.SummaryMarker != "", time.Now().Unix())
+	if err := sc.deps.Cache.Set(ctx, tenantID, gwSessionID, state, finalBody); err != nil {
+		return fmt.Errorf("commit final session cache failed: %w (session_id=%s)", err, gwSessionID)
+	}
+	return nil
+}
+
+func buildSessionState(prevState *SessionState, outboundBody []byte, res *PrepareResult, didCompress bool, now int64) *SessionState {
+	state := &SessionState{}
+	if prevState != nil {
+		*state = *prevState
+		state.AlignmentMap = append([]AlignmentInfo(nil), prevState.AlignmentMap...)
+	}
+	state.SchemaVersion = schemaVersion
+	state.LastOutboundHash = sha256Hex(outboundBody)
+	state.MsgCount = res.MsgCount
+	state.TokenEstimate = res.TokenEst
+	state.AuditedAt = now
+	state.LastCompressedAt = now
+	if res.SummaryMarker != "" {
+		state.SummaryMarker = res.SummaryMarker
+	}
+	if len(res.AlignmentMap) > 0 {
+		state.AlignmentMap = append(state.AlignmentMap[:0], res.AlignmentMap...)
+	}
+	if didCompress {
+		state.RecentlyCompressedAt = now
+	}
+	return state
 }
 
 func (sc *SessionCompressor) fallbackResult(clientBody []byte, res *PrepareResult) *PrepareResult {

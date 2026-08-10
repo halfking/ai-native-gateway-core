@@ -8,6 +8,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -42,10 +43,8 @@ type Router struct {
 	BanditFlusher interface {
 		MarkDirty(credentialID string)
 	}
-	// rrCounter is a round-robin counter for load balancing when multiple
-	// candidates have equal routing scores. Prevents all requests from
-	// always selecting the first candidate in a sorted list.
-	rrCounter atomic.Uint64
+	// weightCounters isolates deterministic weighted selection by candidate set.
+	weightCounters sync.Map
 
 	// 新增：状态管理器引用（向后兼容）
 	StateManager credentialstate.StateProvider
@@ -248,16 +247,16 @@ func (r *Router) PlanCandidatesWithContext(
 		queryCtx, queryCancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
 		defer queryCancel()
 		for _, c := range candidates {
-				reason := c.UnavailableReason()
-				// 2026-08-02 (spec §10 Step 5 C-1): authoritative 模式下
-				// StateManager 必须零调用。当前靠 URSMv2Backend no-op +
-				// PlanCandidates 早期过滤保证"不可达"，此处补显式 guard，
-				// 避免任何未来重构意外触发 StateManager 读路径。
-				if reason == "" && !stateBackend.IsAuthoritative() && r.StateManager != nil && r.StateManager.Enabled() {
-					if _, smReason := r.StateManager.IsAvailable(queryCtx, c.CredentialID, c.RawModel); smReason != "" {
-						reason = "state:" + smReason
-					}
+			reason := c.UnavailableReason()
+			// 2026-08-02 (spec §10 Step 5 C-1): authoritative 模式下
+			// StateManager 必须零调用。当前靠 URSMv2Backend no-op +
+			// PlanCandidates 早期过滤保证"不可达"，此处补显式 guard，
+			// 避免任何未来重构意外触发 StateManager 读路径。
+			if reason == "" && !stateBackend.IsAuthoritative() && r.StateManager != nil && r.StateManager.Enabled() {
+				if _, smReason := r.StateManager.IsAvailable(queryCtx, c.CredentialID, c.RawModel); smReason != "" {
+					reason = "state:" + smReason
 				}
+			}
 			if reason == "" {
 				reason = "unknown"
 			}
@@ -315,15 +314,12 @@ func (r *Router) PlanCandidatesWithContext(
 		ordered = append(ordered, r.planByTier(requestCtx, round2, policy, stratIn)...)
 	}
 
-	// Note (2026-07-07 audit): an earlier "session-aware" round-robin rotation
+	// Note (2026-07-07 audit): an earlier "session-aware" rotation
 	// of the full `ordered` slice lived here. It was added in cf65803f to spread
 	// new-session traffic when loadScore values tie, but it rotated ACROSS tiers
 	// — which violates tier priority semantics (a tier-3 candidate could be
-	// tried before a tier-1 candidate). Per-tier load balancing is already
-	// performed inside planByTier (rotateCandidates per tier bucket), so the
-	// cross-tier rotation here was both redundant and harmful. Removed to
-	// restore correct tier ordering; the per-tier rotation in planByTier still
-	// provides even distribution for candidates within the same tier.
+	// tried before a tier-1 candidate). Per-tier weighted selection is performed
+	// inside planByTier, so cross-tier rotation remains unnecessary and harmful.
 
 	if stickyCredentialID != nil {
 		ordered = prioritizeSticky(ordered, *stickyCredentialID)
@@ -576,21 +572,16 @@ func (r *Router) planByTier(ctx context.Context, candidates []provider.Candidate
 		}
 
 		// GW-03: shadow strategy diff（仅观测，不改顺序）。
-		// 在 round-robin rotation 之前对比 ShadowStrategy 首选 vs 实际首选。
+		// 在 weighted selection 之前对比 ShadowStrategy 首选 vs 实际首选。
 		if r.ShadowStrategy != nil {
 			r.scoreWithShadow(ctx, bucket, sorted, stratIn)
 		}
 
-		// Apply round-robin rotation when multiple candidates exist
-		// This prevents always selecting the first candidate when scores are equal
+		// Weight controls the first attempt. Remaining candidates retain the
+		// health-aware order produced above for failover.
 		if len(sorted) > 1 {
-			// Keep the first plan in score order. Subsequent plans rotate
-			// across the bucket so the initial routing decision remains
-			// deterministic while repeated requests are balanced.
-			counter := r.rrCounter.Add(1) - 1
-			offset := int(counter % uint64(len(sorted)))
-			slog.Info("ROUND_ROBIN_DEBUG", "counter", r.rrCounter.Load(), "offset", offset, "bucket_size", len(sorted))
-			sorted = rotateCandidates(sorted, offset)
+			counter := r.nextWeightCounter(sorted)
+			sorted = promoteWeightedCandidate(sorted, counter)
 		}
 
 		ordered = append(ordered, sorted...)
@@ -607,18 +598,87 @@ func (r *Router) planByTier(ctx context.Context, candidates []provider.Candidate
 	return ordered
 }
 
-// rotateCandidates circularly shifts the candidate slice by offset positions.
-// This ensures fair load distribution when multiple candidates have equal scores.
-func rotateCandidates(cands []provider.Candidate, offset int) []provider.Candidate {
-	if offset == 0 || len(cands) <= 1 {
+func (r *Router) nextWeightCounter(cands []provider.Candidate) uint64 {
+	identities := make([]string, 0, len(cands))
+	for _, c := range cands {
+		identities = append(identities, fmt.Sprintf("%d:%d:%s", c.ProviderID, c.CredentialID, c.RawModel))
+	}
+	sort.Strings(identities)
+
+	counter, _ := r.weightCounters.LoadOrStore(strings.Join(identities, "|"), &atomic.Uint64{})
+	return counter.(*atomic.Uint64).Add(1) - 1
+}
+
+func promoteWeightedCandidate(cands []provider.Candidate, counter uint64) []provider.Candidate {
+	if len(cands) <= 1 {
 		return cands
 	}
-	offset = offset % len(cands)
-	out := make([]provider.Candidate, len(cands))
-	for i := range cands {
-		out[i] = cands[(i+offset)%len(cands)]
+
+	stable := append([]provider.Candidate(nil), cands...)
+	sort.SliceStable(stable, func(i, j int) bool {
+		if stable[i].ProviderID != stable[j].ProviderID {
+			return stable[i].ProviderID < stable[j].ProviderID
+		}
+		if stable[i].CredentialID != stable[j].CredentialID {
+			return stable[i].CredentialID < stable[j].CredentialID
+		}
+		return stable[i].RawModel < stable[j].RawModel
+	})
+
+	totalWeight := 0
+	for _, c := range stable {
+		if c.Weight > 0 {
+			totalWeight += c.Weight
+		}
 	}
+	if totalWeight == 0 {
+		return cands
+	}
+
+	position := int(counter % uint64(totalWeight))
+	position = position * weightStride(totalWeight) % totalWeight
+	winner := stable[0]
+	for _, c := range stable {
+		if c.Weight <= 0 {
+			continue
+		}
+		if position < c.Weight {
+			winner = c
+			break
+		}
+		position -= c.Weight
+	}
+
+	winnerIndex := 0
+	for i, c := range cands {
+		if c.ProviderID == winner.ProviderID && c.CredentialID == winner.CredentialID && c.RawModel == winner.RawModel {
+			winnerIndex = i
+			break
+		}
+	}
+	if winnerIndex == 0 {
+		return cands
+	}
+
+	out := append([]provider.Candidate(nil), cands...)
+	copy(out[1:winnerIndex+1], out[:winnerIndex])
+	out[0] = winner
 	return out
+}
+
+func weightStride(totalWeight int) int {
+	stride := totalWeight*618/1000 + 1
+	for greatestCommonDivisor(stride, totalWeight) != 1 {
+		stride++
+	}
+	return stride
+}
+
+func greatestCommonDivisor(a, b int) int {
+	for b != 0 {
+		a, b = b, a%b
+	}
+	return a
 }
 
 func filterAvailable(cands []provider.Candidate) []provider.Candidate {
@@ -749,7 +809,7 @@ func p2cOrder(cands []provider.Candidate, r *Router) []provider.Candidate {
 			// (the first random sample). This biased load distribution toward
 			// whichever candidate happened to be drawn first, causing 83/17
 			// splits instead of 50/50. Fix: randomize on equal scores to
-			// match the round-robin rotation done at the planByTier level.
+			// avoid deterministic bias before planByTier applies configured weight.
 			if rand.Intn(2) == 0 {
 				chosen = b
 			}

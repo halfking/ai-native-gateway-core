@@ -45,7 +45,8 @@ func TestExpiredCmbRecoverySQLGuards(t *testing.T) {
 		"cmb.unavailable_recover_at <= now()",
 		// ── 只挑两个 transient 原因 ──
 		"unavailable_reason IN ('continuous_failure'",
-		"unavailable_reason LIKE 'probe_%'",
+		"unavailable_reason LIKE 'probe!_%' ESCAPE '!'",
+		"unavailable_reason LIKE 'auto!_%' ESCAPE '!'",
 		// ── 硬保护：manual/admin_protected 一律不动 ──
 		"COALESCE(cmb.unavailable_reason, '') NOT LIKE 'manual%'",
 		"COALESCE(cmb.admin_protected, FALSE) = FALSE",

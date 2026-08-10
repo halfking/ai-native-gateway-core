@@ -779,3 +779,57 @@ func TestStreamCapture_Reset(t *testing.T) {
 		t.Errorf("expected textContent after reset+observe, got %q", text)
 	}
 }
+
+// TestStreamCapture_Reset_PreservesFinalFinish verifies that Reset()
+// preserves the diagnostic terminal reason (finalFinish) across the
+// executor's mid-request credential failover. Without this guarantee,
+// attempt-1 first_byte_timeout followed by an attempt-2 success leaves
+// the deferred client-disconnect probe with an empty
+// upstream_finish_reason, so it falls back to r.Context().Err() and
+// mislabels the supplier-side timeout as a client cancel.
+//
+// 2026-08-10 fix: Reset() now keeps finalFinish (and only clears
+// chunk-counting / textContent / checksums).
+func TestStreamCapture_Reset_PreservesFinalFinish(t *testing.T) {
+	sc := NewStreamCapture()
+	sc.MarkInterruptedWithReason("first_byte_timeout")
+	if got := sc.SummaryAsMap()["upstream_finish_reason"]; got != "first_byte_timeout" {
+		t.Fatalf("preflight: upstream_finish_reason must be first_byte_timeout, got %v", got)
+	}
+
+	// Mid-request credential failover: executor calls Reset() so the
+	// next attempt starts with clean chunk counts / textContent /
+	// checksums. Without the fix the terminal reason is wiped.
+	sc.Reset()
+
+	m := sc.SummaryAsMap()
+	if got := m["upstream_finish_reason"]; got != "first_byte_timeout" {
+		t.Errorf("after Reset(): upstream_finish_reason must still be first_byte_timeout, got %v", got)
+	}
+	// finalFinish being preserved also means failure_detail_code is
+	// preserved (it is derived from finalFinish in SummaryAsMap).
+	if got, ok := m["failure_detail_code"]; !ok || got != "first_byte_timeout" {
+		t.Errorf("after Reset(): failure_detail_code must still be first_byte_timeout, got %v (ok=%v)", got, ok)
+	}
+	// And the unrelated counters ARE cleared so the next attempt's
+	// metrics are not merged with the failed attempt.
+	if m["stream_chunk_count"].(int) != 0 {
+		t.Errorf("after Reset(): stream_chunk_count must be 0, got %v", m["stream_chunk_count"])
+	}
+	if _, ok := m["stream_text_content"]; ok {
+		t.Errorf("after Reset(): stream_text_content must be cleared")
+	}
+
+	// A successful retry may overwrite finalFinish via ObservePayload
+	// (the upstream finish_reason path). That should still work
+	// normally because the underlying MarkInterruptedWithReason sets
+	// `interrupted=true, finalized=true`, and the next attempt's
+	// ObservePayload only writes finalFinish, not those two flags.
+	sc.ObservePayload(
+		`{"choices":[{"index":0,"delta":{"content":"retry success"}}]}`,
+		"stop", false)
+	m2 := sc.SummaryAsMap()
+	if got := m2["upstream_finish_reason"]; got != "stop" {
+		t.Errorf("after successful retry: upstream_finish_reason must be stop, got %v", got)
+	}
+}
