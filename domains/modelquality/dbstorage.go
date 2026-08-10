@@ -87,31 +87,46 @@ func (s *DBStorage) SaveScore(ctx context.Context, score *QualityScore) error {
 		status = "failed"
 	}
 
-	// 1. Append the run row.
+	// 1. Append the run row. Keep the complete benchmark summary so history
+	// remains auditable (question count/correct count/trigger/timestamp are not
+	// derivable from QualityScore alone after the test finishes).
+	benchmarkType := score.BenchmarkType
+	if benchmarkType == "" {
+		benchmarkType = BenchmarkTypeMMLULite
+	}
+	triggerKind := score.TriggerKind
+	if triggerKind == "" {
+		triggerKind = "scheduled"
+	}
+	testedAt := score.Timestamp
+	if testedAt.IsZero() {
+		testedAt = time.Now()
+	}
 	const insertRun = `
 		INSERT INTO model_iq_runs (
 			credential_id, provider_id, raw_model_name, canonical_id,
 			benchmark_type, total_questions, correct_count, accuracy,
 			stability, latency_p95, overall_score, grade,
 			probe_kind, trigger_kind, status, error, tested_at
-		) VALUES ($1,$2,$3,$4,'mmlu_lite',0,0,$5,$6,$7,$8,$9,$10,'scheduled',$11,$12,$13)`
+		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,NULL,$16)`
 	_, err = s.pool.Exec(ctx, insertRun,
 		score.CredentialID, providerID, rawName, nullableInt64(canonicalID),
-		score.Accuracy, nullableFloat(score.Stability), nullableFloat(score.Latency),
-		score.OverallScore, nullableStr(score.Grade),
-		stringOrDefault(string(score.ProbeKind), "direct"),
-		status, nil, // error text + tested_at default
+		benchmarkType, score.TotalQuestions, score.CorrectCount, score.Accuracy,
+		nullableFloat(score.Stability), nullableFloat(score.Latency), score.OverallScore,
+		nullableStr(score.Grade), stringOrDefault(string(score.ProbeKind), "direct"),
+		triggerKind, status, testedAt,
 	)
 	if err != nil {
 		return fmt.Errorf("insert model_iq_runs: %w", err)
 	}
 
-	// 2. Upsert node_iq_latest with recomputed aggregates.
-	if err := s.upsertNodeLatest(ctx, score.CredentialID, rawName, score); err != nil {
-		// non-fatal: the run row is already persisted; latest-cache failure
-		// should not invalidate the test result.
-		slog.Warn("model_iq: upsert node_iq_latest failed", "err", err,
-			"credential_id", score.CredentialID, "model", rawName)
+	// Failed runs remain in the audit table but must not replace the node's
+	// latest usable value or distort avg/min/max aggregates.
+	if status != "failed" {
+		if err := s.upsertNodeLatest(ctx, score.CredentialID, rawName, score); err != nil {
+			slog.Warn("model_iq: upsert node_iq_latest failed", "err", err,
+				"credential_id", score.CredentialID, "model", rawName)
+		}
 	}
 
 	if s.optionalBackup != nil {
@@ -259,12 +274,19 @@ func (s *DBStorage) ListAllScores(ctx context.Context, limit int) ([]*QualitySco
 		limit = 5000
 	}
 	rows, err := s.pool.Query(ctx, `
-		SELECT credential_id, raw_model_name, overall_score::float8,
-		       COALESCE(grade,''), accuracy::float8, COALESCE(stability::float8,0),
-		       COALESCE(latency_p95,0), COALESCE(probe_kind,'direct'), tested_at
-		  FROM model_iq_runs
-		 WHERE status IN ('success','partial')
-		 ORDER BY tested_at DESC LIMIT $1`, limit)
+		SELECT r.credential_id, r.provider_id, r.raw_model_name,
+		       COALESCE(mc.canonical_name, r.raw_model_name),
+		       r.overall_score::float8, COALESCE(r.grade,''), r.accuracy::float8,
+		       COALESCE(r.stability::float8,0), COALESCE(r.latency_p95,0),
+		       COALESCE(r.probe_kind,'direct'), COALESCE(r.benchmark_type,'mmlu_lite'),
+		       COALESCE(r.trigger_kind,'scheduled'), COALESCE(r.total_questions,0),
+		       COALESCE(r.correct_count,0), COALESCE(r.tested_at, r.created_at),
+		       COALESCE(p.display_name, p.code, '')
+		  FROM model_iq_runs r
+		  LEFT JOIN providers p ON p.id = r.provider_id
+		  LEFT JOIN models_canonical mc ON mc.id = r.canonical_id
+		 WHERE r.status IN ('success','partial')
+		 ORDER BY COALESCE(r.tested_at, r.created_at) DESC LIMIT $1`, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -272,13 +294,18 @@ func (s *DBStorage) ListAllScores(ctx context.Context, limit int) ([]*QualitySco
 	var out []*QualityScore
 	for rows.Next() {
 		var sc QualityScore
-		var probeKind, grade string
-		if err := rows.Scan(&sc.CredentialID, &sc.ModelName, &sc.OverallScore, &grade,
-			&sc.Accuracy, &sc.Stability, &sc.Latency, &probeKind, &sc.Timestamp); err != nil {
+		var probeKind, grade, provider, benchmarkType, triggerKind, canonicalName string
+		if err := rows.Scan(&sc.CredentialID, new(int64), &sc.ModelName, &canonicalName, &sc.OverallScore, &grade,
+			&sc.Accuracy, &sc.Stability, &sc.Latency, &probeKind, &benchmarkType,
+			&triggerKind, &sc.TotalQuestions, &sc.CorrectCount, &sc.Timestamp, &provider); err != nil {
 			return nil, err
 		}
+		sc.Provider = provider
+		sc.CanonicalModel = canonicalName
 		sc.Grade = grade
 		sc.ProbeKind = ProbeKind(probeKind)
+		sc.BenchmarkType = BenchmarkType(benchmarkType)
+		sc.TriggerKind = triggerKind
 		out = append(out, &sc)
 	}
 	if err := rows.Err(); err != nil {

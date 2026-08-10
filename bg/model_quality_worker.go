@@ -38,6 +38,13 @@ type ModelQualityWorker struct {
 	// 非空时 Start 用它（叠加 FileStorage 离线备份）替代纯文件存储。
 	dbStorage *modelquality.DBStorage
 
+	// 2026-08-11 audit: dedup + cooldown for suspicious-action triggers so a
+	// flapping node cannot fan out an unbounded number of IQ tests.
+	triggerMu       sync.Mutex
+	triggerInFlight map[string]struct{}
+	triggerLast     map[string]time.Time
+	triggerCooldown time.Duration
+
 	mu         sync.RWMutex
 	running    bool
 	stopping   bool
@@ -59,10 +66,13 @@ func NewModelQualityWorker(dataDir string, apiKey string, baseURL string, timeou
 	}
 
 	return &ModelQualityWorker{
-		dataDir: dataDir,
-		apiKey:  apiKey,
-		baseURL: baseURL,
-		timeout: timeout,
+		dataDir:         dataDir,
+		apiKey:          apiKey,
+		baseURL:         baseURL,
+		timeout:         timeout,
+		triggerInFlight: make(map[string]struct{}),
+		triggerLast:     make(map[string]time.Time),
+		triggerCooldown: 10 * time.Minute,
 	}
 }
 
@@ -93,6 +103,12 @@ func (w *ModelQualityWorker) SetDBStorage(dbStorage *modelquality.DBStorage) {
 // 写入 DB（若注入了 dbStorage）并返回评分。供 admin API「立即测试」按钮调用。
 // 产生真实 token 费用，调用方负责限频。worker 未启动 / 未注入 nodeSource 时返回错误。
 func (w *ModelQualityWorker) TestSingleNode(ctx context.Context, credentialID int, rawModel string) (*modelquality.QualityScore, error) {
+	return w.testSingleNode(ctx, credentialID, rawModel, "on_demand")
+}
+
+// testSingleNode is the shared implementation; triggerKind is persisted with
+// the run so history distinguishes scheduled / on_demand / anomaly triggers.
+func (w *ModelQualityWorker) testSingleNode(ctx context.Context, credentialID int, rawModel, triggerKind string) (*modelquality.QualityScore, error) {
 	w.mu.RLock()
 	src := w.nodeSource
 	invoker := w.nodeInvoker
@@ -112,7 +128,9 @@ func (w *ModelQualityWorker) TestSingleNode(ctx context.Context, credentialID in
 	if err != nil {
 		return nil, fmt.Errorf("execute node test: %w", err)
 	}
+	report.TriggerKind = triggerKind
 	score := (&modelquality.ScoreCalculator{}).CalculateScore(report)
+	score.TriggerKind = triggerKind
 	if dbStorage != nil {
 		if err := dbStorage.SaveScore(ctx, score); err != nil {
 			slog.Warn("TestSingleNode: save score to DB failed", "err", err)
@@ -126,6 +144,9 @@ func (w *ModelQualityWorker) TestSingleNode(ctx context.Context, credentialID in
 // consecutive-failure escalation, provider-profile score_drop alert): it spins
 // up a detached goroutine so the caller (the probe / alert loop) is never
 // blocked by the 50-question test. No-op if the worker has no node source.
+//
+// 2026-08-11 audit: deduplicates concurrent + cooldown-window repeats so a
+// flapping node cannot fan out an unbounded number of IQ tests (token cost).
 // Errors are logged, never returned.
 func (w *ModelQualityWorker) TriggerNodeIQTest(credentialID int, rawModel string) {
 	w.mu.RLock()
@@ -134,10 +155,30 @@ func (w *ModelQualityWorker) TriggerNodeIQTest(credentialID int, rawModel string
 	if src == nil {
 		return
 	}
+	key := fmt.Sprintf("%d:%s", credentialID, rawModel)
+	w.triggerMu.Lock()
+	now := time.Now()
+	if _, ok := w.triggerInFlight[key]; ok {
+		w.triggerMu.Unlock()
+		return
+	}
+	if last, ok := w.triggerLast[key]; ok && now.Sub(last) < w.triggerCooldown {
+		w.triggerMu.Unlock()
+		return
+	}
+	w.triggerInFlight[key] = struct{}{}
+	w.triggerLast[key] = now
+	w.triggerMu.Unlock()
+
 	go func() {
+		defer func() {
+			w.triggerMu.Lock()
+			delete(w.triggerInFlight, key)
+			w.triggerMu.Unlock()
+		}()
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 		defer cancel()
-		score, err := w.TestSingleNode(ctx, credentialID, rawModel)
+		score, err := w.testSingleNode(ctx, credentialID, rawModel, "anomaly")
 		if err != nil {
 			slog.Info("model_iq: anomaly-triggered node test failed (non-fatal)",
 				"credential_id", credentialID, "model", rawModel, "error", err)
