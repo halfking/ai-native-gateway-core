@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased] - 2026-08-09
 
+### Documentation
+
+- **修订0811任务方案审计 (2026-08-11)**: 审计72小时修订、URSM v2、OmniRoute融合和 ai-session-manager ownership 方案，撤销无压测证据的性能/覆盖率结论，纠正 Git 统计口径，并将下一阶段收敛为跨仓事件契约、请求关联链、URSM v2 shadow 门禁和可复现性能基线。详见 `docs/修订0811/05-方案审计修订说明.md`、`docs/修订0811/06-下一阶段实施计划.md` 和 `docs/changelogs/2026-08-11-revision-plan-audit.md`。
+
 ### Fixed
 
 - **StreamCapture.Reset 跨 retry 保留 finalFinish，修复 154 上 probe-client_cancel-cred21-… 误分类 (2026-08-10)**: `domains/hooks/audit/audit.go`、`domains/hooks/audit/audit_test.go` — `commit 0f55458a0` + `commit d63331789` 已部署在 `2.5.0-93bbd43a`，但 154 仍持续产出 `probe-client_cancel-cred<N>-…` 且 `upstream_finish_reason = ''`。根因：executor.go:2375 在 retry 之间调 `params.Capture.Reset()`，把 `finalFinish` 也清空；当「首字节超时 → 重试成功 → 客户端已取消」时，defer 中的 `buildClientDisconnectProbeEntry` 读不到 `upstream_finish_reason`，落回 `errors.Is(ctxErr, context.Canceled)` → 误归类为 `client_cancel`，触发供应商首字超时未触发凭据降级。修复：去掉 `Reset()` 中 `sc.finalFinish = ""`，仅保留 `// KEEP:` 注释以备审计追溯；同步把 `first_byte_timeout`/`stream_chunk_timeout`/`chunk_timeout` 加入 `isInterruptionCode` 白名单，让 `failure_detail_code` 与 `upstream_finish_reason` 保持一致。新增 `TestStreamCapture_Reset_PreservesFinalFinish` 锁定跨 retry 契约。`go test ./domains/hooks/audit/... ./domains/streaming/...` + `go build ./...` 全过。详见 `docs/changelogs/2026-08-10-stream-capture-reset-preserves-finalfinish.md`。
