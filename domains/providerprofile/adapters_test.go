@@ -65,7 +65,7 @@ func TestConcurrencyCapacityDefaults(t *testing.T) {
 		{"only auto configured", 0, 8, 8, false},
 		{"both, auto < hard", 20, 8, 8, true},
 		{"both, auto == hard", 20, 20, 20, false},
-		{"both, auto > hard (manual cap hit)", 20, 30, 30, false},
+		{"both, auto > hard (manual cap applies)", 20, 30, 20, false},
 		{"neither configured", 0, 0, 0, false},
 	}
 	for _, tc := range cases {
@@ -74,10 +74,11 @@ func TestConcurrencyCapacityDefaults(t *testing.T) {
 				ConcurrencyLimit:     tc.hard,
 				ConcurrencyLimitAuto: tc.auto,
 			}
-			switch {
-			case cap.ConcurrencyLimitAuto > 0:
-				cap.EffLimit = cap.ConcurrencyLimitAuto
-			case cap.ConcurrencyLimit > 0:
+			cap.EffLimit = cap.ConcurrencyLimitAuto
+			if cap.EffLimit <= 0 {
+				cap.EffLimit = cap.ConcurrencyLimit
+			}
+			if cap.ConcurrencyLimit > 0 && cap.EffLimit > cap.ConcurrencyLimit {
 				cap.EffLimit = cap.ConcurrencyLimit
 			}
 			if cap.ConcurrencyLimit > 0 && cap.ConcurrencyLimitAuto > 0 && cap.ConcurrencyLimitAuto < cap.ConcurrencyLimit {
