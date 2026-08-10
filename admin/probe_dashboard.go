@@ -906,9 +906,17 @@ func queryProbeNodeTasks(ctx context.Context, db pgxQueryer, limit int) ([]NodeP
 			ORDER BY npr.id DESC
 			LIMIT 1
 		) latest ON TRUE
+		-- WHERE 说明：node_probe_state.next_retry_at 是 NOT NULL 列（默认
+		-- now()），所以不能用 IS NOT NULL 否则返回全表。这里只展示「还有
+		-- 探测任务要做」的行：(a) 正在被 worker 租用执行；(b) 已暂停（达
+		-- 到 7 步退避上限，运维需可见）；(c) 待执行/即将到期 ——
+		-- NodeProbeWorker 成功探测后会把 next_retry_at 推到 now()+1h，用
+		-- <= now()+1h 窗口排除那些远期复检（1h+）的健康节点，避免泳道
+		-- 被无关行塞满。1h 与 runOne 成功分支的 next_retry_at 设置对齐
+		-- （bg/node_probe.go: now() + interval 1 hour）。
 		WHERE nps.in_flight_until > now()
-		   OR (NOT nps.paused AND nps.next_retry_at IS NOT NULL)
 		   OR nps.paused
+		   OR (NOT nps.paused AND nps.next_retry_at <= now() + interval '1 hour')
 		ORDER BY
 			CASE
 				WHEN nps.in_flight_until IS NOT NULL AND nps.in_flight_until > now() THEN 0
