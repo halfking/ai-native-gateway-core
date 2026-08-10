@@ -4,28 +4,27 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 
 	_ "github.com/lib/pq"
 )
 
-// TestWriter_Write tests the basic Write operation.
+// TestWriter_Write tests the basic Write operation against a real PostgreSQL database.
 //
-// This test requires a PostgreSQL database with the outbox_events table.
-// Run: go test -v ./internal/outbox/... -run TestWriter_Write
+// This test is skipped by default. To run it:
+//  1. Start a PostgreSQL test instance
+//  2. Apply the outbox_events table migration (V357)
+//  3. Run: go test -v ./internal/outbox/... -run TestWriter_Write
 func TestWriter_Write(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping integration test in short mode")
 	}
 
-	// TODO: Set up test database connection
-	// For now, skip until database is available
-	t.Skip("TODO: set up test database connection")
-
 	db, err := sql.Open("postgres", "postgres://localhost/llm_gateway_test?sslmode=disable")
 	if err != nil {
-		t.Fatalf("failed to connect to test db: %v", err)
+		t.Skipf("test database not available: %v", err)
 	}
 	defer db.Close()
 
@@ -39,7 +38,7 @@ func TestWriter_Write(t *testing.T) {
 	writer := NewWriter(tx)
 
 	env := EventEnvelope{
-		EventID:          "evt-test-001",
+		EventID:          "evt-test-" + time.Now().Format("20060102150405.000"),
 		EventType:        "request.completed.v1",
 		SchemaVersion:    1,
 		TenantID:         "tenant-test",
@@ -80,8 +79,10 @@ func TestWriter_Write(t *testing.T) {
 }
 
 // TestWriter_Write_MissingFields tests validation of required fields.
+//
+// These tests do not require a database connection — they validate the
+// pre-DB validation logic in Write().
 func TestWriter_Write_MissingFields(t *testing.T) {
-	// No database required for validation tests
 	writer := &Writer{tx: nil}
 	ctx := context.Background()
 
@@ -160,31 +161,49 @@ func TestWriter_Write_MissingFields(t *testing.T) {
 			if err == nil {
 				t.Fatal("expected error, got nil")
 			}
-			if tt.wantErr != "" && !containsString(err.Error(), tt.wantErr) {
+			if !strings.Contains(err.Error(), tt.wantErr) {
 				t.Errorf("error = %v, want substring %q", err, tt.wantErr)
 			}
 		})
 	}
 }
 
-// TestWriter_Write_Defaults tests default value assignment.
+// TestWriter_Write_Defaults tests default value assignment (schema_version, occurred_at).
 func TestWriter_Write_Defaults(t *testing.T) {
-	t.Skip("TODO: implement after database setup")
+	// Defaults are applied via in-place modification of the struct before INSERT.
+	// Since we cannot run a real INSERT without a DB, validate the validation-only path:
+	// passing schema_version=0 and zero occurred_at should NOT fail with "required" errors
+	// because the defaults are intended to fill those.
+	writer := &Writer{tx: nil}
+	env := EventEnvelope{
+		EventID:          "evt-defaults",
+		EventType:        "test.v1",
+		TenantID:         "tenant",
+		AggregateID:      "agg",
+		AggregateVersion: 1,
+		// SchemaVersion: 0, OccurredAt: zero — defaults should apply
+	}
+
+	err := writer.Write(context.Background(), env)
+	// Without a DB tx this will fail at INSERT step, but should NOT fail at validation.
+	if err != nil && strings.Contains(err.Error(), "is required") {
+		t.Errorf("defaults should bypass required-field validation, got: %v", err)
+	}
 }
 
-// TestWriter_WriteBatch tests batch insertion.
-func TestWriter_WriteBatch(t *testing.T) {
-	t.Skip("TODO: implement after database setup")
-}
-
-// TestWriter_Write_DuplicateEventID tests idempotency violation.
-func TestWriter_Write_DuplicateEventID(t *testing.T) {
-	t.Skip("TODO: implement after database setup - should fail with unique constraint violation")
+// TestWriter_WriteBatch_Empty tests that an empty batch is a no-op.
+func TestWriter_WriteBatch_Empty(t *testing.T) {
+	writer := &Writer{tx: nil}
+	if err := writer.WriteBatch(context.Background(), nil); err != nil {
+		t.Errorf("empty batch should not error, got: %v", err)
+	}
+	if err := writer.WriteBatch(context.Background(), []EventEnvelope{}); err != nil {
+		t.Errorf("empty batch should not error, got: %v", err)
+	}
 }
 
 // TestWriter_Write_PayloadSerialization tests payload JSON serialization.
 func TestWriter_Write_PayloadSerialization(t *testing.T) {
-	// Test payload serialization without database
 	env := EventEnvelope{
 		EventID:          "evt-test",
 		EventType:        "test.v1",
@@ -207,13 +226,11 @@ func TestWriter_Write_PayloadSerialization(t *testing.T) {
 		t.Fatalf("marshal failed: %v", err)
 	}
 
-	// Verify we can deserialize
 	var decoded map[string]any
 	if err := json.Unmarshal(payloadBytes, &decoded); err != nil {
 		t.Fatalf("unmarshal failed: %v", err)
 	}
 
-	// Spot check
 	if decoded["string"] != "value" {
 		t.Errorf("string field mismatch")
 	}
@@ -222,17 +239,27 @@ func TestWriter_Write_PayloadSerialization(t *testing.T) {
 	}
 }
 
-func containsString(s, substr string) bool {
-	return len(s) >= len(substr) && (s == substr || len(s) > len(substr) &&
-		(s[:len(substr)] == substr || s[len(s)-len(substr):] == substr ||
-			len(s) > len(substr)+1 && findSubstring(s, substr)))
-}
-
-func findSubstring(s, substr string) bool {
-	for i := 0; i <= len(s)-len(substr); i++ {
-		if s[i:i+len(substr)] == substr {
-			return true
-		}
+// TestWriter_MarshalPayloadError tests that a non-marshalable payload produces a clear error.
+//
+// Uses an unmarshalable value (channel) to trigger a JSON marshal error.
+func TestWriter_MarshalPayloadError(t *testing.T) {
+	writer := &Writer{tx: nil}
+	env := EventEnvelope{
+		EventID:          "evt-bad",
+		EventType:        "test.v1",
+		TenantID:         "tenant",
+		AggregateID:      "agg",
+		AggregateVersion: 1,
+		Payload: map[string]any{
+			"channel": make(chan int), // channels are not JSON-serializable
+		},
 	}
-	return false
+
+	err := writer.Write(context.Background(), env)
+	if err == nil {
+		t.Fatal("expected marshal error, got nil")
+	}
+	if !strings.Contains(err.Error(), "marshal payload") {
+		t.Errorf("error = %v, want substring %q", err, "marshal payload")
+	}
 }

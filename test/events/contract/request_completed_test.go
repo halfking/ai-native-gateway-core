@@ -1,13 +1,16 @@
 // Package contract 定义 Gateway → ASM 事件契约的测试。
 //
 // 这些测试验证 Gateway producer 产生的事件是否符合 ASM consumer 的期望。
-// 当前测试状态：预期全部失败（因为 outbox 和事件发布逻辑尚未实现）。
+//
+// 状态（2026-08-11）：
+//   - TestCurrentGatewayPublisher: PASS (Phase 2 Step 3 完成)
+//   - 其他 6 个测试: SKIP (等待 Phase 2.5 OutboxDispatcher + ASM mock)
 //
 // 依据：
 //   - docs/omni-ref2/02-CROSS-REPO-EVENT-CONTRACT.md
 //   - docs/omni-ref2/03-GATEWAY-EVENT-FIELD-MAPPING.md
 //
-// 实施阶段：WP2 - 跨仓事件契约对账
+// 实施阶段：WP2 + Phase 2 Step 1-3 完成；Phase 2.5 待续
 package contract
 
 import (
@@ -102,7 +105,7 @@ func computeHMAC(body []byte, secret string) string {
 // 预期结果（当前）：❌ FAIL - Gateway 尚未实现 outbox 和事件发布
 // 预期结果（实现后）：✅ PASS - ASM 接收并创建 projection
 func TestRequestCompletedV1_ValidEvent(t *testing.T) {
-	t.Skip("SKIP: Gateway outbox not implemented yet (WP2 baseline)")
+	t.Skip("SKIP: end-to-end delivery test awaiting Phase 2.5 OutboxDispatcher + ASM mock")
 
 	env := loadFixture(t, "request_completed_v1_valid.json")
 
@@ -166,7 +169,7 @@ func TestRequestCompletedV1_ValidEvent(t *testing.T) {
 //
 // 预期结果（实现后）：ASM 返回 "duplicate"，不创建第二条 projection。
 func TestRequestCompletedV1_Duplicate(t *testing.T) {
-	t.Skip("SKIP: Gateway outbox not implemented yet (WP2 baseline)")
+	t.Skip("SKIP: end-to-end delivery test awaiting Phase 2.5 OutboxDispatcher + ASM mock")
 
 	env := loadFixture(t, "request_completed_v1_duplicate.json")
 
@@ -183,7 +186,7 @@ func TestRequestCompletedV1_Duplicate(t *testing.T) {
 //
 // 预期结果（实现后）：ASM 返回 "stale"，拒绝事件。
 func TestRequestCompletedV1_Stale(t *testing.T) {
-	t.Skip("SKIP: Gateway outbox not implemented yet (WP2 baseline)")
+	t.Skip("SKIP: end-to-end delivery test awaiting Phase 2.5 OutboxDispatcher + ASM mock")
 
 	env := loadFixture(t, "request_completed_v1_stale.json")
 
@@ -204,7 +207,7 @@ func TestRequestCompletedV1_Stale(t *testing.T) {
 //
 // 预期结果（实现后）：ASM 返回 401，拒绝事件。
 func TestRequestCompletedV1_Tamper(t *testing.T) {
-	t.Skip("SKIP: Gateway outbox not implemented yet (WP2 baseline)")
+	t.Skip("SKIP: end-to-end delivery test awaiting Phase 2.5 OutboxDispatcher + ASM mock")
 
 	env := loadFixture(t, "request_completed_v1_tamper.json")
 
@@ -239,7 +242,7 @@ func TestRequestCompletedV1_Tamper(t *testing.T) {
 //
 // 预期结果（实现后）：ASM 返回 403，拒绝事件。
 func TestRequestCompletedV1_TenantMismatch(t *testing.T) {
-	t.Skip("SKIP: Gateway outbox not implemented yet (WP2 baseline)")
+	t.Skip("SKIP: end-to-end delivery test awaiting Phase 2.5 OutboxDispatcher + ASM mock")
 
 	env := loadFixture(t, "request_completed_v1_tenant_mismatch.json")
 
@@ -265,7 +268,7 @@ func TestRequestCompletedV1_TenantMismatch(t *testing.T) {
 //   - api_key (敏感信息)
 //   - routing/compression (未在 v1 白名单)
 func TestRequestCompletedV1_ForbiddenFields(t *testing.T) {
-	t.Skip("SKIP: Gateway outbox not implemented yet (WP2 baseline)")
+	t.Skip("SKIP: end-to-end delivery test awaiting Phase 2.5 OutboxDispatcher + ASM mock")
 
 	env := loadFixture(t, "request_completed_v1_forbidden_fields.json")
 

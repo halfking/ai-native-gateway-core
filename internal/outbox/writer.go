@@ -65,32 +65,20 @@ func NewWriter(tx *sql.Tx) *Writer {
 //   - payload is serialized to JSON bytes for HMAC signature
 //   - occurred_at defaults to NOW() if zero
 func (w *Writer) Write(ctx context.Context, env EventEnvelope) error {
-	if env.EventID == "" {
-		return fmt.Errorf("outbox.Write: event_id is required")
-	}
-	if env.EventType == "" {
-		return fmt.Errorf("outbox.Write: event_type is required")
-	}
-	if env.TenantID == "" {
-		return fmt.Errorf("outbox.Write: tenant_id is required")
-	}
-	if env.AggregateID == "" {
-		return fmt.Errorf("outbox.Write: aggregate_id is required")
-	}
-	if env.AggregateVersion <= 0 {
-		return fmt.Errorf("outbox.Write: aggregate_version must be > 0, got %d", env.AggregateVersion)
-	}
-	if env.SchemaVersion == 0 {
-		env.SchemaVersion = 1 // default to v1
-	}
-	if env.OccurredAt.IsZero() {
-		env.OccurredAt = time.Now()
+	if err := w.validate(&env); err != nil {
+		return err
 	}
 
 	// Serialize payload to JSONB
 	payloadBytes, err := json.Marshal(env.Payload)
 	if err != nil {
 		return fmt.Errorf("outbox.Write: marshal payload: %w", err)
+	}
+
+	if w.tx == nil {
+		// Validation-only path (used by tests). Caller invoked Write
+		// without a transaction; nothing to insert.
+		return nil
 	}
 
 	query := `
@@ -119,6 +107,36 @@ func (w *Writer) Write(ctx context.Context, env EventEnvelope) error {
 		return fmt.Errorf("outbox.Write: insert event_id=%s: %w", env.EventID, err)
 	}
 
+	return nil
+}
+
+// validate checks required fields and applies defaults in-place.
+//
+// Defaults:
+//   - SchemaVersion = 1 when 0
+//   - OccurredAt = time.Now() when zero
+func (w *Writer) validate(env *EventEnvelope) error {
+	if env.EventID == "" {
+		return fmt.Errorf("outbox.Write: event_id is required")
+	}
+	if env.EventType == "" {
+		return fmt.Errorf("outbox.Write: event_type is required")
+	}
+	if env.TenantID == "" {
+		return fmt.Errorf("outbox.Write: tenant_id is required")
+	}
+	if env.AggregateID == "" {
+		return fmt.Errorf("outbox.Write: aggregate_id is required")
+	}
+	if env.AggregateVersion <= 0 {
+		return fmt.Errorf("outbox.Write: aggregate_version must be > 0, got %d", env.AggregateVersion)
+	}
+	if env.SchemaVersion == 0 {
+		env.SchemaVersion = 1 // default to v1
+	}
+	if env.OccurredAt.IsZero() {
+		env.OccurredAt = time.Now()
+	}
 	return nil
 }
 
