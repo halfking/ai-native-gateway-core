@@ -151,7 +151,7 @@ type RateLimitMetrics struct {
 // ConcurrencyCapacity 供应商并发承载能力
 //
 // 来自 credentials.concurrency_limit / concurrency_limit_auto：
-//   - EffLimit  = COALESCE(concurrency_limit_auto, concurrency_limit, 0)
+//   - EffLimit  = auto 优先，但受 concurrency_limit 人工硬上限约束
 //   - IsCapped  = (concurrency_limit_auto < concurrency_limit)
 //     表示上游曾因 503 把自动上限压低过，是"被限流到降级"的关键证据。
 //
@@ -159,7 +159,7 @@ type RateLimitMetrics struct {
 type ConcurrencyCapacity struct {
 	ConcurrencyLimit     int  // 用户配置的硬上限（credentials.concurrency_limit）
 	ConcurrencyLimitAuto int  // 自动调优后的当前上限（credentials.concurrency_limit_auto）
-	EffLimit             int  // 实际生效上限（auto 优先）
+	EffLimit             int  // 实际生效上限（auto 优先，且不超过 hard）
 	IsCapped             bool // true=auto < hard，被自动降级过
 }
 
