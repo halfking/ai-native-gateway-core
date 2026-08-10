@@ -88,6 +88,9 @@ func isInterruptionCode(s string) bool {
 	// Stream-level interruption codes (relay/handler.go::classifyStreamInterruption
 	// + relay/stream.go).
 	case "eof_without_done",
+		"first_byte_timeout",
+		"stream_chunk_timeout",
+		"chunk_timeout",
 		"stream_timeout",
 		"client_cancel",
 		"client_disconnected",
@@ -309,6 +312,16 @@ func (sc *StreamCapture) MarkInterrupted() {
 // credential mid-request — without Reset, the new attempt's textContent
 // would be appended to the previous attempt's textContent and the
 // interrupted/done flags would carry over (logical inconsistency).
+//
+// 2026-08-10: PRESERVE finalFinish across resets. The terminal reason
+// ("first_byte_timeout" / "stream_timeout" / "chunk_timeout") is the
+// single most important diagnostic signal when the deferred
+// client-disconnect probe classifies a request — without it, a
+// first-byte timeout on attempt 1 followed by a successful retry on
+// attempt 2 looks like a plain client_cancel (because r.Context()
+// was canceled during the wait for first byte). Other counters
+// (chunkCount, checksums, textContent) are still cleared so the new
+// attempt's metrics are not merged with the failed attempt.
 func (sc *StreamCapture) Reset() {
 	sc.mu.Lock()
 	defer sc.mu.Unlock()
@@ -321,7 +334,9 @@ func (sc *StreamCapture) Reset() {
 	sc.interrupted = false
 	sc.finalized = false
 	sc.checksum = [32]byte{}
-	sc.finalFinish = ""
+	// KEEP: finalFinish — diagnostic terminal reason that must survive
+	// executor retries so buildClientDisconnectProbeEntry can still
+	// see "first_byte_timeout" on the cancel path (see 2026-08-10 fix).
 	sc.preview = sc.preview[:0]
 	sc.textContent = sc.textContent[:0]
 	sc.promptTokens = nil
