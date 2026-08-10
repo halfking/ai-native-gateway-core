@@ -19,7 +19,7 @@ CREATE TABLE public.routing_policy (
     circuit_open_seconds integer DEFAULT 300,
     circuit_failure_threshold smallint DEFAULT 5,
     circuit_max_open_seconds integer DEFAULT 1800,
-    featured_models text[] DEFAULT ARRAY['gpt-4o'::text, 'gpt-4o-mini'::text, 'claude-3-5-sonnet-20241022'::text, 'claude-3-7-sonnet-20250219'::text, 'gemini-2.0-flash'::text, 'gemini-1.5-pro'::text, 'deepseek-chat'::text, 'qwen-plus'::text],
+    featured_models text[] DEFAULT ARRAY['claude-sonnet-5'::text, 'claude-fable-5'::text, 'claude-opus-4-8'::text, 'claude-sonnet-4-6'::text, 'gpt-5.4'::text, 'o5-preview'::text, 'gemini-2.0-flash-exp'::text, 'qwen3-235b'::text, 'minimax-m3'::text, 'deepseek-chat'::text, 'deepseek-coder'::text, 'glm-4v-plus'::text, 'mimo-v2.5-pro'::text, 'moonshot-v1-128k'::text, 'codestral'::text],
     transient_fail_threshold integer DEFAULT 2 NOT NULL,
     stats_window_minutes integer DEFAULT 10,
     stats_update_interval_seconds integer DEFAULT 60,
