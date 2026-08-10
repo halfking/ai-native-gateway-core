@@ -64,6 +64,14 @@ var (
 		Help: "Total QuotaTracker.CorrectFromHeaders calls (triggered by upstream 429).",
 	})
 
+	// OmniFreeQuotaClassifyTotal 统计 429 body 关键词甄别结果分布.
+	// label "classification" ∈ rate_limit / quota_periodic / quota_permanent.
+	// 低基数 label, 遵循本文件既有的 label 纪律.
+	OmniFreeQuotaClassifyTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "omnifree_quota_classify_total",
+		Help: "429 body classification outcome (rate_limit / quota_periodic / quota_permanent).",
+	}, []string{"classification"})
+
 	// OmniFreeQuotaRecordErrorsTotal 统计 Record 失败.
 	OmniFreeQuotaRecordErrorsTotal = promauto.NewCounter(prometheus.CounterOpts{
 		Name: "omnifree_quota_record_errors_total",

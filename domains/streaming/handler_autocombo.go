@@ -13,8 +13,10 @@ import (
 
 	"github.com/kaixuan/llm-gateway-go/domains/freeresource"
 	"github.com/kaixuan/llm-gateway-go/domains/streaming/executors"
+	"github.com/kaixuan/llm-gateway-go/errorsx"
 	"github.com/kaixuan/llm-gateway-go/metrics"
 	"github.com/kaixuan/llm-gateway-go/provider"
+	upstreampkg "github.com/kaixuan/llm-gateway-go/upstream"
 )
 
 // autoRouteMagicExact (handler.go) is the exact "auto" model name that triggers
@@ -73,6 +75,7 @@ type correctedCall struct {
 	ProviderCode string
 	ModelID      string
 	Headers      map[string]string
+	Body         []byte
 	TenantID     string
 }
 
@@ -99,6 +102,7 @@ func (f *fakeQuotaRecorder) CorrectFromHeaders(_ context.Context, req freeresour
 		ProviderCode: req.ProviderCode,
 		ModelID:      req.ModelID,
 		Headers:      req.Headers,
+		Body:         req.Body,
 		TenantID:     req.TenantID,
 	})
 	return nil
@@ -346,6 +350,7 @@ func (h *ChatHandler) recordOmniFreeQuota(
 		StatusCode   int
 		HasResponse  bool
 		Header       http.Header
+		Body         []byte // 429 响应体, 用于 body 关键词甄别
 	}{
 		CredentialID: result.Candidate.CredentialID,
 		CatalogCode:  result.Candidate.CatalogCode,
@@ -355,6 +360,14 @@ func (h *ChatHandler) recordOmniFreeQuota(
 	if captured.HasResponse {
 		captured.StatusCode = result.Response.StatusCode
 		captured.Header = result.Response.Header.Clone()
+	}
+	// 从 execErr 提取上游 429 响应体 (errorsx/executor 已捕获, 4KB cap).
+	// 与 handler.go:3035 gwtrace.UpstreamFailureWithBody 同一模式.
+	if execErr != nil {
+		var upstreamErr *upstreampkg.Error
+		if errors.As(execErr, &upstreamErr) && upstreamErr.Body != nil {
+			captured.Body = upstreamErr.Body
+		}
 	}
 
 	// 构造 Record 任务并投递到 bounded queue. 5s context timeout 防止
@@ -388,6 +401,9 @@ func (h *ChatHandler) recordOmniFreeQuota(
 	// 429 校准: 仅当上游响应可直接访问 (非流式或流式 start 阶段).
 	if captured.HasResponse && captured.StatusCode == http.StatusTooManyRequests {
 		metrics.OmniFreeQuotaCorrectTotal.Inc()
+		// body 关键词甄别指标 (rate_limit / quota_periodic / quota_permanent).
+		classification := errorsx.ClassifyQuota429Body(captured.Body)
+		metrics.OmniFreeQuotaClassifyTotal.WithLabelValues(string(classification)).Inc()
 		headers := flattenHeaders(captured.Header)
 		correctCtx, cancelCorrect := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 
@@ -401,6 +417,7 @@ func (h *ChatHandler) recordOmniFreeQuota(
 				ProviderCode: captured.CatalogCode,
 				ModelID:      captured.StdName,
 				Headers:      headers,
+				Body:         captured.Body,
 				TenantID:     tenantID,
 			},
 		}
