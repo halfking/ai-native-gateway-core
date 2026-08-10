@@ -333,12 +333,14 @@ func (p *GatewayScaleProvider) GetModelScale(ctx context.Context, credentialID i
 	if concLimitAuto != nil {
 		capacity.ConcurrencyLimitAuto = *concLimitAuto
 	}
-	// EffLimit：auto 优先（auto 反映系统动态调整后的实际承载）
-	effLimit := 0
-	switch {
-	case capacity.ConcurrencyLimitAuto > 0:
-		effLimit = capacity.ConcurrencyLimitAuto
-	case capacity.ConcurrencyLimit > 0:
+	// EffLimit：auto 优先，但绝不能突破人工配置的硬上限。
+	// auto 反映系统动态调整后的实际承载；人工上限存在时对其做 cap，
+	// 防止历史脏值或手工写入的过大 auto 值绕过 credentials 的硬约束。
+	effLimit := capacity.ConcurrencyLimitAuto
+	if effLimit <= 0 {
+		effLimit = capacity.ConcurrencyLimit
+	}
+	if capacity.ConcurrencyLimit > 0 && effLimit > capacity.ConcurrencyLimit {
 		effLimit = capacity.ConcurrencyLimit
 	}
 	capacity.EffLimit = effLimit
