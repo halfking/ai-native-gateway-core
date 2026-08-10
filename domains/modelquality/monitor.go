@@ -26,13 +26,19 @@ type MonitorConfig struct {
 	// 告警配置
 	AlertOnQualityDrop   bool    `json:"alert_on_quality_drop"`  // 质量下降时告警
 	QualityDropThreshold float64 `json:"quality_drop_threshold"` // 质量下降阈值(如5表示下降5%)
+
+	// 2026-08-10: 按凭据节点测试（直连节点，绕过网关）。默认 false，向后兼容。
+	EnablePerNodeTesting bool `json:"enable_per_node_testing,omitempty"`
 }
 
 // ModelTarget 监控目标模型
 type ModelTarget struct {
-	Provider  string `json:"provider"`   // 供应商
-	ModelName string `json:"model_name"` // 模型名称
-	Alias     string `json:"alias"`      // 别名(用于显示)
+	Provider       string `json:"provider"`                  // 供应商
+	ModelName      string `json:"model_name"`                // 模型名称
+	Alias          string `json:"alias"`                     // 别名(用于显示)
+	CredentialID   int    `json:"credential_id,omitempty"`   // 2026-08-10: 直连特定凭据节点；0=经网关
+	CanonicalModel string `json:"canonical_model,omitempty"` // 目录模型名（聚合用）
+	Label          string `json:"label,omitempty"`           // 凭据标签（展示用）
 }
 
 // QualityMonitor 质量监控器
@@ -56,11 +62,15 @@ type MonitorStorage interface {
 	// SaveScore 保存质量评分
 	SaveScore(ctx context.Context, score *QualityScore) error
 
-	// GetLatestScore 获取最新评分
-	GetLatestScore(ctx context.Context, provider string, modelName string) (*QualityScore, error)
+	// GetLatestScore 获取最新评分（credentialID=0 表示经网关聚合）
+	GetLatestScore(ctx context.Context, provider string, modelName string, credentialID int) (*QualityScore, error)
 
-	// GetScoreHistory 获取历史评分
-	GetScoreHistory(ctx context.Context, provider string, modelName string, limit int) ([]*QualityScore, error)
+	// GetScoreHistory 获取历史评分（credentialID=0 表示经网关聚合）
+	GetScoreHistory(ctx context.Context, provider string, modelName string, credentialID int, limit int) ([]*QualityScore, error)
+
+	// ListAllScores 列出所有已落盘评分（聚合用：模型目录平均智商 / 单节点智商）。
+	// limit<=0 表示不限制；按时间倒序。
+	ListAllScores(ctx context.Context, limit int) ([]*QualityScore, error)
 }
 
 // Alerter 告警接口
@@ -258,7 +268,7 @@ func (m *QualityMonitor) testModel(ctx context.Context, target ModelTarget, suit
 	}
 
 	// 更新缓存
-	key := fmt.Sprintf("%s:%s", target.Provider, target.ModelName)
+	key := nodeKey(target.Provider, target.ModelName, target.CredentialID)
 	m.mu.Lock()
 	m.lastScores[key] = score
 	m.mu.Unlock()
@@ -268,7 +278,7 @@ func (m *QualityMonitor) testModel(ctx context.Context, target ModelTarget, suit
 
 // checkQualityDrop 检查质量下降
 func (m *QualityMonitor) checkQualityDrop(ctx context.Context, target ModelTarget, newScore *QualityScore) {
-	key := fmt.Sprintf("%s:%s", target.Provider, target.ModelName)
+	key := nodeKey(target.Provider, target.ModelName, target.CredentialID)
 
 	m.mu.RLock()
 	lastScore, exists := m.lastScores[key]
@@ -305,12 +315,12 @@ func (m *QualityMonitor) checkQualityDrop(ctx context.Context, target ModelTarge
 // loadLastScores 加载上次的评分
 func (m *QualityMonitor) loadLastScores(ctx context.Context) {
 	for _, target := range m.config.TargetModels {
-		score, err := m.storage.GetLatestScore(ctx, target.Provider, target.ModelName)
+		score, err := m.storage.GetLatestScore(ctx, target.Provider, target.ModelName, target.CredentialID)
 		if err != nil {
 			continue
 		}
 		if score != nil {
-			key := fmt.Sprintf("%s:%s", target.Provider, target.ModelName)
+			key := nodeKey(target.Provider, target.ModelName, target.CredentialID)
 			m.lastScores[key] = score
 		}
 	}
