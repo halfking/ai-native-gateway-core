@@ -66,11 +66,14 @@ type ScaleProvider interface {
 //
 // 2026-08-07: ConcurrencyCapacity 是可选字段，nil 表示未查询到（适配器
 // 旧版本或单元测试场景），scorer 会按缺失维度处理。
+//
+// 2026-08-11: ModelIQSignal 可选字段，nil 表示未测量（冷启动无智商数据）。
 type ScaleData struct {
 	ProviderID          int64
 	TotalModels         int
 	AvailableModels     int
 	ConcurrencyCapacity *ConcurrencyCapacity
+	ModelIQSignal       *ModelIQSignal
 }
 
 // CredentialLister 凭证列表提供者接口
@@ -209,6 +212,9 @@ func (c *LightweightCollector) collectForCredential(ctx context.Context, credent
 		RateLimitMetrics:    requestStats.RateLimitMetrics,
 		AvailabilityWindow:  requestStats.AvailabilityWindow,
 		ConcurrencyCapacity: scaleData.ConcurrencyCapacity,
+		// 2026-08-11: 节点智商维度。GetModelScale 从 node_iq_latest 聚合；
+		// nil（冷启动无测试数据）时 scorer 跳过。
+		ModelIQSignal: scaleData.ModelIQSignal,
 	}
 
 	// 5. 保存到数据库

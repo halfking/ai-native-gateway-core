@@ -39,19 +39,25 @@ type ExtendedWeights struct {
 	Credibility        float64
 	CostAccuracy       float64
 	Price              float64
+	ModelIQ            float64 // 2026-08-11: 节点智商维度
 }
 
 // DefaultExtendedWeights 返回默认扩展权重（总和=1.0）。
+//
+// 2026-08-11: 引入 ModelIQ 维度（0.12），其余已实现维度按比例下调归一。
+// 模型智商反映供应商所托管模型的实际能力（通过 MCQ 基准测试得到），是路由
+// 应当考量的关键信号。未测量到智商数据（冷启动）时该维度自动跳过，不影响总分。
 func DefaultExtendedWeights() ExtendedWeights {
 	return ExtendedWeights{
-		Network:            0.08,
-		Availability:       0.16,
-		Stability:          0.16,
+		Network:            0.07,
+		Availability:       0.14,
+		Stability:          0.14,
 		Scale:              0.04,
-		RateLimit:          0.10,
-		Concurrency:        0.10,
-		AvailabilityWindow: 0.20,
-		QualityStability:   0.16,
+		RateLimit:          0.09,
+		Concurrency:        0.09,
+		AvailabilityWindow: 0.18,
+		QualityStability:   0.13,
+		ModelIQ:            0.12,
 		// 暂未实现维度，给 0 权重（如果未来填充值，权重需重新分配）
 		Credibility:  0,
 		CostAccuracy: 0,
@@ -350,7 +356,8 @@ func extendedWeightsFor(weights ProfileWeights, scores *DimensionScores) Extende
 		hasNewDim := (scores.MeasuredDimensions&dimensionRateLimit) != 0 ||
 			(scores.MeasuredDimensions&dimensionConcurrency) != 0 ||
 			(scores.MeasuredDimensions&dimensionAvailabilityWindow) != 0 ||
-			(scores.MeasuredDimensions&dimensionQualityStability) != 0
+			(scores.MeasuredDimensions&dimensionQualityStability) != 0 ||
+			(scores.MeasuredDimensions&dimensionModelIQ) != 0
 		if hasNewDim {
 			return DefaultExtendedWeights()
 		}
@@ -361,7 +368,8 @@ func extendedWeightsFor(weights ProfileWeights, scores *DimensionScores) Extende
 	hasNewDim := scores.RateLimitScore > 0 ||
 		scores.ConcurrencyScore > 0 ||
 		scores.AvailabilityWindowScore > 0 ||
-		scores.QualityStabilityScore > 0
+		scores.QualityStabilityScore > 0 ||
+		scores.ModelIQScore > 0
 	if hasNewDim {
 		return DefaultExtendedWeights()
 	}

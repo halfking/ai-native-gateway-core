@@ -76,6 +76,19 @@ type MetricSnapshot struct {
 	ConcurrencyCapacity    *ConcurrencyCapacity    // 供应商并发承载能力
 	AvailabilityWindow     *AvailabilityWindow     // 不可用窗口（连续低成功率段）
 	QualityStabilitySignal *QualityStabilitySignal // 评分自身稳定性（综合分 CV）
+	// 2026-08-11: 节点智商信号（来自 node_iq_latest）。nil = 未测量（冷启动），
+	// scorer 跳过该维度。
+	ModelIQSignal *ModelIQSignal
+}
+
+// ModelIQSignal 节点智商维度数据。
+//
+// 数据来源：node_iq_latest 按 credential 聚合其下所有节点的 overall_score
+// 平均值（即该凭据所托管模型的平均实测智商，0-100）。SampleN=0 表示尚无任何
+// 智商测试数据，应视为未测量。
+type ModelIQSignal struct {
+	AvgIQ   float64 // 节点 overall_score 平均值（0-100）
+	SampleN int     // 参与聚合的节点数
 }
 
 // NetworkMetrics 网络延迟指标
