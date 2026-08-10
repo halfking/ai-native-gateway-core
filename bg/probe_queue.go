@@ -67,10 +67,43 @@ type ProbeQueueResult struct {
 
 type ProbeQueue struct {
 	db *pgxpool.Pool
+	// probeSink (2026-08-11) mirrors enqueue (pending) and claim (in-flight)
+	// transitions to the self-check SSE stream. Optional — nil is a no-op.
+	probeSink ProbeEventSink
 }
 
 func NewProbeQueue(db *pgxpool.Pool) *ProbeQueue {
 	return &ProbeQueue{db: db}
+}
+
+// SetProbeSink wires the self-check SSE sink for the durable integrity-probe
+// queue lifecycle. Terminal completed/failed is emitted by the
+// ProbeQueueWorker's ActiveProbeEmitter; this sink covers enqueue + claim.
+func (q *ProbeQueue) SetProbeSink(sink ProbeEventSink) {
+	if q != nil {
+		q.probeSink = sink
+	}
+}
+
+// publishProbeTask is the shared hook for the durable queue's lifecycle events.
+// Best-effort: a nil sink or a publish error never blocks the enqueue/claim.
+func (q *ProbeQueue) publishProbeTask(task ProbeQueueTask, status string) {
+	if q == nil || q.probeSink == nil {
+		return
+	}
+	q.probeSink.PublishProbeEvent(ProbeStreamEvent{
+		ID:           fmt.Sprintf("integrity:%d", task.ID),
+		TaskType:     "integrity_verify",
+		Source:       "integrity",
+		Status:       status,
+		CredentialID: task.CredentialID,
+		ProviderID:   task.ProviderID,
+		RawModel:     task.RawModel,
+		Attempt:      task.Attempt,
+		Reason:       task.Source,
+		Scheduled:    task.Source != "request_failure" && task.Source != "no_candidates",
+		TimestampMs:  time.Now().UnixMilli(),
+	})
 }
 
 // Enqueue adds a task once for its active dedup key. A duplicate is a normal
@@ -118,6 +151,11 @@ func (q *ProbeQueue) Enqueue(ctx context.Context, task ProbeQueueTask) (int64, b
 	if err != nil {
 		return 0, false, fmt.Errorf("enqueue probe failed: %w (dedup_key=%s)", err, task.DedupKey)
 	}
+	// 2026-08-11: mirror the "task enqueued" transition so the 自检 tab shows
+	// the pending integrity probe. Only fires on a real insert (dedup hits
+	// return false above and skip this).
+	task.ID = id
+	q.publishProbeTask(task, "pending")
 	return id, true, nil
 }
 
@@ -175,6 +213,12 @@ func (q *ProbeQueue) Claim(ctx context.Context, limit int, lease time.Duration) 
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return nil, fmt.Errorf("claim probes failed: commit lease: %w (limit=%d)", err, limit)
+	}
+	// 2026-08-11: mirror the "task claimed/running" transition for each leased
+	// task. Fires after the commit so we never publish a started event for a
+	// task whose lease was rolled back.
+	for _, task := range tasks {
+		q.publishProbeTask(task, "in-flight")
 	}
 	return tasks, nil
 }

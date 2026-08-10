@@ -278,6 +278,16 @@ type ProfileAlertWorker struct {
 	done     chan struct{}
 }
 
+// Engine returns the underlying AlertEngine so callers (e.g. main.go) can
+// inject an alert handler via SetAlertHandler after construction. Returns nil
+// before the worker is constructed.
+func (w *ProfileAlertWorker) Engine() *providerprofile.AlertEngine {
+	if w == nil {
+		return nil
+	}
+	return w.engine
+}
+
 // NewProfileAlertWorker creates the alert worker.
 func NewProfileAlertWorker(db *pgxpool.Pool, interval time.Duration) *ProfileAlertWorker {
 	profileStore := providerprofile.NewPGProfileStore(db)

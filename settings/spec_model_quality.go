@@ -105,5 +105,23 @@ func ModelQualitySpecs() []*Spec {
 			DangerLevel: Safe,
 			HotReload:   true,
 		},
+		{
+			// 2026-08-11: 启用按凭据节点直连测试。开启后 worker 会用
+			// DirectNodeInvoker 绕过网关、直连每个 (凭据, 模型) 节点测量智商，
+			// 写入 model_iq_runs / node_iq_latest。需要 DB + 解密 key 可用，
+			// 否则降级为仅经网关聚合测试。前端「立即测试」按钮与可疑动作触发
+			// 均依赖此开关。
+			Key:         "model_quality.enable_per_node",
+			Type:        TypeBool,
+			Scope:       ScopePlatform,
+			Category:    CategoryModelQuality,
+			Default:     false, // 默认关闭，避免产生真实 token 费用
+			Description: "是否启用按凭据节点直连智商测试（产生真实 token 费用）",
+			DescriptionLong: "开启后对每个活跃 (凭据, 模型) 节点直连上游跑精简智商测试，" +
+				"结果写入 model_iq_runs / node_iq_latest，供供应商模型列表与品质计算读取。" +
+				"需要 DB + 凭据解密 key 可用。关闭时仅做经网关的聚合测试（不计节点维度）。",
+			DangerLevel: Warning, // 会产生真实 token 费用
+			HotReload:   true,
+		},
 	}
 }
