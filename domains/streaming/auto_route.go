@@ -383,6 +383,9 @@ func rewriteBodyWithModel(body []byte, newModel string) []byte {
 
 // decisionToWire converts an autoroute.Decision to the wire format.
 func decisionToWire(d *autoroute.Decision) *autoRouteDecision {
+	if d == nil {
+		return nil
+	}
 	wire := &autoRouteDecision{
 		TaskType:            string(d.TaskType),
 		Confidence:          d.Confidence,
