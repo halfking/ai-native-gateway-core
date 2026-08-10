@@ -240,6 +240,16 @@ func parseRetryAfter(now time.Time, headers map[string]string) (int, time.Time) 
 			}
 			return sec, now.Add(time.Duration(sec) * time.Second)
 		}
+		// 2026-08-10: 相对时间单位 (Groq "6s", "5m", "2h", "1d").
+		// RFC 7231 Retry-After 只定义了 delta-seconds 或 HTTP-date, 但 Groq
+		// 等厂商在 Retry-After 里返回相对单位. 不解析会导致 fallback 到
+		// HTTP-date (失败) → (0, now) → 配额耗尽 key 被立即重试.
+		if sec, ok := parseRetryAfterRelative(ra); ok {
+			if sec < 0 {
+				sec = 0
+			}
+			return sec, now.Add(time.Duration(sec) * time.Second)
+		}
 		if t, err := http.ParseTime(ra); err == nil {
 			resetAt := t.UTC()
 			retry := int(resetAt.Sub(now).Seconds())
@@ -253,7 +263,8 @@ func parseRetryAfter(now time.Time, headers map[string]string) (int, time.Time) 
 }
 
 // parseRetryAfterSeconds 仅当字符串全为数字 (允许前后空白) 时返回秒数.
-// 用于 Retry-After 的 "30" / "30s" / " 60 " 形式, 避免 HTTP-date 被截断误判.
+// 用于 Retry-After 的 "30" / " 60 " 形式 (RFC 7231 delta-seconds), 避免
+// HTTP-date 被截断误判. 带 unit 后缀的形式 ("30s"/"5m") 由 parseRetryAfterRelative 处理.
 func parseRetryAfterSeconds(s string) (int, bool) {
 	s = strings.TrimSpace(s)
 	if s == "" {
@@ -269,6 +280,42 @@ func parseRetryAfterSeconds(s string) (int, bool) {
 		return 0, false
 	}
 	return n, true
+}
+
+// parseRetryAfterRelative parses Groq-style relative Retry-After values with a
+// unit suffix: "6s", "5m", "2h", "1d" (case-insensitive). These are non-RFC but
+// emitted by Groq and some other providers. Returns seconds + true on match,
+// false otherwise (caller falls back to HTTP-date parsing).
+//
+// Mirrors OmniRoute classify429.ts parseRetryAfter relative-unit handling.
+// Supported units: s (seconds), m (minutes), h (hours), d (days).
+func parseRetryAfterRelative(s string) (int, bool) {
+	s = strings.TrimSpace(s)
+	if len(s) < 2 { // need at least "Ns"
+		return 0, false
+	}
+	unit := s[len(s)-1]
+	// unit must be a letter; the rest must be all digits.
+	if !((unit >= 'a' && unit <= 'z') || (unit >= 'A' && unit <= 'Z')) {
+		return 0, false
+	}
+	numPart := s[:len(s)-1]
+	n, err := strconv.Atoi(numPart)
+	if err != nil || n < 0 {
+		return 0, false
+	}
+	switch strings.ToLower(string(unit)) {
+	case "s":
+		return n, true
+	case "m":
+		return n * 60, true
+	case "h":
+		return n * 3600, true
+	case "d":
+		return n * 86400, true
+	default:
+		return 0, false
+	}
 }
 
 // Preflight 配额预检 - 返回是否可用
