@@ -65,12 +65,13 @@ func (h *Handler) listCredentialKeys(w http.ResponseWriter, r *http.Request, pro
 	defer cancel()
 
 	rows, err := h.db.Query(ctx, `
-		SELECT kid_index, COALESCE(label,''), status, secret_ciphertext,
-		       last_used_at, last_failed_at, created_at
-		FROM credential_keys
-		WHERE credential_id = $1
-		ORDER BY kid_index
-	`, credID)
+		SELECT ck.kid_index, COALESCE(ck.label,''), ck.status, ck.secret_ciphertext,
+		       ck.last_used_at, ck.last_failed_at, ck.created_at
+		FROM credential_keys ck
+		JOIN credentials c ON c.id = ck.credential_id
+		WHERE ck.credential_id = $1 AND c.provider_id = $2
+		ORDER BY ck.kid_index
+	`, credID, providerID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "query failed: "+err.Error())
 		return
@@ -143,25 +144,54 @@ func (h *Handler) addCredentialKey(w http.ResponseWriter, r *http.Request, provi
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
 
-	// find the next free kid_index (max + 1).
-	var maxKid int
-	_ = h.db.QueryRow(ctx, `
-		SELECT COALESCE(MAX(kid_index), 0) FROM credential_keys WHERE credential_id = $1
-	`, credID).Scan(&maxKid)
-	newKid := maxKid + 1
-
-	_, err = h.db.Exec(ctx, `
-		INSERT INTO credential_keys (credential_id, kid_index, secret_ciphertext, status, label, tenant_id)
-		VALUES ($1, $2, $3, 'active', NULLIF($4,''), public.get_current_tenant())
-		ON CONFLICT (credential_id, kid_index) DO UPDATE SET secret_ciphertext = EXCLUDED.secret_ciphertext, status = 'active', label = EXCLUDED.label
-	`, credID, newKid, encrypted, req.Label)
+	tx, err := h.db.Begin(ctx)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "insert failed: "+err.Error())
+		writeError(w, http.StatusInternalServerError, "begin transaction failed")
+		return
+	}
+	defer tx.Rollback(ctx) //nolint:errcheck // harmless after successful Commit
+
+	var credTenant string
+	err = tx.QueryRow(ctx, `
+		SELECT tenant_id
+		FROM credentials
+		WHERE id = $1 AND provider_id = $2
+		FOR UPDATE
+	`, credID, providerID).Scan(&credTenant)
+	if err != nil {
+		writeError(w, http.StatusNotFound, "credential not found")
 		return
 	}
 
-	// invalidate candidate cache so the next request re-enriches with the new key.
+	// Find the next free kid_index while holding a row lock on the parent
+	// credential. This avoids MAX(kid_index)+1 races where concurrent POSTs can
+	// select the same kid and silently overwrite each other.
+	var maxKid int
+	if err := tx.QueryRow(ctx, `
+		SELECT COALESCE(MAX(kid_index), 0) FROM credential_keys WHERE credential_id = $1
+	`, credID).Scan(&maxKid); err != nil {
+		writeError(w, http.StatusInternalServerError, "query failed")
+		return
+	}
+	newKid := maxKid + 1
+
+	_, err = tx.Exec(ctx, `
+		INSERT INTO credential_keys (credential_id, kid_index, secret_ciphertext, status, label, tenant_id)
+		VALUES ($1, $2, $3, 'active', NULLIF($4,''), $5)
+	`, credID, newKid, encrypted, req.Label, credTenant)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "insert failed")
+		return
+	}
+	if err := tx.Commit(ctx); err != nil {
+		writeError(w, http.StatusInternalServerError, "commit failed")
+		return
+	}
+
+	// invalidate candidate cache and reset in-memory rotator so the next request
+	// re-enriches/rebuilds from the current DB key set.
 	provider.InvalidateCandidateCacheForCredential(credID)
+	provider.ResetKeyRotatorForCredential(credID)
 	writeJSON(w, http.StatusOK, map[string]any{"kid_index": newKid, "message": "ok"})
 }
 
@@ -171,8 +201,10 @@ func (h *Handler) deleteCredentialKey(w http.ResponseWriter, r *http.Request, pr
 	defer cancel()
 
 	tag, err := h.db.Exec(ctx, `
-		DELETE FROM credential_keys WHERE credential_id = $1 AND kid_index = $2
-	`, credID, kid)
+		DELETE FROM credential_keys ck
+		USING credentials c
+		WHERE ck.credential_id = c.id AND c.provider_id = $1 AND ck.credential_id = $2 AND ck.kid_index = $3
+	`, providerID, credID, kid)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "delete failed: "+err.Error())
 		return
@@ -182,6 +214,7 @@ func (h *Handler) deleteCredentialKey(w http.ResponseWriter, r *http.Request, pr
 		return
 	}
 	provider.InvalidateCandidateCacheForCredential(credID)
+	provider.ResetKeyRotatorForCredential(credID)
 	writeJSON(w, http.StatusOK, map[string]any{"message": "deleted"})
 }
 
@@ -206,8 +239,11 @@ func (h *Handler) resetCredentialKey(w http.ResponseWriter, r *http.Request, pro
 	defer cancel()
 
 	tag, err := h.db.Exec(ctx, `
-		UPDATE credential_keys SET status = $3 WHERE credential_id = $1 AND kid_index = $2
-	`, credID, kid, req.Status)
+		UPDATE credential_keys ck
+		SET status = $4
+		FROM credentials c
+		WHERE ck.credential_id = c.id AND c.provider_id = $1 AND ck.credential_id = $2 AND ck.kid_index = $3
+	`, providerID, credID, kid, req.Status)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "update failed: "+err.Error())
 		return
@@ -216,9 +252,10 @@ func (h *Handler) resetCredentialKey(w http.ResponseWriter, r *http.Request, pro
 		writeError(w, http.StatusNotFound, "key not found")
 		return
 	}
-	// invalidate cache so the KeyRotator re-registers from fresh DB state
-	// on the next request (EnsureCred + the rotator's in-memory state reset).
+	// Invalidate candidate cache and reset the shared in-memory KeyRotator. Cache
+	// invalidation alone does not clear per-key terminal/invalid state.
 	provider.InvalidateCandidateCacheForCredential(credID)
+	provider.ResetKeyRotatorForCredential(credID)
 	slog.Info("credential key status reset",
 		"credential_id", credID, "kid_index", kid, "status", req.Status)
 	writeJSON(w, http.StatusOK, map[string]any{"message": "updated", "status": req.Status})

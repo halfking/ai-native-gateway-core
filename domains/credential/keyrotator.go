@@ -213,6 +213,17 @@ func (kr *KeyRotator) ResetKey(credentialID, idx int) {
 	states[idx].consecutiveFailures = 0
 }
 
+// ResetCredential drops all in-memory key state for a credential. The next
+// EnsureCred call rebuilds a fresh dense key set from the current DB extras.
+// Use after admin add/delete/status changes, because DB kid_index values may be
+// sparse while this rotator intentionally tracks request-time dense slots.
+func (kr *KeyRotator) ResetCredential(credentialID int) {
+	kr.mu.Lock()
+	defer kr.mu.Unlock()
+	delete(kr.states, credentialID)
+	delete(kr.cursors, credentialID)
+}
+
 // KeyCount returns the number of keys registered for a credential (0 if single-key).
 func (kr *KeyRotator) KeyCount(credentialID int) int {
 	kr.mu.Lock()

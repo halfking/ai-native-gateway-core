@@ -156,9 +156,15 @@ func (qt *QuotaTracker) CorrectFromHeaders(ctx context.Context, req CorrectionRe
 		case errorsx.KindQuotaPeriodic:
 			resetAt = errorsx.NextQuotaReset(string(req.Body), now)
 		case errorsx.KindQuotaPermanent:
-			// 永久耗尽 (余额不足): 设远未来, 避免自动解除, 需人工充值后恢复.
-			resetAt = now.AddDate(1, 0, 0)
+			// Permanent exhaustion has no known auto-recovery time; keep it
+			// exhausted until an explicit operator/provider state change.
+			resetAt = time.Time{}
 		}
+	}
+
+	var autoReset any
+	if !resetAt.IsZero() {
+		autoReset = resetAt
 	}
 
 	limit := int64(0)
@@ -204,9 +210,9 @@ func (qt *QuotaTracker) CorrectFromHeaders(ctx context.Context, req CorrectionRe
             last_429_limit_header = EXCLUDED.last_429_limit_header,
             corrected_limit = COALESCE(EXCLUDED.corrected_limit, free_quota_tracker.corrected_limit),
             updated_at = now()
-    `, req.CredentialID, req.ProviderCode, req.ModelID,
+	`, req.CredentialID, req.ProviderCode, req.ModelID,
 		dayStart, dayEnd,
-		resetAt,
+		autoReset,
 		retryAfterSec, limitHeader,
 		limit,
 		req.TenantID,

@@ -48,3 +48,19 @@ func TestHandleCredentialKeys_MethodNotAllowed(t *testing.T) {
 		t.Errorf("PUT on keys collection: status = %d, want 405", w.Code)
 	}
 }
+
+// TestHandleProviderCredentials_KeyItemRouteReachable catches a regression
+// where /keys/{kid} was parsed as subPath="keys/{kid}" by the parent router
+// but only exact subPath="keys" was dispatched. Use an invalid kid so the test
+// stays DB-free while proving the nested handler is reached (400, not 404).
+func TestHandleProviderCredentials_KeyItemRouteReachable(t *testing.T) {
+	h := &Handler{}
+	req := httptest.NewRequest(http.MethodDelete,
+		"/api/providers/1/credentials/2/keys/abc", nil)
+	w := httptest.NewRecorder()
+	h.handleProviderCredentials(w, req, 1, "2/keys/abc")
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("DELETE /keys/{kid}: status = %d, want 400 (body=%s)",
+			w.Code, w.Body.String())
+	}
+}

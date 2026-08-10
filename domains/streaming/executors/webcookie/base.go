@@ -20,6 +20,7 @@ import (
 	"net/http"
 	"net/http/cookiejar"
 	"net/url"
+	"sort"
 	"sync"
 	"time"
 
@@ -51,14 +52,21 @@ func (s *Session) Client(transportFactory func() http.RoundTripper) *http.Client
 	}
 	jar, _ := cookiejar.New(nil) // nil PublicSuffixList is fine for controlled clients
 	if len(s.Cookies) > 0 {
-		// cookiejar needs a URL scope; use a synthetic https URL per provider.
-		// Concrete adapters override this in Login() with the real domain.
-		jar.SetCookies(s.scopeURL(), s.Cookies)
+		// cookiejar needs a URL scope; use the known https URL per provider.
+		if scope := s.scopeURL(); scope.Host != "" {
+			jar.SetCookies(scope, s.Cookies)
+		}
+	}
+	transport := http.RoundTripper(http.DefaultTransport)
+	if transportFactory != nil {
+		if rt := transportFactory(); rt != nil {
+			transport = rt
+		}
 	}
 	c := &http.Client{
 		Jar:       jar,
 		Timeout:   120 * time.Second,
-		Transport: transportFactory(),
+		Transport: transport,
 	}
 	s.client = c
 	return c
@@ -125,7 +133,7 @@ func hostForProvider(code string) string {
 	case "copilot-m365-web":
 		return "microsoft365.com"
 	default:
-		return code + ".example.com" // placeholder; concrete adapter overrides
+		return "" // unknown provider: concrete adapter must define a cookie scope
 	}
 }
 
@@ -192,6 +200,7 @@ func (r *Registry) Codes() []string {
 	for c := range r.adapters {
 		codes = append(codes, c)
 	}
+	sort.Strings(codes)
 	return codes
 }
 

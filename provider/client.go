@@ -374,6 +374,17 @@ func InvalidateCandidateCacheForCredential(credentialID int) {
 	)
 }
 
+// ResetKeyRotatorForCredential clears the shared in-memory multi-key rotation
+// state for one credential. Admin key-set changes must call this in addition to
+// candidate-cache invalidation; the candidate cache does not own the rotator.
+func ResetKeyRotatorForCredential(credentialID int) {
+	if defaultClient == nil || credentialID == 0 || defaultClient.keyRotator == nil {
+		return
+	}
+	defaultClient.keyRotator.ResetCredential(credentialID)
+	slog.Debug("key rotator reset for credential", "credential_id", credentialID)
+}
+
 func (c *Client) Enabled() bool {
 	return c.dbPool != nil
 }
