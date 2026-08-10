@@ -43,6 +43,16 @@ type Index struct {
 	// override the live availability check used by RecommendV2.
 	availabilityFilter func(context.Context, *pgxpool.Pool, []Candidate) ([]Candidate, error)
 
+	// affinityStore, when set, supplies the learned task→model affinity used as
+	// the 5th scoring dimension in RecommendV2. nil (or mode=off) degrades to
+	// the 4-dimension channel-quality path with no behaviour change — affinity
+	// is purely additive and never gates a candidate.
+	affinityStore *AffinityStore
+
+	// affinityTenantResolver maps an API key id to a tenant code, so affinity
+	// can be looked up tenant-scoped. nil ⇒ platform-level only.
+	affinityTenantResolver func(int) string
+
 	// Pool is the optional PG pool for on-demand refresh when the cache
 	// is stale (older than staleThreshold). nil disables on-demand refresh.
 	pool *pgxpool.Pool
@@ -66,6 +76,15 @@ func (idx *Index) SetPool(pool *pgxpool.Pool) {
 	idx.mu.Lock()
 	defer idx.mu.Unlock()
 	idx.pool = pool
+}
+
+// SetAffinityStore wires the learned task→model affinity into the index. nil or
+// mode=off makes RecommendV2 fall back to the 4-dimension path unchanged.
+func (idx *Index) SetAffinityStore(store *AffinityStore, tenantResolver func(int) string) {
+	idx.mu.Lock()
+	defer idx.mu.Unlock()
+	idx.affinityStore = store
+	idx.affinityTenantResolver = tenantResolver
 }
 
 // LastRefresh returns the time of the last successful refresh (zero if

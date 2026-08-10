@@ -1,6 +1,9 @@
 package autoroute
 
-import "strings"
+import (
+	"math"
+	"strings"
+)
 
 // scoring_simplified.go — 简化评分与通道质量评分。
 //
@@ -269,6 +272,63 @@ func ScoreWithChannelQuality(c Candidate, task TaskType, avgPriceByCanonical map
 		VersionRecency: 0,
 		StrengthMatch:  0,
 	}
+}
+
+// AffinityWeight 是学习亲和度在 composite 中的权重。
+//
+// 现有 4 维权重整体乘 (1 - AffinityWeight) 后腾出这一份，因此 4 维之间的
+// 相对比例完全不变——本次改动只是让出 15% 给实测信号，不重新平衡既有维度。
+const AffinityWeight = 0.15
+
+// ScoreWithAffinity 在 4 维渠道质量评分之上叠加第 5 维「学习亲和度」：
+//
+//	FinalScore = IntentMatch * 0.34
+//	           + Price * 0.17
+//	           + ChannelQuality * 0.255
+//	           + Reliability * 0.085
+//	           + Affinity * 0.15
+//	           + Correction
+//
+// （0.4/0.2/0.3/0.1 各乘 0.85 得到前四项。）
+//
+// affinity 由调用方从 AffinityStore.Lookup 取得，已完成最小样本门槛、
+// 陈旧衰减与 [10,90] 钳制；本函数只做 NaN/Inf 兜底。
+//
+// applied=false（shadow 模式或探索流量）时只记录 Affinity 字段，
+// Composite 与 ScoreWithChannelQuality 逐位相同——这正是影子期的意义：
+// 同一条代码路径既能观测又能生效，不存在「上线才第一次跑」的分支。
+//
+// 边界：亲和度只在**已通过硬约束**（活性过滤、ban）的候选之间排序。
+// 它不能让不可用或被封禁的模型复活——那些过滤发生在 RecommendV2 里、
+// 在本函数之前。
+func ScoreWithAffinity(
+	c Candidate,
+	task TaskType,
+	avgPriceByCanonical map[int]float64,
+	correctionScore float64,
+	affinity float64,
+	applied bool,
+) ScoringBreakdown {
+	b := ScoreWithChannelQuality(c, task, avgPriceByCanonical, correctionScore)
+
+	// NaN/Inf 兜底：坏数据退化为「无意见」，绝不污染 composite。
+	if math.IsNaN(affinity) || math.IsInf(affinity, 0) {
+		affinity = AffinityNeutral
+	}
+	b.Affinity = affinity
+	b.AffinityApplied = applied
+
+	if !applied {
+		return b
+	}
+
+	// correction 是绝对偏移（±10），不应被 0.85 缩放稀释：先摘出、
+	// 缩放 4 维基础分、叠加亲和度、再原样加回。
+	correction := clampCorrection(correctionScore)
+	base := b.Composite - correction
+	b.Composite = base*(1-AffinityWeight) + affinity*AffinityWeight + correction
+
+	return b
 }
 
 // clampCorrection 把校正分钳制在 [-10, +10] 区间。

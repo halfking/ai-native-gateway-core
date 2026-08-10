@@ -4,12 +4,17 @@
 **Branch**: main (post model-iq merge)
 **Auditor**: automated + manual review (server-side Explore agents were unavailable during this window; static review + targeted tests were used instead)
 
+> **Second pass (2026-08-12, later)**: a follow-up audit of the first-pass
+> fixes (`40f2880f`) found three additional issues — see §"Second-pass
+> findings" at the bottom. All are fixed and covered by regression tests.
+
 ---
 
 ## Executive Summary
 
 - **Critical issues (P0)**: 0
-- **High-priority issues (P1)**: 3 — all fixed in this audit
+- **High-priority issues (P1)**: 3 — all fixed in this audit (first pass)
+- **Second-pass P1**: 2, **P3**: 1 — all fixed
 - **Medium-priority issues (P2)**: 0
 
 The three P1 findings were latent regressions in the just-merged self-check
@@ -154,5 +159,73 @@ as a single tile flowing across the queue UI.
 
 ---
 
-**Audit Completed**: 2026-08-12  
+**Audit Completed**: 2026-08-12 (first pass)  
 **Follow-ups**: none open
+
+---
+
+## Second-pass findings (2026-08-12, later)
+
+A second audit of the first-pass fix commit (`40f2880f`) found three more
+issues. The first-pass ID-unification work covered node_probe and integrity
+but missed the daily selfcheck; and the cross-status eviction was correct in
+intent but racy in implementation.
+
+### [P1] Daily selfcheck lifecycle forked into two tiles
+
+**File**: `bg/credential_selfcheck.go` (`publishSelfcheck`)
+
+**Symptom**: `runOne` calls `publishSelfcheck` twice (in-flight at line 346,
+terminal at line 437), but each call minted a fresh
+`fmt.Sprintf("selfcheck:%d:%d", credentialID, time.Now().UnixNano())`. The
+two calls therefore produced two different task IDs, so the dashboard showed
+two unrelated tiles for one daily run instead of one tile flowing from
+in-flight to ok/fail. This is the exact class of bug the first-pass ID fix
+addressed for node_probe/integrity, but the selfcheck worker was overlooked.
+
+**Fix**: `publishSelfcheck` now takes the `runID` (the `self_check_runs` DB
+row id, already generated once at the top of `runOne`) and builds the ID as
+`selfcheck:<credID>:<runID>`. Both calls inside `runOne` pass the same runID,
+so the transitions collapse. The no-routable fast-fail path also now emits a
+terminal `fail` event (it previously emitted nothing, silently dropping the
+credential from the tab).
+
+**Regression test**: `bg/credential_selfcheck_taskid_test.go`
+(`TestCredentialSelfcheck_TaskID_StableAcrossLifecycle`).
+
+### [P1] RecordWithOrigin read-modify-write race on prev-status HGet
+
+**File**: `admin/probe_stream_redis_store.go` (`RecordWithOrigin`)
+
+**Symptom**: the first-pass cross-status eviction read the previous lane via
+`s.rdb.HGet(...)` *outside* the pipeline (lines 104/124), then issued
+`ZREM` + `HSet` inside the pipeline. Two concurrent transitions on the same
+taskID (e.g. the worker emitting in-flight while the emitter emits terminal)
+could both read the old prev, both ZREM the wrong key, and overwrite each
+other's HSet — leaving a stale member in the abandoned lane and losing the
+eviction. It also added an extra Redis round-trip per transition.
+
+**Fix**: the entire lane transition (HGet prev → ZREM prev → ZADD current →
+HSET → trim) now runs inside a single Lua script (`recordTransitionScript`),
+which Redis executes atomically. The detail `SET` and `PUBLISH` stay in a
+separate best-effort pipeline so a marshal/publish failure can never block
+the atomic core. The legacy `Record` wrapper (zero production callers) and
+the now-unused `trimProbeQueue` helper were removed.
+
+**Regression test**: `admin/probe_stream_redis_store_test.go`
+(`TestRecordTransitionScript_Loaded`) asserts the script is registered and
+contains the ZREM/HSET/trim invariants.
+
+### [P3] Dead code: ProbeRedisStore.Record + trimProbeQueue
+
+**Files**: `admin/probe_stream_redis_store.go`
+
+`Record(ctx, task)` (the zero-origin wrapper) had no production callers
+(only `RecordWithOrigin` is called from `ProbeSSEHub.Publish`). After moving
+trim into the Lua script, `trimProbeQueue` also became dead. Both removed to
+keep the surface honest.
+
+---
+
+**Second-pass completed**: 2026-08-12  
+**Open follow-ups**: none

@@ -23,6 +23,7 @@ import (
 	"strings"
 
 	"github.com/kaixuan/llm-gateway-go/autoroute"
+	"github.com/kaixuan/llm-gateway-go/domains/hooks/observability/telemetry"
 )
 
 // autoFallbackModel returns the model used when decider fails or is
@@ -326,7 +327,16 @@ func (h *ChatHandler) maybeResolveAuto(reqBody *chatRequestBody, rawBody []byte,
 		sessionID = r.Header.Get("X-Session-Id")
 	}
 
-	decision, err := h.decider.DecideWithFeatureFlags(r.Context(), sigs, apiKeyID, headerProfile, taskHint, sessionID)
+	// Carry the request id into the Decider so the affinity explore bucket can
+	// hash on it (deterministic per-request sampling). X-Request-Id is stamped
+	// upstream before this handler runs; if absent, affinity explore is skipped
+	// and the request is scored with affinity applied normally.
+	reqCtx := r.Context()
+	if rid := r.Header.Get("X-Request-Id"); rid != "" {
+		reqCtx = autoroute.WithRequestID(reqCtx, rid)
+	}
+
+	decision, err := h.decider.DecideWithFeatureFlags(reqCtx, sigs, apiKeyID, headerProfile, taskHint, sessionID)
 	if err != nil {
 		// 2026-07-01 P1: surface the real failure instead of masking it.
 		//
@@ -359,7 +369,62 @@ func (h *ChatHandler) maybeResolveAuto(reqBody *chatRequestBody, rawBody []byte,
 	reqBody.Model = decision.ChosenModel
 	rewritten := rewriteBodyWithModel(rawBody, decision.ChosenModel)
 	wire := decisionToWire(decision)
+
+	// Record the selection for the feedback loop. IDs and numbers only — no
+	// prompt or conversation content (see telemetry.AutoSelection). Best-effort,
+	// non-blocking: the async writer drops on a full queue rather than stalling.
+	recordAutoSelection(r, sessionID, decision)
+
 	return rewritten, wire, false
+}
+
+// recordAutoSelection enqueues one auto_route_selections row from a Decision.
+//
+// MEDIUM-6 fix: the Explore flag is recorded here (deterministically, by
+// hashing the same requestID with the same ratio the scoring path used) so
+// the P3 acceptance criterion — applied-group reward vs explore-group reward —
+// has an observable explore arm. Without this, llmgw_autoroute_explore_total is
+// flat-zero and the shadow/rollout split is invisible.
+//
+// canonical_id and tenant_id are not set here — the settle worker backfills
+// them from request_logs_hot (see CRITICAL-2 Fix A). Storing the canonical
+// *name* now keeps the row useful even if the id is never resolved.
+func recordAutoSelection(r *http.Request, sessionID string, decision *autoroute.Decision) {
+	requestID := r.Header.Get("X-Request-Id")
+
+	var composite, affinity float64
+	var affinityApplied, explore bool
+	winnerRank := 1
+	for i, c := range decision.CandidatesTopN {
+		if c.Candidate.CanonicalName == decision.ChosenModel {
+			winnerRank = i + 1
+			composite = c.Breakdown.Composite
+			affinity = c.Breakdown.Affinity
+			affinityApplied = c.Breakdown.AffinityApplied
+			explore = c.Breakdown.Explore
+			break
+		}
+	}
+	// If the winner is not in CandidatesTopN (pin/promote / cache-reuse path),
+	// composite stays 0 and the row records what actually happened via
+	// candidate_rank>1 and fallback_used.
+
+	telemetry.WriteAutoSelection(telemetry.AutoSelection{
+		RequestID:       requestID,
+		SessionID:       sessionID,
+		TaskID:          r.Header.Get("X-Gw-Task-Id"),
+		TaskType:        string(decision.TaskType),
+		Profile:         string(decision.Profile),
+		Classifier:      decision.Classifier,
+		Confidence:      decision.Confidence,
+		ChosenModel:     decision.ChosenModel,
+		CandidateRank:   winnerRank,
+		CompositeScore:  composite,
+		AffinityScore:   affinity,
+		AffinityApplied: affinityApplied,
+		Explore:         explore,
+		FallbackUsed:    decision.FallbackUsed,
+	})
 }
 
 // rewriteBodyWithModel produces a copy of the body with the model field
