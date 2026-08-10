@@ -1,6 +1,9 @@
 module github.com/kaixuan/llm-gateway-go/installer
 
-go 1.22
+// Full major.minor.patch: golang.org/toolchain publishes go1.22.0, not go1.22,
+// so a bare `go 1.22` makes GOTOOLCHAIN=auto resolve a module version that does
+// not exist and offline-package builds fail with "toolchain not available".
+go 1.22.0
 
 require (
 	github.com/spf13/cobra v1.8.0
