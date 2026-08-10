@@ -360,22 +360,21 @@ func (h *Handler) serveSessionSnapshot(w http.ResponseWriter, r *http.Request, s
 	}
 	tenantID := tenantFromQueryOrContext(r)
 	var snap sessionSnapshotV2
-	err := h.db.QueryRow(r.Context(), `
+	query := `
 		SELECT s.session_id, s.tenant_id,
 		       COALESCE(NULLIF(s.title, ''), st.title, ss.title, '') AS title,
 		       COALESCE(NULLIF(s.summary, ''), ss.summary, '') AS summary,
 		       s.summary_generated_at, s.total_turns, s.total_cost_usd,
 		       s.last_model, s.last_provider
 		FROM gateway.sessions s
+		LEFT JOIN session_dim sd
+			ON sd.gw_session_id = s.session_id AND sd.tenant_id = s.tenant_id
 		LEFT JOIN session_summaries ss
 			ON ss.session_key = s.session_id AND ss.tenant_id = s.tenant_id
-		LEFT JOIN LATERAL (
-			SELECT title FROM session_titles
-			WHERE scoped_session_id = s.session_id
-			ORDER BY generated_at DESC LIMIT 1
-		) st ON true
+		` + sessionTitleFallbackJoinSQL("s.session_id", "sd.task_id") + `
 		WHERE s.session_id=$1 AND s.tenant_id=$2
-		ORDER BY s.partition_date DESC LIMIT 1`,
+		ORDER BY s.partition_date DESC LIMIT 1`
+	err := h.db.QueryRow(r.Context(), query,
 		sessionID, tenantID).Scan(
 		&snap.SessionID, &snap.TenantID, &snap.Title, &snap.Summary,
 		&snap.SummaryGeneratedAt, &snap.TotalTurns, &snap.TotalCostUSD,
