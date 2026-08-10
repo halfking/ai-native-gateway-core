@@ -1,8 +1,8 @@
 [
   {
     "provider_code": "opencode",
-    "display_name": "OpenCode AI (Keyless)",
-    "auth_hint": "无需认证，直接调用公开端点",
+    "display_name": "OpenCode Free (Keyless)",
+    "auth_hint": "无需认证，直接调用公开端点 (OpenCode Zen)",
     "bootstrap_method": "none",
     "rpm_limit": 20,
     "rpd_limit": 1000,
@@ -10,12 +10,12 @@
     "reliability_score": 0.80,
     "enabled": true,
     "allowlist_in_auto_combo": true,
-    "notes": "OpenCode 提供无需 API Key 的公开端点，适合快速测试和低量使用"
+    "notes": "OpenCode 提供无需 API Key 的公开端点，适合快速测试和低量使用。OmniRoute 默认 auto 池成员之一。"
   },
   {
     "provider_code": "duckduckgo-web",
     "display_name": "DuckDuckGo Chat (Keyless)",
-    "auth_hint": "通过网页 API 调用，自动生成会话 token",
+    "auth_hint": "通过网页 API 调用，自动生成会话 token (x-vqd-4)",
     "bootstrap_method": "device-fingerprint",
     "rpm_limit": 10,
     "rpd_limit": 500,
@@ -23,7 +23,7 @@
     "reliability_score": 0.70,
     "enabled": false,
     "allowlist_in_auto_combo": false,
-    "notes": "DuckDuckGo Chat 网页版接口，需模拟浏览器指纹，稳定性一般"
+    "notes": "DuckDuckGo Chat 网页版接口，需模拟浏览器指纹，稳定性一般。ToS 灰区，默认禁用。"
   },
   {
     "provider_code": "felo-web",
@@ -34,8 +34,73 @@
     "rpd_limit": 300,
     "concurrent_limit": 2,
     "reliability_score": 0.65,
+    "enabled": true,
+    "allowlist_in_auto_combo": true,
+    "notes": "Felo 搜索 AI。OmniRoute 默认 auto 池成员之一（与 opencode 同为白名单）。ToS 灰区。"
+  },
+  {
+    "provider_code": "theoldllm",
+    "display_name": "The Old LLM (Keyless)",
+    "auth_hint": "无需认证的公开 OpenAI 兼容端点",
+    "bootstrap_method": "none",
+    "rpm_limit": 20,
+    "rpd_limit": 1000,
+    "concurrent_limit": 5,
+    "reliability_score": 0.55,
     "enabled": false,
     "allowlist_in_auto_combo": false,
-    "notes": "需嵌入 Playwright 模拟浏览器会话，开销较大"
+    "notes": "小型免费 OpenAI 兼容代理，稳定性较低，默认禁用。"
+  },
+  {
+    "provider_code": "chipotle",
+    "display_name": "Chipotle Pepper AI (Keyless)",
+    "auth_hint": "无需认证的公开端点",
+    "bootstrap_method": "none",
+    "rpm_limit": 15,
+    "rpd_limit": 800,
+    "concurrent_limit": 4,
+    "reliability_score": 0.50,
+    "enabled": false,
+    "allowlist_in_auto_combo": false,
+    "notes": "Pepper AI 免费端点，默认禁用。"
+  },
+  {
+    "provider_code": "veoaifree-web",
+    "display_name": "Veo AI Free (Keyless Video)",
+    "auth_hint": "无需认证的免费视频生成端点",
+    "bootstrap_method": "none",
+    "rpm_limit": 5,
+    "rpd_limit": 100,
+    "concurrent_limit": 2,
+    "reliability_score": 0.45,
+    "enabled": false,
+    "allowlist_in_auto_combo": false,
+    "notes": "免费视频生成，仅 video modality，非 LLM。默认禁用。"
+  },
+  {
+    "provider_code": "mimocode",
+    "display_name": "MiMoCode (Keyless)",
+    "auth_hint": "Xiaomi MiMo bootstrap JWT，无需用户密钥",
+    "bootstrap_method": "device-fingerprint",
+    "rpm_limit": 15,
+    "rpd_limit": 600,
+    "concurrent_limit": 3,
+    "reliability_score": 0.60,
+    "enabled": false,
+    "allowlist_in_auto_combo": false,
+    "notes": "小米 MiMo 免费编程模型，通过 bootstrap JWT 认证。默认禁用。"
+  },
+  {
+    "provider_code": "aihorde",
+    "display_name": "AI Horde (Keyless)",
+    "auth_hint": "众包 GPU 队列，匿名访问优先级低",
+    "bootstrap_method": "none",
+    "rpm_limit": 5,
+    "rpd_limit": 200,
+    "concurrent_limit": 2,
+    "reliability_score": 0.40,
+    "enabled": false,
+    "allowlist_in_auto_combo": false,
+    "notes": "AI Horde 众包推理，匿名用户优先级低、延迟高。默认禁用。"
   }
 ]
