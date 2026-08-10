@@ -165,15 +165,25 @@ func (h *Handler) handleTurnsSessions(w http.ResponseWriter, r *http.Request) {
 		beforeSessionID = decoded.SessionID
 	}
 
-	// 会话时间范围（基于会话开始时间 COALESCE(ss.first_request_at, s.created_at)）
-	now := time.Now().UTC()
-	tsFrom := parseQueryTime(r, "ts_from", now.Add(-24*time.Hour))
-	tsTo := parseQueryTime(r, "ts_to", now)
+	// 会话时间范围（基于会话开始时间 COALESCE(ss.first_request_at, s.created_at)）。
+	// 未提供 ts_from / ts_to 时不加时间限制 —— 默认返回最近（按 updated_at 倒序）的会话，
+	// 配合 LIMIT 即"最近 20 个会话"。
+	var tsFrom, tsTo time.Time
+	if raw := strings.TrimSpace(r.URL.Query().Get("ts_from")); raw != "" {
+		tsFrom = parseQueryTime(r, "ts_from", time.Time{})
+	}
+	if raw := strings.TrimSpace(r.URL.Query().Get("ts_to")); raw != "" {
+		tsTo = parseQueryTime(r, "ts_to", time.Time{})
+	}
 
 	// 构造会话 WHERE（含 project/task/search/tags/client/owner 过滤）
 	where, args, argIdx := buildTurnsSessionWhere(r, tenantID, tsFrom, tsTo, beforeTS, beforeSessionID, 1)
 
 	// 会话查询
+	queryClause := ""
+	if where != "" {
+		queryClause = "WHERE " + where
+	}
 	query := fmt.Sprintf(`
 		SELECT s.session_id, s.tenant_id, s.title, s.topic, s.intent,
 			s.summary, s.summary_model, s.summary_generated_at,
@@ -190,10 +200,10 @@ func (h *Handler) handleTurnsSessions(w http.ResponseWriter, r *http.Request) {
 			ON sd.gw_session_id = s.session_id AND sd.tenant_id = s.tenant_id
 		LEFT JOIN session_summaries ss
 			ON ss.session_key = s.session_id AND ss.tenant_id = s.tenant_id
-		WHERE %s
+		%s
 		ORDER BY s.updated_at DESC, s.session_id DESC
 		LIMIT $%d
-	`, where, argIdx)
+	`, queryClause, argIdx)
 	args = append(args, limit+1)
 
 	rows, err := h.db.Query(ctx, query, args...)
@@ -270,17 +280,26 @@ func (h *Handler) handleTurnsSessions(w http.ResponseWriter, r *http.Request) {
 
 // buildTurnsSessionWhere 构造会话级 WHERE 条件。
 // 时间范围基于会话开始时间 COALESCE(ss.first_request_at, s.created_at)；
+// tsFrom / tsTo 为零值（time.Time{}）时表示未指定，不生成对应时间子句。
 // 支持 project_id / task_id / search / tags / client / owner_user 过滤
 // （来自 session_dim sd / session_summaries ss LEFT JOIN）。
 // startArg 为第一个占位符索引（通常为 1）。
 // 返回 WHERE 片段、参数、下一个占位符索引。
 func buildTurnsSessionWhere(r *http.Request, tenantID string, tsFrom, tsTo time.Time, beforeTS time.Time, beforeSessionID string, startArg int) (string, []any, int) {
-	clauses := []string{
-		fmt.Sprintf("COALESCE(ss.first_request_at, s.created_at) >= $%d", startArg),
-		fmt.Sprintf("COALESCE(ss.first_request_at, s.created_at) <= $%d", startArg+1),
+	clauses := []string{}
+	args := make([]any, 0, 10)
+	argIdx := startArg
+
+	if !tsFrom.IsZero() {
+		clauses = append(clauses, fmt.Sprintf("COALESCE(ss.first_request_at, s.created_at) >= $%d", argIdx))
+		args = append(args, tsFrom)
+		argIdx++
 	}
-	args := []any{tsFrom, tsTo}
-	argIdx := startArg + 2
+	if !tsTo.IsZero() {
+		clauses = append(clauses, fmt.Sprintf("COALESCE(ss.first_request_at, s.created_at) <= $%d", argIdx))
+		args = append(args, tsTo)
+		argIdx++
+	}
 
 	if tenantID != "" {
 		clauses = append(clauses, fmt.Sprintf("s.tenant_id = $%d", argIdx))

@@ -8,9 +8,12 @@
 
 import { onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
+import { ElSelect, ElOption } from 'element-plus'
 import {
   listTurnsSessions,
+  listTurnsFilterOptions,
   type TurnsSessionGroup,
+  type TurnsFilterOptions,
   type TurnGroupItem
 } from '../api/turns'
 
@@ -29,11 +32,23 @@ const statusCodeFilter = ref('')
 const projectFilter = ref('')
 const taskFilter = ref('')
 const searchFilter = ref('')
-const tagsFilter = ref('')
+const tagsFilter = ref<string[]>([])
 const clientFilter = ref('')
 const ownerUserFilter = ref('')
 const dateFromFilter = ref('')
 const dateToFilter = ref('')
+
+// 各筛选维度的热门可选值（来自 /turns/sessions/filter-options）
+const filterOptions = ref<TurnsFilterOptions>({
+  projects: [],
+  tasks: [],
+  owners: [],
+  clients: [],
+  tags: [],
+  models: [],
+  providers: [],
+  status_codes: []
+})
 
 // datetime-local 值 → RFC3339，非法值返回空
 function toRFC3339(v: string): string {
@@ -59,7 +74,7 @@ async function load(reset = true) {
     if (projectFilter.value) params.project_id = projectFilter.value
     if (taskFilter.value) params.task_id = taskFilter.value
     if (searchFilter.value) params.search = searchFilter.value
-    if (tagsFilter.value) params.tags = tagsFilter.value
+    if (tagsFilter.value.length > 0) params.tags = tagsFilter.value.join(',')
     if (clientFilter.value) params.client = clientFilter.value
     if (ownerUserFilter.value) params.owner_user = ownerUserFilter.value
     const tsFrom = toRFC3339(dateFromFilter.value)
@@ -75,6 +90,17 @@ async function load(reset = true) {
     error.value = e instanceof Error ? e.message : String(e)
   } finally {
     loading.value = false
+  }
+}
+
+// 加载各筛选维度的热门可选值（近 30 天实际出现的取值），失败不影响列表
+async function loadFilterOptions() {
+  try {
+    filterOptions.value = await listTurnsFilterOptions()
+  } catch (e: unknown) {
+    // 选项加载失败静默降级：下拉退化为自由输入（el-select 仍可输入）
+    const msg = e instanceof Error ? e.message : String(e)
+    console.warn('load filter options failed:', msg)
   }
 }
 
@@ -151,7 +177,7 @@ function resetAll() {
   projectFilter.value = ''
   taskFilter.value = ''
   searchFilter.value = ''
-  tagsFilter.value = ''
+  tagsFilter.value = []
   clientFilter.value = ''
   ownerUserFilter.value = ''
   dateFromFilter.value = ''
@@ -161,6 +187,7 @@ function resetAll() {
 
 onMounted(() => {
   load(true)
+  loadFilterOptions()
 })
 </script>
 
@@ -173,41 +200,107 @@ onMounted(() => {
 
     <!-- 筛选区 -->
     <div class="filter-bar">
-      <input
+      <el-select
         v-model="modelFilter"
-        type="text"
-        placeholder="按模型筛选（仅含该模型的会话）"
-        class="filter-input"
-        @keyup.enter="resetAndLoad"
-      />
-      <input
+        filterable
+        allow-create
+        default-first-option
+        clearable
+        placeholder="模型"
+        class="filter-select"
+        @change="resetAndLoad"
+      >
+        <el-option v-for="v in filterOptions.models" :key="v" :label="v" :value="v" />
+      </el-select>
+      <el-select
         v-model="providerFilter"
-        type="text"
-        placeholder="按供应商筛选"
-        class="filter-input"
-        @keyup.enter="resetAndLoad"
-      />
-      <input
+        filterable
+        allow-create
+        default-first-option
+        clearable
+        placeholder="供应商"
+        class="filter-select"
+        @change="resetAndLoad"
+      >
+        <el-option v-for="v in filterOptions.providers" :key="v" :label="v" :value="v" />
+      </el-select>
+      <el-select
         v-model="statusCodeFilter"
-        type="text"
-        placeholder="状态码（仅含该码的会话）"
-        class="filter-input"
-        @keyup.enter="resetAndLoad"
-      />
-      <input
+        filterable
+        allow-create
+        default-first-option
+        clearable
+        placeholder="状态码"
+        class="filter-select filter-select-short"
+        @change="resetAndLoad"
+      >
+        <el-option v-for="v in filterOptions.status_codes" :key="v" :label="v" :value="v" />
+      </el-select>
+      <el-select
         v-model="projectFilter"
-        type="text"
+        filterable
+        allow-create
+        default-first-option
+        clearable
         placeholder="项目ID"
-        class="filter-input"
-        @keyup.enter="resetAndLoad"
-      />
-      <input
+        class="filter-select filter-select-short"
+        @change="resetAndLoad"
+      >
+        <el-option v-for="v in filterOptions.projects" :key="v" :label="v" :value="v" />
+      </el-select>
+      <el-select
         v-model="taskFilter"
-        type="text"
+        filterable
+        allow-create
+        default-first-option
+        clearable
         placeholder="任务ID"
-        class="filter-input"
-        @keyup.enter="resetAndLoad"
-      />
+        class="filter-select filter-select-short"
+        @change="resetAndLoad"
+      >
+        <el-option v-for="v in filterOptions.tasks" :key="v" :label="v" :value="v" />
+      </el-select>
+      <el-select
+        v-model="clientFilter"
+        filterable
+        allow-create
+        default-first-option
+        clearable
+        placeholder="客户端 / 智能体"
+        class="filter-select"
+        @change="resetAndLoad"
+      >
+        <el-option v-for="v in filterOptions.clients" :key="v" :label="v" :value="v" />
+      </el-select>
+      <el-select
+        v-model="ownerUserFilter"
+        filterable
+        allow-create
+        default-first-option
+        clearable
+        placeholder="属主用户"
+        class="filter-select"
+        @change="resetAndLoad"
+      >
+        <el-option v-for="v in filterOptions.owners" :key="v" :label="v" :value="v" />
+      </el-select>
+      <el-select
+        v-model="tagsFilter"
+        multiple
+        filterable
+        allow-create
+        default-first-option
+        clearable
+        collapse-tags
+        collapse-tags-tooltip
+        placeholder="标签"
+        class="filter-select filter-select-tags"
+        @change="resetAndLoad"
+      >
+        <el-option v-for="v in filterOptions.tags" :key="v" :label="v" :value="v" />
+      </el-select>
+      <input v-model="dateFromFilter" type="datetime-local" class="filter-input" @change="resetAndLoad" />
+      <input v-model="dateToFilter" type="datetime-local" class="filter-input" @change="resetAndLoad" />
       <input
         v-model="searchFilter"
         type="text"
@@ -215,29 +308,6 @@ onMounted(() => {
         class="filter-input filter-search"
         @keyup.enter="resetAndLoad"
       />
-      <input
-        v-model="tagsFilter"
-        type="text"
-        placeholder="标签（逗号分隔）"
-        class="filter-input"
-        @keyup.enter="resetAndLoad"
-      />
-      <input
-        v-model="clientFilter"
-        type="text"
-        placeholder="客户端 / 智能体"
-        class="filter-input"
-        @keyup.enter="resetAndLoad"
-      />
-      <input
-        v-model="ownerUserFilter"
-        type="text"
-        placeholder="属主用户"
-        class="filter-input"
-        @keyup.enter="resetAndLoad"
-      />
-      <input v-model="dateFromFilter" type="datetime-local" class="filter-input" @change="resetAndLoad" />
-      <input v-model="dateToFilter" type="datetime-local" class="filter-input" @change="resetAndLoad" />
       <button class="btn btn-primary" @click="resetAndLoad">查询</button>
       <button class="btn btn-secondary" @click="resetAll">清空</button>
     </div>
@@ -409,6 +479,22 @@ onMounted(() => {
 }
 .filter-search {
   min-width: 220px;
+}
+/* 下拉选择器宽度按内容密度收敛，不铺满整行（rule 12 §5.1） */
+.filter-select {
+  width: 170px;
+  flex: 0 0 170px;
+}
+.filter-select-short {
+  width: 130px;
+  flex-basis: 130px;
+}
+.filter-select-tags {
+  width: 180px;
+  flex: 0 0 180px;
+}
+.filter-select :deep(.el-select__wrapper) {
+  min-height: 36px;
 }
 .btn {
   height: 36px;

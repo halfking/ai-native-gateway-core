@@ -171,3 +171,24 @@ export async function listTurnsSessions(params: {
   const path = `/api/admin/turns/sessions${qs.toString() ? '?' + qs.toString() : ''}`
   return req<TurnsSessionsResponse>('GET', path)
 }
+
+// =============================================================================
+// 热门筛选条件（2026-08-10）
+// 调用 GET /api/admin/turns/sessions/filter-options，返回近 30 天内各筛选维度
+// 实际出现的热门取值，供 TurnsListView.vue 的 filterable 下拉填充。
+// =============================================================================
+
+export interface TurnsFilterOptions {
+  projects: string[]
+  tasks: string[]
+  owners: string[]
+  clients: string[]
+  tags: string[]
+  models: string[]
+  providers: string[]
+  status_codes: string[]
+}
+
+export async function listTurnsFilterOptions(): Promise<TurnsFilterOptions> {
+  return req<TurnsFilterOptions>('GET', '/api/admin/turns/sessions/filter-options')
+}
