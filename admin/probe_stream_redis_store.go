@@ -68,6 +68,69 @@ type ProbeStreamTileSlim struct {
 	Source string `json:"src"`    // integrity|node_probe|selfcheck
 }
 
+// recordTransitionSrc is the Lua source for recordTransitionScript, kept as a
+// package-level constant so tests can assert on its invariants without a live
+// Redis (see TestRecordTransitionScript_Loaded).
+const recordTransitionSrc = `
+local taskID = ARGV[1]
+local ts = tonumber(ARGV[2])
+local statusKey = ARGV[3]
+local source = ARGV[4]
+local statusTTL = tonumber(ARGV[5])
+local mainKey = ARGV[6]
+local mainTTL = tonumber(ARGV[7])
+local taskStatusHash = ARGV[8]
+local taskSourceHash = ARGV[9]
+local dimIndexKey = ARGV[10]
+local detailKey = ARGV[11]
+local detailTTL = tonumber(ARGV[12])
+local keepLimit = tonumber(ARGV[13])
+
+-- Main queue.
+redis.call('ZADD', mainKey, ts, taskID)
+redis.call('EXPIRE', mainKey, mainTTL)
+
+-- Status lane: evict from previous, add to current.
+local prevStatus = redis.call('HGET', taskStatusHash, taskID)
+if prevStatus and prevStatus ~= '' and prevStatus ~= statusKey then
+  redis.call('ZREM', prevStatus, taskID)
+end
+redis.call('ZADD', statusKey, ts, taskID)
+redis.call('EXPIRE', statusKey, statusTTL)
+redis.call('HSET', taskStatusHash, taskID, statusKey)
+redis.call('EXPIRE', taskStatusHash, statusTTL)
+
+-- Source dimension lane.
+if source ~= '' then
+  local dimKey = 'llmgw:probe:dim:source:' .. source
+  redis.call('ZADD', dimKey, ts, taskID)
+  redis.call('EXPIRE', dimKey, statusTTL)
+  redis.call('SADD', dimIndexKey, source)
+  redis.call('EXPIRE', dimIndexKey, statusTTL)
+  local prevSrc = redis.call('HGET', taskSourceHash, taskID)
+  if prevSrc and prevSrc ~= '' and prevSrc ~= source then
+    redis.call('ZREM', 'llmgw:probe:dim:source:' .. prevSrc, taskID)
+  end
+  redis.call('HSET', taskSourceHash, taskID, source)
+  redis.call('EXPIRE', taskSourceHash, statusTTL)
+  -- Trim to newest keepLimit members (rank 0 = lowest score = oldest).
+  redis.call('ZREMRANGEBYRANK', dimKey, 0, -(keepLimit + 1))
+end
+
+return 1
+`
+
+// recordTransitionScript atomically moves a taskID from its previous status
+// lane to the new one, updates the per-task status/source indexes, and trims
+// the lane — all in a single Redis EVAL. This closes the read-modify-write
+// race that existed when the prev-status HGet ran outside the pipeline: two
+// concurrent transitions on the same taskID could both read the old prev,
+// both ZREM the wrong key, and overwrite each other's HSet, leaving stale
+// members in the abandoned lane.
+//
+// 2026-08-12 second-pass audit fix.
+var recordTransitionScript = redis.NewScript(recordTransitionSrc)
+
 // RecordWithOrigin writes a probe task transition to the dimension/status/main
 // queues, publishes a notify message tagged with originInstanceID so the same
 // instance's subscriber can drop its own events, and removes the taskID from
@@ -79,6 +142,10 @@ type ProbeStreamTileSlim struct {
 //     (previously a `pending` tile lingered in the pending queue even after
 //     the task moved to in-flight or completed, so initial_data replay showed
 //     stale copies of every transition).
+//   - second-pass: the prev-status/source read + ZREM + ZADD + HSET now run
+//     inside a single Lua script (recordTransitionScript) so concurrent
+//     transitions on the same taskID can no longer race on the HGet-then-HSet
+//     window.
 func (s *ProbeRedisStore) RecordWithOrigin(ctx context.Context, task ProbeStreamTask, originInstanceID string) error {
 	if !s.Enabled() {
 		return nil
@@ -90,72 +157,31 @@ func (s *ProbeRedisStore) RecordWithOrigin(ctx context.Context, task ProbeStream
 	if tsMs == 0 {
 		tsMs = time.Now().UnixMilli()
 	}
-
-	pipe := s.rdb.Pipeline()
-
-	// Main queue (member = bare taskID). ZADD on an existing member only
-	// updates the score, so re-records within the same lifecycle are idempotent.
-	pipe.ZAdd(ctx, probeMainKey, redis.Z{Score: float64(tsMs), Member: task.ID})
-	pipe.Expire(ctx, probeMainKey, probeMainTTL)
-
-	// Status queue: drop the task from any prior status lane, then add to
-	// the current one. prevStatusKey lives in a per-task hash so concurrent
-	// transitions on the same taskID stay consistent.
-	prevStatusKey, _ := s.rdb.HGet(ctx, probeTaskStatusKey, task.ID).Result()
 	statusKey := probeStatusKey(task.Status)
-	if prevStatusKey != "" && prevStatusKey != statusKey {
-		pipe.ZRem(ctx, prevStatusKey, task.ID)
-	}
-	pipe.ZAdd(ctx, statusKey, redis.Z{Score: float64(tsMs), Member: task.ID})
-	pipe.Expire(ctx, statusKey, probeQueueTTL)
-	pipe.HSet(ctx, probeTaskStatusKey, task.ID, statusKey)
-	pipe.Expire(ctx, probeTaskStatusKey, probeQueueTTL)
 
-	// Source dimension lane (member = taskID; slim tile is computed from the
-	// detail payload by the reader so we don't carry stale status here).
-	if task.Source != "" {
-		dimKey := probeDimSourceKey(task.Source)
-		pipe.ZAdd(ctx, dimKey, redis.Z{Score: float64(tsMs), Member: task.ID})
-		pipe.Expire(ctx, dimKey, probeQueueTTL)
-		pipe.SAdd(ctx, probeDimIndexKey, task.Source)
-		pipe.Expire(ctx, probeDimIndexKey, probeQueueTTL)
-		// Drop the task from any previous source lane (rare today — sources
-		// are stable per worker — but defensive for future moves).
-		prevSrc, _ := s.rdb.HGet(ctx, probeTaskSourceKey, task.ID).Result()
-		if prevSrc != "" && prevSrc != task.Source {
-			pipe.ZRem(ctx, probeDimSourceKey(prevSrc), task.ID)
-		}
-		pipe.HSet(ctx, probeTaskSourceKey, task.ID, task.Source)
-		pipe.Expire(ctx, probeTaskSourceKey, probeQueueTTL)
-		trimProbeQueue(ctx, pipe, dimKey)
-	}
+	// Atomic lane transition (status/source evict+add+trim in one EVAL).
+	_, _ = recordTransitionScript.Run(ctx, s.rdb, []string{},
+		task.ID, tsMs, statusKey, task.Source,
+		int64(probeQueueTTL.Seconds()), probeMainKey, int64(probeMainTTL.Seconds()),
+		probeTaskStatusKey, probeTaskSourceKey, probeDimIndexKey,
+		probeDetailKey(task.ID), int64(probeDetailTTL.Seconds()), probeQueueKeepLimit,
+	).Result()
 
-	// Detail payload.
+	// Detail payload + notify (best-effort, separate from the atomic core so
+	// a marshal/Publish failure never blocks the lane transition).
 	full, _ := json.Marshal(task)
+	pipe := s.rdb.Pipeline()
 	pipe.Set(ctx, probeDetailKey(task.ID), string(full), probeDetailTTL)
-
-	// Notify (hub subscriber reloads + fans out). originInstanceID lets the
-	// publishing instance recognise and skip its own message.
 	notify := buildProbeNotify(task.ID, task.Source, task.Status, originInstanceID)
 	pipe.Publish(ctx, probeNotifyChannel, notify)
-
-	_, err := pipe.Exec(ctx)
-	if err != nil && !isRedisCancelErr(err) {
-		slog.Warn("probe_stream redis record failed", "error", err, "task_id", task.ID)
+	if _, err := pipe.Exec(ctx); err != nil && !isRedisCancelErr(err) {
+		slog.Warn("probe_stream redis record (detail/notify) failed", "error", err, "task_id", task.ID)
 	}
-	return nil // best-effort: a Redis hiccup must not break the probe worker
+	return nil
 }
 
-// Record keeps the legacy zero-arg-origin signature for callers that don't
-// need the dedup guard (kept for backward compat with future tests).
-func (s *ProbeRedisStore) Record(ctx context.Context, task ProbeStreamTask) error {
-	return s.RecordWithOrigin(ctx, task, "")
-}
-
-// trimProbeQueue caps a lane to the newest N members (oldest evicted first).
-func trimProbeQueue(ctx context.Context, pipe redis.Pipeliner, key string) {
-	pipe.ZRemRangeByRank(ctx, key, 0, -probeQueueKeepLimit-1)
-}
+// Lane trimming is inlined into recordTransitionScript (Lua ZREMRANGEBYRANK)
+// so it runs atomically with the lane transition.
 
 func probeStatusKey(status string) string  { return probeKeyPrefix + ":status:" + status }
 func probeDimSourceKey(src string) string  { return probeKeyPrefix + ":dim:source:" + src }
