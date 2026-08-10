@@ -9,6 +9,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/domain" //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/internal/ir"
 	"github.com/kaixuan/llm-gateway-go/internal/irconv"
+	"github.com/kaixuan/llm-gateway-go/internal/paramreg"
 )
 
 // IRConverterAdapter is the dependency-free conversion contract shared with
@@ -467,20 +468,114 @@ func (c *TransportIRConverter) restoreExtensions(body []byte, ext map[string]jso
 	return restored
 }
 
-// restoreRequestExtensions conditionally restores request extensions based on
-// SourceProtocol and catalog code hints.
+// restoreRequestExtensions 把 IR 序列化器可能未覆盖的扩展字段补齐进 body。
 func (c *TransportIRConverter) restoreRequestExtensions(body []byte, req *ir.InternalRequest, targetProtocol string) []byte {
 	return c.restoreRequestExtensionsWithContext(body, req, targetProtocol, c.contextSnapshot())
 }
 
 func (c *TransportIRConverter) restoreRequestExtensionsWithContext(body []byte, req *ir.InternalRequest, targetProtocol string, ctx *domain.TransportContext) []byte {
-	if req == nil || (req.SourceProtocol != "" && req.SourceProtocol != targetProtocol) {
+	if req == nil {
 		return body
 	}
-	if ctx != nil && ctx.ClientCatalogCode != "" && ctx.UpstreamCatalogCode != "" && ctx.ClientCatalogCode != ctx.UpstreamCatalogCode {
+
+	// 2026-08-11（P2 修复）：移除两道门禁。
+	//
+	// 原实现：
+	//   1. SourceProtocol != targetProtocol      → 整包丢弃
+	//   2. ClientCatalogCode != UpstreamCatalogCode → 整包丢弃
+	//
+	// 门禁 1 与 internal/ir 序列化器里的同类门禁重复。门禁 2 更严重 ——
+	// 网关的存在意义就是跨 catalog 转发，所以它等价于"几乎永不还原"。
+	// 两者叠加使得 Claude Code → DeepSeek 这条主链路的厂商私有参数 100% 丢失。
+	//
+	// 门禁的原始动机（docs/IR格式优化/06-Provider-Profile审计与收敛.md 第 5 节：
+	// 避免把 A 厂商私有字段泄漏给 B 厂商上游）是正确的，手段是错的 ——
+	// 正确做法是按**字段**分类判定而非整包丢弃。该职责现由 internal/paramreg
+	// 承担：ir.Serialize* 内部已逐字段决策，未知字段透传、方言私有字段裁剪并
+	// 上报 loss、目标硬拒绝的字段一律剔除。
+	//
+	// 底层 IRExtensionRestorer 只写目标不存在的键，不会覆盖 IR 已生成的标准字段。
+	if !paramregEnabled() {
+		// 回退路径：PARAMREG_ENABLED=false 时恢复旧的双门禁行为。
+		if req.SourceProtocol != "" && req.SourceProtocol != targetProtocol {
+			return body
+		}
+		if ctx != nil && ctx.ClientCatalogCode != "" && ctx.UpstreamCatalogCode != "" &&
+			ctx.ClientCatalogCode != ctx.UpstreamCatalogCode {
+			return body
+		}
+		return c.restoreExtensions(body, req.Extensions)
+	}
+
+	// paramreg 启用路径：transport 层的第二次还原也走注册表决策。
+	//
+	// 注意：internal/ir 的 serialize_* 已经对 req.Extensions 做了一遍 paramreg
+	// 过滤。transport 层的这次还原处理的是 ExtensionsBag.ClientRaw（由
+	// IRExtensionExtractor 从 body 里提取），它可能包含不同的字段子集。
+	// 为保持一致，这里也用 paramreg.Apply 逐字段决策，不用旧的 naive restorer。
+	srcDialect := paramreg.DialectForProtocol(req.SourceProtocol)
+	dstDialect := paramreg.Resolve(req.TargetProvider, targetProtocol)
+	if ctx != nil && dstDialect == paramreg.DialectUnknown {
+		dstDialect = paramreg.DialectForCatalogCode(ctx.UpstreamCatalogCode)
+		if dstDialect == paramreg.DialectUnknown {
+			dstDialect = paramreg.DialectForProtocol(targetProtocol)
+		}
+	}
+
+	return c.restoreExtensionsWithParamreg(body, req.Extensions, srcDialect, dstDialect)
+}
+
+// restoreExtensionsWithParamreg 按注册表策略逐字段决策并还原 Extensions 进 body。
+//
+// 与 internal/ir 的 restoreExtensions 逻辑一致；此函数在 transport 层独立实现，
+// 避免 transport → internal/ir 的反向依赖（ir 需要 import paramreg）。
+func (c *TransportIRConverter) restoreExtensionsWithParamreg(
+	body []byte,
+	extensions map[string]json.RawMessage,
+	src, dst paramreg.Dialect,
+) []byte {
+	if len(extensions) == 0 {
 		return body
 	}
-	return c.restoreExtensions(body, req.Extensions)
+
+	var target map[string]json.RawMessage
+	if err := json.Unmarshal(body, &target); err != nil {
+		return body
+	}
+	if target == nil {
+		target = make(map[string]json.RawMessage)
+	}
+
+	merged := false
+	for key, val := range extensions {
+		if _, exists := target[key]; exists {
+			continue // IR 已输出该键，不覆盖
+		}
+
+		outKey, outVal, action, _ := paramreg.Apply(key, val, src, dst)
+		switch action {
+		case paramreg.ActionRestore, paramreg.ActionTranslate:
+			if outKey == "" {
+				continue
+			}
+			if _, exists := target[outKey]; exists {
+				continue
+			}
+			target[outKey] = outVal
+			merged = true
+		// ActionDrop / ActionSkip：不写入
+		}
+	}
+
+	if !merged {
+		return body
+	}
+
+	out, err := json.Marshal(target)
+	if err != nil {
+		return body
+	}
+	return out
 }
 
 // ─── Response direction (Phase D) ───

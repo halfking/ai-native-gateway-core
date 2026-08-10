@@ -60,10 +60,58 @@ func SerializeGemini(req *InternalRequest) ([]byte, error) {
 		out["generationConfig"] = gc
 	}
 
+	// Safety settings（2026-08-11 P3 修复）。
+	//
+	// 此前 parse_gemini.go 把 safetySettings 列入 knownFields（所以不进
+	// Extensions），却从未赋值给 IR、从未序列化、也没有 loss 事件 —— 纯静默丢失。
+	// 内容安全阈值被静默丢弃属于合规风险，不只是兼容性问题。
+	if len(req.SafetySettings) > 0 {
+		out["safetySettings"] = buildGeminiSafetySettings(req.SafetySettings)
+	}
+
+	// Cached content（同上，此前静默丢失）。
+	if req.CachedContent != "" {
+		out["cachedContent"] = req.CachedContent
+	}
+
 	// Step 4.10 (2026-07-28): explicit anomaly for cross-protocol losses.
 	reportSerializeGeminiLosses(req)
 
+	// Extensions 还原（2026-08-11 P2 修复）。
+	//
+	// 此前本序列化器**完全没有** Extensions 还原代码（grep Extensions 零命中），
+	// 导致任何出向 Gemini 的请求，无论来源协议，未知字段全丢。
+	restoreExtensions(out, req, ProtocolGeminiGenerate)
+
 	return json.Marshal(out)
+}
+
+// buildGeminiSafetySettings 把 IR SafetySetting 渲染为 Gemini 线格式。
+//
+// Gemini 要求每个 harmCategory 最多一条。method 字段仅 Vertex AI 支持，
+// Gemini Developer API 不认，因此仅在非空时输出。
+func buildGeminiSafetySettings(settings []SafetySetting) []map[string]any {
+	out := make([]map[string]any, 0, len(settings))
+	for _, s := range settings {
+		if s.Category == "" && s.Threshold == "" {
+			continue
+		}
+		item := map[string]any{}
+		if s.Category != "" {
+			item["category"] = s.Category
+		}
+		if s.Threshold != "" {
+			item["threshold"] = s.Threshold
+		}
+		if s.Method != "" {
+			item["method"] = s.Method
+		}
+		out = append(out, item)
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }
 
 // reportSerializeGeminiLosses records IR fields that the Gemini generateContent
@@ -639,13 +687,48 @@ func buildGeminiGenerationConfig(req *InternalRequest) map[string]any {
 		}
 	}
 
-	// Map ReasoningConfig → Gemini thinkingConfig
-	if req.Reasoning != nil && req.Reasoning.BudgetTokens != nil {
-		gc["thinkingConfig"] = map[string]any{
-			"thinkingBudget":  *req.Reasoning.BudgetTokens,
-			"includeThoughts": true,
+	// Map ReasoningConfig → Gemini thinkingConfig.
+	//
+	// 2026-08-11: Extended to support effort-only configs (fills the gap where
+	// an effort-only ReasoningConfig from an OpenAI client targeting Gemini
+	// was previously silently dropped because BudgetTokens was nil).
+	if req.Reasoning != nil {
+		var budgetTokens *int
+		includeThoughts := true
+
+		// Explicit budget takes priority.
+		if req.Reasoning.BudgetTokens != nil {
+			budgetTokens = req.Reasoning.BudgetTokens
+		} else if req.Reasoning.Effort != "" {
+			// Convert effort → budget using canonical table.
+			b, ok := reasonnormEffortToBudget(req.Reasoning.Effort)
+			if ok && b > 0 {
+				budgetTokens = &b
+			}
+			// effort=="none" → b==0 → no thinkingConfig (disable thinking)
 		}
-		hasAny = true
+
+		if req.Reasoning.Type == "disabled" {
+			// Gemini sentinel: thinkingBudget=0 means disabled.
+			zero := 0
+			gc["thinkingConfig"] = map[string]any{
+				"thinkingBudget": zero,
+			}
+			hasAny = true
+		} else if budgetTokens != nil {
+			tc := map[string]any{
+				"thinkingBudget": *budgetTokens,
+			}
+			if req.Reasoning.Type == "auto" || req.Reasoning.Effort == "" {
+				// Let Gemini decide whether to include thoughts output.
+				// includeThoughts defaults to true; only override when false.
+				tc["includeThoughts"] = includeThoughts
+			} else {
+				tc["includeThoughts"] = includeThoughts
+			}
+			gc["thinkingConfig"] = tc
+			hasAny = true
+		}
 	}
 
 	if !hasAny {

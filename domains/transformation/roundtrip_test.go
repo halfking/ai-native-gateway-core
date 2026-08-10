@@ -27,35 +27,36 @@ func extractField(t *testing.T, body []byte, field string) json.RawMessage {
 
 // --- 场景 1: 自定义字段往返（OpenAI 顶层非标字段）---
 
+// TestRoundtrip_CustomField_OpenAIToAnthropicResponse 验证未知字段的端到端往返行为。
+//
+// 2026-08-11 (P2 修复)：行为变更说明。
+// 修复前：custom_field / cache 等未登记字段 OpenAI → Anthropic 时被整包丢弃。
+// 修复后：未登记字段按"未知即透传"原则无条件通过，包括跨协议场景。
+// 理由：厂商每月新增参数；Claude Code 的 CLAUDE_CODE_EXTRA_BODY 需要此保证。
+// 如需隔离特定字段，在 provider_catalog.capabilities.strip_request_fields 配置。
 func TestRoundtrip_CustomField_OpenAIToAnthropicResponse(t *testing.T) {
 	tr := NewIRTransport()
 
-	// 1. OpenAI 请求，含非标字段 custom_field + cache
+	// 1. OpenAI 请求，含未登记字段 custom_field + cache
 	reqBody := []byte(`{"model":"gpt-4o","messages":[{"role":"user","content":"hi"}],"max_tokens":1024,"custom_field":"value123","cache":true}`)
 
 	env := newEnvelopeWithBody("openai-chat", "anthropic-messages", reqBody, "gpt-4o")
 
-	// 2. Convert（请求方向）会提取 custom_field + cache 到 ExtensionsBag
-	// 注意：round-trip 测试中 Convert 和 ConvertResponse 必须作用于同一 envelope
-	// （Extensions 需要在两个阶段间传递），所以不能用 cloneEnvelope
+	// 2. Convert（请求方向）
 	upstreamReq, err := tr.Convert(context.Background(), env)
 	if err != nil {
 		t.Fatalf("Convert: %v", err)
 	}
+	_ = upstreamReq
 
-	// 3. 验证 custom_field 未泄漏到 Anthropic 请求（Anthropic 不认识这些字段）
-	if strings.Contains(string(upstreamReq), "custom_field") {
-		t.Errorf("Anthropic upstream should NOT contain custom_field: %s", upstreamReq)
-	}
-
-	// 4. ConvertResponse（响应方向）应把 custom_field + cache 还原到 OpenAI 响应
+	// 3. ConvertResponse（响应方向）应把 custom_field + cache 还原到 OpenAI 响应
 	upstreamResp := []byte(anthropicResponse)
 	clientResp, err := tr.ConvertResponse(context.Background(), env, upstreamResp)
 	if err != nil {
 		t.Fatalf("ConvertResponse: %v", err)
 	}
 
-	// 5. 验证响应包含 custom_field + cache
+	// 4. 验证响应包含 custom_field + cache（往返无损）
 	customField := extractField(t, clientResp, "custom_field")
 	if string(customField) != `"value123"` {
 		t.Errorf("custom_field = %s, want \"value123\"\nfull: %s", customField, clientResp)

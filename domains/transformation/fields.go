@@ -1,5 +1,12 @@
 package transformation
 
+import (
+	"strings"
+	"sync"
+
+	"github.com/kaixuan/llm-gateway-go/internal/paramreg"
+)
+
 // standardRequestFields 是 IR 已知处理的顶层请求字段（OpenAI + Anthropic 共集）。
 //
 // 这些字段会被 IR 的 Parse/Serialize 正确转换，不需要存入 ExtensionsBag。
@@ -63,6 +70,19 @@ var standardRequestFields = map[string]bool{
 }
 
 // isStandardField 报告字段名是否是 IR 已知处理的标准字段。
+//
+// 2026-08-11：数据源改为 internal/paramreg。此前本文件的 standardRequestFields
+// 与 internal/ir/parse_*.go 各自的 knownFields 是两套并行清单，漂移后造成
+// stream_options / metadata 被静默丢弃的真实事故（见本文件顶部注释）。
+// 现由注册表统一供给，从结构上消除这类漂移。
+//
+// standardRequestFields 保留作为 PARAMREG_ENABLED=false 的回退路径。
 func isStandardField(field string) bool {
-	return standardRequestFields[field]
+	if !paramregEnabled() {
+		return standardRequestFields[field]
+	}
+	return irHandledFields()[strings.ToLower(strings.TrimSpace(field))]
 }
+
+// irHandledFields 缓存注册表的 IR 已处理字段集合。
+var irHandledFields = sync.OnceValue(paramreg.IRHandledFields)

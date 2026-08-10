@@ -172,21 +172,14 @@ func SerializeOpenAI(req *InternalRequest) ([]byte, error) {
 		out["parallel_tool_calls"] = *req.ParallelToolCalls
 	}
 
-	// P0 fix (2026-07-13): Restore Extensions (vendor-specific unknown fields)
-	// Extensions contains fields like reasoning_effort (DeepSeek), web_search (GLM),
-	// bot_setting (MiniMax), etc. that were preserved during ParseOpenAI.
-	// Restore them to output for lossless passthrough to upstream providers.
-	if req.SourceProtocol == "" || req.SourceProtocol == ProtocolOpenAIChat {
-		for key, val := range req.Extensions {
-			// Only restore if key doesn't conflict with known fields
-			if _, exists := out[key]; !exists {
-				var v any
-				if err := json.Unmarshal(val, &v); err == nil {
-					out[key] = v
-				}
-			}
-		}
-	}
+	// Restore Extensions（厂商私有 / 未知字段）。
+	//
+	// 2026-08-11: 原实现带 `SourceProtocol == ProtocolOpenAIChat` 门禁，导致
+	// 跨协议路由（Claude Code anthropic → DeepSeek openai-chat，本网关最核心的
+	// 链路）一个 Extensions 字段都还原不了。现改为按字段查参数注册表决策：
+	// 未知字段无条件透传，方言私有字段按目标能力裁剪。
+	// 详见 restoreExtensions 与 docs/参数全量兼容/01-审计基线与研究结论.md。
+	restoreExtensions(out, req, ProtocolOpenAIChat)
 
 	// Validate tool_call integrity before sending to upstream.
 	//

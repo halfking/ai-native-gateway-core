@@ -26,13 +26,27 @@ func TestApplyRequestWhitelist_StripFields(t *testing.T) {
 	assert.Contains(t, string(out), "model")
 }
 
-// TestApplyRequestWhitelist_PassthroughFields 验证未在 passthrough+allowlist 中的字段被删除。
+// TestApplyRequestWhitelist_PassthroughFields 验证 passthrough_fields 的语义。
+//
+// 2026-08-11 (P7 fix): passthrough_fields 的语义改为"额外允许"而非"唯一允许"。
+// 未登记字段（unknown_field）按"未知即透传"原则通过；只有 stripFields 能删字段。
+// 如需删除 unknown_field，应用 stripFields: ["unknown_field"]。
 func TestApplyRequestWhitelist_PassthroughFields(t *testing.T) {
 	body := []byte(`{"model":"gpt-4","messages":[],"unknown_field":"x"}`)
 	out := ApplyRequestWhitelist(body, []string{"model", "messages"}, nil)
 	assert.Contains(t, string(out), "model")
 	assert.Contains(t, string(out), "messages")
-	assert.NotContains(t, string(out), "unknown_field")
+	// unknown_field now passes through (no whitelist-exclusion with paramreg).
+	// To delete it, use stripFields: ["unknown_field"].
+	assert.Contains(t, string(out), "unknown_field")
+}
+
+// TestApplyRequestWhitelist_StripFieldsRemovesUnknown 验证 stripFields 确实删除字段。
+func TestApplyRequestWhitelist_StripFieldsRemovesUnknown(t *testing.T) {
+	body := []byte(`{"model":"gpt-4","messages":[],"secret_field":"x"}`)
+	out := ApplyRequestWhitelist(body, []string{"model", "messages"}, []string{"secret_field"})
+	assert.Contains(t, string(out), "model")
+	assert.NotContains(t, string(out), "secret_field")
 }
 
 // TestCompressMessagesIfNeeded_NoCompression 验证未超限时 body 不变。
