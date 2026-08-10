@@ -2,11 +2,39 @@ package v2
 
 import (
 	"encoding/json"
+	"errors"
+	"log/slog"
 	"reflect"
 	"strings"
 
 	"github.com/kaixuan/llm-gateway-go/internal/ir"
 )
+
+// logParseFail emits a Warn-level log when the adapter degrades a malformed
+// payload. The adapter is designed to never panic, so a "drop" is invisible
+// to the caller — but for an operator these are real signals: a wire format
+// drift (a provider that changed shape), a corrupted DB row, or a unit test
+// that wrote an incomplete fixture. The stage name is a stable grep anchor
+// (e.g. "recover_ir_raw", "ir_blocks_from_raw"); the raw payload is never
+// logged, because it may contain user content and grow the log unbounded.
+//
+// We use the package-default logger rather than a *slog.Logger argument so
+// the helper stays invocable from any layer without plumbing context. The
+// function is allocation-light and safe to call from hot paths; production
+// runs typically see zero output because well-formed payloads never trip it.
+func logParseFail(stage string, err error) {
+	slog.Warn("ir adapter parse failure",
+		"stage", stage,
+		"error", err.Error())
+}
+
+// errInvalidSubBlock is the sentinel error returned (in log form) when a
+// single envelope sub-payload fails to decode inside irBlocksFromRaw. The
+// actual json.Unmarshal error is dropped here on purpose: one malformed
+// sub-object must not cost the surrounding conversation its other blocks,
+// and a single grep-friendly stage string is enough for operators to
+// count occurrences in aggregate.
+var errInvalidSubBlock = errors.New("invalid envelope sub-block")
 
 // ─────────────────────────────────────────────────────────────────────────
 // IR ↔ v2.Message adapter (omni-ref3 A5/E6, Phase 1)
@@ -208,11 +236,22 @@ func irEnvelopeContent(rawContent any) (content, messageRaw json.RawMessage) {
 	}
 	var env irRawEnvelope
 	if err := json.Unmarshal(raw, &env); err != nil {
+		// The bytes claimed to be an envelope (because they do not start with
+		// `[`) but did not parse. This is the only path where a multimodal
+		// content array can be silently lost — log it so an operator can tell
+		// "row arrived intact" from "row arrived malformed".
+		logParseFail("ir_envelope_content", err)
 		return nil, nil
 	}
 	if len(env.Content) > 0 {
 		if out, err := json.Marshal(env.Content); err == nil {
 			content = out
+		} else {
+			// An envelope's content array marshaled successfully on write
+			// (otherwise it would not be in RawContent at all), so a failure
+			// here means the in-memory shape diverged from the on-disk one —
+			// a programmer error worth a log line.
+			logParseFail("ir_envelope_content.marshal", err)
 		}
 	}
 	return content, env.Raw
@@ -441,6 +480,11 @@ func marshalOrNil(v any) json.RawMessage {
 	}
 	out, err := json.Marshal(v)
 	if err != nil {
+		// Every caller passes a pointer to a struct with a stable JSON
+		// shape, so a marshal failure here is a programmer error rather
+		// than bad input. Logging it keeps the failure from being a
+		// silent drop.
+		logParseFail("marshal_or_nil", err)
 		return nil
 	}
 	return out
@@ -473,12 +517,18 @@ func rawJSONFromAny(v any) json.RawMessage {
 		}
 		out, err := json.Marshal(t)
 		if err != nil {
+			// The string was non-empty and not valid JSON, so we attempted
+			// to re-encode it as a JSON string. A failure here means the
+			// string contains bytes that json.Marshal cannot escape — that
+			// is a programmer or fixture error, not a wire-format event.
+			logParseFail("raw_json_from_any.string_marshal", err)
 			return nil
 		}
 		return out
 	default:
 		out, err := json.Marshal(v)
 		if err != nil {
+			logParseFail("raw_json_from_any.default_marshal", err)
 			return nil
 		}
 		return out
@@ -496,9 +546,21 @@ func recoverIRRaw(m Message) (ir.Message, bool) {
 	}
 	// A content-block array (what MarshalJSON persists) is not an envelope;
 	// json.Unmarshal rejects it into the struct and the caller falls back to
-	// the ToIR path, which knows how to decode block arrays.
+	// the ToIR path, which knows how to decode block arrays. Detect the array
+	// shape *before* the unmarshal so a legitimate multimodal round-trip
+	// does not emit a Warn line for every message — only the unexpected
+	// failures reach the log path below.
+	if len(raw) > 0 && raw[0] == '[' {
+		return ir.Message{}, false
+	}
 	var env irRawEnvelope
 	if err := json.Unmarshal(raw, &env); err != nil {
+		// RawContent was set but did not parse as the IR envelope and
+		// was not the documented block-array shape. ToIR will fall
+		// through to the legacy text projection, dropping every
+		// multimodal block. Log so an operator can tell apart "no
+		// RawContent" from "RawContent was unparseable".
+		logParseFail("recover_ir_raw", err)
 		return ir.Message{}, false
 	}
 	// A JSON `null` content — the standard OpenAI assistant-with-tool_calls
@@ -565,54 +627,72 @@ func irBlocksFromRaw(raw []irRawBlock) []ir.ContentBlock {
 			var v ir.ImageSource
 			if json.Unmarshal(rb.Image, &v) == nil {
 				b.Image = &v
+			} else {
+				logParseFail("ir_blocks_from_raw.image", errInvalidSubBlock)
 			}
 		}
 		if len(rb.Audio) > 0 {
 			var v ir.MediaSource
 			if json.Unmarshal(rb.Audio, &v) == nil {
 				b.Audio = &v
+			} else {
+				logParseFail("ir_blocks_from_raw.audio", errInvalidSubBlock)
 			}
 		}
 		if len(rb.Video) > 0 {
 			var v ir.MediaSource
 			if json.Unmarshal(rb.Video, &v) == nil {
 				b.Video = &v
+			} else {
+				logParseFail("ir_blocks_from_raw.video", errInvalidSubBlock)
 			}
 		}
 		if len(rb.Document) > 0 {
 			var v ir.DocumentBlock
 			if json.Unmarshal(rb.Document, &v) == nil {
 				b.Document = &v
+			} else {
+				logParseFail("ir_blocks_from_raw.document", errInvalidSubBlock)
 			}
 		}
 		if len(rb.InputAudio) > 0 {
 			var v ir.InputAudioBlock
 			if json.Unmarshal(rb.InputAudio, &v) == nil {
 				b.InputAudio = &v
+			} else {
+				logParseFail("ir_blocks_from_raw.input_audio", errInvalidSubBlock)
 			}
 		}
 		if len(rb.ToolUse) > 0 {
 			var v ir.ToolUse
 			if json.Unmarshal(rb.ToolUse, &v) == nil {
 				b.ToolUse = &v
+			} else {
+				logParseFail("ir_blocks_from_raw.tool_use", errInvalidSubBlock)
 			}
 		}
 		if len(rb.ToolResult) > 0 {
 			var v ir.ToolResult
 			if json.Unmarshal(rb.ToolResult, &v) == nil {
 				b.ToolResult = &v
+			} else {
+				logParseFail("ir_blocks_from_raw.tool_result", errInvalidSubBlock)
 			}
 		}
 		if len(rb.Thinking) > 0 {
 			var v ir.ThinkingBlock
 			if json.Unmarshal(rb.Thinking, &v) == nil {
 				b.Thinking = &v
+			} else {
+				logParseFail("ir_blocks_from_raw.thinking", errInvalidSubBlock)
 			}
 		}
 		if len(rb.CacheControl) > 0 {
 			var v ir.CacheControl
 			if json.Unmarshal(rb.CacheControl, &v) == nil {
 				b.CacheControl = &v
+			} else {
+				logParseFail("ir_blocks_from_raw.cache_control", errInvalidSubBlock)
 			}
 		}
 		if len(rb.Raw) > 0 {
@@ -867,8 +947,12 @@ func (p msgProbeCompat) toIR() ir.Message {
 // decodeContentBlocks decodes a JSON content-block array, dispatching each
 // element to the envelope decoder or the OpenAI-wire decoder independently.
 func decodeContentBlocks(raw json.RawMessage) []ir.ContentBlock {
+	// Every caller checks `raw[0] == '['` before invoking us, so the outer
+	// unmarshal cannot fail in practice; the if-block below is defensive
+	// (handles a hypothetical caller that forgets the prefix check).
 	var arr []json.RawMessage
 	if err := json.Unmarshal(raw, &arr); err != nil {
+		logParseFail("decode_content_blocks", err)
 		return nil
 	}
 	out := make([]ir.ContentBlock, 0, len(arr))
@@ -879,6 +963,11 @@ func decodeContentBlocks(raw json.RawMessage) []ir.ContentBlock {
 				out = append(out, irBlocksFromRaw([]irRawBlock{rb})...)
 				continue
 			}
+			// Per-block parse failure falls through to the wire decoder,
+			// which usually preserves the block under RawContent. Log so
+			// an operator can spot a provider that started emitting
+			// envelope-shaped bytes the decoder does not understand.
+			logParseFail("decode_content_blocks.envelope_block", errInvalidSubBlock)
 		}
 		if b := decodeContentBlock(bRaw); b != nil {
 			out = append(out, *b)
@@ -914,6 +1003,12 @@ func decodeContentBlock(raw json.RawMessage) *ir.ContentBlock {
 		Index        *int            `json:"index"`
 	}
 	if err := json.Unmarshal(raw, &probe); err != nil {
+		// A block that does not even match the probe shape (no `type`, no
+		// `text`, no provider carrier). The wire decoder returns nil and
+		// the caller skips the block — but the absence of a `type` field
+		// is rare in the wild and almost always signals a partial write
+		// or an upstream format drift.
+		logParseFail("decode_content_block", err)
 		return nil
 	}
 	b := &ir.ContentBlock{Type: probe.Type, Text: probe.Text, Index: probe.Index}
@@ -1001,6 +1096,11 @@ func decodeDocumentBlock(source, whole json.RawMessage) *ir.DocumentBlock {
 		Filename  string `json:"filename"`
 	}
 	if err := json.Unmarshal(source, &src); err != nil {
+		// The block looked Anthropic-shaped but its source did not parse.
+		// Returning nil here means the whole block is preserved under
+		// RawContent, so no data is lost — but the degradation itself
+		// is still useful telemetry.
+		logParseFail("decode_document_block", err)
 		return nil
 	}
 	if src.FileData != "" {
@@ -1066,6 +1166,11 @@ func decodeImageSource(raw json.RawMessage) *ir.ImageSource {
 	}
 	var img ir.ImageSource
 	if err := json.Unmarshal(raw, &img); err != nil {
+		// An image carrier whose shape we did not recognise. The caller
+		// preserves the block verbatim under RawContent; logging here
+		// surfaces wire-format drift before it accumulates as silent
+		// image loss in real conversations.
+		logParseFail("decode_image_source", err)
 		return nil
 	}
 	if img.URL == "" && img.Data == "" && img.FileID == "" && img.FileURI == "" {
