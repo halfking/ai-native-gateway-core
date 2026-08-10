@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 
@@ -15,14 +16,23 @@ import (
 
 func main() {
 	// 命令行参数
-	mode := flag.String("mode", "test", "运行模式: test(单次测试) | monitor(持续监控) | history(历史分析) | changes(变化检测) | simulate-drop(模拟质量下降)")
+	mode := flag.String("mode", "test", "运行模式: test(单次测试) | monitor(持续监控) | history(历史分析) | changes(变化检测) | simulate-drop(模拟质量下降) | catalog-iq(模型目录平均智商) | node-iq(单凭据节点智商) | node-test(直连单节点测试)")
 	provider := flag.String("provider", "openai", "供应商名称")
 	model := flag.String("model", "gpt-4", "模型名称")
 	benchmark := flag.String("benchmark", "lite", "测试套件: lite(快速) | full(完整)")
 	dataDir := flag.String("data-dir", "./data/model-quality", "数据存储目录")
 	interval := flag.Duration("interval", 24*time.Hour, "监控间隔(仅monitor模式)")
 	days := flag.Int("days", 30, "历史分析天数(仅history模式)")
-	
+
+	// 2026-08-10: 直连节点测试相关参数
+	dsn := flag.String("dsn", "", "PostgreSQL DSN（node-test 模式从 DB 自动发现节点，与 -base-url 二选一）")
+	fernetKey := flag.String("fernet-key", "", "32字节 fernet 密钥（hex 解密凭据 secret，配合 -dsn 用）")
+	credID := flag.Int("credential-id", 0, "凭据节点 ID（node-test 模式：直连该节点测试）")
+	rawModel := flag.String("raw-model", "", "节点上的请求模型名（node-test 模式，留空则用该节点的 raw_model_name）")
+	nodeBaseURL := flag.String("node-base-url", "", "直连节点 base URL（node-test 模式，无需 DSN 时直接指定）")
+	nodeAPIKey := flag.String("node-api-key", "", "直连节点 API key（node-test 模式，配合 -node-base-url）")
+	timeout := flag.Duration("timeout", 30*time.Second, "单题请求超时")
+
 	flag.Parse()
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -59,23 +69,35 @@ func main() {
 	case "test":
 		// 单次测试模式
 		runSingleTest(ctx, executor, storage, *provider, *model, *benchmark)
-		
+
 	case "monitor":
 		// 持续监控模式
 		runMonitor(ctx, executor, storage, alerter, *interval)
-		
+
 	case "simulate-drop":
 		// 模拟质量下降场景
 		simulateQualityDrop(ctx, executor, storage, alerter, invoker)
-		
+
 	case "history":
 		// 历史分析模式
 		runHistoryAnalysis(ctx, storage, *provider, *model, *days)
-		
+
 	case "changes":
 		// 变化检测模式
 		runChangeDetection(ctx, storage)
-		
+
+	case "catalog-iq":
+		// 模型目录平均智商
+		runCatalogIQ(ctx, storage)
+
+	case "node-iq":
+		// 单凭据节点智商
+		runNodeIQ(ctx, storage)
+
+	case "node-test":
+		// 直连单节点测试
+		runNodeTest(ctx, storage, *dsn, *fernetKey, *credID, *rawModel, *nodeBaseURL, *nodeAPIKey, *benchmark, *timeout)
+
 	default:
 		fmt.Printf("未知模式: %s\n", *mode)
 		flag.Usage()
@@ -130,6 +152,9 @@ func runSingleTest(ctx context.Context, executor modelquality.BenchmarkExecutor,
 	fmt.Printf("平均延迟: %.0fms\n", report.AvgLatency)
 	fmt.Printf("总Token: %d\n", report.TotalTokens)
 	fmt.Printf("耗时: %s\n", report.Duration)
+	if report.ProbeKind != "" {
+		fmt.Printf("调用路径: %s\n", report.ProbeKind)
+	}
 	fmt.Printf("\n综合评分: %.2f\n", score.OverallScore)
 	fmt.Printf("等级: %s\n", score.Grade)
 	fmt.Printf("稳定性: %.2f%%\n", score.Stability)
@@ -153,7 +178,7 @@ func runMonitor(ctx context.Context, executor modelquality.BenchmarkExecutor, st
 
 	// 配置监控目标 - 使用默认的特色模型列表
 	targetModels := modelquality.GetDefaultMonitorModels()
-	
+
 	config := &modelquality.MonitorConfig{
 		EnableScheduled:      true,
 		ScheduleInterval:     interval,
@@ -165,7 +190,7 @@ func runMonitor(ctx context.Context, executor modelquality.BenchmarkExecutor, st
 		QualityDropThreshold: 5.0, // 准确率下降5%触发告警
 		TargetModels:         targetModels,
 	}
-	
+
 	fmt.Printf("监控模型列表:\n")
 	for i, model := range targetModels {
 		fmt.Printf("  %d. %s (%s:%s)\n", i+1, model.Alias, model.Provider, model.ModelName)
@@ -200,11 +225,11 @@ func simulateQualityDrop(ctx context.Context, executor modelquality.BenchmarkExe
 	suite := modelquality.GetMMLULiteSuite()
 	report1, _ := executor.Execute(ctx, modelName, provider, suite)
 	storage.SaveReport(ctx, report1)
-	
+
 	calculator := &modelquality.ScoreCalculator{}
 	score1 := calculator.CalculateScore(report1)
 	storage.SaveScore(ctx, score1)
-	
+
 	fmt.Printf("初始准确率: %.2f%%, 评分: %.2f (%s)\n\n", score1.Accuracy, score1.OverallScore, score1.Grade)
 
 	// 模拟质量下降
@@ -216,10 +241,10 @@ func simulateQualityDrop(ctx context.Context, executor modelquality.BenchmarkExe
 	fmt.Println("阶段3: 质量下降后测试...")
 	report2, _ := executor.Execute(ctx, modelName, provider, suite)
 	storage.SaveReport(ctx, report2)
-	
+
 	score2 := calculator.CalculateScore(report2)
 	storage.SaveScore(ctx, score2)
-	
+
 	fmt.Printf("下降后准确率: %.2f%%, 评分: %.2f (%s)\n\n", score2.Accuracy, score2.OverallScore, score2.Grade)
 
 	// 触发告警
@@ -227,18 +252,18 @@ func simulateQualityDrop(ctx context.Context, executor modelquality.BenchmarkExe
 	if accuracyDrop > 5.0 {
 		alertMsg := fmt.Sprintf(
 			"检测到模型质量显著下降!\n"+
-			"供应商: %s\n"+
-			"模型: %s\n"+
-			"准确率: %.2f%% -> %.2f%% (下降 %.2f%%)\n"+
-			"综合评分: %.2f (%s) -> %.2f (%s)\n"+
-			"延迟: %.0fms -> %.0fms\n"+
-			"建议: 立即检查供应商是否更换了底层模型或进行了降级",
+				"供应商: %s\n"+
+				"模型: %s\n"+
+				"准确率: %.2f%% -> %.2f%% (下降 %.2f%%)\n"+
+				"综合评分: %.2f (%s) -> %.2f (%s)\n"+
+				"延迟: %.0fms -> %.0fms\n"+
+				"建议: 立即检查供应商是否更换了底层模型或进行了降级",
 			provider, modelName,
 			score1.Accuracy, score2.Accuracy, accuracyDrop,
 			score1.OverallScore, score1.Grade, score2.OverallScore, score2.Grade,
 			score1.Latency, score2.Latency,
 		)
-		
+
 		alerter.Alert(ctx, "critical", "模型质量渗水告警", alertMsg)
 	}
 
@@ -271,11 +296,11 @@ func runHistoryAnalysis(ctx context.Context, storage modelquality.MonitorStorage
 	fmt.Printf("评分统计:\n")
 	fmt.Printf("  当前评分: %.2f (%s)\n", history.CurrentScore.OverallScore, history.CurrentScore.Grade)
 	fmt.Printf("  平均评分: %.2f\n", history.AverageScore)
-	fmt.Printf("  最高评分: %.2f (%s) - %s\n", 
-		history.BestScore.OverallScore, history.BestScore.Grade, 
+	fmt.Printf("  最高评分: %.2f (%s) - %s\n",
+		history.BestScore.OverallScore, history.BestScore.Grade,
 		history.BestScore.Timestamp.Format("2006-01-02"))
-	fmt.Printf("  最低评分: %.2f (%s) - %s\n", 
-		history.WorstScore.OverallScore, history.WorstScore.Grade, 
+	fmt.Printf("  最低评分: %.2f (%s) - %s\n",
+		history.WorstScore.OverallScore, history.WorstScore.Grade,
 		history.WorstScore.Timestamp.Format("2006-01-02"))
 	fmt.Printf("\n")
 
@@ -284,7 +309,7 @@ func runHistoryAnalysis(ctx context.Context, storage modelquality.MonitorStorage
 		fmt.Printf("趋势分析 (%s):\n", history.Trend.Period)
 		fmt.Printf("  趋势方向: %s\n", history.Trend.Direction)
 		fmt.Printf("  平均分: %.2f\n", history.Trend.AverageScore)
-		fmt.Printf("  分数范围: %.2f - %.2f (差%.2f)\n", 
+		fmt.Printf("  分数范围: %.2f - %.2f (差%.2f)\n",
 			history.Trend.MinScore, history.Trend.MaxScore, history.Trend.ScoreRange)
 		fmt.Printf("  波动性: %.2f (标准差)\n", history.Trend.Volatility)
 		if history.Trend.IsVolatile {
@@ -337,7 +362,7 @@ func runChangeDetection(ctx context.Context, storage modelquality.MonitorStorage
 
 	if len(histories) > 0 {
 		fmt.Printf("\n=== 所有模型质量概览 ===\n\n")
-		fmt.Printf("%-20s %-25s %8s %8s %10s %12s\n", 
+		fmt.Printf("%-20s %-25s %8s %8s %10s %12s\n",
 			"供应商", "模型", "当前评分", "等级", "测试次数", "趋势")
 		fmt.Printf("%s\n", string(make([]byte, 90)))
 
@@ -359,3 +384,134 @@ func runChangeDetection(ctx context.Context, storage modelquality.MonitorStorage
 		}
 	}
 }
+
+// runCatalogIQ 打印"模型目录平均智商"表：每个模型跨所有提供它的凭据节点的平均智商。
+func runCatalogIQ(ctx context.Context, storage modelquality.MonitorStorage) {
+	fmt.Printf("=== 模型目录平均智商 ===\n\n")
+	summaries, err := modelquality.CatalogModelIQ(ctx, storage, 0)
+	if err != nil {
+		fmt.Printf("聚合失败: %v\n", err)
+		os.Exit(1)
+	}
+	if len(summaries) == 0 {
+		fmt.Println("(暂无评分数据，先跑 -mode=test 或 node-test 产生数据)")
+		return
+	}
+	fmt.Printf("%-28s %8s %8s %6s %6s %-8s %-12s %s\n",
+		"模型", "平均智商", "标准差", "最低", "最高", "等级", "调用路径", "各供应商均分")
+	fmt.Println(strings.Repeat("-", 120))
+	for _, s := range summaries {
+		byProv := ""
+		for p, v := range s.ByProvider {
+			byProv += fmt.Sprintf("%s=%.0f ", p, v)
+		}
+		byKind := ""
+		for k, v := range s.ByProbeKind {
+			byKind += fmt.Sprintf("%s=%.0f ", k, v)
+		}
+		fmt.Printf("%-28s %8.1f %8.1f %6.1f %6.1f %-8s %-12s %s\n",
+			s.DisplayModel, s.AvgIQ, s.StdIQ, s.MinIQ, s.MaxIQ, s.Grade, byKind, byProv)
+	}
+	fmt.Printf("\n共 %d 个模型\n", len(summaries))
+}
+
+// runNodeIQ 打印"单凭据节点智商"表：按 (provider, credentialID) 聚合。
+func runNodeIQ(ctx context.Context, storage modelquality.MonitorStorage) {
+	fmt.Printf("=== 单凭据节点智商 ===\n\n")
+	nodes, err := modelquality.NodeIQ(ctx, storage, 0)
+	if err != nil {
+		fmt.Printf("聚合失败: %v\n", err)
+		os.Exit(1)
+	}
+	if len(nodes) == 0 {
+		fmt.Println("(暂无带 CredentialID 的评分数据，先跑 -mode=node-test 产生数据)")
+		return
+	}
+	fmt.Printf("%-20s %12s %8s %6s %8s %-8s %-7s %s\n",
+		"供应商", "凭据节点", "平均智商", "模型数", "范围", "等级", "调用路径", "最弱/最强模型")
+	fmt.Println(strings.Repeat("-", 120))
+	for _, n := range nodes {
+		fmt.Printf("%-20s %12d %8.1f %6d %4.0f-%.0f %-8s %-7s %s / %s\n",
+			n.Provider, n.CredentialID, n.AvgIQ, n.ModelCount, n.MinIQ, n.MaxIQ, n.Grade,
+			n.ProbeKind, n.WeakestModel, n.BestModel)
+	}
+	fmt.Printf("\n共 %d 个凭据节点\n", len(nodes))
+}
+
+// runNodeTest 直连单个凭据节点测试其模型智商。
+// 两种方式取节点信息：
+//   - DSN + fernet-key + credential-id：从 DB 自动发现（需编译进 DB 依赖）
+//   - node-base-url + node-api-key + raw-model：直接指定（无需 DB）
+func runNodeTest(ctx context.Context, storage modelquality.MonitorStorage,
+	dsn, fernetKeyHex string, credentialID int, rawModel, baseURL, apiKey, benchmarkType string, timeout time.Duration) {
+
+	fmt.Printf("=== 直连凭据节点智商测试 ===\n\n")
+
+	var node modelquality.CredentialNode
+	if baseURL != "" && apiKey != "" {
+		// 直接指定模式
+		if rawModel == "" {
+			fmt.Println("-node-base-url/-node-api-key 模式必须指定 -raw-model")
+			os.Exit(1)
+		}
+		node = modelquality.CredentialNode{
+			CredentialID: credentialID,
+			BaseURL:      baseURL,
+			APIKey:       apiKey,
+			RawModel:     rawModel,
+		}
+		fmt.Printf("节点: 直接指定 (credential_id=%d, base_url=%s, model=%s)\n", credentialID, baseURL, rawModel)
+	} else if dsn != "" {
+		// DB 发现模式
+		nodeFromDB, err := resolveNodeFromDB(ctx, dsn, fernetKeyHex, credentialID, rawModel)
+		if err != nil {
+			fmt.Printf("从 DB 发现节点失败: %v\n", err)
+			os.Exit(1)
+		}
+		node = *nodeFromDB
+		fmt.Printf("节点: DB 发现 (credential_id=%d, provider=%s, model=%s)\n", node.CredentialID, node.Provider, node.RawModel)
+	} else {
+		fmt.Println("请指定节点来源：用 -node-base-url/-node-api-key 直接指定，或 -dsn/-fernet-key 从 DB 发现")
+		os.Exit(1)
+	}
+
+	// 选测试套件
+	var suite *modelquality.BenchmarkSuite
+	if benchmarkType == "lite" {
+		suite = modelquality.GetMMLULiteSuite()
+	} else {
+		suite = modelquality.GetMMLUFullSuite()
+	}
+	fmt.Printf("开始测试，共 %d 道题...\n\n", len(suite.Questions))
+
+	invoker := modelquality.NewDirectNodeInvoker(timeout)
+	nodeExec := modelquality.NewNodeInvoker(invoker, node, timeout)
+	report, err := nodeExec.Execute(ctx, suite)
+	if err != nil {
+		fmt.Printf("测试失败: %v\n", err)
+		os.Exit(1)
+	}
+
+	// 保存报告与评分
+	if err := storage.SaveReport(ctx, report); err != nil {
+		fmt.Printf("保存报告失败: %v\n", err)
+	}
+	calculator := &modelquality.ScoreCalculator{}
+	score := calculator.CalculateScore(report)
+	if err := storage.SaveScore(ctx, score); err != nil {
+		fmt.Printf("保存评分失败: %v\n", err)
+	}
+
+	fmt.Printf("\n=== 测试完成 ===\n")
+	fmt.Printf("凭据节点: %d (%s)\n", node.CredentialID, node.Provider)
+	fmt.Printf("调用路径: %s（直连，绕过网关）\n", report.ProbeKind)
+	fmt.Printf("模型: %s\n", report.ModelName)
+	fmt.Printf("总题数: %d  正确: %d  错误: %d\n", report.TotalQuestions, report.CorrectCount, report.ErrorCount)
+	fmt.Printf("准确率: %.2f%%\n", report.Accuracy)
+	fmt.Printf("平均延迟: %.0fms\n", report.AvgLatency)
+	fmt.Printf("综合智商: %.2f (%s)\n", score.OverallScore, score.Grade)
+	fmt.Printf("稳定性: %.2f%%\n", score.Stability)
+}
+
+// resolveNodeFromDB 通过 DSN + fernet 密钥从 DB 解析单个节点。
+// 放在独立文件便于按需替换实现（依赖 pgxpool / secret / bg）。

@@ -29,6 +29,11 @@ type ModelQualityWorker struct {
 	config  *modelquality.MonitorConfig
 	monitor *modelquality.QualityMonitor
 
+	// 2026-08-10: 按凭据节点测试（直连节点，绕过网关）。
+	// nodeSource 由外部注入（含 DB pool + 解密 key）；为 nil 时仅支持经网关的聚合测试。
+	nodeSource  *CredentialNodeSource
+	nodeInvoker *modelquality.DirectNodeInvoker
+
 	mu         sync.RWMutex
 	running    bool
 	stopping   bool
@@ -55,6 +60,72 @@ func NewModelQualityWorker(dataDir string, apiKey string, baseURL string, timeou
 		baseURL: baseURL,
 		timeout: timeout,
 	}
+}
+
+// SetNodeSource 注入凭据节点发现源（启用 per-node 直连测试）。
+// 必须在 Start 之前调用。注入后，当 config.EnablePerNodeTesting=true 时，
+// worker 会用直连节点调用器测量每个节点的模型智商，写入带 CredentialID 的评分。
+func (w *ModelQualityWorker) SetNodeSource(src *CredentialNodeSource) {
+	w.mu.Lock()
+	w.nodeSource = src
+	if w.timeout > 0 {
+		w.nodeInvoker = modelquality.NewDirectNodeInvoker(w.timeout)
+	} else {
+		w.nodeInvoker = modelquality.NewDirectNodeInvoker(0)
+	}
+	w.mu.Unlock()
+}
+
+// RunPerNodeCheck 手动触发一次"按凭据节点"测试：遍历所有活跃节点，
+// 对每个节点跑一次精简 MMLU，落盘带 CredentialID 的评分。
+// 返回测试的节点数与遇到的第一个错误。
+// 注意：本方法会产生真实 token 费用；调用方负责限频。
+func (w *ModelQualityWorker) RunPerNodeCheck(ctx context.Context, storage modelquality.MonitorStorage) (int, error) {
+	w.mu.RLock()
+	src := w.nodeSource
+	invoker := w.nodeInvoker
+	w.mu.RUnlock()
+
+	if src == nil || invoker == nil {
+		return 0, fmt.Errorf("node source not configured (call SetNodeSource first)")
+	}
+	nodes, err := src.DiscoverActiveNodes(ctx)
+	if err != nil {
+		return 0, fmt.Errorf("discover nodes: %w", err)
+	}
+	suite := modelquality.GetMMLULiteSuite()
+	calculator := &modelquality.ScoreCalculator{}
+	tested := 0
+	var firstErr error
+	for i := range nodes {
+		select {
+		case <-ctx.Done():
+			return tested, ctx.Err()
+		default:
+		}
+		nodeExec := modelquality.NewNodeInvoker(invoker, nodes[i], w.timeout)
+		report, err := nodeExec.Execute(ctx, suite)
+		if err != nil {
+			slog.Warn("per-node quality test failed",
+				"credential_id", nodes[i].CredentialID, "model", nodes[i].RawModel, "error", err)
+			if firstErr == nil {
+				firstErr = err
+			}
+			continue
+		}
+		if storage != nil {
+			_ = storage.SaveReport(ctx, report)
+			score := calculator.CalculateScore(report)
+			_ = storage.SaveScore(ctx, score)
+		}
+		tested++
+		slog.Info("per-node quality test done",
+			"credential_id", nodes[i].CredentialID,
+			"provider", nodes[i].Provider,
+			"model", nodes[i].RawModel,
+			"accuracy", report.Accuracy)
+	}
+	return tested, firstErr
 }
 
 // Start 启动worker
@@ -160,10 +231,11 @@ func (w *ModelQualityWorker) Start(ctx context.Context, config *modelquality.Mon
 	slog.Info("model quality worker started",
 		"models", len(w.config.TargetModels),
 		"interval", w.config.ScheduleInterval.String(),
-		"storage", storageDir)
+		"storage", storageDir,
+		"per_node", w.config.EnablePerNodeTesting)
 
 	// 异步运行主循环
-	go w.loop(ctx, stopCh, doneCh)
+	go w.loop(ctx, storage, stopCh, doneCh)
 }
 
 // Stop 停止worker
@@ -213,13 +285,50 @@ func (w *ModelQualityWorker) Stop() {
 }
 
 // loop 主循环
-func (w *ModelQualityWorker) loop(ctx context.Context, stopCh <-chan struct{}, doneCh chan<- struct{}) {
+func (w *ModelQualityWorker) loop(ctx context.Context, storage modelquality.MonitorStorage, stopCh <-chan struct{}, doneCh chan<- struct{}) {
 	defer close(doneCh)
 
-	// worker自身不需要循环，监控器内部已有定时逻辑
-	select {
-	case <-stopCh:
-	case <-ctx.Done():
+	// 2026-08-10: 按凭据节点测试（可选）。与经网关的聚合监控并行。
+	// 复用同一 ScheduleInterval。nodeSource 未注入或未启用时，本 ticker 不启动。
+	var nodeTicker *time.Ticker
+	var nodeTickerC <-chan time.Time
+	w.mu.RLock()
+	perNode := w.config != nil && w.config.EnablePerNodeTesting && w.nodeSource != nil
+	w.mu.RUnlock()
+	if perNode {
+		interval := time.Duration(0)
+		w.mu.RLock()
+		if w.config != nil {
+			interval = w.config.ScheduleInterval
+		}
+		w.mu.RUnlock()
+		if interval <= 0 {
+			interval = 24 * time.Hour
+		}
+		nodeTicker = time.NewTicker(interval)
+		nodeTickerC = nodeTicker.C
+		defer nodeTicker.Stop()
+		// 启动时立即跑一次
+		go func() {
+			if n, err := w.RunPerNodeCheck(ctx, storage); err != nil {
+				slog.Warn("per-node quality check error", "tested", n, "error", err)
+			} else {
+				slog.Info("per-node quality check done", "tested", n)
+			}
+		}()
+	}
+
+	for {
+		select {
+		case <-nodeTickerC:
+			if n, err := w.RunPerNodeCheck(ctx, storage); err != nil {
+				slog.Warn("per-node quality check error", "tested", n, "error", err)
+			}
+		case <-stopCh:
+			return
+		case <-ctx.Done():
+			return
+		}
 	}
 }
 
