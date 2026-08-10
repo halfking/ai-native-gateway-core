@@ -42,7 +42,6 @@ import (
 	"github.com/kaixuan/llm-gateway-go/internal/ir"
 	"github.com/kaixuan/llm-gateway-go/internal/modelpolicy"
 	"github.com/kaixuan/llm-gateway-go/internal/observability"
-	"github.com/kaixuan/llm-gateway-go/internal/specbundle"
 	gwtrace "github.com/kaixuan/llm-gateway-go/internal/trace"
 	"github.com/kaixuan/llm-gateway-go/maas"
 	"github.com/kaixuan/llm-gateway-go/metrics"
@@ -53,7 +52,6 @@ import (
 	"github.com/kaixuan/llm-gateway-go/registry"
 	"github.com/kaixuan/llm-gateway-go/resolve"
 	"github.com/kaixuan/llm-gateway-go/security/armor"
-	"github.com/kaixuan/llm-gateway-go/security/guardian"
 	upstreampkg "github.com/kaixuan/llm-gateway-go/upstream"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/trace"
@@ -811,15 +809,6 @@ type ChatHandler struct {
 	// When non-nil, handler calls Logger.Log after armor scoring.
 	// nil disables armor audit (judgments are not persisted).
 	armorLogger *armor.Logger
-
-	// specCache / specKillSwitch (spec-enforcement Phase 1, 2026-08-10) drive
-	// the telemetry-only spec-bundle hook. When specCache is non-nil the
-	// handler computes the would-be injection per request and emits
-	// llm_gateway_spec_lookup_total; it never mutates the request (Phase 1).
-	// nil disables the hook entirely (no telemetry, no regex guard).
-	specCache      *specbundle.Cache
-	specKillSwitch *specbundle.KillSwitch
-	specRegexGuard *specbundle.RegexGuard
 	// lastSystemSession enables 5-minute no-id session reuse.
 	lastSystemSession *session.LastSystemSessionIndex
 	// sessionPref tracks session -> credential preference for model switch handling.
@@ -1218,91 +1207,6 @@ func (h *ChatHandler) SetAutoSummaryGenerator(asg interface {
 func (h *ChatHandler) SetArmor(judge armor.Judge, logger *armor.Logger) {
 	h.armorJudge = judge
 	h.armorLogger = logger
-}
-
-// SetSpecBundle wires the spec-enforcement telemetry hook (Phase 1).
-//
-// When cache is non-nil the handler computes the would-be injection per
-// request (specbundle.Apply) and emits llm_gateway_spec_lookup_total. The
-// RegexGuard (if non-nil) runs the bundle's Class-B checks in observe-only
-// mode (warn, never block). Passing nil for cache disables the hook.
-func (h *ChatHandler) SetSpecBundle(cache *specbundle.Cache, ks *specbundle.KillSwitch, guard *specbundle.RegexGuard) {
-	h.specCache = cache
-	h.specKillSwitch = ks
-	h.specRegexGuard = guard
-}
-
-// runSpecHook executes the Phase 1 spec-bundle telemetry + observe-only
-// regex check for a single request. It is fail-open: every error path
-// records a counter (or logs) and returns without affecting the caller.
-//
-// The method is inline (not a goroutine) because the work is cheap: a
-// map lookup for the profile + a regex match over the body. The armor
-// hook above follows the same synchronous pattern.
-func (h *ChatHandler) runSpecHook(ctx context.Context, requestID, clientProfile string, body []byte) {
-	if h.specCache == nil {
-		return // hook not wired (dev/test or feature disabled)
-	}
-
-	profile := specbundle.ProfileName(clientProfile)
-	if profile == "" {
-		profile = specbundle.ProfileDefault
-	}
-
-	// Telemetry: compute the would-be injection and record the outcome.
-	// In Phase 1 the result is discarded — it exists only to increment
-	// llm_gateway_spec_lookup_total so the GO gate G5 (hook wired) and G6
-	// (>=3 distinct client_kind) can be evaluated.
-	func() {
-		defer func() {
-			if r := recover(); r != nil {
-				metrics.SpecInjectErrorTotal.Inc()
-				slog.Warn("specbundle: apply panic recovered (fail-open)",
-					"request_id", requestID, "panic", r)
-			}
-		}()
-		res := specbundle.Apply(h.specCache.Get(), profile, h.specKillSwitch)
-		resultLabel := "resolved"
-		switch res.SkippedReason {
-		case "kill-switch", "empty-bundle":
-			resultLabel = "skipped"
-		case "passthrough":
-			resultLabel = "passthrough"
-		case "":
-			if !res.ShouldInject() {
-				resultLabel = "passthrough"
-			}
-		}
-		kind := string(profile)
-		if kind == "" {
-			kind = "unknown"
-		}
-		metrics.SpecLookupTotal.WithLabelValues(resultLabel, kind).Inc()
-	}()
-
-	// Observe-only regex guard: runs Class-B checks but always warns,
-	// never blocks (Phase 1). The guard itself owns the kill-switch
-	// short-circuit and fail-open semantics.
-	if h.specRegexGuard != nil {
-		func() {
-			defer func() {
-				if r := recover(); r != nil {
-					slog.Warn("specbundle: regex guard panic recovered (fail-open)",
-						"request_id", requestID, "panic", r)
-				}
-			}()
-			if verdict, err := h.specRegexGuard.CheckInput(ctx, string(body)); err != nil {
-				slog.Warn("specbundle: regex guard error (fail-open)",
-					"request_id", requestID, "error", err)
-			} else if verdict != nil && verdict.Action != guardian.ActionPass {
-				// Phase 1: observe-only, log but do not block.
-				slog.Warn("specbundle: regex check matched (observe-only)",
-					"request_id", requestID,
-					"guard", verdict.GuardName,
-					"message", verdict.Message)
-			}
-		}()
-	}
 }
 
 // SetRequestLogHook installs an in-memory sink that records every
@@ -2716,16 +2620,6 @@ func (h *ChatHandler) serveWithExecutor(
 			}
 		}
 	}
-
-	// ── Spec-bundle telemetry hook (Phase 1, 2026-08-10) ────────────────
-	// Computes the would-be injection for this client's profile and emits
-	// llm_gateway_spec_lookup_total. NEVER mutates the request — Phase 1 is
-	// purely observability to validate the GO gate (§15.2 G5–G8). The hook
-	// is fail-open: any error increments spec_inject_error_total (which must
-	// stay 0 in Phase 1, per G7) and the request proceeds unchanged.
-	//
-	// The regex guard (if wired) runs here too, observe-only.
-	h.runSpecHook(ctx, requestID, clientID.Fingerprint.ClientProfile, bodyBytes)
 
 	// 2026-07-03: Bug #7 fix - pass tenantID from keyInfo
 	tenantID := ""
