@@ -2,10 +2,157 @@ package streaming
 
 import (
 	"encoding/json"
+	"net/http/httptest"
+	"strconv"
+	"strings"
 	"testing"
 
 	"github.com/kaixuan/llm-gateway-go/autoroute"
 )
+
+func TestDecisionToWire_Nil(t *testing.T) {
+	if got := decisionToWire(nil); got != nil {
+		t.Fatalf("decisionToWire(nil) = %+v, want nil", got)
+	}
+}
+
+func TestDecisionToWire_MapsCandidateBreakdown(t *testing.T) {
+	dec := &autoroute.Decision{
+		TaskType:                  autoroute.TaskVision,
+		Confidence:                0.42,
+		Profile:                   autoroute.ProfileCostFirst,
+		Classifier:                "classifier",
+		Reason:                    "reason with \"quotes\" and unicode 中文",
+		ChosenModel:               "winner",
+		ChosenRawModel:            "raw/winner",
+		ChosenCredentialID:        99,
+		EmbeddingShadowTask:       string(autoroute.TaskReasoning),
+		EmbeddingShadowSimilarity: 0.75,
+		CandidatesTopN: []autoroute.ScoredCandidate{{
+			Candidate: autoroute.Candidate{CanonicalName: "candidate"},
+			Breakdown: autoroute.ScoringBreakdown{
+				Composite: 1, PriceScore: 2, SpeedScore: 3, StabilityScore: 4,
+				MatchScore: 5, PressureScore: 6, ContextFit: 7,
+				ChannelQuality: 8, Reliability: 9,
+			},
+		}},
+	}
+
+	wire := decisionToWire(dec)
+	if wire == nil {
+		t.Fatal("expected non-nil wire decision")
+	}
+	if wire.TaskType != "vision" || wire.Profile != "cost_first" || wire.ChosenModel != "winner" {
+		t.Fatalf("scalar fields not mapped: %+v", wire)
+	}
+	if wire.EmbeddingShadowSimilarity == nil || *wire.EmbeddingShadowSimilarity != 0.75 {
+		t.Fatalf("shadow similarity not mapped: %+v", wire.EmbeddingShadowSimilarity)
+	}
+	if len(wire.CandidatesTop3) != 1 {
+		t.Fatalf("candidate count = %d, want 1", len(wire.CandidatesTop3))
+	}
+	candidate := wire.CandidatesTop3[0]
+	if candidate.Model != "candidate" || candidate.Score != 1 || candidate.Price != 2 ||
+		candidate.Speed != 3 || candidate.Stability != 4 || candidate.Match != 5 ||
+		candidate.Pressure != 6 || candidate.ContextFit != 7 || candidate.ChannelQuality != 8 ||
+		candidate.Reliability != 9 {
+		t.Fatalf("candidate breakdown not mapped: %+v", candidate)
+	}
+}
+
+func TestCapDecisionSize_NilAndEmpty(t *testing.T) {
+	if got := capDecisionSize(nil); got != nil {
+		t.Fatalf("capDecisionSize(nil) = %+v, want nil", got)
+	}
+
+	wire := &autoRouteDecision{ChosenModel: "winner"}
+	got := capDecisionSize(wire)
+	if got != wire {
+		t.Fatal("empty candidate list should return the same pointer")
+	}
+	if got.CandidatesTop3 != nil {
+		t.Fatalf("empty candidates changed to non-nil: %+v", got.CandidatesTop3)
+	}
+}
+
+func TestCapDecisionSize_TruncatesTailAndKeepsWinner(t *testing.T) {
+	wire := &autoRouteDecision{ChosenModel: "winner"}
+	winnerModel := strings.Repeat("model-", 40) + "0"
+	for i := 0; i < 200; i++ {
+		wire.CandidatesTop3 = append(wire.CandidatesTop3, autoRouteCandidate{
+			Model: strings.Repeat("model-", 40) + strconv.Itoa(i),
+			Score: float64(i),
+		})
+	}
+
+	got := capDecisionSize(wire)
+	if got != wire {
+		t.Fatal("capDecisionSize should mutate and return the same pointer")
+	}
+	if len(got.CandidatesTop3) == 0 {
+		t.Fatal("capDecisionSize removed the winner")
+	}
+	if got.CandidatesTop3[0].Model != winnerModel {
+		t.Fatalf("winner changed: got %q, want %q", got.CandidatesTop3[0].Model, winnerModel)
+	}
+	encoded, err := json.Marshal(got)
+	if err != nil {
+		t.Fatalf("marshal capped decision: %v", err)
+	}
+	if len(encoded) > maxWireDecisionBytes {
+		t.Fatalf("encoded decision size = %d, limit = %d", len(encoded), maxWireDecisionBytes)
+	}
+}
+
+func TestCapDecisionSize_CannotFitWinner(t *testing.T) {
+	wire := &autoRouteDecision{
+		ChosenModel: strings.Repeat("winner-", maxWireDecisionBytes),
+		CandidatesTop3: []autoRouteCandidate{{
+			Model: "winner",
+		}},
+	}
+
+	got := capDecisionSize(wire)
+	if len(got.CandidatesTop3) != 0 {
+		t.Fatalf("expected candidate list to be emptied when fixed fields exceed cap, got %d", len(got.CandidatesTop3))
+	}
+	encoded, err := json.Marshal(got)
+	if err != nil {
+		t.Fatalf("marshal oversized fixed decision: %v", err)
+	}
+	if len(encoded) <= maxWireDecisionBytes {
+		t.Fatal("test fixture did not exceed the size cap")
+	}
+}
+
+func TestWriteAutoDecisionHeader_NilAndJSON(t *testing.T) {
+	w := httptest.NewRecorder()
+	writeAutoDecisionHeader(w, nil)
+	if got := w.Header().Get(autoHeaderName); got != "" {
+		t.Fatalf("nil decision set header %q", got)
+	}
+
+	wire := &autoRouteDecision{
+		TaskType:       "code",
+		ChosenModel:    "claude-sonnet",
+		CandidatesTop3: []autoRouteCandidate{{Model: "claude-sonnet", Score: 85}},
+	}
+	writeAutoDecisionHeader(w, wire)
+	header := w.Header().Get(autoHeaderName)
+	if header == "" {
+		t.Fatal("expected auto decision header")
+	}
+	if len(header) > maxWireDecisionBytes {
+		t.Fatalf("header size = %d, limit = %d", len(header), maxWireDecisionBytes)
+	}
+	var decoded autoRouteDecision
+	if err := json.Unmarshal([]byte(header), &decoded); err != nil {
+		t.Fatalf("header is not valid JSON: %v", err)
+	}
+	if decoded.ChosenModel != "claude-sonnet" || len(decoded.CandidatesTop3) != 1 {
+		t.Fatalf("unexpected header payload: %+v", decoded)
+	}
+}
 
 func TestDecisionToWire_IncludesEnabledFeatures(t *testing.T) {
 	dec := &autoroute.Decision{
