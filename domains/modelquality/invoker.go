@@ -17,6 +17,9 @@ import (
 type MockModelInvoker struct {
 	// 模拟不同供应商的质量特征
 	providerQuality map[string]*ProviderQuality
+
+	// sleepFn 可注入的延迟函数。默认 time.Sleep，测试可覆盖以跳过真实等待。
+	sleepFn func(d time.Duration)
 }
 
 // ProviderQuality 供应商质量特征
@@ -30,6 +33,7 @@ type ProviderQuality struct {
 // NewMockModelInvoker 创建模拟调用器
 func NewMockModelInvoker() *MockModelInvoker {
 	return &MockModelInvoker{
+		sleepFn: time.Sleep,
 		providerQuality: map[string]*ProviderQuality{
 			// 模拟高质量供应商(如OpenAI GPT-4)
 			"openai": {
@@ -85,7 +89,7 @@ func (m *MockModelInvoker) InvokeModel(ctx context.Context, provider string, mod
 
 	// 检查是否模拟错误
 	if rand.Float64() < quality.ErrorRate {
-		time.Sleep(time.Duration(latencyMs) * time.Millisecond)
+		m.sleepFn(time.Duration(latencyMs) * time.Millisecond)
 		return "", 0, time.Duration(latencyMs) * time.Millisecond, fmt.Errorf("模拟错误: 模型调用失败 (provider=%s)", provider)
 	}
 
@@ -114,7 +118,7 @@ func (m *MockModelInvoker) InvokeModel(ctx context.Context, provider string, mod
 	}
 
 	// 模拟处理时间
-	time.Sleep(time.Duration(latencyMs) * time.Millisecond)
+	m.sleepFn(time.Duration(latencyMs) * time.Millisecond)
 
 	// 模拟token使用量
 	tokenUsage = 100 + rand.Intn(50)
