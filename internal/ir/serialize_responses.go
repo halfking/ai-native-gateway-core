@@ -160,20 +160,12 @@ func SerializeResponsesRequest(req *InternalRequest) ([]byte, error) {
 	// before serializing Extensions (Extensions restore is same-protocol only).
 	reportSerializeResponsesLosses(req)
 
-	// Extensions bypass: restore non-standard top-level fields preserved by
-	// the transport extractor, but ONLY when the source is itself the
-	// Responses protocol (mirrors SerializeOpenAI's same-protocol guard).
-	if req.SourceProtocol == "" || req.SourceProtocol == ProtocolOpenAIResponses {
-		for key, val := range req.Extensions {
-			if _, exists := out[key]; exists {
-				continue // never clobber a known field
-			}
-			var v any
-			if err := json.Unmarshal(val, &v); err == nil {
-				out[key] = v
-			}
-		}
-	}
+	// Extensions 还原：把 transport extractor 保留的非标顶层字段写回。
+	//
+	// 2026-08-11: 原实现只在 SourceProtocol == Responses 时还原，导致
+	// Codex CLI 之外的客户端（如 Claude Code）路由到 Responses 上游时丢字段。
+	// 改为注册表驱动，见 restoreExtensions。
+	restoreExtensions(out, req, ProtocolOpenAIResponses)
 
 	return json.Marshal(out)
 }

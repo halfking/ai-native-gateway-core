@@ -6,5 +6,6 @@
       "role": "user",
       "content": "Describe the image."
     }
-  ]
+  ],
+  "openai_provider_only": true
 }

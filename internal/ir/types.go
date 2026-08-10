@@ -155,6 +155,19 @@ type InternalRequest struct {
 	// Container describes an uploaded file container for Claude 4.5+ skills.
 	Container *Container
 
+	// ─── Gemini 专有（2026-08-11 P3 修复：此前静默丢失）───
+
+	// SafetySettings 是 Gemini 的内容安全阈值配置。
+	//
+	// 修复前：parse_gemini.go 把 safetySettings 列入 knownFields（因此不进
+	// Extensions），但从不赋值给 IR、从不序列化、也不上报 loss —— 完全静默。
+	// 安全语义参数被静默丢弃属于合规风险。
+	SafetySettings []SafetySetting
+
+	// CachedContent 是 Gemini 的 cachedContents/{id} 引用。
+	// 与 SafetySettings 同为此前的静默丢失字段。
+	CachedContent string
+
 	// ─── Source protocol (used by Serializer to determine output format) ───
 	SourceProtocol string // "openai-chat" | "anthropic-messages"
 
@@ -553,9 +566,16 @@ type GeminiThinkingConfig struct {
 // SafetySetting represents a Gemini safetySettings entry.
 // Category: HARM_CATEGORY_HARASSMENT / HATE_SPEECH / SEXUALLY_EXPLICIT / DANGEROUS_CONTENT
 // Threshold: BLOCK_NONE / BLOCK_ONLY_HIGH / BLOCK_MEDIUM_AND_ABOVE / BLOCK_LOW_AND_ABOVE
+//
+// 2026-08-11: 此前该类型是死代码 —— parse_gemini.go 解析了 safetySettings 却
+// 从不赋值给 IR，序列化器也从不输出。现已接入全链路（P3 修复）。
 type SafetySetting struct {
 	Category  string `json:"category"`
 	Threshold string `json:"threshold"`
+
+	// Method 是 HarmBlockMethod（SEVERITY / PROBABILITY）。
+	// 仅 Vertex AI 支持；Gemini Developer API 不认此字段。
+	Method string `json:"method,omitempty"`
 }
 
 // GeminiPart represents a single element in Gemini's `contents[].parts[]` array.

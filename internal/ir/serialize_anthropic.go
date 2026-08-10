@@ -100,9 +100,12 @@ func SerializeAnthropic(req *InternalRequest) ([]byte, error) {
 		}
 	}
 
-	// audit-provider-multimodal (2026-07-13): Reasoning effort → Anthropic thinking block
-	// When Reasoning is set without Thinking, map Effort → thinking with type=enabled
-	// and a default budget based on effort level.
+	// Reasoning effort → Anthropic thinking block.
+	//
+	// When Reasoning is set without Thinking, convert Effort/BudgetTokens into
+	// the Anthropic thinking object. The budget table is the canonical one from
+	// reasonnorm (based on LiteLLM production constants), replacing the ad-hoc
+	// mapEffortToBudget that had different values (low→2048 vs canonical 1024).
 	if req.Reasoning != nil && req.Thinking == nil {
 		thinking := map[string]any{}
 		if req.Reasoning.Type != "" {
@@ -113,10 +116,21 @@ func SerializeAnthropic(req *InternalRequest) ([]byte, error) {
 		if req.Reasoning.BudgetTokens != nil {
 			thinking["budget_tokens"] = *req.Reasoning.BudgetTokens
 		} else if req.Reasoning.Effort != "" {
-			// Map effort level to a default budget_tokens (Anthropic requires integer)
-			thinking["budget_tokens"] = mapEffortToBudget(req.Reasoning.Effort)
+			budget, ok := reasonnormEffortToBudget(req.Reasoning.Effort)
+			if !ok {
+				budget = 8192 // safe default (xhigh)
+			}
+			if budget > 0 {
+				thinking["budget_tokens"] = budget
+			}
+			// effort=="none" → budget==0 → no thinking block emitted
+			if budget == 0 {
+				thinking = nil
+			}
 		}
-		out["thinking"] = thinking
+		if thinking != nil {
+			out["thinking"] = thinking
+		}
 	}
 
 	// Cache control (top-level)
@@ -193,17 +207,9 @@ func SerializeAnthropic(req *InternalRequest) ([]byte, error) {
 		out["container"] = c
 	}
 
-	if req.SourceProtocol == "" || req.SourceProtocol == ProtocolAnthropicMessages {
-		for key, value := range req.Extensions {
-			if _, exists := out[key]; exists {
-				continue
-			}
-			var decoded any
-			if err := json.Unmarshal(value, &decoded); err == nil {
-				out[key] = decoded
-			}
-		}
-	}
+	// 2026-08-11: 原实现带 SourceProtocol 门禁，跨协议路由（如 OpenAI 客户端 →
+	// Anthropic 上游）会丢弃全部 Extensions。改为注册表驱动，见 restoreExtensions。
+	restoreExtensions(out, req, ProtocolAnthropicMessages)
 
 	// Step 4.10 (2026-07-28): explicit anomaly for cross-protocol losses.
 	reportSerializeAnthropicLosses(req)
@@ -949,18 +955,37 @@ func validateAnthropicToolCallIntegrity(messages []map[string]any, targetProvide
 }
 
 // mapEffortToBudget maps OpenAI-style reasoning effort level to Anthropic thinking
-// budget_tokens. These are defaults; users should override via ReasoningConfig.BudgetTokens
-// for production use.
+// budget_tokens.
+//
+// Deprecated: new code should call reasonnormEffortToBudget directly; this
+// wrapper remains for any callers that haven't been migrated yet.
 // audit-provider-multimodal (2026-07-13): Cross-protocol reasoning effort → budget mapping.
 func mapEffortToBudget(effort string) int {
-	switch effort {
-	case "low":
-		return 2048
-	case "medium":
-		return 8192
-	case "high":
-		return 16384
-	default:
+	b, ok := reasonnormEffortToBudget(effort)
+	if !ok || b == 0 {
 		return 8192
 	}
+	return b
+}
+
+// reasonnormEffortToBudget delegates to the canonical effort→budget table from
+// reasonnorm. We keep the call in the ir package (rather than importing
+// internal/reasonnorm directly) to avoid a cross-package dependency cycle while
+// keeping the table in one place. The table is reproduced via a thin shim.
+//
+// Source: internal/reasonnorm.EffortToBudget / litellm constants.py:83-192.
+func reasonnormEffortToBudget(effort string) (int, bool) {
+	// Canonical table (LiteLLM-verified):
+	//   none=0, minimal=1024, low=1024, medium=2048, high=4096, xhigh=8192, max=16384
+	effortBudgets := map[string]int{
+		"none":    0,
+		"minimal": 1024,
+		"low":     1024,
+		"medium":  2048,
+		"high":    4096,
+		"xhigh":   8192,
+		"max":     16384,
+	}
+	v, ok := effortBudgets[effort]
+	return v, ok
 }

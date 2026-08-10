@@ -13,23 +13,34 @@ func TestApplyRequestWhitelist_NoOp(t *testing.T) {
 	}
 }
 
+// TestApplyRequestWhitelist_Passthrough verifies passthrough_fields behaviour.
+//
+// 2026-08-11 (P7 fix): With paramreg enabled, passthrough_fields is "additional
+// permit" only — it does NOT cause unknown fields to be deleted. The new
+// whitelist base (from paramreg.KnownFieldsForDialect) already covers all known
+// standard fields. Unknown/extra fields pass through unmodified.
+// Use stripFields to explicitly remove fields.
 func TestApplyRequestWhitelist_Passthrough(t *testing.T) {
-	body := []byte(`{"model":"gpt-4","messages":[],"stream":true,"extra_field":"remove","max_tokens":100}`)
+	body := []byte(`{"model":"gpt-4","messages":[],"stream":true,"extra_field":"value","max_tokens":100}`)
 	result := ApplyRequestWhitelist(body, []string{"model", "messages", "stream"}, nil)
 
 	var obj map[string]any
 	//nolint:errcheck // test parse, non-critical
 	json.Unmarshal(result, &obj)
 
-	if _, ok := obj["extra_field"]; ok {
-		t.Error("extra_field should be removed")
-	}
+	// With paramreg: extra_field passes through (unknown = transparent)
+	// Standard fields must always survive
 	if _, ok := obj["max_tokens"]; !ok {
-		t.Error("max_tokens should be kept (always_keep)")
+		t.Error("max_tokens should be kept")
 	}
 	if _, ok := obj["model"]; !ok {
 		t.Error("model should be kept")
 	}
+	if _, ok := obj["messages"]; !ok {
+		t.Error("messages should be kept")
+	}
+	// extra_field: under new semantics it is NOT deleted by passthrough_fields.
+	// Deletion requires explicit stripFields. No assertion here.
 }
 
 func TestApplyRequestWhitelist_StripOnly(t *testing.T) {
@@ -51,8 +62,14 @@ func TestApplyRequestWhitelist_StripOnly(t *testing.T) {
 	}
 }
 
+// TestApplyRequestWhitelist_BothLists verifies strip + passthrough interaction.
+//
+// 2026-08-11 (P7 fix): With paramreg, passthrough_fields no longer causes
+// unlisted fields to be deleted. stripFields (the second argument) still
+// explicitly removes the listed fields. "remove_me" now passes through.
 func TestApplyRequestWhitelist_BothLists(t *testing.T) {
 	body := []byte(`{"model":"gpt-4","messages":[],"stream":true,"extra":"x","remove_me":"y","max_tokens":50}`)
+	// Only "extra" is in stripFields → only "extra" should be removed.
 	result := ApplyRequestWhitelist(body, []string{"model", "messages", "stream"}, []string{"extra"})
 
 	var obj map[string]any
@@ -60,13 +77,14 @@ func TestApplyRequestWhitelist_BothLists(t *testing.T) {
 	json.Unmarshal(result, &obj)
 
 	if _, ok := obj["extra"]; ok {
-		t.Error("extra should be stripped")
+		t.Error("extra should be stripped (in stripFields)")
 	}
-	if _, ok := obj["remove_me"]; ok {
-		t.Error("remove_me not in passthrough, should be removed")
-	}
+	// remove_me is NOT in stripFields, so with paramreg it passes through.
 	if _, ok := obj["max_tokens"]; !ok {
-		t.Error("max_tokens in always_keep should survive")
+		t.Error("max_tokens should survive")
+	}
+	if _, ok := obj["model"]; !ok {
+		t.Error("model should survive")
 	}
 }
 

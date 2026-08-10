@@ -501,13 +501,13 @@ func (h *Handler) getModel(w http.ResponseWriter, r *http.Request, id int) {
 
 func (h *Handler) updateModel(w http.ResponseWriter, r *http.Request, id int) {
 	var req struct {
-		DisplayName *string `json:"display_name"`
-		Status      *string `json:"status"`
-		// 新增（需求 #3/#4）：8 维评分相关字段更新
-		ReleasedAt  *time.Time `json:"released_at"`
-		Strengths   *[]string  `json:"strengths"`
-		VersionRank *int       `json:"version_rank"`
-		CostTier    *string    `json:"cost_tier"`
+		DisplayName   *string          `json:"display_name"`
+		Status        *string          `json:"status"`
+		ReleasedAt    *time.Time       `json:"released_at"`
+		Strengths     *[]string        `json:"strengths"`
+		VersionRank   *int             `json:"version_rank"`
+		CostTier      *string          `json:"cost_tier"`
+		ReasoningCaps *json.RawMessage `json:"reasoning_caps"` // 2026-08-11: reasoncap tier-1 热更新
 	}
 	if err := readJSON(r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid body")
@@ -517,14 +517,13 @@ func (h *Handler) updateModel(w http.ResponseWriter, r *http.Request, id int) {
 	defer cancel()
 
 	if req.DisplayName != nil {
-		//nolint:errcheck // best-effort exec, non-critical
+		//nolint:errcheck
 		h.db.Exec(ctx, `UPDATE models_canonical SET display_name = $1 WHERE id = $2`, *req.DisplayName, id)
 	}
 	if req.Status != nil {
-		//nolint:errcheck // best-effort exec, non-critical
+		//nolint:errcheck
 		h.db.Exec(ctx, `UPDATE models_canonical SET status = $1 WHERE id = $2`, *req.Status, id)
 	}
-	// 新增字段更新（需求 #3/#4）
 	if req.ReleasedAt != nil {
 		//nolint:errcheck
 		h.db.Exec(ctx, `UPDATE models_canonical SET released_at = $1 WHERE id = $2`, *req.ReleasedAt, id)
@@ -541,9 +540,19 @@ func (h *Handler) updateModel(w http.ResponseWriter, r *http.Request, id int) {
 		//nolint:errcheck
 		h.db.Exec(ctx, `UPDATE models_canonical SET cost_tier = $1 WHERE id = $2`, *req.CostTier, id)
 	}
-	if req.Status != nil {
-		//nolint:errcheck // best-effort exec, non-critical
-		h.db.Exec(ctx, `UPDATE models_canonical SET status = $1 WHERE id = $2`, *req.Status, id)
+	// 2026-08-11: reasoning_caps 热更新（reasoncap tier-1）。
+	// 接受与 internal/reasoncap.Caps 相同的 JSONB 结构（不含 Source 字段）。
+	// 传 null 清除覆盖，回退到名称模式表（tier-2）。
+	// 示例：{"supported":true,"dialect":"anthropic","budget_min":1024,"budget_max":32000,"can_disable":true,"adaptive":true}
+	if req.ReasoningCaps != nil {
+		raw := *req.ReasoningCaps
+		if string(raw) == "null" {
+			//nolint:errcheck
+			h.db.Exec(ctx, `UPDATE models_canonical SET reasoning_caps = NULL WHERE id = $1`, id)
+		} else {
+			//nolint:errcheck
+			h.db.Exec(ctx, `UPDATE models_canonical SET reasoning_caps = $1 WHERE id = $2`, raw, id)
+		}
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"message": "updated"})
 }

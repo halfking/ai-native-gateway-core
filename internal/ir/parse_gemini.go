@@ -111,6 +111,27 @@ func ParseGemini(body []byte) (*InternalRequest, error) {
 		}
 	}
 
+	// Parse safetySettings → IR SafetySettings（2026-08-11 P3 修复）。
+	//
+	// 修复前这个字段被解析进 src.SafetySettings 就丢在那里：既因为列入
+	// knownFields 而进不了 Extensions，又从未赋值给 IR，也没有 loss 事件。
+	// 全包 grep SafetySettings 只有一处声明，是彻底的静默丢失。
+	if src.SafetySettings != nil && string(src.SafetySettings) != "null" {
+		var settings []SafetySetting
+		if err := json.Unmarshal(src.SafetySettings, &settings); err == nil {
+			ir.SafetySettings = settings
+		} else {
+			// 解析失败不阻断请求，但要留痕 —— 安全参数丢失需可观测。
+			ReportUnknownField("", ProtocolGeminiGenerate, "safetySettings",
+				map[string]any{"reason": "unmarshal_failed"})
+		}
+	}
+
+	// Parse cachedContent → IR CachedContent（同上，此前静默丢失）。
+	if src.CachedContent != "" {
+		ir.CachedContent = src.CachedContent
+	}
+
 	return ir, nil
 }
 

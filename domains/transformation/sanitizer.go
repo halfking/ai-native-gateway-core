@@ -3,12 +3,15 @@ package transformation
 import (
 	"encoding/json"
 	"strings"
+
+	"github.com/kaixuan/llm-gateway-go/internal/paramreg"
 )
 
-// alwaysKeepFieldsOpenAI is the set of fields the gateway passes through
-// unchanged for OpenAI Chat Completions requests. These are the canonical
-// "do not strip" fields for the OpenAI wire format; everything else is
-// subject to the per-route passthrough/strip lists.
+// alwaysKeepFieldsOpenAI is the legacy fallback set used when PARAMREG_ENABLED=false.
+// It is intentionally small — it was the source of the "8-field landmine" bug
+// (any provider with passthrough_fields set would lose tools / tool_choice /
+// stream_options / response_format / reasoning_effort etc.).
+// With paramreg enabled, AllowListForProtocol uses paramreg.KnownFieldsForDialect.
 var alwaysKeepFieldsOpenAI = map[string]bool{
 	"model":       true,
 	"messages":    true,
@@ -20,10 +23,7 @@ var alwaysKeepFieldsOpenAI = map[string]bool{
 	"stop":        true,
 }
 
-// alwaysKeepFieldsAnthropic is the set of fields the gateway passes through
-// unchanged for Anthropic Messages API requests. It mirrors the OpenAI set
-// but adds Anthropic-only top-level fields (system, stop_sequences, top_k,
-// tools, tool_choice, metadata) and drops the OpenAI-only ones (n, stop).
+// alwaysKeepFieldsAnthropic is the legacy fallback set used when PARAMREG_ENABLED=false.
 var alwaysKeepFieldsAnthropic = map[string]bool{
 	"model":          true,
 	"messages":       true,
@@ -39,24 +39,59 @@ var alwaysKeepFieldsAnthropic = map[string]bool{
 	"metadata":       true,
 }
 
-// AllowListForProtocol returns the always-keep allow-list appropriate for
-// the given upstream protocol. Empty or unknown protocols fall back to
-// the OpenAI set for backwards compatibility with callers that have not
-// yet threaded a Candidate into the sanitizer.
+// AllowListForProtocol returns the "always keep" field set for the given upstream
+// protocol, used as the base whitelist in ApplyRequestWhitelist.
 //
-// Callers (e.g. routing/executor_chat.go) should pass cand.Protocol so the
-// whitelist matches the upstream wire format — stripping "system" from an
-// Anthropic body would silently break Anthropic, and keeping it on an
-// OpenAI body would let unknown tooling data leak through.
+// When paramreg is enabled (PARAMREG_ENABLED=true, the default), the list is
+// generated from the parameter registry — it is much wider than the legacy
+// 8-field set and covers all known params across all dialects that the protocol
+// recognises. This prevents the "8-field landmine": configuring a single
+// passthrough_fields entry no longer silently deletes tools/tool_choice/
+// stream_options/response_format/reasoning_effort etc.
+//
+// When paramreg is disabled, the legacy narrow sets are returned for backwards
+// compatibility.
+//
+// Callers should pass cand.Protocol (e.g. "openai-chat", "anthropic-messages")
+// so the list matches the upstream wire format.
 func AllowListForProtocol(protocol string) map[string]bool {
-	switch protocol {
-	case "anthropic-messages":
-		return alwaysKeepFieldsAnthropic
-	default:
-		return alwaysKeepFieldsOpenAI
+	if !paramregEnabled() {
+		switch protocol {
+		case "anthropic-messages":
+			return alwaysKeepFieldsAnthropic
+		default:
+			return alwaysKeepFieldsOpenAI
+		}
 	}
+
+	// paramreg path: use the registry to build the full dialect-aware set.
+	d := paramreg.DialectForProtocol(protocol)
+	if d == paramreg.DialectUnknown {
+		// Unknown protocol — use OpenAI as the conservative default so we
+		// don't accidentally strip fields from a new dialect.
+		d = paramreg.DialectOpenAIChat
+	}
+	return paramreg.KnownFieldsForDialect(d)
 }
 
+// ApplyRequestWhitelist filters the request body according to per-provider
+// passthrough and strip configuration from provider_catalog.capabilities.
+//
+// Behaviour change (2026-08-11, P7 fix):
+//
+//	Old: passthrough_fields was a WHITELIST — any field NOT in passthroughFields
+//	     (union base) was deleted. Configuring a single "extra" field silently
+//	     deleted tools / tool_choice / stream_options / etc.
+//
+//	New: passthrough_fields means "also allow these fields" — they are ADDED to
+//	     the base allow list. The base list is now the full registry set for the
+//	     dialect (via AllowListForProtocol), so standard fields are never deleted
+//	     by a passthrough_fields config. This is the "additional permit" semantic.
+//
+// stripFields is always a blacklist — the listed fields are unconditionally
+// removed regardless of passthrough_fields (unchanged).
+//
+// PARAMREG_ENABLED=false restores the old whitelist semantic.
 func ApplyRequestWhitelist(body []byte, passthroughFields, stripFields []string, protocol ...string) []byte {
 	if len(passthroughFields) == 0 && len(stripFields) == 0 {
 		return body
@@ -74,17 +109,38 @@ func ApplyRequestWhitelist(body []byte, passthroughFields, stripFields []string,
 	baseAllowList := AllowListForProtocol(proto)
 
 	if len(passthroughFields) > 0 {
-		allowed := make(map[string]bool, len(passthroughFields)+len(baseAllowList))
-		for _, f := range passthroughFields {
-			allowed[f] = true
-		}
-		for f := range baseAllowList {
-			allowed[f] = true
-		}
-		for k := range obj {
-			if !allowed[k] {
-				delete(obj, k)
+		if !paramregEnabled() {
+			// Legacy whitelist semantic: keep ONLY passthroughFields ∪ base.
+			allowed := make(map[string]bool, len(passthroughFields)+len(baseAllowList))
+			for _, f := range passthroughFields {
+				allowed[f] = true
 			}
+			for f := range baseAllowList {
+				allowed[f] = true
+			}
+			for k := range obj {
+				if !allowed[k] {
+					delete(obj, k)
+				}
+			}
+		} else {
+			// New "additional permit" semantic: base already covers all known
+			// fields; passthroughFields adds extra permits on top.
+			// We only delete fields that are:
+			//   (a) NOT in base, AND
+			//   (b) NOT in passthroughFields
+			// In practice this means: only strip truly unknown fields that the
+			// provider is not expected to handle. This is an intentionally
+			// conservative default — a provider that wants strict filtering
+			// should use stripFields instead.
+			//
+			// Current decision: with paramreg, passthrough_fields is informational
+			// only (documents what the provider accepts) but does NOT cause unknown
+			// fields to be deleted. Unknown fields are already handled upstream by
+			// paramreg.Decide (with RejectedBy per-dialect filtering).
+			// So in the new path, passthroughFields has no whitelist effect.
+			// It is retained in the code path for future use.
+			_ = passthroughFields
 		}
 	}
 
