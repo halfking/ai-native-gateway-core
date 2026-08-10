@@ -13,6 +13,18 @@ import (
 // RecommendV2 is the new candidate recommendation path. It enforces
 // live availability, seeds from the hottest models in the last 48 hours,
 // and applies the simplified score.
+// DecisionHints carries request-scoped values that the affinity dimension needs
+// but that are not part of the request content (ClassificationSignals) and so
+// should not be hashed or cached with it.
+//
+// Zero values are always safe: an empty RequestID disables explore sampling
+// (every request is treated as non-explore), and an empty ApiKeyID means
+// platform-level affinity only.
+type DecisionHints struct {
+	RequestID string
+	ApiKeyID  int
+}
+
 func (idx *Index) RecommendV2(
 	ctx context.Context,
 	task TaskType,
@@ -21,6 +33,19 @@ func (idx *Index) RecommendV2(
 	sessionID string,
 	topN int,
 ) []ScoredCandidate {
+	return idx.RecommendV2WithHints(ctx, task, sigs, profile, sessionID, topN, DecisionHints{})
+}
+
+// RecommendV2WithHints is the same as RecommendV2 with affinity inputs.
+func (idx *Index) RecommendV2WithHints(
+	ctx context.Context,
+	task TaskType,
+	sigs ClassificationSignals,
+	profile Profile,
+	sessionID string,
+	topN int,
+	hints DecisionHints,
+) []ScoredCandidate {
 	flags := GetFeatureFlags()
 
 	idx.mu.RLock()
@@ -28,6 +53,8 @@ func (idx *Index) RecommendV2(
 	pool := idx.pool
 	availabilityFilter := idx.availabilityFilter
 	correctionLoader := idx.correctionLoader
+	affinityStore := idx.affinityStore
+	affinityTenantResolver := idx.affinityTenantResolver
 	idx.mu.RUnlock()
 
 	if topN <= 0 {
@@ -118,14 +145,50 @@ func (idx *Index) RecommendV2(
 	}
 
 	scored := make([]ScoredCandidate, 0, len(candidatePool))
+
+	// Affinity: the learned 5th dimension. Resolved once per request — the
+	// Applies() check folds in mode and explore-bucketing — then looked up per
+	// candidate. A nil store, mode=off, or a request that landed in the explore
+	// bucket all leave `affinityApplies` false, which makes ScoreWithAffinity
+	// behave bit-identically to ScoreWithChannelQuality (the shadow guarantee).
+	//
+	// LOW fix: tenantID is resolved whenever mode != off (not only when
+	// affinity would apply). In shadow mode the recorded affinity_score must
+	// reflect the same lookup that will be used once the mode flips to on;
+	// otherwise the observation period observes platform-level data while
+	// production reads tenant-level data.
+	store := affinityStore
+	mode := AffinityOff
+	if store != nil {
+		mode = store.Mode()
+	}
+	affinityEnabled := mode != AffinityOff
+	affinityApplies := affinityEnabled && store != nil && store.Applies(hints.RequestID)
+	exploreBucket := affinityEnabled && store != nil && !affinityApplies && store.ShouldExplore(hints.RequestID)
+	tenantID := ""
+	if affinityEnabled && affinityTenantResolver != nil {
+		tenantID = affinityTenantResolver(hints.ApiKeyID)
+	}
+
 	for _, c := range candidatePool {
 		correction := correctionScoreByModel[c.CanonicalName]
 		var bd ScoringBreakdown
 		switch {
 		case flags.UseChannelQualityRouting:
-			// CHANNEL_QUALITY_ROUTING: 4 维评分
-			//   intent 0.4 + price 0.2 + channel 0.3 + reliability 0.1 + correction
-			bd = ScoreWithChannelQuality(c, task, avgPriceByCanonical, correction)
+			switch {
+			case affinityApplies && c.CanonicalID > 0:
+				aff, _ := store.Lookup(task, profile, tenantID, int64(c.CanonicalID))
+				bd = ScoreWithAffinity(c, task, avgPriceByCanonical, correction, aff, true)
+			case affinityEnabled && c.CanonicalID > 0:
+				// Shadow / explore: record the affinity we *would* have
+				// applied, but do not change the composite. Explore requests
+				// under mode=on get explore=true so P3 can compare arms.
+				aff, _ := store.Lookup(task, profile, tenantID, int64(c.CanonicalID))
+				bd = ScoreWithAffinity(c, task, avgPriceByCanonical, correction, aff, false)
+				bd.Explore = exploreBucket
+			default:
+				bd = ScoreWithChannelQuality(c, task, avgPriceByCanonical, correction)
+			}
 		case flags.UseSimplifiedScoring:
 			bd = ScoreSimplified(c, task, avgPriceByCanonical, correction)
 		default:

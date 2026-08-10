@@ -130,12 +130,19 @@ func (w *CredentialSelfcheckWorker) SetProbeSink(sink ProbeEventSink) {
 
 // publishSelfcheck is the shared hook for the daily self-check lifecycle.
 // Best-effort: a nil sink never blocks the worker.
-func (w *CredentialSelfcheckWorker) publishSelfcheck(credentialID int, status string) {
+//
+// runID is the self_check_runs DB row id, generated once per runOne() call.
+// It is the stable SSE task identifier so the in-flight and terminal
+// transitions collapse into one tile. (2026-08-12 audit: previously each
+// call minted a new ns-timestamp id, so the two publishSelfcheck calls inside
+// runOne forked into two unrelated tiles.)
+func (w *CredentialSelfcheckWorker) publishSelfcheck(credentialID int, runID int64, status string) {
 	if w == nil || w.probeSink == nil {
 		return
 	}
+	id := fmt.Sprintf("selfcheck:%d:%d", credentialID, runID)
 	w.probeSink.PublishProbeEvent(ProbeStreamEvent{
-		ID:           fmt.Sprintf("selfcheck:%d:%d", credentialID, time.Now().UnixNano()),
+		ID:           id,
 		TaskType:     "selfcheck",
 		Source:       "selfcheck",
 		Status:       status,
@@ -334,6 +341,9 @@ func (w *CredentialSelfcheckWorker) runOne(ctx context.Context, credentialID int
 			[]string{}); ferr != nil {
 			return fmt.Errorf("finalize no-routable placeholder run: %w", ferr)
 		}
+		// 2026-08-12: mirror the terminal fail so the 自检 tab shows this
+		// fast-fail instead of silently dropping the credential.
+		w.publishSelfcheck(credentialID, runID, "fail")
 		return fmt.Errorf("credential %d has no routable models", credentialID)
 	}
 
@@ -343,7 +353,7 @@ func (w *CredentialSelfcheckWorker) runOne(ctx context.Context, credentialID int
 		return fmt.Errorf("insert run: %w", err)
 	}
 	// 2026-08-11: mirror the "daily self-check now running" transition.
-	w.publishSelfcheck(credentialID, "in-flight")
+	w.publishSelfcheck(credentialID, runID, "in-flight")
 
 	var (
 		success       bool
@@ -427,7 +437,7 @@ func (w *CredentialSelfcheckWorker) runOne(ctx context.Context, credentialID int
 	if status == "failed" {
 		terminalStatus = "fail"
 	}
-	w.publishSelfcheck(credentialID, terminalStatus)
+	w.publishSelfcheck(credentialID, runID, terminalStatus)
 
 	return nil
 }

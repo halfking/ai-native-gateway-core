@@ -94,7 +94,19 @@ type ScoringBreakdown struct {
 	// 0.2 + channel 0.3 + reliability 0.1）+ correction。
 	ChannelQuality float64 `json:"channel_quality"`
 	Reliability    float64 `json:"reliability"`
-	Composite      float64 `json:"composite"`
+	// 新增（AUTO_ROUTE_FEEDBACK_OPTIMIZATION）：学习得到的任务→模型亲和度。
+	//
+	// Affinity 是 [10,90] 的实测分（50=无意见），来源 task_model_affinity，
+	// 已在 AffinityStore.Lookup 内完成最小样本门槛、陈旧衰减与幅度钳制。
+	// AffinityApplied 区分「已影响选择」与「仅影子记录」：shadow 模式下
+	// Affinity 有值但 AffinityApplied=false，此时 Composite 与 4 维路径逐位相同。
+	// Explore 区分「生效」与「探索」：与 AffinityApplied 互斥，但都要在
+	// mode=on 下才可能发生。需要这两个标签来验证 P3 验收标准中「生效组 vs
+	// 探索组 reward 对比」能否观察得到。
+	Affinity        float64 `json:"affinity"`
+	AffinityApplied bool    `json:"affinity_applied"`
+	Explore         bool    `json:"explore"`
+	Composite       float64 `json:"composite"`
 }
 
 // ScoredCandidate pairs a candidate with its breakdown — returned by

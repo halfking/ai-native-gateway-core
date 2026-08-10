@@ -87,13 +87,13 @@ func TestNodeProbeWorker_PublishProbeEvent_FiresOnSink(t *testing.T) {
 // lifecycle hook nil-safety.
 func TestCredentialSelfcheckWorker_PublishSelfcheck_NilSafe(t *testing.T) {
 	w := &CredentialSelfcheckWorker{} // probeSink nil
-	w.publishSelfcheck(1, "in-flight")
+	w.publishSelfcheck(1, 100, "in-flight")
 }
 
 func TestCredentialSelfcheckWorker_PublishSelfcheck_ScheduledFlag(t *testing.T) {
 	sink := &captureSink{}
 	w := &CredentialSelfcheckWorker{probeSink: sink}
-	w.publishSelfcheck(11, "in-flight")
+	w.publishSelfcheck(11, 200, "in-flight")
 	evt := sink.last()
 	if evt.Source != "selfcheck" {
 		t.Errorf("source = %q, want selfcheck", evt.Source)
@@ -102,5 +102,10 @@ func TestCredentialSelfcheckWorker_PublishSelfcheck_ScheduledFlag(t *testing.T) 
 	// distinguish 定时自检 from request-triggered probes.
 	if !evt.Scheduled {
 		t.Errorf("daily self-check must set Scheduled=true")
+	}
+	// 2026-08-12: runID is part of the stable task ID so the in-flight and
+	// terminal transitions for the same daily run collapse into one tile.
+	if evt.ID != "selfcheck:11:200" {
+		t.Errorf("ID = %q, want selfcheck:11:200", evt.ID)
 	}
 }
