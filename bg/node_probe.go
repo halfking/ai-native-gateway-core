@@ -139,6 +139,12 @@ type NodeProbeWorker struct {
 	// back to ctx-driven 503.
 	stateProvider credentialstate.StateProvider
 	emitter       *ActiveProbeEmitter
+	// probeSink (2026-08-11) mirrors the node-probe lifecycle (submitted /
+	// in-flight) to the self-check SSE stream. The terminal completed/failed
+	// transition is already covered by ActiveProbeEmitter.publishSink; this
+	// sink covers the earlier lifecycle stages so the 自检 tab shows the
+	// pending → running → done progression. Optional — nil is a no-op.
+	probeSink ProbeEventSink
 
 	// Candidate cache invalidation keeps a direct probe result visible to the
 	// next routing decision instead of waiting for the provider cache TTL.
@@ -146,6 +152,10 @@ type NodeProbeWorker struct {
 	// recordCircuitSuccess closes the in-memory breaker as soon as the direct
 	// provider probe confirms recovery.
 	recordCircuitSuccess func(providerID, credentialID int)
+	// modelQualityTrigger (2026-08-11) requests an on-demand model-IQ re-test
+	// for a node whose probe has failed repeatedly (suspicious-action trigger).
+	// nil = disabled. Set via SetModelQualityTrigger.
+	modelQualityTrigger func(credentialID int, rawModel string, consecutiveFailures int)
 
 	stopCh   chan struct{}
 	stopOnce sync.Once
@@ -206,6 +216,16 @@ func (w *NodeProbeWorker) SetEmitter(emitter *ActiveProbeEmitter) {
 	}
 }
 
+// SetProbeSink wires the self-check SSE sink so the node-probe lifecycle
+// (submitted / in-flight stages) is mirrored to the 自检 tab. The terminal
+// completed/failed transition is emitted by the ActiveProbeEmitter; this sink
+// covers the earlier stages so the queue progression is visible. Optional.
+func (w *NodeProbeWorker) SetProbeSink(sink ProbeEventSink) {
+	if w != nil {
+		w.probeSink = sink
+	}
+}
+
 // SetInvalidateCandidateCache wires the provider cache invalidator used after
 // direct probe state changes.
 func (w *NodeProbeWorker) SetInvalidateCandidateCache(fn func(credentialID int)) {
@@ -218,6 +238,19 @@ func (w *NodeProbeWorker) SetInvalidateCandidateCache(fn func(credentialID int))
 func (w *NodeProbeWorker) SetCircuitRecovery(fn func(providerID, credentialID int)) {
 	if w != nil {
 		w.recordCircuitSuccess = fn
+	}
+}
+
+// SetModelQualityTrigger wires an optional callback invoked when a node probe
+// fails repeatedly (consecutive_failures reaches nodeProbeMaxAttempts). The
+// gateway uses this to request an on-demand model-IQ re-test for the failing
+// node (a "suspicious action" trigger, see docs/model-iq/01-design.md §3.4).
+// The callback receives (credentialID, rawModel, consecutiveFailures) and must
+// be safe to call from the probe goroutine (best-effort; the receiver should
+// run the actual test async and log/swallow errors). nil disables the hook.
+func (w *NodeProbeWorker) SetModelQualityTrigger(fn func(credentialID int, rawModel string, consecutiveFailures int)) {
+	if w != nil {
+		w.modelQualityTrigger = fn
 	}
 }
 
@@ -499,6 +532,31 @@ func (w *NodeProbeWorker) Submit(credID int, model, tenantID, parentReqID string
 		"credential_id", credID, "model", model,
 		"tenant_id", tenantID, "parent_request_id", parentReqID,
 	)
+	// 2026-08-11: mirror the "probe enqueued" transition to the 自检 SSE
+	// stream so the tab shows the pending task immediately. The triggerKind
+	// (request_failure / no_candidates) is carried as the Reason for context.
+	w.publishProbeEvent(credID, model, "pending", "node_probe", parentReqID, 0)
+}
+
+// publishProbeEvent is the shared hook for node-probe lifecycle events that
+// are NOT the terminal completed/failed (those go through ActiveProbeEmitter).
+// It is best-effort: a nil sink or a publish error never blocks the worker.
+func (w *NodeProbeWorker) publishProbeEvent(credID int, model, status, source, reason string, attempt int) {
+	if w == nil || w.probeSink == nil {
+		return
+	}
+	id := fmt.Sprintf("node_probe:%d:%s", credID, model)
+	w.probeSink.PublishProbeEvent(ProbeStreamEvent{
+		ID:           id,
+		TaskType:     "node_probe",
+		Source:       source,
+		Status:       status,
+		CredentialID: int64(credID),
+		RawModel:     model,
+		Attempt:      attempt,
+		Reason:       reason,
+		TimestampMs:  time.Now().UnixMilli(),
+	})
 }
 
 func nonBlockingWake(ch chan<- struct{}) {
@@ -1011,6 +1069,14 @@ func (w *NodeProbeWorker) cycle(ctx context.Context) bool {
 // 2026-07-16: in_flight_until is a post-pick lease, not a submit-time delay.
 // Submit leaves it NULL, so filtering it here prevents cross-instance duplicate
 // probes without delaying a newly submitted row.
+//
+// 2026-08-11: the previous 24h activity filter (last_attempt_at/updated_at >=
+// now()-24h) silently dropped any node whose probe row had been idle for more
+// than a day, so a credential that failed, cooled, then was forgotten would
+// never be picked again — recovery depended entirely on the 60s
+// credential_recovery tick re-submitting it. Widened to 7 days so a due
+// (next_retry_at <= now()) row is always eligible; the bound remains only to
+// keep centuries-old orphan rows out of the worker.
 func (w *NodeProbeWorker) pickDueAtomically(ctx context.Context) (int, string, bool, error) {
 	tx, err := w.db.Begin(ctx)
 	if err != nil {
@@ -1028,8 +1094,8 @@ func (w *NodeProbeWorker) pickDueAtomically(ctx context.Context) (int, string, b
 			  AND (in_flight_until IS NULL OR in_flight_until <= now())
 			  AND (last_direct_ok IS DISTINCT FROM TRUE
 			       OR last_gateway_ok IS DISTINCT FROM TRUE)
-			  AND (last_attempt_at >= now() - interval '24 hours'
-			       OR updated_at >= now() - interval '24 hours')
+			  AND (last_attempt_at >= now() - interval '7 days'
+			       OR updated_at >= now() - interval '7 days')
 
 		ORDER BY next_retry_at ASC
 		LIMIT 1
@@ -1086,6 +1152,11 @@ func (w *NodeProbeWorker) runOne(ctx context.Context, credID int, model, trigger
 			"consecutive_failures", state.ConsecutiveFailures,
 			"max_attempts", nodeProbeMaxAttempts)
 	}
+
+	// 2026-08-11: mirror the "probe now running" transition. This fires
+	// after pickDueAtomically leased the row (the lease is what makes the
+	// probe exclusive across instances), so subscribers see pending→in-flight.
+	w.publishProbeEvent(credID, model, "in-flight", "node_probe", triggerKind, attempt)
 
 	// Round 1: direct upstream
 	direct := w.probeDirect(ctx, credID, model)
@@ -1233,6 +1304,16 @@ func (w *NodeProbeWorker) runOne(ctx context.Context, credID int, model, trigger
 			WHERE credential_id = $1 AND raw_model_name = $2
 		`, credID, model, attempt, nextRetryAt, nextSec,
 			direct.ok, gw.ok, firstErrCode(direct, gw), firstErrDetail(direct, gw))
+
+		// 2026-08-11: suspicious-action hook. When a node has failed 2+ times
+		// in a row (the same consecutive_threshold the active_probe submitter
+		// uses), request an on-demand model-IQ re-test so the latest IQ value
+		// reflects the degraded node. Best-effort, fire-and-forget; the
+		// receiver runs the test async and swallows errors. See
+		// docs/model-iq/01-design.md §3.4.
+		if w.modelQualityTrigger != nil && attempt >= 2 {
+			w.modelQualityTrigger(credID, model, attempt)
+		}
 	}
 
 	// Persist audit row.

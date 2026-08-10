@@ -63,11 +63,19 @@
 | **手动** | admin API `POST /api/admin/model-iq/trigger` 或前端「立即测试」 | `on_demand` |
 | **可疑动作** | 见下 | `anomaly` |
 
-### 3.4 「可疑动作」定义（初版，可配）
-满足以下任一条件时，由 `modelQualityWorker.TriggerCheck(provider, model, reason)` 发起智商重测：
-1. **连续失败升级**：`NodeProbeWorker` 对该节点的 `consecutive_failures ≥ 2`
-2. **品质骤降**：`provider_profile_alerts` 命中 `score_drop` 规则（24h 品质跌 ≥ 20 分）
-3. **可用性告警**：`availability_score < 60`
+### 3.4 「可疑动作」触发（已接线）
+满足以下任一条件时，发起异步智商重测（`modelQualityWorker.TriggerNodeIQTest`，best-effort，不阻塞触发方）：
+
+1. **连续失败升级**：`NodeProbeWorker.runOne` 在失败分支当 `attempt ≥ 2` 时回调
+   `SetModelQualityTrigger(credID, model, consec)`（接线点 `bg/node_probe.go` 失败 DB 写之后，
+   在 main.go 两个构造处注入闭包）。
+2. **品质骤降**：`provider_profile` 告警引擎在 Phase 3 保存 `score_drop`/`trend_drop`/`dimension_low`
+   告警后回调 `AlertEngine.SetAlertHandler(...)`（`domains/providerprofile/alert_engine.go`）。
+   handler 枚举该凭据的所有可路由模型，逐个触发重测（main.go 接线）。
+3. **可用性告警**：`dimension_low`（可用性/稳定性 < 60）走同一条 alert handler 路径。
+
+所有触发均为异步、best-effort：测试失败仅记日志，不影响探测/告警主流程。
+`modelQualityWorker` 为 nil（`model_quality.enabled=false`）时回调为 no-op。
 
 ## 4. 存储 Schema（迁移 350）
 

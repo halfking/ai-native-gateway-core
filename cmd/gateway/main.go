@@ -65,6 +65,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/domains/integration"                         //nolint:depguard // clientprofile worker wiring
 	"github.com/kaixuan/llm-gateway-go/domains/modelquality"                        //nolint:depguard // 模型质量监控
 	"github.com/kaixuan/llm-gateway-go/domains/notification"                        //nolint:depguard // 审批通知器
+	"github.com/kaixuan/llm-gateway-go/domains/providerprofile"                      //nolint:depguard // 供应商画像告警 handler (AlertType)
 	"github.com/kaixuan/llm-gateway-go/domains/routeincident"                       //nolint:depguard // 2026-07-13 route incident diagnosis (Phase 1)
 	"github.com/kaixuan/llm-gateway-go/domains/routingstate"
 	"github.com/kaixuan/llm-gateway-go/domains/session" //nolint:depguard // historical violation, B1 routing.go CQRS will fix
@@ -1637,6 +1638,10 @@ func main() {
 		30*time.Minute,
 	)
 	var liveStreamHub *admin.LiveStreamSSEHub
+	// probeStreamHub (2026-08-11) mirrors the live request stream for the
+	// 自检 tab. Declared at this scope so it can be constructed in the
+	// system-monitor wiring block and later wired into probe emitters.
+	var probeStreamHub *admin.ProbeSSEHub
 	var anomalyHarvester *streaming.AnomalyHarvester
 	var integrityDriftWorker *bg.IntegrityFingerprintDrift
 	var integrityHarvester *bg.IntegrityHarvester
@@ -2200,6 +2205,13 @@ func main() {
 			}
 		}
 
+		// 2026-08-11: 自检队列 SSE 流（与 live-stream 物理隔离）。无论系统
+		// 监测模块是否启用都挂载，让 node-probe / integrity-probe / selfcheck
+		// 的生命周期事件实时反映到首页自检 tab。fpSlotRedis 为 nil 时 hub 走
+		// 单实例内存模式（仅同实例 fan-out，无 Redis 持久化）。
+		probeStreamHub = admin.NewProbeSSEHub(fpSlotRedis)
+		adminHandler.SetProbeStreamSSE(probeStreamHub)
+
 		// 2026-07-23: 系统监测模块 — 探测任务的唯一入口 (design docs/会话优化v2/32).
 		// env LLM_GATEWAY_SYSTEM_MONITOR_ENABLED=true 才会启；Phase 1 默认关。
 		// 旧 worker (NodeProbe / ActiveProbe / CredentialSelfcheck) 在启用
@@ -2434,6 +2446,18 @@ func main() {
 	var dailyProbeAudit *bg.DailyProbeAudit
 	// 2026-07-14: 30s system-health monitor (GDRT H badge).
 	var systemHealthWorker *bg.SystemHealthWorker
+
+	// newProbeEmitter (2026-08-11) builds an ActiveProbeEmitter and wires the
+	// self-check SSE sink so every node-probe / integrity-probe completion is
+	// mirrored to the 自检 tab. probeStreamHub may be nil (single-instance
+	// dev without Redis) — SetProbeSink is then a no-op.
+	newProbeEmitter := func() *bg.ActiveProbeEmitter {
+		em := bg.NewActiveProbeEmitter(telemetryClient)
+		if em != nil && probeStreamHub != nil {
+			em.SetProbeSink(probeStreamHub)
+		}
+		return em
+	}
 	var modelQualityWorker *bg.ModelQualityWorker
 	var stickyCleaner *bg.StickyCleaner
 	var envelopeCleaner *bg.EnvelopeCleaner
@@ -2751,10 +2775,13 @@ func main() {
 			if os.Getenv("LLM_GATEWAY_PROBE_QUEUE_ENABLED") == "true" {
 				queueExecutor := bg.NewActiveProbeExecutor(dbConn.Pool(), keyring, fernetKey, epTimeoutMs)
 				probeQueue = bg.NewProbeQueue(dbConn.Pool())
+				if probeStreamHub != nil {
+					probeQueue.SetProbeSink(probeStreamHub)
+				}
 				probeQueueWorker = bg.NewProbeQueueWorker(bg.ProbeQueueWorkerConfig{
 					Queue:        probeQueue,
 					Executor:     queueExecutor,
-					Emitter:      bg.NewActiveProbeEmitter(telemetryClient),
+					Emitter:      newProbeEmitter(),
 					ResultSink:   bg.NewPostgresIntegrityProbeResultSink(dbConn.Pool()),
 					BatchSize:    epWorkers,
 					Workers:      epWorkers,
@@ -2812,6 +2839,9 @@ func main() {
 				// A. credential_selfcheck — 24h/cred daily check
 				// (uses the same system api key as the legacy worker).
 				credentialSelfcheckWorker = bg.NewCredentialSelfcheckWorker(dbConn.Pool(), selfCheckAPIKey, "")
+				if probeStreamHub != nil {
+					credentialSelfcheckWorker.SetProbeSink(probeStreamHub)
+				}
 				credentialSelfcheckWorker.Start(context.Background())
 				slog.Info("CHECKPOINT: credential_selfcheck_worker started")
 
@@ -2823,11 +2853,22 @@ func main() {
 				}
 				nodeProbeWorker.SetStateObserver(stateManager)
 				nodeProbeWorker.SetStateProvider(stateManager)
-				nodeProbeWorker.SetEmitter(bg.NewActiveProbeEmitter(telemetryClient))
+				nodeProbeWorker.SetEmitter(newProbeEmitter())
+				if probeStreamHub != nil {
+					nodeProbeWorker.SetProbeSink(probeStreamHub)
+				}
 				nodeProbeWorker.SetInvalidateCandidateCache(provider.InvalidateCandidateCacheForCredential)
 				if routingExec != nil && routingExec.Circuit != nil {
 					nodeProbeWorker.SetCircuitRecovery(routingExec.Circuit.RecordSuccess)
 				}
+				// 2026-08-11: suspicious-action hook — when a node fails 2+ times
+				// in a row, request an async model-IQ re-test (modelQualityWorker
+				// may be constructed later / be nil if model_quality.enabled=false).
+				nodeProbeWorker.SetModelQualityTrigger(func(credID int, rawModel string, consec int) {
+					if modelQualityWorker != nil {
+						modelQualityWorker.TriggerNodeIQTest(credID, rawModel)
+					}
+				})
 				// 2026-07-17: 同步探测 hold 模式开关。env LLM_GATEWAY_SYNC_NO_CANDIDATE_PROBE
 				// 取值 "0"/"false"/"off" 即关闭（默认开启）。关闭时 executor 走原 fire-and-forget
 				// 路径，503 立即返回。该 kill-switch 用于紧急回滚，无需重新打包。
@@ -2999,17 +3040,68 @@ func main() {
 			}
 		}
 
+		// 2026-08-11: wire the provider-profile alert handler so a quality
+		// degradation alert (score_drop / dimension_low) on a credential
+		// triggers model-IQ re-tests for that credential's nodes — the
+		// "suspicious action" path in docs/model-iq/01-design.md §3.4.
+		// Best-effort: enumerates the credential's routable models and fires
+		// an async IQ re-test for each. No-op when model-quality worker is
+		// absent (e.g. model_quality.enabled=false) or the alert engine is
+		// absent (provider_profile disabled).
+		if modelQualityWorker != nil && profileWorkers != nil {
+			if eng := profileWorkers.AlertEngine(); eng != nil {
+				pool := dbConn.Pool()
+				mqw := modelQualityWorker
+				eng.SetAlertHandler(func(ctx context.Context, credentialID, providerID int64, alertType providerprofile.AlertType) {
+					switch alertType {
+					case providerprofile.AlertTypeScoreDrop,
+						providerprofile.AlertTypeTrendDrop,
+						providerprofile.AlertTypeDimensionLow:
+					default:
+						return // only quality-degradation alerts trigger a re-test
+					}
+					rows, err := pool.Query(ctx, `
+						SELECT DISTINCT pm.raw_model_name
+						FROM credential_model_bindings cmb
+						JOIN provider_models pm ON pm.id = cmb.provider_model_id
+						WHERE cmb.credential_id = $1`, credentialID)
+					if err != nil {
+						return
+					}
+					var models []string
+					for rows.Next() {
+						var m string
+						if err := rows.Scan(&m); err == nil {
+							models = append(models, m)
+						}
+					}
+					rows.Close()
+					for _, m := range models {
+						mqw.TriggerNodeIQTest(int(credentialID), m)
+					}
+				})
+			}
+		}
+
 		// Authoritative URSM v2 has no credentialstate.Manager by design, but
 		// active probes must continue to provide recovery evidence. Start the
 		// worker independently and route its final state through the v2 sink.
 		if stateManager == nil && ursmV2Mgr != nil && ursmV2Mgr.Mode() == ursmv2api.ModeAuthoritative && shouldStartNewProbeWorkers(selfCheckAPIKey) {
 			nodeProbeWorker = bg.NewNodeProbeWorker(dbConn.Pool(), fernetKey, keyring, selfCheckAPIKey, "", upClient.Proxy().ProxyFunc())
 			nodeProbeWorker.SetNodeStateSink(ursmV2ProbeSink{manager: ursmV2Mgr})
-			nodeProbeWorker.SetEmitter(bg.NewActiveProbeEmitter(telemetryClient))
+			nodeProbeWorker.SetEmitter(newProbeEmitter())
+			if probeStreamHub != nil {
+				nodeProbeWorker.SetProbeSink(probeStreamHub)
+			}
 			nodeProbeWorker.SetInvalidateCandidateCache(provider.InvalidateCandidateCacheForCredential)
 			if routingExec != nil && routingExec.Circuit != nil {
 				nodeProbeWorker.SetCircuitRecovery(routingExec.Circuit.RecordSuccess)
 			}
+			nodeProbeWorker.SetModelQualityTrigger(func(credID int, rawModel string, consec int) {
+				if modelQualityWorker != nil {
+					modelQualityWorker.TriggerNodeIQTest(credID, rawModel)
+				}
+			})
 			nodeProbeWorker.Start(context.Background())
 			slog.Info("authoritative URSM v2 node_probe_worker started")
 		}
@@ -4921,6 +5013,9 @@ func main() {
 		// 2. Stop hub/background producers before closing their dependencies.
 		if liveStreamHub != nil {
 			liveStreamHub.Stop()
+		}
+		if probeStreamHub != nil {
+			probeStreamHub.Stop()
 		}
 		if anomalyHarvester != nil {
 			anomalyHarvester.Stop()

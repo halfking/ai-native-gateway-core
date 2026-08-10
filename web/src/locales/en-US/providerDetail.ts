@@ -263,6 +263,7 @@ export default {
     iqTestFailed: "Test failed",
     iqHistoryLoading: "Loading history…",
     iqHistoryEmpty: "No test records yet",
+    iqHistoryDetails: "Show detail records",
     iqColTestedAt: "Tested at",
     iqColScore: "IQ",
     iqColGrade: "Grade",
