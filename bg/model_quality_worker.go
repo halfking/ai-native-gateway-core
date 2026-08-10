@@ -34,6 +34,10 @@ type ModelQualityWorker struct {
 	nodeSource  *CredentialNodeSource
 	nodeInvoker *modelquality.DirectNodeInvoker
 
+	// 2026-08-11: DB-backed 存储（model_iq_runs / node_iq_latest），由 main.go 注入。
+	// 非空时 Start 用它（叠加 FileStorage 离线备份）替代纯文件存储。
+	dbStorage *modelquality.DBStorage
+
 	mu         sync.RWMutex
 	running    bool
 	stopping   bool
@@ -74,6 +78,47 @@ func (w *ModelQualityWorker) SetNodeSource(src *CredentialNodeSource) {
 		w.nodeInvoker = modelquality.NewDirectNodeInvoker(0)
 	}
 	w.mu.Unlock()
+}
+
+// SetDBStorage 注入 DB-backed 存储（model_iq_runs / node_iq_latest）。
+// 在 Start 之前调用：Start 内部若发现 dbStorage 非空，会用它（并叠加 FileStorage
+// 作为离线备份）替代默认的纯文件存储；TestSingleNode 也会复用它落库。
+func (w *ModelQualityWorker) SetDBStorage(dbStorage *modelquality.DBStorage) {
+	w.mu.Lock()
+	w.dbStorage = dbStorage
+	w.mu.Unlock()
+}
+
+// TestSingleNode 对单个 (credentialID, rawModel) 节点同步跑一次精简智商测试，
+// 写入 DB（若注入了 dbStorage）并返回评分。供 admin API「立即测试」按钮调用。
+// 产生真实 token 费用，调用方负责限频。worker 未启动 / 未注入 nodeSource 时返回错误。
+func (w *ModelQualityWorker) TestSingleNode(ctx context.Context, credentialID int, rawModel string) (*modelquality.QualityScore, error) {
+	w.mu.RLock()
+	src := w.nodeSource
+	invoker := w.nodeInvoker
+	dbStorage := w.dbStorage
+	w.mu.RUnlock()
+
+	if src == nil || invoker == nil {
+		return nil, fmt.Errorf("node source not configured (call SetNodeSource first)")
+	}
+	node, err := src.FindNodeByModel(ctx, credentialID, rawModel)
+	if err != nil {
+		return nil, err
+	}
+	suite := modelquality.GetMMLULiteSuite()
+	nodeExec := modelquality.NewNodeInvoker(invoker, *node, w.timeout)
+	report, err := nodeExec.Execute(ctx, suite)
+	if err != nil {
+		return nil, fmt.Errorf("execute node test: %w", err)
+	}
+	score := (&modelquality.ScoreCalculator{}).CalculateScore(report)
+	if dbStorage != nil {
+		if err := dbStorage.SaveScore(ctx, score); err != nil {
+			slog.Warn("TestSingleNode: save score to DB failed", "err", err)
+		}
+	}
+	return score, nil
 }
 
 // RunPerNodeCheck 手动触发一次"按凭据节点"测试：遍历所有活跃节点，
@@ -150,7 +195,7 @@ func (w *ModelQualityWorker) Start(ctx context.Context, config *modelquality.Mon
 
 	// 初始化组件
 	storageDir := filepath.Join(w.dataDir, "model-quality")
-	storage, err := modelquality.NewFileStorage(storageDir)
+	fileStorage, err := modelquality.NewFileStorage(storageDir)
 	if err != nil {
 		slog.Error("model quality worker: failed to init storage", "error", err)
 		w.running = false
@@ -158,6 +203,14 @@ func (w *ModelQualityWorker) Start(ctx context.Context, config *modelquality.Mon
 		w.doneCh = nil
 		w.mu.Unlock()
 		return
+	}
+	// 2026-08-11: 若注入了 DB 存储（model_iq_runs / node_iq_latest），用它作为
+	// 主存储并把文件存储挂为离线备份；否则回退到纯文件存储。
+	var storage modelquality.MonitorStorage = fileStorage
+	if w.dbStorage != nil {
+		w.dbStorage.WithFileBackup(fileStorage)
+		storage = w.dbStorage
+		slog.Info("model quality worker: using DB-backed storage (model_iq_runs)")
 	}
 
 	alertLogFile := filepath.Join(storageDir, "alerts.log")

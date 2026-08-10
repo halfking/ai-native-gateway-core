@@ -11,6 +11,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"strings"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
@@ -113,4 +114,30 @@ func (s *CredentialNodeSource) FindNode(ctx context.Context, credentialID int) (
 		}
 	}
 	return nil, fmt.Errorf("credential node id=%d not found or not active", credentialID)
+}
+
+// FindNodeByModel 查找 (credentialID, rawModelName) 节点，用于 admin API 的
+// 「立即测试该节点」按钮。rawModelName 匹配 raw_model_name 或 outbound_model_name
+// （大小写不敏感）。找不到时返回 (nil, error)。
+func (s *CredentialNodeSource) FindNodeByModel(ctx context.Context, credentialID int, rawModelName string) (*modelquality.CredentialNode, error) {
+	if s.db == nil {
+		return nil, fmt.Errorf("node source: db pool is nil")
+	}
+	if rawModelName == "" {
+		return nil, fmt.Errorf("rawModelName required")
+	}
+	nodes, err := s.DiscoverActiveNodes(ctx)
+	if err != nil {
+		return nil, err
+	}
+	target := strings.ToLower(strings.TrimSpace(rawModelName))
+	for i := range nodes {
+		if nodes[i].CredentialID != credentialID {
+			continue
+		}
+		if strings.ToLower(nodes[i].RawModel) == target {
+			return &nodes[i], nil
+		}
+	}
+	return nil, fmt.Errorf("credential node id=%d model=%s not found or not active", credentialID, rawModelName)
 }
