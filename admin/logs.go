@@ -124,6 +124,15 @@ type modelAggregate struct {
 	CostUSD          float64 `json:"cost_usd"`
 }
 
+// shouldRunByModel 决定是否执行按模型分组聚合（by_model）。
+// 仅在未指定模型筛选、存在请求且时间窗不超限（32 天，保护列表主查询
+// 不超时）时运行。2026-08-09 审计发现该决策谓词无测试覆盖，提取为
+// 纯函数以便测试。
+func shouldRunByModel(modelFilterSpecified bool, count int, timeSpan time.Duration) bool {
+	const maxByModelWindow = 32 * 24 * time.Hour
+	return !modelFilterSpecified && count > 0 && timeSpan <= maxByModelWindow
+}
+
 type requestLogDetail struct {
 	requestLogRow
 	RequestBody  any `json:"request_body"`
@@ -631,8 +640,7 @@ func (h *Handler) listLogs(w http.ResponseWriter, r *http.Request) {
 	modelFilterSpecified := strings.TrimSpace(queryString(r, "model")) != "" ||
 		queryIntPtr(r, "canonical_id") != nil
 	timeSpan := end.Sub(start)
-	const maxByModelWindow = 32 * 24 * time.Hour
-	if !modelFilterSpecified && count > 0 && timeSpan <= maxByModelWindow {
+	if shouldRunByModel(modelFilterSpecified, count, timeSpan) {
 		// 与 aggFromSQL 同构，额外 JOIN models_canonical 以解析 canonical 名。
 		// tenant_admin 路径保留 api_keys JOIN 以匹配同一行集。
 		var byModelFromSQL string

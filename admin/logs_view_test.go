@@ -6,6 +6,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 )
 
 type scanDestinationCounter struct {
@@ -304,5 +305,32 @@ func TestListLogsResponseShape(t *testing.T) {
 	}
 	if resp.Aggregate.CreditsCharged == nil || *resp.Aggregate.CreditsCharged != 0 {
 		t.Errorf("credits_charged = %v, want 0", resp.Aggregate.CreditsCharged)
+	}
+}
+
+func TestShouldRunByModel(t *testing.T) {
+	maxWindow := 32 * 24 * time.Hour
+	tests := []struct {
+		name               string
+		modelFilterSpecified bool
+		count              int
+		timeSpan           time.Duration
+		want               bool
+	}{
+		{"empty window, no filter, has rows", false, 5, time.Hour, true},
+		{"model filter set blocks aggregate", true, 5, time.Hour, false},
+		{"zero count blocks aggregate", false, 0, time.Hour, false},
+		{"window at limit allowed", false, 1, maxWindow, true},
+		{"window over limit blocks aggregate", false, 1, maxWindow + time.Second, false},
+		{"monthly view (~31d) still allowed", false, 1, 31 * 24 * time.Hour, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := shouldRunByModel(tt.modelFilterSpecified, tt.count, tt.timeSpan)
+			if got != tt.want {
+				t.Errorf("shouldRunByModel(%v, %d, %v) = %v, want %v",
+					tt.modelFilterSpecified, tt.count, tt.timeSpan, got, tt.want)
+			}
+		})
 	}
 }
