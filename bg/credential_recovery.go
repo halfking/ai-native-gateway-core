@@ -478,6 +478,8 @@ func mnfCoolingRecoveryMirrorSQL() string {
 //     when the two-round probe (direct + gateway)
 //     fails; errCode is appended (e.g. 'probe_http_503',
 //     'probe_network_error', 'probe_network_timeout').
+//   - 'auto_*'              — written by domains/credential/writer.go for
+//     transient per-model failures (timeout, rate limit, upstream down, etc.).
 //
 // Hard guards (mirroring the credential_recovery.recover() siblings):
 //   - NOT LIKE 'manual%'             — operators chose manual; never auto-flip.
@@ -510,7 +512,8 @@ func expiredCmbRecoverySQL() string {
 		          AND cmb.unavailable_recover_at <= now()
 		          AND (
 		              cmb.unavailable_reason IN ('continuous_failure')
-		              OR cmb.unavailable_reason LIKE 'probe_%'
+		              OR cmb.unavailable_reason LIKE 'probe!_%' ESCAPE '!'
+		              OR cmb.unavailable_reason LIKE 'auto!_%' ESCAPE '!'
 		          )
 		      )
 		  )
