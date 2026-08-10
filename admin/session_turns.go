@@ -193,6 +193,24 @@ func decodeCursor(value string, key []byte) (cursorPayload, error) {
 	return payload, nil
 }
 
+// errCursorMismatch 表示 cursor 解码成功但其归属租户/会话与当前请求不符。
+// 用于区分「无效 cursor」（签名错误/格式非法）与「跨租户复用 cursor」，
+// 前者返回 invalid cursor，后者返回 cursor mismatch（2026-08-09 审计修复）。
+var errCursorMismatch = errors.New("cursor mismatch")
+
+// validateCursor 解码并校验 cursor 归属。sessionID 为空表示不校验会话维度
+// （跨会话轮次列表场景）。返回解码后的 payload 供调用方使用。
+func validateCursor(encoded string, key []byte, tenantID, sessionID string) (cursorPayload, error) {
+	p, err := decodeCursor(encoded, key)
+	if err != nil {
+		return cursorPayload{}, err
+	}
+	if p.TenantID != tenantID || (sessionID != "" && p.SessionID != sessionID) {
+		return cursorPayload{}, errCursorMismatch
+	}
+	return p, nil
+}
+
 func (h *SessionTurnsHandler) extractAdminContext(r *http.Request) (tenant, user, role string, ok bool) {
 	if h.jwtParser != nil {
 		auth := r.Header.Get("Authorization")
