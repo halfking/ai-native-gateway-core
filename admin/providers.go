@@ -1201,6 +1201,13 @@ func (h *Handler) handleProviderCredentials(w http.ResponseWriter, r *http.Reque
 		} else {
 			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		}
+	case "keys":
+		// 2026-08-10: per-credential multi-key management (migration 076).
+		//   GET    /api/providers/{id}/credentials/{cid}/keys        list extra keys (masked)
+		//   POST   .../keys          add an extra key
+		//   DELETE .../keys/{kid}    remove an extra key
+		//   PATCH  .../keys/{kid}    reset an extra key's status to active
+		h.handleCredentialKeys(w, r, providerID, credID)
 	default:
 		http.NotFound(w, r)
 	}
