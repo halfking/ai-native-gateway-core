@@ -1,6 +1,7 @@
 package ir
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 )
@@ -445,10 +446,10 @@ func irDocumentToGeminiPart(doc *DocumentBlock) map[string]any {
 			},
 		}
 	case "text", "csv", "":
-		// Inline text payload. Gemini's inlineData.data is a string field, so
-		// raw text is acceptable and far safer than stuffing the whole document
-		// body into fileData.fileUri (which expects a URL and produces a
-		// malformed request).
+		// Inline text payload. Gemini's inlineData.data MUST be base64-encoded
+		// (the parser and the REST spec both treat it as base64). Emitting raw
+		// text here would corrupt the document on the Gemini side. We base64
+		// the UTF-8 bytes of the body, which round-trips losslessly.
 		if mt == "" {
 			if src.Type == "csv" {
 				mt = "text/csv"
@@ -459,7 +460,7 @@ func irDocumentToGeminiPart(doc *DocumentBlock) map[string]any {
 		return map[string]any{
 			"inlineData": map[string]any{
 				"mimeType": mt,
-				"data":     src.Data,
+				"data":     base64.StdEncoding.EncodeToString([]byte(src.Data)),
 			},
 		}
 	case "url":
