@@ -2946,6 +2946,7 @@ func (h *ChatHandler) serveWithExecutor(
 	// and the mechanical-trim fallback). The session compressor delta-appends
 	// new turns to the compressed session history and, when the sliding
 	// window fires, produces a lossless LLM summary (or trims as fallback).
+	var scResult *compression.PrepareResult
 	if h.sessionCompressor != nil && gwSessionID != "" {
 		tenantForSC := "default"
 		if keyInfo != nil {
@@ -2961,7 +2962,7 @@ func (h *ChatHandler) serveWithExecutor(
 		if len(candidates) > 0 && candidates[0].ContextWindow != nil {
 			ctxWindow = *candidates[0].ContextWindow
 		}
-		scResult := h.sessionCompressor.Prepare(
+		scResult = h.sessionCompressor.Prepare(
 			r.Context(),
 			bodyBytes,
 			tenantForSC,
@@ -3192,6 +3193,27 @@ func (h *ChatHandler) serveWithExecutor(
 			if !regressed {
 				bodyBytes = guarded
 			}
+		}
+	}
+
+	// Commit the exact client-protocol body entering provider dispatch. Prepare
+	// writes a compatible intermediate entry for replay callers, but the common
+	// handler transforms above may reorder messages or restore cached tools.
+	if scResult != nil && h.sessionCompressor != nil && gwSessionID != "" {
+		tenantForSC := "default"
+		if keyInfo != nil && keyInfo.TenantID != "" {
+			tenantForSC = keyInfo.TenantID
+		}
+		if err := h.sessionCompressor.CommitFinal(r.Context(), tenantForSC, gwSessionID, bodyBytes, scResult); err != nil {
+			slog.Warn("session_compressor: final cache commit failed",
+				"session", gwSessionID, "request_id", requestID, "error", err)
+		} else {
+			mc := scResult.MsgCount
+			te := scResult.TokenEst
+			logCtx.OutboundBody = append(logCtx.OutboundBody[:0], bodyBytes...)
+			logCtx.OutboundMsgCount = &mc
+			logCtx.OutboundTokenEst = &te
+			logCtx.OutboundMsgHashes = append(logCtx.OutboundMsgHashes[:0], scResult.MsgHashes...)
 		}
 	}
 
