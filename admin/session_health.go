@@ -7,20 +7,20 @@ import (
 
 // HealthScoreConfig 健康评分配置（可热更新）
 type HealthScoreConfig struct {
-	ErrorEndedPenalty        int `json:"error_ended_penalty"`         // 30
-	AbandonedPenalty         int `json:"abandoned_penalty"`           // 15
-	PerErrorPenalty          int `json:"per_error_penalty"`           // 3
-	PerErrorCap              int `json:"per_error_cap"`               // 30
-	PerCompliancePenalty     int `json:"per_compliance_penalty"`      // 10
-	PerComplianceCap         int `json:"per_compliance_cap"`          // 30
-	HighLatencyThresholdMs   int `json:"high_latency_threshold_ms"`   // 5000
-	HighLatencyPenalty       int `json:"high_latency_penalty"`        // 15
-	ModelSwitchThreshold     int `json:"model_switch_threshold"`      // 3
-	ModelSwitchPenalty       int `json:"model_switch_penalty"`        // 10
-	PromptInjectionPenalty   int `json:"prompt_injection_penalty"`    // 20
-	PIIPenalty               int `json:"pii_penalty"`                 // 15
-	ToxicOutputPenalty       int `json:"toxic_output_penalty"`        // 15
-	SensitivePenaltyCap      int `json:"sensitive_penalty_cap"`       // 30
+	ErrorEndedPenalty      int `json:"error_ended_penalty"`       // 30
+	AbandonedPenalty       int `json:"abandoned_penalty"`         // 15
+	PerErrorPenalty        int `json:"per_error_penalty"`         // 3
+	PerErrorCap            int `json:"per_error_cap"`             // 30
+	PerCompliancePenalty   int `json:"per_compliance_penalty"`    // 10
+	PerComplianceCap       int `json:"per_compliance_cap"`        // 30
+	HighLatencyThresholdMs int `json:"high_latency_threshold_ms"` // 5000
+	HighLatencyPenalty     int `json:"high_latency_penalty"`      // 15
+	ModelSwitchThreshold   int `json:"model_switch_threshold"`    // 3
+	ModelSwitchPenalty     int `json:"model_switch_penalty"`      // 10
+	PromptInjectionPenalty int `json:"prompt_injection_penalty"`  // 20
+	PIIPenalty             int `json:"pii_penalty"`               // 15
+	ToxicOutputPenalty     int `json:"toxic_output_penalty"`      // 15
+	SensitivePenaltyCap    int `json:"sensitive_penalty_cap"`     // 30
 }
 
 // DefaultHealthScoreConfig 默认配置
@@ -52,13 +52,17 @@ type PenaltyItem struct {
 
 // SessionHealth 会话健康度
 type SessionHealth struct {
-	HealthScore   int           `json:"health_score"`    // 0-100
-	HealthGrade   string        `json:"health_grade"`    // A-F
-	Outcome       string        `json:"outcome"`         // completed/error/abandoned/unknown
-	OutcomeReason string        `json:"outcome_reason"`  // 人类可读原因
+	HealthScore   int           `json:"health_score"`   // 0-100
+	HealthGrade   string        `json:"health_grade"`   // A-F
+	Outcome       string        `json:"outcome"`        // completed/error/abandoned/unknown
+	OutcomeReason string        `json:"outcome_reason"` // 人类可读原因
 	ErrorRate     float64       `json:"error_rate"`
 	AvgLatencyMs  int           `json:"avg_latency_ms"`
-	Penalties     []PenaltyItem `json:"penalties"`       // 扣分明细
+	Penalties     []PenaltyItem `json:"penalties"` // 扣分明细
+	// QualityScore 是 0-10 的表列（session_summaries.quality_score），是
+	// health_score (0-100) 的 1/10 线性映射。多个 admin 视图读取该列但长期
+	// 无写入方（D6）。此字段由 ComputeHealth 填充，供 worker 落库。
+	QualityScore int `json:"quality_score"` // 0-10
 }
 
 // ComputeHealth 计算会话健康度（核心函数）
@@ -186,6 +190,7 @@ func ComputeHealth(summary AnalyticsSessionSummary, config HealthScoreConfig) Se
 		ErrorRate:     errorRate,
 		AvgLatencyMs:  summary.AvgLatencyMs,
 		Penalties:     penalties,
+		QualityScore:  score / 10, // 0-100 → 0-10 for session_summaries.quality_score
 	}
 }
 
