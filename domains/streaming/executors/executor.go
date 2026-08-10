@@ -2304,6 +2304,10 @@ func (e *Executor) Execute(params *ExecParams) (*ExecuteResult, error) {
 	// fail-open instead of continue.
 	totalCandidates := len(candidates)
 	for candidateIndex, cand := range candidates {
+		// resolvedKeyIdx holds the multi-key rotator's chosen key index for this
+		// candidate (-1 when single-key or not yet resolved). Used by the failure
+		// path to RecordKeyFailure on the correct key.
+		resolvedKeyIdx := -1
 		// OPT-3: skip siblings of providers that already returned
 		// content_filter. The credential is healthy; the content is
 		// the problem. We do NOT update circuit / sticky / state —
@@ -2531,11 +2535,30 @@ func (e *Executor) Execute(params *ExecParams) (*ExecuteResult, error) {
 						"raw_model", cand.RawModel,
 						"credential_id", cand.CredentialID,
 					))
-			switch cand.Protocol {
-			case "anthropic-messages":
-				result, execErr = e.executeAnthropic(params, cand, retryPerCred, tTotal, fpLease)
-			default:
-				result, execErr = e.executeOpenAI(params, cand, retryPerCred, tTotal, fpLease)
+
+			// ── multi-key rotation (OmniRoute apiKeyRotator 对齐) ─────────────
+			// 若 credential 挂了多个 key, 在 BuildRequest 前用 KeyRotator 选一个
+			// healthy key (round-robin, 跳过 invalid/terminal), 重写 cand.APIKey.
+			// 单 key credential (KeyRotator==nil) 走原路径, 零开销.
+			// resolvedKeyIdx 在循环体作用域内声明, 失败路径用它 RecordKeyFailure.
+			if cand.KeyRotator != nil {
+				idx := cand.KeyRotator.ResolveKey(cand.CredentialID, -1)
+				if idx < 0 {
+					// 全部 key invalid/terminal → credential 整体不可用, 跳到下一候选.
+					execErr = fmt.Errorf("keyrotator: all keys exhausted for credential %d", cand.CredentialID)
+				} else if idx >= 1 && idx-1 < len(cand.APIKeys) {
+					cand.APIKey = cand.APIKeys[idx-1] // rotator idx 0 = primary, 1..N = APIKeys[0..N-1]
+				}
+				resolvedKeyIdx = idx
+			}
+
+			if execErr == nil {
+				switch cand.Protocol {
+				case "anthropic-messages":
+					result, execErr = e.executeAnthropic(params, cand, retryPerCred, tTotal, fpLease)
+				default:
+					result, execErr = e.executeOpenAI(params, cand, retryPerCred, tTotal, fpLease)
+				}
 			}
 		}()
 
@@ -2549,6 +2572,11 @@ func (e *Executor) Execute(params *ExecParams) (*ExecuteResult, error) {
 			// 统一状态管理到 URSM v2，避免多路径写入导致状态不一致
 			if e.Recorder != nil && e.legacyWritersEnabled() {
 				e.Recorder.RecordSuccess(sideEffectCtx, cand.CredentialID, cand.RawModel)
+			}
+			// multi-key: mark the resolved key healthy (clears warning/invalid
+			// after a single success). No-op for single-key credentials.
+			if cand.KeyRotator != nil && resolvedKeyIdx >= 0 {
+				cand.KeyRotator.RecordKeySuccess(cand.CredentialID, resolvedKeyIdx)
 			}
 			// Record success for Bandit scoring (Thompson Sampling)
 			e.recordBanditSuccess(cand.CredentialID, result.LatencyMs)
@@ -3186,7 +3214,19 @@ func (e *Executor) Execute(params *ExecParams) (*ExecuteResult, error) {
 		// 2026-08-08 P0 Fix: sole-candidate models also skip the breaker
 		// escalation so a transient blip doesn't lock the only Claude/GPT
 		// route for 30 minutes.
-		if !freeCredentialsTolerateTransient(cand.BillingMode, kind) && totalCandidates > 1 {
+		//
+		// 2026-08-10 multi-key (OmniRoute A3 guard): 先把失败记到 per-key 健康,
+		// 只有当该 credential 的所有 key 都 invalid/terminal 时才上抛到 credential
+		// 级 breaker. 这样一个 key 余额耗尽不会毒化整个 credential, 其他 key 继续
+		// 服务 — N 倍放大免费额度的关键.
+		propagateToBreaker := !freeCredentialsTolerateTransient(cand.BillingMode, kind) && totalCandidates > 1
+		if cand.KeyRotator != nil && resolvedKeyIdx >= 0 {
+			cand.KeyRotator.RecordKeyFailure(cand.CredentialID, resolvedKeyIdx, kind)
+			if !cand.KeyRotator.AllKeysInvalid(cand.CredentialID) {
+				propagateToBreaker = false
+			}
+		}
+		if propagateToBreaker {
 			e.Circuit.RecordFailure(cand.ProviderID, cand.CredentialID, kind)
 		} else {
 			// 2026-07-03 incident fix: free-cred transient skips RecordFailure
