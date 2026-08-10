@@ -5,6 +5,27 @@
 **预计工作量**: 2-4小时
 **任务类型**: 问题诊断 + 代码修复
 **依赖**: 需要生产数据库访问权限
+**最后审阅**: 2026-08-10（HEAD: 747fc843）
+
+---
+
+## ⚠️ 现状对照（2026-08-10 代码审阅结论）
+
+本方案创建于 2026-07-19，**后续多个 P0 修复已经覆盖其中部分场景**，直接按本文档的代码片段修改有回归风险。执行阶段3 之前必须先读这一节。
+
+| 方案子项 | 方案描述的修复点 | HEAD 真实状态 | 是否可直接套用 |
+|---|---|---|---|
+| **3.1** `router.go` | 移除 `isTransientUnavailableReason` 中 `availability:rate_limited` 和 `state:rate_limit` | 函数现在在 `domains/streaming/executors/router.go:1080`（方案说的 861-877 行已偏移）。**两个 case 仍存在，且是多次 P0 加固的结果**——注释明确点名 ba9fc64f 生产事故、cred 19 NIM 误判等案例。2026-08 后又新增了 `KindUpstreamOverloaded`、`KindEmptyResponse`、`probe_direct_timeout` 三个瞬态分支。**直接移除会让单候选+限流场景从"降级成功"退化为"0 候选 503"** | ❌ 不建议直接套用 |
+| **3.2** `errorsx/classify.go` | HTTP 429 必须优先于 body 匹配 | 已完成。函数签名已重构为 `ClassifyError(err, *http.Response)`（`errorsx/classify.go:507`），状态码走 `ClassifyResponseStatus`（429→`KindRateLimit`）。`ClassifyErrorWithBody`（`classify.go:633`）的 `modelNotFoundRe` 已 gate 到 `status in {400,404,422}`，5xx body 不再被误判。多个 P0 提交覆盖（`ce92abe6 fix(errorsx): classify INSUFFICIENT_BALANCE on HTTP 403 as quota, not auth` 等） | ✅ 已在后续 P0 修复中完成 |
+| **3.3** `credentialhealth/checker.go` | 给 `RecoverExpired` 加 `prober` 参数，恢复前探测 | 已完成（实现方式与方案不同）。`RecoverExpired(ctx, db)`（`credentialhealth/checker.go:318`）本身仍无 prober 参数；探测由另一条架构完成：`bg/credential_recovery.go:32` 的 `probeSubmitter` → `NodeProbeWorker`（`bg/node_probe.go:117`），main.go 已 wire。回归测试 `bg/credential_recovery_test.go:110 TestRecoverExpiredBindingsEnqueuesProbes`、`credentialhealth/checker_test.go:504 TestRecoverExpired_SuspendedSQLGuard` 锁定。P0 修复 `afb372e9 fix(P0): credential suspended state deadlock` 也覆盖此路径 | ✅ 已通过架构改造完成 |
+| **3.4** 智谱AI 模型配置 | 执行 SQL 补 `glm-5.2` | SQL 脚本 `sql/migrations/manual/20260719_add_volcano_glm52.sql` 已就绪且幂等 | 🟡 唯一可独立执行项，但仍需 DB 凭据 |
+
+### 执行阶段3 之前的前置条件
+
+1. **必须先跑完阶段1~2 的诊断**——拿到 `查询1`（error_kind + status_code）和 `查询2`（requests_after_unavailable）的真实结果。
+2. **场景A/B/C 的代码修复大概率已在后续 P0 提交里完成**，重新按本文档代码片段改可能引入回归。需要先比对 HEAD 与本文档的差异（见上表"HEAD 真实状态"列）。
+3. **场景D 是唯一可独立执行的修复**（3.4 SQL），因为它不改代码、是仓库已有的幂等脚本、只依赖 DB 凭据。
+4. 任何对 `router.go` 的修改都应在新分支 + `go test ./domains/streaming/executors/...` + 灰度发布下进行。
 
 ---
 
@@ -221,7 +242,9 @@ credentialhealth/checker.go 中的 RecoverExpired 函数
 
 ### 阶段3: 代码修复（1-2小时）
 
-#### 3.1 修复降级模式问题（场景A）
+#### 3.1 修复降级模式问题（场景A） — ⚠️ 高风险，勿直接套用
+
+> **2026-08-10 审阅**：`isTransientUnavailableReason` 现在在 `domains/streaming/executors/router.go:1080`（方案描述的 861-877 行已偏移）。函数注释（router.go:1051-1079）明确说明保留 `rate_limited` 是有意的——单候选场景下要靠降级模式避免 503（生产事故 ba9fc64f）。2026-08 后又加了 `KindUpstreamOverloaded`、`KindEmptyResponse`、`probe_direct_timeout` 三个瞬态分支。**直接移除两个 case 会让单候选+限流场景从"降级成功"退化为"0 候选 503"，风险高于不修**。若场景A 仍然成立，需要重新设计修复（例如：降级时加冷却窗口或并发上限，而不是完全拒绝），并在新分支 + 测试 + 灰度下推进。
 
 **文件**: `domains/streaming/executors/router.go`
 
@@ -302,7 +325,9 @@ git push origin fix/rate-limit-degraded-mode
 
 ---
 
-#### 3.2 修复错误分类问题（场景B）
+#### 3.2 修复错误分类问题（场景B） — ✅ 已在后续 P0 修复中完成
+
+> **2026-08-10 审阅**：本节描述的修复已经落地（实现方式比方案更彻底）。`ClassifyError` 签名已重构为 `ClassifyError(err error, resp *http.Response)`（`errorsx/classify.go:507`），HTTP 状态码走 `ClassifyResponseStatus`（`classify.go:604`）——429 直接返回 `KindRateLimit`，不依赖 body。`ClassifyErrorWithBody`（`classify.go:633`）的 `modelNotFoundRe` 已 gate 到 `status in {400,404,422}`（`classify.go:695-698`），5xx body 即使包含 "model not found" 也不会被误判。后续还有 `ce92abe6 fix(errorsx): classify INSUFFICIENT_BALANCE on HTTP 403 as quota, not auth` 等多次加固。**本节的代码片段仅供参考，不要直接套用——会和现有实现冲突。**
 
 **文件**: `errorsx/classify.go`
 
@@ -372,7 +397,9 @@ git commit -m "fix(errorsx): HTTP状态码优先于body匹配
 
 ---
 
-#### 3.3 修复自动恢复问题（场景C）
+#### 3.3 修复自动恢复问题（场景C） — ✅ 已通过架构改造完成
+
+> **2026-08-10 审阅**：本节描述的"给 `RecoverExpired` 加 prober 参数"在 HEAD 上**没有按方案实现，但等效效果已通过另一条架构达成**。`RecoverExpired(ctx, db DBQuerier)`（`credentialhealth/checker.go:318`）本身仍无 prober 参数，但它只做"恢复 cmb/model_offers/availability_state 三个状态面"的纯 SQL 工作。探测由解耦的 worker 链完成：`bg/credential_recovery.go:32` 的 `probeSubmitter func(credID int, model string)` → `NodeProbeWorker`（`bg/node_probe.go:117`），在 `cmd/gateway/main.go:2820` 已 wire。回归测试 `bg/credential_recovery_test.go:110 TestRecoverExpiredBindingsEnqueuesProbes`、`credentialhealth/checker_test.go:504 TestRecoverExpired_SuspendedSQLGuard` 锁定了该路径。此外 `afb372e9 fix(P0): credential suspended state deadlock`、`6cc4e235 fix(quota): stale periodic cleanup must respect quota_recover_at` 也覆盖了恢复死锁场景。**本节的代码片段已过时，不要按它改 checker.go——会破坏现有 worker 解耦设计。**
 
 **文件**: `credentialhealth/checker.go`
 
@@ -479,7 +506,9 @@ git commit -am "fix(credentialhealth): 自动恢复前增加探测验证
 
 ---
 
-#### 3.4 修复模型配置问题（场景D）
+#### 3.4 修复模型配置问题（场景D） — 🟡 唯一可独立执行项
+
+> **2026-08-10 审阅**：这是阶段3 里唯一不需要改代码、不依赖诊断结论的修复。SQL 脚本 `sql/migrations/manual/20260719_add_volcano_glm52.sql` 已就绪且幂等（用 `NOT EXISTS` 守卫）。但仍需 `$DATABASE_URL` 凭据才能执行；建议先在 staging DB 跑一遍 dry-run，再决定是否在主库执行。
 
 **SQL修复**:
 ```sql
