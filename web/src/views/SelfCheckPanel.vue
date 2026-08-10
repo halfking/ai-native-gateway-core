@@ -409,7 +409,9 @@ function nodeTaskToTile(t: NodeProbeTaskRow): RequestTile {
       : t.status === 'paused' ? 'failure'
         : 'idle'
   return {
-    request_id: `n-${t.credential_id}-${t.raw_model}`,
+    // request_id 用 credential_id + provider_id + raw_model 三元组保证
+    // 唯一性（raw_model 可能含特殊字符或跨 provider 同名，单独用会撞 key）。
+    request_id: `n-${t.provider_id}-${t.credential_id}-${t.raw_model}`,
     timestamp: t.updated_at || t.next_retry_at || new Date().toISOString(),
     model: nodeTaskStandardModel(t),
     vendor: '__unknown__',
