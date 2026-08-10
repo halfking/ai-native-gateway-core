@@ -791,6 +791,9 @@ func (m *Manager) RecordRequest(ctx context.Context, ev api.RequestOutcome) erro
 			// 2026-07-24: 使用配置的冷却时间，与 circuit breaker 冷却时间对齐
 			CoolSeconds:     m.cfg.CoolSeconds,
 			FailStreakLimit: 3,
+			// 2026-08-10: free-tier transient tolerance — see
+			// record_request.lua / reducer.go transientErrors.
+			BillingMode: ev.BillingMode,
 		}); err != nil {
 		metrics.Global().RecordURSMv2ShadowResult("failed")
 		m.log.Warn("ursm.v2: record failed", "error", err, "cid", ev.CredentialID)

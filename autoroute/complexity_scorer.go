@@ -101,8 +101,8 @@ func EstimateComplexity(sigs ClassificationSignals, task TaskType, t ComplexityT
 		level = maxLevel(level, ComplexityMedium)
 	}
 
-	// frontier 判定：reasoning 或 code_audit + 长上下文 + 多工具 同时命中
-	isHardTask := task == TaskReasoning || task == TaskCodeAudit
+	// frontier 判定：reasoning / code_audit / planning + 长上下文 + 多工具 同时命中
+	isHardTask := task == TaskReasoning || task == TaskCodeAudit || task == TaskPlanning
 	if isHardTask && sigs.EstimatedTokens > t.LongContextHardTokens && sigs.ToolCount >= t.AgentHardToolCount {
 		level = ComplexityFrontier
 	}
@@ -113,7 +113,7 @@ func EstimateComplexity(sigs ClassificationSignals, task TaskType, t ComplexityT
 // baseComplexityForTask 返回任务类型的基线难度。
 func baseComplexityForTask(task TaskType) ComplexityLevel {
 	switch task {
-	case TaskReasoning, TaskCodeAudit, TaskAgent, TaskLongContext:
+	case TaskReasoning, TaskCodeAudit, TaskPlanning, TaskAgent, TaskLongContext:
 		return ComplexityHard
 	case TaskVision, TaskFunctionCall, TaskIntentClassification:
 		return ComplexityMedium

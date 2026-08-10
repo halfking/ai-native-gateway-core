@@ -20,7 +20,8 @@
 // The middleware ONLY honours X-LLM-Origin-Stage / X-LLM-Origin-Actor
 // from requests that the auth middleware identified as system keys
 // (is_system=TRUE && owner_user IN ('credential-selfcheck-worker',
-// 'node-probe-worker', 'system-health-worker', 'legacy-probe-worker')).
+// 'node-probe-worker', 'system-health-worker', 'legacy-probe-worker',
+// 'model-quality-worker')).
 // For every other request the inbound headers are stripped — otherwise
 // a public client could send X-LLM-Origin-Stage=manual and bypass the
 // daily self-check rate limit.  Auth runs in the same chain BEFORE this
@@ -101,6 +102,8 @@ var trustedOriginOwners = map[string]struct{}{
 	"node-probe-worker":           {},
 	"system-health-worker":        {},
 	"legacy-probe-worker":         {}, // tenant=system 5min cadence in 252
+	"model-quality-worker":        {}, // 2026-08-10: MMLU 智商测试经网关请求
+	"self-check-worker":           {}, // 2026-08-10: 修复潜伏的归属错误——legacy SelfCheckWorker 与 model-quality-worker 都复用这个系统 key
 }
 
 // -------------------------------------------------------------------
