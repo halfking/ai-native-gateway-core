@@ -996,6 +996,12 @@ func (h *Handler) RegisterProbeDashboardRoutes(mux *http.ServeMux, adminWrap fun
 	mux.HandleFunc("/api/admin/probe/cache-state", adminWrap(h.handleProbeCacheState))
 	mux.HandleFunc("/api/admin/probe/cache-rebuild", adminWrap(h.handleProbeCacheRebuild))
 	mux.HandleFunc("/api/admin/probe/cache-keys", adminWrap(h.handleProbeCacheKeys))
+	// 2026-08-11: self-check / node-probe queue SSE stream (自检 tab). Mounted
+	// conditionally so a gateway without the hub wired (e.g. tests) does not
+	// expose a nil-handler route.
+	if h.probeStreamHub != nil {
+		mux.HandleFunc("/api/admin/probe/stream", adminWrap(h.probeStreamHub.HandleStream))
+	}
 }
 
 // handleProbeModelRoutes is a router for /api/admin/probe/model/* endpoints
