@@ -2964,7 +2964,22 @@ func main() {
 					TargetModels:         modelquality.GetDefaultMonitorModels(),
 				}
 
+				// 2026-08-10: 按凭据节点测试（直连节点，绕过网关）。默认关闭。
+				// 需要 DB pool + fernet/keyring 才能解密凭据并发现节点。
+				var mqEnablePerNode bool
+				if raw, _, _ := settings.Global.EffectiveValue(settings.ScopePlatform, "model_quality.enable_per_node", ""); len(raw) > 0 {
+					_ = json.Unmarshal(raw, &mqEnablePerNode)
+				}
+				mqConfig.EnablePerNodeTesting = mqEnablePerNode
+
 				modelQualityWorker = bg.NewModelQualityWorker(mqDataDir, mqAPIKey, mqBaseURL, time.Duration(mqTimeoutSec)*time.Second)
+				if mqEnablePerNode && dbConn != nil && (keyring != nil || len(fernetKey) == 32) {
+					modelQualityWorker.SetNodeSource(bg.NewCredentialNodeSource(dbConn.Pool(), keyring, fernetKey))
+					slog.Info("model_quality_worker: per-node direct testing enabled")
+				} else if mqEnablePerNode {
+					slog.Warn("model_quality_worker: enable_per_node=true but DB/keyring unavailable, falling back to gateway-only")
+					mqConfig.EnablePerNodeTesting = false
+				}
 				modelQualityWorker.Start(context.Background(), mqConfig)
 				slog.Info("CHECKPOINT: model_quality_worker started",
 					"data_dir", mqDataDir,
@@ -2973,7 +2988,8 @@ func main() {
 					"interval_hours", mqIntervalHours,
 					"alert_threshold", mqAlertThreshold,
 					"timeout_seconds", mqTimeoutSec,
-					"use_lite", mqUseLite)
+					"use_lite", mqUseLite,
+					"per_node", mqEnablePerNode)
 			}
 		}
 

@@ -159,9 +159,11 @@ func TestMMLULiteSuite(t *testing.T) {
 
 func TestMockModelInvoker(t *testing.T) {
 	invoker := NewMockModelInvoker()
+	invoker.sleepFn = func(time.Duration) {}
 	ctx := context.Background()
 
-	response, tokenUsage, latency, err := invoker.InvokeModel(ctx, "openai", "gpt-4", "Test prompt")
+	q := Question{ID: "q1", Subject: "test", Question: "Q?", Options: []string{"A", "B", "C", "D"}, Answer: "B"}
+	response, tokenUsage, latency, err := invoker.InvokeModel(ctx, "openai", "gpt-4", q)
 
 	if err != nil {
 		t.Logf("Mock invocation returned error (expected occasionally): %v", err)
@@ -178,18 +180,64 @@ func TestMockModelInvoker(t *testing.T) {
 	}
 }
 
+// TestMockInvoker_MatchesConfiguredAccuracy 验证 2026-08-10 修复：
+// mock 的准确率必须随 ProviderQuality.BaseAccuracy 单调变化，而不是恒为 ~25% 随机。
+func TestMockInvoker_MatchesConfiguredAccuracy(t *testing.T) {
+	invoker := NewMockModelInvoker()
+	invoker.sleepFn = func(time.Duration) {}
+	// 不固定种子：这是统计性断言（准确率随 BaseAccuracy 单调），固定种子会因
+	// 50题量化在 0.78 vs 0.65 这种相近配置上偶尔撞值。用随机种子 + 较多轮次平滑。
+	ctx := context.Background()
+	executor := NewBenchmarkExecutor(invoker, 30*time.Second)
+	suite := GetMMLULiteSuite()
+	const rounds = 8 // 每个供应商跑 8 轮 50 题(=400题)，平滑随机波动
+
+	// 用真实 executor 测，准确率 = CorrectCount / TotalQuestions（与生产一致）
+	measure := func(provider string) float64 {
+		sum := 0.0
+		for r := 0; r < rounds; r++ {
+			rep, err := executor.Execute(ctx, "m", provider, suite)
+			if err != nil {
+				t.Fatalf("Execute: %v", err)
+			}
+			sum += rep.Accuracy
+		}
+		return sum / float64(rounds)
+	}
+
+	high := measure("openai")    // BaseAccuracy 0.92, ErrorRate 0.01
+	mid := measure("domestic_a") // 0.78, 0.05
+	low := measure("domestic_b") // 0.65, 0.12
+
+	t.Logf("accuracy openai=%.1f%% domestic_a=%.1f%% domestic_b=%.1f%%", high, mid, low)
+
+	// 单调：高质量供应商准确率必须明显高于低质量供应商
+	if !(high > mid && mid > low) {
+		t.Errorf("expected monotonic accuracy high>mid>low, got high=%.1f mid=%.1f low=%.1f", high, mid, low)
+	}
+	// 绝对值校验：openai 应明显高于"瞎蒙"的 25%（BaseAccuracy 0.92 → 预期 ~80%+）
+	if high < 60 {
+		t.Errorf("openai accuracy too low (expected ~80%%+, BaseAccuracy=0.92), got %.1f%% — mock still random?", high)
+	}
+	// domestic_b（BaseAccuracy 0.65, ErrorRate 0.12）应明显低于 openai
+	if low > 70 {
+		t.Errorf("domestic_b accuracy too high (expected <70%%, BaseAccuracy=0.65), got %.1f%%", low)
+	}
+}
+
 func TestMockModelInvoker_QualityDrop(t *testing.T) {
 	invoker := NewMockModelInvoker()
 	// 跳过真实 sleep：该测试只验证成功率变化，延迟模拟无意义且会拖慢 200 次调用。
 	invoker.sleepFn = func(time.Duration) {}
 	ctx := context.Background()
+	q := Question{ID: "q1", Subject: "test", Question: "Q?", Options: []string{"A", "B", "C", "D"}, Answer: "B"}
 
 	// 记录初始质量
 	successCount := 0
 	totalTests := 100
 
 	for i := 0; i < totalTests; i++ {
-		_, _, _, err := invoker.InvokeModel(ctx, "openai", "gpt-4", "Test")
+		_, _, _, err := invoker.InvokeModel(ctx, "openai", "gpt-4", q)
 		if err == nil {
 			successCount++
 		}
@@ -204,7 +252,7 @@ func TestMockModelInvoker_QualityDrop(t *testing.T) {
 	// 再次测试
 	successCount = 0
 	for i := 0; i < totalTests; i++ {
-		_, _, _, err := invoker.InvokeModel(ctx, "openai", "gpt-4", "Test")
+		_, _, _, err := invoker.InvokeModel(ctx, "openai", "gpt-4", q)
 		if err == nil {
 			successCount++
 		}

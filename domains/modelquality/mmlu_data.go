@@ -378,9 +378,9 @@ func GetMMLUFullSuite() *BenchmarkSuite {
 	suite := GetMMLULiteSuite()
 	suite.Type = BenchmarkTypeMMLU
 	suite.Name = "MMLU Full - Comprehensive Quality Assessment"
-	
+
 	// 可以在这里添加更多高级题目
 	// 生产环境建议从外部JSON文件加载
-	
+
 	return suite
 }

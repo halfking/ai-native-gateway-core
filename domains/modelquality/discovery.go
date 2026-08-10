@@ -30,7 +30,7 @@ func (d *GatewayModelDiscovery) DiscoverModels(ctx context.Context) ([]ModelTarg
 	// 2. 从模型目录获取每个供应商支持的模型列表
 	// 3. 过滤出特色模型和常用模型
 	// 4. 返回 []ModelTarget
-	
+
 	return nil, fmt.Errorf("GatewayModelDiscovery not implemented - use StaticModelDiscovery for now")
 }
 
@@ -76,7 +76,7 @@ func (d *ConfigFileModelDiscovery) DiscoverModels(ctx context.Context) ([]ModelT
 	//     model: claude-3-opus
 	//     alias: "Claude 3 Opus"
 	//     priority: high
-	
+
 	return nil, fmt.Errorf("ConfigFileModelDiscovery not implemented")
 }
 
@@ -99,7 +99,7 @@ func GetDefaultMonitorModels() []ModelTarget {
 			ModelName: "gpt-3.5-turbo",
 			Alias:     "OpenAI GPT-3.5 Turbo",
 		},
-		
+
 		// Anthropic 系列
 		{
 			Provider:  "anthropic",
@@ -111,7 +111,7 @@ func GetDefaultMonitorModels() []ModelTarget {
 			ModelName: "claude-3-sonnet",
 			Alias:     "Anthropic Claude 3 Sonnet",
 		},
-		
+
 		// 国产特色模型 - 智谱
 		{
 			Provider:  "zhipu",
@@ -123,7 +123,7 @@ func GetDefaultMonitorModels() []ModelTarget {
 			ModelName: "glm-4-plus",
 			Alias:     "智谱 GLM-4 Plus",
 		},
-		
+
 		// 国产特色模型 - 通义千问
 		{
 			Provider:  "aliyun",
@@ -135,21 +135,21 @@ func GetDefaultMonitorModels() []ModelTarget {
 			ModelName: "qwen-turbo",
 			Alias:     "通义千问 Turbo",
 		},
-		
+
 		// 国产特色模型 - 文心一言
 		{
 			Provider:  "baidu",
 			ModelName: "ernie-4.0",
 			Alias:     "百度 文心一言 4.0",
 		},
-		
+
 		// 国产特色模型 - Kimi
 		{
 			Provider:  "moonshot",
 			ModelName: "moonshot-v1-8k",
 			Alias:     "月之暗面 Kimi",
 		},
-		
+
 		// 国产特色模型 - 豆包
 		{
 			Provider:  "bytedance",

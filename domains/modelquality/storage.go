@@ -65,13 +65,30 @@ func (s *FileStorage) SaveReport(ctx context.Context, report *BenchmarkReport) e
 	return nil
 }
 
+// scoreFileName 评分历史文件名。含 CredentialID 时带上节点维度，
+// 避免同一 provider+model 下不同节点的评分互相覆盖。
+func scoreFileName(score *QualityScore) string {
+	if score.CredentialID != 0 {
+		return fmt.Sprintf("%s_%s_node%d.jsonl", score.Provider, score.ModelName, score.CredentialID)
+	}
+	return fmt.Sprintf("%s_%s.jsonl", score.Provider, score.ModelName)
+}
+
+// scoreFileNameForRead 读取时的文件名（按 provider/model/credential 拼同样规则）。
+func scoreFileNameForRead(provider, modelName string, credentialID int) string {
+	if credentialID != 0 {
+		return fmt.Sprintf("%s_%s_node%d.jsonl", provider, modelName, credentialID)
+	}
+	return fmt.Sprintf("%s_%s.jsonl", provider, modelName)
+}
+
 // SaveScore 保存质量评分
 func (s *FileStorage) SaveScore(ctx context.Context, score *QualityScore) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	// 读取现有评分历史
-	historyFile := filepath.Join(s.baseDir, "scores", fmt.Sprintf("%s_%s.jsonl", score.Provider, score.ModelName))
+	historyFile := filepath.Join(s.baseDir, "scores", scoreFileName(score))
 
 	// 追加写入
 	f, err := os.OpenFile(historyFile, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0644)
@@ -93,8 +110,8 @@ func (s *FileStorage) SaveScore(ctx context.Context, score *QualityScore) error 
 }
 
 // GetLatestScore 获取最新评分
-func (s *FileStorage) GetLatestScore(ctx context.Context, provider string, modelName string) (*QualityScore, error) {
-	scores, err := s.GetScoreHistory(ctx, provider, modelName, 1)
+func (s *FileStorage) GetLatestScore(ctx context.Context, provider string, modelName string, credentialID int) (*QualityScore, error) {
+	scores, err := s.GetScoreHistory(ctx, provider, modelName, credentialID, 1)
 	if err != nil {
 		return nil, err
 	}
@@ -107,11 +124,11 @@ func (s *FileStorage) GetLatestScore(ctx context.Context, provider string, model
 }
 
 // GetScoreHistory 获取历史评分
-func (s *FileStorage) GetScoreHistory(ctx context.Context, provider string, modelName string, limit int) ([]*QualityScore, error) {
+func (s *FileStorage) GetScoreHistory(ctx context.Context, provider string, modelName string, credentialID int, limit int) ([]*QualityScore, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	historyFile := filepath.Join(s.baseDir, "scores", fmt.Sprintf("%s_%s.jsonl", provider, modelName))
+	historyFile := filepath.Join(s.baseDir, "scores", scoreFileNameForRead(provider, modelName, credentialID))
 
 	file, err := os.Open(historyFile)
 	if err != nil {
@@ -148,6 +165,60 @@ func (s *FileStorage) GetScoreHistory(ctx context.Context, provider string, mode
 	}
 
 	return scores, nil
+}
+
+// ListAllScores 列出 scores/ 目录下所有 jsonl 文件中的全部评分（聚合用）。
+// limit<=0 表示不限制。按时间倒序。
+func (s *FileStorage) ListAllScores(ctx context.Context, limit int) ([]*QualityScore, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	dir := filepath.Join(s.baseDir, "scores")
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return []*QualityScore{}, nil
+		}
+		return nil, fmt.Errorf("read scores dir: %w", err)
+	}
+
+	var all []*QualityScore
+	for _, ent := range entries {
+		if ent.IsDir() {
+			continue
+		}
+		name := ent.Name()
+		if filepath.Ext(name) != ".jsonl" {
+			continue
+		}
+		// limit 在文件遍历层面做提前退出，避免读超大目录
+		if limit > 0 && len(all) >= limit {
+			break
+		}
+		file, err := os.Open(filepath.Join(dir, name))
+		if err != nil {
+			continue // 单文件失败不致命
+		}
+		scanner := bufio.NewScanner(file)
+		scanner.Buffer(make([]byte, 64*1024), 4*1024*1024)
+		for scanner.Scan() {
+			var score QualityScore
+			if err := json.Unmarshal(scanner.Bytes(), &score); err != nil {
+				file.Close()
+				continue
+			}
+			all = append(all, &score)
+			if limit > 0 && len(all) >= limit {
+				break
+			}
+		}
+		file.Close()
+	}
+
+	sort.Slice(all, func(i, j int) bool {
+		return all[i].Timestamp.After(all[j].Timestamp)
+	})
+	return all, nil
 }
 
 // ConsoleAlerter 控制台告警实现(简单实现)

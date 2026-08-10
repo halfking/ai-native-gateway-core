@@ -85,29 +85,27 @@ cmd/quality-monitor/
 
 ### 集成测试
 
-#### 1. 单次测试
+#### 1. 单次测试（mock 调用器）
+
 ```bash
 ./quality-monitor -mode=test -provider=openai -model=gpt-4 -benchmark=lite
 
-结果：
-- 总题数: 50
-- 正确数: 14
-- 准确率: 28.00%
-- 平均延迟: 1181ms
-- 综合评分: 55.05 (F)
-- 测试报告已保存
+典型结果（2026-08-10 mock 修复后）：
+- openai    (BaseAccuracy=0.92): 准确率 ~90%, 综合 92.8 (A)
+- domestic_a(0.78):              准确率 ~74%, 综合 ~72
+- domestic_b(0.65):              准确率 ~50%, 综合 59.8 (F)
 ```
+
+> ⚠️ **历史勘误**：2026-08-06 初版记录的"gpt-4 准确率 28%（F）"是 bug 产物。
+> 旧 `MockModelInvoker` 用 prompt 哈希随机取字母判定正确答案，导致所有供应商
+> 准确率恒收敛到 ~25%（4 选 1 瞎蒙），与配置的 BaseAccuracy 无关。2026-08-10 已修复：
+> 调用器接口改为传 `Question`，mock 直接拿 `q.Answer` 按 BaseAccuracy 返回正确/错误答案。
 
 #### 2. 质量下降模拟
 ```bash
 ./quality-monitor -mode=simulate-drop
 
-结果：
-- 初始准确率: 30.00% (评分: 56.80, F)
-- 模拟降级后: 28.00% (评分: 51.97, F)
-- 延迟从 958ms 增加到 1971ms
-- 稳定性从 96% 下降到 92%
-- 成功检测到质量下降
+结果（修复后）：初始 vs 模拟降级后的准确率会随 SimulateQualityDrop 真实变化。
 ```
 
 ## 生成的文件示例
@@ -181,9 +179,9 @@ scores := worker.GetCurrentScores()
 - 开头字母: "A. This is correct"
 
 ### 2. 灵活的调用适配
-- MockModelInvoker: 模拟调用（用于演示）
-- GatewayModelInvoker: 网关集成（待实现）
-- HTTPModelInvoker: HTTP直连（待实现）
+- MockModelInvoker: 模拟调用（用于离线测试，2026-08-10 修复准确率）
+- GatewayModelInvoker: 网关集成（已实现，经网关 `/v1/chat/completions`）
+- DirectNodeInvoker: 直连凭据节点（已实现，绕过网关测单节点智商，2026-08-10）
 
 ### 3. 可扩展的存储
 - FileStorage: 文件存储（已实现）
@@ -225,7 +223,9 @@ config := &modelquality.MonitorConfig{
 ## 后续优化方向
 
 ### 短期 (P0)
-- [ ] 实现真实的网关模型调用器
+- [x] 实现真实的网关模型调用器（GatewayModelInvoker）
+- [x] 实现直连凭据节点调用器（DirectNodeInvoker，2026-08-10）
+- [x] 单凭据节点维度智商 + 模型目录平均智商聚合（2026-08-10）
 - [ ] 添加中文测试题库
 - [ ] 集成到网关的监控面板
 
