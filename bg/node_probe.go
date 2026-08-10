@@ -1011,6 +1011,14 @@ func (w *NodeProbeWorker) cycle(ctx context.Context) bool {
 // 2026-07-16: in_flight_until is a post-pick lease, not a submit-time delay.
 // Submit leaves it NULL, so filtering it here prevents cross-instance duplicate
 // probes without delaying a newly submitted row.
+//
+// 2026-08-11: the previous 24h activity filter (last_attempt_at/updated_at >=
+// now()-24h) silently dropped any node whose probe row had been idle for more
+// than a day, so a credential that failed, cooled, then was forgotten would
+// never be picked again — recovery depended entirely on the 60s
+// credential_recovery tick re-submitting it. Widened to 7 days so a due
+// (next_retry_at <= now()) row is always eligible; the bound remains only to
+// keep centuries-old orphan rows out of the worker.
 func (w *NodeProbeWorker) pickDueAtomically(ctx context.Context) (int, string, bool, error) {
 	tx, err := w.db.Begin(ctx)
 	if err != nil {
@@ -1028,8 +1036,8 @@ func (w *NodeProbeWorker) pickDueAtomically(ctx context.Context) (int, string, b
 			  AND (in_flight_until IS NULL OR in_flight_until <= now())
 			  AND (last_direct_ok IS DISTINCT FROM TRUE
 			       OR last_gateway_ok IS DISTINCT FROM TRUE)
-			  AND (last_attempt_at >= now() - interval '24 hours'
-			       OR updated_at >= now() - interval '24 hours')
+			  AND (last_attempt_at >= now() - interval '7 days'
+			       OR updated_at >= now() - interval '7 days')
 
 		ORDER BY next_retry_at ASC
 		LIMIT 1

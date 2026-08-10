@@ -70,11 +70,17 @@ func TestNodeProbeOnlyPicksRecentFailures(t *testing.T) {
 		t.Fatalf("read node_probe.go: %v", err)
 	}
 	source := string(contents)
+	// 2026-08-11: the activity filter was widened from 24h to 7 days. The
+	// prior 24h cutoff silently dropped any node whose probe row had been
+	// idle for more than a day, so a cooled-then-forgotten credential was
+	// never re-picked and recovery depended solely on the 60s
+	// credential_recovery tick re-submitting it. The 7-day bound remains
+	// only to keep ancient orphan rows out of the worker.
 	for _, want := range []string{
 		"last_direct_ok IS DISTINCT FROM TRUE",
 		"last_gateway_ok IS DISTINCT FROM TRUE",
-		"last_attempt_at >= now() - interval '24 hours'",
-		"updated_at >= now() - interval '24 hours'",
+		"last_attempt_at >= now() - interval '7 days'",
+		"updated_at >= now() - interval '7 days'",
 	} {
 		if !strings.Contains(source, want) {
 			t.Fatalf("pickDueAtomically missing filter %q", want)

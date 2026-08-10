@@ -2746,12 +2746,7 @@ func (e *Executor) Execute(params *ExecParams) (*ExecuteResult, error) {
 		// conversion. Skip all side effects and continue to the
 		// next candidate so the next credential gets a turn.
 		{
-			var kind errorsx.ErrorKind
-			if ue, ok := execErr.(*upstreampkg.Error); ok && ue.Kind != "" {
-				kind = ue.Kind
-			} else {
-				kind = errorsx.ClassifyError(execErr, nil)
-			}
+			kind := classifyExecError(execErr)
 			if errorsx.IsClientBug(kind) {
 				slog.Warn("executor: client-bug kind, trying next candidate",
 					"kind", kind,
@@ -3058,13 +3053,11 @@ func (e *Executor) Execute(params *ExecParams) (*ExecuteResult, error) {
 		// Prefer the typed Kind from *upstreampkg.Error if available, to
 		// avoid re-classifying from the error text (which embeds the
 		// Kind in [brackets] and can trigger false-positive matches on
-		// the concurrentOverload regex).
-		var kind errorsx.ErrorKind
-		if ue, ok := execErr.(*upstreampkg.Error); ok && ue.Kind != "" {
-			kind = ue.Kind
-		} else {
-			kind = errorsx.ClassifyError(execErr, nil)
-		}
+		// the concurrentOverload regex). classifyExecError uses errors.As so
+		// a wrapped *upstreampkg.Error (fmt.Errorf("...: %w", ...)) is still
+		// reached — a plain type assertion misses the wrapped case and would
+		// fall back to the message-only classifier, mis-classifying the error.
+		kind := classifyExecError(execErr)
 		lastKind = recordLastKind(lastKind, kind)
 
 		// ── 2026-07-19: trace.upstream_failure 详细记录上游错误 ────────────
@@ -4946,16 +4939,44 @@ func (e *contextLengthExhaustedError) Unwrap() error {
 // error. Returns (kind, true) when the error is a content-moderation /
 // safety-policy rejection that should short-circuit the candidate loop.
 func classifyContentFilterError(err error) (errorsx.ErrorKind, bool) {
-	var kind errorsx.ErrorKind
-	if ue, ok := err.(*upstreampkg.Error); ok && ue.Kind != "" {
-		kind = ue.Kind
-	} else {
-		kind = errorsx.ClassifyError(err, nil)
-	}
+	kind := classifyExecError(err)
 	if errorsx.IsContentFilter(kind) {
 		return kind, true
 	}
 	return "", false
+}
+
+// classifyExecError derives the canonical errorsx.ErrorKind from an
+// executor-stage error. It uses errors.As (not a direct type assertion) so a
+// *upstreampkg.Error that has been wrapped by fmt.Errorf("...: %w", ...) — the
+// common case in the retry/routing layer — is still reached. Without this, the
+// prior type-assertion fell through to errorsx.ClassifyError(err, nil) which
+// only sees the message string (no HTTP status, no response body) and so
+// mis-classified wrapped upstream errors as generic KindTransient. That
+// mis-classification is a direct cause of accessible nodes being wrongly
+// excluded: the wrong kind routes through the wrong writer branch and the
+// wrong failover decision.
+//
+// Preference order: typed Kind on the upstream error → body-aware
+// ClassifyErrorWithBody (uses StatusCode + Body) → message-only ClassifyError
+// as the final fallback for non-upstream errors (network/cancel/timeout).
+func classifyExecError(err error) errorsx.ErrorKind {
+	if err == nil {
+		return ""
+	}
+	var ue *upstreampkg.Error
+	if errors.As(err, &ue) && ue != nil {
+		if ue.Kind != "" {
+			return ue.Kind
+		}
+		// Typed upstream error but no pre-assigned Kind: classify from the
+		// captured status+body, which is strictly more accurate than the
+		// message-only path.
+		if ue.StatusCode > 0 {
+			return errorsx.ClassifyErrorWithBody(ue.StatusCode, ue.Body)
+		}
+	}
+	return errorsx.ClassifyError(err, nil)
 }
 
 func shouldWriteCredentialState(kind errorsx.ErrorKind) bool {
