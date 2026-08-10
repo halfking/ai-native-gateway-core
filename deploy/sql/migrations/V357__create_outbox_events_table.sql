@@ -117,3 +117,12 @@ COMMENT ON COLUMN outbox_events.next_retry_at IS
 -- Migration metadata
 COMMENT ON TABLE outbox_events IS 
     'V357: Created 2026-08-11 for Phase 2 WP2. Refs: docs/omni-ref2/02-CROSS-REPO-EVENT-CONTRACT.md';
+
+-- Partition strategy (future, when traffic warrants):
+-- If outbox_events grows > 10M rows or has hot/cold access patterns,
+-- partition by RANGE (occurred_at) monthly. The dispatcher query
+--   WHERE status IN ('pending','failed') AND next_retry_at <= NOW()
+-- would scan only the current/next month partition.
+-- For now the table is unpartitioned because volume is low (events
+-- are short-lived; sent rows can be DELETE'd by a reaper job).
+-- TODO(Phase 3): Add partition + reaper when volume exceeds threshold.

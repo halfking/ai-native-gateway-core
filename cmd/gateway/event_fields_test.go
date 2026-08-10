@@ -209,3 +209,92 @@ func TestExtractRequestCompletedPayload_NoUserContent(t *testing.T) {
 		t.Error("payload contains prompt (should not be in contract)")
 	}
 }
+
+// TestExtractModel_Priority tests extractModel priority chain.
+func TestExtractModel_Priority(t *testing.T) {
+	// Priority 1: env.Metadata["model"]
+	env := &domain.PipelineRequest{
+		Metadata: map[string]any{"model": "gpt-4"},
+	}
+	if got := extractModel(env); got != "gpt-4" {
+		t.Errorf("extractModel with metadata = %q, want gpt-4", got)
+	}
+
+	// Default: "unknown" when missing
+	env = &domain.PipelineRequest{}
+	if got := extractModel(env); got != "unknown" {
+		t.Errorf("extractModel with no data = %q, want unknown", got)
+	}
+}
+
+// TestExtractRequestCompletedPayload_BodyRefsFormat verifies body_refs uses
+// the internal:// scheme and the request_id.
+func TestExtractRequestCompletedPayload_BodyRefsFormat(t *testing.T) {
+	env := &domain.PipelineRequest{
+		SessionID:  "session-test",
+		StatusCode: 200,
+	}
+
+	payload := extractRequestCompletedPayload(env, "req-abc-001", time.Now())
+
+	bodyRefs, ok := payload["body_refs"].(map[string]string)
+	if !ok {
+		t.Fatalf("body_refs is not map[string]string: %T", payload["body_refs"])
+	}
+	if bodyRefs["prompt_ref"] != "internal://body/req-abc-001/prompt" {
+		t.Errorf("prompt_ref = %q", bodyRefs["prompt_ref"])
+	}
+	if bodyRefs["response_ref"] != "internal://body/req-abc-001/response" {
+		t.Errorf("response_ref = %q", bodyRefs["response_ref"])
+	}
+}
+
+// TestExtractRequestCompletedPayload_NegativeLatency tests clock-skew handling.
+func TestExtractRequestCompletedPayload_NegativeLatency(t *testing.T) {
+	// startTime in the future → time.Since() returns negative duration
+	futureTime := time.Now().Add(5 * time.Second)
+
+	env := &domain.PipelineRequest{
+		SessionID:  "session-test",
+		StatusCode: 200,
+	}
+
+	payload := extractRequestCompletedPayload(env, "req-clock-skew", futureTime)
+
+	latencyMs, ok := payload["latency_ms"].(int)
+	if !ok {
+		t.Fatalf("latency_ms is not int: %T", payload["latency_ms"])
+	}
+	if latencyMs < 0 {
+		t.Errorf("latency_ms should be >= 0 (clock skew), got %d", latencyMs)
+	}
+}
+
+// TestExtractTokenUsage_FromMetadata tests the metadata short-circuit path.
+func TestExtractTokenUsage_FromMetadata(t *testing.T) {
+	env := &domain.PipelineRequest{
+		Metadata: map[string]any{
+			"token_usage": map[string]int{
+				"prompt_tokens":     10,
+				"completion_tokens": 20,
+				"total_tokens":      30,
+			},
+		},
+	}
+
+	usage := extractTokenUsage(env)
+
+	if usage["prompt_tokens"] != 10 {
+		t.Errorf("prompt_tokens = %d, want 10", usage["prompt_tokens"])
+	}
+	if usage["total_tokens"] != 30 {
+		t.Errorf("total_tokens = %d, want 30", usage["total_tokens"])
+	}
+}
+
+// TestExtractRequestCompletedPayload_NilEnv tests defensive nil-env handling.
+func TestExtractRequestCompletedPayload_NilEnv(t *testing.T) {
+	if got := extractRequestCompletedPayload(nil, "req-001", time.Now()); got != nil {
+		t.Errorf("nil env should return nil payload, got %v", got)
+	}
+}

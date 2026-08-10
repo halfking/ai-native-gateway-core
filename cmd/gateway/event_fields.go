@@ -19,8 +19,8 @@ import (
 // extractRequestCompletedPayload extracts the complete payload for request.completed.v1
 // according to the ASM contract.
 //
-// Phase 2 Step 3: This function replaces the partial payload in main_pipeline.go:845
-// with the complete 11-field contract-compliant payload.
+// Phase 2 Step 3: This function replaces the partial payload in main_pipeline.go (postflight
+// block) with the complete 11-field contract-compliant payload.
 //
 // Missing fields implemented (10):
 //   - turn_no, correlation_id, idempotency_key, provider, status
@@ -37,8 +37,11 @@ func extractRequestCompletedPayload(
 		return nil
 	}
 
-	// Calculate latency
+	// Calculate latency. Guard against clock skew (negative durations).
 	latencyMs := int(time.Since(startTime).Milliseconds())
+	if latencyMs < 0 {
+		latencyMs = 0
+	}
 
 	// Extract provider from routing decision
 	provider := extractProvider(env)
