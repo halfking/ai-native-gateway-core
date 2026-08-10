@@ -263,7 +263,7 @@ func (w *Writer) WriteOnError(ctx context.Context, credentialID int, rawModel st
 			  AND lifecycle_status = 'active'
 		`, string(failure.Kind), detail, credentialID)
 		return err
-	case errorsx.KindConcurrent, errorsx.KindRateLimit, errorsx.KindTimeout, errorsx.KindUpstreamDown, errorsx.KindStreamTimeout, errorsx.KindNoAvailableChannel:
+	case errorsx.KindConcurrent, errorsx.KindRateLimit, errorsx.KindStreamTimeout, errorsx.KindNoAvailableChannel:
 		// Per-model kind. Update the specific (credential, model) binding
 		// in BOTH cmb (production router) and model_offers (/api/routing/
 		// resolve "test route" + admin UI). Sibling models on the same
@@ -274,11 +274,30 @@ func (w *Writer) WriteOnError(ctx context.Context, credentialID int, rawModel st
 		// models on this credential as unavailable (cross-model pollution bug).
 		recoverAt := time.Now().UTC().Add(coolingDuration(failure.Kind, failure.RetryAfter))
 		return w.writeModelLevelFailureOnly(ctx, credentialID, rawModel, "auto_"+string(failure.Kind), recoverAt, detail)
-	case errorsx.KindNetwork:
-		// 2026-06-23 fix: Network errors are per-model. Don't pollute the
-		// entire credential's availability_state.
-		recoverAt := time.Now().UTC().Add(coolingDuration(failure.Kind, failure.RetryAfter))
-		return w.writeModelLevelFailureOnly(ctx, credentialID, rawModel, "auto_network", recoverAt, detail)
+	case errorsx.KindNetwork, errorsx.KindTimeout, errorsx.KindUpstreamDown:
+		// 2026-08-11 soft-degrade: transient network blips, single-request
+		// timeouts, and short-lived 5xx (UpstreamDown) are reported by an
+		// otherwise-healthy upstream and clear in seconds. Previously these
+		// flipped cmb.available=FALSE for 30–120s, removing the node from
+		// v_routable for that window — which surfaced as "the gateway
+		// excludes an accessible provider node". Per KindUpstreamOverloaded
+		// above, record the real detail for operators but do NOT remove the
+		// binding from routing. Transient load is absorbed by the executor's
+		// per-attempt retry, the circuit breaker (e.Circuit), and the URSM v2
+		// fail_streak path; sustained failures still escalate there.
+		//
+		// KindStreamTimeout (no feedback at all on a live stream) is kept on
+		// the hard-degrade path above because it indicates a genuinely stuck
+		// node that should be cooled.
+		_, err := w.dbPool.Exec(ctx, `
+			UPDATE credentials
+			SET state_reason_code   = $1,
+			    state_reason_detail = $2,
+			    state_updated_at    = now()
+			WHERE id = $3
+			  AND lifecycle_status = 'active'
+		`, string(failure.Kind), detail, credentialID)
+		return err
 	case errorsx.KindModelNotFound:
 		// 2026-07-03 fix: Bug #10 - model_not_found should write state
 		// (removed from IsClientBug). When upstream deprecates a model,

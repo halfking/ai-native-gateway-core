@@ -45,10 +45,11 @@ func newSQLOnlyMock() pgxmock.PgxPoolIface {
 }
 
 // TestWriteOnError_PerModelKind_UpdatesCMBNotCredentials pins the fix
-// for the 2026-06-22 audit: per-model kinds (network, rate_limit,
-// concurrent, timeout, upstream_down, stream_timeout) MUST update
-// credential_model_bindings (the production router's source of truth
-// via v_routable_credential_models) — not credentials.availability_state.
+// for the 2026-06-22 audit: per-model kinds that represent a real
+// capacity/quota signal (rate_limit, concurrent, stream_timeout,
+// no_available_channel) MUST update credential_model_bindings (the
+// production router's source of truth via v_routable_credential_models)
+// — not credentials.availability_state.
 //
 // Previously, WriteOnError wrote to the credentials table only, which
 //  1. did not affect the production router (router reads cmb.available)
@@ -60,17 +61,21 @@ func newSQLOnlyMock() pgxmock.PgxPoolIface {
 // which updates ONLY cmb and model_offers, NOT credentials.availability_state.
 // This prevents cross-model pollution where minimax-m3 failing would
 // incorrectly mark minimax-01 unavailable too.
+//
+// 2026-08-11 soft-degrade split: network/timeout/upstream_down moved to
+// the soft-degrade path (see TestWriteOnError_TransientKind_RecordsWithoutCoolingBinding)
+// because they are single-request transient signals that clear in seconds
+// and must not remove an otherwise-healthy node from routing. The remaining
+// kinds here are the ones whose semantics genuinely require a cooling window.
 func TestWriteOnError_PerModelKind_UpdatesCMBNotCredentials(t *testing.T) {
 	cases := []struct {
 		name string
 		kind errorsx.ErrorKind
 	}{
-		{"network", errorsx.KindNetwork},
 		{"rate_limit", errorsx.KindRateLimit},
 		{"concurrent", errorsx.KindConcurrent},
-		{"timeout", errorsx.KindTimeout},
-		{"upstream_down", errorsx.KindUpstreamDown},
 		{"stream_timeout", errorsx.KindStreamTimeout},
+		{"no_available_channel", errorsx.KindNoAvailableChannel},
 	}
 
 	// Common arg layout for all 3 expected SQLs in the per-model path:
@@ -97,6 +102,49 @@ func TestWriteOnError_PerModelKind_UpdatesCMBNotCredentials(t *testing.T) {
 			}
 			if err := mockDB.ExpectationsWereMet(); err != nil {
 				t.Errorf("unmet expectations: %v", err)
+			}
+		})
+	}
+}
+
+// TestWriteOnError_TransientKind_RecordsWithoutCoolingBinding pins the
+// 2026-08-11 soft-degrade fix: KindNetwork, KindTimeout, and KindUpstreamDown
+// record the real upstream detail on credentials.state_reason_* for operators
+// but do NOT flip credential_model_bindings.available — so the node stays in
+// the routing pool. A single transient blip must not exclude an accessible
+// node; sustained failures are still caught by the executor circuit breaker
+// and the credentialhealth aggregate 80% threshold (which still counts these
+// kinds). Sibling test TestWriteOnError_UpstreamOverloadedRecordsWithoutCoolingBinding
+// pins the same shape for KindUpstreamOverloaded.
+func TestWriteOnError_TransientKind_RecordsWithoutCoolingBinding(t *testing.T) {
+	cases := []struct {
+		name string
+		kind errorsx.ErrorKind
+	}{
+		{"network", errorsx.KindNetwork},
+		{"timeout", errorsx.KindTimeout},
+		{"upstream_down", errorsx.KindUpstreamDown},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			mockDB := newSQLOnlyMock()
+			defer mockDB.Close()
+
+			mockDB.ExpectExec(`UPDATE credentials`).
+				WithArgs(pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg()).
+				WillReturnResult(pgxmock.NewResult("UPDATE", 1))
+
+			w := &Writer{dbPool: mockDB}
+			err := w.WriteOnError(context.Background(), 42, "gpt-5.6-luna", Failure{
+				Kind:   tc.kind,
+				Detail: `{"error":{"message":"transient blip"}}`,
+			})
+			if err != nil {
+				t.Fatalf("WriteOnError: %v", err)
+			}
+			if err := mockDB.ExpectationsWereMet(); err != nil {
+				t.Fatalf("%s must not update credential_model_bindings: %v", tc.name, err)
 			}
 		})
 	}
@@ -183,8 +231,13 @@ func TestWriteOnError_CredentialWideKind_OnlyUpdatesCredentials(t *testing.T) {
 // credential-level state).
 //
 // 2026-06-23: Updated to reflect the fix for credential-state pollution.
-// Model-level errors (KindNetwork) now route through writeModelLevelFailureOnly,
+// Model-level errors now route through writeModelLevelFailureOnly,
 // which does NOT update credentials.availability_state.
+//
+// 2026-08-11: switched the fixture kind from KindNetwork to KindRateLimit
+// because KindNetwork moved to the soft-degrade path (no cmb write). The
+// empty-rawModel cmb-fan-out behaviour is unchanged for the hard-degrade
+// per-model kinds.
 func TestWriteOnError_PerModelKind_EmptyRawModel_AllBindings(t *testing.T) {
 	mockDB := newSQLOnlyMock()
 	defer mockDB.Close()
@@ -198,7 +251,7 @@ func TestWriteOnError_PerModelKind_EmptyRawModel_AllBindings(t *testing.T) {
 		WillReturnResult(pgxmock.NewResult("UPDATE", 3))
 
 	w := &Writer{dbPool: mockDB}
-	err := w.WriteOnError(context.Background(), 42, "", Failure{Kind: errorsx.KindNetwork})
+	err := w.WriteOnError(context.Background(), 42, "", Failure{Kind: errorsx.KindRateLimit})
 	if err != nil {
 		t.Fatalf("WriteOnError: %v", err)
 	}
