@@ -1,6 +1,7 @@
 package ir
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"strings"
 	"testing"
@@ -183,12 +184,14 @@ func TestSerializeOpenAI_AudioBlockType(t *testing.T) {
 // ─── irDocumentToGeminiPart: text document ───
 
 // TestSerializeGemini_TextDocumentInline verifies a text-type document is
-// emitted as inlineData, not stuffed into fileData.fileUri (which produced a
-// malformed request).
+// emitted as inlineData (base64-encoded, per Gemini's inlineData contract),
+// not stuffed into fileData.fileUri (which produced a malformed request) and
+// not emitted as raw text (which the Gemini parser would misread as base64).
 func TestSerializeGemini_TextDocumentInline(t *testing.T) {
+	const body = "the quick brown fox"
 	part := irDocumentToGeminiPart(&DocumentBlock{
 		MIMEType: "text/plain",
-		Source:   &DocumentSource{Type: "text", Data: "the quick brown fox"},
+		Source:   &DocumentSource{Type: "text", Data: body},
 	})
 	if part == nil {
 		t.Fatal("returned nil for text document")
@@ -197,21 +200,32 @@ func TestSerializeGemini_TextDocumentInline(t *testing.T) {
 	if !ok {
 		t.Fatalf("expected inlineData, got %v", part)
 	}
-	if inline["data"] != "the quick brown fox" {
-		t.Errorf("inline data = %v, want the quick brown fox", inline["data"])
-	}
 	if inline["mimeType"] != "text/plain" {
 		t.Errorf("mimeType = %v, want text/plain", inline["mimeType"])
+	}
+	// inlineData.data must be base64 of the UTF-8 body, not raw text.
+	enc, _ := inline["data"].(string)
+	if enc == body {
+		t.Errorf("inline data is raw text; must be base64-encoded")
+	}
+	dec, err := base64.StdEncoding.DecodeString(enc)
+	if err != nil {
+		t.Fatalf("inline data is not valid base64 (%v): %q", err, enc)
+	}
+	if string(dec) != body {
+		t.Errorf("decoded inline data = %q, want %q", dec, body)
 	}
 	if _, hasFileData := part["fileData"]; hasFileData {
 		t.Errorf("text document must not produce fileData; got %v", part["fileData"])
 	}
 }
 
-// TestSerializeGemini_CSVDocumentInline verifies csv documents resolve mimeType.
+// TestSerializeGemini_CSVDocumentInline verifies csv documents resolve mimeType
+// and that the payload is base64-encoded.
 func TestSerializeGemini_CSVDocumentInline(t *testing.T) {
+	const body = "a,b,c"
 	part := irDocumentToGeminiPart(&DocumentBlock{
-		Source: &DocumentSource{Type: "csv", Data: "a,b,c"},
+		Source: &DocumentSource{Type: "csv", Data: body},
 	})
 	if part == nil {
 		t.Fatal("returned nil for csv document")
@@ -219,6 +233,14 @@ func TestSerializeGemini_CSVDocumentInline(t *testing.T) {
 	inline := part["inlineData"].(map[string]any)
 	if inline["mimeType"] != "text/csv" {
 		t.Errorf("mimeType = %v, want text/csv", inline["mimeType"])
+	}
+	enc, _ := inline["data"].(string)
+	dec, err := base64.StdEncoding.DecodeString(enc)
+	if err != nil {
+		t.Fatalf("csv inline data not valid base64 (%v): %q", err, enc)
+	}
+	if string(dec) != body {
+		t.Errorf("decoded csv inline data = %q, want %q", dec, body)
 	}
 }
 
