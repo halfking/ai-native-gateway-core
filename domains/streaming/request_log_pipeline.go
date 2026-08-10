@@ -77,6 +77,14 @@ type RequestLogContext struct {
 	AutoDecision   []byte // serialised autoRouteDecision JSON
 	AutoConfidence float64
 
+	// D5: model-level fallback list. The canonical model names from the
+	// auto-route CandidatesTop3, EXCLUDING the already-chosen winner. Used by
+	// the handler's Exhausted path to retry a non-streaming request against the
+	// next-best model when every credential for the chosen model is exhausted.
+	// Kept as a plain []string (not the full decision) so the hot path doesn't
+	// need to unmarshal the JSONB decision to read it.
+	AutoFallbackModels []string
+
 	// v3 (2026-06-19) session-level outbound body fields.
 	// Populated by SessionCompressor.Prepare when it rewrites bodyBytes.
 	// All nil when the session compressor was not active.
@@ -651,6 +659,19 @@ func (c *RequestLogContext) SetAutoDecision(wire *autoRouteDecision) {
 	c.TaskType = wire.TaskType
 	c.AutoProfile = wire.Profile
 	c.AutoConfidence = wire.Confidence
+	// D5: extract fallback model names (all top-3 except the chosen winner).
+	if len(wire.CandidatesTop3) > 1 {
+		fallbacks := make([]string, 0, len(wire.CandidatesTop3)-1)
+		for _, cand := range wire.CandidatesTop3 {
+			if cand.Model == "" || cand.Model == wire.ChosenModel {
+				continue
+			}
+			fallbacks = append(fallbacks, cand.Model)
+		}
+		if len(fallbacks) > 0 {
+			c.AutoFallbackModels = fallbacks
+		}
+	}
 	b, err := jsonMarshal(wire)
 	if err == nil {
 		c.AutoDecision = b

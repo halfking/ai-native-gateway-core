@@ -267,14 +267,16 @@ func (w *SessionHealthWorker) updateHealth(ctx context.Context, sessionKey strin
 		UPDATE session_summaries
 		SET health_score = $1,
 		    health_grade = $2,
-		    outcome = $3,
+		    quality_score = $3,
+		    outcome = $4,
 		    last_health_at = NOW(),
 		    updated_at = NOW()
-		WHERE session_key = $4
+		WHERE session_key = $5
 	`
 	_, err := w.db.Exec(ctx, updateQuery,
 		health.HealthScore,
 		health.HealthGrade,
+		health.QualityScore,
 		health.Outcome,
 		sessionKey,
 	)
@@ -311,20 +313,20 @@ func sessionRecordToParams(s sessionRecord) map[string]interface{} {
 // ── Health Score Logic (duplicated to avoid circular dependency) ──────
 
 type healthScoreConfig struct {
-	ErrorEndedPenalty        int
-	AbandonedPenalty         int
-	PerErrorPenalty          int
-	PerErrorCap              int
-	PerCompliancePenalty     int
-	PerComplianceCap         int
-	HighLatencyThresholdMs   int
-	HighLatencyPenalty       int
-	ModelSwitchThreshold     int
-	ModelSwitchPenalty       int
-	PromptInjectionPenalty   int
-	PIIPenalty               int
-	ToxicOutputPenalty       int
-	SensitivePenaltyCap      int
+	ErrorEndedPenalty      int
+	AbandonedPenalty       int
+	PerErrorPenalty        int
+	PerErrorCap            int
+	PerCompliancePenalty   int
+	PerComplianceCap       int
+	HighLatencyThresholdMs int
+	HighLatencyPenalty     int
+	ModelSwitchThreshold   int
+	ModelSwitchPenalty     int
+	PromptInjectionPenalty int
+	PIIPenalty             int
+	ToxicOutputPenalty     int
+	SensitivePenaltyCap    int
 }
 
 func defaultHealthScoreConfig() healthScoreConfig {
@@ -350,6 +352,7 @@ type sessionHealthResult struct {
 	HealthScore  int
 	HealthGrade  string
 	Outcome      string
+	QualityScore int // 0-10, derived from HealthScore/10
 }
 
 func computeHealthFromFields(summary interface{}, config healthScoreConfig) sessionHealthResult {
@@ -443,6 +446,7 @@ func computeHealthFromFields(summary interface{}, config healthScoreConfig) sess
 		HealthScore:  score,
 		HealthGrade:  grade,
 		Outcome:      outcome,
+		QualityScore: score / 10, // 0-100 → 0-10 for session_summaries.quality_score
 	}
 }
 
