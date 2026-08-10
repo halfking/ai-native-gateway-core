@@ -87,12 +87,21 @@ func (q *ProbeQueue) SetProbeSink(sink ProbeEventSink) {
 
 // publishProbeTask is the shared hook for the durable queue's lifecycle events.
 // Best-effort: a nil sink or a publish error never blocks the enqueue/claim.
+//
+// The task ID uses the dedup_key so the lifecycle (enqueue → claim → terminal)
+// collapses into one SSE tile. dedup_key is the natural stable identifier:
+// it is set at enqueue time, preserved across retries, and is what Enqueue's
+// ON CONFLICT clause uses to recognise a duplicate.
 func (q *ProbeQueue) publishProbeTask(task ProbeQueueTask, status string) {
 	if q == nil || q.probeSink == nil {
 		return
 	}
+	id := task.DedupKey
+	if id == "" {
+		id = fmt.Sprintf("integrity:%d", task.ID)
+	}
 	q.probeSink.PublishProbeEvent(ProbeStreamEvent{
-		ID:           fmt.Sprintf("integrity:%d", task.ID),
+		ID:           id,
 		TaskType:     "integrity_verify",
 		Source:       "integrity",
 		Status:       status,
