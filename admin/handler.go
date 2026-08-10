@@ -20,6 +20,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/domains/credentialstate" //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/domains/dbdegradation"   //nolint:depguard // 数据库降级模块
 	"github.com/kaixuan/llm-gateway-go/domains/memory"          //nolint:depguard // historical violation, B1 routing.go CQRS will fix
+	"github.com/kaixuan/llm-gateway-go/domains/modelquality"    // model-IQ backend interface (modelQualityBackend)
 	"github.com/kaixuan/llm-gateway-go/domains/session"         //nolint:depguard // session state manager
 	"github.com/kaixuan/llm-gateway-go/domains/sessionaudit"    //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/domains/stats"
@@ -139,6 +140,13 @@ type Handler struct {
 	// domains/authentication here.
 	keyVerifier interface {
 		InvalidateKeyID(id int)
+	}
+	// modelQualityBackend (2026-08-11) backs the model-IQ admin endpoints:
+	//   POST /api/admin/model-iq/trigger  — run an on-demand IQ test on one node
+	// nil disables the trigger endpoint (history/node-latest/catalog still work
+	// by reading the DB directly). Wired from cmd/gateway/main.go.
+	modelQualityBackend interface {
+		TestSingleNode(ctx context.Context, credentialID int, rawModel string) (*modelquality.QualityScore, error)
 	}
 	// providerSettingsResolver (2026-06-20) provides provider-level setting
 	// overrides for compression, cache, etc. Wired from cmd/gateway/main.go.
@@ -467,6 +475,13 @@ func (h *Handler) SetProbeServices(probeV2 *bg.CredentialProbeV2, picker *bg.Def
 // 2026-06-18-model-probe-rounds).  nil-safe — admin keeps working
 // without the manual-trigger endpoint if the worker isn't running.
 func (h *Handler) SetModelProbeRunner(r *bg.ModelProbeRunner) { h.modelProbe = r }
+
+// SetModelQualityBackend wires the model-quality worker for the on-demand
+// node IQ test endpoint (POST /api/admin/model-iq/trigger). Pass nil to
+// disable only that endpoint; history/node-latest/catalog read the DB directly.
+func (h *Handler) SetModelQualityBackend(b interface {
+	TestSingleNode(ctx context.Context, credentialID int, rawModel string) (*modelquality.QualityScore, error)
+}) { h.modelQualityBackend = b }
 
 // SetStateManager wires the credential-state manager for /api/credentials/*/state
 // and /api/credentials/*/test endpoints. Pass nil to disable.
@@ -962,6 +977,13 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 		// 2026-07-24: 供应商级路由阻塞诊断 — "凭据正常但路由不到"场景
 		mux.HandleFunc("/api/admin/diagnostics/routing-blocked", h.superAdmin(h.handleRoutingBlockedDiagnostic))
 		mux.HandleFunc("/api/admin/diagnostics/routing-blocked/fix", h.superAdmin(h.handleRoutingBlockedFix))
+
+		// 2026-08-11: 模型智商（Model IQ）— 标准智商 / 节点智商历史 / 立即测试。
+		// catalog/node-latest/history 只读 DB；trigger 调用 modelQualityBackend。
+		mux.HandleFunc("/api/admin/model-iq/catalog", h.superAdmin(h.handleModelIQCatalog))
+		mux.HandleFunc("/api/admin/model-iq/node-latest", h.superAdmin(h.handleModelIQNodeLatest))
+		mux.HandleFunc("/api/admin/model-iq/history", h.superAdmin(h.handleModelIQHistory))
+		mux.HandleFunc("/api/admin/model-iq/trigger", h.superAdmin(h.handleModelIQTrigger))
 
 		h.registerMaasRoutes(mux)
 	}
