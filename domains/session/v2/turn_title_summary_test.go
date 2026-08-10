@@ -1,7 +1,9 @@
 package v2
 
 import (
+	"strings"
 	"testing"
+	"unicode/utf8"
 )
 
 // TestSummarizeMessages_PreviewForTurnTitle verifies the deterministic preview
@@ -42,6 +44,19 @@ func TestSummarizeMessages_TruncatesLongContent(t *testing.T) {
 	got := summarizeMessages([]Message{{Role: "user", Content: string(long)}})
 	if len(got) > 204 {
 		t.Fatalf("expected <= 204 chars (200 + ellipsis), got %d", len(got))
+	}
+}
+
+func TestSummarizeMessages_TruncatesUTF8ByRune(t *testing.T) {
+	got := summarizeMessages([]Message{{Role: "user", Content: strings.Repeat("你", 250)}})
+	if !utf8.ValidString(got) {
+		t.Fatalf("expected valid UTF-8, got %q", got)
+	}
+	if n := utf8.RuneCountInString(got); n != 203 {
+		t.Fatalf("expected 203 runes (200 + ellipsis), got %d", n)
+	}
+	if !strings.HasSuffix(got, "...") {
+		t.Fatalf("expected ellipsis suffix, got %q", got)
 	}
 }
 

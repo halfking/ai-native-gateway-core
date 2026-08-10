@@ -206,15 +206,13 @@ func (h *Handler) handleTurnsSessions(w http.ResponseWriter, r *http.Request) {
 			ON ss.session_key = s.session_id AND ss.tenant_id = s.tenant_id
 		-- session_titles: auto_title_generator 写入的标题（V1 表），
 		-- 取最新一条作为 s.title 的 fallback。用 LATERAL 避免一个会话多行导致行扩展。
-		LEFT JOIN LATERAL (
-			SELECT title FROM session_titles
-			WHERE scoped_session_id = s.session_id
-			ORDER BY generated_at DESC LIMIT 1
-		) st ON true
+		-- task_id 过滤防止跨任务/租户泄漏：优先匹配真实 task_id（sd.task_id），
+		-- 其次接受 'auto'（auto_title_generator 旧版默认值）。
+		%s
 		%s
 		ORDER BY s.updated_at DESC, s.session_id DESC
 		LIMIT $%d
-	`, queryClause, argIdx)
+	`, sessionTitleFallbackJoinSQL("s.session_id", "sd.task_id"), queryClause, argIdx)
 	args = append(args, limit+1)
 
 	rows, err := h.db.Query(ctx, query, args...)
