@@ -92,6 +92,13 @@ type TurnRecord struct {
 	AttachmentCount      int      // Number of attachments in this turn
 	AttachmentTotalBytes int64    // Total bytes of all attachments
 	MultimodalTypes      []string // Types present: ["image", "audio", "video", "document"]
+
+	// Turn-level title / summary (migration 456). The admin turns-list UI
+	// renders these as one-line previews when present. Populated by
+	// SessionWriterV2.Write from the first user / first assistant message so
+	// the list is non-empty without waiting for an async LLM summarizer.
+	Title   string
+	Summary string
 }
 
 // AppendTurn appends a new turn to the session, returning the assigned turn_no
@@ -210,6 +217,7 @@ func (w *TurnWriter) appendTurnInLockedTx(ctx context.Context, tx pgx.Tx, rec Tu
 			latency_ms, status_code, success, error_kind,
 			source_kind, quality,
 			attachment_count, attachment_total_bytes, multimodal_types,
+			title, summary,
 			partition_date
 		) VALUES (
 			$1, $2, $3, $4, $5,
@@ -221,7 +229,8 @@ func (w *TurnWriter) appendTurnInLockedTx(ctx context.Context, tx pgx.Tx, rec Tu
 			$21, $22, $23, $24,
 			$25, $26,
 			$27, $28, $29,
-			$30
+			$30, $31,
+			$32
 		)
 		ON CONFLICT (tenant_id, request_id, partition_date) DO NOTHING
 	`,
@@ -234,6 +243,7 @@ func (w *TurnWriter) appendTurnInLockedTx(ctx context.Context, tx pgx.Tx, rec Tu
 		rec.LatencyMs, rec.StatusCode, rec.Success, rec.ErrorKind,
 		rec.SourceKind, rec.Quality,
 		rec.AttachmentCount, rec.AttachmentTotalBytes, rec.MultimodalTypes,
+		rec.Title, rec.Summary,
 		partitionDate,
 	)
 
@@ -272,30 +282,37 @@ func (w *TurnWriter) appendTurnInLockedTx(ctx context.Context, tx pgx.Tx, rec Tu
 				   SET compression_applied      = $5 OR compression_applied,
 				       compression_strategy     = COALESCE(NULLIF($6, ''), compression_strategy),
 				       compression_meta         = CASE
-				                                      WHEN $7 <> '' AND $7 <> 'null'
-				                                      THEN $7::text::jsonb
-				                                      ELSE compression_meta
-				                                  END,
+					                              WHEN $7 <> '' AND $7 <> 'null'
+					                              THEN $7::text::jsonb
+					                              ELSE compression_meta
+					                          END,
 				       compression_tokens_saved = CASE
-				                                      WHEN $8 <> 0 THEN $8
-				                                      ELSE compression_tokens_saved
-				                                  END,
+					                              WHEN $8 <> 0 THEN $8
+					                              ELSE compression_tokens_saved
+					                          END,
 				       -- submit_mode: only an informative (non-default) verdict may
 				       -- overwrite. rec.SubmitMode defaults to 'full', so a later
 				       -- fire that lacks the header/previous-body context (e.g. a
 				       -- failure-path UPDATE) can never regress a 'delta' /
 				       -- 'inferred_compressed' verdict an earlier fire established.
 				       submit_mode              = CASE
-				                                      WHEN $9 <> '' AND $9 <> 'full'
-				                                      THEN $9
-				                                      ELSE submit_mode
-				                                  END
+					                              WHEN $9 <> '' AND $9 <> 'full'
+					                              THEN $9
+					                              ELSE submit_mode
+					                          END,
+				       -- title / summary (migration 456): same monotonic-enrichment
+				       -- rule as the fields above — a later fire that has the
+				       -- preview text must populate the row, but an empty preview
+				       -- (e.g. attachment-only turn) can never blank one already set.
+				       title                    = COALESCE(NULLIF($10, ''), title),
+				       summary                  = COALESCE(NULLIF($11, ''), summary)
 				 WHERE session_id = $1 AND tenant_id = $2
 				   AND request_id = $3 AND partition_date = $4
 			`,
 			rec.SessionID, rec.TenantID, rec.RequestID, partitionDate,
 			rec.CompressionApplied, rec.CompressionStrategy, compressionMetaStr,
 			rec.TokensSaved, rec.SubmitMode,
+			rec.Title, rec.Summary,
 		)
 		if err != nil {
 			return 0, fmt.Errorf("backfill turn compression/submit_mode: %w", err)

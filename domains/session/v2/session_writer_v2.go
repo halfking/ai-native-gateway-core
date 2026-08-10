@@ -316,6 +316,13 @@ func (w *SessionWriterV2) Write(ctx context.Context, req *ProcessedRequest) erro
 		AttachmentCount:      attachmentCount,
 		AttachmentTotalBytes: attachmentTotalBytes,
 		MultimodalTypes:      req.MultimodalTypes,
+
+		// Turn-level title / summary (migration 456). Derive deterministic
+		// previews from the new messages in this turn so the admin turns-list
+		// UI shows something useful without waiting for the async LLM
+		// summarizer. summarizeMessages already produces a 200-char cap.
+		Title:   summarizeMessages(requestDelta),
+		Summary: summarizeMessages(req.ResponseBody),
 	}
 
 	// 4. Atomic turn + bodies write (spec §6.2). The transaction and lock were

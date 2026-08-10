@@ -185,8 +185,12 @@ func (h *Handler) handleTurnsSessions(w http.ResponseWriter, r *http.Request) {
 		queryClause = "WHERE " + where
 	}
 	query := fmt.Sprintf(`
-		SELECT s.session_id, s.tenant_id, s.title, s.topic, s.intent,
-			s.summary, s.summary_model, s.summary_generated_at,
+		SELECT s.session_id, s.tenant_id,
+			COALESCE(NULLIF(s.title, ''), st.title, ss.title) AS title,
+			s.topic,
+			COALESCE(NULLIF(s.intent, ''), ss.user_intent) AS intent,
+			COALESCE(NULLIF(s.summary, ''), ss.summary) AS summary,
+			s.summary_model, s.summary_generated_at,
 			s.status, s.task_type, s.client_type,
 			s.created_at, s.updated_at, s.closed_at,
 			s.total_turns, s.total_tokens, s.total_cost_usd,
@@ -200,6 +204,13 @@ func (h *Handler) handleTurnsSessions(w http.ResponseWriter, r *http.Request) {
 			ON sd.gw_session_id = s.session_id AND sd.tenant_id = s.tenant_id
 		LEFT JOIN session_summaries ss
 			ON ss.session_key = s.session_id AND ss.tenant_id = s.tenant_id
+		-- session_titles: auto_title_generator 写入的标题（V1 表），
+		-- 取最新一条作为 s.title 的 fallback。用 LATERAL 避免一个会话多行导致行扩展。
+		LEFT JOIN LATERAL (
+			SELECT title FROM session_titles
+			WHERE scoped_session_id = s.session_id
+			ORDER BY generated_at DESC LIMIT 1
+		) st ON true
 		%s
 		ORDER BY s.updated_at DESC, s.session_id DESC
 		LIMIT $%d
@@ -335,13 +346,17 @@ func buildTurnsSessionWhere(r *http.Request, tenantID string, tsFrom, tsTo time.
 		argIdx++
 	}
 	if v := strings.TrimSpace(r.URL.Query().Get("search")); v != "" {
+		// search 同时匹配标题（含 session_titles / session_summaries fallback）、
+		// topic、user_intent、摘要（含 session_summaries fallback），让自动生成
+		// 的标题/摘要也能被搜到。
 		clauses = append(clauses, fmt.Sprintf(
-			"(COALESCE(ss.title, s.title) ILIKE '%%'||$%d||'%%'"+
+			"(COALESCE(s.title, st.title, ss.title) ILIKE '%%'||$%d||'%%'"+
 				" OR COALESCE(s.topic, '') ILIKE '%%'||$%d||'%%'"+
-				" OR COALESCE(ss.summary, s.summary) ILIKE '%%'||$%d||'%%')",
-			argIdx, argIdx+1, argIdx+2))
-		args = append(args, v, v, v)
-		argIdx += 3
+				" OR COALESCE(s.intent, ss.user_intent, '') ILIKE '%%'||$%d||'%%'"+
+				" OR COALESCE(s.summary, ss.summary) ILIKE '%%'||$%d||'%%')",
+			argIdx, argIdx+1, argIdx+2, argIdx+3))
+		args = append(args, v, v, v, v)
+		argIdx += 4
 	}
 
 	// 会话级 cursor：(s.updated_at, s.session_id) < (beforeTS, beforeSessionID)
