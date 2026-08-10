@@ -57,6 +57,41 @@ go build -o gateway ./cmd/gateway
 ./quality-monitor -mode=test -provider=openai -model=gpt-4 -benchmark=full
 ```
 
+### 模型目录平均智商
+
+```bash
+# 汇总所有已测评分，按模型打印平均智商 / 标准差 / 各供应商均分
+./quality-monitor -mode=catalog-iq
+```
+
+### 单凭据节点智商
+
+```bash
+# 汇总所有带 CredentialID 的评分，按 (供应商, 凭据节点) 打印平均智商
+./quality-monitor -mode=node-iq
+```
+
+### 直连单个凭据节点测试
+
+直连节点（绕过网关）测量该节点的模型智商。两种取节点方式：
+
+```bash
+# 方式A：直接指定节点（无需 DB）
+./quality-monitor -mode=node-test \
+  -node-base-url=https://api.openai.com \
+  -node-api-key=sk-xxx \
+  -raw-model=gpt-4o \
+  -credential-id=42
+
+# 方式B：从 DB 自动发现并解密（需 -dsn + -fernet-key）
+./quality-monitor -mode=node-test \
+  -dsn="postgres://..." -fernet-key=<hex> \
+  -credential-id=42 [-raw-model=...]
+```
+
+> ⚠️ 直连测试会产生真实 token 费用。`node-test` 把 `CredentialID` 写入评分，
+> 供 `node-iq` 聚合区分同一供应商下不同 key 的智商差异（发现"渗水"的具体节点）。
+
 ### 持续监控
 
 ```bash
@@ -190,6 +225,20 @@ data/model-quality/
 ```
 
 ## 评分标准
+
+### "智商"是什么
+
+本文档中"智商 / IQ"指 `QualityScore.OverallScore`（综合智商分，0-100）。
+该系统提供**两个聚合维度**查看模型智商：
+
+| 维度 | CLI 模式 | 含义 |
+|------|---------|------|
+| **模型目录平均智商** | `catalog-iq` | 同一 canonical 模型跨所有提供它的凭据节点的平均智商（横向对比不同模型的聪明程度） |
+| **单凭据节点智商** | `node-iq` | 按 `(供应商, 凭据节点ID)` 聚合该节点下所有模型的智商（纵向定位"渗水"的具体 key） |
+
+> 经网关测试（`mode=test`，网关负载均衡选节点）产出的评分 `CredentialID=0`，只参与
+> `catalog-iq` 聚合，不参与 `node-iq`（无节点维度）。要得到单节点智商，必须用
+> `mode=node-test` 直连指定节点。
 
 ### 综合评分计算
 
@@ -360,8 +409,11 @@ tail -f data/model-quality/alerts.log
 
 ## TODO
 
-- [ ] 实现真实的网关模型调用器（替换MockInvoker）
-- [ ] 支持HTTP直连调用（HTTPModelInvoker）
+- [x] 实现真实的网关模型调用器（GatewayModelInvoker）
+- [x] 支持HTTP直连调用（DirectNodeInvoker，2026-08-10）
+- [x] 单凭据节点智商维度（CredentialID + node-test + node-iq，2026-08-10）
+- [x] 模型目录平均智商聚合（catalog-iq，2026-08-10）
+- [x] 修复 MockModelInvoker 假准确率（2026-08-10）
 - [ ] 数据库存储实现（PostgreSQL）
 - [ ] 更多告警渠道（Email、钉钉、飞书）
 - [ ] Web界面展示历史趋势

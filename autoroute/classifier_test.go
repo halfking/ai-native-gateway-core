@@ -363,3 +363,182 @@ func TestHeuristicClassifier_PureDocumentSummary_ShouldBeLongContext(t *testing.
 		t.Errorf("expected TaskLongContext for pure document summary, got %s", res.Primary)
 	}
 }
+
+// ── 新增测试（V6：接入 code_audit / intent_classification / planning）────────
+
+func TestHeuristicClassifier_CodeAudit(t *testing.T) {
+	// 显式安全审计请求 → TaskCodeAudit（不再是死代码）
+	c := NewHeuristicClassifier(DefaultHeuristicThresholds(), DefaultKeywords())
+	res, err := c.Classify(context.Background(), ClassificationSignals{
+		LastUserPrompt: "请对这段代码做安全审计，检查是否有漏洞和注入风险",
+	})
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	if res.Primary != TaskCodeAudit {
+		t.Errorf("expected TaskCodeAudit for security audit, got %s (reason=%s)", res.Primary, res.Reason)
+	}
+	if res.Confidence < 0.8 {
+		t.Errorf("expected high confidence for explicit audit, got %.2f", res.Confidence)
+	}
+}
+
+func TestHeuristicClassifier_CodeAudit_OrdinaryReviewStaysCode(t *testing.T) {
+	// 收窄后：普通 "review my code" 不应误判为 code_audit，仍是 TaskCode
+	c := NewHeuristicClassifier(DefaultHeuristicThresholds(), DefaultKeywords())
+	res, err := c.Classify(context.Background(), ClassificationSignals{
+		LastUserPrompt: "please review my code and suggest improvements",
+	})
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	if res.Primary != TaskCode {
+		t.Errorf("expected TaskCode for ordinary review, got %s (reason=%s)", res.Primary, res.Reason)
+	}
+}
+
+func TestHeuristicClassifier_IntentClassification(t *testing.T) {
+	// 意图分类请求 → TaskIntentClassification（不再是死代码，也不再误判为 chat）
+	c := NewHeuristicClassifier(DefaultHeuristicThresholds(), DefaultKeywords())
+	res, err := c.Classify(context.Background(), ClassificationSignals{
+		LastUserPrompt: "请对这条用户消息进行意图分类，判断是咨询、投诉还是建议",
+	})
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	if res.Primary != TaskIntentClassification {
+		t.Errorf("expected TaskIntentClassification, got %s (reason=%s)", res.Primary, res.Reason)
+	}
+	if res.Confidence < 0.8 {
+		t.Errorf("expected high confidence, got %.2f", res.Confidence)
+	}
+}
+
+func TestHeuristicClassifier_Planning_PurePlan(t *testing.T) {
+	// 纯方案/任务拆解请求 → TaskPlanning（高智商任务，用 opus/sonnet）
+	c := NewHeuristicClassifier(DefaultHeuristicThresholds(), DefaultKeywords())
+	res, err := c.Classify(context.Background(), ClassificationSignals{
+		LastUserPrompt: "帮我写一份微服务架构方案，拆解各模块任务和技术选型",
+	})
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	if res.Primary != TaskPlanning {
+		t.Errorf("expected TaskPlanning for pure plan, got %s (reason=%s)", res.Primary, res.Reason)
+	}
+	if res.Confidence < 0.8 {
+		t.Errorf("expected high confidence, got %.2f", res.Confidence)
+	}
+}
+
+func TestHeuristicClassifier_Planning_WithImplement_StillCode(t *testing.T) {
+	// 不回归："先制定计划然后实现" 仍是 TaskCode（strongCodingSignal 优先于 planning）
+	c := NewHeuristicClassifier(DefaultHeuristicThresholds(), DefaultKeywords())
+	res, err := c.Classify(context.Background(), ClassificationSignals{
+		LastUserPrompt: "实现一个用户认证系统，先制定详细的计划，然后逐步实现",
+	})
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	if res.Primary != TaskCode {
+		t.Errorf("expected TaskCode for plan-then-implement, got %s (reason=%s)", res.Primary, res.Reason)
+	}
+}
+
+func TestHeuristicClassifier_Planning_EnglishDesignDoc(t *testing.T) {
+	// English design doc / task breakdown → TaskPlanning
+	c := NewHeuristicClassifier(DefaultHeuristicThresholds(), DefaultKeywords())
+	res, err := c.Classify(context.Background(), ClassificationSignals{
+		LastUserPrompt: "Write a technical design doc for the new billing system, break down the work into phases",
+	})
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	if res.Primary != TaskPlanning {
+		t.Errorf("expected TaskPlanning for design doc, got %s (reason=%s)", res.Primary, res.Reason)
+	}
+}
+
+func TestHeuristicClassifier_Intent_NotChat(t *testing.T) {
+	// 收窄后：包含"判断"但非意图分类的普通对话，不应误判为 intent_classification
+	c := NewHeuristicClassifier(DefaultHeuristicThresholds(), DefaultKeywords())
+	res, err := c.Classify(context.Background(), ClassificationSignals{
+		LastUserPrompt: "帮我判断一下这个决定对不对",
+	})
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	if res.Primary == TaskIntentClassification {
+		t.Errorf("ordinary '判断' must not trigger intent_classification, got %s (reason=%s)", res.Primary, res.Reason)
+	}
+}
+
+// ── 中文编程任务 pattern 补丁（盲区修复）─────────────────────────────
+
+func TestHeuristicClassifier_ZhCodingTask_AlgorithmName(t *testing.T) {
+	// 盲区："写一个快速排序" 无"算法/函数"字面，关键词层不命中。
+	// 修复：pattern 层匹配"动词 + 编程对象"。
+	c := NewHeuristicClassifier(DefaultHeuristicThresholds(), DefaultKeywords())
+	cases := []string{
+		"用 Python 写一个快速排序",
+		"写一个红黑树的插入",
+		"用 go 写一个 LRU 缓存",
+		"写一个线程池",
+	}
+	for _, prompt := range cases {
+		res, err := c.Classify(context.Background(), ClassificationSignals{LastUserPrompt: prompt})
+		if err != nil {
+			t.Fatalf("err on %q: %v", prompt, err)
+		}
+		if res.Primary != TaskCode {
+			t.Errorf("expected TaskCode for %q, got %s (reason=%s)", prompt, res.Primary, res.Reason)
+		}
+	}
+}
+
+func TestHeuristicClassifier_ZhCodingTask_LanguageVerb(t *testing.T) {
+	// 盲区："用 React 做表单组件""用 SQL 查询" 不命中关键词。
+	// 修复：pattern 层匹配"语言/框架名 + 动作动词"。
+	c := NewHeuristicClassifier(DefaultHeuristicThresholds(), DefaultKeywords())
+	cases := []string{
+		"帮我用 React 做一个表单组件",
+		"用 SQL 查询最近七天的订单",
+		"用 Java 实现一个简单的区块链",
+		"写个脚本批量重命名文件",
+	}
+	for _, prompt := range cases {
+		res, err := c.Classify(context.Background(), ClassificationSignals{LastUserPrompt: prompt})
+		if err != nil {
+			t.Fatalf("err on %q: %v", prompt, err)
+		}
+		if res.Primary != TaskCode {
+			t.Errorf("expected TaskCode for %q, got %s (reason=%s)", prompt, res.Primary, res.Reason)
+		}
+	}
+}
+
+func TestHeuristicClassifier_ZhCodingPattern_NoFalsePositive(t *testing.T) {
+	// code pattern 补丁绝不能误伤 creative/planning：含"写一个"但对象是
+	// 故事/博客/方案，必须保持原归类。
+	c := NewHeuristicClassifier(DefaultHeuristicThresholds(), DefaultKeywords())
+	cases := []struct {
+		prompt string
+		want   TaskType
+	}{
+		{"写一个关于太空探索的故事", TaskCreative},
+		{"写一篇关于 AI 的博客文章", TaskCreative},
+		{"帮我写一份微服务架构方案，拆解各模块任务", TaskPlanning},
+	}
+	for _, tc := range cases {
+		res, err := c.Classify(context.Background(), ClassificationSignals{LastUserPrompt: tc.prompt})
+		if err != nil {
+			t.Fatalf("err on %q: %v", tc.prompt, err)
+		}
+		if res.Primary != tc.want {
+			t.Errorf("expected %s for %q, got %s (reason=%s) — code pattern over-triggered",
+				tc.want, tc.prompt, res.Primary, res.Reason)
+		}
+	}
+}
+
+

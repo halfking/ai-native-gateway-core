@@ -17,6 +17,18 @@ const (
 	BenchmarkTypeCustom   BenchmarkType = "custom"    // 自定义测试
 )
 
+// ProbeKind 自检请求的调用路径，用于在自检记录里区分"通过网关"还是"直连节点"。
+//   - ProbeKindGateway：经网关 /v1/chat/completions（网关负载均衡选节点）
+//   - ProbeKindDirect：直连凭据节点 baseURL，绕过网关
+//   - ProbeKindMock：离线 mock（仅测试用，无真实请求）
+type ProbeKind string
+
+const (
+	ProbeKindGateway ProbeKind = "gateway"
+	ProbeKindDirect  ProbeKind = "direct"
+	ProbeKindMock    ProbeKind = "mock"
+)
+
 // Question 测试题目
 type Question struct {
 	ID       string   `json:"id"`
@@ -24,6 +36,16 @@ type Question struct {
 	Question string   `json:"question"` // 问题文本
 	Options  []string `json:"options"`  // 选项 A/B/C/D
 	Answer   string   `json:"answer"`   // 正确答案 (A/B/C/D)
+}
+
+// nodeKey 凭据节点维度的唯一键。
+// CredentialID==0 表示"未指定节点/经网关"，向后兼容旧的 provider:model 形态。
+// 这是所有按节点存储/聚合代码统一使用的 key 生成器。
+func nodeKey(provider string, modelName string, credentialID int) string {
+	if credentialID == 0 {
+		return fmt.Sprintf("%s:%s", provider, modelName)
+	}
+	return fmt.Sprintf("%s:%s:%d", provider, modelName, credentialID)
 }
 
 // BenchmarkSuite 基准测试套件
@@ -50,42 +72,48 @@ type TestResult struct {
 
 // BenchmarkReport 完整测试报告
 type BenchmarkReport struct {
-	ID            string             `json:"id"`
-	BenchmarkType BenchmarkType      `json:"benchmark_type"`
-	ModelName     string             `json:"model_name"`
-	Provider      string             `json:"provider"`
-	TotalQuestions int               `json:"total_questions"`
-	CorrectCount   int               `json:"correct_count"`
-	Accuracy       float64           `json:"accuracy"`        // 准确率
-	AvgLatency     float64           `json:"avg_latency_ms"`  // 平均延迟
-	TotalTokens    int               `json:"total_tokens"`    // 总Token消耗
-	StartTime      time.Time         `json:"start_time"`
-	EndTime        time.Time         `json:"end_time"`
-	Duration       time.Duration     `json:"duration"`
-	Results        []TestResult      `json:"results"`
+	ID             string             `json:"id"`
+	BenchmarkType  BenchmarkType      `json:"benchmark_type"`
+	ModelName      string             `json:"model_name"`
+	Provider       string             `json:"provider"`
+	CredentialID   int                `json:"credential_id,omitempty"` // 2026-08-10: 直连节点测试时记录的凭据节点ID；0=经网关
+	CanonicalModel string             `json:"canonical_model,omitempty"`
+	ProbeKind      ProbeKind          `json:"probe_kind,omitempty"` // 2026-08-10: gateway=经网关 / direct=直连节点 / mock=离线
+	TotalQuestions int                `json:"total_questions"`
+	CorrectCount   int                `json:"correct_count"`
+	Accuracy       float64            `json:"accuracy"`       // 准确率
+	AvgLatency     float64            `json:"avg_latency_ms"` // 平均延迟
+	TotalTokens    int                `json:"total_tokens"`   // 总Token消耗
+	StartTime      time.Time          `json:"start_time"`
+	EndTime        time.Time          `json:"end_time"`
+	Duration       time.Duration      `json:"duration"`
+	Results        []TestResult       `json:"results"`
 	SubjectScores  map[string]float64 `json:"subject_scores"` // 分学科得分
-	Status         string            `json:"status"`         // success/partial/failed
-	ErrorCount     int               `json:"error_count"`
+	Status         string             `json:"status"`         // success/partial/failed
+	ErrorCount     int                `json:"error_count"`
 }
 
 // QualityScore 质量评分
 type QualityScore struct {
-	ModelName    string    `json:"model_name"`
-	Provider     string    `json:"provider"`
-	Accuracy     float64   `json:"accuracy"`      // 准确率 0-100
-	Latency      float64   `json:"latency_p95"`   // P95延迟
-	Stability    float64   `json:"stability"`     // 稳定性(成功率)
-	OverallScore float64   `json:"overall_score"` // 综合评分 0-100
-	Grade        string    `json:"grade"`         // A+/A/B+/B/C/D/F
-	Timestamp    time.Time `json:"timestamp"`
-	BenchmarkID  string    `json:"benchmark_id"`
+	ModelName      string    `json:"model_name"`
+	Provider       string    `json:"provider"`
+	CredentialID   int       `json:"credential_id,omitempty"` // 2026-08-10: 凭据节点维度；0=经网关聚合
+	CanonicalModel string    `json:"canonical_model,omitempty"`
+	ProbeKind      ProbeKind `json:"probe_kind,omitempty"` // 2026-08-10: gateway=经网关 / direct=直连节点 / mock=离线
+	Accuracy       float64   `json:"accuracy"`             // 准确率 0-100
+	Latency        float64   `json:"latency_p95"`          // P95延迟
+	Stability      float64   `json:"stability"`            // 稳定性(成功率)
+	OverallScore   float64   `json:"overall_score"`        // 综合评分(智商) 0-100
+	Grade          string    `json:"grade"`                // A+/A/B+/B/C/D/F
+	Timestamp      time.Time `json:"timestamp"`
+	BenchmarkID    string    `json:"benchmark_id"`
 }
 
 // BenchmarkExecutor 基准测试执行器接口
 type BenchmarkExecutor interface {
 	// Execute 执行基准测试
 	Execute(ctx context.Context, modelName string, provider string, suite *BenchmarkSuite) (*BenchmarkReport, error)
-	
+
 	// ExecuteQuestion 执行单个问题测试
 	ExecuteQuestion(ctx context.Context, modelName string, provider string, q Question) (*TestResult, error)
 }
@@ -96,11 +124,14 @@ type ScoreCalculator struct{}
 // CalculateScore 计算质量评分
 func (sc *ScoreCalculator) CalculateScore(report *BenchmarkReport) *QualityScore {
 	score := &QualityScore{
-		ModelName:   report.ModelName,
-		Provider:    report.Provider,
-		Accuracy:    report.Accuracy,
-		Timestamp:   time.Now(),
-		BenchmarkID: report.ID,
+		ModelName:      report.ModelName,
+		Provider:       report.Provider,
+		CredentialID:   report.CredentialID,
+		CanonicalModel: report.CanonicalModel,
+		ProbeKind:      report.ProbeKind,
+		Accuracy:       report.Accuracy,
+		Timestamp:      time.Now(),
+		BenchmarkID:    report.ID,
 	}
 
 	// 计算稳定性 (成功率)
