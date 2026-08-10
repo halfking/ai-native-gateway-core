@@ -50,3 +50,42 @@ func TestProbeRedisStore_Record_ClearsPrevStatusLane(t *testing.T) {
 		}
 	}
 }
+
+// TestRecordTransitionScript_Loaded pins that the atomic lane-transition Lua
+// script is registered at package init (2026-08-12 second-pass audit). If the
+// script is accidentally removed, RecordWithOrigin silently falls back to a
+// no-op and the lane state diverges — this test makes that visible.
+func TestRecordTransitionScript_Loaded(t *testing.T) {
+	if recordTransitionScript == nil {
+		t.Fatalf("recordTransitionScript must be registered for RecordWithOrigin to be atomic")
+	}
+	if recordTransitionScript.Hash() == "" {
+		t.Fatalf("recordTransitionScript hash must be non-empty")
+	}
+	// The script body must contain the key invariants: cross-status ZREM,
+	// HSET task_status, and the trim. We assert substrings rather than the
+	// full body so the test survives whitespace tweaks.
+	for _, want := range []string{
+		"prevStatus",      // reads the previous lane before evicting
+		"ZREM",            // evicts from the previous lane
+		"taskStatusHash",  // records the new current lane
+		"ZREMRANGEBYRANK", // trims the lane to the keep limit
+	} {
+		if !stringContains(recordTransitionSrc, want) {
+			t.Errorf("recordTransitionSrc missing %q — atomic lane transition would be broken", want)
+		}
+	}
+}
+
+// stringContains is a local helper to avoid clashing with probeContains.
+func stringContains(s, sub string) bool {
+	if len(sub) == 0 {
+		return true
+	}
+	for i := 0; i+len(sub) <= len(s); i++ {
+		if s[i:i+len(sub)] == sub {
+			return true
+		}
+	}
+	return false
+}
