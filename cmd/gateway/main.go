@@ -1637,6 +1637,10 @@ func main() {
 		30*time.Minute,
 	)
 	var liveStreamHub *admin.LiveStreamSSEHub
+	// probeStreamHub (2026-08-11) mirrors the live request stream for the
+	// 自检 tab. Declared at this scope so it can be constructed in the
+	// system-monitor wiring block and later wired into probe emitters.
+	var probeStreamHub *admin.ProbeSSEHub
 	var anomalyHarvester *streaming.AnomalyHarvester
 	var integrityDriftWorker *bg.IntegrityFingerprintDrift
 	var integrityHarvester *bg.IntegrityHarvester
@@ -2200,6 +2204,13 @@ func main() {
 			}
 		}
 
+		// 2026-08-11: 自检队列 SSE 流（与 live-stream 物理隔离）。无论系统
+		// 监测模块是否启用都挂载，让 node-probe / integrity-probe / selfcheck
+		// 的生命周期事件实时反映到首页自检 tab。fpSlotRedis 为 nil 时 hub 走
+		// 单实例内存模式（仅同实例 fan-out，无 Redis 持久化）。
+		probeStreamHub = admin.NewProbeSSEHub(fpSlotRedis)
+		adminHandler.SetProbeStreamSSE(probeStreamHub)
+
 		// 2026-07-23: 系统监测模块 — 探测任务的唯一入口 (design docs/会话优化v2/32).
 		// env LLM_GATEWAY_SYSTEM_MONITOR_ENABLED=true 才会启；Phase 1 默认关。
 		// 旧 worker (NodeProbe / ActiveProbe / CredentialSelfcheck) 在启用
@@ -2434,6 +2445,18 @@ func main() {
 	var dailyProbeAudit *bg.DailyProbeAudit
 	// 2026-07-14: 30s system-health monitor (GDRT H badge).
 	var systemHealthWorker *bg.SystemHealthWorker
+
+	// newProbeEmitter (2026-08-11) builds an ActiveProbeEmitter and wires the
+	// self-check SSE sink so every node-probe / integrity-probe completion is
+	// mirrored to the 自检 tab. probeStreamHub may be nil (single-instance
+	// dev without Redis) — SetProbeSink is then a no-op.
+	newProbeEmitter := func() *bg.ActiveProbeEmitter {
+		em := bg.NewActiveProbeEmitter(telemetryClient)
+		if em != nil && probeStreamHub != nil {
+			em.SetProbeSink(probeStreamHub)
+		}
+		return em
+	}
 	var modelQualityWorker *bg.ModelQualityWorker
 	var stickyCleaner *bg.StickyCleaner
 	var envelopeCleaner *bg.EnvelopeCleaner
@@ -2754,7 +2777,7 @@ func main() {
 				probeQueueWorker = bg.NewProbeQueueWorker(bg.ProbeQueueWorkerConfig{
 					Queue:        probeQueue,
 					Executor:     queueExecutor,
-					Emitter:      bg.NewActiveProbeEmitter(telemetryClient),
+					Emitter:      newProbeEmitter(),
 					ResultSink:   bg.NewPostgresIntegrityProbeResultSink(dbConn.Pool()),
 					BatchSize:    epWorkers,
 					Workers:      epWorkers,
@@ -2823,7 +2846,7 @@ func main() {
 				}
 				nodeProbeWorker.SetStateObserver(stateManager)
 				nodeProbeWorker.SetStateProvider(stateManager)
-				nodeProbeWorker.SetEmitter(bg.NewActiveProbeEmitter(telemetryClient))
+				nodeProbeWorker.SetEmitter(newProbeEmitter())
 				nodeProbeWorker.SetInvalidateCandidateCache(provider.InvalidateCandidateCacheForCredential)
 				if routingExec != nil && routingExec.Circuit != nil {
 					nodeProbeWorker.SetCircuitRecovery(routingExec.Circuit.RecordSuccess)
@@ -2999,7 +3022,7 @@ func main() {
 		if stateManager == nil && ursmV2Mgr != nil && ursmV2Mgr.Mode() == ursmv2api.ModeAuthoritative && shouldStartNewProbeWorkers(selfCheckAPIKey) {
 			nodeProbeWorker = bg.NewNodeProbeWorker(dbConn.Pool(), fernetKey, keyring, selfCheckAPIKey, "", upClient.Proxy().ProxyFunc())
 			nodeProbeWorker.SetNodeStateSink(ursmV2ProbeSink{manager: ursmV2Mgr})
-			nodeProbeWorker.SetEmitter(bg.NewActiveProbeEmitter(telemetryClient))
+			nodeProbeWorker.SetEmitter(newProbeEmitter())
 			nodeProbeWorker.SetInvalidateCandidateCache(provider.InvalidateCandidateCacheForCredential)
 			if routingExec != nil && routingExec.Circuit != nil {
 				nodeProbeWorker.SetCircuitRecovery(routingExec.Circuit.RecordSuccess)
@@ -4908,6 +4931,9 @@ func main() {
 		// 2. Stop hub/background producers before closing their dependencies.
 		if liveStreamHub != nil {
 			liveStreamHub.Stop()
+		}
+		if probeStreamHub != nil {
+			probeStreamHub.Stop()
 		}
 		if anomalyHarvester != nil {
 			anomalyHarvester.Stop()
