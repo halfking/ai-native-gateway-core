@@ -86,6 +86,10 @@
     {"canonical_name": "doubao-seed-2.0-mini", "standard_iq": 18.0, "family": "doubao"},
     {"canonical_name": "doubao-seed-2.0-lite", "standard_iq": 12.0, "family": "doubao"},
     {"canonical_name": "doubao-seed-2.0-code", "standard_iq": 22.0, "family": "doubao"},
+    {"canonical_name": "doubao-1.5-vision-pro", "standard_iq": 16.0, "family": "doubao"},
+    {"canonical_name": "doubao-1.5-vision-lite", "standard_iq": 9.0, "family": "doubao"},
+
+    {"canonical_name": "gemini-2.0-flash-lite", "standard_iq": 14.0, "family": "google-gemini"},
 
     {"canonical_name": "minimax-m3", "standard_iq": 37.0, "family": "minimax"},
     {"canonical_name": "minimax-m2.7", "standard_iq": 29.0, "family": "minimax"},
@@ -111,6 +115,15 @@
     {"canonical_name": "step-1-256k", "standard_iq": 8.0, "family": "stepfun"},
     {"canonical_name": "sonar-pro", "standard_iq": 18.0, "family": "perplexity"},
     {"canonical_name": "sonar", "standard_iq": 12.0, "family": "perplexity"},
-    {"canonical_name": "yi-large", "standard_iq": 13.0, "family": "yi"}
+    {"canonical_name": "yi-large", "standard_iq": 13.0, "family": "yi"},
+
+    {"canonical_name": "ernie-4.0-turbo-128k", "standard_iq": 17.0, "family": "ernie"},
+    {"canonical_name": "ernie-3.5-8k", "standard_iq": 9.0, "family": "ernie"},
+    {"canonical_name": "ernie-4.0", "standard_iq": 16.0, "family": "ernie"},
+    {"canonical_name": "abab6.5s-chat", "standard_iq": 14.0, "family": "minimax"},
+    {"canonical_name": "abab5.5-chat", "standard_iq": 8.0, "family": "minimax"},
+    {"canonical_name": "codestral-22b-instruct-v0.1", "standard_iq": 15.0, "family": "mistral"},
+    {"canonical_name": "codegemma-1.1-7b", "standard_iq": 6.0, "family": "google-gemini"},
+    {"canonical_name": "mixtral-8x22b-v0.1", "standard_iq": 12.0, "family": "mistral"}
   ]
 }

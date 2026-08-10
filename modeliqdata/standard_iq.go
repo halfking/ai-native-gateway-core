@@ -92,6 +92,16 @@ func ensureLoaded() {
 				continue
 			}
 			byExact[key] = m.StandardIQ
+			// The same model appears in models_canonical under both
+			// dot-separated and dash-separated version forms (e.g.
+			// "claude-sonnet-4.5" vs "claude-sonnet-4-5", "gemini-2.5-pro"
+			// vs "gemini-2-5-pro"). Index the dot→dash fold so either form
+			// resolves to the same value without bloating the reference file.
+			if folded := dashFold(key); folded != key {
+				if _, exists := byExact[folded]; !exists {
+					byExact[folded] = m.StandardIQ
+				}
+			}
 			// Also index under the more aggressive NormalizeRouteKey so that
 			// date-suffixed / dashed variants land on the same value.
 			byNorm[modelname.NormalizeRouteKey(key)] = m.StandardIQ
@@ -99,9 +109,16 @@ func ensureLoaded() {
 	})
 }
 
+// dashFold returns name with '.' replaced by '-' (version separators), used to
+// bridge "claude-sonnet-4.5" and "claude-sonnet-4-5". It does NOT touch other
+// characters so non-version dots (rare) are unaffected at the call site.
+func dashFold(name string) string {
+	return strings.ReplaceAll(name, ".", "-")
+}
+
 // LookupStandardIQ resolves a standard IQ for a canonical / raw model name.
-// It tries, in order: exact lowercase match, CanonicalizeClientModel, then
-// NormalizeRouteKey (strips date suffixes / collapses dashes). Returns the
+// It tries, in order: exact lowercase match, dot→dash fold, CanonicalizeClientModel,
+// then NormalizeRouteKey (strips date suffixes / collapses dashes). Returns the
 // value, whether it was found, and the matched key ("" if not found).
 //
 // The input is typically a models_canonical.canonical_name (already canonical)
@@ -119,11 +136,22 @@ func LookupStandardIQ(modelName string) (iq float64, found bool, matchedKey stri
 	if v, ok := byExact[k]; ok {
 		return v, true, k
 	}
+	// 1b. Dot→dash fold: "claude-sonnet-4.5" -> "claude-sonnet-4-5".
+	if kf := dashFold(k); kf != k {
+		if v, ok := byExact[kf]; ok {
+			return v, true, kf
+		}
+	}
 	// 2. CanonicalizeClientModel (strips vendor prefix, keeps dashes/dots).
 	c := modelname.CanonicalizeClientModel(modelName)
 	if c != "" && c != k {
 		if v, ok := byExact[c]; ok {
 			return v, true, c
+		}
+		if cf := dashFold(c); cf != c {
+			if v, ok := byExact[cf]; ok {
+				return v, true, cf
+			}
 		}
 	}
 	// 3. NormalizeRouteKey (strips dates, collapses dashes) — last resort.
