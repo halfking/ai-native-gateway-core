@@ -11,6 +11,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/kaixuan/llm-gateway-go/domains/credential"
 	"github.com/kaixuan/llm-gateway-go/modelname"
 	"github.com/kaixuan/llm-gateway-go/secret"
 	"github.com/prometheus/client_golang/prometheus"
@@ -136,6 +137,14 @@ type Candidate struct {
 	// "unknown" — in which case the trim path is a no-op.
 	ContextWindow *int   `json:"context_window,omitempty"`
 	APIKey        string `json:"-"`
+	// APIKeys holds additional decrypted keys for multi-key rotation (beyond the
+	// primary APIKey). nil/empty for single-key credentials. Index 0 in the
+	// rotator corresponds to APIKey (primary); indices 1..N correspond here.
+	APIKeys []string `json:"-"`
+	// KeyRotator, when non-nil, enables per-credential multi-key round-robin
+	// with health tracking. The executor calls ResolveKey before BuildRequest
+	// and rewrites APIKey accordingly. nil for single-key credentials.
+	KeyRotator *credential.KeyRotator `json:"-"`
 	// QualityFixMode mirrors providers.quality_fix_mode (017_quality_fix_mode.sql).
 	// Empty string is treated as "off" by every consumer; relay/stream.go
 	// and routing/executor_chat.go both short-circuit when the value is
@@ -291,6 +300,11 @@ type Client struct {
 	keyring             *secret.Keyring
 	asyncExitSuspicious func(credentialID int, rawModel string)
 
+	// keyRotator holds per-credential multi-key rotation state (per-key health +
+	// round-robin). nil when the DB/keyring isn't configured (single-key mode).
+	// Shared across all candidate enrichments so health persists across requests.
+	keyRotator *credential.KeyRotator
+
 	mu        sync.RWMutex
 	candCache map[string]cacheEntry[*resolveResponse]
 	polCache  cacheEntry[*Policy]
@@ -375,6 +389,9 @@ func (c *Client) SetDB(pool *pgxpool.Pool, secretKey, credentialEncryptionKey st
 		c.keyring = kr
 	} else if pool != nil {
 		slog.Warn("credential keyring unavailable; AES-GCM v1 envelopes will fail to decrypt", "error", kerr)
+	}
+	if pool != nil {
+		c.keyRotator = credential.NewKeyRotator()
 	}
 }
 
@@ -1361,6 +1378,46 @@ func (c *Client) fetchRevealDB(ctx context.Context, providerID, credentialID int
 	return string(pt), nil
 }
 
+// fetchExtraKeys returns the decrypted extra keys for a credential from the
+// credential_keys table (kid_index >= 1, status='active'), ordered by kid_index.
+// The primary key (index 0) is NOT included — it lives in credentials and is
+// fetched by fetchRevealDB. Returns nil when the table has no rows or when the
+// table doesn't exist (graceful degradation for pre-076-migration deployments).
+func (c *Client) fetchExtraKeys(ctx context.Context, credentialID int) []string {
+	if c.dbPool == nil {
+		return nil
+	}
+	rows, err := c.dbPool.Query(ctx, `
+		SELECT secret_ciphertext
+		FROM credential_keys
+		WHERE credential_id = $1 AND status = 'active'
+		ORDER BY kid_index
+	`, credentialID)
+	if err != nil {
+		// table missing (pre-076) or query error — degrade to single-key mode.
+		return nil
+	}
+	defer rows.Close()
+	var keys []string
+	for rows.Next() {
+		var ciphertext []byte
+		if err := rows.Scan(&ciphertext); err != nil {
+			continue
+		}
+		if len(ciphertext) == 0 {
+			continue
+		}
+		pt, _, err := secret.DecryptAny(string(ciphertext), c.keyring, c.fernetKey)
+		if err != nil {
+			slog.Warn("fetchExtraKeys: decrypt failed, skipping key",
+				"credential_id", credentialID, "error", err)
+			continue
+		}
+		keys = append(keys, string(pt))
+	}
+	return keys
+}
+
 func (c *Client) enrichWithAPIKeys(ctx context.Context, rr *resolveResponse) []Candidate {
 	if rr == nil {
 		return nil
@@ -1413,6 +1470,17 @@ func (c *Client) enrichWithAPIKeys(ctx context.Context, rr *resolveResponse) []C
 			continue
 		}
 		cand.APIKey = apiKey
+		// multi-key: fetch extra keys and register with the rotator so the
+		// executor can round-robin across all keys for this credential.
+		if c.keyRotator != nil {
+			extras := c.fetchExtraKeys(ctx, cand.CredentialID)
+			if len(extras) > 0 {
+				cand.APIKeys = extras
+				cand.KeyRotator = c.keyRotator
+				// count = 1 primary + len(extras); rotator indices 0..N.
+				c.keyRotator.EnsureCred(cand.CredentialID, 1+len(extras))
+			}
+		}
 		cands = append(cands, cand)
 	}
 
