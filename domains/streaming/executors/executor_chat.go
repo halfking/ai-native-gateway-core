@@ -369,6 +369,9 @@ func (e *Executor) executeOpenAI(
 	for attempt := 0; attempt <= effectiveMaxRetries+mnfBonus; attempt++ {
 		if attempt > 0 {
 			delay := time.Duration(500*(1<<(attempt-1))) * time.Millisecond
+			if isUpstreamOverloaded(lastErr) {
+				delay = errorsx.DefaultOverloadRetryDelay
+			}
 			// 2026-08-08: prefer the upstream's own Retry-After over the
 			// blind exponential guess. An overloaded relay that asks for 3s
 			// gets 3s; without this the gateway either hammered it 500ms

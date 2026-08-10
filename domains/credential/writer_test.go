@@ -38,6 +38,7 @@ func TestCoolingDurationPerKind(t *testing.T) {
 		{errorsx.KindTransient, 30 * time.Second},
 		{errorsx.KindTimeout, 30 * time.Second},
 		{errorsx.KindUpstreamDown, 60 * time.Second},
+		{errorsx.KindUpstreamOverloaded, 60 * time.Second},
 		{errorsx.KindNetwork, 120 * time.Second},
 	}
 	for _, tt := range tests {

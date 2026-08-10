@@ -32,10 +32,11 @@ type FailoverDecision struct {
 }
 
 const (
-	DefaultRateLimitCooldown = 30 * time.Second
-	DefaultTransientCooldown = 2 * time.Second
-	DefaultFrontendWait      = 100 * time.Millisecond
-	DefaultProbeFanout       = 3
+	DefaultRateLimitCooldown  = 30 * time.Second
+	DefaultTransientCooldown  = 2 * time.Second
+	DefaultOverloadRetryDelay = 3 * time.Second
+	DefaultFrontendWait       = 100 * time.Millisecond
+	DefaultProbeFanout        = 3
 )
 
 // DecideFailover maps an upstream response to synchronous routing actions.
@@ -81,6 +82,14 @@ func DecideFailover(status int, body []byte, retryAfterHeader string, clientOrig
 		decision.EnqueueProbe = true
 		decision.ProbeFanout = DefaultProbeFanout
 		decision.ReasonCode = "provider_concurrent_overload"
+	case KindUpstreamOverloaded:
+		// A relay-side overload is recoverable capacity pressure. Delay the
+		// next attempt, preserve the upstream body in request logs, and keep
+		// the credential-model binding routable for later traffic.
+		decision.Scope = ScopeModel
+		decision.RetryAfter = parseRetryAfter(retryAfterHeader, DefaultOverloadRetryDelay)
+		decision.EnqueueProbe = false
+		decision.ReasonCode = "provider_upstream_overloaded"
 	case KindNoAvailableChannel:
 		// 2026-08-09: OneAPI/new-api distributor "no available channel for
 		// model X under group Y" (5xx). Per-(credential,model) gap, recoverable

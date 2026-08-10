@@ -250,7 +250,20 @@ func (w *Writer) WriteOnError(ctx context.Context, credentialID int, rawModel st
 			  AND lifecycle_status = 'active'
 		`, string(failure.Kind), detail, credentialID)
 		return err
-	case errorsx.KindConcurrent, errorsx.KindRateLimit, errorsx.KindTimeout, errorsx.KindUpstreamDown, errorsx.KindUpstreamOverloaded, errorsx.KindStreamTimeout, errorsx.KindNoAvailableChannel:
+	case errorsx.KindUpstreamOverloaded:
+		// Relay capacity pressure is transient and must not remove the
+		// credential-model binding from routing. Keep the real upstream detail
+		// for operators while retry/backoff is handled by the executor.
+		_, err := w.dbPool.Exec(ctx, `
+			UPDATE credentials
+			SET state_reason_code   = $1,
+			    state_reason_detail = $2,
+			    state_updated_at    = now()
+			WHERE id = $3
+			  AND lifecycle_status = 'active'
+		`, string(failure.Kind), detail, credentialID)
+		return err
+	case errorsx.KindConcurrent, errorsx.KindRateLimit, errorsx.KindTimeout, errorsx.KindUpstreamDown, errorsx.KindStreamTimeout, errorsx.KindNoAvailableChannel:
 		// Per-model kind. Update the specific (credential, model) binding
 		// in BOTH cmb (production router) and model_offers (/api/routing/
 		// resolve "test route" + admin UI). Sibling models on the same
