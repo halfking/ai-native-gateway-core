@@ -15,6 +15,7 @@ import {
   triggerSelfCheck,
   fetchProbeSystemHealth,
   fetchProbeQueueTasks,
+  fetchProbeNodeTasks,
   type SelfCheckSettings,
   type SelfCheckStats,
   type SelfCheckRun,
@@ -22,6 +23,7 @@ import {
   type SelfCheckTriggerAvailability,
   type ProbeSystemHealth,
   type ProbeQueueTaskRow,
+  type NodeProbeTaskRow,
 } from '../api-selfcheck'
 import { fetchSystemMonitorStats, type SystemMonitorStats } from '../api/api-system-monitor'
 import SwimLane from '../components/SwimLane.vue'
@@ -52,6 +54,9 @@ const range = ref<'1h' | '6h' | '24h' | '7d'>('24h')
 // 2026-07-24: 并入系统监测指标（队列长度 / 并发）
 const probeHealth = ref<ProbeSystemHealth | null>(null)
 const queueTasks = ref<ProbeQueueTaskRow[]>([])
+// 2026-08-10: 错误触发的节点自检队列（NodeProbeWorker，与 credential_probe_queue
+// 完整性探测分开维护），并入统一泳道展示。
+const nodeTasks = ref<NodeProbeTaskRow[]>([])
 const monitorStats = ref<SystemMonitorStats | null>(null)
 
 let pollTimer: number | undefined
@@ -98,16 +103,21 @@ async function loadAll() {
 }
 
 // 2026-07-23: 队列任务拉取（子项③），随执行更新状态
+// 2026-08-10: 并行拉取 node-tasks（错误触发自检队列），两套队列独立失败，
+// 互不影响彼此展示。
 async function refreshQueueTasks() {
   try {
-    const [res, stats] = await Promise.all([
+    const [res, nodeRes, stats] = await Promise.all([
       fetchProbeQueueTasks(120),
+      fetchProbeNodeTasks(120).catch(() => ({ tasks: [] as NodeProbeTaskRow[], total: 0 })),
       fetchSystemMonitorStats().catch(() => null),
     ])
     queueTasks.value = res.tasks ?? []
+    nodeTasks.value = nodeRes.tasks ?? []
     if (stats) monitorStats.value = stats
   } catch {
     queueTasks.value = []
+    nodeTasks.value = []
   }
 }
 
@@ -385,23 +395,57 @@ function taskToTile(t: ProbeQueueTaskRow): RequestTile {
   }
 }
 
-function tasksForLane(statuses: string[], fifoAsc: boolean): RequestTile[] {
-  const matched = queueTasks.value.filter((t) => statuses.includes(t.status))
-  const sorted = [...matched].sort((a, b) => {
-    const ta = new Date(a.updated_at || a.next_run_at || 0).getTime()
-    const tb = new Date(b.updated_at || b.next_run_at || 0).getTime()
-    return fifoAsc ? ta - tb : tb - ta
-  })
+// 2026-08-10: NodeProbeWorker 错误触发队列的 tile 映射。node_probe_state
+// 是常驻状态行（非一次性任务），三态对应 running/pending/done 泳道：
+// running = 正被 pickDueAtomically 租用；pending = 等待下次退避 tick；
+// paused = 达到 7 步退避上限，归入「已执行」泳道并标 failure（长期搁置）。
+function nodeTaskStandardModel(t: NodeProbeTaskRow): string {
+  return (t.standardized_name || t.raw_model || '').trim()
+}
+
+function nodeTaskToTile(t: NodeProbeTaskRow): RequestTile {
+  const status =
+    t.status === 'running' ? 'in_progress'
+      : t.status === 'paused' ? 'failure'
+        : 'idle'
+  return {
+    request_id: `n-${t.credential_id}-${t.raw_model}`,
+    timestamp: t.updated_at || t.next_retry_at || new Date().toISOString(),
+    model: nodeTaskStandardModel(t),
+    vendor: '__unknown__',
+    provider: t.provider_name || String(t.provider_id),
+    status,
+    is_probe: true,
+    probe_origin: 'direct',
+    latency_ms: t.last_latency_ms && t.last_latency_ms > 0 ? t.last_latency_ms : undefined,
+    error_kind: t.last_err_code || undefined,
+  }
+}
+
+function tasksForLane(statuses: string[], fifoAsc: boolean, nodeStatuses: string[] = []): RequestTile[] {
+  const matchedQueue = queueTasks.value.filter((t) => statuses.includes(t.status))
+  const matchedNode = nodeTasks.value.filter((t) => nodeStatuses.includes(t.status))
+  const combined = [
+    ...matchedQueue.map((t) => ({
+      tile: taskToTile(t),
+      ts: new Date(t.updated_at || t.next_run_at || 0).getTime(),
+    })),
+    ...matchedNode.map((t) => ({
+      tile: nodeTaskToTile(t),
+      ts: new Date(t.updated_at || t.next_retry_at || 0).getTime(),
+    })),
+  ]
+  const sorted = combined.sort((a, b) => (fifoAsc ? a.ts - b.ts : b.ts - a.ts))
   const slice = fifoAsc
     ? sorted.slice(0, QUEUE_LANE_LIMIT)
     : sorted.slice(0, QUEUE_LANE_LIMIT).reverse()
-  return slice.map(taskToTile)
+  return slice.map((x) => x.tile)
 }
 
 const queueSwimLanes = computed<SwimLaneType[]>(() => {
-  const pending = tasksForLane(['ready'], true)
-  const running = tasksForLane(['running'], true)
-  const done = tasksForLane(['success', 'failed', 'expired'], false)
+  const pending = tasksForLane(['ready'], true, ['pending'])
+  const running = tasksForLane(['running'], true, ['running'])
+  const done = tasksForLane(['success', 'failed', 'expired'], false, ['paused'])
   return [
     {
       id: 'done',
