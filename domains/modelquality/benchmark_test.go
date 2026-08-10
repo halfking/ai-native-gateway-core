@@ -180,6 +180,8 @@ func TestMockModelInvoker(t *testing.T) {
 
 func TestMockModelInvoker_QualityDrop(t *testing.T) {
 	invoker := NewMockModelInvoker()
+	// 跳过真实 sleep：该测试只验证成功率变化，延迟模拟无意义且会拖慢 200 次调用。
+	invoker.sleepFn = func(time.Duration) {}
 	ctx := context.Background()
 
 	// 记录初始质量
