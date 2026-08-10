@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"regexp"
 	"strings"
+	"time"
 )
 
 type ErrorKind string
@@ -358,7 +359,17 @@ var budgetExceededRe = regexp.MustCompile(
 		`达到.{0,10}(每周|每月|每日|使用)?上限|` +
 		`(配额|额度|余额).{0,10}(用尽|耗尽|不足|超限)|` +
 		`(限额|使用量).{0,10}重置|` +
-		`"code"\s*:\s*"1310")`, // 智谱AI specific code
+		`"code"\s*:\s*"1310"|` + // 智谱AI specific code
+		// OmniRoute-derived provider-specific quota signals (classify429.ts).
+		// These distinguish periodic quota_exhausted from transient rate_limit
+		// for providers that put the signal in the body, not headers.
+		`daily.{0,15}(limit|quota|allocation)|` + // Cloudflare Workers AI "daily free allocation"
+		`per.?(day|month).{0,15}limit|` +
+		`(monthly|period).{0,15}(limit|quota)|` +
+		`individual quota reached|` + // Antigravity / Google Cloud Code
+		`INSUFFICIENT_G1_CREDITS_BALANCE|` + // Antigravity credit balance
+		`out of credits|` +
+		`hard.?(limit|cap))`,
 )
 
 // concurrentOverloadRe matches upstream error bodies that signal
@@ -405,7 +416,12 @@ var quotaResetsRe = regexp.MustCompile(
 		// Use \s instead of a literal space to dodge Go RE2 character-class
 		// edge cases at fragment boundaries.
 		`\d{4}-\d{2}-\d{2}\s\d{2}:\d{2}:\d{2}|` +
-		`\d{4}/\d{2}/\d{2}\s\d{2}:\d{2}:\d{2})`,
+		`\d{4}/\d{2}/\d{2}\s\d{2}:\d{2}:\d{2}|` +
+		// Google Gemini: "RESOURCE_EXHAUSTED ... quota will reset after ..."
+		// (OmniRoute classify429.ts). The "reset after" qualifier is what
+		// distinguishes the periodic variant from a plain resource_exhausted.
+		`resource.{0,10}exhausted.{0,60}reset.{0,10}after|` +
+		`resource_exhausted)`,
 )
 
 // Both patterns must be classified as KindConcurrent so the breaker can
@@ -790,6 +806,98 @@ func ClassifyErrorWithBody(status int, body []byte) ErrorKind {
 		return KindUnsupportedFeature
 	}
 	return ClassifyResponseStatus(&http.Response{StatusCode: status})
+}
+
+// ClassifyQuota429Body classifies a 429 response body into one of the three
+// quota/rate-limit kinds, for callers (e.g. the OmniFree free_quota_tracker
+// path) that want ONLY the quota split without the full overload /
+// model-not-found / auth classification that ClassifyErrorWithBody performs.
+//
+// It applies just the budgetExceededRe + quotaResetsRe logic from
+// ClassifyErrorWithBody's quota branch (status 402/403/429):
+//
+//   - body matches budgetExceededRe AND quotaResetsRe → KindQuotaPeriodic
+//   - body matches budgetExceededRe only             → KindQuotaPermanent
+//   - otherwise (plain 429)                          → KindRateLimit
+//
+// This is the Go analogue of OmniRoute's classify429.ts, which distinguishes
+// transient rate_limit from periodic quota_exhausted so a quota-exhausted key
+// is parked until its reset window rather than retried immediately.
+func ClassifyQuota429Body(body []byte) ErrorKind {
+	if len(body) == 0 {
+		return KindRateLimit
+	}
+	if !budgetExceededRe.Match(body) {
+		return KindRateLimit
+	}
+	if quotaResetsRe.Match(body) {
+		return KindQuotaPeriodic
+	}
+	return KindQuotaPermanent
+}
+
+// NextQuotaReset computes when a quota-exhausted window should recover, based
+// on the upstream error body. It mirrors OmniRoute's getMsUntilTomorrow /
+// accountFallback.ts precedence: a real reset timestamp in the body wins;
+// otherwise a daily/monthly keyword hint picks the next UTC midnight or next
+// month boundary; otherwise default to next UTC midnight (the common daily
+// free-tier cadence).
+//
+// This is the shared logic that both the credential writer (main/paid path)
+// and the OmniFree quota tracker (free path) can call so they agree on reset
+// semantics. `now` is accepted as a parameter for deterministic tests.
+func NextQuotaReset(body string, now time.Time) time.Time {
+	now = now.UTC()
+	if t, ok := scanQuotaResetTimestamp(body); ok {
+		return t.UTC()
+	}
+	lower := strings.ToLower(body)
+	if strings.Contains(lower, "month") || strings.Contains(lower, "per month") || strings.Contains(lower, "月") {
+		return time.Date(now.Year(), now.Month()+1, 1, 0, 0, 0, 0, time.UTC)
+	}
+	if strings.Contains(lower, "week") || strings.Contains(lower, "per week") || strings.Contains(lower, "周") {
+		daysUntilMonday := (7 - int(now.Weekday()) + int(time.Monday)) % 7
+		if daysUntilMonday == 0 {
+			daysUntilMonday = 7
+		}
+		return midnightUTCShared(now.AddDate(0, 0, daysUntilMonday))
+	}
+	// default: next UTC midnight (daily free-tier cadence)
+	return midnightUTCShared(now.AddDate(0, 0, 1))
+}
+
+// scanQuotaResetTimestamp is the errorsx-local reset-timestamp scanner. It is
+// the same logic as domains/credential/writer.parseQuotaResetTimestamp but
+// lives here so errorsx.NextQuotaReset has no dependency on the credential
+// domain. Kept in sync; prefer editing both together when patterns change.
+func scanQuotaResetTimestamp(detail string) (time.Time, bool) {
+	for _, layout := range []string{
+		"2006-01-02 15:04:05",
+		"2006-01-02T15:04:05",
+		"2006/01/02 15:04:05",
+		"2006/01/02T15:04:05",
+	} {
+		const window = 19
+		if len(detail) < window {
+			continue
+		}
+		for i := 0; i+window <= len(detail); i++ {
+			candidate := detail[i : i+window]
+			t, err := time.ParseInLocation(layout, candidate, time.UTC)
+			if err != nil {
+				continue
+			}
+			if t.Before(time.Now().Add(-1 * time.Minute)) {
+				continue
+			}
+			return t, true
+		}
+	}
+	return time.Time{}, false
+}
+
+func midnightUTCShared(t time.Time) time.Time {
+	return time.Date(t.Year(), t.Month(), t.Day(), 0, 0, 0, 0, time.UTC)
 }
 
 // ClassifyResponseBody inspects an error body fragment (e.g. SSE error

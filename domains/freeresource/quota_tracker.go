@@ -9,6 +9,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/kaixuan/llm-gateway-go/errorsx"
 )
 
 // QuotaTracker 配额追踪器
@@ -112,12 +114,25 @@ func (qt *QuotaTracker) Record(ctx context.Context, req RecordRequest) error {
 	return nil
 }
 
-// CorrectFromHeaders 从429响应头校准配额限制.
+// CorrectFromHeaders 从429响应头+响应体校准配额限制.
 //
 // 行为变更 (2026-08-07): 旧实现仅 UPDATE 当前已存在的 day-1 行, 首次 429
 // 没有任何追踪记录时静默丢失校准. 新实现通过 UPSERT 写入 day-1 窗口, 即使
 // 之前没有 Record 调用, 也能在收到 429 的同时建立追踪行, 后续 Preflight
 // 即可正确识别 is_exhausted.
+//
+// body 关键词甄别 (OmniRoute classify429.ts 对齐, 2026-08-10):
+//   - 旧实现只看 HTTP header (Retry-After / X-RateLimit-Reset). 很多 provider
+//     (Google Gemini, Cloudflare Workers AI, Groq) 把配额耗尽信号放在响应体
+//     里, 没有任何 reset header → parseRetryAfter 返回 (0, now) →
+//     auto_reset_at=now() → Preflight 立即解除耗尽 → 配额耗尽的 key 被反复重试.
+//   - 新实现: 若 req.Body 非空, 调 errorsx.ClassifyQuota429Body 区分:
+//   - KindQuotaPeriodic  → 周期性耗尽, 用 errorsx.NextQuotaReset(body)
+//     算出 next UTC midnight / next month (除非 header 有更准的 reset).
+//   - KindQuotaPermanent → 永久耗尽 (余额不足), auto_reset_at 设为远未来
+//     (now + 365 天) 避免被自动解除, 需人工介入.
+//   - KindRateLimit      → 瞬时限流, 保持原有短退避行为.
+//     优先级: 真实 upstream reset header > body 推断的周期重置 > 默认 now.
 //
 // 事务封装 + RLS GUC (2026-08-09 audit round 3, C1/C2):
 //   - 把 UPSERT 包到 BeginTx, 与并发 Record 形成一致的可见性窗口;
@@ -132,6 +147,19 @@ func (qt *QuotaTracker) CorrectFromHeaders(ctx context.Context, req CorrectionRe
 	dayEnd := dayStart.Add(24 * time.Hour)
 
 	retryAfterSec, resetAt := parseRetryAfter(now, req.Headers)
+	headerHadReset := !resetAt.Equal(now) // parseRetryAfter fallback returns now when no header
+
+	// body 关键词甄别: 当 header 没有给出 reset 时间时, 从 body 推断.
+	classification := errorsx.ClassifyQuota429Body(req.Body)
+	if !headerHadReset && len(req.Body) > 0 {
+		switch classification {
+		case errorsx.KindQuotaPeriodic:
+			resetAt = errorsx.NextQuotaReset(string(req.Body), now)
+		case errorsx.KindQuotaPermanent:
+			// 永久耗尽 (余额不足): 设远未来, 避免自动解除, 需人工充值后恢复.
+			resetAt = now.AddDate(1, 0, 0)
+		}
+	}
 
 	limit := int64(0)
 	if lim, ok := lookupHeader(req.Headers, "X-RateLimit-Limit"); ok && lim != "" {
