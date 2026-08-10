@@ -102,6 +102,27 @@ func TestWriteOnError_PerModelKind_UpdatesCMBNotCredentials(t *testing.T) {
 	}
 }
 
+func TestWriteOnError_UpstreamOverloadedRecordsWithoutCoolingBinding(t *testing.T) {
+	mockDB := newSQLOnlyMock()
+	defer mockDB.Close()
+
+	mockDB.ExpectExec(`UPDATE credentials`).
+		WithArgs(pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg()).
+		WillReturnResult(pgxmock.NewResult("UPDATE", 1))
+
+	w := &Writer{dbPool: mockDB}
+	err := w.WriteOnError(context.Background(), 42, "gpt-5.6-luna", Failure{
+		Kind:   errorsx.KindUpstreamOverloaded,
+		Detail: `{"error":{"message":"Our servers are currently overloaded. Please try again later."}}`,
+	})
+	if err != nil {
+		t.Fatalf("WriteOnError: %v", err)
+	}
+	if err := mockDB.ExpectationsWereMet(); err != nil {
+		t.Fatalf("overload must not update credential_model_bindings: %v", err)
+	}
+}
+
 // TestWriteOnError_CredentialWideKind_OnlyUpdatesCredentials pins
 // the credential-wide path (quota, auth, auth_revoked) — these kinds
 // DO write credentials.availability_state because the entire credential

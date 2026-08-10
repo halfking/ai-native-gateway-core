@@ -4826,6 +4826,14 @@ func upstreamRetryAfterHint(err error) time.Duration {
 	return upstreampkg.ClampInFlightRetryAfter(ue.RetryAfter)
 }
 
+func isUpstreamOverloaded(err error) bool {
+	if err == nil {
+		return false
+	}
+	var ue *upstreampkg.Error
+	return errors.As(err, &ue) && ue != nil && ue.Kind == errorsx.KindUpstreamOverloaded
+}
+
 type retryableError struct {
 	err error
 }

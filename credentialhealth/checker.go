@@ -152,6 +152,7 @@ func (c *Checker) CheckAndUpdate(ctx context.Context, credentialID int, model st
 		if e.ErrorKind == "network" ||
 			e.ErrorKind == string(errorsx.KindCanceled) ||
 			e.ErrorKind == string(errorsx.KindTransient) ||
+			e.ErrorKind == string(errorsx.KindUpstreamOverloaded) ||
 			e.ErrorKind == string(errorsx.KindEmptyResponse) ||
 			errorsx.IsClientBug(errorsx.ErrorKind(e.ErrorKind)) {
 			continue

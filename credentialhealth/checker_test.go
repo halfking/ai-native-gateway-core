@@ -435,6 +435,46 @@ func TestChecker_CheckAndUpdate_ExcludeEmptyResponse(t *testing.T) {
 	}
 }
 
+// Upstream overload is a provider capacity signal, not a credential defect.
+// It must remain observable without cooling the binding out of routing.
+func TestChecker_CheckAndUpdate_ExcludeUpstreamOverloaded(t *testing.T) {
+	mr, err := miniredis.Run()
+	if err != nil {
+		t.Fatalf("failed to start miniredis: %v", err)
+	}
+	defer mr.Close()
+
+	redisClient := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	defer redisClient.Close()
+
+	recorder := NewRecorder(redisClient, time.Hour, 100)
+	mockDB, err := pgxmock.NewPool()
+	if err != nil {
+		t.Fatalf("failed to create mock: %v", err)
+	}
+	defer mockDB.Close()
+
+	checker := NewChecker(recorder, mockDB, DefaultCheckerConfig())
+	now := time.Now()
+	for i := 0; i < 10; i++ {
+		err := recorder.Append(context.Background(), 124, "gpt-5.6-luna", CallEntry{
+			RequestID: "req_overload",
+			Timestamp: now.Add(time.Duration(i) * time.Minute).UnixMilli(),
+			ErrorKind: string(errorsx.KindUpstreamOverloaded),
+		})
+		if err != nil {
+			t.Fatalf("record overload: %v", err)
+		}
+	}
+
+	if err := checker.CheckAndUpdate(context.Background(), 124, "gpt-5.6-luna"); err != nil {
+		t.Fatalf("CheckAndUpdate failed: %v", err)
+	}
+	if err := mockDB.ExpectationsWereMet(); err != nil {
+		t.Fatalf("upstream overload must not trigger binding degradation: %v", err)
+	}
+}
+
 func TestRecoverExpired(t *testing.T) {
 	mockDB, err := pgxmock.NewPool()
 	if err != nil {
@@ -517,8 +557,9 @@ func TestRecoverExpired_SkipsModelProbeBroken(t *testing.T) {
 // We assert by reading the source: the credentials UPDATE must
 // (a) include 'suspended' in availability_state IN(...) and
 // (b) gate it on quota_state NOT IN (permanently_exhausted,
-//     balance_exhausted) so true hard-quota creds cannot be flipped
-//     by a single RecoverExpired tick.
+//
+//	balance_exhausted) so true hard-quota creds cannot be flipped
+//	by a single RecoverExpired tick.
 func TestRecoverExpired_SuspendedSQLGuard(t *testing.T) {
 	src, err := os.ReadFile("checker.go")
 	if err != nil {
