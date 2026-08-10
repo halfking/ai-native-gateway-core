@@ -573,14 +573,15 @@ func validateToolCallIntegrity(messages []map[string]any) error {
 	return nil
 }
 
-// serializeOpenAIAudioBlock converts an audio content block to OpenAI-compatible output.
+// serializeOpenAIAudioBlock converts an audio content block (type "audio",
+// e.g. originating from a Gemini source) to OpenAI-compatible output.
+// OpenAI Chat Completions audio input uses block type "input_audio", not
+// "audio"; emitting "audio" produces a block OpenAI rejects.
 // audit-provider-multimodal (2026-07-13): OpenAI audio output config + Gemini speech_config.
 func serializeOpenAIAudioBlock(audio *MediaSource) map[string]any {
-	block := map[string]any{"type": "audio"}
-	if audio.Format != "" {
-		block["format"] = audio.Format
-	}
-	// Carry data/url through input_audio-style structure for OpenAI compat
+	// OpenAI Chat input audio block type is "input_audio".
+	block := map[string]any{"type": "input_audio"}
+	// input_audio carries data/url/file_id in the nested object.
 	inner := map[string]any{}
 	switch audio.Type {
 	case "base64":
@@ -588,12 +589,25 @@ func serializeOpenAIAudioBlock(audio *MediaSource) map[string]any {
 		if audio.Format != "" {
 			inner["format"] = audio.Format
 		}
-		block["input_audio"] = inner
 	case "url":
 		inner["url"] = audio.URL
-		block["input_audio"] = inner
+		if audio.Format != "" {
+			inner["format"] = audio.Format
+		}
 	case "file_id":
 		inner["file_id"] = audio.FileID
+	default:
+		// Fall back: if we have raw base64 data, emit it.
+		if audio.Data != "" {
+			inner["data"] = audio.Data
+			if audio.Format != "" {
+				inner["format"] = audio.Format
+			}
+		} else if audio.URL != "" {
+			inner["url"] = audio.URL
+		}
+	}
+	if len(inner) > 0 {
 		block["input_audio"] = inner
 	}
 	return block

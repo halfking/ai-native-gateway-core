@@ -30,15 +30,15 @@ func (s headroomStrategy) Score(ctx context.Context, c provider.Candidate, _ Str
 		return 0.5, nil
 	}
 	// calculateHeadroom 返回 [0,1]，越大越好。lower=better → 1-headroom。
-	h := calculateHeadroom(c)
+	h := calculateHeadroom(c, s.r)
 	if h < 0 {
 		h = 0
 	}
 	if h > 1 {
 		h = 1
 	}
-	// 若 ctx 里有 limiter，进一步用实时占用修正（与 P2C 一致）。
-	// 这里保守：只用静态 calculateHeadroom，避免 shadow 引入额外副作用。
+	// calculateHeadroom now uses realtime in-flight pressure from s.r.Limiter
+	// (when available), consistent with calculateLoadScore / P2C.
 	return 1.0 - h, nil
 }
 

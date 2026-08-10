@@ -748,11 +748,26 @@ func parseOpenAIFileBlock(block map[string]any) *DocumentBlock {
 	if fd, ok := inner["file_data"].(string); ok {
 		switch {
 		case strings.HasPrefix(fd, "data:"):
+			// RFC 2397 data URI: data:[<mediatype>][;base64],<data>
+			// base64-encoded payload.
 			idx := strings.Index(fd, "base64,")
 			if idx >= 0 {
 				src.MediaType = strings.TrimSuffix(strings.TrimPrefix(fd[:idx], "data:"), ";")
 				src.Data = fd[idx+len("base64,"):]
 				src.Type = "base64"
+			} else {
+				// Non-base64 data URI (e.g. "data:text/plain,hello").
+				// Parse "<mediatype>,<payload>" per RFC 2397. Without this
+				// branch src.Type stayed "file" and the block was silently
+				// dropped by the src.Type=="file" guard below.
+				comma := strings.Index(fd, ",")
+				if comma >= 0 {
+					src.MediaType = strings.TrimPrefix(fd[:comma], "data:")
+					src.Data = fd[comma+1:]
+				} else {
+					src.MediaType = strings.TrimPrefix(fd, "data:")
+				}
+				src.Type = "text"
 			}
 		case strings.HasPrefix(fd, "http"):
 			src.Type = "url"
