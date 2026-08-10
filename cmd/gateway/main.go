@@ -2774,6 +2774,9 @@ func main() {
 			if os.Getenv("LLM_GATEWAY_PROBE_QUEUE_ENABLED") == "true" {
 				queueExecutor := bg.NewActiveProbeExecutor(dbConn.Pool(), keyring, fernetKey, epTimeoutMs)
 				probeQueue = bg.NewProbeQueue(dbConn.Pool())
+				if probeStreamHub != nil {
+					probeQueue.SetProbeSink(probeStreamHub)
+				}
 				probeQueueWorker = bg.NewProbeQueueWorker(bg.ProbeQueueWorkerConfig{
 					Queue:        probeQueue,
 					Executor:     queueExecutor,
@@ -2835,6 +2838,9 @@ func main() {
 				// A. credential_selfcheck — 24h/cred daily check
 				// (uses the same system api key as the legacy worker).
 				credentialSelfcheckWorker = bg.NewCredentialSelfcheckWorker(dbConn.Pool(), selfCheckAPIKey, "")
+				if probeStreamHub != nil {
+					credentialSelfcheckWorker.SetProbeSink(probeStreamHub)
+				}
 				credentialSelfcheckWorker.Start(context.Background())
 				slog.Info("CHECKPOINT: credential_selfcheck_worker started")
 
@@ -2847,6 +2853,9 @@ func main() {
 				nodeProbeWorker.SetStateObserver(stateManager)
 				nodeProbeWorker.SetStateProvider(stateManager)
 				nodeProbeWorker.SetEmitter(newProbeEmitter())
+				if probeStreamHub != nil {
+					nodeProbeWorker.SetProbeSink(probeStreamHub)
+				}
 				nodeProbeWorker.SetInvalidateCandidateCache(provider.InvalidateCandidateCacheForCredential)
 				if routingExec != nil && routingExec.Circuit != nil {
 					nodeProbeWorker.SetCircuitRecovery(routingExec.Circuit.RecordSuccess)
@@ -3029,6 +3038,9 @@ func main() {
 			nodeProbeWorker = bg.NewNodeProbeWorker(dbConn.Pool(), fernetKey, keyring, selfCheckAPIKey, "", upClient.Proxy().ProxyFunc())
 			nodeProbeWorker.SetNodeStateSink(ursmV2ProbeSink{manager: ursmV2Mgr})
 			nodeProbeWorker.SetEmitter(newProbeEmitter())
+			if probeStreamHub != nil {
+				nodeProbeWorker.SetProbeSink(probeStreamHub)
+			}
 			nodeProbeWorker.SetInvalidateCandidateCache(provider.InvalidateCandidateCacheForCredential)
 			if routingExec != nil && routingExec.Circuit != nil {
 				nodeProbeWorker.SetCircuitRecovery(routingExec.Circuit.RecordSuccess)

@@ -139,6 +139,12 @@ type NodeProbeWorker struct {
 	// back to ctx-driven 503.
 	stateProvider credentialstate.StateProvider
 	emitter       *ActiveProbeEmitter
+	// probeSink (2026-08-11) mirrors the node-probe lifecycle (submitted /
+	// in-flight) to the self-check SSE stream. The terminal completed/failed
+	// transition is already covered by ActiveProbeEmitter.publishSink; this
+	// sink covers the earlier lifecycle stages so the 自检 tab shows the
+	// pending → running → done progression. Optional — nil is a no-op.
+	probeSink ProbeEventSink
 
 	// Candidate cache invalidation keeps a direct probe result visible to the
 	// next routing decision instead of waiting for the provider cache TTL.
@@ -203,6 +209,16 @@ func (w *NodeProbeWorker) SetStateProvider(provider credentialstate.StateProvide
 func (w *NodeProbeWorker) SetEmitter(emitter *ActiveProbeEmitter) {
 	if w != nil {
 		w.emitter = emitter
+	}
+}
+
+// SetProbeSink wires the self-check SSE sink so the node-probe lifecycle
+// (submitted / in-flight stages) is mirrored to the 自检 tab. The terminal
+// completed/failed transition is emitted by the ActiveProbeEmitter; this sink
+// covers the earlier stages so the queue progression is visible. Optional.
+func (w *NodeProbeWorker) SetProbeSink(sink ProbeEventSink) {
+	if w != nil {
+		w.probeSink = sink
 	}
 }
 
@@ -499,6 +515,31 @@ func (w *NodeProbeWorker) Submit(credID int, model, tenantID, parentReqID string
 		"credential_id", credID, "model", model,
 		"tenant_id", tenantID, "parent_request_id", parentReqID,
 	)
+	// 2026-08-11: mirror the "probe enqueued" transition to the 自检 SSE
+	// stream so the tab shows the pending task immediately. The triggerKind
+	// (request_failure / no_candidates) is carried as the Reason for context.
+	w.publishProbeEvent(credID, model, "pending", "node_probe", parentReqID, 0)
+}
+
+// publishProbeEvent is the shared hook for node-probe lifecycle events that
+// are NOT the terminal completed/failed (those go through ActiveProbeEmitter).
+// It is best-effort: a nil sink or a publish error never blocks the worker.
+func (w *NodeProbeWorker) publishProbeEvent(credID int, model, status, source, reason string, attempt int) {
+	if w == nil || w.probeSink == nil {
+		return
+	}
+	id := fmt.Sprintf("node_probe:%d:%s", credID, model)
+	w.probeSink.PublishProbeEvent(ProbeStreamEvent{
+		ID:           id,
+		TaskType:     "node_probe",
+		Source:       source,
+		Status:       status,
+		CredentialID: int64(credID),
+		RawModel:     model,
+		Attempt:      attempt,
+		Reason:       reason,
+		TimestampMs:  time.Now().UnixMilli(),
+	})
 }
 
 func nonBlockingWake(ch chan<- struct{}) {
@@ -1094,6 +1135,11 @@ func (w *NodeProbeWorker) runOne(ctx context.Context, credID int, model, trigger
 			"consecutive_failures", state.ConsecutiveFailures,
 			"max_attempts", nodeProbeMaxAttempts)
 	}
+
+	// 2026-08-11: mirror the "probe now running" transition. This fires
+	// after pickDueAtomically leased the row (the lease is what makes the
+	// probe exclusive across instances), so subscribers see pending→in-flight.
+	w.publishProbeEvent(credID, model, "in-flight", "node_probe", triggerKind, attempt)
 
 	// Round 1: direct upstream
 	direct := w.probeDirect(ctx, credID, model)

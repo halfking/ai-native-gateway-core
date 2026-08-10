@@ -107,10 +107,43 @@ type CredentialSelfcheckWorker struct {
 	stopOnce  sync.Once
 	startOnce sync.Once
 
+	// probeSink (2026-08-11) mirrors the per-credential daily self-check
+	// lifecycle to the 自检 SSE stream. This worker has no ActiveProbeEmitter
+	// (it does not go through the telemetry path), so it publishes both the
+	// started and completed/failed transitions directly. Optional — nil no-op.
+	probeSink ProbeEventSink
+
 	// rng is concurrency-safe (rand.Rand with mutex) so model fallback
 	// selection on a never-used credential can pick uniformly.
 	rng   *rand.Rand
 	rngMu sync.Mutex
+}
+
+// SetProbeSink wires the self-check SSE sink. The per-credential daily
+// self-check is scheduled (not request-triggered), so published events carry
+// Scheduled=true so the 自检 tab can distinguish them from on-demand probes.
+func (w *CredentialSelfcheckWorker) SetProbeSink(sink ProbeEventSink) {
+	if w != nil {
+		w.probeSink = sink
+	}
+}
+
+// publishSelfcheck is the shared hook for the daily self-check lifecycle.
+// Best-effort: a nil sink never blocks the worker.
+func (w *CredentialSelfcheckWorker) publishSelfcheck(credentialID int, status string) {
+	if w == nil || w.probeSink == nil {
+		return
+	}
+	w.probeSink.PublishProbeEvent(ProbeStreamEvent{
+		ID:           fmt.Sprintf("selfcheck:%d:%d", credentialID, time.Now().UnixNano()),
+		TaskType:     "selfcheck",
+		Source:       "selfcheck",
+		Status:       status,
+		CredentialID: int64(credentialID),
+		Scheduled:    true,
+		Reason:       "daily_selfcheck",
+		TimestampMs:  time.Now().UnixMilli(),
+	})
 }
 
 // NewCredentialSelfcheckWorker constructs the worker.  baseURL="" picks
@@ -309,6 +342,8 @@ func (w *CredentialSelfcheckWorker) runOne(ctx context.Context, credentialID int
 	if err != nil {
 		return fmt.Errorf("insert run: %w", err)
 	}
+	// 2026-08-11: mirror the "daily self-check now running" transition.
+	w.publishSelfcheck(credentialID, "in-flight")
 
 	var (
 		success       bool
@@ -386,6 +421,13 @@ func (w *CredentialSelfcheckWorker) runOne(ctx context.Context, credentialID int
 		slog.Warn("credential_selfcheck: failed to audit to system_probe_runs (non-blocking)",
 			"credential_id", credentialID, "error", err)
 	}
+
+	// 2026-08-11: mirror the terminal transition. success/partial → ok, failed → fail.
+	terminalStatus := "ok"
+	if status == "failed" {
+		terminalStatus = "fail"
+	}
+	w.publishSelfcheck(credentialID, terminalStatus)
 
 	return nil
 }
