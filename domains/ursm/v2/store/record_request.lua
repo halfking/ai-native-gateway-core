@@ -15,6 +15,7 @@
 -- ARGV[10] = cool_seconds (default 300 = 5min)
 -- ARGV[11] = fail_streak_limit (default 3)
 -- ARGV[12] = dedup enabled ("1"|"0")
+-- ARGV[13] = billing_mode (optional; "free" enables transient tolerance below)
 
 local node_key = KEYS[1]
 local w1 = KEYS[2]
@@ -33,6 +34,25 @@ local admin_hold_arg = ARGV[9]
 local cool_seconds = tonumber(ARGV[10]) or 300
 local fail_streak_limit = tonumber(ARGV[11]) or 3
 local dedup_enabled = ARGV[12] == "1"
+local billing_mode = ARGV[13] or ""
+
+-- Free-billing transient tolerance (2026-08-10): a free-tier credential
+-- failing on infra noise (timeout/rate_limit/upstream_down/empty_response/
+-- stream_timeout/generic "transient") must not be hard-disabled the same
+-- way a paid credential is. This set mirrors
+-- domains/ursm/v2/reducer/reducer.go's transientErrors map so the (dead,
+-- pending-migration) pure reducer and this live script agree on the
+-- policy. Permanent errors (auth/auth_revoked/model_not_found/
+-- quota_permanent) and all non-free billing modes are unaffected.
+local transient_kinds = {
+  rate_limit = true,
+  timeout = true,
+  stream_timeout = true,
+  upstream_down = true,
+  empty_response = true,
+  transient = true,
+}
+local free_transient = (billing_mode == "free") and (transient_kinds[err_kind] == true)
 
 -- M3 (2026-07-28): read manual_hold INSIDE the script so the short-circuit
 -- observes the live value at write time. Eliminates the prior TOCTOU race
@@ -122,8 +142,12 @@ else
     local new_streak = redis.call("HINCRBY", node_key, "fail_streak", 1)
     new_streak = tonumber(new_streak)
 
-    -- Check if should disable
-    if new_streak >= fail_streak_limit then
+    -- Check if should disable. Free-tier credentials failing on transient
+    -- infra noise (see transient_kinds above) are tolerated: fail_streak
+    -- and failure_count still accumulate (visible for observability/
+    -- scoring), but the node is not hard-disabled the way a paid
+    -- credential would be. This mirrors reducer.go's soft-demote path.
+    if new_streak >= fail_streak_limit and not free_transient then
       local new_cool_seconds = cool_seconds
       redis.call("HSET", node_key,
         "disabled", "1",
@@ -131,6 +155,8 @@ else
         "cool_until_ms", tostring(now_ms + (new_cool_seconds * 1000)),
         "disable_count", tostring(disable_count + 1),
         "disabled_reason", string.format("fail_streak_%d", new_streak))
+    elseif new_streak >= fail_streak_limit and free_transient then
+      redis.call("HSET", node_key, "disabled_reason", "free_transient_tolerated")
     end
   end
 
