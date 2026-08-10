@@ -152,6 +152,10 @@ type NodeProbeWorker struct {
 	// recordCircuitSuccess closes the in-memory breaker as soon as the direct
 	// provider probe confirms recovery.
 	recordCircuitSuccess func(providerID, credentialID int)
+	// modelQualityTrigger (2026-08-11) requests an on-demand model-IQ re-test
+	// for a node whose probe has failed repeatedly (suspicious-action trigger).
+	// nil = disabled. Set via SetModelQualityTrigger.
+	modelQualityTrigger func(credentialID int, rawModel string, consecutiveFailures int)
 
 	stopCh   chan struct{}
 	stopOnce sync.Once
@@ -234,6 +238,19 @@ func (w *NodeProbeWorker) SetInvalidateCandidateCache(fn func(credentialID int))
 func (w *NodeProbeWorker) SetCircuitRecovery(fn func(providerID, credentialID int)) {
 	if w != nil {
 		w.recordCircuitSuccess = fn
+	}
+}
+
+// SetModelQualityTrigger wires an optional callback invoked when a node probe
+// fails repeatedly (consecutive_failures reaches nodeProbeMaxAttempts). The
+// gateway uses this to request an on-demand model-IQ re-test for the failing
+// node (a "suspicious action" trigger, see docs/model-iq/01-design.md §3.4).
+// The callback receives (credentialID, rawModel, consecutiveFailures) and must
+// be safe to call from the probe goroutine (best-effort; the receiver should
+// run the actual test async and log/swallow errors). nil disables the hook.
+func (w *NodeProbeWorker) SetModelQualityTrigger(fn func(credentialID int, rawModel string, consecutiveFailures int)) {
+	if w != nil {
+		w.modelQualityTrigger = fn
 	}
 }
 
@@ -1287,6 +1304,16 @@ func (w *NodeProbeWorker) runOne(ctx context.Context, credID int, model, trigger
 			WHERE credential_id = $1 AND raw_model_name = $2
 		`, credID, model, attempt, nextRetryAt, nextSec,
 			direct.ok, gw.ok, firstErrCode(direct, gw), firstErrDetail(direct, gw))
+
+		// 2026-08-11: suspicious-action hook. When a node has failed 2+ times
+		// in a row (the same consecutive_threshold the active_probe submitter
+		// uses), request an on-demand model-IQ re-test so the latest IQ value
+		// reflects the degraded node. Best-effort, fire-and-forget; the
+		// receiver runs the test async and swallows errors. See
+		// docs/model-iq/01-design.md §3.4.
+		if w.modelQualityTrigger != nil && attempt >= 2 {
+			w.modelQualityTrigger(credID, model, attempt)
+		}
 	}
 
 	// Persist audit row.

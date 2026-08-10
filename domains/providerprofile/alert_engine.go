@@ -27,6 +27,13 @@ type AlertEngine struct {
 	actor    CredentialActor
 	cfg      AlertConfig
 	now      func() time.Time
+	// onAlert (2026-08-11) is an optional callback fired when a quality
+	// degradation alert triggers (score_drop / trend_drop / dimension_low).
+	// The gateway uses it to request model-IQ re-tests for the credential's
+	// nodes (a "suspicious action" trigger, see docs/model-iq/01-design.md §3.4).
+	// nil = disabled. Best-effort: errors from the handler are logged, not
+	// propagated, so alert evaluation stays robust.
+	onAlert func(ctx context.Context, credentialID, providerID int64, alertType AlertType)
 }
 
 // NewAlertEngine 创建告警引擎
@@ -36,6 +43,13 @@ func NewAlertEngine(profiles ProfileSource, alerts AlertStore, actor CredentialA
 
 // SetClock 注入时钟（测试用）
 func (e *AlertEngine) SetClock(f func() time.Time) { e.now = f }
+
+// SetAlertHandler wires an optional handler invoked when a quality-degradation
+// alert (score_drop / trend_drop / dimension_low) is recorded. It is the hook
+// the gateway uses to trigger model-IQ re-tests. nil disables the hook.
+func (e *AlertEngine) SetAlertHandler(fn func(ctx context.Context, credentialID, providerID int64, alertType AlertType)) {
+	e.onAlert = fn
+}
 
 // EvaluateAll 对所有活跃凭证评估。credentialIDs 由调用方传入（来自 GatewayCredentialLister）。
 func (e *AlertEngine) EvaluateAll(ctx context.Context, credentialIDs []int64) []EvaluateResult {
@@ -156,7 +170,12 @@ func (e *AlertEngine) EvaluateCredential(ctx context.Context, credentialID int64
 		if err := e.alerts.SaveIfNew(ctx, &a); err != nil {
 			return res, fmt.Errorf("save alert: %w", err)
 		}
-
+		// 2026-08-11: notify the model-IQ "suspicious action" handler for
+		// quality-degradation alerts so it can re-test the credential's nodes.
+		// The handler is best-effort and must not panic (it logs its own errors).
+		if e.onAlert != nil {
+			e.onAlert(ctx, credentialID, providerID, a.Type)
+		}
 	}
 
 	return res, nil
