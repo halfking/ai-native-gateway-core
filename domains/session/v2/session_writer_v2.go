@@ -316,6 +316,13 @@ func (w *SessionWriterV2) Write(ctx context.Context, req *ProcessedRequest) erro
 		AttachmentCount:      attachmentCount,
 		AttachmentTotalBytes: attachmentTotalBytes,
 		MultimodalTypes:      req.MultimodalTypes,
+
+		// Turn-level title / summary (migration 456). Derive deterministic
+		// previews from the new messages in this turn so the admin turns-list
+		// UI shows something useful without waiting for the async LLM
+		// summarizer. summarizeMessages already produces a 200-char cap.
+		Title:   summarizeMessages(requestDelta),
+		Summary: summarizeMessages(req.ResponseBody),
 	}
 
 	// 4. Atomic turn + bodies write (spec §6.2). The transaction and lock were
@@ -593,11 +600,15 @@ func summarizeMessages(messages []Message) string {
 		return ""
 	}
 
-	// Take first message content, truncate to 200 chars
+	// Take first message content, truncate to 200 runes (not bytes) to avoid
+	// cutting UTF-8 sequences in the middle. PostgreSQL text columns enforce
+	// valid UTF-8, so byte-slicing [:200] would panic on insert if the cut
+	// lands inside a multi-byte character.
 	firstMsg := messages[0]
 	content := firstMsg.Content
-	if len(content) > 200 {
-		content = content[:200] + "..."
+	runes := []rune(content)
+	if len(runes) > 200 {
+		content = string(runes[:200]) + "..."
 	}
 
 	if len(messages) > 1 {

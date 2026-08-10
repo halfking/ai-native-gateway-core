@@ -387,6 +387,8 @@ func requiredTagsForTask(task TaskType) []string {
 		return []string{"code", "review", "security"}
 	case TaskIntentClassification:
 		return []string{"classification"}
+	case TaskPlanning:
+		return []string{"reasoning", "planning", "analysis"}
 	case TaskChat:
 		return nil // no specific tags required
 	default:

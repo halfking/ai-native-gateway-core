@@ -100,8 +100,11 @@ func TestBuildTurnsSessionWhere(t *testing.T) {
 		"sd.owner_user = $6",
 		"(sd.client_id = $7 OR sd.application_code = $8 OR s.client_type = $9)",
 		"ss.user_tags && $10",
-		"ILIKE '%'||$11||'%'",
-		"(s.updated_at, s.session_id) < ($14, $15)",
+		// search now matches title/topic/intent/summary → 4 placeholders $11..$14,
+		// cursor follows at $15/$16 (was $14/$15 before intent was added).
+		"COALESCE(s.title, st.title, ss.title) ILIKE '%'||$11||'%'",
+		"COALESCE(s.summary, ss.summary) ILIKE '%'||$14||'%'",
+		"(s.updated_at, s.session_id) < ($15, $16)",
 	}
 	for _, c := range checks {
 		if !strings.Contains(where, c) {
@@ -109,11 +112,11 @@ func TestBuildTurnsSessionWhere(t *testing.T) {
 		}
 	}
 
-	if len(args) != 15 {
-		t.Fatalf("expected 15 args, got %d: %v", len(args), args)
+	if len(args) != 16 {
+		t.Fatalf("expected 16 args, got %d: %v", len(args), args)
 	}
-	if nextArg != 16 {
-		t.Fatalf("expected nextArg 16, got %d", nextArg)
+	if nextArg != 17 {
+		t.Fatalf("expected nextArg 17, got %d", nextArg)
 	}
 	if args[len(args)-1] != "gw_s1" {
 		t.Fatalf("expected cursor session id arg, got %v", args[len(args)-1])

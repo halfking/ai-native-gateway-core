@@ -95,7 +95,9 @@ func expectAppendTurn(mock pgxmock.PgxPoolIface, rec TurnRecord, nextTurn int, i
 	//   $27 attachment_count
 	//   $28 attachment_total_bytes
 	//   $29 multimodal_types
-	//   $30 partition_date
+	//   $30 title           (migration 456)
+	//   $31 summary         (migration 456)
+	//   $32 partition_date
 	rowsAffected := int64(1)
 	if !inserted {
 		rowsAffected = 0
@@ -131,6 +133,7 @@ func expectAppendTurn(mock pgxmock.PgxPoolIface, rec TurnRecord, nextTurn int, i
 			rec.LatencyMs, rec.StatusCode, rec.Success, rec.ErrorKind,
 			rec.SourceKind, rec.Quality,
 			rec.AttachmentCount, rec.AttachmentTotalBytes, multimodalArg,
+			rec.Title, rec.Summary,
 			partitionDate,
 		).
 		WillReturnResult(pgxmock.NewResult("INSERT", rowsAffected))
@@ -147,11 +150,13 @@ func expectAppendTurn(mock pgxmock.PgxPoolIface, rec TurnRecord, nextTurn int, i
 		//   $1 session_id $2 tenant_id $3 request_id $4 partition_date
 		//   $5 compression_applied $6 compression_strategy $7 compression_meta
 		//   $8 compression_tokens_saved $9 submit_mode
+		//   $10 title $11 summary (migration 456 preview backfill)
 		mock.ExpectExec("UPDATE gateway.session_turns").
 			WithArgs(
 				rec.SessionID, rec.TenantID, rec.RequestID, partitionDate,
 				rec.CompressionApplied, rec.CompressionStrategy, compressionMetaStr,
 				rec.TokensSaved, rec.SubmitMode,
+				rec.Title, rec.Summary,
 			).
 			WillReturnResult(pgxmock.NewResult("UPDATE", 1))
 	}

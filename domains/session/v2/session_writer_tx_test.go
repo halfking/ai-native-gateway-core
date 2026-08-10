@@ -164,7 +164,7 @@ func TestWrite_LoadsPreviousOutboundForRequestDelta(t *testing.T) {
 		WithArgs(pgxmock.AnyArg(), pgxmock.AnyArg()).
 		WillReturnRows(pgxmock.NewRows([]string{"turn_no"}).AddRow(2))
 	mock.ExpectExec("INSERT INTO gateway.session_turns").
-		WithArgs(anyArgs(30)...).
+		WithArgs(anyArgs(32)...).
 		WillReturnResult(pgxmock.NewResult("INSERT", 1))
 
 	bodyArgs := anyArgs(11)
@@ -199,7 +199,7 @@ func TestWrite_TurnAndBodiesAreAtomic_RollbackOnBodiesFailure(t *testing.T) {
 		WithArgs(pgxmock.AnyArg(), pgxmock.AnyArg()).
 		WillReturnRows(pgxmock.NewRows([]string{"turn_no"}).AddRow(1))
 	mock.ExpectExec("INSERT INTO gateway.session_turns").
-		WithArgs(anyArgs(30)...).
+		WithArgs(anyArgs(32)...).
 		WillReturnResult(pgxmock.NewResult("INSERT", 1))
 
 	// 4. WriteBodiesInTx FAILS — simulate a DB error on the bodies INSERT.
@@ -237,7 +237,7 @@ func TestWrite_TurnAndBodiesAreAtomic_CommitOnSuccess(t *testing.T) {
 		WithArgs(pgxmock.AnyArg(), pgxmock.AnyArg()).
 		WillReturnRows(pgxmock.NewRows([]string{"turn_no"}).AddRow(1))
 	mock.ExpectExec("INSERT INTO gateway.session_turns").
-		WithArgs(anyArgs(30)...).
+		WithArgs(anyArgs(32)...).
 		WillReturnResult(pgxmock.NewResult("INSERT", 1))
 
 	// 4. WriteBodiesInTx succeeds.
@@ -336,7 +336,7 @@ func TestWrite_AggregateGoroutineManagedByLifecycle(t *testing.T) {
 		WithArgs(pgxmock.AnyArg(), pgxmock.AnyArg()).
 		WillReturnRows(pgxmock.NewRows([]string{"turn_no"}).AddRow(1))
 	mock.ExpectExec("INSERT INTO gateway.session_turns").
-		WithArgs(anyArgs(30)...).
+		WithArgs(anyArgs(32)...).
 		WillReturnResult(pgxmock.NewResult("INSERT", 1))
 	mock.ExpectExec("INSERT INTO gateway.session_bodies").
 		WithArgs(anyArgs(11)...).
