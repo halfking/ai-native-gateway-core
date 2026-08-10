@@ -695,6 +695,12 @@ type ProbeQueueTaskRow struct {
 	ResultLatencyMs  *int         `json:"result_latency_ms,omitempty"`
 	ResultHTTPStatus *int         `json:"result_http_status,omitempty"`
 	UpdatedAt        sql.NullTime `json:"updated_at,omitempty"`
+	// Source (2026-08-10, fix/selfcheck-queue-and-recovery) labels which
+	// queue produced this row so the frontend can badge it distinctly.
+	// This is the integrity-probe queue (credential_probe_queue), fed by
+	// IntegrityProbePlanner — as opposed to the error-triggered
+	// NodeProbeWorker rows returned by handleProbeNodeTasks below.
+	Source string `json:"source"`
 }
 
 func (h *Handler) handleProbeQueueTasks(w http.ResponseWriter, r *http.Request) {
@@ -708,8 +714,26 @@ func (h *Handler) handleProbeQueueTasks(w http.ResponseWriter, r *http.Request) 
 			limit = n
 		}
 	}
+	tasks, err := queryProbeQueueTasks(r.Context(), h.db, limit)
+	if err != nil {
+		slog.Error("probe dashboard queue-tasks query failed", "error", err)
+		writeError(w, http.StatusInternalServerError, "internal server error")
+		return
+	}
 
-	rows, err := h.db.Query(r.Context(), `
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]interface{}{
+		"tasks": tasks,
+		"total": len(tasks),
+	})
+}
+
+// queryProbeQueueTasks is the pgxQueryer-parameterized core of
+// handleProbeQueueTasks, extracted so admin/probe_dashboard_test.go can
+// drive it against a pgxmock pool without needing an exported
+// *pgxpool.Pool-typed constructor on Handler.
+func queryProbeQueueTasks(ctx context.Context, db pgxQueryer, limit int) ([]ProbeQueueTaskRow, error) {
+	rows, err := db.Query(ctx, `
 		SELECT
 			q.id, q.credential_id, q.provider_id,
 			COALESCE(p.display_name, ''),
@@ -744,9 +768,7 @@ func (h *Handler) handleProbeQueueTasks(w http.ResponseWriter, r *http.Request) 
 		LIMIT $1
 	`, limit)
 	if err != nil {
-		slog.Error("probe dashboard db query failed", "error", err)
-		writeError(w, http.StatusInternalServerError, "internal server error")
-		return
+		return nil, err
 	}
 	defer rows.Close()
 
@@ -759,9 +781,7 @@ func (h *Handler) handleProbeQueueTasks(w http.ResponseWriter, r *http.Request) 
 			&t.RawModel, &t.StandardizedName, &t.Status, &t.Attempt, &t.Priority, &t.ReasonCode,
 			&t.NextRunAt, &lat, &httpStatus, &t.UpdatedAt,
 		); err != nil {
-			slog.Error("probe dashboard scan failed", "error", err)
-			writeError(w, http.StatusInternalServerError, "internal server error")
-			return
+			return nil, err
 		}
 		if lat.Valid {
 			v := int(lat.Int32)
@@ -771,7 +791,65 @@ func (h *Handler) handleProbeQueueTasks(w http.ResponseWriter, r *http.Request) 
 			v := int(httpStatus.Int32)
 			t.ResultHTTPStatus = &v
 		}
+		t.Source = "integrity"
 		tasks = append(tasks, t)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return tasks, nil
+}
+
+// ── Node probe tasks (2026-08-10, fix/selfcheck-queue-and-recovery) ────
+//
+// handleProbeQueueTasks above only sees credential_probe_queue rows (the
+// integrity-probe queue, fed by IntegrityProbePlanner every ~10min). The
+// error-triggered self-heal path — NodeProbeWorker's 7-step backoff ladder
+// (5s→30s→60s→5m→1h→2h→6h) — writes to node_probe_state / node_probe_runs
+// instead, so those retries were invisible in the self-check swimlanes.
+// This endpoint surfaces that queue with the same row shape so the
+// frontend can merge both sources.
+//
+// GET /api/admin/probe/node-tasks?limit=120
+type NodeProbeTaskRow struct {
+	CredentialID        int64      `json:"credential_id"`
+	ProviderID          int64      `json:"provider_id"`
+	ProviderName        string     `json:"provider_name"`
+	ProviderCode        string     `json:"provider_code"`
+	RawModel            string     `json:"raw_model"`
+	StandardizedName    string     `json:"standardized_name"`
+	Status              string     `json:"status"`
+	Attempt             int        `json:"attempt"`
+	ConsecutiveFailures int        `json:"consecutive_failures"`
+	NextRetryAt         *time.Time `json:"next_retry_at,omitempty"`
+	LastDirectOk        *bool      `json:"last_direct_ok,omitempty"`
+	LastGatewayOk       *bool      `json:"last_gateway_ok,omitempty"`
+	LastErrCode         *string    `json:"last_err_code,omitempty"`
+	LastLatencyMs       *int       `json:"last_latency_ms,omitempty"`
+	Paused              bool       `json:"paused"`
+	UpdatedAt           *time.Time `json:"updated_at,omitempty"`
+	// Source is always "node_probe" for this endpoint; mirrors the
+	// ProbeQueueTaskRow.Source label ("integrity") so the frontend can
+	// badge/merge rows from both queues consistently.
+	Source string `json:"source"`
+}
+
+func (h *Handler) handleProbeNodeTasks(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	limit := 120
+	if l := r.URL.Query().Get("limit"); l != "" {
+		if n, err := strconv.Atoi(l); err == nil && n > 0 && n <= 200 {
+			limit = n
+		}
+	}
+	tasks, err := queryProbeNodeTasks(r.Context(), h.db, limit)
+	if err != nil {
+		slog.Error("probe dashboard node-tasks query failed", "error", err)
+		writeError(w, http.StatusInternalServerError, "internal server error")
+		return
 	}
 
 	w.Header().Set("Content-Type", "application/json")
@@ -779,6 +857,119 @@ func (h *Handler) handleProbeQueueTasks(w http.ResponseWriter, r *http.Request) 
 		"tasks": tasks,
 		"total": len(tasks),
 	})
+}
+
+// queryProbeNodeTasks is the pgxQueryer-parameterized core of
+// handleProbeNodeTasks, extracted for the same reason as
+// queryProbeQueueTasks above — testability against pgxmock without an
+// exported *pgxpool.Pool-typed constructor.
+//
+// Status classification mirrors NodeProbeWorker's own state machine
+// (bg/node_probe.go): a row currently leased by pickDueAtomically is
+// "running"; a row awaiting its next backoff tick is "pending"; a
+// paused row (attempt cap reached) is "paused".
+func queryProbeNodeTasks(ctx context.Context, db pgxQueryer, limit int) ([]NodeProbeTaskRow, error) {
+	rows, err := db.Query(ctx, `
+		SELECT
+			nps.credential_id,
+			COALESCE(c.provider_id, 0),
+			COALESCE(p.display_name, ''),
+			COALESCE(p.code, ''),
+			nps.raw_model_name,
+			COALESCE(NULLIF(pm.standardized_name, ''), NULLIF(mc.canonical_name, ''), nps.raw_model_name, ''),
+			CASE
+				WHEN nps.in_flight_until IS NOT NULL AND nps.in_flight_until > now() THEN 'running'
+				WHEN nps.paused THEN 'paused'
+				ELSE 'pending'
+			END,
+			COALESCE(latest.attempt, 0),
+			nps.consecutive_failures,
+			nps.next_retry_at,
+			nps.last_direct_ok,
+			nps.last_gateway_ok,
+			nps.last_err_code,
+			latest.direct_latency_ms,
+			nps.paused,
+			nps.updated_at
+		FROM node_probe_state nps
+		LEFT JOIN credentials c ON c.id = nps.credential_id
+		LEFT JOIN providers p ON p.id = c.provider_id
+		LEFT JOIN provider_models pm
+		       ON pm.provider_id = c.provider_id
+		      AND lower(pm.raw_model_name) = lower(nps.raw_model_name)
+		LEFT JOIN models_canonical mc ON mc.id = pm.canonical_id
+		LEFT JOIN LATERAL (
+			SELECT npr.attempt, npr.direct_latency_ms
+			FROM node_probe_runs npr
+			WHERE npr.credential_id = nps.credential_id
+			  AND npr.raw_model_name = nps.raw_model_name
+			ORDER BY npr.id DESC
+			LIMIT 1
+		) latest ON TRUE
+		WHERE nps.in_flight_until > now()
+		   OR (NOT nps.paused AND nps.next_retry_at IS NOT NULL)
+		   OR nps.paused
+		ORDER BY
+			CASE
+				WHEN nps.in_flight_until IS NOT NULL AND nps.in_flight_until > now() THEN 0
+				WHEN NOT nps.paused THEN 1
+				ELSE 2
+			END,
+			nps.next_retry_at NULLS LAST,
+			nps.updated_at DESC NULLS LAST
+		LIMIT $1
+	`, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	tasks := []NodeProbeTaskRow{}
+	for rows.Next() {
+		var t NodeProbeTaskRow
+		var nextRetryAt, updatedAt sql.NullTime
+		var lastErrCode sql.NullString
+		var lastLatencyMs sql.NullInt32
+		var lastDirectOk, lastGatewayOk sql.NullBool
+		if err := rows.Scan(
+			&t.CredentialID, &t.ProviderID, &t.ProviderName, &t.ProviderCode,
+			&t.RawModel, &t.StandardizedName, &t.Status, &t.Attempt, &t.ConsecutiveFailures,
+			&nextRetryAt, &lastDirectOk, &lastGatewayOk, &lastErrCode, &lastLatencyMs,
+			&t.Paused, &updatedAt,
+		); err != nil {
+			return nil, err
+		}
+		if nextRetryAt.Valid {
+			v := nextRetryAt.Time
+			t.NextRetryAt = &v
+		}
+		if lastDirectOk.Valid {
+			v := lastDirectOk.Bool
+			t.LastDirectOk = &v
+		}
+		if lastGatewayOk.Valid {
+			v := lastGatewayOk.Bool
+			t.LastGatewayOk = &v
+		}
+		if lastErrCode.Valid {
+			v := lastErrCode.String
+			t.LastErrCode = &v
+		}
+		if lastLatencyMs.Valid {
+			v := int(lastLatencyMs.Int32)
+			t.LastLatencyMs = &v
+		}
+		if updatedAt.Valid {
+			v := updatedAt.Time
+			t.UpdatedAt = &v
+		}
+		t.Source = "node_probe"
+		tasks = append(tasks, t)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return tasks, nil
 }
 
 // ── Register Routes ─────────────────────────────────────────────────────
@@ -790,6 +981,7 @@ func (h *Handler) RegisterProbeDashboardRoutes(mux *http.ServeMux, adminWrap fun
 	mux.HandleFunc("/api/admin/probe/queue-snapshot", adminWrap(h.handleProbeQueueSnapshot))
 	mux.HandleFunc("/api/admin/probe/provider-latency", adminWrap(h.handleProviderLatency))
 	mux.HandleFunc("/api/admin/probe/queue-tasks", adminWrap(h.handleProbeQueueTasks))
+	mux.HandleFunc("/api/admin/probe/node-tasks", adminWrap(h.handleProbeNodeTasks))
 	mux.HandleFunc("/api/admin/probe/system-health", adminWrap(h.handleProbeSystemHealth))
 	mux.HandleFunc("/api/admin/probe/model/", adminWrap(h.handleProbeModelRoutes))
 	mux.HandleFunc("/api/admin/probe/availability-timeline", adminWrap(h.handleProbeAvailabilityTimeline))
