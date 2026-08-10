@@ -348,6 +348,11 @@ type sessionSnapshotV2 struct {
 }
 
 // serveSessionSnapshot 返回会话快照（取自 gateway.sessions）。
+//
+// 标题/摘要采用与 GET /api/admin/turns/sessions 一致的级联回退：
+// gateway.sessions → session_titles（auto_title_generator）→
+// session_summaries（auto_summary_generator），否则会话详情页顶部的摘要栏
+// 在 instant-summary 端点被手动触发前会一直显示空白。
 func (h *Handler) serveSessionSnapshot(w http.ResponseWriter, r *http.Request, sessionID string) {
 	if h.db == nil {
 		writeError(w, http.StatusServiceUnavailable, "database not configured")
@@ -356,12 +361,21 @@ func (h *Handler) serveSessionSnapshot(w http.ResponseWriter, r *http.Request, s
 	tenantID := tenantFromQueryOrContext(r)
 	var snap sessionSnapshotV2
 	err := h.db.QueryRow(r.Context(), `
-		SELECT session_id, tenant_id, COALESCE(title,''), COALESCE(summary,''),
-		       summary_generated_at, total_turns, total_cost_usd,
-		       last_model, last_provider
-		FROM gateway.sessions
-		WHERE session_id=$1 AND tenant_id=$2
-		ORDER BY partition_date DESC LIMIT 1`,
+		SELECT s.session_id, s.tenant_id,
+		       COALESCE(NULLIF(s.title, ''), st.title, ss.title, '') AS title,
+		       COALESCE(NULLIF(s.summary, ''), ss.summary, '') AS summary,
+		       s.summary_generated_at, s.total_turns, s.total_cost_usd,
+		       s.last_model, s.last_provider
+		FROM gateway.sessions s
+		LEFT JOIN session_summaries ss
+			ON ss.session_key = s.session_id AND ss.tenant_id = s.tenant_id
+		LEFT JOIN LATERAL (
+			SELECT title FROM session_titles
+			WHERE scoped_session_id = s.session_id
+			ORDER BY generated_at DESC LIMIT 1
+		) st ON true
+		WHERE s.session_id=$1 AND s.tenant_id=$2
+		ORDER BY s.partition_date DESC LIMIT 1`,
 		sessionID, tenantID).Scan(
 		&snap.SessionID, &snap.TenantID, &snap.Title, &snap.Summary,
 		&snap.SummaryGeneratedAt, &snap.TotalTurns, &snap.TotalCostUSD,
