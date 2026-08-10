@@ -1,7 +1,8 @@
 <script setup lang="ts">
-import { ref, reactive, computed, onBeforeUnmount, watch } from 'vue'
+import { ref, reactive, computed, onBeforeUnmount, watch, onMounted, nextTick } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useFormat } from '../../i18n/useFormat'
+import { useChart, createTimeSeriesConfig } from '../../composables/useChart'
 import {
   getProviderModels,
   refreshProviderModels,
@@ -110,6 +111,53 @@ const iqHistory = ref<IQHistoryPoint[]>([])
 const iqHistoryLoading = ref(false)
 const iqTestLoading = ref(false)
 const iqTestError = ref('')
+
+// IQ history trend chart (chart.js via useChart). History arrives newest-first;
+// reverse for left-to-right time order.
+const iqChartRef = ref<HTMLCanvasElement | null>(null)
+const iqChartLabels = computed(() =>
+  [...iqHistory.value].reverse().map(h => {
+    const d = new Date(h.tested_at)
+    return `${d.getMonth() + 1}/${d.getDate()} ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`
+  }),
+)
+const iqChartConfig = computed(() =>
+  createTimeSeriesConfig('line', iqChartLabels.value, [
+    {
+      label: pm('iqColScore'),
+      data: [...iqHistory.value].reverse().map(h => h.overall_score),
+      borderColor: '#58a6ff',
+      backgroundColor: 'rgba(88,166,255,0.12)',
+      tension: 0.3,
+    },
+    {
+      label: pm('iqColAccuracy'),
+      data: [...iqHistory.value].reverse().map(h => h.accuracy),
+      borderColor: '#3fb950',
+      backgroundColor: 'rgba(63,185,80,0.12)',
+      tension: 0.3,
+    },
+  ], {
+    scales: { y: { beginAtZero: true, max: 100 } },
+    plugins: { legend: { display: true, labels: { boxWidth: 12, font: { size: 11 } } } },
+  }),
+)
+const { initChart: iqInitChart, destroyChart: iqDestroyChart, isDisposed: iqChartDisposed } = useChart(iqChartRef, iqChartConfig)
+let iqChartAlive = true
+async function iqRefreshChart() {
+  if (!iqChartAlive || iqChartDisposed()) return
+  if (!iqHistory.value.length) {
+    iqDestroyChart()
+    return
+  }
+  await nextTick()
+  if (!iqChartAlive || iqChartDisposed()) return
+  iqInitChart()
+}
+watch(iqChartConfig, () => void iqRefreshChart(), { deep: true })
+watch(() => iqHistory.value.length, () => void iqRefreshChart())
+onMounted(() => void iqRefreshChart())
+onBeforeUnmount(() => { iqChartAlive = false; iqDestroyChart() })
 
 function iqBadgeClass(iq: number): string {
   if (iq >= 80) return 'iq-good'
@@ -1052,26 +1100,30 @@ load()
             <div v-if="iqHistoryLoading" class="cell-muted" style="margin-top:8px">{{ pm('iqHistoryLoading') }}</div>
             <div v-else-if="!iqHistory.length" class="cell-muted" style="margin-top:8px">{{ pm('iqHistoryEmpty') }}</div>
             <div v-else class="iq-history" style="margin-top:8px">
-              <table class="data-table iq-history-table">
-                <thead>
-                  <tr>
-                    <th>{{ pm('iqColTestedAt') }}</th>
-                    <th>{{ pm('iqColScore') }}</th>
-                    <th>{{ pm('iqColGrade') }}</th>
-                    <th>{{ pm('iqColAccuracy') }}</th>
-                    <th>{{ pm('iqColTrigger') }}</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  <tr v-for="(h, i) in iqHistory" :key="i">
-                    <td>{{ timeText(h.tested_at) }}</td>
-                    <td><span class="iq-cell" :class="iqBadgeClass(h.overall_score)">{{ h.overall_score.toFixed(1) }}</span></td>
-                    <td>{{ h.grade || '—' }}</td>
-                    <td>{{ h.accuracy != null ? h.accuracy.toFixed(1) + '%' : '—' }}</td>
-                    <td><span class="badge" :class="h.trigger_kind === 'on_demand' ? 'badge-blue' : h.trigger_kind === 'anomaly' ? 'badge-red' : ''">{{ h.trigger_kind }}</span></td>
-                  </tr>
-                </tbody>
-              </table>
+              <canvas ref="iqChartRef" class="iq-history-chart"></canvas>
+              <details class="iq-history-details">
+                <summary>{{ pm('iqHistoryDetails') }}</summary>
+                <table class="data-table iq-history-table">
+                  <thead>
+                    <tr>
+                      <th>{{ pm('iqColTestedAt') }}</th>
+                      <th>{{ pm('iqColScore') }}</th>
+                      <th>{{ pm('iqColGrade') }}</th>
+                      <th>{{ pm('iqColAccuracy') }}</th>
+                      <th>{{ pm('iqColTrigger') }}</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <tr v-for="(h, i) in iqHistory" :key="i">
+                      <td>{{ timeText(h.tested_at) }}</td>
+                      <td><span class="iq-cell" :class="iqBadgeClass(h.overall_score)">{{ h.overall_score.toFixed(1) }}</span></td>
+                      <td>{{ h.grade || '—' }}</td>
+                      <td>{{ h.accuracy != null ? h.accuracy.toFixed(1) + '%' : '—' }}</td>
+                      <td><span class="badge" :class="h.trigger_kind === 'on_demand' ? 'badge-blue' : h.trigger_kind === 'anomaly' ? 'badge-red' : ''">{{ h.trigger_kind }}</span></td>
+                    </tr>
+                  </tbody>
+                </table>
+              </details>
             </div>
           </div>
 
@@ -1201,6 +1253,21 @@ load()
 }
 .iq-history-table th {
   font-weight: 500;
+}
+.iq-history-chart {
+  width: 100% !important;
+  height: 200px !important;
+  margin-bottom: 8px;
+}
+.iq-history-details {
+  margin-top: 4px;
+}
+.iq-history-details > summary {
+  cursor: pointer;
+  font-size: 11px;
+  color: var(--muted);
+  user-select: none;
+  margin-bottom: 6px;
 }
 .drawer-section-title {
   display: flex;

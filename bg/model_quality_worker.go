@@ -121,6 +121,33 @@ func (w *ModelQualityWorker) TestSingleNode(ctx context.Context, credentialID in
 	return score, nil
 }
 
+// TriggerNodeIQTest fires an async, best-effort IQ re-test for one node. It is
+// the entry point for the "suspicious action" hook (e.g. NodeProbeWorker
+// consecutive-failure escalation, provider-profile score_drop alert): it spins
+// up a detached goroutine so the caller (the probe / alert loop) is never
+// blocked by the 50-question test. No-op if the worker has no node source.
+// Errors are logged, never returned.
+func (w *ModelQualityWorker) TriggerNodeIQTest(credentialID int, rawModel string) {
+	w.mu.RLock()
+	src := w.nodeSource
+	w.mu.RUnlock()
+	if src == nil {
+		return
+	}
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+		defer cancel()
+		score, err := w.TestSingleNode(ctx, credentialID, rawModel)
+		if err != nil {
+			slog.Info("model_iq: anomaly-triggered node test failed (non-fatal)",
+				"credential_id", credentialID, "model", rawModel, "error", err)
+			return
+		}
+		slog.Info("model_iq: anomaly-triggered node test done",
+			"credential_id", credentialID, "model", rawModel, "overall_score", score.OverallScore)
+	}()
+}
+
 // RunPerNodeCheck 手动触发一次"按凭据节点"测试：遍历所有活跃节点，
 // 对每个节点跑一次精简 MMLU，落盘带 CredentialID 的评分。
 // 返回测试的节点数与遇到的第一个错误。

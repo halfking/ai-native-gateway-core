@@ -276,6 +276,7 @@ export default {
     iqTestFailed: '测试失败',
     iqHistoryLoading: '加载历史…',
     iqHistoryEmpty: '暂无测试记录',
+    iqHistoryDetails: '查看明细记录',
     iqColTestedAt: '测试时间',
     iqColScore: '智商',
     iqColGrade: '等级',

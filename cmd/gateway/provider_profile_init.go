@@ -26,6 +26,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/kaixuan/llm-gateway-go/bg"
+	"github.com/kaixuan/llm-gateway-go/domains/providerprofile"
 	"github.com/kaixuan/llm-gateway-go/secret"
 	"github.com/kaixuan/llm-gateway-go/settings"
 )
@@ -36,6 +37,16 @@ type ProviderProfileWorkers struct {
 	aggregator *bg.ProfileAggregator
 	cleaner    *bg.ProfileCleaner
 	alerts     *bg.ProfileAlertWorker
+}
+
+// AlertEngine returns the alert worker's underlying AlertEngine so main.go can
+// inject a handler via SetAlertHandler. Returns nil when the alert worker is
+// absent (e.g. provider profile disabled).
+func (w *ProviderProfileWorkers) AlertEngine() *providerprofile.AlertEngine {
+	if w == nil || w.alerts == nil {
+		return nil
+	}
+	return w.alerts.Engine()
 }
 
 // initProviderProfile initializes the provider profile system.

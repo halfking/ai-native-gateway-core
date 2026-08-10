@@ -65,6 +65,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/domains/integration"                         //nolint:depguard // clientprofile worker wiring
 	"github.com/kaixuan/llm-gateway-go/domains/modelquality"                        //nolint:depguard // 模型质量监控
 	"github.com/kaixuan/llm-gateway-go/domains/notification"                        //nolint:depguard // 审批通知器
+	"github.com/kaixuan/llm-gateway-go/domains/providerprofile"                      //nolint:depguard // 供应商画像告警 handler (AlertType)
 	"github.com/kaixuan/llm-gateway-go/domains/routeincident"                       //nolint:depguard // 2026-07-13 route incident diagnosis (Phase 1)
 	"github.com/kaixuan/llm-gateway-go/domains/routingstate"
 	"github.com/kaixuan/llm-gateway-go/domains/session" //nolint:depguard // historical violation, B1 routing.go CQRS will fix
@@ -2860,6 +2861,14 @@ func main() {
 				if routingExec != nil && routingExec.Circuit != nil {
 					nodeProbeWorker.SetCircuitRecovery(routingExec.Circuit.RecordSuccess)
 				}
+				// 2026-08-11: suspicious-action hook — when a node fails 2+ times
+				// in a row, request an async model-IQ re-test (modelQualityWorker
+				// may be constructed later / be nil if model_quality.enabled=false).
+				nodeProbeWorker.SetModelQualityTrigger(func(credID int, rawModel string, consec int) {
+					if modelQualityWorker != nil {
+						modelQualityWorker.TriggerNodeIQTest(credID, rawModel)
+					}
+				})
 				// 2026-07-17: 同步探测 hold 模式开关。env LLM_GATEWAY_SYNC_NO_CANDIDATE_PROBE
 				// 取值 "0"/"false"/"off" 即关闭（默认开启）。关闭时 executor 走原 fire-and-forget
 				// 路径，503 立即返回。该 kill-switch 用于紧急回滚，无需重新打包。
@@ -3031,6 +3040,49 @@ func main() {
 			}
 		}
 
+		// 2026-08-11: wire the provider-profile alert handler so a quality
+		// degradation alert (score_drop / dimension_low) on a credential
+		// triggers model-IQ re-tests for that credential's nodes — the
+		// "suspicious action" path in docs/model-iq/01-design.md §3.4.
+		// Best-effort: enumerates the credential's routable models and fires
+		// an async IQ re-test for each. No-op when model-quality worker is
+		// absent (e.g. model_quality.enabled=false) or the alert engine is
+		// absent (provider_profile disabled).
+		if modelQualityWorker != nil && profileWorkers != nil {
+			if eng := profileWorkers.AlertEngine(); eng != nil {
+				pool := dbConn.Pool()
+				mqw := modelQualityWorker
+				eng.SetAlertHandler(func(ctx context.Context, credentialID, providerID int64, alertType providerprofile.AlertType) {
+					switch alertType {
+					case providerprofile.AlertTypeScoreDrop,
+						providerprofile.AlertTypeTrendDrop,
+						providerprofile.AlertTypeDimensionLow:
+					default:
+						return // only quality-degradation alerts trigger a re-test
+					}
+					rows, err := pool.Query(ctx, `
+						SELECT DISTINCT pm.raw_model_name
+						FROM credential_model_bindings cmb
+						JOIN provider_models pm ON pm.id = cmb.provider_model_id
+						WHERE cmb.credential_id = $1`, credentialID)
+					if err != nil {
+						return
+					}
+					var models []string
+					for rows.Next() {
+						var m string
+						if err := rows.Scan(&m); err == nil {
+							models = append(models, m)
+						}
+					}
+					rows.Close()
+					for _, m := range models {
+						mqw.TriggerNodeIQTest(int(credentialID), m)
+					}
+				})
+			}
+		}
+
 		// Authoritative URSM v2 has no credentialstate.Manager by design, but
 		// active probes must continue to provide recovery evidence. Start the
 		// worker independently and route its final state through the v2 sink.
@@ -3045,6 +3097,11 @@ func main() {
 			if routingExec != nil && routingExec.Circuit != nil {
 				nodeProbeWorker.SetCircuitRecovery(routingExec.Circuit.RecordSuccess)
 			}
+			nodeProbeWorker.SetModelQualityTrigger(func(credID int, rawModel string, consec int) {
+				if modelQualityWorker != nil {
+					modelQualityWorker.TriggerNodeIQTest(credID, rawModel)
+				}
+			})
 			nodeProbeWorker.Start(context.Background())
 			slog.Info("authoritative URSM v2 node_probe_worker started")
 		}
