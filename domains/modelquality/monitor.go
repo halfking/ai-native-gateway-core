@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"strings"
 	"sync"
 	"time"
 )
@@ -213,6 +214,18 @@ func (m *QualityMonitor) TriggerAnomalyCheck(ctx context.Context, provider strin
 	return m.testModel(ctx, *target, suite, "anomaly:"+reason)
 }
 
+// normalizeTriggerKind maps internal trigger labels to the stable DB enum.
+func normalizeTriggerKind(trigger string) string {
+	switch {
+	case strings.HasPrefix(trigger, "anomaly"):
+		return "anomaly"
+	case trigger == "on_demand":
+		return "on_demand"
+	default:
+		return "scheduled"
+	}
+}
+
 // testModel 测试单个模型
 func (m *QualityMonitor) testModel(ctx context.Context, target ModelTarget, suite *BenchmarkSuite, trigger string) error {
 	// 2026-08-07 audit fix: check ctx.Done() before launching the (potentially
@@ -238,6 +251,10 @@ func (m *QualityMonitor) testModel(ctx context.Context, target ModelTarget, suit
 			"model", displayName, "error", err)
 		return err
 	}
+
+	// The trigger is persisted with the score so the audit history can
+	// distinguish scheduled, manual, and anomaly-triggered runs.
+	report.TriggerKind = normalizeTriggerKind(trigger)
 
 	// 保存报告
 	if err := m.storage.SaveReport(ctx, report); err != nil {

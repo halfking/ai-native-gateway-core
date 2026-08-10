@@ -74,39 +74,44 @@ type TestResult struct {
 type BenchmarkReport struct {
 	ID             string             `json:"id"`
 	BenchmarkType  BenchmarkType      `json:"benchmark_type"`
+	TriggerKind    string             `json:"trigger_kind,omitempty"`
 	ModelName      string             `json:"model_name"`
 	Provider       string             `json:"provider"`
-	CredentialID   int                `json:"credential_id,omitempty"` // 2026-08-10: 直连节点测试时记录的凭据节点ID；0=经网关
+	CredentialID   int                `json:"credential_id,omitempty"`
 	CanonicalModel string             `json:"canonical_model,omitempty"`
-	ProbeKind      ProbeKind          `json:"probe_kind,omitempty"` // 2026-08-10: gateway=经网关 / direct=直连节点 / mock=离线
+	ProbeKind      ProbeKind          `json:"probe_kind,omitempty"`
 	TotalQuestions int                `json:"total_questions"`
 	CorrectCount   int                `json:"correct_count"`
-	Accuracy       float64            `json:"accuracy"`       // 准确率
-	AvgLatency     float64            `json:"avg_latency_ms"` // 平均延迟
-	TotalTokens    int                `json:"total_tokens"`   // 总Token消耗
+	Accuracy       float64            `json:"accuracy"`
+	AvgLatency     float64            `json:"avg_latency_ms"`
+	TotalTokens    int                `json:"total_tokens"`
 	StartTime      time.Time          `json:"start_time"`
 	EndTime        time.Time          `json:"end_time"`
 	Duration       time.Duration      `json:"duration"`
 	Results        []TestResult       `json:"results"`
-	SubjectScores  map[string]float64 `json:"subject_scores"` // 分学科得分
-	Status         string             `json:"status"`         // success/partial/failed
+	SubjectScores  map[string]float64 `json:"subject_scores"`
+	Status         string             `json:"status"`
 	ErrorCount     int                `json:"error_count"`
 }
 
 // QualityScore 质量评分
 type QualityScore struct {
-	ModelName      string    `json:"model_name"`
-	Provider       string    `json:"provider"`
-	CredentialID   int       `json:"credential_id,omitempty"` // 2026-08-10: 凭据节点维度；0=经网关聚合
-	CanonicalModel string    `json:"canonical_model,omitempty"`
-	ProbeKind      ProbeKind `json:"probe_kind,omitempty"` // 2026-08-10: gateway=经网关 / direct=直连节点 / mock=离线
-	Accuracy       float64   `json:"accuracy"`             // 准确率 0-100
-	Latency        float64   `json:"latency_p95"`          // P95延迟
-	Stability      float64   `json:"stability"`            // 稳定性(成功率)
-	OverallScore   float64   `json:"overall_score"`        // 综合评分(智商) 0-100
-	Grade          string    `json:"grade"`                // A+/A/B+/B/C/D/F
-	Timestamp      time.Time `json:"timestamp"`
-	BenchmarkID    string    `json:"benchmark_id"`
+	ModelName      string        `json:"model_name"`
+	Provider       string        `json:"provider"`
+	CredentialID   int           `json:"credential_id,omitempty"`
+	CanonicalModel string        `json:"canonical_model,omitempty"`
+	ProbeKind      ProbeKind     `json:"probe_kind,omitempty"`
+	BenchmarkType  BenchmarkType `json:"benchmark_type,omitempty"`
+	TriggerKind    string        `json:"trigger_kind,omitempty"`
+	TotalQuestions int           `json:"total_questions,omitempty"`
+	CorrectCount   int           `json:"correct_count,omitempty"`
+	Accuracy       float64       `json:"accuracy"`
+	Latency        float64       `json:"latency_p95"`
+	Stability      float64       `json:"stability"`
+	OverallScore   float64       `json:"overall_score"`
+	Grade          string        `json:"grade"`
+	Timestamp      time.Time     `json:"timestamp"`
+	BenchmarkID    string        `json:"benchmark_id"`
 }
 
 // BenchmarkExecutor 基准测试执行器接口
@@ -129,6 +134,10 @@ func (sc *ScoreCalculator) CalculateScore(report *BenchmarkReport) *QualityScore
 		CredentialID:   report.CredentialID,
 		CanonicalModel: report.CanonicalModel,
 		ProbeKind:      report.ProbeKind,
+		BenchmarkType:  report.BenchmarkType,
+		TriggerKind:    report.TriggerKind,
+		TotalQuestions: report.TotalQuestions,
+		CorrectCount:   report.CorrectCount,
 		Accuracy:       report.Accuracy,
 		Timestamp:      time.Now(),
 		BenchmarkID:    report.ID,

@@ -291,7 +291,8 @@ type CredentialNode struct {
 	Label        string // 凭据标签（仅用于展示）
 	BaseURL      string // 该节点 providers.base_url
 	APIKey       string // 解密后的 api key
-	RawModel     string // 该节点上请求体里应使用的 model 名（provider_models.raw_model_name / outbound_model_name）
+	RawModel     string // 该节点请求体里实际使用的 model 名（可能是 outbound_model_name）
+	RawModelName string // provider_models.raw_model_name，作为节点历史记录身份键
 }
 
 // DirectNodeInvoker 直连凭据节点调用器（绕过网关）。

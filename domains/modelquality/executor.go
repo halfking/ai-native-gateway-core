@@ -68,6 +68,7 @@ func (e *DefaultBenchmarkExecutor) Execute(ctx context.Context, modelName string
 	report := &BenchmarkReport{
 		ID:             uuid.New().String(),
 		BenchmarkType:  suite.Type,
+		TriggerKind:    "scheduled",
 		ModelName:      modelName,
 		Provider:       provider,
 		ProbeKind:      inferProbeKind(e.invoker, e.probeKind), // 2026-08-10: 记录调用路径
@@ -288,15 +289,23 @@ func NewNodeInvoker(invoker *DirectNodeInvoker, node CredentialNode, timeout tim
 	return &NodeExecutor{invoker: invoker, node: node, timeout: timeout}
 }
 
+func nodeModelName(node CredentialNode) string {
+	if node.RawModelName != "" {
+		return node.RawModelName
+	}
+	return node.RawModel
+}
+
 // Execute 对该节点执行完整基准测试。
 func (n *NodeExecutor) Execute(ctx context.Context, suite *BenchmarkSuite) (*BenchmarkReport, error) {
 	report := &BenchmarkReport{
 		ID:             uuid.New().String(),
 		BenchmarkType:  suite.Type,
-		ModelName:      n.node.RawModel,
+		TriggerKind:    "scheduled",
+		ModelName:      nodeModelName(n.node),
 		Provider:       n.node.Provider,
 		CredentialID:   n.node.CredentialID,
-		CanonicalModel: n.node.RawModel,
+		CanonicalModel: n.node.RawModelName,
 		ProbeKind:      ProbeKindDirect, // 2026-08-10: 直连节点，绕过网关
 		TotalQuestions: len(suite.Questions),
 		StartTime:      time.Now(),

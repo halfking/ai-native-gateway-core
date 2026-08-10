@@ -87,14 +87,15 @@ func (s *CredentialNodeSource) DiscoverActiveNodes(ctx context.Context) ([]model
 		if outModel != "" {
 			useModel = outModel
 		}
-		nodes = append(nodes, modelquality.CredentialNode{
-			CredentialID: credID,
-			Provider:     providerName,
-			Label:        label,
-			BaseURL:      baseURL,
-			APIKey:       apiKey,
-			RawModel:     useModel,
-		})
+			nodes = append(nodes, modelquality.CredentialNode{
+				CredentialID: credID,
+				Provider:     providerName,
+				Label:        label,
+				BaseURL:      baseURL,
+				APIKey:       apiKey,
+				RawModel:     useModel,
+				RawModelName: rawModel,
+			})
 	}
 	return nodes, rows.Err()
 }
@@ -135,7 +136,10 @@ func (s *CredentialNodeSource) FindNodeByModel(ctx context.Context, credentialID
 		if nodes[i].CredentialID != credentialID {
 			continue
 		}
-		if strings.ToLower(nodes[i].RawModel) == target {
+		// Match on the node identity key (raw_model_name) first, then fall
+		// back to the request model (outbound_model_name) so the operator can
+		// trigger a test from either the displayed raw name or an endpoint ID.
+		if strings.ToLower(nodes[i].RawModelName) == target || strings.ToLower(nodes[i].RawModel) == target {
 			return &nodes[i], nil
 		}
 	}

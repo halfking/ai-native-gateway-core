@@ -88,7 +88,9 @@ func (h *Handler) handleModelIQNodeLatest(w http.ResponseWriter, r *http.Request
 		FROM node_iq_latest n
 		LEFT JOIN credentials c ON c.id = n.credential_id
 		LEFT JOIN providers p ON p.id = c.provider_id
-		LEFT JOIN provider_models pm ON pm.raw_model_name = n.raw_model_name AND pm.provider_id = c.provider_id
+		LEFT JOIN provider_models pm
+		       ON pm.provider_id = c.provider_id
+		      AND lower(pm.raw_model_name) = lower(n.raw_model_name)
 		LEFT JOIN models_canonical mc ON mc.id = pm.canonical_id
 		`+where+`
 		ORDER BY n.overall_score DESC NULLS LAST, n.credential_id`, args...)
@@ -155,7 +157,7 @@ func (h *Handler) handleModelIQHistory(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	rows, err := h.db.Query(r.Context(), `
-		SELECT tested_at, overall_score::float8, COALESCE(grade,''),
+		SELECT COALESCE(tested_at, created_at), overall_score::float8, COALESCE(grade,''),
 		       accuracy::float8, COALESCE(stability::float8,0), COALESCE(latency_p95,0),
 		       probe_kind, trigger_kind, status
 		FROM model_iq_runs
@@ -212,7 +214,10 @@ func (h *Handler) handleModelIQCatalog(w http.ResponseWriter, r *http.Request) {
 		           max(n.overall_score) AS node_max,
 		           min(n.overall_score) AS node_min
 		      FROM node_iq_latest n
-		      JOIN provider_models pm ON pm.raw_model_name = n.raw_model_name
+		      JOIN credentials c ON c.id = n.credential_id
+		      JOIN provider_models pm
+		        ON pm.provider_id = c.provider_id
+		       AND lower(pm.raw_model_name) = lower(n.raw_model_name)
 		     WHERE pm.canonical_id = mc.id
 		) agg ON true
 		WHERE mc.status IN ('active','disabled','deprecated')
