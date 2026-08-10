@@ -148,6 +148,35 @@ func buildDefaultPatterns() []PatternMatch {
 			weight: 0.55,
 			reason: "pattern: typed variable declaration",
 		},
+		// ── 中文编程任务 patterns（补关键词盲区）──────────────────────
+		// 盲区：关键词层有"写一个函数/写一个类/写一段代码"，但"写一个快速排序"
+		// "写一个红黑树""做一个表单组件"不命中任何 code 关键词，落到了 chat。
+		// 用正则精确锁定"动词 + 编程对象"，避免误伤 creative(故事/诗) 和 planning(方案/计划)。
+		//
+		// P1: "写/做/实现 + 编程对象名"（算法/数据结构/组件/接口/服务/中间件）
+		// 命中如"写一个快速排序""做一个表单组件""实现一个 LRU 缓存""写个线程池"。
+		{
+			expr:   `(?:写|做|实现|实现一个|写一个|写个|做个|编写)(?:一个|个|一段|一个简单的|一个完整)?\s*(?:快速排序|冒泡排序|归并排序|拓扑排序|二分查找|红黑树|二叉树|二叉搜索树|b\s*树|b\+|avl|图|哈希表|散列表|链表|栈|队列|堆|trie|布隆过滤器|线程池|连接池|内存池|缓存|lru|限流器|熔断器|负载均衡|中间件|路由|解释器|编译器|虚拟机|区块链|加密|解密|签名|鉴权|认证|授权|登录|注册|表单组件|对话框|编辑器|解析器|序列化|爬虫|脚本|小工具|控件|组件|插件|微服务|网关|代理|函数|类|方法|模块|接口|服务)`,
+			task:   TaskCode,
+			weight: 0.65,
+			reason: "pattern: chinese coding task (verb + programming object)",
+		},
+		// P2: "用 + 编程语言/技术栈 + 动作动词"
+		// 命中如"用 React 做一个表单组件""用 SQL 查询订单""用 go 写一个 LRU 缓存"。
+		// 语言/框架名本身就是强编程信号，且不会出现在 creative/planning 请求里。
+		{
+			expr:   `用\s*(?:python|java|javascript|js|typescript|ts|go|golang|rust|c\+\+|c#|ruby|php|swift|kotlin|scala|sql|react|vue|angular|node|django|flask|spring|gin|echo|flutter|nextjs|nuxt|tailwind|html|css|shell|bash|powershell)\s*(?:写|做|实现|编写|开发|生成|查询|连接|调用|构建|搭建|写一个|做一个|实现一个)`,
+			task:   TaskCode,
+			weight: 0.65,
+			reason: "pattern: chinese coding task (language/framework + action verb)",
+		},
+		// P3: "写个/做个 + 脚本/工具/函数"（口语变体，P1 的补充）
+		{
+			expr:   `(?:写个|做个|帮我写个|帮我做个|写一个简单)(?:.*?)(?:脚本|工具|函数|方法|程序|demo|示例|prototype|原型|demo)`,
+			task:   TaskCode,
+			weight: 0.60,
+			reason: "pattern: chinese coding task (colloquial 'write a script/tool')",
+		},
 		// ── Creative patterns ───────────────────────────────────────
 		// "写一个/写一段/写首" without an explicit code/algorithm target
 		// (the code keyword "写代码" already covers the code case)

@@ -86,7 +86,7 @@ const (
 var AllTaskTypes = []TaskType{
 	TaskChat, TaskReasoning, TaskCode, TaskAgent,
 	TaskCreative, TaskLongContext, TaskVision, TaskFunctionCall,
-	TaskCodeAudit, TaskIntentClassification,
+	TaskCodeAudit, TaskIntentClassification, TaskPlanning,
 }
 
 // ClassificationSignals is the extracted request fingerprint fed into
@@ -428,6 +428,42 @@ func (c *HeuristicClassifier) Classify(_ context.Context, sigs ClassificationSig
 		}, nil
 	}
 
+	// Channel 1.5: 专项任务硬覆盖（高置信度，在 long_context/tool dispatch 之前）。
+	// 这些任务类型之前只有检测函数（task_types_ext.go）却从未接入主流程，
+	// 导致 code_audit/intent_classification 永远不被识别、planning 缺失。
+	// 顺序：audit → intent → planning。planning 前置 strongCodingSignal 判定，
+	// 保证"先制定计划然后实现"仍归 TaskCode（strongCodingSignal 块在上面已 return）。
+	if IsCodeAuditRequest(sigs) {
+		return &Classification{
+			Primary:    TaskCodeAudit,
+			Confidence: 0.85,
+			Secondary:  []TaskScore{{Task: TaskCodeAudit, Score: 0.85}},
+			Signals:    sigs,
+			Classifier: "heuristic",
+			Reason:     "explicit code audit / security review request",
+		}, nil
+	}
+	if IsIntentClassificationRequest(sigs) {
+		return &Classification{
+			Primary:    TaskIntentClassification,
+			Confidence: 0.82,
+			Secondary:  []TaskScore{{Task: TaskIntentClassification, Score: 0.82}},
+			Signals:    sigs,
+			Classifier: "heuristic",
+			Reason:     "intent classification / text classification request",
+		}, nil
+	}
+	if !strongCodingSignal && IsPlanningRequest(sigs) {
+		return &Classification{
+			Primary:    TaskPlanning,
+			Confidence: 0.82,
+			Secondary:  []TaskScore{{Task: TaskPlanning, Score: 0.82}},
+			Signals:    sigs,
+			Classifier: "heuristic",
+			Reason:     "plan / proposal / design / task-breakdown request",
+		}, nil
+	}
+
 	// 1.3 长上下文（现在只有在 !strongCodingSignal 时才触发）
 	if sigs.EstimatedTokens > c.effectiveLongContextTokens() {
 		conf := 0.85 // 略降 conf（从 0.90），因为可能存在误判边缘案例
@@ -604,11 +640,11 @@ func countKeywordHits(text string, kws []string) int {
 }
 
 // pickWinner returns the task type with the highest score, with a
-// deterministic priority tiebreak (reasoning > code > agent > creative
-// > function_call > vision > long_context > chat).
+// deterministic priority tiebreak (reasoning > planning > code > agent >
+// creative > function_call > vision > long_context > chat).
 func pickWinner(scores map[TaskType]float64) (TaskType, float64) {
 	priority := []TaskType{
-		TaskReasoning, TaskCode, TaskAgent, TaskCreative,
+		TaskReasoning, TaskPlanning, TaskCode, TaskAgent, TaskCreative,
 		TaskFunctionCall, TaskVision, TaskLongContext, TaskChat,
 	}
 	var best TaskType
