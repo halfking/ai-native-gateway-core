@@ -54,9 +54,24 @@ func (f *fakeProc) Start(ctx context.Context) error {
 	f.started = true
 	return f.startErr
 }
-func (f *fakeProc) Wait() error                     { return nil }
-func (f *fakeProc) Stop() error                     { f.stopped = true; return nil }
-func (f *fakeProc) Pid() int                        { return 0 }
+func (f *fakeProc) Wait() error { return nil }
+func (f *fakeProc) Stop() error { f.stopped = true; return nil }
+func (f *fakeProc) Pid() int    { return 0 }
+
+// waitForFile 轮询等待 path 出现，直到 timeout。返回是否存在。
+// 正常路径下 helper 在数十毫秒内落盘，此处只在冷缓存 / 全仓并发
+// 等资源竞争时等待更久，避免硬编码短截止导致的 flaky。
+func waitForFile(path string, timeout time.Duration) bool {
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if _, err := os.Stat(path); err == nil {
+			return true
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	_, err := os.Stat(path)
+	return err == nil
+}
 
 func TestExecCommand_StartsRealProcess(t *testing.T) {
 	helperSrc := filepath.Join(t.TempDir(), "helper.go")
@@ -80,14 +95,7 @@ func main(){ _=os.WriteFile(os.Getenv("PID_FILE"), []byte("alive"), 0644); time.
 	}
 	defer c.Stop()
 
-	deadline := time.Now().Add(3 * time.Second)
-	for time.Now().Before(deadline) {
-		if _, err := os.Stat(pidFile); err == nil {
-			break
-		}
-		time.Sleep(50 * time.Millisecond)
-	}
-	if _, err := os.Stat(pidFile); err != nil {
+	if !waitForFile(pidFile, 15*time.Second) {
 		t.Fatal("helper process did not start (no pid file)")
 	}
 	if c.Pid() == 0 {
@@ -181,26 +189,16 @@ func main(){
 	// Wait until the helper has armed its SIGTERM handler, so we don't race the
 	// signal against signal.Notify (which would terminate the helper before it
 	// could write the graceful marker).
-	armDeadline := time.Now().Add(5 * time.Second)
-	for time.Now().Before(armDeadline) {
-		if _, err := os.Stat(marker + ".armed"); err == nil {
-			break
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
-	if _, err := os.Stat(marker + ".armed"); err != nil {
-		t.Fatalf("helper never armed SIGTERM handler within 5s: %v", err)
+	if !waitForFile(marker+".armed", 15*time.Second) {
+		t.Fatal("helper never armed SIGTERM handler within 15s")
 	}
 	if err := c.Stop(); err != nil {
 		t.Fatalf("stop: %v", err)
 	}
-	// wait for marker (within grace window)
-	deadline := time.Now().Add(3 * time.Second)
-	for time.Now().Before(deadline) {
-		if _, err := os.Stat(marker); err == nil {
-			break
-		}
-		time.Sleep(50 * time.Millisecond)
+	// wait for marker (within grace window); 8s covers the 5s SIGTERM grace
+	// window plus process scheduling lag under full-repo parallel load.
+	if !waitForFile(marker, 8*time.Second) {
+		t.Fatal("graceful stop marker never written")
 	}
 	got, _ := os.ReadFile(marker)
 	if string(got) != "graceful" {
