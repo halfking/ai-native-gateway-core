@@ -22,8 +22,8 @@ func loadSeedJSON[T any](t *testing.T, name string, target *T) {
 func TestBundledSeedDataContract(t *testing.T) {
 	var resources []FreeResourceEntry
 	loadSeedJSON(t, "free_resource_catalog.json", &resources)
-	if len(resources) != 15 {
-		t.Fatalf("resource count = %d, want 15", len(resources))
+	if len(resources) != 523 {
+		t.Fatalf("resource count = %d, want 523", len(resources))
 	}
 	resourceKeys := make(map[string]struct{}, len(resources))
 	for _, resource := range resources {
@@ -37,6 +37,22 @@ func TestBundledSeedDataContract(t *testing.T) {
 		resourceKeys[key] = struct{}{}
 		if len(resource.ConstraintsJSON) == 0 || !json.Valid(resource.ConstraintsJSON) {
 			t.Fatalf("resource %q has invalid constraints_json", key)
+		}
+		// tos_verdict must be one of the CHECK-constraint values.
+		switch resource.ToSVerdict {
+		case "ok", "caution", "ambiguous", "avoid", "unknown":
+		default:
+			t.Fatalf("resource %q has invalid tos_verdict %q", key, resource.ToSVerdict)
+		}
+		// free_type must be one of the CHECK-constraint values.
+		switch resource.FreeType {
+		case "recurring-daily", "recurring-monthly", "one-time-initial", "recurring-credit", "recurring-uncapped", "keyless", "discontinued":
+		default:
+			t.Fatalf("resource %q has invalid free_type %q", key, resource.FreeType)
+		}
+		// discontinued entries must be disabled; everything else enabled.
+		if resource.FreeType == "discontinued" && resource.Enabled {
+			t.Fatalf("discontinued resource %q must have enabled=false", key)
 		}
 	}
 
@@ -61,8 +77,8 @@ func TestBundledSeedDataContract(t *testing.T) {
 
 	var providers []KeylessProvider
 	loadSeedJSON(t, "keyless_providers.json", &providers)
-	if len(providers) != 3 {
-		t.Fatalf("keyless provider count = %d, want 3", len(providers))
+	if len(providers) != 8 {
+		t.Fatalf("keyless provider count = %d, want 8", len(providers))
 	}
 	providerKeys := make(map[string]struct{}, len(providers))
 	for _, provider := range providers {
