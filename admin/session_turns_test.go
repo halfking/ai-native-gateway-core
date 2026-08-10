@@ -1,6 +1,7 @@
 package admin
 
 import (
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -47,6 +48,55 @@ func TestCursorRoundTrip(t *testing.T) {
 		t.Fatalf("round-trip mismatch: %+v", decoded)
 	}
 	if _, err = decodeCursor(encoded, []byte("wrong")); err == nil {
+		t.Fatal("expected error with wrong key")
+	}
+}
+
+func TestValidateCursor_CrossTenantRejected(t *testing.T) {
+	key := []byte("test-key")
+	p := cursorPayload{TenantID: "tenant-a", SessionID: "s1", TurnNo: 42, TS: time.Now()}
+	encoded, err := encodeCursor(p, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// 当前请求租户为 tenant-b，cursor 归属 tenant-a → 必须拒绝
+	_, err = validateCursor(encoded, key, "tenant-b", "")
+	if !errors.Is(err, errCursorMismatch) {
+		t.Fatalf("expected errCursorMismatch for cross-tenant cursor, got: %v", err)
+	}
+}
+
+func TestValidateCursor_CrossSessionRejected(t *testing.T) {
+	key := []byte("test-key")
+	p := cursorPayload{TenantID: "tenant-a", SessionID: "s1", TurnNo: 7, TS: time.Now()}
+	encoded, err := encodeCursor(p, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// 会话维度校验：cursor 归属 s1，请求 s2 → 必须拒绝
+	_, err = validateCursor(encoded, key, "tenant-a", "s2")
+	if !errors.Is(err, errCursorMismatch) {
+		t.Fatalf("expected errCursorMismatch for cross-session cursor, got: %v", err)
+	}
+	// 会话维度跳过（sessionID==""）：仅校验租户 → 允许
+	if _, err = validateCursor(encoded, key, "tenant-a", ""); err != nil {
+		t.Fatalf("expected ok when session check skipped, got: %v", err)
+	}
+}
+
+func TestValidateCursor_InvalidSignature(t *testing.T) {
+	key := []byte("test-key")
+	p := cursorPayload{TenantID: "tenant-a", SessionID: "s1", TurnNo: 1, TS: time.Now()}
+	encoded, err := encodeCursor(p, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// 错误 key 解码失败 → 应返回解码错误而非 mismatch
+	_, err = validateCursor(encoded, []byte("wrong-key"), "tenant-a", "")
+	if errors.Is(err, errCursorMismatch) {
+		t.Fatal("expected decode error (bad signature), not cursor mismatch")
+	}
+	if err == nil {
 		t.Fatal("expected error with wrong key")
 	}
 }

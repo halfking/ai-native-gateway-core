@@ -68,13 +68,13 @@ func (h *Handler) serveSessionTurnsList(w http.ResponseWriter, r *http.Request, 
 	}
 	beforeTurnNo := int(^uint(0) >> 1)
 	if encoded := r.URL.Query().Get("cursor"); encoded != "" {
-		decoded, err := decodeCursor(encoded, []byte(h.secret))
+		decoded, err := validateCursor(encoded, []byte(h.secret), tenantID, sessionID)
 		if err != nil {
-			writeError(w, http.StatusBadRequest, "invalid cursor")
-			return
-		}
-		if decoded.TenantID != tenantID || decoded.SessionID != sessionID {
-			writeError(w, http.StatusBadRequest, "cursor mismatch")
+			if errors.Is(err, errCursorMismatch) {
+				writeError(w, http.StatusBadRequest, "cursor mismatch")
+			} else {
+				writeError(w, http.StatusBadRequest, "invalid cursor")
+			}
 			return
 		}
 		beforeTurnNo = decoded.TurnNo
@@ -128,13 +128,13 @@ func (h *Handler) serveSessionTurnsList(w http.ResponseWriter, r *http.Request, 
 // turnDetailV2Response 是 serveSessionTurnDetail 返回给前端 SessionTurnDrawer 的嵌套形状。
 // 与 SessionTurnV2 的扁平结构不同，前端五个 tab 分别消费 request/response/meta/governance/attachments。
 type turnDetailV2Response struct {
-	Model        string         `json:"model"`
-	CostUSD      float64        `json:"cost_usd"`
-	Request      any            `json:"request"`
-	Response     any            `json:"response"`
-	Meta         map[string]any `json:"meta"`
-	Governance   map[string]any `json:"governance"`
-	Attachments  []attachmentV2 `json:"attachments"`
+	Model       string         `json:"model"`
+	CostUSD     float64        `json:"cost_usd"`
+	Request     any            `json:"request"`
+	Response    any            `json:"response"`
+	Meta        map[string]any `json:"meta"`
+	Governance  map[string]any `json:"governance"`
+	Attachments []attachmentV2 `json:"attachments"`
 }
 
 // attachmentV2 是前端 SessionTurnDrawer 「附件」tab 消费的形状。
@@ -179,19 +179,19 @@ func (h *Handler) serveSessionTurnDetail(w http.ResponseWriter, r *http.Request,
 		WHERE t.session_id = $1 AND t.tenant_id = $2 AND t.turn_no = $3
 		LIMIT 1`
 	var (
-		turnNoOut                                                                  int
+		turnNoOut                                                                   int
 		requestID, submitMode, injectionVerdict, outputVerdict, sourceKind, quality string
-		ts                                                                         time.Time
-		compressionApplied                                                         bool
-		compressionStrategy                                                        *string
-		compressionMetaRaw, requestDeltaRaw, responseDeltaRaw, outboundBodyRaw     []byte
-		compressionTokensSaved                                                     *int
-		model, provider, errorKind                                                 *string
-		promptTokens, completionTokens, cacheReadTokens, cacheWriteTokens          *int
-		costUSD                                                                    *float64
-		latencyMs, statusCode                                                      *int
-		success                                                                    *bool
-		requestAttachmentsRaw, responseAttachmentsRaw                             []byte
+		ts                                                                          time.Time
+		compressionApplied                                                          bool
+		compressionStrategy                                                         *string
+		compressionMetaRaw, requestDeltaRaw, responseDeltaRaw, outboundBodyRaw      []byte
+		compressionTokensSaved                                                      *int
+		model, provider, errorKind                                                  *string
+		promptTokens, completionTokens, cacheReadTokens, cacheWriteTokens           *int
+		costUSD                                                                     *float64
+		latencyMs, statusCode                                                       *int
+		success                                                                     *bool
+		requestAttachmentsRaw, responseAttachmentsRaw                               []byte
 	)
 	err = h.db.QueryRow(r.Context(), query, sessionID, tenantID, turnNo).Scan(
 		&turnNoOut, &requestID, &ts,
@@ -220,28 +220,28 @@ func (h *Handler) serveSessionTurnDetail(w http.ResponseWriter, r *http.Request,
 		Request:  decodeStoredJSON("request_delta", requestID, requestDeltaRaw),
 		Response: decodeStoredJSON("response_delta", requestID, responseDeltaRaw),
 		Meta: map[string]any{
-			"turn_no":           turnNoOut,
-			"request_id":        requestID,
-			"ts":                ts,
-			"provider":          stringPtrValue(provider),
-			"prompt_tokens":     intPtrValue(promptTokens),
-			"completion_tokens": intPtrValue(completionTokens),
-			"cache_read_tokens": intPtrValue(cacheReadTokens),
+			"turn_no":            turnNoOut,
+			"request_id":         requestID,
+			"ts":                 ts,
+			"provider":           stringPtrValue(provider),
+			"prompt_tokens":      intPtrValue(promptTokens),
+			"completion_tokens":  intPtrValue(completionTokens),
+			"cache_read_tokens":  intPtrValue(cacheReadTokens),
 			"cache_write_tokens": intPtrValue(cacheWriteTokens),
-			"latency_ms":        intPtrValue(latencyMs),
-			"status_code":       intPtrValue(statusCode),
-			"success":           boolPtrValue(success),
-			"error_kind":        stringPtrValue(errorKind),
-			"source_kind":       sourceKind,
-			"quality":           quality,
+			"latency_ms":         intPtrValue(latencyMs),
+			"status_code":        intPtrValue(statusCode),
+			"success":            boolPtrValue(success),
+			"error_kind":         stringPtrValue(errorKind),
+			"source_kind":        sourceKind,
+			"quality":            quality,
 		},
 		Governance: map[string]any{
-			"submit_mode":             submitMode,
-			"compression_applied":     compressionApplied,
-			"compression_strategy":    stringPtrValue(compressionStrategy),
+			"submit_mode":              submitMode,
+			"compression_applied":      compressionApplied,
+			"compression_strategy":     stringPtrValue(compressionStrategy),
 			"compression_tokens_saved": intPtrValue(compressionTokensSaved),
-			"injection_verdict":       injectionVerdict,
-			"output_verdict":          outputVerdict,
+			"injection_verdict":        injectionVerdict,
+			"output_verdict":           outputVerdict,
 		},
 		Attachments: buildTurnAttachments(requestID, requestAttachmentsRaw, responseAttachmentsRaw),
 	}

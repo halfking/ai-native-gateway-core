@@ -21,6 +21,7 @@
 package admin
 
 import (
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -70,17 +71,13 @@ func (h *Handler) handleTurnsList(w http.ResponseWriter, r *http.Request) {
 	var beforeSessionID string
 	var beforeTS time.Time
 	if encoded := r.URL.Query().Get("cursor"); encoded != "" {
-		decoded, err := decodeCursor(encoded, []byte(h.secret))
+		decoded, err := validateCursor(encoded, []byte(h.secret), tenantID, "")
 		if err != nil {
-			writeError(w, http.StatusBadRequest, "invalid cursor")
-			return
-		}
-		// 2026-08-09 audit fix: 与其他 turns handler（session_turns.go /
-		// session_turns_v2.go）保持一致，校验 cursor 携带的租户与当前请求
-		// 匹配，拒绝跨租户复用 cursor（防止利用签名 cursor 探测其他租户
-		// 的翻页边界）。
-		if decoded.TenantID != tenantID {
-			writeError(w, http.StatusBadRequest, "cursor mismatch")
+			if errors.Is(err, errCursorMismatch) {
+				writeError(w, http.StatusBadRequest, "cursor mismatch")
+			} else {
+				writeError(w, http.StatusBadRequest, "invalid cursor")
+			}
 			return
 		}
 		beforeNo = decoded.TurnNo
