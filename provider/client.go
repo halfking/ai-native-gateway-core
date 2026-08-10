@@ -1000,6 +1000,12 @@ func (c *Client) loadCandidatesByModalityDB(ctx context.Context, clientModel, te
 			COALESCE(mo.success_rate, 0.9)::float8 AS success_rate,
 			COALESCE(mo.p95_latency_ms, 9999)::int AS p95_latency_ms,
 			c.concurrency_limit,
+			-- 2026-08-11 capacity-weighted LB: load concurrency_limit_auto so
+			-- the candidate build can derive Weight from effective concurrency
+			-- (auto-tuned limit, capped by the manual hard cap). See
+			-- applyCapacityWeightedLB and domains/providerprofile/adapters.go
+			-- GetModelScale for the canonical EffLimit formula.
+			c.concurrency_limit_auto,
 			COALESCE(c.fp_slot_limit, 20) AS fp_slot_limit,  -- 2026-06-24: 5→20
 			-- 2026-07-15: per-credential RPM cap (migration 407). NULL/0 = unlimited.
 			c.rpm_limit,
@@ -1200,6 +1206,10 @@ func (c *Client) loadCandidatesByModalityDB(ctx context.Context, clientModel, te
 	for rows.Next() {
 		var cand Candidate
 		var offerRawModel string
+		// concurrencyLimitAuto is the tuner-adjusted limit (see
+		// credentialhealth/tuner.go); used below to derive a capacity-weighted
+		// Weight when the operator has not set an explicit manual weight.
+		var concurrencyLimitAuto *int
 		if err := rows.Scan(
 			&cand.CredentialID,
 			&cand.ProviderID,
@@ -1213,6 +1223,7 @@ func (c *Client) loadCandidatesByModalityDB(ctx context.Context, clientModel, te
 			&cand.SuccessRate,
 			&cand.P95LatencyMs,
 			&cand.ConcurrencyLimit,
+			&concurrencyLimitAuto,
 			&cand.FpSlotLimit,
 			&cand.RPMLimit,
 			&cand.BalanceUSD,
@@ -1242,6 +1253,7 @@ func (c *Client) loadCandidatesByModalityDB(ctx context.Context, clientModel, te
 			return nil, err
 		}
 		cand.OfferRawModel = offerRawModel
+		applyCapacityWeightedLB(&cand, concurrencyLimitAuto)
 		c.maybeExitSuspicious(cand.CredentialID, offerRawModel)
 		out = append(out, cand)
 	}
@@ -1249,6 +1261,93 @@ func (c *Client) loadCandidatesByModalityDB(ctx context.Context, clientModel, te
 		return nil, err
 	}
 	return out, nil
+}
+
+// defaultManualWeight is the value the SQL layer fills via COALESCE(mo.weight,
+// 100). It doubles as the sentinel for "operator did not set an explicit
+// weight", which is how applyCapacityWeightedLB decides whether to override
+// the manual weight with a capacity-derived one.
+const defaultManualWeight = 100
+
+// capacityWeightFloor / capacityWeightMax clamp the capacity-derived weight so
+// a low-capacity credential still gets a non-zero share of first-choice
+// attempts (promoteWeightedCandidate skips Weight<=0 candidates) and a
+// high-capacity credential cannot monopolise the rotation. The clamp keeps
+// the ratio meaningful: a credential with 2× the effective limit gets ~2× the
+// first-attempt share, bounded so one giant credential doesn't starve the
+// rest of the pool.
+const (
+	capacityWeightFloor = 1
+	capacityWeightMax   = 1000
+)
+
+// applyCapacityWeightedLB derives Candidate.Weight from the credential's
+// effective concurrency capacity (并发能力), so the router's weighted
+// first-choice promotion (promoteWeightedCandidate) distributes session-first
+// and error-triggered re-selection across healthy same-level nodes in
+// proportion to their capacity — the load-balancing contract the gateway
+// promises operators.
+//
+// Effective limit (mirrors domains/providerprofile/adapters.go GetModelScale):
+//   - auto-tuned limit preferred, capped by the manual hard cap
+//   - falls back to the manual hard cap when auto is unset
+//   - unknown (both nil/0) → leave Weight at the default 100
+//
+// Override rules:
+//   - if the operator set an explicit manual weight (≠ defaultManualWeight),
+//     that weight is respected as-is — manual override always wins;
+//   - otherwise Weight is set to clamp(effLimit, floor, max);
+//   - Weight is never left at 0 (promoteWeightedCandidate treats 0 as
+//     "skip", which would silently exclude a capacity-unknown credential).
+//
+// The derived weight is captured in the 30s candidate cache, so it is reused
+// on every cache hit; admin force-enable / state changes invalidate the cache
+// and the next rebuild picks up the latest concurrency_limit_auto.
+func applyCapacityWeightedLB(cand *Candidate, concurrencyLimitAuto *int) {
+	if cand == nil {
+		return
+	}
+	// Respect an explicit operator weight (anything other than the SQL
+	// default of 100). This preserves the manual escape hatch.
+	if cand.Weight != defaultManualWeight {
+		if cand.Weight <= 0 {
+			cand.Weight = defaultManualWeight
+		}
+		return
+	}
+	manual := 0
+	if cand.ConcurrencyLimit != nil {
+		manual = *cand.ConcurrencyLimit
+	}
+	auto := 0
+	if concurrencyLimitAuto != nil {
+		auto = *concurrencyLimitAuto
+	}
+	eff := auto
+	if eff <= 0 {
+		eff = manual
+	}
+	if manual > 0 && eff > manual {
+		eff = manual // never break the operator's hard cap
+	}
+	if eff <= 0 {
+		// Capacity unknown — keep the default so the credential still
+		// participates in weighted rotation.
+		cand.Weight = defaultManualWeight
+		return
+	}
+	eff = clampInt(eff, capacityWeightFloor, capacityWeightMax)
+	cand.Weight = eff
+}
+
+func clampInt(v, lo, hi int) int {
+	if v < lo {
+		return lo
+	}
+	if v > hi {
+		return hi
+	}
+	return v
 }
 
 func (c *Client) fetchPolicyDB(ctx context.Context) (*Policy, error) {

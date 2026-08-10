@@ -991,7 +991,7 @@ func (h *Handler) handleEmergencyRepair(w http.ResponseWriter, r *http.Request) 
 					paused = FALSE,
 					in_flight_until = NULL,
 					updated_at = now()
-				WHERE credential_id = $1 AND COALESCE(last_direct_ok, FALSE) = FALSE
+				WHERE credential_id = $1
 			`, req.CredentialID)
 			if err != nil {
 				writeError(w, http.StatusInternalServerError, "reset node_probe_state failed: "+err.Error())
