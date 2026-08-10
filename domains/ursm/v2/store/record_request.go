@@ -30,6 +30,14 @@ type RecordOutcome struct {
 	// Cooling parameters (P1: unify with credentialfpslot/node_state.go)
 	CoolSeconds     int // Seconds to cool when disabled (default 300 = 5min)
 	FailStreakLimit int // Failures before disabling (default 3)
+	// BillingMode (2026-08-10): when "free", record_request.lua tolerates
+	// transient error kinds (rate_limit/timeout/stream_timeout/
+	// upstream_down/empty_response/transient) — fail_streak still
+	// accumulates but the node is not hard-disabled. Mirrors
+	// domains/ursm/v2/reducer/reducer.go's transientErrors soft-demote
+	// policy. Empty/non-"free" values keep the pre-existing hard-disable
+	// behavior for all other billing modes.
+	BillingMode string
 }
 
 type RecordResult struct {
@@ -64,6 +72,7 @@ func (s *Store) RecordRequest(ctx context.Context, nodeKey, win1m, win5m, win30m
 		fmt.Sprintf("%d", coolSeconds),
 		fmt.Sprintf("%d", failStreakLimit),
 		BoolFlag(o.DedupKey != ""),
+		o.BillingMode,
 	).Slice()
 	if err != nil {
 		return RecordResult{}, fmt.Errorf("ursm.v2: record_request: %w", err)

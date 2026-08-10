@@ -232,3 +232,31 @@ export interface ProbeQueueTaskRow {
 export async function fetchProbeQueueTasks(limit = 100): Promise<{ tasks: ProbeQueueTaskRow[]; total: number }> {
   return req<{ tasks: ProbeQueueTaskRow[]; total: number }>('GET', `/api/admin/probe/queue-tasks?limit=${limit}`)
 }
+
+// 错误触发的节点自检队列（区别于 credential_probe_queue 的完整性探测）。
+// NodeProbeWorker 的 7 步退避（5s→30s→60s→5m→1h→2h→6h）写在
+// node_probe_state / node_probe_runs，之前自检泳道看不到这批任务。
+// 2026-08-10 (fix/selfcheck-queue-and-recovery)
+export interface NodeProbeTaskRow {
+  credential_id: number
+  provider_id: number
+  provider_name: string
+  provider_code: string
+  raw_model: string
+  standardized_name?: string
+  status: string
+  attempt: number
+  consecutive_failures: number
+  next_retry_at?: string | null
+  last_direct_ok?: boolean | null
+  last_gateway_ok?: boolean | null
+  last_err_code?: string | null
+  last_latency_ms?: number | null
+  paused: boolean
+  updated_at?: string | null
+  source: 'node_probe'
+}
+
+export async function fetchProbeNodeTasks(limit = 120): Promise<{ tasks: NodeProbeTaskRow[]; total: number }> {
+  return req<{ tasks: NodeProbeTaskRow[]; total: number }>('GET', `/api/admin/probe/node-tasks?limit=${limit}`)
+}
