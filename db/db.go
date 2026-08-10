@@ -256,6 +256,14 @@ func (db *DB) applyMigrationsOnce(ctx context.Context) error {
 	if err := db.ensureWebCookieSessionsSchema(migCtx); err != nil {
 		return err
 	}
+	// 2026-08-11: model IQ system — standard_iq column on models_canonical
+	// plus model_iq_runs / node_iq_latest. Mirrors migration 350.
+	if err := db.ensureModelsCanonicalStandardIQ(migCtx); err != nil {
+		return err
+	}
+	if err := db.ensureModelIQSchema(migCtx); err != nil {
+		return err
+	}
 	// Dashboard views are derived data for the admin UI, not critical-path.
 	// A failure here logs a warning but does NOT block startup — the gateway
 	// must still serve traffic even if /probe-health renders empty.
@@ -1160,6 +1168,94 @@ func (d *DB) ensureIntegrityFingerprintBaselineSchema(ctx context.Context) error
 		return err
 	}
 	slog.Info("integrity_fingerprint_baseline schema ensured")
+	return nil
+}
+
+// ensureModelsCanonicalStandardIQ (2026-08-11) mirrors migration 350 part 1:
+// add standard_iq / standard_iq_source / standard_iq_updated_at columns to
+// models_canonical. The value is the 0-100 Artificial Analysis Intelligence
+// Index score (or a manual override), populated by cmd/fetch-standard-iq.
+// Idempotent — safe to run repeatedly.
+func (d *DB) ensureModelsCanonicalStandardIQ(ctx context.Context) error {
+	if d == nil || d.pool == nil {
+		return nil
+	}
+	_, err := d.pool.Exec(ctx, `
+		ALTER TABLE models_canonical
+		    ADD COLUMN IF NOT EXISTS standard_iq numeric(5,2),
+		    ADD COLUMN IF NOT EXISTS standard_iq_source text DEFAULT 'artificialanalysis',
+		    ADD COLUMN IF NOT EXISTS standard_iq_updated_at timestamptz;
+		COMMENT ON COLUMN models_canonical.standard_iq IS '标准智商值（0-100，来自评测站点，默认 Artificial Analysis Intelligence Index）';
+		COMMENT ON COLUMN models_canonical.standard_iq_source IS '标准智商数据来源标签，如 artificialanalysis / artificialanalysis-v4.1.1 / manual';
+	`)
+	if err != nil {
+		return err
+	}
+	return nil
+}
+
+// ensureModelIQSchema (2026-08-11) mirrors migration 350 parts 2-3:
+//   - model_iq_runs: append-only per-node IQ test runs (one row per test),
+//     supports the "供应商模型列表点击查看不同时点智商值" feature.
+//   - node_iq_latest: 1:1 cache of latest + aggregate IQ per node, read by
+//     the provider model list and the provider-quality ModelIQ dimension.
+//
+// Node identity is (credential_id, raw_model_name), matching node_probe_state;
+// no FK so binding rename/rewrite paths are unaffected. Idempotent.
+func (d *DB) ensureModelIQSchema(ctx context.Context) error {
+	if d == nil || d.pool == nil {
+		return nil
+	}
+	_, err := d.pool.Exec(ctx, `
+		CREATE TABLE IF NOT EXISTS model_iq_runs (
+			id              bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+			credential_id   bigint NOT NULL,
+			provider_id     bigint NOT NULL,
+			raw_model_name  text NOT NULL,
+			canonical_id    bigint,
+			benchmark_type  text NOT NULL DEFAULT 'mmlu_lite',
+			total_questions integer NOT NULL DEFAULT 0,
+			correct_count   integer NOT NULL DEFAULT 0,
+			accuracy        numeric(5,2) NOT NULL DEFAULT 0,
+			stability       numeric(5,2),
+			latency_p95     integer,
+			overall_score   numeric(5,2) NOT NULL DEFAULT 0,
+			grade           text,
+			probe_kind      text NOT NULL DEFAULT 'direct',
+			trigger_kind    text NOT NULL DEFAULT 'scheduled',
+			status          text NOT NULL DEFAULT 'success',
+			error           text,
+			tested_at       timestamptz NOT NULL DEFAULT now(),
+			created_at      timestamptz NOT NULL DEFAULT now(),
+			CONSTRAINT model_iq_runs_probe_kind_check CHECK (probe_kind IN ('gateway','direct','mock')),
+			CONSTRAINT model_iq_runs_trigger_kind_check CHECK (trigger_kind IN ('scheduled','on_demand','anomaly')),
+			CONSTRAINT model_iq_runs_status_check CHECK (status IN ('success','partial','failed'))
+		);
+		CREATE INDEX IF NOT EXISTS idx_model_iq_runs_node_time
+			ON model_iq_runs(credential_id, raw_model_name, tested_at DESC);
+		CREATE INDEX IF NOT EXISTS idx_model_iq_runs_provider_time
+			ON model_iq_runs(provider_id, tested_at DESC);
+		CREATE INDEX IF NOT EXISTS idx_model_iq_runs_canonical_time
+			ON model_iq_runs(canonical_id, tested_at DESC);
+
+		CREATE TABLE IF NOT EXISTS node_iq_latest (
+			credential_id   bigint NOT NULL,
+			raw_model_name  text NOT NULL,
+			overall_score   numeric(5,2),
+			grade           text,
+			sample_count    integer NOT NULL DEFAULT 0,
+			avg_score       numeric(5,2),
+			min_score       numeric(5,2),
+			max_score       numeric(5,2),
+			tested_at       timestamptz,
+			updated_at      timestamptz NOT NULL DEFAULT now(),
+			PRIMARY KEY (credential_id, raw_model_name)
+		);
+	`)
+	if err != nil {
+		return err
+	}
+	slog.Info("model_iq schema ensured")
 	return nil
 }
 

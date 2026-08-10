@@ -1026,6 +1026,7 @@ watch(activeTab, async (tab) => {
               <th>状态</th>
               <th>modality</th>
               <th>ctx</th>
+              <th>标准智商</th>
               <th>aliases/offers</th>
               <th>操作</th>
             </tr>
@@ -1041,6 +1042,7 @@ watch(activeTab, async (tab) => {
               <td><span class="badge" :class="statusBadgeClass(m.status)">{{ m.status }}</span></td>
               <td>{{ m.modality }}</td>
               <td>{{ m.context_window ?? '-' }}</td>
+              <td>{{ m.standard_iq != null ? Number(m.standard_iq).toFixed(1) : '-' }}</td>
               <td>{{ m.alias_count ?? 0 }} / {{ m.offer_count ?? 0 }}</td>
               <td style="white-space:nowrap">
                 <button class="btn btn-primary btn-sm" @click="openDetail(m)">查看详情</button>

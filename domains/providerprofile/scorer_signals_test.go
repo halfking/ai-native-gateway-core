@@ -44,7 +44,7 @@ func TestExtendedWeightsSumToOne(t *testing.T) {
 	w := DefaultExtendedWeights()
 	total := w.Network + w.Availability + w.Stability + w.Scale +
 		w.RateLimit + w.Concurrency + w.AvailabilityWindow + w.QualityStability +
-		w.Credibility + w.CostAccuracy + w.Price
+		w.Credibility + w.CostAccuracy + w.Price + w.ModelIQ
 	assert.InDelta(t, 1.0, total, 1e-9)
 }
 
