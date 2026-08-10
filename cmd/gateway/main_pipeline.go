@@ -831,10 +831,19 @@ func v2DispatchHandler(deps *v2DispatchDeps, fallback http.Handler) http.Handler
 		// audit/metrics hooks to consume.
 		env.StatusCode = 0 // writer's status is unknown; left for a later phase
 
-		// PR-V4-10: 异步发布 request.completed 事件 → analysis_events。
+		// Phase 2 Step 3: 发布 request.completed.v1 事件（契约完整版）
+		// 使用 extractRequestCompletedPayload() 补全 10 个缺失字段，
+		// 移除 user_content 违规字段。
+		//
 		// 只在 deps.Publisher 非 nil 时执行（即 EnableAnalysis=true 且
 		// 注入了 DB pool）。失败仅记录日志，不影响主流程。
+		//
+		// Refs: docs/omni-ref2/03-GATEWAY-EVENT-FIELD-MAPPING.md
+		//       docs/修订0811/08-Phase2-进度报告.md Step 3
 		if deps.Publisher != nil && env.TenantID != "" && r.Header.Get("X-Gateway-Internal-Purpose") != "session-analysis" {
+			// Extract contract-compliant payload (11 fields, no user_content)
+			payload := extractRequestCompletedPayload(env, requestID, env.CreatedAt)
+
 			evt := analysis.AnalysisEvent{
 				EventID:    "evt-" + requestID,
 				Type:       analysis.EventRequestCompleted,
@@ -842,12 +851,7 @@ func v2DispatchHandler(deps *v2DispatchDeps, fallback http.Handler) http.Handler
 				SessionID:  env.SessionID,
 				RequestID:  requestID,
 				OccurredAt: time.Now(),
-				Payload: map[string]any{
-					"user_content": extractFirstUserMessage(env),
-					"status_code":  env.StatusCode,
-					"model":        env.Metadata["model"],
-					"path":         r.URL.Path,
-				},
+				Payload:    payload,
 			}
 			if err := deps.Publisher.Publish(ctx, evt); err != nil {
 				slog.Warn("v2 dispatch: publish request.completed failed",
