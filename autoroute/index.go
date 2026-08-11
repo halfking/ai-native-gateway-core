@@ -443,8 +443,8 @@ LEFT JOIN credential_model_bindings cmb
   ON cmb.credential_id = cmi.credential_id
  AND cmb.provider_model_id = pm.id
 LEFT JOIN models_canonical mc ON mc.id = cmi.canonical_id
-WHERE COALESCE(cr.lifecycle_status, 'active') != 'suspended'
-  AND COALESCE(cr.status, 'active') NOT IN ('disabled')
+WHERE COALESCE(cr.lifecycle_status, 'active') = 'active'
+  AND COALESCE(cr.status, 'active') = 'active'
 ORDER BY cmi.canonical_id, cmi.score_smart DESC
 `
 
