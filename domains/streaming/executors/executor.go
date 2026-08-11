@@ -19,6 +19,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/db"
 	"github.com/kaixuan/llm-gateway-go/domains/credential"                    //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/domains/credentialstate"               //nolint:depguard // historical violation, B1 routing.go CQRS will fix
+	"github.com/kaixuan/llm-gateway-go/domains/dispatch"
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/audit"                   //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/compression"             //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/observability/telemetry" //nolint:depguard // historical violation, B1 routing.go CQRS will fix
@@ -499,6 +500,10 @@ type Executor struct {
 	Upstream   *upstreampkg.Client
 	Normalize  NormalizerFunc
 	StreamChat StreamHandler
+	// dispatchPipeline (V2, 479): when non-nil AND dispatch_v2 gate is on,
+	// Execute routes through the multi-tier dispatch pipeline instead of the
+	// synchronous candidate loop. See executor_dispatch.go.
+	dispatchPipeline *dispatch.Pipeline
 	// traceRecorder (2026-07-17) 注入请求链路追踪器,记录 upstream_request /
 	// stream_start 事件。nil 时降级为 NoopRecorder 等价。
 	traceRecorder gwtrace.Recorder
@@ -2263,6 +2268,17 @@ func (e *Executor) Execute(params *ExecParams) (*ExecuteResult, error) {
 
 	tTotal := time.Now()
 	retryPerCred := params.Policy.RetryPerCredential
+	// 479: V2 multi-tier dispatch path (per-credential queue + peak-flattening
+	// governor + tiered credential/model failover). Gated by the dispatch_v2
+	// setting + a wired pipeline. When enabled, route through the pipeline and
+	// return its result; otherwise fall through to the legacy synchronous
+	// candidate loop below. See executor_dispatch.go and
+	// docs/会话优化v2/57-多层队列调度架构设计方案.md.
+	if dispatch.IsDispatchEnabled() && e.dispatchPipeline != nil {
+		if res, derr := e.executeViaDispatch(params, candidates, holder, fpSlotDegraded, stickyCredID); res != nil || derr != nil {
+			return res, derr
+		}
+	}
 	var lastErr error
 	// lastKind is the kind reported to the client and used to pick the sync
 	// retry's sticky policy. It is NOT plain last-writer-wins: see

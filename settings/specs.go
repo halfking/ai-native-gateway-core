@@ -35,6 +35,8 @@ func PlatformSpecs() []*Spec {
 	// 2026-08-07: V2 session read-path master switch (docs/omni-ref3 A1).
 	// Platform-scoped, default on, kill-switch via admin/platform settings.
 	out = append(out, SessionsV2CompressionPlatformSpecs()...)
+	// 2026-08-11: V2 多层队列调度（模型/凭据队列 + 并发模式削峰 + 分层故障转移）。
+	out = append(out, DispatchSpecs()...)
 	return out
 }
 

@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/kaixuan/llm-gateway-go/domains/dispatch"
 	"github.com/kaixuan/llm-gateway-go/ratelimit"
 	"github.com/kaixuan/llm-gateway-go/settings"
 )
@@ -283,6 +284,13 @@ func (h *Handler) settingsPut(w http.ResponseWriter, r *http.Request, key string
 		var enabled bool
 		if err := json.Unmarshal(body.Value, &enabled); err == nil {
 			ratelimit.SetRateLimitEnabled(enabled)
+		}
+	}
+	// 2026-08-11 (479): 即时同步 dispatch_v2.enabled 到 dispatch 包的 atomic 缓存。
+	if !tenant && key == dispatch.DispatchGateKey {
+		var enabled bool
+		if err := json.Unmarshal(body.Value, &enabled); err == nil {
+			dispatch.SetDispatchEnabled(enabled)
 		}
 	}
 

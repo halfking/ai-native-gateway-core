@@ -126,6 +126,9 @@ func (db *DB) applyMigrationsOnce(ctx context.Context) error {
 	if err := db.ensureFpSlotLimit(migCtx); err != nil {
 		return err
 	}
+	if err := db.ensureConcurrencyMode(migCtx); err != nil {
+		return err
+	}
 	if err := db.ensureRoutingRecentSuccessRate(migCtx); err != nil {
 		return err
 	}
@@ -2009,6 +2012,66 @@ func (d *DB) ensureFpSlotLimit(ctx context.Context) error {
 		return err
 	}
 	slog.Info("fp_slot_limit schema ensured (credentials.fp_slot_limit + system_identity_pool)")
+	return nil
+}
+
+// ensureConcurrencyMode adds the concurrency_mode / tpm_limit / max_queue_depth /
+// max_queue_wait_ms columns to credentials and backfills concurrency_mode from
+// the existing rpm_limit / concurrency_limit values.
+//
+// Mirrors sql/migrations/startup/479_concurrency_mode.sql so the in-process
+// runner covers this even if the .sql file was never applied externally.
+// Idempotent (ADD COLUMN IF NOT EXISTS, backfill guarded by IS NULL, CHECK via
+// pg_constraint). Runs at startup via ensureSchema. See
+// docs/会话优化v2/57-多层队列调度架构设计方案.md.
+func (d *DB) ensureConcurrencyMode(ctx context.Context) error {
+	if d == nil || d.pool == nil {
+		return nil
+	}
+	_, err := d.pool.Exec(ctx, `
+		ALTER TABLE credentials ADD COLUMN IF NOT EXISTS concurrency_mode TEXT;
+		ALTER TABLE credentials ADD COLUMN IF NOT EXISTS tpm_limit INT;
+		ALTER TABLE credentials ADD COLUMN IF NOT EXISTS max_queue_depth INT;
+		ALTER TABLE credentials ADD COLUMN IF NOT EXISTS max_queue_wait_ms INT;
+
+		-- Backfill: 有 rpm_limit 且无并发数 → rpm；否则 concurrency。
+		UPDATE credentials SET concurrency_mode = 'rpm'
+		 WHERE concurrency_mode IS NULL
+		   AND rpm_limit IS NOT NULL
+		   AND concurrency_limit IS NULL;
+		UPDATE credentials SET concurrency_mode = 'concurrency'
+		 WHERE concurrency_mode IS NULL;
+
+		-- DEFAULT + NOT NULL（仅当当前可空时）。
+		DO $$
+		BEGIN
+		    IF EXISTS (
+		        SELECT 1 FROM information_schema.columns
+		        WHERE table_name = 'credentials' AND column_name = 'concurrency_mode' AND is_nullable = 'YES'
+		    ) THEN
+		        ALTER TABLE credentials ALTER COLUMN concurrency_mode SET DEFAULT 'concurrency';
+		        ALTER TABLE credentials ALTER COLUMN concurrency_mode SET NOT NULL;
+		    END IF;
+		END $$;
+
+		-- CHECK 约束（幂等）。
+		DO $$
+		BEGIN
+		    IF NOT EXISTS (
+		        SELECT 1 FROM pg_constraint
+		        WHERE conname = 'credentials_concurrency_mode_check'
+		          AND conrelid = 'credentials'::regclass
+		    ) THEN
+		        ALTER TABLE credentials
+		            ADD CONSTRAINT credentials_concurrency_mode_check
+		            CHECK (concurrency_mode IN ('concurrency','rpm','tpm','disabled'));
+		    END IF;
+		END $$;
+	`)
+	if err != nil {
+		return err
+	}
+	slog.Info("concurrency_mode schema ensured (credentials.concurrency_mode/tpm_limit/max_queue_depth/max_queue_wait_ms)")
 	return nil
 }
 
