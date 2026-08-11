@@ -192,11 +192,12 @@ func recordLiveFilterFailure(poolConfigured bool, err error) {
 //   1. The in-memory index shrinks/grows unexpectedly (rollup gap, filter
 //      regression) → index_entries gauge lets you see the candidate count
 //      trend across refresh cycles.
-//   2. The index diverges from the authoritative v_routable_credential_models
-//      view (e.g. a new credential was marked routable but rollup hasn't
-//      picked it up, or a disabled credential leaked in) → index_drift gauge
-//      surfaces the delta. Positive = index has extra entries; negative =
-//      view has routable bindings the index hasn't loaded yet.
+//   2. The index contains entries that the authoritative
+//      v_routable_credential_models view currently marks non-routable (for
+//      example disabled credentials, exhausted quota, unhealthy credentials,
+//      or node-probe backoff). index_drift is deliberately the leaked-entry
+//      count, not entries - view_count, because the view includes static
+//      routable bindings that may not have recent 5-minute rollup rows.
 //
 // refresh_total / refresh_failed_total track refresh attempt health so a
 // stuck refresher (5-min cadence stalling) is visible in dashboards.
@@ -215,8 +216,8 @@ func registerRefreshMetrics() {
 	})
 	indexDrift = prometheus.NewGauge(prometheus.GaugeOpts{
 		Name: routingMetricPrefix + "index_drift",
-		Help: "Difference between in-memory index entries and v_routable_credential_models(is_routable=true) count. " +
-			"Positive = index has extra entries; negative = view has routable bindings the index hasn't loaded.",
+		Help: "Number of in-memory autoroute index entries that are not currently routable in v_routable_credential_models. " +
+			"A value greater than zero indicates disabled, exhausted, unhealthy, or probe-backoff credentials leaked into the index.",
 	})
 	refreshTotal = prometheus.NewCounter(prometheus.CounterOpts{
 		Name: routingMetricPrefix + "refresh_total",
@@ -232,13 +233,13 @@ func registerRefreshMetrics() {
 // recordRefreshOutcome is called at the end of Index.Refresh.
 //
 //   - entries: len of the refreshed candidate slice (0 on failure)
-//   - viewRoutable: COUNT(*) from v_routable_credential_models WHERE
-//     is_routable, or -1 when the drift probe itself failed (so drift is
-//     not published with stale data)
+//   - leakedEntries: COUNT of refreshed entries that do not have a matching
+//     is_routable row in v_routable_credential_models, or -1 when the probe
+//     itself failed (so drift is not published with stale data)
 //   - err: the refresh error (nil on success)
 //
 // All metrics are nil-safe (no-op before registration).
-func recordRefreshOutcome(entries int, viewRoutable int, err error) {
+func recordRefreshOutcome(entries int, leakedEntries int, err error) {
 	if refreshTotal != nil {
 		refreshTotal.Inc()
 	}
@@ -251,7 +252,7 @@ func recordRefreshOutcome(entries int, viewRoutable int, err error) {
 	if indexEntries != nil {
 		indexEntries.Set(float64(entries))
 	}
-	if viewRoutable >= 0 && indexDrift != nil {
-		indexDrift.Set(float64(entries - viewRoutable))
+	if leakedEntries >= 0 && indexDrift != nil {
+		indexDrift.Set(float64(leakedEntries))
 	}
 }

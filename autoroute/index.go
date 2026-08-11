@@ -333,9 +333,9 @@ func (idx *Index) Refresh(ctx context.Context) (err error) {
 	// error) for every attempt via deferred closure so all return paths
 	// publish metrics without duplication.
 	entries := 0
-	viewRoutable := -1
+	leakedEntries := -1
 	defer func() {
-		recordRefreshOutcome(entries, viewRoutable, err)
+		recordRefreshOutcome(entries, leakedEntries, err)
 	}()
 
 	if pool == nil {
@@ -376,32 +376,41 @@ func (idx *Index) Refresh(ctx context.Context) (err error) {
 	entries = len(out)
 
 	// 2026-08-11: best-effort drift probe against the authoritative
-	// v_routable_credential_models view. Catches rollup gaps, filter
-	// regressions, and disabled-credential leaks that silently degrade
-	// routing. Short timeout so a slow view COUNT can't eat the refresh
-	// budget; any probe error skips drift publishing (viewRoutable stays -1).
-	driftCtx, driftCancel := context.WithTimeout(ctx, 2*time.Second)
-	if qerr := pool.QueryRow(driftCtx,
-		`SELECT COUNT(*) FROM v_routable_credential_models WHERE is_routable`,
-	).Scan(&viewRoutable); qerr != nil {
-		viewRoutable = -1
+	// v_routable_credential_models view. This publishes the leaked-entry
+	// count (index entries that are not currently routable in the view), not
+	// entries - view_count. The view includes static routable bindings that
+	// may not have recent 5-minute rollup rows, so a total-count delta would
+	// be noisy and often negative without indicating a routing bug.
+	//
+	// Short timeout so a slow probe can't eat the refresh budget; any probe
+	// error skips drift publishing (leakedEntries stays -1).
+	leakProbeCtx, leakProbeCancel := context.WithTimeout(ctx, 2*time.Second)
+	leakKeys := make([]string, 0, len(out))
+	for i := range out {
+		leakKeys = append(leakKeys, fmt.Sprintf("%d:%s", out[i].CredentialID, out[i].RawModel))
 	}
-	driftCancel()
+	if qerr := pool.QueryRow(leakProbeCtx, `
+		WITH refreshed(key) AS (
+			SELECT unnest($1::text[])
+		)
+		SELECT COUNT(*)
+		FROM refreshed r
+		WHERE NOT EXISTS (
+			SELECT 1
+			FROM v_routable_credential_models v
+			WHERE v.is_routable
+			  AND (v.credential_id::text || ':' || v.raw_model_name) = r.key
+		)
+	`, leakKeys).Scan(&leakedEntries); qerr != nil {
+		leakedEntries = -1
+	}
+	leakProbeCancel()
 
-	if viewRoutable >= 0 {
-		drift := entries - viewRoutable
-		absDrift := drift
-		if absDrift < 0 {
-			absDrift = -absDrift
-		}
-		// Threshold >10 to avoid noise on small per-bucket fluctuations.
-		if absDrift > 10 {
-			slog.Warn("autoroute index drift exceeds threshold",
-				"entries", entries,
-				"view_routable", viewRoutable,
-				"drift", drift,
-			)
-		}
+	if leakedEntries > 0 {
+		slog.Warn("autoroute index contains non-routable entries",
+			"entries", entries,
+			"leaked_entries", leakedEntries,
+		)
 	}
 	return nil
 }
@@ -492,6 +501,17 @@ WHERE COALESCE(cr.lifecycle_status, 'active') = 'active'
   AND COALESCE(cr.health_status, 'unknown') IN ('healthy', 'unknown')
   AND COALESCE(p.enabled, true) = true
   AND COALESCE(p.manual_disabled, false) = false
+  AND cmb.available = TRUE
+  AND pm.available = TRUE
+  AND (cmb.unavailable_reason IS NULL OR cmb.unavailable_reason NOT LIKE 'manual%')
+  AND (pm.unavailable_reason IS NULL OR pm.unavailable_reason NOT LIKE 'manual%')
+  AND NOT EXISTS (
+    SELECT 1 FROM node_probe_state nps
+    WHERE nps.credential_id = cmi.credential_id
+      AND nps.raw_model_name = cmi.raw_model
+      AND nps.last_direct_ok = false
+      AND nps.next_retry_at > now()
+  )
 ORDER BY cmi.canonical_id, cmi.score_smart DESC
 `
 
