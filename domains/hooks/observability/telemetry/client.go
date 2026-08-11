@@ -1246,10 +1246,17 @@ $48,
 		// Phase 2 Enhancement: Calculate turn number from session history
 		turnNo := lookupTurnNumber(ctx, tx, sessionID)
 
-		// Build event envelope using outbox builder
-		envelope, err := outbox.BuildRequestCompletedEvent(
+		// Phase 2 Enhancement: Separate correlation_id and idempotency_key from request_id
+		// correlation_id: Use client-provided X-Request-Id if available, fallback to request_id
+		// idempotency_key: Use request_id (Gateway-generated, guarantees uniqueness)
+		correlationID := stringValue(entry.ClientRequestID)
+		idempotencyKey := requestID
+
+		// Build event envelope using outbox builder V2 (with ID separation)
+		envelope, err := outbox.BuildRequestCompletedEventV2(
 			tenantID, sessionID, turnNo,
-			requestID, provider, model, status,
+			requestID, correlationID, idempotencyKey,
+			provider, model, status,
 			promptTokens, completionTokens, latencyMs,
 			success,
 		)
