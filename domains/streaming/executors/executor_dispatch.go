@@ -368,7 +368,13 @@ func (e *Executor) recordDispatchError(params *ExecParams, cand provider.Candida
 	} else if !errorsx.IsClientBug(kind) {
 		e.writeCredentialStateOnError(sideEffectCtx, cand.CredentialID, cand.StandardizedName, kind, err)
 	}
-	_ = probeConsumed
+
+	propagateToBreaker := !errorsx.IsClientBug(kind) && !freeCredentialsTolerateTransient(cand.BillingMode, kind) && len(params.Candidates) > 1
+	if propagateToBreaker && e.Circuit != nil {
+		e.Circuit.RecordFailure(cand.ProviderID, cand.CredentialID, kind)
+	} else if probeConsumed && e.Circuit != nil {
+		e.Circuit.ReleaseProbe(cand.ProviderID, cand.CredentialID)
+	}
 }
 
 // estimatePromptTokens returns a rough pre-send token estimate for tpm pacing.

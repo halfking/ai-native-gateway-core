@@ -123,6 +123,19 @@ func TestParseRetryAfter_PrefersXRateLimitReset(t *testing.T) {
 	}
 }
 
+func TestParseRetryAfter_StaleRateLimitResetUsesDefaultBackoff(t *testing.T) {
+	now := time.Unix(1700000000, 0).UTC()
+	for _, reset := range []string{"0", "1699999990", "1700000000"} {
+		retry, resetAt := parseRetryAfter(now, map[string]string{"X-RateLimit-Reset": reset})
+		if retry != 60 {
+			t.Errorf("X-RateLimit-Reset %q should use 60s default backoff, got %d", reset, retry)
+		}
+		if !resetAt.Equal(now.Add(60 * time.Second)) {
+			t.Errorf("X-RateLimit-Reset %q expected reset=now+60s, got %v", reset, resetAt)
+		}
+	}
+}
+
 func TestParseRetryAfter_RetryAfterSeconds(t *testing.T) {
 	headers := map[string]string{"Retry-After": "30"}
 	now := time.Unix(1700000000, 0).UTC()

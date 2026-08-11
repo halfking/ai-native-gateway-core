@@ -21,7 +21,7 @@ type fakeDeps struct {
 	forwardFn func(ctx context.Context, qr *QueuedRequest, cred CredentialRef) ForwardOutcome
 	// forwardCalls counts forward attempts per credential.
 	forwardCalls map[int]int
-	allowChange bool
+	allowChange  bool
 }
 
 func (f *fakeDeps) routeFunc(ctx context.Context, qr *QueuedRequest) ([]CredentialRef, error) {
@@ -218,7 +218,7 @@ func TestModelChange(t *testing.T) {
 			return ForwardOutcome{}
 		},
 		forwardCalls: map[int]int{},
-		allowChange: true,
+		allowChange:  true,
 	}
 	p := f.pipeline()
 	p.Start()
@@ -243,7 +243,7 @@ func TestNoRoute(t *testing.T) {
 			return ForwardOutcome{Err: errors.New("fail")}
 		},
 		forwardCalls: map[int]int{},
-		allowChange: false,
+		allowChange:  false,
 	}
 	p := f.pipeline()
 	p.Start()
@@ -318,6 +318,48 @@ func TestRPMGovernorPaces(t *testing.T) {
 	elapsed := time.Since(start)
 	if elapsed < 150*time.Millisecond {
 		t.Fatalf("rpm governor did not pace: elapsed=%v (expected >=~300ms)", elapsed)
+	}
+}
+
+// TestRPMGovernorRespectsQueueBudget ensures the governor never sleeps past
+// the queue-wait deadline when pacing would otherwise take longer.
+func TestRPMGovernorRespectsQueueBudget(t *testing.T) {
+	const rpm = 60 // one token per second
+	g := newRPMGovernor(rpm)
+	ctx := context.Background()
+	qr := &QueuedRequest{Ctx: ctx}
+	// Drain the initial burst so the next acquire would naturally wait ~1s.
+	for i := 0; i < rpm; i++ {
+		if err := g.Acquire(ctx, qr, time.Now().Add(5*time.Second)); err != nil {
+			t.Fatalf("drain acquire %d: %v", i, err)
+		}
+	}
+	giveUp := time.Now().Add(40 * time.Millisecond)
+	start := time.Now()
+	if err := g.Acquire(ctx, qr, giveUp); !errors.Is(err, errPaceTimeout) {
+		t.Fatalf("expected errPaceTimeout, got: %v", err)
+	}
+	if elapsed := time.Since(start); elapsed > 250*time.Millisecond {
+		t.Fatalf("rpm governor exceeded budget: elapsed=%v", elapsed)
+	}
+}
+
+// TestTPMGovernorRespectsQueueBudget ensures the governor never sleeps past
+// the queue-wait deadline when token replenishment would otherwise take longer.
+func TestTPMGovernorRespectsQueueBudget(t *testing.T) {
+	g := newTPMGovernor(60) // one token per second
+	ctx := context.Background()
+	// Drain the initial burst so the next acquire would naturally wait ~1s.
+	if err := g.Acquire(ctx, &QueuedRequest{Ctx: ctx, EstimatedTokens: 60}, time.Now().Add(5*time.Second)); err != nil {
+		t.Fatalf("drain acquire: %v", err)
+	}
+	giveUp := time.Now().Add(40 * time.Millisecond)
+	start := time.Now()
+	if err := g.Acquire(ctx, &QueuedRequest{Ctx: ctx, EstimatedTokens: 1}, giveUp); !errors.Is(err, errPaceTimeout) {
+		t.Fatalf("expected errPaceTimeout, got: %v", err)
+	}
+	if elapsed := time.Since(start); elapsed > 250*time.Millisecond {
+		t.Fatalf("tpm governor exceeded budget: elapsed=%v", elapsed)
 	}
 }
 
@@ -446,8 +488,11 @@ func TestAttemptCap(t *testing.T) {
 	}
 	var forwardCalls atomic.Int64
 	f := &fakeDeps{
-		refsByModel:  map[string][]CredentialRef{"m": creds},
-		forwardFn:    func(context.Context, *QueuedRequest, CredentialRef) ForwardOutcome { forwardCalls.Add(1); return ForwardOutcome{Err: errors.New("fail")} },
+		refsByModel: map[string][]CredentialRef{"m": creds},
+		forwardFn: func(context.Context, *QueuedRequest, CredentialRef) ForwardOutcome {
+			forwardCalls.Add(1)
+			return ForwardOutcome{Err: errors.New("fail")}
+		},
 		forwardCalls: map[int]int{},
 	}
 	p := f.pipeline()
