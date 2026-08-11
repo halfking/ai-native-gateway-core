@@ -63,6 +63,7 @@ export default {
     canonicalModel: 'Canonical model',
     selectModelPlaceholder: 'Click to select model…',
     routeNum: 'Route #{n}',
+    routeTier: 'Niveau',
     weight: 'Weight',
     minScore: 'Min score',
     saving: 'Saving…',
@@ -73,6 +74,19 @@ export default {
       confirmEnable: 'enable',
       confirmDisable: 'disable',
     },
+  },
+  // Two-layer priority response sequence (primary / secondary).
+  layers: {
+    primary: 'Principal',
+    primaryHint: 'Essayé en premier · repli uniquement lorsque tous les modèles sont épuisés',
+    secondary: 'Secondaire',
+    secondaryHint: 'Essayé dans l\'ordre après que la couche principale est épuisée',
+    maxRoutesPerLayer: 'Max {n} par couche · glisser-déposer pour réorganiser',
+    dragToReorder: 'Glisser-déposer pour réorganiser la priorité',
+    emptyPrimary: 'Aucun modèle principal — cliquer sur « Ajouter principal »',
+    emptySecondary: 'Aucun modèle secondaire — cliquer sur « Ajouter secondaire »',
+    addPrimary: '+ Ajouter principal',
+    addSecondary: '+ Ajouter secondaire',
   },
   routes: {
     title: 'Model type routes',
@@ -102,7 +116,7 @@ export default {
     syncFromACC: 'Sync from ACC',
     syncFromACCTooltip: 'Pull work type config from ACC',
     create: '+ Create',
-    hint: 'Click row to enter detail, configure basic attributes and model type routes (max 3).',
+    hint: 'Click row to enter detail, configure basic attributes and primary/secondary model layers.',
     tableHeaders: {
       index: '#',
       key: 'Key',
@@ -116,6 +130,7 @@ export default {
     notConfigured: 'Not configured',
     rowEnabled: 'Enabled',
     rowDisabled: 'Disabled',
+    routesSummary: '{primary} principal · {secondary} secondaire',
   },
   modal: {
     title: 'Create work type',

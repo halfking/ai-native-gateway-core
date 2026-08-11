@@ -63,6 +63,7 @@ export default {
     canonicalModel: 'Canonical model',
     selectModelPlaceholder: 'Click to select model…',
     routeNum: 'Route #{n}',
+    routeTier: '階層',
     weight: 'Weight',
     minScore: 'Min score',
     saving: 'Saving…',
@@ -73,6 +74,19 @@ export default {
       confirmEnable: 'enable',
       confirmDisable: 'disable',
     },
+  },
+  // Two-layer priority response sequence (primary / secondary).
+  layers: {
+    primary: '優先',
+    primaryHint: '最初に試行 · 全モデル枯渇後にのみフォールバック',
+    secondary: '代替',
+    secondaryHint: '優先層が枯渇した後、順に試行',
+    maxRoutesPerLayer: '各層最大 {n} 件 · ドラッグで並び替え',
+    dragToReorder: 'ドラッグで優先度を並び替え',
+    emptyPrimary: '優先モデル未設定 — 「優先を追加」をクリック',
+    emptySecondary: '代替モデル未設定 — 「代替を追加」をクリック',
+    addPrimary: '+ 優先を追加',
+    addSecondary: '+ 代替を追加',
   },
   routes: {
     title: 'Model type routes',
@@ -102,7 +116,7 @@ export default {
     syncFromACC: 'Sync from ACC',
     syncFromACCTooltip: 'Pull work type config from ACC',
     create: '+ Create',
-    hint: 'Click row to enter detail, configure basic attributes and model type routes (max 3).',
+    hint: 'Click row to enter detail, configure basic attributes and primary/secondary model layers.',
     tableHeaders: {
       index: '#',
       key: 'Key',
@@ -116,6 +130,7 @@ export default {
     notConfigured: 'Not configured',
     rowEnabled: 'Enabled',
     rowDisabled: 'Disabled',
+    routesSummary: '優先 {primary} · 代替 {secondary}',
   },
   modal: {
     title: 'Create work type',
