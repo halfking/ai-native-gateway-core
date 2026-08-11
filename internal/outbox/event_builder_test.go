@@ -153,3 +153,68 @@ func TestBuildRequestCompletedEvent_EventIDUniqueness(t *testing.T) {
 		t.Errorf("event_id prefix = %q, want %q", envelope1.EventID[:4], "evt-")
 	}
 }
+
+func TestBuildRequestCompletedEvent_IDSeparation(t *testing.T) {
+	tests := []struct {
+		name            string
+		requestID       string
+		correlationID   string
+		idempotencyKey  string
+		wantRequestID   string
+		wantCorrelation string
+		wantIdempotency string
+	}{
+		{
+			name:            "all IDs different",
+			requestID:       "req-001",
+			correlationID:   "corr-xyz",
+			idempotencyKey:  "idem-abc",
+			wantRequestID:   "req-001",
+			wantCorrelation: "corr-xyz",
+			wantIdempotency: "idem-abc",
+		},
+		{
+			name:            "correlation empty defaults to request_id",
+			requestID:       "req-002",
+			correlationID:   "",
+			idempotencyKey:  "idem-def",
+			wantRequestID:   "req-002",
+			wantCorrelation: "req-002",
+			wantIdempotency: "idem-def",
+		},
+		{
+			name:            "all IDs same (backward compatible)",
+			requestID:       "req-003",
+			correlationID:   "req-003",
+			idempotencyKey:  "req-003",
+			wantRequestID:   "req-003",
+			wantCorrelation: "req-003",
+			wantIdempotency: "req-003",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			envelope, err := BuildRequestCompletedEventV2(
+				"tenant-1", "session-1", 1,
+				tt.requestID, tt.correlationID, tt.idempotencyKey,
+				"anthropic", "claude-test", "succeeded",
+				100, 50, 1000, true,
+			)
+			if err != nil {
+				t.Fatalf("BuildRequestCompletedEventV2 failed: %v", err)
+			}
+
+			payload := envelope.Payload
+			if payload["request_id"] != tt.wantRequestID {
+				t.Errorf("request_id = %v, want %v", payload["request_id"], tt.wantRequestID)
+			}
+			if payload["correlation_id"] != tt.wantCorrelation {
+				t.Errorf("correlation_id = %v, want %v", payload["correlation_id"], tt.wantCorrelation)
+			}
+			if payload["idempotency_key"] != tt.wantIdempotency {
+				t.Errorf("idempotency_key = %v, want %v", payload["idempotency_key"], tt.wantIdempotency)
+			}
+		})
+	}
+}
