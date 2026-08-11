@@ -66,6 +66,34 @@ type Config struct {
 	// Stream failover
 	StreamRetryThreshold int `yaml:"stream_retry_threshold" env:"LLM_GATEWAY_STREAM_RETRY_THRESHOLD"`
 
+	// StreamRetryEnabled (2026-08-12): when true, internal/streamretry wraps
+	// the v1 chat handler at the mux layer so upstream 5xx / 429 / connection
+	// drops BEFORE the first byte triggers exponential-backoff retry on the
+	// server side. Client stays connected via ": thinking:" SSE comments;
+	// once the upstream recovers the response continues transparently.
+	// Disabled by default; enable via LLM_GATEWAY_STREAM_RETRY_ENABLED=true.
+	//
+	// Independent of StreamRetryThreshold (which controls per-request
+	// candidate failover inside the executor).
+	StreamRetryEnabled bool `yaml:"stream_retry_enabled" env:"LLM_GATEWAY_STREAM_RETRY_ENABLED"`
+
+	// StreamRetryMaxRetries (2026-08-12): retry budget after the initial
+	// attempt. Default 3.
+	StreamRetryMaxRetries int `yaml:"stream_retry_max_retries" env:"LLM_GATEWAY_STREAM_RETRY_MAX_RETRIES"`
+
+	// StreamRetryBaseDelayMs (2026-08-12): base delay for exponential
+	// backoff. Default 200ms. Real delay = base * 2^attempt with ±20% jitter.
+	StreamRetryBaseDelayMs int `yaml:"stream_retry_base_delay_ms" env:"LLM_GATEWAY_STREAM_RETRY_BASE_DELAY_MS"`
+
+	// StreamRetryMaxDelayMs (2026-08-12): cap on per-attempt backoff.
+	// Default 5000ms.
+	StreamRetryMaxDelayMs int `yaml:"stream_retry_max_delay_ms" env:"LLM_GATEWAY_STREAM_RETRY_MAX_DELAY_MS"`
+
+	// StreamRetryKeepaliveSecs (2026-08-12): how often to emit SSE thinking
+	// comments during the retry sleep so the client connection doesn't
+	// idle-out. Default 10s; must be < client-side read idle timeout.
+	StreamRetryKeepaliveSecs int `yaml:"stream_retry_keepalive_secs" env:"LLM_GATEWAY_STREAM_RETRY_KEEPALIVE_SECS"`
+
 	// EnablePreStreamKeepalive (2026-06-28): when true, the gateway commits
 	// the SSE response (200 + text/event-stream) and emits periodic
 	// ": keep-alive\n\n" comments during upstream credential retries so
@@ -248,25 +276,34 @@ func Load() *Config {
 		// Combined with all-protocol pre-stream keepalive (now on by default),
 		// the client connection stays alive during the wait, so a 180s budget
 		// no longer risks client-side idle disconnects.
-		FirstByteTimeout:        180,
-		KeepaliveInterval:       15,
+		FirstByteTimeout:  180,
+		KeepaliveInterval: 15,
 		// 2026-07-23: Session TTL 从 168h (7d) 改为 72h (3d)。
 		// 7 天累计 23.6 万个 session hash keys 占用 91% 的 Redis 内存。
 		// 3 天足以覆盖 OpenCode/Cursor 用户的连续编辑场景。
 		// 如果需要更长可设 LLM_GATEWAY_SESSION_TTL_HOURS 环境变量。
-		SessionTTLHours:                    72,
-		PendingTTLSeconds:                  300,
-		SessionIDBodyKeys:                  parseCommaList(os.Getenv("LLM_GATEWAY_SESSION_ID_BODY_KEYS")),
-	StreamRetryThreshold:               50,    // Default: allow stream failover if < 50 chunks sent
-	// 2026-08-04: ON by default for ALL streaming protocols. Previously
-	// opt-in and limited to openai-completions, which left Anthropic Messages
-	// and Responses clients with no heartbeat before the first upstream
-	// chunk — reasoning models' long thinking window then tripped client/
-	// proxy idle timeouts, causing the "agent task interrupted through the
-	// gateway" symptom. Disable via LLM_GATEWAY_ENABLE_PRE_STREAM_KEEPALIVE=false.
-	EnablePreStreamKeepalive:           true,
-		PoolGracePeriod:                    180,   // Default: 3 minutes grace period before marking pool as dead
-		DefaultCredentialConcurrency:       20,    // 2026-06-24: 5 → 20. 每个凭据 20 个 fp_slot，更宽松避免争抢。
+		SessionTTLHours:      72,
+		PendingTTLSeconds:    300,
+		SessionIDBodyKeys:    parseCommaList(os.Getenv("LLM_GATEWAY_SESSION_ID_BODY_KEYS")),
+		StreamRetryThreshold: 50, // Default: allow stream failover if < 50 chunks sent
+		// 2026-08-12: streamretry 默认关闭。开启后 internal/streamretry
+		// 会在 mux 入口包一层重试 executor，掩盖 pre-stream 5xx/429/连接中断。
+		// 通过 LLM_GATEWAY_STREAM_RETRY_ENABLED=true 启用；建议先在
+		// staging/245 跑一周观察 metrics，再上 154 生产。
+		StreamRetryEnabled:       false,
+		StreamRetryMaxRetries:    3,
+		StreamRetryBaseDelayMs:   200,
+		StreamRetryMaxDelayMs:    5000,
+		StreamRetryKeepaliveSecs: 10,
+		// 2026-08-04: ON by default for ALL streaming protocols. Previously
+		// opt-in and limited to openai-completions, which left Anthropic Messages
+		// and Responses clients with no heartbeat before the first upstream
+		// chunk — reasoning models' long thinking window then tripped client/
+		// proxy idle timeouts, causing the "agent task interrupted through the
+		// gateway" symptom. Disable via LLM_GATEWAY_ENABLE_PRE_STREAM_KEEPALIVE=false.
+		EnablePreStreamKeepalive:           true,
+		PoolGracePeriod:                    180, // Default: 3 minutes grace period before marking pool as dead
+		DefaultCredentialConcurrency:       20,  // 2026-06-24: 5 → 20. 每个凭据 20 个 fp_slot，更宽松避免争抢。
 		EnableCredentialFpSlots:            true,
 		CredentialFpSlotActiveGateSeconds:  300,   // 5 min — 5 min 内不允许抢的"
 		CredentialFpSlotReclaimIdleSeconds: 1800,  // 30 min — 自动清除无活动的时长

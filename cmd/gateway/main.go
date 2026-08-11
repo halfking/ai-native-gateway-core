@@ -97,6 +97,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/internal/outbox"
 	"github.com/kaixuan/llm-gateway-go/internal/quality"
 	"github.com/kaixuan/llm-gateway-go/internal/sessionv2mirror"
+	"github.com/kaixuan/llm-gateway-go/internal/streamretry" //nolint:depguard // 2026-08-12: v1 chat 入口的 pre-stream 重试包装
 	gwtrace "github.com/kaixuan/llm-gateway-go/internal/trace"
 	"github.com/kaixuan/llm-gateway-go/licensing"
 	"github.com/kaixuan/llm-gateway-go/maas"
@@ -4240,10 +4241,51 @@ func main() {
 		slog.Info("v2 pipeline: flag not set; 4 v1 endpoints stay on v1 chatHandler (production default)")
 	}
 
-	mux.Handle("/v1/chat/completions", chatHandler)
-	mux.Handle("/v1/completions", chatHandler)
-	mux.Handle("/v1/messages", messagesHandler)
-	mux.Handle("/v1/responses", responsesHandler)
+	// ── 2026-08-12: pre-stream retry wrapper (streamretry) ────────────
+	// Wrap the v1 chat handler with internal/streamretry.DefaultStreamExecutor
+	// so upstream 5xx / 429 / connection drops BEFORE the first byte are
+	// retried server-side. The client stays connected via ": thinking:" SSE
+	// comments emitted during backoff sleeps. Off by default; enable via
+	// LLM_GATEWAY_STREAM_RETRY_ENABLED=true. The wrapper implements
+	// http.Handler so it can replace chatHandler in mux.Handle() directly.
+	chatRouteHandler := http.Handler(chatHandler)
+	messagesRouteHandler := http.Handler(messagesHandler)
+	responsesRouteHandler := http.Handler(responsesHandler)
+	if cfg.StreamRetryEnabled {
+		srCfg := streamretry.Config{
+			MaxRetries:        cfg.StreamRetryMaxRetries,
+			BaseDelayMs:       cfg.StreamRetryBaseDelayMs,
+			MaxDelayMs:        cfg.StreamRetryMaxDelayMs,
+			KeepaliveInterval: time.Duration(cfg.StreamRetryKeepaliveSecs) * time.Second,
+			Enabled:           true,
+		}
+		if srCfg.MaxRetries < 0 {
+			srCfg.MaxRetries = 3
+		}
+		if srCfg.BaseDelayMs <= 0 {
+			srCfg.BaseDelayMs = 200
+		}
+		if srCfg.MaxDelayMs <= 0 {
+			srCfg.MaxDelayMs = 5000
+		}
+		if srCfg.KeepaliveInterval <= 0 {
+			srCfg.KeepaliveInterval = 10 * time.Second
+		}
+		wrapped := streamretry.NewDefaultStreamExecutor(chatHandler, srCfg)
+		chatRouteHandler = wrapped
+		messagesRouteHandler = streamretry.NewDefaultStreamExecutor(messagesHandler, srCfg)
+		responsesRouteHandler = streamretry.NewDefaultStreamExecutor(responsesHandler, srCfg)
+		slog.Info("stream_retry_enabled: chat handler wrapped with NewDefaultStreamExecutor",
+			"max_attempts", srCfg.MaxRetries,
+			"base_delay_ms", srCfg.BaseDelayMs,
+			"max_delay_ms", srCfg.MaxDelayMs,
+			"keepalive_interval", srCfg.KeepaliveInterval)
+	}
+
+	mux.Handle("/v1/chat/completions", chatRouteHandler)
+	mux.Handle("/v1/completions", chatRouteHandler)
+	mux.Handle("/v1/messages", messagesRouteHandler)
+	mux.Handle("/v1/responses", responsesRouteHandler)
 	if embeddingsHandler != nil {
 		mux.Handle("/v1/embeddings", embeddingsHandler)
 	}
@@ -4268,7 +4310,7 @@ func main() {
 	// fallback inside v2DispatchHandler; the Pipeline re-routes
 	// through them on a stage error or feature-flag off path.
 	if v2DispatchEnabled {
-		if _, v2Deps, ok := v2DispatchMux(chatHandler, messagesHandler, responsesHandler); ok && v2Deps != nil {
+		if _, v2Deps, ok := v2DispatchMux(chatRouteHandler, messagesRouteHandler, responsesRouteHandler); ok && v2Deps != nil {
 			// 2026-07-18 P1 fix: Wire the sensitive word engine created above
 			// into v2Deps so the Pipeline plugins can reference it.
 			v2Deps.SensitiveWordEngine = swEngine
