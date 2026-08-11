@@ -189,22 +189,32 @@ func TestDecideWithFeatureFlags_SubFeatureEnablesV2Path(t *testing.T) {
 }
 
 func TestIsFallbackWinner(t *testing.T) {
-	// Exact sentinel: single candidate, Composite=50, PriceScore=50, MatchScore<=30
+	// doc 16 §5-E: explicit IsFallback flag, not float triple-equal.
+	// The legacy sentinel values (Composite=50, MatchScore=30, PriceScore=50)
+	// must NOT be detected as fallback on their own — they were too easy
+	// to produce accidentally and previously caused mis-classification.
 	fallbackResult := []ScoredCandidate{{
 		Candidate: Candidate{CanonicalName: "fallback-model"},
-		Breakdown: ScoringBreakdown{Composite: 50, MatchScore: 30, PriceScore: 50},
+		Breakdown: ScoringBreakdown{
+			Composite: 50, MatchScore: 30, PriceScore: 50,
+			IsFallback: true,
+		},
 	}}
 	if !isFallbackWinner(fallbackResult) {
-		t.Fatal("expected fallback sentinel to be detected")
+		t.Fatal("expected IsFallback=true to be detected")
 	}
 
-	// MatchScore = 0 (degenerate case in RecommendV2) should also be detected
+	// Same sentinel numbers WITHOUT the flag must NOT be detected as fallback.
+	// This is the regression case for doc 16 §5-E: a normal-scoring candidate
+	// that happens to hit all three sentinel values would have been flagged
+	// under the old triple-equal detection.
 	degenerate := []ScoredCandidate{{
 		Candidate: Candidate{CanonicalName: "fallback-model"},
 		Breakdown: ScoringBreakdown{Composite: 50, MatchScore: 0, PriceScore: 50},
+		// IsFallback intentionally omitted → false.
 	}}
-	if !isFallbackWinner(degenerate) {
-		t.Fatal("expected fallback with MatchScore=0 to be detected")
+	if isFallbackWinner(degenerate) {
+		t.Fatal("sentinel numbers alone must NOT trigger fallback — IsFallback flag is required")
 	}
 
 	// Normal scoring result should NOT be flagged as fallback
@@ -216,13 +226,13 @@ func TestIsFallbackWinner(t *testing.T) {
 		t.Fatal("normal multi-candidate result should not be flagged as fallback")
 	}
 
-	// Single candidate but with non-sentinel score should NOT be flagged
+	// Single candidate with non-sentinel score and no IsFallback must NOT be flagged.
 	nonSentinel := []ScoredCandidate{{
 		Candidate: Candidate{CanonicalName: "lone"},
 		Breakdown: ScoringBreakdown{Composite: 90, MatchScore: 80, PriceScore: 70},
 	}}
 	if isFallbackWinner(nonSentinel) {
-		t.Fatal("single candidate with non-sentinel score should not be flagged")
+		t.Fatal("single candidate with no IsFallback should not be flagged")
 	}
 }
 

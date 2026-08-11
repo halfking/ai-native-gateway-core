@@ -84,7 +84,7 @@ func TestRecommendV2WithHints_AffinityEndToEnd(t *testing.T) {
 	// Affinity is still recorded (so the shadow/exploration data exists), but
 	// the composite must be the un-scaled 4-dimension value.
 	fourDim := ScoreWithChannelQuality(baseline.Candidate, TaskCode,
-		ComputeAvgPriceByCanonical(idx.entries), 0)
+		recommendCostContext(idx.entries), 0)
 	if diff := baseline.Breakdown.Composite - fourDim.Composite; absf(diff) > 1e-9 {
 		t.Errorf("explore composite %.6f != 4-dim %.6f (diff %.6f)",
 			baseline.Breakdown.Composite, fourDim.Composite, diff)

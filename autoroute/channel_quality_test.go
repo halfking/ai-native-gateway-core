@@ -15,6 +15,26 @@ import (
 	"testing"
 )
 
+// priceCtxFromAvgPrice 是 doc 16 §5-D 修复后的测试辅助：把旧的
+// `map[int]float64{canonicalID: avgPrice}`（语义模糊）转成
+// `CostContext{PriceP75: max(values)}`（与新 PriceScore 公式一致）。
+// 测试 fixture 中的所有候选共享同一价格，因此 max(values) 等价于
+// 整个候选池的 P75。
+func priceCtxFromAvgPrice(m map[int]float64) CostContext {
+	var c CostContext
+	var prices []float64
+	for _, v := range m {
+		if v > 0 {
+			prices = append(prices, v)
+		}
+	}
+	if len(prices) > 0 {
+		sort.Float64s(prices)
+		c.PriceP75 = prices[len(prices)-1]
+	}
+	return c
+}
+
 // ── scoreChannelQuality ──────────────────────────────────────────
 
 func TestScoreChannelQuality_ByCategory(t *testing.T) {
@@ -215,9 +235,10 @@ func TestScoreWithChannelQuality_4Dim(t *testing.T) {
 	}
 
 	avgPrices := map[int]float64{1: 40, 2: 40}
+	costCtx := priceCtxFromAvgPrice(avgPrices)
 
-	sMinimax := ScoreWithChannelQuality(minimax, TaskCode, avgPrices, 0)
-	sNvidia := ScoreWithChannelQuality(nvidiaNim, TaskCode, avgPrices, 0)
+	sMinimax := ScoreWithChannelQuality(minimax, TaskCode, costCtx, 0)
+	sNvidia := ScoreWithChannelQuality(nvidiaNim, TaskCode, costCtx, 0)
 
 	// ChannelQuality 应当清晰分层
 	if sMinimax.ChannelQuality <= sNvidia.ChannelQuality {
@@ -243,33 +264,36 @@ func TestScoreWithChannelQuality_Formula(t *testing.T) {
 	c := Candidate{
 		TaskMatchScore:    0.5, // → intent 50
 		UnitPriceInPer1M:  100,
-		UnitPriceOutPer1M: 100,        // → price (1000-200)/10 = 80
+		UnitPriceOutPer1M: 100,        // blended = 200
 		ProviderCategory:  "official", // → channel base 90
 		SuccessRate:       0.97,       // → +10 delta → channel 100
 		P95LatencyMs:      1500,       // 满足 p95<2000 触发 +10
 	}
 	avgPrices := map[int]float64{0: 200}
+	costCtx := priceCtxFromAvgPrice(avgPrices)
 
-	got := ScoreWithChannelQuality(c, TaskCode, avgPrices, 0)
-	// reliability: 0.97*80 + 20 (p95<=1000ms 阈值改: <=1000) — 1500 走 <=3000 档 → +12
-	//   实际: 0.97*80 = 77.6, latencyFactor 12 → 89.6
-	want := 50*0.4 + 80*0.2 + 100*0.3 + 89.6*0.1 + 0
+	got := ScoreWithChannelQuality(c, TaskCode, costCtx, 0)
+	// doc 16 §5-D: PriceScore = P75 归一化. P75 = max([200]) = 200.
+	// ratio = 200/200 = 1.0 → score = 100*(1.5-1.0) = 50.
+	// reliability: 0.97*80 + 12 (p95<=3000ms) → 89.6
+	want := 50*0.4 + 50*0.2 + 100*0.3 + 89.6*0.1 + 0
 	if diff := got.Composite - want; diff < -0.5 || diff > 0.5 {
 		t.Errorf("composite: got %.2f, want ~%.2f (diff %.2f)", got.Composite, want, diff)
 	}
 	if got.MatchScore != 50 {
 		t.Errorf("MatchScore: got %.2f, want 50", got.MatchScore)
 	}
-	if got.PriceScore != 80 {
-		t.Errorf("PriceScore: got %.2f, want 80", got.PriceScore)
+	if got.PriceScore != 50 {
+		t.Errorf("PriceScore: got %.2f, want 50 (P75=200, ratio=1.0)", got.PriceScore)
 	}
 	if got.ChannelQuality != 100 {
 		t.Errorf("ChannelQuality: got %.2f, want 100", got.ChannelQuality)
 	}
 }
 
-func TestScoreSimplified_LegacyFormulaPreserved(t *testing.T) {
-	// 验证 ScoreSimplified 仍然使用旧的 2 维公式（向后兼容）
+func TestScoreSimplified_2DimFormula(t *testing.T) {
+	// doc 16 §5-D: ScoreSimplified 仍用 2 维公式（intent*0.6 + price*0.4）
+	// 但 price 走 P75 归一化（cohort P75 = 200，blended=200 → ratio=1.0 → 50）。
 	c := Candidate{
 		TaskMatchScore:    0.5,
 		UnitPriceInPer1M:  100,
@@ -277,11 +301,12 @@ func TestScoreSimplified_LegacyFormulaPreserved(t *testing.T) {
 		ProviderCategory:  "official",
 	}
 	avgPrices := map[int]float64{0: 200}
+	costCtx := priceCtxFromAvgPrice(avgPrices)
 
-	got := ScoreSimplified(c, TaskCode, avgPrices, 0)
-	want := 50*0.6 + 80*0.4 + 0
+	got := ScoreSimplified(c, TaskCode, costCtx, 0)
+	want := 50*0.6 + 50*0.4 + 0
 	if diff := got.Composite - want; diff < -0.01 || diff > 0.01 {
-		t.Errorf("ScoreSimplified composite: got %.2f, want %.2f (legacy 2-dim)", got.Composite, want)
+		t.Errorf("ScoreSimplified composite: got %.2f, want %.2f (2-dim)", got.Composite, want)
 	}
 }
 
@@ -501,8 +526,9 @@ func TestChannelQualityRouting_MinimaxBeatsNvidiaNim(t *testing.T) {
 	}
 
 	avgPrices := map[int]float64{1: 40, 2: 40}
-	sMinimax := ScoreWithChannelQuality(minimax, TaskCode, avgPrices, 0)
-	sNvidia := ScoreWithChannelQuality(nvidiaNim, TaskCode, avgPrices, 0)
+	costCtx := priceCtxFromAvgPrice(avgPrices)
+	sMinimax := ScoreWithChannelQuality(minimax, TaskCode, costCtx, 0)
+	sNvidia := ScoreWithChannelQuality(nvidiaNim, TaskCode, costCtx, 0)
 
 	// 业务断言 1：Minimax 应该是 Preferred（>= 50）
 	if sMinimax.ChannelQuality < 50 {
@@ -563,8 +589,9 @@ func TestChannelQualityRouting_FallbackUsedWhenSaturated(t *testing.T) {
 	}
 
 	avgPrices := map[int]float64{1: 40, 2: 40}
-	sSat := ScoreWithChannelQuality(saturated, TaskCode, avgPrices, 0)
-	sFree := ScoreWithChannelQuality(freeBackup, TaskCode, avgPrices, 0)
+	costCtx := priceCtxFromAvgPrice(avgPrices)
+	sSat := ScoreWithChannelQuality(saturated, TaskCode, costCtx, 0)
+	sFree := ScoreWithChannelQuality(freeBackup, TaskCode, costCtx, 0)
 
 	// 验证：freeBackup 确实落入 fallback 池
 	if sFree.ChannelQuality >= ChannelQualityPreferredThreshold {

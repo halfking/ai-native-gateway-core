@@ -92,6 +92,7 @@ func (idx *Index) RecommendV2WithHints(
 					Composite:  50,
 					MatchScore: 30,
 					PriceScore: 50,
+					IsFallback: true,
 				},
 			}}
 		}
@@ -131,13 +132,17 @@ func (idx *Index) RecommendV2WithHints(
 					Composite:  50,
 					MatchScore: 30,
 					PriceScore: 50,
+					IsFallback: true,
 				},
 			}}
 		}
 		return nil
 	}
 
-	avgPriceByCanonical := ComputeAvgPriceByCanonical(candidatePool)
+	// doc 16 §5-D: PriceScore 改用 cohort P75 归一化，确保价格区分力。
+	// 推荐路径统一以 recommendCostContext(candidatePool) 作为 PriceP75
+	// 基线（与 scoring.go::scorePrice 公式一致）。
+	recommendCostCtx := recommendCostContext(candidatePool)
 
 	correctionScoreByModel, err := idx.loadCorrectionScores(ctx, pool, correctionLoader, sessionID, task)
 	if err != nil {
@@ -178,19 +183,19 @@ func (idx *Index) RecommendV2WithHints(
 			switch {
 			case affinityApplies && c.CanonicalID > 0:
 				aff, _ := store.Lookup(task, profile, tenantID, int64(c.CanonicalID))
-				bd = ScoreWithAffinity(c, task, avgPriceByCanonical, correction, aff, true)
+				bd = ScoreWithAffinity(c, task, recommendCostCtx, correction, aff, true)
 			case affinityEnabled && c.CanonicalID > 0:
 				// Shadow / explore: record the affinity we *would* have
 				// applied, but do not change the composite. Explore requests
 				// under mode=on get explore=true so P3 can compare arms.
 				aff, _ := store.Lookup(task, profile, tenantID, int64(c.CanonicalID))
-				bd = ScoreWithAffinity(c, task, avgPriceByCanonical, correction, aff, false)
+				bd = ScoreWithAffinity(c, task, recommendCostCtx, correction, aff, false)
 				bd.Explore = exploreBucket
 			default:
-				bd = ScoreWithChannelQuality(c, task, avgPriceByCanonical, correction)
+				bd = ScoreWithChannelQuality(c, task, recommendCostCtx, correction)
 			}
 		case flags.UseSimplifiedScoring:
-			bd = ScoreSimplified(c, task, avgPriceByCanonical, correction)
+			bd = ScoreSimplified(c, task, recommendCostCtx, correction)
 		default:
 			// NET-013 fix: default branch now invokes the legacy 8-dim
 			// Score() so profile (smart / speed_first / cost_first) is
@@ -234,6 +239,7 @@ func (idx *Index) RecommendV2WithHints(
 					Composite:  50,
 					MatchScore: scored[0].Breakdown.MatchScore,
 					PriceScore: 50,
+					IsFallback: true,
 				},
 			}}
 		}
@@ -507,15 +513,14 @@ func (idx *Index) get48hFallback(ctx context.Context) *Candidate {
 }
 
 // isFallbackWinner reports whether the recommendation result came from the
-// 48h popularity fallback. RecommendV2's fallback path always returns exactly
-// one candidate with the sentinel breakdown {Composite: 50, MatchScore ≤ 30,
-// PriceScore: 50}. This signature cannot be produced by normal scoring.
+// 48h popularity fallback. doc 16 §5-E 修复：旧实现用浮点三连等
+// `Composite==50 && PriceScore==50 && MatchScore<=30` 判定，但正常候选
+// 巧合命中会误翻 FallbackUsed；现在改为检查显式的 IsFallback 标记。
 func isFallbackWinner(results []ScoredCandidate) bool {
 	if len(results) != 1 {
 		return false
 	}
-	bd := results[0].Breakdown
-	return bd.Composite == 50 && bd.PriceScore == 50 && bd.MatchScore <= 30
+	return results[0].Breakdown.IsFallback
 }
 
 // ValidateCachedChoice verifies that a cached credential/model pair is still available.
