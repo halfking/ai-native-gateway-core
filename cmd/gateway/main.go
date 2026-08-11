@@ -65,7 +65,8 @@ import (
 	"github.com/kaixuan/llm-gateway-go/domains/integration"                         //nolint:depguard // clientprofile worker wiring
 	"github.com/kaixuan/llm-gateway-go/domains/modelquality"                        //nolint:depguard // 模型质量监控
 	"github.com/kaixuan/llm-gateway-go/domains/notification"                        //nolint:depguard // 审批通知器
-	"github.com/kaixuan/llm-gateway-go/domains/providerprofile"                      //nolint:depguard // 供应商画像告警 handler (AlertType)
+	"github.com/kaixuan/llm-gateway-go/domains/providerprofile"                     //nolint:depguard // 供应商画像告警 handler (AlertType)
+	"github.com/kaixuan/llm-gateway-go/domains/quotafetcher"                        //nolint:depguard // P1 proactive upstream quota prefetch
 	"github.com/kaixuan/llm-gateway-go/domains/routeincident"                       //nolint:depguard // 2026-07-13 route incident diagnosis (Phase 1)
 	"github.com/kaixuan/llm-gateway-go/domains/routingstate"
 	"github.com/kaixuan/llm-gateway-go/domains/session" //nolint:depguard // historical violation, B1 routing.go CQRS will fix
@@ -135,6 +136,11 @@ var (
 	// gRestrictedMode 在 license 校验失败时设为 true；router 注册阶段
 	// 据此决定是否启用 licensing.RestrictedModeMiddleware。
 	gRestrictedMode bool
+	// gOmniFreeTracker 在 OMNIFREE_ENABLED=true 的装配分支里写入，在 SSE hub
+	// 装配阶段（不同的嵌套作用域）读取以注入 QuotaEventSink。两个分支处在
+	// main() 的不同 if 嵌套中，无法用局部变量跨越，故沿用本文件既有的
+	// 包级 late-binding 模式（与 gAuditBus 等一致）。
+	gOmniFreeTracker *freeresource.QuotaTracker
 )
 
 func main() {
@@ -1479,12 +1485,21 @@ func main() {
 			stdlibDB := dbConn.Stdlib()
 			if stdlibDB != nil {
 				resolver := autocombo.NewResolver(stdlibDB)
-				tracker := freeresource.NewQuotaTracker(stdlibDB)
-				factory := autocombo.NewVirtualFactory(stdlibDB, tracker)
-				chatHandler.SetOmniFree(resolver, factory, tracker)
+				gOmniFreeTracker = freeresource.NewQuotaTracker(stdlibDB)
+				factory := autocombo.NewVirtualFactory(stdlibDB, gOmniFreeTracker)
+				// P1 主动配额预取 (2026-08-11): wire a proactive upstream quota
+				// fetcher so preflightQuota reads real remaining quota (OpenRouter
+				// /api/v1/key, DeepSeek/SiliconFlow balance) instead of relying
+				// solely on 429-reactive calibration. providerClient implements
+				// quotafetcher.KeyRevealer (RevealAPIKey, cached+singleflighted).
+				quotaFetchMgr := quotafetcher.NewManager(providerClient)
+				quotaFetchMgr.RegisterBuiltins()
+				factory.SetQuotaFetcher(autocombo.NewQuotaFetcherFromManager(quotaFetchMgr))
+				chatHandler.SetOmniFree(resolver, factory, gOmniFreeTracker)
 				slog.Info("omnifree: virtual auto/* routing enabled",
 					"resolver_db", stdlibDB != nil,
-					"tracker_enabled", true)
+					"tracker_enabled", true,
+					"quota_fetcher_providers", []string{"openrouter", "deepseek", "siliconflow", "openai"})
 			}
 		}
 
@@ -1642,6 +1657,7 @@ func main() {
 	// 自检 tab. Declared at this scope so it can be constructed in the
 	// system-monitor wiring block and later wired into probe emitters.
 	var probeStreamHub *admin.ProbeSSEHub
+	var freePoolSSEHub *admin.FreePoolSSEHub
 	var anomalyHarvester *streaming.AnomalyHarvester
 	var integrityDriftWorker *bg.IntegrityFingerprintDrift
 	var integrityHarvester *bg.IntegrityHarvester
@@ -2211,6 +2227,18 @@ func main() {
 		// 单实例内存模式（仅同实例 fan-out，无 Redis 持久化）。
 		probeStreamHub = admin.NewProbeSSEHub(fpSlotRedis)
 		adminHandler.SetProbeStreamSSE(probeStreamHub)
+
+		// 2026-08-11: 免费资源池 SSE 流（与 probe / live-stream 物理隔离）。
+		// 让凭据配额状态变化（rate_limited / quota_exhausted / recovered）实时
+		// 推送到「免费资源」tab，管理员无需手动刷新。fpSlotRedis 为 nil 时走
+		// 单实例内存模式（仅同实例 fan-out）。
+		freePoolSSEHub = admin.NewFreePoolSSEHub(fpSlotRedis)
+		adminHandler.SetFreePoolSSE(freePoolSSEHub)
+		// Wire the SSE sink into the OmniFree QuotaTracker so credential quota
+		// state changes are pushed to the 免费资源 tab in real time.
+		if gOmniFreeTracker != nil {
+			gOmniFreeTracker.SetQuotaSink(freePoolSSEHub)
+		}
 
 		// 2026-07-23: 系统监测模块 — 探测任务的唯一入口 (design docs/会话优化v2/32).
 		// env LLM_GATEWAY_SYSTEM_MONITOR_ENABLED=true 才会启；Phase 1 默认关。

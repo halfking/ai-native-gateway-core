@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { useI18n } from 'vue-i18n'
-import { ref, onMounted, computed, nextTick } from 'vue'
+import { ref, onMounted, onUnmounted, computed, nextTick } from 'vue'
 import {
   getFreePoolStatus,
   getFreePoolMethods,
@@ -16,6 +16,8 @@ import {
   quickEntryFreePool,
   createFreePoolTempEmail,
   pollFreePoolTempEmail,
+  bulkRegisterFreePool,
+  openFreePoolStream,
   type FreePoolStatusResponse,
   type FreePoolEntry,
   type FreePoolCatalogEntry,
@@ -39,6 +41,33 @@ const error     = ref('')
 const message   = ref('')
 const modelQuery = ref('')
 const activeTab = ref<'models' | 'providers' | 'catalog' | 'keys' | 'guide' | 'assistant'>('assistant')
+
+// ── P0 UI 实时化 (2026-08-11) ──────────────────────────────────────────
+// Auto-poll every 15s + SSE push on credential quota changes. Solves the
+// "看不到有效的变化" problem: previously the page only loaded once on mount.
+const POLL_INTERVAL_MS = 15_000
+const fetchedAt = ref<number | null>(null) // unix ms of last successful load
+const freshnessLabel = computed(() => {
+  if (!fetchedAt.value) return ''
+  const secs = Math.max(0, Math.round((Date.now() - fetchedAt.value) / 1000))
+  if (secs < 60) return `${secs} 秒前`
+  const mins = Math.floor(secs / 60)
+  return `${mins} 分 ${secs % 60} 秒前`
+})
+// stale (>60s yellow, >5min red) drives the badge color.
+const freshnessClass = computed(() => {
+  if (!fetchedAt.value) return 'fresh-stale'
+  const secs = (Date.now() - fetchedAt.value) / 1000
+  if (secs > 300) return 'fresh-stale'
+  if (secs > 60) return 'fresh-warn'
+  return 'fresh-ok'
+})
+// Live "seconds ago" ticker so freshnessLabel updates without re-fetching.
+const nowTick = ref(Date.now())
+let pollTimer: ReturnType<typeof setInterval> | null = null
+let tickTimer: ReturnType<typeof setInterval> | null = null
+let closeStream: (() => void) | null = null
+let liveBadge = ref(false) // pulses when an SSE event arrives
 
 const showAddForm = ref(false)
 const showKeyForm = ref(false)
@@ -91,6 +120,22 @@ const newProvider = ref({
   protocol: 'openai-completions',
   api_key: '',
   models: '',
+})
+
+// ── P2 (2026-08-11): bulk multi-key import ──────────────────────────────
+// Pools multiple keys of ONE upstream account into a single credential so the
+// KeyRotator round-robins across them (amplifying free quota). Default mode
+// "per_credential"; switch to "per_key" when keys belong to different accounts.
+const showBulkForm = ref(false)
+const bulkSubmitting = ref(false)
+const bulkForm = ref({
+  catalog_code: '',
+  display_name: '',
+  base_url: '',
+  protocol: 'openai-completions',
+  api_keys: '',
+  models: '',
+  bulk_mode: 'per_credential' as 'per_credential' | 'per_key',
 })
 
 const catalog = computed(() => poolData.value?.catalog ?? [])
@@ -146,6 +191,7 @@ async function load() {
     methodsData.value = methods
     poolKeys.value = keysRes.keys
     signupHub.value = hub
+    fetchedAt.value = Date.now()
   } catch (e: unknown) {
     error.value = e instanceof Error ? e.message : t('freePool.loadFailed')
   } finally {
@@ -437,6 +483,55 @@ async function submitNew() {
   }
 }
 
+async function submitBulk() {
+  if (!bulkForm.value.catalog_code || !bulkForm.value.base_url) {
+    error.value = t('freePool.catalogAndBaseUrlRequired')
+    return
+  }
+  const apiKeys = bulkForm.value.api_keys
+    .split(/[\n,]/)
+    .map(s => s.trim())
+    .filter(Boolean)
+  if (apiKeys.length === 0) {
+    error.value = '请至少填入一个 API Key（逗号或换行分隔）'
+    return
+  }
+  bulkSubmitting.value = true
+  error.value = ''
+  message.value = ''
+  try {
+    const models = bulkForm.value.models
+      .split(',')
+      .map(s => s.trim())
+      .filter(Boolean)
+    const res = await bulkRegisterFreePool({
+      catalog_code: bulkForm.value.catalog_code,
+      display_name: bulkForm.value.display_name || bulkForm.value.catalog_code,
+      base_url: bulkForm.value.base_url,
+      protocol: bulkForm.value.protocol,
+      api_keys: apiKeys,
+      models: models.length > 0 ? models : undefined,
+      bulk_mode: bulkForm.value.bulk_mode,
+    })
+    if (res.bulk_mode === 'per_credential' && res.errors === 0) {
+      message.value = `多 Key 池化完成：${res.total_keys} 个 Key 聚合成 1 个 credential（轮转放大配额）`
+    } else {
+      message.value = `批量注册：${res.registered}/${res.total_keys} 成功（${res.bulk_mode}）`
+    }
+    showBulkForm.value = false
+    bulkForm.value = {
+      catalog_code: '', display_name: '', base_url: '',
+      protocol: 'openai-completions', api_keys: '', models: '',
+      bulk_mode: 'per_credential',
+    }
+    await load()
+  } catch (e: unknown) {
+    error.value = e instanceof Error ? e.message : t('freePool.registerFailed')
+  } finally {
+    bulkSubmitting.value = false
+  }
+}
+
 function statusBadgeClass(entry: FreePoolEntry | FreePoolModelEntry): string {
   if (entry.credential_status !== 'active') return 'badge-red'
   if (entry.availability_state === 'rate_limited' || entry.availability_state === 'cooling' || entry.availability_state === 'unreachable') return 'badge-orange'
@@ -486,14 +581,118 @@ function categoryLabel(id: string): string {
   return row?.label || id
 }
 
-onMounted(load)
+// ── Metric formatting helpers (P0 UI 实时化) ───────────────────────────
+// Render runtime health fields now returned by /api/free-pool/status. All
+// gracefully handle missing/zero data (URSM off or unobserved) → "–".
+
+/** Quota progress 0..100 from used/total; null when total unknown. */
+function quotaPct(m: FreePoolModelEntry): number | null {
+  const total = m.quota_total ?? 0
+  if (!total) return null
+  const used = m.quota_used ?? 0
+  return Math.min(100, Math.round((used / total) * 100))
+}
+
+/** CSS class for the quota bar based on fill + exhausted flag. */
+function quotaBarClass(m: FreePoolModelEntry): string {
+  if (m.quota_exhausted) return 'qbar-exhausted'
+  const pct = quotaPct(m)
+  if (pct === null) return 'qbar-unknown'
+  if (pct >= 90) return 'qbar-high'
+  if (pct >= 70) return 'qbar-mid'
+  return 'qbar-ok'
+}
+
+/** Countdown to quota reset, e.g. "2h 14m"; '' when no reset time. */
+function quotaResetCountdown(m: FreePoolModelEntry): string {
+  if (!m.quota_reset_at) return ''
+  const reset = new Date(m.quota_reset_at).getTime()
+  if (!reset) return ''
+  const diff = reset - nowTick.value
+  if (diff <= 0) return t('freePool.imminent') || '即将重置'
+  const totalSec = Math.floor(diff / 1000)
+  const h = Math.floor(totalSec / 3600)
+  const mm = Math.floor((totalSec % 3600) / 60)
+  if (h > 0) return `${h}h ${mm}m`
+  if (mm > 0) return `${mm}m`
+  return `${totalSec}s`
+}
+
+/** Countdown to cooling end; '' when not cooling. */
+function coolingCountdown(m: FreePoolModelEntry): string {
+  if (!m.cooling_until || m.circuit_state !== 'open') return ''
+  const end = new Date(m.cooling_until).getTime()
+  if (!end) return ''
+  const diff = end - nowTick.value
+  if (diff <= 0) return ''
+  const totalSec = Math.floor(diff / 1000)
+  if (totalSec >= 3600) return `${Math.floor(totalSec / 3600)}h`
+  if (totalSec >= 60) return `${Math.floor(totalSec / 60)}m`
+  return `${totalSec}s`
+}
+
+/** Success rate as a 0–100 integer string, or '–' when unobserved. */
+function successRateLabel(m: FreePoolModelEntry): string {
+  if (!m.success_rate || m.success_rate <= 0) return '–'
+  return `${Math.round(m.success_rate * 100)}%`
+}
+
+/** p95 latency label, or '–' when unobserved. */
+function latencyLabel(m: FreePoolModelEntry): string {
+  if (!m.p95_latency_ms || m.p95_latency_ms <= 0) return '–'
+  return `${m.p95_latency_ms}ms`
+}
+
+onMounted(() => {
+  load()
+
+  // Auto-poll every 15s so the page reflects upstream changes (429 cooldowns,
+  // quota resets) without manual refresh. Paused when the tab is hidden to
+  // avoid wasted requests (visibilitychange fires on tab switch).
+  pollTimer = setInterval(() => {
+    if (document.hidden) return
+    load()
+  }, POLL_INTERVAL_MS)
+
+  // 1s ticker so freshnessLabel / countdowns tick without re-fetching.
+  tickTimer = setInterval(() => { nowTick.value = Date.now() }, 1000)
+
+  // SSE: refresh immediately when a credential quota event arrives, so the
+  // operator sees the change within ~1s instead of waiting up to 15s.
+  // EventSource auto-reconnects (backend sends retry: 3000); we also fall
+  // back to the 15s poll if the stream is unavailable (Redis off / network).
+  try {
+    closeStream = openFreePoolStream((env) => {
+      if (env.type === 'heartbeat' || env.type === 'initial_data') return
+      liveBadge.value = true
+      setTimeout(() => { liveBadge.value = false }, 2000)
+      load()
+    })
+  } catch {
+    // EventSource unsupported / blocked — polling still covers us.
+  }
+})
+
+onUnmounted(() => {
+  if (pollTimer) { clearInterval(pollTimer); pollTimer = null }
+  if (tickTimer) { clearInterval(tickTimer); tickTimer = null }
+  if (closeStream) { closeStream(); closeStream = null }
+})
 </script>
 
 <template>
   <div>
     <div class="page-header">
       <h2>{{ t('freePool.page.title') }}</h2>
-      <div style="display:flex;gap:8px;flex-wrap:wrap">
+      <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+        <span
+          class="freshness-badge"
+          :class="[freshnessClass, { 'live-pulse': liveBadge }]"
+          :title="fetchedAt ? new Date(fetchedAt).toLocaleTimeString() : ''"
+        >
+          <span class="fresh-dot" aria-hidden="true"></span>
+          {{ fetchedAt ? freshnessLabel : '未加载' }}
+        </span>
         <button class="btn btn-ghost" type="button" @click="load" :disabled="loading || syncing">刷新</button>
         <button class="btn btn-ghost" type="button" @click="runBootstrap" :disabled="loading || syncing">
           {{ syncing ? t('freePool.bootstrapSyncing') : t('freePool.bootstrap') }}
@@ -515,6 +714,9 @@ onMounted(load)
         </button>
         <button class="btn btn-primary" type="button" @click="showAddForm = !showAddForm">
           {{ showAddForm ? t('freePool.hideKeyForm') : t('freePool.showAddForm') }}
+        </button>
+        <button class="btn btn-primary" type="button" @click="showBulkForm = !showBulkForm">
+          {{ showBulkForm ? '收起多 Key 批量' : '多 Key 批量池化' }}
         </button>
       </div>
     </div>
@@ -648,6 +850,60 @@ onMounted(load)
           {{ submitting ? t('freePool.submitting') : t('freePool.submit') }}
         </button>
         <button class="btn btn-ghost" type="button" @click="showAddForm = false" :disabled="submitting">取消</button>
+      </div>
+    </div>
+
+    <!-- P2 (2026-08-11): bulk multi-key pooling form -->
+    <div v-if="showBulkForm" class="card" style="margin-bottom:20px">
+      <h3 style="margin-top:0">多 Key 批量池化</h3>
+      <p class="cell-muted" style="margin:0 0 12px">
+        把同一账号的多个 Key 聚合成 <strong>1 个 credential</strong>，由 KeyRotator 轮转使用 ——
+        成倍放大该账号的免费配额。<strong>仅适用于同一上游账号的多 Key</strong>；
+        若 Key 分属不同账号，请切换为「每 Key 独立 credential」。
+      </p>
+      <div class="form-grid">
+        <div class="form-item">
+          <label>Catalog Code *</label>
+          <input v-model="bulkForm.catalog_code" class="input" placeholder="例如: openrouter-free" />
+        </div>
+        <div class="form-item">
+          <label>显示名称</label>
+          <input v-model="bulkForm.display_name" class="input" placeholder="例如: OpenRouter Free Pool" />
+        </div>
+        <div class="form-item" style="grid-column: 1 / -1">
+          <label>Base URL *</label>
+          <input v-model="bulkForm.base_url" class="input" placeholder="https://openrouter.ai/api/v1" />
+        </div>
+        <div class="form-item">
+          <label>协议</label>
+          <select v-model="bulkForm.protocol" class="input">
+            <option value="openai-completions">openai-completions</option>
+            <option value="openai-responses">openai-responses</option>
+            <option value="anthropic-messages">anthropic-messages</option>
+          </select>
+        </div>
+        <div class="form-item">
+          <label>聚合模式</label>
+          <select v-model="bulkForm.bulk_mode" class="input">
+            <option value="per_credential">聚合成 1 个 credential（轮转放大配额，默认）</option>
+            <option value="per_key">每 Key 独立 credential（不同账号时用）</option>
+          </select>
+        </div>
+        <div class="form-item" style="grid-column: 1 / -1">
+          <label>API Keys *（逗号或换行分隔）</label>
+          <textarea v-model="bulkForm.api_keys" class="input" rows="4"
+            placeholder="sk-or-v1-aaa&#10;sk-or-v1-bbb&#10;sk-or-v1-ccc"></textarea>
+        </div>
+        <div class="form-item" style="grid-column: 1 / -1">
+          <label>模型列表 (逗号分隔)</label>
+          <input v-model="bulkForm.models" class="input" placeholder="例如: google/gemini-flash:free, meta-llama/llama-3.3-70b:free" />
+        </div>
+      </div>
+      <div style="margin-top:12px;display:flex;gap:8px">
+        <button class="btn btn-primary" type="button" @click="submitBulk" :disabled="bulkSubmitting">
+          {{ bulkSubmitting ? t('freePool.submitting') : '批量池化' }}
+        </button>
+        <button class="btn btn-ghost" type="button" @click="showBulkForm = false" :disabled="bulkSubmitting">取消</button>
       </div>
     </div>
 
@@ -976,8 +1232,8 @@ onMounted(load)
             <tr>
               <th>模型名称</th>
               <th>Provider</th>
-              <th>Catalog</th>
-              <th>Tier</th>
+              <th>配额（今日）</th>
+              <th>健康</th>
               <th>状态</th>
               <th>凭据</th>
             </tr>
@@ -989,10 +1245,35 @@ onMounted(load)
                 <div v-if="m.standardized_name && m.standardized_name !== m.raw_model_name" class="cell-muted">
                   标准名: {{ m.standardized_name }}
                 </div>
+                <div class="cell-muted">T{{ m.routing_tier }} · <code style="font-size:11px">{{ m.catalog_code }}</code></div>
               </td>
               <td>{{ m.provider_name }}</td>
-              <td><code style="font-size:11px">{{ m.catalog_code }}</code></td>
-              <td><span class="tier-pill">T{{ m.routing_tier }}</span></td>
+              <td class="quota-cell">
+                <!-- Quota bar: only shown when quota_total is known -->
+                <div v-if="quotaPct(m) !== null" class="qbar" :class="quotaBarClass(m)">
+                  <div class="qbar-fill" :style="{ width: quotaPct(m) + '%' }"></div>
+                  <span class="qbar-text">{{ m.quota_used }} / {{ m.quota_total }}</span>
+                </div>
+                <span v-else class="cell-muted">–</span>
+                <div v-if="m.quota_exhausted && quotaResetCountdown(m)" class="cell-muted qbar-reset">
+                  ⟳ {{ quotaResetCountdown(m) }}
+                </div>
+                <div v-else-if="m.quota_exhausted" class="cell-muted qbar-reset">已耗尽</div>
+              </td>
+              <td class="health-cell">
+                <div class="health-row">
+                  <span class="health-pill" :class="m.success_rate && m.success_rate >= 0.95 ? 'hp-ok' : (m.success_rate && m.success_rate < 0.8 ? 'hp-bad' : 'hp-mid')">
+                    {{ successRateLabel(m) }}
+                  </span>
+                  <span class="health-pill" :title="'P95 延迟'">{{ latencyLabel(m) }}</span>
+                </div>
+                <div v-if="(m.consecutive_failures ?? 0) > 0" class="cell-muted fail-streak">
+                  ⚠ 连续失败 {{ m.consecutive_failures }} 次
+                </div>
+                <div v-if="coolingCountdown(m)" class="cell-muted cooling-tag">
+                  ❄ 冷却 {{ coolingCountdown(m) }}
+                </div>
+              </td>
               <td>
                 <span class="badge" :class="statusBadgeClass(m)">{{ modelStatusLabel(m) }}</span>
               </td>
@@ -1025,7 +1306,14 @@ onMounted(load)
                 <div>{{ entry.provider_name }}</div>
               </td>
               <td>
-                <div>{{ entry.credential_label }}</div>
+                <div>
+                  {{ entry.credential_label }}
+                  <span
+                    v-if="(entry.key_count ?? 1) > 1"
+                    class="key-count-badge"
+                    :title="`多 Key 池化：${entry.key_count} 个 Key 轮转（放大配额）`"
+                  >🔑 ×{{ entry.key_count }}</span>
+                </div>
                 <div class="cell-muted">#{{ entry.credential_id }} · {{ entry.availability_state || t('freePool.ready') }}</div>
               </td>
               <td>
@@ -1560,5 +1848,109 @@ onMounted(load)
   margin: 0 0 12px 0;
   color: var(--muted);
   font-size: 13px;
+}
+
+/* ── P0 UI 实时化 styles (2026-08-11) ─────────────────────────────────── */
+
+/* Freshness badge — shows data age, color-coded by staleness. */
+.freshness-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  padding: 4px 10px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: var(--bg-subtle, var(--card));
+  color: var(--muted);
+  white-space: nowrap;
+}
+.fresh-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: currentColor;
+  flex-shrink: 0;
+}
+.fresh-ok { color: var(--success); border-color: rgba(63,185,80,.35); }
+.fresh-warn { color: var(--warning); border-color: rgba(210,153,34,.35); }
+.fresh-stale { color: var(--danger); border-color: rgba(248,81,73,.35); }
+/* Live pulse: briefly highlights when an SSE event arrives. */
+.live-pulse {
+  animation: livePulse 0.6s ease-out;
+  border-color: var(--accent);
+  color: var(--accent-h);
+}
+@keyframes livePulse {
+  0% { box-shadow: 0 0 0 0 rgba(var(--accent-rgb, 63, 120, 255), .5); }
+  100% { box-shadow: 0 0 0 8px rgba(var(--accent-rgb, 63, 120, 255), 0); }
+}
+
+/* Quota progress bar — used/total with color by fill level. */
+.qbar {
+  position: relative;
+  min-width: 110px;
+  height: 18px;
+  border-radius: 9px;
+  background: rgba(139,148,158,.15);
+  overflow: hidden;
+  border: 1px solid var(--border);
+}
+.qbar-fill {
+  height: 100%;
+  border-radius: 9px 0 0 9px;
+  transition: width 0.4s ease;
+}
+.qbar-ok .qbar-fill { background: rgba(63,185,80,.5); }
+.qbar-mid .qbar-fill { background: rgba(210,153,34,.5); }
+.qbar-high .qbar-fill { background: rgba(248,81,73,.55); }
+.qbar-exhausted .qbar-fill { background: rgba(248,81,73,.7); }
+.qbar-unknown .qbar-fill { background: rgba(139,148,158,.25); }
+.qbar-text {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--text);
+  text-shadow: 0 0 2px var(--bg);
+}
+.qbar-reset { font-size: 10px; margin-top: 3px; }
+
+/* Health pills — success rate + latency. */
+.health-cell { min-width: 120px; }
+.health-row { display: flex; gap: 4px; flex-wrap: wrap; }
+.health-pill {
+  font-size: 10px;
+  padding: 2px 6px;
+  border-radius: 4px;
+  background: rgba(139,148,158,.12);
+  color: var(--text);
+  border: 1px solid var(--border);
+}
+.hp-ok { color: var(--success); background: rgba(63,185,80,.12); border-color: rgba(63,185,80,.3); }
+.hp-bad { color: var(--danger); background: rgba(248,81,73,.12); border-color: rgba(248,81,73,.3); }
+.hp-mid { color: var(--warning); background: rgba(210,153,34,.12); border-color: rgba(210,153,34,.3); }
+.fail-streak { color: var(--danger); font-size: 10px; margin-top: 3px; }
+.cooling-tag { color: var(--warning); font-size: 10px; margin-top: 2px; }
+.quota-cell { min-width: 130px; }
+
+/* P2 (2026-08-11): multi-key pooling badge — shown when a credential pools
+   more than one key for rotation (amplifies one account's free quota). */
+.key-count-badge {
+  display: inline-block;
+  font-size: 10px;
+  font-weight: 700;
+  padding: 1px 7px;
+  margin-left: 6px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--accent) 15%, transparent);
+  border: 1px solid color-mix(in srgb, var(--accent) 40%, transparent);
+  color: var(--accent-h);
+  vertical-align: middle;
+  white-space: nowrap;
+  cursor: help;
 }
 </style>

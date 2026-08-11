@@ -2,6 +2,7 @@ package admin
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -2993,7 +2994,11 @@ func (h *Handler) handleFreePoolStatus(w http.ResponseWriter, r *http.Request) {
 			c.acquisition_detail,
 			COUNT(mo.id) AS total_offers,
 			COUNT(mo.id) FILTER (WHERE mo.available) AS available_offers,
-			COUNT(mo.id) FILTER (WHERE mo.unit_price_in_per_1m = 0 AND mo.unit_price_out_per_1m = 0) AS free_offers
+			COUNT(mo.id) FILTER (WHERE mo.unit_price_in_per_1m = 0 AND mo.unit_price_out_per_1m = 0) AS free_offers,
+			COALESCE((
+				SELECT COUNT(*) FROM credential_keys ck
+				WHERE ck.credential_id = c.id AND ck.status = 'active'
+			), 0) + 1 AS key_count
 		FROM credentials c
 		JOIN providers p ON p.id = c.provider_id
 		LEFT JOIN model_offers mo ON mo.credential_id = c.id
@@ -3024,8 +3029,12 @@ func (h *Handler) handleFreePoolStatus(w http.ResponseWriter, r *http.Request) {
 		TotalOffers       int      `json:"total_offers"`
 		AvailableOffers   int      `json:"available_offers"`
 		FreeOffers        int      `json:"free_offers"`
-		Models            []any    `json:"models"`
-		ModelNames        []string `json:"model_names"`
+		// KeyCount (P2 2026-08-11): 1 primary + N active extras in
+		// credential_keys. >1 means this credential is pooled for multi-key
+		// rotation (KeyRotator round-robins across them).
+		KeyCount   int      `json:"key_count"`
+		Models     []any    `json:"models"`
+		ModelNames []string `json:"model_names"`
 	}
 	pool := make([]poolEntry, 0)
 	byCred := map[int][]any{}
@@ -3037,6 +3046,7 @@ func (h *Handler) handleFreePoolStatus(w http.ResponseWriter, r *http.Request) {
 			&e.QuotaState, &e.BalanceUSD, &e.HasSecret,
 			&e.AcquisitionSource, &e.AcquisitionDetail,
 			&e.TotalOffers, &e.AvailableOffers, &e.FreeOffers,
+			&e.KeyCount,
 		); err != nil {
 			slog.Warn("free-pool status: scan row failed", "error", err.Error())
 			continue
@@ -3068,10 +3078,19 @@ func (h *Handler) handleFreePoolStatus(w http.ResponseWriter, r *http.Request) {
 			c.label AS credential_label,
 			c.status AS credential_status,
 			c.availability_state,
-			c.quota_state
+			c.quota_state,
+			COALESCE(fqt.request_count, 0) AS quota_used,
+			COALESCE(fqt.corrected_limit, 0) AS quota_total,
+			COALESCE(fqt.is_exhausted, FALSE) AS quota_exhausted,
+			fqt.auto_reset_at AS quota_reset_at
 		FROM model_offers mo
 		JOIN credentials c ON c.id = mo.credential_id
 		JOIN providers p ON p.id = c.provider_id
+		LEFT JOIN free_quota_tracker fqt ON fqt.credential_id = c.id
+			AND fqt.provider_code = p.catalog_code
+			AND fqt.model_id = mo.raw_model_name
+			AND fqt.window_type = 'day-1'
+			AND fqt.window_start <= now() AND fqt.window_end >= now()
 		WHERE c.pool_group = 'free' AND mo.billing_mode = 'free'
 		ORDER BY mo.raw_model_name ASC, p.display_name ASC
 	`)
@@ -3106,12 +3125,16 @@ func (h *Handler) handleFreePoolStatus(w http.ResponseWriter, r *http.Request) {
 				routingTier                                                      int
 				priceIn, priceOut                                                float64
 				credID                                                           int
+				quotaUsed, quotaTotal                                            int
+				quotaExhausted                                                   bool
+				quotaResetAt                                                     sql.NullTime
 			)
 			if err := modelRows.Scan(
 				&offerID, &rawModel, &stdName, &available, &billingMode, &routingTier,
 				&priceIn, &priceOut, &currency, &catalogCode, &providerName,
 				&protocol, &baseURL, &credID, &credLabel, &credStatus,
 				&availState, &quotaState,
+				&quotaUsed, &quotaTotal, &quotaExhausted, &quotaResetAt,
 			); err != nil {
 				slog.Warn("free-pool status: scan model row failed", "error", err.Error())
 				continue
@@ -3140,6 +3163,17 @@ func (h *Handler) handleFreePoolStatus(w http.ResponseWriter, r *http.Request) {
 				"availability_state":    availState,
 				"quota_state":           quotaState,
 				"routable":              routable,
+				"quota_used":            quotaUsed,
+				"quota_total":           quotaTotal,
+				"quota_exhausted":       quotaExhausted,
+				"quota_reset_at":        nullTimeToAny(quotaResetAt),
+				// Runtime health defaults — overwritten by URSM v2 overlay below
+				// when available; remain zero/nil when URSM is off.
+				"success_rate":         0.0,
+				"p95_latency_ms":       0,
+				"consecutive_failures": 0,
+				"circuit_state":        "closed",
+				"cooling_until":        nil,
 			}
 			models = append(models, item)
 			if available {
@@ -3200,6 +3234,13 @@ func (h *Handler) handleFreePoolStatus(w http.ResponseWriter, r *http.Request) {
 			pool[i].ModelNames = names
 		}
 	}
+
+	// URSM v2 runtime health overlay — mirrors handleRoutingResolve's overlay
+	// (routing.go ~367-460). Overwrites the zero defaults set above with live
+	// success_rate / p95_latency / fail_streak / circuit / cooling from Redis,
+	// and re-derives `routable` from the runtime view. When URSM is nil or off,
+	// the defaults already in the map stand (graceful degradation, no errors).
+	h.overlayFreePoolRuntimeHealth(ctx, models)
 
 	// Build catalog list (mirrors Python catalog_for_api)
 	registeredSet := map[string]struct{}{}
@@ -3264,6 +3305,112 @@ func (h *Handler) handleFreePoolStatus(w http.ResponseWriter, r *http.Request) {
 		"live_models_by_code":  liveModelsByCode,
 		"catalog":              catalog,
 	})
+}
+
+// overlayFreePoolRuntimeHealth overwrites the zero-valued runtime health fields
+// on each free-pool model entry with live values from URSM v2 (Redis-backed),
+// and re-derives `routable` from the runtime view. Mirrors the overlay logic in
+// handleRoutingResolve (routing.go ~367-460). No-op when URSM v2 is nil / off /
+// not ready — the zero defaults already set in the map remain (graceful).
+//
+// This is the fix for "看不到有效的变化": without it the free-pool page only
+// showed coarse persisted DB enums (availability_state / quota_state) and never
+// the router's real success_rate / latency / fail streak / cooling state.
+func (h *Handler) overlayFreePoolRuntimeHealth(ctx context.Context, models []any) {
+	ursmManager := h.ursmV2
+	if ursmManager == nil || ursmManager.Mode() == api.ModeOff {
+		return
+	}
+	if !ursmManager.Ready(ctx) {
+		return
+	}
+
+	// Collect candidate seeds keyed by their index in `models`, so we can map
+	// the returned NodeViews back to the right map entry.
+	type seedWithIdx struct {
+		idx  int
+		seed v2.CandidateSeed
+	}
+	seeds := make([]seedWithIdx, 0, len(models))
+	for i, m := range models {
+		mm, ok := m.(map[string]any)
+		if !ok {
+			continue
+		}
+		credID, _ := mm["credential_id"].(int)
+		rawModel, _ := mm["raw_model_name"].(string)
+		if credID == 0 || rawModel == "" {
+			continue
+		}
+		priceIn, _ := mm["unit_price_in_per_1m"].(float64)
+		priceOut, _ := mm["unit_price_out_per_1m"].(float64)
+		billingMode, _ := mm["billing_mode"].(string)
+		seeds = append(seeds, seedWithIdx{idx: i, seed: v2.CandidateSeed{
+			CredentialID: credID,
+			RawModel:     rawModel,
+			TenantID:     "default",
+			PriceIn:      priceIn,
+			PriceOut:     priceOut,
+			BillingMode:  billingMode,
+		}})
+	}
+	if len(seeds) == 0 {
+		return
+	}
+
+	pureSeeds := make([]v2.CandidateSeed, 0, len(seeds))
+	for _, s := range seeds {
+		pureSeeds = append(pureSeeds, s.seed)
+	}
+	views, err := ursmManager.FilterAndScore(ctx, pureSeeds)
+	if err != nil {
+		slog.Debug("free-pool status: ursm v2 overlay failed, keeping DB defaults", "error", err.Error())
+		return
+	}
+
+	now := time.Now()
+	for j, s := range seeds {
+		if j >= len(views) {
+			break
+		}
+		v := views[j]
+		if v.CredentialID != s.seed.CredentialID || v.RawModel != s.seed.RawModel {
+			continue
+		}
+		mm := models[s.idx].(map[string]any)
+		if v.SR5m > 0 {
+			mm["success_rate"] = v.SR5m
+		}
+		if v.LatP95Ms > 0 {
+			mm["p95_latency_ms"] = v.LatP95Ms
+		}
+		mm["consecutive_failures"] = v.FailStreak
+		if !v.CoolUntil.IsZero() && v.CoolUntil.After(now) {
+			mm["circuit_state"] = "open"
+			s := v.CoolUntil.UTC().Format(time.RFC3339)
+			mm["cooling_until"] = s
+			// A live cool-down overrides the persisted routable flag.
+			mm["routable"] = false
+		} else {
+			mm["circuit_state"] = "closed"
+			mm["cooling_until"] = nil
+		}
+		// If URSM says the node is unavailable, override routable regardless of
+		// the persisted availability_state.
+		if !v.Available {
+			mm["routable"] = false
+		}
+	}
+}
+
+// nullTimeToAny converts a sql.NullTime to a JSON-friendly value: nil when
+// not valid, otherwise an RFC3339 string in UTC. Used by handleFreePoolStatus
+// to surface free_quota_tracker.auto_reset_at as quota_reset_at.
+func nullTimeToAny(nt sql.NullTime) any {
+	if !nt.Valid || nt.Time.IsZero() {
+		return nil
+	}
+	return nt.Time.UTC().Format(time.RFC3339)
 }
 
 func nilIfZeroFloat(p float64) any {
@@ -3785,6 +3932,15 @@ func (h *Handler) handleFreePoolBulkRegister(w http.ResponseWriter, r *http.Requ
 		APIKeys     []string `json:"api_keys"`
 		Models      []string `json:"models"`
 		Protocol    string   `json:"protocol"`
+		// BulkMode (P2 2026-08-11) controls how multiple keys are stored:
+		//   "per_credential" (default): pool all keys into ONE credential —
+		//     first key → credentials.secret_ciphertext, rest → credential_keys
+		//     child rows. The KeyRotator round-robins across them, amplifying
+		//     one account's free quota. ONLY correct when all keys belong to
+		//     the SAME upstream account.
+		//   "per_key": legacy behavior — one credential per key. Use when keys
+		//     belong to DIFFERENT accounts (each has its own quota window).
+		BulkMode string `json:"bulk_mode"`
 	}
 	if err := readJSON(r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid body")
@@ -3793,15 +3949,62 @@ func (h *Handler) handleFreePoolBulkRegister(w http.ResponseWriter, r *http.Requ
 	if req.Protocol == "" {
 		req.Protocol = "openai-completions"
 	}
+	if req.BulkMode == "" {
+		req.BulkMode = "per_credential"
+	}
+
+	// Filter blanks once.
+	keys := make([]string, 0, len(req.APIKeys))
+	for _, k := range req.APIKeys {
+		if strings.TrimSpace(k) != "" {
+			keys = append(keys, k)
+		}
+	}
 
 	registered := 0
 	errors := 0
 	results := make([]map[string]any, 0)
 
-	for i, key := range req.APIKeys {
-		if key == "" {
-			continue
+	// per_credential: pool all keys into one credential.
+	if req.BulkMode == "per_credential" && len(keys) > 0 {
+		cfg := freeProviderConfig{
+			catalogCode:     req.CatalogCode,
+			displayName:     req.DisplayName,
+			baseURL:         req.BaseURL,
+			protocol:        req.Protocol,
+			apiKey:          keys[0],
+			models:          req.Models,
+			credentialLabel: fmt.Sprintf("%s-free-pool", req.CatalogCode),
+			acquisitionMode: "bulk",
+			acquisitionDetail: fmt.Sprintf("bulk-register per_credential: 1 primary + %d extras (%d keys total)",
+				len(keys)-1, len(keys)),
 		}
+		if len(keys) > 1 {
+			cfg.extraKeys = keys[1:]
+		}
+		result := h.registerFreeProvider(w, r, cfg)
+		if result["status"] == "registered" {
+			registered = len(keys) // all keys went into one credential
+		} else {
+			errors = len(keys)
+		}
+		result["bulk_mode"] = "per_credential"
+		result["pooled_credential"] = true
+		results = append(results, result)
+
+		writeJSON(w, http.StatusOK, map[string]any{
+			"catalog_code": req.CatalogCode,
+			"bulk_mode":    "per_credential",
+			"total_keys":   len(keys),
+			"registered":   registered,
+			"errors":       errors,
+			"results":      results,
+		})
+		return
+	}
+
+	// per_key (legacy): one credential per key.
+	for i, key := range keys {
 		cfg := freeProviderConfig{
 			catalogCode:       req.CatalogCode,
 			displayName:       req.DisplayName,
@@ -3811,7 +4014,7 @@ func (h *Handler) handleFreePoolBulkRegister(w http.ResponseWriter, r *http.Requ
 			models:            req.Models,
 			credentialLabel:   fmt.Sprintf("%s-free-key-%d", req.CatalogCode, i+1),
 			acquisitionMode:   "bulk",
-			acquisitionDetail: fmt.Sprintf("bulk-register key %d/%d", i+1, len(req.APIKeys)),
+			acquisitionDetail: fmt.Sprintf("bulk-register key %d/%d", i+1, len(keys)),
 		}
 		result := h.registerFreeProvider(w, r, cfg)
 		if result["status"] == "registered" {
@@ -3820,12 +4023,14 @@ func (h *Handler) handleFreePoolBulkRegister(w http.ResponseWriter, r *http.Requ
 			errors++
 		}
 		result["key_index"] = i
+		result["bulk_mode"] = "per_key"
 		results = append(results, result)
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{
 		"catalog_code": req.CatalogCode,
-		"total_keys":   len(req.APIKeys),
+		"bulk_mode":    "per_key",
+		"total_keys":   len(keys),
 		"registered":   registered,
 		"errors":       errors,
 		"results":      results,
@@ -3849,6 +4054,12 @@ type freeProviderConfig struct {
 	// rpmLimit field so freshly registered free credentials get the
 	// recommended throttle without manual ops intervention.
 	rpmLimit int
+	// extraKeys (P2 2026-08-11) holds additional decrypted keys for the SAME
+	// upstream account, written to the credential_keys child table so the
+	// KeyRotator round-robins across them (amplifying one account's free
+	// quota). Only meaningful when the keys belong to ONE account — bulk-
+	// importing keys from different accounts would wrongly pool their quota.
+	extraKeys []string
 }
 
 func (h *Handler) collectEnvProviderConfigs() []freeProviderConfig {
