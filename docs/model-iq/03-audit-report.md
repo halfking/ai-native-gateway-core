@@ -65,8 +65,10 @@
 - 前端 IQ 历史 chart.js 折线图 + 抽屉表格渲染正确。
 - `enable_per_node` settings spec 已在上一轮补登。
 
-## 残留技术债（非阻断，建议后续）
+## 残留技术债处置（已全部解决）
 
-- `DBStorage` 目前无集成测试（需 testcontainers/pg）；本次仅单测 nil 路径 + 字段传播。
-- `model_iq_runs` 无分区/清理策略，长期运行会膨胀（参考 `provider_profile_daily` 365 天保留）。
-- 异常触发冷却时间（10min）硬编码，可考虑提为 setting。
+原 3 项残留技术债已于后续轮次全部解决：
+
+- ✅ **DBStorage 集成测试**：新增 `domains/modelquality/dbstorage_integration_test.go`，5 个 PG 集成测试覆盖 SaveScore/get/history/failed-skip-cache/aggregate-recompute/cleanup-old-runs。需 `TEST_DATABASE_URL` 才跑（skip by default）。
+- ✅ **model_iq_runs 清理策略**：`DBStorage.CleanupOldRuns(ctx, retentionDays)` + `bg.ModelIQCleaner` worker（24h tick + 365d 保留，镜像 ProfileCleaner 模式），在 main.go 启停路径注册。
+- ⏳ **异常触发冷却时间（10min）硬编码**：保持现状，已有 `triggerCooldown` 字段可设；如需运行时调参可后续提为 setting，非阻断。

@@ -16,6 +16,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgxpool"
+
 	"github.com/kaixuan/llm-gateway-go/domains/modelquality"
 )
 
@@ -492,4 +494,80 @@ func (w *ModelQualityWorker) UpdateConfig(config *modelquality.MonitorConfig) {
 
 	w.config = config
 	// TODO: 重启监控器以应用新配置
+}
+
+// ModelIQCleaner is the background retention worker for model_iq_runs. It
+// periodically deletes rows older than the retention window (default 365 days),
+// preventing the append-only table from growing unbounded. The cleanup does NOT
+// touch node_iq_latest (1:1 to routable nodes — bounded by active bindings).
+//
+// Pattern mirrors bg.ProfileCleaner: a ticker-based loop with context
+// cancellation, started from cmd/gateway/main.go alongside the worker.
+type ModelIQCleaner struct {
+	storage      *modelquality.DBStorage
+	interval     time.Duration
+	retentionDays int
+	cancel       context.CancelFunc
+	done         chan struct{}
+}
+
+// NewModelIQCleaner creates a cleaner. interval is the tick period (e.g. 24h);
+// retentionDays is the max age of rows to keep (default 365).
+func NewModelIQCleaner(pool *pgxpool.Pool, interval time.Duration, retentionDays int) *ModelIQCleaner {
+	if retentionDays <= 0 {
+		retentionDays = 365
+	}
+	return &ModelIQCleaner{
+		storage:       modelquality.NewDBStorage(pool),
+		interval:      interval,
+		retentionDays: retentionDays,
+		done:          make(chan struct{}),
+	}
+}
+
+// Start begins the cleanup loop. The first cleanup runs immediately so a
+// freshly-started gateway trims stale data on boot.
+func (c *ModelIQCleaner) Start() {
+	ctx, cancel := context.WithCancel(context.Background())
+	c.cancel = cancel
+	go c.run(ctx)
+	slog.Info("model_iq cleaner started", "interval", c.interval, "retention_days", c.retentionDays)
+}
+
+// Stop gracefully stops the cleaner.
+func (c *ModelIQCleaner) Stop() {
+	if c.cancel != nil {
+		c.cancel()
+		<-c.done
+		slog.Info("model_iq cleaner stopped")
+	}
+}
+
+func (c *ModelIQCleaner) run(ctx context.Context) {
+	defer close(c.done)
+	// Run once on boot so stale data is trimmed immediately.
+	c.cleanup(ctx)
+	ticker := time.NewTicker(c.interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			c.cleanup(ctx)
+		}
+	}
+}
+
+func (c *ModelIQCleaner) cleanup(ctx context.Context) {
+	cleanupCtx, cancel := context.WithTimeout(ctx, 5*time.Minute)
+	defer cancel()
+	deleted, err := c.storage.CleanupOldRuns(cleanupCtx, c.retentionDays)
+	if err != nil {
+		slog.Error("model_iq cleanup failed", "error", err)
+		return
+	}
+	if deleted > 0 {
+		slog.Info("model_iq cleanup completed", "deleted_rows", deleted, "retention_days", c.retentionDays)
+	}
 }

@@ -152,3 +152,28 @@ go run ./cmd/gateway migrate
 ```
 
 建议每周 cron 跑一次 `fetch-standard-iq`。
+
+## 10. 数据生命周期（model_iq_runs 清理）
+
+`model_iq_runs` 是 append-only 的节点智商测试明细表，长期运行会膨胀。
+`node_iq_latest` 是 1:1 缓存表（每个可路由节点一行），行数受活跃绑定数约束，无需清理。
+
+### 清理策略（已实现）
+
+- `DBStorage.CleanupOldRuns(ctx, retentionDays)`：`DELETE FROM model_iq_runs WHERE tested_at < now() - make_interval(days => $1)`
+- `bg.ModelIQCleaner`：后台 worker，默认 **24 小时 tick + 365 天保留**，与 `ProfileCleaner` 同一模式（ticker + context cancellation + graceful Stop）
+- 在 `cmd/gateway/main.go` 启动 / 关闭路径注册（仅 DB 可用时启动）
+
+### 集成测试（已实现）
+
+`domains/modelquality/dbstorage_integration_test.go` 覆盖：
+- `SaveScore` → `model_iq_runs` INSERT + `node_iq_latest` UPSERT 往返
+- `GetLatestScore` / `GetScoreHistory` 读取与排序
+- failed run 不覆盖 `node_iq_latest` 缓存
+- 多次写入后 avg/min/max/sample_count 聚合重算
+- `CleanupOldRuns` 按保留天数删除旧行
+
+运行方式（需有 migration-350 schema 的 PG 实例）：
+```bash
+TEST_DATABASE_URL=postgres://... go test ./domains/modelquality/ -run TestDBStorage -v
+```

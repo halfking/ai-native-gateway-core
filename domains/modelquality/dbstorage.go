@@ -316,6 +316,30 @@ func (s *DBStorage) ListAllScores(ctx context.Context, limit int) ([]*QualitySco
 	return out, nil
 }
 
+// CleanupOldRuns deletes model_iq_runs rows older than `retentionDays` days
+// (based on tested_at). Returns the number of deleted rows.
+//
+// This is the cleanup strategy for the append-only model_iq_runs table: the
+// background ModelIQCleaner worker calls it periodically (default 365-day
+// retention) to prevent unbounded growth. The node_iq_latest cache table is
+// 1:1 to routable nodes and does not need cleanup — its row count is bounded
+// by the number of active (credential, model) pairs.
+func (s *DBStorage) CleanupOldRuns(ctx context.Context, retentionDays int) (int64, error) {
+	if s == nil || s.pool == nil {
+		return 0, fmt.Errorf("DBStorage: nil pool")
+	}
+	if retentionDays <= 0 {
+		retentionDays = 365
+	}
+	result, err := s.pool.Exec(ctx, `
+		DELETE FROM model_iq_runs
+		 WHERE tested_at < now() - make_interval(days => $1)`, retentionDays)
+	if err != nil {
+		return 0, fmt.Errorf("cleanup old model_iq_runs: %w", err)
+	}
+	return result.RowsAffected(), nil
+}
+
 // --- helpers -----------------------------------------------------------------
 
 func nullableInt64(v int64) any {
