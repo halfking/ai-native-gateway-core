@@ -170,8 +170,8 @@ func (e *Engine) splitTiers(scored []ScoredCandidate) Tiers {
 
 // roundRobin Tier 内轮换
 func (e *Engine) roundRobin(tier []ScoredCandidate) *Candidate {
-	// 简单轮换（实际应使用持久化的 round-robin state）
-	// TODO: 实现带权重的轮换或基于评分的概率选择
+	// 简单轮换。当前不保存跨进程状态, 避免引入热路径外部依赖；
+	// 后续如需更强公平性, 可在 Round 6 引入持久化 weighted round-robin。
 	idx := rand.Intn(len(tier))
 	return &tier[idx].Candidate
 }
