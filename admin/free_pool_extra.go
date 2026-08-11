@@ -1447,7 +1447,38 @@ func (h *Handler) registerFreeProviderWithCtx(ctx context.Context, cfg freeProvi
 		}
 	}
 
-	// 5. Insert model offers
+	// 5. Insert extra keys into credential_keys child table (P2 multi-key).
+	// Mirrors admin/provider_credential.go:111-122: kid_index starts at 1
+	// (0 is reserved for the primary in credentials.secret_ciphertext).
+	// ON CONFLICT upserts so re-importing the same keys is idempotent.
+	// Failures are non-fatal (credential already created; extras can be
+	// added later via the credential_keys admin API).
+	extraKeyCount := 0
+	for i, rawKey := range cfg.extraKeys {
+		rawKey = strings.TrimSpace(rawKey)
+		if rawKey == "" {
+			continue
+		}
+		encExtra, err := h.encryptCred([]byte(rawKey))
+		if err != nil {
+			slog.Warn("free-pool: encrypt extra key failed",
+				"credential_id", credID, "kid_index", i+1, "error", err)
+			continue
+		}
+		if _, err := h.db.Exec(ctx, `
+			INSERT INTO credential_keys (credential_id, kid_index, secret_ciphertext, status, tenant_id)
+			VALUES ($1, $2, $3, 'active', public.get_current_tenant())
+			ON CONFLICT (credential_id, kid_index) DO UPDATE SET
+				secret_ciphertext = EXCLUDED.secret_ciphertext, status = 'active'
+		`, credID, i+1, []byte(encExtra)); err != nil {
+			slog.Warn("free-pool: insert extra key failed",
+				"credential_id", credID, "kid_index", i+1, "error", err)
+			continue
+		}
+		extraKeyCount++
+	}
+
+	// 6. Insert model offers
 	offerCount := 0
 	for _, model := range cfg.models {
 		var canonID *int
@@ -1475,6 +1506,7 @@ func (h *Handler) registerFreeProviderWithCtx(ctx context.Context, cfg freeProvi
 		"provider_id":   providerID,
 		"credential_id": credID,
 		"models":        offerCount,
+		"extra_keys":    extraKeyCount,
 	}
 }
 

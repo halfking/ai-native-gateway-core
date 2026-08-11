@@ -50,6 +50,14 @@ type ScoringWeights struct {
 	Cost           float64 `json:"cost"`            // 成本权重
 	TaskFit        float64 `json:"task_fit"`        // 任务适配度权重
 	TierAffinity   float64 `json:"tier_affinity"`   // 层级亲和度权重
+	// ResetWindowAffinity (P3 2026-08-11) rewards credentials whose quota has
+	// freshly reset (more remaining runway in the current window). Mirrors
+	// OmniRoute combo/quotaScoring.ts:304-311, but unlike OmniRoute (which
+	// leaves it weight-0) we give it a small real weight so freshly-reset
+	// free credentials edge out near-exhausted ones beyond what QuotaRemaining
+	// already captures. Optional — defaults to 0 in legacy weight presets, so
+	// the validation sum check ignores it when unset.
+	ResetWindowAffinity float64 `json:"reset_window_affinity,omitempty"`
 }
 
 // Candidate 候选模型

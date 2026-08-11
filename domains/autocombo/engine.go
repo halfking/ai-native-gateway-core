@@ -6,9 +6,17 @@ import (
 	"math/rand"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/kaixuan/llm-gateway-go/provider"
 )
+
+// resetWindowHorizon is the "full reset cycle" over which resetWindowAffinity
+// decays from 1 (just reset) toward 0. Mirrors OmniRoute's per-window horizon
+// (monthly=30d default); we use a single 7d horizon since most free tiers
+// reset daily/weekly. A credential that resets in <7d scores >0; beyond that
+// it trends toward 0 (still waiting on a far-future reset).
+const resetWindowHorizon = 7 * 24 * time.Hour
 
 // Engine 评分与选择引擎
 type Engine struct {
@@ -245,7 +253,19 @@ type ScoredProvider struct {
 // 的实际字段：P95 延迟、RecentSuccessRate (作为 HealthScore)、单位价格
 // (Cost)；BillingMode 决定 tier affinity；其余权重留给 task fit 等
 // 后续扩展维度。
-func (e *Engine) sortCandidates(pool []provider.Candidate) []provider.Candidate {
+// sortCandidates scores and orders the candidate pool by descending score.
+//
+// quotaSnap (P3 2026-08-11) optionally carries each credential's proactively-
+// fetched quota signal (PercentUsed, ResetAt), keyed by CredentialID. When
+// present it activates two previously-dead terms:
+//   - QuotaRemaining: (1 - PercentUsed), so a near-full credential outscores
+//     a near-exhausted one. This is the free-tier's highest-weighted dimension
+//     (default 0.25) but before P3 the formula had NO quota term — the weight
+//     multiplied into nothing. nil/missing entry → neutral (quotaRemaining=0.5).
+//   - ResetWindowAffinity: rewards credentials whose quota just reset (more
+//     runway). Mirrors OmniRoute combo/quotaScoring.ts:304-311. Weight defaults
+//     to 0 in legacy presets so this is opt-in.
+func (e *Engine) sortCandidates(pool []provider.Candidate, quotaSnap map[int]fetchedQuota) []provider.Candidate {
 	if len(pool) <= 1 {
 		return append([]provider.Candidate(nil), pool...)
 	}
@@ -285,11 +305,29 @@ func (e *Engine) sortCandidates(pool []provider.Candidate) []provider.Candidate 
 		if health > 1 {
 			health = 1
 		}
+		// ── P3 quota terms (2026-08-11) ──────────────────────────────────
+		// quotaRemaining: 1 = full, 0 = exhausted. Neutral 0.5 when no signal
+		// (quotaSnap nil or credential absent) so the term neither helps nor
+		// hurts — preserving legacy behavior for deployments without the
+		// proactive quota fetcher.
+		quotaRemaining := 0.5
+		resetWindow := 0.5
+		if fq, ok := quotaSnap[c.CredentialID]; ok {
+			if fq.PercentUsed > 0 {
+				quotaRemaining = 1 - fq.PercentUsed
+				if quotaRemaining < 0 {
+					quotaRemaining = 0
+				}
+			}
+			resetWindow = computeResetWindowAffinity(fq.ResetAt, resetWindowHorizon)
+		}
 		score := e.weights.HealthScore*health +
 			e.weights.LatencyP95*(1-normLatency) +
 			e.weights.Cost*(1-normCost) +
 			e.weights.TaskFit*e.estimateTaskFitProvider(c) +
-			e.weights.TierAffinity*providerTierAffinity(c)
+			e.weights.TierAffinity*providerTierAffinity(c) +
+			e.weights.QuotaRemaining*quotaRemaining +
+			e.weights.ResetWindowAffinity*resetWindow
 		if score > 1 {
 			score = 1
 		}
@@ -319,6 +357,35 @@ func (e *Engine) sortCandidates(pool []provider.Candidate) []provider.Candidate 
 		out[i] = s.Candidate
 	}
 	return out
+}
+
+// computeResetWindowAffinity maps a quota reset time to a 0..1 affinity score.
+// Mirrors OmniRoute combo/quotaScoring.ts:304-311:
+//   - already reset (resetAt in the past or nil) → 1.0 (full runway)
+//   - resets soon → high score (decays linearly over the horizon)
+//   - resets far in the future → low score (little remaining runway)
+//   - unknown reset time → neutral (caller passes the fallback, usually 0.5)
+//
+// The linear decay is a simplification of OmniRoute's clamp01(1 - msUntilReset/horizon);
+// we clamp to [0,1] so a reset far beyond the horizon scores 0.
+func computeResetWindowAffinity(resetAt *time.Time, horizon time.Duration) float64 {
+	if resetAt == nil || resetAt.IsZero() {
+		return 0.5 // unknown → neutral
+	}
+	now := time.Now()
+	msUntilReset := resetAt.Sub(now)
+	if msUntilReset <= 0 {
+		return 1.0 // already reset → full runway
+	}
+	ratio := float64(msUntilReset) / float64(horizon)
+	score := 1 - ratio
+	if score < 0 {
+		return 0
+	}
+	if score > 1 {
+		return 1
+	}
+	return score
 }
 
 // priceAvg 估算单 token 平均价, 兼容 PriceIn/Out 任一为空的情况.
