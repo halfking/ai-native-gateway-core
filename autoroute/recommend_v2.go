@@ -334,11 +334,31 @@ func filterCurrentlyAvailable(ctx context.Context, pool *pgxpool.Pool, all []Can
 		FROM credential_model_bindings cmb
 		JOIN provider_models pm ON pm.id = cmb.provider_model_id
 		JOIN models_canonical mc ON mc.id = pm.canonical_id
+		JOIN credentials c ON c.id = cmb.credential_id
+		JOIN providers p ON p.id = c.provider_id
 		WHERE (cmb.credential_id::text || ':' || lower(mc.canonical_name)) = ANY($1)
 		  AND cmb.available = TRUE
 		  AND pm.available = TRUE
 		  AND (cmb.unavailable_reason IS NULL OR cmb.unavailable_reason NOT LIKE 'manual%')
 		  AND (pm.unavailable_reason IS NULL OR pm.unavailable_reason NOT LIKE 'manual%')
+		  -- credential-level availability (对齐 v_routable_credential_models 视图)
+		  AND COALESCE(c.status, 'active') = 'active'
+		  AND COALESCE(c.lifecycle_status, 'active') = 'active'
+		  AND COALESCE(c.manual_disabled, false) = false
+		  AND COALESCE(c.availability_state, 'ready') = 'ready'
+		  AND COALESCE(c.quota_state, 'ok') <> ALL (ARRAY['permanently_exhausted','balance_exhausted','periodic_exhausted'])
+		  AND COALESCE(c.health_status, 'unknown') IN ('healthy', 'unknown')
+		  -- provider-level availability
+		  AND COALESCE(p.enabled, true) = true
+		  AND COALESCE(p.manual_disabled, false) = false
+		  -- node-probe backoff (对齐 v_routable_credential_models 视图)
+		  AND NOT EXISTS (
+		    SELECT 1 FROM node_probe_state nps
+		    WHERE nps.credential_id = cmb.credential_id
+		      AND nps.raw_model_name = pm.raw_model_name
+		      AND nps.last_direct_ok = false
+		      AND nps.next_retry_at > now()
+		  )
 	`, pairs)
 	if err != nil {
 		return nil, err

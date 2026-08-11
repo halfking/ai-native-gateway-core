@@ -1,0 +1,42 @@
+package executors
+
+import (
+	"context"
+	"errors"
+	"testing"
+
+	"github.com/kaixuan/llm-gateway-go/domains/dispatch"
+	"github.com/kaixuan/llm-gateway-go/errorsx"
+)
+
+// TestDispatchErrMapping locks the contract that dispatch pipeline errors are
+// wrapped into *ExecuteError so the handler's Exhausted branch emits 503 (not
+// 502) and goal-retry recognises the kind.
+func TestDispatchErrMapping(t *testing.T) {
+	cases := []struct {
+		name    string
+		in      error
+		wantExh bool
+		wantKnd errorsx.ErrorKind
+	}{
+		{"no-route", dispatch.ErrNoRoute, true, errorsx.KindConcurrent},
+		{"overflow", dispatch.ErrOverflow, true, errorsx.KindConcurrent},
+		{"deadline", context.DeadlineExceeded, true, errorsx.KindTimeout},
+		{"forward-sentinel", errDispatchCircuitOpen, true, errorsx.KindTransient},
+		{"generic", errors.New("boom"), true, errorsx.KindTransient},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			ee := dispatchErrToExecuteError(c.in)
+			if !ee.Exhausted {
+				t.Fatalf("Exhausted must be true for %q", c.name)
+			}
+			if ee.LastKind != c.wantKnd {
+				t.Fatalf("kind = %q, want %q", ee.LastKind, c.wantKnd)
+			}
+			if !errors.Is(ee.LastErr, c.in) {
+				t.Fatalf("LastErr does not wrap input: got %v", ee.LastErr)
+			}
+		})
+	}
+}

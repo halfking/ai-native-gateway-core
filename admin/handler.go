@@ -57,6 +57,11 @@ type Handler struct {
 	// events to the dashboard 自检 tab over SSE, mirroring the live request
 	// stream. nil when Redis is not wired — the route is then not registered.
 	probeStreamHub *ProbeSSEHub
+	// freePoolSSE (2026-08-11) fans out free-pool credential quota events
+	// (rate_limited / quota_exhausted / recovered) to the 免费资源 tab over
+	// SSE, so the operator sees state changes without manual refresh. nil when
+	// Redis is not wired — the route is then not registered (polling still works).
+	freePoolSSE *FreePoolSSEHub
 	// 2026-06-23 Phase 2/3: backs /api/candidate-failures* endpoints.
 	// Wired from cmd/gateway/main.go via SetCandidateFailureHandlers so
 	// /alerts can read live data from the CandidateFailureMonitor.
@@ -485,7 +490,9 @@ func (h *Handler) SetModelProbeRunner(r *bg.ModelProbeRunner) { h.modelProbe = r
 // disable only that endpoint; history/node-latest/catalog read the DB directly.
 func (h *Handler) SetModelQualityBackend(b interface {
 	TestSingleNode(ctx context.Context, credentialID int, rawModel string) (*modelquality.QualityScore, error)
-}) { h.modelQualityBackend = b }
+}) {
+	h.modelQualityBackend = b
+}
 
 // SetStateManager wires the credential-state manager for /api/credentials/*/state
 // and /api/credentials/*/test endpoints. Pass nil to disable.
@@ -920,6 +927,9 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/free-pool/quick-entry", h.superAdmin(h.handleFreePoolQuickEntry))
 	mux.HandleFunc("/api/free-pool/keys", h.superAdmin(h.handleFreePoolKeysRouter))
 	mux.HandleFunc("/api/free-pool/keys/", h.superAdmin(h.handleFreePoolKeysSubRouter))
+	if h.freePoolSSE != nil {
+		mux.HandleFunc("/api/free-pool/stream", h.admin(h.freePoolSSE.HandleStream))
+	}
 	mux.HandleFunc("/api/pricing/", admin(h.handlePricing))
 	mux.HandleFunc("/api/config/default-limits", admin(h.handleDefaultLimits))
 
@@ -1242,4 +1252,10 @@ func (h *Handler) SetSystemMonitorSSE(hub *SystemMonitorSSEHub) {
 // queue stream (自检 tab). Pass nil to disable.
 func (h *Handler) SetProbeStreamSSE(hub *ProbeSSEHub) {
 	h.probeStreamHub = hub
+}
+
+// SetFreePoolSSE wires the dashboard SSE hub for free-pool credential quota
+// events (免费资源 tab). Pass nil to disable (the page falls back to polling).
+func (h *Handler) SetFreePoolSSE(hub *FreePoolSSEHub) {
+	h.freePoolSSE = hub
 }

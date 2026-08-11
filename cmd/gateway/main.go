@@ -65,7 +65,8 @@ import (
 	"github.com/kaixuan/llm-gateway-go/domains/integration"                         //nolint:depguard // clientprofile worker wiring
 	"github.com/kaixuan/llm-gateway-go/domains/modelquality"                        //nolint:depguard // 模型质量监控
 	"github.com/kaixuan/llm-gateway-go/domains/notification"                        //nolint:depguard // 审批通知器
-	"github.com/kaixuan/llm-gateway-go/domains/providerprofile"                      //nolint:depguard // 供应商画像告警 handler (AlertType)
+	"github.com/kaixuan/llm-gateway-go/domains/providerprofile"                     //nolint:depguard // 供应商画像告警 handler (AlertType)
+	"github.com/kaixuan/llm-gateway-go/domains/quotafetcher"                        //nolint:depguard // P1 proactive upstream quota prefetch
 	"github.com/kaixuan/llm-gateway-go/domains/routeincident"                       //nolint:depguard // 2026-07-13 route incident diagnosis (Phase 1)
 	"github.com/kaixuan/llm-gateway-go/domains/routingstate"
 	"github.com/kaixuan/llm-gateway-go/domains/session" //nolint:depguard // historical violation, B1 routing.go CQRS will fix
@@ -93,6 +94,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/internal/logging"
 	"github.com/kaixuan/llm-gateway-go/internal/modelpolicy"
 	"github.com/kaixuan/llm-gateway-go/internal/observability"
+	"github.com/kaixuan/llm-gateway-go/internal/outbox"
 	"github.com/kaixuan/llm-gateway-go/internal/quality"
 	"github.com/kaixuan/llm-gateway-go/internal/sessionv2mirror"
 	gwtrace "github.com/kaixuan/llm-gateway-go/internal/trace"
@@ -135,7 +137,21 @@ var (
 	// gRestrictedMode 在 license 校验失败时设为 true；router 注册阶段
 	// 据此决定是否启用 licensing.RestrictedModeMiddleware。
 	gRestrictedMode bool
+	// gOmniFreeTracker 在 OMNIFREE_ENABLED=true 的装配分支里写入，在 SSE hub
+	// 装配阶段（不同的嵌套作用域）读取以注入 QuotaEventSink。两个分支处在
+	// main() 的不同 if 嵌套中，无法用局部变量跨越，故沿用本文件既有的
+	// 包级 late-binding 模式（与 gAuditBus 等一致）。
+	gOmniFreeTracker *freeresource.QuotaTracker
 )
+
+// outboxWriterStub is a no-op OutboxWriter used as a feature flag.
+// The actual outbox INSERT happens in telemetry.Client.insertRequestLog()
+// via direct tx.Exec(), not through this interface.
+type outboxWriterStub struct{}
+
+func (s *outboxWriterStub) Write(ctx context.Context, env outbox.EventEnvelope) error {
+	return nil // no-op
+}
 
 func main() {
 	// migrate subcommand: connect DB, run migrations, exit.
@@ -305,6 +321,38 @@ func main() {
 	// never block startup on this.
 	if dbConn != nil {
 		_, _ = bg.ColumnarInvariantCheck(context.Background(), dbConn.Pool())
+	}
+
+	// ── Gateway → ASM outbox dispatcher (Phase 3, 2026-08-11) ───────
+	// Opt-in: only starts when both ASM_INTERNAL_ENDPOINT and OUTBOX_HMAC_SECRET
+	// are configured. Polls outbox_events and delivers to ASM via HTTP.
+	var outboxDispatcherStop context.CancelFunc
+	if dbConn != nil && dbConn.Enabled() {
+		asmEndpoint := strings.TrimSpace(os.Getenv("ASM_INTERNAL_ENDPOINT"))
+		hmacSecret := strings.TrimSpace(os.Getenv("OUTBOX_HMAC_SECRET"))
+		if asmEndpoint == "" || hmacSecret == "" {
+			slog.Info("outbox dispatcher disabled: incomplete ASM configuration",
+				"endpoint_configured", asmEndpoint != "",
+				"secret_configured", hmacSecret != "")
+		} else {
+			dispatcherCtx, cancel := context.WithCancel(context.Background())
+			outboxDispatcherStop = cancel
+			dispatcher := outbox.NewDispatcher(outbox.DispatcherConfig{
+				DB:           dbConn.Stdlib(),
+				ASMEndpoint:  asmEndpoint,
+				HMACSecret:   hmacSecret,
+				PollInterval: positiveDurationEnv("OUTBOX_POLL_INTERVAL", 5*time.Second),
+				MaxAttempts:  positiveIntEnv("OUTBOX_MAX_ATTEMPTS", 5),
+				HTTPTimeout:  positiveDurationEnv("OUTBOX_HTTP_TIMEOUT", 10*time.Second),
+				Logger:       slog.Default(),
+			})
+			go func() {
+				if err := dispatcher.Start(dispatcherCtx); err != nil && err != context.Canceled {
+					slog.Error("outbox dispatcher stopped unexpectedly", "error", err)
+				}
+			}()
+			slog.Info("outbox dispatcher enabled", "endpoint", asmEndpoint)
+		}
 	}
 
 	// ── License enforcement (2026-07-12) ─────────────────────────────
@@ -758,6 +806,8 @@ func main() {
 		// 后续通过 admin /api/settings 更新后，由对应的 onChange 回调触发
 		// ratelimit.SetRateLimitEnabled(v) 更新缓存。
 		syncRateLimitGateFromSettings()
+		// 2026-08-11 (479): 同步 dispatch_v2.enabled 到 dispatch 包的 atomic.Bool 缓存。
+		syncDispatchGateFromSettings()
 
 		// 2026-07-02: apply persisted log.* settings after the registry is
 		// initialized. Keep this independent from the rate-limit gate sync.
@@ -1479,12 +1529,21 @@ func main() {
 			stdlibDB := dbConn.Stdlib()
 			if stdlibDB != nil {
 				resolver := autocombo.NewResolver(stdlibDB)
-				tracker := freeresource.NewQuotaTracker(stdlibDB)
-				factory := autocombo.NewVirtualFactory(stdlibDB, tracker)
-				chatHandler.SetOmniFree(resolver, factory, tracker)
+				gOmniFreeTracker = freeresource.NewQuotaTracker(stdlibDB)
+				factory := autocombo.NewVirtualFactory(stdlibDB, gOmniFreeTracker)
+				// P1 主动配额预取 (2026-08-11): wire a proactive upstream quota
+				// fetcher so preflightQuota reads real remaining quota (OpenRouter
+				// /api/v1/key, DeepSeek/SiliconFlow balance) instead of relying
+				// solely on 429-reactive calibration. providerClient implements
+				// quotafetcher.KeyRevealer (RevealAPIKey, cached+singleflighted).
+				quotaFetchMgr := quotafetcher.NewManager(providerClient)
+				quotaFetchMgr.RegisterBuiltins()
+				factory.SetQuotaFetcher(autocombo.NewQuotaFetcherFromManager(quotaFetchMgr))
+				chatHandler.SetOmniFree(resolver, factory, gOmniFreeTracker)
 				slog.Info("omnifree: virtual auto/* routing enabled",
 					"resolver_db", stdlibDB != nil,
-					"tracker_enabled", true)
+					"tracker_enabled", true,
+					"quota_fetcher_providers", []string{"openrouter", "deepseek", "siliconflow", "openai"})
 			}
 		}
 
@@ -1571,6 +1630,22 @@ func main() {
 	telemetryClient := telemetry.NewClient()
 	if dbConn != nil && dbConn.Enabled() {
 		telemetryClient.SetDB(dbConn.Pool())
+
+		// WP4: Enable outbox writer for Gateway → ASM event delivery
+		// Only when both ASM_INTERNAL_ENDPOINT and OUTBOX_HMAC_SECRET are configured.
+		// The actual INSERT happens in insertRequestLog() using its pgx.Tx.
+		asmEndpoint := strings.TrimSpace(os.Getenv("ASM_INTERNAL_ENDPOINT"))
+		hmacSecret := strings.TrimSpace(os.Getenv("OUTBOX_HMAC_SECRET"))
+		if asmEndpoint != "" && hmacSecret != "" {
+			// Pass a non-nil writer as a feature flag. The writer itself is not used;
+			// insertRequestLog() directly executes INSERT via tx.Exec().
+			telemetryClient.SetOutboxWriter(&outboxWriterStub{})
+			slog.Info("outbox writer enabled for telemetry", "asm_endpoint", asmEndpoint)
+		} else {
+			slog.Info("outbox writer disabled: incomplete ASM configuration",
+				"endpoint_configured", asmEndpoint != "",
+				"secret_configured", hmacSecret != "")
+		}
 	}
 	if telemetryClient.Enabled() {
 		chatHandler.SetTelemetry(telemetryClient)
@@ -1642,6 +1717,7 @@ func main() {
 	// 自检 tab. Declared at this scope so it can be constructed in the
 	// system-monitor wiring block and later wired into probe emitters.
 	var probeStreamHub *admin.ProbeSSEHub
+	var freePoolSSEHub *admin.FreePoolSSEHub
 	var anomalyHarvester *streaming.AnomalyHarvester
 	var integrityDriftWorker *bg.IntegrityFingerprintDrift
 	var integrityHarvester *bg.IntegrityHarvester
@@ -2211,6 +2287,18 @@ func main() {
 		// 单实例内存模式（仅同实例 fan-out，无 Redis 持久化）。
 		probeStreamHub = admin.NewProbeSSEHub(fpSlotRedis)
 		adminHandler.SetProbeStreamSSE(probeStreamHub)
+
+		// 2026-08-11: 免费资源池 SSE 流（与 probe / live-stream 物理隔离）。
+		// 让凭据配额状态变化（rate_limited / quota_exhausted / recovered）实时
+		// 推送到「免费资源」tab，管理员无需手动刷新。fpSlotRedis 为 nil 时走
+		// 单实例内存模式（仅同实例 fan-out）。
+		freePoolSSEHub = admin.NewFreePoolSSEHub(fpSlotRedis)
+		adminHandler.SetFreePoolSSE(freePoolSSEHub)
+		// Wire the SSE sink into the OmniFree QuotaTracker so credential quota
+		// state changes are pushed to the 免费资源 tab in real time.
+		if gOmniFreeTracker != nil {
+			gOmniFreeTracker.SetQuotaSink(freePoolSSEHub)
+		}
 
 		// 2026-07-23: 系统监测模块 — 探测任务的唯一入口 (design docs/会话优化v2/32).
 		// env LLM_GATEWAY_SYSTEM_MONITOR_ENABLED=true 才会启；Phase 1 默认关。
@@ -4710,6 +4798,10 @@ func main() {
 		contextWindowHandler.RegisterRoutes(mux, wrapAdmin)
 		slog.Info("A4 Phase 1 context window calibration enabled (/api/admin/models/context-window/{id})")
 
+		// 2026-08-11 (479): V2 多层队列调度实时快照（Tier-3 显示与统计）。
+		mux.HandleFunc("/api/admin/dispatch/queues", wrapAdmin(handleDispatchQueues))
+		slog.Info("dispatch_v2 queue snapshot enabled (/api/admin/dispatch/queues)")
+
 		// D2 (2026-08-07): Cache Metrics API
 		// Unified cache observability for semantic/prefix/delta/kv/session_state layers
 		cacheMetricsHandler := admin.NewCacheMetricsHandler(dbConn.Pool())
@@ -4884,6 +4976,12 @@ func main() {
 	// was previously missing — the proxy existed but was never mounted.
 	finalHandler := newMaintainGatewayHandler(handler, maintainStatic)
 
+	// 2026-08-11 (479): 构建 V2 多层队列调度 Pipeline 并注入 executor。
+	// Pipeline 长生命周期；adapters 在请求时惰性读取 routingExec 字段，
+	// 因此只要在 srv 接受请求前注入即可。dispatch_v2.enabled 的 atomic 缓存
+	// 已在 syncDispatchGateFromSettings 同步；此处仅构造与启动 worker 池。
+	wireDispatchPipeline(routingExec)
+
 	srv := &http.Server{
 		Addr:    cfg.Listen,
 		Handler: finalHandler,
@@ -5016,6 +5114,11 @@ func main() {
 	stopDone := make(chan struct{}, 1)
 
 	go func() {
+		// Stop outbox dispatcher before other background services
+		if outboxDispatcherStop != nil {
+			outboxDispatcherStop()
+		}
+
 		// Stop accepting quota tasks and drain the bounded OmniFree worker queue
 		// before the shared database pool is closed.
 		chatHandler.ShutdownOmniFree()
