@@ -219,13 +219,14 @@ func (c *Checker) CheckAndUpdate(ctx context.Context, credentialID int, model st
 // models on the same credential routable (per the 2026-06-22 audit on
 // cross-model collateral damage).
 func (c *Checker) markDegraded(ctx context.Context, credentialID int, model string, rate float64, kinds map[string]int, sampleSize int) error {
-	recoverAt := time.Now().Add(c.degradedCooldown)
+	now := time.Now()
+	recoverAt := now.Add(c.degradedCooldown)
 
 	tag, err := c.db.Exec(ctx, `
 		UPDATE credential_model_bindings cmb
 		SET available          = FALSE,
 		    unavailable_reason = 'continuous_failure',
-		    unavailable_at     = now(),
+		    unavailable_at     = $4,
 		    unavailable_recover_at = $3,
 		    updated_at         = now()
 		FROM provider_models pm
@@ -235,7 +236,7 @@ func (c *Checker) markDegraded(ctx context.Context, credentialID int, model stri
 		  AND cmb.available = TRUE
 		  AND COALESCE(cmb.admin_protected, FALSE) = FALSE
 		  AND COALESCE(cmb.unavailable_reason, '') NOT LIKE 'manual%'
-	`, credentialID, model, recoverAt)
+	`, credentialID, model, recoverAt, now)
 	if err != nil {
 		return fmt.Errorf("update credential_model_bindings: %w", err)
 	}
@@ -245,34 +246,47 @@ func (c *Checker) markDegraded(ctx context.Context, credentialID int, model stri
 		// surfaces the same unavailability — admin UI and production
 		// routing must stay in lock-step.
 		//
-		// 2026-07-15 P1 fix: model_offers is a VIEW over
-		// credential_model_bindings + provider_models, and the view does
-		// not expose unavailable_recover_at (only unavailable_at). Writing
-		// that column raises SQLSTATE 42703 and pollutes the journald
-		// stream with "checker: model_offers mirror write failed" warnings
-		// on every degraded credential. The recover_at remains visible
-		// on the cmb row (which is what the production router reads via
-		// v_routable_credential_models) and on the underlying
-		// credential_model_bindings table that the view selects from, so
-		// dropping the column from this mirror is lossless.
+		// model_offers is a VIEW over credential_model_bindings + provider_models
+		// with an INSTEAD OF UPDATE trigger that routes writes back to cmb.
+		// The mirror exists because the cmb UPDATE above does NOT touch the
+		// view row directly (views are read-only without the trigger path),
+		// so /api/routing/resolve would otherwise keep showing the offer as
+		// available until something else refreshes it.
+		//
+		// 2026-08-11 fix: the previous subquery joined on
+		//   cmb.unavailable_at = $2  with $2 = recoverAt (= now()+15min),
+		// but the cmb write sets unavailable_at = now(), not recoverAt — so
+		// the subquery NEVER matched and the mirror updated zero rows. The
+		// "lock-step" guarantee was silently broken. Now we match on the same
+		// (credential_id, canonical_raw_name) the cmb UPDATE targeted and pass
+		// the exact now() timestamp written to cmb.unavailable_at, so the
+		// join is stable.
+		//
+		// Note: the view DOES expose unavailable_recover_at, but the INSTEAD OF
+		// UPDATE trigger (model_offers_update_trigger.sql) does NOT propagate
+		// that column to cmb, so writing it here would be silently dropped.
+		// unavailable_recover_at is already set correctly on the cmb row above;
+		// we only mirror the columns the trigger honours.
 		if _, moErr := c.db.Exec(ctx, `
 			UPDATE model_offers mo
 			SET available          = FALSE,
 			    unavailable_reason = 'continuous_failure',
-			    unavailable_at     = now()
+			    unavailable_at     = $3
 			FROM provider_models pm
-			WHERE pm.raw_model_name = mo.raw_model_name
-			  AND pm.id IN (
+			WHERE pm.canonical_raw_name = $2
+			  AND pm.id = (
 			      SELECT cmb.provider_model_id
 			      FROM credential_model_bindings cmb
 			      WHERE cmb.credential_id = $1
+			        AND cmb.available = FALSE
 			        AND cmb.unavailable_reason = 'continuous_failure'
-			        AND cmb.unavailable_at    = $2
+			        AND cmb.unavailable_at = $3
 			  )
 			  AND mo.credential_id = $1
+			  AND mo.canonical_raw_name = $2
 			  AND mo.available = TRUE
 			  AND COALESCE(mo.admin_protected, FALSE) = FALSE
-		`, credentialID, recoverAt); moErr != nil {
+		`, credentialID, model, now); moErr != nil {
 			slog.Warn("checker: model_offers mirror write failed",
 				"credential_id", credentialID, "model", model, "error", moErr)
 		}
@@ -346,6 +360,18 @@ func RecoverExpired(ctx context.Context, db DBQuerier) (int, error) {
 	//
 	// NOTE: model_offers is a VIEW, so it doesn't have an updated_at column.
 	// The underlying credential_model_bindings.updated_at was already set above.
+	//
+	// 2026-08-11 fix: the previous WHERE used
+	//   COALESCE(unavailable_at + 30s, now()+1h) < now()
+	// which (since unavailable_at is non-null) reduced to
+	//   unavailable_at + 30s < now()
+	// i.e. recover 30s after the degradation. But the cmb path above
+	// recovers at unavailable_recover_at = now()+degradedCooldown (15min).
+	// model_offers has an INSTEAD OF UPDATE trigger that writes the recovery
+	// back to cmb (clearing unavailable_reason/unavailable_at), so the
+	// premature 30s recovery also silently re-armed the binding on cmb —
+	// the 15min cooldown was effectively bypassed. The view exposes
+	// unavailable_recover_at, so mirror the same condition the cmb UPDATE uses.
 	moTag, err := db.Exec(ctx, `
 		UPDATE model_offers mo
 		SET available          = TRUE,
@@ -355,7 +381,8 @@ func RecoverExpired(ctx context.Context, db DBQuerier) (int, error) {
 		  AND COALESCE(mo.unavailable_reason, '') NOT LIKE 'manual%'
 		  AND mo.unavailable_reason <> 'model_probe_broken'
 		  AND COALESCE(mo.admin_protected, FALSE) = FALSE
-		  AND COALESCE(mo.unavailable_at + INTERVAL '30 seconds', now() + INTERVAL '1 hour') < now()
+		  AND COALESCE(mo.unavailable_recover_at,
+		               mo.unavailable_at + INTERVAL '30 seconds') < now()
 	`)
 	if err != nil {
 		return int(cmbTag.RowsAffected()), fmt.Errorf("recover expired model_offers: %w", err)

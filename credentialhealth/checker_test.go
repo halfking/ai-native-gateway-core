@@ -132,13 +132,14 @@ func TestChecker_CheckAndUpdate_AboveThreshold(t *testing.T) {
 	// reads; writing to credentials leaves the binding routable in production
 	// even though the credential is "degraded" in the admin UI.
 	mockDB.ExpectExec("UPDATE credential_model_bindings").
-		WithArgs(pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg()).
+		WithArgs(pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg()).
 		WillReturnResult(pgxmock.NewResult("UPDATE", 1))
-	// 2026-07-15 P1 fix: the model_offers mirror UPDATE no longer carries
-	// the unavailable_recover_at placeholder; the remaining $1/$2 are
-	// credential_id and unavailable_at for the cmb subquery join.
+	// 2026-08-11 fix: the model_offers mirror UPDATE now carries THREE
+	// placeholders ($1 credential_id, $2 canonical_raw_name, $3 now) so the
+	// cmb subquery can join on the exact unavailable_at timestamp written to
+	// cmb (previously it joined on recoverAt and never matched).
 	mockDB.ExpectExec(`UPDATE model_offers[\s\S]*continuous_failure`).
-		WithArgs(pgxmock.AnyArg(), pgxmock.AnyArg()).
+		WithArgs(pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg()).
 		WillReturnResult(pgxmock.NewResult("UPDATE", 1))
 
 	err = checker.CheckAndUpdate(ctx, credID, model)
@@ -275,11 +276,14 @@ func TestChecker_CheckAndUpdate_ExcludeBenignEOF(t *testing.T) {
 	}
 
 	// 2026-07-16 P1: stream_timeout IS counted → 10/10 = 100% > 80% → markDegraded fires.
+	// 2026-08-11 fix: cmb UPDATE now carries 4 placeholders
+	// ($1 credential_id, $2 model, $3 recoverAt, $4 now) and the
+	// model_offers mirror carries 3 ($1 credential_id, $2 model, $3 now).
 	mockDB.ExpectExec("UPDATE credential_model_bindings").
-		WithArgs(pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg()).
+		WithArgs(pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg()).
 		WillReturnResult(pgxmock.NewResult("UPDATE", 1))
 	mockDB.ExpectExec(`UPDATE model_offers[\s\S]*continuous_failure`).
-		WithArgs(pgxmock.AnyArg(), pgxmock.AnyArg()).
+		WithArgs(pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg()).
 		WillReturnResult(pgxmock.NewResult("UPDATE", 1))
 
 	if err := checker.CheckAndUpdate(ctx, credID, model); err != nil {
@@ -342,17 +346,16 @@ func TestChecker_CheckAndUpdate_MixedEOFStillFlagsTrueFailures(t *testing.T) {
 	}
 
 	// Expect: cmb UPDATE (the production source of truth).
+	// 2026-08-11 fix: cmb UPDATE now carries 4 placeholders.
 	mockDB.ExpectExec("UPDATE credential_model_bindings").
-		WithArgs(pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg()).
+		WithArgs(pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg()).
 		WillReturnResult(pgxmock.NewResult("UPDATE", 1))
-	// Expect: model_offers mirror UPDATE — but it must NOT carry an
-	// unavailable_recover_at column (the column does not exist on the
-	// view, see checker.go markDegraded comment). 2026-07-15 P1 fix
-	// removed the third placeholder from this UPDATE entirely; the
-	// remaining $1/$2 are the credential_id and unavailable_at timestamp
-	// used to JOIN the cmb subquery.
+	// Expect: model_offers mirror UPDATE — 2026-08-11 fix: the mirror now
+	// matches on (credential_id, canonical_raw_name) and passes the exact
+	// now() timestamp written to cmb.unavailable_at, so it carries 3
+	// placeholders ($1 credential_id, $2 model, $3 now).
 	mockDB.ExpectExec(`UPDATE model_offers[\s\S]*continuous_failure`).
-		WithArgs(pgxmock.AnyArg(), pgxmock.AnyArg()).
+		WithArgs(pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg()).
 		WillReturnResult(pgxmock.NewResult("UPDATE", 1))
 
 	if err := checker.CheckAndUpdate(ctx, credID, model); err != nil {
