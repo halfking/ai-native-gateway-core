@@ -41,6 +41,11 @@ func (h *Handler) addCredential(w http.ResponseWriter, r *http.Request, provider
 		ConcurrencyLimit *int     `json:"concurrency_limit"`
 		FpSlotLimit      *int     `json:"fp_slot_limit"`
 		PlanType         *string  `json:"plan_type"`
+		// 479: 并发/限流模式与队列参数（见 docs/会话优化v2/57）。
+		ConcurrencyMode *string `json:"concurrency_mode"` // concurrency|rpm|tpm|disabled
+		TPMLimit        *int    `json:"tpm_limit"`
+		MaxQueueDepth   *int    `json:"max_queue_depth"`
+		MaxQueueWaitMS  *int    `json:"max_queue_wait_ms"`
 	}
 	if err := readJSON(r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid body")
@@ -93,16 +98,27 @@ func (h *Handler) addCredential(w http.ResponseWriter, r *http.Request, provider
 	if req.FpSlotLimit != nil {
 		fpSlotLimit = *req.FpSlotLimit
 	}
+	// 479: 并发模式默认 concurrency；校验取值。
+	concurrencyMode := "concurrency"
+	if req.ConcurrencyMode != nil && *req.ConcurrencyMode != "" {
+		if !isValidConcurrencyMode(*req.ConcurrencyMode) {
+			writeError(w, http.StatusBadRequest, "invalid concurrency_mode; allowed: concurrency, rpm, tpm, disabled")
+			return
+		}
+		concurrencyMode = *req.ConcurrencyMode
+	}
 
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
 
 	var id int
 	err = h.db.QueryRow(ctx, `
-		INSERT INTO credentials (provider_id, label, secret_ciphertext, status, concurrency_limit, fp_slot_limit, balance_usd, plan_type)
-		VALUES ($1, $2, $3, 'active', $4, $5, 1000.0, $6)
+		INSERT INTO credentials (provider_id, label, secret_ciphertext, status, concurrency_limit, fp_slot_limit, balance_usd, plan_type,
+		                         concurrency_mode, tpm_limit, max_queue_depth, max_queue_wait_ms)
+		VALUES ($1, $2, $3, 'active', $4, $5, 1000.0, $6, $7, $8, $9, $10)
 		RETURNING id
-	`, providerID, label, encrypted, concurrencyLimit, fpSlotLimit, planType).Scan(&id)
+	`, providerID, label, encrypted, concurrencyLimit, fpSlotLimit, planType,
+		concurrencyMode, req.TPMLimit, req.MaxQueueDepth, req.MaxQueueWaitMS).Scan(&id)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "create failed: "+err.Error())
 		return
@@ -177,7 +193,11 @@ func (h *Handler) listCredentials(w http.ResponseWriter, r *http.Request, provid
 		       c.secret_ciphertext,
 		       COALESCE(c.manual_disabled, false),
 		       c.created_at,
-		       c.updated_at
+		       c.updated_at,
+		       COALESCE(c.concurrency_mode,'concurrency'),
+		       c.tpm_limit,
+		       c.max_queue_depth,
+		       c.max_queue_wait_ms
 		FROM credentials c
 		WHERE c.provider_id = $1
 		ORDER BY c.id
@@ -232,6 +252,10 @@ func (h *Handler) listCredentials(w http.ResponseWriter, r *http.Request, provid
 		ManualDisabled         bool       `json:"manual_disabled"`
 		CreatedAt              *time.Time `json:"created_at"`
 		UpdatedAt              *time.Time `json:"updated_at"`
+		ConcurrencyMode        string     `json:"concurrency_mode"`
+		TPMLimit               *int       `json:"tpm_limit"`
+		MaxQueueDepth          *int       `json:"max_queue_depth"`
+		MaxQueueWaitMS         *int       `json:"max_queue_wait_ms"`
 	}
 
 	var creds []cred
@@ -277,6 +301,10 @@ func (h *Handler) listCredentials(w http.ResponseWriter, r *http.Request, provid
 			&c.ManualDisabled,
 			&c.CreatedAt,
 			&c.UpdatedAt,
+			&c.ConcurrencyMode,
+			&c.TPMLimit,
+			&c.MaxQueueDepth,
+			&c.MaxQueueWaitMS,
 		); err != nil {
 			slog.Warn("listCredentials scan failed", "error", err)
 			continue
@@ -345,6 +373,11 @@ func (h *Handler) updateCredential(w http.ResponseWriter, r *http.Request, provi
 		Notes            *string  `json:"notes"`
 		BalanceUSD       *float64 `json:"balance_usd"`
 		PlanType         *string  `json:"plan_type"`
+		// 479: 并发/限流模式与队列参数（见 docs/会话优化v2/57）。
+		ConcurrencyMode *string `json:"concurrency_mode"`
+		TPMLimit        *int    `json:"tpm_limit"`
+		MaxQueueDepth   *int    `json:"max_queue_depth"`
+		MaxQueueWaitMS  *int    `json:"max_queue_wait_ms"`
 	}
 	if err := readJSON(r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid body")
@@ -364,6 +397,27 @@ func (h *Handler) updateCredential(w http.ResponseWriter, r *http.Request, provi
 	if req.ConcurrencyLimit != nil {
 		//nolint:errcheck // best-effort exec, non-critical
 		h.db.Exec(ctx, `UPDATE credentials SET concurrency_limit = $1 WHERE id = $2 AND provider_id = $3`, *req.ConcurrencyLimit, credID, providerID)
+	}
+	// 479: 并发模式与队列参数。
+	if req.ConcurrencyMode != nil {
+		if *req.ConcurrencyMode != "" && !isValidConcurrencyMode(*req.ConcurrencyMode) {
+			writeError(w, http.StatusBadRequest, "invalid concurrency_mode; allowed: concurrency, rpm, tpm, disabled")
+			return
+		}
+		//nolint:errcheck // best-effort exec, non-critical
+		h.db.Exec(ctx, `UPDATE credentials SET concurrency_mode = $1 WHERE id = $2 AND provider_id = $3`, *req.ConcurrencyMode, credID, providerID)
+	}
+	if req.TPMLimit != nil {
+		//nolint:errcheck // best-effort exec, non-critical
+		h.db.Exec(ctx, `UPDATE credentials SET tpm_limit = $1 WHERE id = $2 AND provider_id = $3`, *req.TPMLimit, credID, providerID)
+	}
+	if req.MaxQueueDepth != nil {
+		//nolint:errcheck // best-effort exec, non-critical
+		h.db.Exec(ctx, `UPDATE credentials SET max_queue_depth = $1 WHERE id = $2 AND provider_id = $3`, *req.MaxQueueDepth, credID, providerID)
+	}
+	if req.MaxQueueWaitMS != nil {
+		//nolint:errcheck // best-effort exec, non-critical
+		h.db.Exec(ctx, `UPDATE credentials SET max_queue_wait_ms = $1 WHERE id = $2 AND provider_id = $3`, *req.MaxQueueWaitMS, credID, providerID)
 	}
 	if req.FpSlotLimit != nil {
 		newLimit := *req.FpSlotLimit

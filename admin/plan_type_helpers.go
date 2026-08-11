@@ -12,5 +12,13 @@ var validPlanTypes = map[string]bool{
 
 func isValidPlanType(s string) bool { return validPlanTypes[s] }
 
+// validConcurrencyModes mirrors the credentials_concurrency_mode_check
+// constraint (migration 479). See docs/会话优化v2/57.
+var validConcurrencyModes = map[string]bool{
+	"concurrency": true, "rpm": true, "tpm": true, "disabled": true,
+}
+
+func isValidConcurrencyMode(s string) bool { return validConcurrencyModes[s] }
+
 // deriveBillingModeSQL is the CASE expression used in multiple UPDATEs.
 const deriveBillingModeSQL = `CASE WHEN $1 = 'token' THEN 'per_token' ELSE $1 END`

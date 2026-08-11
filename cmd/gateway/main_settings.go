@@ -14,6 +14,7 @@ import (
 	"strings"
 
 	"github.com/kaixuan/llm-gateway-go/bg"
+	"github.com/kaixuan/llm-gateway-go/domains/dispatch"
 	"github.com/kaixuan/llm-gateway-go/internal/logging"
 	"github.com/kaixuan/llm-gateway-go/ratelimit"
 	"github.com/kaixuan/llm-gateway-go/settings"
@@ -52,6 +53,33 @@ func syncRateLimitGateFromSettings() {
 	}
 	ratelimit.SetRateLimitEnabled(b)
 	slog.Info("rate_limit.enabled initialised", "enabled", b)
+}
+
+// syncDispatchGateFromSettings reads dispatch_v2.enabled from settings.Global
+// and applies it to dispatch's atomic.Bool cache (domains/dispatch/gate.go).
+// The cache is read on every Execute hot-path call so we never hit the
+// settings backend during a request. Mirrors syncRateLimitGateFromSettings.
+// Runtime changes go through the admin settings PUT handler which calls
+// dispatch.SetDispatchEnabled directly. Errors are non-fatal (keep default ON).
+func syncDispatchGateFromSettings() {
+	if settings.Global == nil {
+		return
+	}
+	sp := settings.Global.Spec(dispatch.DispatchGateKey)
+	if sp == nil {
+		return // Spec not registered — keep package default (enabled).
+	}
+	v, _, err := settings.Global.EffectiveValue(sp.Scope, dispatch.DispatchGateKey, "")
+	if err != nil || len(v) == 0 {
+		return
+	}
+	var b bool
+	if err := json.Unmarshal(v, &b); err != nil {
+		slog.Debug("dispatch_v2.enabled: failed to unmarshal", "raw", string(v))
+		return
+	}
+	dispatch.SetDispatchEnabled(b)
+	slog.Info("dispatch_v2.enabled initialised", "enabled", b)
 }
 
 // applyLogSettingsToLogging 从 settings_kv 读取 log.* 配置并应用到已初始化的

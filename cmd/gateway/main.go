@@ -800,6 +800,8 @@ func main() {
 		// 后续通过 admin /api/settings 更新后，由对应的 onChange 回调触发
 		// ratelimit.SetRateLimitEnabled(v) 更新缓存。
 		syncRateLimitGateFromSettings()
+		// 2026-08-11 (479): 同步 dispatch_v2.enabled 到 dispatch 包的 atomic.Bool 缓存。
+		syncDispatchGateFromSettings()
 
 		// 2026-07-02: apply persisted log.* settings after the registry is
 		// initialized. Keep this independent from the rate-limit gate sync.
@@ -4768,6 +4770,10 @@ func main() {
 		contextWindowHandler.RegisterRoutes(mux, wrapAdmin)
 		slog.Info("A4 Phase 1 context window calibration enabled (/api/admin/models/context-window/{id})")
 
+		// 2026-08-11 (479): V2 多层队列调度实时快照（Tier-3 显示与统计）。
+		mux.HandleFunc("/api/admin/dispatch/queues", wrapAdmin(handleDispatchQueues))
+		slog.Info("dispatch_v2 queue snapshot enabled (/api/admin/dispatch/queues)")
+
 		// D2 (2026-08-07): Cache Metrics API
 		// Unified cache observability for semantic/prefix/delta/kv/session_state layers
 		cacheMetricsHandler := admin.NewCacheMetricsHandler(dbConn.Pool())
@@ -4941,6 +4947,12 @@ func main() {
 	// pass-through, preserving the pre-migration rollback path. This call
 	// was previously missing — the proxy existed but was never mounted.
 	finalHandler := newMaintainGatewayHandler(handler, maintainStatic)
+
+	// 2026-08-11 (479): 构建 V2 多层队列调度 Pipeline 并注入 executor。
+	// Pipeline 长生命周期；adapters 在请求时惰性读取 routingExec 字段，
+	// 因此只要在 srv 接受请求前注入即可。dispatch_v2.enabled 的 atomic 缓存
+	// 已在 syncDispatchGateFromSettings 同步；此处仅构造与启动 worker 池。
+	wireDispatchPipeline(routingExec)
 
 	srv := &http.Server{
 		Addr:    cfg.Listen,
