@@ -120,15 +120,16 @@ func (p *Pipeline) Start() {
 }
 
 // Stop drains workers. After Stop, Submit returns ErrShutdown.
+//
+// We do NOT close the model-queue channels: senders in enqueueModel send
+// outside modelMu, so closing would race with an in-flight send and panic.
+// Drainers exit via stopCh instead; the channels are GC'd with the pipeline.
 func (p *Pipeline) Stop() {
 	if !p.shutdown.CompareAndSwap(false, true) {
 		return
 	}
 	close(p.stopCh)
 	p.modelMu.Lock()
-	for _, mq := range p.models {
-		close(mq.ch)
-	}
 	p.models = map[string]*modelQueue{}
 	p.modelMu.Unlock()
 	p.credMu.Lock()
@@ -213,6 +214,13 @@ func (p *Pipeline) getOrCreateModelQueue(name string) *modelQueue {
 	if mq, ok := p.models[name]; ok {
 		return mq
 	}
+	// After Stop, do not spawn new drainers (Stop's wg.Wait may already be
+	// running; a late wg.Add would race it). Return a throwaway queue whose
+	// sends will buffer or overflow — Submit has already started rejecting.
+	if p.shutdown.Load() {
+		mq := &modelQueue{name: name, ch: make(chan *QueuedRequest, 1)}
+		return mq
+	}
 	mq := &modelQueue{name: name, ch: make(chan *QueuedRequest, p.config().MaxQueueDepth)}
 	p.models[name] = mq
 	p.wg.Add(1)
@@ -222,15 +230,25 @@ func (p *Pipeline) getOrCreateModelQueue(name string) *modelQueue {
 
 // runModelDrainer forwards items from a per-model queue into the shared
 // dispatchIn, preserving per-model FIFO and providing per-model backpressure.
+//
+// It reads via select+stopCh (NOT `for range`) so Stop() never has to close
+// mq.ch. Closing mq.ch would race with concurrent senders in enqueueModel
+// (which send outside modelMu) and panic on send-to-closed. The channel is
+// simply left to be garbage-collected with the pipeline.
 func (p *Pipeline) runModelDrainer(mq *modelQueue) {
 	defer p.wg.Done()
-	for qr := range mq.ch {
-		mq.depth.Add(-1)
-		metricModelQueueDepth.WithLabelValues(mq.name).Dec()
-		wait := time.Since(qr.EnqueuedAt).Seconds()
-		metricModelQueueWait.WithLabelValues(mq.name).Observe(wait)
+	for {
 		select {
-		case p.dispatchIn <- qr:
+		case qr := <-mq.ch:
+			mq.depth.Add(-1)
+			metricModelQueueDepth.WithLabelValues(mq.name).Dec()
+			wait := time.Since(qr.EnqueuedAt).Seconds()
+			metricModelQueueWait.WithLabelValues(mq.name).Observe(wait)
+			select {
+			case p.dispatchIn <- qr:
+			case <-p.stopCh:
+				return
+			}
 		case <-p.stopCh:
 			return
 		}

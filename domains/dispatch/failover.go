@@ -33,6 +33,17 @@ func (p *Pipeline) runFailover() {
 //  3. model-change (tryModelChange);
 //  4. terminal → complete with the error.
 func (p *Pipeline) move(qr *QueuedRequest, err error) {
+	// Global safety net: cap total forward attempts so a request can never
+	// churn an unbounded candidate set. Under normal operation this is well
+	// above candidate count × retry and never trips.
+	if qr.AttemptCount >= maxAttempts {
+		metricOverflow.WithLabelValues("attempt_cap").Inc()
+		slog.Warn("dispatch: attempt cap reached, giving up",
+			"request_id", qr.ID, "attempts", qr.AttemptCount,
+			"tried_creds", len(qr.TriedCredentials))
+		p.complete(qr, ForwardOutcome{Err: err})
+		return
+	}
 	// (1) Same-credential retry.
 	if qr.CredRetryCount < p.config().RetryPerCredential {
 		qr.CredRetryCount++

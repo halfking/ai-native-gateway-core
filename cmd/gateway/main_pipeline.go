@@ -1101,6 +1101,8 @@ func v2ShutdownPipeline(deps *v2DispatchDeps) {
 	_ = deps.AuditWriter.Close()
 }
 
+var lookupAnalysisIP = net.LookupIP
+
 func validateAnalysisEndpoint(rawURL string, allowInsecureLocal bool) (string, error) {
 	parsed, err := url.Parse(strings.TrimSpace(rawURL))
 	if err != nil || parsed.Hostname() == "" {
@@ -1116,7 +1118,7 @@ func validateAnalysisEndpoint(rawURL string, allowInsecureLocal bool) (string, e
 	if parsed.Scheme != "https" {
 		return "", fmt.Errorf("analysis endpoint must use https")
 	}
-	addresses, err := net.LookupIP(host)
+	addresses, err := lookupAnalysisIP(host)
 	if err != nil || len(addresses) == 0 {
 		return "", fmt.Errorf("analysis endpoint hostname cannot be resolved")
 	}

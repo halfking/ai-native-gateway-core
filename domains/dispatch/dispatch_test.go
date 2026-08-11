@@ -350,3 +350,116 @@ func TestCtxCancelAbandoned(t *testing.T) {
 	close(block) // release the hung forward; complete must no-op (no send panic)
 	time.Sleep(30 * time.Millisecond)
 }
+
+// TestStopNoSendOnClosedRace: concurrent Submit (enqueueModel) while Stop
+// runs must not panic on send-to-closed channel. Regression for the
+// drainer/Stop design (Stop must NOT close mq.ch).
+func TestStopNoSendOnClosedRace(t *testing.T) {
+	f := &fakeDeps{
+		refsByModel:  map[string][]CredentialRef{"m": {cred(1, ModeConcurrency, 2)}},
+		forwardFn:    func(context.Context, *QueuedRequest, CredentialRef) ForwardOutcome { return ForwardOutcome{} },
+		forwardCalls: map[int]int{},
+	}
+	p := f.pipeline()
+	p.Start()
+
+	var wg sync.WaitGroup
+	// Hammer Submit/abandon concurrently; Stop in the middle.
+	for i := 0; i < 50; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Millisecond)
+			defer cancel()
+			qr := NewQueuedRequest(fmt.Sprintf("r%d", i), "t", "m", ctx, nil)
+			_, _ = p.Submit(ctx, qr) // outcome irrelevant; must not panic
+		}(i)
+	}
+	time.Sleep(2 * time.Millisecond)
+	p.Stop() // must not race with in-flight sends
+	wg.Wait()
+}
+
+// TestPacingTimeoutSkipsSameCredRetry: a pacing-timeout (concurrency
+// saturated) must NOT burn the same-credential retry budget — it should
+// switch to the next credential immediately.
+func TestPacingTimeoutSkipsSameCredRetry(t *testing.T) {
+	var attempts atomic.Int64
+	// cred 1 caps at 1 in-flight; forward hangs so the slot stays taken →
+	// second arrival at cred 1 paces out. cred 2 succeeds.
+	block := make(chan struct{})
+	f := &fakeDeps{
+		refsByModel: map[string][]CredentialRef{"m": {
+			cred(1, ModeConcurrency, 1),
+			cred(2, ModeConcurrency, 1),
+		}},
+		forwardFn: func(ctx context.Context, qr *QueuedRequest, c CredentialRef) ForwardOutcome {
+			n := attempts.Add(1)
+			if c.CredentialID == 1 {
+				<-block // hold the single slot
+				_ = n
+				return ForwardOutcome{}
+			}
+			return ForwardOutcome{}
+		},
+		forwardCalls: map[int]int{},
+	}
+	p := f.pipeline()
+	p.Start()
+	defer func() {
+		close(block)
+		p.Stop()
+	}()
+
+	// First request occupies cred 1's single slot (hangs).
+	go func() {
+		qr1 := NewQueuedRequest("r1", "t", "m", context.Background(), nil)
+		_, _ = p.Submit(context.Background(), qr1)
+	}()
+	time.Sleep(20 * time.Millisecond) // let qr1 acquire cred1's slot
+
+	// Second request: dispatcher also picks cred1 (only non-tried), but its
+	// governor is saturated → pacing timeout (short budget) → must skip retry
+	// and switch to cred2. Give a tiny queue-wait budget via config.
+	cfg := DefaultConfig()
+	cfg.MaxQueueWaitMS = 50
+	p.Reload(cfg)
+	qr2 := NewQueuedRequest("r2", "t", "m", context.Background(), nil)
+	res, err := p.Submit(context.Background(), qr2)
+	if err != nil {
+		t.Fatalf("expected success via cred2, got err: %v", err)
+	}
+	if res == nil {
+		t.Fatalf("expected non-nil result via cred2")
+	}
+}
+
+// TestAttemptCap: a request that fails on every credential must terminate at
+// the maxAttempts ceiling, not loop forever.
+func TestAttemptCap(t *testing.T) {
+	// Cycle of 3 credentials that all fail pre-firstbyte; without the cap the
+	// mover would keep switching forever (Tried set grows but routeFunc keeps
+	// returning fresh IDs if we supply many). Use many failing credentials.
+	creds := make([]CredentialRef, 0, 60)
+	for i := 1; i <= 60; i++ {
+		creds = append(creds, cred(i, ModeConcurrency, 1))
+	}
+	var forwardCalls atomic.Int64
+	f := &fakeDeps{
+		refsByModel:  map[string][]CredentialRef{"m": creds},
+		forwardFn:    func(context.Context, *QueuedRequest, CredentialRef) ForwardOutcome { forwardCalls.Add(1); return ForwardOutcome{Err: errors.New("fail")} },
+		forwardCalls: map[int]int{},
+	}
+	p := f.pipeline()
+	p.Start()
+	defer p.Stop()
+
+	qr := NewQueuedRequest("r1", "t", "m", context.Background(), nil)
+	_, err := p.Submit(context.Background(), qr)
+	if err == nil {
+		t.Fatalf("expected terminal error")
+	}
+	if got := forwardCalls.Load(); got > maxAttempts {
+		t.Fatalf("attempt cap violated: %d forwards (cap=%d)", got, maxAttempts)
+	}
+}

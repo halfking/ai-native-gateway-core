@@ -78,6 +78,10 @@ type QueuedRequest struct {
 	TriedCredentials map[int]struct{}
 	TriedModels      map[string]struct{}
 	CredRetryCount   int
+	// AttemptCount is the total number of forward attempts across all
+	// credentials. Bounded by maxAttempts to prevent a request from looping
+	// through an unbounded candidate set under pathological conditions.
+	AttemptCount int
 
 	EnqueuedAt time.Time // Tier-1 enqueue time (for queue-wait metrics)
 	DequeuedAt time.Time // set when leaving Tier-2 (governor acquire)

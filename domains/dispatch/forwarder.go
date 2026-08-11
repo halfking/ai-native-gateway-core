@@ -54,6 +54,7 @@ func (cf *credForwarder) loop() {
 
 // attempt paces then forwards one request.
 func (cf *credForwarder) attempt(qr *QueuedRequest) {
+	qr.AttemptCount++
 	giveUp := time.Now().Add(cf.pipe.queueWaitBudget(qr))
 
 	if err := cf.gov.Acquire(ctxOf(qr), qr, giveUp); err != nil {
@@ -63,6 +64,13 @@ func (cf *credForwarder) attempt(qr *QueuedRequest) {
 			// Client gave up; nothing to do (Submit already returned).
 			cf.pipe.complete(qr, ForwardOutcome{Err: ctxOf(qr).Err()})
 			return
+		}
+		// Pacing timeout means this credential's concurrency/rate budget is
+		// saturated — an immediate same-credential retry would almost surely
+		// time out again. Skip the retry budget so the mover switches to a
+		// different credential right away.
+		if IsPaceTimeout(err) {
+			qr.CredRetryCount = maxRetryBudget
 		}
 		metricOverflow.WithLabelValues("pace_timeout").Inc()
 		cf.pipe.routeFailover(qr, err)

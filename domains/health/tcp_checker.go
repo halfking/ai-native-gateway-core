@@ -27,6 +27,15 @@ func NewTCPChecker(timeout time.Duration) *TCPChecker {
 	return &TCPChecker{timeout: timeout}
 }
 
+// dialTCP is the dial function used by Check. It is a package-level variable
+// so tests can inject deterministic fakes without relying on the host network
+// (which makes the documentation-IP / invalid-hostname tests flaky in
+// environments with transparent proxies or unusual routing). Production code
+// leaves the default, which uses net.Dialer.DialContext.
+var dialTCP = func(ctx context.Context, network, addr string, timeout time.Duration) (net.Conn, error) {
+	return (&net.Dialer{Timeout: timeout}).DialContext(ctx, network, addr)
+}
+
 // Check performs a TCP connectivity check to the specified address.
 // addr should be in the format "host:port" (e.g., "api.openai.com:443")
 func (c *TCPChecker) Check(ctx context.Context, addr string) TCPCheckResult {
@@ -35,13 +44,8 @@ func (c *TCPChecker) Check(ctx context.Context, addr string) TCPCheckResult {
 		CheckedAt: start,
 	}
 
-	// Create dialer with timeout
-	dialer := &net.Dialer{
-		Timeout: c.timeout,
-	}
-
-	// Attempt TCP connection
-	conn, err := dialer.DialContext(ctx, "tcp", addr)
+	// Attempt TCP connection (dialTCP is injectable for tests).
+	conn, err := dialTCP(ctx, "tcp", addr, c.timeout)
 	result.Latency = time.Since(start)
 
 	if err != nil {

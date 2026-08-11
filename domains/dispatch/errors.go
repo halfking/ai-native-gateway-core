@@ -2,6 +2,17 @@ package dispatch
 
 import "errors"
 
+// Hard limits that bound a single request's lifetime in the pipeline.
+const (
+	// maxAttempts is the absolute ceiling on total forward attempts across all
+	// credentials/models. Prevents a pathological request from churning the
+	// whole candidate set; well above any realistic candidate count × retry.
+	maxAttempts = 32
+	// maxRetryBudget is a sentinel used to force-skip same-credential retry
+	// (e.g. on pacing timeout where retrying a saturated credential is futile).
+	maxRetryBudget = 1 << 30
+)
+
 // Sentinel errors produced by the dispatch pipeline. The executor maps these
 // to HTTP responses (e.g. ErrNoRoute → 503 + Retry-After).
 
