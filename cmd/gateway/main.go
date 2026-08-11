@@ -2459,6 +2459,7 @@ func main() {
 		return em
 	}
 	var modelQualityWorker *bg.ModelQualityWorker
+	var modelIQCleaner *bg.ModelIQCleaner
 	var stickyCleaner *bg.StickyCleaner
 	var envelopeCleaner *bg.EnvelopeCleaner
 	var settingsAuditCleaner *bg.SettingsAuditCleaner
@@ -3038,6 +3039,14 @@ func main() {
 					"use_lite", mqUseLite,
 					"per_node", mqEnablePerNode)
 			}
+		}
+
+		// 2026-08-11: start the model_iq_runs retention cleaner. Mirrors
+		// ProfileCleaner: daily tick, 365-day retention default. Only started
+		// when DB is available (the table does not exist without migration 350).
+		if dbConn != nil {
+			modelIQCleaner = bg.NewModelIQCleaner(dbConn.Pool(), 24*time.Hour, 365)
+			modelIQCleaner.Start()
 		}
 
 		// 2026-08-11: wire the provider-profile alert handler so a quality
@@ -5041,6 +5050,9 @@ func main() {
 		}
 		if modelQualityWorker != nil {
 			modelQualityWorker.Stop()
+		}
+		if modelIQCleaner != nil {
+			modelIQCleaner.Stop()
 		}
 
 		// Stop probe/state services before closing their shared dependencies.
