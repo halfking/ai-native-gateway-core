@@ -115,20 +115,6 @@ func (w *Wrapper) Execute(ctx context.Context, httpW http.ResponseWriter, stream
 			return err
 		}
 
-		// Increment attempt counter before checking max retries
-		// (so we know how many retries we've done)
-		retryCount := rc.Attempt + 1
-
-		// Check if max retries exceeded (before next retry)
-		if retryCount > w.config.MaxRetries {
-			w.logger.Error("stream failed after max retries",
-				"error", err,
-				"max_retries", w.config.MaxRetries,
-				"total_attempts", rc.Attempt+1)
-			w.metrics.TotalRetries = rc.Attempt
-			return fmt.Errorf("stream failed after %d retries: %w", rc.Attempt+1, err)
-		}
-
 		// Log retry decision
 		classified := rc.LastError.(*RetryableError)
 		w.logger.Info("stream failed with retriable error, retrying",

@@ -289,7 +289,7 @@ func (kw *KeepaliveWriter) Start(ctx context.Context) {
 		case <-kw.stopCh:
 			return
 		case <-ticker.C:
-			kw.sendThinking("正在重试连接上游服务...")
+			kw.sendThinking("Retrying connection to upstream service...")
 		}
 	}
 }
@@ -299,7 +299,7 @@ func (kw *KeepaliveWriter) SendRetryMessage(attempt int, delay time.Duration) {
 	if kw == nil {
 		return
 	}
-	msg := fmt.Sprintf("上游服务暂时不可用，正在重试 (第 %d 次，等待 %v)...", attempt+1, delay.Round(time.Millisecond))
+	msg := fmt.Sprintf("Upstream service temporarily unavailable, retrying (attempt %d, waiting %v)...", attempt+1, delay.Round(time.Millisecond))
 	kw.sendThinking(msg)
 }
 
