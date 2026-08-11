@@ -28,6 +28,9 @@ func BuildRequestCompletedEvent(
 	promptTokens, completionTokens, latencyMs int,
 	success bool,
 ) (EventEnvelope, error) {
+	if requestID == "" {
+		return EventEnvelope{}, fmt.Errorf("outbox.BuildRequestCompletedEvent: request_id is required")
+	}
 	// Map internal success flag to contract status enum
 	eventStatus := "succeeded"
 	if !success {
@@ -102,6 +105,9 @@ func BuildRequestCompletedEventV2(
 	promptTokens, completionTokens, latencyMs int,
 	success bool,
 ) (EventEnvelope, error) {
+	if requestID == "" {
+		return EventEnvelope{}, fmt.Errorf("outbox.BuildRequestCompletedEventV2: request_id is required")
+	}
 	// Fallback: if correlationID is empty, use requestID
 	if correlationID == "" {
 		correlationID = requestID

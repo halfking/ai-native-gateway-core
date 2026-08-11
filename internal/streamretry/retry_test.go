@@ -230,6 +230,26 @@ func TestCalculateRetryDelay(t *testing.T) {
 	}
 }
 
+func TestRetryContext_ShouldRetryDisabledDoesNotPanic(t *testing.T) {
+	rc := &RetryContext{Config: Config{Enabled: false, MaxRetries: 3}, Attempt: 0}
+	if rc.ShouldRetry(io.EOF) {
+		t.Fatal("expected disabled retry to return false")
+	}
+	if rc.LastError != nil {
+		t.Fatalf("LastError = %v, want nil when retries are disabled", rc.LastError)
+	}
+}
+
+func TestRetryContext_ShouldRetryExhaustedDoesNotPanic(t *testing.T) {
+	rc := &RetryContext{Config: Config{Enabled: true, MaxRetries: 1}, Attempt: 1}
+	if rc.ShouldRetry(io.EOF) {
+		t.Fatal("expected exhausted retry budget to return false")
+	}
+	if rc.LastError != nil {
+		t.Fatalf("LastError = %v, want nil when retry budget is exhausted", rc.LastError)
+	}
+}
+
 func TestRetryContext_ShouldRetry(t *testing.T) {
 	tests := []struct {
 		name      string

@@ -48,14 +48,12 @@ type ModelQualityWorker struct {
 	triggerCooldown time.Duration
 
 	// 2026-08-11 audit fix: triggerCtx is the parent context for anomaly-triggered
-	// IQ test goroutines. It is created once at construction and cancelled by
-	// Stop(), so an in-flight 50-question test is interrupted on graceful
-	// shutdown instead of continuing to make real (paid) upstream calls for up
-	// to 5 minutes after the DB pool has been closed. Write-once then read: the
-	// field is set in the constructor and never reassigned, so concurrent reads
-	// in TriggerNodeIQTest are safe without a lock.
-	triggerCtx     context.Context
-	triggerCancel  context.CancelFunc
+	// IQ test goroutines. It is refreshed on Start() and cancelled by Stop(), so
+	// in-flight tests are interrupted on graceful shutdown while a stopped worker
+	// can later restart with a live trigger context. Reads/writes are protected by
+	// mu together with the worker lifecycle fields.
+	triggerCtx    context.Context
+	triggerCancel context.CancelFunc
 
 	mu         sync.RWMutex
 	running    bool
@@ -165,8 +163,9 @@ func (w *ModelQualityWorker) testSingleNode(ctx context.Context, credentialID in
 func (w *ModelQualityWorker) TriggerNodeIQTest(credentialID int, rawModel string) {
 	w.mu.RLock()
 	src := w.nodeSource
+	triggerCtx := w.triggerCtx
 	w.mu.RUnlock()
-	if src == nil {
+	if src == nil || triggerCtx == nil {
 		return
 	}
 	key := fmt.Sprintf("%d:%s", credentialID, rawModel)
@@ -194,7 +193,8 @@ func (w *ModelQualityWorker) TriggerNodeIQTest(credentialID int, rawModel string
 		// this goroutine on graceful shutdown — otherwise the test keeps making
 		// real upstream calls (paid tokens) for up to 5 min after the gateway
 		// has begun shutting down and its DB pool is about to close.
-		ctx, cancel := context.WithTimeout(w.triggerCtx, 5*time.Minute)
+		ctx, cancel := context.WithTimeout(triggerCtx, 5*time.Minute)
+
 		defer cancel()
 		score, err := w.testSingleNode(ctx, credentialID, rawModel, "anomaly")
 		if err != nil {
@@ -273,6 +273,7 @@ func (w *ModelQualityWorker) Start(ctx context.Context, config *modelquality.Mon
 	w.stopping = false
 	w.stopCh = make(chan struct{})
 	w.doneCh = make(chan struct{})
+	w.triggerCtx, w.triggerCancel = context.WithCancel(context.Background())
 	stopCh := w.stopCh
 	doneCh := w.doneCh
 
@@ -380,23 +381,26 @@ func (w *ModelQualityWorker) Start(ctx context.Context, config *modelquality.Mon
 // Stop 停止worker
 // 遵循统一worker模式：幂等、阻塞直到完全停止
 func (w *ModelQualityWorker) Stop() {
-	// 2026-08-11 audit fix: cancel triggerCtx unconditionally (before the
-	// running guard) so in-flight anomaly-triggered IQ tests are interrupted
-	// even when Start() failed and left running=false. Without this, a worker
-	// whose Start failed but whose trigger callback was already wired would
-	// leak goroutines that keep making paid upstream calls after Stop.
-	if w.triggerCancel != nil {
-		w.triggerCancel()
-	}
-
+	// 2026-08-11 audit fix: cancel triggerCtx unconditionally so in-flight
+	// anomaly-triggered IQ tests are interrupted even when Start() failed and
+	// left running=false. Take the cancel snapshot under mu because Start()
+	// refreshes triggerCtx/triggerCancel on every worker restart.
 	w.mu.Lock()
+	triggerCancel := w.triggerCancel
+	w.triggerCancel = nil
 	if !w.running {
 		w.mu.Unlock()
+		if triggerCancel != nil {
+			triggerCancel()
+		}
 		return
 	}
 	if w.stopping {
 		doneCh := w.doneCh
 		w.mu.Unlock()
+		if triggerCancel != nil {
+			triggerCancel()
+		}
 		<-doneCh
 		return
 	}
@@ -405,8 +409,12 @@ func (w *ModelQualityWorker) Stop() {
 	doneCh := w.doneCh
 	monitor := w.monitor
 	cancel := w.cancelFunc
+	w.cancelFunc = nil
 	w.mu.Unlock()
 
+	if triggerCancel != nil {
+		triggerCancel()
+	}
 	slog.Info("stopping model quality worker...")
 	// 2026-08-07 audit fix: cancel the monitor ctx to interrupt in-flight
 	// runScheduledCheck / testModel / Execute. This makes Stop() responsive
@@ -529,11 +537,11 @@ func (w *ModelQualityWorker) UpdateConfig(config *modelquality.MonitorConfig) {
 // Pattern mirrors bg.ProfileCleaner: a ticker-based loop with context
 // cancellation, started from cmd/gateway/main.go alongside the worker.
 type ModelIQCleaner struct {
-	storage      *modelquality.DBStorage
-	interval     time.Duration
+	storage       *modelquality.DBStorage
+	interval      time.Duration
 	retentionDays int
-	cancel       context.CancelFunc
-	done         chan struct{}
+	cancel        context.CancelFunc
+	done          chan struct{}
 }
 
 // NewModelIQCleaner creates a cleaner. interval is the tick period (e.g. 24h);
