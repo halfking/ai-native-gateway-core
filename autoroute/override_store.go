@@ -100,6 +100,7 @@ func (s *OverrideStore) Reload(ctx context.Context) error {
 		SELECT id, task_type, profile, mode, model_chosen, reason, created_by, expires_at
 		FROM routing_overrides
 		WHERE expires_at IS NULL OR expires_at > NOW()
+		ORDER BY id ASC
 	`)
 	if err != nil {
 		return err

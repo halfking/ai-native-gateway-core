@@ -90,6 +90,7 @@ func registerRoutingMetrics() {
 func init() {
 	registerRoutingMetrics()
 	registerLiveFilterMetrics()
+	registerRefreshMetrics()
 }
 
 // DecisionPoolLabel 与 DecisionReasonLabel 是 recordRoutingDecision
@@ -183,4 +184,74 @@ func recordLiveFilterFailure(poolConfigured bool, err error) {
 		"error", err,
 		"pool_configured", poolConfigured,
 	)
+}
+
+// 2026-08-11: autoroute index refresh observability.
+//
+// Operators need to detect two classes of silent degradation:
+//   1. The in-memory index shrinks/grows unexpectedly (rollup gap, filter
+//      regression) → index_entries gauge lets you see the candidate count
+//      trend across refresh cycles.
+//   2. The index diverges from the authoritative v_routable_credential_models
+//      view (e.g. a new credential was marked routable but rollup hasn't
+//      picked it up, or a disabled credential leaked in) → index_drift gauge
+//      surfaces the delta. Positive = index has extra entries; negative =
+//      view has routable bindings the index hasn't loaded yet.
+//
+// refresh_total / refresh_failed_total track refresh attempt health so a
+// stuck refresher (5-min cadence stalling) is visible in dashboards.
+
+var (
+	indexEntries  prometheus.Gauge
+	indexDrift    prometheus.Gauge
+	refreshTotal  prometheus.Counter
+	refreshFailed prometheus.Counter
+)
+
+func registerRefreshMetrics() {
+	indexEntries = prometheus.NewGauge(prometheus.GaugeOpts{
+		Name: routingMetricPrefix + "index_entries",
+		Help: "Number of candidates in the in-memory autoroute index after the last successful refresh.",
+	})
+	indexDrift = prometheus.NewGauge(prometheus.GaugeOpts{
+		Name: routingMetricPrefix + "index_drift",
+		Help: "Difference between in-memory index entries and v_routable_credential_models(is_routable=true) count. " +
+			"Positive = index has extra entries; negative = view has routable bindings the index hasn't loaded.",
+	})
+	refreshTotal = prometheus.NewCounter(prometheus.CounterOpts{
+		Name: routingMetricPrefix + "refresh_total",
+		Help: "Total autoroute index refresh attempts (success + failure).",
+	})
+	refreshFailed = prometheus.NewCounter(prometheus.CounterOpts{
+		Name: routingMetricPrefix + "refresh_failed_total",
+		Help: "Autoroute index refresh attempts that failed.",
+	})
+	prometheus.MustRegister(indexEntries, indexDrift, refreshTotal, refreshFailed)
+}
+
+// recordRefreshOutcome is called at the end of Index.Refresh.
+//
+//   - entries: len of the refreshed candidate slice (0 on failure)
+//   - viewRoutable: COUNT(*) from v_routable_credential_models WHERE
+//     is_routable, or -1 when the drift probe itself failed (so drift is
+//     not published with stale data)
+//   - err: the refresh error (nil on success)
+//
+// All metrics are nil-safe (no-op before registration).
+func recordRefreshOutcome(entries int, viewRoutable int, err error) {
+	if refreshTotal != nil {
+		refreshTotal.Inc()
+	}
+	if err != nil {
+		if refreshFailed != nil {
+			refreshFailed.Inc()
+		}
+		return
+	}
+	if indexEntries != nil {
+		indexEntries.Set(float64(entries))
+	}
+	if viewRoutable >= 0 && indexDrift != nil {
+		indexDrift.Set(float64(entries - viewRoutable))
+	}
 }

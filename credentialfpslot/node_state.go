@@ -1,8 +1,11 @@
-// DEPRECATED: This file will be moved to _to-be-deprecated/routing-old/credentialfpslot/
-// Replaced by: domains/ursm/state.go (NodeState 结构和健康状态管理)
-// Migration date: 2026-07-03
-// Status: 等待 Router/Executor 适配 URSM 完成后迁移
-// DO NOT use NodeState from this package in new code. Use domains/ursm.NodeState instead.
+// NOTE (2026-08-11 audit): the original "DEPRECATED / Replaced by
+// domains/ursm/state.go" header below was inaccurate — that target file
+// never existed. This NodeState remains the live, production type used by
+// domains/streaming/executors/router.go (per-credential/model health gating
+// on the request hot path). domains/ursm/v2 manages a different concern
+// (LRU/filter scoring) and does not supersede this struct. Treat this file
+// as authoritative until a concrete migration lands; do not mark it
+// deprecated against a non-existent target.
 
 package credentialfpslot
 

@@ -308,7 +308,8 @@ SELECT
    + COALESCE(AVG(CASE WHEN rl.success THEN 1.0 ELSE 0.0 END), 0.9) * 100 * 0.15
     + 50 * 0.20
     + 100 * 0.05
-    + 80 * 0.10)::numeric(8,4) AS score_cost_first
+    + 80 * 0.10)::numeric(8,4) AS score_cost_first,
+    1 AS half_no
 FROM request_logs_hot rl
 JOIN credentials cr ON cr.id = rl.credential_id
 LEFT JOIN model_offers mo
@@ -319,8 +320,8 @@ LEFT JOIN models_canonical mc ON mc.id = mo.canonical_id
 WHERE rl.ts >= NOW() - INTERVAL '5 minutes'
   AND rl.ts < NOW()
   AND rl.credential_id IS NOT NULL
-  AND COALESCE(cr.status, 'active') NOT IN ('disabled')
-  AND COALESCE(cr.lifecycle_status, 'active') != 'suspended'
+  AND COALESCE(cr.status, 'active') = 'active'
+  AND COALESCE(cr.lifecycle_status, 'active') = 'active'
 GROUP BY rl.credential_id, COALESCE(rl.outbound_model, rl.client_model),
          mo.canonical_id, mo.billing_mode
 
@@ -354,7 +355,8 @@ SELECT
     0::numeric(5,4)                     AS pressure_ratio,
     50::numeric(8,4)                    AS score_smart,
     50::numeric(8,4)                    AS score_speed_first,
-    50::numeric(8,4)                    AS score_cost_first
+    50::numeric(8,4)                    AS score_cost_first,
+    2 AS half_no
 FROM v_routable_credential_models v
 JOIN credentials c                  ON c.id = v.credential_id
 JOIN credential_model_bindings cmb ON cmb.id = v.binding_id
@@ -381,7 +383,11 @@ WHERE v.is_routable = TRUE
 -- Genuine metric changes (success_rate 0.9 -> 0.85 -> 0.9) are still
 -- recorded because the comparison is against the most-recent row
 -- (whose metrics would already match the new row if nothing changed).
-SELECT f.*
+SELECT DISTINCT ON (f.bucket, f.credential_id, f.raw_model)
+       f.bucket, f.credential_id, f.raw_model, f.canonical_id,
+       f.billing_mode, f.unit_price_in_per_1m, f.unit_price_out_per_1m, f.context_window,
+       f.success_rate, f.p95_latency_ms, f.active_sessions, f.concurrency_limit, f.pressure_ratio,
+       f.score_smart, f.score_speed_first, f.score_cost_first
 FROM fresh f
 WHERE NOT EXISTS (
     SELECT 1 FROM credential_model_index_hot prev
@@ -400,6 +406,9 @@ WHERE NOT EXISTS (
       AND prev.score_speed_first   IS NOT DISTINCT FROM f.score_speed_first
       AND prev.score_cost_first    IS NOT DISTINCT FROM f.score_cost_first
 )
+-- ORDER BY 必须以 DISTINCT ON 的列开头；末尾 half_no 保证 traffic 行(half_no=1)
+-- 优先于 cold-start baseline(half_no=2)，避免 baseline 覆盖真实指标。
+ORDER BY f.bucket, f.credential_id, f.raw_model, f.half_no
 `
 
 // rollupCredentialModelIndexONCONFLICT is the ON CONFLICT clause for the

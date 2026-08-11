@@ -460,6 +460,64 @@ func (l *Limiter) AcquireAll(ctx context.Context, providerID, credentialID int, 
 	}, nil
 }
 
+// AcquireAllNoCredLayer is the dispatch-path variant of AcquireAll: it
+// enforces only the OUTER layers (global → pool → identity[soft] → per-key
+// [soft]) and intentionally skips the credential semaphore and the per-credential
+// RPM check. The credential-level concurrency/rate gating is owned by the
+// dispatch governor (domains/dispatch), which is the single authority for the
+// credential's concurrency_mode. Calling both would double-count and could
+// over-limit (the Limiter's credential sem defaults to 50 regardless of the
+// per-credential concurrency_limit / rpm_limit / tpm_limit).
+//
+// Used by executor_dispatch.go when dispatch_v2 is enabled. Same kill-switch
+// and bounded-wait semantics as AcquireAll.
+func (l *Limiter) AcquireAllNoCredLayer(ctx context.Context, providerID, credentialID int, identityHash string, keyID int, keyConcurrentLimit int) (ReleaseFunc, error) {
+	if !ratelimit.IsRateLimitEnabled() {
+		return func() {}, nil
+	}
+	waitCtx, waitCancel := context.WithTimeout(ctx, acquireWaitTimeout)
+	defer waitCancel()
+
+	if err := l.global.Acquire(waitCtx); err != nil {
+		return nil, fmt.Errorf("global limit: %w", err)
+	}
+	pool := l.Pool(providerID)
+	if err := pool.Acquire(waitCtx); err != nil {
+		l.global.Release()
+		return nil, fmt.Errorf("pool limit: %w", err)
+	}
+
+	// Identity (soft cap, non-blocking).
+	ident := l.Identity(providerID, credentialID, identityHash)
+	identAcquired := ident.TryAcquire()
+	if !identAcquired {
+		slog.Warn("identity limit reached, bypassing",
+			"provider", providerID, "credential", credentialID, "identity", identityHash)
+	}
+
+	// Per-key (soft cap, non-blocking).
+	var keyAcquired bool
+	var keySem *Semaphore
+	if keyID > 0 && keyConcurrentLimit > 0 {
+		keySem = l.Key(keyID, keyConcurrentLimit)
+		keyAcquired = keySem.TryAcquire()
+		if !keyAcquired {
+			slog.Warn("per-key concurrent limit reached, bypassing", "key_id", keyID)
+		}
+	}
+
+	return func() {
+		if keyAcquired && keySem != nil {
+			keySem.Release()
+		}
+		if identAcquired {
+			ident.Release()
+		}
+		pool.Release()
+		l.global.Release()
+	}, nil
+}
+
 // derefInt safely dereferences a *int (e.g. Candidate.RPMLimit which may
 // be nil for paid credentials). Returns 0 when nil so the limiter treats
 // 0 as "unlimited" everywhere.

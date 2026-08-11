@@ -41,11 +41,21 @@ type ModelQualityWorker struct {
 	dbStorage *modelquality.DBStorage
 
 	// 2026-08-11 audit: dedup + cooldown for suspicious-action triggers so a
-	// flapping node cannot fan out an unbounded number of IQ tests.
+	// flapping node cannot fan out an unbounded number of IQ tests (token cost).
 	triggerMu       sync.Mutex
 	triggerInFlight map[string]struct{}
 	triggerLast     map[string]time.Time
 	triggerCooldown time.Duration
+
+	// 2026-08-11 audit fix: triggerCtx is the parent context for anomaly-triggered
+	// IQ test goroutines. It is created once at construction and cancelled by
+	// Stop(), so an in-flight 50-question test is interrupted on graceful
+	// shutdown instead of continuing to make real (paid) upstream calls for up
+	// to 5 minutes after the DB pool has been closed. Write-once then read: the
+	// field is set in the constructor and never reassigned, so concurrent reads
+	// in TriggerNodeIQTest are safe without a lock.
+	triggerCtx     context.Context
+	triggerCancel  context.CancelFunc
 
 	mu         sync.RWMutex
 	running    bool
@@ -67,7 +77,7 @@ func NewModelQualityWorker(dataDir string, apiKey string, baseURL string, timeou
 		timeout = 30 * time.Second
 	}
 
-	return &ModelQualityWorker{
+	w := &ModelQualityWorker{
 		dataDir:         dataDir,
 		apiKey:          apiKey,
 		baseURL:         baseURL,
@@ -76,6 +86,8 @@ func NewModelQualityWorker(dataDir string, apiKey string, baseURL string, timeou
 		triggerLast:     make(map[string]time.Time),
 		triggerCooldown: 10 * time.Minute,
 	}
+	w.triggerCtx, w.triggerCancel = context.WithCancel(context.Background())
+	return w
 }
 
 // SetNodeSource 注入凭据节点发现源（启用 per-node 直连测试）。
@@ -178,7 +190,11 @@ func (w *ModelQualityWorker) TriggerNodeIQTest(credentialID int, rawModel string
 			delete(w.triggerInFlight, key)
 			w.triggerMu.Unlock()
 		}()
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+		// Derive from triggerCtx (not context.Background()) so Stop() cancels
+		// this goroutine on graceful shutdown — otherwise the test keeps making
+		// real upstream calls (paid tokens) for up to 5 min after the gateway
+		// has begun shutting down and its DB pool is about to close.
+		ctx, cancel := context.WithTimeout(w.triggerCtx, 5*time.Minute)
 		defer cancel()
 		score, err := w.testSingleNode(ctx, credentialID, rawModel, "anomaly")
 		if err != nil {
@@ -364,6 +380,15 @@ func (w *ModelQualityWorker) Start(ctx context.Context, config *modelquality.Mon
 // Stop 停止worker
 // 遵循统一worker模式：幂等、阻塞直到完全停止
 func (w *ModelQualityWorker) Stop() {
+	// 2026-08-11 audit fix: cancel triggerCtx unconditionally (before the
+	// running guard) so in-flight anomaly-triggered IQ tests are interrupted
+	// even when Start() failed and left running=false. Without this, a worker
+	// whose Start failed but whose trigger callback was already wired would
+	// leak goroutines that keep making paid upstream calls after Stop.
+	if w.triggerCancel != nil {
+		w.triggerCancel()
+	}
+
 	w.mu.Lock()
 	if !w.running {
 		w.mu.Unlock()

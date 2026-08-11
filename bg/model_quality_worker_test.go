@@ -1,6 +1,7 @@
 package bg
 
 import (
+	"context"
 	"testing"
 	"time"
 )
@@ -50,5 +51,54 @@ func TestModelQualityWorker_DefaultCooldown(t *testing.T) {
 	}
 	if w.triggerInFlight == nil || w.triggerLast == nil {
 		t.Fatal("dedup maps must be initialized by constructor")
+	}
+}
+
+// TestModelQualityWorker_StopCancelsTriggerCtx verifies the 2026-08-11 audit
+// fix: Stop() must cancel the worker's trigger context so in-flight
+// anomaly-triggered IQ tests (TriggerNodeIQTest goroutines) are interrupted on
+// graceful shutdown instead of continuing to make paid upstream calls for up
+// to 5 minutes after the gateway begins shutting down.
+//
+// Crucially this must hold even when the worker was never Start()ed (running
+// stays false): a failed Start can leave the trigger callback wired, and those
+// goroutines must still be cancellable.
+func TestModelQualityWorker_StopCancelsTriggerCtx(t *testing.T) {
+	w := NewModelQualityWorker("", "", "", time.Second)
+	if w.triggerCtx == nil || w.triggerCancel == nil {
+		t.Fatal("constructor must initialize triggerCtx/triggerCancel")
+	}
+	// Sanity: the context is alive right after construction.
+	select {
+	case <-w.triggerCtx.Done():
+		t.Fatal("triggerCtx should be alive before Stop")
+	default:
+	}
+
+	// Stop() on a never-started worker must still cancel triggerCtx (the
+	// running==false early-return path must not skip the cancel).
+	w.Stop()
+
+	select {
+	case <-w.triggerCtx.Done():
+		// expected: context cancelled by Stop
+	default:
+		t.Fatal("triggerCtx should be cancelled after Stop, even when never started")
+	}
+}
+
+// TestModelQualityWorker_TriggerCtxIsChildOfWorkerLifecycle confirms that a
+// context derived from triggerCtx observes cancellation, which is the property
+// TriggerNodeIQTest relies on to interrupt its detached goroutine.
+func TestModelQualityWorker_TriggerCtxDerivedCancelled(t *testing.T) {
+	w := NewModelQualityWorker("", "", "", time.Second)
+	derived, cancel := context.WithTimeout(w.triggerCtx, 5*time.Minute)
+	defer cancel()
+	w.Stop()
+	select {
+	case <-derived.Done():
+		// expected: derived ctx cancelled because its parent was cancelled
+	default:
+		t.Fatal("derived trigger ctx must be cancelled when parent triggerCtx is cancelled by Stop")
 	}
 }
