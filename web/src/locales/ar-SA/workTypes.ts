@@ -63,6 +63,7 @@ export default {
     canonicalModel: 'Canonical model',
     selectModelPlaceholder: 'Click to select model…',
     routeNum: 'Route #{n}',
+    routeTier: 'الطبقة',
     weight: 'Weight',
     minScore: 'Min score',
     saving: 'Saving…',
@@ -73,6 +74,19 @@ export default {
       confirmEnable: 'enable',
       confirmDisable: 'disable',
     },
+  },
+  // تسلسل الاستجابة ذو الطبقتين (primary / secondary).
+  layers: {
+    primary: 'أساسي',
+    primaryHint: 'يُجرَّب أولًا · يُلجَأ إلى الاحتياطي فقط عند استنفاد جميع النماذج',
+    secondary: 'ثانوي',
+    secondaryHint: 'يُجرَّب بالترتيب بعد استنفاد الطبقة الأساسية',
+    maxRoutesPerLayer: 'بحد أقصى {n} لكل طبقة · اسحب لإعادة الترتيب',
+    dragToReorder: 'اسحب لإعادة ترتيب الأولوية',
+    emptyPrimary: 'لا توجد نماذج أساسية بعد — انقر على «إضافة أساسي»',
+    emptySecondary: 'لا توجد نماذج ثانوية بعد — انقر على «إضافة ثانوي»',
+    addPrimary: '+ إضافة أساسي',
+    addSecondary: '+ إضافة ثانوي',
   },
   routes: {
     title: 'Model type routes',
@@ -102,7 +116,7 @@ export default {
     syncFromACC: 'Sync from ACC',
     syncFromACCTooltip: 'Pull work type config from ACC',
     create: '+ Create',
-    hint: 'Click row to enter detail, configure basic attributes and model type routes (max 3).',
+    hint: 'Click row to enter detail, configure basic attributes and primary/secondary model layers.',
     tableHeaders: {
       index: '#',
       key: 'Key',
@@ -116,6 +130,7 @@ export default {
     notConfigured: 'Not configured',
     rowEnabled: 'Enabled',
     rowDisabled: 'Disabled',
+    routesSummary: '{primary} أساسي · {secondary} ثانوي',
   },
   modal: {
     title: 'Create work type',

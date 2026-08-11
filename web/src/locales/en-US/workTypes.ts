@@ -63,6 +63,7 @@ export default {
     canonicalModel: 'Canonical model',
     selectModelPlaceholder: 'Click to select model…',
     routeNum: 'Route #{n}',
+    routeTier: 'Tier',
     weight: 'Weight',
     minScore: 'Min score',
     saving: 'Saving…',
@@ -73,6 +74,22 @@ export default {
       confirmEnable: 'enable',
       confirmDisable: 'disable',
     },
+  },
+  // Two-layer priority response sequence (primary / secondary). The
+  // operator edits these directly on the work-type detail page; each
+  // layer has its own drag-to-reorder priority list capped at
+  // MAX_ROUTES_PER_LAYER. Tier is stored on the row (work_type_model_route.tier).
+  layers: {
+    primary: 'Primary',
+    primaryHint: 'Tried first · falls back only when every model is exhausted',
+    secondary: 'Secondary',
+    secondaryHint: 'Tried in order after the primary layer is exhausted',
+    maxRoutesPerLayer: 'Max {n} per layer · drag to reorder',
+    dragToReorder: 'Drag to reorder priority',
+    emptyPrimary: 'No primary models yet — click Add primary',
+    emptySecondary: 'No secondary models yet — click Add secondary',
+    addPrimary: '+ Add primary',
+    addSecondary: '+ Add secondary',
   },
   routes: {
     title: 'Model type routes',
@@ -102,7 +119,7 @@ export default {
     syncFromACC: 'Sync from ACC',
     syncFromACCTooltip: 'Pull work type config from ACC',
     create: '+ Create',
-    hint: 'Click row to enter detail, configure basic attributes and model type routes (max 3).',
+    hint: 'Click a row to enter detail, configure basic attributes and the primary/secondary response model layers.',
     tableHeaders: {
       index: '#',
       key: 'Key',
@@ -116,6 +133,8 @@ export default {
     notConfigured: 'Not configured',
     rowEnabled: 'Enabled',
     rowDisabled: 'Disabled',
+    // Concise summary chip in the list view, e.g. "3 primary · 2 secondary".
+    routesSummary: '{primary} primary · {secondary} secondary',
   },
   modal: {
     title: 'Create work type',

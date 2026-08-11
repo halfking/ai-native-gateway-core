@@ -63,6 +63,7 @@ export default {
     canonicalModel: '标准模型',
     selectModelPlaceholder: '点击选择模型…',
     routeNum: '路由 #{n}',
+    routeTier: '层级',
     weight: '权重',
     minScore: '最低分',
     saving: '保存中…',
@@ -75,6 +76,22 @@ export default {
       confirmEnable: '启用',
       confirmDisable: '禁用',
     },
+  },
+  // Two-layer priority response sequence (primary / secondary). The
+  // operator edits these directly on the work-type detail page; each
+  // layer has its own drag-to-reorder priority list capped at
+  // MAX_ROUTES_PER_LAYER. Tier is stored on the row (work_type_model_route.tier).
+  layers: {
+    primary: '首选',
+    primaryHint: '优先使用 · 全部失败才回退',
+    secondary: '备选',
+    secondaryHint: '首选全部失败后逐个尝试',
+    maxRoutesPerLayer: '每层最多 {n} 个 · 拖拽调整顺序',
+    dragToReorder: '拖动调整优先级',
+    emptyPrimary: '尚未配置首选模型 — 点击「添加首选」',
+    emptySecondary: '尚未配置备选模型 — 点击「添加备选」',
+    addPrimary: '+ 添加首选',
+    addSecondary: '+ 添加备选',
   },
   routes: {
     title: '模型类型路由',
@@ -104,7 +121,7 @@ export default {
     syncFromACC: '从 ACC 同步',
     syncFromACCTooltip: '从 ACC 拉取工作类型配置',
     create: '+ 新建',
-    hint: '点击行进入详情，配置基本属性与模型类型路由（最多 3 个）。',
+    hint: '点击行进入详情，配置基本属性与首选/备选两层响应模型。',
     tableHeaders: {
       index: '#',
       key: 'Key',
@@ -118,6 +135,9 @@ export default {
     notConfigured: '未配置',
     rowEnabled: '启用',
     rowDisabled: '禁用',
+    // Concise summary chip in the list view, e.g. "3 首选 · 2 备选".
+    // Falls back to a single-line summary when only one tier is set.
+    routesSummary: '{primary} 首选 · {secondary} 备选',
   },
   modal: {
     title: '新建工作类型',
