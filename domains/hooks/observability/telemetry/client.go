@@ -16,9 +16,16 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/kaixuan/llm-gateway-go/domains/dbdegradation"
+	"github.com/kaixuan/llm-gateway-go/internal/outbox"
 )
 
 var errNoTelemetryDB = errors.New("telemetry database not configured")
+
+// OutboxWriter writes events to outbox_events table for Gateway → ASM delivery.
+// Implemented by internal/outbox.Writer. Nil-safe (checked before use).
+type OutboxWriter interface {
+	Write(ctx context.Context, env outbox.EventEnvelope) error
+}
 
 type requestLogDB interface {
 	execQuerier
@@ -54,6 +61,11 @@ type Client struct {
 	onEmitted func(entry *RequestLogEntry)
 	fallback  dbdegradation.BackupWriter
 	degraded  atomic.Bool
+
+	// outboxWriter (optional): writes request.completed events to outbox_events
+	// in the same transaction as request_logs INSERT for Gateway → ASM delivery.
+	// Phase 3 WP4: Business write point integration.
+	outboxWriter OutboxWriter
 
 	// 2026-07-16: failure counters so ops can detect "telemetry rows
 	// silently dropping" via FailCounts() instead of grepping stderr.
@@ -391,6 +403,14 @@ func (c *Client) SetDegraded(enabled bool) { c.degraded.Store(enabled) }
 
 func (c *Client) SetFallbackWriter(writer dbdegradation.BackupWriter) {
 	c.fallback = writer
+}
+
+// SetOutboxWriter registers an outbox writer for Gateway → ASM event delivery.
+// Phase 3 WP4: Business write point integration.
+func (c *Client) SetOutboxWriter(writer OutboxWriter) {
+	c.lifecycleMu.Lock()
+	defer c.lifecycleMu.Unlock()
+	c.outboxWriter = writer
 }
 
 func (c *Client) ReplayFallback(ctx context.Context, record dbdegradation.BackupRecord) error {
@@ -1201,6 +1221,68 @@ $48,
 		}
 	}
 
+	// Phase 3 WP4: Write request.completed event to outbox_events in same transaction
+	if c.outboxWriter != nil && entry.GwSessionID != nil && *entry.GwSessionID != "" {
+		// Extract required fields with safe defaults
+		sessionID := stringValue(entry.GwSessionID)
+		requestID := entry.RequestID
+		tenantID := entry.TenantID
+		if tenantID == "" {
+			tenantID = "default"
+		}
+		// Phase 1: Use "unknown" for provider since ProviderID is *int and we need string
+		// TODO: Resolve provider name from ProviderID in Phase 2
+		provider := "unknown"
+		model := stringValue(entry.OutboundModel)
+		if model == "" {
+			model = stringValue(entry.ClientModel)
+		}
+		status := stringValue(entry.RequestStatus)
+
+		promptTokens := intValue(entry.PromptTokens)
+		completionTokens := intValue(entry.CompletionTokens)
+		latencyMs := intValue(entry.LatencyMs)
+		success := entry.Success
+
+		// Build event envelope using outbox builder
+		envelope, err := outbox.BuildRequestCompletedEvent(
+			tenantID, sessionID, 1, // turnNo=1 for Phase 1 (will be enriched later)
+			requestID, provider, model, status,
+			promptTokens, completionTokens, latencyMs,
+			success,
+		)
+		if err != nil {
+			slog.Warn("outbox: build event failed", "request_id", requestID, "error", err)
+		} else {
+			// Serialize payload to JSON for outbox_events.payload column
+			payloadJSON, err := json.Marshal(envelope.Payload)
+			if err != nil {
+				slog.Warn("outbox: marshal payload failed", "request_id", requestID, "error", err)
+			} else {
+				// Write directly to outbox_events in the same pgx transaction
+				_, err = tx.Exec(ctx, `
+					INSERT INTO outbox_events (
+						event_id, event_type, schema_version, tenant_id,
+						aggregate_id, aggregate_version, occurred_at, payload, status
+					) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'pending')
+				`,
+					envelope.EventID,
+					envelope.EventType,
+					envelope.SchemaVersion,
+					envelope.TenantID,
+					envelope.AggregateID,
+					envelope.AggregateVersion,
+					envelope.OccurredAt,
+					payloadJSON,
+				)
+				if err != nil {
+					slog.Warn("outbox: insert event failed", "request_id", requestID, "error", err)
+					// Non-fatal: continue with request_logs commit even if outbox write fails
+				}
+			}
+		}
+	}
+
 	return tx.Commit(ctx)
 }
 
@@ -1738,6 +1820,22 @@ func firstString(values ...*string) *string {
 		}
 	}
 	return nil
+}
+
+// stringValue extracts string from *string with empty fallback
+func stringValue(p *string) string {
+	if p == nil {
+		return ""
+	}
+	return *p
+}
+
+// intValue extracts int from *int with 0 fallback
+func intValue(p *int) int {
+	if p == nil {
+		return 0
+	}
+	return *p
 }
 
 func searchText(entry *RequestLogEntry) *string {
