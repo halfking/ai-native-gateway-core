@@ -32,10 +32,11 @@ func TestScoreSimplified_IntentAndPriceWeighting(t *testing.T) {
 		1: 1000, // model-a 平均价格
 		2: 100,  // model-b 平均价格
 	}
+	costCtx := priceCtxFromAvgPrice(avgPrices)
 
 	// 评分
-	scoreA := ScoreSimplified(highIntentHighPrice, TaskCode, avgPrices, 0)
-	scoreB := ScoreSimplified(lowIntentLowPrice, TaskCode, avgPrices, 0)
+	scoreA := ScoreSimplified(highIntentHighPrice, TaskCode, costCtx, 0)
+	scoreB := ScoreSimplified(lowIntentLowPrice, TaskCode, costCtx, 0)
 
 	// 验证意图匹配分
 	if scoreA.MatchScore != 90 {
@@ -45,16 +46,19 @@ func TestScoreSimplified_IntentAndPriceWeighting(t *testing.T) {
 		t.Errorf("model-b MatchScore: got %.2f, want 30", scoreB.MatchScore)
 	}
 
-	// 验证价格分
-	if scoreA.PriceScore != 0 {
-		t.Errorf("model-a PriceScore: got %.2f, want 0", scoreA.PriceScore)
+	// 验证价格分（doc 16 §5-D: P75 归一化）
+	// pool = {100, 1000}, PriceP75 = 1000.
+	// model-a: ratio 1.0 → 100*(1.5-1.0) = 50
+	// model-b: ratio 0.1 → 100*(1.5-0.1) = 140 → clamp 100
+	if scoreA.PriceScore != 50 {
+		t.Errorf("model-a PriceScore: got %.2f, want 50 (P75=1000, ratio=1.0)", scoreA.PriceScore)
 	}
-	if scoreB.PriceScore != 90 {
-		t.Errorf("model-b PriceScore: got %.2f, want 90", scoreB.PriceScore)
+	if scoreB.PriceScore != 100 {
+		t.Errorf("model-b PriceScore: got %.2f, want 100 (clamped, ratio=0.1)", scoreB.PriceScore)
 	}
 
-	expectedA := 90*0.6 + 0*0.4
-	expectedB := 30*0.6 + 90*0.4
+	expectedA := 90*0.6 + 50*0.4
+	expectedB := 30*0.6 + 100*0.4
 
 	if abs(scoreA.Composite-expectedA) > 0.01 {
 		t.Errorf("model-a Composite: got %.2f, want %.2f", scoreA.Composite, expectedA)
@@ -63,8 +67,11 @@ func TestScoreSimplified_IntentAndPriceWeighting(t *testing.T) {
 		t.Errorf("model-b Composite: got %.2f, want %.2f", scoreB.Composite, expectedB)
 	}
 
-	if abs(scoreA.Composite-scoreB.Composite) > 0.01 {
-		t.Errorf("scores should be equal: model-a %.2f vs model-b %.2f", scoreA.Composite, scoreB.Composite)
+	// doc 16 §5-D: PriceScore 改用 P75 归一化后, model-b（低价 + 低意图）
+	// composite 仍低于 model-a（高价 + 高意图），但差距扩大（旧的近似常数
+	// priceScore 让两条线几乎平行；新公式让 price 真正参与排序）。
+	if scoreA.Composite <= scoreB.Composite {
+		t.Errorf("model-a Composite (%.2f) should beat model-b (%.2f) given high intent", scoreA.Composite, scoreB.Composite)
 	}
 }
 

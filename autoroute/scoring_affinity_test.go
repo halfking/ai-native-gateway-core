@@ -2,8 +2,27 @@ package autoroute
 
 import (
 	"math"
+	"sort"
 	"testing"
 )
+
+// priceCtxFromAvgPrice — doc 16 §5-D 后 test helper：把旧的
+// `map[int]float64{canonicalID: avgPrice}` 转成 `CostContext{PriceP75}`，
+// max(values) 在测试 fixture 单价场景下等价于 P75。
+func affinityPriceCtx(m map[int]float64) CostContext {
+	var c CostContext
+	var prices []float64
+	for _, v := range m {
+		if v > 0 {
+			prices = append(prices, v)
+		}
+	}
+	if len(prices) > 0 {
+		sort.Float64s(prices)
+		c.PriceP75 = prices[len(prices)-1]
+	}
+	return c
+}
 
 func affinityTestCandidate() Candidate {
 	return Candidate{
@@ -26,8 +45,8 @@ func TestScoreWithAffinity_ShadowDoesNotChangeComposite(t *testing.T) {
 	prices := map[int]float64{1: 200}
 
 	for _, affinity := range []float64{0, 10, 50, 90, 100} {
-		base := ScoreWithChannelQuality(c, TaskCode, prices, 5)
-		shadow := ScoreWithAffinity(c, TaskCode, prices, 5, affinity, false)
+		base := ScoreWithChannelQuality(c, TaskCode, affinityPriceCtx(prices), 5)
+		shadow := ScoreWithAffinity(c, TaskCode, affinityPriceCtx(prices), 5, affinity, false)
 
 		if shadow.Composite != base.Composite {
 			t.Errorf("affinity=%.0f: shadow composite %.10f != 4-dim %.10f",
@@ -54,8 +73,8 @@ func TestScoreWithAffinity_NeutralIsNoOpWhenApplied(t *testing.T) {
 	c := affinityTestCandidate()
 	prices := map[int]float64{1: 200}
 
-	base := ScoreWithChannelQuality(c, TaskCode, prices, 0)
-	applied := ScoreWithAffinity(c, TaskCode, prices, 0, AffinityNeutral, true)
+	base := ScoreWithChannelQuality(c, TaskCode, affinityPriceCtx(prices), 0)
+	applied := ScoreWithAffinity(c, TaskCode, affinityPriceCtx(prices), 0, AffinityNeutral, true)
 
 	// base*0.85 + 50*0.15 == base only if base == 50, so compare against the
 	// explicit expectation rather than asserting equality.
@@ -72,9 +91,9 @@ func TestScoreWithAffinity_HighAffinityRaisesLowAffinityLowers(t *testing.T) {
 	c := affinityTestCandidate()
 	prices := map[int]float64{1: 200}
 
-	neutral := ScoreWithAffinity(c, TaskCode, prices, 0, AffinityNeutral, true)
-	high := ScoreWithAffinity(c, TaskCode, prices, 0, 90, true)
-	low := ScoreWithAffinity(c, TaskCode, prices, 0, 10, true)
+	neutral := ScoreWithAffinity(c, TaskCode, affinityPriceCtx(prices), 0, AffinityNeutral, true)
+	high := ScoreWithAffinity(c, TaskCode, affinityPriceCtx(prices), 0, 90, true)
+	low := ScoreWithAffinity(c, TaskCode, affinityPriceCtx(prices), 0, 10, true)
 
 	if high.Composite <= neutral.Composite {
 		t.Errorf("high affinity should raise composite: %.4f vs %.4f", high.Composite, neutral.Composite)
@@ -104,8 +123,8 @@ func TestScoreWithAffinity_CannotOverrideStrongMatchGap(t *testing.T) {
 
 	// Worst case: the well-matched model has minimum affinity, the mismatched
 	// one has maximum.
-	good := ScoreWithAffinity(goodMatch, TaskCode, prices, 0, 10, true)
-	poor := ScoreWithAffinity(poorMatch, TaskCode, prices, 0, 90, true)
+	good := ScoreWithAffinity(goodMatch, TaskCode, affinityPriceCtx(prices), 0, 10, true)
+	poor := ScoreWithAffinity(poorMatch, TaskCode, affinityPriceCtx(prices), 0, 90, true)
 
 	if poor.Composite >= good.Composite {
 		t.Errorf("affinity overrode a full task-match gap: poor=%.4f >= good=%.4f",
@@ -119,8 +138,8 @@ func TestScoreWithAffinity_CorrectionNotDilutedByScaling(t *testing.T) {
 
 	// Correction is an absolute ±10 nudge and must survive the 0.85 scaling
 	// intact, else the session-level penalty would silently weaken.
-	withPenalty := ScoreWithAffinity(c, TaskCode, prices, -10, AffinityNeutral, true)
-	withBonus := ScoreWithAffinity(c, TaskCode, prices, 5, AffinityNeutral, true)
+	withPenalty := ScoreWithAffinity(c, TaskCode, affinityPriceCtx(prices), -10, AffinityNeutral, true)
+	withBonus := ScoreWithAffinity(c, TaskCode, affinityPriceCtx(prices), 5, AffinityNeutral, true)
 
 	if delta := withBonus.Composite - withPenalty.Composite; math.Abs(delta-15) > 1e-9 {
 		t.Errorf("correction delta = %.10f, want exactly 15 (undiluted)", delta)
@@ -131,10 +150,10 @@ func TestScoreWithAffinity_GarbageAffinityFallsBackToNeutral(t *testing.T) {
 	c := affinityTestCandidate()
 	prices := map[int]float64{1: 200}
 
-	expected := ScoreWithAffinity(c, TaskCode, prices, 0, AffinityNeutral, true)
+	expected := ScoreWithAffinity(c, TaskCode, affinityPriceCtx(prices), 0, AffinityNeutral, true)
 
 	for _, bad := range []float64{math.NaN(), math.Inf(1), math.Inf(-1)} {
-		got := ScoreWithAffinity(c, TaskCode, prices, 0, bad, true)
+		got := ScoreWithAffinity(c, TaskCode, affinityPriceCtx(prices), 0, bad, true)
 		if got.Affinity != AffinityNeutral {
 			t.Errorf("affinity %v should degrade to neutral, got %.4f", bad, got.Affinity)
 		}
@@ -163,8 +182,8 @@ func TestScoreWithAffinity_StoreIntegrationColdStart(t *testing.T) {
 		t.Error("a below-floor row must not report as found")
 	}
 
-	got := ScoreWithAffinity(c, TaskCode, prices, 0, affinity, true)
-	neutral := ScoreWithAffinity(c, TaskCode, prices, 0, AffinityNeutral, true)
+	got := ScoreWithAffinity(c, TaskCode, affinityPriceCtx(prices), 0, affinity, true)
+	neutral := ScoreWithAffinity(c, TaskCode, affinityPriceCtx(prices), 0, AffinityNeutral, true)
 	if math.Abs(got.Composite-neutral.Composite) > 1e-9 {
 		t.Errorf("cold start should score as neutral: %.6f vs %.6f", got.Composite, neutral.Composite)
 	}

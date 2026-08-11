@@ -2,6 +2,7 @@ package autoroute
 
 import (
 	"math"
+	"sort"
 	"strings"
 )
 
@@ -187,17 +188,25 @@ func scoreReliability(c Candidate) float64 {
 //  4. ChannelQuality (0-100): 通道静态分类 + 实时健康
 //  5. Reliability (0-100): success_rate + p95_latency
 //
+// PriceScore（与 scorePrice 在 scoring.go 中的实现保持一致）：
+//
+//	blended = unit_price_in + unit_price_out  (1:1 input/output)
+//	if blended == 0                  → 100 (free)
+//	if PriceP75 == 0                 → 80   (no cohort baseline → 中性)
+//	ratio = blended / PriceP75
+//	score = clamp(100 * (1.5 - ratio), 0, 100)
+//
+// 0.5 × P75 → 100（最便宜）；1.0 × P75 → 50（基线）；1.5 × P75 → 0（最贵）。
+// doc 16 §5-D 修复：用 cohort P75 归一化替代旧的 `(1000-avgCost)/10`，后者
+// 把价格分数几乎钳制在 94–100 区间（avgCost ≈ 0–60/1M），丧失区分力。
+//
 // 最终得分（2 维路径）：IntentMatch * 0.6 + Price * 0.4 + Correction
-func ScoreSimplified(c Candidate, task TaskType, avgPriceByCanonical map[int]float64, correctionScore float64) ScoringBreakdown {
+func ScoreSimplified(c Candidate, task TaskType, costCtx CostContext, correctionScore float64) ScoringBreakdown {
 	intentMatch := c.TaskMatchScore * 100
 
-	avgCost := avgPriceByCanonical[c.CanonicalID]
-	if avgCost == 0 {
-		avgCost = c.UnitPriceInPer1M + c.UnitPriceOutPer1M
-	}
-	priceScore := (1000 - avgCost) / 10.0
-	priceScore = clamp01to100(priceScore)
-
+	priceScore := scorePriceByCostContext(c, costCtx)
+	channelQuality := scoreChannelQuality(c)
+	reliability := scoreReliability(c)
 	correction := clampCorrection(correctionScore)
 
 	composite := intentMatch*0.6 + priceScore*0.4 + correction
@@ -205,8 +214,8 @@ func ScoreSimplified(c Candidate, task TaskType, avgPriceByCanonical map[int]flo
 	return ScoringBreakdown{
 		MatchScore:     intentMatch,
 		PriceScore:     priceScore,
-		ChannelQuality: scoreChannelQuality(c),
-		Reliability:    scoreReliability(c),
+		ChannelQuality: channelQuality,
+		Reliability:    reliability,
 		Composite:      composite,
 		// 其余维度保持为 0，保持结构兼容
 		SpeedScore:     0,
@@ -232,22 +241,17 @@ func ScoreSimplified(c Candidate, task TaskType, avgPriceByCanonical map[int]flo
 //   - Price 0.2：从 0.4 降到 0.2，价格不再是主要决策因子
 //   - Reliability 0.1：作为安全网，反映凭据的实时健康
 //
-// 池分层（preferred/fallback）由 RecommendV2 在调用本函数后单独
-// 处理：本函数只产出 composite，不施加 demotion 系数。
+// PriceScore 与 ScoreSimplified 共用 scorePriceByCostContext（P75 归一化，
+// 详见该函数注释）。池分层（preferred/fallback）由 RecommendV2 在调
+// 用本函数后单独处理：本函数只产出 composite，不施加 demotion 系数。
 //
 // 当 ProviderCategory 为空（冷启动 / SQL 尚未加载该字段）时，
 // ChannelQuality 走默认 base=40；不会拉黑候选，但会让该候选落入
 // fallback 池。
-func ScoreWithChannelQuality(c Candidate, task TaskType, avgPriceByCanonical map[int]float64, correctionScore float64) ScoringBreakdown {
+func ScoreWithChannelQuality(c Candidate, task TaskType, costCtx CostContext, correctionScore float64) ScoringBreakdown {
 	intentMatch := c.TaskMatchScore * 100
 
-	avgCost := avgPriceByCanonical[c.CanonicalID]
-	if avgCost == 0 {
-		avgCost = c.UnitPriceInPer1M + c.UnitPriceOutPer1M
-	}
-	priceScore := (1000 - avgCost) / 10.0
-	priceScore = clamp01to100(priceScore)
-
+	priceScore := scorePriceByCostContext(c, costCtx)
 	channelQuality := scoreChannelQuality(c)
 	reliability := scoreReliability(c)
 	correction := clampCorrection(correctionScore)
@@ -304,12 +308,12 @@ const AffinityWeight = 0.15
 func ScoreWithAffinity(
 	c Candidate,
 	task TaskType,
-	avgPriceByCanonical map[int]float64,
+	costCtx CostContext,
 	correctionScore float64,
 	affinity float64,
 	applied bool,
 ) ScoringBreakdown {
-	b := ScoreWithChannelQuality(c, task, avgPriceByCanonical, correctionScore)
+	b := ScoreWithChannelQuality(c, task, costCtx, correctionScore)
 
 	// NaN/Inf 兜底：坏数据退化为「无意见」，绝不污染 composite。
 	if math.IsNaN(affinity) || math.IsInf(affinity, 0) {
@@ -340,6 +344,67 @@ func clampCorrection(v float64) float64 {
 		return 10
 	}
 	return v
+}
+
+// scorePriceByCostContext 把候选价格归一化到 cohort P75，输出 0-100 的
+// PriceScore。这是 doc 16 §5-D 的统一实现（替换旧的 `(1000-avgCost)/10`）：
+//
+//	blended = unit_price_in + unit_price_out  (1:1 input/output)
+//	if blended <= 0                  → 100 (free 或未知 → 最优)
+//	if costCtx.PriceP75 <= 0         → 80  (无 cohort 基线 → 中性)
+//	ratio = blended / PriceP75
+//	score = clamp(100 * (1.5 - ratio), 0, 100)
+//
+//	ratio 0.5 (half of P75) → 100 (最便宜)
+//	ratio 1.0 (at P75)     → 50  (基线)
+//	ratio 1.5 (50% more)   → 0   (最贵)
+//
+// 旧公式对 per-1M 单价（典型 0.1–60）的输出被钳制在 94–100，丧失区分力；
+// P75 归一化恢复了跨 cohort 的可比性，与 scoring.go::scorePrice 完全一致。
+//
+// §5-F 混币种：当前 CostContext 假设 cohort 单币种，HasMixedPrices 字段
+// 仍为占位。CNY/USD 同 cohort 评分的修复需要先在 Candidate 上加
+// BillingCurrency 字段并引入 FX 注入（与 §5-F 一起处理）。
+func scorePriceByCostContext(c Candidate, costCtx CostContext) float64 {
+	blended := c.UnitPriceInPer1M + c.UnitPriceOutPer1M
+	if blended <= 0 {
+		return 100
+	}
+	if costCtx.PriceP75 <= 0 {
+		return 80
+	}
+	ratio := blended / costCtx.PriceP75
+	score := 100 * (1.5 - ratio)
+	if score < 0 {
+		score = 0
+	}
+	if score > 100 {
+		score = 100
+	}
+	return score
+}
+
+// recommendCostContext 从候选池构建 CostContext（cohort P75 归一化的基线）。
+//
+// doc 16 §5-D 修复：旧实现用 per-canonical `avgPriceByCanonical[canonicalID]`
+// （数值小、范围窄 → PriceScore 几乎常数 94–100）。现在改用整个候选池
+// 的 P75 单一基线，确保 cohort 内「最便宜」/「最贵」两端能拉开。
+//
+// 排除零价候选（free/未知价格不应作为 P75 基线，否则会拉低）。
+func recommendCostContext(cands []Candidate) CostContext {
+	prices := make([]float64, 0, len(cands))
+	for _, c := range cands {
+		blended := c.UnitPriceInPer1M + c.UnitPriceOutPer1M
+		if blended > 0 {
+			prices = append(prices, blended)
+		}
+	}
+	ctx := CostContext{}
+	if len(prices) > 0 {
+		sort.Float64s(prices)
+		ctx.PriceP75 = percentileFloat(prices, 0.75)
+	}
+	return ctx
 }
 
 // ── 池分层（preferred/fallback） ──────────────────────────────────

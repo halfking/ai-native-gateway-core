@@ -107,6 +107,11 @@ type ScoringBreakdown struct {
 	AffinityApplied bool    `json:"affinity_applied"`
 	Explore         bool    `json:"explore"`
 	Composite       float64 `json:"composite"`
+
+	// IsFallback 标记该候选来自 48h 热门回退路径（doc 16 §5-E）：
+	// 之前用 `Composite==50 && PriceScore==50 && MatchScore<=30` 的浮点三连等
+	// 判定，正常候选巧合命中会误翻 FallbackUsed；现在改为显式标记。
+	IsFallback bool `json:"is_fallback,omitempty"`
 }
 
 // ScoredCandidate pairs a candidate with its breakdown — returned by

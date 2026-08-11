@@ -1,9 +1,9 @@
 # LLM Gateway Go - 修订0811总索引
 
-> **文档集版本**: v1.3（含 0811 第三轮增量审计 doc 16）
-> **生成时间**: 2026-08-11
-> **覆盖时间**: 2026-08-09 03:00 ~ 2026-08-11 22:30 (72小时 + 24h 增量审计 + 凭据/路由第二、三轮审计)
-> **文档总数**: 4份核心文档 + 本索引 + 24h 增量审计 + 凭据/路由第二、三轮审计
+> **文档集版本**: v1.4（含 0812 评分口径治理 doc 17）
+> **生成时间**: 2026-08-12
+> **覆盖时间**: 2026-08-09 03:00 ~ 2026-08-12 01:30 (72小时 + 24h 增量审计 + 凭据/路由第二、三轮审计 + 评分口径治理)
+> **文档总数**: 4份核心文档 + 本索引 + 24h 增量审计 + 凭据/路由第二、三轮审计 + 评分口径治理
 
 ---
 
@@ -20,6 +20,7 @@
 | 14 | [14-24小时审计与修复报告-2026-08-11.md](./14-24小时审计与修复报告-2026-08-11.md) | **24h 增量审计**：5 缺陷已修复 + 4 待跟进 + 设计/代码差异核验 | 8 | 实施负责人、全体开发者 |
 | 15 | [15-凭据节点状态与路由第二轮审计-2026-08-11.md](./15-凭据节点状态与路由第二轮审计-2026-08-11.md) | **凭据/路由第二轮审计**：4 缺陷已修复（model_offers 镜像零命中、恢复绕过冷却、缓存 bypass override ban、DisableCount Go↔Lua 分歧）+ 上轮 A/B/C/D 复核 + 3 项评分口径新发现 | 6 | 实施负责人、全体开发者 |
 | 16 | [16-凭据节点状态与路由第三轮审计-2026-08-11.md](./16-凭据节点状态与路由第三轮审计-2026-08-11.md) | **凭据/路由第三轮审计**：5 缺陷已修复（outbox dispatcher 每事件事务化、OverrideStore Reload ORDER BY、Writer nil-tx 返回错误、checker.go 表名注释、node_state.go DEPRECATED 头部）+ doc 15 待跟进 A/B/D/E/F 复核 | 5 | 实施负责人、全体开发者 |
+| 17 | [17-评分口径治理-2026-08-12.md](./17-评分口径治理-2026-08-12.md) | **评分口径治理**：doc 16 §5-D（PriceScore P75 归一化恢复价格区分力）+ §5-E（IsFallback 显式标记替换浮点三连等）本轮修复；§5-F（混币种评分）需 schema 接入 `billing_currency` 后跟进 | 4 | 实施负责人、架构师 |
 | - | **本文档 (README.md)** | 索引导航、快速查阅 | 4 | 新成员、快速查阅 |
 
 > **增量审计（doc 14，2026-08-11 10:40）**：对最近 24h 全部提交做了第二轮代码审计——`go build`/`vet` 通过、190/192 包测试绿；发现并修复 5 个真实缺陷（probe-SSE 进程崩溃、Gemini effort:none 未关思考、reasoning_caps null 清除死码、outbox HTTP 无超时、dispatcher 测试 panic），commit `23fb8485`；另记录 4 个待跟进问题（含 outbox 多实例领取缺事务、D5 failover 复用耗尽 candidates 等）并给出修复建议与上线门禁。详见 doc 14。
@@ -27,6 +28,8 @@
 > **第二轮增量审计（doc 15，2026-08-11 12:50）**：聚焦凭据健康/节点状态/路由决策链，复核 doc 14 待跟进 A/B/C/D（C/D5 已由上游 `e57684ac` 修复，A/B/D 仍待跟进），并发现修复 4 个新缺陷——`markDegraded` 的 model_offers 镜像因 `unavailable_at = recoverAt` 不匹配而**恒零命中**、`RecoverExpired` 的 model_offers 恢复 30s 过早**绕过 15min 冷却**、`DecideV2` 缓存重校验**bypass 内存 OverrideStore ban**、`recoverIfCooldownExpired` **漏清 DisableCount** 致 Go↔Lua 分歧，commit `d8c83b74`；另记录 3 项评分口径新发现（price 维度退化、fallback-winner 浮点三连等、混币种评分 TODO live）。详见 doc 15。
 
 > **第三轮增量审计（doc 16，2026-08-11 22:30）**：复核 doc 15 待跟进 A/B/D/E/F——B（探测 SSE ID）已由 probe-stream lifecycle 审计闭环；A（outbox `FOR UPDATE SKIP LOCKED` 在 autocommit 形同虚设）/D（Writer nil-tx 静默丢弃）/E（OverrideStore.Reload 缺 ORDER BY 致 pin 优先级跨重载非确定）本轮修复；另修 2 项文档真实性缺陷（checker.go 注释引用不存在的表名、node_state.go DEPRECATED 头部指向从未存在的 `domains/ursm/state.go`）。outbox dispatcher 重构为**每事件一个事务**（claim+deliver+mark 原子化，SKIP LOCKED 真正生效）。评分口径 3 项（price 退化/fallback 浮点三连等/混币种）仍 live，待统一设计决策。详见 doc 16。
+
+> **评分口径治理（doc 17，2026-08-12 01:30）**：doc 16 §5-D（PriceScore P75 归一化恢复价格区分力；旧 `(1000-avgCost)/10` 把付费模型钳制在 94–100，梯度≈1.5 点；改公式后梯度≥40 点 + 5 个新增回归测试覆盖）+ §5-E（`isFallbackWinner` 浮点三连等 → 显式 `IsFallback bool` 标记；3 处 fallback 路径统一设置）+ 共享 helper `scorePriceByCostContext` / `recommendCostContext` 落地。评分函数签名从 `(c, task, avgPriceByCanonical map[int]float64, correction)` 改为 `(c, task, costCtx CostContext, correction)`，与 `scoring.go::scorePrice` 公式对齐。doc 16 §5-F（混币种评分）需要先在 schema 接入 `billing_currency` 字段（本次挂账，建议 doc 18）。详见 doc 17。
 
 ---
 
