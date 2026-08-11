@@ -1,11 +1,14 @@
 package streamretry
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
+	"sync"
 )
 
 // StreamFunc represents a function that executes a streaming request.
@@ -22,9 +25,10 @@ type WrapperMetrics struct {
 
 // Wrapper wraps a streaming function with intelligent retry and keepalive.
 type Wrapper struct {
-	config  Config
-	metrics *WrapperMetrics
-	logger  *slog.Logger
+	config    Config
+	metricsMu sync.RWMutex
+	metrics   WrapperMetrics
+	logger    *slog.Logger
 }
 
 // NewWrapper creates a new retry wrapper with the given configuration.
@@ -34,7 +38,7 @@ func NewWrapper(config Config, logger *slog.Logger) *Wrapper {
 	}
 	return &Wrapper{
 		config:  config,
-		metrics: &WrapperMetrics{SuccessAttempt: -1},
+		metrics: WrapperMetrics{SuccessAttempt: -1},
 		logger:  logger,
 	}
 }
@@ -52,19 +56,33 @@ func NewWrapper(config Config, logger *slog.Logger) *Wrapper {
 // The wrapper is transparent to the client: keepalive events are SSE comments
 // that don't trigger parsing errors in the client.
 func (w *Wrapper) Execute(ctx context.Context, httpW http.ResponseWriter, streamFunc StreamFunc) error {
+	_, err := w.ExecuteWithMetrics(ctx, httpW, streamFunc)
+	return err
+}
+
+// ExecuteWithMetrics runs the stream and returns metrics for this execution.
+// The returned snapshot is isolated from concurrent requests; Metrics remains
+// available for callers that only need the latest completed execution.
+func (w *Wrapper) ExecuteWithMetrics(ctx context.Context, httpW http.ResponseWriter, streamFunc StreamFunc) (metrics WrapperMetrics, err error) {
 	// Initialize metrics for this execution
-	w.metrics = &WrapperMetrics{SuccessAttempt: -1}
+	metrics = WrapperMetrics{SuccessAttempt: -1}
+	defer func() {
+		w.metricsMu.Lock()
+		w.metrics = metrics
+		w.metricsMu.Unlock()
+		recordExecutionMetrics(metrics, err)
+	}()
 
 	if !w.config.Enabled {
 		// Fast path: retry disabled, execute once
-		w.metrics.TotalAttempts = 1
-		err := streamFunc(ctx, httpW)
+		metrics.TotalAttempts = 1
+		err = streamFunc(ctx, httpW)
 		if err == nil {
-			w.metrics.SuccessAttempt = 0
+			metrics.SuccessAttempt = 0
 		} else {
-			w.metrics.LastError = err
+			metrics.LastError = err
 		}
-		return err
+		return metrics, err
 	}
 
 	// Initialize retry context
@@ -85,23 +103,23 @@ func (w *Wrapper) Execute(ctx context.Context, httpW http.ResponseWriter, stream
 
 	// Retry loop
 	for {
-		w.metrics.TotalAttempts++
+		metrics.TotalAttempts++
 
 		// Execute the stream function
 		err := streamFunc(ctx, httpW)
 
 		if err == nil {
 			// Success!
-			w.metrics.SuccessAttempt = rc.Attempt
-			w.metrics.TotalRetries = rc.Attempt
+			metrics.SuccessAttempt = rc.Attempt
+			metrics.TotalRetries = rc.Attempt
 			w.logger.Info("stream completed successfully",
 				"attempt", rc.Attempt+1,
 				"total_retries", rc.Attempt)
-			return nil
+			return metrics, nil
 		}
 
 		// Record failure
-		w.metrics.LastError = err
+		metrics.LastError = err
 
 		// Check if we should retry
 		if !rc.ShouldRetry(err) {
@@ -111,8 +129,8 @@ func (w *Wrapper) Execute(ctx context.Context, httpW http.ResponseWriter, stream
 				"retriable", classified.Retriable,
 				"reason", classified.Reason,
 				"attempt", rc.Attempt+1)
-			w.metrics.TotalRetries = rc.Attempt
-			return err
+			metrics.TotalRetries = rc.Attempt
+			return metrics, err
 		}
 
 		// Log retry decision
@@ -127,8 +145,8 @@ func (w *Wrapper) Execute(ctx context.Context, httpW http.ResponseWriter, stream
 		if err := rc.Sleep(ctx); err != nil {
 			// Context canceled during sleep
 			w.logger.Info("retry canceled by context", "error", err)
-			w.metrics.TotalRetries = rc.Attempt
-			return err
+			metrics.TotalRetries = rc.Attempt
+			return metrics, err
 		}
 
 		// Increment attempt counter for next iteration
@@ -136,9 +154,14 @@ func (w *Wrapper) Execute(ctx context.Context, httpW http.ResponseWriter, stream
 	}
 }
 
-// Metrics returns the accumulated retry metrics.
+// Metrics returns the latest completed execution metrics.
+// Prefer ExecuteWithMetrics when the caller needs metrics for a specific
+// request. This method is safe for concurrent execution, but another request
+// may replace the snapshot before it is read.
 func (w *Wrapper) Metrics() WrapperMetrics {
-	return *w.metrics
+	w.metricsMu.RLock()
+	defer w.metricsMu.RUnlock()
+	return w.metrics
 }
 
 // WrapHTTPError is a helper to wrap HTTP response errors with status code
@@ -194,6 +217,14 @@ type DefaultStreamExecutor struct {
 }
 
 // NewDefaultStreamExecutor creates a stream executor that wraps an http.Handler.
+//
+// Typical wiring in cmd/gateway/main.go:
+//
+//	srCfg := streamretry.Config{...}                       // from app config
+//	wrapped := streamretry.NewDefaultStreamExecutor(chatHandler, srCfg)
+//	mux.Handle("/v1/chat/completions", wrapped)            // wrapped implements http.Handler
+//
+// See README.md "在 ChatHandler 中接入" for the full integration example.
 func NewDefaultStreamExecutor(handler http.Handler, config Config) *DefaultStreamExecutor {
 	return &DefaultStreamExecutor{
 		wrapper: NewWrapper(config, nil),
@@ -201,22 +232,105 @@ func NewDefaultStreamExecutor(handler http.Handler, config Config) *DefaultStrea
 	}
 }
 
+// ServeHTTP makes *DefaultStreamExecutor implement http.Handler. The request
+// context is forwarded to ExecuteStream so context cancellation (client
+// disconnect, request timeout) propagates naturally and stops the retry loop.
+//
+// This is the entry point used by net/http.ServeMux when the executor is
+// registered directly as a route handler.
+func (e *DefaultStreamExecutor) ServeHTTP(w http.ResponseWriter, req *http.Request) {
+	_ = e.ExecuteStream(req.Context(), w, req)
+}
+
 // ExecuteStream implements the StreamExecutor interface.
 func (e *DefaultStreamExecutor) ExecuteStream(ctx context.Context, w http.ResponseWriter, req *http.Request) error {
+	_, err := e.ExecuteStreamWithMetrics(ctx, w, req)
+	return err
+}
+
+// ExecuteStreamWithMetrics returns metrics for the current request without
+// sharing mutable per-request state between concurrent handlers.
+func (e *DefaultStreamExecutor) ExecuteStreamWithMetrics(ctx context.Context, w http.ResponseWriter, req *http.Request) (WrapperMetrics, error) {
+	body, streaming := snapshotRequestBody(req)
 	streamFunc := func(ctx context.Context, w http.ResponseWriter) error {
+		if body != nil {
+			req.Body = io.NopCloser(bytes.NewReader(body))
+		}
 		// Wrap the handler in a recorder to capture errors
 		rec := &errorRecorder{ResponseWriter: w}
 		e.handler.ServeHTTP(rec, req.WithContext(ctx))
 		return rec.err
 	}
 
-	return e.wrapper.Execute(ctx, w, streamFunc)
+	if !streaming {
+		rec := &errorRecorder{ResponseWriter: w}
+		e.handler.ServeHTTP(rec, req.WithContext(ctx))
+		metrics := WrapperMetrics{TotalAttempts: 1, SuccessAttempt: -1}
+		if rec.err == nil {
+			metrics.SuccessAttempt = 0
+		} else {
+			metrics.LastError = rec.err
+		}
+		e.wrapper.setMetrics(metrics)
+		recordExecutionMetrics(metrics, rec.err)
+		return metrics, rec.err
+	}
+
+	return e.wrapper.ExecuteWithMetrics(ctx, w, streamFunc)
+}
+
+// snapshotRequestBody reads and restores a request body before the first
+// attempt. Each retry then receives a fresh reader, which is required because
+// the wrapped handlers consume r.Body.
+func snapshotRequestBody(req *http.Request) ([]byte, bool) {
+	if req == nil || req.Body == nil {
+		// Preserve the original executor behavior for direct callers that do
+		// not provide a body: treat the request as a stream attempt.
+		return nil, true
+	}
+	original := req.Body
+	body, err := io.ReadAll(original)
+	_ = original.Close()
+	if err != nil {
+		req.Body = io.NopCloser(bytes.NewReader(body))
+		return body, false
+	}
+	req.Body = io.NopCloser(bytes.NewReader(body))
+	if len(body) == 0 {
+		return body, true
+	}
+
+	var envelope struct {
+		Stream bool `json:"stream"`
+	}
+	if json.Unmarshal(body, &envelope) != nil {
+		return body, false
+	}
+	return body, envelope.Stream
+}
+
+func (w *Wrapper) setMetrics(metrics WrapperMetrics) {
+	w.metricsMu.Lock()
+	w.metrics = metrics
+	w.metricsMu.Unlock()
 }
 
 // errorRecorder captures errors from http.Handler execution.
 type errorRecorder struct {
 	http.ResponseWriter
 	err error
+}
+
+// Flush preserves SSE behavior through the retry wrapper.
+func (r *errorRecorder) Flush() {
+	if flusher, ok := r.ResponseWriter.(http.Flusher); ok {
+		flusher.Flush()
+	}
+}
+
+// Unwrap exposes the underlying writer to middleware that needs to inspect it.
+func (r *errorRecorder) Unwrap() http.ResponseWriter {
+	return r.ResponseWriter
 }
 
 // WriteHeader captures error status codes.
