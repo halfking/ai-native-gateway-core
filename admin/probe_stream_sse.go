@@ -43,13 +43,14 @@ import (
 //   - node_probe: buildNodeProbeTaskID(credID, model)  → "node_probe:<cred>:<model>"
 //   - integrity:  task.DedupKey (preserved across retries)
 //   - selfcheck:  "selfcheck:<credID>:<unixnano>"  (daily run, distinct per run)
+//
 // The high-cardinality telemetry request_id (request_logs row) is unrelated
 // to this SSE key — it stays distinct and is recorded in auto_decision.
 type ProbeStreamTask struct {
-	ID           string  `json:"id"`            // stable lifecycle id (see conventions above)
-	TaskType     string  `json:"task_type"`     // node_probe | integrity_verify | selfcheck
-	Source       string  `json:"source"`        // node_probe | integrity | selfcheck
-	Status       string  `json:"status"`        // pending | in-flight | ok | fail
+	ID           string  `json:"id"`        // stable lifecycle id (see conventions above)
+	TaskType     string  `json:"task_type"` // node_probe | integrity_verify | selfcheck
+	Source       string  `json:"source"`    // node_probe | integrity | selfcheck
+	Status       string  `json:"status"`    // pending | in-flight | ok | fail
 	CredentialID int64   `json:"credential_id"`
 	ProviderID   int64   `json:"provider_id,omitempty"`
 	ProviderCode string  `json:"provider_code,omitempty"`
@@ -76,11 +77,11 @@ func (t ProbeStreamTask) TsUnixMilli() int64 {
 
 // ProbeStreamEnvelope is the SSE wire type.
 type ProbeStreamEnvelope struct {
-	Type      string            `json:"type"` // initial_data|submitted|started|completed|failed|idle_marker|snapshot_refresh
-	Ts        time.Time         `json:"ts"`
-	Task      *ProbeStreamTask  `json:"task,omitempty"`
-	Initial   []ProbeStreamTask `json:"initial,omitempty"` // initial_data full replay
-	LaneIDs   []string          `json:"lane_ids,omitempty"` // idle_marker lane hints
+	Type    string            `json:"type"` // initial_data|submitted|started|completed|failed|idle_marker|snapshot_refresh
+	Ts      time.Time         `json:"ts"`
+	Task    *ProbeStreamTask  `json:"task,omitempty"`
+	Initial []ProbeStreamTask `json:"initial,omitempty"`  // initial_data full replay
+	LaneIDs []string          `json:"lane_ids,omitempty"` // idle_marker lane hints
 }
 
 // eventTypeForStatus maps a task status to the small-form SSE event type.
@@ -230,19 +231,32 @@ func (h *ProbeSSEHub) run() {
 // fanOut delivers an envelope to every connected client; a full client buffer
 // drops that client (browser auto-reconnects), matching LiveStreamSSEHub /
 // SystemMonitorSSEHub backpressure policy.
+//
+// Concurrency: the send loop runs UNDER h.mu. This is essential because
+// removeClient and Stop close client channels, and a send on a closed channel
+// panics unconditionally (the select's default branch does NOT save it — the
+// runtime checks closed-state before arbitrating cases). ProbeSSEHub has TWO
+// concurrent fanOut callers — run() (Redis/heartbeat) and Publish() (bg
+// workers) — so the close-during-send window is reachable. Evicted channels
+// are deleted from the map under the lock and closed only after releasing it,
+// which is safe because they are then invisible to every other fanOut snapshot
+// and removeClient's map-membership guard refuses to double-close.
 func (h *ProbeSSEHub) fanOut(env ProbeStreamEnvelope) {
 	h.mu.Lock()
-	clients := make([]chan ProbeStreamEnvelope, 0, len(h.clients))
+	var dead []chan ProbeStreamEnvelope
 	for c := range h.clients {
-		clients = append(clients, c)
-	}
-	h.mu.Unlock()
-	for _, c := range clients {
 		select {
 		case c <- env:
 		default:
-			h.removeClient(c)
+			// Buffer full: drop this client. Remove from the map under the
+			// lock so no later fanOut re-snapshots it; close after unlock.
+			delete(h.clients, c)
+			dead = append(dead, c)
 		}
+	}
+	h.mu.Unlock()
+	for _, c := range dead {
+		close(c)
 	}
 }
 

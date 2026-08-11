@@ -32,6 +32,7 @@ type Dispatcher struct {
 	hmacSecret   string        // Shared HMAC secret for signing
 	pollInterval time.Duration // How often to poll (default: 5s)
 	maxAttempts  int           // Max retry attempts before DLQ (default: 5)
+	httpClient   *http.Client  // Per-dispatcher client with a bounded timeout
 	logger       *slog.Logger
 }
 
@@ -42,7 +43,11 @@ type DispatcherConfig struct {
 	HMACSecret   string
 	PollInterval time.Duration
 	MaxAttempts  int
-	Logger       *slog.Logger
+	// HTTPTimeout bounds each ASM POST. Defaults to 10s. A dedicated client
+	// (rather than http.DefaultClient, which has no timeout) prevents a single
+	// stalled ASM connection from blocking the serial dispatch loop forever.
+	HTTPTimeout time.Duration
+	Logger      *slog.Logger
 }
 
 // NewDispatcher creates a new OutboxDispatcher.
@@ -50,6 +55,7 @@ type DispatcherConfig struct {
 // Defaults:
 //   - PollInterval: 5s
 //   - MaxAttempts: 5
+//   - HTTPTimeout: 10s
 //   - Logger: slog.Default()
 func NewDispatcher(cfg DispatcherConfig) *Dispatcher {
 	if cfg.PollInterval == 0 {
@@ -57,6 +63,9 @@ func NewDispatcher(cfg DispatcherConfig) *Dispatcher {
 	}
 	if cfg.MaxAttempts == 0 {
 		cfg.MaxAttempts = 5
+	}
+	if cfg.HTTPTimeout == 0 {
+		cfg.HTTPTimeout = 10 * time.Second
 	}
 	if cfg.Logger == nil {
 		cfg.Logger = slog.Default()
@@ -68,6 +77,7 @@ func NewDispatcher(cfg DispatcherConfig) *Dispatcher {
 		hmacSecret:   cfg.HMACSecret,
 		pollInterval: cfg.PollInterval,
 		maxAttempts:  cfg.MaxAttempts,
+		httpClient:   &http.Client{Timeout: cfg.HTTPTimeout},
 		logger:       cfg.Logger,
 	}
 }
@@ -225,8 +235,8 @@ func (d *Dispatcher) dispatch(ctx context.Context, env EventEnvelope, payloadByt
 	req.Header.Set("X-Tenant-ID", env.TenantID)
 	req.Header.Set("X-Event-Signature", signature)
 
-	// Send
-	resp, err := http.DefaultClient.Do(req)
+	// Send (dedicated client with a bounded timeout — see NewDispatcher).
+	resp, err := d.httpClient.Do(req)
 	if err != nil {
 		return fmt.Errorf("http post: %w", err)
 	}

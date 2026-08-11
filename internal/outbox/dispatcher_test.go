@@ -3,7 +3,9 @@ package outbox
 import (
 	"context"
 	"database/sql"
+	"database/sql/driver"
 	"encoding/json"
+	"errors"
 	"log/slog"
 	"testing"
 	"time"
@@ -66,7 +68,13 @@ func TestDispatcher_Start(t *testing.T) {
 	}
 
 	cfg := DispatcherConfig{
-		DB:           &sql.DB{}, // nil DB will fail queries, but that's OK for this test
+		// A DB whose connector always errors. The original fixture used a
+		// zero-value &sql.DB{}, but database/sql panics (nil connector) on the
+		// first QueryContext of such a value, which crashes the test instead
+		// of exercising Start's "keep polling despite query errors" path.
+		// errorConnector makes QueryContext return a real error, matching the
+		// documented intent of this test.
+		DB:           sql.OpenDB(errorConnector{}),
 		ASMEndpoint:  "http://localhost:9999/events",
 		HMACSecret:   "test",
 		PollInterval: 100 * time.Millisecond,
@@ -168,3 +176,14 @@ func TestDispatcher_SignatureGeneration(t *testing.T) {
 		t.Error("ASM would reject this signature")
 	}
 }
+
+// errorConnector is a database/sql/driver.Connector whose Connect always fails.
+// It backs a *sql.DB that returns query errors instead of panicking, so tests
+// can exercise error-handling paths (e.g. the dispatcher's "keep polling"
+// resilience) without a live database.
+type errorConnector struct{}
+
+func (errorConnector) Connect(context.Context) (driver.Conn, error) {
+	return nil, errors.New("test: database connector unavailable")
+}
+func (errorConnector) Driver() driver.Driver { return nil }
