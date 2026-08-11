@@ -783,3 +783,9 @@
 > `6ab117...`。`c13ee3c6a4` 提交历史不可改，但请把本 note 视为权威
 > 文件名映射。
 
+## 2026-08-11T16:30:13Z — deploy 245 build_seq 1491 (8a788d30)
+
+| Migration | File | SHA-256 | Status |
+|-----------|------|---------|--------|
+| 479 | `479_concurrency_mode.sql` | `066445e9d55602562bcbc69720eed2121c676ca8b1bbd1e8d6a0210f0793408e` | applied+verified |
+

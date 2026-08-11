@@ -1,0 +1,177 @@
+{
+  "dashboard": {
+    "title": "LLM Gateway - Outbox Delivery (Gateway → ASM)",
+    "tags": ["llm-gateway", "outbox", "asm", "event-contract"],
+    "timezone": "browser",
+    "schemaVersion": 27,
+    "version": 1,
+    "refresh": "30s",
+    "description": "Outbox pattern observability for Gateway → ai-session-manager event delivery. Tracks: pending/DLQ backlog, delivery rate, failure rate by reason, P50/P95/P99 delivery latency. Metrics from internal/outbox/metrics.go.",
+    "annotations": {
+      "list": [
+        {
+          "builtIn": 1,
+          "datasource": "-- Grafana --",
+          "enable": true,
+          "hide": true,
+          "iconColor": "rgba(0, 211, 255, 1)",
+          "name": "Annotations & Alerts",
+          "type": "dashboard"
+        }
+      ]
+    },
+    "panels": [
+      {
+        "id": 1,
+        "title": "队列深度 (Pending / DLQ)",
+        "type": "graph",
+        "gridPos": {"x": 0, "y": 0, "w": 12, "h": 8},
+        "targets": [
+          {
+            "expr": "outbox_pending_count",
+            "legendFormat": "pending",
+            "refId": "A"
+          },
+          {
+            "expr": "outbox_dlq_count",
+            "legendFormat": "dlq",
+            "refId": "B"
+          }
+        ],
+        "yaxes": [
+          {"format": "short", "label": "events"},
+          {"format": "short"}
+        ],
+        "description": "Backlog gauges. pending>1000 warns; dlq>0 criticals (events need manual replay via scripts/outbox-dlq-replay.sh)."
+      },
+      {
+        "id": 2,
+        "title": "投递速率 (sent vs failed vs retried)",
+        "type": "graph",
+        "gridPos": {"x": 12, "y": 0, "w": 12, "h": 8},
+        "targets": [
+          {
+            "expr": "sum(rate(outbox_events_sent_total[5m]))",
+            "legendFormat": "sent",
+            "refId": "A"
+          },
+          {
+            "expr": "sum(rate(outbox_events_failed_total[5m]))",
+            "legendFormat": "failed",
+            "refId": "B"
+          },
+          {
+            "expr": "rate(outbox_events_retried_total[5m])",
+            "legendFormat": "retried",
+            "refId": "C"
+          }
+        ],
+        "yaxes": [
+          {"format": "ops", "label": "events/sec"},
+          {"format": "short"}
+        ],
+        "description": "rate(5m). retried events will eventually succeed or hit DLQ — sustained retried > sent indicates a retry storm."
+      },
+      {
+        "id": 3,
+        "title": "失败原因分布 (按 reason)",
+        "type": "graph",
+        "gridPos": {"x": 0, "y": 8, "w": 12, "h": 8},
+        "targets": [
+          {
+            "expr": "sum by (reason) (rate(outbox_events_failed_total[5m]))",
+            "legendFormat": "{{reason}}",
+            "refId": "A"
+          }
+        ],
+        "yaxes": [
+          {"format": "ops", "label": "failures/sec"},
+          {"format": "short"}
+        ],
+        "description": "Reasons: http_error, network, timeout, validation, hmac_mismatch, tenant_mismatch, duplicate, http_5xx, http_4xx. hmac_mismatch>0 means rule 39 §5.1 secret rotation needed."
+      },
+      {
+        "id": 4,
+        "title": "投递延迟 (P50/P95/P99)",
+        "type": "graph",
+        "gridPos": {"x": 12, "y": 8, "w": 12, "h": 8},
+        "targets": [
+          {
+            "expr": "histogram_quantile(0.50, sum by (le) (rate(outbox_delivery_duration_seconds_bucket[5m])))",
+            "legendFormat": "p50",
+            "refId": "A"
+          },
+          {
+            "expr": "histogram_quantile(0.95, sum by (le) (rate(outbox_delivery_duration_seconds_bucket[5m])))",
+            "legendFormat": "p95",
+            "refId": "B"
+          },
+          {
+            "expr": "histogram_quantile(0.99, sum by (le) (rate(outbox_delivery_duration_seconds_bucket[5m])))",
+            "legendFormat": "p99",
+            "refId": "C"
+          }
+        ],
+        "yaxes": [
+          {"format": "s", "label": "duration"},
+          {"format": "short"}
+        ],
+        "description": "HTTP roundtrip latency to ASM. P99>5s is the warning threshold."
+      },
+      {
+        "id": 5,
+        "title": "DLQ 事件 (Last value)",
+        "type": "stat",
+        "gridPos": {"x": 0, "y": 16, "w": 8, "h": 6},
+        "targets": [
+          {
+            "expr": "outbox_dlq_count",
+            "refId": "A"
+          }
+        ],
+        "fieldConfig": {
+          "defaults": {
+            "unit": "short",
+            "thresholds": {
+              "mode": "absolute",
+              "steps": [
+                {"color": "green", "value": null},
+                {"color": "yellow", "value": 1},
+                {"color": "red", "value": 10}
+              ]
+            }
+          }
+        },
+        "description": "DLQ events. Green=0, Yellow=1-9, Red=10+."
+      },
+      {
+        "id": 6,
+        "title": "失败占比 (5m)",
+        "type": "stat",
+        "gridPos": {"x": 8, "y": 16, "w": 8, "h": 6},
+        "targets": [
+          {
+            "expr": "sum(rate(outbox_events_failed_total[5m])) / clamp_min(sum(rate(outbox_events_sent_total[5m])) + sum(rate(outbox_events_failed_total[5m])), 1)",
+            "refId": "A"
+          }
+        ],
+        "fieldConfig": {
+          "defaults": {
+            "unit": "percentunit",
+            "min": 0,
+            "max": 1,
+            "thresholds": {
+              "mode": "absolute",
+              "steps": [
+                {"color": "green", "value": null},
+                {"color": "yellow", "value": 0.01},
+                {"color": "red", "value": 0.10}
+              ]
+            }
+          }
+        },
+        "description": "failed / (sent + failed). Green<1%, Yellow 1-10%, Red>10%."
+      }
+    ]
+  }
+}

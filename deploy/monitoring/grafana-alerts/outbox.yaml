@@ -1,0 +1,88 @@
+groups:
+  - name: outbox_delivery
+    interval: 30s
+    rules:
+      # 死信队列累积 — DLQ events never auto-replay, manual intervention needed.
+      # 任何 dlq>0 都触发，因为一条 DLQ 事件等于一次 ASM 投递失败。
+      - alert: OutboxDLQAccumulation
+        expr: outbox_dlq_count > 0
+        for: 1m
+        labels:
+          severity: critical
+          component: outbox
+          domain: gateway-asm-contract
+        annotations:
+          summary: "Outbox DLQ has {{ $value }} events — ASM 投递已停止"
+          description: "DLQ 事件需要人工干预（replay 或删除）。runbook: scripts/outbox-dlq-replay.sh"
+
+      # 投递失败率过高 — failed 计数占成功的比例异常
+      # 滑动窗口 5m，避免单次抖动告警
+      - alert: OutboxHighFailureRate
+        expr: |
+          (
+            sum(rate(outbox_events_failed_total[5m]))
+            /
+            clamp_min(sum(rate(outbox_events_sent_total[5m])) + sum(rate(outbox_events_failed_total[5m])), 1)
+          ) > 0.10
+        for: 5m
+        labels:
+          severity: critical
+          component: outbox
+          domain: gateway-asm-contract
+        annotations:
+          summary: "Outbox 投递失败率 {{ $value | humanizePercentage }} 超过 10%"
+          description: "5m 滑动窗口 failed/(sent+failed) 超过 10%。可能是 ASM 不可用、HMAC secret 不匹配或网络抖动"
+
+      # 待投递事件积压 — Dispatcher 没有在跑 / 处理能力不足
+      # 1000 阈值与 handoff §5 Step 5 监控要求对齐
+      - alert: OutboxBacklogGrowing
+        expr: outbox_pending_count > 1000
+        for: 5m
+        labels:
+          severity: warning
+          component: outbox
+          domain: gateway-asm-contract
+        annotations:
+          summary: "Outbox 待投递事件 {{ $value }} 条 — Dispatcher 处理能力不足"
+          description: "pending > 1000 持续 5m。可能原因: Dispatcher 未启动、ASM 限流、慢查询锁表"
+
+      # P99 投递延迟过高
+      - alert: OutboxSlowDelivery
+        expr: histogram_quantile(0.99, sum by (le) (rate(outbox_delivery_duration_seconds_bucket[5m]))) > 5
+        for: 5m
+        labels:
+          severity: warning
+          component: outbox
+          domain: gateway-asm-contract
+        annotations:
+          summary: "Outbox P99 投递延迟 {{ $value }}s 超过 5s"
+          description: "ASM 服务响应变慢，可能影响下游审计/成本统计的实时性"
+
+      # HMAC 签名失败 — 强烈提示密钥不匹配或代码 BUG
+      - alert: OutboxHMACMismatch
+        expr: sum(rate(outbox_events_failed_total{reason="hmac_mismatch"}[5m])) > 0
+        for: 1m
+        labels:
+          severity: critical
+          component: outbox
+          domain: gateway-asm-contract
+        annotations:
+          summary: "Outbox HMAC 签名验证失败 — 共享密钥不匹配"
+          description: "rule 39 §5.1: 检查 OUTBOX_HMAC_SECRET 是否与 ASM 一致。立即 rotation 并 redeploy"
+
+      # Tenant 隔离被破坏 — provider 名称为 'unknown' 意味着 provider lookup 失败
+      # 0.05/5m = 5% 投递事件 provider 字段空，可观测性受损
+      - alert: OutboxHighProviderUnknownRate
+        expr: |
+          sum(rate(outbox_events_failed_total{reason="validation"}[5m]))
+          /
+          clamp_min(sum(rate(outbox_events_sent_total[5m])), 1)
+          > 0.05
+        for: 5m
+        labels:
+          severity: warning
+          component: outbox
+          domain: gateway-asm-contract
+        annotations:
+          summary: "Outbox validation 失败率 {{ $value | humanizePercentage }} 超过 5%"
+          description: "可能是 provider lookup 持续失败 / payload 损坏。检查 lookupProviderName 路径与 providers 表"
