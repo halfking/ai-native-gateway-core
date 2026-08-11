@@ -240,24 +240,46 @@ func (d *Dispatcher) dispatchOne(ctx context.Context) (dispatchOutcome, error) {
 	}
 
 	if err := json.Unmarshal(payloadBytes, &env.Payload); err != nil {
+		// Poison-pill event (corrupt payload). markFailed will move it
+		// straight to DLQ after max_attempts, so count both "failed" and
+		// the retry attempt — but skip the duration histogram since the
+		// failure never reached ASM.
 		d.logger.Error("unmarshal payload failed", "event_id", eventID, "error", err)
+		RecordEventFailed("validation")
 		d.markFailed(ctx, tx, id, attempts+1, fmt.Sprintf("unmarshal error: %v", err))
 		if err := tx.Commit(); err != nil {
 			return dispatchOutcomeNone, fmt.Errorf("commit (unmarshal-fail mark): %w", err)
 		}
+		if attempts+1 < d.maxAttempts {
+			RecordEventRetried()
+		}
 		return dispatchOutcomeFailed, nil
 	}
 
-	if err := d.dispatch(ctx, env, payloadBytes); err != nil {
+	// Time only the HTTP roundtrip; the rest of dispatchOne is in-process
+	// overhead that the dispatcher loop batches.
+	start := time.Now()
+	err = d.dispatch(ctx, env, payloadBytes)
+	duration := time.Since(start).Seconds()
+	ObserveDeliveryDuration(duration, err == nil)
+
+	if err != nil {
 		d.logger.Warn("dispatch failed", "event_id", eventID, "attempts", attempts+1, "error", err)
+		RecordEventFailed(classifyError(err))
 		d.markFailed(ctx, tx, id, attempts+1, err.Error())
 		if err := tx.Commit(); err != nil {
 			return dispatchOutcomeNone, fmt.Errorf("commit (dispatch-fail mark): %w", err)
+		}
+		// Retry if markFailed scheduled a future next_retry_at; skip when
+		// the event has hit max_attempts and was moved to DLQ.
+		if attempts+1 < d.maxAttempts {
+			RecordEventRetried()
 		}
 		return dispatchOutcomeFailed, nil
 	}
 
 	d.logger.Info("dispatch succeeded", "event_id", eventID, "attempts", attempts+1)
+	RecordEventSent()
 	d.markSent(ctx, tx, id)
 	if err := tx.Commit(); err != nil {
 		return dispatchOutcomeNone, fmt.Errorf("commit (sent mark): %w", err)
