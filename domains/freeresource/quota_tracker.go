@@ -15,12 +15,23 @@ import (
 
 // QuotaTracker 配额追踪器
 type QuotaTracker struct {
-	db *sql.DB
+	db   *sql.DB
+	sink QuotaEventSink // optional SSE sink; nil = no real-time push
 }
 
 // NewQuotaTracker 创建配额追踪器
 func NewQuotaTracker(db *sql.DB) *QuotaTracker {
 	return &QuotaTracker{db: db}
+}
+
+// SetQuotaSink wires an SSE sink so credential quota state changes are pushed
+// to the FreePoolView admin page in real time. Safe to call once at startup;
+// nil leaves the tracker in legacy no-push mode.
+func (qt *QuotaTracker) SetQuotaSink(sink QuotaEventSink) {
+	if qt == nil {
+		return
+	}
+	qt.sink = sink
 }
 
 // Record 记录一次请求的配额消耗.
@@ -221,7 +232,37 @@ func (qt *QuotaTracker) CorrectFromHeaders(ctx context.Context, req CorrectionRe
 		return err
 	}
 
-	return tx.Commit()
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+
+	// Push a real-time event so the FreePoolView page refreshes immediately
+	// (instead of waiting for the next 15s poll). Map the 429 body
+	// classification to an event type the frontend listens for; default to
+	// rate_limited when no body was provided.
+	if qt.sink != nil {
+		evtType := "rate_limited"
+		switch classification {
+		case errorsx.KindQuotaPeriodic:
+			evtType = "quota_exhausted"
+		case errorsx.KindQuotaPermanent:
+			evtType = "quota_permanent"
+		}
+		var resetPtr *time.Time
+		if autoReset != nil {
+			t := autoReset.(time.Time)
+			resetPtr = &t
+		}
+		qt.sink.PublishQuotaEvent(QuotaEvent{
+			Type:         evtType,
+			CredentialID: req.CredentialID,
+			ProviderCode: req.ProviderCode,
+			ModelID:      req.ModelID,
+			AutoResetAt:  resetPtr,
+			Ts:           now,
+		})
+	}
+	return nil
 }
 
 // parseRetryAfter 解析 Retry-After 与 X-RateLimit-Reset 头部, 返回 retryAfter (秒) 与 resetAt.
@@ -419,6 +460,86 @@ func escapeTenant(id string) string {
 		}
 	}
 	return id
+}
+
+// ApplyFetchedQuota writes a proactively-fetched upstream quota snapshot into
+// the day-1 window of free_quota_tracker, so the existing Preflight reads
+// accurate values (real corrected_limit + real is_exhausted) instead of the
+// 429-reactive defaults. Fed by the quotafetcher package (P1 主动配额预取).
+//
+// Semantics (mirrors CorrectFromHeaders' UPSERT but for proactive data):
+//   - Total > 0 → corrected_limit = Total (only overwrites when a real value
+//     arrived; Total=0 keeps the existing corrected_limit, e.g. on a
+//     balance-only fetch where we only know exhausted/not).
+//   - LimitReached → is_exhausted = TRUE, exhausted_at = now, auto_reset_at =
+//     ResetAt (or keep existing when ResetAt is nil).
+//   - !LimitReached → is_exhausted = FALSE (clear a stale exhaustion when the
+//     upstream now reports healthy), leaving auto_reset_at intact.
+//
+// RLS: transaction-scoped SET LOCAL app.current_tenant (same pattern as
+// Record / CorrectFromHeaders / Preflight). Failures are logged + returned
+// but the caller (virtual_factory preflightQuota) treats them as fail-open.
+func (qt *QuotaTracker) ApplyFetchedQuota(ctx context.Context, req ApplyRequest) error {
+	if qt == nil || qt.db == nil {
+		return nil
+	}
+	if req.TenantID == "" {
+		req.TenantID = "default"
+	}
+
+	now := time.Now().UTC()
+	dayStart := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)
+	dayEnd := dayStart.Add(24 * time.Hour)
+
+	var autoReset any
+	if req.ResetAt != nil {
+		utc := req.ResetAt.UTC()
+		autoReset = utc
+	}
+
+	tx, err := qt.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin tx for apply fetched quota: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	if _, err := tx.ExecContext(ctx,
+		fmt.Sprintf("SET LOCAL app.current_tenant = '%s'", escapeTenant(req.TenantID))); err != nil {
+		fmt.Printf("omnifree: failed to set app.current_tenant in ApplyFetchedQuota: %v\n", err)
+	}
+
+	_, err = tx.ExecContext(ctx, `
+		INSERT INTO free_quota_tracker (
+			credential_id, provider_code, model_id, window_type,
+			window_start, window_end, request_count, token_count,
+			success_count, error_count,
+			is_exhausted, exhausted_at, auto_reset_at,
+			corrected_limit, tenant_id
+		) VALUES (
+			$1, $2, $3, 'day-1',
+			$4, $5, 0, 0, 0, 0,
+			$6, CASE WHEN $6 THEN now() ELSE NULL END, $7,
+			CASE WHEN $8 > 0 THEN $8 ELSE NULL END,
+			$9
+		)
+		ON CONFLICT (credential_id, provider_code, model_id, window_type, window_start, tenant_id)
+		DO UPDATE SET
+			is_exhausted = EXCLUDED.is_exhausted,
+			exhausted_at = CASE WHEN EXCLUDED.is_exhausted THEN now() ELSE NULL END,
+			auto_reset_at = COALESCE(EXCLUDED.auto_reset_at, free_quota_tracker.auto_reset_at),
+			corrected_limit = COALESCE(EXCLUDED.corrected_limit, free_quota_tracker.corrected_limit),
+			updated_at = now()
+	`, req.CredentialID, req.ProviderCode, req.ModelID,
+		dayStart, dayEnd,
+		req.LimitReached, autoReset,
+		req.Total,
+		req.TenantID,
+	)
+	if err != nil {
+		return fmt.Errorf("upsert fetched quota: %w", err)
+	}
+
+	return tx.Commit()
 }
 
 // computeWindows 计算给定时间点的所有窗口起止.

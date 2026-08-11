@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
+	"time"
 
 	"github.com/lib/pq"
 
@@ -31,6 +32,41 @@ type QuotaPreflighter interface {
 	Preflight(ctx context.Context, req freeresource.PreflightRequest) (bool, error)
 }
 
+// QuotaApplicator optionally writes a proactively-fetched upstream quota
+// snapshot back into the tracker so subsequent Preflight calls read accurate
+// values. Implemented by *freeresource.QuotaTracker; kept separate from
+// QuotaPreflighter so test fakes need only implement Preflight. The factory
+// type-asserts quotaTracker to this interface when a QuotaFetcher is wired.
+type QuotaApplicator interface {
+	ApplyFetchedQuota(ctx context.Context, req freeresource.ApplyRequest) error
+}
+
+// QuotaFetcher proactively reads a provider's remaining quota from its
+// upstream usage API (cached), used in preflightQuota to feed the tracker.
+// Implemented by an adapter wrapping *quotafetcher.Manager. nil keeps the
+// legacy 429-reactive behavior (P0). Fail-open: a nil result falls back to
+// the existing DB-based Preflight.
+type QuotaFetcher interface {
+	FetchQuota(ctx context.Context, providerCode string, credentialID int64, providerID int, baseURL, apiKey, model, tenantID string) (*fetchedQuota, error)
+}
+
+// fetchedQuota is the minimal projection of an upstream quota snapshot that
+// preflightQuota consumes: the limit (to write as corrected_limit), whether
+// the upstream reports exhaustion, and the window reset time. Defined here
+// to avoid an autocombo→quotafetcher import cycle (the manager adapter
+// projects its richer QuotaInfo into this type).
+type fetchedQuota struct {
+	Total        int64
+	LimitReached bool
+	ResetAt      *time.Time
+	// PercentUsed (P3 2026-08-11) is the fraction of the quota window used,
+	// 0..1 (0 = full, 1 = exhausted). Feeds the QuotaRemaining scoring term
+	// so the free-tier's highest-weighted dimension (default 0.25) actually
+	// influences ordering — previously the term was dead (engine.go had no
+	// quota term in the formula).
+	PercentUsed float64
+}
+
 // CatalogEntry is a denormalised view of a free_resource_catalog row
 // surfaced to the factory. ModelID matches the standardized/canonical
 // model id used by the provider layer.
@@ -38,13 +74,13 @@ type QuotaPreflighter interface {
 // round 3 M7: 新增 TrainsOnPrompts 字段, 镜像 OmniRoute
 // freeModelCatalog.trainsOnPrompts. factory 可选过滤掉训练型提供商.
 type CatalogEntry struct {
-	ProviderCode     string
-	ModelID          string
-	FreeType         string
-	ToSVerdict       string
-	TrainsOnPrompts  bool
-	DailyTokens      int64
-	MonthlyTokens    int64
+	ProviderCode    string
+	ModelID         string
+	FreeType        string
+	ToSVerdict      string
+	TrainsOnPrompts bool
+	DailyTokens     int64
+	MonthlyTokens   int64
 }
 
 // VirtualFactory 虚拟 Combo 工厂
@@ -54,9 +90,20 @@ type CatalogEntry struct {
 // 当前实现只在 provider.Client 解析出的可执行 provider.Candidate 池上
 // 做免费资源过滤 + 配额预检 + 评分排序; 输入输出都是 []provider.Candidate.
 type VirtualFactory struct {
-	db            *sql.DB
-	quotaTracker  QuotaPreflighter
+	db           *sql.DB
+	quotaTracker QuotaPreflighter
+	// quotaFetcher (P1 主动配额预取) proactively reads upstream usage APIs
+	// before the existing Preflight gate. nil = legacy 429-reactive behavior.
+	quotaFetcher  QuotaFetcher
 	loadCatalogFn func(ctx context.Context, tenantID string, spec *AutoComboSpec) ([]CatalogEntry, error)
+}
+
+// SetQuotaFetcher wires a proactive upstream quota fetcher (P1). nil disables
+// it and keeps the legacy 429-reactive Preflight path. The fetcher result is
+// written back via the tracker's ApplyFetchedQuota (when the tracker
+// implements QuotaApplicator) so subsequent Preflight calls read real values.
+func (vf *VirtualFactory) SetQuotaFetcher(f QuotaFetcher) {
+	vf.quotaFetcher = f
 }
 
 // NewVirtualFactory 创建虚拟工厂
@@ -123,7 +170,7 @@ func (vf *VirtualFactory) BuildFromCandidates(
 		return nil, nil
 	}
 
-	withQuota := vf.preflightQuota(ctx, filtered, tenantID)
+	withQuota, quotaSnap := vf.preflightQuota(ctx, filtered, tenantID)
 	if len(withQuota) == 0 {
 		return nil, nil
 	}
@@ -132,7 +179,7 @@ func (vf *VirtualFactory) BuildFromCandidates(
 	if err != nil {
 		return nil, fmt.Errorf("build engine: %w", err)
 	}
-	sorted := engine.sortCandidates(withQuota)
+	sorted := engine.sortCandidates(withQuota, quotaSnap)
 	if limit := spec.MaxCandidates; limit > 0 && len(sorted) > limit {
 		sorted = sorted[:limit]
 	}
@@ -399,15 +446,62 @@ func (vf *VirtualFactory) preflightQuota(
 	ctx context.Context,
 	candidates []provider.Candidate,
 	tenantID string,
-) []provider.Candidate {
+) ([]provider.Candidate, map[int]fetchedQuota) {
 	if vf.quotaTracker == nil {
-		return candidates
+		return candidates, nil
 	}
 	out := make([]provider.Candidate, 0, len(candidates))
+	// quotaSnap (P3) carries each candidate's proactively-fetched quota signal
+	// (PercentUsed / ResetAt) keyed by credential ID, so sortCandidates can
+	// feed the previously-dead QuotaRemaining + resetWindowAffinity terms.
+	// nil quotaFetcher → nil map → those terms degrade to neutral (0.5).
+	quotaSnap := map[int]fetchedQuota{}
 	for _, c := range candidates {
 		if !isFreeBilling(c.BillingMode) {
 			out = append(out, c)
 			continue
+		}
+
+		// ── P1 主动配额预取 (2026-08-11) ────────────────────────────────
+		// Before the DB Preflight, proactively fetch the upstream usage API
+		// (cached 45s, throttled) and write the real quota back into the
+		// tracker. This makes the Preflight below read accurate values
+		// (corrected_limit, is_exhausted) instead of 429-reactive defaults.
+		// Fail-open: any error or nil result skips this step and falls
+		// through to the existing Preflight (no worse than before).
+		if vf.quotaFetcher != nil {
+			fq, ferr := vf.quotaFetcher.FetchQuota(ctx, c.CatalogCode,
+				int64(c.CredentialID), c.ProviderID, c.BaseURL, c.APIKey,
+				c.StandardizedName, tenantID)
+			if ferr == nil && fq != nil {
+				// Write back if the tracker supports it (concrete
+				// *freeresource.QuotaTracker does; test fakes may not).
+				if ap, ok := vf.quotaTracker.(QuotaApplicator); ok {
+					_ = ap.ApplyFetchedQuota(ctx, freeresource.ApplyRequest{
+						CredentialID: int64(c.CredentialID),
+						ProviderCode: c.CatalogCode,
+						ModelID:      c.StandardizedName,
+						TenantID:     tenantID,
+						Total:        fq.Total,
+						LimitReached: fq.LimitReached,
+						ResetAt:      fq.ResetAt,
+					})
+				}
+				// Stash the quota signal for sortCandidates (P3). Even when
+				// not LimitReached, PercentUsed drives the QuotaRemaining
+				// scoring term and ResetAt drives resetWindowAffinity.
+				quotaSnap[c.CredentialID] = *fq
+				// Short-circuit: upstream explicitly says exhausted → drop
+				// this candidate without running Preflight (saves a DB round
+				// trip and gives an authoritative exclusion).
+				if fq.LimitReached {
+					slog.Debug("omnifree: preflight dropped by proactive fetch",
+						"provider_code", c.CatalogCode,
+						"credential_id", c.CredentialID,
+						"model", c.StandardizedName)
+					continue
+				}
+			}
 		}
 
 		// 对每个 (billing mode → window type) 组合跑一次 Preflight; 全部
@@ -444,7 +538,7 @@ func (vf *VirtualFactory) preflightQuota(
 		}
 		out = append(out, c)
 	}
-	return out
+	return out, quotaSnap
 }
 
 // freeTierDefaultLimit 返回 Preflight 的 fallback 上限. provider 自身的
@@ -532,5 +626,5 @@ func (vf *VirtualFactory) ScoreSort(candidates []provider.Candidate, weights jso
 	if err != nil {
 		return nil, err
 	}
-	return engine.sortCandidates(candidates), nil
+	return engine.sortCandidates(candidates, nil), nil
 }

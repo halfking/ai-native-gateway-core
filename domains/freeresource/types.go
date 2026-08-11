@@ -82,6 +82,19 @@ type PreflightRequest struct {
 	TenantID        string
 }
 
+// ApplyRequest carries a proactively-fetched upstream quota snapshot to be
+// written into free_quota_tracker, so the existing Preflight reads accurate
+// values instead of the 429-reactive defaults. Fed by the quotafetcher package.
+type ApplyRequest struct {
+	CredentialID int64
+	ProviderCode string
+	ModelID      string
+	TenantID     string
+	Total        int64      // corrected_limit (0 = unknown, keep existing)
+	LimitReached bool       // mark is_exhausted = TRUE when upstream says exhausted
+	ResetAt      *time.Time // auto_reset_at (nil = keep existing / unknown)
+}
+
 // FreeResourceEntry 免费资源目录条目
 type FreeResourceEntry struct {
 	ID            int64

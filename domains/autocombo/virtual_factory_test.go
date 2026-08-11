@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/kaixuan/llm-gateway-go/domains/freeresource"
 	"github.com/kaixuan/llm-gateway-go/provider"
@@ -171,7 +172,7 @@ func TestVirtualFactory_PreflightQuota_FilterDropsExhausted(t *testing.T) {
 		cand(1, "openrouter", "openai/gpt-3.5-turbo:free", "free", 300, 0, 0.9),
 		cand(2, "groq", "llama-3.3-70b", "free", 100, 0, 0.95),
 	}
-	got := vf.preflightQuota(context.Background(), candidates, "default")
+	got, _ := vf.preflightQuota(context.Background(), candidates, "default")
 	if len(got) != 1 {
 		t.Fatalf("expected 1 candidate after preflight, got %d", len(got))
 	}
@@ -183,7 +184,7 @@ func TestVirtualFactory_PreflightQuota_FilterDropsExhausted(t *testing.T) {
 func TestVirtualFactory_PreflightQuota_NilPreflighterPassesThrough(t *testing.T) {
 	vf := NewVirtualFactoryWith(nil, nil)
 	candidates := []provider.Candidate{cand(1, "openrouter", "openai/gpt-3.5-turbo:free", "free", 300, 0, 0.9)}
-	got := vf.preflightQuota(context.Background(), candidates, "default")
+	got, _ := vf.preflightQuota(context.Background(), candidates, "default")
 	if len(got) != 1 {
 		t.Fatalf("expected nil prefighter to pass through, got %d", len(got))
 	}
@@ -195,7 +196,7 @@ func TestVirtualFactory_PreflightQuota_SkipsNonFree(t *testing.T) {
 	candidates := []provider.Candidate{
 		cand(1, "openrouter", "openai/gpt-3.5-turbo:free", "per_token", 300, 1, 0.9),
 	}
-	got := vf.preflightQuota(context.Background(), candidates, "default")
+	got, _ := vf.preflightQuota(context.Background(), candidates, "default")
 	if len(got) != 1 {
 		t.Fatalf("non-free billing should bypass quota gate, got %d", len(got))
 	}
@@ -283,7 +284,7 @@ func TestEngine_SortProviderCandidates_TieBreakDeterministic(t *testing.T) {
 		cand(10, "openrouter", "model-b", "free", 200, 0, 0.9),
 		cand(10, "openrouter", "model-c", "free", 200, 0, 0.9),
 	}
-	sorted := engine.sortCandidates(candidates)
+	sorted := engine.sortCandidates(candidates, nil)
 	if len(sorted) != 3 {
 		t.Fatalf("expected 3 sorted candidates, got %d", len(sorted))
 	}
@@ -306,9 +307,107 @@ func TestEngine_SortProviderCandidates_PrefersLowLatency(t *testing.T) {
 		cand(1, "openrouter", "slow", "free", 1000, 0, 0.9),
 		cand(2, "openrouter", "fast", "free", 50, 0, 0.9),
 	}
-	sorted := engine.sortCandidates(candidates)
+	sorted := engine.sortCandidates(candidates, nil)
 	if sorted[0].RawModel != "fast" {
 		t.Errorf("expected fast first, got %s", sorted[0].RawModel)
+	}
+}
+
+// TestEngine_SortCandidates_QuotaInfluencesOrdering (P3) verifies the previously-
+// dead QuotaRemaining dimension now drives ordering: with equal health/latency/
+// cost, a near-full credential (PercentUsed=0.1) must outrank a near-exhausted
+// one (PercentUsed=0.9). Before P3 the formula had no quota term, so this
+// weight (0.25, the free-tier default) multiplied into nothing.
+func TestEngine_SortCandidates_QuotaInfluencesOrdering(t *testing.T) {
+	weights := ScoringWeights{
+		HealthScore:    0.25,
+		LatencyP95:     0.2,
+		QuotaRemaining: 0.25, // the dimension under test
+		Cost:           0.1,
+		TaskFit:        0.1,
+		TierAffinity:   0.1,
+	}
+	raw, _ := json.Marshal(weights)
+	engine, err := NewEngine(raw)
+	if err != nil {
+		t.Fatalf("NewEngine: %v", err)
+	}
+
+	// Two identical candidates except credential ID; quota snapshot makes
+	// credID=1 (10% used) outrank credID=2 (90% used).
+	candidates := []provider.Candidate{
+		cand(1, "openrouter", "model-a", "free", 200, 0, 0.9),
+		cand(2, "openrouter", "model-b", "free", 200, 0, 0.9),
+	}
+	quotaSnap := map[int]fetchedQuota{
+		1: {PercentUsed: 0.1}, // near full
+		2: {PercentUsed: 0.9}, // near exhausted
+	}
+	sorted := engine.sortCandidates(candidates, quotaSnap)
+	if sorted[0].CredentialID != 1 {
+		t.Fatalf("expected near-full credential (id=1) first, got id=%d", sorted[0].CredentialID)
+	}
+	if sorted[1].CredentialID != 2 {
+		t.Fatalf("expected near-exhausted credential (id=2) second, got id=%d", sorted[1].CredentialID)
+	}
+}
+
+// TestEngine_SortCandidates_QuotaSnapNilIsNeutral (P3) verifies that when no
+// quota snapshot is available (legacy deployments / nil quotaFetcher), the
+// quota term degrades to neutral 0.5 and does NOT distort ordering — i.e. the
+// change is backwards-compatible.
+func TestEngine_SortCandidates_QuotaSnapNilIsNeutral(t *testing.T) {
+	weights := ScoringWeights{
+		HealthScore:    0.3,
+		QuotaRemaining: 0.25,
+		Cost:           0.15,
+		TaskFit:        0.15,
+		TierAffinity:   0.15,
+	}
+	raw, _ := json.Marshal(weights)
+	engine, err := NewEngine(raw)
+	if err != nil {
+		t.Fatalf("NewEngine: %v", err)
+	}
+
+	// credID=2 has worse latency; without quota distortion it should rank
+	// behind credID=1 (faster). A non-neutral quota term could flip this.
+	candidates := []provider.Candidate{
+		cand(1, "openrouter", "fast", "free", 50, 0, 0.9),
+		cand(2, "openrouter", "slow", "free", 1000, 0, 0.9),
+	}
+	sorted := engine.sortCandidates(candidates, nil)
+	if sorted[0].RawModel != "fast" {
+		t.Fatalf("nil quotaSnap should keep latency-driven order (fast first), got %s", sorted[0].RawModel)
+	}
+}
+
+// TestComputeResetWindowAffinity (P3) verifies the reset-window scoring formula
+// mirrors OmniRoute combo/quotaScoring.ts:304-311.
+func TestComputeResetWindowAffinity(t *testing.T) {
+	now := time.Now()
+
+	// Already reset (past) → full runway.
+	past := now.Add(-1 * time.Hour)
+	if got := computeResetWindowAffinity(&past, resetWindowHorizon); got != 1.0 {
+		t.Fatalf("past reset → want 1.0, got %v", got)
+	}
+
+	// Unknown (nil) → neutral 0.5.
+	if got := computeResetWindowAffinity(nil, resetWindowHorizon); got != 0.5 {
+		t.Fatalf("nil reset → want 0.5, got %v", got)
+	}
+
+	// Resets soon → high score (just under 1).
+	soon := now.Add(1 * time.Hour) // 1h / 168h horizon ≈ 0.006
+	if got := computeResetWindowAffinity(&soon, resetWindowHorizon); got < 0.98 {
+		t.Fatalf("resets in 1h → want ≥0.98, got %v", got)
+	}
+
+	// Resets far in the future → near 0.
+	far := now.Add(30 * 24 * time.Hour) // 30d >> 7d horizon
+	if got := computeResetWindowAffinity(&far, resetWindowHorizon); got != 0 {
+		t.Fatalf("resets in 30d → want 0, got %v", got)
 	}
 }
 

@@ -112,6 +112,14 @@ type Candidate struct {
 	// credentials auto-populate from the free-pool template rpmLimit.
 	// Enforced by domains/credential/limiter.go in AcquireAll.
 	RPMLimit             *int     `json:"rpm_limit,omitempty"`
+	// 479: 并发/限流模式与队列参数（见 docs/会话优化v2/57）。
+	// concurrency: 用 ConcurrencyLimit 做 in-flight 上限; rpm: 用 RPMLimit 做令牌桶;
+	// tpm: 用 TPMLimit 做令牌桶(发送前预估 token); disabled: 不限流。
+	// 由 domains/dispatch 的凭据队列调速器消费。
+	ConcurrencyMode  string `json:"concurrency_mode,omitempty"`
+	TPMLimit         *int   `json:"tpm_limit,omitempty"`
+	MaxQueueDepth    *int   `json:"max_queue_depth,omitempty"`
+	MaxQueueWaitMS   *int   `json:"max_queue_wait_ms,omitempty"`
 	BalanceUSD           *float64 `json:"balance_usd"`
 	CircuitState         string   `json:"circuit_state"`
 	AvailabilityState    string   `json:"availability_state"`
@@ -1007,8 +1015,13 @@ func (c *Client) loadCandidatesByModalityDB(ctx context.Context, clientModel, te
 			-- GetModelScale for the canonical EffLimit formula.
 			c.concurrency_limit_auto,
 			COALESCE(c.fp_slot_limit, 20) AS fp_slot_limit,  -- 2026-06-24: 5→20
-			-- 2026-07-15: per-credential RPM cap (migration 407). NULL/0 = unlimited.
-			c.rpm_limit,
+		-- 2026-07-15: per-credential RPM cap (migration 407). NULL/0 = unlimited.
+		c.rpm_limit,
+		-- 479: 并发/限流模式与队列参数（见 docs/会话优化v2/57）。
+		COALESCE(c.concurrency_mode, 'concurrency') AS concurrency_mode,
+		c.tpm_limit,
+		c.max_queue_depth,
+		c.max_queue_wait_ms,
 			c.balance_usd::float8,
 			COALESCE(c.circuit_state, 'closed') AS circuit_state,
 			COALESCE(c.availability_state, 'ready') AS availability_state,
@@ -1226,6 +1239,10 @@ func (c *Client) loadCandidatesByModalityDB(ctx context.Context, clientModel, te
 			&concurrencyLimitAuto,
 			&cand.FpSlotLimit,
 			&cand.RPMLimit,
+			&cand.ConcurrencyMode,
+			&cand.TPMLimit,
+			&cand.MaxQueueDepth,
+			&cand.MaxQueueWaitMS,
 			&cand.BalanceUSD,
 			&cand.CircuitState,
 			&cand.AvailabilityState,
