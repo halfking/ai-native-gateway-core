@@ -17,10 +17,11 @@ const eventPath = "/internal/v1/events"
 type Server struct {
 	secret string
 
-	mu       sync.RWMutex
-	events   []map[string]any
-	ids      map[string]struct{}
-	versions map[string]int
+	mu            sync.RWMutex
+	events        []map[string]any
+	ids           map[string]struct{}
+	versions      map[string]int
+	totalAttempts int // every POST to the event path, accepted or rejected
 }
 
 // NewServer creates an ASM mock server using the supplied shared HMAC secret.
@@ -39,6 +40,12 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
+
+	// Count every delivery attempt (accepted or rejected) so regression tests
+	// can detect double-delivery from concurrent dispatchers.
+	s.mu.Lock()
+	s.totalAttempts++
+	s.mu.Unlock()
 
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
@@ -109,6 +116,17 @@ func (s *Server) Events() []map[string]any {
 		result[i] = cloneMap(event)
 	}
 	return result
+}
+
+// Attempts returns the total number of POST attempts received (accepted or
+// rejected). A regression test for the outbox dispatcher's per-event
+// transaction claims exactly N events for N rows; any value above N means a
+// concurrent dispatcher double-delivered (the second attempt is rejected as
+// a duplicate event_id).
+func (s *Server) Attempts() int {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.totalAttempts
 }
 
 func verifySignature(body []byte, secret, provided string) bool {
