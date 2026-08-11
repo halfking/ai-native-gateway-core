@@ -65,7 +65,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/domains/integration"                         //nolint:depguard // clientprofile worker wiring
 	"github.com/kaixuan/llm-gateway-go/domains/modelquality"                        //nolint:depguard // 模型质量监控
 	"github.com/kaixuan/llm-gateway-go/domains/notification"                        //nolint:depguard // 审批通知器
-	"github.com/kaixuan/llm-gateway-go/domains/providerprofile"                      //nolint:depguard // 供应商画像告警 handler (AlertType)
+	"github.com/kaixuan/llm-gateway-go/domains/providerprofile"                     //nolint:depguard // 供应商画像告警 handler (AlertType)
 	"github.com/kaixuan/llm-gateway-go/domains/routeincident"                       //nolint:depguard // 2026-07-13 route incident diagnosis (Phase 1)
 	"github.com/kaixuan/llm-gateway-go/domains/routingstate"
 	"github.com/kaixuan/llm-gateway-go/domains/session" //nolint:depguard // historical violation, B1 routing.go CQRS will fix
@@ -93,6 +93,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/internal/logging"
 	"github.com/kaixuan/llm-gateway-go/internal/modelpolicy"
 	"github.com/kaixuan/llm-gateway-go/internal/observability"
+	"github.com/kaixuan/llm-gateway-go/internal/outbox"
 	"github.com/kaixuan/llm-gateway-go/internal/quality"
 	"github.com/kaixuan/llm-gateway-go/internal/sessionv2mirror"
 	gwtrace "github.com/kaixuan/llm-gateway-go/internal/trace"
@@ -305,6 +306,38 @@ func main() {
 	// never block startup on this.
 	if dbConn != nil {
 		_, _ = bg.ColumnarInvariantCheck(context.Background(), dbConn.Pool())
+	}
+
+	// ── Gateway → ASM outbox dispatcher (Phase 3, 2026-08-11) ───────
+	// Opt-in: only starts when both ASM_INTERNAL_ENDPOINT and OUTBOX_HMAC_SECRET
+	// are configured. Polls outbox_events and delivers to ASM via HTTP.
+	var outboxDispatcherStop context.CancelFunc
+	if dbConn != nil && dbConn.Enabled() {
+		asmEndpoint := strings.TrimSpace(os.Getenv("ASM_INTERNAL_ENDPOINT"))
+		hmacSecret := strings.TrimSpace(os.Getenv("OUTBOX_HMAC_SECRET"))
+		if asmEndpoint == "" || hmacSecret == "" {
+			slog.Info("outbox dispatcher disabled: incomplete ASM configuration",
+				"endpoint_configured", asmEndpoint != "",
+				"secret_configured", hmacSecret != "")
+		} else {
+			dispatcherCtx, cancel := context.WithCancel(context.Background())
+			outboxDispatcherStop = cancel
+			dispatcher := outbox.NewDispatcher(outbox.DispatcherConfig{
+				DB:           dbConn.Stdlib(),
+				ASMEndpoint:  asmEndpoint,
+				HMACSecret:   hmacSecret,
+				PollInterval: positiveDurationEnv("OUTBOX_POLL_INTERVAL", 5*time.Second),
+				MaxAttempts:  positiveIntEnv("OUTBOX_MAX_ATTEMPTS", 5),
+				HTTPTimeout:  positiveDurationEnv("OUTBOX_HTTP_TIMEOUT", 10*time.Second),
+				Logger:       slog.Default(),
+			})
+			go func() {
+				if err := dispatcher.Start(dispatcherCtx); err != nil && err != context.Canceled {
+					slog.Error("outbox dispatcher stopped unexpectedly", "error", err)
+				}
+			}()
+			slog.Info("outbox dispatcher enabled", "endpoint", asmEndpoint)
+		}
 	}
 
 	// ── License enforcement (2026-07-12) ─────────────────────────────
@@ -5016,6 +5049,11 @@ func main() {
 	stopDone := make(chan struct{}, 1)
 
 	go func() {
+		// Stop outbox dispatcher before other background services
+		if outboxDispatcherStop != nil {
+			outboxDispatcherStop()
+		}
+
 		// Stop accepting quota tasks and drain the bounded OmniFree worker queue
 		// before the shared database pool is closed.
 		chatHandler.ShutdownOmniFree()
