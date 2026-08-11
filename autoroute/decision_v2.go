@@ -42,26 +42,50 @@ func (d *Decider) DecideV2(ctx context.Context, sigs ClassificationSignals, apiK
 				pool := idx.pool
 				idx.mu.RUnlock()
 				if pool != nil && ValidateCachedChoice(ctx, pool, cached.CredentialID, cached.ChosenModel) {
-					slog.Info("autoroute.v2: reusing cached decision (revalidated)",
+					// 2026-08-11 fix: ValidateCachedChoice only checks DB-level
+					// availability + 'manual%' reasons. It does NOT consult the
+					// in-memory OverrideStore, so an admin ban applied AFTER the
+					// session was cached would keep serving the banned model
+					// until cache eviction. Re-check the ban set here; if the
+					// cached choice is now banned, fall through to reclassify
+					// (same path as "no longer available") instead of reusing.
+					bannedByOverride := false
+					if d.overrideStore != nil {
+						task := string(cached.TaskType)
+						prof := string(cached.Profile)
+						if d.overrideStore.GetBans(task, prof)[cached.ChosenModel] {
+							bannedByOverride = true
+						}
+					}
+					if !bannedByOverride {
+						slog.Info("autoroute.v2: reusing cached decision (revalidated)",
+							"session_id", sessionID,
+							"cached_model", cached.ChosenModel,
+							"task_type", cached.TaskType,
+						)
+						decision := &Decision{
+							ChosenModel:        cached.ChosenModel,
+							ChosenCredentialID: cached.CredentialID,
+							ChosenRawModel:     cached.ChosenModel,
+							TaskType:           cached.TaskType,
+							Confidence:         cached.Confidence,
+							Profile:            cached.Profile,
+							Classifier:         "session_cache_v2",
+							Reason:             "reused session intent (revalidated)",
+							EnabledFeatures:    enabledFeatures,
+							CacheReused:        true,
+							DecidedAt:          time.Now(),
+						}
+						d.populateShadow(ctx, sigs, decision)
+						return decision, nil
+					}
+					// Cached choice is banned by an admin override — clear the
+					// stale cache entry and reclassify.
+					d.intentCache.Invalidate(sessionID)
+					slog.Info("autoroute.v2: cached choice banned by override, reclassifying",
 						"session_id", sessionID,
 						"cached_model", cached.ChosenModel,
-						"task_type", cached.TaskType,
 					)
-					decision := &Decision{
-						ChosenModel:        cached.ChosenModel,
-						ChosenCredentialID: cached.CredentialID,
-						ChosenRawModel:     cached.ChosenModel,
-						TaskType:           cached.TaskType,
-						Confidence:         cached.Confidence,
-						Profile:            cached.Profile,
-						Classifier:         "session_cache_v2",
-						Reason:             "reused session intent (revalidated)",
-						EnabledFeatures:    enabledFeatures,
-						CacheReused:        true,
-						DecidedAt:          time.Now(),
-					}
-					d.populateShadow(ctx, sigs, decision)
-					return decision, nil
 				} else {
 					// 可用性校验失败，清除缓存并重新决策
 					d.intentCache.Invalidate(sessionID)

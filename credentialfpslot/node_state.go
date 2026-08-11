@@ -211,6 +211,14 @@ func (n *NodeState) recoverIfCooldownExpired(nowUnix int64) {
 		n.SlideWindow = []NodeRecord{}
 		n.DisabledUntil = 0
 		n.DisabledReason = ""
+		// 2026-08-11 fix: keep DisableCount in sync with the Lua transition
+		// (recordNodeOutcomeScript cooldown-expired + success branch resets
+		// disable_count = 0). Without this the Go read path (IsUsable → here)
+		// reports a stale non-zero DisableCount after cooldown expiry, which
+		// corrupts the "dynamic cooldown adjustment" signal the field exists
+		// to provide. The next Lua write would fix it, but in between the
+		// in-memory copy read by callers diverges from Redis.
+		n.DisableCount = 0
 	}
 }
 
