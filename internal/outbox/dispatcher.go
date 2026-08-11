@@ -15,6 +15,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"strings"
 	"time"
 )
 
@@ -193,6 +194,9 @@ func (d *Dispatcher) dispatchBatch(ctx context.Context) error {
 		d.logger.Info("dispatch batch complete", "dispatched", dispatched, "failed", failed)
 	}
 
+	// Update gauge metrics after each batch
+	d.updateGaugeMetrics(ctx)
+
 	return rows.Err()
 }
 
@@ -295,5 +299,55 @@ func (d *Dispatcher) markFailed(ctx context.Context, id int64, newAttempts int, 
 		if _, err := d.db.ExecContext(ctx, query, newAttempts, errMsg, nextRetry, id); err != nil {
 			d.logger.Error("mark failed failed", "id", id, "error", err)
 		}
+	}
+}
+
+// classifyError categorizes delivery errors into metric labels.
+// Helps diagnose failure modes: network issues, HTTP errors, validation, etc.
+func classifyError(err error) string {
+	if err == nil {
+		return "unknown"
+	}
+
+	errStr := err.Error()
+	switch {
+	case strings.Contains(errStr, "context deadline exceeded"), strings.Contains(errStr, "timeout"):
+		return "timeout"
+	case strings.Contains(errStr, "connection refused"), strings.Contains(errStr, "no such host"):
+		return "network"
+	case strings.Contains(errStr, "401"), strings.Contains(errStr, "signature"):
+		return "hmac_mismatch"
+	case strings.Contains(errStr, "403"), strings.Contains(errStr, "tenant"):
+		return "tenant_mismatch"
+	case strings.Contains(errStr, "422"), strings.Contains(errStr, "validation"):
+		return "validation"
+	case strings.Contains(errStr, "409"), strings.Contains(errStr, "duplicate"):
+		return "duplicate"
+	case strings.Contains(errStr, "5"), strings.Contains(errStr, "Internal Server Error"):
+		return "http_5xx"
+	case strings.Contains(errStr, "4"):
+		return "http_4xx"
+	default:
+		return "http_error"
+	}
+}
+
+// updateGaugeMetrics queries current pending and DLQ counts and updates Prometheus gauges.
+// Should be called periodically (e.g., after each poll cycle) for accurate monitoring.
+func (d *Dispatcher) updateGaugeMetrics(ctx context.Context) {
+	var pendingCount, dlqCount int
+
+	// Count pending events
+	if err := d.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM outbox_events WHERE status = 'pending'`).Scan(&pendingCount); err != nil {
+		d.logger.Warn("query pending count failed", "error", err)
+	} else {
+		SetPendingCount(pendingCount)
+	}
+
+	// Count DLQ events
+	if err := d.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM outbox_events WHERE status = 'dlq'`).Scan(&dlqCount); err != nil {
+		d.logger.Warn("query dlq count failed", "error", err)
+	} else {
+		SetDLQCount(dlqCount)
 	}
 }
