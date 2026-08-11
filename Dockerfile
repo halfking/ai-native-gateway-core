@@ -7,6 +7,10 @@ ARG RUNTIME_BASE_IMAGE=${BASE_REGISTRY}/alpine:3.22
 # 构建阶段
 FROM ${GO_BASE_IMAGE} AS builder
 
+# China network: proxy.golang.org is unreachable, use goproxy.cn instead.
+# The offline-package build script already does this; Docker builds need it too.
+ENV GOPROXY=https://goproxy.cn,direct
+
 WORKDIR /app
 
 # 复制依赖文件
