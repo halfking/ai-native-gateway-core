@@ -731,3 +731,126 @@ func TestLookupProviderName(t *testing.T) {
 		}
 	})
 }
+
+// TestLookupTurnNumber verifies turn number counting logic.
+func TestLookupTurnNumber(t *testing.T) {
+	t.Run("returns 1 for first turn in session", func(t *testing.T) {
+		mockDB, err := pgxmock.NewPool()
+		require.NoError(t, err)
+		defer mockDB.Close()
+
+		mockDB.ExpectBegin()
+		mockDB.ExpectQuery(`SELECT COUNT\(\*\) FROM request_logs WHERE gw_session_id = \$1`).
+			WithArgs("session-abc").
+			WillReturnRows(pgxmock.NewRows([]string{"count"}).AddRow(1))
+
+		ctx := context.Background()
+		tx, err := mockDB.Begin(ctx)
+		require.NoError(t, err)
+
+		result := lookupTurnNumber(ctx, tx, "session-abc")
+		require.Equal(t, 1, result)
+		require.NoError(t, mockDB.ExpectationsWereMet())
+	})
+
+	t.Run("returns 2 for second turn in session", func(t *testing.T) {
+		mockDB, err := pgxmock.NewPool()
+		require.NoError(t, err)
+		defer mockDB.Close()
+
+		mockDB.ExpectBegin()
+		mockDB.ExpectQuery(`SELECT COUNT\(\*\) FROM request_logs WHERE gw_session_id = \$1`).
+			WithArgs("session-abc").
+			WillReturnRows(pgxmock.NewRows([]string{"count"}).AddRow(2))
+
+		ctx := context.Background()
+		tx, err := mockDB.Begin(ctx)
+		require.NoError(t, err)
+
+		result := lookupTurnNumber(ctx, tx, "session-abc")
+		require.Equal(t, 2, result)
+		require.NoError(t, mockDB.ExpectationsWereMet())
+	})
+
+	t.Run("returns 1 when sessionID is empty", func(t *testing.T) {
+		mockDB, err := pgxmock.NewPool()
+		require.NoError(t, err)
+		defer mockDB.Close()
+
+		ctx := context.Background()
+		// No expectations - should not query
+		result := lookupTurnNumber(ctx, nil, "")
+		require.Equal(t, 1, result)
+		require.NoError(t, mockDB.ExpectationsWereMet())
+	})
+
+	t.Run("returns 1 when query fails", func(t *testing.T) {
+		mockDB, err := pgxmock.NewPool()
+		require.NoError(t, err)
+		defer mockDB.Close()
+
+		mockDB.ExpectBegin()
+		mockDB.ExpectQuery(`SELECT COUNT\(\*\) FROM request_logs WHERE gw_session_id = \$1`).
+			WithArgs("session-xyz").
+			WillReturnError(pgx.ErrNoRows)
+
+		ctx := context.Background()
+		tx, err := mockDB.Begin(ctx)
+		require.NoError(t, err)
+
+		result := lookupTurnNumber(ctx, tx, "session-xyz")
+		require.Equal(t, 1, result)
+		require.NoError(t, mockDB.ExpectationsWereMet())
+	})
+
+	t.Run("returns 1 when count is 0", func(t *testing.T) {
+		mockDB, err := pgxmock.NewPool()
+		require.NoError(t, err)
+		defer mockDB.Close()
+
+		mockDB.ExpectBegin()
+		mockDB.ExpectQuery(`SELECT COUNT\(\*\) FROM request_logs WHERE gw_session_id = \$1`).
+			WithArgs("session-new").
+			WillReturnRows(pgxmock.NewRows([]string{"count"}).AddRow(0))
+
+		ctx := context.Background()
+		tx, err := mockDB.Begin(ctx)
+		require.NoError(t, err)
+
+		result := lookupTurnNumber(ctx, tx, "session-new")
+		require.Equal(t, 1, result)
+		require.NoError(t, mockDB.ExpectationsWereMet())
+	})
+
+	t.Run("handles multi-turn conversation", func(t *testing.T) {
+		testCases := []struct {
+			count      int
+			expectedTurn int
+		}{
+			{1, 1},
+			{2, 2},
+			{3, 3},
+			{5, 5},
+			{10, 10},
+		}
+
+		for _, tc := range testCases {
+			mockDB, err := pgxmock.NewPool()
+			require.NoError(t, err)
+
+			mockDB.ExpectBegin()
+			mockDB.ExpectQuery(`SELECT COUNT\(\*\) FROM request_logs WHERE gw_session_id = \$1`).
+				WithArgs("session-multi").
+				WillReturnRows(pgxmock.NewRows([]string{"count"}).AddRow(tc.count))
+
+			ctx := context.Background()
+			tx, err := mockDB.Begin(ctx)
+			require.NoError(t, err)
+
+			result := lookupTurnNumber(ctx, tx, "session-multi")
+			require.Equal(t, tc.expectedTurn, result)
+			require.NoError(t, mockDB.ExpectationsWereMet())
+			mockDB.Close()
+		}
+	})
+}

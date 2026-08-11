@@ -1243,9 +1243,12 @@ $48,
 		latencyMs := intValue(entry.LatencyMs)
 		success := entry.Success
 
+		// Phase 2 Enhancement: Calculate turn number from session history
+		turnNo := lookupTurnNumber(ctx, tx, sessionID)
+
 		// Build event envelope using outbox builder
 		envelope, err := outbox.BuildRequestCompletedEvent(
-			tenantID, sessionID, 1, // turnNo=1 for Phase 1 (will be enriched later)
+			tenantID, sessionID, turnNo,
 			requestID, provider, model, status,
 			promptTokens, completionTokens, latencyMs,
 			success,
@@ -2462,4 +2465,38 @@ func lookupProviderName(ctx context.Context, tx pgx.Tx, providerID *int) string 
 	}
 
 	return code
+}
+
+// lookupTurnNumber queries request_logs to count the turn number for this session.
+// Returns the next turn number (1-based). If sessionID is empty or query fails, returns 1.
+// Uses the same transaction tx to maintain consistency.
+func lookupTurnNumber(ctx context.Context, tx pgx.Tx, sessionID string) int {
+	if sessionID == "" {
+		return 1
+	}
+
+	// Count existing requests in this session (including the current insert from the same tx)
+	// Since we're in the middle of the INSERT transaction, we need to count INCLUDING
+	// the row we just inserted. The turn_no should be: COUNT(*) for this session.
+	var count int
+	err := tx.QueryRow(ctx, `
+		SELECT COUNT(*) 
+		FROM request_logs 
+		WHERE gw_session_id = $1
+	`, sessionID).Scan(&count)
+
+	if err != nil {
+		// Non-fatal: log and fallback to 1
+		slog.Warn("outbox: turn number lookup failed", "session_id", sessionID, "error", err)
+		return 1
+	}
+
+	// If count is 0, this is the first turn (shouldn't happen since we just inserted)
+	// If count is 1, this is turn 1
+	// If count is 2, this is turn 2, etc.
+	if count == 0 {
+		return 1
+	}
+
+	return count
 }
