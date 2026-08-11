@@ -320,8 +320,8 @@ LEFT JOIN models_canonical mc ON mc.id = mo.canonical_id
 WHERE rl.ts >= NOW() - INTERVAL '5 minutes'
   AND rl.ts < NOW()
   AND rl.credential_id IS NOT NULL
-  AND COALESCE(cr.status, 'active') NOT IN ('disabled')
-  AND COALESCE(cr.lifecycle_status, 'active') != 'suspended'
+  AND COALESCE(cr.status, 'active') = 'active'
+  AND COALESCE(cr.lifecycle_status, 'active') = 'active'
 GROUP BY rl.credential_id, COALESCE(rl.outbound_model, rl.client_model),
          mo.canonical_id, mo.billing_mode
 
