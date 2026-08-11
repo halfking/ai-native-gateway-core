@@ -63,6 +63,7 @@ export default {
     canonicalModel: 'Canonical model',
     selectModelPlaceholder: 'Click to select model…',
     routeNum: 'Route #{n}',
+    routeTier: 'Tier',
     weight: 'Weight',
     minScore: 'Min score',
     saving: 'Saving…',
@@ -73,6 +74,19 @@ export default {
       confirmEnable: 'enable',
       confirmDisable: 'disable',
     },
+  },
+  // Two-layer priority response sequence (primary / secondary).
+  layers: {
+    primary: 'Vorrang',
+    primaryHint: 'Zuerst versucht · Fallback erst, wenn alle Modelle erschöpft sind',
+    secondary: 'Ersatz',
+    secondaryHint: 'In Reihenfolge versucht, nachdem die Vorrang-Schicht erschöpft ist',
+    maxRoutesPerLayer: 'Max {n} pro Schicht · per Drag-and-Drop neu sortieren',
+    dragToReorder: 'Per Drag-and-Drop neu sortieren',
+    emptyPrimary: 'Noch keine Vorrang-Modelle — auf „Vorrang hinzufügen" klicken',
+    emptySecondary: 'Noch keine Ersatz-Modelle — auf „Ersatz hinzufügen" klicken',
+    addPrimary: '+ Vorrang hinzufügen',
+    addSecondary: '+ Ersatz hinzufügen',
   },
   routes: {
     title: 'Model type routes',
@@ -102,7 +116,7 @@ export default {
     syncFromACC: 'Sync from ACC',
     syncFromACCTooltip: 'Pull work type config from ACC',
     create: '+ Create',
-    hint: 'Click row to enter detail, configure basic attributes and model type routes (max 3).',
+    hint: 'Click row to enter detail, configure basic attributes and primary/secondary model layers.',
     tableHeaders: {
       index: '#',
       key: 'Key',
@@ -116,6 +130,8 @@ export default {
     notConfigured: 'Not configured',
     rowEnabled: 'Enabled',
     rowDisabled: 'Disabled',
+    // Concise summary chip in the list view, e.g. "3 primary · 2 secondary".
+    routesSummary: '{primary} Vorrang · {secondary} Ersatz',
   },
   modal: {
     title: 'Create work type',
