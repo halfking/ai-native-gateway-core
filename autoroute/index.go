@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"sort"
 	"strings"
 	"sync"
@@ -319,7 +320,7 @@ func percentile(sorted []float64, p float64) float64 {
 // Implementation note: uses a single SQL query joining credentials,
 // models_canonical, and credential_model_index. Returns a flat list
 // of Candidate structs. Tags are parsed from JSONB.
-func (idx *Index) Refresh(ctx context.Context) error {
+func (idx *Index) Refresh(ctx context.Context) (err error) {
 	// 2026-07-27 concurrency fix: read idx.pool under RLock. SetPool writes
 	// it under the write lock; reading it unlocked here was an unsynchronised
 	// pointer read. Snapshot the pointer, release the lock, then do the
@@ -327,6 +328,16 @@ func (idx *Index) Refresh(ctx context.Context) error {
 	idx.mu.RLock()
 	pool := idx.pool
 	idx.mu.RUnlock()
+
+	// 2026-08-11: observability — record refresh outcome (entries, drift,
+	// error) for every attempt via deferred closure so all return paths
+	// publish metrics without duplication.
+	entries := 0
+	viewRoutable := -1
+	defer func() {
+		recordRefreshOutcome(entries, viewRoutable, err)
+	}()
+
 	if pool == nil {
 		return fmt.Errorf("autoroute index: PG pool not set")
 	}
@@ -362,6 +373,36 @@ func (idx *Index) Refresh(ctx context.Context) error {
 	idx.byCanonical = byCanon
 	idx.lastRefresh = time.Now()
 	idx.mu.Unlock()
+	entries = len(out)
+
+	// 2026-08-11: best-effort drift probe against the authoritative
+	// v_routable_credential_models view. Catches rollup gaps, filter
+	// regressions, and disabled-credential leaks that silently degrade
+	// routing. Short timeout so a slow view COUNT can't eat the refresh
+	// budget; any probe error skips drift publishing (viewRoutable stays -1).
+	driftCtx, driftCancel := context.WithTimeout(ctx, 2*time.Second)
+	if qerr := pool.QueryRow(driftCtx,
+		`SELECT COUNT(*) FROM v_routable_credential_models WHERE is_routable`,
+	).Scan(&viewRoutable); qerr != nil {
+		viewRoutable = -1
+	}
+	driftCancel()
+
+	if viewRoutable >= 0 {
+		drift := entries - viewRoutable
+		absDrift := drift
+		if absDrift < 0 {
+			absDrift = -absDrift
+		}
+		// Threshold >10 to avoid noise on small per-bucket fluctuations.
+		if absDrift > 10 {
+			slog.Warn("autoroute index drift exceeds threshold",
+				"entries", entries,
+				"view_routable", viewRoutable,
+				"drift", drift,
+			)
+		}
+	}
 	return nil
 }
 
@@ -448,6 +489,7 @@ WHERE COALESCE(cr.lifecycle_status, 'active') = 'active'
   AND COALESCE(cr.manual_disabled, false) = false
   AND COALESCE(cr.availability_state, 'ready') = 'ready'
   AND COALESCE(cr.quota_state, 'ok') <> ALL (ARRAY['permanently_exhausted','balance_exhausted','periodic_exhausted'])
+  AND COALESCE(cr.health_status, 'unknown') IN ('healthy', 'unknown')
   AND COALESCE(p.enabled, true) = true
   AND COALESCE(p.manual_disabled, false) = false
 ORDER BY cmi.canonical_id, cmi.score_smart DESC

@@ -347,6 +347,7 @@ func filterCurrentlyAvailable(ctx context.Context, pool *pgxpool.Pool, all []Can
 		  AND COALESCE(c.manual_disabled, false) = false
 		  AND COALESCE(c.availability_state, 'ready') = 'ready'
 		  AND COALESCE(c.quota_state, 'ok') <> ALL (ARRAY['permanently_exhausted','balance_exhausted','periodic_exhausted'])
+		  AND COALESCE(c.health_status, 'unknown') IN ('healthy', 'unknown')
 		  -- provider-level availability
 		  AND COALESCE(p.enabled, true) = true
 		  AND COALESCE(p.manual_disabled, false) = false
