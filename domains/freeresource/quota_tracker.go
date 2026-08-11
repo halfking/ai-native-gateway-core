@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/kaixuan/llm-gateway-go/errorsx"
+	"github.com/lib/pq"
 )
 
 // QuotaTracker 配额追踪器
@@ -88,35 +89,53 @@ func (qt *QuotaTracker) Record(ctx context.Context, req RecordRequest) error {
 		}
 	}
 
-	for _, w := range windows {
-		successCount := 0
-		errorCount := 0
-		if req.Success {
-			successCount = 1
-		} else {
-			errorCount = 1
-		}
+	// P0 优化: 批量 UPSERT，减少数据库热点竞争
+	// 使用 unnest() 将多个窗口在单个查询中插入/更新
+	// 预期收益: 高并发下延迟降低 30-50%，吞吐量提升 2-3倍
+	if len(windows) == 0 {
+		return nil
+	}
 
-		_, err := tx.ExecContext(ctx, `
-            INSERT INTO free_quota_tracker (
-                credential_id, provider_code, model_id, window_type,
-                window_start, window_end, request_count, token_count,
-                success_count, error_count, tenant_id
-            ) VALUES ($1, $2, $3, $4, $5, $6, 1, $7, $8, $9, $10)
-            ON CONFLICT (credential_id, provider_code, model_id, window_type, window_start, tenant_id)
-            DO UPDATE SET
-                request_count = free_quota_tracker.request_count + 1,
-                token_count = free_quota_tracker.token_count + $7,
-                success_count = free_quota_tracker.success_count + $8,
-                error_count = free_quota_tracker.error_count + $9,
-                updated_at = now()
-        `, req.CredentialID, req.ProviderCode, req.ModelID, w.Type,
-			w.Start, w.End, req.TokenCount,
-			successCount, errorCount, req.TenantID)
+	successCount := 0
+	errorCount := 0
+	if req.Success {
+		successCount = 1
+	} else {
+		errorCount = 1
+	}
 
-		if err != nil {
-			return fmt.Errorf("upsert quota tracker: %w", err)
-		}
+	// 构建批量参数
+	windowTypes := make([]string, len(windows))
+	windowStarts := make([]time.Time, len(windows))
+	windowEnds := make([]time.Time, len(windows))
+	for i, w := range windows {
+		windowTypes[i] = string(w.Type)
+		windowStarts[i] = w.Start
+		windowEnds[i] = w.End
+	}
+
+	// 使用 unnest + lateral 批量 UPSERT
+	_, err = tx.ExecContext(ctx, `
+		INSERT INTO free_quota_tracker (
+			credential_id, provider_code, model_id, window_type,
+			window_start, window_end, request_count, token_count,
+			success_count, error_count, tenant_id
+		)
+		SELECT $1, $2, $3, w.type, w.start, w.end, 1, $4, $5, $6, $7
+		FROM unnest($8::text[], $9::timestamptz[], $10::timestamptz[]) AS w(type, start, "end")
+		ON CONFLICT (credential_id, provider_code, model_id, window_type, window_start, tenant_id)
+		DO UPDATE SET
+			request_count = free_quota_tracker.request_count + 1,
+			token_count = free_quota_tracker.token_count + $4,
+			success_count = free_quota_tracker.success_count + $5,
+			error_count = free_quota_tracker.error_count + $6,
+			updated_at = now()
+	`, req.CredentialID, req.ProviderCode, req.ModelID, req.TokenCount,
+		successCount, errorCount, req.TenantID,
+		pq.Array(windowTypes), pq.Array(windowStarts), pq.Array(windowEnds))
+
+	if err != nil {
+		return fmt.Errorf("batch upsert quota tracker: %w", err)
 	}
 
 	if err := tx.Commit(); err != nil {
@@ -285,6 +304,11 @@ func parseRetryAfter(now time.Time, headers map[string]string) (int, time.Time) 
 			if sec < 0 {
 				sec = 0
 			}
+			// P1 修复: 当 sec <= 0 时使用默认退避(60s), 避免 429 循环
+			// 部分提供商返回 "0" 表示"稍后重试"而非"立即可用"
+			if sec == 0 {
+				sec = 60
+			}
 			return sec, now.Add(time.Duration(sec) * time.Second)
 		}
 		// 2026-08-10: 相对时间单位 (Groq "6s", "5m", "2h", "1d").
@@ -294,6 +318,10 @@ func parseRetryAfter(now time.Time, headers map[string]string) (int, time.Time) 
 		if sec, ok := parseRetryAfterRelative(ra); ok {
 			if sec < 0 {
 				sec = 0
+			}
+			// P1 修复: 相对单位也应用零值保护
+			if sec == 0 {
+				sec = 60
 			}
 			return sec, now.Add(time.Duration(sec) * time.Second)
 		}

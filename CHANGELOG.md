@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased] - 2026-08-09
 
+### Fixed
+
+- **OmniFree Round 5 免费模型 token 池性能与稳定性审计修复 (2026-08-12)**: `domains/freeresource/quota_tracker.go`、`sql/migrations/078-omnifree-perf-indexes.sql`、`docs/omnifree/AUDIT-ROUND5-REPORT.md` — `QuotaTracker.Record` 从逐窗口循环 UPSERT 改为 `unnest()` 批量 UPSERT，降低免费 quota 计量热路径 DB 往返与行锁竞争；`Retry-After: 0` / `0s` 改为 60s 默认退避，避免上游 429 后立即重试形成循环；新增 078 性能索引迁移与对称 down 脚本，覆盖 Preflight、cleanup、catalog、auto combo template 关键查询。补充 `TestParseRetryAfter_RetryAfterZeroUsesDefaultBackoff` 回归测试，并新增 Round 5 审计报告与状态文档。
+
 ### Documentation
 
 - **修订0811任务方案审计 (2026-08-11)**: 审计72小时修订、URSM v2、OmniRoute融合和 ai-session-manager ownership 方案，撤销无压测证据的性能/覆盖率结论，纠正 Git 统计口径，并将下一阶段收敛为跨仓事件契约、请求关联链、URSM v2 shadow 门禁和可复现性能基线。详见 `docs/修订0811/05-方案审计修订说明.md`、`docs/修订0811/06-下一阶段实施计划.md` 和 `docs/changelogs/2026-08-11-revision-plan-audit.md`。

@@ -1,6 +1,7 @@
 package freeresource
 
 import (
+	"os"
 	"testing"
 	"time"
 )
@@ -131,6 +132,25 @@ func TestParseRetryAfter_RetryAfterSeconds(t *testing.T) {
 	}
 	if !reset.Equal(now.Add(30 * time.Second)) {
 		t.Errorf("expected reset=now+30s, got %v", reset)
+	}
+}
+
+func TestParseRetryAfter_RetryAfterZeroUsesDefaultBackoff(t *testing.T) {
+	now := time.Unix(1700000000, 0).UTC()
+	retry, reset := parseRetryAfter(now, map[string]string{"Retry-After": "0"})
+	if retry != 60 {
+		t.Errorf("Retry-After 0 should use 60s default backoff, got %d", retry)
+	}
+	if !reset.Equal(now.Add(60 * time.Second)) {
+		t.Errorf("expected reset=now+60s, got %v", reset)
+	}
+
+	retryRel, resetRel := parseRetryAfter(now, map[string]string{"Retry-After": "0s"})
+	if retryRel != 60 {
+		t.Errorf("Retry-After 0s should use 60s default backoff, got %d", retryRel)
+	}
+	if !resetRel.Equal(now.Add(60 * time.Second)) {
+		t.Errorf("expected relative reset=now+60s, got %v", resetRel)
 	}
 }
 
@@ -318,39 +338,35 @@ func TestLookupHeader_CaseInsensitive(t *testing.T) {
 const httpTimeFormat = "Mon, 02 Jan 2006 15:04:05 GMT"
 
 func TestQuotaTracker_Record(t *testing.T) {
-	// 这是集成测试，需要真实数据库
-	// 在 CI 环境中，应使用 Docker PostgreSQL 容器
+	// 集成测试, 需要真实 PostgreSQL. live-DB 路径已由 rls_helper_test.go
+	// (OMNIFREE_TEST_DB_URL gated) 覆盖 Record/CorrectFromHeaders/Preflight;
+	// 这里保留 short-mode skip 占位, 待 Round 6 接入 CI postgres 容器后补齐.
 	if testing.Short() {
 		t.Skip("skipping integration test")
 	}
-
-	// TODO: 实现完整的集成测试
-	// 1. 创建测试数据库连接
-	// 2. 插入测试凭据
-	// 3. 调用 Record
-	// 4. 验证 UPSERT 结果
+	if os.Getenv("OMNIFREE_TEST_DB_URL") == "" {
+		t.Skip("OMNIFREE_TEST_DB_URL not set; skipping live-DB integration test")
+	}
 }
 
 func TestQuotaTracker_Preflight(t *testing.T) {
+	// 同上: live-DB 覆盖见 rls_helper_test.go TestPreflight_RLSIsolation.
 	if testing.Short() {
 		t.Skip("skipping integration test")
 	}
-
-	// TODO: 实现完整的集成测试
-	// 1. 准备测试数据
-	// 2. 测试无记录场景（应返回 true）
-	// 3. 测试配额充足场景（应返回 true）
-	// 4. 测试配额耗尽场景（应返回 false）
-	// 5. 测试过期自动重置场景
+	if os.Getenv("OMNIFREE_TEST_DB_URL") == "" {
+		t.Skip("OMNIFREE_TEST_DB_URL not set; skipping live-DB integration test")
+	}
 }
 
 func TestQuotaTracker_CorrectFromHeaders(t *testing.T) {
+	// 同上: live-DB 覆盖见 rls_helper_test.go TestCorrectFromHeaders_SetsExhausted.
 	if testing.Short() {
 		t.Skip("skipping integration test")
 	}
-
-	// TODO: 实现完整的集成测试
-	// 测试各种 429 响应头组合
+	if os.Getenv("OMNIFREE_TEST_DB_URL") == "" {
+		t.Skip("OMNIFREE_TEST_DB_URL not set; skipping live-DB integration test")
+	}
 }
 
 // 单元测试：验证窗口边界计算
