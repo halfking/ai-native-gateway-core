@@ -541,14 +541,20 @@ func (vf *VirtualFactory) preflightQuota(
 	return out, quotaSnap
 }
 
-// freeTierDefaultLimit 返回 Preflight 的 fallback 上限. provider 自身的
-// day-1 配额未知时, 用 1000 req/day 作为兜底. 真实生产中,
-// free_resource_catalog.daily_tokens 已经存了日配额, 应由 catalog loader
-// 注入到 candidate metadata 中; 这里先用常量兜底, 后续可通过 provider 扩
-// 展 metadata 字段传入.
+// freeTierDefaultLimit 返回 Preflight 的 fallback 上限 (RPD, requests/day).
+//
+// 设计说明 (2026-08-12 round 5 二审澄清):
+//   - 运行时配额强制基于 request_count (RPD), 而非 token_count. token 用量
+//     只在响应完全消费后才能解析 (尤其流式), 早于 Execute 返回的 Preflight
+//     无法获取, 故采用 RPD 作为强制维度.
+//   - free_resource_catalog.daily_tokens / monthly_tokens 仅用于去重聚合
+//     与 ROI 估算 (ComputeDedupedTotal), 不参与运行时 Preflight 比较.
+//   - recordOmniFreeQuota 因此传 TokenCount=0; free_quota_tracker.token_count
+//     列保留但当前为信息性, 留作未来 token-based 强制的扩展位.
+//   - 1000 RPD 是大多数免费层提供商的保守默认 (OpenRouter :free boost 后
+//     ≈1000, Groq dev tier ≈1000); 真实值由 CorrectFromHeaders 从 429
+//     响应头 (X-RateLimit-Limit) 校准后覆盖 corrected_limit.
 func freeTierDefaultLimit(_ provider.Candidate) int64 {
-	// 1000 RPD 是大多数免费层提供商的保守默认值 (OpenRouter :free = 50 RPD,
-	// 但加上 boost 后可达 1000 RPD; Groq dev tier ≈ 1000 RPD).
 	return 1000
 }
 

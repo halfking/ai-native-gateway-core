@@ -387,7 +387,7 @@ func (h *ChatHandler) recordOmniFreeQuota(
 			ProviderCode: captured.CatalogCode,
 			ModelID:      captured.StdName,
 			WindowTypes:  windowTypes,
-			TokenCount:   0, // token 用量在 telemetry/audit 阶段另有统计, 避免重复.
+			TokenCount:   0, // 运行时强制基于 RPD (request_count), token 用量仅在响应消费后可知, 此处取不到; 见 virtual_factory.freeTierDefaultLimit 设计说明
 			Success:      success,
 			TenantID:     tenantID,
 		},
