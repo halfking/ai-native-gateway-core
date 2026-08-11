@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/pashagolub/pgxmock/v4"
 	"github.com/stretchr/testify/require"
 )
@@ -641,6 +642,92 @@ func TestRequestLogEntry_ApplyOriginFromContext(t *testing.T) {
 		e.ApplyOriginFromContext(ctx)
 		if e.OriginStage == nil || *e.OriginStage != "node_probe" {
 			t.Fatalf("OriginStage should keep pre-set value, got %v", e.OriginStage)
+		}
+	})
+}
+
+// TestLookupProviderName verifies the provider name resolution logic.
+func TestLookupProviderName(t *testing.T) {
+	t.Run("returns provider code when found", func(t *testing.T) {
+		mockDB, err := pgxmock.NewPool()
+		require.NoError(t, err)
+		defer mockDB.Close()
+
+		providerID := 42
+		mockDB.ExpectBegin()
+		mockDB.ExpectQuery(`SELECT code FROM providers WHERE id = \$1`).
+			WithArgs(42).
+			WillReturnRows(pgxmock.NewRows([]string{"code"}).AddRow("anthropic"))
+
+		ctx := context.Background()
+		tx, err := mockDB.Begin(ctx)
+		require.NoError(t, err)
+
+		result := lookupProviderName(ctx, tx, &providerID)
+		require.Equal(t, "anthropic", result)
+		require.NoError(t, mockDB.ExpectationsWereMet())
+	})
+
+	t.Run("returns unknown when providerID is nil", func(t *testing.T) {
+		mockDB, err := pgxmock.NewPool()
+		require.NoError(t, err)
+		defer mockDB.Close()
+
+		ctx := context.Background()
+		// No expectations needed - should not query
+		result := lookupProviderName(ctx, nil, nil)
+		require.Equal(t, "unknown", result)
+		require.NoError(t, mockDB.ExpectationsWereMet())
+	})
+
+	t.Run("returns unknown when query fails", func(t *testing.T) {
+		mockDB, err := pgxmock.NewPool()
+		require.NoError(t, err)
+		defer mockDB.Close()
+
+		providerID := 999
+		mockDB.ExpectBegin()
+		mockDB.ExpectQuery(`SELECT code FROM providers WHERE id = \$1`).
+			WithArgs(999).
+			WillReturnError(pgx.ErrNoRows)
+
+		ctx := context.Background()
+		tx, err := mockDB.Begin(ctx)
+		require.NoError(t, err)
+
+		result := lookupProviderName(ctx, tx, &providerID)
+		require.Equal(t, "unknown", result)
+		require.NoError(t, mockDB.ExpectationsWereMet())
+	})
+
+	t.Run("handles multiple provider types", func(t *testing.T) {
+		testCases := []struct {
+			providerID int
+			code       string
+		}{
+			{1, "openai"},
+			{2, "anthropic"},
+			{3, "google"},
+			{4, "alibaba-dashscope"},
+		}
+
+		for _, tc := range testCases {
+			mockDB, err := pgxmock.NewPool()
+			require.NoError(t, err)
+
+			mockDB.ExpectBegin()
+			mockDB.ExpectQuery(`SELECT code FROM providers WHERE id = \$1`).
+				WithArgs(tc.providerID).
+				WillReturnRows(pgxmock.NewRows([]string{"code"}).AddRow(tc.code))
+
+			ctx := context.Background()
+			tx, err := mockDB.Begin(ctx)
+			require.NoError(t, err)
+
+			result := lookupProviderName(ctx, tx, &tc.providerID)
+			require.Equal(t, tc.code, result)
+			require.NoError(t, mockDB.ExpectationsWereMet())
+			mockDB.Close()
 		}
 	})
 }

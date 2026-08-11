@@ -1230,9 +1230,8 @@ $48,
 		if tenantID == "" {
 			tenantID = "default"
 		}
-		// Phase 1: Use "unknown" for provider since ProviderID is *int and we need string
-		// TODO: Resolve provider name from ProviderID in Phase 2
-		provider := "unknown"
+		// Phase 2 Enhancement: Resolve provider name from ProviderID
+		provider := lookupProviderName(ctx, tx, entry.ProviderID)
 		model := stringValue(entry.OutboundModel)
 		if model == "" {
 			model = stringValue(entry.ClientModel)
@@ -2445,3 +2444,22 @@ func (e *RequestLogEntry) ApplyOriginFromContext(ctx context.Context) {
 // now reads with plain string keys so values stored by middleware/origin_mw.go
 // (which uses string-typed context keys) are reachable.
 type originCtxKey string
+
+// lookupProviderName queries the providers table to resolve provider_id to code.
+// Returns "unknown" if providerID is nil or query fails (non-fatal fallback).
+// Uses the same transaction tx to avoid additional connections.
+func lookupProviderName(ctx context.Context, tx pgx.Tx, providerID *int) string {
+	if providerID == nil {
+		return "unknown"
+	}
+
+	var code string
+	err := tx.QueryRow(ctx, `SELECT code FROM providers WHERE id = $1`, *providerID).Scan(&code)
+	if err != nil {
+		// Non-fatal: log and fallback to "unknown"
+		slog.Warn("outbox: provider lookup failed", "provider_id", *providerID, "error", err)
+		return "unknown"
+	}
+
+	return code
+}
