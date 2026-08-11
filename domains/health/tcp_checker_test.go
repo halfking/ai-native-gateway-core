@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"strings"
 	"testing"
 	"time"
 
@@ -44,19 +45,39 @@ func TestTCPChecker_Success(t *testing.T) {
 	t.Logf("✓ TCP连接成功，延迟: %v", result.Latency)
 }
 
-// TestTCPChecker_Timeout tests TCP connection timeout
+// withDial replaces the package dialTCP for the duration of t and restores it
+// on cleanup. Tests use this to avoid depending on the host network (the
+// default documentation-IP / invalid-hostname tests are flaky behind proxies).
+func withDial(t *testing.T, fn func(ctx context.Context, network, addr string, timeout time.Duration) (net.Conn, error)) {
+	t.Helper()
+	old := dialTCP
+	dialTCP = fn
+	t.Cleanup(func() { dialTCP = old })
+}
+
+// TestTCPChecker_Timeout tests TCP connection timeout using a deterministic
+// fake dial that blocks until ctx/timeout fires.
 func TestTCPChecker_Timeout(t *testing.T) {
-	// Use a non-routable IP to trigger timeout
-	// 198.51.100.1 is a documentation IP that should not respond
+	withDial(t, func(ctx context.Context, _, _ string, timeout time.Duration) (net.Conn, error) {
+		// Honour the sooner of the dial timeout and the caller's ctx.
+		timer := time.NewTimer(timeout)
+		defer timer.Stop()
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-timer.C:
+			return nil, fmt.Errorf("i/o timeout")
+		}
+	})
 	checker := NewTCPChecker(500 * time.Millisecond)
 
 	start := time.Now()
-	result := checker.Check(context.Background(), "198.51.100.1:9999")
+	result := checker.Check(context.Background(), "203.0.113.1:9999")
 	elapsed := time.Since(start)
 
 	assert.False(t, result.Success, "TCP check should fail on timeout")
-	assert.Error(t, result.Error)
-	assert.Greater(t, result.Latency, 400*time.Millisecond, "Should wait close to timeout")
+	require.Error(t, result.Error)
+	assert.GreaterOrEqual(t, result.Latency, 400*time.Millisecond, "Should wait close to timeout")
 	assert.Less(t, elapsed, 1*time.Second, "Should not exceed timeout significantly")
 
 	t.Logf("✓ TCP超时检测正常，延迟: %v, 错误: %v", result.Latency, result.Error)
@@ -64,49 +85,56 @@ func TestTCPChecker_Timeout(t *testing.T) {
 
 // TestTCPChecker_ConnectionRefused tests connection refused scenario
 func TestTCPChecker_ConnectionRefused(t *testing.T) {
-	// Connect to a port that's not listening
+	withDial(t, func(ctx context.Context, _, addr string, _ time.Duration) (net.Conn, error) {
+		return nil, fmt.Errorf("dial tcp %s: connect: connection refused", addr)
+	})
 	checker := NewTCPChecker(1 * time.Second)
 	result := checker.Check(context.Background(), "127.0.0.1:9")
 
 	assert.False(t, result.Success, "TCP check should fail on connection refused")
-	assert.Error(t, result.Error)
+	require.Error(t, result.Error)
 	assert.Contains(t, result.Error.Error(), "connection refused", "Should report connection refused")
 	assert.Less(t, result.Latency, 100*time.Millisecond, "Should fail quickly")
 
 	t.Logf("✓ TCP连接拒绝检测正常，延迟: %v", result.Latency)
 }
 
-// TestTCPChecker_InvalidAddress tests invalid address format
+// TestTCPChecker_InvalidAddress tests invalid address / unresolvable host.
 func TestTCPChecker_InvalidAddress(t *testing.T) {
+	withDial(t, func(ctx context.Context, _, addr string, _ time.Duration) (net.Conn, error) {
+		return nil, fmt.Errorf("dial tcp: lookup %s: no such host", strings.Split(addr, ":")[0])
+	})
 	checker := NewTCPChecker(1 * time.Second)
-
-	// Test invalid hostname
 	result := checker.Check(context.Background(), "invalid-host-that-does-not-exist-12345:443")
 
 	assert.False(t, result.Success, "TCP check should fail on invalid address")
-	assert.Error(t, result.Error)
+	require.Error(t, result.Error)
+	assert.Contains(t, result.Error.Error(), "no such host")
 
 	t.Logf("✓ 无效地址检测正常，错误: %v", result.Error)
 }
 
 // TestTCPChecker_ContextCancellation tests context cancellation
 func TestTCPChecker_ContextCancellation(t *testing.T) {
+	withDial(t, func(ctx context.Context, _, _ string, _ time.Duration) (net.Conn, error) {
+		<-ctx.Done()
+		return nil, ctx.Err()
+	})
 	checker := NewTCPChecker(5 * time.Second)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
 	defer cancel()
 
-	// Use non-routable IP to ensure it doesn't complete quickly
-	result := checker.Check(ctx, "198.51.100.1:9999")
+	result := checker.Check(ctx, "203.0.113.1:9999")
 
 	assert.False(t, result.Success)
-	assert.Error(t, result.Error)
-	// Context cancellation may show as "context deadline exceeded" or "i/o timeout"
+	require.Error(t, result.Error)
+	// Context cancellation may show as "context deadline exceeded" or "i/o timeout".
 	errStr := result.Error.Error()
-	hasDeadline := assert.ObjectsAreEqual(errStr, "context deadline exceeded") ||
-		(len(errStr) > 0 && (errStr == "context deadline exceeded" || errStr == "i/o timeout" ||
-			errStr != "" && (errStr[len(errStr)-17:] == "i/o timeout" || len(errStr) > 25)))
-	_ = hasDeadline // Context timeout detected in any form
+	hasDeadline := strings.Contains(errStr, "context deadline exceeded") ||
+		strings.Contains(errStr, "i/o timeout") ||
+		strings.Contains(errStr, "operation was canceled")
+	assert.True(t, hasDeadline, "expected cancellation/timeout error, got %q", errStr)
 	assert.NotEmpty(t, errStr, "Should have error message")
 
 	t.Logf("✓ Context取消检测正常")
@@ -142,14 +170,18 @@ func TestTCPChecker_WithRetry(t *testing.T) {
 
 // TestTCPChecker_RetryExhaustion tests retry exhaustion
 func TestTCPChecker_RetryExhaustion(t *testing.T) {
+	withDial(t, func(ctx context.Context, _, _ string, timeout time.Duration) (net.Conn, error) {
+		<-time.After(timeout)
+		return nil, fmt.Errorf("i/o timeout")
+	})
 	checker := NewTCPChecker(100 * time.Millisecond)
 
 	start := time.Now()
-	result := checker.CheckWithRetry(context.Background(), "198.51.100.1:9999", 2)
+	result := checker.CheckWithRetry(context.Background(), "203.0.113.1:9999", 2)
 	elapsed := time.Since(start)
 
 	assert.False(t, result.Success, "Should fail after retries")
-	assert.Error(t, result.Error)
+	require.Error(t, result.Error)
 
 	// Should take at least: 3 attempts × 100ms timeout + 2 delays
 	assert.Greater(t, elapsed, 300*time.Millisecond, "Should attempt multiple times")
@@ -188,12 +220,16 @@ func TestPing_ConvenienceFunction(t *testing.T) {
 
 // TestTCPChecker_DefaultTimeout tests default timeout value
 func TestTCPChecker_DefaultTimeout(t *testing.T) {
+	withDial(t, func(ctx context.Context, _, _ string, timeout time.Duration) (net.Conn, error) {
+		<-time.After(timeout)
+		return nil, fmt.Errorf("i/o timeout")
+	})
 	checker := NewTCPChecker(0) // Should use default 1s
 
 	// Verify it uses a reasonable timeout by checking it doesn't hang forever
 	done := make(chan struct{})
 	go func() {
-		checker.Check(context.Background(), "198.51.100.1:9999")
+		checker.Check(context.Background(), "203.0.113.1:9999")
 		close(done)
 	}()
 
