@@ -19,12 +19,21 @@ async function req<T>(method: string, path: string, body?: unknown): Promise<T> 
   return resp.json() as Promise<T>
 }
 
+// work_type_model_route.tier is a two-layer (primary/secondary) priority
+// ordering for the response model sequence. `fallback` is reserved for
+// future per-tier tertiary routes; we still accept it on the wire for
+// forward-compat with the index tier system but the UI only edits the
+// two primary layers.
+export type ModelRouteTier = 'primary' | 'secondary' | 'fallback'
+
 export interface ModelRoute {
   id?: number
   canonical_name: string
   weight: number
   min_score: number
   enabled: boolean
+  tier: ModelRouteTier
+  task_quality_score: number
 }
 
 export interface WorkTypeConfig {
@@ -41,6 +50,49 @@ export interface WorkTypeConfig {
   synced_from_acc_at?: string | null
   updated_at: string
   model_routes?: ModelRoute[]
+}
+
+/**
+ * Default values used when the backend hands us rows that pre-date the
+ * tier column (e.g. before 046_task_route_tiers.sql). Newer rows always
+ * carry an explicit tier.
+ */
+export function normalizeRouteTier(rt: Partial<ModelRoute>): ModelRouteTier {
+  const t = rt.tier
+  if (t === 'primary' || t === 'secondary' || t === 'fallback') return t
+  return 'secondary'
+}
+
+/**
+ * Bucket model routes by tier for the two-layer UI. Routes that have
+ * an empty canonical_name are dropped (frontend can have a half-filled
+ * draft row, but it should never be persisted). Unknown tiers fall into
+ * the `secondary` bucket so legacy data still renders.
+ */
+export function groupRoutesByLayer(
+  routes: ModelRoute[] | undefined | null,
+): Record<ModelRouteTier, ModelRoute[]> {
+  const groups: Record<ModelRouteTier, ModelRoute[]> = {
+    primary: [],
+    secondary: [],
+    fallback: [],
+  }
+  for (const rt of routes ?? []) {
+    if (!rt.canonical_name || !rt.canonical_name.trim()) continue
+    const tier = normalizeRouteTier(rt)
+    groups[tier].push({
+      ...rt,
+      tier,
+      task_quality_score: typeof rt.task_quality_score === 'number' ? rt.task_quality_score : 0,
+      weight: typeof rt.weight === 'number' ? rt.weight : 1,
+    })
+  }
+  // Within a tier, sort by weight DESC so the backend's ORDER BY weight DESC
+  // matches what the user sees on screen after Save.
+  for (const tier of Object.keys(groups) as ModelRouteTier[]) {
+    groups[tier].sort((a, b) => b.weight - a.weight)
+  }
+  return groups
 }
 
 export interface WorkTypeStatEntry {
