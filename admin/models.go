@@ -501,13 +501,20 @@ func (h *Handler) getModel(w http.ResponseWriter, r *http.Request, id int) {
 
 func (h *Handler) updateModel(w http.ResponseWriter, r *http.Request, id int) {
 	var req struct {
-		DisplayName   *string          `json:"display_name"`
-		Status        *string          `json:"status"`
-		ReleasedAt    *time.Time       `json:"released_at"`
-		Strengths     *[]string        `json:"strengths"`
-		VersionRank   *int             `json:"version_rank"`
-		CostTier      *string          `json:"cost_tier"`
-		ReasoningCaps *json.RawMessage `json:"reasoning_caps"` // 2026-08-11: reasoncap tier-1 热更新
+		DisplayName *string    `json:"display_name"`
+		Status      *string    `json:"status"`
+		ReleasedAt  *time.Time `json:"released_at"`
+		Strengths   *[]string  `json:"strengths"`
+		VersionRank *int       `json:"version_rank"`
+		CostTier    *string    `json:"cost_tier"`
+		// ReasoningCaps uses a value json.RawMessage (not a pointer) so the
+		// handler can distinguish three client intents: field absent
+		// (len==0 → leave the column untouched) vs. explicit JSON null
+		// (the bytes "null" → clear the override, fall back to the
+		// name-pattern table) vs. an object (→ set the override). With a
+		// *json.RawMessage, both "absent" and "null" decode to a nil pointer
+		// and the clear branch below is unreachable.
+		ReasoningCaps json.RawMessage `json:"reasoning_caps"` // 2026-08-11: reasoncap tier-1 热更新
 	}
 	if err := readJSON(r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid body")
@@ -544,8 +551,8 @@ func (h *Handler) updateModel(w http.ResponseWriter, r *http.Request, id int) {
 	// 接受与 internal/reasoncap.Caps 相同的 JSONB 结构（不含 Source 字段）。
 	// 传 null 清除覆盖，回退到名称模式表（tier-2）。
 	// 示例：{"supported":true,"dialect":"anthropic","budget_min":1024,"budget_max":32000,"can_disable":true,"adaptive":true}
-	if req.ReasoningCaps != nil {
-		raw := *req.ReasoningCaps
+	if len(req.ReasoningCaps) > 0 {
+		raw := req.ReasoningCaps
 		if string(raw) == "null" {
 			//nolint:errcheck
 			h.db.Exec(ctx, `UPDATE models_canonical SET reasoning_caps = NULL WHERE id = $1`, id)

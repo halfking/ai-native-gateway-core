@@ -695,6 +695,7 @@ func buildGeminiGenerationConfig(req *InternalRequest) map[string]any {
 	if req.Reasoning != nil {
 		var budgetTokens *int
 		includeThoughts := true
+		disableThinking := false
 
 		// Explicit budget takes priority.
 		if req.Reasoning.BudgetTokens != nil {
@@ -704,11 +705,17 @@ func buildGeminiGenerationConfig(req *InternalRequest) map[string]any {
 			b, ok := reasonnormEffortToBudget(req.Reasoning.Effort)
 			if ok && b > 0 {
 				budgetTokens = &b
+			} else if ok && b == 0 {
+				// effort=="none" maps to budget 0. On Gemini 2.5+ the
+				// absence of thinkingConfig leaves the model at its default
+				// (dynamic thinking ENABLED), so "none" must explicitly emit
+				// the disable sentinel (thinkingBudget=0) below rather than
+				// silently omitting the block.
+				disableThinking = true
 			}
-			// effort=="none" → b==0 → no thinkingConfig (disable thinking)
 		}
 
-		if req.Reasoning.Type == "disabled" {
+		if req.Reasoning.Type == "disabled" || disableThinking {
 			// Gemini sentinel: thinkingBudget=0 means disabled.
 			zero := 0
 			gc["thinkingConfig"] = map[string]any{
@@ -719,13 +726,9 @@ func buildGeminiGenerationConfig(req *InternalRequest) map[string]any {
 			tc := map[string]any{
 				"thinkingBudget": *budgetTokens,
 			}
-			if req.Reasoning.Type == "auto" || req.Reasoning.Effort == "" {
-				// Let Gemini decide whether to include thoughts output.
-				// includeThoughts defaults to true; only override when false.
-				tc["includeThoughts"] = includeThoughts
-			} else {
-				tc["includeThoughts"] = includeThoughts
-			}
+			// includeThoughts is always true here; the flag exists for
+			// future per-dialect overrides.
+			tc["includeThoughts"] = includeThoughts
 			gc["thinkingConfig"] = tc
 			hasAny = true
 		}
