@@ -445,6 +445,11 @@ LEFT JOIN credential_model_bindings cmb
 LEFT JOIN models_canonical mc ON mc.id = cmi.canonical_id
 WHERE COALESCE(cr.lifecycle_status, 'active') = 'active'
   AND COALESCE(cr.status, 'active') = 'active'
+  AND COALESCE(cr.manual_disabled, false) = false
+  AND COALESCE(cr.availability_state, 'ready') = 'ready'
+  AND COALESCE(cr.quota_state, 'ok') <> ALL (ARRAY['permanently_exhausted','balance_exhausted','periodic_exhausted'])
+  AND COALESCE(p.enabled, true) = true
+  AND COALESCE(p.manual_disabled, false) = false
 ORDER BY cmi.canonical_id, cmi.score_smart DESC
 `
 
