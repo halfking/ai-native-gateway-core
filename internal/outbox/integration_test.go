@@ -8,6 +8,7 @@ import (
 	"database/sql"
 	"fmt"
 	"net/http/httptest"
+	"os"
 	"sync"
 	"testing"
 	"time"
@@ -28,7 +29,7 @@ import (
 //
 // Prerequisites:
 //   - PostgreSQL with the V357 outbox_events migration applied.
-//   - TEST_DATABASE_URL set (or the default below resolves).
+//   - TEST_DATABASE_URL set.
 func TestE2E_CompleteEventFlow(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping E2E test in short mode")
@@ -38,15 +39,15 @@ func TestE2E_CompleteEventFlow(t *testing.T) {
 	testServer := httptest.NewServer(asmServer)
 	defer testServer.Close()
 
-	db, err := sql.Open("postgres", getTestDatabaseURL())
-	require.NoError(t, err)
+	db := mustOpenTestDB(t)
 	defer db.Close()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
+	const tenantID = "test-e2e"
 	cleanup := func() {
-		_, _ = db.ExecContext(ctx, `DELETE FROM outbox_events WHERE tenant_id = 'test-e2e'`)
+		_, _ = db.ExecContext(ctx, `DELETE FROM outbox_events WHERE tenant_id = $1`, tenantID)
 	}
 	cleanup()
 	defer cleanup()
@@ -58,7 +59,7 @@ func TestE2E_CompleteEventFlow(t *testing.T) {
 	require.NoError(t, err)
 
 	writer := outbox.NewWriter(tx)
-	envelope := validEnvelope("evt-e2e-test-001", "session-e2e-001", 1)
+	envelope := validEnvelope(tenantID, "evt-e2e-test-001", "session-e2e-001", 1)
 	require.NoError(t, writer.Write(ctx, envelope))
 	require.NoError(t, tx.Commit())
 
@@ -119,21 +120,23 @@ func TestE2E_ConcurrentDispatchers_NoDoubleDelivery(t *testing.T) {
 		t.Skip("skipping integration test in short mode")
 	}
 
-	const n = 20
+	const (
+		n        = 20
+		tenantID = "test-concurrent"
+	)
 
 	asmServer := asm.NewServer("test-secret-key")
 	testServer := httptest.NewServer(asmServer)
 	defer testServer.Close()
 
-	db, err := sql.Open("postgres", getTestDatabaseURL())
-	require.NoError(t, err)
+	db := mustOpenTestDB(t)
 	defer db.Close()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
 	cleanup := func() {
-		_, _ = db.ExecContext(ctx, `DELETE FROM outbox_events WHERE tenant_id = 'test-concurrent'`)
+		_, _ = db.ExecContext(ctx, `DELETE FROM outbox_events WHERE tenant_id = $1`, tenantID)
 	}
 	cleanup()
 	defer cleanup()
@@ -144,6 +147,7 @@ func TestE2E_ConcurrentDispatchers_NoDoubleDelivery(t *testing.T) {
 		require.NoError(t, err)
 		w := outbox.NewWriter(tx)
 		require.NoError(t, w.Write(ctx, validEnvelope(
+			tenantID,
 			"evt-concurrent-"+pad(i),
 			"session-concurrent-"+pad(i),
 			1,
@@ -175,8 +179,8 @@ func TestE2E_ConcurrentDispatchers_NoDoubleDelivery(t *testing.T) {
 		var settled int
 		require.NoError(t, db.QueryRowContext(ctx, `
 			SELECT COUNT(*) FROM outbox_events
-			WHERE tenant_id = 'test-concurrent' AND status IN ('sent','dlq')
-		`).Scan(&settled))
+			WHERE tenant_id = $1 AND status IN ('sent','dlq')
+		`, tenantID).Scan(&settled))
 		if settled >= n {
 			break
 		}
@@ -193,21 +197,21 @@ func TestE2E_ConcurrentDispatchers_NoDoubleDelivery(t *testing.T) {
 
 	// And every event should be cleanly sent (no DLQ from 409 retry loops).
 	var sent, dlq int
-	require.NoError(t, db.QueryRowContext(ctx, `SELECT COUNT(*) FROM outbox_events WHERE tenant_id = 'test-concurrent' AND status = 'sent'`).Scan(&sent))
-	require.NoError(t, db.QueryRowContext(ctx, `SELECT COUNT(*) FROM outbox_events WHERE tenant_id = 'test-concurrent' AND status = 'dlq'`).Scan(&dlq))
+	require.NoError(t, db.QueryRowContext(ctx, `SELECT COUNT(*) FROM outbox_events WHERE tenant_id = $1 AND status = 'sent'`, tenantID).Scan(&sent))
+	require.NoError(t, db.QueryRowContext(ctx, `SELECT COUNT(*) FROM outbox_events WHERE tenant_id = $1 AND status = 'dlq'`, tenantID).Scan(&dlq))
 	assert.Equal(t, n, sent, "all events should be delivered")
 	assert.Zero(t, dlq, "no event should reach the DLQ")
 }
 
 // validEnvelope builds an EventEnvelope whose payload satisfies the ASM mock's
 // validateEvent (all required fields present, no forbidden fields).
-func validEnvelope(eventID, sessionID string, turnNo int) outbox.EventEnvelope {
+func validEnvelope(tenantID, eventID, sessionID string, turnNo int) outbox.EventEnvelope {
 	reqID := "req-" + eventID
 	return outbox.EventEnvelope{
 		EventID:          eventID,
 		EventType:        "request.completed.v1",
 		SchemaVersion:    1,
-		TenantID:         "test-e2e",
+		TenantID:         tenantID,
 		AggregateID:      sessionID,
 		AggregateVersion: turnNo,
 		OccurredAt:       time.Now(),
@@ -236,8 +240,21 @@ func validEnvelope(eventID, sessionID string, turnNo int) outbox.EventEnvelope {
 
 func pad(i int) string { return fmt.Sprintf("%04d", i) }
 
-// getTestDatabaseURL returns the test database connection string.
-func getTestDatabaseURL() string {
-	// TODO: read from TEST_DATABASE_URL env or use a configured test DB.
-	return "postgres://postgres:postgres@localhost:5432/llm_gateway_test?sslmode=disable"
+func mustOpenTestDB(t *testing.T) *sql.DB {
+	t.Helper()
+	dsn := os.Getenv("TEST_DATABASE_URL")
+	if dsn == "" {
+		t.Skip("skipping integration test: TEST_DATABASE_URL not set")
+	}
+
+	db, err := sql.Open("postgres", dsn)
+	require.NoError(t, err)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := db.PingContext(ctx); err != nil {
+		db.Close()
+		t.Skipf("skipping integration test: test database not reachable: %v", err)
+	}
+	return db
 }
