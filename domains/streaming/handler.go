@@ -3659,30 +3659,48 @@ func (h *ChatHandler) serveWithExecutor(
 	// 2026-08-07 OmniFree: 对 auto/* 请求记录免费资源配额, 429 时
 	// 校正配额上限与 reset_at. 仅在 executor 返回结果时处理 (success 或
 	// 失败但至少选出了 candidate).
-h.recordOmniFreeQuota(r.Context(), clientModel, tenantID, result, execErr)
+	h.recordOmniFreeQuota(r.Context(), clientModel, tenantID, result, execErr)
 
-		// ── D5: model-level failover (2026-08-11) ─────────────────────────────
-		// When the chosen model is exhausted (all its credentials failed), retry
-		// the request against the next-best model from the auto-route CandidatesTop3.
-		//
-		// Safety gates:
-		//   - feature-flag OFF by default (AUTO_ROUTE_FALLBACK_ENABLED=true to enable)
-		//   - only non-streaming requests (streaming already committed the response)
-		//   - only auto-route requests that still have untried fallback models
-		//   - only when the failure is a true Exhausted (all candidates failed)
-		//
-		// On success we REPLACE execErr(=nil) and result, so the normal success
-		// path below runs. On failure we fall through to the existing error handling.
-		// Bounded: tries at most one alternate model per request.
-		if execErr != nil && logCtx != nil && logCtx.IsAutoRequest &&
-			len(logCtx.AutoFallbackModels) > 0 &&
-			!isStream && !preStreamPrepared &&
-			os.Getenv("AUTO_ROUTE_FALLBACK_ENABLED") == "true" {
+	// ── D5: model-level failover (2026-08-11) ─────────────────────────────
+	// When the chosen model is exhausted (all its credentials failed), retry
+	// the request against the next-best model from the auto-route CandidatesTop3.
+	//
+	// Safety gates:
+	//   - feature-flag OFF by default (AUTO_ROUTE_FALLBACK_ENABLED=true to enable)
+	//   - only non-streaming requests (streaming already committed the response)
+	//   - only auto-route requests that still have untried fallback models
+	//   - only when the failure is a true Exhausted (all candidates failed)
+	//
+	// On success we REPLACE execErr(=nil) and result, so the normal success
+	// path below runs. On failure we fall through to the existing error handling.
+	// Bounded: tries at most one alternate model per request.
+	//
+	// CRITICAL: candidates, policy and resolution MUST be re-resolved for
+	// nextModel — the originals are for the exhausted model and would route
+	// nextModel to credentials that don't support it.
+	if execErr != nil && logCtx != nil && logCtx.IsAutoRequest &&
+		len(logCtx.AutoFallbackModels) > 0 &&
+		!isStream && !preStreamPrepared &&
+		os.Getenv("AUTO_ROUTE_FALLBACK_ENABLED") == "true" {
 
-			if execErrTyped, ok := execErr.(*executors.ExecuteError); ok && execErrTyped.Exhausted {
-				nextModel := logCtx.AutoFallbackModels[0]
-				logCtx.AutoFallbackModels = logCtx.AutoFallbackModels[1:]
+		if execErrTyped, ok := execErr.(*executors.ExecuteError); ok && execErrTyped.Exhausted {
+			nextModel := logCtx.AutoFallbackModels[0]
+			logCtx.AutoFallbackModels = logCtx.AutoFallbackModels[1:]
 
+			// Re-resolve candidates for nextModel. Without this the executor
+			// would try to route nextModel through the exhausted model's
+			// credentials → guaranteed failure.
+			fbCandidates, fbPolicy, _, fbErr := resolveCandidatesForRequest(
+				r.Context(), h.provider, nextModel,
+				clientID.Fingerprint.ClientProfile, tenantID, upstreamBody,
+			)
+			if fbErr != nil || len(fbCandidates) == 0 {
+				slog.Warn("D5: cannot resolve candidates for fallback model",
+					"request_id", requestID,
+					"model", nextModel,
+					"error", fbErr,
+				)
+			} else {
 				rewritten := rewriteBodyWithModel(upstreamBody, nextModel)
 				if len(rewritten) > 0 {
 					slog.Info("D5: model-level fallback",
@@ -3691,23 +3709,23 @@ h.recordOmniFreeQuota(r.Context(), clientModel, tenantID, result, execErr)
 						"to", nextModel,
 					)
 					fallbackResult, fallbackErr := h.executor.Execute(&executors.ExecParams{
-						W:                  w,
-						R:                  r,
-						BodyBytes:          rewritten,
-						IsStream:           false,
-						ClientProtocol:     clientProtocol,
-						ClientModel:        nextModel,
-						OutboundModel:      nextModel,
-						ClientID:           clientID,
-						Transform:          txResult,
-						Resolution:         modelResolution,
-						Candidates:         candidates,
-						Policy:             policy,
-						AuditBuilder:       auditBuilder,
-						Capture:            streamCapture,
-						ToolsRequested:     requestHasTools(rewritten),
-						SessionKey:         sessionKey,
-						StickyKey:          stickyKey,
+						W:              w,
+						R:              r,
+						BodyBytes:      rewritten,
+						IsStream:       false,
+						ClientProtocol: clientProtocol,
+						ClientModel:    nextModel,
+						OutboundModel:  nextModel,
+						ClientID:       clientID,
+						Transform:      txResult,
+						Resolution:     nil, // stale; executor resolves per-candidate
+						Candidates:     fbCandidates,
+						Policy:         fbPolicy,
+						AuditBuilder:   auditBuilder,
+						Capture:        streamCapture,
+						ToolsRequested: requestHasTools(rewritten),
+						SessionKey:     sessionKey,
+						StickyKey:      stickyKey,
 						KeyID: func() int {
 							if keyInfo != nil {
 								return keyInfo.ID
@@ -3726,9 +3744,34 @@ h.recordOmniFreeQuota(r.Context(), clientModel, tenantID, result, execErr)
 							}
 							return ""
 						}(),
-						RequestID: requestID,
-						SessionID: gwSessionID,
-						Model:     nextModel,
+						AppID: func() *int {
+							if keyInfo != nil {
+								return &keyInfo.ApplicationID
+							}
+							return nil
+						}(),
+						ApiKeyID: func() *int {
+							if keyInfo != nil {
+								return &keyInfo.ID
+							}
+							return nil
+						}(),
+						RequestID:         requestID,
+						SessionID:         gwSessionID,
+						Model:             nextModel,
+						OnStreamReady:     func() {},
+						OnStreamStarted:   func(ttfbMs int) {},
+						OnStreamCompleted: func(outcome executors.StreamOutcome) {},
+						OnProbeHoldStart: func() {
+							if logCtx != nil {
+								logCtx.MarkProbeHoldStart()
+							}
+						},
+						OnProbeHoldEnd: func(recovered bool) {
+							if logCtx != nil {
+								logCtx.MarkProbeHoldEnd(recovered)
+							}
+						},
 					})
 					if fallbackErr == nil {
 						result = fallbackResult
@@ -3749,8 +3792,9 @@ h.recordOmniFreeQuota(r.Context(), clientModel, tenantID, result, execErr)
 				}
 			}
 		}
+	}
 
-		if execErr != nil {
+	if execErr != nil {
 		if preStream != nil {
 			preStream.stop()
 			preStream = nil
