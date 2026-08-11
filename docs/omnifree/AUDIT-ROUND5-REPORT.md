@@ -196,6 +196,38 @@ CREATE INDEX idx_combo_name_tenant_enabled ON public.auto_combo_templates
 
 **建议**: 更新文档标注为"Phase 6 待实施"或创建示例文件
 
+### 第二轮深度审计 (集成层, 2026-08-12)
+
+对集成层 (`handler_autocombo.go`, `handler.go` 装配, `bg/freequotareset` worker)
+做第二轮代码审查, 结论: **核心逻辑扎实, 发现项均为文档/注释与实际设计不一致**:
+
+1. **`freeTierDefaultLimit` 误导性注释 (已修复)**: 旧注释声称
+   "free_resource_catalog.daily_tokens 将由 catalog loader 注入到 candidate
+   metadata", 暗示是临时兜底. 实际架构是稳定的 **RPD 强制模式**:
+   - 运行时 Preflight 比较 `request_count` vs `corrected_limit` (RPD)
+   - `token_count` 在 `recordOmniFreeQuota` 调用时机取不到 (Execute 返回时
+     响应未消费, 尤其流式), 故传 0
+   - `daily_tokens`/`monthly_tokens` 仅用于去重聚合与 ROI 估算
+   - 已重写注释准确描述设计决策
+
+2. **`TokenCount: 0` 注释误导 (已修复)**: 旧注释 "token 用量在
+   telemetry/audit 阶段另有统计, 避免重复" 暗示是去重决策. 实际是调用
+   时机限制. 已改为引用 `freeTierDefaultLimit` 设计说明.
+
+3. **`free_quota_hook.go` 文档引用 (已修复)**: 5 个文档引用该文件为
+   "待创建", 但实际集成内联在 `handler_autocombo.go` 的
+   `resolveOmniFreeCandidates` + `recordOmniFreeQuota`, 经 `SetOmniFree`
+   装配. 已在 `02-QUOTA-TRACKING.md` 集成点小节顶部加明确澄清.
+
+4. **context cancel 处理正确**: `recordOmniFreeQuota` 的 `_ = cancel` 初看
+   像泄漏, 实际 `processQuotaRecordTask` 通过 `defer task.cancel()` 在
+   worker 消费时释放; enqueue 失败路径显式调 cancel. 无泄漏.
+
+5. **Worker RLS 处理正确**: `bg/freequotareset` 的 `listTenants` 用
+   `SET LOCAL app.current_role='super_admin'` 走 policy 白名单通道,
+   `resetTenant` 双保险 (GUC + `WHERE tenant_id=$1`). reset 语义正确
+   (只清 is_exhausted, 不清 request_count — retry-after 不是配额刷新).
+
 ### 测试覆盖审计 (7.0/10)
 
 #### ✅ 单元测试充分

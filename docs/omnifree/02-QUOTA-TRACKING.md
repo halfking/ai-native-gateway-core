@@ -293,10 +293,23 @@ func boolToInt(b bool) int {
 
 ## 🔌 集成点
 
+> **实际实现位置 (2026-08-12 round 5 二审澄清)**: 下方代码为设计期伪代码,
+> 展示 Preflight / Record / CorrectFromHeaders 的预期调用模式. 实际集成
+> **并未**落地为独立的 `domains/streaming/executors/free_quota_hook.go`
+> (该文件从未创建), 而是直接内联在:
+> - `domains/streaming/handler_autocombo.go` — `resolveOmniFreeCandidates`
+>   (含 Preflight, 经 VirtualFactory.preflightQuota) + `recordOmniFreeQuota`
+>   (Record + CorrectFromHeaders, 经 bounded worker queue)
+> - `domains/streaming/handler.go` — `SetOmniFree` 装配 + quota worker 池
+>
+> 伪代码中的 `TokenCount: resp.Usage.TotalTokens` 在实际实现里为 `0`:
+> 运行时强制基于 RPD (request_count), token 用量仅在响应消费后可知, 早于
+> Execute 返回的配额记录路径取不到 (见 `freeTierDefaultLimit` 设计说明).
+
 ### 1. 在 Streaming Executor 中记录配额
 
 ```go
-// domains/streaming/executors/free_quota_hook.go
+// domains/streaming/executors/free_quota_hook.go  ← 设计期伪代码, 实际见上方说明
 
 func (e *StreamExecutor) executeWithQuotaTracking(ctx context.Context, req *Request) error {
     // 1. 预检
