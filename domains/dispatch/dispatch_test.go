@@ -21,7 +21,7 @@ type fakeDeps struct {
 	forwardFn func(ctx context.Context, qr *QueuedRequest, cred CredentialRef) ForwardOutcome
 	// forwardCalls counts forward attempts per credential.
 	forwardCalls map[int]int
-	allowChange bool
+	allowChange  bool
 }
 
 func (f *fakeDeps) routeFunc(ctx context.Context, qr *QueuedRequest) ([]CredentialRef, error) {
@@ -218,7 +218,7 @@ func TestModelChange(t *testing.T) {
 			return ForwardOutcome{}
 		},
 		forwardCalls: map[int]int{},
-		allowChange: true,
+		allowChange:  true,
 	}
 	p := f.pipeline()
 	p.Start()
@@ -243,7 +243,7 @@ func TestNoRoute(t *testing.T) {
 			return ForwardOutcome{Err: errors.New("fail")}
 		},
 		forwardCalls: map[int]int{},
-		allowChange: false,
+		allowChange:  false,
 	}
 	p := f.pipeline()
 	p.Start()
@@ -446,8 +446,11 @@ func TestAttemptCap(t *testing.T) {
 	}
 	var forwardCalls atomic.Int64
 	f := &fakeDeps{
-		refsByModel:  map[string][]CredentialRef{"m": creds},
-		forwardFn:    func(context.Context, *QueuedRequest, CredentialRef) ForwardOutcome { forwardCalls.Add(1); return ForwardOutcome{Err: errors.New("fail")} },
+		refsByModel: map[string][]CredentialRef{"m": creds},
+		forwardFn: func(context.Context, *QueuedRequest, CredentialRef) ForwardOutcome {
+			forwardCalls.Add(1)
+			return ForwardOutcome{Err: errors.New("fail")}
+		},
 		forwardCalls: map[int]int{},
 	}
 	p := f.pipeline()
@@ -461,5 +464,68 @@ func TestAttemptCap(t *testing.T) {
 	}
 	if got := forwardCalls.Load(); got > maxAttempts {
 		t.Fatalf("attempt cap violated: %d forwards (cap=%d)", got, maxAttempts)
+	}
+}
+
+// TestStopNoDrainLoss is a regression for a bug introduced by dispatch audit
+// round 2 (commit f97896db): runModelDrainer reads qr from mq.ch, then on
+// Stop fires the inner select on (dispatchIn <- qr / stopCh). If dispatchIn
+// is full and stopCh wins, the drainer returns without forwarding qr OR
+// calling complete(qr) — Submit's caller (waiting on qr.ResultCh) blocks
+// forever, and the request is silently dropped.
+//
+// Reproduce: dispatchIn must be full AND have no reader. We achieve this by
+// setting DispatcherWorkers=0 (no dispatcher goroutine to drain dispatchIn)
+// — dispatchIn becomes an unbuffered (cap 0) channel where every drainer
+// send blocks. The drainer pops qr from mq.ch and then parks forever on
+// `p.dispatchIn <- qr`. When Stop fires, the inner select picks stopCh and
+// (under the bug) returns without completing qr.
+func TestStopNoDrainLoss(t *testing.T) {
+	// cfg.DispatcherWorkers=0 → dispatchIn has cap 0, no worker drains it.
+	cfg := DefaultConfig()
+	cfg.DispatcherWorkers = 0
+	cfg.MaxQueueDepth = 8 // mq.ch buffer; keep small so the test stays deterministic
+	hotCfg := &atomic.Value{}
+	hotCfg.Store(&cfg)
+
+	p := NewPipeline(Deps{
+		RouteFunc: func(ctx context.Context, qr *QueuedRequest) ([]CredentialRef, error) {
+			return []CredentialRef{cred(1, ModeConcurrency, 1)}, nil
+		},
+		ModelResolveFunc: func(ctx context.Context, requested string, tried []string) (string, []string, error) {
+			return "m", nil, nil
+		},
+		ForwardFunc: func(context.Context, *QueuedRequest, CredentialRef) ForwardOutcome {
+			// Unreachable in this test (dispatchIn blocks the drainer), but
+			// kept for completeness.
+			return ForwardOutcome{}
+		},
+		AllowModelChange: false,
+		HotCfg:           hotCfg,
+	})
+	p.Start()
+
+	// Submit a qr that lands in mq.ch. The drainer pops it and blocks on
+	// dispatchIn (cap 0, no reader). Now Stop will fire stopCh and the
+	// drainer must complete the qr with ErrShutdown instead of dropping it.
+	victimDone := make(chan struct{})
+	qrVictim := NewQueuedRequest("victim", "t", "m", context.Background(), nil)
+	go func() {
+		defer close(victimDone)
+		_, _ = p.Submit(context.Background(), qrVictim)
+	}()
+	// Give the drainer a moment to pop qrVictim and park on dispatchIn.
+	time.Sleep(50 * time.Millisecond)
+
+	p.Stop()
+
+	select {
+	case <-victimDone:
+		// Submit returned. Drainer called complete(qr, ErrShutdown). Under
+		// the bug this case would have timed out instead. We don't need to
+		// re-read qrVictim.ResultCh: it's buffered cap 1 and Submit already
+		// consumed the value when it returned.
+	case <-time.After(2 * time.Second):
+		t.Fatal("Submit never returned: drainer dropped qrVictim instead of completing it on Stop")
 	}
 }

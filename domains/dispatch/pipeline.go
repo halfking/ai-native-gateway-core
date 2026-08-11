@@ -235,6 +235,11 @@ func (p *Pipeline) getOrCreateModelQueue(name string) *modelQueue {
 // mq.ch. Closing mq.ch would race with concurrent senders in enqueueModel
 // (which send outside modelMu) and panic on send-to-closed. The channel is
 // simply left to be garbage-collected with the pipeline.
+//
+// CRITICAL: after popping a qr from mq.ch, the drainer MUST complete it
+// (with ErrShutdown) if stopCh wins the inner select. Otherwise qr is
+// silently dropped — its Submit caller blocks forever on qr.ResultCh and
+// the goroutine leaks. See TestStopNoDrainLoss.
 func (p *Pipeline) runModelDrainer(mq *modelQueue) {
 	defer p.wg.Done()
 	for {
@@ -247,6 +252,10 @@ func (p *Pipeline) runModelDrainer(mq *modelQueue) {
 			select {
 			case p.dispatchIn <- qr:
 			case <-p.stopCh:
+				// qr was already popped from mq.ch, depth/metrics already
+				// decremented; we MUST report outcome to the Submit caller
+				// or it leaks forever waiting on qr.ResultCh.
+				p.complete(qr, ForwardOutcome{Err: ErrShutdown})
 				return
 			}
 		case <-p.stopCh:

@@ -46,6 +46,9 @@ type accWorkTypePayload struct {
 	Enabled        *bool        `json:"enabled"`
 	SortOrder      int          `json:"sort_order"`
 	ModelRoutes    []modelRoute `json:"model_routes"`
+	// 2026-08-12: ACC now emits per-route tier so the operator's two-layer
+	// ordering round-trips through sync. We mirror modelRoute.Tier into
+	// the DB column instead of relying on the schema default 'secondary'.
 }
 
 type accWorkTypesResponse struct {
@@ -212,10 +215,18 @@ func syncWorkTypesFromACC(ctx context.Context, db *pgxpool.Pool) (workTypeSyncRe
 			if wt <= 0 {
 				wt = 1
 			}
+			// Mirror the putRoutes tier handling: whitelist + default.
+			tier := strings.TrimSpace(rt.Tier)
+			if tier == "" {
+				tier = "secondary"
+			}
+			if tier != "primary" && tier != "secondary" && tier != "fallback" {
+				return workTypeSyncResult{}, fmt.Errorf("sync %s: invalid tier %q for route %s", key, tier, name)
+			}
 			_, err := tx.Exec(ctx, `
-				INSERT INTO work_type_model_route (work_type_key, canonical_name, weight, min_score, enabled)
-				VALUES ($1, $2, $3, $4, $5)
-			`, key, name, wt, rt.MinScore, rt.Enabled)
+				INSERT INTO work_type_model_route (work_type_key, canonical_name, weight, min_score, enabled, tier)
+				VALUES ($1, $2, $3, $4, $5, $6)
+			`, key, name, wt, rt.MinScore, rt.Enabled, tier)
 			if err != nil {
 				return workTypeSyncResult{}, err
 			}

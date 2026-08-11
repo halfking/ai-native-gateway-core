@@ -63,6 +63,7 @@ export default {
     canonicalModel: 'Canonical model',
     selectModelPlaceholder: 'Click to select model…',
     routeNum: 'Route #{n}',
+    routeTier: '層級',
     weight: 'Weight',
     minScore: 'Min score',
     saving: 'Saving…',
@@ -73,6 +74,19 @@ export default {
       confirmEnable: 'enable',
       confirmDisable: 'disable',
     },
+  },
+  // 兩層優先順序響應模型序列（primary / secondary）。
+  layers: {
+    primary: '首選',
+    primaryHint: '優先使用 · 全部失敗才回退',
+    secondary: '備選',
+    secondaryHint: '首選全部失敗後逐個嘗試',
+    maxRoutesPerLayer: '每層最多 {n} 個 · 拖曳調整順序',
+    dragToReorder: '拖曳調整優先級',
+    emptyPrimary: '尚未設定首選模型 — 點擊「新增首選」',
+    emptySecondary: '尚未設定備選模型 — 點擊「新增備選」',
+    addPrimary: '+ 新增首選',
+    addSecondary: '+ 新增備選',
   },
   routes: {
     title: 'Model type routes',
@@ -102,7 +116,7 @@ export default {
     syncFromACC: 'Sync from ACC',
     syncFromACCTooltip: 'Pull work type config from ACC',
     create: '+ Create',
-    hint: 'Click row to enter detail, configure basic attributes and model type routes (max 3).',
+    hint: 'Click row to enter detail, configure basic attributes and primary/secondary model layers.',
     tableHeaders: {
       index: '#',
       key: 'Key',
@@ -116,6 +130,7 @@ export default {
     notConfigured: 'Not configured',
     rowEnabled: 'Enabled',
     rowDisabled: 'Disabled',
+    routesSummary: '{primary} 首選 · {secondary} 備選',
   },
   modal: {
     title: 'Create work type',

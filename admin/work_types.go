@@ -738,17 +738,42 @@ func (h *WorkTypeHandlers) putRoutes(w http.ResponseWriter, r *http.Request, key
 		return
 	}
 
-	// Drop empty rows and enforce at most 3 model routes per work type.
+	// Pre-DB validation pass: drop empty rows, enforce canonical_name
+	// uniqueness (UNIQUE on (work_type_key, canonical_name)), and whitelist
+	// tier values. Rejecting these here keeps the error envelope clean —
+	// unknown tier values would otherwise surface as a generic SQL CHECK
+	// violation 500, and duplicate canonical_names would fail mid-INSERT
+	// with a unique_violation that aborts the whole transaction.
 	filtered := make([]modelRoute, 0, len(routes))
+	seen := make(map[string]struct{}, len(routes))
 	for _, rt := range routes {
-		if strings.TrimSpace(rt.CanonicalName) == "" {
+		name := strings.TrimSpace(rt.CanonicalName)
+		if name == "" {
 			continue
 		}
+		if _, dup := seen[name]; dup {
+			writeJSONErrCtx(w, r, http.StatusBadRequest, "admin_duplicate_route")
+			return
+		}
+		seen[name] = struct{}{}
+		rt.CanonicalName = name
+		// Tier whitelist. Empty string is allowed and defaults to
+		// 'secondary' below so older callers don't break.
+		if rt.Tier != "" && rt.Tier != "primary" && rt.Tier != "secondary" && rt.Tier != "fallback" {
+			writeJSONErrCtx(w, r, http.StatusBadRequest, "admin_invalid_tier")
+			return
+		}
+		// Per 046_task_route_tiers.sql: task_quality_score == 0 means
+		// "use the scoring formula"; >0 means operator-supplied override
+		// in the 0..100 range. Clamp out-of-range values here so the SQL
+		// CHECK never fires for a clean input.
+		if rt.TaskQualityScore < 0 {
+			rt.TaskQualityScore = 0
+		}
+		if rt.TaskQualityScore > 100 {
+			rt.TaskQualityScore = 100
+		}
 		filtered = append(filtered, rt)
-	}
-	if len(filtered) > 3 {
-		writeJSONErrCtx(w, r, http.StatusBadRequest, "admin_max_routes_exceeded")
-		return
 	}
 	routes = filtered
 
@@ -779,26 +804,18 @@ func (h *WorkTypeHandlers) putRoutes(w http.ResponseWriter, r *http.Request, key
 	}
 
 	for _, rt := range routes {
-		if strings.TrimSpace(rt.CanonicalName) == "" {
-			continue
-		}
 		wt := rt.Weight
 		if wt <= 0 {
 			wt = 1
 		}
-		// 新增（需求 #6）：支持 tier 和 task_quality_score
 		tier := rt.Tier
 		if tier == "" {
-			tier = "secondary" // 默认 secondary
-		}
-		taskQuality := rt.TaskQualityScore
-		if taskQuality <= 0 {
-			taskQuality = 0.5 // 默认中等质量
+			tier = "secondary"
 		}
 		_, err := tx.Exec(ctx, `
 				INSERT INTO work_type_model_route (work_type_key, canonical_name, weight, min_score, enabled, tier, task_quality_score)
 				VALUES ($1, $2, $3, $4, $5, $6, $7)
-			`, key, rt.CanonicalName, wt, rt.MinScore, rt.Enabled, tier, taskQuality)
+			`, key, rt.CanonicalName, wt, rt.MinScore, rt.Enabled, tier, rt.TaskQualityScore)
 		if err != nil {
 			writeInternalErr(w, err)
 			return
@@ -831,11 +848,13 @@ func (h *WorkTypeHandlers) fetchWorkType(ctx context.Context, key string) (workT
 func (h *WorkTypeHandlers) fetchRoutes(ctx context.Context, key string) ([]modelRoute, error) {
 	rows, err := h.db.Query(ctx, `
 		SELECT id, canonical_name, weight, min_score, enabled,
-		       COALESCE(tier, 'secondary'), COALESCE(task_quality_score, 0.5)
+		       COALESCE(tier, 'secondary'), COALESCE(task_quality_score, 0)
 		FROM work_type_model_route
 		WHERE work_type_key = $1
-		ORDER BY weight DESC, canonical_name
-		LIMIT 3
+		ORDER BY
+		    CASE tier WHEN 'primary' THEN 0 WHEN 'secondary' THEN 1 WHEN 'fallback' THEN 2 ELSE 3 END,
+		    weight DESC,
+		    canonical_name
 	`, key)
 	if err != nil {
 		return nil, err
@@ -864,10 +883,13 @@ func (h *WorkTypeHandlers) fetchRoutesForKeys(ctx context.Context, keys []string
 	}
 	rows, err := h.db.Query(ctx, `
 		SELECT work_type_key, id, canonical_name, weight, min_score, enabled,
-		       COALESCE(tier, 'secondary'), COALESCE(task_quality_score, 0.5)
+		       COALESCE(tier, 'secondary'), COALESCE(task_quality_score, 0)
 		FROM work_type_model_route
 		WHERE work_type_key = ANY($1)
-		ORDER BY work_type_key, weight DESC, canonical_name
+		ORDER BY work_type_key,
+		    CASE tier WHEN 'primary' THEN 0 WHEN 'secondary' THEN 1 WHEN 'fallback' THEN 2 ELSE 3 END,
+		    weight DESC,
+		    canonical_name
 	`, keys)
 	if err != nil {
 		return nil, err
@@ -883,9 +905,6 @@ func (h *WorkTypeHandlers) fetchRoutesForKeys(ctx context.Context, keys []string
 		}
 		rt.Weight = weight
 		rt.MinScore = minScore
-		if len(out[key]) >= 3 {
-			continue
-		}
 		out[key] = append(out[key], rt)
 	}
 	return out, nil
