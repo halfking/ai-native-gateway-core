@@ -76,9 +76,14 @@ func (w *Writer) Write(ctx context.Context, env EventEnvelope) error {
 	}
 
 	if w.tx == nil {
-		// Validation-only path (used by tests). Caller invoked Write
-		// without a transaction; nothing to insert.
-		return nil
+		// A Writer without a transaction cannot persist the event. Returning
+		// nil here (the previous behaviour) silently dropped durability-
+		// critical writes — a caller that forgot to pass the business tx would
+		// see "success" and the event would never reach ASM. Fail loudly so the
+		// bug surfaces at the call site instead of as a missing delivery.
+		// (Unit tests that only exercise validation should call validate
+		// directly rather than rely on a nil-tx Write being a no-op.)
+		return fmt.Errorf("outbox.Writer.Write: no transaction provided (event_id=%s); pass an active *sql.Tx to NewWriter", env.EventID)
 	}
 
 	query := `
