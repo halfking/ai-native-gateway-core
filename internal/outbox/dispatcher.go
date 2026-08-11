@@ -11,10 +11,12 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
+	"strings"
 	"time"
 )
 
@@ -112,88 +114,155 @@ func (d *Dispatcher) Start(ctx context.Context) error {
 	}
 }
 
-// dispatchBatch fetches pending/failed events and dispatches them.
+// dispatchBatch claims pending/failed events and delivers them one at a
+// time, each inside its own short transaction.
+//
+// Why per-event transactions: SELECT ... FOR UPDATE SKIP LOCKED only
+// serialises concurrent workers while the row lock is held, i.e. for the
+// duration of an open transaction. The previous implementation ran the
+// claim SELECT and every markSent/markFailed UPDATE in autocommit, so the
+// lock was released the moment the SELECT statement finished — two
+// dispatcher instances could both claim and re-deliver the same event.
+// Wrapping claim + delivery-result + mark in one tx per event makes
+// SKIP LOCKED actually skip rows that a peer is currently delivering.
+//
+// Crash safety is unchanged (at-least-once): if the process dies after a
+// successful HTTP POST but before COMMIT, the tx rolls back, the event
+// stays pending, and the next poll redelivers it. ASM dedups by the fixed
+// event_id, so a duplicate delivery is absorbed by the consumer.
 func (d *Dispatcher) dispatchBatch(ctx context.Context) error {
-	// Fetch pending events (status=pending OR (status=failed AND next_retry_at <= NOW()))
-	query := `
+	dispatched := 0
+	failed := 0
+	for {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		outcome, err := d.dispatchOne(ctx)
+		if err != nil {
+			// Structural error (DB unavailable, commit failed). Stop the
+			// batch and let the next poll retry; per-event delivery errors
+			// are classified inside dispatchOne and never reach here.
+			if dispatched > 0 || failed > 0 {
+				d.logger.Info("dispatch batch interrupted",
+					"dispatched", dispatched, "failed", failed, "error", err)
+			}
+			d.updateGaugeMetrics(ctx)
+			return err
+		}
+		switch outcome {
+		case dispatchOutcomeSent:
+			dispatched++
+		case dispatchOutcomeFailed:
+			failed++
+		case dispatchOutcomeNone:
+			if dispatched > 0 || failed > 0 {
+				d.logger.Info("dispatch batch complete",
+					"dispatched", dispatched, "failed", failed)
+			}
+			d.updateGaugeMetrics(ctx)
+			return nil
+		}
+	}
+}
+
+// dispatchOutcome is the result of attempting one event.
+type dispatchOutcome int
+
+const (
+	dispatchOutcomeNone   dispatchOutcome = iota // no claimable event remaining
+	dispatchOutcomeSent                          // delivered + marked sent
+	dispatchOutcomeFailed                        // delivery failed + marked failed/dlq
+)
+
+// execer is satisfied by both *sql.DB and *sql.Tx, letting markSent/markFailed
+// run on whichever the caller holds.
+type execer interface {
+	ExecContext(ctx context.Context, query string, args ...interface{}) (sql.Result, error)
+}
+
+// dispatchOne claims a single pending/failed event within a transaction,
+// delivers it, and commits the resulting status. The row is locked for the
+// duration of the HTTP delivery so concurrent dispatchers skip it. Returns
+// dispatchOutcomeNone when no event is claimable.
+func (d *Dispatcher) dispatchOne(ctx context.Context) (dispatchOutcome, error) {
+	tx, err := d.db.BeginTx(ctx, nil)
+	if err != nil {
+		return dispatchOutcomeNone, fmt.Errorf("begin tx: %w", err)
+	}
+	defer func() {
+		_ = tx.Rollback() // no-op after Commit
+	}()
+
+	// Claim one event. LIMIT 1 + FOR UPDATE SKIP LOCKED inside the tx makes
+	// the lock effective for the whole delivery window.
+	const claimQuery = `
 		SELECT id, event_id, event_type, schema_version, tenant_id,
 		       aggregate_id, aggregate_version, occurred_at, payload,
 		       status, attempts, last_error, next_retry_at
 		FROM outbox_events
 		WHERE (status = 'pending' OR (status = 'failed' AND next_retry_at <= NOW()))
 		ORDER BY occurred_at ASC
-		LIMIT 100
+		LIMIT 1
 		FOR UPDATE SKIP LOCKED
 	`
-
-	rows, err := d.db.QueryContext(ctx, query)
+	var (
+		id                              int64
+		eventID, eventType, tenantID    string
+		aggregateID                     string
+		schemaVersion, aggregateVersion int
+		occurredAt                      time.Time
+		payloadBytes                    []byte
+		status                          string
+		attempts                        int
+		lastError                       sql.NullString
+		nextRetryAt                     sql.NullTime
+	)
+	err = tx.QueryRowContext(ctx, claimQuery).Scan(
+		&id, &eventID, &eventType, &schemaVersion, &tenantID,
+		&aggregateID, &aggregateVersion, &occurredAt, &payloadBytes,
+		&status, &attempts, &lastError, &nextRetryAt,
+	)
+	if errors.Is(err, sql.ErrNoRows) {
+		return dispatchOutcomeNone, nil
+	}
 	if err != nil {
-		return fmt.Errorf("query outbox_events: %w", err)
-	}
-	defer rows.Close()
-
-	dispatched := 0
-	failed := 0
-
-	for rows.Next() {
-		var (
-			id                              int64
-			eventID, eventType, tenantID    string
-			aggregateID                     string
-			schemaVersion, aggregateVersion int
-			occurredAt                      time.Time
-			payloadBytes                    []byte
-			status                          string
-			attempts                        int
-			lastError                       sql.NullString
-			nextRetryAt                     sql.NullTime
-		)
-
-		if err := rows.Scan(
-			&id, &eventID, &eventType, &schemaVersion, &tenantID,
-			&aggregateID, &aggregateVersion, &occurredAt, &payloadBytes,
-			&status, &attempts, &lastError, &nextRetryAt,
-		); err != nil {
-			d.logger.Error("scan row failed", "error", err)
-			continue
-		}
-
-		// Reconstruct EventEnvelope
-		env := EventEnvelope{
-			EventID:          eventID,
-			EventType:        eventType,
-			SchemaVersion:    schemaVersion,
-			TenantID:         tenantID,
-			AggregateID:      aggregateID,
-			AggregateVersion: aggregateVersion,
-			OccurredAt:       occurredAt,
-		}
-
-		// Deserialize payload
-		if err := json.Unmarshal(payloadBytes, &env.Payload); err != nil {
-			d.logger.Error("unmarshal payload failed", "event_id", eventID, "error", err)
-			d.markFailed(ctx, id, attempts+1, fmt.Sprintf("unmarshal error: %v", err))
-			failed++
-			continue
-		}
-
-		// Dispatch
-		if err := d.dispatch(ctx, env, payloadBytes); err != nil {
-			d.logger.Warn("dispatch failed", "event_id", eventID, "attempts", attempts+1, "error", err)
-			d.markFailed(ctx, id, attempts+1, err.Error())
-			failed++
-		} else {
-			d.logger.Info("dispatch succeeded", "event_id", eventID, "attempts", attempts+1)
-			d.markSent(ctx, id)
-			dispatched++
-		}
+		return dispatchOutcomeNone, fmt.Errorf("claim event: %w", err)
 	}
 
-	if dispatched > 0 || failed > 0 {
-		d.logger.Info("dispatch batch complete", "dispatched", dispatched, "failed", failed)
+	env := EventEnvelope{
+		EventID:          eventID,
+		EventType:        eventType,
+		SchemaVersion:    schemaVersion,
+		TenantID:         tenantID,
+		AggregateID:      aggregateID,
+		AggregateVersion: aggregateVersion,
+		OccurredAt:       occurredAt,
 	}
 
-	return rows.Err()
+	if err := json.Unmarshal(payloadBytes, &env.Payload); err != nil {
+		d.logger.Error("unmarshal payload failed", "event_id", eventID, "error", err)
+		d.markFailed(ctx, tx, id, attempts+1, fmt.Sprintf("unmarshal error: %v", err))
+		if err := tx.Commit(); err != nil {
+			return dispatchOutcomeNone, fmt.Errorf("commit (unmarshal-fail mark): %w", err)
+		}
+		return dispatchOutcomeFailed, nil
+	}
+
+	if err := d.dispatch(ctx, env, payloadBytes); err != nil {
+		d.logger.Warn("dispatch failed", "event_id", eventID, "attempts", attempts+1, "error", err)
+		d.markFailed(ctx, tx, id, attempts+1, err.Error())
+		if err := tx.Commit(); err != nil {
+			return dispatchOutcomeNone, fmt.Errorf("commit (dispatch-fail mark): %w", err)
+		}
+		return dispatchOutcomeFailed, nil
+	}
+
+	d.logger.Info("dispatch succeeded", "event_id", eventID, "attempts", attempts+1)
+	d.markSent(ctx, tx, id)
+	if err := tx.Commit(); err != nil {
+		return dispatchOutcomeNone, fmt.Errorf("commit (sent mark): %w", err)
+	}
+	return dispatchOutcomeSent, nil
 }
 
 // dispatch sends a single event to ASM via HTTP POST.
@@ -251,19 +320,21 @@ func (d *Dispatcher) dispatch(ctx context.Context, env EventEnvelope, payloadByt
 	return nil
 }
 
-// markSent updates the event to status='sent'.
-func (d *Dispatcher) markSent(ctx context.Context, id int64) {
-	query := `
+// markSent updates the event to status='sent'. ex is the tx that holds the
+// claim lock (or d.db for non-transactional callers).
+func (d *Dispatcher) markSent(ctx context.Context, ex execer, id int64) {
+	const query = `
 		UPDATE outbox_events
 		SET status = 'sent', updated_at = NOW()
 		WHERE id = $1
 	`
-	if _, err := d.db.ExecContext(ctx, query, id); err != nil {
+	if _, err := ex.ExecContext(ctx, query, id); err != nil {
 		d.logger.Error("mark sent failed", "id", id, "error", err)
 	}
 }
 
-// markFailed updates the event status to 'failed' or 'dlq'.
+// markFailed updates the event status to 'failed' or 'dlq'. ex is the tx
+// that holds the claim lock (or d.db for non-transactional callers).
 //
 // Exponential backoff:
 //   - Attempt 1: retry after 1s
@@ -271,29 +342,78 @@ func (d *Dispatcher) markSent(ctx context.Context, id int64) {
 //   - Attempt 3: retry after 4s
 //   - Attempt 4: retry after 8s
 //   - Attempt 5+: move to DLQ
-func (d *Dispatcher) markFailed(ctx context.Context, id int64, newAttempts int, errMsg string) {
+func (d *Dispatcher) markFailed(ctx context.Context, ex execer, id int64, newAttempts int, errMsg string) {
 	if newAttempts >= d.maxAttempts {
 		// Move to DLQ
-		query := `
+		const query = `
 			UPDATE outbox_events
 			SET status = 'dlq', attempts = $1, last_error = $2, updated_at = NOW()
 			WHERE id = $3
 		`
-		if _, err := d.db.ExecContext(ctx, query, newAttempts, errMsg, id); err != nil {
+		if _, err := ex.ExecContext(ctx, query, newAttempts, errMsg, id); err != nil {
 			d.logger.Error("move to dlq failed", "id", id, "error", err)
 		}
-	} else {
-		// Exponential backoff: 2^(attempts-1) seconds
-		backoff := time.Duration(1<<uint(newAttempts-1)) * time.Second
-		nextRetry := time.Now().Add(backoff)
+		return
+	}
+	// Exponential backoff: 2^(attempts-1) seconds
+	backoff := time.Duration(1<<uint(newAttempts-1)) * time.Second
+	nextRetry := time.Now().Add(backoff)
+	const query = `
+		UPDATE outbox_events
+		SET status = 'failed', attempts = $1, last_error = $2, next_retry_at = $3, updated_at = NOW()
+		WHERE id = $4
+	`
+	if _, err := ex.ExecContext(ctx, query, newAttempts, errMsg, nextRetry, id); err != nil {
+		d.logger.Error("mark failed failed", "id", id, "error", err)
+	}
+}
 
-		query := `
-			UPDATE outbox_events
-			SET status = 'failed', attempts = $1, last_error = $2, next_retry_at = $3, updated_at = NOW()
-			WHERE id = $4
-		`
-		if _, err := d.db.ExecContext(ctx, query, newAttempts, errMsg, nextRetry, id); err != nil {
-			d.logger.Error("mark failed failed", "id", id, "error", err)
-		}
+// classifyError categorizes delivery errors into metric labels.
+// Helps diagnose failure modes: network issues, HTTP errors, validation, etc.
+func classifyError(err error) string {
+	if err == nil {
+		return "unknown"
+	}
+
+	errStr := err.Error()
+	switch {
+	case strings.Contains(errStr, "context deadline exceeded"), strings.Contains(errStr, "timeout"):
+		return "timeout"
+	case strings.Contains(errStr, "connection refused"), strings.Contains(errStr, "no such host"):
+		return "network"
+	case strings.Contains(errStr, "401"), strings.Contains(errStr, "signature"):
+		return "hmac_mismatch"
+	case strings.Contains(errStr, "403"), strings.Contains(errStr, "tenant"):
+		return "tenant_mismatch"
+	case strings.Contains(errStr, "422"), strings.Contains(errStr, "validation"):
+		return "validation"
+	case strings.Contains(errStr, "409"), strings.Contains(errStr, "duplicate"):
+		return "duplicate"
+	case strings.Contains(errStr, "5"), strings.Contains(errStr, "Internal Server Error"):
+		return "http_5xx"
+	case strings.Contains(errStr, "4"):
+		return "http_4xx"
+	default:
+		return "http_error"
+	}
+}
+
+// updateGaugeMetrics queries current pending and DLQ counts and updates Prometheus gauges.
+// Should be called periodically (e.g., after each poll cycle) for accurate monitoring.
+func (d *Dispatcher) updateGaugeMetrics(ctx context.Context) {
+	var pendingCount, dlqCount int
+
+	// Count pending events
+	if err := d.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM outbox_events WHERE status = 'pending'`).Scan(&pendingCount); err != nil {
+		d.logger.Warn("query pending count failed", "error", err)
+	} else {
+		SetPendingCount(pendingCount)
+	}
+
+	// Count DLQ events
+	if err := d.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM outbox_events WHERE status = 'dlq'`).Scan(&dlqCount); err != nil {
+		d.logger.Warn("query dlq count failed", "error", err)
+	} else {
+		SetDLQCount(dlqCount)
 	}
 }

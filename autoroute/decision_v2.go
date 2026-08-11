@@ -75,6 +75,7 @@ func (d *Decider) DecideV2(ctx context.Context, sigs ClassificationSignals, apiK
 							EnabledFeatures:    enabledFeatures,
 							CacheReused:        true,
 							DecidedAt:          time.Now(),
+							RoutingSource:      "session_cache",
 						}
 						d.populateShadow(ctx, sigs, decision)
 						return decision, nil
@@ -130,12 +131,22 @@ func (d *Decider) DecideV2(ctx context.Context, sigs ClassificationSignals, apiK
 		ApiKeyID:  apiKeyID,
 	})
 
+	// Step 3a (M2): 路由来源标签。V2 不调用 defaultRoutingStore（explicit_default
+	// 是 V1 的隐式 tag 路径；V2 用 channel-quality routing 取代），所以 V2 的
+	// 来源只有 implicit_tag / override_pin / session_cache 三种。
+	// 之前 V2 完全不填 RoutingSource，导致 V1/V2 的审计/日志不一致——此处补齐。
+	routingSource := "implicit_tag"
+
 	// 应用 override store（如果配置）
 	if d.overrideStore != nil {
 		task := string(cls.Primary)
 		prof := string(profile)
 		filtered := d.overrideStore.FilterBanned(recommended, task, prof)
 		recommended = d.overrideStore.PromotePins(filtered, task, prof)
+		// 若 pin 把非首选候选提到第一，标记来源为 override_pin（与 V1 一致）
+		if len(recommended) > 0 && len(filtered) > 0 && recommended[0].Candidate.CanonicalName != filtered[0].Candidate.CanonicalName {
+			routingSource = "override_pin"
+		}
 	}
 
 	// Step 4: 检查是否有候选
@@ -168,6 +179,7 @@ func (d *Decider) DecideV2(ctx context.Context, sigs ClassificationSignals, apiK
 		EnabledFeatures:    enabledFeatures,
 		FallbackUsed:       fallbackUsed,
 		DecidedAt:          time.Now(),
+		RoutingSource:      routingSource,
 	}
 	d.populateShadow(ctx, sigs, decision)
 
