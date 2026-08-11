@@ -138,6 +138,15 @@ var (
 	gRestrictedMode bool
 )
 
+// outboxWriterStub is a no-op OutboxWriter used as a feature flag.
+// The actual outbox INSERT happens in telemetry.Client.insertRequestLog()
+// via direct tx.Exec(), not through this interface.
+type outboxWriterStub struct{}
+
+func (s *outboxWriterStub) Write(ctx context.Context, env outbox.EventEnvelope) error {
+	return nil // no-op
+}
+
 func main() {
 	// migrate subcommand: connect DB, run migrations, exit.
 	// Used by launcher to run forward-compatible migrations while old
@@ -1604,6 +1613,22 @@ func main() {
 	telemetryClient := telemetry.NewClient()
 	if dbConn != nil && dbConn.Enabled() {
 		telemetryClient.SetDB(dbConn.Pool())
+
+		// WP4: Enable outbox writer for Gateway → ASM event delivery
+		// Only when both ASM_INTERNAL_ENDPOINT and OUTBOX_HMAC_SECRET are configured.
+		// The actual INSERT happens in insertRequestLog() using its pgx.Tx.
+		asmEndpoint := strings.TrimSpace(os.Getenv("ASM_INTERNAL_ENDPOINT"))
+		hmacSecret := strings.TrimSpace(os.Getenv("OUTBOX_HMAC_SECRET"))
+		if asmEndpoint != "" && hmacSecret != "" {
+			// Pass a non-nil writer as a feature flag. The writer itself is not used;
+			// insertRequestLog() directly executes INSERT via tx.Exec().
+			telemetryClient.SetOutboxWriter(&outboxWriterStub{})
+			slog.Info("outbox writer enabled for telemetry", "asm_endpoint", asmEndpoint)
+		} else {
+			slog.Info("outbox writer disabled: incomplete ASM configuration",
+				"endpoint_configured", asmEndpoint != "",
+				"secret_configured", hmacSecret != "")
+		}
 	}
 	if telemetryClient.Enabled() {
 		chatHandler.SetTelemetry(telemetryClient)
