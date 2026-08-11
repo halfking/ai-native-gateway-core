@@ -6,7 +6,8 @@ import {
   listWorkTypes, getWorkType, createWorkType, updateWorkType, deleteWorkType,
   putWorkTypeRoutes, getWorkTypeStats, syncWorkTypesFromACC,
   PROFILES, CATEGORIES,
-  type WorkTypeConfig, type WorkTypeStats, type ModelRoute, type WorkTypeSyncMeta,
+  groupRoutesByLayer, normalizeRouteTier,
+  type WorkTypeConfig, type WorkTypeStats, type ModelRoute, type ModelRouteTier, type WorkTypeSyncMeta,
 } from '../api-work-types'
 import {
   getAutoRouteAudit, getAutoRouteDecisions,
@@ -19,7 +20,15 @@ import ModelPicker from '../components/ModelPicker.vue'
 const { t } = useI18n()
 
 
-const MAX_ROUTES = 3
+// Per-layer cap. Two layers (primary/secondary) × 5 models = 10 routes max
+// per work type, which is well below the historical 3-row hard limit but
+// generous enough for operators to build a real priority sequence.
+const MAX_ROUTES_PER_LAYER = 5
+
+// Tiers exposed in the UI. The DB also has 'fallback' (reserved for future
+// tertiary routes / emergency degradations), but the editor only manages
+// the two primary layers operators interact with day-to-day.
+const EDITABLE_TIERS: ModelRouteTier[] = ['primary', 'secondary']
 
 const route = useRoute()
 const router = useRouter()
@@ -95,7 +104,23 @@ function profileLabel(key: string): string {
 
 function routeSummary(wt: WorkTypeConfig): string[] {
   const routes = wt.model_routes ?? []
-  return routes.filter(r => r.enabled !== false && r.canonical_name).map(r => r.canonical_name).slice(0, MAX_ROUTES)
+  return routes
+    .filter(r => r.enabled !== false && r.canonical_name)
+    .sort((a, b) => {
+      // Mirror the backend ordering (tier rank ASC, weight DESC) so the
+      // summary chip strip matches what the editor shows.
+      const tierRank: Record<ModelRouteTier, number> = { primary: 0, secondary: 1, fallback: 2 }
+      const ta = tierRank[normalizeRouteTier(a)] ?? 1
+      const tb = tierRank[normalizeRouteTier(b)] ?? 1
+      if (ta !== tb) return ta - tb
+      return b.weight - a.weight
+    })
+    .map(r => r.canonical_name)
+}
+
+function routeTierCount(wt: WorkTypeConfig, tier: ModelRouteTier): number {
+  const routes = wt.model_routes ?? []
+  return routes.filter(r => r.enabled !== false && r.canonical_name && normalizeRouteTier(r) === tier).length
 }
 
 // ── Settings / CRUD ───────────────────────────────────
@@ -152,7 +177,15 @@ function onKeywordKeydown(e: KeyboardEvent) {
   }
 }
 
-const routesDraft = ref<ModelRoute[]>([])
+// routesDraft is keyed by editable tier so each layer is independent.
+// Within a layer, priority is order in the array (weight is derived
+// when saving so we never lose data even if the operator drags rows
+// around).
+const routesDraft = ref<Record<ModelRouteTier, ModelRoute[]>>({
+  primary: [],
+  secondary: [],
+  fallback: [],
+})
 const routesSaving = ref(false)
 const routesMsg = ref('')
 
@@ -160,6 +193,74 @@ const testResults = ref<Record<string, ProbeResult>>({})
 const testErrors = ref<Record<string, string>>({})
 const testingModel = ref<string | null>(null)
 const testingAll = ref(false)
+
+// Drag state — one shared "from" index per tier so two layers can be
+// re-ordered independently without colliding.
+const dragState = ref<{ tier: ModelRouteTier | null; index: number | null }>({
+  tier: null,
+  index: null,
+})
+
+function freshRouteRow(tier: ModelRouteTier): ModelRoute {
+  return {
+    canonical_name: '',
+    weight: 1,
+    min_score: 0,
+    enabled: true,
+    tier,
+    task_quality_score: 0,
+  }
+}
+
+function onRouteDragStart(tier: ModelRouteTier, index: number) {
+  dragState.value = { tier, index }
+}
+
+function onRouteDragOver(event: DragEvent, tier: ModelRouteTier, index: number) {
+  event.preventDefault()
+  const { tier: fromTier, index: fromIndex } = dragState.value
+  if (fromTier === null || fromIndex === null) return
+  if (fromTier !== tier) return
+  if (fromIndex === index) return
+  const list = [...routesDraft.value[tier]]
+  const dragged = list[fromIndex]
+  list.splice(fromIndex, 1)
+  list.splice(index, 0, dragged)
+  routesDraft.value = { ...routesDraft.value, [tier]: list }
+  dragState.value = { tier, index }
+}
+
+function onRouteDragEnd() {
+  dragState.value = { tier: null, index: null }
+}
+
+function addRouteRow(tier: ModelRouteTier) {
+  if (routesDraft.value[tier].length >= MAX_ROUTES_PER_LAYER) return
+  routesDraft.value = {
+    ...routesDraft.value,
+    [tier]: [...routesDraft.value[tier], freshRouteRow(tier)],
+  }
+}
+
+function removeRouteRow(tier: ModelRouteTier, index: number) {
+  const list = [...routesDraft.value[tier]]
+  list.splice(index, 1)
+  routesDraft.value = { ...routesDraft.value, [tier]: list }
+  // Clear any stale test result for the removed model so a future row
+  // picking the same canonical_name does not show a misleading ✔.
+  const removed = routesDraft.value[tier][index]
+  if (removed?.canonical_name) {
+    delete testResults.value[removed.canonical_name]
+    delete testErrors.value[removed.canonical_name]
+  }
+}
+
+function totalRouteCount(): number {
+  return (
+    routesDraft.value.primary.length +
+    routesDraft.value.secondary.length
+  )
+}
 
 function syncDetailForm(wt: WorkTypeConfig) {
   detailForm.value = {
@@ -181,7 +282,18 @@ async function loadSettings() {
     if (detailKey.value) {
       detail.value = await getWorkType(detailKey.value)
       syncDetailForm(detail.value)
-      routesDraft.value = (detail.value.model_routes ?? []).slice(0, MAX_ROUTES).map(r => ({ ...r }))
+      // Bucket routes by tier. Fallback-tier rows (reserved) are loaded
+      // so a Save round-trip doesn't silently drop them, but the editor
+      // does not render them — see template.
+      const grouped = groupRoutesByLayer(detail.value.model_routes)
+      routesDraft.value = {
+        primary: grouped.primary.map(r => ({ ...r })),
+        secondary: grouped.secondary.map(r => ({ ...r })),
+        // Defensive: if someone wrote a fallback row via API directly,
+        // surface it in the secondary layer's bucket so the operator can
+        // see and move it. This shouldn't normally happen.
+        fallback: grouped.fallback.map(r => ({ ...r })),
+      }
       testResults.value = {}
       testErrors.value = {}
     } else {
@@ -279,17 +391,50 @@ async function toggleEnabled() {
   }
 }
 
+// saveRoutes flattens the two-tier draft back into a single ordered
+// ModelRoute[] payload. Within each tier, list order is the priority
+// (top = highest) and we materialise that ordering into `weight` so the
+// DB's ORDER BY weight DESC reproduces the operator's drag-and-drop
+// intent across a page reload. We also drop half-filled rows that have
+// no canonical_name yet.
 async function saveRoutes() {
   if (!detailKey.value) return
-  const payload = routesDraft.value
-    .filter(r => r.canonical_name.trim())
-    .slice(0, MAX_ROUTES)
+  const payload: ModelRoute[] = []
+  for (const tier of EDITABLE_TIERS) {
+    const rows = routesDraft.value[tier]
+    const n = rows.length
+    rows.forEach((rt, i) => {
+      const name = rt.canonical_name.trim()
+      if (!name) return
+      // weight is per-tier: top row gets the largest value, bottom row
+      // gets 1.0. Concretely weight = (n - i) so dragging row 0 of 3
+      // yields weight 3, row 2 yields weight 1.
+      const weight = n - i
+      payload.push({
+        ...rt,
+        canonical_name: name,
+        tier,
+        weight,
+        // Clamp task_quality_score so we don't ship NaN/negative values.
+        task_quality_score: Number.isFinite(rt.task_quality_score)
+          ? Math.max(0, Math.min(100, rt.task_quality_score))
+          : 0,
+      })
+    })
+  }
   routesSaving.value = true
   routesMsg.value = ''
   try {
     await putWorkTypeRoutes(detailKey.value, payload)
     detail.value = await getWorkType(detailKey.value)
-    routesDraft.value = (detail.value.model_routes ?? []).slice(0, MAX_ROUTES).map(r => ({ ...r }))
+    // Re-bucket the freshly persisted rows so the draft mirrors the
+    // server's tier-aware ORDER BY (primary first, then secondary).
+    const grouped = groupRoutesByLayer(detail.value.model_routes)
+    routesDraft.value = {
+      primary: grouped.primary.map(r => ({ ...r })),
+      secondary: grouped.secondary.map(r => ({ ...r })),
+      fallback: grouped.fallback.map(r => ({ ...r })),
+    }
     routesMsg.value = t('workTypes.savedOk')
     await loadSettings()
   } catch (e) {
@@ -297,15 +442,6 @@ async function saveRoutes() {
   } finally {
     routesSaving.value = false
   }
-}
-
-function addRouteRow() {
-  if (routesDraft.value.length >= MAX_ROUTES) return
-  routesDraft.value.push({ canonical_name: '', weight: 1, min_score: 0, enabled: true })
-}
-
-function removeRouteRow(i: number) {
-  routesDraft.value.splice(i, 1)
 }
 
 async function testRoute(rt: ModelRoute) {
@@ -325,7 +461,13 @@ async function testRoute(rt: ModelRoute) {
 
 async function testAllRoutes() {
   testingAll.value = true
-  for (const rt of routesDraft.value.filter(r => r.enabled !== false && r.canonical_name.trim())) {
+  const all: ModelRoute[] = []
+  for (const tier of EDITABLE_TIERS) {
+    for (const rt of routesDraft.value[tier]) {
+      if (rt.enabled !== false && rt.canonical_name.trim()) all.push(rt)
+    }
+  }
+  for (const rt of all) {
     await testRoute(rt)
   }
   testingAll.value = false
@@ -577,73 +719,104 @@ watch(activeTab, (tab) => {
           <div class="section-head">
             <span class="layer-tag l2">L2</span>
             <h3>{{ t('workTypes.detail.modelTypeRoutes') }}</h3>
-            <span class="text-muted route-hint">{{ t('workTypes.detail.maxRoutesHint', { n: MAX_ROUTES }) }}</span>
-            <button
-              class="btn btn-ghost btn-sm"
-              :disabled="routesDraft.length >= MAX_ROUTES"
-              @click="addRouteRow"
-            >{{ t('workTypes.detail.addRoute') }}</button>
+            <span class="text-muted route-hint">{{ t('workTypes.layers.maxRoutesPerLayer', { n: MAX_ROUTES_PER_LAYER }) }}</span>
             <button class="btn btn-primary btn-sm" :disabled="routesSaving" @click="saveRoutes">
               {{ routesSaving ? t('workTypes.saving') : t('workTypes.saveBtn') }}
             </button>
           </div>
           <div v-if="routesMsg" class="inline-msg">{{ routesMsg }}</div>
 
-          <div v-if="!routesDraft.length" class="empty-routes">
+          <div v-if="!totalRouteCount()" class="empty-routes">
             {{ t('workTypes.detail.emptyRoutes') }}
           </div>
 
-          <div class="route-cards">
+          <div class="layer-stack">
             <div
-              v-for="(rt, i) in routesDraft"
-              :key="i"
-              class="route-card"
-              :class="{ 'route-card--disabled': rt.enabled === false }"
+              v-for="tier in EDITABLE_TIERS"
+              :key="tier"
+              class="layer-block"
+              :class="`layer-block--${tier}`"
             >
-              <div class="route-card-head">
-                <span class="route-index">#{{ i + 1 }}</span>
-                <label class="route-enabled">
-                  <input type="checkbox" v-model="rt.enabled" />
-                  {{ t('workTypes.detail.routeEnabled') }}
-                </label>
-                <button class="btn btn-ghost btn-sm route-remove" @click="removeRouteRow(i)">{{ t('workTypes.detail.removeRoute') }}</button>
-              </div>
-              <div class="route-picker-row">
-                <span class="field-label">{{ t('workTypes.detail.canonicalModel') }}</span>
-                <ModelPicker
-                  v-model="rt.canonical_name"
-                  :placeholder="t('workTypes.detail.selectModelPlaceholder')"
-                  :title="`${t('workTypes.topBar.title')} ${detail.label} · ${t('workTypes.detail.routeNum', { n: i + 1 })}`"
-                />
-              </div>
-              <div class="route-fields">
-                <label>{{ t('workTypes.detail.weight') }}
-                  <input v-model.number="rt.weight" type="number" step="0.1" min="0.1" class="input compact" />
-                </label>
-                <label>{{ t('workTypes.detail.minScore') }}
-                  <input v-model.number="rt.min_score" type="number" step="0.1" class="input compact" />
-                </label>
+              <header class="layer-head">
+                <span class="layer-pill" :class="`layer-pill--${tier}`">
+                  {{ t(`workTypes.layers.${tier}`) }}
+                </span>
+                <span class="layer-count">{{ routesDraft[tier].length }}/{{ MAX_ROUTES_PER_LAYER }}</span>
+                <span class="layer-hint">{{ t(`workTypes.layers.${tier}Hint`) }}</span>
+                <span class="layer-spacer"></span>
                 <button
                   class="btn btn-ghost btn-sm"
-                  :disabled="!rt.canonical_name.trim() || testingModel === rt.canonical_name"
-                  @click="testRoute(rt)"
+                  :disabled="routesDraft[tier].length >= MAX_ROUTES_PER_LAYER"
+                  @click="addRouteRow(tier)"
+                >{{ t(`workTypes.layers.add${tier === 'primary' ? 'Primary' : 'Secondary'}`) }}</button>
+              </header>
+
+              <div v-if="!routesDraft[tier].length" class="layer-empty">
+                {{ t(`workTypes.layers.empty${tier === 'primary' ? 'Primary' : 'Secondary'}`) }}
+              </div>
+
+              <ol class="route-cards">
+                <li
+                  v-for="(rt, i) in routesDraft[tier]"
+                  :key="`${tier}-${i}-${rt.canonical_name}`"
+                  class="route-card"
+                  :class="{
+                    'route-card--disabled': rt.enabled === false,
+                    'route-card--dragging': dragState.tier === tier && dragState.index === i,
+                  }"
+                  draggable="true"
+                  @dragstart="onRouteDragStart(tier, i)"
+                  @dragover="onRouteDragOver($event, tier, i)"
+                  @dragend="onRouteDragEnd"
                 >
-                  {{ testingModel === rt.canonical_name ? t('workTypes.testing') : t('workTypes.test') }}
-                </button>
-              </div>
-              <div v-if="testErrors[rt.canonical_name]" class="test-result test-result--fail">
-                {{ testErrors[rt.canonical_name] }}
-              </div>
-              <div v-else-if="testResults[rt.canonical_name]" class="test-result" :class="testResults[rt.canonical_name].success ? 'test-result--ok' : 'test-result--fail'">
-                <span>{{ testResults[rt.canonical_name].success ? t('workTypes.testOk') : t('workTypes.testFail') }}</span>
-                <span v-if="testResults[rt.canonical_name].latency_ms != null">{{ testResults[rt.canonical_name].latency_ms }}ms</span>
-                <span v-if="testResults[rt.canonical_name].model_name">{{ testResults[rt.canonical_name].provider_name }}</span>
-                <span v-if="testResults[rt.canonical_name].error" class="test-err">{{ testResults[rt.canonical_name].error }}</span>
-              </div>
+                  <div class="route-card-head">
+                    <span class="route-drag-handle" :title="t('workTypes.layers.dragToReorder')" aria-hidden="true">☰</span>
+                    <span class="route-index">{{ t('workTypes.detail.routeNum', { n: i + 1 }) }}</span>
+                    <span class="route-tier-tag">{{ t('workTypes.detail.routeTier') }}: {{ t(`workTypes.layers.${tier}`) }}</span>
+                    <label class="route-enabled">
+                      <input type="checkbox" v-model="rt.enabled" />
+                      {{ t('workTypes.detail.routeEnabled') }}
+                    </label>
+                    <button class="btn btn-ghost btn-sm route-remove" @click="removeRouteRow(tier, i)">{{ t('workTypes.detail.removeRoute') }}</button>
+                  </div>
+                  <div class="route-picker-row">
+                    <span class="field-label">{{ t('workTypes.detail.canonicalModel') }}</span>
+                    <ModelPicker
+                      v-model="rt.canonical_name"
+                      :placeholder="t('workTypes.detail.selectModelPlaceholder')"
+                      :title="`${detail.label} · ${t(`workTypes.layers.${tier}`)} · ${t('workTypes.detail.routeNum', { n: i + 1 })}`"
+                    />
+                  </div>
+                  <div class="route-fields">
+                    <label>{{ t('workTypes.detail.weight') }}
+                      <input v-model.number="rt.weight" type="number" step="0.1" min="0.1" class="input compact" />
+                    </label>
+                    <label>{{ t('workTypes.detail.minScore') }}
+                      <input v-model.number="rt.min_score" type="number" step="0.1" class="input compact" />
+                    </label>
+                    <button
+                      class="btn btn-ghost btn-sm"
+                      :disabled="!rt.canonical_name.trim() || testingModel === rt.canonical_name"
+                      @click="testRoute(rt)"
+                    >
+                      {{ testingModel === rt.canonical_name ? t('workTypes.testing') : t('workTypes.test') }}
+                    </button>
+                  </div>
+                  <div v-if="testErrors[rt.canonical_name]" class="test-result test-result--fail">
+                    {{ testErrors[rt.canonical_name] }}
+                  </div>
+                  <div v-else-if="testResults[rt.canonical_name]" class="test-result" :class="testResults[rt.canonical_name].success ? 'test-result--ok' : 'test-result--fail'">
+                    <span>{{ testResults[rt.canonical_name].success ? t('workTypes.testOk') : t('workTypes.testFail') }}</span>
+                    <span v-if="testResults[rt.canonical_name].latency_ms != null">{{ testResults[rt.canonical_name].latency_ms }}ms</span>
+                    <span v-if="testResults[rt.canonical_name].model_name">{{ testResults[rt.canonical_name].provider_name }}</span>
+                    <span v-if="testResults[rt.canonical_name].error" class="test-err">{{ testResults[rt.canonical_name].error }}</span>
+                  </div>
+                </li>
+              </ol>
             </div>
           </div>
 
-          <div v-if="routesDraft.length" class="route-actions">
+          <div v-if="totalRouteCount()" class="route-actions">
             <button class="btn btn-ghost btn-sm" :disabled="testingAll" @click="testAllRoutes">
               {{ testingAll ? t('workTypes.testingAll') : t('workTypes.testAll') }}
             </button>
@@ -703,7 +876,17 @@ watch(activeTab, (tab) => {
                 <td>{{ profileLabel(wt.default_profile) }}</td>
                 <td class="route-cell">
                   <span v-if="!routeSummary(wt).length" class="text-muted">{{ t('workTypes.list.notConfigured') }}</span>
-                  <span v-for="m in routeSummary(wt)" :key="m" class="route-chip">{{ m }}</span>
+                  <template v-else>
+                    <span class="route-tier-summary">
+                      <span class="route-tier-summary__pill route-tier-summary__pill--primary">
+                        {{ routeTierCount(wt, 'primary') }} {{ t('workTypes.layers.primary') }}
+                      </span>
+                      <span class="route-tier-summary__pill route-tier-summary__pill--secondary">
+                        {{ routeTierCount(wt, 'secondary') }} {{ t('workTypes.layers.secondary') }}
+                      </span>
+                    </span>
+                    <span v-for="m in routeSummary(wt)" :key="m" class="route-chip">{{ m }}</span>
+                  </template>
                 </td>
                 <td><span :class="wt.enabled ? 'badge badge-green' : 'badge badge-red'">{{ wt.enabled ? t('workTypes.list.rowEnabled') : t('workTypes.list.rowDisabled') }}</span></td>
               </tr>
@@ -1008,23 +1191,109 @@ watch(activeTab, (tab) => {
 }
 
 .route-cards { display: flex; flex-direction: column; gap: 12px; }
+
+/* Two-layer UI: one .layer-block per tier (primary, secondary). Each
+ * block has its own header (pill + count + hint + add button) and its
+ * own list of .route-card items, draggable within the block. */
+.layer-stack { display: flex; flex-direction: column; gap: 16px; }
+.layer-block {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 10px 12px 12px;
+  background: var(--card);
+}
+.layer-block--primary { border-left: 3px solid var(--success); }
+.layer-block--secondary { border-left: 3px solid color-mix(in srgb, var(--accent) 60%, transparent); }
+.layer-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-bottom: 8px;
+}
+.layer-pill {
+  display: inline-flex; align-items: center;
+  padding: 2px 8px;
+  border-radius: 99px;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+.layer-pill--primary {
+  background: rgba(63,185,80,.18);
+  color: var(--success);
+  border: 1px solid rgba(63,185,80,.4);
+}
+.layer-pill--secondary {
+  background: color-mix(in srgb, var(--accent) 18%, transparent);
+  color: var(--accent-h);
+  border: 1px solid color-mix(in srgb, var(--accent) 35%, transparent);
+}
+.layer-count {
+  font-size: 10px;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+.layer-hint {
+  font-size: 10px;
+  color: var(--muted);
+  flex: 0 1 auto;
+}
+.layer-spacer { flex: 1 1 auto; }
+.layer-empty {
+  padding: 12px;
+  text-align: center;
+  color: var(--muted);
+  font-size: 11px;
+  border: 1px dashed var(--border);
+  border-radius: var(--radius);
+}
+
 .route-card {
   padding: 12px;
   border: 1px solid var(--border);
   border-radius: var(--radius);
   background: var(--bg-subtle);
+  list-style: none;
 }
 .route-card--disabled { opacity: 0.65; }
+.route-card--dragging {
+  opacity: 0.55;
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 8%, var(--bg-subtle));
+}
+.route-card[draggable="true"] { cursor: grab; }
+.route-card[draggable="true"]:active { cursor: grabbing; }
 .route-card-head {
   display: flex;
   align-items: center;
   gap: 8px;
   margin-bottom: 10px;
+  flex-wrap: wrap;
 }
+.route-drag-handle {
+  font-size: 14px;
+  line-height: 1;
+  color: var(--muted);
+  padding: 2px 6px;
+  border-radius: 4px;
+  user-select: none;
+  cursor: grab;
+}
+.route-drag-handle:hover { background: var(--bg); color: var(--text); }
 .route-index {
   font-size: 11px;
   font-weight: 700;
   color: var(--muted);
+}
+.route-tier-tag {
+  font-size: 10px;
+  color: var(--muted);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  padding: 1px 6px;
+  border-radius: 99px;
 }
 .route-enabled {
   display: flex;
@@ -1058,6 +1327,25 @@ watch(activeTab, (tab) => {
   gap: 4px;
   font-size: 11px;
   color: var(--muted);
+}
+
+.route-tier-summary { display: inline-flex; gap: 4px; margin-right: 4px; }
+.route-tier-summary__pill {
+  padding: 1px 6px;
+  border-radius: 99px;
+  font-size: 10px;
+  font-weight: 600;
+  border: 1px solid var(--border);
+}
+.route-tier-summary__pill--primary {
+  background: rgba(63,185,80,.12);
+  color: var(--success);
+  border-color: rgba(63,185,80,.35);
+}
+.route-tier-summary__pill--secondary {
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+  color: var(--accent-h);
+  border-color: color-mix(in srgb, var(--accent) 25%, transparent);
 }
 .empty-routes {
   padding: 24px;
