@@ -479,7 +479,23 @@ func (e *Executor) prepareAnthropicRequestBody(params *ExecParams, cand provider
 				)
 				return e.legacyAnthropicBody(params, cand, sourceBody)
 			}
-			return nil, fmt.Errorf("ir parse openai: %w", err)
+			// 2026-08-12 P0 fix: preserve Kind=KindToolCallIdMismatch so the
+			// outer RecordFailure() in executor_common.go:104 can see it
+			// (and skip circuit-breaker counting via IsClientBug check at
+			// domains/credential/breaker.go:320). Without this typed wrap,
+			// classifyKind() in executor_common.go:124 falls back to
+			// ClassifyError() regex matching on the wrapped string, which
+			// does NOT match toolCallIdMismatchRe (that pattern only
+			// matches 2013 error codes) and regresses to KindTransient —
+			// the direct cause of "tool_call validation failed" cascading
+			// into circuit-open flicker every time a Cursor/Claude Code
+			// client compresses history and drops a tool_use block.
+			// Mirrors the 2026-07-03 P0 fix at executor_chat.go:879-895.
+			return nil, &upstreampkg.Error{
+				Kind:    errorsx.KindToolCallIdMismatch,
+				Message: fmt.Sprintf("ir parse openai: %s", err.Error()),
+				Err:     err,
+			}
 		}
 		// Override model to outbound model (matching existing behavior)
 		irReq.Model = resolveOutboundModel(params, cand)
@@ -505,7 +521,19 @@ func (e *Executor) prepareAnthropicRequestBody(params *ExecParams, cand provider
 				)
 				return e.legacyAnthropicBody(params, cand, sourceBody)
 			}
-			return nil, fmt.Errorf("ir serialize anthropic: %w", err)
+			// 2026-08-12 P0 fix: preserve Kind=KindToolCallIdMismatch so
+			// circuit-breaker RecordFailure() recognises this as a client
+			// bug (IsClientBug=true) and skips credential state degradation.
+			// Without this, "tool_call validation failed" surfaces as
+			// KindTransient via the wrapped fmt.Errorf string and triggers
+			// circuit-open flicker on the credential (see 2026-08-12
+			// prod incident: claude-sonnet-5 / cred 17 / 130dao). Mirrors
+			// the 2026-07-03 P0 fix at executor_chat.go:879-895.
+			return nil, &upstreampkg.Error{
+				Kind:    errorsx.KindToolCallIdMismatch,
+				Message: fmt.Sprintf("ir serialize anthropic: %s", err.Error()),
+				Err:     err,
+			}
 		}
 		// Apply remaining Anthropic-path transforms (sanitize, fix, validate)
 		if e.SanitizeAnthropicTools != nil {
