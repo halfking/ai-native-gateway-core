@@ -44,19 +44,24 @@ func (m *Manager) ClearState(ctx context.Context, credentialID int, rawModel str
 
 // ClearStateForTenant clears cooling state and error counters for one
 // tenant-qualified node after an emergency repair.
+//
+// A missing Redis node key is treated as success (not an error): an idle or
+// freshly-added node may never have had cooling/fail state recorded, so there
+// is nothing to clear. Returning a hard error here caused the routing-v2
+// emergency-repair UI to warn "URSM 状态未清理" even though PostgreSQL (the
+// source of truth for resolve) was already updated correctly (2026-08-13).
 func (m *Manager) ClearStateForTenant(ctx context.Context, tenant string, credentialID int, rawModel string) error {
 	if m == nil || m.store == nil {
 		return fmt.Errorf("ursm.v2: nil manager")
 	}
 	key := store.NodeKeyForTenant(m.cfg.RedisKeyPrefix, tenant, credentialID, rawModel)
-	result, err := store.ClearStateScript.Run(ctx, m.store.RawClient(),
+	_, err := store.ClearStateScript.Run(ctx, m.store.RawClient(),
 		[]string{key}, fmt.Sprintf("%d", time.Now().UnixMilli())).Slice()
 	if err != nil {
 		return fmt.Errorf("ursm.v2: clear_state: %w", err)
 	}
-	if len(result) > 0 && result[0] == "key_not_found" {
-		return fmt.Errorf("ursm.v2: node key not found in Redis")
-	}
+	// key_not_found is benign — nothing to clear. Still invalidate the in-memory
+	// cache so the next read reflects the (now clean) authoritative state.
 	m.invalidateNode(tenant, credentialID, rawModel)
 	return nil
 }

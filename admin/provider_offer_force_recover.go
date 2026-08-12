@@ -33,6 +33,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/kaixuan/llm-gateway-go/domains/ursm/v2/api"
 )
 
 func (h *Handler) handleProviderModelOffer(w http.ResponseWriter, r *http.Request, providerID int, offerPath string) {
@@ -542,11 +544,87 @@ func (h *Handler) setCredentialManualDisabled(w http.ResponseWriter, r *http.Req
 	// ourselves to keep the in-memory routing layer in sync.
 	invalidateRoutingCaches(r.Context(), h.db, "credentials", credID)
 
+	// 2026-08-13: mirror the manual_disabled flag into URSM v2 so the Redis
+	// manual_hold stays consistent with PostgreSQL under URSM_v2_MODE=
+	// authoritative. The emergency-repair force_disable/force_enable path
+	// already does this; the Settings-tab checkbox previously flipped only the
+	// DB column, so a checkbox disable could lag the Redis hold. Fan out across
+	// every bound raw_model because this endpoint is credential-scoped (no
+	// model). Best-effort: failures are logged, never block the HTTP response.
+	ursmApplied := h.applyURSMManualDisabled(ctx, credID, req.ManualDisabled, req.Reason, actor)
+
 	writeJSON(w, http.StatusOK, map[string]any{
-		"message":         "updated",
-		"manual_disabled": req.ManualDisabled,
-		"actor":           actor,
+		"message":             "updated",
+		"manual_disabled":     req.ManualDisabled,
+		"actor":               actor,
+		"ursm_v2_applied":     ursmApplied.applied,
+		"ursm_v2_models":      ursmApplied.models,
+		"ursm_v2_errors":      ursmApplied.errors,
 	})
+}
+
+// urmsManualDisableResult reports the URSM v2 manual-hold fan-out outcome for
+// setCredentialManualDisabled. Used only to surface diagnostics in the response.
+type urmsManualDisableResult struct {
+	applied bool   // true if at least one model's ApplyAdmin succeeded
+	models  int    // number of bound raw_models attempted
+	errors  int    // number of per-model ApplyAdmin failures
+}
+
+// applyURSMManualDisabled fans an URSM v2 manual-hold (or release) across every
+// raw_model bound to the credential. No-op when URSM v2 is not configured. The
+// tenant is read from the credentials row; missing tenant is treated as the
+// default ("") tenant, matching handleEmergencyRepair.
+func (h *Handler) applyURSMManualDisabled(ctx context.Context, credID int, disabled bool, reason, actor string) urmsManualDisableResult {
+	out := urmsManualDisableResult{}
+	if h.ursmV2 == nil {
+		return out
+	}
+	var tenant string
+	if err := h.db.QueryRow(ctx,
+		"SELECT COALESCE(tenant_id,'') FROM credentials WHERE id = $1", credID,
+	).Scan(&tenant); err != nil {
+		slog.Warn("manual_disabled: tenant lookup failed", "cred", credID, "error", err)
+		return out
+	}
+	rows, err := h.db.Query(ctx, `
+		SELECT pm.raw_model_name
+		FROM credential_model_bindings cmb
+		JOIN provider_models pm ON pm.id = cmb.provider_model_id
+		WHERE cmb.credential_id = $1
+	`, credID)
+	if err != nil {
+		slog.Warn("manual_disabled: bound models query failed", "cred", credID, "error", err)
+		return out
+	}
+	defer rows.Close()
+	disabledPtr := disabled
+	issuedAt := time.Now().UnixMilli()
+	for rows.Next() {
+		var rawModel string
+		if err := rows.Scan(&rawModel); err != nil {
+			continue
+		}
+		out.models++
+		action := api.AdminAction{
+			Scope:          api.ScopeNode,
+			CredentialID:   credID,
+			RawModel:       rawModel,
+			TenantID:       tenant,
+			ManualDisabled: &disabledPtr,
+			Reason:         reason,
+			Actor:          actor,
+			IssuedAtMs:     issuedAt,
+		}
+		if err := h.ursmV2.ApplyAdmin(ctx, action); err != nil {
+			out.errors++
+			slog.Warn("manual_disabled: ursm.v2 apply_admin failed",
+				"cred", credID, "model", rawModel, "error", err)
+			continue
+		}
+		out.applied = true
+	}
+	return out
 }
 
 // setDefaultProbeModel manually pins a credential's probe model

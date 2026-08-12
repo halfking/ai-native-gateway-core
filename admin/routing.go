@@ -925,6 +925,7 @@ func (h *Handler) handleEmergencyRepair(w http.ResponseWriter, r *http.Request) 
 				quota_recover_at = NULL,
 				circuit_state = 'closed',
 				cooling_until = NULL,
+				health_status = 'healthy',
 				consecutive_failures = 0,
 				state_reason_code = NULL,
 				state_reason_detail = $2,
@@ -1001,6 +1002,48 @@ func (h *Handler) handleEmergencyRepair(w http.ResponseWriter, r *http.Request) 
 			probeRows = tag.RowsAffected()
 		}
 
+		// Clear model_probe_state broken_confirmed (2026-08-13): the SQL view
+		// v_routable_credential_models also gates routability on
+		// model_probe_state.state != 'broken_confirmed', and
+		// reconcileBrokenConfirmedBindings re-marks the cmb unavailable every
+		// probe cycle while it stays broken_confirmed. Without this clear,
+		// force_enable leaves a broken_confirmed node non-routable despite the
+		// credential/cmb/node_probe resets above. 'recovering' is immediately
+		// routable (only 'broken_confirmed' is gated) and matches the
+		// BrokenProbeReviver semantics.
+		var modelProbeRows int64
+		if req.RawModel != "" {
+			tag, err := tx.Exec(ctx, `
+				UPDATE model_probe_state SET
+					state = 'recovering',
+					consecutive_failures = 0,
+					next_retry_at = now(),
+					last_state_change_at = now()
+				WHERE credential_id = $1 AND raw_model_name = $2
+				  AND state = 'broken_confirmed'
+			`, req.CredentialID, req.RawModel)
+			if err != nil {
+				writeError(w, http.StatusInternalServerError, "reset model_probe_state failed: "+err.Error())
+				return
+			}
+			modelProbeRows = tag.RowsAffected()
+		} else {
+			tag, err := tx.Exec(ctx, `
+				UPDATE model_probe_state SET
+					state = 'recovering',
+					consecutive_failures = 0,
+					next_retry_at = now(),
+					last_state_change_at = now()
+				WHERE credential_id = $1
+				  AND state = 'broken_confirmed'
+			`, req.CredentialID)
+			if err != nil {
+				writeError(w, http.StatusInternalServerError, "reset model_probe_state failed: "+err.Error())
+				return
+			}
+			modelProbeRows = tag.RowsAffected()
+		}
+
 		if err := tx.Commit(ctx); err != nil {
 			writeError(w, http.StatusInternalServerError, "commit failed: "+err.Error())
 			return
@@ -1012,6 +1055,7 @@ func (h *Handler) handleEmergencyRepair(w http.ResponseWriter, r *http.Request) 
 		beforeAfter["cmb_available"] = cmbRows > 0 || req.RawModel == ""
 		beforeAfter["cmb_rows_updated"] = cmbRows
 		beforeAfter["node_probe_rows_updated"] = probeRows
+		beforeAfter["model_probe_rows_updated"] = modelProbeRows
 
 		// URSM v2: clear manual_hold via ApplyAdmin, AND wipe any
 		// residual disabled/fail_streak/cool_until_ms via ClearState.

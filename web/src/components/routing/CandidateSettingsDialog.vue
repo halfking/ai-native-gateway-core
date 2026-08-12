@@ -50,11 +50,17 @@ const lifecycleOptions = [
   { value: 'test', label: 'test（测试）' },
 ]
 
-// Emergency repair actions availability based on current state
-// R6 fix: canForceEnable must only be enabled when the credential is
-// currently disabled. Previous implementation returned true when EITHER
-// status was non-active, which incorrectly enabled the button on
-// lifecycle='retired' (lifecycle_status cannot be flipped here).
+// Emergency repair actions availability based on current state.
+//
+// canForceEnable is gated on the credential being STRUCTURALLY active
+// (status/lifecycle active, in-effect, not expired) — force_enable resets
+// RUNTIME blocks (manual_disabled / availability_state / circuit / quota /
+// broken_confirmed) without changing structure, so it is only meaningful on a
+// structurally-active node. It does NOT require a runtime block to be present:
+// an admin may still click it to clear a stale broken_confirmed that resolve
+// surfaces (2026-08-13: force_enable now also resets model_probe_state). When
+// the node is already fully healthy, confirmEmergencyRepair short-circuits to
+// a no-op message instead of silently resetting counters.
 const canForceEnable = computed(() => {
   const c = props.candidate
   const inEffect = (c.effective_at == null) ||
@@ -65,6 +71,17 @@ const canForceEnable = computed(() => {
     c.lifecycle_status === 'active' &&
     inEffect &&
     notExpired
+})
+
+// hasRuntimeBlock reports whether any runtime gate currently makes the node
+// non-routable or degraded (so force_enable would actually do something).
+const hasRuntimeBlock = computed(() => {
+  const c = props.candidate
+  if (!c.routable) return true
+  if (c.circuit_state && c.circuit_state !== 'closed') return true
+  if (c.availability_state && c.availability_state !== 'ready') return true
+  if (c.quota_state && c.quota_state !== 'ok') return true
+  return false
 })
 
 const canForceDisable = computed(() => {
@@ -102,6 +119,13 @@ async function confirmEmergencyRepair() {
 
   emergencyErr.value = ''
   emergencyOk.value = ''
+  // 2026-08-13: force_enable on an already-healthy node is a no-op — surface
+  // that to the operator instead of silently resetting counters/timestamps.
+  if (pending.action === 'force_enable' && !hasRuntimeBlock.value) {
+    emergencyOk.value = '节点当前已健康（无运行态阻塞），无需强制启用'
+    pendingRepair.value = null
+    return
+  }
   emergencyRepairing.value = pending.action
   try {
     const result = await emergencyRepair({

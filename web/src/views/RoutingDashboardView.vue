@@ -387,7 +387,14 @@ async function runSim() {
 
 function startPoll() {
   stopPoll()
-  pollTimer = setInterval(() => { loadAudit(); loadDecisions() }, 5000)
+  pollTimer = setInterval(() => {
+    loadAudit()
+    loadDecisions()
+    // 2026-08-13: silently re-resolve on the resolve tab so node-status changes
+    // (auto-recovery flipping availability_state back to ready, a new circuit
+    // open, or another admin's force_enable) appear without a manual re-pick.
+    if (activeTab.value === 'resolve' && resolved.value) refreshResolveSilent()
+  }, 5000)
 }
 function stopPoll() {
   if (pollTimer) { clearInterval(pollTimer); pollTimer = null }
@@ -443,6 +450,41 @@ const resolveUnavailableCount = computed(() =>
 
 function candidateBlockReason(c: RoutingCandidate): string {
   return c.block_reason || c.runtime_block_reason || 'unavailable'
+}
+
+// resolveStateBadge classifies a candidate into a richer availability state for
+// the resolve table (2026-08-13). Previously the row showed only a binary
+// green/red badge + a raw block_reason; now the badge reflects the actual
+// availability_state / circuit_state / quota_state so operators can see at a
+// glance WHY a node is unroutable (cooling vs auth_failed vs circuit-open).
+function resolveStateBadge(c: RoutingCandidate): { label: string; cls: string } {
+  if (c.routable) return { label: t('routing.routable'), cls: 'badge-green' }
+  const av = c.availability_state
+  if (av === 'suspended') return { label: '已挂起', cls: 'badge-red' }
+  if (av === 'auth_failed') return { label: '鉴权失败', cls: 'badge-red' }
+  if (av === 'unreachable') return { label: '不可达', cls: 'badge-red' }
+  if (av === 'rate_limited') return { label: '限流', cls: 'badge-yellow' }
+  if (av === 'cooling') return { label: '冷却中', cls: 'badge-yellow' }
+  if (c.circuit_state === 'open') return { label: '熔断', cls: 'badge-red' }
+  if (c.circuit_state === 'half_open') return { label: '半开探测', cls: 'badge-yellow' }
+  if (c.quota_state && c.quota_state !== 'ok') return { label: '配额耗尽', cls: 'badge-yellow' }
+  return { label: t('routing.unavailable'), cls: 'badge-red' }
+}
+
+// resolveStateHint returns a compact, human-readable cause line: the earliest
+// recovery timestamp as a relative countdown plus the consecutive-failure count.
+// Falls back to the raw block_reason when no structured signal is present.
+function resolveStateHint(c: RoutingCandidate): string {
+  const parts: string[] = []
+  const recoverAt = c.availability_recover_at || c.cooling_until || c.quota_recover_at
+  if (recoverAt) {
+    const rel = fmtTimeUntil(recoverAt)
+    if (rel) parts.push('恢复 ' + rel)
+  }
+  const fails = c.credential_consecutive_failures ?? c.consecutive_failures ?? 0
+  if (fails > 0) parts.push(`连续失败 ${fails}`)
+  if (parts.length === 0) parts.push(candidateBlockReason(c))
+  return parts.join(' · ')
 }
 
 function onCandidateDragStart(c: RoutingCandidate, event: DragEvent) {
@@ -561,6 +603,22 @@ async function doResolve() {
   }
 }
 
+// refreshResolveSilent re-resolves without toggling the resolving spinner or
+// appending to the log, so the auto-refresh poll updates node statuses in place
+// without disrupting an admin who may be mid-interaction. On error the previous
+// candidate list is kept (stale-but-better-than-empty).
+async function refreshResolveSilent() {
+  if (!modelInput.value.trim() || resolving.value) return
+  try {
+    const profile = clientProfile.value.trim()
+    const res = await resolveRouting(modelInput.value.trim(), profile || undefined, true)
+    resolution.value = res
+    resolveCandidates.value = res.candidates
+  } catch {
+    // swallow — keep stale list; next tick retries
+  }
+}
+
 function replayFromLog(entry: ResolveLogEntry) {
   modelInput.value = entry.model
   clientProfile.value = entry.profile
@@ -571,9 +629,9 @@ watch(autoRefresh, (v) => { v ? startPoll() : stopPoll() })
 watch(activeTab, (tab) => {
   if (tab === 'analytics') { loadAudit(); loadAnalytics() }
   if (tab === 'live') { loadAudit(); loadDecisions(); if (autoRefresh.value) startPoll() }
+  else if (tab === 'resolve') { loadResolveLog(); if (autoRefresh.value) startPoll() }
   else stopPoll()
   if (tab === 'policy') { loadPolicy(); loadCosts() }
-  if (tab === 'resolve') loadResolveLog()
   if (route.query.tab !== tab) {
     router.replace({ query: { ...route.query, tab } })
   }
@@ -595,6 +653,22 @@ function fmtMs(ms: number | undefined): string {
 function fmtCost(n: number | undefined): string {
   if (!n || n <= 0) return '$0'
   return '$' + n.toFixed(4)
+}
+// fmtTimeUntil renders an ISO timestamp as a short relative countdown for the
+// resolve status hint (e.g. "2m", "1h", "已到点"). Returns '' for unparseable
+// or past-elapsed timestamps with no near-future boundary.
+function fmtTimeUntil(iso: string | null | undefined): string {
+  if (!iso) return ''
+  const ts = new Date(iso).getTime()
+  if (!ts || isNaN(ts)) return ''
+  const diffMs = ts - Date.now()
+  if (diffMs <= 0) return '已到点'
+  const mins = Math.round(diffMs / 60000)
+  if (mins < 1) return '<1m'
+  if (mins < 60) return `${mins}m`
+  const hrs = Math.round(mins / 60)
+  if (hrs < 24) return `${hrs}h`
+  return `${Math.round(hrs / 24)}d`
 }
 function maxDimValue(w: ProfileWeights): number {
   return Math.max(w.Price, w.Speed, w.Stability, w.Match, w.Pressure, w.ContextFit, 1)
@@ -1176,11 +1250,11 @@ onUnmounted(() => stopPoll())
                 <td v-if="superAdmin" class="drag-cell" title="拖动以调整优先级" aria-label="拖动以调整优先级">⠿</td>
                 <td class="rank-cell">{{ i + 1 }}</td>
                 <td>
-                  <span class="badge" :class="c.routable ? 'badge-green' : 'badge-red'">
-                    {{ c.routable ? t('routing.routable') : t('routing.unavailable') }}
+                  <span class="badge" :class="resolveStateBadge(c).cls">
+                    {{ resolveStateBadge(c).label }}
                   </span>
                   <div v-if="!c.routable" class="text-muted block-reason">
-                    {{ candidateBlockReason(c) }}
+                    {{ resolveStateHint(c) }}
                   </div>
                 </td>
                 <td>
