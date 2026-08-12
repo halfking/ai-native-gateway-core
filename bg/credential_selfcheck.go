@@ -70,6 +70,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 // credentialSelfcheckCycleInterval is the wake-up cadence.  Each tick
@@ -95,17 +96,56 @@ type credentialSelfcheckDB interface {
 	Exec(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error)
 }
 
+type credentialSelfcheckConn interface {
+	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
+	Exec(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error)
+	Release(discard bool)
+}
+
+type credentialSelfcheckConnPool interface {
+	Acquire(ctx context.Context) (credentialSelfcheckConn, error)
+}
+
+type pgxCredentialSelfcheckPool struct {
+	pool *pgxpool.Pool
+}
+
+func (p pgxCredentialSelfcheckPool) Acquire(ctx context.Context) (credentialSelfcheckConn, error) {
+	conn, err := p.pool.Acquire(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return pgxCredentialSelfcheckConn{Conn: conn}, nil
+}
+
+type pgxCredentialSelfcheckConn struct {
+	*pgxpool.Conn
+}
+
+func (c pgxCredentialSelfcheckConn) Release(discard bool) {
+	if discard {
+		conn := c.Hijack()
+		_ = conn.Close(context.Background())
+		return
+	}
+	c.Conn.Release()
+}
+
 // CredentialSelfcheckWorker handles self-checks for credentials with recent
 // request errors. Featured-model checks are owned by ModelProbeRunner.
 type CredentialSelfcheckWorker struct {
-	db      credentialSelfcheckDB
-	apiKey  string
-	baseURL string
-	client  *http.Client
+	db       credentialSelfcheckDB
+	connPool credentialSelfcheckConnPool
+	apiKey   string
+	baseURL  string
+	client   *http.Client
 
-	stopCh    chan struct{}
-	stopOnce  sync.Once
-	startOnce sync.Once
+	stopCh      chan struct{}
+	stopOnce    sync.Once
+	startOnce   sync.Once
+	lifecycleMu sync.Mutex
+	cancel      context.CancelFunc
+	wg          sync.WaitGroup
 
 	// probeSink (2026-08-11) mirrors the per-credential daily self-check
 	// lifecycle to the 自检 SSE stream. This worker has no ActiveProbeEmitter
@@ -155,7 +195,7 @@ func (w *CredentialSelfcheckWorker) publishSelfcheck(credentialID int, runID int
 
 // NewCredentialSelfcheckWorker constructs the worker.  baseURL="" picks
 // LLM_GATEWAY_SELF_CHECK_BASE_URL or the local gateway loopback URL.
-func NewCredentialSelfcheckWorker(db credentialSelfcheckDB, apiKey, baseURL string) *CredentialSelfcheckWorker {
+func NewCredentialSelfcheckWorker(db *pgxpool.Pool, apiKey, baseURL string) *CredentialSelfcheckWorker {
 	if baseURL == "" {
 		if envURL := strings.TrimSpace(os.Getenv("LLM_GATEWAY_SELF_CHECK_BASE_URL")); envURL != "" {
 			baseURL = envURL
@@ -163,7 +203,7 @@ func NewCredentialSelfcheckWorker(db credentialSelfcheckDB, apiKey, baseURL stri
 			baseURL = "http://127.0.0.1:8781/v1"
 		}
 	}
-	return &CredentialSelfcheckWorker{
+	worker := &CredentialSelfcheckWorker{
 		db:      db,
 		apiKey:  apiKey,
 		baseURL: baseURL,
@@ -171,14 +211,30 @@ func NewCredentialSelfcheckWorker(db credentialSelfcheckDB, apiKey, baseURL stri
 		stopCh:  make(chan struct{}),
 		rng:     rand.New(rand.NewSource(time.Now().UnixNano())),
 	}
+	if db != nil {
+		worker.connPool = pgxCredentialSelfcheckPool{pool: db}
+	}
+	return worker
 }
 
 // Start launches the worker goroutine. It is safe to call repeatedly.
-func (w *CredentialSelfcheckWorker) Start(ctx context.Context) {
+func (w *CredentialSelfcheckWorker) Start(parent context.Context) {
 	if w == nil {
 		return
 	}
 	w.startOnce.Do(func() {
+		w.lifecycleMu.Lock()
+		select {
+		case <-w.stopCh:
+			w.lifecycleMu.Unlock()
+			return
+		default:
+		}
+		ctx, cancel := context.WithCancel(parent)
+		w.cancel = cancel
+		w.wg.Add(1)
+		w.lifecycleMu.Unlock()
+
 		go w.loop(ctx)
 		slog.Info("credential_selfcheck_worker started",
 			"cycle_interval", credentialSelfcheckCycleInterval,
@@ -187,15 +243,26 @@ func (w *CredentialSelfcheckWorker) Start(ctx context.Context) {
 	})
 }
 
-// Stop requests termination. It is safe to call repeatedly, including before Start.
+// Stop requests termination and waits for the loop and active HTTP/DB work.
+// It is safe to call repeatedly, including before Start.
 func (w *CredentialSelfcheckWorker) Stop() {
 	if w == nil {
 		return
 	}
-	w.stopOnce.Do(func() { close(w.stopCh) })
+	w.stopOnce.Do(func() {
+		close(w.stopCh)
+		w.lifecycleMu.Lock()
+		cancel := w.cancel
+		w.lifecycleMu.Unlock()
+		if cancel != nil {
+			cancel()
+		}
+	})
+	w.wg.Wait()
 }
 
 func (w *CredentialSelfcheckWorker) loop(ctx context.Context) {
+	defer w.wg.Done()
 	defer func() {
 		if r := recover(); r != nil {
 			slog.Error("credential_selfcheck_worker panic", "recover", r)
@@ -217,9 +284,9 @@ func (w *CredentialSelfcheckWorker) loop(ctx context.Context) {
 
 // cycleOnce picks at most ONE due credential and processes it sequentially.
 // Sequential per-process (5-min tick, 1 credential per tick) combined with
-// a PG advisory lock guarantees cross-instance isolation: if the selected
-// (credential_id) is already being self-checked by another gateway instance,
-// pg_try_advisory_xact_lock returns false and we skip silently.
+// a PG session advisory lock guarantees cross-instance isolation: if the
+// selected credential is already being self-checked by another gateway
+// instance, pg_try_advisory_lock returns false and we skip silently.
 func (w *CredentialSelfcheckWorker) cycleOnce(ctx context.Context) {
 	credID, ok, err := w.pickDueCredential(ctx)
 	if err != nil {
@@ -230,21 +297,43 @@ func (w *CredentialSelfcheckWorker) cycleOnce(ctx context.Context) {
 		return // nothing due
 	}
 
-	// Cross-instance mutual exclusion via PG advisory lock.
-	// Lock key = credential_id (int4).  Failure means another
-	// instance already holds the lock → skip this tick.
-	var locked bool
+	if w.connPool == nil {
+		slog.Warn("credential_selfcheck_worker: advisory lock unavailable",
+			"credential_id", credID)
+		return
+	}
 	lockCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
-	defer cancel()
-	if err := w.db.QueryRow(lockCtx,
-		`SELECT pg_try_advisory_xact_lock($1)`, credID,
-	).Scan(&locked); err != nil || !locked {
+	conn, err := w.connPool.Acquire(lockCtx)
+	cancel()
+	if err != nil {
+		slog.Warn("credential_selfcheck_worker: acquire advisory lock connection failed",
+			"credential_id", credID, "error", err)
+		return
+	}
+
+	discardConn := false
+	defer func() { conn.Release(discardConn) }()
+	var locked bool
+	lockCtx, cancel = context.WithTimeout(ctx, 3*time.Second)
+	err = conn.QueryRow(lockCtx, `SELECT pg_try_advisory_lock($1)`, credID).Scan(&locked)
+	cancel()
+	if err != nil || !locked {
 		if err != nil {
 			slog.Warn("credential_selfcheck_worker: advisory lock query failed",
 				"credential_id", credID, "error", err)
 		}
 		return
 	}
+	defer func() {
+		unlockCtx, unlockCancel := context.WithTimeout(context.WithoutCancel(ctx), 3*time.Second)
+		defer unlockCancel()
+		var unlocked bool
+		if unlockErr := conn.QueryRow(unlockCtx, `SELECT pg_advisory_unlock($1)`, credID).Scan(&unlocked); unlockErr != nil || !unlocked {
+			discardConn = true
+			slog.Warn("credential_selfcheck_worker: advisory unlock failed; discarding connection",
+				"credential_id", credID, "unlocked", unlocked, "error", unlockErr)
+		}
+	}()
 
 	if err := w.runOne(ctx, credID); err != nil {
 		slog.Warn("credential_selfcheck_worker: runOne failed",

@@ -260,6 +260,40 @@ func (q *ProbeQueue) Complete(ctx context.Context, task ProbeQueueTask, result P
 	return nil
 }
 
+func (q *ProbeQueue) ExtendLease(ctx context.Context, task ProbeQueueTask, lease time.Duration) error {
+	if q == nil || q.db == nil {
+		return fmt.Errorf("extend probe lease failed: database is unavailable (queue_id=%d)", task.ID)
+	}
+	if lease <= 0 {
+		lease = 30 * time.Second
+	}
+	tag, err := q.db.Exec(ctx, `
+		UPDATE credential_probe_queue
+		SET lease_until=now()+$3, updated_at=now()
+		WHERE id=$1 AND status='running' AND lease_token=$2::uuid AND lease_until >= now() AND expires_at > now()`,
+		task.ID, task.LeaseToken, lease)
+	if err != nil {
+		return fmt.Errorf("extend probe lease failed: %w (queue_id=%d)", err, task.ID)
+	}
+	if tag.RowsAffected() == 0 {
+		return fmt.Errorf("%w (queue_id=%d)", ErrProbeLeaseLost, task.ID)
+	}
+	return nil
+}
+
+func (q *ProbeQueue) OwnsLease(ctx context.Context, task ProbeQueueTask) (bool, error) {
+	if q == nil || q.db == nil {
+		return false, fmt.Errorf("check probe lease failed: database is unavailable (queue_id=%d)", task.ID)
+	}
+	var owned bool
+	err := q.db.QueryRow(ctx, `
+		SELECT EXISTS (
+			SELECT 1 FROM credential_probe_queue
+			WHERE id=$1 AND status='running' AND lease_token=$2::uuid
+			  AND lease_until >= now() AND expires_at > now()
+		)`, task.ID, task.LeaseToken).Scan(&owned)
+	return owned, err
+}
 func (q *ProbeQueue) RequeueExpiredLeases(ctx context.Context) (int64, error) {
 	if q == nil || q.db == nil {
 		return 0, fmt.Errorf("requeue expired probes failed: database is unavailable (queue=credential_probe_queue)")
