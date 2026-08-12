@@ -315,7 +315,7 @@ func (e *Executor) forwardForDispatch(dctx *dispatchCtx, cand provider.Candidate
 			bytesSent = true
 		}
 	}
-	e.recordDispatchError(params, cand, execErr, probeConsumed)
+	e.recordDispatchError(params, cand, execErr, probeConsumed, len(dctx.candidates))
 	return dispatch.ForwardOutcome{Err: execErr, BytesSent: bytesSent}
 }
 
@@ -356,7 +356,10 @@ func (e *Executor) recordDispatchSuccess(params *ExecParams, cand provider.Candi
 
 // recordDispatchError classifies the error and updates credential state so a
 // failing credential cools. model_not_found is recorded at binding scope.
-func (e *Executor) recordDispatchError(params *ExecParams, cand provider.Candidate, err error, probeConsumed bool) {
+// totalCandidates is the post-filter candidate count (from the dispatch
+// context), mirroring legacy's totalCandidates so the sole-candidate fail-open
+// rule is honoured: never escalate the breaker when only one candidate remains.
+func (e *Executor) recordDispatchError(params *ExecParams, cand provider.Candidate, err error, probeConsumed bool, totalCandidates int) {
 	kind := classifyExecError(err)
 	sideEffectCtx, sideEffectCancel := runctx.DetachedTimeout(params.R.Context(), 5*time.Second)
 	defer sideEffectCancel()
@@ -369,7 +372,7 @@ func (e *Executor) recordDispatchError(params *ExecParams, cand provider.Candida
 		e.writeCredentialStateOnError(sideEffectCtx, cand.CredentialID, cand.StandardizedName, kind, err)
 	}
 
-	propagateToBreaker := !errorsx.IsClientBug(kind) && !freeCredentialsTolerateTransient(cand.BillingMode, kind) && len(params.Candidates) > 1
+	propagateToBreaker := !errorsx.IsClientBug(kind) && !freeCredentialsTolerateTransient(cand.BillingMode, kind) && totalCandidates > 1
 	if propagateToBreaker && e.Circuit != nil {
 		e.Circuit.RecordFailure(cand.ProviderID, cand.CredentialID, kind)
 	} else if probeConsumed && e.Circuit != nil {

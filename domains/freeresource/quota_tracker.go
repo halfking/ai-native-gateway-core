@@ -333,8 +333,12 @@ func parseRetryAfter(now time.Time, headers map[string]string) (int, time.Time) 
 		if t, err := http.ParseTime(ra); err == nil {
 			resetAt := t.UTC()
 			retry := int(resetAt.Sub(now).Seconds())
-			if retry < 0 {
-				retry = 0
+			// Stale HTTP-date (clock drift / past reset): apply the same
+			// default backoff as the other paths so CorrectFromHeaders does
+			// not persist an auto_reset_at<=now.
+			if retry <= 0 {
+				retry = 60
+				resetAt = now.Add(60 * time.Second)
 			}
 			return retry, resetAt
 		}
