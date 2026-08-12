@@ -97,8 +97,34 @@ func TestModelQualityWorker_TriggerCtxDerivedCancelled(t *testing.T) {
 	w.Stop()
 	select {
 	case <-derived.Done():
-		// expected: derived ctx cancelled because its parent was cancelled
+		// expected: derived ctx cancelled because its parent triggerCtx is cancelled by Stop
 	default:
 		t.Fatal("derived trigger ctx must be cancelled when parent triggerCtx is cancelled by Stop")
 	}
+}
+
+// TestModelQualityWorker_TriggerCtxResetOnRestart verifies that Stop followed
+// by a fresh Start recreates triggerCtx so anomaly-triggered tests remain usable
+// after a worker restart.
+func TestModelQualityWorker_TriggerCtxResetOnRestart(t *testing.T) {
+	w := NewModelQualityWorker("", "", "", time.Second)
+	first := w.triggerCtx
+	w.Stop()
+	if first == nil {
+		t.Fatal("expected initial trigger ctx")
+	}
+	w.Start(context.Background(), nil)
+	second := w.triggerCtx
+	if second == nil {
+		t.Fatal("expected trigger ctx after restart")
+	}
+	if first == second {
+		t.Fatal("expected restart to create a fresh trigger ctx")
+	}
+	select {
+	case <-second.Done():
+		t.Fatal("fresh trigger ctx should not be canceled immediately after restart")
+	default:
+	}
+	w.Stop()
 }

@@ -123,6 +123,19 @@ func TestParseRetryAfter_PrefersXRateLimitReset(t *testing.T) {
 	}
 }
 
+func TestParseRetryAfter_StaleRateLimitResetUsesDefaultBackoff(t *testing.T) {
+	now := time.Unix(1700000000, 0).UTC()
+	for _, reset := range []string{"0", "1699999990", "1700000000"} {
+		retry, resetAt := parseRetryAfter(now, map[string]string{"X-RateLimit-Reset": reset})
+		if retry != 60 {
+			t.Errorf("X-RateLimit-Reset %q should use 60s default backoff, got %d", reset, retry)
+		}
+		if !resetAt.Equal(now.Add(60 * time.Second)) {
+			t.Errorf("X-RateLimit-Reset %q expected reset=now+60s, got %v", reset, resetAt)
+		}
+	}
+}
+
 func TestParseRetryAfter_RetryAfterSeconds(t *testing.T) {
 	headers := map[string]string{"Retry-After": "30"}
 	now := time.Unix(1700000000, 0).UTC()
@@ -167,6 +180,23 @@ func TestParseRetryAfter_RetryAfterHTTPDate(t *testing.T) {
 	}
 	if !reset.Equal(future) {
 		t.Errorf("expected reset %v, got %v", future, reset)
+	}
+}
+
+// TestParseRetryAfter_StaleHTTPDateUsesDefaultBackoff ensures a past HTTP-date
+// in Retry-After (clock drift) applies the 60s default backoff instead of
+// clamping to 0 and leaving resetAt in the past (which would let Preflight
+// immediately re-enable the exhausted credential).
+func TestParseRetryAfter_StaleHTTPDateUsesDefaultBackoff(t *testing.T) {
+	now := time.Date(2024, 8, 15, 14, 30, 0, 0, time.UTC)
+	past := now.Add(-5 * time.Minute).UTC()
+	hdr := past.Format(httpTimeFormat)
+	retry, reset := parseRetryAfter(now, map[string]string{"Retry-After": hdr})
+	if retry != 60 {
+		t.Errorf("stale HTTP-date should use 60s default backoff, got %d", retry)
+	}
+	if !reset.Equal(now.Add(60 * time.Second)) {
+		t.Errorf("expected reset=now+60s, got %v", reset)
 	}
 }
 

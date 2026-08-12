@@ -333,6 +333,48 @@ func TestRPMGovernorPaces(t *testing.T) {
 	}
 }
 
+// TestRPMGovernorRespectsQueueBudget ensures the governor never sleeps past
+// the queue-wait deadline when pacing would otherwise take longer.
+func TestRPMGovernorRespectsQueueBudget(t *testing.T) {
+	const rpm = 60 // one token per second
+	g := newRPMGovernor(rpm)
+	ctx := context.Background()
+	qr := &QueuedRequest{Ctx: ctx}
+	// Drain the initial burst so the next acquire would naturally wait ~1s.
+	for i := 0; i < rpm; i++ {
+		if err := g.Acquire(ctx, qr, time.Now().Add(5*time.Second)); err != nil {
+			t.Fatalf("drain acquire %d: %v", i, err)
+		}
+	}
+	giveUp := time.Now().Add(40 * time.Millisecond)
+	start := time.Now()
+	if err := g.Acquire(ctx, qr, giveUp); !errors.Is(err, errPaceTimeout) {
+		t.Fatalf("expected errPaceTimeout, got: %v", err)
+	}
+	if elapsed := time.Since(start); elapsed > 250*time.Millisecond {
+		t.Fatalf("rpm governor exceeded budget: elapsed=%v", elapsed)
+	}
+}
+
+// TestTPMGovernorRespectsQueueBudget ensures the governor never sleeps past
+// the queue-wait deadline when token replenishment would otherwise take longer.
+func TestTPMGovernorRespectsQueueBudget(t *testing.T) {
+	g := newTPMGovernor(60) // one token per second
+	ctx := context.Background()
+	// Drain the initial burst so the next acquire would naturally wait ~1s.
+	if err := g.Acquire(ctx, &QueuedRequest{Ctx: ctx, EstimatedTokens: 60}, time.Now().Add(5*time.Second)); err != nil {
+		t.Fatalf("drain acquire: %v", err)
+	}
+	giveUp := time.Now().Add(40 * time.Millisecond)
+	start := time.Now()
+	if err := g.Acquire(ctx, &QueuedRequest{Ctx: ctx, EstimatedTokens: 1}, giveUp); !errors.Is(err, errPaceTimeout) {
+		t.Fatalf("expected errPaceTimeout, got: %v", err)
+	}
+	if elapsed := time.Since(start); elapsed > 250*time.Millisecond {
+		t.Fatalf("tpm governor exceeded budget: elapsed=%v", elapsed)
+	}
+}
+
 // TestCtxCancelAbandoned: Submit returns ctx.Err() on cancel and the qr is
 // marked abandoned (complete becomes a no-op).
 func TestCtxCancelAbandoned(t *testing.T) {
