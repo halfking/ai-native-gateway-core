@@ -133,3 +133,29 @@ b2fb748e6 fix(streaming): preserve tool_call_id_mismatch kind + emit context-len
 ```
 
 两个 fix commit 都已 push 到 main，并已 deploy 到 245 + 154。
+
+## 后续审计发现 + POST_CONDITION 防御链
+
+**审计发现另外 2 个 schema 漂移**（不属于本次事件但同根源，**未修**）：
+
+- `column rl.status_code does not exist (SQLSTATE 42703)` — credential_selfcheck_worker
+- `column outcome of relation session_summaries does not exist (SQLSTATE 42703)` — session health compute
+
+这两个是**预先存在**的 schema 漂移，建议作为下一次独立 task 修复（建 483 / 484 migrations + POST_CONDITION）。本次不修以保持 PR 范围聚焦。
+
+**deploy-seamless silent-fail 三道防线**（rule 11 §6 审计闭环）：
+
+| 轮 | 修复 | commit |
+|---|---|---|
+| 1 | NOTICE capture：deploy log 显示 `RAISE NOTICE` 而非 swallow（之前 deploy log 只看到 BEGIN/DO/COMMIT） | `96ae7600a` |
+| 2 | stderr capture：PG client 把 NOTICE 走 stderr，把 `2>/tmp/_mig_err_*.log` 改成 `2>&1` 让 stderr 也进 deploy log | `b5a601e31` |
+| 3 | POST_CONDITION assertion：迁移文件头部加 `-- POST_CONDITION: <sql>` 注释，db-changelog.sh 跑迁移后跑 assert，期望至少 1 行。失败时 deploy **中止**（symbol-link switch 不切），但**不回滚 schema**。`tests/deploy_seamless_postcondition_test.sh` 6 个测试覆盖 extract / no-condition / false-positive / PASS path / FAIL path | `5a3673aec` |
+
+481 + 482 已加 `POST_CONDITION` 头，确保未来同类 silent-fail 立即 deploy 失败、运维看到具体 assertion。
+
+**审计时发现的额外问题（独立于本次事件）**：
+
+- `column rl.status_code does not exist (SQLSTATE 42703)` — credential_selfcheck_worker
+- `column outcome of relation session_summaries does not exist (SQLSTATE 42703)` — session health compute
+
+建议作为独立 task（migration 483 / 484 + POST_CONDITION）后续处理。
