@@ -3687,6 +3687,60 @@ func (e *Executor) recordModelNotFound(ctx context.Context, credentialID int, ra
 			"raw_model", rawModel,
 			"error", err)
 	}
+
+	// Self-healing: temporarily exclude this (credential, raw_model) pair
+	// from routing so the gateway stops sending requests to a model the
+	// upstream no longer serves. We write node_probe_state with
+	// last_direct_ok=FALSE and a 5-minute next_retry_at window.
+	//
+	// Both refreshIndexSQL (autoroute/index.go) and filterCurrentlyAvailable
+	// (autoroute/recommend_v2.go) filter on:
+	//   nps.last_direct_ok = false AND nps.next_retry_at > now()
+	// so the pair disappears from the candidate pool for 5 minutes. After
+	// the window expires the pair is eligible again; if it still 404s,
+	// this function re-arms the exclusion. The bg node-probe worker owns
+	// the long-term retry ladder and will eventually set last_direct_ok=TRUE
+	// when an upstream probe confirms the model is back.
+	//
+	// This is scoped to the specific (credential, model) pair — it does
+	// NOT cool the entire credential, so other models on the same
+	// credential remain routable.
+	const mnfCoolWindow = 5 * time.Minute
+	_, mnfErr := e.DB.Pool().Exec(ctx, `
+		INSERT INTO node_probe_state (
+			credential_id, raw_model_name,
+			consecutive_failures, consecutive_successes,
+			last_attempt_at, next_retry_at, next_retry_seconds,
+			paused, in_flight_until,
+			last_direct_ok, last_gateway_ok,
+			last_err_code, last_err_detail,
+			updated_at
+		) VALUES (
+			$1, $2,
+			1, 0,
+			now(), now() + $3::interval, EXTRACT(EPOCH FROM $3::interval)::int,
+			FALSE, NULL,
+			FALSE, FALSE,
+			$4, NULL,
+			now()
+		)
+		ON CONFLICT (credential_id, raw_model_name) DO UPDATE
+		SET last_direct_ok = FALSE,
+		    last_gateway_ok = FALSE,
+		    last_attempt_at = now(),
+		    next_retry_at = now() + $3::interval,
+		    next_retry_seconds = EXTRACT(EPOCH FROM $3::interval)::int,
+		    consecutive_failures = node_probe_state.consecutive_failures + 1,
+		    last_err_code = $4,
+		    in_flight_until = NULL,
+		    updated_at = now()
+	`, credentialID, rawModel, mnfCoolWindow.String(), errorCode)
+	if mnfErr != nil {
+		slog.Warn("record_model_not_found: node_probe_state UPSERT failed",
+			"credential_id", credentialID,
+			"raw_model", rawModel,
+			"error", mnfErr)
+	}
 }
 
 // recordMnfStreak (Step 6, 2026-06-18) increments the per-credential
