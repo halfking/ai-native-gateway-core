@@ -1888,13 +1888,14 @@ func (w *NodeProbeWorker) updateBindingAvailability(ctx context.Context, credID 
 			    unavailable_reason = NULL,
 			    unavailable_at = NULL,
 			    unavailable_recover_at = NULL,
+			    probe_revert_at = NULL,
 			    updated_at = now()
 			FROM provider_models pm
 			WHERE pm.id = cmb.provider_model_id
 			  AND cmb.credential_id = $1
 			  AND pm.raw_model_name = $2
 			  AND COALESCE(cmb.admin_protected, FALSE) = FALSE
-		`, credID, model)
+			`, credID, model)
 		return
 	}
 	_, _ = w.db.Exec(ctx, `
