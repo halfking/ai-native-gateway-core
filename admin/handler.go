@@ -57,6 +57,10 @@ type Handler struct {
 	// events to the dashboard 自检 tab over SSE, mirroring the live request
 	// stream. nil when Redis is not wired — the route is then not registered.
 	probeStreamHub *ProbeSSEHub
+	// probeQueue (2026-08-13, 需求 6) is the unified self-check queue; exposed via
+	// the public POST/DELETE /api/admin/probe/tasks API so external callers can
+	// add/remove probe tasks without knowing internal details. nil in tests.
+	probeQueue *bg.ProbeQueue
 	// freePoolSSE (2026-08-11) fans out free-pool credential quota events
 	// (rate_limited / quota_exhausted / recovered) to the 免费资源 tab over
 	// SSE, so the operator sees state changes without manual refresh. nil when
@@ -1252,6 +1256,13 @@ func (h *Handler) SetSystemMonitorSSE(hub *SystemMonitorSSEHub) {
 // queue stream (自检 tab). Pass nil to disable.
 func (h *Handler) SetProbeStreamSSE(hub *ProbeSSEHub) {
 	h.probeStreamHub = hub
+}
+
+// SetProbeQueue wires the unified self-check queue (需求 6). Enables the public
+// POST/DELETE /api/admin/probe/tasks API so external callers can add/remove
+// probe tasks without knowing internal details. Pass nil to disable.
+func (h *Handler) SetProbeQueue(q *bg.ProbeQueue) {
+	h.probeQueue = q
 }
 
 // SetFreePoolSSE wires the dashboard SSE hub for free-pool credential quota

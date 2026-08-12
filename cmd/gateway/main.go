@@ -2895,6 +2895,9 @@ func main() {
 				})
 				probeQueueWorker.Start(context.Background())
 				slog.Info("durable probe queue worker started", "workers", epWorkers)
+				// 2026-08-13 (需求 6 bullet 1): expose the unified queue via the
+				// public POST/DELETE /api/admin/probe/tasks API.
+				adminHandler.SetProbeQueue(probeQueue)
 			}
 			slog.Info("CHECKPOINT: after activeProbe.Start")
 		}

@@ -217,6 +217,24 @@ func (q *ProbeQueue) CancelNodeProbe(ctx context.Context, credentialID int64, mo
 	return q.Cancel(ctx, buildNodeProbeTaskID(int(credentialID), model))
 }
 
+// BuildProbeDedupKey derives the canonical dedup key for a probe task so
+// external callers (the public POST/DELETE /api/admin/probe/tasks API, 需求 6
+// bullet 1) do not need to know the per-command key shape. It must match the
+// key the corresponding producer (NodeProbeWorker.submitViaQueue,
+// IntegrityProbePlanner) uses so enqueue/cancel collapse on the same row.
+func BuildProbeDedupKey(command string, credentialID int64, model string) string {
+	switch command {
+	case "node_probe", "":
+		return buildNodeProbeTaskID(int(credentialID), model)
+	case "integrity_verify":
+		// matches IntegrityProbePlanner: "integrity:<tenant>:<cred>:<model>";
+		// tenant is resolved at enqueue, so the public API uses the tenant-less form.
+		return fmt.Sprintf("integrity:%d:%s", credentialID, model)
+	default:
+		return fmt.Sprintf("%s:%d:%s", command, credentialID, model)
+	}
+}
+
 // Claim atomically leases ready tasks. It is safe for multiple gateway
 // instances to call this concurrently because rows are locked with SKIP LOCKED.
 func (q *ProbeQueue) Claim(ctx context.Context, limit int, lease time.Duration) ([]ProbeQueueTask, error) {
