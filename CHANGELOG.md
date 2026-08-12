@@ -11,6 +11,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **Session Summaries outcome + Request Logs Hot status_code 漂移修复 (2026-08-13)**: 修复 2026-08-12 审计时发现的另外 2 个 schema 漂移（独立于 481/482）。
 - **第二轮 schema 漂移修复 (2026-08-13)**: 修 483/484 后审计又发现 2 个 SQLSTATE 42703。
+- **第三轮 schema 漂移修复 (2026-08-13)**: 修 485/486 后，485 的 `raw_model_name` 修复让 integrity_fingerprint_drift cron 下一轮命中下一个缺失列 `system_fingerprint`（分层 code-vs-schema drift）。
+  - Migration 487 加 `request_logs.system_fingerprint TEXT` 列。
+  - 带 `-- POST_CONDITION:` 注释。
+  - 详见 `docs/changelogs/2026-08-13-schema-drift-483-484.md` 末尾（追加 487 段）。
+  - **强烈建议 follow-up**：pre-commit hook diff Go SQL 字面量与 canonical schema 列（rule 11 §6 根本解法，避免 runtime cron 报错来发现 schema 漂移）。
+
   - Migration 485 加 `request_logs.raw_model_name TEXT` 列，消除 `bg/integrity_fingerprint_drift.go` 引用该列但 schema 漏列的 code-vs-schema drift。
   - Migration 486 加 `credential_model_bindings.probe_revert_at TIMESTAMPTZ` 列，消除 `bg/probe_rollback.go` + `bg/node_probe.go`（feat(probe) 系列）引用该列但 base schema 升级时漏列的问题。
   - 两处都带 `-- POST_CONDITION:` 注释（POST_CONDITION 防御链）。
