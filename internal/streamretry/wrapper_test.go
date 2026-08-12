@@ -49,19 +49,18 @@ func TestDefaultStreamExecutor_SuccessFirstAttempt(t *testing.T) {
 	}
 }
 
-// TestDefaultStreamExecutor_RetryOnTransientFailure verifies the executor
-// retries a 5xx response. Note: in production the FIRST WriteHeader commits
-// the response, so the executor's retry only changes internal metrics — the
-// client's observed status remains the first one. This test focuses on
-// metrics (what the operator cares about) rather than the recorder body.
+// TestDefaultStreamExecutor_RetryOnTransientFailure verifies retrying a
+// transient failure reported before the handler commits a response.
 func TestDefaultStreamExecutor_RetryOnTransientFailure(t *testing.T) {
 	var attempts int32
 
 	inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		n := atomic.AddInt32(&attempts, 1)
 		if n < 3 {
-			// 503 — retriable per ClassifyHTTPError.
-			http.Error(w, "service unavailable", http.StatusServiceUnavailable)
+			w.(*errorRecorder).err = &HTTPError{
+				StatusCode: http.StatusServiceUnavailable,
+				Err:        errors.New("service unavailable"),
+			}
 			return
 		}
 		w.Header().Set("Content-Type", "text/event-stream")
@@ -95,6 +94,28 @@ func TestDefaultStreamExecutor_RetryOnTransientFailure(t *testing.T) {
 	}
 	if metrics.SuccessAttempt != 2 {
 		t.Errorf("SuccessAttempt = %d, want 2 (0-indexed)", metrics.SuccessAttempt)
+	}
+}
+
+func TestDefaultStreamExecutor_DoesNotRetryCommittedResponse(t *testing.T) {
+	var attempts int32
+	inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&attempts, 1)
+		http.Error(w, "service unavailable", http.StatusServiceUnavailable)
+	})
+
+	cfg := DefaultConfig()
+	cfg.BaseDelayMs = 1
+	exec := NewDefaultStreamExecutor(inner, cfg)
+	metrics, err := exec.ExecuteStreamWithMetrics(context.Background(), httptest.NewRecorder(), newStreamingRequest())
+	if err == nil {
+		t.Fatal("ExecuteStreamWithMetrics() error = nil, want committed response error")
+	}
+	if got := atomic.LoadInt32(&attempts); got != 1 {
+		t.Fatalf("attempts = %d, want 1 after response commitment", got)
+	}
+	if metrics.TotalAttempts != 1 {
+		t.Fatalf("TotalAttempts = %d, want 1", metrics.TotalAttempts)
 	}
 }
 
@@ -158,7 +179,11 @@ func TestDefaultStreamExecutor_DisabledRetryFastPath(t *testing.T) {
 // (the wrapper's LastError is set to the prior attempt's err before sleep).
 func TestDefaultStreamExecutor_ContextCanceledStopsLoop(t *testing.T) {
 	inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		http.Error(w, "fail", http.StatusServiceUnavailable)
+		// Pre-flight failure: status code only, no body. Retriable.
+		w.(*errorRecorder).err = &HTTPError{
+			StatusCode: http.StatusServiceUnavailable,
+			Err:        errors.New("fail"),
+		}
 	})
 
 	cfg := DefaultConfig()
@@ -189,7 +214,12 @@ func TestDefaultStreamExecutor_ContextCanceledStopsLoop(t *testing.T) {
 // retry budget is consumed.
 func TestDefaultStreamExecutor_ExhaustedRetriesReturnsLastError(t *testing.T) {
 	inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		http.Error(w, "service unavailable", http.StatusServiceUnavailable)
+		// Pre-flight failure: status code only, no body. This is
+		// retriable — the handler has not committed a response.
+		w.(*errorRecorder).err = &HTTPError{
+			StatusCode: http.StatusServiceUnavailable,
+			Err:        errors.New("service unavailable"),
+		}
 	})
 
 	cfg := DefaultConfig()

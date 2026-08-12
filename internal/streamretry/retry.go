@@ -30,6 +30,7 @@ import (
 	"math/rand"
 	"net"
 	"net/http"
+	"sync"
 	"syscall"
 	"time"
 )
@@ -249,6 +250,15 @@ type KeepaliveWriter struct {
 	interval time.Duration
 	stopCh   chan struct{}
 	doneCh   chan struct{}
+	writeMu  sync.Mutex
+}
+
+type retryBlockedError struct {
+	err error
+}
+
+func (e *retryBlockedError) Error() string {
+	return fmt.Sprintf("retry blocked after response commitment: %v", e.err)
 }
 
 // NewKeepaliveWriter creates a new keepalive writer.
@@ -308,6 +318,8 @@ func (kw *KeepaliveWriter) sendThinking(message string) {
 	if kw == nil {
 		return
 	}
+	kw.writeMu.Lock()
+	defer kw.writeMu.Unlock()
 
 	// SSE comment format: ": text\n\n"
 	// This keeps the connection alive without triggering data parsing.
@@ -339,6 +351,10 @@ func (rc *RetryContext) ShouldRetry(err error) bool {
 	}
 
 	if rc.Attempt >= rc.Config.MaxRetries {
+		return false
+	}
+	if _, blocked := err.(*retryBlockedError); blocked {
+		rc.LastError = ClassifyError(err)
 		return false
 	}
 
