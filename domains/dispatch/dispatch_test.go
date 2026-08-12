@@ -848,3 +848,116 @@ func TestRetryBudgetRequestOverride(t *testing.T) {
 		t.Fatalf("cred1 should be tried once with request budget 0; calls=%d", got)
 	}
 }
+
+// TestTier2StopDrainsQueuedRequests is the Tier-2 analogue of
+// TestStopNoDrainLoss. A request sits in the credential forwarder's Tier-2
+// queue (governor pacing wait) when Stop() fires. Under the bug the
+// forwarder loop returned on <-cf.ctx.Done() without draining cf.queue, so
+// the qr was never completed and its Submit caller blocked forever. The fix
+// (drainAndComplete) completes every buffered qr with ErrShutdown.
+//
+// Reproduce: a concurrency-1 credential whose single in-flight slot is held
+// by a blocking forward. A second request is admitted into the Tier-2 queue
+// (governor waiting for the slot). Stop() then cancels the forwarder; the
+// queued request must complete (Submit returns ErrShutdown), not hang.
+func TestTier2StopDrainsQueuedRequests(t *testing.T) {
+	releaseForward := make(chan struct{})
+	ref := cred(1, ModeConcurrency, 1)
+	ref.MaxQueueDepth = 4
+
+	cfg := DefaultConfig()
+	cfg.RetryPerCredential = 0
+	hotCfg := &atomic.Value{}
+	hotCfg.Store(&cfg)
+	forwardStarted := make(chan struct{})
+	p := NewPipeline(Deps{
+		RouteFunc: func(context.Context, *QueuedRequest) ([]CredentialRef, error) {
+			return []CredentialRef{ref}, nil
+		},
+		ModelResolveFunc: func(context.Context, string, []string) (string, []string, error) {
+			return "m", nil, nil
+		},
+		ForwardFunc: func(context.Context, *QueuedRequest, CredentialRef) ForwardOutcome {
+			select {
+			case <-forwardStarted:
+			default:
+				close(forwardStarted)
+			}
+			<-releaseForward
+			return ForwardOutcome{}
+		},
+		HotCfg: hotCfg,
+	})
+	p.Start()
+
+	// First request: takes the single concurrency slot and blocks.
+	go func() {
+		_, _ = p.Submit(context.Background(), NewQueuedRequest("in-flight", "t", "m", context.Background(), nil))
+	}()
+	select {
+	case <-forwardStarted:
+	case <-time.After(time.Second):
+		t.Fatal("first request never entered forward")
+	}
+
+	// Second request: admitted to the Tier-2 queue, parked in governor wait.
+	queuedDone := make(chan error, 1)
+	go func() {
+		_, err := p.Submit(context.Background(), NewQueuedRequest("queued", "t", "m", context.Background(), nil))
+		queuedDone <- err
+	}()
+	// Give it a moment to land in cf.queue (governor pacing).
+	time.Sleep(80 * time.Millisecond)
+
+	// Stop races with the queued request. The forwarder loop must drain its
+	// queue and complete the queued qr instead of dropping it.
+	close(releaseForward)
+	p.Stop()
+
+	select {
+	case err := <-queuedDone:
+		// Submit returned — the queued request was completed. Under the bug
+		// this select would time out and the goroutine would leak.
+		_ = err
+	case <-time.After(2 * time.Second):
+		t.Fatal("queued Submit never returned: Tier-2 forwarder dropped qr on Stop instead of draining")
+	}
+}
+
+// TestCredEnqueuedAtSetBeforeSend pins the data-race fix in tryEnqueueCred.
+// qr.CredEnqueuedAt must be written BEFORE the channel send so the
+// forwarder loop's read (acquire → metricCredQueueWait) is ordered by the
+// channel hand-off. Run with -race to catch the regression.
+func TestCredEnqueuedAtSetBeforeSend(t *testing.T) {
+	t.Parallel()
+	ref := cred(1, ModeConcurrency, 8)
+	cfg := DefaultConfig()
+	cfg.RetryPerCredential = 0
+	hotCfg := &atomic.Value{}
+	hotCfg.Store(&cfg)
+	p := NewPipeline(Deps{
+		RouteFunc: func(context.Context, *QueuedRequest) ([]CredentialRef, error) {
+			return []CredentialRef{ref}, nil
+		},
+		ModelResolveFunc: func(context.Context, string, []string) (string, []string, error) {
+			return "m", nil, nil
+		},
+		ForwardFunc: func(context.Context, *QueuedRequest, CredentialRef) ForwardOutcome {
+			return ForwardOutcome{}
+		},
+		HotCfg: hotCfg,
+	})
+	p.Start()
+	defer p.Stop()
+
+	const N = 200
+	var wg sync.WaitGroup
+	wg.Add(N)
+	for i := 0; i < N; i++ {
+		go func() {
+			defer wg.Done()
+			_, _ = p.Submit(context.Background(), NewQueuedRequest("r", "t", "m", context.Background(), nil))
+		}()
+	}
+	wg.Wait()
+}

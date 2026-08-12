@@ -67,6 +67,30 @@ func (cf *credForwarder) loop() {
 			cf.wg.Add(1)
 			go cf.attempt(qr)
 		case <-cf.ctx.Done():
+			// Drain remaining queued requests and complete them with
+			// ErrShutdown so their Submit callers don't block forever on
+			// qr.ResultCh. This mirrors runModelDrainer's stopCh handling
+			// (pipeline.go runModelDrainer) — the same bug class that
+			// Tier-1 was fixed against must not live at Tier-2.
+			cf.drainAndComplete()
+			return
+		}
+	}
+}
+
+// drainAndComplete non-blockingly drains cf.queue, completing every
+// still-buffered request with ErrShutdown. Called once on shutdown.
+func (cf *credForwarder) drainAndComplete() {
+	for {
+		select {
+		case qr, ok := <-cf.queue:
+			if !ok {
+				return
+			}
+			cf.depth.Add(-1)
+			metricCredQueueDepth.WithLabelValues(itoa(cf.cred.CredentialID), cf.cred.ConcurrencyMode).Dec()
+			cf.pipe.complete(qr, ForwardOutcome{Err: ErrShutdown})
+		default:
 			return
 		}
 	}
