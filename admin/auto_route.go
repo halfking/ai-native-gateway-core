@@ -247,35 +247,50 @@ func (h *AutoRouteHandlers) handleIndexSnapshot(w http.ResponseWriter, r *http.R
 	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 	defer cancel()
 
-	// Get the latest bucket (NULL-safe: returns zero value when empty)
-	var latestBucket sql.NullTime
-	if err := h.db.QueryRow(ctx, `SELECT MAX(bucket) FROM credential_model_index`).Scan(&latestBucket); err != nil {
+	// Check whether the index has any data at all. Read from the union
+	// view (hot + cold) so we see the same rows the in-memory refresh sees.
+	// Use a per-pair latest-bucket CTE (matching refreshIndexSQL) rather
+	// than a single global MAX(bucket): the rollup dedup makes individual
+	// buckets sparse, so a global MAX lands on whatever bucket had the
+	// last metric change — typically 1-2 rows — and hides the rest of the
+	// index. The per-pair CTE collects the freshest row for EVERY
+	// (credential_id, raw_model) pair.
+	var anyRows bool
+	if err := h.db.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM credential_model_index_with_current_month)`).Scan(&anyRows); err != nil {
 		writeInternalErr(w, err)
 		return
 	}
-	if !latestBucket.Valid {
-		// Empty table — return [] with warning so the admin UI shows
+	if !anyRows {
+		// Empty — return [] with warning so the admin UI shows
 		// "waiting for first refresh" instead of an error.
 		writeJSONOk(w, []map[string]interface{}{
 			{"warning": "credential_model_index is empty; awaiting first bg worker refresh (within 5 minutes of gateway start)"},
 		})
 		return
 	}
-	bucket := latestBucket.Time
 
 	query := `
+		WITH latest_bucket AS (
+		    SELECT credential_id, raw_model, MAX(bucket) AS bucket
+		    FROM credential_model_index_with_current_month
+		    GROUP BY credential_id, raw_model
+		)
 		SELECT cmi.credential_id, cmi.raw_model, cmi.canonical_id,
 		       COALESCE(mc.canonical_name, ''), cmi.billing_mode,
 		       cmi.unit_price_in_per_1m, cmi.unit_price_out_per_1m,
 		       cmi.context_window, cmi.success_rate, cmi.p95_latency_ms,
 		       cmi.active_sessions, cmi.concurrency_limit, cmi.pressure_ratio,
 		       cmi.score_smart, cmi.score_speed_first, cmi.score_cost_first,
-		       cmi.updated_at
-		FROM credential_model_index cmi
+		       cmi.updated_at, cmi.bucket
+		FROM credential_model_index_with_current_month cmi
+		JOIN latest_bucket lb
+		  ON lb.credential_id = cmi.credential_id
+		 AND lb.raw_model     = cmi.raw_model
+		 AND lb.bucket        = cmi.bucket
 		LEFT JOIN models_canonical mc ON mc.id = cmi.canonical_id
-		WHERE cmi.bucket = $1
+		WHERE 1=1
 	`
-	args := []interface{}{bucket}
+	args := []interface{}{}
 	if canonicalID != "" {
 		args = append(args, canonicalID)
 		query += fmt.Sprintf(" AND cmi.canonical_id = $%d", len(args))
@@ -298,15 +313,15 @@ func (h *AutoRouteHandlers) handleIndexSnapshot(w http.ResponseWriter, r *http.R
 		var priceIn, priceOut, successRate, pressureRatio *float64
 		var contextWindow, p95, activeSessions, concurrencyLimit *int
 		var scoreSmart, scoreSpeed, scoreCost *float64
-		var updatedAt time.Time
+		var updatedAt, rowBucket time.Time
 		if err := rows.Scan(&credID, &rawModel, &canonicalIDVal, &canonicalName, &billingMode,
 			&priceIn, &priceOut, &contextWindow, &successRate, &p95,
 			&activeSessions, &concurrencyLimit, &pressureRatio,
-			&scoreSmart, &scoreSpeed, &scoreCost, &updatedAt); err != nil {
+			&scoreSmart, &scoreSpeed, &scoreCost, &updatedAt, &rowBucket); err != nil {
 			continue
 		}
 		entry := map[string]interface{}{
-			"bucket":        bucket.Format(time.RFC3339),
+			"bucket":        rowBucket.Format(time.RFC3339),
 			"credential_id": credID,
 			"raw_model":     rawModel,
 		}
