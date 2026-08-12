@@ -293,50 +293,49 @@ _psql -v ON_ERROR_STOP=1 -tAc \"SELECT 1 FROM pg_class WHERE oid = 'public.llm_g
     desc=$(echo "$base" | sed 's/^[0-9]*_//;s/.sql$//')
     checksum=$(_db_migration_checksum "$f")
     _db_log "  → $base (sha256=${checksum:0:12})"
-    # 2026-08-13 P0 fix (rule 11 §6 audit): capture psql stdout (NOTICE +
-    # BEGIN/COMMIT/CREATE TABLE echo) into the deploy log so DO blocks that
-    # silently swallow EXECUTE failures surface. Previous invocation
-    # redirected stderr to /tmp/_mig_err_*.log but left stdout to the
-    # ssh tunnel, where it could vanish depending on caller pipe setup —
-    # which masked the 481 partition-creation regression on 2026-08-12
-    # (deploy log showed BEGIN/DO/COMMIT, but the partition was never
-    # actually created). New invocation uses client_min_messages=NOTICE
-    # to ensure PL/pgSQL RAISE NOTICE is emitted at all verbosities, and
-    # also captures stdout into $psql_stdout so the operator sees
-    # BEGIN / DO / NOTICE / COMMIT in the deploy log.
-    local psql_stdout psql_rc=0
-    psql_stdout=$(_deploy_verify_ssh "$ssh_cmd" "${remote_psql}
-_psql -v ON_ERROR_STOP=1 -v ON_ERROR_ROLLBACK=1 -v client_min_messages=NOTICE -f '$remote_dir/$base' 2>/tmp/_mig_err_${ver}.log" 2>&1) || psql_rc=$?
+    # 2026-08-13 P0 fix (rule 11 §6 audit): capture psql stdout AND stderr
+    # into the deploy log so DO blocks that silently swallow EXECUTE
+    # failures surface. Previous invocation redirected stderr to
+    # /tmp/_mig_err_*.log but left stdout to the ssh tunnel, where it
+    # could vanish depending on caller pipe setup — which masked the
+    # 481 partition-creation regression on 2026-08-12 (deploy log showed
+    # BEGIN/DO/COMMIT, but the partition was never actually created).
+    # Even with stdout capture alone, psql writes PL/pgSQL RAISE NOTICE
+    # to STDERR (PG client convention), so the fix is to also redirect
+    # stderr into the same captured stream via 2>&1. client_min_messages=NOTICE
+    # guarantees NOTICE is emitted regardless of caller session settings,
+    # and ON_ERROR_ROLLBACK=1 aborts cleanly on error.
+    local psql_output psql_rc=0
+    psql_output=$(_deploy_verify_ssh "$ssh_cmd" "${remote_psql}
+_psql -v ON_ERROR_STOP=1 -v ON_ERROR_ROLLBACK=1 -v client_min_messages=NOTICE -f '$remote_dir/$base' 2>&1" 2>/dev/null) || psql_rc=$?
     if (( psql_rc != 0 )); then
       local migration_error
-      migration_error=$("$ssh_cmd" "cat '/tmp/_mig_err_${ver}.log' 2>/dev/null || true")
+      migration_error=$psql_output
       if [[ -n "$migration_error" ]] && grep -qiE 'already exists|duplicate key|relation .* already exists' <<<"$migration_error"; then
         _db_warn "  ⊘ $base idempotent"
       elif [[ -z "$migration_error" ]]; then
-        _db_err "  ✗ $base: psql 退出非零，但远端 /tmp/_mig_err_${ver}.log 为空或不可读。"
-        _db_err "    远端诊断: $($ssh_cmd "ls -la '/tmp/_mig_err_${ver}.log' '/tmp/llm-gateway-migrations-*' 2>/dev/null" || true)"
-        "$ssh_cmd" "rm -f '/tmp/_mig_err_${ver}.log'" || true
+        _db_err "  ✗ $base: psql 退出非零，但 psql stdout/stderr 为空。"
         "$ssh_cmd" "rm -rf '$remote_dir'" || true
         return 1
       else
         _db_err "  ✗ $base:"
         printf '%s\n' "$migration_error" | tail -15 >&2
-        "$ssh_cmd" "rm -f '/tmp/_mig_err_${ver}.log'" || true
         "$ssh_cmd" "rm -rf '$remote_dir'" || true
         return 1
       fi
     else
-      # Forward psql stdout (NOTICE/BEGIN/COMMIT/etc.) into deploy log so
-      # silent-fail migrations like the 481 partition case become visible
-      # to the operator reading the deploy output.
-      if [[ -n "$psql_stdout" ]]; then
+      # Forward psql stdout + stderr (NOTICE / BEGIN / DO / COMMIT /
+      # CREATE TABLE) into deploy log so silent-fail migrations like the
+      # 481 partition case become visible to the operator reading the
+      # deploy output. PL/pgSQL RAISE NOTICE goes to stderr; BEGIN /
+      # COMMIT echoes go to stdout; both are now captured.
+      if [[ -n "$psql_output" ]]; then
         while IFS= read -r _db_psql_line; do
           _db_log "    | $_db_psql_line"
-        done <<<"$psql_stdout"
+        done <<<"$psql_output"
       fi
       applied_count=$((applied_count + 1))
     fi
-    "$ssh_cmd" "rm -f '/tmp/_mig_err_${ver}.log'" || true
 
     if ! _deploy_verify_ssh "$ssh_cmd" "${remote_psql}
 _psql -v ON_ERROR_STOP=1 -c \"BEGIN; SELECT pg_advisory_xact_lock(hashtextextended('llm-gateway:schema_migrations', 0)); INSERT INTO schema_migrations (version, description) SELECT '$ver', '$desc' WHERE NOT EXISTS (SELECT 1 FROM schema_migrations WHERE version = '$ver'); INSERT INTO llm_gateway_migration_checksums (version, migration_name, checksum) VALUES ('$ver', '$base', '$checksum') ON CONFLICT (version) DO UPDATE SET migration_name = EXCLUDED.migration_name, checksum = EXCLUDED.checksum; COMMIT;\" >/dev/null"; then
