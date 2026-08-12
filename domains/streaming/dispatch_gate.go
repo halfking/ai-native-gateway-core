@@ -1,7 +1,10 @@
 package streaming
 
 import (
+	"net/http"
 	"os"
+	"strconv"
+	"strings"
 
 	"github.com/kaixuan/llm-gateway-go/settings"
 )
@@ -24,4 +27,23 @@ func dispatchAllowModelChangeEnabled() bool {
 		return true
 	}
 	return settings.GetPlatformBool("dispatch_v2.allow_model_change", false)
+}
+
+// parsePinCredentialHeader reads the X-LLM-Pin-Credential header (trusted-only:
+// OriginMiddleware strips it for non-system callers, so a non-nil return here is
+// authoritative). Returns nil when absent or unparsable. Used by self-check /
+// node-probe to force routing to a specific credential (需求 6, bullet 5).
+func parsePinCredentialHeader(r *http.Request) *int {
+	if r == nil {
+		return nil
+	}
+	v := strings.TrimSpace(r.Header.Get("X-LLM-Pin-Credential"))
+	if v == "" {
+		return nil
+	}
+	id, err := strconv.Atoi(v)
+	if err != nil || id <= 0 {
+		return nil
+	}
+	return &id
 }

@@ -24,6 +24,8 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -40,6 +42,17 @@ type ActiveProbeExecutor struct {
 	keyring    *secret.Keyring
 	encKey     []byte
 	httpClient *http.Client
+
+	// Gateway round (2026-08-13, 需求 6 bullet 5: 自检不串节点). When configured,
+	// RunGateway posts a chat-completion ping through the LOCAL gateway with the
+	// system API key plus X-LLM-Pin-Credential so the router serves the exact
+	// credential being probed (instead of any routable credential for the model,
+	// which is what happened previously). The gateway client is intentionally
+	// separate from httpClient: gateway probes must NOT go through the upstream
+	// egress proxy (they target 127.0.0.1).
+	gatewayURL    string
+	gatewayAPIKey string
+	gatewayClient *http.Client
 }
 
 // ProbeTarget is the resolved "where to send the probe" record.
@@ -135,6 +148,37 @@ func NewActiveProbeExecutor(db *pgxpool.Pool, keyring *secret.Keyring, encKey []
 			Timeout: time.Duration(timeoutMs) * time.Millisecond,
 		},
 	}
+}
+
+// SetHTTPClient overrides the DIRECT (upstream) probe client. Use this to inject
+// a proxy-respecting transport so direct probes leave through the same egress as
+// real request traffic (2026-07-16 node-probe fix parity). nil is a no-op.
+func (e *ActiveProbeExecutor) SetHTTPClient(c *http.Client) {
+	if e != nil && c != nil {
+		e.httpClient = c
+	}
+}
+
+// SetGateway configures the local-gateway probe round (RunGateway). url is the
+// gateway base (e.g. http://127.0.0.1:8781/v1), apiKey is the system API key
+// authorized for X-LLM-Pin-Credential, and client is the (non-proxy) HTTP client
+// to reach the local gateway. A nil client falls back to a 30s direct client.
+// With url=="" RunGateway is disabled (returns a skipped result).
+func (e *ActiveProbeExecutor) SetGateway(url, apiKey string, client *http.Client) {
+	if e == nil {
+		return
+	}
+	e.gatewayURL = strings.TrimRight(url, "/")
+	e.gatewayAPIKey = apiKey
+	if client == nil {
+		client = &http.Client{Timeout: 30 * time.Second}
+	}
+	e.gatewayClient = client
+}
+
+// GatewayEnabled reports whether the gateway round is configured.
+func (e *ActiveProbeExecutor) GatewayEnabled() bool {
+	return e != nil && e.gatewayURL != "" && e.gatewayClient != nil
 }
 
 // IsPermanentProbeFailure reports whether a failed probe justifies marking a
@@ -366,6 +410,94 @@ func (e *ActiveProbeExecutor) RunCommand(ctx context.Context, command ProbeComma
 		return e.runModelsList(ctx, command.Target)
 	}
 	return e.Run(ctx, command.Target)
+}
+
+// RunGateway issues a chat-completion ping through the LOCAL gateway with the
+// system API key AND X-LLM-Pin-Credential set to target.CredentialID, so the
+// router serves exactly the credential being probed (需求 6, bullet 5: 自检
+// 不涉及节点的切换). This catches routing/auth/transform/rate-limit regressions
+// that a direct upstream call cannot, while still attributing the outcome to the
+// specific (credential, model) under test. Returns a skipped result when the
+// gateway round is not configured (SetGateway not called / empty url).
+//
+// Lifted from NodeProbeWorker.probeGateway; the in-place node-probe code will
+// delegate here once ProbeService.Run owns the two-round orchestration.
+func (e *ActiveProbeExecutor) RunGateway(ctx context.Context, target *ProbeTarget) *ProbeResult {
+	start := time.Now()
+	if target == nil {
+		return &ProbeResult{Status: ProbeStatusFailed, ErrCode: "missing_probe_target", StartedAt: start, CompletedAt: time.Now()}
+	}
+	if !e.GatewayEnabled() {
+		return &ProbeResult{
+			Status: ProbeStatusSkipped, ErrCode: "gateway_not_configured",
+			StartedAt: start, CompletedAt: time.Now(), Target: derefTarget(target),
+		}
+	}
+	body := fmt.Sprintf(`{"model":%q,"messages":[{"role":"user","content":"ping"}],"max_tokens":10}`, target.RawModel)
+	endpoint := e.gatewayURL + "/chat/completions"
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, strings.NewReader(body))
+	if err != nil {
+		return &ProbeResult{Status: ProbeStatusFailed, ErrCode: "request_build", ErrMsg: err.Error(), StartedAt: start, CompletedAt: time.Now(), Target: derefTarget(target), RequestURL: endpoint, RequestBody: body}
+	}
+	req.Header.Set("Authorization", "Bearer "+e.gatewayAPIKey)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-LLM-Origin-Stage", "node_probe")
+	req.Header.Set("X-LLM-Origin-Actor", "probe-service")
+	// Pin the gateway router to this exact credential so the gateway round
+	// verifies the right node (C7 header, honored by the request pipeline).
+	req.Header.Set("X-LLM-Pin-Credential", strconv.Itoa(target.CredentialID))
+	if v := strings.TrimSpace(os.Getenv("LLM_GATEWAY_EGRESS_IP")); v != "" {
+		req.Header.Set("X-Real-IP", v)
+	}
+	if v := strings.TrimSpace(os.Getenv("LLM_GATEWAY_EGRESS_FORWARDED_FOR")); v != "" {
+		req.Header.Set("X-Forwarded-For", v)
+	}
+	resp, err := e.gatewayClient.Do(req)
+	latency := int(time.Since(start).Milliseconds())
+	if err != nil {
+		if errors.Is(err, context.DeadlineExceeded) || strings.Contains(err.Error(), "Client.Timeout") {
+			return &ProbeResult{Status: ProbeStatusTimeout, ErrCode: "probe_timeout", ErrMsg: err.Error(), LatencyMs: latency, StartedAt: start, CompletedAt: time.Now(), Target: derefTarget(target), RequestURL: endpoint, RequestBody: body}
+		}
+		return &ProbeResult{Status: ProbeStatusNetwork, ErrCode: "network_error", ErrMsg: err.Error(), LatencyMs: latency, StartedAt: start, CompletedAt: time.Now(), Target: derefTarget(target), RequestURL: endpoint, RequestBody: body}
+	}
+	defer resp.Body.Close()
+	respBuf := make([]byte, 512)
+	n, _ := resp.Body.Read(respBuf)
+	respBody := string(respBuf[:n])
+	parsed := classifyHTTPResponse(resp.StatusCode, respBody, latency)
+	status := ProbeStatusHTTP4xx
+	switch parsed.status {
+	case "ok":
+		status = ProbeStatusSuccess
+	case "auth":
+		status = ProbeStatusAuth
+	case "http_5xx", "network":
+		status = ProbeStatusHTTP5xx
+	case "rate_limit", "rate_limit_5h", "rate_limit_weekly", "rate_limit_monthly":
+		status = ProbeStatusRate
+	}
+	return &ProbeResult{
+		Status:       status,
+		HTTPStatus:   resp.StatusCode,
+		ErrCode:      parsed.errCode,
+		ErrMsg:       parsed.errMsg,
+		LatencyMs:    latency,
+		RespPreview:  truncatePreview(respBody, 500),
+		ResponseBody: truncatePreview(respBody, 500),
+		StartedAt:    start,
+		CompletedAt:  time.Now(),
+		Target:       derefTarget(target),
+		RequestURL:   endpoint,
+		RequestBody:  body,
+	}
+}
+
+// derefTarget returns a copy of the target value (ProbeResult stores by value).
+func derefTarget(t *ProbeTarget) ProbeTarget {
+	if t == nil {
+		return ProbeTarget{}
+	}
+	return *t
 }
 
 func (e *ActiveProbeExecutor) runModelsList(ctx context.Context, target *ProbeTarget) *ProbeResult {

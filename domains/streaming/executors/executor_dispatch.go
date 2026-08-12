@@ -90,6 +90,21 @@ func (e *Executor) dispatchRoute(ctx context.Context, qr *dispatch.QueuedRequest
 		}
 		refs = append(refs, candidateToRef(c))
 	}
+	// 2026-08-13: X-LLM-Pin-Credential hard filter. A trusted internal caller
+	// (self-check / node-probe) pinned routing to one credential; drop every
+	// other candidate so the probe verdict is attributable to that exact node.
+	// If the pinned credential is unavailable/absent the request will exhaust
+	// and fail with a clear no-candidate error rather than silently spilling to
+	// a different node.
+	if pin := dctx.params.PinCredentialID; pin != nil {
+		filtered := make([]dispatch.CredentialRef, 0, 1)
+		for _, r := range refs {
+			if r.CredentialID == *pin {
+				filtered = append(filtered, r)
+			}
+		}
+		return filtered, nil
+	}
 	return refs, nil
 }
 

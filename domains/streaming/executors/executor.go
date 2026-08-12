@@ -1202,6 +1202,15 @@ type ExecParams struct {
 	// within the same provider.
 	DispatchAllowProviderChange bool
 
+	// PinCredentialID (2026-08-13, 需求 6 bullet 5) forces routing to a specific
+	// credential. Set ONLY by trusted internal callers (the OriginMiddleware
+	// strips X-LLM-Pin-Credential from non-system requests), used by self-check /
+	// node-probe so a probe attributes its outcome to the exact (credential,
+	// model) under test instead of letting the router pick any routable node.
+	// Honored as a HARD filter in dispatchRoute and as the sticky source in the
+	// legacy synchronous loop.
+	PinCredentialID *int
+
 	// InFallback (Phase 2, 2026-07-19) prevents infinite recursion when
 	// the cross-provider model fallback chain triggers a recursive call
 	// to Execute(). Set true before the recursive call so the inner
@@ -3961,6 +3970,12 @@ func (e *Executor) stickyCredentialID(stickyKey string) *int {
 // L3, so a session-scoped request retried after a transient error could hop
 // to a different credential than the first attempt.
 func (e *Executor) pickStickyCredentialID(params *ExecParams) *int {
+	// 2026-08-13: X-LLM-Pin-Credential takes absolute precedence over session
+	// sticky. It is set only by trusted internal callers (OriginMiddleware
+	// strips the header for everyone else), so it is safe to honor directly.
+	if params.PinCredentialID != nil {
+		return params.PinCredentialID
+	}
 	var stickyID *int
 	var level string
 
