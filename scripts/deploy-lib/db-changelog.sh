@@ -50,6 +50,63 @@ _db_migration_checksum() {
   fi
 }
 
+# 2026-08-13 P0 fix (rule 11 §6 audit, round 3): extract POST_CONDITION
+# assertions declared at the top of a migration file. Each line that
+# matches `^[[:space:]]*--[[:space:]]*POST_CONDITION: <sql>` becomes one
+# assertion; the SQL must return at least one row (typically a SELECT
+# that returns 1 when the expected object exists). Migrations with no
+# POST_CONDITION header are treated as having zero assertions — no
+# extra SQL is run, so legacy migrations keep working without changes.
+# See _db_run_postcondition for the execution semantics.
+_db_extract_postcondition() {
+  local file=$1
+  head -50 "$file" | grep -E '^[[:space:]]*--[[:space:]]*POST_CONDITION:[[:space:]]*' \
+    | sed -E 's/^[[:space:]]*--[[:space:]]*POST_CONDITION:[[:space:]]*//'
+}
+
+# _db_run_postcondition executes every POST_CONDITION assertion extracted
+# from $file. Failures abort the deploy (return 1) so the symbol-link
+# switch in deploy-seamless.sh is never reached — but the migration
+# itself is NOT rolled back, since schema changes are already applied.
+# The operator must investigate; the deploy log records which
+# assertion failed and the suspected cause (PL/pgSQL DO block wrapping
+# an EXECUTE that did not raise on failure, like the 2026-08-12 481
+# partition regression).
+_db_run_postcondition() {
+  local file=$1 ssh_cmd=$2 env_file=$3
+  local remote_psql
+  remote_psql=$(_deploy_remote_psql_script "$env_file")
+
+  local conditions
+  if ! conditions=$(_db_extract_postcondition "$file"); then
+    return 0
+  fi
+  if [[ -z "$conditions" ]]; then
+    return 0
+  fi
+
+  while IFS= read -r cond; do
+    [[ -z "$cond" ]] && continue
+    _db_log "    [assert] $cond"
+    if ! _deploy_verify_ssh "$ssh_cmd" "${remote_psql}
+_psql -v ON_ERROR_STOP=1 -tAc \"$cond\" 2>/dev/null" 2>/dev/null | grep -qE '^[1-9]' ; then
+      _db_err "    ✗ POST_CONDITION FAILED: $cond"
+      _db_err "      The migration SQL applied cleanly (no syntax / permission /"
+      _db_err "      constraint errors) but the expected schema state is NOT present."
+      _db_err "      This is the silent-fail pattern that masked the 481"
+      _db_err "      partition regression on 2026-08-12."
+      _db_err "      Likely causes:"
+      _db_err "        - PL/pgSQL DO block wrapping EXECUTE that returns 0 rows"
+      _db_err "          without RAISE EXCEPTION"
+      _db_err "        - Migration idempotency check that saw 'already exists'"
+      _db_err "          and skipped the actual CREATE"
+      _db_err "      Deploy is being aborted BEFORE the symbol-link switch."
+      return 1
+    fi
+    _db_log "    [assert] ✓"
+  done <<<"$conditions"
+}
+
 _deploy_migration_history_gate() {
   local ssh_cmd=$1 env_file=$2
   local remote_psql result
@@ -356,6 +413,11 @@ _psql -v ON_ERROR_STOP=1 -tAc \"SELECT checksum FROM llm_gateway_migration_check
       return 1
     fi
     applied_files+=("$base:$checksum")
+    # 2026-08-13 P0 fix (rule 11 §6 audit): run POST_CONDITION assertions
+    # extracted from the migration header to catch silent-fail patterns
+    # like the 481 partition regression. Failures abort the deploy
+    # BEFORE the symbol-link switch but do NOT roll back the migration.
+    _db_run_postcondition "$f" "$ssh_cmd" "$env_file" || return 1
   done
 
   "$ssh_cmd" "rm -rf '$remote_dir'" || true

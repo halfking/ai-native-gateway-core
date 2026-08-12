@@ -33,6 +33,8 @@
 -- Idempotent: 是（IF NOT EXISTS）
 -- Down: 见 482_*.down.sql
 
+-- POST_CONDITION: SELECT 1 FROM information_schema.columns WHERE table_name = 'provider_profile_metrics' AND column_name = 'rate_limit_hits'
+
 BEGIN;
 
 ALTER TABLE provider_profile_metrics
