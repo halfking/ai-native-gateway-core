@@ -30,6 +30,7 @@ import SwimLane from '../components/SwimLane.vue'
 import type { SwimLane as SwimLaneType, RequestTile } from '../types/swimlane'
 import { getFeaturedModelsDynamic } from '../api/system'
 import type { FeaturedModel } from '../api/system'
+import { acquireProbeStream, useProbeStream } from '../composables/probeStreamStore'
 
 const loading = ref(false)
 const error = ref<string | null>(null)
@@ -61,6 +62,14 @@ const monitorStats = ref<SystemMonitorStats | null>(null)
 
 let pollTimer: number | undefined
 let queueTimer: number | undefined
+
+// 2026-08-13 (需求 6 bullet 8): live SSE feed from /api/admin/probe/stream.
+// Tiles are appended from the right and collapsed by id (pending→in-flight→ok|fail)
+// in the composable. The panel refreshes its REST lanes within ~ms of a terminal
+// event instead of waiting up to 15s, and exposes liveTiles for richer rendering.
+const { tiles: liveProbeTiles } = useProbeStream()
+let releaseProbeStream: (() => void) | null = null
+let lastSeenTileTs = 0
 
 // ── 数据加载 ──────────────────────────────────────────
 
@@ -143,11 +152,25 @@ onMounted(() => {
   void loadAll()
   void loadSystemFeaturedModels()
   startPoll()
+  // Subscribe to the live probe SSE stream (right-appending tiles). On any new
+  // tile, re-pull the REST lanes so pending/executing/completed reflect the
+  // change immediately (sub-second vs the 15s poll). Debounced via ts tracking.
+  releaseProbeStream = acquireProbeStream()
 })
 
 onUnmounted(() => {
   stopPoll()
+  if (releaseProbeStream) { releaseProbeStream(); releaseProbeStream = null }
 })
+
+// React to live SSE tiles: refresh the REST lanes when a new tile arrives.
+watch(liveProbeTiles, (list) => {
+  const newest = list.length ? list[list.length - 1].ts : 0
+  if (newest > lastSeenTileTs) {
+    lastSeenTileTs = newest
+    void refreshQueueTasks()
+  }
+}, { deep: false })
 
 watch(range, () => {
   void loadAll()
