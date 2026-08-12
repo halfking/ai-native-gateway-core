@@ -168,8 +168,6 @@ func TestBuildRequestCompletedEvent_StatusMapping(t *testing.T) {
 	}
 }
 
-
-
 func TestBuildRequestCompletedEvent_EventIDUniqueness(t *testing.T) {
 	envelope1, _ := BuildRequestCompletedEvent(
 		"tenant-1", "session-1", 1, "request-001",

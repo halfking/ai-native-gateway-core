@@ -183,6 +183,23 @@ func TestParseRetryAfter_RetryAfterHTTPDate(t *testing.T) {
 	}
 }
 
+// TestParseRetryAfter_StaleHTTPDateUsesDefaultBackoff ensures a past HTTP-date
+// in Retry-After (clock drift) applies the 60s default backoff instead of
+// clamping to 0 and leaving resetAt in the past (which would let Preflight
+// immediately re-enable the exhausted credential).
+func TestParseRetryAfter_StaleHTTPDateUsesDefaultBackoff(t *testing.T) {
+	now := time.Date(2024, 8, 15, 14, 30, 0, 0, time.UTC)
+	past := now.Add(-5 * time.Minute).UTC()
+	hdr := past.Format(httpTimeFormat)
+	retry, reset := parseRetryAfter(now, map[string]string{"Retry-After": hdr})
+	if retry != 60 {
+		t.Errorf("stale HTTP-date should use 60s default backoff, got %d", retry)
+	}
+	if !reset.Equal(now.Add(60 * time.Second)) {
+		t.Errorf("expected reset=now+60s, got %v", reset)
+	}
+}
+
 // TestParseRetryAfter_RelativeUnits covers Groq-style "6s"/"5m"/"2h"/"1d"
 // Retry-After values (non-RFC but emitted by several providers). Without
 // parseRetryAfterRelative these fall through to HTTP-date parse (fail) →
