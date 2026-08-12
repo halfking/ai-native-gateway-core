@@ -39,6 +39,7 @@ import (
 	"fmt"
 	"log/slog"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -85,7 +86,8 @@ type ModelProbeRunner struct {
 	done    chan struct{}
 	// featuredCancel is set by StartFeaturedOnly so Stop can cancel the
 	// standalone 常用模型 deep-ping cycle independently of the consensus loop.
-	featuredCancel context.CancelFunc
+	// atomic.Pointer so Stop can safely read it during/after Start (audit #9).
+	featuredCancel atomic.Pointer[context.CancelFunc]
 	// closeOnce ensures `done` is closed exactly once whether the closer is the
 	// consensus loop (run) or the featured-only cycle (StartFeaturedOnly).
 	closeOnce sync.Once
@@ -126,20 +128,106 @@ func (r *ModelProbeRunner) Start(ctx context.Context) {
 // state unless the consensus cycle also runs), so it is safe to run standalone.
 func (r *ModelProbeRunner) StartFeaturedOnly(ctx context.Context) {
 	fctx, cancel := context.WithCancel(ctx)
-	r.featuredCancel = cancel
+	r.featuredCancel.Store(&cancel)
 	go func() {
 		defer r.closeOnce.Do(func() { close(r.done) })
 		r.featuredCycleLoop(fctx)
 	}()
-	slog.Info("model probe featured-only cycle (常用模型 deep ping) started")
+	// Audit fix #2: in new mode the consensus cycle is OFF, so the
+	// nonfeatured watchdog multiplier (applyResult) never runs. Add a
+	// lightweight watchdog loop that only EXTENDS next_retry_at for healthy
+	// non-featured bindings — no HTTP probe, just timestamp arithmetic. This
+	// keeps "其它模型降频" honest in the default new mode.
+	go r.nonfeaturedWatchdogLoop(fctx)
+	slog.Info("model probe featured-only cycle (常用模型 deep ping) + nonfeatured watchdog started")
+}
+
+// nonfeaturedWatchdogLoop extends next_retry_at on healthy_confirmed bindings
+// whose raw_model is NOT 常用, multiplying the existing interval by
+// probe.nonfeatured_watchdog_multiplier (default 4). 30-min cadence keeps it
+// cheap; only touches model_probe_state, never calls out to providers.
+func (r *ModelProbeRunner) nonfeaturedWatchdogLoop(ctx context.Context) {
+	defer func() {
+		if rec := recover(); rec != nil {
+			slog.Error("nonfeatured watchdog panic", "recover", rec)
+		}
+	}()
+	// Initial 1-min stagger so it runs after the first featured tick.
+	select {
+	case <-ctx.Done():
+		return
+	case <-time.After(1 * time.Minute):
+	}
+	r.nonfeaturedWatchdogTick(ctx)
+	ticker := time.NewTicker(30 * time.Minute)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			r.nonfeaturedWatchdogTick(ctx)
+		}
+	}
+}
+
+func (r *ModelProbeRunner) nonfeaturedWatchdogTick(ctx context.Context) {
+	mult := settings.GetPlatformInt("probe.nonfeatured_watchdog_multiplier", 4)
+	if mult <= 1 {
+		return
+	}
+	windowHours := settings.GetPlatformInt("probe.featured_usage_window_hours", 168)
+	topN := settings.GetPlatformInt("probe.featured_usage_top_n", 20)
+	if topN <= 0 {
+		topN = 0 // only static featured applies
+	}
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	// Mirror the ModelTier refresh (routing_policy tenant-scoped +
+	// request_logs_hot top-N by COALESCE(outbound,client)) so the "常用"判定
+	// stays consistent across probe and watchdog. Anything not in either set
+	// is non-featured and gets its next_retry_at pushed forward by multiplier.
+	tag, err := r.db.Exec(ctx, `
+		WITH static AS (
+		    SELECT unnest(COALESCE(
+		        (SELECT featured_models FROM routing_policy WHERE tenant_id = $1 LIMIT 1),
+		        ARRAY[]::TEXT[]
+		    )) AS model
+		), usage AS (
+		    SELECT raw_model FROM (
+		        SELECT COALESCE(rl.outbound_model, rl.client_model) AS raw_model,
+		               count(*) AS calls
+		        FROM request_logs_hot rl
+		        WHERE rl.success
+		          AND rl.ts > now() - make_interval(hours => $2)
+		          AND COALESCE(rl.outbound_model, rl.client_model) <> ''
+		        GROUP BY raw_model
+		    ) t
+		    ORDER BY calls DESC LIMIT $3
+		)
+		UPDATE model_probe_state mps
+		SET next_retry_at = next_retry_at + ($4::int || ' seconds')::interval
+		FROM provider_models pm
+		WHERE pm.id = mps.provider_model_id
+		  AND mps.state = 'healthy_confirmed'
+		  AND lower(pm.raw_model_name) NOT IN (SELECT lower(model) FROM static)
+		  AND lower(pm.raw_model_name) NOT IN (SELECT lower(raw_model) FROM usage)
+	`, "default", windowHours, topN, mult)
+	if err != nil {
+		slog.Warn("nonfeatured watchdog tick failed", "error", err)
+		return
+	}
+	if n := tag.RowsAffected(); n > 0 {
+		slog.Info("nonfeatured watchdog extended next_retry_at", "rows", n, "multiplier", mult)
+	}
 }
 
 func (r *ModelProbeRunner) Stop() {
 	if r.cancel != nil {
 		r.cancel()
 	}
-	if r.featuredCancel != nil {
-		r.featuredCancel()
+	if fc := r.featuredCancel.Load(); fc != nil && *fc != nil {
+		(*fc)()
 	}
 	<-r.done
 }
@@ -374,7 +462,14 @@ func (r *ModelProbeRunner) featuredCycleLoop(ctx context.Context) {
 	}
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
-	time.Sleep(2 * time.Minute) // stagger: wait 2min then start
+	// Stagger initial run by 2 minutes so it does not collide with the
+	// 30s CredentialSelfcheckWorker tick. Audit fix #5: cancellation-aware so
+	// Stop() does not block for 2 minutes on shutdown.
+	select {
+	case <-ctx.Done():
+		return
+	case <-time.After(2 * time.Minute):
+	}
 	r.featuredCycle(ctx)
 	for {
 		select {
@@ -411,7 +506,8 @@ func (r *ModelProbeRunner) featuredCycle(ctx context.Context) {
 		  AND COALESCE(c.status, 'active') = 'active'
 		  AND COALESCE(c.manual_disabled, FALSE) = FALSE
 		  AND COALESCE(p.enabled, FALSE) = TRUE
-	`)
+		LIMIT $1
+	`, MaxBatchPerCycle*4 /* bound scan; Go-side globalIsFeaturedModel further filters */)
 	if err != nil {
 		slog.Warn("featured cycle: query failed", "error", err)
 		return

@@ -119,12 +119,22 @@ func (s *ProbeService) Run(ctx context.Context, task ProbeQueueTask) (ProbeQueue
 	// 2026-08-13: 常用模型失败回退缩短（probe.featured_backoff_multiplier，默认
 	// 50% → 更快重试恢复）；非常用按标准 7 步链。仅影响失败后的下次重试间隔，
 	// 不降低探测深度（仍走 direct+gateway 双轮）。
+	// Audit fix #6: clamp to ≥5s — at pct=1 the first rung (5s) would truncate
+	// to 0s and produce a busy retry loop; the spec Min is 20 (enforced there),
+	// but a defensive floor here guards against future chain rungs <5s.
 	if globalIsFeaturedModel(model, "") {
 		if pct := settings.GetPlatformInt("probe.featured_backoff_multiplier", 50); pct > 0 && pct < 100 {
-			backoff = time.Duration(float64(backoff) * float64(pct) / 100.0)
+			scaled := time.Duration(float64(backoff) * float64(pct) / 100.0)
+			if scaled < 5*time.Second {
+				scaled = 5 * time.Second
+			}
+			backoff = scaled
 		}
 	}
 	nextSec := int(backoff.Seconds())
+	if nextSec <= 0 {
+		nextSec = 5 // defensive floor for sub-second backoff (audit #6)
+	}
 
 	// Mirror into node_probe_state for backward compat with existing dashboard /
 	// recovery readers during the transition (C11 will drop this).

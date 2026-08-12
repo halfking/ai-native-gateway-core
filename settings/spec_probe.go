@@ -212,11 +212,11 @@ func ProbeSpecs() []*Spec {
 			Type:            TypeInt,
 			Scope:           ScopePlatform,
 			Category:        CategoryProbe,
-			Min:             floatPtr(1),
+			Min:             floatPtr(20), // floor to keep 5s rung non-zero (audit #6)
 			Max:             floatPtr(100),
 			Default:         50,
 			Description:     "常用模型失败回退倍率（百分比）",
-			DescriptionLong: "常用模型 node-probe 失败时的回退间隔按此百分比折算（默认 50%=缩短一半），使其更快重试恢复。100=与非常用一致。",
+			DescriptionLong: "常用模型 node-probe 失败时的回退间隔按此百分比折算（默认 50%=缩短一半），使其更快重试恢复。100=与非常用一致。下限 20 保证首阶梯 (5s) 缩放后仍 ≥1s。",
 			Unit:            "%",
 			DangerLevel:     Safe,
 			HotReload:       true,

@@ -63,12 +63,15 @@ func NewModelTier(db *pgxpool.Pool, cfg ModelTierConfig) *ModelTier {
 }
 
 // Start launches the background refresh. Idempotent; safe to call once.
+// The prime refresh runs synchronously under a 10s timeout so a DB hiccup at
+// startup cannot block main() indefinitely (audit issue #14).
 func (m *ModelTier) Start(ctx context.Context) {
 	if m == nil || m.db == nil || !m.once.CompareAndSwap(false, true) {
 		return
 	}
-	// Prime synchronously so the first probe tick already sees a fresh set.
-	m.refresh(ctx)
+	primeCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	m.refresh(primeCtx)
+	cancel()
 	go m.loop(ctx)
 }
 
@@ -106,8 +109,15 @@ func (m *ModelTier) Stop() {
 func (m *ModelTier) refresh(ctx context.Context) {
 	fs := &featuredSet{static: map[string]struct{}{}, usage: map[string]struct{}{}}
 
-	// Static featured list (operator-curated, all tenants unioned).
-	if rows, err := m.db.Query(ctx, `SELECT COALESCE(featured_models, ARRAY[]::TEXT[]) FROM routing_policy`); err == nil {
+	// Static featured list (operator-curated, scoped to the 'default' tenant
+	// since routing_policy is per-tenant and probe-side categorization is global;
+	// cross-tenant unioning would mis-classify tenant-specific models. Override
+	// tenant via probe.featured_tenant setting if needed for multi-tenant
+	// deployments).
+	staticTenant := settings.GetPlatformString("probe.featured_tenant", "default")
+	if rows, err := m.db.Query(ctx, `
+		SELECT COALESCE(featured_models, ARRAY[]::TEXT[])
+		FROM routing_policy WHERE tenant_id = $1 LIMIT 1`, staticTenant); err == nil {
 		for rows.Next() {
 			var arr []string
 			if err := rows.Scan(&arr); err == nil {
@@ -120,22 +130,29 @@ func (m *ModelTier) refresh(ctx context.Context) {
 		}
 		rows.Close()
 	} else {
-		slog.Warn("model_tier: load static featured failed", "error", err)
+		slog.Warn("model_tier: load static featured failed", "tenant", staticTenant, "error", err)
 	}
 
-	// Usage Top-N.
+	// Usage Top-N. Audit fix: request_logs_hot has no `model` column; the real
+	// model-name is COALESCE(outbound_model, client_model). GROUP BY raw_model
+	// dedupes across alias variants (audit issue #11).
 	if topN := settings.GetPlatformInt("probe.featured_usage_top_n", 20); topN > 0 {
 		windowHours := settings.GetPlatformInt("probe.featured_usage_window_hours", 168)
 		if windowHours <= 0 {
 			windowHours = 168
 		}
 		if rows, err := m.db.Query(ctx, `
-			SELECT model
-			FROM request_logs_hot
-			WHERE success AND ts > now() - make_interval(hours => $1)
-			  AND model IS NOT NULL AND model <> ''
-			GROUP BY model
-			ORDER BY count(*) DESC
+			SELECT raw_model FROM (
+				SELECT COALESCE(rl.outbound_model, rl.client_model) AS raw_model,
+				       count(*) AS calls
+				FROM request_logs_hot rl
+				WHERE rl.success
+				  AND rl.ts > now() - make_interval(hours => $1)
+				  AND COALESCE(rl.outbound_model, rl.client_model) IS NOT NULL
+				  AND COALESCE(rl.outbound_model, rl.client_model) <> ''
+				GROUP BY COALESCE(rl.outbound_model, rl.client_model)
+			) t
+			ORDER BY calls DESC
 			LIMIT $2`, windowHours, topN); err == nil {
 			for rows.Next() {
 				var model string
