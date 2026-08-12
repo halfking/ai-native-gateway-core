@@ -2500,6 +2500,7 @@ func main() {
 
 	// ── Background Services ─────────────────────────────────────────────
 	var credRecovery *bg.CredentialRecovery
+	var probeRollback *bg.ProbeRollback // 2026-08-13: delayed-rollback for tentative probe restores
 	var brokenProbeReviver *bg.BrokenProbeReviver
 	var credCycler *bg.CredentialCycler
 	var credProbeV2 *bg.CredentialProbeV2
@@ -2573,6 +2574,10 @@ func main() {
 		credRecovery = bg.NewCredentialRecovery(dbConn.Pool())
 		credRecovery.Start(context.Background())
 		slog.Info("CHECKPOINT: credRecovery started")
+		// 2026-08-13 (需求 6 bullet 3): delayed-rollback for tentative probe restores.
+		probeRollback = bg.NewProbeRollback(dbConn.Pool(), bg.ProbeRollbackConfig{Interval: 10 * time.Second})
+		probeRollback.Start(context.Background())
+		slog.Info("CHECKPOINT: probeRollback started")
 		brokenProbeReviver = bg.NewBrokenProbeReviver(dbConn.Pool(), 0, 0)
 		brokenProbeReviver.Start(context.Background())
 		slog.Info("CHECKPOINT: brokenProbeReviver started")
@@ -5307,6 +5312,9 @@ func main() {
 		}
 		if credRecovery != nil {
 			credRecovery.Stop()
+		}
+		if probeRollback != nil {
+			probeRollback.Stop()
 		}
 		if brokenProbeReviver != nil {
 			brokenProbeReviver.Stop()
