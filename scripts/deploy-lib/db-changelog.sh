@@ -293,8 +293,21 @@ _psql -v ON_ERROR_STOP=1 -tAc \"SELECT 1 FROM pg_class WHERE oid = 'public.llm_g
     desc=$(echo "$base" | sed 's/^[0-9]*_//;s/.sql$//')
     checksum=$(_db_migration_checksum "$f")
     _db_log "  → $base (sha256=${checksum:0:12})"
-    if ! _deploy_verify_ssh "$ssh_cmd" "${remote_psql}
-_psql -v ON_ERROR_STOP=1 -f '$remote_dir/$base' 2>/tmp/_mig_err_${ver}.log"; then
+    # 2026-08-13 P0 fix (rule 11 §6 audit): capture psql stdout (NOTICE +
+    # BEGIN/COMMIT/CREATE TABLE echo) into the deploy log so DO blocks that
+    # silently swallow EXECUTE failures surface. Previous invocation
+    # redirected stderr to /tmp/_mig_err_*.log but left stdout to the
+    # ssh tunnel, where it could vanish depending on caller pipe setup —
+    # which masked the 481 partition-creation regression on 2026-08-12
+    # (deploy log showed BEGIN/DO/COMMIT, but the partition was never
+    # actually created). New invocation uses client_min_messages=NOTICE
+    # to ensure PL/pgSQL RAISE NOTICE is emitted at all verbosities, and
+    # also captures stdout into $psql_stdout so the operator sees
+    # BEGIN / DO / NOTICE / COMMIT in the deploy log.
+    local psql_stdout psql_rc=0
+    psql_stdout=$(_deploy_verify_ssh "$ssh_cmd" "${remote_psql}
+_psql -v ON_ERROR_STOP=1 -v ON_ERROR_ROLLBACK=1 -v client_min_messages=NOTICE -f '$remote_dir/$base' 2>/tmp/_mig_err_${ver}.log" 2>&1) || psql_rc=$?
+    if (( psql_rc != 0 )); then
       local migration_error
       migration_error=$("$ssh_cmd" "cat '/tmp/_mig_err_${ver}.log' 2>/dev/null || true")
       if [[ -n "$migration_error" ]] && grep -qiE 'already exists|duplicate key|relation .* already exists' <<<"$migration_error"; then
@@ -313,6 +326,14 @@ _psql -v ON_ERROR_STOP=1 -f '$remote_dir/$base' 2>/tmp/_mig_err_${ver}.log"; the
         return 1
       fi
     else
+      # Forward psql stdout (NOTICE/BEGIN/COMMIT/etc.) into deploy log so
+      # silent-fail migrations like the 481 partition case become visible
+      # to the operator reading the deploy output.
+      if [[ -n "$psql_stdout" ]]; then
+        while IFS= read -r _db_psql_line; do
+          _db_log "    | $_db_psql_line"
+        done <<<"$psql_stdout"
+      fi
       applied_count=$((applied_count + 1))
     fi
     "$ssh_cmd" "rm -f '/tmp/_mig_err_${ver}.log'" || true
