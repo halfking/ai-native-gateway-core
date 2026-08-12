@@ -107,3 +107,71 @@ groups:
         annotations:
           summary: "LLM Gateway 延迟过高"
           description: "LLM Gateway P99 延迟 > 5s (当前: {{ $value | humanizeDuration }})"
+
+  # 2026-08-12: node-probe 同步路径 + 路由状态源告警。
+  # 覆盖范围说明：仅覆盖请求热路径上的 ProbeSync（no_candidates 触发）
+  # 与 routing_state_source 外层标签。后台 NodeProbeWorker 的探测结果只
+  # 写 node_probe_runs 表、不进 Prometheus，故此处不含其告警——需后台
+  # 探测告警时请基于该表另配 SQL/exporter，不要在此处伪造指标。
+  - name: node_probe_and_routing_alerts
+    interval: 30s
+    rules:
+      # 同步探测持续无法恢复任何候选 → 用户请求落到 503。
+      - alert: NodeProbeSyncExhaustedHigh
+        expr: increase(llmgw_node_probe_sync_total{outcome="exhausted"}[5m]) > 10
+        for: 5m
+        labels:
+          severity: warning
+          component: routing
+        annotations:
+          summary: "NodeProbe 同步探测大量耗尽"
+          description: "近 5 分钟 ProbeSync 无法恢复任何候选共 {{ $value }} 次（outcome=exhausted），no_candidates 请求正在返回 503。排查上游是否大面积不可达。"
+
+      # 同步探测频繁超时 → 每个吃掉最多 5s 用户请求预算。
+      - alert: NodeProbeSyncTimeoutHigh
+        expr: increase(llmgw_node_probe_sync_total{outcome="timeout"}[5m]) > 5
+        for: 5m
+        labels:
+          severity: warning
+          component: routing
+        annotations:
+          summary: "NodeProbe 同步探测大量超时"
+          description: "近 5 分钟 ProbeSync 超时 {{ $value }} 次（outcome=timeout），每次占用至多 5s 用户请求预算。排查直连探测 probeDirect 的网络/代理延迟。"
+
+      # 大量请求阻塞在等待进行中的探测 → 用户可见排队延迟。
+      - alert: NodeProbeSyncInflightWaitersHigh
+        expr: llmgw_node_probe_sync_inflight_waiters > 20
+        for: 2m
+        labels:
+          severity: warning
+          component: routing
+        annotations:
+          summary: "NodeProbe 同步探测等待者过多"
+          description: "当前有 {{ $value }} 个请求 goroutine 阻塞在等待进行中的后台探测（dedup 复用）。若持续，说明探测周期过慢或 no_candidates 流量过大。"
+
+      # authoritative 模式下大量回退 → URSM v2 未作为权威源生效（Redis 故障 / 未 Ready）。
+      # 仅在外层标签上计算比例，避免与 node_mirror_* 内层标签重复计数。
+      - alert: RoutingStateFallbackRatioHigh
+        expr: |
+          sum(rate(routing_state_source_total{source="fallback"}[5m]))
+          /
+          clamp_min(sum(rate(routing_state_source_total{source=~"authoritative|fallback|canary|off|skipped"}[5m])), 0.001)
+          > 0.2
+        for: 5m
+        labels:
+          severity: warning
+          component: routing
+        annotations:
+          summary: "路由状态源 fallback 占比过高"
+          description: "authoritative 模式下超过 20% 请求回退到 legacy（当前: {{ $value | humanizePercentage }}）。URSM v2 可能未 Ready 或 Redis 异常，检查 URSM_V2_MODE 与 Redis 连通性。"
+
+      # 压力查询持续失败 → 压力感知路由 fail-open 降级。
+      - alert: RoutingPressureQueryFailuresHigh
+        expr: increase(llmgw_pressure_query_failures_total[5m]) > 50
+        for: 5m
+        labels:
+          severity: warning
+          component: routing
+        annotations:
+          summary: "路由压力信号查询大量失败"
+          description: "近 5 分钟 FpSlots/Limiter 压力查询失败 {{ $value }} 次。压力感知路由已 fail-open（按原权重选路），检查 Redis 连通性。"
