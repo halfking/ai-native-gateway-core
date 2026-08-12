@@ -35,6 +35,8 @@
 
 BEGIN;
 
+-- POST_CONDITION: SELECT 1 FROM pg_class WHERE relname = 'request_logs_bodies_2026_07' AND relkind = 'r'
+
 DO $$
 DECLARE
   parent_name text := 'request_logs_bodies';
