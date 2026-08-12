@@ -298,6 +298,7 @@ func (p *Pipeline) tryEnqueueCred(cred CredentialRef, qr *QueuedRequest) bool {
 	}
 	select {
 	case cf.queue <- qr:
+		qr.CredEnqueuedAt = time.Now()
 		metricCredQueueDepth.WithLabelValues(itoa(cred.CredentialID), cred.ConcurrencyMode).Inc()
 		return true
 	default:

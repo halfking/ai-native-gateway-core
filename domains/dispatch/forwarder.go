@@ -104,13 +104,21 @@ func (cf *credForwarder) acquire(qr *QueuedRequest) bool {
 		return false
 	}
 	qr.DequeuedAt = time.Now()
+	if !qr.CredEnqueuedAt.IsZero() {
+		metricCredQueueWait.WithLabelValues(itoa(cf.cred.CredentialID)).Observe(qr.DequeuedAt.Sub(qr.CredEnqueuedAt).Seconds())
+	}
 	return true
 }
 
 // attempt forwards one request after governor admission.
 func (cf *credForwarder) attempt(qr *QueuedRequest) {
 	defer cf.wg.Done()
-	mode := cf.gov.Mode()
+	// Use the credential's CONFIGURED mode for all metric labels so labels are
+	// consistent across queue-depth / dequeued / in-flight. Do NOT use
+	// cf.gov.Mode(): a concurrency credential with limit 0 degrades to a
+	// noopGovernor whose Mode() returns "disabled", which would mismatch the
+	// "concurrency" label used on the queue-depth gauge for the same credential.
+	mode := cf.cred.ConcurrencyMode
 	metricDequeued.WithLabelValues(itoa(cf.cred.CredentialID), mode).Inc()
 	metricInFlight.WithLabelValues(itoa(cf.cred.CredentialID), mode).Inc()
 

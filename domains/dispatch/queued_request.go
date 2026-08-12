@@ -95,8 +95,9 @@ type QueuedRequest struct {
 	// through an unbounded candidate set under pathological conditions.
 	AttemptCount int
 
-	EnqueuedAt time.Time // Tier-1 enqueue time (for queue-wait metrics)
-	DequeuedAt time.Time // set when leaving Tier-2 (governor acquire)
+	EnqueuedAt    time.Time // Tier-1 enqueue time (for queue-wait metrics)
+	CredEnqueuedAt time.Time // Tier-2 (credential queue) enqueue time
+	DequeuedAt    time.Time // set when leaving Tier-2 (governor acquire)
 
 	// completed guarantees ResultCh is sent on exactly once even if a bug
 	// would otherwise double-complete.
