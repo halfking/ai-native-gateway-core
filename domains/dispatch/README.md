@@ -206,3 +206,11 @@ UPDATE settings_kv SET value = 'false' WHERE key = 'dispatch_v2.enabled';
 - [57-多层队列调度架构设计方案.md](../../docs/会话优化v2/57-多层队列调度架构设计方案.md) - 完整设计
 - [56-LLM厂商并发模式参考.md](../../docs/会话优化v2/56-LLM厂商并发模式参考.md) - 厂商限流语义
 - [31-当前实现基线与修正决策.md](../../docs/会话优化v2/31-当前实现基线与修正决策.md) - 历史背景
+
+## 2026-08-13 优化（容量加权 failover + tpm 估算 + 竞态修复）
+
+- **tpm 估算**：`executor_dispatch.go::estimatePromptTokens` 不再恒返回 0，改用 `transformation.EstimateTokens(params.BodyBytes)`（chars/3.5），使 tpm governor 按真实 prompt 大小计费；空 body 保留 `defaultTokenEstimate=800` 兜底。
+- **容量加权 failover**：`Candidate.Weight`（凭据并发容量）原仅在首次 `promoteWeightedCandidate` 生效；现 `p2cOrder` 等分平局按 Weight 比例加权（`pickWeightedTie`），`banditOrder` 平局 tiebreak 按 Weight 降序，`calculateLoadScore` 增加极小容量惩罚项（默认 0.02，`LLM_GATEWAY_ROUTING_W_CAPACITY=0` 可关）。故障转移序列保持容量比例。
+- **模型切换开关收敛**：`AUTO_ROUTE_FALLBACK_ENABLED` env 与 `dispatch_v2.allow_model_change` settings 统一（`domains/streaming/dispatch_gate.go::dispatchAllowModelChangeEnabled`），env=true 保留为强制开启。
+- **CredEnqueuedAt 竞态修复**：原在 channel send 之后赋值，与 forwarder goroutine 竞争（`go test -race` 在 main 复现）；改为 send 之前赋值，由 channel 收发建立 happens-before。`domains/dispatch` 全包 `-race` 通过。
+
