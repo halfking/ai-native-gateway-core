@@ -1028,6 +1028,22 @@ func (e *Executor) handleContextLengthRecovery(
 		if res.ShouldRetry && res.NewBody != nil && len(res.NewBody) < len(*sourceBody) {
 			before := len(*sourceBody)
 			*sourceBody = res.NewBody
+			// 2026-08-12 P0: notify the client (Cursor / Claude Code /
+			// opencode) via SSE thinking event that we are transparently
+			// compressing the conversation so the request can fit. Without
+			// this the upstream returns 400, the executor retries silently,
+			// and the user sees a useless "context_length" 4xx instead of
+			// understanding the gateway is helping them. Reuses the
+			// existing OnNodeJump callback (handler.go:3434 → preStream
+			// → SSE comment `: thinking: ...`) which is no-op when
+			// preStream is nil (non-stream responses) — safe to call
+			// unconditionally.
+			if params != nil && params.OnNodeJump != nil {
+				params.OnNodeJump(fmt.Sprintf(
+					"context length exceeds model window (%d > %dk) — gateway is transparently compressing the conversation (%s)",
+					before, contextWindow/1024, res.Strategy,
+				))
+			}
 			slog.Info("context_length 4xx → smart window recovery retry",
 				"credential_id", targetCand.CredentialID,
 				"model", targetCand.RawModel,
@@ -1068,6 +1084,16 @@ func (e *Executor) handleContextLengthRecovery(
 		if len(trimmed) < len(*sourceBody) {
 			before := len(*sourceBody)
 			*sourceBody = trimmed
+			// 2026-08-12 P0: notify the client we are transparently
+			// trimming the conversation. See the smart-window branch
+			// above for the full rationale. OnNodeJump is no-op when
+			// preStream is nil (non-stream responses).
+			if params != nil && params.OnNodeJump != nil {
+				params.OnNodeJump(fmt.Sprintf(
+					"context length exceeds model window (%d > %dk) — gateway is transparently trimming oldest messages (mechanical_trim)",
+					before, *targetCand.ContextWindow/1024,
+				))
+			}
 			slog.Info("context_length 4xx → mechanical trim retry",
 				"credential_id", targetCand.CredentialID,
 				"model", targetCand.RawModel,
@@ -1094,6 +1120,16 @@ func (e *Executor) handleContextLengthRecovery(
 		if newBody, ok := e.tryMemoraCompression(ctx, params, *sourceBody); ok {
 			before := len(*sourceBody)
 			*sourceBody = newBody
+			// 2026-08-12 P0: notify the client we are pulling
+			// task-relevant facts from the session cache before
+			// retrying. See the smart-window branch for the full
+			// rationale.
+			if params != nil && params.OnNodeJump != nil {
+				params.OnNodeJump(fmt.Sprintf(
+					"context length exceeds model window (%d) — gateway is rebuilding with task-relevant session facts (memora_l1)",
+					before,
+				))
+			}
 			slog.Info("context_length 4xx → memora L1 rebuild retry",
 				"credential_id", targetCand.CredentialID,
 				"model", targetCand.RawModel,
@@ -1113,6 +1149,15 @@ func (e *Executor) handleContextLengthRecovery(
 		if ok {
 			before := len(*sourceBody)
 			*sourceBody = newBody
+			// 2026-08-12 P0: notify the client we are LLM-summarising
+			// the oldest messages before retrying. See the
+			// smart-window branch for the full rationale.
+			if params != nil && params.OnNodeJump != nil {
+				params.OnNodeJump(fmt.Sprintf(
+					"context length exceeds model window (%d) — gateway is LLM-summarising oldest messages (llm_summary)",
+					before,
+				))
+			}
 			slog.Info("context_length 4xx → llm summary retry",
 				"credential_id", targetCand.CredentialID,
 				"model", targetCand.RawModel,
