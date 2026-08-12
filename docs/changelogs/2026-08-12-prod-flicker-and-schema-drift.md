@@ -109,6 +109,7 @@ opencode）都能识别。
 - **第一次 245 部署没包含修复** —— 我违反了 rule 35，代码没 commit 就触发 deploy-seamless，结果 deploy 的是旧 commit c3b95413。**修正**：`git commit + push` 再 deploy。
 - **`deploy/sql/migrations/V356_*.sql` 为什么没生效** —— 该文件位于 `deploy/sql/migrations/` 旧路径，deploy-seamless 只扫描 `sql/migrations/startup/` + `domain/`。同样的 ADD COLUMN 在新路径下重做（migration 482）。
 - **为什么 245 没有 cron 错误但 154 还有** —— 245 跟 154 共享 252 PG。245 部署时自动 apply 481/482 迁移 → PG 上分区和列都修了 → 154 上即使代码还是老的，cron 也成功（因为列和分区已就绪）。修复 154 代码只是补上 binary 升级。
+- **deploy-seamless 自动跑 481 迁移可能 silent-fail** —— 245 部署日志显示 `[db] → 481_*.sql / BEGIN / DO / COMMIT` 看起来成功，但实际 `request_logs_bodies_2026_07` 分区在 PG 上**没有创建**。手动重跑 481 才真正创建（NOTICE `created partition request_logs_bodies_2026_07` 出现）。**可能原因**（待排查）：deploy-seamless 的 `psql -f` 调用在 PL/pgSQL `DO` block 内 `RAISE NOTICE` 没被 stdout capture，导致 deploy-seamless 把 DO block 静默成功但 EXECUTE 实际未跑。**建议**：deploy-seamless 的 `db-changelog.sh` 应改成 `psql -f` 时显式设置 `client_min_messages=NOTICE` 或 capture NOTICE 到 deploy 日志。**临时绕过**：手动重跑 481 即可（已做）。
 
 ## 遗留与风险
 
