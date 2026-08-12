@@ -16,18 +16,36 @@ import (
 	"github.com/redis/go-redis/v9"
 )
 
+// ErrLeaseLost is returned by Complete when the caller's lease_token no longer
+// matches the task's current lease — meaning the task was reclaimed (the
+// original worker stalled/crashed past RedisLeaseTTL) and re-dispatched to
+// another worker that already completed it. Callers should treat this as a
+// benign "skip terminal side-effects" signal, not a hard failure.
+var ErrLeaseLost = errors.New("systemmonitor: task lease lost (reclaimed by another worker)")
+
 // RedisKey 命名空间常量（与 design §3.1 严格一致）。
 //
 // 任何在代码中拼写 Redis Key 的位置都必须使用这里定义的常量。
 // 搜索模式: grep -rn "llmgw:monitor" --include="*.go"
 const (
 	RedisKeyQueue      = "llmgw:monitor:queue"
+	RedisKeyProcessing = "llmgw:monitor:processing" // claimed-but-incomplete recovery lane
 	RedisKeyRunning    = "llmgw:monitor:running"
 	RedisKeyTasksCnt   = "llmgw:monitor:tasks:counter"
 	RedisKeyWorkers    = "llmgw:monitor:workers"
 	RedisKeyEventsPub  = "llmgw:monitor:events"
 	RedisInflightTTL   = 30 * time.Second
 	RedisRecentSuccTTL = 300 * time.Second
+	// RedisLeaseTTL is how long a claimed task is owned by a worker before
+	// reclaim can re-enqueue it. Must exceed RedisInflightTTL so a live worker
+	// keeps ownership across the dedup window; recovery latency for a crashed
+	// worker is ~RedisLeaseTTL.
+	RedisLeaseTTL = 90 * time.Second
+	// RedisReclaimBatch caps how many stale tasks one reclaim sweep restores,
+	// bounding Lua runtime if processing ever grows abnormally large.
+	RedisReclaimBatch = 256
+	// RedisKeyTasksPrefix is the HASH key prefix used by the Lua scripts.
+	RedisKeyTasksPrefix = "llmgw:monitor:tasks:"
 )
 
 // Queue 是面向 SystemMonitor 的 Redis 队列封装。
@@ -70,17 +88,13 @@ func (q *Queue) loadScripts() *LoadedScripts {
 	return q.scripts.Load()
 }
 
-// Submit enqueues a task to the Redis FIFO queue and persists the full
-// task definition under llmgw:monitor:tasks:{id}.
+// Submit enqueues a task atomically: ID allocation + task hash + ready queue
+// happen in a single Lua EVAL, eliminating the orphan-hash / orphan-queue
+// window the previous 3-round-trip implementation had on crash.
 //
-// Steps:
-//  1. INCR llmgw:monitor:tasks:counter → task_id
-//  2. Marshal task to JSON (claim.lua expects cjson-compatible encoding)
-//  3. HSET llmgw:monitor:tasks:{id} task fields (for REST GET + SSE replay)
-//  4. LPUSH llmgw:monitor:queue {json}
-//
-// The caller (SystemMonitor.Submit) is responsible for Validate() before
-// Submit() — Submit itself does not call Validate to keep the hot path lean.
+// See lua/submit.lua. The Lua script INCRs the counter, fills the real id into
+// the task JSON, HSETs the task hash and LPUSHes the ready queue in one atomic
+// step. task.ID is updated in place from the returned id.
 func (q *Queue) Submit(ctx context.Context, task *Task) error {
 	if !q.Enabled() {
 		return errors.New("queue disabled: redis client is nil")
@@ -88,13 +102,11 @@ func (q *Queue) Submit(ctx context.Context, task *Task) error {
 	if task == nil {
 		return errors.New("task is nil")
 	}
-
-	// 1. 分配 task_id
-	id, err := q.rdb.Incr(ctx, RedisKeyTasksCnt).Result()
-	if err != nil {
-		return fmt.Errorf("submit: incr counter: %w", err)
+	scripts := q.loadScripts()
+	if scripts == nil {
+		return errors.New("submit: lua scripts not loaded")
 	}
-	task.ID = id
+
 	if task.EnqueuedAt.IsZero() {
 		task.EnqueuedAt = time.Now().UTC()
 	}
@@ -107,22 +119,53 @@ func (q *Queue) Submit(ctx context.Context, task *Task) error {
 	task.Status = TaskStatusReady
 	task.Attempt = 0
 
-	// 2. JSON 编码（Lua cjson 兼容：用 float64 表示 ms 时间戳）
+	// Task JSON carries id=0; submit.lua fills the real id after INCR.
 	taskJSON, err := marshalTaskForLua(task)
 	if err != nil {
 		return fmt.Errorf("submit: marshal task: %w", err)
 	}
+	fieldsJSON := q.taskHashFieldsJSON(task)
 
-	// 3. 写任务 hash（REST GET + SSE 重放）
-	if err := q.writeTaskHash(ctx, task); err != nil {
-		return fmt.Errorf("submit: write task hash: %w", err)
+	res, err := runScript(ctx, q.rdb, scripts.submitSHA, submitLuaSrc,
+		[]string{RedisKeyTasksCnt, RedisKeyTasksPrefix, RedisKeyQueue},
+		taskJSON, fieldsJSON)
+	if err != nil {
+		return fmt.Errorf("submit: eval: %w", err)
 	}
-
-	// 4. LPUSH 入队（FIFO = LPUSH + RPOPLPUSH + LPOP 的对称）
-	if err := q.rdb.LPush(ctx, RedisKeyQueue, taskJSON).Err(); err != nil {
-		return fmt.Errorf("submit: lpush queue: %w", err)
+	// submit.lua returns {id_str, task_json_str}.
+	arr, ok := res.([]any)
+	if !ok || len(arr) < 1 {
+		return fmt.Errorf("submit: unexpected script result: %v", res)
 	}
+	idStr, _ := arr[0].(string)
+	id, parseErr := strconv.ParseInt(idStr, 10, 64)
+	if parseErr != nil {
+		return fmt.Errorf("submit: parse task id %q: %w", idStr, parseErr)
+	}
+	task.ID = id
 	return nil
+}
+
+// taskHashFieldsJSON mirrors the fields written by writeTaskHash so submit.lua
+// can HSET them atomically in the same EVAL. Returns a JSON object.
+func (q *Queue) taskHashFieldsJSON(task *Task) string {
+	fields := map[string]any{
+		"task_type":         string(task.TaskType),
+		"automaticity":      string(task.Automaticity),
+		"source":            string(task.Source),
+		"credential_id":     strconv.FormatInt(task.CredentialID, 10),
+		"provider_id":       strconv.FormatInt(task.ProviderID, 10),
+		"raw_model":         task.RawModel,
+		"enqueued_at":       strconv.FormatInt(task.EnqueuedAt.Unix(), 10),
+		"scheduled_at":      strconv.FormatInt(task.ScheduledAt.Unix(), 10),
+		"next_run_at":       strconv.FormatInt(task.NextRunAt.Unix(), 10),
+		"attempt":           strconv.Itoa(task.Attempt),
+		"max_attempts":      strconv.Itoa(task.MaxAttempts),
+		"status":            string(task.Status),
+		"parent_request_id": task.ParentRequestID,
+	}
+	b, _ := json.Marshal(fields)
+	return string(b)
 }
 
 // Claim atomically pops the next eligible task off the queue.
@@ -146,8 +189,8 @@ func (q *Queue) Claim(ctx context.Context) (*Task, error) {
 	}
 
 	res, err := runScript(ctx, q.rdb, scripts.claimSHA, claimLuaSrc,
-		[]string{RedisKeyQueue},
-		workerIDFromContext(ctx), int(RedisInflightTTL.Seconds()))
+		[]string{RedisKeyQueue, RedisKeyProcessing, RedisKeyRunning, RedisKeyTasksPrefix},
+		workerIDFromContext(ctx), int(RedisInflightTTL.Seconds()), int(RedisLeaseTTL.Seconds()))
 	if err != nil {
 		return nil, fmt.Errorf("claim: eval: %w", err)
 	}
@@ -161,6 +204,10 @@ func (q *Queue) Claim(ctx context.Context) (*Task, error) {
 	var task Task
 	if err := json.Unmarshal([]byte(raw), &task); err != nil {
 		return nil, fmt.Errorf("claim: unmarshal task: %w", err)
+	}
+	// claim.lua 在 JSON 里签发了 lease_token; 保留它供 Complete fencing 用。
+	if task.LeaseToken != "" {
+		task.leaseToken = task.LeaseToken
 	}
 	return &task, nil
 }
@@ -183,16 +230,24 @@ func (q *Queue) Complete(ctx context.Context, task *Task, status TaskStatus, ext
 	}
 
 	taskKey := task.HashKey()
-	inflightKey := task.InflightKey()
 
 	extrasJSON, err := json.Marshal(extras)
 	if err != nil {
 		return fmt.Errorf("complete: marshal extras: %w", err)
 	}
-	_, err = runScript(ctx, q.rdb, scripts.completeSHA, completeLuaSrc,
-		[]string{taskKey, inflightKey}, string(status), string(extrasJSON))
+	res, err := runScript(ctx, q.rdb, scripts.completeSHA, completeLuaSrc,
+		[]string{taskKey, RedisKeyProcessing, RedisKeyRunning},
+		string(status), string(extrasJSON), strconv.FormatInt(task.ID, 10), task.leaseToken)
 	if err != nil {
 		return fmt.Errorf("complete: eval: %w", err)
+	}
+	// complete.lua returns 0 when the caller's lease_token no longer matches
+	// (task was reclaimed and re-dispatched to another worker). That is the
+	// expected "lease lost" outcome, not a hard error: surface it so the caller
+	// can skip terminal side-effects (audit/SSE already published by the new
+	// owner) without polluting logs as a failure.
+	if n, _ := res.(int64); n == 0 {
+		return ErrLeaseLost
 	}
 
 	// 本地缓存同步更新
@@ -220,6 +275,10 @@ func (q *Queue) Requeue(ctx context.Context, task *Task, nextRunAt time.Time) er
 	task.Attempt++
 	task.ScheduledAt = nextRunAt
 	task.Status = TaskStatusReady
+	// Requeue produces a fresh queue entry: clear any lease state carried over
+	// from the prior claim so complete.lua fencing does not reject the next
+	// owner with a stale token.
+	task.leaseToken = ""
 
 	taskJSON, err := marshalTaskForLua(task)
 	if err != nil {
@@ -231,7 +290,69 @@ func (q *Queue) Requeue(ctx context.Context, task *Task, nextRunAt time.Time) er
 	if err := q.writeTaskHash(ctx, task); err != nil {
 		return fmt.Errorf("requeue: write task hash: %w", err)
 	}
+	// A requeued task must not also linger in the processing lane from its
+	// previous claim; drop any recovery copy keyed by this task id.
+	q.removeProcessingByID(ctx, task.ID)
 	return nil
+}
+
+// removeProcessingByID is a best-effort cleanup that removes any processing
+// member whose decoded id matches. Used by Requeue so a re-enqueued task is
+// not later restored a second time by the reclaim sweep.
+func (q *Queue) removeProcessingByID(ctx context.Context, taskID int64) {
+	if !q.Enabled() {
+		return
+	}
+	items, err := q.rdb.LRange(ctx, RedisKeyProcessing, 0, -1).Result()
+	if err != nil {
+		return
+	}
+	for _, raw := range items {
+		var probe struct {
+			ID int64 `json:"id"`
+		}
+		if json.Unmarshal([]byte(raw), &probe) == nil && probe.ID == taskID {
+			_ = q.rdb.LRem(ctx, RedisKeyProcessing, 1, raw).Err()
+			break
+		}
+	}
+}
+
+// Reclaim re-enqueues tasks in the processing lane whose lease has expired
+// (the owning worker crashed or stalled past RedisLeaseTTL). Safe to call on
+// every worker tick; it is a no-op when nothing is stale. Returns the number
+// of tasks restored to the ready queue.
+//
+// See lua/reclaim.lua. This is the crash-recovery mechanism that makes Claim
+// safe: a task popped off the ready queue is no longer lost when the worker
+// dies — it lives in processing until complete removes it or reclaim restores it.
+func (q *Queue) Reclaim(ctx context.Context) (int, error) {
+	if !q.Enabled() {
+		return 0, nil
+	}
+	scripts := q.loadScripts()
+	if scripts == nil {
+		return 0, errors.New("reclaim: lua scripts not loaded")
+	}
+	// reclaim.lua uses the lease TTL key (llmgw:monitor:lease:{id}) as the
+	// expiry authority rather than TIME arithmetic, so miniredis FastForward
+	// (which advances TTL but not TIME) exercises the recovery path correctly.
+	res, err := runScript(ctx, q.rdb, scripts.reclaimSHA, reclaimLuaSrc,
+		[]string{RedisKeyProcessing, RedisKeyQueue, RedisKeyTasksPrefix},
+		RedisReclaimBatch)
+	if err != nil {
+		return 0, fmt.Errorf("reclaim: eval: %w", err)
+	}
+	switch v := res.(type) {
+	case string:
+		n, _ := strconv.Atoi(v)
+		return n, nil
+	case int64:
+		return int(v), nil
+	case int:
+		return v, nil
+	}
+	return 0, nil
 }
 
 // QueueSize returns LLEN(llmgw:monitor:queue) for dashboards / monitoring.

@@ -177,6 +177,16 @@ type Task struct {
 	Status    TaskStatus `json:"status"`               // 当前状态
 	ClaimedAt *time.Time `json:"claimed_at,omitempty"` // worker 抢占时间（用于心跳恢复）
 
+	// LeaseToken is the fenced ownership token stamped by claim.lua and verified
+	// by complete.lua. It prevents a stalled worker's late complete from
+	// clobbering a task that was reclaimed and re-dispatched to another worker.
+	// Populated on Claim; carried through to Complete.
+	LeaseToken string `json:"lease_token,omitempty"`
+
+	// leaseToken is the working copy used by Complete fencing. Mirrors
+	// LeaseToken but is not part of the JSON contract callers rely on.
+	leaseToken string `json:"-"`
+
 	// 上次执行结果（用于 SSE 广播 + 审计）
 	HTTPStatus      *int       `json:"http_status,omitempty"`
 	LatencyMs       *int       `json:"latency_ms,omitempty"`
