@@ -2578,6 +2578,13 @@ func main() {
 		probeRollback = bg.NewProbeRollback(dbConn.Pool(), bg.ProbeRollbackConfig{Interval: 10 * time.Second})
 		probeRollback.Start(context.Background())
 		slog.Info("CHECKPOINT: probeRollback started")
+		// 2026-08-13 (常用模型分级自检): process-wide 常用模型 tier cache
+		// (routing_policy.featured_models ∪ request_logs_hot 用量 Top-N), 供
+		// model_probe featured cycle / node_probe priority / probe_service backoff
+		// 分级使用。
+		modelTier := bg.NewModelTier(dbConn.Pool(), bg.ModelTierConfig{RefreshInterval: 10 * time.Minute})
+		modelTier.Start(context.Background())
+		bg.SetGlobalModelTier(modelTier)
 		brokenProbeReviver = bg.NewBrokenProbeReviver(dbConn.Pool(), 0, 0)
 		brokenProbeReviver.Start(context.Background())
 		slog.Info("CHECKPOINT: brokenProbeReviver started")
@@ -2762,6 +2769,12 @@ func main() {
 			slog.Info("CHECKPOINT: before modelProbe.Start")
 			if useNewProbeMode() {
 				slog.Info("modelProbe (legacy 5min consensus) skipped: LLM_GATEWAY_USE_NEW_PROBE_MODE=true")
+				// 2026-08-13 (需求: 常用模型强化自检): even in new mode, run the
+				// 常用模型 deep-ping cycle (the consensus loop is skipped to avoid
+				// duplicate state writes; NodeProbeWorker/CredentialSelfcheckWorker
+				// own error/daily probes). This is the "higher frequency + deeper
+				// probe for 常用 models" lever.
+				modelProbe.StartFeaturedOnly(context.Background())
 			} else {
 				modelProbe.Start(context.Background())
 			}
