@@ -28,8 +28,11 @@ func TestProbeQueue_PublishProbeTask_FiresOnSink(t *testing.T) {
 	if evt.Status != "in-flight" {
 		t.Errorf("status = %q, want in-flight", evt.Status)
 	}
-	if evt.Source != "integrity" {
-		t.Errorf("source = %q, want integrity", evt.Source)
+	// 2026-08-13: Source now propagates the task's own source (previously
+	// hardcoded "integrity"), so node_probe / integrity_verify / selfcheck
+	// tasks render with their real origin on the 自检 stream.
+	if evt.Source != "no_candidates" {
+		t.Errorf("source = %q, want no_candidates (task source)", evt.Source)
 	}
 	if evt.CredentialID != 9 || evt.RawModel != "gpt-5.6" {
 		t.Errorf("credential/model not propagated: %+v", evt)

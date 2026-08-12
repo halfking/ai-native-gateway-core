@@ -2528,6 +2528,7 @@ func main() {
 	var activeProbe *bg.ActiveProbeWorker // 2026-07-13: 错误触发的主动探测
 	var probeQueue *bg.ProbeQueue
 	var probeQueueWorker *bg.ProbeQueueWorker
+	var queueExecutor *bg.ActiveProbeExecutor // 2026-08-13: 统一自检队列执行器 (gateway 轮 + ProbeService)
 	// New-mode workers are held at this scope so shutdown can stop them
 	// before telemetry and the database pool are closed.
 	var credentialSelfcheckWorker *bg.CredentialSelfcheckWorker
@@ -2862,8 +2863,17 @@ func main() {
 			} else {
 				activeProbe.Start(context.Background())
 			}
-			if os.Getenv("LLM_GATEWAY_PROBE_QUEUE_ENABLED") == "true" {
-				queueExecutor := bg.NewActiveProbeExecutor(dbConn.Pool(), keyring, fernetKey, epTimeoutMs)
+			// 2026-08-13 (需求 6 完全统一): durable probe queue now defaults ON.
+			// LLM_GATEWAY_PROBE_QUEUE_ENABLED=false reverts to the legacy
+			// node_probe_state path (kill-switch). The queue is the single entry
+			// point for node_probe + integrity_verify + selfcheck; ProbeService
+			// (wired below after NodeProbeWorker is built) owns node-probe
+			// execution. The worker starts now; node_probe tasks fall back to the
+			// executor direct path until ProbeService is injected (~ms window).
+			if envBoolOff("LLM_GATEWAY_PROBE_QUEUE_ENABLED") {
+				slog.Info("durable probe queue DISABLED by env (legacy node_probe path)")
+			} else {
+				queueExecutor = bg.NewActiveProbeExecutor(dbConn.Pool(), keyring, fernetKey, epTimeoutMs)
 				probeQueue = bg.NewProbeQueue(dbConn.Pool())
 				if probeStreamHub != nil {
 					probeQueue.SetProbeSink(probeStreamHub)
@@ -2970,10 +2980,31 @@ func main() {
 					routingExec.NodeProbeHealthy = func(ctx context.Context, credentialID int, rawModel string) error {
 						return bg.MarkNodeProbeHealthy(ctx, dbConn.Pool(), credentialID, rawModel)
 					}
-					slog.Info("sync_no_candidate_probe", "enabled", syncOn, "timeout", routingExec.SyncNoCandidateTimeout)
-				}
+				slog.Info("sync_no_candidate_probe", "enabled", syncOn, "timeout", routingExec.SyncNoCandidateTimeout)
+			}
 
-				nodeProbeWorker.Start(context.Background())
+			// 2026-08-13 (需求 6 完全统一): wire ProbeService so node_probe tasks
+			// dequeued from credential_probe_queue run through the unified
+			// two-round (direct + pinned-gateway) executor with all side-effects.
+			// Also flip NodeProbeWorker.Submit to enqueue into the queue and park
+			// its legacy picker. The gateway round uses the system key +
+			// X-LLM-Pin-Credential so it attributes to the exact node under test.
+			if probeQueueWorker != nil && probeQueue != nil {
+				gatewayURL := strings.TrimSpace(os.Getenv("LLM_GATEWAY_NODE_PROBE_BASE_URL"))
+				if gatewayURL == "" {
+					gatewayURL = "http://127.0.0.1:8781/v1"
+				}
+				if queueExecutor != nil {
+					queueExecutor.SetGateway(gatewayURL, selfCheckAPIKey, &http.Client{Timeout: 30 * time.Second})
+				}
+				probeService := bg.NewProbeService(nodeProbeWorker, queueExecutor)
+				probeQueueWorker.SetProbeService(probeService)
+				nodeProbeWorker.SetProbeQueue(probeQueue)
+				slog.Info("unified probe service wired",
+					"gateway_url", gatewayURL, "gateway_round", queueExecutor != nil && queueExecutor.GatewayEnabled())
+			}
+
+			nodeProbeWorker.Start(context.Background())
 				slog.Info("CHECKPOINT: node_probe_worker started")
 
 				dailyProbeAudit = bg.NewDailyProbeAudit(dbConn.Pool(), nodeProbeWorker)
@@ -3200,6 +3231,19 @@ func main() {
 					modelQualityWorker.TriggerNodeIQTest(credID, rawModel)
 				}
 			})
+			// 2026-08-13: mirror the unified-queue wiring for the authoritative
+			// URSM v2 fallback path (no credentialstate.Manager).
+			if probeQueueWorker != nil && probeQueue != nil {
+				gatewayURL := strings.TrimSpace(os.Getenv("LLM_GATEWAY_NODE_PROBE_BASE_URL"))
+				if gatewayURL == "" {
+					gatewayURL = "http://127.0.0.1:8781/v1"
+				}
+				if queueExecutor != nil {
+					queueExecutor.SetGateway(gatewayURL, selfCheckAPIKey, &http.Client{Timeout: 30 * time.Second})
+				}
+				probeQueueWorker.SetProbeService(bg.NewProbeService(nodeProbeWorker, queueExecutor))
+				nodeProbeWorker.SetProbeQueue(probeQueue)
+			}
 			nodeProbeWorker.Start(context.Background())
 			slog.Info("authoritative URSM v2 node_probe_worker started")
 		}
