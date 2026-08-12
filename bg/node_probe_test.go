@@ -130,7 +130,13 @@ func TestNodeProbeResultToStatus(t *testing.T) {
 		{"success", nodeProbeRoundResult{ok: true}, ProbeStatusSuccess},
 		{"endpoint_build", nodeProbeRoundResult{errCode: "endpoint_build"}, ProbeStatusFailed},
 		{"network_error", nodeProbeRoundResult{errCode: "network_error", latencyMs: 500}, ProbeStatusNetwork},
-		{"network_error near timeout", nodeProbeRoundResult{errCode: "network_error", latencyMs: 14900, timedOut: true}, ProbeStatusTimeout},
+		// 2026-08-12: timeout is now its own errCode (was network_error +
+		// timedOut=true). dns_error / connection_error are new transport
+		// subclasses; both still roll up to ProbeStatusNetwork so existing
+		// dashboards that grouped on the old single label are unaffected.
+		{"timeout", nodeProbeRoundResult{errCode: "timeout", latencyMs: 14900, timedOut: true}, ProbeStatusTimeout},
+		{"dns_error", nodeProbeRoundResult{errCode: "dns_error"}, ProbeStatusNetwork},
+		{"connection_error", nodeProbeRoundResult{errCode: "connection_error"}, ProbeStatusNetwork},
 		{"429", nodeProbeRoundResult{errCode: "http_429", httpStatus: 429}, ProbeStatusRate},
 		{"401", nodeProbeRoundResult{errCode: "http_401", httpStatus: 401}, ProbeStatusAuth},
 		{"403", nodeProbeRoundResult{errCode: "http_403", httpStatus: 403}, ProbeStatusAuth},
