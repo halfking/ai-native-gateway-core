@@ -71,7 +71,8 @@ local cutoff = now - window
 
 redis.call('ZREMRANGEBYSCORE', key, '-inf', cutoff)
 
--- Sum current token usage (members encode "timestamp:tokens")
+-- Sum current token usage. Members encode "<ms>:<microseconds>:<tokens>";
+-- the token count is the trailing field so string.match(':(%d+)$') reads it.
 local members = redis.call('ZRANGE', key, 0, -1)
 local used = 0
 for _, m in ipairs(members) do
@@ -82,7 +83,13 @@ if used + tokens > limit then
   return 0
 end
 
-redis.call('ZADD', key, now, now .. ':' .. tokens)
+-- Member must be unique: two requests in the same ms with the same token
+-- estimate (defaultTokenEstimate is very common) would otherwise produce an
+-- identical "ms:tokens" member, and ZADD would overwrite (not add) — silently
+-- under-counting TPM. The microsecond suffix makes the member unique while
+-- keeping tokens last for the sum parser above.
+local usec = redis.call('TIME')[2]
+redis.call('ZADD', key, now, now .. ':' .. usec .. ':' .. tokens)
 redis.call('PEXPIRE', key, window + 1000)
 return 1
 `
