@@ -17,8 +17,8 @@ import (
 
 	"github.com/kaixuan/llm-gateway-go/credentialfpslot"
 	"github.com/kaixuan/llm-gateway-go/db"
-	"github.com/kaixuan/llm-gateway-go/domains/credential"                    //nolint:depguard // historical violation, B1 routing.go CQRS will fix
-	"github.com/kaixuan/llm-gateway-go/domains/credentialstate"               //nolint:depguard // historical violation, B1 routing.go CQRS will fix
+	"github.com/kaixuan/llm-gateway-go/domains/credential"      //nolint:depguard // historical violation, B1 routing.go CQRS will fix
+	"github.com/kaixuan/llm-gateway-go/domains/credentialstate" //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/domains/dispatch"
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/audit"                   //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/compression"             //nolint:depguard // historical violation, B1 routing.go CQRS will fix
@@ -57,6 +57,10 @@ type providerResolver interface {
 	// 2026-07-03: Bug #7 fix - added tenantID parameter
 	GetCandidates(ctx context.Context, model, profile, tenantID string) ([]provider.Candidate, *provider.Policy, error)
 	ModelKnown(ctx context.Context, model string) bool
+}
+
+type modalityProviderResolver interface {
+	GetCandidatesByModality(ctx context.Context, model, profile, tenantID, modality string) ([]provider.Candidate, *provider.Policy, error)
 }
 
 type probeCandidateResolver interface {
@@ -1182,6 +1186,21 @@ type ExecParams struct {
 	// ApiKeyID is the API key ID from keyInfo.ID (same as KeyID but as pointer).
 	// 2026-07-07: Used by multi-level sticky routing (L1/L2/L3).
 	ApiKeyID *int
+
+	// DispatchModelAlternatives carries request-scoped model fallback candidates
+	// computed before Execute (for example auto-route CandidatesTop3 excluding
+	// the chosen model). Dispatch V2 may use them only when
+	// DispatchAllowModelChange is true.
+	DispatchModelAlternatives []string
+	DispatchAllowModelChange  bool
+	// DispatchRequestModality is the modality detected by the handler when it
+	// resolved the initial candidates. Dispatch V2 reuses it when lazily resolving
+	// candidates for an alternate model.
+	DispatchRequestModality string
+	// DispatchAllowProviderChange permits dispatch V2 to leave the provider of
+	// the first selected credential. When false it may still switch credentials
+	// within the same provider.
+	DispatchAllowProviderChange bool
 
 	// InFallback (Phase 2, 2026-07-19) prevents infinite recursion when
 	// the cross-provider model fallback chain triggers a recursive call

@@ -3336,6 +3336,14 @@ func (h *ChatHandler) serveWithExecutor(
 	defer retryCancel()
 
 	// Retry loop
+	dispatchModelAlternatives := []string(nil)
+	dispatchAllowModelChange := false
+	if logCtx != nil && logCtx.IsAutoRequest && len(logCtx.AutoFallbackModels) > 0 && os.Getenv("AUTO_ROUTE_FALLBACK_ENABLED") == "true" {
+		dispatchModelAlternatives = append([]string(nil), logCtx.AutoFallbackModels...)
+		dispatchAllowModelChange = true
+	}
+	dispatchAllowProviderChange := hasMultipleProviders(candidates)
+	dispatchModelAlternativesConsumed := dispatchAllowModelChange
 	retryStartTime := time.Now()
 	retriesPerformed := 0
 
@@ -3463,17 +3471,21 @@ func (h *ChatHandler) serveWithExecutor(
 			// received a short id like "glm-5.2" or "minimax-m3" instead of
 			// the required publisher-prefixed "z-ai/glm-5.2" /
 			// "minimaxai/minimax-m3" → model_not_found.
-			OutboundModel:  clientModel,
-			ClientID:       clientID,
-			Transform:      txResult,
-			Resolution:     modelResolution,
-			Candidates:     candidates,
-			Policy:         policy,
-			AuditBuilder:   auditBuilder,
-			Capture:        streamCapture,
-			ToolsRequested: requestHasTools(bodyBytes),
-			SessionKey:     sessionKey,
-			StickyKey:      stickyKey,
+			OutboundModel:               clientModel,
+			ClientID:                    clientID,
+			Transform:                   txResult,
+			Resolution:                  modelResolution,
+			Candidates:                  candidates,
+			Policy:                      policy,
+			DispatchModelAlternatives:   append([]string(nil), dispatchModelAlternatives...),
+			DispatchAllowModelChange:    dispatchAllowModelChange,
+			DispatchAllowProviderChange: dispatchAllowProviderChange,
+			DispatchRequestModality:     requestModality,
+			AuditBuilder:                auditBuilder,
+			Capture:                     streamCapture,
+			ToolsRequested:              requestHasTools(bodyBytes),
+			SessionKey:                  sessionKey,
+			StickyKey:                   stickyKey,
 			KeyID: func() int {
 				if keyInfo != nil {
 					return keyInfo.ID
@@ -3679,7 +3691,7 @@ func (h *ChatHandler) serveWithExecutor(
 	// nextModel — the originals are for the exhausted model and would route
 	// nextModel to credentials that don't support it.
 	if execErr != nil && logCtx != nil && logCtx.IsAutoRequest &&
-		len(logCtx.AutoFallbackModels) > 0 &&
+		len(logCtx.AutoFallbackModels) > 0 && !dispatchModelAlternativesConsumed &&
 		!isStream && !preStreamPrepared &&
 		os.Getenv("AUTO_ROUTE_FALLBACK_ENABLED") == "true" {
 
@@ -5174,6 +5186,20 @@ func shouldSkipAutoTitleGeneration(logCtx *RequestLogContext) bool {
 // treated as a normal request (no skip).
 func shouldSkipAutoSummaryGeneration(logCtx *RequestLogContext) bool {
 	return logCtx != nil && logCtx.IsAutoRequest
+}
+
+func hasMultipleProviders(candidates []provider.Candidate) bool {
+	seen := map[int]struct{}{}
+	for _, c := range candidates {
+		if c.ProviderID == 0 {
+			continue
+		}
+		seen[c.ProviderID] = struct{}{}
+		if len(seen) > 1 {
+			return true
+		}
+	}
+	return false
 }
 
 // streamRespModelForIntegrity returns the upstream-returned model
