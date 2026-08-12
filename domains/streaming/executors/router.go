@@ -804,15 +804,13 @@ func p2cOrder(cands []provider.Candidate, r *Router) []provider.Candidate {
 		if scoreB < scoreA {
 			chosen = b
 		} else if scoreB == scoreA {
-			// 2026-06-25: When load scores are equal (e.g., both free local
-			// mocks with same routing_score), P2C previously always picked 'a'
-			// (the first random sample). This biased load distribution toward
-			// whichever candidate happened to be drawn first, causing 83/17
-			// splits instead of 50/50. Fix: randomize on equal scores to
-			// avoid deterministic bias before planByTier applies configured weight.
-			if rand.Intn(2) == 0 {
-				chosen = b
-			}
+			// 2026-06-25: When load scores are equal, P2C previously always
+			// picked 'a' (first random sample), biasing distribution 83/17.
+			// 2026-08-13: extend the tie-break to be capacity-proportional so
+			// failover ordering stays weighted by provider concurrency capacity
+			// (Candidate.Weight). Each side wins with probability ∝ its Weight;
+			// equal weights collapse to the original 50/50 anti-bias coin flip.
+			chosen = pickWeightedTie(a, b)
 		}
 
 		out = append(out, chosen)
@@ -859,6 +857,33 @@ func randomPair(pool []provider.Candidate) (provider.Candidate, provider.Candida
 		j++
 	}
 	return pool[i], pool[j]
+}
+
+// pickWeightedTie breaks a P2C load-score tie by capacity weight (Candidate.Weight,
+// derived from the credential's concurrency capacity). Each candidate wins with
+// probability proportional to its Weight, so the failover sequence remains
+// capacity-proportional instead of an unweighted coin flip. Equal (or both
+// unknown/zero) weights collapse to the original 50/50 anti-bias behavior, so
+// homogeneous pools still distribute evenly.
+func pickWeightedTie(a, b provider.Candidate) provider.Candidate {
+	wa := a.Weight
+	wb := b.Weight
+	if wa <= 0 && wb <= 0 {
+		if rand.Intn(2) == 0 {
+			return b
+		}
+		return a
+	}
+	if wa <= 0 {
+		wa = 1
+	}
+	if wb <= 0 {
+		wb = 1
+	}
+	if rand.Float64() < float64(wa)/float64(wa+wb) {
+		return a
+	}
+	return b
 }
 
 func removeCandidate(pool []provider.Candidate, target provider.Candidate) []provider.Candidate {
@@ -1050,7 +1075,12 @@ func (r *Router) banditOrder(cands []provider.Candidate) []provider.Candidate {
 		if scored[i].score != scored[j].score {
 			return scored[i].score > scored[j].score
 		}
-		// Tie-breaker: credential ID
+		// Tie-breaker: capacity weight (Candidate.Weight, the credential's
+		// concurrency capacity) descending so failover ordering stays
+		// capacity-proportional; CredentialID is the final stable tiebreak.
+		if scored[i].cand.Weight != scored[j].cand.Weight {
+			return scored[i].cand.Weight > scored[j].cand.Weight
+		}
 		return scored[i].cand.CredentialID < scored[j].cand.CredentialID
 	})
 
