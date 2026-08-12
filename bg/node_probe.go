@@ -595,12 +595,13 @@ func (w *NodeProbeWorker) submitViaQueue(credID int, model, tenantID, parentReqI
 		RawModel:     model,
 		Command:      "node_probe",
 		Mode:         "multi_round",
-		Priority:     60, // above passive integrity (50), below urgent
-		MaxAttempts:  nodeProbeMaxAttempts,
-		NextRunAt:    time.Now().Add(5 * time.Second),
-		Source:       "request_failure",
-		ParentReqID:  parentReqID,
-		DedupKey:     buildNodeProbeTaskID(credID, model),
+		// 2026-08-13: 常用模型更高优先级（默认 80），抢占式先执行；非常用 60。
+		Priority:    FeaturedQueuePriority(model, 60),
+		MaxAttempts: nodeProbeMaxAttempts,
+		NextRunAt:   time.Now().Add(5 * time.Second),
+		Source:      "request_failure",
+		ParentReqID: parentReqID,
+		DedupKey:    buildNodeProbeTaskID(credID, model),
 	}
 	if _, inserted, err := w.probeQueue.Enqueue(ctx, task); err != nil {
 		slog.Warn("node_probe_worker: enqueue via queue failed",

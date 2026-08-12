@@ -38,6 +38,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"sync"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -82,6 +83,12 @@ type ModelProbeRunner struct {
 	cache   *ModelAvailabilityCache
 	cancel  context.CancelFunc
 	done    chan struct{}
+	// featuredCancel is set by StartFeaturedOnly so Stop can cancel the
+	// standalone 常用模型 deep-ping cycle independently of the consensus loop.
+	featuredCancel context.CancelFunc
+	// closeOnce ensures `done` is closed exactly once whether the closer is the
+	// consensus loop (run) or the featured-only cycle (StartFeaturedOnly).
+	closeOnce sync.Once
 }
 
 func NewModelProbeRunner(db *pgxpool.Pool, encKey []byte) *ModelProbeRunner {
@@ -110,15 +117,35 @@ func (r *ModelProbeRunner) Start(ctx context.Context) {
 	)
 }
 
+// StartFeaturedOnly launches ONLY the 常用模型 deep-ping cycle (no consensus
+// loop). Used when LLM_GATEWAY_USE_NEW_PROBE_MODE=true (the default): the new
+// CredentialSelfcheckWorker + NodeProbeWorker own consensus/error probes, but
+// neither runs a frequent deep ping for HEALTHY 常用 models — so the featured
+// cycle is the "强化自检" lever (需求: 常用模型加强自检). It only probes models
+// matched by globalIsFeaturedModel and writes model_probe_runs (read-only w.r.t.
+// state unless the consensus cycle also runs), so it is safe to run standalone.
+func (r *ModelProbeRunner) StartFeaturedOnly(ctx context.Context) {
+	fctx, cancel := context.WithCancel(ctx)
+	r.featuredCancel = cancel
+	go func() {
+		defer r.closeOnce.Do(func() { close(r.done) })
+		r.featuredCycleLoop(fctx)
+	}()
+	slog.Info("model probe featured-only cycle (常用模型 deep ping) started")
+}
+
 func (r *ModelProbeRunner) Stop() {
 	if r.cancel != nil {
 		r.cancel()
+	}
+	if r.featuredCancel != nil {
+		r.featuredCancel()
 	}
 	<-r.done
 }
 
 func (r *ModelProbeRunner) run(ctx context.Context) {
-	defer close(r.done)
+	defer r.closeOnce.Do(func() { close(r.done) })
 
 	ticker := time.NewTicker(ProbeInterval)
 	defer ticker.Stop()
@@ -337,9 +364,15 @@ func (r *ModelProbeRunner) cycle(ctx context.Context) {
 	)
 }
 
-// featuredCycleLoop runs Layer 4 deep probe for featured models every 30min.
+// featuredCycleLoop runs Layer 4 deep probe for 常用模型 (featured ∪ usage top-N).
+// Cadence is configurable via probe.featured_cycle_seconds (default 900=15min;
+// was hardcoded 30min). 常用模型自检更频繁，其它模型不走此深探测周期。
 func (r *ModelProbeRunner) featuredCycleLoop(ctx context.Context) {
-	ticker := time.NewTicker(30 * time.Minute)
+	interval := time.Duration(settings.GetPlatformInt("probe.featured_cycle_seconds", 900)) * time.Second
+	if interval < time.Minute {
+		interval = time.Minute
+	}
+	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 	time.Sleep(2 * time.Minute) // stagger: wait 2min then start
 	r.featuredCycle(ctx)
@@ -367,19 +400,14 @@ func (r *ModelProbeRunner) featuredCycle(ctx context.Context) {
 		       COALESCE(pm.outbound_model_name, ''),
 		       COALESCE(mc.modality, 'text'),
 		       COALESCE(p.base_url, ''), COALESCE(p.protocol, 'openai-completions'),
-		       c.secret_ciphertext, COALESCE(c.manual_disabled, FALSE)
+		       c.secret_ciphertext, COALESCE(c.manual_disabled, FALSE),
+		       COALESCE(pm.standardized_name, '')
 		FROM credential_model_bindings cmb
 		JOIN provider_models pm ON pm.id = cmb.provider_model_id
 		LEFT JOIN models_canonical mc ON mc.id = pm.canonical_id
 		JOIN credentials c ON c.id = cmb.credential_id
 		JOIN providers p ON p.id = c.provider_id
-		CROSS JOIN routing_policy pol
-		WHERE pol.tenant_id = 'default'
-		  AND (
-		    COALESCE(pm.standardized_name, pm.raw_model_name) = ANY(pol.featured_models)
-		    OR pm.raw_model_name = ANY(pol.featured_models)
-		  )
-		  AND COALESCE(c.lifecycle_status, 'active') = 'active'
+		WHERE COALESCE(c.lifecycle_status, 'active') = 'active'
 		  AND COALESCE(c.status, 'active') = 'active'
 		  AND COALESCE(c.manual_disabled, FALSE) = FALSE
 		  AND COALESCE(p.enabled, FALSE) = TRUE
@@ -394,13 +422,20 @@ func (r *ModelProbeRunner) featuredCycle(ctx context.Context) {
 	for rows.Next() {
 		var t probeTarget
 		var ciphertext []byte
+		var standardized string
 		if err := rows.Scan(
 			&t.CredentialID, &t.RawModel, &t.OutboundModel, &t.Modality,
-			&t.BaseURL, &t.Protocol, &ciphertext, &t.ManualDisabled,
+			&t.BaseURL, &t.Protocol, &ciphertext, &t.ManualDisabled, &standardized,
 		); err != nil {
 			continue
 		}
 		if t.ManualDisabled {
+			continue
+		}
+		// 2026-08-13: "常用模型" filter (static featured ∪ usage Top-N). Only
+		// 常用 models get the deep chat-ping; non-featured rows are skipped here
+		// (they stay on the cheaper consensus models-list cycle).
+		if !globalIsFeaturedModel(t.RawModel, standardized) {
 			continue
 		}
 		apiKey, decErr := decryptCiphertext(ciphertext, r.keyring, r.encKey)
@@ -615,6 +650,14 @@ func (r *ModelProbeRunner) applyResult(
 	switch newState {
 	case "healthy_confirmed":
 		nextRetryInterval = cfg.NextDelay(0)
+		// 2026-08-13: 非常用模型降频 — 健康态看门狗乘倍率（默认 4 → ~8h 才再探），
+		// 降低非常用模型自检频度。常用模型维持基准 2h。仅作用于健康态，
+		// 不影响失败检测/熔断（broken_confirmed 与 default 分支不动）。
+		if !globalIsFeaturedModel(t.RawModel, "") {
+			if mult := settings.GetPlatformInt("probe.nonfeatured_watchdog_multiplier", 4); mult > 1 {
+				nextRetryInterval *= time.Duration(mult)
+			}
+		}
 	case "broken_confirmed":
 		nextRetryInterval = time.Duration(settings.GetPlatformInt("probe.broken_watchdog_hours", 168)) * time.Hour
 	default:
