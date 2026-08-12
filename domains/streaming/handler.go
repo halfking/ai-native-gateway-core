@@ -3338,7 +3338,7 @@ func (h *ChatHandler) serveWithExecutor(
 	// Retry loop
 	dispatchModelAlternatives := []string(nil)
 	dispatchAllowModelChange := false
-	if logCtx != nil && logCtx.IsAutoRequest && len(logCtx.AutoFallbackModels) > 0 && os.Getenv("AUTO_ROUTE_FALLBACK_ENABLED") == "true" {
+	if logCtx != nil && logCtx.IsAutoRequest && len(logCtx.AutoFallbackModels) > 0 && dispatchAllowModelChangeEnabled() {
 		dispatchModelAlternatives = append([]string(nil), logCtx.AutoFallbackModels...)
 		dispatchAllowModelChange = true
 	}
@@ -3693,7 +3693,7 @@ func (h *ChatHandler) serveWithExecutor(
 	if execErr != nil && logCtx != nil && logCtx.IsAutoRequest &&
 		len(logCtx.AutoFallbackModels) > 0 && !dispatchModelAlternativesConsumed &&
 		!isStream && !preStreamPrepared &&
-		os.Getenv("AUTO_ROUTE_FALLBACK_ENABLED") == "true" {
+		dispatchAllowModelChangeEnabled() {
 
 		if execErrTyped, ok := execErr.(*executors.ExecuteError); ok && execErrTyped.Exhausted {
 			nextModel := logCtx.AutoFallbackModels[0]

@@ -50,12 +50,22 @@ func calculateLoadScore(c provider.Candidate, r *Router, ctx context.Context, we
 	headroomWeight := envFloat("LLM_GATEWAY_ROUTING_W_HEADROOM", 0.05)
 	latencyPenalty := 1.0 - latencyScore
 	headroomPenalty := 1.0 - headroom
+	// Capacity nudge (2026-08-13): a deliberately tiny term so the credential's
+	// concurrency capacity (Candidate.Weight) biases the P2C score in favor of
+	// higher-capacity nodes even outside exact ties. It saturates at the default
+	// weight (100) so normal pools are unaffected and only sub-default nodes get
+	// a small penalty; the dominant load/health terms and the capacity-aware
+	// tie-breaks (pickWeightedTie / banditOrder) carry the real weighting. Set
+	// LLM_GATEWAY_ROUTING_W_CAPACITY=0 to disable entirely.
+	capacityWeight := envFloat("LLM_GATEWAY_ROUTING_W_CAPACITY", 0.02)
+	capacityPenalty := capacityPenaltyForWeight(c.Weight)
 	composite :=
 		concurrencyScore*weights.ConcurrencyWeight +
 			identityScore*weights.IdentityWeight +
 			latencyPenalty*weights.LatencyWeight +
 			qualityScore*weights.QualityWeight +
-			headroomPenalty*headroomWeight // 高 headroom → 低惩罚 → 更易被选中
+			headroomPenalty*headroomWeight + // 高 headroom → 低惩罚 → 更易被选中
+			capacityPenalty*capacityWeight
 
 	if rand.Float64() < 0.1 {
 		slog.Info("LOAD_SCORE_V2",
@@ -67,11 +77,30 @@ func calculateLoadScore(c provider.Candidate, r *Router, ctx context.Context, we
 			"quality_score", qualityScore,
 			"headroom", headroom,
 			"headroom_penalty", headroomPenalty,
+			"capacity_weight", c.Weight,
+			"capacity_penalty", capacityPenalty,
 			"composite", composite,
 		)
 	}
 
 	return composite
+}
+
+// capacityPenaltyForWeight turns a candidate's capacity weight (the credential's
+// concurrency capacity, see provider.applyCapacityWeightedLB) into a 0..1
+// penalty for calculateLoadScore. The default/unknown weight (100) and any
+// larger weight map to 0 (no penalty); sub-default weights rise linearly to 1.
+// Unknown/zero weights are treated as the default so they are never penalized.
+const defaultCapacityWeight = 100
+
+func capacityPenaltyForWeight(weight int) float64 {
+	if weight <= 0 {
+		weight = defaultCapacityWeight
+	}
+	if weight >= defaultCapacityWeight {
+		return 0
+	}
+	return 1.0 - float64(weight)/float64(defaultCapacityWeight)
 }
 
 // calculateConcurrencyScore 计算全局并发压力分数

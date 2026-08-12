@@ -296,9 +296,13 @@ func (p *Pipeline) tryEnqueueCred(cred CredentialRef, qr *QueuedRequest) bool {
 		metricOverflow.WithLabelValues("cred_queue_full").Inc()
 		return false
 	}
+	// Stamp the enqueue time BEFORE the channel send. The send/receive on
+	// cf.queue establishes happens-before, so the forwarder goroutine's read of
+	// CredEnqueuedAt in acquire() (forwarder.go) is race-free. Setting it after
+	// the send (the previous order) raced with the receiver (go test -race).
+	qr.CredEnqueuedAt = time.Now()
 	select {
 	case cf.queue <- qr:
-		qr.CredEnqueuedAt = time.Now()
 		metricCredQueueDepth.WithLabelValues(itoa(cred.CredentialID), cred.ConcurrencyMode).Inc()
 		return true
 	default:

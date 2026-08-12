@@ -9,6 +9,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/credentialfpslot"
 	"github.com/kaixuan/llm-gateway-go/domains/dispatch"
 	ursmv2api "github.com/kaixuan/llm-gateway-go/domains/ursm/v2/api"
+	"github.com/kaixuan/llm-gateway-go/domains/transformation"
 	"github.com/kaixuan/llm-gateway-go/errorsx"
 	"github.com/kaixuan/llm-gateway-go/internal/runctx"
 	"github.com/kaixuan/llm-gateway-go/provider"
@@ -446,8 +447,16 @@ func (e *Executor) recordDispatchError(params *ExecParams, cand provider.Candida
 }
 
 // estimatePromptTokens returns a rough pre-send token estimate for tpm pacing.
-// v1: 0 (unknown) → the tpm governor uses a conservative fixed cost.
-func estimatePromptTokens(params *ExecParams) int { return 0 }
+// It reuses the same chars/3.5 heuristic the auto_route path applies, so the
+// tpm governor charges an approximation of the real prompt size instead of a
+// flat fixed cost. A 0 (empty/unknown body) return is intentional: the tpm
+// governor then falls back to its conservative defaultTokenEstimate.
+func estimatePromptTokens(params *ExecParams) int {
+	if params == nil || len(params.BodyBytes) == 0 {
+		return 0
+	}
+	return transformation.EstimateTokens(params.BodyBytes)
+}
 
 func latencyOr(r *ExecuteResult, def int) int {
 	if r != nil && r.LatencyMs > 0 {
