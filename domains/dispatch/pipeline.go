@@ -292,12 +292,16 @@ func (p *Pipeline) routeFailover(qr *QueuedRequest, err error) {
 // creating the forwarder on first use. Returns false if the queue is full.
 func (p *Pipeline) tryEnqueueCred(cred CredentialRef, qr *QueuedRequest) bool {
 	cf := p.getOrCreateForwarder(cred)
+	if !cf.tryReserve() {
+		metricOverflow.WithLabelValues("cred_queue_full").Inc()
+		return false
+	}
 	select {
 	case cf.queue <- qr:
-		cf.depth.Add(1)
 		metricCredQueueDepth.WithLabelValues(itoa(cred.CredentialID), cred.ConcurrencyMode).Inc()
 		return true
 	default:
+		cf.depth.Add(-1)
 		metricOverflow.WithLabelValues("cred_queue_full").Inc()
 		return false
 	}

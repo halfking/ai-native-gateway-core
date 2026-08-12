@@ -2,6 +2,7 @@ package dispatch
 
 import (
 	"context"
+	"sync"
 	"sync/atomic"
 	"time"
 )
@@ -12,10 +13,12 @@ type credForwarder struct {
 	cred   CredentialRef
 	queue  chan *QueuedRequest
 	depth  atomic.Int64
+	limit  int64
 	gov    Governor
 	pipe   *Pipeline
 	ctx    context.Context
 	cancel context.CancelFunc
+	wg     sync.WaitGroup
 }
 
 func newCredForwarder(cred CredentialRef, queueDepth int, pipe *Pipeline) *credForwarder {
@@ -23,6 +26,7 @@ func newCredForwarder(cred CredentialRef, queueDepth int, pipe *Pipeline) *credF
 	cf := &credForwarder{
 		cred:   cred,
 		queue:  make(chan *QueuedRequest, queueDepth),
+		limit:  int64(queueDepth),
 		gov:    newGovernor(cred),
 		pipe:   pipe,
 		ctx:    ctx,
@@ -32,19 +36,35 @@ func newCredForwarder(cred CredentialRef, queueDepth int, pipe *Pipeline) *credF
 	return cf
 }
 
-// loop drains the Tier-2 queue. Each drained request is paced by the governor
-// (which flattens peaks and never exceeds the concurrency/rate limit) in a
-// transient goroutine, so a blocked governor does not stall other items in the
-// queue.
+func (cf *credForwarder) tryReserve() bool {
+	for {
+		cur := cf.depth.Load()
+		if cf.limit > 0 && cur >= cf.limit {
+			return false
+		}
+		if cf.depth.CompareAndSwap(cur, cur+1) {
+			return true
+		}
+	}
+}
+
+// loop drains the Tier-2 queue. Governor admission happens in this owner
+// goroutine, so requests waiting for a credential slot remain visible in the
+// bounded queue instead of escaping into unbounded goroutines.
 func (cf *credForwarder) loop() {
+	defer cf.wg.Wait()
 	for {
 		select {
 		case qr, ok := <-cf.queue:
 			if !ok {
 				return
 			}
+			if !cf.acquire(qr) {
+				continue
+			}
 			cf.depth.Add(-1)
 			metricCredQueueDepth.WithLabelValues(itoa(cf.cred.CredentialID), cf.cred.ConcurrencyMode).Dec()
+			cf.wg.Add(1)
 			go cf.attempt(qr)
 		case <-cf.ctx.Done():
 			return
@@ -52,31 +72,44 @@ func (cf *credForwarder) loop() {
 	}
 }
 
-// attempt paces then forwards one request.
-func (cf *credForwarder) attempt(qr *QueuedRequest) {
+func (cf *credForwarder) acquire(qr *QueuedRequest) bool {
 	qr.AttemptCount++
 	giveUp := time.Now().Add(cf.pipe.queueWaitBudget(qr))
-
-	if err := cf.gov.Acquire(ctxOf(qr), qr, giveUp); err != nil {
-		// Acquire failed (pacing timeout or ctx cancel): no slot is held, so
-		// routeFailover is safe to call even if it blocks on a full channel.
-		if ctxOf(qr).Err() != nil {
-			// Client gave up; nothing to do (Submit already returned).
-			cf.pipe.complete(qr, ForwardOutcome{Err: ctxOf(qr).Err()})
-			return
+	ctx, cancel := context.WithCancel(ctxOf(qr))
+	defer cancel()
+	go func() {
+		select {
+		case <-cf.ctx.Done():
+			cancel()
+		case <-ctx.Done():
 		}
-		// Pacing timeout means this credential's concurrency/rate budget is
-		// saturated — an immediate same-credential retry would almost surely
-		// time out again. Skip the retry budget so the mover switches to a
-		// different credential right away.
+	}()
+
+	if err := cf.gov.Acquire(ctx, qr, giveUp); err != nil {
+		cf.depth.Add(-1)
+		metricCredQueueDepth.WithLabelValues(itoa(cf.cred.CredentialID), cf.cred.ConcurrencyMode).Dec()
+		if ctxOf(qr).Err() != nil {
+			cf.pipe.complete(qr, ForwardOutcome{Err: ctxOf(qr).Err()})
+			return false
+		}
+		if cf.ctx.Err() != nil {
+			cf.pipe.complete(qr, ForwardOutcome{Err: ErrShutdown})
+			return false
+		}
 		if IsPaceTimeout(err) {
 			qr.CredRetryCount = maxRetryBudget
 		}
 		metricOverflow.WithLabelValues("pace_timeout").Inc()
 		cf.pipe.routeFailover(qr, err)
-		return
+		return false
 	}
+	qr.DequeuedAt = time.Now()
+	return true
+}
 
+// attempt forwards one request after governor admission.
+func (cf *credForwarder) attempt(qr *QueuedRequest) {
+	defer cf.wg.Done()
 	mode := cf.gov.Mode()
 	metricDequeued.WithLabelValues(itoa(cf.cred.CredentialID), mode).Inc()
 	metricInFlight.WithLabelValues(itoa(cf.cred.CredentialID), mode).Inc()

@@ -28,7 +28,7 @@ func (p *Pipeline) runDispatcher() {
 func (p *Pipeline) dispatch(qr *QueuedRequest) {
 	// Resolve model (auto / empty → concrete).
 	if qr.ResolvedModel == "" {
-		resolved, _, err := p.modelResolveFunc(qr.Ctx, qr.RequestedModel, nil)
+		resolved, alts, err := p.modelResolveFunc(qr.Ctx, qr.RequestedModel, nil)
 		if err != nil || resolved == "" {
 			slog.Debug("dispatch: model resolve failed",
 				"requested", qr.RequestedModel, "request_id", qr.ID, "error", err)
@@ -36,6 +36,9 @@ func (p *Pipeline) dispatch(qr *QueuedRequest) {
 			return
 		}
 		qr.ResolvedModel = resolved
+		if len(qr.ModelAlternatives) == 0 && len(alts) > 0 {
+			qr.ModelAlternatives = append([]string(nil), alts...)
+		}
 	}
 
 	// Pick an available credential (routeFunc excludes tried creds).
@@ -57,9 +60,12 @@ func (p *Pipeline) selectAndEnqueue(qr *QueuedRequest) bool {
 		if qr.hasTriedCredential(ref.CredentialID) {
 			continue
 		}
+		if !p.providerSwitchAllowed(qr, ref.ProviderID) {
+			qr.markTriedCredential(ref.CredentialID)
+			continue
+		}
 		// Set selected cred BEFORE enqueue so the forwarder knows the governor.
-		qr.SelectedCred = ref
-		qr.vendor = ref.Vendor
+		p.selectCredential(qr, ref)
 		if p.tryEnqueueCred(ref, qr) {
 			return true
 		}
@@ -72,18 +78,24 @@ func (p *Pipeline) selectAndEnqueue(qr *QueuedRequest) bool {
 
 // tryModelChange is the Tier-1 escape hatch: when all credentials under the
 // current model are exhausted, switch to an alternative model. If model-change
-// is disabled or no alternative exists, complete with ErrNoRoute.
+// is disabled or no alternative exists, complete with the original cause.
 func (p *Pipeline) tryModelChange(qr *QueuedRequest, cause error) {
-	if !p.allowModelChange {
-		// No route available and model-change disabled: the request has
-		// exhausted every credential under its model.
-		p.complete(qr, ForwardOutcome{Err: ErrNoRoute})
+	if !p.allowModelChange || !qr.AllowModelChange {
+		p.complete(qr, ForwardOutcome{Err: terminalErr(cause)})
 		return
 	}
 	qr.markTriedModel(qr.ResolvedModel)
-	_, alts, err := p.modelResolveFunc(qr.Ctx, qr.RequestedModel, triedList(qr.TriedModels))
-	if err != nil || len(alts) == 0 {
-		p.complete(qr, ForwardOutcome{Err: ErrNoRoute})
+	alts := qr.ModelAlternatives
+	if len(alts) == 0 {
+		_, resolvedAlts, err := p.modelResolveFunc(qr.Ctx, qr.RequestedModel, triedList(qr.TriedModels))
+		if err != nil {
+			p.complete(qr, ForwardOutcome{Err: terminalErr(cause)})
+			return
+		}
+		alts = resolvedAlts
+	}
+	if len(alts) == 0 {
+		p.complete(qr, ForwardOutcome{Err: terminalErr(cause)})
 		return
 	}
 	// Take the first alternative not already tried.
@@ -95,19 +107,30 @@ func (p *Pipeline) tryModelChange(qr *QueuedRequest, cause error) {
 		}
 	}
 	if chosen == "" {
-		p.complete(qr, ForwardOutcome{Err: ErrNoRoute})
+		p.complete(qr, ForwardOutcome{Err: terminalErr(cause)})
 		return
 	}
 	qr.ResolvedModel = chosen
+	qr.TriedCredentials = make(map[int]struct{})
+	qr.CredRetryCount = 0
+	qr.InitialProviderID = 0
 	metricFailover.WithLabelValues("model_switch").Inc()
 	slog.Info("dispatch: model change",
 		"request_id", qr.ID, "from", qr.RequestedModel, "to", chosen,
-		"tried_models", len(qr.TriedModels), "tried_creds", len(qr.TriedCredentials))
+		"tried_models", len(qr.TriedModels))
 	// Re-enter Tier-1 for the new model (re-routes its credentials).
 	key := queueKeyFor(chosen)
 	if !p.enqueueModel(key, qr) {
 		metricOverflow.WithLabelValues("model_queue_full").Inc()
 		p.complete(qr, ForwardOutcome{Err: ErrOverflow})
+	}
+}
+
+func (p *Pipeline) selectCredential(qr *QueuedRequest, ref CredentialRef) {
+	qr.SelectedCred = ref
+	qr.vendor = ref.Vendor
+	if qr.InitialProviderID == 0 {
+		qr.InitialProviderID = ref.ProviderID
 	}
 }
 

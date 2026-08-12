@@ -122,6 +122,17 @@ func cred(id int, mode string, limit int) CredentialRef {
 	}
 }
 
+// credWithProvider builds a CredentialRef pinned to a specific provider so
+// request-level provider-switch policy can be exercised.
+func credWithProvider(id, provider int, limit int) CredentialRef {
+	return CredentialRef{
+		CredentialID:     id,
+		ProviderID:       provider,
+		ConcurrencyMode:  ModeConcurrency,
+		ConcurrencyLimit: limit,
+	}
+}
+
 // TestSubmitSuccess: a single healthy credential forwards and returns the result.
 func TestSubmitSuccess(t *testing.T) {
 	f := &fakeDeps{
@@ -225,6 +236,7 @@ func TestModelChange(t *testing.T) {
 	defer p.Stop()
 
 	qr := NewQueuedRequest("r1", "t", "a", context.Background(), nil)
+	qr.AllowModelChange = true
 	res, err := p.Submit(context.Background(), qr)
 	if err != nil {
 		t.Fatalf("unexpected err: %v", err)
@@ -251,8 +263,8 @@ func TestNoRoute(t *testing.T) {
 
 	qr := NewQueuedRequest("r1", "t", "a", context.Background(), nil)
 	_, err := p.Submit(context.Background(), qr)
-	if !errors.Is(err, ErrNoRoute) {
-		t.Fatalf("expected ErrNoRoute, got: %v", err)
+	if err == nil || err.Error() != "fail" {
+		t.Fatalf("expected preserved upstream error, got: %v", err)
 	}
 }
 
@@ -527,5 +539,270 @@ func TestStopNoDrainLoss(t *testing.T) {
 		// consumed the value when it returned.
 	case <-time.After(2 * time.Second):
 		t.Fatal("Submit never returned: drainer dropped qrVictim instead of completing it on Stop")
+	}
+}
+
+func TestTier2QueueBoundIncludesGovernorWait(t *testing.T) {
+	forwardStarted := make(chan struct{})
+	releaseForward := make(chan struct{})
+	ref := cred(1, ModeConcurrency, 1)
+	ref.MaxQueueDepth = 2
+
+	cfg := DefaultConfig()
+	cfg.RetryPerCredential = 0
+	hotCfg := &atomic.Value{}
+	hotCfg.Store(&cfg)
+	p := NewPipeline(Deps{
+		RouteFunc: func(context.Context, *QueuedRequest) ([]CredentialRef, error) {
+			return []CredentialRef{ref}, nil
+		},
+		ModelResolveFunc: func(context.Context, string, []string) (string, []string, error) {
+			return "m", nil, nil
+		},
+		ForwardFunc: func(context.Context, *QueuedRequest, CredentialRef) ForwardOutcome {
+			select {
+			case <-forwardStarted:
+			default:
+				close(forwardStarted)
+			}
+			<-releaseForward
+			return ForwardOutcome{}
+		},
+		HotCfg: hotCfg,
+	})
+	p.Start()
+	defer func() {
+		close(releaseForward)
+		p.Stop()
+	}()
+
+	go func() {
+		_, _ = p.Submit(context.Background(), NewQueuedRequest("in-flight", "t", "m", context.Background(), nil))
+	}()
+	select {
+	case <-forwardStarted:
+	case <-time.After(time.Second):
+		t.Fatal("first request did not enter forward")
+	}
+
+	for i := 0; i < ref.MaxQueueDepth; i++ {
+		go func(i int) {
+			_, _ = p.Submit(context.Background(), NewQueuedRequest(fmt.Sprintf("queued-%d", i), "t", "m", context.Background(), nil))
+		}(i)
+	}
+
+	deadline := time.Now().Add(time.Second)
+	for {
+		_, snapshots := p.Snapshot()
+		if len(snapshots) == 1 && snapshots[0].Depth == int64(ref.MaxQueueDepth) {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("credential queue never reached configured bound: snapshots=%v", snapshots)
+		}
+		time.Sleep(time.Millisecond)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+	_, err := p.Submit(ctx, NewQueuedRequest("overflow", "t", "m", ctx, nil))
+	if !errors.Is(err, ErrNoRoute) {
+		t.Fatalf("expected queue overflow to reject through no-route, got %v", err)
+	}
+}
+
+// TestRequestLevelModelChangeDisabled: even with global AllowModelChange=true
+// and alternatives available, a request with AllowModelChange=false must NOT
+// switch models — it terminates with the real upstream error.
+func TestRequestLevelModelChangeDisabled(t *testing.T) {
+	f := &fakeDeps{
+		refsByModel: map[string][]CredentialRef{
+			"a": {cred(1, ModeConcurrency, 5)},
+			"b": {cred(2, ModeConcurrency, 5)},
+		},
+		altsByModel: map[string][]string{"a": {"b"}, "b": {"a"}},
+		forwardFn: func(ctx context.Context, qr *QueuedRequest, c CredentialRef) ForwardOutcome {
+			return ForwardOutcome{Err: errors.New("upstream-down")}
+		},
+		forwardCalls: map[int]int{},
+		allowChange:  true, // global switch ON
+	}
+	p := f.pipeline()
+	p.Start()
+	defer p.Stop()
+
+	qr := NewQueuedRequest("r1", "t", "a", context.Background(), nil)
+	qr.AllowModelChange = false // request denies model switch
+	qr.ModelAlternatives = []string{"b"}
+	_, err := p.Submit(context.Background(), qr)
+	if err == nil || err.Error() != "upstream-down" {
+		t.Fatalf("expected preserved upstream error without model switch, got: %v", err)
+	}
+	if forwardCalls := f.forwardCalls[2]; forwardCalls != 0 {
+		t.Fatalf("model b credential must not be tried when request denies model change; calls=%d", forwardCalls)
+	}
+}
+
+// TestRequestLevelProviderSwitchScoped: when AllowProviderChange=false the
+// mover may only switch credentials within the initial provider. Credentials
+// from a second provider are skipped even if available.
+func TestRequestLevelProviderSwitchScoped(t *testing.T) {
+	// Provider 10 has two failing credentials; provider 20 has a healthy one.
+	refs := []CredentialRef{
+		credWithProvider(1, 10, 5),
+		credWithProvider(2, 10, 5),
+		credWithProvider(3, 20, 5),
+	}
+	var provider20Tried atomic.Int32
+	f := &fakeDeps{
+		refsByModel: map[string][]CredentialRef{"m": refs},
+		forwardFn: func(ctx context.Context, qr *QueuedRequest, c CredentialRef) ForwardOutcome {
+			if c.ProviderID == 20 {
+				provider20Tried.Add(1)
+			}
+			return ForwardOutcome{Err: errors.New("fail")}
+		},
+		forwardCalls: map[int]int{},
+	}
+	p := f.pipeline()
+	p.Start()
+	defer p.Stop()
+
+	qr := NewQueuedRequest("r1", "t", "m", context.Background(), nil)
+	qr.AllowProviderChange = false
+	_, _ = p.Submit(context.Background(), qr)
+
+	if got := provider20Tried.Load(); got != 0 {
+		t.Fatalf("provider 20 credential must not be tried when request denies provider switch; tried=%d", got)
+	}
+	// Both provider-10 credentials should have been attempted.
+	if f.forwardCalls[1] == 0 || f.forwardCalls[2] == 0 {
+		t.Fatalf("same-provider credentials should be tried: calls=%v", f.forwardCalls)
+	}
+}
+
+// TestRequestLevelProviderSwitchAllowed: with AllowProviderChange=true the
+// mover crosses providers and succeeds on the second provider's credential.
+func TestRequestLevelProviderSwitchAllowed(t *testing.T) {
+	refs := []CredentialRef{
+		credWithProvider(1, 10, 5),
+		credWithProvider(2, 20, 5),
+	}
+	f := &fakeDeps{
+		refsByModel: map[string][]CredentialRef{"m": refs},
+		forwardFn: func(ctx context.Context, qr *QueuedRequest, c CredentialRef) ForwardOutcome {
+			if c.ProviderID == 10 {
+				return ForwardOutcome{Err: errors.New("provider-10-down")}
+			}
+			return ForwardOutcome{}
+		},
+		forwardCalls: map[int]int{},
+	}
+	p := f.pipeline()
+	p.Start()
+	defer p.Stop()
+
+	qr := NewQueuedRequest("r1", "t", "m", context.Background(), nil)
+	qr.AllowProviderChange = true
+	res, err := p.Submit(context.Background(), qr)
+	if err != nil {
+		t.Fatalf("expected cross-provider success, got: %v", err)
+	}
+	if res != "ok:cred2:call1" {
+		t.Fatalf("expected provider-20 credential to serve, got: %v", res)
+	}
+}
+
+// TestLastUpstreamErrorPreserved: when every credential fails with a concrete
+// upstream error, the Submit caller receives THAT error, not a synthetic
+// ErrNoRoute. ErrNoRoute is reserved for the never-routed case.
+func TestLastUpstreamErrorPreserved(t *testing.T) {
+	want := errors.New("persistent-502")
+	f := &fakeDeps{
+		refsByModel: map[string][]CredentialRef{"m": {
+			cred(1, ModeConcurrency, 5),
+			cred(2, ModeConcurrency, 5),
+		}},
+		forwardFn: func(context.Context, *QueuedRequest, CredentialRef) ForwardOutcome {
+			return ForwardOutcome{Err: want}
+		},
+		forwardCalls: map[int]int{},
+	}
+	p := f.pipeline()
+	p.Start()
+	defer p.Stop()
+
+	qr := NewQueuedRequest("r1", "t", "m", context.Background(), nil)
+	_, err := p.Submit(context.Background(), qr)
+	if !errors.Is(err, want) {
+		t.Fatalf("expected preserved upstream error %v, got: %v", want, err)
+	}
+	if errors.Is(err, ErrNoRoute) {
+		t.Fatalf("must not collapse concrete upstream error into ErrNoRoute")
+	}
+}
+
+// TestConcurrentSubmitStopRace: hammer Submit while Stop runs to exercise the
+// shutdown/admission race under the race detector. Must not panic or leak.
+func TestConcurrentSubmitStopRace(t *testing.T) {
+	f := &fakeDeps{
+		refsByModel:  map[string][]CredentialRef{"m": {cred(1, ModeConcurrency, 4)}},
+		forwardFn:    func(context.Context, *QueuedRequest, CredentialRef) ForwardOutcome { return ForwardOutcome{} },
+		forwardCalls: map[int]int{},
+	}
+	p := f.pipeline()
+	p.Start()
+
+	const N = 200
+	var wg sync.WaitGroup
+	wg.Add(N)
+	for i := 0; i < N; i++ {
+		go func(i int) {
+			defer wg.Done()
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Millisecond)
+			defer cancel()
+			qr := NewQueuedRequest(fmt.Sprintf("r%d", i), "t", "m", ctx, nil)
+			_, _ = p.Submit(ctx, qr)
+		}(i)
+	}
+	p.Stop() // race with in-flight submits
+	wg.Wait()
+}
+
+// TestRetryBudgetRequestOverride: RetryPerCredential on the request overrides
+// the global config. A request with budget 0 switches immediately on the first
+// pre-firstbyte failure, while the global default is 1.
+func TestRetryBudgetRequestOverride(t *testing.T) {
+	var calls atomic.Int64
+	f := &fakeDeps{
+		refsByModel: map[string][]CredentialRef{"m": {
+			cred(1, ModeConcurrency, 5),
+			cred(2, ModeConcurrency, 5),
+		}},
+		forwardFn: func(ctx context.Context, qr *QueuedRequest, c CredentialRef) ForwardOutcome {
+			calls.Add(1)
+			if c.CredentialID == 1 {
+				return ForwardOutcome{Err: errors.New("fail")}
+			}
+			return ForwardOutcome{}
+		},
+		forwardCalls: map[int]int{},
+	}
+	p := f.pipeline()
+	p.Start()
+	defer p.Stop()
+
+	qr := NewQueuedRequest("r1", "t", "m", context.Background(), nil)
+	qr.RetryPerCredential = 0 // switch immediately, do not retry cred 1
+	res, err := p.Submit(context.Background(), qr)
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	if res != "ok:cred2:call1" {
+		t.Fatalf("expected immediate switch to cred2, got: %v", res)
+	}
+	// cred 1 should be called exactly once (no same-credential retry).
+	if got := f.forwardCalls[1]; got != 1 {
+		t.Fatalf("cred1 should be tried once with request budget 0; calls=%d", got)
 	}
 }

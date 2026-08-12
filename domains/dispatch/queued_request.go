@@ -21,11 +21,11 @@ type CredentialRef struct {
 	CredentialID     int
 	ProviderID       int
 	ConcurrencyMode  string
-	ConcurrencyLimit int // in-flight cap (concurrency mode); 0 = unlimited
-	RPMLimit         int // req/min (rpm mode); 0 = unlimited
-	TPMLimit         int // tokens/min (tpm mode); 0 = unlimited
-	MaxQueueDepth    int // 0 = use global Config.MaxQueueDepth
-	MaxQueueWaitMS   int // 0 = use global Config.MaxQueueWaitMS
+	ConcurrencyLimit int    // in-flight cap (concurrency mode); 0 = unlimited
+	RPMLimit         int    // req/min (rpm mode); 0 = unlimited
+	TPMLimit         int    // tokens/min (tpm mode); 0 = unlimited
+	MaxQueueDepth    int    // 0 = use global Config.MaxQueueDepth
+	MaxQueueWaitMS   int    // 0 = use global Config.MaxQueueWaitMS
 	Vendor           string // 原厂/供应商, for stats labels
 }
 
@@ -61,6 +61,18 @@ type QueuedRequest struct {
 	// Payload is opaque to dispatch. RouteFunc/ForwardFunc interpret it
 	// (e.g. *executors.ExecParams).
 	Payload any
+
+	// Request-level failover policy. The Pipeline-wide switches are kill
+	// switches; these fields are the per-request authority derived by the caller
+	// from the original client model and routing constraints.
+	AllowModelChange    bool
+	AllowProviderChange bool
+	// RetryPerCredential overrides Config.RetryPerCredential when >= 0. This
+	// keeps policy.RetryPerCredential=0 meaningful for requests that must
+	// switch immediately after a pre-firstbyte failure.
+	RetryPerCredential int
+	ModelAlternatives  []string
+	InitialProviderID  int
 
 	// EstimatedTokens is the pre-send token estimate used by the tpm
 	// governor. 0 = unknown (the tpm governor uses a conservative fixed cost).
@@ -101,15 +113,16 @@ type QueuedRequest struct {
 // NewQueuedRequest constructs a QueuedRequest ready for Pipeline.Submit.
 func NewQueuedRequest(id, tenantID, model string, ctx context.Context, payload any) *QueuedRequest {
 	return &QueuedRequest{
-		ID:              id,
-		TenantID:        tenantID,
-		RequestedModel:  model,
-		Ctx:             ctx,
-		Payload:         payload,
-		ResultCh:        make(chan ForwardOutcome, 1),
-		TriedCredentials: make(map[int]struct{}),
-		TriedModels:      make(map[string]struct{}),
-		EnqueuedAt:      time.Now(),
+		ID:                 id,
+		TenantID:           tenantID,
+		RequestedModel:     model,
+		Ctx:                ctx,
+		Payload:            payload,
+		ResultCh:           make(chan ForwardOutcome, 1),
+		TriedCredentials:   make(map[int]struct{}),
+		TriedModels:        make(map[string]struct{}),
+		RetryPerCredential: -1,
+		EnqueuedAt:         time.Now(),
 	}
 }
 
