@@ -132,9 +132,44 @@ type turnDetailV2Response struct {
 	CostUSD     float64        `json:"cost_usd"`
 	Request     any            `json:"request"`
 	Response    any            `json:"response"`
+	Compression map[string]any `json:"compression,omitempty"`
 	Meta        map[string]any `json:"meta"`
 	Governance  map[string]any `json:"governance"`
 	Attachments []attachmentV2 `json:"attachments"`
+}
+
+// buildCompressionDiagnosticsV2 keeps gateway-derived outbound state separate
+// from the client request shown in the session detail view. The outbound body
+// remains available for privileged diagnostics and is still the exact body
+// used for compression/session recovery.
+func buildCompressionDiagnosticsV2(
+	requestID string,
+	applied bool,
+	strategy *string,
+	tokensSaved *int,
+	metaRaw, outboundRaw []byte,
+) map[string]any {
+	if !applied && strategy == nil && tokensSaved == nil && len(metaRaw) == 0 && len(outboundRaw) == 0 {
+		return nil
+	}
+
+	out := make(map[string]any)
+	if applied {
+		out["applied"] = true
+	}
+	if strategy != nil && *strategy != "" {
+		out["strategy"] = *strategy
+	}
+	if tokensSaved != nil {
+		out["tokens_saved"] = *tokensSaved
+	}
+	if len(metaRaw) > 0 {
+		out["meta"] = decodeStoredJSON("compression_meta", requestID, metaRaw)
+	}
+	if len(outboundRaw) > 0 {
+		out["outbound_body"] = decodeStoredJSON("outbound_body", requestID, outboundRaw)
+	}
+	return out
 }
 
 // attachmentV2 是前端 SessionTurnDrawer 「附件」tab 消费的形状。
@@ -217,8 +252,9 @@ func (h *Handler) serveSessionTurnDetail(w http.ResponseWriter, r *http.Request,
 	}
 
 	resp := turnDetailV2Response{
-		Request:  decodeStoredJSON("request_delta", requestID, requestDeltaRaw),
-		Response: decodeStoredJSON("response_delta", requestID, responseDeltaRaw),
+		Request:     decodeStoredJSON("request_delta", requestID, requestDeltaRaw),
+		Response:    decodeStoredJSON("response_delta", requestID, responseDeltaRaw),
+		Compression: buildCompressionDiagnosticsV2(requestID, compressionApplied, compressionStrategy, compressionTokensSaved, compressionMetaRaw, outboundBodyRaw),
 		Meta: map[string]any{
 			"turn_no":            turnNoOut,
 			"request_id":         requestID,
@@ -250,12 +286,6 @@ func (h *Handler) serveSessionTurnDetail(w http.ResponseWriter, r *http.Request,
 	}
 	if costUSD != nil {
 		resp.CostUSD = *costUSD
-	}
-	if len(outboundBodyRaw) > 0 {
-		// 把 outbound_body 合并进 request 视图（前端如有需要可读到）。
-		if existing, ok := resp.Request.(map[string]any); ok {
-			existing["_outbound_body"] = decodeStoredJSON("outbound_body", requestID, outboundBodyRaw)
-		}
 	}
 	writeJSON(w, http.StatusOK, resp)
 }

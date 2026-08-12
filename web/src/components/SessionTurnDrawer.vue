@@ -1,7 +1,7 @@
 <script setup lang="ts">
 // SessionTurnDrawer.vue — V2-P4 (2026-07-24)
-// Right-side drawer showing full turn payload. Five tabs: request,
-// response, meta, governance, attachments. Attachment links open via
+// Right-side drawer showing full turn payload. Six tabs: request,
+// response, compression diagnostics, meta, governance, attachments. Attachment links open via
 // signed URL (admin endpoint, short-lived).
 
 import { ref, watch } from 'vue'
@@ -13,6 +13,7 @@ import {
 interface TurnDetail {
   request?: unknown
   response?: unknown
+  compression?: unknown
   meta?: unknown
   governance?: unknown
   attachments?: Array<{ att_id: string; name: string; size: number }>
@@ -25,7 +26,7 @@ const emit = defineEmits<{ (e: 'close'): void }>()
 
 const loading = ref(false)
 const turn = ref<TurnDetail | null>(null)
-const tab = ref<'request' | 'response' | 'meta' | 'governance' | 'attachments'>(
+const tab = ref<'request' | 'response' | 'compression' | 'meta' | 'governance' | 'attachments'>(
   'request'
 )
 
@@ -96,6 +97,9 @@ function stringify(v: unknown): string {
       </el-tab-pane>
       <el-tab-pane label="回复" name="response">
         <pre>{{ stringify(turn.response) }}</pre>
+      </el-tab-pane>
+      <el-tab-pane label="压缩诊断" name="compression">
+        <pre>{{ stringify(turn.compression) }}</pre>
       </el-tab-pane>
       <el-tab-pane label="元数据" name="meta">
         <pre>{{ stringify(turn.meta) }}</pre>
