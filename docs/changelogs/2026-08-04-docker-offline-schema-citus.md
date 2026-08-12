@@ -71,6 +71,8 @@ request_logs_2026_07/08: relam=columnar，无索引
 
 ## 上传
 
+### v2.4.9 Docker 离线包（arm64，337MB）
+
 已上传至生产 Cloudreve（v4.15.0，154 服务器），通过 WebDAV PUT。
 
 - **分享链接**：`https://res.itestu.cn/s/qKFZ`（公开，无密码/过期/次数限制）
@@ -79,3 +81,22 @@ request_logs_2026_07/08: relam=columnar，无索引
 - **上传验证**：HTTP 201，SIZE=337501788 与本地一致；服务端 sha256 复核 = `6383b60c127d543ac07b9dd68e8963bcbee702a3c9d76f5d8cecd668cf471e59` 与 SHA256SUMS 一致；WebDAV 断点下载前 1MB hash 与本地一致
 - **上传方式**：WebDAV Basic auth（`admin@itestu.cn` + dav_account 临时账号），非 v3 API（生产已升级 v4）
 - **备注**：Cloudreve v4 登录端点 `POST /api/v4/session/token`（验证码未开）；分享 API `PUT /api/v4/share` 用 `Authorization: Bearer <jwt>`；dav_account 表独立存 WebDAV 明文密码（`uri=cloudreve://my/`），已保留该临时账号便于后续上传
+
+### v2.5.0 Installer 离线包（6 平台，2026-08-12 重建）
+
+基于 HEAD `27e139f9`（v2.5.0 tag 后 26 个 commit + 工作区未提交改动）重建，覆盖 `dist/offline/v2.5.0/` 与 `latest/` 软链。
+
+| 平台 | 文件 | Size | sha256 |
+|---|---|---|---|
+| linux/amd64 | llm-gateway-go-2.5.0-linux-amd64-offline.tar.gz | 42735150 | `31a5b936cd5826f4664b9faf2d3d3955f5a03a2bf0dccddb469011a61e534963` |
+| linux/arm64 | llm-gateway-go-2.5.0-linux-arm64-offline.tar.gz | 38394734 | `bcdd620febda47af9db53c19a956cd43d2495921feea99a428c950fb9c63c3d2` |
+| linux/loong64 | llm-gateway-go-2.5.0-linux-loong64-offline.tar.gz | 40350809 | `5291c5a60b32fa00903f71df3b1b15447a0f42b69fb00fdd96b6cae4e346d5f4` |
+| darwin/amd64 | llm-gateway-go-2.5.0-darwin-amd64-offline.tar.gz | 43413869 | `c1664ea35ba0fb50d424d404271de870b38d868d9ee28c7d036687b522820d34` |
+| darwin/arm64 | llm-gateway-go-2.5.0-darwin-arm64-offline.tar.gz | 39871558 | `ec9a1d3f48dff9910bc516f562dcb8dade37c8c8496b641c5539d7b78ee74e13` |
+| windows/amd64 | llm-gateway-go-2.5.0-windows-amd64-offline.zip | 12276977 | `0399a8d01e06387fce28082b60b8a8cad894a6848670ddb1b68d182f8be33019` |
+
+- **WebDAV 路径**：`https://files.kxpms.cn/dav/llm-gateway-go/releases/v2.5.0/<file>`（需认证，dav_account Basic auth）
+- **上传验证**：6 包 HTTP 201，HEAD `Content-Length` 与本地 size 一致（±0 byte）
+- **生成命令**：`bash scripts/build-offline-packages.sh v2.5.0`（脚本默认跑 `npm run build` + 6 平台 `go build` + tar/zip + SHA256SUMS）
+- **未生成分享**：admin 主密码待定，本次未跑 `PUT /api/v4/share`；后续由老板到 Cloudreve 后台手动点分享，或提供 admin@itestu.cn 主密码后由脚本补
+- **注意**：之前 v2.5.0 SHA256（`d311b573…` 等）是旧 HEAD 构建；本次 6 个 hash 全部更新（`31a5b936…` 等），如外部已引用旧 hash 需同步更新
