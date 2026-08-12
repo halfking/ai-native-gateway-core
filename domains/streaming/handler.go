@@ -3480,6 +3480,7 @@ func (h *ChatHandler) serveWithExecutor(
 			DispatchModelAlternatives:   append([]string(nil), dispatchModelAlternatives...),
 			DispatchAllowModelChange:    dispatchAllowModelChange,
 			DispatchAllowProviderChange: dispatchAllowProviderChange,
+			PinCredentialID:             parsePinCredentialHeader(r),
 			DispatchRequestModality:     requestModality,
 			AuditBuilder:                auditBuilder,
 			Capture:                     streamCapture,

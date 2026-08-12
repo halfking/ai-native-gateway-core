@@ -173,9 +173,14 @@ func (m *OriginMiddleware) Wrap(next http.Handler) http.Handler {
 
 		// Inbound header sanitisation: never let a non-system caller
 		// smuggle X-LLM-Origin-Stage through to the realtime stream.
+		// X-LLM-Pin-Credential (2026-08-13) forces the router to a specific
+		// credential; it MUST be honored only for trusted internal callers
+		// (system self-check / node-probe), so strip it for everyone else to
+		// prevent a public client from pinning routing to an arbitrary cred.
 		if strip {
 			r.Header.Del("X-LLM-Origin-Stage")
 			r.Header.Del("X-LLM-Origin-Actor")
+			r.Header.Del("X-LLM-Pin-Credential")
 		}
 
 		// 1024B cap on the chain so a malicious header cannot bloat
