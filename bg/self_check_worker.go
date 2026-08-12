@@ -29,8 +29,12 @@ type SelfCheckWorker struct {
 	keyring *secret.Keyring
 	client  *http.Client
 
-	stopCh   chan struct{}
-	stopOnce sync.Once
+	stopCh      chan struct{}
+	stopOnce    sync.Once
+	startOnce   sync.Once
+	lifecycleMu sync.Mutex
+	cancel      context.CancelFunc
+	wg          sync.WaitGroup
 
 	triggerCh chan string
 
@@ -97,74 +101,89 @@ func NewSelfCheckWorker(db *pgxpool.Pool, apiKey, baseURL string, keyring *secre
 	}
 }
 
-func (w *SelfCheckWorker) Start(ctx context.Context) {
-	slog.Info("self_check_worker started")
-	go func() {
-		w.runOnce(ctx)
-
-		// Load initial settings to compute the first ticker interval.
-		s, err := w.loadSettings(ctx)
-		if err != nil {
-			slog.Error("self_check_worker: failed to load initial settings, using 1min fallback", "error", err)
-			s = &scSettings{NormalInterval: 600, FaultInterval: 600}
+func (w *SelfCheckWorker) Start(parent context.Context) {
+	if w == nil {
+		return
+	}
+	w.startOnce.Do(func() {
+		w.lifecycleMu.Lock()
+		select {
+		case <-w.stopCh:
+			w.lifecycleMu.Unlock()
+			return
+		default:
 		}
+		ctx, cancel := context.WithCancel(parent)
+		w.cancel = cancel
+		w.wg.Add(1)
+		w.lifecycleMu.Unlock()
 
-		tickerInterval := selfCheckTickerInterval(s)
-		slog.Info("self_check_worker: using dynamic ticker interval",
-			"interval_seconds", int(tickerInterval.Seconds()),
-			"normal_interval_seconds", s.NormalInterval,
-			"fault_interval_seconds", s.FaultInterval)
+		slog.Info("self_check_worker started")
+		go func() {
+			defer w.wg.Done()
+			w.runOnce(ctx)
 
-		ticker := time.NewTicker(tickerInterval)
-		defer ticker.Stop()
-
-		for {
-			select {
-			case <-ctx.Done():
-				slog.Info("self_check_worker stopping (ctx done)")
-				return
-			case <-w.stopCh:
-				slog.Info("self_check_worker stopped")
-				return
-			case model := <-w.triggerCh:
-				s, err := w.loadSettings(ctx)
-				if err != nil {
-					slog.Error("self_check_worker: manual trigger: load settings failed", "error", err)
-					continue
-				}
-				if model != "" {
-					w.runModel(ctx, model, s.MaxTokens)
-					continue
-				}
-				if !s.Enabled {
-					slog.Info("self_check_worker: manual trigger ignored because self-check is disabled")
-					continue
-				}
-				models, err := w.selectModels(ctx, s)
-				if err != nil {
-					slog.Error("self_check_worker: manual trigger: select models failed", "error", err)
-					continue
-				}
-				w.runModels(ctx, models, s.MaxTokens)
-			case <-ticker.C:
-				newSettings, err := w.loadSettings(ctx)
-				if err != nil {
-					slog.Error("self_check_worker: failed to reload settings", "error", err)
-				} else if newInterval := selfCheckTickerInterval(newSettings); newInterval != tickerInterval {
-					slog.Info("self_check_worker: adjusting ticker interval",
-						"old_seconds", int(tickerInterval.Seconds()),
-						"new_seconds", int(newInterval.Seconds()),
-						"normal_interval_seconds", newSettings.NormalInterval,
-						"fault_interval_seconds", newSettings.FaultInterval)
-					ticker.Stop()
-					ticker = time.NewTicker(newInterval)
-					tickerInterval = newInterval
-				}
-
-				w.runOnce(ctx)
+			// Load initial settings to compute the first ticker interval.
+			s, err := w.loadSettings(ctx)
+			if err != nil {
+				slog.Error("self_check_worker: failed to load initial settings, using 1min fallback", "error", err)
+				s = &scSettings{NormalInterval: 600, FaultInterval: 600}
 			}
-		}
-	}()
+
+			tickerInterval := selfCheckTickerInterval(s)
+			slog.Info("self_check_worker: using dynamic ticker interval",
+				"interval_seconds", int(tickerInterval.Seconds()),
+				"normal_interval_seconds", s.NormalInterval,
+				"fault_interval_seconds", s.FaultInterval)
+
+			ticker := time.NewTicker(tickerInterval)
+			defer ticker.Stop()
+
+			for {
+				select {
+				case <-ctx.Done():
+					slog.Info("self_check_worker stopping (ctx done)")
+					return
+				case model := <-w.triggerCh:
+					s, err := w.loadSettings(ctx)
+					if err != nil {
+						slog.Error("self_check_worker: manual trigger: load settings failed", "error", err)
+						continue
+					}
+					if model != "" {
+						w.runModel(ctx, model, s.MaxTokens)
+						continue
+					}
+					if !s.Enabled {
+						slog.Info("self_check_worker: manual trigger ignored because self-check is disabled")
+						continue
+					}
+					models, err := w.selectModels(ctx, s)
+					if err != nil {
+						slog.Error("self_check_worker: manual trigger: select models failed", "error", err)
+						continue
+					}
+					w.runModels(ctx, models, s.MaxTokens)
+				case <-ticker.C:
+					newSettings, err := w.loadSettings(ctx)
+					if err != nil {
+						slog.Error("self_check_worker: failed to reload settings", "error", err)
+					} else if newInterval := selfCheckTickerInterval(newSettings); newInterval != tickerInterval {
+						slog.Info("self_check_worker: adjusting ticker interval",
+							"old_seconds", int(tickerInterval.Seconds()),
+							"new_seconds", int(newInterval.Seconds()),
+							"normal_interval_seconds", newSettings.NormalInterval,
+							"fault_interval_seconds", newSettings.FaultInterval)
+						ticker.Stop()
+						ticker = time.NewTicker(newInterval)
+						tickerInterval = newInterval
+					}
+
+					w.runOnce(ctx)
+				}
+			}
+		}()
+	})
 }
 
 func selfCheckTickerInterval(s *scSettings) time.Duration {
@@ -179,7 +198,19 @@ func selfCheckTickerInterval(s *scSettings) time.Duration {
 }
 
 func (w *SelfCheckWorker) Stop() {
-	w.stopOnce.Do(func() { close(w.stopCh) })
+	if w == nil {
+		return
+	}
+	w.stopOnce.Do(func() {
+		close(w.stopCh)
+		w.lifecycleMu.Lock()
+		cancel := w.cancel
+		w.lifecycleMu.Unlock()
+		if cancel != nil {
+			cancel()
+		}
+	})
+	w.wg.Wait()
 }
 
 // --------------------------------------------------------------------------
