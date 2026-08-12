@@ -91,14 +91,11 @@ func (w *Wrapper) ExecuteWithMetrics(ctx context.Context, httpW http.ResponseWri
 		Attempt: 0,
 	}
 
-	// Start keepalive if response writer supports flushing
+	// Keepalive messages are sent synchronously before backoff. A background
+	// ticker would race with the handler, which also writes to httpW.
 	keepalive := NewKeepaliveWriter(httpW, w.config.KeepaliveInterval)
 	if keepalive != nil {
 		rc.Keepalive = keepalive
-		keepaliveCtx, keepaliveCancel := context.WithCancel(ctx)
-		defer keepaliveCancel()
-		go keepalive.Start(keepaliveCtx)
-		defer keepalive.Stop()
 	}
 
 	// Retry loop
@@ -259,6 +256,9 @@ func (e *DefaultStreamExecutor) ExecuteStreamWithMetrics(ctx context.Context, w 
 		// Wrap the handler in a recorder to capture errors
 		rec := &errorRecorder{ResponseWriter: w}
 		e.handler.ServeHTTP(rec, req.WithContext(ctx))
+		if rec.err != nil && rec.committed {
+			return &retryBlockedError{err: rec.err}
+		}
 		return rec.err
 	}
 
@@ -315,16 +315,23 @@ func (w *Wrapper) setMetrics(metrics WrapperMetrics) {
 	w.metricsMu.Unlock()
 }
 
-// errorRecorder captures errors from http.Handler execution.
+// errorRecorder captures errors from http.Handler execution. The
+// `committed` flag tracks whether the handler has started a successful
+// streaming response (2xx + body bytes). Once committed, retrying would
+// corrupt the stream. Error status codes (4xx/5xx) without body bytes
+// are NOT committed — they are retriable.
 type errorRecorder struct {
 	http.ResponseWriter
-	err error
+	err       error
+	committed bool
 }
 
 // Flush preserves SSE behavior through the retry wrapper.
 func (r *errorRecorder) Flush() {
-	if flusher, ok := r.ResponseWriter.(http.Flusher); ok {
-		flusher.Flush()
+	if r.committed {
+		if flusher, ok := r.ResponseWriter.(http.Flusher); ok {
+			flusher.Flush()
+		}
 	}
 }
 
@@ -333,19 +340,26 @@ func (r *errorRecorder) Unwrap() http.ResponseWriter {
 	return r.ResponseWriter
 }
 
-// WriteHeader captures error status codes.
+// WriteHeader captures error status codes. Error statuses (>= 400) are
+// retriable and do NOT mark the writer committed. Success statuses (2xx)
+// mark the writer committed since retrying would change the status code.
 func (r *errorRecorder) WriteHeader(statusCode int) {
 	if statusCode >= 400 {
 		r.err = &HTTPError{
 			StatusCode: statusCode,
 			Err:        fmt.Errorf("HTTP %d", statusCode),
 		}
+	} else {
+		r.committed = true
 	}
 	r.ResponseWriter.WriteHeader(statusCode)
 }
 
-// Write captures write errors.
+// Write captures write errors. Once body bytes are written (whether
+// part of a success or error response), the response is committed to
+// the client and retrying would produce a corrupt response.
 func (r *errorRecorder) Write(p []byte) (int, error) {
+	r.committed = true
 	n, err := r.ResponseWriter.Write(p)
 	if err != nil && r.err == nil {
 		// Classify write error (could be connection drop)
