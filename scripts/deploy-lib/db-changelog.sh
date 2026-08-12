@@ -60,7 +60,10 @@ _db_migration_checksum() {
 # See _db_run_postcondition for the execution semantics.
 _db_extract_postcondition() {
   local file=$1
-  head -50 "$file" | grep -E '^[[:space:]]*--[[:space:]]*POST_CONDITION:[[:space:]]*' \
+  # Use `|| true` to swallow grep's exit-1 on no-match (set -o pipefail
+  # in the deploy lib would otherwise kill the caller). The actual
+  # assertions are still parsed correctly when present.
+  head -50 "$file" | { grep -E '^[[:space:]]*--[[:space:]]*POST_CONDITION:[[:space:]]*' || true; } \
     | sed -E 's/^[[:space:]]*--[[:space:]]*POST_CONDITION:[[:space:]]*//'
 }
 
@@ -78,9 +81,7 @@ _db_run_postcondition() {
   remote_psql=$(_deploy_remote_psql_script "$env_file")
 
   local conditions
-  if ! conditions=$(_db_extract_postcondition "$file"); then
-    return 0
-  fi
+  conditions=$(_db_extract_postcondition "$file" || true)
   if [[ -z "$conditions" ]]; then
     return 0
   fi
