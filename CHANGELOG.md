@@ -10,6 +10,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - **Session Summaries outcome + Request Logs Hot status_code 漂移修复 (2026-08-13)**: 修复 2026-08-12 审计时发现的另外 2 个 schema 漂移（独立于 481/482）。
+- **第二轮 schema 漂移修复 (2026-08-13)**: 修 483/484 后审计又发现 2 个 SQLSTATE 42703。
+  - Migration 485 加 `request_logs.raw_model_name TEXT` 列，消除 `bg/integrity_fingerprint_drift.go` 引用该列但 schema 漏列的 code-vs-schema drift。
+  - Migration 486 加 `credential_model_bindings.probe_revert_at TIMESTAMPTZ` 列，消除 `bg/probe_rollback.go` + `bg/node_probe.go`（feat(probe) 系列）引用该列但 base schema 升级时漏列的问题。
+  - 两处都带 `-- POST_CONDITION:` 注释（POST_CONDITION 防御链）。
+  - 详见 `docs/changelogs/2026-08-13-schema-drift-483-484.md` 末尾（追加 485/486 段）。
+
   - Migration 483 加 `session_summaries.outcome TEXT` 列，消除 session health compute 后台 worker 每 60 分钟的 SQLSTATE 42703。
   - Migration 484 加 `request_logs_hot.status_code INTEGER` 列，消除 credential_selfcheck_worker 每 5 分钟的 SQLSTATE 42703。Code (`bg/credential_selfcheck.go:373`) 用 `status_code`，schema canonical 用 `upstream_status_code` —— 这是 code-vs-schema drift 的历史 bug（commit `4b5740b9c` 引入），本次选加列路径（最小改动），下次 task 可做 code-schema 一致性清理。
   - 两处都带 `-- POST_CONDITION:` 注释（POST_CONDITION 防御链）。
