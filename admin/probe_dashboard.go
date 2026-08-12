@@ -982,6 +982,135 @@ func queryProbeNodeTasks(ctx context.Context, db pgxQueryer, limit int) ([]NodeP
 
 // ── Register Routes ─────────────────────────────────────────────────────
 
+// handleProbeTaskCreate is the public "add self-check task" API (需求 6 bullet 1:
+// 让外部需要自检的操作不用关心细节，直接增加自检任务).
+// POST /api/admin/probe/tasks  {credential_id, raw_model, command?, ...}
+// It enqueues a task into the unified credential_probe_queue; the caller does
+// not need to know the dedup_key, backoff, or execution details. Requires the
+// unified queue to be wired (SetProbeQueue); otherwise 503.
+func (h *Handler) handleProbeTaskCreate(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if h.probeQueue == nil {
+		writeError(w, http.StatusServiceUnavailable, "unified probe queue not configured")
+		return
+	}
+	var req struct {
+		CredentialID int64  `json:"credential_id"`
+		RawModel     string `json:"raw_model"`
+		Command      string `json:"command"`       // default node_probe
+		Source       string `json:"source"`        // default admin
+		Priority     int16  `json:"priority"`      // default 60
+		MaxAttempts  int    `json:"max_attempts"`  // default 7 (node-probe chain)
+		Reason       string `json:"reason"`        // free-form audit detail
+		RunAfterSec  int    `json:"run_after_seconds"` // schedule in future (0 = now)
+	}
+	if err := readJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid body")
+		return
+	}
+	if req.CredentialID <= 0 || req.RawModel == "" {
+		writeError(w, http.StatusBadRequest, "credential_id and raw_model are required")
+		return
+	}
+	if req.Command == "" {
+		req.Command = "node_probe"
+	}
+	if req.Source == "" {
+		req.Source = "admin"
+	}
+	if req.MaxAttempts <= 0 {
+		req.MaxAttempts = 7
+	}
+	nextRunAt := time.Now()
+	if req.RunAfterSec > 0 {
+		nextRunAt = nextRunAt.Add(time.Duration(req.RunAfterSec) * time.Second)
+	}
+	task := bg.ProbeQueueTask{
+		CredentialID: req.CredentialID,
+		RawModel:     req.RawModel,
+		Command:      req.Command,
+		Mode:         "multi_round",
+		Priority:     req.Priority,
+		MaxAttempts:  req.MaxAttempts,
+		Source:       req.Source,
+		ReasonDetail: req.Reason,
+		NextRunAt:    nextRunAt,
+		DedupKey:     bg.BuildProbeDedupKey(req.Command, req.CredentialID, req.RawModel),
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	defer cancel()
+	id, inserted, err := h.probeQueue.Enqueue(ctx, task)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "enqueue failed: "+err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"queued":    inserted,
+		"task_id":   id,
+		"dedup_key": task.DedupKey,
+		"message":   ternary(inserted, "task enqueued", "a task for this dedup key is already active"),
+	})
+}
+
+// handleProbeTaskCancel is the public "remove self-check task" API (需求 6
+// bullet 1). DELETE /api/admin/probe/tasks?key=<dedup_key>  (or ?credential_id&raw_model).
+// Cancels active (ready/running) tasks for the key; terminal-sticky.
+func (h *Handler) handleProbeTaskCancel(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodDelete {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if h.probeQueue == nil {
+		writeError(w, http.StatusServiceUnavailable, "unified probe queue not configured")
+		return
+	}
+	key := r.URL.Query().Get("key")
+	if key == "" {
+		credIDStr := r.URL.Query().Get("credential_id")
+		rawModel := r.URL.Query().Get("raw_model")
+		credID, err := strconv.ParseInt(credIDStr, 10, 64)
+		if err != nil || credID <= 0 || rawModel == "" {
+			writeError(w, http.StatusBadRequest, "provide ?key=<dedup_key> or ?credential_id=&raw_model=")
+			return
+		}
+		key = bg.BuildProbeDedupKey("node_probe", credID, rawModel)
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	defer cancel()
+	n, err := h.probeQueue.Cancel(ctx, key)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "cancel failed: "+err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"cancelled":  n,
+		"dedup_key":  key,
+	})
+}
+
+func ternary(b bool, t, f string) string {
+	if b {
+		return t
+	}
+	return f
+}
+
+// handleProbeTaskRoute dispatches POST (create) vs DELETE (cancel) on the
+// public /api/admin/probe/tasks endpoint.
+func (h *Handler) handleProbeTaskRoute(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodPost:
+		h.handleProbeTaskCreate(w, r)
+	case http.MethodDelete:
+		h.handleProbeTaskCancel(w, r)
+	default:
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+	}
+}
+
 // RegisterProbeDashboardRoutes registers probe dashboard API routes
 // Called from cmd/gateway/main.go during admin API setup
 func (h *Handler) RegisterProbeDashboardRoutes(mux *http.ServeMux, adminWrap func(http.HandlerFunc) http.HandlerFunc) {
@@ -990,6 +1119,8 @@ func (h *Handler) RegisterProbeDashboardRoutes(mux *http.ServeMux, adminWrap fun
 	mux.HandleFunc("/api/admin/probe/provider-latency", adminWrap(h.handleProviderLatency))
 	mux.HandleFunc("/api/admin/probe/queue-tasks", adminWrap(h.handleProbeQueueTasks))
 	mux.HandleFunc("/api/admin/probe/node-tasks", adminWrap(h.handleProbeNodeTasks))
+	// 2026-08-13 (需求 6 bullet 1): public add/remove self-check task API.
+	mux.HandleFunc("/api/admin/probe/tasks", adminWrap(h.handleProbeTaskRoute))
 	mux.HandleFunc("/api/admin/probe/system-health", adminWrap(h.handleProbeSystemHealth))
 	mux.HandleFunc("/api/admin/probe/model/", adminWrap(h.handleProbeModelRoutes))
 	mux.HandleFunc("/api/admin/probe/availability-timeline", adminWrap(h.handleProbeAvailabilityTimeline))
