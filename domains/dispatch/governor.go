@@ -52,9 +52,9 @@ func newGovernor(ref CredentialRef) Governor {
 // ── concurrency: weighted semaphore ────────────────────────────────────────
 
 type concurrencyGovernor struct {
-	cap   int64
-	used  atomic.Int64
-	mode  string
+	cap  int64
+	used atomic.Int64
+	mode string
 }
 
 func newConcurrencyGovernor(capacity int) *concurrencyGovernor {
@@ -94,6 +94,20 @@ func (g *concurrencyGovernor) Release(_ *QueuedRequest) {
 	}
 }
 
+func waitWithinBudget(now time.Time, wait time.Duration, giveUp time.Time) (time.Duration, bool) {
+	if !now.Before(giveUp) {
+		return 0, false
+	}
+	deadline := time.Until(giveUp)
+	if wait > deadline {
+		wait = deadline
+	}
+	if wait <= 0 {
+		return 0, false
+	}
+	return wait, true
+}
+
 // ── rpm: requests-per-minute token bucket ──────────────────────────────────
 
 // rpmGovernor replenishes 1 token every (60s / rpm). Burst = rpm (i.e. the
@@ -102,7 +116,7 @@ func (g *concurrencyGovernor) Release(_ *QueuedRequest) {
 // the minute rather than firing them all at once after a refill.
 type rpmGovernor struct {
 	mu       sync.Mutex
-	tokens   float64       // available tokens (fractional for smooth refill)
+	tokens   float64 // available tokens (fractional for smooth refill)
 	rpm      int
 	last     time.Time
 	interval time.Duration // 60s / rpm
@@ -141,7 +155,8 @@ func (g *rpmGovernor) Acquire(ctx context.Context, _ *QueuedRequest, giveUp time
 		wait := time.Duration(need * float64(g.interval))
 		g.mu.Unlock()
 
-		if now.After(giveUp) {
+		wait, ok := waitWithinBudget(now, wait, giveUp)
+		if !ok {
 			return errPaceTimeout
 		}
 		if err := ctx.Err(); err != nil {
@@ -153,6 +168,7 @@ func (g *rpmGovernor) Acquire(ctx context.Context, _ *QueuedRequest, giveUp time
 		case <-time.After(wait):
 			// loop and re-check (token may now be available)
 		}
+
 	}
 }
 func (g *rpmGovernor) Release(_ *QueuedRequest) {} // rate-based: nothing to release
@@ -163,11 +179,11 @@ func (g *rpmGovernor) Release(_ *QueuedRequest) {} // rate-based: nothing to rel
 // the request's EstimatedTokens; when unknown (0), a conservative fixed cost
 // (defaultTokenEstimate) is charged so unknown-size requests are still paced.
 type tpmGovernor struct {
-	mu       sync.Mutex
-	tokens   float64
-	tpm      int
-	last     time.Time
-	perSec   float64
+	mu     sync.Mutex
+	tokens float64
+	tpm    int
+	last   time.Time
+	perSec float64
 }
 
 const defaultTokenEstimate = 800 // conservative cost when EstimatedTokens unknown
@@ -206,7 +222,8 @@ func (g *tpmGovernor) Acquire(ctx context.Context, qr *QueuedRequest, giveUp tim
 		wait := time.Duration((need / g.perSec) * float64(time.Second))
 		g.mu.Unlock()
 
-		if now.After(giveUp) {
+		wait, ok := waitWithinBudget(now, wait, giveUp)
+		if !ok {
 			return errPaceTimeout
 		}
 		if err := ctx.Err(); err != nil {
@@ -225,7 +242,7 @@ func (g *tpmGovernor) Release(_ *QueuedRequest) {}
 
 type noopGovernor struct{}
 
-func newNoopGovernor() *noopGovernor      { return &noopGovernor{} }
-func (g *noopGovernor) Mode() string      { return ModeDisabled }
+func newNoopGovernor() *noopGovernor                                             { return &noopGovernor{} }
+func (g *noopGovernor) Mode() string                                             { return ModeDisabled }
 func (g *noopGovernor) Acquire(context.Context, *QueuedRequest, time.Time) error { return nil }
-func (g *noopGovernor) Release(*QueuedRequest)                                  {}
+func (g *noopGovernor) Release(*QueuedRequest)                                   {}

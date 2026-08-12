@@ -123,21 +123,21 @@ func (w *Wrapper) ExecuteWithMetrics(ctx context.Context, httpW http.ResponseWri
 
 		// Check if we should retry
 		if !rc.ShouldRetry(err) {
-			classified := rc.LastError.(*RetryableError)
+			classify := ClassifyError(err)
 			w.logger.Warn("stream failed with non-retriable error",
 				"error", err,
-				"retriable", classified.Retriable,
-				"reason", classified.Reason,
+				"retriable", classify.Retriable,
+				"reason", classify.Reason,
 				"attempt", rc.Attempt+1)
 			metrics.TotalRetries = rc.Attempt
 			return metrics, err
 		}
 
 		// Log retry decision
-		classified := rc.LastError.(*RetryableError)
+		classify := ClassifyError(err)
 		w.logger.Info("stream failed with retriable error, retrying",
 			"error", err,
-			"reason", classified.Reason,
+			"reason", classify.Reason,
 			"attempt", rc.Attempt+1,
 			"next_attempt", rc.Attempt+2)
 

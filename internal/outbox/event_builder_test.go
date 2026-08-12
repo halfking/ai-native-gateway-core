@@ -97,6 +97,44 @@ func TestBuildRequestCompletedEvent(t *testing.T) {
 	}
 }
 
+func TestBuildRequestCompletedEvent_EmptyRequestID(t *testing.T) {
+	if _, err := BuildRequestCompletedEvent(
+		"tenant-123",
+		"session-abc",
+		1,
+		"",
+		"anthropic",
+		"claude-3-5-sonnet-20241022",
+		"succeeded",
+		150,
+		80,
+		1250,
+		true,
+	); err == nil {
+		t.Fatal("expected error for empty request_id")
+	}
+}
+
+func TestBuildRequestCompletedEventV2_EmptyRequestID(t *testing.T) {
+	if _, err := BuildRequestCompletedEventV2(
+		"tenant-123",
+		"session-abc",
+		1,
+		"",
+		"",
+		"",
+		"anthropic",
+		"claude-3-5-sonnet-20241022",
+		"succeeded",
+		150,
+		80,
+		1250,
+		true,
+	); err == nil {
+		t.Fatal("expected error for empty request_id")
+	}
+}
+
 func TestBuildRequestCompletedEvent_StatusMapping(t *testing.T) {
 	tests := []struct {
 		name           string

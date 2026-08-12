@@ -291,8 +291,13 @@ func parseRetryAfter(now time.Time, headers map[string]string) (int, time.Time) 
 		if ts, err := strconv.ParseInt(reset, 10, 64); err == nil {
 			resetAt := time.Unix(ts, 0).UTC()
 			retry := int(resetAt.Sub(now).Seconds())
-			if retry < 0 {
-				retry = 0
+			// Some providers emit a zero/stale reset timestamp while still returning
+			// 429. Treat it like Retry-After: 0 and apply a short default backoff;
+			// otherwise CorrectFromHeaders would persist auto_reset_at<=now and the
+			// next Preflight would immediately re-enable the exhausted credential.
+			if retry <= 0 {
+				retry = 60
+				resetAt = now.Add(60 * time.Second)
 			}
 			return retry, resetAt
 		}
@@ -328,8 +333,12 @@ func parseRetryAfter(now time.Time, headers map[string]string) (int, time.Time) 
 		if t, err := http.ParseTime(ra); err == nil {
 			resetAt := t.UTC()
 			retry := int(resetAt.Sub(now).Seconds())
-			if retry < 0 {
-				retry = 0
+			// Stale HTTP-date (clock drift / past reset): apply the same
+			// default backoff as the other paths so CorrectFromHeaders does
+			// not persist an auto_reset_at<=now.
+			if retry <= 0 {
+				retry = 60
+				resetAt = now.Add(60 * time.Second)
 			}
 			return retry, resetAt
 		}
