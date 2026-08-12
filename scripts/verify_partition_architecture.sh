@@ -305,7 +305,6 @@ check_code_usage() {
   # 检查是否还有使用_default的代码
   local bad_usage=$(grep -r "INSERT INTO.*_default\|UPDATE.*_default" \
     --include="*.go" \
-    --exclude-dir="_to-be-deprecated" \
     . 2>/dev/null || true)
   
   if [[ -z "$bad_usage" ]]; then
@@ -319,7 +318,6 @@ check_code_usage() {
   # 检查是否正确使用_hot表
   local hot_usage=$(grep -r "INSERT INTO.*_hot\|UPDATE.*_hot" \
     --include="*.go" \
-    --exclude-dir="_to-be-deprecated" \
     . 2>/dev/null | wc -l)
   
   if [[ $hot_usage -gt 0 ]]; then
