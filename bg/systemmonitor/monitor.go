@@ -533,6 +533,42 @@ func (sm *SystemMonitor) Start(ctx context.Context) {
 	}
 	sm.wg.Add(1)
 	go sm.healthCheckLoop(ctx)
+	sm.wg.Add(1)
+	go sm.reclaimLoop(ctx)
+}
+
+// reclaimLoop periodically restores tasks whose owning worker crashed or
+// stalled past the lease. Only the Redis path needs reclaim (the in-memory
+// fallback lane is drained synchronously by workers). See lua/reclaim.lua.
+func (sm *SystemMonitor) reclaimLoop(ctx context.Context) {
+	defer sm.wg.Done()
+	log := slog.With("worker_id", sm.workerID, "loop", "reclaim")
+	// Stagger the first sweep so a freshly started instance does not race
+	// the worker ticker before scripts/keys are settled.
+	ticker := time.NewTicker(15 * time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			log.Debug("system_monitor: reclaim loop ctx cancelled, exiting")
+			return
+		case <-sm.stopCh:
+			log.Debug("system_monitor: reclaim loop stop signaled, exiting")
+			return
+		case <-ticker.C:
+		}
+		if sm.IsFallback() {
+			continue
+		}
+		n, err := sm.queue.Reclaim(ctx)
+		if err != nil {
+			log.Warn("system_monitor: reclaim sweep failed", "error", err)
+			continue
+		}
+		if n > 0 {
+			log.Info("system_monitor: reclaimed stale tasks", "count", n)
+		}
+	}
 }
 
 // Stop gracefully shuts down workers. Pending tasks in the in-memory
@@ -692,14 +728,26 @@ func (sm *SystemMonitor) processTask(ctx context.Context, task *Task, workerLog 
 	}
 
 	// Complete (Redis status update + running removal)
+	leaseLost := false
 	if !sm.IsFallback() {
 		if err := sm.queue.Complete(ctx, task, status, extras); err != nil {
-			workerLog.Warn("system_monitor: complete failed", "error", err)
+			if errors.Is(err, ErrLeaseLost) {
+				// Task was reclaimed (this worker stalled past the lease) and
+				// re-dispatched to another worker that already completed it.
+				// Our terminal result is discarded; do NOT requeue (the task
+				// is already back in flight under a fresh lease).
+				leaseLost = true
+				workerLog.Info("system_monitor: complete skipped, lease lost (reclaimed)",
+					"task_id", task.ID)
+			} else {
+				workerLog.Warn("system_monitor: complete failed", "error", err)
+			}
 		}
 	}
 
-	// Backoff: requeue if failed and attempts remain
-	if status == TaskStatusFailed && task.Attempt < task.MaxAttempts {
+	// Backoff: requeue if failed and attempts remain. Skip when this worker's
+	// lease was lost — the task was already restored to the queue by reclaim.
+	if !leaseLost && status == TaskStatusFailed && task.Attempt < task.MaxAttempts {
 		nextRun := time.Now().UTC().Add(computeBackoff(task.Attempt))
 		if !sm.IsFallback() {
 			if err := sm.queue.Requeue(ctx, task, nextRun); err != nil {
