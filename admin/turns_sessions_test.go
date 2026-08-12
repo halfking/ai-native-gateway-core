@@ -82,6 +82,28 @@ func TestComputeSessionAggs_NilSafe(t *testing.T) {
 	}
 }
 
+func TestEnsureTurnsNonNil(t *testing.T) {
+	// nil 会话不 panic
+	ensureTurnsNonNil(nil)
+
+	// 无轮次（过滤后）→ 归一化为非 nil 空切片，避免 JSON null
+	g := &TurnsSessionGroup{SessionID: "gw_s_empty"}
+	ensureTurnsNonNil(g)
+	if g.Turns == nil {
+		t.Fatal("expected non-nil Turns after ensureTurnsNonNil")
+	}
+	if len(g.Turns) != 0 {
+		t.Fatalf("expected empty Turns, got %d", len(g.Turns))
+	}
+
+	// 已有轮次 → 保持不变
+	filled := &TurnsSessionGroup{SessionID: "gw_s_filled", Turns: []TurnGroupItem{{TurnNo: 1}}}
+	ensureTurnsNonNil(filled)
+	if len(filled.Turns) != 1 {
+		t.Fatalf("expected existing turns preserved, got %d", len(filled.Turns))
+	}
+}
+
 func TestBuildTurnsSessionWhere(t *testing.T) {
 	now := time.Now().UTC()
 	tsFrom := now.Add(-time.Hour)

@@ -25,6 +25,11 @@ const nextCursor = ref('')
 const error = ref('')
 const expandedSessions = ref<Set<string>>(new Set())
 
+// 筛选区是否展开（折叠时仅显示当前生效的条件描述）
+const filterExpanded = ref(true)
+// 当前生效的条件描述（供折叠态展示）
+const activeFilterDesc = ref('')
+
 // 筛选参数
 const modelFilter = ref('')
 const providerFilter = ref('')
@@ -170,6 +175,24 @@ function resetAndLoad() {
   load(true)
 }
 
+// 折叠时显示的生效条件描述；无任何条件时返回空串（显示"全部"）
+function activeFilterSummary(): string {
+  const parts: string[] = []
+  if (modelFilter.value) parts.push(`模型 ${modelFilter.value}`)
+  if (providerFilter.value) parts.push(`供应商 ${providerFilter.value}`)
+  if (statusCodeFilter.value) parts.push(`状态码 ${statusCodeFilter.value}`)
+  if (projectFilter.value) parts.push(`项目 ${projectFilter.value}`)
+  if (taskFilter.value) parts.push(`任务 ${taskFilter.value}`)
+  if (clientFilter.value) parts.push(`客户端 ${clientFilter.value}`)
+  if (ownerUserFilter.value) parts.push(`属主 ${ownerUserFilter.value}`)
+  if (tagsFilter.value.length > 0) parts.push(`标签 ${tagsFilter.value.join('、')}`)
+  if (dateFromFilter.value || dateToFilter.value) {
+    parts.push(`时间 ${dateFromFilter.value || '…'} ~ ${dateToFilter.value || '…'}`)
+  }
+  if (searchFilter.value) parts.push(`搜索 "${searchFilter.value}"`)
+  return parts.join(' · ')
+}
+
 function resetAll() {
   modelFilter.value = ''
   providerFilter.value = ''
@@ -198,9 +221,21 @@ onMounted(() => {
       <p class="subtitle">最外层为会话（主题 / 摘要 / 用量 / 压缩 / failover），展开查看该会话的每个轮次</p>
     </div>
 
-    <!-- 筛选区 -->
-    <div class="filter-bar">
-      <el-select
+    <!-- 筛选区（可折叠：折叠时只显示生效条件描述） -->
+    <div class="filter-section">
+      <div class="filter-toggle">
+        <button class="btn btn-secondary btn-sm" @click="filterExpanded = !filterExpanded">
+          {{ filterExpanded ? '收起条件' : '筛选条件' }}
+          <span class="caret" :class="{ open: filterExpanded }">▸</span>
+        </button>
+        <span v-if="!filterExpanded" class="filter-summary">
+          {{ activeFilterSummary() || '全部会话（最近更新）' }}
+        </span>
+        <span v-else class="filter-summary muted">配置条件后点击查询</span>
+      </div>
+
+      <div v-if="filterExpanded" class="filter-bar">
+        <el-select
         v-model="modelFilter"
         filterable
         allow-create
@@ -310,6 +345,7 @@ onMounted(() => {
       />
       <button class="btn btn-primary" @click="resetAndLoad">查询</button>
       <button class="btn btn-secondary" @click="resetAll">清空</button>
+      </div>
     </div>
 
     <!-- 错误提示 -->
@@ -368,9 +404,9 @@ onMounted(() => {
 
         <!-- 内层级：该会话的轮次 -->
         <div v-if="expandedSessions.has(session.session_id)" class="turns-block">
-          <div v-if="session.turns.length === 0" class="empty">该会话暂无匹配轮次</div>
+          <div v-if="(session.turns || []).length === 0" class="empty">该会话暂无匹配轮次</div>
           <div
-            v-for="turn in session.turns"
+            v-for="turn in session.turns || []"
             :key="`${session.session_id}-${turn.turn_no}`"
             class="turn-row"
             @click="openTurn(session, turn)"
@@ -456,6 +492,30 @@ onMounted(() => {
   font-size: 14px;
   color: var(--text-secondary);
   margin: 0;
+}
+.filter-section {
+  margin-bottom: 16px;
+}
+.filter-toggle {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 10px;
+}
+.filter-summary {
+  font-size: 13px;
+  color: var(--text-secondary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.filter-summary.muted {
+  color: var(--text-muted);
+}
+.btn-sm {
+  height: 32px;
+  padding: 0 12px;
+  font-size: 13px;
 }
 .filter-bar {
   display: flex;

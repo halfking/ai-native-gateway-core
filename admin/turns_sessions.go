@@ -477,9 +477,19 @@ func (h *Handler) loadTurnsForSessions(ctx context.Context, sessions []*TurnsSes
 
 	// 计算会话级聚合
 	for _, g := range sessions {
+		ensureTurnsNonNil(g)
 		computeSessionAggs(g)
 	}
 	return nil
+}
+
+// ensureTurnsNonNil 确保会话的 Turns 为非 nil 空切片。
+// 会话因过滤（model/provider/status_code）无匹配轮次时 g.Turns 为 nil，
+// 若直接返回 nil 会让 JSON 输出 "turns": null，导致前端读取 .length 崩溃。
+func ensureTurnsNonNil(g *TurnsSessionGroup) {
+	if g != nil && g.Turns == nil {
+		g.Turns = []TurnGroupItem{}
+	}
 }
 
 // computeSessionAggs 根据回填的轮次计算会话级聚合指标。
