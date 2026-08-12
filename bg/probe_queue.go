@@ -101,10 +101,14 @@ func (q *ProbeQueue) publishProbeTask(task ProbeQueueTask, status string) {
 	if id == "" {
 		id = fmt.Sprintf("integrity:%d", task.ID)
 	}
+	taskType := task.Command
+	if taskType == "" {
+		taskType = "integrity_verify"
+	}
 	q.probeSink.PublishProbeEvent(ProbeStreamEvent{
 		ID:           id,
-		TaskType:     "integrity_verify",
-		Source:       "integrity",
+		TaskType:     taskType,
+		Source:       task.Source,
 		Status:       status,
 		CredentialID: task.CredentialID,
 		ProviderID:   task.ProviderID,

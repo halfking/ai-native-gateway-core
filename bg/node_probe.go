@@ -146,6 +146,12 @@ type NodeProbeWorker struct {
 	// pending → running → done progression. Optional — nil is a no-op.
 	probeSink ProbeEventSink
 
+	// probeQueue (2026-08-13, 需求 6 完全统一) routes Submit into the durable
+	// credential_probe_queue. When non-nil the worker is in unified-queue mode:
+	// Submit enqueues, the legacy loop() stops picking node_probe_state rows,
+	// and a ProbeQueueWorker + ProbeService own execution. nil = legacy path.
+	probeQueue *ProbeQueue
+
 	// Candidate cache invalidation keeps a direct probe result visible to the
 	// next routing decision instead of waiting for the provider cache TTL.
 	invalidateCandidateCache func(credentialID int)
@@ -253,6 +259,21 @@ func (w *NodeProbeWorker) SetModelQualityTrigger(fn func(credentialID int, rawMo
 		w.modelQualityTrigger = fn
 	}
 }
+
+// SetProbeQueue switches NodeProbeWorker into unified-queue mode (需求 6 完全统一).
+// When set, Submit enqueues into the durable credential_probe_queue instead of
+// UPSERT-ing node_probe_state, and the legacy loop() stops picking node_probe
+// rows (the ProbeQueueWorker + ProbeService own execution). ProbeSync (the
+// synchronous request-path probe) is unaffected — it never used the queue. Pass
+// nil to revert to the legacy direct path (kill-switch).
+func (w *NodeProbeWorker) SetProbeQueue(q *ProbeQueue) {
+	if w != nil {
+		w.probeQueue = q
+	}
+}
+
+// UseProbeQueue reports whether Submit routes through the unified queue.
+func (w *NodeProbeWorker) UseProbeQueue() bool { return w != nil && w.probeQueue != nil }
 
 // NewNodeProbeWorker constructs a worker.  baseURL="" picks
 // LLM_GATEWAY_NODE_PROBE_BASE_URL or the local gateway loopback URL.
@@ -398,6 +419,14 @@ func (w *NodeProbeWorker) loop(ctx context.Context) {
 			slog.Error("node_probe_worker panic", "recover", r)
 		}
 	}()
+	// Unified-queue mode: execution is owned by ProbeQueueWorker + ProbeService.
+	// The legacy node_probe_state picker is disabled to avoid double execution.
+	// ProbeSync (synchronous request-path probe) does not use this loop.
+	if w.UseProbeQueue() {
+		slog.Info("node_probe_worker: unified-queue mode, legacy picker disabled")
+		<-ctx.Done()
+		return
+	}
 	ticker := time.NewTicker(nodeProbeTickInterval)
 	defer ticker.Stop()
 	for {
@@ -424,6 +453,16 @@ func (w *NodeProbeWorker) Submit(credID int, model, tenantID, parentReqID string
 		return
 	}
 	if model == "" {
+		return
+	}
+	// Unified-queue mode (需求 6): route through credential_probe_queue instead
+	// of UPSERT-ing node_probe_state. The dedup_key is the canonical node-probe
+	// ID; ON CONFLICT DO NOTHING preserves any in-flight backoff (no collapse).
+	// next_run_at = now+5s mirrors the legacy "first retry in 5s" arming; the
+	// queue worker's completeFailure advances the 7-step chain on subsequent
+	// failures. MaxAttempts caps the chain at nodeProbeMaxAttempts (7).
+	if w.probeQueue != nil {
+		w.submitViaQueue(credID, model, tenantID, parentReqID)
 		return
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
@@ -537,6 +576,45 @@ func (w *NodeProbeWorker) Submit(credID int, model, tenantID, parentReqID string
 	// (request_failure / no_candidates) is carried as the Reason for context.
 	w.publishProbeEvent(credID, model, "pending", "node_probe", parentReqID, 0)
 }
+
+// submitViaQueue is the unified-queue path for Submit. It enqueues a node_probe
+// task into credential_probe_queue; the ProbeQueueWorker + ProbeService execute
+// it. Best-effort on DB error (matches the legacy path which ignores UPSERT err).
+func (w *NodeProbeWorker) submitViaQueue(credID int, model, tenantID, parentReqID string) {
+	if w.probeQueue == nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	if tenantID == "" {
+		tenantID = "default"
+	}
+	task := ProbeQueueTask{
+		CredentialID: int64(credID),
+		TenantID:     tenantID,
+		RawModel:     model,
+		Command:      "node_probe",
+		Mode:         "multi_round",
+		Priority:     60, // above passive integrity (50), below urgent
+		MaxAttempts:  nodeProbeMaxAttempts,
+		NextRunAt:    time.Now().Add(5 * time.Second),
+		Source:       "request_failure",
+		ParentReqID:  parentReqID,
+		DedupKey:     buildNodeProbeTaskID(credID, model),
+	}
+	if _, inserted, err := w.probeQueue.Enqueue(ctx, task); err != nil {
+		slog.Warn("node_probe_worker: enqueue via queue failed",
+			"credential_id", credID, "model", model, "error", err)
+	} else {
+		slog.Info("node_probe_worker: submit via queue",
+			"credential_id", credID, "model", model, "inserted", inserted)
+	}
+	// publishProbeTask (called inside Enqueue) emits the pending tile using
+	// task.Command as TaskType, so it shows as node_probe on the 自检 stream.
+}
+
+// publishProbeTask TaskType uses task.Command so node_probe / integrity_verify /
+// selfcheck tasks render with their own type on the 自检 stream (2026-08-13).
 
 // publishProbeEvent is the shared hook for node-probe lifecycle events that
 // are NOT the terminal completed/failed (those go through ActiveProbeEmitter).
