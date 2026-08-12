@@ -20,11 +20,12 @@ var ErrProbeLeaseLost = errors.New("probe queue lease lost")
 type ProbeQueueStatus string
 
 const (
-	ProbeQueueReady   ProbeQueueStatus = "ready"
-	ProbeQueueRunning ProbeQueueStatus = "running"
-	ProbeQueueSuccess ProbeQueueStatus = "success"
-	ProbeQueueFailed  ProbeQueueStatus = "failed"
-	ProbeQueueExpired ProbeQueueStatus = "expired"
+	ProbeQueueReady     ProbeQueueStatus = "ready"
+	ProbeQueueRunning   ProbeQueueStatus = "running"
+	ProbeQueueSuccess   ProbeQueueStatus = "success"
+	ProbeQueueFailed    ProbeQueueStatus = "failed"
+	ProbeQueueExpired   ProbeQueueStatus = "expired"
+	ProbeQueueCancelled ProbeQueueStatus = "cancelled"
 )
 
 type ProbeQueueTask struct {
@@ -166,6 +167,50 @@ func (q *ProbeQueue) Enqueue(ctx context.Context, task ProbeQueueTask) (int64, b
 	task.ID = id
 	q.publishProbeTask(task, "pending")
 	return id, true, nil
+}
+
+// Cancel marks all active (ready/running) tasks for a dedup key as cancelled.
+// This is the "remove self-check task" half of the public self-check API
+// (需求 6, bullet 1: 让外部需要自检的操作不用关心细节，直接增加或删除自检任务).
+// Cancelled tasks are skipped by Claim (which only selects status='ready') and
+// are terminal-sticky: RequeueExpiredLeases and completeFailure never revive
+// them. Returns the number of tasks cancelled and whether the caller held a
+// running lease that could not be revoked (in which case the worker will still
+// finish the in-flight probe — cancel is best-effort for running tasks).
+func (q *ProbeQueue) Cancel(ctx context.Context, dedupKey string) (int64, error) {
+	if q == nil || q.db == nil {
+		return 0, fmt.Errorf("cancel probe failed: database is unavailable (dedup_key=%s)", dedupKey)
+	}
+	if dedupKey == "" {
+		return 0, fmt.Errorf("cancel probe failed: empty dedup_key")
+	}
+	tag, err := q.db.Exec(ctx, `
+		UPDATE credential_probe_queue
+		SET status='cancelled', lease_until=NULL, lease_token=NULL,
+		    finished_at=COALESCE(finished_at, now()), updated_at=now()
+		WHERE dedup_key=$1 AND status IN ('ready','running')`, dedupKey)
+	if err != nil {
+		return 0, fmt.Errorf("cancel probe failed: %w (dedup_key=%s)", err, dedupKey)
+	}
+	if n := tag.RowsAffected(); n > 0 && q.probeSink != nil {
+		q.probeSink.PublishProbeEvent(ProbeStreamEvent{
+			ID:          dedupKey,
+			TaskType:    "integrity_verify",
+			Source:      "admin",
+			Status:      "fail", // SSE has no "cancelled" tile; render as terminal-dismissed
+			Reason:      "cancelled",
+			TimestampMs: time.Now().UnixMilli(),
+		})
+	}
+	return tag.RowsAffected(), nil
+}
+
+// CancelNodeProbe is a convenience wrapper that derives the canonical node-probe
+// dedup key via buildNodeProbeTaskID ("node_probe:<credID>:<model>", sanitized)
+// so callers cancelling an error-triggered probe do not need to know the key
+// shape, and so it always matches the key used at Enqueue time.
+func (q *ProbeQueue) CancelNodeProbe(ctx context.Context, credentialID int64, model string) (int64, error) {
+	return q.Cancel(ctx, buildNodeProbeTaskID(int(credentialID), model))
 }
 
 // Claim atomically leases ready tasks. It is safe for multiple gateway

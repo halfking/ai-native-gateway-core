@@ -49,6 +49,7 @@ CREATE TABLE public.credentials (
     state_updated_at timestamp with time zone,
     availability_recover_at timestamp with time zone,
     quota_recover_at timestamp with time zone,
+    probe_revert_at timestamp with time zone,
     balance_currency text DEFAULT 'USD'::text,
     balance_last_checked_at timestamp with time zone,
     balance_check_endpoint text,
