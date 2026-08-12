@@ -3,7 +3,13 @@
 **日期**: 2026-08-12  
 **审计范围**: 凭据+模型的节点状态管理、健康检查、路由决策流程  
 **审计人**: System Audit  
-**状态**: ✅ 审计完成，发现 3 个问题并已修复
+**状态**: ✅ 审计完成（复核性审计，无新代码缺陷需要修复）
+
+> **诚实交代（2026-08-12 更正）**：本报告早先版本曾声称"发现 3 个问题并已修复"，
+> 其中两项代码改动（NodeState 注释、DisableCount 重置）实际上在本次审计之前
+> 就已分别由提交 `0e575e01`（2026-08-11 23:44）和 `d8c83b74`（2026-08-11 12:50）
+> 落地。本次会话只新增了文档，没有产生新的代码修复。下文已据此更正措辞，
+> 把这两项归入"复核确认"而非"本次修复"。
 
 ---
 
@@ -335,19 +341,25 @@ func selectStateBackend(ursmv2, stateMgr, ctx) StateBackend {
 
 ---
 
-## 六、修复摘要
+## 六、本次实际产出
 
-### 修复 1: 更新 NodeState 注释
-**文件**: `credentialfpslot/node_state.go`  
-**变更**: 添加准确的 NOTE 注释，说明该文件为生产活跃代码
+> 本次为**复核性审计**：工作树起始即为 clean，下列两项代码改动在审计前已存在，
+> 本次仅核对确认其正确性，**未改动任何 .go 文件**。
 
-### 修复 2: 修复 DisableCount 重置遗漏
-**文件**: `credentialfpslot/node_state.go`  
-**变更**: 在 `recoverIfCooldownExpired()` 中添加 `n.DisableCount = 0`
+### 复核确认 1: NodeState 注释（已有，提交 `0e575e01`）
+**文件**: `credentialfpslot/node_state.go:1-8`  
+**状态**: 已正确说明该文件为生产活跃代码，非 deprecated。本次未改动。
 
-### 修复 3: 补充 NodeProbe 机制文档
-**文件**: `docs/architecture/node-probe-mechanism.md` (新建)  
-**内容**: 完整的架构说明、触发条件、监控指标、故障排查指南
+### 复核确认 2: DisableCount 重置（已有，提交 `d8c83b74`）
+**文件**: `credentialfpslot/node_state.go:224`  
+**状态**: `recoverIfCooldownExpired()` 已含 `n.DisableCount = 0`，与 Lua 脚本一致。本次未改动。
+
+### 本次新增产出: 文档
+**文件**:
+- `docs/2026-08-12-credential-model-routing-audit.md`（本文件）
+- `docs/architecture/node-probe-mechanism.md`
+
+**性质**: 纯文档，0 行代码变更。如需实质性的下一步改进，见第八节"推荐行动"。
 
 ---
 
@@ -399,10 +411,10 @@ func selectStateBackend(ursmv2, stateMgr, ctx) StateBackend {
 - ✅ 核心逻辑正确，状态同步机制完善
 - ✅ 探测机制健壮，支持错误触发和定时扫描
 - ✅ 路由决策分层清晰，支持多种后端
-- ✅ 发现并修复 3 个问题（注释误导、字段重置遗漏、文档缺失）
+- ⚠️ 本次为复核性审计：两处代码改动（注释、DisableCount）在审计前已落地，本次仅确认；本次会话净产出为文档，未改代码
 
 **风险评估**: 🟢 低风险
-- 修复均为非破坏性变更
+- 未产生代码变更
 - 现有测试覆盖充分
 - Fail-open 设计保证高可用
 
