@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Session Summaries outcome + Request Logs Hot status_code 漂移修复 (2026-08-13)**: 修复 2026-08-12 审计时发现的另外 2 个 schema 漂移（独立于 481/482）。
+  - Migration 483 加 `session_summaries.outcome TEXT` 列，消除 session health compute 后台 worker 每 60 分钟的 SQLSTATE 42703。
+  - Migration 484 加 `request_logs_hot.status_code INTEGER` 列，消除 credential_selfcheck_worker 每 5 分钟的 SQLSTATE 42703。Code (`bg/credential_selfcheck.go:373`) 用 `status_code`，schema canonical 用 `upstream_status_code` —— 这是 code-vs-schema drift 的历史 bug（commit `4b5740b9c` 引入），本次选加列路径（最小改动），下次 task 可做 code-schema 一致性清理。
+  - 两处都带 `-- POST_CONDITION:` 注释（POST_CONDITION 防御链）。
+  - 详见 `docs/changelogs/2026-08-13-schema-drift-483-484.md`。
+
 - **生产 154 闪动事件 + schema 漂移修复 (2026-08-12)**: 修复 llm.kxpms.cn (154) 上 glm-5.2 (zhipu-roocode-v2 cred 22) + claude-sonnet-5 (130dao cred 17) 的 `all 0 candidates failed` 闪动（每分钟 1-3 次，circuit breaker 每 2 分钟 open/close）。根因：客户端 bug（tool_call 错乱 / context 超长）被错误归类为 `KindTransient`，绕过 `domains/credential/breaker.go:320` 的 `IsClientBug` 短路。修复 1：anthropic IR 路径（`executor_anthropic.go:482,510`）改用 `&upstreampkg.Error{Kind: errorsx.KindToolCallIdMismatch}` 包装 Kind，与 chat 路径 7-3 P0 修复对称。修复 2：`handleContextLengthRecovery` 4 个压缩路径（smart window / mechanical trim / memora L1 / llm summary）触发重试前向客户端 emit SSE comment `: thinking: ...` 提示（复用已有 `OnNodeJump` 回调）。**部署后 154 实测**：`SQLSTATE 23514` / `SQLSTATE 42703` / `circuit opened/closed` / `all 0 candidates failed` 全部 0 次。**同时修复 2 个 schema 漂移**（审计时发现，预先存在）：migration 481 补 `request_logs_bodies_2026_07` 分区（migration 473 漏列这张表），migration 482 给 `provider_profile_metrics` 补 14 列（`rate_limit_hits`, `quality_stability_*` 等），均幂等 up+down。详见 `docs/changelogs/2026-08-12-prod-flicker-and-schema-drift.md`。Commits: `b2fb748e6` (streaming) + `be6cff05d` (sql)。
 
 - **Stream retry 并发指标审计修复 (2026-08-12)**: 修复共享 `DefaultStreamExecutor` 下 `Wrapper.metrics` 的并发数据竞争；新增 `ExecuteWithMetrics` / `ExecuteStreamWithMetrics` 返回请求级隔离指标，保留互斥保护的 latest snapshot；新增 32 路并发 race 回归测试。审计同时复核 URSM v2、probe queue、Session V2 mirror 的已有不变量和会话污染防护，未发现新的 P0/P1 问题。`go build ./...`、`go vet ./internal/streamretry/... ./cmd/gateway/...`、`go test -race -count=1 ./internal/streamretry/...` 全部通过。详见 `AUDIT_STREAMRETRY_CONCURRENCY_20260812.md`。
