@@ -19,13 +19,21 @@ var claimLuaSrc string
 //go:embed lua/complete.lua
 var completeLuaSrc string
 
+//go:embed lua/submit.lua
+var submitLuaSrc string
+
+//go:embed lua/reclaim.lua
+var reclaimLuaSrc string
+
 // LoadedScripts holds the SHA1-loaded Redis scripts ready for EVALSHA.
 type LoadedScripts struct {
 	claimSHA    string
 	completeSHA string
+	submitSHA   string
+	reclaimSHA  string
 }
 
-// LoadScripts precomputes SHA1 of both Lua scripts and verifies the embedded
+// LoadScripts precomputes SHA1 of all Lua scripts and verifies the embedded
 // source compiles cleanly via SCRIPT LOAD.
 //
 // Must be called once at startup. Subsequent EVALSHA calls reuse the SHA1
@@ -42,7 +50,20 @@ func LoadScripts(ctx context.Context, rdb *redis.Client) (*LoadedScripts, error)
 	if err != nil {
 		return nil, fmt.Errorf("script load complete.lua: %w", err)
 	}
-	return &LoadedScripts{claimSHA: claimSHA, completeSHA: completeSHA}, nil
+	submitSHA, err := rdb.ScriptLoad(ctx, submitLuaSrc).Result()
+	if err != nil {
+		return nil, fmt.Errorf("script load submit.lua: %w", err)
+	}
+	reclaimSHA, err := rdb.ScriptLoad(ctx, reclaimLuaSrc).Result()
+	if err != nil {
+		return nil, fmt.Errorf("script load reclaim.lua: %w", err)
+	}
+	return &LoadedScripts{
+		claimSHA:    claimSHA,
+		completeSHA: completeSHA,
+		submitSHA:   submitSHA,
+		reclaimSHA:  reclaimSHA,
+	}, nil
 }
 
 // runScript is a thin wrapper around EVALSHA that falls back to EVAL if the
