@@ -324,13 +324,31 @@ func (m *Manager) Acquire(ctx context.Context, credentialID int, limit *int, hol
 		recordAcquireRedisError()
 		return nil, false
 	}
-	if lease, ok := m.acquireRedis(ctx, credentialID, *eff, holder, tenantID); ok {
+	lease, outcome := m.acquireRedis(ctx, credentialID, *eff, holder, tenantID)
+	switch outcome {
+	case acquireOK:
 		recordAcquireSuccess()
 		return lease, true
+	case acquireRedisError:
+		recordAcquireRedisError()
+		return nil, false
+	default: // acquireSaturated
+		recordAcquireSaturated()
+		return nil, false
 	}
-	recordAcquireSaturated()
-	return nil, false
 }
+
+// acquireOutcome distinguishes a genuine "all slots active" result from a
+// Redis/Lua infrastructure error. The previous code mapped both to
+// recordAcquireSaturated(), so a Redis outage was misread by operators as
+// credential saturation. See AUDIT_CROSSCUTTING_CONCURRENCY_20260813.md §3-S2.
+type acquireOutcome int
+
+const (
+	acquireOK acquireOutcome = iota
+	acquireSaturated
+	acquireRedisError
+)
 
 // Release frees a previously acquired slot while preserving the session pin.
 //
@@ -648,7 +666,7 @@ func (m *Manager) hasPinForTenant(ctx context.Context, tenantID, holder string, 
 	return err == nil
 }
 
-func (m *Manager) acquireRedis(ctx context.Context, credentialID, limit int, holder, tenantID string) (*Lease, bool) {
+func (m *Manager) acquireRedis(ctx context.Context, credentialID, limit int, holder, tenantID string) (*Lease, acquireOutcome) {
 	pinKey := tenantPinRedisKey(tenantID, holder, credentialID)
 	gate := m.cfg.resolveActiveGateSeconds()
 	// Phase 1: pin-reuse path. The Lua script applies the active
@@ -665,7 +683,7 @@ func (m *Manager) acquireRedis(ctx context.Context, credentialID, limit int, hol
 				slog.Debug("cred_fp_slot redis pin-reuse failed", "cred", credentialID, "slot", slot, "error", err)
 			} else if acquired {
 				eg := identity.BuildEgressIdentity(credentialID, slot, tenantID)
-				return &Lease{SlotIndex: slot, Egress: &eg, CredentialID: credentialID, Holder: holder, TenantID: tenantID}, true
+				return &Lease{SlotIndex: slot, Egress: &eg, CredentialID: credentialID, Holder: holder, TenantID: tenantID}, acquireOK
 			}
 		}
 	}
@@ -681,21 +699,25 @@ func (m *Manager) acquireRedis(ctx context.Context, credentialID, limit int, hol
 	).Result()
 	if err != nil {
 		slog.Debug("cred_fp_slot redis LRU acquire failed", "cred", credentialID, "error", err)
-		return nil, false
+		return nil, acquireRedisError
 	}
 	arr, ok := res.([]interface{})
 	if !ok || len(arr) < 3 {
-		return nil, false
+		return nil, acquireRedisError
 	}
 	acquired, _ := arr[0].(int64)
 	if acquired != 1 {
 		// No preemptable slot — all active. Later arrivals wait
 		// (sync_retry in routing layer).
-		return nil, false
+		return nil, acquireSaturated
 	}
 	slot, _ := arr[1].(int64)
 	oldHolder, _ := arr[2].(string)
 	if oldHolder != "" {
+		// Real preemption of another holder's slot: emit the metric so
+		// preemption rate is observable (the counter was registered but
+		// never incremented before — see AUDIT report §3-S3).
+		recordPreempt()
 		slog.Info("cred_fp_slot LRU preempt",
 			"cred", credentialID,
 			"new_holder", holder,
@@ -704,7 +726,7 @@ func (m *Manager) acquireRedis(ctx context.Context, credentialID, limit int, hol
 		)
 	}
 	eg := identity.BuildEgressIdentity(credentialID, int(slot), tenantID)
-	return &Lease{SlotIndex: int(slot), Egress: &eg, CredentialID: credentialID, Holder: holder, TenantID: tenantID}, true
+	return &Lease{SlotIndex: int(slot), Egress: &eg, CredentialID: credentialID, Holder: holder, TenantID: tenantID}, acquireOK
 }
 
 func (m *Manager) tryRedisLock(ctx context.Context, credentialID, slot int, holder string) bool { //nolint:unused

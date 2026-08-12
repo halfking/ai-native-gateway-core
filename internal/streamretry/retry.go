@@ -224,8 +224,17 @@ func CalculateRetryDelay(attempt int, baseDelayMs int, maxDelayMs int) time.Dura
 		maxDelayMs = 5000 // default max 5s
 	}
 
-	// Exponential backoff
-	delayMs := baseDelayMs * (1 << attempt)
+	// Exponential backoff. Clamp the shift exponent so baseDelayMs * 2^shift
+	// cannot overflow int before the maxDelayMs cap is applied. The cap
+	// dominates well before shiftCap, so clamping is behaviourally a no-op for
+	// sane inputs; it only removes the overflow footgun for unbounded /
+	// caller-supplied attempt values (see AUDIT_CROSSCUTTING_CONCURRENCY_20260813.md §4-SR1).
+	const shiftCap = 30
+	shift := attempt
+	if shift > shiftCap {
+		shift = shiftCap
+	}
+	delayMs := baseDelayMs * (1 << shift)
 	if delayMs > maxDelayMs {
 		delayMs = maxDelayMs
 	}
