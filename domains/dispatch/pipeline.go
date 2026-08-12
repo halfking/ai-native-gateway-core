@@ -285,6 +285,11 @@ func (p *Pipeline) routeFailover(qr *QueuedRequest, err error) {
 	select {
 	case p.failoverCh <- failoverItem{qr: qr, err: err}:
 	case <-p.stopCh:
+		// Pipeline is shutting down and the failover channel may never be
+		// drained. Complete the request so its Submit caller is not left
+		// blocking on qr.ResultCh forever. Mirrors runModelDrainer's
+		// stopCh handling (see TestStopNoDrainLoss).
+		p.complete(qr, ForwardOutcome{Err: ErrShutdown})
 	}
 }
 

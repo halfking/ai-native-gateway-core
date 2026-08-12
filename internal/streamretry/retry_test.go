@@ -213,6 +213,19 @@ func TestCalculateRetryDelay(t *testing.T) {
 			wantMin:     160 * time.Millisecond, // 200ms default - 20%
 			wantMax:     240 * time.Millisecond, // 200ms default + 20%
 		},
+		{
+			// Regression: without the shift clamp, baseDelayMs * (1 << attempt)
+			// overflows int for large attempt (1<<63 negative on 64-bit, wraps
+			// on 32-bit), and the post-hoc `if delayMs < 0` only catches the
+			// fully-negative case. The clamp keeps the result within the
+			// maxDelayMs band for any attempt value.
+			name:        "attempt 100 (overflow guard, must stay capped)",
+			attempt:     100,
+			baseDelayMs: 200,
+			maxDelayMs:  5000,
+			wantMin:     4000 * time.Millisecond, // 5000ms - 20%
+			wantMax:     6000 * time.Millisecond, // 5000ms + 20%
+		},
 	}
 
 	for _, tt := range tests {
