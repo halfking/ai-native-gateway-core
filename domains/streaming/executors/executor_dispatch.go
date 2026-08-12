@@ -35,6 +35,7 @@ import (
 type dispatchCtx struct {
 	params         *ExecParams
 	candidates     []provider.Candidate
+	byModel        map[string][]provider.Candidate
 	holder         string
 	fpSlotDegraded bool
 	retryPerCred   int
@@ -75,7 +76,7 @@ func (e *Executor) dispatchRoute(ctx context.Context, qr *dispatch.QueuedRequest
 		sticky = dctx.stickyCredID
 	}
 	planned := e.Router.PlanCandidatesWithContext(
-		ctx, dctx.candidates, sticky, dctx.params.Policy, nil,
+		ctx, e.dispatchCandidatesForModel(ctx, dctx, qr.ResolvedModel), sticky, dctx.params.Policy, nil,
 		dctx.params.TenantID, dctx.params.ClientModel, dctx.params.RequestID,
 	)
 	refs := make([]dispatch.CredentialRef, 0, len(planned))
@@ -91,11 +92,10 @@ func (e *Executor) dispatchRoute(ctx context.Context, qr *dispatch.QueuedRequest
 	return refs, nil
 }
 
-// dispatchResolveModel is the v1 ModelResolveFunc: it returns the requested
-// model as resolved with NO alternatives (model-change disabled in v1 wiring).
-// The handler always resolves the client model to a concrete canonical name
-// before Execute, so `requested` is concrete in normal flow. A later phase can
-// plug in the autoroute Decider to return alternatives for model-failover.
+// dispatchResolveModel returns the requested concrete model plus request-scoped
+// alternatives. Auto-route has already rewritten the request body and candidate
+// list before Execute; the fallback list is explicitly carried in ExecParams so
+// dispatch does not have to infer intent from the rewritten body.
 func (e *Executor) dispatchResolveModel(_ context.Context, requested string, _ []string) (string, []string, error) {
 	return requested, nil, nil
 }
@@ -108,7 +108,7 @@ func (e *Executor) dispatchForward(ctx context.Context, qr *dispatch.QueuedReque
 		return dispatch.ForwardOutcome{Err: errDispatchBadPayload}
 	}
 	var cand provider.Candidate
-	for _, c := range dctx.candidates {
+	for _, c := range e.dispatchCandidatesForModel(ctx, dctx, qr.ResolvedModel) {
 		if c.CredentialID == ref.CredentialID {
 			cand = c
 			break
@@ -162,13 +162,14 @@ func (e *Executor) executeViaDispatch(
 	if e.dispatchPipeline == nil {
 		return nil, nil
 	}
-	retryPerCred := 1
-	if params.Policy != nil && params.Policy.RetryPerCredential > 0 {
+	retryPerCred := 0
+	if params.Policy != nil {
 		retryPerCred = params.Policy.RetryPerCredential
 	}
 	dctx := &dispatchCtx{
 		params:         params,
 		candidates:     candidates,
+		byModel:        mapCandidatesByModel(candidates),
 		holder:         holder,
 		fpSlotDegraded: fpSlotDegraded,
 		retryPerCred:   retryPerCred,
@@ -181,6 +182,10 @@ func (e *Executor) executeViaDispatch(
 	}
 	qr := dispatch.NewQueuedRequest(params.RequestID, params.TenantID, requestedModel, params.R.Context(), dctx)
 	qr.EstimatedTokens = estimatePromptTokens(params)
+	qr.AllowModelChange = params.DispatchAllowModelChange && len(params.DispatchModelAlternatives) > 0
+	qr.AllowProviderChange = params.DispatchAllowProviderChange
+	qr.RetryPerCredential = retryPerCred
+	qr.ModelAlternatives = append([]string(nil), params.DispatchModelAlternatives...)
 
 	result, err := e.dispatchPipeline.Submit(params.R.Context(), qr)
 	if err != nil {
@@ -214,6 +219,66 @@ func dispatchErrToExecuteError(err error) *ExecuteError {
 		}
 		return &ExecuteError{LastErr: err, Exhausted: true, LastKind: errorsx.KindTransient}
 	}
+}
+
+func (e *Executor) dispatchCandidatesForModel(ctx context.Context, d *dispatchCtx, model string) []provider.Candidate {
+	if d == nil {
+		return nil
+	}
+	if model == "" {
+		return d.candidates
+	}
+	if cands := d.candidatesForModel(model); len(cands) > 0 {
+		return cands
+	}
+	if e.Provider == nil || d.params == nil || d.params.DispatchRequestModality == "" {
+		return d.candidates
+	}
+	resolver, ok := e.Provider.(modalityProviderResolver)
+	if !ok {
+		return d.candidates
+	}
+	cands, policy, err := resolver.GetCandidatesByModality(ctx, model,
+		d.params.ClientID.Fingerprint.ClientProfile, d.params.TenantID, d.params.DispatchRequestModality)
+	if err != nil || len(cands) == 0 {
+		slog.Warn("dispatch: alternate model candidate resolve failed",
+			"request_id", d.params.RequestID, "model", model, "error", err)
+		return nil
+	}
+	if policy != nil {
+		d.params.Policy = policy
+	}
+	if d.byModel == nil {
+		d.byModel = map[string][]provider.Candidate{}
+	}
+	d.byModel[model] = cands
+	return cands
+}
+
+func (d *dispatchCtx) candidatesForModel(model string) []provider.Candidate {
+	if d == nil {
+		return nil
+	}
+	if model == "" {
+		return d.candidates
+	}
+	if cands := d.byModel[model]; len(cands) > 0 {
+		return cands
+	}
+	return d.candidates
+}
+
+func mapCandidatesByModel(candidates []provider.Candidate) map[string][]provider.Candidate {
+	if len(candidates) == 0 {
+		return nil
+	}
+	out := make(map[string][]provider.Candidate)
+	for _, c := range candidates {
+		if c.StandardizedName != "" {
+			out[c.StandardizedName] = append(out[c.StandardizedName], c)
+		}
+	}
+	return out
 }
 
 // forwardForDispatch performs ONE upstream forward attempt for a candidate and
