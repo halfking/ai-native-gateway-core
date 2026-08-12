@@ -1504,15 +1504,13 @@ func (w *NodeProbeWorker) probeDirect(ctx context.Context, credID int, model str
 	resp, err := w.probeClient.Do(req)
 	r.latencyMs = int(time.Since(start).Milliseconds())
 	if err != nil {
-		r.errCode = "network_error"
-		if errors.Is(err, context.DeadlineExceeded) {
-			r.timedOut = true
-			r.errDetail = fmt.Sprintf("upstream timeout after %ds (cred_id=%d, url=%s, model=%s)", int(w.client.Timeout/time.Second), credID, endpoint, bodyModel)
-		} else if ue, ok := err.(*url.Error); ok && ue.Timeout() {
-			r.timedOut = true
+		code, timedOut := classifyProbeNetworkError(err)
+		r.errCode = code
+		r.timedOut = timedOut
+		if timedOut {
 			r.errDetail = fmt.Sprintf("upstream timeout after %ds (cred_id=%d, url=%s, model=%s)", int(w.client.Timeout/time.Second), credID, endpoint, bodyModel)
 		} else {
-			r.errDetail = fmt.Sprintf("upstream call failed: %s (cred_id=%d, url=%s, model=%s)", err.Error(), credID, endpoint, bodyModel)
+			r.errDetail = fmt.Sprintf("upstream %s: %s (cred_id=%d, url=%s, model=%s)", code, err.Error(), credID, endpoint, bodyModel)
 		}
 		return r
 	}
@@ -1594,12 +1592,15 @@ func nodeProbeResultToStatus(r nodeProbeRoundResult) ProbeStatus {
 	switch r.errCode {
 	case "endpoint_build":
 		return ProbeStatusFailed // gateway-side build error (decrypt/resolve)
-	case "network_error":
-		// Transport failure. A request that hit the 15s client timeout is
-		// reported by probeDirect/probeGateway with timedOut=true.
-		if r.timedOut {
-			return ProbeStatusTimeout
-		}
+	case "timeout":
+		// Transport deadline: context cancelled, client Timeout, or a dial
+		// timeout. Classified by classifyProbeNetworkError.
+		return ProbeStatusTimeout
+	case "dns_error", "connection_error", "network_error":
+		// Non-deadline transport failures. errCode carries the finer
+		// distinction (DNS resolver vs refused dial vs everything else);
+		// all map to ProbeStatusNetwork so dashboards/alerts that grouped
+		// on the old single "network_error" keep working unchanged.
 		return ProbeStatusNetwork
 	}
 	// errCode is "http_<status>" for non-200 upstream responses.
@@ -1616,6 +1617,82 @@ func nodeProbeResultToStatus(r nodeProbeRoundResult) ProbeStatus {
 		return ProbeStatusHTTP4xx
 	}
 	return ProbeStatusFailed
+}
+
+// classifyProbeNetworkError maps a transport-layer error returned by
+// http.Client.Do into a fine-grained errCode for node_probe_runs.
+//
+// Before this existed, every non-2xx transport failure collapsed to a single
+// "network_error" string, so an operator reading node_probe_runs could not
+// tell a DNS resolver outage from a refused dial or a slow upstream — three
+// failures that need completely different responses (fix egress DNS vs the
+// upstream is down vs upstream is slow). probeGateway was worse: it did not
+// even detect timeouts, so a 30s gateway hang was filed as "network_error".
+//
+// Classification priority (first match wins):
+//   - context.DeadlineExceeded → "timeout"     (whole probe budget exhausted)
+//   - *url.Error with Timeout()==true → "timeout"
+//   - *url.Error wrapping *net.DNSError → "dns_error"
+//   - *url.Error wrapping *net.OpError{Op:"dial"} → "connection_error"
+//   - bare *net.DNSError → "dns_error" (honoring DNSError.IsTimeout)
+//   - bare *net.OpError → "timeout" if Timeout() else "connection_error" if dial
+//   - anything else → "network_error"        (TLS, mid-stream reset, body read, …)
+//
+// Returns (errCode, timedOut). timedOut is redundant with errCode=="timeout"
+// but is kept because nodeProbeRoundResult.timedOut is read elsewhere
+// (emitProbe / probe_direct_timeout state:* branch in router.go) and the
+// audit row still records it as a separate boolean for quick filtering.
+//
+// This is a pure function on purpose: it has no *NodeProbeWorker receiver so
+// it can be unit-tested with synthetic errors instead of a real HTTP hop.
+func classifyProbeNetworkError(err error) (errCode string, timedOut bool) {
+	if err == nil {
+		return "none", false
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return "timeout", true
+	}
+	// http.Client.Do always wraps transport errors in *url.Error.
+	var ue *url.Error
+	if errors.As(err, &ue) {
+		if ue.Timeout() {
+			return "timeout", true
+		}
+		var dnsErr *net.DNSError
+		if errors.As(ue.Err, &dnsErr) {
+			if dnsErr.IsTimeout {
+				return "timeout", true
+			}
+			return "dns_error", false
+		}
+		var opErr *net.OpError
+		if errors.As(ue.Err, &opErr) {
+			if opErr.Timeout() {
+				return "timeout", true
+			}
+			if opErr.Op == "dial" {
+				return "connection_error", false
+			}
+		}
+	}
+	// Bare errors (custom Transport, direct dialer use, future callers).
+	var dnsErr *net.DNSError
+	if errors.As(err, &dnsErr) {
+		if dnsErr.IsTimeout {
+			return "timeout", true
+		}
+		return "dns_error", false
+	}
+	var opErr *net.OpError
+	if errors.As(err, &opErr) {
+		if opErr.Timeout() {
+			return "timeout", true
+		}
+		if opErr.Op == "dial" {
+			return "connection_error", false
+		}
+	}
+	return "network_error", false
 }
 
 func (w *NodeProbeWorker) resolveDirectTarget(ctx context.Context, credID int, model string) (string, string, string, string, int, error) {
@@ -1851,7 +1928,13 @@ func (w *NodeProbeWorker) probeGateway(ctx context.Context, credID int, model st
 	resp, err := w.client.Do(req)
 	r.latencyMs = int(time.Since(start).Milliseconds())
 	if err != nil {
-		r.errCode = "network_error"
+		// 2026-08-12: probeGateway previously filed every transport error as
+		// "network_error", including 30s hangs. Reuse the direct-round
+		// classifier so a gateway timeout is distinguishable from a refused
+		// connection in node_probe_runs.gateway_err_code.
+		code, timedOut := classifyProbeNetworkError(err)
+		r.errCode = code
+		r.timedOut = timedOut
 		r.errDetail = err.Error()
 		return r
 	}
