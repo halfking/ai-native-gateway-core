@@ -418,7 +418,14 @@ func (idx *Index) Refresh(ctx context.Context) (err error) {
 // refreshIndexSQL is the single query that materialises the index snapshot.
 //
 // Source tables:
-//   - credential_model_index : latest 5-min bucket
+//   - credential_model_index_with_current_month : union view of the hot table
+//     (credential_model_index_hot, ≤7d live data) and the cold partitioned
+//     parent (credential_model_index, promoted rows). Reading the view is
+//     required because bg.AutoIndexRefresher writes the hot table while the
+//     promote function only migrates rows aged past the 24h retention — so
+//     the freshest 5-min rollup lives ONLY in _hot and is invisible to a
+//     plain SELECT against the cold parent. (migration 347 decoupled the two
+//     tables; the view was created precisely for cross-table reads.)
 //   - models_canonical       : canonical model attributes (tags, context_window)
 //   - credentials            : provider_id, label, lifecycle
 //
@@ -432,7 +439,7 @@ func (idx *Index) Refresh(ctx context.Context) (err error) {
 const refreshIndexSQL = `
 WITH latest_bucket AS (
     SELECT credential_id, raw_model, MAX(bucket) AS bucket
-    FROM credential_model_index
+    FROM credential_model_index_with_current_month
     GROUP BY credential_id, raw_model
 )
 SELECT
@@ -479,7 +486,7 @@ SELECT
     mc.complexity_ceiling AS complexity_ceiling,
     mc.min_complexity     AS min_complexity,
     COALESCE(mc.modality, 'text') AS modality
-FROM credential_model_index cmi
+FROM credential_model_index_with_current_month cmi
 JOIN latest_bucket lb
   ON lb.credential_id = cmi.credential_id
  AND lb.raw_model     = cmi.raw_model
