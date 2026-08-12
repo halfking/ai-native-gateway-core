@@ -31,6 +31,8 @@ import (
 	"fmt"
 	"log/slog"
 	"time"
+
+	"github.com/kaixuan/llm-gateway-go/settings"
 )
 
 // ProbeService is the queue-facing facade over NodeProbeWorker's probe logic.
@@ -114,6 +116,14 @@ func (s *ProbeService) Run(ctx context.Context, task ProbeQueueTask) (ProbeQueue
 	durationMs := int(now.Sub(startedAt).Milliseconds())
 
 	backoff := ChainBackoffIndex(attempt, NodeProbeBackoffChain)
+	// 2026-08-13: 常用模型失败回退缩短（probe.featured_backoff_multiplier，默认
+	// 50% → 更快重试恢复）；非常用按标准 7 步链。仅影响失败后的下次重试间隔，
+	// 不降低探测深度（仍走 direct+gateway 双轮）。
+	if globalIsFeaturedModel(model, "") {
+		if pct := settings.GetPlatformInt("probe.featured_backoff_multiplier", 50); pct > 0 && pct < 100 {
+			backoff = time.Duration(float64(backoff) * float64(pct) / 100.0)
+		}
+	}
 	nextSec := int(backoff.Seconds())
 
 	// Mirror into node_probe_state for backward compat with existing dashboard /
