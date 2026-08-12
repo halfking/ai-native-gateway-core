@@ -163,7 +163,18 @@ func ProbeSpecs() []*Spec {
 			DescriptionLong: "ModelProbeRunner 为常用模型运行 chat-ping 深探测的周期。原硬编码 1800（30 分钟）；调小则常用模型自检更频繁。",
 			Unit:            "秒",
 			DangerLevel:     Safe,
-			HotReload:       false, // ticker 启动时读取
+			HotReload:       false, // ticker 启动时读取；修改需重启
+		},
+		{
+			Key:             "probe.featured_tenant",
+			Type:            TypeString,
+			Scope:           ScopePlatform,
+			Category:        CategoryProbe,
+			Default:         "default",
+			Description:     "常用模型判定所用的租户 ID",
+			DescriptionLong: "ModelTier 从 routing_policy 读取 featured_models 静态精选列表时所用的 tenant_id（默认 'default'）。多租户部署中若需以特定租户的精选列表驱动自检分级，修改此项。nonfeaturedWatchdogTick 也读取同一设置以保持一致性。",
+			DangerLevel:     Safe,
+			HotReload:       true,
 		},
 		{
 			Key:             "probe.featured_usage_top_n",

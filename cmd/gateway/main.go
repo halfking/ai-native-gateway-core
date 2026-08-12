@@ -2501,6 +2501,7 @@ func main() {
 	// ── Background Services ─────────────────────────────────────────────
 	var credRecovery *bg.CredentialRecovery
 	var probeRollback *bg.ProbeRollback // 2026-08-13: delayed-rollback for tentative probe restores
+	var modelTier *bg.ModelTier         // 2026-08-13: 常用模型 tier cache
 	var brokenProbeReviver *bg.BrokenProbeReviver
 	var credCycler *bg.CredentialCycler
 	var credProbeV2 *bg.CredentialProbeV2
@@ -2582,7 +2583,7 @@ func main() {
 		// (routing_policy.featured_models ∪ request_logs_hot 用量 Top-N), 供
 		// model_probe featured cycle / node_probe priority / probe_service backoff
 		// 分级使用。
-		modelTier := bg.NewModelTier(dbConn.Pool(), bg.ModelTierConfig{RefreshInterval: 10 * time.Minute})
+		modelTier = bg.NewModelTier(dbConn.Pool(), bg.ModelTierConfig{RefreshInterval: 10 * time.Minute})
 		modelTier.Start(context.Background())
 		bg.SetGlobalModelTier(modelTier)
 		brokenProbeReviver = bg.NewBrokenProbeReviver(dbConn.Pool(), 0, 0)
@@ -5331,6 +5332,10 @@ func main() {
 		}
 		if probeRollback != nil {
 			probeRollback.Stop()
+		}
+		if modelTier != nil {
+			modelTier.Stop()
+			bg.SetGlobalModelTier(nil) // clear global accessor before DB close
 		}
 		if brokenProbeReviver != nil {
 			brokenProbeReviver.Stop()
