@@ -12,7 +12,6 @@ run:
   tests: true
   exclusions:
     paths:
-      - _to-be-deprecated
       - vendor
       - build
 
@@ -59,7 +58,7 @@ linters:
             - "$all"
           deny:
             - pkg: "github.com/kaixuan/llm-gateway-go/relay"
-              desc: "relay/ 已废弃 (_to-be-deprecated/)，不应有新引用"
+              desc: "relay/ 已废弃，不应再有新引用"
 
         # 规则 4: control/query 不能相互依赖（CQRS）
         cqrs-separation:

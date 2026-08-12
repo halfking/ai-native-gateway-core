@@ -82,10 +82,7 @@ WHITELIST_PATTERNS=(
 
 EXCLUDE_DIRS=(".git" "node_modules" "vendor" "build" "dist" "out" "coverage"
   ".playwright-mcp" ".codegraph" ".cache" ".runtime" ".ruff_cache"
-  ".pnpm-store" ".secrets" ".deploy" ".trash" ".artifacts" ".idea" ".vscode" ".cursor"
-  # Slice 7: the legacy migration carve-out is git-ignored and
-  # scheduled for deletion. Stop the scanner from crawling it.
-  "_to-be-deprecated")
+  ".pnpm-store" ".secrets" ".deploy" ".trash" ".artifacts" ".idea" ".vscode" ".cursor")
 EXCLUDE_FILES=("scan-secrets.sh" "scan-secrets.config" "scan-secrets.replacements"
   "scan-secrets.baseline" "package-lock.json" "pnpm-lock.yaml" "go.sum"
   # Slice 7: PEM key artifacts are legitimate test/infra fixtures,
