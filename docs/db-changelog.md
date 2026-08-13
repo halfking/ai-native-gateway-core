@@ -789,3 +789,11 @@
 |-----------|------|---------|--------|
 | 479 | `479_concurrency_mode.sql` | `066445e9d55602562bcbc69720eed2121c676ca8b1bbd1e8d6a0210f0793408e` | applied+verified |
 
+## 2026-08-13T15:34:22Z — deploy 245 build_seq 1505 (83b40b7d)
+
+| Migration | File | SHA-256 | Status |
+|-----------|------|---------|--------|
+| 490 | `490_credential_probe_queue_runtime_columns.sql` | `cfda9da5259662fdc34249bf345ec33480ea0e70aa4541a912614b3d84688971` | applied+verified |
+| 510 | `510_request_type.sql` | `d663b0915a0db9b82acec08abdcff8a6f6ae97ad64d681e0788f7b998d8f7645` | applied+verified |
+| 511 | `511_state_transitions_table.sql` | `f4c9cc150bb2cc39a22639794fd43fdc780da89c270e252a8ab5f9fe8e6bd199` | applied+verified |
+
