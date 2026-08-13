@@ -251,10 +251,22 @@ type Handler struct {
 	// ursmV2 (2026-07-24) 是 URSM v2 Manager，用于紧急修复操作时
 	// 同时清除 Redis 中的冷却/错误计数状态。通过 SetURSMv2 注入。
 	ursmV2 *v2.Manager
+
+	// rateLimiter (V3.2-LP5, 2026-08-14) 节点操作限流器：test-now 1req/s per-cred + 10req/min per-operator。
+	rateLimiter *nodeOperationsRateLimiter
+
+	// auditLogger (V3.2-LP5, 2026-08-14) 节点操作审计：异步写入 request_state_transitions。
+	auditLogger *nodeOperationAuditLogger
 }
 
 func NewHandler(db *pgxpool.Pool, secretKey string, encKey []byte) *Handler {
-	h := &Handler{db: db, secret: secretKey, encKey: encKey}
+	h := &Handler{
+		db:          db,
+		secret:      secretKey,
+		encKey:      encKey,
+		rateLimiter: newNodeOperationsRateLimiter(),
+		auditLogger: newNodeOperationAuditLogger(db),
+	}
 	// Initialize auto title generator
 	h.autoTitleGen = NewAutoTitleGenerator(h)
 	// 2026-08-06: initialize incremental-rolling session summary generator.
