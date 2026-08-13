@@ -11,8 +11,8 @@
   },
   "metrics": {
     "delta_22_1": 1,
-    "delta_22_2": 60,
-    "delta_22_3": 120,
+    "delta_22_2": 30,
+    "delta_22_3": 60,
     "delta_22_4_fail": 20,
     "driver": "cmd/scenario_driver/main.go (Go) — 避免 bash 5 子 shell EOF bug"
   }

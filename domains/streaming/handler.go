@@ -3020,19 +3020,18 @@ func (h *ChatHandler) serveWithExecutor(
 		// Always populate outbound_msg_count / outbound_token_est from the
 		// session compressor so request_logs.*_hot columns are non-NULL even
 		// when no compression strategy was applied (pure delta-append).
-			if scResult != nil {
-				mc := scResult.MsgCount
-				te := scResult.TokenEst
-				logCtx.OutboundMsgCount = &mc
-				logCtx.OutboundTokenEst = &te
-				logCtx.OutboundBody = scResult.OutboundBody
-				logCtx.OutboundMsgHashes = []byte(scResult.MsgHashes)
-				logCtx.OutboundSummaryMarker = scResult.SummaryMarker
-				logCtx.OutboundWindowTriggered = scResult.WindowTriggered
-			}
-			if scResult != nil && scResult.CompressionStrategy != "" {
-				logCtx.OutboundStrategy = scResult.CompressionStrategy
-
+		if scResult != nil {
+			mc := scResult.MsgCount
+			te := scResult.TokenEst
+			logCtx.OutboundMsgCount = &mc
+			logCtx.OutboundTokenEst = &te
+			logCtx.OutboundBody = scResult.OutboundBody
+			logCtx.OutboundMsgHashes = []byte(scResult.MsgHashes)
+			logCtx.OutboundSummaryMarker = scResult.SummaryMarker
+			logCtx.OutboundWindowTriggered = scResult.WindowTriggered
+		}
+		if scResult != nil && scResult.CompressionStrategy != "" {
+			logCtx.OutboundStrategy = scResult.CompressionStrategy
 
 			// ── Request WAL: async update on compression success ──────────────
 			if h.requestLogger != nil && scResult != nil {
