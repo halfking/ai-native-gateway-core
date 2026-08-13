@@ -108,7 +108,8 @@
 - [x] ExecuteError 携带 T0–T9；handler fail 路径 ApplyQueueTimestampsFromError
 - [x] buildEntry 写入失败行时间戳
 - [x] waterfall ring 带 session_id；session timeline completed 可过滤
-- [x] admin APIs: `/api/admin/queue/active-requests`、`/request/{id}/timeline`、`/stats/realtime`、`/sessions/{id}/timeline`
+- [x] admin API: `GET /api/admin/dispatch/waterfall`（已完成请求瀑布 ring）
+- [ ] admin API（V3.2 待办）：`/api/admin/queue/active-requests`（在飞请求）、`/request/{id}/timeline`、`/stats/realtime`、`/sessions/{id}/timeline` 完整实现 —  handler 代码已就位于 `admin/{node_operations,request_transitions,session_online}.go`，**未注册到 mux**，待后续 commit 补注册
 
 **总计剩余工作量**: 部署 migration 491 + 真流量 e2e 验证
 
