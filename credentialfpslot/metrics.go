@@ -214,7 +214,10 @@ func updateUtilization(credentialID int, used, limit int) {
 	}
 }
 
-func recordClientTokenRequest(tenantID, holder, outcome string) {
+// RecordClientTokenRequest records one completed gateway request for the
+// client-token observability contract. Callers should invoke it once at the
+// outer request boundary, not once per credential attempt.
+func RecordClientTokenRequest(tenantID, holder, outcome string) {
 	clientType, userKey := splitClientToken(holder)
 	key := tenantID + "\x00" + userKey
 	clientTokenStateMu.Lock()
@@ -231,6 +234,10 @@ func recordClientTokenRequest(tenantID, holder, outcome string) {
 	clientTokenStateMu.Unlock()
 
 	clientTokenRequests.WithLabelValues(tenantID, clientType, outcome).Inc()
+}
+
+func recordClientTokenRequest(tenantID, holder, outcome string) {
+	RecordClientTokenRequest(tenantID, holder, outcome)
 }
 
 func recordClientTokenPinAge(tenantID, holder string, ageSeconds float64) {

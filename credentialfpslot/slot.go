@@ -311,36 +311,29 @@ func (m *Manager) RoutingEligibleForTenant(ctx context.Context, credentialID int
 func (m *Manager) Acquire(ctx context.Context, credentialID int, limit *int, holder, tenantID string) (*Lease, bool) {
 	tenantID = normalizeTenantID(tenantID)
 	if !ratelimit.IsRateLimitEnabled() {
-		recordClientTokenRequest(tenantID, holder, "acquired")
 		return &Lease{Unlimited: true, CredentialID: credentialID, Holder: holder, TenantID: tenantID}, true
 	}
 	if !m.Enabled() {
-		recordClientTokenRequest(tenantID, holder, "degraded")
 		return &Lease{Unlimited: true, CredentialID: credentialID, Holder: holder, TenantID: tenantID}, true
 	}
 	eff := EffectiveLimit(limit, m.cfg.DefaultLimit)
 	if eff == nil {
-		recordClientTokenRequest(tenantID, holder, "degraded")
 		return &Lease{Unlimited: true, CredentialID: credentialID, Holder: holder, TenantID: tenantID}, true
 	}
 	if m.client == nil {
 		recordAcquireRedisError()
-		recordClientTokenRequest(tenantID, holder, "error")
 		return nil, false
 	}
 	lease, outcome := m.acquireRedis(ctx, credentialID, *eff, holder, tenantID)
 	switch outcome {
 	case acquireOK:
 		recordAcquireSuccess()
-		recordClientTokenRequest(tenantID, holder, "acquired")
 		return lease, true
 	case acquireRedisError:
 		recordAcquireRedisError()
-		recordClientTokenRequest(tenantID, holder, "error")
 		return nil, false
 	default: // acquireSaturated
 		recordAcquireSaturated()
-		recordClientTokenRequest(tenantID, holder, "saturated")
 		return nil, false
 	}
 }

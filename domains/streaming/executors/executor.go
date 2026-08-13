@@ -1040,6 +1040,15 @@ func clientTokenOf(userKey, clientType string) string {
 	return userKey + "|" + clientType
 }
 
+func clientTokenForMetrics(params *ExecParams) string {
+	userKey := params.StickyKey
+	if userKey == "" && params.R != nil {
+		userKey = params.R.Header.Get("X-Request-Id")
+	}
+	clientType := extractClientType(params.R)
+	return clientTokenOf(userKey, clientType)
+}
+
 func (e *Executor) logUpstreamRequest(params *ExecParams, protocol string, body []byte) {
 	if e.RawDataLogger == nil {
 		return
@@ -1180,6 +1189,9 @@ type ExecParams struct {
 	// The handler passes the same value it uses for request_logs insert;
 	// executor does not generate one itself.
 	RequestID string
+	// clientTokenMetricsOwner marks the outermost Execute call. Recursive
+	// failover/probe calls share the same request and must not double-count it.
+	clientTokenMetricsOwner bool
 	// AppID is the application ID from keyInfo.ApplicationID.
 	// 2026-07-07: Used by multi-level sticky routing (L1/L2/L3).
 	AppID *int
@@ -1850,7 +1862,18 @@ func buildEnhancedErrorContext(params *ExecParams, kind errorsx.ErrorKind, execE
 	return ctx
 }
 
-func (e *Executor) Execute(params *ExecParams) (*ExecuteResult, error) {
+func (e *Executor) Execute(params *ExecParams) (result *ExecuteResult, err error) {
+	if !params.clientTokenMetricsOwner {
+		params.clientTokenMetricsOwner = true
+		holder := clientTokenForMetrics(params)
+		outcome := "error"
+		defer func() {
+			if err == nil {
+				outcome = "acquired"
+			}
+			credentialfpslot.RecordClientTokenRequest(params.TenantID, holder, outcome)
+		}()
+	}
 	if params.R != nil && strings.TrimSpace(params.TenantID) != "" {
 		params.R = params.R.WithContext(session.SetTenantID(params.R.Context(), params.TenantID))
 	}

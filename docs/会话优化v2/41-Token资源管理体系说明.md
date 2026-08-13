@@ -180,7 +180,7 @@ T+2h:  alice|         → 同上，因为空字符串被兜底为 "unknown"
 ### 6.1 Prometheus 指标（已实施）
 
 ```yaml
-# Counter（credentialfpslot/metrics.go）
+# Counter（请求边界由 executors.Executor.Execute 记录一次；credentialfpslot 负责 slot 状态）
 gateway_client_token_requests_total{tenant_id, client_type, outcome}
   # outcome = acquired | saturated | error | degraded
 
