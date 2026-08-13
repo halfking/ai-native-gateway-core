@@ -48,6 +48,7 @@ export default {
   create: {
     title: '新增模型到「{tier}」',
     modelRequired: '請選擇模型',
+    duplicate: '此設定已存在（目前模型：{model}），請直接編輯現有項目。',
     taskRequired: '請先選擇任務類型',
     submit: '新增',
     submitting: '新增中…',

@@ -11,10 +11,10 @@ const props = defineProps<{
   rows: RoutingDefault[]
   taskType: string
   busyId?: number | null
+  add: (payload: { tier: TierKey; canonical_model: string; profile: string; priority: number }) => Promise<void>
 }>()
 
 const emit = defineEmits<{
-  add: [payload: { tier: TierKey; canonical_model: string; profile: string; priority: number }]
   patch: [payload: { id: number; body: Record<string, unknown> }]
   detail: [row: RoutingDefault]
   remove: [row: RoutingDefault]
@@ -76,15 +76,28 @@ async function submitAdd(tier: TierKey) {
     addError.value = t('routingDefault.create.modelRequired')
     return
   }
+  const profile = addProfile.value
+  const existing = props.rows.find((row) =>
+    row.task_type === props.taskType &&
+    (row.profile || '') === profile &&
+    (row.tier || 'primary') === tier &&
+    !row.tenant_id,
+  )
+  if (existing) {
+    addError.value = t('routingDefault.create.duplicate', { model: existing.canonical_model })
+    return
+  }
   addSubmitting.value = true
   try {
-    emit('add', {
+    await props.add({
       tier,
       canonical_model: addModel.value.trim(),
-      profile: addProfile.value,
+      profile,
       priority: addPriority.value || 100,
     })
     cancelAdd()
+  } catch (e: unknown) {
+    addError.value = e instanceof Error ? e.message : String(e)
   } finally {
     addSubmitting.value = false
   }

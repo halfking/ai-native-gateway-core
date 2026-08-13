@@ -48,7 +48,8 @@ export default {
   create: {
     title: 'Ajouter un modèle à "{tier}"',
     modelRequired: 'Le modèle est requis',
-    taskRequired: 'Sélectionnez d\'abord un type de tâche',
+    duplicate: 'Cette configuration existe déjà (modèle actuel : {model}). Modifiez l’entrée existante.',
+    taskRequired: 'Sélectionnez d’abord un type de tâche',
     submit: 'Ajouter',
     submitting: 'Ajout…',
     hint: 'Ajouter un modèle au niveau sélectionné',
