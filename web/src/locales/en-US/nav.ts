@@ -35,6 +35,7 @@ export default {
     keyApplications: 'Key Applications',
     auditLogs: 'Audit Logs',
     requestLogs: 'Request Logs',
+    dispatchWaterfall: 'Queue Waterfall',
     turns: 'Turns List',
     sessions: 'Sessions',
     pluginSessions: 'Plugin Sessions',

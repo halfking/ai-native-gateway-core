@@ -1,6 +1,6 @@
 {
   "version": "1.0.0",
-  "exported_at": "2026-08-12T01:00:19.624Z",
+  "exported_at": "2026-08-13T11:44:26.039Z",
   "source": "gateway-appNav",
   "tenantScopeLegend": {
     "default": "仅默认租户 + super_admin 可见",
@@ -224,6 +224,16 @@
           "labelKey": "nav.item.requestLogs",
           "icon": "📋",
           "tenantScope": "*",
+          "pluginScope": "*"
+        },
+        {
+          "path": "/dispatch/waterfall",
+          "label": "队列瀑布图",
+          "labelKey": "nav.item.dispatchWaterfall",
+          "icon": "📊",
+          "platformOps": true,
+          "hideForTenant": true,
+          "tenantScope": "default",
           "pluginScope": "*"
         },
         {

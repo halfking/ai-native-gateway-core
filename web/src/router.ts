@@ -22,6 +22,7 @@ const RoutingOverrideView = () => import('./views/RoutingOverrideView.vue')
 const QualityCorrelationsView = () => import('./views/QualityCorrelationsView.vue')
 const RoutingAuditView = () => import('./views/RoutingAuditView.vue')
 const RequestLogsView = () => import('./views/RequestLogsView.vue')
+const DispatchWaterfallView = () => import('./views/DispatchWaterfallView.vue')
 const ModelsView = () => import('./views/ModelsView.vue')
 const ProviderDetailView = () => import('./views/ProviderDetailView.vue')
 const PricingManagementView = () => import('./views/PricingManagementView.vue')
@@ -194,6 +195,7 @@ export const router = createRouter({
     { path: '/routing/overrides/audit', component: RoutingAuditView, meta: { requiresSuper: true } },
     { path: '/quality-correlations',  component: QualityCorrelationsView, meta: { requiresSuper: true } },
     { path: '/request-logs',       component: RequestLogsView },
+    { path: '/dispatch/waterfall', component: DispatchWaterfallView, meta: { requiresPlatformOps: true } },
     { path: '/admin/session-analytics/users', component: UserProfileListView, meta: { requiresAuth: true } },
     { path: '/admin/session-analytics/users/:owner', component: UserProfileView, meta: { requiresAuth: true } },
     { path: '/admin/session-analytics/clients/:id', component: ClientAnalyticsView, meta: { requiresAuth: true } },

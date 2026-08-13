@@ -38,6 +38,7 @@ export * from './api/session'
 export * from './api/credential-monitor'
 export * from './api/format-anomalies'
 export * from './api/ops'
+export * from './api/dispatch'
 
 // Default export: axios-style HTTP client (api.get/put/patch/post/delete).
 // Wraps the low-level `req<T>(method, path, body?)` from api/_core so views

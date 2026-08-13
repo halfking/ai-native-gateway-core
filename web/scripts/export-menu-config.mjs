@@ -96,6 +96,7 @@ const NAV_GROUPS = [
     labelKey: 'nav.group.requestsSessions',
     items: [
       { path: '/request-logs', label: '请求日志', labelKey: 'nav.item.requestLogs', icon: '📋' },
+      { path: '/dispatch/waterfall', label: '队列瀑布图', labelKey: 'nav.item.dispatchWaterfall', icon: '📊', platformOps: true, hideForTenant: true },
       // 2026-07-23: ai-session-manager plugin 入口
       { path: '/plugins/ai-session-manager/sessions', label: '会话列表', labelKey: 'nav.item.pluginSessions', icon: '💬', super: true, hideForTenant: true, external: true, plugin: 'ai-session-manager' },
     ],
