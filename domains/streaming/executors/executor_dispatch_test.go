@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/kaixuan/llm-gateway-go/domains/dispatch"
 	"github.com/kaixuan/llm-gateway-go/errorsx"
@@ -38,5 +39,30 @@ func TestDispatchErrMapping(t *testing.T) {
 				t.Fatalf("LastErr does not wrap input: got %v", ee.LastErr)
 			}
 		})
+	}
+}
+
+func TestCopyQueueTimestampsToError(t *testing.T) {
+	qr := dispatch.NewQueuedRequest("r1", "t", "m", context.Background(), nil)
+	t1 := time.Now().Add(-100 * time.Millisecond)
+	t6 := time.Now().Add(-10 * time.Millisecond)
+	t9 := time.Now()
+	qr.T1_TotalEnqueuedAt = &t1
+	qr.T6_CredDequeuedAt = &t6
+	qr.T9_ResponseEndAt = &t9
+
+	ee := dispatchErrToExecuteError(dispatch.ErrNoRoute)
+	copyQueueTimestampsToError(ee, qr)
+	if ee.T0ArrivedAt == nil {
+		t.Fatal("T0ArrivedAt missing")
+	}
+	if ee.T1TotalEnqueuedAt == nil || !ee.T1TotalEnqueuedAt.Equal(t1) {
+		t.Fatalf("T1=%v", ee.T1TotalEnqueuedAt)
+	}
+	if ee.T6CredDequeuedAt == nil || !ee.T6CredDequeuedAt.Equal(t6) {
+		t.Fatalf("T6=%v", ee.T6CredDequeuedAt)
+	}
+	if ee.T9ResponseEndAt == nil || !ee.T9ResponseEndAt.Equal(t9) {
+		t.Fatalf("T9=%v", ee.T9ResponseEndAt)
 	}
 }

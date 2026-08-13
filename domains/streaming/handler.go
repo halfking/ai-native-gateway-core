@@ -3812,6 +3812,13 @@ func (h *ChatHandler) serveWithExecutor(
 			preStream.stop()
 			preStream = nil
 		}
+		// V3.1: capture dispatch queue timestamps from ExecuteError before
+		// any failAndMark / EmitFailure so failure request_logs keep T0–T9.
+		if logCtx != nil {
+			if ee, ok := execErr.(*executors.ExecuteError); ok {
+				logCtx.ApplyQueueTimestampsFromError(ee)
+			}
+		}
 		// ── Request WAL: synchronous update on execution failure ─────────────
 		if h.requestLogger != nil {
 			var pid, cid *int64
@@ -4202,6 +4209,9 @@ func (h *ChatHandler) serveWithExecutor(
 	// executor's actual upstream body (result.RequestBody) as the fallback
 	// so request_logs.outbound_body always reflects what was forwarded to
 	// upstream, regardless of whether compression fired.
+	if logCtx != nil && result != nil {
+		logCtx.ApplyQueueTimestampsFromResult(result)
+	}
 	h.emitTelemetry(auditBuilder.Build(), result, endUser, keyInfo, streamCapture, "chat", txResult, result.InboundBody, result.ResponseBody, logCtx)
 
 	// ── Response Interceptor (2026-06-29, auto-control feature) ─────────
@@ -4635,6 +4645,17 @@ func (h *ChatHandler) emitTelemetry(evt audit.Event, result *executors.ExecuteRe
 		CompressionStrategy: result.CompressionStrategy,
 		CompressionMeta:     result.CompressionMeta,
 		ParentRequestID:     result.ParentRequestID,
+		// V3.1 dispatch queue timestamps (migration 491)
+		T0ArrivedAt:       result.T0ArrivedAt,
+		T1TotalEnqueuedAt: result.T1TotalEnqueuedAt,
+		T2TotalDequeuedAt: result.T2TotalDequeuedAt,
+		T3ModelEnqueuedAt: result.T3ModelEnqueuedAt,
+		T4ModelDequeuedAt: result.T4ModelDequeuedAt,
+		T5CredEnqueuedAt:  result.T5CredEnqueuedAt,
+		T6CredDequeuedAt:  result.T6CredDequeuedAt,
+		T7ForwardStartAt:  result.T7ForwardStartAt,
+		T8ResponseStartAt: result.T8ResponseStartAt,
+		T9ResponseEndAt:   result.T9ResponseEndAt,
 		// 2026-06-26: persist the client-supplied X-Request-Id for debug
 		// alongside the server-generated RequestID. Distinguishes
 		// legitimate client retries (same client_request_id, distinct

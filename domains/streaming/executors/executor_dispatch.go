@@ -8,8 +8,8 @@ import (
 
 	"github.com/kaixuan/llm-gateway-go/credentialfpslot"
 	"github.com/kaixuan/llm-gateway-go/domains/dispatch"
-	ursmv2api "github.com/kaixuan/llm-gateway-go/domains/ursm/v2/api"
 	"github.com/kaixuan/llm-gateway-go/domains/transformation"
+	ursmv2api "github.com/kaixuan/llm-gateway-go/domains/ursm/v2/api"
 	"github.com/kaixuan/llm-gateway-go/errorsx"
 	"github.com/kaixuan/llm-gateway-go/internal/runctx"
 	"github.com/kaixuan/llm-gateway-go/provider"
@@ -197,6 +197,9 @@ func (e *Executor) executeViaDispatch(
 		requestedModel = params.ClientModel
 	}
 	qr := dispatch.NewQueuedRequest(params.RequestID, params.TenantID, requestedModel, params.R.Context(), dctx)
+	// V3.1 waterfall: thread SessionID so WaterfallRequest can carry it for the
+	// admin /sessions/{id}/timeline endpoint. Empty for one-shot traffic.
+	qr.SessionID = params.SessionID
 	qr.EstimatedTokens = estimatePromptTokens(params)
 	qr.AllowModelChange = params.DispatchAllowModelChange && len(params.DispatchModelAlternatives) > 0
 	qr.AllowProviderChange = params.DispatchAllowProviderChange
@@ -209,13 +212,19 @@ func (e *Executor) executeViaDispatch(
 		// Exhausted branch (handler.go:3878) emits 503 + Retry-After (not
 		// 502) and goal-retry (isRetriableError) recognises the kind. A raw
 		// dispatch error would fall through to the generic 502 path.
-		return nil, dispatchErrToExecuteError(err)
+		// Still attach T0–T9 so failure request_logs rows keep queue latency.
+		ee := dispatchErrToExecuteError(err)
+		copyQueueTimestampsToError(ee, qr)
+		return nil, ee
 	}
 	if res, ok := result.(*ExecuteResult); ok && res != nil {
+		copyQueueTimestamps(res, qr)
 		return res, nil
 	}
 	slog.Warn("dispatch: unexpected result type", "request_id", params.RequestID)
-	return nil, &ExecuteError{LastErr: errDispatchBadResult, Exhausted: true, LastKind: errorsx.KindTransient}
+	ee := &ExecuteError{LastErr: errDispatchBadResult, Exhausted: true, LastKind: errorsx.KindTransient}
+	copyQueueTimestampsToError(ee, qr)
+	return nil, ee
 }
 
 // dispatchErrToExecuteError maps a dispatch.Pipeline error to *ExecuteError
@@ -478,6 +487,66 @@ func latencyOr(r *ExecuteResult, def int) int {
 		return r.LatencyMs
 	}
 	return def
+}
+
+// copyQueueTimestamps copies V3.1 T0–T9 timestamps from the finished
+// QueuedRequest onto ExecuteResult for telemetry persistence.
+func copyQueueTimestamps(res *ExecuteResult, qr *dispatch.QueuedRequest) {
+	if res == nil || qr == nil {
+		return
+	}
+	t0, t1, t2, t3, t4, t5, t6, t7, t8, t9 := extractQueueTimestamps(qr)
+	res.T0ArrivedAt = t0
+	res.T1TotalEnqueuedAt = t1
+	res.T2TotalDequeuedAt = t2
+	res.T3ModelEnqueuedAt = t3
+	res.T4ModelDequeuedAt = t4
+	res.T5CredEnqueuedAt = t5
+	res.T6CredDequeuedAt = t6
+	res.T7ForwardStartAt = t7
+	res.T8ResponseStartAt = t8
+	res.T9ResponseEndAt = t9
+}
+
+// copyQueueTimestampsToError attaches the same T0–T9 set onto ExecuteError
+// so failure rows can still persist queue latency.
+func copyQueueTimestampsToError(ee *ExecuteError, qr *dispatch.QueuedRequest) {
+	if ee == nil || qr == nil {
+		return
+	}
+	t0, t1, t2, t3, t4, t5, t6, t7, t8, t9 := extractQueueTimestamps(qr)
+	ee.T0ArrivedAt = t0
+	ee.T1TotalEnqueuedAt = t1
+	ee.T2TotalDequeuedAt = t2
+	ee.T3ModelEnqueuedAt = t3
+	ee.T4ModelDequeuedAt = t4
+	ee.T5CredEnqueuedAt = t5
+	ee.T6CredDequeuedAt = t6
+	ee.T7ForwardStartAt = t7
+	ee.T8ResponseStartAt = t8
+	ee.T9ResponseEndAt = t9
+}
+
+func extractQueueTimestamps(qr *dispatch.QueuedRequest) (
+	t0, t1, t2, t3, t4, t5, t6, t7, t8, t9 *time.Time,
+) {
+	if qr == nil {
+		return
+	}
+	if !qr.T0_ArrivedAt.IsZero() {
+		t := qr.T0_ArrivedAt
+		t0 = &t
+	}
+	t1 = qr.T1_TotalEnqueuedAt
+	t2 = qr.T2_TotalDequeuedAt
+	t3 = qr.T3_ModelEnqueuedAt
+	t4 = qr.T4_ModelDequeuedAt
+	t5 = qr.T5_CredEnqueuedAt
+	t6 = qr.T6_CredDequeuedAt
+	t7 = qr.T7_ForwardStartAt
+	t8 = qr.T8_ResponseStartAt
+	t9 = qr.T9_ResponseEndAt
+	return
 }
 
 // sentinel errors for the dispatch forward path.

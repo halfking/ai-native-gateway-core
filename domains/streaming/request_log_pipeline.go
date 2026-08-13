@@ -31,7 +31,7 @@ func jsonMarshal(v any) ([]byte, error) {
 // (auth, body read, routing, upstream, response) so every exit path emits
 // a complete request_logs row with user/application correlation.
 type RequestLogContext struct {
-	handler *ChatHandler
+	handler   *ChatHandler
 	RequestID string
 
 	// terminalKind guards the captured kind for the lifetime of the
@@ -39,9 +39,9 @@ type RequestLogContext struct {
 	// Read via TerminalKind() while holding terminalMu (RLock).
 	// 2026-07-28 §10 Step 2: support richer terminal classification
 	// (success/failure/disconnect) for downstream logs/audit.
-	terminalMu     sync.RWMutex
-	terminalKind   string
-	terminalEntry  *telemetry.RequestLogEntry
+	terminalMu    sync.RWMutex
+	terminalKind  string
+	terminalEntry *telemetry.RequestLogEntry
 	// ClientRequestID is the X-Request-Id the client supplied, if any.
 	// Persisted into request_logs.client_request_id for debug /
 	// cross-system tracing. Distinct from RequestID (the server-generated
@@ -149,6 +149,20 @@ type RequestLogContext struct {
 	// RoutingTracker (2026-07-20) 记录所有路由轮次，供 buildEntry 写入
 	// request_logs.routing_attempts。nil 表示不追踪（旧路径/降级）。
 	RoutingTracker *executors.RoutingAttemptsTracker
+
+	// V3.1 dispatch queue timestamps (from ExecuteResult / ExecuteError after
+	// Pipeline.Submit). Applied onto RequestLogEntry in buildEntry so both
+	// success and failure rows persist T0–T9 when the V2 pipeline ran.
+	T0ArrivedAt       *time.Time
+	T1TotalEnqueuedAt *time.Time
+	T2TotalDequeuedAt *time.Time
+	T3ModelEnqueuedAt *time.Time
+	T4ModelDequeuedAt *time.Time
+	T5CredEnqueuedAt  *time.Time
+	T6CredDequeuedAt  *time.Time
+	T7ForwardStartAt  *time.Time
+	T8ResponseStartAt *time.Time
+	T9ResponseEndAt   *time.Time
 
 	// 2026-07-25: 请求/响应体大小（用于 Redis 实时统计和看板展示）
 	RequestBodySize  int
@@ -358,6 +372,40 @@ func (c *RequestLogContext) SetRoute(providerID, credentialID *int) {
 	c.CredentialID = credentialID
 }
 
+// ApplyQueueTimestampsFromResult copies V3.1 T0–T9 from a successful ExecuteResult.
+func (c *RequestLogContext) ApplyQueueTimestampsFromResult(res *executors.ExecuteResult) {
+	if c == nil || res == nil {
+		return
+	}
+	c.T0ArrivedAt = res.T0ArrivedAt
+	c.T1TotalEnqueuedAt = res.T1TotalEnqueuedAt
+	c.T2TotalDequeuedAt = res.T2TotalDequeuedAt
+	c.T3ModelEnqueuedAt = res.T3ModelEnqueuedAt
+	c.T4ModelDequeuedAt = res.T4ModelDequeuedAt
+	c.T5CredEnqueuedAt = res.T5CredEnqueuedAt
+	c.T6CredDequeuedAt = res.T6CredDequeuedAt
+	c.T7ForwardStartAt = res.T7ForwardStartAt
+	c.T8ResponseStartAt = res.T8ResponseStartAt
+	c.T9ResponseEndAt = res.T9ResponseEndAt
+}
+
+// ApplyQueueTimestampsFromError copies V3.1 T0–T9 from a dispatch-path ExecuteError.
+func (c *RequestLogContext) ApplyQueueTimestampsFromError(ee *executors.ExecuteError) {
+	if c == nil || ee == nil {
+		return
+	}
+	c.T0ArrivedAt = ee.T0ArrivedAt
+	c.T1TotalEnqueuedAt = ee.T1TotalEnqueuedAt
+	c.T2TotalDequeuedAt = ee.T2TotalDequeuedAt
+	c.T3ModelEnqueuedAt = ee.T3ModelEnqueuedAt
+	c.T4ModelDequeuedAt = ee.T4ModelDequeuedAt
+	c.T5CredEnqueuedAt = ee.T5CredEnqueuedAt
+	c.T6CredDequeuedAt = ee.T6CredDequeuedAt
+	c.T7ForwardStartAt = ee.T7ForwardStartAt
+	c.T8ResponseStartAt = ee.T8ResponseStartAt
+	c.T9ResponseEndAt = ee.T9ResponseEndAt
+}
+
 func applyWorkTypeField(entry *telemetry.RequestLogEntry, c *RequestLogContext) {
 	if entry == nil || c == nil || c.WorkType == "" {
 		return
@@ -372,10 +420,10 @@ func applyWorkTypeField(entry *telemetry.RequestLogEntry, c *RequestLogContext) 
 // This is what makes the auto-title loopback SQL-joinable to its parent user
 // request:
 //
-//   SELECT child.request_id, child.parent_request_id, child.origin_actor
-//   FROM request_logs_hot child
-//   WHERE child.origin_actor = 'auto-title-generator'
-//     AND child.ts > now() - interval '1 hour';
+//	SELECT child.request_id, child.parent_request_id, child.origin_actor
+//	FROM request_logs_hot child
+//	WHERE child.origin_actor = 'auto-title-generator'
+//	  AND child.ts > now() - interval '1 hour';
 //
 // Without this, request_logs_hot.parent_request_id is always NULL on title
 // rows and operators have no way to correlate "08aa2a8a → 3a03f7db".
@@ -862,6 +910,17 @@ func (c *RequestLogContext) buildEntry(errCode, errMessage string, providerID, c
 		StreamChunksSent:   streamChunksSentPtr,
 		// 2026-07-01: 附件元数据
 		Attachments: attachmentsJSON,
+		// V3.1 dispatch queue timestamps (migration 491)
+		T0ArrivedAt:       c.T0ArrivedAt,
+		T1TotalEnqueuedAt: c.T1TotalEnqueuedAt,
+		T2TotalDequeuedAt: c.T2TotalDequeuedAt,
+		T3ModelEnqueuedAt: c.T3ModelEnqueuedAt,
+		T4ModelDequeuedAt: c.T4ModelDequeuedAt,
+		T5CredEnqueuedAt:  c.T5CredEnqueuedAt,
+		T6CredDequeuedAt:  c.T6CredDequeuedAt,
+		T7ForwardStartAt:  c.T7ForwardStartAt,
+		T8ResponseStartAt: c.T8ResponseStartAt,
+		T9ResponseEndAt:   c.T9ResponseEndAt,
 	}
 	enrichRequestLogFromMeta(reqLog, c.KeyInfo, &c.meta)
 	applyAutoRouteFields(reqLog, c)
