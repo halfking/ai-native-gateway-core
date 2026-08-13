@@ -34,36 +34,45 @@ func wireStateTransitionLogger(db *pgxpool.Pool) *dispatch.StateTransitionLogger
 	return l
 }
 
-// wireQueueSnapshotProvider builds the closure handed to LiveStreamSSEHub
-// for V3.2 BE-A1. The closure converts dispatch.Pipeline.Snapshot()
-// (model + credential queues) into the dashboard wire shape
-// (LiveQueueSnapshot). Wired: false when pipeline is not constructed
+// wireQueueSnapshotProvider builds the QueueMetricsCollector and returns
+// the closure handed to LiveStreamSSEHub for V3.2 BE-A1 (V32-LP3).
+// The collector wraps dispatch.Pipeline and provides thread-safe,
+// non-blocking queue depth snapshots. Wired: false when pipeline is nil
 // (pre-deployment / test mode).
 func wireQueueSnapshotProvider(pipeline *dispatch.Pipeline) func() *admin.LiveQueueSnapshot {
+	// Create collector (handles nil pipeline gracefully with Wired=false)
+	collector := dispatch.NewQueueMetricsCollector(pipeline)
+
+	// Return closure that converts dispatch.SnapshotView → admin.LiveQueueSnapshot
 	return func() *admin.LiveQueueSnapshot {
-		if pipeline == nil {
-			return &admin.LiveQueueSnapshot{Enabled: dispatch.IsDispatchEnabled(), Wired: false}
+		snap := collector.Snapshot()
+		if snap == nil {
+			// Defensive: should never happen per collector contract
+			return &admin.LiveQueueSnapshot{Enabled: false, Wired: false}
 		}
-		models, creds := pipeline.Snapshot()
+
 		out := &admin.LiveQueueSnapshot{
-			Enabled:     dispatch.IsDispatchEnabled(),
-			Wired:       true,
-			Models:      make([]admin.LiveQueueLaneSnapshot, 0, len(models)),
-			Credentials: make([]admin.LiveQueueLaneSnapshot, 0, len(creds)),
+			Enabled:     snap.Enabled,
+			Wired:       snap.Wired,
+			Models:      make([]admin.LiveQueueLaneSnapshot, 0, len(snap.Models)),
+			Credentials: make([]admin.LiveQueueLaneSnapshot, 0, len(snap.Credentials)),
 		}
-		for _, m := range models {
+
+		for _, m := range snap.Models {
 			out.Models = append(out.Models, admin.LiveQueueLaneSnapshot{
 				Model: m.Model,
 				Depth: m.Depth,
 			})
 		}
-		for _, c := range creds {
+
+		for _, c := range snap.Credentials {
 			out.Credentials = append(out.Credentials, admin.LiveQueueLaneSnapshot{
 				Credential: c.Credential,
 				Mode:       c.Mode,
 				Depth:      c.Depth,
 			})
 		}
+
 		return out
 	}
 }
