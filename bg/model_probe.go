@@ -36,6 +36,7 @@ package bg
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"sync"
@@ -75,6 +76,21 @@ const (
 	//   - cycle 5min 一次不会与 1m/2m/5m backoff 冲突
 	ProbeInterval = 5 * time.Minute
 )
+
+// ErrCredentialManuallyDisabled is returned by TriggerManual when the
+// targeted (credential, model) binding exists but the credential has
+// manual_disabled=TRUE (or lifecycle_status != 'active').  The admin UI
+// surface should treat this as an expected guard outcome, not an
+// unexpected SQL error: callers can check with errors.Is and emit a
+// user-friendly "credential is disabled" message instead of "binding
+// not found".
+//
+// 2026-08-13 audit: TriggerManual previously returned a generic
+// "binding not found" error for manual_disabled bindings because the
+// SQL WHERE clause didn't filter on c.manual_disabled. The fix here
+// reintroduces a typed sentinel so admin handlers can detect and
+// surface the exact reason.
+var ErrCredentialManuallyDisabled = errors.New("credential is manually disabled")
 
 // ModelProbeRunner is the v2 (consensus + backoff) implementation.
 type ModelProbeRunner struct {
@@ -989,6 +1005,14 @@ func (r *ModelProbeRunner) probeModel(ctx context.Context, t probeTarget) (
 // TriggerManual fires one off-schedule probe for a single binding.  It
 // still goes through the consensus logic — a single manual trigger is
 // just one data point, not an override.
+//
+// 2026-08-13 audit: Bindings whose credential is manually disabled are
+// filtered out at the WHERE clause (rather than relying on the
+// post-fetch t.ManualDisabled check, which would otherwise still
+// execute an upstream probe and decrypt the secret first). The check
+// mirrors TriggerAllSync / cycle() so an admin-flipped
+// `manual_disabled=true` consistently short-circuits at SQL time and
+// returns ErrCredentialManuallyDisabled.
 func (r *ModelProbeRunner) TriggerManual(ctx context.Context, credentialID int, rawModel string) error {
 	row := r.db.QueryRow(ctx, `
 		SELECT cmb.credential_id, pm.raw_model_name,
@@ -1007,6 +1031,8 @@ func (r *ModelProbeRunner) TriggerManual(ctx context.Context, credentialID int, 
 		       ON mps.credential_id = cmb.credential_id
 		      AND mps.raw_model_name = pm.raw_model_name
 		WHERE cmb.credential_id = $1 AND pm.raw_model_name = $2
+		  AND COALESCE(c.manual_disabled, FALSE) = FALSE
+		  AND COALESCE(c.lifecycle_status, 'active') = 'active'
 		LIMIT 1
 	`, credentialID, rawModel)
 	var t probeTarget
@@ -1016,6 +1042,22 @@ func (r *ModelProbeRunner) TriggerManual(ctx context.Context, credentialID int, 
 	if err := row.Scan(&t.CredentialID, &t.RawModel, &t.OutboundModel, &t.Modality, &t.BaseURL, &t.Protocol,
 		&ciphertext, &t.ManualDisabled, &prevState, &prevSucc, &prevFail); err != nil {
 		if err == pgx.ErrNoRows {
+			// Distinguish "binding does not exist" from "binding exists but
+			// is manually disabled" so callers can surface a clearer
+			// admin-UI / API error message.
+			var exists bool
+			if probeErr := r.db.QueryRow(ctx, `
+				SELECT EXISTS (
+					SELECT 1
+					FROM credential_model_bindings cmb
+					JOIN credentials c ON c.id = cmb.credential_id
+					WHERE cmb.credential_id = $1 AND cmb.provider_model_id = (
+						SELECT id FROM provider_models WHERE raw_model_name = $2 LIMIT 1
+					)
+				)
+			`, credentialID, rawModel).Scan(&exists); probeErr == nil && exists {
+				return ErrCredentialManuallyDisabled
+			}
 			return fmt.Errorf("binding not found")
 		}
 		return err
