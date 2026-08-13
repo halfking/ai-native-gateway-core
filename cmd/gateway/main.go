@@ -3635,6 +3635,16 @@ func main() {
 			defaultRoutingRefresher.Start(context.Background())
 			defer func() { defaultRoutingRefresher.Stop() }()
 			decider.SetDefaultRoutingStore(defaultRoutingStore)
+
+			// 2026-08-13: work_type_model_route store — bridges admin panel
+			// task→model preferences into the V2 routing path. Without this,
+			// work_type_model_route rows written by PUT /api/admin/work-types/:key/routes
+			// have zero runtime effect (P0 audit finding).
+			workTypeRouteStore := autoroute.NewWorkTypeRouteStore(dbConn.Pool())
+			workTypeRouteRefresher := bg.NewWorkTypeRouteStoreRefresher(workTypeRouteStore)
+			workTypeRouteRefresher.Start(context.Background())
+			defer workTypeRouteRefresher.Stop()
+			decider.SetWorkTypeRouteStore(workTypeRouteStore)
 			// 2026-07-17 (audit H1): wire the apiKeyID -> tenantID resolver so
 			// tenant-scoped default routing rows can actually match. Without
 			// this, TenantResolver stays nil, tenantID is always empty, and every

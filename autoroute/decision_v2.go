@@ -124,11 +124,32 @@ func (d *Decider) DecideV2(ctx context.Context, sigs ClassificationSignals, apiK
 	}
 
 	// Step 3: 候选推荐（使用新逻辑）
+	// Work-type preferences and explicit pins must see the configured candidate,
+	// not only the initial TopN. Keep the normal small window unless either
+	// constraint is present, then trim back to TopN after applying it.
+	task := string(cls.Primary)
+	prof := string(profile)
+	resultTopN := d.TopN
+	if resultTopN <= 0 {
+		resultTopN = 3
+	}
+	candidateTopN := resultTopN
+	keepFullCandidateSet := d.workTypeRouteStore != nil && d.workTypeRouteStore.HasRoutes(task)
+	if d.overrideStore != nil && len(d.overrideStore.GetPins(task, prof)) > 0 {
+		keepFullCandidateSet = true
+	}
+	if keepFullCandidateSet {
+		if poolSize := len(idx.Snapshot()); poolSize > candidateTopN {
+			candidateTopN = poolSize
+		}
+	}
+
 	// requestID 来自请求 context（由 maybeResolveAuto 注入），用于 affinity
 	// 的 explore 分桶。缺失时 explore 退化为「不探索」，affinity 仍可应用。
-	recommended := idx.RecommendV2WithHints(ctx, cls.Primary, sigs, profile, sessionID, d.TopN, DecisionHints{
-		RequestID: requestIDFromContext(ctx),
-		ApiKeyID:  apiKeyID,
+	recommended := idx.RecommendV2WithHints(ctx, cls.Primary, sigs, profile, sessionID, candidateTopN, DecisionHints{
+		RequestID:        requestIDFromContext(ctx),
+		ApiKeyID:         apiKeyID,
+		FullCandidateSet: keepFullCandidateSet,
 	})
 
 	// Step 3a (M2): 路由来源标签。V2 不调用 defaultRoutingStore（explicit_default
@@ -137,16 +158,37 @@ func (d *Decider) DecideV2(ctx context.Context, sigs ClassificationSignals, apiK
 	// 之前 V2 完全不填 RoutingSource，导致 V1/V2 的审计/日志不一致——此处补齐。
 	routingSource := "implicit_tag"
 
-	// 应用 override store（如果配置）
+	// Apply operator overrides around work-type preferences. Bans are applied
+	// first, boosts only affect the remaining candidates, and pins are applied
+	// last so an explicit pin remains the strongest routing constraint.
 	if d.overrideStore != nil {
-		task := string(cls.Primary)
-		prof := string(profile)
-		filtered := d.overrideStore.FilterBanned(recommended, task, prof)
-		recommended = d.overrideStore.PromotePins(filtered, task, prof)
-		// 若 pin 把非首选候选提到第一，标记来源为 override_pin（与 V1 一致）
-		if len(recommended) > 0 && len(filtered) > 0 && recommended[0].Candidate.CanonicalName != filtered[0].Candidate.CanonicalName {
-			routingSource = "override_pin"
-		}
+		recommended = d.overrideStore.FilterBanned(recommended, task, prof)
+	}
+
+	beforeBoostWinner := ""
+	if len(recommended) > 0 {
+		beforeBoostWinner = recommended[0].Candidate.CanonicalName
+	}
+	if d.workTypeRouteStore != nil {
+		recommended = d.workTypeRouteStore.ApplyBoost(recommended, task)
+	}
+	boostChangedWinner := len(recommended) > 0 && recommended[0].Candidate.CanonicalName != beforeBoostWinner
+
+	beforePinWinner := ""
+	if len(recommended) > 0 {
+		beforePinWinner = recommended[0].Candidate.CanonicalName
+	}
+	if d.overrideStore != nil {
+		recommended = d.overrideStore.PromotePins(recommended, task, prof)
+	}
+	pinChangedWinner := len(recommended) > 0 && recommended[0].Candidate.CanonicalName != beforePinWinner
+	if pinChangedWinner {
+		routingSource = "override_pin"
+	} else if boostChangedWinner {
+		routingSource = "work_type_route"
+	}
+	if len(recommended) > resultTopN {
+		recommended = recommended[:resultTopN]
 	}
 
 	// Step 4: 检查是否有候选

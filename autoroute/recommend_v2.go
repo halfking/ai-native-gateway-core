@@ -23,6 +23,9 @@ import (
 type DecisionHints struct {
 	RequestID string
 	ApiKeyID  int
+	// FullCandidateSet disables the hot-top-3 narrowing step when an
+	// operator-authored route or pin needs to see every available candidate.
+	FullCandidateSet bool
 }
 
 func (idx *Index) RecommendV2(
@@ -108,17 +111,21 @@ func (idx *Index) RecommendV2WithHints(
 
 	candidatePool := []Candidate{}
 	hotCanonIDs := make(map[int]bool)
-	for _, canonID := range hotTop3 {
-		if cands, ok := byCanonical[canonID]; ok {
-			candidatePool = append(candidatePool, cands...)
-			hotCanonIDs[canonID] = true
-		}
-	}
-
-	if len(hotTop3) < 3 {
-		for canonID, cands := range byCanonical {
-			if !hotCanonIDs[canonID] {
+	if hints.FullCandidateSet {
+		candidatePool = append(candidatePool, available...)
+	} else {
+		for _, canonID := range hotTop3 {
+			if cands, ok := byCanonical[canonID]; ok {
 				candidatePool = append(candidatePool, cands...)
+				hotCanonIDs[canonID] = true
+			}
+		}
+
+		if len(hotTop3) < 3 {
+			for canonID, cands := range byCanonical {
+				if !hotCanonIDs[canonID] {
+					candidatePool = append(candidatePool, cands...)
+				}
 			}
 		}
 	}
