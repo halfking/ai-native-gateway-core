@@ -41,11 +41,16 @@ A_OK=0
 A_429=0
 A_OTHER=0
 A_CODES=""
+A_LAT_FILE="$(mktemp -t s29-lat-XXXXXX).txt"
 for i in $(seq 1 20); do
+    T0=$(python3 -c 'import time;print(int(time.time()*1000))')
     CODE=$(curl -s -o /dev/null -w "%{http_code}" -X POST \
         -H "Authorization: Bearer $AK" -H "Content-Type: application/json" \
         -d '{"model":"loadtest-mini-alpha","messages":[{"role":"user","content":"phaseA-quota"}],"max_tokens":3,"stream":false}' \
         "$GATEWAY/v1/chat/completions" || echo 000)
+    T1=$(python3 -c 'import time;print(int(time.time()*1000))')
+    LAT=$((T1 - T0))
+    [ "$CODE" = "200" ] && echo "$LAT" >> "$A_LAT_FILE"
     A_CODES="$A_CODES,$CODE"
     case "$CODE" in
         200) A_OK=$((A_OK+1)) ;;
@@ -54,7 +59,13 @@ for i in $(seq 1 20); do
     esac
     sleep 0.15
 done
-log "phase A: $A_OK OK / $A_429 quota / $A_OTHER other (out of 20)"
+A_P99_MS=$(python3 -c "
+xs = sorted(int(l.strip()) for l in open('$A_LAT_FILE') if l.strip())
+if not xs: print(0)
+else: print(xs[int(len(xs)*0.99)])
+")
+rm -f "$A_LAT_FILE"
+log "phase A: $A_OK OK / $A_429 quota / $A_OTHER other (out of 20), p99=${A_P99_MS}ms"
 
 # Phase B: kill G, 10 个请求 (因为 G 死,所有走其他组)
 log "phase B: kill G (5s downtime), then 10 requests — should ALL be 200 (G unavailable)"
@@ -75,12 +86,17 @@ B_OK=0
 B_429=0
 B_OTHER=0
 B_CODES=""
+B_LAT_FILE="$(mktemp -t s29-b-lat-XXXXXX).txt"
 sleep 1  # 让 G 死透
 for i in $(seq 1 10); do
+    T0=$(python3 -c 'import time;print(int(time.time()*1000))')
     CODE=$(curl -s -o /dev/null -w "%{http_code}" -X POST \
         -H "Authorization: Bearer $AK" -H "Content-Type: application/json" \
         -d '{"model":"loadtest-mini-alpha","messages":[{"role":"user","content":"phaseB-after-kill"}],"max_tokens":3,"stream":false}' \
         "$GATEWAY/v1/chat/completions" || echo 000)
+    T1=$(python3 -c 'import time;print(int(time.time()*1000))')
+    LAT=$((T1 - T0))
+    [ "$CODE" = "200" ] && echo "$LAT" >> "$B_LAT_FILE"
     B_CODES="$B_CODES,$CODE"
     case "$CODE" in
         200) B_OK=$((B_OK+1)) ;;
@@ -89,6 +105,12 @@ for i in $(seq 1 10); do
     esac
     sleep 0.2
 done
+B_P99_MS=$(python3 -c "
+xs = sorted(int(l.strip()) for l in open('$B_LAT_FILE') if l.strip())
+if not xs: print(0)
+else: print(xs[int(len(xs)*0.99)])
+")
+rm -f "$B_LAT_FILE"
 
 wait "$FI_PID" 2>/dev/null || true
 
@@ -103,18 +125,29 @@ log "request_logs_hot recent 2min rows: $RECENT_REQS (we issued $((20 + 10)))"
 log "phase D: post-restart 5 requests — G quota should still be 0 (window=600s)"
 D_OK=0
 D_429=0
+D_LAT_FILE="$(mktemp -t s29-d-lat-XXXXXX).txt"
 for i in $(seq 1 5); do
+    T0=$(python3 -c 'import time;print(int(time.time()*1000))')
     CODE=$(curl -s -o /dev/null -w "%{http_code}" -X POST \
         -H "Authorization: Bearer $AK" -H "Content-Type: application/json" \
         -d '{"model":"loadtest-mini-alpha","messages":[{"role":"user","content":"phaseD-post-restart"}],"max_tokens":3,"stream":false}' \
         "$GATEWAY/v1/chat/completions" || echo 000)
+    T1=$(python3 -c 'import time;print(int(time.time()*1000))')
+    LAT=$((T1 - T0))
+    [ "$CODE" = "200" ] && echo "$LAT" >> "$D_LAT_FILE"
     case "$CODE" in
         200) D_OK=$((D_OK+1)) ;;
         429) D_429=$((D_429+1)) ;;
     esac
     sleep 0.2
 done
-log "phase D: $D_OK OK / $D_429 quota (out of 5)"
+D_P99_MS=$(python3 -c "
+xs = sorted(int(l.strip()) for l in open('$D_LAT_FILE') if l.strip())
+if not xs: print(0)
+else: print(xs[int(len(xs)*0.99)])
+")
+rm -f "$D_LAT_FILE"
+log "phase D: $D_OK OK / $D_429 quota (out of 5), p99=${D_P99_MS}ms"
 
 # 判定
 PASS=true
@@ -147,7 +180,7 @@ cp "$FI_STDERR" "$RESULTS_DIR/${SCENARIO}-fault-inject.log" 2>/dev/null || true
 
 write_scenario_result "$SCENARIO" "functional" "$STATUS" \
   "{\"phase_a_some_200\":$CHECK_A_OK,\"phase_a_some_429\":$CHECK_A_QUOTA,\"phase_b_no_phantom_429\":$CHECK_B_NO_PHANTOM,\"gateway_alive\":$CHECK_ALIVE}" \
-  "{\"total\":$TOTAL,\"succ\":$SUCC,\"quota\":$QUOTA,\"other\":$OTHER,\"success_rate\":$RATE,\"a_ok\":$A_OK,\"a_429\":$A_429,\"b_ok\":$B_OK,\"b_429\":$B_429,\"d_ok\":$D_OK,\"d_429\":$D_429,\"request_logs_recent\":$RECENT_REQS}" \
+  "{\"total\":$TOTAL,\"succ\":$SUCC,\"quota\":$QUOTA,\"other\":$OTHER,\"success_rate\":$RATE,\"p99_ms\":$B_P99_MS,\"a_ok\":$A_OK,\"a_429\":$A_429,\"a_p99_ms\":$A_P99_MS,\"b_ok\":$B_OK,\"b_429\":$B_429,\"b_p99_ms\":$B_P99_MS,\"d_ok\":$D_OK,\"d_429\":$D_429,\"d_p99_ms\":$D_P99_MS,\"request_logs_recent\":$RECENT_REQS}" \
   "{\"phase_a_codes\":\"$A_CODES\",\"phase_b_codes\":\"$B_CODES\",\"fault_inject_log\":\"results/${SCENARIO}-fault-inject.jsonl\"}" \
   "$FAILURES" \
   "{\"gateway\":\"$GATEWAY\",\"quota_tokens\":20,\"quota_window_sec\":600,\"kill_window_sec\":5}"

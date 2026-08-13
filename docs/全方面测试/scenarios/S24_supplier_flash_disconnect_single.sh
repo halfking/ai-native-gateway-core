@@ -95,16 +95,20 @@ WINDOW_OK=0
 WINDOW_5XX=0
 WINDOW_OTHER=0
 WINDOW_CODES=""
+WINDOW_LAT_FILE="$(mktemp -t s24-lat-XXXXXX).txt"
 WINDOW_START=$(date +%s)
 WINDOW_END=$((WINDOW_START + 11))
 while [ "$(date +%s)" -lt "$WINDOW_END" ]; do
+    T0=$(python3 -c 'import time;print(int(time.time()*1000))')
     CODE=$(curl -s -o /dev/null -w "%{http_code}" -X POST \
         -H "Authorization: Bearer $AK" -H "Content-Type: application/json" \
         -d '{"model":"loadtest-mini-alpha","messages":[{"role":"user","content":"during-flash"}],"max_tokens":10,"stream":false}' \
         "$GATEWAY/v1/chat/completions" || echo 000)
+    T1=$(python3 -c 'import time;print(int(time.time()*1000))')
+    LAT=$((T1 - T0))
     WINDOW_TOTAL=$((WINDOW_TOTAL+1))
     case "$CODE" in
-        200) WINDOW_OK=$((WINDOW_OK+1)) ;;
+        200) WINDOW_OK=$((WINDOW_OK+1)); echo "$LAT" >> "$WINDOW_LAT_FILE" ;;
         5*)  WINDOW_5XX=$((WINDOW_5XX+1)) ;;
         *)   WINDOW_OTHER=$((WINDOW_OTHER+1)) ;;
     esac
@@ -112,7 +116,13 @@ while [ "$(date +%s)" -lt "$WINDOW_END" ]; do
     # 11s / 30 = 0.36s/req
     sleep 0.36
 done
-log "flash window: $WINDOW_OK/$WINDOW_TOTAL OK, 5xx=$WINDOW_5XX, other=$WINDOW_OTHER"
+WINDOW_P99_MS=$(python3 -c "
+xs = sorted(int(l.strip()) for l in open('$WINDOW_LAT_FILE') if l.strip())
+if not xs: print(0)
+else: print(xs[int(len(xs)*0.99)])
+")
+rm -f "$WINDOW_LAT_FILE"
+log "flash window: $WINDOW_OK/$WINDOW_TOTAL OK, 5xx=$WINDOW_5XX, other=$WINDOW_OTHER, p99=${WINDOW_P99_MS}ms"
 
 # 等 fault_inject 跑到 t=15 (restart) 完成
 wait "$FI_PID" 2>/dev/null || true
@@ -171,7 +181,7 @@ if [ "$PASS" != true ]; then
 fi
 write_scenario_result "$SCENARIO" "functional" "$STATUS" \
   "{\"baseline_5_of_5\":$CHECK_BASELINE,\"window_60pct\":$CHECK_WINDOW,\"recovery_8_of_10\":$CHECK_RECOVERY,\"gateway_alive\":$CHECK_ALIVE}" \
-  "{\"total\":$TOTAL,\"succ\":$SUCC,\"fail\":$((TOTAL-SUCC)),\"success_rate\":$RATE,\"baseline_ok\":$BASELINE_OK,\"window_ok\":$WINDOW_OK,\"window_total\":$WINDOW_TOTAL,\"window_5xx\":$WINDOW_5XX,\"window_other\":$WINDOW_OTHER,\"recovery_ok\":$RECOVERY_OK,\"recovery_total\":$RECOVERY_TOTAL}" \
+  "{\"total\":$TOTAL,\"succ\":$SUCC,\"fail\":$((TOTAL-SUCC)),\"success_rate\":$RATE,\"p99_ms\":$WINDOW_P99_MS,\"baseline_ok\":$BASELINE_OK,\"window_ok\":$WINDOW_OK,\"window_total\":$WINDOW_TOTAL,\"window_5xx\":$WINDOW_5XX,\"window_other\":$WINDOW_OTHER,\"recovery_ok\":$RECOVERY_OK,\"recovery_total\":$RECOVERY_TOTAL}" \
   "{\"window_codes\":\"$WINDOW_CODES\",\"fault_inject_log\":\"results/${SCENARIO}-fault-inject.jsonl\"}" \
   "$FAILURES" \
   "{\"gateway\":\"$GATEWAY\",\"kill_group\":\"G\",\"kill_after_sec\":1,\"window_sec\":11,\"recovery_after_sec\":15}"

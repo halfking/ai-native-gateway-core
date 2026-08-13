@@ -155,7 +155,7 @@ cp "$FI_STDERR" "$RESULTS_DIR/${SCENARIO}-fault-inject.log" 2>/dev/null || true
 
 write_scenario_result "$SCENARIO" "functional" "$STATUS" \
   "{\"baseline_5_of_5\":$CHECK_BASELINE,\"cascade_50pct\":$CHECK_WINDOW,\"recovery_8_of_10\":$CHECK_RECOVERY,\"gateway_alive\":$CHECK_ALIVE}" \
-  "{\"total\":$TOTAL,\"succ\":$SUCC,\"fail\":$((TOTAL-SUCC)),\"success_rate\":$RATE,\"baseline_ok\":$BASELINE_OK,\"cascade_ok\":$WINDOW_OK,\"cascade_total\":$WINDOW_TOTAL,\"cascade_5xx\":$WINDOW_5XX,\"cascade_other\":$WINDOW_OTHER,\"cascade_p99_ms\":$WINDOW_P99_MS,\"recovery_ok\":$RECOVERY_OK}" \
+  "{\"total\":$TOTAL,\"succ\":$SUCC,\"fail\":$((TOTAL-SUCC)),\"success_rate\":$RATE,\"p99_ms\":$WINDOW_P99_MS,\"baseline_ok\":$BASELINE_OK,\"cascade_ok\":$WINDOW_OK,\"cascade_total\":$WINDOW_TOTAL,\"cascade_5xx\":$WINDOW_5XX,\"cascade_other\":$WINDOW_OTHER,\"cascade_p99_ms\":$WINDOW_P99_MS,\"recovery_ok\":$RECOVERY_OK}" \
   "{\"cascade_codes\":\"$WINDOW_CODES\",\"fault_inject_log\":\"results/${SCENARIO}-fault-inject.jsonl\"}" \
   "$FAILURES" \
   "{\"gateway\":\"$GATEWAY\",\"kill_groups\":[\"G\",\"H\",\"I\"],\"kill_after_sec\":1,\"window_sec\":30,\"cascade_event_count\":3}"
