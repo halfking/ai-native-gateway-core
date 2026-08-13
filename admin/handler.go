@@ -1059,6 +1059,16 @@ func writeError(w http.ResponseWriter, status int, msg string) {
 	})
 }
 
+// writeErrorWithCode 返回带 error_code 的错误响应（V3.2 契约）。
+func writeErrorWithCode(w http.ResponseWriter, status int, code, msg string) {
+	writeJSON(w, status, map[string]any{
+		"error": map[string]string{
+			"code":   code,
+			"detail": msg,
+		},
+	})
+}
+
 func readJSON(r *http.Request, v any) error {
 	if r.Body == nil {
 		return nil
