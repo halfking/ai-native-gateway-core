@@ -1737,6 +1737,12 @@ func main() {
 		})
 		go liveStreamHub.Run()
 
+		// V3.2 BE-A4: the hub emits node status from a cached DB projection.
+		// Refreshing outside the SSE goroutine keeps the 2s fan-out tick cheap.
+		liveNodeStatusCache, stopLiveNodeStatusRefresh := startLiveNodeStatusRefresh(dbConn.Pool(), 2*time.Second)
+		defer stopLiveNodeStatusRefresh()
+		liveStreamHub.SetNodeStatusProvider(liveNodeStatusCache.get)
+
 		// Publish terminal live-stream updates only after the request log
 		// transaction commits. Emitting before persistence allowed a green
 		// tile to reach the dashboard before GET /api/logs/{id} could see it.
@@ -5115,7 +5121,13 @@ func main() {
 	// Pipeline 长生命周期；adapters 在请求时惰性读取 routingExec 字段，
 	// 因此只要在 srv 接受请求前注入即可。dispatch_v2.enabled 的 atomic 缓存
 	// 已在 syncDispatchGateFromSettings 同步；此处仅构造与启动 worker 池。
-	wireDispatchPipeline(routingExec)
+	pipeline := wireDispatchPipeline(routingExec)
+	if liveStreamHub != nil {
+		liveStreamHub.SetQueueSnapshotProvider(func() *admin.LiveQueueSnapshot {
+			return liveQueueSnapshotProvider(pipeline)
+		})
+		slog.Info("live stream: queue snapshot provider wired", "wired", pipeline != nil)
+	}
 
 	srv := &http.Server{
 		Addr:    cfg.Listen,
