@@ -84,8 +84,16 @@
   - `dispatch_stage_total_seconds` (T0→T9)
   - label: `result` ∈ {success, fail_prefirstbyte, fail_postfirstbyte, shutdown}
   - 观测点: `Pipeline.complete()` → `recordStageMetrics()`
-- [ ] 前端瀑布图 UI（QueueWaterfallChart.vue）
-- [ ] 会话日志集成（request_logs 表扩展）
+- [x] 前端瀑布图 UI — 2026-08-13
+  - API: `GET /api/admin/dispatch/waterfall`
+  - 组件: `QueueWaterfallTimeline.vue`
+  - 页面: `/dispatch/waterfall`（DispatchWaterfallView）
+  - ring buffer: 最近 200 条完成请求时间戳
+- [x] 会话日志集成（request_logs 表扩展）— 2026-08-13
+  - migration 491: t0_arrived_at..t9_response_end_at on hot + parent + view freeze
+  - RequestLogEntry + INSERT $91–$100
+  - ExecuteResult → handler success path 透传
+  - ensureRequestLogSchema cold-start ADD COLUMN
 
 ### 2. 数据库迁移（预计 1.5 天）
 - [ ] Hot + 分区表架构
@@ -96,7 +104,13 @@
 - [x] 阶段指标单元测试（stage_metrics_test.go）
 - [ ] 端到端时间戳验证测试
 
-**总计剩余工作量**: ~3 天
+### 4. 失败路径 + 在途观测（本轮收尾）
+- [x] ExecuteError 携带 T0–T9；handler fail 路径 ApplyQueueTimestampsFromError
+- [x] buildEntry 写入失败行时间戳
+- [x] waterfall ring 带 session_id；session timeline completed 可过滤
+- [x] admin APIs: `/api/admin/queue/active-requests`、`/request/{id}/timeline`、`/stats/realtime`、`/sessions/{id}/timeline`
+
+**总计剩余工作量**: 部署 migration 491 + 真流量 e2e 验证
 
 ---
 
