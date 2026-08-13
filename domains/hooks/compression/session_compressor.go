@@ -973,7 +973,7 @@ func sha256Hash(data any) string { //nolint:unused
 // ─────────────────────────────────────────────────────────────
 
 // shouldUseV2 determines whether to read session state from the V2 store
-// (gateway.session_bodies) instead of V1 (request_logs LCS delta).
+// (public.session_bodies) instead of V1 (request_logs LCS delta).
 //
 // Returns true when:
 //  1. V2 components (CacheV2 + Builder) are wired, AND

@@ -173,6 +173,23 @@ type ProcessedRequest struct {
 	Success     bool
 	ErrorKind   string
 
+	// V3.1 dispatch 9-stage (10 timestamps) queue timestamps (migration 513).
+	// Mirrors RequestLogEntry.T0ArrivedAt..T9ResponseEndAt from migration 491.
+	// Plumbed through to public.session_turns so the session timeline view
+	// can answer "how long did stage X take" without joining request_logs.
+	// nil-safe — callers (e.g. pipeline_hook.go) that don't have these yet
+	// simply leave them nil and the columns persist as NULL.
+	T0ArrivedAt       *time.Time
+	T1TotalEnqueuedAt *time.Time
+	T2TotalDequeuedAt *time.Time
+	T3ModelEnqueuedAt *time.Time
+	T4ModelDequeuedAt *time.Time
+	T5CredEnqueuedAt  *time.Time
+	T6CredDequeuedAt  *time.Time
+	T7ForwardStartAt  *time.Time
+	T8ResponseStartAt *time.Time
+	T9ResponseEndAt   *time.Time
+
 	// Protocol-specific extensions (from ir.TransportContext)
 	ProviderExtensions map[string]interface{} // Preserves vendor-specific fields
 
@@ -308,6 +325,21 @@ func (w *SessionWriterV2) Write(ctx context.Context, req *ProcessedRequest) erro
 		StatusCode: req.StatusCode,
 		Success:    req.Success,
 		ErrorKind:  req.ErrorKind,
+
+		// V3.2 dual-write (migration 513): copy the 10 dispatch queue
+		// timestamps from the ProcessedRequest (populated by the
+		// sessionv2mirror hook from telemetry entry) so public.session_turns
+		// stays in sync with public.request_logs_hot.
+		T0ArrivedAt:       req.T0ArrivedAt,
+		T1TotalEnqueuedAt: req.T1TotalEnqueuedAt,
+		T2TotalDequeuedAt: req.T2TotalDequeuedAt,
+		T3ModelEnqueuedAt: req.T3ModelEnqueuedAt,
+		T4ModelDequeuedAt: req.T4ModelDequeuedAt,
+		T5CredEnqueuedAt:  req.T5CredEnqueuedAt,
+		T6CredDequeuedAt:  req.T6CredDequeuedAt,
+		T7ForwardStartAt:  req.T7ForwardStartAt,
+		T8ResponseStartAt: req.T8ResponseStartAt,
+		T9ResponseEndAt:   req.T9ResponseEndAt,
 
 		SourceKind: "live",
 		Quality:    "verified",

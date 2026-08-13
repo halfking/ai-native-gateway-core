@@ -2,7 +2,7 @@
 
 BEGIN;
 
-ALTER TABLE gateway.session_turns
+ALTER TABLE public.session_turns
     DROP COLUMN IF EXISTS aggregate_applied_at;
 
 COMMIT;

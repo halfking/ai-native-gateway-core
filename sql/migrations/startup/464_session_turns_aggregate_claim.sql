@@ -7,10 +7,10 @@
 
 BEGIN;
 
-ALTER TABLE gateway.session_turns
+ALTER TABLE public.session_turns
     ADD COLUMN IF NOT EXISTS aggregate_applied_at TIMESTAMPTZ;
 
-COMMENT ON COLUMN gateway.session_turns.aggregate_applied_at IS
-    'Timestamp at which this turn was atomically applied to gateway.sessions aggregate counters; NULL means pending/retryable.';
+COMMENT ON COLUMN public.session_turns.aggregate_applied_at IS
+    'Timestamp at which this turn was atomically applied to public.sessions aggregate counters; NULL means pending/retryable.';
 
 COMMIT;

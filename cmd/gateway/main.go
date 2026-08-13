@@ -710,7 +710,7 @@ func main() {
 	}
 
 	// V2-P3.2: turn_logs aggregator — flushes 24h-TTL per-stage logs into
-	// gateway.sessions.turn_logs_summary and deletes the source rows.
+	// public.sessions.turn_logs_summary and deletes the source rows.
 	// 5-minute polling, runs only when DB is enabled.
 	if dbConn != nil && dbConn.Enabled() {
 		turnLogsCtx, turnLogsCancel := context.WithCancel(context.Background())
@@ -728,7 +728,7 @@ func main() {
 				case <-ticker.C:
 					rows, err := dbConn.Pool().Query(turnLogsCtx, `
 						SELECT tenant_id, session_id
-						FROM gateway.session_turn_logs
+						FROM public.session_turn_logs
 						WHERE expires_at > NOW()
 						GROUP BY tenant_id, session_id
 						LIMIT 100
@@ -1779,7 +1779,7 @@ func main() {
 		slog.Info("attachment mirror enabled (request_attachments relational write)")
 	}
 
-	// 2026-07-21: V2 sessions shadow write (gateway.sessions / session_turns /
+	// 2026-07-21: V2 sessions shadow write (public.sessions / session_turns /
 	// session_bodies / session_turn_logs). Feature-flagged via
 	// sessions_v2.enabled + sessions_v2.shadow_write in the hot-reload
 	// settings system. Best-effort hook: any DB error is logged but never
@@ -1789,7 +1789,7 @@ func main() {
 		sessionV2Writer = initSessionV2Writer(dbConn.Pool())
 		if sessionV2Writer != nil {
 			telemetryClient.AddOnRequestLogPersisted(sessionv2mirror.PersistHook(sessionV2Writer))
-			slog.Info("session V2 shadow write hook registered (live feature-gated; gateway.sessions gateway.session_turns gateway.session_bodies gateway.session_turn_logs)")
+			slog.Info("session V2 shadow write hook registered (live feature-gated; public.sessions public.session_turns public.session_bodies public.session_turn_logs)")
 
 		}
 	}

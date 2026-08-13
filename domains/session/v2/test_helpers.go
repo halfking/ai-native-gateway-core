@@ -37,10 +37,10 @@ func cleanupTestDB(t *testing.T, db *pgxpool.Pool) {
 
 	// Delete test data from all tables
 	tables := []string{
-		"gateway.sessions",
-		"gateway.session_bodies",
-		"gateway.session_turns",
-		"gateway.session_turn_logs",
+		"public.sessions",
+		"public.session_bodies",
+		"public.session_turns",
+		"public.session_turn_logs",
 	}
 
 	for _, table := range tables {

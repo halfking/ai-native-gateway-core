@@ -22,7 +22,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-// TurnWriter writes turn metadata to gateway.session_turns
+// TurnWriter writes turn metadata to public.session_turns
 //
 // It ensures turn_no is monotonically increasing within each session
 // using PostgreSQL advisory locks to prevent concurrent conflicts.
@@ -99,6 +99,23 @@ type TurnRecord struct {
 	// the list is non-empty without waiting for an async LLM summarizer.
 	Title   string
 	Summary string
+
+	// V3.1 dispatch 9-stage (10 timestamps) queue timestamps (migration 513).
+	// Mirrors the same columns on public.request_logs_hot so the session_turns
+	// table can answer timeline queries without joining request_logs. Populated
+	// by SessionWriterV2.Write from ProcessedRequest.T0ArrivedAt..T9ResponseEndAt,
+	// which the telemetry mirror carries from RequestLogEntry. nil-safe —
+	// old entries (pre-513) keep null timestamps.
+	T0ArrivedAt       *time.Time
+	T1TotalEnqueuedAt *time.Time
+	T2TotalDequeuedAt *time.Time
+	T3ModelEnqueuedAt *time.Time
+	T4ModelDequeuedAt *time.Time
+	T5CredEnqueuedAt  *time.Time
+	T6CredDequeuedAt  *time.Time
+	T7ForwardStartAt  *time.Time
+	T8ResponseStartAt *time.Time
+	T9ResponseEndAt   *time.Time
 }
 
 // AppendTurn appends a new turn to the session, returning the assigned turn_no
@@ -187,7 +204,7 @@ func (w *TurnWriter) appendTurnInLockedTx(ctx context.Context, tx pgx.Tx, rec Tu
 	// 2. Get next turn_no
 	err = tx.QueryRow(ctx, `
 		SELECT COALESCE(MAX(turn_no), 0) + 1
-		FROM gateway.session_turns
+		FROM public.session_turns
 		WHERE tenant_id = $1 AND session_id = $2
 	`, rec.TenantID, rec.SessionID).Scan(&turnNo)
 	if err != nil {
@@ -207,7 +224,7 @@ func (w *TurnWriter) appendTurnInLockedTx(ctx context.Context, tx pgx.Tx, rec Tu
 
 	// 4. Insert turn record
 	result, err := tx.Exec(ctx, `
-		INSERT INTO gateway.session_turns (
+		INSERT INTO public.session_turns (
 			session_id, turn_no, tenant_id, request_id, ts,
 			submit_mode,
 			compression_applied, compression_strategy, compression_meta, compression_tokens_saved,
@@ -256,7 +273,7 @@ func (w *TurnWriter) appendTurnInLockedTx(ctx context.Context, tx pgx.Tx, rec Tu
 	if result.RowsAffected() == 0 {
 		err = tx.QueryRow(ctx, `
 			SELECT turn_no
-			FROM gateway.session_turns
+			FROM public.session_turns
 			WHERE session_id = $1 AND tenant_id = $2
 			  AND request_id = $3 AND partition_date = $4
 		`, rec.SessionID, rec.TenantID, rec.RequestID, partitionDate).Scan(&turnNo)
@@ -278,7 +295,7 @@ func (w *TurnWriter) appendTurnInLockedTx(ctx context.Context, tx pgx.Tx, rec Tu
 		// fire can never blank a value an earlier fire populated (monotonic
 		// enrichment), so this stays idempotent under retries.
 		_, err = tx.Exec(ctx, `
-				UPDATE gateway.session_turns
+				UPDATE public.session_turns
 				   SET compression_applied      = $5 OR compression_applied,
 				       compression_strategy     = COALESCE(NULLIF($6, ''), compression_strategy),
 				       compression_meta         = CASE
@@ -336,10 +353,10 @@ func (w *TurnWriter) GetTurn(ctx context.Context, requestID string) (*TurnRecord
 	var compressionMetaJSON []byte
 
 	query := `
-		SELECT 
+		SELECT
 			session_id, turn_no, tenant_id, request_id, ts,
 			submit_mode,
-			compression_applied, compression_strategy, compression_meta, 
+			compression_applied, compression_strategy, compression_meta,
 			COALESCE(compression_tokens_saved, 0),
 			COALESCE(injection_verdict, 'skip'),
 			COALESCE(output_verdict, 'skip'),
@@ -352,8 +369,12 @@ func (w *TurnWriter) GetTurn(ctx context.Context, requestID string) (*TurnRecord
 			source_kind, quality,
 			COALESCE(attachment_count, 0),
 			COALESCE(attachment_total_bytes, 0),
-			COALESCE(multimodal_types, '{}')
-		FROM gateway.session_turns
+			COALESCE(multimodal_types, '{}'),
+			t0_arrived_at, t1_total_enqueued_at, t2_total_dequeued_at,
+			t3_model_enqueued_at, t4_model_dequeued_at, t5_cred_enqueued_at,
+			t6_cred_dequeued_at, t7_forward_start_at, t8_response_start_at,
+			t9_response_end_at
+		FROM public.session_turns
 		WHERE request_id = $1
 		LIMIT 1
 	`
@@ -371,6 +392,10 @@ func (w *TurnWriter) GetTurn(ctx context.Context, requestID string) (*TurnRecord
 		&rec.Success, &rec.ErrorKind,
 		&rec.SourceKind, &rec.Quality,
 		&rec.AttachmentCount, &rec.AttachmentTotalBytes, &rec.MultimodalTypes,
+		&rec.T0ArrivedAt, &rec.T1TotalEnqueuedAt, &rec.T2TotalDequeuedAt,
+		&rec.T3ModelEnqueuedAt, &rec.T4ModelDequeuedAt, &rec.T5CredEnqueuedAt,
+		&rec.T6CredDequeuedAt, &rec.T7ForwardStartAt, &rec.T8ResponseStartAt,
+		&rec.T9ResponseEndAt,
 	)
 
 	if err == pgx.ErrNoRows {
@@ -398,7 +423,7 @@ func (w *TurnWriter) ListTurns(ctx context.Context, tenantID, sessionID string, 
 	}
 
 	query := `
-		SELECT 
+		SELECT
 			session_id, turn_no, tenant_id, request_id, ts,
 			submit_mode,
 			compression_applied, compression_strategy, compression_meta,
@@ -414,8 +439,12 @@ func (w *TurnWriter) ListTurns(ctx context.Context, tenantID, sessionID string, 
 			source_kind, quality,
 			COALESCE(attachment_count, 0),
 			COALESCE(attachment_total_bytes, 0),
-			COALESCE(multimodal_types, '{}')
-		FROM gateway.session_turns
+			COALESCE(multimodal_types, '{}'),
+			t0_arrived_at, t1_total_enqueued_at, t2_total_dequeued_at,
+			t3_model_enqueued_at, t4_model_dequeued_at, t5_cred_enqueued_at,
+			t6_cred_dequeued_at, t7_forward_start_at, t8_response_start_at,
+			t9_response_end_at
+		FROM public.session_turns
 		WHERE tenant_id = $1 AND session_id = $2
 		ORDER BY turn_no ASC
 		LIMIT $3
@@ -445,6 +474,10 @@ func (w *TurnWriter) ListTurns(ctx context.Context, tenantID, sessionID string, 
 			&rec.Success, &rec.ErrorKind,
 			&rec.SourceKind, &rec.Quality,
 			&rec.AttachmentCount, &rec.AttachmentTotalBytes, &rec.MultimodalTypes,
+			&rec.T0ArrivedAt, &rec.T1TotalEnqueuedAt, &rec.T2TotalDequeuedAt,
+			&rec.T3ModelEnqueuedAt, &rec.T4ModelDequeuedAt, &rec.T5CredEnqueuedAt,
+			&rec.T6CredDequeuedAt, &rec.T7ForwardStartAt, &rec.T8ResponseStartAt,
+			&rec.T9ResponseEndAt,
 		)
 		if err != nil {
 			return nil, fmt.Errorf("scan turn: %w", err)

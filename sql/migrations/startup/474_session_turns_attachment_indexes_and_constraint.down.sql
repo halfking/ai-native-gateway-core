@@ -15,9 +15,9 @@ ALTER TABLE public.session_turns
   ADD CONSTRAINT session_turns_submit_mode_check
   CHECK (submit_mode IN ('full', 'delta', 'snapshot', 'inferred_compressed'));
 
-ALTER TABLE gateway.session_turns
+ALTER TABLE public.session_turns
   DROP CONSTRAINT IF EXISTS session_turns_submit_mode_check;
-ALTER TABLE gateway.session_turns
+ALTER TABLE public.session_turns
   ADD CONSTRAINT session_turns_submit_mode_check
   CHECK (submit_mode IN ('full', 'delta', 'snapshot', 'inferred_compressed'));
 

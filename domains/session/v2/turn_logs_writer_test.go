@@ -371,7 +371,7 @@ func TestTurnLogsWriter_CleanupExpiredLogs(t *testing.T) {
 	// Write a log with expired timestamp (manually)
 	// Note: This requires directly inserting with a past expires_at
 	_, err := db.Exec(ctx, `
-		INSERT INTO gateway.session_turn_logs (
+		INSERT INTO public.session_turn_logs (
 			session_id, turn_no, tenant_id, request_id,
 			stage, stage_status, event_data,
 			started_at, completed_at, latency_ms,

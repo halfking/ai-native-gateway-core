@@ -78,7 +78,7 @@ func main() {
 	// positive and break CI for unrelated reasons. We therefore WARN only.
 	//
 	// Operators who want strict enforcement can grep the deployment logs for
-	// "CREATE INDEX" or run `\\d gateway.sessions` in psql.
+	// "CREATE INDEX" or run `\\d public.sessions` in psql.
 	indexes := []string{
 		"idx_sessions_last_full_at",
 		"idx_sessions_summary_at",

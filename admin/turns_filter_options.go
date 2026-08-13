@@ -12,9 +12,9 @@
 //	  owners       sd.owner_user
 //	  clients      sd.client_id ∪ sd.application_code
 //	  tags         UNNEST(ss.user_tags)
-//	  models       gateway.session_turns.model
-//	  providers    gateway.session_turns.provider
-//	  status_codes gateway.session_turns.status_code
+//	  models       public.session_turns.model
+//	  providers    public.session_turns.provider
+//	  status_codes public.session_turns.status_code
 //
 //	每个维度按最近活跃（MAX(first_request_at / t.ts)）倒序取前 20。
 //	鉴权：admin() 中间件；tenant_admin 仅看到本租户。
@@ -146,7 +146,7 @@ func (h *Handler) lastActiveQuery(source string) string {
 // lastActiveTurnQuery 组装基于 session_turns 的热门值查询。
 func (h *Handler) lastActiveTurnQuery(valueExpr, filter, tenantWhere string) string {
 	return fmt.Sprintf(
-		"SELECT v FROM (SELECT %s AS v, MAX(t.ts) AS last_at FROM gateway.session_turns t"+
+		"SELECT v FROM (SELECT %s AS v, MAX(t.ts) AS last_at FROM public.session_turns t"+
 			" WHERE %s AND t.ts > NOW() - INTERVAL '%d days'%s GROUP BY 1)"+
 			" t2 ORDER BY last_at DESC LIMIT %d",
 		valueExpr, filter, turnsFilterOptionsWindowDays, tenantWhere, turnsFilterOptionsLimit)

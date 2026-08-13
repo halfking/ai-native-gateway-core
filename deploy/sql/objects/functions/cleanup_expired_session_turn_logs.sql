@@ -8,7 +8,7 @@ CREATE FUNCTION public.cleanup_expired_session_turn_logs() RETURNS void
 DECLARE
     deleted_count INT;
 BEGIN
-    DELETE FROM gateway.session_turn_logs
+    DELETE FROM public.session_turn_logs
     WHERE expires_at < NOW();
     
     GET DIAGNOSTICS deleted_count = ROW_COUNT;

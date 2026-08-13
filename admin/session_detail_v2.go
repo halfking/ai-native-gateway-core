@@ -36,7 +36,7 @@ func NewSessionDetailV2API(pool *pgxpool.Pool) *SessionDetailV2API {
 	return &SessionDetailV2API{pool: pool}
 }
 
-// SessionV2 表示 gateway.sessions 表的记录
+// SessionV2 表示 public.sessions 表的记录
 type SessionV2 struct {
 	ID                   int64      `json:"id"`
 	SessionID            string     `json:"session_id"`
@@ -184,7 +184,7 @@ func (api *SessionDetailV2API) querySessionDetail(
 	sessionID, tenantID string,
 	limit, offset int,
 ) (*SessionDetailV2Response, error) {
-	// 1. Query session metadata from gateway.sessions
+	// 1. Query session metadata from public.sessions
 	session, err := api.querySession(ctx, sessionID, tenantID)
 	if err != nil {
 		return nil, fmt.Errorf("query session: %w", err)
@@ -218,7 +218,7 @@ func (api *SessionDetailV2API) querySession(
 			last_model, last_provider,
 			task_type, client_type, topic, intent,
 			primary_request_id, turn_logs_summary
-		FROM gateway.sessions
+		FROM public.sessions
 		WHERE session_id = $1 AND tenant_id = $2
 		ORDER BY partition_date DESC
 		LIMIT 1
@@ -271,8 +271,8 @@ func (api *SessionDetailV2API) queryTurns(
 			t.source_kind, t.quality,
 			b.request_delta, b.response_delta, b.outbound_body,
 			b.request_attachments, b.response_attachments
-		FROM gateway.session_turns t
-		LEFT JOIN gateway.session_bodies b 
+		FROM public.session_turns t
+		LEFT JOIN public.session_bodies b 
 			ON t.session_id = b.session_id 
 			AND t.turn_no = b.turn_no
 			AND t.partition_date = b.partition_date

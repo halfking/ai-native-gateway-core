@@ -42,10 +42,10 @@ func cleanupTestV2Data(t *testing.T, db *pgxpool.Pool, sessionID, tenantID strin
 	t.Helper()
 	ctx := context.Background()
 	tables := []string{
-		"gateway.sessions",
-		"gateway.session_turns",
-		"gateway.session_bodies",
-		"gateway.session_turn_logs",
+		"public.sessions",
+		"public.session_turns",
+		"public.session_bodies",
+		"public.session_turn_logs",
 	}
 	for _, table := range tables {
 		q := fmt.Sprintf(`DELETE FROM %s WHERE session_id = $1 AND tenant_id = $2`, table)
@@ -57,7 +57,7 @@ func cleanupTestV2Data(t *testing.T, db *pgxpool.Pool, sessionID, tenantID strin
 
 // TestPersistHook_Integration_DBWrite exercises the full shadow write path
 // against the real PG17 on 252. Requires TEST_DB_URL with write access to
-// gateway.sessions / session_turns / session_bodies / session_turn_logs.
+// public.sessions / session_turns / session_bodies / session_turn_logs.
 //
 //	Run:   TEST_DB_URL="postgres://llm_gateway:$(pass)@172.16.2.210:5432/llm_gateway" \
 //	         go test -tags=integration -run TestPersistHook_Integration_DBWrite \
@@ -109,14 +109,14 @@ func TestPersistHook_Integration_DBWrite(t *testing.T) {
 	// Verify data in V2 tables
 	var turnCount int
 	err = db.QueryRow(ctx,
-		`SELECT COUNT(*) FROM gateway.session_turns WHERE session_id = $1 AND tenant_id = $2`,
+		`SELECT COUNT(*) FROM public.session_turns WHERE session_id = $1 AND tenant_id = $2`,
 		sessionID, tenantID).Scan(&turnCount)
 	require.NoError(t, err)
 	require.Equal(t, 1, turnCount, "expected 1 turn")
 
 	var bodyCount int
 	err = db.QueryRow(ctx,
-		`SELECT COUNT(*) FROM gateway.session_bodies WHERE session_id = $1 AND tenant_id = $2`,
+		`SELECT COUNT(*) FROM public.session_bodies WHERE session_id = $1 AND tenant_id = $2`,
 		sessionID, tenantID).Scan(&bodyCount)
 	require.NoError(t, err)
 	require.Equal(t, 1, bodyCount, "expected 1 bodies row")
@@ -126,7 +126,7 @@ func TestPersistHook_Integration_DBWrite(t *testing.T) {
 
 	var sessionCount int
 	err = db.QueryRow(ctx,
-		`SELECT COUNT(*) FROM gateway.sessions WHERE session_id = $1 AND tenant_id = $2`,
+		`SELECT COUNT(*) FROM public.sessions WHERE session_id = $1 AND tenant_id = $2`,
 		sessionID, tenantID).Scan(&sessionCount)
 	require.NoError(t, err)
 	require.Equal(t, 1, sessionCount, "expected 1 session row")

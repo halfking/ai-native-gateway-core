@@ -690,7 +690,7 @@ func ensureSpecs() []archiveSpec {
 		// date 签名 —— pgx 传 time.Time 为 timestamptz，需显式 ::date 转换，
 		// 否则 PG 报 "function does not exist"。
 		//
-		// ensure_sessions_v2_partitions 一次调用同时覆盖 gateway.sessions /
+		// ensure_sessions_v2_partitions 一次调用同时覆盖 public.sessions /
 		// session_turns / session_bodies 三张表（见 Migration 430）。这三张
 		// 表是 V2 会话主链路的写入目标，缺分区等于聊天全挂。
 		{fnName: "ensure_sessions_v2_partitions", label: "sessions_v2 (sessions/session_turns/session_bodies)", argExpr: "$1::date"}, // Migration 430

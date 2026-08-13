@@ -113,7 +113,7 @@ func (h *SessionTurnsHandler) listTurns(w http.ResponseWriter, r *http.Request, 
 		       COALESCE(model,''), COALESCE(provider,''), COALESCE(status_code,0),
 		       COALESCE(submit_mode,''), COALESCE(injection_verdict,''), COALESCE(output_verdict,''),
 		       COALESCE(attachment_count,0)
-		FROM gateway.session_turns WHERE tenant_id=$1 AND session_id=$2 AND turn_no < $3
+		FROM public.session_turns WHERE tenant_id=$1 AND session_id=$2 AND turn_no < $3
 		ORDER BY turn_no DESC LIMIT $4`, tenantID, sessionID, beforeTurnNo, limit+1)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)

@@ -805,7 +805,7 @@ CREATE FUNCTION public.cleanup_expired_session_turn_logs() RETURNS void
 DECLARE
     deleted_count INT;
 BEGIN
-    DELETE FROM gateway.session_turn_logs
+    DELETE FROM public.session_turn_logs
     WHERE expires_at < NOW();
     
     GET DIAGNOSTICS deleted_count = ROW_COUNT;
@@ -1871,21 +1871,21 @@ DECLARE
 BEGIN
     -- sessions 分区（heap格式）
     EXECUTE format(
-        'CREATE TABLE IF NOT EXISTS gateway.sessions_%s PARTITION OF gateway.sessions
+        'CREATE TABLE IF NOT EXISTS public.sessions_%s PARTITION OF public.sessions
          FOR VALUES FROM (%L) TO (%L)',
         partition_suffix, month_start, month_end
     );
-    
+
     -- session_turns 分区（heap格式）
     EXECUTE format(
-        'CREATE TABLE IF NOT EXISTS gateway.session_turns_%s PARTITION OF gateway.session_turns
+        'CREATE TABLE IF NOT EXISTS public.session_turns_%s PARTITION OF public.session_turns
          FOR VALUES FROM (%L) TO (%L)',
         partition_suffix, month_start, month_end
     );
-    
+
     -- session_bodies 分区使用 heap，因为正文写入支持冲突更新。
     EXECUTE format(
-        'CREATE TABLE IF NOT EXISTS gateway.session_bodies_%s PARTITION OF gateway.session_bodies
+        'CREATE TABLE IF NOT EXISTS public.session_bodies_%s PARTITION OF public.session_bodies
          FOR VALUES FROM (%L) TO (%L)',
         partition_suffix, month_start, month_end
     );

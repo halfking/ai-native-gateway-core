@@ -143,8 +143,8 @@ func (api *SessionSummaryV2API) queryTurnsForSummary(
 			t.turn_no,
 			b.request_delta, 
 			b.response_delta
-		FROM gateway.session_turns t
-		LEFT JOIN gateway.session_bodies b 
+		FROM public.session_turns t
+		LEFT JOIN public.session_bodies b 
 			ON t.session_id = b.session_id 
 			AND t.turn_no = b.turn_no
 			AND t.partition_date = b.partition_date

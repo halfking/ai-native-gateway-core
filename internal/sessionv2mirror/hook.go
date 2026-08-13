@@ -1,6 +1,6 @@
 // Package sessionv2mirror mirrors request_logs into V2 sessions tables
-// (gateway.sessions, gateway.session_turns, gateway.session_bodies,
-// gateway.session_turn_logs).
+// (public.sessions, public.session_turns, public.session_bodies,
+// public.session_turn_logs).
 //
 // Why a separate package: domains/session/v2 cannot import
 // domains/hooks/observability/telemetry without creating an import
@@ -160,6 +160,22 @@ func entryToProcessedRequest(entry *telemetry.RequestLogEntry) *v2.ProcessedRequ
 	if entry.LatencyMs != nil && *entry.LatencyMs > 0 && !req.StartedAt.IsZero() {
 		req.CompletedAt = req.StartedAt.Add(time.Duration(*entry.LatencyMs) * time.Millisecond)
 	}
+
+	// V3.2 dual-write (migration 513): copy the 10 dispatch queue timestamps
+	// from RequestLogEntry → ProcessedRequest so SessionWriterV2 can persist
+	// them into public.session_turns alongside the existing turn columns.
+	// nil-safe: pre-491 RequestLogEntries (older telemetry rows) carry nil
+	// for all T0..T9, so the columns persist as NULL — no breakage.
+	req.T0ArrivedAt = entry.T0ArrivedAt
+	req.T1TotalEnqueuedAt = entry.T1TotalEnqueuedAt
+	req.T2TotalDequeuedAt = entry.T2TotalDequeuedAt
+	req.T3ModelEnqueuedAt = entry.T3ModelEnqueuedAt
+	req.T4ModelDequeuedAt = entry.T4ModelDequeuedAt
+	req.T5CredEnqueuedAt = entry.T5CredEnqueuedAt
+	req.T6CredDequeuedAt = entry.T6CredDequeuedAt
+	req.T7ForwardStartAt = entry.T7ForwardStartAt
+	req.T8ResponseStartAt = entry.T8ResponseStartAt
+	req.T9ResponseEndAt = entry.T9ResponseEndAt
 
 	// Compression
 	if entry.CompressionStrategy != nil {
