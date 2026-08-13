@@ -134,6 +134,16 @@ CREATE TABLE public.request_logs_hot (
     routing_summary text,
     trace_events jsonb,
     canonical_model text,
+    t0_arrived_at timestamp with time zone,
+    t1_total_enqueued_at timestamp with time zone,
+    t2_total_dequeued_at timestamp with time zone,
+    t3_model_enqueued_at timestamp with time zone,
+    t4_model_dequeued_at timestamp with time zone,
+    t5_cred_enqueued_at timestamp with time zone,
+    t6_cred_dequeued_at timestamp with time zone,
+    t7_forward_start_at timestamp with time zone,
+    t8_response_start_at timestamp with time zone,
+    t9_response_end_at timestamp with time zone,
     CONSTRAINT chk_compression_parent_single CHECK (((parent_request_id IS NULL) OR (compression_reason IS NOT NULL) OR (origin_actor IS NOT NULL))),
     CONSTRAINT request_logs_strategy_used_check CHECK (((strategy_used IS NULL) OR (strategy_used = ANY (ARRAY['baseline_heuristic'::text, 'pattern_layered'::text, 'llm_fallback'::text]))))
 )
