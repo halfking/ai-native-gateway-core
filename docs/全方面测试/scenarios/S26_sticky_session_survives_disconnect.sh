@@ -76,18 +76,28 @@ trap cleanup EXIT
 log "phase C: 3 mid-fault rounds (sticky session)"
 DURING_OK=0
 DURING_CODES=""
+DURING_LAT_FILE="$(mktemp -t s26-lat-XXXXXX).txt"
 for i in 3 4 5; do
     sleep 1.2
+    T0=$(python3 -c 'import time;print(int(time.time()*1000))')
     CODE=$(curl -s -o /dev/null -w "%{http_code}" -X POST \
         -H "Authorization: Bearer $AK" \
         -H "X-Gw-Session-Id: $SID" \
         -H "Content-Type: application/json" \
         -d "{\"model\":\"loadtest-mini-alpha\",\"messages\":[{\"role\":\"user\",\"content\":\"round $i during-fault\"}],\"max_tokens\":15,\"stream\":false}" \
         "$GATEWAY/v1/chat/completions" || echo 000)
-    [ "$CODE" = "200" ] && DURING_OK=$((DURING_OK+1))
+    T1=$(python3 -c 'import time;print(int(time.time()*1000))')
+    LAT=$((T1 - T0))
+    [ "$CODE" = "200" ] && DURING_OK=$((DURING_OK+1)) && echo "$LAT" >> "$DURING_LAT_FILE"
     DURING_CODES="$DURING_CODES,$CODE"
-    log "  during-fault round $i → HTTP $CODE"
+    log "  during-fault round $i → HTTP $CODE (${LAT}ms)"
 done
+DURING_P99_MS=$(python3 -c "
+xs = sorted(int(l.strip()) for l in open('$DURING_LAT_FILE') if l.strip())
+if not xs: print(0)
+else: print(xs[int(len(xs)*0.99)])
+")
+rm -f "$DURING_LAT_FILE"
 
 wait "$FI_PID" 2>/dev/null || true
 
@@ -127,7 +137,7 @@ cp "$FI_STDERR" "$RESULTS_DIR/${SCENARIO}-fault-inject.log" 2>/dev/null || true
 
 write_scenario_result "$SCENARIO" "functional" "$STATUS" \
   "{\"baseline_2_of_2\":$CHECK_BASELINE,\"during_2_of_3\":$CHECK_DURING,\"session_turns_ge_4\":$CHECK_TURNS,\"gateway_alive\":$CHECK_ALIVE}" \
-  "{\"total\":$TOTAL,\"succ\":$SUCC,\"fail\":$((TOTAL-SUCC)),\"success_rate\":$RATE,\"baseline_ok\":$BASELINE_OK,\"during_ok\":$DURING_OK,\"session_turns\":$SESS_TURNS}" \
+  "{\"total\":$TOTAL,\"succ\":$SUCC,\"fail\":$((TOTAL-SUCC)),\"success_rate\":$RATE,\"p99_ms\":$DURING_P99_MS,\"baseline_ok\":$BASELINE_OK,\"during_ok\":$DURING_OK,\"session_turns\":$SESS_TURNS}" \
   "{\"during_codes\":\"$DURING_CODES\",\"session_id\":\"$SID\",\"fault_inject_log\":\"results/${SCENARIO}-fault-inject.jsonl\"}" \
   "$FAILURES" \
   "{\"gateway\":\"$GATEWAY\",\"session_id\":\"$SID\",\"kill_group\":\"G\",\"kill_window_sec\":5}"

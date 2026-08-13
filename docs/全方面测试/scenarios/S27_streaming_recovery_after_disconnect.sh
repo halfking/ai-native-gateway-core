@@ -55,25 +55,36 @@ STREAM_OK=0
 STREAM_GOT_CHUNK=0
 STREAM_TIMED_OUT=0
 STREAM_CHUNK_DETAILS=""
+STREAM_LAT_FILE="$(mktemp -t s27-lat-XXXXXX).txt"
 for i in 1 2 3; do
     # 用 timeout 5s 避免 hang
+    T0=$(python3 -c 'import time;print(int(time.time()*1000))')
     OUT=$(timeout 5 curl -s -N -X POST \
         -H "Authorization: Bearer $AK" -H "Content-Type: application/json" \
         -d '{"model":"loadtest-mini-alpha","messages":[{"role":"user","content":"stream"}],"max_tokens":30,"stream":true}' \
         "$GATEWAY/v1/chat/completions" 2>&1 || true)
+    T1=$(python3 -c 'import time;print(int(time.time()*1000))')
+    LAT=$((T1 - T0))
     RC=$?
     if [ -n "$OUT" ]; then
         STREAM_GOT_CHUNK=$((STREAM_GOT_CHUNK+1))
         STREAM_OK=$((STREAM_OK+1))
         FIRST_DATA=$(echo "$OUT" | grep -c "^data: ")
         STREAM_CHUNK_DETAILS="$STREAM_CHUNK_DETAILS,$FIRST_DATA"
+        echo "$LAT" >> "$STREAM_LAT_FILE"
     else
         STREAM_CHUNK_DETAILS="$STREAM_CHUNK_DETAILS,0"
     fi
     # timeout(5) 返回 124 = timed out, 但我们设了 -N; 实际若有数据返回就 ok
     [ "$RC" = "124" ] && STREAM_TIMED_OUT=$((STREAM_TIMED_OUT+1))
 done
-log "stream: $STREAM_OK/3 收到字节, chunks=$STREAM_CHUNK_DETAILS, timed_out=$STREAM_TIMED_OUT"
+STREAM_P99_MS=$(python3 -c "
+xs = sorted(int(l.strip()) for l in open('$STREAM_LAT_FILE') if l.strip())
+if not xs: print(0)
+else: print(xs[int(len(xs)*0.99)])
+")
+rm -f "$STREAM_LAT_FILE"
+log "stream: $STREAM_OK/3 收到字节, chunks=$STREAM_CHUNK_DETAILS, timed_out=$STREAM_TIMED_OUT, p99=${STREAM_P99_MS}ms"
 
 # Phase C: 重置 G, 恢复 100% 流式
 log "phase C: reset G and re-test streaming"
@@ -112,7 +123,7 @@ FAILURES="[]"
 
 write_scenario_result "$SCENARIO" "functional" "$STATUS" \
   "{\"non_stream_4_of_5\":$CHECK_NON_STREAM,\"stream_got_chunk_1_of_3\":$CHECK_STREAM_CHUNK,\"recovery_stream_2_of_3\":$CHECK_STREAM_RE,\"gateway_alive\":$CHECK_ALIVE}" \
-  "{\"total\":$TOTAL,\"succ\":$SUCC,\"fail\":$((TOTAL-SUCC)),\"success_rate\":$RATE,\"non_stream_ok\":$NON_STREAM_OK,\"stream_ok\":$STREAM_OK,\"stream_got_chunk\":$STREAM_GOT_CHUNK,\"stream_timed_out\":$STREAM_TIMED_OUT,\"recovery_stream_ok\":$RECOVER_STREAM_OK}" \
+  "{\"total\":$TOTAL,\"succ\":$SUCC,\"fail\":$((TOTAL-SUCC)),\"success_rate\":$RATE,\"p99_ms\":$STREAM_P99_MS,\"non_stream_ok\":$NON_STREAM_OK,\"stream_ok\":$STREAM_OK,\"stream_got_chunk\":$STREAM_GOT_CHUNK,\"stream_timed_out\":$STREAM_TIMED_OUT,\"recovery_stream_ok\":$RECOVER_STREAM_OK}" \
   "{\"stream_chunks\":\"$STREAM_CHUNK_DETAILS\"}" \
   "$FAILURES" \
   "{\"gateway\":\"$GATEWAY\",\"disconnect_after_ms\":80,\"group\":\"G\"}"
