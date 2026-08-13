@@ -3,6 +3,7 @@ package v2
 import (
 	"context"
 	"fmt"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -550,4 +551,134 @@ func TestSessionCacheV2_NilState_NoDereference(t *testing.T) {
 	require.NotPanics(t, func() {
 		_ = c.Set(context.Background(), nil)
 	}, "Set 必须容忍 nil state")
+}
+
+// ── 2026-08-14 回归：CompressionMetaCache.Get 必须返回独立副本 ──────────────
+//
+// 问题：Get 之前返回的是 entry.state 内部指针，调用方对返回值的任何修改
+// 都会直接写入 L1 缓存，造成跨请求状态污染。
+// 修复：Get/Set 都对 SessionStateV2 做值拷贝，确保 L1 持有的指针永远不泄露给外部。
+
+// TestCompressionMetaCache_GetReturnsCopy 锁定 Get 返回独立副本（不暴露内部指针）。
+// 修改返回值必须不影响缓存里的 entry.state。
+func TestCompressionMetaCache_GetReturnsCopy(t *testing.T) {
+	cache := NewCompressionMetaCache(10)
+
+	orig := &SessionStateV2{
+		SessionID:  "s1",
+		TenantID:   "t1",
+		LastTurnNo: 3,
+		CompressionMeta: CompressionMeta{
+			Strategy:      "delta_append",
+			TokenEstimate: 500,
+			MsgCount:      5,
+			SummaryMarker: "[smm_v1:abc]",
+		},
+	}
+	cache.Set(orig)
+
+	// First Get — mutate the returned copy.
+	got1 := cache.Get("t1", "s1")
+	require.NotNil(t, got1)
+	got1.CompressionMeta.TokenEstimate = 9999
+	got1.CompressionMeta.SummaryMarker = "POISONED"
+	got1.LastTurnNo = 999
+
+	// Second Get — must still see the original values.
+	got2 := cache.Get("t1", "s1")
+	require.NotNil(t, got2)
+	assert.Equal(t, 500, got2.CompressionMeta.TokenEstimate,
+		"mutating Get result must not corrupt L1 TokenEstimate")
+	assert.Equal(t, "[smm_v1:abc]", got2.CompressionMeta.SummaryMarker,
+		"mutating Get result must not corrupt L1 SummaryMarker")
+	assert.Equal(t, 3, got2.LastTurnNo,
+		"mutating Get result must not corrupt L1 LastTurnNo")
+}
+
+// TestCompressionMetaCache_SetStoredCopy 锁定 Set 存储的是副本（不保留调用方指针）。
+// 调用 Set 后修改原指针必须不影响缓存里的 entry.state。
+func TestCompressionMetaCache_SetStoredCopy(t *testing.T) {
+	cache := NewCompressionMetaCache(10)
+
+	state := &SessionStateV2{
+		SessionID: "s2",
+		TenantID:  "t2",
+		CompressionMeta: CompressionMeta{
+			TokenEstimate: 100,
+			Strategy:      "mechanical_trim",
+		},
+	}
+	cache.Set(state)
+
+	// Mutate the original after Set.
+	state.CompressionMeta.TokenEstimate = 9999
+	state.CompressionMeta.Strategy = "POISONED"
+
+	got := cache.Get("t2", "s2")
+	require.NotNil(t, got)
+	assert.Equal(t, 100, got.CompressionMeta.TokenEstimate,
+		"post-Set mutation of source must not corrupt L1 TokenEstimate")
+	assert.Equal(t, "mechanical_trim", got.CompressionMeta.Strategy,
+		"post-Set mutation of source must not corrupt L1 Strategy")
+}
+
+// TestCompressionMetaCache_UpdateStoredCopy 锁定 Set 更新已有 entry 时也存副本。
+func TestCompressionMetaCache_UpdateStoredCopy(t *testing.T) {
+	cache := NewCompressionMetaCache(10)
+
+	// Initial insert.
+	s := &SessionStateV2{SessionID: "s3", TenantID: "t3",
+		CompressionMeta: CompressionMeta{TokenEstimate: 10}}
+	cache.Set(s)
+
+	// Update same key via Set.
+	s2 := &SessionStateV2{SessionID: "s3", TenantID: "t3",
+		CompressionMeta: CompressionMeta{TokenEstimate: 20}}
+	cache.Set(s2)
+
+	// Mutate s2 after update.
+	s2.CompressionMeta.TokenEstimate = 9999
+
+	got := cache.Get("t3", "s3")
+	require.NotNil(t, got)
+	assert.Equal(t, 20, got.CompressionMeta.TokenEstimate,
+		"post-Set mutation of updated source must not corrupt L1")
+}
+
+// TestCompressionMetaCache_ConcurrentGetMutate 锁定在并发 Get+Mutate 场景下
+// 不会出现数据竞争（用 -race 检测）。
+func TestCompressionMetaCache_ConcurrentGetMutate(t *testing.T) {
+	cache := NewCompressionMetaCache(10)
+
+	base := &SessionStateV2{
+		SessionID: "scon", TenantID: "tcon",
+		CompressionMeta: CompressionMeta{TokenEstimate: 42, MsgCount: 7},
+	}
+	cache.Set(base)
+
+	const goroutines = 20
+	var wg sync.WaitGroup
+	wg.Add(goroutines)
+	for i := 0; i < goroutines; i++ {
+		go func(n int) {
+			defer wg.Done()
+			got := cache.Get("tcon", "scon")
+			if got == nil {
+				return
+			}
+			// Mutate the returned copy — this must not race with other goroutines
+			// reading the same entry.
+			got.CompressionMeta.TokenEstimate = n * 100
+			got.CompressionMeta.MsgCount = n
+		}(i)
+	}
+	wg.Wait()
+
+	// After all mutations the cached value must be the original.
+	final := cache.Get("tcon", "scon")
+	require.NotNil(t, final)
+	assert.Equal(t, 42, final.CompressionMeta.TokenEstimate,
+		"concurrent mutations of Get results must not alter the L1 entry")
+	assert.Equal(t, 7, final.CompressionMeta.MsgCount,
+		"concurrent mutations of Get results must not alter the L1 MsgCount")
 }

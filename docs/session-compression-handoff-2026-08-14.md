@@ -1,69 +1,101 @@
 # 会话压缩与多级缓存交接状态
 
-**更新时间**：2026-08-14
+**更新时间**：2026-08-14（第二轮）
 **仓库**：`llm-gateway-go-2`
 **分支**：`main`
-**当前基线**：本地 `main` 已包含 `d7ed7890 fix(session): preserve V2 compression state and outbound snapshots`；远端 `origin/main` 目前比本地多一个主线提交 `18303f7a feat(db): V3.2 migration 510+511 — request_type + request_state_transitions`，下一次操作应先 `git pull --ff-only`。
+**当前基线**：本地 `main` 与 `origin/main` 一致（`07271950 docs(changelog): flash-disconnect-suite…`）；提交 `d7ed7890` 在 log 第 33 行（git log 只显示最近 5 条时被截断，但 `git merge-base --is-ancestor d7ed7890 HEAD` 确认其为 HEAD 祖先）。
 
-## 本轮已完成
+---
+
+## 第一轮已完成（commit d7ed7890）
 
 - 审计了会话上下文压缩、客户端完整历史重复发送、LCS delta-append、滑动窗口、LLM 摘要、机械裁剪、摘要 marker、三层缓存和 V2 mirror 链路。
 - 修复并推送了 `d7ed7890`：
-  - V2 `compression_meta` 冷启动解析，恢复摘要 marker、压缩时间戳、策略、token/message 统计、工具 hash 和 prefix hash。
+  - V2 `compression_meta` 冷启动解析：恢复摘要 marker、压缩时间戳、策略、token/message 统计、工具 hash 和 prefix hash。
   - V2 cache 与 DB reader 的 nil/fail-open 保护。
   - handler 在没有压缩策略时也持久化实际 outbound body、消息 hash 和统计，保证 V2 多轮 delta 检测不丢上一轮快照。
   - 新增 V2 metadata 与冷启动回归测试。
-- 已验证：
-  - `go test ./domains/hooks/compression/...`
-  - `go test ./domains/session/v2/...`
-  - `go test ./domains/streaming/...`
-  - `go test ./security/sanitize/...`
-  - `go test ./...`
-  - 全部通过。
+
+---
+
+## 第二轮已完成（本轮 commit）
+
+### 1. Envelope 完整性审计结论
+
+通读了以下模块并确认：
+
+| 路径 | 关键结论 |
+|------|---------|
+| `domains/session/v2/outbound_builder.go` `BuildLatestOutbound` | 返回 `json.Marshal([]Message)` ── 仅消息数组，不含 model/tools/stream 等 envelope 顶层字段；这是设计意图：provider envelope 在 executor 层重建。 |
+| `domains/hooks/compression/diff.go` `BuildOutboundMessages` | 用 `spliceBodyMessages(clientBody, newMsgs)` 将增量消息注入 **client body**（保留了 model/tools/stream 等顶层字段）。Anthropic 走额外的 `preserveAnthropicSystem(lastBody, newBody)` 保留 `system` 字段。 |
+| `domains/hooks/compression/session_compressor.go` `Prepare` | V2 lastOutboundBody（bare messages array）正确被接受（`extractMessages` 兼容裸数组）；delta 拼接后的最终 body 含完整 client envelope 字段。|
+| `CommitFinal` | 当 `res.skipV1Cache=true`（V2 来源）时跳过 V1 写入，V2 持久化路径由 `sessionv2mirror.PersistHook` 负责。|
+| `internal/sessionv2mirror/hook.go` `entryToProcessedRequest` | `parseMessagesJSON` 正确从完整 envelope 中提取 `messages[]`；Anthropic `content[]` 作为单条 assistant 消息包装。`system`/`tools`/`metadata`/`model` 等 envelope 字段**不存入** session_bodies（设计意图）。|
+
+**结论**：envelope 顶层字段（OpenAI: model/tools/stream；Anthropic: system/tools/metadata）在压缩 delta 路径中通过 `spliceBodyMessages`+`preserveAnthropicSystem` 保留；V2 表仅存消息数组，provider envelope 重建在 executor 层。没有发现未预期的字段丢失。
+
+### 2. 修复 `CompressionMetaCache.Get`/`Set` 指针别名
+
+**问题**：`Get` 返回 `entry.state`（内部指针），调用方修改后污染 L1 缓存；`Set` 直接存调用方指针，调用方在 Set 后修改会同样污染 L1。
+
+**修复**（`domains/session/v2/cache_v2.go`）：
+- `Get`：`cp := *entry.state; return &cp`
+- `Set`：`cp := *state` 后存 `&cp`（新旧 entry 路径均处理）
+
+**测试**（追加到 `domains/session/v2/cache_v2_test.go`）：
+- `TestCompressionMetaCache_GetReturnsCopy` — 修改 Get 返回值不影响 L1
+- `TestCompressionMetaCache_SetStoredCopy` — Set 后修改源不影响 L1
+- `TestCompressionMetaCache_UpdateStoredCopy` — 更新已有 entry 时同样复制
+- `TestCompressionMetaCache_ConcurrentGetMutate` — 并发 Get+Mutate 不数据竞争（`-race` 验证）
+
+### 3. 新增集成回归测试
+
+新建 `domains/hooks/compression/session_compressor_regression_test.go`，覆盖：
+
+1. **`TestPrepare_ClientResendFullHistory_DoesNotUndoCompression`** — 客户端重发完整未压缩历史时，outbound 仍含 smm_v1 marker（压缩未被撤销），且包含新增 delta turn。
+2. **`TestPrepare_FreshSession_OutboundBodyAlwaysPopulated`** — 纯 fresh session：MsgCount/TokenEst/MsgHashes 均有值，handler 可据此持久化 OutboundBody（修复 d7ed7890 场景的单元级守卫）。
+3. **`TestPrepare_PureDeltaAppend_NotClassifiedAsNewSession`** — V2 有先前快照时，纯 delta-append 产出 3 条消息（先前 2 + 新增 1），不被误判为新 session。
+4. **`TestPrepare_V2MetaRestore_ColdStart`** — summary_marker/compressed_prefix_hash/strategy 从 L3 冷启动元数据正确传入 Prepare 流程。
+5. **`TestPrepare_Anthropic_SystemPreservedAcrossDelta`** — Anthropic delta-append 后 `system` 字段保留在 outbound body 中。
+
+### 4. 字段命名/语义审计结论
+
+| 字段 | request_logs | session_turns (compression_meta JSONB) | V2 CompressionMeta | 一致性 |
+|------|-------------|----------------------------------------|--------------------|--------|
+| `summary_marker` | `outbound_summary_marker` | `summary_marker` | `SummaryMarker` | ✅ 各层名称对应清晰 |
+| `compressed_prefix_hash` | `compression_meta.compressed_prefix_hash` | `compressed_prefix_hash` | `CompressedPrefixHash` | ✅ |
+| `window_triggered` | `outbound_window_triggered` | `window_triggered`（通过 scResult WAL 写入）| N/A（仅 request 级） | ✅ 仅在 request_logs 层，V2 不需要 |
+| `strategy` | `compression_strategy` (独立列) | `strategy`（JSONB 内） | `Strategy` | ✅ 注意 request_logs 有独立列 + JSONB 冗余 |
+| `msg_count` | `outbound_msg_count` | `msg_count` | `MsgCount` | ✅ |
+| `token_estimate` | `outbound_token_est` | `token_estimate` | `TokenEstimate` | ✅ |
+| `LastCompressedAt` | 无独立列（存入 JSONB）| `last_compressed_at` | `LastCompressedAt time.Time` | ✅ L3 冷启动正确解析 RFC3339 |
+| `RecentlyCompressedAt` | 无独立列（存入 JSONB）| `recently_compressed_at` | `RecentlyCompressedAt time.Time` | ✅ |
+| `CutMarker` | N/A（V1 SessionState 独有）| N/A | N/A（V2 无此字段）| V1/V2 边界：V2 不跟踪 cut marker，依赖 summary_marker 区分 |
+| `tools_hash` | 无 | `tools_hash` | `ToolsHash` | ✅ |
+
+无需统一改动；命名语义跨层一致，差异均为有意设计（V1/V2 边界、request vs session 粒度差异）。
+
+### 5. 测试验证
+
+```
+go test -race ./domains/hooks/compression/... ./domains/session/v2/... ./domains/streaming/... ./security/sanitize/...
+# → 全部 ok，无 race 警告
+
+go test ./...
+# → 唯一 FAIL: internal/sqlguard（pre-existing，与本轮无关；stash 后仍 FAIL）
+```
+
+---
 
 ## 已确认的设计边界
 
-- `SessionCache` 的 L1/L2/L3 是存储层级，不等同于“原始/压缩/审计后”三个业务语义层。
-- V2 `CompressionMetaCache` 主要存元数据；上一轮真实 outbound 仍依赖 `session_bodies.outbound_body`/`TurnReader` 回放。
-- `session_bodies.outbound_body` 保存消息数组，而压缩器兼容完整 provider envelope；OpenAI/Anthropic 顶层字段保留仍需继续做协议级回放测试。
-- 仓库根目录未发现 `.acc-session-policy`，本轮未执行专用 session governance gate。
-- 用户原始工作树开始时有 `.golangci.yml`、`scripts/scan-secrets.sh`、`scripts/verify_partition_architecture.sh` 修改；本轮未改动这些文件，后续操作仍需避免覆盖。
+- `session_bodies.outbound_body` 仅存消息数组；provider envelope（model/tools/stream/system/metadata）在 executor 层重建，不进 V2 表——这是正确的设计。
+- `CompressionMetaCache`（V2 L1）全字段均为值类型（string/int/time.Time/bool），深拷贝只需 struct 值赋值，无需递归。
+- `CommitFinal` 对 V2 来源（`skipV1Cache=true`）静默跳过，V2 持久化由 `sessionv2mirror.PersistHook` 异步完成（best-effort + backlog）。
+- `internal/sqlguard.TestNoGoCommentsInSQLLiterals` 失败是 pre-existing（`domains/hooks/observability/telemetry/client.go` 的 SQL 字符串里包含 Go 注释），与本轮无关。
 
-## 新会话剩余任务
+## 后续任务（可选）
 
-1. 先同步远端：
-   - `git status --short`
-   - `git pull --ff-only origin main`
-   - 确认 `d7ed7890` 仍在历史中。
-2. 继续做协议级回放审计：
-   - OpenAI 完整 envelope 在 V2 `BuildLatestOutbound`、`Prepare`、handler 最终 body、`CommitFinal` 和 `sessionv2mirror` 间是否保留 `model/tools/stream/extra_body`。
-   - Anthropic `system`、`tools`、`metadata` 是否在 delta-append/摘要 marker/最终 provider body 中保持语义一致。
-3. 补充真正的 handler/telemetry/V2 mirror 集成测试：
-   - 纯 fresh session 也写 `OutboundBody`。
-   - 纯 delta-append 不被当作新 session。
-   - 客户端再次发送完整未压缩历史时，网关仍使用上一轮压缩 outbound + 新增消息。
-   - V2 mirror 的 `compression_meta` 与 `outbound_body` 可恢复。
-4. 检查并修正 V2 cache 的返回值隔离：`CompressionMetaCache.Get` 当前返回内部 `SessionStateV2` 指针，调用方修改后可能污染 L1；建议返回深拷贝，并补并发/别名回归测试。
-5. 统一 `compression_meta` 字段协议，重点核对：`summary_marker`、`window_triggered`、`compressed_prefix_hash`、`tokens_before/after`、`msg_count`、`strategy`、压缩时间戳是否跨 request_logs/session_turns/cache_v2 一致。
-6. 检查 `LastCompressedAt`、`RecentlyCompressedAt`、`CutMarker` 在普通 delta 轮次、机械裁剪、LLM 摘要、4xx recovery、进程重启后的更新/失效行为。
-7. 如需真实环境数据，使用授权的 154 日志做脱敏 replay；不要把生产敏感内容写入仓库。
-8. 完成后运行定向测试和 `go test ./...`，再检查 `git diff --check`、`git status`，提交并推送。
-
-## 新会话可复制提示词
-
-```text
-继续审计并修复仓库 /Users/xutaohuang/workspace/ai-native-tools/syncfield/llm-gateway-go-2 的会话上下文压缩、相关轮次和多级缓存设计。先执行 git status --short && git pull --ff-only origin main，确认 d7ed7890 仍在历史中且保留现有用户修改，不要回退无关改动。
-
-上一轮已完成并验证：V2 compression_meta 冷启动解析、V2/DB nil fail-open、handler 在纯 delta/fresh session 也持久化 outbound body；提交 d7ed7890。定向包和 go test ./... 均通过。
-
-本轮重点继续：
-1. 审计 OpenAI/Anthropic provider envelope 在 V2 BuildLatestOutbound、SessionCompressor.Prepare、handler 最终发送 body、CommitFinal 和 sessionv2mirror 之间是否完整保留；特别检查 Anthropic system/tools/metadata。
-2. 补真实集成回归测试：客户端重复发送完整未压缩历史时不能破坏上一轮压缩；纯 fresh/delta 请求必须持久化 outbound_body；V2 mirror 必须恢复 compression_meta 和 outbound 快照。
-3. 修复 CompressionMetaCache.Get 返回内部指针造成的 L1 状态污染，最好返回深拷贝并补测试。
-4. 统一 compression_meta 字段命名和时间戳语义，检查 summary_marker/window_triggered/compressed_prefix_hash/tokens_before/after/msg_count/strategy/LastCompressedAt/RecentlyCompressedAt/CutMarker 在 request_logs、session_turns、V2 cache 和进程重启后的行为。
-5. 如需 154 真实日志，只做授权脱敏 replay，不将敏感生产数据写入仓库。
-6. 每次修改后运行 gofmt；至少运行 go test ./domains/hooks/compression/... ./domains/session/v2/... ./domains/streaming/... ./security/sanitize/...，最终运行 go test ./...。
-7. 完成后检查 git diff --check、git status，提交并推送到 origin/main，并更新本交接文档。
-
-不要停留在分析阶段；发现问题就修复、补测试、验证并完成提交推送。不要提交或覆盖用户未授权的无关改动。
-```
+- 若需要覆盖 handler 层 telemetry 的完整端到端测试，需要 `TEST_DB_URL` 环境，可在 CI 集成测试套件中补充。
+- V1 `SessionState.CutMarker` 与进程重启后的失效行为：当 V2 完全接管后 V1 路径将退休，该问题届时自然消除。
+- `internal/sqlguard` 失败需要 telemetry 包的 owner 修复（将 Go `//` 注释改成 SQL `--` 注释）。

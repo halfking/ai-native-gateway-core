@@ -241,7 +241,12 @@ func NewCompressionMetaCache(capacity int) *CompressionMetaCache {
 	}
 }
 
-// Get retrieves state from L1 cache
+// Get retrieves state from L1 cache.
+//
+// Always returns a shallow copy of the cached SessionStateV2 so callers
+// cannot mutate the L1 entry. All fields in SessionStateV2/CompressionMeta/
+// GovernanceMeta are value types (no slices or maps), so a struct copy is a
+// true deep copy.
 func (c *CompressionMetaCache) Get(tenantID, sessionID string) *SessionStateV2 {
 	key := cacheKey(tenantID, sessionID)
 
@@ -256,25 +261,33 @@ func (c *CompressionMetaCache) Get(tenantID, sessionID string) *SessionStateV2 {
 	// Move to front (most recently used)
 	c.lru.moveToFront(entry.node)
 
-	return entry.state
+	// Return a copy; never expose the internal pointer.
+	cp := *entry.state
+	return &cp
 }
 
 // Set stores state in L1 cache. A nil state is ignored: LoadState returns
 // (nil, nil) for a brand-new session, and a nil-deref here took down the
 // whole chat path on 2026-08-07. Callers should skip the warm-up entirely,
 // but this guard keeps a nil from being fatal.
+//
+// A copy of the state is stored so later mutations by the caller cannot
+// silently corrupt the cached entry.
 func (c *CompressionMetaCache) Set(state *SessionStateV2) {
 	if c == nil || state == nil {
 		return
 	}
 	key := cacheKey(state.TenantID, state.SessionID)
 
+	// Copy before locking so the closure is short.
+	cp := *state
+
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
 	// Update existing entry
 	if entry, ok := c.items[key]; ok {
-		entry.state = state
+		entry.state = &cp
 		c.lru.moveToFront(entry.node)
 		return
 	}
@@ -289,7 +302,7 @@ func (c *CompressionMetaCache) Set(state *SessionStateV2) {
 	c.lru.addToFront(node)
 
 	c.items[key] = &cacheEntry{
-		state: state,
+		state: &cp,
 		node:  node,
 	}
 }
