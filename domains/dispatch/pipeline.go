@@ -155,6 +155,10 @@ func (p *Pipeline) Submit(ctx context.Context, qr *QueuedRequest) (any, error) {
 	if qr.EnqueuedAt.IsZero() {
 		qr.EnqueuedAt = time.Now()
 	}
+
+	// V3.1: Record T1 timestamp (total queue enqueue)
+	qr.SetT1_TotalEnqueued()
+
 	modelKey := queueKeyFor(qr.RequestedModel)
 	if !p.enqueueModel(modelKey, qr) {
 		metricOverflow.WithLabelValues("model_queue_full").Inc()
@@ -247,6 +251,10 @@ func (p *Pipeline) runModelDrainer(mq *modelQueue) {
 		case qr := <-mq.ch:
 			mq.depth.Add(-1)
 			metricModelQueueDepth.WithLabelValues(mq.name).Dec()
+
+			// V3.1: Record T2 timestamp (model queue dequeue, routing start)
+			qr.SetT2_TotalDequeued()
+
 			wait := time.Since(qr.EnqueuedAt).Seconds()
 			metricModelQueueWait.WithLabelValues(mq.name).Observe(wait)
 			select {
@@ -305,7 +313,10 @@ func (p *Pipeline) tryEnqueueCred(cred CredentialRef, qr *QueuedRequest) bool {
 	// cf.queue establishes happens-before, so the forwarder goroutine's read of
 	// CredEnqueuedAt in acquire() (forwarder.go) is race-free. Setting it after
 	// the send (the previous order) raced with the receiver (go test -race).
-	qr.CredEnqueuedAt = time.Now()
+
+	// V3.1: Record T5 timestamp (credential queue enqueue)
+	qr.SetT5_CredEnqueued()
+
 	select {
 	case cf.queue <- qr:
 		metricCredQueueDepth.WithLabelValues(itoa(cred.CredentialID), cred.ConcurrencyMode).Inc()

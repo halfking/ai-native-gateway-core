@@ -127,7 +127,10 @@ func (cf *credForwarder) acquire(qr *QueuedRequest) bool {
 		cf.pipe.routeFailover(qr, err)
 		return false
 	}
-	qr.DequeuedAt = time.Now()
+
+	// V3.1: Record T6 timestamp (credential queue dequeue, governor acquired)
+	qr.SetT6_CredDequeued()
+
 	if !qr.CredEnqueuedAt.IsZero() {
 		metricCredQueueWait.WithLabelValues(itoa(cf.cred.CredentialID)).Observe(qr.DequeuedAt.Sub(qr.CredEnqueuedAt).Seconds())
 	}
