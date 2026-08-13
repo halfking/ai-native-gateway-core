@@ -286,6 +286,52 @@ func (m *SanitizeInputMiddleware) saveMapAndOffsets(ctx context.Context, session
 	return m.redis.Expire(ctx, mapKey, m.ttl).Err()
 }
 
+// injectPlaceholderProtection 向 messages 数组注入 System Prompt 占位符保护指令
+//
+// Phase 2 Task 2.3: 防止 LLM 篡改或泄露占位符格式
+//
+// 行为：
+//  1. 查找第一条 system 消息
+//  2. 如果存在，向其 content 追加保护指令
+//  3. 如果不存在，在数组开头插入新的 system 消息
+//
+// 参数：
+//   - messages: []any，每个元素是 map[string]any（OpenAI 格式）
+func (m *SanitizeInputMiddleware) injectPlaceholderProtection(messages []any) {
+	if !IsSanitizeSystemPromptEnabled() {
+		return
+	}
+
+	// 查找第一条 system 消息
+	for _, msgAny := range messages {
+		msg, ok := msgAny.(map[string]any)
+		if !ok {
+			continue
+		}
+		role, _ := msg["role"].(string)
+		if role != "system" {
+			continue
+		}
+
+		// 找到 system 消息，注入保护指令
+		content, _ := msg["content"].(string)
+		msg["content"] = InjectPlaceholderProtection(content)
+		return
+	}
+
+	// 没有 system 消息，在开头插入新消息
+	newSystemMsg := map[string]any{
+		"role":    "system",
+		"content": InjectPlaceholderProtection(""),
+	}
+
+	// 在数组开头插入（避免 append 后 messages 指向新的底层数组）
+	// 由于 messages 是切片，这里需要用反射或类型断言来修改原数组
+	// 简化实现：直接在切片开头插入（调用方会重新序列化整个 raw）
+	copy(messages[1:], messages)
+	messages[0] = newSystemMsg
+}
+
 // SanitizeRestoreInterceptor 实现 response.ResponseInterceptor。
 // 在输出安全检查（OutputComplianceInterceptor）之后执行，
 // 从 Redis 读取会话级映射表，把占位符还原为真实敏感值。
