@@ -103,10 +103,11 @@ type ScoringBreakdown struct {
 	// Explore 区分「生效」与「探索」：与 AffinityApplied 互斥，但都要在
 	// mode=on 下才可能发生。需要这两个标签来验证 P3 验收标准中「生效组 vs
 	// 探索组 reward 对比」能否观察得到。
-	Affinity        float64 `json:"affinity"`
-	AffinityApplied bool    `json:"affinity_applied"`
-	Explore         bool    `json:"explore"`
-	Composite       float64 `json:"composite"`
+	Affinity          float64 `json:"affinity"`
+	AffinityApplied   bool    `json:"affinity_applied"`
+	Explore           bool    `json:"explore"`
+	RouteBoostApplied bool    `json:"route_boost_applied,omitempty"`
+	Composite         float64 `json:"composite"`
 
 	// IsFallback 标记该候选来自 48h 热门回退路径（doc 16 §5-E）：
 	// 之前用 `Composite==50 && PriceScore==50 && MatchScore<=30` 的浮点三连等
