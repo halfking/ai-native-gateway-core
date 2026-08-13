@@ -86,7 +86,7 @@ func (h *Handler) serveSessionTurnsList(w http.ResponseWriter, r *http.Request, 
 		       COALESCE(model,''), COALESCE(provider,''), COALESCE(status_code,0),
 		       COALESCE(submit_mode,''), COALESCE(injection_verdict,''), COALESCE(output_verdict,''),
 		       COALESCE(attachment_count,0)
-		FROM gateway.session_turns
+		FROM public.session_turns
 		WHERE tenant_id=$1 AND session_id=$2 AND turn_no < $3
 		ORDER BY turn_no DESC LIMIT $4`, tenantID, sessionID, beforeTurnNo, limit+1)
 	if err != nil {
@@ -208,8 +208,8 @@ func (h *Handler) serveSessionTurnDetail(w http.ResponseWriter, r *http.Request,
 			t.source_kind, t.quality,
 			b.request_delta, b.response_delta, b.outbound_body,
 			b.request_attachments, b.response_attachments
-		FROM gateway.session_turns t
-		LEFT JOIN gateway.session_bodies b
+		FROM public.session_turns t
+		LEFT JOIN public.session_bodies b
 			ON t.session_id = b.session_id AND t.turn_no = b.turn_no AND t.partition_date = b.partition_date
 		WHERE t.session_id = $1 AND t.tenant_id = $2 AND t.turn_no = $3
 		LIMIT 1`
@@ -363,7 +363,7 @@ func boolPtrValue(p *bool) bool {
 }
 
 // sessionSnapshotV2 是会话快照的响应形状，前端 SessionSummaryBar 依赖这些字段。
-// 数据源为 gateway.sessions（V2 会话快照，migration 456 添加了
+// 数据源为 public.sessions（V2 会话快照，migration 456 添加了
 // title/summary/summary_generated_at 列，migration 430 有 last_model/last_provider）。
 type sessionSnapshotV2 struct {
 	SessionID          string     `json:"session_id"`
@@ -377,10 +377,10 @@ type sessionSnapshotV2 struct {
 	LastProvider       *string    `json:"last_provider,omitempty"`
 }
 
-// serveSessionSnapshot 返回会话快照（取自 gateway.sessions）。
+// serveSessionSnapshot 返回会话快照（取自 public.sessions）。
 //
 // 标题/摘要采用与 GET /api/admin/turns/sessions 一致的级联回退：
-// gateway.sessions → session_titles（auto_title_generator）→
+// public.sessions → session_titles（auto_title_generator）→
 // session_summaries（auto_summary_generator），否则会话详情页顶部的摘要栏
 // 在 instant-summary 端点被手动触发前会一直显示空白。
 func (h *Handler) serveSessionSnapshot(w http.ResponseWriter, r *http.Request, sessionID string) {
@@ -396,7 +396,7 @@ func (h *Handler) serveSessionSnapshot(w http.ResponseWriter, r *http.Request, s
 		       COALESCE(NULLIF(s.summary, ''), ss.summary, '') AS summary,
 		       s.summary_generated_at, s.total_turns, s.total_cost_usd,
 		       s.last_model, s.last_provider
-		FROM gateway.sessions s
+		FROM public.sessions s
 		LEFT JOIN session_dim sd
 			ON sd.gw_session_id = s.session_id AND sd.tenant_id = s.tenant_id
 		LEFT JOIN session_summaries ss
@@ -422,8 +422,8 @@ func (h *Handler) serveSessionSnapshot(w http.ResponseWriter, r *http.Request, s
 
 // serveSessionInstantSummary 触发会话即时总结，返回生成的标题/总结/生成时间。
 // 复用 SessionSummaryV2API 的 LLM 总结路径（session_summary_v2.go），并把
-// title/summary/summary_generated_at 回写 gateway.sessions，供前端
-// 轮询感知新鲜度（gateway.sessions 是分区表，UPDATE 需 ORDER BY LIMIT 1）。
+// title/summary/summary_generated_at 回写 public.sessions，供前端
+// 轮询感知新鲜度（public.sessions 是分区表，UPDATE 需 ORDER BY LIMIT 1）。
 func (h *Handler) serveSessionInstantSummary(w http.ResponseWriter, r *http.Request, sessionID string) {
 	if r.Method != http.MethodPost {
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
@@ -446,7 +446,7 @@ func (h *Handler) serveSessionInstantSummary(w http.ResponseWriter, r *http.Requ
 
 	now := time.Now()
 	result, uerr := h.db.Exec(r.Context(), `
-		UPDATE gateway.sessions
+		UPDATE public.sessions
 		SET title=$3, summary=$4, summary_generated_at=$5, updated_at=$5
 		WHERE session_id=$1 AND tenant_id=$2
 		ORDER BY partition_date DESC LIMIT 1`,

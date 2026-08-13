@@ -6,7 +6,7 @@
 -- 注意：
 --   - 431 已被另一迁移占用（session_turns 增加 attachment_count 等），
 --     这里使用未占用编号 456。
---   - gateway.session_bodies 上 request_attachments / response_attachments
+--   - public.session_bodies 上 request_attachments / response_attachments
 --     已经由 migration 430 创建（DEFAULT '[]'::jsonb）。
 --     本迁移以 IF NOT EXISTS 形式幂等地补一遍（不会创建重复列），
 --     以保证会话 V2 详情工具的运行假设稳定。
@@ -18,10 +18,10 @@
 BEGIN;
 
 -- =============================================
--- gateway.sessions：最后一轮快读 + 总结
+-- public.sessions：最后一轮快读 + 总结
 -- =============================================
 
-ALTER TABLE gateway.sessions
+ALTER TABLE public.sessions
     ADD COLUMN IF NOT EXISTS last_full_request JSONB,
     ADD COLUMN IF NOT EXISTS last_full_response JSONB,
     ADD COLUMN IF NOT EXISTS last_full_payload_at TIMESTAMPTZ,
@@ -32,48 +32,48 @@ ALTER TABLE gateway.sessions
     ADD COLUMN IF NOT EXISTS summary_quality TEXT
         CHECK (summary_quality IS NULL OR summary_quality IN ('rejected','partial','verified'));
 
-COMMENT ON COLUMN gateway.sessions.last_full_request IS
+COMMENT ON COLUMN public.sessions.last_full_request IS
     'Last turn full request payload (snapshot, used for session detail UI).';
-COMMENT ON COLUMN gateway.sessions.last_full_response IS
+COMMENT ON COLUMN public.sessions.last_full_response IS
     'Last turn full response payload (snapshot).';
-COMMENT ON COLUMN gateway.sessions.last_full_payload_at IS
+COMMENT ON COLUMN public.sessions.last_full_payload_at IS
     'When last_full_request/response was captured.';
-COMMENT ON COLUMN gateway.sessions.title IS
+COMMENT ON COLUMN public.sessions.title IS
     'Auto-generated session title (one-line).';
-COMMENT ON COLUMN gateway.sessions.summary IS
+COMMENT ON COLUMN public.sessions.summary IS
     'Inline summary of the conversation up to last_full_payload_at.';
-COMMENT ON COLUMN gateway.sessions.summary_model IS
+COMMENT ON COLUMN public.sessions.summary_model IS
     'Model id used to produce summary.';
-COMMENT ON COLUMN gateway.sessions.summary_generated_at IS
+COMMENT ON COLUMN public.sessions.summary_generated_at IS
     'When summary was generated.';
-COMMENT ON COLUMN gateway.sessions.summary_quality IS
+COMMENT ON COLUMN public.sessions.summary_quality IS
     'Quality flag for the summary: rejected | partial | verified.';
 
 -- =============================================
--- gateway.session_turns：attempt_no + 每轮一句话
+-- public.session_turns：attempt_no + 每轮一句话
 -- =============================================
 
-ALTER TABLE gateway.session_turns
+ALTER TABLE public.session_turns
     ADD COLUMN IF NOT EXISTS attempt_no INT NOT NULL DEFAULT 0,
     ADD COLUMN IF NOT EXISTS tools JSONB NOT NULL DEFAULT '[]'::jsonb,
     ADD COLUMN IF NOT EXISTS title TEXT,
     ADD COLUMN IF NOT EXISTS summary TEXT;
 
-COMMENT ON COLUMN gateway.session_turns.attempt_no IS
+COMMENT ON COLUMN public.session_turns.attempt_no IS
     'Failover attempt index for this turn (0 = first attempt).';
-COMMENT ON COLUMN gateway.session_turns.tools IS
+COMMENT ON COLUMN public.session_turns.tools IS
     'Tools invoked during this turn (JSON array of tool_use records).';
-COMMENT ON COLUMN gateway.session_turns.title IS
+COMMENT ON COLUMN public.session_turns.title IS
     'Turn-level one-line title (UI list rendering).';
-COMMENT ON COLUMN gateway.session_turns.summary IS
+COMMENT ON COLUMN public.session_turns.summary IS
     'Turn-level one-sentence summary.';
 
 -- =============================================
--- gateway.session_bodies：附件 manifest（引用，不存 base64）
+-- public.session_bodies：附件 manifest（引用，不存 base64）
 --   430 已经创建过同名同类型列；这里 IF NOT EXISTS 幂等补齐。
 -- =============================================
 
-ALTER TABLE gateway.session_bodies
+ALTER TABLE public.session_bodies
     ADD COLUMN IF NOT EXISTS request_attachments JSONB NOT NULL DEFAULT '[]'::jsonb,
     ADD COLUMN IF NOT EXISTS response_attachments JSONB NOT NULL DEFAULT '[]'::jsonb;
 
@@ -87,14 +87,14 @@ BEGIN
         SELECT 1 FROM information_schema.columns
         WHERE table_schema='gateway' AND table_name='sessions' AND column_name='last_full_payload_at'
     ) THEN
-        RAISE EXCEPTION 'gateway.sessions.last_full_payload_at not created';
+        RAISE EXCEPTION 'public.sessions.last_full_payload_at not created';
     END IF;
 
     IF NOT EXISTS (
         SELECT 1 FROM information_schema.columns
         WHERE table_schema='gateway' AND table_name='session_turns' AND column_name='attempt_no'
     ) THEN
-        RAISE EXCEPTION 'gateway.session_turns.attempt_no not created';
+        RAISE EXCEPTION 'public.session_turns.attempt_no not created';
     END IF;
 
     RAISE NOTICE '===== Migration 456 SUCCESSFUL (columns) =====';
@@ -110,7 +110,7 @@ COMMIT;
 --   - idx_sessions_summary_at：summary_generated_at 用于 UI 提示"已总结"
 --
 -- ⚠️ 锁风险（audit P1-7）：
---   gateway.sessions 是分区表。CREATE INDEX ON 父表会逐分区获取
+--   public.sessions 是分区表。CREATE INDEX ON 父表会逐分区获取
 --   ACCESS EXCLUSIVE 锁，生产环境大分区可能阻塞读写数分钟。
 --   CONCURRENTLY 不支持用在分区表父表上（PostgreSQL 限制）。
 --
@@ -119,7 +119,7 @@ COMMIT;
 --   B) 逐分区 CONCURRENTLY（适合已有流量的生产环境）：
 --      DO $$ DECLARE p TEXT; BEGIN
 --        FOR p IN SELECT inhrelid::regclass::text FROM pg_inherits
---          WHERE inhparent = 'gateway.sessions'::regclass
+--          WHERE inhparent = 'public.sessions'::regclass
 --        LOOP
 --          EXECUTE format('CREATE INDEX CONCURRENTLY IF NOT EXISTS
 --            idx_sessions_last_full_at ON %s (tenant_id, last_full_payload_at DESC)
@@ -134,9 +134,9 @@ COMMIT;
 -- =============================================
 
 CREATE INDEX IF NOT EXISTS idx_sessions_last_full_at
-    ON gateway.sessions (tenant_id, last_full_payload_at DESC)
+    ON public.sessions (tenant_id, last_full_payload_at DESC)
     WHERE last_full_payload_at IS NOT NULL;
 
 CREATE INDEX IF NOT EXISTS idx_sessions_summary_at
-    ON gateway.sessions (tenant_id, summary_generated_at DESC)
+    ON public.sessions (tenant_id, summary_generated_at DESC)
     WHERE summary_generated_at IS NOT NULL;

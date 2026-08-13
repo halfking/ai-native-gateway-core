@@ -9,7 +9,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-// TurnLogsWriter writes processing stage logs to gateway.session_turn_logs
+// TurnLogsWriter writes processing stage logs to public.session_turn_logs
 //
 // These logs are temporary (24h TTL) and used for debugging and diagnostics.
 // When a session closes, they can be aggregated into the sessions table's
@@ -52,7 +52,7 @@ func (w *TurnLogsWriter) WriteStage(ctx context.Context, rec TurnLogRecord) erro
 	}
 
 	_, err = w.db.Exec(ctx, `
-		INSERT INTO gateway.session_turn_logs (
+		INSERT INTO public.session_turn_logs (
 			session_id, turn_no, tenant_id, request_id,
 			stage, stage_status, event_data, error_message,
 			started_at, completed_at, latency_ms,
@@ -85,7 +85,7 @@ func (w *TurnLogsWriter) GetStageLogs(ctx context.Context, tenantID, sessionID s
 			stage, stage_status, event_data, 
 			COALESCE(error_message, ''),
 			started_at, completed_at, latency_ms
-		FROM gateway.session_turn_logs
+		FROM public.session_turn_logs
 		WHERE tenant_id = $1 AND session_id = $2 AND turn_no = $3
 		ORDER BY started_at ASC
 	`
@@ -131,7 +131,7 @@ func (w *TurnLogsWriter) GetAllSessionLogs(ctx context.Context, tenantID, sessio
 			stage, stage_status, event_data,
 			COALESCE(error_message, ''),
 			started_at, completed_at, latency_ms
-		FROM gateway.session_turn_logs
+		FROM public.session_turn_logs
 		WHERE tenant_id = $1 AND session_id = $2
 		ORDER BY turn_no ASC, started_at ASC
 	`
@@ -215,7 +215,7 @@ func (w *TurnLogsWriter) AggregateSessionLogs(ctx context.Context, tenantID, ses
 // This should be called by a background worker periodically.
 func (w *TurnLogsWriter) CleanupExpiredLogs(ctx context.Context) (int64, error) {
 	result, err := w.db.Exec(ctx, `
-		DELETE FROM gateway.session_turn_logs
+		DELETE FROM public.session_turn_logs
 		WHERE expires_at < NOW()
 	`)
 

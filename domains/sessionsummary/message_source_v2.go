@@ -11,7 +11,7 @@ import (
 )
 
 // v2SessionBodiesSource is the V2 MessageSource: it reads from
-// gateway.session_bodies (+ session_turns for the model name) instead of the V1
+// public.session_bodies (+ session_turns for the model name) instead of the V1
 // request_logs / request_logs_bodies tables.
 //
 // It exists so the summarizer can keep working once V1 request bodies are
@@ -33,7 +33,7 @@ type v2SessionBodiesSource struct {
 }
 
 // NewV2SessionBodiesSource constructs a MessageSource that reads from the V2
-// gateway.session_bodies (+ session_turns for the model) tables. Intended for
+// public.session_bodies (+ session_turns for the model) tables. Intended for
 // Summarizer.SetMessageSource when the sessions_v2_compression_read flag is on
 // (docs/omni-ref3 A1). A nil pool yields per-call errors rather than a panic,
 // matching the V1 source's nil-safety contract.
@@ -64,8 +64,8 @@ const v2SessionBodiesBaseQuery = `
 		COALESCE(t.model, '') AS model,
 		b.ts,
 		b.request_delta
-	FROM gateway.session_bodies b
-		LEFT JOIN gateway.session_turns t
+	FROM public.session_bodies b
+		LEFT JOIN public.session_turns t
 		  ON t.tenant_id = b.tenant_id
 		 AND t.request_id = b.request_id
 	WHERE b.session_id = $1

@@ -22,7 +22,7 @@ type bodiesDB interface {
 	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
 }
 
-// SessionBodiesWriter writes turn bodies to gateway.session_bodies
+// SessionBodiesWriter writes turn bodies to public.session_bodies
 //
 // It stores incremental message deltas to avoid the bloat problem
 // of storing full message history in every row (as request_logs does).
@@ -233,7 +233,7 @@ func jsonTextOrNull(data []byte) string {
 	return string(data)
 }
 
-// WriteBodies writes turn bodies to gateway.session_bodies
+// WriteBodies writes turn bodies to public.session_bodies
 //
 // This is the backwards-compatible wrapper that runs against the writer's own
 // pool. Prefer WriteBodiesInTx when you need turn + bodies to commit atomically
@@ -289,7 +289,7 @@ func (w *SessionBodiesWriter) WriteBodiesInTx(ctx context.Context, tx bodiesDB, 
 	partitionDate := calendarDate(rec.Ts)
 
 	_, err = tx.Exec(ctx, `
-		INSERT INTO gateway.session_bodies AS existing (
+		INSERT INTO public.session_bodies AS existing (
 			session_id, turn_no, tenant_id, request_id, ts,
 			request_delta, response_delta, outbound_body,
 			request_attachments, response_attachments,
@@ -342,7 +342,7 @@ func (w *SessionBodiesWriter) GetBodies(ctx context.Context, tenantID, sessionID
 			session_id, turn_no, tenant_id, request_id, ts,
 			request_delta, response_delta, outbound_body,
 			request_attachments, response_attachments
-		FROM gateway.session_bodies
+		FROM public.session_bodies
 		WHERE tenant_id = $1 AND session_id = $2 AND turn_no = $3
 		LIMIT 1
 	`
@@ -416,7 +416,7 @@ func getLatestBodies(ctx context.Context, db bodiesDB, tenantID, sessionID strin
 			session_id, turn_no, tenant_id, request_id, ts,
 			request_delta, response_delta, outbound_body,
 			request_attachments, response_attachments
-		FROM gateway.session_bodies
+		FROM public.session_bodies
 		WHERE tenant_id = $1 AND session_id = $2
 		ORDER BY turn_no DESC
 		LIMIT 1
@@ -467,7 +467,7 @@ func (w *SessionBodiesWriter) ListAllBodies(ctx context.Context, tenantID, sessi
 			session_id, turn_no, tenant_id, request_id, ts,
 			request_delta, response_delta, outbound_body,
 			request_attachments, response_attachments
-		FROM gateway.session_bodies
+		FROM public.session_bodies
 		WHERE tenant_id = $1 AND session_id = $2
 		ORDER BY turn_no ASC
 	`

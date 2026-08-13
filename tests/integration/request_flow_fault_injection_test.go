@@ -610,7 +610,7 @@ func TestFaultInjection(t *testing.T) {
 		t.Cleanup(func() {
 			cctx, ccancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer ccancel()
-			_, _ = pool.Exec(cctx, `DELETE FROM gateway.session_turns WHERE session_id = $1`, sess)
+			_, _ = pool.Exec(cctx, `DELETE FROM public.session_turns WHERE session_id = $1`, sess)
 		})
 
 		turn1, err := tw.AppendTurn(ctx, base)

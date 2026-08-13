@@ -103,7 +103,7 @@ func (r *SessionRepairer) PlanRepair(ctx context.Context, tenantID, sessionID st
 	// Count turn logs (may not exist for old sessions)
 	var turnLogsCount int
 	err = r.db.QueryRow(ctx, `
-		SELECT COUNT(*) FROM gateway.session_turn_logs
+		SELECT COUNT(*) FROM public.session_turn_logs
 		WHERE tenant_id = $1 AND session_id = $2
 	`, tenantID, sessionID).Scan(&turnLogsCount)
 	if err != nil && err != pgx.ErrNoRows {
@@ -161,7 +161,7 @@ func (r *SessionRepairer) ExecuteRepair(ctx context.Context, tenantID, sessionID
 
 	// Delete turn logs
 	tag, err := tx.Exec(ctx, `
-		DELETE FROM gateway.session_turn_logs
+		DELETE FROM public.session_turn_logs
 		WHERE tenant_id = $1 AND session_id = $2
 	`, tenantID, sessionID)
 	if err != nil {
@@ -172,7 +172,7 @@ func (r *SessionRepairer) ExecuteRepair(ctx context.Context, tenantID, sessionID
 
 	// Delete bodies
 	tag, err = tx.Exec(ctx, `
-		DELETE FROM gateway.session_bodies
+		DELETE FROM public.session_bodies
 		WHERE tenant_id = $1 AND session_id = $2
 	`, tenantID, sessionID)
 	if err != nil {
@@ -183,7 +183,7 @@ func (r *SessionRepairer) ExecuteRepair(ctx context.Context, tenantID, sessionID
 
 	// Delete turns
 	tag, err = tx.Exec(ctx, `
-		DELETE FROM gateway.session_turns
+		DELETE FROM public.session_turns
 		WHERE tenant_id = $1 AND session_id = $2
 	`, tenantID, sessionID)
 	if err != nil {
@@ -194,7 +194,7 @@ func (r *SessionRepairer) ExecuteRepair(ctx context.Context, tenantID, sessionID
 
 	// Delete session snapshot
 	tag, err = tx.Exec(ctx, `
-		DELETE FROM gateway.sessions
+		DELETE FROM public.sessions
 		WHERE tenant_id = $1 AND session_id = $2
 	`, tenantID, sessionID)
 	if err != nil {
@@ -248,7 +248,7 @@ func (r *SessionRepairer) ExecuteRepair(ctx context.Context, tenantID, sessionID
 		}
 
 		_, err = tx.Exec(ctx, `
-			INSERT INTO gateway.session_turns (
+			INSERT INTO public.session_turns (
 				tenant_id, session_id, turn_no, request_id, ts,
 				submit_mode, model, provider, credential_id,
 				prompt_tokens, completion_tokens, cost_usd,
@@ -298,7 +298,7 @@ func (r *SessionRepairer) ExecuteRepair(ctx context.Context, tenantID, sessionID
 		responseDeltaJSON, _ := json.Marshal(responseDelta)
 
 		_, err = tx.Exec(ctx, `
-			INSERT INTO gateway.session_bodies (
+			INSERT INTO public.session_bodies (
 				tenant_id, session_id, turn_no, request_id, ts,
 				request_delta, response_delta,
 				request_attachments, response_attachments
@@ -339,7 +339,7 @@ func (r *SessionRepairer) ExecuteRepair(ctx context.Context, tenantID, sessionID
 	lastTurn := v1Turns[len(v1Turns)-1]
 
 	_, err = tx.Exec(ctx, `
-		INSERT INTO gateway.sessions (
+		INSERT INTO public.sessions (
 			tenant_id, session_id, status,
 			total_turns, total_tokens, total_cost_usd,
 			last_turn_no, last_model, last_provider,

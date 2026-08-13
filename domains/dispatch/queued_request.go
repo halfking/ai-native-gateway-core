@@ -51,7 +51,7 @@ type ForwardOutcome struct {
 type QueuedRequest struct {
 	ID       string // request_id
 	TenantID string
-	// SessionID is the V2 session identifier (gateway.sessions.id). Populated
+	// SessionID is the V2 session identifier (public.sessions.id). Populated
 	// by the executor from ExecParams.SessionID so admin /sessions/{id}/timeline
 	// can group in-flight + completed requests by session. Empty for one-shot
 	// traffic (probe / health checks).

@@ -9,7 +9,7 @@ import (
 )
 
 // DualReadDiff summarizes the divergence between V1 (public.request_logs)
-// and V2 (gateway.session_turns) for one session during the cut-over
+// and V2 (public.session_turns) for one session during the cut-over
 // observation window. Non-zero TokenDiff / CostDiff means V1 and V2
 // disagree, which must be reconciled before flipping the primary read.
 type DualReadDiff struct {
@@ -63,7 +63,7 @@ func (v *DualReadValidator) Compare(ctx context.Context, tenant, session string,
 		v2 AS (
 			SELECT COALESCE(prompt_tokens + completion_tokens, 0) AS total_tokens,
 			       COALESCE(cost_usd, 0) AS cost
-			FROM gateway.session_turns
+			FROM public.session_turns
 			WHERE tenant_id=$1 AND session_id=$2
 		)
 		SELECT

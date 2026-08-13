@@ -9,10 +9,10 @@
 --   4. 完整的RLS租户隔离
 -- 
 -- 表结构：
---   - gateway.sessions: 会话快照（一个会话一条记录）
---   - gateway.session_turns: 轮次元数据（不含正文）
---   - gateway.session_bodies: 正文内容（增量存储，columnar）
---   - gateway.session_turn_logs: 环节状态日志（24小时TTL）
+--   - public.sessions: 会话快照（一个会话一条记录）
+--   - public.session_turns: 轮次元数据（不含正文）
+--   - public.session_bodies: 正文内容（增量存储，columnar）
+--   - public.session_turn_logs: 环节状态日志（24小时TTL）
 -- 
 -- Author: llm-gateway-ops
 -- Date: 2026-07-17
@@ -20,13 +20,18 @@
 
 BEGIN;
 
-CREATE SCHEMA IF NOT EXISTS gateway;
+-- 2026-08-14 (V3.2 schema unification, Migration 513):
+-- Drop the redundant `CREATE SCHEMA IF NOT EXISTS gateway;` line.
+-- `public.sessions` is already created by sql/schema/01-schema.sql, so the
+-- V2 tables continue to land in `public` (matching the project convention).
+-- Historical deployments that already created `gateway.*` tables will be
+-- cleaned up by Migration 513 (DROP gateway schema).
 
 -- =============================================
 -- 1. sessions 表：会话快照
 -- =============================================
 
-CREATE TABLE IF NOT EXISTS gateway.sessions (
+CREATE TABLE IF NOT EXISTS public.sessions (
     id BIGSERIAL,
     session_id TEXT NOT NULL,
     tenant_id VARCHAR(255) NOT NULL,
@@ -69,24 +74,24 @@ CREATE TABLE IF NOT EXISTS gateway.sessions (
     UNIQUE (session_id, partition_date)
 ) PARTITION BY RANGE (partition_date);
 
-CREATE INDEX IF NOT EXISTS idx_sessions_session_id ON gateway.sessions (session_id);
-CREATE INDEX IF NOT EXISTS idx_sessions_tenant ON gateway.sessions (tenant_id, created_at DESC);
-CREATE INDEX IF NOT EXISTS idx_sessions_status ON gateway.sessions (status, updated_at DESC);
-CREATE INDEX IF NOT EXISTS idx_sessions_primary_request ON gateway.sessions (primary_request_id) WHERE primary_request_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_sessions_session_id ON public.sessions (session_id);
+CREATE INDEX IF NOT EXISTS idx_sessions_tenant ON public.sessions (tenant_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_sessions_status ON public.sessions (status, updated_at DESC);
+CREATE INDEX IF NOT EXISTS idx_sessions_primary_request ON public.sessions (primary_request_id) WHERE primary_request_id IS NOT NULL;
 
 -- RLS
-ALTER TABLE gateway.sessions ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.sessions ENABLE ROW LEVEL SECURITY;
 
-DROP POLICY IF EXISTS sessions_tenant_isolation ON gateway.sessions;
-CREATE POLICY sessions_tenant_isolation ON gateway.sessions
+DROP POLICY IF EXISTS sessions_tenant_isolation ON public.sessions;
+CREATE POLICY sessions_tenant_isolation ON public.sessions
     USING (tenant_id = current_setting('app.current_tenant', true)::TEXT);
 
-DROP POLICY IF EXISTS sessions_super_admin_bypass ON gateway.sessions;
-CREATE POLICY sessions_super_admin_bypass ON gateway.sessions
+DROP POLICY IF EXISTS sessions_super_admin_bypass ON public.sessions;
+CREATE POLICY sessions_super_admin_bypass ON public.sessions
     USING (current_setting('app.current_role', true) = 'super_admin'
         OR current_setting('app.bypass_rls', true) = 'true');
 
-COMMENT ON TABLE gateway.sessions IS 
+COMMENT ON TABLE public.sessions IS 
     'V2会话快照表：一个会话一条记录，存储会话级汇总信息。
      与request_logs并行运行，通过Feature Flag控制流量路由。
      通过primary_request_id可以关联到request_logs进行数据校验。
@@ -96,7 +101,7 @@ COMMENT ON TABLE gateway.sessions IS
 -- 2. session_turns 表：轮次元数据
 -- =============================================
 
-CREATE TABLE IF NOT EXISTS gateway.session_turns (
+CREATE TABLE IF NOT EXISTS public.session_turns (
     id BIGSERIAL,
     session_id TEXT NOT NULL,
     turn_no INT NOT NULL,
@@ -156,25 +161,25 @@ CREATE TABLE IF NOT EXISTS gateway.session_turns (
     UNIQUE (tenant_id, request_id, partition_date)
 ) PARTITION BY RANGE (partition_date);
 
-CREATE INDEX IF NOT EXISTS idx_session_turns_session ON gateway.session_turns 
+CREATE INDEX IF NOT EXISTS idx_session_turns_session ON public.session_turns 
     (session_id, turn_no DESC);
-CREATE INDEX IF NOT EXISTS idx_session_turns_request ON gateway.session_turns (request_id);
-CREATE INDEX IF NOT EXISTS idx_session_turns_tenant ON gateway.session_turns 
+CREATE INDEX IF NOT EXISTS idx_session_turns_request ON public.session_turns (request_id);
+CREATE INDEX IF NOT EXISTS idx_session_turns_tenant ON public.session_turns 
     (tenant_id, ts DESC);
 
 -- RLS
-ALTER TABLE gateway.session_turns ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.session_turns ENABLE ROW LEVEL SECURITY;
 
-DROP POLICY IF EXISTS session_turns_tenant_isolation ON gateway.session_turns;
-CREATE POLICY session_turns_tenant_isolation ON gateway.session_turns
+DROP POLICY IF EXISTS session_turns_tenant_isolation ON public.session_turns;
+CREATE POLICY session_turns_tenant_isolation ON public.session_turns
     USING (tenant_id = current_setting('app.current_tenant', true)::TEXT);
 
-DROP POLICY IF EXISTS session_turns_super_admin_bypass ON gateway.session_turns;
-CREATE POLICY session_turns_super_admin_bypass ON gateway.session_turns
+DROP POLICY IF EXISTS session_turns_super_admin_bypass ON public.session_turns;
+CREATE POLICY session_turns_super_admin_bypass ON public.session_turns
     USING (current_setting('app.current_role', true) = 'super_admin'
         OR current_setting('app.bypass_rls', true) = 'true');
 
-COMMENT ON TABLE gateway.session_turns IS 
+COMMENT ON TABLE public.session_turns IS 
     'V2轮次元数据表：存储每轮的元数据，正文存储在session_bodies。
      与request_logs并行，通过request_id关联便于数据校验。
      使用advisory lock保证turn_no在同一会话内单调递增。
@@ -184,7 +189,7 @@ COMMENT ON TABLE gateway.session_turns IS
 -- 3. session_bodies 表：正文内容（增量存储）
 -- =============================================
 
-CREATE TABLE IF NOT EXISTS gateway.session_bodies (
+CREATE TABLE IF NOT EXISTS public.session_bodies (
     id BIGSERIAL,
     session_id TEXT NOT NULL,
     turn_no INT NOT NULL,
@@ -213,23 +218,23 @@ CREATE TABLE IF NOT EXISTS gateway.session_bodies (
     UNIQUE (tenant_id, request_id, partition_date)
 ) PARTITION BY RANGE (partition_date);
 
-CREATE INDEX IF NOT EXISTS idx_session_bodies_session ON gateway.session_bodies 
+CREATE INDEX IF NOT EXISTS idx_session_bodies_session ON public.session_bodies 
     (session_id, turn_no DESC);
-CREATE INDEX IF NOT EXISTS idx_session_bodies_request ON gateway.session_bodies (request_id);
+CREATE INDEX IF NOT EXISTS idx_session_bodies_request ON public.session_bodies (request_id);
 
 -- RLS
-ALTER TABLE gateway.session_bodies ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.session_bodies ENABLE ROW LEVEL SECURITY;
 
-DROP POLICY IF EXISTS session_bodies_tenant_isolation ON gateway.session_bodies;
-CREATE POLICY session_bodies_tenant_isolation ON gateway.session_bodies
+DROP POLICY IF EXISTS session_bodies_tenant_isolation ON public.session_bodies;
+CREATE POLICY session_bodies_tenant_isolation ON public.session_bodies
     USING (tenant_id = current_setting('app.current_tenant', true)::TEXT);
 
-DROP POLICY IF EXISTS session_bodies_super_admin_bypass ON gateway.session_bodies;
-CREATE POLICY session_bodies_super_admin_bypass ON gateway.session_bodies
+DROP POLICY IF EXISTS session_bodies_super_admin_bypass ON public.session_bodies;
+CREATE POLICY session_bodies_super_admin_bypass ON public.session_bodies
     USING (current_setting('app.current_role', true) = 'super_admin'
         OR current_setting('app.bypass_rls', true) = 'true');
 
-COMMENT ON TABLE gateway.session_bodies IS 
+COMMENT ON TABLE public.session_bodies IS 
     'V2正文存储表：存储增量正文，避免request_logs的全量JSONB膨胀问题。
      使用columnar存储格式，配合zstd压缩，预计可节省60-80%磁盘空间。
      Created: 2026-07-17, Migration 430';
@@ -238,7 +243,7 @@ COMMENT ON TABLE gateway.session_bodies IS
 -- 4. session_turn_logs 表：环节状态日志（24小时TTL）
 -- =============================================
 
-CREATE TABLE IF NOT EXISTS gateway.session_turn_logs (
+CREATE TABLE IF NOT EXISTS public.session_turn_logs (
     id BIGSERIAL PRIMARY KEY,
     session_id TEXT NOT NULL,
     turn_no INT NOT NULL,
@@ -265,12 +270,12 @@ CREATE TABLE IF NOT EXISTS gateway.session_turn_logs (
     expires_at TIMESTAMPTZ NOT NULL DEFAULT (NOW() + INTERVAL '24 hours')
 );
 
-CREATE INDEX IF NOT EXISTS idx_session_turn_logs_session ON gateway.session_turn_logs 
+CREATE INDEX IF NOT EXISTS idx_session_turn_logs_session ON public.session_turn_logs 
     (session_id, turn_no, started_at DESC);
-CREATE INDEX IF NOT EXISTS idx_session_turn_logs_expires ON gateway.session_turn_logs (expires_at);
-CREATE INDEX IF NOT EXISTS idx_session_turn_logs_request ON gateway.session_turn_logs (request_id);
+CREATE INDEX IF NOT EXISTS idx_session_turn_logs_expires ON public.session_turn_logs (expires_at);
+CREATE INDEX IF NOT EXISTS idx_session_turn_logs_request ON public.session_turn_logs (request_id);
 
-COMMENT ON TABLE gateway.session_turn_logs IS 
+COMMENT ON TABLE public.session_turn_logs IS 
     'V2环节状态日志：记录每个轮次的处理过程，用于故障诊断。
      24小时后自动清理，会话结束时汇总生成JSON存入sessions表。
      Created: 2026-07-17, Migration 430';
@@ -288,21 +293,21 @@ DECLARE
 BEGIN
     -- sessions 分区（heap格式）
     EXECUTE format(
-        'CREATE TABLE IF NOT EXISTS gateway.sessions_%s PARTITION OF gateway.sessions
+        'CREATE TABLE IF NOT EXISTS public.sessions_%s PARTITION OF public.sessions
          FOR VALUES FROM (%L) TO (%L)',
         partition_suffix, month_start, month_end
     );
     
     -- session_turns 分区（heap格式）
     EXECUTE format(
-        'CREATE TABLE IF NOT EXISTS gateway.session_turns_%s PARTITION OF gateway.session_turns
+        'CREATE TABLE IF NOT EXISTS public.session_turns_%s PARTITION OF public.session_turns
          FOR VALUES FROM (%L) TO (%L)',
         partition_suffix, month_start, month_end
     );
     
     -- session_bodies 分区使用 heap，因为正文写入支持冲突更新。
     EXECUTE format(
-        'CREATE TABLE IF NOT EXISTS gateway.session_bodies_%s PARTITION OF gateway.session_bodies
+        'CREATE TABLE IF NOT EXISTS public.session_bodies_%s PARTITION OF public.session_bodies
          FOR VALUES FROM (%L) TO (%L)',
         partition_suffix, month_start, month_end
     );
@@ -333,7 +338,7 @@ RETURNS void LANGUAGE plpgsql AS $$
 DECLARE
     deleted_count INT;
 BEGIN
-    DELETE FROM gateway.session_turn_logs
+    DELETE FROM public.session_turn_logs
     WHERE expires_at < NOW();
     
     GET DIAGNOSTICS deleted_count = ROW_COUNT;
@@ -357,19 +362,19 @@ DO $$
 BEGIN
     -- 验证表存在
     IF NOT EXISTS (SELECT 1 FROM pg_tables WHERE schemaname = 'gateway' AND tablename = 'sessions') THEN
-        RAISE EXCEPTION 'Table gateway.sessions not created';
+        RAISE EXCEPTION 'Table public.sessions not created';
     END IF;
     
     IF NOT EXISTS (SELECT 1 FROM pg_tables WHERE schemaname = 'gateway' AND tablename = 'session_turns') THEN
-        RAISE EXCEPTION 'Table gateway.session_turns not created';
+        RAISE EXCEPTION 'Table public.session_turns not created';
     END IF;
     
     IF NOT EXISTS (SELECT 1 FROM pg_tables WHERE schemaname = 'gateway' AND tablename = 'session_bodies') THEN
-        RAISE EXCEPTION 'Table gateway.session_bodies not created';
+        RAISE EXCEPTION 'Table public.session_bodies not created';
     END IF;
     
     IF NOT EXISTS (SELECT 1 FROM pg_tables WHERE schemaname = 'gateway' AND tablename = 'session_turn_logs') THEN
-        RAISE EXCEPTION 'Table gateway.session_turn_logs not created';
+        RAISE EXCEPTION 'Table public.session_turn_logs not created';
     END IF;
     
     -- 验证RLS已启用
@@ -379,7 +384,7 @@ BEGIN
         AND tablename = 'sessions' 
         AND rowsecurity = true
     ) THEN
-        RAISE EXCEPTION 'RLS not enabled on gateway.sessions';
+        RAISE EXCEPTION 'RLS not enabled on public.sessions';
     END IF;
     
     RAISE NOTICE '===== Migration 430 SUCCESSFUL =====';

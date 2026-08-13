@@ -13,9 +13,9 @@
 --   - request_logs has no `meta` jsonb column; submit_mode is not stored on V1.
 --     We default to 'full' as the safe assumption (COALESCE).
 --   - request_logs has `success` (bool) and `request_status` (text), NOT `status_code`.
---     We map success → status_code (200/0) for backwards compat with gateway.session_turns.
+--     We map success → status_code (200/0) for backwards compat with public.session_turns.
 --   - request_logs is partitioned by ts (TIMESTAMPTZ); partition_date derived from ts.
---   - gateway.session_turns has UNIQUE (request_id, partition_date) so ON CONFLICT is required.
+--   - public.session_turns has UNIQUE (request_id, partition_date) so ON CONFLICT is required.
 --
 -- Author: llm-gateway-ops
 -- Date: 2026-07-24
@@ -28,7 +28,7 @@ CREATE OR REPLACE FUNCTION backfill_session_v2_turns(
 DECLARE
     v_count INT;
 BEGIN
-    INSERT INTO gateway.session_turns (
+    INSERT INTO public.session_turns (
         session_id,
         turn_no,
         tenant_id,
@@ -71,7 +71,7 @@ BEGIN
       AND rl.gw_session_id IS NOT NULL
       AND NOT EXISTS (
           SELECT 1
-          FROM gateway.session_turns st
+          FROM public.session_turns st
           WHERE st.session_id   = rl.gw_session_id
             AND st.request_id   = rl.request_id
       )
@@ -85,6 +85,6 @@ END;
 $$;
 
 COMMENT ON FUNCTION backfill_session_v2_turns(TEXT, TEXT, INT) IS
-    'Backfill a single session''s turns from public.request_logs into gateway.session_turns.
+    'Backfill a single session''s turns from public.request_logs into public.session_turns.
      Idempotent via NOT EXISTS + ON CONFLICT DO NOTHING.
      Marks source_kind=backfill, quality=inferred.';

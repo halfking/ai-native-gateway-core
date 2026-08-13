@@ -95,7 +95,7 @@ WHERE tenant_id = :'tenant_id'
 SELECT 
     'session_turns' as table_name,
     COUNT(*) as existing_rows
-FROM gateway.session_turns
+FROM public.session_turns
 WHERE tenant_id = :'tenant_id'
   AND ts >= (date :'start_date')
   AND ts < (date :'end_date')
@@ -103,7 +103,7 @@ UNION ALL
 SELECT 
     'session_bodies' as table_name,
     COUNT(*) as existing_rows
-FROM gateway.session_bodies
+FROM public.session_bodies
 WHERE tenant_id = :'tenant_id'
   AND ts >= (date :'start_date')
   AND ts < (date :'end_date')
@@ -111,7 +111,7 @@ UNION ALL
 SELECT 
     'sessions' as table_name,
     COUNT(*) as existing_rows
-FROM gateway.sessions
+FROM public.sessions
 WHERE tenant_id = :'tenant_id'
   AND created_at >= (date :'start_date')
   AND created_at < (date :'end_date');
@@ -161,7 +161,7 @@ BEGIN
             ORDER BY session_id, ts
             LIMIT :batch_size OFFSET batch_start
         )
-        INSERT INTO gateway.session_turns (
+        INSERT INTO public.session_turns (
             session_id, turn_no, tenant_id, request_id, ts,
             submit_mode,
             compression_applied, compression_strategy, compression_meta, compression_tokens_saved,
@@ -245,7 +245,7 @@ BEGIN
                 t.ts,
                 rl.body,
                 rl.response
-            FROM gateway.session_turns t
+            FROM public.session_turns t
             JOIN gateway.request_logs rl ON rl.request_id = t.request_id
             WHERE t.tenant_id = :'tenant_id'
               AND t.ts >= (date :'start_date')
@@ -254,7 +254,7 @@ BEGIN
             ORDER BY t.session_id, t.turn_no
             LIMIT :batch_size OFFSET batch_start
         )
-        INSERT INTO gateway.session_bodies (
+        INSERT INTO public.session_bodies (
             session_id, turn_no, tenant_id, request_id,
             request_delta, response_delta, outbound_body,
             request_attachments, response_attachments,
@@ -312,7 +312,7 @@ END $$;
 \echo ''
 \echo '=== Step 5: Backfilling sessions (aggregates) ==='
 
-INSERT INTO gateway.sessions (
+INSERT INTO public.sessions (
     session_id, tenant_id,
     created_at, updated_at, status,
     total_turns, total_tokens, total_cost_usd,
@@ -333,13 +333,13 @@ SELECT
     MAX(t.turn_no) as last_turn_no,
     '' as last_request_summary,
     '' as last_response_summary,
-    (SELECT model FROM gateway.session_turns 
+    (SELECT model FROM public.session_turns 
      WHERE session_id = t.session_id AND turn_no = MAX(t.turn_no) LIMIT 1) as last_model,
     '' as last_provider,
-    (SELECT request_id FROM gateway.session_turns 
+    (SELECT request_id FROM public.session_turns 
      WHERE session_id = t.session_id ORDER BY turn_no ASC LIMIT 1) as primary_request_id,
     MIN(t.ts)::date as partition_date
-FROM gateway.session_turns t
+FROM public.session_turns t
 WHERE t.tenant_id = :'tenant_id'
   AND t.ts >= (date :'start_date')
   AND t.ts < (date :'end_date')
@@ -374,7 +374,7 @@ SELECT
     COUNT(DISTINCT session_id) as unique_sessions,
     SUM(prompt_tokens + completion_tokens) as total_tokens,
     SUM(cost_usd) as total_cost_usd
-FROM gateway.session_turns
+FROM public.session_turns
 WHERE tenant_id = :'tenant_id'
   AND ts >= (date :'start_date')
   AND ts < (date :'end_date');
@@ -397,19 +397,19 @@ BEGIN
       AND ts < (date :'end_date');
     
     SELECT COUNT(*) INTO v2_turns_count
-    FROM gateway.session_turns
+    FROM public.session_turns
     WHERE tenant_id = :'tenant_id'
       AND ts >= (date :'start_date')
       AND ts < (date :'end_date');
     
     SELECT COUNT(*) INTO v2_bodies_count
-    FROM gateway.session_bodies
+    FROM public.session_bodies
     WHERE tenant_id = :'tenant_id'
       AND ts >= (date :'start_date')
       AND ts < (date :'end_date');
     
     SELECT COUNT(*) INTO v2_sessions_count
-    FROM gateway.sessions
+    FROM public.sessions
     WHERE tenant_id = :'tenant_id'
       AND created_at >= (date :'start_date')
       AND created_at < (date :'end_date');

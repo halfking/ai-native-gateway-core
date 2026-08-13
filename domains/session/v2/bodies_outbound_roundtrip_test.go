@@ -58,7 +58,7 @@ func TestSessionBodiesWriter_OutboundBody_RoundTrip(t *testing.T) {
 	ctx := context.Background()
 	require.NoError(t, writer.WriteBodies(ctx, rec))
 	t.Cleanup(func() {
-		_, _ = pool.Exec(ctx, `DELETE FROM gateway.session_bodies
+		_, _ = pool.Exec(ctx, `DELETE FROM public.session_bodies
 			WHERE tenant_id=$1 AND session_id=$2`, tenantID, sessionID)
 	})
 

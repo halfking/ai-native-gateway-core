@@ -30,7 +30,7 @@ func aggregateTestUpdate() SessionUpdate {
 }
 
 func expectAggregateUpsert(mock pgxmock.PgxPoolIface, update SessionUpdate, partitionDate time.Time) {
-	mock.ExpectExec(regexp.QuoteMeta("INSERT INTO gateway.sessions")).
+	mock.ExpectExec(regexp.QuoteMeta("INSERT INTO public.sessions")).
 		WithArgs(
 			update.SessionID, update.TenantID,
 			update.UpdatedAt,
@@ -55,7 +55,7 @@ func TestSessionAggregator_UpdateSessionIdempotent(t *testing.T) {
 	agg := newSessionAggregator(mock)
 	update := aggregateTestUpdate()
 	partitionDate := update.UpdatedAt.Truncate(24 * time.Hour)
-	claim := regexp.QuoteMeta("UPDATE gateway.session_turns")
+	claim := regexp.QuoteMeta("UPDATE public.session_turns")
 
 	mock.ExpectBegin()
 	mock.ExpectQuery(claim).
@@ -86,8 +86,8 @@ func TestSessionAggregator_UpdateSessionClaimRollsBackOnFailure(t *testing.T) {
 	agg := newSessionAggregator(mock)
 	update := aggregateTestUpdate()
 	partitionDate := update.UpdatedAt.Truncate(24 * time.Hour)
-	claim := regexp.QuoteMeta("UPDATE gateway.session_turns")
-	insert := regexp.QuoteMeta("INSERT INTO gateway.sessions")
+	claim := regexp.QuoteMeta("UPDATE public.session_turns")
+	insert := regexp.QuoteMeta("INSERT INTO public.sessions")
 
 	mock.ExpectBegin()
 	mock.ExpectQuery(claim).

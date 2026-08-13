@@ -513,7 +513,7 @@ func buildV2DispatchPipeline(deps *v2DispatchDeps) *pipeline.RequestPipeline {
 	// Gated by buildV2PipelineHooks via sessions_v2.enabled &&
 	// sessions_v2.shadow_write. When both flags are on, the
 	// SessionPersistHook dual-writes request logs to V2 tables
-	// (gateway.sessions / session_turns / session_bodies /
+	// (public.sessions / session_turns / session_bodies /
 	// session_turn_logs) in addition to the V1 telemetry path.
 	// Best-effort: errors are logged inside the hook and never
 	// propagated up.
@@ -1253,7 +1253,7 @@ func SetV2DispatchAnalysisResources(
 					summaryService.SetModel(cfg.ModelFor(sessionanalytics.StageSummary))
 					// docs/omni-ref3 A1 (decision: compress+summary cut over
 					// together, default-on, same kill-switch as compression read):
-					// read session messages from gateway.session_bodies instead of
+					// read session messages from public.session_bodies instead of
 					// request_logs. Same platform flag as shouldUseV2, default true,
 					// hot-reloadable to false to revert to V1 reads.
 					if settings.GetPlatformBool("sessions_v2_compression_read", true) {

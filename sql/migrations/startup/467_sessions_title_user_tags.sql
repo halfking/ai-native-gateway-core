@@ -1,7 +1,7 @@
--- Migration 467: sessions_title_user_tags — add title and user_tags to gateway.sessions
+-- Migration 467: sessions_title_user_tags — add title and user_tags to public.sessions
 --
 -- docs/omni-ref3 M2/M3: unify metadata fact source. Move title from Redis/session_titles
--- and user tags from Redis to V2 gateway.sessions table, making it the single source
+-- and user tags from Redis to V2 public.sessions table, making it the single source
 -- of truth for session metadata.
 --
 -- Columns:

@@ -7,7 +7,7 @@
 --     3. 已验证系统完全回退到 V1
 --
 -- 所有权说明（重要）：
---   gateway.session_bodies.request_attachments / response_attachments
+--   public.session_bodies.request_attachments / response_attachments
 --   实际由 migration 430_sessions_v2_schema.sql 创建（DEFAULT '[]'::jsonb）；
 --   migration 456 仅以 ADD COLUMN IF NOT EXISTS 幂等补齐，因此本 down
 --   **不会** DROP 这两列（避免误删 430 创建的列及破坏下游依赖）。
@@ -22,14 +22,14 @@ DROP INDEX IF EXISTS gateway.idx_sessions_summary_at;
 DROP INDEX IF EXISTS gateway.idx_sessions_last_full_at;
 
 -- session_turns 新增列
-ALTER TABLE gateway.session_turns
+ALTER TABLE public.session_turns
     DROP COLUMN IF EXISTS summary,
     DROP COLUMN IF EXISTS title,
     DROP COLUMN IF EXISTS tools,
     DROP COLUMN IF EXISTS attempt_no;
 
 -- sessions 新增列
-ALTER TABLE gateway.sessions
+ALTER TABLE public.sessions
     DROP COLUMN IF EXISTS summary_quality,
     DROP COLUMN IF EXISTS summary_generated_at,
     DROP COLUMN IF EXISTS summary_model,
@@ -49,14 +49,14 @@ BEGIN
         SELECT 1 FROM information_schema.columns
         WHERE table_schema='gateway' AND table_name='sessions' AND column_name='last_full_payload_at'
     ) THEN
-        RAISE EXCEPTION 'gateway.sessions.last_full_payload_at still exists after rollback';
+        RAISE EXCEPTION 'public.sessions.last_full_payload_at still exists after rollback';
     END IF;
 
     IF EXISTS (
         SELECT 1 FROM information_schema.columns
         WHERE table_schema='gateway' AND table_name='session_turns' AND column_name='attempt_no'
     ) THEN
-        RAISE EXCEPTION 'gateway.session_turns.attempt_no still exists after rollback';
+        RAISE EXCEPTION 'public.session_turns.attempt_no still exists after rollback';
     END IF;
 
     RAISE NOTICE '===== Migration 456 ROLLBACK SUCCESSFUL =====';

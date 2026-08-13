@@ -388,7 +388,7 @@ func (r *SessionTurnsReader) LoadState(ctx context.Context, tenantID, sessionID 
 			COALESCE(prompt_tokens, 0), COALESCE(completion_tokens, 0),
 			COALESCE(injection_verdict, 'skip'),
 			COALESCE(output_verdict, 'skip')
-		FROM gateway.session_turns
+		FROM public.session_turns
 		WHERE tenant_id = $1 AND session_id = $2
 		ORDER BY turn_no DESC
 		LIMIT 1

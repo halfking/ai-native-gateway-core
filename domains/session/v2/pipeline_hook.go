@@ -1,6 +1,6 @@
 // Package v2 contains the session persistence writer for V2 tables
-// (gateway.sessions, gateway.session_turns, gateway.session_bodies,
-// gateway.session_turn_logs).
+// (public.sessions, public.session_turns, public.session_bodies,
+// public.session_turn_logs).
 //
 // pipeline_hook.go is the shell kept for backwards compatibility only:
 // telemetry onPersisted is the sole production V2 write owner, and the

@@ -38,7 +38,7 @@ func TestRLS_SessionsV2_OwnerFilter_CrossTenantDenied(t *testing.T) {
 	}
 	var countA int
 	if err := pool.QueryRow(ctxA,
-		`SELECT count(*) FROM gateway.session_turns`).Scan(&countA); err != nil {
+		`SELECT count(*) FROM public.session_turns`).Scan(&countA); err != nil {
 		t.Fatalf("query tA: %v", err)
 	}
 	t.Logf("non-matching user sees %d turns (expect 0 if no fixtures match)", countA)
@@ -50,7 +50,7 @@ func TestRLS_SessionsV2_OwnerFilter_CrossTenantDenied(t *testing.T) {
 	}
 	var countSuper int
 	if err := pool.QueryRow(ctxSuper,
-		`SELECT count(*) FROM gateway.session_turns`).Scan(&countSuper); err != nil {
+		`SELECT count(*) FROM public.session_turns`).Scan(&countSuper); err != nil {
 		t.Fatalf("query super: %v", err)
 	}
 	t.Logf("super_admin sees %d turns", countSuper)

@@ -128,7 +128,7 @@ COMMIT;
 
 -- After running this script:
 -- 1. Monitor /api/admin/sessions/v2/shadow_metrics for 24 hours
--- 2. Check session_turns table for data: SELECT count(*) FROM gateway.session_turns WHERE ts > now() - interval '1 hour';
+-- 2. Check session_turns table for data: SELECT count(*) FROM public.session_turns WHERE ts > now() - interval '1 hour';
 -- 3. If no errors, increase rollout_percent to 10:
 --    UPDATE platform_settings SET value = '10' WHERE key = 'sessions_v2.rollout_percent';
 -- 4. After another 24h, increase to 100:

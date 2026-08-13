@@ -26,7 +26,7 @@ func newMockTurnWriter(t *testing.T) (*TurnWriter, pgxmock.PgxPoolIface) {
 //   - BEGIN
 //   - SELECT pg_advisory_xact_lock($1) with the lock key
 //   - SELECT COALESCE(MAX(turn_no), 0) + 1
-//   - INSERT INTO gateway.session_turns (with precise WithArgs)
+//   - INSERT INTO public.session_turns (with precise WithArgs)
 //   - If inserted == false, SELECT turn_no WHERE request_id=... (post-conflict re-read)
 //   - COMMIT
 //
@@ -122,7 +122,7 @@ func expectAppendTurn(mock pgxmock.PgxPoolIface, rec TurnRecord, nextTurn int, i
 	// as-is to the column (a text[] typed as []string on the Go side).
 	multimodalArg := pgxmock.AnyArg()
 
-	mock.ExpectExec("INSERT INTO gateway.session_turns").
+	mock.ExpectExec("INSERT INTO public.session_turns").
 		WithArgs(
 			rec.SessionID, nextTurn, rec.TenantID, rec.RequestID, rec.Ts,
 			rec.SubmitMode,
@@ -139,7 +139,7 @@ func expectAppendTurn(mock pgxmock.PgxPoolIface, rec TurnRecord, nextTurn int, i
 		WillReturnResult(pgxmock.NewResult("INSERT", rowsAffected))
 	if !inserted {
 		// Post-conflict re-read: SELECT turn_no WHERE request_id=...
-		mock.ExpectQuery("SELECT turn_no[[:space:]]+FROM gateway.session_turns").
+		mock.ExpectQuery("SELECT turn_no[[:space:]]+FROM public.session_turns").
 			WithArgs(rec.SessionID, rec.TenantID, rec.RequestID, partitionDate).
 			WillReturnRows(pgxmock.NewRows([]string{"turn_no"}).AddRow(existingTurn))
 		// 2026-08-05 (v2 mirror bug): on the conflict path the writer backfills
@@ -151,7 +151,7 @@ func expectAppendTurn(mock pgxmock.PgxPoolIface, rec TurnRecord, nextTurn int, i
 		//   $5 compression_applied $6 compression_strategy $7 compression_meta
 		//   $8 compression_tokens_saved $9 submit_mode
 		//   $10 title $11 summary (migration 456 preview backfill)
-		mock.ExpectExec("UPDATE gateway.session_turns").
+		mock.ExpectExec("UPDATE public.session_turns").
 			WithArgs(
 				rec.SessionID, rec.TenantID, rec.RequestID, partitionDate,
 				rec.CompressionApplied, rec.CompressionStrategy, compressionMetaStr,

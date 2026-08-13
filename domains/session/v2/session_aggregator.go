@@ -26,7 +26,7 @@ type aggregatorDB interface {
 	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
 }
 
-// SessionAggregator updates session snapshots in gateway.sessions
+// SessionAggregator updates session snapshots in public.sessions
 //
 // It maintains session-level aggregated data like total_turns, total_tokens,
 // total_cost, and last turn summaries. Updates can be incremental (add to
@@ -137,7 +137,7 @@ func (a *SessionAggregator) UpdateSession(ctx context.Context, update SessionUpd
 func claimAggregateTurn(ctx context.Context, tx pgx.Tx, update SessionUpdate, partitionDate time.Time) (bool, error) {
 	var claimed int
 	err := tx.QueryRow(ctx, `
-		UPDATE gateway.session_turns
+		UPDATE public.session_turns
 		SET aggregate_applied_at = NOW()
 		WHERE session_id = $1
 		  AND tenant_id = $2
@@ -157,7 +157,7 @@ func claimAggregateTurn(ctx context.Context, tx pgx.Tx, update SessionUpdate, pa
 
 func upsertSessionSnapshot(ctx context.Context, db aggregateExecutor, update SessionUpdate, partitionDate time.Time) error {
 	_, err := db.Exec(ctx, `
-		INSERT INTO gateway.sessions (
+		INSERT INTO public.sessions (
 			session_id, tenant_id,
 			created_at, updated_at, status,
 			total_turns, total_tokens, total_cost_usd,
@@ -175,9 +175,9 @@ func upsertSessionSnapshot(ctx context.Context, db aggregateExecutor, update Ses
 		ON CONFLICT (session_id, partition_date)
 		DO UPDATE SET
 			updated_at = EXCLUDED.updated_at,
-			total_turns = gateway.sessions.total_turns + EXCLUDED.total_turns,
-			total_tokens = gateway.sessions.total_tokens + EXCLUDED.total_tokens,
-			total_cost_usd = gateway.sessions.total_cost_usd + EXCLUDED.total_cost_usd,
+			total_turns = public.sessions.total_turns + EXCLUDED.total_turns,
+			total_tokens = public.sessions.total_tokens + EXCLUDED.total_tokens,
+			total_cost_usd = public.sessions.total_cost_usd + EXCLUDED.total_cost_usd,
 			last_turn_no = EXCLUDED.last_turn_no,
 			last_request_summary = EXCLUDED.last_request_summary,
 			last_response_summary = EXCLUDED.last_response_summary,
@@ -218,7 +218,7 @@ func (a *SessionAggregator) GetSession(ctx context.Context, tenantID, sessionID 
 			COALESCE(intent, ''),
 			COALESCE(primary_request_id, ''),
 			turn_logs_summary
-		FROM gateway.sessions
+		FROM public.sessions
 		WHERE tenant_id = $1 AND session_id = $2
 		LIMIT 1
 	`
@@ -284,7 +284,7 @@ type SessionSnapshot struct {
 // CloseSession marks a session as closed
 func (a *SessionAggregator) CloseSession(ctx context.Context, tenantID, sessionID string) error {
 	_, err := a.db.Exec(ctx, `
-		UPDATE gateway.sessions
+		UPDATE public.sessions
 		SET status = 'closed', closed_at = NOW()
 		WHERE tenant_id = $1 AND session_id = $2
 	`, tenantID, sessionID)
@@ -298,7 +298,7 @@ func (a *SessionAggregator) CloseSession(ctx context.Context, tenantID, sessionI
 // the auto-title generator / user tag updates (M2/M3).
 func (a *SessionAggregator) SetSessionMetadata(ctx context.Context, tenantID, sessionID string, meta SessionMetadata) error {
 	_, err := a.db.Exec(ctx, `
-		UPDATE gateway.sessions
+		UPDATE public.sessions
 		SET 
 			task_type = COALESCE(NULLIF($3, ''), task_type),
 			client_type = COALESCE(NULLIF($4, ''), client_type),
@@ -322,7 +322,7 @@ type SessionMetadata struct {
 	UserTags   []string // docs/omni-ref3 M3: user-supplied tags (X-Gw-Tags), distinct from session_tags (auto)
 }
 
-// GetSessionMetadata retrieves session metadata from gateway.sessions, optionally
+// GetSessionMetadata retrieves session metadata from public.sessions, optionally
 // merging auto-generated tags from session_tags (M3).
 //
 // Returns nil if the session does not exist. Auto tags (tag_source='auto') are
@@ -339,7 +339,7 @@ func (a *SessionAggregator) GetSessionMetadata(ctx context.Context, tenantID, se
 			COALESCE(intent, ''),
 			COALESCE(title, ''),
 			COALESCE(user_tags, ARRAY[]::text[])
-		FROM gateway.sessions
+		FROM public.sessions
 		WHERE tenant_id = $1 AND session_id = $2
 	`, tenantID, sessionID).Scan(
 		&meta.TaskType, &meta.ClientType, &meta.Topic,

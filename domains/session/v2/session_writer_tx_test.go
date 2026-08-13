@@ -103,7 +103,7 @@ func (s bodiesPoolShim) QueryRow(ctx context.Context, sql string, args ...any) p
 // rows so submit-mode detection proceeds without attachments. It matches by
 // regex so the test does not depend on the exact column list.
 func expectListAllBodiesEmpty(mock pgxmock.PgxPoolIface) {
-	mock.ExpectQuery("FROM gateway.session_bodies").
+	mock.ExpectQuery("FROM public.session_bodies").
 		WithArgs(pgxmock.AnyArg(), pgxmock.AnyArg()).
 		WillReturnRows(pgxmock.NewRows([]string{
 			"session_id", "turn_no", "tenant_id", "request_id", "ts",
@@ -147,7 +147,7 @@ func TestWrite_LoadsPreviousOutboundForRequestDelta(t *testing.T) {
 
 	mock.ExpectBegin()
 	expectSessionLock(mock)
-	mock.ExpectQuery("FROM gateway.session_bodies").
+	mock.ExpectQuery("FROM public.session_bodies").
 		WithArgs(req.TenantID, req.SessionID).
 		WillReturnRows(pgxmock.NewRows([]string{
 			"session_id", "turn_no", "tenant_id", "request_id", "ts",
@@ -163,13 +163,13 @@ func TestWrite_LoadsPreviousOutboundForRequestDelta(t *testing.T) {
 	mock.ExpectQuery("COALESCE\\(MAX\\(turn_no\\), 0\\) \\+ 1").
 		WithArgs(pgxmock.AnyArg(), pgxmock.AnyArg()).
 		WillReturnRows(pgxmock.NewRows([]string{"turn_no"}).AddRow(2))
-	mock.ExpectExec("INSERT INTO gateway.session_turns").
+	mock.ExpectExec("INSERT INTO public.session_turns").
 		WithArgs(anyArgs(32)...).
 		WillReturnResult(pgxmock.NewResult("INSERT", 1))
 
 	bodyArgs := anyArgs(11)
 	bodyArgs[5] = `[{"role":"user","content":"new"}]`
-	mock.ExpectExec("INSERT INTO gateway.session_bodies").
+	mock.ExpectExec("INSERT INTO public.session_bodies").
 		WithArgs(bodyArgs...).
 		WillReturnResult(pgxmock.NewResult("INSERT", 1))
 	mock.ExpectCommit()
@@ -198,13 +198,13 @@ func TestWrite_TurnAndBodiesAreAtomic_RollbackOnBodiesFailure(t *testing.T) {
 	mock.ExpectQuery("COALESCE\\(MAX\\(turn_no\\), 0\\) \\+ 1").
 		WithArgs(pgxmock.AnyArg(), pgxmock.AnyArg()).
 		WillReturnRows(pgxmock.NewRows([]string{"turn_no"}).AddRow(1))
-	mock.ExpectExec("INSERT INTO gateway.session_turns").
+	mock.ExpectExec("INSERT INTO public.session_turns").
 		WithArgs(anyArgs(32)...).
 		WillReturnResult(pgxmock.NewResult("INSERT", 1))
 
 	// 4. WriteBodiesInTx FAILS — simulate a DB error on the bodies INSERT.
 	bodiesErr := errors.New("boom: bodies insert failed")
-	mock.ExpectExec("INSERT INTO gateway.session_bodies").
+	mock.ExpectExec("INSERT INTO public.session_bodies").
 		WithArgs(anyArgs(11)...).
 		WillReturnError(bodiesErr)
 
@@ -236,12 +236,12 @@ func TestWrite_TurnAndBodiesAreAtomic_CommitOnSuccess(t *testing.T) {
 	mock.ExpectQuery("COALESCE\\(MAX\\(turn_no\\), 0\\) \\+ 1").
 		WithArgs(pgxmock.AnyArg(), pgxmock.AnyArg()).
 		WillReturnRows(pgxmock.NewRows([]string{"turn_no"}).AddRow(1))
-	mock.ExpectExec("INSERT INTO gateway.session_turns").
+	mock.ExpectExec("INSERT INTO public.session_turns").
 		WithArgs(anyArgs(32)...).
 		WillReturnResult(pgxmock.NewResult("INSERT", 1))
 
 	// 4. WriteBodiesInTx succeeds.
-	mock.ExpectExec("INSERT INTO gateway.session_bodies").
+	mock.ExpectExec("INSERT INTO public.session_bodies").
 		WithArgs(anyArgs(11)...).
 		WillReturnResult(pgxmock.NewResult("INSERT", 1))
 
@@ -335,10 +335,10 @@ func TestWrite_AggregateGoroutineManagedByLifecycle(t *testing.T) {
 	mock.ExpectQuery("COALESCE\\(MAX\\(turn_no\\), 0\\) \\+ 1").
 		WithArgs(pgxmock.AnyArg(), pgxmock.AnyArg()).
 		WillReturnRows(pgxmock.NewRows([]string{"turn_no"}).AddRow(1))
-	mock.ExpectExec("INSERT INTO gateway.session_turns").
+	mock.ExpectExec("INSERT INTO public.session_turns").
 		WithArgs(anyArgs(32)...).
 		WillReturnResult(pgxmock.NewResult("INSERT", 1))
-	mock.ExpectExec("INSERT INTO gateway.session_bodies").
+	mock.ExpectExec("INSERT INTO public.session_bodies").
 		WithArgs(anyArgs(11)...).
 		WillReturnResult(pgxmock.NewResult("INSERT", 1))
 	mock.ExpectCommit()

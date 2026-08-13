@@ -9,8 +9,8 @@
 //  2. Feature-flagged — 只有 sessions_v2.enabled && sessions_v2.shadow_write
 //     同时为 true 时才执行 V2 写入（hook 内部判断）。启动期不阻塞。
 //  3. Fail-safe — V2 写入失败只 log WARN 不阻塞主 request_logs INSERT。
-//  4. Schema 先决 — V2 表 (gateway.sessions / gateway.session_turns /
-//     gateway.session_bodies / gateway.session_turn_logs) 必须在 252 上已跑
+//  4. Schema 先决 — V2 表 (public.sessions / public.session_turns /
+//     public.session_bodies / public.session_turn_logs) 必须在 252 上已跑
 //     430_sessions_v2_schema.sql。init 不自动建表，启动期失败会 log WARN
 //     但不 fatal（退化 = shadow write 静默关闭）。
 //  5. 配置驱动 — timeout / retention 等参数从 settings（hot-reload 平台配置）

@@ -10,7 +10,7 @@
 --   - 456_session_v2_display_columns.sql  (no DDL changes to policy)
 --
 -- Schema reality:
---   - gateway.sessions / session_turns / session_bodies each have an
+--   - public.sessions / session_turns / session_bodies each have an
 --     `tenant_id` column and a `session_id` column.
 --   - session_dim lives in the PUBLIC schema (created by 350) and its PK is
 --     `gw_session_id`. It does NOT currently carry an `owner_user` column —
@@ -32,8 +32,8 @@
 BEGIN;
 
 -- session_turns ─────────────────────────────────────────────────────────
-DROP POLICY IF EXISTS session_turns_owner_filter ON gateway.session_turns;
-CREATE POLICY session_turns_owner_filter ON gateway.session_turns
+DROP POLICY IF EXISTS session_turns_owner_filter ON public.session_turns;
+CREATE POLICY session_turns_owner_filter ON public.session_turns
     AS RESTRICTIVE
     FOR ALL
     TO PUBLIC
@@ -46,7 +46,7 @@ CREATE POLICY session_turns_owner_filter ON gateway.session_turns
                 WHERE gw_session_id IS NOT NULL
                 ORDER BY gw_session_id, ts ASC
             ) first_rl
-            WHERE first_rl.gw_session_id = gateway.session_turns.session_id
+            WHERE first_rl.gw_session_id = public.session_turns.session_id
               AND (
                   first_rl.owner_user = current_setting('app.current_user', true)
                   OR current_setting('app.current_role', true) = 'super_admin'
@@ -56,8 +56,8 @@ CREATE POLICY session_turns_owner_filter ON gateway.session_turns
     );
 
 -- sessions ──────────────────────────────────────────────────────────────
-DROP POLICY IF EXISTS sessions_owner_filter ON gateway.sessions;
-CREATE POLICY sessions_owner_filter ON gateway.sessions
+DROP POLICY IF EXISTS sessions_owner_filter ON public.sessions;
+CREATE POLICY sessions_owner_filter ON public.sessions
     AS RESTRICTIVE
     FOR ALL
     TO PUBLIC
@@ -70,7 +70,7 @@ CREATE POLICY sessions_owner_filter ON gateway.sessions
                 WHERE gw_session_id IS NOT NULL
                 ORDER BY gw_session_id, ts ASC
             ) first_rl
-            WHERE first_rl.gw_session_id = gateway.sessions.session_id
+            WHERE first_rl.gw_session_id = public.sessions.session_id
               AND (
                   first_rl.owner_user = current_setting('app.current_user', true)
                   OR current_setting('app.current_role', true) = 'super_admin'
@@ -80,8 +80,8 @@ CREATE POLICY sessions_owner_filter ON gateway.sessions
     );
 
 -- session_bodies ────────────────────────────────────────────────────────
-DROP POLICY IF EXISTS session_bodies_owner_filter ON gateway.session_bodies;
-CREATE POLICY session_bodies_owner_filter ON gateway.session_bodies
+DROP POLICY IF EXISTS session_bodies_owner_filter ON public.session_bodies;
+CREATE POLICY session_bodies_owner_filter ON public.session_bodies
     AS RESTRICTIVE
     FOR ALL
     TO PUBLIC
@@ -94,7 +94,7 @@ CREATE POLICY session_bodies_owner_filter ON gateway.session_bodies
                 WHERE gw_session_id IS NOT NULL
                 ORDER BY gw_session_id, ts ASC
             ) first_rl
-            WHERE first_rl.gw_session_id = gateway.session_bodies.session_id
+            WHERE first_rl.gw_session_id = public.session_bodies.session_id
               AND (
                   first_rl.owner_user = current_setting('app.current_user', true)
                   OR current_setting('app.current_role', true) = 'super_admin'

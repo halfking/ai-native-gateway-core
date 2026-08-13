@@ -1,7 +1,7 @@
 // Package admin - turns_list.go
 //
 // 跨会话轮次列表端点（2026-08-09）。
-// 将 gateway.session_turns 表中的轮次数据按时间倒序暴露，供前端轮次列表页
+// 将 public.session_turns 表中的轮次数据按时间倒序暴露，供前端轮次列表页
 // （TurnsListView.vue）使用。与现有 /api/admin/sessions/<id>/turns 不同，
 // 本端点不限定单一会话，而是跨会话展示所有轮次。
 //
@@ -144,7 +144,7 @@ func (h *Handler) handleTurnsList(w http.ResponseWriter, r *http.Request) {
 			COALESCE(t.injection_verdict, '') AS injection_verdict,
 			COALESCE(t.output_verdict, '') AS output_verdict,
 			COALESCE(t.attachment_count, 0) AS attachment_count
-		FROM gateway.session_turns t
+		FROM public.session_turns t
 		WHERE %s
 		ORDER BY t.ts DESC, t.session_id DESC, t.turn_no DESC
 		LIMIT $%d

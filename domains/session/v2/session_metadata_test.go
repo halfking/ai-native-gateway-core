@@ -31,14 +31,14 @@ func TestSessionMetadata_SetAndGet(t *testing.T) {
 
 	// Setup: create a test session
 	_, err = pool.Exec(ctx, `
-		INSERT INTO gateway.sessions (session_id, tenant_id, partition_date)
+		INSERT INTO public.sessions (session_id, tenant_id, partition_date)
 		VALUES ($1, $2, CURRENT_DATE)
 		ON CONFLICT (session_id, partition_date) DO NOTHING
 	`, sessionID, tenantID)
 	require.NoError(t, err)
 
 	defer func() {
-		pool.Exec(ctx, "DELETE FROM gateway.sessions WHERE session_id = $1", sessionID)
+		pool.Exec(ctx, "DELETE FROM public.sessions WHERE session_id = $1", sessionID)
 		pool.Exec(ctx, "DELETE FROM gateway.session_tags WHERE session_id = $1", sessionID)
 	}()
 
@@ -126,13 +126,13 @@ func TestSessionMetadata_PartialUpdate(t *testing.T) {
 
 	// Setup
 	_, err = pool.Exec(ctx, `
-		INSERT INTO gateway.sessions (session_id, tenant_id, partition_date)
+		INSERT INTO public.sessions (session_id, tenant_id, partition_date)
 		VALUES ($1, $2, CURRENT_DATE)
 		ON CONFLICT (session_id, partition_date) DO NOTHING
 	`, sessionID, tenantID)
 	require.NoError(t, err)
 
-	defer pool.Exec(ctx, "DELETE FROM gateway.sessions WHERE session_id = $1", sessionID)
+	defer pool.Exec(ctx, "DELETE FROM public.sessions WHERE session_id = $1", sessionID)
 
 	// Set initial metadata
 	err = agg.SetSessionMetadata(ctx, tenantID, sessionID, SessionMetadata{

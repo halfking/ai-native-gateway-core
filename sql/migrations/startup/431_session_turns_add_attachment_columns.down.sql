@@ -9,7 +9,7 @@ DROP INDEX IF EXISTS gateway.idx_session_turns_multimodal_types;
 DROP INDEX IF EXISTS gateway.idx_session_turns_attachment_count;
 
 -- Remove attachment metadata columns
-ALTER TABLE gateway.session_turns 
+ALTER TABLE public.session_turns 
   DROP COLUMN IF EXISTS attachment_count,
   DROP COLUMN IF EXISTS attachment_total_bytes,
   DROP COLUMN IF EXISTS multimodal_types;

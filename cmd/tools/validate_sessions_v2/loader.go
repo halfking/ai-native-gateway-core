@@ -198,7 +198,7 @@ func (l *SessionLoader) LoadV2Turns(ctx context.Context, tenantID, sessionID str
 			COALESCE(error_kind, '') as error_kind,
 			source_kind,
 			quality
-		FROM gateway.session_turns
+		FROM public.session_turns
 		WHERE tenant_id = $1 AND session_id = $2
 		ORDER BY turn_no ASC
 	`
@@ -263,7 +263,7 @@ func (l *SessionLoader) LoadV2Bodies(ctx context.Context, tenantID, sessionID st
 			COALESCE(outbound_body, '[]'::jsonb) as outbound_body,
 			COALESCE(request_attachments, '[]'::jsonb) as request_attachments,
 			COALESCE(response_attachments, '[]'::jsonb) as response_attachments
-		FROM gateway.session_bodies
+		FROM public.session_bodies
 		WHERE tenant_id = $1 AND session_id = $2
 		ORDER BY turn_no ASC
 	`
@@ -320,7 +320,7 @@ func (l *SessionLoader) LoadV2Session(ctx context.Context, tenantID, sessionID s
 			COALESCE(last_model, '') as last_model,
 			COALESCE(last_provider, '') as last_provider,
 			COALESCE(primary_request_id, '') as primary_request_id
-		FROM gateway.sessions
+		FROM public.sessions
 		WHERE tenant_id = $1 AND session_id = $2
 		LIMIT 1
 	`

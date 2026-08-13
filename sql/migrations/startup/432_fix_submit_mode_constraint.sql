@@ -16,11 +16,11 @@
 BEGIN;
 
 -- Drop the existing constraint
-ALTER TABLE gateway.session_turns 
+ALTER TABLE public.session_turns 
   DROP CONSTRAINT IF EXISTS session_turns_submit_mode_check;
 
 -- Re-create with the additional 'attachment_only' mode
-ALTER TABLE gateway.session_turns 
+ALTER TABLE public.session_turns 
   ADD CONSTRAINT session_turns_submit_mode_check 
   CHECK (submit_mode IN ('full', 'delta', 'snapshot', 'inferred_compressed', 'attachment_only'));
 
@@ -30,7 +30,7 @@ BEGIN
     IF NOT EXISTS (
         SELECT 1 FROM pg_constraint 
         WHERE conname = 'session_turns_submit_mode_check'
-        AND conrelid = 'gateway.session_turns'::regclass
+        AND conrelid = 'public.session_turns'::regclass
     ) THEN
         RAISE EXCEPTION 'Constraint session_turns_submit_mode_check not created';
     END IF;

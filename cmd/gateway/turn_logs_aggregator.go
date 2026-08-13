@@ -9,7 +9,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-// StageLog is one per-stage entry from gateway.session_turn_logs.
+// StageLog is one per-stage entry from public.session_turn_logs.
 type StageLog struct {
 	Stage     string    `json:"stage"`
 	Status    string    `json:"status"`
@@ -18,7 +18,7 @@ type StageLog struct {
 	Error     string    `json:"error,omitempty"`
 }
 
-// LogSummary is the aggregated JSON we write into gateway.sessions.turn_logs_summary.
+// LogSummary is the aggregated JSON we write into public.sessions.turn_logs_summary.
 type LogSummary struct {
 	Stages  []StageLog `json:"stages"`
 	TurnNo  int        `json:"turn_no"`
@@ -27,7 +27,7 @@ type LogSummary struct {
 
 // TurnLogsAggregator reads per-stage logs for a (tenant, session), aggregates
 // them by turn_no into a JSON summary, and writes the result into
-// gateway.sessions.turn_logs_summary. After a successful flush the rows are
+// public.sessions.turn_logs_summary. After a successful flush the rows are
 // deleted so they don't get re-aggregated.
 type TurnLogsAggregator struct {
 	db *pgxpool.Pool
@@ -39,7 +39,7 @@ func NewTurnLogsAggregator(db *pgxpool.Pool) *TurnLogsAggregator {
 
 // AggregateAndFlush reads non-expired session_turn_logs for the given
 // (tenant, session), groups them by turn_no, writes a JSON summary to
-// gateway.sessions.turn_logs_summary, and deletes the source rows.
+// public.sessions.turn_logs_summary, and deletes the source rows.
 //
 // Safe to call concurrently per (tenant, session): the rows are read-only
 // then deleted; concurrent writers of the same JSON column will result in
@@ -48,7 +48,7 @@ func NewTurnLogsAggregator(db *pgxpool.Pool) *TurnLogsAggregator {
 func (a *TurnLogsAggregator) AggregateAndFlush(ctx context.Context, tenantID, sessionID string) error {
 	rows, err := a.db.Query(ctx, `
 		SELECT turn_no, stage, stage_status, latency_ms, started_at, COALESCE(error_message,'')
-		FROM gateway.session_turn_logs
+		FROM public.session_turn_logs
 		WHERE tenant_id=$1 AND session_id=$2 AND expires_at > NOW()
 		ORDER BY turn_no ASC, started_at ASC
 	`, tenantID, sessionID)
@@ -75,7 +75,7 @@ func (a *TurnLogsAggregator) AggregateAndFlush(ctx context.Context, tenantID, se
 	// (defensive — also handles empty sessions cleanly).
 	if len(byTurn) == 0 {
 		if _, err := a.db.Exec(ctx, `
-			DELETE FROM gateway.session_turn_logs
+			DELETE FROM public.session_turn_logs
 			WHERE tenant_id=$1 AND session_id=$2 AND expires_at > NOW()
 		`, tenantID, sessionID); err != nil {
 			return fmt.Errorf("delete empty: %w", err)
@@ -98,7 +98,7 @@ func (a *TurnLogsAggregator) AggregateAndFlush(ctx context.Context, tenantID, se
 	}
 
 	if _, err := a.db.Exec(ctx, `
-		UPDATE gateway.sessions
+		UPDATE public.sessions
 		SET turn_logs_summary = $1::jsonb
 		WHERE tenant_id=$2 AND session_id=$3
 	`, string(payload), tenantID, sessionID); err != nil {
@@ -106,7 +106,7 @@ func (a *TurnLogsAggregator) AggregateAndFlush(ctx context.Context, tenantID, se
 	}
 
 	if _, err := a.db.Exec(ctx, `
-		DELETE FROM gateway.session_turn_logs
+		DELETE FROM public.session_turn_logs
 		WHERE tenant_id=$1 AND session_id=$2 AND expires_at > NOW()
 	`, tenantID, sessionID); err != nil {
 		return fmt.Errorf("delete: %w", err)

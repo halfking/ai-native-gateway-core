@@ -45,13 +45,13 @@ func TestOutboundBuilder_BuildLatestOutbound_RealDB(t *testing.T) {
 	// LoadLatestOutbound reads; session_turns is not required for this
 	// read path.
 	_, err = pool.Exec(ctx, `
-		DELETE FROM gateway.session_bodies
+		DELETE FROM public.session_bodies
 		WHERE tenant_id = $1 AND session_id = $2`,
 		tenantID, sessionID)
 	require.NoError(t, err)
 
 	_, err = pool.Exec(ctx, `
-		INSERT INTO gateway.session_bodies
+		INSERT INTO public.session_bodies
 		    (session_id, turn_no, partition_date, tenant_id, request_id,
 		     request_delta, response_delta, outbound_body, ts)
 		VALUES ($1, 1, $2, $3, $4, NULL, NULL, $5, $6)`,
@@ -59,7 +59,7 @@ func TestOutboundBuilder_BuildLatestOutbound_RealDB(t *testing.T) {
 		"req_build_latest_01", outboundJSON, now)
 	require.NoError(t, err)
 	t.Cleanup(func() {
-		_, _ = pool.Exec(ctx, `DELETE FROM gateway.session_bodies
+		_, _ = pool.Exec(ctx, `DELETE FROM public.session_bodies
 			WHERE tenant_id=$1 AND session_id=$2`, tenantID, sessionID)
 	})
 
@@ -95,7 +95,7 @@ func TestOutboundBuilder_BuildLatestOutbound_RealDB_NoRows(t *testing.T) {
 	)
 
 	// Ensure clean slate.
-	_, err := pool.Exec(ctx, `DELETE FROM gateway.session_bodies
+	_, err := pool.Exec(ctx, `DELETE FROM public.session_bodies
 		WHERE tenant_id=$1 AND session_id=$2`, tenantID, sessionID)
 	require.NoError(t, err)
 
@@ -123,7 +123,7 @@ func TestSessionTurnsReader_LoadState_RealDB_NoRows(t *testing.T) {
 		sessionID = "gw_loadstate_norows01"
 	)
 	// No session_turns rows exist for this session.
-	_, err := pool.Exec(ctx, `DELETE FROM gateway.session_turns
+	_, err := pool.Exec(ctx, `DELETE FROM public.session_turns
 		WHERE tenant_id=$1 AND session_id=$2`, tenantID, sessionID)
 	require.NoError(t, err)
 

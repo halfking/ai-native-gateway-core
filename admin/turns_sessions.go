@@ -199,7 +199,7 @@ func (h *Handler) handleTurnsSessions(w http.ResponseWriter, r *http.Request) {
 			sd.client_id, sd.application_code, sd.end_user_id,
 			COALESCE(ss.user_tags, '{}') AS user_tags,
 			ss.first_request_at AS start_time
-		FROM gateway.sessions s
+		FROM public.sessions s
 		LEFT JOIN session_dim sd
 			ON sd.gw_session_id = s.session_id AND sd.tenant_id = s.tenant_id
 		LEFT JOIN session_summaries ss
@@ -431,7 +431,7 @@ func (h *Handler) loadTurnsForSessions(ctx context.Context, sessions []*TurnsSes
 			COALESCE(t.attachment_count, 0) AS attachment_count,
 			COALESCE(t.attempt_no, 0) AS attempt_no,
 			t.latency_ms
-		FROM gateway.session_turns t
+		FROM public.session_turns t
 		WHERE %s
 		ORDER BY t.session_id, t.turn_no ASC
 	`, turnWhere)
