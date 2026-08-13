@@ -286,6 +286,10 @@ func (p *Pipeline) complete(qr *QueuedRequest, out ForwardOutcome) {
 	// V3.1: Record T9 timestamp (response end - stream completed)
 	qr.SetT9_ResponseEnd()
 
+	// V3.1: Export stage histograms even if the caller already left —
+	// abandoned requests still carry useful latency signal.
+	recordStageMetrics(qr, out)
+
 	if qr.abandoned.Load() {
 		return // caller already left; drop
 	}
@@ -293,6 +297,55 @@ func (p *Pipeline) complete(qr *QueuedRequest, out ForwardOutcome) {
 	case qr.ResultCh <- out:
 	default:
 		// cap-1 channel with a single reader; shouldn't happen. Drain-safe.
+	}
+}
+
+// resultLabel maps a ForwardOutcome to the closed-enum "result" label used by
+// V3.1 stage histograms.
+func resultLabel(out ForwardOutcome) string {
+	if out.Err == nil {
+		return "success"
+	}
+	if IsShutdown(out.Err) {
+		return "shutdown"
+	}
+	if out.BytesSent {
+		return "fail_postfirstbyte"
+	}
+	return "fail_prefirstbyte"
+}
+
+// recordStageMetrics observes the 9 V3.1 lifecycle histograms for one completed
+// request. Missing timestamps are skipped (early complete / failover paths).
+func recordStageMetrics(qr *QueuedRequest, out ForwardOutcome) {
+	result := resultLabel(out)
+
+	if s, ok := stageSecondsFrom(qr.T0_ArrivedAt, qr.T6_CredDequeuedAt); ok {
+		metricStageQueueWaitT0T6.WithLabelValues(result).Observe(s)
+	}
+	if s, ok := stageSeconds(qr.T1_TotalEnqueuedAt, qr.T2_TotalDequeuedAt); ok {
+		metricStageTotalQueueT1T2.WithLabelValues(result).Observe(s)
+	}
+	if s, ok := stageSeconds(qr.T3_ModelEnqueuedAt, qr.T4_ModelDequeuedAt); ok {
+		metricStageModelQueueT3T4.WithLabelValues(result).Observe(s)
+	}
+	if s, ok := stageSeconds(qr.T5_CredEnqueuedAt, qr.T6_CredDequeuedAt); ok {
+		metricStageCredQueueT5T6.WithLabelValues(result).Observe(s)
+	}
+	if s, ok := stageSeconds(qr.T2_TotalDequeuedAt, qr.T5_CredEnqueuedAt); ok {
+		metricStageRoutingT2T5.WithLabelValues(result).Observe(s)
+	}
+	if s, ok := stageSeconds(qr.T6_CredDequeuedAt, qr.T7_ForwardStartAt); ok {
+		metricStageAcquireT6T7.WithLabelValues(result).Observe(s)
+	}
+	if s, ok := stageSeconds(qr.T7_ForwardStartAt, qr.T8_ResponseStartAt); ok {
+		metricStageUpstreamT7T8.WithLabelValues(result).Observe(s)
+	}
+	if s, ok := stageSeconds(qr.T8_ResponseStartAt, qr.T9_ResponseEndAt); ok {
+		metricStageStreamingT8T9.WithLabelValues(result).Observe(s)
+	}
+	if s, ok := stageSecondsFrom(qr.T0_ArrivedAt, qr.T9_ResponseEndAt); ok {
+		metricStageTotalT0T9.WithLabelValues(result).Observe(s)
 	}
 }
 

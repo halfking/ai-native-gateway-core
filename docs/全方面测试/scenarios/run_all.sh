@@ -10,7 +10,9 @@ SKIP_SCENARIOS=""
 FAST=0
 ALLOW_SKIPPED=0
 SUITE="functional"
-GATEWAY="${GATEWAY:-http://localhost:8781}"
+# 2026-08-13 修订: 默认端口 8793 (与 _lib.sh / 02-测试环境部署.md 对齐, 避开 8781 上的其它 gateway 容器).
+# 历史: S22/S23 第一轮失败 30/30 0% succ, 根因是默认 GATEWAY=localhost:8781 撞到了别人 7月31日的旧 binary.
+GATEWAY="${GATEWAY:-http://127.0.0.1:8793}"
 RUN_ID="${TEST_RUN_ID:-run-$(date -u +%Y%m%dT%H%M%SZ)-$$}"
 while [ $# -gt 0 ]; do
     case "$1" in
