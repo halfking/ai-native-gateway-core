@@ -71,7 +71,7 @@ func TestPrepare_V2Path_RestoresCompressionMetadata(t *testing.T) {
 		},
 		Builder: stubOutboundBuilder{body: []byte(`[ {"role":"user","content":"first"} ]`)},
 	}}
-	res := sc.Prepare(context.Background(), `{"messages":[{"role":"user","content":"first"}]}`, "t1", "gw_v2meta01", "openai", 0, false)
+	res := sc.Prepare(context.Background(), []byte(`{"messages":[{"role":"user","content":"first"}]}`), "t1", "gw_v2meta01", "openai", 0, false)
 	if res.MsgCount != 1 {
 		t.Fatalf("expected restored V2 body to remain active, got %d messages", res.MsgCount)
 	}
