@@ -3,6 +3,7 @@ package provider
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -111,15 +112,15 @@ type Candidate struct {
 	// nil/0 = unlimited (default for paid credentials). Free-pool
 	// credentials auto-populate from the free-pool template rpmLimit.
 	// Enforced by domains/credential/limiter.go in AcquireAll.
-	RPMLimit             *int     `json:"rpm_limit,omitempty"`
+	RPMLimit *int `json:"rpm_limit,omitempty"`
 	// 479: 并发/限流模式与队列参数（见 docs/会话优化v2/57）。
 	// concurrency: 用 ConcurrencyLimit 做 in-flight 上限; rpm: 用 RPMLimit 做令牌桶;
 	// tpm: 用 TPMLimit 做令牌桶(发送前预估 token); disabled: 不限流。
 	// 由 domains/dispatch 的凭据队列调速器消费。
-	ConcurrencyMode  string `json:"concurrency_mode,omitempty"`
-	TPMLimit         *int   `json:"tpm_limit,omitempty"`
-	MaxQueueDepth    *int   `json:"max_queue_depth,omitempty"`
-	MaxQueueWaitMS   *int   `json:"max_queue_wait_ms,omitempty"`
+	ConcurrencyMode      string   `json:"concurrency_mode,omitempty"`
+	TPMLimit             *int     `json:"tpm_limit,omitempty"`
+	MaxQueueDepth        *int     `json:"max_queue_depth,omitempty"`
+	MaxQueueWaitMS       *int     `json:"max_queue_wait_ms,omitempty"`
 	BalanceUSD           *float64 `json:"balance_usd"`
 	CircuitState         string   `json:"circuit_state"`
 	AvailabilityState    string   `json:"availability_state"`
@@ -505,6 +506,40 @@ func (c *Client) getCandidates(ctx context.Context, model, profile, tenantID, mo
 		return resp, nil
 	})
 	if err != nil {
+		// 🆕 Fail-Safe: 数据库查询失败时，尝试使用过期缓存
+		c.mu.RLock()
+		if staleEntry, ok := c.candCache[key]; ok {
+			c.mu.RUnlock()
+
+			cacheAge := time.Since(staleEntry.expires)
+			slog.Warn("[candidate_diag] database unavailable, serving stale cache",
+				"model", routeModel,
+				"profile", profile,
+				"tenant_id", tenantID,
+				"cache_key", key,
+				"cache_age", cacheAge,
+				"plan_count", planCount(staleEntry.value),
+				"candidate_count", candidateCount(staleEntry.value),
+				"db_error", err.Error(),
+			)
+
+			policy, _ := c.getPolicyCached(ctx)
+			cands := c.enrichWithAPIKeys(ctx, staleEntry.value)
+
+			if len(cands) == 0 {
+				logCandidateDiagnostic("stale_cache_empty",
+					"model", routeModel,
+					"profile", profile,
+					"tenant_id", tenantID,
+					"cache_age", cacheAge,
+				)
+			}
+
+			return cands, policy, nil
+		}
+		c.mu.RUnlock()
+
+		// 缓存也没有，真正失败
 		return nil, DefaultPolicy(), err
 	}
 
@@ -542,6 +577,30 @@ func candidateCount(resp *resolveResponse) int {
 
 func logCandidateDiagnostic(event string, args ...any) {
 	slog.Warn("[candidate_diag] "+event, args...)
+}
+
+// isRetryableDBError 判断数据库错误是否应该重试
+// 网络抖动、连接超时等临时性错误会重试，SQL语法错误等不重试
+func isRetryableDBError(err error) bool {
+	if err == nil {
+		return false
+	}
+
+	// 不重试 ErrNoRows (这是正常的"没有记录"，不是连接错误)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return false
+	}
+
+	// 重试以下错误类型
+	errStr := strings.ToLower(err.Error())
+	return errors.Is(err, context.DeadlineExceeded) ||
+		strings.Contains(errStr, "connection refused") ||
+		strings.Contains(errStr, "timeout") ||
+		strings.Contains(errStr, "connection reset") ||
+		strings.Contains(errStr, "broken pipe") ||
+		strings.Contains(errStr, "i/o timeout") ||
+		strings.Contains(errStr, "connection closed") ||
+		strings.Contains(errStr, "no such host")
 }
 
 func (c *Client) GetPolicy(ctx context.Context) (*Policy, error) {
@@ -994,7 +1053,13 @@ func (c *Client) loadCandidatesByModalityDB(ctx context.Context, clientModel, te
 		tenantID = "default"
 	}
 
-	rows, err := c.dbPool.Query(ctx, `
+	// 🆕 重试逻辑：数据库查询失败时重试最多3次，指数退避
+	var rows pgx.Rows
+	var err error
+	maxAttempts := 3
+
+	for attempt := 0; attempt < maxAttempts; attempt++ {
+		rows, err = c.dbPool.Query(ctx, `
 		SELECT
 			c.id::int AS credential_id,
 			p.id::int AS provider_id,
@@ -1210,6 +1275,39 @@ func (c *Client) loadCandidatesByModalityDB(ctx context.Context, clientModel, te
 			-- above soft-degraded ones even when the static column is equal.
 			COALESCE(rsr.rate, mo.success_rate, 0.9) DESC
 		`, clientModelLower, tenantID, modality)
+
+		// 查询成功，跳出重试循环
+		if err == nil {
+			break
+		}
+
+		// 判断是否可重试
+		if !isRetryableDBError(err) {
+			// 不可重试的错误（如SQL语法错误），直接返回
+			return nil, fmt.Errorf("db query failed (non-retryable): %w", err)
+		}
+
+		// 最后一次尝试失败
+		if attempt == maxAttempts-1 {
+			return nil, fmt.Errorf("db query failed after %d attempts: %w", maxAttempts, err)
+		}
+
+		// 指数退避：50ms, 100ms, 150ms
+		backoff := time.Duration(50*(attempt+1)) * time.Millisecond
+		slog.Warn("[candidate_diag] db query retry",
+			"model", clientModel,
+			"tenant_id", tenantID,
+			"modality", modality,
+			"attempt", attempt+1,
+			"max_attempts", maxAttempts,
+			"error", err.Error(),
+			"backoff_ms", backoff.Milliseconds(),
+		)
+
+		time.Sleep(backoff)
+	}
+
+	// 重试后仍然失败，返回错误
 	if err != nil {
 		return nil, err
 	}
