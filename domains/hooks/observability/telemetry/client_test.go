@@ -187,7 +187,7 @@ func TestUpdateRequestLog_MissingRequestFallsBackToInsert(t *testing.T) {
 	mockDB.ExpectExec(`INSERT INTO usage_ledger_hot`).
 		WithArgs(usageInsertArgs...).
 		WillReturnResult(pgxmock.NewResult("INSERT", 1))
-	requestInsertArgs := make([]interface{}, 90)
+	requestInsertArgs := make([]interface{}, 100)
 	for index := range requestInsertArgs {
 		requestInsertArgs[index] = pgxmock.AnyArg()
 	}
@@ -824,7 +824,7 @@ func TestLookupTurnNumber(t *testing.T) {
 
 	t.Run("handles multi-turn conversation", func(t *testing.T) {
 		testCases := []struct {
-			count      int
+			count        int
 			expectedTurn int
 		}{
 			{1, 1},

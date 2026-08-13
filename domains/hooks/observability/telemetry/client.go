@@ -318,10 +318,59 @@ type RequestLogEntry struct {
 	// 2026-07-25: 请求/响应体大小（用于 Redis 实时统计和看板展示）
 	RequestBytes  *int `json:"request_bytes,omitempty"`
 	ResponseBytes *int `json:"response_bytes,omitempty"`
+
+	// V3.1 (2026-08-13, migration 491): 9-stage dispatch queue timestamps.
+	// Populated from domains/dispatch.QueuedRequest when the V2 pipeline is on.
+	// All nullable — early complete / legacy path leave them NULL.
+	T0ArrivedAt       *time.Time `json:"t0_arrived_at,omitempty"`
+	T1TotalEnqueuedAt *time.Time `json:"t1_total_enqueued_at,omitempty"`
+	T2TotalDequeuedAt *time.Time `json:"t2_total_dequeued_at,omitempty"`
+	T3ModelEnqueuedAt *time.Time `json:"t3_model_enqueued_at,omitempty"`
+	T4ModelDequeuedAt *time.Time `json:"t4_model_dequeued_at,omitempty"`
+	T5CredEnqueuedAt  *time.Time `json:"t5_cred_enqueued_at,omitempty"`
+	T6CredDequeuedAt  *time.Time `json:"t6_cred_dequeued_at,omitempty"`
+	T7ForwardStartAt  *time.Time `json:"t7_forward_start_at,omitempty"`
+	T8ResponseStartAt *time.Time `json:"t8_response_start_at,omitempty"`
+	T9ResponseEndAt   *time.Time `json:"t9_response_end_at,omitempty"`
+
+	// RequestType (2026-08-13, V3.2 BE-A3) classifies the row for the
+	// homepage live-stream parent/child tree:
+	//   main / title_gen / summary / sensitive_check / compression / other
+	// Persisted to request_logs.request_type (migration 510).
+	RequestType *string `json:"request_type,omitempty"`
 }
 
 func NewClient() *Client {
 	return newClientWithBufSize(4096)
+}
+
+// inferRequestTypeV32 derives the V3.2 request_type from the entry's existing
+// fields. Returns "main" for a plain client request (the column DEFAULT).
+// Precedence: explicit RequestType > compression > origin_actor > parent link.
+func inferRequestTypeV32(entry *RequestLogEntry) string {
+	if entry == nil {
+		return "main"
+	}
+	if entry.RequestType != nil && *entry.RequestType != "" {
+		return *entry.RequestType
+	}
+	// 压缩重写的请求：有 compression_reason。
+	if entry.CompressionReason != nil && *entry.CompressionReason != "" {
+		return "compression"
+	}
+	if entry.OriginActor != nil {
+		switch *entry.OriginActor {
+		case "auto-title-generator":
+			return "title_gen"
+		case "auto-summary-generator", "session-summary":
+			return "summary"
+		}
+	}
+	// 有父请求但无压缩/actor：归为 other（扩展请求）。
+	if entry.ParentRequestID != nil && *entry.ParentRequestID != "" {
+		return "other"
+	}
+	return "main"
 }
 
 func newClientWithBufSize(bufSize int) *Client {
@@ -887,7 +936,12 @@ func (c *Client) insertRequestLog(entry *RequestLogEntry) error {
 			-- client_protocol 来自 URL path routing。
 			-- virtual_client_id 来自 identity.BuildIdentityFromRequest。
 			-- 之前这些字段只在侧表 request_context_attrs 写入,主表永远 NULL。
-			agent_name, agent_type, client_protocol, virtual_client_id
+			agent_name, agent_type, client_protocol, virtual_client_id,
+			// V3.1 (migration 491): 9-stage dispatch queue timestamps.
+			t0_arrived_at, t1_total_enqueued_at, t2_total_dequeued_at,
+			t3_model_enqueued_at, t4_model_dequeued_at,
+			t5_cred_enqueued_at, t6_cred_dequeued_at,
+			t7_forward_start_at, t8_response_start_at, t9_response_end_at
 		) VALUES (
 		$1, now(), $2, $3, $4,
 		$5, $6, $7,
@@ -924,7 +978,9 @@ $48,
 		$81, $82, $83, $84,
 			$85::text::jsonb, $86,
 			-- 2026-07-27: 客户端感知字段(主表 INSERT 必填)。
-			$87, $88, $89, $90
+			$87, $88, $89, $90,
+			-- V3.1 queue timestamps (migration 491).
+			$91, $92, $93, $94, $95, $96, $97, $98, $99, $100
 		)
 				-- 2026-08-06 fix: INSERT targets request_logs_hot (NOT the partitioned parent).
 				-- Migration 455 (2026-07-23) gave request_logs_hot PRIMARY KEY (request_id),
@@ -1004,48 +1060,59 @@ $48,
 		upstream_finish_reason = EXCLUDED.upstream_finish_reason,
 		tool_calls = EXCLUDED.tool_calls,
 		client_request_id = COALESCE(EXCLUDED.client_request_id, request_logs_hot.client_request_id),
-		-- 2026-06-30: upstream diagnostics (migration 320)
+		// 2026-06-30: upstream diagnostics (migration 320)
 		upstream_status_code = EXCLUDED.upstream_status_code,
 		client_timeout = EXCLUDED.client_timeout,
 		client_endpoint = EXCLUDED.client_endpoint,
 		stream_chunk_errors = EXCLUDED.stream_chunk_errors,
-		-- 2026-07-01 P0 fix: stream_chunks_sent is NOT NULL (migration 320).
-		-- COALESCE so a missing value from any code path falls back to 0
-		-- instead of crashing the INSERT with SQLSTATE 23502.
+		// 2026-07-05 P0 fix: stream_chunks_sent is NOT NULL (migration 320).
+		// streamChunksSentArg() coerces nil pointer to 0 so the explicit
+		// INSERT never trips SQLSTATE 23502 even when the caller does
+		// not set the field (e.g. /api/telemetry/request-log HTTP path).
 		stream_chunks_sent = COALESCE(EXCLUDED.stream_chunks_sent, 0),
-		-- 2026-07-01: 附件元数据 (migration 325)。仅在目标行尚无附件时
-		-- 写入，避免后续 upsert（如失败补写）覆盖首次提取的完整附件列表。
+		// 2026-07-01: 附件元数据 (migration 325)。为空时写入 NULL。
 		attachments = COALESCE(request_logs_hot.attachments, EXCLUDED.attachments),
-		-- 2026-07-14 (migration 341): origin metadata. First-write-wins:
-		-- the first writer (usually the origin middleware) keeps its value;
-		-- later replays must not overwrite the real client IP / origin label.
+		// 2026-07-14 (migration 341): origin metadata. First-write-wins:
+		// the first writer (usually the origin middleware) keeps its value;
+		// later replays must not overwrite the real client IP / origin label.
 		client_ip           = COALESCE(request_logs_hot.client_ip, EXCLUDED.client_ip),
 		client_forwarded_for = COALESCE(request_logs_hot.client_forwarded_for, EXCLUDED.client_forwarded_for),
 		origin_stage        = COALESCE(request_logs_hot.origin_stage, EXCLUDED.origin_stage),
 		origin_actor        = COALESCE(request_logs_hot.origin_actor, EXCLUDED.origin_actor),
-		-- 2026-07-27: 客户端感知字段 — first-write-wins (避免后续 retry / 补写覆盖)
-		-- origin_mw / fillAttemptMeta 阶段提取的真实值。
+		// 2026-07-27: 客户端感知字段 — first-write-wins (避免后续 retry / 补写覆盖)
+		// origin_mw / fillAttemptMeta 阶段提取的真实值。
 		agent_name          = COALESCE(request_logs_hot.agent_name, EXCLUDED.agent_name),
 		agent_type          = COALESCE(request_logs_hot.agent_type, EXCLUDED.agent_type),
 		client_protocol     = COALESCE(request_logs_hot.client_protocol, EXCLUDED.client_protocol),
-		virtual_client_id   = COALESCE(request_logs_hot.virtual_client_id, EXCLUDED.virtual_client_id)
-		-- 2026-07-27 (L-2): terminal-state guard, mirroring the WAL guard in
-		-- request_logger.go Update(). Without this, the deferred client-
-		-- disconnect safety net could regress a row that already reached a
-		-- terminal state: the handler writes success=TRUE / request_status=
-		-- 'success' via the completion path, then the disconnect probe fires
-		-- EmitRequestLogUpdate with success=FALSE / 'client_disconnect' right
-		-- after the client reads the good response — clobbering the success
-		-- row (split-brain vs the WAL, which already had this guard).
-		--
-		-- Skip the UPDATE entirely when the existing row is already terminal
-		-- (success=TRUE OR request_status IN ('success','failure')) AND the
-		-- incoming update is NOT itself terminal-success (a legitimate later
-		-- enrichment of an already-success row, e.g. token accounting from a
-		-- slower path, is still allowed). The failure→success promotion case
-		-- is intentionally NOT allowed here: a disconnect probe must never
-		-- upgrade a failure, and a success is written by the authoritative
-		-- completion path before any probe fires.
+		virtual_client_id   = COALESCE(request_logs_hot.virtual_client_id, EXCLUDED.virtual_client_id),
+		// V3.1 queue timestamps: prefer newer non-null values from EXCLUDED.
+		t0_arrived_at        = COALESCE(EXCLUDED.t0_arrived_at, request_logs_hot.t0_arrived_at),
+		t1_total_enqueued_at = COALESCE(EXCLUDED.t1_total_enqueued_at, request_logs_hot.t1_total_enqueued_at),
+		t2_total_dequeued_at = COALESCE(EXCLUDED.t2_total_dequeued_at, request_logs_hot.t2_total_dequeued_at),
+		t3_model_enqueued_at = COALESCE(EXCLUDED.t3_model_enqueued_at, request_logs_hot.t3_model_enqueued_at),
+		t4_model_dequeued_at = COALESCE(EXCLUDED.t4_model_dequeued_at, request_logs_hot.t4_model_dequeued_at),
+		t5_cred_enqueued_at  = COALESCE(EXCLUDED.t5_cred_enqueued_at, request_logs_hot.t5_cred_enqueued_at),
+		t6_cred_dequeued_at  = COALESCE(EXCLUDED.t6_cred_dequeued_at, request_logs_hot.t6_cred_dequeued_at),
+		t7_forward_start_at  = COALESCE(EXCLUDED.t7_forward_start_at, request_logs_hot.t7_forward_start_at),
+		t8_response_start_at = COALESCE(EXCLUDED.t8_response_start_at, request_logs_hot.t8_response_start_at),
+		t9_response_end_at   = COALESCE(EXCLUDED.t9_response_end_at, request_logs_hot.t9_response_end_at)
+		// 2026-07-27 (L-2): terminal-state guard, mirroring the WAL guard in
+		// request_logger.go Update(). Without this, the deferred client-
+		// disconnect safety net could regress a row that already reached a
+		// terminal state: the handler writes success=TRUE / request_status=
+		// 'success' via the completion path, then the disconnect probe fires
+		// EmitRequestLogUpdate with success=FALSE / 'client_disconnect' right
+		// after the client reads the good response — clobbering the success
+		// row (split-brain vs the WAL, which already had this guard).
+		//
+		// Skip the UPDATE entirely when the existing row is already terminal
+		// (success=TRUE OR request_status IN ('success','failure')) AND the
+		// incoming update is NOT itself terminal-success (a legitimate later
+		// enrichment of an already-success row, e.g. token accounting from a
+		// slower path, is still allowed). The failure→success promotion case
+		// is intentionally NOT allowed here: a disconnect probe must never
+		// upgrade a failure, and a success is written by the authoritative
+		// completion path before any probe fires.
 		WHERE NOT (
 			request_logs_hot.request_status = 'failure'
 			OR (
@@ -1175,6 +1242,17 @@ $48,
 		entry.AgentType,
 		entry.ClientProtocol,
 		entry.VirtualClientID,
+		// V3.1 (migration 491): $91–$100 queue timestamps
+		entry.T0ArrivedAt,
+		entry.T1TotalEnqueuedAt,
+		entry.T2TotalDequeuedAt,
+		entry.T3ModelEnqueuedAt,
+		entry.T4ModelDequeuedAt,
+		entry.T5CredEnqueuedAt,
+		entry.T6CredDequeuedAt,
+		entry.T7ForwardStartAt,
+		entry.T8ResponseStartAt,
+		entry.T9ResponseEndAt,
 	)
 	if err != nil {
 		return err
@@ -2329,6 +2407,17 @@ func mergeRequestLogEntry(dst, src *RequestLogEntry) {
 	mergeStringPtr(&dst.AgentType, src.AgentType)
 	mergeStringPtr(&dst.ClientProtocol, src.ClientProtocol)
 	mergeStringPtr(&dst.VirtualClientID, src.VirtualClientID)
+	// V3.1 queue timestamps (migration 491)
+	mergeTimePtr(&dst.T0ArrivedAt, src.T0ArrivedAt)
+	mergeTimePtr(&dst.T1TotalEnqueuedAt, src.T1TotalEnqueuedAt)
+	mergeTimePtr(&dst.T2TotalDequeuedAt, src.T2TotalDequeuedAt)
+	mergeTimePtr(&dst.T3ModelEnqueuedAt, src.T3ModelEnqueuedAt)
+	mergeTimePtr(&dst.T4ModelDequeuedAt, src.T4ModelDequeuedAt)
+	mergeTimePtr(&dst.T5CredEnqueuedAt, src.T5CredEnqueuedAt)
+	mergeTimePtr(&dst.T6CredDequeuedAt, src.T6CredDequeuedAt)
+	mergeTimePtr(&dst.T7ForwardStartAt, src.T7ForwardStartAt)
+	mergeTimePtr(&dst.T8ResponseStartAt, src.T8ResponseStartAt)
+	mergeTimePtr(&dst.T9ResponseEndAt, src.T9ResponseEndAt)
 	if src.Success {
 		dst.Success = true
 	}
@@ -2507,3 +2596,10 @@ func lookupTurnNumber(ctx context.Context, tx pgx.Tx, sessionID string) int {
 
 	return count
 }
+
+// inferRequestType infers the request type from the request body.
+// Returns "" if the request type cannot be inferred.
+
+// inferRequestType derives the V3.2 request_type from the entry's existing
+// fields. Returns "main" for a plain client request (the column DEFAULT).
+// Precedence: explicit RequestType > compression > origin_actor > parent link.

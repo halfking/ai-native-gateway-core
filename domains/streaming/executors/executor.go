@@ -1512,6 +1512,19 @@ type ExecuteResult struct {
 	CompressionReason   *string
 	CompressionStrategy *string
 	CompressionMeta     []byte // JSON-encoded v7 §3.2 schema
+	// V3.1 dispatch queue timestamps (from QueuedRequest after Pipeline.Submit).
+	// Nil when dispatch path is off or stage was never reached.
+	T0ArrivedAt       *time.Time
+	T1TotalEnqueuedAt *time.Time
+	T2TotalDequeuedAt *time.Time
+	T3ModelEnqueuedAt *time.Time
+	T4ModelDequeuedAt *time.Time
+	T5CredEnqueuedAt  *time.Time
+	T6CredDequeuedAt  *time.Time
+	T7ForwardStartAt  *time.Time
+	T8ResponseStartAt *time.Time
+	T9ResponseEndAt   *time.Time
+
 	// ParentRequestID is the pre-compression request_id. Populated when
 	// the retry leg (after 4xx recovery) is treated as a child of the
 	// original attempt by the executor. Currently we emit a single
@@ -1550,6 +1563,19 @@ type ExecuteError struct {
 	Trace     *Trace
 	Attempts  []AttemptRecord
 	LastKind  errorsx.ErrorKind
+
+	// V3.1 dispatch queue timestamps when the failure went through Pipeline.Submit.
+	// Handler copies these onto RequestLogContext so failure rows also persist T0–T9.
+	T0ArrivedAt       *time.Time
+	T1TotalEnqueuedAt *time.Time
+	T2TotalDequeuedAt *time.Time
+	T3ModelEnqueuedAt *time.Time
+	T4ModelDequeuedAt *time.Time
+	T5CredEnqueuedAt  *time.Time
+	T6CredDequeuedAt  *time.Time
+	T7ForwardStartAt  *time.Time
+	T8ResponseStartAt *time.Time
+	T9ResponseEndAt   *time.Time
 }
 
 // Trace records the per-candidate decision points during routing/execution.
