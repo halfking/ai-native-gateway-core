@@ -354,6 +354,19 @@ func (it *SanitizeRestoreInterceptor) InterceptNonStream(ctx context.Context, re
 		return nil, nil
 	}
 
+	// === 验证占位符完整性（Phase 1 Task 1.1）===
+	invalidPlaceholders := it.validatePlaceholders(ctx, req.ResponseBody, sm)
+	if len(invalidPlaceholders) > 0 {
+		it.logger.WarnContext(ctx, "sanitize_restore: detected invalid placeholders in LLM response",
+			"invalid_placeholders", invalidPlaceholders,
+			"invalid_count", len(invalidPlaceholders),
+			"session_id", req.SessionID,
+			"tenant_id", req.TenantID,
+		)
+		// TODO: 添加 Prometheus 指标（Task 1.1 后续）
+		// metrics.SanitizePlaceholderTampering.WithLabelValues("llm_generated").Add(float64(len(invalidPlaceholders)))
+	}
+
 	restored, err := it.restoreResponseBody(ctx, req.ResponseBody, sm)
 	if err != nil || restored == nil {
 		return nil, nil
@@ -363,8 +376,9 @@ func (it *SanitizeRestoreInterceptor) InterceptNonStream(ctx context.Context, re
 		ModifiedBody: restored,
 		Action:       "sanitize_restore",
 		Metadata: map[string]any{
-			"sanitize_restored": true,
-			"placeholder_count": len(sm),
+			"sanitize_restored":    true,
+			"placeholder_count":    len(sm),
+			"invalid_placeholders": len(invalidPlaceholders),
 		},
 	}, nil
 }
@@ -616,6 +630,29 @@ func (it *SanitizeRestoreInterceptor) loadMap(ctx context.Context, sessionID str
 	// 每次还原都刷新 TTL（用户继续会话）
 	_ = it.redis.Expire(ctx, key, it.ttl).Err()
 	return sm, nil
+}
+
+// validatePlaceholders 验证响应中的占位符是否都在映射表中。
+// 返回不在映射表中的占位符列表（LLM 生成的伪造占位符）。
+func (it *SanitizeRestoreInterceptor) validatePlaceholders(ctx context.Context, body []byte, sm SanitizeMap) []string {
+	var invalidPlaceholders []string
+
+	matches := PlaceholderPattern.FindAllString(string(body), -1)
+	seen := make(map[string]bool)
+
+	for _, match := range matches {
+		if seen[match] {
+			continue // 去重
+		}
+		seen[match] = true
+
+		if _, ok := sm[match]; !ok {
+			// LLM 生成了不在映射表中的占位符
+			invalidPlaceholders = append(invalidPlaceholders, match)
+		}
+	}
+
+	return invalidPlaceholders
 }
 
 // restoreResponseBody 还原 OpenAI 响应体 choices[].message.content 中的占位符。

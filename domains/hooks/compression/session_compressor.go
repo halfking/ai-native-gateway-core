@@ -571,6 +571,43 @@ func (sc *SessionCompressor) Prepare(
 		}
 	}
 
+	// ── 计算并记录压缩质量评分（Phase 1 Task 1.3）──────────────────────
+	if winResult.ShouldTrigger && !winResult.Degraded {
+		// 计算原始消息的 token 估算（从 state 或 clientBody 估算）
+		originalTokens := 0
+		originalMsgCount := 0
+		if state != nil && state.TokenEstimate > 0 {
+			// 使用上一次的 token 估算作为基线
+			originalTokens = state.TokenEstimate
+			originalMsgCount = state.MsgCount
+		} else {
+			// 从 clientBody 估算
+			originalTokens = len(clientBody) / 3 // 粗略估算：3 字节/token
+			originalMsgCount = res.MsgCount
+		}
+
+		quality := ComputeCompressionQuality(
+			originalTokens,
+			res.TokenEst,
+			originalMsgCount,
+			res.MsgCount,
+			res.AlignmentMap,
+			res.Lossiness,
+		)
+
+		sc.logCompressionQuality(
+			ctx,
+			tenantID,
+			gwSessionID,
+			originalTokens,
+			res.TokenEst,
+			originalMsgCount,
+			res.MsgCount,
+			quality,
+			res.CompressionStrategy,
+		)
+	}
+
 	// ── Persist updated cache state ──────────────────────────────────────
 	didCompress := winResult.ShouldTrigger && !winResult.Degraded && res.SummaryMarker != ""
 	sc.updateCache(ctx, tenantID, gwSessionID, state, outboundBody, res, didCompress, fromV2)
@@ -986,4 +1023,51 @@ func (sc *SessionCompressor) tryLoadV2State(
 	}
 
 	return outboundBody, true
+}
+
+// logCompressionQuality 记录压缩质量日志（Phase 1 Task 1.3）
+//
+// 在每次压缩完成后调用，记录详细的质量指标，用于：
+//  1. 监控压缩效果（token 节省、语义保真度）
+//  2. 对比不同压缩策略的效果
+//  3. 发现压缩质量问题（如压缩后反而变大）
+func (sc *SessionCompressor) logCompressionQuality(
+	ctx context.Context,
+	tenantID, sessionID string,
+	originalTokens, compressedTokens int,
+	originalMsgCount, compressedMsgCount int,
+	quality CompressionQualityScore,
+	strategy string,
+) {
+	if sc == nil {
+		return
+	}
+
+	slog.InfoContext(ctx, "compression_quality",
+		"session_id", sessionID,
+		"tenant_id", tenantID,
+		"strategy", strategy,
+		"lossiness", quality.LossinessClass,
+		// 原始 vs 压缩
+		"original_msg_count", originalMsgCount,
+		"original_tokens", originalTokens,
+		"compressed_msg_count", compressedMsgCount,
+		"compressed_tokens", compressedTokens,
+		// 质量评分
+		"token_savings_pct", formatPercent(quality.TokenSavingsPercent),
+		"msg_retention_rate", formatFloat(quality.MessageRetentionRate),
+		"semantic_fidelity", formatFloat(quality.SemanticFidelity),
+		"info_density", formatFloat(quality.InformationDensity),
+		"overall_score", formatFloat(quality.OverallScore),
+	)
+}
+
+// formatPercent 格式化百分比为字符串（保留1位小数）
+func formatPercent(v float64) string {
+	return fmt.Sprintf("%.1f%%", v)
+}
+
+// formatFloat 格式化浮点数为字符串（保留2位小数）
+func formatFloat(v float64) string {
+	return fmt.Sprintf("%.2f", v)
 }
