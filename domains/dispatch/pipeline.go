@@ -257,6 +257,10 @@ func (p *Pipeline) runModelDrainer(mq *modelQueue) {
 
 			wait := time.Since(qr.EnqueuedAt).Seconds()
 			metricModelQueueWait.WithLabelValues(mq.name).Observe(wait)
+
+			// V3.1: Record T3 timestamp (enqueue to dispatcher - model resolution queue)
+			qr.SetT3_ModelEnqueued()
+
 			select {
 			case p.dispatchIn <- qr:
 			case <-p.stopCh:
@@ -278,6 +282,10 @@ func (p *Pipeline) complete(qr *QueuedRequest, out ForwardOutcome) {
 	if !qr.completed.CompareAndSwap(false, true) {
 		return
 	}
+
+	// V3.1: Record T9 timestamp (response end - stream completed)
+	qr.SetT9_ResponseEnd()
+
 	if qr.abandoned.Load() {
 		return // caller already left; drop
 	}
