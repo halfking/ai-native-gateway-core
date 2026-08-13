@@ -311,29 +311,36 @@ func (m *Manager) RoutingEligibleForTenant(ctx context.Context, credentialID int
 func (m *Manager) Acquire(ctx context.Context, credentialID int, limit *int, holder, tenantID string) (*Lease, bool) {
 	tenantID = normalizeTenantID(tenantID)
 	if !ratelimit.IsRateLimitEnabled() {
+		recordClientTokenRequest(tenantID, holder, "acquired")
 		return &Lease{Unlimited: true, CredentialID: credentialID, Holder: holder, TenantID: tenantID}, true
 	}
 	if !m.Enabled() {
+		recordClientTokenRequest(tenantID, holder, "degraded")
 		return &Lease{Unlimited: true, CredentialID: credentialID, Holder: holder, TenantID: tenantID}, true
 	}
 	eff := EffectiveLimit(limit, m.cfg.DefaultLimit)
 	if eff == nil {
+		recordClientTokenRequest(tenantID, holder, "degraded")
 		return &Lease{Unlimited: true, CredentialID: credentialID, Holder: holder, TenantID: tenantID}, true
 	}
 	if m.client == nil {
 		recordAcquireRedisError()
+		recordClientTokenRequest(tenantID, holder, "error")
 		return nil, false
 	}
 	lease, outcome := m.acquireRedis(ctx, credentialID, *eff, holder, tenantID)
 	switch outcome {
 	case acquireOK:
 		recordAcquireSuccess()
+		recordClientTokenRequest(tenantID, holder, "acquired")
 		return lease, true
 	case acquireRedisError:
 		recordAcquireRedisError()
+		recordClientTokenRequest(tenantID, holder, "error")
 		return nil, false
 	default: // acquireSaturated
 		recordAcquireSaturated()
+		recordClientTokenRequest(tenantID, holder, "saturated")
 		return nil, false
 	}
 }
@@ -552,6 +559,15 @@ func (m *Manager) DetailedStatsForTenant(ctx context.Context, credentialID int, 
 		return slotLimit, nil, nil, 0
 	}
 	holders, details, healthySlots = m.detailedStatsRedis(ctx, tenantID, credentialID, limitVal)
+	counts := make(map[string]int)
+	for _, detail := range details {
+		if detail.Holder == "" {
+			continue
+		}
+		clientType, _ := splitClientToken(detail.Holder)
+		counts[clientType]++
+	}
+	setClientTokenActiveSlots(tenantID, credentialID, counts)
 	return slotLimit, holders, details, healthySlots
 }
 
@@ -673,6 +689,13 @@ func (m *Manager) acquireRedis(ctx context.Context, credentialID, limit int, hol
 	// gate for us — if our pin is on a slot that some other holder
 	// is now sitting on, the gate decides whether to preempt.
 	if pinned, err := m.client.Get(ctx, pinKey).Result(); err == nil {
+		if ttl, ttlErr := m.client.TTL(ctx, pinKey).Result(); ttlErr == nil {
+			age := float64(sessionPinTTLSeconds) - ttl.Seconds()
+			if age < 0 {
+				age = 0
+			}
+			recordClientTokenPinAge(tenantID, holder, age)
+		}
 		slot, parseErr := strconv.Atoi(strings.TrimSpace(pinned))
 		if parseErr == nil && slot >= 0 && slot < limit {
 			acquired, err := acquireSlotScript.Run(ctx, m.client,
