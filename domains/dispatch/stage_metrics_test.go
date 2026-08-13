@@ -115,7 +115,7 @@ func TestRecordStageMetricsObservesHistograms(t *testing.T) {
 	qr.T8_ResponseStartAt = &t8
 	qr.T9_ResponseEndAt = &t9
 
-	recordStageMetrics(qr, ForwardOutcome{})
+	observeStageMetrics(qr, ForwardOutcome{})
 
 	assertCountInc(t, "total T0T9", metricStageTotalT0T9, "success", beforeTotal)
 	assertCountInc(t, "queue T0T6", metricStageQueueWaitT0T6, "success", beforeQueue)
@@ -147,7 +147,7 @@ func TestRecordStageMetricsSkipsMissingTimestamps(t *testing.T) {
 	end := qr.T0_ArrivedAt.Add(5 * time.Millisecond)
 	qr.T9_ResponseEndAt = &end
 
-	recordStageMetrics(qr, ForwardOutcome{Err: ErrShutdown})
+	observeStageMetrics(qr, ForwardOutcome{Err: ErrShutdown})
 
 	afterUp := histogramSampleCount(t, metricStageUpstreamT7T8, "shutdown")
 	if afterUp != beforeUp {

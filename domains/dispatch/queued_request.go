@@ -49,8 +49,13 @@ type ForwardOutcome struct {
 // fields below are therefore safe to mutate WITHOUT a mutex — the single
 // current owner is the only writer.
 type QueuedRequest struct {
-	ID             string // request_id
-	TenantID       string
+	ID       string // request_id
+	TenantID string
+	// SessionID is the V2 session identifier (gateway.sessions.id). Populated
+	// by the executor from ExecParams.SessionID so admin /sessions/{id}/timeline
+	// can group in-flight + completed requests by session. Empty for one-shot
+	// traffic (probe / health checks).
+	SessionID      string
 	RequestedModel string // client model (may be "auto")
 	ResolvedModel  string // set by the dispatcher after auto-resolution
 
