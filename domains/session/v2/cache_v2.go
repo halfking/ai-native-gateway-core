@@ -460,4 +460,3 @@ func applyCompressionMeta(dst *CompressionMeta, raw []byte) {
 		dst.Strategy = meta.Strategy
 	}
 }
-}
