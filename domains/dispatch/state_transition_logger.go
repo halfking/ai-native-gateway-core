@@ -29,7 +29,9 @@ import (
 
 // StateTransition 是一条状态变更记录（对应 request_state_transitions 一行）。
 type StateTransition struct {
-	RequestID      string	TenantID       string         // 租户 ID (T0: admin, T1-T4: 正常租户)	TransitionType string // route | node_switch | retry | error | state
+	RequestID      string
+	TenantID       string // 租户 ID (T0: admin, T1-T4: 正常租户)
+	TransitionType string // route | node_switch | retry | error | state
 	FromState      string
 	ToState        string
 	Metadata       map[string]any // 决策原因/候选列表/retry_seq/reason_class 等

@@ -2819,14 +2819,13 @@ func (h *ChatHandler) serveWithExecutor(
 		// nil-safe helper — no logger wired (DB disabled / test mode) → no-op.
 		// Captures from_state="route_resolve" + chosen credential's display name
 		// so the timeline view shows "route_resolve → provider-X (cred-Y)".
-		dispatch.LogRouteDecisionGlobal(requestID, "route_resolve", "credential_selected",
+		dispatch.LogRouteDecisionGlobal(requestID, tenantID, "route_resolve", "credential_selected",
 			map[string]any{
 				"chosen_provider_id":   pid,
 				"chosen_credential_id": cid,
 				"chosen_raw_model":     candidates[0].RawModel,
 				"candidates_count":     len(candidates),
 				"profile":              clientID.Fingerprint.ClientProfile,
-				"tenant_id":            tenantID,
 			})
 	}
 

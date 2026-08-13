@@ -181,8 +181,9 @@ func (w *Wrapper) ExecuteWithMetrics(ctx context.Context, httpW http.ResponseWri
 		// nil-safe — no logger wired (DB disabled / test mode) → no-op.
 		// Pulled from X-Request-Id header so the row joins request_logs.request_id.
 		// ADR-V3-102: reuse the existing request_id, never mint a new one.
+		// TODO(LP2): extract tenantID from context (currently "" placeholder).
 		if requestID := requestIDFromCtx(ctx); requestID != "" {
-			dispatch.LogRetryGlobal(requestID, rc.Attempt+1, classify.Reason,
+			dispatch.LogRetryGlobal(requestID, "", rc.Attempt+1, classify.Reason,
 				map[string]any{
 					"next_attempt": rc.Attempt + 2,
 					"retriable":    classify.Retriable,
