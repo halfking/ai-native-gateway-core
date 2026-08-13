@@ -109,30 +109,25 @@ else
     log "WARN: non-existent session returned $RESP_FAKE (expected 404)"
 fi
 
-# 写结果 JSON
-cat > "$RESULT" <<EOF
-{
-  "scenario": "$SCENARIO",
-  "gateway": "$GATEWAY",
-  "metrics": {
-    "total": 4,
-    "succ": $( [ "$PASS" = true ] && echo 4 || echo 3 ),
-    "fail": $( [ "$PASS" = true ] && echo 0 || echo 1 ),
-    "success_rate": $( [ "$PASS" = true ] && echo 1.0 || echo 0.75 ),
-    "elapsed_sec": 4,
-    "fail_by_status": {},
-    "fail_by_kind": {},
-    "extra": {
-      "tenant_a_own": $RESP_A,
-      "tenant_b_cross": $RESP_B,
-      "anon": $RESP_ANON,
-      "non_existent": $RESP_FAKE,
-      "admin_tenant_a": ${ADMIN_HTTP:-null},
-      "pass": $( [ "$PASS" = true ] && echo true || echo false )
-    }
-  }
-}
-EOF
+# Strict result envelope (schema_version 1.0)
+CHECK_CROSS=$([ "$RESP_B" = "404" ] || [ "$RESP_B" = "403" ] && echo true || echo false)
+CHECK_ANON=$([ "$RESP_ANON" = "401" ] || [ "$RESP_ANON" = "404" ] && echo true || echo false)
+CHECK_FAKE=$([ "$RESP_FAKE" = "404" ] && echo true || echo false)
+SUCC=$([ "$PASS" = true ] && echo 4 || echo 3)
+FAIL=$((4 - SUCC))
+RATE=$([ "$PASS" = true ] && echo 1.0 || echo 0.75)
+STATUS=$([ "$PASS" = true ] && echo PASS || echo FAIL)
+FAILURES="[]"
+if [ "$PASS" != true ]; then
+  FAILURES="[\"tenant isolation checks failed: cross=$RESP_B anon=$RESP_ANON fake=$RESP_FAKE\"]"
+fi
+ADMIN_JSON=${ADMIN_HTTP:-null}
+write_scenario_result "$SCENARIO" "functional" "$STATUS" \
+  "{\"cross_tenant_blocked\":$CHECK_CROSS,\"anonymous_blocked\":$CHECK_ANON,\"non_existent_404\":$CHECK_FAKE}" \
+  "{\"total\":4,\"succ\":$SUCC,\"fail\":$FAIL,\"success_rate\":$RATE,\"elapsed_sec\":4,\"p99_ms\":0,\"fail_by_status\":{},\"fail_by_kind\":{}}" \
+  "{\"tenant_a_own\":$RESP_A,\"tenant_b_cross\":$RESP_B,\"anon\":$RESP_ANON,\"non_existent\":$RESP_FAKE,\"admin_tenant_a\":$ADMIN_JSON}" \
+  "$FAILURES" \
+  "{\"gateway\":\"$GATEWAY\"}"
 
 if [ "$PASS" = true ]; then
     log "PASS"

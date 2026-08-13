@@ -8,8 +8,8 @@
     "23_4_real_map_reduce": true_map_reduce_path_verified
   },
   "metrics": {
-    "delta_23_1": 120,
-    "distribution_23_2": 86,
-    "delta_23_3": 160
+    "delta_23_1": 60,
+    "distribution_23_2": 25,
+    "delta_23_3": 80
   }
 }

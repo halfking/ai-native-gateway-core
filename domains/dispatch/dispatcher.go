@@ -26,6 +26,11 @@ func (p *Pipeline) runDispatcher() {
 // dispatch handles one request through model-resolution + credential selection.
 // Bounded retry on "credential queue full" to avoid spinning.
 func (p *Pipeline) dispatch(qr *QueuedRequest) {
+	// V3.1: Record T4 timestamp (model queue dequeued - start model resolution)
+	// Note: In current architecture, dispatchIn acts as the model queue.
+	// T3 (model enqueue) is set in runModelDrainer when feeding dispatchIn.
+	qr.SetT4_ModelDequeued()
+
 	// Resolve model (auto / empty → concrete).
 	if qr.ResolvedModel == "" {
 		resolved, alts, err := p.modelResolveFunc(qr.Ctx, qr.RequestedModel, nil)

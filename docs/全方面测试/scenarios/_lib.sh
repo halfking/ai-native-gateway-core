@@ -19,7 +19,30 @@ mkdir -p "$RESULTS_DIR"
 : "${PGDATABASE:=llm_gateway}"
 : "${PGDB:=llm_gateway}"  # backward-compat alias
 
-GATEWAY="${GATEWAY:-http://localhost:8781}"
+# 2026-08-13 修订: GATEWAY 默认值改用一个不可能误连其它 gateway 的端口
+# (本地 8781/8782 容易撞到 r112_gateway / llm-gateway-dev 容器).
+# 之前 `bash S22.sh` 直接执行会用 GATEWAY=localhost:8781,
+# 如果本机恰好有别的 llm-gateway-go 在 8781 跑, 测试会静默打到错的 gateway 上
+# (这是 S22/S23 第一轮失败 0/30 的根本原因).
+#
+# 新策略:
+#   1. 默认端口改为 8793 (与本仓库本地部署文档 §3.2 默认端口一致, 见 02-测试环境部署.md).
+#   2. source 时立即跑一次 /healthz 探活: 如果不通, WARN+提示用户设 GATEWAY= 而不是静默拒绝.
+#   3. 允许通过 override: `GATEWAY=http://127.0.0.1:8781 bash S22.sh` 或 run_all.sh --gateway=.
+GATEWAY="${GATEWAY:-http://127.0.0.1:8793}"
+
+# 3. 探活与诊断 - 不阻断 (允许离线 dry-run), 但发出清晰警告.
+if [ "${LLMGW_LIB_SUPPRESS_PROBE:-0}" != "1" ]; then
+    _probe_url="${GATEWAY}/healthz"
+    _probe_resp="$(curl -fsS -m 3 -o /dev/null -w '%{http_code}' "${_probe_url}" 2>/dev/null || echo 000)"
+    if [ "$_probe_resp" != "200" ]; then
+        echo "[_lib.sh] WARN: ${_probe_url} -> ${_probe_resp} (not 200)" >&2
+        echo "[_lib.sh] WARN: 检查 GATEWAY env 或 psql 'docker ps | grep gateway' 看谁占了目标端口." >&2
+        echo "[_lib.sh] WARN: 当前 GATEWAY=${GATEWAY}" >&2
+        echo "[_lib.sh] WARN: 如确认目标已就绪, 设 LLMGW_LIB_SUPPRESS_PROBE=1 屏蔽本警告." >&2
+        unset _probe_url _probe_resp
+    fi
+fi
 # raw API keys (gateway 用 HMAC-SHA256 + secret_key 算 hash，去 api_keys 表查)
 # 默认使用 seed.sql 注入的 sk-loadtest-01..08 这 8 把 key + 1 把 admin sk-loadtest-admin-01
 API_KEYS="${API_KEYS:-sk-loadtest-01,sk-loadtest-02,sk-loadtest-03,sk-loadtest-04,sk-loadtest-05,sk-loadtest-06,sk-loadtest-07,sk-loadtest-08}"
