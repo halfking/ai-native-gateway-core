@@ -827,6 +827,15 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	// 2026-07-09 Session Inspector stats endpoint (session_inspector module).
 	// Platform-level aggregate stats: active/idle/closed counts, average health score, recycled today.
 	mux.HandleFunc("/api/admin/sessions/inspector-stats", admin(h.HandleSessionInspectorStats))
+
+	// 2026-08-14 V3.2 (BE-B1 + BE-B2): 状态变更历史 + 在线会话浏览。
+	// 路径中 /online 显式写在 /sessions/ 通配之前（Go 1.22+ ServeMux 长前缀优先，
+	// 但显式更清晰）；/timeline 用 {id} 通配。
+	// 鉴权：只读，走 admin 中间件（JWT 或 admin_key）。
+	mux.HandleFunc("/api/admin/requests/{id}/transitions", admin(h.handleRequestTransitions))
+	mux.HandleFunc("/api/admin/sessions/online", admin(h.handleSessionsOnline))
+	mux.HandleFunc("/api/admin/sessions/{id}/timeline", admin(h.handleSessionTimeline))
+
 	// Public polling endpoint (no auth) — clients poll this to learn whether
 	// their pending approval was approved/rejected/timeout. Cross-tenant
 	// protection via optional X-Tenant-ID header (see handler docstring).
@@ -857,6 +866,13 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/providers/", h.superAdmin(h.handleProviders))
 	mux.HandleFunc("/api/providers/seed-from-catalog", h.superAdmin(h.handleSeedFromCatalog))
 	mux.HandleFunc("/api/providers/credentials/", h.superAdmin(h.handleForceRecover))
+
+	// 2026-08-14 V3.2 (BE-A2): 节点操作 API — 同步测试 + 启用/禁用切换。
+	// handleNodeTestNow / handleNodeToggle 内部已调 RequireSuperAdminForWrite，
+	// 此处直接注册、不外加 super_admin wrapper（避免双层鉴权）。
+	// 路径中的 {id} 由 Go 1.22+ ServeMux 解析，handler 用 r.PathValue("id")。
+	mux.HandleFunc("/api/admin/providers/{id}/test-now", h.handleNodeTestNow)
+	mux.HandleFunc("/api/admin/providers/{id}/enable", h.handleNodeToggle)
 
 	// 2026-06-23 Phase 2 (P1) + Phase 3 (P2): candidate_failure_logs query
 	// endpoints + alert ring view from the CandidateFailureMonitor.
