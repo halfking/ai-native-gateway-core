@@ -24,6 +24,7 @@ package autoroute
 import (
 	"context"
 	"sort"
+	"strings"
 	"sync/atomic"
 	"time"
 
@@ -32,23 +33,27 @@ import (
 
 // WorkTypeRoute mirrors one enabled row of work_type_model_route.
 type WorkTypeRoute struct {
-	WorkTypeKey   string
-	L1TaskType    string
-	CanonicalName string
-	Weight        float64
-	Tier          string // "primary" | "secondary" | "fallback"
+	WorkTypeKey      string
+	L1TaskType       string
+	CanonicalName    string
+	Weight           float64
+	MinScore         float64
+	TaskQualityScore float64
+	Tier             string // "primary" | "secondary" | "fallback"
 }
 
 // wtRouteSnapshot is the immutable point-in-time view indexed by L1 task type.
 type wtRouteSnapshot struct {
 	byTaskType map[string][]WorkTypeRoute
 	LoadedAt   time.Time
+	Version    uint64
 }
 
 // WorkTypeRouteStore loads and exposes work_type_model_route rows.
 type WorkTypeRouteStore struct {
 	pool     *pgxpool.Pool
 	snapshot atomic.Pointer[wtRouteSnapshot]
+	version  atomic.Uint64
 }
 
 // NewWorkTypeRouteStore constructs an empty store. Call Reload before first use.
@@ -78,12 +83,15 @@ func (s *WorkTypeRouteStore) Reload(ctx context.Context) error {
 
 	rows, err := s.pool.Query(ctx, `
 		SELECT r.work_type_key, c.l1_task_type, r.canonical_name,
-		       COALESCE(r.weight, 1.0),
+		       COALESCE(r.weight, 1.0), COALESCE(r.min_score, 0),
+		       COALESCE(r.task_quality_score, 0),
 		       COALESCE(r.tier, 'secondary')
 		FROM work_type_model_route r
 		JOIN work_type_config c ON c.key = r.work_type_key
 		WHERE r.enabled = TRUE AND c.enabled = TRUE
-		ORDER BY c.l1_task_type, r.tier, r.weight DESC, r.work_type_key
+		ORDER BY c.l1_task_type,
+		         CASE r.tier WHEN 'primary' THEN 0 WHEN 'secondary' THEN 1 WHEN 'fallback' THEN 2 ELSE 3 END,
+		         r.weight DESC, r.work_type_key
 	`)
 	if err != nil {
 		return err
@@ -96,7 +104,8 @@ func (s *WorkTypeRouteStore) Reload(ctx context.Context) error {
 	}
 	for rows.Next() {
 		var r WorkTypeRoute
-		if err := rows.Scan(&r.WorkTypeKey, &r.L1TaskType, &r.CanonicalName, &r.Weight, &r.Tier); err != nil {
+		if err := rows.Scan(&r.WorkTypeKey, &r.L1TaskType, &r.CanonicalName,
+			&r.Weight, &r.MinScore, &r.TaskQualityScore, &r.Tier); err != nil {
 			return err
 		}
 		snap.byTaskType[r.L1TaskType] = append(snap.byTaskType[r.L1TaskType], r)
@@ -105,6 +114,7 @@ func (s *WorkTypeRouteStore) Reload(ctx context.Context) error {
 		return err
 	}
 
+	snap.Version = s.version.Add(1)
 	s.snapshot.Store(snap)
 	return nil
 }
@@ -128,12 +138,46 @@ func (s *WorkTypeRouteStore) HasRoutes(taskType string) bool {
 	return s != nil && len(s.current().byTaskType[taskType]) > 0
 }
 
-// ApplyBoost modifies scored candidates in-place, boosting any whose
-// CanonicalName matches a configured work-type route, then re-sorts
-// by composite DESC. Returns the same slice (re-sorted).
-//
-// When no routes are configured for the task type, the list is returned
-// unchanged — the V2 scoring result is the final answer.
+// Version returns the monotonically increasing version of the active snapshot.
+// A zero value means no successful reload has completed.
+func (s *WorkTypeRouteStore) Version() uint64 {
+	if s == nil {
+		return 0
+	}
+	return s.current().Version
+}
+
+// routeBoost returns a bounded preference multiplier. Tier supplies the
+// primary policy signal; weight and an operator quality override refine it
+// without allowing admin data to defeat health/availability scoring.
+func routeBoost(r WorkTypeRoute) float64 {
+	base := tierBoost(r.Tier)
+	weight := r.Weight
+	if weight <= 0 {
+		weight = 1
+	}
+	if weight > 1 {
+		weight = 1
+	}
+	quality := r.TaskQualityScore
+	if quality < 0 {
+		quality = 0
+	}
+	if quality > 100 {
+		quality = 100
+	}
+	if quality > 0 {
+		base *= 0.90 + 0.20*(quality/100)
+	}
+	return 1 + (base-1)*weight
+}
+
+func normalizeCanonicalName(name string) string {
+	return strings.ToLower(strings.TrimSpace(name))
+}
+
+// ApplyBoost modifies scored candidates in-place. It is idempotent for a
+// candidate slice: the same route marker is never multiplied twice.
 func (s *WorkTypeRouteStore) ApplyBoost(scored []ScoredCandidate, taskType string) []ScoredCandidate {
 	if s == nil || len(scored) == 0 {
 		return scored
@@ -144,20 +188,31 @@ func (s *WorkTypeRouteStore) ApplyBoost(scored []ScoredCandidate, taskType strin
 	}
 
 	// Build canonical → boost lookup. A model can be configured by multiple
-	// work types mapping to the same L1 task; use the strongest tier.
+	// work types mapping to the same L1 task; use the strongest effective route.
 	boosts := make(map[string]float64, len(routes))
+	minScores := make(map[string]float64, len(routes))
 	for _, r := range routes {
-		b := tierBoost(r.Tier)
-		if prev, ok := boosts[r.CanonicalName]; !ok || b > prev {
-			boosts[r.CanonicalName] = b
+		name := normalizeCanonicalName(r.CanonicalName)
+		if name == "" {
+			continue
+		}
+		b := routeBoost(r)
+		if prev, ok := boosts[name]; !ok || b > prev {
+			boosts[name] = b
+			minScores[name] = r.MinScore
 		}
 	}
 
 	changed := false
 	for i := range scored {
-		name := scored[i].Candidate.CanonicalName
-		if mult, ok := boosts[name]; ok && mult > 1.0 {
+		if scored[i].Breakdown.RouteBoostApplied {
+			continue
+		}
+		name := normalizeCanonicalName(scored[i].Candidate.CanonicalName)
+		if mult, ok := boosts[name]; ok && mult > 1.0 &&
+			(minScores[name] <= 0 || scored[i].Breakdown.Composite >= minScores[name]) {
 			scored[i].Breakdown.Composite *= mult
+			scored[i].Breakdown.RouteBoostApplied = true
 			changed = true
 		}
 	}

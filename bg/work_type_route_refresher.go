@@ -17,6 +17,11 @@ type WorkTypeRouteStoreRefresher struct {
 	stop     chan struct{}
 	done     chan struct{}
 	stopOnce sync.Once
+
+	lifecycleMu sync.Mutex
+	cancel      context.CancelFunc
+	started     bool
+	stopped     bool
 }
 
 // NewWorkTypeRouteStoreRefresher constructs a one-minute refresher.
@@ -31,19 +36,53 @@ func NewWorkTypeRouteStoreRefresher(store *autoroute.WorkTypeRouteStore) *WorkTy
 
 // Start spawns the background worker and immediately reloads the store.
 func (r *WorkTypeRouteStoreRefresher) Start(ctx context.Context) {
-	go r.run(ctx)
+	if r == nil {
+		return
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
+	r.lifecycleMu.Lock()
+	if r.started || r.stopped {
+		r.lifecycleMu.Unlock()
+		return
+	}
+	runCtx, cancel := context.WithCancel(ctx)
+	r.cancel = cancel
+	r.started = true
+	r.lifecycleMu.Unlock()
+
+	go r.run(runCtx)
 	slog.Info("work type route store refresher started", "interval", r.tick.String())
 }
 
-// Stop terminates the worker. It is safe to call more than once.
+// Stop terminates the worker and waits for it to finish. It is safe to call
+// before Start and safe to call more than once.
 func (r *WorkTypeRouteStoreRefresher) Stop() {
-	if r.stop == nil || r.done == nil {
+	if r == nil {
 		return
 	}
+
+	r.lifecycleMu.Lock()
+	if r.stopped {
+		r.lifecycleMu.Unlock()
+		if r.started {
+			<-r.done
+		}
+		return
+	}
+	r.stopped = true
+	cancel := r.cancel
+	started := r.started
+	r.lifecycleMu.Unlock()
+
 	r.stopOnce.Do(func() { close(r.stop) })
-	select {
-	case <-r.done:
-	default:
+	if cancel != nil {
+		cancel()
+	}
+	if started {
+		<-r.done
 	}
 }
 
@@ -57,6 +96,9 @@ func (r *WorkTypeRouteStoreRefresher) RefreshOnce(ctx context.Context) error {
 
 func (r *WorkTypeRouteStoreRefresher) run(ctx context.Context) {
 	defer close(r.done)
+	if ctx.Err() != nil {
+		return
+	}
 	if err := r.RefreshOnce(ctx); err != nil {
 		slog.Warn("work type route store initial reload failed", "error", err)
 	}

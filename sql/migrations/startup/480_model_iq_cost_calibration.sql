@@ -305,7 +305,7 @@ VALUES
     ('intent_classification', 'smart',       'fallback',  'minimax-m2.7',      300, 'v6.1 default'),
     ('intent_classification', 'speed_first', 'primary',   'glm-4.5-flash',     100, 'v6.1 default'),
     ('intent_classification', 'speed_first', 'secondary', 'deepseek-v4-flash', 200, 'v6.1 default'),
-    ('intent_classification', 'speed_first', 'fallback',  'minimax-m2.5',      300, 'v6.1 default'),
+    ('intent_classification', 'speed_first', 'fallback',  'deepseek-v4-flash', 300, 'v6.1 default'),
     ('intent_classification', 'cost_first',  'primary',   'glm-4.5-flash',     100, 'v6.1 default'),
     ('intent_classification', 'cost_first',  'secondary', 'deepseek-v4-flash', 200, 'v6.1 default'),
     ('intent_classification', 'cost_first',  'fallback',  'qwen3-14b',         300, 'v6.1 default'),

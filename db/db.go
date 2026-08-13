@@ -481,9 +481,32 @@ CREATE TABLE IF NOT EXISTS work_type_model_route (
     weight          NUMERIC(5,2) NOT NULL DEFAULT 1.0,
     min_score       NUMERIC(8,4) NOT NULL DEFAULT 0,
     enabled         BOOLEAN NOT NULL DEFAULT TRUE,
+    tier            TEXT NOT NULL DEFAULT 'secondary'
+                    CHECK (tier IN ('primary', 'secondary', 'fallback')),
+    task_quality_score NUMERIC(5,2) NOT NULL DEFAULT 0
+                    CHECK (task_quality_score >= 0 AND task_quality_score <= 100),
     UNIQUE (work_type_key, canonical_name)
 );
+ALTER TABLE work_type_model_route
+    ADD COLUMN IF NOT EXISTS tier TEXT NOT NULL DEFAULT 'secondary';
+ALTER TABLE work_type_model_route
+    ADD COLUMN IF NOT EXISTS task_quality_score NUMERIC(5,2) NOT NULL DEFAULT 0;
 CREATE INDEX IF NOT EXISTS idx_wtmr_work_type ON work_type_model_route (work_type_key);
+CREATE INDEX IF NOT EXISTS idx_wtmr_tier ON work_type_model_route (work_type_key, tier, weight DESC);
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1
+        FROM pg_constraint
+        WHERE conrelid = 'work_type_model_route'::regclass
+          AND conname = 'work_type_model_route_work_type_key_fkey'
+    ) THEN
+        ALTER TABLE work_type_model_route
+            ADD CONSTRAINT work_type_model_route_work_type_key_fkey
+            FOREIGN KEY (work_type_key) REFERENCES work_type_config(key)
+            ON DELETE CASCADE NOT VALID;
+    END IF;
+END $$;
 
 ALTER TABLE request_logs ADD COLUMN IF NOT EXISTS work_type TEXT;
 CREATE INDEX IF NOT EXISTS idx_request_logs_work_type
@@ -550,14 +573,10 @@ ON CONFLICT (key) DO NOTHING;
 
 INSERT INTO work_type_model_route (work_type_key, canonical_name, weight, min_score, enabled)
 VALUES
-  ('session_title',   'minimax-m2.7',  1.00, 0, TRUE),
-  ('session_title',   'glm-5.1',       0.95, 0, TRUE),
-  ('session_title',   'minimax-m3',    0.90, 0, TRUE),
-  ('session_title',   'deepseek-chat', 0.85, 0, TRUE),
-  ('session_summary', 'minimax-m2.7',  1.00, 0, TRUE),
-  ('session_summary', 'glm-5.1',       0.95, 0, TRUE),
-  ('session_summary', 'minimax-m3',    0.90, 0, TRUE),
-  ('session_summary', 'deepseek-chat', 0.85, 0, TRUE)
+  ('session_title',   'minimax-m3',         1.00, 0, TRUE),
+  ('session_title',   'deepseek-v4-flash',  0.90, 0, TRUE),
+  ('session_summary', 'minimax-m3',         1.00, 0, TRUE),
+  ('session_summary', 'deepseek-v4-flash',  0.90, 0, TRUE)
 ON CONFLICT (work_type_key, canonical_name) DO NOTHING;
 `
 

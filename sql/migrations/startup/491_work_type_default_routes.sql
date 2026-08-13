@@ -1,11 +1,33 @@
--- 483_work_type_default_routes.sql
--- Seed default task-to-model mappings only for work types that have no routes.
+-- 491_work_type_default_routes.sql
+-- Ensure runtime route columns exist, then seed default task-to-model mappings.
 -- Existing administrator-managed route sets remain untouched.
 --
 -- Runtime joins work_type_model_route to work_type_config and applies the
 -- matching l1_task_type preferences in autoroute.WorkTypeRouteStore.
 
 BEGIN;
+
+ALTER TABLE work_type_model_route
+    ADD COLUMN IF NOT EXISTS tier TEXT NOT NULL DEFAULT 'secondary';
+ALTER TABLE work_type_model_route
+    ADD COLUMN IF NOT EXISTS task_quality_score NUMERIC(5,2) NOT NULL DEFAULT 0;
+CREATE INDEX IF NOT EXISTS idx_wtmr_tier
+    ON work_type_model_route (work_type_key, tier, weight DESC);
+
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1
+        FROM pg_constraint
+        WHERE conrelid = 'work_type_model_route'::regclass
+          AND conname = 'work_type_model_route_work_type_key_fkey'
+    ) THEN
+        ALTER TABLE work_type_model_route
+            ADD CONSTRAINT work_type_model_route_work_type_key_fkey
+            FOREIGN KEY (work_type_key) REFERENCES work_type_config(key)
+            ON DELETE CASCADE NOT VALID;
+    END IF;
+END $$;
 
 WITH defaults (work_type_key, canonical_name, weight, min_score, enabled, tier) AS (
     VALUES
@@ -42,11 +64,14 @@ WITH defaults (work_type_key, canonical_name, weight, min_score, enabled, tier) 
 INSERT INTO work_type_model_route (work_type_key, canonical_name, weight, min_score, enabled, tier)
 SELECT d.work_type_key, d.canonical_name, d.weight, d.min_score, d.enabled, d.tier
 FROM defaults d
-WHERE NOT EXISTS (
-    SELECT 1
-    FROM work_type_model_route existing
-    WHERE existing.work_type_key = d.work_type_key
+WHERE EXISTS (
+    SELECT 1 FROM work_type_config c
+    WHERE c.key = d.work_type_key AND c.enabled = TRUE
 )
-ON CONFLICT (work_type_key, canonical_name) DO NOTHING;
+AND NOT EXISTS (
+    SELECT 1 FROM work_type_model_route existing
+    WHERE existing.work_type_key = d.work_type_key
+      AND existing.canonical_name = d.canonical_name
+);
 
 COMMIT;

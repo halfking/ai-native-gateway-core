@@ -73,6 +73,67 @@ func TestWorkTypeRouteStore_ApplyBoostFallbackDoesNotChangeOrder(t *testing.T) {
 	}
 }
 
+func TestWorkTypeRouteStore_ApplyBoostCanonicalNameNormalization(t *testing.T) {
+	store := NewWorkTypeRouteStore(nil)
+	store.snapshot.Store(&wtRouteSnapshot{byTaskType: map[string][]WorkTypeRoute{
+		"code": {{CanonicalName: " Preferred-Model ", Tier: "primary", Weight: 1}},
+	}})
+
+	got := store.ApplyBoost([]ScoredCandidate{{
+		Candidate: Candidate{CanonicalName: "preferred-model"},
+		Breakdown: ScoringBreakdown{Composite: 100},
+	}}, "code")
+	if !got[0].Breakdown.RouteBoostApplied || got[0].Breakdown.Composite != 130 {
+		t.Fatalf("normalized canonical route was not applied: %+v", got[0].Breakdown)
+	}
+}
+
+func TestWorkTypeRouteStore_ApplyBoostHonorsMinScore(t *testing.T) {
+	store := NewWorkTypeRouteStore(nil)
+	store.snapshot.Store(&wtRouteSnapshot{byTaskType: map[string][]WorkTypeRoute{
+		"code": {{CanonicalName: "preferred-model", Tier: "primary", MinScore: 90}},
+	}})
+
+	below := store.ApplyBoost([]ScoredCandidate{{
+		Candidate: Candidate{CanonicalName: "preferred-model"},
+		Breakdown: ScoringBreakdown{Composite: 89},
+	}}, "code")
+	if below[0].Breakdown.RouteBoostApplied || below[0].Breakdown.Composite != 89 {
+		t.Fatalf("route below min_score should not be boosted: %+v", below[0].Breakdown)
+	}
+
+	at := store.ApplyBoost([]ScoredCandidate{{
+		Candidate: Candidate{CanonicalName: "preferred-model"},
+		Breakdown: ScoringBreakdown{Composite: 90},
+	}}, "code")
+	if !at[0].Breakdown.RouteBoostApplied || at[0].Breakdown.Composite != 117 {
+		t.Fatalf("route at min_score should be boosted: %+v", at[0].Breakdown)
+	}
+}
+
+func TestWorkTypeRouteStore_ApplyBoostIsIdempotent(t *testing.T) {
+	store := NewWorkTypeRouteStore(nil)
+	store.snapshot.Store(&wtRouteSnapshot{byTaskType: map[string][]WorkTypeRoute{
+		"code": {{CanonicalName: "preferred-model", Tier: "primary", Weight: 1}},
+	}})
+	candidates := []ScoredCandidate{{
+		Candidate: Candidate{CanonicalName: "preferred-model"},
+		Breakdown: ScoringBreakdown{Composite: 100},
+	}}
+	store.ApplyBoost(candidates, "code")
+	store.ApplyBoost(candidates, "code")
+	if candidates[0].Breakdown.Composite != 130 {
+		t.Fatalf("route boost must be idempotent, got %v", candidates[0].Breakdown.Composite)
+	}
+}
+
+func TestWorkTypeRouteStore_VersionStartsAtZero(t *testing.T) {
+	store := NewWorkTypeRouteStore(nil)
+	if got := store.Version(); got != 0 {
+		t.Fatalf("new store version: got %d, want 0", got)
+	}
+}
+
 func TestWorkTypeRouteStore_LoadedAt(t *testing.T) {
 	store := NewWorkTypeRouteStore(nil)
 	if !store.LoadedAt().IsZero() {
