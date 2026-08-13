@@ -91,6 +91,9 @@ type GovernanceMeta struct {
 
 // Get retrieves session state from cache hierarchy (L1 → L2 → L3)
 func (c *SessionCacheV2) Get(ctx context.Context, tenantID, sessionID string) (*SessionStateV2, error) {
+	if c == nil {
+		return nil, nil
+	}
 	// Try L1 (in-memory)
 	if state := c.l1.Get(tenantID, sessionID); state != nil {
 		slog.DebugContext(ctx, "cache v2 l1 hit", "session_id", sessionID)
@@ -375,6 +378,9 @@ func NewSessionTurnsReader(db *pgxpool.Pool) *SessionTurnsReader {
 
 // LoadState loads session state from session_turns (last turn)
 func (r *SessionTurnsReader) LoadState(ctx context.Context, tenantID, sessionID string) (*SessionStateV2, error) {
+	if r == nil || r.db == nil {
+		return nil, nil
+	}
 	query := `
 		SELECT 
 			turn_no, ts,
@@ -459,5 +465,4 @@ func applyCompressionMeta(dst *CompressionMeta, raw []byte) {
 	if meta.Strategy != "" {
 		dst.Strategy = meta.Strategy
 	}
-}
 }

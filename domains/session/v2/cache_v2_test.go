@@ -11,7 +11,29 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// TestCompressionMetaCache_GetSet tests basic get/set operations
+func TestSessionTurnsReader_LoadState_NilDBIsColdMiss(t *testing.T) {
+	reader := NewSessionTurnsReader(nil)
+	state, err := reader.LoadState(context.Background(), "tenant", "session")
+	if err != nil {
+		t.Fatalf("nil DB should fail open, got error: %v", err)
+	}
+	if state != nil {
+		t.Fatalf("nil DB should return no state, got %+v", state)
+	}
+}
+
+func TestApplyCompressionMeta_RestoresWindowState(t *testing.T) {
+	var meta CompressionMeta
+	raw := []byte(`{"last_compressed_at":"2026-08-13T10:00:00Z","recently_compressed_at":"2026-08-13T10:00:30Z","summary_marker":"[smm_v1:abc]","compressed_prefix_hash":"prefix","token_estimate":42,"msg_count":7,"strategy":"sliding_window_token","tools_hash":"tools"}`)
+	applyCompressionMeta(&meta, raw)
+	if meta.SummaryMarker != "[smm_v1:abc]" || meta.CompressedPrefixHash != "prefix" || meta.TokenEstimate != 42 || meta.MsgCount != 7 || meta.Strategy != "sliding_window_token" || meta.ToolsHash != "tools" {
+		t.Fatalf("compression metadata was not restored: %+v", meta)
+	}
+	if meta.LastCompressedAt.IsZero() || meta.RecentlyCompressedAt.IsZero() {
+		t.Fatalf("compression timestamps were not restored: %+v", meta)
+	}
+}
+
 func TestCompressionMetaCache_GetSet(t *testing.T) {
 	cache := NewCompressionMetaCache(10)
 
