@@ -48,6 +48,18 @@ func (h *Handler) handleRequestTransitions(w http.ResponseWriter, r *http.Reques
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
 
+	// RLS 支持：从请求头提取租户 ID，设置 app.current_tenant
+	tenantID := r.Header.Get("X-Tenant-ID")
+	if tenantID == "" {
+		tenantID = "admin" // 默认管理员租户
+	}
+
+	// 设置 RLS 会话变量
+	if _, err := h.db.Exec(ctx, `SET LOCAL app.current_tenant = $1`, tenantID); err != nil {
+		writeError(w, http.StatusInternalServerError, "set tenant failed: "+err.Error())
+		return
+	}
+
 	rows, err := h.db.Query(ctx, `
 		SELECT id, request_id, transition_type,
 		       COALESCE(from_state,''), COALESCE(to_state,''),
