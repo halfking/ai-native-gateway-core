@@ -12,12 +12,12 @@
 
 - [ ] **0.1** 备份当前 154 服务器二进制文件
   ```bash
-  ssh root@8.136.114.154 -p 25022 "cp /opt/llm-gateway-go/gateway /opt/llm-gateway-go/gateway.backup.$(date +%Y%m%d-%H%M%S)"
+  bash scripts/deploy-seamless.sh status 154
   ```
 
 - [ ] **0.2** 备份当前数据库连接配置
   ```bash
-  ssh root@8.136.114.154 -p 25022 "cat /etc/llm-gateway-go/env | grep -E '(DATABASE|POSTGRES)' > /tmp/db_config_backup.txt"
+  env-injector inject aliyun-gateway-154
   ```
 
 - [ ] **0.3** 创建 Git 分支
@@ -69,7 +69,7 @@
 
 - [ ] **1.1.4** 更新配置文件
   ```yaml
-  # /etc/llm-gateway-go/config.yaml (154 服务器)
+  # Deployment configuration must use the managed environment for the target.
   database:
     max_conns: 50
     min_conns: 10
@@ -451,66 +451,11 @@
   CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o gateway ./cmd/gateway
   ```
 
-- [ ] **3.2.2** 上传到 154
-  ```bash
-  scp -P 25022 gateway root@8.136.114.154:/tmp/gateway.new
-  ```
-
-- [ ] **3.2.3** 停止服务并替换二进制
-  ```bash
-  ssh root@8.136.114.154 -p 25022 << 'DEPLOY'
-  systemctl stop llm-gateway-go
-  cp /opt/llm-gateway-go/gateway /opt/llm-gateway-go/gateway.backup.manual
-  cp /tmp/gateway.new /opt/llm-gateway-go/gateway
-  chmod +x /opt/llm-gateway-go/gateway
-  DEPLOY
-  ```
-
-- [ ] **3.2.4** 更新配置文件 (如果需要)
-  ```bash
-  ssh root@8.136.114.154 -p 25022 << 'CONFIG'
-  cat >> /etc/llm-gateway-go/config.yaml << 'EOF'
-  database:
-    max_conns: 50
-    min_conns: 10
-    max_conn_lifetime: 1h
-    max_conn_idle_time: 30m
-    health_check_period: 1m
-  
-  ursm_v2:
-    lru_mirror_size: 300000
-    lru_mirror_soft_ttl: 60s
-  EOF
-  CONFIG
-  ```
-
-- [ ] **3.2.5** 启动服务
-  ```bash
-  ssh root@8.136.114.154 -p 25022 "systemctl start llm-gateway-go"
-  ```
-
-- [ ] **3.2.6** 检查服务状态
-  ```bash
-  ssh root@8.136.114.154 -p 25022 "systemctl status llm-gateway-go"
-  ssh root@8.136.114.154 -p 25022 "journalctl -u llm-gateway-go -f"
-  ```
-
-- [ ] **3.2.7** 测试请求
-  ```bash
-  curl -X POST http://8.136.114.154:8080/v1/chat/completions \
-    -H "Content-Type: application/json" \
-    -H "Authorization: Bearer <real-key>" \
-    -d '{
-      "model": "gpt-5.6-luna",
-      "messages": [{"role": "user", "content": "test"}]
-    }'
-  ```
-
-- [ ] **3.2.8** 监控日志 30 分钟
-  ```bash
-  # 监控是否有 db_empty 错误
-  ssh root@8.136.114.154 -p 25022 "journalctl -u llm-gateway-go -f | grep -E '(db_empty|cache|retry)'"
-  ```
+- [ ] **3.2.2** 使用 canonical promotion runner 部署到 245，产出 gate 记录。
+- [ ] **3.2.3** 通过 245 gate 后，经人工确认再使用同一 gate 晋级到 154。
+- [ ] **3.2.4** 使用 `env-injector inject aliyun-gateway-154` 管理运行时配置；不直接覆盖服务器配置文件。
+- [ ] **3.2.5** 用 `https://llm.kxpms.cn` 验证健康检查和已认证业务 smoke。
+- [ ] **3.2.6** 保留 30 分钟日志与指标观察记录。
 
 ---
 
@@ -588,22 +533,14 @@
 ### 快速回滚 (< 2 分钟)
 
 ```bash
-# 回滚二进制文件
-ssh root@8.136.114.154 -p 25022 << 'ROLLBACK'
-systemctl stop llm-gateway-go
-cp /opt/llm-gateway-go/gateway.backup.manual /opt/llm-gateway-go/gateway
-systemctl start llm-gateway-go
-ROLLBACK
+# 使用项目标准回滚入口，恢复上一个已验证 release。
+bash scripts/deploy-seamless.sh rollback 154
 ```
 
 ### 回滚配置文件 (如果需要)
 
 ```bash
-ssh root@8.136.114.154 -p 25022 << 'ROLLBACK_CONFIG'
-# 恢复备份的配置
-cp /tmp/db_config_backup.txt /etc/llm-gateway-go/env
-systemctl restart llm-gateway-go
-ROLLBACK_CONFIG
+env-injector inject aliyun-gateway-154
 ```
 
 ---
