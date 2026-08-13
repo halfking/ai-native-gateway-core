@@ -179,22 +179,35 @@ func (r *ModelProbeRunner) nonfeaturedWatchdogTick(ctx context.Context) {
 	windowHours := settings.GetPlatformInt("probe.featured_usage_window_hours", 168)
 	topN := settings.GetPlatformInt("probe.featured_usage_top_n", 20)
 	if topN <= 0 {
-		topN = 0 // only static featured applies
+		topN = 0 // only static featured applies when kill-switch is on
 	}
-	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	// Tenant for routing_policy lookup (same as ModelTier.refresh, audit #H).
+	tenant := settings.GetPlatformString("probe.featured_tenant", "default")
+
+	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
-	// Mirror the ModelTier refresh (routing_policy tenant-scoped +
-	// request_logs_hot top-N by COALESCE(outbound,client)) so the "常用"判定
-	// stays consistent across probe and watchdog. Anything not in either set
-	// is non-featured and gets its next_retry_at pushed forward by multiplier.
+
+	// Derive the target next_retry_at: NOW() + mult × LoadProbeBackoffConfig().NextDelay(0).
+	// NextDelay(0) is the healthy-confirmed baseline (MaxDelay ≈ 2h). The operation
+	// is IDEMPOTENT: we only extend rows whose next_retry_at is LESS than the target,
+	// preventing unbounded drift on repeated 30-min ticks (audit #H additive issue).
+	// model_probe_state has no provider_model_id; identity is (credential_id, raw_model_name).
+	// We filter non-featured models by comparing raw_model_name directly against the
+	// static + usage sets (audit BLOCKER join fix).
+	baseSecs := int(LoadProbeBackoffConfig().NextDelay(0).Seconds())
+	if baseSecs <= 0 {
+		baseSecs = 7200 // fallback: 2h
+	}
+	targetSecs := mult * baseSecs
+
 	tag, err := r.db.Exec(ctx, `
 		WITH static AS (
-		    SELECT unnest(COALESCE(
+		    SELECT lower(unnest(COALESCE(
 		        (SELECT featured_models FROM routing_policy WHERE tenant_id = $1 LIMIT 1),
 		        ARRAY[]::TEXT[]
-		    )) AS model
+		    ))) AS model
 		), usage AS (
-		    SELECT raw_model FROM (
+		    SELECT lower(raw_model) AS raw_model FROM (
 		        SELECT COALESCE(rl.outbound_model, rl.client_model) AS raw_model,
 		               count(*) AS calls
 		        FROM request_logs_hot rl
@@ -206,19 +219,19 @@ func (r *ModelProbeRunner) nonfeaturedWatchdogTick(ctx context.Context) {
 		    ORDER BY calls DESC LIMIT $3
 		)
 		UPDATE model_probe_state mps
-		SET next_retry_at = next_retry_at + ($4::int || ' seconds')::interval
-		FROM provider_models pm
-		WHERE pm.id = mps.provider_model_id
-		  AND mps.state = 'healthy_confirmed'
-		  AND lower(pm.raw_model_name) NOT IN (SELECT lower(model) FROM static)
-		  AND lower(pm.raw_model_name) NOT IN (SELECT lower(raw_model) FROM usage)
-	`, "default", windowHours, topN, mult)
+		SET next_retry_at = now() + ($4 * interval '1 second')
+		WHERE mps.state = 'healthy_confirmed'
+		  AND (mps.next_retry_at IS NULL OR mps.next_retry_at < now() + ($4 * interval '1 second'))
+		  AND lower(mps.raw_model_name) NOT IN (SELECT model FROM static)
+		  AND lower(mps.raw_model_name) NOT IN (SELECT raw_model FROM usage)
+	`, tenant, windowHours, topN, targetSecs)
 	if err != nil {
 		slog.Warn("nonfeatured watchdog tick failed", "error", err)
 		return
 	}
 	if n := tag.RowsAffected(); n > 0 {
-		slog.Info("nonfeatured watchdog extended next_retry_at", "rows", n, "multiplier", mult)
+		slog.Info("nonfeatured watchdog extended next_retry_at",
+			"rows", n, "mult", mult, "target_hours", targetSecs/3600)
 	}
 }
 
