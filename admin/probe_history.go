@@ -22,6 +22,7 @@ package admin
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"log/slog"
 	"net/http"
 	"strconv"
@@ -29,6 +30,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgconn"
 
+	"github.com/kaixuan/llm-gateway-go/bg"
 	"github.com/kaixuan/llm-gateway-go/provider"
 )
 
@@ -197,6 +199,14 @@ func (h *Handler) handleProviderProbeHistoryTrigger(w http.ResponseWriter, r *ht
 		return
 	}
 	if err := h.modelProbe.TriggerManual(r.Context(), req.CredentialID, req.RawModelName); err != nil {
+		// 2026-08-13: surface manual_disabled as 409 Conflict instead of a
+		// generic 500. TriggerManual's SQL-level filter guarantees this
+		// only fires when the credential is genuinely disabled (not a
+		// binding typo).
+		if errors.Is(err, bg.ErrCredentialManuallyDisabled) {
+			writeError(w, http.StatusConflict, "credential is manually disabled")
+			return
+		}
 		writeError(w, http.StatusInternalServerError, "trigger failed: "+err.Error())
 		return
 	}
