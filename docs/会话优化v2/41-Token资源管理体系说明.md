@@ -177,23 +177,23 @@ T+2h:  alice|         → 同上，因为空字符串被兜底为 "unknown"
 
 ## 6. 可观测性
 
-### 6.1 Prometheus 指标（设计目标，本轮未实施）
+### 6.1 Prometheus 指标（已实施）
 
 ```yaml
-# Counter
+# Counter（credentialfpslot/metrics.go）
 gateway_client_token_requests_total{tenant_id, client_type, outcome}
   # outcome = acquired | saturated | error | degraded
 
 gateway_client_token_holder_changes_total{tenant_id, client_type}
   # 同一 userKey 切 clientType 时累计
 
-# Gauge
+# Gauge（active_slots 在 DetailedStatsForTenant 刷新）
 gateway_client_token_active_slots{tenant_id, credential_id, client_type}
 
 gateway_client_token_unknown_ratio
   # 未识别 clientType 在所有请求中的占比（应该 < 5%）
 
-# Histogram
+# Histogram（pin 命中时记录）
 gateway_client_token_pin_age_seconds{tenant_id, client_type}
   # pin 复用率指标：age 越小复用越多
 ```
