@@ -117,10 +117,10 @@ COMMENT ON FUNCTION public.ensure_sessions_v2_partitions(target_date date) IS
 -- (已经部署过 430 但 sessions_v2.enabled 是 false 状态运行的网关实例,这些
 -- gateway.* 表是空的。生产跑过 shadow_write 的实例需要先确认 0 行。
 --  ringbuffer / 自检跑道有审计日志兜底。)
-DROP TABLE IF EXISTS public.session_turn_logs CASCADE;
-DROP TABLE IF EXISTS public.session_bodies   CASCADE;
-DROP TABLE IF EXISTS public.session_turns   CASCADE;
-DROP TABLE IF EXISTS public.sessions        CASCADE;
+DROP TABLE IF EXISTS gateway.session_turn_logs CASCADE;
+DROP TABLE IF EXISTS gateway.session_bodies   CASCADE;
+DROP TABLE IF EXISTS gateway.session_turns   CASCADE;
+DROP TABLE IF EXISTS gateway.sessions        CASCADE;
 DROP SCHEMA  IF EXISTS gateway CASCADE;
 
 -- IF NOT EXISTS 留给 migration 430 后续重复部署（已部署过的 DB 跳过 CREATE）。

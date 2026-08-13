@@ -50,12 +50,14 @@ check_text "15-检查、漂移与迁移门禁.md" "NOSUPERUSER"
 check_text "15-检查、漂移与迁移门禁.md" "ui-verify-"
 
 MIGRATION="$ROOT/sql/migrations/startup/513_schema_unification_and_session_turns_dual_write.sql"
-if rg -q "DROP TABLE IF EXISTS public\.session_turns" "$MIGRATION" \
-  && rg -q "ALTER TABLE public\.session_turns" "$MIGRATION"; then
-  printf 'BLOCKED migration 513: drops public.session_turns before altering it\n'
+if rg -q "DROP TABLE IF EXISTS public\.session_turns" "$MIGRATION"; then
+  printf 'FAIL migration 513: still drops public.session_turns (should be gateway.*)\n'
+  FAIL=$((FAIL + 1))
+elif ! rg -q "DROP TABLE IF EXISTS gateway\.session_turns" "$MIGRATION"; then
+  printf 'FAIL migration 513: missing gateway.session_turns DROP\n'
   FAIL=$((FAIL + 1))
 else
-  printf 'PASS migration 513 does not contain the known drop-before-alter pattern\n'
+  printf 'PASS migration 513 correctly drops gateway.* tables\n'
   PASS=$((PASS + 1))
 fi
 
