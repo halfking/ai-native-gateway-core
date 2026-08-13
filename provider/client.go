@@ -579,19 +579,15 @@ func logCandidateDiagnostic(event string, args ...any) {
 	slog.Warn("[candidate_diag] "+event, args...)
 }
 
-// isRetryableDBError 判断数据库错误是否应该重试
-// 网络抖动、连接超时等临时性错误会重试，SQL语法错误等不重试
 func isRetryableDBError(err error) bool {
 	if err == nil {
 		return false
 	}
 
-	// 不重试 ErrNoRows (这是正常的"没有记录"，不是连接错误)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return false
 	}
 
-	// 重试以下错误类型
 	errStr := strings.ToLower(err.Error())
 	return errors.Is(err, context.DeadlineExceeded) ||
 		strings.Contains(errStr, "connection refused") ||
@@ -601,6 +597,18 @@ func isRetryableDBError(err error) bool {
 		strings.Contains(errStr, "i/o timeout") ||
 		strings.Contains(errStr, "connection closed") ||
 		strings.Contains(errStr, "no such host")
+}
+
+func waitForRetry(ctx context.Context, delay time.Duration) error {
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
 }
 
 func (c *Client) GetPolicy(ctx context.Context) (*Policy, error) {
@@ -1053,10 +1061,9 @@ func (c *Client) loadCandidatesByModalityDB(ctx context.Context, clientModel, te
 		tenantID = "default"
 	}
 
-	// 🆕 重试逻辑：数据库查询失败时重试最多3次，指数退避
 	var rows pgx.Rows
 	var err error
-	maxAttempts := 3
+	const maxAttempts = 3
 
 	for attempt := 0; attempt < maxAttempts; attempt++ {
 		rows, err = c.dbPool.Query(ctx, `
@@ -1276,23 +1283,18 @@ func (c *Client) loadCandidatesByModalityDB(ctx context.Context, clientModel, te
 			COALESCE(rsr.rate, mo.success_rate, 0.9) DESC
 		`, clientModelLower, tenantID, modality)
 
-		// 查询成功，跳出重试循环
 		if err == nil {
 			break
 		}
 
-		// 判断是否可重试
 		if !isRetryableDBError(err) {
-			// 不可重试的错误（如SQL语法错误），直接返回
-			return nil, fmt.Errorf("db query failed (non-retryable): %w", err)
+			return nil, fmt.Errorf("query candidates failed: %w (context: model=%s, tenant_id=%s)", err, clientModel, tenantID)
 		}
 
-		// 最后一次尝试失败
 		if attempt == maxAttempts-1 {
-			return nil, fmt.Errorf("db query failed after %d attempts: %w", maxAttempts, err)
+			return nil, fmt.Errorf("query candidates failed after %d attempts: %w (context: model=%s, tenant_id=%s)", maxAttempts, err, clientModel, tenantID)
 		}
 
-		// 指数退避：50ms, 100ms, 150ms
 		backoff := time.Duration(50*(attempt+1)) * time.Millisecond
 		slog.Warn("[candidate_diag] db query retry",
 			"model", clientModel,
@@ -1304,10 +1306,11 @@ func (c *Client) loadCandidatesByModalityDB(ctx context.Context, clientModel, te
 			"backoff_ms", backoff.Milliseconds(),
 		)
 
-		time.Sleep(backoff)
+		if err := waitForRetry(ctx, backoff); err != nil {
+			return nil, fmt.Errorf("wait to retry candidate query failed: %w (context: model=%s, tenant_id=%s)", err, clientModel, tenantID)
+		}
 	}
 
-	// 重试后仍然失败，返回错误
 	if err != nil {
 		return nil, err
 	}
