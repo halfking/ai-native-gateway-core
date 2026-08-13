@@ -204,6 +204,23 @@ type SessionState struct {
 	// rewrite (summary/trim) fired; nil otherwise. Non-breaking addition —
 	// a missing "algn" hash key decodes to nil for legacy entries.
 	AlignmentMap []AlignmentInfo `json:"alignment_map,omitempty"`
+
+	// v8 (Phase 2, 2026-08-13): Three-tier cache semantic alignment.
+	// Separates L1 (raw), L2 (compressed), L3 (audited) state for better
+	// observability and quality scoring.
+	//
+	// L1 fields (raw session, true values):
+	RawTokenEstimate int `json:"raw_te,omitempty"` // token count before sanitization/compression
+	RawMsgCount      int `json:"raw_mc,omitempty"` // message count before compression
+
+	// L2 fields (compressed session, placeholders):
+	CompressedTokens   int                     `json:"cmp_te,omitempty"`      // token count after compression
+	CompressedMsgs     int                     `json:"cmp_mc,omitempty"`      // message count after compression
+	CompressionQuality CompressionQualityScore `json:"cmp_quality,omitempty"` // quality metrics
+
+	// L3 fields (audited session, sanitize map):
+	SanitizeMapRef string        `json:"sanitize_ref,omitempty"` // Redis key: session:{id}:sanitize
+	SanitizeStats  SanitizeStats `json:"sanitize_stats,omitempty"`
 }
 
 // MsgHash is one entry in the outbound_msg_hashes JSONB array.
