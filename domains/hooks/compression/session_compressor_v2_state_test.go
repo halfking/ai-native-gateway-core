@@ -10,10 +10,15 @@ import (
 type stubStateReader struct {
 	has  bool
 	err  error
+	meta map[string]any
 }
 
 func (s stubStateReader) HasState(_ context.Context, _, _ string) (bool, error) {
 	return s.has, s.err
+}
+
+func (s stubStateReader) CompressionMetadata(_ context.Context, _, _ string) (map[string]any, error) {
+	return s.meta, nil
 }
 
 // stubOutboundBuilder implements V2OutboundBuilder for tests.

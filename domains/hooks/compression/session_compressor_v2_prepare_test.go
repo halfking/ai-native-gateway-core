@@ -3,6 +3,7 @@ package compression
 import (
 	"context"
 	"testing"
+	"time"
 )
 
 // TestPrepare_V2Path_EngagesDeltaAppend is the end-to-end guard for the
@@ -52,7 +53,30 @@ func TestPrepare_V2Path_EngagesDeltaAppend(t *testing.T) {
 	}
 }
 
-// TestPrepare_V2Path_NewSession_NoState verifies the new-session branch:
+func TestPrepare_V2Path_RestoresCompressionMetadata(t *testing.T) {
+	withPlatformFlag(t, "sessions_v2_compression_read", true)
+	compressedAt := time.Now().Add(-2 * time.Minute)
+	sc := &SessionCompressor{deps: SessionCompressorDeps{
+		CacheV2: stubStateReader{
+			has: true,
+			meta: map[string]any{
+				"last_compressed_at":     compressedAt,
+				"recently_compressed_at": compressedAt,
+				"summary_marker":         "[smm_v1:abc]",
+				"compressed_prefix_hash": "prefix-hash",
+				"tools_hash":             "tools-hash",
+				"token_estimate":         120,
+				"msg_count":              3,
+			},
+		},
+		Builder: stubOutboundBuilder{body: []byte(`[ {"role":"user","content":"first"} ]`)},
+	}}
+	res := sc.Prepare(context.Background(), `{"messages":[{"role":"user","content":"first"}]}`, "t1", "gw_v2meta01", "openai", 0, false)
+	if res.MsgCount != 1 {
+		t.Fatalf("expected restored V2 body to remain active, got %d messages", res.MsgCount)
+	}
+}
+
 // when V2 reports no prior state, Prepare must NOT fabricate outbound
 // state and must treat it as a fresh session (MsgCount == client msgs,
 // no rewrite required).
