@@ -84,6 +84,13 @@ type V2StateReader interface {
 	HasState(ctx context.Context, tenantID, sessionID string) (bool, error)
 }
 
+// V2CompressionMetadataReader is an optional extension implemented by the V2
+// cache. Keeping it separate preserves compatibility with lightweight readers
+// used during rollout and in unit tests.
+type V2CompressionMetadataReader interface {
+	CompressionMetadata(ctx context.Context, tenantID, sessionID string) (map[string]any, error)
+}
+
 // V2OutboundBuilder rebuilds the most recent outbound body (the exact
 // message array last forwarded to the upstream model, including any
 // compression markers) as a JSON-marshaled []byte.
@@ -230,15 +237,13 @@ func (sc *SessionCompressor) Prepare(
 		v2Body, ok := sc.tryLoadV2State(ctx, tenantID, gwSessionID)
 		if ok {
 			lastOutboundBody = v2Body
-			// BuildOutboundMessages treats a nil state as "new session" and
-			// discards lastOutboundBody, so we MUST provide a non-nil state
-			// for the delta-append path to engage. The V2 reader does not
-			// populate the legacy SessionState fields; an empty struct is
-			// sufficient because diff.go only checks state != nil here.
-			// Tools-caching / strip bookkeeping later in Prepare will see a
-			// zero-valued state and no-op, which is the correct conservative
-			// behaviour until those features are migrated to V2 metadata.
-			state = &SessionState{}
+			state = sc.loadV2CompressionState(ctx, tenantID, gwSessionID)
+			if state == nil {
+				// A reader that only supports HasState is still valid; a
+				// non-nil placeholder keeps the delta path active.
+				state = &SessionState{}
+			}
+
 			fromV2 = true
 			res.skipV1Cache = true
 			slog.InfoContext(ctx, "session_compressor: v2 cache loaded successfully",
@@ -788,16 +793,23 @@ func buildSessionState(prevState *SessionState, outboundBody []byte, res *Prepar
 	state.LastOutboundHash = sha256Hex(outboundBody)
 	state.MsgCount = res.MsgCount
 	state.TokenEstimate = res.TokenEst
+	state.RawMsgCount = countMessages(outboundBody)
+	state.RawTokenEstimate = estimateBodyTokens(outboundBody)
+	state.CompressedMsgs = res.MsgCount
+	state.CompressedTokens = res.TokenEst
+	if res.CompressedPrefixHash != "" {
+		state.CompressedPrefixHash = res.CompressedPrefixHash
+	}
 	state.AuditedAt = now
-	state.LastCompressedAt = now
+	if didCompress {
+		state.LastCompressedAt = now
+		state.RecentlyCompressedAt = now
+	}
 	if res.SummaryMarker != "" {
 		state.SummaryMarker = res.SummaryMarker
 	}
 	if len(res.AlignmentMap) > 0 {
 		state.AlignmentMap = append(state.AlignmentMap[:0], res.AlignmentMap...)
-	}
-	if didCompress {
-		state.RecentlyCompressedAt = now
 	}
 	return state
 }
@@ -1025,8 +1037,56 @@ func (sc *SessionCompressor) tryLoadV2State(
 	return outboundBody, true
 }
 
-// logCompressionQuality 记录压缩质量日志（Phase 1 Task 1.3）
-//
+func (sc *SessionCompressor) loadV2CompressionState(ctx context.Context, tenantID, sessionID string) *SessionState {
+	reader, ok := sc.deps.CacheV2.(V2CompressionMetadataReader)
+	if !ok {
+		return nil
+	}
+	meta, err := reader.CompressionMetadata(ctx, tenantID, sessionID)
+	if err != nil || meta == nil {
+		return nil
+	}
+	state := &SessionState{SchemaVersion: schemaVersion}
+	state.SummaryMarker, _ = meta["summary_marker"].(string)
+	state.CompressedPrefixHash, _ = meta["compressed_prefix_hash"].(string)
+	state.ToolsHash, _ = meta["tools_hash"].(string)
+	state.CompressionMode, _ = meta["strategy"].(string)
+	state.TokenEstimate = intMeta(meta["token_estimate"])
+	state.MsgCount = intMeta(meta["msg_count"])
+	state.LastCompressedAt = unixMeta(meta["last_compressed_at"])
+	state.RecentlyCompressedAt = unixMeta(meta["recently_compressed_at"])
+	return state
+}
+
+func intMeta(v any) int {
+	switch n := v.(type) {
+	case int:
+		return n
+	case int64:
+		return int(n)
+	case float64:
+		return int(n)
+	default:
+		return 0
+	}
+}
+
+func unixMeta(v any) int64 {
+	switch t := v.(type) {
+	case time.Time:
+		return t.Unix()
+	case string:
+		if parsed, err := time.Parse(time.RFC3339Nano, t); err == nil {
+			return parsed.Unix()
+		}
+	case int64:
+		return t
+	case float64:
+		return int64(t)
+	}
+	return 0
+}
+
 // 在每次压缩完成后调用，记录详细的质量指标，用于：
 //  1. 监控压缩效果（token 节省、语义保真度）
 //  2. 对比不同压缩策略的效果

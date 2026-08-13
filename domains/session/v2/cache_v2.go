@@ -2,6 +2,7 @@ package v2
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -66,9 +67,12 @@ type SessionStateV2 struct {
 	GovernanceMeta GovernanceMeta
 }
 
-// CompressionMeta stores compression-related metadata
+// CompressionMeta stores compression-related metadata.
+// JSON names intentionally mirror the compression_meta payload emitted by the
+// gateway so cold-start recovery preserves the same state as the hot cache.
 type CompressionMeta struct {
 	LastCompressedAt     time.Time
+	RecentlyCompressedAt time.Time
 	SummaryMarker        string
 	CompressedPrefixHash string // Fingerprint of compressed content
 	TokenEstimate        int
@@ -148,6 +152,27 @@ func (c *SessionCacheV2) Set(ctx context.Context, state *SessionStateV2) error {
 func (c *SessionCacheV2) Invalidate(ctx context.Context, tenantID, sessionID string) error {
 	c.l1.Delete(tenantID, sessionID)
 	return c.l2.Delete(ctx, tenantID, sessionID)
+}
+
+// CompressionMetadata returns the compression portion of the current V2 state
+// as a JSON-shaped map. It is intentionally small so compression can consume
+// it without importing this package and creating an import cycle.
+func (c *SessionCacheV2) CompressionMetadata(ctx context.Context, tenantID, sessionID string) (map[string]any, error) {
+	state, err := c.Get(ctx, tenantID, sessionID)
+	if err != nil || state == nil {
+		return nil, err
+	}
+	meta := state.CompressionMeta
+	return map[string]any{
+		"last_compressed_at":     meta.LastCompressedAt,
+		"recently_compressed_at": meta.RecentlyCompressedAt,
+		"summary_marker":         meta.SummaryMarker,
+		"compressed_prefix_hash": meta.CompressedPrefixHash,
+		"token_estimate":         meta.TokenEstimate,
+		"msg_count":              meta.MsgCount,
+		"strategy":               meta.Strategy,
+		"tools_hash":             meta.ToolsHash,
+	}, nil
 }
 
 // HasState reports whether any prior session state exists. It is the
@@ -393,11 +418,46 @@ func (r *SessionTurnsReader) LoadState(ctx context.Context, tenantID, sessionID 
 	state.CompressionMeta.Strategy = strategy
 	state.CompressionMeta.TokenEstimate = promptTokens + completionTokens
 
-	// Parse compression_meta JSON if present
-	if len(compressionMetaJSON) > 0 {
-		// TODO: Parse compression_meta fields
-		// For now, we have the basic structure
+	// Parse compression_meta JSON if present. The payload is intentionally
+	// decoded best-effort: malformed optional metadata must not hide a valid
+	// turn or prevent the next request from using its outbound snapshot.
+	if len(compressionMetaJSON) > 0 && string(compressionMetaJSON) != "null" {
+		applyCompressionMeta(&state.CompressionMeta, compressionMetaJSON)
 	}
 
 	return &state, nil
+}
+
+func applyCompressionMeta(dst *CompressionMeta, raw []byte) {
+	if dst == nil || len(raw) == 0 || string(raw) == "null" {
+		return
+	}
+	var meta struct {
+		LastCompressedAt     time.Time `json:"last_compressed_at"`
+		RecentlyCompressedAt time.Time `json:"recently_compressed_at"`
+		SummaryMarker        string    `json:"summary_marker"`
+		CompressedPrefixHash string    `json:"compressed_prefix_hash"`
+		TokenEstimate        int       `json:"token_estimate"`
+		MsgCount             int       `json:"msg_count"`
+		Strategy             string    `json:"strategy"`
+		ToolsHash            string    `json:"tools_hash"`
+	}
+	if err := json.Unmarshal(raw, &meta); err != nil {
+		return
+	}
+	dst.LastCompressedAt = meta.LastCompressedAt
+	dst.RecentlyCompressedAt = meta.RecentlyCompressedAt
+	dst.SummaryMarker = meta.SummaryMarker
+	dst.CompressedPrefixHash = meta.CompressedPrefixHash
+	dst.ToolsHash = meta.ToolsHash
+	if meta.TokenEstimate > 0 {
+		dst.TokenEstimate = meta.TokenEstimate
+	}
+	if meta.MsgCount > 0 {
+		dst.MsgCount = meta.MsgCount
+	}
+	if meta.Strategy != "" {
+		dst.Strategy = meta.Strategy
+	}
+}
 }

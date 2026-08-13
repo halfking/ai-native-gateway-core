@@ -214,9 +214,10 @@ type SessionState struct {
 	RawMsgCount      int `json:"raw_mc,omitempty"` // message count before compression
 
 	// L2 fields (compressed session, placeholders):
-	CompressedTokens   int                     `json:"cmp_te,omitempty"`      // token count after compression
-	CompressedMsgs     int                     `json:"cmp_mc,omitempty"`      // message count after compression
-	CompressionQuality CompressionQualityScore `json:"cmp_quality,omitempty"` // quality metrics
+	CompressedTokens     int                     `json:"cmp_te,omitempty"`      // token count after compression
+	CompressedMsgs       int                     `json:"cmp_mc,omitempty"`      // message count after compression
+	CompressedPrefixHash string                  `json:"cmp_ph,omitempty"`      // stable compressed prefix fingerprint
+	CompressionQuality   CompressionQualityScore `json:"cmp_quality,omitempty"` // quality metrics
 
 	// L3 fields (audited session, sanitize map):
 	SanitizeMapRef string        `json:"sanitize_ref,omitempty"` // Redis key: session:{id}:sanitize
@@ -665,7 +666,10 @@ func encodeSessionStateFields(st *SessionState) []any {
 			fields = append(fields, "cm_ba", fmt.Sprintf("%d", st.CutBytesAfter))
 		}
 	}
-	// v6: Audited state — only emit non-zero values to keep Redis hash small
+	if st.CompressedPrefixHash != "" {
+		fields = append(fields, "cmp_ph", st.CompressedPrefixHash)
+	}
+
 	// and to remain backward compatible with older readers that only know
 	// the v5 field set.
 	if st.AuditedAt > 0 {
@@ -734,6 +738,7 @@ func decodeSessionStateFields(fields map[string]string, st *SessionState) error 
 	st.CutStrategy = fields["cm_strat"]
 	st.CutBytesBefore = int(parseInt(fields["cm_bb"]))
 	st.CutBytesAfter = int(parseInt(fields["cm_ba"]))
+	st.CompressedPrefixHash = fields["cmp_ph"]
 	// v6: Audited state — missing keys decode to zero value, which is the
 	// intended "no audit yet" semantic.
 	st.AuditedAt = parseInt(fields["aud_at"])
