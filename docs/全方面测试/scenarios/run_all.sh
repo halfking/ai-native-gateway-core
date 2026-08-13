@@ -32,7 +32,11 @@ case "$SUITE" in
         S10_long_prompt S11_quota_recovery S12_comprehensive S13_no_candidate
         S14_model_not_found S15_cross_group_failover S16_quick_recovery S17_stream_continuation
         S18_null_handling S19_tenant_isolation S20_auto_title S21_branch_session
-        S22_instant_summary S23_long_text_chunked) ;;
+        S22_instant_summary S23_long_text_chunked
+        # 2026-08-14: flash-disconnect 套件 (S24-S29), 详见 docs/changelogs/2026-08-14-flash-disconnect-suite.md
+        S24_supplier_flash_disconnect_single S25_supplier_flash_disconnect_cascade
+        S26_sticky_session_survives_disconnect S27_streaming_recovery_after_disconnect
+        S28_concurrent_flash_isolation S29_post_disconnect_quota_replay) ;;
     concurrency) SCENARIOS=(C01_concurrency) ;;
     performance) SCENARIOS=(P01_performance) ;;
     reliability) SCENARIOS=(R01_reliability) ;;
@@ -41,7 +45,11 @@ case "$SUITE" in
         S10_long_prompt S11_quota_recovery S12_comprehensive S13_no_candidate
         S14_model_not_found S15_cross_group_failover S16_quick_recovery S17_stream_continuation
         S18_null_handling S19_tenant_isolation S20_auto_title S21_branch_session
-        S22_instant_summary S23_long_text_chunked C01_concurrency P01_performance R01_reliability) ;;
+        S22_instant_summary S23_long_text_chunked
+        S24_supplier_flash_disconnect_single S25_supplier_flash_disconnect_cascade
+        S26_sticky_session_survives_disconnect S27_streaming_recovery_after_disconnect
+        S28_concurrent_flash_isolation S29_post_disconnect_quota_replay
+        C01_concurrency P01_performance R01_reliability) ;;
     *) echo "invalid --suite: $SUITE" >&2; exit 2 ;;
 esac
 
