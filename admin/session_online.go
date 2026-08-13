@@ -20,112 +20,154 @@ import (
 	"net/http"
 	"strconv"
 	"time"
+
+	"github.com/kaixuan/llm-gateway-go/domains/session"
 )
 
 // OnlineSession 是在线会话列表的一项。
 type OnlineSession struct {
-	SessionID         string `json:"session_id"`
-	Title             string `json:"title,omitempty"`
-	LastRequestStatus string `json:"last_request_status,omitempty"`
-	LastModel         string `json:"last_model,omitempty"`
-	LastProviderID    *int   `json:"last_provider_id,omitempty"`
-	LastLatencyMs     *int   `json:"last_latency_ms,omitempty"`
-	LastActiveAt      string `json:"last_active_at,omitempty"`
-	DeviceCount       int    `json:"device_count,omitempty"`
+	SessionID         string         `json:"session_id"`
+	Title             string         `json:"title,omitempty"`
+	LastRequestStatus string         `json:"last_request_status,omitempty"`
+	LastModel         string         `json:"last_model,omitempty"`
+	LastProviderID    *int           `json:"last_provider_id,omitempty"`
+	LastLatencyMs     *int           `json:"last_latency_ms,omitempty"`
+	LastActiveAt      string         `json:"last_active_at,omitempty"`
+	DeviceCount       int            `json:"device_count,omitempty"`
+	Freshness         *FreshnessInfo `json:"freshness,omitempty"` // V3.2 freshness 信息
 }
 
 // handleSessionsOnline 返回在线会话列表。
-// GET /api/admin/sessions/online?limit=50&cursor=0
+// GET /api/admin/sessions/online?limit=50&cursor=xxx
+//
+// V3.2 改动（LP6）：
+//   - tenant 隔离：从认证上下文取 tenant_id，过滤 session_last_requests
+//   - cursor 分页：base64(RFC3339Nano)，时间倒序
+//   - freshness：data_source + freshness_ms + stale
 func (h *Handler) handleSessionsOnline(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
-	if h.sessionManager == nil || h.sessionManager.GetRedisClient() == nil {
-		writeError(w, http.StatusServiceUnavailable, "session manager not configured")
+
+	// 1. Tenant 隔离（契约：从认证上下文取，忽略 query 覆盖）
+	tenantID := session.GetTenantIDFromContext(r.Context())
+	if tenantID == "" {
+		writeError(w, http.StatusUnauthorized, "tenant_id required")
 		return
 	}
 
-	limit := 50
-	if v := r.URL.Query().Get("limit"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil && n > 0 && n <= 200 {
+	// 2. 解析分页参数
+	cursor := r.URL.Query().Get("cursor")
+	limitStr := r.URL.Query().Get("limit")
+	limit := 20
+	if limitStr != "" {
+		if n, err := strconv.Atoi(limitStr); err == nil && n > 0 {
 			limit = n
 		}
+	}
+	params := NormalizePaginationParams(PaginationParams{Cursor: cursor, Limit: limit})
+
+	// 3. 解析 cursor
+	cursorTime, err := ParseCursor(params.Cursor)
+	if err != nil {
+		writeErrorWithCode(w, http.StatusBadRequest, "session.pagination_invalid_cursor", "invalid cursor: "+err.Error())
+		return
+	}
+
+	// 4. 查询数据库（tenant 过滤 + cursor 分页 + freshness）
+	if h.db == nil {
+		writeError(w, http.StatusServiceUnavailable, "database not configured")
+		return
 	}
 
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
 
-	rdb := h.sessionManager.GetRedisClient().Client()
-
-	// SCAN 游标遍历 session:* Hash（禁 KEYS，rule: 在线列表 P95<200ms）
-	var sessionIDs []string
-	var cursor uint64
-	pattern := "session:*"
-	for {
-		keys, next, err := rdb.Scan(ctx, cursor, pattern, 100).Result()
-		if err != nil {
-			writeError(w, http.StatusInternalServerError, "redis scan failed: "+err.Error())
-			return
-		}
-		for _, k := range keys {
-			// 排除子键（session:{id}:sanitize 等），只留 session:{id} 主键
-			// 主键格式：session:<id>（一个冒号）
-			if countColon(k) == 1 {
-				sessionIDs = append(sessionIDs, k[len("session:"):])
-			}
-			if len(sessionIDs) >= limit {
-				break
-			}
-		}
-		cursor = next
-		if cursor == 0 || len(sessionIDs) >= limit {
-			break
-		}
+	// 查询 session_last_requests，按 updated_at 倒序（最新的在前）
+	// cursor 分页：updated_at < cursorTime（首次请求 cursorTime 为 zero，不限制）
+	query := `
+		SELECT session_id, last_request_status, COALESCE(last_model,''),
+		       last_provider_id, last_latency_ms, updated_at, tenant_id
+		FROM session_last_requests
+		WHERE tenant_id = $1`
+	args := []interface{}{tenantID}
+	if !cursorTime.IsZero() {
+		query += ` AND updated_at < $2`
+		args = append(args, cursorTime)
 	}
+	query += ` ORDER BY updated_at DESC LIMIT $` + strconv.Itoa(len(args)+1)
+	args = append(args, params.Limit)
 
-	// 丰富：从 session_last_requests 补最后请求状态/模型/供应商
-	out := make([]OnlineSession, 0, len(sessionIDs))
-	for _, sid := range sessionIDs {
-		os := OnlineSession{SessionID: sid}
-		if h.db != nil {
-			var status, model string
-			var providerID, latency *int
-			var updatedAt *time.Time
-			err := h.db.QueryRow(ctx, `
-				SELECT last_request_status, COALESCE(last_model,''),
-				       last_provider_id, last_latency_ms, updated_at
-				FROM session_last_requests
-				WHERE session_id = $1`, sid).
-				Scan(&status, &model, &providerID, &latency, &updatedAt)
-			if err == nil {
-				os.LastRequestStatus = status
-				os.LastModel = model
-				os.LastProviderID = providerID
-				os.LastLatencyMs = latency
-				if updatedAt != nil {
-					os.LastActiveAt = updatedAt.UTC().Format(time.RFC3339)
-				}
-			}
+	rows, err := h.db.Query(ctx, query, args...)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "query failed: "+err.Error())
+		return
+	}
+	defer rows.Close()
+
+	now := time.Now()
+	out := make([]OnlineSession, 0, params.Limit)
+	var lastUpdatedAt time.Time
+
+	for rows.Next() {
+		var sid, status, model string
+		var providerID, latency *int
+		var updatedAt time.Time
+		var dbTenantID string
+
+		if err := rows.Scan(&sid, &status, &model, &providerID, &latency, &updatedAt, &dbTenantID); err != nil {
+			continue
+		}
+
+		// 再次确认 tenant（防御性编程）
+		if dbTenantID != tenantID {
+			continue
+		}
+
+		// 计算 freshness（数据源暂定 hot，后续可从表字段读取）
+		freshness := CalculateFreshness(DataSourceHot, updatedAt, now)
+
+		os := OnlineSession{
+			SessionID:         sid,
+			LastRequestStatus: status,
+			LastModel:         model,
+			LastProviderID:    providerID,
+			LastLatencyMs:     latency,
+			Freshness:         &freshness,
+		}
+		if !updatedAt.IsZero() {
+			os.LastActiveAt = updatedAt.UTC().Format(time.RFC3339)
 		}
 		out = append(out, os)
+		lastUpdatedAt = updatedAt
 	}
 
+	if err := rows.Err(); err != nil {
+		writeError(w, http.StatusInternalServerError, "rows iteration failed: "+err.Error())
+		return
+	}
+
+	// 5. 构建分页响应
+	pagination := BuildPaginationResponse(len(out), lastUpdatedAt, params.Limit)
+
 	writeJSON(w, http.StatusOK, map[string]any{
-		"sessions": out,
-		"count":    len(out),
+		"sessions":    out,
+		"count":       len(out),
+		"next_cursor": pagination.NextCursor,
+		"has_more":    pagination.HasMore,
 	})
 }
 
 // SessionTurn 是会话时间线的一轮（主请求 + 扩展请求子树）。
 type SessionTurn struct {
-	RequestID   string             `json:"request_id"`
-	RequestType string             `json:"request_type"`
-	Status      string             `json:"status"`
-	Model       string             `json:"model,omitempty"`
-	LatencyMs   *int               `json:"latency_ms,omitempty"`
-	StartedAt   string             `json:"started_at,omitempty"`
-	Children    []*SessionTurn     `json:"children,omitempty"`
+	RequestID   string         `json:"request_id"`
+	RequestType string         `json:"request_type"`
+	Status      string         `json:"status"`
+	Model       string         `json:"model,omitempty"`
+	LatencyMs   *int           `json:"latency_ms,omitempty"`
+	StartedAt   string         `json:"started_at,omitempty"`
+	Children    []*SessionTurn `json:"children,omitempty"`
 }
 
 // handleSessionTimeline 返回会话的多轮次时间线（主请求 + 扩展请求子树）。
