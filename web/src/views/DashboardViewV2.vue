@@ -5,6 +5,12 @@ import { ref, computed, inject, type Ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import MemoraStatusButton from '../components/MemoraStatusButton.vue'
 import LiveRequestStreamV2 from '../components/LiveRequestStreamV2.vue'
+// 2026-08-14 V3.2 (FE-A1 + FE-A2): queue + node panels promoted from
+// `.v32wip` to live components. Mount them on the stream tab above
+// LiveRequestStreamV2 so the operator sees queue depth + node matrix
+// without scrolling.
+import QueuePerspectivePanel from '../components/QueuePerspectivePanel.vue'
+import NodeStatusMatrix from '../components/NodeStatusMatrix.vue'
 import StatsDrawer from '../components/StatsDrawer.vue'
 import RequestLogDrawer from '../components/RequestLogDrawer.vue'
 import SessionStatsPanel from '../components/SessionStatsPanel.vue'
@@ -198,6 +204,15 @@ async function onRefresh() {
       v-if="activeTab === 'stream'"
       @open-detail="openRequestDetail"
     />
+
+    <!-- 2026-08-14 V3.2 (FE-A1 + FE-A2): mounted on the stream tab. The
+         panels render their own empty state when the corresponding SSE
+         provider is not wired (cmd/gateway/main.go), so this v-if is a
+         safe default for the pre-deployment state. -->
+    <div v-if="activeTab === 'stream'" class="v32-wip-stack">
+      <QueuePerspectivePanel />
+      <NodeStatusMatrix />
+    </div>
 
     <StatsDrawer
       ref="statsDrawerRef"
@@ -568,5 +583,13 @@ async function onRefresh() {
     /* 更窄屏幕：每张卡占满一行 */
     flex: 1 1 100%;
   }
+}
+
+/* 2026-08-14 V3.2 (FE-A1 + FE-A2): 队列透视 + 节点矩阵 上下堆叠布局 */
+.v32-wip-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin-top: 12px;
 }
 </style>
