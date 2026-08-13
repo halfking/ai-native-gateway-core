@@ -244,10 +244,43 @@ func (qr *QueuedRequest) GetUpstreamLatency() time.Duration {
 	return qr.T8_ResponseStartAt.Sub(*qr.T7_ForwardStartAt)
 }
 
+// GetStreamingDuration returns response body transfer time (T8→T9)
+func (qr *QueuedRequest) GetStreamingDuration() time.Duration {
+	if qr.T8_ResponseStartAt == nil || qr.T9_ResponseEndAt == nil {
+		return 0
+	}
+	return qr.T9_ResponseEndAt.Sub(*qr.T8_ResponseStartAt)
+}
+
 // GetTotalDuration returns end-to-end time (T0→T9)
 func (qr *QueuedRequest) GetTotalDuration() time.Duration {
 	if qr.T9_ResponseEndAt == nil {
 		return 0
 	}
 	return qr.T9_ResponseEndAt.Sub(qr.T0_ArrivedAt)
+}
+
+// stageSeconds returns end.Sub(start) in seconds when both timestamps are set
+// and end >= start. Used by Prometheus stage histograms.
+func stageSeconds(start, end *time.Time) (float64, bool) {
+	if start == nil || end == nil {
+		return 0, false
+	}
+	d := end.Sub(*start)
+	if d < 0 {
+		return 0, false
+	}
+	return d.Seconds(), true
+}
+
+// stageSecondsFrom returns end.Sub(start) when end is set and end >= start.
+func stageSecondsFrom(start time.Time, end *time.Time) (float64, bool) {
+	if end == nil || start.IsZero() {
+		return 0, false
+	}
+	d := end.Sub(start)
+	if d < 0 {
+		return 0, false
+	}
+	return d.Seconds(), true
 }
