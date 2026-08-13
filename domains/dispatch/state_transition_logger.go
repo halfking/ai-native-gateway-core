@@ -29,8 +29,7 @@ import (
 
 // StateTransition 是一条状态变更记录（对应 request_state_transitions 一行）。
 type StateTransition struct {
-	RequestID      string
-	TransitionType string // route | node_switch | retry | error | state
+	RequestID      string	TenantID       string         // 租户 ID (T0: admin, T1-T4: 正常租户)	TransitionType string // route | node_switch | retry | error | state
 	FromState      string
 	ToState        string
 	Metadata       map[string]any // 决策原因/候选列表/retry_seq/reason_class 等
@@ -69,35 +68,35 @@ func NewStateTransitionLogger(db *pgxpool.Pool) *StateTransitionLogger {
 
 // LogRouteDecision 记录路由决策（route_resolve/route_credential 阶段）。
 // metadata 建议含 candidates / block_reason / chosen_credential_id。
-func (l *StateTransitionLogger) LogRouteDecision(requestID, fromState, toState string, metadata map[string]any) {
-	l.add(StateTransition{RequestID: requestID, TransitionType: "route", FromState: fromState, ToState: toState, Metadata: metadata})
+func (l *StateTransitionLogger) LogRouteDecision(requestID, tenantID, fromState, toState string, metadata map[string]any) {
+	l.add(StateTransition{RequestID: requestID, TenantID: tenantID, TransitionType: "route", FromState: fromState, ToState: toState, Metadata: metadata})
 }
 
 // LogNodeSwitch 记录节点切换（failover/sibling 切换）。
 // metadata 建议含 from_node / to_node / reason。
-func (l *StateTransitionLogger) LogNodeSwitch(requestID, fromNode, toNode string, metadata map[string]any) {
+func (l *StateTransitionLogger) LogNodeSwitch(requestID, tenantID, fromNode, toNode string, metadata map[string]any) {
 	if metadata == nil {
 		metadata = map[string]any{}
 	}
 	metadata["from_node"] = fromNode
 	metadata["to_node"] = toNode
-	l.add(StateTransition{RequestID: requestID, TransitionType: "node_switch", FromState: fromNode, ToState: toNode, Metadata: metadata})
+	l.add(StateTransition{RequestID: requestID, TenantID: tenantID, TransitionType: "node_switch", FromState: fromNode, ToState: toNode, Metadata: metadata})
 }
 
 // LogRetry 记录重试（前端特殊标 🔄）。
 // metadata 必须含 retry_seq / reason_class（供前端标记）。
-func (l *StateTransitionLogger) LogRetry(requestID string, retrySeq int, reasonClass string, metadata map[string]any) {
+func (l *StateTransitionLogger) LogRetry(requestID, tenantID string, retrySeq int, reasonClass string, metadata map[string]any) {
 	if metadata == nil {
 		metadata = map[string]any{}
 	}
 	metadata["retry_seq"] = retrySeq
 	metadata["reason_class"] = reasonClass
-	l.add(StateTransition{RequestID: requestID, TransitionType: "retry", ToState: "retry", Metadata: metadata})
+	l.add(StateTransition{RequestID: requestID, TenantID: tenantID, TransitionType: "retry", ToState: "retry", Metadata: metadata})
 }
 
 // LogError 记录终态错误。
-func (l *StateTransitionLogger) LogError(requestID, fromState string, metadata map[string]any) {
-	l.add(StateTransition{RequestID: requestID, TransitionType: "error", FromState: fromState, ToState: "error", Metadata: metadata})
+func (l *StateTransitionLogger) LogError(requestID, tenantID, fromState string, metadata map[string]any) {
+	l.add(StateTransition{RequestID: requestID, TenantID: tenantID, TransitionType: "error", FromState: fromState, ToState: "error", Metadata: metadata})
 }
 
 // add 追加到缓冲；满 batchSize 触发同步 flush（仍旁路：调用方是 relay 的
@@ -147,11 +146,11 @@ func (l *StateTransitionLogger) Flush() {
 		}
 		if _, err := tx.Exec(ctx, `
 			INSERT INTO request_state_transitions
-			  (request_id, transition_type, from_state, to_state, metadata)
-			VALUES ($1, $2, $3, $4, $5)`,
-			t.RequestID, t.TransitionType, nullStr(t.FromState), nullStr(t.ToState), metaJSON); err != nil {
+			  (request_id, tenant_id, transition_type, from_state, to_state, metadata)
+			VALUES ($1, $2, $3, $4, $5, $6)`,
+			t.RequestID, t.TenantID, t.TransitionType, nullStr(t.FromState), nullStr(t.ToState), metaJSON); err != nil {
 			slog.Warn("state_transition: insert failed (non-fatal)",
-				"request_id", t.RequestID, "type", t.TransitionType, "error", err)
+				"request_id", t.RequestID, "tenant_id", t.TenantID, "type", t.TransitionType, "error", err)
 		}
 	}
 	if err := tx.Commit(ctx); err != nil {
