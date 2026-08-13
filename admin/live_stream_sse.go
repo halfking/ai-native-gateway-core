@@ -74,6 +74,53 @@ type LiveStreamEnvelope struct {
 	// LaneIDs carries the list of known lane IDs for idle_marker envelopes.
 	// The frontend uses this to decide which lanes need idle tiles.
 	LaneIDs []string `json:"lane_ids,omitempty"`
+
+	// Queue (2026-08-13, V3.2 BE-A1) carries a dispatch queue snapshot for
+	// the queue-perspective panel. Type="queue_snapshot" identifies this
+	// variant. Optional — nil on envelopes that don't carry queue data.
+	Queue *LiveQueueSnapshot `json:"queue,omitempty"`
+
+	// Nodes (2026-08-13, V3.2 BE-A4) carries the node status matrix for the
+	// node-status panel. Sent in initial_data (full) and node_update (delta).
+	// Optional — nil on envelopes that don't carry node data.
+	Nodes []LiveNodeStatus `json:"nodes,omitempty"`
+}
+
+// LiveQueueSnapshot is the wire shape of a dispatch queue snapshot pushed
+// to the frontend queue-perspective panel. It mirrors dispatch's Tier-1
+// (model) and Tier-2 (credential) queue depths plus the dispatch gate state.
+// Kept as a local struct to avoid an admin → dispatch import cycle.
+type LiveQueueSnapshot struct {
+	Enabled     bool                    `json:"enabled"`
+	Wired       bool                    `json:"wired"`
+	Models      []LiveQueueLaneSnapshot `json:"models"`
+	Credentials []LiveQueueLaneSnapshot `json:"credentials"`
+}
+
+// LiveQueueLaneSnapshot is one queue lane (a model queue or a credential queue).
+type LiveQueueLaneSnapshot struct {
+	Model      string `json:"model,omitempty"`
+	Credential int    `json:"credential,omitempty"`
+	Mode       string `json:"mode,omitempty"`
+	Depth      int64  `json:"depth"`
+}
+
+// LiveNodeStatus is the wire shape of one supplier node's status for the
+// homepage node-status matrix. It is a PROJECTION of the credentialhealth /
+// circuit / quota state (ADR-V3-103: those packages remain the single source
+// of truth — this struct only carries what the UI needs).
+type LiveNodeStatus struct {
+	CredentialID      int    `json:"credential_id"`
+	ProviderID        int    `json:"provider_id,omitempty"`
+	ProviderCode      string `json:"provider_code,omitempty"`
+	CircuitState      string `json:"circuit_state,omitempty"`
+	AvailabilityState string `json:"availability_state,omitempty"`
+	QuotaState        string `json:"quota_state,omitempty"`
+	HealthStatus      string `json:"health_status,omitempty"`
+	ManualDisabled    bool   `json:"manual_disabled"`
+	InFlight          int64  `json:"in_flight,omitempty"`
+	LastLatencyMs     *int   `json:"last_latency_ms,omitempty"`
+	LastError         string `json:"last_error,omitempty"`
 }
 
 // LiveIncidentUpdate is the wire shape of a route incident update
@@ -202,6 +249,14 @@ type LiveRequest struct {
 	AgentName      string `json:"agent_name,omitempty"`
 	AgentType      string `json:"agent_type,omitempty"`
 	ClientProtocol string `json:"client_protocol,omitempty"`
+
+	// 2026-08-13 (V3.2 BE-A3): 主从请求关联。
+	// ParentRequestID 非空表示这是扩展请求（标题生成/总结/敏感词检查/压缩），
+	// 挂在父请求下展示。RequestType 区分 main/title_gen/summary/sensitive_check/compression。
+	// Children 仅在推送主请求时异步附带（深度≤3，循环保护），其余时候为 nil。
+	ParentRequestID string         `json:"parent_request_id,omitempty"`
+	RequestType     string         `json:"request_type,omitempty"`
+	Children        []*LiveRequest `json:"children,omitempty"`
 }
 
 // LiveStreamConfig controls hub behaviour. Zero values are safe and
@@ -335,11 +390,85 @@ type LiveStreamSSEHub struct {
 	incidentMu       sync.Mutex
 	incidentUpdateCh chan LiveStreamEnvelope
 	incidentDrops    atomic.Int64
+
+	// queueSnapshotProvider (2026-08-13, V3.2 BE-A1) supplies live dispatch
+	// queue snapshots for the queue-perspective panel. Injected from
+	// cmd/gateway (which owns the dispatch.Pipeline) via SetQueueSnapshotProvider
+	// to avoid an admin → dispatch import cycle. nil disables queue_snapshot pushes.
+	queueSnapshotMu sync.RWMutex
+	queueSnapshotProvider func() *LiveQueueSnapshot
+
+	// nodeStatusProvider (2026-08-13, V3.2 BE-A4) supplies the node status
+	// matrix for the homepage node-status panel. Injected from cmd/gateway
+	// (which owns credentialhealth/circuit) via SetNodeStatusProvider to
+	// avoid an import cycle. nil disables node pushes.
+	nodeStatusMu       sync.RWMutex
+	nodeStatusProvider func() []LiveNodeStatus
 }
 
+// cachedSnapshotEntry is one tenant's cached snapshot plus its last-access
+// timestamp (drives periodic eviction of stale tenants).
 type cachedSnapshotEntry struct {
 	snapshot     *LiveStreamSnapshot
 	lastAccessed time.Time
+}
+
+// SetQueueSnapshotProvider injects the dispatch queue snapshot source.
+// Called once from cmd/gateway after the dispatch pipeline is wired.
+// The provider is invoked on each queue tick; it must be cheap and non-blocking.
+func (h *LiveStreamSSEHub) SetQueueSnapshotProvider(p func() *LiveQueueSnapshot) {
+	h.queueSnapshotMu.Lock()
+	h.queueSnapshotProvider = p
+	h.queueSnapshotMu.Unlock()
+}
+
+// fanOutQueueSnapshot reads the current dispatch queue snapshot and broadcasts
+// it as a queue_snapshot envelope. No-op when no provider is wired.
+func (h *LiveStreamSSEHub) fanOutQueueSnapshot() {
+	h.queueSnapshotMu.RLock()
+	provider := h.queueSnapshotProvider
+	h.queueSnapshotMu.RUnlock()
+	if provider == nil {
+		return
+	}
+	snap := provider()
+	if snap == nil {
+		return
+	}
+	h.fanOut(LiveStreamEnvelope{
+		Type:      "queue_snapshot",
+		Timestamp: time.Now().UTC(),
+		Queue:     snap,
+	})
+}
+
+// SetNodeStatusProvider injects the node status matrix source.
+// Called once from cmd/gateway after credentialhealth/circuit are wired.
+// The provider is invoked on each node tick; it must be cheap and non-blocking.
+func (h *LiveStreamSSEHub) SetNodeStatusProvider(p func() []LiveNodeStatus) {
+	h.nodeStatusMu.Lock()
+	h.nodeStatusProvider = p
+	h.nodeStatusMu.Unlock()
+}
+
+// fanOutNodeUpdate reads the current node status matrix and broadcasts it as
+// a node_update envelope. No-op when no provider is wired.
+func (h *LiveStreamSSEHub) fanOutNodeUpdate() {
+	h.nodeStatusMu.RLock()
+	provider := h.nodeStatusProvider
+	h.nodeStatusMu.RUnlock()
+	if provider == nil {
+		return
+	}
+	nodes := provider()
+	if nodes == nil {
+		return
+	}
+	h.fanOut(LiveStreamEnvelope{
+		Type:      "node_update",
+		Timestamp: time.Now().UTC(),
+		Nodes:     nodes,
+	})
 }
 
 // NewLiveStreamSSEHub constructs a hub. The caller MUST call Run()
@@ -373,11 +502,15 @@ func (h *LiveStreamSSEHub) Run() {
 	cacheCleanupTicker := time.NewTicker(h.cfg.CachedSnapshotCleanupInterval)
 	healthTicker := time.NewTicker(30 * time.Second) // Redis health check interval
 	snapshotRefreshTicker := time.NewTicker(h.cfg.SnapshotRefreshInterval)
+	queueTicker := time.NewTicker(2 * time.Second) // V3.2 BE-A1: queue snapshot push interval
+	nodeTicker := time.NewTicker(2 * time.Second)  // V3.2 BE-A4: node status push interval
 	defer idleTicker.Stop()
 	defer keepaliveTicker.Stop()
 	defer cacheCleanupTicker.Stop()
 	defer healthTicker.Stop()
 	defer snapshotRefreshTicker.Stop()
+	defer queueTicker.Stop()
+	defer nodeTicker.Stop()
 
 	// Emit initial health status immediately so freshly-connected
 	// clients do not have to wait 30s to learn about Redis state.
@@ -465,6 +598,10 @@ func (h *LiveStreamSSEHub) Run() {
 			h.checkAndBroadcastHealth()
 		case <-snapshotRefreshTicker.C:
 			h.PushFullSnapshots()
+		case <-queueTicker.C:
+			h.fanOutQueueSnapshot()
+		case <-nodeTicker.C:
+			h.fanOutNodeUpdate()
 		}
 	}
 }
@@ -1892,8 +2029,72 @@ func (h *LiveStreamSSEHub) LiveRequestFromTelemetry(
 		if entry.GwSessionID != nil && out.GwSessionID == "" {
 			out.GwSessionID = strings.TrimSpace(*entry.GwSessionID)
 		}
+		// 2026-08-13 (V3.2 BE-A3): 主从请求关联字段。
+		if entry.ParentRequestID != nil {
+			out.ParentRequestID = strings.TrimSpace(*entry.ParentRequestID)
+		}
+		if entry.RequestType != nil {
+			out.RequestType = strings.TrimSpace(*entry.RequestType)
+		}
 	}
 
+	return out
+}
+
+// QueryChildRequests (2026-08-13, V3.2 BE-A3) returns the child/extended
+// requests (title_gen / summary / sensitive_check / compression / other)
+// linked to a parent request via request_logs.parent_request_id.
+// Used by the homepage live-stream to render the parent/child tree.
+// Depth is capped at 3 with a visited-set cycle guard. PG is the source of
+// truth (migration 510 added the parent_request_id partial index); Redis is
+// not used here because child links are queried on demand, not streamed.
+func (h *LiveStreamSSEHub) QueryChildRequests(ctx context.Context, parentRequestID string) []*LiveRequest {
+	if h.db == nil || parentRequestID == "" {
+		return nil
+	}
+	const maxDepth = 3
+	visited := map[string]bool{parentRequestID: true}
+	var out []*LiveRequest
+	var walk func(parentID string, depth int)
+	walk = func(parentID string, depth int) {
+		if depth > maxDepth {
+			return
+		}
+		rows, err := h.db.Query(ctx, `
+			SELECT request_id, COALESCE(request_type,'main'), COALESCE(request_status,''),
+			       latency_ms, success
+			FROM request_logs_hot
+			WHERE parent_request_id = $1
+			ORDER BY ts ASC
+			LIMIT 20`, parentID)
+		if err != nil {
+			slog.Debug("query child requests failed", "parent", parentID, "error", err)
+			return
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var rid, rtype, status string
+			var latency *int
+			var success bool
+			if rows.Scan(&rid, &rtype, &status, &latency, &success) != nil {
+				continue
+			}
+			if visited[rid] {
+				continue // 循环保护
+			}
+			visited[rid] = true
+			child := &LiveRequest{
+				RequestID:       rid,
+				RequestType:     rtype,
+				Status:          status,
+				LatencyMs:       latency,
+				ParentRequestID: parentRequestID,
+			}
+			out = append(out, child)
+			walk(rid, depth+1) // 递归子请求的子请求（深度≤3）
+		}
+	}
+	walk(parentRequestID, 1)
 	return out
 }
 
