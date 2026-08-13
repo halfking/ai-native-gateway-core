@@ -92,5 +92,72 @@ func TestDecideV2_RoutingSource_OverridePin(t *testing.T) {
 // 这里保留用例作为文档：一旦缓存命中，RoutingSource 必须是 session_cache。代码审查
 // 已确认 decision_v2.go 的缓存分支直接赋字面量 "session_cache"。
 func TestDecideV2_RoutingSource_SessionCache_DocumentationOnly(t *testing.T) {
-	t.Skip("V2 session-cache 命中需要真实 DB pool（ValidateCachedChoice），留给集成测试")
+	t.Skip("V2 session-cache hit needs real DB pool (ValidateCachedChoice),留给集成测试")
+}
+
+func TestDecideV2_WorkTypeRouteBoostDoesNotOverridePin(t *testing.T) {
+	old := GetFeatureFlags()
+	SetGlobalFeatureFlagsForTest(&FeatureFlags{UseChannelQualityRouting: true})
+	defer SetGlobalFeatureFlagsForTest(old)
+
+	idx := newV2Index([]Candidate{
+		{CredentialID: 1, CanonicalID: 1, CanonicalName: "natural-winner", Tags: []string{"code"}, SuccessRate: 0.99, UnitPriceInPer1M: 1},
+		{CredentialID: 2, CanonicalID: 2, CanonicalName: "boosted-model", Tags: []string{"code"}, SuccessRate: 0.80, UnitPriceInPer1M: 100},
+		{CredentialID: 3, CanonicalID: 3, CanonicalName: "pinned-model", Tags: []string{"code"}, SuccessRate: 0.70, UnitPriceInPer1M: 200},
+	})
+
+	routes := NewWorkTypeRouteStore(nil)
+	routes.snapshot.Store(&wtRouteSnapshot{byTaskType: map[string][]WorkTypeRoute{
+		"code": {{CanonicalName: "boosted-model", Tier: "primary"}},
+	}})
+	overrides := newStoreWith(
+		Override{TaskType: "code", Profile: "smart", Mode: OverridePin, ModelChosen: "pinned-model"},
+		Override{TaskType: "code", Profile: "smart", Mode: OverrideBan, ModelChosen: "boosted-model"},
+	)
+
+	d := NewDecider(&v2TestClassifier{task: TaskCode}, nil, idx, NewMemoryProfileStore())
+	d.SetWorkTypeRouteStore(routes)
+	d.SetOverrideStore(overrides)
+
+	dec, err := d.DecideV2(context.Background(), ClassificationSignals{}, 0, "", "", "")
+	if err != nil {
+		t.Fatalf("DecideV2 err: %v", err)
+	}
+	if dec.ChosenModel != "pinned-model" {
+		t.Fatalf("pin must beat route boost and ban must remove boosted model, got %q", dec.ChosenModel)
+	}
+	if dec.RoutingSource != "override_pin" {
+		t.Fatalf("RoutingSource: got %q, want override_pin", dec.RoutingSource)
+	}
+}
+
+func TestDecideV2_WorkTypeRouteCanSelectBeyondInitialTopN(t *testing.T) {
+	old := GetFeatureFlags()
+	SetGlobalFeatureFlagsForTest(&FeatureFlags{UseChannelQualityRouting: true})
+	defer SetGlobalFeatureFlagsForTest(old)
+
+	idx := newV2Index([]Candidate{
+		{CredentialID: 1, CanonicalID: 1, CanonicalName: "natural-a", Tags: []string{"code"}, SuccessRate: 0.99, UnitPriceInPer1M: 1, ProviderCategory: "minimax"},
+		{CredentialID: 2, CanonicalID: 2, CanonicalName: "natural-b", Tags: []string{"code"}, SuccessRate: 0.98, UnitPriceInPer1M: 2, ProviderCategory: "minimax"},
+		{CredentialID: 3, CanonicalID: 3, CanonicalName: "configured-model", Tags: []string{"code"}, SuccessRate: 0.97, UnitPriceInPer1M: 3, ProviderCategory: "minimax"},
+	})
+	routes := NewWorkTypeRouteStore(nil)
+	routes.snapshot.Store(&wtRouteSnapshot{byTaskType: map[string][]WorkTypeRoute{
+		"code": {{CanonicalName: "configured-model", Tier: "primary"}},
+	}})
+
+	d := NewDecider(&v2TestClassifier{task: TaskCode}, nil, idx, NewMemoryProfileStore())
+	d.TopN = 2
+	d.SetWorkTypeRouteStore(routes)
+
+	dec, err := d.DecideV2(context.Background(), ClassificationSignals{}, 0, "", "", "")
+	if err != nil {
+		t.Fatalf("DecideV2 err: %v", err)
+	}
+	if dec.ChosenModel != "configured-model" {
+		t.Fatalf("configured model outside initial TopN should be considered, got %q", dec.ChosenModel)
+	}
+	if len(dec.CandidatesTopN) != 2 {
+		t.Fatalf("CandidatesTopN length: got %d, want 2", len(dec.CandidatesTopN))
+	}
 }

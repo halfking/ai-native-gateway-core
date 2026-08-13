@@ -105,6 +105,7 @@ type Decider struct {
 	tuningStore         *TuningStore         // optional dynamic params (v2.1)
 	overrideStore       *OverrideStore       // optional admin ban/pin overrides (P7.6)
 	defaultRoutingStore *DefaultRoutingStore // optional explicit default routing (M2)
+	workTypeRouteStore  *WorkTypeRouteStore  // optional work_type_model_route boost (V2 bridge)
 
 	// DefaultProfile is used when no header AND no sticky entry exists.
 	DefaultProfile Profile
@@ -177,6 +178,12 @@ func (d *Decider) SetOverrideStore(store *OverrideStore) {
 // SetDefaultRoutingStore wires the explicit default routing store (M2).
 func (d *Decider) SetDefaultRoutingStore(store *DefaultRoutingStore) {
 	d.defaultRoutingStore = store
+}
+
+// SetWorkTypeRouteStore wires the work_type_model_route store that bridges
+// admin-configured task→model preferences into the V2 routing path.
+func (d *Decider) SetWorkTypeRouteStore(store *WorkTypeRouteStore) {
+	d.workTypeRouteStore = store
 }
 
 // SetShadowClassifier wires the optional embedding classifier used for
