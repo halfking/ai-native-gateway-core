@@ -34,3 +34,6 @@ var ErrShutdown = errors.New("dispatch: pipeline shut down")
 
 // IsPaceTimeout reports whether err is the governor pacing-timeout sentinel.
 func IsPaceTimeout(err error) bool { return errors.Is(err, errPaceTimeout) }
+
+// IsShutdown reports whether err is the pipeline-shutdown sentinel.
+func IsShutdown(err error) bool { return errors.Is(err, ErrShutdown) }
