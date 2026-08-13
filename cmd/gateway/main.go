@@ -3002,31 +3002,31 @@ func main() {
 					routingExec.NodeProbeHealthy = func(ctx context.Context, credentialID int, rawModel string) error {
 						return bg.MarkNodeProbeHealthy(ctx, dbConn.Pool(), credentialID, rawModel)
 					}
-				slog.Info("sync_no_candidate_probe", "enabled", syncOn, "timeout", routingExec.SyncNoCandidateTimeout)
-			}
-
-			// 2026-08-13 (需求 6 完全统一): wire ProbeService so node_probe tasks
-			// dequeued from credential_probe_queue run through the unified
-			// two-round (direct + pinned-gateway) executor with all side-effects.
-			// Also flip NodeProbeWorker.Submit to enqueue into the queue and park
-			// its legacy picker. The gateway round uses the system key +
-			// X-LLM-Pin-Credential so it attributes to the exact node under test.
-			if probeQueueWorker != nil && probeQueue != nil {
-				gatewayURL := strings.TrimSpace(os.Getenv("LLM_GATEWAY_NODE_PROBE_BASE_URL"))
-				if gatewayURL == "" {
-					gatewayURL = "http://127.0.0.1:8781/v1"
+					slog.Info("sync_no_candidate_probe", "enabled", syncOn, "timeout", routingExec.SyncNoCandidateTimeout)
 				}
-				if queueExecutor != nil {
-					queueExecutor.SetGateway(gatewayURL, selfCheckAPIKey, &http.Client{Timeout: 30 * time.Second})
-				}
-				probeService := bg.NewProbeService(nodeProbeWorker, queueExecutor)
-				probeQueueWorker.SetProbeService(probeService)
-				nodeProbeWorker.SetProbeQueue(probeQueue)
-				slog.Info("unified probe service wired",
-					"gateway_url", gatewayURL, "gateway_round", queueExecutor != nil && queueExecutor.GatewayEnabled())
-			}
 
-			nodeProbeWorker.Start(context.Background())
+				// 2026-08-13 (需求 6 完全统一): wire ProbeService so node_probe tasks
+				// dequeued from credential_probe_queue run through the unified
+				// two-round (direct + pinned-gateway) executor with all side-effects.
+				// Also flip NodeProbeWorker.Submit to enqueue into the queue and park
+				// its legacy picker. The gateway round uses the system key +
+				// X-LLM-Pin-Credential so it attributes to the exact node under test.
+				if probeQueueWorker != nil && probeQueue != nil {
+					gatewayURL := strings.TrimSpace(os.Getenv("LLM_GATEWAY_NODE_PROBE_BASE_URL"))
+					if gatewayURL == "" {
+						gatewayURL = "http://127.0.0.1:8781/v1"
+					}
+					if queueExecutor != nil {
+						queueExecutor.SetGateway(gatewayURL, selfCheckAPIKey, &http.Client{Timeout: 30 * time.Second})
+					}
+					probeService := bg.NewProbeService(nodeProbeWorker, queueExecutor)
+					probeQueueWorker.SetProbeService(probeService)
+					nodeProbeWorker.SetProbeQueue(probeQueue)
+					slog.Info("unified probe service wired",
+						"gateway_url", gatewayURL, "gateway_round", queueExecutor != nil && queueExecutor.GatewayEnabled())
+				}
+
+				nodeProbeWorker.Start(context.Background())
 				slog.Info("CHECKPOINT: node_probe_worker started")
 
 				dailyProbeAudit = bg.NewDailyProbeAudit(dbConn.Pool(), nodeProbeWorker)
@@ -3767,6 +3767,22 @@ func main() {
 			slog.Info("CHECKPOINT: after SetFpSlots")
 			adminHandler.SetPeakCollector(peakCollector)
 			slog.Info("CHECKPOINT: after SetPeakCollector")
+
+			// 2026-08-14 V3.2: wire state-transition logger + SSE
+			// queue/node providers. All nil-safe; missing deps degrade
+			// to "feature disabled" without affecting the relay.
+			// See cmd/gateway/main_v32_wiring.go for the closure bodies.
+			if dbConn != nil && dbConn.Enabled() {
+				wireStateTransitionLogger(dbConn.Pool())
+			}
+			if liveStreamHub != nil {
+				liveStreamHub.SetQueueSnapshotProvider(wireQueueSnapshotProvider(gatewayDispatchPipeline))
+				if dbConn != nil && dbConn.Enabled() {
+					liveStreamHub.SetNodeStatusProvider(wireNodeStatusProvider(dbConn.Pool(), peakCollector))
+				}
+				slog.Info("V3.2 SSE providers wired: queue_snapshot + node_status")
+			}
+
 			// 2026-08-11: expose the on-demand node IQ test endpoint. Only wire
 			// when the worker is running with a node source (per-node direct
 			// testing enabled); otherwise the trigger endpoint 503s and the

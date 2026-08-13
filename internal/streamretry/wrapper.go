@@ -8,8 +8,47 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"strings"
 	"sync"
+
+	"github.com/kaixuan/llm-gateway-go/domains/dispatch" //nolint:depguard // V3.2 state-transition logger
 )
+
+// requestIDCtxKey is the private context key used to thread the inbound
+// X-Request-Id from the http.Request into the wrapper's retry loop. We
+// deliberately avoid touching the streaming / identity packages to keep the
+// streamretry package self-contained (the request id is already stamped
+// upstream by domains/streaming/handler.go).
+type requestIDCtxKey struct{}
+
+// withRequestID attaches a request id to ctx (set by ServeHTTP from the
+// inbound X-Request-Id header).
+func withRequestID(ctx context.Context, requestID string) context.Context {
+	if requestID == "" {
+		return ctx
+	}
+	return context.WithValue(ctx, requestIDCtxKey{}, requestID)
+}
+
+// requestIDFromCtx returns the request id stashed by withRequestID, or "".
+func requestIDFromCtx(ctx context.Context) string {
+	if v, ok := ctx.Value(requestIDCtxKey{}).(string); ok {
+		return v
+	}
+	// Fallback: try the standard X-Request-Id header in case the caller
+	// didn't route through ServeHTTP (e.g. legacy callers using Execute
+	// directly). Some upstream callers place the id in the request itself,
+	// not just the context.
+	if req, ok := ctx.Value(httpReqCtxKey{}).(*http.Request); ok && req != nil {
+		return strings.TrimSpace(req.Header.Get("X-Request-Id"))
+	}
+	return ""
+}
+
+// httpReqCtxKey is a secondary context key used by callers that prefer
+// to pass the *http.Request directly (e.g. unit tests). Production flows
+// use http.ServerMux → ServeHTTP → withRequestID.
+type httpReqCtxKey struct{}
 
 // StreamFunc represents a function that executes a streaming request.
 // It should return an error if the stream fails, or nil if it completes successfully.
@@ -138,6 +177,19 @@ func (w *Wrapper) ExecuteWithMetrics(ctx context.Context, httpW http.ResponseWri
 			"attempt", rc.Attempt+1,
 			"next_attempt", rc.Attempt+2)
 
+		// 2026-08-14 V3.2 (BE-B1): record state transition for the retry.
+		// nil-safe — no logger wired (DB disabled / test mode) → no-op.
+		// Pulled from X-Request-Id header so the row joins request_logs.request_id.
+		// ADR-V3-102: reuse the existing request_id, never mint a new one.
+		if requestID := requestIDFromCtx(ctx); requestID != "" {
+			dispatch.LogRetryGlobal(requestID, rc.Attempt+1, classify.Reason,
+				map[string]any{
+					"next_attempt": rc.Attempt + 2,
+					"retriable":    classify.Retriable,
+					"reason":       classify.Reason,
+				})
+		}
+
 		// Sleep with backoff (and send keepalive notification)
 		if err := rc.Sleep(ctx); err != nil {
 			// Context canceled during sleep
@@ -233,10 +285,12 @@ func NewDefaultStreamExecutor(handler http.Handler, config Config) *DefaultStrea
 // context is forwarded to ExecuteStream so context cancellation (client
 // disconnect, request timeout) propagates naturally and stops the retry loop.
 //
-// This is the entry point used by net/http.ServeMux when the executor is
-// registered directly as a route handler.
+// 2026-08-14 V3.2: extract X-Request-Id from the inbound header and stash
+// it in the context so the retry loop can call LogRetryGlobal with the
+// existing request id (ADR-V3-102 — never mint a new id).
 func (e *DefaultStreamExecutor) ServeHTTP(w http.ResponseWriter, req *http.Request) {
-	_ = e.ExecuteStream(req.Context(), w, req)
+	ctx := withRequestID(req.Context(), strings.TrimSpace(req.Header.Get("X-Request-Id")))
+	_ = e.ExecuteStream(ctx, w, req)
 }
 
 // ExecuteStream implements the StreamExecutor interface.
