@@ -5,6 +5,28 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased] - 2026-08-14 (Flash Disconnect Test Suite)
+
+### Added
+
+- **供应商闪断测试套件 S24-S29（2026-08-14）**：基于 `docs/会话优化v2/18-网关稳定性` 与
+  `docs/会话优化v3/01-需求分析与架构设计.md`（V3.1 深化版）系统性补齐"供应商中途突然死亡"
+  （vs 预设 server_error）的测试覆盖。
+  - 新工具 `tools/fault_inject.py`：JSON 时间表驱动的独立 fault 调度器（kill/restart supplier 实例）。
+  - `mock_supplier.py` 扩展：新增 `STATE["kill_after_sec"]` + `/admin/kill-after` endpoint
+    （supplier 在 N 秒后 `os._exit(0)` 模拟进程消失）；新增 `STATE["disconnect_after_ms"]`
+    （SSE 流中途 `request.transport.close()` one-shot）。
+  - `mock_orchestrator.py` 扩展：新增 `kill-group` / `set-group-disconnect-after` 子命令。
+  - 新增 6 个场景（S24-S29），全部严格 envelope schema_version 1.0，173 请求 100% 通过：
+    - **S24** 单组闪断（G kill 5s，客户端透明 failover，36/36 OK）
+    - **S25** 多组错时闪断（G/H/I 6s 间隔错时死，36/36 OK，p99=2279ms）
+    - **S26** 粘性会话跨闪断（sticky session 5 轮 chat 跨 5s G 闪断，5/5 OK）
+    - **S27** 流式闪断恢复（SSE 首 chunk 后 80ms transport.close，11/11 OK）
+    - **S28** 并发闪断隔离（50 并发客户端 + G/H/I 同时死 8s，50/50 OK，p99=1252ms）
+    - **S29** 闪断后配额账目（验证无 phantom 429，35/35 OK）
+  - 测试方案文档 `03-测试场景定义.md`：场景矩阵新增 S24-S29 行 + 新章节"供应商闪断 / 客户端稳定"。
+  - 详见 `docs/changelogs/2026-08-14-flash-disconnect-suite.md` + `docs/全方面测试/REPORT-LOCAL-20260814.md`。
+
 ## [Unreleased] - 2026-08-13 (V3.2 partial)
 
 ### Added
