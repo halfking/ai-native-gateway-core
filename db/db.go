@@ -365,6 +365,37 @@ func (d *DB) ensureRequestLogSchema(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	
+	// V3.1 (migration 491): 9-stage dispatch queue timestamps on hot + parent.
+	// Startup ensure so environments that have not yet run 491 still accept INSERTs.
+	_, err = d.pool.Exec(ctx, `
+		ALTER TABLE request_logs_hot
+		    ADD COLUMN IF NOT EXISTS t0_arrived_at TIMESTAMPTZ,
+		    ADD COLUMN IF NOT EXISTS t1_total_enqueued_at TIMESTAMPTZ,
+		    ADD COLUMN IF NOT EXISTS t2_total_dequeued_at TIMESTAMPTZ,
+		    ADD COLUMN IF NOT EXISTS t3_model_enqueued_at TIMESTAMPTZ,
+		    ADD COLUMN IF NOT EXISTS t4_model_dequeued_at TIMESTAMPTZ,
+		    ADD COLUMN IF NOT EXISTS t5_cred_enqueued_at TIMESTAMPTZ,
+		    ADD COLUMN IF NOT EXISTS t6_cred_dequeued_at TIMESTAMPTZ,
+		    ADD COLUMN IF NOT EXISTS t7_forward_start_at TIMESTAMPTZ,
+		    ADD COLUMN IF NOT EXISTS t8_response_start_at TIMESTAMPTZ,
+		    ADD COLUMN IF NOT EXISTS t9_response_end_at TIMESTAMPTZ;
+		ALTER TABLE request_logs
+		    ADD COLUMN IF NOT EXISTS t0_arrived_at TIMESTAMPTZ,
+		    ADD COLUMN IF NOT EXISTS t1_total_enqueued_at TIMESTAMPTZ,
+		    ADD COLUMN IF NOT EXISTS t2_total_dequeued_at TIMESTAMPTZ,
+		    ADD COLUMN IF NOT EXISTS t3_model_enqueued_at TIMESTAMPTZ,
+		    ADD COLUMN IF NOT EXISTS t4_model_dequeued_at TIMESTAMPTZ,
+		    ADD COLUMN IF NOT EXISTS t5_cred_enqueued_at TIMESTAMPTZ,
+		    ADD COLUMN IF NOT EXISTS t6_cred_dequeued_at TIMESTAMPTZ,
+		    ADD COLUMN IF NOT EXISTS t7_forward_start_at TIMESTAMPTZ,
+		    ADD COLUMN IF NOT EXISTS t8_response_start_at TIMESTAMPTZ,
+		    ADD COLUMN IF NOT EXISTS t9_response_end_at TIMESTAMPTZ;
+	`)
+	if err != nil {
+		return err
+	}
+
 	slog.Info("request_logs schema ensured (gw_session_id, gw_task_id, request_status, api_key_prefix, api_key_owner_user, application_code, parent_request_id, compression_reason, compression_strategy, compression_meta, outbound_body, outbound_msg_count, outbound_token_est, outbound_msg_hashes, quality_flags, quality_fix_actions, quality_score, client_request_id)")
 	return nil
 }
