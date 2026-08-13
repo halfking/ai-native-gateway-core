@@ -78,22 +78,31 @@ STATE_DEFAULTS = {
     # Connection limiting (0 = unlimited)
     "max_connections": 0,
     # Edge case fault modes
-    "slow_connect_delay_ms": 0,      # TCP handshake delay
-    "timeout_response": False,         # Simulate timeout
-    "huge_response": False,          # >10MB response
-    "truncated_response": False,     # Response cut off mid-stream
-    "slow_header_delay_ms": 0,       # Header send delay
-    "invalid_json_response": False,   # Return invalid JSON
+    "slow_connect_delay_ms": 0,  # TCP handshake delay
+    "timeout_response": False,  # Simulate timeout
+    "huge_response": False,  # >10MB response
+    "truncated_response": False,  # Response cut off mid-stream
+    "slow_header_delay_ms": 0,  # Header send delay
+    "invalid_json_response": False,  # Return invalid JSON
+    # 2026-08-14: flash-disconnect fault injection (Phase B for S24-S29).
+    # `disconnect_after_ms` > 0 means: after sending the first response byte,
+    # wait `disconnect_after_ms` ms then abort the TCP connection mid-stream.
+    # Models supplier that dies mid-response (socket RST / FIN while gateway
+    # is still reading). Tested with S27_streaming_recovery_after_disconnect.
+    "disconnect_after_ms": 0,
+    "disconnect_after_consumed": False,  # becomes True after first abort (one-shot)
+    "kill_after_sec": 0,  # >0 means self-terminate N seconds after start
     # 2026-08-06: scripted-content for deterministic LLM responses.
     # When set (non-empty string), /v1/chat/completions returns this exact
     # content instead of the default `[group/instance] mock-pong: ...` echo.
     # Used by S20 (auto-title), S22 (instant summary), S23 (long-text)
     # to assert on deterministic title/summary text in DB.
     "scripted_content": "",
-    "scripted_model_override": "",    # optional: override the `model` field in response
+    "scripted_model_override": "",  # optional: override the `model` field in response
 }
 
 STATE: dict = dict(STATE_DEFAULTS)
+
 
 # Connection manager for concurrency limiting
 class ConnectionManager:
@@ -259,7 +268,9 @@ async def admin_set_protocol(request):
     body = await request.json()
     protocol = body.get("protocol", "chat")
     if protocol not in ("chat", "response", "anthropic"):
-        return web.json_response({"error": "protocol must be chat|response|anthropic"}, status=400)
+        return web.json_response(
+            {"error": "protocol must be chat|response|anthropic"}, status=400
+        )
     STATE["protocol_mode"] = protocol
     STATE["state_change_at"] = now()
     return web.json_response({"ok": True, "protocol_mode": protocol})
@@ -271,7 +282,9 @@ async def admin_set_delay(request):
     delay_ms = int(body.get("delay_ms", 0))
     STATE["processing_delay_ms"] = max(0, delay_ms)
     STATE["state_change_at"] = now()
-    return web.json_response({"ok": True, "processing_delay_ms": STATE["processing_delay_ms"]})
+    return web.json_response(
+        {"ok": True, "processing_delay_ms": STATE["processing_delay_ms"]}
+    )
 
 
 async def admin_set_connlimit(request):
@@ -281,7 +294,9 @@ async def admin_set_connlimit(request):
     STATE["max_connections"] = max(0, limit)
     await CONN_MGR.set_limit(limit)
     STATE["state_change_at"] = now()
-    return web.json_response({"ok": True, "max_connections": limit, "current": CONN_MGR.current})
+    return web.json_response(
+        {"ok": True, "max_connections": limit, "current": CONN_MGR.current}
+    )
 
 
 async def admin_set_fault_mode(request):
@@ -292,6 +307,7 @@ async def admin_set_fault_mode(request):
     - truncated_response: cut off mid-stream
     - slow_header_delay_ms: header send delay
     - invalid_json_response: return invalid JSON
+    - disconnect_after_ms: 2026-08-14, abort TCP connection N ms after first byte
     """
     body = await request.json()
     fault_modes = [
@@ -301,27 +317,60 @@ async def admin_set_fault_mode(request):
         "truncated_response",
         "slow_header_delay_ms",
         "invalid_json_response",
+        "disconnect_after_ms",
     ]
     for k in fault_modes:
         if k in body:
-            if k in ("timeout_response", "huge_response", "truncated_response", "invalid_json_response"):
+            if k in (
+                "timeout_response",
+                "huge_response",
+                "truncated_response",
+                "invalid_json_response",
+            ):
                 STATE[k] = bool(body[k])
             else:
                 STATE[k] = max(0, int(body[k]))
+    # reset one-shot flag whenever a new disconnect_after_ms is configured
+    if "disconnect_after_ms" in body:
+        STATE["disconnect_after_consumed"] = False
     STATE["state_change_at"] = now()
     applied = {k: STATE[k] for k in fault_modes if k in body}
     return web.json_response({"ok": True, "applied": applied})
+
+
+async def admin_set_kill_after(request):
+    """2026-08-14: schedule self-termination N seconds from now.
+
+    Used by fault_inject.py / S24-S29 to model a supplier that abruptly
+    disappears. After kill_after_sec elapses, the process calls os._exit(0)
+    (skipping aiohttp graceful shutdown so the socket RST is observable).
+    Set kill_after_sec=0 to cancel a pending kill.
+    """
+    body = await request.json()
+    STATE["kill_after_sec"] = max(0, int(body.get("kill_after_sec", 0)))
+    STATE["kill_after_set_at"] = now()
+    STATE["state_change_at"] = now()
+    return web.json_response({"ok": True, "kill_after_sec": STATE["kill_after_sec"]})
 
 
 async def admin_set_state_full(request):
     """Set multiple state fields at once (convenience endpoint)"""
     body = await request.json()
     valid_fields = {
-        "state", "latency_ms_extra", "latency_prob", "fail_rate",
-        "broken_stream_drop_after", "protocol_mode", "processing_delay_ms",
-        "max_connections", "slow_connect_delay_ms", "timeout_response",
-        "huge_response", "truncated_response", "slow_header_delay_ms",
-        "invalid_json_response"
+        "state",
+        "latency_ms_extra",
+        "latency_prob",
+        "fail_rate",
+        "broken_stream_drop_after",
+        "protocol_mode",
+        "processing_delay_ms",
+        "max_connections",
+        "slow_connect_delay_ms",
+        "timeout_response",
+        "huge_response",
+        "truncated_response",
+        "slow_header_delay_ms",
+        "invalid_json_response",
     }
     for k, v in body.items():
         if k in valid_fields:
@@ -336,7 +385,9 @@ async def admin_set_state_full(request):
     STATE["state_change_at"] = now()
     if "max_connections" in body:
         await CONN_MGR.set_limit(body["max_connections"])
-    return web.json_response({"ok": True, "applied": {k: STATE[k] for k in body.keys() if k in valid_fields}})
+    return web.json_response(
+        {"ok": True, "applied": {k: STATE[k] for k in body.keys() if k in valid_fields}}
+    )
 
 
 # 2026-08-06: scripted-response admin endpoint. When `scripted_content` is set
@@ -355,13 +406,15 @@ async def admin_set_scripted_response(request):
     if "model_override" in body and isinstance(body["model_override"], str):
         STATE["scripted_model_override"] = body["model_override"]
     STATE["state_change_at"] = now()
-    return web.json_response({
-        "ok": True,
-        "applied": {
-            "scripted_content": STATE["scripted_content"],
-            "scripted_model_override": STATE["scripted_model_override"],
-        },
-    })
+    return web.json_response(
+        {
+            "ok": True,
+            "applied": {
+                "scripted_content": STATE["scripted_content"],
+                "scripted_model_override": STATE["scripted_model_override"],
+            },
+        }
+    )
 
 
 # ── Business endpoints ─────────────────────────────────────────────────────
@@ -508,7 +561,9 @@ async def _do_chat_completions(request):
     protocol = STATE.get("protocol_mode", "chat")
 
     if STATE["invalid_json_response"]:
-        return web.Response(status=200, body=b"{invalid-json", content_type="application/json")
+        return web.Response(
+            status=200, body=b"{invalid-json", content_type="application/json"
+        )
 
     if STATE["truncated_response"] and not body.get("stream"):
         return web.Response(
@@ -531,6 +586,30 @@ async def _do_chat_completions(request):
         )
         await resp.prepare(request)
 
+        # 2026-08-14: schedule mid-stream disconnect (one-shot per request).
+        # When `disconnect_after_ms > 0`, schedule a task that forcibly closes
+        # the TCP transport N ms from now — modelling a supplier that dies
+        # mid-response (gateway sees RST / EOF after partial body). Used by
+        # S27_streaming_recovery_after_disconnect.
+        if STATE["disconnect_after_ms"] > 0 and not STATE["disconnect_after_consumed"]:
+            STATE["disconnect_after_consumed"] = True
+            ms = int(STATE["disconnect_after_ms"])
+
+            async def _disconnect_after():
+                try:
+                    await asyncio.sleep(ms / 1000.0)
+                    # Force-close the TCP transport (RST) so gateway's
+                    # read loop sees EOF mid-stream rather than a graceful EOF.
+                    tr = request.transport
+                    if tr is not None and not tr.is_closing():
+                        tr.close()
+                except Exception:
+                    pass
+
+            # schedule but don't await — the write loop continues so we send
+            # at least one chunk before the socket dies.
+            asyncio.create_task(_disconnect_after())
+
         # broken_stream/truncated_response: write a prefix, then close early
         if s == "broken_stream" or STATE["truncated_response"]:
             STATE["broken_stream_drop_after"] = min(5, len(reply))
@@ -541,15 +620,22 @@ async def _do_chat_completions(request):
                 await response_break(resp)
                 return resp
             chunk = format_chunk(cid, model, ch, ts, protocol, index=0)
-            await resp.write(b"data: " + json.dumps(chunk).encode() + b"\n\n")
+            try:
+                await resp.write(b"data: " + json.dumps(chunk).encode() + b"\n\n")
+            except (ConnectionResetError, BrokenPipeError):
+                # disconnect_after_ms timer already fired — stop sending.
+                return resp
             sent += 1
 
         # Final chunk
         chunk = format_chunk_final(cid, model, ts, protocol, index=0)
-        await resp.write(b"data: " + json.dumps(chunk).encode() + b"\n\n")
-        await resp.write(b"data: [DONE]\n\n")
-        await resp.write_eof()
-        REQUESTS_2XX += 1
+        try:
+            await resp.write(b"data: " + json.dumps(chunk).encode() + b"\n\n")
+            await resp.write(b"data: [DONE]\n\n")
+            await resp.write_eof()
+            REQUESTS_2XX += 1
+        except (ConnectionResetError, BrokenPipeError):
+            return resp
         return resp
 
     REQUESTS_2XX += 1
@@ -559,7 +645,9 @@ async def _do_chat_completions(request):
     )
 
 
-def format_response(cid: str, model: str, content: str, ts: int, protocol: str, **kwargs):
+def format_response(
+    cid: str, model: str, content: str, ts: int, protocol: str, **kwargs
+):
     """Format response based on protocol mode."""
     usage = {"prompt_tokens": 50, "completion_tokens": 20, "total_tokens": 70}
     if protocol == "response":
@@ -644,7 +732,9 @@ def format_chunk_final(cid: str, model: str, ts: int, protocol: str, **kwargs):
             "object": "chat.completion.chunk",
             "created": ts,
             "model": model,
-            "choices": [{"index": kwargs.get("index", 0), "delta": {}, "finish_reason": "stop"}],
+            "choices": [
+                {"index": kwargs.get("index", 0), "delta": {}, "finish_reason": "stop"}
+            ],
         }
 
 
@@ -716,6 +806,38 @@ def build_app():
     app.router.add_post("/admin/fault-mode", admin_set_fault_mode)
     app.router.add_post("/admin/state-full", admin_set_state_full)
     app.router.add_post("/admin/scripted-response", admin_set_scripted_response)
+    # 2026-08-14: flash-disconnect control endpoints (S24-S29)
+    app.router.add_post("/admin/kill-after", admin_set_kill_after)
+
+    async def _kill_watchdog_loop():
+        """Background task: every 200ms, if STATE['kill_after_sec'] > 0 and
+        that many seconds have elapsed since kill_after_set_at, os._exit(0)
+        to simulate a supplier process dying (no graceful aiohttp shutdown —
+        socket RST / FIN is the goal, observable by gateway).
+        """
+        try:
+            while True:
+                await asyncio.sleep(0.2)
+                ka = STATE.get("kill_after_sec", 0)
+                ka_at = STATE.get("kill_after_set_at", 0.0)
+                if ka > 0 and ka_at > 0 and (now() - ka_at) >= ka:
+                    print(
+                        f"[{ARGS.group}/{ARGS.instance}] watchdog: kill_after_sec={ka} reached, exiting",
+                        file=sys.stderr,
+                        flush=True,
+                    )
+                    os._exit(0)
+        except asyncio.CancelledError:
+            pass
+
+    async def _start_watchdog(_app):
+        # on_startup hook must itself be a coroutine factory; inside we
+        # spawn the actual long-lived loop as a task. Using `append` directly
+        # with the loop function blocks the startup signal (aiohttp waits
+        # forever for the loop coroutine to return).
+        asyncio.create_task(_kill_watchdog_loop())
+
+    app.on_startup.append(_start_watchdog)
     return app
 
 
