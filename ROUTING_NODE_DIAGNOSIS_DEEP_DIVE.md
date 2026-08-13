@@ -54,7 +54,7 @@
 
 **可能原因**:
 1. **数据库连接短暂中断** (可能性 ⭐⭐⭐⭐)
-   - PostgreSQL (172.16.2.210:4100) 网络抖动
+   - PostgreSQL 连接网络抖动
    - 连接池耗尽
    - 查询超时
 
@@ -121,16 +121,14 @@ LRUMirrorSoftTTL: 30 * time.Second  // 30秒过期
 ### 诊断步骤 1: 验证数据库连接稳定性
 
 ```bash
-# 在 154 服务器执行
-ssh root@8.136.114.154 -p 25022 << 'SCRIPT'
-# 测试数据库连接 (连续 60 秒)
+# 先运行 env-injector inject aliyun-gateway-154，然后使用服务环境中的连接串。
+# 测试数据库连接（连续 60 秒）
 for i in {1..60}; do
-  PGPASSWORD='your_password' psql -h 172.16.2.210 -p 4100 -U llm_gateway -d llm_gateway \
+  psql "$LLM_GATEWAY_DATABASE_URL" \
     -c "SELECT COUNT(*) FROM routing_plans WHERE model LIKE 'gpt-5.6%';" \
     2>&1 | grep -E '(count|error|timeout)'
   sleep 1
 done
-SCRIPT
 ```
 
 **预期结果**:
@@ -142,9 +140,8 @@ SCRIPT
 ### 诊断步骤 2: 检查路由计划数据完整性
 
 ```bash
-# 查询当前路由计划
-ssh root@8.136.114.154 -p 25022 << 'SCRIPT'
-PGPASSWORD='your_password' psql -h 172.16.2.210 -p 4100 -U llm_gateway -d llm_gateway -c "
+# 查询当前路由计划（使用由 env-injector 注入的连接串）
+psql "$LLM_GATEWAY_DATABASE_URL" -c "
 SELECT 
   model, 
   COUNT(*) as plan_count,
@@ -154,7 +151,6 @@ FROM routing_plans
 WHERE model IN ('gpt-5.6-luna', 'gpt-5.6-terra', 'gpt-5.6-sol', 'claude-opus-5', 'glm-5.2')
 GROUP BY model;
 "
-SCRIPT
 ```
 
 **预期结果**:
@@ -166,15 +162,8 @@ SCRIPT
 ### 诊断步骤 3: 监控数据库查询性能
 
 ```bash
-# 启用 PostgreSQL 慢查询日志 (在 252 数据库服务器)
-ssh root@172.16.2.210 << 'SCRIPT'
-# 设置慢查询阈值为 100ms
-psql -U postgres -c "ALTER SYSTEM SET log_min_duration_statement = 100;"
-psql -U postgres -c "SELECT pg_reload_conf();"
-
-# 查看最近的慢查询
-tail -f /var/log/postgresql/postgresql-17-main.log | grep "duration:"
-SCRIPT
+# 生产慢查询配置属于数据库管理员操作，需要独立变更单和人工确认。
+# 在只读诊断中，查询现有慢查询指标或数据库日志聚合。
 ```
 
 **预期结果**:
@@ -186,8 +175,7 @@ SCRIPT
 ### 诊断步骤 4: 检查连接池状态
 
 ```bash
-# 查看网关连接池统计
-ssh root@8.136.114.154 -p 25022 "journalctl -u llm-gateway-go --since '1 hour ago' | grep -E '(pgx|pool|connection)' | tail -50"
+# 使用受管部署记录或 service 日志查询网关连接池统计。
 ```
 
 **关注指标**:
