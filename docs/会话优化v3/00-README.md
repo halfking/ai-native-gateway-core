@@ -9,7 +9,7 @@
 v3 将会话优化定义为一条可回放的语义管线，而不是一个单独的“摘要接口”：
 
 ```text
-request_logs / gateway.session_turns
+request_logs / public.session_turns
         │
         ▼
 规范化 turn、脱敏、输入指纹
@@ -59,7 +59,7 @@ request_logs / gateway.session_turns
 
 ## 4. 与既有方案的关系
 
-- V2 的正式存储表是 `gateway.sessions`、`gateway.session_turns`、`gateway.session_bodies`、`gateway.session_turn_logs`；v3 消费这些事实，不替换 turn/body writer。
+- V2 的当前正式存储表是 `public.sessions`、`public.session_turns`、`public.session_bodies`、`public.session_turn_logs`；migration 513 清理重复的 `gateway.*` schema，并在 `public.session_turns` 增加 T0-T9 队列时间戳。v3 消费这些事实，不替换 turn/body writer。
 - 根仓 `docs/拆分/23–31` 定义了 session ownership、事件 envelope、租户隔离、RLS 和迁移门禁；v3 遵守这些边界。
 - `request_logs` 仍是当前已落库正文事实源；V2 是否完成 ownership 切换，以真实 wiring 和门禁为准。
 - `session_clusters`、`session_cluster_members`、`session_titles`、`session_state_snapshots` 和现有摘要/聚类 API 是可复用的 CURRENT/CURRENT-PARTIAL 能力，但不能直接当作完整的 v3 语义事实层。

@@ -2,6 +2,8 @@
 
 > 本文所有表均为 `TARGET` 草案，未创建 migration、未接入 writer。正式 migration 编号、部署顺序和 down 必须在实施阶段评审后确定。
 
+> **2026-08-14 状态声明**：本文件只描述 V3.0 Semantic Track 的目标模型；当前仓库未发现 `semantic_*` migration、worker wiring 或正式 semantic API。不得把本文 SQL 草案当作已存在 schema。V3.2 的 510/511 migration 属于可观测性轨道，不能替代本文件的 semantic migration。
+
 ## 1. 设计约束
 
 - 所有表有 `tenant_id`；派生结果不能脱离 tenant/session scope；
