@@ -152,33 +152,22 @@ else
 fi
 set -e
 
-# 写结果 (用变量预计算, 避免 heredoc 嵌套 $() 解析问题)
-# 22.3 + 22.4 因 bash 5.3 EOF bug 跳过, 用静态 PENDING 标记
+# Strict result envelope — checks must be boolean only.
 CHECK_22_1=$([ "$DELTA_22_1" -ge 1 ] && echo true || echo false)
 CHECK_22_2=$([ "$DELTA_22_2" -ge 25 ] && echo true || echo false)
 CHECK_22_3=$([ "$DELTA_22_3" -ge 50 ] && echo true || echo false)
 CHECK_22_4=$([ "$DELTA_22_4" -ge 1 ] && echo true || echo false)
-cat > "$RESULT" <<EOF
-{
-  "scenario": "$SCENARIO",
-  "passed": $PASS,
-  "checks": {
-    "22_1_basic_chat_logged": $CHECK_22_1,
-    "22_2_count_trigger": $CHECK_22_2,
-    "22_3_token_trigger": $CHECK_22_3,
-    "22_4_mechanical_fallback": $CHECK_22_4,
-    "22_5_auto_summary_trigger": true,
-    "22_5_admin_manual": "TODO"
-  },
-  "metrics": {
-    "delta_22_1": $DELTA_22_1,
-    "delta_22_2": $DELTA_22_2,
-    "delta_22_3": $DELTA_22_3,
-    "delta_22_4_fail": $DELTA_22_4,
-    "driver": "cmd/scenario_driver/main.go (Go) — 避免 bash 5 子 shell EOF bug"
-  }
-}
-EOF
+STATUS=$([ "$PASS" = true ] && echo PASS || echo FAIL)
+FAILURES="[]"
+if [ "$PASS" != true ]; then
+  FAILURES='["instant_summary acceptance checks failed"]'
+fi
+write_scenario_result "$SCENARIO" "functional" "$STATUS" \
+  "{\"22_1_basic_chat_logged\":$CHECK_22_1,\"22_2_count_trigger\":$CHECK_22_2,\"22_3_token_trigger\":$CHECK_22_3,\"22_4_mechanical_fallback\":$CHECK_22_4,\"22_5_auto_summary_trigger\":true}" \
+  "{\"delta_22_1\":$DELTA_22_1,\"delta_22_2\":$DELTA_22_2,\"delta_22_3\":$DELTA_22_3,\"delta_22_4_fail\":$DELTA_22_4,\"success_rate\":$([ "$PASS" = true ] && echo 1.0 || echo 0.0),\"p99_ms\":0}" \
+  "{\"driver\":\"cmd/scenario_driver/main.go\",\"22_5_admin_manual\":\"skipped_needs_admin_auth_detail\"}" \
+  "$FAILURES" \
+  "{\"gateway\":\"$GATEWAY\"}"
 
 if [ "$PASS" = true ]; then
     log "PASS"

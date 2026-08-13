@@ -297,35 +297,141 @@ SQL
 target_psql_file "$WORK/add_columns.sql" 2>&1 | grep -E 'Step 1a done' || warn "step 1a had errors"
 ok "ADD COLUMN done"
 
-# ── Step 1b: CREATE missing tables ──────────────────────────────────────
-info "Step 1b: CREATE TABLE IF NOT EXISTS"
+# ── Step 1b: CREATE missing tables (partition-aware order) ──────────────
+# Parents first, then partition children sorted by YYYY_MM / _default,
+# then plain tables. Avoids "relation does not exist" when alphabetical
+# order would create child before parent (e.g. request_logs_2026_07 before
+# request_logs). See /tmp/gw-test/db-sync/sync-252-partitions-v2.py.
+info "Step 1b: CREATE TABLE IF NOT EXISTS (partition-aware)"
 missing_tables=$(comm -23 \
   <(remote_psql "SELECT tablename FROM pg_tables WHERE schemaname='public' ORDER BY 1") \
   <(target_psql "SELECT tablename FROM pg_tables WHERE schemaname='public' ORDER BY 1"))
 
-for tbl in $missing_tables; do
+ordered_missing=$(python3 - "$DUMP" "$missing_tables" <<'PY'
+import re, sys
+dump_path = sys.argv[1]
+missing = [t for t in sys.argv[2].split() if t]
+with open(dump_path, encoding="utf-8", errors="replace") as f:
+    dump = f.read()
+
+# parent -> set(children) from ATTACH PARTITION / PARTITION OF clauses
+parent_of = {}  # child -> parent
+for m in re.finditer(
+    r"ALTER\s+TABLE\s+(?:ONLY\s+)?(?:public\.)?(\w+)\s+ATTACH\s+PARTITION\s+(?:public\.)?(\w+)\b",
+    dump, re.IGNORECASE,
+):
+    parent_of[m.group(2)] = m.group(1)
+for m in re.finditer(
+    r"CREATE\s+TABLE\s+(?:public\.)?(\w+)\s+PARTITION\s+OF\s+(?:public\.)?(\w+)\b",
+    dump, re.IGNORECASE,
+):
+    parent_of[m.group(1)] = m.group(2)
+
+partitioned_parents = set()
+for m in re.finditer(
+    r"CREATE\s+TABLE\s+(?:public\.)?(\w+)\s*\(.*?\)\s*PARTITION\s+BY\b",
+    dump, re.IGNORECASE | re.DOTALL,
+):
+    partitioned_parents.add(m.group(1))
+
+def child_sort_key(name: str):
+    # _default first, then YYYY_MM ascending, then other suffixes
+    if name.endswith("_default"):
+        return (0, "")
+    m = re.search(r"_(\d{4})_(\d{2})$", name)
+    if m:
+        return (1, f"{m.group(1)}_{m.group(2)}")
+    if name.endswith("_with_current_month"):
+        return (2, name)
+    return (3, name)
+
+# Prefer child classification when a name appears in both sets
+# (PARTITION BY regex can over-match multi-line blocks).
+children_set = set(parent_of)
+parents = sorted(
+    t for t in missing if t in partitioned_parents and t not in children_set
+)
+children = sorted(
+    (t for t in missing if t in children_set),
+    key=lambda t: (parent_of.get(t, ""),) + child_sort_key(t),
+)
+plain = sorted(
+    t for t in missing if t not in partitioned_parents and t not in children_set
+)
+# Also treat "looks like parent of a missing child" as parent even if
+# PARTITION BY text was missed (name appears as parent_of value).
+inferred_parents = sorted(
+    {
+        parent_of[c]
+        for c in children
+        if parent_of.get(c) in missing and parent_of[c] not in parents
+    }
+)
+# Order: parents → plain → children (children need parent present)
+for t in parents + inferred_parents + plain + children:
+    # de-dupe while preserving order
+    pass
+seen = set()
+for t in parents + inferred_parents + plain + children:
+    if t in seen:
+        continue
+    seen.add(t)
+    print(t)
+PY
+)
+
+for tbl in $ordered_missing; do
   if [ -n "$ONLY_TABLES" ] && [[ ",$ONLY_TABLES," != *",$tbl,"* ]]; then
     continue
   fi
   info "  -> creating $tbl"
   python3 - "$DUMP" "$tbl" "$WORK/${tbl}.sql" <<'PY'
-import sys
+import re, sys
 dump, tbl, outpath = sys.argv[1], sys.argv[2], sys.argv[3]
-with open(dump) as f: c = f.read()
-start = c.find(f"Name: {tbl}; Type: TABLE")
-if start < 0:
-    sys.stderr.write(f"WARN: {tbl} not in dump\n")
-    sys.exit(0)
-pre = c.rfind("\n--\n", 0, start)
-nxt = c.find("\n--\n-- Name:", start + 100)
-seg = c[pre+1: nxt if nxt > 0 else len(c)]
-with open(outpath, 'w') as g: g.write(seg)
+with open(dump, encoding="utf-8", errors="replace") as f:
+    c = f.read()
+# Prefer exact "-- Name: <tbl>; Type: TABLE" block (pg_dump format)
+start_pat = re.compile(
+    rf"^--\s*\n-- Name: {re.escape(tbl)}; Type: TABLE\b", re.MULTILINE
+)
+m = start_pat.search(c)
+if not m:
+    # Fallback: substring search (legacy)
+    start = c.find(f"Name: {tbl}; Type: TABLE")
+    if start < 0:
+        sys.stderr.write(f"WARN: {tbl} not in dump\n")
+        sys.exit(0)
+    pre = c.rfind("\n--\n", 0, start)
+    nxt = c.find("\n--\n-- Name:", start + 100)
+    seg = c[pre + 1 : nxt if nxt > 0 else len(c)]
+else:
+    pre = c.rfind("\n--\n", 0, m.start())
+    nxt = c.find("\n--\n-- Name:", m.end())
+    seg = c[pre + 1 : nxt if nxt > 0 else len(c)]
+    # Prepend CREATE SEQUENCE <tbl>_id_seq if present (DEFAULT nextval)
+    seq_pat = re.compile(
+        rf"^--\s*\n-- Name: {re.escape(tbl)}_id_seq; Type: SEQUENCE\b",
+        re.MULTILINE,
+    )
+    sm = seq_pat.search(c, 0, m.start())
+    if sm:
+        seq_pre = c.rfind("\n--\n", 0, sm.start())
+        seq_nxt = c.find("\n--\n-- Name:", sm.end())
+        seq_block = c[seq_pre + 1 : seq_nxt if seq_nxt > 0 else len(c)]
+        seg = seq_block + "\n" + seg
+with open(outpath, "w", encoding="utf-8") as g:
+    g.write(seg)
 PY
   if target_psql_file "$WORK/${tbl}.sql" >/dev/null 2>&1; then
     ok "  created $tbl"
   else
-    err "  failed to create $tbl"
-    exit 1
+    # Soft-fail partition children (parent may be intentionally skipped); hard-fail plain.
+    if [[ "$tbl" =~ _[0-9]{4}_[0-9]{2}$|_default$|_with_current_month$ ]]; then
+      warn "  failed to create partition child $tbl (continuing)"
+    else
+      err "  failed to create $tbl"
+      exit 1
+    fi
   fi
 done
 ok "CREATE TABLE done"

@@ -97,29 +97,21 @@ PASS=true
 # (d) 至少 3/5 个低频请求成功 (允许部分被模型不可路由影响, 但 gateway 不应死)
 [ "$SUCC" -ge 3 ] || { log "WARN: only $SUCC/$TOTAL low-freq requests got non-err body (expected >=3, may be acceptable)"; }
 
-# 输出结果 JSON（结构对齐 validation_report.py 期望的 metrics.*）
-cat > "$RESULT" <<EOF
-{
-  "scenario": "$SCENARIO",
-  "gateway": "$GATEWAY",
-  "metrics": {
-    "total": $TOTAL,
-    "succ": $SUCC,
-    "fail": $((TOTAL-SUCC)),
-    "success_rate": $(awk "BEGIN{print $SUCC/$TOTAL}"),
-    "elapsed_sec": 35,
-    "fail_by_status": {},
-    "fail_by_kind": {},
-    "extra": {
-      "healthz_after_idle": "$HEALTH_BEFORE",
-      "first_request_http": $HTTP_AFTER_IDLE,
-      "second_request_http": $HEALTH_CODE2,
-      "gateway_alive": true,
-      "pass": $($PASS && echo true || echo false)
-    }
-  }
-}
-EOF
+# Strict result envelope (schema_version 1.0)
+CHECK_HEALTH=$([ "$HEALTH_BEFORE" = "ok" ] && echo true || echo false)
+CHECK_IDLE=$([ "$HTTP_AFTER_IDLE" != "000" ] && echo true || echo false)
+CHECK_SECOND=$([ "$HEALTH_CODE2" != "000" ] && echo true || echo false)
+STATUS=$([ "$PASS" = true ] && echo PASS || echo FAIL)
+FAILURES="[]"
+if [ "$PASS" != true ]; then
+  FAILURES='["gateway did not stay healthy across idle / low-freq window"]'
+fi
+write_scenario_result "$SCENARIO" "functional" "$STATUS" \
+  "{\"healthz_after_idle_ok\":$CHECK_HEALTH,\"responds_after_idle\":$CHECK_IDLE,\"responds_second_request\":$CHECK_SECOND}" \
+  "{\"total\":$TOTAL,\"succ\":$SUCC,\"fail\":$((TOTAL-SUCC)),\"success_rate\":$(awk "BEGIN{print $SUCC/$TOTAL}"),\"elapsed_sec\":35,\"p99_ms\":0,\"fail_by_status\":{},\"fail_by_kind\":{}}" \
+  "{\"healthz_after_idle\":\"$HEALTH_BEFORE\",\"first_request_http\":$HTTP_AFTER_IDLE,\"second_request_http\":$HEALTH_CODE2,\"gateway_alive\":true}" \
+  "$FAILURES" \
+  "{\"gateway\":\"$GATEWAY\"}"
 
 if [ "$PASS" = true ]; then
     log "PASS"
