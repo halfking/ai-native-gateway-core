@@ -395,7 +395,7 @@ type LiveStreamSSEHub struct {
 	// queue snapshots for the queue-perspective panel. Injected from
 	// cmd/gateway (which owns the dispatch.Pipeline) via SetQueueSnapshotProvider
 	// to avoid an admin → dispatch import cycle. nil disables queue_snapshot pushes.
-	queueSnapshotMu sync.RWMutex
+	queueSnapshotMu       sync.RWMutex
 	queueSnapshotProvider func() *LiveQueueSnapshot
 
 	// nodeStatusProvider (2026-08-13, V3.2 BE-A4) supplies the node status
@@ -422,16 +422,23 @@ func (h *LiveStreamSSEHub) SetQueueSnapshotProvider(p func() *LiveQueueSnapshot)
 	h.queueSnapshotMu.Unlock()
 }
 
-// fanOutQueueSnapshot reads the current dispatch queue snapshot and broadcasts
-// it as a queue_snapshot envelope. No-op when no provider is wired.
-func (h *LiveStreamSSEHub) fanOutQueueSnapshot() {
+// queueSnapshot reads the current queue projection. It is shared by the
+// periodic fan-out and the initial SSE envelope so newly connected dashboards
+// do not wait for the next ticker cycle.
+func (h *LiveStreamSSEHub) queueSnapshot() *LiveQueueSnapshot {
 	h.queueSnapshotMu.RLock()
 	provider := h.queueSnapshotProvider
 	h.queueSnapshotMu.RUnlock()
 	if provider == nil {
-		return
+		return nil
 	}
-	snap := provider()
+	return provider()
+}
+
+// fanOutQueueSnapshot reads the current dispatch queue snapshot and broadcasts
+// it as a queue_snapshot envelope. No-op when no provider is wired.
+func (h *LiveStreamSSEHub) fanOutQueueSnapshot() {
+	snap := h.queueSnapshot()
 	if snap == nil {
 		return
 	}
@@ -451,16 +458,20 @@ func (h *LiveStreamSSEHub) SetNodeStatusProvider(p func() []LiveNodeStatus) {
 	h.nodeStatusMu.Unlock()
 }
 
-// fanOutNodeUpdate reads the current node status matrix and broadcasts it as
-// a node_update envelope. No-op when no provider is wired.
-func (h *LiveStreamSSEHub) fanOutNodeUpdate() {
+func (h *LiveStreamSSEHub) nodeStatusSnapshot() []LiveNodeStatus {
 	h.nodeStatusMu.RLock()
 	provider := h.nodeStatusProvider
 	h.nodeStatusMu.RUnlock()
 	if provider == nil {
-		return
+		return nil
 	}
-	nodes := provider()
+	return provider()
+}
+
+// fanOutNodeUpdate reads the current node status matrix and broadcasts it as
+// a node_update envelope. No-op when no provider is wired.
+func (h *LiveStreamSSEHub) fanOutNodeUpdate() {
+	nodes := h.nodeStatusSnapshot()
 	if nodes == nil {
 		return
 	}
@@ -1701,6 +1712,8 @@ func (h *LiveStreamSSEHub) HandleLiveStream(w http.ResponseWriter, r *http.Reque
 			Requests:  items,
 			Snapshot:  snapshot,
 			Health:    initialHealth,
+			Queue:     h.queueSnapshot(),
+			Nodes:     h.nodeStatusSnapshot(),
 		})
 		if mErr == nil {
 			h.writeEvent(client, data)
@@ -1938,7 +1951,7 @@ func (h *LiveStreamSSEHub) LiveRequestFromTelemetry(
 	// 2026-07-27: 优先用入参 canonicalName (来自 request_logs_hot.canonical_model
 	// 字段),省掉一次 DB 查询。如果入参空 (canonical_id 没匹配),仍走原来的
 	// CanonicalNameFor fallback。
-	canonicalName := canonicalNameIn  // 2026-07-27: 入参直接用 (跳过 DB JOIN)
+	canonicalName := canonicalNameIn // 2026-07-27: 入参直接用 (跳过 DB JOIN)
 	if canonicalName == "" && canonicalID > 0 {
 		canonicalName = h.CanonicalNameFor(ctx, canonicalID)
 	}

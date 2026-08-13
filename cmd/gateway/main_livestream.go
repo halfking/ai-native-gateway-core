@@ -12,9 +12,12 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
+	"sync"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/kaixuan/llm-gateway-go/admin"
+	"github.com/kaixuan/llm-gateway-go/domains/dispatch"
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/observability/telemetry"
 	"github.com/kaixuan/llm-gateway-go/domains/routeincident"
 )
@@ -233,4 +236,154 @@ func newIncidentPublishFn(hub *admin.LiveStreamSSEHub) func(*routeincident.Trans
 		}
 		hub.PublishIncidentUpdate(incidentUpdateFromResult(r))
 	}
+}
+
+// liveQueueSnapshotProvider adapts the dispatch package's queue snapshot to
+// the admin SSE wire type. Snapshot acquires the pipeline's own locks, so the
+// provider is safe to call from the hub ticker without blocking dispatch work.
+func liveQueueSnapshotProvider(p *dispatch.Pipeline) *admin.LiveQueueSnapshot {
+	if p == nil {
+		return liveQueueSnapshotFromLanes(nil, nil, dispatch.IsDispatchEnabled(), false)
+	}
+	models, credentials := p.Snapshot()
+	return liveQueueSnapshotFromLanes(models, credentials, dispatch.IsDispatchEnabled(), true)
+}
+
+func liveQueueSnapshotFromLanes(models, credentials []dispatch.QueueSnapshot, enabled, wired bool) *admin.LiveQueueSnapshot {
+	modelLanes := make([]admin.LiveQueueLaneSnapshot, 0, len(models))
+	for _, lane := range models {
+		modelLanes = append(modelLanes, admin.LiveQueueLaneSnapshot{
+			Model: lane.Model,
+			Depth: lane.Depth,
+		})
+	}
+	credentialLanes := make([]admin.LiveQueueLaneSnapshot, 0, len(credentials))
+	for _, lane := range credentials {
+		credentialLanes = append(credentialLanes, admin.LiveQueueLaneSnapshot{
+			Credential: lane.Credential,
+			Mode:       lane.Mode,
+			Depth:      lane.Depth,
+		})
+	}
+	return &admin.LiveQueueSnapshot{
+		Enabled:     enabled,
+		Wired:       wired,
+		Models:      modelLanes,
+		Credentials: credentialLanes,
+	}
+}
+
+// liveNodeStatusProvider reads the stable credential/provider projection used
+// by the node matrix. Runtime-only fields are intentionally left at their
+// zero values until a non-blocking runtime source is available.
+func liveNodeStatusProvider(ctx context.Context, pool *pgxpool.Pool) ([]admin.LiveNodeStatus, error) {
+	if pool == nil {
+		return []admin.LiveNodeStatus{}, nil
+	}
+	queryCtx, cancel := context.WithTimeout(ctx, 1500*time.Millisecond)
+	defer cancel()
+	rows, err := pool.Query(queryCtx, `
+		SELECT c.id, c.provider_id,
+		       COALESCE(NULLIF(p.display_name, ''), NULLIF(p.catalog_code, ''), p.code, ''),
+		       COALESCE(c.circuit_state, ''),
+		       COALESCE(c.availability_state, ''),
+		       COALESCE(c.quota_state, ''),
+		       COALESCE(c.health_status, ''),
+		       COALESCE(c.manual_disabled, FALSE)
+		FROM credentials c
+		LEFT JOIN providers p ON p.id = c.provider_id
+		ORDER BY c.id`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	out := make([]admin.LiveNodeStatus, 0, 16)
+	for rows.Next() {
+		var status admin.LiveNodeStatus
+		if err := rows.Scan(
+			&status.CredentialID,
+			&status.ProviderID,
+			&status.ProviderCode,
+			&status.CircuitState,
+			&status.AvailabilityState,
+			&status.QuotaState,
+			&status.HealthStatus,
+			&status.ManualDisabled,
+		); err != nil {
+			return nil, err
+		}
+		out = append(out, status)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// liveNodeStatusCache refreshes the DB projection off the SSE goroutine and
+// retains the last good snapshot during transient database failures.
+type liveNodeStatusCache struct {
+	mu          sync.RWMutex
+	snapshot    []admin.LiveNodeStatus
+	lastErrorAt time.Time
+}
+
+func (c *liveNodeStatusCache) get() []admin.LiveNodeStatus {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return append([]admin.LiveNodeStatus{}, c.snapshot...)
+}
+
+func (c *liveNodeStatusCache) refresh(ctx context.Context, pool *pgxpool.Pool) error {
+	return c.refreshWith(func(ctx context.Context) ([]admin.LiveNodeStatus, error) {
+		return liveNodeStatusProvider(ctx, pool)
+	}, ctx)
+}
+
+func (c *liveNodeStatusCache) refreshWith(fetch func(context.Context) ([]admin.LiveNodeStatus, error), ctx context.Context) error {
+	snapshot, err := fetch(ctx)
+	if err != nil {
+		c.mu.Lock()
+		shouldLog := time.Since(c.lastErrorAt) >= 30*time.Second
+		if shouldLog {
+			c.lastErrorAt = time.Now()
+		}
+		c.mu.Unlock()
+		if shouldLog {
+			slog.Warn("live stream: node status refresh failed", "error", err)
+		}
+		return err
+	}
+	c.mu.Lock()
+	c.snapshot = append(c.snapshot[:0], snapshot...)
+	c.mu.Unlock()
+	return nil
+}
+
+func startLiveNodeStatusRefresh(pool *pgxpool.Pool, interval time.Duration) (*liveNodeStatusCache, func()) {
+	cache := &liveNodeStatusCache{snapshot: make([]admin.LiveNodeStatus, 0)}
+	if pool == nil {
+		return cache, func() {}
+	}
+	if interval <= 0 {
+		interval = 2 * time.Second
+	}
+	stopCh := make(chan struct{})
+	var stopOnce sync.Once
+	go func() {
+		refresh := func() { _ = cache.refresh(context.Background(), pool) }
+		refresh()
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				refresh()
+			case <-stopCh:
+				return
+			}
+		}
+	}()
+	return cache, func() { stopOnce.Do(func() { close(stopCh) }) }
 }

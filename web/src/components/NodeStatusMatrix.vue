@@ -18,15 +18,6 @@ import { ref, computed } from 'vue'
 import { nodesRef, type LiveNodeStatus } from '../composables/liveStreamStore'
 import { authBearer } from '../store'
 
-// 2026-08-14 V3.2 (FE-A2): authBearer() returns a flat string (JWT or
-// api-key), not an object. Spread `...authBearer()` was a TypeScript error
-// in the WIP draft (vue-tsc 2698). Use a helper that wraps the bearer
-// into the headers object once.
-function authHeaders(): Record<string, string> {
-  const t = authBearer()
-  return t ? { Authorization: `Bearer ${t}` } : {}
-}
-
 const nodes = nodesRef
 
 // 选中节点的抽屉
@@ -72,7 +63,7 @@ async function testNow() {
   try {
     const resp = await fetch(`/api/admin/providers/${selectedNode.value.provider_id}/test-now`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', ...authHeaders() },
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${authBearer()}` },
     })
     if (!resp.ok) throw new Error(`HTTP ${resp.status}`)
     testResult.value = await resp.json()
@@ -95,7 +86,7 @@ async function toggleEnable() {
   try {
     const resp = await fetch(`/api/admin/providers/${selectedNode.value.provider_id}/enable`, {
       method: 'PATCH',
-      headers: { 'Content-Type': 'application/json', ...authHeaders() },
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${authBearer()}` },
       body: JSON.stringify({ enabled: target }),
     })
     if (!resp.ok) throw new Error(`HTTP ${resp.status}`)
@@ -213,7 +204,7 @@ const hasNodes = computed(() => nodes.value.length > 0)
 .node-matrix {
   background: var(--kx-surface);
   border: 1px solid var(--kx-border);
-  border-radius: var(--kx-radius-md);
+  border-radius: var(--kx-radius-md, 8px);
   padding: 12px 16px;
   margin-bottom: 12px;
 }
@@ -234,7 +225,7 @@ const hasNodes = computed(() => nodes.value.length > 0)
 }
 .nm-card {
   border: 1px solid var(--kx-border);
-  border-radius: var(--kx-radius-sm);
+  border-radius: var(--kx-radius-sm, 6px);
   padding: 10px;
   cursor: pointer;
   transition: transform 0.15s ease, box-shadow 0.15s ease;
@@ -337,7 +328,7 @@ const hasNodes = computed(() => nodes.value.length > 0)
   flex: 1;
   padding: 8px 12px;
   border: 1px solid var(--kx-border);
-  border-radius: var(--kx-radius-sm);
+  border-radius: var(--kx-radius-sm, 6px);
   background: var(--kx-surface);
   color: var(--kx-text);
   cursor: pointer;
@@ -345,22 +336,22 @@ const hasNodes = computed(() => nodes.value.length > 0)
   transition: opacity 0.15s ease;
 }
 .nm-btn:disabled { opacity: 0.5; cursor: not-allowed; }
-.nm-btn--primary { background: var(--kx-primary); color: var(--kx-text-on-primary); border-color: var(--kx-primary); }
-.nm-btn--success { background: var(--kx-success); color: var(--kx-text-on-primary); border-color: var(--kx-success); }
-.nm-btn--danger { background: var(--kx-danger); color: var(--kx-text-on-primary); border-color: var(--kx-danger); }
+.nm-btn--primary { background: var(--kx-primary); color: var(--kx-text-on-primary, #fff); border-color: var(--kx-primary); }
+.nm-btn--success { background: var(--kx-success); color: var(--kx-text-on-primary, #fff); border-color: var(--kx-success); }
+.nm-btn--danger { background: var(--kx-danger); color: var(--kx-text-on-primary, #fff); border-color: var(--kx-danger); }
 .nm-test-result {
   margin-top: 12px;
   padding: 10px;
-  border-radius: var(--kx-radius-sm);
+  border-radius: var(--kx-radius-sm, 6px);
   font-size: 13px;
 }
-.nm-test-result--ok { background: var(--kx-success-bg); color: var(--kx-success); }
-.nm-test-result--error { background: var(--kx-danger-bg); color: var(--kx-danger); }
+.nm-test-result--ok { background: var(--kx-success-bg, rgba(103, 194, 58, 0.12)); color: var(--kx-success); }
+.nm-test-result--error { background: var(--kx-danger-bg, rgba(245, 108, 108, 0.12)); color: var(--kx-danger); }
 .nm-op-error {
   margin-top: 12px;
   padding: 10px;
-  border-radius: var(--kx-radius-sm);
-  background: var(--kx-danger-bg);
+  border-radius: var(--kx-radius-sm, 6px);
+  background: var(--kx-danger-bg, rgba(245, 108, 108, 0.12));
   color: var(--kx-danger);
   font-size: 13px;
 }

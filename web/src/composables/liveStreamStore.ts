@@ -105,10 +105,6 @@ export interface LiveStreamHealth {
   redis_error?: string
 }
 
-// 2026-08-14 V3.2 (BE-A1): dispatch queue snapshot envelope type.
-// Mirrors the Go admin.LiveQueueSnapshot wire shape sent every 2s on
-// /api/admin/live-stream. Wired: false when the dispatch pipeline is not
-// built (pre-deployment / test mode).
 export interface LiveQueueLaneSnapshot {
   model?: string
   credential?: number
@@ -123,11 +119,6 @@ export interface LiveQueueSnapshot {
   credentials: LiveQueueLaneSnapshot[]
 }
 
-// 2026-08-14 V3.2 (BE-A4): node status matrix envelope type.
-// Mirrors the Go admin.LiveNodeStatus projection. ADR-V3-103: a projection
-// of credentialhealth/circuit/quota state — never the source of truth.
-// Sent every 2s as `node_update` envelopes; included in `initial_data` for
-// full-state clients.
 export interface LiveNodeStatus {
   credential_id: number
   provider_id?: number
@@ -143,15 +134,7 @@ export interface LiveNodeStatus {
 }
 
 export interface LiveStreamEnvelope {
-  type:
-    | 'initial_data'
-    | 'request'
-    | 'idle_marker'
-    | 'health_update'
-    | 'incident_update'
-    | 'snapshot_refresh'
-    | 'queue_snapshot'   // V3.2 BE-A1
-    | 'node_update'      // V3.2 BE-A4
+  type: 'initial_data' | 'request' | 'idle_marker' | 'health_update' | 'incident_update' | 'snapshot_refresh' | 'queue_snapshot' | 'node_update'
   ts: string
   request?: LiveRequest
   requests?: LiveRequest[]
@@ -160,8 +143,8 @@ export interface LiveStreamEnvelope {
   health?: LiveStreamHealth
   incident?: RouteIncidentUpdate
   lane_ids?: string[]
-  queue?: LiveQueueSnapshot        // V3.2 BE-A1
-  nodes?: LiveNodeStatus[]         // V3.2 BE-A4
+  queue?: LiveQueueSnapshot
+  nodes?: LiveNodeStatus[]
 }
 
 export type ConnectionState = 'idle' | 'connecting' | 'open' | 'reconnecting' | 'closed' | 'unsupported'
@@ -174,10 +157,6 @@ export const liveStreamState = reactive({
   lastEventAt: 0,
   redisHealthy: true,
   redisError: '',
-  // 2026-08-14 V3.2: queue snapshot + node status state. Both default to
-  // a "not yet wired" sentinel so the WIP components can render their
-  // empty state until the corresponding SSE provider is connected in
-  // cmd/gateway/main.go.
   queue: null as LiveQueueSnapshot | null,
   nodes: [] as LiveNodeStatus[],
 })
@@ -232,9 +211,6 @@ export const pausedRef: ComputedRef<boolean> = computed(() => liveStreamState.pa
 export const lastEventAtRef: ComputedRef<number> = computed(() => liveStreamState.lastEventAt)
 export const redisHealthyRef: ComputedRef<boolean> = computed(() => liveStreamState.redisHealthy)
 export const redisErrorRef: ComputedRef<string> = computed(() => liveStreamState.redisError)
-// 2026-08-14 V3.2: queue + node state refs consumed by the WIP
-// QueuePerspectivePanel / NodeStatusMatrix components (mounted on the
-// stream tab in DashboardViewV2).
 export const queueRef: ComputedRef<LiveQueueSnapshot | null> = computed(() => liveStreamState.queue)
 export const nodesRef: ComputedRef<LiveNodeStatus[]> = computed(() => liveStreamState.nodes)
 
@@ -416,6 +392,12 @@ function applyInitialData(items: LiveRequest[]) {
 
 function handleEnvelope(env: LiveStreamEnvelope) {
   liveStreamState.lastEventAt = Date.now()
+  if (env.queue) {
+    liveStreamState.queue = env.queue
+  }
+  if (env.nodes) {
+    liveStreamState.nodes = env.nodes
+  }
   if (env.health) {
     liveStreamState.redisHealthy = env.health.redis_connected
     liveStreamState.redisError = env.health.redis_error || ''
@@ -433,20 +415,6 @@ function handleEnvelope(env: LiveStreamEnvelope) {
     applyInitialData(env.requests)
     for (const r of env.requests) {
       if (r.ts && r.ts > maxSeenTs) maxSeenTs = r.ts
-    }
-    // 2026-08-14 V3.2: bootstrap queue + node state from initial_data so the
-    // first SSE connect returns the full snapshot rather than waiting for
-    // the next 2s tick to populate the WIP panels.
-    if (env.queue) {
-      liveStreamState.queue = {
-        enabled: env.queue.enabled,
-        wired: env.queue.wired,
-        models: env.queue.models ?? [],
-        credentials: env.queue.credentials ?? [],
-      }
-    }
-    if (env.nodes) {
-      liveStreamState.nodes = env.nodes
     }
     return
   }
@@ -514,23 +482,6 @@ function handleEnvelope(env: LiveStreamEnvelope) {
     void import('./useRouteIncidents').then((mod) => {
       mod.applyIncidentUpdate(env.incident!)
     })
-    return
-  }
-  // 2026-08-14 V3.2: queue snapshot (BE-A1) — full replacement of the
-  // queue lane array. The SSE tick is 2s so this is a low-frequency write.
-  if (env.type === 'queue_snapshot' && env.queue) {
-    liveStreamState.queue = {
-      enabled: env.queue.enabled,
-      wired: env.queue.wired,
-      models: env.queue.models ?? [],
-      credentials: env.queue.credentials ?? [],
-    }
-    return
-  }
-  // 2026-08-14 V3.2: node status matrix (BE-A4) — full replacement
-  // (admin/live_stream_sse.go always sends the full matrix on node_update).
-  if (env.type === 'node_update' && env.nodes) {
-    liveStreamState.nodes = env.nodes
     return
   }
 }
