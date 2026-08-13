@@ -65,6 +65,10 @@ type Pipeline struct {
 	wg       sync.WaitGroup // dispatcher + drainer + failover goroutines
 	started  atomic.Bool
 	shutdown atomic.Bool
+
+	// V3.1 waterfall ring (recent completed request timelines for admin UI).
+	waterfallOnce sync.Once
+	waterfall     *waterfallRing
 }
 
 // NewPipeline constructs a pipeline. Call Start before Submit.
@@ -286,9 +290,9 @@ func (p *Pipeline) complete(qr *QueuedRequest, out ForwardOutcome) {
 	// V3.1: Record T9 timestamp (response end - stream completed)
 	qr.SetT9_ResponseEnd()
 
-	// V3.1: Export stage histograms even if the caller already left —
-	// abandoned requests still carry useful latency signal.
-	recordStageMetrics(qr, out)
+	// V3.1: Export stage histograms + waterfall ring even if the caller
+	// already left — abandoned requests still carry useful latency signal.
+	p.recordStageMetrics(qr, out)
 
 	if qr.abandoned.Load() {
 		return // caller already left; drop
@@ -317,7 +321,15 @@ func resultLabel(out ForwardOutcome) string {
 
 // recordStageMetrics observes the 9 V3.1 lifecycle histograms for one completed
 // request. Missing timestamps are skipped (early complete / failover paths).
-func recordStageMetrics(qr *QueuedRequest, out ForwardOutcome) {
+// When called via Pipeline.complete, also pushes a waterfall ring sample.
+func (p *Pipeline) recordStageMetrics(qr *QueuedRequest, out ForwardOutcome) {
+	observeStageMetrics(qr, out)
+	p.recordWaterfall(qr, out)
+}
+
+// observeStageMetrics is the package-level histogram observer (testable without
+// a full Pipeline).
+func observeStageMetrics(qr *QueuedRequest, out ForwardOutcome) {
 	result := resultLabel(out)
 
 	if s, ok := stageSecondsFrom(qr.T0_ArrivedAt, qr.T6_CredDequeuedAt); ok {

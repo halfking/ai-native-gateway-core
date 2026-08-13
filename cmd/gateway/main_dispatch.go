@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"log/slog"
 	"net/http"
+	"strconv"
 
 	"github.com/kaixuan/llm-gateway-go/domains/dispatch"
 	"github.com/kaixuan/llm-gateway-go/domains/streaming/executors"
@@ -46,9 +47,9 @@ func handleDispatchQueues(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	resp := map[string]any{
-		"enabled":  dispatch.IsDispatchEnabled(),
-		"wired":    gatewayDispatchPipeline != nil,
-		"models":   []dispatch.QueueSnapshot{},
+		"enabled":     dispatch.IsDispatchEnabled(),
+		"wired":       gatewayDispatchPipeline != nil,
+		"models":      []dispatch.QueueSnapshot{},
 		"credentials": []dispatch.QueueSnapshot{},
 	}
 	if gatewayDispatchPipeline != nil {
@@ -64,4 +65,49 @@ func handleDispatchQueues(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(resp)
+}
+
+// handleDispatchWaterfall serves GET /api/admin/dispatch/waterfall — recent
+// completed request 9-stage timelines for the admin waterfall UI.
+//
+// Query:
+//   - limit (default 50, max 200)
+//   - model (optional)
+//   - credential_id (optional)
+func handleDispatchWaterfall(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	q := r.URL.Query()
+	limit := 50
+	if v := q.Get("limit"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			limit = n
+		}
+	}
+	model := q.Get("model")
+	credID := 0
+	if v := q.Get("credential_id"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			credID = n
+		}
+	}
+
+	var snap dispatch.WaterfallSnapshot
+	if gatewayDispatchPipeline != nil {
+		snap = gatewayDispatchPipeline.SnapshotWaterfall(limit, model, credID)
+	} else {
+		snap = dispatch.WaterfallSnapshot{
+			Requests: []dispatch.WaterfallRequest{},
+			Enabled:  dispatch.IsDispatchEnabled(),
+			Wired:    false,
+			BottleneckDiagnosis: dispatch.BottleneckDiagnosis{
+				Bottleneck: "none",
+				Message:    "dispatch pipeline not wired",
+			},
+		}
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(snap)
 }
