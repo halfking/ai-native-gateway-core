@@ -5,6 +5,36 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased] - 2026-08-13 (V3.2 partial)
+
+### Added
+
+- **V3.2 数据库迁移 510/511（2026-08-13）**:
+  - `sql/migrations/startup/510_request_type.{sql,down.sql}`：`request_logs_hot` / `request_logs` 加 `request_type TEXT NOT NULL DEFAULT 'main'`（CHECK 枚举 `main|title_gen|summary|sensitive_check|compression|other`），按 rule 49 §9.2 view freeze 重建 `request_logs_with_current_month`。为 V3.2 主从请求分类落地（R4）。
+  - `sql/migrations/startup/511_state_transitions_table.{sql,down.sql}`：新表 `request_state_transitions`，承载 V3.2 BE-B1 状态变更历史（route / node_switch / retry / error / state）。
+  - `sql/migrations/test/test_510_511.test.sql`：本地 PG 临时库验证脚本。
+  - 详见 `docs/db-changelog.md` 2026-08-13T15:34:22Z 条目。
+
+- **V3.2 后端 handler（未注册路由，API 暂不可达）**:
+  - `admin/live_stream_sse.go`：`LiveStreamEnvelope` 加 `Queue` / `Nodes` 段；新增 `LiveQueueSnapshot` / `LiveQueueLaneSnapshot` / `LiveNodeStatus` 类型；`LiveStreamSSEHub` 新增 `SetQueueSnapshotProvider` / `SetNodeStatusProvider` 与 `fanOutQueueSnapshot` / `fanOutNodeUpdate` 推送器（BE-A1 / BE-A4 类型层）。
+  - `admin/node_operations.go`：`handleNodeTestNow`（POST 同步探测，5s 超时兜底）+ `handleNodeToggle`（PATCH 启停 + 候选缓存失效）（BE-A2）。
+  - `admin/request_transitions.go`：`handleRequestTransitions`（BE-B1 查询 511 表）。
+  - `admin/session_online.go`：`handleSessionsOnline`（Redis SCAN）+ `handleSessionTimeline`（BE-B2）。
+  - `domains/dispatch/state_transition_logger.go`：`StateTransitionLogger` 旁路异步批量写 `request_state_transitions` + 7 天清理。**KEEP 标记**：当前为孤儿代码，无调用方，待 INT 阶段 wire 到 `route_resolve` / `streamretry`。
+  - ⚠️ 上述 handler 方法均未在 `admin/handler.go::RegisterRoutes` 注册，外部访问返 404；`cmd/gateway/main.go` 未调 `SetQueueSnapshotProvider` / `SetNodeStatusProvider`，SSE 新推送器不会被触发。详见 `docs/会话优化v3/08-执行记录.md` 2026-08-13 条目 known_gaps。
+
+### Docs
+
+- **V3.2 设计文档（4 份）**:
+  - `docs/会话优化v3/09-V3.2整合方案与代码现状对齐.md`：现状盘点 + ADR-V3-101..104（后端合流单 SSE / 复用 request_id / credentialhealth 为唯一真相 / 旁路异步）。
+  - `docs/会话优化v3/10-任务分解与并行执行计划-V3.2.md`：DB-01 + BE-A1..A4 + BE-B1/B2 + FE-A1..A3/B1 依赖图与验收标准。
+  - `docs/会话优化v3/11-子任务提示词集合-V3.2.md`：各子任务的可复用提示词模板。
+  - `docs/会话优化v3/20-统一可观测性平台需求分析.md` + `21-任务分解与并行执行计划.md` + `22-子任务提示词集合.md`：V3.2 上游需求源头（老板 2026-08-13 提出）与 5 子任务分解（与 10 号文档并行版本）。
+
+### Fixed
+
+- **执行记录与 SUMMARY 虚报修正（rule 11 §5 诚实汇报红线）**：先前 `08-执行记录.md` 声称 "admin/handler.go 注册 4 条新路由 / live_stream_sse.go envelope 扩展 / main.go wire provider 注入" 均已完成，实际**路由未注册、SSE 类型仅 admin 包内可见、main.go 未调 setter**。`SUMMARY.md` 同样将 4 个不存在的 admin API 标为已完成。本次按 rule 11 §5 修正为真实状态（详见 08-执行记录 2026-08-13 known_gaps）。
+
 ## [Unreleased] - 2026-08-09
 
 ### Fixed
