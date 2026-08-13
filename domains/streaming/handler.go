@@ -26,6 +26,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/domains/authentication" //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/domains/autocombo"
 	"github.com/kaixuan/llm-gateway-go/domains/credential"                          //nolint:depguard // historical violation, B1 routing.go CQRS will fix
+	"github.com/kaixuan/llm-gateway-go/domains/dispatch"                            //nolint:depguard // V3.2 state-transition logger
 	"github.com/kaixuan/llm-gateway-go/domains/freeresource"                        //nolint:depguard // OmniFree quota tracker
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/audit"                         //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/compression"                   //nolint:depguard // historical violation, B1 routing.go CQRS will fix
@@ -2813,6 +2814,20 @@ func (h *ChatHandler) serveWithExecutor(
 		pid := candidates[0].ProviderID
 		cid := candidates[0].CredentialID
 		logCtx.SetRoute(&pid, &cid)
+
+		// 2026-08-14 V3.2 (BE-B1): record route decision in state transitions.
+		// nil-safe helper — no logger wired (DB disabled / test mode) → no-op.
+		// Captures from_state="route_resolve" + chosen credential's display name
+		// so the timeline view shows "route_resolve → provider-X (cred-Y)".
+		dispatch.LogRouteDecisionGlobal(requestID, "route_resolve", "credential_selected",
+			map[string]any{
+				"chosen_provider_id":   pid,
+				"chosen_credential_id": cid,
+				"chosen_raw_model":     candidates[0].RawModel,
+				"candidates_count":     len(candidates),
+				"profile":              clientID.Fingerprint.ClientProfile,
+				"tenant_id":            tenantID,
+			})
 	}
 
 	var modelResolution *resolve.Resolution
