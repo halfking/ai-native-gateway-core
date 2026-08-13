@@ -937,7 +937,7 @@ func (c *Client) insertRequestLog(entry *RequestLogEntry) error {
 			-- virtual_client_id 来自 identity.BuildIdentityFromRequest。
 			-- 之前这些字段只在侧表 request_context_attrs 写入,主表永远 NULL。
 			agent_name, agent_type, client_protocol, virtual_client_id,
-			// V3.1 (migration 491): 9-stage dispatch queue timestamps.
+			-- V3.1 (migration 491): 9-stage dispatch queue timestamps.
 			t0_arrived_at, t1_total_enqueued_at, t2_total_dequeued_at,
 			t3_model_enqueued_at, t4_model_dequeued_at,
 			t5_cred_enqueued_at, t6_cred_dequeued_at,
@@ -1060,32 +1060,32 @@ $48,
 		upstream_finish_reason = EXCLUDED.upstream_finish_reason,
 		tool_calls = EXCLUDED.tool_calls,
 		client_request_id = COALESCE(EXCLUDED.client_request_id, request_logs_hot.client_request_id),
-		// 2026-06-30: upstream diagnostics (migration 320)
+		-- 2026-06-30: upstream diagnostics (migration 320)
 		upstream_status_code = EXCLUDED.upstream_status_code,
 		client_timeout = EXCLUDED.client_timeout,
 		client_endpoint = EXCLUDED.client_endpoint,
 		stream_chunk_errors = EXCLUDED.stream_chunk_errors,
-		// 2026-07-05 P0 fix: stream_chunks_sent is NOT NULL (migration 320).
-		// streamChunksSentArg() coerces nil pointer to 0 so the explicit
-		// INSERT never trips SQLSTATE 23502 even when the caller does
-		// not set the field (e.g. /api/telemetry/request-log HTTP path).
+		-- 2026-07-05 P0 fix: stream_chunks_sent is NOT NULL (migration 320).
+		-- streamChunksSentArg() coerces nil pointer to 0 so the explicit
+		-- INSERT never trips SQLSTATE 23502 even when the caller does
+		-- not set the field (e.g. /api/telemetry/request-log HTTP path).
 		stream_chunks_sent = COALESCE(EXCLUDED.stream_chunks_sent, 0),
-		// 2026-07-01: 附件元数据 (migration 325)。为空时写入 NULL。
+		-- 2026-07-01: 附件元数据 (migration 325)。为空时写入 NULL。
 		attachments = COALESCE(request_logs_hot.attachments, EXCLUDED.attachments),
-		// 2026-07-14 (migration 341): origin metadata. First-write-wins:
-		// the first writer (usually the origin middleware) keeps its value;
-		// later replays must not overwrite the real client IP / origin label.
+		-- 2026-07-14 (migration 341): origin metadata. First-write-wins:
+		-- the first writer (usually the origin middleware) keeps its value;
+		-- later replays must not overwrite the real client IP / origin label.
 		client_ip           = COALESCE(request_logs_hot.client_ip, EXCLUDED.client_ip),
 		client_forwarded_for = COALESCE(request_logs_hot.client_forwarded_for, EXCLUDED.client_forwarded_for),
 		origin_stage        = COALESCE(request_logs_hot.origin_stage, EXCLUDED.origin_stage),
 		origin_actor        = COALESCE(request_logs_hot.origin_actor, EXCLUDED.origin_actor),
-		// 2026-07-27: 客户端感知字段 — first-write-wins (避免后续 retry / 补写覆盖)
-		// origin_mw / fillAttemptMeta 阶段提取的真实值。
+		-- 2026-07-27: 客户端感知字段 — first-write-wins (避免后续 retry / 补写覆盖)
+		-- origin_mw / fillAttemptMeta 阶段提取的真实值。
 		agent_name          = COALESCE(request_logs_hot.agent_name, EXCLUDED.agent_name),
 		agent_type          = COALESCE(request_logs_hot.agent_type, EXCLUDED.agent_type),
 		client_protocol     = COALESCE(request_logs_hot.client_protocol, EXCLUDED.client_protocol),
 		virtual_client_id   = COALESCE(request_logs_hot.virtual_client_id, EXCLUDED.virtual_client_id),
-		// V3.1 queue timestamps: prefer newer non-null values from EXCLUDED.
+		-- V3.1 queue timestamps: prefer newer non-null values from EXCLUDED.
 		t0_arrived_at        = COALESCE(EXCLUDED.t0_arrived_at, request_logs_hot.t0_arrived_at),
 		t1_total_enqueued_at = COALESCE(EXCLUDED.t1_total_enqueued_at, request_logs_hot.t1_total_enqueued_at),
 		t2_total_dequeued_at = COALESCE(EXCLUDED.t2_total_dequeued_at, request_logs_hot.t2_total_dequeued_at),
@@ -1096,23 +1096,23 @@ $48,
 		t7_forward_start_at  = COALESCE(EXCLUDED.t7_forward_start_at, request_logs_hot.t7_forward_start_at),
 		t8_response_start_at = COALESCE(EXCLUDED.t8_response_start_at, request_logs_hot.t8_response_start_at),
 		t9_response_end_at   = COALESCE(EXCLUDED.t9_response_end_at, request_logs_hot.t9_response_end_at)
-		// 2026-07-27 (L-2): terminal-state guard, mirroring the WAL guard in
-		// request_logger.go Update(). Without this, the deferred client-
-		// disconnect safety net could regress a row that already reached a
-		// terminal state: the handler writes success=TRUE / request_status=
-		// 'success' via the completion path, then the disconnect probe fires
-		// EmitRequestLogUpdate with success=FALSE / 'client_disconnect' right
-		// after the client reads the good response — clobbering the success
-		// row (split-brain vs the WAL, which already had this guard).
-		//
-		// Skip the UPDATE entirely when the existing row is already terminal
-		// (success=TRUE OR request_status IN ('success','failure')) AND the
-		// incoming update is NOT itself terminal-success (a legitimate later
-		// enrichment of an already-success row, e.g. token accounting from a
-		// slower path, is still allowed). The failure→success promotion case
-		// is intentionally NOT allowed here: a disconnect probe must never
-		// upgrade a failure, and a success is written by the authoritative
-		// completion path before any probe fires.
+		-- 2026-07-27 (L-2): terminal-state guard, mirroring the WAL guard in
+		-- request_logger.go Update(). Without this, the deferred client-
+		-- disconnect safety net could regress a row that already reached a
+		-- terminal state: the handler writes success=TRUE / request_status=
+		-- 'success' via the completion path, then the disconnect probe fires
+		-- EmitRequestLogUpdate with success=FALSE / 'client_disconnect' right
+		-- after the client reads the good response — clobbering the success
+		-- row (split-brain vs the WAL, which already had this guard).
+		--
+		-- Skip the UPDATE entirely when the existing row is already terminal
+		-- (success=TRUE OR request_status IN ('success','failure')) AND the
+		-- incoming update is NOT itself terminal-success (a legitimate later
+		-- enrichment of an already-success row, e.g. token accounting from a
+		-- slower path, is still allowed). The failure→success promotion case
+		-- is intentionally NOT allowed here: a disconnect probe must never
+		-- upgrade a failure, and a success is written by the authoritative
+		-- completion path before any probe fires.
 		WHERE NOT (
 			request_logs_hot.request_status = 'failure'
 			OR (

@@ -27,42 +27,42 @@ func SetGlobalStateTransitionLogger(l *StateTransitionLogger) {
 
 // LogRouteDecisionGlobal 在 route_resolve / 节点选择 时记录。
 // nil-safe（logger 未注入时静默 return）。
-func LogRouteDecisionGlobal(requestID, fromState, toState string, metadata map[string]any) {
+func LogRouteDecisionGlobal(requestID, tenantID, fromState, toState string, metadata map[string]any) {
 	l := getGlobalStateTransitionLogger()
 	if l == nil {
 		return
 	}
-	l.LogRouteDecision(requestID, fromState, toState, metadata)
+	l.LogRouteDecision(requestID, tenantID, fromState, toState, metadata)
 }
 
 // LogNodeSwitchGlobal 在节点切换（failover / sibling 切换）时记录。
 // nil-safe。
-func LogNodeSwitchGlobal(requestID, fromNode, toNode string, metadata map[string]any) {
+func LogNodeSwitchGlobal(requestID, tenantID, fromNode, toNode string, metadata map[string]any) {
 	l := getGlobalStateTransitionLogger()
 	if l == nil {
 		return
 	}
-	l.LogNodeSwitch(requestID, fromNode, toNode, metadata)
+	l.LogNodeSwitch(requestID, tenantID, fromNode, toNode, metadata)
 }
 
 // LogRetryGlobal 在 streamretry 重试时记录。
 // nil-safe。
-func LogRetryGlobal(requestID string, retrySeq int, reasonClass string, metadata map[string]any) {
+func LogRetryGlobal(requestID, tenantID string, retrySeq int, reasonClass string, metadata map[string]any) {
 	l := getGlobalStateTransitionLogger()
 	if l == nil {
 		return
 	}
-	l.LogRetry(requestID, retrySeq, reasonClass, metadata)
+	l.LogRetry(requestID, tenantID, retrySeq, reasonClass, metadata)
 }
 
 // LogErrorGlobal 在终态错误时记录。
 // nil-safe。
-func LogErrorGlobal(requestID, fromState string, metadata map[string]any) {
+func LogErrorGlobal(requestID, tenantID, fromState string, metadata map[string]any) {
 	l := getGlobalStateTransitionLogger()
 	if l == nil {
 		return
 	}
-	l.LogError(requestID, fromState, metadata)
+	l.LogError(requestID, tenantID, fromState, metadata)
 }
 
 func getGlobalStateTransitionLogger() *StateTransitionLogger {
