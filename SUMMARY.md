@@ -71,8 +71,19 @@
 
 ## ⏳ 遗留工作（后续 PR）
 
-### 1. 指标导出与可视化（预计 2 天）
-- [ ] Prometheus 指标导出（9 个 histogram）
+### 1. 指标导出与可视化
+- [x] Prometheus 指标导出（9 个 histogram）— 2026-08-13
+  - `dispatch_stage_queue_wait_seconds` (T0→T6)
+  - `dispatch_stage_total_queue_seconds` (T1→T2)
+  - `dispatch_stage_model_queue_seconds` (T3→T4)
+  - `dispatch_stage_cred_queue_seconds` (T5→T6)
+  - `dispatch_stage_routing_seconds` (T2→T5)
+  - `dispatch_stage_acquire_seconds` (T6→T7)
+  - `dispatch_stage_upstream_seconds` (T7→T8)
+  - `dispatch_stage_streaming_seconds` (T8→T9)
+  - `dispatch_stage_total_seconds` (T0→T9)
+  - label: `result` ∈ {success, fail_prefirstbyte, fail_postfirstbyte, shutdown}
+  - 观测点: `Pipeline.complete()` → `recordStageMetrics()`
 - [ ] 前端瀑布图 UI（QueueWaterfallChart.vue）
 - [ ] 会话日志集成（request_logs 表扩展）
 
@@ -81,11 +92,11 @@
 - [ ] session_turns 表创建
 - [ ] 每日 ETL 流程
 
-### 3. 单元测试补充（预计 0.5 天）
-- [ ] 时间戳方法单元测试
+### 3. 单元测试补充
+- [x] 阶段指标单元测试（stage_metrics_test.go）
 - [ ] 端到端时间戳验证测试
 
-**总计剩余工作量**: 4 天
+**总计剩余工作量**: ~3 天
 
 ---
 
