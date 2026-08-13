@@ -4,11 +4,11 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 )
 
-// TestIsRetryableDBError 测试错误重试判断逻辑
 func TestIsRetryableDBError(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -67,14 +67,15 @@ func TestIsRetryableDBError(t *testing.T) {
 	}
 }
 
-// TestStaleCacheFailsafe 测试过期缓存降级逻辑
-func TestStaleCacheFailsafe(t *testing.T) {
-	// 这个测试需要实际的数据库连接和Redis，暂时跳过
-	// 在集成测试中验证完整的失败安全机制
-	t.Skip("Integration test - requires database and Redis")
+func TestWaitForRetryReturnsContextCancellation(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	if err := waitForRetry(ctx, time.Second); !errors.Is(err, context.Canceled) {
+		t.Fatalf("waitForRetry() error = %v, want context.Canceled", err)
+	}
 }
 
-// BenchmarkIsRetryableDBError 性能基准测试
 func BenchmarkIsRetryableDBError(b *testing.B) {
 	err := errors.New("connection refused")
 	b.ResetTimer()
