@@ -48,6 +48,7 @@ export default {
   create: {
     title: 'Add model to "{tier}"',
     modelRequired: 'Model is required',
+    duplicate: 'This configuration already exists (current model: {model}). Edit the existing entry instead.',
     taskRequired: 'Select a task type first',
     submit: 'Add',
     submitting: 'Adding…',

@@ -48,6 +48,7 @@ export default {
   create: {
     title: 'Añadir modelo a "{tier}"',
     modelRequired: 'Se requiere modelo',
+    duplicate: 'Esta configuración ya existe (modelo actual: {model}). Edita la entrada existente.',
     taskRequired: 'Primero selecciona un tipo de tarea',
     submit: 'Añadir',
     submitting: 'Añadiendo…',

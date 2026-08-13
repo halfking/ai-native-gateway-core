@@ -75,6 +75,7 @@ export async function req<T>(method: string, path: string, body?: unknown): Prom
         try {
           const j = JSON.parse(text)
           msg = (j && typeof j.error === 'string') ? j.error :
+                (j && j.error && typeof j.error.message === 'string') ? j.error.message :
                 (j && j.error && typeof j.error.detail === 'string') ? j.error.detail :
                 text
         } catch {
