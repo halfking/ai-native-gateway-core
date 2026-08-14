@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"strconv"
+	"sync/atomic"
 	"time"
 
 	"github.com/redis/go-redis/v9"
@@ -26,12 +27,19 @@ type RedisHealthStore struct {
 	keyPrefix string
 	ttl       time.Duration
 	enabled   bool
+
+	// nextConsistencyCheck bounds background Redis verification triggered by
+	// reads. The memory cache is authoritative between writes and startup
+	// recovery, so verifying every read only creates unbounded goroutine and
+	// connection-pool pressure on the hot path.
+	nextConsistencyCheck atomic.Int64
 }
 
 const (
-	defaultKeyPrefix    = "llmgw:health:cred:"
-	defaultHealthTTL    = 10 * time.Minute
-	maxAsyncWriteBuffer = 1000 // 异步写入队列最大长度
+	defaultKeyPrefix         = "llmgw:health:cred:"
+	defaultHealthTTL         = 10 * time.Minute
+	maxAsyncWriteBuffer      = 1000 // 异步写入队列最大长度
+	consistencyCheckInterval = time.Minute
 )
 
 // HealthState Redis中存储的健康状态
@@ -141,20 +149,29 @@ func (s *RedisHealthStore) key(id string) string {
 	return s.keyPrefix + id
 }
 
-// Get 获取credential（优先内存，Redis作为验证）
+// Get retrieves a credential from the authoritative in-memory cache.
 func (s *RedisHealthStore) Get(id string) (*Credential, bool, error) {
-	// 总是从内存读取（零延迟）
+	// Always read from memory on the request path.
 	cred, ok, err := s.memory.Get(id)
 	if err != nil || !ok {
 		return nil, false, err
 	}
 
-	// Redis可用时，异步验证一致性（不阻塞读取）
-	if s.Enabled() {
-		go s.verifyConsistency(id, cred)
-	}
+	s.scheduleConsistencyCheck(id, cred)
 
 	return cred, true, nil
+}
+
+func (s *RedisHealthStore) scheduleConsistencyCheck(id string, cred *Credential) {
+	if !s.Enabled() {
+		return
+	}
+	now := time.Now().UnixNano()
+	next := s.nextConsistencyCheck.Load()
+	if now < next || !s.nextConsistencyCheck.CompareAndSwap(next, now+consistencyCheckInterval.Nanoseconds()) {
+		return
+	}
+	go s.verifyConsistency(id, cred)
 }
 
 // Save 保存credential（内存+Redis双写）。
