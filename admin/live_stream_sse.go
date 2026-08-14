@@ -356,7 +356,8 @@ type LiveStreamSSEHub struct {
 	// should appear in one lane, not scattered across multiple lanes).
 	canonicalCache sync.Map
 
-	stopCh chan struct{}
+	stopCh   chan struct{}
+	stopOnce sync.Once
 
 	// cachedSnapshot holds the last-known snapshot per tenant so broadcast
 	// can compute a delta instead of sending the full snapshot every time.
@@ -847,13 +848,15 @@ func (h *LiveStreamSSEHub) pushScopeSnapshot(tenantID string, isSuper bool) {
 	h.fanOutScope(scope, env)
 }
 
-// Stop tears down the hub. Safe to call once.
+// Stop tears down the hub. It is safe to call concurrently.
 func (h *LiveStreamSSEHub) Stop() {
-	select {
-	case <-h.stopCh:
-	default:
+	h.stopOnce.Do(func() {
+		// Serialize shutdown with lazy incident-worker startup so Stop cannot
+		// leave behind a newly created channel with no active consumer.
+		h.incidentMu.Lock()
 		close(h.stopCh)
-	}
+		h.incidentMu.Unlock()
+	})
 }
 
 // ProviderCodeFor resolves a providers.id to its display name, falling
@@ -1584,8 +1587,9 @@ func (h *LiveStreamSSEHub) PublishIncidentUpdate(upd *LiveIncidentUpdate) {
 	if h == nil || upd == nil {
 		return
 	}
-	if h.incidentUpdateCh == nil {
-		h.initIncidentUpdateCh()
+	incidentUpdates := h.incidentUpdates()
+	if incidentUpdates == nil {
+		return
 	}
 	upd.Type = "incident_update"
 	env := LiveStreamEnvelope{
@@ -1594,7 +1598,7 @@ func (h *LiveStreamSSEHub) PublishIncidentUpdate(upd *LiveIncidentUpdate) {
 		Incident:  upd,
 	}
 	select {
-	case h.incidentUpdateCh <- env:
+	case incidentUpdates <- env:
 	default:
 		h.incidentDrops.Add(1)
 		if n := h.incidentDrops.Load(); n%incidentUpdateDropsLog == 1 {
@@ -1607,12 +1611,19 @@ func (h *LiveStreamSSEHub) PublishIncidentUpdate(upd *LiveIncidentUpdate) {
 	}
 }
 
-// initIncidentUpdateCh lazily creates the channel + drops counter.
+// incidentUpdates lazily creates the incident channel and returns a stable
+// reference. The mutex makes publication safe while another goroutine performs
+// the first initialization.
 // The hub constructor doesn't pre-allocate them so the cost is
 // only paid when the diagnose feature is actually wired in.
-func (h *LiveStreamSSEHub) initIncidentUpdateCh() {
+func (h *LiveStreamSSEHub) incidentUpdates() chan LiveStreamEnvelope {
 	h.incidentMu.Lock()
 	defer h.incidentMu.Unlock()
+	select {
+	case <-h.stopCh:
+		return nil
+	default:
+	}
 	if h.incidentUpdateCh == nil {
 		h.incidentUpdateCh = make(chan LiveStreamEnvelope, incidentUpdateChCapacity)
 		// Drive a tiny fan-out goroutine so the observer never
@@ -1621,6 +1632,7 @@ func (h *LiveStreamSSEHub) initIncidentUpdateCh() {
 		// the cheapest correct path.
 		go h.fanOutIncidentUpdates()
 	}
+	return h.incidentUpdateCh
 }
 
 func (h *LiveStreamSSEHub) fanOutIncidentUpdates() {

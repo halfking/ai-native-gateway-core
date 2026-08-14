@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -174,6 +175,48 @@ func TestLiveStreamSSEHub_RunKeepsSubscribedScopeBaseline(t *testing.T) {
 		_, exists := hub.cachedSnapshot[scope.cacheKey]
 		return !exists
 	})
+}
+
+func TestLiveStreamSSEHub_PublishIncidentUpdateInitializesOnceConcurrently(t *testing.T) {
+	hub := NewLiveStreamSSEHub(nil, LiveStreamConfig{})
+	t.Cleanup(hub.Stop)
+
+	var wg sync.WaitGroup
+	for i := 0; i < 64; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			hub.PublishIncidentUpdate(&LiveIncidentUpdate{IncidentID: "incident-1"})
+		}()
+	}
+	wg.Wait()
+
+	hub.incidentMu.Lock()
+	updates := hub.incidentUpdateCh
+	hub.incidentMu.Unlock()
+	if updates == nil {
+		t.Fatal("incident updates channel was not initialized")
+	}
+}
+
+func TestLiveStreamSSEHub_StopIsSafeToCallConcurrently(t *testing.T) {
+	hub := NewLiveStreamSSEHub(nil, LiveStreamConfig{})
+
+	var wg sync.WaitGroup
+	for i := 0; i < 64; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			hub.Stop()
+		}()
+	}
+	wg.Wait()
+
+	select {
+	case <-hub.stopCh:
+	default:
+		t.Fatal("hub stop channel was not closed")
+	}
 }
 
 func waitForLiveStreamCondition(t *testing.T, timeout time.Duration, condition func() bool) {
