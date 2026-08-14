@@ -31,7 +31,7 @@ MM-1a 之后，入站 base64 附件在 IR 侧已被替换为网关 URL 引用（
 | qwen / dashscope | ✅ | qwen-vl 系列 `image_url` 支持公网 URL（DashScope 服务端拉取）与 base64（官方百炼文档） | `SupportsHTTPSURL: true, PreferredMode: gateway_url` ✅ 一致 |
 | doubao / volcengine | ✅ | Ark 视觉模型 `image_url.url` 支持公网 URL 与 base64（火山方舟文档） | `SupportsHTTPSURL: true, PreferredMode: gateway_url` ✅ 一致 |
 | minimax | ✅⚠️ | Chat Completions 为 OpenAI 兼容 `image_url`，M3/H3/Hailuo 级模型支持图片输入，URL 与 base64 均接受（platform.minimaxi.com 文档）；但社区反馈存在 URL 未稳定取回的案例 → 建议保留 data 回退开关 | `SupportsHTTPSURL: true, PreferredMode: data` ✅ 一致（保守首选 data） |
-| deepseek | ⚠️ | 官方 Chat API 当前无公开视觉模型（VL 系列未在 chat 端点开放）；矩阵按"能发 URL"标记待真机确认 | 代码 `SupportsHTTPSURL: true, PreferredMode: data` —— 真机确认前**建议改为 false**（见 §4） |
+| deepseek | ⚠️ | 官方 Chat API 当前无公开视觉模型（VL 系列未在 chat 端点开放）；URL 拉取能力未经真机确认 | 代码已保守降级 `SupportsHTTPSURL: false, PreferredMode: data`（MM-1a 提交内落地）；真机确认支持后可升回 true |
 | ollama | ❌ | 本地推理，无服务端取回能力，必须 inline | `SupportsHTTPSURL: false, PreferredMode: data` ✅ 一致 |
 | 未知 provider | ❌（默认） | 保守默认，强制回退 | default 分支 `SupportsHTTPSURL: false` ✅ 一致 |
 
@@ -53,7 +53,7 @@ gemini 与 ollama 走 Files API / inline 回退。满足 doc 19 的 MM-1 默认�
 
 ## 4. 待办移交
 
-- [ ] MM-2 实现时：`deepseek` 能力在真机确认前建议降级 `SupportsHTTPSURL: false`（一行改动 + 矩阵测试同步）。
+- [ ] MM-2 实现时：真机验证 `deepseek` 视觉/URL 能力；如支持则把 `SupportsHTTPSURL` 升回 true（矩阵测试同步）。
 - [ ] MM-2 实现时：minimax URL 拉取稳定性加 E2E 用例（URL 失败自动降 base64）。
 - [ ] MM-4：`scripts/multimodal-e2e` 增加网关 URL 模式用例（T-02 变体：客户端只发网关 URL，验证 provider 拉取）。
 - [ ] anthropic document URL 的 100MB 上限（`MaxURLBytes`）与 Files API 优先级在 MM-1b 渲染时复核。

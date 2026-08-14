@@ -57,6 +57,7 @@ func (t *IRTransformer) AttachmentURL(relPath string) string {
 
 // TransformRequest 将请求 IR 中所有 base64 图片块落盘并替换为 URL 引用。
 //
+// ctx 为 MM-1b 接线预留（Storage 后端当前不接受 context）。
 // 转换直接发生在传入的 IR 上；调用方用于真实转发的原始 body 字节不受影响。
 // 任何单个块失败都会记录到 Failures 并继续处理其余块，函数本身不返回 error。
 func (t *IRTransformer) TransformRequest(ctx context.Context, requestID string, req *ir.InternalRequest) *TransformResult {
@@ -65,8 +66,10 @@ func (t *IRTransformer) TransformRequest(ctx context.Context, requestID string, 
 		return result
 	}
 
-	// 请求内 hash → 首次落盘的 manifest，同 hash 后续出现直接复用。
-	manifestsByHash := make(map[string]AttachmentMetadata)
+	// 请求内 data → 首次落盘的 manifest；同一 base64 payload 再次出现时直接
+	// 复用，避免重复解码/哈希大 payload。按内容 hash 的跨请求去重仍由
+	// Storage.SaveBase64Image 承担（注意其路径含 YYYY/MM，跨月会重复落盘）。
+	manifestsByData := make(map[string]AttachmentMetadata)
 
 	for msgIdx := range req.Messages {
 		content := req.Messages[msgIdx].Content
@@ -79,7 +82,7 @@ func (t *IRTransformer) TransformRequest(ctx context.Context, requestID string, 
 			if img.Type != "base64" || img.Data == "" {
 				continue
 			}
-			t.processImageBlock(requestID, img, msgIdx, blockIdx, manifestsByHash, result)
+			t.processImageBlock(requestID, img, msgIdx, blockIdx, manifestsByData, result)
 		}
 	}
 
@@ -91,9 +94,22 @@ func (t *IRTransformer) processImageBlock(
 	requestID string,
 	img *ir.ImageSource,
 	msgIdx, blockIdx int,
-	manifestsByHash map[string]AttachmentMetadata,
+	manifestsByData map[string]AttachmentMetadata,
 	result *TransformResult,
 ) {
+	// 请求内去重预检：同 payload 直接复用首个 manifest，跳过解码落盘。
+	if prev, ok := manifestsByData[img.Data]; ok {
+		reused := prev
+		reused.MessageIndex = msgIdx
+		reused.BlockIndex = blockIdx
+		result.Deduped++
+		result.Attachments = append(result.Attachments, reused)
+		img.Type = "url"
+		img.URL = t.AttachmentURL(reused.Path)
+		img.Data = ""
+		return
+	}
+
 	mediaType := img.MediaType
 	if mediaType == "" {
 		mediaType = "image/png"
@@ -122,22 +138,13 @@ func (t *IRTransformer) processImageBlock(
 	}
 
 	meta := res.Metadata
-	if prev, ok := manifestsByHash[meta.Hash]; ok {
-		// 请求内同 hash：直接复用首个 manifest（跨块定位字段保留本次位置）。
-		reused := prev
-		reused.MessageIndex = msgIdx
-		reused.BlockIndex = blockIdx
+	manifestsByData[img.Data] = meta
+	result.Attachments = append(result.Attachments, meta)
+	if res.Deduped {
+		// 跨请求去重：文件早已存在，本次未写入新文件。
 		result.Deduped++
-		result.Attachments = append(result.Attachments, reused)
 	} else {
-		manifestsByHash[meta.Hash] = meta
-		result.Attachments = append(result.Attachments, meta)
-		if res.Deduped {
-			// 跨请求去重：文件早已存在，本次未写入新文件。
-			result.Deduped++
-		} else {
-			result.Stored++
-		}
+		result.Stored++
 	}
 
 	// 替换 IR 引用：base64 → 网关 URL
