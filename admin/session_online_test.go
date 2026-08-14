@@ -11,6 +11,7 @@ import (
 
 // TestParseCursor 测试 cursor 解析。
 func TestParseCursor(t *testing.T) {
+	t.Setenv("CURSOR_HMAC_SECRET", "test-secret-key-0123456789012345")
 	tests := []struct {
 		name     string
 		cursor   string
@@ -24,7 +25,7 @@ func TestParseCursor(t *testing.T) {
 		},
 		{
 			name:   "valid cursor",
-			cursor: base64.URLEncoding.EncodeToString([]byte("2026-08-13T10:30:00.123456789Z")),
+			cursor: mustEncodeCursor(t, time.Date(2026, 8, 13, 10, 30, 0, 123456789, time.UTC)),
 		},
 		{
 			name:    "invalid base64",
@@ -54,10 +55,20 @@ func TestParseCursor(t *testing.T) {
 	}
 }
 
+func mustEncodeCursor(t *testing.T, ts time.Time) string {
+	t.Helper()
+	cursor, err := EncodeCursor(ts)
+	if err != nil {
+		t.Fatalf("EncodeCursor() error = %v", err)
+	}
+	return cursor
+}
+
 // TestEncodeCursor 测试 cursor 编码。
 func TestEncodeCursor(t *testing.T) {
+	t.Setenv("CURSOR_HMAC_SECRET", "test-secret-key-0123456789012345")
 	ts := time.Date(2026, 8, 13, 10, 30, 0, 123456789, time.UTC)
-	cursor := EncodeCursor(ts)
+	cursor, err := EncodeCursor(ts)
 	if cursor == "" {
 		t.Errorf("EncodeCursor() returned empty string")
 	}
@@ -113,6 +124,7 @@ func TestNormalizePaginationParams(t *testing.T) {
 
 // TestBuildPaginationResponse 测试分页响应构建。
 func TestBuildPaginationResponse(t *testing.T) {
+	t.Setenv("CURSOR_HMAC_SECRET", "test-secret-key-0123456789012345")
 	ts := time.Date(2026, 8, 13, 10, 30, 0, 0, time.UTC)
 
 	tests := []struct {
@@ -140,7 +152,10 @@ func TestBuildPaginationResponse(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			resp := BuildPaginationResponse(tt.items, tt.lastTS, tt.limit)
+			resp, err := BuildPaginationResponse(tt.items, tt.lastTS, tt.limit)
+			if err != nil {
+				t.Fatalf("BuildPaginationResponse() error = %v", err)
+			}
 			if resp.HasMore != tt.wantHasMore {
 				t.Errorf("BuildPaginationResponse() has_more = %v, want %v", resp.HasMore, tt.wantHasMore)
 			}

@@ -35,9 +35,7 @@ type PaginationResponse struct {
 	HasMore    bool   `json:"has_more"`              // 是否有下一页
 }
 
-// ParseCursor 解析 base64 游标为时间戳（带 HMAC 验证）。
-// 格式：base64(timestamp|hmac)。如果签名验证失败，返回 error。
-// 兼容旧格式（无签名）：尝试直接解析 timestamp。
+// ParseCursor 解析 base64 游标为时间戳并验证 HMAC 签名。
 func ParseCursor(cursor string) (time.Time, error) {
 	if cursor == "" {
 		return time.Time{}, nil // 首次请求，返回 zero time（表示从最新开始）
@@ -47,22 +45,20 @@ func ParseCursor(cursor string) (time.Time, error) {
 		return time.Time{}, err
 	}
 
-	// 尝试分割 timestamp|hmac
+	// Unsigned cursors are rejected so callers cannot bypass tamper protection.
 	parts := strings.SplitN(string(decoded), "|", 2)
 	if len(parts) != 2 {
-		// 兼容旧格式（无签名）：直接解析 timestamp
-		ts, err := time.Parse(time.RFC3339Nano, string(decoded))
-		if err != nil {
-			return time.Time{}, fmt.Errorf("invalid cursor format: %w", err)
-		}
-		return ts, nil
+		return time.Time{}, fmt.Errorf("invalid cursor format: signature missing")
 	}
 
 	timestampStr := parts[0]
 	providedMAC := parts[1]
 
 	// 验证 HMAC
-	expectedMAC := computeCursorHMAC(timestampStr)
+	expectedMAC, err := computeCursorHMAC(timestampStr)
+	if err != nil {
+		return time.Time{}, err
+	}
 	if !hmac.Equal([]byte(providedMAC), []byte(expectedMAC)) {
 		return time.Time{}, fmt.Errorf("cursor signature verification failed")
 	}
@@ -77,26 +73,29 @@ func ParseCursor(cursor string) (time.Time, error) {
 
 // EncodeCursor 将时间戳编码为 base64 游标（带 HMAC 签名）。
 // 格式：base64(timestamp|hmac)。
-func EncodeCursor(ts time.Time) string {
+func EncodeCursor(ts time.Time) (string, error) {
 	if ts.IsZero() {
-		return ""
+		return "", nil
 	}
 	timestampStr := ts.Format(time.RFC3339Nano)
-	mac := computeCursorHMAC(timestampStr)
+	mac, err := computeCursorHMAC(timestampStr)
+	if err != nil {
+		return "", err
+	}
 	payload := fmt.Sprintf("%s|%s", timestampStr, mac)
-	return base64.URLEncoding.EncodeToString([]byte(payload))
+	return base64.URLEncoding.EncodeToString([]byte(payload)), nil
 }
 
 // computeCursorHMAC 计算 cursor 的 HMAC-SHA256 签名。
-// 密钥从环境变量 CURSOR_HMAC_SECRET 读取（默认 "changeme-in-production"）。
-func computeCursorHMAC(data string) string {
-	secret := os.Getenv("CURSOR_HMAC_SECRET")
-	if secret == "" {
-		secret = "changeme-in-production" // 默认密钥（生产环境必须覆盖）
+// The secret is mandatory so deployments cannot silently share a public key.
+func computeCursorHMAC(data string) (string, error) {
+	secret := strings.TrimSpace(os.Getenv("CURSOR_HMAC_SECRET"))
+	if len(secret) < 32 {
+		return "", fmt.Errorf("cursor HMAC secret must be at least 32 bytes")
 	}
 	h := hmac.New(sha256.New, []byte(secret))
 	h.Write([]byte(data))
-	return hex.EncodeToString(h.Sum(nil))
+	return hex.EncodeToString(h.Sum(nil)), nil
 }
 
 // NormalizePaginationParams 规范化分页参数（限制范围，设默认值）。
@@ -114,14 +113,21 @@ func NormalizePaginationParams(params PaginationParams) PaginationParams {
 // items: 本次返回的条目数
 // lastTS: 本次最后一条的时间戳（用于生成 next_cursor）
 // limit: 请求的 limit
-func BuildPaginationResponse(items int, lastTS time.Time, limit int) PaginationResponse {
+func BuildPaginationResponse(items int, lastTS time.Time, limit int) (PaginationResponse, error) {
 	if items < limit {
 		// 返回条目少于 limit，说明无更多数据
-		return PaginationResponse{HasMore: false}
+		return PaginationResponse{HasMore: false}, nil
+	}
+	if lastTS.IsZero() {
+		return PaginationResponse{}, fmt.Errorf("cannot build cursor without a last timestamp")
+	}
+	nextCursor, err := EncodeCursor(lastTS)
+	if err != nil {
+		return PaginationResponse{}, err
 	}
 	// 有更多数据，生成 next_cursor
 	return PaginationResponse{
-		NextCursor: EncodeCursor(lastTS),
+		NextCursor: nextCursor,
 		HasMore:    true,
-	}
+	}, nil
 }

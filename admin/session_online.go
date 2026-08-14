@@ -17,11 +17,10 @@ package admin
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"strconv"
 	"time"
-
-	"github.com/kaixuan/llm-gateway-go/domains/session"
 )
 
 // OnlineSession 是在线会话列表的一项。
@@ -51,10 +50,14 @@ func (h *Handler) handleSessionsOnline(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// 1. Tenant 隔离（契约：从认证上下文取，忽略 query 覆盖）
-	tenantID := session.GetTenantIDFromContext(r.Context())
-	if tenantID == "" {
-		writeError(w, http.StatusUnauthorized, "tenant_id required")
+	auth := GetAuthContext(r)
+	if auth == nil {
+		writeError(w, http.StatusUnauthorized, "authentication required")
 		return
+	}
+	tenantID := auth.TenantID
+	if tenantID == "" {
+		tenantID = "default"
 	}
 
 	// 2. 解析分页参数
@@ -71,7 +74,7 @@ func (h *Handler) handleSessionsOnline(w http.ResponseWriter, r *http.Request) {
 	// 3. 解析 cursor
 	cursorTime, err := ParseCursor(params.Cursor)
 	if err != nil {
-		writeErrorWithCode(w, http.StatusBadRequest, "session.pagination_invalid_cursor", "invalid cursor: "+err.Error())
+		writeErrorWithCode(w, http.StatusBadRequest, "session.pagination_invalid_cursor", "invalid cursor")
 		return
 	}
 
@@ -90,10 +93,14 @@ func (h *Handler) handleSessionsOnline(w http.ResponseWriter, r *http.Request) {
 		SELECT session_id, last_request_status, COALESCE(last_model,''),
 		       last_provider_id, last_latency_ms, updated_at, tenant_id
 		FROM session_last_requests
-		WHERE tenant_id = $1`
-	args := []interface{}{tenantID}
+		WHERE 1 = 1`
+	args := []interface{}{}
+	if !IsSuperAdminOrLegacy(r) {
+		query += ` AND tenant_id = $1`
+		args = append(args, tenantID)
+	}
 	if !cursorTime.IsZero() {
-		query += ` AND updated_at < $2`
+		query += fmt.Sprintf(` AND updated_at < $%d`, len(args)+1)
 		args = append(args, cursorTime)
 	}
 	query += ` ORDER BY updated_at DESC LIMIT $` + strconv.Itoa(len(args)+1)
@@ -149,7 +156,11 @@ func (h *Handler) handleSessionsOnline(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// 5. 构建分页响应
-	pagination := BuildPaginationResponse(len(out), lastUpdatedAt, params.Limit)
+	pagination, err := BuildPaginationResponse(len(out), lastUpdatedAt, params.Limit)
+	if err != nil {
+		writeError(w, http.StatusServiceUnavailable, "pagination cursor unavailable")
+		return
+	}
 
 	writeJSON(w, http.StatusOK, map[string]any{
 		"sessions":    out,
@@ -186,6 +197,11 @@ func (h *Handler) handleSessionTimeline(w http.ResponseWriter, r *http.Request) 
 		writeError(w, http.StatusServiceUnavailable, "database not configured")
 		return
 	}
+	auth := GetAuthContext(r)
+	if auth == nil {
+		writeError(w, http.StatusUnauthorized, "authentication required")
+		return
+	}
 
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
@@ -193,14 +209,23 @@ func (h *Handler) handleSessionTimeline(w http.ResponseWriter, r *http.Request) 
 	// 查该会话的所有请求（主请求 + 扩展请求），按时间升序。
 	// 主请求：gw_session_id = sessionID 且 parent_request_id IS NULL
 	// 扩展请求：parent_request_id 指向主请求（request_type 区分类型）
-	rows, err := h.db.Query(ctx, `
+	query := `
 		SELECT request_id, COALESCE(request_type,'main'), COALESCE(request_status,''),
 		       COALESCE(outbound_model, client_model, ''), latency_ms, ts,
 		       COALESCE(parent_request_id, '')
 		FROM request_logs_hot
-		WHERE gw_session_id = $1
-		ORDER BY ts ASC
-		LIMIT 200`, sessionID)
+		WHERE gw_session_id = $1`
+	args := []any{sessionID}
+	if !IsSuperAdminOrLegacy(r) {
+		if auth.TenantID == "" {
+			writeError(w, http.StatusUnauthorized, "tenant_id required")
+			return
+		}
+		query += " AND tenant_id = $2"
+		args = append(args, auth.TenantID)
+	}
+	query += " ORDER BY ts ASC LIMIT 200"
+	rows, err := h.db.Query(ctx, query, args...)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "query failed: "+err.Error())
 		return
