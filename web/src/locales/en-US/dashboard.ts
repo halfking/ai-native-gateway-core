@@ -235,6 +235,7 @@ export default {
     unsupported: 'Live stream not supported in this browser',
     empty: 'No live requests',
     emptyWaiting: 'Waiting for live request stream data…',
+    groupByQueue: 'By Queue',
     groupByVendor: 'By vendor',
     groupByProvider: 'By provider',
     groupByModel: 'By model',

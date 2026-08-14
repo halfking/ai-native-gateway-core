@@ -147,7 +147,9 @@ export function useRouteIncidents() {
 
   // Active incidents for a given lane (used by SwimLane to know
   // whether to show the diagnose button).
-  function incidentsForLane(dimension: 'vendor' | 'provider' | 'model', value: string): RouteIncident[] {
+  // 2026-08-14 V3.2: 支持 'queue' 维度（返回空数组）
+  function incidentsForLane(dimension: 'vendor' | 'provider' | 'model' | 'queue', value: string): RouteIncident[] {
+    if (dimension === 'queue') return []
     _bump.value
     const ids = incidentState.byLane[dimension][value] || []
     return ids.map((id) => incidentState.byId[id]).filter(Boolean)

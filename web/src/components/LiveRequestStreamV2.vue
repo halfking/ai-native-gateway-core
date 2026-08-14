@@ -4,6 +4,7 @@
 // 2026-07-05 v2: 添加管理员连接详情弹窗、空闲块机制
 // 2026-07-07: 管理员可编辑远端SSE地址
 // 2026-07-13: 转发泳道诊断事件，承载 RouteIncidentDrawer
+// 2026-08-14 V3.2: 添加"按处理队列"维度，显示队列透视 + 节点矩阵面板
 
 import { ref, computed } from 'vue'
 import { useI18n } from 'vue-i18n'
@@ -22,6 +23,8 @@ import LiveStreamLegend from './LiveStreamLegend.vue'
 import EmergencyDiagnosticModal from './EmergencyDiagnosticModal.vue'
 import RouteIncidentDrawer from './RouteIncidentDrawer.vue'
 import LiveStreamFilterDialog from './LiveStreamFilterDialog.vue'
+import QueuePerspectivePanel from './QueuePerspectivePanel.vue'
+import NodeStatusMatrix from './NodeStatusMatrix.vue'
 import type { GroupByDimension } from '../types/swimlane'
 import type { RouteIncident } from '../types/routeIncident'
 
@@ -207,6 +210,14 @@ function vendorOptionLabel(v: string) {
       <div class="stream-controls">
         <!-- 分组切换 -->
         <div class="control-group control-group--dimension">
+          <button
+            type="button"
+            class="control-btn"
+            :class="{ 'control-btn--active': groupBy === 'queue' }"
+            @click="handleGroupByChange('queue')"
+          >
+            {{ t('dashboard.liveStream.groupByQueue') }}
+          </button>
           <button
             type="button"
             class="control-btn"
@@ -467,8 +478,14 @@ function vendorOptionLabel(v: string) {
       <span>{{ t('dashboard.liveStream.redisWarning', { error: redisErrorRef || t('dashboard.liveStream.redisFallbackError') }) }}</span>
     </div>
 
-    <!-- 泳道区域 -->
-    <div class="swim-lanes">
+    <!-- 2026-08-14 V3.2: 按处理队列维度时显示队列透视 + 节点矩阵面板 -->
+    <div v-if="groupBy === 'queue'" class="v32-queue-panels">
+      <QueuePerspectivePanel />
+      <NodeStatusMatrix />
+    </div>
+
+    <!-- 泳道区域（其他维度） -->
+    <div v-else class="swim-lanes">
       <SwimLane
         v-for="lane in filteredLanes"
         :key="lane.id"
@@ -1058,6 +1075,14 @@ function vendorOptionLabel(v: string) {
 .redis-warning-icon {
   font-size: 16px;
   flex-shrink: 0;
+}
+
+/* 2026-08-14 V3.2: 按处理队列维度的面板容器 */
+.v32-queue-panels {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin-top: 12px;
 }
 
 .swim-lanes {

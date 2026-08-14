@@ -232,6 +232,7 @@ export default {
     connecting: '连接中…',
     reconnecting: '重新连接中…',
     unsupported: '当前浏览器不支持实时流',
+    groupByQueue: '按处理队列',
     groupByVendor: '按原厂',
     groupByProvider: '按供应商',
     groupByModel: '按模型',
