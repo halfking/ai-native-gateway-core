@@ -26,6 +26,15 @@ log() { echo "[S29] $*"; }
 reset_all_suppliers
 sleep 2
 
+FI_PID=""
+cleanup() {
+    if [ -n "$FI_PID" ] && kill -0 "$FI_PID" 2>/dev/null; then
+        kill "$FI_PID" 2>/dev/null || true
+    fi
+    cd "$TOOLS_DIR" && python3 mock_orchestrator.py reset-all >/dev/null 2>&1 || true
+}
+trap cleanup EXIT
+
 # Phase A only leaves G healthy so quota exhaustion is observed, not inferred.
 GROUP_NAMES=(A B C D E F G H I J K L)
 for group in "${GROUP_NAMES[@]}"; do
@@ -93,12 +102,6 @@ FI_STDERR="$(mktemp -t s29-fi-err-XXXXXX).log"
 python3 "$TOOLS_DIR/fault_inject.py" --schedule "$SCHED" --duration 8 \
     > "$FI_STDOUT" 2> "$FI_STDERR" &
 FI_PID=$!
-
-cleanup() {
-    if kill -0 "$FI_PID" 2>/dev/null; then kill "$FI_PID" 2>/dev/null || true; fi
-    cd "$TOOLS_DIR" && python3 mock_orchestrator.py reset-all >/dev/null 2>&1 || true
-}
-trap cleanup EXIT
 
 B_OK=0
 B_429=0

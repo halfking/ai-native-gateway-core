@@ -68,7 +68,7 @@ for i in 1 2 3; do
     set -e
     T1=$(python3 -c 'import time;print(int(time.time()*1000))')
     LAT=$((T1 - T0))
-    if echo "$OUT" | grep -q "^data: "; then
+    if [ "$RC" -ne 124 ] && echo "$OUT" | grep -q "^data: "; then
         STREAM_GOT_CHUNK=$((STREAM_GOT_CHUNK+1))
         STREAM_OK=$((STREAM_OK+1))
         FIRST_DATA=$(echo "$OUT" | grep -c "^data: ")
