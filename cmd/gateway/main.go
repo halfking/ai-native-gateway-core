@@ -1544,6 +1544,23 @@ func main() {
 		)
 
 		chatHandler.SetExecutor(routingExec, providerClient, stickyCache)
+
+		// ── SR-W2 request survival (doc 18 §6) ─────────────────────────────
+		// Arm the in-connection survival branch: global flag + per-tenant
+		// allowlist gate every request; disabled (default) the handler's
+		// goal-retry loop runs untouched.
+		if cfg.RequestSurvivalEnabled {
+			chatHandler.SetRequestSurvival(cfg.RequestSurvivalEnabledForTenant, streaming.SurvivalOptions{
+				Deadline:  time.Duration(cfg.RequestSurvivalInteractiveDeadlineSeconds) * time.Second,
+				RetryBase: time.Duration(cfg.RequestSurvivalRetryBaseSeconds) * time.Second,
+				RetryMax:  time.Duration(cfg.RequestSurvivalRetryMaxSeconds) * time.Second,
+			})
+			slog.Info("request_survival_armed",
+				"interactive_deadline_sec", cfg.RequestSurvivalInteractiveDeadlineSeconds,
+				"retry_base_sec", cfg.RequestSurvivalRetryBaseSeconds,
+				"retry_max_sec", cfg.RequestSurvivalRetryMaxSeconds,
+			)
+		}
 		chatHandler.SetSessionRouting(lastSystemSession, sessionPref)
 
 		// ── 2026-08-07 OmniFree (Phase 4) ────────────────────────────────
