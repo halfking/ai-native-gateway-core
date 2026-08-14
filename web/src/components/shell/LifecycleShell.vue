@@ -83,7 +83,7 @@ const links = computed(() =>
   left: -9999px;
   top: 0;
   background: var(--kx-primary, var(--accent));
-  color: #fff;
+  color: var(--kx-text-on-primary);
   padding: 8px 14px;
   border-radius: 6px;
   z-index: 9999;
