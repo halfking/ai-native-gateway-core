@@ -26,6 +26,11 @@ type DecisionHints struct {
 	// FullCandidateSet disables the hot-top-3 narrowing step when an
 	// operator-authored route or pin needs to see every available candidate.
 	FullCandidateSet bool
+	// FilterNotes, when non-nil, collects the human-readable reasons for
+	// candidates excluded by hard gates (RT-1 MinStandardIQ today). The
+	// decider copies them into Decision.FilterReasons so they surface in
+	// request_logs.auto_decision for audit. nil ⇒ notes are discarded.
+	FilterNotes *[]string
 }
 
 func (idx *Index) RecommendV2(
@@ -58,6 +63,8 @@ func (idx *Index) RecommendV2WithHints(
 	correctionLoader := idx.correctionLoader
 	affinityStore := idx.affinityStore
 	affinityTenantResolver := idx.affinityTenantResolver
+	tenantIQPolicy := idx.tenantIQPolicy
+	featuredModels := idx.featuredModels
 	idx.mu.RUnlock()
 
 	if topN <= 0 {
@@ -80,8 +87,29 @@ func (idx *Index) RecommendV2WithHints(
 	}
 
 	available := make([]Candidate, 0, len(filtered))
+	// RT-1 MinStandardIQ hard gate (default off): resolve the effective
+	// threshold (tenant policy > global flag), then exclude known-below
+	// candidates before the hot-top3 narrowing so an IQ-excluded model can
+	// not re-enter through any later pool. Unknown models fail open. The
+	// 48h fallback path below intentionally bypasses the gate — when the
+	// pool is empty, availability trumps IQ.
+	//
+	// Tenant resolution reuses the affinity resolver (main.go wires it
+	// unconditionally via SetAffinityStore, regardless of affinity mode).
+	// A nil resolver (library/embedded use) degrades to platform-level.
+	iqThreshold := resolveStandardIQThreshold(tenantIQPolicy,
+		resolveTenantCode(affinityTenantResolver, hints.ApiKeyID), flags)
 	for i := range filtered {
 		c := filtered[i]
+		if iqThreshold > 0 {
+			if passes, iq, _ := StandardIQMatch(c.CanonicalName, iqThreshold); !passes {
+				if hints.FilterNotes != nil {
+					*hints.FilterNotes = append(*hints.FilterNotes,
+						StandardIQFilterReason(c.CanonicalName, iq, iqThreshold))
+				}
+				continue
+			}
+		}
 		c.TaskMatchScore = TaskMatchScore(task, c.Tags)
 		available = append(available, c)
 	}
@@ -212,6 +240,10 @@ func (idx *Index) RecommendV2WithHints(
 		}
 		scored = append(scored, ScoredCandidate{Candidate: c, Breakdown: bd})
 	}
+
+	// RT-3: popularity/featured ordering weight (default off — no-op that
+	// leaves composites and ordering byte-identical).
+	applyPopularityWeighting(scored, featuredModels, flags)
 
 	sort.SliceStable(scored, func(i, j int) bool {
 		return scored[i].Breakdown.Composite > scored[j].Breakdown.Composite
