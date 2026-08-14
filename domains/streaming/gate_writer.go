@@ -71,13 +71,13 @@ func (gw *GateWriter) Write(p []byte) (int, error) {
 	gw.pending = append(gw.pending, p...)
 	consumed := 0
 	for {
-		idx := frameBoundary(gw.pending)
-		if idx < 0 {
+		n := frameBoundary(gw.pending)
+		if n < 0 {
 			break
 		}
-		frame := string(gw.pending[:idx+2]) // include the blank line
-		gw.pending = gw.pending[idx+2:]
-		consumed += len(frame)
+		frame := string(gw.pending[:n]) // includes the blank line
+		gw.pending = gw.pending[n:]
+		consumed += n
 		if err := gw.gate.WriteFrame(frame); err != nil {
 			// The gate (immediate mode) has already passed earlier bytes
 			// through; report the failure so the bridge stops.
@@ -108,12 +108,21 @@ func (gw *GateWriter) Finish() {
 	gw.gate.writer.Flush()
 }
 
-// frameBoundary returns the index of the "\n\n" frame terminator in buf, or
-// -1 when the buffer does not yet contain a complete frame.
+// frameBoundary returns the byte length of the first complete frame in buf
+// (content plus its blank-line terminator), or -1 when the buffer does not
+// yet contain a complete frame. Both "\n\n" and "\r\n\r\n" terminators
+// are recognized: anthropic passthrough forwards upstream bytes verbatim and
+// CRLF-dialect vendors must not stall frame assembly.
 func frameBoundary(buf []byte) int {
 	for i := 0; i+1 < len(buf); i++ {
-		if buf[i] == '\n' && buf[i+1] == '\n' {
-			return i
+		if buf[i] != '\n' {
+			continue
+		}
+		if buf[i+1] == '\n' {
+			return i + 2
+		}
+		if buf[i+1] == '\r' && i+2 < len(buf) && buf[i+2] == '\n' {
+			return i + 3
 		}
 	}
 	return -1

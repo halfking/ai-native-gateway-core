@@ -31,6 +31,10 @@ func StreamResponsesSSE(w http.ResponseWriter, resp *http.Response, clientModel,
 	}()
 	runtimeCfg := currentStreamRuntimeConfig()
 
+
+	// SR-W1: route client frames through the attempt commit gate.
+	// Disabled (default) this is the identity function — legacy wire bytes.
+	w, gate := wrapAttemptWriter(w, ProtocolOpenAIResponses)
 	flusher, ok := w.(http.Flusher)
 	if !ok {
 		http.Error(w, "streaming not supported", http.StatusInternalServerError)
@@ -127,7 +131,9 @@ func StreamResponsesSSE(w http.ResponseWriter, resp *http.Response, clientModel,
 			"first_byte_timeout_seconds", int(runtimeCfg.firstByteTimeout.Seconds()),
 			"hint", "if frequent, increase LLM_GATEWAY_FIRST_BYTE_TIMEOUT or admin config (default 120s)",
 		)
-		writeResponsesIncomplete(w, flusher, respID, msgID, createdAt, clientModel, fullText, "first_byte_timeout")
+		if gate.MayWriteTerminal() {
+			writeResponsesIncomplete(w, flusher, respID, msgID, createdAt, clientModel, fullText, "first_byte_timeout")
+		}
 		outcome.Interrupted = true
 		outcome.Reason = "first_byte_timeout"
 		outcome.Kind = errorsx.KindStreamTimeout
@@ -217,7 +223,9 @@ func StreamResponsesSSE(w http.ResponseWriter, resp *http.Response, clientModel,
 				if capture != nil {
 					capture.MarkInterruptedWithReason("client_disconnected")
 				}
-				writeResponsesIncomplete(w, flusher, respID, msgID, createdAt, clientModel, fullText, "client_disconnected")
+				if gate.MayWriteTerminal() {
+					writeResponsesIncomplete(w, flusher, respID, msgID, createdAt, clientModel, fullText, "client_disconnected")
+				}
 				outcome.Interrupted = true
 				outcome.Reason = "client_cancel"
 				outcome.Kind = errorsx.KindCanceled
@@ -229,7 +237,9 @@ func StreamResponsesSSE(w http.ResponseWriter, resp *http.Response, clientModel,
 				if capture != nil {
 					capture.MarkInterruptedWithReason("stream_timeout")
 				}
-				writeResponsesIncomplete(w, flusher, respID, msgID, createdAt, clientModel, fullText, "stream_timeout")
+				if gate.MayWriteTerminal() {
+					writeResponsesIncomplete(w, flusher, respID, msgID, createdAt, clientModel, fullText, "stream_timeout")
+				}
 				outcome.Interrupted = true
 				outcome.Reason = "stream_timeout"
 				outcome.Kind = errorsx.KindStreamTimeout
@@ -239,7 +249,9 @@ func StreamResponsesSSE(w http.ResponseWriter, resp *http.Response, clientModel,
 				if capture != nil {
 					capture.MarkInterruptedWithReason("stream_error")
 				}
-				writeResponsesIncomplete(w, flusher, respID, msgID, createdAt, clientModel, fullText, "upstream_error")
+				if gate.MayWriteTerminal() {
+					writeResponsesIncomplete(w, flusher, respID, msgID, createdAt, clientModel, fullText, "upstream_error")
+				}
 				outcome.Interrupted = true
 				outcome.Reason = "read_error"
 				outcome.Kind = errorsx.KindUpstreamDown
@@ -262,11 +274,19 @@ func StreamResponsesSSE(w http.ResponseWriter, resp *http.Response, clientModel,
 		// recoverable-interruption path can failover to another candidate.
 		// Mirrors stream.go's three ObserveChunk sites.
 		if capture != nil && capture.IntegrityBreached() {
-			writeResponsesIncomplete(w, flusher, respID, msgID, createdAt, clientModel, fullText, capture.IntegrityBreachReason())
+			if gate.MayWriteTerminal() {
+				writeResponsesIncomplete(w, flusher, respID, msgID, createdAt, clientModel, fullText, capture.IntegrityBreachReason())
+			}
 			return integrityBreachOutcome(capture, 0)
 		}
 	}
 
+	// SR-W1: the completed-response tail is terminal rendering. While the
+	// gate holds an uncommitted attempt (deferred survival mode) it must not
+	// fabricate a completed response — e.g. an empty stream stays discardable.
+	if !gate.MayWriteTerminal() {
+		return outcome
+	}
 	textDone := map[string]any{
 		"type":          "response.output_text.done",
 		"item_id":       msgID,

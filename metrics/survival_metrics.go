@@ -104,3 +104,14 @@ var (
 		Help: "Invalid (never-issued) placeholders found in LLM responses.",
 	}, []string{"source"})
 )
+
+var (
+	// SurvivalAttemptGateMetadataOverflowTotal counts attempts whose buffered
+	// attempt metadata exceeded the commit-gate cap (doc 18 §5.1): the attempt
+	// is blocked/skipped rather than force-committed. Sustained non-zero means
+	// a vendor started emitting unbounded pre-content metadata.
+	SurvivalAttemptGateMetadataOverflowTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "gateway_survival_attempt_gate_metadata_overflow_total",
+		Help: "Attempt commit-gate metadata buffer overflows by client protocol.",
+	}, []string{"protocol"})
+)

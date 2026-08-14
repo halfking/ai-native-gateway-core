@@ -3,6 +3,9 @@ package streaming
 import (
 	"errors"
 	"sync"
+	"time"
+
+	"github.com/kaixuan/llm-gateway-go/metrics"
 )
 
 // attempt_commit_gate.go — SR-W1 (doc 18 §5.1 AttemptCommitGate, §9.3, §10.1)
@@ -92,25 +95,38 @@ var (
 // budget in stream.go.
 const DefaultMaxMetadataBufferBytes = 64 * 1024
 
+// DefaultMaxMetadataBufferAge bounds how long attempt metadata may sit
+// buffered (doc 18 §5.1 byte/TIME cap).
+const DefaultMaxMetadataBufferAge = 30 * time.Second
+
 // GateOptions configures an AttemptCommitGate.
 type GateOptions struct {
 	Mode                   GateMode
 	MaxMetadataBufferBytes int
+	// MaxMetadataBufferAge bounds how long attempt metadata may stay
+	// buffered; 0 = DefaultMaxMetadataBufferAge. Overflow surfaces the
+	// same ErrAttemptMetadataBufferExceeded as the byte cap.
+	MaxMetadataBufferAge time.Duration
 }
 
 // AttemptCommitGate is the per-attempt protocol-aware buffer sink.
 type AttemptCommitGate struct {
-	mu          sync.Mutex
-	protocol    ClientProtocol
-	writer      *SerializedStreamWriter
-	mode        GateMode
-	maxMetadata int
+	mu             sync.Mutex
+	protocol       ClientProtocol
+	writer         *SerializedStreamWriter
+	mode           GateMode
+	maxMetadata    int
+	maxMetadataAge time.Duration
 
 	state     CommitState
 	committed bool
 	discarded bool
 	buffer    []byte
 	bufferLen int
+	// firstMetaAt timestamps the first buffered attempt metadata; the
+	// buffer is bounded by bytes AND age (doc 18 §5.1). Checked lazily on
+	// the next buffered write — no timer goroutine.
+	firstMetaAt time.Time
 }
 
 // NewAttemptCommitGate creates a gate for one attempt. All client-facing
@@ -119,15 +135,53 @@ func NewAttemptCommitGate(protocol ClientProtocol, writer *SerializedStreamWrite
 	if opts.MaxMetadataBufferBytes <= 0 {
 		opts.MaxMetadataBufferBytes = DefaultMaxMetadataBufferBytes
 	}
+	if opts.MaxMetadataBufferAge <= 0 {
+		opts.MaxMetadataBufferAge = DefaultMaxMetadataBufferAge
+	}
 	if writer == nil {
 		panic("attempt commit gate requires a serialized stream writer")
 	}
 	return &AttemptCommitGate{
-		protocol:    protocol,
-		writer:      writer,
-		mode:        opts.Mode,
-		maxMetadata: opts.MaxMetadataBufferBytes,
+		protocol:       protocol,
+		writer:         writer,
+		mode:           opts.Mode,
+		maxMetadata:    opts.MaxMetadataBufferBytes,
+		maxMetadataAge: opts.MaxMetadataBufferAge,
 	}
+}
+
+// protocolMetricLabel renders the client protocol as a metric label value.
+func protocolMetricLabel(p ClientProtocol) string {
+	switch p {
+	case ProtocolOpenAIChat:
+		return "openai_chat"
+	case ProtocolOpenAIResponses:
+		return "openai_responses"
+	case ProtocolAnthropic:
+		return "anthropic"
+	default:
+		return "unknown"
+	}
+}
+
+// MayWriteTerminal reports whether a bridge may keep its LEGACY error-path
+// terminal-frame rendering (error SSE / synthesized [DONE] / final events).
+//
+//   - no gate attached (gate disabled): true — legacy behavior, verbatim;
+//   - GateModeImmediate (Phase 0B): true — every frame passes through at
+//     legacy timing, so error frames reach the wire exactly as before;
+//   - GateModeBuffered: true only after the attempt committed (the client
+//     saw semantic bytes and must receive a well-formed ending). While the
+//     gate still holds an uncommitted attempt the bridge must return a
+//     structured outcome ONLY — the survival coordinator owns the final
+//     protocol rendering (doc 18 §9.3).
+func (g *AttemptCommitGate) MayWriteTerminal() bool {
+	if g == nil {
+		return true
+	}
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return g.committed || g.mode == GateModeImmediate
 }
 
 // State returns the current commit state.
@@ -158,7 +212,16 @@ func (g *AttemptCommitGate) WriteFrame(frame string) error {
 	}
 	if class == FrameClassKeepalive {
 		// Transport-level keepalive is attempt-independent: straight to the
-		// shared serialized channel, never buffered, never state-changing.
+		// shared serialized channel, never state-changing. But it must
+		// never jump AROUND already-buffered attempt frames — reordering
+		// protocol frames (e.g. an anthropic ping ahead of message_start)
+		// breaks client parsers — so queue in order while frames are
+		// pending.
+		if g.mode == GateModeBuffered && !g.committed && g.bufferLen > 0 {
+			g.buffer = append(g.buffer, frame...)
+			g.bufferLen += len(frame)
+			return nil
+		}
 		if _, err := g.writer.Write([]byte(frame)); err != nil {
 			return err
 		}
@@ -190,10 +253,18 @@ func (g *AttemptCommitGate) WriteFrame(frame string) error {
 		return nil
 	}
 
+	if g.firstMetaAt.IsZero() {
+		g.firstMetaAt = time.Now()
+	} else if time.Since(g.firstMetaAt) > g.maxMetadataAge {
+		// Age cap exceeded; never force a commit to reclaim memory.
+		metrics.SurvivalAttemptGateMetadataOverflowTotal.WithLabelValues(protocolMetricLabel(g.protocol)).Inc()
+		return ErrAttemptMetadataBufferExceeded
+	}
 	g.buffer = append(g.buffer, frame...)
 	g.bufferLen += len(frame)
 	if g.state == CommitStateMetadata && g.bufferLen > g.maxMetadata {
 		// Surface the overflow; never force a commit to reclaim memory.
+		metrics.SurvivalAttemptGateMetadataOverflowTotal.WithLabelValues(protocolMetricLabel(g.protocol)).Inc()
 		return ErrAttemptMetadataBufferExceeded
 	}
 	return nil
@@ -277,6 +348,7 @@ func (g *AttemptCommitGate) Discard() error {
 	}
 	g.buffer = nil
 	g.bufferLen = 0
+	g.firstMetaAt = time.Time{}
 	// The attempt produced nothing client-visible: state resets so a fresh
 	// attempt/gate can be reasoned about uniformly.
 	g.state = CommitStateNone
