@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/kaixuan/llm-gateway-go/domains/streaming/executors"
 	"github.com/kaixuan/llm-gateway-go/errorsx"
 )
 
@@ -50,6 +51,10 @@ type CandidateOutcome struct {
 type AttemptResult struct {
 	Success           bool
 	CandidateOutcomes []CandidateOutcome
+	// ExecResult is the raw executor result on success (nil on failure);
+	// the coordinator hands it back so the handler's shared post-loop
+	// processing (telemetry, traces, session bookkeeping) runs unchanged.
+	ExecResult *executors.ExecuteResult
 	// CommitState mirrors the AttemptCommitGate state at the end of the
 	// attempt: none/metadata ⇒ buffer discardable, content+ ⇒ client
 	// already saw semantic output.

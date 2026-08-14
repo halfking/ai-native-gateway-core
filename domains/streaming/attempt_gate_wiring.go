@@ -63,7 +63,14 @@ func setAttemptGateForTest(enabled bool, mode GateMode) (restore func()) {
 // wrapAttemptWriter wraps the client writer of a streaming bridge in a commit
 // gate for the given CLIENT protocol (the gate classifies client-facing
 // frames regardless of the upstream dialect the bridge converts from).
+//
+// A writer that is already gated (the SurvivalCoordinator pre-wrapped it
+// with its per-attempt buffered gate) passes through unchanged with the
+// existing gate — commit ownership stays with the coordinator.
 func wrapAttemptWriter(w http.ResponseWriter, protocol ClientProtocol) (http.ResponseWriter, *AttemptCommitGate) {
+	if gw, ok := w.(*GateWriter); ok {
+		return w, gw.UnderlyingAttemptGate()
+	}
 	if !attemptGateEnabled() {
 		return w, nil
 	}

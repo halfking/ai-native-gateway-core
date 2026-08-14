@@ -108,6 +108,13 @@ func (gw *GateWriter) Finish() {
 	gw.gate.writer.Flush()
 }
 
+// UnderlyingAttemptGate exposes the gate this writer fronts so downstream
+// wrapAttemptWriter calls (bridges) reuse the coordinator-owned gate instead
+// of stacking a second one (SR-07 wiring).
+func (gw *GateWriter) UnderlyingAttemptGate() *AttemptCommitGate {
+	return gw.gate
+}
+
 // frameBoundary returns the byte length of the first complete frame in buf
 // (content plus its blank-line terminator), or -1 when the buffer does not
 // yet contain a complete frame. Both "\n\n" and "\r\n\r\n" terminators
