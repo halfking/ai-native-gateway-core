@@ -1,57 +1,101 @@
-# llm-gateway-go 全面优化 v1 · 功能特性与任务计划
+# llm-gateway-go 全面优化 v1 · 审计修正版任务计划
 
-> 编制日期：2026-08-15 ｜ 上层方案：`ai-native-tools/docs/全面优化v1/`
-> 基线文档：父仓 `docs/拆分/31-端到端用户流程与三模块一体.md`（SSOT）、本仓 `docs/会话优化v3/`、`docs/修订0811/`
+> 编制日期：2026-08-14 ｜ 上层方案：`ai-native-tools/docs/全面优化v1/`
+> 基线：父仓 `docs/拆分/31-端到端用户流程与三模块一体.md`、本仓 `docs/会话优化v3/`、`docs/修订0811/`
+> 状态词：`CURRENT` 已由源码证明；`PARTIAL` 基础存在未闭环；`PLANNED` 目标能力。
 
-## 一、平台定位
+## 一、定位与事实边界
 
-**推理平面唯一 SSOT**：模型/会话/配额/计费的权威所有者；平台内所有 LLM 流量（ACC、RedClaw、Memora、Pocket）的唯一出口。同时是插件运行时宿主（承载 ai-session-manager 等）与 License/分发/升级通道（ai-native-maintain 协同）。
+gateway 是推理平面 SSOT，但 v1 文档必须区分事实与目标：
 
-## 二、功能特性清单
+- `cmd/gateway` 主入口默认 `:8781`，是 CURRENT。
+- `cmd/gateway-v2` 默认 `:8782`，是并行演示入口，不是生产主入口。
+- `ai-session-manager` TCP 默认也是 `:8782`，因此部署文档必须显式区分端口与服务名。
+- durable outbox/writer/dispatcher 已存在，不能写成“待上线”纯未来项；但通用 webhook/订阅与跨系统对账仍需闭环。
+- `GET /api/v2/capabilities` 目前不是源码事实能力，应作为计划项。
+- D1 资源档位是目标，不是已经有证据的事实指标。
 
-### 保留并强化（生产能力，不推倒）
+## 二、能力现状矩阵
 
-| 特性 | 现状 | v1 动作 |
-| --- | --- | --- |
-| 智能路由（L1 任务分类选模型 / L2 凭据解吸 + tier 回退 + P2C）、粘性会话 | v3.1 已验证 | 对外提供"平台级模型策略 API"：ACC/RedClaw 只传语义偏好（`acc_task_type`、`agent_client_type` 已有），路由决策全部收归本仓 |
-| 凭据池 + 身份隧道 + 50 UA 指纹 + 健康分级 | 生产运行 | 维持；新增平台调用方（façade 代理流量）凭据隔离 |
-| 多租户 RLS（38+ 表）+ MaaS 计费 | 生产运行 | 为 ACC/Memora/Pocket 建立独立租户与配额策略（借鉴 LiteLLM virtual-key 模型：key=身份+策略+预算） |
-| 全链路审计 + DLQ + columnar 分区 | 生产运行 | 审计事件对齐平台 envelope，可被 SM 聚合检索 |
-| 会话事实（session_turns/bodies、SessionCompressor、L0-L3 缓存、注入检测） | 生产运行 | 会话**分析与展示**职责继续外迁 SM（只读投影），事实与写入路径保留 |
-| 插件运行时（下载/校验/启动/握手/代理 + plugin-nav） | 单插件（SM） | 通用化：多插件并发、插件级配额与网络隔离 |
-| License/升级/分发（maintain 协同） | 生产运行 | 作为平台统一升级通道，承接其他模块发布包的可行性评估（P2） |
+| 能力 | 当前事实 | 状态 | v1 动作 |
+| --- | --- | --- | --- |
+| primary gateway | `cmd/gateway :8781` | CURRENT | 作为生产主入口 |
+| gateway-v2 demo | `cmd/gateway-v2 :8782` | CURRENT/PARTIAL | 仅并行演示，文档中明确非主入口 |
+| request/session facts | session/request 事实已存在 | CURRENT | 保持 SSOT |
+| durable outbox | outbox table/writer/dispatcher 已存在 | CURRENT/PARTIAL | 冻结事件 schema、HMAC、防重放、DLQ/replay |
+| SM projection dispatch | 已投递到 SM `/internal/v1/events` | CURRENT/PARTIAL | 继续联调与对账 |
+| plugin runtime | 已有 plugin 机制与 SM plugin manifest | CURRENT/PARTIAL | 通用化多插件与隔离 |
+| capabilities endpoint | 未见统一 `/api/v2/capabilities` 路由 | PLANNED | 先定 contract，再实现 |
+| D1 资源档位 | 未有实测证据/配置 | PLANNED | 加采样方法与报告 |
 
-### 新增（v1 交付）
+## 三、服务间身份与标准参数
 
-1. **平台调用方租户化**：为 ACC、RedClaw worker、Memora、Pocket 后端签发独立 service 身份与配额；旁路直连 provider 的流量归零（ADR-1 落地侧）。
-2. **审计事件平台化**：request_logs/审计事件增加平台 envelope 字段（correlation_id 透传、schema_version），暴露订阅通道（outbox/webhook）供 SM projection。
-3. **`GET /api/v2/capabilities`**（数据面与管理面各一）。
-4. **D1 精简 profile**：非必要 bg worker（~50 个中可选部分）与探针可关闭，支撑 16GB all-in-one（常驻 ≤1GB）。
-5. **MCP proxy 评估（P2）**：对齐 Higress 方向，评估工具级（MCP）流量在本网关收口的可行性——仅评估，不实施。
+### service JWT
 
-### 明确不做
+入站/出站都要明确：
 
-- 不做业务会话分析/聚类/预算 UI（SM 职责）；不写 SM 库；管理面不改业务语义。
-- 不承接任务编排、记忆治理。
-- v1 不引入新框架替换 gin/echo 双栈（重构风险大于收益，列 v2 评估）。
+- `iss`、`aud`、`sub`、`tenant_id`、`scope`、`exp`、`nbf`、`iat`。
+- gateway 到 SM 的 service token 可单独签发，但必须与目标 audience 一一对应，不能共享泛 token。
+- legacy `AI_SESSION_MANAGER_GATEWAY_SERVICE_TOKEN` 只作迁移兼容，不应写成平台标准。
 
-## 三、任务计划（对齐顶层 Phase 0-4；注意与 origin/main 同步——两副本本地均落后 3-4 提交）
+### 写/订阅请求
 
-| ID | 任务 | 对应顶层任务 | 优先级 | 验收 |
-| --- | --- | --- | --- | --- |
-| GW-0.0 | `git pull` 同步 origin/main（`7186325b2 feat(probe): async TriggerManual`）；确认 `llm-gateway-go/` 为唯一工作副本（`-3` 副本仅审计用） | — | **P0** | 两副本状态一致 |
-| GW-0.1 | correlation_id 全链路透传（数据面→request_logs→审计） | 0-4 | P0 | 六系统 trace 校验脚本通过 |
-| GW-0.2 | capabilities endpoint | 0-5 | P0 | 探测通过 |
-| GW-1.1 | 平台调用方租户/密钥/配额开通（ACC/RedClaw/Memora/Pocket）+ 旁路流量清零校验 | 1-6 | P0 | 网关统计 0 旁路 |
-| GW-2.1 | 审计事件订阅通道（outbox/webhook）供 SM projection | 2-3 | P0 | SM 消费联调通过 |
-| GW-2.2 | 插件运行时通用化（多插件、配额、隔离） | 2-3 关联 | P1 | 双插件共存冒烟 |
-| GW-3.1 | D1 精简 profile（worker/探针开关 + 资源限制） | 3-2 | P0 | all-in-one 常驻 ≤1GB |
-| GW-3.2 | 代理附加延迟基准（p95 < 80ms 保持） | 3-4 | P1 | 基准报告 |
-| GW-4.1 | MCP proxy 可行性评估报告 | 4-x | P2 | 报告 |
-| GW-4.2 | 会话优化 V3.2 收尾与全方面测试整改按既有文档继续 | — | P1 | 既有验收门禁 |
+- 写入/管理类 API：`Idempotency-Key` + `X-Correlation-ID` + `Traceparent`。
+- outbox 事件：`event_id/schema_version/event_type/tenant_id/session_id/request_id/correlation_id/occurred_at`。
+- 传输：HMAC 签名、timestamp/nonce、防重放、幂等消费、checkpoint、DLQ/replay。
 
-## 四、风险与依赖
+## 四、事件与投影闭环
 
-- 本仓迭代极快（日均多提交）：跨团队任务（envelope、租户开通）需在 CHANGELOG 标注平台坐标，避免与内部优化冲突。
-- SM projection 依赖审计事件稳定性：订阅通道上线前冻结相关表 schema 一个版本周期。
-- SOPS/env 与 154/245/252 环境差异：新增租户密钥走同一 env-injector 流程，禁止明文落仓。
+### 当前状态
+
+- durable outbox 已存在。
+- dispatcher 目标投递 SM `/internal/v1/events`。
+- SM projection schema、RLS、consumer、local-first read 已存在，但 ownership 切换/对账未完成。
+
+### v1 目标
+
+1. 冻结 event envelope 与版本。
+2. 明确 `request.completed.v1` 等事件字段和消费者幂等策略。
+3. 补 webhook/通用订阅能力时，必须与既有 outbox 区分。
+4. 设置 freshness 指标和 shadow 对账门禁，未通过不得切换 ownership。
+
+## 五、插件协议边界
+
+SM plugin 协议已存在 `http-unix-socket`、`/plugin/healthz`、`/plugin/handshake`、`X-Gateway-Plugin-ID`、`X-Gateway-Tenant-ID`、`X-Gateway-Context-Timestamp`、`X-Gateway-Context-Nonce`、`X-Gateway-Context-Signature`。
+
+gateway 文档中的“plugin runtime 通用化”应只描述为：
+
+- 已有 SM plugin 为样板。
+- 目标是多插件并发、插件级配额和网络隔离。
+- capabilities 仍需按插件/服务分别声明，不要把审计/预算/聚类写成当前所有 plugin 都已暴露。
+
+## 六、D1 资源档位
+
+“D1” 仅表示资源档位，不是 Cloudflare D1。
+
+必须补充：
+
+- 目标组件清单：gateway、SM、acc-go、Memora、RedClaw core、PG、Redis。
+- 关闭哪些 bg workers/probes。
+- RSS/PSS 采样方法、采样时长、典型流量。
+- 是否包含浏览器 UI。
+- `≤1GB`、`≤300MB`、`≤12GB` 必须标为 TARGET，等待实测。
+
+## 七、任务计划
+
+| ID | 任务 | 优先级 | 验收 |
+| --- | --- | --- | --- |
+| GW-0.1 | 明确端口矩阵与主/演示入口，杜绝 8780/8781/8782 混淆 | P0 | 文档、compose、启动日志一致 |
+| GW-0.2 | `GET /api/v2/capabilities` contract（目标） | P0 | 先生成 contract，再实现路由 |
+| GW-0.3 | correlation_id/tenant/service JWT standardization | P0 | 六系统 trace 可串联 |
+| GW-1.1 | 平台调用方租户化与旁路清零（ACC/RedClaw/Memora/Pocket） | P0 | 网关统计 0 旁路 |
+| GW-1.2 | outbox → SM event envelope freeze + HMAC/replay/dlq | P0 | consumer contract test 通过 |
+| GW-2.1 | plugin runtime multi-plugin/isolation 设计 | P1 | 双插件并存冒烟 |
+| GW-3.1 | D1 资源档位实测与报告 | P1 | 采样报告 |
+| GW-4.1 | 会话优化 V3.2 按既有文档继续，明确 CURRENT/PARTIAL/TARGET | P1 | 状态表更新 |
+
+## 八、风险
+
+- 不要把 gateway-v2 的 `:8782` 和 session-manager 的 `:8782` 混为一谈。
+- outbox/dispatcher 是 CURRENT，但 webhook/通用订阅不是；不要把两者合并描述。
+- 资源档位必须以实测支撑，不得写成已验收事实。
