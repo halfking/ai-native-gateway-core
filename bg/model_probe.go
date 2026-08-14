@@ -101,13 +101,24 @@ type ModelProbeRunner struct {
 	// closeOnce ensures `done` is closed exactly once whether the closer is the
 	// consensus loop (run) or the featured-only cycle (StartFeaturedOnly).
 	closeOnce sync.Once
+	// manualProbeQueue holds async manual probe requests submitted via
+	// SubmitManualProbe. Worker goroutine consumes tasks and executes
+	// TriggerManual synchronously in background (2026-08-14).
+	manualProbeQueue chan manualProbeTask
+	manualProbeWG    sync.WaitGroup
+}
+
+type manualProbeTask struct {
+	CredentialID int
+	RawModel     string
 }
 
 func NewModelProbeRunner(db *pgxpool.Pool, encKey []byte) *ModelProbeRunner {
 	return &ModelProbeRunner{
-		db:     db,
-		encKey: encKey,
-		done:   make(chan struct{}),
+		db:               db,
+		encKey:           encKey,
+		done:             make(chan struct{}),
+		manualProbeQueue: make(chan manualProbeTask, 64),
 	}
 }
 
@@ -122,6 +133,8 @@ func (r *ModelProbeRunner) Start(ctx context.Context) {
 	go r.run(ctx)
 	// Layer 4: featured model deep ping every 30 minutes (v5, 2026-06-20)
 	go r.featuredCycleLoop(ctx)
+	// Layer 5: manual probe worker (2026-08-14)
+	go r.manualProbeWorker(ctx)
 	slog.Info("model probe runner v2 (consensus+backoff) started",
 		"interval", ProbeInterval,
 		"required_consensus", RequiredConsensus,
@@ -254,6 +267,48 @@ func (r *ModelProbeRunner) nonfeaturedWatchdogTick(ctx context.Context) {
 	if n := tag.RowsAffected(); n > 0 {
 		slog.Info("nonfeatured watchdog extended next_retry_at",
 			"rows", n, "mult", mult, "target_hours", targetSecs/3600)
+	}
+}
+
+// SubmitManualProbe submits a manual probe task to the async queue.
+// Returns immediately with nil on success, or error if queue is full.
+// The probe executes in background via manualProbeWorker.
+func (r *ModelProbeRunner) SubmitManualProbe(credID int, model string) error {
+	select {
+	case r.manualProbeQueue <- manualProbeTask{CredentialID: credID, RawModel: model}:
+		slog.Debug("manual probe submitted to async queue",
+			"credential_id", credID,
+			"model", model)
+		return nil
+	default:
+		return fmt.Errorf("manual probe queue full")
+	}
+}
+
+// manualProbeWorker consumes manual probe tasks from the queue and executes
+// TriggerManual in background goroutines. Each task runs independently with
+// timeout; failures are logged but don't block the queue.
+func (r *ModelProbeRunner) manualProbeWorker(ctx context.Context) {
+	for {
+		select {
+		case task := <-r.manualProbeQueue:
+			r.manualProbeWG.Add(1)
+			go func(t manualProbeTask) {
+				defer r.manualProbeWG.Done()
+				probeCtx, cancel := context.WithTimeout(ctx, 90*time.Second)
+				defer cancel()
+				if err := r.TriggerManual(probeCtx, t.CredentialID, t.RawModel); err != nil {
+					slog.Warn("async manual probe failed",
+						"credential_id", t.CredentialID,
+						"model", t.RawModel,
+						"error", err)
+				}
+			}(task)
+		case <-ctx.Done():
+			slog.Info("manual probe worker shutting down, waiting for in-flight probes")
+			r.manualProbeWG.Wait()
+			return
+		}
 	}
 }
 
@@ -1080,6 +1135,34 @@ func (r *ModelProbeRunner) TriggerManual(ctx context.Context, credentialID int, 
 		}
 		return err
 	}
+
+	// 2026-08-14: Race protection - recheck eligibility before decrypt.
+	// Between initial SELECT (line ~1088) and here, operator could flip
+	// manual_disabled or lifecycle_status. This prevents decrypt + upstream
+	// probe of credentials that became ineligible during the race window.
+	var statusOk, lifecycleOk, credDisabled, providerEnabled, providerDisabled bool
+	recheckErr := r.db.QueryRow(ctx, `
+		SELECT 
+			COALESCE(c.status, 'active') = 'active',
+			COALESCE(c.lifecycle_status, 'active') = 'active',
+			COALESCE(c.manual_disabled, FALSE),
+			COALESCE(p.enabled, FALSE),
+			COALESCE(p.manual_disabled, FALSE)
+		FROM credentials c
+		JOIN providers p ON p.id = c.provider_id
+		WHERE c.id = $1
+	`, t.CredentialID).Scan(&statusOk, &lifecycleOk, &credDisabled, &providerEnabled, &providerDisabled)
+
+	if recheckErr != nil {
+		return recheckErr
+	}
+	if !statusOk || !lifecycleOk || credDisabled || !providerEnabled || providerDisabled {
+		r.recordRun(ctx, t, "skipped", nil, "disabled_after_query",
+			"credential became ineligible between query and probe", 0,
+			"unchanged", false, "manual")
+		return ErrCredentialManuallyDisabled
+	}
+
 	apiKey, decErr := decryptCiphertext(ciphertext, r.keyring, r.encKey)
 	if decErr != nil {
 		_, _, ns, nf, nst := r.computeConsensus("auth", probeCategoryProviderError, prevState, "decrypt_error", prevSucc, prevFail)
