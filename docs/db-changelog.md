@@ -783,11 +783,35 @@
 > `6ab117...`。`c13ee3c6a4` 提交历史不可改，但请把本 note 视为权威
 > 文件名映射。
 
+## 2026-08-10T16:37:43Z — deploy 245 build_seq 1489 (b0f29dc1)
+
+| Migration | File | SHA-256 | Status |
+|-----------|------|---------|--------|
+| 477 | `477_auto_route_v6_defaults.sql` | `05966190dcb0fb8c9e2a1cbecb9e97b7e9dd3561d3615acf3f8934598e4b8772` | applied+verified |
+
+## 2026-08-10T18:59:44Z — deploy 245 build_seq 1489 (11e553dc)
+
+| Migration | File | SHA-256 | Status |
+|-----------|------|---------|--------|
+| 478 | `478_auto_route_affinity.sql` | `520c3e510b77200e7679ebe10574c7d10f4600bfc108773431a0a462907d15b5` | applied+verified |
+
+## 2026-08-10T18:59:48Z — deploy 154 build_seq 1490 (11e553dc)
+
+| Migration | File | SHA-256 | Status |
+|-----------|------|---------|--------|
+| 478 | `478_auto_route_affinity.sql` | `520c3e510b77200e7679ebe10574c7d10f4600bfc108773431a0a462907d15b5` | applied+verified |
+
 ## 2026-08-11T16:30:13Z — deploy 245 build_seq 1491 (8a788d30)
 
 | Migration | File | SHA-256 | Status |
 |-----------|------|---------|--------|
 | 479 | `479_concurrency_mode.sql` | `066445e9d55602562bcbc69720eed2121c676ca8b1bbd1e8d6a0210f0793408e` | applied+verified |
+
+## 2026-08-12T19:22:23Z — deploy 245 build_seq 1505 (456875ed)
+
+| Migration | File | SHA-256 | Status |
+|-----------|------|---------|--------|
+| 487 | `487_request_logs_add_system_fingerprint.sql` | `e5ade1908e2c93998bf819c7e9adfd3107097adf8de4f1fc43eaac172353e5e6` | applied+verified |
 
 ## 2026-08-13T15:34:22Z — deploy 245 build_seq 1505 (83b40b7d)
 
