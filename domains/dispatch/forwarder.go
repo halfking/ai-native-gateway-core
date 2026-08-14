@@ -32,6 +32,12 @@ func newCredForwarder(cred CredentialRef, queueDepth int, pipe *Pipeline) *credF
 		ctx:    ctx,
 		cancel: cancel,
 	}
+	// Track the loop goroutine in the pipeline-wide WaitGroup so Stop() waits
+	// for in-flight forwards to finish (concurrency audit 2026-08-13 D3).
+	// Safe against Stop's wg.Wait: newCredForwarder is only reached via
+	// getOrCreateForwarder under p.credMu with a shutdown guard, so the Add
+	// happens-before Stop's credMu section and therefore before wg.Wait.
+	pipe.wg.Add(1)
 	go cf.loop()
 	return cf
 }
@@ -52,6 +58,9 @@ func (cf *credForwarder) tryReserve() bool {
 // goroutine, so requests waiting for a credential slot remain visible in the
 // bounded queue instead of escaping into unbounded goroutines.
 func (cf *credForwarder) loop() {
+	// LIFO: cf.wg.Wait (registered second) runs first, so the pipeline-wide
+	// Done only fires after every in-flight attempt goroutine has exited.
+	defer cf.pipe.wg.Done()
 	defer cf.wg.Wait()
 	for {
 		select {

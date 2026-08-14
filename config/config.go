@@ -95,6 +95,55 @@ type Config struct {
 	// idle-out. Default 10s; must be < client-side read idle timeout.
 	StreamRetryKeepaliveSecs int `yaml:"stream_retry_keepalive_secs" env:"LLM_GATEWAY_STREAM_RETRY_KEEPALIVE_SECS"`
 
+	// ── Request survival (docs/修订0811/18, 2026-08-14) ──────────────────
+	// RequestSurvival* controls the request-survival coordinator: protocol-
+	// safe keepalive + recoverable-error retry inside the client connection
+	// (Phase 1) and durable task takeover across disconnect/restart (Phase 2).
+	// ALL defaults OFF; survival is the exclusive outer retry owner and is
+	// mutually exclusive with StreamRetryEnabled at startup.
+	RequestSurvivalEnabled bool `yaml:"request_survival_enabled" env:"LLM_GATEWAY_REQUEST_SURVIVAL_ENABLED"`
+
+	// RequestSurvivalDurableEnabled (Phase 2): durable task creation,
+	// recovery workers, write-ahead semantic checkpoint. Requires
+	// RequestSurvivalEnabled and the durable crypto/schema prerequisites.
+	RequestSurvivalDurableEnabled bool `yaml:"request_survival_durable_enabled" env:"LLM_GATEWAY_REQUEST_SURVIVAL_DURABLE_ENABLED"`
+
+	// RequestSurvivalInteractiveDeadlineSeconds: max in-connection wait for
+	// ordinary streaming requests. Default 1800 (30 min).
+	RequestSurvivalInteractiveDeadlineSeconds int `yaml:"request_survival_interactive_deadline_seconds" env:"LLM_GATEWAY_REQUEST_SURVIVAL_INTERACTIVE_DEADLINE_SECONDS"`
+
+	// RequestSurvivalDurableDeadlineSeconds: max total wait for durable
+	// tasks (client disconnect / gateway restart included). Default 86400.
+	RequestSurvivalDurableDeadlineSeconds int `yaml:"request_survival_durable_deadline_seconds" env:"LLM_GATEWAY_REQUEST_SURVIVAL_DURABLE_DEADLINE_SECONDS"`
+
+	// RequestSurvivalStatusIntervalSeconds: min interval between visible
+	// gateway-status emissions. Default 60.
+	RequestSurvivalStatusIntervalSeconds int `yaml:"request_survival_status_interval_seconds" env:"LLM_GATEWAY_REQUEST_SURVIVAL_STATUS_INTERVAL_SECONDS"`
+
+	// RequestSurvivalRetryBaseSeconds / RetryMaxSeconds: exponential backoff
+	// base and cap for the fallback delay when no authoritative recovery time
+	// exists. Authoritative Retry-After / recover_at is NOT truncated by the
+	// cap. Defaults 2s / 300s.
+	RequestSurvivalRetryBaseSeconds int `yaml:"request_survival_retry_base_seconds" env:"LLM_GATEWAY_REQUEST_SURVIVAL_RETRY_BASE_SECONDS"`
+	RequestSurvivalRetryMaxSeconds  int `yaml:"request_survival_retry_max_seconds" env:"LLM_GATEWAY_REQUEST_SURVIVAL_RETRY_MAX_SECONDS"`
+
+	// RequestSurvivalWorkerCount / WorkerLeaseSeconds: Phase 2 recovery
+	// worker pool size and lease duration. Defaults 4 / 60.
+	RequestSurvivalWorkerCount     int `yaml:"request_survival_worker_count" env:"LLM_GATEWAY_REQUEST_SURVIVAL_WORKER_COUNT"`
+	RequestSurvivalWorkerLeaseSecs int `yaml:"request_survival_worker_lease_seconds" env:"LLM_GATEWAY_REQUEST_SURVIVAL_WORKER_LEASE_SECONDS"`
+
+	// RequestSurvivalMaxAttempts: per-task attempt cap. Default 100.
+	RequestSurvivalMaxAttempts int `yaml:"request_survival_max_attempts" env:"LLM_GATEWAY_REQUEST_SURVIVAL_MAX_ATTEMPTS"`
+
+	// RequestSurvivalMaxActiveTasksPerTenant: tenant-level active durable
+	// task cap. Default 100.
+	RequestSurvivalMaxActiveTasksPerTenant int `yaml:"request_survival_max_active_tasks_per_tenant" env:"LLM_GATEWAY_REQUEST_SURVIVAL_MAX_ACTIVE_TASKS_PER_TENANT"`
+
+	// RequestSurvivalTenantAllowlist: when non-empty, survival only applies
+	// to these tenants (Phase 1/2 canary gate). Empty = all tenants (once
+	// enabled).
+	RequestSurvivalTenantAllowlist []string `yaml:"request_survival_tenant_allowlist" env:"LLM_GATEWAY_REQUEST_SURVIVAL_TENANT_ALLOWLIST"`
+
 	// EnablePreStreamKeepalive (2026-06-28): when true, the gateway commits
 	// the SSE response (200 + text/event-stream) and emits periodic
 	// ": keep-alive\n\n" comments during upstream credential retries so
@@ -188,6 +237,66 @@ type Config struct {
 func (cfg *Config) IsProduction() bool {
 	env := strings.ToLower(strings.TrimSpace(cfg.DeployEnv))
 	return env == "production" || env == "prod"
+}
+
+// NormalizeRequestSurvival applies safe defaults to the request-survival
+// knobs after config load (zero values fall back to the documented defaults
+// from docs/修订0811/18 §14). Durable implies survival: enabling durable
+// alone also enables the in-connection coordinator, which is its Phase 1
+// prerequisite.
+func (cfg *Config) NormalizeRequestSurvival() {
+	if cfg.RequestSurvivalInteractiveDeadlineSeconds <= 0 {
+		cfg.RequestSurvivalInteractiveDeadlineSeconds = 1800
+	}
+	if cfg.RequestSurvivalDurableDeadlineSeconds <= 0 {
+		cfg.RequestSurvivalDurableDeadlineSeconds = 86400
+	}
+	if cfg.RequestSurvivalStatusIntervalSeconds <= 0 {
+		cfg.RequestSurvivalStatusIntervalSeconds = 60
+	}
+	if cfg.RequestSurvivalRetryBaseSeconds <= 0 {
+		cfg.RequestSurvivalRetryBaseSeconds = 2
+	}
+	if cfg.RequestSurvivalRetryMaxSeconds <= 0 {
+		cfg.RequestSurvivalRetryMaxSeconds = 300
+	}
+	if cfg.RequestSurvivalWorkerCount <= 0 {
+		cfg.RequestSurvivalWorkerCount = 4
+	}
+	if cfg.RequestSurvivalWorkerLeaseSecs <= 0 {
+		cfg.RequestSurvivalWorkerLeaseSecs = 60
+	}
+	if cfg.RequestSurvivalMaxAttempts <= 0 {
+		cfg.RequestSurvivalMaxAttempts = 100
+	}
+	if cfg.RequestSurvivalMaxActiveTasksPerTenant <= 0 {
+		cfg.RequestSurvivalMaxActiveTasksPerTenant = 100
+	}
+	if cfg.RequestSurvivalDurableEnabled {
+		cfg.RequestSurvivalEnabled = true
+	}
+}
+
+// RequestSurvivalEnabledForTenant evaluates the request-survival canary
+// gate: survival must be globally enabled AND, when a tenant allowlist is
+// configured, the tenant must be listed. Empty tenantID never passes an
+// allowlist gate (fail closed).
+func (cfg *Config) RequestSurvivalEnabledForTenant(tenantID string) bool {
+	if cfg == nil || !cfg.RequestSurvivalEnabled {
+		return false
+	}
+	if len(cfg.RequestSurvivalTenantAllowlist) == 0 {
+		return true
+	}
+	if tenantID == "" {
+		return false
+	}
+	for _, t := range cfg.RequestSurvivalTenantAllowlist {
+		if t == tenantID {
+			return true
+		}
+	}
+	return false
 }
 
 // ValidateAuthSecrets enforces production secrets for the data plane, ops plane,
@@ -300,6 +409,21 @@ func Load() *Config {
 		StreamRetryBaseDelayMs:   200,
 		StreamRetryMaxDelayMs:    5000,
 		StreamRetryKeepaliveSecs: 10,
+		// Request survival (docs/修订0811/18): all OFF by default. Enabling
+		// makes the survival coordinator the exclusive outer retry owner;
+		// mutually exclusive with StreamRetryEnabled (startup check).
+		RequestSurvivalEnabled:                    false,
+		RequestSurvivalDurableEnabled:             false,
+		RequestSurvivalInteractiveDeadlineSeconds: 1800,
+		RequestSurvivalDurableDeadlineSeconds:     86400,
+		RequestSurvivalStatusIntervalSeconds:      60,
+		RequestSurvivalRetryBaseSeconds:           2,
+		RequestSurvivalRetryMaxSeconds:            300,
+		RequestSurvivalWorkerCount:                4,
+		RequestSurvivalWorkerLeaseSecs:            60,
+		RequestSurvivalMaxAttempts:                100,
+		RequestSurvivalMaxActiveTasksPerTenant:    100,
+		RequestSurvivalTenantAllowlist:            nil,
 		// 2026-08-04: ON by default for ALL streaming protocols. Previously
 		// opt-in and limited to openai-completions, which left Anthropic Messages
 		// and Responses clients with no heartbeat before the first upstream
@@ -400,6 +524,32 @@ func Load() *Config {
 	}
 	if v := os.Getenv("LLM_GATEWAY_ENABLE_PRE_STREAM_KEEPALIVE"); v != "" {
 		cfg.EnablePreStreamKeepalive = v == "true" || v == "1"
+	}
+	// streamretry flag: the struct tag declares the env var but the parse was
+	// historically missing, so env-only deployments silently ran with the
+	// wrapper off. Parsed here so the survival mutual-exclusion check in
+	// cmd/gateway sees the same value the wrapper wiring does.
+	if v := os.Getenv("LLM_GATEWAY_STREAM_RETRY_ENABLED"); v != "" {
+		cfg.StreamRetryEnabled = v == "true" || v == "1"
+	}
+	// Request survival env overrides.
+	if v := os.Getenv("LLM_GATEWAY_REQUEST_SURVIVAL_ENABLED"); v != "" {
+		cfg.RequestSurvivalEnabled = v == "true" || v == "1"
+	}
+	if v := os.Getenv("LLM_GATEWAY_REQUEST_SURVIVAL_DURABLE_ENABLED"); v != "" {
+		cfg.RequestSurvivalDurableEnabled = v == "true" || v == "1"
+	}
+	applyPositiveIntEnv("LLM_GATEWAY_REQUEST_SURVIVAL_INTERACTIVE_DEADLINE_SECONDS", &cfg.RequestSurvivalInteractiveDeadlineSeconds)
+	applyPositiveIntEnv("LLM_GATEWAY_REQUEST_SURVIVAL_DURABLE_DEADLINE_SECONDS", &cfg.RequestSurvivalDurableDeadlineSeconds)
+	applyPositiveIntEnv("LLM_GATEWAY_REQUEST_SURVIVAL_STATUS_INTERVAL_SECONDS", &cfg.RequestSurvivalStatusIntervalSeconds)
+	applyPositiveIntEnv("LLM_GATEWAY_REQUEST_SURVIVAL_RETRY_BASE_SECONDS", &cfg.RequestSurvivalRetryBaseSeconds)
+	applyPositiveIntEnv("LLM_GATEWAY_REQUEST_SURVIVAL_RETRY_MAX_SECONDS", &cfg.RequestSurvivalRetryMaxSeconds)
+	applyPositiveIntEnv("LLM_GATEWAY_REQUEST_SURVIVAL_WORKER_COUNT", &cfg.RequestSurvivalWorkerCount)
+	applyPositiveIntEnv("LLM_GATEWAY_REQUEST_SURVIVAL_WORKER_LEASE_SECONDS", &cfg.RequestSurvivalWorkerLeaseSecs)
+	applyPositiveIntEnv("LLM_GATEWAY_REQUEST_SURVIVAL_MAX_ATTEMPTS", &cfg.RequestSurvivalMaxAttempts)
+	applyPositiveIntEnv("LLM_GATEWAY_REQUEST_SURVIVAL_MAX_ACTIVE_TASKS_PER_TENANT", &cfg.RequestSurvivalMaxActiveTasksPerTenant)
+	if v := os.Getenv("LLM_GATEWAY_REQUEST_SURVIVAL_TENANT_ALLOWLIST"); v != "" {
+		cfg.RequestSurvivalTenantAllowlist = parseCommaList(v)
 	}
 
 	// Log rotation overrides (only honoured when LLM_GATEWAY_LOG_FILE
@@ -532,6 +682,43 @@ func (cfg *Config) mergeFrom(other *Config) {
 	}
 	if other.EnablePreStreamKeepalive && os.Getenv("LLM_GATEWAY_ENABLE_PRE_STREAM_KEEPALIVE") == "" {
 		cfg.EnablePreStreamKeepalive = true
+	}
+	// Request survival file overrides (env wins, same pattern as above).
+	if other.RequestSurvivalEnabled && os.Getenv("LLM_GATEWAY_REQUEST_SURVIVAL_ENABLED") == "" {
+		cfg.RequestSurvivalEnabled = true
+	}
+	if other.RequestSurvivalDurableEnabled && os.Getenv("LLM_GATEWAY_REQUEST_SURVIVAL_DURABLE_ENABLED") == "" {
+		cfg.RequestSurvivalDurableEnabled = true
+	}
+	if other.RequestSurvivalInteractiveDeadlineSeconds != 0 && os.Getenv("LLM_GATEWAY_REQUEST_SURVIVAL_INTERACTIVE_DEADLINE_SECONDS") == "" {
+		cfg.RequestSurvivalInteractiveDeadlineSeconds = other.RequestSurvivalInteractiveDeadlineSeconds
+	}
+	if other.RequestSurvivalDurableDeadlineSeconds != 0 && os.Getenv("LLM_GATEWAY_REQUEST_SURVIVAL_DURABLE_DEADLINE_SECONDS") == "" {
+		cfg.RequestSurvivalDurableDeadlineSeconds = other.RequestSurvivalDurableDeadlineSeconds
+	}
+	if other.RequestSurvivalStatusIntervalSeconds != 0 && os.Getenv("LLM_GATEWAY_REQUEST_SURVIVAL_STATUS_INTERVAL_SECONDS") == "" {
+		cfg.RequestSurvivalStatusIntervalSeconds = other.RequestSurvivalStatusIntervalSeconds
+	}
+	if other.RequestSurvivalRetryBaseSeconds != 0 && os.Getenv("LLM_GATEWAY_REQUEST_SURVIVAL_RETRY_BASE_SECONDS") == "" {
+		cfg.RequestSurvivalRetryBaseSeconds = other.RequestSurvivalRetryBaseSeconds
+	}
+	if other.RequestSurvivalRetryMaxSeconds != 0 && os.Getenv("LLM_GATEWAY_REQUEST_SURVIVAL_RETRY_MAX_SECONDS") == "" {
+		cfg.RequestSurvivalRetryMaxSeconds = other.RequestSurvivalRetryMaxSeconds
+	}
+	if other.RequestSurvivalWorkerCount != 0 && os.Getenv("LLM_GATEWAY_REQUEST_SURVIVAL_WORKER_COUNT") == "" {
+		cfg.RequestSurvivalWorkerCount = other.RequestSurvivalWorkerCount
+	}
+	if other.RequestSurvivalWorkerLeaseSecs != 0 && os.Getenv("LLM_GATEWAY_REQUEST_SURVIVAL_WORKER_LEASE_SECONDS") == "" {
+		cfg.RequestSurvivalWorkerLeaseSecs = other.RequestSurvivalWorkerLeaseSecs
+	}
+	if other.RequestSurvivalMaxAttempts != 0 && os.Getenv("LLM_GATEWAY_REQUEST_SURVIVAL_MAX_ATTEMPTS") == "" {
+		cfg.RequestSurvivalMaxAttempts = other.RequestSurvivalMaxAttempts
+	}
+	if other.RequestSurvivalMaxActiveTasksPerTenant != 0 && os.Getenv("LLM_GATEWAY_REQUEST_SURVIVAL_MAX_ACTIVE_TASKS_PER_TENANT") == "" {
+		cfg.RequestSurvivalMaxActiveTasksPerTenant = other.RequestSurvivalMaxActiveTasksPerTenant
+	}
+	if len(other.RequestSurvivalTenantAllowlist) > 0 && os.Getenv("LLM_GATEWAY_REQUEST_SURVIVAL_TENANT_ALLOWLIST") == "" {
+		cfg.RequestSurvivalTenantAllowlist = other.RequestSurvivalTenantAllowlist
 	}
 	if other.LogFile != "" && os.Getenv("LLM_GATEWAY_LOG_FILE") == "" {
 		cfg.LogFile = other.LogFile

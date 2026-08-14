@@ -737,8 +737,29 @@ func (sc *SessionCompressor) updateCache(
 		return
 	}
 	newState := buildSessionState(prevState, outboundBody, res, didCompress, time.Now().Unix())
+	hydrateSanitizeInfo(ctx, newState)
 	if err := sc.deps.Cache.Set(ctx, tenantID, gwSessionID, newState, outboundBody); err != nil {
 		slog.Warn("session_compressor: cache set failed", "session", gwSessionID, "error", err)
+	}
+}
+
+// hydrateSanitizeInfo copies the request-scoped sanitize bridge info (set by
+// the HTTP sanitize middleware, SC-1) into the cache state's v8 L3 fields.
+// Requests without new placeholders keep whatever ref the previous state
+// carried — buildSessionState already copies prevState forward.
+func hydrateSanitizeInfo(ctx context.Context, state *SessionState) {
+	if state == nil {
+		return
+	}
+	info, ok := SanitizeInfoFromContext(ctx)
+	if !ok {
+		return
+	}
+	if info.MapRef != "" {
+		state.SanitizeMapRef = info.MapRef
+	}
+	if info.Stats.PlaceholderCount > 0 || info.Stats.SanitizedAt > 0 {
+		state.SanitizeStats = info.Stats
 	}
 }
 
@@ -777,6 +798,7 @@ func (sc *SessionCompressor) CommitFinal(
 		res.CompressedPrefixHash = report.PrefixHash
 	}
 	state := buildSessionState(prevState, finalBody, res, res.SummaryMarker != "", time.Now().Unix())
+	hydrateSanitizeInfo(ctx, state)
 	if err := sc.deps.Cache.Set(ctx, tenantID, gwSessionID, state, finalBody); err != nil {
 		return fmt.Errorf("commit final session cache failed: %w (session_id=%s)", err, gwSessionID)
 	}

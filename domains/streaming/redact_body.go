@@ -6,6 +6,7 @@ import (
 	"log/slog"
 
 	"github.com/kaixuan/llm-gateway-go/domains/outputcompliance"
+	"github.com/kaixuan/llm-gateway-go/settings"
 )
 
 // RedactOwnerContextFunc 返回一次请求的 (callerOwner, dataOwner)。
@@ -149,15 +150,23 @@ func rewriteAssistantContentInJSON(body []byte, redactedContent string) ([]byte,
 	return out, true
 }
 
-// outputComplianceEnabled 读取 output_compliance.enabled（复用 interceptor 同名函数逻辑）。
+// outputComplianceEnabled 读取 output_compliance.enabled。SC-2
+// (docs/修订0811/19)：此前是硬编码 true 的占位实现，绕过了管理台的
+// 模块开关；现在从 settings 读取（默认 true 保持旧行为）。
 func outputComplianceEnabled() bool {
-	// 简化：直接返回 true，实际应从 settings.Global 读取
-	// 与 interceptor.go 保持一致。生产时需注入 settings registry。
-	return true
+	return settings.GetPlatformBool("output_compliance.enabled", true)
 }
 
-// getRedactionMode 读取 output_compliance.redaction_mode（复用 interceptor 同名函数逻辑）。
+// getRedactionMode 读取 output_compliance.redaction_mode。SC-2：此前硬
+// 编码 RedactOwnerMismatch；现在解析 settings 枚举
+// （off/always/owner_mismatch），未知值回落 owner_mismatch（旧行为）。
 func getRedactionMode() outputcompliance.RedactionMode {
-	// 简化：默认返回 RedactOwnerMismatch，实际应从 settings.Global 读取
-	return outputcompliance.RedactOwnerMismatch
+	switch settings.GetPlatformString("output_compliance.redaction_mode", "owner_mismatch") {
+	case "off":
+		return outputcompliance.RedactOff
+	case "always":
+		return outputcompliance.RedactAlways
+	default:
+		return outputcompliance.RedactOwnerMismatch
+	}
 }

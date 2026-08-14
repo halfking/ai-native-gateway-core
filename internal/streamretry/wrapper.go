@@ -12,6 +12,7 @@ import (
 	"sync"
 
 	"github.com/kaixuan/llm-gateway-go/domains/dispatch" //nolint:depguard // V3.2 state-transition logger
+	"github.com/kaixuan/llm-gateway-go/internal/retryowner"
 )
 
 // requestIDCtxKey is the private context key used to thread the inbound
@@ -331,6 +332,25 @@ func (e *DefaultStreamExecutor) ExecuteStreamWithMetrics(ctx context.Context, w 
 		e.wrapper.setMetrics(metrics)
 		recordExecutionMetrics(metrics, rec.err)
 		return metrics, rec.err
+	}
+
+	// Request-survival ownership (docs/修订0811/18 §5, docs/修订0811/19
+	// SR-W0): when the survival coordinator owns this request's retries, this
+	// wrapper must execute the handler exactly once and never loop — nested
+	// ownership would multiply provider calls and cost. The owner is frozen
+	// at the HTTP boundary via context; hot-toggling the survival flag does
+	// not affect in-flight requests.
+	if retryowner.OwnerFrom(ctx) == retryowner.Survival {
+		metrics := WrapperMetrics{TotalAttempts: 1, SuccessAttempt: -1}
+		err := streamFunc(ctx, w)
+		if err == nil {
+			metrics.SuccessAttempt = 0
+		} else {
+			metrics.LastError = err
+		}
+		e.wrapper.setMetrics(metrics)
+		recordExecutionMetrics(metrics, err)
+		return metrics, err
 	}
 
 	return e.wrapper.ExecuteWithMetrics(ctx, w, streamFunc)
