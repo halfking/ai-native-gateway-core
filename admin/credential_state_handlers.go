@@ -51,8 +51,8 @@ func (h *Handler) handleTestCredential(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleTestCredentialModel fires a per-model manual probe via the
-// ModelProbeRunner. Returns 202 — consensus (3 successes/failures) still
-// applies before routability actually flips.
+// ModelProbeRunner async queue. Returns 202 immediately; the probe runs
+// in background and results are visible via probe history or state query.
 func (h *Handler) handleTestCredentialModel(w http.ResponseWriter, r *http.Request) {
 	credID, ok := parseCredentialID(w, r)
 	if !ok {
@@ -70,8 +70,8 @@ func (h *Handler) handleTestCredentialModel(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	if err := h.modelProbe.TriggerManual(r.Context(), credID, model); err != nil {
-		slog.Warn("manual model probe failed",
+	if err := h.modelProbe.SubmitManualProbe(credID, model); err != nil {
+		slog.Warn("manual model probe submission failed",
 			"credential_id", credID,
 			"model", model,
 			"error", err)
@@ -79,7 +79,7 @@ func (h *Handler) handleTestCredentialModel(w http.ResponseWriter, r *http.Reque
 			http.Error(w, "credential is manually disabled", http.StatusConflict)
 			return
 		}
-		http.Error(w, "probe trigger failed", http.StatusInternalServerError)
+		http.Error(w, "probe queue full", http.StatusServiceUnavailable)
 		return
 	}
 
