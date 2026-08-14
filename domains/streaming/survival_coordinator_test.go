@@ -1,0 +1,291 @@
+package streaming
+
+import (
+	"context"
+	"errors"
+	"testing"
+	"time"
+
+	"github.com/kaixuan/llm-gateway-go/domains/streaming/executors"
+	"github.com/kaixuan/llm-gateway-go/errorsx"
+)
+
+// SR-06 (doc 18 §5.1 SurvivalCoordinator, §8): the in-connection recovery
+// loop. It owns the commit gate per attempt, aggregates task outcomes and
+// dispatches retry-now / wait-recovery / terminal. All seams (executor,
+// candidate refresh, sleep, terminal render) are injected so the loop logic
+// is verifiable without IO.
+
+// scriptedExecutor returns queued results in order.
+type scriptedExecutor struct {
+	results []*executors.ExecuteResult
+	errs    []error
+	calls   int
+}
+
+func (s *scriptedExecutor) Execute(params *executors.ExecParams) (*executors.ExecuteResult, error) {
+	i := s.calls
+	s.calls++
+	if i < len(s.errs) && s.errs[i] != nil {
+		return nil, s.errs[i]
+	}
+	if i < len(s.results) {
+		return s.results[i], nil
+	}
+	return nil, errors.New("scripted executor exhausted")
+}
+
+type coordHarness struct {
+	exec       *scriptedExecutor
+	flusher    *trackingFlusher
+	sw         *SerializedStreamWriter
+	refreshes  int
+	sleeps     []time.Duration
+	terminals  []TaskDecision
+	committeds []bool
+	clock      time.Time
+}
+
+func newCoordHarness(exec *scriptedExecutor) *coordHarness {
+	h := &coordHarness{
+		exec:    exec,
+		flusher: &trackingFlusher{},
+		clock:   time.Now(),
+	}
+	h.sw = NewSerializedStreamWriter(h.flusher)
+	return h
+}
+
+func (h *coordHarness) coordinator() *SurvivalCoordinator {
+	return &SurvivalCoordinator{
+		Exec:     h.exec,
+		Protocol: ProtocolAnthropic,
+		Options: SurvivalOptions{Deadline: 30 * time.Minute, RetryBase: 2 * time.Second, RetryMax: 300 * time.Second},
+		Now: func() time.Time {
+			return h.clock
+		},
+		Sleep: func(ctx context.Context, d time.Duration) error {
+			h.sleeps = append(h.sleeps, d)
+			h.clock = h.clock.Add(d)
+			return ctx.Err()
+		},
+		Refresh: func(ctx context.Context) {
+			h.refreshes++
+		},
+		Terminal: func(d TaskDecision, committed bool) {
+			h.terminals = append(h.terminals, d)
+			h.committeds = append(h.committeds, committed)
+		},
+	}
+}
+
+func transientFailure() error {
+	return &executors.ExecuteError{
+		LastKind: errorsx.KindTransient,
+		Attempts: []executors.AttemptRecord{{ProviderID: 1, CredentialID: 1, Kind: errorsx.KindTransient}},
+	}
+}
+
+func rateLimitFailure() error {
+	return &executors.ExecuteError{
+		LastKind: errorsx.KindRateLimit,
+		Attempts: []executors.AttemptRecord{{ProviderID: 1, CredentialID: 1, Kind: errorsx.KindRateLimit}},
+	}
+}
+
+func TestSurvivalCoordinatorFirstAttemptSucceeds(t *testing.T) {
+	h := newCoordHarness(&scriptedExecutor{results: []*executors.ExecuteResult{{}}})
+	c := h.coordinator()
+
+	res := c.Run(context.Background(), h.sw, &executors.ExecParams{IsStream: true})
+
+	if !res.Succeed {
+		t.Fatalf("expected success, decision=%v err=%v", res.Decision.Action, res.FinalAttempt.FinalError)
+	}
+	if h.exec.calls != 1 {
+		t.Fatalf("executor calls = %d, want 1", h.exec.calls)
+	}
+	if len(h.terminals) != 0 || len(h.sleeps) != 0 || h.refreshes != 0 {
+		t.Fatalf("clean success must not retry/render: terminals=%v sleeps=%v refreshes=%d",
+			h.terminals, h.sleeps, h.refreshes)
+	}
+}
+
+func TestSurvivalCoordinatorRetryNowRecoversOnSecondAttempt(t *testing.T) {
+	h := newCoordHarness(&scriptedExecutor{
+		errs:    []error{transientFailure(), nil},
+		results: []*executors.ExecuteResult{nil, {}},
+	})
+	c := h.coordinator()
+
+	res := c.Run(context.Background(), h.sw, &executors.ExecParams{})
+
+	if !res.Succeed {
+		t.Fatalf("expected recovery, decision=%v", res.Decision.Action)
+	}
+	if h.exec.calls != 2 {
+		t.Fatalf("executor calls = %d, want 2", h.exec.calls)
+	}
+	if h.refreshes != 1 {
+		t.Fatalf("retry-now must refresh candidates once, got %d", h.refreshes)
+	}
+	if len(h.terminals) != 0 {
+		t.Fatalf("recovered request must not render terminal, got %v", h.terminals)
+	}
+}
+
+func TestSurvivalCoordinatorWaitRecoveryBacksOffAndKeepalives(t *testing.T) {
+	h := newCoordHarness(&scriptedExecutor{
+		errs:    []error{rateLimitFailure(), nil},
+		results: []*executors.ExecuteResult{nil, {}},
+	})
+	c := h.coordinator()
+
+	res := c.Run(context.Background(), h.sw, &executors.ExecParams{})
+
+	if !res.Succeed {
+		t.Fatalf("expected recovery, decision=%v", res.Decision.Action)
+	}
+	if len(h.sleeps) != 1 || h.sleeps[0] != 2*time.Second {
+		t.Fatalf("first wait must sleep the base backoff, got %v", h.sleeps)
+	}
+	if h.flusher.buf.Len() == 0 {
+		t.Fatal("waiting for recovery must emit a keepalive comment to the client")
+	}
+	if h.refreshes != 1 {
+		t.Fatalf("wait-recovery must refresh candidates, got %d", h.refreshes)
+	}
+}
+
+func TestSurvivalCoordinatorFailTerminalRendersOnce(t *testing.T) {
+	termErr := &executors.ExecuteError{
+		LastKind: errorsx.KindContentFilter,
+		Attempts: []executors.AttemptRecord{{ProviderID: 1, CredentialID: 1, Kind: errorsx.KindContentFilter}},
+	}
+	h := newCoordHarness(&scriptedExecutor{errs: []error{termErr, termErr}})
+	c := h.coordinator()
+
+	res := c.Run(context.Background(), h.sw, &executors.ExecParams{})
+
+	if res.Succeed {
+		t.Fatal("terminal failure must not succeed")
+	}
+	if res.Decision.Action != TaskActionFailTerminal {
+		t.Fatalf("decision = %v, want fail_terminal", res.Decision.Action)
+	}
+	if h.exec.calls != 1 {
+		t.Fatalf("terminal kinds must not retry, executor calls = %d", h.exec.calls)
+	}
+	if len(h.terminals) != 1 || h.terminals[0].Action != TaskActionFailTerminal {
+		t.Fatalf("terminal render = %+v", h.terminals)
+	}
+	if h.committeds[0] {
+		t.Fatal("uncommitted terminal must render as uncommitted")
+	}
+}
+
+// committedExecutor simulates an attempt that committed content before
+// failing with a recoverable kind — the aggregator upgrades to
+// ResumeBlocked and the coordinator must render a well-formed ending.
+type committedExecutor struct{ calls int }
+
+func (e *committedExecutor) Execute(params *executors.ExecParams) (*executors.ExecuteResult, error) {
+	e.calls++
+	if gw, ok := params.W.(*GateWriter); ok {
+		_, _ = gw.Write([]byte("event: content_block_delta\ndata: {\"delta\":{\"type\":\"text_delta\",\"text\":\"hi\"}}\n\n"))
+	}
+	return nil, &executors.ExecuteError{
+		LastKind: errorsx.KindRateLimit,
+		Attempts: []executors.AttemptRecord{{ProviderID: 1, CredentialID: 1, Kind: errorsx.KindRateLimit}},
+	}
+}
+
+func TestSurvivalCoordinatorResumeBlockedRendersCommittedEnding(t *testing.T) {
+	h := newCoordHarness(nil)
+	h.exec = nil
+	c := h.coordinator()
+	c.Exec = &committedExecutor{}
+
+	res := c.Run(context.Background(), h.sw, &executors.ExecParams{})
+
+	if res.Succeed {
+		t.Fatal("resume-blocked must not succeed")
+	}
+	if res.Decision.Action != TaskActionResumeBlocked {
+		t.Fatalf("decision = %v, want resume_blocked", res.Decision.Action)
+	}
+	if c.Exec.(*committedExecutor).calls != 1 {
+		t.Fatal("resume-blocked must never retry")
+	}
+	if len(h.terminals) != 1 || !h.committeds[0] {
+		t.Fatalf("committed ending required, terminals=%v committeds=%v", h.terminals, h.committeds)
+	}
+	if got := h.flusher.buf.String(); got == "" || got == ": gw-survival-keepalive\n\n" {
+		t.Fatalf("committed content must have reached the wire, got %q", got)
+	}
+}
+
+func TestSurvivalCoordinatorDeadlineStopsLoop(t *testing.T) {
+	h := newCoordHarness(&scriptedExecutor{errs: []error{rateLimitFailure(), rateLimitFailure()}})
+	c := h.coordinator()
+	// Tight deadline: expires before the second retry.
+	c.Options.Deadline = 3 * time.Second // first sleep = 2s, clock advances past deadline
+
+	res := c.Run(context.Background(), h.sw, &executors.ExecParams{})
+
+	if res.Succeed {
+		t.Fatal("deadline must stop recovery")
+	}
+	if res.Decision.Reason != "deadline_exceeded" {
+		t.Fatalf("decision reason = %q, want deadline_exceeded", res.Decision.Reason)
+	}
+	if len(h.terminals) != 1 {
+		t.Fatalf("deadline terminal must render once, got %v", h.terminals)
+	}
+}
+
+func TestSurvivalCoordinatorClientCancelStopsLoop(t *testing.T) {
+	h := newCoordHarness(&scriptedExecutor{errs: []error{rateLimitFailure()}})
+	c := h.coordinator()
+	ctx, cancel := context.WithCancel(context.Background())
+	c.Sleep = func(ctx context.Context, d time.Duration) error {
+		cancel()
+		return ctx.Err()
+	}
+
+	res := c.Run(ctx, h.sw, &executors.ExecParams{})
+
+	if res.Succeed {
+		t.Fatal("cancelled recovery must not succeed")
+	}
+	if res.Decision.Reason != "client_disconnected" {
+		t.Fatalf("decision reason = %q, want client_disconnected", res.Decision.Reason)
+	}
+	if len(h.terminals) != 0 {
+		t.Fatal("client is gone — no terminal render")
+	}
+}
+
+func TestSurvivalCoordinatorBackoffDoublesAndCaps(t *testing.T) {
+	h := newCoordHarness(&scriptedExecutor{errs: []error{
+		transientFailure(), transientFailure(), transientFailure(), nil,
+	},
+		results: []*executors.ExecuteResult{nil, nil, nil, {}},
+	})
+	c := h.coordinator()
+
+	res := c.Run(context.Background(), h.sw, &executors.ExecParams{})
+
+	if !res.Succeed {
+		t.Fatalf("expected recovery on 4th attempt, decision=%v", res.Decision.Action)
+	}
+	want := []time.Duration{2 * time.Second, 4 * time.Second, 8 * time.Second}
+	if len(h.sleeps) != len(want) {
+		t.Fatalf("sleeps = %v, want %v", h.sleeps, want)
+	}
+	for i, w := range want {
+		if h.sleeps[i] != w {
+			t.Fatalf("sleep[%d] = %v, want %v (full: %v)", i, h.sleeps[i], w, h.sleeps)
+		}
+	}
+}
