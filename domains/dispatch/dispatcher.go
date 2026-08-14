@@ -126,6 +126,10 @@ func (p *Pipeline) tryModelChange(qr *QueuedRequest, cause error) {
 	// Re-enter Tier-1 for the new model (re-routes its credentials).
 	key := queueKeyFor(chosen)
 	if !p.enqueueModel(key, qr) {
+		if p.shutdown.Load() {
+			p.complete(qr, ForwardOutcome{Err: ErrShutdown})
+			return
+		}
 		metricOverflow.WithLabelValues("model_queue_full").Inc()
 		p.complete(qr, ForwardOutcome{Err: ErrOverflow})
 	}

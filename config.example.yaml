@@ -18,3 +18,23 @@ enable_empty_stream_gate: true
 enable_credential_fp_slots: true
 credential_fp_slot_active_gate_seconds: 300
 credential_fp_slot_reclaim_idle_seconds: 1800
+
+# ── Request survival (docs/修订0811/18+19) ─────────────────────────────
+# Protocol-safe keepalive + recoverable-error retry inside the client
+# connection (Phase 1) and durable task takeover across disconnect/restart
+# (Phase 2). ALL OFF by default; mutually exclusive with
+# LLM_GATEWAY_STREAM_RETRY_ENABLED (survival wins at startup).
+request_survival_enabled: false
+request_survival_durable_enabled: false
+request_survival_interactive_deadline_seconds: 1800
+request_survival_durable_deadline_seconds: 86400
+request_survival_status_interval_seconds: 60
+request_survival_retry_base_seconds: 2
+request_survival_retry_max_seconds: 300
+request_survival_worker_count: 4
+request_survival_worker_lease_seconds: 60
+request_survival_max_attempts: 100
+request_survival_max_active_tasks_per_tenant: 100
+# Empty allowlist = all tenants once enabled; set tenants for canary rollout.
+# request_survival_tenant_allowlist:
+#   - "alpha"

@@ -433,6 +433,11 @@ func (c *SessionCache) Set(ctx context.Context, tenantID, gwSessionID string, st
 //
 // KILL-SWITCH (2026-07-12 incident): when session_cache is disabled,
 // Invalidate is a no-op.
+//
+// SC-1 (docs/修订0811/19): invalidation is session-state-driven — the
+// sanitize map/offsets hashes share the session's lifecycle and must die with
+// it, otherwise plaintext values outlive the session cache that references
+// them.
 func (c *SessionCache) Invalidate(ctx context.Context, tenantID, gwSessionID string) {
 	if !settings.IsEnabled("session_cache") {
 		return
@@ -449,6 +454,12 @@ func (c *SessionCache) Invalidate(ctx context.Context, tenantID, gwSessionID str
 		if err := c.redis.Del(ctx, redisKey(tenantID, gwSessionID)); err != nil {
 			slog.Warn("session_cache: redis invalidate error", "session", gwSessionID, "error", err)
 		}
+		// Best-effort cascade: the sanitize hashes live in the same Redis DB
+		// as the L2 state (both written per session), so deleting them here
+		// closes the lifecycle gap without a new dependency on the sanitize
+		// package (which imports this one).
+		_ = c.redis.Del(ctx, SessionSanitizeRedisKey(gwSessionID))
+		_ = c.redis.Del(ctx, SessionSanitizeOffsetRedisKey(gwSessionID))
 	}
 }
 

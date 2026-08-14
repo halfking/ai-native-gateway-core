@@ -165,6 +165,11 @@ func (p *Pipeline) Submit(ctx context.Context, qr *QueuedRequest) (any, error) {
 
 	modelKey := queueKeyFor(qr.RequestedModel)
 	if !p.enqueueModel(modelKey, qr) {
+		if p.shutdown.Load() {
+			// Stop raced us between the entry check and admission: report
+			// shutdown, not a misleading queue-full overflow.
+			return nil, ErrShutdown
+		}
 		metricOverflow.WithLabelValues("model_queue_full").Inc()
 		return nil, ErrOverflow
 	}
@@ -203,9 +208,12 @@ func isAutoModel(m string) bool {
 
 // enqueueModel pushes qr into the named model queue, creating it (and its
 // drainer goroutine) on first use. Returns false if the model queue is full
-// (overflow).
+// (overflow) or the pipeline is shutting down (admission refused).
 func (p *Pipeline) enqueueModel(name string, qr *QueuedRequest) bool {
 	mq := p.getOrCreateModelQueue(name)
+	if mq == nil {
+		return false
+	}
 	select {
 	case mq.ch <- qr:
 		mq.depth.Add(1)
@@ -223,11 +231,13 @@ func (p *Pipeline) getOrCreateModelQueue(name string) *modelQueue {
 		return mq
 	}
 	// After Stop, do not spawn new drainers (Stop's wg.Wait may already be
-	// running; a late wg.Add would race it). Return a throwaway queue whose
-	// sends will buffer or overflow — Submit has already started rejecting.
+	// running; a late wg.Add would race it) and do NOT hand back a throwaway
+	// queue: enqueueModel would "succeed" into a channel nobody drains, so
+	// the qr would never complete and its Submit caller would block forever
+	// (concurrency audit 2026-08-13 D5). Return nil — enqueueModel then fails
+	// admission and the caller completes the qr with ErrShutdown.
 	if p.shutdown.Load() {
-		mq := &modelQueue{name: name, ch: make(chan *QueuedRequest, 1)}
-		return mq
+		return nil
 	}
 	mq := &modelQueue{name: name, ch: make(chan *QueuedRequest, p.config().MaxQueueDepth)}
 	p.models[name] = mq
@@ -375,9 +385,14 @@ func (p *Pipeline) routeFailover(qr *QueuedRequest, err error) {
 }
 
 // tryEnqueueCred pushes qr into the selected credential's Tier-2 queue,
-// creating the forwarder on first use. Returns false if the queue is full.
+// creating the forwarder on first use. Returns false if the queue is full or
+// the pipeline is shutting down (admission refused).
 func (p *Pipeline) tryEnqueueCred(cred CredentialRef, qr *QueuedRequest) bool {
 	cf := p.getOrCreateForwarder(cred)
+	if cf == nil {
+		metricOverflow.WithLabelValues("shutdown").Inc()
+		return false
+	}
 	if !cf.tryReserve() {
 		metricOverflow.WithLabelValues("cred_queue_full").Inc()
 		return false
@@ -406,6 +421,14 @@ func (p *Pipeline) getOrCreateForwarder(cred CredentialRef) *credForwarder {
 	defer p.credMu.Unlock()
 	if cf, ok := p.forwarders[cred.CredentialID]; ok {
 		return cf
+	}
+	// Shutdown guard (concurrency audit 2026-08-13 D4): without it, a late
+	// Submit→failover path could spawn a forwarder AFTER Stop cleared the map,
+	// leaving a goroutine with a context.Background() nobody cancels — a
+	// permanent leak. Fail admission instead; callers complete with
+	// ErrShutdown via the failover ladder's terminal path.
+	if p.shutdown.Load() {
+		return nil
 	}
 	depth := cred.MaxQueueDepth
 	if depth <= 0 {

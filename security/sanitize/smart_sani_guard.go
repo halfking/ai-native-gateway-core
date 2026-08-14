@@ -28,7 +28,9 @@ import (
 	"strings"
 	"time"
 
+	"github.com/kaixuan/llm-gateway-go/domains/hooks/compression"
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/response"
+	"github.com/kaixuan/llm-gateway-go/metrics"
 	"github.com/redis/go-redis/v9"
 )
 
@@ -139,10 +141,14 @@ func (m *SanitizeInputMiddleware) Wrap(next http.Handler) http.Handler {
 			r.Body = io.NopCloser(bytes.NewReader(sanitizedBody))
 			// 脱敏改写后长度变化，同步 ContentLength（仅此一项；
 			// Content-Length header 是 server 端 Go 解析时填入的，下游
-			// 全部走 r.ContentLength 字段，不再回读 header）。
+			// 全部走 r.ContentLength 字段，不再回写 header）。
 			// 与 armor middleware.withReplayedBody 保持一致。
 			r.ContentLength = int64(len(sanitizedBody))
 			*r = *r.WithContext(WithSanitizeMap(r.Context(), sm))
+			// SC-1 (docs/修订0811/19): 同时把脱敏桥接信息放入 ctx，供
+			// session compressor 写入 SessionState v8 的 SanitizeMapRef /
+			// SanitizeStats，使三层缓存的 L3 脱敏字段不再悬空。
+			*r = *r.WithContext(compression.WithSanitizeInfo(r.Context(), buildSanitizeInfoForSession(sessionID, sm)))
 		}
 
 		next.ServeHTTP(w, r)
@@ -409,8 +415,10 @@ func (it *SanitizeRestoreInterceptor) InterceptNonStream(ctx context.Context, re
 			"session_id", req.SessionID,
 			"tenant_id", req.TenantID,
 		)
-		// TODO: 添加 Prometheus 指标（Task 1.1 后续）
-		// metrics.SanitizePlaceholderTampering.WithLabelValues("llm_generated").Add(float64(len(invalidPlaceholders)))
+		// SC-2 (docs/修订0811/19): the Phase 1 TODO metric — surface
+		// placeholder forgery / sanitizer drift as a Prometheus series
+		// instead of only a log line.
+		metrics.SanitizePlaceholderTamperingTotal.WithLabelValues("llm_generated").Add(float64(len(invalidPlaceholders)))
 	}
 
 	restored, err := it.restoreResponseBody(ctx, req.ResponseBody, sm)
@@ -757,6 +765,24 @@ func (it *SanitizeRestoreInterceptor) restoreResponseBody(ctx context.Context, b
 // 与 domains/session/sanitize.go 保持一致的命名空间。
 func SanitizeRedisKey(sessionID string) string {
 	return fmt.Sprintf("session:%s:sanitize", sessionID)
+}
+
+// buildSanitizeInfoForSession derives the compression.SanitizeInfo bridge
+// payload from the merged placeholder map (SC-1). Counts are classified by
+// parsing the placeholder token, so the merged map (no per-message
+// Fragments) is enough.
+func buildSanitizeInfoForSession(sessionID string, sm SanitizeMap) compression.SanitizeInfo {
+	keys := make(map[string]struct{}, len(sm))
+	for ph := range sm {
+		keys[ph] = struct{}{}
+	}
+	return compression.BuildSanitizeInfo(sessionID, func(placeholder string) (string, bool) {
+		p, ok := ParsePlaceholder(placeholder)
+		if !ok {
+			return "", false
+		}
+		return string(p.Type), true
+	}, keys)
 }
 
 // SanitizeOffsetRedisKey 生成会话级 offset（每类已用最大编号）的 Redis key。
