@@ -17,13 +17,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     （supplier 在 N 秒后 `os._exit(0)` 模拟进程消失）；新增 `STATE["disconnect_after_ms"]`
     （SSE 流中途 `request.transport.close()` one-shot）。
   - `mock_orchestrator.py` 扩展：新增 `kill-group` / `set-group-disconnect-after` 子命令。
-  - 新增 6 个场景（S24-S29），全部严格 envelope schema_version 1.0，173 请求 100% 通过：
+   - 新增 6 个场景（S24-S29），均使用严格 envelope schema_version 1.0：
     - **S24** 单组闪断（G kill 5s，客户端透明 failover，36/36 OK）
     - **S25** 多组错时闪断（G/H/I 6s 间隔错时死，36/36 OK，p99=2279ms）
     - **S26** 粘性会话跨闪断（sticky session 5 轮 chat 跨 5s G 闪断，5/5 OK）
     - **S27** 流式闪断恢复（SSE 首 chunk 后 80ms transport.close，11/11 OK）
     - **S28** 并发闪断隔离（50 并发客户端 + G/H/I 同时死 8s，50/50 OK，p99=1252ms）
-    - **S29** 闪断后配额账目（验证无 phantom 429，35/35 OK）
+     - **S29** 闪断后配额账目（fail-closed：必须先观察到 G 的 quota 429，才能验证无 phantom retry）
   - 测试方案文档 `03-测试场景定义.md`：场景矩阵新增 S24-S29 行 + 新章节"供应商闪断 / 客户端稳定"。
   - 详见 `docs/changelogs/2026-08-14-flash-disconnect-suite.md` + `docs/全方面测试/REPORT-LOCAL-20260814.md`。
 
@@ -54,6 +54,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `docs/会话优化v3/20-统一可观测性平台需求分析.md` + `21-任务分解与并行执行计划.md` + `22-子任务提示词集合.md`：V3.2 上游需求源头（老板 2026-08-13 提出）与 5 子任务分解（与 10 号文档并行版本）。
 
 ### Fixed
+
+- **供应商闪断套件审计修复（2026-08-14）**：场景不再吞掉 `fault_inject.py` 失败；S24-S26/S28/S29 将调度器退出码写入 evidence 并作为 PASS 前提，S25/S28 的 p99 上限改为硬门槛。S27 保留 `timeout` 的真实退出码，只有收到 SSE `data:` 行才算首 chunk。S29 在 Phase A 隔离到 G、显式启用 `quota_429`，若仍不能观察到 quota 429 则返回 FAIL，阻止“无 phantom 429”假阳性。
 
 - **执行记录与 SUMMARY 虚报修正（rule 11 §5 诚实汇报红线）**：先前 `08-执行记录.md` 声称 "admin/handler.go 注册 4 条新路由 / live_stream_sse.go envelope 扩展 / main.go wire provider 注入" 均已完成，实际**路由未注册、SSE 类型仅 admin 包内可见、main.go 未调 setter**。`SUMMARY.md` 同样将 4 个不存在的 admin API 标为已完成。本次按 rule 11 §5 修正为真实状态（详见 08-执行记录 2026-08-13 known_gaps）。
 

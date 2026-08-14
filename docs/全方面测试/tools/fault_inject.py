@@ -188,7 +188,8 @@ def main() -> int:
 
     started_at = time.time()
     events = sorted(schedule, key=lambda e: e.get("at", 0))
-    for ev in events:
+    failed_events = 0
+    for index, ev in enumerate(events):
         at = float(ev.get("at", 0))
         action = ev.get("action", "")
         group = ev.get("group", "")
@@ -201,7 +202,7 @@ def main() -> int:
         if time.time() - started_at > args.duration:
             log(
                 f"fault_inject: duration cap {args.duration}s reached, "
-                f"skipping remaining {len(events) - schedule.index(ev)} events",
+                f"skipping remaining {len(events) - index} events",
                 args.quiet,
             )
             break
@@ -217,11 +218,13 @@ def main() -> int:
                 "stderr": f"unknown action: {action}",
             }
         result["at_sec"] = round(time.time() - started_at, 3)
+        if result["rc"] != 0:
+            failed_events += 1
         # emit a JSON line to stdout for the calling S## script to parse
         print(json.dumps(result), flush=True)
 
-    log("fault_inject: schedule complete", args.quiet)
-    return 0
+    log(f"fault_inject: schedule complete (failed_events={failed_events})", args.quiet)
+    return 1 if failed_events else 0
 
 
 if __name__ == "__main__":

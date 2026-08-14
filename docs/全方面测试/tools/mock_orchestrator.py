@@ -404,6 +404,8 @@ async def cmd_kill_group(args):
         f"kill-group {args.group} kill_after_sec={kas}: {n_ok}/{len(ports)} scheduled "
         f"(suppliers will os._exit)"
     )
+    if n_ok != len(ports):
+        raise SystemExit(1)
 
 
 async def cmd_set_group_disconnect_after(args):

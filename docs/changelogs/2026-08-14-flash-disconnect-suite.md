@@ -53,13 +53,13 @@
 
 ## 验证结果 (对齐 rule 09 FACT + verification-before-completion)
 
-- **测试**: 6/6 PASS (173 请求, 100% 成功率)
+- **初始测试**: S24-S28 PASS；S29 的初始 35/35 结果不再作为 quota replay 通过证据。
   - S24: 36/36 OK (baseline 5 + flash window 21 + recovery 10)
   - S25: 36/36 OK, p99=2279ms
   - S26: 5/5 OK + session state preserved in DB
   - S27: 11/11 OK (non-stream 5 + stream 3 收到字节 + recovery 3 收到 [DONE])
   - S28: 50/50 OK, p99=1252ms
-  - S29: 35/35 OK, no phantom 429
+   - S29: 初始运行未命中 G 的 quota，不能证明 no-phantom-retry。
 - **lint/typecheck**: mock_supplier.py / mock_orchestrator.py 通过 Python `python3 -c`
   import 验证;6 个新场景 `bash S##.sh` 全部 exit 0
 - **结构验证**: 所有 S## envelope schema_version=1.0, status=PASS, boolean checks 全部 true
@@ -70,8 +70,9 @@
   实际 100% 表明 gateway 实时 retry 弥补
 - **S26 sticky 验证浅**: 未追踪具体 round → credential 映射, 建议 V3.1 补丁后用
   `candidate_failure_logs.attempt_index` 精化
-- **S29 quota 验证浅**: Phase A 实际 router 跳过 G 全走其它组, A_429=0;
-  B_429=0 才是关键验证项 (no phantom retry)
+- **S29 quota 验证待网关契约补齐**: 场景已改为 Phase A 隔离非 G 组并显式启用
+  `quota_429`；当前网关仍将上游 quota 耗尽转为其它失败，未暴露 client-side
+  `A_429`。脚本因此 fail-closed，直到可观察 quota 429 后才允许通过。
 - **245/154 环境未跑**: 生产环境 probe 间隔可能不同, 建议在 245 补跑一次
 
 ## 下一步建议
@@ -79,7 +80,7 @@
 1. 在 245 阿里云预生产环境跑一遍 S24-S25, 验证环境差异
 2. V3.1 队列瀑布流补丁落地后, 加 S30 验证 5 级会话层级
 3. 实现 V3 §08 X-Gw-Resume-Token 端点后, S27 增强 resume 验证
-4. 下次跑前在 metrics 加 p99_ms 字段 (S24/S26/S27/S29 当前 metrics.p99_ms=0)
+4. 在网关响应中保留可归因的上游 quota 信号后，重跑 S29 作为 quota replay 验收。
 
 ## 相关文档
 

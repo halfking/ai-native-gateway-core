@@ -3,7 +3,7 @@
 #
 # 2026-08-14:
 #   G 组配额设为 20 tokens, window=600s (足够大,不让自然刷新干扰).
-#   Phase A: 发 20 个短请求, 让 G 组 quota 耗尽 → 部分 200, 部分 429
+#   Phase A: 发 30 个短请求, 覆盖 G 的 5 个实例并让 quota 耗尽 → 部分 200, 部分 429
 #   Phase B: kill G 组, 发 10 个请求, 应全部走其它组(不会 retry 死的 G)
 #   Phase C: 验证 request_logs_hot 的总行数 ≈ Phase A 成功 + Phase A 429 +
 #            Phase B 全部 (没有 phantom retry 把 G 的旧 429 重发)
@@ -26,9 +26,15 @@ log() { echo "[S29] $*"; }
 reset_all_suppliers
 sleep 2
 
+# Phase A only leaves G healthy so quota exhaustion is observed, not inferred.
+GROUP_NAMES=(A B C D E F G H I J K L)
+for group in "${GROUP_NAMES[@]}"; do
+    [ "$group" = "G" ] || python3 "$TOOLS_DIR/mock_orchestrator.py" set-group "$group" server_error >/dev/null
+done
 # 让 G 组只有 20 tokens 配额, window 600s (足够大,中途不会自然刷新)
 log "configure G group: quota_tokens=20 window=600s (single quota cycle)"
-python3 "$TOOLS_DIR/mock_orchestrator.py" set-group-quota G 20 600 2>&1 | tail -1
+python3 "$TOOLS_DIR/mock_orchestrator.py" set-group-quota G 20 600 >/dev/null
+python3 "$TOOLS_DIR/mock_orchestrator.py" set-group G quota_429 >/dev/null
 
 AK="$(echo "$API_KEYS" | cut -d, -f1)"
 log "client api key (truncated): ${AK:0:18}..."
@@ -36,13 +42,13 @@ log "client api key (truncated): ${AK:0:18}..."
 curl -sf "$GATEWAY/healthz" > /dev/null || { log "FAIL: gateway not reachable"; exit 1; }
 
 # 抓 Phase A 起点 baseline count
-log "phase A: 20 requests with G quota=20 (should yield mixed 200/429)"
+log "phase A: 30 requests with G quota=20 (should yield mixed 200/429)"
 A_OK=0
 A_429=0
 A_OTHER=0
 A_CODES=""
 A_LAT_FILE="$(mktemp -t s29-lat-XXXXXX).txt"
-for i in $(seq 1 20); do
+for i in $(seq 1 30); do
     T0=$(python3 -c 'import time;print(int(time.time()*1000))')
     CODE=$(curl -s -o /dev/null -w "%{http_code}" -X POST \
         -H "Authorization: Bearer $AK" -H "Content-Type: application/json" \
@@ -65,7 +71,13 @@ if not xs: print(0)
 else: print(xs[int(len(xs)*0.99)])
 ")
 rm -f "$A_LAT_FILE"
-log "phase A: $A_OK OK / $A_429 quota / $A_OTHER other (out of 20), p99=${A_P99_MS}ms"
+log "phase A: $A_OK OK / $A_429 quota / $A_OTHER other (out of 30), p99=${A_P99_MS}ms"
+
+# Restore failover candidates before G is killed.
+for group in "${GROUP_NAMES[@]}"; do
+    [ "$group" = "G" ] || python3 "$TOOLS_DIR/mock_orchestrator.py" set-group "$group" healthy >/dev/null
+done
+sleep 1
 
 # Phase B: kill G, 10 个请求 (因为 G 死,所有走其他组)
 log "phase B: kill G (5s downtime), then 10 requests — should ALL be 200 (G unavailable)"
@@ -81,6 +93,12 @@ FI_STDERR="$(mktemp -t s29-fi-err-XXXXXX).log"
 python3 "$TOOLS_DIR/fault_inject.py" --schedule "$SCHED" --duration 8 \
     > "$FI_STDOUT" 2> "$FI_STDERR" &
 FI_PID=$!
+
+cleanup() {
+    if kill -0 "$FI_PID" 2>/dev/null; then kill "$FI_PID" 2>/dev/null || true; fi
+    cd "$TOOLS_DIR" && python3 mock_orchestrator.py reset-all >/dev/null 2>&1 || true
+}
+trap cleanup EXIT
 
 B_OK=0
 B_429=0
@@ -112,14 +130,15 @@ else: print(xs[int(len(xs)*0.99)])
 ")
 rm -f "$B_LAT_FILE"
 
-wait "$FI_PID" 2>/dev/null || true
+if wait "$FI_PID" 2>/dev/null; then FI_RC=0; else FI_RC=$?; fi
+log "fault_inject exit=$FI_RC"
 
 log "phase B: $B_OK OK / $B_429 quota / $B_OTHER other (out of 10)"
 
 # Phase C: 验证 request_logs 的请求数 == 我们实际发出的请求数 (近似,允许 1-2 个 race)
 sleep 3  # 异步写入
 RECENT_REQS=$(psql_count "SELECT COUNT(*) FROM request_logs_hot WHERE ts > NOW() - INTERVAL '2 minutes'")
-log "request_logs_hot recent 2min rows: $RECENT_REQS (we issued $((20 + 10)))"
+log "request_logs_hot recent 2min rows: $RECENT_REQS (we issued $((30 + 10)))"
 
 # Phase D: restart G 已完成 (Phase B 流程中), 验证 G 重启后 quota 不变
 log "phase D: post-restart 5 requests — G quota should still be 0 (window=600s)"
@@ -151,9 +170,10 @@ log "phase D: $D_OK OK / $D_429 quota (out of 5), p99=${D_P99_MS}ms"
 
 # 判定
 PASS=true
+[ "$FI_RC" -eq 0 ] || { log "FAIL: fault injector exited $FI_RC"; PASS=false; }
 # Phase A 配额行为: 应该至少有 1 个 200 和若干 429
 [ "$A_OK" -ge 1 ] || { log "FAIL: phase A no 200"; PASS=false; }
-[ "$A_429" -ge 1 ] || { log "WARN: phase A no 429 (quota may be > 20 tokens used)"; }
+[ "$A_429" -ge 1 ] || { log "FAIL: phase A did not exhaust G quota; phantom-retry assertion is invalid"; PASS=false; }
 # Phase B: G 死后,客户端不应再"重试" G (否则可能 phantom 429)
 [ "$B_429" -eq 0 ] || { log "FAIL: phase B $B_429 phantom 429 (G dead but retry hit it)"; PASS=false; }
 # Phase D: G 重启但 quota window 不变,后续应继续 429 (因 G 还是 quota exhausted)
@@ -166,7 +186,8 @@ CHECK_A_OK=$([ "$A_OK" -ge 1 ] && echo true || echo false)
 CHECK_A_QUOTA=$([ "$A_429" -ge 1 ] && echo true || echo false)
 CHECK_B_NO_PHANTOM=$([ "$B_429" -eq 0 ] && echo true || echo false)
 CHECK_ALIVE=true
-TOTAL=$((20 + 10 + 5))
+CHECK_FAULT_INJECT=$([ "$FI_RC" -eq 0 ] && echo true || echo false)
+TOTAL=$((30 + 10 + 5))
 SUCC=$((A_OK + B_OK + D_OK))
 QUOTA=$((A_429 + B_429 + D_429))
 OTHER=$((A_OTHER + B_OTHER))
@@ -179,9 +200,9 @@ cp "$FI_STDOUT" "$RESULTS_DIR/${SCENARIO}-fault-inject.jsonl" 2>/dev/null || tru
 cp "$FI_STDERR" "$RESULTS_DIR/${SCENARIO}-fault-inject.log" 2>/dev/null || true
 
 write_scenario_result "$SCENARIO" "functional" "$STATUS" \
-  "{\"phase_a_some_200\":$CHECK_A_OK,\"phase_a_some_429\":$CHECK_A_QUOTA,\"phase_b_no_phantom_429\":$CHECK_B_NO_PHANTOM,\"gateway_alive\":$CHECK_ALIVE}" \
+  "{\"phase_a_some_200\":$CHECK_A_OK,\"phase_a_some_429\":$CHECK_A_QUOTA,\"phase_b_no_phantom_429\":$CHECK_B_NO_PHANTOM,\"fault_inject_completed\":$CHECK_FAULT_INJECT,\"gateway_alive\":$CHECK_ALIVE}" \
   "{\"total\":$TOTAL,\"succ\":$SUCC,\"quota\":$QUOTA,\"other\":$OTHER,\"success_rate\":$RATE,\"p99_ms\":$B_P99_MS,\"a_ok\":$A_OK,\"a_429\":$A_429,\"a_p99_ms\":$A_P99_MS,\"b_ok\":$B_OK,\"b_429\":$B_429,\"b_p99_ms\":$B_P99_MS,\"d_ok\":$D_OK,\"d_429\":$D_429,\"d_p99_ms\":$D_P99_MS,\"request_logs_recent\":$RECENT_REQS}" \
-  "{\"phase_a_codes\":\"$A_CODES\",\"phase_b_codes\":\"$B_CODES\",\"fault_inject_log\":\"results/${SCENARIO}-fault-inject.jsonl\"}" \
+  "{\"phase_a_codes\":\"$A_CODES\",\"phase_b_codes\":\"$B_CODES\",\"fault_inject_exit\":$FI_RC,\"fault_inject_log\":\"results/${SCENARIO}-fault-inject.jsonl\"}" \
   "$FAILURES" \
   "{\"gateway\":\"$GATEWAY\",\"quota_tokens\":20,\"quota_window_sec\":600,\"kill_window_sec\":5}"
 

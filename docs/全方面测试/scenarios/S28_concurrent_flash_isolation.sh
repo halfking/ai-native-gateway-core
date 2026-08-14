@@ -96,7 +96,8 @@ while [ "$(date +%s)" -lt "$WAIT_END" ]; do
     sleep 0.5
 done
 
-wait "$FI_PID" 2>/dev/null || true
+if wait "$FI_PID" 2>/dev/null; then FI_RC=0; else FI_RC=$?; fi
+log "fault_inject exit=$FI_RC"
 
 # ── Phase 3: 汇总结果 ──────────────────────────────────────
 OK=0
@@ -127,17 +128,19 @@ log "results: $OK/$TOTAL OK, p99=${P99_MS}ms"
 
 # ── Phase 4: 判定 ─────────────────────────────────────────────
 PASS=true
+[ "$FI_RC" -eq 0 ] || { log "FAIL: fault injector exited $FI_RC"; PASS=false; }
 # 全局 ≥ 75% (3 组 down,但有 9 组可用)
 SUCC_MIN=$(awk "BEGIN{print int($TOTAL*0.75)}")
 [ "$OK" -ge "$SUCC_MIN" ] || { log "FAIL: success $OK/$TOTAL < 75%"; PASS=false; }
 # p99 ≤ 3000ms
-[ "$P99_MS" -le 3000 ] || { log "WARN: p99=$P99_MS ms > 3s"; }
+[ "$P99_MS" -le 3000 ] || { log "FAIL: p99=$P99_MS ms > 3s"; PASS=false; }
 # gateway 仍然活
 curl -sf "$GATEWAY/healthz" > /dev/null || { log "FAIL: gateway died"; PASS=false; }
 
 CHECK_GLOBAL_OK=$([ "$OK" -ge "$SUCC_MIN" ] && echo true || echo false)
 CHECK_P99=$([ "$P99_MS" -le 3000 ] && echo true || echo false)
 CHECK_ALIVE=true
+CHECK_FAULT_INJECT=$([ "$FI_RC" -eq 0 ] && echo true || echo false)
 RATE=$(awk "BEGIN{printf \"%.3f\", $OK/$TOTAL}")
 STATUS=$([ "$PASS" = true ] && echo PASS || echo FAIL)
 FAILURES="[]"
@@ -147,9 +150,9 @@ cp "$FI_STDOUT" "$RESULTS_DIR/${SCENARIO}-fault-inject.jsonl" 2>/dev/null || tru
 cp "$FI_STDERR" "$RESULTS_DIR/${SCENARIO}-fault-inject.log" 2>/dev/null || true
 
 write_scenario_result "$SCENARIO" "functional" "$STATUS" \
-  "{\"global_75pct\":$CHECK_GLOBAL_OK,\"p99_le_3s\":$CHECK_P99,\"gateway_alive\":$CHECK_ALIVE}" \
+  "{\"global_75pct\":$CHECK_GLOBAL_OK,\"p99_le_3s\":$CHECK_P99,\"fault_inject_completed\":$CHECK_FAULT_INJECT,\"gateway_alive\":$CHECK_ALIVE}" \
   "{\"total\":$TOTAL,\"succ\":$OK,\"fail\":$((TOTAL-OK)),\"success_rate\":$RATE,\"p99_ms\":$P99_MS,\"kill_groups\":3,\"downtime_sec\":8}" \
-  "{\"http_codes\":\"$CODES\",\"fault_inject_log\":\"results/${SCENARIO}-fault-inject.jsonl\"}" \
+  "{\"http_codes\":\"$CODES\",\"fault_inject_exit\":$FI_RC,\"fault_inject_log\":\"results/${SCENARIO}-fault-inject.jsonl\"}" \
   "$FAILURES" \
   "{\"gateway\":\"$GATEWAY\",\"kill_groups\":[\"G\",\"H\",\"I\"],\"concurrent\":$TOTAL,\"kill_window_sec\":8}"
 
