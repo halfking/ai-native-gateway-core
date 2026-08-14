@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased] - 2026-08-14 (Live Stream Queue Controls)
+
+### Fixed
+
+- **实时请求流队列与控制栏修复**：恢复缓存节点状态 provider，避免无效 SQL provider
+  覆盖导致 `node_update` 消失；空队列明确显示为调度链路畅通，并补充最近请求处理轨迹。
+- **顶部控制栏滚动修复**：实时请求流的分组、模式、筛选、连接和暂停控件改为单行横向
+  滚动区域。430px 视口下控制栏高度由 332px 降至 49px，末端控件可滚动到达并操作。
+- 详见 `docs/changelogs/2026-08-14-live-stream-queue-controls.md`。
+
 ## [Unreleased] - 2026-08-14 (Flash Disconnect Test Suite)
 
 ### Added
