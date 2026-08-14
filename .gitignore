@@ -33,6 +33,7 @@ coverage/
 /llm-gateway
 /llm-gateway-go
 /llm-gateway-go-*
+/llm-gateway-*
 /gateway-*
 /build_seq
 Dockerfile.local
