@@ -390,6 +390,36 @@ func TestBuildSummaryMarker_LongContent(t *testing.T) {
 	}
 }
 
+// TestBuildSummaryMarker_StableForSameContent guards against the bug seen on
+// 154 (issue: 17 different smm_v1 hashes in a row for the same session).
+func TestBuildSummaryMarker_StableForSameContent(t *testing.T) {
+	a := BuildSummaryMarker("hello world")
+	b := BuildSummaryMarker("hello world")
+	if a != b {
+		t.Errorf("BuildSummaryMarker not stable: %q vs %q", a, b)
+	}
+	if a == "" {
+		t.Error("BuildSummaryMarker should not return empty for non-empty input")
+	}
+}
+
+func TestBuildSummaryMarker_V1PrefixCompatibility(t *testing.T) {
+	prefix := strings.Repeat("a", 128)
+	a := BuildSummaryMarker(prefix + "TAIL-A")
+	b := BuildSummaryMarker(prefix + "TAIL-B")
+	if a != b {
+		t.Errorf("BuildSummaryMarker changed v1 prefix semantics: %q vs %q", a, b)
+	}
+}
+
+// TestBuildSummaryMarker_EmptyReturnsEmpty guards the mechanical-fallback
+// contract: an empty summary has no smm_v1 marker.
+func TestBuildSummaryMarker_EmptyReturnsEmpty(t *testing.T) {
+	if m := BuildSummaryMarker(""); m != "" {
+		t.Errorf("BuildSummaryMarker(\"\") = %q, want \"\"", m)
+	}
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // encodeSessionStateFields / decodeSessionStateFields
 // ─────────────────────────────────────────────────────────────────────────────

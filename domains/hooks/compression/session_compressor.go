@@ -501,7 +501,7 @@ func (sc *SessionCompressor) Prepare(
 				res.MsgCount = countMessages(outboundBody)
 				res.TokenEst = estimateBodyTokens(outboundBody)
 				res.MsgHashes = marshalHashes(computeHashes(mustExtractMessages(outboundBody)))
-				res.AlignmentMap = buildAlignmentMap(before, outboundBody, firstAssistantIndex(outboundBody))
+				res.AlignmentMap = buildAlignmentMap(before, outboundBody, summaryMessageIndex(outboundBody, protocol))
 			} else {
 				// LLM summary failed or didn't shrink — fall back to mechanical trim.
 				slog.Info("session_compressor: LLM summary failed/no-op, falling back to mechanical trim",
@@ -807,11 +807,20 @@ func buildSessionState(prevState *SessionState, outboundBody []byte, res *Prepar
 	}
 	if res.SummaryMarker != "" {
 		state.SummaryMarker = res.SummaryMarker
+	} else if state.SummaryMarker != "" && !bytesContainSummaryMarker(outboundBody, state.SummaryMarker) {
+		// A rewrite that removed the old gateway summary must not leave its
+		// marker attached to the new body. Preserve it only when the exact
+		// marker is still present in the body being committed.
+		state.SummaryMarker = ""
 	}
 	if len(res.AlignmentMap) > 0 {
 		state.AlignmentMap = append(state.AlignmentMap[:0], res.AlignmentMap...)
 	}
 	return state
+}
+
+func bytesContainSummaryMarker(body []byte, marker string) bool {
+	return marker != "" && strings.Contains(string(body), marker)
 }
 
 func (sc *SessionCompressor) fallbackResult(clientBody []byte, res *PrepareResult) *PrepareResult {
@@ -835,57 +844,186 @@ func mechanicalTrim(body []byte, contextWindow int, protocol string) []byte {
 	return transformation.CompressMessagesIfNeeded(body, contextWindow)
 }
 
-// injectSummaryMarker wraps the summarised body so the first assistant
-// message content is prefixed with the smm_v1 marker. Returns the marker
-// string and the new body (nil body = injection failed, use raw summarised).
+// injectSummaryMarker adds the smm_v1 marker to the gateway-generated summary
+// boundary. It never marks an arbitrary user or assistant message: the marker
+// is only emitted when the body contains a known summary prefix from one of
+// the protocol-specific rebuilders.
 func injectSummaryMarker(summarisedBody []byte, protocol string) (marker string, newBody []byte) {
-	// Extract the first assistant message content.
-	msgs, err := extractMessages(summarisedBody)
+	if protocol == "anthropic-messages" {
+		return injectAnthropicSummaryMarker(summarisedBody)
+	}
+	return injectOpenAISummaryMarker(summarisedBody)
+}
+
+func injectOpenAISummaryMarker(body []byte) (string, []byte) {
+	msgs, err := extractMessages(body)
 	if err != nil || len(msgs) == 0 {
 		return "", nil
 	}
-	// Find the first assistant message.
-	for i, m := range msgs {
+	for i, raw := range msgs {
 		var msg map[string]json.RawMessage
-		if json.Unmarshal(m, &msg) != nil {
+		if json.Unmarshal(raw, &msg) != nil {
 			continue
 		}
 		var role string
-		if json.Unmarshal(msg["role"], &role) != nil || role != "assistant" {
+		if json.Unmarshal(msg["role"], &role) != nil || role != "user" {
 			continue
 		}
 		var content string
-		if json.Unmarshal(msg["content"], &content) != nil {
-			continue
+		if json.Unmarshal(msg["content"], &content) == nil {
+			marker, baseContent, alreadyMarked := summaryMarkerContent(content)
+			if !isGatewaySummaryContent(baseContent) {
+				continue
+			}
+			if alreadyMarked {
+				return marker, body
+			}
+			marker = BuildSummaryMarker(content)
+			if marker == "" {
+				return "", nil
+			}
+			encoded, err := json.Marshal(marker + "\n" + content)
+			if err != nil {
+				return "", nil
+			}
+			msg["content"] = encoded
+			updated, err := json.Marshal(msg)
+			if err != nil {
+				return "", nil
+			}
+			msgs[i] = updated
+			newMessages, err := json.Marshal(msgs)
+			if err != nil {
+				return "", nil
+			}
+			updatedBody, ok := spliceBodyMessages(body, newMessages)
+			if !ok {
+				return "", nil
+			}
+			return marker, updatedBody
+		}
+	}
+	return "", nil
+}
+
+func injectAnthropicSummaryMarker(body []byte) (string, []byte) {
+	var top map[string]json.RawMessage
+	if err := json.Unmarshal(body, &top); err != nil {
+		return "", nil
+	}
+	system, ok := top["system"]
+	if !ok || len(system) == 0 || string(system) == "null" {
+		return "", nil
+	}
+	marker, updatedSystem, ok := markerizeAnthropicSystem(system)
+	if !ok {
+		return "", nil
+	}
+	top["system"] = updatedSystem
+	updatedBody, err := json.Marshal(top)
+	if err != nil {
+		return "", nil
+	}
+	return marker, updatedBody
+}
+
+func markerizeAnthropicSystem(system json.RawMessage) (string, json.RawMessage, bool) {
+	var content string
+	if json.Unmarshal(system, &content) == nil {
+		marker, baseContent, alreadyMarked := summaryMarkerContent(content)
+		if !isAnthropicSummaryContent(baseContent) {
+			return "", nil, false
+		}
+		if alreadyMarked {
+			return marker, system, true
 		}
 		marker = BuildSummaryMarker(content)
-		// Prepend marker to content while preserving all other message fields.
-		newContent, err := json.Marshal(marker + "\n" + content)
-		if err != nil {
-			return "", nil
+		if marker == "" {
+			return "", nil, false
 		}
-		msg["content"] = newContent
-		newMsgBytes, err := json.Marshal(msg)
-		if err != nil {
-			return "", nil
-		}
-		msgs[i] = newMsgBytes
+		updated, err := json.Marshal(marker + "\n" + content)
+		return marker, updated, err == nil
+	}
 
-		newMsgsRaw, err := json.Marshal(msgs)
+	var blocks []json.RawMessage
+	if json.Unmarshal(system, &blocks) != nil {
+		return "", nil, false
+	}
+	for i, raw := range blocks {
+		var block struct {
+			Type string `json:"type"`
+			Text string `json:"text"`
+		}
+		if json.Unmarshal(raw, &block) != nil || block.Type != "text" || !isAnthropicSummaryContent(block.Text) {
+			continue
+		}
+		marker, baseContent, alreadyMarked := summaryMarkerContent(block.Text)
+		if !isAnthropicSummaryContent(baseContent) {
+			continue
+		}
+		if alreadyMarked {
+			return marker, system, true
+		}
+		marker = BuildSummaryMarker(block.Text)
+		if marker == "" {
+			return "", nil, false
+		}
+		block.Text = marker + "\n" + block.Text
+		updatedBlock, err := json.Marshal(block)
 		if err != nil {
-			return "", nil
+			return "", nil, false
 		}
-		nb, ok := spliceBodyMessages(summarisedBody, newMsgsRaw)
-		if !ok {
-			return "", nil
+		blocks[i] = updatedBlock
+		updatedSystem, err := json.Marshal(blocks)
+		return marker, updatedSystem, err == nil
+	}
+	return "", nil, false
+}
+
+func summaryMarkerContent(content string) (marker, base string, marked bool) {
+	if !strings.HasPrefix(content, CompactionMarkerPrefix) {
+		return "", content, false
+	}
+	end := strings.IndexByte(content, ']')
+	if end < len(CompactionMarkerPrefix) {
+		return "", content, false
+	}
+	marker = content[:end+1]
+	return marker, strings.TrimPrefix(strings.TrimPrefix(content[end+1:], "\n"), "\r\n"), true
+}
+
+func isGatewaySummaryContent(content string) bool {
+	return strings.HasPrefix(content, CompressionSummaryPrefix) || strings.HasPrefix(content, smartWindowSummaryPrefix)
+}
+
+func isAnthropicSummaryContent(content string) bool {
+	literalPrefix := AnthropicSystemSummaryPrefix
+	decodedPrefix := strings.ReplaceAll(literalPrefix, `\n`, "\n")
+	return strings.HasPrefix(content, literalPrefix) || strings.HasPrefix(content, decodedPrefix) ||
+		strings.HasPrefix(content, literalPrefix[2:]) || strings.HasPrefix(content, decodedPrefix[2:])
+}
+
+func summaryMessageIndex(body []byte, protocol string) int {
+	if protocol == "anthropic-messages" {
+		return -1
+	}
+	msgs, err := extractMessages(body)
+	if err != nil {
+		return -1
+	}
+	for i, raw := range msgs {
+		var msg struct {
+			Role    string `json:"role"`
+			Content string `json:"content"`
 		}
-		return marker, nb
+		if json.Unmarshal(raw, &msg) == nil && msg.Role == "user" {
+			_, baseContent, _ := summaryMarkerContent(msg.Content)
+			if isGatewaySummaryContent(baseContent) {
+				return i
+			}
+		}
 	}
-	// No assistant message found — store marker without injection.
-	if len(summarisedBody) > 0 {
-		marker = BuildSummaryMarker(string(summarisedBody[:min512(len(summarisedBody))]))
-	}
-	return marker, summarisedBody
+	return -1
 }
 
 // extractTaskType retrieves the task_type from the request context if set

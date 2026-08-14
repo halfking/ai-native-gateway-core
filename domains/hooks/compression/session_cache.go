@@ -769,9 +769,14 @@ func sha256Hex(b []byte) string {
 }
 
 // BuildSummaryMarker constructs the smm_v1 marker string from the first
-// 128 chars of a summary message content. The marker is stored in
+// 128 bytes of a summary message content. The marker is stored in
 // SessionState.SummaryMarker and also injected into compression_meta JSONB.
+// An empty summary has no marker; callers use that to represent a mechanical
+// fallback, which must not masquerade as an LLM summary.
 func BuildSummaryMarker(summaryContent string) string {
+	if summaryContent == "" {
+		return ""
+	}
 	prefix := summaryContent
 	if len(prefix) > 128 {
 		prefix = prefix[:128]

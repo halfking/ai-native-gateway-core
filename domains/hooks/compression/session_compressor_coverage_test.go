@@ -154,8 +154,7 @@ func TestInjectSummaryMarker_InvalidJSON(t *testing.T) {
 }
 
 func TestInjectSummaryMarker_OpenAI(t *testing.T) {
-	// Construct body with the summary as the first assistant message.
-	body := []byte(`{"messages":[{"role":"assistant","content":"summary"},{"role":"user","content":"q"}]}`)
+	body := []byte(`{"messages":[{"role":"user","content":"[Gateway compacted conversation summary - prior turns collapsed to fit context. Use direct quotes for exact identifiers, errors, user corrections. The first user message is preserved verbatim below as the original intent.]\nsummary"},{"role":"assistant","content":"answer"}]}`)
 	marker, newBody := injectSummaryMarker(body, "openai")
 	if marker == "" {
 		t.Error("injectSummaryMarker(openai): empty marker")
@@ -168,8 +167,26 @@ func TestInjectSummaryMarker_OpenAI(t *testing.T) {
 	}
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// applyToolsCaching
+func TestBuildSessionState_ClearsStaleSummaryMarker(t *testing.T) {
+	previous := &SessionState{SummaryMarker: "[smm_v1:oldmarker]"}
+	res := &PrepareResult{MsgCount: 1, TokenEst: 10, CompressionStrategy: "mechanical_trim"}
+	state := buildSessionState(previous, []byte(`{"messages":[{"role":"user","content":"trimmed"}]}`), res, true, 1)
+	if state.SummaryMarker != "" {
+		t.Fatalf("stale summary marker was retained: %q", state.SummaryMarker)
+	}
+}
+
+func TestBuildSessionState_PreservesMarkerPresentInBody(t *testing.T) {
+	marker := "[smm_v1:oldmarker]"
+	previous := &SessionState{SummaryMarker: marker}
+	res := &PrepareResult{MsgCount: 1, TokenEst: 10, CompressionStrategy: "delta_append"}
+	body := []byte(`{"messages":[{"role":"user","content":"` + marker + `\nsummary"}]}`)
+	state := buildSessionState(previous, body, res, false, 1)
+	if state.SummaryMarker != marker {
+		t.Fatalf("marker present in current body was cleared: %q", state.SummaryMarker)
+	}
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 
 func TestApplyToolsCaching_NilState(t *testing.T) {

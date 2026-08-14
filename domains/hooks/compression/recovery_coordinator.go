@@ -198,12 +198,22 @@ func (rc *RecoveryCoordinator) Recover(
 	}
 
 	// ── Phase 3: Build CutMarker and persist to cache ────────────────────
+	// IMPORTANT: only attach an smm_v1 marker when an LLM summary was actually
+	// produced. Mechanical fallback text is deterministic-but-unstable (its
+	// prefix changes with every user input and message count), so hashing it
+	// would generate a different marker on every compression pass even when
+	// nothing semantically changed. The main session_compressor path applies
+	// the same rule (SummaryMarker is only set on the LLM-success branch).
+	var markerSummaryText string
+	if strategy == "smart_window_llm" {
+		markerSummaryText = summaryText
+	}
 	marker := NewCutMarker(
 		plan,
 		len(messages),
 		strategy,
-		BuildSummaryMarker(summaryText),
-		summaryText,
+		BuildSummaryMarker(markerSummaryText),
+		markerSummaryText,
 		len(body),
 		len(rebuilt),
 	)

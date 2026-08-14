@@ -198,8 +198,8 @@ func TestMsgHash_Stable(t *testing.T) {
 	}
 }
 
-func TestInjectSummaryMarker_PreservesAssistantFields(t *testing.T) {
-	body := []byte(`{"messages":[{"role":"assistant","content":"answer","tool_calls":[{"id":"call_1"}],"name":"agent","refusal":null}]}`)
+func TestInjectSummaryMarker_PreservesSummaryFields(t *testing.T) {
+	body := []byte(`{"messages":[{"role":"user","content":"[Gateway compacted conversation summary - prior turns collapsed to fit context. Use direct quotes for exact identifiers, errors, user corrections. The first user message is preserved verbatim below as the original intent.]\nanswer","tool_calls":[{"id":"call_1"}],"name":"agent","refusal":null}]}`)
 	marker, rebuilt := injectSummaryMarker(body, "openai")
 	if marker == "" {
 		t.Fatal("expected marker")
@@ -210,10 +210,26 @@ func TestInjectSummaryMarker_PreservesAssistantFields(t *testing.T) {
 	}
 	msg := out["messages"][0]
 	if len(msg["tool_calls"].([]any)) != 1 || msg["name"] != "agent" {
-		t.Errorf("assistant fields lost: %+v", msg)
+		t.Errorf("summary fields lost: %+v", msg)
 	}
 	if !strings.Contains(msg["content"].(string), marker) {
 		t.Errorf("content missing marker: %v", msg["content"])
+	}
+}
+
+func TestInjectSummaryMarker_AnthropicSystemBlock(t *testing.T) {
+	body := []byte(`{"system":[{"type":"text","text":"original"},{"type":"text","text":"` + AnthropicSystemSummaryPrefix + `summary"}],"messages":[]}`)
+	marker, rebuilt := injectSummaryMarker(body, "anthropic-messages")
+	if marker == "" || !strings.Contains(string(rebuilt), marker) {
+		t.Fatalf("expected injected Anthropic marker, marker=%q body=%s", marker, rebuilt)
+	}
+}
+
+func TestInjectSummaryMarker_NoSummaryBoundary(t *testing.T) {
+	body := []byte(`{"messages":[{"role":"assistant","content":"answer"}]}`)
+	marker, rebuilt := injectSummaryMarker(body, "openai")
+	if marker != "" || rebuilt != nil {
+		t.Fatalf("expected no marker and failed injection, marker=%q body=%s", marker, rebuilt)
 	}
 }
 
