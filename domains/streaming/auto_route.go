@@ -95,6 +95,7 @@ type autoRouteDecision struct {
 	ChosenRawModel            string               `json:"chosen_raw_model"`
 	ChosenCredID              int64                `json:"chosen_credential_id"`
 	EnabledFeatures           []string             `json:"enabled_features,omitempty"`
+	FilterReasons             []string             `json:"filter_reasons,omitempty"`
 	CacheReused               bool                 `json:"cache_reused"`
 	FallbackUsed              bool                 `json:"fallback_used"`
 	EmbeddingShadowTask       string               `json:"embedding_shadow_task,omitempty"`
@@ -461,6 +462,7 @@ func decisionToWire(d *autoroute.Decision) *autoRouteDecision {
 		ChosenRawModel:      d.ChosenRawModel,
 		ChosenCredID:        d.ChosenCredentialID,
 		EnabledFeatures:     d.EnabledFeatures,
+		FilterReasons:       d.FilterReasons,
 		CacheReused:         d.CacheReused,
 		FallbackUsed:        d.FallbackUsed,
 		EmbeddingShadowTask: d.EmbeddingShadowTask,

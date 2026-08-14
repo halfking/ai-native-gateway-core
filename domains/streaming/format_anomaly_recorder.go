@@ -292,3 +292,33 @@ func TruncateForSample(s string, maxLen int) string {
 	}
 	return s[:maxLen] + "...[truncated]"
 }
+
+// BackfillActualTokens (CO-2): fills actual_tokens on an estimated anomaly
+// row when the real completion-token count arrives later, and corrects
+// usage_source from "estimated" to "llm" so admin aggregates
+// (AVG(actual_tokens)) stop reading NULL. No-op for rows already backfilled
+// or non-positive counts (a 0 would misrepresent real usage).
+func (r *FormatAnomalyRecorder) BackfillActualTokens(ctx context.Context, requestID string, actualTokens int) error {
+	if r == nil || r.db == nil || requestID == "" || actualTokens <= 0 {
+		return nil
+	}
+
+	backfillFn := func(exec FormatAnomalyExec) error {
+		_, err := exec.Exec(ctx, `
+			UPDATE response_format_anomalies
+			SET actual_tokens = $2,
+			    usage_source  = $3
+			WHERE request_id = $1
+			  AND actual_tokens IS NULL
+		`, requestID, actualTokens, UsageSourceLLM)
+		if err != nil {
+			slog.Warn("failed to backfill format anomaly actual_tokens",
+				"request_id", requestID, "error", err)
+		}
+		return err
+	}
+	if r.pool == nil {
+		return backfillFn(r.db)
+	}
+	return withAnomalyWriteTx(ctx, r.pool, backfillFn)
+}
