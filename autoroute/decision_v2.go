@@ -146,10 +146,13 @@ func (d *Decider) DecideV2(ctx context.Context, sigs ClassificationSignals, apiK
 
 	// requestID 来自请求 context（由 maybeResolveAuto 注入），用于 affinity
 	// 的 explore 分桶。缺失时 explore 退化为「不探索」，affinity 仍可应用。
+	// FilterNotes 收集 RT-1 IQ 门禁等硬过滤的排除原因，进 Decision metadata。
+	var filterReasons []string
 	recommended := idx.RecommendV2WithHints(ctx, cls.Primary, sigs, profile, sessionID, candidateTopN, DecisionHints{
 		RequestID:        requestIDFromContext(ctx),
 		ApiKeyID:         apiKeyID,
 		FullCandidateSet: keepFullCandidateSet,
+		FilterNotes:      &filterReasons,
 	})
 
 	// Step 3a (M2): 路由来源标签。V2 不调用 defaultRoutingStore（explicit_default
@@ -220,6 +223,7 @@ func (d *Decider) DecideV2(ctx context.Context, sigs ClassificationSignals, apiK
 		CandidatesTopN:     recommended,
 		EnabledFeatures:    enabledFeatures,
 		FallbackUsed:       fallbackUsed,
+		FilterReasons:      filterReasons,
 		DecidedAt:          time.Now(),
 		RoutingSource:      routingSource,
 	}

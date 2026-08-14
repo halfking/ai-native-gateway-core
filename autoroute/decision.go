@@ -63,6 +63,11 @@ type Decision struct {
 	// popularity fallback rather than normal scoring. Used for event-level audit.
 	FallbackUsed bool
 
+	// FilterReasons records why candidates were excluded by hard gates
+	// (RT-1 MinStandardIQ today). nil when no gate fired — so flag-off
+	// decisions serialise byte-identically to the pre-gate wire format.
+	FilterReasons []string
+
 	// DecidedAt is the wall-clock time when the decision was made.
 	DecidedAt time.Time
 

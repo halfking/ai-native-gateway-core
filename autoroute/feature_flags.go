@@ -77,6 +77,31 @@ type FeatureFlags struct {
 	//
 	// Deprecated: 用 URSM_V2_MODE 替代。详见 autoroute/internal/legacyflags。
 	AutoEmbeddingRoute bool
+
+	// UseStandardIQGate enables the RT-1 MinStandardIQ hard gate: candidates
+	// whose standard IQ (Artificial Analysis Intelligence Index, 0-100) is
+	// known and below MinStandardIQ are excluded before scoring. Default off;
+	// when off, routing decisions are byte-identical to the pre-RT-1 path.
+	// Per-tenant policy (routing_policy.weights_json min_standard_iq) takes
+	// precedence over this global flag.
+	UseStandardIQGate bool
+	// MinStandardIQ is the global gate threshold. 0 (default) disables the
+	// gate even when UseStandardIQGate is on.
+	MinStandardIQ float64
+
+	// UsePopularityWeight enables RT-3: candidate PopularityScore (from
+	// credential_model_bindings.routing_tier) and featured_models (from
+	// routing_policy) feed an additive ordering weight on top of the
+	// composite. Default off; when off, composites and ordering are
+	// byte-identical to the pre-RT-3 path.
+	UsePopularityWeight bool
+	// PopularityWeight is the max additive points for popularity (applied as
+	// weight * PopularityScore/100). Default 5 — large enough to break ties,
+	// small enough not to outweigh the scoring dimensions.
+	PopularityWeight float64
+	// FeaturedBonus is the additive points for models listed in
+	// routing_policy.featured_models. Default 5.
+	FeaturedBonus float64
 }
 
 // DefaultFeatureFlags returns the default flags.
@@ -104,6 +129,14 @@ func DefaultFeatureFlags() *FeatureFlags {
 		AutoOnResponses:          false,
 		AutoOnEmbeddings:         false,
 		AutoEmbeddingRoute:       false,
+		// RT-1 MinStandardIQ gate: default off (hard requirement — flag-off
+		// routing decisions must be byte-identical).
+		UseStandardIQGate: false,
+		MinStandardIQ:     0,
+		// RT-3 popularity/featured weighting: default off (same requirement).
+		UsePopularityWeight: false,
+		PopularityWeight:   5,
+		FeaturedBonus:      5,
 	}
 }
 
@@ -129,6 +162,15 @@ func LoadFeatureFlagsFromEnv() *FeatureFlags {
 		AutoOnResponses:          lf.AutoOnResponses,
 		AutoOnEmbeddings:         lf.AutoOnEmbeddings,
 		AutoEmbeddingRoute:       lf.AutoEmbeddingRoute,
+		// RT-1 MinStandardIQ gate: AUTO_USE_STANDARD_IQ_GATE (default off) +
+		// AUTO_MIN_STANDARD_IQ (default 0 = inactive even when the gate is on).
+		UseStandardIQGate: getEnvBool("AUTO_USE_STANDARD_IQ_GATE", false),
+		MinStandardIQ:     getEnvFloat("AUTO_MIN_STANDARD_IQ", 0),
+		// RT-3: AUTO_USE_POPULARITY_WEIGHT (default off) +
+		// AUTO_POPULARITY_WEIGHT / AUTO_FEATURED_BONUS (defaults 5 / 5).
+		UsePopularityWeight: getEnvBool("AUTO_USE_POPULARITY_WEIGHT", false),
+		PopularityWeight:   getEnvFloat("AUTO_POPULARITY_WEIGHT", 5),
+		FeaturedBonus:      getEnvFloat("AUTO_FEATURED_BONUS", 5),
 	}
 
 	if flags.EnableV2Logic {
@@ -153,6 +195,20 @@ func getEnvBool(key string, defaultValue bool) bool {
 		return defaultValue
 	}
 	return b
+}
+
+// getEnvFloat reads a float env var, falling back to defaultValue when unset
+// or unparseable.
+func getEnvFloat(key string, defaultValue float64) float64 {
+	val := os.Getenv(key)
+	if val == "" {
+		return defaultValue
+	}
+	f, err := strconv.ParseFloat(val, 64)
+	if err != nil {
+		return defaultValue
+	}
+	return f
 }
 
 // 2026-07-27 concurrency fix: globalFeatureFlags is read on the hot path
@@ -200,6 +256,9 @@ func activeFeatureNames(flags *FeatureFlags) []string {
 	}
 	if flags.AutoEmbeddingRoute {
 		features = append(features, "embedding_shadow")
+	}
+	if flags.UseStandardIQGate && flags.MinStandardIQ > 0 {
+		features = append(features, "standard_iq_gate")
 	}
 	return features
 }
