@@ -27,6 +27,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - 测试方案文档 `03-测试场景定义.md`：场景矩阵新增 S24-S29 行 + 新章节"供应商闪断 / 客户端稳定"。
   - 详见 `docs/changelogs/2026-08-14-flash-disconnect-suite.md` + `docs/全方面测试/REPORT-LOCAL-20260814.md`。
 
+## [Unreleased] - 2026-08-14 (V3.2 Integration Verification)
+
+### Verified
+
+- **V3.2 多智能体并行验证（2026-08-14）**：使用3个并行子代理验证 V3.2 集成完整性
+  - **后端验证**：5/5 路由已注册（test-now/enable/transitions/sessions），2/2 provider 已注入（QueueSnapshotProvider/NodeStatusProvider），4/4 SSE 字段完整（queue/nodes/queue_snapshot/node_update）
+  - **前端验证**：4/4 组件存在（QueuePerspectivePanel/NodeStatusMatrix/LiveRequestStreamV2/SessionStatsPanel），liveStreamStore 正确处理消息，3个页面已集成
+  - **构建验证**：go build/vet 通过，pnpm vue-tsc/build 通过（符合 rule 11 §14 + rule 17）
+  - **文件完整性**：11/11 关键文件存在（组件/migration/handler/logger）
+  - **集成测试脚本**：新增 `test-v32-integration.sh`（离线文件验证 + API 端点检查）
+  - 详见 `docs/会话优化v3/08-执行记录.md` 2026-08-14 条目
+
+### Fixed
+
+- **构建产物忽略规则**：`.gitignore` 添加 `/llm-gateway-*` 通配符，覆盖所有平台构建产物（linux-amd64 等）
+
 ## [Unreleased] - 2026-08-13 (V3.2 partial)
 
 ### Added
