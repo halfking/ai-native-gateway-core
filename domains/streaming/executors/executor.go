@@ -1112,6 +1112,14 @@ type ExecParams struct {
 	// while the executor is still retrying upstream credentials. In this
 	// mode Execute must not switch to JSON/202 fallback semantics.
 	PreStreamPrepared bool
+	// SurvivalAttempt (SR-05, doc 18 §17 Phase 0): the SurvivalCoordinator
+	// owns this execution. Execute performs a single bounded pass — the
+	// no-candidate probe hold, single-node 5xx re-execute, sync retry loop,
+	// cross-provider model fallback and async fallback are all suppressed;
+	// failure returns the aggregated ExecuteError and the coordinator decides
+	// retry-now / wait-recovery / terminal. Copied by value into sub-Execute
+	// calls so no nested path can re-enable them.
+	SurvivalAttempt bool
 	// OnStreamReady is called exactly once right before the executor hands
 	// control to the normal stream writer. The caller uses it to stop any
 	// pre-stream keepalive goroutine so no writes race with StreamChat.
@@ -2172,7 +2180,7 @@ func (e *Executor) Execute(params *ExecParams) (result *ExecuteResult, err error
 		// ── 2026-07-17 同步探测 hold: 把客户端请求暂停，并行探测同模型所有
 		// 候选节点的供应商直连；首个直连成功 → 网关路由测试 → 重发用户请求。
 		// 所有探测都失败 / 5s 超时 → fall through 到下方 503 返回。
-		if e.SyncNoCandidateProbe && e.ProbeSync != nil && params.R != nil {
+		if e.SyncNoCandidateProbe && e.ProbeSync != nil && params.R != nil && !params.SurvivalAttempt {
 			syncNoCands := make([]credentialstate.NoCandidatesCandidate, 0, len(probeCandidates))
 			for _, c := range probeCandidates {
 				if c.CredentialID == 0 {
@@ -3419,7 +3427,7 @@ func (e *Executor) Execute(params *ExecParams) (result *ExecuteResult, err error
 	// 这解决了单节点场景下前端超时导致credential被降级的问题。
 	if len(candidates) == 1 && lastKind == errorsx.KindTransient &&
 		e.ProbeSync != nil && lastTransientCred.CredentialID != 0 &&
-		e.asyncDepth.Load() < 3 {
+		e.asyncDepth.Load() < 3 && !params.SurvivalAttempt {
 
 		slog.Info("single_node_5xx_immediate_probe",
 			"credential_id", lastTransientCred.CredentialID,
@@ -3452,7 +3460,7 @@ func (e *Executor) Execute(params *ExecParams) (result *ExecuteResult, err error
 	// 而是保持 HTTP 连接，继续同步重试候选。客户端断开时自动停止。
 	// 2026-07-03: 增加最多 3 轮重试限制（加主循环共 4 轮），避免死循环。
 	const maxSyncRetryRounds = 3
-	if !params.PreStreamPrepared && e.SyncRetryTimeout > 0 && tried > 0 {
+	if !params.PreStreamPrepared && !params.SurvivalAttempt && e.SyncRetryTimeout > 0 && tried > 0 {
 		retried := 0
 		retryRound := 0
 		e.asyncDepth.Add(1)
@@ -3645,7 +3653,7 @@ func (e *Executor) Execute(params *ExecParams) (result *ExecuteResult, err error
 	//
 	// tried > 0 ensures we only fallback when real failures occurred,
 	// not when no candidates were available (routing misconfiguration).
-	if !params.InFallback && tried > 0 && len(e.ModelFallbackChain) > 0 {
+	if !params.InFallback && !params.SurvivalAttempt && tried > 0 && len(e.ModelFallbackChain) > 0 {
 		fbModels := e.ModelFallbackChain[params.ClientModel]
 		for _, fbModel := range fbModels {
 			if params.R.Context().Err() != nil {
@@ -4352,6 +4360,11 @@ func (e *AsyncPendingError) Error() string {
 //     over latency symmetry.
 func (e *Executor) shouldAsyncFallback(params *ExecParams, tTotal time.Time, tried int, lastKind errorsx.ErrorKind) bool {
 	if params != nil && params.PreStreamPrepared {
+		return false
+	}
+	// SR-05: survival-owned attempts never demote to the async 202 path —
+	// the SurvivalCoordinator keeps the connection and retries in-band.
+	if params != nil && params.SurvivalAttempt {
 		return false
 	}
 	// Recursion guard: the async goroutine calls Execute again.

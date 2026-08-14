@@ -241,3 +241,21 @@ func TestExecuteOpenAI_StreamPreStreamStopOrdering(t *testing.T) {
 		t.Fatalf("stream body = %q, want final stream chunk", body)
 	}
 }
+
+// SR-05 (doc 18 §17 Phase 0): under request survival the executor performs a
+// single bounded pass — the SurvivalCoordinator owns every retry decision.
+func TestShouldAsyncFallback_DisabledWhenSurvivalAttempt(t *testing.T) {
+	exec := &Executor{
+		AsyncShortTimeout: 1 * time.Second,
+		AsyncLongTimeout:  10 * time.Second,
+	}
+	req := httptest.NewRequest("POST", "/v1/chat/completions", nil)
+	req.Header.Set("X-Gw-Session-Id", "gw_test")
+	params := &ExecParams{
+		R:               req,
+		SurvivalAttempt: true,
+	}
+	if exec.shouldAsyncFallback(params, time.Now().Add(-2*time.Second), 1, errorsx.KindTransient) {
+		t.Fatal("expected async fallback to be disabled for survival-owned attempts")
+	}
+}
