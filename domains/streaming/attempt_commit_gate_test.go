@@ -109,6 +109,51 @@ func TestAttemptCommitGateMetadataBufferLimitNeverForcesCommit(t *testing.T) {
 	}
 }
 
+// A stream of pure error frames (no metadata ever written, state stays none)
+// must still be bounded by the buffer byte cap — the cap guards the buffer,
+// not the metadata state (doc 20 A-P2-2).
+func TestAttemptCommitGateErrorFramesBoundedByBufferLimit(t *testing.T) {
+	g, f := newGateForTest(GateModeBuffered)
+	bigErr := "event: error\ndata: {\"type\":\"error\",\"pad\":\"" + strings.Repeat("x", 600) + "\"}\n\n"
+	if err := g.WriteFrame(bigErr); err != nil {
+		t.Fatal(err)
+	}
+	err := g.WriteFrame(bigErr)
+	if !errors.Is(err, ErrAttemptMetadataBufferExceeded) {
+		t.Fatalf("second oversized error write = %v, want ErrAttemptMetadataBufferExceeded", err)
+	}
+	if f.buf.Len() != 0 {
+		t.Fatalf("error-frame overflow must not force commit, wire = %q", f.buf.String())
+	}
+	if g.Committed() {
+		t.Fatal("gate must not be committed on error-frame overflow")
+	}
+}
+
+// Keepalive frames queued behind pending attempt frames (order-preserving
+// path) must be bounded by the same byte/age caps as any other buffered
+// frame, and must start the age clock (doc 20 A-P2-3).
+func TestAttemptCommitGateQueuedKeepaliveBoundedByBufferLimit(t *testing.T) {
+	g, f := newGateForTest(GateModeBuffered)
+	if err := g.WriteFrame("event: message_start\ndata: {}\n\n"); err != nil {
+		t.Fatal(err)
+	}
+	bigPing := "event: ping\ndata: {\"pad\":\"" + strings.Repeat("x", 600) + "\"}\n\n"
+	if err := g.WriteFrame(bigPing); err != nil {
+		t.Fatal(err)
+	}
+	err := g.WriteFrame(bigPing)
+	if !errors.Is(err, ErrAttemptMetadataBufferExceeded) {
+		t.Fatalf("oversized queued keepalive = %v, want ErrAttemptMetadataBufferExceeded", err)
+	}
+	if f.buf.Len() != 0 {
+		t.Fatalf("keepalive overflow must not force commit, wire = %q", f.buf.String())
+	}
+	if g.Committed() {
+		t.Fatal("gate must not be committed on keepalive overflow")
+	}
+}
+
 func TestAttemptCommitGateKeepalivePassthroughBeforeCommit(t *testing.T) {
 	g, f := newGateForTest(GateModeBuffered)
 	if err := g.WriteFrame(": keep-alive\n\n"); err != nil {

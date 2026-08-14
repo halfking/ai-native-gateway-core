@@ -218,9 +218,9 @@ func (g *AttemptCommitGate) WriteFrame(frame string) error {
 		// breaks client parsers — so queue in order while frames are
 		// pending.
 		if g.mode == GateModeBuffered && !g.committed && g.bufferLen > 0 {
-			g.buffer = append(g.buffer, frame...)
-			g.bufferLen += len(frame)
-			return nil
+			// Order-preserving queue behind pending attempt frames — bounded
+			// by the same byte/age caps as any other buffered frame.
+			return g.appendBufferedLocked(frame)
 		}
 		if _, err := g.writer.Write([]byte(frame)); err != nil {
 			return err
@@ -253,6 +253,15 @@ func (g *AttemptCommitGate) WriteFrame(frame string) error {
 		return nil
 	}
 
+	return g.appendBufferedLocked(frame)
+}
+
+// appendBufferedLocked appends one frame to the attempt-local buffer under
+// the unified byte/age caps. Every frame class that lands in the buffer
+// (attempt metadata, error frames, order-queued keepalives) goes through
+// here; overflow surfaces ErrAttemptMetadataBufferExceeded and never forces
+// a commit.
+func (g *AttemptCommitGate) appendBufferedLocked(frame string) error {
 	if g.firstMetaAt.IsZero() {
 		g.firstMetaAt = time.Now()
 	} else if time.Since(g.firstMetaAt) > g.maxMetadataAge {
@@ -262,7 +271,9 @@ func (g *AttemptCommitGate) WriteFrame(frame string) error {
 	}
 	g.buffer = append(g.buffer, frame...)
 	g.bufferLen += len(frame)
-	if g.state == CommitStateMetadata && g.bufferLen > g.maxMetadata {
+	// The cap guards the attempt-local buffer itself — whatever frame class
+	// lands in it (metadata, error, keepalive), not just the metadata state.
+	if g.bufferLen > g.maxMetadata {
 		// Surface the overflow; never force a commit to reclaim memory.
 		metrics.SurvivalAttemptGateMetadataOverflowTotal.WithLabelValues(protocolMetricLabel(g.protocol)).Inc()
 		return ErrAttemptMetadataBufferExceeded

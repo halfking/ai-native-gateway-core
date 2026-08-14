@@ -156,3 +156,25 @@ func TestGateWriterEndToEndAnthropicToOpenAIByteIdentity(t *testing.T) {
 		"OpenAI-chat bridge bytes must be identical with the Phase 0B gate")
 	assert.Equal(t, CommitStateTerminal, gate.State())
 }
+
+// SR-07 wiring precondition: when the SurvivalCoordinator already gated the
+// writer (per-attempt buffered gate), a bridge's wrapAttemptWriter call must
+// REUSE that gate instead of stacking a second one — double gating would
+// buffer frames twice and split commit ownership.
+func TestWrapAttemptWriterReusesPreGatedWriter(t *testing.T) {
+	restore := setAttemptGateForTest(true, GateModeBuffered)
+	defer restore()
+
+	inner := &trackingFlusher{}
+	sw := NewSerializedStreamWriter(inner)
+	gate := NewAttemptCommitGate(ProtocolAnthropic, sw, GateOptions{Mode: GateModeBuffered})
+	gw := NewGateWriterWithResponse(gate, nil)
+
+	w2, gate2 := wrapAttemptWriter(gw, ProtocolAnthropic)
+	if w2 != gw {
+		t.Fatal("already-gated writer must pass through unchanged")
+	}
+	if gate2 != gate {
+		t.Fatal("bridge must reuse the coordinator's gate, not create a second one")
+	}
+}
