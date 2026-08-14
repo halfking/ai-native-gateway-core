@@ -149,12 +149,6 @@ func (h *Handler) nodeProbeTargets(ctx context.Context, providerID int) ([]strin
 	return modelsURLCandidatesForBase(baseURL), apiKey, nil
 }
 
-// nodeEnableRequest 是 enable 端点的请求体。
-type nodeEnableRequest struct {
-	Enabled bool   `json:"enabled"`
-	Reason  string `json:"reason"`
-}
-
 // handleNodeToggle 启用/禁用一个 provider 节点。
 // PATCH /api/admin/providers/{id}/enable
 //
@@ -288,24 +282,4 @@ func parseProviderIDFromPath(w http.ResponseWriter, r *http.Request) (int, bool)
 		return 0, false
 	}
 	return id, true
-}
-
-// checkIdempotencyCache 检查 idempotency key 是否在 24h 内已使用。
-// 返回 true=已缓存（拒绝重复执行），false=未缓存（可执行）。
-func (h *Handler) checkIdempotencyCache(ctx context.Context, key string) (bool, error) {
-	var exists bool
-	err := h.db.QueryRow(ctx, `
-		SELECT EXISTS(
-			SELECT 1 FROM request_state_transitions
-			WHERE metadata->>'idempotency_key' = $1
-			  AND created_at > NOW() - INTERVAL '24 hours'
-		)`, key).Scan(&exists)
-	return exists, err
-}
-
-// setIdempotencyCache 标记 idempotency key 已使用（通过已写入的审计记录实现，无需额外存储）。
-// 实际缓存通过 auditNodeToggle 写入的 request_state_transitions 记录实现。
-func (h *Handler) setIdempotencyCache(ctx context.Context, key string, ttl time.Duration) error {
-	// 无需额外操作，auditNodeToggle 已写入 metadata 包含 idempotency_key
-	return nil
 }
