@@ -17,6 +17,7 @@ import (
 
 	"github.com/kaixuan/llm-gateway-go/credentialfpslot"
 	"github.com/kaixuan/llm-gateway-go/db"
+	"github.com/kaixuan/llm-gateway-go/domains/attachments"   //nolint:depguard // MM-1 outbound attachment URL rewrite
 	"github.com/kaixuan/llm-gateway-go/domains/credential"      //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/domains/credentialstate" //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/domains/dispatch"
@@ -504,6 +505,11 @@ type Executor struct {
 	Upstream   *upstreampkg.Client
 	Normalize  NormalizerFunc
 	StreamChat StreamHandler
+	// AttachmentURLRewriter (MM-1): when non-nil, the candidate loop swaps
+	// inline base64 image blocks for gateway URLs on outbound bodies when
+	// the target provider's attachment capability prefers URL references.
+	// nil (default) keeps the legacy byte-for-byte outbound body.
+	AttachmentURLRewriter *attachments.OutboundURLRewriter
 	// dispatchPipeline (V2, 479): when non-nil AND dispatch_v2 gate is on,
 	// Execute routes through the multi-tier dispatch pipeline instead of the
 	// synchronous candidate loop. See executor_dispatch.go.
@@ -1137,6 +1143,10 @@ type ExecParams struct {
 	// status without entering the conversation. Optional.
 	OnNodeJump           func(message string)
 	SuppressSuccessWrite bool
+	// AttachmentMetadata carries the extractor's stored-attachment records
+	// (MM-1) so the executor can swap inline base64 blocks for gateway URLs
+	// per outbound candidate. nil on the legacy path (feature off).
+	AttachmentMetadata []attachments.AttachmentMetadata
 	ClientModel          string
 	OutboundModel        string
 	ClientID             identity.ClientIdentity
@@ -2646,11 +2656,24 @@ func (e *Executor) Execute(params *ExecParams) (result *ExecuteResult, err error
 			}
 
 			if execErr == nil {
+				// ── MM-1 outbound attachment URL rewrite ─────────────────────
+				// Per-candidate: derive the attempt body from the ORIGINAL
+				// body so a failover from a URL-mode provider to a
+				// data-URI-only provider never inherits rewritten URLs.
+				execParams := params
+				if e.AttachmentURLRewriter != nil && len(params.AttachmentMetadata) > 0 {
+					if newBody, n := e.AttachmentURLRewriter.RewriteOpenAIBody(
+						params.BodyBytes, params.AttachmentMetadata, cand.CatalogCode); n > 0 {
+						cp := *params
+						cp.BodyBytes = newBody
+						execParams = &cp
+					}
+				}
 				switch cand.Protocol {
 				case "anthropic-messages":
-					result, execErr = e.executeAnthropic(params, cand, retryPerCred, tTotal, fpLease)
+					result, execErr = e.executeAnthropic(execParams, cand, retryPerCred, tTotal, fpLease)
 				default:
-					result, execErr = e.executeOpenAI(params, cand, retryPerCred, tTotal, fpLease)
+					result, execErr = e.executeOpenAI(execParams, cand, retryPerCred, tTotal, fpLease)
 				}
 			}
 		}()
