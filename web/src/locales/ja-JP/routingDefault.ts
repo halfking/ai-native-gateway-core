@@ -48,6 +48,7 @@ export default {
   create: {
     title: '「{tier}」にモデルを追加',
     modelRequired: 'モデルを選択してください',
+    duplicate: 'この設定はすでに存在します（現在のモデル: {model}）。既存の項目を編集してください。',
     taskRequired: '先にタスク種別を選択してください',
     submit: '追加',
     submitting: '追加中…',
