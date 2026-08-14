@@ -21,7 +21,7 @@ func TestProviderCapabilityMatrix(t *testing.T) {
 		{"anthropic", RefModeDataURI, true, true, true, 5 << 20},
 		{"gemini", RefModeProviderFile, true, false, true, 20 << 20},
 		{"google", RefModeProviderFile, true, false, true, 20 << 20},
-		{"deepseek", RefModeDataURI, true, true, false, 10 << 20},
+		{"deepseek", RefModeDataURI, true, false, false, 10 << 20},
 		{"glm", RefModeGatewayURL, true, true, false, 10 << 20},
 		{"zhipu", RefModeGatewayURL, true, true, false, 10 << 20},
 		{"minimax", RefModeDataURI, true, true, false, 10 << 20},
@@ -173,16 +173,16 @@ func TestValidateAttachmentForProvider(t *testing.T) {
 // default matches that config ("/api/attachments/").
 func TestGatewayURL(t *testing.T) {
 	t.Run("default base", func(t *testing.T) {
-		ResetGatewayURLBaseForTest()
-		defer ResetGatewayURLBaseForTest()
+		resetGatewayURLBase()
+		defer resetGatewayURLBase()
 		got := GatewayURL("2026/08/a1/b2/hash.png")
 		if got != "/api/attachments/2026/08/a1/b2/hash.png" {
 			t.Errorf("GatewayURL = %q", got)
 		}
 	})
 	t.Run("custom base from attachments config", func(t *testing.T) {
-		ResetGatewayURLBaseForTest()
-		defer ResetGatewayURLBaseForTest()
+		resetGatewayURLBase()
+		defer resetGatewayURLBase()
 		SetGatewayURLBase("https://cdn.example.com/attachments/")
 		got := GatewayURL("2026/08/a1/b2/hash.png")
 		if got != "https://cdn.example.com/attachments/2026/08/a1/b2/hash.png" {
@@ -190,8 +190,8 @@ func TestGatewayURL(t *testing.T) {
 		}
 	})
 	t.Run("empty key returns base", func(t *testing.T) {
-		ResetGatewayURLBaseForTest()
-		defer ResetGatewayURLBaseForTest()
+		resetGatewayURLBase()
+		defer resetGatewayURLBase()
 		SetGatewayURLBase("https://cdn.example.com/attachments")
 		if got := GatewayURL(""); got != "https://cdn.example.com/attachments" {
 			t.Errorf("GatewayURL(\"\") = %q", got)
@@ -199,7 +199,7 @@ func TestGatewayURL(t *testing.T) {
 	})
 }
 
-// ResetGatewayURLBaseForTest restores the default gateway URL base.
-func ResetGatewayURLBaseForTest() {
+// resetGatewayURLBase restores the default gateway URL base.
+func resetGatewayURLBase() {
 	SetGatewayURLBase("")
 }
