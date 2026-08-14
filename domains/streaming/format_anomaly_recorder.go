@@ -144,6 +144,38 @@ func withAnomalyWriteTx(ctx context.Context, pool *pgxpool.Pool, fn func(FormatA
 	return tx.Commit(ctx)
 }
 
+// BackfillActualTokens (CO-2, 2026-08-15) fills the actual completion-token
+// count onto the anomaly rows recorded for a request whose estimated
+// request_logs row has just been corrected with real usage. Only rows still
+// lacking an actual_tokens value are touched, so repeated calls are
+// idempotent. Errors are returned to the caller, which treats the backfill
+// as best-effort (warn-only, never on the request hot path).
+func (r *FormatAnomalyRecorder) BackfillActualTokens(ctx context.Context, requestID string, actualTokens int) error {
+	if r == nil || r.db == nil || requestID == "" {
+		return nil
+	}
+	query := `
+		UPDATE response_format_anomalies
+		   SET actual_tokens = $2,
+		       usage_source = 'corrected'
+		 WHERE request_id = $1
+		   AND actual_tokens IS NULL
+	`
+	execFn := func(exec FormatAnomalyExec) error {
+		_, err := exec.Exec(ctx, query, requestID, actualTokens)
+		if err != nil {
+			slog.Warn("failed to backfill format anomaly actual tokens",
+				"request_id", requestID,
+				"error", err)
+		}
+		return err
+	}
+	if r.pool == nil {
+		return execFn(r.db)
+	}
+	return withAnomalyWriteTx(ctx, r.pool, execFn)
+}
+
 // RecordDataAnomaly implements the DataAnomalyRecorder interface for data-level
 // anomalies (persistence failures, JSON marshal failures, log harvest issues).
 func (r *FormatAnomalyRecorder) RecordDataAnomaly(ctx context.Context, anomalyType, severity, requestID, message string, metadata map[string]any) error {

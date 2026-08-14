@@ -4987,6 +4987,34 @@ func (h *ChatHandler) emitTelemetry(evt audit.Event, result *executors.ExecuteRe
 		reqLog.UsageSource = strPtr(UsageSourceLLM)
 	}
 
+	// CO-2 (2026-08-15): 真实 usage 到达时，异步修正本请求此前可能已落库的
+	// estimated 行（同 request_id 的早写路径，如重试/断连补写），并回填
+	// format_anomalies 的 actual_tokens。行不是 estimated 时 UPDATE 不生效
+	// （幂等，不碰 llm/corrected 行）。复制值而非指针，避免与后续 reqLog
+	// 变更产生数据竞争。
+	if reqLog.UsageSource != nil && *reqLog.UsageSource == UsageSourceLLM &&
+		h.telemetryClient != nil &&
+		(reqLog.PromptTokens != nil || reqLog.CompletionTokens != nil) {
+		backfillEntry := &telemetry.RequestLogEntry{RequestID: reqLog.RequestID}
+		if reqLog.PromptTokens != nil {
+			v := *reqLog.PromptTokens
+			backfillEntry.PromptTokens = &v
+		}
+		if reqLog.CompletionTokens != nil {
+			v := *reqLog.CompletionTokens
+			backfillEntry.CompletionTokens = &v
+		}
+		if reqLog.CacheReadTokens != nil {
+			v := *reqLog.CacheReadTokens
+			backfillEntry.CacheReadTokens = &v
+		}
+		if reqLog.CacheWriteTokens != nil {
+			v := *reqLog.CacheWriteTokens
+			backfillEntry.CacheWriteTokens = &v
+		}
+		backfillEstimatedUsage(h.telemetryClient, h.anomalyRecorder, backfillEntry)
+	}
+
 	if reqLog.PromptTokens != nil || reqLog.CompletionTokens != nil {
 		cost := CalcCost(CostInput{
 			PromptTokens:     floatPtrFromInt(reqLog.PromptTokens),

@@ -1373,6 +1373,57 @@ $48,
 	return tx.Commit(ctx)
 }
 
+// CorrectEstimatedUsage (CO-2, 2026-08-15) overwrites the token columns of a
+// request_logs row that still carries usage_source='estimated' with the real
+// LLM-reported usage contained in entry, marking the row usage_source=
+// 'corrected'. It is the write-side counterpart of the estimation fallback in
+// relay/handler.go: emitTelemetry estimates tokens when the upstream never
+// sent a usage block; when the real numbers later arrive for the same
+// request_id (retry success / writeback paths), the regular UPDATE cannot
+// replace them — its COALESCE semantics preserve the already-stored estimates.
+//
+// Only estimated rows are touched: llm rows keep their authoritative values
+// and corrected rows keep the first correction (idempotent). Returns the
+// number of rows corrected so callers can gate follow-ups (e.g. the
+// format-anomalies actual_tokens backfill) on an actual transition.
+// The caller is expected to invoke this off the request hot path (async,
+// best-effort); a DB error is returned, never retried here.
+func (c *Client) CorrectEstimatedUsage(ctx context.Context, entry *RequestLogEntry) (int64, error) {
+	if c == nil || c.requestLogDatabase() == nil {
+		return 0, errNoTelemetryDB
+	}
+	if entry == nil || entry.RequestID == "" {
+		return 0, nil
+	}
+	if entry.PromptTokens == nil && entry.CompletionTokens == nil {
+		return 0, nil
+	}
+	totalTokens := total(entry.PromptTokens, entry.CompletionTokens)
+	tag, err := c.requestLogDatabase().Exec(ctx, `
+		UPDATE request_logs_hot
+		   SET prompt_tokens     = COALESCE($2, prompt_tokens),
+		       completion_tokens = COALESCE($3, completion_tokens),
+		       total_tokens      = COALESCE($4, total_tokens),
+		       cache_read_tokens = COALESCE($5, cache_read_tokens),
+		       cache_write_tokens = COALESCE($6, cache_write_tokens),
+		       usage_source      = 'corrected'
+		 WHERE request_id = $1
+		   AND usage_source = 'estimated'
+		   AND ($2 IS NOT NULL OR $3 IS NOT NULL)
+	`,
+		entry.RequestID,
+		entry.PromptTokens,
+		entry.CompletionTokens,
+		totalTokens,
+		entry.CacheReadTokens,
+		entry.CacheWriteTokens,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return tag.RowsAffected(), nil
+}
+
 func (c *Client) updateRequestLog(entry *RequestLogEntry) error {
 	db := c.requestLogDatabase()
 	if db == nil {
@@ -1485,7 +1536,14 @@ func (c *Client) updateRequestLog(entry *RequestLogEntry) error {
 		       egress_protocol = COALESCE($33, egress_protocol),
 		       request_preview = COALESCE($34, request_preview),
 		       transform_summary = COALESCE($35, transform_summary),
-		       usage_source = COALESCE(NULLIF($36, ''), usage_source),
+		       -- CO-2 (2026-08-15): 'corrected' is terminal in the
+		       -- estimated → corrected state machine. A generic UPDATE
+		       -- carrying usage_source='llm' racing the correction
+		       -- backfill must not downgrade the row back to 'llm'.
+		       usage_source = CASE
+		           WHEN usage_source = 'corrected' THEN usage_source
+		           ELSE COALESCE(NULLIF($36, ''), usage_source)
+		       END,
 		       success = COALESCE($37, success),
 		       request_status = COALESCE($38, request_status),
 		       -- 2026-06-20: clear error_kind on success to prevent
