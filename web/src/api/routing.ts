@@ -1,4 +1,5 @@
 import { req } from './_core'
+import type { CredentialLifecycleStatus } from './providers'
 
 // routing.ts — v6.0 audit T12 (2026-06-22)
 // Routing decision endpoints: resolve (what would I route to?),
@@ -21,7 +22,7 @@ export interface RoutingCandidate {
   credential_id: number
   credential_label: string
   credential_status: string
-  lifecycle_status: string | null
+  lifecycle_status: CredentialLifecycleStatus | null
   availability_state: string | null
   availability_recover_at: string | null
   quota_state: string | null
@@ -70,7 +71,7 @@ export interface RoutingOverviewRow {
   credential_id: number
   credential_label: string
   credential_status: string
-  lifecycle_status: string | null
+  lifecycle_status: CredentialLifecycleStatus | null
   availability_state: string | null
   availability_recover_at: string | null
   quota_state: string | null

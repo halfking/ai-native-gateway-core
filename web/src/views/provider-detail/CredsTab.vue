@@ -7,10 +7,10 @@ import {
   addCredential,
   setCredentialManualDisabled, setDefaultProbeModel, pickDefaultProbeModel,
   resetCredentialAvailability, resetCredentialQuota, forceRecoverCredential,
-  updateCredentialLifecycle, resetCredentialFpSlots,
+  CREDENTIAL_LIFECYCLE_STATUSES, updateCredentialLifecycle, resetCredentialFpSlots,
   releaseCredentialFpSlot,
   getCredentialFpSlotStats, type FpSlotStats,
-  type ProviderCredential, type CredentialStatus,
+  type CredentialLifecycleStatus, type ProviderCredential, type CredentialStatus,
 } from '../../api'
 import FpSlotVisualizer from '../../components/FpSlotVisualizer.vue'
 
@@ -129,12 +129,10 @@ const statuses = computed<Array<{ value: CredentialStatus; label: string }>>(() 
   { value: 'disabled', label: pd('creds.statuses.disabled') },
 ])
 
-const lifecycleStatuses = computed(() => [
-  { value: 'active', label: pd('creds.lifecycleLabel.active') },
-  { value: 'disabled', label: pd('creds.lifecycleLabel.disabled') },
-  { value: 'suspended', label: pd('creds.lifecycleLabel.suspended') },
-  { value: 'retired', label: pd('creds.lifecycleLabel.retired') },
-])
+const lifecycleStatuses = computed(() => CREDENTIAL_LIFECYCLE_STATUSES.map((value) => ({
+  value,
+  label: pd(`creds.lifecycleLabel.${value}`),
+})))
 
 // v735: route-side plan type. Empty string means "no plan" (DB NULL).
 // The empty option is rendered first so users see "unset" as the
@@ -491,16 +489,22 @@ async function toggleManualDisabled() {
   }
 }
 
-async function setLifecycle(value: string) {
+async function setLifecycle(value: CredentialLifecycleStatus) {
   const c = selected.value
   if (!c) return
   try {
     await updateCredentialLifecycle(props.provider.id, c.id, value)
-    c.lifecycle_status = value as 'active' | 'disabled' | 'suspended' | 'retired' | null
+    c.lifecycle_status = value
     emit('silentRefresh')
   } catch (e: unknown) {
     alert(e instanceof Error ? e.message : pd('creds.lifecycleFailed'))
   }
+}
+
+function handleLifecycleChange(event: Event) {
+  const value = (event.target as HTMLSelectElement).value
+  if (!CREDENTIAL_LIFECYCLE_STATUSES.some((status) => status === value)) return
+  void setLifecycle(value as CredentialLifecycleStatus)
 }
 
 // v735: route-side plan type — fires immediately on select change so
@@ -762,7 +766,7 @@ function onTagsInput(ev: Event) {
                 <select
                   :value="selected.lifecycle_status"
                   class="field-input"
-                  @change="(e: Event) => setLifecycle((e.target as HTMLSelectElement).value)"
+                  @change="handleLifecycleChange"
                 >
                   <option v-for="s in lifecycleStatuses" :key="s.value" :value="s.value">{{ s.label }}</option>
                 </select>

@@ -2,7 +2,11 @@
 import { reactive, ref, computed } from 'vue'
 import { isSuperAdmin } from '../../store'
 import { patchCandidateBinding, emergencyRepair, type RoutingCandidate, type EmergencyRepairAction } from '../../api/routing'
-import { updateCredential } from '../../api/providers'
+import {
+  CREDENTIAL_LIFECYCLE_STATUSES,
+  updateCredentialLifecycle,
+  type CredentialLifecycleStatus,
+} from '../../api/providers'
 import { setCredentialManualDisabled } from '../../api/provider-probe'
 
 const props = defineProps<{
@@ -25,7 +29,7 @@ const form = reactive({
   routing_tier: props.candidate.tier ?? 2,
   weight: props.candidate.weight ?? 100,
   manual_disabled: false,
-  lifecycle_status: (props.candidate.lifecycle_status || 'active') as string,
+  lifecycle_status: (props.candidate.lifecycle_status || 'active') as CredentialLifecycleStatus,
 })
 
 // Emergency repair state — confirm stays inside this dialog (no ElMessageBox:
@@ -44,11 +48,17 @@ const prev = {
 
 const canEdit = computed(() => isSuperAdmin())
 
-const lifecycleOptions = [
-  { value: 'active', label: 'active（在用）' },
-  { value: 'deprecated', label: 'deprecated（弃用）' },
-  { value: 'test', label: 'test（测试）' },
-]
+const lifecycleLabels: Record<CredentialLifecycleStatus, string> = {
+  active: 'active（在用）',
+  disabled: 'disabled（停用）',
+  suspended: 'suspended（暂停）',
+  retired: 'retired（退役）',
+}
+
+const lifecycleOptions = CREDENTIAL_LIFECYCLE_STATUSES.map((value) => ({
+  value,
+  label: lifecycleLabels[value],
+}))
 
 // Emergency repair actions availability based on current state.
 //
@@ -211,27 +221,11 @@ async function save() {
     }
     if (form.lifecycle_status !== (props.candidate.lifecycle_status || 'active')) {
       try {
-        await updateCredential(
+        await updateCredentialLifecycle(
           props.candidate.provider_id,
           props.candidate.credential_id,
-          // lifecycle_status 不属于 updateCredential 字段白名单，置空让后端忽略即可。
-          // 注意：实际改 lifecycle_status 走的是 /lifecycle 端点，这里仅做"轻量提示"。
-          // 留空避免误改其他字段；UI 上仍然展示便于操作员查看当前状态。
-          {},
+          form.lifecycle_status,
         )
-        // 走专门的 lifecycle 端点（admin/routing.go 已存在）
-        await fetch(
-          `/api/providers/${props.candidate.provider_id}/credentials/${props.candidate.credential_id}/lifecycle`,
-          {
-            method: 'PATCH',
-            credentials: 'same-origin',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ lifecycle_status: form.lifecycle_status }),
-          },
-        ).then(async (r) => {
-          if (!r.ok) throw new Error(`HTTP ${r.status}`)
-          return r.json()
-        })
         touched.push({ ok: true, label: '生命周期' })
       } catch (e) {
         touched.push({ ok: false, label: `生命周期（${(e as Error).message}）` })
