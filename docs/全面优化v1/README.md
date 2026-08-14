@@ -4,6 +4,8 @@
 > 基线：父仓 `docs/拆分/31-端到端用户流程与三模块一体.md`、本仓 `docs/会话优化v3/`、`docs/修订0811/`
 > 状态词：`CURRENT` 已由源码证明；`PARTIAL` 基础存在未闭环；`PLANNED` 目标能力。
 
+> API 与事件细化：见 [API-DETAILS.md](API-DETAILS.md)，其中定义 gateway 主入口、outbox 事件、SM 投递、插件协议与 capabilities 目标契约。
+
 ## 一、定位与事实边界
 
 gateway 是推理平面 SSOT，但 v1 文档必须区分事实与目标：
