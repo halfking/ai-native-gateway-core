@@ -99,7 +99,8 @@ else: print(xs[int(len(xs)*0.99)])
 ")
 rm -f "$DURING_LAT_FILE"
 
-wait "$FI_PID" 2>/dev/null || true
+if wait "$FI_PID" 2>/dev/null; then FI_RC=0; else FI_RC=$?; fi
+log "fault_inject exit=$FI_RC"
 
 # Phase D: 验证 request_logs_hot 里有 ≥5 行 (gateway 实际写入位置, session_turns 表
 # 在 V2 设计中预留但当前版本未启用 — 对齐 S22 §22.1-22.4 验证模式)
@@ -111,6 +112,7 @@ SESS_TURNS=$REQ_LOGS   # reuse variable for downstream logic
 
 # 判定
 PASS=true
+[ "$FI_RC" -eq 0 ] || { log "FAIL: fault injector exited $FI_RC"; PASS=false; }
 [ "$BASELINE_OK" -ge 2 ] || { log "FAIL: baseline $BASELINE_OK/2"; PASS=false; }
 [ "$DURING_OK" -ge 2 ] || { log "FAIL: during-fault $DURING_OK/3 (need ≥2)"; PASS=false; }
 # session_turns 应有 ≥4 行 (允许 1 轮因 race 写入失败)
@@ -125,6 +127,7 @@ CHECK_TURNS=$([ "$SESS_TURNS" -ge 4 ] && echo true || echo false)
 DISTINCT_CRED=$(psql_count "SELECT COUNT(DISTINCT credential_id) FROM request_logs_hot WHERE ts > NOW() - INTERVAL '30 seconds'")
 log "  distinct credential_ids in recent 30s: $DISTINCT_CRED"
 CHECK_ALIVE=true
+CHECK_FAULT_INJECT=$([ "$FI_RC" -eq 0 ] && echo true || echo false)
 TOTAL=$((2 + 3))
 SUCC=$((BASELINE_OK + DURING_OK))
 RATE=$(awk "BEGIN{printf \"%.3f\", $SUCC/$TOTAL}")
@@ -136,9 +139,9 @@ cp "$FI_STDOUT" "$RESULTS_DIR/${SCENARIO}-fault-inject.jsonl" 2>/dev/null || tru
 cp "$FI_STDERR" "$RESULTS_DIR/${SCENARIO}-fault-inject.log" 2>/dev/null || true
 
 write_scenario_result "$SCENARIO" "functional" "$STATUS" \
-  "{\"baseline_2_of_2\":$CHECK_BASELINE,\"during_2_of_3\":$CHECK_DURING,\"session_turns_ge_4\":$CHECK_TURNS,\"gateway_alive\":$CHECK_ALIVE}" \
+  "{\"baseline_2_of_2\":$CHECK_BASELINE,\"during_2_of_3\":$CHECK_DURING,\"session_turns_ge_4\":$CHECK_TURNS,\"fault_inject_completed\":$CHECK_FAULT_INJECT,\"gateway_alive\":$CHECK_ALIVE}" \
   "{\"total\":$TOTAL,\"succ\":$SUCC,\"fail\":$((TOTAL-SUCC)),\"success_rate\":$RATE,\"p99_ms\":$DURING_P99_MS,\"baseline_ok\":$BASELINE_OK,\"during_ok\":$DURING_OK,\"session_turns\":$SESS_TURNS}" \
-  "{\"during_codes\":\"$DURING_CODES\",\"session_id\":\"$SID\",\"fault_inject_log\":\"results/${SCENARIO}-fault-inject.jsonl\"}" \
+  "{\"during_codes\":\"$DURING_CODES\",\"session_id\":\"$SID\",\"fault_inject_exit\":$FI_RC,\"fault_inject_log\":\"results/${SCENARIO}-fault-inject.jsonl\"}" \
   "$FAILURES" \
   "{\"gateway\":\"$GATEWAY\",\"session_id\":\"$SID\",\"kill_group\":\"G\",\"kill_window_sec\":5}"
 

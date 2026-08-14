@@ -124,9 +124,9 @@ else: print(xs[int(len(xs)*0.99)])
 rm -f "$WINDOW_LAT_FILE"
 log "flash window: $WINDOW_OK/$WINDOW_TOTAL OK, 5xx=$WINDOW_5XX, other=$WINDOW_OTHER, p99=${WINDOW_P99_MS}ms"
 
-# 等 fault_inject 跑到 t=15 (restart) 完成
-wait "$FI_PID" 2>/dev/null || true
-log "fault_inject exit: $(tail -1 "$FI_LOG.stdout" 2>/dev/null || echo 'no output')"
+# 调度失败不能继续报告 PASS。
+if wait "$FI_PID" 2>/dev/null; then FI_RC=0; else FI_RC=$?; fi
+log "fault_inject exit=$FI_RC"
 
 # ── Phase 3: 恢复后 (t=15-22s) ────────────────────────────────
 log "phase 3: 10 recovery requests"
@@ -150,6 +150,7 @@ cp "$FI_LOG" "$RESULTS_DIR/${SCENARIO}-fault-inject.log" 2>/dev/null || true
 # ── Phase 5: 判定 ─────────────────────────────────────────────
 # 接受基线: 基线 ≥4/5 (95%), 闪断窗口 ≥60% (允许 probe 未及时剔除), 恢复 ≥8/10 (80%)
 PASS=true
+[ "$FI_RC" -eq 0 ] || { log "FAIL: fault injector exited $FI_RC"; PASS=false; }
 if [ "$BASELINE_OK" -lt 4 ]; then
     log "FAIL: baseline $BASELINE_OK/5 < 4"; PASS=false
 fi
@@ -170,6 +171,7 @@ CHECK_BASELINE=$([ "$BASELINE_OK" -ge 4 ] && echo true || echo false)
 CHECK_WINDOW=$([ "$WINDOW_OK" -ge "$WINDOW_OK_MIN" ] && echo true || echo false)
 CHECK_RECOVERY=$([ "$RECOVERY_OK" -ge 8 ] && echo true || echo false)
 CHECK_ALIVE=true
+CHECK_FAULT_INJECT=$([ "$FI_RC" -eq 0 ] && echo true || echo false)
 STATUS=$([ "$PASS" = true ] && echo PASS || echo FAIL)
 TOTAL=$((BASELINE_OK >= 0 ? 5 : 0))
 TOTAL=$((5 + WINDOW_TOTAL + RECOVERY_TOTAL))
@@ -180,9 +182,9 @@ if [ "$PASS" != true ]; then
   FAILURES="[\"S24 acceptance failed: baseline=$BASELINE_OK/5 window=$WINDOW_OK/$WINDOW_TOTAL recovery=$RECOVERY_OK/10\"]"
 fi
 write_scenario_result "$SCENARIO" "functional" "$STATUS" \
-  "{\"baseline_5_of_5\":$CHECK_BASELINE,\"window_60pct\":$CHECK_WINDOW,\"recovery_8_of_10\":$CHECK_RECOVERY,\"gateway_alive\":$CHECK_ALIVE}" \
+  "{\"baseline_5_of_5\":$CHECK_BASELINE,\"window_60pct\":$CHECK_WINDOW,\"recovery_8_of_10\":$CHECK_RECOVERY,\"fault_inject_completed\":$CHECK_FAULT_INJECT,\"gateway_alive\":$CHECK_ALIVE}" \
   "{\"total\":$TOTAL,\"succ\":$SUCC,\"fail\":$((TOTAL-SUCC)),\"success_rate\":$RATE,\"p99_ms\":$WINDOW_P99_MS,\"baseline_ok\":$BASELINE_OK,\"window_ok\":$WINDOW_OK,\"window_total\":$WINDOW_TOTAL,\"window_5xx\":$WINDOW_5XX,\"window_other\":$WINDOW_OTHER,\"recovery_ok\":$RECOVERY_OK,\"recovery_total\":$RECOVERY_TOTAL}" \
-  "{\"window_codes\":\"$WINDOW_CODES\",\"fault_inject_log\":\"results/${SCENARIO}-fault-inject.jsonl\"}" \
+  "{\"window_codes\":\"$WINDOW_CODES\",\"fault_inject_exit\":$FI_RC,\"fault_inject_log\":\"results/${SCENARIO}-fault-inject.jsonl\"}" \
   "$FAILURES" \
   "{\"gateway\":\"$GATEWAY\",\"kill_group\":\"G\",\"kill_after_sec\":1,\"window_sec\":11,\"recovery_after_sec\":15}"
 

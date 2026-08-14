@@ -59,14 +59,16 @@ STREAM_LAT_FILE="$(mktemp -t s27-lat-XXXXXX).txt"
 for i in 1 2 3; do
     # 用 timeout 5s 避免 hang
     T0=$(python3 -c 'import time;print(int(time.time()*1000))')
+    set +e
     OUT=$(timeout 5 curl -s -N -X POST \
         -H "Authorization: Bearer $AK" -H "Content-Type: application/json" \
         -d '{"model":"loadtest-mini-alpha","messages":[{"role":"user","content":"stream"}],"max_tokens":30,"stream":true}' \
-        "$GATEWAY/v1/chat/completions" 2>&1 || true)
+        "$GATEWAY/v1/chat/completions" 2>&1)
+    RC=$?
+    set -e
     T1=$(python3 -c 'import time;print(int(time.time()*1000))')
     LAT=$((T1 - T0))
-    RC=$?
-    if [ -n "$OUT" ]; then
+    if echo "$OUT" | grep -q "^data: "; then
         STREAM_GOT_CHUNK=$((STREAM_GOT_CHUNK+1))
         STREAM_OK=$((STREAM_OK+1))
         FIRST_DATA=$(echo "$OUT" | grep -c "^data: ")
@@ -106,13 +108,14 @@ log "recovery stream: $RECOVER_STREAM_OK/3 got [DONE]"
 PASS=true
 [ "$NON_STREAM_OK" -ge 4 ] || { log "FAIL: non-stream $NON_STREAM_OK/5"; PASS=false; }
 [ "$STREAM_GOT_CHUNK" -ge 1 ] || { log "FAIL: no streaming chunk received"; PASS=false; }
-[ "$STREAM_TIMED_OUT" -le 2 ] || { log "WARN: $STREAM_TIMED_OUT/3 stream requests timed out"; }
+[ "$STREAM_TIMED_OUT" -le 2 ] || { log "FAIL: $STREAM_TIMED_OUT/3 stream requests timed out"; PASS=false; }
 [ "$RECOVER_STREAM_OK" -ge 2 ] || { log "FAIL: recovery stream $RECOVER_STREAM_OK/3"; PASS=false; }
 curl -sf "$GATEWAY/healthz" > /dev/null || { log "FAIL: gateway died"; PASS=false; }
 
 CHECK_NON_STREAM=$([ "$NON_STREAM_OK" -ge 4 ] && echo true || echo false)
 CHECK_STREAM_CHUNK=$([ "$STREAM_GOT_CHUNK" -ge 1 ] && echo true || echo false)
 CHECK_STREAM_RE=$([ "$RECOVER_STREAM_OK" -ge 2 ] && echo true || echo false)
+CHECK_STREAM_TIMEOUT=$([ "$STREAM_TIMED_OUT" -le 2 ] && echo true || echo false)
 CHECK_ALIVE=true
 TOTAL=$((5 + 3 + 3))
 SUCC=$((NON_STREAM_OK + STREAM_OK + RECOVER_STREAM_OK))
@@ -122,7 +125,7 @@ FAILURES="[]"
 [ "$PASS" != true ] && FAILURES="[\"S27 streaming recovery failed: ns=$NON_STREAM_OK/5 stream=$STREAM_GOT_CHUNK/3 rec=$RECOVER_STREAM_OK/3\"]"
 
 write_scenario_result "$SCENARIO" "functional" "$STATUS" \
-  "{\"non_stream_4_of_5\":$CHECK_NON_STREAM,\"stream_got_chunk_1_of_3\":$CHECK_STREAM_CHUNK,\"recovery_stream_2_of_3\":$CHECK_STREAM_RE,\"gateway_alive\":$CHECK_ALIVE}" \
+  "{\"non_stream_4_of_5\":$CHECK_NON_STREAM,\"stream_got_chunk_1_of_3\":$CHECK_STREAM_CHUNK,\"stream_timeouts_le_2_of_3\":$CHECK_STREAM_TIMEOUT,\"recovery_stream_2_of_3\":$CHECK_STREAM_RE,\"gateway_alive\":$CHECK_ALIVE}" \
   "{\"total\":$TOTAL,\"succ\":$SUCC,\"fail\":$((TOTAL-SUCC)),\"success_rate\":$RATE,\"p99_ms\":$STREAM_P99_MS,\"non_stream_ok\":$NON_STREAM_OK,\"stream_ok\":$STREAM_OK,\"stream_got_chunk\":$STREAM_GOT_CHUNK,\"stream_timed_out\":$STREAM_TIMED_OUT,\"recovery_stream_ok\":$RECOVER_STREAM_OK}" \
   "{\"stream_chunks\":\"$STREAM_CHUNK_DETAILS\"}" \
   "$FAILURES" \

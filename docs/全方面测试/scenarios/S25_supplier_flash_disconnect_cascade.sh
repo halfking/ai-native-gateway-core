@@ -116,7 +116,8 @@ log "cascade window: $WINDOW_OK/$WINDOW_TOTAL OK, 5xx=$WINDOW_5XX, other=$WINDOW
 
 # ── Phase 3: recovery (等 fault_inject 跑完 restart, 再发 10 个请求) ──
 log "phase 3: wait for all groups restored, then 10 recovery requests"
-wait "$FI_PID" 2>/dev/null || true
+if wait "$FI_PID" 2>/dev/null; then FI_RC=0; else FI_RC=$?; fi
+log "fault_inject exit=$FI_RC"
 sleep 2
 RECOVERY_OK=0
 for i in 1 2 3 4 5 6 7 8 9 10; do
@@ -131,18 +132,20 @@ log "recovery: $RECOVERY_OK/10 OK"
 
 # ── Phase 4: 判定 ─────────────────────────────────────────────
 PASS=true
+[ "$FI_RC" -eq 0 ] || { log "FAIL: fault injector exited $FI_RC"; PASS=false; }
 [ "$BASELINE_OK" -ge 4 ] || { log "FAIL: baseline $BASELINE_OK/5"; PASS=false; }
 WINDOW_OK_MIN=$(awk "BEGIN{print int($WINDOW_TOTAL*0.5)}")
 [ "$WINDOW_OK" -ge "$WINDOW_OK_MIN" ] || { log "FAIL: cascade window $WINDOW_OK/$WINDOW_TOTAL < 50%"; PASS=false; }
 [ "$RECOVERY_OK" -ge 8 ] || { log "FAIL: recovery $RECOVERY_OK/10"; PASS=false; }
 # p99 sanity: 即使有 retry, 也不应超过 3s
-[ "$WINDOW_P99_MS" -le 3000 ] || { log "WARN: p99=$WINDOW_P99_MS ms > 3s"; }
+[ "$WINDOW_P99_MS" -le 3000 ] || { log "FAIL: p99=$WINDOW_P99_MS ms > 3s"; PASS=false; }
 curl -sf "$GATEWAY/healthz" > /dev/null || { log "FAIL: gateway died"; PASS=false; }
 
 CHECK_BASELINE=$([ "$BASELINE_OK" -ge 4 ] && echo true || echo false)
 CHECK_WINDOW=$([ "$WINDOW_OK" -ge "$WINDOW_OK_MIN" ] && echo true || echo false)
 CHECK_RECOVERY=$([ "$RECOVERY_OK" -ge 8 ] && echo true || echo false)
 CHECK_ALIVE=true
+CHECK_FAULT_INJECT=$([ "$FI_RC" -eq 0 ] && echo true || echo false)
 TOTAL=$((5 + WINDOW_TOTAL + 10))
 SUCC=$((BASELINE_OK + WINDOW_OK + RECOVERY_OK))
 RATE=$(awk "BEGIN{printf \"%.3f\", $SUCC/$TOTAL}")
@@ -154,9 +157,9 @@ cp "$FI_STDOUT" "$RESULTS_DIR/${SCENARIO}-fault-inject.jsonl" 2>/dev/null || tru
 cp "$FI_STDERR" "$RESULTS_DIR/${SCENARIO}-fault-inject.log" 2>/dev/null || true
 
 write_scenario_result "$SCENARIO" "functional" "$STATUS" \
-  "{\"baseline_5_of_5\":$CHECK_BASELINE,\"cascade_50pct\":$CHECK_WINDOW,\"recovery_8_of_10\":$CHECK_RECOVERY,\"gateway_alive\":$CHECK_ALIVE}" \
+  "{\"baseline_5_of_5\":$CHECK_BASELINE,\"cascade_50pct\":$CHECK_WINDOW,\"recovery_8_of_10\":$CHECK_RECOVERY,\"p99_le_3s\":$([ "$WINDOW_P99_MS" -le 3000 ] && echo true || echo false),\"fault_inject_completed\":$CHECK_FAULT_INJECT,\"gateway_alive\":$CHECK_ALIVE}" \
   "{\"total\":$TOTAL,\"succ\":$SUCC,\"fail\":$((TOTAL-SUCC)),\"success_rate\":$RATE,\"p99_ms\":$WINDOW_P99_MS,\"baseline_ok\":$BASELINE_OK,\"cascade_ok\":$WINDOW_OK,\"cascade_total\":$WINDOW_TOTAL,\"cascade_5xx\":$WINDOW_5XX,\"cascade_other\":$WINDOW_OTHER,\"cascade_p99_ms\":$WINDOW_P99_MS,\"recovery_ok\":$RECOVERY_OK}" \
-  "{\"cascade_codes\":\"$WINDOW_CODES\",\"fault_inject_log\":\"results/${SCENARIO}-fault-inject.jsonl\"}" \
+  "{\"cascade_codes\":\"$WINDOW_CODES\",\"fault_inject_exit\":$FI_RC,\"fault_inject_log\":\"results/${SCENARIO}-fault-inject.jsonl\"}" \
   "$FAILURES" \
   "{\"gateway\":\"$GATEWAY\",\"kill_groups\":[\"G\",\"H\",\"I\"],\"kill_after_sec\":1,\"window_sec\":30,\"cascade_event_count\":3}"
 
