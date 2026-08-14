@@ -151,6 +151,17 @@ func (s *responsesScaffold) writeInitialEvents() {
 	})
 }
 
+// finishAttempt writes the terminal Responses events unless the attempt
+// commit gate still holds an uncommitted attempt (survival deferred mode) —
+// in that case the coordinator owns the final protocol rendering and the
+// bridge must return a structured outcome only (doc 18 §9.3).
+func (s *responsesScaffold) finishAttempt(gate *AttemptCommitGate, fullText, finishReason string, inputTokens, outputTokens, totalTokens int) {
+	if !gate.MayWriteTerminal() {
+		return
+	}
+	s.writeFinalEvents(fullText, finishReason, inputTokens, outputTokens, totalTokens)
+}
+
 // writeFinalEvents emits response.output_text.done, response.output_item.done,
 // and response.completed with aggregated usage. fullText is the
 // accumulated visible text from all delta chunks. finishReason is the
@@ -279,6 +290,10 @@ func StreamAnthropicSSEToResponsesWithDiagnostics(
 		diagnosticCollector.report(diagnostics, requestID, "anthropic-messages", "openai-responses", outcome.Interrupted)
 	}()
 
+
+	// SR-W1: route client frames through the attempt commit gate.
+	// Disabled (default) this is the identity function — legacy wire bytes.
+	w, gate := wrapAttemptWriter(w, FrameProtocolResponses)
 	flusher, ok := w.(http.Flusher)
 	if !ok {
 		http.Error(w, "streaming not supported", http.StatusInternalServerError)
@@ -383,7 +398,7 @@ func StreamAnthropicSSEToResponsesWithDiagnostics(
 				capture.MarkInterruptedWithReason("stream_chunk_timeout")
 			}
 			totalTokens := inputTokens + outputTokens
-			scaffold.writeFinalEvents(fullText.String(), finishReason, inputTokens, outputTokens, totalTokens)
+			scaffold.finishAttempt(gate, fullText.String(), finishReason, inputTokens, outputTokens, totalTokens)
 			outcome.Interrupted = true
 			outcome.Reason = "chunk_timeout"
 			outcome.Kind = errorsx.KindStreamTimeout
@@ -397,7 +412,7 @@ func StreamAnthropicSSEToResponsesWithDiagnostics(
 		if err != nil {
 			if err == io.EOF {
 				totalTokens := inputTokens + outputTokens
-				scaffold.writeFinalEvents(fullText.String(), finishReason, inputTokens, outputTokens, totalTokens)
+				scaffold.finishAttempt(gate, fullText.String(), finishReason, inputTokens, outputTokens, totalTokens)
 				return StreamOutcome{ChunkCount: chunkCount}
 			}
 			outcome.Interrupted = true
@@ -406,7 +421,7 @@ func StreamAnthropicSSEToResponsesWithDiagnostics(
 			if capture != nil {
 				capture.MarkInterruptedWithReason("anthropic_to_responses_read_error")
 			}
-			scaffold.writeFinalEvents(fullText.String(), finishReason, inputTokens, outputTokens, inputTokens+outputTokens)
+			scaffold.finishAttempt(gate, fullText.String(), finishReason, inputTokens, outputTokens, inputTokens+outputTokens)
 			outcome.ChunkCount = chunkCount
 			return outcome
 		}
@@ -474,7 +489,7 @@ func StreamAnthropicSSEToResponsesWithDiagnostics(
 		// Incremental integrity breach (repeated-content loop): cut the
 		// stream so the executor can failover. Mirrors stream.go.
 		if capture != nil && capture.IntegrityBreached() {
-			scaffold.writeFinalEvents(fullText.String(), finishReason, inputTokens, outputTokens, inputTokens+outputTokens)
+			scaffold.finishAttempt(gate, fullText.String(), finishReason, inputTokens, outputTokens, inputTokens+outputTokens)
 			return integrityBreachOutcome(capture, chunkCount)
 		}
 	}
@@ -536,6 +551,10 @@ func StreamOpenAIToResponsesSSEWithDiagnostics(
 		diagnosticCollector.report(diagnostics, requestID, "openai-completions", "openai-responses", outcome.Interrupted)
 	}()
 
+
+	// SR-W1: route client frames through the attempt commit gate.
+	// Disabled (default) this is the identity function — legacy wire bytes.
+	w, gate := wrapAttemptWriter(w, FrameProtocolResponses)
 	flusher, ok := w.(http.Flusher)
 	if !ok {
 		http.Error(w, "streaming not supported", http.StatusInternalServerError)
@@ -629,20 +648,20 @@ func StreamOpenAIToResponsesSSEWithDiagnostics(
 				if capture != nil {
 					capture.MarkInterruptedWithReason("client_disconnected")
 				}
-				scaffold.writeFinalEvents(fullText.String(), finishReason, inputTokens, outputTokens, inputTokens+outputTokens)
+				scaffold.finishAttempt(gate, fullText.String(), finishReason, inputTokens, outputTokens, inputTokens+outputTokens)
 				outcome.Interrupted = true
 				outcome.Reason = "client_cancel"
 				outcome.Kind = errorsx.KindCanceled
 				return outcome
 			case streamReadEOF:
-				scaffold.writeFinalEvents(fullText.String(), finishReason, inputTokens, outputTokens, inputTokens+outputTokens)
+				scaffold.finishAttempt(gate, fullText.String(), finishReason, inputTokens, outputTokens, inputTokens+outputTokens)
 				return StreamOutcome{ChunkCount: chunkCount}
 			case streamReadTimeout:
 				slog.Warn("openai_to_responses: stream read timeout", "error", readResult.err)
 				if capture != nil {
 					capture.MarkInterruptedWithReason("stream_timeout")
 				}
-				scaffold.writeFinalEvents(fullText.String(), finishReason, inputTokens, outputTokens, inputTokens+outputTokens)
+				scaffold.finishAttempt(gate, fullText.String(), finishReason, inputTokens, outputTokens, inputTokens+outputTokens)
 				outcome.Interrupted = true
 				outcome.Reason = "stream_timeout"
 				outcome.Kind = errorsx.KindStreamTimeout
@@ -652,7 +671,7 @@ func StreamOpenAIToResponsesSSEWithDiagnostics(
 				if capture != nil {
 					capture.MarkInterruptedWithReason("stream_error")
 				}
-				scaffold.writeFinalEvents(fullText.String(), finishReason, inputTokens, outputTokens, inputTokens+outputTokens)
+				scaffold.finishAttempt(gate, fullText.String(), finishReason, inputTokens, outputTokens, inputTokens+outputTokens)
 				outcome.Interrupted = true
 				outcome.Reason = "read_error"
 				outcome.Kind = errorsx.KindUpstreamDown
@@ -672,7 +691,7 @@ func StreamOpenAIToResponsesSSEWithDiagnostics(
 		}
 		payload := strings.TrimPrefix(trimmed, "data: ")
 		if payload == "[DONE]" {
-			scaffold.writeFinalEvents(fullText.String(), finishReason, inputTokens, outputTokens, inputTokens+outputTokens)
+			scaffold.finishAttempt(gate, fullText.String(), finishReason, inputTokens, outputTokens, inputTokens+outputTokens)
 			return StreamOutcome{ChunkCount: chunkCount}
 		}
 
@@ -718,7 +737,7 @@ func StreamOpenAIToResponsesSSEWithDiagnostics(
 		// Incremental integrity breach (repeated-content loop): cut the
 		// stream so the executor can failover. Mirrors stream.go.
 		if capture != nil && capture.IntegrityBreached() {
-			scaffold.writeFinalEvents(fullText.String(), finishReason, inputTokens, outputTokens, inputTokens+outputTokens)
+			scaffold.finishAttempt(gate, fullText.String(), finishReason, inputTokens, outputTokens, inputTokens+outputTokens)
 			return integrityBreachOutcome(capture, chunkCount)
 		}
 	}
