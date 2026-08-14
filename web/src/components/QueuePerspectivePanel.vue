@@ -2,11 +2,7 @@
 /**
  * QueuePerspectivePanel — 队列透视区（V3.2 FE-A1）
  *
- * KEEP: 等待 V3.2 BE-A1 wire SetQueueSnapshotProvider + liveStreamStore 加 queueRef state 后启用。
- * 当前为 WIP（`.v32wip` 后缀）— 引用了尚未实现的 queueRef。
- * 重命名为 .vue 会编译失败。@v3-team 2026-Q3 review.
- *
- * 实时展示三层队列（总/模型/节点）的深度与拥堵状态。
+ * 实时展示三层队列（总/模型/节点）的深度、拥堵状态和最近请求轨迹。
  * 数据源：liveStreamStore 的 queue_snapshot SSE 消息（BE-A1）。
  *
  * 设计约束：
@@ -15,9 +11,25 @@
  *   - 动画只用 transform/opacity
  */
 import { computed } from 'vue'
-import { queueRef } from '../composables/liveStreamStore'
+import { queueRef, nodesRef } from '../composables/liveStreamStore'
+import RequestProcessingTrail from './RequestProcessingTrail.vue'
 
 const queue = queueRef
+const nodes = nodesRef
+
+// 节点统计
+const nodeStats = computed(() => {
+  const total = nodes.value.length
+  const ready = nodes.value.filter(n =>
+    n.availability_state === 'ready' &&
+    n.circuit_state === 'closed' &&
+    n.quota_state === 'ok' &&
+    !n.manual_disabled
+  ).length
+  const suspended = nodes.value.filter(n => n.availability_state === 'suspended').length
+  const exhausted = nodes.value.filter(n => n.quota_state?.includes('exhausted')).length
+  return { total, ready, suspended, exhausted }
+})
 
 // 总队列深度 = 所有模型队列深度之和（总队列是模型队列的上游）
 const totalDepth = computed(() => {
@@ -65,6 +77,7 @@ const congestionHint = computed(() => {
 })
 
 const hasData = computed(() => queue.value !== null && queue.value.wired)
+const isIdle = computed(() => hasData.value && totalDepth.value === 0)
 </script>
 
 <template>
@@ -82,6 +95,30 @@ const hasData = computed(() => queue.value !== null && queue.value.wired)
 
     <!-- 三层队列 -->
     <div v-else class="qp-layers">
+      <!-- 节点健康度摘要 -->
+      <div class="qp-node-summary">
+        <span class="qp-summary-item">
+          <span class="qp-summary-label">总节点</span>
+          <span class="qp-summary-value">{{ nodeStats.total }}</span>
+        </span>
+        <span class="qp-summary-item qp-summary-item--ok">
+          <span class="qp-summary-label">可用</span>
+          <span class="qp-summary-value">{{ nodeStats.ready }}</span>
+        </span>
+        <span v-if="nodeStats.suspended > 0" class="qp-summary-item qp-summary-item--warn">
+          <span class="qp-summary-label">暂停</span>
+          <span class="qp-summary-value">{{ nodeStats.suspended }}</span>
+        </span>
+        <span v-if="nodeStats.exhausted > 0" class="qp-summary-item qp-summary-item--danger">
+          <span class="qp-summary-label">配额耗尽</span>
+          <span class="qp-summary-value">{{ nodeStats.exhausted }}</span>
+        </span>
+      </div>
+
+      <div v-if="isIdle" class="qp-idle">
+        ✅ 当前无排队请求，调度链路畅通
+      </div>
+
       <!-- 总队列 -->
       <div class="qp-layer">
         <div class="qp-layer-header">
@@ -137,6 +174,8 @@ const hasData = computed(() => queue.value !== null && queue.value.wired)
           </span>
         </div>
       </div>
+
+      <RequestProcessingTrail />
     </div>
   </div>
 </template>
@@ -184,6 +223,48 @@ const hasData = computed(() => queue.value !== null && queue.value.wired)
   display: flex;
   flex-direction: column;
   gap: 12px;
+}
+
+/* 节点健康度摘要 */
+.qp-node-summary {
+  display: flex;
+  gap: 12px;
+  padding: 8px 12px;
+  background: var(--kx-bg-elevated);
+  border-radius: var(--kx-radius-sm, 6px);
+  margin-bottom: 4px;
+}
+.qp-summary-item {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-size: 12px;
+}
+.qp-summary-label {
+  color: var(--kx-text-secondary);
+  font-size: 11px;
+}
+.qp-summary-value {
+  font-weight: 600;
+  font-size: 14px;
+  color: var(--kx-text);
+}
+.qp-summary-item--ok .qp-summary-value {
+  color: var(--kx-success);
+}
+.qp-summary-item--warn .qp-summary-value {
+  color: var(--kx-warning);
+}
+.qp-summary-item--danger .qp-summary-value {
+  color: var(--kx-danger);
+}
+
+.qp-idle {
+  color: var(--kx-text-secondary);
+  font-size: 13px;
+  padding: 8px 12px;
+  background: var(--kx-success-bg, rgba(103, 194, 58, 0.12));
+  border-radius: var(--kx-radius-sm, 6px);
 }
 .qp-layer-header {
   display: flex;
