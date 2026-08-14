@@ -176,6 +176,7 @@ export default {
   viewFailedRequests: 'View failed requests',
   liveStream: {
     title: 'Real-time request stream',
+    controlsAria: 'Live request stream controls',
     connected: 'Connected',
     disconnected: 'Reconnecting…',
     pause: 'Pause',

@@ -1,4 +1,5 @@
 export default {
+  imminent: "Zurücksetzung steht bevor",
   page: {
     title: "Kostenloser Ressourcenpool",
     desc: "Verwalten Sie den Pool kostenloser Modelle. Registrierte Modelle haben die höchste Routing-Priorität (routing_tier = 9, composite_score = 0). Die „Kostenlose Modellliste\" unten zeigt alle aktuell im Pool verfügbaren Modelle; der „Vorlagenkatalog\" zeigt bekannte kostenlose Anbieter und ihre erwarteten Modelle."

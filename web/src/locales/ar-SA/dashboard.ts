@@ -152,6 +152,7 @@ v2: {
   viewFailedRequests: "عرض الطلبات الفاشلة",
   liveStream: {
     title: "تدفق الطلبات المباشر",
+    controlsAria: "عناصر التحكم في تدفق الطلبات المباشر",
     connected: "متصل",
     disconnected: "إعادة الاتصال...",
     pause: "إيقاف مؤقت",

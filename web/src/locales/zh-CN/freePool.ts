@@ -2,6 +2,7 @@
 // 命名空间：page / tab / stats / assistant / keyForm / providerForm / models / providers / catalog / keys / guide / status / acquisition / error / feedback。
 // 技术术语保持不译：catalog_code、routing_tier、offer、mail.tm、OAuth、secret_ciphertext。
 export default {
+  imminent: '即将重置',
   page: {
     title: '免费资源池',
     desc: '管理免费模型资源池。已注册模型路由优先级最高（routing_tier = 9，composite_score = 0）。下方「免费模型清单」展示当前池内全部可用模型；「模板目录」展示已知免费 Provider 及其预期模型。',
