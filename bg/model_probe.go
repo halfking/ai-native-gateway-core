@@ -77,20 +77,14 @@ const (
 	ProbeInterval = 5 * time.Minute
 )
 
-// ErrCredentialManuallyDisabled is returned by TriggerManual when the
-// targeted (credential, model) binding exists but the credential has
-// manual_disabled=TRUE (or lifecycle_status != 'active').  The admin UI
-// surface should treat this as an expected guard outcome, not an
-// unexpected SQL error: callers can check with errors.Is and emit a
-// user-friendly "credential is disabled" message instead of "binding
-// not found".
+// ErrCredentialManuallyDisabled is returned by TriggerManual when the target
+// binding exists but its credential or provider is manually disabled, or the
+// credential is no longer active. Callers should treat this as an expected
+// guard outcome rather than an unexpected SQL error.
 //
-// 2026-08-13 audit: TriggerManual previously returned a generic
-// "binding not found" error for manual_disabled bindings because the
-// SQL WHERE clause didn't filter on c.manual_disabled. The fix here
-// reintroduces a typed sentinel so admin handlers can detect and
-// surface the exact reason.
-var ErrCredentialManuallyDisabled = errors.New("credential is manually disabled")
+// 2026-08-13 audit: TriggerManual must short-circuit at SQL time so a disabled
+// target is never decrypted or probed upstream.
+var ErrCredentialManuallyDisabled = errors.New("manual probe target is disabled")
 
 // ModelProbeRunner is the v2 (consensus + backoff) implementation.
 type ModelProbeRunner struct {
@@ -217,30 +211,42 @@ func (r *ModelProbeRunner) nonfeaturedWatchdogTick(ctx context.Context) {
 	targetSecs := mult * baseSecs
 
 	tag, err := r.db.Exec(ctx, `
-		WITH static AS (
-		    SELECT lower(unnest(COALESCE(
-		        (SELECT featured_models FROM routing_policy WHERE tenant_id = $1 LIMIT 1),
-		        ARRAY[]::TEXT[]
-		    ))) AS model
-		), usage AS (
-		    SELECT lower(raw_model) AS raw_model FROM (
-		        SELECT COALESCE(rl.outbound_model, rl.client_model) AS raw_model,
-		               count(*) AS calls
-		        FROM request_logs_hot rl
-		        WHERE rl.success
-		          AND rl.ts > now() - make_interval(hours => $2)
-		          AND COALESCE(rl.outbound_model, rl.client_model) <> ''
-		        GROUP BY raw_model
-		    ) t
-		    ORDER BY calls DESC LIMIT $3
-		)
-		UPDATE model_probe_state mps
-		SET next_retry_at = now() + ($4 * interval '1 second')
-		WHERE mps.state = 'healthy_confirmed'
-		  AND (mps.next_retry_at IS NULL OR mps.next_retry_at < now() + ($4 * interval '1 second'))
-		  AND lower(mps.raw_model_name) NOT IN (SELECT model FROM static)
-		  AND lower(mps.raw_model_name) NOT IN (SELECT raw_model FROM usage)
-	`, tenant, windowHours, topN, targetSecs)
+			WITH static AS (
+			    SELECT lower(unnest(COALESCE(
+			        (SELECT featured_models FROM routing_policy WHERE tenant_id = $1 LIMIT 1),
+			        ARRAY[]::TEXT[]
+			    ))) AS model
+			), usage AS (
+			    SELECT lower(raw_model) AS raw_model FROM (
+			        SELECT COALESCE(rl.outbound_model, rl.client_model) AS raw_model,
+			               count(*) AS calls
+			        FROM request_logs_hot rl
+			        WHERE rl.success
+			          AND rl.ts > now() - make_interval(hours => $2)
+			          AND COALESCE(rl.outbound_model, rl.client_model) <> ''
+			        GROUP BY raw_model
+			    ) t
+			    ORDER BY calls DESC LIMIT $3
+			)
+			UPDATE model_probe_state mps
+			SET next_retry_at = now() + ($4 * interval '1 second')
+			FROM credential_model_bindings cmb
+			JOIN provider_models pm ON pm.id = cmb.provider_model_id
+			JOIN credentials c ON c.id = cmb.credential_id
+			JOIN providers p ON p.id = c.provider_id
+			WHERE mps.credential_id = cmb.credential_id
+			  AND mps.raw_model_name = pm.raw_model_name
+			  AND mps.state = 'healthy_confirmed'
+			  AND (mps.next_retry_at IS NULL OR mps.next_retry_at < now() + ($4 * interval '1 second'))
+			  AND COALESCE(c.status, 'active') = 'active'
+			  AND COALESCE(c.lifecycle_status, 'active') = 'active'
+			  AND COALESCE(c.manual_disabled, FALSE) = FALSE
+			  AND COALESCE(p.enabled, FALSE) = TRUE
+			  AND COALESCE(p.manual_disabled, FALSE) = FALSE
+			  AND COALESCE(cmb.unavailable_reason, '') NOT LIKE 'manual%'
+			  AND lower(mps.raw_model_name) NOT IN (SELECT model FROM static)
+			  AND lower(mps.raw_model_name) NOT IN (SELECT raw_model FROM usage)
+		`, tenant, windowHours, topN, targetSecs)
 	if err != nil {
 		slog.Warn("nonfeatured watchdog tick failed", "error", err)
 		return
@@ -1031,8 +1037,9 @@ func (r *ModelProbeRunner) TriggerManual(ctx context.Context, credentialID int, 
 		       ON mps.credential_id = cmb.credential_id
 		      AND mps.raw_model_name = pm.raw_model_name
 		WHERE cmb.credential_id = $1 AND pm.raw_model_name = $2
-		  AND COALESCE(c.manual_disabled, FALSE) = FALSE
 		  AND COALESCE(c.lifecycle_status, 'active') = 'active'
+		  AND COALESCE(c.manual_disabled, FALSE) = FALSE
+		  AND COALESCE(p.manual_disabled, FALSE) = FALSE
 		LIMIT 1
 	`, credentialID, rawModel)
 	var t probeTarget
@@ -1042,20 +1049,25 @@ func (r *ModelProbeRunner) TriggerManual(ctx context.Context, credentialID int, 
 	if err := row.Scan(&t.CredentialID, &t.RawModel, &t.OutboundModel, &t.Modality, &t.BaseURL, &t.Protocol,
 		&ciphertext, &t.ManualDisabled, &prevState, &prevSucc, &prevFail); err != nil {
 		if err == pgx.ErrNoRows {
-			// Distinguish "binding does not exist" from "binding exists but
-			// is manually disabled" so callers can surface a clearer
-			// admin-UI / API error message.
-			var exists bool
+			var disabled bool
 			if probeErr := r.db.QueryRow(ctx, `
-				SELECT EXISTS (
-					SELECT 1
-					FROM credential_model_bindings cmb
-					JOIN credentials c ON c.id = cmb.credential_id
-					WHERE cmb.credential_id = $1 AND cmb.provider_model_id = (
-						SELECT id FROM provider_models WHERE raw_model_name = $2 LIMIT 1
+					SELECT EXISTS (
+						SELECT 1
+						FROM credential_model_bindings cmb
+						JOIN provider_models pm ON pm.id = cmb.provider_model_id
+						JOIN credentials c ON c.id = cmb.credential_id
+						JOIN providers p ON p.id = c.provider_id
+						WHERE cmb.credential_id = $1
+						  AND pm.raw_model_name = $2
+						  AND (
+							  COALESCE(c.manual_disabled, FALSE)
+							  OR COALESCE(p.manual_disabled, FALSE)
+							  OR COALESCE(c.lifecycle_status, 'active') <> 'active'
+						  )
 					)
-				)
-			`, credentialID, rawModel).Scan(&exists); probeErr == nil && exists {
+				`, credentialID, rawModel).Scan(&disabled); probeErr != nil {
+				return probeErr
+			} else if disabled {
 				return ErrCredentialManuallyDisabled
 			}
 			return fmt.Errorf("binding not found")

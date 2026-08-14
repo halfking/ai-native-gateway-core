@@ -180,6 +180,9 @@ func (db *DB) applyMigrationsOnce(ctx context.Context) error {
 	if err := db.ensurePassiveProbeStateSchema(migCtx); err != nil {
 		return err
 	}
+	if err := db.ensureProbeWatchdogIndex(migCtx); err != nil {
+		return err
+	}
 	if err := db.ensureProbeStateFunctionFixes(migCtx); err != nil {
 		return err
 	}
@@ -365,7 +368,7 @@ func (d *DB) ensureRequestLogSchema(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	
+
 	// V3.1 (migration 491): 9-stage dispatch queue timestamps on hot + parent.
 	// Startup ensure so environments that have not yet run 491 still accept INSERTs.
 	_, err = d.pool.Exec(ctx, `
@@ -1361,6 +1364,21 @@ func (d *DB) ensurePassiveProbeStateSchema(ctx context.Context) error {
 	}
 	slog.Info("passive_probe_state schema ensured (table + 1 index + 3 model_probe_state columns)")
 	return nil
+}
+
+// ensureProbeWatchdogIndex keeps the healthy non-featured watchdog update
+// indexed on every startup path, including deployments that do not replay
+// historical SQL migration files.
+func (d *DB) ensureProbeWatchdogIndex(ctx context.Context) error {
+	if d == nil || d.pool == nil {
+		return nil
+	}
+	_, err := d.pool.Exec(ctx, `
+		CREATE INDEX IF NOT EXISTS idx_mps_healthy_confirmed_next_retry
+		    ON model_probe_state (next_retry_at)
+		    WHERE state = 'healthy_confirmed';
+	`)
+	return err
 }
 
 // ensureProbeStateFunctionFixes patches probe state SQL functions from 301/302

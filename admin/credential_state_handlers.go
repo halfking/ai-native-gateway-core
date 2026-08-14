@@ -16,9 +16,12 @@ package admin
 
 import (
 	"encoding/json"
+	"errors"
 	"log/slog"
 	"net/http"
 	"strconv"
+
+	"github.com/kaixuan/llm-gateway-go/bg"
 )
 
 // handleTestCredential fires an immediate fast re-probe for one credential.
@@ -72,6 +75,10 @@ func (h *Handler) handleTestCredentialModel(w http.ResponseWriter, r *http.Reque
 			"credential_id", credID,
 			"model", model,
 			"error", err)
+		if errors.Is(err, bg.ErrCredentialManuallyDisabled) {
+			http.Error(w, "credential is manually disabled", http.StatusConflict)
+			return
+		}
 		http.Error(w, "probe trigger failed", http.StatusInternalServerError)
 		return
 	}
