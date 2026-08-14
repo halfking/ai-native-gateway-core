@@ -102,20 +102,27 @@ if [ "$RESP_ANON" = "401" ] || [ "$RESP_ANON" = "404" ]; then
 else
     log "FAIL: anonymous returned $RESP_ANON"; PASS=false
 fi
-# (c) 不存在 session 必须 404
+# (c) 自己的 pending 必须能读回
+if [ "$RESP_A" = "200" ]; then
+    log "PASS: own pending readable ($RESP_A)"
+else
+    log "FAIL: own pending returned $RESP_A (expected 200)"; PASS=false
+fi
+# (d) 不存在 session 必须 404
 if [ "$RESP_FAKE" = "404" ]; then
     log "PASS: non-existent session 404 (no enumeration)"
 else
-    log "WARN: non-existent session returned $RESP_FAKE (expected 404)"
+    log "FAIL: non-existent session returned $RESP_FAKE (expected 404)"; PASS=false
 fi
 
 # Strict result envelope (schema_version 1.0)
+CHECK_OWN=$([ "$RESP_A" = "200" ] && echo true || echo false)
 CHECK_CROSS=$([ "$RESP_B" = "404" ] || [ "$RESP_B" = "403" ] && echo true || echo false)
 CHECK_ANON=$([ "$RESP_ANON" = "401" ] || [ "$RESP_ANON" = "404" ] && echo true || echo false)
 CHECK_FAKE=$([ "$RESP_FAKE" = "404" ] && echo true || echo false)
-SUCC=$([ "$PASS" = true ] && echo 4 || echo 3)
+SUCC=$([ "$PASS" = true ] && echo 4 || echo 0)
 FAIL=$((4 - SUCC))
-RATE=$([ "$PASS" = true ] && echo 1.0 || echo 0.75)
+RATE=$([ "$PASS" = true ] && echo 1.0 || echo 0.0)
 STATUS=$([ "$PASS" = true ] && echo PASS || echo FAIL)
 FAILURES="[]"
 if [ "$PASS" != true ]; then
@@ -123,8 +130,8 @@ if [ "$PASS" != true ]; then
 fi
 ADMIN_JSON=${ADMIN_HTTP:-null}
 write_scenario_result "$SCENARIO" "functional" "$STATUS" \
-  "{\"cross_tenant_blocked\":$CHECK_CROSS,\"anonymous_blocked\":$CHECK_ANON,\"non_existent_404\":$CHECK_FAKE}" \
-  "{\"total\":4,\"succ\":$SUCC,\"fail\":$FAIL,\"success_rate\":$RATE,\"elapsed_sec\":4,\"p99_ms\":0,\"fail_by_status\":{},\"fail_by_kind\":{}}" \
+  "{\"own_pending_readable\":$CHECK_OWN,\"cross_tenant_blocked\":$CHECK_CROSS,\"anonymous_blocked\":$CHECK_ANON,\"non_existent_404\":$CHECK_FAKE}" \
+  "{\"total\":4,\"succ\":$SUCC,\"fail\":$FAIL,\"success_rate\":$RATE,\"elapsed_sec\":4,\"p99_required\":false,\"fail_by_status\":{},\"fail_by_kind\":{}}" \
   "{\"tenant_a_own\":$RESP_A,\"tenant_b_cross\":$RESP_B,\"anon\":$RESP_ANON,\"non_existent\":$RESP_FAKE,\"admin_tenant_a\":$ADMIN_JSON}" \
   "$FAILURES" \
   "{\"gateway\":\"$GATEWAY\"}"

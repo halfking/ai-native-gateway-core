@@ -147,13 +147,13 @@ def load_manifest(path: str | None) -> list[str] | None:
     return scenarios
 
 
-def main() -> int:
+def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--results", default="./results")
     parser.add_argument("--manifest", help="JSON manifest containing declared scenario names")
     parser.add_argument("--format", choices=["md", "json"], default="md")
     parser.add_argument("--allow-skipped", action="store_true")
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
 
     try:
         declared = load_manifest(args.manifest)
@@ -181,8 +181,8 @@ def main() -> int:
         rows.append(evaluate_file(path, expected))
 
     counts = {status: sum(1 for row in rows if row["status"] == status) for status in STATUSES}
-    blocking = counts["FAIL"] + counts["INVALID"]
-    incomplete = counts["SKIPPED"] + counts["BLOCKED_ENVIRONMENT"]
+    blocking = counts["FAIL"] + counts["INVALID"] + counts["BLOCKED_ENVIRONMENT"]
+    incomplete = counts["SKIPPED"]
     if blocking:
         overall = "FAIL"
     elif incomplete and not args.allow_skipped:

@@ -14,15 +14,37 @@ SUITE="functional"
 # 历史: S22/S23 第一轮失败 30/30 0% succ, 根因是默认 GATEWAY=localhost:8781 撞到了别人 7月31日的旧 binary.
 GATEWAY="${GATEWAY:-http://127.0.0.1:8793}"
 RUN_ID="${TEST_RUN_ID:-run-$(date -u +%Y%m%dT%H%M%SZ)-$$}"
+usage() {
+    cat <<'EOF'
+Usage: bash scenarios/run_all.sh [options]
+
+Options:
+  --suite <functional|concurrency|performance|reliability|all>
+  --gateway <url> | --gateway=<url>
+  --run-id <id>
+  --skip-scenarios "<space-separated scenario names>"
+  --fast
+  --allow-skipped       Produce a non-release PASS only when all other results pass.
+  --help
+EOF
+}
+require_value() {
+    if [ "$#" -lt 2 ] || [ -z "$2" ]; then
+        echo "missing value for $1" >&2
+        exit 2
+    fi
+}
 while [ $# -gt 0 ]; do
     case "$1" in
-        --skip-scenarios) SKIP_SCENARIOS="$2"; shift 2 ;;
+        --skip-scenarios) require_value "$@"; SKIP_SCENARIOS="$2"; shift 2 ;;
         --fast) FAST=1; shift ;;
-        --gateway) GATEWAY="$2"; shift 2 ;;
-        --suite) SUITE="$2"; shift 2 ;;
-        --run-id) RUN_ID="$2"; shift 2 ;;
+        --gateway) require_value "$@"; GATEWAY="$2"; shift 2 ;;
+        --gateway=*) GATEWAY="${1#--gateway=}"; [ -n "$GATEWAY" ] || { echo "missing value for --gateway" >&2; exit 2; }; shift ;;
+        --suite) require_value "$@"; SUITE="$2"; shift 2 ;;
+        --run-id) require_value "$@"; RUN_ID="$2"; shift 2 ;;
         --allow-skipped) ALLOW_SKIPPED=1; shift ;;
-        *) echo "unknown: $1" >&2; exit 2 ;;
+        --help|-h) usage; exit 0 ;;
+        *) echo "unknown option: $1" >&2; usage >&2; exit 2 ;;
     esac
 done
 
@@ -89,12 +111,41 @@ printf '%s\n' "=================================================================
 # Environment failures are represented as a result and stop the suite. They are
 # not counted as gateway failures, but they still make release acceptance red.
 PREFLIGHT="$RESULTS_DIR/TEST_PREFLIGHT.json"
+write_environment_block() {
+    local reason="$1"
+    python3 - "$MANIFEST" "$PREFLIGHT" "$reason" <<'PY'
+import json, sys
+from result_contract import envelope, write_result
+
+manifest_path, path, reason = sys.argv[1:]
+try:
+    with open(path, encoding="utf-8") as stream:
+        probe = json.load(stream)
+except (OSError, json.JSONDecodeError):
+    probe = {}
+with open(manifest_path, "w", encoding="utf-8") as stream:
+    json.dump({"schema_version": "1.0", "run_id": probe.get("run_id"), "suite": "environment", "scenarios": ["TEST_PREFLIGHT"]}, stream, indent=2)
+write_result(path, envelope(
+    "TEST_PREFLIGHT",
+    "environment",
+    "BLOCKED_ENVIRONMENT",
+    checks={"preflight_passed": False},
+    metrics={"p99_required": False},
+    evidence={"preflight": probe},
+    failures=[reason],
+    parameters={"gateway": probe.get("gateway", "")},
+    reason=reason,
+))
+PY
+    python3 tools/validation_report.py --results "$RESULTS_DIR" --manifest "$MANIFEST" > "$RESULTS_DIR/REPORT.md" || true
+}
 set +e
 python3 tools/preflight.py --gateway "$GATEWAY" --output "$PREFLIGHT" --skip-mocks
 PREFLIGHT_RC=$?
 set -e
 if [ "$PREFLIGHT_RC" -ne 0 ]; then
     echo "BLOCKED_ENVIRONMENT: preflight failed; see $PREFLIGHT"
+    write_environment_block "gateway/database preflight failed"
     exit 1
 fi
 
@@ -109,6 +160,7 @@ if [ "$SUITE" = "functional" ] || [ "$SUITE" = "concurrency" ] || \
     set -e
     if [ "$MOCK_PREFLIGHT_RC" -ne 0 ]; then
         echo "BLOCKED_ENVIRONMENT: mock preflight failed; see $PREFLIGHT"
+        write_environment_block "mock supplier preflight failed"
         exit 1
     fi
 fi

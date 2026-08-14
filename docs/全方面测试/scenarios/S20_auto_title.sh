@@ -97,7 +97,8 @@ fi
 if [ "$LATEST_TASK_ID" = "auto" ]; then
     log "✅ 20.3 PASS: task_id='auto' (auto-title 触发链正常)"
 else
-    log "⚠️ 20.3 WARN: task_id='$LATEST_TASK_ID' (不是 'auto', 可能是 manual 触发残留)"
+    log "❌ 20.3 FAIL: task_id='$LATEST_TASK_ID' (不是 'auto')"
+    PASS=false
 fi
 
 # 20.4 幂等: 再发 1 轮到同一 session, 验证不会产生第 2 行
@@ -114,14 +115,10 @@ log "20.4: rows before=$ROWS_BEFORE after=$ROWS_AFTER"
 if [ "$ROWS_AFTER" = "$ROWS_BEFORE" ]; then
     log "✅ 20.4 PASS: 重复触发不重复写库 (ON CONFLICT 生效)"
 else
-    # 允许略有增加 (例如 sticky session 触发不同 gw_session_id)
-    if [ "$((ROWS_AFTER - ROWS_BEFORE))" -le "2" ]; then
-        log "⚠️ 20.4 WARN: 重复触发多写了 $((ROWS_AFTER - ROWS_BEFORE)) 行 (新 session_id)"
-    else
-        log "❌ 20.4 FAIL: 重复触发多写 $((ROWS_AFTER - ROWS_BEFORE)) 行"
-        PASS=false
-    fi
+    log "❌ 20.4 FAIL: 重复触发多写了 $((ROWS_AFTER - ROWS_BEFORE)) 行"
+    PASS=false
 fi
+
 
 # 20.5 manual 触发: POST /api/system/session-context/<taskId>/summarize-title
 # 这条需要 admin token (LLM_GATEWAY_ADMIN_API_KEY env, 不在 DB)
@@ -158,9 +155,10 @@ log "    路径: POST /api/system/session-context/<taskId>/summarize-title"
 log "    admin/handler.go:852 已注册路由"
 log "    admin/session_extract.go:62 实现 handleSessionSummarizeTitle"
 
-# Strict result envelope — checks must be boolean only (no skipped_TODO strings).
+# Strict result envelope — checks must represent the full assertions above.
+TITLE_LEN=${#LATEST_TITLE}
 CHECK_20_1=$([ "$LATEST_ROW_COUNT" -gt 0 ] && echo true || echo false)
-CHECK_20_2=$([ -n "$LATEST_TITLE" ] && [ "$LATEST_TITLE" != "null" ] && echo true || echo false)
+CHECK_20_2=$([ -n "$LATEST_TITLE" ] && [ "$LATEST_TITLE" != "null" ] && [ "$TITLE_LEN" -ge 1 ] && [ "$TITLE_LEN" -le 80 ] && ! printf '%s' "$LATEST_TITLE" | grep -qE "redacted|^\s*<\|.*\|>\s*$" && echo true || echo false)
 CHECK_20_3=$([ "$LATEST_TASK_ID" = "auto" ] && echo true || echo false)
 # 20.4: allow +0..+2 rows (new sticky session_id) as soft-pass
 DELTA_20_4=$((ROWS_AFTER - ROWS_BEFORE))
@@ -174,7 +172,7 @@ fi
 TITLE_JSON=$(python3 -c 'import json,sys; print(json.dumps(sys.argv[1]))' "$LATEST_TITLE")
 write_scenario_result "$SCENARIO" "functional" "$STATUS" \
   "{\"20_1_title_triggered\":$CHECK_20_1,\"20_2_title_content_valid\":$CHECK_20_2,\"20_3_task_id_auto\":$CHECK_20_3,\"20_4_idempotent\":$CHECK_20_4}" \
-  "{\"title_length\":${#LATEST_TITLE},\"row_count_after\":$ROWS_AFTER,\"success_rate\":$([ "$PASS" = true ] && echo 1.0 || echo 0.0),\"p99_ms\":0}" \
+  "{\"title_length\":$TITLE_LEN,\"row_count_after\":$ROWS_AFTER,\"success_rate\":$([ "$PASS" = true ] && echo 1.0 || echo 0.0),\"p99_required\":false}" \
   "{\"title\":$TITLE_JSON,\"model\":\"$LATEST_MODEL\",\"task_id\":\"$LATEST_TASK_ID\",\"scoped_session_id\":\"$LATEST_SCOPED\",\"20_5_manual_endpoint\":\"skipped_needs_admin_auth_detail\",\"rows_delta_20_4\":$DELTA_20_4}" \
   "$FAILURES" \
   "{\"gateway\":\"$GATEWAY\"}"

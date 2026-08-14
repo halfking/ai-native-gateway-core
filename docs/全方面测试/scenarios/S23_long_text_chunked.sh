@@ -14,7 +14,7 @@
 # 2026-08-06: 修 ON CONFLICT + API_KEYS + 索引后, 从 PENDING 改回真测试.
 # 23.1 + 23.2 实测, 23.3 + 23.4 标 PENDING (bash 5 EOF bug + chunked_summarizer 未实现).
 
-set -uo pipefail
+set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 source "$SCRIPT_DIR/_lib.sh"
 
@@ -77,7 +77,8 @@ log "23.2: 30 轮中 outbound_msg_count < 50 (压缩触发) 的行数: $DISTRIBU
 if [ "$DISTRIBUTION" -ge 1 ]; then
     log "✅ 23.2 PASS: 30 轮后有 $DISTRIBUTION 行被压缩 (outbound_msg_count < 50)"
 else
-    log "⚠️ 23.2 WARN: 30 轮未触发压缩 (token 触发器可能要求更长 prompt)"
+    log "❌ 23.2 FAIL: 30 轮未触发压缩"
+    PASS=false
 fi
 
 # 23.3 80 轮 chat 触发 outbound_msg_count < 50 (count trigger, sliding_window_count 路径)
@@ -98,25 +99,27 @@ else
     PASS=false
 fi
 
-# 23.4: 验证 90b51dc7 map_reduce 路径 chunks 6, corpus_chars 15250.
-# 因 bash 5 EOF bug 不在 S23 主流程跑 14k chat, 而直接 grep log
-# (单跑已验证 6 次 map_reduce 触发, 详见 02-测试环境部署.md).
-log "23.4: 90b51dc7 map_reduce 路径验证 (基于已有 log, 绕过 bash 5 EOF bug)"
-grep -c "auto_summary: map_reduce mode" /tmp/gateway-test.log > /tmp/s23-4-mapreduce.txt 2>/dev/null || echo 0 > /tmp/s23-4-mapreduce.txt
-grep -c "auto_summary: single-shot" /tmp/gateway-test.log > /tmp/s23-4-singleshot.txt 2>/dev/null || echo 0 > /tmp/s23-4-singleshot.txt
-grep "auto_summary: map_reduce mode" /tmp/gateway-test.log | tail -1 > /tmp/s23-4-latest.txt 2>/dev/null || echo "" > /tmp/s23-4-latest.txt
-MAPREDUCE_LOG=$(cat /tmp/s23-4-mapreduce.txt)
-SINGLE_SHOT_LOG=$(cat /tmp/s23-4-singleshot.txt)
-LATEST=$(cat /tmp/s23-4-latest.txt)
-log "23.4: map_reduce mode log count=$MAPREDUCE_LOG, single-shot log count=$SINGLE_SHOT_LOG"
-log "23.4: 最新 map_reduce 触发: $LATEST"
-if [ "$MAPREDUCE_LOG" -ge 1 ]; then
-    log "✅ 23.4 PASS: 90b51dc7 map_reduce 路径已实测 chunks 6, corpus_chars 15250"
-    CHECK_23_4=true
+# 23.4 requires a fresh gateway log artifact from the current run. A missing
+# artifact is a failed acceptance check, not evidence from an unrelated run.
+log "23.4: map_reduce mode verification from current gateway log artifact"
+GATEWAY_LOG="${GATEWAY_LOG:-/tmp/gateway-test.log}"
+if [ -f "$GATEWAY_LOG" ]; then
+    MAPREDUCE_LOG=$(grep -c "auto_summary: map_reduce mode" "$GATEWAY_LOG" || true)
+    SINGLE_SHOT_LOG=$(grep -c "auto_summary: single-shot" "$GATEWAY_LOG" || true)
+    LATEST=$(grep "auto_summary: map_reduce mode" "$GATEWAY_LOG" | tail -1 || true)
 else
-    log "⚠️ 23.4 WARN: map_reduce log 0, 见 02-测试环境部署.md 跑 14k chat 验证"
-    # Soft: historical log may be rotated; do not fail the suite solely on this.
-    CHECK_23_4=true
+    MAPREDUCE_LOG=0
+    SINGLE_SHOT_LOG=0
+    LATEST=""
+fi
+log "23.4: map_reduce mode log count=$MAPREDUCE_LOG, single-shot log count=$SINGLE_SHOT_LOG"
+log "23.4: latest map_reduce trigger: $LATEST"
+CHECK_23_4=$([ "$MAPREDUCE_LOG" -ge 1 ] && echo true || echo false)
+if [ "$CHECK_23_4" = true ]; then
+    log "✅ 23.4 PASS: map_reduce path observed in current log artifact"
+else
+    log "❌ 23.4 FAIL: map_reduce path not observed in current log artifact"
+    PASS=false
 fi
 # Strict result envelope — checks must be boolean only.
 CHECK_23_1=$([ "$DELTA_23_1" -ge 50 ] && echo true || echo false)
@@ -129,7 +132,7 @@ if [ "$PASS" != true ]; then
 fi
 write_scenario_result "$SCENARIO" "functional" "$STATUS" \
   "{\"23_1_token_trigger\":$CHECK_23_1,\"23_2_count_trigger\":$CHECK_23_2,\"23_3_map_reduce_chunked\":$CHECK_23_3,\"23_4_real_map_reduce\":$CHECK_23_4}" \
-  "{\"delta_23_1\":$DELTA_23_1,\"distribution_23_2\":$DISTRIBUTION,\"delta_23_3\":$DELTA_23_3,\"success_rate\":$([ "$PASS" = true ] && echo 1.0 || echo 0.0),\"p99_ms\":0}" \
+  "{\"delta_23_1\":$DELTA_23_1,\"distribution_23_2\":$DISTRIBUTION,\"delta_23_3\":$DELTA_23_3,\"success_rate\":$([ "$PASS" = true ] && echo 1.0 || echo 0.0),\"p99_required\":false}" \
   "{\"map_reduce_log_count\":$MAPREDUCE_LOG,\"single_shot_log_count\":$SINGLE_SHOT_LOG}" \
   "$FAILURES" \
   "{\"gateway\":\"$GATEWAY\"}"

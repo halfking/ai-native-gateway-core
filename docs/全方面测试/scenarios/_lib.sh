@@ -287,11 +287,23 @@ wait_for_session_summary() {
 }
 
 # skip_scenario REASON
-# Print SKIPPED reason and exit 0 (used for not-yet-implemented features like
-# S21 branch session). Always exit 0 so the parent run_all.sh doesn't fail.
+# Write a strict SKIPPED envelope and exit 0. The parent run_all.sh/report uses
+# the result status to keep release acceptance incomplete by default.
 skip_scenario() {
     local reason="${1:-feature not implemented yet}"
+    local scenario="${SCENARIO:?SCENARIO must be set before skip_scenario}"
+    local category="${SCENARIO_CATEGORY:-functional}"
     echo "  ⏭  SKIPPED: $reason"
+    write_scenario_result "$scenario" "$category" "SKIPPED" \
+        '{"executed":false}' \
+        '{"p99_required":false}' \
+        '{}' \
+        '[]' \
+        "$(python3 - "$reason" <<'PY'
+import json, sys
+print(json.dumps({"reason": sys.argv[1]}))
+PY
+)"
     exit 0
 }
 

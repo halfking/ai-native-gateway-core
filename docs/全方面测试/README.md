@@ -6,7 +6,7 @@
 
 | 套件 | 入口 | 覆盖 | 结果目录 |
 |---|---|---|---|
-| 功能场景 | `bash scenarios/run_all.sh --suite functional` | S01–S23（S21 未实现时为 `SKIPPED`） | `results/runs/<run_id>/` |
+| 功能场景 | `bash scenarios/run_all.sh --suite functional` | S01–S29（S21 未实现时为 `SKIPPED`） | `results/runs/<run_id>/` |
 | 并发 | `bash scenarios/run_all.sh --suite concurrency` | C01 steady + burst | 同上 |
 | 性能 | `bash scenarios/run_all.sh --suite performance` | P01 非流/流、P50/P95/P99、TTFB、SSE 完成率 | 同上 |
 | 可靠性 | `bash scenarios/run_all.sh --suite reliability` | R01 长稳探针、故障阶段、恢复与清理 | 同上 |
@@ -18,7 +18,7 @@
 - 每个结果必须包含 `schema_version`、`run_id`、`scenario`、`category`、`status`、`checks`、`metrics`、`evidence`、`failures`、`parameters`。
 - `PASS` 要求所有 `checks` 为布尔 `true`、`failures` 为空，并通过 `tools/validation_report.py` 的场景 gate。
 - `FAIL` 表示网关行为或测试断言失败；`BLOCKED_ENVIRONMENT` 表示依赖、Schema、隔离或资源门禁失败；`INVALID` 表示结果缺失或契约损坏；`SKIPPED` 表示能力未实现或显式跳过。
-- 默认 `SKIPPED`、`BLOCKED_ENVIRONMENT`、`INVALID` 都阻断发布验收；`--allow-skipped` 只允许非发布报告，不会隐藏 `FAIL` 或 `INVALID`。
+- 默认 `SKIPPED`、`BLOCKED_ENVIRONMENT`、`INVALID` 都阻断发布验收；`--allow-skipped` 只允许非发布报告中的显式 `SKIPPED`，不会隐藏 `FAIL`、`INVALID` 或 `BLOCKED_ENVIRONMENT`。
 - `202 Accepted` 是异步控制响应，不计为业务 `200 OK`；预期失败场景按错误码、错误类型、响应时延和无上游证据验收。
 - 报告只读取当前 run 的 `manifest.json`，`results/` 下的历史 JSON 不会自动混入。
 
@@ -57,7 +57,19 @@ bash docs/全方面测试/scenarios/run_all.sh --suite all
 - 多模态与压缩专项使用独立 fixture 和入口，不自动计入主 suite；其客户端/报告器未齐全前不得宣称专项完整通过。
 - S60 跨环境测试仅在显式环境中执行；仅验证 Nginx→Mock 链路的结果只能标记 `PARTIAL_PASS`，不能替代 Gateway 稳定性验收。
 
-## 结果查看
+## CI 接入约束
+
+全面场景套件必须使用严格入口，不能使用兼容 wrapper `run-fast.sh` 作为门禁：
+
+```bash
+TEST_RUN_ID="ci-${GITHUB_RUN_ID:-local}-${GITHUB_RUN_ATTEMPT:-0}" \
+  bash docs/全方面测试/scenarios/run_all.sh --suite functional --fast
+```
+
+CI 必须提供可重置的 PostgreSQL、已迁移并写入 `data/seed.sql` 的测试数据、Gateway、60 个 mock supplier 所需的 `python3`/`curl`/`psql`/`jq`，以及和 seed 一致的 client/admin 测试密钥。每次执行需在 `if: always()` 步骤中上传 `results/runs/$TEST_RUN_ID/`、Gateway 日志和 `/tmp/lab-suppliers/` 日志，并独立清理 mock 与 Gateway 进程。缺少任一依赖必须保留 `BLOCKED_ENVIRONMENT` 工件并使 job 失败，不得把它转为 `SKIPPED` 或绿色结果。
+
+当前仓库的现有 Actions workflow 尚未声明一套可公开验证的 Gateway 启动、测试 DB 或 secret 命名约定；在这些运行环境契约落地前，不应添加猜测性的 workflow。完成环境契约后，应新增独立、足够超时的场景测试 job，而不是塞入现有 15 分钟的 Go build job。
+
 
 ```bash
 cat docs/全方面测试/results/runs/<run_id>/REPORT.md
