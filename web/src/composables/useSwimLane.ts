@@ -15,7 +15,8 @@ const emptySnapshot: LiveStreamSnapshot = {
 }
 
 export function useSwimLane(snapshotRef?: ComputedRef<LiveStreamSnapshot | null>) {
-  const groupBy = ref<GroupByDimension>('vendor')
+  // 2026-08-14 V3.2: 默认选中"按处理队列"维度
+  const groupBy = ref<GroupByDimension>('queue')
   const selectedLegends = ref<Set<string>>(new Set())
   const localSnapshot = ref<LiveStreamSnapshot>(emptySnapshot)
   // 2026-07-23: 小模式（竖条）作为默认展示模式
@@ -34,8 +35,15 @@ export function useSwimLane(snapshotRef?: ComputedRef<LiveStreamSnapshot | null>
   }
 
   const snapshot = computed(() => snapshotRef?.value || localSnapshot.value)
-  const lanes = computed<SwimLane[]>(() => (snapshot.value.dimensions[groupBy.value] || []) as SwimLane[])
-  const legendItems = computed<LiveStreamLegendItem[]>(() => snapshot.value.dimension_legends[groupBy.value] || [])
+  // 2026-08-14 V3.2: 'queue' 维度不使用泳道，返回空数组
+  const lanes = computed<SwimLane[]>(() => {
+    if (groupBy.value === 'queue') return []
+    return (snapshot.value.dimensions[groupBy.value] || []) as SwimLane[]
+  })
+  const legendItems = computed<LiveStreamLegendItem[]>(() => {
+    if (groupBy.value === 'queue') return []
+    return snapshot.value.dimension_legends[groupBy.value] || []
+  })
   const statusLegendItems = computed<LiveStreamLegendItem[]>(() => snapshot.value.status_legends || [])
   const dimensionStats = computed(() => ({
     vendor: (snapshot.value.dimension_legends.vendor || []).map(toDimensionStat),

@@ -2,7 +2,7 @@
 // 2026-07-05: 实时请求流泳道系统的核心类型定义
 // 2026-07-05 v2: 完善字符截断、空闲块、状态枚举
 
-export type GroupByDimension = 'vendor' | 'provider' | 'model'
+export type GroupByDimension = 'queue' | 'vendor' | 'provider' | 'model'
 
 // 2026-07-23: 泳道展示模式 — small=竖条（默认，容量更大），large=卡片
 export type SwimLaneMode = 'small' | 'large'
