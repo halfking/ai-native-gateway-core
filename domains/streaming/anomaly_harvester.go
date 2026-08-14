@@ -185,9 +185,10 @@ func (h *AnomalyHarvester) runBridge(ctx context.Context) {
 // backfillActualTokens (CO-2) sweeps response_format_anomalies rows that
 // were recorded with actual_tokens=NULL (estimated usage path,
 // handler.go emitTelemetry) and fills them from request_logs_hot rows whose
-// usage_source has since become "llm" with a real completion_tokens count.
-// Runs inside the harvester's bridge cadence; idempotent (skips rows whose
-// actual_tokens is already set).
+// usage_source has since become a real-usage terminal state ('llm' via a
+// later real-usage update, or 'corrected' via the online CO-2 correction —
+// both mean completion_tokens is authoritative). Runs inside the harvester's
+// bridge cadence; idempotent (skips rows whose actual_tokens is already set).
 func (h *AnomalyHarvester) backfillActualTokens(parent context.Context) {
 	ctx, cancel := context.WithTimeout(parent, 30*time.Second)
 	defer cancel()
@@ -201,6 +202,19 @@ func (h *AnomalyHarvester) backfillActualTokens(parent context.Context) {
 		slog.Warn("anomaly harvester: backfill RLS setup failed", "error", err)
 		return
 	}
+	if err := backfillActualTokensSweep(ctx, tx); err != nil {
+		slog.Warn("anomaly harvester: backfill failed", "error", err)
+		return
+	}
+	if err := tx.Commit(ctx); err != nil {
+		slog.Warn("anomaly harvester: backfill commit failed", "error", err)
+		return
+	}
+}
+
+// backfillActualTokensSweep is the tx-scoped core of the batch backfill,
+// kept separate so its SQL contract can be pinned by tests.
+func backfillActualTokensSweep(ctx context.Context, tx pgx.Tx) error {
 	ct, err := tx.Exec(ctx, `
 		UPDATE response_format_anomalies a
 		SET actual_tokens = r.completion_tokens,
@@ -209,21 +223,17 @@ func (h *AnomalyHarvester) backfillActualTokens(parent context.Context) {
 		WHERE a.request_id = r.request_id
 		  AND a.actual_tokens IS NULL
 		  AND a.usage_source  = 'estimated'
-		  AND r.usage_source  = 'llm'
+		  AND r.usage_source IN ('llm', 'corrected')
 		  AND r.completion_tokens IS NOT NULL
 		  AND r.completion_tokens > 0
 	`)
 	if err != nil {
-		slog.Warn("anomaly harvester: backfill failed", "error", err)
-		return
-	}
-	if err := tx.Commit(ctx); err != nil {
-		slog.Warn("anomaly harvester: backfill commit failed", "error", err)
-		return
+		return err
 	}
 	if n := ct.RowsAffected(); n > 0 {
 		slog.Info("anomaly harvester: backfilled actual_tokens", "rows", n)
 	}
+	return nil
 }
 
 type anomalyAlert struct {
