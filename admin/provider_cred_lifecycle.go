@@ -32,6 +32,26 @@ import (
 	"github.com/kaixuan/llm-gateway-go/provider"
 )
 
+var credentialLifecycleStatuses = map[string]struct{}{
+	"active":    {},
+	"disabled":  {},
+	"suspended": {},
+	"retired":   {},
+}
+
+func isCredentialLifecycleStatus(value string) bool {
+	_, ok := credentialLifecycleStatuses[value]
+	return ok
+}
+
+func setCredentialLifecycleStatus(ctx context.Context, db dbExec, providerID, credID int, status string) (bool, error) {
+	tag, err := db.Exec(ctx, `UPDATE credentials SET lifecycle_status = $1 WHERE id = $2 AND provider_id = $3`, status, credID, providerID)
+	if err != nil {
+		return false, err
+	}
+	return tag.RowsAffected() > 0, nil
+}
+
 func (h *Handler) revealCredential(w http.ResponseWriter, r *http.Request, providerID, credID int) {
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
@@ -70,10 +90,22 @@ func (h *Handler) updateCredentialLifecycle(w http.ResponseWriter, r *http.Reque
 		writeError(w, http.StatusBadRequest, "invalid body")
 		return
 	}
+	if !isCredentialLifecycleStatus(req.LifecycleStatus) {
+		writeError(w, http.StatusBadRequest, "invalid lifecycle_status")
+		return
+	}
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
-	//nolint:errcheck // best-effort exec, non-critical
-	h.db.Exec(ctx, `UPDATE credentials SET lifecycle_status = $1 WHERE id = $2 AND provider_id = $3`, req.LifecycleStatus, credID, providerID)
+	updated, err := setCredentialLifecycleStatus(ctx, h.db, providerID, credID, req.LifecycleStatus)
+	if err != nil {
+		slog.Error("update credential lifecycle failed", "provider_id", providerID, "credential_id", credID, "lifecycle_status", req.LifecycleStatus, "error", err)
+		writeError(w, http.StatusInternalServerError, "update credential lifecycle failed")
+		return
+	}
+	if !updated {
+		writeError(w, http.StatusNotFound, "credential not found")
+		return
+	}
 	provider.InvalidateAllCandidateCache()
 	writeJSON(w, http.StatusOK, map[string]string{"message": "updated"})
 }

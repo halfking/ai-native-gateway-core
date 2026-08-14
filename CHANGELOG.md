@@ -5,6 +5,15 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased] - 2026-08-15 (Credential Lifecycle Contract Integrity)
+
+### Fixed
+
+- **凭据生命周期契约修复**：路由解析详情设置弹窗错误使用了 `deprecated`/`test` 三态，现已恢复为正确的 `active`/`disabled`/`suspended`/`retired` 四态契约，与供应商凭据详情页和后端数据库约束对齐。
+- **后端边界强化**：非法 `lifecycle_status` 返回 400；数据库错误返回 500；零行更新返回 404，不再静默成功。
+- **回归测试覆盖**：新增前后端生命周期契约测试，覆盖四个合法值、非法值（`deprecated`/`test`）、数据库错误与零行更新场景。
+- 详见 `rules/53-state-domain-contract-integrity.md`（新增 Vibe Coding 状态域规范）。
+
 ## [Unreleased] - 2026-08-15 (Node Operations Audit Fixes)
 
 ### Fixed

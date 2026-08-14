@@ -805,3 +805,9 @@
 
 > 245 deploy output confirmed the migration transaction completed and the gateway DB readiness check returned `background-tasks=401`. This is not evidence that the required 252 Migration 513 up/down rehearsal or `test_511_rls.test.sql` has passed; track those P0 checks in `docs/会话优化v3/TASK-CLOSURE-20260814.md` before marking the migration verified.
 
+## 2026-08-14T14:52:38Z — deploy 245 build_seq 1522 (7be7f5be)
+
+| Migration | File | SHA-256 | Status |
+|-----------|------|---------|--------|
+| 514 | `514_model_probe_watchdog_index.sql` | `fbcb9719af0960199e5375140d99c65378b1772999bbc0f1636947cbedc33790` | applied+verified |
+

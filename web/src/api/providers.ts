@@ -194,6 +194,10 @@ export interface CredentialQuotaSummary {
   any_exhausted: boolean
 }
 
+export const CREDENTIAL_LIFECYCLE_STATUSES = ['active', 'disabled', 'suspended', 'retired'] as const
+
+export type CredentialLifecycleStatus = typeof CREDENTIAL_LIFECYCLE_STATUSES[number]
+
 export interface ProviderCredential {
   id: number
   provider_id: number
@@ -205,7 +209,7 @@ export interface ProviderCredential {
   key_mask_error?: string | null
   status: CredentialStatus
   // 900-series: 3-layer state machine fields
-  lifecycle_status?: 'active' | 'disabled' | 'suspended' | 'retired' | null
+  lifecycle_status?: CredentialLifecycleStatus | null
   availability_state?: 'ready' | 'cooling' | 'rate_limited' | 'auth_failed' | 'unreachable' | 'suspended' | null
   quota_state?: 'ok' | 'cooling' | 'periodic_exhausted' | 'balance_exhausted' | 'permanently_exhausted' | null
   manual_disabled?: boolean
@@ -662,7 +666,7 @@ export function forceRecoverCredential(credId: number) {
   )
 }
 
-export function updateCredentialLifecycle(providerId: number, credId: number, lifecycle_status: string) {
+export function updateCredentialLifecycle(providerId: number, credId: number, lifecycle_status: CredentialLifecycleStatus) {
   return req<{ message: string }>(
     'PATCH', `/api/providers/${providerId}/credentials/${credId}/lifecycle`, { lifecycle_status }
   )
