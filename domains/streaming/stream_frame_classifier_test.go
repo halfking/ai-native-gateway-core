@@ -135,3 +135,108 @@ func TestClassifyClientFrameUnknownProtocolFailsClosed(t *testing.T) {
 		t.Fatalf("unknown protocol: want FrameClassUnknown, got %v", got)
 	}
 }
+
+// TestClassifyClientFrameCommentWithDataFrameIsNotKeepalive pins doc 20
+// A-P2-4: a frame whose first line is a comment but which also carries
+// data/event lines is ONE SSE event — the data must never be classified as
+// transport keepalive (a deferred gate would otherwise stream it past the
+// commit decision and a later Discard could drop it).
+func TestClassifyClientFrameCommentWithDataFrameIsNotKeepalive(t *testing.T) {
+	cases := []struct {
+		name     string
+		protocol ClientProtocol
+		frame    string
+		want     FrameClass
+	}{
+		{"anthropic comment before content delta", ProtocolAnthropic,
+			": vendor-ka\nevent: content_block_delta\ndata: {\"delta\":{\"type\":\"text_delta\",\"text\":\"x\"}}\n\n",
+			FrameClassContent},
+		{"anthropic comment before tool_use block", ProtocolAnthropic,
+			": vendor-ka\nevent: content_block_start\ndata: {\"content_block\":{\"type\":\"tool_use\",\"id\":\"t\",\"name\":\"n\"}}\n\n",
+			FrameClassToolCall},
+		{"chat comment before data payload", ProtocolOpenAIChat,
+			": vendor-ka\ndata: {\"choices\":[{\"delta\":{\"content\":\"hi\"}}]}\n\n",
+			FrameClassContent},
+		{"pure comment frame stays keepalive", ProtocolAnthropic,
+			": vendor-ka\n\n", FrameClassKeepalive},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := ClassifyClientFrame(tc.protocol, tc.frame); got != tc.want {
+				t.Fatalf("ClassifyClientFrame(%v, %q) = %v, want %v",
+					tc.protocol, tc.frame, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestClassifyClientFrameToolShapeRefinements pins the fa0baf822 refinements
+// with direct cases (doc 20 A-P2-1): tool-shaped Anthropic block starts
+// (incl. server-side tools) are never droppable metadata; explicit
+// tool_calls null/[] on role-only chat chunks stays droppable.
+func TestClassifyClientFrameToolShapeRefinements(t *testing.T) {
+	cases := []struct {
+		name     string
+		protocol ClientProtocol
+		frame    string
+		want     FrameClass
+	}{
+		{"server_tool_use block start", ProtocolAnthropic,
+			"event: content_block_start\ndata: {\"content_block\":{\"type\":\"server_tool_use\",\"id\":\"srv\",\"name\":\"web_search\"}}\n\n",
+			FrameClassToolCall},
+		{"web_search_tool_result block start", ProtocolAnthropic,
+			"event: content_block_start\ndata: {\"content_block\":{\"type\":\"web_search_tool_result\",\"tool_use_id\":\"srv\"}}\n\n",
+			FrameClassToolCall},
+		{"tool_use block start", ProtocolAnthropic,
+			"event: content_block_start\ndata: {\"content_block\":{\"type\":\"tool_use\",\"id\":\"t\",\"name\":\"n\"}}\n\n",
+			FrameClassToolCall},
+		{"chat tool_calls null on role chunk stays metadata", ProtocolOpenAIChat,
+			"data: {\"choices\":[{\"delta\":{\"role\":\"assistant\",\"tool_calls\":null,\"content\":\"\"}}]}\n\n",
+			FrameClassAttemptMetadata},
+		{"chat tool_calls empty array stays metadata", ProtocolOpenAIChat,
+			"data: {\"choices\":[{\"delta\":{\"role\":\"assistant\",\"tool_calls\":[]}}]}\n\n",
+			FrameClassAttemptMetadata},
+		{"chat tool_calls present is tool output", ProtocolOpenAIChat,
+			"data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"c\",\"function\":{\"name\":\"f\"}}]}}]}\n\n",
+			FrameClassToolCall},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := ClassifyClientFrame(tc.protocol, tc.frame); got != tc.want {
+				t.Fatalf("ClassifyClientFrame(%v, %q) = %v, want %v",
+					tc.protocol, tc.frame, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestClassifyClientFrameCRLFLineEndings pins CRLF tolerance end-to-end:
+// event/data field extraction and tool-shape detection must survive
+// \r\n-framed events (the GateWriter accepts both boundaries).
+func TestClassifyClientFrameCRLFLineEndings(t *testing.T) {
+	cases := []struct {
+		name     string
+		protocol ClientProtocol
+		frame    string
+		want     FrameClass
+	}{
+		{"anthropic tool_use via crlf", ProtocolAnthropic,
+			"event: content_block_start\r\ndata: {\"content_block\":{\"type\":\"tool_use\",\"id\":\"t\",\"name\":\"n\"}}\r\n\r\n",
+			FrameClassToolCall},
+		{"anthropic text delta via crlf", ProtocolAnthropic,
+			"event: content_block_delta\r\ndata: {\"delta\":{\"type\":\"text_delta\",\"text\":\"x\"}}\r\n\r\n",
+			FrameClassContent},
+		{"anthropic ping via crlf stays keepalive", ProtocolAnthropic,
+			"event: ping\r\ndata: {}\r\n\r\n", FrameClassKeepalive},
+		{"chat done sentinel via crlf", ProtocolOpenAIChat,
+			"data: [DONE]\r\n\r\n", FrameClassTerminal},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := ClassifyClientFrame(tc.protocol, tc.frame); got != tc.want {
+				t.Fatalf("ClassifyClientFrame(%v, %q) = %v, want %v",
+					tc.protocol, tc.frame, got, tc.want)
+			}
+		})
+	}
+}
