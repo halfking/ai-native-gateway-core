@@ -82,6 +82,8 @@ type StickyRedisStore interface {
 	DeleteLevelIfCredential(ctx context.Context, level int, rawKey string, credID int) error
 }
 
+const stickyRedisWriteTimeout = 50 * time.Millisecond
+
 type StickyCache struct {
 	mu         sync.RWMutex
 	items      map[string]stickyEntry
@@ -526,7 +528,6 @@ func (s *StickyCache) RecordSuccessMultiLevel(
 
 	// Redis 双写(URSM v2 过渡): 用显式 level, 避免 levelOf 启发式
 	if store != nil {
-		ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
 		levels := []struct {
 			key string
 			lvl int
@@ -540,11 +541,14 @@ func (s *StickyCache) RecordSuccessMultiLevel(
 			if lv.key == "" {
 				continue
 			}
+			// Each level gets its own bounded budget. Sharing one context would
+			// let a slow L1 write consume the deadline and silently skip L2/L3.
+			ctx, cancel := context.WithTimeout(context.Background(), stickyRedisWriteTimeout)
 			if err := store.SetLevel(ctx, lv.lvl, credentialID, lv.key, lv.ttl); err != nil {
 				slog.Debug("sticky redis double-write failed", "key", lv.key, "error", err)
 			}
+			cancel()
 		}
-		cancel()
 	}
 
 	// Async DB write for all levels
