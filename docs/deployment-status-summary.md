@@ -67,33 +67,27 @@ scripts/deploy-seamless.sh   # Actual deployment logic
 
 #### Step-by-Step Deployment to 245
 
-**1. Inject credentials**
+**1. Deploy to 245**
 ```bash
-bash ~/.agents/skills/env-injector/scripts/env-injector.sh inject aliyun-frontend-245
-```
-
-**2. Deploy to 245**
-```bash
-cd /Users/xutaohuang/workspace/ai-native-tools/syncfield/llm-gateway-go-2
+# deploy-seamless.sh loads the envs SSOT itself and resolves 245 internally.
 bash scripts/deploy-245.sh
 ```
 
-**3. Verify service status**
+The repository-native SOPS injector currently supports only targets with committed encrypted envelopes. For 245, use `scripts/deploy-245.sh`, which loads the shared envs SSOT itself; do not invoke the native injector for 245 until a managed `.env.245.enc` envelope is provisioned.
+
+**2. Verify service status**
 ```bash
 # Check service is running
-ssh -i $SSH_KEY_245 -p $SSH_PORT root@$HOST_245 'systemctl status llmgo-245.service'
+ssh -i "$SSH_KEY_245" -p "${SSH_PORT:-25022}" root@8.136.114.245 'systemctl status llm-gateway-go.service'
 
 # Check health endpoint
-curl -f https://llmgo.kxpms.cn/healthz
+curl -f http://8.136.114.245:8781/healthz
 ```
 
-**4. Monitor for 30 minutes**
+**3. Monitor for 30 minutes**
 ```bash
 # Watch logs
-ssh -i $SSH_KEY_245 -p $SSH_PORT root@$HOST_245 'journalctl -u llmgo-245.service -f'
-
-# Check Redis memory (every 10 min)
-ssh -i $SSH_KEY_245 -p $SSH_PORT root@$HOST_245 'redis-cli INFO memory | grep used_memory_human'
+ssh -i "$SSH_KEY_245" -p "${SSH_PORT:-25022}" root@8.136.114.245 'journalctl -u llm-gateway-go.service -f'
 ```
 
 **5. Manual verification checklist**
@@ -130,7 +124,7 @@ bash scripts/deploy-seamless.sh deploy 245
 # Option B: Use deploy-245.sh (recommended)
 bash scripts/deploy-245.sh
 
-# Both require proper environment variables loaded via env-injector
+# Both load the envs SSOT and require SSH_KEY_245; they do not require HOST_245.
 ```
 
 ## Environment Requirements
@@ -141,16 +135,13 @@ The following environment variables must be loaded before deployment:
 # SSH credentials
 SSH_KEY_245          # Path to SSH private key
 SSH_PORT             # SSH port (default: 25022)
-HOST_245             # Host: 8.136.114.245
 
-# Service configuration
-LLM_GATEWAY_245_SERVICE="llmgo-245.service"
-LLM_GATEWAY_API_KEY  # For health check authentication
-
-# Database and secrets (loaded via env-injector)
-PG_*                 # Database credentials
-LLM_GATEWAY_*        # Gateway configuration
+# Runtime configuration
+CURSOR_HMAC_SECRET   # Required in production for signed online-session cursors
+LLM_GATEWAY_API_KEY  # Data-plane API key
 ```
+
+`deploy-seamless.sh` resolves the 245 host internally as `8.136.114.245` and sources the shared envs SSOT. `HOST_245` is not part of its deployment contract. For targets supported by the repository-native SOPS injector, use `eval "$(env-injector inject --target=<target>)"`; running `env-injector inject` by itself only prints exports and cannot change the parent shell.
 
 ## Risk Assessment
 
@@ -205,7 +196,7 @@ bash scripts/deploy-245.sh
 **Rollback Verification**:
 ```bash
 # Verify service restarted
-ssh root@$HOST_245 'systemctl status llmgo-245.service'
+ssh -i "$SSH_KEY_245" -p "${SSH_PORT:-25022}" root@8.136.114.245 'systemctl status llm-gateway-go.service'
 
 # Check health
 curl https://llmgo.kxpms.cn/healthz

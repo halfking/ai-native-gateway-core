@@ -95,10 +95,18 @@ RC=$?
 [[ $RC -ne 0 ]] && log_pass "AC-I5: unknown target exits non-zero (rc=$RC)" || log_fail "AC-I5: unknown target should fail"
 
 # ── Legacy alias resolution ────────────────────────────────────────
-OUT="$("$BINARY" inject --target=184 --dry-run 2>&1)" || true
+OUT="$($BINARY inject --target=184 --dry-run 2>&1)" || true
 [[ "$OUT" == *".env.252.enc"* ]] \
   && log_pass "Legacy alias 184 resolves to 252" \
   || log_fail "Legacy alias 184 should resolve to 252"
+
+# 245 is deployed by scripts/deploy-245.sh via the shared envs SSOT. The
+# repository-native injector must fail closed until a managed envelope exists.
+OUT="$($BINARY inject --target=245 --dry-run 2>&1)" || true
+[[ "$OUT" == *"unknown target"* ]] \
+  && log_pass "245 is not exposed without a managed envelope" \
+  || log_fail "245 should not advertise an unmanaged native envelope"
+
 
 # ── Summary ───────────────────────────────────────────────────────
 echo ""

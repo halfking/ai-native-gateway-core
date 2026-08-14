@@ -797,3 +797,11 @@
 | 510 | `510_request_type.sql` | `d663b0915a0db9b82acec08abdcff8a6f6ae97ad64d681e0788f7b998d8f7645` | applied+verified |
 | 511 | `511_state_transitions_table.sql` | `f4c9cc150bb2cc39a22639794fd43fdc780da89c270e252a8ab5f9fe8e6bd199` | applied+verified |
 
+## 2026-08-14T04:45:26Z — deploy 245 build_seq 1511 (ff3d6449)
+
+| Migration | File | SHA-256 | Status |
+|-----------|------|---------|--------|
+| 513 | `513_schema_unification_and_session_turns_dual_write.sql` | `63dcac48097f0f69ee72ac1dc95b50de7190d3accc2cb5a728ce6eca0c2e7e98` | applied on 245; 252 rehearsal and RLS verification pending |
+
+> 245 deploy output confirmed the migration transaction completed and the gateway DB readiness check returned `background-tasks=401`. This is not evidence that the required 252 Migration 513 up/down rehearsal or `test_511_rls.test.sql` has passed; track those P0 checks in `docs/会话优化v3/TASK-CLOSURE-20260814.md` before marking the migration verified.
+
