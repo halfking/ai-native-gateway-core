@@ -1,6 +1,9 @@
 package v2
 
-import "time"
+import (
+	"strings"
+	"time"
+)
 
 // AttachmentReferenceStrategy determines how to reference attachments when serializing to different providers
 //
@@ -38,9 +41,11 @@ type ProviderAttachmentCapability struct {
 	SupportedMIMETypes []string // Empty means all
 }
 
-// GetProviderCapability returns attachment capabilities for a provider
+// GetProviderCapability returns attachment capabilities for a provider.
+// Provider identifiers are normalized (trimmed, lowercased) since callers
+// derive them from different sources (model registry, vendor config).
 func GetProviderCapability(provider string) ProviderAttachmentCapability {
-	switch provider {
+	switch strings.ToLower(strings.TrimSpace(provider)) {
 	case "openai":
 		return ProviderAttachmentCapability{
 			SupportsDataURI:  true,
@@ -167,6 +172,37 @@ func GetProviderCapability(provider string) ProviderAttachmentCapability {
 			PreferredMode:    RefModeDataURI,
 		}
 	}
+}
+
+// defaultGatewayURLBase matches the default PublicURL in
+// domains/attachments/config.go (LoadConfigFromEnv).
+const defaultGatewayURLBase = "/api/attachments"
+
+// gatewayURLBase is the public base for gateway-hosted attachment URLs.
+// Wired once at startup via SetGatewayURLBase from attachments.Config.PublicURL;
+// kept as an injectable value so this package stays decoupled from
+// domains/attachments (see ir_attachment_adapter.go's mirror-struct note).
+var gatewayURLBase = defaultGatewayURLBase
+
+// SetGatewayURLBase sets the public base URL used by GatewayURL.
+// Empty resets to the default. Startup wiring should pass
+// attachments.Config.PublicURL (env LLM_GATEWAY_ATTACHMENT_PUBLIC_URL).
+func SetGatewayURLBase(base string) {
+	base = strings.TrimSpace(base)
+	if base == "" {
+		gatewayURLBase = defaultGatewayURLBase
+		return
+	}
+	gatewayURLBase = strings.TrimRight(base, "/")
+}
+
+// GatewayURL builds the gateway-hosted URL for an attachment object key.
+func GatewayURL(objectKey string) string {
+	objectKey = strings.TrimLeft(objectKey, "/")
+	if objectKey == "" {
+		return gatewayURLBase
+	}
+	return gatewayURLBase + "/" + objectKey
 }
 
 // SelectReferenceMode determines the best way to reference an attachment for a target provider
