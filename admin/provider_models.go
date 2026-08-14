@@ -31,7 +31,7 @@ func (h *Handler) getProviderModels(w http.ResponseWriter, r *http.Request, prov
 		       mo.last_seen_at, COALESCE(mo.routing_tier::text,''),
 		       mc.standard_iq::float8,
 		       niq.overall_score::float8, niq.avg_score::float8,
-		       niq.sample_count, niq.tested_at,
+		       COALESCE(niq.sample_count, 0), niq.tested_at,
 		       COALESCE(NULLIF(mc.canonical_name,''), mo.standardized_name)
 		FROM model_offers mo
 		JOIN credentials c ON c.id = mo.credential_id
@@ -242,7 +242,7 @@ func (h *Handler) queryProviderModels(w http.ResponseWriter, r *http.Request, pr
 		       mo.last_seen_at, COALESCE(mo.routing_tier::text,''),
 		       mc.standard_iq::float8,
 		       niq.overall_score::float8, niq.avg_score::float8,
-		       niq.sample_count, niq.tested_at,
+		       COALESCE(niq.sample_count, 0), niq.tested_at,
 		       COALESCE(NULLIF(mc.canonical_name,''), mo.standardized_name)
 		FROM model_offers mo
 		JOIN credentials c ON c.id = mo.credential_id
@@ -264,23 +264,23 @@ func (h *Handler) queryProviderModels(w http.ResponseWriter, r *http.Request, pr
 	defer rows.Close()
 
 	type modelOffer struct {
-		ID                 int        `json:"id"`
-		CredentialID       int        `json:"credential_id"`
-		CredentialLabel    string     `json:"credential_label"`
-		RawModelName       string     `json:"raw_model_name"`
-		StandardizedName   string     `json:"standardized_name"`
-		CanonicalID        *int       `json:"canonical_id"`
-		DisplayName        string     `json:"display_name"`
-		Available          bool       `json:"available"`
-		UnavailableReason  *string    `json:"unavailable_reason"`
-		UnavailableAt      *time.Time `json:"unavailable_at"`
-		P95LatencyMs       *int       `json:"p95_latency_ms"`
-		SuccessRate        *float64   `json:"success_rate"`
-		InputPrice         *float64   `json:"input_price"`
-		OutputPrice        *float64   `json:"output_price"`
-		LastSeenAt         *time.Time `json:"last_seen_at"`
-		RoutingTier        string     `json:"routing_tier"`
-		AvailabilitySource string     `json:"availability_source"`
+		ID                  int        `json:"id"`
+		CredentialID        int        `json:"credential_id"`
+		CredentialLabel     string     `json:"credential_label"`
+		RawModelName        string     `json:"raw_model_name"`
+		StandardizedName    string     `json:"standardized_name"`
+		CanonicalID         *int       `json:"canonical_id"`
+		DisplayName         string     `json:"display_name"`
+		Available           bool       `json:"available"`
+		UnavailableReason   *string    `json:"unavailable_reason"`
+		UnavailableAt       *time.Time `json:"unavailable_at"`
+		P95LatencyMs        *int       `json:"p95_latency_ms"`
+		SuccessRate         *float64   `json:"success_rate"`
+		InputPrice          *float64   `json:"input_price"`
+		OutputPrice         *float64   `json:"output_price"`
+		LastSeenAt          *time.Time `json:"last_seen_at"`
+		RoutingTier         string     `json:"routing_tier"`
+		AvailabilitySource  string     `json:"availability_source"`
 		CanonicalStandardIQ *float64   `json:"canonical_standard_iq"`
 		CanonicalName       string     `json:"canonical_name"`
 		NodeIQ              *float64   `json:"node_iq"`
