@@ -1247,6 +1247,18 @@ func main() {
 		routingExec.StreamTimeout = time.Duration(cfg.StreamTimeout) * time.Second
 		routingExec.UpstreamTimeout = time.Duration(cfg.UpstreamTimeout) * time.Second
 		routingExec.StreamRetryThreshold = cfg.StreamRetryThreshold
+		// MM-1 (doc 19): outbound multimodal URL rewrite — swap stored
+		// base64 image blocks for gateway URLs when the target provider
+		// prefers URL references. Default OFF; requires a public base URL.
+		if v := strings.TrimSpace(os.Getenv("LLM_GATEWAY_ATTACHMENT_URL_OUTBOUND")); v != "" && v != "0" {
+			base := strings.TrimSpace(os.Getenv("LLM_GATEWAY_ATTACHMENT_PUBLIC_BASE_URL"))
+			if base == "" {
+				slog.Warn("attachments: outbound URL rewrite disabled: LLM_GATEWAY_ATTACHMENT_PUBLIC_BASE_URL not set")
+			} else {
+				routingExec.AttachmentURLRewriter = attachments.NewOutboundURLRewriter(base)
+				slog.Info("attachments: outbound URL rewrite enabled", "base_url", base)
+			}
+		}
 		// 2026-06-21: 同步重试超时（全候选失败后保持客户端连接继续重试）
 		// 2026-07-18: 设为60s，给慢节点足够时间，同时配合单节点快速恢复机制
 		routingExec.SyncRetryTimeout = 60 * time.Second

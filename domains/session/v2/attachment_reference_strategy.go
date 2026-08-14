@@ -1,6 +1,10 @@
 package v2
 
-import "time"
+import (
+	"strings"
+	"sync/atomic"
+	"time"
+)
 
 // AttachmentReferenceStrategy determines how to reference attachments when serializing to different providers
 //
@@ -24,7 +28,7 @@ const (
 	RefModeProviderFile AttachmentReferenceMode = "provider_file"
 
 	// RefModePublicURL uses a public HTTPS URL
-	RefModePublicURL AttachmentReferenceMode = "public_url"
+	RefModePublicURL AttachmentReferenceMode = "public_url" // MM-2 预留：直引附件原始公网 URL；当前无 provider 首选，SelectReferenceMode 暂不产出
 )
 
 // ProviderAttachmentCapability describes a provider's attachment handling capabilities
@@ -38,9 +42,11 @@ type ProviderAttachmentCapability struct {
 	SupportedMIMETypes []string // Empty means all
 }
 
-// GetProviderCapability returns attachment capabilities for a provider
+// GetProviderCapability returns attachment capabilities for a provider.
+// Provider identifiers are normalized (trimmed, lowercased) since callers
+// derive them from different sources (model registry, vendor config).
 func GetProviderCapability(provider string) ProviderAttachmentCapability {
-	switch provider {
+	switch strings.ToLower(strings.TrimSpace(provider)) {
 	case "openai":
 		return ProviderAttachmentCapability{
 			SupportsDataURI:  true,
@@ -85,9 +91,11 @@ func GetProviderCapability(provider string) ProviderAttachmentCapability {
 		}
 
 	case "deepseek":
+		// 官方 Chat API 暂无公开视觉端点；URL 拉取能力未经真机确认，
+		// 按 MM-2 矩阵（provider-url-support-matrix.md §2）保守降级为仅 data URI。
 		return ProviderAttachmentCapability{
 			SupportsDataURI:  true,
-			SupportsHTTPSURL: true,
+			SupportsHTTPSURL: false,
 			SupportsFilesAPI: false,
 			MaxInlineBytes:   10 * 1024 * 1024,
 			PreferredMode:    RefModeDataURI,
@@ -167,6 +175,46 @@ func GetProviderCapability(provider string) ProviderAttachmentCapability {
 			PreferredMode:    RefModeDataURI,
 		}
 	}
+}
+
+// defaultGatewayURLBase matches the default PublicURL in
+// domains/attachments/config.go (LoadConfigFromEnv).
+const defaultGatewayURLBase = "/api/attachments"
+
+// gatewayURLBase holds the public base for gateway-hosted attachment URLs.
+// Wired once at startup via SetGatewayURLBase from attachments.Config.PublicURL;
+// kept as an injectable value so this package stays decoupled from
+// domains/attachments (see ir_attachment_adapter.go's mirror-struct note).
+// Atomic so a mis-ordered runtime re-wire cannot race hot-path reads.
+var gatewayURLBase atomic.Value // string
+
+func loadGatewayURLBase() string {
+	if v, ok := gatewayURLBase.Load().(string); ok && v != "" {
+		return v
+	}
+	return defaultGatewayURLBase
+}
+
+// SetGatewayURLBase sets the public base URL used by GatewayURL.
+// Empty resets to the default. Startup wiring should pass
+// attachments.Config.PublicURL (env LLM_GATEWAY_ATTACHMENT_PUBLIC_URL).
+func SetGatewayURLBase(base string) {
+	base = strings.TrimSpace(base)
+	if base == "" {
+		gatewayURLBase.Store(defaultGatewayURLBase)
+		return
+	}
+	gatewayURLBase.Store(strings.TrimRight(base, "/"))
+}
+
+// GatewayURL builds the gateway-hosted URL for an attachment object key.
+func GatewayURL(objectKey string) string {
+	base := loadGatewayURLBase()
+	objectKey = strings.TrimLeft(objectKey, "/")
+	if objectKey == "" {
+		return base
+	}
+	return base + "/" + objectKey
 }
 
 // SelectReferenceMode determines the best way to reference an attachment for a target provider

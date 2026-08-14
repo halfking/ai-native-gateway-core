@@ -109,6 +109,12 @@ type ScoringBreakdown struct {
 	RouteBoostApplied bool    `json:"route_boost_applied,omitempty"`
 	Composite         float64 `json:"composite"`
 
+	// PopularityBoost (RT-3) is the additive ordering weight contributed by
+	// PopularityScore + featured_models when UsePopularityWeight is on. Zero
+	// (omitted) when the feature is off, so flag-off breakdowns serialise
+	// byte-identically.
+	PopularityBoost float64 `json:"popularity_boost,omitempty"`
+
 	// IsFallback 标记该候选来自 48h 热门回退路径（doc 16 §5-E）：
 	// 之前用 `Composite==50 && PriceScore==50 && MatchScore<=30` 的浮点三连等
 	// 判定，正常候选巧合命中会误翻 FallbackUsed；现在改为显式标记。
