@@ -58,14 +58,6 @@ const overallStatus = computed(() => {
   return 'unhealthy'
 })
 
-const statusColor = computed(() => {
-  switch (overallStatus.value) {
-    case 'healthy': return 'var(--success)'
-    case 'unhealthy': return 'var(--danger)'
-    default: return 'var(--muted)'
-  }
-})
-
 const statusIcon = computed(() => {
   switch (overallStatus.value) {
     case 'healthy': return '✓'
@@ -200,7 +192,7 @@ onUnmounted(() => {
 
             <div v-else-if="health" class="status-details">
               <div class="status-item">
-                <span class="status-dot" :style="{ backgroundColor: statusColor }"></span>
+                <span class="status-dot" :class="`status-dot--${overallStatus}`"></span>
                 <span class="status-name">Gateway</span>
                 <span class="status-value">
                   v{{ health.version.split('-')[0] }}
@@ -373,6 +365,9 @@ onUnmounted(() => {
 .status-dot--ok { background: var(--success); }
 .status-dot--error { background: var(--danger); }
 .status-dot--warning { background: var(--warning); }
+.status-dot--healthy { background: var(--success); }
+.status-dot--unhealthy { background: var(--danger); }
+.status-dot--unknown { background: var(--muted); }
 
 .status-name {
   font-weight: 500;
