@@ -25,6 +25,7 @@ html[data-theme='light'] {
   --kx-warning-soft: #fff7e8;
   --kx-danger: #c2413b;
   --kx-danger-soft: #fff1f1;
+  --kx-text-on-primary: #ffffff;
   --kx-shadow-sm: 0 8px 24px rgba(30, 55, 100, 0.06);
   --kx-shadow-md: 0 16px 40px rgba(30, 50, 90, 0.1);
   /* Gateway alias bridge — 旧组件仍引用 --bg/--card/--border 等 */
@@ -72,6 +73,7 @@ html[data-theme='dark'] {
   --kx-warning-soft: rgba(224, 165, 58, 0.14);
   --kx-danger: #f07167;
   --kx-danger-soft: rgba(240, 113, 103, 0.14);
+  --kx-text-on-primary: #ffffff;
   --kx-shadow-sm: 0 8px 24px rgba(0, 0, 0, 0.28);
   --kx-shadow-md: 0 16px 40px rgba(0, 0, 0, 0.4);
   --bg:        var(--kx-bg);
@@ -426,7 +428,7 @@ tbody tr:hover { background: rgba(255,255,255,.02); }
 .stat-overview-card {
   background: var(--card);
   border: 1px solid var(--border);
-  border-left: 3px solid var(--primary, #3b82f6);
+  border-left: 3px solid var(--primary);
   border-radius: var(--radius);
   padding: 12px 16px;
   display: flex;
@@ -436,7 +438,7 @@ tbody tr:hover { background: rgba(255,255,255,.02); }
   transition: background 0.12s ease;
 }
 .stat-overview-card:hover { background: var(--surface-secondary, var(--card)); }
-.stat-overview-card[data-stat="total-credits"] { border-left-color: var(--success, #16a34a); }
+.stat-overview-card[data-stat="total-credits"] { border-left-color: var(--success); }
 .stat-overview-label {
   font-size: 11px;
   color: var(--text-secondary, var(--muted));
