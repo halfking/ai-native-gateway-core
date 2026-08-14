@@ -15,6 +15,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **主题 token 合规**：节点和队列状态背景改用现有设计 token 混色，移除硬编码颜色 fallback。
 - 详见 `docs/changelogs/2026-08-15-node-operations-audit-fixes.md`。
 
+## [Unreleased] - 2026-08-15 (Vendor Synchronization)
+
+### Fixed
+
+- Regenerated `vendor/` from `go.mod` and `go.sum` after adding Testcontainers dependencies, restoring the default Go vendor-mode test, build, and vet workflow.
+
 ## [Unreleased] - 2026-08-14 (Live Stream Queue Controls)
 
 ### Fixed
