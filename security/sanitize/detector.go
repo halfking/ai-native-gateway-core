@@ -30,20 +30,15 @@ type patternEntry struct {
 
 // PatternDetector 基于正则模式匹配的检测器
 type PatternDetector struct {
-	patterns []patternEntry
+	mu         sync.RWMutex
+	patterns   []patternEntry
+	configPath string
 }
 
 // NewPatternDetector 创建包含默认 PII 模式的检测器
 func NewPatternDetector() *PatternDetector {
 	return &PatternDetector{
-		patterns: []patternEntry{
-			{TypePhone, regexp.MustCompile(`1[3-9]\d{9}`)},
-			{TypeIDCard, regexp.MustCompile(`\d{17}[\dXx]`)},
-			{TypeEmail, regexp.MustCompile(`[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}`)},
-			{TypeCreditCard, regexp.MustCompile(`\b(?:4\d{12,15}|5[1-5]\d{14}|3[47]\d{13}|6(?:011|5\d{2})\d{12})\b`)},
-			{TypeSecret, regexp.MustCompile(`(sk|ak)-[a-zA-Z0-9]{16,}`)},
-			{TypeInternalIP, regexp.MustCompile(`(?:10\.\d{1,3}\.\d{1,3}\.\d{1,3}|192\.168\.\d{1,3}\.\d{1,3}|172\.(?:1[6-9]|2\d|3[01])\.\d{1,3}\.\d{1,3})`)},
-		},
+		patterns: defaultPatternEntries(),
 	}
 }
 
@@ -53,10 +48,13 @@ func (d *PatternDetector) Detect(_ context.Context, text string) ([]SensitiveFra
 	if d == nil {
 		return nil, nil
 	}
+	d.mu.RLock()
+	patterns := append([]patternEntry(nil), d.patterns...)
+	d.mu.RUnlock()
 	var fragments []SensitiveFragment
 	seen := make(map[string]bool)
 
-	for _, p := range d.patterns {
+	for _, p := range patterns {
 		matches := p.regex.FindAllStringIndex(text, -1)
 		for _, m := range matches {
 			value := text[m[0]:m[1]]
@@ -78,6 +76,17 @@ func (d *PatternDetector) Detect(_ context.Context, text string) ([]SensitiveFra
 		return fragments[i].Start < fragments[j].Start
 	})
 	return fragments, nil
+}
+
+func defaultPatternEntries() []patternEntry {
+	return []patternEntry{
+		{TypePhone, regexp.MustCompile(`1[3-9]\d{9}`)},
+		{TypeIDCard, regexp.MustCompile(`\d{17}[\dXx]`)},
+		{TypeEmail, regexp.MustCompile(`[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}`)},
+		{TypeCreditCard, regexp.MustCompile(`\b(?:4\d{12,15}|5[1-5]\d{14}|3[47]\d{13}|6(?:011|5\d{2})\d{12})\b`)},
+		{TypeSecret, regexp.MustCompile(`(sk|ak)-[a-zA-Z0-9]{16,}`)},
+		{TypeInternalIP, regexp.MustCompile(`(?:10\.\d{1,3}\.\d{1,3}\.\d{1,3}|192\.168\.\d{1,3}\.\d{1,3}|172\.(?:1[6-9]|2\d|3[01])\.\d{1,3}\.\d{1,3})`)},
+	}
 }
 
 // CustomDetector 用户自定义检测器

@@ -720,7 +720,7 @@ func v2DispatchHandler(deps *v2DispatchDeps, fallback http.Handler) http.Handler
 
 		// Best-effort body sniff for metadata. chatHandler will
 		// re-parse the full body for its own protocol decoding.
-		model, stream, _, _ := dispatchRequestBody(r)
+		model, stream, rawBody, _ := dispatchRequestBody(r)
 		if env.Envelope != nil && env.Envelope.Transport != nil {
 			env.Envelope.Transport.IsStream = stream
 		}
@@ -731,6 +731,11 @@ func v2DispatchHandler(deps *v2DispatchDeps, fallback http.Handler) http.Handler
 			"stream": stream,
 			"remote": r.RemoteAddr,
 			"agent":  r.UserAgent(),
+		}
+		if setForceCompressionMetadata(env.Metadata, r.Header.Get("X-Gw-Force-Compression")) {
+			if messages := compressionMessagesFromBody(rawBody); len(messages) > 0 {
+				env.Metadata[compression.MetaKeyMessages] = messages
+			}
 		}
 
 		rawKey := pipelineAPIKey(r)
@@ -859,6 +864,38 @@ func v2DispatchHandler(deps *v2DispatchDeps, fallback http.Handler) http.Handler
 			}
 		}
 	})
+}
+
+// setForceCompressionMetadata maps the client opt-in header to the existing
+// compression hook contract. Only an explicit true value activates it.
+func setForceCompressionMetadata(metadata map[string]any, header string) bool {
+	if metadata == nil {
+		return false
+	}
+	if !strings.EqualFold(strings.TrimSpace(header), "true") {
+		return false
+	}
+	metadata[compression.MetaKeyNeedsCompression] = true
+	return true
+}
+
+func compressionMessagesFromBody(body []byte) []compression.Message {
+	var request struct {
+		Messages []struct {
+			Role    string `json:"role"`
+			Content string `json:"content"`
+		} `json:"messages"`
+	}
+	if err := json.Unmarshal(body, &request); err != nil {
+		return nil
+	}
+	messages := make([]compression.Message, 0, len(request.Messages))
+	for _, message := range request.Messages {
+		if message.Role != "" && message.Content != "" {
+			messages = append(messages, compression.Message{Role: message.Role, Content: message.Content})
+		}
+	}
+	return messages
 }
 
 // extractFirstUserMessage 从 env 中尝试取出第一条用户消息文本。
