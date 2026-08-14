@@ -1,4 +1,5 @@
 export default {
+  imminent: "即將重設",
   page: {
     title: "免費資源池",
     desc: "管理免費模型資源池。已註冊模型路由優先級最高（routing_tier = 9，composite_score = 0）。下方「免費模型清單」展示目前池內全部可用模型；「範本目錄」展示已知免費 Provider 及其預期模型。"

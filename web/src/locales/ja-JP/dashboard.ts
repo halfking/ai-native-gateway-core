@@ -143,6 +143,7 @@ tabs: {
   viewFailedRequests: "失敗リクエストを表示",
   liveStream: {
     title: "リアルタイムリクエスト",
+    controlsAria: "リアルタイムリクエストストリームのコントロール",
     connected: "接続中",
     disconnected: "再接続中...",
     pause: "一時停止",

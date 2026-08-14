@@ -152,6 +152,7 @@ v2: {
   viewFailedRequests: "Fehlgeschlagene Anfragen anzeigen",
   liveStream: {
     title: "Echtzeit-Anfrage-Stream",
+    controlsAria: "Steuerung des Echtzeit-Anfrage-Streams",
     connected: "Verbunden",
     disconnected: "Verbindet erneut...",
     pause: "Pause",

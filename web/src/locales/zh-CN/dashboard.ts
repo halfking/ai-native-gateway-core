@@ -173,6 +173,7 @@ export default {
   viewFailedRequests: '查看失败请求',
   liveStream: {
     title: '实时请求流',
+    controlsAria: '实时请求流控制栏',
     connected: '已连接',
     disconnected: '重新连接中…',
     pause: '暂停',

@@ -609,7 +609,7 @@ function quotaResetCountdown(m: FreePoolModelEntry): string {
   const reset = new Date(m.quota_reset_at).getTime()
   if (!reset) return ''
   const diff = reset - nowTick.value
-  if (diff <= 0) return t('freePool.imminent') || '即将重置'
+  if (diff <= 0) return t('freePool.imminent')
   const totalSec = Math.floor(diff / 1000)
   const h = Math.floor(totalSec / 3600)
   const mm = Math.floor((totalSec % 3600) / 60)

@@ -1,4 +1,5 @@
 export default {
+  imminent: "Réinitialisation imminente",
   page: {
     title: "Pool de ressources gratuites",
     desc: "Gérez le pool de modèles gratuits. Les modèles enregistrés ont la plus haute priorité de routage (routing_tier = 9, composite_score = 0). La « Liste des modèles gratuits » ci-dessous montre tous les modèles actuellement dans le pool ; le « Catalogue de modèles » montre les fournisseurs gratuits connus et leurs modèles attendus."

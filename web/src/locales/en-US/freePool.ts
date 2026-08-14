@@ -2,6 +2,7 @@
 // Namespaces: page / tab / stats / assistant / keyForm / providerForm / models / providers / catalog / keys / guide / status / acquisition / error.
 // Technical terms kept untranslated: catalog_code, routing_tier, offer, mail.tm, OAuth, secret_ciphertext.
 export default {
+  imminent: 'Reset imminent',
   page: {
     title: 'Free resource pool',
     desc: 'Manage the free model pool. Registered models have the highest routing priority (routing_tier = 9, composite_score = 0). The "Free model list" below shows every model currently in the pool; the "Template catalog" shows known free Providers and their expected models.',

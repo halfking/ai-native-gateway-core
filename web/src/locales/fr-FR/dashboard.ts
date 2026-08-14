@@ -152,6 +152,7 @@ v2: {
   viewFailedRequests: "Voir les requêtes échouées",
   liveStream: {
     title: "Flux des requêtes en temps réel",
+    controlsAria: "Commandes du flux des requêtes en temps réel",
     connected: "Connecté",
     disconnected: "Reconnexion...",
     pause: "Pause",

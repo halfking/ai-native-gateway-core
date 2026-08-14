@@ -1,4 +1,5 @@
 export default {
+  imminent: "Reinicio inminente",
   page: {
     title: "Pool gratuito de recursos",
     desc: "Gestione el pool de modelos gratuitos. Los modelos registrados tienen la mayor prioridad de enrutamiento (routing_tier = 9, composite_score = 0). La \"Lista de modelos gratuitos\" muestra todos los modelos del pool; el \"Catálogo de plantillas\" muestra los proveedores gratuitos conocidos y sus modelos esperados."

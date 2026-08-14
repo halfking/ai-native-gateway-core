@@ -328,7 +328,7 @@ function navLabel(labelKey: string | undefined, fallback: string): string {
       <div class="app-topbar__meta">
         <SystemStatusIndicator />
         <div v-if="props.versionInfo?.version" class="app-topbar__version" :title="props.versionInfo.git_sha">
-          <span class="app-topbar__version-tag">v{{ props.versionInfo.version }}</span>
+          <span class="app-topbar__version-tag">{{ props.versionInfo.version }}</span>
           <template v-if="props.versionInfo.build_seq != null">
             <span class="app-topbar__meta-sep" aria-hidden="true">·</span>
             <span class="app-topbar__version-build">#{{ props.versionInfo.build_seq }}</span>
@@ -554,12 +554,34 @@ function navLabel(labelKey: string | undefined, fallback: string): string {
     order: 3;
     width: 100%;
     margin-top: 6px;
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    overflow-y: hidden;
+    scrollbar-width: thin;
+    -webkit-overflow-scrolling: touch;
+  }
+  .app-topbar__link {
+    flex: 0 0 auto;
   }
   .app-topbar__version {
     display: none;
   }
   .app-topbar__brand-text {
     font-size: 12px;
+  }
+}
+
+@media (max-width: 480px) {
+  .app-topbar {
+    gap: 8px;
+  }
+  .app-topbar__brand-text,
+  .app-topbar__meta {
+    display: none;
+  }
+  .app-topbar__actions {
+    gap: 6px;
+    min-width: 0;
   }
 }
 </style>
