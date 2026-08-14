@@ -126,6 +126,12 @@ func StreamAnthropicPassthroughWithDiagnostics(
 		}
 	}()
 
+
+	// SR-W1: route client frames through the attempt commit gate.
+	// Disabled (default) this is the identity function — legacy wire bytes.
+	// This passthrough has no error-path terminal rendering (interrupted
+	// reads already return outcome-only), so the gate handle is unused here.
+	w, _ = wrapAttemptWriter(w, ProtocolAnthropic)
 	flusher, ok := w.(http.Flusher)
 	if !ok {
 		http.Error(w, "streaming not supported", http.StatusInternalServerError)
@@ -310,6 +316,10 @@ func StreamAnthropicSSEToOpenAIWithDiagnostics(
 		diagnosticCollector.report(diagnostics, requestID, "anthropic-messages", "openai-completions", outcome.Interrupted)
 	}()
 
+
+	// SR-W1: route client frames through the attempt commit gate.
+	// Disabled (default) this is the identity function — legacy wire bytes.
+	w, gate := wrapAttemptWriter(w, ProtocolOpenAIChat)
 	flusher, ok := w.(http.Flusher)
 	if !ok {
 		http.Error(w, "streaming not supported", http.StatusInternalServerError)
@@ -422,8 +432,10 @@ func StreamAnthropicSSEToOpenAIWithDiagnostics(
 			if capture != nil {
 				capture.MarkInterruptedWithReason("stream_panic")
 			}
-			emitAnthropicBridgeErrorChunk(w, "stream_panic",
-				fmt.Sprintf("internal error: %v", r), flusher)
+			if gate.MayWriteTerminal() {
+				emitAnthropicBridgeErrorChunk(w, "stream_panic",
+					fmt.Sprintf("internal error: %v", r), flusher)
+			}
 			outcome.Interrupted = true
 			outcome.Reason = "stream_panic"
 			outcome.Kind = errorsx.KindUpstreamDown
@@ -443,8 +455,10 @@ func StreamAnthropicSSEToOpenAIWithDiagnostics(
 			if capture != nil {
 				capture.MarkInterruptedWithReason("stream_chunk_timeout")
 			}
-			emitAnthropicBridgeErrorChunk(w, "stream_chunk_timeout",
-				fmt.Sprintf("no data received for %v", runtimeCfg.streamChunkTimeout), flusher)
+			if gate.MayWriteTerminal() {
+				emitAnthropicBridgeErrorChunk(w, "stream_chunk_timeout",
+					fmt.Sprintf("no data received for %v", runtimeCfg.streamChunkTimeout), flusher)
+			}
 			outcome.Interrupted = true
 			outcome.Reason = "chunk_timeout"
 			outcome.Kind = errorsx.KindStreamTimeout
@@ -457,26 +471,35 @@ func StreamAnthropicSSEToOpenAIWithDiagnostics(
 
 		if err != nil {
 			if err == io.EOF {
-				flushBufferedText()
-				// Incremental integrity breach on the flushed text: cut
-				// before emitting the closing usage/done chunks so the
-				// executor can failover. Mirrors stream.go.
-				if capture != nil && capture.IntegrityBreached() {
-					return integrityBreachOutcome(capture, chunkCount)
+				// SR-W1: pending REAL text must still be delivered even while
+				// the gate holds an uncommitted attempt — delivering it
+				// commits the attempt and the closing usage/done chunks
+				// follow. An EOF with nothing delivered (empty stream) stays
+				// droppable: no completed stream is fabricated.
+				if gate.MayWriteTerminal() || bufferedText.Len() > 0 {
+					flushBufferedText()
+					// Incremental integrity breach on the flushed text: cut
+					// before emitting the closing usage/done chunks so the
+					// executor can failover. Mirrors stream.go.
+					if capture != nil && capture.IntegrityBreached() {
+						return integrityBreachOutcome(capture, chunkCount)
+					}
+					if gate.MayWriteTerminal() {
+						if inputTokens > 0 || outputTokens > 0 {
+							writeChunk(&ir.StreamChunk{
+								Type: ir.ChunkTypeUsage,
+								Usage: &ir.StreamUsage{
+									PromptTokens:     inputTokens,
+									CompletionTokens: outputTokens,
+									TotalTokens:      inputTokens + outputTokens,
+								},
+								FinishReason:   "stop",
+								SourceProtocol: ir.ProtocolAnthropicMessages,
+							})
+						}
+						writeChunk(&ir.StreamChunk{Type: ir.ChunkTypeDone, SourceProtocol: ir.ProtocolAnthropicMessages})
+					}
 				}
-				if inputTokens > 0 || outputTokens > 0 {
-					writeChunk(&ir.StreamChunk{
-						Type: ir.ChunkTypeUsage,
-						Usage: &ir.StreamUsage{
-							PromptTokens:     inputTokens,
-							CompletionTokens: outputTokens,
-							TotalTokens:      inputTokens + outputTokens,
-						},
-						FinishReason:   "stop",
-						SourceProtocol: ir.ProtocolAnthropicMessages,
-					})
-				}
-				writeChunk(&ir.StreamChunk{Type: ir.ChunkTypeDone, SourceProtocol: ir.ProtocolAnthropicMessages})
 				return StreamOutcome{ChunkCount: chunkCount}
 			}
 			outcome.Interrupted = true
@@ -485,7 +508,9 @@ func StreamAnthropicSSEToOpenAIWithDiagnostics(
 			if capture != nil {
 				capture.MarkInterruptedWithReason("anthropic_to_openai_read_error")
 			}
-			emitAnthropicBridgeErrorChunk(w, "stream_read_error", err.Error(), flusher)
+			if gate.MayWriteTerminal() {
+				emitAnthropicBridgeErrorChunk(w, "stream_read_error", err.Error(), flusher)
+			}
 			outcome.ChunkCount = chunkCount
 			return outcome
 		}
@@ -639,7 +664,9 @@ func StreamAnthropicSSEToOpenAIWithDiagnostics(
 							if capture != nil {
 								capture.AddQualityFlag("malformed_tool_args_blocked")
 							}
-							emitAnthropicBridgeErrorChunk(w, "malformed_tool_args", "upstream tool arguments are invalid JSON", flusher)
+							if gate.MayWriteTerminal() {
+								emitAnthropicBridgeErrorChunk(w, "malformed_tool_args", "upstream tool arguments are invalid JSON", flusher)
+							}
 							outcome.Interrupted = true
 							outcome.Reason = "malformed_tool_args"
 							outcome.ChunkCount = chunkCount
@@ -699,7 +726,9 @@ func StreamAnthropicSSEToOpenAIWithDiagnostics(
 				capture.MarkInterruptedWithReason("upstream_error")
 			}
 			if chunk.Error != nil {
-				emitAnthropicBridgeErrorChunk(w, chunk.Error.Type, chunk.Error.Message, flusher)
+				if gate.MayWriteTerminal() {
+					emitAnthropicBridgeErrorChunk(w, chunk.Error.Type, chunk.Error.Message, flusher)
+				}
 			}
 			outcome.Interrupted = true
 			outcome.Reason = "upstream_error"

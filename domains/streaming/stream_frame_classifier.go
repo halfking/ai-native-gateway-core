@@ -167,15 +167,33 @@ func classifyChatDataPayload(payload string) FrameClass {
 		return FrameClassUnknown
 	}
 	d := f.Choices[0].Delta
+	// "null"/"[]" mean no tool calls: several vendors emit an explicit null
+	// on role-only chunks and that must stay droppable metadata.
+	hasToolCalls := len(d.ToolCalls) > 0 && string(d.ToolCalls) != "null" && string(d.ToolCalls) != "[]"
 	switch {
-	case len(d.ToolCalls) > 0, len(d.Audio) > 0, len(d.FunctionCall) > 0:
+	case hasToolCalls, len(d.Audio) > 0, len(d.FunctionCall) > 0:
 		return FrameClassToolCall
-	case len(d.Content) > 0, len(d.Reasoning) > 0:
+	case nonEmptyJSONString(d.Content), nonEmptyJSONString(d.Reasoning):
 		return FrameClassContent
 	default:
-		// role-only structural opening frame
+		// role-only structural opening frame ("content":"" or null carries
+		// no semantic text and must stay droppable metadata)
 		return FrameClassAttemptMetadata
 	}
+}
+
+// nonEmptyJSONString reports whether raw is a JSON string with non-empty
+// text. null / absent / empty / non-string values all report false.
+func nonEmptyJSONString(raw json.RawMessage) bool {
+	if len(raw) == 0 || string(raw) == "null" {
+		return false
+	}
+	var s string
+	if err := json.Unmarshal(raw, &s); err != nil {
+		// Non-string content (unexpected shape): fail closed as present.
+		return true
+	}
+	return s != ""
 }
 
 func classifyResponsesFrame(frame string) FrameClass {
@@ -251,7 +269,9 @@ func classifyAnthropicContentBlockStart(frame string) FrameClass {
 	switch f.ContentBlock.Type {
 	case "text", "thinking":
 		return FrameClassAttemptMetadata
-	case "tool_use":
+	case "tool_use", "server_tool_use", "web_search_tool_result":
+		// Any tool-shaped block (incl. server-side/side-effect tools,
+		// doc 18 §10.3) is never droppable metadata.
 		return FrameClassToolCall
 	default:
 		return FrameClassUnknown

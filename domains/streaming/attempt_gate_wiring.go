@@ -1,0 +1,73 @@
+package streaming
+
+import (
+	"net/http"
+	"os"
+	"sync/atomic"
+)
+
+// attempt_gate_wiring.go — SR-W1 Phase 0B bridge integration (doc 18 §9.3).
+//
+// The bridges wrap their client writer via wrapAttemptWriter before deriving
+// the flusher: every existing write helper then flows through the
+// AttemptCommitGate without per-bridge changes. With the gate disabled
+// (default) wrapAttemptWriter is the identity function — the legacy wire
+// bytes are preserved verbatim; the returned gate is nil and every
+// gate.MayWriteTerminal() call site degrades to legacy behavior.
+//
+// LLM_GATEWAY_ATTEMPT_COMMIT_GATE=false is the production default until the
+// survival coordinator (SR-W2) owns the Commit()/Discard() decisions.
+
+var (
+	attemptGateEnabledOverride atomic.Value // bool
+	attemptGateModeOverride    atomic.Value // GateMode
+)
+
+func envStringOrDefault(key, def string) string {
+	if v := os.Getenv(key); v != "" {
+		return v
+	}
+	return def
+}
+
+func attemptGateEnabled() bool {
+	if v, ok := attemptGateEnabledOverride.Load().(bool); ok {
+		return v
+	}
+	return envBool("LLM_GATEWAY_ATTEMPT_COMMIT_GATE", false)
+}
+
+func attemptGateMode() GateMode {
+	if v, ok := attemptGateModeOverride.Load().(GateMode); ok {
+		return v
+	}
+	if envStringOrDefault("LLM_GATEWAY_ATTEMPT_COMMIT_GATE_MODE", "buffered") == "immediate" {
+		return GateModeImmediate
+	}
+	return GateModeBuffered
+}
+
+// setAttemptGateForTest overrides the enabled flag and gate mode for the
+// duration of a test. The returned restore function must be deferred.
+func setAttemptGateForTest(enabled bool, mode GateMode) (restore func()) {
+	oldEnabled, _ := attemptGateEnabledOverride.Load().(bool)
+	oldMode, _ := attemptGateModeOverride.Load().(GateMode)
+	attemptGateEnabledOverride.Store(enabled)
+	attemptGateModeOverride.Store(mode)
+	return func() {
+		attemptGateEnabledOverride.Store(oldEnabled)
+		attemptGateModeOverride.Store(oldMode)
+	}
+}
+
+// wrapAttemptWriter wraps the client writer of a streaming bridge in a commit
+// gate for the given CLIENT protocol (the gate classifies client-facing
+// frames regardless of the upstream dialect the bridge converts from).
+func wrapAttemptWriter(w http.ResponseWriter, protocol ClientProtocol) (http.ResponseWriter, *AttemptCommitGate) {
+	if !attemptGateEnabled() {
+		return w, nil
+	}
+	sw := NewSerializedStreamWriter(w)
+	gate := NewAttemptCommitGate(protocol, sw, GateOptions{Mode: attemptGateMode()})
+	return NewGateWriterWithResponse(gate, w), gate
+}

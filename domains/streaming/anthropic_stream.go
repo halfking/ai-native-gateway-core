@@ -79,6 +79,10 @@ func StreamOpenAIToAnthropicSSEWithDiagnostics(
 	}()
 	runtimeCfg := currentStreamRuntimeConfig()
 
+
+	// SR-W1: route client frames through the attempt commit gate.
+	// Disabled (default) this is the identity function — legacy wire bytes.
+	w, gate := wrapAttemptWriter(w, ProtocolAnthropic)
 	flusher, ok := w.(http.Flusher)
 	if !ok {
 		http.Error(w, "streaming not supported", http.StatusInternalServerError)
@@ -192,13 +196,15 @@ func StreamOpenAIToAnthropicSSEWithDiagnostics(
 			"first_byte_timeout_seconds", int(runtimeCfg.firstByteTimeout.Seconds()),
 			"hint", "if frequent, increase LLM_GATEWAY_FIRST_BYTE_TIMEOUT or admin config (default 120s)",
 		)
-		errPayload := map[string]any{
-			"type":  "error",
-			"error": map[string]any{"type": "timeout", "message": "upstream first-byte timeout"},
+		if gate.MayWriteTerminal() {
+			errPayload := map[string]any{
+				"type":  "error",
+				"error": map[string]any{"type": "timeout", "message": "upstream first-byte timeout"},
+			}
+			captureSSE("error", errPayload)
+			flusher.Flush()
+			writeAnthropicTail(w, flusher, pc, msgID, clientModel, finalFinishReason, outputTokens, inputTokens, capture)
 		}
-		captureSSE("error", errPayload)
-		flusher.Flush()
-		writeAnthropicTail(w, flusher, pc, msgID, clientModel, finalFinishReason, outputTokens, inputTokens, capture)
 		outcome.Interrupted = true
 		outcome.Reason = "first_byte_timeout"
 		outcome.Kind = errorsx.KindStreamTimeout
@@ -224,11 +230,13 @@ func StreamOpenAIToAnthropicSSEWithDiagnostics(
 			if capture != nil {
 				capture.MarkInterruptedWithReason("json_error_in_stream")
 			}
-			captureSSE("error", map[string]any{
-				"type":  "error",
-				"error": map[string]any{"type": "upstream_error", "message": errMsg, "code": errKind},
-			})
-			flusher.Flush()
+			if gate.MayWriteTerminal() {
+				captureSSE("error", map[string]any{
+					"type":  "error",
+					"error": map[string]any{"type": "upstream_error", "message": errMsg, "code": errKind},
+				})
+				flusher.Flush()
+			}
 			outcome.Interrupted = true
 			outcome.Reason = "json_error_in_stream"
 			outcome.Kind = errorsx.KindUpstreamDown
@@ -453,12 +461,14 @@ func StreamOpenAIToAnthropicSSEWithDiagnostics(
 				if capture != nil {
 					capture.MarkInterruptedWithReason("stream_timeout")
 				}
-				errPayload := map[string]any{
-					"type":  "error",
-					"error": map[string]any{"type": "timeout", "message": "upstream read timeout"},
+				if gate.MayWriteTerminal() {
+					errPayload := map[string]any{
+						"type":  "error",
+						"error": map[string]any{"type": "timeout", "message": "upstream read timeout"},
+					}
+					writeSSEWithCapturer(w, pc, "error", errPayload)
+					flusher.Flush()
 				}
-				writeSSEWithCapturer(w, pc, "error", errPayload)
-				flusher.Flush()
 				outcome.Interrupted = true
 				outcome.Reason = "stream_timeout"
 				outcome.Kind = errorsx.KindStreamTimeout
@@ -467,12 +477,14 @@ func StreamOpenAIToAnthropicSSEWithDiagnostics(
 				if capture != nil {
 					capture.MarkInterruptedWithReason("stream_error")
 				}
-				errPayload := map[string]any{
-					"type":  "error",
-					"error": map[string]any{"type": "upstream_error", "message": fmt.Sprintf("stream read error: %v", readResult.err)},
+				if gate.MayWriteTerminal() {
+					errPayload := map[string]any{
+						"type":  "error",
+						"error": map[string]any{"type": "upstream_error", "message": fmt.Sprintf("stream read error: %v", readResult.err)},
+					}
+					writeSSEWithCapturer(w, pc, "error", errPayload)
+					flusher.Flush()
 				}
-				writeSSEWithCapturer(w, pc, "error", errPayload)
-				flusher.Flush()
 				outcome.Interrupted = true
 				outcome.Reason = "read_error"
 				outcome.Kind = errorsx.KindUpstreamDown
@@ -497,29 +509,44 @@ func StreamOpenAIToAnthropicSSEWithDiagnostics(
 	// lost. Passthrough means deltas were already emitted in real time,
 	// so just close the pre-declared block. Buffering means a <think>
 	// prefix was confirmed; flush with the split logic.
-	switch textAccMode {
-	case textAccProbing:
-		if probeBuf.Len() > 0 {
-			writeSSEWithCapturer(w, pc, "content_block_delta", map[string]any{
-				"type":  "content_block_delta",
-				"index": 0,
-				"delta": map[string]any{"type": "text_delta", "text": probeBuf.String()},
-			})
+	// SR-W1: pending REAL content must still be delivered even while the
+	// gate holds an uncommitted attempt — delivering it commits the attempt,
+	// which then allows the closing tail. Only a stream with nothing to
+	// deliver (empty/interrupted pre-content) stays droppable for the
+	// coordinator to discard and retry.
+	pendingContent := (textAccMode == textAccProbing && probeBuf.Len() > 0) ||
+		(textAccMode == textAccBuffering && bufferedText.Len() > 0)
+	if gate.MayWriteTerminal() || pendingContent {
+		switch textAccMode {
+		case textAccProbing:
+			if probeBuf.Len() > 0 {
+				writeSSEWithCapturer(w, pc, "content_block_delta", map[string]any{
+					"type":  "content_block_delta",
+					"index": 0,
+					"delta": map[string]any{"type": "text_delta", "text": probeBuf.String()},
+				})
+			}
+			if gate.MayWriteTerminal() {
+				writeSSEWithCapturer(w, pc, "content_block_stop", map[string]any{"type": "content_block_stop", "index": 0})
+				if flusher != nil {
+					flusher.Flush()
+				}
+			}
+		case textAccBuffering:
+			flushBufferedText(w, flusher, pc, bufferedText.String(), capture)
+		case textAccPassthrough:
+			writeSSEWithCapturer(w, pc, "content_block_stop", map[string]any{"type": "content_block_stop", "index": 0})
+			if flusher != nil {
+				flusher.Flush()
+			}
 		}
-		writeSSEWithCapturer(w, pc, "content_block_stop", map[string]any{"type": "content_block_stop", "index": 0})
-		if flusher != nil {
-			flusher.Flush()
-		}
-	case textAccBuffering:
-		flushBufferedText(w, flusher, pc, bufferedText.String(), capture)
-	case textAccPassthrough:
-		writeSSEWithCapturer(w, pc, "content_block_stop", map[string]any{"type": "content_block_stop", "index": 0})
-		if flusher != nil {
-			flusher.Flush()
+
+		// Content delivery above may have committed the gate; re-check
+		// before rendering the closing tail.
+		if gate.MayWriteTerminal() {
+			writeAnthropicTail(w, flusher, pc, msgID, clientModel, finalFinishReason, outputTokens, inputTokens, capture)
 		}
 	}
-
-	writeAnthropicTail(w, flusher, pc, msgID, clientModel, finalFinishReason, outputTokens, inputTokens, capture)
 
 	// Only mark the capture as "done" if the stream was NOT interrupted.
 	// If we received an interruption (e.g. stream_timeout, read_error,
