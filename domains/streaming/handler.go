@@ -668,20 +668,24 @@ type providerResolver interface {
 
 // ChatHandler handles chat completions with circuit breaker and concurrency control.
 type ChatHandler struct {
-	circuit         *credential.Manager
-	limiter         *credential.Limiter
-	matrix          *transformation.Matrix
-	pools           *pool.PoolManager
-	resolver        *resolve.Resolver
-	auditor         audit.Sink
-	client          *upstreampkg.Client
-	normalizer      *Normalizer
-	executor        *executors.Executor
-	provider        providerResolver
-	sticky          *executors.StickyCache
-	keyVerifier     *authentication.KeyVerifier
-	rateLimiter     ratelimit.RPMLimiter
-	telemetryClient *telemetry.Client
+	circuit    *credential.Manager
+	limiter    *credential.Limiter
+	matrix     *transformation.Matrix
+	pools      *pool.PoolManager
+	resolver   *resolve.Resolver
+	auditor    audit.Sink
+	client     *upstreampkg.Client
+	normalizer *Normalizer
+	executor   *executors.Executor
+	// SR-W2 request survival (doc 18 §6): nil gate keeps the survival branch
+	// inert; armed via SetRequestSurvival from main.go.
+	survivalTenantAllowed func(tenantID string) bool
+	survivalOptions       SurvivalOptions
+	provider              providerResolver
+	sticky                *executors.StickyCache
+	keyVerifier           *authentication.KeyVerifier
+	rateLimiter           ratelimit.RPMLimiter
+	telemetryClient       *telemetry.Client
 	// profileEmitter (2026-07-15) 把请求/会话事件投到 clientprofile 画像聚合。
 	// nil 禁用画像聚合；调用方负责 graceful 注入（main.go SetupClientProfileIntegration）。
 	profileEmitter interface {
@@ -3367,45 +3371,11 @@ func (h *ChatHandler) serveWithExecutor(
 		defer trackGoalActiveRetry(keyInfo.TenantID, -1)
 	}
 
-	for attempt := 0; attempt <= maxRetries; attempt++ {
-		// Check if context is cancelled (client disconnected or timeout)
-		if err := retryCtx.Err(); err != nil {
-			execErr = fmt.Errorf("retry stopped before attempt %d: %w", attempt, err)
-			slog.Warn("goal_retry_cancelled_before_execute",
-				"request_id", requestID,
-				"attempt", attempt,
-				"elapsed_sec", time.Since(retryStartTime).Seconds())
-			break
-		}
-
-		// Log retry attempt (skip for first attempt)
-		if attempt > 0 {
-			retriesPerformed++
-			slog.Info("goal_retry_attempt",
-				"request_id", requestID,
-				"attempt", attempt,
-				"max_retries", maxRetries,
-				"prev_error", func() string {
-					if execErr != nil {
-						return execErr.Error()
-					}
-					return ""
-				}())
-		}
-
-		// Execute the request
-		streamWriter := w
-		var interceptedWriter *interceptingStreamWriter
-		if isStream && h.responseInterceptor != nil {
-			interceptedWriter = newInterceptingStreamWriter(w, h.responseInterceptor, r.Context(), response.StreamMeta{
-				SessionID:   gwSessionID,
-				RequestID:   requestID,
-				TenantID:    tenantID,
-				ClientModel: clientModel,
-			})
-			streamWriter = interceptedWriter
-		}
-		result, execErr = h.executor.Execute(&executors.ExecParams{
+	// buildExecParams assembles the per-attempt ExecParams shared by the
+	// legacy goal-retry loop and the SR-W2 survival branch (doc 18 §5.1):
+	// one construction site, zero drift between the two paths.
+	buildExecParams := func(streamWriter http.ResponseWriter) *executors.ExecParams {
+		return &executors.ExecParams{
 			W:                  streamWriter,
 			AttachmentMetadata: attachmentsForOutbound(logCtx),
 			R:                  r,
@@ -3546,7 +3516,59 @@ func (h *ChatHandler) serveWithExecutor(
 			// 2026-07-20: Pre-populated with the candidate list above so
 			// request_logs.routing_attempts captures ALL routing rounds.
 			RoutingTracker: candTracker,
-		})
+		}
+	}
+
+	// ── SR-W2 request survival (doc 18 §5.1) ──────────────────────────────
+	// Streaming requests with survival enabled for this tenant skip the
+	// goal-retry loop entirely: the SurvivalCoordinator owns every retry
+	// in-connection behind a per-attempt buffered commit gate (ExecuteAttempt
+	// suppresses the executor's internal retry ladder). Flag-off requests
+	// never enter this branch — the loop below is byte-for-byte the legacy path.
+	if isStream && h.survivalTenantAllowed != nil && h.survivalTenantAllowed(tenantID) {
+		result, execErr = h.runSurvivalCoordinator(r, w, buildExecParams, tenantID)
+		goto goalRetryLoopDone
+	}
+
+	for attempt := 0; attempt <= maxRetries; attempt++ {
+		// Check if context is cancelled (client disconnected or timeout)
+		if err := retryCtx.Err(); err != nil {
+			execErr = fmt.Errorf("retry stopped before attempt %d: %w", attempt, err)
+			slog.Warn("goal_retry_cancelled_before_execute",
+				"request_id", requestID,
+				"attempt", attempt,
+				"elapsed_sec", time.Since(retryStartTime).Seconds())
+			break
+		}
+
+		// Log retry attempt (skip for first attempt)
+		if attempt > 0 {
+			retriesPerformed++
+			slog.Info("goal_retry_attempt",
+				"request_id", requestID,
+				"attempt", attempt,
+				"max_retries", maxRetries,
+				"prev_error", func() string {
+					if execErr != nil {
+						return execErr.Error()
+					}
+					return ""
+				}())
+		}
+
+		// Execute the request
+		streamWriter := w
+		var interceptedWriter *interceptingStreamWriter
+		if isStream && h.responseInterceptor != nil {
+			interceptedWriter = newInterceptingStreamWriter(w, h.responseInterceptor, r.Context(), response.StreamMeta{
+				SessionID:   gwSessionID,
+				RequestID:   requestID,
+				TenantID:    tenantID,
+				ClientModel: clientModel,
+			})
+			streamWriter = interceptedWriter
+		}
+		result, execErr = h.executor.Execute(buildExecParams(streamWriter))
 		if interceptedWriter != nil {
 			interceptedWriter.finish()
 		}
@@ -3600,6 +3622,8 @@ func (h *ChatHandler) serveWithExecutor(
 			break
 		}
 	}
+goalRetryLoopDone:
+
 	// ── End of retry loop ────────────────────────────────────────────────
 
 	// 2026-08-09: attach the executor's StreamCapture to the log context so
