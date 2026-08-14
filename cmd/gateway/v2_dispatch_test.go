@@ -27,14 +27,19 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"sync/atomic"
 	"testing"
 
+	"github.com/kaixuan/llm-gateway-go/domain"
 	"github.com/kaixuan/llm-gateway-go/domains/authentication"
+	compressionhooks "github.com/kaixuan/llm-gateway-go/domains/hooks/compression"
+	"github.com/kaixuan/llm-gateway-go/domains/pipeline"
 )
 
 // v2ChatHandlerStub is a stand-in for *relay.ChatHandler that records
@@ -44,6 +49,41 @@ type v2ChatHandlerStub struct {
 	called int32
 	body   []byte
 	status int
+}
+
+type failingHookCompressor struct{}
+
+func (failingHookCompressor) Name() string { return "failing" }
+
+func (failingHookCompressor) Strategy() compressionhooks.HookStrategy {
+	return compressionhooks.HookStrategyLCS
+}
+
+func (failingHookCompressor) Compress(*compressionhooks.Context) error {
+	return errors.New("compress failed")
+}
+
+type compressionMetadataCaptureHook struct {
+	needsCompression bool
+	messages         []compressionhooks.Message
+}
+
+func (h *compressionMetadataCaptureHook) Name() string { return "capture" }
+
+func (h *compressionMetadataCaptureHook) Priority() int { return 0 }
+
+func (h *compressionMetadataCaptureHook) Enabled(context.Context, *domain.PipelineRequest) bool {
+	return true
+}
+
+func (h *compressionMetadataCaptureHook) Execute(_ context.Context, env *domain.PipelineRequest) error {
+	h.needsCompression, _ = env.Metadata[compressionhooks.MetaKeyNeedsCompression].(bool)
+	h.messages, _ = env.Metadata[compressionhooks.MetaKeyMessages].([]compressionhooks.Message)
+	return nil
+}
+
+func (h *compressionMetadataCaptureHook) OnError(context.Context, *domain.PipelineRequest, error) error {
+	return nil
 }
 
 func (s *v2ChatHandlerStub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -455,5 +495,113 @@ func TestV2Dispatch_PipelineErrorDoesNotBlockFallback(t *testing.T) {
 	}
 	if atomic.LoadInt32(&chat.called) != 1 {
 		t.Fatal("fallback should be called exactly once")
+	}
+}
+
+func TestForceCompressionMetadata(t *testing.T) {
+	tests := []struct {
+		name   string
+		header string
+		want   bool
+	}{
+		{name: "explicit true", header: "true", want: true},
+		{name: "case and whitespace", header: " TRUE ", want: true},
+		{name: "absent", want: false},
+		{name: "other value", header: "1", want: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			metadata := map[string]any{}
+			setForceCompressionMetadata(metadata, tt.header)
+
+			got, exists := metadata[compressionhooks.MetaKeyNeedsCompression].(bool)
+			if exists != tt.want || got != tt.want {
+				t.Fatalf("needs_compression = (%v, exists=%v), want (%v, exists=%v)", got, exists, tt.want, tt.want)
+			}
+		})
+	}
+}
+
+func TestForceCompressionMetadata_EnablesCompressionHookForStream(t *testing.T) {
+	t.Setenv("KILL_SESSION_COMPRESSION", "")
+	env := &domain.PipelineRequest{Metadata: map[string]any{
+		compressionhooks.MetaKeyMessages: []compressionhooks.Message{{Role: "user", Content: "hello"}},
+	}}
+	setForceCompressionMetadata(env.Metadata, "true")
+
+	p := pipeline.NewRequestPipeline()
+	p.AddStage(&pipeline.PipelineStage{
+		Name:  "compression",
+		Phase: pipeline.PhaseTransform,
+		Mode:  pipeline.ModeSequential,
+		Hooks: []pipeline.Hook{compressionhooks.NewCompressionHook(compressionhooks.NewLCSCompressor(4096))},
+	})
+	if err := p.Execute(context.Background(), env); err != nil {
+		t.Fatalf("pipeline.Execute() error = %v", err)
+	}
+	if _, ok := env.Metadata[compressionhooks.MetaKeyCompressedMessages]; !ok {
+		t.Fatal("forced stream request must receive compressed_messages metadata")
+	}
+}
+
+func TestForceCompressionMetadata_StreamCompressionFailureFallsBack(t *testing.T) {
+	t.Setenv("KILL_SESSION_COMPRESSION", "")
+	original := []compressionhooks.Message{{Role: "user", Content: "keep this message"}}
+	env := &domain.PipelineRequest{Metadata: map[string]any{
+		compressionhooks.MetaKeyMessages: original,
+	}}
+	setForceCompressionMetadata(env.Metadata, "true")
+
+	p := pipeline.NewRequestPipeline()
+	p.AddStage(&pipeline.PipelineStage{
+		Name:  "compression",
+		Phase: pipeline.PhaseTransform,
+		Mode:  pipeline.ModeSequential,
+		Hooks: []pipeline.Hook{compressionhooks.NewCompressionHook(failingHookCompressor{})},
+	})
+	if err := p.Execute(context.Background(), env); err != nil {
+		t.Fatalf("stream pipeline must degrade instead of fail: %v", err)
+	}
+	got, ok := env.Metadata[compressionhooks.MetaKeyCompressedMessages].([]compressionhooks.Message)
+	if !ok || len(got) != 1 || got[0] != original[0] {
+		t.Fatalf("fallback messages = %#v, want %#v", env.Metadata[compressionhooks.MetaKeyCompressedMessages], original)
+	}
+	if _, ok := env.Metadata[compressionhooks.MetaKeyCompressionError].(string); !ok {
+		t.Fatal("compression failure must be recorded in metadata")
+	}
+}
+
+func TestCompressionMessagesFromBody(t *testing.T) {
+	messages := compressionMessagesFromBody([]byte(`{"messages":[{"role":"system","content":"rules"},{"role":"user","content":"hello"},{"role":"tool","content":null}]}`))
+	if len(messages) != 2 {
+		t.Fatalf("compressionMessagesFromBody() returned %d messages, want 2", len(messages))
+	}
+	if messages[1].Role != "user" || messages[1].Content != "hello" {
+		t.Fatalf("second message = %#v, want user hello", messages[1])
+	}
+}
+
+func TestV2Dispatch_ForceCompressionHeaderReachesPipeline(t *testing.T) {
+	capture := &compressionMetadataCaptureHook{}
+	p := pipeline.NewRequestPipeline()
+	p.AddStage(&pipeline.PipelineStage{
+		Name:  "capture",
+		Phase: pipeline.PhasePreTransform,
+		Mode:  pipeline.ModeSequential,
+		Hooks: []pipeline.Hook{capture},
+	})
+	deps := &v2DispatchDeps{Pipeline: p}
+	fallback := &v2ChatHandlerStub{}
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"messages":[{"role":"user","content":"compress me"}]}`))
+	req.Header.Set("X-Gw-Force-Compression", "true")
+
+	v2DispatchHandler(deps, fallback).ServeHTTP(httptest.NewRecorder(), req)
+
+	if !capture.needsCompression {
+		t.Fatal("force-compression header did not activate the pipeline metadata")
+	}
+	if len(capture.messages) != 1 || capture.messages[0].Content != "compress me" {
+		t.Fatalf("pipeline compression messages = %#v", capture.messages)
 	}
 }
