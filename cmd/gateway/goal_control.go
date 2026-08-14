@@ -387,11 +387,10 @@ func parseModelList(s string) []string {
 // don't need an LLM) without a hard runtime dependency.
 // buildSanitizeRestoreInterceptor 构造 SmartSaniGuard 占位符还原拦截器。
 // 返回 nil 时表示该能力未启用（Redis 不可用或 sanitizer 失败）。
-func buildSanitizeRestoreInterceptor(redisClient *redis.Client) (response.ResponseInterceptor, error) {
+func buildSanitizeRestoreInterceptor(redisClient *redis.Client, detector *sanitize.PatternDetector) (response.ResponseInterceptor, error) {
 	if redisClient == nil {
 		return nil, nil
 	}
-	detector := sanitize.NewPatternDetector()
 	s, err := sanitize.NewSanitizer(detector)
 	if err != nil {
 		return nil, err
@@ -401,11 +400,10 @@ func buildSanitizeRestoreInterceptor(redisClient *redis.Client) (response.Respon
 
 // buildSanitizeInputMiddleware 构造 SmartSaniGuard 输入脱敏中间件。
 // 返回的函数可直接传给 chatHandler.SetSanitizeInputMiddleware。
-func buildSanitizeInputMiddleware(redisClient *redis.Client) (func(http.Handler) http.Handler, error) {
+func buildSanitizeInputMiddleware(redisClient *redis.Client, detector *sanitize.PatternDetector) (func(http.Handler) http.Handler, error) {
 	if redisClient == nil {
 		return nil, nil
 	}
-	detector := sanitize.NewPatternDetector()
 	s, err := sanitize.NewSanitizer(detector)
 	if err != nil {
 		return nil, err
@@ -415,6 +413,17 @@ func buildSanitizeInputMiddleware(redisClient *redis.Client) (func(http.Handler)
 		return nil, err
 	}
 	return mw.Wrap, nil
+}
+
+func newSanitizePatternDetector() *sanitize.PatternDetector {
+	const configPath = "configs/sensitive_patterns.yaml"
+	detector, err := sanitize.NewPatternDetectorFromFile(configPath)
+	if err != nil {
+		slog.Warn("sanitize pattern config unavailable; using built-in fallback", "path", configPath, "error", err)
+		return sanitize.NewPatternDetector()
+	}
+	slog.Info("sanitize pattern detector ready", "path", configPath)
+	return detector
 }
 
 // installSmartSaniGuard 在 chatHandler 上挂载 SmartSaniGuard 的请求侧
@@ -429,14 +438,16 @@ func buildSanitizeInputMiddleware(redisClient *redis.Client) (func(http.Handler)
 //     写 Redis map，还原拦截器负责读 Redis map + 还原响应）
 //
 // 入口：main.go 在调用 initGoalControl 之外单独调用本函数，
-//       bgDataPlaneOnly 与 !bgDataPlaneOnly 两个分支都会执行。
-func installSmartSaniGuard(chatHandler *streaming.ChatHandler, redisClient *redis.Client) {
+//
+//	bgDataPlaneOnly 与 !bgDataPlaneOnly 两个分支都会执行。
+func installSmartSaniGuard(chatHandler *streaming.ChatHandler, redisClient *redis.Client) *sanitize.PatternDetector {
 	if chatHandler == nil || redisClient == nil {
-		return
+		return nil
 	}
+	detector := newSanitizePatternDetector()
 
 	// 1. 输入侧中间件（chatHandler.ServeHTTP 入口处生效）
-	mwFn, mwErr := buildSanitizeInputMiddleware(redisClient)
+	mwFn, mwErr := buildSanitizeInputMiddleware(redisClient, detector)
 	if mwErr != nil || mwFn == nil {
 		slog.Warn("smart_sani_guard: input middleware init failed, skip request-side",
 			"error", mwErr)
@@ -447,11 +458,11 @@ func installSmartSaniGuard(chatHandler *streaming.ChatHandler, redisClient *redi
 
 	// 2. 响应侧还原拦截器：把链挂到 chatHandler 已有的 response chain
 	//    之后（保证 output_compliance 先于 sanitize_restore 执行）。
-	restoreHook, restoreErr := buildSanitizeRestoreInterceptor(redisClient)
+	restoreHook, restoreErr := buildSanitizeRestoreInterceptor(redisClient, detector)
 	if restoreErr != nil || restoreHook == nil {
 		slog.Warn("smart_sani_guard: restore interceptor init failed, skip response-side",
 			"error", restoreErr)
-		return
+		return detector
 	}
 
 	// 把现有 chain + 还原拦截器重组成新 chain，保持插入顺序。
@@ -468,6 +479,7 @@ func installSmartSaniGuard(chatHandler *streaming.ChatHandler, redisClient *redi
 	}
 	slog.Info("smart_sani_guard: restore interceptor wired",
 		"chain_length", len(existing.ListInterceptors())+1)
+	return detector
 }
 
 // buildGoalLLMCaller builds the LLMCaller used by completion detection + audit.

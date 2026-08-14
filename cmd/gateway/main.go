@@ -114,6 +114,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/secret"
 	"github.com/kaixuan/llm-gateway-go/security/armor"
 	"github.com/kaixuan/llm-gateway-go/security/ipblocklist"
+	"github.com/kaixuan/llm-gateway-go/security/sanitize"
 	"github.com/kaixuan/llm-gateway-go/security/sensitive"
 	"github.com/kaixuan/llm-gateway-go/settings"
 	"github.com/kaixuan/llm-gateway-go/tenantops"
@@ -213,6 +214,7 @@ func main() {
 	// Declared at top-level so the HTTP handler (registered later in main)
 	// can reach it; assigned in the dbConn != nil block below.
 	var ringBuffer *dbdegradation.RingBuffer
+	var sanitizePatternDetector *sanitize.PatternDetector
 
 	// ── Logging ───────────────────────────────────────────────────────────
 	cfg := config.Load()
@@ -3596,7 +3598,7 @@ func main() {
 			if redisClientForCache != nil {
 				redisForGuard = redisClientForCache.Client()
 			}
-			installSmartSaniGuard(chatHandler, redisForGuard)
+			sanitizePatternDetector = installSmartSaniGuard(chatHandler, redisForGuard)
 
 			autoIndexRefresher = bg.NewAutoIndexRefresher(dbConn.Pool(), autoIdx)
 			autoIndexRefresher.Start(context.Background())
@@ -4118,6 +4120,7 @@ func main() {
 	// endpoints are always available.
 	if adminHandler != nil {
 		adminHandler.SetSensitiveWordEngine(swEngine)
+		adminHandler.SetSanitizePatternDetector(sanitizePatternDetector)
 		slog.Info("admin: sensitive word engine wired", "words", swEngine.LoadedWordCount())
 	}
 

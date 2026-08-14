@@ -1,13 +1,26 @@
 package admin
 
 import (
+	"errors"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/kaixuan/llm-gateway-go/security/sensitive"
 )
+
+type reloadablePatternDetector struct {
+	reloadErr error
+	called    bool
+}
+
+func (d *reloadablePatternDetector) ReloadFromFile() error {
+	d.called = true
+	return d.reloadErr
+}
 
 func TestSensitiveWordsHandlerMatch(t *testing.T) {
 	engine := sensitive.NewSensitiveWordEngine()
@@ -58,5 +71,30 @@ func TestSensitiveWordsHandlerRejectsWrongMethod(t *testing.T) {
 
 	if res.Code != http.StatusMethodNotAllowed {
 		t.Fatalf("match method status = %d, want %d", res.Code, http.StatusMethodNotAllowed)
+	}
+}
+
+func TestSensitiveWordsHandlerReloadsPatternDetector(t *testing.T) {
+	engine := sensitive.NewSensitiveWordEngine()
+	path := filepath.Join(t.TempDir(), "sensitive_words.json")
+	if err := os.WriteFile(path, []byte(`{"categories":{}}`), 0o600); err != nil {
+		t.Fatalf("write config failed: %v", err)
+	}
+	if err := engine.BuildFromFile(path); err != nil {
+		t.Fatalf("BuildFromFile failed: %v", err)
+	}
+	patternDetector := &reloadablePatternDetector{reloadErr: errors.New("invalid yaml")}
+	h := NewSensitiveWordsHandler(engine)
+	h.SetPatternDetector(patternDetector)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/admin/sensitive-words/reload", nil)
+	res := httptest.NewRecorder()
+	h.handleReload(res, req)
+
+	if !patternDetector.called {
+		t.Fatal("pattern detector was not reloaded")
+	}
+	if res.Code != http.StatusInternalServerError {
+		t.Fatalf("reload status = %d, want %d", res.Code, http.StatusInternalServerError)
 	}
 }
