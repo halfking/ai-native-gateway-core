@@ -9,7 +9,12 @@ import (
 const (
 	UsageSourceLLM       = "llm"       // From upstream response usage block
 	UsageSourceEstimated = "estimated" // Computed locally from request/response text
-	UsageSourceNone      = ""          // No usage data and not estimable
+	// UsageSourceCorrected (CO-2, 2026-08-15) marks an estimated row that a
+	// later real-usage write (retry success / writeback, same request_id)
+	// overwrote via telemetry.Client.CorrectEstimatedUsage. Terminal state:
+	// estimated → corrected only; llm rows are never rewritten.
+	UsageSourceCorrected = "corrected"
+	UsageSourceNone      = "" // No usage data and not estimable
 )
 
 // estimatePromptTokens computes an approximate prompt token count from the

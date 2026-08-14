@@ -522,8 +522,10 @@ func (h *Handler) listLogs(w http.ResponseWriter, r *http.Request) {
 		addFilter("rl.gw_task_id = $%d", v)
 	}
 	if v := strings.TrimSpace(queryString(r, "usage_source")); v != "" {
-		if v != "llm" && v != "estimated" {
-			writeError(w, http.StatusBadRequest, "usage_source must be 'llm' or 'estimated'")
+		// 'corrected' (CO-2, 2026-08-15) marks estimated rows backfilled
+		// with real usage from a later write path.
+		if v != "llm" && v != "estimated" && v != "corrected" {
+			writeError(w, http.StatusBadRequest, "usage_source must be 'llm', 'estimated' or 'corrected'")
 			return
 		}
 		addFilter("rl.usage_source = $%d", v)
