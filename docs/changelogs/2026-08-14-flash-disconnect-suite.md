@@ -75,6 +75,13 @@
   `A_429`。脚本因此 fail-closed，直到可观察 quota 429 后才允许通过。
 - **245/154 环境未跑**: 生产环境 probe 间隔可能不同, 建议在 245 补跑一次
 
+## 追加审计修复
+
+- S27 不再将被 `timeout` 终止但已输出部分 SSE 数据的请求计入 `stream_ok`，避免
+  成功率与 timeout 指标重叠。
+- S29 在修改任意 supplier 状态前注册 cleanup trap，确保预置失败也会恢复所有 mock
+  supplier 到 healthy 状态。
+
 ## 下一步建议
 
 1. 在 245 阿里云预生产环境跑一遍 S24-S25, 验证环境差异
