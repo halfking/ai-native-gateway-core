@@ -52,6 +52,9 @@ func (rl *nodeOperationsRateLimiter) checkTestNow(ctx context.Context, credentia
 	// 2. per-operator: 10 req/min = 1 req/6s, burst=3
 	operatorLimiter, exists := rl.perOperator[operatorID]
 	if !exists {
+		// 10 req/min = 每6秒补充1个令牌，桶容量3（允许突发3次）
+		// burst=3 意味着：用户可连续点3次test-now，然后每6秒补充1个令牌。
+		// 这符合"10 req/min"的平均速率要求（18秒3次 = 60秒10次）。
 		operatorLimiter = rate.NewLimiter(rate.Every(6*time.Second), 3)
 		rl.perOperator[operatorID] = operatorLimiter
 	}
