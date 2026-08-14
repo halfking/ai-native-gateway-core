@@ -46,8 +46,11 @@ html[data-theme='light'] {
   --accent:    var(--kx-primary);
   --accent-h:  var(--kx-primary-hover);
   --success:   var(--kx-success);
+  --success-soft: var(--kx-success-soft);
   --warning:   var(--kx-warning);
+  --warning-soft: var(--kx-warning-soft);
   --danger:    var(--kx-danger);
+  --danger-soft: var(--kx-danger-soft);
   --surface-primary: var(--kx-surface);
   --surface-secondary: color-mix(in srgb, var(--kx-primary) 5%, var(--kx-surface));
   --surface-elevated: var(--kx-surface-soft);
@@ -93,8 +96,11 @@ html[data-theme='dark'] {
   --accent:    var(--kx-primary);
   --accent-h:  var(--kx-primary-hover);
   --success:   var(--kx-success);
+  --success-soft: var(--kx-success-soft);
   --warning:   var(--kx-warning);
+  --warning-soft: var(--kx-warning-soft);
   --danger:    var(--kx-danger);
+  --danger-soft: var(--kx-danger-soft);
   --surface-primary: var(--kx-surface);
   --surface-secondary: color-mix(in srgb, #ffffff 4%, var(--kx-surface));
   --surface-elevated: var(--kx-surface-soft);
