@@ -2,7 +2,9 @@
 //
 // Cursor-based 分页工具（V3.2 LP6）。
 //
-// Cursor 格式：base64(RFC3339Nano timestamp)，用于时间倒序分页。
+// Cursor 格式：base64(timestamp|hmac_signature)，用于时间倒序分页。
+// HMAC 签名防止 cursor 伪造（P1 安全增强，2026-08-14）。
+//
 // 契约（13号文档§6）：
 //   - cursor 可选，首次请求不传
 //   - limit ∈ [1, 100]，默认 20
