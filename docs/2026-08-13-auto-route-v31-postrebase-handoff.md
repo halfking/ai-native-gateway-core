@@ -118,4 +118,15 @@ go test ./internal/sqlguard/...
 
 ### 8.3 245 smoke-test 阻塞
 
-2026-08-14 对 245 的 `POST /v1/chat/completions`（`model=auto`）返回 HTTP 503 `auth_unavailable`，未产生 `X-Gw-Auto-Decision`，因此不能声称已验证实际 chosen model。该结果应归类为认证服务/运行环境阻塞；恢复可用 API key 与认证 DB 后，必须重新执行 `scripts/test-models.sh` 并确认 header 中 `chosen_model != minimax-m2.5`。
+**初始状态（2026-08-14 早期）**：对 245 的 `POST /v1/chat/completions`（`model=auto`）返回 HTTP 503 `auth_unavailable`，未产生 `X-Gw-Auto-Decision`。
+
+**更新状态（2026-08-14 21:45）**：
+- ✅ API Key 认证：已解决（创建临时测试 key `sk-smoke-test-20260814-...`，DB id: 101）
+- ✅ Auto-route 触发：确认逻辑已激活（响应头 `X-Gw-Session-Auto: true`）
+- ❌ 上游 Provider：所有候选 provider 不可用，返回 HTTP 503 `no_candidate`
+- ❌ X-Gw-Auto-Decision：因决策失败，响应中不存在此头
+- ❌ chosen_model 验证：无法验证
+
+**结论**：验证仍保持 **BLOCKED** 状态，但阻塞原因已从"认证问题"转变为"上游 provider 不可用"。Auto-route 代码逻辑已正常工作，阻塞属于环境配置问题。详细报告见 `docs/2026-08-14-245-auto-route-verification.md`。
+
+**待办**：修复 245 的上游 provider 配置（凭据/网络/额度），然后重新执行 `scripts/test-models.sh` 并确认 `X-Gw-Auto-Decision.chosen_model != minimax-m2.5`。

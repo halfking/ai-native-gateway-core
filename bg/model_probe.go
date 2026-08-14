@@ -1037,9 +1037,12 @@ func (r *ModelProbeRunner) TriggerManual(ctx context.Context, credentialID int, 
 		       ON mps.credential_id = cmb.credential_id
 		      AND mps.raw_model_name = pm.raw_model_name
 		WHERE cmb.credential_id = $1 AND pm.raw_model_name = $2
+		  AND COALESCE(c.status, 'active') = 'active'
 		  AND COALESCE(c.lifecycle_status, 'active') = 'active'
 		  AND COALESCE(c.manual_disabled, FALSE) = FALSE
+		  AND COALESCE(p.enabled, FALSE) = TRUE
 		  AND COALESCE(p.manual_disabled, FALSE) = FALSE
+		  AND COALESCE(cmb.unavailable_reason, '') NOT LIKE 'manual%'
 		LIMIT 1
 	`, credentialID, rawModel)
 	var t probeTarget
@@ -1051,21 +1054,24 @@ func (r *ModelProbeRunner) TriggerManual(ctx context.Context, credentialID int, 
 		if err == pgx.ErrNoRows {
 			var disabled bool
 			if probeErr := r.db.QueryRow(ctx, `
-					SELECT EXISTS (
-						SELECT 1
-						FROM credential_model_bindings cmb
-						JOIN provider_models pm ON pm.id = cmb.provider_model_id
-						JOIN credentials c ON c.id = cmb.credential_id
-						JOIN providers p ON p.id = c.provider_id
-						WHERE cmb.credential_id = $1
-						  AND pm.raw_model_name = $2
-						  AND (
-							  COALESCE(c.manual_disabled, FALSE)
-							  OR COALESCE(p.manual_disabled, FALSE)
-							  OR COALESCE(c.lifecycle_status, 'active') <> 'active'
-						  )
-					)
-				`, credentialID, rawModel).Scan(&disabled); probeErr != nil {
+						SELECT EXISTS (
+							SELECT 1
+							FROM credential_model_bindings cmb
+							JOIN provider_models pm ON pm.id = cmb.provider_model_id
+							JOIN credentials c ON c.id = cmb.credential_id
+							JOIN providers p ON p.id = c.provider_id
+							WHERE cmb.credential_id = $1
+							  AND pm.raw_model_name = $2
+							  AND (
+								  COALESCE(c.manual_disabled, FALSE)
+								  OR COALESCE(p.manual_disabled, FALSE)
+								  OR COALESCE(c.lifecycle_status, 'active') <> 'active'
+								  OR COALESCE(c.status, 'active') <> 'active'
+								  OR COALESCE(p.enabled, FALSE) = FALSE
+								  OR COALESCE(cmb.unavailable_reason, '') LIKE 'manual%'
+							  )
+						)
+					`, credentialID, rawModel).Scan(&disabled); probeErr != nil {
 				return probeErr
 			} else if disabled {
 				return ErrCredentialManuallyDisabled

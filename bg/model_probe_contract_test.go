@@ -23,11 +23,16 @@ func TestTriggerManualSQLGuardsAndFallbackAreScoped(t *testing.T) {
 	fn := body[start : start+end]
 
 	for _, want := range []string{
-		"COALESCE(c.manual_disabled, FALSE) = FALSE",
-		"COALESCE(p.manual_disabled, FALSE) = FALSE",
+		"COALESCE(c.status, 'active') = 'active'",
 		"COALESCE(c.lifecycle_status, 'active') = 'active'",
+		"COALESCE(c.manual_disabled, FALSE) = FALSE",
+		"COALESCE(p.enabled, FALSE) = TRUE",
+		"COALESCE(p.manual_disabled, FALSE) = FALSE",
+		"COALESCE(cmb.unavailable_reason, '') NOT LIKE 'manual%'",
 		"JOIN provider_models pm ON pm.id = cmb.provider_model_id",
-		"COALESCE(p.manual_disabled, FALSE)",
+		"COALESCE(c.status, 'active') <> 'active'",
+		"COALESCE(p.enabled, FALSE) = FALSE",
+		"COALESCE(cmb.unavailable_reason, '') LIKE 'manual%'",
 		"return ErrCredentialManuallyDisabled",
 		"return fmt.Errorf(\"binding not found\")",
 	} {
