@@ -118,8 +118,8 @@ DELTA_22_4=${DELTA_22_4:-0}
 if [ "$DELTA_22_4" -ge 1 ]; then
     log "✅ 22.4 PASS: LLM 失败时 gateway 落 server_error 状态 (delta_fail=$DELTA_22_4)"
 elif [ "$DELTA_22_4" -eq 0 ]; then
-    log "⚠️  22.4 WARN: LLM 失败时 delta_fail=0 (mock state 偶发 not-applied 或 async_pending)"
-    log "    22.2 已覆盖 compression 触发路径, 22.4 主要为冗余"
+    log "❌ 22.4 FAIL: LLM 失败时未观察到 server_error 状态"
+    PASS=false
 else
     log "❌ 22.4 FAIL: 异常状态"
     PASS=false
@@ -140,9 +140,16 @@ S22_5_OUT=$(cd "$RESULTS_DIR/../../.." && go run ./cmd/scenario_driver \
 DELTA_22_5=$(echo "$S22_5_OUT" | python3 -c "import json,sys; print(json.load(sys.stdin).get('delta_bodies', 0))" 2>/dev/null || echo "0")
 DELTA_22_5=${DELTA_22_5:-0}
 sleep 5
-SUMMARY_LOG=$(grep -c "auto_summar" /tmp/gateway-test.log)
-RATE_LIMITED=$(grep -c "summary rate-limited" /tmp/gateway-test.log)
-DECRYPT_FAIL=$(grep -c "no API key: failed to decrypt" /tmp/gateway-test.log)
+GATEWAY_LOG="${GATEWAY_LOG:-/tmp/gateway-test.log}"
+if [ -f "$GATEWAY_LOG" ]; then
+    SUMMARY_LOG=$(grep -c "auto_summar" "$GATEWAY_LOG" || true)
+    RATE_LIMITED=$(grep -c "summary rate-limited" "$GATEWAY_LOG" || true)
+    DECRYPT_FAIL=$(grep -c "no API key: failed to decrypt" "$GATEWAY_LOG" || true)
+else
+    SUMMARY_LOG=0
+    RATE_LIMITED=0
+    DECRYPT_FAIL=0
+fi
 log "22.5: 5 轮 chat 后 auto_summary trigger log count: $SUMMARY_LOG (rate-limited: $RATE_LIMITED, decrypt_fail: $DECRYPT_FAIL)"
 if [ "$SUMMARY_LOG" -ge 1 ]; then
     log "✅ 22.5 PASS: auto_summary 触发链已工作 (90b51dc7 引入)"
@@ -157,14 +164,15 @@ CHECK_22_1=$([ "$DELTA_22_1" -ge 1 ] && echo true || echo false)
 CHECK_22_2=$([ "$DELTA_22_2" -ge 25 ] && echo true || echo false)
 CHECK_22_3=$([ "$DELTA_22_3" -ge 50 ] && echo true || echo false)
 CHECK_22_4=$([ "$DELTA_22_4" -ge 1 ] && echo true || echo false)
+CHECK_22_5=$([ "$SUMMARY_LOG" -ge 1 ] && echo true || echo false)
 STATUS=$([ "$PASS" = true ] && echo PASS || echo FAIL)
 FAILURES="[]"
 if [ "$PASS" != true ]; then
   FAILURES='["instant_summary acceptance checks failed"]'
 fi
 write_scenario_result "$SCENARIO" "functional" "$STATUS" \
-  "{\"22_1_basic_chat_logged\":$CHECK_22_1,\"22_2_count_trigger\":$CHECK_22_2,\"22_3_token_trigger\":$CHECK_22_3,\"22_4_mechanical_fallback\":$CHECK_22_4,\"22_5_auto_summary_trigger\":true}" \
-  "{\"delta_22_1\":$DELTA_22_1,\"delta_22_2\":$DELTA_22_2,\"delta_22_3\":$DELTA_22_3,\"delta_22_4_fail\":$DELTA_22_4,\"success_rate\":$([ "$PASS" = true ] && echo 1.0 || echo 0.0),\"p99_ms\":0}" \
+  "{\"22_1_basic_chat_logged\":$CHECK_22_1,\"22_2_count_trigger\":$CHECK_22_2,\"22_3_token_trigger\":$CHECK_22_3,\"22_4_mechanical_fallback\":$CHECK_22_4,\"22_5_auto_summary_trigger\":$CHECK_22_5}" \
+  "{\"delta_22_1\":$DELTA_22_1,\"delta_22_2\":$DELTA_22_2,\"delta_22_3\":$DELTA_22_3,\"delta_22_4_fail\":$DELTA_22_4,\"success_rate\":$([ "$PASS" = true ] && echo 1.0 || echo 0.0),\"p99_required\":false}" \
   "{\"driver\":\"cmd/scenario_driver/main.go\",\"22_5_admin_manual\":\"skipped_needs_admin_auth_detail\"}" \
   "$FAILURES" \
   "{\"gateway\":\"$GATEWAY\"}"

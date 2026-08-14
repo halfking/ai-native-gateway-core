@@ -108,7 +108,7 @@ if [ "$PASS" != true ]; then
 fi
 write_scenario_result "$SCENARIO" "functional" "$STATUS" \
   "{\"healthz_after_idle_ok\":$CHECK_HEALTH,\"responds_after_idle\":$CHECK_IDLE,\"responds_second_request\":$CHECK_SECOND}" \
-  "{\"total\":$TOTAL,\"succ\":$SUCC,\"fail\":$((TOTAL-SUCC)),\"success_rate\":$(awk "BEGIN{print $SUCC/$TOTAL}"),\"elapsed_sec\":35,\"p99_ms\":0,\"fail_by_status\":{},\"fail_by_kind\":{}}" \
+  "{\"total\":$TOTAL,\"succ\":$SUCC,\"fail\":$((TOTAL-SUCC)),\"success_rate\":$(awk "BEGIN{print $SUCC/$TOTAL}"),\"elapsed_sec\":35,\"p99_required\":false,\"fail_by_status\":{},\"fail_by_kind\":{}}" \
   "{\"healthz_after_idle\":\"$HEALTH_BEFORE\",\"first_request_http\":$HTTP_AFTER_IDLE,\"second_request_http\":$HEALTH_CODE2,\"gateway_alive\":true}" \
   "$FAILURES" \
   "{\"gateway\":\"$GATEWAY\"}"

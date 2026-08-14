@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 import subprocess
 import time
@@ -94,6 +95,18 @@ def validate_result(data: Any, expected_scenario: str | None = None) -> list[str
         invalid_checks = [key for key, value in checks.items() if not isinstance(value, bool)]
         if invalid_checks:
             errors.append("checks must contain boolean values: " + ", ".join(invalid_checks))
+    metrics = data.get("metrics")
+    if isinstance(metrics, dict):
+        p99 = metrics.get("p99_ms")
+        if p99 is not None:
+            if isinstance(p99, bool) or not isinstance(p99, (int, float)):
+                errors.append("metrics.p99_ms must be a number")
+            elif not math.isfinite(float(p99)) or float(p99) < 0:
+                errors.append("metrics.p99_ms must be finite and non-negative")
+        if metrics.get("p99_required") is not None and not isinstance(metrics.get("p99_required"), bool):
+            errors.append("metrics.p99_required must be boolean")
+        if metrics.get("p99_required") is True and p99 is None:
+            errors.append("metrics.p99_ms is required when p99_required=true")
     if data.get("status") == "PASS":
         false_checks = [key for key, value in (checks or {}).items() if value is False]
         if false_checks:
