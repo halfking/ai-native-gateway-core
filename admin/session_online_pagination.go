@@ -35,55 +35,84 @@ type PaginationResponse struct {
 	HasMore    bool   `json:"has_more"`              // 是否有下一页
 }
 
+type onlineSessionCursor struct {
+	UpdatedAt time.Time
+	SessionID string
+}
+
 // ParseCursor 解析 base64 游标为时间戳并验证 HMAC 签名。
 func ParseCursor(cursor string) (time.Time, error) {
+	parsed, err := parseOnlineSessionCursor(cursor)
+	return parsed.UpdatedAt, err
+}
+
+func parseOnlineSessionCursor(cursor string) (onlineSessionCursor, error) {
 	if cursor == "" {
-		return time.Time{}, nil // 首次请求，返回 zero time（表示从最新开始）
+		return onlineSessionCursor{}, nil
 	}
 	decoded, err := base64.URLEncoding.DecodeString(cursor)
 	if err != nil {
-		return time.Time{}, err
+		return onlineSessionCursor{}, err
 	}
 
 	// Unsigned cursors are rejected so callers cannot bypass tamper protection.
-	parts := strings.SplitN(string(decoded), "|", 2)
-	if len(parts) != 2 {
-		return time.Time{}, fmt.Errorf("invalid cursor format: signature missing")
+	parts := strings.Split(string(decoded), "|")
+	if len(parts) != 2 && len(parts) != 3 {
+		return onlineSessionCursor{}, fmt.Errorf("invalid cursor format")
 	}
 
 	timestampStr := parts[0]
+	sessionID := ""
 	providedMAC := parts[1]
+	if len(parts) == 3 {
+		sessionID = parts[1]
+		providedMAC = parts[2]
+		if sessionID == "" {
+			return onlineSessionCursor{}, fmt.Errorf("invalid cursor format")
+		}
+	}
 
 	// 验证 HMAC
-	expectedMAC, err := computeCursorHMAC(timestampStr)
+	signedPayload := timestampStr
+	if sessionID != "" {
+		signedPayload += "|" + sessionID
+	}
+	expectedMAC, err := computeCursorHMAC(signedPayload)
 	if err != nil {
-		return time.Time{}, err
+		return onlineSessionCursor{}, err
 	}
 	if !hmac.Equal([]byte(providedMAC), []byte(expectedMAC)) {
-		return time.Time{}, fmt.Errorf("cursor signature verification failed")
+		return onlineSessionCursor{}, fmt.Errorf("cursor signature verification failed")
 	}
 
 	// 解析时间戳
 	ts, err := time.Parse(time.RFC3339Nano, timestampStr)
 	if err != nil {
-		return time.Time{}, fmt.Errorf("invalid timestamp in cursor: %w", err)
+		return onlineSessionCursor{}, fmt.Errorf("invalid timestamp in cursor: %w", err)
 	}
-	return ts, nil
+	return onlineSessionCursor{UpdatedAt: ts, SessionID: sessionID}, nil
 }
 
 // EncodeCursor 将时间戳编码为 base64 游标（带 HMAC 签名）。
 // 格式：base64(timestamp|hmac)。
 func EncodeCursor(ts time.Time) (string, error) {
+	return encodeOnlineSessionCursor(ts, "")
+}
+
+func encodeOnlineSessionCursor(ts time.Time, sessionID string) (string, error) {
 	if ts.IsZero() {
 		return "", nil
 	}
 	timestampStr := ts.Format(time.RFC3339Nano)
-	mac, err := computeCursorHMAC(timestampStr)
+	payload := timestampStr
+	if sessionID != "" {
+		payload += "|" + sessionID
+	}
+	mac, err := computeCursorHMAC(payload)
 	if err != nil {
 		return "", err
 	}
-	payload := fmt.Sprintf("%s|%s", timestampStr, mac)
-	return base64.URLEncoding.EncodeToString([]byte(payload)), nil
+	return base64.URLEncoding.EncodeToString([]byte(fmt.Sprintf("%s|%s", payload, mac))), nil
 }
 
 // computeCursorHMAC 计算 cursor 的 HMAC-SHA256 签名。
@@ -130,4 +159,18 @@ func BuildPaginationResponse(items int, lastTS time.Time, limit int) (Pagination
 		NextCursor: nextCursor,
 		HasMore:    true,
 	}, nil
+}
+
+func buildOnlineSessionPaginationResponse(hasMore bool, lastTS time.Time, lastSessionID string) (PaginationResponse, error) {
+	if !hasMore {
+		return PaginationResponse{HasMore: false}, nil
+	}
+	if lastTS.IsZero() || lastSessionID == "" {
+		return PaginationResponse{}, fmt.Errorf("cannot build cursor without a session sort key")
+	}
+	nextCursor, err := encodeOnlineSessionCursor(lastTS, lastSessionID)
+	if err != nil {
+		return PaginationResponse{}, err
+	}
+	return PaginationResponse{NextCursor: nextCursor, HasMore: true}, nil
 }

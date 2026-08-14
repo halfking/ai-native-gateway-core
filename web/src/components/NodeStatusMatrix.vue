@@ -2,10 +2,6 @@
 /**
  * NodeStatusMatrix — 节点状态矩阵（V3.2 FE-A2）
  *
- * KEEP: 等待 V3.2 BE-A4 wire SetNodeStatusProvider + liveStreamStore 加 nodesRef state 后启用。
- * 当前为 WIP（`.v32wip` 后缀）— 引用了尚未实现的 nodesRef / LiveNodeStatus type，
- * 重命名为 .vue 会编译失败。@v3-team 2026-Q3 review.
- *
  * 展示所有可用节点的四态（circuit/availability/quota/health）+ 在途请求数，
  * 支持点击节点 → 抽屉：立即测试（test-now）+ 启用/禁用切换（enable）。
  *
@@ -37,6 +33,32 @@ function nodeHealth(n: LiveNodeStatus): 'ok' | 'warn' | 'danger' | 'disabled' {
   if (n.circuit_state === 'half_open' || n.availability_state === 'cooling' ||
       n.quota_state?.includes('exhausted')) return 'warn'
   return 'ok'
+}
+
+// 分组节点：按健康状态分组
+const groupedNodes = computed(() => {
+  const groups = {
+    danger: [] as LiveNodeStatus[],
+    warn: [] as LiveNodeStatus[],
+    ok: [] as LiveNodeStatus[],
+    disabled: [] as LiveNodeStatus[]
+  }
+  nodes.value.forEach(n => {
+    groups[nodeHealth(n)].push(n)
+  })
+  return groups
+})
+
+// 折叠状态（默认只展开异常和警告）
+const collapsedGroups = ref({
+  danger: false,
+  warn: false,
+  ok: true,
+  disabled: true
+})
+
+function toggleGroup(group: keyof typeof collapsedGroups.value) {
+  collapsedGroups.value[group] = !collapsedGroups.value[group]
 }
 
 const sortedNodes = computed(() => {
@@ -114,41 +136,184 @@ const hasNodes = computed(() => nodes.value.length > 0)
       <span class="nm-empty-text">暂无节点数据（等待 node_update 推送）</span>
     </div>
 
-    <!-- 节点矩阵 -->
-    <div v-else class="nm-grid">
-      <div
-        v-for="n in sortedNodes"
-        :key="n.credential_id"
-        class="nm-card"
-        :class="`nm-card--${nodeHealth(n)}`"
-        @click="openNode(n)"
-      >
-        <div class="nm-card-header">
-          <span class="nm-card-id">节点 {{ n.credential_id }}</span>
-          <span class="nm-card-provider">{{ n.provider_code || `P${n.provider_id}` }}</span>
+    <!-- 节点矩阵（分组显示） -->
+    <div v-else class="nm-groups">
+      <!-- 异常节点组 -->
+      <div v-if="groupedNodes.danger.length > 0" class="nm-group">
+        <div class="nm-group-header" @click="toggleGroup('danger')">
+          <span class="nm-group-title nm-group-title--danger">
+            ⚠️ 异常节点 ({{ groupedNodes.danger.length }})
+          </span>
+          <span class="nm-collapse-icon">{{ collapsedGroups.danger ? '▶' : '▼' }}</span>
         </div>
-        <div class="nm-card-states">
-          <span class="nm-state" :title="`熔断: ${n.circuit_state}`">
-            <i class="nm-dot" :class="`nm-dot--${n.circuit_state === 'closed' ? 'ok' : n.circuit_state === 'open' ? 'danger' : 'warn'}`" />
-            熔断
-          </span>
-          <span class="nm-state" :title="`可用性: ${n.availability_state}`">
-            <i class="nm-dot" :class="`nm-dot--${n.availability_state === 'ready' || n.availability_state === 'active' ? 'ok' : 'warn'}`" />
-            可用
-          </span>
-          <span class="nm-state" :title="`配额: ${n.quota_state}`">
-            <i class="nm-dot" :class="`nm-dot--${n.quota_state === 'ok' ? 'ok' : 'danger'}`" />
-            配额
-          </span>
-          <span class="nm-state" :title="`健康: ${n.health_status}`">
-            <i class="nm-dot" :class="`nm-dot--${n.health_status === 'healthy' ? 'ok' : n.health_status === 'unreachable' ? 'danger' : 'warn'}`" />
-            健康
-          </span>
+        <div v-if="!collapsedGroups.danger" class="nm-grid">
+          <div
+            v-for="n in groupedNodes.danger"
+            :key="n.credential_id"
+            class="nm-card nm-card--danger"
+            @click="openNode(n)"
+          >
+            <div class="nm-card-header">
+              <span class="nm-card-id">节点 {{ n.credential_id }}</span>
+              <span class="nm-card-provider">{{ n.provider_code || `P${n.provider_id}` }}</span>
+            </div>
+            <div class="nm-card-states">
+              <span class="nm-state" :title="`熔断: ${n.circuit_state}`">
+                <i class="nm-dot" :class="`nm-dot--${n.circuit_state === 'closed' ? 'ok' : n.circuit_state === 'open' ? 'danger' : 'warn'}`" />
+                熔断
+              </span>
+              <span class="nm-state" :title="`可用性: ${n.availability_state}`">
+                <i class="nm-dot" :class="`nm-dot--${n.availability_state === 'ready' || n.availability_state === 'active' ? 'ok' : 'warn'}`" />
+                可用
+              </span>
+              <span class="nm-state" :title="`配额: ${n.quota_state}`">
+                <i class="nm-dot" :class="`nm-dot--${n.quota_state === 'ok' ? 'ok' : 'danger'}`" />
+                配额
+              </span>
+              <span class="nm-state" :title="`健康: ${n.health_status}`">
+                <i class="nm-dot" :class="`nm-dot--${n.health_status === 'healthy' ? 'ok' : n.health_status === 'unreachable' ? 'danger' : 'warn'}`" />
+                健康
+              </span>
+            </div>
+            <div class="nm-card-footer">
+              <span v-if="n.in_flight" class="nm-inflight">在途 {{ n.in_flight }}</span>
+              <span v-if="n.last_latency_ms" class="nm-latency">{{ n.last_latency_ms }}ms</span>
+            </div>
+          </div>
         </div>
-        <div class="nm-card-footer">
-          <span v-if="n.in_flight" class="nm-inflight">在途 {{ n.in_flight }}</span>
-          <span v-if="n.last_latency_ms" class="nm-latency">{{ n.last_latency_ms }}ms</span>
-          <span v-if="n.manual_disabled" class="nm-disabled-tag">已禁用</span>
+      </div>
+
+      <!-- 警告节点组 -->
+      <div v-if="groupedNodes.warn.length > 0" class="nm-group">
+        <div class="nm-group-header" @click="toggleGroup('warn')">
+          <span class="nm-group-title nm-group-title--warn">
+            ⚡ 警告节点 ({{ groupedNodes.warn.length }})
+          </span>
+          <span class="nm-collapse-icon">{{ collapsedGroups.warn ? '▶' : '▼' }}</span>
+        </div>
+        <div v-if="!collapsedGroups.warn" class="nm-grid">
+          <div
+            v-for="n in groupedNodes.warn"
+            :key="n.credential_id"
+            class="nm-card nm-card--warn"
+            @click="openNode(n)"
+          >
+            <div class="nm-card-header">
+              <span class="nm-card-id">节点 {{ n.credential_id }}</span>
+              <span class="nm-card-provider">{{ n.provider_code || `P${n.provider_id}` }}</span>
+            </div>
+            <div class="nm-card-states">
+              <span class="nm-state" :title="`熔断: ${n.circuit_state}`">
+                <i class="nm-dot" :class="`nm-dot--${n.circuit_state === 'closed' ? 'ok' : n.circuit_state === 'open' ? 'danger' : 'warn'}`" />
+                熔断
+              </span>
+              <span class="nm-state" :title="`可用性: ${n.availability_state}`">
+                <i class="nm-dot" :class="`nm-dot--${n.availability_state === 'ready' || n.availability_state === 'active' ? 'ok' : 'warn'}`" />
+                可用
+              </span>
+              <span class="nm-state" :title="`配额: ${n.quota_state}`">
+                <i class="nm-dot" :class="`nm-dot--${n.quota_state === 'ok' ? 'ok' : 'danger'}`" />
+                配额
+              </span>
+              <span class="nm-state" :title="`健康: ${n.health_status}`">
+                <i class="nm-dot" :class="`nm-dot--${n.health_status === 'healthy' ? 'ok' : n.health_status === 'unreachable' ? 'danger' : 'warn'}`" />
+                健康
+              </span>
+            </div>
+            <div class="nm-card-footer">
+              <span v-if="n.in_flight" class="nm-inflight">在途 {{ n.in_flight }}</span>
+              <span v-if="n.last_latency_ms" class="nm-latency">{{ n.last_latency_ms }}ms</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- 正常节点组 -->
+      <div v-if="groupedNodes.ok.length > 0" class="nm-group">
+        <div class="nm-group-header" @click="toggleGroup('ok')">
+          <span class="nm-group-title nm-group-title--ok">
+            ✅ 正常节点 ({{ groupedNodes.ok.length }})
+          </span>
+          <span class="nm-collapse-icon">{{ collapsedGroups.ok ? '▶' : '▼' }}</span>
+        </div>
+        <div v-if="!collapsedGroups.ok" class="nm-grid">
+          <div
+            v-for="n in groupedNodes.ok"
+            :key="n.credential_id"
+            class="nm-card nm-card--ok"
+            @click="openNode(n)"
+          >
+            <div class="nm-card-header">
+              <span class="nm-card-id">节点 {{ n.credential_id }}</span>
+              <span class="nm-card-provider">{{ n.provider_code || `P${n.provider_id}` }}</span>
+            </div>
+            <div class="nm-card-states">
+              <span class="nm-state" :title="`熔断: ${n.circuit_state}`">
+                <i class="nm-dot" :class="`nm-dot--${n.circuit_state === 'closed' ? 'ok' : n.circuit_state === 'open' ? 'danger' : 'warn'}`" />
+                熔断
+              </span>
+              <span class="nm-state" :title="`可用性: ${n.availability_state}`">
+                <i class="nm-dot" :class="`nm-dot--${n.availability_state === 'ready' || n.availability_state === 'active' ? 'ok' : 'warn'}`" />
+                可用
+              </span>
+              <span class="nm-state" :title="`配额: ${n.quota_state}`">
+                <i class="nm-dot" :class="`nm-dot--${n.quota_state === 'ok' ? 'ok' : 'danger'}`" />
+                配额
+              </span>
+              <span class="nm-state" :title="`健康: ${n.health_status}`">
+                <i class="nm-dot" :class="`nm-dot--${n.health_status === 'healthy' ? 'ok' : n.health_status === 'unreachable' ? 'danger' : 'warn'}`" />
+                健康
+              </span>
+            </div>
+            <div class="nm-card-footer">
+              <span v-if="n.in_flight" class="nm-inflight">在途 {{ n.in_flight }}</span>
+              <span v-if="n.last_latency_ms" class="nm-latency">{{ n.last_latency_ms }}ms</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- 已禁用节点组 -->
+      <div v-if="groupedNodes.disabled.length > 0" class="nm-group">
+        <div class="nm-group-header" @click="toggleGroup('disabled')">
+          <span class="nm-group-title nm-group-title--disabled">
+            🚫 已禁用节点 ({{ groupedNodes.disabled.length }})
+          </span>
+          <span class="nm-collapse-icon">{{ collapsedGroups.disabled ? '▶' : '▼' }}</span>
+        </div>
+        <div v-if="!collapsedGroups.disabled" class="nm-grid">
+          <div
+            v-for="n in groupedNodes.disabled"
+            :key="n.credential_id"
+            class="nm-card nm-card--disabled"
+            @click="openNode(n)"
+          >
+            <div class="nm-card-header">
+              <span class="nm-card-id">节点 {{ n.credential_id }}</span>
+              <span class="nm-card-provider">{{ n.provider_code || `P${n.provider_id}` }}</span>
+            </div>
+            <div class="nm-card-states">
+              <span class="nm-state" :title="`熔断: ${n.circuit_state}`">
+                <i class="nm-dot" :class="`nm-dot--${n.circuit_state === 'closed' ? 'ok' : n.circuit_state === 'open' ? 'danger' : 'warn'}`" />
+                熔断
+              </span>
+              <span class="nm-state" :title="`可用性: ${n.availability_state}`">
+                <i class="nm-dot" :class="`nm-dot--${n.availability_state === 'ready' || n.availability_state === 'active' ? 'ok' : 'warn'}`" />
+                可用
+              </span>
+              <span class="nm-state" :title="`配额: ${n.quota_state}`">
+                <i class="nm-dot" :class="`nm-dot--${n.quota_state === 'ok' ? 'ok' : 'danger'}`" />
+                配额
+              </span>
+              <span class="nm-state" :title="`健康: ${n.health_status}`">
+                <i class="nm-dot" :class="`nm-dot--${n.health_status === 'healthy' ? 'ok' : n.health_status === 'unreachable' ? 'danger' : 'warn'}`" />
+                健康
+              </span>
+            </div>
+            <div class="nm-card-footer">
+              <span class="nm-disabled-tag">已禁用</span>
+            </div>
+          </div>
         </div>
       </div>
     </div>
@@ -218,10 +383,50 @@ const hasNodes = computed(() => nodes.value.length > 0)
 .nm-count { font-size: 12px; color: var(--kx-text-secondary); }
 .nm-empty { padding: 16px; text-align: center; }
 .nm-empty-text { color: var(--kx-text-secondary); font-size: 13px; }
+
+/* 分组样式 */
+.nm-groups {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+.nm-group {
+  border: 1px solid var(--kx-border);
+  border-radius: var(--kx-radius-sm, 6px);
+  overflow: hidden;
+}
+.nm-group-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 10px 12px;
+  background: var(--kx-bg-elevated);
+  cursor: pointer;
+  user-select: none;
+  transition: background 0.15s ease;
+}
+.nm-group-header:hover {
+  background: var(--kx-border);
+}
+.nm-group-title {
+  font-size: 13px;
+  font-weight: 600;
+}
+.nm-group-title--danger { color: var(--kx-danger); }
+.nm-group-title--warn { color: var(--kx-warning); }
+.nm-group-title--ok { color: var(--kx-success); }
+.nm-group-title--disabled { color: var(--kx-text-secondary); }
+.nm-collapse-icon {
+  font-size: 11px;
+  color: var(--kx-text-secondary);
+  transition: transform 0.2s ease;
+}
+
 .nm-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
   gap: 10px;
+  padding: 12px;
 }
 .nm-card {
   border: 1px solid var(--kx-border);
@@ -336,9 +541,9 @@ const hasNodes = computed(() => nodes.value.length > 0)
   transition: opacity 0.15s ease;
 }
 .nm-btn:disabled { opacity: 0.5; cursor: not-allowed; }
-.nm-btn--primary { background: var(--kx-primary); color: var(--kx-text-on-primary, #fff); border-color: var(--kx-primary); }
-.nm-btn--success { background: var(--kx-success); color: var(--kx-text-on-primary, #fff); border-color: var(--kx-success); }
-.nm-btn--danger { background: var(--kx-danger); color: var(--kx-text-on-primary, #fff); border-color: var(--kx-danger); }
+.nm-btn--primary { background: var(--kx-primary); color: var(--kx-text-on-primary); border-color: var(--kx-primary); }
+.nm-btn--success { background: var(--kx-success); color: var(--kx-text-on-primary); border-color: var(--kx-success); }
+.nm-btn--danger { background: var(--kx-danger); color: var(--kx-text-on-primary); border-color: var(--kx-danger); }
 .nm-test-result {
   margin-top: 12px;
   padding: 10px;

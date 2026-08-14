@@ -55,8 +55,41 @@ func TestCursorRequiresSecret(t *testing.T) {
 	}
 }
 
+func TestCursorRejectsShortSecret(t *testing.T) {
+	t.Setenv("CURSOR_HMAC_SECRET", "too-short")
+	if _, err := EncodeCursor(time.Now()); err == nil {
+		t.Fatal("EncodeCursor should reject a short secret")
+	}
+}
+
+func TestOnlineSessionCursorRoundTrip(t *testing.T) {
+	t.Setenv("CURSOR_HMAC_SECRET", "test-secret-key-0123456789012345")
+	want := onlineSessionCursor{
+		UpdatedAt: time.Date(2026, 8, 14, 12, 34, 56, 123456789, time.UTC),
+		SessionID: "session-123",
+	}
+
+	cursor, err := encodeOnlineSessionCursor(want.UpdatedAt, want.SessionID)
+	if err != nil {
+		t.Fatalf("encodeOnlineSessionCursor() error = %v", err)
+	}
+	got, err := parseOnlineSessionCursor(cursor)
+	if err != nil {
+		t.Fatalf("parseOnlineSessionCursor() error = %v", err)
+	}
+	if got != want {
+		t.Errorf("cursor round-trip = %+v, want %+v", got, want)
+	}
+
+	tamperedPayload := want.UpdatedAt.Format(time.RFC3339Nano) + "|session-456|invalid-signature"
+	tamperedCursor := base64.URLEncoding.EncodeToString([]byte(tamperedPayload))
+	if _, err := parseOnlineSessionCursor(tamperedCursor); err == nil {
+		t.Fatal("parseOnlineSessionCursor should reject a tampered session ID")
+	}
+}
+
 func TestBuildPaginationResponseRequiresTimestamp(t *testing.T) {
-	t.Setenv("CURSOR_HMAC_SECRET", "test-secret-key")
+	t.Setenv("CURSOR_HMAC_SECRET", "test-secret-key-0123456789012345")
 	if _, err := BuildPaginationResponse(20, time.Time{}, 20); err == nil {
 		t.Fatal("BuildPaginationResponse should reject a missing last timestamp")
 	}
