@@ -3783,10 +3783,7 @@ func main() {
 			}
 			if liveStreamHub != nil {
 				liveStreamHub.SetQueueSnapshotProvider(wireQueueSnapshotProvider(gatewayDispatchPipeline))
-				if dbConn != nil && dbConn.Enabled() {
-					liveStreamHub.SetNodeStatusProvider(wireNodeStatusProvider(dbConn.Pool(), peakCollector))
-				}
-				slog.Info("V3.2 SSE providers wired: queue_snapshot + node_status")
+				slog.Info("V3.2 SSE provider wired: queue_snapshot; node_status uses cached provider")
 			}
 
 			// 2026-08-11: expose the on-demand node IQ test endpoint. Only wire

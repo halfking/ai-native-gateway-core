@@ -207,7 +207,12 @@ function vendorOptionLabel(v: string) {
     <div class="stream-header">
       <h3 class="stream-title">{{ t('dashboard.liveStream.title') }}</h3>
 
-      <div class="stream-controls">
+      <div
+        class="stream-controls"
+        role="toolbar"
+        :aria-label="t('dashboard.liveStream.controlsAria', '实时请求流控制栏')"
+        tabindex="0"
+      >
         <!-- 分组切换 -->
         <div class="control-group control-group--dimension">
           <button
@@ -542,11 +547,10 @@ function vendorOptionLabel(v: string) {
 
 .stream-header {
   display: flex;
-  align-items: center;
-  justify-content: space-between;
+  flex-direction: column;
+  align-items: stretch;
   gap: 12px;
   margin-bottom: 12px;
-  flex-wrap: wrap;
 }
 
 .stream-title {
@@ -561,12 +565,41 @@ function vendorOptionLabel(v: string) {
   display: flex;
   align-items: center;
   gap: 10px;
-  flex-wrap: wrap;
+  width: 100%;
+  min-width: 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+  flex-wrap: nowrap;
+  padding: 2px 2px 6px;
+  overscroll-behavior-inline: contain;
+  scrollbar-width: thin;
+  scrollbar-color: var(--border) transparent;
+  -webkit-overflow-scrolling: touch;
+}
+
+.stream-controls:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: 6px;
+}
+
+.stream-controls::-webkit-scrollbar {
+  height: 6px;
+}
+
+.stream-controls::-webkit-scrollbar-thumb {
+  background: var(--border);
+  border-radius: 3px;
+}
+
+.stream-controls::-webkit-scrollbar-track {
+  background: transparent;
 }
 
 .control-group {
   display: flex;
   align-items: center;
+  flex: 0 0 auto;
   gap: 4px;
   position: relative;
   padding: 4px 8px;
@@ -630,8 +663,9 @@ function vendorOptionLabel(v: string) {
 .filter-group {
   display: flex;
   align-items: center;
+  flex: 0 0 auto;
   gap: 8px;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
   padding: 5px 10px;
   border-radius: 6px;
   background: color-mix(in srgb, #722ed1 18%, var(--bg-subtle));
@@ -1129,22 +1163,19 @@ function vendorOptionLabel(v: string) {
 }
 
 @media (max-width: 768px) {
-  .stream-header {
-    flex-direction: column;
-    align-items: stretch;
-  }
-
   .stream-controls {
-    flex-direction: column;
-    align-items: stretch;
+    flex-direction: row;
+    flex-wrap: nowrap;
+    overflow-x: auto;
   }
 
-  .control-group {
-    justify-content: stretch;
+  .control-group,
+  .filter-group {
+    flex: 0 0 auto;
   }
 
   .control-btn {
-    flex: 1;
+    flex: 0 0 auto;
   }
 }
 </style>
