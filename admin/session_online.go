@@ -238,7 +238,8 @@ func (h *Handler) handleSessionTimeline(w http.ResponseWriter, r *http.Request) 
 		query += " AND tenant_id = $2"
 		args = append(args, auth.TenantID)
 	}
-	query += " ORDER BY ts ASC LIMIT 200"
+	const timelineLimit = 200
+	query += " ORDER BY ts ASC LIMIT 201"
 	rows, err := h.db.Query(ctx, query, args...)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "query failed: "+err.Error())
@@ -254,8 +255,15 @@ func (h *Handler) handleSessionTimeline(w http.ResponseWriter, r *http.Request) 
 	mains := make([]*SessionTurn, 0, 32)
 	byID := make(map[string]*SessionTurn)
 	var children []*row
+	rowCount := 0
+	hasMore := false
 
 	for rows.Next() {
+		rowCount++
+		if rowCount > timelineLimit {
+			hasMore = true
+			break
+		}
 		t := &SessionTurn{}
 		var latency *int
 		var ts time.Time
@@ -274,6 +282,10 @@ func (h *Handler) handleSessionTimeline(w http.ResponseWriter, r *http.Request) 
 			children = append(children, &row{turn: t, parentID: parentID})
 		}
 	}
+	if err := rows.Err(); err != nil {
+		writeError(w, http.StatusInternalServerError, fmt.Sprintf("read session timeline rows failed: %v (session_id=%s)", err, sessionID))
+		return
+	}
 
 	// 第二遍：把扩展请求挂到父请求（循环保护：父不存在则挂为顶层）
 	for _, c := range children {
@@ -289,6 +301,8 @@ func (h *Handler) handleSessionTimeline(w http.ResponseWriter, r *http.Request) 
 		"session_id": sessionID,
 		"turns":      mains,
 		"count":      len(mains),
+		"has_more":   hasMore,
+		"truncated":  hasMore,
 	})
 }
 

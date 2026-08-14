@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased] - 2026-08-15 (Node Operations Audit Fixes)
+
+### Fixed
+
+- **节点启停修复**：修正节点矩阵启停方向反转，并补齐后端要求的确认、原因和幂等关联请求头。
+- **操作竞态修复**：节点测试与启停操作互斥，避免测试结果与并发状态变更相互混淆。
+- **会话时间线截断可见性**：超过 200 条请求时返回 `has_more` 和 `truncated`，不再静默截断。
+- **主题 token 合规**：节点和队列状态背景改用现有设计 token 混色，移除硬编码颜色 fallback。
+- 详见 `docs/changelogs/2026-08-15-node-operations-audit-fixes.md`。
+
 ## [Unreleased] - 2026-08-14 (Live Stream Queue Controls)
 
 ### Fixed
@@ -13,6 +23,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   覆盖导致 `node_update` 消失；空队列明确显示为调度链路畅通，并补充最近请求处理轨迹。
 - **顶部控制栏滚动修复**：实时请求流的分组、模式、筛选、连接和暂停控件改为单行横向
   滚动区域。430px 视口下控制栏高度由 332px 降至 49px，末端控件可滚动到达并操作。
+- **全局顶部导航窄屏修复**：430px 视口下导航改为独立横向滚动，不再撑宽页面；保留
+  主题、语言和用户操作，并修正版本号重复显示为 `vv2.5.0` 的问题。
+- **i18n 缺口修复**：补齐实时流控制栏无障碍名称和免费资源池“即将重置”文案，8 个
+  locale 的缺失键归零。
 - 详见 `docs/changelogs/2026-08-14-live-stream-queue-controls.md`。
 
 ## [Unreleased] - 2026-08-14 (Flash Disconnect Test Suite)

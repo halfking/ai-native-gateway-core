@@ -204,11 +204,11 @@ const isIdle = computed(() => hasData.value && totalDepth.value === 0)
   border-radius: 10px;
 }
 .qp-badge--ok {
-  background: var(--kx-success-bg, rgba(103, 194, 58, 0.12));
+  background: color-mix(in srgb, var(--kx-success) 12%, var(--kx-surface));
   color: var(--kx-success);
 }
 .qp-badge--warn {
-  background: var(--kx-warning-bg, rgba(230, 162, 60, 0.12));
+  background: color-mix(in srgb, var(--kx-warning) 12%, var(--kx-surface));
   color: var(--kx-warning);
 }
 .qp-empty {
@@ -263,7 +263,7 @@ const isIdle = computed(() => hasData.value && totalDepth.value === 0)
   color: var(--kx-text-secondary);
   font-size: 13px;
   padding: 8px 12px;
-  background: var(--kx-success-bg, rgba(103, 194, 58, 0.12));
+  background: color-mix(in srgb, var(--kx-success) 12%, var(--kx-surface));
   border-radius: var(--kx-radius-sm, 6px);
 }
 .qp-layer-header {

@@ -78,7 +78,7 @@ function openNode(n: LiveNodeStatus) {
 
 // 立即测试（同步 probe，5s 超时）
 async function testNow() {
-  if (!selectedNode.value) return
+  if (!selectedNode.value || toggling.value) return
   testing.value = true
   testResult.value = null
   opError.value = ''
@@ -98,22 +98,32 @@ async function testNow() {
 
 // 启用/禁用切换（二次确认）
 async function toggleEnable() {
-  if (!selectedNode.value) return
-  const target = !selectedNode.value.manual_disabled
-  if (target === false && !confirm(`确认禁用节点 ${selectedNode.value.credential_id}？禁用后将立即从路由候选中摘除。`)) {
+  if (!selectedNode.value || testing.value) return
+  const enabled = selectedNode.value.manual_disabled
+  if (!enabled && !confirm(`确认禁用节点 ${selectedNode.value.credential_id}？禁用后将立即从路由候选中摘除。`)) {
     return
   }
   toggling.value = true
   opError.value = ''
   try {
+    const idempotencyKey = `node-toggle-${selectedNode.value.provider_id}-${enabled}-${Date.now()}`
     const resp = await fetch(`/api/admin/providers/${selectedNode.value.provider_id}/enable`, {
       method: 'PATCH',
-      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${authBearer()}` },
-      body: JSON.stringify({ enabled: target }),
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${authBearer()}`,
+        'X-Confirm': 'yes',
+        'Idempotency-Key': idempotencyKey,
+        'X-Correlation-ID': idempotencyKey,
+      },
+      body: JSON.stringify({
+        enabled,
+        reason: enabled ? 'Enabled from node status matrix' : 'Disabled from node status matrix',
+      }),
     })
     if (!resp.ok) throw new Error(`HTTP ${resp.status}`)
     // 乐观更新（SSE node_update 会在 2s 内同步真实状态）
-    selectedNode.value.manual_disabled = !target
+    selectedNode.value.manual_disabled = !enabled
   } catch (e: any) {
     opError.value = e?.message || '操作失败'
   } finally {
@@ -339,13 +349,13 @@ const hasNodes = computed(() => nodes.value.length > 0)
 
           <!-- 操作区 -->
           <div class="nm-actions">
-            <button class="nm-btn nm-btn--primary" :disabled="testing" @click="testNow">
+            <button class="nm-btn nm-btn--primary" :disabled="testing || toggling" @click="testNow">
               {{ testing ? '测试中…' : '立即测试' }}
             </button>
             <button
               class="nm-btn"
               :class="selectedNode.manual_disabled ? 'nm-btn--success' : 'nm-btn--danger'"
-              :disabled="toggling"
+              :disabled="testing || toggling"
               @click="toggleEnable"
             >
               {{ toggling ? '处理中…' : selectedNode.manual_disabled ? '启用节点' : '禁用节点' }}
@@ -483,7 +493,7 @@ const hasNodes = computed(() => nodes.value.length > 0)
 .nm-drawer-mask {
   position: fixed;
   inset: 0;
-  background: rgba(0, 0, 0, 0.4);
+  background: color-mix(in srgb, var(--kx-text) 40%, transparent);
   z-index: 1000;
 }
 .nm-drawer {
@@ -550,13 +560,13 @@ const hasNodes = computed(() => nodes.value.length > 0)
   border-radius: var(--kx-radius-sm, 6px);
   font-size: 13px;
 }
-.nm-test-result--ok { background: var(--kx-success-bg, rgba(103, 194, 58, 0.12)); color: var(--kx-success); }
-.nm-test-result--error { background: var(--kx-danger-bg, rgba(245, 108, 108, 0.12)); color: var(--kx-danger); }
+.nm-test-result--ok { background: color-mix(in srgb, var(--kx-success) 12%, var(--kx-surface)); color: var(--kx-success); }
+.nm-test-result--error { background: color-mix(in srgb, var(--kx-danger) 12%, var(--kx-surface)); color: var(--kx-danger); }
 .nm-op-error {
   margin-top: 12px;
   padding: 10px;
   border-radius: var(--kx-radius-sm, 6px);
-  background: var(--kx-danger-bg, rgba(245, 108, 108, 0.12));
+  background: color-mix(in srgb, var(--kx-danger) 12%, var(--kx-surface));
   color: var(--kx-danger);
   font-size: 13px;
 }
