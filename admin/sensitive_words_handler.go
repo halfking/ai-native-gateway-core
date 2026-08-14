@@ -15,12 +15,19 @@ import (
 //   - status: 查询引擎状态（分类、词数、配置路径）
 //   - match:  对给定文本触发一次匹配扫描
 type SensitiveWordsHandler struct {
-	engine *sensitive.SensitiveWordEngine
+	engine          *sensitive.SensitiveWordEngine
+	patternDetector interface{ ReloadFromFile() error }
 }
 
 // NewSensitiveWordsHandler 创建 Handler
 func NewSensitiveWordsHandler(engine *sensitive.SensitiveWordEngine) *SensitiveWordsHandler {
 	return &SensitiveWordsHandler{engine: engine}
+}
+
+// SetPatternDetector wires the YAML pattern detector into the same reload
+// operation as the sensitive-word engine.
+func (h *SensitiveWordsHandler) SetPatternDetector(detector interface{ ReloadFromFile() error }) {
+	h.patternDetector = detector
 }
 
 // RegisterRoutes 注册 /api/admin/sensitive-words/* 路由。
@@ -41,6 +48,13 @@ func (h *SensitiveWordsHandler) handleReload(w http.ResponseWriter, r *http.Requ
 		slog.Error("sensitive word reload failed", "error", err)
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "Sensitive word reload failed"})
 		return
+	}
+	if h.patternDetector != nil {
+		if err := h.patternDetector.ReloadFromFile(); err != nil {
+			slog.Error("sensitive pattern reload failed", "error", err)
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "Sensitive pattern reload failed"})
+			return
+		}
 	}
 
 	writeJSON(w, http.StatusOK, map[string]interface{}{

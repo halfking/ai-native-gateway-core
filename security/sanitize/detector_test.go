@@ -2,6 +2,8 @@ package sanitize
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"testing"
 )
 
@@ -178,4 +180,94 @@ func TestDetectorInterfaceCompileTime(t *testing.T) {
 	var _ Detector = (*CustomDetector)(nil)
 	var _ Detector = (*CompositeDetector)(nil)
 	_ = t
+}
+
+func TestPatternDetector_BuildFromFileAndReload(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "sensitive_patterns.yaml")
+	if err := os.WriteFile(path, []byte(`
+pii:
+  enabled: true
+  patterns:
+    phone:
+      regex: 'PHONE-[0-9]{4}'
+    address:
+      regex: 'ADDR-[0-9]{4}'
+secret:
+  enabled: true
+  patterns:
+    api_key:
+      regex: 'KEY-[A-Z]{4}'
+`), 0o600); err != nil {
+		t.Fatalf("write config failed: %v", err)
+	}
+
+	d, err := NewPatternDetectorFromFile(path)
+	if err != nil {
+		t.Fatalf("NewPatternDetectorFromFile() error = %v", err)
+	}
+	assertDetectedType(t, d, "PHONE-1234", TypePhone)
+	assertDetectedType(t, d, "KEY-ABCD", TypeSecret)
+	assertDetectedType(t, d, "ADDR-1234", TypeCustom)
+
+	if err := os.WriteFile(path, []byte(`
+pii:
+  enabled: true
+  patterns:
+    email:
+      regex: 'MAIL-[A-Z]{3}'
+`), 0o600); err != nil {
+		t.Fatalf("replace config failed: %v", err)
+	}
+	if err := d.ReloadFromFile(); err != nil {
+		t.Fatalf("ReloadFromFile() error = %v", err)
+	}
+	assertDetectedType(t, d, "MAIL-ABC", TypeEmail)
+	if got, _ := d.Detect(context.Background(), "PHONE-1234"); len(got) != 0 {
+		t.Fatalf("stale pattern remained after reload: %v", got)
+	}
+}
+
+func TestPatternDetector_BuildFromFileRejectsInvalidConfig(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "sensitive_patterns.yaml")
+	if err := os.WriteFile(path, []byte("pii:\n  patterns:\n    phone:\n      regex: '['\n"), 0o600); err != nil {
+		t.Fatalf("write config failed: %v", err)
+	}
+	if _, err := NewPatternDetectorFromFile(path); err == nil {
+		t.Fatal("NewPatternDetectorFromFile() should reject invalid regex")
+	}
+}
+
+func TestPatternDetector_ReloadFailureKeepsLastValidPatterns(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "sensitive_patterns.yaml")
+	if err := os.WriteFile(path, []byte(`
+pii:
+  enabled: true
+  patterns:
+    phone:
+      regex: 'PHONE-[0-9]{4}'
+`), 0o600); err != nil {
+		t.Fatalf("write config failed: %v", err)
+	}
+	d, err := NewPatternDetectorFromFile(path)
+	if err != nil {
+		t.Fatalf("NewPatternDetectorFromFile() error = %v", err)
+	}
+	if err := os.WriteFile(path, []byte("pii:\n  patterns:\n    phone:\n      regex: '['\n"), 0o600); err != nil {
+		t.Fatalf("replace config failed: %v", err)
+	}
+	if err := d.ReloadFromFile(); err == nil {
+		t.Fatal("ReloadFromFile() should reject invalid config")
+	}
+	assertDetectedType(t, d, "PHONE-1234", TypePhone)
+}
+
+func assertDetectedType(t *testing.T, d *PatternDetector, text string, want SensitiveType) {
+	t.Helper()
+	got, err := d.Detect(context.Background(), text)
+	if err != nil {
+		t.Fatalf("Detect() error = %v", err)
+	}
+	if len(got) != 1 || got[0].Type != want {
+		t.Fatalf("Detect(%q) = %v, want one %s fragment", text, got, want)
+	}
 }

@@ -30,6 +30,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/pending"
 	"github.com/kaixuan/llm-gateway-go/secret"
 	"github.com/kaixuan/llm-gateway-go/security/ipblocklist"
+	"github.com/kaixuan/llm-gateway-go/security/sanitize"
 	"github.com/kaixuan/llm-gateway-go/security/sensitive"
 	"github.com/kaixuan/llm-gateway-go/settings"
 	"github.com/redis/go-redis/v9"
@@ -100,6 +101,9 @@ type Handler struct {
 	// management endpoints (reload, status, match). nil disables the
 	// endpoints. Wired from cmd/gateway/main.go.
 	sensitiveWordEngine *sensitive.SensitiveWordEngine
+	// sanitizePatternDetector reloads SmartSaniGuard's YAML rule set through
+	// the same admin operation as sensitive words.
+	sanitizePatternDetector *sanitize.PatternDetector
 	// routeIncidentHandler (2026-07-13) backs the read-only
 	// /api/admin/route-incidents* endpoints. nil disables the
 	// diagnose feature on the swim lane.
@@ -604,6 +608,11 @@ func (h *Handler) SetSensitiveWordEngine(engine *sensitive.SensitiveWordEngine) 
 	h.sensitiveWordEngine = engine
 }
 
+// SetSanitizePatternDetector wires the SmartSaniGuard YAML detector for admin reload.
+func (h *Handler) SetSanitizePatternDetector(detector *sanitize.PatternDetector) {
+	h.sanitizePatternDetector = detector
+}
+
 func (h *Handler) admin(fn http.HandlerFunc) http.HandlerFunc {
 	return AdminMiddleware(fn, h.db, h.secret)
 }
@@ -757,6 +766,7 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	// 引擎未注入时隐藏这些端点（nil-safe）。
 	if h.sensitiveWordEngine != nil {
 		swH := NewSensitiveWordsHandler(h.sensitiveWordEngine)
+		swH.SetPatternDetector(h.sanitizePatternDetector)
 		swH.RegisterRoutes(mux, h.admin)
 	}
 
