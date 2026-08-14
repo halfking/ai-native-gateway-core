@@ -280,7 +280,7 @@ func (h *Handler) VerifyAllCredentialModelFetches(ctx context.Context, providerI
 		} else if len(models) == 0 {
 			res.Error = "no models returned"
 		} else {
-			res.OK = source == "api" || source == "api+manifest" || source == "manifest_only" || source == "manifest"
+			res.OK = isProviderRefreshSourceUsable(source)
 			limit := 3
 			if len(models) < limit {
 				limit = len(models)
@@ -402,7 +402,7 @@ func (h *Handler) discoverAndUpsertForCredential(ctx context.Context, cred crede
 	// "manifest" (API failed, fell back to manifest) is also accepted because
 	// some vendors (e.g. zhipu) may have intermittent API issues but the
 	// manifest still provides a valid model list for routing.
-	if source != "api" && source != "api+manifest" && source != "manifest_only" && source != "manifest" {
+	if !isProviderRefreshSourceUsable(source) {
 		h.updateCredHealth(ctx, cred.id, "unreachable", "vendor API failed; manifest fallback only")
 		return 0, 0, fmt.Errorf("vendor API failed; only manifest fallback available (%d models)", len(models))
 	}
@@ -445,6 +445,13 @@ func (h *Handler) enrollCredentialModels(ctx context.Context, credentialID int, 
 		upserted++
 	}
 	return upserted, failed
+}
+
+// isProviderRefreshSourceUsable reports whether model discovery returned a
+// usable list for refresh. A manifest fallback is usable for vendors whose
+// models endpoint is unavailable or temporarily failing.
+func isProviderRefreshSourceUsable(source string) bool {
+	return source == "api" || source == "api+manifest" || source == "manifest_only" || source == "manifest"
 }
 
 func probeModelsEligibleForRouting(source string, models []string) bool {
