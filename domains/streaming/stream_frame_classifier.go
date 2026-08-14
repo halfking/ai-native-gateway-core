@@ -95,14 +95,23 @@ func classifyChatFrame(frame string) FrameClass {
 }
 
 // classifyCommonSSEFrame handles protocol-independent frame shapes: SSE
-// comments (keepalive) and comment-only frames. The bool reports whether the
-// frame was recognized at this layer.
+// comment-only frames (keepalive). A frame that also carries data/event
+// lines is ONE event whose data must not be mistaken for transport
+// keepalive — it falls through to protocol classification. The bool
+// reports whether the frame was recognized at this layer.
 func classifyCommonSSEFrame(frame string) (FrameClass, bool) {
 	first := firstSSELine(frame)
-	if strings.HasPrefix(first, ":") {
-		return FrameClassKeepalive, true
+	if !strings.HasPrefix(first, ":") {
+		return FrameClassUnknown, false
 	}
-	return FrameClassUnknown, false
+	for _, line := range strings.Split(frame, "\n") {
+		line = strings.TrimRight(line, "\r")
+		if strings.HasPrefix(line, "data:") || strings.HasPrefix(line, "event:") {
+			// Comment + data in the same event block: classify by the data.
+			return FrameClassUnknown, false
+		}
+	}
+	return FrameClassKeepalive, true
 }
 
 // firstSSELine returns the first non-empty line of the frame.
