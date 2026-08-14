@@ -280,14 +280,14 @@ func (h *Handler) VerifyAllCredentialModelFetches(ctx context.Context, providerI
 		} else if len(models) == 0 {
 			res.Error = "no models returned"
 		} else {
-			res.OK = source == "api" || source == "api+manifest" || source == "manifest_only"
+			res.OK = source == "api" || source == "api+manifest" || source == "manifest_only" || source == "manifest"
 			limit := 3
 			if len(models) < limit {
 				limit = len(models)
 			}
 			res.SampleModels = models[:limit]
 			if source == "manifest" {
-				res.Error = "vendor API unavailable; manifest fallback only"
+				res.Error = "vendor API unavailable; using manifest fallback"
 			}
 		}
 		out = append(out, res)
@@ -399,7 +399,10 @@ func (h *Handler) discoverAndUpsertForCredential(ctx context.Context, cred crede
 	// is the authoritative source for those bindings.
 	// "api+manifest" is a successful live fetch with extra known-but-unlisted
 	// models merged in, so it counts as a real refresh.
-	if source != "api" && source != "api+manifest" && source != "manifest_only" {
+	// "manifest" (API failed, fell back to manifest) is also accepted because
+	// some vendors (e.g. zhipu) may have intermittent API issues but the
+	// manifest still provides a valid model list for routing.
+	if source != "api" && source != "api+manifest" && source != "manifest_only" && source != "manifest" {
 		h.updateCredHealth(ctx, cred.id, "unreachable", "vendor API failed; manifest fallback only")
 		return 0, 0, fmt.Errorf("vendor API failed; only manifest fallback available (%d models)", len(models))
 	}
