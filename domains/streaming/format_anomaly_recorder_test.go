@@ -3,7 +3,6 @@ package streaming
 import (
 	"context"
 	"errors"
-	"strings"
 	"testing"
 
 	"github.com/jackc/pgx/v5/pgconn"
@@ -189,39 +188,10 @@ func TestToFaultSeverity(t *testing.T) {
 func ptrStr(s string) *string { return &s }
 func ptrInt(i int) *int       { return &i }
 
-// CO-2 (2026-08-15): 真实 usage 回填时，补写 format_anomalies 行的
-// actual_tokens 与 usage_source='corrected'。只填 actual_tokens IS NULL 的行，
-// 已有 actual 值的行不重复覆盖（幂等）。
-func TestFormatAnomalyRecorder_BackfillActualTokens(t *testing.T) {
-	db := &mockDB{}
-	recorder := NewFormatAnomalyRecorder(db)
-
-	err := recorder.BackfillActualTokens(context.Background(), "req-backfill", 456)
-	if err != nil {
-		t.Fatalf("BackfillActualTokens() error = %v", err)
-	}
-	if !db.execCalled {
-		t.Fatal("expected Exec to be called")
-	}
-	wantSQL := []string{
-		"UPDATE response_format_anomalies",
-		"actual_tokens = $2",
-		"usage_source = 'corrected'",
-		"WHERE request_id = $1",
-		"AND actual_tokens IS NULL",
-	}
-	for _, w := range wantSQL {
-		if !strings.Contains(db.execQuery, w) {
-			t.Errorf("SQL missing %q, got: %s", w, db.execQuery)
-		}
-	}
-	if len(db.execArgs) != 2 || db.execArgs[0] != "req-backfill" || db.execArgs[1] != 456 {
-		t.Errorf("unexpected args: %v", db.execArgs)
-	}
-}
-
-// 回填失败只返回错误由调用方告警，不影响请求主链路。
-func TestFormatAnomalyRecorder_BackfillActualTokens_ExecError(t *testing.T) {
+// recorder 的主行为（actual_tokens 回填 + usage_source 修正为 llm）由
+// format_anomaly_backfill_test.go 覆盖；此处只补错误传播路径。
+// 回填失败返回错误由调用方告警，不影响请求主链路。
+func TestFormatAnomalyRecorder_BackfillActualTokens_ExecErrorPropagates(t *testing.T) {
 	db := &mockDB{execError: errors.New("db down")}
 	recorder := NewFormatAnomalyRecorder(db)
 

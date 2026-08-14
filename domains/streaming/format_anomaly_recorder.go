@@ -144,38 +144,6 @@ func withAnomalyWriteTx(ctx context.Context, pool *pgxpool.Pool, fn func(FormatA
 	return tx.Commit(ctx)
 }
 
-// BackfillActualTokens (CO-2, 2026-08-15) fills the actual completion-token
-// count onto the anomaly rows recorded for a request whose estimated
-// request_logs row has just been corrected with real usage. Only rows still
-// lacking an actual_tokens value are touched, so repeated calls are
-// idempotent. Errors are returned to the caller, which treats the backfill
-// as best-effort (warn-only, never on the request hot path).
-func (r *FormatAnomalyRecorder) BackfillActualTokens(ctx context.Context, requestID string, actualTokens int) error {
-	if r == nil || r.db == nil || requestID == "" {
-		return nil
-	}
-	query := `
-		UPDATE response_format_anomalies
-		   SET actual_tokens = $2,
-		       usage_source = 'corrected'
-		 WHERE request_id = $1
-		   AND actual_tokens IS NULL
-	`
-	execFn := func(exec FormatAnomalyExec) error {
-		_, err := exec.Exec(ctx, query, requestID, actualTokens)
-		if err != nil {
-			slog.Warn("failed to backfill format anomaly actual tokens",
-				"request_id", requestID,
-				"error", err)
-		}
-		return err
-	}
-	if r.pool == nil {
-		return execFn(r.db)
-	}
-	return withAnomalyWriteTx(ctx, r.pool, execFn)
-}
-
 // RecordDataAnomaly implements the DataAnomalyRecorder interface for data-level
 // anomalies (persistence failures, JSON marshal failures, log harvest issues).
 func (r *FormatAnomalyRecorder) RecordDataAnomaly(ctx context.Context, anomalyType, severity, requestID, message string, metadata map[string]any) error {
@@ -323,4 +291,34 @@ func TruncateForSample(s string, maxLen int) string {
 		return s
 	}
 	return s[:maxLen] + "...[truncated]"
+}
+
+// BackfillActualTokens (CO-2): fills actual_tokens on an estimated anomaly
+// row when the real completion-token count arrives later, and corrects
+// usage_source from "estimated" to "llm" so admin aggregates
+// (AVG(actual_tokens)) stop reading NULL. No-op for rows already backfilled
+// or non-positive counts (a 0 would misrepresent real usage).
+func (r *FormatAnomalyRecorder) BackfillActualTokens(ctx context.Context, requestID string, actualTokens int) error {
+	if r == nil || r.db == nil || requestID == "" || actualTokens <= 0 {
+		return nil
+	}
+
+	backfillFn := func(exec FormatAnomalyExec) error {
+		_, err := exec.Exec(ctx, `
+			UPDATE response_format_anomalies
+			SET actual_tokens = $2,
+			    usage_source  = $3
+			WHERE request_id = $1
+			  AND actual_tokens IS NULL
+		`, requestID, actualTokens, UsageSourceLLM)
+		if err != nil {
+			slog.Warn("failed to backfill format anomaly actual_tokens",
+				"request_id", requestID, "error", err)
+		}
+		return err
+	}
+	if r.pool == nil {
+		return backfillFn(r.db)
+	}
+	return withAnomalyWriteTx(ctx, r.pool, backfillFn)
 }

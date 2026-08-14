@@ -17,14 +17,18 @@ type UsageCorrector interface {
 // backfillEstimatedUsage asynchronously corrects a request_logs row that
 // still carries usage_source='estimated' with the real usage in entry, and —
 // when a row actually transitions — backfills the request's
-// response_format_anomalies rows with the real completion tokens.
+// response_format_anomalies rows with the real completion tokens (the
+// anomaly rows themselves are labelled usage_source='llm'; request_logs
+// keeps the dedicated 'corrected' state). This is the online path; the
+// AnomalyHarvester's periodic backfillActualTokens sweep is the batch
+// safety net for rows this path misses.
 //
 // Best-effort by design: failures only log, never block the request path,
 // and repeated calls are idempotent (the SQL only touches estimated rows /
 // anomaly rows without actual_tokens). Known limitation: if the earlier
 // estimated write is still queued in the telemetry worker when the
 // correction runs, the correction matches 0 rows and is dropped — the
-// M3 reconciliation job (CO-3) is the safety net for that window.
+// harvester sweep is the safety net for that window.
 // usage_ledger_hot is intentionally not rewritten here; ledger/billing
 // reconciliation is out of CO-2 scope.
 func backfillEstimatedUsage(corrector UsageCorrector, anomalies *FormatAnomalyRecorder, entry *telemetry.RequestLogEntry) {
