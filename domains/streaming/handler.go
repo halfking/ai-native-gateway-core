@@ -3406,11 +3406,12 @@ func (h *ChatHandler) serveWithExecutor(
 			streamWriter = interceptedWriter
 		}
 		result, execErr = h.executor.Execute(&executors.ExecParams{
-			W:                 streamWriter,
-			R:                 r,
-			BodyBytes:         upstreamBody,
-			IsStream:          isStream,
-			PreStreamPrepared: preStreamPrepared,
+			W:                  streamWriter,
+			AttachmentMetadata: attachmentsForOutbound(logCtx),
+			R:                  r,
+			BodyBytes:          upstreamBody,
+			IsStream:           isStream,
+			PreStreamPrepared:  preStreamPrepared,
 			OnStreamReady: func() {
 				if preStream != nil {
 					preStream.stop()
@@ -3736,23 +3737,24 @@ func (h *ChatHandler) serveWithExecutor(
 						"to", nextModel,
 					)
 					fallbackResult, fallbackErr := h.executor.Execute(&executors.ExecParams{
-						W:              w,
-						R:              r,
-						BodyBytes:      rewritten,
-						IsStream:       false,
-						ClientProtocol: clientProtocol,
-						ClientModel:    nextModel,
-						OutboundModel:  nextModel,
-						ClientID:       clientID,
-						Transform:      txResult,
-						Resolution:     nil, // stale; executor resolves per-candidate
-						Candidates:     fbCandidates,
-						Policy:         fbPolicy,
-						AuditBuilder:   auditBuilder,
-						Capture:        streamCapture,
-						ToolsRequested: requestHasTools(rewritten),
-						SessionKey:     sessionKey,
-						StickyKey:      stickyKey,
+						W:                  w,
+						R:                  r,
+						BodyBytes:          rewritten,
+						AttachmentMetadata: attachmentsForOutbound(logCtx),
+						IsStream:           false,
+						ClientProtocol:     clientProtocol,
+						ClientModel:        nextModel,
+						OutboundModel:      nextModel,
+						ClientID:           clientID,
+						Transform:          txResult,
+						Resolution:         nil, // stale; executor resolves per-candidate
+						Candidates:         fbCandidates,
+						Policy:             fbPolicy,
+						AuditBuilder:       auditBuilder,
+						Capture:            streamCapture,
+						ToolsRequested:     requestHasTools(rewritten),
+						SessionKey:         sessionKey,
+						StickyKey:          stickyKey,
 						KeyID: func() int {
 							if keyInfo != nil {
 								return keyInfo.ID

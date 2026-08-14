@@ -380,7 +380,7 @@ function navLabel(labelKey: string | undefined, fallback: string): string {
   border-radius: 8px;
   object-fit: contain;
   background: var(--kx-surface, var(--card));
-  box-shadow: var(--kx-shadow-sm, 0 2px 8px rgba(0, 0, 0, 0.06));
+  box-shadow: var(--kx-shadow-sm);
   flex-shrink: 0;
 }
 
@@ -459,7 +459,7 @@ function navLabel(labelKey: string | undefined, fallback: string): string {
   background: var(--kx-surface, var(--card));
   border: 1px solid var(--kx-border, var(--border));
   border-radius: 12px;
-  box-shadow: var(--kx-shadow-md, 0 16px 40px rgba(0, 0, 0, 0.1));
+  box-shadow: var(--kx-shadow-md);
   display: flex;
   flex-direction: column;
   gap: 2px;

@@ -60,9 +60,9 @@ const overallStatus = computed(() => {
 
 const statusColor = computed(() => {
   switch (overallStatus.value) {
-    case 'healthy': return '#34d399'
-    case 'unhealthy': return '#f87171'
-    default: return '#9ca3af'
+    case 'healthy': return 'var(--success)'
+    case 'unhealthy': return 'var(--danger)'
+    default: return 'var(--muted)'
   }
 })
 
@@ -213,7 +213,7 @@ onUnmounted(() => {
               <div v-if="health.database" class="status-item">
                 <span
                   class="status-dot"
-                  :style="{ backgroundColor: health.database.connected ? '#34d399' : '#f87171' }"
+                  :class="health.database.connected ? 'status-dot--ok' : 'status-dot--error'"
                 ></span>
                 <span class="status-name">Database</span>
                 <span class="status-value">
@@ -227,7 +227,7 @@ onUnmounted(() => {
               <div v-if="health.redis" class="status-item">
                 <span
                   class="status-dot"
-                  :style="{ backgroundColor: health.redis.connected ? '#34d399' : '#f87171' }"
+                  :class="health.redis.connected ? 'status-dot--ok' : 'status-dot--error'"
                 ></span>
                 <span class="status-name">Redis</span>
                 <span class="status-value">
@@ -241,7 +241,7 @@ onUnmounted(() => {
               <div v-if="aliveTasksCount" class="status-item">
                 <span
                   class="status-dot"
-                  :style="{ backgroundColor: aliveTasksCount.alive === aliveTasksCount.total ? '#34d399' : '#fbbf24' }"
+                  :class="aliveTasksCount.alive === aliveTasksCount.total ? 'status-dot--ok' : 'status-dot--warning'"
                 ></span>
                 <span class="status-name">Tasks</span>
                 <span class="status-value">{{ aliveTasksCount.alive }}/{{ aliveTasksCount.total }} alive</span>
@@ -290,16 +290,16 @@ onUnmounted(() => {
   font-size: 10px;
   font-weight: bold;
   background: var(--bg-hover);
-  color: #8b949e;
+  color: var(--muted);
   border: 1px solid var(--border);
   cursor: help;
   flex-shrink: 0;
 }
 
 .compact-indicator.ok {
-  background: rgba(52, 211, 153, 0.15);
-  color: #34d399;
-  border-color: #34d399;
+  background: var(--success-soft);
+  color: var(--success);
+  border-color: var(--success);
 }
 
 .status-dropdown {
@@ -307,7 +307,7 @@ onUnmounted(() => {
   background: var(--bg-card);
   border: 1px solid var(--border);
   border-radius: 8px;
-  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+  box-shadow: var(--kx-shadow-md);
   z-index: 2000;
   min-width: 240px;
   /* Position below the trigger element - will be set via JS */
@@ -338,7 +338,7 @@ onUnmounted(() => {
   display: flex;
   align-items: center;
   gap: 8px;
-  color: #f87171;
+  color: var(--danger);
 }
 
 .error-icon {
@@ -360,7 +360,7 @@ onUnmounted(() => {
 }
 
 .status-item:hover {
-  background: var(--bg-hover, rgba(255, 255, 255, 0.05));
+  background: var(--bg-hover);
 }
 
 .status-dot {
@@ -369,6 +369,10 @@ onUnmounted(() => {
   border-radius: 50%;
   flex-shrink: 0;
 }
+
+.status-dot--ok { background: var(--success); }
+.status-dot--error { background: var(--danger); }
+.status-dot--warning { background: var(--warning); }
 
 .status-name {
   font-weight: 500;
@@ -400,7 +404,7 @@ onUnmounted(() => {
 }
 
 .status-summary:hover {
-  background: var(--bg-hover, rgba(255, 255, 255, 0.05));
+  background: var(--bg-hover);
 }
 
 .summary-line {
@@ -441,15 +445,15 @@ onUnmounted(() => {
   font-size: 10px;
   font-weight: bold;
   background: var(--bg-hover);
-  color: #8b949e;
+  color: var(--muted);
   border: 1px solid var(--border);
   cursor: help;
 }
 
 .indicator.ok {
-  background: rgba(52, 211, 153, 0.15);
-  color: #34d399;
-  border-color: #34d399;
+  background: var(--success-soft);
+  color: var(--success);
+  border-color: var(--success);
 }
 
 .detail-view {

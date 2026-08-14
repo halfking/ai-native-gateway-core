@@ -169,12 +169,60 @@ func (h *AnomalyHarvester) bridgeLoop() {
 }
 
 func (h *AnomalyHarvester) runBridge(ctx context.Context) {
+	// CO-2: before alerting, backfill actual_tokens on estimated anomaly
+	// rows whose request later gained real LLM-reported usage.
+	h.backfillActualTokens(ctx)
+
 	alerts := h.queryAnomalyAlerts(ctx)
 	if len(alerts) == 0 {
 		return
 	}
 	for _, a := range alerts {
 		h.createFaultEvent(ctx, a)
+	}
+}
+
+// backfillActualTokens (CO-2) sweeps response_format_anomalies rows that
+// were recorded with actual_tokens=NULL (estimated usage path,
+// handler.go emitTelemetry) and fills them from request_logs_hot rows whose
+// usage_source has since become "llm" with a real completion_tokens count.
+// Runs inside the harvester's bridge cadence; idempotent (skips rows whose
+// actual_tokens is already set).
+func (h *AnomalyHarvester) backfillActualTokens(parent context.Context) {
+	ctx, cancel := context.WithTimeout(parent, 30*time.Second)
+	defer cancel()
+	tx, err := h.pool.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		slog.Warn("anomaly harvester: backfill transaction failed", "error", err)
+		return
+	}
+	defer tx.Rollback(ctx)
+	if _, err := tx.Exec(ctx, "SELECT set_config('app.bypass_rls', 'true', true)"); err != nil {
+		slog.Warn("anomaly harvester: backfill RLS setup failed", "error", err)
+		return
+	}
+	ct, err := tx.Exec(ctx, `
+		UPDATE response_format_anomalies a
+		SET actual_tokens = r.completion_tokens,
+		    usage_source  = 'llm'
+		FROM request_logs_hot r
+		WHERE a.request_id = r.request_id
+		  AND a.actual_tokens IS NULL
+		  AND a.usage_source  = 'estimated'
+		  AND r.usage_source  = 'llm'
+		  AND r.completion_tokens IS NOT NULL
+		  AND r.completion_tokens > 0
+	`)
+	if err != nil {
+		slog.Warn("anomaly harvester: backfill failed", "error", err)
+		return
+	}
+	if err := tx.Commit(ctx); err != nil {
+		slog.Warn("anomaly harvester: backfill commit failed", "error", err)
+		return
+	}
+	if n := ct.RowsAffected(); n > 0 {
+		slog.Info("anomaly harvester: backfilled actual_tokens", "rows", n)
 	}
 }
 

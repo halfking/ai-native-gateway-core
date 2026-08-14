@@ -57,3 +57,13 @@ func attachmentsFromLogContext(logCtx *RequestLogContext) json.RawMessage {
 	}
 	return b
 }
+
+// attachmentsForOutbound returns the stored-attachment records for the
+// executor's MM-1 outbound URL rewrite. nil-safe: the legacy path simply
+// carries no metadata and the rewrite is a no-op.
+func attachmentsForOutbound(logCtx *RequestLogContext) []attachments.AttachmentMetadata {
+	if logCtx == nil {
+		return nil
+	}
+	return logCtx.Attachments
+}

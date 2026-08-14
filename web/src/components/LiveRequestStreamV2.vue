@@ -621,8 +621,8 @@ function vendorOptionLabel(v: string) {
 }
 
 .control-group.control-group--request-type {
-  background: color-mix(in srgb, #409eff 16%, var(--bg-subtle));
-  border-color: color-mix(in srgb, #409eff 38%, var(--border));
+  background: color-mix(in srgb, var(--accent) 16%, var(--bg-subtle));
+  border-color: color-mix(in srgb, var(--accent) 38%, var(--border));
 }
 
 .control-btn {
@@ -651,15 +651,15 @@ function vendorOptionLabel(v: string) {
 
 /* 2026-07-13: 探测过滤器按钮专用样式 */
 .control-btn--probe {
-  border-color: rgba(64, 158, 255, 0.4);
+  border-color: color-mix(in srgb, var(--accent) 40%, transparent);
 }
 .control-btn--probe.control-btn--active {
-  background: rgba(64, 158, 255, 0.18);
-  border-color: #1890ff;
-  color: #1890ff;
+  background: color-mix(in srgb, var(--accent) 18%, transparent);
+  border-color: var(--accent);
+  color: var(--accent);
 }
 
-/* 2026-07-24: 多维过滤器样式 — 紫色高亮以便与维度/模式/请求类型组区分 */
+/* 2026-07-24: 多维过滤器使用警告色，与维度/模式/请求类型组区分。 */
 .filter-group {
   display: flex;
   align-items: center;
@@ -668,15 +668,15 @@ function vendorOptionLabel(v: string) {
   flex-wrap: nowrap;
   padding: 5px 10px;
   border-radius: 6px;
-  background: color-mix(in srgb, #722ed1 18%, var(--bg-subtle));
-  border: 1px solid color-mix(in srgb, #722ed1 45%, var(--border));
+  background: color-mix(in srgb, var(--warning) 18%, var(--bg-subtle));
+  border: 1px solid color-mix(in srgb, var(--warning) 45%, var(--border));
 }
 
 /* 2026-07-24: "筛选"前缀标签，让用户一眼看到这是筛选项区 */
 .filter-group__label {
   font-size: 11px;
   font-weight: 600;
-  color: #722ed1;
+  color: var(--warning);
   letter-spacing: 0.5px;
   user-select: none;
   padding-right: 2px;
@@ -737,7 +737,7 @@ function vendorOptionLabel(v: string) {
   background: var(--card);
   border: 1px solid var(--border);
   border-radius: 6px;
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+  box-shadow: var(--kx-shadow-sm);
   z-index: 100;
   padding: 4px;
 }
@@ -830,7 +830,7 @@ function vendorOptionLabel(v: string) {
 
 .status--ok .status-dot {
   background: var(--success);
-  box-shadow: 0 0 0 3px rgba(63, 185, 80, 0.18);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--success) 18%, transparent);
 }
 
 .status--warn .status-dot {
@@ -852,7 +852,7 @@ function vendorOptionLabel(v: string) {
   background: var(--bg);
   border: 1px solid var(--border);
   border-radius: 8px;
-  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+  box-shadow: var(--kx-shadow-md);
   z-index: 1000;
   overflow: hidden;
 }
@@ -1007,7 +1007,7 @@ function vendorOptionLabel(v: string) {
 }
 
 .save-btn:hover {
-  background: #5558e3;
+  background: var(--accent-h);
 }
 
 .reset-btn {
@@ -1056,8 +1056,8 @@ function vendorOptionLabel(v: string) {
 }
 
 .test-btn:hover {
-  background: #5558e3;
-  border-color: #5558e3;
+  background: var(--accent-h);
+  border-color: var(--accent-h);
 }
 
 .close-btn {
@@ -1098,10 +1098,10 @@ function vendorOptionLabel(v: string) {
   gap: 8px;
   padding: 8px 12px;
   margin-top: 8px;
-  background: rgba(245, 158, 11, 0.15);
-  border: 1px solid rgba(245, 158, 11, 0.4);
+  background: var(--warning-soft);
+  border: 1px solid color-mix(in srgb, var(--warning) 40%, transparent);
   border-radius: 6px;
-  color: #fbbf24;
+  color: var(--warning);
   font-size: 12px;
   line-height: 1.4;
 }
@@ -1143,7 +1143,7 @@ function vendorOptionLabel(v: string) {
   font-size: 13px;
   border: 1px dashed color-mix(in srgb, var(--border) 80%, transparent);
   border-radius: 8px;
-  background: linear-gradient(180deg, rgba(22, 27, 34, 0.6) 0%, rgba(15, 17, 23, 0.4) 100%);
+  background: var(--bg-secondary);
 }
 
 .swim-lanes__empty-icon {

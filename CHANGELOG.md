@@ -15,6 +15,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **主题 token 合规**：节点和队列状态背景改用现有设计 token 混色，移除硬编码颜色 fallback。
 - 详见 `docs/changelogs/2026-08-15-node-operations-audit-fixes.md`。
 
+## [Unreleased] - 2026-08-15 (Priority Component Color Tokens)
+
+### Fixed
+
+- **优先页面硬编码色治理**：`LiveRequestStreamV2`、`SystemStatusIndicator` 与 shell
+  组件统一使用现有 daylight/night 语义 token；动态健康点改为 CSS 状态类，去除内联颜色值。
+- **范围化回归门禁**：新增目标组件颜色合规测试，阻止 `#hex` 与 `rgb/rgba()` 再次进入
+  此轮治理的文件。
+- 详见 `docs/changelogs/2026-08-15-priority-component-color-tokens.md`。
+
 ## [Unreleased] - 2026-08-15 (Vendor Synchronization)
 
 ### Fixed
