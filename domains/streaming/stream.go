@@ -433,6 +433,10 @@ func StreamChatWithPendingCaptureAndDiagnostics(
 
 	runtimeCfg := currentStreamRuntimeConfig()
 
+
+	// SR-W1: route client frames through the attempt commit gate.
+	// Disabled (default) this is the identity function — legacy wire bytes.
+	w, gate := wrapAttemptWriter(w, FrameProtocolOpenAIChat)
 	flusher, ok := w.(http.Flusher)
 	if !ok {
 		http.Error(w, "streaming not supported", http.StatusInternalServerError)
@@ -513,8 +517,10 @@ func StreamChatWithPendingCaptureAndDiagnostics(
 			"first_byte_timeout_seconds", int(runtimeCfg.firstByteTimeout.Seconds()),
 			"hint", "if frequent, increase LLM_GATEWAY_FIRST_BYTE_TIMEOUT or admin config (default 120s)",
 		)
-		safeWriteSSE(w, "data: {\"error\":{\"message\":\"upstream first-byte timeout\",\"type\":\"timeout\",\"code\":\"first_byte_timeout\"}}\n\n")
-		safeFlush(flusher)
+		if gate.MayWriteTerminal() {
+			safeWriteSSE(w, "data: {\"error\":{\"message\":\"upstream first-byte timeout\",\"type\":\"timeout\",\"code\":\"first_byte_timeout\"}}\n\n")
+			safeFlush(flusher)
+		}
 		outcome.Interrupted = true
 		outcome.Reason = "first_byte_timeout"
 		outcome.Kind = errorsx.KindStreamTimeout
@@ -766,15 +772,17 @@ func StreamChatWithPendingCaptureAndDiagnostics(
 				// this signal only provides operator visibility, not
 				// classification.
 				synthesizedDone := !upstreamDoneReceived
-				safeWriteSSE(w, "data: [DONE]\n\n")
-				safeFlush(flusher)
-				if synthesizedDone {
-					slog.Warn("stream synthesized [DONE] terminator",
-						"client_model", clientModel,
-						"chunk_count", chunkCount,
-						"had_capture", capture != nil,
-					)
-					metrics.Global().RecordStreamSynthesizedDone()
+				if gate.MayWriteTerminal() {
+					safeWriteSSE(w, "data: [DONE]\n\n")
+					safeFlush(flusher)
+					if synthesizedDone {
+						slog.Warn("stream synthesized [DONE] terminator",
+							"client_model", clientModel,
+							"chunk_count", chunkCount,
+							"had_capture", capture != nil,
+						)
+						metrics.Global().RecordStreamSynthesizedDone()
+					}
 				}
 				if capture != nil && upstreamDoneReceived {
 					capture.ObserveChunk(&ir.StreamChunk{
@@ -798,8 +806,10 @@ func StreamChatWithPendingCaptureAndDiagnostics(
 					"client_model", clientModel,
 					"hint", "if timeout occurs frequently with chunks received, consider increasing llmgw_node_timeout_seconds (current default 120s, hotconfigurable via admin/settings)",
 				)
-				safeWriteSSE(w, "data: {\"error\":{\"message\":\"upstream read timeout\",\"type\":\"timeout\",\"code\":\"stream_timeout\"}}\n\n")
-				safeFlush(flusher)
+				if gate.MayWriteTerminal() {
+					safeWriteSSE(w, "data: {\"error\":{\"message\":\"upstream read timeout\",\"type\":\"timeout\",\"code\":\"stream_timeout\"}}\n\n")
+					safeFlush(flusher)
+				}
 				if capture != nil {
 					capture.MarkInterruptedWithReason("stream_timeout")
 				}
