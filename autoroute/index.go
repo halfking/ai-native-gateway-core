@@ -54,6 +54,17 @@ type Index struct {
 	// can be looked up tenant-scoped. nil ⇒ platform-level only.
 	affinityTenantResolver func(int) string
 
+	// tenantIQPolicy holds the per-tenant MinStandardIQ thresholds (RT-1),
+	// loaded best-effort from routing_policy.weights_json -> min_standard_iq
+	// on each Refresh. A tenant entry > 0 enables the gate for that tenant;
+	// an explicit 0 disables it; no entry falls back to the global flag.
+	tenantIQPolicy map[string]float64
+
+	// featuredModels (RT-3) is the canonical-name set from
+	// routing_policy.featured_models, reloaded best-effort on each Refresh.
+	// Only consulted when UsePopularityWeight is on.
+	featuredModels map[string]struct{}
+
 	// Pool is the optional PG pool for on-demand refresh when the cache
 	// is stale (older than staleThreshold). nil disables on-demand refresh.
 	pool *pgxpool.Pool
@@ -79,6 +90,26 @@ func (idx *Index) SetPool(pool *pgxpool.Pool) {
 	idx.pool = pool
 }
 
+// SetTenantIQPolicyForTest overrides the per-tenant MinStandardIQ thresholds
+// (RT-1) without standing up the Refresh/DB machinery.
+func (idx *Index) SetTenantIQPolicyForTest(policy map[string]float64) {
+	idx.mu.Lock()
+	defer idx.mu.Unlock()
+	idx.tenantIQPolicy = policy
+}
+
+// SetFeaturedModelsForTest overrides the featured canonical-name set (RT-3)
+// without standing up the Refresh/DB machinery.
+func (idx *Index) SetFeaturedModelsForTest(models []string) {
+	idx.mu.Lock()
+	defer idx.mu.Unlock()
+	set := make(map[string]struct{}, len(models))
+	for _, m := range models {
+		set[m] = struct{}{}
+	}
+	idx.featuredModels = set
+}
+
 // SetAffinityStore wires the learned task→model affinity into the index. nil or
 // mode=off makes RecommendV2 fall back to the 4-dimension path unchanged.
 func (idx *Index) SetAffinityStore(store *AffinityStore, tenantResolver func(int) string) {
@@ -94,6 +125,14 @@ func (idx *Index) LastRefresh() time.Time {
 	idx.mu.RLock()
 	defer idx.mu.RUnlock()
 	return idx.lastRefresh
+}
+
+// loadFeaturedModelsSnapshot returns the current featured set (RT-3) under
+// the read lock.
+func (idx *Index) loadFeaturedModelsSnapshot() map[string]struct{} {
+	idx.mu.RLock()
+	defer idx.mu.RUnlock()
+	return idx.featuredModels
 }
 
 // Snapshot returns a defensive copy of the current candidates.
@@ -133,9 +172,15 @@ func (idx *Index) Recommend(task TaskType, sigs ClassificationSignals, profile P
 		topN = 3
 	}
 	var reqLevel ComplexityLevel
-	if flags := GetFeatureFlags(); flags != nil && flags.UseComplexityScore {
+	flags := GetFeatureFlags()
+	if flags.UseComplexityScore {
 		reqLevel = EstimateComplexity(sigs, task, DefaultComplexityThresholds())
 	}
+	// RT-1 MinStandardIQ gate (platform-level; the legacy path has no tenant
+	// hints and no FilterNotes channel, so exclusions here are not audited in
+	// decision metadata — production traffic runs DecideV2 which audits).
+	// Same fail-open semantics as the V2 path.
+	iqThreshold := resolveStandardIQThreshold(nil, "", flags)
 
 	// L1: 热门池过滤（tier=primary）
 	primaryPool := make([]Candidate, 0, len(all))
@@ -150,6 +195,11 @@ func (idx *Index) Recommend(task TaskType, sigs ClassificationSignals, profile P
 		}
 		if reqLevel != "" && !ComplexityMatch(reqLevel, c.ComplexityCeiling, c.MinComplexity) {
 			continue
+		}
+		if iqThreshold > 0 {
+			if passes, _, _ := StandardIQMatch(c.CanonicalName, iqThreshold); !passes {
+				continue
+			}
 		}
 
 		// 计算 TaskMatchScore（用于后续评分）
@@ -195,6 +245,9 @@ func (idx *Index) Recommend(task TaskType, sigs ClassificationSignals, profile P
 		scored = append(scored, ScoredCandidate{Candidate: c, Breakdown: bd})
 	}
 
+	// RT-3: popularity/featured ordering weight (default off — no-op).
+	applyPopularityWeighting(scored, idx.loadFeaturedModelsSnapshot(), flags)
+
 	// 按 composite 降序排序
 	sort.SliceStable(scored, func(i, j int) bool {
 		return scored[i].Breakdown.Composite > scored[j].Breakdown.Composite
@@ -224,6 +277,11 @@ func (idx *Index) Recommend(task TaskType, sigs ClassificationSignals, profile P
 				// defeating UseComplexityScore.
 				if reqLevel != "" && !ComplexityMatch(reqLevel, c.ComplexityCeiling, c.MinComplexity) {
 					continue
+				}
+				if iqThreshold > 0 {
+					if passes, _, _ := StandardIQMatch(c.CanonicalName, iqThreshold); !passes {
+						continue
+					}
 				}
 				c.TaskMatchScore = TaskMatchScore(task, c.Tags)
 				fallbackFiltered = append(fallbackFiltered, c)
@@ -374,6 +432,29 @@ func (idx *Index) Refresh(ctx context.Context) (err error) {
 	idx.lastRefresh = time.Now()
 	idx.mu.Unlock()
 	entries = len(out)
+
+	// RT-1: best-effort reload of the per-tenant MinStandardIQ policy from
+	// routing_policy.weights_json -> min_standard_iq. Failure keeps the
+	// previous policy (don't fail-closed on a transient DB blip).
+	if policy, perr := loadTenantIQPolicies(ctx, pool); perr == nil {
+		idx.mu.Lock()
+		idx.tenantIQPolicy = policy
+		idx.mu.Unlock()
+	} else {
+		slog.Warn("autoroute index: load tenant IQ policy failed, keeping previous",
+			"error", perr.Error())
+	}
+
+	// RT-3: best-effort reload of routing_policy.featured_models. Failure
+	// keeps the previous set.
+	if featured, ferr := loadFeaturedModels(ctx, pool); ferr == nil {
+		idx.mu.Lock()
+		idx.featuredModels = featured
+		idx.mu.Unlock()
+	} else {
+		slog.Warn("autoroute index: load featured models failed, keeping previous",
+			"error", ferr.Error())
+	}
 
 	// 2026-08-11: best-effort drift probe against the authoritative
 	// v_routable_credential_models view. This publishes the leaked-entry
