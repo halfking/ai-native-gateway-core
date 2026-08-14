@@ -3526,7 +3526,21 @@ func (h *ChatHandler) serveWithExecutor(
 	// suppresses the executor's internal retry ladder). Flag-off requests
 	// never enter this branch — the loop below is byte-for-byte the legacy path.
 	if isStream && h.survivalTenantAllowed != nil && h.survivalTenantAllowed(tenantID) {
-		result, execErr = h.runSurvivalCoordinator(r, w, buildExecParams, tenantID)
+		// Session capture parity: the goal loop intercepts the stream
+		// writer per attempt; survival keeps ONE interceptor for the whole
+		// run — the buffered gate guarantees only client-visible
+		// (committed) bytes ever reach it.
+		base := w
+		if h.responseInterceptor != nil {
+			base = newInterceptingStreamWriter(w, h.responseInterceptor, r.Context(), response.StreamMeta{
+				SessionID:   gwSessionID,
+				RequestID:   requestID,
+				TenantID:    tenantID,
+				ClientModel: clientModel,
+			})
+			defer base.(*interceptingStreamWriter).finish()
+		}
+		result, execErr = h.runSurvivalCoordinator(r, base, buildExecParams, tenantID)
 		goto goalRetryLoopDone
 	}
 
