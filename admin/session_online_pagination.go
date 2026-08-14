@@ -13,13 +13,19 @@
 package admin
 
 import (
+	"crypto/hmac"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
+	"fmt"
+	"os"
+	"strings"
 	"time"
 )
 
 // PaginationParams 是分页请求参数。
 type PaginationParams struct {
-	Cursor string // base64(RFC3339Nano)，空表示首次请求
+	Cursor string // base64(timestamp|hmac)，空表示首次请求
 	Limit  int    // ∈ [1, 100]，默认 20
 }
 
@@ -29,7 +35,9 @@ type PaginationResponse struct {
 	HasMore    bool   `json:"has_more"`              // 是否有下一页
 }
 
-// ParseCursor 解析 base64 游标为时间戳，失败返回 zero time + error。
+// ParseCursor 解析 base64 游标为时间戳（带 HMAC 验证）。
+// 格式：base64(timestamp|hmac)。如果签名验证失败，返回 error。
+// 兼容旧格式（无签名）：尝试直接解析 timestamp。
 func ParseCursor(cursor string) (time.Time, error) {
 	if cursor == "" {
 		return time.Time{}, nil // 首次请求，返回 zero time（表示从最新开始）
@@ -38,19 +46,57 @@ func ParseCursor(cursor string) (time.Time, error) {
 	if err != nil {
 		return time.Time{}, err
 	}
-	ts, err := time.Parse(time.RFC3339Nano, string(decoded))
+
+	// 尝试分割 timestamp|hmac
+	parts := strings.SplitN(string(decoded), "|", 2)
+	if len(parts) != 2 {
+		// 兼容旧格式（无签名）：直接解析 timestamp
+		ts, err := time.Parse(time.RFC3339Nano, string(decoded))
+		if err != nil {
+			return time.Time{}, fmt.Errorf("invalid cursor format: %w", err)
+		}
+		return ts, nil
+	}
+
+	timestampStr := parts[0]
+	providedMAC := parts[1]
+
+	// 验证 HMAC
+	expectedMAC := computeCursorHMAC(timestampStr)
+	if !hmac.Equal([]byte(providedMAC), []byte(expectedMAC)) {
+		return time.Time{}, fmt.Errorf("cursor signature verification failed")
+	}
+
+	// 解析时间戳
+	ts, err := time.Parse(time.RFC3339Nano, timestampStr)
 	if err != nil {
-		return time.Time{}, err
+		return time.Time{}, fmt.Errorf("invalid timestamp in cursor: %w", err)
 	}
 	return ts, nil
 }
 
-// EncodeCursor 将时间戳编码为 base64 游标。
+// EncodeCursor 将时间戳编码为 base64 游标（带 HMAC 签名）。
+// 格式：base64(timestamp|hmac)。
 func EncodeCursor(ts time.Time) string {
 	if ts.IsZero() {
 		return ""
 	}
-	return base64.URLEncoding.EncodeToString([]byte(ts.Format(time.RFC3339Nano)))
+	timestampStr := ts.Format(time.RFC3339Nano)
+	mac := computeCursorHMAC(timestampStr)
+	payload := fmt.Sprintf("%s|%s", timestampStr, mac)
+	return base64.URLEncoding.EncodeToString([]byte(payload))
+}
+
+// computeCursorHMAC 计算 cursor 的 HMAC-SHA256 签名。
+// 密钥从环境变量 CURSOR_HMAC_SECRET 读取（默认 "changeme-in-production"）。
+func computeCursorHMAC(data string) string {
+	secret := os.Getenv("CURSOR_HMAC_SECRET")
+	if secret == "" {
+		secret = "changeme-in-production" // 默认密钥（生产环境必须覆盖）
+	}
+	h := hmac.New(sha256.New, []byte(secret))
+	h.Write([]byte(data))
+	return hex.EncodeToString(h.Sum(nil))
 }
 
 // NormalizePaginationParams 规范化分页参数（限制范围，设默认值）。
