@@ -17,6 +17,7 @@ type Config struct {
 	// Secrets
 	SecretKey               string `yaml:"secret_key" env:"LLM_GATEWAY_SECRET_KEY"`
 	CredentialEncryptionKey string `yaml:"credential_encryption_key" env:"LLM_GATEWAY_CREDENTIAL_ENCRYPTION_KEY"`
+	CursorHMACSecret        string `yaml:"-" env:"CURSOR_HMAC_SECRET"`
 
 	// Redis
 	RedisAddr     string `yaml:"redis_addr" env:"LLM_GATEWAY_REDIS_ADDR"`
@@ -189,9 +190,9 @@ func (cfg *Config) IsProduction() bool {
 	return env == "production" || env == "prod"
 }
 
-// ValidateAuthSecrets enforces rule 20 §8: in production, the three auth
-// secrets (data-plane API key, ops admin token, JWT signing key) must all
-// be non-empty, otherwise the process must NOT start fail-open.
+// ValidateAuthSecrets enforces production secrets for the data plane, ops plane,
+// session JWTs, and signed pagination cursors. A missing secret must prevent
+// production startup rather than silently enabling a forgeable fallback.
 //
 // JWT secret (SSOT: admin/auth_params.go EnvJWTSecret, EnvSecretKey):
 //
@@ -211,6 +212,9 @@ func (cfg *Config) ValidateAuthSecrets() (missing string) {
 	jwtSecret := firstNonEmpty(os.Getenv("LLM_GATEWAY_JWT_SECRET"), cfg.SecretKey)
 	if jwtSecret == "" {
 		return "LLM_GATEWAY_JWT_SECRET (or LLM_GATEWAY_SECRET_KEY fallback)"
+	}
+	if len([]byte(strings.TrimSpace(cfg.CursorHMACSecret))) < 32 {
+		return "CURSOR_HMAC_SECRET (must be at least 32 bytes)"
 	}
 	return ""
 }
@@ -256,6 +260,7 @@ func Load() *Config {
 		DatabaseURL:             firstNonEmpty(os.Getenv("LLM_GATEWAY_DATABASE_URL"), os.Getenv("DATABASE_URL")),
 		SecretKey:               firstNonEmpty(os.Getenv("LLM_GATEWAY_SECRET_KEY"), os.Getenv("SECRET_KEY")),
 		CredentialEncryptionKey: firstNonEmpty(os.Getenv("LLM_GATEWAY_CREDENTIAL_ENCRYPTION_KEY"), os.Getenv("CREDENTIAL_ENCRYPTION_KEY")),
+		CursorHMACSecret:        os.Getenv("CURSOR_HMAC_SECRET"),
 		RedisAddr:               os.Getenv("LLM_GATEWAY_REDIS_ADDR"),
 		RedisPassword:           os.Getenv("LLM_GATEWAY_REDIS_PASSWORD"),
 		Listen:                  envOrDefault("LLM_GATEWAY_LISTEN", ":8781"),

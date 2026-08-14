@@ -5,6 +5,9 @@
 **会话**: gw_b48a0684-edf1-4bb3-a451-720c5ce6ccf0（compact 后）
 **目的**: 上下文压缩后保留路由修复任务状态，便于后续会话无重复执行侦察/部署
 
+> ⚠️ **本文档已过期**：本文描述 rebase 之前的状态（本地 HEAD `ade844b9`，与 origin 差 1 commit）。Rebase 已于后续会话完成，本地与 origin/main 均落至 `22c79083`，详见配套文档 **`docs/2026-08-13-auto-route-v31-postrebase-handoff.md`**。
+> 后续请以 post-rebase 文档为准，本文档保留作为修复历史的快照。
+
 ---
 
 ## 一、原始目标

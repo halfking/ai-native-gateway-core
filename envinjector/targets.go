@@ -21,7 +21,6 @@ var legacyAliases = map[string]string{
 var canonicalTargets = []Target{
 	{Alias: "252", EncFile: ".env.252.enc", SSHKeyEnv: "SSH_KEY_252", SSHKeyDef: "~/.ssh/id_ed25519"},
 	{Alias: "154", EncFile: ".env.154.enc", SSHKeyEnv: "SSH_KEY_154", SSHKeyDef: "~/.ssh/id_ed25519"},
-	{Alias: "245", EncFile: ".env.245.enc", SSHKeyEnv: "SSH_KEY_245", SSHKeyDef: "~/.ssh/id_ed25519"},
 	{Alias: "kaixuan-1", EncFile: ".env.kaixuan-1.enc", SSHKeyEnv: "SSH_KEY_KAIXUAN_1", SSHKeyDef: "~/.ssh/kaixuan1_id_rsa"},
 }
 

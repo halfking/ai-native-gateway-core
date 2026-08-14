@@ -10,6 +10,8 @@ GATEWAY_URL="${GATEWAY_URL:-http://localhost:8781}"
 # 加载方式: source ~/workspace/ai-native-tools/envs/loader.sh --project llm-gateway-go --server <target>
 API_KEY="${LLM_GATEWAY_API_KEY:?LLM_GATEWAY_API_KEY 未加载，请先 source envs/loader.sh}"
 TIMESTAMP=$(date +%s)
+AUTO_HEADERS=$(mktemp)
+trap 'rm -f "$AUTO_HEADERS"' EXIT
 
 # 颜色输出
 GREEN='\033[0;32m'
@@ -29,7 +31,7 @@ log_info() {
 
 log_success() {
     echo -e "${GREEN}[PASS]${NC} $1"
-    ((PASSED_TESTS++))
+    PASSED_TESTS=$((PASSED_TESTS + 1))
 }
 
 log_error() {
@@ -43,7 +45,7 @@ test_model() {
     local test_name=$2
     local max_tokens=${3:-10}
     
-    ((TOTAL_TESTS++))
+    TOTAL_TESTS=$((TOTAL_TESTS + 1))
     
     log_info "测试 #$TOTAL_TESTS: $test_name (model: $model)"
     
@@ -107,7 +109,7 @@ log_info "测试 #$((TOTAL_TESTS + 1)): 自动路由 (model: auto)"
 ((TOTAL_TESTS++))
 
 request_id="test-${TIMESTAMP}-auto"
-response=$(timeout 15 curl -s -w "\n%{http_code}" -X POST "$GATEWAY_URL/v1/chat/completions" \
+response=$(timeout 15 curl -s -D "$AUTO_HEADERS" -w "\n%{http_code}" -X POST "$GATEWAY_URL/v1/chat/completions" \
     -H "Authorization: Bearer $API_KEY" \
     -H "Content-Type: application/json" \
     -H "X-Request-Id: $request_id" \
@@ -121,10 +123,18 @@ http_code=$(echo "$response" | tail -n1)
 body=$(echo "$response" | head -n-1)
 
 if [ "$http_code" = "200" ]; then
-    chosen_model=$(echo "$body" | jq -r '.model' 2>/dev/null)
-    log_success "自动路由 - 选择了模型: $chosen_model"
-    echo "         Request ID: $request_id"
-    ((PASSED_TESTS++))
+    auto_decision=$(tr -d '\r' < "$AUTO_HEADERS" | awk 'BEGIN { IGNORECASE = 1 } /^X-Gw-Auto-Decision:/ { sub(/^[^:]*:[[:space:]]*/, ""); print; exit }')
+    chosen_model=$(printf '%s' "$auto_decision" | jq -r '.chosen_model // empty' 2>/dev/null)
+    if [ -z "$chosen_model" ]; then
+        log_error "自动路由 - missing X-Gw-Auto-Decision.chosen_model"
+        echo "         Request ID: $request_id"
+    elif [ "$chosen_model" = "minimax-m2.5" ]; then
+        log_error "自动路由 - selected deprecated model: $chosen_model"
+        echo "         Request ID: $request_id"
+    else
+        log_success "自动路由 - 选择了模型: $chosen_model"
+        echo "         Request ID: $request_id"
+    fi
 else
     log_error "自动路由 - HTTP $http_code"
     echo "         Response: $body"
@@ -154,7 +164,7 @@ if [ "$http_code" = "200" ]; then
     if echo "$response" | grep -q "data:"; then
         log_success "流式响应 - SSE 格式正确"
         echo "         Request ID: $request_id"
-        ((PASSED_TESTS++))
+        PASSED_TESTS=$((PASSED_TESTS + 1))
     else
         log_error "流式响应 - 未检测到 SSE 数据"
     fi

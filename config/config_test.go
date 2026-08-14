@@ -7,6 +7,30 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+func TestValidateAuthSecretsRequiresCursorHMACSecret(t *testing.T) {
+	cfg := &Config{
+		APIKey:           "api-key",
+		AdminAPIKey:      "admin-key",
+		SecretKey:        "jwt-secret",
+		CursorHMACSecret: "",
+	}
+	if missing := cfg.ValidateAuthSecrets(); missing != "CURSOR_HMAC_SECRET (must be at least 32 bytes)" {
+		t.Fatalf("ValidateAuthSecrets() = %q, want short-secret error", missing)
+	}
+
+	cfg.CursorHMACSecret = "cursor-secret-key-0123456789012345"
+	if missing := cfg.ValidateAuthSecrets(); missing != "" {
+		t.Fatalf("ValidateAuthSecrets() = %q, want empty", missing)
+	}
+}
+
+func TestLoadReadsCursorHMACSecret(t *testing.T) {
+	t.Setenv("CURSOR_HMAC_SECRET", "cursor-secret")
+	if got := Load().CursorHMACSecret; got != "cursor-secret" {
+		t.Fatalf("Load().CursorHMACSecret = %q, want cursor-secret", got)
+	}
+}
+
 func TestLoad_TimeoutAndPendingTTLEnvironmentOverrides(t *testing.T) {
 	for _, tc := range []struct {
 		name string

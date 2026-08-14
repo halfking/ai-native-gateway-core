@@ -144,7 +144,6 @@ Usage:
 Targets:
   252         Alibaba Cloud pre-production (legacy: 184)
   154         Production (legacy: 71)
-  245         Registry / pre-production gate
   kaixuan-1   Company k3s cluster
 
 Examples:

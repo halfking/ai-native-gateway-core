@@ -32,6 +32,9 @@ func TestFindTarget(t *testing.T) {
 	if tgt := FindTarget("184"); tgt == nil {
 		t.Error("FindTarget(184) should resolve legacy alias to 252")
 	}
+	if tgt := FindTarget("245"); tgt != nil {
+		t.Errorf("FindTarget(245) should be nil until a managed envelope exists, got %+v", tgt)
+	}
 	if tgt := FindTarget("nonexistent"); tgt != nil {
 		t.Errorf("FindTarget(nonexistent) should be nil, got %+v", tgt)
 	}
