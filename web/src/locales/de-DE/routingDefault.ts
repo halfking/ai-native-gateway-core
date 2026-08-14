@@ -48,6 +48,7 @@ export default {
   create: {
     title: 'Modell zu "{tier}" hinzufügen',
     modelRequired: 'Modell ist erforderlich',
+    duplicate: 'Diese Konfiguration existiert bereits (aktuelles Modell: {model}). Bearbeiten Sie den vorhandenen Eintrag.',
     taskRequired: 'Wählen Sie zuerst einen Aufgabentyp aus',
     submit: 'Hinzufügen',
     submitting: 'Wird hinzugefügt…',

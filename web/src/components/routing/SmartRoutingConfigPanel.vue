@@ -65,8 +65,7 @@ async function loadDefaults() {
 
 async function onAdd(payload: { tier: TierKey; canonical_model: string; profile: string; priority: number }) {
   if (!selectedTask.value) {
-    error.value = t('routingDefault.empty.needTask')
-    return
+    throw new Error(t('routingDefault.empty.needTask'))
   }
   try {
     await createRoutingDefault({
@@ -80,7 +79,9 @@ async function onAdd(payload: { tier: TierKey; canonical_model: string; profile:
     })
     await loadDefaults()
   } catch (e: any) {
-    error.value = e?.message ?? String(e)
+    const message = e?.message ?? String(e)
+    error.value = message
+    throw new Error(message)
   }
 }
 
@@ -156,7 +157,7 @@ defineExpose({ reload: loadDefaults })
           :rows="filteredRows"
           :task-type="selectedTask"
           :busy-id="busyId"
-          @add="onAdd"
+          :add="onAdd"
           @patch="onPatch"
           @detail="detailRow = $event"
           @remove="onRemove"

@@ -48,6 +48,7 @@ export default {
   create: {
     title: 'إضافة نموذج إلى "{tier}"',
     modelRequired: 'النموذج مطلوب',
+    duplicate: 'هذا الإعداد موجود بالفعل (النموذج الحالي: {model}). عدّل الإدخال الموجود.',
     taskRequired: 'حدد نوع مهمة أولاً',
     submit: 'إضافة',
     submitting: 'جارٍ الإضافة…',
