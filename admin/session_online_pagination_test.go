@@ -2,20 +2,17 @@ package admin
 
 import (
 	"encoding/base64"
-	"os"
 	"testing"
 	"time"
 )
 
 func TestCursorHMACSignature(t *testing.T) {
-	// 设置测试密钥
-	os.Setenv("CURSOR_HMAC_SECRET", "test-secret-key")
-	defer os.Unsetenv("CURSOR_HMAC_SECRET")
+	t.Setenv("CURSOR_HMAC_SECRET", "test-secret-key-0123456789012345")
 
 	now := time.Now()
 
 	// 测试编码 + 解码（正常流程）
-	cursor := EncodeCursor(now)
+	cursor, err := EncodeCursor(now)
 	if cursor == "" {
 		t.Fatal("EncodeCursor returned empty string")
 	}
@@ -42,27 +39,26 @@ func TestCursorHMACSignature(t *testing.T) {
 		t.Logf("Got expected error: %v", err)
 	}
 
-	// 测试兼容旧格式（无签名）
+	// Unsigned cursors must be rejected.
 	oldFormatCursor := "MjAyNi0wOC0xNFQxMjozNDo1Ni4xMjM0NTZa" // base64("2026-08-14T12:34:56.123456Z")
 	_, err = ParseCursor(oldFormatCursor)
-	if err != nil {
-		t.Errorf("ParseCursor should accept old format: %v", err)
+	if err == nil {
+		t.Error("ParseCursor should reject unsigned cursor")
 	}
 }
 
-func TestCursorDefaultSecret(t *testing.T) {
-	// 清除环境变量，测试默认密钥
-	os.Unsetenv("CURSOR_HMAC_SECRET")
-
+func TestCursorRequiresSecret(t *testing.T) {
+	t.Setenv("CURSOR_HMAC_SECRET", "")
 	now := time.Now()
-	cursor := EncodeCursor(now)
-	decoded, err := ParseCursor(cursor)
-	if err != nil {
-		t.Fatalf("ParseCursor with default secret failed: %v", err)
+	if _, err := EncodeCursor(now); err == nil {
+		t.Fatal("EncodeCursor should fail without a configured secret")
 	}
+}
 
-	if decoded.Sub(now).Abs() > time.Microsecond {
-		t.Errorf("timestamp mismatch: got %v, want %v", decoded, now)
+func TestBuildPaginationResponseRequiresTimestamp(t *testing.T) {
+	t.Setenv("CURSOR_HMAC_SECRET", "test-secret-key")
+	if _, err := BuildPaginationResponse(20, time.Time{}, 20); err == nil {
+		t.Fatal("BuildPaginationResponse should reject a missing last timestamp")
 	}
 }
 
@@ -75,7 +71,10 @@ func TestEmptyCursor(t *testing.T) {
 		t.Errorf("ParseCursor('') should return zero time, got %v", decoded)
 	}
 
-	cursor := EncodeCursor(time.Time{})
+	cursor, err := EncodeCursor(time.Time{})
+	if err != nil {
+		t.Fatalf("EncodeCursor(zero) failed: %v", err)
+	}
 	if cursor != "" {
 		t.Errorf("EncodeCursor(zero) should return empty string, got %q", cursor)
 	}
