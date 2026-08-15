@@ -305,7 +305,15 @@ func StreamAnthropicSSEToResponsesWithDiagnostics(
 		w.Header().Set("X-Request-Id", requestID)
 	}
 	w.WriteHeader(http.StatusOK)
-	flusher.Flush()
+	if !safeFlush(flusher) {
+		if capture != nil {
+			capture.MarkInterruptedWithReason("client_write_failed")
+		}
+		if pc != nil {
+			pc.markInterrupted("client_write_failed")
+		}
+		return StreamOutcome{Interrupted: true, Reason: "client_write_failed", Kind: errorsx.KindUpstreamDown, Resumable: true}
+	}
 
 	if clientModel == "" {
 		clientModel = outboundModel
@@ -565,7 +573,15 @@ func StreamOpenAIToResponsesSSEWithDiagnostics(
 		w.Header().Set("X-Request-Id", requestID)
 	}
 	w.WriteHeader(http.StatusOK)
-	flusher.Flush()
+	if !safeFlush(flusher) {
+		if capture != nil {
+			capture.MarkInterruptedWithReason("client_write_failed")
+		}
+		if pc != nil {
+			pc.markInterrupted("client_write_failed")
+		}
+		return StreamOutcome{Interrupted: true, Reason: "client_write_failed", Kind: errorsx.KindUpstreamDown, Resumable: true}
+	}
 
 	if clientModel == "" {
 		clientModel = outboundModel

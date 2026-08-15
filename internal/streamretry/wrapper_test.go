@@ -14,6 +14,35 @@ import (
 	"time"
 )
 
+type flushErrorResponseWriter struct {
+	http.ResponseWriter
+	flushErr error
+	flushes  int
+}
+
+func (w *flushErrorResponseWriter) Flush() { _ = w.FlushError() }
+func (w *flushErrorResponseWriter) FlushError() error {
+	w.flushes++
+	return w.flushErr
+}
+
+func TestErrorRecorderPropagatesFlushErrorAfterCommit(t *testing.T) {
+	flushErr := errors.New("connection closed")
+	underlying := &flushErrorResponseWriter{ResponseWriter: httptest.NewRecorder(), flushErr: flushErr}
+	recorder := &errorRecorder{ResponseWriter: underlying}
+
+	if err := recorder.FlushError(); err != nil || underlying.flushes != 0 {
+		t.Fatalf("pre-commit flush = (%v, %d), want nil and zero calls", err, underlying.flushes)
+	}
+	recorder.WriteHeader(http.StatusOK)
+	if err := recorder.FlushError(); !errors.Is(err, flushErr) {
+		t.Fatalf("committed FlushError() = %v, want %v", err, flushErr)
+	}
+	if underlying.flushes != 1 {
+		t.Fatalf("underlying flushes = %d, want 1", underlying.flushes)
+	}
+}
+
 // TestDefaultStreamExecutor_SuccessFirstAttempt wraps a happy-path handler and
 // verifies the executor forwards the response without retrying.
 func TestDefaultStreamExecutor_SuccessFirstAttempt(t *testing.T) {

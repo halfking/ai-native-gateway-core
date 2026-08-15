@@ -2,6 +2,7 @@ package streaming
 
 import (
 	"errors"
+	"fmt"
 	"io"
 	"sync"
 )
@@ -18,6 +19,7 @@ import (
 // touching a dead ResponseWriter.
 
 type flusher interface{ Flush() }
+type errorFlusher interface{ FlushError() error }
 
 // SerializedStreamWriter serializes all client-facing stream writes for one
 // HTTP connection.
@@ -25,7 +27,9 @@ type SerializedStreamWriter struct {
 	mu              sync.Mutex
 	w               io.Writer
 	f               flusher
+	fe              errorFlusher
 	detached        bool
+	detachErr       error
 	capture         []byte
 	captureLimit    int
 	captureOverflow bool
@@ -37,6 +41,9 @@ func NewSerializedStreamWriter(w io.Writer) *SerializedStreamWriter {
 	s := &SerializedStreamWriter{w: w}
 	if f, ok := w.(flusher); ok {
 		s.f = f
+	}
+	if fe, ok := w.(errorFlusher); ok {
+		s.fe = fe
 	}
 	return s
 }
@@ -79,6 +86,7 @@ func (s *SerializedStreamWriter) Write(p []byte) (int, error) {
 	n, err := s.w.Write(p)
 	if err != nil {
 		s.detached = true
+		s.detachErr = err
 		return n, err
 	}
 	return n, nil
@@ -87,12 +95,37 @@ func (s *SerializedStreamWriter) Write(p []byte) (int, error) {
 // Flush flushes the underlying connection, serialized with writes. It is a
 // no-op when detached or when the writer has no flusher.
 func (s *SerializedStreamWriter) Flush() {
+	_ = s.FlushError()
+}
+
+// FlushError preserves optional net/http flush errors so a closed connection
+// detaches immediately instead of being touched by later stream producers.
+func (s *SerializedStreamWriter) FlushError() (err error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.detached || s.f == nil {
-		return
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			s.detached = true
+			s.detachErr = fmt.Errorf("flush panic: %v", recovered)
+			err = s.detachErr
+		}
+	}()
+	if s.detached {
+		return s.detachErr
+	}
+	if s.fe != nil {
+		if err := s.fe.FlushError(); err != nil {
+			s.detached = true
+			s.detachErr = err
+			return err
+		}
+		return nil
+	}
+	if s.f == nil {
+		return nil
 	}
 	s.f.Flush()
+	return nil
 }
 
 // Detached reports whether the client connection is gone.

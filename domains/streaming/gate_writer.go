@@ -93,7 +93,12 @@ func (gw *GateWriter) Write(p []byte) (int, error) {
 // classification. Pending bytes stay buffered until the frame completes (or
 // Finish at attempt end).
 func (gw *GateWriter) Flush() {
-	gw.gate.writer.Flush()
+	_ = gw.FlushError()
+}
+
+// FlushError preserves connection errors from the shared serialized writer.
+func (gw *GateWriter) FlushError() error {
+	return gw.gate.writer.FlushError()
 }
 
 // Finish writes any trailing partial frame through the gate's attempt-end

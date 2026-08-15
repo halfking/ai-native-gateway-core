@@ -165,7 +165,12 @@ func (c *SurvivalCoordinator) Run(ctx context.Context, sw *SerializedStreamWrite
 
 		switch res.Decision.Action {
 		case TaskActionSucceed:
-			finishGateWriter(gw, gate)
+			if err := finishGateWriter(gw, gate); err != nil {
+				res.Decision = TaskDecision{Action: TaskActionFailClosed, Reason: "client_disconnected"}
+				recordSurvivalTransition(survivalStateRunning, survivalTerminalToState(res.Decision), res.Decision.Reason)
+				recordSurvivalRequestTerminal(c.Protocol, res.Decision)
+				return res
+			}
 			res.Succeed = true
 			recordSurvivalTransition(survivalStateRunning, survivalTerminalToState(res.Decision), res.Decision.Reason)
 			recordSurvivalRequestTerminal(c.Protocol, res.Decision)
@@ -235,7 +240,7 @@ func (c *SurvivalCoordinator) Run(ctx context.Context, sw *SerializedStreamWrite
 			continue
 
 		default: // ResumeBlocked / FailTerminal / FailClosed
-			finishGateWriter(gw, gate)
+			_ = finishGateWriter(gw, gate)
 			c.renderTerminal(res.Decision, gate)
 			recordSurvivalTransition(survivalStateRunning, survivalTerminalToState(res.Decision), res.Decision.Reason)
 			recordSurvivalResumeSafetyBlocked(res.Decision, res.FinalAttempt)
@@ -250,10 +255,11 @@ func (c *SurvivalCoordinator) Run(ctx context.Context, sw *SerializedStreamWrite
 // attempt committed; a discarded attempt owns nothing on the wire. Finish
 // routes through AttemptCommitGate.FinishAttempt, which itself refuses
 // trailing bytes on a discarded attempt.
-func finishGateWriter(w interface{ Finish() error }, gate *AttemptCommitGate) {
+func finishGateWriter(w interface{ Finish() error }, gate *AttemptCommitGate) error {
 	if gate != nil && gate.Committed() {
-		w.Finish()
+		return w.Finish()
 	}
+	return nil
 }
 
 func (c *SurvivalCoordinator) renderTerminal(decision TaskDecision, gate *AttemptCommitGate) {

@@ -53,6 +53,35 @@ func TestAttemptCommitGateBuffersMetadataUntilSemanticCommit(t *testing.T) {
 	}
 }
 
+func TestAttemptCommitGatePropagatesSemanticFlushError(t *testing.T) {
+	flushErr := errors.New("connection closed")
+	writer := &failingErrorFlusher{flushErr: flushErr}
+	gate := NewAttemptCommitGate(ProtocolAnthropic, NewSerializedStreamWriter(writer), GateOptions{Mode: GateModeBuffered})
+
+	err := gate.WriteFrame("event: content_block_delta\ndata: {\"delta\":{\"type\":\"text_delta\",\"text\":\"x\"}}\n\n")
+	if !errors.Is(err, flushErr) {
+		t.Fatalf("semantic frame error = %v, want %v", err, flushErr)
+	}
+	if !gate.Committed() {
+		t.Fatal("written semantic bytes must remain committed after flush failure")
+	}
+}
+
+func TestAttemptCommitGatePropagatesCommitAndFinishFlushErrors(t *testing.T) {
+	flushErr := errors.New("connection closed")
+	writer := &failingErrorFlusher{flushErr: flushErr}
+	gate := NewAttemptCommitGate(ProtocolAnthropic, NewSerializedStreamWriter(writer), GateOptions{Mode: GateModeBuffered})
+	if err := gate.WriteFrame("event: message_start\ndata: {}\n\n"); err != nil {
+		t.Fatal(err)
+	}
+	if err := gate.Commit(); !errors.Is(err, flushErr) {
+		t.Fatalf("Commit() = %v, want %v", err, flushErr)
+	}
+	if err := gate.FinishAttempt(""); !errors.Is(err, flushErr) {
+		t.Fatalf("FinishAttempt() = %v, want retained %v", err, flushErr)
+	}
+}
+
 func TestAttemptCommitGateDiscardAllowedOnlyBeforeSemanticCommit(t *testing.T) {
 	g, f := newGateForTest(GateModeBuffered)
 	if err := g.WriteFrame("event: message_start\ndata: {}\n\n"); err != nil {

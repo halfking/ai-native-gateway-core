@@ -47,6 +47,9 @@ func (s *serializedResponseWriter) Write(p []byte) (int, error) { return s.write
 // Flush flushes the shared serialized channel.
 func (s *serializedResponseWriter) Flush() { s.writer.Flush() }
 
+// FlushError preserves connection errors for callers that can act on them.
+func (s *serializedResponseWriter) FlushError() error { return s.writer.FlushError() }
+
 // SerializedWriter exposes the shared serialized channel so other producers
 // (keepalive senders, attempt gates) can write without going through the
 // http.ResponseWriter interface.

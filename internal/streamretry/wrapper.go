@@ -405,11 +405,21 @@ type errorRecorder struct {
 
 // Flush preserves SSE behavior through the retry wrapper.
 func (r *errorRecorder) Flush() {
-	if r.committed {
-		if flusher, ok := r.ResponseWriter.(http.Flusher); ok {
-			flusher.Flush()
-		}
+	_ = r.FlushError()
+}
+
+// FlushError preserves connection errors through the retry wrapper.
+func (r *errorRecorder) FlushError() error {
+	if !r.committed {
+		return nil
 	}
+	if flusher, ok := r.ResponseWriter.(interface{ FlushError() error }); ok {
+		return flusher.FlushError()
+	}
+	if flusher, ok := r.ResponseWriter.(http.Flusher); ok {
+		flusher.Flush()
+	}
+	return nil
 }
 
 // Unwrap exposes the underlying writer to middleware that needs to inspect it.
