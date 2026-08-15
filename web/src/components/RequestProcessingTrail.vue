@@ -1,6 +1,14 @@
 <script setup lang="ts">
+// RequestProcessingTrail — 最近请求处理轨迹（V3.2 FE-A1 → V3.3-OBS OBS-FE2 升级）
+//
+// 24号 §7：轨迹由动作事件驱动（原为快照驱动）。进行中请求的小形态卡显示
+// stage 徽标（仅后端上报时）+ 最新动作（request_lifecycle 推送）+ 当前节点；
+// 管道两端解耦：左端客户端协议（client_protocol），右端当前上游节点
+// （最新动作的 credential_id）。动作事件未推送时退回快照文案，
+// 不造第二状态机、不用零值冒充。
 import { computed } from 'vue'
-import { requestsRef, type LiveRequest } from '../composables/liveStreamStore'
+import { requestsRef, getRequestActions, type ActionEvent, type LiveRequest } from '../composables/liveStreamStore'
+import { actionEventLabel } from '../composables/liveStreamDisplay'
 
 const recentRequests = computed(() => requestsRef.value
   .filter((request) => request.type !== 'idle_marker' && request.request_id)
@@ -23,13 +31,31 @@ function statusClass(request: LiveRequest) {
   if (request.status === 'failure' || request.status === 'rate_limited') return 'trail-request--danger'
   return 'trail-request--active'
 }
+
+// 最新动作（seq 升序取末位）；未推送时返回 null，由模板退回快照文案。
+function latestAction(requestId?: string): ActionEvent | null {
+  if (!requestId) return null
+  const list = getRequestActions(requestId)
+  return list.length > 0 ? list[list.length - 1] : null
+}
+
+// 右端当前上游节点：最近一个携带 credential_id 的动作（24号 §2 语义）。
+function currentNode(requestId?: string): number | null {
+  if (!requestId) return null
+  const list = getRequestActions(requestId)
+  for (let i = list.length - 1; i >= 0; i--) {
+    const cred = list[i].credential_id
+    if (typeof cred === 'number' && cred > 0) return cred
+  }
+  return null
+}
 </script>
 
 <template>
   <section class="processing-trail">
     <div class="trail-header">
       <span class="trail-title">最近请求处理轨迹</span>
-      <span class="trail-note">来自实时请求流</span>
+      <span class="trail-note">动作事件驱动</span>
     </div>
 
     <div v-if="recentRequests.length === 0" class="trail-empty">等待新请求进入网关</div>
@@ -47,11 +73,25 @@ function statusClass(request: LiveRequest) {
           <span v-if="request.latency_ms != null" class="trail-latency">{{ request.latency_ms }}ms</span>
         </div>
         <div class="trail-steps">
-          <span class="trail-step">进入网关</span>
+          <!-- 左端：客户端侧（协议），管道两端解耦（26号 §2） -->
+          <span class="trail-step trail-step--client">{{ request.client_protocol || '客户端' }}</span>
           <i aria-hidden="true">→</i>
-          <span class="trail-step">路由选择</span>
-          <i aria-hidden="true">→</i>
-          <span class="trail-step trail-step--provider">{{ request.provider_code || '选择节点' }}</span>
+          <template v-if="latestAction(request.request_id)">
+            <!-- stage 徽标：仅后端上报 stage 时渲染（禁止猜测值冒充） -->
+            <span v-if="request.stage" class="trail-stage">{{ request.stage }}</span>
+            <span class="trail-step trail-step--latest">{{ actionEventLabel(latestAction(request.request_id)?.action) }}</span>
+            <template v-if="currentNode(request.request_id)">
+              <i aria-hidden="true">→</i>
+              <span class="trail-step trail-step--provider">节点 {{ currentNode(request.request_id) }}</span>
+            </template>
+          </template>
+          <template v-else>
+            <span class="trail-step">进入网关</span>
+            <i aria-hidden="true">→</i>
+            <span class="trail-step">路由选择</span>
+            <i aria-hidden="true">→</i>
+            <span class="trail-step trail-step--provider">{{ request.provider_code || '选择节点' }}</span>
+          </template>
           <i aria-hidden="true">→</i>
           <span class="trail-step">{{ request.status === 'in_progress' ? '等待响应' : statusLabel(request) }}</span>
         </div>
@@ -110,6 +150,18 @@ function statusClass(request: LiveRequest) {
 }
 .trail-steps i { color: var(--kx-border-strong, var(--kx-border)); font-style: normal; }
 .trail-step--provider { color: var(--kx-text); font-weight: 500; }
+.trail-step--client { color: var(--kx-muted, var(--kx-text)); }
+/* 最新动作（动作事件驱动）+ stage 徽标（仅后端上报时渲染） */
+.trail-step--latest { color: var(--kx-text); font-weight: 500; }
+.trail-stage {
+  font-size: 10px;
+  font-weight: 700;
+  padding: 0 4px;
+  border-radius: 3px;
+  color: var(--kx-primary);
+  border: 1px solid var(--kx-primary);
+  white-space: nowrap;
+}
 @media (max-width: 640px) {
   .trail-note { display: none; }
   .trail-request-header { flex-wrap: wrap; }

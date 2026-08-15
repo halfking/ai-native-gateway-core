@@ -28,7 +28,7 @@
 
 2. **版本不一致**：245 当前运行的是 build 1519 (50f4f7a3)，而最新修复版本是 c5ea2f56。需要部署新版本以应用游标安全加固和配置校验。
 
-3. **API Key 认证**：原有 API keys 在数据库中以 HMAC-SHA256 哈希存储，无法直接提取明文。为测试创建了临时 key：`sk-smoke-test-20260814-temp-key-for-auto-route-verification` (DB id: 101)。
+3. **API Key 认证**：原有 API keys 在数据库中以 HMAC-SHA256 哈希存储，无法直接提取明文。为测试创建了临时 key：`__API_KEY_20__` (DB id: 101)。
 
 ## 3. Auto-Route 测试结果
 
@@ -36,7 +36,7 @@
 
 ```bash
 curl -X POST http://8.136.114.245:8781/v1/chat/completions \
-  -H "Authorization: Bearer sk-smoke-test-20260814-temp-key-for-auto-route-verification" \
+  -H "Authorization: Bearer __API_KEY_20__" \
   -H "Content-Type: application/json" \
   -d '{"model":"auto","messages":[{"role":"user","content":"hi"}],"stream":false}'
 ```
@@ -136,7 +136,7 @@ X-Request-Id: 055ddaa144806e453bd482841c4d7576
 
 4. **修复 Provider 问题后重新测试**：
    ```bash
-   LLM_GATEWAY_API_KEY="sk-smoke-test-20260814-temp-key-for-auto-route-verification" \
+   LLM_GATEWAY_API_KEY="__API_KEY_20__" \
    GATEWAY_URL=http://8.136.114.245:8781 \
    bash scripts/test-models.sh
    ```
@@ -161,7 +161,7 @@ X-Request-Id: 055ddaa144806e453bd482841c4d7576
 
 ### 5.1 临时测试 Key 信息
 
-- **Key**: `sk-smoke-test-20260814-temp-key-for-auto-route-verification`
+- **Key**: `__API_KEY_20__`
 - **DB ID**: 101
 - **Key Hash**: `84eb18ed2d97ad3643f5410f56f7f917ce8befd2e9f72443fc708b26c79069a0`
 - **创建时间**: 2026-08-14 21:40 CST

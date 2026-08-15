@@ -12,7 +12,8 @@ import {
   truncateText,
 } from '../types/swimlane'
 import { errorKindLabel, statusBarColor, statusSemanticLabel } from '../composables/liveStreamDisplay'
-import { getRequestChildren, type LiveRequest } from '../composables/liveStreamStore'
+import { getRequestActions, getRequestChildren, type LiveRequest } from '../composables/liveStreamStore'
+import ActionTimeline from './ActionTimeline.vue'
 
 const { t, locale } = useI18n()
 
@@ -294,6 +295,46 @@ function toggleChildPanel(evt: Event) {
 function closeChildPanel() {
   childPanelOpen.value = false
 }
+
+// ─── 2026-08-15 OBS-FE2（26号 §2/§6）：大形态动作时间线 ─────────────────────
+//
+// 大形态卡片的"轨迹"按钮弹出 ActionTimeline 面板（Teleport 到 body，防泳道
+// 裁剪）。数据只来自 liveStreamStore 的 request_lifecycle 推送索引
+// （getRequestActions），不调后端查询；事件未到时面板内显示空态文案。
+const timelineActions = computed(() => getRequestActions(props.tile.request_id))
+const timelineCount = computed(() => timelineActions.value.length)
+
+const timelineBadgeRef = ref<HTMLButtonElement | null>(null)
+const timelinePanelOpen = ref(false)
+const timelinePanelStyle = ref<Record<string, string>>({})
+
+const timelineBadgeTitle = computed(() =>
+  timelineCount.value > 0
+    ? `动作轨迹 ${timelineCount.value} 条（点击查看）`
+    : '动作轨迹（暂无推送，点击查看）',
+)
+
+function toggleTimelinePanel(evt: Event) {
+  evt.stopPropagation()
+  if (timelinePanelOpen.value) {
+    timelinePanelOpen.value = false
+    return
+  }
+  timelinePanelOpen.value = true
+  void nextTick(() => {
+    const anchor = timelineBadgeRef.value
+    if (!anchor) return
+    const rect = anchor.getBoundingClientRect()
+    const PANEL_WIDTH = 320
+    const vw = typeof window !== 'undefined' && window.innerWidth ? window.innerWidth : PANEL_WIDTH + 16
+    const left = Math.max(8, Math.min(rect.right - PANEL_WIDTH, vw - PANEL_WIDTH - 8))
+    timelinePanelStyle.value = { top: `${Math.round(rect.bottom + 6)}px`, left: `${Math.round(left)}px` }
+  })
+}
+
+function closeTimelinePanel() {
+  timelinePanelOpen.value = false
+}
 </script>
 
 <template>
@@ -388,6 +429,22 @@ function closeChildPanel() {
       @keydown.enter.stop.prevent="toggleChildPanel"
     >{{ childCount }}</button>
 
+    <!-- OBS-FE2 (26号 §6): 动作轨迹按钮（仅大形态，位于子请求徽标下方）。
+         点击弹出 ActionTimeline 面板；计数 0（事件未推送）时置灰仍可点击。 -->
+    <button
+      v-if="!isIdle"
+      ref="timelineBadgeRef"
+      type="button"
+      class="request-tile__timeline-badge"
+      :class="{ 'request-tile__timeline-badge--empty': timelineCount === 0 }"
+      :title="timelineBadgeTitle"
+      :aria-label="timelineBadgeTitle"
+      :aria-expanded="timelinePanelOpen"
+      aria-haspopup="dialog"
+      @click.stop="toggleTimelinePanel"
+      @keydown.enter.stop.prevent="toggleTimelinePanel"
+    >≈{{ timelineCount }}</button>
+
     <div class="request-tile__body">
       <div class="request-tile__time">{{ timeLabel }}</div>
       <div class="request-tile__model">{{ line2Content }}</div>
@@ -452,6 +509,32 @@ function closeChildPanel() {
         <p v-else class="request-tile__children-empty">
           暂无子请求事件推送（等待 child_request）
         </p>
+      </div>
+    </Teleport>
+
+    <!-- OBS-FE2 (26号 §6): 动作时间线面板 — Teleport 到 body，数据只来自
+         request_lifecycle 推送（liveStreamStore.getRequestActions）。 -->
+    <Teleport to="body">
+      <div
+        v-if="timelinePanelOpen"
+        class="request-tile__timeline-panel"
+        :style="timelinePanelStyle"
+        role="dialog"
+        aria-label="动作时间线"
+        tabindex="-1"
+        @click.stop
+        @keydown.esc.stop="closeTimelinePanel"
+      >
+        <div class="request-tile__timeline-panel-header">
+          <span class="request-tile__timeline-panel-title">动作轨迹 {{ timelineCount }}</span>
+          <button
+            type="button"
+            class="request-tile__children-panel-close"
+            aria-label="关闭动作时间线"
+            @click.stop="closeTimelinePanel"
+          >✕</button>
+        </div>
+        <ActionTimeline :request-id="tile.request_id" />
       </div>
     </Teleport>
   </div>
@@ -1038,10 +1121,88 @@ function closeChildPanel() {
   color: var(--kx-muted);
 }
 
+/* OBS-FE2 动作轨迹按钮：位于子请求徽标下方；计数 0 时置灰仍可点击（弹空态） */
+.request-tile__timeline-badge {
+  position: absolute;
+  top: 29px;
+  right: 3px;
+  z-index: 4;
+  min-width: 13px;
+  height: 13px;
+  padding: 0 3px;
+  border-radius: 7px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 8px;
+  font-weight: 700;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+  color: var(--kx-text-on-primary);
+  background: var(--kx-success);
+  border: 1px solid var(--kx-success);
+  cursor: pointer;
+  transition: transform 0.12s ease, opacity 0.12s ease;
+}
+
+.request-tile__timeline-badge:hover {
+  transform: scale(1.12);
+}
+
+.request-tile__timeline-badge--empty {
+  color: var(--kx-muted);
+  background: var(--kx-surface);
+  border-color: var(--kx-border);
+  opacity: 0.75;
+}
+
+/* 动作时间线面板（Teleport 到 body，fixed 定位由打开时计算覆盖） */
+.request-tile__timeline-panel {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 320px;
+  max-width: calc(100vw - 16px);
+  max-height: 300px;
+  display: flex;
+  flex-direction: column;
+  background: var(--kx-surface);
+  border: 1px solid var(--kx-border);
+  border-radius: 6px;
+  box-shadow: var(--kx-shadow-md);
+  z-index: 2000;
+  animation: request-tile-panel-in 0.15s ease-out;
+}
+
+.request-tile__timeline-panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--kx-border);
+  background: var(--kx-bg-accent);
+}
+
+.request-tile__timeline-panel-title {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--kx-text);
+}
+
+.request-tile__timeline-panel > :deep(.action-timeline) {
+  padding: 4px 8px;
+  overflow-y: auto;
+  flex: 1;
+  min-height: 0;
+}
+
 @media (prefers-reduced-motion: reduce) {
   .request-tile__children-panel,
   .request-tile__children-badge,
-  .request-tile__children-panel-close {
+  .request-tile__children-panel-close,
+  .request-tile__timeline-badge,
+  .request-tile__timeline-panel {
     animation: none;
     transition: none;
   }

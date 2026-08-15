@@ -16,6 +16,8 @@ package pending
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 
@@ -43,7 +45,9 @@ func NewPGSource(db PGQuerier, kr *secret.Keyring) *PGSource {
 }
 
 // pgSourceRow 是回源 SELECT 的目标列（doc 18 §11.1 字段子集）。
-const pgSourceColumns = `SELECT id, request_id, tenant_id, status, result_ciphertext, result_hash, content_type, completed_at, reason_code`
+const pgSourceColumns = `SELECT id, request_id, tenant_id, status, result_ciphertext,
+	request_hash, result_hash, content_type, completed_at, reason_code,
+	fencing_token, result_version`
 
 // Get 按 (sessionID, requestID) 回源读取最新任务行。
 func (p *PGSource) Get(ctx context.Context, sessionID, requestID string) (*Response, bool, error) {
@@ -85,18 +89,21 @@ func (p *PGSource) GetLatest(ctx context.Context, sessionID string) (*Response, 
 // scanRow 把任务行投影为 pending.Response；completed 且带密文时解密。
 func (p *PGSource) scanRow(row pgx.Row, sessionID string) (*Response, bool, error) {
 	var (
-		id          string
-		requestID   string
-		tenantID    string
-		dbStatus    string
-		resultCT    pgtype.Text
-		resultHash  string
-		contentType string
-		completedAt pgtype.Timestamptz
-		reasonCode  string
+		id            string
+		requestID     string
+		tenantID      string
+		dbStatus      string
+		resultCT      pgtype.Text
+		requestHash   string
+		resultHash    pgtype.Text
+		contentType   pgtype.Text
+		completedAt   pgtype.Timestamptz
+		reasonCode    string
+		fencingToken  int64
+		resultVersion pgtype.Int8
 	)
-	if err := row.Scan(&id, &requestID, &tenantID, &dbStatus, &resultCT, &resultHash,
-		&contentType, &completedAt, &reasonCode); err != nil {
+	if err := row.Scan(&id, &requestID, &tenantID, &dbStatus, &resultCT, &requestHash,
+		&resultHash, &contentType, &completedAt, &reasonCode, &fencingToken, &resultVersion); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, false, nil
 		}
@@ -104,10 +111,14 @@ func (p *PGSource) scanRow(row pgx.Row, sessionID string) (*Response, bool, erro
 	}
 
 	r := &Response{
-		SessionID:   sessionID,
-		TenantID:    tenantID,
-		RequestID:   requestID,
-		RequestHash: resultHash,
+		SessionID:     sessionID,
+		TenantID:      tenantID,
+		RequestID:     requestID,
+		RequestHash:   requestHash,
+		TaskID:        id,
+		FencingToken:  fencingToken,
+		ResultVersion: resultVersion.Int64,
+		ResultHash:    resultHash.String,
 	}
 	if completedAt.Valid {
 		r.CompletedAt = completedAt.Time.Unix()
@@ -116,7 +127,7 @@ func (p *PGSource) scanRow(row pgx.Row, sessionID string) (*Response, bool, erro
 	switch dbStatus {
 	case "completed":
 		r.Status = StatusCompleted
-		r.ContentType = contentType
+		r.ContentType = contentType.String
 		if !resultCT.Valid || resultCT.String == "" {
 			// completed 但无密文：文档不允许（终态必须原子提交加密结果），
 			// 视为数据异常，fail closed。
@@ -125,13 +136,17 @@ func (p *PGSource) scanRow(row pgx.Row, sessionID string) (*Response, bool, erro
 		if p.kr == nil {
 			return nil, false, fmt.Errorf("pending: pg source task %s: %w", id, secret.ErrAADNoKey)
 		}
-		binding := secret.AADBinding{TenantID: tenantID, TaskID: id, RequestHash: resultHash}
+		binding := secret.AADBinding{TenantID: tenantID, TaskID: id, RequestHash: requestHash}
 		pt, _, err := secret.DecryptWithAAD(resultCT.String, p.kr, secret.AADDomainDurableResult, binding)
 		if err != nil {
 			return nil, false, fmt.Errorf("pending: pg source task %s: %w", id, err)
 		}
+		hash := sha256.Sum256(pt)
+		if !resultHash.Valid || resultHash.String == "" || hex.EncodeToString(hash[:]) != resultHash.String {
+			return nil, false, fmt.Errorf("pending: pg source task %s: result hash mismatch", id)
+		}
 		r.Body = string(pt)
-	case "failed", "expired", "canceled":
+	case "failed", "expired", "canceled", "resume_safety_blocked":
 		r.Status = StatusFailed
 		r.ErrorMessage = reasonCode
 	default:

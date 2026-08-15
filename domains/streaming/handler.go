@@ -53,7 +53,6 @@ import (
 	"github.com/kaixuan/llm-gateway-go/ratelimit"
 	"github.com/kaixuan/llm-gateway-go/registry"
 	"github.com/kaixuan/llm-gateway-go/resolve"
-	"github.com/kaixuan/llm-gateway-go/secret"
 	"github.com/kaixuan/llm-gateway-go/security/armor"
 	upstreampkg "github.com/kaixuan/llm-gateway-go/upstream"
 	"go.opentelemetry.io/otel/attribute"
@@ -697,12 +696,11 @@ type ChatHandler struct {
 	// inert; armed via SetRequestSurvival from main.go.
 	survivalTenantAllowed func(tenantID string) bool
 	survivalOptions       SurvivalOptions
-	// M3 durable request creation (doc 18 §11.2): nil fields keep the default
-	// request path inert. All three protocol handlers share one pre-routing seam.
-	durableStore         DurableRequestStore
-	durableKeyring       *secret.Keyring
+	// SR-12 durable execution (doc 18 §11.2): nil store keeps the durable
+	// handoff inert; armed via SetDurableExecution from main.go.
+	durableStore         DurableHandlerStore
 	durableTenantAllowed func(tenantID string) bool
-	durableDeadline      time.Duration
+	durableExecOptions   DurableExecutionOptions
 	provider             providerResolver
 	sticky               *executors.StickyCache
 	keyVerifier          *authentication.KeyVerifier
@@ -2701,31 +2699,30 @@ func (h *ChatHandler) serveWithExecutor(
 		tenantID = keyInfo.TenantID
 	}
 
-	if durableRequested(r) && !isStream {
-		captureAndEmitFailure("durable_stream_required", "durable requests require streaming mode", nil, nil)
-		writeErrorJSON(w, http.StatusServiceUnavailable, requestID,
-			"durable requests require streaming mode", "server_error", "durable_stream_required")
-		return
-	}
-	responseFormatRequested, multimodal := durableSnapshotFlags(bodyBytes)
-
-	r, err = h.prepareDurableRequest(r, DurableSnapshotInput{
-		Protocol:       "openai-chat",
-		RequestID:      requestID,
-		ClientModel:    clientModel,
-		Body:           bodyBytes,
-		KeyInfo:        keyInfo,
-		Session:        sessionInfo,
-		ClientIdentity: clientID,
-		ToolsRequested: requestHasTools(bodyBytes),
-		ResponseFormat: responseFormatRequested,
-		Multimodal:     multimodal,
-	})
-	if err != nil {
-		captureAndEmitFailure("durable_create_failed", err.Error(), nil, nil)
-		writeErrorJSON(w, http.StatusServiceUnavailable, requestID,
-			"durable request could not be accepted", "server_error", "durable_create_failed")
-		return
+	// ── SR-12 durable snapshot cut point (doc 18 §11.2) ────────────────
+	// Auth, session ownership, tool_ids expansion and body normalization
+	// are done; candidates are not resolved yet. A completed durable
+	// handshake diverts the request to the background worker (202);
+	// everything else falls through unchanged.
+	if h.durableStore != nil && DurableRequested(r, isStream) {
+		in := DurableSnapshotInput{
+			Protocol:       "openai-completions",
+			Endpoint:       "/v1/chat/completions",
+			TenantID:       tenantID,
+			ApplicationID:  appIDValue(keyInfo),
+			APIKeyID:       apiKeyIDValue(keyInfo),
+			SessionID:      sessionID,
+			SessionSource:  deriveSessionSource(bodyBytes, r),
+			ClientModel:    clientModel,
+			Body:           bodyBytes,
+			IdentityHash:   clientID.IdentityHash,
+			ClientProfile:  clientID.Fingerprint.ClientProfile,
+			RequestID:      requestID,
+			ToolsRequested: len(reqBody.Tools) > 0 || len(reqBody.ToolIDs) > 0,
+		}
+		if h.maybeStartDurable(w, r, in, isStream) == durableHandled {
+			return
+		}
 	}
 
 	var (

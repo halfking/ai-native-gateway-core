@@ -42,6 +42,9 @@ func ExecuteAttempt(ctx context.Context, exec AttemptExecutor, gate *AttemptComm
 	}
 	attemptParams := *params
 	attemptParams.SurvivalAttempt = true
+	if params.R != nil {
+		attemptParams.R = params.R.WithContext(ctx)
+	}
 
 	result, err := exec.Execute(&attemptParams)
 	state := commitStateOf(gate)

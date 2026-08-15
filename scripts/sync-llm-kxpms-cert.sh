@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# ============================================================================
 # sync-llm-kxpms-cert.sh — keep 252 llmgateway.internal.example.com cert in sync with 154
 #
 # Source: 154 /etc/letsencrypt/live/internal.example.com/{fullchain.pem,privkey.pem}

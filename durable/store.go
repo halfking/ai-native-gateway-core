@@ -1,349 +1,265 @@
+// store.go — DurableTaskStore：durable 任务的 PostgreSQL SSoT repository
+// （doc 18 §11.3，SR-09）。
+//
+// 关键语义：
+//   - CreateAndClaim：单事务「插入加密快照 + running + 初始 lease + fencing=1 +
+//     commit_state='none' + accepted→running 事件」，前台 Coordinator 提交成功
+//     后才可调用 ExecuteAttempt；
+//   - 所有完成/重排/checkpoint 更新携带 (lease_owner, fencing_token) 条件，
+//     更新 0 行即租约失效（ErrLeaseLost），旧 worker 必须丢弃结果；
+//   - runnable claim / reschedule 带全局 commit_state IN ('none','metadata') 门禁；
+//   - 终态在单事务内原子写入（含加密结果），终态不可回退。
+//
+// 表结构见 sql/migrations/startup/516_durable_llm_tasks.sql（SR-08）。
 package durable
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
-	"github.com/kaixuan/llm-gateway-go/metrics"
+	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/kaixuan/llm-gateway-go/secret"
 )
 
-type Repository struct {
-	db  DB
+// DB 是 Store 的最小依赖接口：*pgxpool.Pool 与 pgxmock.PgxPoolIface 均满足
+// （后者内嵌 pgx.Tx，Begin 返回 pgx.Tx）。
+type DB interface {
+	Exec(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error)
+	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
+	Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error)
+	Begin(ctx context.Context) (pgx.Tx, error)
+}
+
+// Store 错误哨兵。
+var (
+	// ErrLeaseLost 更新影响 0 行：租约已过期/被抢占或任务已越过语义
+	// checkpoint，调用方（旧 worker）必须丢弃结果、停止执行。
+	ErrLeaseLost = errors.New("durable: lease lost or task transitioned (0 rows)")
+	// ErrDuplicateTask 同 (tenant_id, request_id) 任务已存在（幂等防重）。
+	ErrDuplicateTask = errors.New("durable: task already exists for (tenant, request)")
+	// ErrNoKeyring 未配置密钥：durable 数据一律 fail closed（doc 18 §11.2）。
+	ErrNoKeyring = secret.ErrAADNoKey
+)
+
+// Store 是 durable_llm_tasks / durable_llm_task_events 的 repository。
+// 并发安全：无共享可变状态，所有方法独立开事务。
+type Store struct {
+	db DB
+	kr *secret.Keyring
+	// now 供测试注入时钟；nil 用 time.Now。
 	now func() time.Time
 }
 
-type RepositoryOption func(*Repository)
-
-func WithClock(now func() time.Time) RepositoryOption {
-	return func(r *Repository) {
-		if now != nil {
-			r.now = now
-		}
-	}
+// NewStore 构造 DurableTaskStore。kr 为 nil 时任何需要加/解密的操作
+// fail closed（ErrNoKey）。
+func NewStore(db DB, kr *secret.Keyring) *Store {
+	return &Store{db: db, kr: kr}
 }
 
-func NewRepository(db DB, opts ...RepositoryOption) *Repository {
-	r := &Repository{db: db, now: time.Now}
-	for _, opt := range opts {
-		opt(r)
+func (s *Store) clock() time.Time {
+	if s.now != nil {
+		return s.now()
 	}
-	return r
+	return time.Now()
 }
 
-const taskColumns = `id, tenant_id, request_id, session_id, protocol, endpoint,
- request_snapshot_ciphertext, snapshot_version, encryption_key_id, request_hash,
- status, error_kind, reason_code, attempt_count, next_retry_at, deadline_at,
- lease_owner, lease_until, fencing_token, semantic_content_committed, commit_state,
- commit_metadata, result_ciphertext, result_object_ref, result_hash, result_version,
- content_type, policy, connection_attached, last_disconnect_at, expires_at,
- created_at, updated_at, completed_at`
-
-func (r *Repository) CreateAndClaim(ctx context.Context, in CreateTaskInput, owner string, leaseDuration time.Duration) (*Task, error) {
-	if r == nil || r.db == nil {
-		return nil, errors.New("durable repository has no database")
-	}
-	if leaseDuration <= 0 {
-		leaseDuration = time.Minute
-	}
-	if len(in.Policy) == 0 {
-		in.Policy = json.RawMessage(`{}`)
-	}
-	tx, err := r.db.Begin(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("create durable task: begin transaction: %w", err)
-	}
-	defer tx.Rollback(ctx)
-
-	q := `INSERT INTO durable_llm_tasks
- (id, tenant_id, request_id, session_id, protocol, endpoint, request_snapshot_ciphertext,
-  snapshot_version, encryption_key_id, request_hash, status, attempt_count, next_retry_at, deadline_at,
-  lease_owner, lease_until, fencing_token, semantic_content_committed, commit_state, policy)
- VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,'running',1,now(),$11,$12,now()+$13,1,false,'none',$14)
- RETURNING ` + taskColumns
-	t := &Task{}
-	if err := scanTask(tx.QueryRow(ctx, q, in.ID, in.TenantID, in.RequestID, in.SessionID, in.Protocol, in.Endpoint,
-		in.SnapshotCiphertext, in.SnapshotVersion, in.EncryptionKeyID, in.RequestHash, in.DeadlineAt, owner, leaseDuration, in.Policy), t); err != nil {
-		return nil, fmt.Errorf("create durable task: scan inserted task: %w", err)
-	}
-
-	metadata, err := json.Marshal(map[string]any{"task_id": in.ID, "fencing_token": int64(1)})
-	if err != nil {
-		return nil, fmt.Errorf("create durable task: marshal transition metadata: %w", err)
-	}
-	if _, err := tx.Exec(ctx, `INSERT INTO request_state_transitions
- (request_id, tenant_id, transition_type, from_state, to_state, attempt_no, metadata, seq)
- SELECT $1,$2,'survival_running','accepted','running',1,$3,
-        COALESCE(MAX(seq), 0) + 1
- FROM request_state_transitions
- WHERE request_id=$1`, in.RequestID, in.TenantID, metadata); err != nil {
-		return nil, fmt.Errorf("create durable task: record running transition: %w", err)
-	}
-	if err := tx.Commit(ctx); err != nil {
-		return nil, fmt.Errorf("create durable task: commit transaction: %w", err)
-	}
-	metrics.SurvivalActiveTasks.WithLabelValues(t.TenantID).Inc()
-	return t, nil
+// Task 是 durable_llm_tasks 行的 Go 投影（调度面字段；快照/结果密文不展开）。
+type Task struct {
+	ID                       string
+	TenantID                 string
+	RequestID                string
+	SessionID                string
+	Protocol                 string
+	Endpoint                 string
+	Status                   Status
+	CommitState              CommitState
+	SemanticContentCommitted bool
+	ErrorKind                string
+	ReasonCode               string
+	AttemptCount             int
+	FencingToken             int64
+	LeaseOwner               string
+	LeaseUntil               time.Time
+	NextRetryAt              time.Time
+	DeadlineAt               time.Time
+	ExpiresAt                time.Time
+	RequestHash              string
+	SnapshotVersion          int
+	EncryptionKeyID          string
+	ResultVersion            int64
+	CreatedAt                time.Time
+	UpdatedAt                time.Time
+	CompletedAt              time.Time
 }
 
-func (r *Repository) Claim(ctx context.Context, owner string, leaseDuration time.Duration) (*Task, error) {
-	if r == nil || r.db == nil {
-		return nil, errors.New("claim durable task: repository has no database")
-	}
-	if leaseDuration <= 0 {
-		leaseDuration = time.Minute
-	}
-	tx, err := r.db.Begin(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("claim durable task: begin transaction: %w", err)
-	}
-	defer tx.Rollback(ctx)
-	q := `WITH candidate AS (
- SELECT id FROM durable_llm_tasks
-	 WHERE status IN ('waiting_recovery','retry_scheduled','running')
-	   AND commit_state IN ('none','metadata') AND deadline_at > now()
-	   AND next_retry_at <= now() AND (lease_until IS NULL OR lease_until <= now())
-
- ORDER BY next_retry_at, created_at FOR UPDATE SKIP LOCKED LIMIT 1
-), claimed AS (
- UPDATE durable_llm_tasks t SET status='running', lease_owner=$1, lease_until=now()+$2,
-   fencing_token=t.fencing_token+1, attempt_count=t.attempt_count+1, updated_at=now()
- FROM candidate c WHERE t.id=c.id RETURNING t.*
-) SELECT ` + taskColumns + ` FROM claimed`
-	t := &Task{}
-	if err := scanTask(tx.QueryRow(ctx, q, owner, leaseDuration), t); err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return nil, ErrNoTask
-		}
-		return nil, fmt.Errorf("claim durable task: scan claimed task: %w", err)
-	}
-	if err := tx.Commit(ctx); err != nil {
-		return nil, fmt.Errorf("claim durable task: commit transaction: %w", err)
-	}
-	return t, nil
+// NewTask 是 CreateAndClaim 的输入。Snapshot 是版本化 DTO 明文，
+// Store 在事务前用 durable-request 域 AAD 加密（绑定 tenant/task/request hash）。
+type NewTask struct {
+	TenantID        string
+	RequestID       string
+	SessionID       string
+	Protocol        string
+	Endpoint        string
+	Snapshot        []byte
+	SnapshotVersion int
+	RequestHash     string
+	DeadlineAt      time.Time
+	// ExpiresAt = DeadlineAt + result_read_window（Redis 投影 TTL 基准）。
+	ExpiresAt  time.Time
+	LeaseOwner string
+	LeaseUntil time.Time
+	Policy     []byte
+	Attempt    int
 }
 
-func (r *Repository) Renew(ctx context.Context, id, owner string, token int64, leaseDuration time.Duration) (*Task, error) {
-	if leaseDuration <= 0 {
-		leaseDuration = time.Minute
-	}
-	return r.mutateReturning(ctx, `UPDATE durable_llm_tasks SET lease_until=now()+$4, updated_at=now()
- WHERE id=$1 AND lease_owner=$2 AND fencing_token=$3 AND status='running' AND completed_at IS NULL
- RETURNING `+taskColumns, id, owner, token, leaseDuration)
-}
-
-func (r *Repository) Checkpoint(ctx context.Context, id, owner string, token int64, state string, metadata json.RawMessage, semantic bool) error {
-	if len(metadata) == 0 {
-		metadata = json.RawMessage(`{}`)
-	}
-	return r.mutate(ctx, `UPDATE durable_llm_tasks SET commit_state=$4, commit_metadata=$5,
- semantic_content_committed=$6, updated_at=now() WHERE id=$1 AND lease_owner=$2 AND fencing_token=$3
- AND status NOT IN ('completed','permanent_failed','expired','cancelled','resume_safety_blocked')`, id, owner, token, state, metadata, semantic)
-}
-
-// HoldUntil keeps the current lease while persisting a future retry time.
-func (r *Repository) HoldUntil(ctx context.Context, id, owner string, token int64, nextRetryAt time.Time, reason string, leaseDuration time.Duration) error {
-	if leaseDuration <= 0 {
-		leaseDuration = time.Minute
-	}
-	return r.mutate(ctx, `UPDATE durable_llm_tasks SET next_retry_at=$4, reason_code=$5,
-	 lease_until=GREATEST(now()+$6, $4+$6), updated_at=now()
-	 WHERE id=$1 AND lease_owner=$2 AND fencing_token=$3 AND status='running'
-	   AND completed_at IS NULL AND commit_state IN ('none','metadata')`,
-		id, owner, token, nextRetryAt, reason, leaseDuration)
-}
-
-func (r *Repository) Reschedule(ctx context.Context, id, owner string, token int64, nextRetryAt time.Time, reason string) error {
-	return r.mutate(ctx, `UPDATE durable_llm_tasks SET status='retry_scheduled', next_retry_at=$4,
- reason_code=$5, lease_owner=NULL, lease_until=NULL, updated_at=now()
- WHERE id=$1 AND lease_owner=$2 AND fencing_token=$3 AND completed_at IS NULL
-   AND commit_state IN ('none','metadata')`, id, owner, token, nextRetryAt, reason)
-}
-
-func (r *Repository) CommitTerminal(ctx context.Context, id, owner string, token int64, result TerminalResult) error {
-	if result.Status == "" {
-		result.Status = StatusPermanentFailed
-	}
-	tx, err := r.db.Begin(ctx)
-	if err != nil {
-		return fmt.Errorf("commit terminal task: begin transaction: %w", err)
-	}
-	defer tx.Rollback(ctx)
-	var tenant string
-	err = tx.QueryRow(ctx, `UPDATE durable_llm_tasks SET status=$4, reason_code=$5, error_kind=$6,
- result_ciphertext=$7, result_object_ref=$8, result_hash=$9, result_version=$10, content_type=$11,
- commit_state='terminal', completed_at=now(), lease_owner=NULL, lease_until=NULL, updated_at=now()
- WHERE id=$1 AND lease_owner=$2 AND fencing_token=$3 AND completed_at IS NULL
- RETURNING tenant_id`, id, owner, token, result.Status, result.ReasonCode, result.ErrorKind,
-		result.ResultCiphertext, result.ResultObjectRef, result.ResultHash, result.ResultVersion, result.ContentType).Scan(&tenant)
-	if errors.Is(err, pgx.ErrNoRows) {
-		metrics.SurvivalLeaseConflictsTotal.Inc()
-		return ErrLeaseConflict
-	}
-	if err != nil {
-		return fmt.Errorf("commit terminal task: update task: %w", err)
-	}
-	if err := tx.Commit(ctx); err != nil {
-		return fmt.Errorf("commit terminal task: commit transaction: %w", err)
-	}
-	metrics.SurvivalActiveTasks.WithLabelValues(tenant).Dec()
-	return nil
-}
-
-// ReapUnsafeCommitState fences and terminates non-terminal tasks that cannot be replayed safely.
-func (r *Repository) ReapUnsafeCommitState(ctx context.Context) (int64, error) {
-	tx, err := r.db.Begin(ctx)
-	if err != nil {
-		return 0, fmt.Errorf("reap unsafe durable tasks: begin transaction: %w", err)
-	}
-	defer tx.Rollback(ctx)
-	rows, err := tx.Query(ctx, `WITH candidates AS (
- SELECT id FROM durable_llm_tasks
- WHERE completed_at IS NULL
-   AND status NOT IN ('completed','permanent_failed','expired','cancelled','resume_safety_blocked')
-   AND commit_state IN ('content','tool_call','terminal')
- FOR UPDATE SKIP LOCKED
-), updated AS (
- UPDATE durable_llm_tasks t SET status='resume_safety_blocked',
-   reason_code='survival_resume_safety_blocked', commit_state='terminal',
-   result_version=GREATEST(result_version, 1), completed_at=now(),
-   lease_owner=NULL, lease_until=NULL, fencing_token=fencing_token+1, updated_at=now()
- FROM candidates c WHERE t.id=c.id RETURNING t.tenant_id
-) SELECT tenant_id FROM updated`)
-	if err != nil {
-		return 0, fmt.Errorf("reap unsafe durable tasks: update candidates: %w", err)
-	}
-	tenants, err := collectTenants(rows)
-	if err != nil {
-		return 0, fmt.Errorf("reap unsafe durable tasks: collect tenants: %w", err)
-	}
-	if err := tx.Commit(ctx); err != nil {
-		return 0, fmt.Errorf("reap unsafe durable tasks: commit transaction: %w", err)
-	}
-	for _, tenant := range tenants {
-		metrics.SurvivalActiveTasks.WithLabelValues(tenant).Dec()
-		metrics.SurvivalResumeSafetyBlockedTotal.WithLabelValues("unknown").Inc()
-	}
-	return int64(len(tenants)), nil
-}
-
-// ReapDeadlines fences and expires every non-terminal task beyond its durable deadline.
-func (r *Repository) ReapDeadlines(ctx context.Context) (int64, error) {
-	tx, err := r.db.Begin(ctx)
-	if err != nil {
-		return 0, fmt.Errorf("reap deadline durable tasks: begin transaction: %w", err)
-	}
-	defer tx.Rollback(ctx)
-	rows, err := tx.Query(ctx, `WITH candidates AS (
- SELECT id FROM durable_llm_tasks
- WHERE deadline_at <= now() AND completed_at IS NULL
-   AND status NOT IN ('completed','permanent_failed','expired','cancelled','resume_safety_blocked')
- FOR UPDATE SKIP LOCKED
-), updated AS (
- UPDATE durable_llm_tasks t SET status='expired', reason_code='survival_expired',
-   commit_state='terminal', result_version=GREATEST(result_version, 1), completed_at=now(),
-   lease_owner=NULL, lease_until=NULL, fencing_token=fencing_token+1, updated_at=now()
- FROM candidates c WHERE t.id=c.id RETURNING t.tenant_id
-) SELECT tenant_id FROM updated`)
-	if err != nil {
-		return 0, fmt.Errorf("reap deadline durable tasks: update candidates: %w", err)
-	}
-	tenants, err := collectTenants(rows)
-	if err != nil {
-		return 0, fmt.Errorf("reap deadline durable tasks: collect tenants: %w", err)
-	}
-	if err := tx.Commit(ctx); err != nil {
-		return 0, fmt.Errorf("reap deadline durable tasks: commit transaction: %w", err)
-	}
-	for _, tenant := range tenants {
-		metrics.SurvivalActiveTasks.WithLabelValues(tenant).Dec()
-	}
-	return int64(len(tenants)), nil
-}
-
-func collectTenants(rows pgx.Rows) ([]string, error) {
-	defer rows.Close()
-	var tenants []string
-	for rows.Next() {
-		var tenant string
-		if err := rows.Scan(&tenant); err != nil {
-			return nil, err
-		}
-		tenants = append(tenants, tenant)
-	}
-	return tenants, rows.Err()
-}
-
-func (r *Repository) mutate(ctx context.Context, query string, args ...any) error {
-	tx, err := r.db.Begin(ctx)
-	if err != nil {
-		return fmt.Errorf("durable task mutation: begin transaction: %w", err)
-	}
-	defer tx.Rollback(ctx)
-	res, err := tx.Exec(ctx, query, args...)
-	if err != nil {
-		return fmt.Errorf("durable task mutation: execute: %w", err)
-	}
-	if res.RowsAffected() != 1 {
-		metrics.SurvivalLeaseConflictsTotal.Inc()
-		return ErrLeaseConflict
-	}
-	if err := tx.Commit(ctx); err != nil {
-		return fmt.Errorf("durable task mutation: commit transaction: %w", err)
+// Validate 校验创建输入的必填字段。
+func (n NewTask) Validate() error {
+	switch {
+	case n.TenantID == "":
+		return errors.New("durable: TenantID required")
+	case n.RequestID == "":
+		return errors.New("durable: RequestID required")
+	case n.SessionID == "":
+		return errors.New("durable: SessionID required")
+	case len(n.Snapshot) == 0:
+		return errors.New("durable: Snapshot required")
+	case n.RequestHash == "":
+		return errors.New("durable: RequestHash required")
+	case n.DeadlineAt.IsZero():
+		return errors.New("durable: DeadlineAt required")
+	case n.ExpiresAt.IsZero():
+		return errors.New("durable: ExpiresAt required")
+	case n.LeaseOwner == "":
+		return errors.New("durable: LeaseOwner required")
+	case n.LeaseUntil.IsZero():
+		return errors.New("durable: LeaseUntil required")
 	}
 	return nil
 }
 
-func (r *Repository) mutateReturning(ctx context.Context, query string, args ...any) (*Task, error) {
-	tx, err := r.db.Begin(ctx)
+// CreateAndClaim 首次前台创建即领取（doc 18 §11.3）：
+// 单事务插入任务（status='running'、lease_owner/lease_until、fencing_token=1、
+// commit_state='none'、semantic_content_committed=false）并写 accepted→running
+// append-only 事件。事务失败时不得发送 durable 已接管状态。
+func (s *Store) CreateAndClaim(ctx context.Context, n NewTask) (*Task, error) {
+	if err := n.Validate(); err != nil {
+		return nil, err
+	}
+	if s.kr == nil {
+		return nil, ErrNoKeyring
+	}
+	taskID := uuid.NewString()
+	binding := secret.AADBinding{TenantID: n.TenantID, TaskID: taskID, RequestHash: n.RequestHash}
+	envelope, keyID, err := secret.EncryptWithAAD(n.Snapshot, s.kr, secret.AADDomainDurableRequest, binding)
 	if err != nil {
-		return nil, fmt.Errorf("durable task returning mutation: begin transaction: %w", err)
+		return nil, fmt.Errorf("durable: encrypt snapshot: %w", err)
 	}
-	defer tx.Rollback(ctx)
-	t := &Task{}
-	if err := scanTask(tx.QueryRow(ctx, query, args...), t); err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			metrics.SurvivalLeaseConflictsTotal.Inc()
-			return nil, ErrLeaseConflict
+	if n.Attempt <= 0 {
+		n.Attempt = 1
+	}
+	if n.SnapshotVersion <= 0 {
+		n.SnapshotVersion = 1
+	}
+
+	now := s.clock()
+	task := &Task{
+		ID:              taskID,
+		TenantID:        n.TenantID,
+		RequestID:       n.RequestID,
+		SessionID:       n.SessionID,
+		Protocol:        n.Protocol,
+		Endpoint:        n.Endpoint,
+		Status:          StatusRunning,
+		CommitState:     CommitStateNone,
+		AttemptCount:    n.Attempt,
+		FencingToken:    1,
+		LeaseOwner:      n.LeaseOwner,
+		LeaseUntil:      n.LeaseUntil,
+		NextRetryAt:     now,
+		DeadlineAt:      n.DeadlineAt,
+		ExpiresAt:       n.ExpiresAt,
+		RequestHash:     n.RequestHash,
+		SnapshotVersion: n.SnapshotVersion,
+		EncryptionKeyID: keyID,
+		CreatedAt:       now,
+		UpdatedAt:       now,
+	}
+
+	tx, err := s.db.Begin(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("durable: begin: %w", err)
+	}
+	defer tx.Rollback(context.WithoutCancel(ctx)) //nolint:errcheck // 提交后 Rollback 是 no-op
+
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO durable_llm_tasks (
+			id, tenant_id, request_id, session_id, protocol, endpoint,
+			request_snapshot_ciphertext, snapshot_version, encryption_key_id, request_hash,
+			status, attempt_count, next_retry_at, deadline_at, expires_at,
+			lease_owner, lease_until, fencing_token,
+			semantic_content_committed, commit_state, policy,
+			created_at, updated_at
+		) VALUES (
+			$1, $2, $3, $4, $5, $6,
+			$7, $8, $9, $10,
+			'running', $11, $17, $12, $13,
+			$14, $15, 1,
+			FALSE, 'none', $16,
+			$17, $17
+		)`,
+		task.ID, n.TenantID, n.RequestID, n.SessionID, n.Protocol, n.Endpoint,
+		envelope, n.SnapshotVersion, keyID, n.RequestHash,
+		n.Attempt, n.DeadlineAt, n.ExpiresAt,
+		n.LeaseOwner, n.LeaseUntil,
+		jsonbOrNull(n.Policy),
+		task.CreatedAt,
+	); err != nil {
+		if isUniqueViolation(err) {
+			return nil, ErrDuplicateTask
 		}
-		return nil, fmt.Errorf("durable task returning mutation: scan task: %w", err)
+		return nil, fmt.Errorf("durable: insert task: %w", err)
 	}
+
+	if err := appendEvent(ctx, tx, task, "", StatusRunning, "create_and_claim", n.Attempt, now); err != nil {
+		return nil, err
+	}
+
 	if err := tx.Commit(ctx); err != nil {
-		return nil, fmt.Errorf("durable task returning mutation: commit transaction: %w", err)
+		return nil, fmt.Errorf("durable: commit create: %w", err)
 	}
-	return t, nil
+	return task, nil
 }
 
-func scanTask(row pgx.Row, t *Task) error {
-	var leaseUntil, lastDisconnect, expires, completed *time.Time
-	var owner, errorKind, reason, resultCipher, resultRef, resultHash, content *string
-	err := row.Scan(&t.ID, &t.TenantID, &t.RequestID, &t.SessionID, &t.Protocol, &t.Endpoint,
-		&t.SnapshotCiphertext, &t.SnapshotVersion, &t.EncryptionKeyID, &t.RequestHash,
-		&t.Status, &errorKind, &reason, &t.AttemptCount, &t.NextRetryAt, &t.DeadlineAt,
-		&owner, &leaseUntil, &t.FencingToken, &t.SemanticContentCommitted, &t.CommitState,
-		&t.CommitMetadata, &resultCipher, &resultRef, &resultHash, &t.ResultVersion,
-		&content, &t.Policy, &t.ConnectionAttached, &lastDisconnect, &expires,
-		&t.CreatedAt, &t.UpdatedAt, &completed)
-	if err != nil {
-		return err
+// appendEvent 写 durable_llm_task_events（append-only，§12.2）。
+// now 由调用方传入，保证事件时间与同事务的任务行 updated_at 一致。
+func appendEvent(ctx context.Context, tx pgx.Tx, task *Task, from, to Status, reason string, attempt int, now time.Time) error {
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO durable_llm_task_events (
+			task_id, request_id, session_id, tenant_id,
+			attempt, from_status, to_status, reason, fencing_token, created_at
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
+		task.ID, task.RequestID, task.SessionID, task.TenantID,
+		attempt, string(from), string(to), reason, task.FencingToken, now,
+	); err != nil {
+		return fmt.Errorf("durable: append event: %w", err)
 	}
-	if owner != nil {
-		t.LeaseOwner = *owner
-	}
-	t.LeaseUntil = leaseUntil
-	t.ErrorKind, t.ReasonCode = deref(errorKind), deref(reason)
-	t.ResultCiphertext, t.ResultObjectRef, t.ResultHash = deref(resultCipher), deref(resultRef), deref(resultHash)
-	t.ContentType = deref(content)
-	t.LastDisconnectAt, t.ExpiresAt, t.CompletedAt = lastDisconnect, expires, completed
 	return nil
 }
 
-func deref(v *string) string {
-	if v == nil {
-		return ""
+// jsonbOrNull 空切片落 NULL，非空 JSON 原样传递。
+func jsonbOrNull(b []byte) any {
+	if len(b) == 0 {
+		return nil
 	}
-	return *v
+	return b
+}
+
+// isUniqueViolation 识别 PG 23505。
+func isUniqueViolation(err error) bool {
+	var pgErr *pgconn.PgError
+	return errors.As(err, &pgErr) && pgErr.Code == "23505"
 }

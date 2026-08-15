@@ -424,34 +424,29 @@ func (h *ResponsesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if keyInfo != nil {
 		tenantID = keyInfo.TenantID
 	}
-	if durableRequested(r) && !isStream {
-		attemptErrCode = "durable_stream_required"
-		attemptErrMsg = "durable requests require streaming mode"
-		writeResponsesError(w, http.StatusServiceUnavailable, attemptErrMsg, "server_error", attemptErrCode)
-		return
+
+	// ── SR-12 durable snapshot cut point (doc 18 §11.2) ────────────────
+	if h.chatHandler.durableStore != nil && DurableRequested(r, isStream) {
+		in := DurableSnapshotInput{
+			Protocol:       "openai-responses",
+			Endpoint:       "/v1/responses",
+			TenantID:       tenantID,
+			ApplicationID:  appIDValue(keyInfo),
+			APIKeyID:       apiKeyIDValue(keyInfo),
+			SessionID:      sessionID,
+			SessionSource:  deriveSessionSource(bodyBytes, r),
+			ClientModel:    clientModel,
+			Body:           bodyBytes,
+			IdentityHash:   clientID.IdentityHash,
+			ClientProfile:  clientID.Fingerprint.ClientProfile,
+			RequestID:      requestID,
+			ToolsRequested: responsesHasTools(&reqBody),
+		}
+		if h.chatHandler.maybeStartDurable(w, r, in, isStream) == durableHandled {
+			return
+		}
 	}
-	responseFormatRequested, multimodal := durableSnapshotFlags(bodyBytes)
-	r, candErr := h.chatHandler.prepareDurableRequest(r, DurableSnapshotInput{
-		Protocol:       "openai-responses",
-		RequestID:      requestID,
-		ClientModel:    clientModel,
-		Body:           bodyBytes,
-		KeyInfo:        keyInfo,
-		Session:        sessionInfo,
-		ClientIdentity: clientID,
-		ToolsRequested: responsesHasTools(&reqBody),
-		ResponseFormat: responseFormatRequested,
-		Multimodal:     multimodal,
-	})
-	if candErr != nil {
-		attemptErrCode = "durable_create_failed"
-		attemptErrMsg = candErr.Error()
-		h.chatHandler.recordFailedRequestWithKey(requestID, clientModel, "",
-			nil, nil, attemptErrCode, attemptErrMsg, int(time.Since(startTime).Milliseconds()), bodyBytes, keyInfo, r)
-		*attemptLogged = true
-		writeResponsesError(w, http.StatusServiceUnavailable, "durable request could not be accepted", "server_error", "durable_create_failed")
-		return
-	}
+
 	candidates, policy, _, candErr := resolveCandidatesForRequest(r.Context(), h.chatHandler.provider, clientModel, clientID.Fingerprint.ClientProfile, tenantID, bodyBytes)
 	if candErr != nil {
 		// Database or infrastructure error - do NOT disguise as no_candidate
@@ -542,7 +537,7 @@ func (h *ResponsesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		logCtx,
 	)
 
-	execParams := &executors.ExecParams{
+	result, execErr := h.chatHandler.executor.Execute(&executors.ExecParams{
 		W:                    w,
 		R:                    r,
 		BodyBytes:            chatBodyBytes,
@@ -596,18 +591,7 @@ func (h *ResponsesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		// no-candidates fallback can pass it to ActiveProbeWorker as
 		// the probe row's parent_request_id.
 		RequestID: requestID,
-	}
-	var result *executors.ExecuteResult
-	var execErr error
-	if isStream && h.chatHandler.survivalTenantAllowed != nil && h.chatHandler.survivalTenantAllowed(tenantID) {
-		result, execErr = h.chatHandler.runSurvivalCoordinator(r, w, func(streamWriter http.ResponseWriter) *executors.ExecParams {
-			copy := *execParams
-			copy.W = streamWriter
-			return &copy
-		}, tenantID)
-	} else {
-		result, execErr = h.chatHandler.executor.Execute(execParams)
-	}
+	})
 
 	if execErr != nil {
 		errCode := "provider_error"
