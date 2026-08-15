@@ -510,6 +510,12 @@ type Executor struct {
 	// the target provider's attachment capability prefers URL references.
 	// nil (default) keeps the legacy byte-for-byte outbound body.
 	AttachmentURLRewriter *attachments.OutboundURLRewriter
+	// AttachmentURLFetchFallback (MM-2, doc 19): when non-nil, the candidate
+	// loop re-inlines gateway attachment URLs as base64 data URIs for
+	// providers the URL-support matrix marks as unable to fetch URL sources.
+	// nil (default, flag LLM_GATEWAY_ATTACHMENT_URL_FETCH_FALLBACK off)
+	// keeps the legacy byte-for-byte outbound body.
+	AttachmentURLFetchFallback *attachments.URLFetchFallback
 	// dispatchPipeline (V2, 479): when non-nil AND dispatch_v2 gate is on,
 	// Execute routes through the multi-tier dispatch pipeline instead of the
 	// synchronous candidate loop. See executor_dispatch.go.
@@ -2664,15 +2670,41 @@ func (e *Executor) Execute(params *ExecParams) (result *ExecuteResult, err error
 			}
 
 			if execErr == nil {
-				// ── MM-1 outbound attachment URL rewrite ─────────────────────
+				// ── MM-1/MM-2 outbound attachment transforms ─────────────────
 				// Per-candidate: derive the attempt body from the ORIGINAL
 				// body so a failover from a URL-mode provider to a
 				// data-URI-only provider never inherits rewritten URLs.
 				execParams := params
 				if e.AttachmentURLRewriter != nil && len(params.AttachmentMetadata) > 0 {
-					if newBody, n := e.AttachmentURLRewriter.RewriteOpenAIBody(
-						params.BodyBytes, params.AttachmentMetadata, cand.CatalogCode); n > 0 {
+					var newBody []byte
+					var n int
+					if params.ClientProtocol == "anthropic-messages" {
+						// E-P2-3 (doc 20): Anthropic-protocol clients bridged
+						// to a URL-mode OpenAI provider — rewrite the
+						// Anthropic base64 source blocks to url sources
+						// before the bridge conversion maps them to
+						// image_url. (For anthropic-messages upstreams the
+						// matrix gives anthropic a data-URI preference, so
+						// this is a no-op there.)
+						newBody, n = e.AttachmentURLRewriter.RewriteAnthropicBody(
+							params.BodyBytes, params.AttachmentMetadata, cand.CatalogCode)
+					} else {
+						newBody, n = e.AttachmentURLRewriter.RewriteOpenAIBody(
+							params.BodyBytes, params.AttachmentMetadata, cand.CatalogCode)
+					}
+					if n > 0 {
 						cp := *params
+						cp.BodyBytes = newBody
+						execParams = &cp
+					}
+				}
+				// MM-2 (doc 19): URL 拉取回退——目标 provider 矩阵判定不
+				// 支持 url source 而出站 body 以网关 URL 引用附件时，取回
+				// 内容重新内联 base64。flag-off（nil）零开销直通。
+				if e.AttachmentURLFetchFallback != nil {
+					if newBody, n := e.AttachmentURLFetchFallback.InlineOpenAIBody(
+						execParams.BodyBytes, cand.CatalogCode); n > 0 {
+						cp := *execParams
 						cp.BodyBytes = newBody
 						execParams = &cp
 					}
