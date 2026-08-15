@@ -331,9 +331,15 @@ type ReapedTaskInfo struct {
 	CompletedAt time.Time
 }
 
-// ReapUnsafeCheckpointed 是 safety reaper（doc 18 §11.3）：把任意非终态且
-// commit_state IN ('content','tool_call','terminal') 的任务原子迁移到
-// resume_safety_blocked（fencing+1、撤租约），绝不进入 ExecuteAttempt。
+// ReapUnsafeCheckpointed 是 safety reaper（doc 18 §11.3）：把**已弃置**（lease
+// 过期或为空——持有者崩溃/断连）且非终态、commit_state IN
+// ('content','tool_call','terminal') 的任务原子迁移到 resume_safety_blocked
+// （fencing+1、撤租约），绝不进入 ExecuteAttempt。
+//
+// lease 护栏（2026-08-15 审计修正，doc 28 §1）：活跃前台持有者（lease 未
+// 过期、持续续租中）绝不收割——它已向客户端提交语义内容，终态转换属于它
+// 自己的 fenced 写（CommitTerminal）；否则前台随后的完成会被 fence 拒绝，
+// 客户端拿到成功流但任务被记为 resume_safety_blocked 并投影失败。
 func (s *Store) ReapUnsafeCheckpointed(ctx context.Context, limit int, now time.Time) ([]*Task, error) {
 	if now.IsZero() {
 		now = s.clock()
@@ -348,9 +354,10 @@ func (s *Store) ReapUnsafeCheckpointed(ctx context.Context, limit int, now time.
 		SELECT id, status FROM durable_llm_tasks
 		WHERE commit_state IN ('content', 'tool_call', 'terminal')
 		  AND status NOT IN ('completed', 'failed', 'expired', 'canceled')
+		  AND (lease_until IS NULL OR lease_until < $2)
 		ORDER BY updated_at
 		FOR UPDATE SKIP LOCKED
-		LIMIT $1`, limit)
+		LIMIT $1`, limit, now)
 	if err != nil {
 		return nil, err
 	}
