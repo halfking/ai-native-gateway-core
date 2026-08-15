@@ -114,6 +114,31 @@ func TestDurableRecoveryWorkerStopIsIdempotent(t *testing.T) {
 	worker.Stop()
 }
 
+// TestDurableRecoveryWorkerStopGraceExceededIncrementsMetric asserts that a
+// Stop whose bounded wait times out (the runner ignores cancellation and
+// keeps the attempt goroutine alive past StopGrace) increments
+// durable_recovery_stop_grace_exceeded_total, giving operators visibility
+// into a slow foreground detach / goroutine leak. The bounded wait must still
+// return (not hang) — verified by the 15s ceiling.
+func TestDurableRecoveryWorkerStopGraceExceededIncrementsMetric(t *testing.T) {
+	store := &workerFakeStore{task: runnableTask(), snapshot: &durable.Snapshot{TaskID: "task-1"}}
+	before := gatherMetricValue(t, "durable_recovery_stop_grace_exceeded_total")
+	worker := NewDurableRecoveryWorker(store, nil, blockingRunner{release: make(chan struct{})},
+		DurableWorkerOptions{Owner: "worker", Lease: time.Hour, StopGrace: 30 * time.Millisecond})
+	worker.Start(context.Background())
+	time.Sleep(50 * time.Millisecond) // let the first runOnce enter runTask
+	stopped := make(chan struct{})
+	go func() { worker.Stop(); close(stopped) }()
+	select {
+	case <-stopped:
+	case <-time.After(15 * time.Second):
+		t.Fatal("Stop must not hang when the runner ignores cancellation")
+	}
+	if got := gatherMetricValue(t, "durable_recovery_stop_grace_exceeded_total"); got <= before {
+		t.Fatalf("durable_recovery_stop_grace_exceeded_total = %v, want > %v", got, before)
+	}
+}
+
 // 审计修正（P1-1）：快照加载失败可能是瞬态 DB/keyring 问题，不得永久
 // terminal-fail——重排重试，deadline reaper 给出安全的 expired 终态。
 func TestDurableRecoveryWorkerSnapshotFailureReschedules(t *testing.T) {

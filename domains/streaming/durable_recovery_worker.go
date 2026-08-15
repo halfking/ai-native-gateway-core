@@ -149,6 +149,7 @@ func (w *DurableRecoveryWorker) Stop() {
 	select {
 	case <-done:
 	case <-time.After(w.opts.StopGrace):
+		metrics.DurableRecoveryStopGraceExceededTotal.Inc()
 		slog.Warn("durable recovery worker stop grace exceeded; background attempt still running")
 	}
 	w.mu.Lock()
