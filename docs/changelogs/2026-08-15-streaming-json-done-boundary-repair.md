@@ -12,6 +12,9 @@ invalid string and failed with a non-whitespace-character-after-JSON error.
   separate `data:` frames.
 - Preserve final unterminated SSE lines when `bufio.Reader` returns them with
   `io.EOF`.
+- Apply the same OpenAI frame repair before JSON parsing in the OpenAI to
+  Anthropic and OpenAI to Responses stream converters.
+- Preserve the final unterminated event in Anthropic passthrough streams.
 - Disable new digest-only request-log body writes, including historical false
   overrides, so audit records retain complete request and response JSON.
 

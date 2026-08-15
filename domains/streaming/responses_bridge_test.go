@@ -498,6 +498,22 @@ func TestStreamOpenAIToResponsesSSE_NoUsageStillFinishes(t *testing.T) {
 		"usage defaults to zero when upstream omits it")
 }
 
+func TestStreamOpenAIToResponsesSSE_SplitsDoneJoinedToJSON(t *testing.T) {
+	resp := &http.Response{
+		Body: io.NopCloser(strings.NewReader(
+			`data: {"id":"chunk-1","object":"chat.completion.chunk","choices":[{"delta":{"content":"planning"},"finish_reason":null}]}[DONE].`,
+		)),
+		Request: httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil),
+	}
+	rec := httptest.NewRecorder()
+
+	out := StreamOpenAIToResponsesSSE(rec, resp, "gpt-5.6-sol", "gpt-5.6-sol", "req-combined-done", nil, nil)
+
+	require.False(t, out.Interrupted)
+	assert.Contains(t, rec.Body.String(), `"delta":"planning"`)
+	assert.Contains(t, rec.Body.String(), "event: response.completed")
+}
+
 // TestStreamOpenAIToResponsesSSE_LengthMapsToIncomplete mirrors the
 // Anthropic max_tokens → incomplete translation for the OpenAI path.
 func TestStreamOpenAIToResponsesSSE_LengthMapsToIncomplete(t *testing.T) {

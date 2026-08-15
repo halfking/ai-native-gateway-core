@@ -681,6 +681,10 @@ func StreamOpenAIToResponsesSSEWithDiagnostics(
 		if line == "" {
 			continue
 		}
+		if normalizedLine, hasCombinedDone := splitCombinedDoneFrame(line); hasCombinedDone {
+			line = normalizedLine
+			reader = prependDoneFrame(reader)
+		}
 
 		// Standard OpenAI SSE framing: data: {...}\n\n and sentinel data: [DONE].
 		trimmed := strings.TrimSpace(line)
