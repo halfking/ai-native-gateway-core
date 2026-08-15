@@ -150,6 +150,7 @@ func (c *SurvivalCoordinator) Run(ctx context.Context, sw *SerializedStreamWrite
 		case TaskActionSucceed:
 			finishGateWriter(gw, gate)
 			res.Succeed = true
+			recordSurvivalRequestTerminal(c.Protocol, res.Decision)
 			return res
 
 		case TaskActionRetryNow, TaskActionWaitRecovery:
@@ -159,11 +160,13 @@ func (c *SurvivalCoordinator) Run(ctx context.Context, sw *SerializedStreamWrite
 			if err := gate.Discard(); err != nil {
 				res.Decision = TaskDecision{Action: TaskActionFailClosed, Reason: "discard_refused"}
 				c.renderTerminal(res.Decision, gate)
+				recordSurvivalRequestTerminal(c.Protocol, res.Decision)
 				return res
 			}
 			if c.now().After(deadline) {
 				res.Decision = TaskDecision{Action: TaskActionFailClosed, Reason: "deadline_exceeded"}
 				c.renderTerminal(res.Decision, gate)
+				recordSurvivalRequestTerminal(c.Protocol, res.Decision)
 				return res
 			}
 			wait := backoff
@@ -174,6 +177,7 @@ func (c *SurvivalCoordinator) Run(ctx context.Context, sw *SerializedStreamWrite
 			c.keepalive(sw)
 			if err := c.sleep(ctx, wait); err != nil {
 				res.Decision = TaskDecision{Action: TaskActionFailClosed, Reason: "client_disconnected"}
+				recordSurvivalRequestTerminal(c.Protocol, res.Decision)
 				return res
 			}
 			if c.Refresh != nil {
@@ -188,6 +192,7 @@ func (c *SurvivalCoordinator) Run(ctx context.Context, sw *SerializedStreamWrite
 		default: // ResumeBlocked / FailTerminal / FailClosed
 			finishGateWriter(gw, gate)
 			c.renderTerminal(res.Decision, gate)
+			recordSurvivalRequestTerminal(c.Protocol, res.Decision)
 			return res
 		}
 	}
