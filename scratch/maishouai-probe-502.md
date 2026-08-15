@@ -3,7 +3,7 @@
 ## 现状
 - maishouai.top provider (id=5990) 已添加到 252 PG, health_status=healthy
 - 7 个 model_offers 全部 routable
-- credential #30 的 API key: `sk-KnQ3x4VgHkOwfSHScwE7NDHbjAtC9cWhRhl9P7P4Z2bKsQwx`
+- credential #30 的 API key: `__API_KEY_24__`
 - 探测请求全返回 502
 
 ## 网络路径
