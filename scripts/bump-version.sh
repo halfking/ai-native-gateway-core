@@ -71,7 +71,12 @@ CURRENT_VERSION=$(python3 -c "import json; print(json.load(open('$VERSION_JSON')
   || echo "v0.0.0")
 
 # git tag (e.g. "v2.4.1") — 这是 NEW_VERSION 的 tag 部分
-GIT_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "v0.0.0")
+# 跳过 archive/* / sr-* / release/* 等工作分支 tag；只有 semver 风格的 vX.Y.Z
+# 才应当出现在 git_tag 字段。其余情况回落到 v0.0.0，脚本仍能正常 bump。
+GIT_TAG=$(git tag --list 'v[0-9]*.[0-9]*.[0-9]*' --sort=-v:refname | head -n 1)
+if [[ -z "$GIT_TAG" ]]; then
+  GIT_TAG="v0.0.0"
+fi
 GIT_TAG_PATCH=$(echo "$GIT_TAG" | sed 's/^v//')   # "2.4.1"
 
 # 新版本号

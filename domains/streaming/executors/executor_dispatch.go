@@ -200,11 +200,14 @@ func candidateToRef(c provider.Candidate) dispatch.CredentialRef {
 // upstream request. Streaming calls already detach the vendor context from a
 // client disconnect so pending capture can finish; Pipeline.Submit must wait on
 // the same detached lifetime instead of abandoning the request early.
+// Non-streaming requests (even those carrying a session id) keep the client
+// context: there's no capture to drain, and detaching would silently bill /
+// debit quota for a response the user never receives.
 func dispatchExecutionContext(params *ExecParams) (context.Context, context.CancelFunc) {
 	if params == nil || params.R == nil {
 		return context.WithCancel(context.Background())
 	}
-	if params.IsStream || hasSessionID(params) {
+	if params.IsStream {
 		return context.WithCancel(context.WithoutCancel(params.R.Context()))
 	}
 	return context.WithCancel(params.R.Context())

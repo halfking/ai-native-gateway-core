@@ -5178,6 +5178,11 @@ func (e *streamInterruptedError) Error() string {
 }
 
 func mayRetryInterruptedStream(params *ExecParams, interrupted *streamInterruptedError) bool {
+	// Only safe to retry when no assistant output has reached the client yet.
+	// params.Capture is nil for non-streaming requests (the catch branch above
+	// is unreachable for them) and for streaming requests without an active
+	// capture hook; in both cases no chunk has been emitted, so retrying the
+	// next candidate is safe.
 	if interrupted == nil || !interrupted.resumable || params == nil || params.SurvivalAttempt {
 		return false
 	}
