@@ -91,7 +91,7 @@ func (f *fakeDurableHandlerStore) Reschedule(_ context.Context, p durable.Resche
 	return nil
 }
 
-func armedDurableHandler(store DurableHandlerStore) *ChatHandler {
+func armedDurableHandler(store DurableForegroundStore) *ChatHandler {
 	h := &ChatHandler{}
 	h.SetDurableExecution(store, func(string) bool { return true }, DurableExecutionOptions{})
 	return h
@@ -115,7 +115,7 @@ func durableTestInput() DurableSnapshotInput {
 }
 
 func TestMaybeStartDurableHandsOffToWorkerAndRenders202(t *testing.T) {
-	store := &fakeDurableHandlerStore{}
+	store := &fakeForegroundStore{}
 	h := armedDurableHandler(store)
 
 	r := httptest.NewRequest("POST", "/v1/chat/completions", nil)
@@ -123,7 +123,7 @@ func TestMaybeStartDurableHandsOffToWorkerAndRenders202(t *testing.T) {
 	r.Header.Set("Prefer", "respond-async")
 	rec := httptest.NewRecorder()
 
-	if got := h.maybeStartDurable(rec, r, durableTestInput(), false); got != durableHandled {
+	if got := decisionOf(h.maybeStartDurable(rec, r, durableTestInput(), false, false)); got != durableHandled {
 		t.Fatalf("decision = %v, want durableHandled", got)
 	}
 	if rec.Code != httpAccepted {
@@ -157,7 +157,7 @@ func TestMaybeStartDurableInertUntilArmed(t *testing.T) {
 	r.Header.Set(GatewayCapabilitiesHeader, CapabilityDurableRecovery)
 	r.Header.Set("Prefer", "respond-async")
 	rec := httptest.NewRecorder()
-	if got := h.maybeStartDurable(rec, r, durableTestInput(), false); got != durableProceed {
+	if got := decisionOf(h.maybeStartDurable(rec, r, durableTestInput(), false, false)); got != durableProceed {
 		t.Fatalf("zero-value handler decision = %v, want durableProceed", got)
 	}
 	if rec.Code != 200 { // recorder default — nothing written
@@ -168,12 +168,12 @@ func TestMaybeStartDurableInertUntilArmed(t *testing.T) {
 // Streaming durable requests fail closed with an explicit unsupported
 // response until checkpoint binding lands.
 func TestMaybeStartDurableStreamingFailsClosed(t *testing.T) {
-	store := &fakeDurableHandlerStore{}
+	store := &fakeForegroundStore{}
 	h := armedDurableHandler(store)
 	r := httptest.NewRequest("POST", "/v1/chat/completions", nil)
 	r.Header.Set(GatewayCapabilitiesHeader, CapabilityDurableRecovery)
 	rec := httptest.NewRecorder()
-	if got := h.maybeStartDurable(rec, r, durableTestInput(), true); got != durableHandled {
+	if got := decisionOf(h.maybeStartDurable(rec, r, durableTestInput(), true, false)); got != durableHandled {
 		t.Fatalf("decision = %v, want durableHandled", got)
 	}
 	if rec.Code != http.StatusNotImplemented {
@@ -190,7 +190,7 @@ func TestMaybeStartDurableStreamingFailsClosed(t *testing.T) {
 // No completed handshake → the request keeps sync semantics (§9.4: no 202
 // without capability + respond-async).
 func TestMaybeStartDurableRequiresFullHandshake(t *testing.T) {
-	store := &fakeDurableHandlerStore{}
+	store := &fakeForegroundStore{}
 	h := armedDurableHandler(store)
 	in := durableTestInput()
 
@@ -213,7 +213,7 @@ func TestMaybeStartDurableRequiresFullHandshake(t *testing.T) {
 				r.Header.Set("Prefer", tc.prefer)
 			}
 			rec := httptest.NewRecorder()
-			if got := h.maybeStartDurable(rec, r, in, false); got != durableProceed {
+			if got := decisionOf(h.maybeStartDurable(rec, r, in, false, false)); got != durableProceed {
 				t.Fatalf("decision = %v, want durableProceed", got)
 			}
 			if rec.Code != 200 {
@@ -229,7 +229,7 @@ func TestMaybeStartDurableRequiresFullHandshake(t *testing.T) {
 // A failed create transaction must not claim durable ownership and must
 // not silently downgrade an explicitly-async request to sync.
 func TestMaybeStartDurableStoreErrorFailsClosed(t *testing.T) {
-	store := &fakeDurableHandlerStore{}
+	store := &fakeForegroundStore{}
 	store.createFn = func(durableCreatedRecord) (*durable.Task, error) {
 		return nil, errors.New("db down")
 	}
@@ -238,7 +238,7 @@ func TestMaybeStartDurableStoreErrorFailsClosed(t *testing.T) {
 	r.Header.Set(GatewayCapabilitiesHeader, CapabilityDurableRecovery)
 	r.Header.Set("Prefer", "respond-async")
 	rec := httptest.NewRecorder()
-	if got := h.maybeStartDurable(rec, r, durableTestInput(), false); got != durableHandled {
+	if got := decisionOf(h.maybeStartDurable(rec, r, durableTestInput(), false, false)); got != durableHandled {
 		t.Fatalf("decision = %v, want durableHandled", got)
 	}
 	if rec.Code != http.StatusServiceUnavailable {
@@ -252,7 +252,7 @@ func TestMaybeStartDurableStoreErrorFailsClosed(t *testing.T) {
 // Duplicate (tenant, request) is an idempotent replay: 202 pointing at the
 // existing pending response, no second task.
 func TestMaybeStartDurableDuplicateIsIdempotentReplay(t *testing.T) {
-	store := &fakeDurableHandlerStore{}
+	store := &fakeForegroundStore{}
 	store.createFn = func(durableCreatedRecord) (*durable.Task, error) {
 		return nil, durable.ErrDuplicateTask
 	}
@@ -261,7 +261,7 @@ func TestMaybeStartDurableDuplicateIsIdempotentReplay(t *testing.T) {
 	r.Header.Set(GatewayCapabilitiesHeader, CapabilityDurableRecovery)
 	r.Header.Set("Prefer", "respond-async")
 	rec := httptest.NewRecorder()
-	if got := h.maybeStartDurable(rec, r, durableTestInput(), false); got != durableHandled {
+	if got := decisionOf(h.maybeStartDurable(rec, r, durableTestInput(), false, false)); got != durableHandled {
 		t.Fatalf("decision = %v, want durableHandled", got)
 	}
 	if rec.Code != httpAccepted {
@@ -277,17 +277,54 @@ func TestMaybeStartDurableDuplicateIsIdempotentReplay(t *testing.T) {
 
 // Tenant outside the durable allowlist keeps sync semantics.
 func TestMaybeStartDurableTenantAllowlist(t *testing.T) {
-	store := &fakeDurableHandlerStore{}
+	store := &fakeForegroundStore{}
 	h := &ChatHandler{}
 	h.SetDurableExecution(store, func(tenantID string) bool { return false }, DurableExecutionOptions{})
 	r := httptest.NewRequest("POST", "/v1/chat/completions", nil)
 	r.Header.Set(GatewayCapabilitiesHeader, CapabilityDurableRecovery)
 	r.Header.Set("Prefer", "respond-async")
 	rec := httptest.NewRecorder()
-	if got := h.maybeStartDurable(rec, r, durableTestInput(), false); got != durableProceed {
+	if got := decisionOf(h.maybeStartDurable(rec, r, durableTestInput(), false, false)); got != durableProceed {
 		t.Fatalf("decision = %v, want durableProceed", got)
 	}
 	if len(store.created) != 0 {
 		t.Fatal("disallowed tenant must not create a durable task")
 	}
 }
+
+// Streaming durable on a foreground-capable endpoint creates + claims the
+// task and returns the binding for the survival coordinator — no 202, no
+// reschedule: the foreground holds the lease (doc 18 §11.3).
+func TestMaybeStartDurableStreamingForegroundReturnsBinding(t *testing.T) {
+	store := &fakeForegroundStore{}
+	h := &ChatHandler{}
+	h.SetDurableExecution(store, func(string) bool { return true }, DurableExecutionOptions{})
+	r := httptest.NewRequest("POST", "/v1/chat/completions", nil)
+	r.Header.Set(GatewayCapabilitiesHeader, CapabilityDurableRecovery)
+	rec := httptest.NewRecorder()
+
+	decision, binding := h.maybeStartDurable(rec, r, durableTestInput(), true, true)
+	if decision != durableProceed {
+		t.Fatalf("decision = %v, want durableProceed (stream continues in-connection)", decision)
+	}
+	if binding == nil {
+		t.Fatal("foreground streaming must return a binding")
+	}
+	if len(store.created) != 1 {
+		t.Fatalf("CreateAndClaim calls = %d, want 1", len(store.created))
+	}
+	if len(store.resched) != 0 {
+		t.Fatalf("foreground must not reschedule, got %+v", store.resched)
+	}
+	if rec.Code != 200 {
+		t.Fatalf("foreground must not write a response, got %d", rec.Code)
+	}
+	if err := binding.Checkpoint(CommitStateContent); err != nil {
+		t.Fatalf("binding checkpoint: %v", err)
+	}
+	if !binding.ContentCommitted() {
+		t.Fatal("binding must expose the checkpointed state")
+	}
+}
+
+func decisionOf(d durableDecision, _ *DurableStreamBinding) durableDecision { return d }

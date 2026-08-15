@@ -407,7 +407,9 @@ func TestPlanCandidates_Off_RecordsOff(t *testing.T) {
 // the router ever consults it on the authoritative path, the
 // failure would manifest as a `spy.calls > 0` reading. The strict
 // spec §8.2 强不变量 is therefore re-stated as:
-//   spy.calls == 0
+//
+//	spy.calls == 0
+//
 // (the previous assertion `spy.calls > 0 && !spy.sawAtLeastOneAvailable()`
 // was a weak check because the spy defaulted to available=true and
 // the right-hand side was a no-op; the assertion effectively

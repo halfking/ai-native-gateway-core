@@ -13,7 +13,7 @@ import (
 
 func TestRoutingAttemptsTracker_Add(t *testing.T) {
 	tracker := NewRoutingAttemptsTracker()
-	
+
 	tracker.Add(RoutingAttempt{
 		ProviderID:   35,
 		ProviderName: "火山方舟",
@@ -24,7 +24,7 @@ func TestRoutingAttemptsTracker_Add(t *testing.T) {
 		LatencyMs:    1523,
 		HTTPStatus:   404,
 	})
-	
+
 	tracker.Add(RoutingAttempt{
 		ProviderID:   18,
 		ProviderName: "NVIDIA NIM",
@@ -34,7 +34,7 @@ func TestRoutingAttemptsTracker_Add(t *testing.T) {
 		Result:       "canceled",
 		LatencyMs:    120000,
 	})
-	
+
 	assert.Equal(t, 2, tracker.Count())
 	assert.Equal(t, 1, tracker.attempts[0].Seq)
 	assert.Equal(t, 2, tracker.attempts[1].Seq)
@@ -42,13 +42,13 @@ func TestRoutingAttemptsTracker_Add(t *testing.T) {
 
 func TestRoutingAttemptsTracker_ToJSONBytes_SingleSuccess(t *testing.T) {
 	tracker := NewRoutingAttemptsTracker()
-	
+
 	tracker.Add(RoutingAttempt{
 		ProviderID: 35,
 		Result:     "success",
 		LatencyMs:  234,
 	})
-	
+
 	// 单次成功应该返回 nil（优化存储）
 	bytes, err := tracker.ToJSONBytes()
 	require.NoError(t, err)
@@ -57,31 +57,31 @@ func TestRoutingAttemptsTracker_ToJSONBytes_SingleSuccess(t *testing.T) {
 
 func TestRoutingAttemptsTracker_ToJSONBytes_MultipleAttempts(t *testing.T) {
 	tracker := NewRoutingAttemptsTracker()
-	
+
 	tracker.Add(RoutingAttempt{
 		ProviderID: 35,
 		Result:     "model_not_found",
 		LatencyMs:  1523,
 	})
-	
+
 	tracker.Add(RoutingAttempt{
 		ProviderID: 18,
 		Result:     "canceled",
 		LatencyMs:  120000,
 	})
-	
+
 	bytes, err := tracker.ToJSONBytes()
 	require.NoError(t, err)
 	require.NotNil(t, bytes)
-	
+
 	var result map[string]interface{}
 	err = json.Unmarshal(bytes, &result)
 	require.NoError(t, err)
-	
+
 	attempts, ok := result["attempts"].([]interface{})
 	require.True(t, ok)
 	assert.Len(t, attempts, 2)
-	
+
 	first := attempts[0].(map[string]interface{})
 	assert.Equal(t, float64(1), first["seq"])
 	assert.Equal(t, float64(35), first["provider_id"])
@@ -122,14 +122,14 @@ func TestRoutingAttemptsTracker_Summary(t *testing.T) {
 			want: "候选1: 35(35) 超时 5.0s",
 		},
 	}
-	
+
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			tracker := NewRoutingAttemptsTracker()
 			for _, a := range tt.attempts {
 				tracker.Add(a)
 			}
-			
+
 			got := tracker.Summary()
 			assert.Equal(t, tt.want, got)
 		})
@@ -186,7 +186,7 @@ func TestClassifyResult(t *testing.T) {
 			want:       "error",
 		},
 	}
-	
+
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			got := ClassifyResult(tt.err, tt.statusCode)

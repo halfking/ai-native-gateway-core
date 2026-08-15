@@ -19,7 +19,7 @@ import (
 
 	"github.com/kaixuan/llm-gateway-go/credentialfpslot"
 	"github.com/kaixuan/llm-gateway-go/db"
-	"github.com/kaixuan/llm-gateway-go/domains/attachments"   //nolint:depguard // MM-1 outbound attachment URL rewrite
+	"github.com/kaixuan/llm-gateway-go/domains/attachments"     //nolint:depguard // MM-1 outbound attachment URL rewrite
 	"github.com/kaixuan/llm-gateway-go/domains/credential"      //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/domains/credentialstate" //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/domains/dispatch"
@@ -1171,16 +1171,16 @@ type ExecParams struct {
 	// (MM-1) so the executor can swap inline base64 blocks for gateway URLs
 	// per outbound candidate. nil on the legacy path (feature off).
 	AttachmentMetadata []attachments.AttachmentMetadata
-	ClientModel          string
-	OutboundModel        string
-	ClientID             identity.ClientIdentity
-	Transform            *transformation.TransformResult
-	Resolution           *resolve.Resolution
-	Candidates           []provider.Candidate
-	Policy               *provider.Policy
-	AuditBuilder         *audit.EventBuilder
-	Capture              *audit.StreamCapture
-	StreamWrapper        StreamWrapperFunc
+	ClientModel        string
+	OutboundModel      string
+	ClientID           identity.ClientIdentity
+	Transform          *transformation.TransformResult
+	Resolution         *resolve.Resolution
+	Candidates         []provider.Candidate
+	Policy             *provider.Policy
+	AuditBuilder       *audit.EventBuilder
+	Capture            *audit.StreamCapture
+	StreamWrapper      StreamWrapperFunc
 	// ToolsRequested indicates the upstream request body carried a non-empty
 	// `tools` array. Some providers (Xiaomi MiMo, MiniMax M2.7) cannot emit
 	// structured `tool_calls` and instead fall back to embedding

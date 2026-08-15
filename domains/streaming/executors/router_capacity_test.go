@@ -27,9 +27,9 @@ func TestEstimatePromptTokens_UsesBodyBytes(t *testing.T) {
 // TestCapacityPenaltyForWeight verifies the saturating mapping: default/larger
 // weight → 0 penalty; sub-default weight rises linearly toward 1.
 func TestCapacityPenaltyForWeight(t *testing.T) {
-	assert.Equal(t, 0.0, capacityPenaltyForWeight(0))   // unknown treated as default → 0
-	assert.Equal(t, 0.0, capacityPenaltyForWeight(-5))  // negative treated as default → 0
-	assert.Equal(t, 0.0, capacityPenaltyForWeight(100)) // default → 0
+	assert.Equal(t, 0.0, capacityPenaltyForWeight(0))    // unknown treated as default → 0
+	assert.Equal(t, 0.0, capacityPenaltyForWeight(-5))   // negative treated as default → 0
+	assert.Equal(t, 0.0, capacityPenaltyForWeight(100))  // default → 0
 	assert.Equal(t, 0.0, capacityPenaltyForWeight(1000)) // larger → 0 (saturated)
 	assert.InDelta(t, 0.5, capacityPenaltyForWeight(50), 1e-9)
 	assert.InDelta(t, 0.9, capacityPenaltyForWeight(10), 1e-9)
