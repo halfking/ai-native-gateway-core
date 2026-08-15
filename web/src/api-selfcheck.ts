@@ -260,3 +260,49 @@ export interface NodeProbeTaskRow {
 export async function fetchProbeNodeTasks(limit = 120): Promise<{ tasks: NodeProbeTaskRow[]; total: number }> {
   return req<{ tasks: NodeProbeTaskRow[]; total: number }>('GET', `/api/admin/probe/node-tasks?limit=${limit}`)
 }
+// ── Tri-state probe queue (OBS-BE5, 25 号 §6.2 / 26 号 §4) ─────────────
+// GET /api/admin/probe/tasks?status=pending|in_flight|completed&limit=
+// One leg of the three-section self-check queue view. Field semantics follow
+// the backend contract exactly: optional fields are absent when unimplemented
+// (e.g. next_retry_at_ms only rides on pending re-arm rows) — the UI must not
+// zero-fake them (13 号门禁).
+
+export type ProbeTriStateStatus = 'pending' | 'in_flight' | 'completed'
+export type ProbeOutcome = 'success' | 'failed' | 'expired' | 'cancelled'
+
+export interface ProbeTriStateTask {
+  id: number
+  dedup_key: string
+  credential_id: number
+  provider_id?: number
+  raw_model: string
+  command: string
+  source: string
+  origin: 'scheduled' | 'error' | 'manual'
+  status: ProbeTriStateStatus
+  outcome?: ProbeOutcome
+  attempt: number
+  max_attempts: number
+  priority: number
+  /** 退避下一跳（unix ms）— 仅 pending 重臂行携带 */
+  next_retry_at_ms?: number
+  reason_code?: string
+  http_status?: number
+  latency_ms?: number
+  created_at: string
+  updated_at: string
+  finished_at?: string
+}
+
+export interface ProbeTriStateLeg {
+  status: ProbeTriStateStatus
+  tasks: ProbeTriStateTask[]
+  count: number
+}
+
+export async function fetchProbeTriStateTasks(
+  status: ProbeTriStateStatus,
+  limit = 50
+): Promise<ProbeTriStateLeg> {
+  return req<ProbeTriStateLeg>('GET', `/api/admin/probe/tasks?status=${status}&limit=${limit}`)
+}

@@ -143,6 +143,7 @@ offline: "下線資源",
   viewFailedRequests: "查看失敗請求",
   liveStream: {
     title: "即時請求流",
+    groupByQueue: "按處理佇列",
     controlsAria: "即時請求流控制列",
     connected: "已連線",
     disconnected: "重新連線中…",

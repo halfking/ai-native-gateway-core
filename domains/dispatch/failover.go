@@ -2,6 +2,9 @@ package dispatch
 
 import (
 	"log/slog"
+	"strconv"
+
+	"github.com/kaixuan/llm-gateway-go/internal/liveactions"
 )
 
 // failoverItem pairs a request with the pre-firstbyte error that caused the
@@ -49,6 +52,9 @@ func (p *Pipeline) move(qr *QueuedRequest, err error) {
 	if qr.CredRetryCount < p.retryBudget(qr) {
 		qr.CredRetryCount++
 		metricFailover.WithLabelValues("cred_retry").Inc()
+		// V3.3-OBS OBS-B1 (2026-08-15): node_switch 动作事件，retry=true、
+		// retry_seq 递增时前端打特别标（24 号 §1）。
+		p.emitNodeSwitch(qr, qr.SelectedCred.CredentialID, qr.SelectedCred.CredentialID, "cred_retry", true, qr.CredRetryCount)
 		if p.tryEnqueueCred(qr.SelectedCred, qr) {
 			return
 		}
@@ -67,8 +73,11 @@ func (p *Pipeline) move(qr *QueuedRequest, err error) {
 			qr.markTriedCredential(ref.CredentialID)
 			continue
 		}
+		fromCred := qr.SelectedCred.CredentialID
 		p.selectCredential(qr, ref)
 		metricFailover.WithLabelValues("cred_switch").Inc()
+		// V3.3-OBS OBS-B1 (2026-08-15): node_switch 动作事件（跨凭据切换）。
+		p.emitNodeSwitch(qr, fromCred, ref.CredentialID, "cred_switch", false, 0)
 		if p.tryEnqueueCred(ref, qr) {
 			return
 		}
@@ -104,4 +113,25 @@ func terminalErr(err error) error {
 		return err
 	}
 	return ErrNoRoute
+}
+
+// emitNodeSwitch emits the node_switch action event (V3.3-OBS OBS-B1,
+// 24 号 §2: from/to/reason/retry/retry_seq)。
+func (p *Pipeline) emitNodeSwitch(qr *QueuedRequest, fromCred, toCred int, reason string, retry bool, retrySeq int) {
+	if p == nil || qr == nil {
+		return
+	}
+	p.liveActions.Emit(ctxOf(qr), liveactions.ActionEvent{
+		RequestID:    qr.ID,
+		Action:       liveactions.ActionNodeSwitch,
+		Model:        qr.ResolvedModel,
+		CredentialID: toCred,
+		Retry:        retry,
+		RetrySeq:     retrySeq,
+		Detail: map[string]string{
+			"from_credential_id": strconv.Itoa(fromCred),
+			"to_credential_id":   strconv.Itoa(toCred),
+			"reason":             reason,
+		},
+	})
 }

@@ -43,6 +43,55 @@ export interface LiveRequest {
   is_probe?: boolean
   probe_origin?: 'direct' | 'gateway' | 'scheduled'
   probe_attempt?: number
+  // 2026-08-15 (24号 §3): lifecycle extension fields — camelCase on the wire.
+  // stage is the §1 state-machine enum the request currently sits in
+  // (arriving/routing/queued_model/queued_node/forwarding/first_byte/
+  // streaming/done/failed/rejected/...). All optional + backward compatible.
+  stage?: string
+  retrySeq?: number
+  retryReasonClass?: string
+  parentRequestId?: string
+  requestType?: 'chat' | 'title' | 'summary' | 'sensitive_word' | 'probe' | 'unknown'
+}
+
+/**
+ * ActionEvent — one row of the 24号 §2 action vocabulary
+ * (arrive | route_resolved | model_enqueued | credential_selected |
+ *  node_enqueued | node_selected | upstream_request | first_byte | reply |
+ *  node_switch | model_switch | no_route).
+ *
+ * `seq` is monotonically increasing WITHIN a request_id; the store sorts by
+ * seq, never by arrival order. Field names keep the store's snake_case wire
+ * style. All fields optional + backward compatible (13号 contract principle):
+ * absent fields must be treated as "not reported", never rendered as zero.
+ */
+export interface ActionEvent {
+  request_id?: string
+  seq?: number
+  action?: string
+  ts?: string
+  model?: string
+  credential_id?: number
+  error_kind?: string | null
+  retry_seq?: number
+  retry?: boolean
+  // §2 per-action detail fields (only present on the actions that use them)
+  client_protocol?: string
+  auto_decision?: string
+  queue_depth?: number
+  weight?: number
+  tier?: string
+  sticky?: boolean
+  attempt?: number
+  ttfb_ms?: number
+  status?: string
+  latency_ms?: number | null
+  from_credential_id?: number
+  to_credential_id?: number
+  reason?: string
+  from_model?: string
+  to_model?: string
+  blocked_reasons?: string[]
 }
 
 export interface LiveStreamStats {
@@ -134,7 +183,7 @@ export interface LiveNodeStatus {
 }
 
 export interface LiveStreamEnvelope {
-  type: 'initial_data' | 'request' | 'idle_marker' | 'health_update' | 'incident_update' | 'snapshot_refresh' | 'queue_snapshot' | 'node_update'
+  type: 'initial_data' | 'request' | 'idle_marker' | 'health_update' | 'incident_update' | 'snapshot_refresh' | 'queue_snapshot' | 'node_update' | 'request_lifecycle' | 'child_request'
   ts: string
   request?: LiveRequest
   requests?: LiveRequest[]
@@ -145,6 +194,13 @@ export interface LiveStreamEnvelope {
   lane_ids?: string[]
   queue?: LiveQueueSnapshot
   nodes?: LiveNodeStatus[]
+  // 2026-08-15 (24号 §3): request_lifecycle payload. The backend normally
+  // sends one action object, but an aggregated batch frame may carry an array
+  // — both shapes are accepted. `actions` is a defensive alias.
+  action?: ActionEvent | ActionEvent[]
+  actions?: ActionEvent[]
+  // 2026-08-15 (24号 §3): child_request payload key.
+  parent_request_id?: string
 }
 
 export type ConnectionState = 'idle' | 'connecting' | 'open' | 'reconnecting' | 'closed' | 'unsupported'
@@ -159,7 +215,23 @@ export const liveStreamState = reactive({
   redisError: '',
   queue: null as LiveQueueSnapshot | null,
   nodes: [] as LiveNodeStatus[],
+  // 2026-08-15 (24号 §7): per-request action timeline + parent→children
+  // index. Both Maps live inside the reactive state so Vue tracks
+  // get/set/iteration on them.
+  actions: new Map<string, ActionEvent[]>(),
+  children: new Map<string, LiveRequest[]>(),
 })
+
+// Action timeline caps (24号 §7): 50 events per request, 2000 globally
+// (oldest evicted; the Map is re-inserted on touch so eviction is LRU by
+// last-activity, falling back to insertion order).
+export const ACTIONS_PER_REQUEST_CAP = 50
+export const ACTIONS_GLOBAL_CAP = 2000
+export const CHILDREN_PER_PARENT_CAP = 50
+export const CHILDREN_GLOBAL_CAP = 2000
+
+let actionsTotal = 0
+let childrenTotal = 0
 
 // Page visibility state
 const visibilityState = reactive({
@@ -213,6 +285,18 @@ export const redisHealthyRef: ComputedRef<boolean> = computed(() => liveStreamSt
 export const redisErrorRef: ComputedRef<string> = computed(() => liveStreamState.redisError)
 export const queueRef: ComputedRef<LiveQueueSnapshot | null> = computed(() => liveStreamState.queue)
 export const nodesRef: ComputedRef<LiveNodeStatus[]> = computed(() => liveStreamState.nodes)
+export const actionsRef: ComputedRef<Map<string, ActionEvent[]>> = computed(() => liveStreamState.actions)
+export const childrenRef: ComputedRef<Map<string, LiveRequest[]>> = computed(() => liveStreamState.children)
+
+/** Action timeline of one request, ordered by seq ASC. Empty when unknown. */
+export function getRequestActions(requestId: string): ActionEvent[] {
+  return liveStreamState.actions.get(requestId) ?? []
+}
+
+/** Child requests of one parent request_id, collapsed by request_id. */
+export function getRequestChildren(parentRequestId: string): LiveRequest[] {
+  return liveStreamState.children.get(parentRequestId) ?? []
+}
 
 const TILE_WIDTH = 80
 const TILE_GAP = 6
@@ -300,6 +384,141 @@ function notifyTerminalRequest(req: LiveRequest) {
   if (req.type === 'idle_marker' || !req.request_id) return
   if (req.status !== 'success' && req.status !== 'failure' && req.status !== 'rate_limited') return
   for (const fn of terminalListeners) fn(req)
+}
+
+// ---------------------------------------------------------------------------
+// 2026-08-15 (24号 §2/§3/§7): request_lifecycle action timeline + child_request
+// index. Store layer only — rendering is done by consumers (RequestDetail /
+// RequestProcessingTrail upgrade).
+// ---------------------------------------------------------------------------
+
+function seqOf(a: ActionEvent): number {
+  return a.seq ?? 0
+}
+
+/** Insert one action into its request's timeline, kept sorted by seq ASC.
+ *  Re-delivering an existing seq (Redis replay dedupe) replaces in place. */
+function recordAction(action: ActionEvent) {
+  const requestId = action.request_id
+  if (!requestId) return
+  let list = liveStreamState.actions.get(requestId)
+  if (!list) {
+    list = []
+    liveStreamState.actions.set(requestId, list)
+  } else {
+    // Refresh LRU order: delete + re-insert so the least recently active
+    // request is evicted first when the global cap is hit.
+    liveStreamState.actions.delete(requestId)
+    liveStreamState.actions.set(requestId, list)
+  }
+
+  const existingIndex = list.findIndex((a) => seqOf(a) === seqOf(action))
+  if (existingIndex >= 0) {
+    // Same seq replays (snapshot refresh / reconnect): last write wins.
+    list[existingIndex] = action
+    return
+  }
+
+  list.push(action)
+  // Array#sort is stable, so equal-seq events keep arrival order and the
+  // overall order depends only on seq — never on message arrival history.
+  list.sort((a, b) => seqOf(a) - seqOf(b))
+  actionsTotal += 1
+
+  // Per-request cap: drop the OLDEST actions (smallest seq).
+  while (list.length > ACTIONS_PER_REQUEST_CAP) {
+    list.shift()
+    actionsTotal -= 1
+  }
+  enforceGlobalActionsCap()
+}
+
+/** Global cap: evict the oldest actions of the least recently active request
+ *  (Map insertion order front) until the total is back under the cap. */
+function enforceGlobalActionsCap() {
+  while (actionsTotal > ACTIONS_GLOBAL_CAP && liveStreamState.actions.size > 0) {
+    const oldestKey = liveStreamState.actions.keys().next().value as string | undefined
+    if (oldestKey === undefined) {
+      actionsTotal = 0
+      break
+    }
+    const list = liveStreamState.actions.get(oldestKey)
+    if (!list || list.length === 0) {
+      liveStreamState.actions.delete(oldestKey)
+      continue
+    }
+    list.shift()
+    actionsTotal -= 1
+    if (list.length === 0) liveStreamState.actions.delete(oldestKey)
+  }
+}
+
+/** request_lifecycle frame: `action` may be a single object or an aggregated
+ *  batch array; `actions` is accepted as a defensive alias. */
+function applyLifecycleActions(payload: ActionEvent | ActionEvent[] | undefined) {
+  if (!payload) return
+  const batch = Array.isArray(payload) ? payload : [payload]
+  for (const action of batch) {
+    if (!action || typeof action !== 'object') continue
+    recordAction(action)
+  }
+}
+
+/** child_request frame: attach the child request to its parent's index and
+ *  refresh the child's card in the flat replay buffer when it is visible. */
+function applyChildRequest(parentRequestId: string, child: LiveRequest) {
+  const enriched: LiveRequest = { ...child, parentRequestId: child.parentRequestId ?? parentRequestId }
+  if (!enriched.request_id) return
+
+  let list = liveStreamState.children.get(parentRequestId)
+  if (!list) {
+    list = []
+    liveStreamState.children.set(parentRequestId, list)
+  } else {
+    liveStreamState.children.delete(parentRequestId)
+    liveStreamState.children.set(parentRequestId, list)
+  }
+
+  const existingIndex = list.findIndex((c) => c.request_id === enriched.request_id)
+  if (existingIndex >= 0) {
+    // Lifecycle update of a known child: collapse in place, keep list order.
+    list[existingIndex] = { ...list[existingIndex], ...enriched }
+  } else {
+    list.push(enriched)
+    childrenTotal += 1
+    while (list.length > CHILDREN_PER_PARENT_CAP) {
+      list.shift()
+      childrenTotal -= 1
+    }
+    enforceGlobalChildrenCap()
+  }
+
+  // Update the corresponding request card if the child is present in the
+  // flat replay buffer (children may never enter the main swim lane).
+  if (idIndex.has(enriched.request_id)) {
+    const cardIndex = liveStreamState.requests.findIndex((r) => r.request_id === enriched.request_id)
+    if (cardIndex >= 0) {
+      liveStreamState.requests[cardIndex] = { ...liveStreamState.requests[cardIndex], ...enriched }
+    }
+  }
+}
+
+function enforceGlobalChildrenCap() {
+  while (childrenTotal > CHILDREN_GLOBAL_CAP && liveStreamState.children.size > 0) {
+    const oldestKey = liveStreamState.children.keys().next().value as string | undefined
+    if (oldestKey === undefined) {
+      childrenTotal = 0
+      break
+    }
+    const list = liveStreamState.children.get(oldestKey)
+    if (!list || list.length === 0) {
+      liveStreamState.children.delete(oldestKey)
+      continue
+    }
+    list.shift()
+    childrenTotal -= 1
+    if (list.length === 0) liveStreamState.children.delete(oldestKey)
+  }
 }
 
 function trimOldest() {
@@ -475,6 +694,15 @@ function handleEnvelope(env: LiveStreamEnvelope) {
     // array replacement and unnecessary repaint.
     return
   }
+  if (env.type === 'request_lifecycle') {
+    applyLifecycleActions(env.action ?? env.actions)
+    return
+  }
+  if (env.type === 'child_request' && env.request && env.parent_request_id) {
+    applyChildRequest(env.parent_request_id, env.request)
+    return
+  }
+
   if (env.type === 'health_update') {
     return
   }
@@ -913,6 +1141,10 @@ export function togglePause() {
 export function resetStream() {
   liveStreamState.requests = []
   liveStreamState.snapshot = null
+  liveStreamState.actions.clear()
+  liveStreamState.children.clear()
+  actionsTotal = 0
+  childrenTotal = 0
   idIndex.clear()
   pending.length = 0
   maxSeenTs = ''
@@ -943,6 +1175,11 @@ export const __testing = {
   mergeLaneList,
   mergeTilesById,
   laneDataEqual,
+  recordAction,
+  applyLifecycleActions,
+  applyChildRequest,
+  actionsTotal: () => actionsTotal,
+  childrenTotal: () => childrenTotal,
   resetStream,
   refCount: () => refCount,
   es: () => es,

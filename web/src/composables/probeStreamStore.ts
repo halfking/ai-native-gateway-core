@@ -13,6 +13,15 @@
 import { ref } from 'vue'
 import { authBearer } from '../store'
 
+// OBS-BE5 (25 号 §6 / 26 号 §4): tri-state origin badge carried by every task
+// object. Old payloads without `origin` keep rendering (callers derive a
+// fallback from `source`).
+export type ProbeOrigin = 'scheduled' | 'error' | 'manual'
+
+// SSE connection state — mirrors liveStreamStore's ConnectionState so panels
+// can render a reconnecting chip instead of silently going stale.
+export type ProbeConnectionState = 'connecting' | 'open' | 'reconnecting' | 'closed'
+
 export interface ProbeStreamTile {
   id: string
   task_type: string
@@ -29,6 +38,10 @@ export interface ProbeStreamTile {
   err_detail?: string
   scheduled?: boolean
   reason?: string
+  // OBS-BE5: optional tri-state extras. next_retry_at_ms is only present on
+  // pending re-arm rows — absent means "none", never zero-fake it.
+  origin?: ProbeOrigin
+  next_retry_at_ms?: number
   ts: number
 }
 
@@ -36,6 +49,8 @@ const ENDPOINT = '/api/admin/probe/stream'
 const MAX_VISIBLE = 200
 
 const tiles = ref<ProbeStreamTile[]>([])
+// Connection state for the reconnecting chip (26 号 §4: SSE 断线重连态展示).
+const connection = ref<ProbeConnectionState>('closed')
 let es: EventSource | null = null
 let refCount = 0
 let reconnectTimer: ReturnType<typeof setTimeout> | null = null
@@ -102,12 +117,16 @@ function handleEvent(type: string, data: unknown) {
   try {
     const payload = (data ?? {}) as Record<string, unknown>
     if (type === 'initial_data' || type === 'snapshot_refresh') {
-      const items = (payload.tasks ?? payload.items ?? []) as ProbeStreamTile[]
+      // OBS-BE5 wire form: ProbeStreamEnvelope { type, ts, initial: [...] }.
+      // Keep the legacy `tasks`/`items` keys for older gateways.
+      const items = (payload.initial ?? payload.tasks ?? payload.items ?? []) as ProbeStreamTile[]
       applyInitial(items)
       return
     }
     // submitted/started/completed/failed/idle_marker → one incremental tile.
-    const tile = payload as unknown as ProbeStreamTile
+    // The envelope nests the task under `task`; bare task payloads (older
+    // wire form) are still accepted.
+    const tile = (payload.task ?? payload) as unknown as ProbeStreamTile
     if (!tile || !tile.id) return
     collapseTile(tile)
   } catch { /* swallow malformed event */ }
@@ -115,16 +134,19 @@ function handleEvent(type: string, data: unknown) {
 
 function open() {
   if (es) return
+  connection.value = 'connecting'
   try {
     es = new EventSource(buildUrl(), { withCredentials: true })
   } catch {
     es = null
+    connection.value = 'reconnecting'
     scheduleReconnect()
     return
   }
-  es.onopen = () => { /* connected */ }
+  es.onopen = () => { connection.value = 'open' }
   es.onerror = () => {
     // Browser auto-reconnects; fall back to a manual retry if it gives up.
+    connection.value = 'reconnecting'
     scheduleReconnect()
   }
   // Subscribe to all named event types the hub emits.
@@ -153,10 +175,11 @@ function teardownEs() {
     try { es.close() } catch { /* ignore */ }
     es = null
   }
+  connection.value = 'closed'
 }
 
 export function useProbeStream() {
-  return { tiles }
+  return { tiles, connection }
 }
 
 export function acquireProbeStream() {

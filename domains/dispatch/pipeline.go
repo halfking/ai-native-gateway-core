@@ -2,9 +2,12 @@ package dispatch
 
 import (
 	"context"
+	"strconv"
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/kaixuan/llm-gateway-go/internal/liveactions"
 )
 
 // RouteFunc returns the ranked, availability-filtered credentials for the
@@ -69,6 +72,21 @@ type Pipeline struct {
 	// V3.1 waterfall ring (recent completed request timelines for admin UI).
 	waterfallOnce sync.Once
 	waterfall     *waterfallRing
+
+	// liveActions (2026-08-15, V3.3-OBS OBS-B1) 请求生命周期动作事件发射器
+	// （model_enqueued / node_enqueued / node_switch / model_switch / no_route，
+	// docs/会话优化v3/24 §2）。nil 安全（Emit 对 nil receiver 是 no-op），
+	// 旁路异步，热路径零阻塞。
+	liveActions *liveactions.Emitter
+}
+
+// SetLiveActions wires the request-lifecycle action-event emitter (V3.3-OBS
+// OBS-B1). Call before/after Start — emit sites are nil-safe either way.
+func (p *Pipeline) SetLiveActions(e *liveactions.Emitter) {
+	if p == nil {
+		return
+	}
+	p.liveActions = e
 }
 
 // NewPipeline constructs a pipeline. Call Start before Submit.
@@ -218,6 +236,15 @@ func (p *Pipeline) enqueueModel(name string, qr *QueuedRequest) bool {
 	case mq.ch <- qr:
 		mq.depth.Add(1)
 		metricModelQueueDepth.WithLabelValues(name).Inc()
+		// V3.3-OBS OBS-B1 (2026-08-15): model_enqueued 动作事件（S4）。
+		p.liveActions.Emit(ctxOf(qr), liveactions.ActionEvent{
+			RequestID: qr.ID,
+			Action:    liveactions.ActionModelEnqueued,
+			Model:     name,
+			Detail: map[string]string{
+				"queue_depth": strconv.FormatInt(mq.depth.Load(), 10),
+			},
+		})
 		return true
 	default:
 		return false
@@ -408,6 +435,18 @@ func (p *Pipeline) tryEnqueueCred(cred CredentialRef, qr *QueuedRequest) bool {
 	select {
 	case cf.queue <- qr:
 		metricCredQueueDepth.WithLabelValues(itoa(cred.CredentialID), cred.ConcurrencyMode).Inc()
+		// V3.3-OBS OBS-B1 (2026-08-15): node_enqueued 动作事件（S6，落入
+		// 凭据队列）。
+		p.liveActions.Emit(ctxOf(qr), liveactions.ActionEvent{
+			RequestID:    qr.ID,
+			Action:       liveactions.ActionNodeEnqueued,
+			Model:        qr.ResolvedModel,
+			CredentialID: cred.CredentialID,
+			Detail: map[string]string{
+				"queue_depth": strconv.FormatInt(cf.depth.Load(), 10),
+				"vendor":      cred.Vendor,
+			},
+		})
 		return true
 	default:
 		cf.depth.Add(-1)

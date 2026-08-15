@@ -2,7 +2,10 @@ package dispatch
 
 import (
 	"context"
+	"errors"
 	"log/slog"
+
+	"github.com/kaixuan/llm-gateway-go/internal/liveactions"
 )
 
 // runDispatcher is a ① Model Dispatcher worker. It consumes from dispatchIn,
@@ -37,6 +40,8 @@ func (p *Pipeline) dispatch(qr *QueuedRequest) {
 		if err != nil || resolved == "" {
 			slog.Debug("dispatch: model resolve failed",
 				"requested", qr.RequestedModel, "request_id", qr.ID, "error", err)
+			// V3.3-OBS OBS-B1 (2026-08-15): no_route 动作事件（终态）。
+			p.emitNoRoute(qr, qr.RequestedModel, "model_resolve_failed")
 			p.complete(qr, ForwardOutcome{Err: ErrNoRoute})
 			return
 		}
@@ -86,6 +91,7 @@ func (p *Pipeline) selectAndEnqueue(qr *QueuedRequest) bool {
 // is disabled or no alternative exists, complete with the original cause.
 func (p *Pipeline) tryModelChange(qr *QueuedRequest, cause error) {
 	if !p.allowModelChange || !qr.AllowModelChange {
+		p.emitNoRouteIfCause(qr, cause)
 		p.complete(qr, ForwardOutcome{Err: terminalErr(cause)})
 		return
 	}
@@ -94,12 +100,14 @@ func (p *Pipeline) tryModelChange(qr *QueuedRequest, cause error) {
 	if len(alts) == 0 {
 		_, resolvedAlts, err := p.modelResolveFunc(qr.Ctx, qr.RequestedModel, triedList(qr.TriedModels))
 		if err != nil {
+			p.emitNoRouteIfCause(qr, cause)
 			p.complete(qr, ForwardOutcome{Err: terminalErr(cause)})
 			return
 		}
 		alts = resolvedAlts
 	}
 	if len(alts) == 0 {
+		p.emitNoRouteIfCause(qr, cause)
 		p.complete(qr, ForwardOutcome{Err: terminalErr(cause)})
 		return
 	}
@@ -112,9 +120,22 @@ func (p *Pipeline) tryModelChange(qr *QueuedRequest, cause error) {
 		}
 	}
 	if chosen == "" {
+		p.emitNoRouteIfCause(qr, cause)
 		p.complete(qr, ForwardOutcome{Err: terminalErr(cause)})
 		return
 	}
+	// V3.3-OBS OBS-B1 (2026-08-15): model_switch 动作事件（24 号 §2：
+	// from/to/reason；不产生新 request_id）。
+	p.liveActions.Emit(ctxOf(qr), liveactions.ActionEvent{
+		RequestID: qr.ID,
+		Action:    liveactions.ActionModelSwitch,
+		Model:     chosen,
+		Detail: map[string]string{
+			"from_model": qr.ResolvedModel,
+			"to_model":   chosen,
+			"reason":     "no_node",
+		},
+	})
 	qr.ResolvedModel = chosen
 	qr.TriedCredentials = make(map[int]struct{})
 	qr.CredRetryCount = 0
@@ -149,4 +170,30 @@ func ctxOf(qr *QueuedRequest) context.Context {
 		return qr.Ctx
 	}
 	return context.Background()
+}
+
+// emitNoRoute emits the no_route terminal action event (V3.3-OBS OBS-B1).
+func (p *Pipeline) emitNoRoute(qr *QueuedRequest, model, reason string) {
+	if p == nil || qr == nil {
+		return
+	}
+	p.liveActions.Emit(ctxOf(qr), liveactions.ActionEvent{
+		RequestID: qr.ID,
+		Action:    liveactions.ActionNoRoute,
+		Model:     model,
+		Detail: map[string]string{
+			"blocked_reason": reason,
+		},
+	})
+}
+
+// emitNoRouteIfCause emits no_route only when the terminal cause is a
+// no-route condition (模型换完仍无可用路由 → rejected(503))。
+func (p *Pipeline) emitNoRouteIfCause(qr *QueuedRequest, cause error) {
+	if p == nil || qr == nil || cause == nil {
+		return
+	}
+	if cause == ErrNoRoute || errors.Is(cause, ErrNoRoute) {
+		p.emitNoRoute(qr, qr.ResolvedModel, "all_credentials_exhausted")
+	}
 }

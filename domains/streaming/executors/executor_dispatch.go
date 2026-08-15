@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"strconv"
 	"time"
 
 	"github.com/kaixuan/llm-gateway-go/credentialfpslot"
@@ -11,6 +12,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/domains/transformation"
 	ursmv2api "github.com/kaixuan/llm-gateway-go/domains/ursm/v2/api"
 	"github.com/kaixuan/llm-gateway-go/errorsx"
+	"github.com/kaixuan/llm-gateway-go/internal/liveactions"
 	"github.com/kaixuan/llm-gateway-go/internal/runctx"
 	"github.com/kaixuan/llm-gateway-go/provider"
 	"github.com/kaixuan/llm-gateway-go/settings"
@@ -105,6 +107,19 @@ func (e *Executor) dispatchRoute(ctx context.Context, qr *dispatch.QueuedRequest
 		}
 		return filtered, nil
 	}
+	// V3.3-OBS OBS-B1 (2026-08-15): dispatch_v2 路径的 credential_selected
+	// 动作事件（S5，Router.PlanCandidates 输出，best-first 首个 ref）。
+	if len(refs) > 0 {
+		e.liveActions.Emit(ctx, liveactions.ActionEvent{
+			RequestID:    qr.ID,
+			Action:       liveactions.ActionCredentialSelected,
+			Model:        qr.ResolvedModel,
+			CredentialID: refs[0].CredentialID,
+			Detail: map[string]string{
+				"candidates": strconv.Itoa(len(refs)),
+			},
+		})
+	}
 	return refs, nil
 }
 
@@ -133,6 +148,21 @@ func (e *Executor) dispatchForward(ctx context.Context, qr *dispatch.QueuedReque
 	if cand.CredentialID == 0 {
 		return dispatch.ForwardOutcome{Err: errDispatchNoCandidate}
 	}
+	// V3.3-OBS OBS-B1 (2026-08-15): dispatch_v2 路径的 upstream_request 动作
+	// 事件（S7，每个候选转发开始）。AttemptCount 从 1 开始计。
+	attempt := qr.AttemptCount + 1
+	e.liveActions.Emit(ctx, liveactions.ActionEvent{
+		RequestID:    qr.ID,
+		Action:       liveactions.ActionUpstreamRequest,
+		Model:        qr.ResolvedModel,
+		CredentialID: ref.CredentialID,
+		Retry:        attempt > 1,
+		RetrySeq:     attempt,
+		Detail: map[string]string{
+			"attempt":     strconv.Itoa(attempt),
+			"provider_id": strconv.Itoa(ref.ProviderID),
+		},
+	})
 	return e.forwardForDispatch(dctx, cand)
 }
 

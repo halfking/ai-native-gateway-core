@@ -910,6 +910,10 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/admin/requests/{id}/transitions", admin(h.handleRequestTransitions))
 	mux.HandleFunc("/api/admin/sessions/online", admin(h.handleSessionsOnline))
 	mux.HandleFunc("/api/admin/sessions/{id}/timeline", admin(h.handleSessionTimeline))
+	// 2026-08-15 V3.3-OBS (OBS-BE6): 会话轮次-子请求树（仅元数据，分页）。
+	// 主请求按 ts 排序派生 turn_number，子请求经 parent_request_id 关联，
+	// request_type 优先 510 迁移列、缺失回退 origin_actor（X-Gw-Source-Actor 落库）。
+	mux.HandleFunc("/api/admin/sessions/{id}/turns", admin(h.handleSessionTurnsTree))
 
 	// Public polling endpoint (no auth) — clients poll this to learn whether
 	// their pending approval was approved/rejected/timeout. Cross-tenant
