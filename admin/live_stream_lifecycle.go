@@ -314,40 +314,48 @@ func (h *LiveStreamSSEHub) pollLiveActions() {
 
 // deliverNewActions advances the cursor over the scanned entries. The list
 // is newest-first (LPUSH): iteration stops at the cursor; everything before
-// it is fresh. On the very first poll the cursor is armed at the head and
-// nothing is delivered — connected clients rebuild history via the
-// initial_data action replay instead.
+// it is fresh.
+//
+// Arming (the first poll after hub start): when the list already holds
+// entries at boot, the cursor is armed at the head and the pre-boot backlog
+// is NOT delivered live — clients rebuild history via the initial_data
+// action replay instead. When the list is EMPTY at the first poll, arming
+// completes with an empty cursor, and everything appended afterwards is
+// genuinely new and IS delivered live (the first post-boot event must not
+// be swallowed by a lazily-armed cursor).
 func (h *LiveStreamSSEHub) deliverNewActions(ctx context.Context, entries []string) {
+	h.actionMu.Lock()
+	armed := h.actionArmed
+	cursor := h.actionCursor
+	h.actionMu.Unlock()
+	if !armed {
+		h.actionMu.Lock()
+		h.actionArmed = true
+		if len(entries) > 0 {
+			// Boot against a non-empty list: arm at the newest entry.
+			decodedHead := decodeActionEntries(entries)
+			if len(decodedHead) > 0 {
+				h.actionCursor = decodedHead[0].key
+			}
+		}
+		h.actionMu.Unlock()
+		return
+	}
 	if len(entries) == 0 {
 		return
 	}
-	type keyed struct {
-		ev  liveactions.ActionEvent
-		key string
-	}
-	decoded := make([]keyed, 0, len(entries))
-	for _, raw := range entries {
-		var ev liveactions.ActionEvent
-		if err := json.Unmarshal([]byte(raw), &ev); err != nil || ev.Action == "" {
-			continue // malformed entry: skip, never kill the stream
-		}
-		if !isRequestScopedAction(ev) {
-			continue // state_change 等：不占 lifecycle 光标（见 isRequestScopedAction）
-		}
-		decoded = append(decoded, keyed{ev: ev, key: actionUniqueKey(ev)})
-	}
+
+	decoded := decodeActionEntries(entries)
 	if len(decoded) == 0 {
 		return
 	}
 
-	h.actionMu.Lock()
-	cursor := h.actionCursor
-	h.actionMu.Unlock()
-
 	var fresh []liveactions.ActionEvent
 	if cursor == "" {
-		// Arm only: history is replayed per-client on connect.
-		fresh = nil
+		// Armed against an empty list: everything scanned is new.
+		for _, k := range decoded {
+			fresh = append(fresh, k.ev)
+		}
 	} else {
 		for _, k := range decoded {
 			if k.key == cursor {
@@ -370,6 +378,29 @@ func (h *LiveStreamSSEHub) deliverNewActions(ctx context.Context, entries []stri
 	sortActionsStable(fresh)
 	h.resolveActionTenants(ctx, fresh)
 	h.fanOutLifecycleActions(fresh)
+}
+
+// keyedAction pairs one decoded action with its cursor key.
+type keyedAction struct {
+	ev  liveactions.ActionEvent
+	key string
+}
+
+// decodeActionEntries parses stored list entries, skipping malformed rows
+// and node-dimension events (they never ride request_lifecycle, 24号 §2).
+func decodeActionEntries(entries []string) []keyedAction {
+	decoded := make([]keyedAction, 0, len(entries))
+	for _, raw := range entries {
+		var ev liveactions.ActionEvent
+		if err := json.Unmarshal([]byte(raw), &ev); err != nil || ev.Action == "" {
+			continue // malformed entry: skip, never kill the stream
+		}
+		if !isRequestScopedAction(ev) {
+			continue // state_change 等：不进 lifecycle 帧/光标
+		}
+		decoded = append(decoded, keyedAction{ev: ev, key: actionUniqueKey(ev)})
+	}
+	return decoded
 }
 
 // fanOutLifecycleActions delivers one aggregated request_lifecycle frame
