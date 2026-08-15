@@ -1647,6 +1647,12 @@ type TraceCandidate struct {
 }
 
 func (e *ExecuteError) Error() string {
+	if e == nil {
+		return "execution failed"
+	}
+	if !e.Exhausted && e.LastErr != nil {
+		return e.LastErr.Error()
+	}
 	if e.LastErr != nil {
 		return fmt.Sprintf("all %d candidates failed: %v", e.Tried, e.LastErr)
 	}
@@ -3200,8 +3206,8 @@ func (e *Executor) Execute(params *ExecParams) (result *ExecuteResult, err error
 				}
 			}
 
-			if sie.resumable {
-				// Stream is resumable (few chunks sent) - try next candidate.
+			if mayRetryInterruptedStream(params, sie) {
+				// Stream is resumable and no semantic output was committed - try next candidate.
 				// The inner tryCandidate already wrote the credential state
 				// with the correct kind; here we just record the failure on
 				// the circuit to keep the counter consistent. For
@@ -5169,6 +5175,18 @@ type streamInterruptedError struct {
 
 func (e *streamInterruptedError) Error() string {
 	return "stream_interrupted: " + e.reason
+}
+
+func mayRetryInterruptedStream(params *ExecParams, interrupted *streamInterruptedError) bool {
+	if interrupted == nil || !interrupted.resumable || params == nil || params.SurvivalAttempt {
+		return false
+	}
+	if params.Capture != nil {
+		if sent, _ := params.Capture.ChunkCountersSnapshot(); sent > 0 {
+			return false
+		}
+	}
+	return true
 }
 
 // upstreamRetryAfterHint extracts an upstream-requested retry delay from
