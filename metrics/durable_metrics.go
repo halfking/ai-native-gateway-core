@@ -66,6 +66,18 @@ var (
 		Name: "durable_lease_lost_total",
 		Help: "Durable task writes rejected by the fencing check (ErrLeaseLost).",
 	})
+
+	// DurableRecoveryStopGraceExceededTotal counts Stop calls that hit the
+	// StopGrace timeout: the bounded wait gave up before the in-flight
+	// attempt goroutine exited on its own. A rising rate means the streaming
+	// upstream (which uses WithoutCancel and may ignore cancellation) is
+	// keeping the worker goroutine alive past the grace, so Stop returns
+	// while a background attempt is still running — visibility into a
+	// potential goroutine leak / slow foreground detach.
+	DurableRecoveryStopGraceExceededTotal = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "durable_recovery_stop_grace_exceeded_total",
+		Help: "Recovery worker Stop() calls that timed out waiting for the in-flight attempt to exit.",
+	})
 )
 
 // durableActiveTenants remembers every tenant series ever published so a
