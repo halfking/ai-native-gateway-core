@@ -358,7 +358,7 @@ func (s *Store) ReapUnsafeCheckpointed(ctx context.Context, limit int, now time.
 	rows, err := reapSelect(ctx, tx, `
 		SELECT id, status FROM durable_llm_tasks
 		WHERE commit_state IN ('content', 'tool_call', 'terminal')
-		  AND status NOT IN ('completed', 'failed', 'expired', 'canceled')
+		  AND status NOT IN ('completed', 'failed', 'expired', 'canceled', 'resume_safety_blocked')
 		  AND (lease_until IS NULL OR lease_until < $2)
 		ORDER BY updated_at
 		FOR UPDATE SKIP LOCKED
@@ -395,9 +395,9 @@ func (s *Store) ReapUnsafeCheckpointed(ctx context.Context, limit int, now time.
 				    completed_at = $2,
 				    result_version = COALESCE(result_version, 0) + 1,
 				    updated_at = $2
-			WHERE id = $1
-			  AND status NOT IN ('completed', 'failed', 'expired', 'canceled')
-			RETURNING `+taskColumns,
+				WHERE id = $1
+				  AND status NOT IN ('completed', 'failed', 'expired', 'canceled', 'resume_safety_blocked')
+				RETURNING `+taskColumns,
 			row.id, now, ReasonResumeSafetyBlocked,
 		).Scan(
 			&t.ID, &t.TenantID, &t.RequestID, &t.SessionID, &t.Protocol, &t.Endpoint,
