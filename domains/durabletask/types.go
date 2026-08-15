@@ -114,17 +114,20 @@ type Event struct {
 
 // OutboxItem is a terminal PendingStore projection awaiting delivery.
 type OutboxItem struct {
-	ID               int64
-	TaskID           string
-	TenantID         string
-	RequestID        string
-	SessionID        string
-	Status           Status
-	ReasonCode       string
-	FencingToken     int64
-	ResultVersion    int64
-	ResultHash       string
+	ID            int64
+	TaskID        string
+	TenantID      string
+	RequestID     string
+	SessionID     string
+	Status        Status
+	ReasonCode    string
+	FencingToken  int64
+	ResultVersion int64
+	ResultHash    string
+	// RequestHash binds the result decryption AAD (durable-result domain).
+	RequestHash      string
 	ResultCiphertext string
 	ContentType      string
+	AttemptCount     int
 	CreatedAt        time.Time
 }
