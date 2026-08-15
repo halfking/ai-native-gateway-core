@@ -224,7 +224,7 @@ func (s *Store) CreateAndClaim(ctx context.Context, n NewTask) (*Task, error) {
 		return nil, fmt.Errorf("durable: insert task: %w", err)
 	}
 
-	if err := appendEvent(ctx, tx, task, "", StatusRunning, "create_and_claim", n.Attempt); err != nil {
+	if err := appendEvent(ctx, tx, task, "", StatusRunning, "create_and_claim", n.Attempt, now); err != nil {
 		return nil, err
 	}
 
@@ -235,14 +235,15 @@ func (s *Store) CreateAndClaim(ctx context.Context, n NewTask) (*Task, error) {
 }
 
 // appendEvent 写 durable_llm_task_events（append-only，§12.2）。
-func appendEvent(ctx context.Context, tx pgx.Tx, task *Task, from, to Status, reason string, attempt int) error {
+// now 由调用方传入，保证事件时间与同事务的任务行 updated_at 一致。
+func appendEvent(ctx context.Context, tx pgx.Tx, task *Task, from, to Status, reason string, attempt int, now time.Time) error {
 	if _, err := tx.Exec(ctx, `
 		INSERT INTO durable_llm_task_events (
 			task_id, request_id, session_id, tenant_id,
 			attempt, from_status, to_status, reason, fencing_token, created_at
 		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
 		task.ID, task.RequestID, task.SessionID, task.TenantID,
-		attempt, string(from), string(to), reason, task.FencingToken, time.Now(),
+		attempt, string(from), string(to), reason, task.FencingToken, now,
 	); err != nil {
 		return fmt.Errorf("durable: append event: %w", err)
 	}

@@ -49,6 +49,12 @@ type DurableWorkerOptions struct {
 	Lease        time.Duration
 	Batch        int
 	ReapLimit    int
+	// StopGrace bounds how long Stop waits for an in-flight attempt that
+	// ignores cancellation. 0 → 10s.
+	StopGrace time.Duration
+	// RetryFloor is the minimum reschedule backoff (prevents tight retry
+	// loops when a decision carries no RetryAfter). 0 → 5s.
+	RetryFloor time.Duration
 }
 
 func (o DurableWorkerOptions) withDefaults() DurableWorkerOptions {
@@ -66,6 +72,12 @@ func (o DurableWorkerOptions) withDefaults() DurableWorkerOptions {
 	}
 	if o.ReapLimit <= 0 {
 		o.ReapLimit = 32
+	}
+	if o.StopGrace <= 0 {
+		o.StopGrace = 10 * time.Second
+	}
+	if o.RetryFloor <= 0 {
+		o.RetryFloor = 5 * time.Second
 	}
 	return o
 }
@@ -131,9 +143,17 @@ func (w *DurableRecoveryWorker) Stop() {
 		return
 	}
 	cancel()
-	<-done
+	// 有界等待：生产 runner 的流式上游可能不响应取消（WithoutCancel），
+	// 无限等待会让 Stop 永久挂起。超时后放弃等待，goroutine 自行退出时
+	// close(done) 依然安全（无人再读）。
+	select {
+	case <-done:
+	case <-time.After(w.opts.StopGrace):
+		slog.Warn("durable recovery worker stop grace exceeded; background attempt still running")
+	}
 	w.mu.Lock()
 	w.cancel = nil
+	w.start = false
 	w.mu.Unlock()
 }
 
@@ -183,7 +203,11 @@ func (w *DurableRecoveryWorker) reconcileActiveTaskGauge(counts map[string]int64
 func (w *DurableRecoveryWorker) runTask(ctx context.Context, task *durable.Task) {
 	snapshot, err := w.store.LoadSnapshot(ctx, task.ID)
 	if err != nil {
-		w.failTask(ctx, task, fmt.Errorf("load durable snapshot: %w", err))
+		// LoadSnapshot 失败可能是瞬态 DB 错误或 keyring 暂缺——fail closed
+		// 的语义是「不声称已接管」，不是销毁任务。改走重排（带退避），
+		// 由 deadline reaper 在 deadline 到期时给出安全的 expired 终态。
+		slog.Warn("durable snapshot load failed; rescheduling", "task_id", task.ID, "error", err)
+		w.rescheduleWithError(ctx, task, "durable_snapshot_unavailable")
 		return
 	}
 	leaseUntil := w.clock().Add(w.opts.Lease)
@@ -220,18 +244,22 @@ func (w *DurableRecoveryWorker) runTask(ctx context.Context, task *durable.Task)
 					metrics.SurvivalLeaseConflictsTotal.Inc()
 				}
 				cancelAttempt()
-				<-attemptDone
+				waitAttemptDone(attemptDone, w.opts.StopGrace)
 				return
 			}
 		case <-ctx.Done():
 			cancelAttempt()
-			<-attemptDone
+			waitAttemptDone(attemptDone, w.opts.StopGrace)
 			return
 		}
 	}
 attemptFinished:
 	if err != nil || attempt == nil || attempt.Result == nil {
-		w.failTask(ctx, task, err)
+		// runner 级错误（重建失败/上游基础设施异常）无法区分类别时不做
+		// 永久终态——重排重试，deadline reaper 兜底。任务级永久判定只能
+		// 来自 AggregateTaskOutcome（下方 fallthrough）。
+		slog.Warn("durable attempt runner failed; rescheduling", "task_id", task.ID, "error", err)
+		w.rescheduleWithError(ctx, task, "durable_runner_error")
 		return
 	}
 	decision := AggregateTaskOutcome(attempt.Result)
@@ -249,13 +277,41 @@ attemptFinished:
 		return
 	}
 	if decision.Action == TaskActionRetryNow || decision.Action == TaskActionWaitRecovery {
-		next := w.clock().Add(decision.NextRetryAfter)
+		backoff := decision.NextRetryAfter
+		if backoff < w.opts.RetryFloor {
+			backoff = w.opts.RetryFloor
+		}
+		next := w.clock().Add(backoff)
 		if err := w.store.Reschedule(ctx, durable.RescheduleParams{TaskID: task.ID, LeaseOwner: task.LeaseOwner, FencingToken: task.FencingToken, NextRetryAt: next, ErrorKind: attempt.ErrorKind, Reason: decision.Reason, Attempt: attempt.Attempt}); err != nil && errors.Is(err, durable.ErrLeaseLost) {
 			metrics.SurvivalLeaseConflictsTotal.Inc()
 		}
 		return
 	}
 	w.failTask(ctx, task, fmt.Errorf("durable task terminal: %s", decision.Reason))
+}
+
+// rescheduleWithError releases the claim with a floored backoff and a stable
+// reason code. Used for errors whose recoverability is unknown (snapshot load,
+// runner infrastructure): the deadline reaper provides the safe terminal.
+func (w *DurableRecoveryWorker) rescheduleWithError(ctx context.Context, task *durable.Task, reason string) {
+	next := w.clock().Add(w.opts.RetryFloor)
+	if err := w.store.Reschedule(ctx, durable.RescheduleParams{
+		TaskID: task.ID, LeaseOwner: task.LeaseOwner, FencingToken: task.FencingToken,
+		NextRetryAt: next, ErrorKind: "durable_recovery", Reason: reason, Attempt: task.AttemptCount,
+	}); err != nil && errors.Is(err, durable.ErrLeaseLost) {
+		metrics.SurvivalLeaseConflictsTotal.Inc()
+	}
+}
+
+// waitAttemptDone waits at most grace for a cancelled attempt to finish. A
+// runner that ignores cancellation (streaming upstreams use WithoutCancel)
+// must not block the worker loop or Stop forever; the goroutine still exits
+// on its own and its post-exit writes are to variables nobody reads again.
+func waitAttemptDone(done <-chan struct{}, grace time.Duration) {
+	select {
+	case <-done:
+	case <-time.After(grace):
+	}
 }
 
 func (w *DurableRecoveryWorker) failTask(ctx context.Context, task *durable.Task, cause error) {
