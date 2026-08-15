@@ -24,19 +24,19 @@ const colX = [80, 360, 640]
 const nodeH = SANKEY_NODE_H
 const gap = SANKEY_GAP
 
-// ── Task-type color palette ──────────────────────────
+// Keep task categories distinct while inheriting daylight/night theme colors.
 const TASK_COLORS: Record<string, string> = {
-  chat:          '#3b82f6', // indigo
-  reasoning:     '#a855f7', // purple
-  code:          '#22c55e', // green
-  agent:         '#f97316', // orange
-  creative:      '#ec4899', // pink
-  long_context:  '#a16207', // amber-brown
-  vision:        '#06b6d4', // cyan
-  function_call: '#eab308', // yellow
+  chat:          'var(--accent)',
+  reasoning:     'color-mix(in srgb, var(--accent) 68%, var(--success))',
+  code:          'var(--success)',
+  agent:         'color-mix(in srgb, var(--warning) 72%, var(--danger))',
+  creative:      'var(--danger)',
+  long_context:  'color-mix(in srgb, var(--warning) 78%, var(--text))',
+  vision:        'color-mix(in srgb, var(--success) 64%, var(--accent))',
+  function_call: 'var(--warning)',
 }
-const SPECIFIED_COLOR = '#6b7280' // gray-500 — neutral accent for explicit-model traffic
-const FALLBACK_COLOR = '#94a3b8'   // slate-400
+const SPECIFIED_COLOR = 'var(--muted)'
+const FALLBACK_COLOR = 'color-mix(in srgb, var(--muted) 72%, var(--border))'
 
 function colorForTask(taskKey: string): string {
   if (taskKey === SPECIFIED_MODEL_TASK_KEY) return SPECIFIED_COLOR
@@ -271,10 +271,7 @@ const TASK_LABELS: Record<string, string> = {
 .flow-node.layer-0 { fill: color-mix(in srgb, var(--accent) 25%, var(--bg-subtle)); }
 .flow-node.layer-1 { fill: color-mix(in srgb, var(--success) 20%, var(--bg-subtle)); }
 .flow-node.layer-2 { fill: color-mix(in srgb, var(--warning) 18%, var(--bg-subtle)); }
-/* "specified model" task node: muted gray tint, dashed border to distinguish
-   from the colored task-type nodes in the same column. Uses theme tokens so
-   it adapts to both light and dark themes (the previous hardcoded #f3f4f6
-   read as a stark near-white slab against the dark background). */
+/* Explicit-model traffic stays neutral and dashed in both themes. */
 .flow-node.node-specified {
   fill: color-mix(in srgb, var(--muted) 32%, var(--bg-subtle));
   stroke: var(--muted);
