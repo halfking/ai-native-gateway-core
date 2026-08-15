@@ -112,12 +112,14 @@ func LoadNodeFailoverConfig(hotCfg *hotconfig.Config) NodeFailoverConfig {
 		return DefaultNodeFailoverConfig()
 	}
 	return NodeFailoverConfig{
-		// llmgw_node_timeout_seconds: Max execution time per node (default 120s, range 10-600s).
-		// Aligned with FirstByteTimeout (120s) so upstream read deadline
-		// doesn't cancel the request before first byte can arrive.
-		// Increase if "upstream first-byte timeout" occurs frequently for long-running requests.
+		// llmgw_node_timeout_seconds: Max execution time per node (default 180s, range 10-600s).
+		// 2026-08-15: raised 120→180 to stay aligned with FirstByteTimeout (which
+		// itself went 120→180 on 2026-08-04 for long-thinking models). The node
+		// timeout must be >= FirstByteTimeout, otherwise the per-node timer cuts
+		// the request before the first-byte deadline can fire (see
+		// docs/会话优化v3/29 §A4).
 		// Note: This is per-node timeout; total retry time = NodeTimeout * RetryCount.
-		NodeTimeoutSeconds:          clampInt(hotCfg.GetInt("llmgw_node_timeout_seconds", 120), 10, 600),
+		NodeTimeoutSeconds:          clampInt(hotCfg.GetInt("llmgw_node_timeout_seconds", 180), 10, 600),
 		RetryCount:                  clampInt(hotCfg.GetInt("llmgw_retry_count", 2), 0, 5),
 		SingleNodeRetryDelaySeconds: clampInt(hotCfg.GetInt("llmgw_single_node_retry_delay_seconds", 10), 5, 60),
 	}
@@ -126,8 +128,10 @@ func LoadNodeFailoverConfig(hotCfg *hotconfig.Config) NodeFailoverConfig {
 func DefaultNodeFailoverConfig() NodeFailoverConfig {
 	return NodeFailoverConfig{
 		// 2026-07-23: 30→60→120s (two-step), aligned with FirstByteTimeout.
-		// Long-thinking Claude/NVIDIA models exceed 60s before first byte.
-		NodeTimeoutSeconds:          120,
+		// 2026-08-15: 120→180s, aligned with the current FirstByteTimeout
+		// (stream_runtime.go, 180s since 2026-08-04). Long-thinking
+		// Claude/NVIDIA models exceed 60s before first byte.
+		NodeTimeoutSeconds:          180,
 		RetryCount:                  2,
 		SingleNodeRetryDelaySeconds: 10,
 	}

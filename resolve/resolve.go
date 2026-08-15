@@ -35,6 +35,20 @@ type Resolver struct {
 	stopCh  chan struct{}
 }
 
+// negativeTTL is how long a "model not found → passthrough" miss is cached.
+// Kept short (≤30s, ≤ttl/4) so a model registered right after a miss is
+// picked up quickly; see Resolve for why the miss is cached at all.
+func (r *Resolver) negativeTTL() time.Duration {
+	neg := r.ttl / 4
+	if neg > 30*time.Second {
+		neg = 30 * time.Second
+	}
+	if neg < 5*time.Second {
+		neg = 5 * time.Second
+	}
+	return neg
+}
+
 func NewResolver(_ string, cacheTTL time.Duration) *Resolver {
 	if cacheTTL == 0 {
 		cacheTTL = 120 * time.Second
@@ -77,10 +91,24 @@ func (r *Resolver) Resolve(ctx context.Context, clientModel, clientProfile strin
 				"model", clientModel,
 				"error", fetchErr,
 			)
+			// DB errors are NOT negatively cached: the miss is infrastructure,
+			// not a real "model not found" answer.
 			return passthrough(clientModel), nil
 		}
 		if resolved == nil {
-			return passthrough(clientModel), nil
+			// Negative cache (2026-08-15): an unregistered model hit
+			// resolveDB on EVERY request outside the positive TTL window —
+			// singleflight only dedups concurrent lookups, not repeats. Cache
+			// the passthrough miss for a short window (negativeTTL) so a
+			// newly-registered model is still picked up quickly.
+			p := passthrough(clientModel)
+			r.mu.Lock()
+			r.cache[key] = cacheEntry{
+				resolved:   p,
+				expiration: time.Now().Add(r.negativeTTL()),
+			}
+			r.mu.Unlock()
+			return p, nil
 		}
 
 		r.mu.Lock()
