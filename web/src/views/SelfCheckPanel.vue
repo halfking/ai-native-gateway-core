@@ -14,23 +14,16 @@ import {
   fetchSelfCheckTriggerAvailability,
   triggerSelfCheck,
   fetchProbeSystemHealth,
-  fetchProbeQueueTasks,
-  fetchProbeNodeTasks,
   type SelfCheckSettings,
   type SelfCheckStats,
   type SelfCheckRun,
   type SelfCheckRunDetail,
   type SelfCheckTriggerAvailability,
   type ProbeSystemHealth,
-  type ProbeQueueTaskRow,
-  type NodeProbeTaskRow,
 } from '../api-selfcheck'
-import { fetchSystemMonitorStats, type SystemMonitorStats } from '../api/api-system-monitor'
-import SwimLane from '../components/SwimLane.vue'
-import type { SwimLane as SwimLaneType, RequestTile } from '../types/swimlane'
+import ProbeTriStateQueue from '../components/probe/ProbeTriStateQueue.vue'
 import { getFeaturedModelsDynamic } from '../api/system'
 import type { FeaturedModel } from '../api/system'
-import { acquireProbeStream, useProbeStream } from '../composables/probeStreamStore'
 
 const loading = ref(false)
 const error = ref<string | null>(null)
@@ -51,25 +44,13 @@ const triggerBusy = ref(false)
 const triggerAvailability = ref<SelfCheckTriggerAvailability>({ available: true, new_probe_mode: true })
 const range = ref<'1h' | '6h' | '24h' | '7d'>('24h')
 
-// 2026-07-23: 新探测模式下的系统健康（子项④）与队列任务（子项③）
-// 2026-07-24: 并入系统监测指标（队列长度 / 并发）
+// 2026-07-23: 新探测模式下的系统健康（子项④）
 const probeHealth = ref<ProbeSystemHealth | null>(null)
-const queueTasks = ref<ProbeQueueTaskRow[]>([])
-// 2026-08-10: 错误触发的节点自检队列（NodeProbeWorker，与 credential_probe_queue
-// 完整性探测分开维护），并入统一泳道展示。
-const nodeTasks = ref<NodeProbeTaskRow[]>([])
-const monitorStats = ref<SystemMonitorStats | null>(null)
 
 let pollTimer: number | undefined
-let queueTimer: number | undefined
 
-// 2026-08-13 (需求 6 bullet 8): live SSE feed from /api/admin/probe/stream.
-// Tiles are appended from the right and collapsed by id (pending→in-flight→ok|fail)
-// in the composable. The panel refreshes its REST lanes within ~ms of a terminal
-// event instead of waiting up to 15s, and exposes liveTiles for richer rendering.
-const { tiles: liveProbeTiles } = useProbeStream()
-let releaseProbeStream: (() => void) | null = null
-let lastSeenTileTs = 0
+// 2026-08-15 (OBS-FE4): 探测队列泳道改为三段式队列组件（待请求/正在请求/
+// 已完成），SSE 为主 + tri-state API 兜底，组件内部自管可见性门控与降级态。
 
 // ── 数据加载 ──────────────────────────────────────────
 
@@ -102,31 +83,11 @@ async function loadAll() {
         .then((h) => { probeHealth.value = h })
         .catch(() => { /* 新探测接口可能不存在，静默 */ })
     }
-    // 队列任务（子项③）独立拉取
-    void refreshQueueTasks()
+    // 队列任务由 ProbeTriStateQueue 组件自行拉取（SSE 为主 + tri-state API 兜底）
   } catch (e: unknown) {
     error.value = e instanceof Error ? e.message : '加载失败'
   } finally {
     loading.value = false
-  }
-}
-
-// 2026-07-23: 队列任务拉取（子项③），随执行更新状态
-// 2026-08-10: 并行拉取 node-tasks（错误触发自检队列），两套队列独立失败，
-// 互不影响彼此展示。
-async function refreshQueueTasks() {
-  try {
-    const [res, nodeRes, stats] = await Promise.all([
-      fetchProbeQueueTasks(120),
-      fetchProbeNodeTasks(120).catch(() => ({ tasks: [] as NodeProbeTaskRow[], total: 0 })),
-      fetchSystemMonitorStats().catch(() => null),
-    ])
-    queueTasks.value = res.tasks ?? []
-    nodeTasks.value = nodeRes.tasks ?? []
-    if (stats) monitorStats.value = stats
-  } catch {
-    queueTasks.value = []
-    nodeTasks.value = []
   }
 }
 
@@ -139,43 +100,22 @@ function startPoll() {
     if (typeof document !== 'undefined' && document.hidden) return
     void loadAll()
   }, 60_000) // 60秒刷新（自检数据变化较慢）
-  // 2026-07-23: 队列任务变化更快，单独 15s 轮询（子项③）
-  queueTimer = window.setInterval(() => {
-    if (typeof document !== 'undefined' && document.hidden) return
-    void refreshQueueTasks()
-  }, 15_000)
 }
 
 function stopPoll() {
   if (pollTimer) clearInterval(pollTimer)
-  if (queueTimer) clearInterval(queueTimer)
   pollTimer = undefined
-  queueTimer = undefined
 }
 
 onMounted(() => {
   void loadAll()
   void loadSystemFeaturedModels()
   startPoll()
-  // Subscribe to the live probe SSE stream (right-appending tiles). On any new
-  // tile, re-pull the REST lanes so pending/executing/completed reflect the
-  // change immediately (sub-second vs the 15s poll). Debounced via ts tracking.
-  releaseProbeStream = acquireProbeStream()
 })
 
 onUnmounted(() => {
   stopPoll()
-  if (releaseProbeStream) { releaseProbeStream(); releaseProbeStream = null }
 })
-
-// React to live SSE tiles: refresh the REST lanes when a new tile arrives.
-watch(liveProbeTiles, (list) => {
-  const newest = list.length ? list[list.length - 1].ts : 0
-  if (newest > lastSeenTileTs) {
-    lastSeenTileTs = newest
-    void refreshQueueTasks()
-  }
-}, { deep: false })
 
 watch(range, () => {
   void loadAll()
@@ -397,124 +337,9 @@ const probeSummaryCards = computed(() => {
   ]
 })
 
-// ── 2026-07-24: 探测队列固定三泳道（已执行 / 正在执行 / 待执行），FIFO
-const QUEUE_LANE_LIMIT = 40
-
-function taskStandardModel(t: ProbeQueueTaskRow): string {
-  return (t.standardized_name || t.raw_model || '').trim()
-}
-
-function taskToTile(t: ProbeQueueTaskRow): RequestTile {
-  const status =
-    t.status === 'running' ? 'in_progress'
-      : t.status === 'success' ? 'success'
-        : (t.status === 'failed' || t.status === 'expired') ? 'failure'
-          : 'idle'
-  return {
-    request_id: `q-${t.id}`,
-    timestamp: t.updated_at || t.next_run_at || new Date().toISOString(),
-    model: taskStandardModel(t),
-    vendor: '__unknown__',
-    provider: t.provider_name || String(t.provider_id),
-    status,
-    is_probe: true,
-    probe_origin: 'direct',
-    latency_ms: t.result_latency_ms > 0 ? t.result_latency_ms : undefined,
-  }
-}
-
-// 2026-08-10: NodeProbeWorker 错误触发队列的 tile 映射。node_probe_state
-// 是常驻状态行（非一次性任务），三态对应 running/pending/done 泳道：
-// running = 正被 pickDueAtomically 租用；pending = 等待下次退避 tick；
-// paused = 达到 7 步退避上限，归入「已执行」泳道并标 failure（长期搁置）。
-function nodeTaskStandardModel(t: NodeProbeTaskRow): string {
-  return (t.standardized_name || t.raw_model || '').trim()
-}
-
-function nodeTaskToTile(t: NodeProbeTaskRow): RequestTile {
-  const status =
-    t.status === 'running' ? 'in_progress'
-      : t.status === 'paused' ? 'failure'
-        : 'idle'
-  return {
-    // request_id 用 credential_id + provider_id + raw_model 三元组保证
-    // 唯一性（raw_model 可能含特殊字符或跨 provider 同名，单独用会撞 key）。
-    request_id: `n-${t.provider_id}-${t.credential_id}-${t.raw_model}`,
-    timestamp: t.updated_at || t.next_retry_at || new Date().toISOString(),
-    model: nodeTaskStandardModel(t),
-    vendor: '__unknown__',
-    provider: t.provider_name || String(t.provider_id),
-    status,
-    is_probe: true,
-    probe_origin: 'direct',
-    latency_ms: t.last_latency_ms && t.last_latency_ms > 0 ? t.last_latency_ms : undefined,
-    error_kind: t.last_err_code || undefined,
-  }
-}
-
-function tasksForLane(statuses: string[], fifoAsc: boolean, nodeStatuses: string[] = []): RequestTile[] {
-  const matchedQueue = queueTasks.value.filter((t) => statuses.includes(t.status))
-  const matchedNode = nodeTasks.value.filter((t) => nodeStatuses.includes(t.status))
-  const combined = [
-    ...matchedQueue.map((t) => ({
-      tile: taskToTile(t),
-      ts: new Date(t.updated_at || t.next_run_at || 0).getTime(),
-    })),
-    ...matchedNode.map((t) => ({
-      tile: nodeTaskToTile(t),
-      ts: new Date(t.updated_at || t.next_retry_at || 0).getTime(),
-    })),
-  ]
-  const sorted = combined.sort((a, b) => (fifoAsc ? a.ts - b.ts : b.ts - a.ts))
-  const slice = fifoAsc
-    ? sorted.slice(0, QUEUE_LANE_LIMIT)
-    : sorted.slice(0, QUEUE_LANE_LIMIT).reverse()
-  return slice.map((x) => x.tile)
-}
-
-const queueSwimLanes = computed<SwimLaneType[]>(() => {
-  const pending = tasksForLane(['ready'], true, ['pending'])
-  const running = tasksForLane(['running'], true, ['running'])
-  const done = tasksForLane(['success', 'failed', 'expired'], false, ['paused'])
-  return [
-    {
-      id: 'done',
-      name: '已执行',
-      dimension: 'provider',
-      requests: done,
-      stats: { total: done.length, success: done.filter((r) => r.status === 'success').length, failure: done.filter((r) => r.status === 'failure').length },
-      isOthers: false,
-    },
-    {
-      id: 'running',
-      name: '正在执行',
-      dimension: 'provider',
-      requests: running,
-      stats: { total: running.length, success: 0, failure: 0 },
-      isOthers: false,
-    },
-    {
-      id: 'pending',
-      name: '待执行',
-      dimension: 'provider',
-      requests: pending,
-      stats: { total: pending.length, success: 0, failure: 0 },
-      isOthers: false,
-    },
-  ]
-})
-
-const queueLengthDisplay = computed(() => {
-  if (monitorStats.value) return monitorStats.value.queue_size
-  return queueTasks.value.filter((t) => t.status === 'ready').length
-})
-const runningCountDisplay = computed(() => {
-  if (monitorStats.value) return monitorStats.value.running_size
-  return queueTasks.value.filter((t) => t.status === 'running').length
-})
-const concurrencyDisplay = computed(() => monitorStats.value?.monitor_concurrency ?? '—')
-
-const queueLaneSelectedLegends = ref<Set<string>>(new Set())
+// ── 2026-08-15 (OBS-FE4): 探测队列三段式（待请求/正在请求/已完成）由
+// ProbeTriStateQueue 组件渲染（SSE 为主 + tri-state API 兜底），此处不再
+// 维护泳道投影。 ─────────────────────────────────────────
 </script>
 
 <template>
@@ -577,26 +402,10 @@ const queueLaneSelectedLegends = ref<Set<string>>(new Set())
       </div>
     </div>
 
-    <!-- 2026-07-24: 当前探测队列（系统监测并入） -->
-    <div class="queue-swimlanes-section">
-      <div class="queue-head">
-        <h4 class="section-title">当前探测队列</h4>
-        <div class="queue-metrics">
-          <span class="queue-metric">队列长度 <strong>{{ queueLengthDisplay }}</strong></span>
-          <span class="queue-metric">运行中 <strong>{{ runningCountDisplay }}</strong></span>
-          <span class="queue-metric">并发上限 <strong>{{ concurrencyDisplay }}</strong></span>
-        </div>
-      </div>
-      <div class="queue-swimlanes">
-        <SwimLane
-          v-for="lane in queueSwimLanes"
-          :key="lane.id"
-          :lane="lane"
-          group-by="provider"
-          mode="small"
-          :selected-legends="queueLaneSelectedLegends"
-        />
-      </div>
+    <!-- 2026-08-15 (OBS-FE4): 探测队列三段式（待请求/正在请求/已完成） -->
+    <div class="queue-section">
+      <h4 class="section-title">当前探测队列</h4>
+      <ProbeTriStateQueue />
     </div>
 
     <!-- 模型状态卡片 -->
@@ -1168,37 +977,12 @@ const queueLaneSelectedLegends = ref<Set<string>>(new Set())
   font-size: 13px;
 }
 
-/* 2026-07-24: 当前探测队列 */
-.queue-swimlanes-section {
+/* 2026-08-15: 探测队列三段式容器 */
+.queue-section {
   margin-bottom: 24px;
 }
-.queue-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  flex-wrap: wrap;
-  margin-bottom: 8px;
-}
-.queue-head .section-title {
-  margin: 0;
-}
-.queue-metrics {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 10px 14px;
-  font-size: 12px;
-  color: var(--muted);
-}
-.queue-metric strong {
-  color: var(--text);
-  font-variant-numeric: tabular-nums;
-  margin-left: 4px;
-}
-.queue-swimlanes {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
+.queue-section .section-title {
+  margin-top: 0;
 }
 
 .modal-overlay {
