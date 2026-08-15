@@ -1793,7 +1793,7 @@ func main() {
 
 		// V3.2 BE-A4: the hub emits node status from a cached DB projection.
 		// Refreshing outside the SSE goroutine keeps the 2s fan-out tick cheap.
-		liveNodeStatusCache, stopLiveNodeStatusRefresh := startLiveNodeStatusRefresh(dbConn.Pool(), 2*time.Second)
+		liveNodeStatusCache, stopLiveNodeStatusRefresh := startLiveNodeStatusRefresh(dbConn.Pool(), 2*time.Second, fpSlots)
 		defer stopLiveNodeStatusRefresh()
 		liveStreamHub.SetNodeStatusProvider(liveNodeStatusCache.get)
 

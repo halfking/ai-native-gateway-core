@@ -148,6 +148,27 @@ type LiveNodeStatus struct {
 	InFlight          int64  `json:"in_flight,omitempty"`
 	LastLatencyMs     *int   `json:"last_latency_ms,omitempty"`
 	LastError         string `json:"last_error,omitempty"`
+
+	// OBS-BE4 (V3.3-OBS, 2026-08-15): disable-kind / cooldown projection,
+	// sourced at snapshot time from the credentials row and the
+	// credentialfpslot per-(credential, model) NodeState. All fields are
+	// optional (omitempty): older clients ignore them, healthy nodes omit
+	// them, and no state is stored here (ADR-V3-103 — projection only).
+	//
+	//   - FPDisabled:      any bound model is currently inside an fpslot
+	//                      cooldown (Disabled && now < DisabledUntil)
+	//   - FPDisabledUntil: the DisabledUntil of the most recent disable
+	//                      (max LastDisabledAt across bound models)
+	//   - DisableKind:     "manual" (manual_disabled) | "system"
+	//                      (availability/quota/circuit degraded) | "" (ok)
+	//   - SystemRecoverAt: earliest of DB availability_recover_at /
+	//                      quota_recover_at / cooling_until
+	//   - LastErrorAt:     most recent fpslot failure across bound models
+	FPDisabled      *bool      `json:"fp_disabled,omitempty"`
+	FPDisabledUntil *time.Time `json:"fp_disabled_until,omitempty"`
+	DisableKind     string     `json:"disable_kind,omitempty"`
+	SystemRecoverAt *time.Time `json:"system_recover_at,omitempty"`
+	LastErrorAt     *time.Time `json:"last_error_at,omitempty"`
 }
 
 // LiveIncidentUpdate is the wire shape of a route incident update
