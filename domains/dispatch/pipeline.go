@@ -432,15 +432,22 @@ func (p *Pipeline) tryEnqueueCred(cred CredentialRef, qr *QueuedRequest) bool {
 	// V3.1: Record T5 timestamp (credential queue enqueue)
 	qr.SetT5_CredEnqueued()
 
+	// Snapshot the event fields BEFORE the send: cf.queue <- qr hands qr to the
+	// forwarder goroutine, which may fail fast, re-enter failover, and rewrite
+	// ResolvedModel (tryModelChange) while this goroutine is still emitting —
+	// same bug class as the T5 ordering above (caught by go test -race,
+	// TestModelChange).
+	reqID, model, emitCtx := qr.ID, qr.ResolvedModel, ctxOf(qr)
+
 	select {
 	case cf.queue <- qr:
 		metricCredQueueDepth.WithLabelValues(itoa(cred.CredentialID), cred.ConcurrencyMode).Inc()
 		// V3.3-OBS OBS-B1 (2026-08-15): node_enqueued 动作事件（S6，落入
 		// 凭据队列）。
-		p.liveActions.Emit(ctxOf(qr), liveactions.ActionEvent{
-			RequestID:    qr.ID,
+		p.liveActions.Emit(emitCtx, liveactions.ActionEvent{
+			RequestID:    reqID,
 			Action:       liveactions.ActionNodeEnqueued,
-			Model:        qr.ResolvedModel,
+			Model:        model,
 			CredentialID: cred.CredentialID,
 			Detail: map[string]string{
 				"queue_depth": strconv.FormatInt(cf.depth.Load(), 10),
