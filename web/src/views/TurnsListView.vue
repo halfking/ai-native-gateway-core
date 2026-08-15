@@ -66,6 +66,7 @@ function projectLabel(projectId?: string): string {
 function taskLabel(taskId?: string): string {
   if (!taskId) return NO_TASK
   if (taskId.startsWith('auto-summary:')) return '总结生成分支'
+  if (taskId.startsWith('auto-title:')) return '标题生成分支'
   if (taskId === 'auto') return '标题生成分支'
   return taskId
 }
