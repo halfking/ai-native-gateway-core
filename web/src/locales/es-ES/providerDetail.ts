@@ -237,8 +237,16 @@ export default {
       available: "Disponible",
       source: "Origen",
       latencyP95: "Latencia P95",
-      successRate: "Tasa de éxito"
+      successRate: "Tasa de éxito",
+      standardIq: "Inteligencia estándar",
+      nodeIq: "Inteligencia del nodo"
     },
+    standardIqHint: "Puntuación de referencia de Artificial Analysis Intelligence Index",
+    standardIqLabel: "Inteligencia estándar", nodeIqLabel: "Inteligencia del nodo", nodeIqAvgLabel: "Promedio del nodo",
+    iqAvg: "Promedio {v}", iqSamples: "{n} pruebas", iqTestedAt: "Última {t}", drawerSectionIq: "Inteligencia del modelo",
+    iqTestBtn: "Ejecutar prueba", iqTestBtnTitle: "Ejecutar una prueba compacta de inteligencia para este nodo", iqTestRunning: "Probando...", iqTestFailed: "La prueba falló",
+    iqHistoryLoading: "Cargando historial...", iqHistoryEmpty: "No hay registros", iqHistoryDetails: "Ver detalles",
+    iqColTestedAt: "Probado el", iqColScore: "Puntuación", iqColGrade: "Nivel", iqColAccuracy: "Precisión", iqColTrigger: "Disparador",
     tableLoading: "Cargando…",
     tableEmpty: "Sin modelos",
     source: {
