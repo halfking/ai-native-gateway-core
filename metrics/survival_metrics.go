@@ -63,11 +63,12 @@ var (
 		Buckets: []float64{1, 5, 15, 60, 300, 900, 1800, 3600, 14400, 86400},
 	}, []string{"protocol"})
 
-	// SurvivalActiveDurableTasks gauges runnable/active durable tasks per
-	// tenant. Alert when this approaches max_active_tasks_per_tenant.
-	SurvivalActiveDurableTasks = promauto.NewGaugeVec(prometheus.GaugeOpts{
-		Name: "gateway_survival_active_durable_tasks",
-		Help: "Active durable survival tasks per tenant (bounded by per-tenant cap).",
+	// SurvivalActiveTasks gauges runnable/active survival tasks per tenant
+	// (durable worker scope, doc 18 §12; the series name follows §15.1
+	// verbatim). Alert when this approaches max_active_tasks_per_tenant.
+	SurvivalActiveTasks = promauto.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "gateway_survival_active_tasks",
+		Help: "Active survival tasks per tenant (bounded by per-tenant cap).",
 	}, []string{"tenant"})
 
 	// SurvivalLeaseConflictsTotal counts fenced-off submissions: a worker or
