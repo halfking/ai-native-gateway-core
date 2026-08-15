@@ -96,16 +96,15 @@ func (gw *GateWriter) Flush() {
 	gw.gate.writer.Flush()
 }
 
-// Finish writes any trailing partial frame through unchanged (line-protocol
-// bytes must never be dropped or duplicated) and flushes. Called once at
-// attempt end by the survival coordinator, not by bridges.
-func (gw *GateWriter) Finish() {
-	if len(gw.pending) > 0 {
-		rest := gw.pending
-		gw.pending = nil
-		_, _ = gw.gate.writer.Write(rest)
-	}
-	gw.gate.writer.Flush()
+// Finish writes any trailing partial frame through the gate's attempt-end
+// path (gate.FinishAttempt: verbatim when committed/immediate, held in the
+// attempt buffer when the attempt is still discardable, refused when
+// discarded) and flushes. Called once at attempt end by the survival
+// coordinator, not by bridges. The pending bytes never bypass the gate.
+func (gw *GateWriter) Finish() error {
+	partial := string(gw.pending)
+	gw.pending = nil
+	return gw.gate.FinishAttempt(partial)
 }
 
 // UnderlyingAttemptGate exposes the gate this writer fronts so downstream
