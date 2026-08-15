@@ -33,6 +33,16 @@ type EventEnvelope struct {
 	AggregateVersion int            `json:"aggregate_version"`
 	OccurredAt       time.Time      `json:"occurred_at"`
 	Payload          map[string]any `json:"payload"`
+
+	// V1 envelope fields (gateway-event-schema-v1.json, GW-1.2). They are
+	// rendered at the top level of the wire envelope by RenderWireEnvelope and
+	// are optional on the storage struct: session_id falls back to
+	// AggregateID, request_id/correlation_id fall back to the payload values
+	// so pre-v1 rows keep dispatching with correlation info.
+	SessionID     string `json:"session_id,omitempty"`
+	RequestID     string `json:"request_id,omitempty"`
+	CorrelationID string `json:"correlation_id,omitempty"`
+	SourceSystem  string `json:"source_system,omitempty"`
 }
 
 // Writer writes events to the outbox_events table.

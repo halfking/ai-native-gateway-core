@@ -2032,6 +2032,20 @@ func main() {
 		slog.Info("attachment extractor enabled",
 			"type", attachmentBackendType,
 			"max_size_mb", attachmentStorage.MaxSize/(1024*1024))
+
+		// MM-2 (doc 19): URL 拉取回退——目标 provider 矩阵判定不支持
+		// url source 而出站 body 以网关 URL 引用附件时，从自身存储取回
+		// 内容重新内联 base64。默认 OFF；依赖公开 base URL（与 MM-1
+		// 共用 LLM_GATEWAY_ATTACHMENT_PUBLIC_BASE_URL）。
+		if v := strings.TrimSpace(os.Getenv("LLM_GATEWAY_ATTACHMENT_URL_FETCH_FALLBACK")); v != "" && v != "0" {
+			base := strings.TrimSpace(os.Getenv("LLM_GATEWAY_ATTACHMENT_PUBLIC_BASE_URL"))
+			if base == "" {
+				slog.Warn("attachments: URL fetch fallback disabled: LLM_GATEWAY_ATTACHMENT_PUBLIC_BASE_URL not set")
+			} else if routingExec != nil {
+				routingExec.AttachmentURLFetchFallback = attachments.NewURLFetchFallback(base, attachmentStorage)
+				slog.Info("attachments: URL fetch fallback enabled", "base_url", base)
+			}
+		}
 	}
 
 	// ── Model Discovery ─────────────────────────────────────────────────

@@ -165,6 +165,122 @@ func GetProviderCapability(provider string) ProviderAttachmentCapability {
 			},
 		}
 
+	// ── MM-2（doc 19 §3）矩阵补齐 ────────────────────────────────────────
+	// 以下 provider 均为仓内 catalog/种子 SQL 实际存在的可路由供应商，此前
+	// 落入 default 分支。结论依据 docs/multimodal-testing/provider-url-
+	// support-matrix.md 口径：
+	//   - 官方文档确认 image_url.url 支持公网 URL（服务端拉取）→
+	//     SupportsHTTPSURL=true，但 PreferredMode 保守取 data（不参与
+	//     MM-1 出站 URL 改写，URL 能力留给请求体中已存在的网关 URL 直通）；
+	//   - 未经真机/文档确认 → SupportsHTTPSURL=false（出站含网关 URL 时
+	//     走 MM-2 拉取回退，inline base64）。
+
+	case "moonshot", "kimi":
+		// Kimi 视觉系列官方文档支持 image_url 传公网 URL 与 base64。
+		return ProviderAttachmentCapability{
+			SupportsDataURI:  true,
+			SupportsHTTPSURL: true,
+			SupportsFilesAPI: false,
+			MaxInlineBytes:   10 * 1024 * 1024,
+			PreferredMode:    RefModeDataURI,
+			SupportedMIMETypes: []string{
+				"image/png", "image/jpeg", "image/webp",
+			},
+		}
+
+	case "groq":
+		// Groq 视觉模型（Llama 4 系）官方文档：image_url 支持 URL 与
+		// base64（URL 有大小限制），保守首选 data。
+		return ProviderAttachmentCapability{
+			SupportsDataURI:  true,
+			SupportsHTTPSURL: true,
+			SupportsFilesAPI: false,
+			MaxInlineBytes:   10 * 1024 * 1024,
+			PreferredMode:    RefModeDataURI,
+			SupportedMIMETypes: []string{
+				"image/png", "image/jpeg", "image/webp",
+			},
+		}
+
+	case "mistral":
+		// Mistral 官方文档：image_url 支持 base64 与公网 URL。
+		return ProviderAttachmentCapability{
+			SupportsDataURI:  true,
+			SupportsHTTPSURL: true,
+			SupportsFilesAPI: false,
+			MaxInlineBytes:   10 * 1024 * 1024,
+			PreferredMode:    RefModeDataURI,
+			SupportedMIMETypes: []string{
+				"image/png", "image/jpeg", "image/webp",
+			},
+		}
+
+	case "xai":
+		// Grok 视觉：官方文档 image_url 支持 base64 与公网 URL。
+		return ProviderAttachmentCapability{
+			SupportsDataURI:  true,
+			SupportsHTTPSURL: true,
+			SupportsFilesAPI: false,
+			MaxInlineBytes:   10 * 1024 * 1024,
+			PreferredMode:    RefModeDataURI,
+			SupportedMIMETypes: []string{
+				"image/png", "image/jpeg", "image/webp",
+			},
+		}
+
+	case "openrouter":
+		// OpenRouter 聚合透传 image_url，底层模型普遍支持 URL/base64。
+		return ProviderAttachmentCapability{
+			SupportsDataURI:  true,
+			SupportsHTTPSURL: true,
+			SupportsFilesAPI: false,
+			MaxInlineBytes:   10 * 1024 * 1024,
+			PreferredMode:    RefModeDataURI,
+			SupportedMIMETypes: []string{
+				"image/png", "image/jpeg", "image/webp",
+			},
+		}
+
+	case "fireworks":
+		// Fireworks 视觉端点文档示例同时给出 URL 与 base64。
+		return ProviderAttachmentCapability{
+			SupportsDataURI:  true,
+			SupportsHTTPSURL: true,
+			SupportsFilesAPI: false,
+			MaxInlineBytes:   10 * 1024 * 1024,
+			PreferredMode:    RefModeDataURI,
+			SupportedMIMETypes: []string{
+				"image/png", "image/jpeg", "image/webp",
+			},
+		}
+
+	case "siliconflow":
+		// 硅基流动 OpenAI 兼容端点，Qwen-VL 系文档示例支持公网 URL。
+		return ProviderAttachmentCapability{
+			SupportsDataURI:  true,
+			SupportsHTTPSURL: true,
+			SupportsFilesAPI: false,
+			MaxInlineBytes:   10 * 1024 * 1024,
+			PreferredMode:    RefModeDataURI,
+			SupportedMIMETypes: []string{
+				"image/png", "image/jpeg", "image/webp",
+			},
+		}
+
+	case "together", "stepfun", "baichuan", "yi", "spark":
+		// URL 拉取能力未经文档/真机确认，保守降级：仅 base64，
+		// 出站含网关 URL 时走 MM-2 拉取回退（与 deepseek 同口径）。
+		return ProviderAttachmentCapability{
+			SupportsDataURI:  true,
+			SupportsHTTPSURL: false,
+			SupportsFilesAPI: false,
+			MaxInlineBytes:   10 * 1024 * 1024,
+			PreferredMode:    RefModeDataURI,
+			SupportedMIMETypes: []string{
+				"image/png", "image/jpeg", "image/webp",
+			},
+		}
+
 	default:
 		// Conservative defaults for unknown providers
 		return ProviderAttachmentCapability{

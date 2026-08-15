@@ -30,6 +30,26 @@ func TestProviderCapabilityMatrix(t *testing.T) {
 		{"ollama", RefModeDataURI, true, false, false, 50 << 20},
 		{"doubao", RefModeGatewayURL, true, true, false, 10 << 20},
 		{"volcengine", RefModeGatewayURL, true, true, false, 10 << 20},
+
+		// MM-2（doc 19 §3）矩阵补齐：仓内可路由（catalog/种子 SQL 实际
+		// 存在）但此前落入 default 分支的 provider。结论依据
+		// docs/multimodal-testing/provider-url-support-matrix.md 口径：
+		// 官方文档确认支持服务端拉取 URL 的标 true（PreferredMode 保守取
+		// data，MM-1 改写不启用）；未经确认的保守降级为 false（出站含
+		// 网关 URL 时走 MM-2 拉取回退 inline base64）。
+		{"moonshot", RefModeDataURI, true, true, false, 10 << 20},
+		{"kimi", RefModeDataURI, true, true, false, 10 << 20},
+		{"groq", RefModeDataURI, true, true, false, 10 << 20},
+		{"mistral", RefModeDataURI, true, true, false, 10 << 20},
+		{"xai", RefModeDataURI, true, true, false, 10 << 20},
+		{"openrouter", RefModeDataURI, true, true, false, 10 << 20},
+		{"fireworks", RefModeDataURI, true, true, false, 10 << 20},
+		{"siliconflow", RefModeDataURI, true, true, false, 10 << 20},
+		{"together", RefModeDataURI, true, false, false, 10 << 20},
+		{"stepfun", RefModeDataURI, true, false, false, 10 << 20},
+		{"baichuan", RefModeDataURI, true, false, false, 10 << 20},
+		{"yi", RefModeDataURI, true, false, false, 10 << 20},
+		{"spark", RefModeDataURI, true, false, false, 10 << 20},
 	}
 
 	for _, tt := range tests {

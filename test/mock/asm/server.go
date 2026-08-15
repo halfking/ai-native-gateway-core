@@ -152,7 +152,19 @@ func validateEvent(event map[string]any) error {
 	if event["event_type"] != "request.completed.v1" {
 		return &validationError{"unsupported event type"}
 	}
-	if event["schema_version"] != float64(1) {
+	// GW-1.2: the wire envelope renders schema_version as the string "1.0"
+	// (gateway-event-schema-v1.json). Rows written before the alignment still
+	// dispatch with the legacy JSON number 1, so both are accepted here.
+	switch event["schema_version"].(type) {
+	case string:
+		if event["schema_version"] != "1.0" {
+			return &validationError{"unsupported schema version"}
+		}
+	case float64:
+		if event["schema_version"] != float64(1) {
+			return &validationError{"unsupported schema version"}
+		}
+	default:
 		return &validationError{"unsupported schema version"}
 	}
 	if _, ok := event["aggregate_id"].(string); !ok {
