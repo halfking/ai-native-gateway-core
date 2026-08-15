@@ -47,16 +47,17 @@ import (
 	"github.com/kaixuan/llm-gateway-go/db"
 	"github.com/kaixuan/llm-gateway-go/discovery"
 	"github.com/kaixuan/llm-gateway-go/disguise"
-	"github.com/kaixuan/llm-gateway-go/domains/analysis"                            //nolint:depguard // M3 embedding shadow adapter
-	"github.com/kaixuan/llm-gateway-go/domains/analysis/bus"                        //nolint:depguard // historical violation, B1 routing.go CQRS will fix
-	"github.com/kaixuan/llm-gateway-go/domains/approval"                            //nolint:depguard // D1: approval config management
-	"github.com/kaixuan/llm-gateway-go/domains/assets"                              //nolint:depguard // historical violation, B1 routing.go CQRS will fix
-	"github.com/kaixuan/llm-gateway-go/domains/attachments"                         //nolint:depguard // historical violation, B1 routing.go CQRS will fix
-	"github.com/kaixuan/llm-gateway-go/domains/authentication"                      //nolint:depguard // historical violation, B1 routing.go CQRS will fix
-	"github.com/kaixuan/llm-gateway-go/domains/autocombo"                           //nolint:depguard // OmniFree virtual auto/* routing
-	"github.com/kaixuan/llm-gateway-go/domains/credential"                          //nolint:depguard // historical violation, B1 routing.go CQRS will fix
+	"github.com/kaixuan/llm-gateway-go/domains/analysis"       //nolint:depguard // M3 embedding shadow adapter
+	"github.com/kaixuan/llm-gateway-go/domains/analysis/bus"   //nolint:depguard // historical violation, B1 routing.go CQRS will fix
+	"github.com/kaixuan/llm-gateway-go/domains/approval"       //nolint:depguard // D1: approval config management
+	"github.com/kaixuan/llm-gateway-go/domains/assets"         //nolint:depguard // historical violation, B1 routing.go CQRS will fix
+	"github.com/kaixuan/llm-gateway-go/domains/attachments"    //nolint:depguard // historical violation, B1 routing.go CQRS will fix
+	"github.com/kaixuan/llm-gateway-go/domains/authentication" //nolint:depguard // historical violation, B1 routing.go CQRS will fix
+	"github.com/kaixuan/llm-gateway-go/domains/autocombo"      //nolint:depguard // OmniFree virtual auto/* routing
+	"github.com/kaixuan/llm-gateway-go/domains/credential"
 	"github.com/kaixuan/llm-gateway-go/domains/credentialstate"                     //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/domains/dbdegradation"                       //nolint:depguard // 数据库降级模块
+	"github.com/kaixuan/llm-gateway-go/domains/durabletask"                         //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/domains/freeresource"                        //nolint:depguard // OmniFree quota tracker
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/audit"                         //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/compression"                   //nolint:depguard // historical violation, B1 routing.go CQRS will fix
@@ -2072,6 +2073,21 @@ func main() {
 			} else {
 				keyring = kr
 				slog.Info("AES-GCM keyring initialized")
+			}
+		}
+
+		// ── SR-W3 durable execution (doc 18 §6/§12) ──────────────────
+		// Arm request-entry durable persistence behind an explicit
+		// opt-in: every survival-coordinated request creates its durable
+		// task (encrypted snapshot + lease) before the first upstream
+		// attempt. Requires the AES-GCM keyring (snapshot/result encryption).
+		if os.Getenv("LLM_GATEWAY_DURABLE_EXECUTION") == "true" {
+			if keyring == nil {
+				slog.Error("durable execution requested (LLM_GATEWAY_DURABLE_EXECUTION=true) but AES-GCM keyring unavailable; not armed")
+			} else {
+				chatHandler.SetDurableExecution(durabletask.NewStore(dbConn.Pool(), keyring), keyring, durabletask.ForegroundConfig{})
+				slog.Info("durable_execution_armed",
+					"request_survival_required", cfg.RequestSurvivalEnabled)
 			}
 		}
 

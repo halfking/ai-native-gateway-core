@@ -27,6 +27,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/domains/autocombo"
 	"github.com/kaixuan/llm-gateway-go/domains/credential"                          //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/domains/dispatch"                            //nolint:depguard // V3.2 state-transition logger
+	"github.com/kaixuan/llm-gateway-go/domains/durabletask"                         //nolint:depguard // SR-W3 durable execution wiring
 	"github.com/kaixuan/llm-gateway-go/domains/freeresource"                        //nolint:depguard // OmniFree quota tracker
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/audit"                         //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/compression"                   //nolint:depguard // historical violation, B1 routing.go CQRS will fix
@@ -52,6 +53,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/ratelimit"
 	"github.com/kaixuan/llm-gateway-go/registry"
 	"github.com/kaixuan/llm-gateway-go/resolve"
+	"github.com/kaixuan/llm-gateway-go/secret"
 	"github.com/kaixuan/llm-gateway-go/security/armor"
 	upstreampkg "github.com/kaixuan/llm-gateway-go/upstream"
 	"go.opentelemetry.io/otel/attribute"
@@ -695,11 +697,16 @@ type ChatHandler struct {
 	// inert; armed via SetRequestSurvival from main.go.
 	survivalTenantAllowed func(tenantID string) bool
 	survivalOptions       SurvivalOptions
-	provider              providerResolver
-	sticky                *executors.StickyCache
-	keyVerifier           *authentication.KeyVerifier
-	rateLimiter           ratelimit.RPMLimiter
-	telemetryClient       *telemetry.Client
+	// SR-W3 durable execution (doc 18 §6/§12): nil store keeps requests
+	// non-durable; armed via SetDurableExecution from main.go.
+	durableStore    *durabletask.Store
+	durableKeyring  *secret.Keyring
+	durableConfig   durabletask.ForegroundConfig
+	provider        providerResolver
+	sticky          *executors.StickyCache
+	keyVerifier     *authentication.KeyVerifier
+	rateLimiter     ratelimit.RPMLimiter
+	telemetryClient *telemetry.Client
 	// profileEmitter (2026-07-15) 把请求/会话事件投到 clientprofile 画像聚合。
 	// nil 禁用画像聚合；调用方负责 graceful 注入（main.go SetupClientProfileIntegration）。
 	profileEmitter interface {

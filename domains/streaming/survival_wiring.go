@@ -61,6 +61,24 @@ func (h *ChatHandler) runSurvivalCoordinator(
 	frozenReq := r.WithContext(frozenCtx)
 
 	params := buildExecParams(w)
+
+	// SR-W3 durable entry: create+claim the durable task before any upstream
+	// attempt and attach the lease to the request context. Fail-open on
+	// begin errors (the feature is opt-in); nil keeps the request non-durable.
+	durable := h.beginDurable(frozenReq, params, protocol, tenantID)
+	var durableRenewCancel context.CancelFunc
+	if durable != nil {
+		frozenReq = frozenReq.WithContext(durable.Attach(frozenCtx))
+		var renewCtx context.Context
+		renewCtx, durableRenewCancel = context.WithCancel(frozenCtx)
+		go durableRenewLoop(renewCtx, durable)
+	}
+	defer func() {
+		if durableRenewCancel != nil {
+			durableRenewCancel()
+		}
+	}()
+
 	params.R = frozenReq
 
 	// A-P2-6 write-unification: the pre-stream keepalive goroutine writes
@@ -73,9 +91,10 @@ func (h *ChatHandler) runSurvivalCoordinator(
 
 	sw := NewSerializedStreamWriter(w)
 	coordinator := &SurvivalCoordinator{
-		Exec:     h.executor,
-		Protocol: protocol,
-		Options:  h.survivalOptions,
+		Exec:              h.executor,
+		Protocol:          protocol,
+		Options:           h.survivalOptions,
+		DurableCheckpoint: durableCheckpointHook(frozenCtx, durable),
 		Refresh: func(ctx context.Context) {
 			cands, _, _, err := resolveCandidatesForRequest(
 				ctx, h.provider, params.ClientModel, params.ClientID.Fingerprint.ClientProfile,
@@ -91,6 +110,10 @@ func (h *ChatHandler) runSurvivalCoordinator(
 	}
 
 	res := coordinator.Run(frozenCtx, sw, params)
+
+	// SR-W3 durable terminalization: map the coordinator verdict onto the
+	// fenced Complete/Fail transition (also enqueues the projection outbox).
+	h.finishDurable(frozenCtx, durable, res, params.RequestID)
 	slog.Info("request_survival_finished",
 		"request_id", params.RequestID,
 		"succeed", res.Succeed,
