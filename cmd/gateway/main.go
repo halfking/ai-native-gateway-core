@@ -1836,8 +1836,12 @@ func main() {
 	if telemetryClient != nil && dbConn != nil && dbConn.Enabled() {
 		sessionV2Writer = initSessionV2Writer(dbConn.Pool())
 		if sessionV2Writer != nil {
-			telemetryClient.AddOnRequestLogPersisted(sessionv2mirror.PersistHook(sessionV2Writer))
-			slog.Info("session V2 shadow write hook registered (live feature-gated; public.sessions public.session_turns public.session_bodies public.session_turn_logs)")
+			// session_dim 维度（任务/项目/属主/客户端）随同一 hook 维护：
+			// 旧 350/358 触发器链路在部分环境缺失，这里以 Go 侧 best-effort
+			// UPSERT 兜底，/admin/turns 的项目→任务层级依赖该表。
+			sessionDimWriter := sessionv2mirror.NewSessionDimWriter(dbConn.Pool())
+			telemetryClient.AddOnRequestLogPersisted(sessionv2mirror.PersistHook(sessionV2Writer, sessionDimWriter))
+			slog.Info("session V2 shadow write hook registered (live feature-gated; public.sessions public.session_turns public.session_bodies public.session_turn_logs + session_dim)")
 
 		}
 	}
@@ -2673,6 +2677,15 @@ func main() {
 		profileWorkers = initProviderProfile(dbConn.Pool(), fernetKey, keyring)
 		if profileWorkers != nil {
 			slog.Info("CHECKPOINT: provider profile system started")
+		}
+
+		// 2026-08-15 (M3 CO-3): 供应商成本对账管理端点（月度账单导入 + diff
+		// 查询）。仅当 provider_profile.cost_reconciliation.enabled 开启时
+		// CostReconciler 非 nil，端点才注册；默认关闭与 main 行为一致。
+		if profileWorkers != nil && adminHandler != nil {
+			if cr := profileWorkers.CostReconciler(); cr != nil {
+				adminHandler.SetProviderCostReconciliationHandler(admin.NewProviderCostReconciliationHandler(cr))
+			}
 		}
 
 		// Self-check worker — runs periodic ping + tool-call smoke tests
