@@ -289,26 +289,11 @@ func (d *Dispatcher) dispatchOne(ctx context.Context) (dispatchOutcome, error) {
 
 // dispatch sends a single event to ASM via HTTP POST.
 func (d *Dispatcher) dispatch(ctx context.Context, env EventEnvelope, payloadBytes []byte) error {
-	// Sign the complete envelope (reconstructed JSON)
-	envelopeJSON, err := json.Marshal(struct {
-		EventID          string         `json:"event_id"`
-		EventType        string         `json:"event_type"`
-		SchemaVersion    int            `json:"schema_version"`
-		TenantID         string         `json:"tenant_id"`
-		AggregateID      string         `json:"aggregate_id"`
-		AggregateVersion int            `json:"aggregate_version"`
-		OccurredAt       time.Time      `json:"occurred_at"`
-		Payload          map[string]any `json:"payload"`
-	}{
-		EventID:          env.EventID,
-		EventType:        env.EventType,
-		SchemaVersion:    env.SchemaVersion,
-		TenantID:         env.TenantID,
-		AggregateID:      env.AggregateID,
-		AggregateVersion: env.AggregateVersion,
-		OccurredAt:       env.OccurredAt,
-		Payload:          env.Payload,
-	})
+	// Sign the complete envelope (reconstructed JSON) in the
+	// gateway-event-schema-v1.json wire format (GW-1.2): schema_version is
+	// rendered as "1.0" and session_id/request_id/correlation_id are lifted
+	// to the envelope top level.
+	envelopeJSON, err := RenderWireEnvelope(env)
 	if err != nil {
 		return fmt.Errorf("marshal envelope: %w", err)
 	}

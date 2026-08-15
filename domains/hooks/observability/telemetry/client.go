@@ -1330,12 +1330,15 @@ $48,
 		correlationID := stringValue(entry.ClientRequestID)
 		idempotencyKey := requestID
 
-		// Build event envelope using outbox builder V2 (with ID separation)
-		envelope, err := outbox.BuildRequestCompletedEventV2(
+		// Build event envelope using outbox builder V3 (GW-1.2: payload
+		// validates against gateway-event-schema-v1.json; legacy omni-ref2
+		// payload fields are retained for existing consumers).
+		envelope, err := outbox.BuildRequestCompletedEventV3(
 			tenantID, sessionID, turnNo,
 			requestID, correlationID, idempotencyKey,
 			provider, model, status,
 			promptTokens, completionTokens, latencyMs,
+			entry.CostUSD,
 			success,
 		)
 		if err != nil {
