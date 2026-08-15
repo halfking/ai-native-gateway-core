@@ -152,7 +152,7 @@ func (s *Store) ClaimRunnable(ctx context.Context, opts ClaimOptions) ([]*Task, 
 		if err != nil {
 			return nil, fmt.Errorf("durable: claim update %s: %w", candidate.id, err)
 		}
-		if err := appendEvent(ctx, tx, task, Status(candidate.fromStatus), StatusRunning, "claim", task.AttemptCount); err != nil {
+		if err := appendEvent(ctx, tx, task, Status(candidate.fromStatus), StatusRunning, "claim", task.AttemptCount, now); err != nil {
 			return nil, err
 		}
 		claimed = append(claimed, task)

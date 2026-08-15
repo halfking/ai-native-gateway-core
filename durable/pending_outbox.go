@@ -73,7 +73,7 @@ func (s *Store) ProjectPendingOutbox(ctx context.Context, target *pending.Store,
 		resultHash, contentType                pgtype.Text
 		reasonCode                             string
 		fencingToken, resultVersion            int64
-		completedAt                            time.Time
+		completedAt                            pgtype.Timestamptz
 		expiresAt                              time.Time
 	}
 	var batch []rowData
@@ -99,7 +99,11 @@ func (s *Store) ProjectPendingOutbox(ctx context.Context, target *pending.Store,
 			ContentType: r.contentType.String, RequestHash: r.requestHash,
 			TaskID: r.taskID, FencingToken: r.fencingToken,
 			ResultVersion: r.resultVersion, ResultHash: r.resultHash.String,
-			CompletedAt: r.completedAt.Unix(),
+		}
+		if r.completedAt.Valid {
+			resp.CompletedAt = r.completedAt.Time.Unix()
+		} else {
+			resp.CompletedAt = now.Unix()
 		}
 		if r.status == StatusCompleted {
 			if !r.resultCT.Valid || s.kr == nil {

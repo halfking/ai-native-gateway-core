@@ -111,11 +111,68 @@ func TestDurableRecoveryWorkerStopIsIdempotent(t *testing.T) {
 	worker.Stop()
 }
 
-func TestDurableRecoveryWorkerSnapshotFailureFailsTask(t *testing.T) {
-	store := &workerFakeStore{task: runnableTask(), snapshotErr: errors.New("aad mismatch")}
+// 审计修正（P1-1）：快照加载失败可能是瞬态 DB/keyring 问题，不得永久
+// terminal-fail——重排重试，deadline reaper 给出安全的 expired 终态。
+func TestDurableRecoveryWorkerSnapshotFailureReschedules(t *testing.T) {
+	store := &workerFakeStore{task: runnableTask(), snapshotErr: errors.New("db unavailable")}
 	worker := NewDurableRecoveryWorker(store, nil, workerFakeRunner{}, DurableWorkerOptions{Owner: "worker"})
+	worker.runOnce(context.Background())
+	if store.rescheduleCalls != 1 || store.commitCalls != 0 {
+		t.Fatalf("commit=%d reschedule=%d, want reschedule-only", store.commitCalls, store.rescheduleCalls)
+	}
+}
+
+// 审计修正（P1-1）：runner 基础设施错误（无 AttemptResult 可聚合）同样只
+// 重排；永久终态只能来自 AggregateTaskOutcome 的判定。
+func TestDurableRecoveryWorkerRunnerErrorReschedules(t *testing.T) {
+	store := &workerFakeStore{task: runnableTask(), snapshot: &durable.Snapshot{TaskID: "task-1"}}
+	worker := NewDurableRecoveryWorker(store, nil, workerFakeRunner{err: errors.New("rebuild failed")}, DurableWorkerOptions{Owner: "worker"})
+	worker.runOnce(context.Background())
+	if store.rescheduleCalls != 1 || store.commitCalls != 0 {
+		t.Fatalf("commit=%d reschedule=%d, want reschedule-only", store.commitCalls, store.rescheduleCalls)
+	}
+}
+
+// 任务级永久判定（AggregateTaskOutcome FailTerminal）仍必须形成 failed 终态。
+func TestDurableRecoveryWorkerTerminalDecisionFails(t *testing.T) {
+	result := &AttemptResult{Success: false, CandidateOutcomes: []CandidateOutcome{{Kind: errorsx.KindContextLength}}}
+	store := &workerFakeStore{task: runnableTask(), snapshot: &durable.Snapshot{TaskID: "task-1"}}
+	worker := NewDurableRecoveryWorker(store, nil, workerFakeRunner{attempt: &DurableAttempt{Result: result, Attempt: 1}}, DurableWorkerOptions{Owner: "worker"})
 	worker.runOnce(context.Background())
 	if store.commitCalls != 1 || store.lastOutcome != durable.StatusFailed {
 		t.Fatalf("commit=%d outcome=%s", store.commitCalls, store.lastOutcome)
 	}
+}
+
+// 审计修正（P1-2）：不响应取消的 runner 不能让 Stop 永久挂起。
+func TestDurableRecoveryWorkerStopBoundedWhenRunnerIgnoresCancel(t *testing.T) {
+	store := &workerFakeStore{task: runnableTask(), snapshot: &durable.Snapshot{TaskID: "task-1"}}
+	release := make(chan struct{})
+	worker := NewDurableRecoveryWorker(store, nil, blockingRunner{release: release}, DurableWorkerOptions{Owner: "worker", Lease: time.Hour})
+	started := make(chan struct{})
+	worker.Start(context.Background())
+	go func() {
+		close(started)
+	}()
+	<-started
+	// runOnce 在 Start 的首圈内同步执行；给调度器一点时间进入 runTask。
+	time.Sleep(50 * time.Millisecond)
+	done := make(chan struct{})
+	go func() { worker.Stop(); close(done) }()
+	select {
+	case <-done:
+		close(release)
+	case <-time.After(15 * time.Second):
+		close(release)
+		t.Fatal("Stop must not hang when the runner ignores cancellation")
+	}
+}
+
+type blockingRunner struct {
+	release chan struct{}
+}
+
+func (r blockingRunner) Run(ctx context.Context, _ *durable.Task, _ *durable.Snapshot) (*DurableAttempt, error) {
+	<-r.release
+	return successAttempt(), nil
 }
