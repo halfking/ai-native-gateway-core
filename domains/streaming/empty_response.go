@@ -29,12 +29,15 @@ func classifyNonStreamUpstreamResponse(body []byte) (nonStreamResponseFormat, bo
 	if raw, ok := envelope["output"]; ok {
 		return nonStreamResponseResponses, isEmptyResponsesOutput(raw)
 	}
-	return nonStreamResponseChat, true
+	return nonStreamResponseUnknown, false
 }
 
 func isEmptyUpstreamChatResponse(body []byte) bool {
+	if len(body) == 0 || !json.Valid(body) {
+		return false
+	}
 	format, empty := classifyNonStreamUpstreamResponse(body)
-	return format == nonStreamResponseChat && empty
+	return format == nonStreamResponseUnknown || (format == nonStreamResponseChat && empty)
 }
 
 func isEmptyChatChoices(raw json.RawMessage) bool {
@@ -81,9 +84,7 @@ func isEmptyAnthropicContent(raw json.RawMessage) bool {
 		case "redacted_thinking", "server_tool_use", "web_search_tool_result":
 			return false
 		case "tool_use":
-			if block.ID != "" || block.Name != "" {
-				return false
-			}
+			return false
 		}
 	}
 	return true
