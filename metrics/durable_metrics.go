@@ -28,6 +28,44 @@ var (
 		Name: "durable_tasks_active",
 		Help: "Active (non-terminal) durable tasks per tenant, from the authoritative PostgreSQL count.",
 	}, []string{"tenant"})
+
+	// DurableRecoveryRunsTotal counts recovery worker claim cycles by
+	// outcome: claimed (one or more tasks executed), empty (nothing due),
+	// error (the claim query itself failed). Sustained empty+claimed
+	// imbalance or rising error is the runnable-backlog signal.
+	DurableRecoveryRunsTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "durable_recovery_runs_total",
+		Help: "Recovery worker claim cycles by outcome (claimed/empty/error).",
+	}, []string{"outcome"})
+
+	// DurablePendingProjectionsTotal counts terminal task projections
+	// successfully written into the PendingStore by the outbox deliverer,
+	// by terminal status. doc 18 §15.3: "worker succeeded but the final
+	// result write-back failed" — compare against durable_tasks terminal
+	// transitions to detect projection loss.
+	DurablePendingProjectionsTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "durable_pending_projections_total",
+		Help: "Terminal durable task projections delivered to the PendingStore by terminal status.",
+	}, []string{"status"})
+
+	// DurablePendingProjectionErrorsTotal counts failed outbox deliveries
+	// by reason: decrypt (result ciphertext undecryptable/tampered),
+	// project_cas (PendingStore write rejected/failed), mark_failed
+	// (bookkeeping update lost the row lease). Retries continue with
+	// backoff; sustained growth means the projection is stuck.
+	DurablePendingProjectionErrorsTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "durable_pending_projection_errors_total",
+		Help: "Failed PendingStore outbox deliveries by reason.",
+	}, []string{"reason"})
+
+	// DurableLeaseLostTotal counts fenced-off durable task writes — a
+	// worker or foreground holder whose (lease_owner, fencing_token) no
+	// longer matched at commit time (worker-path counterpart of
+	// gateway_survival_lease_conflicts_total).
+	DurableLeaseLostTotal = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "durable_lease_lost_total",
+		Help: "Durable task writes rejected by the fencing check (ErrLeaseLost).",
+	})
 )
 
 // durableActiveTenants remembers every tenant series ever published so a
