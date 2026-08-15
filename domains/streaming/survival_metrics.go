@@ -2,7 +2,9 @@ package streaming
 
 import (
 	"strconv"
+	"time"
 
+	"github.com/kaixuan/llm-gateway-go/errorsx"
 	"github.com/kaixuan/llm-gateway-go/metrics"
 )
 
@@ -124,4 +126,35 @@ func survivalTerminalToState(d TaskDecision) string {
 // is the TaskDecision.Reason (low-cardinality by construction).
 func recordSurvivalTransition(from, to, reason string) {
 	metrics.SurvivalStateTransitionsTotal.WithLabelValues(from, to, reason).Inc()
+}
+
+// survivalWaitReason folds an error kind into the closed reason enum of
+// gateway_survival_wait_seconds (skeleton comment, doc 18 §15.1): the bucket
+// operators slice recovery windows by.
+func survivalWaitReason(kind errorsx.ErrorKind) string {
+	switch kind {
+	case errorsx.KindRateLimit:
+		return "rate_limit"
+	case errorsx.KindQuota, errorsx.KindQuotaPeriodic, errorsx.KindQuotaBalance:
+		return "quota_periodic"
+	case errorsx.KindConcurrent:
+		return "concurrent"
+	case errorsx.KindUpstreamOverloaded, errorsx.KindUpstreamDown:
+		return "upstream_overloaded"
+	case errorsx.KindTransient, errorsx.KindTimeout, errorsx.KindAuth,
+		errorsx.KindStreamTimeout, errorsx.KindEmptyResponse:
+		return "transient"
+	case errorsx.KindNetwork:
+		return "network"
+	case errorsx.KindNoAvailableChannel:
+		return "no_candidates"
+	default:
+		return "other"
+	}
+}
+
+// observeSurvivalWait records one completed waiting_recovery window in
+// gateway_survival_wait_seconds{reason}.
+func observeSurvivalWait(kind errorsx.ErrorKind, waited time.Duration) {
+	metrics.SurvivalWaitSeconds.WithLabelValues(survivalWaitReason(kind)).Observe(waited.Seconds())
 }

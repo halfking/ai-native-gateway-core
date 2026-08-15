@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus"
 	dto "github.com/prometheus/client_model/go"
 
 	"github.com/kaixuan/llm-gateway-go/domains/streaming/executors"
@@ -343,6 +344,62 @@ func TestSurvivalMetricsStateTransitions(t *testing.T) {
 		got := survivalTransitionDeltas(t, before, keys)
 		if got["running>fail_terminal|terminal_candidate"] != 1 {
 			t.Fatalf("terminal decision must emit running->fail_terminal, got %v", got)
+		}
+	})
+}
+
+// TestSurvivalMetricsWaitSeconds pins gateway_survival_wait_seconds{reason}:
+// a completed recovery wait is observed once, in seconds, labeled by the
+// dominant recovery reason bucket derived from the failing error kind.
+func TestSurvivalMetricsWaitSeconds(t *testing.T) {
+	cases := []struct {
+		name   string
+		kind   errorsx.ErrorKind
+		reason string
+	}{
+		{"rate limit waits under rate_limit", errorsx.KindRateLimit, "rate_limit"},
+		{"quota periodic waits under quota_periodic", errorsx.KindQuotaPeriodic, "quota_periodic"},
+		{"upstream down waits under upstream_overloaded", errorsx.KindUpstreamDown, "upstream_overloaded"},
+		{"no channel waits under no_candidates", errorsx.KindNoAvailableChannel, "no_candidates"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			fail := &executors.ExecuteError{
+				LastKind: tc.kind,
+				Attempts: []executors.AttemptRecord{{ProviderID: 1, CredentialID: 1, Kind: tc.kind}},
+			}
+			h := newCoordHarness(&scriptedExecutor{
+				errs:    []error{fail, nil},
+				results: []*executors.ExecuteResult{nil, {}},
+			})
+			c := h.coordinator()
+			hist := metrics.SurvivalWaitSeconds.WithLabelValues(tc.reason).(prometheus.Histogram)
+			cb, sb := survivalHistogramDelta(t, hist)
+
+			c.Run(context.Background(), h.sw, &executors.ExecParams{})
+
+			ca, sa := survivalHistogramDelta(t, hist)
+			if ca-cb != 1 {
+				t.Fatalf("wait_seconds{%s} sample count delta = %d, want 1", tc.reason, ca-cb)
+			}
+			if got := (sa - sb) * 1e9; got != 2*1e9 {
+				t.Fatalf("wait_seconds{%s} observed %vns, want the 2s base backoff", tc.reason, got)
+			}
+		})
+	}
+
+	t.Run("retry-now does not record a recovery wait", func(t *testing.T) {
+		h := newCoordHarness(&scriptedExecutor{
+			errs:    []error{transientFailure(), nil},
+			results: []*executors.ExecuteResult{nil, {}},
+		})
+		c := h.coordinator()
+		cb, _ := survivalHistogramDelta(t, metrics.SurvivalWaitSeconds.WithLabelValues("transient").(prometheus.Histogram))
+
+		c.Run(context.Background(), h.sw, &executors.ExecParams{})
+
+		if ca, _ := survivalHistogramDelta(t, metrics.SurvivalWaitSeconds.WithLabelValues("transient").(prometheus.Histogram)); ca != cb {
+			t.Fatal("immediate retry-now backoff must not be recorded as a recovery wait")
 		}
 	})
 }

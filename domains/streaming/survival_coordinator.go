@@ -190,6 +190,9 @@ func (c *SurvivalCoordinator) Run(ctx context.Context, sw *SerializedStreamWrite
 				recordSurvivalRequestTerminal(c.Protocol, res.Decision)
 				return res
 			}
+			if res.Decision.Action == TaskActionWaitRecovery && res.FinalAttempt != nil {
+				observeSurvivalWait(res.FinalAttempt.LastKind(), wait)
+			}
 			recordSurvivalTransition(waitState, survivalStateRunning, "retry")
 			if c.Refresh != nil {
 				c.Refresh(ctx)
