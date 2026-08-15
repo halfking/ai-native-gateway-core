@@ -2679,6 +2679,15 @@ func main() {
 			slog.Info("CHECKPOINT: provider profile system started")
 		}
 
+		// 2026-08-15 (M3 CO-3): 供应商成本对账管理端点（月度账单导入 + diff
+		// 查询）。仅当 provider_profile.cost_reconciliation.enabled 开启时
+		// CostReconciler 非 nil，端点才注册；默认关闭与 main 行为一致。
+		if profileWorkers != nil && adminHandler != nil {
+			if cr := profileWorkers.CostReconciler(); cr != nil {
+				adminHandler.SetProviderCostReconciliationHandler(admin.NewProviderCostReconciliationHandler(cr))
+			}
+		}
+
 		// Self-check worker — runs periodic ping + tool-call smoke tests
 		// against key models to verify gateway availability (2026-07-12).
 		slog.Info("CHECKPOINT: before self-check worker init")

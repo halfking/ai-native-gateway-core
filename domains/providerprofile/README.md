@@ -70,7 +70,26 @@ provider_profile:
   collection_interval: 2h      # 轻量级采集频率
   aggregation_interval: 24h    # 每日聚合频率
   cleanup_interval: 168h       # 清理频率（7天）
+  # ── 供应商成本对账（M3 CO-3，2026-08-15，默认关闭）──
+  cost_reconciliation:
+    enabled: false               # 开启后：每日聚合当月+上月用量到 provider_cost_reconciliation
+    interval: 86400              # 聚合周期（秒）
+    cost_diff_threshold: 0.05    # 成本差异率告警阈值
+    token_diff_threshold: 0.05   # token 差异率告警阈值
 ```
+
+成本对账子开关也可用环境变量 `LLM_GATEWAY_PROVIDER_COST_RECONCILIATION_ENABLED=true`
+控制（优先于 settings）。开启后：
+
+- **月度聚合**：`CostReconciliationWorker` 每日把 `request_logs_hot` + `request_logs`
+  按 provider + 月（跨表按 `request_id` 去重）聚合写入 `provider_cost_reconciliation`
+  的 `gateway_*` 列。
+- **账单导入**：`POST /api/admin/provider-cost-reconciliation/bill`（super_admin，
+  body: `{"provider_id":42,"month":"2026-07","total_tokens":1000,"total_cost":100.5,...}`），
+  写入 `provider_*` 列并计算差异率。
+- **diff 查询**：`GET /api/admin/provider-cost-reconciliation?month=2026-07`。
+- **diff 告警**：差异率超阈值时向 `provider_events` 写入
+  `event_kind='cost_reconciliation_diff'` 事件（按 provider+月幂等去重）。
 
 ### 3. 集成到网关（代码）
 
@@ -298,7 +317,7 @@ ORDER BY p.total_score ASC;
 - [ ] 基础评分补全 - 实现价格评分维度（原 Phase 2 内容）
 - [ ] Phase 3: 可信度测试第一期 - 能力探针、成本倒推
 - [ ] Phase 5: 前端展示 - API 和管理界面（含告警展示）
-- [ ] Phase 6: 费用准确性 - 账单对账和差异分析
+- [x] Phase 6: 费用准确性 - 账单对账和差异分析（M3 CO-3 已激活：月度聚合 + 账单导入 + diff 告警，见上文配置；费用准确性评分并入画像总分仍待后续）
 - [ ] Phase 7: 可信度测试第二期 - 标准测试集、输出指纹
 - [ ] Phase 8: 优化和上线 - 性能优化、全量部署
 

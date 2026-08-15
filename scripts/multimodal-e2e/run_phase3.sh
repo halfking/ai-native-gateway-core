@@ -102,6 +102,29 @@ run_case() {
       # Whisper transcription is multipart, not chat completions — handled
       # separately by T-05 branch below to keep shell plumbing simple.
       payload="__WHISPER__" ;;
+    openai-image-gateway-url)
+      # MM-4 URL 模式（doc 19 轨道 MM）：附件以网关自身 URL 引用传入。
+      # 需要环境提供已存入网关附件存储对象的完整公开 URL
+      # （MULTIMODAL_E2E_GATEWAY_ATTACHMENT_URL=<PUBLIC_BASE_URL>/<relPath>）；
+      # 未设置视为环境不满足，自动 SKIP（同 gemini 条件性用例先例）。
+      # - T-28（openai，矩阵 SupportsHTTPSURL=true）：URL 直通，验证 URL
+      #   模式端到端正向。
+      # - T-23（非 URL 型供应商，如 deepseek-vl）：需网关以
+      #   LLM_GATEWAY_ATTACHMENT_URL_FETCH_FALLBACK=1 +
+      #   LLM_GATEWAY_ATTACHMENT_PUBLIC_BASE_URL 启动，验证 MM-2 回退取回
+      #   内联后上游仍 accept（executor 级行为已由 Go e2e T-23 钉住）。
+      local gw_att_url="${MULTIMODAL_E2E_GATEWAY_ATTACHMENT_URL:-}"
+      if [[ -z "$gw_att_url" ]]; then
+        yel "  [$id] SKIP (MULTIMODAL_E2E_GATEWAY_ATTACHMENT_URL not set: MM-4 URL-mode case needs a stored gateway attachment)"
+        SKIP=$((SKIP+1)); return
+      fi
+      payload=$(jq -n --arg m "$model" --arg img "$gw_att_url" '{
+        model: $m, max_tokens: 50,
+        messages: [{role:"user",content:[
+          {type:"text",text:"describe in one short sentence"},
+          {type:"image_url",image_url:{url:$img}}
+        ]}]
+      }') ;;
     *)
       red "  [$id] FAIL: unknown format in case json"
       FAIL=$((FAIL+1)); return ;;

@@ -108,7 +108,12 @@ type Handler struct {
 	// /api/admin/route-incidents* endpoints. nil disables the
 	// diagnose feature on the swim lane.
 	routeIncidentHandler *RouteIncidentsHandler
-	peakCollector        interface {
+	// providerCostReconciliationHandler (2026-08-15, M3 CO-3) backs the
+	// /api/admin/provider-cost-reconciliation* endpoints (月度账单导入 +
+	// diff 查询). nil (default) keeps the endpoints unregistered —
+	// flag-off behavior is identical to main.
+	providerCostReconciliationHandler *ProviderCostReconciliationHandler
+	peakCollector                     interface {
 		Acquire(credID int64, model string)
 		Release(credID int64, model string)
 		Stats() map[string]interface{}
@@ -412,6 +417,15 @@ func (h *Handler) SetRequestTraceHandler(rth *RequestTraceHandler) {
 // disable (the swim lane's diagnose button is hidden in that case).
 func (h *Handler) SetRouteIncidentsHandler(rih *RouteIncidentsHandler) {
 	h.routeIncidentHandler = rih
+}
+
+// SetProviderCostReconciliationHandler wires the provider cost
+// reconciliation API (M3 CO-3, 2026-08-15). Once set,
+// POST /api/admin/provider-cost-reconciliation/bill and
+// GET  /api/admin/provider-cost-reconciliation become available.
+// Pass nil (or leave unset) to keep the endpoints unregistered.
+func (h *Handler) SetProviderCostReconciliationHandler(hh *ProviderCostReconciliationHandler) {
+	h.providerCostReconciliationHandler = hh
 }
 
 // SetSessionManager (2026-07-06) wires the session.Manager for the
@@ -767,6 +781,12 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	// is suppressed.
 	if h.routeIncidentHandler != nil {
 		h.routeIncidentHandler.RegisterRoutes(mux, h.superAdmin)
+	}
+
+	// 2026-08-15: 供应商成本对账端点（super_admin only，账单导入 + diff
+	// 查询）。nil（对账开关关闭）时不注册。
+	if h.providerCostReconciliationHandler != nil {
+		h.providerCostReconciliationHandler.RegisterRoutes(mux, h.superAdmin)
 	}
 
 	// 2026-07-17: 请求链路追踪查看端点 (super_admin only, 仅子路径 /trace 与 /ai-prompt).

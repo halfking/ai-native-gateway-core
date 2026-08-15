@@ -216,11 +216,13 @@ LIMIT 10;
 
 ## Phase 3 实施要点（1天）
 
+> **历史注记（2026-08-15，P2-S1 清理）**：下文的 `KeepaliveSender` 设计从未进入生产（零调用，且独立 goroutine 直写 ResponseWriter 的帧格式会击穿严格客户端），已随 doc 23/24 审计整文件删除。keepalive 现由 `domains/streaming/gate_writer.go` 的 `serializedResponseWriter` 统一承担（单连接串行写通道，600f9069e）。以下代码仅作当时的方案记录保留。
+
 ### 核心文件
 
 ```
 domains/streaming/
-├── keepalive_sender.go          # 新建（Keepalive发送器）
+├── keepalive_sender.go          # 已删除（P2-S1 死代码清理）
 ├── node_switch_notifier.go      # 新建（节点切换通知）
 └── executors/executor.go        # 修改（集成Keepalive）
 ```
