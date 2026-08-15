@@ -43,7 +43,7 @@ gateway 是推理平面 SSOT，但 v1 文档必须区分事实与目标：
 ### 写/订阅请求
 
 - 写入/管理类 API：`Idempotency-Key` + `X-Correlation-ID` + `Traceparent`。
-- outbox 事件：`event_id/schema_version/event_type/tenant_id/session_id/request_id/correlation_id/occurred_at`。
+- outbox 事件：`event_id/schema_version/type/tenant_id/session_id/request_id/correlation_id/occurred_at`。
 - 传输：HMAC 签名、timestamp/nonce、防重放、幂等消费、checkpoint、DLQ/replay。
 
 ## 四、事件与投影闭环
@@ -91,7 +91,7 @@ gateway 文档中的“plugin runtime 通用化”应只描述为：
 | GW-0.2 | `GET /api/v2/capabilities` contract（目标） | P0 | CURRENT | 先生成 contract，再实现路由 |
 | GW-0.3 | correlation_id/tenant/service JWT standardization | P0 | PLANNED | 六系统 trace 可串联 |
 | GW-1.1 | 平台调用方租户化与旁路清零（ACC/RedClaw/Memora/Pocket） | P0 | PLANNED | 网关统计 0 旁路 |
-| GW-1.2 | outbox → SM event envelope freeze + HMAC/replay/dlq | P0 | CURRENT（envelope 已冻结并对齐 gateway-event-schema-v1，含 JSON Schema 校验测试；按 event_id/时间窗/tenant 的重放工具与 SM 侧消费联调未闭环） | consumer contract test 通过 |
+| GW-1.2 | outbox → SM event envelope freeze + HMAC/replay/dlq | P0 | CURRENT/PARTIAL（gateway 已实现 `events` batch、timestamp/nonce HMAC、`type`+`schema_version:1.0` wire envelope、HTTP retry 分类和按 event_id/tenant/时间窗的 DLQ replay 工具；SM consumer/schema 已对齐 canonical `type`，跨仓 HMAC/幂等 E2E 尚未执行） | consumer contract test 通过 |
 | GW-2.1 | plugin runtime multi-plugin/isolation 设计 | P1 | 双插件并存冒烟 |
 | GW-3.1 | D1 资源档位实测与报告 | P1 | 采样报告 |
 | GW-4.1 | 会话优化 V3.2 按既有文档继续，明确 CURRENT/PARTIAL/TARGET | P1 | 状态表更新 |

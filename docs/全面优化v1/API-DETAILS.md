@@ -10,8 +10,8 @@
 | demo plane | `cmd/gateway-v2 :8782` | CURRENT/PARTIAL | 演示并行入口，不替代主入口 |
 | health | `/healthz` 等 | CURRENT | 现有探针保留 |
 | session/request facts | gateway PG | CURRENT | 会话事实 SSOT |
-| outbox | `outbox_events` + writer/dispatcher | CURRENT/PARTIAL | 需冻结 schema 与 consumer 契约 |
-| SM delivery | POST SM `/internal/v1/events` | CURRENT/PARTIAL | 需 HMAC/replay/幂等验收 |
+| outbox | `outbox_events` + writer/dispatcher/replay CLI | CURRENT/PARTIAL | gateway delivery/replay 已实现；gateway 与 SM 均使用 authoritative `type` |
+| SM delivery | POST SM `/internal/v1/events` | CURRENT/PARTIAL | gateway HMAC/retry/DLQ 与 SM canonical consumer 已实现；跨仓 HMAC/幂等 E2E 尚未执行 |
 | capabilities | `/api/v2/capabilities` | CURRENT | GW-0.2 已实现（cmd/gateway/capabilities.go），响应结构见 §5 |
 
 ## 2. 平台调用标准
@@ -53,7 +53,7 @@ client_ref: string optional
 {
   "event_id": "evt-123",
   "schema_version": "1.0",
-  "event_type": "request.completed.v1",
+  "type": "request.completed.v1",
   "tenant_id": "tenant-123",
   "session_id": "session-123",
   "request_id": "request-123",
@@ -113,7 +113,7 @@ X-Correlation-ID: corr-123
 
 ```json
 {
-  "events": [ {"event_id": "evt-123", "schema_version": "1.0", "event_type": "request.completed.v1"} ]
+  "events": [ {"event_id": "evt-123", "schema_version": "1.0", "type": "request.completed.v1"} ]
 }
 ```
 

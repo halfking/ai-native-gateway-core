@@ -7,13 +7,11 @@
 package outbox
 
 import (
-	"bytes"
 	"context"
 	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"log/slog"
 	"net/http"
 	"strings"
@@ -34,7 +32,7 @@ type Dispatcher struct {
 	hmacSecret   string        // Shared HMAC secret for signing
 	pollInterval time.Duration // How often to poll (default: 5s)
 	maxAttempts  int           // Max retry attempts before DLQ (default: 5)
-	httpClient   *http.Client  // Per-dispatcher client with a bounded timeout
+	deliverer    *HTTPDeliverer
 	logger       *slog.Logger
 }
 
@@ -73,14 +71,21 @@ func NewDispatcher(cfg DispatcherConfig) *Dispatcher {
 		cfg.Logger = slog.Default()
 	}
 
+	httpClient := &http.Client{Timeout: cfg.HTTPTimeout}
 	return &Dispatcher{
 		db:           cfg.DB,
 		asmEndpoint:  cfg.ASMEndpoint,
 		hmacSecret:   cfg.HMACSecret,
 		pollInterval: cfg.PollInterval,
 		maxAttempts:  cfg.MaxAttempts,
-		httpClient:   &http.Client{Timeout: cfg.HTTPTimeout},
-		logger:       cfg.Logger,
+		deliverer: NewHTTPDeliverer(HTTPDelivererConfig{
+			Endpoint:        cfg.ASMEndpoint,
+			Secret:          cfg.HMACSecret,
+			AcceptDuplicate: true,
+
+			HTTPClient: httpClient,
+		}),
+		logger: cfg.Logger,
 	}
 }
 
@@ -246,12 +251,9 @@ func (d *Dispatcher) dispatchOne(ctx context.Context) (dispatchOutcome, error) {
 		// failure never reached ASM.
 		d.logger.Error("unmarshal payload failed", "event_id", eventID, "error", err)
 		RecordEventFailed("validation")
-		d.markFailed(ctx, tx, id, attempts+1, fmt.Sprintf("unmarshal error: %v", err))
+		d.markDLQ(ctx, tx, id, attempts+1, fmt.Sprintf("unmarshal error: %v", err))
 		if err := tx.Commit(); err != nil {
 			return dispatchOutcomeNone, fmt.Errorf("commit (unmarshal-fail mark): %w", err)
-		}
-		if attempts+1 < d.maxAttempts {
-			RecordEventRetried()
 		}
 		return dispatchOutcomeFailed, nil
 	}
@@ -259,20 +261,22 @@ func (d *Dispatcher) dispatchOne(ctx context.Context) (dispatchOutcome, error) {
 	// Time only the HTTP roundtrip; the rest of dispatchOne is in-process
 	// overhead that the dispatcher loop batches.
 	start := time.Now()
-	err = d.dispatch(ctx, env, payloadBytes)
+	err = d.deliverer.Deliver(ctx, env)
 	duration := time.Since(start).Seconds()
 	ObserveDeliveryDuration(duration, err == nil)
 
 	if err != nil {
 		d.logger.Warn("dispatch failed", "event_id", eventID, "attempts", attempts+1, "error", err)
 		RecordEventFailed(classifyError(err))
-		d.markFailed(ctx, tx, id, attempts+1, err.Error())
+		if Retryable(err) {
+			d.markFailed(ctx, tx, id, attempts+1, err.Error())
+		} else {
+			d.markDLQ(ctx, tx, id, attempts+1, err.Error())
+		}
 		if err := tx.Commit(); err != nil {
 			return dispatchOutcomeNone, fmt.Errorf("commit (dispatch-fail mark): %w", err)
 		}
-		// Retry if markFailed scheduled a future next_retry_at; skip when
-		// the event has hit max_attempts and was moved to DLQ.
-		if attempts+1 < d.maxAttempts {
+		if Retryable(err) && attempts+1 < d.maxAttempts {
 			RecordEventRetried()
 		}
 		return dispatchOutcomeFailed, nil
@@ -287,52 +291,13 @@ func (d *Dispatcher) dispatchOne(ctx context.Context) (dispatchOutcome, error) {
 	return dispatchOutcomeSent, nil
 }
 
-// dispatch sends a single event to ASM via HTTP POST.
-func (d *Dispatcher) dispatch(ctx context.Context, env EventEnvelope, payloadBytes []byte) error {
-	// Sign the complete envelope (reconstructed JSON) in the
-	// gateway-event-schema-v1.json wire format (GW-1.2): schema_version is
-	// rendered as "1.0" and session_id/request_id/correlation_id are lifted
-	// to the envelope top level.
-	envelopeJSON, err := RenderWireEnvelope(env)
-	if err != nil {
-		return fmt.Errorf("marshal envelope: %w", err)
-	}
-
-	// Compute HMAC-SHA256 signature
-	signature := computeHMAC(envelopeJSON, d.hmacSecret)
-
-	// Build HTTP request
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, d.asmEndpoint, bytes.NewReader(envelopeJSON))
-	if err != nil {
-		return fmt.Errorf("create request: %w", err)
-	}
-
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("X-Tenant-ID", env.TenantID)
-	req.Header.Set("X-Event-Signature", signature)
-
-	// Send (dedicated client with a bounded timeout — see NewDispatcher).
-	resp, err := d.httpClient.Do(req)
-	if err != nil {
-		return fmt.Errorf("http post: %w", err)
-	}
-	defer resp.Body.Close()
-
-	// Check status
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		body, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("asm returned %d: %s", resp.StatusCode, string(body))
-	}
-
-	return nil
-}
-
 // markSent updates the event to status='sent'. ex is the tx that holds the
 // claim lock (or d.db for non-transactional callers).
 func (d *Dispatcher) markSent(ctx context.Context, ex execer, id int64) {
 	const query = `
 		UPDATE outbox_events
-		SET status = 'sent', updated_at = NOW()
+		SET status = 'sent', last_attempt_at = NOW(), last_error = NULL,
+		    next_retry_at = NULL, updated_at = NOW()
 		WHERE id = $1
 	`
 	if _, err := ex.ExecContext(ctx, query, id); err != nil {
@@ -351,15 +316,7 @@ func (d *Dispatcher) markSent(ctx context.Context, ex execer, id int64) {
 //   - Attempt 5+: move to DLQ
 func (d *Dispatcher) markFailed(ctx context.Context, ex execer, id int64, newAttempts int, errMsg string) {
 	if newAttempts >= d.maxAttempts {
-		// Move to DLQ
-		const query = `
-			UPDATE outbox_events
-			SET status = 'dlq', attempts = $1, last_error = $2, updated_at = NOW()
-			WHERE id = $3
-		`
-		if _, err := ex.ExecContext(ctx, query, newAttempts, errMsg, id); err != nil {
-			d.logger.Error("move to dlq failed", "id", id, "error", err)
-		}
+		d.markDLQ(ctx, ex, id, newAttempts, errMsg)
 		return
 	}
 	// Exponential backoff: 2^(attempts-1) seconds
@@ -367,11 +324,24 @@ func (d *Dispatcher) markFailed(ctx context.Context, ex execer, id int64, newAtt
 	nextRetry := time.Now().Add(backoff)
 	const query = `
 		UPDATE outbox_events
-		SET status = 'failed', attempts = $1, last_error = $2, next_retry_at = $3, updated_at = NOW()
+		SET status = 'failed', attempts = $1, last_error = $2,
+		    last_attempt_at = NOW(), next_retry_at = $3, updated_at = NOW()
 		WHERE id = $4
 	`
 	if _, err := ex.ExecContext(ctx, query, newAttempts, errMsg, nextRetry, id); err != nil {
 		d.logger.Error("mark failed failed", "id", id, "error", err)
+	}
+}
+
+func (d *Dispatcher) markDLQ(ctx context.Context, ex execer, id int64, attempts int, errMsg string) {
+	const query = `
+		UPDATE outbox_events
+		SET status = 'dlq', attempts = $1, last_error = $2,
+		    last_attempt_at = NOW(), next_retry_at = NULL, updated_at = NOW()
+		WHERE id = $3
+	`
+	if _, err := ex.ExecContext(ctx, query, attempts, errMsg, id); err != nil {
+		d.logger.Error("move to dlq failed", "id", id, "error", err)
 	}
 }
 
