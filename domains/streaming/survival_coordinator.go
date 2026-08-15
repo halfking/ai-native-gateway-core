@@ -89,6 +89,8 @@ type SurvivalCoordinator struct {
 	// rather than a bare error frame.
 	Terminal func(decision TaskDecision, committed bool)
 	// BeforeSemanticCommit runs before the first semantic frame reaches the client.
+	// It doubles as the durable write-ahead checkpoint hook (SR-W3): the
+	// survival wiring adapts the DurableStreamBinding into this seam.
 	BeforeSemanticCommit func(ctx context.Context, state CommitState) error
 	// Reschedule persists the next runnable time while the current lease is valid.
 	Reschedule func(ctx context.Context, nextRetryAt time.Time, reason string) error
