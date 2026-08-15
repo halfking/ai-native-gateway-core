@@ -161,9 +161,23 @@ export interface LiveQueueLaneSnapshot {
   depth: number
 }
 
+// OBS-BE3 (V3.3-OBS, 2026-08-15, 13号 §4 pipeline 层): 全链路 pipeline 聚合
+// 口径。字段 optional 语义：waitingMsP50/P95 无样本时缺省（不是 0），
+// pipeline 整层在 dispatch 未启用/未接线时缺省 —— 前端必须按缺省隐藏，
+// 禁止零值冒充。
+export interface LiveQueuePipelineStats {
+  depth: number
+  waitingMsP50?: number | null
+  waitingMsP95?: number | null
+  inFlight: number
+  degraded: boolean
+}
+
 export interface LiveQueueSnapshot {
   enabled: boolean
   wired: boolean
+  sourceVersion?: number
+  pipeline?: LiveQueuePipelineStats | null
   models: LiveQueueLaneSnapshot[]
   credentials: LiveQueueLaneSnapshot[]
 }
@@ -180,6 +194,14 @@ export interface LiveNodeStatus {
   in_flight?: number
   last_latency_ms?: number
   last_error?: string
+  // OBS-BE4 (V3.3-OBS, 2026-08-15): fpslot/降级投影。全部 optional：
+  // 健康节点缺省；fp_disabled 仅在 true 时上报；disable_kind ∈
+  // manual | system（缺省 = ok）；时间为 RFC3339 字符串，未上报不渲染。
+  fp_disabled?: boolean
+  fp_disabled_until?: string
+  disable_kind?: 'manual' | 'system' | ''
+  system_recover_at?: string
+  last_error_at?: string
 }
 
 export interface LiveStreamEnvelope {
