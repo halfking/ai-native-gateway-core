@@ -100,6 +100,7 @@ func foldCandidateOutcomes(err error) []CandidateOutcome {
 		outcomes = append(outcomes, CandidateOutcome{
 			CandidateID:  "provider:" + strconv.Itoa(a.ProviderID) + "/model:" + a.RawModel,
 			CredentialID: strconv.Itoa(a.CredentialID),
+			ProviderID:   a.ProviderID,
 			Kind:         a.Kind,
 			Err:          execErr.LastErr,
 		})

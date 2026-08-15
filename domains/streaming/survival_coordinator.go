@@ -122,6 +122,8 @@ func (c *SurvivalCoordinator) keepalive(sw *SerializedStreamWriter) {
 	if sw != nil {
 		if _, err := sw.Write([]byte(": gw-survival-keepalive\n\n")); err == nil {
 			sw.Flush()
+		} else {
+			recordSurvivalKeepaliveWriteError(c.Protocol)
 		}
 	}
 }
@@ -135,6 +137,9 @@ func (c *SurvivalCoordinator) Run(ctx context.Context, sw *SerializedStreamWrite
 	backoff := opts.RetryBase
 
 	res := SurvivalResult{}
+	// recoveryStart anchors gateway_survival_recovery_latency_seconds: the
+	// instant the task saw its first recoverable failure.
+	var recoveryStart time.Time
 
 	for {
 		gate := NewAttemptCommitGate(c.Protocol, sw, GateOptions{Mode: GateModeBuffered})
@@ -144,12 +149,18 @@ func (c *SurvivalCoordinator) Run(ctx context.Context, sw *SerializedStreamWrite
 		attemptParams.W = gw
 		res.FinalAttempt = ExecuteAttempt(ctx, c.Exec, gate, &attemptParams)
 		res.Attempts++
+		recordSurvivalAttempt(res.FinalAttempt)
 		res.Decision = AggregateTaskOutcome(res.FinalAttempt)
 
 		switch res.Decision.Action {
 		case TaskActionSucceed:
 			finishGateWriter(gw, gate)
 			res.Succeed = true
+			recordSurvivalTransition(survivalStateRunning, survivalTerminalToState(res.Decision), res.Decision.Reason)
+			recordSurvivalRequestTerminal(c.Protocol, res.Decision)
+			if !recoveryStart.IsZero() {
+				observeSurvivalRecoveryLatency(c.Protocol, c.now().Sub(recoveryStart))
+			}
 			return res
 
 		case TaskActionRetryNow, TaskActionWaitRecovery:
@@ -159,11 +170,15 @@ func (c *SurvivalCoordinator) Run(ctx context.Context, sw *SerializedStreamWrite
 			if err := gate.Discard(); err != nil {
 				res.Decision = TaskDecision{Action: TaskActionFailClosed, Reason: "discard_refused"}
 				c.renderTerminal(res.Decision, gate)
+				recordSurvivalTransition(survivalStateRunning, survivalTerminalToState(res.Decision), res.Decision.Reason)
+				recordSurvivalRequestTerminal(c.Protocol, res.Decision)
 				return res
 			}
 			if c.now().After(deadline) {
 				res.Decision = TaskDecision{Action: TaskActionFailClosed, Reason: "deadline_exceeded"}
 				c.renderTerminal(res.Decision, gate)
+				recordSurvivalTransition(survivalStateRunning, survivalTerminalToState(res.Decision), res.Decision.Reason)
+				recordSurvivalRequestTerminal(c.Protocol, res.Decision)
 				return res
 			}
 			wait := backoff
@@ -171,11 +186,25 @@ func (c *SurvivalCoordinator) Run(ctx context.Context, sw *SerializedStreamWrite
 				res.Decision.NextRetryAfter > wait && res.Decision.NextRetryAfter <= opts.RetryMax {
 				wait = res.Decision.NextRetryAfter
 			}
+			if recoveryStart.IsZero() {
+				recoveryStart = c.now()
+			}
+			waitState := survivalStateRetryNow
+			if res.Decision.Action == TaskActionWaitRecovery {
+				waitState = survivalStateWaiting
+			}
+			recordSurvivalTransition(survivalStateRunning, waitState, res.Decision.Reason)
 			c.keepalive(sw)
 			if err := c.sleep(ctx, wait); err != nil {
 				res.Decision = TaskDecision{Action: TaskActionFailClosed, Reason: "client_disconnected"}
+				recordSurvivalTransition(waitState, survivalTerminalToState(res.Decision), res.Decision.Reason)
+				recordSurvivalRequestTerminal(c.Protocol, res.Decision)
 				return res
 			}
+			if res.Decision.Action == TaskActionWaitRecovery && res.FinalAttempt != nil {
+				observeSurvivalWait(res.FinalAttempt.LastKind(), wait)
+			}
+			recordSurvivalTransition(waitState, survivalStateRunning, "retry")
 			if c.Refresh != nil {
 				c.Refresh(ctx)
 			}
@@ -188,6 +217,9 @@ func (c *SurvivalCoordinator) Run(ctx context.Context, sw *SerializedStreamWrite
 		default: // ResumeBlocked / FailTerminal / FailClosed
 			finishGateWriter(gw, gate)
 			c.renderTerminal(res.Decision, gate)
+			recordSurvivalTransition(survivalStateRunning, survivalTerminalToState(res.Decision), res.Decision.Reason)
+			recordSurvivalResumeSafetyBlocked(res.Decision, res.FinalAttempt)
+			recordSurvivalRequestTerminal(c.Protocol, res.Decision)
 			return res
 		}
 	}
