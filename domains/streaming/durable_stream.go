@@ -88,6 +88,7 @@ func (b *DurableStreamBinding) Start() {
 					// worker — the client keeps our stream either way.
 					if err == durable.ErrLeaseLost {
 						metrics.SurvivalLeaseConflictsTotal.Inc()
+						metrics.DurableLeaseLostTotal.Inc()
 					}
 					slog.Warn("durable foreground lease renewal stopped", "task_id", b.task.ID, "error", err)
 					return
@@ -253,6 +254,7 @@ func settleDurableStream(_ context.Context, b *DurableStreamBinding, res Surviva
 func logSettleError(stage string, b *DurableStreamBinding, err error) {
 	if err == durable.ErrLeaseLost {
 		metrics.SurvivalLeaseConflictsTotal.Inc()
+		metrics.DurableLeaseLostTotal.Inc()
 	}
 	slog.Warn("durable foreground settlement step failed", "stage", stage, "task_id", b.task.ID, "error", err)
 }
