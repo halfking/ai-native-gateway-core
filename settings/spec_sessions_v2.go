@@ -144,16 +144,15 @@ func SessionsV2Specs() []*Spec {
 		},
 		{
 			// CO-5 (docs/修订0811/19 §3): sessions_v2.enabled 时
-			// request_logs_bodies 默认保留完整请求/响应体。显式关闭本开关后
-			// 才落摘要信封(sha256+长度+截断头部)。sessions_v2 未启用时本开关无效
-			// (始终全量落库)。
+			// 兼容保留的旧开关。新请求始终保存完整请求/响应体；历史 false
+			// 值不再启用摘要信封，避免大请求的唯一审计副本被截断。
 			Key:             "sessions_v2.request_bodies_full",
 			Type:            TypeBool,
 			Scope:           ScopePlatform,
 			Category:        CategorySession,
 			Default:         true,
 			Description:     "sessions_v2 启用时仍全量落库请求/响应体",
-			DescriptionLong: "安全默认：sessions_v2.enabled 下 request_logs_bodies 仍全量落库。仅在确认下游不依赖完整 body 后显式置为 false，启用 sha256/字节长度/截断头部摘要；sessions_v2 未启用时本开关无效。",
+			DescriptionLong: "兼容旧配置项：新请求始终全量保存 request_logs_bodies。历史 false 值不再启用摘要写入；已有摘要信封仍可读取。",
 			Unit:            "",
 			DangerLevel:     Warning,
 			HotReload:       true,

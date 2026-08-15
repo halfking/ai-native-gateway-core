@@ -5,6 +5,15 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased] - 2026-08-15 (Streaming JSON DONE Boundary Repair)
+
+### Fixed
+
+- **流式 JSON 终止帧边界修复**：将上游异常拼接的 `JSON}[DONE]` 和 `JSON}[DONE].` 严格拆回独立 SSE JSON 与 `data: [DONE]` 帧，避免正常 OpenAI chunk 被当作无效 JSON。
+- **末帧读取修复**：保留无换行但附带 `io.EOF` 的最后一个 SSE 数据帧，不再丢失其内容。
+- **审计 body 完整性**：历史 `sessions_v2.request_bodies_full=false` 配置不再启用摘要写入，新的请求与响应审计体始终保留完整 JSON。
+- 详见 `docs/changelogs/2026-08-15-streaming-json-done-boundary-repair.md`。
+
 ## [Unreleased] - 2026-08-15 (会话优化v4 版本裁决与实施计划)
 
 ### Added

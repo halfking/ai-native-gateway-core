@@ -6,22 +6,17 @@ import (
 	"encoding/json"
 	"sync/atomic"
 	"unicode/utf8"
-
-	"github.com/kaixuan/llm-gateway-go/settings"
 )
 
-// CO-5 (docs/修订0811/19 §3, M2): when sessions_v2.enabled is on, session
-// history reconstruction moves to the V2 tables (session_turns), so
-// request_logs_bodies no longer needs to carry full request/response bodies.
-// Summary mode replaces the full body persisted to request_logs_bodies_hot
-// with a digest envelope: mode, byte length, sha256 of the full body and a
-// bounded UTF-8 head prefix — enough for audit correlation while shrinking
-// per-row storage. sessions_v2 disabled ⇒ behaviour is unchanged (full
-// bodies), pinned by TestUpdateRequestLog_BodiesFullModeUnchanged.
+// CO-5 (docs/修订0811/19 §3, M2) briefly replaced bodies persisted to
+// request_logs_bodies_hot with digest envelopes. That write mode is disabled;
+// the envelope implementation remains only for compatibility tests and admin
+// readers of rows written while it was active.
 //
-// An explicit platform flag (sessions_v2.request_bodies_full, default true)
-// keeps full bodies under sessions_v2. Operators may set it false to opt in
-// to digest-only storage after downstream consumers are ready.
+// Existing digest envelopes remain readable for compatibility, but new
+// request logs always retain full bodies. The former platform flag is ignored
+// because persisted false values survived the default change and continued
+// destroying the only complete audit copy of large requests.
 
 const (
 	// bodySummaryModeDigest marks the digest envelope persisted in place of
@@ -64,13 +59,11 @@ func init() {
 	bodySummaryEnabledPtr.Store(bodySummaryEnabledFn(defaultBodiesSummaryEnabled))
 }
 
-// defaultBodiesSummaryEnabled reads the live platform settings: summary mode
-// is active only when sessions_v2.enabled is true AND full-body persistence
-// has been explicitly disabled.
-// Hot-reloadable on both flags.
+// defaultBodiesSummaryEnabled keeps digest writes disabled in production.
+// The test seam remains available to verify compatibility with historical
+// envelopes already stored before full-body persistence was restored.
 func defaultBodiesSummaryEnabled() bool {
-	return settings.GetPlatformBool("sessions_v2.enabled", false) &&
-		!settings.GetPlatformBool("sessions_v2.request_bodies_full", true)
+	return false
 }
 
 // requestBodiesSummaryEnabled reports whether request_logs_bodies writes

@@ -343,7 +343,7 @@ func strconvFormatBool(b bool) string {
 }
 
 // TestRequestBodiesSummaryEnabled_FlagCombination pins full body persistence
-// as the safe default. Summary storage requires an explicit false override.
+// regardless of historical settings_kv values. Summary writes are disabled.
 func TestRequestBodiesSummaryEnabled_FlagCombination(t *testing.T) {
 	tests := []struct {
 		name                  string
@@ -354,7 +354,7 @@ func TestRequestBodiesSummaryEnabled_FlagCombination(t *testing.T) {
 	}{
 		{name: "sessions_v2 disabled keeps full bodies", sessionsV2On: false, bodiesFullOn: false, wantSummaryOn: false},
 		{name: "sessions_v2 enabled defaults to full bodies", sessionsV2On: true, wantSummaryOn: false},
-		{name: "explicit false enables summary storage", sessionsV2On: true, setBodiesFullOverride: true, bodiesFullOn: false, wantSummaryOn: true},
+		{name: "legacy explicit false still keeps full bodies", sessionsV2On: true, setBodiesFullOverride: true, bodiesFullOn: false, wantSummaryOn: false},
 		{name: "explicit true keeps full bodies", sessionsV2On: true, setBodiesFullOverride: true, bodiesFullOn: true, wantSummaryOn: false},
 	}
 

@@ -168,14 +168,18 @@ func runEmptyStreamGate(
 		// Read the next upstream line, with the same first-byte / inter-chunk
 		// timeout semantics as the main loop.
 		line, err := readLineWithTimeoutAndCloser(ctx, reader, bodyCloser, firstByteTimeout)
-		if onRawLine != nil {
-			onRawLine(line)
-		}
 		if err != nil {
 			// Timeout / network error during buffering → flush whatever we
 			// have so the caller can write them, then let the main loop
 			// surface the error as a stream interruption.
 			return buffered, nil
+		}
+		normalizedLine, hasCombinedDone := splitCombinedDoneFrame(line)
+		if hasCombinedDone {
+			line = normalizedLine
+		}
+		if onRawLine != nil {
+			onRawLine(line)
 		}
 
 		// Observe chunks in capture for audit, but do NOT count them as
@@ -208,6 +212,10 @@ func runEmptyStreamGate(
 
 		buffered = append(buffered, line)
 		bufferedBytes += len(line)
+		if hasCombinedDone {
+			buffered = append(buffered, "data: [DONE]\n")
+			break
+		}
 
 		// [DONE] while buffering: classify and decide.
 		if payload == "[DONE]" {
@@ -527,6 +535,10 @@ func StreamChatWithPendingCaptureAndDiagnostics(
 		outcome.ChunkCount = 0
 		return outcome
 	}
+	if normalizedLine, hasCombinedDone := splitCombinedDoneFrame(firstLine); hasCombinedDone {
+		firstLine = normalizedLine
+		reader = prependDoneFrame(reader)
+	}
 
 	// upstreamDoneReceived tracks whether the upstream sent the literal
 	// "data: [DONE]\n\n" terminator. If the stream ended by EOF without
@@ -832,6 +844,10 @@ func StreamChatWithPendingCaptureAndDiagnostics(
 		}
 
 		line := readResult.line
+		if normalizedLine, hasCombinedDone := splitCombinedDoneFrame(line); hasCombinedDone {
+			line = normalizedLine
+			reader = prependDoneFrame(reader)
+		}
 		logRawUpstreamFrame(diagnostics, auditFromDiagnostics(diagnostics, requestID, "openai-completions"), []byte(line))
 		rawPayload := extractPayload(line)
 		if rawPayload != "" && rawPayload != "[DONE]" {
@@ -946,6 +962,37 @@ func extractPayload(line string) string {
 	}
 	payload := strings.TrimPrefix(line, "data: ")
 	return strings.TrimSpace(payload)
+}
+
+// splitCombinedDoneFrame repairs a malformed OpenAI SSE line where an
+// otherwise complete JSON event is immediately followed by the [DONE]
+// sentinel. The two payloads are distinct SSE events, so JSON consumers must
+// never receive them as one string. A trailing period is accepted for the
+// observed provider variant. Only split when the prefix is independently valid
+// JSON; unexpected suffixes remain untouched.
+func splitCombinedDoneFrame(line string) (string, bool) {
+	trimmed := strings.TrimSpace(line)
+	if !strings.HasPrefix(trimmed, "data: ") {
+		return line, false
+	}
+	payload := strings.TrimSpace(strings.TrimPrefix(trimmed, "data: "))
+	marker := "[DONE]"
+	if strings.HasSuffix(payload, "[DONE].") {
+		marker = "[DONE]."
+	}
+	if !strings.HasSuffix(payload, marker) {
+		return line, false
+	}
+
+	jsonPayload := strings.TrimSpace(strings.TrimSuffix(payload, marker))
+	if !json.Valid([]byte(jsonPayload)) {
+		return line, false
+	}
+	return "data: " + jsonPayload + "\n", true
+}
+
+func prependDoneFrame(reader *bufio.Reader) *bufio.Reader {
+	return bufio.NewReaderSize(io.MultiReader(strings.NewReader("data: [DONE]\n"), reader), streamBufSize)
 }
 
 // shouldDropEmptyChoicesFrame reports whether an SSE data line is a
@@ -1081,6 +1128,12 @@ func (r *timedLineReader) ReadLine(ctx context.Context, timeout time.Duration) (
 
 	select {
 	case res := <-ch:
+		// bufio.Reader returns a final unterminated line together with io.EOF.
+		// The bytes are still a valid SSE frame and must be processed before
+		// the next read reports the terminal EOF.
+		if res.err == io.EOF && res.line != "" {
+			return res.line, nil
+		}
 		return res.line, res.err
 	case <-readCtx.Done():
 		// BUG-1 fix (2026-06-19): close the underlying body to force the
