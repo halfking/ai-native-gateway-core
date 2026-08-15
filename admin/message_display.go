@@ -26,9 +26,9 @@ type TurnDisplay struct {
 // sessions_v2.request_bodies_full=true) take the exact pre-P2-C1 path.
 func extractTurnDisplay(requestBody, responseBody, requestPreview, responsePreview *string) TurnDisplay {
 	var out TurnDisplay
-	reqEnv := envelopeOf(requestBody)
-	if head := headForExtraction(requestBody); head != nil && strings.TrimSpace(*head) != "" {
-		out.UserTurn = extractLatestUserFromRequestJSON([]byte(*head))
+	reqEnv, reqHead := unwrapBody(requestBody)
+	if reqHead != nil && strings.TrimSpace(*reqHead) != "" {
+		out.UserTurn = extractLatestUserFromRequestJSON([]byte(*reqHead))
 	}
 	if out.UserTurn == "" && requestPreview != nil {
 		out.UserTurn = latestUserFromPreview(*requestPreview)
@@ -40,9 +40,9 @@ func extractTurnDisplay(requestBody, responseBody, requestPreview, responsePrevi
 		out.UserTurn = strings.TrimSpace(out.UserTurn + " " + reqEnv.displayNote())
 	}
 
-	respEnv := envelopeOf(responseBody)
-	if head := headForExtraction(responseBody); head != nil && strings.TrimSpace(*head) != "" {
-		out.AssistantText, out.ToolSummary = extractAssistantFromResponseJSON([]byte(*head))
+	respEnv, respHead := unwrapBody(responseBody)
+	if respHead != nil && strings.TrimSpace(*respHead) != "" {
+		out.AssistantText, out.ToolSummary = extractAssistantFromResponseJSON([]byte(*respHead))
 	}
 	if out.AssistantText == "" && out.ToolSummary == "" && responsePreview != nil {
 		out.AssistantText, out.ToolSummary = assistantFromPreview(*responsePreview)
