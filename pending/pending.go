@@ -82,6 +82,10 @@ type Response struct {
 	BytesBuffered int    `json:"bytes_buffered"`
 	IsStream      bool   `json:"is_stream"`
 	ErrorMessage  string `json:"error_message,omitempty"` // populated when Status=StatusFailed
+	TaskID        string `json:"task_id,omitempty"`
+	FencingToken  int64  `json:"fencing_token,omitempty"`
+	ResultVersion int64  `json:"result_version,omitempty"`
+	ResultHash    string `json:"result_hash,omitempty"`
 }
 
 // Store is the persistence layer. Always safe for concurrent use;
@@ -404,6 +408,10 @@ func (s *Store) write(ctx context.Context, r *Response) error {
 		"bytes_buffered": r.BytesBuffered,
 		"is_stream":      r.IsStream,
 		"error_message":  r.ErrorMessage,
+		"task_id":        r.TaskID,
+		"fencing_token":  r.FencingToken,
+		"result_version": r.ResultVersion,
+		"result_hash":    r.ResultHash,
 	}
 	pipe := s.rdb.Pipeline()
 	pipe.HSet(ctx, entryKey(r.SessionID, r.RequestID), fields)
@@ -477,6 +485,22 @@ func parseResponse(sessionID string, fields map[string]string) *Response {
 	}
 	if v, ok := fields["error_message"]; ok {
 		r.ErrorMessage = v
+	}
+	if v, ok := fields["task_id"]; ok {
+		r.TaskID = v
+	}
+	if v, ok := fields["fencing_token"]; ok {
+		if n, err := strconv.ParseInt(v, 10, 64); err == nil {
+			r.FencingToken = n
+		}
+	}
+	if v, ok := fields["result_version"]; ok {
+		if n, err := strconv.ParseInt(v, 10, 64); err == nil {
+			r.ResultVersion = n
+		}
+	}
+	if v, ok := fields["result_hash"]; ok {
+		r.ResultHash = v
 	}
 	return r
 }

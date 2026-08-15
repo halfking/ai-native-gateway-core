@@ -37,15 +37,15 @@
 
 **API Access**:
 - Base URL: https://llm.kxpms.cn/v1
-- API Key: sk-1vH6C2I9pywyvUXaUXj4vdMZbeYVE5VB0fBYVgqA97JrltE9
+- API Key: __API_KEY_1__
 - Compatible: OpenAI format
 
 ## Provider Configuration
 
 ### apiclaude (问题provider)
 - Base URL (Anthropic): https://apiclaude.cc
-- API Key 1: sk-6213eaf3d65e73552f38d79342ee8ce5f12c15413a5363a6fd67d98b53fe0060
-- API Key 2 (with cache): sk-c153b05c266a33bb1f231bea45f233458310b3ab6509ff619300bdcd08967a61
+- API Key 1: __API_KEY_14__
+- API Key 2 (with cache): __API_KEY_15__
 - Models: claude-fable-5, claude-opus-4-8, claude-sonnet-4-6, claude-sonnet-5
 
 ### 其他Provider (用于对比测试)
@@ -215,13 +215,13 @@ curl -H "Authorization: Bearer $API_KEY" \
 
 ### Kaixuan (自有)
 - Base URL: https://llm.kxpms.cn/v1
-- API Key: sk-1vH6C2I9pywyvUXaUXj4vdMZbeYVE5VB0fBYVgqA97JrltE9
+- API Key: __API_KEY_1__
 - Models: claude-fable-5, claude-opus-4-8, claude-sonnet-4-6, claude-sonnet-5, gpt-5.6, gpt-5.5, gpt-5.4, glm-5.2, minimax-m3, deepseek-v4-pro, mimo-v2.5-pro
 
 ### Minimax
 - Base URL: https://api.minimaxi.com/v1
 - Base URL 2: https://api.minimaxi.com/anthropic
-- API Key: sk-cp-bT8Qagnkbdo5xFil3rddP5GA7s31eSCd5ZrAvRroVu-M6fhZr21DHDmLx5h4SV-9Rd6dG40SdVp3XbUNLEGGIlYZuw3g33w1bmt5l99ESMyOS_gf-Ba1hvY
+- API Key: __API_KEY_9__
 - Models: MiniMax-M2.7, MiniMax-M3, Minimax-M2.7-hightspeed
 
 ### 智谱 (Zhipu)
@@ -234,31 +234,31 @@ curl -H "Authorization: Bearer $API_KEY" \
 
 ### apiclaude (问题provider)
 - Base URL (Anthropic): https://apiclaude.cc
-- API Key 1: sk-6213eaf3d65e73552f38d79342ee8ce5f12c15413a5363a6fd67d98b53fe0060
-- API Key 2 (cached): sk-c153b05c266a33bb1f231bea45f233458310b3ab6509ff619300bdcd08967a61
+- API Key 1: __API_KEY_14__
+- API Key 2 (cached): __API_KEY_15__
 - Models: claude-fable-5, claude-opus-4-8, claude-sonnet-4-6, claude-sonnet-5
 
 ### api-gpt
 - Base URL: https://apiclaude.cc/v1
-- API Key: sk-621464e823d4c98705ab79664bbd5b2b732f728771b2e28242b2d37b8b513ef8
+- API Key: __API_KEY_16__
 - Models: gpt-5.6-sola, gpt-5.6-luna, gpt-5.6-terra, gpt-5.4
 
 ### Evol
 - Base URL: https://mg-new.evolai.cn/openclaw-proxy/v1
 - Base URL (Codex): https://mg-new.evolai.cn/codex-proxy
-- API Key: mg-aZXHIREnemGhonu_hvo5PbuyElTvYT1u779JwoJo6bU
+- API Key: __API_KEY_28__
 - Models: claude-fable-5, claude-opus-4-8, claude-sonnet-4-6, claude-sonnet-5, gpt-5.6, gpt-5.5, gpt-5.4
 
 ### NVIDIA
 - Base URL: https://integrate.api.nvidia.com/v1
 - API Keys:
-  - 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
-  - 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
-  - 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 (latest)
+  - __API_KEY_11__
+  - __API_KEY_12__
+  - __API_KEY_13__ (latest)
 
 ### 小米 (Xiaomi)
 - Base URL: https://token-plan-cn.xiaomimimo.com/v1
-- API Key: tp-cia63detlzzaz731c3q3gebwi7ab6y1fas5r4sajo8n11l4m
+- API Key: __API_KEY_25__
 - Models: mimo-v2.5-pro, mimo-v2.5
 
 ### 商汤 (SenseTime)
@@ -276,7 +276,7 @@ curl -H "Authorization: Bearer $API_KEY" \
 - Base URL (Embedding): https://ark.cn-beijing.volces.com/api/coding/v3
 - API Keys:
   - ark-69292b6a-417f-43ff-810a-e8d153468850-410d1
-  - sk-wVesetfgNhudELoOmQDSgbyIkiRXhhT2CdgaT4VKHGrcLerl
+  - __API_KEY_21__
 - Models: doubao-seed-code, doubao-seed-2.0-code, doubao-seed-2.0-pro, doubao-seed-2.0-lite, minimax-m2.7, glm-5.1, kimi-k2.6, deepseek-v4-pro, deepseek-v4-flash, minimax-m3, doubao-embedding-vision
 
 ### 火山 (Volcano) - Standard
@@ -286,5 +286,5 @@ curl -H "Authorization: Bearer $API_KEY" \
 
 ### 普联 (Pulian)
 - Base URL: https://othersapi.com
-- API Key: sk-U7joS6evheqeCtupTO0BRsyX17QmNs4mFJnve418pn4Bioiw
+- API Key: __API_KEY_22__
 - Model: glm-5.2

@@ -170,6 +170,10 @@ type liveRequestRedisPayload struct {
 	ClientProfile  string `json:"client_profile,omitempty"`
 	IdentityHash   string `json:"identity_hash,omitempty"`
 	CreditsCharged *int   `json:"credits_charged,omitempty"`
+	// OBS-BE2 (V3.3-OBS, 2026-08-15): 主从请求关联随 Redis 持久化，remote hub
+	// 经 pub/sub 重建请求时不丢 child_request 所需的 parent/type 元数据。
+	ParentRequestID string `json:"parent_request_id,omitempty"`
+	RequestType     string `json:"request_type,omitempty"`
 }
 
 // 2026-07-23: 精细化分层 TTL
@@ -774,6 +778,8 @@ func marshalLiveRequestRedisPayload(req LiveRequest) (string, error) {
 		ClientProfile:    req.ClientProfile,
 		IdentityHash:     req.IdentityHash,
 		CreditsCharged:   req.CreditsCharged,
+		ParentRequestID:  req.ParentRequestID,
+		RequestType:      req.RequestType,
 	}
 	b, err := json.Marshal(p)
 	if err != nil {
@@ -811,6 +817,8 @@ func unmarshalLiveRequestRedisPayload(data string) (LiveRequest, error) {
 		ClientProfile:    p.ClientProfile,
 		IdentityHash:     p.IdentityHash,
 		CreditsCharged:   p.CreditsCharged,
+		ParentRequestID:  p.ParentRequestID,
+		RequestType:      normalizeLiveRequestType(p.RequestType),
 	}, nil
 }
 

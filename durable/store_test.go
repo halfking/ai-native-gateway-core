@@ -2,233 +2,150 @@ package durable
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
-	"os"
 	"testing"
 	"time"
 
-	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/kaixuan/llm-gateway-go/secret"
+	"github.com/pashagolub/pgxmock/v4"
 )
 
-func TestRepository_RealPostgresLifecycle(t *testing.T) {
-	dsn := os.Getenv("TEST_DATABASE_URL")
-	if dsn == "" {
-		t.Skip("TEST_DATABASE_URL not set; skipping durable PostgreSQL integration test")
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-	defer cancel()
-	conn, err := pgx.Connect(ctx, dsn)
+func testKeyring(t *testing.T) *secret.Keyring {
+	t.Helper()
+	kr, err := secret.NewKeyring(map[string][32]byte{"k1": {7}}, "k1")
 	if err != nil {
-		t.Fatalf("connect TEST_DATABASE_URL: %v", err)
+		t.Fatalf("keyring: %v", err)
 	}
-	defer conn.Close(context.Background())
+	return kr
+}
 
-	if _, err := conn.Exec(ctx, durableTestSchema); err != nil {
-		t.Fatalf("create temporary durable schema: %v", err)
+func newMockStore(t *testing.T) (*Store, pgxmock.PgxPoolIface) {
+	t.Helper()
+	mock, err := pgxmock.NewPool()
+	if err != nil {
+		t.Fatalf("pgxmock: %v", err)
 	}
-	repo := NewRepository(conn)
-	deadline := time.Now().Add(time.Hour)
-	task, err := repo.CreateAndClaim(ctx, CreateTaskInput{
-		ID:                 "00000000-0000-0000-0000-000000000701",
-		TenantID:           "tenant-durable",
-		RequestID:          "request-durable",
-		SessionID:          "session-durable",
-		Protocol:           "openai-chat",
-		Endpoint:           "/v1/chat/completions",
-		SnapshotCiphertext: "encrypted-request",
-		SnapshotVersion:    1,
-		EncryptionKeyID:    "key-1",
-		RequestHash:        "request-hash",
-		DeadlineAt:         deadline,
-	}, "gateway-a/request-durable", time.Minute)
+	t.Cleanup(func() { mock.Close() })
+	return NewStore(mock, testKeyring(t)), mock
+}
+
+// anyArgs 生成 n 个 AnyArg 匹配器（跳过密文等随机参数的精确匹配）。
+func anyArgs(n int) []any {
+	args := make([]any, n)
+	for i := range args {
+		args[i] = pgxmock.AnyArg()
+	}
+	return args
+}
+
+func validNewTask() NewTask {
+	return NewTask{
+		TenantID:        "tenant-1",
+		RequestID:       "req-1",
+		SessionID:       "sess-1",
+		Protocol:        "openai",
+		Endpoint:        "/v1/chat/completions",
+		Snapshot:        []byte(`{"model":"gpt-x"}`),
+		SnapshotVersion: 1,
+		RequestHash:     "hash-1",
+		DeadlineAt:      time.Date(2026, 8, 15, 12, 0, 0, 0, time.UTC),
+		ExpiresAt:       time.Date(2026, 8, 16, 12, 0, 0, 0, time.UTC),
+		LeaseOwner:      "gw-1/req-1",
+		LeaseUntil:      time.Date(2026, 8, 15, 11, 0, 30, 0, time.UTC),
+		Policy:          []byte(`{"durable":true}`),
+		Attempt:         1,
+	}
+}
+
+// TestStore_CreateAndClaim：单事务完成「插入加密快照 + status=running +
+// lease_owner/lease_until + fencing_token=1 + commit_state='none' +
+// semantic_content_committed=false + accepted→running 事件」（doc 18 §11.3
+// CreateAndClaim），快照以 durable-request 域 AAD 加密。
+func TestStore_CreateAndClaim(t *testing.T) {
+	store, mock := newMockStore(t)
+
+	mock.ExpectBegin()
+	mock.ExpectExec(`INSERT INTO durable_llm_tasks`).
+		WithArgs(anyArgs(17)...).
+		WillReturnResult(pgxmock.NewResult("INSERT", 1))
+	mock.ExpectExec(`INSERT INTO durable_llm_task_events`).
+		WithArgs(anyArgs(10)...).
+		WillReturnResult(pgxmock.NewResult("INSERT", 1))
+	mock.ExpectCommit()
+
+	task, err := store.CreateAndClaim(context.Background(), validNewTask())
 	if err != nil {
 		t.Fatalf("CreateAndClaim: %v", err)
 	}
-	if task.Status != StatusRunning || task.FencingToken != 1 || task.AttemptCount != 1 || task.LeaseOwner != "gateway-a/request-durable" {
-		t.Fatalf("created task = %+v", task)
+	if task.Status != StatusRunning {
+		t.Fatalf("status = %s, want running", task.Status)
 	}
+	if task.FencingToken != 1 {
+		t.Fatalf("fencing token = %d, want 1", task.FencingToken)
+	}
+	if task.CommitState != CommitStateNone {
+		t.Fatalf("commit state = %s, want none", task.CommitState)
+	}
+	if task.SemanticContentCommitted {
+		t.Fatal("semantic_content_committed must start false")
+	}
+	if task.LeaseOwner != "gw-1/req-1" || task.LeaseUntil.IsZero() {
+		t.Fatalf("lease = %q %v", task.LeaseOwner, task.LeaseUntil)
+	}
+	if task.NextRetryAt.IsZero() || !task.NextRetryAt.Equal(task.CreatedAt) {
+		t.Fatalf("next retry = %v, created = %v; crashed first attempt must become reclaimable after lease expiry", task.NextRetryAt, task.CreatedAt)
+	}
+	if task.ID == "" {
+		t.Fatal("task id must be generated")
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("expectations: %v", err)
+	}
+}
 
-	var transitions int
-	if err := conn.QueryRow(ctx, `SELECT count(*) FROM request_state_transitions WHERE request_id='request-durable'`).Scan(&transitions); err != nil {
-		t.Fatalf("read transition: %v", err)
-	}
-	if transitions != 1 {
-		t.Fatalf("CreateAndClaim transition count = %d, want 1", transitions)
-	}
+// TestStore_CreateAndClaim_RollsBackOnError：事务内任一语句失败必须回滚，
+// 不得发送已接管状态或留下半创建任务（doc 18 §11.3）。
+func TestStore_CreateAndClaim_RollsBackOnError(t *testing.T) {
+	store, mock := newMockStore(t)
+	mock.ExpectBegin()
+	mock.ExpectExec(`INSERT INTO durable_llm_tasks`).
+		WithArgs(anyArgs(17)...).
+		WillReturnError(errors.New("boom"))
+	mock.ExpectRollback()
 
-	if err := repo.Checkpoint(ctx, task.ID, task.LeaseOwner, task.FencingToken, CommitContent, nil, true); err != nil {
-		t.Fatalf("Checkpoint: %v", err)
+	if _, err := store.CreateAndClaim(context.Background(), validNewTask()); err == nil {
+		t.Fatal("must propagate insert error")
 	}
-	if err := repo.Reschedule(ctx, task.ID, task.LeaseOwner, task.FencingToken, time.Now().Add(time.Minute), "retry"); !errors.Is(err, ErrLeaseConflict) {
-		t.Fatalf("content checkpoint reschedule error = %v, want ErrLeaseConflict", err)
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("expectations: %v", err)
 	}
-	if n, err := repo.ReapUnsafeCommitState(ctx); err != nil || n != 1 {
-		t.Fatalf("ReapUnsafeCommitState = %d, %v; want 1, nil", n, err)
-	}
-	var status, reason string
-	if err := conn.QueryRow(ctx, `SELECT status, reason_code FROM durable_llm_tasks WHERE id=$1`, task.ID).Scan(&status, &reason); err != nil {
-		t.Fatalf("read safety-blocked task: %v", err)
-	}
-	if status != StatusSafetyBlocked || reason != "survival_resume_safety_blocked" {
-		t.Fatalf("safety-blocked row = %q/%q", status, reason)
-	}
+}
 
-	waiting, err := repo.CreateAndClaim(ctx, CreateTaskInput{
-		ID:                 "00000000-0000-0000-0000-000000000702",
-		TenantID:           "tenant-durable",
-		RequestID:          "request-expired",
-		SessionID:          "session-durable",
-		Protocol:           "openai-chat",
-		Endpoint:           "/v1/chat/completions",
-		SnapshotCiphertext: "encrypted-request",
-		SnapshotVersion:    1,
-		EncryptionKeyID:    "key-1",
-		RequestHash:        "request-hash-2",
-		DeadlineAt:         time.Now().Add(time.Minute),
-	}, "gateway-a/request-expired", time.Minute)
+// TestStore_CreateAndClaim_RequiresKeyring：无密钥 fail closed（doc 18 §11.2）。
+func TestStore_CreateAndClaim_RequiresKeyring(t *testing.T) {
+	mock, err := pgxmock.NewPool()
 	if err != nil {
-		t.Fatalf("create deadline task: %v", err)
+		t.Fatalf("pgxmock: %v", err)
 	}
-	if _, err := conn.Exec(ctx, `UPDATE durable_llm_tasks SET deadline_at=now()-interval '1 second' WHERE id=$1`, waiting.ID); err != nil {
-		t.Fatalf("expire task: %v", err)
-	}
-	if n, err := repo.ReapDeadlines(ctx); err != nil || n != 1 {
-		t.Fatalf("ReapDeadlines = %d, %v; want 1, nil", n, err)
-	}
-	if err := conn.QueryRow(ctx, `SELECT status, reason_code FROM durable_llm_tasks WHERE id=$1`, waiting.ID).Scan(&status, &reason); err != nil {
-		t.Fatalf("read expired task: %v", err)
-	}
-	if status != StatusExpired || reason != "survival_expired" {
-		t.Fatalf("expired row = %q/%q", status, reason)
-	}
-
-	// HoldUntil keeps the lease while scheduling a future retry: the row must
-	// stay running with its lease extended past the next retry time, so only a
-	// crash (lease expiry) can hand ownership to the background worker.
-	held, err := repo.CreateAndClaim(ctx, CreateTaskInput{
-		ID:                 "00000000-0000-0000-0000-000000000703",
-		TenantID:           "tenant-durable",
-		RequestID:          "request-held",
-		SessionID:          "session-durable",
-		Protocol:           "openai-chat",
-		Endpoint:           "/v1/chat/completions",
-		SnapshotCiphertext: "encrypted-request",
-		SnapshotVersion:    1,
-		EncryptionKeyID:    "key-1",
-		RequestHash:        "request-hash-3",
-		DeadlineAt:         deadline,
-	}, "gateway-a/request-held", time.Minute)
-	if err != nil {
-		t.Fatalf("create held task: %v", err)
-	}
-	nextRetry := time.Now().Add(2 * time.Minute)
-	if err := repo.HoldUntil(ctx, held.ID, held.LeaseOwner, held.FencingToken, nextRetry, "provider_throttled", time.Minute); err != nil {
-		t.Fatalf("HoldUntil: %v", err)
-	}
-	var heldStatus, heldReason, leaseOwner string
-	var leaseUntil, nextRetryAt time.Time
-	if err := conn.QueryRow(ctx, `SELECT status, reason_code, lease_owner, lease_until, next_retry_at FROM durable_llm_tasks WHERE id=$1`, held.ID).
-		Scan(&heldStatus, &heldReason, &leaseOwner, &leaseUntil, &nextRetryAt); err != nil {
-		t.Fatalf("read held task: %v", err)
-	}
-	if heldStatus != StatusRunning || heldReason != "provider_throttled" || leaseOwner != "gateway-a/request-held" {
-		t.Fatalf("held row = status:%q reason:%q owner:%q", heldStatus, heldReason, leaseOwner)
-	}
-	if !leaseUntil.After(nextRetry) {
-		t.Fatalf("HoldUntil must extend lease past next_retry_at: lease_until=%v next_retry_at=%v", leaseUntil, nextRetry)
-	}
-	if nextRetryAt.Sub(time.Now()) < time.Minute {
-		t.Fatalf("next_retry_at not scheduled in the future: %v", nextRetryAt)
-	}
-
-	// A running task whose lease is still valid must NOT be claimable by the
-	// worker (global lease-expiry gate, not the old status-excluding rule).
-	if _, err := repo.Claim(ctx, "gateway-b/worker", time.Minute); !errors.Is(err, ErrNoTask) {
-		t.Fatalf("Claim during valid lease = %v, want ErrNoTask", err)
+	t.Cleanup(mock.Close)
+	store := NewStore(mock, nil)
+	if _, err := store.CreateAndClaim(context.Background(), validNewTask()); !errors.Is(err, secret.ErrAADNoKey) {
+		t.Fatalf("err = %v, want ErrAADNoKey", err)
 	}
 }
 
-type workerStoreStub struct {
-	owner       string
-	claimCount  int
-	reschedules int
-	commits     int
-}
+// TestStore_CreateAndClaim_UniqueViolation：同 (tenant, request) 重复创建
+// 返回 ErrDuplicateTask（幂等防重）。
+func TestStore_CreateAndClaim_UniqueViolation(t *testing.T) {
+	store, mock := newMockStore(t)
+	mock.ExpectBegin()
+	mock.ExpectExec(`INSERT INTO durable_llm_tasks`).
+		WithArgs(anyArgs(17)...).
+		WillReturnError(&pgconn.PgError{Code: "23505", Message: "duplicate key"})
+	mock.ExpectRollback()
 
-func (s *workerStoreStub) Claim(_ context.Context, owner string, _ time.Duration) (*Task, error) {
-	s.owner = owner
-	s.claimCount++
-	if s.claimCount > 1 {
-		return nil, ErrNoTask
-	}
-	return &Task{ID: "task", LeaseOwner: owner, FencingToken: 2}, nil
-}
-func (*workerStoreStub) Renew(context.Context, string, string, int64, time.Duration) (*Task, error) {
-	return nil, nil
-}
-func (*workerStoreStub) Checkpoint(context.Context, string, string, int64, string, json.RawMessage, bool) error {
-	return nil
-}
-func (s *workerStoreStub) Reschedule(context.Context, string, string, int64, time.Time, string) error {
-	s.reschedules++
-	return nil
-}
-func (s *workerStoreStub) CommitTerminal(context.Context, string, string, int64, TerminalResult) error {
-	s.commits++
-	return nil
-}
-
-type workerExecutorStub struct{ err error }
-
-func (e workerExecutorStub) Execute(context.Context, *Task) (ExecutionResult, error) {
-	return ExecutionResult{Terminal: TerminalResult{Status: StatusPermanentFailed}}, e.err
-}
-
-func TestRecoveryWorkerUsesConfiguredOwnerAndIsolatesExecutionError(t *testing.T) {
-	store := &workerStoreStub{}
-	worker, err := NewRecoveryWorker(store, workerExecutorStub{err: errors.New("upstream failed")}, WorkerConfig{
-		Owner:     "gateway-instance-1",
-		BatchSize: 2,
-		Now:       func() time.Time { return time.Unix(0, 0) },
-	})
-	if err != nil {
-		t.Fatalf("NewRecoveryWorker: %v", err)
-	}
-	if err := worker.RunOnce(context.Background()); err == nil {
-		t.Fatal("RunOnce must return the isolated executor failure")
-	}
-	if store.owner != "gateway-instance-1" || store.reschedules != 1 || store.commits != 0 {
-		t.Fatalf("worker store calls = owner:%q reschedules:%d commits:%d", store.owner, store.reschedules, store.commits)
+	if _, err := store.CreateAndClaim(context.Background(), validNewTask()); !errors.Is(err, ErrDuplicateTask) {
+		t.Fatalf("err = %v, want ErrDuplicateTask", err)
 	}
 }
-
-func TestNewRecoveryWorkerRejectsMissingDependency(t *testing.T) {
-	if _, err := NewRecoveryWorker(nil, workerExecutorStub{}, WorkerConfig{}); !errors.Is(err, ErrWorkerNotConfigured) {
-		t.Fatalf("nil store error = %v", err)
-	}
-	if _, err := NewRecoveryWorker(&workerStoreStub{}, nil, WorkerConfig{}); !errors.Is(err, ErrWorkerNotConfigured) {
-		t.Fatalf("nil executor error = %v", err)
-	}
-}
-
-const durableTestSchema = `
-CREATE TEMP TABLE durable_llm_tasks (
- id uuid PRIMARY KEY, tenant_id text NOT NULL, request_id text NOT NULL, session_id text NOT NULL,
- protocol text NOT NULL, endpoint text NOT NULL, request_snapshot_ciphertext text NOT NULL,
- snapshot_version integer NOT NULL, encryption_key_id text NOT NULL, request_hash text NOT NULL,
- status text NOT NULL, error_kind text, reason_code text, attempt_count integer NOT NULL,
- next_retry_at timestamptz NOT NULL, deadline_at timestamptz NOT NULL, lease_owner text,
- lease_until timestamptz, fencing_token bigint NOT NULL, semantic_content_committed boolean NOT NULL,
- commit_state text NOT NULL, commit_metadata jsonb NOT NULL DEFAULT '{}'::jsonb,
- result_ciphertext text, result_object_ref text, result_hash text, result_version bigint NOT NULL DEFAULT 0,
- content_type text, policy jsonb NOT NULL DEFAULT '{}'::jsonb, connection_attached boolean NOT NULL DEFAULT true,
- last_disconnect_at timestamptz, expires_at timestamptz, created_at timestamptz NOT NULL DEFAULT now(),
- updated_at timestamptz NOT NULL DEFAULT now(), completed_at timestamptz
-) ON COMMIT PRESERVE ROWS;
-CREATE TEMP TABLE request_state_transitions (
- request_id text NOT NULL, tenant_id text NOT NULL, transition_type text NOT NULL,
- from_state text, to_state text, attempt_no integer, metadata jsonb, seq bigint NOT NULL,
- UNIQUE (request_id, seq)
-) ON COMMIT PRESERVE ROWS;
-`

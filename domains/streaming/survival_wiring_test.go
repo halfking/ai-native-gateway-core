@@ -1,6 +1,7 @@
 package streaming
 
 import (
+	"encoding/json"
 	"net/http/httptest"
 	"strings"
 	"testing"
@@ -64,6 +65,29 @@ func TestRenderSurvivalTerminalFramesPerProtocol(t *testing.T) {
 				t.Fatalf("terminal frame must end with a frame boundary: %q", out)
 			}
 		})
+	}
+}
+
+func TestRenderSurvivalTerminalEscapesReasonJSON(t *testing.T) {
+	f := &trackingFlusher{}
+	sw := NewSerializedStreamWriter(f)
+	reason := `provider returned "bad"\nresponse`
+	renderSurvivalTerminal(sw, ProtocolOpenAIChat,
+		TaskDecision{Action: TaskActionFailTerminal, Reason: reason}, false)
+	if !strings.Contains(f.buf.String(), `gateway request survival ended: provider returned \"bad\"\\nresponse`) {
+		t.Fatalf("terminal reason was not JSON escaped: %q", f.buf.String())
+	}
+	payload := strings.TrimSuffix(strings.TrimPrefix(f.buf.String(), "data: "), "\n\ndata: [DONE]\n\n")
+	var decoded struct {
+		Error struct {
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal([]byte(payload), &decoded); err != nil {
+		t.Fatalf("terminal payload is invalid JSON: %v (%q)", err, payload)
+	}
+	if decoded.Error.Message != "gateway request survival ended: "+reason {
+		t.Fatalf("decoded reason = %q", decoded.Error.Message)
 	}
 }
 

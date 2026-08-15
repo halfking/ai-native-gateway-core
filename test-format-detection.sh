@@ -8,7 +8,7 @@ set -e
 
 # 配置
 BASE_URL="https://llm.kxpms.cn/v1"
-API_KEY="sk-1vH6C2I9pywyvUXaUXj4vdMZbeYVE5VB0fBYVgqA97JrltE9"
+API_KEY="${LLM_GATEWAY_API_KEY:?export LLM_GATEWAY_API_KEY first (envs SSOT / env-injector)}"
 METRICS_URL="https://llm.kxpms.cn:9090/metrics"  # 需要确认实际端口
 TEST_MODEL="gpt-5.4"
 SESSION_ID="test-format-$(date +%s)"

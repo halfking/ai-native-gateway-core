@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# ============================================================================
 # sync-llm-kxpms-cert.sh — keep 252 llm.kxpms.cn cert in sync with 154
 #
 # Source: 154 /etc/letsencrypt/live/kxpms.cn/{fullchain.pem,privkey.pem}

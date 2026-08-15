@@ -835,9 +835,14 @@
 |-----------|------|---------|--------|
 | 514 | `514_model_probe_watchdog_index.sql` | `fbcb9719af0960199e5375140d99c65378b1772999bbc0f1636947cbedc33790` | applied+verified |
 
+## 2026-08-15T04:48:25Z — deploy 245 build_seq 1538 (186ae04c)
+
+| Migration | File | SHA-256 | Status |
+|-----------|------|---------|--------|
+| 515 | `515_state_transitions_seq_unique.sql` | `3f0f328f3575a3445b037750518f4bf68037327f0a7c1d3bc455e693b37f057a` | applied+verified |
+
 ## 2026-08-15T11:14:38Z — deploy 245 build_seq 1538 (f7fadd17)
 
 | Migration | File | SHA-256 | Status |
 |-----------|------|---------|--------|
 | 516 | `516_durable_llm_tasks.sql` | `ab38d456e680ed2dfdc778a867a6137ad40a1ffa9bca76a13e3c524cc1955608` | applied+verified |
-

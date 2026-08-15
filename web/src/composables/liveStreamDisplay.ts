@@ -271,3 +271,32 @@ export function statusSemanticLabel(
   }
   return '未知'
 }
+
+// ── V3.3-OBS（24号 §2 冻结动作词汇表） ────────────────────────────────────────
+
+/**
+ * actionEventLabel maps one frozen request-lifecycle action (24号 §2) to its
+ * zh-CN display name. Unknown actions fall back to the raw key — the wire
+ * vocabulary is closed, but a defensive fallback keeps older dashboards
+ * rendering when a new action ships before the label map.
+ */
+const ACTION_EVENT_LABELS: Record<string, string> = {
+  arrive: '到达',
+  route_resolved: '路由完成',
+  model_enqueued: '入模型队列',
+  credential_selected: '选定凭据',
+  node_enqueued: '入节点队列',
+  node_selected: '选定节点',
+  upstream_request: '转发请求',
+  first_byte: '首字节',
+  reply: '回复',
+  node_switch: '节点切换',
+  model_switch: '模型切换',
+  state_change: '状态变更',
+  no_route: '无可用路由',
+}
+
+export function actionEventLabel(action: string | undefined | null): string {
+  const key = action ?? ''
+  return ACTION_EVENT_LABELS[key] ?? key ?? '—'
+}

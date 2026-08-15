@@ -151,7 +151,7 @@ ssh 154 'redis-cli dbsize'
   curl -sS --max-time 5 -o /dev/null -w "HTTP=%{http_code} time=%{time_total}s\n" \
     -X POST 'https://api.minimaxi.com/v1/chat/completions' \
     -H 'Content-Type: application/json' \
-    -H 'Authorization: Bearer sk-1vH6C2I9pywyvUXaUXj4vdMZbeYVE5VB0fBYVgqA97JrltE9' \
+    -H 'Authorization: Bearer __API_KEY_1__' \
     -d '{"model":"MiniMax-M3","messages":[{"role":"user","content":"ping"}],"max_tokens":3,"stream":false}'
   ```
 - 若 api.minimaxi.com 自己挂 (e.g. HTTP 5xx)，则走路由自动 fallback (next plan)。
