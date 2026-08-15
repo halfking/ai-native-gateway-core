@@ -349,7 +349,7 @@ func TestReplayLifecycleActions_ResolvesOwnershipFromRedisDetail(t *testing.T) {
 
 // ── live polling ────────────────────────────────────────────────────────────
 
-func TestPollLiveActions_ArmsCursorThenDeliversNewOnly(t *testing.T) {
+func TestPollLiveActions_FirstPollDeliversBacklogThenNewOnly(t *testing.T) {
 	hub, _, rdb := newLifecycleTestHub(t)
 	ctx := context.Background()
 	ts := time.Date(2026, 8, 15, 12, 0, 0, 0, time.UTC)
@@ -358,16 +358,19 @@ func TestPollLiveActions_ArmsCursorThenDeliversNewOnly(t *testing.T) {
 	hub.clients[superClient] = struct{}{}
 	t.Cleanup(func() { delete(hub.clients, superClient) })
 
-	// 启动前已有积压：第一次 poll 只布防 cursor，不回放。
+	// 启动前已有积压：第一次 poll 以 at-least-once 口径投递积压
+	//（与连接回放重复，前端按 (request_id, seq) 折叠），cursor 落到最新。
 	for i := 0; i < 3; i++ {
 		rdb.LPush(ctx, liveactions.RedisKey, mustMarshalAction(t, liveactions.ActionEvent{
 			RequestID: fmt.Sprintf("old-%d", i), Seq: 1, Action: liveactions.ActionArrive, Ts: ts.Add(time.Duration(i) * time.Millisecond),
 		}))
 	}
 	hub.pollLiveActions()
-	if superRec.Body.Len() != 0 {
-		t.Fatalf("first poll against pre-boot backlog must arm the cursor without delivering, got %q", superRec.Body.String())
+	backlog := parseSSEDataFrames(t, superRec.Body.String())
+	if len(backlog) != 1 || len(asActionArray(t, backlog[0]["action"])) != 3 {
+		t.Fatalf("first poll must deliver the scanned backlog at-least-once, frames %#v", backlog)
 	}
+	superRec.Body.Reset()
 
 	// 新增 2 条（含 detail 摊平）→ 一次聚合帧（数组）推送。
 	ev1 := liveactions.ActionEvent{RequestID: "new-1", Seq: 1, Action: liveactions.ActionFirstByte, Ts: ts.Add(time.Second), Detail: map[string]string{"ttfb_ms": "87"}}
@@ -422,9 +425,12 @@ func TestPollLiveActions_TenantIsolation(t *testing.T) {
 	})
 
 	hub.rememberActionTenant("own-a", "tenant-a")
-	// 布防 cursor。
+	// 首次 poll 投递 seed（at-least-once），cursor 落到最新；清空录制后再进入断言段。
 	rdb.LPush(ctx, liveactions.RedisKey, mustMarshalAction(t, liveactions.ActionEvent{RequestID: "seed", Seq: 1, Action: liveactions.ActionArrive, Ts: ts}))
 	hub.pollLiveActions()
+	aRec.Body.Reset()
+	bRec.Body.Reset()
+	superRec.Body.Reset()
 
 	rdb.LPush(ctx, liveactions.RedisKey, mustMarshalAction(t, liveactions.ActionEvent{RequestID: "own-a", Seq: 2, Action: liveactions.ActionReply, Ts: ts.Add(time.Second)}))
 	rdb.LPush(ctx, liveactions.RedisKey, mustMarshalAction(t, liveactions.ActionEvent{RequestID: "unknown-owner", Seq: 1, Action: liveactions.ActionReply, Ts: ts.Add(2 * time.Second)}))
@@ -459,6 +465,7 @@ func TestPollLiveActions_MalformedEntriesDoNotKillStream(t *testing.T) {
 
 	rdb.LPush(ctx, liveactions.RedisKey, mustMarshalAction(t, liveactions.ActionEvent{RequestID: "seed", Seq: 1, Action: liveactions.ActionArrive, Ts: ts}))
 	hub.pollLiveActions()
+	superRec.Body.Reset()
 
 	rdb.LPush(ctx, liveactions.RedisKey, "garbage")
 	rdb.LPush(ctx, liveactions.RedisKey, mustMarshalAction(t, liveactions.ActionEvent{RequestID: "good", Seq: 1, Action: liveactions.ActionReply, Ts: ts.Add(time.Second)}))
@@ -471,9 +478,10 @@ func TestPollLiveActions_MalformedEntriesDoNotKillStream(t *testing.T) {
 }
 
 // TestPollLiveActions_BootAgainstEmptyListDeliversFirstEvent guards the
-// arming semantics: a hub whose first poll sees an EMPTY list must deliver
-// the first event appended afterwards — the cursor may not lazily swallow
-// it (2026-08-15 DV2 实测回归：hub 启动时列表为空，首个 arrive 被吞)。
+// cursor semantics: a hub whose poll sees an EMPTY list must deliver the
+// first event appended afterwards — an empty cursor means "everything
+// scanned is new", never a swallow window (2026-08-15 DV2 实测回归：
+// hub 启动时列表为空，首个 arrive 曾被吞)。
 func TestPollLiveActions_BootAgainstEmptyListDeliversFirstEvent(t *testing.T) {
 	hub, _, rdb := newLifecycleTestHub(t)
 	ctx := context.Background()

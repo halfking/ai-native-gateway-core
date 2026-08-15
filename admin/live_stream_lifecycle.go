@@ -297,8 +297,22 @@ func (h *LiveStreamSSEHub) actionsVisibleToTenant(actions []liveactions.ActionEv
 
 // pollLiveActions reads the newest llmgw:live:actions entries and fans out
 // everything appended since the previous tick as one aggregated batch.
+//
+// Idle-cost guard: with no connected dashboard client there is nobody to
+// deliver to, and the 4/s × ≤500-entry LRANGE would sit permanently on the
+// shared Redis (the repo has a documented history of Redis slowlog
+// incidents). Skipping is safe: delivery is at-least-once — the cursor goes
+// stale while idle, the next connected client rebuilds history via the
+// initial_data action replay, and the first poll's ≤500-entry catch-up
+// duplicates collapse client-side by (request_id, seq).
 func (h *LiveStreamSSEHub) pollLiveActions() {
 	if h == nil || h.cfg.RedisClient == nil {
+		return
+	}
+	h.mu.RLock()
+	hasClients := len(h.clients) > 0
+	h.mu.RUnlock()
+	if !hasClients {
 		return
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), actionReadTimeout)
@@ -314,45 +328,28 @@ func (h *LiveStreamSSEHub) pollLiveActions() {
 
 // deliverNewActions advances the cursor over the scanned entries. The list
 // is newest-first (LPUSH): iteration stops at the cursor; everything before
-// it is fresh.
-//
-// Arming (the first poll after hub start): when the list already holds
-// entries at boot, the cursor is armed at the head and the pre-boot backlog
-// is NOT delivered live — clients rebuild history via the initial_data
-// action replay instead. When the list is EMPTY at the first poll, arming
-// completes with an empty cursor, and everything appended afterwards is
-// genuinely new and IS delivered live (the first post-boot event must not
-// be swallowed by a lazily-armed cursor).
+// it is fresh. An empty cursor (fresh hub, or idle with no clients) treats
+// EVERYTHING scanned as new — there is deliberately no arming/swallow step:
+// a swallow window between a client's initial_data replay read and the
+// cursor's first arm could drop genuinely-new events, while delivering the
+// backlog instead only duplicates what the replay already sent, and the
+// frontend replaces duplicates by (request_id, seq).
 func (h *LiveStreamSSEHub) deliverNewActions(ctx context.Context, entries []string) {
-	h.actionMu.Lock()
-	armed := h.actionArmed
-	cursor := h.actionCursor
-	h.actionMu.Unlock()
-	if !armed {
-		h.actionMu.Lock()
-		h.actionArmed = true
-		if len(entries) > 0 {
-			// Boot against a non-empty list: arm at the newest entry.
-			decodedHead := decodeActionEntries(entries)
-			if len(decodedHead) > 0 {
-				h.actionCursor = decodedHead[0].key
-			}
-		}
-		h.actionMu.Unlock()
-		return
-	}
 	if len(entries) == 0 {
 		return
 	}
-
 	decoded := decodeActionEntries(entries)
 	if len(decoded) == 0 {
 		return
 	}
 
+	h.actionMu.Lock()
+	cursor := h.actionCursor
+	h.actionMu.Unlock()
+
 	var fresh []liveactions.ActionEvent
 	if cursor == "" {
-		// Armed against an empty list: everything scanned is new.
+		// Fresh cursor: everything scanned is new (at-least-once catch-up).
 		for _, k := range decoded {
 			fresh = append(fresh, k.ev)
 		}
