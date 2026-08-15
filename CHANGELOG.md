@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - **流式 JSON 终止帧边界修复**：将上游异常拼接的 `JSON}[DONE]` 和 `JSON}[DONE].` 严格拆回独立 SSE JSON 与 `data: [DONE]` 帧，避免正常 OpenAI chunk 被当作无效 JSON。
+- **流式 JSON 粘连兼容与审计**：对于 JSON 前后粘连的传输字符，提取首个完整 JSON 值并丢弃额外字节；每次修复记录结构化策略、方向、字节数与 DONE 重排结果，且不记录响应正文。
 - **跨协议流式一致性**：OpenAI→Anthropic 与 OpenAI→Responses 转换同样恢复黏连终止帧；Anthropic passthrough 保留无换行 EOF 同时携带的最后一个事件，避免协议转换路径丢失末帧。
 - **末帧读取修复**：保留无换行但附带 `io.EOF` 的最后一个 SSE 数据帧，不再丢失其内容。
 - **审计 body 完整性**：历史 `sessions_v2.request_bodies_full=false` 配置不再启用摘要写入，新的请求与响应审计体始终保留完整 JSON。

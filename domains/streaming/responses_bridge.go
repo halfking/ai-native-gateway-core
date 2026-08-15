@@ -681,8 +681,9 @@ func StreamOpenAIToResponsesSSEWithDiagnostics(
 		if line == "" {
 			continue
 		}
-		if normalizedLine, hasCombinedDone := splitCombinedDoneFrame(line); hasCombinedDone {
-			line = normalizedLine
+		normalizedLine, hasCombinedDone := splitCombinedDoneFrame(line)
+		line = normalizedLine
+		if hasCombinedDone {
 			reader = prependDoneFrame(reader)
 		}
 

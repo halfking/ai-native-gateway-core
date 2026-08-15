@@ -243,3 +243,26 @@ func TestStreamChatWithPendingCapture_SplitsDoneJoinedToJSON(t *testing.T) {
 	assert.Contains(t, writer.Body.String(), `"reasoning_content":"planning"`)
 	assert.True(t, strings.HasSuffix(writer.Body.String(), "data: [DONE]\n\n"))
 }
+
+func TestSplitCombinedDoneFrame_ExtractsCompleteJSONFromTransportGarbage(t *testing.T) {
+	valid := `{"id":"chunk-1","choices":[{"delta":{"content":"preserved"}}]}`
+	tests := []struct {
+		name     string
+		line     string
+		wantLine string
+		wantDone bool
+	}{
+		{name: "leading marker", line: "data: noise:" + valid, wantLine: "data: " + valid + "\n", wantDone: false},
+		{name: "trailing marker", line: "data: " + valid + "\x00tail", wantLine: "data: " + valid + "\n", wantDone: false},
+		{name: "both markers and done", line: "data: noise:" + valid + "[DONE].", wantLine: "data: " + valid + "\n", wantDone: true},
+		{name: "clean json remains unchanged", line: "data: " + valid, wantLine: "data: " + valid, wantDone: false},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got, hasDone := splitCombinedDoneFrame(tc.line)
+			assert.Equal(t, tc.wantDone, hasDone)
+			assert.Equal(t, tc.wantLine, got)
+		})
+	}
+}

@@ -436,8 +436,9 @@ func StreamOpenAIToAnthropicSSEWithDiagnostics(
 	}
 
 	if firstLine != "" {
-		if normalizedLine, hasCombinedDone := splitCombinedDoneFrame(firstLine); hasCombinedDone {
-			firstLine = normalizedLine
+		normalizedLine, hasCombinedDone := splitCombinedDoneFrame(firstLine)
+		firstLine = normalizedLine
+		if hasCombinedDone {
 			reader = prependDoneFrame(reader)
 		}
 		if processLine(firstLine) {
@@ -496,8 +497,9 @@ func StreamOpenAIToAnthropicSSEWithDiagnostics(
 		}
 
 		line := readResult.line
-		if normalizedLine, hasCombinedDone := splitCombinedDoneFrame(line); hasCombinedDone {
-			line = normalizedLine
+		normalizedLine, hasCombinedDone := splitCombinedDoneFrame(line)
+		line = normalizedLine
+		if hasCombinedDone {
 			reader = prependDoneFrame(reader)
 		}
 
