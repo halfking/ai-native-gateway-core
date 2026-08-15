@@ -33,6 +33,22 @@ type QueueMetricsCollector struct {
 	// Cached to avoid redundant gate reads in hot path.
 	enabled atomic.Bool
 
+	// sourceVersion (V3.3-OBS OBS-BE3) increments on every wired+enabled
+	// snapshot so SSE clients can detect stale/out-of-order queue_snapshot
+	// envelopes. Monotonic per collector; omitted (0) while degraded or
+	// disabled.
+	sourceVersion atomic.Int64
+
+	// lastOverflowTotal is the last-seen cumulative dispatch_overflow_total.
+	// Diffing against the current reading yields the "overflow since last
+	// snapshot" degraded flag (queue_metrics_pipeline.go). Overflow counters
+	// are Inc-only, so the diff is monotone-safe. The first tick of a fresh
+	// collector only latches the baseline (the counter is process-global and
+	// may already be non-zero from earlier traffic) and never reports
+	// degraded from pre-existing history.
+	lastOverflowTotal    atomic.Int64
+	overflowBaselineSeen atomic.Bool
+
 	// mu protects the lane maps during concurrent updates from hooks.
 	mu sync.RWMutex
 
@@ -128,12 +144,32 @@ func (c *QueueMetricsCollector) Snapshot() *SnapshotView {
 	}
 	c.mu.RUnlock()
 
-	return &SnapshotView{
+	view := &SnapshotView{
 		Enabled:     enabled,
 		Wired:       true,
 		Models:      models,
 		Credentials: credentials,
 	}
+
+	// V3.3-OBS OBS-BE3: pipeline aggregate view + monotonic sourceVersion.
+	// Only when the dispatch gate is enabled — a disabled pipeline carries
+	// no live traffic and its queue stats would be stale, so the fields stay
+	// absent (omitempty) instead of masquerading as current values.
+	if enabled {
+		overflowNow := int64(overflowVecTotal())
+		overflowSince := false
+		if c.overflowBaselineSeen.CompareAndSwap(false, true) {
+			// First tick: latch the baseline only.
+			c.lastOverflowTotal.Store(overflowNow)
+		} else {
+			overflowSince = overflowNow > c.lastOverflowTotal.Load()
+			c.lastOverflowTotal.Store(overflowNow)
+		}
+		view.SourceVersion = c.sourceVersion.Add(1)
+		view.Pipeline = c.pipeline.pipelineQueueStats(overflowSince)
+	}
+
+	return view
 }
 
 // RecordEnqueue is a hook called when a request enters a queue (model or credential).
@@ -179,11 +215,17 @@ func (c *QueueMetricsCollector) RecordDequeue(model string, credentialID int) {
 // SnapshotView is the dispatch-native queue snapshot shape for admin SSE.
 // Kept in dispatch package to avoid admin → dispatch import cycle.
 // cmd/gateway converts SnapshotView → admin.LiveQueueSnapshot at the boundary.
+//
+// Pipeline (V3.3-OBS OBS-BE3) and SourceVersion are optional: present only
+// when the collector is wired AND the dispatch gate is enabled. A present
+// Depth/InFlight of 0 is a real zero (queues empty), never a placeholder.
 type SnapshotView struct {
-	Enabled     bool       `json:"enabled"`
-	Wired       bool       `json:"wired"`
-	Models      []LaneView `json:"models"`
-	Credentials []LaneView `json:"credentials"`
+	Enabled       bool                `json:"enabled"`
+	Wired         bool                `json:"wired"`
+	SourceVersion int64               `json:"sourceVersion,omitempty"`
+	Pipeline      *PipelineQueueStats `json:"pipeline,omitempty"`
+	Models        []LaneView          `json:"models"`
+	Credentials   []LaneView          `json:"credentials"`
 }
 
 // LaneView is one queue lane (model or credential).
