@@ -460,3 +460,25 @@ func TestSurvivalMetricsRecoveryLatency(t *testing.T) {
 		}
 	})
 }
+
+// TestSurvivalMetricsKeepaliveWriteErrors pins
+// gateway_survival_keepalive_write_errors_total{protocol}: a keepalive comment
+// that cannot reach the client connection is counted per protocol — the early
+// disconnect signal while the gateway still holds the request.
+func TestSurvivalMetricsKeepaliveWriteErrors(t *testing.T) {
+	h := newCoordHarness(&scriptedExecutor{
+		errs:    []error{rateLimitFailure(), nil},
+		results: []*executors.ExecuteResult{nil, {}},
+	})
+	c := h.coordinator()
+	// Break the connection before the recovery loop's keepalive fires.
+	h.flusher.fail = true
+	lbl := metrics.SurvivalKeepaliveWriteErrorsTotal.WithLabelValues("anthropic")
+	before := survivalCounterDelta(t, lbl)
+
+	c.Run(context.Background(), h.sw, &executors.ExecParams{})
+
+	if d := survivalCounterDelta(t, lbl) - before; d != 1 {
+		t.Fatalf("keepalive_write_errors_total{anthropic} delta = %v, want 1 (one failed keepalive)", d)
+	}
+}

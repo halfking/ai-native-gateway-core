@@ -122,6 +122,8 @@ func (c *SurvivalCoordinator) keepalive(sw *SerializedStreamWriter) {
 	if sw != nil {
 		if _, err := sw.Write([]byte(": gw-survival-keepalive\n\n")); err == nil {
 			sw.Flush()
+		} else {
+			recordSurvivalKeepaliveWriteError(c.Protocol)
 		}
 	}
 }
