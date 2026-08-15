@@ -151,6 +151,7 @@ func (c *SurvivalCoordinator) Run(ctx context.Context, sw *SerializedStreamWrite
 		case TaskActionSucceed:
 			finishGateWriter(gw, gate)
 			res.Succeed = true
+			recordSurvivalTransition(survivalStateRunning, survivalTerminalToState(res.Decision), res.Decision.Reason)
 			recordSurvivalRequestTerminal(c.Protocol, res.Decision)
 			return res
 
@@ -161,12 +162,14 @@ func (c *SurvivalCoordinator) Run(ctx context.Context, sw *SerializedStreamWrite
 			if err := gate.Discard(); err != nil {
 				res.Decision = TaskDecision{Action: TaskActionFailClosed, Reason: "discard_refused"}
 				c.renderTerminal(res.Decision, gate)
+				recordSurvivalTransition(survivalStateRunning, survivalTerminalToState(res.Decision), res.Decision.Reason)
 				recordSurvivalRequestTerminal(c.Protocol, res.Decision)
 				return res
 			}
 			if c.now().After(deadline) {
 				res.Decision = TaskDecision{Action: TaskActionFailClosed, Reason: "deadline_exceeded"}
 				c.renderTerminal(res.Decision, gate)
+				recordSurvivalTransition(survivalStateRunning, survivalTerminalToState(res.Decision), res.Decision.Reason)
 				recordSurvivalRequestTerminal(c.Protocol, res.Decision)
 				return res
 			}
@@ -175,12 +178,19 @@ func (c *SurvivalCoordinator) Run(ctx context.Context, sw *SerializedStreamWrite
 				res.Decision.NextRetryAfter > wait && res.Decision.NextRetryAfter <= opts.RetryMax {
 				wait = res.Decision.NextRetryAfter
 			}
+			waitState := survivalStateRetryNow
+			if res.Decision.Action == TaskActionWaitRecovery {
+				waitState = survivalStateWaiting
+			}
+			recordSurvivalTransition(survivalStateRunning, waitState, res.Decision.Reason)
 			c.keepalive(sw)
 			if err := c.sleep(ctx, wait); err != nil {
 				res.Decision = TaskDecision{Action: TaskActionFailClosed, Reason: "client_disconnected"}
+				recordSurvivalTransition(waitState, survivalTerminalToState(res.Decision), res.Decision.Reason)
 				recordSurvivalRequestTerminal(c.Protocol, res.Decision)
 				return res
 			}
+			recordSurvivalTransition(waitState, survivalStateRunning, "retry")
 			if c.Refresh != nil {
 				c.Refresh(ctx)
 			}
@@ -193,6 +203,7 @@ func (c *SurvivalCoordinator) Run(ctx context.Context, sw *SerializedStreamWrite
 		default: // ResumeBlocked / FailTerminal / FailClosed
 			finishGateWriter(gw, gate)
 			c.renderTerminal(res.Decision, gate)
+			recordSurvivalTransition(survivalStateRunning, survivalTerminalToState(res.Decision), res.Decision.Reason)
 			recordSurvivalRequestTerminal(c.Protocol, res.Decision)
 			return res
 		}
