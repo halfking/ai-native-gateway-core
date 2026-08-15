@@ -145,6 +145,47 @@ func TestBuildTurnsSessionWhere(t *testing.T) {
 	}
 }
 
+func TestDeriveSessionParent(t *testing.T) {
+	cases := []struct {
+		sessionID string
+		parent    string
+		relation  string
+	}{
+		{"gt_gw_abc123", "gw_abc123", "auto_title"},
+		{"gs_gw_abc123", "gw_abc123", "auto_summary"},
+		{"gw_abc123", "", ""},
+		{"", "", ""},
+	}
+	for _, c := range cases {
+		parent, relation := deriveSessionParent(c.sessionID)
+		if parent != c.parent || relation != c.relation {
+			t.Errorf("deriveSessionParent(%q) = (%q,%q), want (%q,%q)",
+				c.sessionID, parent, relation, c.parent, c.relation)
+		}
+	}
+}
+
+func TestApplySessionParent(t *testing.T) {
+	// handoff 持久化记录优先
+	g := &TurnsSessionGroup{SessionID: "gw_new", ParentSessionID: strPtr("gw_old")}
+	applySessionParent(g)
+	if *g.ParentSessionID != "gw_old" || *g.ParentRelation != "handoff" {
+		t.Fatalf("handoff parent should win, got %v %v", g.ParentSessionID, g.ParentRelation)
+	}
+	// 无 handoff 记录时按前缀推导
+	g2 := &TurnsSessionGroup{SessionID: "gt_gw_orig"}
+	applySessionParent(g2)
+	if g2.ParentSessionID == nil || *g2.ParentSessionID != "gw_orig" || *g2.ParentRelation != "auto_title" {
+		t.Fatalf("prefix derivation failed: %v %v", g2.ParentSessionID, g2.ParentRelation)
+	}
+	// 普通会话无父
+	g3 := &TurnsSessionGroup{SessionID: "gw_plain"}
+	applySessionParent(g3)
+	if g3.ParentSessionID != nil || g3.ParentRelation != nil {
+		t.Fatalf("plain session should have no parent, got %v %v", g3.ParentSessionID, g3.ParentRelation)
+	}
+}
+
 func TestBuildTurnsSessionWhere_TurnLevelFiltersSession(t *testing.T) {
 	// model / provider / status_code 应通过 EXISTS 在会话级排除无匹配轮次的会话
 	req := httptest.NewRequest(http.MethodGet, "/api/admin/turns/sessions?model=m1&provider=p1&status_code=500", nil)

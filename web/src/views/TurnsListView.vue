@@ -6,7 +6,7 @@
 // failover 明细，点击轮次跳转到会话详情页。
 // 数据来自 GET /api/admin/turns/sessions（gateway.sessions + session_turns）。
 
-import { onMounted, ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElSelect, ElOption } from 'element-plus'
 import {
@@ -24,6 +24,134 @@ const hasMore = ref(false)
 const nextCursor = ref('')
 const error = ref('')
 const expandedSessions = ref<Set<string>>(new Set())
+
+// 展示模式：tree = 项目→任务→会话→轮次 层级分组；flat = 按更新时间平铺
+const viewMode = ref<'tree' | 'flat'>('tree')
+// 分组折叠状态（key 为 分组键）
+const collapsedProjects = ref<Set<string>>(new Set())
+const collapsedTasks = ref<Set<string>>(new Set())
+
+const NO_PROJECT = '未分类项目'
+const NO_TASK = '未分类任务'
+
+interface TaskGroup {
+  key: string
+  label: string
+  rawLabel: string
+  sessions: TurnsSessionGroup[]
+}
+interface ProjectGroup {
+  key: string
+  label: string
+  tasks: TaskGroup[]
+  sessionCount: number
+  totalTurns: number
+  totalTokens: number
+  totalCost: number
+}
+
+function summarize(sessions: TurnsSessionGroup[]) {
+  return {
+    sessionCount: sessions.length,
+    totalTurns: sessions.reduce((n, s) => n + (s.total_turns || 0), 0),
+    totalTokens: sessions.reduce((n, s) => n + (s.total_tokens || 0), 0),
+    totalCost: sessions.reduce((n, s) => n + (s.total_cost_usd || 0), 0)
+  }
+}
+
+// 分组标签：项目/任务未分类时归入「未分类」桶；auto 回环的合成任务 ID 转可读名
+function projectLabel(projectId?: string): string {
+  return projectId || NO_PROJECT
+}
+function taskLabel(taskId?: string): string {
+  if (!taskId) return NO_TASK
+  if (taskId.startsWith('auto-summary:')) return '总结生成分支'
+  if (taskId === 'auto') return '标题生成分支'
+  return taskId
+}
+
+// 当前页会话的层级分组（tree 模式：项目→任务；flat 模式：单一"全部会话"组，
+// 复用同一渲染结构，任务层隐藏）
+const displayGroups = computed<ProjectGroup[]>(() => {
+  if (viewMode.value === 'flat') {
+    const sum = summarize(items.value)
+    return [
+      {
+        key: '__all__',
+        label: `全部会话（按最近更新）`,
+        tasks: [{ key: '__all__', label: '', rawLabel: '', sessions: items.value }],
+        ...sum
+      }
+    ]
+  }
+  const projects = new Map<string, ProjectGroup>()
+  for (const s of items.value) {
+    const pKey = s.project_id || ''
+    const tKey = s.task_id || ''
+    let proj = projects.get(pKey)
+    if (!proj) {
+      proj = {
+        key: pKey,
+        label: projectLabel(s.project_id),
+        tasks: [],
+        sessionCount: 0,
+        totalTurns: 0,
+        totalTokens: 0,
+        totalCost: 0
+      }
+      projects.set(pKey, proj)
+    }
+    let task = proj.tasks.find(t => t.key === tKey)
+    if (!task) {
+      task = { key: tKey, label: taskLabel(s.task_id), rawLabel: s.task_id || '', sessions: [] }
+      proj.tasks.push(task)
+    }
+    task.sessions.push(s)
+  }
+  for (const proj of projects.values()) {
+    const all = proj.tasks.flatMap(t => t.sessions)
+    Object.assign(proj, summarize(all))
+  }
+  return [...projects.values()]
+})
+
+function toggleProject(key: string) {
+  const next = new Set(collapsedProjects.value)
+  if (next.has(key)) next.delete(key)
+  else next.add(key)
+  collapsedProjects.value = next
+}
+
+function toggleTask(key: string) {
+  const next = new Set(collapsedTasks.value)
+  if (next.has(key)) next.delete(key)
+  else next.add(key)
+  collapsedTasks.value = next
+}
+
+function taskGroupKey(projKey: string, taskKey: string): string {
+  return `${projKey}::${taskKey}`
+}
+
+// 父会话关系徽标文案
+function relationLabel(relation?: string): string {
+  const map: Record<string, string> = {
+    handoff: '轮换自',
+    auto_title: '标题分支 ←',
+    auto_summary: '总结分支 ←'
+  }
+  return map[relation || ''] || '父会话'
+}
+
+function shortSessionId(id?: string): string {
+  if (!id) return ''
+  return id.length > 14 ? id.slice(0, 14) + '…' : id
+}
+
+function openSessionById(id?: string) {
+  if (!id) return
+  router.push({ path: `/admin/sessions/${id}` })
+}
 
 // 「更多筛选」区是否展开：常用筛选（搜索/模型/时间）常驻，其余收进折叠行
 const advancedExpanded = ref(false)
@@ -78,6 +206,8 @@ async function load(reset = true) {
       items.value = []
       nextCursor.value = ''
       expandedSessions.value = new Set()
+      collapsedProjects.value = new Set()
+      collapsedTasks.value = new Set()
     }
     const params: Parameters<typeof listTurnsSessions>[0] = { limit: 20 }
     if (nextCursor.value) params.cursor = nextCursor.value
@@ -420,9 +550,44 @@ onMounted(() => {
     <!-- 错误提示 -->
     <div v-if="error" class="error-banner">{{ error }}</div>
 
-    <!-- 会话分组列表 -->
+    <!-- 会话分组列表：层级视图为 项目 → 任务 → 会话（展开轮次），平铺视图为按更新时间的单列 -->
     <div class="list">
-      <div v-for="session in items" :key="session.session_id" class="session-card">
+      <div class="view-toggle">
+        <button class="toggle-btn" :class="{ active: viewMode === 'tree' }" @click="viewMode = 'tree'">
+          层级视图
+        </button>
+        <button class="toggle-btn" :class="{ active: viewMode === 'flat' }" @click="viewMode = 'flat'">
+          平铺视图
+        </button>
+      </div>
+
+      <template v-for="proj in displayGroups" :key="proj.key">
+        <div class="group-card">
+          <div class="group-header" @click="toggleProject(proj.key)">
+            <span class="caret" :class="{ open: !collapsedProjects.has(proj.key) }">▸</span>
+            <span class="group-title">{{ proj.label }}</span>
+            <span class="badge">{{ proj.sessionCount }} 会话</span>
+            <span class="badge">{{ proj.totalTurns }} 轮</span>
+            <span class="badge">{{ formatBytesTokens(proj.totalTokens) }} tok</span>
+            <span v-if="proj.totalCost > 0" class="badge cost">${{ proj.totalCost.toFixed(4) }}</span>
+          </div>
+
+          <div v-if="!collapsedProjects.has(proj.key)" class="group-body">
+            <template v-for="task in proj.tasks" :key="taskGroupKey(proj.key, task.key)">
+              <div
+                v-if="task.label"
+                class="task-header"
+                @click="toggleTask(taskGroupKey(proj.key, task.key))"
+              >
+                <span class="caret" :class="{ open: !collapsedTasks.has(taskGroupKey(proj.key, task.key)) }">▸</span>
+                <span class="task-title">{{ task.label }}</span>
+                <span class="badge">{{ task.sessions.length }} 会话</span>
+              </div>
+              <div
+                v-if="!task.label || !collapsedTasks.has(taskGroupKey(proj.key, task.key))"
+                class="task-sessions"
+              >
+                <div v-for="session in task.sessions" :key="session.session_id" class="session-card">
         <!-- 外层级：会话摘要，点击展开/收起 -->
         <div class="session-header" @click="toggleSession(session.session_id)">
           <div class="session-head-line">
@@ -431,6 +596,14 @@ onMounted(() => {
             <span class="session-title">{{ sessionTitle(session) }}</span>
             <span v-if="sessionTopic(session) && session.topic !== session.title" class="session-topic">
               主题：{{ sessionTopic(session) }}
+            </span>
+            <span
+              v-if="session.parent_session_id"
+              class="ctx-badge parent-link"
+              :title="`父会话（${relationLabel(session.parent_relation)}）：${session.parent_session_id}，点击查看`"
+              @click.stop="openSessionById(session.parent_session_id)"
+            >
+              ↳ {{ relationLabel(session.parent_relation) }} {{ shortSessionId(session.parent_session_id) }}
             </span>
           </div>
 
@@ -536,7 +709,12 @@ onMounted(() => {
             </div>
           </div>
         </div>
-      </div>
+              </div>
+              </div>
+            </template>
+          </div>
+        </div>
+      </template>
 
       <div v-if="!loading && items.length === 0" class="empty">暂无会话记录</div>
       <div v-if="hasMore" class="load-more">
@@ -686,6 +864,90 @@ onMounted(() => {
   display: flex;
   flex-direction: column;
   gap: 12px;
+}
+
+/* ---- 视图切换（层级 / 平铺） ---- */
+.view-toggle {
+  display: flex;
+  gap: 8px;
+}
+.toggle-btn {
+  height: 30px;
+  padding: 0 14px;
+  border: 1px solid var(--border);
+  border-radius: 15px;
+  background: var(--surface-primary);
+  color: var(--text-secondary);
+  font-size: 13px;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+.toggle-btn.active {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: white;
+}
+
+/* ---- 层级分组（项目 → 任务 → 会话） ---- */
+.group-card {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface-primary);
+  overflow: hidden;
+}
+.group-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  padding: 10px 16px;
+  cursor: pointer;
+  background: var(--surface-secondary);
+  border-bottom: 1px solid var(--border);
+}
+.group-header:hover {
+  background: var(--bg-hover);
+}
+.group-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+.group-body {
+  padding: 10px 12px 12px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.task-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  cursor: pointer;
+  border-radius: 6px;
+}
+.task-header:hover {
+  background: var(--bg-hover);
+}
+.task-title {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--accent);
+}
+.task-sessions {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding-left: 18px;
+}
+.ctx-badge.parent-link {
+  background: var(--warning-soft);
+  color: var(--warning);
+  cursor: pointer;
+}
+.ctx-badge.parent-link:hover {
+  text-decoration: underline;
 }
 
 /* ---- 会话卡片（外层） ---- */
