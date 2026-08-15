@@ -403,3 +403,60 @@ func TestSurvivalMetricsWaitSeconds(t *testing.T) {
 		}
 	})
 }
+
+// TestSurvivalMetricsRecoveryLatency pins
+// gateway_survival_recovery_latency_seconds{protocol}: outage-to-success is
+// measured from the FIRST recoverable failure of the task until the attempt
+// that finally completes it. Clean successes and never-recovered tasks must
+// not add samples.
+func TestSurvivalMetricsRecoveryLatency(t *testing.T) {
+	hist := func() prometheus.Histogram {
+		return metrics.SurvivalRecoveryLatencySeconds.WithLabelValues("anthropic").(prometheus.Histogram)
+	}
+
+	t.Run("recovered task observes first failure to completion", func(t *testing.T) {
+		h := newCoordHarness(&scriptedExecutor{
+			errs:    []error{rateLimitFailure(), rateLimitFailure(), nil},
+			results: []*executors.ExecuteResult{nil, nil, {}},
+		})
+		c := h.coordinator()
+		cb, sb := survivalHistogramDelta(t, hist())
+
+		c.Run(context.Background(), h.sw, &executors.ExecParams{})
+
+		ca, sa := survivalHistogramDelta(t, hist())
+		if ca-cb != 1 {
+			t.Fatalf("recovery_latency sample count delta = %d, want 1", ca-cb)
+		}
+		// Backoff doubles: 2s wait + 4s wait = first failure → completion
+		// spans 6s on the fake clock.
+		if got := (sa - sb) * 1e9; got != 6*1e9 {
+			t.Fatalf("recovery_latency observed %vns, want 6s (2s+4s waits)", got)
+		}
+	})
+
+	t.Run("clean success records no recovery latency", func(t *testing.T) {
+		h := newCoordHarness(&scriptedExecutor{results: []*executors.ExecuteResult{{}}})
+		c := h.coordinator()
+		cb, _ := survivalHistogramDelta(t, hist())
+
+		c.Run(context.Background(), h.sw, &executors.ExecParams{})
+
+		if ca, _ := survivalHistogramDelta(t, hist()); ca != cb {
+			t.Fatal("a task that never failed must not sample recovery_latency")
+		}
+	})
+
+	t.Run("task that never recovers records no recovery latency", func(t *testing.T) {
+		h := newCoordHarness(&scriptedExecutor{errs: []error{rateLimitFailure(), rateLimitFailure()}})
+		c := h.coordinator()
+		c.Options.Deadline = 3 * time.Second
+		cb, _ := survivalHistogramDelta(t, hist())
+
+		c.Run(context.Background(), h.sw, &executors.ExecParams{})
+
+		if ca, _ := survivalHistogramDelta(t, hist()); ca != cb {
+			t.Fatal("a task that never completed must not sample recovery_latency")
+		}
+	})
+}
