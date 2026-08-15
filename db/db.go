@@ -270,6 +270,9 @@ func (db *DB) applyMigrationsOnce(ctx context.Context) error {
 	if err := db.ensureModelIQSchema(migCtx); err != nil {
 		return err
 	}
+	if err := db.ensureDurableTaskSchema(migCtx); err != nil {
+		return err
+	}
 	// Dashboard views are derived data for the admin UI, not critical-path.
 	// A failure here logs a warning but does NOT block startup — the gateway
 	// must still serve traffic even if /probe-health renders empty.

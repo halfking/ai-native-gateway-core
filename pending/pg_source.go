@@ -16,6 +16,7 @@ package pending
 
 import (
 	"context"
+	"crypto/sha256"
 	"errors"
 	"fmt"
 
@@ -43,7 +44,7 @@ func NewPGSource(db PGQuerier, kr *secret.Keyring) *PGSource {
 }
 
 // pgSourceRow 是回源 SELECT 的目标列（doc 18 §11.1 字段子集）。
-const pgSourceColumns = `SELECT id, request_id, tenant_id, status, result_ciphertext, result_hash, content_type, completed_at, reason_code`
+const pgSourceColumns = `SELECT id, request_id, tenant_id, status, request_hash, result_ciphertext, result_hash, content_type, completed_at, reason_code, fencing_token, result_version, next_retry_at, attempt_count, expires_at`
 
 // Get 按 (sessionID, requestID) 回源读取最新任务行。
 func (p *PGSource) Get(ctx context.Context, sessionID, requestID string) (*Response, bool, error) {
@@ -85,18 +86,25 @@ func (p *PGSource) GetLatest(ctx context.Context, sessionID string) (*Response, 
 // scanRow 把任务行投影为 pending.Response；completed 且带密文时解密。
 func (p *PGSource) scanRow(row pgx.Row, sessionID string) (*Response, bool, error) {
 	var (
-		id          string
-		requestID   string
-		tenantID    string
-		dbStatus    string
-		resultCT    pgtype.Text
-		resultHash  string
-		contentType string
-		completedAt pgtype.Timestamptz
-		reasonCode  string
+		id            string
+		requestID     string
+		tenantID      string
+		dbStatus      string
+		requestHash   string
+		resultCT      pgtype.Text
+		resultHash    pgtype.Text
+		contentType   pgtype.Text
+		completedAt   pgtype.Timestamptz
+		reasonCode    pgtype.Text
+		fencingToken  int64
+		resultVersion int64
+		nextRetryAt   pgtype.Timestamptz
+		attemptCount  int
+		expiresAt     pgtype.Timestamptz
 	)
-	if err := row.Scan(&id, &requestID, &tenantID, &dbStatus, &resultCT, &resultHash,
-		&contentType, &completedAt, &reasonCode); err != nil {
+	if err := row.Scan(&id, &requestID, &tenantID, &dbStatus, &requestHash, &resultCT, &resultHash,
+		&contentType, &completedAt, &reasonCode, &fencingToken, &resultVersion, &nextRetryAt,
+		&attemptCount, &expiresAt); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, false, nil
 		}
@@ -104,38 +112,61 @@ func (p *PGSource) scanRow(row pgx.Row, sessionID string) (*Response, bool, erro
 	}
 
 	r := &Response{
-		SessionID:   sessionID,
-		TenantID:    tenantID,
-		RequestID:   requestID,
-		RequestHash: resultHash,
+		SessionID:     sessionID,
+		TenantID:      tenantID,
+		RequestID:     requestID,
+		TaskID:        id,
+		RequestHash:   requestHash,
+		FencingToken:  fencingToken,
+		ResultVersion: resultVersion,
+		AttemptCount:  attemptCount,
+		Durable:       true,
+	}
+	if resultHash.Valid {
+		r.ResultHash = resultHash.String
+	}
+	if contentType.Valid {
+		r.ContentType = contentType.String
 	}
 	if completedAt.Valid {
 		r.CompletedAt = completedAt.Time.Unix()
+	}
+	if nextRetryAt.Valid {
+		r.NextRetryAt = nextRetryAt.Time.Unix()
+	}
+	if expiresAt.Valid {
+		r.ExpiresAt = expiresAt.Time.Unix()
 	}
 
 	switch dbStatus {
 	case "completed":
 		r.Status = StatusCompleted
-		r.ContentType = contentType
 		if !resultCT.Valid || resultCT.String == "" {
-			// completed 但无密文：文档不允许（终态必须原子提交加密结果），
-			// 视为数据异常，fail closed。
 			return nil, false, fmt.Errorf("pending: pg source task %s completed without result ciphertext", id)
+		}
+		if !resultHash.Valid || resultHash.String == "" {
+			return nil, false, fmt.Errorf("pending: pg source task %s completed without result hash", id)
 		}
 		if p.kr == nil {
 			return nil, false, fmt.Errorf("pending: pg source task %s: %w", id, secret.ErrAADNoKey)
 		}
-		binding := secret.AADBinding{TenantID: tenantID, TaskID: id, RequestHash: resultHash}
+		binding := secret.AADBinding{TenantID: tenantID, TaskID: id, RequestHash: requestHash}
 		pt, _, err := secret.DecryptWithAAD(resultCT.String, p.kr, secret.AADDomainDurableResult, binding)
 		if err != nil {
 			return nil, false, fmt.Errorf("pending: pg source task %s: %w", id, err)
 		}
+		actualHash := fmt.Sprintf("%x", sha256.Sum256(pt))
+		if actualHash != resultHash.String {
+			return nil, false, fmt.Errorf("pending: pg source task %s result hash mismatch", id)
+		}
 		r.Body = string(pt)
-	case "failed", "expired", "canceled":
+		r.BytesBuffered = len(pt)
+	case "permanent_failed", "expired", "cancelled", "resume_safety_blocked":
 		r.Status = StatusFailed
-		r.ErrorMessage = reasonCode
+		if reasonCode.Valid {
+			r.ErrorMessage = reasonCode.String
+		}
 	default:
-		// running / retry_scheduled / waiting_recovery 等非终态。
 		r.Status = StatusInProgress
 	}
 	return r, true, nil

@@ -2,6 +2,9 @@ package pending
 
 import (
 	"context"
+	"crypto/sha256"
+	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -25,8 +28,11 @@ func testAADKeyring(t *testing.T) *secret.Keyring {
 // 返回（doc 18 §12.1：Redis 丢失时从任务表回源返回规范化结果）。
 func TestPGSource_Get_CompletedDecrypts(t *testing.T) {
 	kr := testAADKeyring(t)
-	binding := secret.AADBinding{TenantID: "tenant-1", TaskID: "task-9", RequestHash: "reqhash-9"}
-	env, keyID, err := secret.EncryptWithAAD([]byte(`{"result":"body"}`), kr, secret.AADDomainDurableResult, binding)
+	body := []byte(`{"result":"body"}`)
+	requestHash := "request-hash-9"
+	resultHash := fmt.Sprintf("%x", sha256.Sum256(body))
+	binding := secret.AADBinding{TenantID: "tenant-1", TaskID: "task-9", RequestHash: requestHash}
+	env, keyID, err := secret.EncryptWithAAD(body, kr, secret.AADDomainDurableResult, binding)
 	if err != nil {
 		t.Fatalf("encrypt: %v", err)
 	}
@@ -38,13 +44,14 @@ func TestPGSource_Get_CompletedDecrypts(t *testing.T) {
 	t.Cleanup(mock.Close)
 
 	now := time.Date(2026, 8, 15, 12, 0, 0, 0, time.UTC)
-	mock.ExpectQuery(`SELECT id, request_id, tenant_id, status, result_ciphertext, result_hash, content_type, completed_at, reason_code`).
+	mock.ExpectQuery(`SELECT id, request_id, tenant_id, status, request_hash, result_ciphertext, result_hash, content_type, completed_at, reason_code, fencing_token, result_version, next_retry_at, attempt_count, expires_at`).
 		WithArgs("sess-1", "req-1").
 		WillReturnRows(pgxmock.NewRows([]string{
-			"id", "request_id", "tenant_id", "status", "result_ciphertext", "result_hash",
-			"content_type", "completed_at", "reason_code",
-		}).AddRow("task-9", "req-1", "tenant-1", "completed", env, "reqhash-9",
-			"application/json", now, ""))
+			"id", "request_id", "tenant_id", "status", "request_hash", "result_ciphertext", "result_hash",
+			"content_type", "completed_at", "reason_code", "fencing_token", "result_version",
+			"next_retry_at", "attempt_count", "expires_at",
+		}).AddRow("task-9", "req-1", "tenant-1", "completed", requestHash, env, resultHash,
+			"application/json", now, nil, int64(7), int64(3), nil, 4, now.Add(time.Hour)))
 
 	src := NewPGSource(mock, kr)
 	r, found, err := src.Get(context.Background(), "sess-1", "req-1")
@@ -60,6 +67,15 @@ func TestPGSource_Get_CompletedDecrypts(t *testing.T) {
 	if r.CompletedAt != now.Unix() {
 		t.Fatalf("completedAt = %d, want %d", r.CompletedAt, now.Unix())
 	}
+	if r.RequestHash != requestHash || r.ResultHash != resultHash {
+		t.Fatalf("hashes = request:%q result:%q", r.RequestHash, r.ResultHash)
+	}
+	if r.TaskID != "task-9" || r.FencingToken != 7 || r.ResultVersion != 3 || r.AttemptCount != 4 || !r.Durable {
+		t.Fatalf("durable metadata = %+v", r)
+	}
+	if r.ExpiresAt != now.Add(time.Hour).Unix() {
+		t.Fatalf("expiresAt = %d, want %d", r.ExpiresAt, now.Add(time.Hour).Unix())
+	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Fatalf("expectations: %v", err)
 	}
@@ -68,19 +84,25 @@ func TestPGSource_Get_CompletedDecrypts(t *testing.T) {
 	}
 }
 
-// TestPGSource_Get_NonTerminalStatus：非终态任务回源返回 in_progress 投影
-// （无正文）；failed/expired/canceled 返回 failed + reason。
-func TestPGSource_Get_NonTerminalStatus(t *testing.T) {
+// TestPGSource_Get_StatusProjection verifies nullable nonterminal columns and
+// the durable terminal-state mapping exposed through the legacy pending API.
+func TestPGSource_Get_StatusProjection(t *testing.T) {
 	kr := testAADKeyring(t)
+	nextRetryAt := time.Date(2026, 8, 15, 12, 5, 0, 0, time.UTC)
 	cases := []struct {
-		dbStatus  string
-		reason    string
-		wantSt    Status
-		wantMsgOk bool
+		dbStatus   string
+		reason     any
+		wantStatus Status
+		wantReason string
+		wantRetry  int64
 	}{
-		{"running", "", StatusInProgress, false},
-		{"retry_scheduled", "waiting_recovery", StatusInProgress, false},
-		{"failed", "survival_expired", StatusFailed, true},
+		{"running", nil, StatusInProgress, "", 0},
+		{"waiting_recovery", nil, StatusInProgress, "", nextRetryAt.Unix()},
+		{"retry_scheduled", nil, StatusInProgress, "", nextRetryAt.Unix()},
+		{"permanent_failed", "offers_exhausted", StatusFailed, "offers_exhausted", 0},
+		{"expired", "survival_expired", StatusFailed, "survival_expired", 0},
+		{"cancelled", "client_cancelled", StatusFailed, "client_cancelled", 0},
+		{"resume_safety_blocked", "semantic_commit", StatusFailed, "semantic_commit", 0},
 	}
 	for _, tc := range cases {
 		t.Run(tc.dbStatus, func(t *testing.T) {
@@ -89,27 +111,29 @@ func TestPGSource_Get_NonTerminalStatus(t *testing.T) {
 				t.Fatalf("pgxmock: %v", err)
 			}
 			t.Cleanup(mock.Close)
-			mock.ExpectQuery(`SELECT id, request_id, tenant_id, status, result_ciphertext, result_hash, content_type, completed_at, reason_code`).
+			var retry any
+			if tc.wantRetry != 0 {
+				retry = nextRetryAt
+			}
+			mock.ExpectQuery(`SELECT id, request_id, tenant_id, status, request_hash, result_ciphertext, result_hash, content_type, completed_at, reason_code, fencing_token, result_version, next_retry_at, attempt_count, expires_at`).
 				WithArgs("sess-1", "req-1").
 				WillReturnRows(pgxmock.NewRows([]string{
-					"id", "request_id", "tenant_id", "status", "result_ciphertext", "result_hash",
-					"content_type", "completed_at", "reason_code",
-				}).AddRow("task-9", "req-1", "tenant-1", tc.dbStatus, nil, "reqhash-9",
-					"", nil, tc.reason))
+					"id", "request_id", "tenant_id", "status", "request_hash", "result_ciphertext", "result_hash",
+					"content_type", "completed_at", "reason_code", "fencing_token", "result_version",
+					"next_retry_at", "attempt_count", "expires_at",
+				}).AddRow("task-9", "req-1", "tenant-1", tc.dbStatus, "request-hash-9", nil, nil,
+					nil, nil, tc.reason, int64(7), int64(2), retry, 3, nil))
 
 			src := NewPGSource(mock, kr)
 			r, found, err := src.Get(context.Background(), "sess-1", "req-1")
 			if err != nil || !found {
 				t.Fatalf("Get: found=%v err=%v", found, err)
 			}
-			if r.Status != tc.wantSt {
-				t.Fatalf("status = %q, want %q", r.Status, tc.wantSt)
+			if r.Status != tc.wantStatus || r.ErrorMessage != tc.wantReason || r.NextRetryAt != tc.wantRetry {
+				t.Fatalf("response = %+v", r)
 			}
-			if r.Body != "" {
-				t.Fatalf("non-completed must not carry body, got %q", r.Body)
-			}
-			if tc.wantMsgOk && r.ErrorMessage != tc.reason {
-				t.Fatalf("errorMessage = %q, want %q", r.ErrorMessage, tc.reason)
+			if r.Body != "" || r.ContentType != "" || r.ResultHash != "" {
+				t.Fatalf("nullable non-result fields must remain empty: %+v", r)
 			}
 		})
 	}
@@ -137,8 +161,11 @@ func TestPGSource_Get_NotFound(t *testing.T) {
 // 不得把任务当作可读或未命中（doc 18 §11.2 fail closed）。
 func TestPGSource_Get_FailClosed(t *testing.T) {
 	kr := testAADKeyring(t)
-	binding := secret.AADBinding{TenantID: "tenant-1", TaskID: "task-9", RequestHash: "reqhash-9"}
-	env, _, err := secret.EncryptWithAAD([]byte("body"), kr, secret.AADDomainDurableResult, binding)
+	body := []byte("body")
+	requestHash := "request-hash-9"
+	resultHash := fmt.Sprintf("%x", sha256.Sum256(body))
+	binding := secret.AADBinding{TenantID: "tenant-1", TaskID: "task-9", RequestHash: requestHash}
+	env, _, err := secret.EncryptWithAAD(body, kr, secret.AADDomainDurableResult, binding)
 	if err != nil {
 		t.Fatalf("encrypt: %v", err)
 	}
@@ -158,13 +185,14 @@ func TestPGSource_Get_FailClosed(t *testing.T) {
 				t.Fatalf("pgxmock: %v", err)
 			}
 			t.Cleanup(mock.Close)
-			mock.ExpectQuery(`SELECT id, request_id, tenant_id, status`).
+			mock.ExpectQuery(`SELECT id, request_id, tenant_id, status, request_hash`).
 				WithArgs("sess-1", "req-1").
 				WillReturnRows(pgxmock.NewRows([]string{
-					"id", "request_id", "tenant_id", "status", "result_ciphertext", "result_hash",
-					"content_type", "completed_at", "reason_code",
-				}).AddRow("task-9", "req-1", "tenant-1", "completed", tc.ciphertext, "reqhash-9",
-					"application/json", time.Now(), ""))
+					"id", "request_id", "tenant_id", "status", "request_hash", "result_ciphertext", "result_hash",
+					"content_type", "completed_at", "reason_code", "fencing_token", "result_version",
+					"next_retry_at", "attempt_count", "expires_at",
+				}).AddRow("task-9", "req-1", "tenant-1", "completed", requestHash, tc.ciphertext, resultHash,
+					"application/json", time.Now(), nil, int64(1), int64(1), nil, 1, nil))
 
 			src := NewPGSource(mock, tc.kr)
 			r, found, err := src.Get(context.Background(), "sess-1", "req-1")
@@ -175,11 +203,42 @@ func TestPGSource_Get_FailClosed(t *testing.T) {
 	}
 }
 
+func TestPGSource_Get_ResultHashMismatchFailsClosed(t *testing.T) {
+	kr := testAADKeyring(t)
+	binding := secret.AADBinding{TenantID: "tenant-1", TaskID: "task-9", RequestHash: "request-hash-9"}
+	env, _, err := secret.EncryptWithAAD([]byte("body"), kr, secret.AADDomainDurableResult, binding)
+	if err != nil {
+		t.Fatalf("encrypt: %v", err)
+	}
+	mock, err := pgxmock.NewPool()
+	if err != nil {
+		t.Fatalf("pgxmock: %v", err)
+	}
+	t.Cleanup(mock.Close)
+	mock.ExpectQuery(`SELECT id, request_id, tenant_id, status, request_hash`).
+		WithArgs("sess-1", "req-1").
+		WillReturnRows(pgxmock.NewRows([]string{
+			"id", "request_id", "tenant_id", "status", "request_hash", "result_ciphertext", "result_hash",
+			"content_type", "completed_at", "reason_code", "fencing_token", "result_version",
+			"next_retry_at", "attempt_count", "expires_at",
+		}).AddRow("task-9", "req-1", "tenant-1", "completed", "request-hash-9", env,
+			"0000000000000000000000000000000000000000000000000000000000000000",
+			"application/json", time.Now(), nil, int64(1), int64(1), nil, 1, nil))
+
+	r, found, err := NewPGSource(mock, kr).Get(context.Background(), "sess-1", "req-1")
+	if err == nil || !strings.Contains(err.Error(), "result hash mismatch") {
+		t.Fatalf("Get: r=%+v found=%v err=%v", r, found, err)
+	}
+}
+
 // TestPGSource_GetLatest：按最近更新时间取会话最新任务并解密。
 func TestPGSource_GetLatest(t *testing.T) {
 	kr := testAADKeyring(t)
-	binding := secret.AADBinding{TenantID: "tenant-1", TaskID: "task-7", RequestHash: "reqhash-7"}
-	env, _, err := secret.EncryptWithAAD([]byte("latest-body"), kr, secret.AADDomainDurableResult, binding)
+	body := []byte("latest-body")
+	requestHash := "request-hash-7"
+	resultHash := fmt.Sprintf("%x", sha256.Sum256(body))
+	binding := secret.AADBinding{TenantID: "tenant-1", TaskID: "task-7", RequestHash: requestHash}
+	env, _, err := secret.EncryptWithAAD(body, kr, secret.AADDomainDurableResult, binding)
 	if err != nil {
 		t.Fatalf("encrypt: %v", err)
 	}
@@ -189,13 +248,14 @@ func TestPGSource_GetLatest(t *testing.T) {
 		t.Fatalf("pgxmock: %v", err)
 	}
 	t.Cleanup(mock.Close)
-	mock.ExpectQuery(`SELECT id, request_id, tenant_id, status, result_ciphertext, result_hash, content_type, completed_at, reason_code`).
+	mock.ExpectQuery(`SELECT id, request_id, tenant_id, status, request_hash, result_ciphertext, result_hash, content_type, completed_at, reason_code, fencing_token, result_version, next_retry_at, attempt_count, expires_at`).
 		WithArgs("sess-1").
 		WillReturnRows(pgxmock.NewRows([]string{
-			"id", "request_id", "tenant_id", "status", "result_ciphertext", "result_hash",
-			"content_type", "completed_at", "reason_code",
-		}).AddRow("task-7", "req-1", "tenant-1", "completed", env, "reqhash-7",
-			"application/json", time.Now(), ""))
+			"id", "request_id", "tenant_id", "status", "request_hash", "result_ciphertext", "result_hash",
+			"content_type", "completed_at", "reason_code", "fencing_token", "result_version",
+			"next_retry_at", "attempt_count", "expires_at",
+		}).AddRow("task-7", "req-1", "tenant-1", "completed", requestHash, env, resultHash,
+			"application/json", time.Now(), nil, int64(2), int64(1), nil, 1, nil))
 
 	src := NewPGSource(mock, kr)
 	r, rid, found, err := src.GetLatest(context.Background(), "sess-1")

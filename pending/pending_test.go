@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/alicebob/miniredis/v2"
 	"github.com/redis/go-redis/v9"
 )
 
@@ -13,6 +14,49 @@ import (
 // for Save/Get/Delete/MarkInProgress to verify the graceful-degrade
 // contract. The Redis-backed path is covered by integration tests
 // in scripts/ (planned); this is the unit-test layer.
+
+func TestStore_ProjectCAS_AppliesAbsentDurableProjection(t *testing.T) {
+	mr := miniredis.RunT(t)
+	rdb := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	t.Cleanup(func() { _ = rdb.Close() })
+
+	now := time.Now().Truncate(time.Second)
+	expiresAt := now.Add(20 * time.Minute)
+	s := NewStore(rdb, time.Hour)
+	in := &Response{
+		SessionID: "s1", TenantID: "tenant-1", RequestID: "r1", TaskID: "task-1",
+		Status: StatusCompleted, Body: "durable-body", ContentType: "application/json",
+		RequestHash: "request-hash", FencingToken: 5, ResultVersion: 3,
+		ResultHash: "result-hash", NextRetryAt: now.Add(time.Minute).Unix(),
+		AttemptCount: 4, Durable: true, ExpiresAt: expiresAt.Unix(),
+		CreatedAt: now.Add(-time.Minute).Unix(), CompletedAt: now.Unix(), BytesBuffered: 12,
+	}
+
+	applied, err := s.ProjectCAS(context.Background(), in)
+	if err != nil || !applied {
+		t.Fatalf("ProjectCAS: applied=%v err=%v", applied, err)
+	}
+	got, found, err := s.Get(context.Background(), "s1", "r1")
+	if err != nil || !found {
+		t.Fatalf("Get: found=%v err=%v", found, err)
+	}
+	if got.TaskID != in.TaskID || got.FencingToken != in.FencingToken || got.ResultVersion != in.ResultVersion ||
+		got.ResultHash != in.ResultHash || got.NextRetryAt != in.NextRetryAt || got.AttemptCount != in.AttemptCount ||
+		!got.Durable || got.ExpiresAt != in.ExpiresAt || got.Body != in.Body {
+		t.Fatalf("projection round trip = %+v", got)
+	}
+	entryTTL, err := rdb.TTL(context.Background(), entryKey("s1", "r1")).Result()
+	if err != nil {
+		t.Fatalf("entry TTL: %v", err)
+	}
+	if entryTTL < 19*time.Minute || entryTTL > 20*time.Minute {
+		t.Fatalf("entry TTL = %v, want about 20m", entryTTL)
+	}
+	latest, rid, found, err := s.GetLatest(context.Background(), "s1")
+	if err != nil || !found || rid != "r1" || latest.TaskID != "task-1" {
+		t.Fatalf("GetLatest: r=%+v rid=%q found=%v err=%v", latest, rid, found, err)
+	}
+}
 
 func TestStore_NilClientGracefulDegrade(t *testing.T) {
 	s := NewStore(nil, 0)

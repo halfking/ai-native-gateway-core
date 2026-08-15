@@ -71,13 +71,21 @@ type Response struct {
 	SessionID     string `json:"session_id"`
 	TenantID      string `json:"tenant_id"`
 	RequestID     string `json:"request_id"`
+	TaskID        string `json:"task_id,omitempty"`
 	Status        Status `json:"status"`
 	Body          string `json:"body,omitempty"` // SSE text or JSON body
 	ContentType   string `json:"content_type"`   // "text/event-stream" | "application/json"
 	ProviderID    int    `json:"provider_id"`
 	CredentialID  int    `json:"credential_id"`
 	RequestHash   string `json:"request_hash"` // sha256 of request body (anti-tamper)
-	CreatedAt     int64  `json:"created_at"`   // unix seconds
+	FencingToken  int64  `json:"fencing_token,omitempty"`
+	ResultVersion int64  `json:"result_version,omitempty"`
+	ResultHash    string `json:"result_hash,omitempty"`
+	NextRetryAt   int64  `json:"next_retry_at,omitempty"`
+	AttemptCount  int    `json:"attempt_count,omitempty"`
+	Durable       bool   `json:"durable,omitempty"`
+	ExpiresAt     int64  `json:"expires_at,omitempty"`
+	CreatedAt     int64  `json:"created_at"` // unix seconds
 	CompletedAt   int64  `json:"completed_at,omitempty"`
 	BytesBuffered int    `json:"bytes_buffered"`
 	IsStream      bool   `json:"is_stream"`
@@ -110,6 +118,28 @@ func NewStore(rdb *redis.Client, ttl time.Duration) *Store {
 // nil redis client. Callers should treat this as a soft failure — the
 // rest of the request flow continues, the cache step is just skipped.
 var ErrUnavailable = errors.New("pending store unavailable (redis client nil)")
+
+var projectCASScript = redis.NewScript(`
+local current_task = redis.call('HGET', KEYS[1], 'task_id')
+if current_task then
+  if current_task ~= ARGV[1] then
+    return 0
+  end
+  local current_version = tonumber(redis.call('HGET', KEYS[1], 'result_version') or '-1')
+  if tonumber(ARGV[2]) < current_version then
+    return 0
+  end
+end
+
+redis.call('HSET', KEYS[1], unpack(ARGV, 6))
+redis.call('PEXPIRE', KEYS[1], ARGV[3])
+redis.call('ZADD', KEYS[2], ARGV[4], ARGV[5])
+local index_ttl = redis.call('PTTL', KEYS[2])
+if index_ttl < tonumber(ARGV[3]) then
+  redis.call('PEXPIRE', KEYS[2], ARGV[3])
+end
+return 1
+`)
 
 // entryKey returns the Redis hash key for a (sessionID, requestID).
 func entryKey(sessionID, requestID string) string {
@@ -174,6 +204,61 @@ func (s *Store) Save(ctx context.Context, r *Response) error {
 	}
 
 	return s.write(ctx, r)
+}
+
+// ProjectCAS writes a durable PendingStore projection only when the existing
+// entry is absent or belongs to the same task at an older/equal result version.
+func (s *Store) ProjectCAS(ctx context.Context, r *Response) (bool, error) {
+	if r == nil {
+		return false, errors.New("pending: nil response")
+	}
+	if r.SessionID == "" || r.RequestID == "" || r.TaskID == "" {
+		return false, errors.New("pending: SessionID, RequestID and TaskID required")
+	}
+	if r.ResultVersion < 0 {
+		return false, errors.New("pending: ResultVersion must be non-negative")
+	}
+	if s == nil || s.rdb == nil {
+		return false, ErrUnavailable
+	}
+	now := time.Now()
+	if r.CreatedAt == 0 {
+		r.CreatedAt = now.Unix()
+	}
+	if r.Status != StatusInProgress && r.CompletedAt == 0 {
+		r.CompletedAt = now.Unix()
+	}
+	if len(r.Body) > MaxBodyBytes {
+		originalBytes := len(r.Body)
+		r.Body = fmt.Sprintf(`{"error":{"message":"response_too_large: %d bytes (limit %d); see request_logs for full body","code":"response_too_large"}}`, originalBytes, MaxBodyBytes)
+		r.BytesBuffered = MaxBodyBytes
+	} else {
+		r.BytesBuffered = len(r.Body)
+	}
+
+	ttl := s.ttl
+	if r.ExpiresAt > 0 {
+		ttl = time.Until(time.Unix(r.ExpiresAt, 0))
+	}
+	if ttl <= 0 {
+		ttl = time.Second
+	}
+	score := r.CompletedAt
+	if score == 0 {
+		score = r.CreatedAt
+	}
+	fields := responseFields(r)
+	args := make([]any, 0, 5+2*len(fields))
+	args = append(args, r.TaskID, r.ResultVersion, ttl.Milliseconds(), score, r.RequestID)
+	for key, value := range fields {
+		args = append(args, key, value)
+	}
+	result, err := projectCASScript.Run(ctx, s.rdb,
+		[]string{entryKey(r.SessionID, r.RequestID), indexKey(r.SessionID)}, args...).Int()
+	if err != nil {
+		return false, fmt.Errorf("pending: project cas: %w", err)
+	}
+	return result == 1, nil
 }
 
 // Get returns the entry for (sessionID, requestID), or
@@ -387,24 +472,36 @@ func splitEntryKey(k string) (sessionID, requestID string, ok bool) {
 	return rest[:idx], rest[idx+1:], true
 }
 
-// write persists the response (hash + index) atomically. Internal.
-func (s *Store) write(ctx context.Context, r *Response) error {
-	fields := map[string]any{
+func responseFields(r *Response) map[string]any {
+	return map[string]any{
 		"session_id":     r.SessionID,
 		"tenant_id":      r.TenantID,
 		"request_id":     r.RequestID,
+		"task_id":        r.TaskID,
 		"status":         string(r.Status),
 		"body":           r.Body,
 		"content_type":   r.ContentType,
 		"provider_id":    r.ProviderID,
 		"credential_id":  r.CredentialID,
 		"request_hash":   r.RequestHash,
+		"fencing_token":  r.FencingToken,
+		"result_version": r.ResultVersion,
+		"result_hash":    r.ResultHash,
+		"next_retry_at":  r.NextRetryAt,
+		"attempt_count":  r.AttemptCount,
+		"durable":        r.Durable,
+		"expires_at":     r.ExpiresAt,
 		"created_at":     r.CreatedAt,
 		"completed_at":   r.CompletedAt,
 		"bytes_buffered": r.BytesBuffered,
 		"is_stream":      r.IsStream,
 		"error_message":  r.ErrorMessage,
 	}
+}
+
+// write persists the response (hash + index) atomically. Internal.
+func (s *Store) write(ctx context.Context, r *Response) error {
+	fields := responseFields(r)
 	pipe := s.rdb.Pipeline()
 	pipe.HSet(ctx, entryKey(r.SessionID, r.RequestID), fields)
 	pipe.Expire(ctx, entryKey(r.SessionID, r.RequestID), s.ttl)
@@ -435,6 +532,9 @@ func parseResponse(sessionID string, fields map[string]string) *Response {
 	if v, ok := fields["request_id"]; ok {
 		r.RequestID = v
 	}
+	if v, ok := fields["task_id"]; ok {
+		r.TaskID = v
+	}
 	if v, ok := fields["status"]; ok {
 		r.Status = Status(v)
 	}
@@ -456,6 +556,37 @@ func parseResponse(sessionID string, fields map[string]string) *Response {
 	}
 	if v, ok := fields["request_hash"]; ok {
 		r.RequestHash = v
+	}
+	if v, ok := fields["fencing_token"]; ok {
+		if n, err := strconv.ParseInt(v, 10, 64); err == nil {
+			r.FencingToken = n
+		}
+	}
+	if v, ok := fields["result_version"]; ok {
+		if n, err := strconv.ParseInt(v, 10, 64); err == nil {
+			r.ResultVersion = n
+		}
+	}
+	if v, ok := fields["result_hash"]; ok {
+		r.ResultHash = v
+	}
+	if v, ok := fields["next_retry_at"]; ok {
+		if n, err := strconv.ParseInt(v, 10, 64); err == nil {
+			r.NextRetryAt = n
+		}
+	}
+	if v, ok := fields["attempt_count"]; ok {
+		if n, err := strconv.Atoi(v); err == nil {
+			r.AttemptCount = n
+		}
+	}
+	if v, ok := fields["durable"]; ok {
+		r.Durable = v == "1" || v == "true"
+	}
+	if v, ok := fields["expires_at"]; ok {
+		if n, err := strconv.ParseInt(v, 10, 64); err == nil {
+			r.ExpiresAt = n
+		}
 	}
 	if v, ok := fields["created_at"]; ok {
 		if n, err := strconv.ParseInt(v, 10, 64); err == nil {

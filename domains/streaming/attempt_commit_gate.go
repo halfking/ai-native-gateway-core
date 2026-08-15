@@ -107,16 +107,21 @@ type GateOptions struct {
 	// buffered; 0 = DefaultMaxMetadataBufferAge. Overflow surfaces the
 	// same ErrAttemptMetadataBufferExceeded as the byte cap.
 	MaxMetadataBufferAge time.Duration
+	// BeforeSemanticCommit runs after the first semantic frame is classified
+	// but before any buffered or semantic bytes reach the real writer.
+	// A durable caller uses this hook for the PostgreSQL write-ahead checkpoint.
+	BeforeSemanticCommit func(CommitState) error
 }
 
 // AttemptCommitGate is the per-attempt protocol-aware buffer sink.
 type AttemptCommitGate struct {
-	mu             sync.Mutex
-	protocol       ClientProtocol
-	writer         *SerializedStreamWriter
-	mode           GateMode
-	maxMetadata    int
-	maxMetadataAge time.Duration
+	mu                   sync.Mutex
+	protocol             ClientProtocol
+	writer               *SerializedStreamWriter
+	mode                 GateMode
+	maxMetadata          int
+	maxMetadataAge       time.Duration
+	beforeSemanticCommit func(CommitState) error
 
 	state     CommitState
 	committed bool
@@ -142,11 +147,12 @@ func NewAttemptCommitGate(protocol ClientProtocol, writer *SerializedStreamWrite
 		panic("attempt commit gate requires a serialized stream writer")
 	}
 	return &AttemptCommitGate{
-		protocol:       protocol,
-		writer:         writer,
-		mode:           opts.Mode,
-		maxMetadata:    opts.MaxMetadataBufferBytes,
-		maxMetadataAge: opts.MaxMetadataBufferAge,
+		protocol:             protocol,
+		writer:               writer,
+		mode:                 opts.Mode,
+		maxMetadata:          opts.MaxMetadataBufferBytes,
+		maxMetadataAge:       opts.MaxMetadataBufferAge,
+		beforeSemanticCommit: opts.BeforeSemanticCommit,
 	}
 }
 
@@ -241,6 +247,13 @@ func (g *AttemptCommitGate) WriteFrame(frame string) error {
 
 	// Buffered mode, not yet committed.
 	if isSemanticClass(class) {
+		// Durable streams must persist the write-ahead checkpoint before any
+		// buffered metadata or semantic bytes become client-visible.
+		if g.beforeSemanticCommit != nil {
+			if err := g.beforeSemanticCommit(g.state); err != nil {
+				return err
+			}
+		}
 		// First semantic frame triggers the normal semantic commit: flush
 		// buffered frames in original order, then this frame.
 		if err := g.commitLocked(); err != nil {
