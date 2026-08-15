@@ -171,3 +171,17 @@ func observeSurvivalRecoveryLatency(protocol ClientProtocol, latency time.Durati
 func recordSurvivalKeepaliveWriteError(protocol ClientProtocol) {
 	metrics.SurvivalKeepaliveWriteErrorsTotal.WithLabelValues(protocolMetricLabel(protocol)).Inc()
 }
+
+// recordSurvivalResumeSafetyBlocked counts a task ended ResumeBlocked, by
+// the response type of the attempt that committed semantic content
+// (gateway_survival_resume_safety_blocked_total, doc 18 §15.1).
+func recordSurvivalResumeSafetyBlocked(d TaskDecision, a *AttemptResult) {
+	if d.Action != TaskActionResumeBlocked {
+		return
+	}
+	responseType := "stream"
+	if a != nil {
+		responseType = a.ResponseType.String()
+	}
+	metrics.SurvivalResumeSafetyBlockedTotal.WithLabelValues(responseType).Inc()
+}

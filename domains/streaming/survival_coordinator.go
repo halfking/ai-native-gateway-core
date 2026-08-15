@@ -218,6 +218,7 @@ func (c *SurvivalCoordinator) Run(ctx context.Context, sw *SerializedStreamWrite
 			finishGateWriter(gw, gate)
 			c.renderTerminal(res.Decision, gate)
 			recordSurvivalTransition(survivalStateRunning, survivalTerminalToState(res.Decision), res.Decision.Reason)
+			recordSurvivalResumeSafetyBlocked(res.Decision, res.FinalAttempt)
 			recordSurvivalRequestTerminal(c.Protocol, res.Decision)
 			return res
 		}

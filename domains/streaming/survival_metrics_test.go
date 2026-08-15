@@ -482,3 +482,31 @@ func TestSurvivalMetricsKeepaliveWriteErrors(t *testing.T) {
 		t.Fatalf("keepalive_write_errors_total{anthropic} delta = %v, want 1 (one failed keepalive)", d)
 	}
 }
+
+// TestSurvivalMetricsResumeSafetyBlocked pins
+// gateway_survival_resume_safety_blocked_total{response_type}: a task stopped
+// because semantic content was already committed is counted by the response
+// type of the attempt that committed it.
+func TestSurvivalMetricsResumeSafetyBlocked(t *testing.T) {
+	h := newCoordHarness(nil)
+	c := h.coordinator()
+	c.Exec = &committedExecutor{}
+	lbl := metrics.SurvivalResumeSafetyBlockedTotal.WithLabelValues("stream")
+	before := survivalCounterDelta(t, lbl)
+
+	c.Run(context.Background(), h.sw, &executors.ExecParams{})
+
+	if d := survivalCounterDelta(t, lbl) - before; d != 1 {
+		t.Fatalf("resume_safety_blocked_total{stream} delta = %v, want 1", d)
+	}
+
+	// Terminal-but-unblocked failures must not touch the series.
+	h2 := newCoordHarness(&scriptedExecutor{errs: []error{rateLimitFailure()}})
+	c2 := h2.coordinator()
+	c2.Options.Deadline = 3 * time.Second
+	before = survivalCounterDelta(t, lbl)
+	c2.Run(context.Background(), h2.sw, &executors.ExecParams{})
+	if d := survivalCounterDelta(t, lbl) - before; d != 0 {
+		t.Fatalf("deadline terminal must not count as resume_safety_blocked, delta = %v", d)
+	}
+}
