@@ -227,8 +227,10 @@ func (c *SurvivalCoordinator) Run(ctx context.Context, sw *SerializedStreamWrite
 
 // finishGateWriter flushes any trailing partial frame at attempt end
 // (A-P2-5: line-protocol bytes must never be dropped) — but only when the
-// attempt committed; a discarded attempt owns nothing on the wire.
-func finishGateWriter(w interface{ Finish() }, gate *AttemptCommitGate) {
+// attempt committed; a discarded attempt owns nothing on the wire. Finish
+// routes through AttemptCommitGate.FinishAttempt, which itself refuses
+// trailing bytes on a discarded attempt.
+func finishGateWriter(w interface{ Finish() error }, gate *AttemptCommitGate) {
 	if gate != nil && gate.Committed() {
 		w.Finish()
 	}
