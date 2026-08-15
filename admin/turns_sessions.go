@@ -90,6 +90,12 @@ type TurnsSessionGroup struct {
 	EndUserID       *string    `json:"end_user_id,omitempty"`
 	UserTags        []string   `json:"user_tags"`
 	StartTime       *time.Time `json:"start_time,omitempty"`
+
+	// 会话间父子/附属关系：本会话由哪个会话创建/派生。
+	// handoff_logs（透明轮换，持久化）优先；gt_/gs_ 前缀（auto title/summary
+	// 回环分支会话）按 ID 前缀推导。
+	ParentSessionID *string `json:"parent_session_id,omitempty"`
+	ParentRelation  *string `json:"parent_relation,omitempty"` // handoff | auto_title | auto_summary
 }
 
 // TurnGroupItem 是会话内单个轮次的记录（含 compression / cache / failover 明细）。
@@ -198,12 +204,23 @@ func (h *Handler) handleTurnsSessions(w http.ResponseWriter, r *http.Request) {
 			ss.gw_project_id, sd.task_id, sd.owner_user,
 			sd.client_id, sd.application_code, sd.end_user_id,
 			COALESCE(ss.user_tags, '{}') AS user_tags,
-			ss.first_request_at AS start_time
+			ss.first_request_at AS start_time,
+			ho.parent_session_id, ho.trigger_reason
 		FROM public.sessions s
 		LEFT JOIN session_dim sd
 			ON sd.gw_session_id = s.session_id AND sd.tenant_id = s.tenant_id
 		LEFT JOIN session_summaries ss
 			ON ss.session_key = s.session_id AND ss.tenant_id = s.tenant_id
+		-- 会话父子关系：本会话若是 handoff（透明轮换）创建的新会话，
+		-- handoff_logs 里 new_session_id = 本会话 的记录给出父会话。
+		-- LATERAL LIMIT 1 防止多次轮换记录导致行扩展。
+		LEFT JOIN LATERAL (
+			SELECT hl.session_id AS parent_session_id, hl.trigger_reason
+			FROM public.handoff_logs hl
+			WHERE hl.new_session_id = s.session_id
+			ORDER BY hl.created_at DESC
+			LIMIT 1
+		) ho ON TRUE
 		-- session_titles: auto_title_generator 写入的标题（V1 表），
 		-- 取最新一条作为 s.title 的 fallback。用 LATERAL 避免一个会话多行导致行扩展。
 		-- task_id 过滤防止跨任务/租户泄漏：优先匹配真实 task_id（sd.task_id），
@@ -223,9 +240,7 @@ func (h *Handler) handleTurnsSessions(w http.ResponseWriter, r *http.Request) {
 	}
 	defer rows.Close()
 
-	type sessionRow struct {
-		TurnsSessionGroup
-	}
+	var handoffReason *string
 	sessions := make([]*TurnsSessionGroup, 0, limit+1)
 	for rows.Next() {
 		var g TurnsSessionGroup
@@ -239,6 +254,7 @@ func (h *Handler) handleTurnsSessions(w http.ResponseWriter, r *http.Request) {
 			&g.ProjectID, &g.TaskID, &g.OwnerUser,
 			&g.ClientID, &g.ApplicationCode, &g.EndUserID,
 			&g.UserTags, &g.StartTime,
+			&g.ParentSessionID, &handoffReason,
 		); err != nil {
 			slog.Warn("admin handleTurnsSessions scan failed", "err", err.Error())
 			writeError(w, http.StatusInternalServerError, "scan session failed")
@@ -247,6 +263,7 @@ func (h *Handler) handleTurnsSessions(w http.ResponseWriter, r *http.Request) {
 		g.ModelsUsed = []string{}
 		g.UserTags = []string{}
 		g.Compression = TurnsCompressionAgg{Strategies: []string{}}
+		applySessionParent(&g)
 		sessions = append(sessions, &g)
 	}
 	if err := rows.Err(); err != nil {
@@ -507,8 +524,39 @@ func (h *Handler) loadTurnsForSessions(ctx context.Context, sessions []*TurnsSes
 	return nil
 }
 
-// ensureTurnsNonNil 确保会话的 Turns 为非 nil 空切片。
-// 会话因过滤（model/provider/status_code）无匹配轮次时 g.Turns 为 nil，
+// applySessionParent 回填会话的父子关系。
+// 优先使用 handoff_logs 的持久化记录（关系 = handoff）；
+// 无记录时按 ID 前缀推导 auto title/summary 回环分支会话的父会话。
+func applySessionParent(g *TurnsSessionGroup) {
+	if g == nil {
+		return
+	}
+	if g.ParentSessionID != nil && *g.ParentSessionID != "" {
+		g.ParentRelation = strPtrTurns("handoff")
+		return
+	}
+	if parent, relation := deriveSessionParent(g.SessionID); parent != "" {
+		g.ParentSessionID = &parent
+		g.ParentRelation = &relation
+	}
+}
+
+// deriveSessionParent 按 ID 前缀推导派生会话的父会话。
+// auto title/summary 的 loopback 会话 ID 是 "gt_" / "gs_" + 原会话 ID
+// （见 admin/auto_title_generator.go、admin/auto_summary_generator.go）。
+func deriveSessionParent(sessionID string) (parent, relation string) {
+	switch {
+	case strings.HasPrefix(sessionID, "gt_"):
+		return strings.TrimPrefix(sessionID, "gt_"), "auto_title"
+	case strings.HasPrefix(sessionID, "gs_"):
+		return strings.TrimPrefix(sessionID, "gs_"), "auto_summary"
+	}
+	return "", ""
+}
+
+func strPtrTurns(s string) *string { return &s }
+
+// ensureTurnsNonNil 确保会话的 Turns 为非 nil 空切片。// 会话因过滤（model/provider/status_code）无匹配轮次时 g.Turns 为 nil，
 // 若直接返回 nil 会让 JSON 输出 "turns": null，导致前端读取 .length 崩溃。
 func ensureTurnsNonNil(g *TurnsSessionGroup) {
 	if g != nil && g.Turns == nil {
