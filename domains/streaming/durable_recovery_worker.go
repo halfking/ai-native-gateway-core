@@ -173,11 +173,18 @@ func (w *DurableRecoveryWorker) runOnce(ctx context.Context) {
 	counts, err := w.store.ActiveTaskCounts(ctx)
 	if err == nil {
 		w.reconcileActiveTaskGauge(counts)
+		metrics.SetDurableTasksActive(counts)
 	}
 	tasks, err := w.store.ClaimRunnable(ctx, durable.ClaimOptions{Owner: w.opts.Owner, Lease: w.opts.Lease, Batch: w.opts.Batch, Now: now})
 	if err != nil {
+		metrics.DurableRecoveryRunsTotal.WithLabelValues("error").Inc()
 		slog.Warn("durable claim failed", "error", err)
 		return
+	}
+	if len(tasks) == 0 {
+		metrics.DurableRecoveryRunsTotal.WithLabelValues("empty").Inc()
+	} else {
+		metrics.DurableRecoveryRunsTotal.WithLabelValues("claimed").Inc()
 	}
 	for _, task := range tasks {
 		w.runTask(ctx, task)
@@ -213,7 +220,7 @@ func (w *DurableRecoveryWorker) runTask(ctx context.Context, task *durable.Task)
 	leaseUntil := w.clock().Add(w.opts.Lease)
 	if err := w.store.RenewLease(ctx, task.ID, task.LeaseOwner, task.FencingToken, leaseUntil); err != nil {
 		if errors.Is(err, durable.ErrLeaseLost) {
-			metrics.SurvivalLeaseConflictsTotal.Inc()
+			w.noteLeaseLost()
 		}
 		return
 	}
@@ -241,7 +248,7 @@ func (w *DurableRecoveryWorker) runTask(ctx context.Context, task *durable.Task)
 		case <-leaseTicker.C:
 			if err := w.store.RenewLease(ctx, task.ID, task.LeaseOwner, task.FencingToken, w.clock().Add(w.opts.Lease)); err != nil {
 				if errors.Is(err, durable.ErrLeaseLost) {
-					metrics.SurvivalLeaseConflictsTotal.Inc()
+					w.noteLeaseLost()
 				}
 				cancelAttempt()
 				waitAttemptDone(attemptDone, w.opts.StopGrace)
@@ -267,12 +274,12 @@ attemptFinished:
 		projection, commitErr := w.store.CommitTerminal(ctx, durable.TerminalCommit{Task: task, Outcome: durable.StatusCompleted, Body: attempt.Body, ContentType: attempt.ContentType, Attempt: attempt.Attempt, ErrorKind: attempt.ErrorKind})
 		if commitErr != nil {
 			if errors.Is(commitErr, durable.ErrLeaseLost) {
-				metrics.SurvivalLeaseConflictsTotal.Inc()
+				w.noteLeaseLost()
 			}
 			return
 		}
 		if projection != nil && !projection.Committed {
-			metrics.SurvivalLeaseConflictsTotal.Inc()
+			w.noteLeaseLost()
 		}
 		return
 	}
@@ -283,11 +290,19 @@ attemptFinished:
 		}
 		next := w.clock().Add(backoff)
 		if err := w.store.Reschedule(ctx, durable.RescheduleParams{TaskID: task.ID, LeaseOwner: task.LeaseOwner, FencingToken: task.FencingToken, NextRetryAt: next, ErrorKind: attempt.ErrorKind, Reason: decision.Reason, Attempt: attempt.Attempt}); err != nil && errors.Is(err, durable.ErrLeaseLost) {
-			metrics.SurvivalLeaseConflictsTotal.Inc()
+			w.noteLeaseLost()
 		}
 		return
 	}
 	w.failTask(ctx, task, fmt.Errorf("durable task terminal: %s", decision.Reason))
+}
+
+// noteLeaseLost records one fenced-off write in both observability families:
+// gateway_survival_lease_conflicts_total (per-request coordinator view) and
+// durable_lease_lost_total (worker-path view, doc 18 §15).
+func (w *DurableRecoveryWorker) noteLeaseLost() {
+	metrics.SurvivalLeaseConflictsTotal.Inc()
+	metrics.DurableLeaseLostTotal.Inc()
 }
 
 // rescheduleWithError releases the claim with a floored backoff and a stable
