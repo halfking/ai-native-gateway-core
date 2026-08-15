@@ -180,9 +180,15 @@ func (w *RecoveryWorker) Run(ctx context.Context) error {
 func (w *RecoveryWorker) RunCycle(ctx context.Context) {
 	tasks, err := w.store.ClaimRunnable(ctx, w.cfg.Owner, w.cfg.ClaimLimit, w.cfg.Lease)
 	if err != nil {
+		metrics.DurableRecoveryRunsTotal.WithLabelValues("error").Inc()
 		slog.Warn("durabletask: claim runnable failed", "error", err, "owner", w.cfg.Owner)
 		return
 	}
+	if len(tasks) == 0 {
+		metrics.DurableRecoveryRunsTotal.WithLabelValues("empty").Inc()
+		return
+	}
+	metrics.DurableRecoveryRunsTotal.WithLabelValues("claimed").Inc()
 	for _, task := range tasks {
 		w.executeClaimed(ctx, task)
 	}
@@ -236,8 +242,12 @@ func (w *RecoveryWorker) executeClaimed(ctx context.Context, task ClaimedTask) {
 			Status:     StatusPermanentFailed,
 			ReasonCode: ReasonSnapshotUndecryptable,
 			ErrorKind:  "snapshot_decrypt_failed",
-		}); ferr != nil && !errors.Is(ferr, ErrLeaseLost) {
-			slog.Warn("durabletask: fail undecryptable task errored", "task_id", task.TaskID, "error", ferr)
+		}); ferr != nil {
+			if errors.Is(ferr, ErrLeaseLost) {
+				w.noteLeaseLost(task.TaskID, "fail_undecryptable")
+			} else {
+				slog.Warn("durabletask: fail undecryptable task errored", "task_id", task.TaskID, "error", ferr)
+			}
 		}
 		return
 	}
@@ -256,6 +266,7 @@ func (w *RecoveryWorker) executeClaimed(ctx context.Context, task ClaimedTask) {
 	if leaseLost.lost() {
 		// The fencing token moved on while executing: this attempt's
 		// outcome is void; the current owner owns the transition.
+		w.noteLeaseLost(task.TaskID, "renew_during_execution")
 		slog.Warn("durabletask: lease lost during execution; discarding outcome",
 			"task_id", task.TaskID, "outcome", int(exec.Outcome))
 		return
@@ -280,6 +291,7 @@ func (w *RecoveryWorker) renewUntilDone(ctx context.Context, cancel context.Canc
 		case <-ticker.C:
 			if err := w.store.RenewLease(ctx, lease, time.Now().Add(w.cfg.Lease)); err != nil {
 				if errors.Is(err, ErrLeaseLost) {
+					w.noteLeaseLost(lease.TaskID, "renew")
 					lost.trigger()
 					cancel()
 				} else {
@@ -291,12 +303,18 @@ func (w *RecoveryWorker) renewUntilDone(ctx context.Context, cancel context.Canc
 	}
 }
 
+// noteLeaseLost records a fenced-off write for observability.
+func (w *RecoveryWorker) noteLeaseLost(taskID, stage string) {
+	metrics.DurableLeaseLostTotal.Inc()
+	slog.Warn("durabletask: fenced write rejected", "task_id", taskID, "stage", stage)
+}
+
 func (w *RecoveryWorker) applyOutcome(ctx context.Context, lease Lease, exec Execution) {
 	switch exec.Outcome {
 	case OutcomeCompleted:
 		if _, err := w.store.Complete(ctx, lease, CompleteParams{Body: exec.Body, ContentType: exec.ContentType}); err != nil {
 			if errors.Is(err, ErrLeaseLost) {
-				slog.Warn("durabletask: completion fenced off", "task_id", lease.TaskID)
+				w.noteLeaseLost(lease.TaskID, "complete")
 				return
 			}
 			slog.Error("durabletask: completion write failed", "task_id", lease.TaskID, "error", err)
@@ -315,7 +333,11 @@ func (w *RecoveryWorker) applyOutcome(ctx context.Context, lease Lease, exec Exe
 			NextRetryAt: time.Now().Add(delay),
 			ErrorKind:   exec.ErrorKind,
 			ReasonCode:  exec.ReasonCode,
-		}); err != nil && !errors.Is(err, ErrLeaseLost) {
+		}); err != nil {
+			if errors.Is(err, ErrLeaseLost) {
+				w.noteLeaseLost(lease.TaskID, "reschedule")
+				return
+			}
 			slog.Error("durabletask: reschedule write failed", "task_id", lease.TaskID, "error", err)
 		}
 	case OutcomePermanent:
@@ -323,7 +345,11 @@ func (w *RecoveryWorker) applyOutcome(ctx context.Context, lease Lease, exec Exe
 			Status:     StatusPermanentFailed,
 			ReasonCode: exec.ReasonCode,
 			ErrorKind:  exec.ErrorKind,
-		}); err != nil && !errors.Is(err, ErrLeaseLost) {
+		}); err != nil {
+			if errors.Is(err, ErrLeaseLost) {
+				w.noteLeaseLost(lease.TaskID, "fail")
+				return
+			}
 			slog.Error("durabletask: failure write failed", "task_id", lease.TaskID, "error", err)
 		}
 	default:
