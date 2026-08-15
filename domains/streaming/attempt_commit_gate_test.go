@@ -53,6 +53,60 @@ func TestAttemptCommitGateBuffersMetadataUntilSemanticCommit(t *testing.T) {
 	}
 }
 
+func TestAttemptCommitGateCheckpointsBeforeSemanticWrite(t *testing.T) {
+	f := &trackingFlusher{}
+	var checkpointed CommitState
+	g := NewAttemptCommitGate(ProtocolAnthropic, NewSerializedStreamWriter(f), GateOptions{
+		Mode:                   GateModeBuffered,
+		MaxMetadataBufferBytes: 1024,
+		BeforeSemanticCommit: func(state CommitState) error {
+			if f.buf.Len() != 0 {
+				t.Fatalf("semantic bytes reached wire before checkpoint: %q", f.buf.String())
+			}
+			checkpointed = state
+			return nil
+		},
+	})
+	meta := "event: message_start\ndata: {}\n\n"
+	content := "event: content_block_delta\ndata: {\"delta\":{\"type\":\"text_delta\",\"text\":\"hi\"}}\n\n"
+	if err := g.WriteFrame(meta); err != nil {
+		t.Fatal(err)
+	}
+	if err := g.WriteFrame(content); err != nil {
+		t.Fatal(err)
+	}
+	if checkpointed != CommitStateContent {
+		t.Fatalf("checkpoint state = %v, want content", checkpointed)
+	}
+	if got := f.buf.String(); got != meta+content {
+		t.Fatalf("wire = %q, want %q", got, meta+content)
+	}
+}
+
+func TestAttemptCommitGateCheckpointFailureBlocksNetworkWrite(t *testing.T) {
+	f := &trackingFlusher{}
+	wantErr := errors.New("checkpoint unavailable")
+	g := NewAttemptCommitGate(ProtocolAnthropic, NewSerializedStreamWriter(f), GateOptions{
+		Mode: GateModeBuffered,
+		BeforeSemanticCommit: func(CommitState) error {
+			return wantErr
+		},
+	})
+	if err := g.WriteFrame("event: message_start\ndata: {}\n\n"); err != nil {
+		t.Fatal(err)
+	}
+	err := g.WriteFrame("event: content_block_delta\ndata: {\"delta\":{\"type\":\"text_delta\",\"text\":\"hi\"}}\n\n")
+	if !errors.Is(err, wantErr) {
+		t.Fatalf("semantic write error = %v, want %v", err, wantErr)
+	}
+	if f.buf.Len() != 0 {
+		t.Fatalf("checkpoint failure leaked bytes: %q", f.buf.String())
+	}
+	if g.Committed() {
+		t.Fatal("checkpoint failure must leave gate uncommitted")
+	}
+}
+
 func TestAttemptCommitGateDiscardAllowedOnlyBeforeSemanticCommit(t *testing.T) {
 	g, f := newGateForTest(GateModeBuffered)
 	if err := g.WriteFrame("event: message_start\ndata: {}\n\n"); err != nil {

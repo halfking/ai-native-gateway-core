@@ -218,17 +218,6 @@ func main() {
 
 	// ── Logging ───────────────────────────────────────────────────────────
 	cfg := config.Load()
-	// Request survival (docs/修订0811/18+19): normalize knobs after load and
-	// enforce the single-outer-retry-owner invariant at startup. Survival and
-	// the mux streamretry wrapper are mutually exclusive; survival wins and
-	// the wrapper is skipped with an error log so the misconfiguration is
-	// visible instead of doubling retries silently.
-	cfg.NormalizeRequestSurvival()
-	if cfg.RequestSurvivalEnabled && cfg.StreamRetryEnabled {
-		slog.Error("request_survival and stream_retry are both enabled; " +
-			"disabling stream_retry wrapper (request_survival is the exclusive outer retry owner)")
-		cfg.StreamRetryEnabled = false
-	}
 
 	level := slog.LevelInfo
 	switch cfg.LogLevel {
@@ -277,7 +266,17 @@ func main() {
 		}
 	}
 
+	// Request survival (docs/修订0811/18+19): normalize after the optional
+	// YAML merge and enforce one outer retry owner for the final config.
+	cfg.NormalizeRequestSurvival()
+	if cfg.RequestSurvivalEnabled && cfg.StreamRetryEnabled {
+		slog.Error("request_survival and stream_retry are both enabled; disabling stream_retry wrapper (request_survival is the exclusive outer retry owner)")
+		cfg.StreamRetryEnabled = false
+	}
+
 	// V2-P8: 主读切换标记 — only the banner, the routing switch itself is
+	// a follow-up PR so this commit stays a pure observable change.
+
 	// a follow-up PR so this commit stays a pure observable change.
 	v2Primary := os.Getenv("SESSIONS_V2_PRIMARY_READ") == "true"
 	if v2Primary {
