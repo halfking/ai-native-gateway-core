@@ -172,9 +172,11 @@ func TestPGConcurrentClaimFencing(t *testing.T) {
 		NextRetryAt: now.Add(-time.Second), Reason: "detached",
 	}))
 
-	// 并发 claim：SKIP LOCKED 下恰好一个赢。
+	// 并发 claim：SKIP LOCKED 下恰好一个赢。错误经 channel 回收后在主
+	// goroutine 断言——testify 的 FailNow 只能在测试 goroutine 调用。
 	var mu sync.Mutex
 	var winners []*Task
+	errCh := make(chan error, 2)
 	var wg sync.WaitGroup
 	for i := 0; i < 2; i++ {
 		wg.Add(1)
@@ -183,13 +185,20 @@ func TestPGConcurrentClaimFencing(t *testing.T) {
 			tasks, err := store.ClaimRunnable(ctx, ClaimOptions{
 				Owner: "worker-" + string(rune('a'+i)), Lease: time.Minute, Batch: 1, Now: now,
 			})
-			require.NoError(t, err)
+			if err != nil {
+				errCh <- err
+				return
+			}
 			mu.Lock()
 			winners = append(winners, tasks...)
 			mu.Unlock()
 		}(i)
 	}
 	wg.Wait()
+	close(errCh)
+	for err := range errCh {
+		require.NoError(t, err)
+	}
 	require.Len(t, winners, 1, "exactly one worker must win the claim")
 	winner := winners[0]
 
