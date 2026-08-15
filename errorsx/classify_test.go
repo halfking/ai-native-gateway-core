@@ -58,6 +58,14 @@ func TestClassifyError_DNSFailure(t *testing.T) {
 	}
 }
 
+func TestClassifyError_EADDRNOTAVAIL(t *testing.T) {
+	err := errors.New("connect EADDRNOTAVAIL 198.18.0.51:443 - Local (0.0.0.0:0): cannot assign requested address")
+	kind := ClassifyError(err, nil)
+	if kind != KindNetwork {
+		t.Errorf("expected KindNetwork for EADDRNOTAVAIL, got %q", kind)
+	}
+}
+
 func TestClassifyError_GenericError(t *testing.T) {
 	err := errors.New("some random error")
 	kind := ClassifyError(err, nil)

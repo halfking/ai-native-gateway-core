@@ -553,8 +553,10 @@ func ClassifyError(err error, resp *http.Response) ErrorKind {
 		if strings.Contains(msg, "timeout") || strings.Contains(msg, "deadline") {
 			return KindTimeout
 		}
-		if strings.Contains(msg, "connection") || strings.Contains(msg, "refused") ||
-			strings.Contains(msg, "no such host") || strings.Contains(msg, "reset") {
+		if strings.Contains(msg, "connection") || strings.Contains(msg, "connect") ||
+			strings.Contains(msg, "refused") || strings.Contains(msg, "no such host") ||
+			strings.Contains(msg, "reset") || strings.Contains(msg, "eaddrnotavail") ||
+			strings.Contains(msg, "cannot assign requested address") {
 			return KindNetwork
 		}
 		if modelDeprecatedRe.MatchString(msg) {
