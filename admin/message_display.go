@@ -15,10 +15,20 @@ type TurnDisplay struct {
 	ToolSummary   string
 }
 
+// extractTurnDisplay normalizes one stored request/response pair.
+//
+// P2-C1: bodies persisted in CO-5 summary mode arrive as a _gw_body_summary
+// digest envelope. The envelope is unwrapped to its retained head before
+// extraction (see headForExtraction) and any content derived from an
+// envelope carries the displayNote truncation marker, so neither the
+// session-log previews nor the summary/title corpora ever see the envelope
+// JSON itself as content. Non-envelope bodies (flag-off or
+// sessions_v2.request_bodies_full=true) take the exact pre-P2-C1 path.
 func extractTurnDisplay(requestBody, responseBody, requestPreview, responsePreview *string) TurnDisplay {
 	var out TurnDisplay
-	if requestBody != nil && strings.TrimSpace(*requestBody) != "" {
-		out.UserTurn = extractLatestUserFromRequestJSON([]byte(*requestBody))
+	reqEnv, reqHead := unwrapBody(requestBody)
+	if reqHead != nil && strings.TrimSpace(*reqHead) != "" {
+		out.UserTurn = extractLatestUserFromRequestJSON([]byte(*reqHead))
 	}
 	if out.UserTurn == "" && requestPreview != nil {
 		out.UserTurn = latestUserFromPreview(*requestPreview)
@@ -26,15 +36,26 @@ func extractTurnDisplay(requestBody, responseBody, requestPreview, responsePrevi
 	if out.UserTurn == "" && requestPreview != nil {
 		out.UserTurn = strings.TrimSpace(*requestPreview)
 	}
+	if reqEnv != nil && out.UserTurn != "" {
+		out.UserTurn = strings.TrimSpace(out.UserTurn + " " + reqEnv.displayNote())
+	}
 
-	if responseBody != nil && strings.TrimSpace(*responseBody) != "" {
-		out.AssistantText, out.ToolSummary = extractAssistantFromResponseJSON([]byte(*responseBody))
+	respEnv, respHead := unwrapBody(responseBody)
+	if respHead != nil && strings.TrimSpace(*respHead) != "" {
+		out.AssistantText, out.ToolSummary = extractAssistantFromResponseJSON([]byte(*respHead))
 	}
 	if out.AssistantText == "" && out.ToolSummary == "" && responsePreview != nil {
 		out.AssistantText, out.ToolSummary = assistantFromPreview(*responsePreview)
 	}
 	if out.AssistantText == "" && responsePreview != nil {
 		out.AssistantText = strings.TrimSpace(*responsePreview)
+	}
+	if respEnv != nil {
+		if out.AssistantText != "" {
+			out.AssistantText = strings.TrimSpace(out.AssistantText + " " + respEnv.displayNote())
+		} else if out.ToolSummary != "" {
+			out.ToolSummary = strings.TrimSpace(out.ToolSummary + " " + respEnv.displayNote())
+		}
 	}
 	return out
 }
