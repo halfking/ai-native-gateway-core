@@ -4864,7 +4864,9 @@ func (h *ChatHandler) emitTelemetry(evt audit.Event, result *executors.ExecuteRe
 		CompressionReason:   result.CompressionReason,
 		CompressionStrategy: result.CompressionStrategy,
 		CompressionMeta:     result.CompressionMeta,
-		ParentRequestID:     result.ParentRequestID,
+		// Compression-rewrite parent chain only; the header-supplied auto
+		// loopback parent is applied below via applyParentCorrelationFields.
+		ParentRequestID: result.ParentRequestID,
 		// V3.1 dispatch queue timestamps (migration 491)
 		T0ArrivedAt:       result.T0ArrivedAt,
 		T1TotalEnqueuedAt: result.T1TotalEnqueuedAt,
@@ -4911,6 +4913,13 @@ func (h *ChatHandler) emitTelemetry(evt audit.Event, result *executors.ExecuteRe
 			reqLog.GwTaskID = strPtr(gwTID)
 		}
 	}
+	// 2026-08-15 (OBS-DV2 #4)：最终 upsert 此前只带 result.ParentRequestID
+	// （压缩重写父链），入口侧从 X-Gw-Parent-Request-Id 读入 logCtx 的
+	// auto loopback 父子关联被丢弃，ON CONFLICT DO UPDATE 又用 NULL 覆盖了
+	// recordInitialRequestLog 已写入的值 —— auto-title/auto-summary 子请求的
+	// parent_request_id / origin_actor 落库恒为 NULL，live stream 的
+	// child_request 帧因此从不发射。与初始写入保持同一套关联字段应用。
+	applyParentCorrelationFields(reqLog, logCtx)
 
 	// v3: if v7 compression_strategy is empty but a session compressor strategy
 	// exists, prefer the session compressor value so the row is queryable.

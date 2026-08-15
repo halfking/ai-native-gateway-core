@@ -763,7 +763,11 @@ func (g *AutoTitleGenerator) doCallAutoTitleOnce(
 	// to find every auto-title row and JOIN child.parent_request_id back to
 	// the parent user request. Pairs with the gs_ prefix used by the
 	// auto-summary generator (admin/auto_summary_generator.go).
-	req.Header.Set("X-Gw-Session-Id", "gt:"+sessionID)
+	// 2026-08-15 fix: prefix MUST be "gt_" (underscore) — sanitizeGwSessionHeader
+	// only accepts gw_/gt_/gs_ prefixes; the previous "gt:" (colon) form was
+	// silently dropped and the loopback row got a fresh gw_<uuid> instead of
+	// the branch namespace documented below.
+	req.Header.Set("X-Gw-Session-Id", "gt_"+sessionID)
 	// 2026-08-06: parent request correlation — handler entry reads this header
 	// and stores it in logCtx.ParentRequestID, which then flows into
 	// request_logs_hot.parent_request_id. This is what makes the title loopback

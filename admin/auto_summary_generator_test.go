@@ -174,7 +174,7 @@ func TestWorkerSlots_BoundedConcurrency(t *testing.T) {
 
 // TestDoCallSummaryOnce_EmitsBranchSessionAndParentHeaders (2026-08-06)
 // — verifies the loopback request includes the gs_ branch session id
-// (X-Gw-Session-Id: gs:<parent>), the parent request correlation header,
+// (X-Gw-Session-Id: gs_<parent>), the parent request correlation header,
 // and the source-actor header. Mirrors the title-generator test in
 // auto_title_generator_test.go.
 func TestDoCallSummaryOnce_EmitsBranchSessionAndParentHeaders(t *testing.T) {
@@ -225,8 +225,11 @@ func TestDoCallSummaryOnce_EmitsBranchSessionAndParentHeaders(t *testing.T) {
 	if gotPath != "/v1/chat/completions" {
 		t.Errorf("path = %q, want /v1/chat/completions", gotPath)
 	}
-	if v := gotHeaders.Get("X-Gw-Session-Id"); v != "gs:gw_abc123" {
-		t.Errorf("X-Gw-Session-Id = %q, want gs:gw_abc123", v)
+	// The prefix must be "gs_" (underscore): streaming.sanitizeGwSessionHeader
+	// only accepts gw_/gt_/gs_, so the earlier "gs:" form was silently dropped
+	// and the loopback row got a fresh gw_<uuid> instead of the gs_ branch id.
+	if v := gotHeaders.Get("X-Gw-Session-Id"); v != "gs_gw_abc123" {
+		t.Errorf("X-Gw-Session-Id = %q, want gs_gw_abc123", v)
 	}
 	if v := gotHeaders.Get("X-Gw-Parent-Request-Id"); v != "parent-req-id-xyz" {
 		t.Errorf("X-Gw-Parent-Request-Id = %q, want parent-req-id-xyz", v)
