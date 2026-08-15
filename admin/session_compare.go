@@ -454,6 +454,13 @@ func latestUserMessage(body *string) string {
 	if body == nil || *body == "" {
 		return ""
 	}
+	if env, head := unwrapBody(body); env != nil {
+		if head == nil || strings.TrimSpace(*head) == "" {
+			return env.displayNote()
+		}
+		content := latestUserMessage(head)
+		return appendEnvelopeDisplayNote(content, env)
+	}
 	var parsed struct {
 		Messages []struct {
 			Role    string          `json:"role"`
@@ -477,6 +484,13 @@ func firstAssistantFromResponse(body *string) string {
 	if body == nil || *body == "" {
 		return ""
 	}
+	if env, head := unwrapBody(body); env != nil {
+		if head == nil || strings.TrimSpace(*head) == "" {
+			return env.displayNote()
+		}
+		content := firstAssistantFromResponse(head)
+		return appendEnvelopeDisplayNote(content, env)
+	}
 	var openaiResp struct {
 		Choices []struct {
 			Message struct {
@@ -496,6 +510,31 @@ func firstAssistantFromResponse(body *string) string {
 	return ""
 }
 
+func appendEnvelopeDisplayNote(content string, env *bodyEnvelope) string {
+	if env == nil {
+		return content
+	}
+	note := env.displayNote()
+	if strings.TrimSpace(content) == "" {
+		return note
+	}
+	return strings.TrimSpace(content + " " + note)
+}
+
+func envelopeMessage(index *int, env *bodyEnvelope) []MessageView {
+	if env == nil {
+		return nil
+	}
+	*index++
+	content := env.displayNote()
+	return []MessageView{{
+		Index:      *index,
+		Role:       "gateway",
+		Content:    content,
+		TokenCount: estimateTokens(content),
+	}}
+}
+
 // ptrString safely dereferences a *string, returning "" for nil.
 func ptrString(s *string) string {
 	if s == nil {
@@ -506,6 +545,17 @@ func ptrString(s *string) string {
 
 // parseMessagesFromBody extracts messages from a request body.
 func parseMessagesFromBody(body string, index *int) []MessageView {
+	if env, head := unwrapBody(&body); env != nil {
+		if head == nil || strings.TrimSpace(*head) == "" {
+			return envelopeMessage(index, env)
+		}
+		msgs := parseMessagesFromBody(*head, index)
+		if len(msgs) == 0 {
+			return envelopeMessage(index, env)
+		}
+		msgs[len(msgs)-1].Content = appendEnvelopeDisplayNote(msgs[len(msgs)-1].Content, env)
+		return msgs
+	}
 	var parsed struct {
 		Messages []struct {
 			Role      string          `json:"role"`
@@ -541,6 +591,17 @@ func parseMessagesFromBody(body string, index *int) []MessageView {
 
 // parseResponseMessages extracts messages from a response body (OpenAI/Anthropic format).
 func parseResponseMessages(body string, index *int) []MessageView {
+	if env, head := unwrapBody(&body); env != nil {
+		if head == nil || strings.TrimSpace(*head) == "" {
+			return envelopeMessage(index, env)
+		}
+		msgs := parseResponseMessages(*head, index)
+		if len(msgs) == 0 {
+			return envelopeMessage(index, env)
+		}
+		msgs[len(msgs)-1].Content = appendEnvelopeDisplayNote(msgs[len(msgs)-1].Content, env)
+		return msgs
+	}
 	// Try OpenAI format first
 	var openaiResp struct {
 		Choices []struct {
@@ -779,6 +840,12 @@ func (api *HandoffAPI) generateHandoffSummary(ctx context.Context, sessionID, te
 }
 
 func extractUserIntent(body string) string {
+	if env, head := unwrapBody(&body); env != nil {
+		if head == nil || strings.TrimSpace(*head) == "" {
+			return env.displayNote()
+		}
+		return appendEnvelopeDisplayNote(extractUserIntent(*head), env)
+	}
 	var parsed struct {
 		Messages []struct {
 			Role    string          `json:"role"`
@@ -801,6 +868,12 @@ func extractUserIntent(body string) string {
 }
 
 func extractResponseSummary(body string) string {
+	if env, head := unwrapBody(&body); env != nil {
+		if head == nil || strings.TrimSpace(*head) == "" {
+			return env.displayNote()
+		}
+		return appendEnvelopeDisplayNote(extractResponseSummary(*head), env)
+	}
 	var openaiResp struct {
 		Choices []struct {
 			Message struct {

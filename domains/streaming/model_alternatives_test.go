@@ -87,7 +87,7 @@ func TestResolveTaskTypeForAlternatives_InlineHeuristicLast(t *testing.T) {
 		nil,          // no cache
 		autoroute.ClassificationSignals{
 			LastUserPrompt: "refactor this function and fix the failing unit test",
-			HasCodeBlock:    true,
+			HasCodeBlock:   true,
 		},
 	)
 	if got == "" {

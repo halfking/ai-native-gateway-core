@@ -67,14 +67,14 @@ func TestSessionsV2FeatureFlags(t *testing.T) {
 		t.Errorf("rollout_percent: expected default 0, got %v", rolloutSpec.Default)
 	}
 
-	// CO-5: bodies full-capture override defaults to false (summary mode is
-	// the default under sessions_v2.enabled) and is hot-reloadable.
+	// Full request/response bodies remain the safe default. Operators must
+	// explicitly opt in to summary storage by setting this flag to false.
 	bodiesFullSpec := findSpec(specs, "sessions_v2.request_bodies_full")
 	if bodiesFullSpec == nil {
 		t.Fatal("request_bodies_full spec not found")
 	}
-	if bodiesFullSpec.Default != false {
-		t.Errorf("request_bodies_full: expected default false, got %v", bodiesFullSpec.Default)
+	if bodiesFullSpec.Default != true {
+		t.Errorf("request_bodies_full: expected default true, got %v", bodiesFullSpec.Default)
 	}
 
 	// Test hot reload flag

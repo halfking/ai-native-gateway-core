@@ -53,6 +53,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/ratelimit"
 	"github.com/kaixuan/llm-gateway-go/registry"
 	"github.com/kaixuan/llm-gateway-go/resolve"
+	"github.com/kaixuan/llm-gateway-go/secret"
 	"github.com/kaixuan/llm-gateway-go/security/armor"
 	upstreampkg "github.com/kaixuan/llm-gateway-go/upstream"
 	"go.opentelemetry.io/otel/attribute"
@@ -696,11 +697,17 @@ type ChatHandler struct {
 	// inert; armed via SetRequestSurvival from main.go.
 	survivalTenantAllowed func(tenantID string) bool
 	survivalOptions       SurvivalOptions
-	provider              providerResolver
-	sticky                *executors.StickyCache
-	keyVerifier           *authentication.KeyVerifier
-	rateLimiter           ratelimit.RPMLimiter
-	telemetryClient       *telemetry.Client
+	// M3 durable request creation (doc 18 §11.2): nil fields keep the default
+	// request path inert. All three protocol handlers share one pre-routing seam.
+	durableStore         DurableRequestStore
+	durableKeyring       *secret.Keyring
+	durableTenantAllowed func(tenantID string) bool
+	durableDeadline      time.Duration
+	provider             providerResolver
+	sticky               *executors.StickyCache
+	keyVerifier          *authentication.KeyVerifier
+	rateLimiter          ratelimit.RPMLimiter
+	telemetryClient      *telemetry.Client
 	// profileEmitter (2026-07-15) 把请求/会话事件投到 clientprofile 画像聚合。
 	// nil 禁用画像聚合；调用方负责 graceful 注入（main.go SetupClientProfileIntegration）。
 	profileEmitter interface {
@@ -2692,6 +2699,33 @@ func (h *ChatHandler) serveWithExecutor(
 	tenantID := ""
 	if keyInfo != nil {
 		tenantID = keyInfo.TenantID
+	}
+
+	if durableRequested(r) && !isStream {
+		captureAndEmitFailure("durable_stream_required", "durable requests require streaming mode", nil, nil)
+		writeErrorJSON(w, http.StatusServiceUnavailable, requestID,
+			"durable requests require streaming mode", "server_error", "durable_stream_required")
+		return
+	}
+	responseFormatRequested, multimodal := durableSnapshotFlags(bodyBytes)
+
+	r, err = h.prepareDurableRequest(r, DurableSnapshotInput{
+		Protocol:       "openai-chat",
+		RequestID:      requestID,
+		ClientModel:    clientModel,
+		Body:           bodyBytes,
+		KeyInfo:        keyInfo,
+		Session:        sessionInfo,
+		ClientIdentity: clientID,
+		ToolsRequested: requestHasTools(bodyBytes),
+		ResponseFormat: responseFormatRequested,
+		Multimodal:     multimodal,
+	})
+	if err != nil {
+		captureAndEmitFailure("durable_create_failed", err.Error(), nil, nil)
+		writeErrorJSON(w, http.StatusServiceUnavailable, requestID,
+			"durable request could not be accepted", "server_error", "durable_create_failed")
+		return
 	}
 
 	var (
@@ -5604,7 +5638,6 @@ func buildClientDisconnectProbeEntry(originalRequestID string, r *http.Request, 
 	var providerID, credentialID *int
 	var apiKeyID *int
 	var endUser *string
-	var requestBody *string
 	var requestPreview *string
 
 	if logCtx != nil {
@@ -5625,35 +5658,10 @@ func buildClientDisconnectProbeEntry(originalRequestID string, r *http.Request, 
 			endUser = strPtr(logCtx.EndUser)
 		}
 
-		// 记录请求体 (2026-07-24 fix: 重要！这样可以分析客户端为什么取消/超时)
+		// Client-disconnect probe rows are synthetic diagnostic events. Keep
+		// compact request metadata, but do not duplicate the original body into
+		// the probe row; the original row is linked through ClientRequestID.
 		if len(logCtx.Body) > 0 {
-			// 完整请求体（限制大小避免数据库字段溢出）
-			//
-			// 2026-07-25 调整：64KB → 512KB → 2MB
-			//
-			// 2MB 容量估算：
-			//   - 英文文本：~500K tokens（覆盖 GPT-4/Claude 200K 上下文）
-			//   - 中文文本：~1.3M tokens（覆盖 Gemini 1.5 Pro 2M 上下文）
-			//   - 代码：~570K tokens
-			//
-			// 实际场景覆盖：
-			//   ✅ 长文档分析（100页）：200-400KB
-			//   ✅ 多轮对话（100+ 轮）：400KB-1.2MB
-			//   ✅ 工具调用 + 工具结果：800KB-3MB（部分覆盖）
-			//   ✅ 完整书籍/长代码库：接近 2MB 上限
-			//   ⚠️ 超大代码库（百万行级）：> 2MB 仍会截断
-			//
-			// 数据库字段为 jsonb 类型（无明确大小限制，理论 1GB），
-			// 但超过 2MB 的请求体通常是异常情况，继续记录会拖慢入库。
-			// 2MB 可覆盖 > 99% 的真实场景，超过部分会被截断 + 标记原始大小。
-			maxSize := 2 * 1024 * 1024 // 2MB，覆盖 200K-2M token 上下文窗口
-			bodyText := string(logCtx.Body)
-			if len(bodyText) > maxSize {
-				bodyText = bodyText[:maxSize] + "...[truncated,original=" + strconv.Itoa(len(logCtx.Body)) + "bytes]"
-			}
-			requestBody = &bodyText
-
-			// 提取关键参数到 request_preview 用于快速查看
 			var reqBodyParsed map[string]any
 			if err := json.Unmarshal(logCtx.Body, &reqBodyParsed); err == nil {
 				preview := buildRequestPreview(reqBodyParsed)
@@ -5683,8 +5691,7 @@ func buildClientDisconnectProbeEntry(originalRequestID string, r *http.Request, 
 		ErrorKind:     strPtr(errorKind),
 		FailureStage:  &stage,
 		LatencyMs:     &latencyMs,
-		// 2026-07-24: 记录完整请求信息，用于分析客户端取消/超时原因
-		RequestBody:    requestBody,
+		// 2026-08-15: probe rows are synthetic; keep only compact metadata.
 		RequestPreview: requestPreview,
 		// Link back to the original request via ClientRequestID so /request-logs
 		// can correlate the probe row with the in_progress row it interrupted.

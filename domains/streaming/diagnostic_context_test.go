@@ -66,7 +66,8 @@ func (l *panickingRawLogger) LogResponse(_ string, _ string, _ []byte, _ bool) e
 	panic("raw logger exploded")
 }
 
-type recordedAnomaly struct {	anomalyType string
+type recordedAnomaly struct {
+	anomalyType string
 	details     map[string]interface{}
 }
 

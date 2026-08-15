@@ -19,11 +19,11 @@ const (
 // request_logs.quality_flags. Add new tags here, never inline string
 // literals, so dashboards and SQL aggregations stay consistent.
 const (
-	QualityFlagEmptyToolName        = "empty_tool_name"
-	QualityFlagDuplicateToolID      = "duplicate_tool_call_id"
-	QualityFlagXMLInToolCalls       = "xml_in_tool_calls"
-	QualityFlagEmptyToolNameAll     = "all_empty_tool_names"
-	QualityFlagUpstreamContextLoss  = "upstream_context_loss"
+	QualityFlagEmptyToolName       = "empty_tool_name"
+	QualityFlagDuplicateToolID     = "duplicate_tool_call_id"
+	QualityFlagXMLInToolCalls      = "xml_in_tool_calls"
+	QualityFlagEmptyToolNameAll    = "all_empty_tool_names"
+	QualityFlagUpstreamContextLoss = "upstream_context_loss"
 )
 
 // QualityFixResult is the output of ProcessNonStreamBody. Callers

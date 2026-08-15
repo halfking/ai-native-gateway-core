@@ -126,7 +126,6 @@ func StreamAnthropicPassthroughWithDiagnostics(
 		}
 	}()
 
-
 	// SR-W1: route client frames through the attempt commit gate.
 	// Disabled (default) this is the identity function — legacy wire bytes.
 	// This passthrough has no error-path terminal rendering (interrupted
@@ -315,7 +314,6 @@ func StreamAnthropicSSEToOpenAIWithDiagnostics(
 	defer func() {
 		diagnosticCollector.report(diagnostics, requestID, "anthropic-messages", "openai-completions", outcome.Interrupted)
 	}()
-
 
 	// SR-W1: route client frames through the attempt commit gate.
 	// Disabled (default) this is the identity function — legacy wire bytes.

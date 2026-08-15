@@ -433,7 +433,6 @@ func StreamChatWithPendingCaptureAndDiagnostics(
 
 	runtimeCfg := currentStreamRuntimeConfig()
 
-
 	// SR-W1: route client frames through the attempt commit gate.
 	// Disabled (default) this is the identity function — legacy wire bytes.
 	w, gate := wrapAttemptWriter(w, ProtocolOpenAIChat)

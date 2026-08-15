@@ -280,13 +280,13 @@ func TestRequestLogContextTerminalGateCompetingOutcomes(t *testing.T) {
 //   - EndUserID (covered by end-user fix Round-1+2; sanity-checked here)
 func TestRequestLogContext_KeyInfoParity(t *testing.T) {
 	var (
-		tenantID       = "tenant-acme"
-		apiKeyID       = 42
-		applicationID  = 7
-		keyPrefix      = "sk-acme-1a2b"
-		ownerUser      = "ops@acme.com"
-		appCode        = "PROD"
-		endUser        = "alice@acme.com"
+		tenantID      = "tenant-acme"
+		apiKeyID      = 42
+		applicationID = 7
+		keyPrefix     = "sk-acme-1a2b"
+		ownerUser     = "ops@acme.com"
+		appCode       = "PROD"
+		endUser       = "alice@acme.com"
 	)
 	ki := &authentication.KeyInfo{
 		ID:              apiKeyID,

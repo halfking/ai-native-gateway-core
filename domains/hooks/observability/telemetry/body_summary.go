@@ -19,8 +19,9 @@ import (
 // per-row storage. sessions_v2 disabled ⇒ behaviour is unchanged (full
 // bodies), pinned by TestUpdateRequestLog_BodiesFullModeUnchanged.
 //
-// An explicit platform flag (sessions_v2.request_bodies_full, default false)
-// restores full bodies under sessions_v2 for incident debugging.
+// An explicit platform flag (sessions_v2.request_bodies_full, default true)
+// keeps full bodies under sessions_v2. Operators may set it false to opt in
+// to digest-only storage after downstream consumers are ready.
 
 const (
 	// bodySummaryModeDigest marks the digest envelope persisted in place of
@@ -64,12 +65,12 @@ func init() {
 }
 
 // defaultBodiesSummaryEnabled reads the live platform settings: summary mode
-// is active only when sessions_v2.enabled is true AND the explicit full-body
-// override (sessions_v2.request_bodies_full, default false — 排障用) is off.
+// is active only when sessions_v2.enabled is true AND full-body persistence
+// has been explicitly disabled.
 // Hot-reloadable on both flags.
 func defaultBodiesSummaryEnabled() bool {
 	return settings.GetPlatformBool("sessions_v2.enabled", false) &&
-		!settings.GetPlatformBool("sessions_v2.request_bodies_full", false)
+		!settings.GetPlatformBool("sessions_v2.request_bodies_full", true)
 }
 
 // requestBodiesSummaryEnabled reports whether request_logs_bodies writes

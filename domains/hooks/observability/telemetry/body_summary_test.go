@@ -342,28 +342,27 @@ func strconvFormatBool(b bool) string {
 	return "false"
 }
 
-// TestRequestBodiesSummaryEnabled_FlagCombination (CO-5): the settings-backed
-// seam must implement: summary mode only under sessions_v2.enabled, and the
-// explicit sessions_v2.request_bodies_full override (default false) restores
-// full bodies for incident debugging even when sessions_v2 is enabled.
+// TestRequestBodiesSummaryEnabled_FlagCombination pins full body persistence
+// as the safe default. Summary storage requires an explicit false override.
 func TestRequestBodiesSummaryEnabled_FlagCombination(t *testing.T) {
 	tests := []struct {
-		name          string
-		sessionsV2On  bool
-		bodiesFullOn  bool
-		wantSummaryOn bool
+		name                  string
+		sessionsV2On          bool
+		setBodiesFullOverride bool
+		bodiesFullOn          bool
+		wantSummaryOn         bool
 	}{
 		{name: "sessions_v2 disabled keeps full bodies", sessionsV2On: false, bodiesFullOn: false, wantSummaryOn: false},
-		{name: "sessions_v2 enabled defaults to summary", sessionsV2On: true, bodiesFullOn: false, wantSummaryOn: true},
-		{name: "explicit full override restores full bodies", sessionsV2On: true, bodiesFullOn: true, wantSummaryOn: false},
-		{name: "full override is inert without sessions_v2", sessionsV2On: false, bodiesFullOn: true, wantSummaryOn: false},
+		{name: "sessions_v2 enabled defaults to full bodies", sessionsV2On: true, wantSummaryOn: false},
+		{name: "explicit false enables summary storage", sessionsV2On: true, setBodiesFullOverride: true, bodiesFullOn: false, wantSummaryOn: true},
+		{name: "explicit true keeps full bodies", sessionsV2On: true, setBodiesFullOverride: true, bodiesFullOn: true, wantSummaryOn: false},
 	}
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			overrides := map[string]bool{"sessions_v2.enabled": tc.sessionsV2On}
-			if tc.bodiesFullOn {
-				overrides["sessions_v2.request_bodies_full"] = true
+			if tc.setBodiesFullOverride {
+				overrides["sessions_v2.request_bodies_full"] = tc.bodiesFullOn
 			}
 			withSessionsV2Settings(t, overrides)
 

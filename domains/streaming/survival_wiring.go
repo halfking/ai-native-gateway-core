@@ -2,9 +2,11 @@ package streaming
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
+	"time"
 
 	"github.com/kaixuan/llm-gateway-go/domains/streaming/executors"
 	"github.com/kaixuan/llm-gateway-go/internal/retryowner"
@@ -54,6 +56,11 @@ func (h *ChatHandler) runSurvivalCoordinator(
 	tenantID string,
 ) (*executors.ExecuteResult, error) {
 	protocol := survivalClientProtocol(r)
+	lease, durable := DurableLeaseFromContext(r.Context())
+	lifecycle, durableLifecycle := h.durableStore.(DurableLifecycleStore)
+	if durable && !durableLifecycle {
+		return nil, errors.New("durable lifecycle store is not configured")
+	}
 
 	// Owner freeze (SR-05/W0): mark the whole request survival-owned so the
 	// streamretry wrapper (if still mounted) steps aside.
@@ -72,6 +79,9 @@ func (h *ChatHandler) runSurvivalCoordinator(
 	}
 
 	sw := NewSerializedStreamWriter(w)
+	if durable {
+		sw.EnableCapture(1 << 20)
+	}
 	coordinator := &SurvivalCoordinator{
 		Exec:     h.executor,
 		Protocol: protocol,
@@ -89,8 +99,38 @@ func (h *ChatHandler) runSurvivalCoordinator(
 			renderSurvivalTerminal(sw, protocol, decision, committed)
 		},
 	}
+	if durable {
+		coordinator.BeforeSemanticCommit = func(ctx context.Context, state CommitState) error {
+			persistCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+			defer cancel()
+			return lifecycle.Checkpoint(persistCtx, lease, state)
+		}
+		coordinator.Reschedule = func(ctx context.Context, nextRetryAt time.Time, reason string) error {
+			persistCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+			defer cancel()
+			return lifecycle.Reschedule(persistCtx, lease, nextRetryAt, reason)
+		}
+	}
 
 	res := coordinator.Run(frozenCtx, sw, params)
+	if durable {
+		body, captureErr := sw.Captured()
+		if captureErr != nil {
+			res.Succeed = false
+			res.Decision = TaskDecision{Action: TaskActionResumeBlocked, Reason: "durable_result_too_large"}
+			body = nil
+		}
+		persistCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		contentType := "text/event-stream"
+		if !params.IsStream {
+			contentType = "application/json"
+		}
+		commitErr := lifecycle.Commit(persistCtx, lease, body, contentType, res.Decision)
+		cancel()
+		if commitErr != nil {
+			return nil, fmt.Errorf("commit durable result: %w", commitErr)
+		}
+	}
 	slog.Info("request_survival_finished",
 		"request_id", params.RequestID,
 		"succeed", res.Succeed,

@@ -76,8 +76,9 @@ func (fs FieldState) String() string {
 //   - FieldProvided → actual content
 //
 // Example:
-//   var messagesPtr *string = ToStringPtr(reqBody.Messages)
-//   // Store messagesPtr in database, preserving the semantic difference
+//
+//	var messagesPtr *string = ToStringPtr(reqBody.Messages)
+//	// Store messagesPtr in database, preserving the semantic difference
 func ToStringPtr(raw json.RawMessage) *string {
 	state := GetFieldState(raw)
 	switch state {
@@ -98,9 +99,10 @@ func ToStringPtr(raw json.RawMessage) *string {
 // Returns an error message if validation fails, or empty string if valid.
 //
 // Example:
-//   if errMsg := ValidateRequiredField(reqBody.Messages, "messages"); errMsg != "" {
-//       return errorResponse("invalid_request", errMsg)
-//   }
+//
+//	if errMsg := ValidateRequiredField(reqBody.Messages, "messages"); errMsg != "" {
+//	    return errorResponse("invalid_request", errMsg)
+//	}
 func ValidateRequiredField(raw json.RawMessage, fieldName string) string {
 	state := GetFieldState(raw)
 	switch state {
@@ -119,12 +121,13 @@ func ValidateRequiredField(raw json.RawMessage, fieldName string) string {
 // Returns an error message if validation fails, or empty string if valid.
 //
 // Example:
-//   if errMsg := ValidateNonEmptyArray(reqBody.Messages, "messages"); errMsg != "" {
-//       return errorResponse("invalid_request", errMsg)
-//   }
+//
+//	if errMsg := ValidateNonEmptyArray(reqBody.Messages, "messages"); errMsg != "" {
+//	    return errorResponse("invalid_request", errMsg)
+//	}
 func ValidateNonEmptyArray(raw json.RawMessage, fieldName string) string {
 	state := GetFieldState(raw)
-	
+
 	// First check field state
 	if state == FieldNotProvided {
 		return fieldName + " field is required"
@@ -132,17 +135,17 @@ func ValidateNonEmptyArray(raw json.RawMessage, fieldName string) string {
 	if state == FieldNull {
 		return fieldName + " cannot be null"
 	}
-	
+
 	// Then validate it's a non-empty array
 	var arr []interface{}
 	if err := json.Unmarshal(raw, &arr); err != nil {
 		return fieldName + " must be a valid JSON array, not an object or other type"
 	}
-	
+
 	if len(arr) == 0 {
 		return fieldName + " array cannot be empty"
 	}
-	
+
 	return "" // Valid
 }
 
@@ -150,20 +153,21 @@ func ValidateNonEmptyArray(raw json.RawMessage, fieldName string) string {
 // Returns true if at least one user message is found.
 //
 // Example:
-//   if !HasUserMessage(reqBody.Messages) {
-//       return errorResponse("no_user_message", "messages must contain at least one user message")
-//   }
+//
+//	if !HasUserMessage(reqBody.Messages) {
+//	    return errorResponse("no_user_message", "messages must contain at least one user message")
+//	}
 func HasUserMessage(raw json.RawMessage) bool {
 	var messages []map[string]interface{}
 	if err := json.Unmarshal(raw, &messages); err != nil {
 		return false
 	}
-	
+
 	for _, msg := range messages {
 		if role, ok := msg["role"].(string); ok && role == "user" {
 			return true
 		}
 	}
-	
+
 	return false
 }

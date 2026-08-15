@@ -177,6 +177,18 @@ function formatJson(obj: unknown): string {
   }
 }
 
+function summaryEnvelopeMessage(summary: Record<string, unknown> | undefined): Record<string, unknown>[] | null {
+  if (!summary || typeof summary !== 'object') return null
+  const bytes = typeof summary.bytes === 'number' ? summary.bytes : Number(summary.bytes || 0)
+  const truncated = summary.head_truncated === true
+  return [{
+    role: 'gateway',
+    content: truncated
+      ? `[已摘要化: 原始 ${bytes} bytes, head 已截断]`
+      : `[已摘要化: 原始 ${bytes} bytes]`,
+  }]
+}
+
 function extractMessagesFromBody(body: unknown): Record<string, unknown>[] {
   if (body == null) return []
   let parsed: unknown = body
@@ -186,6 +198,8 @@ function extractMessagesFromBody(body: unknown): Record<string, unknown>[] {
   if (Array.isArray(parsed)) return parsed as Record<string, unknown>[]
   if (typeof parsed === 'object' && parsed !== null) {
     const o = parsed as Record<string, unknown>
+    const summaryMessage = summaryEnvelopeMessage(o._gw_body_summary as Record<string, unknown> | undefined)
+    if (summaryMessage) return summaryMessage
     if (Array.isArray(o.messages)) return o.messages as Record<string, unknown>[]
     if (Array.isArray(o.choices)) {
       const msgs: Record<string, unknown>[] = []

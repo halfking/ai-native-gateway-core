@@ -88,6 +88,10 @@ type SurvivalCoordinator struct {
 	// (resume-blocked) and therefore needs a well-formed stream ending
 	// rather than a bare error frame.
 	Terminal func(decision TaskDecision, committed bool)
+	// BeforeSemanticCommit runs before the first semantic frame reaches the client.
+	BeforeSemanticCommit func(ctx context.Context, state CommitState) error
+	// Reschedule persists the next runnable time while the current lease is valid.
+	Reschedule func(ctx context.Context, nextRetryAt time.Time, reason string) error
 }
 
 func (c *SurvivalCoordinator) now() time.Time {
@@ -142,7 +146,12 @@ func (c *SurvivalCoordinator) Run(ctx context.Context, sw *SerializedStreamWrite
 	var recoveryStart time.Time
 
 	for {
-		gate := NewAttemptCommitGate(c.Protocol, sw, GateOptions{Mode: GateModeBuffered})
+		gate := NewAttemptCommitGate(c.Protocol, sw, GateOptions{Mode: GateModeBuffered, BeforeSemanticCommit: func(state CommitState) error {
+			if c.BeforeSemanticCommit == nil {
+				return nil
+			}
+			return c.BeforeSemanticCommit(ctx, state)
+		}})
 
 		gw := NewGateWriterWithResponse(gate, params.W)
 		attemptParams := *params
@@ -192,6 +201,15 @@ func (c *SurvivalCoordinator) Run(ctx context.Context, sw *SerializedStreamWrite
 			waitState := survivalStateRetryNow
 			if res.Decision.Action == TaskActionWaitRecovery {
 				waitState = survivalStateWaiting
+			}
+			if c.Reschedule != nil {
+				if err := c.Reschedule(ctx, c.now().Add(wait), res.Decision.Reason); err != nil {
+					res.Decision = TaskDecision{Action: TaskActionFailClosed, Reason: "durable_reschedule_failed"}
+					c.renderTerminal(res.Decision, gate)
+					recordSurvivalTransition(survivalStateRunning, survivalTerminalToState(res.Decision), res.Decision.Reason)
+					recordSurvivalRequestTerminal(c.Protocol, res.Decision)
+					return res
+				}
 			}
 			recordSurvivalTransition(survivalStateRunning, waitState, res.Decision.Reason)
 			c.keepalive(sw)

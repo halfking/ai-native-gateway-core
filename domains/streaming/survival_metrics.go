@@ -19,12 +19,12 @@ import (
 // survivalOutcomeLabels are the closed outcome enum of
 // gateway_survival_requests_total (doc 18 §15.1).
 const (
-	survivalOutcomeCompleted          = "completed"
-	survivalOutcomePermanentFailed    = "permanent_failed"
-	survivalOutcomeExpired            = "expired"
-	survivalOutcomeCancelled          = "cancelled"
+	survivalOutcomeCompleted           = "completed"
+	survivalOutcomePermanentFailed     = "permanent_failed"
+	survivalOutcomeExpired             = "expired"
+	survivalOutcomeCancelled           = "cancelled"
 	survivalOutcomeResumeSafetyBlocked = "resume_safety_blocked"
-	survivalOutcomeError              = "error"
+	survivalOutcomeError               = "error"
 )
 
 // survivalMetricOutcome maps a terminal TaskDecision onto the closed outcome
