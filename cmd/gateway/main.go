@@ -340,12 +340,12 @@ func main() {
 	}
 
 	// ── Gateway → ASM outbox dispatcher (Phase 3, 2026-08-11) ───────
-	// Opt-in: only starts when both ASM_INTERNAL_ENDPOINT and OUTBOX_HMAC_SECRET
-	// are configured. Polls outbox_events and delivers to ASM via HTTP.
+	// Opt-in: only starts when both ASM_INTERNAL_ENDPOINT and
+	// AI_SESSION_MANAGER_GATEWAY_EVENT_SECRET are configured.
 	var outboxDispatcherStop context.CancelFunc
 	if dbConn != nil && dbConn.Enabled() {
 		asmEndpoint := strings.TrimSpace(os.Getenv("ASM_INTERNAL_ENDPOINT"))
-		hmacSecret := strings.TrimSpace(os.Getenv("OUTBOX_HMAC_SECRET"))
+		hmacSecret := gatewayEventSecret()
 		if asmEndpoint == "" || hmacSecret == "" {
 			slog.Info("outbox dispatcher disabled: incomplete ASM configuration",
 				"endpoint_configured", asmEndpoint != "",
@@ -1688,10 +1688,11 @@ func main() {
 		telemetryClient.SetDB(dbConn.Pool())
 
 		// WP4: Enable outbox writer for Gateway → ASM event delivery
-		// Only when both ASM_INTERNAL_ENDPOINT and OUTBOX_HMAC_SECRET are configured.
+		// Only when both ASM_INTERNAL_ENDPOINT and
+		// AI_SESSION_MANAGER_GATEWAY_EVENT_SECRET are configured.
 		// The actual INSERT happens in insertRequestLog() using its pgx.Tx.
 		asmEndpoint := strings.TrimSpace(os.Getenv("ASM_INTERNAL_ENDPOINT"))
-		hmacSecret := strings.TrimSpace(os.Getenv("OUTBOX_HMAC_SECRET"))
+		hmacSecret := gatewayEventSecret()
 		if asmEndpoint != "" && hmacSecret != "" {
 			// Pass a non-nil writer as a feature flag. The writer itself is not used;
 			// insertRequestLog() directly executes INSERT via tx.Exec().

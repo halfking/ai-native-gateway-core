@@ -6,7 +6,7 @@
   "definitions": {
     "EventEnvelope": {
       "type": "object",
-      "required": ["event_id", "schema_version", "event_type", "tenant_id", "occurred_at"],
+      "required": ["event_id", "schema_version", "type", "tenant_id", "occurred_at"],
       "properties": {
         "event_id": {
           "type": "string",
@@ -18,7 +18,7 @@
           "const": "1.0",
           "description": "事件 schema 版本"
         },
-        "event_type": {
+        "type": {
           "type": "string",
           "enum": [
             "request.completed.v1",
@@ -58,7 +58,7 @@
         },
         "payload": {
           "type": "object",
-          "description": "事件载荷，schema 由 event_type 决定"
+          "description": "事件载荷，schema 由 type 决定"
         }
       }
     },
@@ -265,31 +265,31 @@
   "oneOf": [
     {
       "properties": {
-        "event_type": {"const": "request.completed.v1"},
+        "type": {"const": "request.completed.v1"},
         "payload": {"$ref": "#/definitions/RequestCompletedPayload"}
       }
     },
     {
       "properties": {
-        "event_type": {"const": "request.failed.v1"},
+        "type": {"const": "request.failed.v1"},
         "payload": {"$ref": "#/definitions/RequestFailedPayload"}
       }
     },
     {
       "properties": {
-        "event_type": {"const": "session.opened.v1"},
+        "type": {"const": "session.opened.v1"},
         "payload": {"$ref": "#/definitions/SessionOpenedPayload"}
       }
     },
     {
       "properties": {
-        "event_type": {"const": "session.updated.v1"},
+        "type": {"const": "session.updated.v1"},
         "payload": {"$ref": "#/definitions/SessionUpdatedPayload"}
       }
     },
     {
       "properties": {
-        "event_type": {"const": "session.deleted.v1"},
+        "type": {"const": "session.deleted.v1"},
         "payload": {"$ref": "#/definitions/SessionDeletedPayload"}
       }
     }

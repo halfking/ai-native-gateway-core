@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -279,6 +280,7 @@ func newDispatcherWithMockDB(t *testing.T) (*Dispatcher, sqlmock.Sqlmock, *atomi
 		// httptest server they wrap this Dispatcher in. We use a bare 200
 		// here because success-path tests assert against the actual response.
 		w.WriteHeader(http.StatusOK)
+		_, _ = io.WriteString(w, `{"data":{"accepted":1,"duplicates":0,"failed":[]}}`)
 	})
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
@@ -314,7 +316,7 @@ func TestDispatcher_DispatchOne_SuccessIncrementsSent(t *testing.T) {
 
 	mock.ExpectBegin()
 	mock.ExpectQuery("SELECT id, event_id, event_type, schema_version, tenant_id,\n\t\t       aggregate_id, aggregate_version, occurred_at, payload,\n\t\t       status, attempts, last_error, next_retry_at\n\t\tFROM outbox_events\n\t\tWHERE (status = 'pending' OR (status = 'failed' AND next_retry_at <= NOW()))\n\t\tORDER BY occurred_at ASC\n\t\tLIMIT 1\n\t\tFOR UPDATE SKIP LOCKED").WillReturnRows(outboxRow(1, "evt-success", 1))
-	mock.ExpectExec("UPDATE outbox_events\n\t\tSET status = 'sent', updated_at = NOW()\n\t\tWHERE id = $1").WithArgs(int64(1)).WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec("UPDATE outbox_events\n\t\tSET status = 'sent', last_attempt_at = NOW(), last_error = NULL,\n\t\t    next_retry_at = NULL, updated_at = NOW()\n\t\tWHERE id = $1").WithArgs(int64(1)).WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectCommit()
 
 	before, after := counterDelta(t, func() {
@@ -362,7 +364,7 @@ func TestDispatcher_DispatchOne_HTTPFailureIncrementsFailedAndRetried(t *testing
 	mock.ExpectBegin()
 	mock.ExpectQuery("SELECT id, event_id, event_type, schema_version, tenant_id,\n\t\t       aggregate_id, aggregate_version, occurred_at, payload,\n\t\t       status, attempts, last_error, next_retry_at\n\t\tFROM outbox_events\n\t\tWHERE (status = 'pending' OR (status = 'failed' AND next_retry_at <= NOW()))\n\t\tORDER BY occurred_at ASC\n\t\tLIMIT 1\n\t\tFOR UPDATE SKIP LOCKED").WillReturnRows(outboxRow(2, "evt-fail", 1))
 	// attempts+1 = 2 < maxAttempts = 3, so markFailed schedules a retry.
-	mock.ExpectExec("UPDATE outbox_events\n\t\tSET status = 'failed', attempts = $1, last_error = $2, next_retry_at = $3, updated_at = NOW()\n\t\tWHERE id = $4").WithArgs(2, sqlmock.AnyArg(), sqlmock.AnyArg(), int64(2)).WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec("UPDATE outbox_events\n\t\tSET status = 'failed', attempts = $1, last_error = $2,\n\t\t    last_attempt_at = NOW(), next_retry_at = $3, updated_at = NOW()\n\t\tWHERE id = $4").WithArgs(2, sqlmock.AnyArg(), sqlmock.AnyArg(), int64(2)).WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectCommit()
 
 	before, after := counterDelta(t, func() {
@@ -410,7 +412,7 @@ func TestDispatcher_DispatchOne_FailureAtMaxAttemptsNoRetry(t *testing.T) {
 	// no retry counter increment.
 	mock.ExpectBegin()
 	mock.ExpectQuery("SELECT id, event_id, event_type, schema_version, tenant_id,\n\t\t       aggregate_id, aggregate_version, occurred_at, payload,\n\t\t       status, attempts, last_error, next_retry_at\n\t\tFROM outbox_events\n\t\tWHERE (status = 'pending' OR (status = 'failed' AND next_retry_at <= NOW()))\n\t\tORDER BY occurred_at ASC\n\t\tLIMIT 1\n\t\tFOR UPDATE SKIP LOCKED").WillReturnRows(outboxRow(3, "evt-dlq", 2))
-	mock.ExpectExec("UPDATE outbox_events\n\t\tSET status = 'dlq', attempts = $1, last_error = $2, updated_at = NOW()\n\t\tWHERE id = $3").WithArgs(3, sqlmock.AnyArg(), int64(3)).WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec("UPDATE outbox_events\n\t\tSET status = 'dlq', attempts = $1, last_error = $2,\n\t\t    last_attempt_at = NOW(), next_retry_at = NULL, updated_at = NOW()\n\t\tWHERE id = $3").WithArgs(3, sqlmock.AnyArg(), int64(3)).WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectCommit()
 
 	before, after := counterDelta(t, func() {
@@ -476,7 +478,7 @@ func TestDispatcher_DispatchOne_DurationHistogramObserved(t *testing.T) {
 	d, mock, _ := newDispatcherWithMockDB(t)
 	mock.ExpectBegin()
 	mock.ExpectQuery("SELECT id, event_id, event_type, schema_version, tenant_id,\n\t\t       aggregate_id, aggregate_version, occurred_at, payload,\n\t\t       status, attempts, last_error, next_retry_at\n\t\tFROM outbox_events\n\t\tWHERE (status = 'pending' OR (status = 'failed' AND next_retry_at <= NOW()))\n\t\tORDER BY occurred_at ASC\n\t\tLIMIT 1\n\t\tFOR UPDATE SKIP LOCKED").WillReturnRows(outboxRow(4, "evt-duration", 1))
-	mock.ExpectExec("UPDATE outbox_events\n\t\tSET status = 'sent', updated_at = NOW()\n\t\tWHERE id = $1").WithArgs(int64(4)).WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec("UPDATE outbox_events\n\t\tSET status = 'sent', last_attempt_at = NOW(), last_error = NULL,\n\t\t    next_retry_at = NULL, updated_at = NOW()\n\t\tWHERE id = $1").WithArgs(int64(4)).WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectCommit()
 
 	outcome, err := d.dispatchOne(context.Background())
@@ -491,6 +493,44 @@ func TestDispatcher_DispatchOne_DurationHistogramObserved(t *testing.T) {
 	// specific metric-name string format.
 	if got := sumMetricVecName("outbox_delivery_duration_seconds"); got == 0 {
 		t.Errorf("expected at least one histogram observation after success")
+	}
+}
+
+func TestDispatcher_DispatchOne_TerminalHTTPFailureMovesDirectlyToDLQ(t *testing.T) {
+	db, mock, err := sqlmock.New(sqlmock.QueryMatcherOption(sqlmock.QueryMatcherEqual))
+	if err != nil {
+		t.Fatalf("sqlmock.New: %v", err)
+	}
+	defer db.Close()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, "schema invalid", http.StatusUnprocessableEntity)
+	}))
+	defer server.Close()
+
+	d := NewDispatcher(DispatcherConfig{
+		DB: db, ASMEndpoint: server.URL, HMACSecret: "test-secret",
+		PollInterval: time.Hour, MaxAttempts: 5, HTTPTimeout: time.Second,
+	})
+	mock.ExpectBegin()
+	mock.ExpectQuery("SELECT id, event_id, event_type, schema_version, tenant_id,\n\t\t       aggregate_id, aggregate_version, occurred_at, payload,\n\t\t       status, attempts, last_error, next_retry_at\n\t\tFROM outbox_events\n\t\tWHERE (status = 'pending' OR (status = 'failed' AND next_retry_at <= NOW()))\n\t\tORDER BY occurred_at ASC\n\t\tLIMIT 1\n\t\tFOR UPDATE SKIP LOCKED").WillReturnRows(outboxRow(5, "evt-terminal", 0))
+	mock.ExpectExec("UPDATE outbox_events\n\t\tSET status = 'dlq', attempts = $1, last_error = $2,\n\t\t    last_attempt_at = NOW(), next_retry_at = NULL, updated_at = NOW()\n\t\tWHERE id = $3").WithArgs(1, sqlmock.AnyArg(), int64(5)).WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectCommit()
+
+	before, after := counterDelta(t, func() {
+		outcome, err := d.dispatchOne(context.Background())
+		if err != nil {
+			t.Fatalf("dispatchOne: %v", err)
+		}
+		if outcome != dispatchOutcomeFailed {
+			t.Fatalf("outcome = %v, want dispatchOutcomeFailed", outcome)
+		}
+	})
+	if got := after.retried - before.retried; got != 0 {
+		t.Fatalf("terminal response retry metric delta = %v, want 0", got)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sqlmock expectations: %v", err)
 	}
 }
 
