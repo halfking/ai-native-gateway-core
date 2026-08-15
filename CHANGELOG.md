@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased] - 2026-08-15 (Route Flow Sankey Theme Tokens)
+
+### Fixed
+
+- **Sankey 分类色主题化**：路由流向图的 8 类任务颜色与中性 fallback 改用现有 daylight/night 语义 token，移除页面级 hex 色和禁用紫色，同时保持分类映射、数据、布局与交互不变。
+- **范围化回归门禁**：将 `RouteFlowSankey.vue` 纳入组件颜色合规测试，阻止硬编码 `#hex` 与 `rgb/rgba()` 回归。
+- 详见 `docs/changelogs/2026-08-15-route-flow-sankey-theme-tokens.md`。
+
 ## [Unreleased] - 2026-08-15 (Credential Lifecycle Contract Integrity)
 
 ### Fixed
