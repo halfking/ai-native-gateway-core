@@ -11,6 +11,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/pending"
 	"github.com/kaixuan/llm-gateway-go/secret"
 	"github.com/pashagolub/pgxmock/v4"
+	"github.com/prometheus/client_golang/prometheus"
 	"github.com/redis/go-redis/v9"
 )
 
@@ -92,5 +93,78 @@ func TestStore_ProjectPendingOutbox_HashMismatchRetried(t *testing.T) {
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Fatalf("expectations: %v", err)
+	}
+}
+
+// durable_* 投影观测契约（doc 18 §15.3）：成功投递按终态计数，失败按原因
+// 计数——对比 terminal 转换可探测投影丢失。
+func gatherProjectionMetric(t *testing.T, name, labelValue string) float64 {
+	t.Helper()
+	mfs, err := prometheus.DefaultGatherer.Gather()
+	if err != nil {
+		t.Fatalf("gather: %v", err)
+	}
+	for _, mf := range mfs {
+		if mf.GetName() != name {
+			continue
+		}
+		for _, m := range mf.GetMetric() {
+			for _, l := range m.GetLabel() {
+				if l.GetValue() == labelValue && m.GetCounter() != nil {
+					return m.GetCounter().GetValue()
+				}
+			}
+		}
+	}
+	return 0
+}
+
+func TestStore_ProjectPendingOutbox_Metrics(t *testing.T) {
+	store, mock := newMockStore(t)
+	now := time.Now()
+	envelope, resultHash := encryptedOutboxResult(t, "task-metrics", "request-hash", `{"ok":true}`)
+	projectedBefore := gatherProjectionMetric(t, "durable_pending_projections_total", "completed")
+
+	mock.ExpectBegin()
+	mock.ExpectQuery(`FROM durable_pending_outbox`).
+		WithArgs(8, now).
+		WillReturnRows(outboxRows("task-metrics", envelope, resultHash, now))
+	mock.ExpectExec(`DELETE FROM durable_pending_outbox`).
+		WithArgs("task-metrics").
+		WillReturnResult(pgxmock.NewResult("DELETE", 1))
+	mock.ExpectCommit()
+
+	mr := miniredis.RunT(t)
+	pendingStore := pending.NewStore(redis.NewClient(&redis.Options{Addr: mr.Addr()}), time.Hour)
+	if _, err := store.ProjectPendingOutbox(context.Background(), pendingStore, 8, now); err != nil {
+		t.Fatalf("project: %v", err)
+	}
+	if got := gatherProjectionMetric(t, "durable_pending_projections_total", "completed"); got < projectedBefore+1 {
+		t.Fatalf("durable_pending_projections_total{completed} = %v, want >= %v", got, projectedBefore+1)
+	}
+}
+
+func TestStore_ProjectPendingOutbox_ErrorMetricOnHashMismatch(t *testing.T) {
+	store, mock := newMockStore(t)
+	now := time.Now()
+	envelope, _ := encryptedOutboxResult(t, "task-errmetrics", "request-hash", "body")
+	errBefore := gatherProjectionMetric(t, "durable_pending_projection_errors_total", "result_hash")
+
+	mock.ExpectBegin()
+	mock.ExpectQuery(`FROM durable_pending_outbox`).
+		WithArgs(8, now).
+		WillReturnRows(outboxRows("task-errmetrics", envelope, "wrong-hash", now))
+	mock.ExpectExec(`UPDATE durable_pending_outbox`).
+		WithArgs("task-errmetrics", "result hash mismatch", now.Add(time.Minute)).
+		WillReturnResult(pgxmock.NewResult("UPDATE", 1))
+	mock.ExpectCommit()
+
+	mr := miniredis.RunT(t)
+	pendingStore := pending.NewStore(redis.NewClient(&redis.Options{Addr: mr.Addr()}), time.Hour)
+	if _, err := store.ProjectPendingOutbox(context.Background(), pendingStore, 8, now); err != nil {
+		t.Fatalf("project: %v", err)
+	}
+	if got := gatherProjectionMetric(t, "durable_pending_projection_errors_total", "result_hash"); got < errBefore+1 {
+		t.Fatalf("durable_pending_projection_errors_total{result_hash} = %v, want >= %v", got, errBefore+1)
 	}
 }
