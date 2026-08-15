@@ -33,6 +33,7 @@ export default {
     keyApplications: "金鑰申請",
     auditLogs: "稽核記錄",
     requestLogs: "請求記錄",
+    dispatchWaterfall: "佇列瀑布圖",
     turns: "輪次列表",
     requestTrace: "請求鏈路追蹤",
     sessions: "會話清單",

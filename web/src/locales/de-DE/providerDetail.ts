@@ -237,8 +237,16 @@ export default {
       available: "Verfügbar",
       source: "Quelle",
       latencyP95: "Latenz P95",
-      successRate: "Erfolgsrate"
+      successRate: "Erfolgsrate",
+      standardIq: "Standard Intelligence",
+      nodeIq: "Node Intelligence"
     },
+    standardIqHint: "Benchmark intelligence score from Artificial Analysis Intelligence Index",
+    standardIqLabel: "Standard Intelligence", nodeIqLabel: "Node Intelligence", nodeIqAvgLabel: "Node average",
+    iqAvg: "Average {v}", iqSamples: "{n} tests", iqTestedAt: "Latest {t}", drawerSectionIq: "Model Intelligence",
+    iqTestBtn: "Run test", iqTestBtnTitle: "Run a compact intelligence test for this node", iqTestRunning: "Testing...", iqTestFailed: "Test failed",
+    iqHistoryLoading: "Loading history...", iqHistoryEmpty: "No test records", iqHistoryDetails: "View details",
+    iqColTestedAt: "Tested at", iqColScore: "Score", iqColGrade: "Grade", iqColAccuracy: "Accuracy", iqColTrigger: "Trigger",
     tableLoading: "Wird geladen…",
     tableEmpty: "Keine Modelle",
     source: {

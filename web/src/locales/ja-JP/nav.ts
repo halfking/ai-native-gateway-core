@@ -33,6 +33,7 @@ export default {
     keyApplications: "キー申請",
     auditLogs: "監査ログ",
     requestLogs: "リクエストログ",
+    dispatchWaterfall: "キューウォーターフォール",
     turns: "ターンリスト",
     requestTrace: "リクエストトレース",
     sessions: "セッション一覧",

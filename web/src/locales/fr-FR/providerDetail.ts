@@ -237,8 +237,16 @@ export default {
       available: "Disponible",
       source: "Source",
       latencyP95: "Latence P95",
-      successRate: "Taux de réussite"
+      successRate: "Taux de réussite",
+      standardIq: "Intelligence standard",
+      nodeIq: "Intelligence du nœud"
     },
+    standardIqHint: "Score de référence Artificial Analysis Intelligence Index",
+    standardIqLabel: "Intelligence standard", nodeIqLabel: "Intelligence du nœud", nodeIqAvgLabel: "Moyenne du nœud",
+    iqAvg: "Moyenne {v}", iqSamples: "{n} tests", iqTestedAt: "Dernier {t}", drawerSectionIq: "Intelligence du modèle",
+    iqTestBtn: "Lancer le test", iqTestBtnTitle: "Lancer un test compact pour ce nœud", iqTestRunning: "Test en cours...", iqTestFailed: "Échec du test",
+    iqHistoryLoading: "Chargement de l'historique...", iqHistoryEmpty: "Aucun test", iqHistoryDetails: "Voir les détails",
+    iqColTestedAt: "Testé le", iqColScore: "Score", iqColGrade: "Niveau", iqColAccuracy: "Précision", iqColTrigger: "Déclencheur",
     tableLoading: "Chargement…",
     tableEmpty: "Aucun modèle",
     source: {

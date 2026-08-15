@@ -3,7 +3,7 @@
 // 2026-07-13 v5: 现代观测面板风格 — 玻璃质感卡片 + 左侧色带 + 状态圆点
 // 2026-07-14: 探测/idle tile 显示明确的错误原因（不再静默 "[空闲]"）
 
-import { computed } from 'vue'
+import { computed, nextTick, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import type { RequestTile as RequestTileType, GroupByDimension, SwimLaneMode } from '../types/swimlane'
 import {
@@ -12,6 +12,7 @@ import {
   truncateText,
 } from '../types/swimlane'
 import { errorKindLabel, statusBarColor, statusSemanticLabel } from '../composables/liveStreamDisplay'
+import { getRequestChildren, type LiveRequest } from '../composables/liveStreamStore'
 
 const { t, locale } = useI18n()
 
@@ -224,6 +225,75 @@ function handleClick() {
   if (isIdle.value) return
   emit('click', props.tile.request_id)
 }
+
+// ─── 2026-08-15 OBS-FE3（26号 §3 / 24号 §1）：卡片生命周期徽标 ───────────
+//
+// 1) stage 徽标：仅在后端上报了 `stage`（24号 §1 状态机枚举）时渲染；
+//    字段缺失 = 未上报，禁止用猜测值冒充（13号门禁）。
+// 2) retrySeq 角标：retrySeq >= 1（非首次尝试）时显示 ⭐r{n} 特别标。
+// 3) 子请求徽标与列表：右上角 children 计数徽标，点击弹出子请求列表面板。
+//    数据只来自 liveStreamStore 的 SSE child_request 索引
+//    （getRequestChildren），绝不调后端查询兜底（26号 §3：查询兜底
+//    属于会话详情侧，实时流只用推送数据）；事件未到时列表显示空态文案。
+const stageLabel = computed<string | null>(() => {
+  const s = props.tile.stage
+  return typeof s === 'string' && s.length > 0 ? s : null
+})
+
+const retrySeqLabel = computed<string | null>(() => {
+  const n = props.tile.retrySeq
+  return typeof n === 'number' && Number.isFinite(n) && n >= 1 ? `r${n}` : null
+})
+
+// 子请求索引只读消费（store 导出）；Map 变化驱动徽标/面板响应式更新。
+const childRequests = computed<LiveRequest[]>(() => getRequestChildren(props.tile.request_id))
+const childCount = computed(() => childRequests.value.length)
+
+const childBadgeTitle = computed(() =>
+  childCount.value > 0
+    ? `子请求 ${childCount.value} 个（点击查看）`
+    : '子请求（暂无推送，点击查看）',
+)
+
+// 子请求类型缩写（26号 §3：title/summary/sensitive_word）。
+const CHILD_TYPE_SHORT: Record<string, string> = {
+  title: 'T',
+  summary: 'S',
+  sensitive_word: 'SW',
+  probe: 'P',
+}
+function childTypeShort(child: LiveRequest): string {
+  const t = child.requestType
+  return t ? (CHILD_TYPE_SHORT[t] ?? '·') : '·'
+}
+
+const childrenBadgeRef = ref<HTMLButtonElement | null>(null)
+const childPanelOpen = ref(false)
+const childPanelStyle = ref<Record<string, string>>({})
+
+// 面板 Teleport 到 body：泳道轨道 overflow:hidden 会裁剪任何内嵌弹出层。
+// 打开时按徽标位置计算 fixed 坐标；jsdom 下 rect 全 0，测试只断言内容。
+function toggleChildPanel(evt: Event) {
+  evt.stopPropagation()
+  if (childPanelOpen.value) {
+    childPanelOpen.value = false
+    return
+  }
+  childPanelOpen.value = true
+  void nextTick(() => {
+    const anchor = childrenBadgeRef.value
+    if (!anchor) return
+    const rect = anchor.getBoundingClientRect()
+    const PANEL_WIDTH = 240
+    const vw = typeof window !== 'undefined' && window.innerWidth ? window.innerWidth : PANEL_WIDTH + 16
+    const left = Math.max(8, Math.min(rect.right - PANEL_WIDTH, vw - PANEL_WIDTH - 8))
+    childPanelStyle.value = { top: `${Math.round(rect.bottom + 6)}px`, left: `${Math.round(left)}px` }
+  })
+}
+
+function closeChildPanel() {
+  childPanelOpen.value = false
+}
 </script>
 
 <template>
@@ -288,6 +358,36 @@ function handleClick() {
       </svg>
     </span>
 
+    <!-- OBS-FE3 (26号 §3): stage 徽标 — 仅当后端上报 stage 时渲染，缺省不显示。 -->
+    <span
+      v-if="stageLabel"
+      class="request-tile__stage-badge"
+      :title="`stage: ${stageLabel}`"
+    >{{ stageLabel }}</span>
+
+    <!-- OBS-FE3 (24号 §1): 重试角标 — retrySeq >= 1 时显示 ⭐r{n} 特别标。 -->
+    <span
+      v-if="retrySeqLabel"
+      class="request-tile__retry-badge"
+      :title="`重试第 ${retrySeqLabel.slice(1)} 次`"
+    >⭐{{ retrySeqLabel }}</span>
+
+    <!-- OBS-FE3 (26号 §3): 子请求计数徽标（右上角，位于状态点下方）。
+         点击弹出子请求列表面板；计数 0（事件未推送）时置灰仍可点击，面板显示空态。 -->
+    <button
+      v-if="!isIdle"
+      ref="childrenBadgeRef"
+      type="button"
+      class="request-tile__children-badge"
+      :class="{ 'request-tile__children-badge--empty': childCount === 0 }"
+      :title="childBadgeTitle"
+      :aria-label="childBadgeTitle"
+      :aria-expanded="childPanelOpen"
+      aria-haspopup="dialog"
+      @click.stop="toggleChildPanel"
+      @keydown.enter.stop.prevent="toggleChildPanel"
+    >{{ childCount }}</button>
+
     <div class="request-tile__body">
       <div class="request-tile__time">{{ timeLabel }}</div>
       <div class="request-tile__model">{{ line2Content }}</div>
@@ -308,6 +408,52 @@ function handleClick() {
         <span v-if="latencyLabel && !isIdle" class="request-tile__latency">{{ latencyLabel }}</span>
       </div>
     </div>
+
+    <!-- OBS-FE3 (26号 §3): 子请求列表面板 — Teleport 到 body，
+         避免被泳道轨道 overflow:hidden 裁剪。数据只来自 SSE
+         child_request 推送（liveStreamStore.getRequestChildren），
+         不调后端查询；事件未到时显示空态文案。 -->
+    <Teleport to="body">
+      <div
+        v-if="childPanelOpen"
+        class="request-tile__children-panel"
+        :style="childPanelStyle"
+        role="dialog"
+        aria-label="子请求列表"
+        tabindex="-1"
+        @click.stop
+        @keydown.esc.stop="closeChildPanel"
+      >
+        <div class="request-tile__children-panel-header">
+          <span class="request-tile__children-panel-title">子请求 {{ childCount }}</span>
+          <button
+            type="button"
+            class="request-tile__children-panel-close"
+            aria-label="关闭子请求列表"
+            @click.stop="closeChildPanel"
+          >✕</button>
+        </div>
+        <ul v-if="childCount > 0" class="request-tile__children-list">
+          <li
+            v-for="child in childRequests"
+            :key="child.request_id"
+            class="request-tile__child-row"
+          >
+            <span
+              class="request-tile__child-type"
+              :title="child.requestType || ''"
+            >{{ childTypeShort(child) }}</span>
+            <span class="request-tile__child-model">{{ child.model || (child.request_id || '').slice(0, 8) || '—' }}</span>
+            <span class="request-tile__child-status" :class="`request-tile__child-status--${child.status || 'unknown'}`">
+              {{ child.status || '—' }}
+            </span>
+          </li>
+        </ul>
+        <p v-else class="request-tile__children-empty">
+          暂无子请求事件推送（等待 child_request）
+        </p>
+      </div>
+    </Teleport>
   </div>
 </template>
 
@@ -671,6 +817,233 @@ function handleClick() {
   }
   .request-tile__status-dot--pulse {
     animation: none;
+  }
+}
+
+/* ════════════════════════════════════════════════════════════════
+ * 2026-08-15 OBS-FE3（26号 §3 / 24号 §1）：请求卡生命周期徽标。
+ * 颜色全部走 var(--kx-*)；动画只用 transform/opacity。
+ *  - stage 徽标：左上角（探测徽标占位时下移），仅后端上报时渲染。
+ *  - retry 角标：左上角第二行，⭐r{n} 描边样式（--kx-warning）。
+ *  - 子请求徽标：右上角（状态点下方）计数角标。
+ *  - 子请求面板：Teleport 到 body 的 fixed 弹层，绕开泳道轨道
+ *    overflow:hidden 裁剪。
+ * ════════════════════════════════════════════════════════════════ */
+.request-tile__stage-badge {
+  position: absolute;
+  top: 2px;
+  left: 3px;
+  z-index: 3;
+  max-width: 46px;
+  padding: 1px 3px;
+  border-radius: 3px;
+  font-size: 7px;
+  font-weight: 700;
+  line-height: 1.2;
+  letter-spacing: 0.02em;
+  color: var(--kx-primary);
+  background: var(--kx-primary-soft);
+  border: 1px solid var(--kx-primary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  pointer-events: none;
+}
+
+/* 探测徽标（左上角 14x14）占位时，stage 徽标下移避免重叠 */
+.request-tile--probe .request-tile__stage-badge {
+  top: 19px;
+}
+
+/* 重试角标：⭐r{n}，warning 描边样式（描边 + 透明底），仅 retrySeq>=1 */
+.request-tile__retry-badge {
+  position: absolute;
+  top: 14px;
+  left: 3px;
+  z-index: 3;
+  max-width: 46px;
+  padding: 1px 3px;
+  border-radius: 3px;
+  font-size: 7px;
+  font-weight: 700;
+  line-height: 1.2;
+  font-variant-numeric: tabular-nums;
+  color: var(--kx-warning);
+  background: var(--kx-warning-soft);
+  border: 1px solid var(--kx-warning);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  pointer-events: none;
+}
+
+.request-tile--probe .request-tile__retry-badge {
+  top: 31px;
+}
+
+/* 子请求计数徽标：右上角（状态点下方），计数 0 时置灰但仍可点击（弹空态） */
+.request-tile__children-badge {
+  position: absolute;
+  top: 13px;
+  right: 3px;
+  z-index: 4;
+  min-width: 13px;
+  height: 13px;
+  padding: 0 3px;
+  border-radius: 7px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 8px;
+  font-weight: 700;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+  color: var(--kx-text-on-primary);
+  background: var(--kx-primary);
+  border: 1px solid var(--kx-primary);
+  cursor: pointer;
+  transition: transform 0.12s ease, opacity 0.12s ease;
+}
+
+.request-tile__children-badge:hover {
+  transform: scale(1.12);
+}
+
+.request-tile__children-badge--empty {
+  color: var(--kx-muted);
+  background: var(--kx-surface);
+  border-color: var(--kx-border);
+  opacity: 0.75;
+}
+
+/* 子请求列表面板（Teleport 到 body，fixed 定位由打开时计算覆盖） */
+.request-tile__children-panel {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 240px;
+  max-width: calc(100vw - 16px);
+  max-height: 220px;
+  display: flex;
+  flex-direction: column;
+  background: var(--kx-surface);
+  border: 1px solid var(--kx-border);
+  border-radius: 6px;
+  box-shadow: var(--kx-shadow-md);
+  z-index: 2000;
+  animation: request-tile-panel-in 0.15s ease-out;
+}
+
+@keyframes request-tile-panel-in {
+  from { opacity: 0; transform: translateY(-4px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+.request-tile__children-panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--kx-border);
+  background: var(--kx-bg-accent);
+}
+
+.request-tile__children-panel-title {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--kx-text);
+}
+
+.request-tile__children-panel-close {
+  border: none;
+  background: transparent;
+  color: var(--kx-muted);
+  font-size: 12px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 2px 4px;
+  border-radius: 3px;
+  transition: opacity 0.12s ease, transform 0.12s ease;
+}
+
+.request-tile__children-panel-close:hover {
+  color: var(--kx-text);
+  transform: scale(1.1);
+}
+
+.request-tile__children-list {
+  list-style: none;
+  margin: 0;
+  padding: 4px;
+  overflow-y: auto;
+  flex: 1;
+  min-height: 0;
+}
+
+.request-tile__child-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 5px;
+  border-radius: 4px;
+  font-size: 11px;
+}
+
+.request-tile__child-row:hover {
+  background: var(--kx-bg-accent);
+}
+
+/* 类型缩写 chip：T=title / S=summary / SW=sensitive_word / P=probe */
+.request-tile__child-type {
+  flex: 0 0 auto;
+  min-width: 18px;
+  text-align: center;
+  padding: 1px 3px;
+  border-radius: 3px;
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  color: var(--kx-primary);
+  background: var(--kx-primary-soft);
+  border: 1px solid var(--kx-border);
+}
+
+.request-tile__child-model {
+  flex: 1 1 auto;
+  min-width: 0;
+  color: var(--kx-text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.request-tile__child-status {
+  flex: 0 0 auto;
+  font-size: 9px;
+  font-weight: 600;
+  color: var(--kx-muted);
+}
+
+.request-tile__child-status--success { color: var(--kx-success); }
+.request-tile__child-status--failure,
+.request-tile__child-status--rate_limited { color: var(--kx-danger); }
+.request-tile__child-status--in_progress { color: var(--kx-primary); }
+
+.request-tile__children-empty {
+  margin: 0;
+  padding: 10px 12px;
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--kx-muted);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .request-tile__children-panel,
+  .request-tile__children-badge,
+  .request-tile__children-panel-close {
+    animation: none;
+    transition: none;
   }
 }
 </style>

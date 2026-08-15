@@ -66,6 +66,14 @@ export interface RequestTile {
   is_probe?: boolean
   probe_origin?: 'direct' | 'gateway' | 'scheduled'
   probe_attempt?: number
+  // 2026-08-15 (26号 §3 / OBS-FE3): lifecycle extension fields mirrored from
+  // liveStreamStore.LiveRequest (24号 §3 wire contract). All optional +
+  // backward compatible — absent means "not reported", the card must NOT
+  // render a guessed value (13号 gate).
+  stage?: string
+  retrySeq?: number
+  parentRequestId?: string
+  requestType?: 'chat' | 'title' | 'summary' | 'sensitive_word' | 'probe' | 'unknown'
 }
 
 // 维度统计项
