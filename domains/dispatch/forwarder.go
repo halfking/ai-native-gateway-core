@@ -5,6 +5,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/kaixuan/llm-gateway-go/internal/liveactions"
 )
 
 // credForwarder is the ② Credential Forwarder for one credential. It owns the
@@ -139,6 +141,18 @@ func (cf *credForwarder) acquire(qr *QueuedRequest) bool {
 
 	// V3.1: Record T6 timestamp (credential queue dequeue, governor acquired)
 	qr.SetT6_CredDequeued()
+
+	// V3.3-OBS OBS-B1 (2026-08-15): node_selected 动作事件（S7 前，最终选定
+	// 节点——通过 governor 准入，即将开始转发）。
+	cf.pipe.liveActions.Emit(ctxOf(qr), liveactions.ActionEvent{
+		RequestID:    qr.ID,
+		Action:       liveactions.ActionNodeSelected,
+		Model:        qr.ResolvedModel,
+		CredentialID: cf.cred.CredentialID,
+		Detail: map[string]string{
+			"attempt": itoa(qr.AttemptCount),
+		},
+	})
 
 	if !qr.CredEnqueuedAt.IsZero() {
 		metricCredQueueWait.WithLabelValues(itoa(cf.cred.CredentialID)).Observe(qr.DequeuedAt.Sub(qr.CredEnqueuedAt).Seconds())
