@@ -1836,8 +1836,12 @@ func main() {
 	if telemetryClient != nil && dbConn != nil && dbConn.Enabled() {
 		sessionV2Writer = initSessionV2Writer(dbConn.Pool())
 		if sessionV2Writer != nil {
-			telemetryClient.AddOnRequestLogPersisted(sessionv2mirror.PersistHook(sessionV2Writer))
-			slog.Info("session V2 shadow write hook registered (live feature-gated; public.sessions public.session_turns public.session_bodies public.session_turn_logs)")
+			// session_dim 维度（任务/项目/属主/客户端）随同一 hook 维护：
+			// 旧 350/358 触发器链路在部分环境缺失，这里以 Go 侧 best-effort
+			// UPSERT 兜底，/admin/turns 的项目→任务层级依赖该表。
+			sessionDimWriter := sessionv2mirror.NewSessionDimWriter(dbConn.Pool())
+			telemetryClient.AddOnRequestLogPersisted(sessionv2mirror.PersistHook(sessionV2Writer, sessionDimWriter))
+			slog.Info("session V2 shadow write hook registered (live feature-gated; public.sessions public.session_turns public.session_bodies public.session_turn_logs + session_dim)")
 
 		}
 	}
