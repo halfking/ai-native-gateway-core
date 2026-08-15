@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased] - 2026-08-15 (Status Badge Theme Tokens)
+
+### Fixed
+
+- **模型状态徽章主题化**：凭据监控的五态模型可用性徽章改用现有 daylight/night
+  语义 token；保持可用、禁用、探测失败、未声明和绑定缺失的状态语义与强弱层级。
+- **范围化回归门禁**：将 `StatusBadge.vue` 纳入组件颜色合规测试，阻止硬编码
+  `#hex` 与 `rgb/rgba()` 颜色回归。
+- 详见 `docs/changelogs/2026-08-15-status-badge-theme-tokens.md`。
+
 ## [Unreleased] - 2026-08-15 (Streaming JSON DONE Boundary Repair)
 
 ### Fixed
