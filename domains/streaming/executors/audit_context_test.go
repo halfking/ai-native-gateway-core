@@ -109,18 +109,18 @@ func TestAuditContextFromAttempt(t *testing.T) {
 // field set on the AuditContext.
 func TestAuditContext_RawAndAnomalyEnvelopes(t *testing.T) {
 	ctx := &AuditContext{
-		RequestID:       "r1",
-		ClientRequestID: "cr1",
-		GWSessionID:     "s1",
-		GWTaskID:        "task",
-		TenantID:        "t",
-		APIKeyID:        9,
-		ProviderID:      18,
-		CredentialID:    42,
-		AttemptNo:       2,
+		RequestID:        "r1",
+		ClientRequestID:  "cr1",
+		GWSessionID:      "s1",
+		GWTaskID:         "task",
+		TenantID:         "t",
+		APIKeyID:         9,
+		ProviderID:       18,
+		CredentialID:     42,
+		AttemptNo:        2,
 		UpstreamEndpoint: "https://u",
-		TraceID:         "trace",
-		SpanID:          "span",
+		TraceID:          "trace",
+		SpanID:           "span",
 	}
 	raw := ctx.RawCorrelationEnvelope()
 	if raw.ClientRequestID != "cr1" || raw.ProviderID != 18 || raw.AttemptNo != 2 {

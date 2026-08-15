@@ -2,6 +2,7 @@ package streaming
 
 import (
 	"errors"
+	"fmt"
 	"sync"
 	"time"
 
@@ -103,8 +104,14 @@ const DefaultMaxMetadataBufferAge = 30 * time.Second
 type GateOptions struct {
 	Mode                   GateMode
 	MaxMetadataBufferBytes int
-	// BeforeSemanticCommit persists a write-ahead checkpoint before the first
-	// semantic frame can reach the client. Returning an error blocks the write.
+	// BeforeSemanticCommit is the durable write-ahead hook (doc 18 §11.3):
+	// it fires exactly when the gate's commit state advances AND bytes of
+	// that state are about to reach the network (immediate mode, an already
+	// committed attempt, or the buffered semantic commit — including
+	// post-commit advances such as content→tool_call, the §10.3 replay
+	// blocker). Returning an error fails the frame write — nothing of that
+	// state may be sent (禁写网络). Buffering metadata alone never fires it:
+	// the first semantic commit's checkpoint covers the metadata rank too.
 	BeforeSemanticCommit func(CommitState) error
 	// MaxMetadataBufferAge bounds how long attempt metadata may stay
 	// buffered; 0 = DefaultMaxMetadataBufferAge. Overflow surfaces the
@@ -234,7 +241,19 @@ func (g *AttemptCommitGate) WriteFrame(frame string) error {
 		return nil
 	}
 
-	g.advanceStateLocked(class)
+	advanced := g.advanceStateLocked(class)
+
+	// Write-ahead checkpoint (doc 18 §11.3): before bytes of a newly
+	// reached state reach the network, the durable commit_state must be
+	// persisted. A failed checkpoint fails the write (禁写网络) and the
+	// advanced local state keeps Discard refused — the attempt fail-closes
+	// instead of transparently retrying an unknown DB outcome.
+	if advanced && g.beforeSemanticCommit != nil &&
+		(g.mode == GateModeImmediate || g.committed || isSemanticClass(class)) {
+		if err := g.beforeSemanticCommit(g.state); err != nil {
+			return fmt.Errorf("attempt commit gate: write-ahead checkpoint %s: %w", g.state, err)
+		}
+	}
 
 	if g.mode == GateModeImmediate || g.committed {
 		if _, err := g.writer.Write([]byte(frame)); err != nil {
@@ -246,13 +265,7 @@ func (g *AttemptCommitGate) WriteFrame(frame string) error {
 
 	// Buffered mode, not yet committed.
 	if isSemanticClass(class) {
-		if g.beforeSemanticCommit != nil {
-			if err := g.beforeSemanticCommit(g.state); err != nil {
-				return err
-			}
-		}
 		// First semantic frame triggers the normal semantic commit: flush
-
 		// buffered frames in original order, then this frame.
 		if err := g.commitLocked(); err != nil {
 			return err
@@ -293,12 +306,13 @@ func (g *AttemptCommitGate) appendBufferedLocked(frame string) error {
 }
 
 // advanceStateLocked moves the commit state forward according to the frame
-// class. Unknown frames fail closed as content.
-func (g *AttemptCommitGate) advanceStateLocked(class FrameClass) {
+// class, reporting whether the state advanced. Unknown frames fail closed
+// as content.
+func (g *AttemptCommitGate) advanceStateLocked(class FrameClass) bool {
 	var next CommitState
 	switch class {
 	case FrameClassKeepalive:
-		return
+		return false
 	case FrameClassConnectionMetadata, FrameClassAttemptMetadata:
 		next = CommitStateMetadata
 	case FrameClassContent, FrameClassUnknown:
@@ -310,13 +324,15 @@ func (g *AttemptCommitGate) advanceStateLocked(class FrameClass) {
 	case FrameClassError:
 		// Error frames do not advance semantic state; the outcome path owns
 		// terminal rendering.
-		return
+		return false
 	default:
 		next = CommitStateContent
 	}
 	if next > g.state {
 		g.state = next
+		return true
 	}
+	return false
 }
 
 // isSemanticClass reports whether a frame class forces the semantic commit.

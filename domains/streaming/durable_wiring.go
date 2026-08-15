@@ -109,7 +109,7 @@ const (
 // SetDurableExecution arms the handler-side durable path. A nil store (the
 // zero state) keeps durable fully disabled — requests carrying the
 // capability header are served with normal sync semantics.
-func (h *ChatHandler) SetDurableExecution(store DurableHandlerStore, tenantAllowed func(tenantID string) bool, opts DurableExecutionOptions) {
+func (h *ChatHandler) SetDurableExecution(store DurableForegroundStore, tenantAllowed func(tenantID string) bool, opts DurableExecutionOptions) {
 	h.durableStore = store
 	h.durableTenantAllowed = tenantAllowed
 	h.durableExecOptions = opts.withDefaults()
@@ -120,26 +120,29 @@ func (h *ChatHandler) SetDurableExecution(store DurableHandlerStore, tenantAllow
 // Prefer: respond-async) create + claim the task, hand it to the recovery
 // worker via Reschedule (doc 18 §11.3「创建后直接后台执行」mode — the handler
 // never calls attempt) and render the frozen §9.4 202 envelope. Streaming
-// durable requests fail closed until checkpoint binding lands.
-func (h *ChatHandler) maybeStartDurable(w http.ResponseWriter, r *http.Request, in DurableSnapshotInput, isStream bool) durableDecision {
+// durable requests on a foreground-capable endpoint (the chat survival
+// branch) create + claim and return the DurableStreamBinding so the
+// SurvivalCoordinator holds the lease in-connection (§11.3 前台模式);
+// endpoints without a survival branch stay fail-closed (501).
+func (h *ChatHandler) maybeStartDurable(w http.ResponseWriter, r *http.Request, in DurableSnapshotInput, isStream, foreground bool) (durableDecision, *DurableStreamBinding) {
 	if h.durableStore == nil || !DurableRequested(r, isStream) {
-		return durableProceed
+		return durableProceed, nil
 	}
 	if h.durableTenantAllowed != nil && !h.durableTenantAllowed(in.TenantID) {
 		// Tenant not authorized for durable: capability unmet, sync
 		// terminal semantics (§6 — never auto-durable without handshake).
-		return durableProceed
+		return durableProceed, nil
 	}
-	if isStream {
+	if isStream && !foreground {
 		writeErrorJSON(w, http.StatusNotImplemented, in.RequestID,
 			"streaming durable recovery is not enabled on this gateway",
 			"api_error", "streaming_durable_unsupported")
-		return durableHandled
+		return durableHandled, nil
 	}
 	// Real-session / DB-auth preconditions: without them no durable task
 	// can be built — keep sync semantics rather than half-honoring.
 	if in.SessionID == "" || in.TenantID == "" || in.APIKeyID <= 0 {
-		return durableProceed
+		return durableProceed, nil
 	}
 
 	opts := h.durableExecOptions
@@ -173,7 +176,7 @@ func (h *ChatHandler) maybeStartDurable(w http.ResponseWriter, r *http.Request, 
 		// rather than silently degrading an explicitly-async request.
 		writeErrorJSON(w, http.StatusServiceUnavailable, in.RequestID,
 			"durable request snapshot rejected", "api_error", "durable_snapshot_invalid")
-		return durableHandled
+		return durableHandled, nil
 	}
 
 	deadline := now.Add(opts.Deadline)
@@ -201,15 +204,27 @@ func (h *ChatHandler) maybeStartDurable(w http.ResponseWriter, r *http.Request, 
 		if errors.Is(err, durable.ErrDuplicateTask) {
 			// Same (tenant, request) task already exists — idempotent
 			// replay: point the client at the existing pending response.
+			// (Streaming duplicates fall back to the in-connection stream;
+			// the existing task keeps serving pollers.)
+			if isStream {
+				return durableProceed, nil
+			}
 			renderDurableAccepted(w, in.SessionID, in.RequestID, "", opts.RetryAfter)
-			return durableHandled
+			return durableHandled, nil
 		}
 		// §11.2 fail closed: the create transaction failed, so the gateway
 		// must not claim durable ownership — and must not silently turn an
-		// explicitly-async request into a sync one either.
+		// explicitly-async request into a sync one either. For streaming the
+		// connection is already committed to the survival path, so the only
+		// safe outcome is a fail-closed error frame.
 		writeErrorJSON(w, http.StatusServiceUnavailable, in.RequestID,
 			"durable task store unavailable", "api_error", "durable_unavailable")
-		return durableHandled
+		return durableHandled, nil
+	}
+
+	// Foreground streaming keeps the lease and continues in-connection.
+	if isStream {
+		return durableProceed, newDurableStreamBinding(h.durableStore, task, opts.FrontendLease)
 	}
 
 	// Hand the claimed task to the recovery worker（创建后直接后台执行）.
@@ -228,7 +243,7 @@ func (h *ChatHandler) maybeStartDurable(w http.ResponseWriter, r *http.Request, 
 	}
 
 	renderDurableAccepted(w, in.SessionID, in.RequestID, task.ID, opts.RetryAfter)
-	return durableHandled
+	return durableHandled, nil
 }
 
 // durableResponseFormat extracts the response_format type flag (a §10.3

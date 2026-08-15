@@ -145,12 +145,12 @@ func (w *CandidateFailureWriter) buildRow(
 	extraContext map[string]any,
 ) candidateFailureLog {
 	row := candidateFailureLog{
-		RequestID:           requestID,
-		TenantID:            tenantID,
-		CredentialID:        credentialID,
-		ProviderID:          providerID,
-		RawModelName:        rawModelName,
-		AttemptIndex:        attemptIndex,
+		RequestID:    requestID,
+		TenantID:     tenantID,
+		CredentialID: credentialID,
+		ProviderID:   providerID,
+		RawModelName: rawModelName,
+		AttemptIndex: attemptIndex,
 		// 2026-07-20: defensive nil-check on execErr.Error(). Callers
 		// pass typed-nil *upstream.Error via the error interface in
 		// some stream-interrupt paths. (*upstream.Error).Error() is

@@ -1,8 +1,8 @@
 package executors
 
 import (
-	"math"
 	"context"
+	"math"
 	"testing"
 
 	"github.com/kaixuan/llm-gateway-go/domains/credential" //nolint:depguard // historical violation, B1 routing.go CQRS will fix

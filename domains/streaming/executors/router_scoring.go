@@ -257,12 +257,18 @@ func calculateLatencyScore(c provider.Candidate, r *Router) float64 {
 	observed := float64(p95) * amp
 	// piecewise table (在 amplified observed 上)
 	switch {
-	case observed < 800: return 1.00
-	case observed < 1500: return lerp(observed, 800, 1500, 1.00, 0.85)
-	case observed < 3000: return lerp(observed, 1500, 3000, 0.85, 0.65)
-	case observed < 10000: return lerp(observed, 3000, 10000, 0.65, 0.30)
-	case observed < 30000: return lerp(observed, 10000, 30000, 0.30, 0.05)
-	default: return 0.0 // hard block (> block threshold 默认 30s)
+	case observed < 800:
+		return 1.00
+	case observed < 1500:
+		return lerp(observed, 800, 1500, 1.00, 0.85)
+	case observed < 3000:
+		return lerp(observed, 1500, 3000, 0.85, 0.65)
+	case observed < 10000:
+		return lerp(observed, 3000, 10000, 0.65, 0.30)
+	case observed < 30000:
+		return lerp(observed, 10000, 30000, 0.30, 0.05)
+	default:
+		return 0.0 // hard block (> block threshold 默认 30s)
 	}
 }
 

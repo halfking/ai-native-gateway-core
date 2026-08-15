@@ -226,10 +226,10 @@ func TestEnvelopeFromParams_AuditContext(t *testing.T) {
 		SpanID:           "span-audit",
 	}
 	env := envelopeFromParams(&ExecParams{
-		Audit:         auditCtx,
-		SessionID:     "ignored-sess", // flat field must be ignored
-		GWTaskID:      "ignored-task", // flat field must be ignored
-		Model:         "ignored-model",
+		Audit:     auditCtx,
+		SessionID: "ignored-sess", // flat field must be ignored
+		GWTaskID:  "ignored-task", // flat field must be ignored
+		Model:     "ignored-model",
 	})
 	if env.ClientRequestID != "cr-audit" {
 		t.Errorf("client_request_id=%q (must come from Audit)", env.ClientRequestID)
@@ -301,9 +301,9 @@ func TestAnomalyReporterAdapterWithAudit_UsesAuditEnvelope(t *testing.T) {
 	require.Equal(t, 1, rep.conversionCalls)
 
 	// The ctx passed to the reporter must carry the AnomalyReportEnvelope.
-// We do not reach into the unexported context key directly here —
-// end-to-end envelope propagation is covered by the integration
-// test in domains/streaming (TestAnomalyHttpPayloadIncludesEnvelope,
-// 2026-07-28 §5.7). Here we just assert the adapter invoked the
-// reporter and that an override context is respected.
+	// We do not reach into the unexported context key directly here —
+	// end-to-end envelope propagation is covered by the integration
+	// test in domains/streaming (TestAnomalyHttpPayloadIncludesEnvelope,
+	// 2026-07-28 §5.7). Here we just assert the adapter invoked the
+	// reporter and that an override context is respected.
 }

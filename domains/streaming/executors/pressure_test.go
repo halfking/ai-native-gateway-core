@@ -11,11 +11,11 @@ import (
 // TestCalculatePressurePenalty 测试压力惩罚计算
 func TestCalculatePressurePenalty(t *testing.T) {
 	tests := []struct {
-		name             string
-		fpPressure       float64
-		limiterPressure  float64
-		expectedPenalty  float64
-		tolerance        float64
+		name            string
+		fpPressure      float64
+		limiterPressure float64
+		expectedPenalty float64
+		tolerance       float64
 	}{
 		{"no pressure", 0, 0, 0, 0.01},
 		{"low pressure fp", 0.3, 0, 0, 0.01},
@@ -79,16 +79,16 @@ func TestCalculatePressurePenalty_Bounds(t *testing.T) {
 // TestCalculatePressurePenalty_Monotonic 测试单调性（压力越高，惩罚越重）
 func TestCalculatePressurePenalty_Monotonic(t *testing.T) {
 	pressures := []float64{0, 0.3, 0.5, 0.6, 0.7, 0.8, 0.85, 0.9, 0.95, 1.0}
-	
+
 	var prevPenalty float64
 	for i, pressure := range pressures {
 		penalty := calculatePressurePenalty(pressure, 0)
-		
+
 		if i > 0 && penalty < prevPenalty {
 			t.Errorf("penalty should be monotonic increasing, but penalty(%f)=%f < penalty(%f)=%f",
 				pressure, penalty, pressures[i-1], prevPenalty)
 		}
-		
+
 		prevPenalty = penalty
 	}
 }
@@ -97,7 +97,7 @@ func TestCalculatePressurePenalty_Monotonic(t *testing.T) {
 func TestCalculatePressurePenalty_MaxPenalty(t *testing.T) {
 	// 即使压力超过 1.0，惩罚也不应该超过 0.7
 	pressures := []float64{1.0, 1.1, 1.5, 2.0}
-	
+
 	for _, pressure := range pressures {
 		penalty := calculatePressurePenalty(pressure, 0)
 		if penalty > 0.7 {
@@ -110,14 +110,14 @@ func TestCalculatePressurePenalty_MaxPenalty(t *testing.T) {
 // TestCalculatePressurePenalty_Symmetry 测试对称性（fp 和 limiter 对称）
 func TestCalculatePressurePenalty_Symmetry(t *testing.T) {
 	pressures := []float64{0, 0.3, 0.5, 0.7, 0.9, 1.0}
-	
+
 	for _, p := range pressures {
 		// fp 压力 = p, limiter 压力 = 0
 		penalty1 := calculatePressurePenalty(p, 0)
-		
+
 		// fp 压力 = 0, limiter 压力 = p
 		penalty2 := calculatePressurePenalty(0, p)
-		
+
 		if math.Abs(penalty1-penalty2) > 0.001 {
 			t.Errorf("penalty should be symmetric, but fp(%f)=%f != limiter(%f)=%f",
 				p, penalty1, p, penalty2)
@@ -130,12 +130,12 @@ func TestCalculatePressurePenalty_PiecewiseContinuity(t *testing.T) {
 	// 在分段点附近，惩罚应该连续
 	thresholds := []float64{0.5, 0.8}
 	epsilon := 0.001
-	
+
 	for _, threshold := range thresholds {
 		penaltyBefore := calculatePressurePenalty(threshold-epsilon, 0)
 		penaltyAt := calculatePressurePenalty(threshold, 0)
 		penaltyAfter := calculatePressurePenalty(threshold+epsilon, 0)
-		
+
 		// 检查连续性（差值应该很小）
 		if math.Abs(penaltyAt-penaltyBefore) > 0.01 {
 			t.Errorf("discontinuity at threshold %f: before=%f, at=%f",
@@ -153,7 +153,7 @@ func TestCalculatePressurePenalty_NegativeInput(t *testing.T) {
 	// 负数压力应该被当作 0 处理（math.Max 会选择 0）
 	penalty := calculatePressurePenalty(-0.5, 0.3)
 	expected := calculatePressurePenalty(0, 0.3)
-	
+
 	if math.Abs(penalty-expected) > 0.001 {
 		t.Errorf("negative pressure should be treated as 0, got penalty=%f, expected=%f",
 			penalty, expected)
