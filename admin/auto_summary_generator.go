@@ -26,7 +26,7 @@ import (
 // but for the session_summary LLM task.
 //
 // Naming convention — the loopback request's X-Gw-Session-Id is prefixed
-// with "gs:" + original session_id, yielding e.g. "gs_gw_abc123". Operators
+// with "gs_" + original session_id, yielding e.g. "gs_gw_abc123". Operators
 // can SQL:
 //   WHERE gw_session_id LIKE 'gs\_%' ESCAPE '\'
 // to find every auto-summary row, and JOIN child.parent_request_id back
@@ -55,7 +55,7 @@ import (
 // auto_title_generator.go's autoParentRequestIDHeader / autoSourceActorHeader.
 const (
 	autoSummaryOriginActor      = "auto-summary-generator"
-	autoSummarySessionIDPrefix  = "gs" // appended before ":" to form "gs:gw_xxx" → "gs_gw_xxx"
+	autoSummarySessionIDPrefix  = "gs" // appended before "_" to form "gs_gw_xxx" (sanitizer contract: gw_/gt_/gs_)
 	autoSummaryChunkApproxTurns = 5    // each chunk target turn count
 	autoSummaryHTTPTimeout      = 30 * time.Second
 )
@@ -235,7 +235,7 @@ func (g *AutoSummaryGenerator) SetWorkerSlots(n int) {
 // forget; the heavy lifting happens in a background goroutine.
 //
 // sessionID is the user's gw_session_id (e.g. "gw_abc123"); the loopback
-// LLM call will tag its own session as "gs:gw_abc123" → "gs_gw_abc123" via
+// LLM call will tag its own session as "gs_gw_abc123" via
 // X-Gw-Session-Id.
 //
 // parentRequestID is the user request's request_id; forwarded to the
@@ -679,7 +679,10 @@ func (g *AutoSummaryGenerator) doCallSummaryOnce(
 	// "gs_gw_<original>" instead of a fresh gw_<uuid>. Operators can SQL
 	//   WHERE gw_session_id LIKE 'gs\_%' ESCAPE '\'
 	// to find every auto-summary row.
-	req.Header.Set("X-Gw-Session-Id", autoSummarySessionIDPrefix+":"+sessionID)
+	// 2026-08-15 fix: prefix MUST be "gs_" (underscore) — sanitizeGwSessionHeader
+	// only accepts gw_/gt_/gs_; the previous "gs:" (colon) form was silently
+	// dropped (same class of bug as the auto-title gt: fix).
+	req.Header.Set("X-Gw-Session-Id", autoSummarySessionIDPrefix+"_"+sessionID)
 	if parentRequestID != "" {
 		req.Header.Set(autoParentRequestIDHeader, parentRequestID)
 	}
