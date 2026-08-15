@@ -43,7 +43,7 @@ func TestGateWriterImmediateModeByteIdentityWithSplitWrites(t *testing.T) {
 		require.NoError(t, err)
 		require.Equal(t, 1, n)
 	}
-	gw.Finish()
+	require.NoError(t, gw.Finish())
 
 	assert.Equal(t, legacy.String(), f.buf.String(), "wire bytes must be byte-identical in immediate mode")
 	assert.Equal(t, CommitStateTerminal, gate.State(), "gate should track terminal state")
@@ -63,10 +63,49 @@ func TestGateWriterPendingPartialFrameHeldUntilFinish(t *testing.T) {
 	require.Equal(t, "data: {\"choices\":[{\"delta\":{\"content\":\"x\"}}]}\n\n", f.buf.String(),
 		"Flush must not bypass the gate with pending partial frames")
 	// Attempt end: Finish passes the trailing partial frame through unchanged.
-	gw.Finish()
+	require.NoError(t, gw.Finish())
 	assert.Equal(t,
 		"data: {\"choices\":[{\"delta\":{\"content\":\"x\"}}]}\n\ndata: {\"choices\"",
 		f.buf.String(), "Finish must pass the trailing partial frame through unchanged")
+}
+
+// TestGateWriterFinishRoutesThroughGate pins the A-P2-5 hardening: Finish
+// must not bypass the gate. In buffered mode the trailing partial frame
+// stays in the attempt-local buffer (flushed on Commit, dropped on Discard);
+// a discarded attempt refuses trailing bytes instead of writing them to the
+// wire.
+func TestGateWriterFinishRoutesThroughGate(t *testing.T) {
+	f := &trackingFlusher{}
+	gate := NewAttemptCommitGate(ProtocolOpenAIChat, NewSerializedStreamWriter(f), GateOptions{Mode: GateModeBuffered})
+	gw := NewGateWriter(gate)
+	_, err := gw.Write([]byte("data: {\"choices\":[{\"delta\":{\"role\":\"assistant\"}}]}\n\n"))
+	require.NoError(t, err)
+	_, err = gw.Write([]byte("data: {\"partial\""))
+	require.NoError(t, err)
+	require.NoError(t, gw.Finish())
+	assert.Equal(t, 0, f.buf.Len(), "uncommitted partial must not reach the wire at Finish")
+	require.NoError(t, gate.Discard())
+	assert.Equal(t, 0, f.buf.Len(), "discarded partial must never reach the wire")
+
+	// A discarded attempt is dead: Finish refuses further trailing bytes.
+	_, err = gw.Write([]byte("data: more\n\n"))
+	assert.ErrorIs(t, err, ErrAttemptDiscarded)
+	assert.ErrorIs(t, gw.Finish(), ErrAttemptDiscarded)
+	assert.Equal(t, 0, f.buf.Len())
+}
+
+// TestGateWriterFinishPartialFlushesOnCommit complements the discard case:
+// the buffered partial frame survives in the attempt buffer and flushes in
+// order when the attempt commits.
+func TestGateWriterFinishPartialFlushesOnCommit(t *testing.T) {
+	f := &trackingFlusher{}
+	gate := NewAttemptCommitGate(ProtocolOpenAIChat, NewSerializedStreamWriter(f), GateOptions{Mode: GateModeBuffered})
+	gw := NewGateWriter(gate)
+	_, err := gw.Write([]byte("data: {\"partial\""))
+	require.NoError(t, err)
+	require.NoError(t, gw.Finish())
+	require.NoError(t, gate.Commit())
+	assert.Equal(t, "data: {\"partial\"", f.buf.String())
 }
 
 func upstreamSSEServer(t *testing.T, body string) *httptest.Server {
