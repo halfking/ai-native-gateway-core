@@ -13,11 +13,12 @@ func TestClassifyNonStreamUpstreamResponse(t *testing.T) {
 		wantFormat nonStreamResponseFormat
 		wantEmpty  bool
 	}{
-		{"missing response format remains an empty chat response", `{"id":"unknown"}`, nonStreamResponseChat, true},
+		{"unknown JSON remains non-empty for compatibility", `{"id":"unknown"}`, nonStreamResponseUnknown, false},
 		{"empty chat response is empty", `{"choices":[]}`, nonStreamResponseChat, true},
 		{"later chat choice has content", `{"choices":[{"message":{"content":""}},{"message":{"content":"second"}}]}`, nonStreamResponseChat, false},
 		{"anthropic text is not empty", `{"type":"message","content":[{"type":"text","text":"hello"}]}`, nonStreamResponseAnthropic, false},
 		{"anthropic tool use is not empty", `{"type":"message","content":[{"type":"tool_use","id":"toolu_1","name":"weather","input":{}}]}`, nonStreamResponseAnthropic, false},
+		{"anthropic tool use with input only is not empty", `{"type":"message","content":[{"type":"tool_use","input":{"city":"Paris"}}]}`, nonStreamResponseAnthropic, false},
 		{"anthropic signed thinking is not empty", `{"type":"message","content":[{"type":"thinking","thinking":"","signature":"sig_1"}]}`, nonStreamResponseAnthropic, false},
 		{"anthropic redacted thinking is not empty", `{"type":"message","content":[{"type":"redacted_thinking","data":"opaque"}]}`, nonStreamResponseAnthropic, false},
 		{"anthropic server tool use is not empty", `{"type":"message","content":[{"type":"server_tool_use","id":"srvtoolu_1","name":"web_search","input":{}}]}`, nonStreamResponseAnthropic, false},
