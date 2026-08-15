@@ -101,3 +101,108 @@ func (r *OutboundURLRewriter) RewriteOpenAIBody(body []byte, attachments []Attac
 	}
 	return out, rewritten
 }
+
+// RewriteAnthropicBody rewrites an Anthropic Messages request body for one
+// outbound attempt (E-P2-3, doc 20): Anthropic-protocol clients bridged to a
+// URL-mode OpenAI provider previously hit RewriteOpenAIBody's silent no-op
+// (no image_url fields in the Anthropic shape). This variant walks the same
+// Extractor-recorded coordinates, verifies the block is still a base64 image
+// source, and swaps it for a {"type":"url","url":...} source — the exact
+// shape the Anthropic→OpenAI bridge converter maps to image_url. Providers
+// without URL preference keep the original base64. Returns the body
+// (unchanged when nothing applies) and the number of source blocks rewritten.
+func (r *OutboundURLRewriter) RewriteAnthropicBody(body []byte, attachments []AttachmentMetadata, provider string) ([]byte, int) {
+	if len(attachments) == 0 || len(body) == 0 || !ShouldURLRewrite(provider) {
+		return body, 0
+	}
+
+	var parsed struct {
+		Messages []struct {
+			Content []json.RawMessage `json:"content"`
+		} `json:"messages"`
+	}
+	if err := json.Unmarshal(body, &parsed); err != nil {
+		return body, 0
+	}
+
+	// Collect verified (coordinate → gateway URL) replacements.
+	replacements := make(map[int]map[int]string)
+	for _, att := range attachments {
+		if att.Path == "" || att.MessageIndex < 0 || att.MessageIndex >= len(parsed.Messages) {
+			continue
+		}
+		blocks := parsed.Messages[att.MessageIndex].Content
+		if att.BlockIndex < 0 || att.BlockIndex >= len(blocks) {
+			continue
+		}
+		var block struct {
+			Type   string `json:"type"`
+			Source *struct {
+				Type string `json:"type"`
+				Data string `json:"data"`
+			} `json:"source"`
+		}
+		if err := json.Unmarshal(blocks[att.BlockIndex], &block); err != nil {
+			continue
+		}
+		// Body drifted from the extraction snapshot: skip rather than
+		// blind-splice. Only base64 sources are swapped; url sources pass
+		// through untouched.
+		if block.Type != "image" || block.Source == nil ||
+			block.Source.Type != "base64" || block.Source.Data == "" {
+			continue
+		}
+		if replacements[att.MessageIndex] == nil {
+			replacements[att.MessageIndex] = make(map[int]string)
+		}
+		replacements[att.MessageIndex][att.BlockIndex] = r.baseURL + "/" + att.Path
+	}
+	if len(replacements) == 0 {
+		return body, 0
+	}
+
+	// Apply via JSON-aware mutation; the rewritten body is re-serialized
+	// (the bridge converter re-marshals downstream anyway), while the
+	// no-op path above keeps the original bytes.
+	var root map[string]any
+	if err := json.Unmarshal(body, &root); err != nil {
+		return body, 0
+	}
+	messages, ok := root["messages"].([]any)
+	if !ok {
+		return body, 0
+	}
+	rewritten := 0
+	for msgIdx, blockRepls := range replacements {
+		if msgIdx >= len(messages) {
+			continue
+		}
+		msgMap, ok := messages[msgIdx].(map[string]any)
+		if !ok {
+			continue
+		}
+		content, ok := msgMap["content"].([]any)
+		if !ok {
+			continue
+		}
+		for blockIdx, gwURL := range blockRepls {
+			if blockIdx >= len(content) {
+				continue
+			}
+			blockMap, ok := content[blockIdx].(map[string]any)
+			if !ok {
+				continue
+			}
+			blockMap["source"] = map[string]any{"type": "url", "url": gwURL}
+			rewritten++
+		}
+	}
+	if rewritten == 0 {
+		return body, 0
+	}
+	out, err := json.Marshal(root)
+	if err != nil {
+		return body, 0
+	}
+	return out, rewritten
+}
