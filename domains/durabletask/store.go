@@ -22,6 +22,39 @@ type Store struct {
 // NewStore creates a PostgreSQL durable task store.
 func NewStore(db DB, kr *secret.Keyring) *Store { return &Store{db: db, kr: kr} }
 
+// bypassTx begins a transaction that bypasses the durable tables' RLS.
+// The store is the cross-tenant authority (worker, reaper, outbox): tenant
+// scoping happens in SQL predicates, so every store transaction runs with
+// the established service GUC from migration 515 (see
+// domains/streaming/anomaly_harvester.go for the same pattern).
+func (s *Store) bypassTx(ctx context.Context) (pgx.Tx, error) {
+	tx, err := s.db.Begin(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if _, err := tx.Exec(ctx, "SELECT set_config('app.bypass_rls', 'true', true)"); err != nil {
+		_ = tx.Rollback(ctx)
+		return nil, fmt.Errorf("durabletask: set bypass rls: %w", err)
+	}
+	return tx, nil
+}
+
+// withinBypassTx runs fn inside a bypass transaction and commits.
+func (s *Store) withinBypassTx(ctx context.Context, fn func(tx pgx.Tx) error) (err error) {
+	tx, err := s.bypassTx(ctx)
+	if err != nil {
+		return err
+	}
+	defer rollbackUnlessCommitted(ctx, tx, &err)
+	if err = fn(tx); err != nil {
+		return err
+	}
+	if err = tx.Commit(ctx); err != nil {
+		return fmt.Errorf("durabletask: commit: %w", err)
+	}
+	return nil
+}
+
 // CreateAndClaimParams contains the immutable request snapshot and initial foreground lease.
 type CreateAndClaimParams struct {
 	Snapshot        DurableRequestSnapshotV1
@@ -52,7 +85,7 @@ func (s *Store) CreateAndClaim(ctx context.Context, params CreateAndClaimParams)
 	if err != nil {
 		return Lease{}, err
 	}
-	tx, err := s.db.Begin(ctx)
+	tx, err := s.bypassTx(ctx)
 	if err != nil {
 		return Lease{}, fmt.Errorf("durabletask: begin create: %w", err)
 	}
@@ -101,7 +134,7 @@ func (s *Store) ClaimRunnable(ctx context.Context, owner string, limit int, leas
 		lease = time.Minute
 	}
 	leaseUntil := time.Now().Add(lease)
-	tx, err := s.db.Begin(ctx)
+	tx, err := s.bypassTx(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("durabletask: begin claim: %w", err)
 	}
@@ -171,13 +204,15 @@ func (s *Store) RenewLease(ctx context.Context, lease Lease, until time.Time) er
 	if until.IsZero() {
 		return errors.New("durabletask: lease renewal deadline is required")
 	}
-	tag, err := s.db.Exec(ctx, `UPDATE durable_llm_tasks SET lease_until=$4,updated_at=now()
-		WHERE id=$1 AND lease_owner=$2 AND fencing_token=$3 AND status='running'`,
-		lease.TaskID, lease.Owner, lease.FencingToken, until)
-	if err != nil {
-		return fmt.Errorf("durabletask: renew lease: %w", err)
-	}
-	return requireFencedRow(tag.RowsAffected())
+	return s.withinBypassTx(ctx, func(tx pgx.Tx) error {
+		tag, err := tx.Exec(ctx, `UPDATE durable_llm_tasks SET lease_until=$4,updated_at=now()
+			WHERE id=$1 AND lease_owner=$2 AND fencing_token=$3 AND status='running'`,
+			lease.TaskID, lease.Owner, lease.FencingToken, until)
+		if err != nil {
+			return fmt.Errorf("durabletask: renew lease: %w", err)
+		}
+		return requireFencedRow(tag.RowsAffected())
+	})
 }
 
 // Checkpoint persists the strongest commit state before any semantic network write.
@@ -189,16 +224,18 @@ func (s *Store) Checkpoint(ctx context.Context, lease Lease, state CommitState) 
 		return fmt.Errorf("durabletask: invalid commit state %q", state)
 	}
 	semantic := state == CommitContent || state == CommitToolCall || state == CommitTerminal
-	tag, err := s.db.Exec(ctx, `UPDATE durable_llm_tasks SET commit_state=$4,
-		semantic_content_committed=semantic_content_committed OR $5,updated_at=now()
-		WHERE id=$1 AND lease_owner=$2 AND fencing_token=$3 AND status='running'
-		  AND CASE commit_state WHEN 'none' THEN 0 WHEN 'metadata' THEN 1 WHEN 'content' THEN 2 WHEN 'tool_call' THEN 3 ELSE 4 END
-		      <= CASE $4 WHEN 'none' THEN 0 WHEN 'metadata' THEN 1 WHEN 'content' THEN 2 WHEN 'tool_call' THEN 3 ELSE 4 END`,
-		lease.TaskID, lease.Owner, lease.FencingToken, state, semantic)
-	if err != nil {
-		return fmt.Errorf("durabletask: checkpoint: %w", err)
-	}
-	return requireFencedRow(tag.RowsAffected())
+	return s.withinBypassTx(ctx, func(tx pgx.Tx) error {
+		tag, err := tx.Exec(ctx, `UPDATE durable_llm_tasks SET commit_state=$4,
+			semantic_content_committed=semantic_content_committed OR $5,updated_at=now()
+			WHERE id=$1 AND lease_owner=$2 AND fencing_token=$3 AND status='running'
+			  AND CASE commit_state WHEN 'none' THEN 0 WHEN 'metadata' THEN 1 WHEN 'content' THEN 2 WHEN 'tool_call' THEN 3 ELSE 4 END
+			      <= CASE $4 WHEN 'none' THEN 0 WHEN 'metadata' THEN 1 WHEN 'content' THEN 2 WHEN 'tool_call' THEN 3 ELSE 4 END`,
+			lease.TaskID, lease.Owner, lease.FencingToken, state, semantic)
+		if err != nil {
+			return fmt.Errorf("durabletask: checkpoint: %w", err)
+		}
+		return requireFencedRow(tag.RowsAffected())
+	})
 }
 
 // RescheduleParams describes a replay-safe transition back to a runnable state.
@@ -216,7 +253,7 @@ func (s *Store) Reschedule(ctx context.Context, lease Lease, params ReschedulePa
 	if params.NextRetryAt.IsZero() {
 		return errors.New("durabletask: next retry time is required")
 	}
-	tx, err := s.db.Begin(ctx)
+	tx, err := s.bypassTx(ctx)
 	if err != nil {
 		return fmt.Errorf("durabletask: begin reschedule: %w", err)
 	}
@@ -262,7 +299,7 @@ func (s *Store) Complete(ctx context.Context, lease Lease, params CompleteParams
 	if params.ContentType == "" {
 		params.ContentType = "application/json"
 	}
-	tx, err := s.db.Begin(ctx)
+	tx, err := s.bypassTx(ctx)
 	if err != nil {
 		return item, fmt.Errorf("durabletask: begin complete: %w", err)
 	}
@@ -327,7 +364,7 @@ func (s *Store) Fail(ctx context.Context, lease Lease, params FailureParams) (it
 	if !isFailureTerminal(params.Status) {
 		return item, ErrInvalidTerminalStatus
 	}
-	tx, err := s.db.Begin(ctx)
+	tx, err := s.bypassTx(ctx)
 	if err != nil {
 		return item, fmt.Errorf("durabletask: begin fail: %w", err)
 	}
@@ -383,7 +420,7 @@ func (s *Store) reap(ctx context.Context, limit int, predicate string, status St
 	if limit <= 0 {
 		limit = 100
 	}
-	tx, err := s.db.Begin(ctx)
+	tx, err := s.bypassTx(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("durabletask: begin reaper: %w", err)
 	}
@@ -441,22 +478,25 @@ func (s *Store) reap(ctx context.Context, limit int, predicate string, status St
 
 // ActiveTaskCounts returns authoritative non-terminal task counts per tenant.
 func (s *Store) ActiveTaskCounts(ctx context.Context) (map[string]int64, error) {
-	rows, err := s.db.Query(ctx, `SELECT tenant_id,count(*) FROM durable_llm_tasks
-		WHERE status NOT IN ('completed','permanent_failed','expired','cancelled','resume_safety_blocked') GROUP BY tenant_id`)
-	if err != nil {
-		return nil, fmt.Errorf("durabletask: active counts: %w", err)
-	}
-	defer rows.Close()
 	out := map[string]int64{}
-	for rows.Next() {
-		var tenant string
-		var count int64
-		if err := rows.Scan(&tenant, &count); err != nil {
-			return nil, err
+	err := s.withinBypassTx(ctx, func(tx pgx.Tx) error {
+		rows, err := tx.Query(ctx, `SELECT tenant_id,count(*) FROM durable_llm_tasks
+			WHERE status NOT IN ('completed','permanent_failed','expired','cancelled','resume_safety_blocked') GROUP BY tenant_id`)
+		if err != nil {
+			return fmt.Errorf("durabletask: active counts: %w", err)
 		}
-		out[tenant] = count
-	}
-	return out, rows.Err()
+		defer rows.Close()
+		for rows.Next() {
+			var tenant string
+			var count int64
+			if err := rows.Scan(&tenant, &count); err != nil {
+				return err
+			}
+			out[tenant] = count
+		}
+		return rows.Err()
+	})
+	return out, err
 }
 
 // ClaimOutbox leases pending terminal projections for idempotent delivery.
@@ -471,7 +511,8 @@ func (s *Store) ClaimOutbox(ctx context.Context, owner string, limit int, lease 
 		lease = time.Minute
 	}
 	until := time.Now().Add(lease)
-	rows, err := s.db.Query(ctx, `WITH picked AS (SELECT id FROM durable_pending_outbox
+	err = s.withinBypassTx(ctx, func(tx pgx.Tx) error {
+		rows, err := tx.Query(ctx, `WITH picked AS (SELECT id FROM durable_pending_outbox
 		WHERE (status IN ('pending','failed') AND next_attempt_at<=now()) OR (status='processing' AND lease_until<now())
 		ORDER BY next_attempt_at,id FOR UPDATE SKIP LOCKED LIMIT $1), claimed AS (
 		UPDATE durable_pending_outbox o SET status='processing',lease_owner=$2,lease_until=$3,
@@ -479,44 +520,50 @@ func (s *Store) ClaimOutbox(ctx context.Context, owner string, limit int, lease 
 			RETURNING o.id,o.task_id,o.tenant_id,o.request_id,o.session_id,o.projection_status,
 				o.fencing_token,o.result_version,coalesce(o.result_hash,''),o.attempt_count,o.created_at)
 		SELECT c.*,coalesce(t.reason_code,''),t.request_hash,coalesce(t.result_ciphertext,''),coalesce(t.content_type,'')
-		FROM claimed c JOIN durable_llm_tasks t ON t.id=c.task_id`, limit, owner, until)
-	if err != nil {
-		return nil, fmt.Errorf("durabletask: claim outbox: %w", err)
-	}
-	defer rows.Close()
-	for rows.Next() {
-		var item OutboxItem
-		var status string
-		if err = rows.Scan(&item.ID, &item.TaskID, &item.TenantID, &item.RequestID,
-			&item.SessionID, &status, &item.FencingToken, &item.ResultVersion, &item.ResultHash,
-			&item.AttemptCount, &item.CreatedAt, &item.ReasonCode, &item.RequestHash,
-			&item.ResultCiphertext, &item.ContentType); err != nil {
-			return nil, err
+			FROM claimed c JOIN durable_llm_tasks t ON t.id=c.task_id`, limit, owner, until)
+		if err != nil {
+			return fmt.Errorf("durabletask: claim outbox: %w", err)
 		}
-		item.Status = Status(status)
-		items = append(items, item)
-	}
-	return items, rows.Err()
+		defer rows.Close()
+		for rows.Next() {
+			var item OutboxItem
+			var status string
+			if err := rows.Scan(&item.ID, &item.TaskID, &item.TenantID, &item.RequestID,
+				&item.SessionID, &status, &item.FencingToken, &item.ResultVersion, &item.ResultHash,
+				&item.AttemptCount, &item.CreatedAt, &item.ReasonCode, &item.RequestHash,
+				&item.ResultCiphertext, &item.ContentType); err != nil {
+				return err
+			}
+			item.Status = Status(status)
+			items = append(items, item)
+		}
+		return rows.Err()
+	})
+	return items, err
 }
 
 // MarkOutboxDelivered records a successfully projected outbox row.
 func (s *Store) MarkOutboxDelivered(ctx context.Context, id int64, owner string) error {
-	tag, err := s.db.Exec(ctx, `UPDATE durable_pending_outbox SET status='delivered',delivered_at=now(),updated_at=now(),lease_owner=NULL,lease_until=NULL
-		WHERE id=$1 AND lease_owner=$2 AND status='processing'`, id, owner)
-	if err != nil {
-		return err
-	}
-	return requireFencedRow(tag.RowsAffected())
+	return s.withinBypassTx(ctx, func(tx pgx.Tx) error {
+		tag, err := tx.Exec(ctx, `UPDATE durable_pending_outbox SET status='delivered',delivered_at=now(),updated_at=now(),lease_owner=NULL,lease_until=NULL
+			WHERE id=$1 AND lease_owner=$2 AND status='processing'`, id, owner)
+		if err != nil {
+			return err
+		}
+		return requireFencedRow(tag.RowsAffected())
+	})
 }
 
 // MarkOutboxFailed releases a projection for retry.
 func (s *Store) MarkOutboxFailed(ctx context.Context, id int64, owner, message string, next time.Time) error {
-	tag, err := s.db.Exec(ctx, `UPDATE durable_pending_outbox SET status='failed',last_error=$3,next_attempt_at=$4,
-		updated_at=now(),lease_owner=NULL,lease_until=NULL WHERE id=$1 AND lease_owner=$2 AND status='processing'`, id, owner, message, next)
-	if err != nil {
-		return err
-	}
-	return requireFencedRow(tag.RowsAffected())
+	return s.withinBypassTx(ctx, func(tx pgx.Tx) error {
+		tag, err := tx.Exec(ctx, `UPDATE durable_pending_outbox SET status='failed',last_error=$3,next_attempt_at=$4,
+			updated_at=now(),lease_owner=NULL,lease_until=NULL WHERE id=$1 AND lease_owner=$2 AND status='processing'`, id, owner, message, next)
+		if err != nil {
+			return err
+		}
+		return requireFencedRow(tag.RowsAffected())
+	})
 }
 
 func appendEvent(ctx context.Context, tx pgx.Tx, event Event) error {

@@ -19,7 +19,7 @@ func TestStoreCreateAndClaimIsAtomic(t *testing.T) {
 	deadline := time.Date(2026, 8, 16, 12, 0, 0, 0, time.UTC)
 	snapshot := testSnapshot()
 
-	mock.ExpectBegin()
+	expectBypassBegin(mock)
 	mock.ExpectExec(`INSERT INTO durable_llm_tasks`).
 		WithArgs(
 			snapshot.TaskID, snapshot.TenantID, snapshot.RequestID, snapshot.ParentRequestID,
@@ -58,7 +58,7 @@ func TestStoreCreateAndClaimRollsBackWhenEventAppendFails(t *testing.T) {
 	defer mock.Close()
 
 	snapshot := testSnapshot()
-	mock.ExpectBegin()
+	expectBypassBegin(mock)
 	mock.ExpectExec(`INSERT INTO durable_llm_tasks`).
 		WithArgs(pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(),
 			pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(),
@@ -97,4 +97,10 @@ func testSnapshot() DurableRequestSnapshotV1 {
 		NormalizedBody:  json.RawMessage(`{"model":"gpt-5"}`),
 		Policy:          json.RawMessage(`{"max_attempts":4}`),
 	}
+}
+
+// expectBypassBegin stubs the RLS-bypass transaction opening (Begin + GUC).
+func expectBypassBegin(mock pgxmock.PgxPoolIface) {
+	mock.ExpectBegin()
+	mock.ExpectExec("SELECT set_config").WillReturnResult(pgxmock.NewResult("SELECT", 1))
 }

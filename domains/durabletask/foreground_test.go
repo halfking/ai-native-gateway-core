@@ -16,7 +16,7 @@ func TestBeginForegroundCreatesAndClaims(t *testing.T) {
 	snapshot := testSnapshot()
 
 	leaseUntil := pgxmock.AnyArg()
-	mock.ExpectBegin()
+	expectBypassBegin(mock)
 	mock.ExpectExec(`INSERT INTO durable_llm_tasks`).
 		WithArgs(pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(),
 			pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(),
@@ -47,7 +47,7 @@ func TestBeginForegroundGeneratesTaskID(t *testing.T) {
 	snapshot := testSnapshot()
 	snapshot.TaskID = "" // caller did not pre-generate
 
-	mock.ExpectBegin()
+	expectBypassBegin(mock)
 	mock.ExpectExec(`INSERT INTO durable_llm_tasks`).
 		WithArgs(pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(),
 			pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(),
@@ -101,9 +101,11 @@ func TestForegroundCheckpointFencesOff(t *testing.T) {
 
 	fg := &Foreground{store: NewStore(mock, kr), Lease: Lease{TaskID: "018f-task", Owner: "gateway/request-1", FencingToken: 1}}
 	// 0 rows updated → ErrLeaseLost.
+	expectBypassBegin(mock)
 	mock.ExpectExec("UPDATE durable_llm_tasks SET commit_state").
 		WithArgs("018f-task", "gateway/request-1", int64(1), CommitContent, true).
 		WillReturnResult(pgxmock.NewResult("UPDATE", 0))
+	mock.ExpectRollback()
 	err = fg.Checkpoint(context.Background(), CommitContent)
 	require.ErrorIs(t, err, ErrLeaseLost)
 	require.NoError(t, mock.ExpectationsWereMet())
@@ -136,9 +138,11 @@ func TestForegroundRenewNow(t *testing.T) {
 	kr := testKeyring(t)
 
 	fg := &Foreground{store: NewStore(mock, kr), Lease: Lease{TaskID: "018f-task", Owner: "gateway/request-1", FencingToken: 1}}
+	expectBypassBegin(mock)
 	mock.ExpectExec("UPDATE durable_llm_tasks SET lease_until").
 		WithArgs("018f-task", "gateway/request-1", int64(1), pgxmock.AnyArg()).
 		WillReturnResult(pgxmock.NewResult("UPDATE", 1))
+	mock.ExpectCommit()
 	require.NoError(t, fg.RenewNow(context.Background()))
 	require.NoError(t, mock.ExpectationsWereMet())
 }
