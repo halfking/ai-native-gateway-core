@@ -148,7 +148,11 @@ func TestPipelineEmitsFailoverActions(t *testing.T) {
 		t.Fatal("Submit should fail (all forwards fail)")
 	}
 
-	events := rec.actions(t, "req-live-2", 6)
+	// 完整事件链恰 8 步：model_enqueued → node_enqueued → node_selected →
+	// node_switch(retry) → node_enqueued → node_selected → model_switch →
+	// no_route。等待下限必须 ≥ 8：此前传 6 会在 no_route（第 8 个）产出前
+	// 采样返回，断言时缺终态事件 → 时序 flaky。
+	events := rec.actions(t, "req-live-2", 8)
 	byAction := map[liveactions.Action][]liveactions.ActionEvent{}
 	for _, ev := range events {
 		byAction[ev.Action] = append(byAction[ev.Action], ev)
