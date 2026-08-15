@@ -393,3 +393,52 @@ func TestPGActiveCountsAndEvents(t *testing.T) {
 		`SELECT count(*) FROM durable_llm_task_events WHERE request_id=$1`, task.RequestID).Scan(&events))
 	require.Equal(t, 1, events, "creation must append the accepted→running event")
 }
+
+// TestPGSafetyReaperSkipsAlreadyBlocked：safety reaper 必须排除已处于
+// resume_safety_blocked 的任务（sink 态）——否则每个调度循环都会把它重割
+// （fencing+1、completed_at 刷新、再写一条失败投影事件），污染审计并反复
+// 向 PendingStore 投递失败（doc 审计发现：原谓词只排除四终态，漏排 sink 态）。
+func TestPGSafetyReaperSkipsAlreadyBlocked(t *testing.T) {
+	store := startDurablePG(t)
+	ctx := context.Background()
+	now := time.Now()
+
+	task := createITTask(t, store, "blocked", now.Add(2*time.Hour))
+	// 越过语义检查点后断连 → 先被 safety reaper 终态化为 resume_safety_blocked。
+	require.NoError(t, store.CheckpointCommitState(ctx, CheckpointParams{
+		TaskID: task.ID, LeaseOwner: task.LeaseOwner, FencingToken: task.FencingToken,
+		State: CommitStateContent,
+	}))
+	expireITLease(t, store, task.ID)
+	blocked, err := store.ReapUnsafeCheckpointed(ctx, 100, now)
+	require.NoError(t, err)
+	require.Len(t, blocked, 1)
+	require.Equal(t, StatusResumeSafetyBlocked, blocked[0].Status)
+	firstToken := blocked[0].FencingToken
+
+	// 记录终态化那一刻的 completed_at 与事件数（sink 态不应再被改写）。
+	var completedAt time.Time
+	require.NoError(t, store.db.QueryRow(ctx,
+		`SELECT completed_at FROM durable_llm_tasks WHERE id=$1`, task.ID).Scan(&completedAt))
+	var eventsBefore int
+	require.NoError(t, store.db.QueryRow(ctx,
+		`SELECT count(*) FROM durable_llm_task_events WHERE task_id=$1`, task.ID).Scan(&eventsBefore))
+
+	// 再次运行 safety reaper：已 sank 的任务必须零副作用。
+	again, err := store.ReapUnsafeCheckpointed(ctx, 100, now)
+	require.NoError(t, err)
+	require.Empty(t, again, "already-blocked task must not be reaped again")
+
+	var tokenAfter int64
+	var completedAtAfter time.Time
+	require.NoError(t, store.db.QueryRow(ctx,
+		`SELECT fencing_token, completed_at FROM durable_llm_tasks WHERE id=$1`, task.ID).
+		Scan(&tokenAfter, &completedAtAfter))
+	require.Equal(t, firstToken, tokenAfter, "sank task fencing token must not advance")
+	require.Equal(t, completedAt.Unix(), completedAtAfter.Unix(), "sank task completed_at must not refresh")
+
+	var eventsAfter int
+	require.NoError(t, store.db.QueryRow(ctx,
+		`SELECT count(*) FROM durable_llm_task_events WHERE task_id=$1`, task.ID).Scan(&eventsAfter))
+	require.Equal(t, eventsBefore, eventsAfter, "no extra projection event for an already-blocked task")
+}
