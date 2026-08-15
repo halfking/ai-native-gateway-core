@@ -29,6 +29,17 @@ func (s *routerFpSlotsStub) GetNodeState(_ context.Context, credentialID int, mo
 	return s.states[nodeKeyForTest(credentialID, model)], nil
 }
 
+// GetNodeStatesBatch mirrors the in-memory map the same way the production
+// Manager does: one logical "round trip" returning aligned states.
+func (s *routerFpSlotsStub) GetNodeStatesBatch(_ context.Context, keys []credentialfpslot.NodeStateKey) ([]*credentialfpslot.NodeState, error) {
+	out := make([]*credentialfpslot.NodeState, len(keys))
+	for i, k := range keys {
+		state, _ := s.GetNodeState(nil, k.CredentialID, k.Model)
+		out[i] = state
+	}
+	return out, nil
+}
+
 func nodeKeyForTest(credentialID int, model string) string {
 	return fmt.Sprintf("%d:%s", credentialID, model)
 }

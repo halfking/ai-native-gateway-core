@@ -40,6 +40,32 @@ let es: EventSource | null = null
 let refCount = 0
 let reconnectTimer: ReturnType<typeof setTimeout> | null = null
 
+// Page-visibility gate (2026-08-15, mirrors liveStreamStore): while the tab
+// is hidden we keep the SSE connection alive (cheap) but SKIP all state
+// writes — no findIndex/push/slice churn, no reactive triggers, so hidden
+// dashboards cost ~zero CPU. When the tab becomes visible again we clear the
+// (now stale) tiles and reconnect so the backend's authoritative
+// initial_data snapshot rebuilds the view instead of replaying a gap.
+const visibility = {
+  hidden: typeof document !== 'undefined' ? document.hidden : false,
+  missed: false,
+}
+if (typeof document !== 'undefined') {
+  document.addEventListener('visibilitychange', () => {
+    if (!document.hidden && visibility.hidden) {
+      visibility.hidden = false
+      if (visibility.missed && refCount > 0) {
+        visibility.missed = false
+        tiles.value = []
+        teardownEs()
+        open()
+      }
+    } else if (document.hidden) {
+      visibility.hidden = true
+    }
+  })
+}
+
 function buildUrl(): string {
   let url = ENDPOINT
   try {
@@ -68,6 +94,11 @@ function applyInitial(items: ProbeStreamTile[]) {
 }
 
 function handleEvent(type: string, data: unknown) {
+  // Hidden page: no rendering, no state churn — just remember we fell behind.
+  if (visibility.hidden) {
+    visibility.missed = true
+    return
+  }
   try {
     const payload = (data ?? {}) as Record<string, unknown>
     if (type === 'initial_data' || type === 'snapshot_refresh') {

@@ -133,10 +133,15 @@ async function refreshQueueTasks() {
 function startPoll() {
   stopPoll()
   pollTimer = window.setInterval(() => {
+    // 2026-08-15: hidden tab → skip the fetch entirely. Browsers throttle
+    // timers when hidden anyway; skipping keeps the polling cadence honest
+    // (no burst catch-up) and wastes zero requests on an unrendered page.
+    if (typeof document !== 'undefined' && document.hidden) return
     void loadAll()
   }, 60_000) // 60秒刷新（自检数据变化较慢）
   // 2026-07-23: 队列任务变化更快，单独 15s 轮询（子项③）
   queueTimer = window.setInterval(() => {
+    if (typeof document !== 'undefined' && document.hidden) return
     void refreshQueueTasks()
   }, 15_000)
 }

@@ -123,6 +123,62 @@ func (m *Manager) GetNodeState(ctx context.Context, credentialID int, model stri
 	return &state, nil
 }
 
+// NodeStateKey identifies one (credentialID, model) node-state entry.
+type NodeStateKey struct {
+	CredentialID int
+	Model        string
+}
+
+// GetNodeStatesBatch reads several node health states in ONE Redis round
+// trip (MGET) and returns states aligned with keys (entry is never nil; a
+// missing or corrupt key yields a zero — i.e. usable — state).
+//
+// The router calls this once per candidate list on the request hot path;
+// the previous per-candidate GET loop amplified routing latency by
+// Redis RTT × N for up to 12 candidates (docs/会话优化v3/29 §B1).
+func (m *Manager) GetNodeStatesBatch(ctx context.Context, keys []NodeStateKey) ([]*NodeState, error) {
+	if len(keys) == 0 {
+		return nil, nil
+	}
+	out := make([]*NodeState, len(keys))
+	if m.client == nil {
+		for i, k := range keys {
+			out[i] = newZeroNodeState(k.CredentialID, k.Model)
+		}
+		return out, nil
+	}
+	redisKeys := make([]string, len(keys))
+	for i, k := range keys {
+		redisKeys[i] = nodeKey(k.CredentialID, k.Model)
+	}
+	vals, err := m.client.MGet(ctx, redisKeys...).Result()
+	if err != nil {
+		return nil, fmt.Errorf("mget node states: %w", err)
+	}
+	for i, v := range vals {
+		s, ok := v.(string)
+		if !ok || s == "" {
+			out[i] = newZeroNodeState(keys[i].CredentialID, keys[i].Model)
+			continue
+		}
+		var state NodeState
+		if err := json.Unmarshal([]byte(s), &state); err != nil {
+			// One corrupt entry must not fail the whole batch — the caller
+			// fail-opens on error, which would un-filter every node.
+			out[i] = newZeroNodeState(keys[i].CredentialID, keys[i].Model)
+			continue
+		}
+		if state.CredentialID == 0 {
+			state.CredentialID = keys[i].CredentialID
+		}
+		if state.Model == "" {
+			state.Model = keys[i].Model
+		}
+		out[i] = &state
+	}
+	return out, nil
+}
+
 // SetNodeState stores node health state directly.
 // Used by tests to inject specific cooldown timestamps.
 func (m *Manager) SetNodeState(ctx context.Context, state *NodeState) error {

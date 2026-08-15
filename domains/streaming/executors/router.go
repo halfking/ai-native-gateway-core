@@ -33,6 +33,7 @@ type Router struct {
 		Enabled() bool
 		Stats(ctx context.Context, credentialID int, limit *int) (slotLimit, used, free *int)
 		GetNodeState(ctx context.Context, credentialID int, model string) (*credentialfpslot.NodeState, error)
+		GetNodeStatesBatch(ctx context.Context, keys []credentialfpslot.NodeStateKey) ([]*credentialfpslot.NodeState, error)
 	}
 	// Bandit is the Thompson Sampling bandit scorer for intelligent credential
 	// selection. When set, planByTier uses bandit scoring instead of P2C within
@@ -735,15 +736,25 @@ func (r *Router) filterHealthyNodes(candidates []provider.Candidate) []provider.
 	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
 	defer cancel()
 
+	// 2026-08-15: batch MGET instead of one GET per candidate — the serial
+	// loop amplified routing latency by Redis RTT × N (up to 12 candidates)
+	// on the request hot path (docs/会话优化v3/29 §B1). On a batch error we
+	// fail open exactly like the per-candidate error path did.
+	keys := make([]credentialfpslot.NodeStateKey, len(candidates))
+	for i, cand := range candidates {
+		keys[i] = credentialfpslot.NodeStateKey{CredentialID: cand.CredentialID, Model: cand.RawModel}
+	}
+	states, err := r.FpSlots.GetNodeStatesBatch(ctx, keys)
+	if err != nil {
+		slog.Warn("router: batch node state read failed, failing open", "error", err)
+		return candidates
+	}
+
 	healthy := make([]provider.Candidate, 0, len(candidates))
 	filtered := make([]provider.Candidate, 0)
 	now := time.Now()
-	for _, cand := range candidates {
-		state, err := r.FpSlots.GetNodeState(ctx, cand.CredentialID, cand.RawModel)
-		if err != nil {
-			healthy = append(healthy, cand)
-			continue
-		}
+	for i, cand := range candidates {
+		state := states[i]
 		if state == nil || state.IsUsable(now) {
 			healthy = append(healthy, cand)
 			continue
