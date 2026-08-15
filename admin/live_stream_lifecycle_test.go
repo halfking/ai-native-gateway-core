@@ -366,7 +366,7 @@ func TestPollLiveActions_ArmsCursorThenDeliversNewOnly(t *testing.T) {
 	}
 	hub.pollLiveActions()
 	if superRec.Body.Len() != 0 {
-		t.Fatalf("first poll must arm the cursor without delivering backlog, got %q", superRec.Body.String())
+		t.Fatalf("first poll against pre-boot backlog must arm the cursor without delivering, got %q", superRec.Body.String())
 	}
 
 	// 新增 2 条（含 detail 摊平）→ 一次聚合帧（数组）推送。
@@ -467,6 +467,46 @@ func TestPollLiveActions_MalformedEntriesDoNotKillStream(t *testing.T) {
 	frames := parseSSEDataFrames(t, superRec.Body.String())
 	if len(frames) != 1 || len(asActionArray(t, frames[0]["action"])) != 1 {
 		t.Fatalf("malformed entries must be skipped, frames %#v", frames)
+	}
+}
+
+// TestPollLiveActions_BootAgainstEmptyListDeliversFirstEvent guards the
+// arming semantics: a hub whose first poll sees an EMPTY list must deliver
+// the first event appended afterwards — the cursor may not lazily swallow
+// it (2026-08-15 DV2 实测回归：hub 启动时列表为空，首个 arrive 被吞)。
+func TestPollLiveActions_BootAgainstEmptyListDeliversFirstEvent(t *testing.T) {
+	hub, _, rdb := newLifecycleTestHub(t)
+	ctx := context.Background()
+	ts := time.Date(2026, 8, 15, 12, 0, 0, 0, time.UTC)
+
+	superClient, superRec := newLifecycleClient("", true)
+	hub.clients[superClient] = struct{}{}
+	t.Cleanup(func() { delete(hub.clients, superClient) })
+
+	// 第一次 poll 命中空列表：布防完成，cursor 保持空。
+	hub.pollLiveActions()
+	if superRec.Body.Len() != 0 {
+		t.Fatalf("poll on empty list must not deliver, got %q", superRec.Body.String())
+	}
+
+	// 布防后的第一个事件必须实时送达（不得被吞）。
+	rdb.LPush(ctx, liveactions.RedisKey, mustMarshalAction(t, liveactions.ActionEvent{RequestID: "first-1", Seq: 1, Action: liveactions.ActionArrive, Ts: ts}))
+	hub.pollLiveActions()
+
+	frames := parseSSEDataFrames(t, superRec.Body.String())
+	if len(frames) != 1 {
+		t.Fatalf("first post-boot event must be delivered, frames %d", len(frames))
+	}
+	actions := asActionArray(t, frames[0]["action"])
+	if len(actions) != 1 || actions[0]["request_id"] != "first-1" {
+		t.Fatalf("expected first-1 arrive, got %#v", actions)
+	}
+
+	// 后续无新增 → 不推送。
+	superRec.Body.Reset()
+	hub.pollLiveActions()
+	if superRec.Body.Len() != 0 {
+		t.Fatalf("poll without new actions must not push, got %q", superRec.Body.String())
 	}
 }
 
