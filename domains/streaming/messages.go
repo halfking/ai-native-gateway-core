@@ -1079,12 +1079,16 @@ func (h *MessagesHandler) writeNonStreamResponse(w http.ResponseWriter, body []b
 		return nil
 	}
 
-	if isEmptyUpstreamChatResponse(body) {
+	format, empty := classifyNonStreamUpstreamResponse(body)
+	if empty {
 		writeAnthropicError(w, http.StatusBadGateway, "api_error", "模型未返回任何内容")
 		return nil
 	}
 
-	anthropicBody := convertChatResponseToAnthropic(body, clientModel, requestID)
+	anthropicBody := body
+	if format != nonStreamResponseAnthropic {
+		anthropicBody = convertChatResponseToAnthropic(body, clientModel, requestID)
+	}
 
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("X-Request-Id", requestID)
