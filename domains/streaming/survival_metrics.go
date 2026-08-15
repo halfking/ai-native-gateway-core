@@ -165,3 +165,9 @@ func observeSurvivalWait(kind errorsx.ErrorKind, waited time.Duration) {
 func observeSurvivalRecoveryLatency(protocol ClientProtocol, latency time.Duration) {
 	metrics.SurvivalRecoveryLatencySeconds.WithLabelValues(protocolMetricLabel(protocol)).Observe(latency.Seconds())
 }
+
+// recordSurvivalKeepaliveWriteError counts a keepalive comment that failed
+// to reach the client connection (gateway_survival_keepalive_write_errors_total).
+func recordSurvivalKeepaliveWriteError(protocol ClientProtocol) {
+	metrics.SurvivalKeepaliveWriteErrorsTotal.WithLabelValues(protocolMetricLabel(protocol)).Inc()
+}
