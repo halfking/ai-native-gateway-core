@@ -132,9 +132,9 @@ func TestRedisFormatCache_UseCountIncrement(t *testing.T) {
 
 	sessionID := "test-session-usecount"
 	format := &CachedFormat{
-		PatternID:  "opencode-v1",
-		UseCount:   1,
-		LastUsed:   time.Now(),
+		PatternID: "opencode-v1",
+		UseCount:  1,
+		LastUsed:  time.Now(),
 	}
 
 	// Set initial

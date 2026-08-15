@@ -44,11 +44,11 @@ func TestGetFieldState(t *testing.T) {
 				Model    string          `json:"model"`
 				Messages json.RawMessage `json:"messages,omitempty"`
 			}
-			
+
 			if err := json.Unmarshal([]byte(tt.input), &req); err != nil {
 				t.Fatalf("failed to unmarshal: %v", err)
 			}
-			
+
 			state := GetFieldState(req.Messages)
 			if state != tt.expected {
 				t.Errorf("GetFieldState() = %v, want %v", state, tt.expected)
@@ -78,10 +78,10 @@ func TestFieldStateString(t *testing.T) {
 
 func TestToStringPtr(t *testing.T) {
 	tests := []struct {
-		name     string
-		input    string
-		wantNil  bool
-		wantStr  string
+		name    string
+		input   string
+		wantNil bool
+		wantStr string
 	}{
 		{
 			name:    "not provided",
@@ -120,13 +120,13 @@ func TestToStringPtr(t *testing.T) {
 				Model    string          `json:"model"`
 				Messages json.RawMessage `json:"messages,omitempty"`
 			}
-			
+
 			if err := json.Unmarshal([]byte(tt.input), &req); err != nil {
 				t.Fatalf("failed to unmarshal: %v", err)
 			}
-			
+
 			ptr := ToStringPtr(req.Messages)
-			
+
 			if tt.wantNil {
 				if ptr != nil {
 					t.Errorf("ToStringPtr() = %v, want nil", *ptr)
@@ -190,13 +190,13 @@ func TestValidateRequiredField(t *testing.T) {
 				Model    string          `json:"model"`
 				Messages json.RawMessage `json:"messages,omitempty"`
 			}
-			
+
 			if err := json.Unmarshal([]byte(tt.input), &req); err != nil {
 				t.Fatalf("failed to unmarshal: %v", err)
 			}
-			
+
 			errMsg := ValidateRequiredField(req.Messages, tt.fieldName)
-			
+
 			if tt.expectError {
 				if errMsg == "" {
 					t.Errorf("ValidateRequiredField() expected error, got none")
@@ -214,9 +214,9 @@ func TestValidateRequiredField(t *testing.T) {
 
 func TestValidateNonEmptyArray(t *testing.T) {
 	tests := []struct {
-		name        string
-		input       string
-		expectError bool
+		name          string
+		input         string
+		expectError   bool
 		errorContains string
 	}{
 		{
@@ -244,9 +244,9 @@ func TestValidateNonEmptyArray(t *testing.T) {
 			errorContains: "must be a valid JSON array",
 		},
 		{
-			name:          "valid non-empty array",
-			input:         `{"model":"gpt-4","messages":[{"role":"user","content":"hi"}]}`,
-			expectError:   false,
+			name:        "valid non-empty array",
+			input:       `{"model":"gpt-4","messages":[{"role":"user","content":"hi"}]}`,
+			expectError: false,
 		},
 		{
 			name:          "string instead of array",
@@ -262,13 +262,13 @@ func TestValidateNonEmptyArray(t *testing.T) {
 				Model    string          `json:"model"`
 				Messages json.RawMessage `json:"messages,omitempty"`
 			}
-			
+
 			if err := json.Unmarshal([]byte(tt.input), &req); err != nil {
 				t.Fatalf("failed to unmarshal: %v", err)
 			}
-			
+
 			errMsg := ValidateNonEmptyArray(req.Messages, "messages")
-			
+
 			if tt.expectError {
 				if errMsg == "" {
 					t.Errorf("ValidateNonEmptyArray() expected error, got none")
@@ -333,11 +333,11 @@ func TestHasUserMessage(t *testing.T) {
 				Model    string          `json:"model"`
 				Messages json.RawMessage `json:"messages,omitempty"`
 			}
-			
+
 			if err := json.Unmarshal([]byte(tt.input), &req); err != nil {
 				t.Fatalf("failed to unmarshal: %v", err)
 			}
-			
+
 			result := HasUserMessage(req.Messages)
 			if result != tt.expected {
 				t.Errorf("HasUserMessage() = %v, want %v", result, tt.expected)
@@ -348,9 +348,9 @@ func TestHasUserMessage(t *testing.T) {
 
 // Helper function
 func contains(s, substr string) bool {
-	return len(s) >= len(substr) && (s == substr || len(s) > len(substr) && 
-		(s[:len(substr)] == substr || s[len(s)-len(substr):] == substr || 
-		 findSubstring(s, substr)))
+	return len(s) >= len(substr) && (s == substr || len(s) > len(substr) &&
+		(s[:len(substr)] == substr || s[len(s)-len(substr):] == substr ||
+			findSubstring(s, substr)))
 }
 
 func findSubstring(s, substr string) bool {

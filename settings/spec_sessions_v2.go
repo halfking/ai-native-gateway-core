@@ -144,16 +144,16 @@ func SessionsV2Specs() []*Spec {
 		},
 		{
 			// CO-5 (docs/修订0811/19 §3): sessions_v2.enabled 时
-			// request_logs_bodies 默认只落摘要信封(sha256+长度+截断头部)。
-			// 本开关用于排障时恢复全量落库。sessions_v2 未启用时本开关无效
+			// request_logs_bodies 默认保留完整请求/响应体。显式关闭本开关后
+			// 才落摘要信封(sha256+长度+截断头部)。sessions_v2 未启用时本开关无效
 			// (始终全量落库)。
 			Key:             "sessions_v2.request_bodies_full",
 			Type:            TypeBool,
 			Scope:           ScopePlatform,
 			Category:        CategorySession,
-			Default:         false,
+			Default:         true,
 			Description:     "sessions_v2 启用时仍全量落库请求/响应体",
-			DescriptionLong: "排障开关：sessions_v2.enabled 下 request_logs_bodies 默认摘要模式(只落 sha256/字节长度/截断头部)。置为 true 恢复全量落库；sessions_v2 未启用时始终全量落库，本开关无效。",
+			DescriptionLong: "安全默认：sessions_v2.enabled 下 request_logs_bodies 仍全量落库。仅在确认下游不依赖完整 body 后显式置为 false，启用 sha256/字节长度/截断头部摘要；sessions_v2 未启用时本开关无效。",
 			Unit:            "",
 			DangerLevel:     Warning,
 			HotReload:       true,

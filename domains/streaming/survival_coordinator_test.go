@@ -60,7 +60,7 @@ func (h *coordHarness) coordinator() *SurvivalCoordinator {
 	return &SurvivalCoordinator{
 		Exec:     h.exec,
 		Protocol: ProtocolAnthropic,
-		Options: SurvivalOptions{Deadline: 30 * time.Minute, RetryBase: 2 * time.Second, RetryMax: 300 * time.Second},
+		Options:  SurvivalOptions{Deadline: 30 * time.Minute, RetryBase: 2 * time.Second, RetryMax: 300 * time.Second},
 		Now: func() time.Time {
 			return h.clock
 		},

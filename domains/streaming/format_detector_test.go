@@ -397,10 +397,10 @@ func TestScorePattern(t *testing.T) {
 	}
 
 	tests := []struct {
-		name          string
-		body          map[string]any
-		minScore      float64
-		maxScore      float64
+		name     string
+		body     map[string]any
+		minScore float64
+		maxScore float64
 	}{
 		{
 			name: "perfect match",

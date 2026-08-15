@@ -97,7 +97,7 @@ func TestBuildRedactBodyFn_Integration(t *testing.T) {
 
 	// 包含 PII 的响应
 	body := []byte(`{"choices":[{"message":{"content":"Contact me at test@example.com"}}]}`)
-	
+
 	// Mock context and check
 	ctx := context.Background()
 	result, _ := checker.Check(ctx, "default", "Contact me at test@example.com")
@@ -107,7 +107,7 @@ func TestBuildRedactBodyFn_Integration(t *testing.T) {
 
 	// 调用 redact
 	redacted := fn(body, "sess1", "default")
-	
+
 	// 验证已脱敏
 	content, _ := extractAssistantContent(redacted)
 	if content == "Contact me at test@example.com" {

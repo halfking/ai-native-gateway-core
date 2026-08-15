@@ -1,6 +1,7 @@
 package streaming
 
 import (
+	"errors"
 	"io"
 	"sync"
 )
@@ -21,10 +22,13 @@ type flusher interface{ Flush() }
 // SerializedStreamWriter serializes all client-facing stream writes for one
 // HTTP connection.
 type SerializedStreamWriter struct {
-	mu       sync.Mutex
-	w        io.Writer
-	f        flusher
-	detached bool
+	mu              sync.Mutex
+	w               io.Writer
+	f               flusher
+	detached        bool
+	capture         []byte
+	captureLimit    int
+	captureOverflow bool
 }
 
 // NewSerializedStreamWriter wraps the client connection. w must not be used
@@ -37,12 +41,38 @@ func NewSerializedStreamWriter(w io.Writer) *SerializedStreamWriter {
 	return s
 }
 
+// EnableCapture retains at most limit client-facing bytes for durable result persistence.
+func (s *SerializedStreamWriter) EnableCapture(limit int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if limit > 0 {
+		s.captureLimit = limit
+	}
+}
+
+// Captured returns a copy of retained bytes or an error if the configured cap was exceeded.
+func (s *SerializedStreamWriter) Captured() ([]byte, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.captureOverflow {
+		return nil, errors.New("serialized stream capture exceeded limit")
+	}
+	return append([]byte(nil), s.capture...), nil
+}
+
 // Write appends p to the client connection under the serialization lock.
 // Once detached it reports success without writing, so callers do not need
 // per-site detached checks.
 func (s *SerializedStreamWriter) Write(p []byte) (int, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.captureLimit > 0 && !s.captureOverflow {
+		if len(s.capture)+len(p) > s.captureLimit {
+			s.captureOverflow = true
+		} else {
+			s.capture = append(s.capture, p...)
+		}
+	}
 	if s.detached {
 		return len(p), nil
 	}

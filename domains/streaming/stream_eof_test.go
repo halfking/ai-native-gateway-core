@@ -107,38 +107,38 @@ type countingRecorder struct {
 // All forwards below mirror metrics.Recorder. Kept short to avoid
 // duplication; if Recorder grows, add the forward here in lockstep.
 
-func (c *countingRecorder) RecordCircuitRequest(_ string)                            {}
-func (c *countingRecorder) RecordCircuitSuccess()                                    {}
-func (c *countingRecorder) RecordCircuitFailure()                                    {}
-func (c *countingRecorder) RecordCircuitStateChange(_, _ string)                     {}
-func (c *countingRecorder) RecordCircuitTrip()                                       {}
-func (c *countingRecorder) ObserveCircuitLatency(_ time.Duration)                    {}
-func (c *countingRecorder) SetCircuitState(_ string)                                 {}
-func (c *countingRecorder) SetCircuitErrorRate(_ float64)                            {}
-func (c *countingRecorder) RecordAdapterConversion(_, _ string, _ time.Duration)     {}
-func (c *countingRecorder) RecordAdapterFailure(_, _ string)                         {}
-func (c *countingRecorder) RecordAdapterTokens(_, _ string, _ int)                   {}
-func (c *countingRecorder) SetAdapterActive(_ string, _ bool)                        {}
-func (c *countingRecorder) RecordSchedulerSelection(_ string, _ time.Duration)       {}
-func (c *countingRecorder) UpdateSchedulerWeight(_ string, _ int)                    {}
-func (c *countingRecorder) UpdateSchedulerCurrentWeight(_ string, _ int)             {}
-func (c *countingRecorder) UpdateSchedulerEffectiveWeight(_ string, _ int)           {}
-func (c *countingRecorder) SetSchedulerAvailableCredentials(_ int)                   {}
-func (c *countingRecorder) RecordSafetyCheck(_ string, _ time.Duration)              {}
-func (c *countingRecorder) RecordSafetyAction(_, _ string)                           {}
-func (c *countingRecorder) RecordSafetyRuleHit(_, _, _ string)                       {}
-func (c *countingRecorder) RecordSafetyWhitelistHit()                                {}
-func (c *countingRecorder) SetSafetyRulesCount(_ bool, _ int)                        {}
-func (c *countingRecorder) UpdatePoolUtilization(_ string, _ float64)                {}
-func (c *countingRecorder) RecordPoolRequest(_, _ string)                            {}
-func (c *countingRecorder) SetPoolCapacity(_ string, _ int)                          {}
-func (c *countingRecorder) SetPoolActiveCredentials(_ string, _ int)                 {}
-func (c *countingRecorder) SetPoolHealthyCredentials(_ string, _ int)                {}
-func (c *countingRecorder) RecordShadowWriteFailure(_ string)                        {}
-func (c *countingRecorder) RecordRingBufferDropped(_ uint64)                         {}
-func (c *countingRecorder) RecordRawAuditWriteFailure()                              {}
-func (c *countingRecorder) RecordURSMv2ShadowResult(_ string)                        {}
-func (c *countingRecorder) RecordStreamSynthesizedDone()                             { c.synth++ }
+func (c *countingRecorder) RecordCircuitRequest(_ string)                        {}
+func (c *countingRecorder) RecordCircuitSuccess()                                {}
+func (c *countingRecorder) RecordCircuitFailure()                                {}
+func (c *countingRecorder) RecordCircuitStateChange(_, _ string)                 {}
+func (c *countingRecorder) RecordCircuitTrip()                                   {}
+func (c *countingRecorder) ObserveCircuitLatency(_ time.Duration)                {}
+func (c *countingRecorder) SetCircuitState(_ string)                             {}
+func (c *countingRecorder) SetCircuitErrorRate(_ float64)                        {}
+func (c *countingRecorder) RecordAdapterConversion(_, _ string, _ time.Duration) {}
+func (c *countingRecorder) RecordAdapterFailure(_, _ string)                     {}
+func (c *countingRecorder) RecordAdapterTokens(_, _ string, _ int)               {}
+func (c *countingRecorder) SetAdapterActive(_ string, _ bool)                    {}
+func (c *countingRecorder) RecordSchedulerSelection(_ string, _ time.Duration)   {}
+func (c *countingRecorder) UpdateSchedulerWeight(_ string, _ int)                {}
+func (c *countingRecorder) UpdateSchedulerCurrentWeight(_ string, _ int)         {}
+func (c *countingRecorder) UpdateSchedulerEffectiveWeight(_ string, _ int)       {}
+func (c *countingRecorder) SetSchedulerAvailableCredentials(_ int)               {}
+func (c *countingRecorder) RecordSafetyCheck(_ string, _ time.Duration)          {}
+func (c *countingRecorder) RecordSafetyAction(_, _ string)                       {}
+func (c *countingRecorder) RecordSafetyRuleHit(_, _, _ string)                   {}
+func (c *countingRecorder) RecordSafetyWhitelistHit()                            {}
+func (c *countingRecorder) SetSafetyRulesCount(_ bool, _ int)                    {}
+func (c *countingRecorder) UpdatePoolUtilization(_ string, _ float64)            {}
+func (c *countingRecorder) RecordPoolRequest(_, _ string)                        {}
+func (c *countingRecorder) SetPoolCapacity(_ string, _ int)                      {}
+func (c *countingRecorder) SetPoolActiveCredentials(_ string, _ int)             {}
+func (c *countingRecorder) SetPoolHealthyCredentials(_ string, _ int)            {}
+func (c *countingRecorder) RecordShadowWriteFailure(_ string)                    {}
+func (c *countingRecorder) RecordRingBufferDropped(_ uint64)                     {}
+func (c *countingRecorder) RecordRawAuditWriteFailure()                          {}
+func (c *countingRecorder) RecordURSMv2ShadowResult(_ string)                    {}
+func (c *countingRecorder) RecordStreamSynthesizedDone()                         { c.synth++ }
 
 // Compile-time check that countingRecorder satisfies metrics.Recorder.
 var _ metrics.Recorder = (*countingRecorder)(nil)

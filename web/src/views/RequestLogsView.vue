@@ -1267,12 +1267,26 @@ function formatJson(obj: any): string {
   }
 }
 
+function summaryEnvelopeMessage(summary: any): any[] | null {
+  if (!summary || typeof summary !== 'object') return null
+  const bytes = typeof summary.bytes === 'number' ? summary.bytes : Number(summary.bytes || 0)
+  const truncated = summary.head_truncated === true
+  return [{
+    role: 'gateway',
+    content: truncated
+      ? `[已摘要化: 原始 ${bytes} bytes, head 已截断]`
+      : `[已摘要化: 原始 ${bytes} bytes]`,
+  }]
+}
+
 function extractMessagesFromBody(body: any): any[] {
   if (body == null) return []
   if (Array.isArray(body)) return body
   if (typeof body === 'string') {
     try { body = JSON.parse(body) } catch { return [] }
   }
+  const summaryMessage = summaryEnvelopeMessage(body?._gw_body_summary)
+  if (summaryMessage) return summaryMessage
   if (body.messages && Array.isArray(body.messages)) return body.messages
   if (body.choices && Array.isArray(body.choices)) {
     const msgs: any[] = []

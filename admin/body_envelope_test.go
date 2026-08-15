@@ -8,6 +8,7 @@ package admin
 
 import (
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -306,6 +307,100 @@ func TestCompressionStatsEstimatedOrigSQL(t *testing.T) {
 		if !strings.Contains(sql, want) {
 			t.Fatalf("compressionStatsEstimatedOrigSQL missing %q\nSQL:\n%s", want, sql)
 		}
+	}
+}
+
+func TestSessionCompareEnvelopeParsers(t *testing.T) {
+	reqEnv := mustEnvelopeJSON(t, bodyEnvelope{Mode: "digest", Bytes: len(envelopeUserBody), Head: envelopeUserBody})
+	respEnv := mustEnvelopeJSON(t, bodyEnvelope{Mode: "digest", Bytes: len(envelopeRespBody), Head: envelopeRespBody})
+
+	if got := latestUserMessage(strp(reqEnv)); !strings.Contains(got, "帮我排查线上网关 502") || !strings.Contains(got, "[已摘要化: 原始 ") {
+		t.Fatalf("latestUserMessage must unwrap envelope head with marker, got %q", got)
+	}
+	if got := firstAssistantFromResponse(strp(respEnv)); !strings.Contains(got, "答案：先看上游超时") || !strings.Contains(got, "[已摘要化: 原始 ") {
+		t.Fatalf("firstAssistantFromResponse must unwrap envelope head with marker, got %q", got)
+	}
+
+	idx := 0
+	msgs := parseMessagesFromBody(reqEnv, &idx)
+	if len(msgs) != 1 || msgs[0].Role != "user" || !strings.Contains(msgs[0].Content, "帮我排查线上网关 502") {
+		t.Fatalf("parseMessagesFromBody must use envelope head, got %#v", msgs)
+	}
+	if strings.Contains(msgs[0].Content, "_gw_body_summary") {
+		t.Fatalf("request envelope JSON must never become session-compare content, got %q", msgs[0].Content)
+	}
+
+	msgs = parseResponseMessages(respEnv, &idx)
+	if len(msgs) != 1 || !strings.Contains(msgs[0].Content, "答案：先看上游超时") {
+		t.Fatalf("parseResponseMessages must use envelope head, got %#v", msgs)
+	}
+	if strings.Contains(msgs[0].Content, "_gw_body_summary") {
+		t.Fatalf("response envelope JSON must never become session-compare content, got %q", msgs[0].Content)
+	}
+}
+
+func TestSessionCompareEnvelopeParsers_TruncatedHead(t *testing.T) {
+	truncated := mustEnvelopeJSON(t, bodyEnvelope{
+		Mode:          "digest",
+		Bytes:         1204626,
+		Head:          `{"max_tokens":32000,"messages":[{"content":"[gateway-handoff-v1]`,
+		HeadTruncated: true,
+	})
+
+	got := latestUserMessage(strp(truncated))
+	if got != "[已摘要化: 原始 1204626 bytes, head 已截断]" {
+		t.Fatalf("truncated request envelope should render only the marker, got %q", got)
+	}
+	if strings.Contains(got, "_gw_body_summary") || strings.Contains(got, "gateway-handoff-v1") {
+		t.Fatalf("truncated envelope internals must not leak as message content, got %q", got)
+	}
+
+	idx := 0
+	msgs := parseMessagesFromBody(truncated, &idx)
+	if len(msgs) != 1 || msgs[0].Role != "gateway" || msgs[0].Content != got {
+		t.Fatalf("truncated envelope should become one gateway marker message, got %#v", msgs)
+	}
+}
+
+func TestDecodeStoredBodyForAdmin_Envelope(t *testing.T) {
+	reqEnv := mustEnvelopeJSON(t, bodyEnvelope{Mode: "digest", Bytes: len(envelopeUserBody), Head: envelopeUserBody})
+	decoded := decodeStoredBodyForAdmin([]byte(reqEnv))
+	body, ok := decoded.(map[string]any)
+	if !ok {
+		t.Fatalf("decoded envelope head type = %T, want map", decoded)
+	}
+	messages, ok := body["messages"].([]any)
+	if !ok || len(messages) != 1 {
+		t.Fatalf("decoded messages = %#v, want one message", body["messages"])
+	}
+	msg, ok := messages[0].(map[string]any)
+	if !ok || msg["role"] != "user" || !strings.Contains(fmt.Sprint(msg["content"]), "帮我排查线上网关 502") {
+		t.Fatalf("decoded message must come from envelope head, got %#v", messages[0])
+	}
+}
+
+func TestDecodeStoredBodyForAdmin_TruncatedEnvelope(t *testing.T) {
+	truncated := mustEnvelopeJSON(t, bodyEnvelope{
+		Mode:          "digest",
+		Bytes:         1204626,
+		Head:          `{"max_tokens":32000,"messages":[{"content":"[gateway-handoff-v1]`,
+		HeadTruncated: true,
+	})
+	decoded := decodeStoredBodyForAdmin([]byte(truncated))
+	body, ok := decoded.(map[string]any)
+	if !ok {
+		t.Fatalf("decoded truncated envelope type = %T, want map", decoded)
+	}
+	messages, ok := body["messages"].([]map[string]any)
+	if !ok || len(messages) != 1 {
+		t.Fatalf("decoded truncated messages = %#v, want one gateway marker", body["messages"])
+	}
+	content := fmt.Sprint(messages[0]["content"])
+	if messages[0]["role"] != "gateway" || !strings.Contains(content, "head 已截断") {
+		t.Fatalf("truncated envelope must become gateway marker, got %#v", messages[0])
+	}
+	if strings.Contains(content, "_gw_body_summary") || strings.Contains(content, "gateway-handoff-v1") {
+		t.Fatalf("truncated envelope internals must not leak, got %q", content)
 	}
 }
 

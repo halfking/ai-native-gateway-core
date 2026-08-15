@@ -39,9 +39,9 @@ type FormatIssue struct {
 
 // FormatFix describes a fix strategy.
 type FormatFix struct {
-	IssueType   string                                                   // Issue type to fix
+	IssueType   string                                                  // Issue type to fix
 	FixFunc     func(body map[string]any) (map[string]any, bool, error) // Fix function, returns (fixed, changed, error)
-	Description string                                                   // Human-readable description
+	Description string                                                  // Human-readable description
 }
 
 // DetectResult represents the result of format detection.

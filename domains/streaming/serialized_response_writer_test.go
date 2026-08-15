@@ -40,12 +40,16 @@ type syncRecorder struct {
 	header http.Header
 }
 
-func newSyncRecorder() *syncRecorder { return &syncRecorder{header: make(http.Header)} }
-func (s *syncRecorder) Header() http.Header         { return s.header }
-func (s *syncRecorder) WriteHeader(int)             {}
-func (s *syncRecorder) Write(p []byte) (int, error) { s.mu.Lock(); defer s.mu.Unlock(); return s.buf.Write(p) }
-func (s *syncRecorder) Flush()                      {}
-func (s *syncRecorder) String() string              { s.mu.Lock(); defer s.mu.Unlock(); return s.buf.String() }
+func newSyncRecorder() *syncRecorder        { return &syncRecorder{header: make(http.Header)} }
+func (s *syncRecorder) Header() http.Header { return s.header }
+func (s *syncRecorder) WriteHeader(int)     {}
+func (s *syncRecorder) Write(p []byte) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.buf.Write(p)
+}
+func (s *syncRecorder) Flush()         {}
+func (s *syncRecorder) String() string { s.mu.Lock(); defer s.mu.Unlock(); return s.buf.String() }
 
 func TestSerializedResponseWriterConcurrentProducersNeverInterleave(t *testing.T) {
 	f := newSyncRecorder()

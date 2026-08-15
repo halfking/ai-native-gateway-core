@@ -83,6 +83,7 @@ import (
 	ursmv2api "github.com/kaixuan/llm-gateway-go/domains/ursm/v2/api" //nolint:depguard // URSM v2 ModeOff constant (Task 8)
 	ursmcache "github.com/kaixuan/llm-gateway-go/domains/ursm/v2/cache"
 	"github.com/kaixuan/llm-gateway-go/domains/ursm/v2/persist" //nolint:depguard // URSM v2 persist writer
+	"github.com/kaixuan/llm-gateway-go/durable"
 	"github.com/kaixuan/llm-gateway-go/eventbus"
 	"github.com/kaixuan/llm-gateway-go/fault"
 	"github.com/kaixuan/llm-gateway-go/hotconfig"
@@ -91,8 +92,8 @@ import (
 	"github.com/kaixuan/llm-gateway-go/internal/collector"
 	"github.com/kaixuan/llm-gateway-go/internal/handlers"
 	"github.com/kaixuan/llm-gateway-go/internal/ir" //nolint:depguard // 诊断组件：语义分析器
-	"github.com/kaixuan/llm-gateway-go/internal/logging"
 	"github.com/kaixuan/llm-gateway-go/internal/liveactions"
+	"github.com/kaixuan/llm-gateway-go/internal/logging"
 	"github.com/kaixuan/llm-gateway-go/internal/modelpolicy"
 	"github.com/kaixuan/llm-gateway-go/internal/observability"
 	"github.com/kaixuan/llm-gateway-go/internal/outbox"
@@ -560,6 +561,7 @@ func main() {
 	var sessionMgr *session.Manager
 	var fpSlotRedis *redis.Client
 	var pendingStore *pending.Store
+	pendingTTL := time.Duration(cfg.PendingTTLSeconds) * time.Second
 	var redisClientForCache *session.RedisClient
 	var routingExec *executors.Executor
 	var stateManager *credentialstate.Manager // 2026-06-30: credential×model state manager
@@ -583,7 +585,6 @@ func main() {
 		pingCancel()
 		if pingErr == nil {
 			sessionTTL := time.Duration(cfg.SessionTTLHours) * time.Hour
-			pendingTTL := time.Duration(cfg.PendingTTLSeconds) * time.Second
 			sessionMgr = session.NewManager(redisClient, sessionTTL)
 			chatHandler.SetSessionGetter(sessionMgr)
 			redisClientForCache = redisClient
@@ -2086,6 +2087,40 @@ func main() {
 				keyring = kr
 				slog.Info("AES-GCM keyring initialized")
 			}
+		}
+
+		var pendingUpgraded bool
+		pendingStore, pendingUpgraded = upgradePendingStoreForDurability(
+			pendingStore,
+			fpSlotRedis,
+			pendingTTL,
+			cfg.RequestSurvivalDurableEnabled,
+			dbConn.Pool(),
+			keyring,
+		)
+		if pendingUpgraded {
+			if routingExec != nil {
+				routingExec.PendingStore = pendingStore
+			}
+			slog.Info("durable pending PostgreSQL fallback enabled")
+		}
+
+		if cfg.RequestSurvivalEnabled && cfg.RequestSurvivalDurableEnabled && keyring != nil {
+			host, _ := os.Hostname()
+			ownerPrefix := fmt.Sprintf("%s/%d", host, os.Getpid())
+			repo := durable.NewRepository(dbConn.Pool())
+			adapter := durableRequestStoreAdapter{
+				repository:    repo,
+				lifecycle:     repo,
+				keyring:       keyring,
+				ownerPrefix:   ownerPrefix,
+				leaseDuration: time.Duration(cfg.RequestSurvivalWorkerLeaseSecs) * time.Second,
+			}
+			chatHandler.SetRequestDurability(adapter, keyring, cfg.RequestSurvivalEnabledForTenant,
+				time.Duration(cfg.RequestSurvivalDurableDeadlineSeconds)*time.Second)
+			slog.Info("request_survival_durable_foreground_armed", "owner_prefix", ownerPrefix)
+		} else if cfg.RequestSurvivalDurableEnabled {
+			slog.Warn("request_survival_durable_disabled_missing_prerequisites", "db", dbConn != nil, "keyring", keyring != nil)
 		}
 
 		if !bgDataPlaneOnly {

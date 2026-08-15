@@ -2,6 +2,7 @@ package pending
 
 import (
 	"context"
+	"os"
 	"testing"
 	"time"
 
@@ -207,5 +208,114 @@ func TestPGSource_GetLatest(t *testing.T) {
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Fatalf("expectations: %v", err)
+	}
+}
+
+// TestPGSource_RealPostgresFallback verifies the Wave 1 read path against a
+// real PostgreSQL parser and transaction. Wave 2 owns the permanent schema, so
+// this test creates a transaction-local table with exactly the columns queried
+// by PGSource and always rolls the transaction back.
+func TestPGSource_RealPostgresFallback(t *testing.T) {
+	dsn := os.Getenv("TEST_DATABASE_URL")
+	if dsn == "" {
+		t.Skip("TEST_DATABASE_URL not set; skipping PostgreSQL fallback integration test")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	conn, err := pgx.Connect(ctx, dsn)
+	if err != nil {
+		t.Fatalf("connect to TEST_DATABASE_URL: %v", err)
+	}
+	defer conn.Close(context.Background())
+
+	tx, err := conn.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin transaction: %v", err)
+	}
+	defer func() {
+		if err := tx.Rollback(context.Background()); err != nil && err != pgx.ErrTxClosed {
+			t.Errorf("rollback integration transaction: %v", err)
+		}
+	}()
+
+	_, err = tx.Exec(ctx, `
+		CREATE TEMP TABLE durable_llm_tasks (
+			id text PRIMARY KEY,
+			request_id text NOT NULL,
+			session_id text NOT NULL,
+			tenant_id text NOT NULL,
+			status text NOT NULL,
+			result_ciphertext text,
+			result_hash text NOT NULL,
+			content_type text NOT NULL DEFAULT '',
+			completed_at timestamptz,
+			reason_code text NOT NULL DEFAULT '',
+			updated_at timestamptz NOT NULL
+		) ON COMMIT DROP
+	`)
+	if err != nil {
+		t.Fatalf("create transaction-local durable task table: %v", err)
+	}
+
+	kr := testAADKeyring(t)
+	completedAt := time.Date(2026, 8, 15, 12, 0, 0, 0, time.UTC)
+	binding := secret.AADBinding{TenantID: "tenant-real", TaskID: "task-completed", RequestHash: "hash-completed"}
+	ciphertext, _, err := secret.EncryptWithAAD(
+		[]byte(`{"result":"from-postgres"}`),
+		kr,
+		secret.AADDomainDurableResult,
+		binding,
+	)
+	if err != nil {
+		t.Fatalf("encrypt completed result: %v", err)
+	}
+
+	_, err = tx.Exec(ctx, `
+		INSERT INTO durable_llm_tasks
+			(id, request_id, session_id, tenant_id, status, result_ciphertext,
+			 result_hash, content_type, completed_at, reason_code, updated_at)
+		VALUES
+			($1, $2, $3, $4, 'completed', $5, $6, 'application/json', $7, '', $7),
+			('task-running', 'req-running', 'sess-real', 'tenant-real', 'retry_scheduled',
+			 NULL, 'hash-running', '', NULL, 'waiting_recovery', $8)
+	`, binding.TaskID, "req-completed", "sess-real", binding.TenantID, ciphertext,
+		binding.RequestHash, completedAt, completedAt.Add(time.Minute))
+	if err != nil {
+		t.Fatalf("seed transaction-local durable tasks: %v", err)
+	}
+
+	store := NewStoreWithFallback(nil, 0, NewPGSource(tx, kr))
+	completed, found, err := store.Get(ctx, "sess-real", "req-completed")
+	if err != nil || !found {
+		t.Fatalf("completed fallback: found=%v err=%v", found, err)
+	}
+	if completed.Status != StatusCompleted || completed.Body != `{"result":"from-postgres"}` {
+		t.Fatalf("completed fallback response = %+v", completed)
+	}
+	if completed.ContentType != "application/json" || completed.CompletedAt != completedAt.Unix() {
+		t.Fatalf("completed fallback metadata = %+v", completed)
+	}
+
+	running, found, err := store.Get(ctx, "sess-real", "req-running")
+	if err != nil || !found {
+		t.Fatalf("in-progress fallback: found=%v err=%v", found, err)
+	}
+	if running.Status != StatusInProgress || running.Body != "" {
+		t.Fatalf("in-progress fallback response = %+v", running)
+	}
+
+	latest, requestID, found, err := store.GetLatest(ctx, "sess-real")
+	if err != nil || !found {
+		t.Fatalf("latest fallback: found=%v err=%v", found, err)
+	}
+	if requestID != "req-running" || latest.Status != StatusInProgress {
+		t.Fatalf("latest fallback: requestID=%q response=%+v", requestID, latest)
+	}
+
+	missing, found, err := store.Get(ctx, "sess-real", "req-missing")
+	if err != nil || found || missing != nil {
+		t.Fatalf("missing fallback: response=%+v found=%v err=%v", missing, found, err)
 	}
 }

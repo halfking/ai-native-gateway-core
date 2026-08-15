@@ -898,8 +898,8 @@ func (h *Handler) getLog(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	detail.RequestBody = decodeJSONText(requestBodyRaw)
-	detail.ResponseBody = decodeJSONText(responseBodyRaw)
+	detail.RequestBody = decodeStoredBodyForAdmin(requestBodyRaw)
+	detail.ResponseBody = decodeStoredBodyForAdmin(responseBodyRaw)
 	// Outbound body: it's already a JSON RawMessage from JSONB scan; convert to
 	// a structured payload so the UI can render it as a message list.
 	if len(detail.OutboundBody) > 0 {
@@ -999,6 +999,33 @@ func parseQueryTime(r *http.Request, key string, def time.Time) time.Time {
 		}
 	}
 	return def.UTC()
+}
+
+func decodeStoredBodyForAdmin(raw []byte) any {
+	if len(raw) == 0 {
+		return nil
+	}
+	body := string(raw)
+	if env, head := unwrapBody(&body); env != nil {
+		if head != nil && strings.TrimSpace(*head) != "" {
+			decoded := decodeJSONText([]byte(*head))
+			if _, ok := decoded.(string); !ok {
+				return decoded
+			}
+		}
+		return map[string]any{
+			"messages": []map[string]any{{
+				"role":    "gateway",
+				"content": env.displayNote(),
+			}},
+			"_gw_body_summary_display": map[string]any{
+				"mode":           env.Mode,
+				"bytes":          env.Bytes,
+				"head_truncated": env.HeadTruncated,
+			},
+		}
+	}
+	return decodeJSONText(raw)
 }
 
 func decodeJSONText(raw []byte) any {

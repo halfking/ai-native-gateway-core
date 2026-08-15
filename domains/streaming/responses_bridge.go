@@ -290,7 +290,6 @@ func StreamAnthropicSSEToResponsesWithDiagnostics(
 		diagnosticCollector.report(diagnostics, requestID, "anthropic-messages", "openai-responses", outcome.Interrupted)
 	}()
 
-
 	// SR-W1: route client frames through the attempt commit gate.
 	// Disabled (default) this is the identity function — legacy wire bytes.
 	w, gate := wrapAttemptWriter(w, ProtocolOpenAIResponses)
@@ -550,7 +549,6 @@ func StreamOpenAIToResponsesSSEWithDiagnostics(
 	defer func() {
 		diagnosticCollector.report(diagnostics, requestID, "openai-completions", "openai-responses", outcome.Interrupted)
 	}()
-
 
 	// SR-W1: route client frames through the attempt commit gate.
 	// Disabled (default) this is the identity function — legacy wire bytes.

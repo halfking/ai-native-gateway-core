@@ -65,21 +65,21 @@ func TestShouldSkipAutoTitleGeneration(t *testing.T) {
 // "08aa2a8a → 3a03f7db".
 func TestApplyParentCorrelationFields(t *testing.T) {
 	tests := []struct {
-		name           string
-		logCtx         *RequestLogContext
-		wantParentID   *string
+		name            string
+		logCtx          *RequestLogContext
+		wantParentID    *string
 		wantOriginActor *string
 	}{
 		{
-			name:    "nil logCtx is no-op",
-			logCtx:  nil,
-			wantParentID: nil,
+			name:            "nil logCtx is no-op",
+			logCtx:          nil,
+			wantParentID:    nil,
 			wantOriginActor: nil,
 		},
 		{
-			name:           "empty fields → nil entry pointers",
-			logCtx:         &RequestLogContext{},
-			wantParentID:   nil,
+			name:            "empty fields → nil entry pointers",
+			logCtx:          &RequestLogContext{},
+			wantParentID:    nil,
 			wantOriginActor: nil,
 		},
 		{
@@ -88,7 +88,7 @@ func TestApplyParentCorrelationFields(t *testing.T) {
 				ParentRequestID: "08aa2a8af42ef05eb87c97973f467519",
 				OriginActor:     "auto-title-generator",
 			},
-			wantParentID:   strPtrLocal("08aa2a8af42ef05eb87c97973f467519"),
+			wantParentID:    strPtrLocal("08aa2a8af42ef05eb87c97973f467519"),
 			wantOriginActor: strPtrLocal("auto-title-generator"),
 		},
 		{
@@ -96,7 +96,7 @@ func TestApplyParentCorrelationFields(t *testing.T) {
 			logCtx: &RequestLogContext{
 				ParentRequestID: "p",
 			},
-			wantParentID:   strPtrLocal("p"),
+			wantParentID:    strPtrLocal("p"),
 			wantOriginActor: nil,
 		},
 	}
@@ -128,14 +128,15 @@ func ptrEqualString(a, b *string) bool {
 
 // TestSanitizeGwSessionHeader (2026-08-06) — guards the three gateway
 // session-id namespaces:
-//   gw_<uuid>  — user main session (legacy)
-//   gt_<...>   — auto-title branch (admin/auto_title_generator.go)
-//   gs_<...>   — auto-summary branch (admin/auto_summary_generator.go)
+//
+//	gw_<uuid>  — user main session (legacy)
+//	gt_<...>   — auto-title branch (admin/auto_title_generator.go)
+//	gs_<...>   — auto-summary branch (admin/auto_summary_generator.go)
 //
 // Strip the prefix to recover the parent user session id:
 //
-//   strings.TrimPrefix("gt_gw_abc", "gt_") == "gw_abc"
-//   strings.TrimPrefix("gs_gw_abc", "gs_") == "gw_abc"
+//	strings.TrimPrefix("gt_gw_abc", "gt_") == "gw_abc"
+//	strings.TrimPrefix("gs_gw_abc", "gs_") == "gw_abc"
 func TestSanitizeGwSessionHeader(t *testing.T) {
 	tests := []struct {
 		name  string
@@ -168,11 +169,11 @@ func TestSanitizeGwSessionHeader(t *testing.T) {
 // closes the "no user info at all" gap (dc767386f... incident). The
 // priority chain must be:
 //
-//	1. bodyUser argument (already-parsed typed request body)
-//	2. X-End-User-Id header
-//	3. bodyBytes sniff for "user":"..."
-//	4. r.Body sniff (fallback when body not yet drained)
-//	5. "anonymous"
+//  1. bodyUser argument (already-parsed typed request body)
+//  2. X-End-User-Id header
+//  3. bodyBytes sniff for "user":"..."
+//  4. r.Body sniff (fallback when body not yet drained)
+//  5. "anonymous"
 func TestResolveEndUser(t *testing.T) {
 	mkReq := func(body string, header string) *http.Request {
 		r, _ := http.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(body))

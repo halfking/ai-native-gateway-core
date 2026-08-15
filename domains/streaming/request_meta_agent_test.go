@@ -4,8 +4,8 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	agenttelemetry "github.com/kaixuan/llm-gateway-go/telemetry"        //nolint:depguard // test-only alias to /telemetry root package
 	telemetryv1 "github.com/kaixuan/llm-gateway-go/domains/hooks/observability/telemetry" //nolint:depguard // aliased: RequestLogEntry is in /domains/hooks/observability/telemetry
+	agenttelemetry "github.com/kaixuan/llm-gateway-go/telemetry"                          //nolint:depguard // test-only alias to /telemetry root package
 )
 
 // TestFillAttemptMeta_AgentNameSemanticFallback verifies the 2026-07-27
@@ -145,7 +145,6 @@ func TestFillAttemptMeta_SystemPromptFalsyDoesNotCall(t *testing.T) {
 	}
 }
 
-
 func TestShouldOverrideAgentName(t *testing.T) {
 	tests := []struct {
 		name         string
@@ -183,7 +182,6 @@ func TestShouldOverrideAgentName(t *testing.T) {
 		})
 	}
 }
-
 
 // TestEnrichRequestLogFromMeta_AgentFields verifies that the 2026-07-27 fix
 // to enrichRequestLogFromMeta copies the new client-perception fields
