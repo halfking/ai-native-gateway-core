@@ -201,15 +201,14 @@ func (h *Handler) handleTurnsSessions(w http.ResponseWriter, r *http.Request) {
 			s.created_at, s.updated_at, s.closed_at,
 			s.total_turns, s.total_tokens, s.total_cost_usd,
 			s.last_turn_no, s.last_model, s.last_provider,
-			ss.gw_project_id, sd.task_id, sd.owner_user,
+			COALESCE(ss.gw_project_id, sd.project_id), sd.task_id, sd.owner_user,
 			sd.client_id, sd.application_code, sd.end_user_id,
 			COALESCE(ss.user_tags, '{}') AS user_tags,
 			ss.first_request_at AS start_time,
 			ho.parent_session_id, ho.trigger_reason
 		FROM public.sessions s
 		LEFT JOIN session_dim sd
-			ON sd.gw_session_id = s.session_id AND sd.tenant_id = s.tenant_id
-		LEFT JOIN session_summaries ss
+			ON sd.gw_session_id = s.session_id AND sd.tenant_id = s.tenant_id		LEFT JOIN session_summaries ss
 			ON ss.session_key = s.session_id AND ss.tenant_id = s.tenant_id
 		-- 会话父子关系：本会话若是 handoff（透明轮换）创建的新会话，
 		-- handoff_logs 里 new_session_id = 本会话 的记录给出父会话。
