@@ -84,6 +84,20 @@ type LiveStreamEnvelope struct {
 	// node-status panel. Sent in initial_data (full) and node_update (delta).
 	// Optional — nil on envelopes that don't carry node data.
 	Nodes []LiveNodeStatus `json:"nodes,omitempty"`
+
+	// Action (OBS-BE2, V3.3-OBS 2026-08-15, 24号 §3) carries the
+	// request_lifecycle payload: one flattened action object for a single
+	// event, or an array for an aggregated batch frame. Per-action detail
+	// attributes (24号 §2 的 detail 字段) are flattened to the top level of
+	// each object so the frontend ActionEvent shape is satisfied without a
+	// second wire DTO. Optional — nil on every other envelope type; older
+	// clients that do not know "request_lifecycle" ignore the frame.
+	Action any `json:"action,omitempty"`
+
+	// ParentRequestID (OBS-BE2, 24号 §3) pairs with Request on child_request
+	// frames (主从关系建立/更新： title/summary/sensitive_check/compression).
+	// Optional — empty on every other envelope type.
+	ParentRequestID string `json:"parent_request_id,omitempty"`
 }
 
 // LiveQueueSnapshot is the wire shape of a dispatch queue snapshot pushed
@@ -319,6 +333,14 @@ type LiveStreamConfig struct {
 	CachedSnapshotTTL             time.Duration // 淘汰阈值；零值 → 4h。可通过 LLM_GATEWAY_LIVE_STREAM_CACHED_TTL 覆盖
 	CachedSnapshotCleanupInterval time.Duration // evict ticker 周期；零值 → 与 TTL 一致。可通过 LLM_GATEWAY_LIVE_STREAM_CACHED_CLEANUP_INTERVAL 覆盖
 	SnapshotRefreshInterval       time.Duration // 全量快照推送间隔；零值 → 30min。可通过 LLM_GATEWAY_LIVE_STREAM_SNAPSHOT_REFRESH_INTERVAL 覆盖
+
+	// ActionPollInterval (OBS-BE2) is the live-action poll tick against the
+	// Redis LIST llmgw:live:actions. 零值 → 250ms; 两次 tick 之内聚合推送，
+	// 满足 24号/27号 的 ≤500ms 端到端预算。
+	ActionPollInterval time.Duration
+	// ActionReplayLimit (OBS-BE2) is how many recent actions initial_data
+	// replays after connect (24号 §4: 默认 200).
+	ActionReplayLimit int
 }
 
 func (c *LiveStreamConfig) defaults() {
@@ -353,6 +375,12 @@ func (c *LiveStreamConfig) defaults() {
 		// 30m matches what actually runs and is what the frontend's snapshot
 		// guard (now '<' instead of '<=') expects for periodic reconciliation.
 		c.SnapshotRefreshInterval = 30 * time.Minute
+	}
+	if c.ActionPollInterval <= 0 {
+		c.ActionPollInterval = defaultActionPollInterval
+	}
+	if c.ActionReplayLimit <= 0 {
+		c.ActionReplayLimit = defaultActionReplayLimit
 	}
 }
 
@@ -453,6 +481,17 @@ type LiveStreamSSEHub struct {
 	// avoid an import cycle. nil disables node pushes.
 	nodeStatusMu       sync.RWMutex
 	nodeStatusProvider func() []LiveNodeStatus
+
+	// OBS-BE2 (V3.3-OBS, 2026-08-15): request_lifecycle action consumption
+	// state. See live_stream_lifecycle.go — the hot-path emitter
+	// (internal/liveactions) is untouched; the hub only READS the bounded
+	// Redis LIST and fans filtered batches out to SSE clients.
+	actionMu          sync.Mutex
+	actionCursor      string               // unique key of the newest processed action entry
+	actionTenantIndex map[string]string    // request_id → tenant (bounded ownership index)
+	actionTenantMiss  map[string]time.Time // negative cache for unresolved lookups
+	actionsDelivered  int64
+	actionScanErrors  int64
 }
 
 // cachedSnapshotEntry is one tenant's cached snapshot plus its last-access
@@ -536,16 +575,18 @@ func (h *LiveStreamSSEHub) fanOutNodeUpdate() {
 func NewLiveStreamSSEHub(db *pgxpool.Pool, cfg LiveStreamConfig) *LiveStreamSSEHub {
 	cfg.defaults()
 	return &LiveStreamSSEHub{
-		db:             db,
-		cfg:            cfg,
-		store:          NewLiveStreamRedisStore(cfg.RedisClient),
-		register:       make(chan *liveStreamClient, 16),
-		unregister:     make(chan *liveStreamClient, 16),
-		broadcast:      make(chan LiveRequest, cfg.BroadcastQueueSize),
-		clients:        make(map[*liveStreamClient]struct{}),
-		lastActivity:   time.Now(),
-		stopCh:         make(chan struct{}),
-		cachedSnapshot: make(map[string]*cachedSnapshotEntry),
+		db:                db,
+		cfg:               cfg,
+		store:             NewLiveStreamRedisStore(cfg.RedisClient),
+		register:          make(chan *liveStreamClient, 16),
+		unregister:        make(chan *liveStreamClient, 16),
+		broadcast:         make(chan LiveRequest, cfg.BroadcastQueueSize),
+		clients:           make(map[*liveStreamClient]struct{}),
+		lastActivity:      time.Now(),
+		stopCh:            make(chan struct{}),
+		cachedSnapshot:    make(map[string]*cachedSnapshotEntry),
+		actionTenantIndex: make(map[string]string),
+		actionTenantMiss:  make(map[string]time.Time),
 	}
 }
 
@@ -564,6 +605,10 @@ func (h *LiveStreamSSEHub) Run() {
 	snapshotRefreshTicker := time.NewTicker(h.cfg.SnapshotRefreshInterval)
 	queueTicker := time.NewTicker(2 * time.Second) // V3.2 BE-A1: queue snapshot push interval
 	nodeTicker := time.NewTicker(2 * time.Second)  // V3.2 BE-A4: node status push interval
+	// OBS-BE2: live action poll tick. Two consecutive ticks bound the
+	// end-to-end latency (poll interval + one tick of aggregation) inside
+	// the ≤500ms budget from 27号 §3.
+	actionTicker := time.NewTicker(h.cfg.ActionPollInterval)
 	defer idleTicker.Stop()
 	defer keepaliveTicker.Stop()
 	defer cacheCleanupTicker.Stop()
@@ -571,6 +616,7 @@ func (h *LiveStreamSSEHub) Run() {
 	defer snapshotRefreshTicker.Stop()
 	defer queueTicker.Stop()
 	defer nodeTicker.Stop()
+	defer actionTicker.Stop()
 
 	// Emit initial health status immediately so freshly-connected
 	// clients do not have to wait 30s to learn about Redis state.
@@ -648,6 +694,15 @@ func (h *LiveStreamSSEHub) Run() {
 				Delta:      tenantDelta,
 				superDelta: superDelta,
 			})
+			// OBS-BE2: every streamed request teaches the lifecycle filter
+			// its tenant (action events themselves carry no tenant id), and
+			// child/extended requests additionally get a child_request frame.
+			h.rememberActionTenant(req.RequestID, tenantID)
+			if req.ParentRequestID != "" {
+				h.fanOutChildRequest(req)
+			}
+		case <-actionTicker.C:
+			h.pollLiveActions()
 		case <-idleTicker.C:
 			h.maybeEmitIdleMarker()
 		case <-keepaliveTicker.C:
@@ -1759,6 +1814,11 @@ func (h *LiveStreamSSEHub) HandleLiveStream(w http.ResponseWriter, r *http.Reque
 	if items, err := h.replay(r.Context(), tenantID, isSuper, h.cfg.InitialReplayLimit); err != nil {
 		slog.Warn("live stream initial replay failed", "err", err.Error())
 	} else if len(items) > 0 {
+		// OBS-BE2: replayed requests teach the action filter their tenant
+		// BEFORE the action replay below resolves ownership.
+		for _, item := range items {
+			h.rememberActionTenant(item.RequestID, item.TenantID)
+		}
 		snapshot := BuildLiveStreamSnapshot(items)
 		if h.store != nil {
 			// 2026-07-19: Use dimension-queue-based snapshot for initial data
@@ -1779,6 +1839,11 @@ func (h *LiveStreamSSEHub) HandleLiveStream(w http.ResponseWriter, r *http.Reque
 			h.writeEvent(client, data)
 		}
 	}
+
+	// OBS-BE2 (24号 §4): replay the most recent actions after the request
+	// snapshot so a page refresh rebuilds the per-request action timelines.
+	// Filtered to the client's scope exactly like the live frames.
+	h.replayLifecycleActions(r.Context(), client)
 
 	// Block until the client disconnects.
 	<-r.Context().Done()
@@ -2103,11 +2168,12 @@ func (h *LiveStreamSSEHub) LiveRequestFromTelemetry(
 			out.GwSessionID = strings.TrimSpace(*entry.GwSessionID)
 		}
 		// 2026-08-13 (V3.2 BE-A3): 主从请求关联字段。
+		// OBS-BE2: request_type 归一到 24号 §3 冻结词表后再上线。
 		if entry.ParentRequestID != nil {
 			out.ParentRequestID = strings.TrimSpace(*entry.ParentRequestID)
 		}
 		if entry.RequestType != nil {
-			out.RequestType = strings.TrimSpace(*entry.RequestType)
+			out.RequestType = normalizeLiveRequestType(strings.TrimSpace(*entry.RequestType))
 		}
 	}
 
@@ -2158,7 +2224,7 @@ func (h *LiveStreamSSEHub) QueryChildRequests(ctx context.Context, parentRequest
 			visited[rid] = true
 			child := &LiveRequest{
 				RequestID:       rid,
-				RequestType:     rtype,
+				RequestType:     normalizeLiveRequestType(rtype),
 				Status:          status,
 				LatencyMs:       latency,
 				ParentRequestID: parentRequestID,
@@ -2205,5 +2271,8 @@ func (h *LiveStreamSSEHub) Stats() map[string]interface{} {
 		"cached_snapshot_entries":          cachedSnapshotEntries,
 		"last_activity":                    lastActivity.UTC().Format(time.RFC3339),
 		"seconds_since_activity":           time.Since(lastActivity).Seconds(),
+		// OBS-BE2: request_lifecycle delivery health.
+		"lifecycle_actions_delivered":  atomic.LoadInt64(&h.actionsDelivered),
+		"lifecycle_action_scan_errors": atomic.LoadInt64(&h.actionScanErrors),
 	}
 }
