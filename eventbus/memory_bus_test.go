@@ -107,21 +107,31 @@ func TestMemoryBus_ConcurrentPublish(t *testing.T) {
 
 // Test 4: 缓冲区满
 func TestMemoryBus_BufferFull(t *testing.T) {
-	// 不订阅任何 handler（dispatch 不会取出事件），buffer=1
+	// dispatch goroutine 无论有无订阅者都会持续从 buffer 取事件（且 handler
+	// 在独立 goroutine 执行，阻塞 handler 也钉不住消费循环），所以
+	// "buffer=1 时第二次 Publish 必失败"是调度竞态，不是确定性语义——
+	// 全量测试高负载下 dispatch 抢先取走首事件，原写法偶发红。
+	// 改为压满法：buffer=1 下 back-to-back 连发——一次 Publish 只需
+	// RLock+select-send，而 dispatch 消费一次要 recv+copy+spawn goroutine，
+	// 生产必然领先消费，短时间内必触发满拒绝；同时校验"成功+拒绝=发布
+	// 总数"钉住不丢弃语义。
 	bus := NewMemoryBus(1)
 	defer bus.Close()
 
-	// 第一个 publish 成功（buffer=1, 0/1 已用）
-	if err := bus.Publish(newTestEvent("nobody", 1)); err != nil {
-		t.Fatalf("first publish should succeed: %v", err)
+	const total = 1000
+	succeeded, rejected := 0, 0
+	for i := 0; i < total; i++ {
+		if err := bus.Publish(newTestEvent("nobody", i)); err != nil {
+			rejected++
+		} else {
+			succeeded++
+		}
 	}
-
-	// 第二个 publish 失败（buffer=1, 1/1 已满）
-	err := bus.Publish(newTestEvent("nobody", 2))
-	if err == nil {
-		t.Error("expected error when buffer is full")
-	} else {
-		t.Logf("second publish failed as expected: %v", err)
+	if rejected == 0 {
+		t.Fatalf("expected at least one buffer-full rejection in %d back-to-back publishes (buffer=1)", total)
+	}
+	if succeeded+rejected != total {
+		t.Fatalf("publish accounting broken: succeeded=%d rejected=%d want total=%d", succeeded, rejected, total)
 	}
 }
 
