@@ -2116,6 +2116,15 @@ func main() {
 		slog.Info("ursm.v2 manager wired to admin handler for emergency repair")
 	}
 
+	// 2026-08-15: emergency repair must also reset the IN-PROCESS state
+	// layers (circuit breaker / credentialstate cache) so force_enable and
+	// clear_circuit take effect on the next routing cycle instead of after
+	// the in-memory cooling windows (docs/会话优化v3/29 §A1).
+	adminHandler.SetCircuitResetter(cm)
+	if stateManager != nil {
+		adminHandler.SetCredStateRecoverer(stateManager)
+	}
+
 	var approvalMgr *sessionaudit.ApprovalManager // 2026-06-27: outer-scope so the timeout worker can read it
 	if dbConn != nil && dbConn.Enabled() {
 		slog.Info("CHECKPOINT: before admin.SetKeyring etc")

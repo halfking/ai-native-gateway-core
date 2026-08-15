@@ -256,6 +256,22 @@ type Handler struct {
 	// 同时清除 Redis 中的冷却/错误计数状态。通过 SetURSMv2 注入。
 	ursmV2 *v2.Manager
 
+	// circuitResetter (2026-08-15) resets the in-process credential circuit
+	// breaker so emergency repair (force_enable / clear_circuit) takes effect
+	// on the request hot path immediately instead of waiting for the in-memory
+	// OPEN cooling window. nil → in-memory breakers are left untouched.
+	circuitResetter interface {
+		Reset(providerID, credentialID int)
+	}
+
+	// credStateRecoverer (2026-08-15) marks the legacy credentialstate cache
+	// (mem 10s / Redis 5min) as available with a probe-success semantics so
+	// emergency repair is not blocked by stale Unavailable=false entries.
+	// nil → credentialstate is left to its 60s recovery ticker / Redis TTL.
+	credStateRecoverer interface {
+		UpdateFromProbe(ctx context.Context, state *credentialstate.State)
+	}
+
 	// rateLimiter (V3.2-LP5, 2026-08-14) 节点操作限流器：test-now 1req/s per-cred + 10req/min per-operator。
 	rateLimiter *nodeOperationsRateLimiter
 
@@ -557,6 +573,23 @@ func (h *Handler) SetPendingStore(s *pending.Store) {
 // repair operations can also clear Redis state (cooling/disabled/fail_streak).
 func (h *Handler) SetURSMv2(m *v2.Manager) {
 	h.ursmV2 = m
+}
+
+// SetCircuitResetter (2026-08-15) injects the in-process circuit breaker
+// manager (domains/credential.Manager) so emergency repair can reset a
+// single credential's breaker immediately.
+func (h *Handler) SetCircuitResetter(r interface {
+	Reset(providerID, credentialID int)
+}) {
+	h.circuitResetter = r
+}
+
+// SetCredStateRecoverer (2026-08-15) injects the credentialstate manager so
+// emergency repair can force-recover its cached state via UpdateFromProbe.
+func (h *Handler) SetCredStateRecoverer(r interface {
+	UpdateFromProbe(ctx context.Context, state *credentialstate.State)
+}) {
+	h.credStateRecoverer = r
 }
 
 // SetSettingsStore (settings-management, 2026-06-20) injects the

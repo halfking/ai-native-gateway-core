@@ -345,8 +345,13 @@ func (m *Manager) UpdateOnFailure(ctx context.Context, credID int, model string,
 	// A timeout/network failure must start probing after the first confirmed
 	// failure. Waiting for a second request is too late for streaming clients:
 	// they commonly cancel while the upstream is still waiting for headers.
+	// 2026-08-15: rate_limit joins the immediate set. Upstream 429s are often
+	// short-lived (per-minute windows); probing after the FIRST failure lets
+	// the node recover in seconds instead of waiting for the threshold-2
+	// fallback while the router keeps excluding it (docs/会话优化v3/29 §A3).
 	probeImmediately := errKind == errorsx.KindNetwork ||
 		errKind == errorsx.KindTimeout ||
+		errKind == errorsx.KindRateLimit ||
 		errKind == errorsx.KindUpstreamDown ||
 		errKind == errorsx.KindUpstreamOverloaded ||
 		errKind == errorsx.KindStreamTimeout ||
