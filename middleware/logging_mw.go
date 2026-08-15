@@ -218,7 +218,15 @@ func (rw *loggingResponseWriter) Write(b []byte) (int, error) {
 }
 
 func (rw *loggingResponseWriter) Flush() {
+	_ = rw.FlushError()
+}
+
+func (rw *loggingResponseWriter) FlushError() error {
+	if f, ok := rw.ResponseWriter.(interface{ FlushError() error }); ok {
+		return f.FlushError()
+	}
 	if f, ok := rw.ResponseWriter.(http.Flusher); ok {
 		f.Flush()
 	}
+	return nil
 }

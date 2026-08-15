@@ -171,7 +171,7 @@ function getHandoffDependencyWarning(key: string): string | null {
     return '摘要会安全回退到系统配置的摘要模型；启用会话压缩可复用会话上下文与候选回退。'
   }
   if (key === 'handoff.client_mode') {
-    return 'transparent 会在网关内创建新会话并继续当前请求；explicit 返回 resume_packet 供客户端续跑。'
+    return 'transparent 是默认兼容模式，会原样继续当前请求；explicit 返回 202 resume_packet，由客户端创建新会话续跑。'
   }
   return null
 }

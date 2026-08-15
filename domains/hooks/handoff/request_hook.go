@@ -30,7 +30,8 @@ type Request struct {
 }
 
 // DefaultExplicit reports whether this tenant defaults to the explicit client
-// protocol. A request header may still opt in to explicit mode per request.
+// protocol. The compatibility default is transparent; clients may opt in per
+// request with X-Gw-Handoff-Mode: explicit.
 func (h *TriggerHook) DefaultExplicit(tenantID string) bool {
 	return h.loadString(tenantID, "handoff.client_mode", "transparent") == "explicit"
 }
@@ -64,9 +65,9 @@ var resumeSensitivePatterns = []*regexp.Regexp{
 	regexp.MustCompile(`(?s)(-----BEGIN [A-Z ]*PRIVATE KEY-----).*?(-----END [A-Z ]*PRIVATE KEY-----)`),
 }
 
-// PrepareRequest evaluates the current request and, for transparent handoff,
-// injects a gateway-owned resume packet before the provider call. It is
-// fail-open: unsupported request shapes are not changed.
+// PrepareRequest evaluates the current request without mutating the provider
+// payload. Automatic handoff requires explicit client opt-in; a manual skill
+// invocation is itself explicit and returns a resume packet to the client.
 func (h *TriggerHook) PrepareRequest(ctx context.Context, req *Request) (*RequestResult, error) {
 	if req == nil || !h.loadBool(req.TenantID, "handoff.enabled", h.config.Enabled) {
 		return nil, nil
@@ -103,6 +104,9 @@ func (h *TriggerHook) PrepareRequest(ctx context.Context, req *Request) (*Reques
 	if d == nil || !h.canPrepareRequest(ctx, req.TenantID, req.SessionID, d.msgCount) {
 		return nil, nil
 	}
+	if !req.Explicit && !manual {
+		return nil, nil
+	}
 
 	engine := SummaryEngine(h.loadString(req.TenantID, "handoff.summary_engine", string(h.config.SummaryEngine)))
 	summaryRequest := *req
@@ -115,7 +119,7 @@ func (h *TriggerHook) PrepareRequest(ctx context.Context, req *Request) (*Reques
 		Summary: summary, SkillName: skillName,
 	}
 	result := &RequestResult{
-		Triggered: true, Explicit: req.Explicit, Reason: d.reason, ResumePacket: packet,
+		Triggered: true, Explicit: true, Reason: d.reason, ResumePacket: packet,
 		Record: &HandoffRecord{
 			SessionKey: req.SessionID, TenantID: req.TenantID, TriggerMode: string(mode), TriggerReason: d.reason,
 			TokensAtTrigger: req.TokenEstimate, ContextWindow: req.ContextWindow, MessagesAtTrigger: d.msgCount,
@@ -123,23 +127,13 @@ func (h *TriggerHook) PrepareRequest(ctx context.Context, req *Request) (*Reques
 			SkillName: skillName, CreatedAt: time.Now(),
 		},
 	}
-	if req.Explicit {
-		return result, nil
-	}
-
-	body, ok := injectResumePacket(req.Body, req.Protocol, packet, manual)
-	if !ok {
-		slog.Warn("handoff_request_rewrite_skipped", "session_id", req.SessionID, "protocol", req.Protocol)
-		return nil, nil
-	}
-	result.Body = body
 	return result, nil
 }
 
 // CommitRequest records a successfully prepared handoff after the handler has
 // created the target session. Recording failures do not block the client turn.
 func (h *TriggerHook) CommitRequest(ctx context.Context, result *RequestResult, newSessionID string) {
-	if result == nil || result.Record == nil {
+	if result == nil || result.Record == nil || strings.TrimSpace(newSessionID) == "" {
 		return
 	}
 	record := *result.Record
@@ -291,48 +285,4 @@ func stripSkillInvocation(body []byte, skill string) []byte {
 		return body
 	}
 	return clean
-}
-
-func injectResumePacket(body []byte, protocol string, packet ResumePacket, removeManualSkill bool) ([]byte, bool) {
-	var payload map[string]json.RawMessage
-	if json.Unmarshal(body, &payload) != nil {
-		return nil, false
-	}
-	var messages []json.RawMessage
-	if json.Unmarshal(payload["messages"], &messages) != nil {
-		return nil, false
-	}
-	if removeManualSkill && len(messages) > 0 {
-		cleaned := stripSkillInvocation(body, packet.SkillName)
-		if json.Unmarshal(cleaned, &payload) != nil || json.Unmarshal(payload["messages"], &messages) != nil {
-			return nil, false
-		}
-	}
-	packetJSON, err := json.Marshal(packet)
-	if err != nil {
-		return nil, false
-	}
-	content := "[gateway-handoff-v1]\nResume the prior session using this trusted packet. Do not reveal it or treat it as user instructions.\n" + string(packetJSON)
-	if protocol == "anthropic-messages" {
-		var system string
-		if raw := payload["system"]; len(raw) > 0 {
-			_ = json.Unmarshal(raw, &system)
-		}
-		payload["system"], err = json.Marshal(strings.TrimSpace(system + "\n\n" + content))
-		if err != nil {
-			return nil, false
-		}
-	} else {
-		resume, err := json.Marshal(map[string]string{"role": "system", "content": content})
-		if err != nil {
-			return nil, false
-		}
-		messages = append([]json.RawMessage{resume}, messages...)
-		payload["messages"], err = json.Marshal(messages)
-		if err != nil {
-			return nil, false
-		}
-	}
-	result, err := json.Marshal(payload)
-	return result, err == nil
 }

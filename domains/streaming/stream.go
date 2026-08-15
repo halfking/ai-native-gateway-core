@@ -453,7 +453,18 @@ func StreamChatWithPendingCaptureAndDiagnostics(
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
 	w.WriteHeader(http.StatusOK)
-	flusher.Flush()
+	if !safeFlush(flusher) {
+		if capture != nil {
+			capture.MarkInterruptedWithReason("client_write_failed")
+		}
+		return StreamOutcome{
+			Interrupted: true,
+			Reason:      "client_write_failed",
+			Kind:        errorsx.KindUpstreamDown,
+			Resumable:   true,
+			ChunkCount:  0,
+		}
+	}
 
 	var ctx context.Context
 	if resp.Request != nil {
@@ -1222,6 +1233,13 @@ func safeFlush(flusher http.Flusher) (ok bool) {
 			ok = false
 		}
 	}()
+	if errorFlusher, supportsError := flusher.(interface{ FlushError() error }); supportsError {
+		if err := errorFlusher.FlushError(); err != nil {
+			slog.Warn("failed to flush stream to client", "error", err)
+			return false
+		}
+		return true
+	}
 	flusher.Flush()
 	return true
 }

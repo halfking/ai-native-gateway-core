@@ -237,8 +237,7 @@ func (g *AttemptCommitGate) WriteFrame(frame string) error {
 		if _, err := g.writer.Write([]byte(frame)); err != nil {
 			return err
 		}
-		g.writer.Flush()
-		return nil
+		return g.writer.FlushError()
 	}
 
 	advanced := g.advanceStateLocked(class)
@@ -259,8 +258,7 @@ func (g *AttemptCommitGate) WriteFrame(frame string) error {
 		if _, err := g.writer.Write([]byte(frame)); err != nil {
 			return err
 		}
-		g.writer.Flush()
-		return nil
+		return g.writer.FlushError()
 	}
 
 	// Buffered mode, not yet committed.
@@ -273,8 +271,7 @@ func (g *AttemptCommitGate) WriteFrame(frame string) error {
 		if _, err := g.writer.Write([]byte(frame)); err != nil {
 			return err
 		}
-		g.writer.Flush()
-		return nil
+		return g.writer.FlushError()
 	}
 
 	return g.appendBufferedLocked(frame)
@@ -370,8 +367,7 @@ func (g *AttemptCommitGate) Commit() error {
 	if err := g.commitLocked(); err != nil {
 		return err
 	}
-	g.writer.Flush()
-	return nil
+	return g.writer.FlushError()
 }
 
 // FinishAttempt writes the attempt's trailing partial frame (bytes after the
@@ -393,7 +389,7 @@ func (g *AttemptCommitGate) FinishAttempt(partial string) error {
 	}
 	if partial == "" {
 		if g.mode == GateModeImmediate || g.committed {
-			g.writer.Flush()
+			return g.writer.FlushError()
 		}
 		return nil
 	}
@@ -401,8 +397,7 @@ func (g *AttemptCommitGate) FinishAttempt(partial string) error {
 		if _, err := g.writer.Write([]byte(partial)); err != nil {
 			return err
 		}
-		g.writer.Flush()
-		return nil
+		return g.writer.FlushError()
 	}
 	return g.appendBufferedLocked(partial)
 }

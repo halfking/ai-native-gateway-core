@@ -119,10 +119,19 @@ func (w *interceptingStreamWriter) Write(p []byte) (int, error) {
 }
 
 func (w *interceptingStreamWriter) Flush() {
+	_ = w.FlushError()
+}
+
+func (w *interceptingStreamWriter) FlushError() error {
 	w.drain()
-	if w.flusher != nil {
-		w.flusher.Flush()
+	if w.flusher == nil {
+		return nil
 	}
+	if errorFlusher, ok := w.flusher.(interface{ FlushError() error }); ok {
+		return errorFlusher.FlushError()
+	}
+	w.flusher.Flush()
+	return nil
 }
 
 func (w *interceptingStreamWriter) finish() {
@@ -865,8 +874,8 @@ type ChatHandler struct {
 	// by SanitizeRestoreInterceptor on the response path. nil = disabled.
 	sanitizeInputMiddleware func(http.Handler) http.Handler
 
-	// handoffHook prepares a trusted resume packet and rotates the gateway
-	// session before the provider receives a near-limit request.
+	// handoffHook may return an explicit resume packet before provider dispatch;
+	// it must never inject gateway control data into the provider request body.
 	handoffHook *handoff.TriggerHook
 
 	// attachmentExtractor (2026-07-01) extracts base64/data-URI attachments
@@ -3037,8 +3046,8 @@ func (h *ChatHandler) serveWithExecutor(
 
 	// ── Request-side session handoff ─────────────────────────────────────
 	// The handoff runs after routing resolves the real context window and
-	// before compression. It therefore rewrites the exact body compression
-	// will cache and forward, instead of scheduling a second hidden request.
+	// before compression. It may return an explicit resume packet, but it must
+	// never rewrite the request body forwarded to the provider.
 	if h.handoffHook != nil && gwSessionID != "" {
 		contextWindow := 0
 		if len(candidates) > 0 && candidates[0].ContextWindow != nil {
@@ -3059,35 +3068,12 @@ func (h *ChatHandler) serveWithExecutor(
 		if handoffErr != nil {
 			slog.Warn("handoff_prepare_failed", "session_id", gwSessionID, "error", handoffErr)
 		} else if handoffResult != nil && handoffResult.Triggered {
-			if handoffResult.Explicit {
-				h.handoffHook.CommitRequest(ctx, handoffResult, "")
-				w.Header().Set("X-Gw-Handoff", "explicit")
-				w.Header().Set("X-Gw-Handoff-Reason", handoffResult.Reason)
-				writeJSON(w, http.StatusAccepted, map[string]any{
-					"status": "handoff_required", "resume_packet": handoffResult.ResumePacket,
-				})
-				return
-			}
-			if keyInfo == nil || h.sessionGetter == nil {
-				slog.Warn("handoff_session_rotation_skipped", "session_id", gwSessionID, "reason", "session_owner_unavailable")
-			} else if newSession, err := h.sessionGetter.CreateV2(ctx, keyInfo.ID, keyInfo.TenantID, handoffDeviceSeed(r), r.Header.Get("X-Gw-Task-Id")); err != nil {
-				slog.Warn("handoff_session_rotation_failed", "session_id", gwSessionID, "error", err)
-			} else {
-				bodyBytes = handoffResult.Body
-				previousSessionID := gwSessionID
-				gwSessionID = newSession.SessionID
-				sessionInfo = newSession
-				ctx = session.SessionFromContextWith(ctx, newSession)
-				r = r.WithContext(ctx)
-				r.Header.Set("X-Gw-Session-Id", gwSessionID)
-				logCtx.SetSession(newSession)
-				w.Header().Set("X-Gw-Handoff", "transparent")
-				w.Header().Set("X-Gw-Handoff-Reason", handoffResult.Reason)
-				w.Header().Set("X-Gw-Handoff-From", previousSessionID)
-				w.Header().Set("X-Gw-Handoff-To", gwSessionID)
-				w.Header().Set("X-Gw-Session-Id-Resume", gwSessionID)
-				h.handoffHook.CommitRequest(ctx, handoffResult, gwSessionID)
-			}
+			w.Header().Set("X-Gw-Handoff", "explicit")
+			w.Header().Set("X-Gw-Handoff-Reason", handoffResult.Reason)
+			writeJSON(w, http.StatusAccepted, map[string]any{
+				"status": "handoff_required", "resume_packet": handoffResult.ResumePacket,
+			})
+			return
 		}
 	}
 

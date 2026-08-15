@@ -4,14 +4,14 @@
 
 ## 概述
 
-会话交接在供应商调用前评估会话上下文，避免等到 `context_length_exceeded` 后再恢复。达到阈值后，网关生成结构化 resume packet，创建真实的新网关会话，并将恢复包注入当前请求后继续正常路由。原客户端请求不会再触发一个隐式的 `/handoff` 自调用。
+会话交接在供应商调用前评估会话上下文，避免等到 `context_length_exceeded` 后再恢复。达到阈值时，只有显式声明支持交接协议的客户端才会收到结构化 resume packet；默认兼容模式不会改写请求体，也不会替客户端创建新会话，原请求继续正常路由。
 
 Handoff 与 `compression`、`cache`、`goal` 和 `session_inspector` 协同：
 
-- `compression` 在 Handoff 改写之后运行，缓存并转发带恢复包的最终请求。
-- `cache` 和 `session_summaries` 提供累计 token、请求数、冷却时间和交接计数。
-- `goal` 仍在响应侧处理任务续跑，但 Handoff 不再使用 last-writer-wins follow-up。
-- `session_inspector` 读取 `handoff_count`、`last_handoff_at` 和触发原因进行健康判断。
+- `compression` 在 Handoff 检查之后运行，缓存并转发原始或其他中间件已处理的请求。
+- `cache` 和 `session_summaries` 提供累计 token 与请求数，供阈值判断使用。
+- `goal` 仍在响应侧处理任务续跑，但 Handoff 不使用隐藏 follow-up 请求。
+- `202 handoff_required` 只生成恢复包，不会在客户端创建新会话前增加 `handoff_count` 或启动 cooldown；客户端确认协议尚待实现。
 
 ## 运行流程
 
@@ -20,22 +20,13 @@ flowchart LR
     A[客户端请求] --> B[认证和会话归属校验]
     B --> C[路由解析上下文窗口]
     C --> D{Handoff 阈值或 /skill}
-    D -- 否 --> E[会话压缩]
-    D -- 透明 --> F[摘要 + 新网关会话 + resume packet]
-    F --> E
-    D -- 显式 --> G[202 + resume_packet]
+    D -- 未触发 --> E[会话压缩]
+    D -- 默认 transparent --> E
+    D -- 显式协议或手工 skill --> G[202 + resume_packet]
     E --> H[供应商请求]
 ```
 
-默认 `transparent` 模式会在响应头中返回：
-
-- `X-Gw-Handoff: transparent`
-- `X-Gw-Handoff-Reason`
-- `X-Gw-Handoff-From`
-- `X-Gw-Handoff-To`
-- `X-Gw-Session-Id-Resume`
-
-设置 `X-Gw-Handoff-Mode: explicit`，或将 `handoff.client_mode` 设为 `explicit`，会返回 `202 Accepted` 和：
+默认 `transparent` 模式不增加交接响应头，不改写请求体，也不创建新会话。设置 `X-Gw-Handoff-Mode: explicit`，或将 `handoff.client_mode` 设为 `explicit`，会返回 `202 Accepted` 和：
 
 ```json
 {
@@ -52,7 +43,7 @@ flowchart LR
 
 ## 手动 Skill
 
-`handoff.trigger_mode=manual` 只响应最后一条 user message 的 `/<handoff.skill_name>`。网关识别并删除该命令，然后把恢复包作为受控上下文交给供应商；客户端不需要安装或实现该 Skill。`hybrid` 同时支持手动命令和阈值触发。
+`handoff.trigger_mode=manual` 只响应最后一条 user message 的 `/<handoff.skill_name>`。该命令本身视为显式交接请求：网关不会把命令或恢复包发送给供应商，而是返回 `202 Accepted` 和 resume packet，由客户端创建新会话后续跑。`hybrid` 同时支持手动命令和阈值触发。
 
 Skill 名称只允许字母、数字、`_`、`-`，最长 64 个字符。
 
