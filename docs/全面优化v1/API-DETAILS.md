@@ -12,7 +12,7 @@
 | session/request facts | gateway PG | CURRENT | 会话事实 SSOT |
 | outbox | `outbox_events` + writer/dispatcher | CURRENT/PARTIAL | 需冻结 schema 与 consumer 契约 |
 | SM delivery | POST SM `/internal/v1/events` | CURRENT/PARTIAL | 需 HMAC/replay/幂等验收 |
-| capabilities | `/api/v2/capabilities` | PLANNED | 目标接口 |
+| capabilities | `/api/v2/capabilities` | CURRENT | GW-0.2 已实现（cmd/gateway/capabilities.go），响应结构见 §5 |
 
 ## 2. 平台调用标准
 
