@@ -246,7 +246,10 @@ type reapedTask struct {
 
 // ReapDeadlines 是 deadline reaper（doc 18 §11.3）：扫描所有非终态且
 // deadline_at <= now 的任务（含 waiting_recovery/retry_scheduled/崩溃后的
-// running），在单事务内以行锁 + fencing 原子迁移为 expired：
+// running），在单事务内以行锁 + fencing 原子迁移为 expired。
+// 已越过语义检查点（commit_state content/tool_call）的任务被排除——
+// 它们只能由 ReapUnsafeCheckpointed 终态化为 resume_safety_blocked，
+// 打成干净的 expired 会误报「无副作用」（doc 18 §11.3 验收 19）：
 // fencing_token+1、撤销 lease（旧 worker 后续更新因 token 失效而失败）、
 // reason=survival_expired、completed_at、result_version+1，并写事件。
 // 与 worker 完成并发时只有一方形成终态。
@@ -264,6 +267,7 @@ func (s *Store) ReapDeadlines(ctx context.Context, limit int, now time.Time) ([]
 		SELECT id, status FROM durable_llm_tasks
 		WHERE deadline_at <= $2
 		  AND status NOT IN ('completed', 'failed', 'expired', 'canceled')
+		  AND commit_state IN ('none', 'metadata')
 		ORDER BY deadline_at
 		FOR UPDATE SKIP LOCKED
 		LIMIT $1`, limit, now)
@@ -291,8 +295,9 @@ func (s *Store) ReapDeadlines(ctx context.Context, limit int, now time.Time) ([]
 			    result_version = COALESCE(result_version, 0) + 1
 			WHERE id = $1
 			  AND status NOT IN ('completed', 'failed', 'expired', 'canceled')
+			  AND commit_state IN ('none', 'metadata')
 			RETURNING id, tenant_id, request_id, session_id, request_hash,
-			          status, fencing_token, expires_at, content_type,
+			          status, fencing_token, expires_at, COALESCE(content_type, ''),
 			          reason_code, result_version`,
 			row.id, now, ReasonSurvivalExpired, ReasonSurvivalExpired,
 		).Scan(&rt.ID, &rt.TenantID, &rt.RequestID, &rt.SessionID, &rt.RequestHash,

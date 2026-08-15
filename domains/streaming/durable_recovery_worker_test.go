@@ -7,8 +7,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus"
+
 	"github.com/kaixuan/llm-gateway-go/durable"
 	"github.com/kaixuan/llm-gateway-go/errorsx"
+	"github.com/kaixuan/llm-gateway-go/metrics"
 	"github.com/kaixuan/llm-gateway-go/pending"
 )
 
@@ -175,4 +178,96 @@ type blockingRunner struct {
 func (r blockingRunner) Run(ctx context.Context, _ *durable.Task, _ *durable.Snapshot) (*DurableAttempt, error) {
 	<-r.release
 	return successAttempt(), nil
+}
+
+// gatherMetricValue sums the current value of one durable_* series across all
+// label combinations (global registry; tests only assert deltas).
+func gatherMetricValue(t *testing.T, name string) float64 {
+	t.Helper()
+	mfs, err := prometheus.DefaultGatherer.Gather()
+	if err != nil {
+		t.Fatalf("gather: %v", err)
+	}
+	total := 0.0
+	for _, mf := range mfs {
+		if mf.GetName() != name {
+			continue
+		}
+		for _, m := range mf.GetMetric() {
+			switch {
+			case m.GetCounter() != nil:
+				total += m.GetCounter().GetValue()
+			case m.GetGauge() != nil:
+				total += m.GetGauge().GetValue()
+			}
+		}
+	}
+	return total
+}
+
+func gatherLabeledValue(t *testing.T, name, labelValue string) float64 {
+	t.Helper()
+	mfs, err := prometheus.DefaultGatherer.Gather()
+	if err != nil {
+		t.Fatalf("gather: %v", err)
+	}
+	for _, mf := range mfs {
+		if mf.GetName() != name {
+			continue
+		}
+		for _, m := range mf.GetMetric() {
+			for _, l := range m.GetLabel() {
+				if l.GetValue() == labelValue {
+					if m.GetCounter() != nil {
+						return m.GetCounter().GetValue()
+					}
+					if m.GetGauge() != nil {
+						return m.GetGauge().GetValue()
+					}
+				}
+			}
+		}
+	}
+	return 0
+}
+
+// durable_* 观测契约（doc 18 §15）：claim 周期按结果计数，active gauge 来自
+// 权威 ActiveTaskCounts，fencing 失效计入 lease-lost。
+func TestDurableRecoveryWorkerEmitsRunOutcomes(t *testing.T) {
+	before := gatherLabeledValue(t, "durable_recovery_runs_total", "claimed")
+	emptyBefore := gatherLabeledValue(t, "durable_recovery_runs_total", "empty")
+
+	store := &workerFakeStore{task: runnableTask(), snapshot: &durable.Snapshot{TaskID: "task-1"}, attempt: successAttempt()}
+	worker := NewDurableRecoveryWorker(store, nil, workerFakeRunner{attempt: store.attempt}, DurableWorkerOptions{Owner: "worker"})
+	worker.runOnce(context.Background())
+	if got := gatherLabeledValue(t, "durable_recovery_runs_total", "claimed"); got < before+1 {
+		t.Fatalf("durable_recovery_runs_total{claimed} = %v, want >= %v", got, before+1)
+	}
+
+	worker.runOnce(context.Background()) // second cycle claims nothing
+	if got := gatherLabeledValue(t, "durable_recovery_runs_total", "empty"); got < emptyBefore+1 {
+		t.Fatalf("durable_recovery_runs_total{empty} = %v, want >= %v", got, emptyBefore+1)
+	}
+}
+
+func TestDurableRecoveryWorkerPublishesActiveGauge(t *testing.T) {
+	metrics.SetDurableTasksActive(map[string]int64{"metric-tenant": 2})
+	if got := gatherLabeledValue(t, "durable_tasks_active", "metric-tenant"); got != 2 {
+		t.Fatalf("durable_tasks_active{metric-tenant} = %v, want 2", got)
+	}
+	// 租户清零后（GROUP BY 缺席）不得冻结在旧值。
+	metrics.SetDurableTasksActive(map[string]int64{})
+	if got := gatherLabeledValue(t, "durable_tasks_active", "metric-tenant"); got != 0 {
+		t.Fatalf("durable_tasks_active{metric-tenant} = %v after drain, want 0", got)
+	}
+}
+
+func TestDurableRecoveryWorkerCountsLeaseLost(t *testing.T) {
+	before := gatherMetricValue(t, "durable_lease_lost_total")
+	store := &workerFakeStore{task: runnableTask(), snapshot: &durable.Snapshot{TaskID: "task-1"}, commitErr: durable.ErrLeaseLost}
+	worker := NewDurableRecoveryWorker(store, nil, workerFakeRunner{attempt: successAttempt()}, DurableWorkerOptions{Owner: "worker"})
+	worker.runOnce(context.Background())
+	if got := gatherMetricValue(t, "durable_lease_lost_total"); got < before+1 {
+		t.Fatalf("durable_lease_lost_total = %v, want >= %v", got, before+1)
+	}
 }

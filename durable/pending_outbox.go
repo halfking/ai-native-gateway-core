@@ -10,6 +10,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
+	"github.com/kaixuan/llm-gateway-go/metrics"
 	"github.com/kaixuan/llm-gateway-go/pending"
 	"github.com/kaixuan/llm-gateway-go/secret"
 )
@@ -107,7 +108,7 @@ func (s *Store) ProjectPendingOutbox(ctx context.Context, target *pending.Store,
 		}
 		if r.status == StatusCompleted {
 			if !r.resultCT.Valid || s.kr == nil {
-				if err := markProjectionFailed(ctx, tx, r.taskID, now, "completed result cannot be decrypted"); err != nil {
+				if err := markProjectionFailed(ctx, tx, r.taskID, now, "completed result cannot be decrypted", "decrypt"); err != nil {
 					return projected, err
 				}
 				continue
@@ -115,14 +116,14 @@ func (s *Store) ProjectPendingOutbox(ctx context.Context, target *pending.Store,
 			body, _, err := secret.DecryptWithAAD(r.resultCT.String, s.kr, secret.AADDomainDurableResult,
 				secret.AADBinding{TenantID: r.tenantID, TaskID: r.taskID, RequestHash: r.requestHash})
 			if err != nil {
-				if markErr := markProjectionFailed(ctx, tx, r.taskID, now, err.Error()); markErr != nil {
+				if markErr := markProjectionFailed(ctx, tx, r.taskID, now, err.Error(), "decrypt"); markErr != nil {
 					return projected, markErr
 				}
 				continue
 			}
 			hash := sha256.Sum256(body)
 			if !r.resultHash.Valid || hex.EncodeToString(hash[:]) != r.resultHash.String {
-				if err := markProjectionFailed(ctx, tx, r.taskID, now, "result hash mismatch"); err != nil {
+				if err := markProjectionFailed(ctx, tx, r.taskID, now, "result hash mismatch", "result_hash"); err != nil {
 					return projected, err
 				}
 				continue
@@ -140,7 +141,7 @@ func (s *Store) ProjectPendingOutbox(ctx context.Context, target *pending.Store,
 			if err != nil {
 				message = err.Error()
 			}
-			if markErr := markProjectionFailed(ctx, tx, r.taskID, now, message); markErr != nil {
+			if markErr := markProjectionFailed(ctx, tx, r.taskID, now, message, "project_cas"); markErr != nil {
 				return projected, markErr
 			}
 			continue
@@ -148,6 +149,7 @@ func (s *Store) ProjectPendingOutbox(ctx context.Context, target *pending.Store,
 		if _, err := tx.Exec(ctx, `DELETE FROM durable_pending_outbox WHERE task_id = $1`, r.taskID); err != nil {
 			return projected, fmt.Errorf("durable: delete pending outbox: %w", err)
 		}
+		metrics.DurablePendingProjectionsTotal.WithLabelValues(string(r.status)).Inc()
 		projected++
 	}
 
@@ -157,10 +159,13 @@ func (s *Store) ProjectPendingOutbox(ctx context.Context, target *pending.Store,
 	return projected, nil
 }
 
-func markProjectionFailed(ctx context.Context, tx pgx.Tx, taskID string, now time.Time, message string) error {
+// markProjectionFailed parks one outbox row with a fixed retry delay. The
+// reason label feeds durable_pending_projection_errors_total (doc 18 §15.3).
+func markProjectionFailed(ctx context.Context, tx pgx.Tx, taskID string, now time.Time, message, reason string) error {
 	if message == "" {
 		message = errors.New("unknown projection error").Error()
 	}
+	metrics.DurablePendingProjectionErrorsTotal.WithLabelValues(reason).Inc()
 	_, err := tx.Exec(ctx, `
 		UPDATE durable_pending_outbox
 		SET attempts = attempts + 1, last_error = $2,

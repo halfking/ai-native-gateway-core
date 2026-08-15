@@ -307,3 +307,24 @@ func TestStore_ReapUnsafeCheckpointed_LiveLeaseGuard(t *testing.T) {
 		t.Fatalf("expectations: %v", err)
 	}
 }
+
+// TestStore_ReapDeadlines_ExcludesCheckpointed：deadline reaper 的扫描必须
+// 排除已越过语义检查点（commit_state content/tool_call）的任务——它们只能
+// 由 safety reaper 终态化为 resume_safety_blocked（doc 18 §11.3 验收 19，
+// 真实 PG 行为由 pg_integration_test.go 钉住，这里钉 SQL 门禁不回退）。
+func TestStore_ReapDeadlines_ExcludesCheckpointed(t *testing.T) {
+	store, mock := newMockStore(t)
+	mock.ExpectBegin()
+	mock.ExpectQuery(`commit_state IN \('none', 'metadata'\)`).
+		WithArgs(anyArgs(2)...).
+		WillReturnRows(pgxmock.NewRows([]string{"id", "status"}))
+	mock.ExpectCommit()
+
+	reaped, err := store.ReapDeadlines(context.Background(), 16, time.Date(2026, 8, 15, 12, 0, 0, 0, time.UTC))
+	if err != nil || len(reaped) != 0 {
+		t.Fatalf("ReapDeadlines = %v err = %v", reaped, err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("expectations: %v", err)
+	}
+}
