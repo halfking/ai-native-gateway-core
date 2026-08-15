@@ -1,6 +1,8 @@
 package streaming
 
 import (
+	"strconv"
+
 	"github.com/kaixuan/llm-gateway-go/metrics"
 )
 
@@ -55,4 +57,40 @@ func survivalMetricOutcome(d TaskDecision) string {
 func recordSurvivalRequestTerminal(protocol ClientProtocol, d TaskDecision) {
 	metrics.SurvivalRequestsTotal.WithLabelValues(
 		protocolMetricLabel(protocol), "false", survivalMetricOutcome(d)).Inc()
+}
+
+// survivalProviderLabel renders the provider dimension of
+// gateway_survival_attempts_total. Provider IDs are small bounded integers
+// (GW-00 cardinality rule); synthesized outcomes with no provider read as
+// "unknown".
+func survivalProviderLabel(providerID int) string {
+	if providerID <= 0 {
+		return "unknown"
+	}
+	return strconv.Itoa(providerID)
+}
+
+// recordSurvivalAttempt reports one finished attempt: one
+// gateway_survival_attempts_total increment per candidate outcome the
+// executor walked through (kind "" on success), so per-provider failure
+// attribution survives credential rotation inside a single attempt.
+func recordSurvivalAttempt(a *AttemptResult) {
+	if a == nil {
+		return
+	}
+	if a.Success {
+		provider := "unknown"
+		if a.ExecResult != nil && a.ExecResult.Candidate.ProviderID > 0 {
+			provider = survivalProviderLabel(a.ExecResult.Candidate.ProviderID)
+		}
+		metrics.SurvivalAttemptsTotal.WithLabelValues("", provider).Inc()
+		return
+	}
+	if len(a.CandidateOutcomes) == 0 {
+		metrics.SurvivalAttemptsTotal.WithLabelValues(string(a.LastKind()), "unknown").Inc()
+		return
+	}
+	for _, co := range a.CandidateOutcomes {
+		metrics.SurvivalAttemptsTotal.WithLabelValues(string(co.Kind), survivalProviderLabel(co.ProviderID)).Inc()
+	}
 }

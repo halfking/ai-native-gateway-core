@@ -144,6 +144,7 @@ func (c *SurvivalCoordinator) Run(ctx context.Context, sw *SerializedStreamWrite
 		attemptParams.W = gw
 		res.FinalAttempt = ExecuteAttempt(ctx, c.Exec, gate, &attemptParams)
 		res.Attempts++
+		recordSurvivalAttempt(res.FinalAttempt)
 		res.Decision = AggregateTaskOutcome(res.FinalAttempt)
 
 		switch res.Decision.Action {

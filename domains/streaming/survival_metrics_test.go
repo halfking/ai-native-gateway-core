@@ -158,3 +158,49 @@ func TestSurvivalMetricsRequestsTotalOutcome(t *testing.T) {
 		})
 	}
 }
+
+// TestSurvivalMetricsAttemptsTotalPerCandidate pins
+// gateway_survival_attempts_total{kind,provider}: one increment per candidate
+// outcome the executor walked through (a single attempt may rotate several
+// credentials), with kind "" on success.
+func TestSurvivalMetricsAttemptsTotalPerCandidate(t *testing.T) {
+	t.Run("failed attempt counts every candidate outcome", func(t *testing.T) {
+		multi := &executors.ExecuteError{
+			LastKind: errorsx.KindUpstreamDown,
+			Attempts: []executors.AttemptRecord{
+				{ProviderID: 7, CredentialID: 1, Kind: errorsx.KindRateLimit},
+				{ProviderID: 9, CredentialID: 4, Kind: errorsx.KindUpstreamDown},
+			},
+		}
+		h := newCoordHarness(&scriptedExecutor{errs: []error{multi, multi}})
+		c := h.coordinator()
+		// Wait-recovery: both attempts run before the deadline stops the loop.
+		c.Options.Deadline = 3 * time.Second
+
+		rlBefore := survivalCounterDelta(t, metrics.SurvivalAttemptsTotal.WithLabelValues("rate_limit", "7"))
+		udBefore := survivalCounterDelta(t, metrics.SurvivalAttemptsTotal.WithLabelValues("upstream_down", "9"))
+
+		c.Run(context.Background(), h.sw, &executors.ExecParams{})
+
+		if d := survivalCounterDelta(t, metrics.SurvivalAttemptsTotal.WithLabelValues("rate_limit", "7")) - rlBefore; d != 2 {
+			t.Fatalf("attempts_total{rate_limit,7} delta = %v, want 2 (one per attempt)", d)
+		}
+		if d := survivalCounterDelta(t, metrics.SurvivalAttemptsTotal.WithLabelValues("upstream_down", "9")) - udBefore; d != 2 {
+			t.Fatalf("attempts_total{upstream_down,9} delta = %v, want 2 (one per attempt)", d)
+		}
+	})
+
+	t.Run("successful attempt counts once with empty kind", func(t *testing.T) {
+		ok := &executors.ExecuteResult{}
+		h := newCoordHarness(&scriptedExecutor{results: []*executors.ExecuteResult{ok}})
+		c := h.coordinator()
+
+		before := survivalCounterDelta(t, metrics.SurvivalAttemptsTotal.WithLabelValues("", "unknown"))
+
+		c.Run(context.Background(), h.sw, &executors.ExecParams{})
+
+		if d := survivalCounterDelta(t, metrics.SurvivalAttemptsTotal.WithLabelValues("", "unknown")) - before; d != 1 {
+			t.Fatalf("attempts_total{\"\",unknown} delta = %v, want 1", d)
+		}
+	})
+}
