@@ -306,7 +306,7 @@ func (s *Store) Complete(ctx context.Context, lease Lease, params CompleteParams
 	}
 	item = OutboxItem{TaskID: lease.TaskID, TenantID: tenantID, RequestID: requestID, SessionID: sessionID,
 		Status: StatusCompleted, FencingToken: lease.FencingToken, ResultVersion: version, ResultHash: resultHash,
-		ResultCiphertext: ciphertext, ContentType: params.ContentType}
+		RequestHash: requestHash, ResultCiphertext: ciphertext, ContentType: params.ContentType}
 	if item.ID, err = insertOutbox(ctx, tx, item); err != nil {
 		return item, err
 	}
@@ -476,9 +476,9 @@ func (s *Store) ClaimOutbox(ctx context.Context, owner string, limit int, lease 
 		ORDER BY next_attempt_at,id FOR UPDATE SKIP LOCKED LIMIT $1), claimed AS (
 		UPDATE durable_pending_outbox o SET status='processing',lease_owner=$2,lease_until=$3,
 			attempt_count=o.attempt_count+1,updated_at=now() FROM picked p WHERE o.id=p.id
-		RETURNING o.id,o.task_id,o.tenant_id,o.request_id,o.session_id,o.projection_status,
-			o.fencing_token,o.result_version,coalesce(o.result_hash,''),o.created_at)
-		SELECT c.*,coalesce(t.reason_code,''),coalesce(t.result_ciphertext,''),coalesce(t.content_type,'')
+			RETURNING o.id,o.task_id,o.tenant_id,o.request_id,o.session_id,o.projection_status,
+				o.fencing_token,o.result_version,coalesce(o.result_hash,''),o.attempt_count,o.created_at)
+		SELECT c.*,coalesce(t.reason_code,''),t.request_hash,coalesce(t.result_ciphertext,''),coalesce(t.content_type,'')
 		FROM claimed c JOIN durable_llm_tasks t ON t.id=c.task_id`, limit, owner, until)
 	if err != nil {
 		return nil, fmt.Errorf("durabletask: claim outbox: %w", err)
@@ -488,8 +488,9 @@ func (s *Store) ClaimOutbox(ctx context.Context, owner string, limit int, lease 
 		var item OutboxItem
 		var status string
 		if err = rows.Scan(&item.ID, &item.TaskID, &item.TenantID, &item.RequestID,
-			&item.SessionID, &status, &item.FencingToken, &item.ResultVersion, &item.ResultHash, &item.CreatedAt,
-			&item.ReasonCode, &item.ResultCiphertext, &item.ContentType); err != nil {
+			&item.SessionID, &status, &item.FencingToken, &item.ResultVersion, &item.ResultHash,
+			&item.AttemptCount, &item.CreatedAt, &item.ReasonCode, &item.RequestHash,
+			&item.ResultCiphertext, &item.ContentType); err != nil {
 			return nil, err
 		}
 		item.Status = Status(status)
