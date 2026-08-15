@@ -209,6 +209,10 @@ func StreamResponsesSSE(w http.ResponseWriter, resp *http.Response, clientModel,
 	}
 
 	if firstLine != "" {
+		if normalizedLine, hasCombinedDone := splitCombinedDoneFrame(firstLine); hasCombinedDone {
+			firstLine = normalizedLine
+			reader = prependDoneFrame(reader)
+		}
 		processLine(firstLine)
 	}
 
@@ -263,6 +267,10 @@ func StreamResponsesSSE(w http.ResponseWriter, resp *http.Response, clientModel,
 		}
 
 		line := readResult.line
+		if normalizedLine, hasCombinedDone := splitCombinedDoneFrame(line); hasCombinedDone {
+			line = normalizedLine
+			reader = prependDoneFrame(reader)
+		}
 
 		if line == "" {
 			continue

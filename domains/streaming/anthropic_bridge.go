@@ -150,10 +150,7 @@ func StreamAnthropicPassthroughWithDiagnostics(
 
 	for {
 		line, err := reader.ReadString('\n')
-		if err != nil {
-			if err == io.EOF {
-				break
-			}
+		if err != nil && err != io.EOF {
 			outcome.Interrupted = true
 			outcome.Reason = "read_error"
 			outcome.Kind = errorsx.KindUpstreamDown
@@ -161,6 +158,9 @@ func StreamAnthropicPassthroughWithDiagnostics(
 				capture.MarkInterruptedWithReason("read_error")
 			}
 			return outcome
+		}
+		if line == "" && err == io.EOF {
+			break
 		}
 		if !clientDisconnected {
 			if !safeWriteSSE(w, line) || !safeFlush(flusher) {
@@ -181,6 +181,9 @@ func StreamAnthropicPassthroughWithDiagnostics(
 
 		if line == "\n" && !clientDisconnected {
 			safeFlush(flusher)
+		}
+		if err == io.EOF {
+			break
 		}
 	}
 	if !clientDisconnected {

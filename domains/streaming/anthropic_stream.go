@@ -436,6 +436,10 @@ func StreamOpenAIToAnthropicSSEWithDiagnostics(
 	}
 
 	if firstLine != "" {
+		if normalizedLine, hasCombinedDone := splitCombinedDoneFrame(firstLine); hasCombinedDone {
+			firstLine = normalizedLine
+			reader = prependDoneFrame(reader)
+		}
 		if processLine(firstLine) {
 			outcome = integrityBreachOutcome(capture, 0)
 			return outcome
@@ -492,6 +496,10 @@ func StreamOpenAIToAnthropicSSEWithDiagnostics(
 		}
 
 		line := readResult.line
+		if normalizedLine, hasCombinedDone := splitCombinedDoneFrame(line); hasCombinedDone {
+			line = normalizedLine
+			reader = prependDoneFrame(reader)
+		}
 
 		if line == "" {
 			continue

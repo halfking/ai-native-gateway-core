@@ -3,6 +3,7 @@ package streaming
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -177,6 +178,22 @@ func TestResponsesStreamSSE_Events(t *testing.T) {
 	assert.Contains(t, body, `"delta":"Hi"`)
 	assert.Contains(t, body, `"delta":" there"`)
 	assert.Contains(t, body, `"status":"completed"`)
+}
+
+func TestResponsesStreamSSE_SplitsDoneJoinedToJSON(t *testing.T) {
+	resp := &http.Response{
+		Body: io.NopCloser(strings.NewReader(
+			`data: {"choices":[{"delta":{"content":"planning"},"finish_reason":null}]}[DONE].`,
+		)),
+		Request: httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil),
+	}
+	rec := httptest.NewRecorder()
+
+	out := StreamResponsesSSE(rec, resp, "gpt-5.6-sol", "gpt-5.6-sol", "req-combined-done", nil)
+
+	assert.False(t, out.Interrupted)
+	assert.Contains(t, rec.Body.String(), `"delta":"planning"`)
+	assert.Contains(t, rec.Body.String(), "event: response.completed")
 }
 
 func TestWriteResponsesError(t *testing.T) {

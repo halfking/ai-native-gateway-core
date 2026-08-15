@@ -140,6 +140,33 @@ func TestStreamAnthropicPassthrough_BytesForPassThrough(t *testing.T) {
 	assert.False(t, out.Interrupted)
 }
 
+func TestStreamAnthropicPassthrough_ForwardsUnterminatedFinalFrame(t *testing.T) {
+	const body = `data: {"type":"message_stop"}`
+	resp := &http.Response{Body: io.NopCloser(strings.NewReader(body))}
+	rec := newBridgeWriter()
+
+	out := StreamAnthropicPassthrough(rec, resp, "claude-3-5-sonnet", "claude-3-5-sonnet", "req-eof", nil, nil)
+
+	assert.False(t, out.Interrupted)
+	assert.Equal(t, body, rec.buf.String())
+}
+
+func TestStreamOpenAIToAnthropicSSE_SplitsDoneJoinedToJSON(t *testing.T) {
+	resp := &http.Response{
+		Body: io.NopCloser(strings.NewReader(
+			`data: {"id":"chunk-1","object":"chat.completion.chunk","choices":[{"delta":{"content":"planning"},"finish_reason":null}]}[DONE].`,
+		)),
+		Request: httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil),
+	}
+	rec := httptest.NewRecorder()
+
+	out := StreamOpenAIToAnthropicSSE(rec, resp, "gpt-5.6-sol", "gpt-5.6-sol", "req-combined-done", nil, nil)
+
+	require.False(t, out.Interrupted)
+	assert.Contains(t, rec.Body.String(), `"text":"planning"`)
+	assert.Contains(t, rec.Body.String(), `event: message_stop`)
+}
+
 func TestStreamAnthropicSSEToOpenAI_ConvertsMessageStartToOpenAIChunk(t *testing.T) {
 	body := strings.Join([]string{
 		"event: message_start\n",
