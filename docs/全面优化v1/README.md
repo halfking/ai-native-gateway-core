@@ -27,7 +27,7 @@ gateway 是推理平面 SSOT，但 v1 文档必须区分事实与目标：
 | durable outbox | outbox table/writer/dispatcher 已存在 | CURRENT/PARTIAL | 冻结事件 schema、HMAC、防重放、DLQ/replay |
 | SM projection dispatch | 已投递到 SM `/internal/v1/events` | CURRENT/PARTIAL | 继续联调与对账 |
 | plugin runtime | 已有 plugin 机制与 SM plugin manifest | CURRENT/PARTIAL | 通用化多插件与隔离 |
-| capabilities endpoint | 未见统一 `/api/v2/capabilities` 路由 | PLANNED | 先定 contract，再实现 |
+| capabilities endpoint | `GET /api/v2/capabilities` 已实现（cmd/gateway/capabilities.go，GW-0.2） | CURRENT | 保持与能力矩阵如实同步 |
 | D1 资源档位 | 未有实测证据/配置 | PLANNED | 加采样方法与报告 |
 
 ## 三、服务间身份与标准参数
@@ -85,13 +85,13 @@ gateway 文档中的“plugin runtime 通用化”应只描述为：
 
 ## 七、任务计划
 
-| ID | 任务 | 优先级 | 验收 |
-| --- | --- | --- | --- |
-| GW-0.1 | 明确端口矩阵与主/演示入口，杜绝 8780/8781/8782 混淆 | P0 | 文档、compose、启动日志一致 |
-| GW-0.2 | `GET /api/v2/capabilities` contract（目标） | P0 | 先生成 contract，再实现路由 |
-| GW-0.3 | correlation_id/tenant/service JWT standardization | P0 | 六系统 trace 可串联 |
-| GW-1.1 | 平台调用方租户化与旁路清零（ACC/RedClaw/Memora/Pocket） | P0 | 网关统计 0 旁路 |
-| GW-1.2 | outbox → SM event envelope freeze + HMAC/replay/dlq | P0 | consumer contract test 通过 |
+| ID | 任务 | 优先级 | 状态 | 验收 |
+| --- | --- | --- | --- | --- |
+| GW-0.1 | 明确端口矩阵与主/演示入口，杜绝 8780/8781/8782 混淆 | P0 | PLANNED | 文档、compose、启动日志一致 |
+| GW-0.2 | `GET /api/v2/capabilities` contract（目标） | P0 | CURRENT | 先生成 contract，再实现路由 |
+| GW-0.3 | correlation_id/tenant/service JWT standardization | P0 | PLANNED | 六系统 trace 可串联 |
+| GW-1.1 | 平台调用方租户化与旁路清零（ACC/RedClaw/Memora/Pocket） | P0 | PLANNED | 网关统计 0 旁路 |
+| GW-1.2 | outbox → SM event envelope freeze + HMAC/replay/dlq | P0 | CURRENT（envelope 已冻结并对齐 gateway-event-schema-v1，含 JSON Schema 校验测试；按 event_id/时间窗/tenant 的重放工具与 SM 侧消费联调未闭环） | consumer contract test 通过 |
 | GW-2.1 | plugin runtime multi-plugin/isolation 设计 | P1 | 双插件并存冒烟 |
 | GW-3.1 | D1 资源档位实测与报告 | P1 | 采样报告 |
 | GW-4.1 | 会话优化 V3.2 按既有文档继续，明确 CURRENT/PARTIAL/TARGET | P1 | 状态表更新 |
