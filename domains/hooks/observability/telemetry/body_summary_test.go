@@ -9,6 +9,8 @@ import (
 
 	"github.com/pashagolub/pgxmock/v4"
 	"github.com/stretchr/testify/require"
+
+	"github.com/kaixuan/llm-gateway-go/settings"
 )
 
 // bodySummaryEnvelope is the observer-side view of the digest envelope that
@@ -283,4 +285,89 @@ func TestInsertRequestLog_BodiesSummaryModeWritesDigest(t *testing.T) {
 	})
 	require.NoError(t, err)
 	require.NoError(t, mockDB.ExpectationsWereMet())
+}
+
+// fakeSettingsBackend is a minimal in-memory settings backend (same pattern
+// as domains/hooks/compression tests).
+type fakeSettingsBackend struct {
+	store map[string][]byte
+}
+
+func (f *fakeSettingsBackend) Get(scope settings.Scope, key string) ([]byte, error) {
+	return f.store[key], nil
+}
+func (f *fakeSettingsBackend) Set(scope settings.Scope, key string, value any) ([]byte, error) {
+	return nil, nil
+}
+func (f *fakeSettingsBackend) GetTenant(tenantID, key string) ([]byte, error) {
+	return f.store[key], nil
+}
+func (f *fakeSettingsBackend) SetTenant(tenantID, key string, value any) ([]byte, error) {
+	return nil, nil
+}
+
+// withSessionsV2Settings swaps settings.Global for a registry carrying the
+// real sessions_v2 specs plus the given platform overrides.
+func withSessionsV2Settings(t *testing.T, overrides map[string]bool) {
+	t.Helper()
+	prevGlobal := settings.Global
+	prevSeam, hadSeam := requestBodiesSummaryEnabledFn()
+	t.Cleanup(func() {
+		settings.Global = prevGlobal
+		if hadSeam {
+			setRequestBodiesSummaryEnabledForTest(prevSeam)
+		}
+	})
+
+	store := map[string][]byte{}
+	for key, val := range overrides {
+		store[key] = []byte(strconvFormatBool(val))
+	}
+	registry := settings.NewRegistry()
+	registry.RegisterBackend(settings.ScopePlatform, &fakeSettingsBackend{store: store})
+	registry.RegisterBackend(settings.EnvBackendScope, settings.NewStoreEnv())
+	for _, spec := range settings.SessionsV2Specs() {
+		registry.MustRegisterSpec(spec)
+	}
+	settings.Global = registry
+	// Pin the seam to the settings-backed default so the test exercises the
+	// real flag combination rather than an override.
+	setRequestBodiesSummaryEnabledForTest(defaultBodiesSummaryEnabled)
+}
+
+func strconvFormatBool(b bool) string {
+	if b {
+		return "true"
+	}
+	return "false"
+}
+
+// TestRequestBodiesSummaryEnabled_FlagCombination (CO-5): the settings-backed
+// seam must implement: summary mode only under sessions_v2.enabled, and the
+// explicit sessions_v2.request_bodies_full override (default false) restores
+// full bodies for incident debugging even when sessions_v2 is enabled.
+func TestRequestBodiesSummaryEnabled_FlagCombination(t *testing.T) {
+	tests := []struct {
+		name          string
+		sessionsV2On  bool
+		bodiesFullOn  bool
+		wantSummaryOn bool
+	}{
+		{name: "sessions_v2 disabled keeps full bodies", sessionsV2On: false, bodiesFullOn: false, wantSummaryOn: false},
+		{name: "sessions_v2 enabled defaults to summary", sessionsV2On: true, bodiesFullOn: false, wantSummaryOn: true},
+		{name: "explicit full override restores full bodies", sessionsV2On: true, bodiesFullOn: true, wantSummaryOn: false},
+		{name: "full override is inert without sessions_v2", sessionsV2On: false, bodiesFullOn: true, wantSummaryOn: false},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			overrides := map[string]bool{"sessions_v2.enabled": tc.sessionsV2On}
+			if tc.bodiesFullOn {
+				overrides["sessions_v2.request_bodies_full"] = true
+			}
+			withSessionsV2Settings(t, overrides)
+
+			require.Equal(t, tc.wantSummaryOn, requestBodiesSummaryEnabled())
+		})
+	}
 }
