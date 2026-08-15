@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"net/http"
 	"testing"
 
 	"github.com/kaixuan/llm-gateway-go/domains/streaming/executors"
@@ -21,11 +22,13 @@ type fakeAttemptExecutor struct {
 	err    error
 	calls  int
 	lastW  interface{}
+	lastR  *http.Request
 }
 
 func (f *fakeAttemptExecutor) Execute(params *executors.ExecParams) (*executors.ExecuteResult, error) {
 	f.calls++
 	f.lastW = params.W
+	f.lastR = params.R
 	return f.result, f.err
 }
 
