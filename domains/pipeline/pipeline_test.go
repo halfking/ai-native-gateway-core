@@ -406,18 +406,25 @@ func TestRequestPipeline_ParallelOneHookFailsCancelsOthers(t *testing.T) {
 	p := NewRequestPipeline()
 	var sawCancel int32
 
+	// executeParallel 对未启动的 hook 有已取消早退守卫；必须先确保 slow
+	// hook 真正启动、fast-fail 再失败，否则结果取决于 goroutine 调度时序。
+	slowStarted := make(chan struct{})
 	hooks := []Hook{
 		&mockHook{
-			name:       "fast-fail",
-			priority:   100,
-			enabled:    true,
-			executeErr: errors.New("boom"),
+			name:     "fast-fail",
+			priority: 100,
+			enabled:  true,
+			executeFunc: func(ctx context.Context, env *domain.PipelineRequest) error {
+				<-slowStarted
+				return errors.New("boom")
+			},
 		},
 		&mockHook{
 			name:     "slow",
 			priority: 200,
 			enabled:  true,
 			executeFunc: func(ctx context.Context, env *domain.PipelineRequest) error {
+				close(slowStarted)
 				select {
 				case <-ctx.Done():
 					atomic.StoreInt32(&sawCancel, 1)
