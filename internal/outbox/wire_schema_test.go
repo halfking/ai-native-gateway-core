@@ -2,10 +2,10 @@
 // gateway-event-schema-v1.json — the event contract shared with
 // ai-session-manager (GW-1.2, docs/全面优化v1/README.md).
 //
-// The schema file in testdata/ is a verbatim copy of
-// ai-session-manager/docs/全面优化v1/gateway-event-schema-v1.json. If the
-// upstream contract changes, refresh the copy and these tests will fail until
-// the gateway emitter is aligned again.
+// The schema file in testdata/ is the gateway-authoritative v1 fixture based on
+// ai-session-manager/docs/全面优化v1/gateway-event-schema-v1.json, with the
+// handoff-required discriminator `type`. The current SM copy still uses
+// `event_type` and must be aligned separately before cross-repo E2E validation.
 package outbox
 
 import (
@@ -22,7 +22,7 @@ import (
 const eventSchemaID = "https://platform.example.com/schemas/gateway-events-v1.json"
 
 // loadEventSchema compiles the composition of the upstream contract's
-// EventEnvelope definition and its root oneOf (payload-per-event_type). The
+// EventEnvelope definition and its root oneOf (payload-per-type). The
 // upstream root schema alone only pins the payload branch; the wrapper lives
 // in testdata/gateway-event-envelope-validator.json and references the
 // upstream document by its $id, which is registered via AddResource so no
@@ -103,7 +103,7 @@ func TestRenderWireEnvelope_ValidatesAgainstV1Schema(t *testing.T) {
 }
 
 // TestRenderWireEnvelope_V1FieldShape asserts the envelope-level v1 fields
-// (schema_version "1.0", correlation_id, request_id, session_id, occurred_at)
+// (schema_version "1.0", type, correlation_id, request_id, session_id, occurred_at)
 // without relying on the schema compiler's error strings.
 func TestRenderWireEnvelope_V1FieldShape(t *testing.T) {
 	env, err := BuildRequestCompletedEventV3(
@@ -134,8 +134,11 @@ func TestRenderWireEnvelope_V1FieldShape(t *testing.T) {
 	if !strings.HasPrefix(env.EventID, "evt-") {
 		t.Errorf("event_id %q must match ^evt-[a-zA-Z0-9_-]+$", env.EventID)
 	}
-	if parsed["event_type"] != "request.completed.v1" {
-		t.Errorf("event_type = %v, want request.completed.v1", parsed["event_type"])
+	if parsed["type"] != "request.completed.v1" {
+		t.Errorf("type = %v, want request.completed.v1", parsed["type"])
+	}
+	if _, exists := parsed["event_type"]; exists {
+		t.Error("wire envelope must use type, not event_type")
 	}
 	if parsed["tenant_id"] != "tenant-123" {
 		t.Errorf("tenant_id = %v, want tenant-123", parsed["tenant_id"])
@@ -195,7 +198,7 @@ func TestRenderWireEnvelope_LegacyRows(t *testing.T) {
 }
 
 // TestRenderWireEnvelope_RejectsNonCompliantEvents sanity-checks the
-// validator: an envelope violating the frozen contract (bad event_type /
+// validator: an envelope violating the frozen contract (bad type /
 // wrong schema_version / payload missing v1 required fields) must fail
 // validation, so the passing tests above actually prove compliance.
 func TestRenderWireEnvelope_RejectsNonCompliantEvents(t *testing.T) {

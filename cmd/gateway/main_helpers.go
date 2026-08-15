@@ -17,6 +17,17 @@ import (
 	"github.com/kaixuan/llm-gateway-go/admin"
 )
 
+func gatewayEventSecret() string {
+	if value := strings.TrimSpace(os.Getenv("AI_SESSION_MANAGER_GATEWAY_EVENT_SECRET")); value != "" {
+		return value
+	}
+	if value := strings.TrimSpace(os.Getenv("OUTBOX_HMAC_SECRET")); value != "" {
+		slog.Warn("OUTBOX_HMAC_SECRET is deprecated; use AI_SESSION_MANAGER_GATEWAY_EVENT_SECRET")
+		return value
+	}
+	return ""
+}
+
 // positiveDurationEnv parses a positive Go duration from key. Missing, zero,
 // negative, and malformed values fall back to the supplied default.
 func positiveDurationEnv(key string, fallback time.Duration) time.Duration {
