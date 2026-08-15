@@ -8,6 +8,7 @@ import LiveRequestStreamV2 from '../components/LiveRequestStreamV2.vue'
 import StatsDrawer from '../components/StatsDrawer.vue'
 import RequestLogDrawer from '../components/RequestLogDrawer.vue'
 import SessionStatsPanel from '../components/SessionStatsPanel.vue'
+import SessionDrilldownPanel from '../components/session/SessionDrilldownPanel.vue'
 import BoardPanel from '../components/board/BoardPanel.vue'
 import SelfCheckPanel from './SelfCheckPanel.vue'
 import type { BoardPayload } from '../api/board'
@@ -190,7 +191,12 @@ async function onRefresh() {
 
     <BoardPanel v-if="activeTab === 'board'" />
 
-    <SessionStatsPanel v-if="activeTab === 'stats'" style="margin-bottom: 20px;" />
+    <!-- V3.3-OBS (OBS-FE5, 26 号 §5): 会话与统计 tab 下钻链路
+         在线会话列表 → 轮次时间线（内联子请求树），手动加载、无轮询。 -->
+    <template v-if="activeTab === 'stats'">
+      <SessionDrilldownPanel />
+      <SessionStatsPanel style="margin-bottom: 20px;" />
+    </template>
 
     <SelfCheckPanel v-if="activeTab === 'selfcheck'" />
 
