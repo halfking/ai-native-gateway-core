@@ -135,6 +135,9 @@ func (c *SurvivalCoordinator) Run(ctx context.Context, sw *SerializedStreamWrite
 	backoff := opts.RetryBase
 
 	res := SurvivalResult{}
+	// recoveryStart anchors gateway_survival_recovery_latency_seconds: the
+	// instant the task saw its first recoverable failure.
+	var recoveryStart time.Time
 
 	for {
 		gate := NewAttemptCommitGate(c.Protocol, sw, GateOptions{Mode: GateModeBuffered})
@@ -153,6 +156,9 @@ func (c *SurvivalCoordinator) Run(ctx context.Context, sw *SerializedStreamWrite
 			res.Succeed = true
 			recordSurvivalTransition(survivalStateRunning, survivalTerminalToState(res.Decision), res.Decision.Reason)
 			recordSurvivalRequestTerminal(c.Protocol, res.Decision)
+			if !recoveryStart.IsZero() {
+				observeSurvivalRecoveryLatency(c.Protocol, c.now().Sub(recoveryStart))
+			}
 			return res
 
 		case TaskActionRetryNow, TaskActionWaitRecovery:
@@ -177,6 +183,9 @@ func (c *SurvivalCoordinator) Run(ctx context.Context, sw *SerializedStreamWrite
 			if res.Decision.Action == TaskActionWaitRecovery &&
 				res.Decision.NextRetryAfter > wait && res.Decision.NextRetryAfter <= opts.RetryMax {
 				wait = res.Decision.NextRetryAfter
+			}
+			if recoveryStart.IsZero() {
+				recoveryStart = c.now()
 			}
 			waitState := survivalStateRetryNow
 			if res.Decision.Action == TaskActionWaitRecovery {

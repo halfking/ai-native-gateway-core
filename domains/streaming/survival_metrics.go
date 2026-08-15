@@ -158,3 +158,10 @@ func survivalWaitReason(kind errorsx.ErrorKind) string {
 func observeSurvivalWait(kind errorsx.ErrorKind, waited time.Duration) {
 	metrics.SurvivalWaitSeconds.WithLabelValues(survivalWaitReason(kind)).Observe(waited.Seconds())
 }
+
+// observeSurvivalRecoveryLatency records outage-to-success for one task:
+// from the first recoverable failure until the attempt that completed it
+// (gateway_survival_recovery_latency_seconds, doc 18 §15.1).
+func observeSurvivalRecoveryLatency(protocol ClientProtocol, latency time.Duration) {
+	metrics.SurvivalRecoveryLatencySeconds.WithLabelValues(protocolMetricLabel(protocol)).Observe(latency.Seconds())
+}
