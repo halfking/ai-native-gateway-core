@@ -1792,6 +1792,14 @@ func (c *Client) upsertRequestLogBodies(ctx context.Context, tx pgx.Tx, requestI
 	// captured by the initial or successful request-log write.
 	reqJSON := requestBodyJSON
 	respJSON := responseBodyJSON
+	// CO-5 (2026-08-15): under sessions_v2.enabled, downsample the persisted
+	// bodies to digest envelopes (sha256 + length + bounded head) unless the
+	// explicit sessions_v2.request_bodies_full override is set. sessions_v2
+	// disabled keeps the full-body behaviour unchanged.
+	if requestBodiesSummaryEnabled() {
+		reqJSON = summarizeBodyJSON(reqJSON)
+		respJSON = summarizeBodyJSON(respJSON)
+	}
 	// Use now() as ts for the hot table. Migration 455 (2026-07-23) changed the
 	// unique key to UNIQUE(request_id); ON CONFLICT must be (request_id), NOT
 	// (request_id, ts) — the composite form triggers 42P10 at runtime.
