@@ -20,11 +20,12 @@ import (
 // fakeForegroundStore extends the handler fake with the foreground surface.
 type fakeForegroundStore struct {
 	fakeDurableHandlerStore
-	renews    []durableRenewCall
-	checks    []durable.CheckpointParams
-	terminals []durable.TerminalCommit
-	renewErr  error
-	checkErr  error
+	renews      []durableRenewCall
+	checks      []durable.CheckpointParams
+	terminals   []durable.TerminalCommit
+	renewErr    error
+	checkErr    error
+	terminalErr error
 }
 
 type durableRenewCall struct {
@@ -50,6 +51,9 @@ func (f *fakeForegroundStore) CheckpointCommitState(_ context.Context, p durable
 }
 
 func (f *fakeForegroundStore) CommitTerminal(_ context.Context, c durable.TerminalCommit) (*durable.TerminalProjection, error) {
+	if f.terminalErr != nil {
+		return nil, f.terminalErr
+	}
 	f.terminals = append(f.terminals, c)
 	return &durable.TerminalProjection{Committed: true}, nil
 }
@@ -116,6 +120,38 @@ func TestDurableStreamBindingRenewalLoopStops(t *testing.T) {
 	}
 	// Stop is idempotent.
 	b.Stop()
+}
+
+func TestDurableStreamBindingRenewalLeaseLossCountsBothMetricFamilies(t *testing.T) {
+	beforeSurvival := gatherMetricValue(t, "gateway_survival_lease_conflicts_total")
+	beforeDurable := gatherMetricValue(t, "durable_lease_lost_total")
+	store := &fakeForegroundStore{renewErr: durable.ErrLeaseLost}
+	b := newStreamBinding(store)
+	b.Start()
+	defer b.Stop()
+	time.Sleep(80 * time.Millisecond)
+	if got := gatherMetricValue(t, "gateway_survival_lease_conflicts_total"); got < beforeSurvival+1 {
+		t.Fatalf("survival lease conflicts = %v, want >= %v", got, beforeSurvival+1)
+	}
+	if got := gatherMetricValue(t, "durable_lease_lost_total"); got < beforeDurable+1 {
+		t.Fatalf("durable lease lost = %v, want >= %v", got, beforeDurable+1)
+	}
+}
+
+func TestSettleDurableStreamLeaseLossCountsBothMetricFamilies(t *testing.T) {
+	beforeSurvival := gatherMetricValue(t, "gateway_survival_lease_conflicts_total")
+	beforeDurable := gatherMetricValue(t, "durable_lease_lost_total")
+	store := &fakeForegroundStore{terminalErr: durable.ErrLeaseLost}
+	b := newStreamBinding(store)
+	settleDurableStream(context.Background(), b,
+		SurvivalResult{Succeed: true, Decision: TaskDecision{Action: TaskActionSucceed, Reason: "success"}},
+		[]byte("data: hi\\n\\n"), "text/event-stream", false)
+	if got := gatherMetricValue(t, "gateway_survival_lease_conflicts_total"); got < beforeSurvival+1 {
+		t.Fatalf("survival lease conflicts = %v, want >= %v", got, beforeSurvival+1)
+	}
+	if got := gatherMetricValue(t, "durable_lease_lost_total"); got < beforeDurable+1 {
+		t.Fatalf("durable lease lost = %v, want >= %v", got, beforeDurable+1)
+	}
 }
 
 func TestSettleDurableStreamMatrix(t *testing.T) {
