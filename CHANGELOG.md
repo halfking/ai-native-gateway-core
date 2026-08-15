@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased] - 2026-08-15 (会话优化v4 版本裁决与实施计划)
+
+### Added
+
+- **会话优化v4 权威设计 + 实施计划**：整合 6 套历史文档（会话优化v1~v3 / 路由优化v3 / 修订0811 / 自检优化）为 7 份文档，落地 `docs/会话优化v4/`（`00-README` / `01-现状基线与版本裁决` / `02-会话管理与压缩` / `03-缓存映射与请求队列` / `04-节点状态与路由处理` / `05-会话分析与模型选择` / `10-实施计划`）。
+- **代码事实裁决**：所有业务表在 `public.*`（分区表除外），`gateway.*` schema 已于 migration 513 整库 DROP（历史文档 v1/v2 ADR-V2-001 为错误记录）；会话管理采用 `ursm/v2` 三模式基座（ModeOff/shadow/canary）。
+- **会话三层数据定义**：①原始多轮会话 → ②压缩后多轮会话（可跨轮次）→ ③安全脱敏后发送会话；缓存指该三层数据而非 Redis/内存层。
+- **存储维度与分区**：会话以「项目+任务+会话+轮次+附属会话+附属信息」分解；`session_turns` 采用 hot+分区表模式（对齐 `request_logs_hot`），旧 `request_logs` 存储模式保留双写逐步移除。
+- 详见 `docs/会话优化v4/00-README.md`。
+
 ## [Unreleased] - 2026-08-15 (Route Flow Sankey Theme Tokens)
 
 ### Fixed
