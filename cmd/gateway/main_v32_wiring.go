@@ -52,10 +52,24 @@ func wireQueueSnapshotProvider(pipeline *dispatch.Pipeline) func() *admin.LiveQu
 		}
 
 		out := &admin.LiveQueueSnapshot{
-			Enabled:     snap.Enabled,
-			Wired:       snap.Wired,
-			Models:      make([]admin.LiveQueueLaneSnapshot, 0, len(snap.Models)),
-			Credentials: make([]admin.LiveQueueLaneSnapshot, 0, len(snap.Credentials)),
+			Enabled:       snap.Enabled,
+			Wired:         snap.Wired,
+			SourceVersion: snap.SourceVersion,
+			Models:        make([]admin.LiveQueueLaneSnapshot, 0, len(snap.Models)),
+			Credentials:   make([]admin.LiveQueueLaneSnapshot, 0, len(snap.Credentials)),
+		}
+
+		// V3.3-OBS OBS-BE3: pipeline aggregate view. Present only when the
+		// collector produced it (wired + dispatch gate enabled); nil keeps
+		// the JSON field absent instead of a zero-value placeholder.
+		if snap.Pipeline != nil {
+			out.Pipeline = &admin.LiveQueuePipelineStats{
+				Depth:        snap.Pipeline.Depth,
+				WaitingMsP50: snap.Pipeline.WaitingMsP50,
+				WaitingMsP95: snap.Pipeline.WaitingMsP95,
+				InFlight:     snap.Pipeline.InFlight,
+				Degraded:     snap.Pipeline.Degraded,
+			}
 		}
 
 		for _, m := range snap.Models {
