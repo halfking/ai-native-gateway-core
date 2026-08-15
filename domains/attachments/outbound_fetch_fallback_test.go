@@ -167,6 +167,39 @@ func TestURLFetchFallbackNoGatewayURLsIsByteIdentical(t *testing.T) {
 	assert.Equal(t, body, string(out))
 }
 
+// `..` 路径穿越拒绝（MM-4）：relPath 含 ".." 的网关 URL 不触发存储取回，
+// 原样保留（sha256 存储路径不含 ".."，此分支防御构造 URL）。
+func TestURLFetchFallbackRejectsTraversalPaths(t *testing.T) {
+	fetcher := &stubFetcher{
+		content: map[string][]byte{"etc/passwd": []byte("SHOULD-NOT-BE-LOADED")},
+	}
+	fb := NewURLFetchFallback("https://files.example.com/attachments", fetcher)
+	for _, rel := range []string{
+		"../../etc/passwd",
+		"2026/08/a1/../../../etc/passwd",
+		"..",
+	} {
+		body := `{"messages":[{"role":"user","content":[{"type":"image_url","image_url":{"url":"https://files.example.com/attachments/` + rel + `"}}]}]}`
+		out, n := fb.InlineOpenAIBody([]byte(body), "deepseek")
+		assert.Equal(t, 0, n, "traversal relPath %q must not be inlined", rel)
+		assert.Equal(t, body, string(out), "traversal relPath %q must keep the body unchanged", rel)
+	}
+	assert.Empty(t, fetcher.calls, "traversal paths must never reach storage")
+}
+
+// 空 relPath（URL 即 base 前缀 + "/"）同样不取回、不改写。
+func TestURLFetchFallbackRejectsEmptyRelPath(t *testing.T) {
+	fetcher := &stubFetcher{
+		content: map[string][]byte{"2026/08/a1/b2/hash1.png": []byte("PNGDATA1")},
+	}
+	fb := NewURLFetchFallback("https://files.example.com/attachments", fetcher)
+	body := `{"messages":[{"role":"user","content":[{"type":"image_url","image_url":{"url":"https://files.example.com/attachments/"}}]}]}`
+	out, n := fb.InlineOpenAIBody([]byte(body), "deepseek")
+	assert.Equal(t, 0, n)
+	assert.Equal(t, body, string(out))
+	assert.Empty(t, fetcher.calls)
+}
+
 // 同一 URL 在多个块出现（会话历史重放）：全部内联。
 func TestURLFetchFallbackDuplicateURLsAllInlined(t *testing.T) {
 	url := "https://files.example.com/attachments/2026/08/a1/b2/hash1.png"
