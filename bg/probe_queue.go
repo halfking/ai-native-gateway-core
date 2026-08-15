@@ -66,11 +66,61 @@ type ProbeQueueResult struct {
 	FinishedAt   *time.Time
 }
 
+// ProbeTaskDetailSink is the enriched (OBS-BE5, 25 号 §6) self-check SSE sink.
+// bg.ProbeStreamEvent cannot grow fields without touching
+// active_probe_emitter.go (owned by another workstream), so the richer
+// transition — origin (scheduled|error|manual) and next_retry_at (智能回退
+// 下一跳) — travels through this separate structural interface instead.
+// *admin.ProbeSSEHub implements PublishProbeTransition directly; main.go wires
+// the concrete hub via SetProbeTaskDetailSink. When set, the queue prefers
+// this sink for its own lifecycle transitions so each transition is emitted
+// exactly once.
+type ProbeTaskDetailSink interface {
+	PublishProbeTransition(t ProbeTaskTransition)
+}
+
+// ProbeTaskTransition is the enriched probe-lifecycle transition carried to
+// the 自检 tab SSE stream. All fields map 1:1 onto the admin-side
+// ProbeStreamTask; NextRetryAtMs is unix milliseconds (0 = unset/none).
+type ProbeTaskTransition struct {
+	ID            string // stable lifecycle id (dedup_key based)
+	TaskType      string // node_probe | integrity_verify | selfcheck
+	Source        string // request_failure | no_candidates | admin | planner ...
+	Status        string // pending | in-flight | ok | fail
+	CredentialID  int64
+	ProviderID    int64
+	RawModel      string
+	Attempt       int
+	Origin        string // scheduled | error | manual
+	Reason        string
+	NextRetryAtMs int64 // backoff next hop, 0 = none
+	TimestampMs   int64
+}
+
+// probeQueueOriginFromSource maps a queue source onto the tri-state display
+// origin badge (26 号 §4: origin scheduled/error/manual). Error-triggered
+// probes are "error"; admin-created tasks are "manual"; everything else
+// (integrity planner, periodic, watchdog) is "scheduled".
+func probeQueueOriginFromSource(source string) string {
+	switch source {
+	case "request_failure", "no_candidates":
+		return "error"
+	case "admin":
+		return "manual"
+	default:
+		return "scheduled"
+	}
+}
+
 type ProbeQueue struct {
 	db *pgxpool.Pool
 	// probeSink (2026-08-11) mirrors enqueue (pending) and claim (in-flight)
 	// transitions to the self-check SSE stream. Optional — nil is a no-op.
 	probeSink ProbeEventSink
+	// detailSink (2026-08-15, OBS-BE5) is the enriched transition sink. When
+	// set it takes precedence over probeSink for the queue's own transitions
+	// so origin/next_retry_at reach the dashboard without double-emitting.
+	detailSink ProbeTaskDetailSink
 }
 
 func NewProbeQueue(db *pgxpool.Pool) *ProbeQueue {
@@ -86,6 +136,17 @@ func (q *ProbeQueue) SetProbeSink(sink ProbeEventSink) {
 	}
 }
 
+// SetProbeTaskDetailSink wires the enriched transition sink (OBS-BE5). When
+// set, the queue's own enqueue/claim/re-arm transitions are published through
+// it (carrying origin + next_retry_at) instead of the legacy probeSink, so
+// each transition is emitted exactly once. Nil (or unset) keeps the legacy
+// behaviour. Safe on a nil queue.
+func (q *ProbeQueue) SetProbeTaskDetailSink(sink ProbeTaskDetailSink) {
+	if q != nil {
+		q.detailSink = sink
+	}
+}
+
 // publishProbeTask is the shared hook for the durable queue's lifecycle events.
 // Best-effort: a nil sink or a publish error never blocks the enqueue/claim.
 //
@@ -93,8 +154,33 @@ func (q *ProbeQueue) SetProbeSink(sink ProbeEventSink) {
 // collapses into one SSE tile. dedup_key is the natural stable identifier:
 // it is set at enqueue time, preserved across retries, and is what Enqueue's
 // ON CONFLICT clause uses to recognise a duplicate.
+//
+// When the enriched detailSink is wired (OBS-BE5) the transition is published
+// through it instead — same envelope plus origin + next_retry_at — so the
+// 自检 tab can badge scheduled/error/manual and show the backoff next hop
+// without double-emitting the event.
 func (q *ProbeQueue) publishProbeTask(task ProbeQueueTask, status string) {
-	if q == nil || q.probeSink == nil {
+	if q == nil {
+		return
+	}
+	if q.detailSink != nil {
+		q.detailSink.PublishProbeTransition(ProbeTaskTransition{
+			ID:            probeQueueLifecycleID(task),
+			TaskType:      probeQueueTaskType(task.Command),
+			Source:        task.Source,
+			Status:        status,
+			CredentialID:  task.CredentialID,
+			ProviderID:    task.ProviderID,
+			RawModel:      task.RawModel,
+			Attempt:       task.Attempt,
+			Origin:        probeQueueOriginFromSource(task.Source),
+			Reason:        task.Source,
+			NextRetryAtMs: probeQueueNextRetryMs(nilIfZero(task.NextRunAt)),
+			TimestampMs:   time.Now().UnixMilli(),
+		})
+		return
+	}
+	if q.probeSink == nil {
 		return
 	}
 	id := task.DedupKey
@@ -118,6 +204,58 @@ func (q *ProbeQueue) publishProbeTask(task ProbeQueueTask, status string) {
 		Scheduled:    task.Source != "request_failure" && task.Source != "no_candidates",
 		TimestampMs:  time.Now().UnixMilli(),
 	})
+}
+
+// publishRearmTransition emits the "failed this attempt, re-armed for the
+// next backoff hop" transition (OBS-BE5, 25 号 §6.1 智能回退). There is no
+// legacy equivalent — the old stream had no signal for the next retry time —
+// so this only fires when the enriched sink is wired. Published after the
+// Complete UPDATE succeeds (and only when the lease was still ours), so the
+// dashboard never shows a backoff tile for a rolled-back completion.
+func (q *ProbeQueue) publishRearmTransition(task ProbeQueueTask, nextRunAt *time.Time) {
+	if q == nil || q.detailSink == nil {
+		return
+	}
+	q.detailSink.PublishProbeTransition(ProbeTaskTransition{
+		ID:            probeQueueLifecycleID(task),
+		TaskType:      probeQueueTaskType(task.Command),
+		Source:        task.Source,
+		Status:        "pending",
+		CredentialID:  task.CredentialID,
+		ProviderID:    task.ProviderID,
+		RawModel:      task.RawModel,
+		Attempt:       task.Attempt,
+		Origin:        probeQueueOriginFromSource(task.Source),
+		Reason:        task.Source,
+		NextRetryAtMs: probeQueueNextRetryMs(nextRunAt),
+		TimestampMs:   time.Now().UnixMilli(),
+	})
+}
+
+// probeQueueLifecycleID mirrors the legacy SSE id convention (dedup_key, or
+// integrity:<id> fallback when the key is missing).
+func probeQueueLifecycleID(task ProbeQueueTask) string {
+	if task.DedupKey != "" {
+		return task.DedupKey
+	}
+	return fmt.Sprintf("integrity:%d", task.ID)
+}
+
+// probeQueueTaskType defaults the SSE task_type badge.
+func probeQueueTaskType(command string) string {
+	if command == "" {
+		return "integrity_verify"
+	}
+	return command
+}
+
+// probeQueueNextRetryMs converts a backoff next-run time to unix millis,
+// returning 0 (unset) for nil/zero values.
+func probeQueueNextRetryMs(t *time.Time) int64 {
+	if t == nil || t.IsZero() {
+		return 0
+	}
+	return t.UnixMilli()
 }
 
 // Enqueue adds a task once for its active dedup key. A duplicate is a normal
@@ -324,6 +462,16 @@ func (q *ProbeQueue) Complete(ctx context.Context, task ProbeQueueTask, result P
 	if tag.RowsAffected() == 0 {
 		return fmt.Errorf("%w (queue_id=%d)", ErrProbeLeaseLost, id)
 	}
+	// OBS-BE5 (25 号 §6.1 智能回退): a failure re-arm (status back to 'ready'
+	// with a future next_run_at) means "this attempt failed; the next backoff
+	// hop is scheduled for next_run_at". Mirror it to the SSE stream so the
+	// 自检 tab can render the next-hop countdown on the failed tile. This is
+	// the ONLY new signal — enqueue/claim transitions keep their existing
+	// events; scheduling semantics (first hop only, re-enqueue on expiry) are
+	// untouched.
+	if result.Status == ProbeQueueReady && result.NextRunAt != nil {
+		q.publishRearmTransition(task, result.NextRunAt)
+	}
 	return nil
 }
 
@@ -387,4 +535,13 @@ func nilString(value string) any {
 		return nil
 	}
 	return value
+}
+
+// nilIfZero converts a value time.Time into nil when zero — lets the enqueue
+// path share probeQueueNextRetryMs's *time.Time signature.
+func nilIfZero(t time.Time) *time.Time {
+	if t.IsZero() {
+		return nil
+	}
+	return &t
 }

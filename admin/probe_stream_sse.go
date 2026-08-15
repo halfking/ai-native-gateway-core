@@ -62,9 +62,31 @@ type ProbeStreamTask struct {
 	ErrDetail    string  `json:"err_detail,omitempty"`
 	Scheduled    bool    `json:"scheduled,omitempty"` // 定时自检（不进待请求队列）
 	Reason       string  `json:"reason,omitempty"`    // 触发原因（request_failure / no_candidates / periodic ...）
-	Timestamp    int64   `json:"ts"`                  // unix milliseconds
-	Flusher      func()  `json:"-"`
-	_            [0]int8 // disallow unkeyed struct literals
+	// Origin + NextRetryAtMs (OBS-BE5, 25 号 §6 / 26 号 §4): optional fields —
+	// old clients ignore them. Origin badges the tri-state queue card
+	// (scheduled/error/manual); NextRetryAtMs carries the 智能回退 next hop
+	// (unix milliseconds, 0/omitted = none) so the failed tile can render the
+	// backoff countdown.
+	Origin        string `json:"origin,omitempty"`         // scheduled | error | manual
+	NextRetryAtMs int64  `json:"next_retry_at_ms,omitempty"`
+	Timestamp     int64  `json:"ts"`                       // unix milliseconds
+	Flusher       func() `json:"-"`
+	_             [0]int8 // disallow unkeyed struct literals
+}
+
+// probeOriginFromSource maps a producer source string onto the tri-state
+// origin badge (26 号 §4). Mirrors bg.probeQueueOriginFromSource — the bg
+// helper is unexported to keep active_probe_emitter.go untouched, so both
+// sides hold a copy of the small mapping.
+func probeOriginFromSource(source string) string {
+	switch source {
+	case "request_failure", "no_candidates":
+		return "error"
+	case "admin":
+		return "manual"
+	default:
+		return "scheduled"
+	}
 }
 
 // TsUnixMilli returns the event timestamp, defaulting to now.
@@ -279,6 +301,11 @@ func (h *ProbeSSEHub) Publish(task ProbeStreamTask) {
 	if task.ID == "" {
 		return
 	}
+	// OBS-BE5: legacy producers (emitter / node_probe worker) never set
+	// Origin — derive it from Source so every tile carries the badge.
+	if task.Origin == "" {
+		task.Origin = probeOriginFromSource(task.Source)
+	}
 	if h.store.Enabled() {
 		ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
 		_ = h.store.RecordWithOrigin(ctx, task, h.instanceID)
@@ -318,6 +345,36 @@ func (h *ProbeSSEHub) PublishProbeEvent(evt bg.ProbeStreamEvent) {
 		Scheduled:    evt.Scheduled,
 		Reason:       evt.Reason,
 		Timestamp:    evt.TimestampMs,
+	})
+}
+
+// PublishProbeTransition adapts a bg.ProbeTaskTransition (the OBS-BE5 enriched
+// projection carrying origin + next_retry_at) into a ProbeStreamTask and
+// publishes it. This method makes *ProbeSSEHub satisfy bg.ProbeTaskDetailSink
+// so the durable queue can publish its lifecycle transitions without
+// depending on admin. Event naming stays aligned with the existing stream:
+// pending→submitted, in-flight→started, ok→completed, fail→failed.
+func (h *ProbeSSEHub) PublishProbeTransition(t bg.ProbeTaskTransition) {
+	if h == nil || t.ID == "" {
+		return
+	}
+	ts := t.TimestampMs
+	if ts == 0 {
+		ts = time.Now().UnixMilli()
+	}
+	h.Publish(ProbeStreamTask{
+		ID:            t.ID,
+		TaskType:      t.TaskType,
+		Source:        t.Source,
+		Status:        t.Status,
+		CredentialID:  t.CredentialID,
+		ProviderID:    t.ProviderID,
+		RawModel:      t.RawModel,
+		Attempt:       t.Attempt,
+		Origin:        t.Origin,
+		Reason:        t.Reason,
+		NextRetryAtMs: t.NextRetryAtMs,
+		Timestamp:     ts,
 	})
 }
 

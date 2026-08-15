@@ -2980,6 +2980,11 @@ func main() {
 				probeQueue = bg.NewProbeQueue(dbConn.Pool())
 				if probeStreamHub != nil {
 					probeQueue.SetProbeSink(probeStreamHub)
+					// OBS-BE5 (2026-08-15): enriched transitions (origin +
+					// backoff next hop) take precedence over the legacy sink,
+					// so each enqueue/claim/re-arm reaches the 自检 tab SSE
+					// exactly once. Scheduling semantics stay untouched.
+					probeQueue.SetProbeTaskDetailSink(probeStreamHub)
 				}
 				probeQueueWorker = bg.NewProbeQueueWorker(bg.ProbeQueueWorkerConfig{
 					Queue:        probeQueue,

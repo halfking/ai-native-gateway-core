@@ -1098,10 +1098,177 @@ func ternary(b bool, t, f string) string {
 	return f
 }
 
-// handleProbeTaskRoute dispatches POST (create) vs DELETE (cancel) on the
-// public /api/admin/probe/tasks endpoint.
+// ProbeTriStateTask is one row of GET /api/admin/probe/tasks (OBS-BE5,
+// 25 号 §6.2 三态队列). Metadata only — no result_body_preview, keeping the
+// 可观测安全红线 (body 不进 API/SSE) 一致。
+type ProbeTriStateTask struct {
+	ID           int64      `json:"id"`
+	DedupKey     string     `json:"dedup_key"`
+	CredentialID int64      `json:"credential_id"`
+	ProviderID   *int64     `json:"provider_id,omitempty"`
+	RawModel     string     `json:"raw_model"`
+	Command      string     `json:"command"`
+	Source       string     `json:"source"`
+	Origin       string     `json:"origin"`            // scheduled | error | manual
+	Status       string     `json:"status"`            // pending | in_flight | completed
+	Outcome      string     `json:"outcome,omitempty"` // success|failed|expired|cancelled (completed 行)
+	Attempt      int        `json:"attempt"`
+	MaxAttempts  int        `json:"max_attempts"`
+	Priority     int16      `json:"priority"`
+	NextRetryAtMs int64     `json:"next_retry_at_ms,omitempty"` // 退避下一跳（pending 重臂行）
+	ReasonCode   string     `json:"reason_code,omitempty"`
+	HTTPStatus   *int       `json:"http_status,omitempty"`
+	LatencyMs    *int       `json:"latency_ms,omitempty"`
+	CreatedAt    time.Time  `json:"created_at"`
+	UpdatedAt    time.Time  `json:"updated_at"`
+	FinishedAt   *time.Time `json:"finished_at,omitempty"`
+}
+
+// probeTriStateOrigin maps credential_probe_queue.source onto the 26 号 §4
+// tri-state origin badge. Mirrors bg.probeQueueOriginFromSource (both sides
+// keep a copy of the small mapping to avoid an import).
+func probeTriStateOrigin(source string) string {
+	switch source {
+	case "request_failure", "no_candidates":
+		return "error"
+	case "admin", "external_async":
+		return "manual"
+	default:
+		return "scheduled"
+	}
+}
+
+// probeCompletedWindow caps the completed leg (保留最近 N 条, 27 号 OBS-BE5).
+const probeCompletedWindow = 200
+
+// queryProbeTriStateTasks reads one leg of the tri-state probe queue view.
+// status is one of pending|in_flight|completed; completed is capped at
+// probeCompletedWindow rows ordered newest-first.
+func queryProbeTriStateTasks(ctx context.Context, db pgxQueryer, status string, limit int) ([]ProbeTriStateTask, error) {
+	if limit <= 0 {
+		limit = 50
+	}
+	var where, order string
+	switch status {
+	case "pending":
+		where, order = `q.status='ready'`, `q.priority DESC, q.next_run_at ASC, q.id ASC`
+	case "in_flight":
+		where, order = `q.status='running'`, `q.started_at DESC NULLS LAST, q.id DESC`
+	case "completed":
+		where, order = `q.status IN ('success','failed','expired','cancelled')`,
+			`COALESCE(q.finished_at, q.updated_at) DESC, q.id DESC`
+		if limit > probeCompletedWindow {
+			limit = probeCompletedWindow
+		}
+	default:
+		return nil, fmt.Errorf("invalid status %q", status)
+	}
+	rows, err := db.Query(ctx, `
+		SELECT q.id, q.dedup_key, q.credential_id, q.provider_id,
+		       COALESCE(q.raw_model, ''), q.probe_command, q.source, q.status,
+		       q.attempt, q.max_attempts, q.priority, q.next_run_at,
+		       COALESCE(q.reason_code, ''), q.result_http_status, q.result_latency_ms,
+		       q.created_at, q.updated_at, q.finished_at
+		FROM credential_probe_queue q
+		WHERE `+where+`
+		ORDER BY `+order+`
+		LIMIT $1
+	`, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	tasks := []ProbeTriStateTask{}
+	for rows.Next() {
+		var t ProbeTriStateTask
+		var nextRunAt time.Time
+		var httpStatus, latency sql.NullInt32
+		if err := rows.Scan(
+			&t.ID, &t.DedupKey, &t.CredentialID, &t.ProviderID,
+			&t.RawModel, &t.Command, &t.Source, &t.Status,
+			&t.Attempt, &t.MaxAttempts, &t.Priority, &nextRunAt,
+			&t.ReasonCode, &httpStatus, &latency,
+			&t.CreatedAt, &t.UpdatedAt, &t.FinishedAt,
+		); err != nil {
+			return nil, err
+		}
+		t.Origin = probeTriStateOrigin(t.Source)
+		switch t.Status {
+		case "ready":
+			t.Status = "pending"
+		case "running":
+			t.Status = "in_flight"
+		default:
+			t.Outcome = t.Status
+			t.Status = "completed"
+		}
+		if t.Status == "pending" && !nextRunAt.IsZero() {
+			t.NextRetryAtMs = nextRunAt.UnixMilli()
+		}
+		if httpStatus.Valid {
+			v := int(httpStatus.Int32)
+			t.HTTPStatus = &v
+		}
+		if latency.Valid {
+			v := int(latency.Int32)
+			t.LatencyMs = &v
+		}
+		tasks = append(tasks, t)
+	}
+	return tasks, rows.Err()
+}
+
+// handleProbeTaskList is the tri-state queue view behind
+// GET /api/admin/probe/tasks?status=pending|in_flight|completed&limit= (OBS-BE5).
+// Read-only — it never touches scheduling semantics (25 号 §6.1 不变).
+func (h *Handler) handleProbeTaskList(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	status := r.URL.Query().Get("status")
+	if status == "" {
+		status = "pending"
+	}
+	switch status {
+	case "pending", "in_flight", "completed":
+	default:
+		writeError(w, http.StatusBadRequest, "status must be pending|in_flight|completed")
+		return
+	}
+	limit := 50
+	if l := r.URL.Query().Get("limit"); l != "" {
+		if n, err := strconv.Atoi(l); err != nil || n <= 0 || n > probeCompletedWindow {
+			writeError(w, http.StatusBadRequest, "limit must be 1..200")
+			return
+		} else {
+			limit = n
+		}
+	}
+	if h.db == nil {
+		writeError(w, http.StatusServiceUnavailable, "database not configured")
+		return
+	}
+	tasks, err := queryProbeTriStateTasks(r.Context(), h.db, status, limit)
+	if err != nil {
+		slog.Error("probe tri-state tasks query failed", "status", status, "error", err)
+		writeError(w, http.StatusInternalServerError, "internal server error")
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]interface{}{
+		"status": status,
+		"tasks":  tasks,
+		"count":  len(tasks),
+	})
+}
+
+// handleProbeTaskRoute dispatches GET (tri-state list) / POST (create) /
+// DELETE (cancel) on the public /api/admin/probe/tasks endpoint.
 func (h *Handler) handleProbeTaskRoute(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
+	case http.MethodGet:
+		h.handleProbeTaskList(w, r)
 	case http.MethodPost:
 		h.handleProbeTaskCreate(w, r)
 	case http.MethodDelete:
