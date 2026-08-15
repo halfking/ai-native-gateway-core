@@ -19,6 +19,44 @@ type hourBucket struct {
 	Rate       float64   `json:"rate"`
 }
 
+// compressionStatsEstimatedOrigSQL estimates original tokens from the stored
+// request body length (chars / 4). P2-C1: rows persisted in CO-5 summary mode
+// hold a {"_gw_body_summary":{...,"bytes":N,...}} digest envelope instead of
+// the full body; for those rows the envelope's original byte count (bytes) is
+// used, never the envelope document's own length (which would understate the
+// original for large bodies). Malformed envelopes (missing/non-numeric bytes)
+// fall back to the stored document length, and the second column counts
+// summary-mode rows so the response can expose summary_mode_rows separately.
+//
+// The envelope test requires the "_gw_body_summary" value to be a JSON
+// object (jsonb_typeof), matching the Go-side detector in body_envelope.go:
+// a present-but-null or scalar key ({"_gw_body_summary":null} / :5) is not
+// an envelope, so it neither contributes bytes nor counts as a summary-mode
+// row. The `#>>` path operator is jsonb-only; both body columns are jsonb
+// (deploy/sql/objects/tables/request_logs_bodies_hot.sql), and NULL
+// request_body falls through the CASE to the length fallback.
+// Note the fallback casts to text BEFORE coalescing with the empty-string
+// literal: a bare empty string inside COALESCE next to jsonb resolves to
+// jsonb, and the empty string is invalid JSON — the pre-P2-C1 query hit
+// "invalid input syntax for type json" at runtime on NULL-body rows
+// (silently swallowed by the err==nil guard, so estimated_original_tokens
+// was never populated). The ::text restores the intended chars/4 estimate
+// for non-envelope rows.
+const compressionStatsEstimatedOrigSQL = `
+			SELECT
+				COALESCE(SUM(CEIL(CASE
+						WHEN jsonb_typeof(rb.request_body->'_gw_body_summary') = 'object'
+							AND (rb.request_body #>> '{_gw_body_summary,bytes}') ~ '^[0-9]+$'
+						THEN (rb.request_body #>> '{_gw_body_summary,bytes}')::numeric
+					ELSE LENGTH(COALESCE(COALESCE(rb.request_body, rl.request_body)::text, ''))::numeric
+				END / 4.0)), 0)::bigint,
+				COALESCE(SUM(CASE WHEN jsonb_typeof(rb.request_body->'_gw_body_summary') = 'object' THEN 1 ELSE 0 END), 0)::bigint
+		FROM request_logs_with_current_month rl
+		LEFT JOIN request_logs_bodies_with_current_month rb
+		  ON rb.request_id = rl.request_id
+		WHERE rl.ts >= $1 AND rl.ts <= $2
+		  AND ($3 OR rl.success)`
+
 func (h *Handler) handleCompressionStats(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
@@ -72,6 +110,7 @@ func (h *Handler) handleCompressionStats(w http.ResponseWriter, r *http.Request)
 		TotalOutboundTokens  *int64         `json:"total_outbound_tokens,omitempty"`
 		EstimatedOrigTokens  *int64         `json:"estimated_original_tokens,omitempty"`
 		EstimatedTokensSaved *int64         `json:"estimated_tokens_saved,omitempty"`
+		SummaryModeRows      *int64         `json:"summary_mode_rows,omitempty"`
 		HourlySeries         []hourBucket   `json:"hourly_series"`
 	}{
 		StrategyDistribution: make(map[string]int),
@@ -130,20 +169,27 @@ func (h *Handler) handleCompressionStats(w http.ResponseWriter, r *http.Request)
 		result.TotalOutboundTokens = &totalToksAfter
 	}
 
-	var estimatedOrig int64
-	err = h.db.QueryRow(ctx, `
-		SELECT COALESCE(SUM(CEIL(LENGTH(COALESCE(COALESCE(rb.request_body, rl.request_body), ''))::numeric / 4.0)), 0)::bigint
-		FROM request_logs_with_current_month rl
-		LEFT JOIN request_logs_bodies_with_current_month rb
-		  ON rb.request_id = rl.request_id
-		WHERE rl.ts >= $1 AND rl.ts <= $2
-		  AND ($3 OR rl.success)`+aggWhere+`
-	`, aggArgs...).Scan(&estimatedOrig)
-	if err == nil && estimatedOrig > 0 {
-		result.EstimatedOrigTokens = &estimatedOrig
-		if totalToksAfter > 0 && estimatedOrig > totalToksAfter {
-			saved := estimatedOrig - totalToksAfter
-			result.EstimatedTokensSaved = &saved
+	var estimatedOrig, summaryModeRows int64
+	err = h.db.QueryRow(ctx, compressionStatsEstimatedOrigSQL+aggWhere+`
+	`, aggArgs...).Scan(&estimatedOrig, &summaryModeRows)
+	if err != nil {
+		// The estimate is best-effort and the endpoint still returns the
+		// aggregates above, but stay diagnosable: the pre-P2-C1 ::text bug
+		// was hidden here by a silent err==nil guard for its whole life.
+		slog.Warn("compression_stats estimated-orig query failed", "error", err)
+	} else {
+		if estimatedOrig > 0 {
+			result.EstimatedOrigTokens = &estimatedOrig
+			if totalToksAfter > 0 && estimatedOrig > totalToksAfter {
+				saved := estimatedOrig - totalToksAfter
+				result.EstimatedTokensSaved = &saved
+			}
+		}
+		// P2-C1: surface how many rows are digest envelopes (summary mode).
+		// Omitted (omitempty) when zero, so the flag-off response payload is
+		// byte-identical to the pre-P2-C1 shape.
+		if summaryModeRows > 0 {
+			result.SummaryModeRows = &summaryModeRows
 		}
 	}
 

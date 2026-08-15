@@ -91,6 +91,9 @@ type Response struct {
 type Store struct {
 	rdb *redis.Client
 	ttl time.Duration
+	// fallback 是 Redis 不可用/未命中时的 PG 回源（doc 18 §12.1）。
+	// 仅 NewStoreWithFallback 注入；nil 时行为与历史版本完全一致。
+	fallback FallbackSource
 }
 
 // NewStore returns a Store backed by the supplied redis client. If
@@ -175,21 +178,34 @@ func (s *Store) Save(ctx context.Context, r *Response) error {
 
 // Get returns the entry for (sessionID, requestID), or
 // (sessionID, ErrNotFound) if absent. The bool is false in that case.
+// Redis 未命中/不可用时，若注入了 PG 回源（NewStoreWithFallback）则回源。
 func (s *Store) Get(ctx context.Context, sessionID, requestID string) (*Response, bool, error) {
 	if s == nil || s.rdb == nil {
+		if s != nil && s.fallback != nil {
+			return s.fallback.Get(ctx, sessionID, requestID)
+		}
 		return nil, false, ErrUnavailable
 	}
 	if sessionID == "" || requestID == "" {
 		return nil, false, errors.New("pending: SessionID and RequestID required")
 	}
 	fields, err := s.rdb.HGetAll(ctx, entryKey(sessionID, requestID)).Result()
+	if err == nil && len(fields) > 0 {
+		return parseResponse(sessionID, fields), true, nil
+	}
+	if s.fallback != nil {
+		// Redis 投影丢失（miss）或不可用（err）都尝试回源；
+		// 回源报错向上传播（fail closed），回源未命中时保留原结果。
+		if r, ok, ferr := s.fallback.Get(ctx, sessionID, requestID); ferr != nil {
+			return nil, false, ferr
+		} else if ok {
+			return r, true, nil
+		}
+	}
 	if err != nil {
 		return nil, false, fmt.Errorf("pending: hgetall: %w", err)
 	}
-	if len(fields) == 0 {
-		return nil, false, nil
-	}
-	return parseResponse(sessionID, fields), true, nil
+	return nil, false, nil
 }
 
 // GetLatest returns the most-recently-completed entry for sessionID,
@@ -197,6 +213,9 @@ func (s *Store) Get(ctx context.Context, sessionID, requestID string) (*Response
 // (nil, false, nil) when the session has no entries.
 func (s *Store) GetLatest(ctx context.Context, sessionID string) (*Response, string, bool, error) {
 	if s == nil || s.rdb == nil {
+		if s != nil && s.fallback != nil {
+			return s.fallback.GetLatest(ctx, sessionID)
+		}
 		return nil, "", false, ErrUnavailable
 	}
 	if sessionID == "" {
@@ -209,15 +228,22 @@ func (s *Store) GetLatest(ctx context.Context, sessionID string) (*Response, str
 		Stop:  0,
 		Rev:   true,
 	}).Result()
+	if err == nil && len(zs) > 0 {
+		requestID := zs[0]
+		r, ok, gerr := s.Get(ctx, sessionID, requestID)
+		return r, requestID, ok, gerr
+	}
+	if s.fallback != nil {
+		if r, rid, ok, ferr := s.fallback.GetLatest(ctx, sessionID); ferr != nil {
+			return nil, "", false, ferr
+		} else if ok {
+			return r, rid, true, nil
+		}
+	}
 	if err != nil {
 		return nil, "", false, fmt.Errorf("pending: zrevrange: %w", err)
 	}
-	if len(zs) == 0 {
-		return nil, "", false, nil
-	}
-	requestID := zs[0]
-	r, ok, err := s.Get(ctx, sessionID, requestID)
-	return r, requestID, ok, err
+	return nil, "", false, nil
 }
 
 // Delete removes the entry. Used by tests and the admin API.
