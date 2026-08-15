@@ -60,27 +60,27 @@ const defaultTooltip = computed(() => META[props.state as ModelEffectiveState]?.
 
 .status-badge--available {
   color: var(--success);
-  background: rgba(63, 185, 80, 0.12);
-  border-color: rgba(63, 185, 80, 0.3);
+  background: var(--success-soft);
+  border-color: color-mix(in srgb, var(--success) 30%, transparent);
 }
 .status-badge--manual_disabled {
   color: var(--danger);
-  background: rgba(248, 81, 73, 0.12);
-  border-color: rgba(248, 81, 73, 0.3);
+  background: var(--danger-soft);
+  border-color: color-mix(in srgb, var(--danger) 30%, transparent);
 }
 .status-badge--probe_broken {
   color: var(--danger);
-  background: rgba(248, 81, 73, 0.18);
-  border-color: rgba(248, 81, 73, 0.4);
+  background: color-mix(in srgb, var(--danger) 18%, var(--danger-soft));
+  border-color: color-mix(in srgb, var(--danger) 40%, transparent);
 }
 .status-badge--offer_missing {
   color: var(--muted);
-  background: rgba(139, 148, 158, 0.12);
-  border-color: rgba(139, 148, 158, 0.3);
+  background: color-mix(in srgb, var(--muted) 12%, transparent);
+  border-color: color-mix(in srgb, var(--muted) 30%, transparent);
 }
 .status-badge--binding_missing {
   color: var(--warning);
-  background: rgba(210, 153, 34, 0.12);
-  border-color: rgba(210, 153, 34, 0.3);
+  background: var(--warning-soft);
+  border-color: color-mix(in srgb, var(--warning) 30%, transparent);
 }
 </style>
