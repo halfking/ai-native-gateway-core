@@ -316,6 +316,30 @@ func buildTurnsSessionWhere(r *http.Request, tenantID string, tsFrom, tsTo time.
 		argIdx++
 	}
 
+	// model / provider / status_code 是轮次级条件：在会话查询里用 EXISTS 直接
+	// 排除不含匹配轮次的会话，避免整页"无匹配轮次"的空会话卡片。
+	// loadTurnsForSessions 会用同样条件过滤会话内展示的轮次。
+	if v := strings.TrimSpace(r.URL.Query().Get("model")); v != "" {
+		clauses = append(clauses, fmt.Sprintf(
+			"EXISTS (SELECT 1 FROM public.session_turns ft WHERE ft.session_id = s.session_id AND ft.tenant_id = s.tenant_id AND ft.model = $%d)", argIdx))
+		args = append(args, v)
+		argIdx++
+	}
+	if v := strings.TrimSpace(r.URL.Query().Get("provider")); v != "" {
+		clauses = append(clauses, fmt.Sprintf(
+			"EXISTS (SELECT 1 FROM public.session_turns ft WHERE ft.session_id = s.session_id AND ft.tenant_id = s.tenant_id AND ft.provider = $%d)", argIdx))
+		args = append(args, v)
+		argIdx++
+	}
+	if v := strings.TrimSpace(r.URL.Query().Get("status_code")); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			clauses = append(clauses, fmt.Sprintf(
+				"EXISTS (SELECT 1 FROM public.session_turns ft WHERE ft.session_id = s.session_id AND ft.tenant_id = s.tenant_id AND ft.status_code = $%d)", argIdx))
+			args = append(args, n)
+			argIdx++
+		}
+	}
+
 	if v := strings.TrimSpace(r.URL.Query().Get("project_id")); v != "" {
 		clauses = append(clauses, fmt.Sprintf("ss.gw_project_id = $%d", argIdx))
 		args = append(args, v)

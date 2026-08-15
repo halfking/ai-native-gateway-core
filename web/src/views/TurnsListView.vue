@@ -25,10 +25,18 @@ const nextCursor = ref('')
 const error = ref('')
 const expandedSessions = ref<Set<string>>(new Set())
 
-// 筛选区是否展开（折叠时仅显示当前生效的条件描述）
-const filterExpanded = ref(true)
-// 当前生效的条件描述（供折叠态展示）
-const activeFilterDesc = ref('')
+// 「更多筛选」区是否展开：常用筛选（搜索/模型/时间）常驻，其余收进折叠行
+const advancedExpanded = ref(false)
+// 时间快捷预设：all=不限（默认最近更新）、custom=手动输入起止时间
+const timePreset = ref('all')
+
+const timePresets: { value: string; label: string; hours: number }[] = [
+  { value: 'all', label: '时间不限', hours: 0 },
+  { value: 'h1', label: '最近 1 小时', hours: 1 },
+  { value: 'h24', label: '最近 24 小时', hours: 24 },
+  { value: 'd3', label: '最近 3 天', hours: 72 },
+  { value: 'd7', label: '最近 7 天', hours: 168 }
+]
 
 // 筛选参数
 const modelFilter = ref('')
@@ -146,6 +154,24 @@ function sessionClient(s: TurnsSessionGroup): string {
   return s.application_code || s.client_id || s.client_type || ''
 }
 
+// 会话 AI 总结的操作信息：生成模型 + 时间（体现"会话总结"这一后台动作）
+function summaryMeta(s: TurnsSessionGroup): string {
+  const parts: string[] = []
+  if (s.summary_model) parts.push(s.summary_model)
+  if (s.summary_generated_at) {
+    parts.push(new Date(s.summary_generated_at).toLocaleString())
+  }
+  return parts.join(' · ')
+}
+
+// 模型徽标最多展示 3 个，其余折叠为 +N（完整列表在 title 里）
+function visibleModels(s: TurnsSessionGroup): string[] {
+  return (s.models_used || []).slice(0, 3)
+}
+function hiddenModelCount(s: TurnsSessionGroup): number {
+  return Math.max(0, (s.models_used || []).length - 3)
+}
+
 function formatMs(ms: number): string {
   if (!ms || ms <= 0) return '—'
   if (ms < 1000) return `${ms}ms`
@@ -175,22 +201,44 @@ function resetAndLoad() {
   load(true)
 }
 
-// 折叠时显示的生效条件描述；无任何条件时返回空串（显示"全部"）
-function activeFilterSummary(): string {
-  const parts: string[] = []
-  if (modelFilter.value) parts.push(`模型 ${modelFilter.value}`)
-  if (providerFilter.value) parts.push(`供应商 ${providerFilter.value}`)
-  if (statusCodeFilter.value) parts.push(`状态码 ${statusCodeFilter.value}`)
-  if (projectFilter.value) parts.push(`项目 ${projectFilter.value}`)
-  if (taskFilter.value) parts.push(`任务 ${taskFilter.value}`)
-  if (clientFilter.value) parts.push(`客户端 ${clientFilter.value}`)
-  if (ownerUserFilter.value) parts.push(`属主 ${ownerUserFilter.value}`)
-  if (tagsFilter.value.length > 0) parts.push(`标签 ${tagsFilter.value.join('、')}`)
-  if (dateFromFilter.value || dateToFilter.value) {
-    parts.push(`时间 ${dateFromFilter.value || '…'} ~ ${dateToFilter.value || '…'}`)
+// 时间预设：all 清空起止时间；h1/h24/d3/d7 设置起始时间为 now-hours，结束留空
+function applyTimePreset(value: string) {
+  const preset = timePresets.find(p => p.value === value)
+  if (!preset) return
+  if (value === 'all') {
+    dateFromFilter.value = ''
+    dateToFilter.value = ''
+  } else {
+    const from = new Date(Date.now() - preset.hours * 3600 * 1000)
+    // datetime-local 需要 yyyy-MM-ddTHH:mm 本地格式
+    dateFromFilter.value = localDatetime(from)
+    dateToFilter.value = ''
   }
-  if (searchFilter.value) parts.push(`搜索 "${searchFilter.value}"`)
-  return parts.join(' · ')
+  resetAndLoad()
+}
+
+// 手动修改起止时间 → 预设切换为"自定义"（不重新触发查询，等用户点查询或回车）
+function onDatetimeManualChange() {
+  timePreset.value = 'custom'
+  resetAndLoad()
+}
+
+function localDatetime(d: Date): string {
+  const pad = (n: number) => String(n).padStart(2, '0')
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`
+}
+
+// 更多筛选中已生效的条件数（用于折叠按钮提示）
+function advancedActiveCount(): number {
+  let n = 0
+  if (providerFilter.value) n++
+  if (statusCodeFilter.value) n++
+  if (projectFilter.value) n++
+  if (taskFilter.value) n++
+  if (clientFilter.value) n++
+  if (ownerUserFilter.value) n++
+  if (tagsFilter.value.length > 0) n++
+  return n
 }
 
 function resetAll() {
@@ -205,6 +253,7 @@ function resetAll() {
   ownerUserFilter.value = ''
   dateFromFilter.value = ''
   dateToFilter.value = ''
+  timePreset.value = 'all'
   load(true)
 }
 
@@ -218,133 +267,151 @@ onMounted(() => {
   <div class="turns-list-view">
     <div class="header">
       <h1>会话与轮次</h1>
-      <p class="subtitle">最外层为会话（主题 / 摘要 / 用量 / 压缩 / failover），展开查看该会话的每个轮次</p>
+      <p class="subtitle">按最近更新排序 · 最外层为会话（主题 / 摘要 / 模型 / 用量 / 压缩 / failover），展开查看每个轮次的请求与返回</p>
     </div>
 
-    <!-- 筛选区（可折叠：折叠时只显示生效条件描述） -->
+    <!-- 筛选区：常用筛选常驻（搜索 / 模型 / 时间），其余收进「更多筛选」 -->
     <div class="filter-section">
-      <div class="filter-toggle">
-        <button class="btn btn-secondary btn-sm" @click="filterExpanded = !filterExpanded">
-          {{ filterExpanded ? '收起条件' : '筛选条件' }}
-          <span class="caret" :class="{ open: filterExpanded }">▸</span>
+      <div class="filter-bar">
+        <input
+          v-model="searchFilter"
+          type="text"
+          placeholder="搜索 标题 / 主题 / 摘要"
+          class="filter-input filter-search"
+          @keyup.enter="resetAndLoad"
+        />
+        <el-select
+          v-model="modelFilter"
+          filterable
+          allow-create
+          default-first-option
+          clearable
+          placeholder="模型"
+          class="filter-select"
+          @change="resetAndLoad"
+        >
+          <el-option v-for="v in filterOptions.models" :key="v" :label="v" :value="v" />
+        </el-select>
+        <select
+          :value="timePreset"
+          class="filter-input filter-preset"
+          @change="timePreset = ($event.target as HTMLSelectElement).value; applyTimePreset(timePreset)"
+        >
+          <option v-for="p in timePresets" :key="p.value" :value="p.value">{{ p.label }}</option>
+          <option v-if="timePreset === 'custom'" value="custom">自定义时间段</option>
+        </select>
+        <input
+          v-model="dateFromFilter"
+          type="datetime-local"
+          class="filter-input filter-dt"
+          title="会话开始时间起"
+          @change="onDatetimeManualChange"
+        />
+        <span class="dt-sep">~</span>
+        <input
+          v-model="dateToFilter"
+          type="datetime-local"
+          class="filter-input filter-dt"
+          title="会话开始时间止"
+          @change="onDatetimeManualChange"
+        />
+        <button class="btn btn-primary" @click="resetAndLoad">查询</button>
+        <button class="btn btn-secondary" @click="resetAll">清空</button>
+        <button class="btn btn-secondary" @click="advancedExpanded = !advancedExpanded">
+          更多筛选
+          <span v-if="advancedActiveCount() > 0" class="adv-count">{{ advancedActiveCount() }}</span>
+          <span class="caret" :class="{ open: advancedExpanded }">▸</span>
         </button>
-        <span v-if="!filterExpanded" class="filter-summary">
-          {{ activeFilterSummary() || '全部会话（最近更新）' }}
-        </span>
-        <span v-else class="filter-summary muted">配置条件后点击查询</span>
       </div>
 
-      <div v-if="filterExpanded" class="filter-bar">
+      <div v-if="advancedExpanded" class="filter-bar filter-advanced">
         <el-select
-        v-model="modelFilter"
-        filterable
-        allow-create
-        default-first-option
-        clearable
-        placeholder="模型"
-        class="filter-select"
-        @change="resetAndLoad"
-      >
-        <el-option v-for="v in filterOptions.models" :key="v" :label="v" :value="v" />
-      </el-select>
-      <el-select
-        v-model="providerFilter"
-        filterable
-        allow-create
-        default-first-option
-        clearable
-        placeholder="供应商"
-        class="filter-select"
-        @change="resetAndLoad"
-      >
-        <el-option v-for="v in filterOptions.providers" :key="v" :label="v" :value="v" />
-      </el-select>
-      <el-select
-        v-model="statusCodeFilter"
-        filterable
-        allow-create
-        default-first-option
-        clearable
-        placeholder="状态码"
-        class="filter-select filter-select-short"
-        @change="resetAndLoad"
-      >
-        <el-option v-for="v in filterOptions.status_codes" :key="v" :label="v" :value="v" />
-      </el-select>
-      <el-select
-        v-model="projectFilter"
-        filterable
-        allow-create
-        default-first-option
-        clearable
-        placeholder="项目ID"
-        class="filter-select filter-select-short"
-        @change="resetAndLoad"
-      >
-        <el-option v-for="v in filterOptions.projects" :key="v" :label="v" :value="v" />
-      </el-select>
-      <el-select
-        v-model="taskFilter"
-        filterable
-        allow-create
-        default-first-option
-        clearable
-        placeholder="任务ID"
-        class="filter-select filter-select-short"
-        @change="resetAndLoad"
-      >
-        <el-option v-for="v in filterOptions.tasks" :key="v" :label="v" :value="v" />
-      </el-select>
-      <el-select
-        v-model="clientFilter"
-        filterable
-        allow-create
-        default-first-option
-        clearable
-        placeholder="客户端 / 智能体"
-        class="filter-select"
-        @change="resetAndLoad"
-      >
-        <el-option v-for="v in filterOptions.clients" :key="v" :label="v" :value="v" />
-      </el-select>
-      <el-select
-        v-model="ownerUserFilter"
-        filterable
-        allow-create
-        default-first-option
-        clearable
-        placeholder="属主用户"
-        class="filter-select"
-        @change="resetAndLoad"
-      >
-        <el-option v-for="v in filterOptions.owners" :key="v" :label="v" :value="v" />
-      </el-select>
-      <el-select
-        v-model="tagsFilter"
-        multiple
-        filterable
-        allow-create
-        default-first-option
-        clearable
-        collapse-tags
-        collapse-tags-tooltip
-        placeholder="标签"
-        class="filter-select filter-select-tags"
-        @change="resetAndLoad"
-      >
-        <el-option v-for="v in filterOptions.tags" :key="v" :label="v" :value="v" />
-      </el-select>
-      <input v-model="dateFromFilter" type="datetime-local" class="filter-input" @change="resetAndLoad" />
-      <input v-model="dateToFilter" type="datetime-local" class="filter-input" @change="resetAndLoad" />
-      <input
-        v-model="searchFilter"
-        type="text"
-        placeholder="搜索 标题/主题/摘要"
-        class="filter-input filter-search"
-        @keyup.enter="resetAndLoad"
-      />
-      <button class="btn btn-primary" @click="resetAndLoad">查询</button>
-      <button class="btn btn-secondary" @click="resetAll">清空</button>
+          v-model="providerFilter"
+          filterable
+          allow-create
+          default-first-option
+          clearable
+          placeholder="供应商"
+          class="filter-select"
+          @change="resetAndLoad"
+        >
+          <el-option v-for="v in filterOptions.providers" :key="v" :label="v" :value="v" />
+        </el-select>
+        <el-select
+          v-model="statusCodeFilter"
+          filterable
+          allow-create
+          default-first-option
+          clearable
+          placeholder="状态码"
+          class="filter-select filter-select-short"
+          @change="resetAndLoad"
+        >
+          <el-option v-for="v in filterOptions.status_codes" :key="v" :label="v" :value="v" />
+        </el-select>
+        <el-select
+          v-model="projectFilter"
+          filterable
+          allow-create
+          default-first-option
+          clearable
+          placeholder="项目ID"
+          class="filter-select filter-select-short"
+          @change="resetAndLoad"
+        >
+          <el-option v-for="v in filterOptions.projects" :key="v" :label="v" :value="v" />
+        </el-select>
+        <el-select
+          v-model="taskFilter"
+          filterable
+          allow-create
+          default-first-option
+          clearable
+          placeholder="任务ID"
+          class="filter-select filter-select-short"
+          @change="resetAndLoad"
+        >
+          <el-option v-for="v in filterOptions.tasks" :key="v" :label="v" :value="v" />
+        </el-select>
+        <el-select
+          v-model="clientFilter"
+          filterable
+          allow-create
+          default-first-option
+          clearable
+          placeholder="客户端 / 智能体"
+          class="filter-select"
+          @change="resetAndLoad"
+        >
+          <el-option v-for="v in filterOptions.clients" :key="v" :label="v" :value="v" />
+        </el-select>
+        <el-select
+          v-model="ownerUserFilter"
+          filterable
+          allow-create
+          default-first-option
+          clearable
+          placeholder="属主用户"
+          class="filter-select"
+          @change="resetAndLoad"
+        >
+          <el-option v-for="v in filterOptions.owners" :key="v" :label="v" :value="v" />
+        </el-select>
+        <el-select
+          v-model="tagsFilter"
+          multiple
+          filterable
+          allow-create
+          default-first-option
+          clearable
+          collapse-tags
+          collapse-tags-tooltip
+          placeholder="标签"
+          class="filter-select filter-select-tags"
+          @change="resetAndLoad"
+        >
+          <el-option v-for="v in filterOptions.tags" :key="v" :label="v" :value="v" />
+        </el-select>
       </div>
     </div>
 
@@ -365,8 +432,13 @@ onMounted(() => {
             </span>
           </div>
 
-          <div class="session-summary" v-if="session.summary">{{ session.summary }}</div>
-          <div v-else class="session-summary muted">暂无会话摘要</div>
+          <div class="session-summary" v-if="session.summary">
+            {{ session.summary }}
+            <span v-if="summaryMeta(session)" class="summary-meta" title="会话 AI 总结生成信息">
+              AI 总结 · {{ summaryMeta(session) }}
+            </span>
+          </div>
+          <div v-else class="session-summary muted">暂无会话摘要（未生成总结）</div>
 
           <div class="session-context">
             <span v-if="session.project_id" class="ctx-badge project">项目 {{ session.project_id }}</span>
@@ -391,9 +463,14 @@ onMounted(() => {
             <span v-if="session.compression.applied_count > 0" class="badge compression">
               压缩 {{ session.compression.applied_count }} 次 · 省 {{ formatBytesTokens(session.compression.tokens_saved) }} tok
             </span>
-            <template v-for="m in session.models_used" :key="m">
+            <template v-for="m in visibleModels(session)" :key="m">
               <span class="badge model">{{ m }}</span>
             </template>
+            <span
+              v-if="hiddenModelCount(session) > 0"
+              class="badge model"
+              :title="(session.models_used || []).join(', ')"
+            >+{{ hiddenModelCount(session) }}</span>
           </div>
 
           <div class="session-foot">
@@ -424,7 +501,6 @@ onMounted(() => {
               <div class="preview">{{ turn.title || '(无请求摘要)' }}</div>
               <div class="badges">
                 <span class="badge">req {{ formatBytesTokens(turn.request_tokens) }}</span>
-                <span class="badge">Δ{{ turn.request_tokens }}</span>
                 <span v-if="turn.cache_read_tokens > 0" class="badge cache">cache读 {{ formatBytesTokens(turn.cache_read_tokens) }}</span>
                 <span v-if="turn.cache_write_tokens > 0" class="badge cache">cache写 {{ formatBytesTokens(turn.cache_write_tokens) }}</span>
                 <span v-if="turn.attachment_count > 0" class="badge">📎 {{ turn.attachment_count }}</span>
@@ -446,7 +522,6 @@ onMounted(() => {
               <div class="preview">{{ turn.summary || '(无回复摘要)' }}</div>
               <div class="badges">
                 <span class="badge">resp {{ formatBytesTokens(turn.response_tokens) }}</span>
-                <span class="badge">Δ{{ turn.response_tokens }}</span>
                 <span class="badge cost">${{ turn.cost_usd.toFixed(4) }}</span>
                 <span
                   class="badge status"
@@ -496,32 +571,43 @@ onMounted(() => {
 .filter-section {
   margin-bottom: 16px;
 }
-.filter-toggle {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  margin-bottom: 10px;
-}
-.filter-summary {
-  font-size: 13px;
-  color: var(--text-secondary);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.filter-summary.muted {
-  color: var(--text-muted);
-}
-.btn-sm {
-  height: 32px;
-  padding: 0 12px;
-  font-size: 13px;
-}
 .filter-bar {
   display: flex;
   gap: 8px;
-  margin-bottom: 16px;
+  margin-bottom: 8px;
   flex-wrap: wrap;
+  align-items: center;
+}
+.filter-advanced {
+  padding: 8px;
+  border: 1px dashed var(--border);
+  border-radius: 6px;
+  background: var(--surface-secondary);
+  margin-bottom: 16px;
+}
+.filter-preset {
+  min-width: 130px;
+  flex: 0 0 130px;
+  cursor: pointer;
+}
+.filter-dt {
+  min-width: 180px;
+  flex: 0 0 180px;
+}
+.dt-sep {
+  color: var(--text-muted);
+  font-size: 13px;
+}
+.adv-count {
+  display: inline-block;
+  min-width: 16px;
+  padding: 0 4px;
+  margin-left: 2px;
+  border-radius: 8px;
+  background: var(--accent);
+  color: white;
+  font-size: 11px;
+  line-height: 16px;
 }
 .filter-input {
   height: 36px;
@@ -672,6 +758,15 @@ onMounted(() => {
 }
 .session-summary.muted {
   color: var(--text-muted);
+}
+.summary-meta {
+  display: inline-block;
+  margin-left: 8px;
+  padding: 1px 6px;
+  border-radius: 4px;
+  font-size: 11px;
+  color: var(--text-muted);
+  background: var(--surface-secondary);
 }
 .session-meta {
   display: flex;

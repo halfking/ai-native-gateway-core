@@ -145,6 +145,32 @@ func TestBuildTurnsSessionWhere(t *testing.T) {
 	}
 }
 
+func TestBuildTurnsSessionWhere_TurnLevelFiltersSession(t *testing.T) {
+	// model / provider / status_code 应通过 EXISTS 在会话级排除无匹配轮次的会话
+	req := httptest.NewRequest(http.MethodGet, "/api/admin/turns/sessions?model=m1&provider=p1&status_code=500", nil)
+	where, args, nextArg := buildTurnsSessionWhere(req, "t1", time.Time{}, time.Time{}, time.Time{}, "", 1)
+
+	for _, c := range []string{
+		"s.tenant_id = $1",
+		"ft.model = $2",
+		"ft.provider = $3",
+		"ft.status_code = $4",
+	} {
+		if !strings.Contains(where, c) {
+			t.Errorf("where missing %q\nwhere=%s", c, where)
+		}
+	}
+	if !strings.Contains(where, "EXISTS (SELECT 1 FROM public.session_turns ft") {
+		t.Errorf("expected EXISTS subquery on session_turns: %s", where)
+	}
+	if len(args) != 4 || nextArg != 5 {
+		t.Fatalf("expected 4 args / nextArg=5, got %d args / nextArg=%d", len(args), nextArg)
+	}
+	if args[3] != 500 {
+		t.Fatalf("status_code arg should be int 500, got %v (%T)", args[3], args[3])
+	}
+}
+
 func TestBuildTurnsSessionWhere_Empty(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/api/admin/turns/sessions", nil)
 	where, args, nextArg := buildTurnsSessionWhere(req, "", time.Time{}, time.Time{}, time.Time{}, "", 1)
