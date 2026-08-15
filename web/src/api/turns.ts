@@ -128,6 +128,9 @@ export interface TurnsSessionGroup {
   end_user_id?: string
   user_tags: string[]
   start_time?: string
+  // 会话间父子/附属关系：handoff=透明轮换派生，auto_title/auto_summary=回环分支会话
+  parent_session_id?: string
+  parent_relation?: string
 }
 
 export interface TurnsSessionsResponse {
