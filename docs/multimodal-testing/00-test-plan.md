@@ -60,6 +60,28 @@
 | T-20 | vision | Gemini `fileData` image mimeType | 正向 | P2 | A 检测 |
 | T-21 | 一致性 | `models_canonical.modality` vs `InferModality()` 一致 | 校验 | P2 | 规则推断 |
 
+### URL 模式用例（MM-4，2026-08-15 增补）
+
+附件以网关自身 URL 引用传入的端到端用例，覆盖 MM-2 URL 拉取回退分支。
+executor 级走 `Execute` 公共请求路径（`/v1/chat/completions`），mock 边界
+与既有 MM-1/MM-2 用例一致（仅 mock 上游 SSE）；实现在
+`domains/streaming/executors/executor_attachment_url_mode_e2e_test.go`。
+
+| ID | 场景 | 回退开关 | Phase | 入口层 |
+|---|---|---|---|---|
+| T-22 | 网关 URL 直通（供应商不支持 URL 也不取回） | 关（默认） | P2 | executor 出站 |
+| T-23 | 非 URL 供应商取回内联 base64（正例） | 开 | P2+P3 | executor 出站 |
+| T-24 | `..` 路径穿越拒绝：不取回、原样保留、不吞请求 | 开 | P2 | executor 出站 |
+| T-25 | 取回失败 best-effort 保留 URL、流正常返回 | 开 | P2 | executor 出站 |
+| T-26 | 非网关 base 前缀的外部 URL 不取回 | 开 | P2 | executor 出站 |
+| T-27 | 重复 URL 去重：存储单次取回、全内联 | 开 | P2 | executor 出站 |
+| T-28 | URL 型供应商（openai）直通不取回 | 开 | P2+P3 | executor 出站 |
+
+单元级补充（`domains/attachments/outbound_fetch_fallback_test.go`）：
+`..` 穿越与空 relPath 拒绝。Phase 3 实模子集新增 T-23/T-28
+（`scripts/multimodal-e2e/cases/`，需 `MULTIMODAL_E2E_GATEWAY_ATTACHMENT_URL`
+指向已存储附件的公开 URL，未设置自动 SKIP）。
+
 ### Phase 3 真实模型子集
 
 | 模型 | 模态 | 用例 | 上游 key |

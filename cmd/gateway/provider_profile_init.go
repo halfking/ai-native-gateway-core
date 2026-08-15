@@ -37,6 +37,10 @@ type ProviderProfileWorkers struct {
 	aggregator *bg.ProfileAggregator
 	cleaner    *bg.ProfileCleaner
 	alerts     *bg.ProfileAlertWorker
+	// costRecon / costReconciler 仅在 provider_profile.cost_reconciliation.enabled
+	// 开启时非空（M3 CO-3，2026-08-15，默认关闭）。
+	costRecon      *bg.CostReconciliationWorker
+	costReconciler *providerprofile.CostReconciler
 }
 
 // AlertEngine returns the alert worker's underlying AlertEngine so main.go can
@@ -47,6 +51,16 @@ func (w *ProviderProfileWorkers) AlertEngine() *providerprofile.AlertEngine {
 		return nil
 	}
 	return w.alerts.Engine()
+}
+
+// CostReconciler returns the cost reconciliation orchestrator (M3 CO-3) so
+// main.go can wire the admin bill-import API to the same instance used by the
+// background worker. Returns nil when cost reconciliation is disabled.
+func (w *ProviderProfileWorkers) CostReconciler() *providerprofile.CostReconciler {
+	if w == nil {
+		return nil
+	}
+	return w.costReconciler
 }
 
 // initProviderProfile initializes the provider profile system.
@@ -150,18 +164,68 @@ func initProviderProfile(pool *pgxpool.Pool, fernetKey []byte, keyring *secret.K
 	cleaner.Start()
 	alerts.Start()
 
+	workers := &ProviderProfileWorkers{
+		collector:  collector,
+		aggregator: aggregator,
+		cleaner:    cleaner,
+		alerts:     alerts,
+	}
+
+	// ── Provider cost reconciliation (M3 CO-3, 2026-08-15) ────────────
+	// 月度聚合网关用量到 provider_cost_reconciliation；账单由管理端导入；
+	// 差异超阈值写 provider_events 告警事件。独立子开关，默认关闭。
+	if costReconciliationEnabled() {
+		reconSeconds := int64(86400)
+		if envVal := os.Getenv("LLM_GATEWAY_PROVIDER_COST_RECONCILIATION_INTERVAL"); envVal != "" {
+			if v, err := strconv.ParseInt(envVal, 10, 64); err == nil && v > 0 {
+				reconSeconds = v
+			}
+		}
+		if reconSeconds <= 0 {
+			reconSeconds = settings.GetPlatformDuration("provider_profile.cost_reconciliation.interval", 86400)
+		}
+
+		costThreshold := settings.GetPlatformFloat("provider_profile.cost_reconciliation.cost_diff_threshold", 0.05)
+		tokenThreshold := settings.GetPlatformFloat("provider_profile.cost_reconciliation.token_diff_threshold", 0.05)
+		thresholds := providerprofile.DiffThresholds{Cost: costThreshold, Token: tokenThreshold}
+
+		source := providerprofile.NewPGGatewayMonthlyUsageSource(pool)
+		store := providerprofile.NewPGReconciliationStore(pool)
+		sink := providerprofile.NewPGReconciliationEventSink(pool)
+		reconciler := providerprofile.NewCostReconciler(source, store, sink, thresholds)
+		costRecon := bg.NewCostReconciliationWorkerFromReconciler(reconciler, time.Duration(reconSeconds)*time.Second)
+		costRecon.Start()
+
+		workers.costReconciler = reconciler
+		workers.costRecon = costRecon
+		slog.Info("provider cost reconciliation enabled",
+			"interval", time.Duration(reconSeconds)*time.Second,
+			"cost_diff_threshold", costThreshold,
+			"token_diff_threshold", tokenThreshold)
+	}
+
 	slog.Info("provider profile system initialized",
 		"collection_interval", collectionInterval,
 		"aggregation_interval", aggregationInterval,
 		"cleanup_interval", cleanupInterval,
 		"alert_interval", alertInterval)
 
-	return &ProviderProfileWorkers{
-		collector:  collector,
-		aggregator: aggregator,
-		cleaner:    cleaner,
-		alerts:     alerts,
+	return workers
+}
+
+// costReconciliationEnabled 读取对账子开关（默认关闭）。
+// 环境变量 LLM_GATEWAY_PROVIDER_COST_RECONCILIATION_ENABLED 优先，
+// 其次 settings 的 provider_profile.cost_reconciliation.enabled。
+func costReconciliationEnabled() bool {
+	if envVal, ok := os.LookupEnv("LLM_GATEWAY_PROVIDER_COST_RECONCILIATION_ENABLED"); ok {
+		parsed, err := strconv.ParseBool(envVal)
+		if err != nil {
+			slog.Warn("provider cost reconciliation: invalid enabled environment value", "value", envVal, "error", err)
+			return false
+		}
+		return parsed
 	}
+	return settings.GetPlatformBool("provider_profile.cost_reconciliation.enabled", false)
 }
 
 // stopProviderProfile gracefully stops all provider profile workers
@@ -183,6 +247,9 @@ func stopProviderProfile(workers *ProviderProfileWorkers) {
 	}
 	if workers.alerts != nil {
 		workers.alerts.Stop()
+	}
+	if workers.costRecon != nil {
+		workers.costRecon.Stop()
 	}
 
 	slog.Info("provider profile workers stopped")

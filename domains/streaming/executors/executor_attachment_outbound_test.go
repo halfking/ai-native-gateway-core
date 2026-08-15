@@ -21,6 +21,11 @@ import (
 // byte-identical when both multimodal flags are off (default wiring:
 // AttachmentURLRewriter == nil && AttachmentURLFetchFallback == nil), and
 // must apply the rewrites per-candidate when they are wired on.
+//
+// multimodal-e2e 框架登记（00-test-plan.md §3）：
+// TestExecuteAttachmentOutbound_FetchFallbackInlinesGatewayURL = T-23
+// （URL 模式 · 回退开启 + 非 URL 供应商 → 取回内联正例）。URL 模式其余
+// 分支用例见 executor_attachment_url_mode_e2e_test.go（MM-4，T-22..T-28）。
 
 // captureServer records every upstream request body.
 type captureServer struct {

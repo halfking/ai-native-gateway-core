@@ -1,0 +1,9 @@
+{
+  "id": "T-23",
+  "name": "url-mode-fetch-fallback-inline",
+  "model": "deepseek-vl",
+  "endpoint": "/v1/chat/completions",
+  "provider": "deepseek",
+  "format": "openai-image-gateway-url",
+  "notes": "MM-4 URL 模式（含回退）：附件以网关 URL 引用传入，目标供应商矩阵判定不支持 URL source。前置条件：网关以 LLM_GATEWAY_ATTACHMENT_URL_FETCH_FALLBACK=1 + LLM_GATEWAY_ATTACHMENT_PUBLIC_BASE_URL 启动，且 MULTIMODAL_E2E_GATEWAY_ATTACHMENT_URL 指向已存储附件的完整公开 URL（未设置时 runner 自动 SKIP）。通过标准：MM-2 回退取回内联 base64 后上游 accept（HTTP 200 + 非空 content）。executor 级行为已由 Go e2e TestExecuteAttachmentOutbound_FetchFallbackInlinesGatewayURL 钉住。"
+}
