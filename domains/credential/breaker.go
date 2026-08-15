@@ -572,6 +572,15 @@ func (m *Manager) ResetAll() {
 	}
 }
 
+// Reset resets the single breaker for the given provider/credential to
+// CLOSED state (admin emergency repair — force_enable / clear_circuit).
+// A breaker that was never created has nothing to reset; this is a no-op.
+func (m *Manager) Reset(providerID, credentialID int) {
+	if b := m.Get(providerID, credentialID); b != nil {
+		b.Reset()
+	}
+}
+
 // RecordFailure records a failure on the appropriate breaker.
 func (m *Manager) RecordFailure(providerID, credentialID int, kind ErrorKind) {
 	b := m.GetOrCreate(providerID, credentialID)
