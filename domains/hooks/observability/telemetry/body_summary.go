@@ -64,9 +64,12 @@ func init() {
 }
 
 // defaultBodiesSummaryEnabled reads the live platform settings: summary mode
-// is active only when sessions_v2.enabled is true.
+// is active only when sessions_v2.enabled is true AND the explicit full-body
+// override (sessions_v2.request_bodies_full, default false — 排障用) is off.
+// Hot-reloadable on both flags.
 func defaultBodiesSummaryEnabled() bool {
-	return settings.GetPlatformBool("sessions_v2.enabled", false)
+	return settings.GetPlatformBool("sessions_v2.enabled", false) &&
+		!settings.GetPlatformBool("sessions_v2.request_bodies_full", false)
 }
 
 // requestBodiesSummaryEnabled reports whether request_logs_bodies writes

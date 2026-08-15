@@ -19,6 +19,7 @@ func TestSessionsV2FeatureFlags(t *testing.T) {
 		"sessions_v2.read_timeout_ms",
 		"sessions_v2.compression_enabled",
 		"sessions_v2.turn_logs_retention_hours",
+		"sessions_v2.request_bodies_full",
 	}
 
 	if len(specs) != len(expectedKeys) {
@@ -64,6 +65,16 @@ func TestSessionsV2FeatureFlags(t *testing.T) {
 	}
 	if rolloutSpec.Default != 0 {
 		t.Errorf("rollout_percent: expected default 0, got %v", rolloutSpec.Default)
+	}
+
+	// CO-5: bodies full-capture override defaults to false (summary mode is
+	// the default under sessions_v2.enabled) and is hot-reloadable.
+	bodiesFullSpec := findSpec(specs, "sessions_v2.request_bodies_full")
+	if bodiesFullSpec == nil {
+		t.Fatal("request_bodies_full spec not found")
+	}
+	if bodiesFullSpec.Default != false {
+		t.Errorf("request_bodies_full: expected default false, got %v", bodiesFullSpec.Default)
 	}
 
 	// Test hot reload flag
