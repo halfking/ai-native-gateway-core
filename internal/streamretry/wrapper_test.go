@@ -26,6 +26,18 @@ func (w *flushErrorResponseWriter) FlushError() error {
 	return w.flushErr
 }
 
+func TestErrorRecorderTreatsAnyWrittenStatusAsCommitted(t *testing.T) {
+	for _, status := range []int{http.StatusOK, http.StatusBadRequest, http.StatusServiceUnavailable} {
+		t.Run(http.StatusText(status), func(t *testing.T) {
+			recorder := &errorRecorder{ResponseWriter: httptest.NewRecorder()}
+			recorder.WriteHeader(status)
+			if !recorder.committed {
+				t.Fatalf("status %d was forwarded but recorder remained retryable", status)
+			}
+		})
+	}
+}
+
 func TestErrorRecorderPropagatesFlushErrorAfterCommit(t *testing.T) {
 	flushErr := errors.New("connection closed")
 	underlying := &flushErrorResponseWriter{ResponseWriter: httptest.NewRecorder(), flushErr: flushErr}
@@ -284,7 +296,10 @@ func TestDefaultStreamExecutor_ConcurrentRequestsHaveIndependentMetrics(t *testi
 			failures = int32(value)
 		}
 		if attempt <= failures {
-			w.WriteHeader(http.StatusServiceUnavailable)
+			w.(*errorRecorder).err = &HTTPError{
+				StatusCode: http.StatusServiceUnavailable,
+				Err:        errors.New("service unavailable"),
+			}
 			return
 		}
 		w.WriteHeader(http.StatusOK)

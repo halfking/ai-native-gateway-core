@@ -195,6 +195,11 @@ func (p *Pipeline) Submit(ctx context.Context, qr *QueuedRequest) (any, error) {
 	case out := <-qr.ResultCh:
 		return out.Result, out.Err
 	case <-ctx.Done():
+		select {
+		case out := <-qr.ResultCh:
+			return out.Result, out.Err
+		default:
+		}
 		qr.abandoned.Store(true)
 		return nil, ctx.Err()
 	}

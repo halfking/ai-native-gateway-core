@@ -196,6 +196,27 @@ func candidateToRef(c provider.Candidate) dispatch.CredentialRef {
 	return r
 }
 
+// dispatchExecutionContext keeps the dispatch wait lifecycle aligned with the
+// upstream request. Streaming calls already detach the vendor context from a
+// client disconnect so pending capture can finish; Pipeline.Submit must wait on
+// the same detached lifetime instead of abandoning the request early.
+func dispatchExecutionContext(params *ExecParams) (context.Context, context.CancelFunc) {
+	if params == nil || params.R == nil {
+		return context.WithCancel(context.Background())
+	}
+	if params.IsStream || hasSessionID(params) {
+		return context.WithCancel(context.WithoutCancel(params.R.Context()))
+	}
+	return context.WithCancel(params.R.Context())
+}
+
+func copyDispatchAttemptMetadata(ee *ExecuteError, qr *dispatch.QueuedRequest) {
+	if ee == nil || qr == nil {
+		return
+	}
+	ee.Tried = qr.AttemptCount
+}
+
 // executeViaDispatch is the V2 entry point called from Execute. It packages
 // the per-request context into a QueuedRequest and blocks on Pipeline.Submit.
 func (e *Executor) executeViaDispatch(
@@ -226,7 +247,9 @@ func (e *Executor) executeViaDispatch(
 	if requestedModel == "" {
 		requestedModel = params.ClientModel
 	}
-	qr := dispatch.NewQueuedRequest(params.RequestID, params.TenantID, requestedModel, params.R.Context(), dctx)
+	dispatchCtx, cancelDispatch := dispatchExecutionContext(params)
+	defer cancelDispatch()
+	qr := dispatch.NewQueuedRequest(params.RequestID, params.TenantID, requestedModel, dispatchCtx, dctx)
 	// V3.1 waterfall: thread SessionID so WaterfallRequest can carry it for the
 	// admin /sessions/{id}/timeline endpoint. Empty for one-shot traffic.
 	qr.SessionID = params.SessionID
@@ -236,7 +259,7 @@ func (e *Executor) executeViaDispatch(
 	qr.RetryPerCredential = retryPerCred
 	qr.ModelAlternatives = append([]string(nil), params.DispatchModelAlternatives...)
 
-	result, err := e.dispatchPipeline.Submit(params.R.Context(), qr)
+	result, err := e.dispatchPipeline.Submit(dispatchCtx, qr)
 	if err != nil {
 		// Wrap dispatch outcomes into *ExecuteError so the handler's
 		// Exhausted branch (handler.go:3878) emits 503 + Retry-After (not
@@ -244,6 +267,7 @@ func (e *Executor) executeViaDispatch(
 		// dispatch error would fall through to the generic 502 path.
 		// Still attach T0–T9 so failure request_logs rows keep queue latency.
 		ee := dispatchErrToExecuteError(err)
+		copyDispatchAttemptMetadata(ee, qr)
 		copyQueueTimestampsToError(ee, qr)
 		return nil, ee
 	}
@@ -261,6 +285,8 @@ func (e *Executor) executeViaDispatch(
 // with an errorsx kind that drives the handler's HTTP status + goal-retry.
 func dispatchErrToExecuteError(err error) *ExecuteError {
 	switch {
+	case errors.Is(err, context.Canceled):
+		return &ExecuteError{LastErr: err, Exhausted: false, LastKind: errorsx.KindCanceled}
 	case errors.Is(err, dispatch.ErrNoRoute), errors.Is(err, dispatch.ErrOverflow):
 		// All routes/queues exhausted → 503 + Retry-After; retryable.
 		return &ExecuteError{LastErr: err, Exhausted: true, LastKind: errorsx.KindConcurrent}

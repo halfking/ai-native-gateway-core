@@ -431,13 +431,12 @@ func (r *errorRecorder) Unwrap() http.ResponseWriter {
 // retriable and do NOT mark the writer committed. Success statuses (2xx)
 // mark the writer committed since retrying would change the status code.
 func (r *errorRecorder) WriteHeader(statusCode int) {
+	r.committed = true
 	if statusCode >= 400 {
 		r.err = &HTTPError{
 			StatusCode: statusCode,
 			Err:        fmt.Errorf("HTTP %d", statusCode),
 		}
-	} else {
-		r.committed = true
 	}
 	r.ResponseWriter.WriteHeader(statusCode)
 }

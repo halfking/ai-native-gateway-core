@@ -4044,6 +4044,7 @@ goalRetryLoopDone:
 		}
 
 		slog.Error("executor failed",
+			"request_id", requestID,
 			"error", execErr,
 			"model", clientModel,
 		)
