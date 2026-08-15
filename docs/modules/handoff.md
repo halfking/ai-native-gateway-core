@@ -11,7 +11,7 @@ Handoff 与 `compression`、`cache`、`goal` 和 `session_inspector` 协同：
 - `compression` 在 Handoff 检查之后运行，缓存并转发原始或其他中间件已处理的请求。
 - `cache` 和 `session_summaries` 提供累计 token 与请求数，供阈值判断使用。
 - `goal` 仍在响应侧处理任务续跑，但 Handoff 不使用隐藏 follow-up 请求。
-- `202 handoff_required` 只生成恢复包，不会在客户端创建新会话前增加 `handoff_count` 或启动 cooldown；客户端确认协议尚待实现。
+- `202 handoff_required` 只生成恢复包，不会在客户端创建新会话前增加 `handoff_count` 或启动 cooldown；客户端通过一次性 capability 确认后才会原子写入日志和会话指标。
 
 ## 运行流程
 
@@ -68,6 +68,18 @@ Skill 名称只允许字母、数字、`_`、`-`，最长 64 个字符。
 `llm`、`rule`、`hybrid` 都从当前会话消息生成摘要。LLM 摘要使用系统配置的摘要模型和凭据；请求中的 gateway `Authorization` Key **绝不会**被转发给摘要供应商。
 
 当直通上游凭据在认证层被显式标记并提供给 Handoff 后，才允许优先复用它；未建模或无法验证的 Key 一律视为 gateway Key，安全回退到系统摘要凭据。日志、Webhook、响应头和 resume packet 不含凭据。
+
+## 显式确认协议
+
+显式客户端会先收到 `202 handoff_required`，其 body 除 `resume_packet` 外还包含 `handoff_id`、`confirmation_token` 和 `confirmation_expires_at`。`confirmation_token` 是一次性能力凭据：服务端只持久化其 SHA-256 哈希，不会写入日志或 webhook，默认 5 分钟到期。
+
+客户端必须按以下顺序完成交接：
+
+1. 使用同一 gateway API Key 调用 `POST /v1/sessions` 创建新的 `gw_` 会话；目标会话必须属于原 API Key 与 tenant，且创建时间不早于 proposal。
+2. 使用相同 API Key 调用 `POST /v1/handoffs/confirm`，提交 `{ "handoff_id", "confirmation_token", "new_session_id" }`，并提供至少 16 字符的 `Idempotency-Key`。
+3. 只有首次确认会在一个数据库事务中写入 `handoff_logs`、增加 `session_summaries.handoff_count` 并设置 cooldown；相同请求的幂等重试返回成功且不重复记账。
+
+错误的 tenant、API Key、token、过期 capability、旧目标会话或重复但内容不一致的确认均不会产生 handoff 记账。过期 pending capability 由后台任务批量标记为 terminal；确认事务仍独立强制校验过期时间。
 
 ## 设置分组
 

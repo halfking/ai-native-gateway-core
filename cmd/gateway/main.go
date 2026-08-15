@@ -3862,6 +3862,10 @@ func main() {
 				auditTrimmer.Stop()
 			}()
 
+			handoffPendingTrimmer := bg.NewHandoffPendingTrimmer(dbConn.Pool())
+			handoffPendingTrimmer.Start(context.Background())
+			defer handoffPendingTrimmer.Stop()
+
 			// v2.1: FeedbackAnalyzer — daily worker that generates
 			// tuning_proposals from tuning_signals. Skipped in data-plane
 			// mode to avoid write load on the secondary instance.
@@ -4521,6 +4525,7 @@ func main() {
 	mux.Handle("/v1/completions", chatRouteHandler)
 	mux.Handle("/v1/messages", messagesRouteHandler)
 	mux.Handle("/v1/responses", responsesRouteHandler)
+	mux.HandleFunc("/v1/handoffs/confirm", chatHandler.HandleHandoffConfirmation)
 	if embeddingsHandler != nil {
 		mux.Handle("/v1/embeddings", embeddingsHandler)
 	}

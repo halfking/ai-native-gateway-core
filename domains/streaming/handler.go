@@ -876,7 +876,10 @@ type ChatHandler struct {
 
 	// handoffHook may return an explicit resume packet before provider dispatch;
 	// it must never inject gateway control data into the provider request body.
-	handoffHook *handoff.TriggerHook
+	handoffHook          *handoff.TriggerHook
+	handoffSessionGetter interface {
+		Get(ctx context.Context, id string) (*session.Session, error)
+	}
 
 	// attachmentExtractor (2026-07-01) extracts base64/data-URI attachments
 	// from incoming requests and saves them to the filesystem before forwarding.
@@ -1367,6 +1370,7 @@ func (h *ChatHandler) SetSessionGetter(sg interface {
 	BindAPIKey(ctx context.Context, sessionID string, apiKeyID int, tenantID string) error
 }) {
 	h.sessionGetter = sg
+	h.handoffSessionGetter = sg
 }
 
 // SetFormatAnomalyRecorder configures the anomaly recorder for tracking
@@ -3068,10 +3072,22 @@ func (h *ChatHandler) serveWithExecutor(
 		if handoffErr != nil {
 			slog.Warn("handoff_prepare_failed", "session_id", gwSessionID, "error", handoffErr)
 		} else if handoffResult != nil && handoffResult.Triggered {
+			if keyInfo == nil || keyInfo.ID <= 0 {
+				writeErrorJSON(w, http.StatusServiceUnavailable, requestID, "handoff confirmation is unavailable", "handoff_error", "handoff_confirmation_unavailable")
+				return
+			}
+			proposal, token, proposalErr := h.handoffHook.PrepareConfirmation(ctx, handoffResult, keyInfo.ID)
+			if proposalErr != nil {
+				slog.Warn("handoff_confirmation_prepare_failed", "session_id", gwSessionID, "error", proposalErr)
+				writeErrorJSON(w, http.StatusServiceUnavailable, requestID, "handoff confirmation is unavailable", "handoff_error", "handoff_confirmation_unavailable")
+				return
+			}
 			w.Header().Set("X-Gw-Handoff", "explicit")
 			w.Header().Set("X-Gw-Handoff-Reason", handoffResult.Reason)
 			writeJSON(w, http.StatusAccepted, map[string]any{
 				"status": "handoff_required", "resume_packet": handoffResult.ResumePacket,
+				"handoff_id": proposal.ID, "confirmation_token": token,
+				"confirmation_expires_at": proposal.ExpiresAt,
 			})
 			return
 		}
