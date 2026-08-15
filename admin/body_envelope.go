@@ -55,15 +55,32 @@ func detectBodyEnvelope(raw string) (bodyEnvelope, bool) {
 	return *outer.Summary, true
 }
 
+// unwrapBody parses body once and returns both the envelope (nil when the
+// body is not an envelope) and the document JSON extraction should run
+// against, so callers never pay for double detection. Semantics are the
+// composition of envelopeOf and headForExtraction: nil body yields
+// (nil, nil), a non-envelope body yields (nil, body) untouched, an envelope
+// yields the parsed envelope plus its head — or nil head when the head was
+// truncated mid-document (invalid JSON; callers fall back to previews).
+func unwrapBody(body *string) (*bodyEnvelope, *string) {
+	if body == nil {
+		return nil, nil
+	}
+	env, ok := detectBodyEnvelope(*body)
+	if !ok {
+		return nil, body
+	}
+	if !json.Valid([]byte(env.Head)) {
+		return &env, nil
+	}
+	head := env.Head
+	return &env, &head
+}
+
 // envelopeOf is the *string variant of detectBodyEnvelope; nil stays nil.
 func envelopeOf(body *string) *bodyEnvelope {
-	if body == nil {
-		return nil
-	}
-	if env, ok := detectBodyEnvelope(*body); ok {
-		return &env
-	}
-	return nil
+	env, _ := unwrapBody(body)
+	return env
 }
 
 // headForExtraction returns the body document JSON extraction should run
@@ -74,18 +91,8 @@ func envelopeOf(body *string) *bodyEnvelope {
 // back to the stored previews instead of feeding partial JSON into the
 // extractor (which would trip the "unparseable body" data-loss warning).
 func headForExtraction(body *string) *string {
-	if body == nil {
-		return nil
-	}
-	env, ok := detectBodyEnvelope(*body)
-	if !ok {
-		return body
-	}
-	if !json.Valid([]byte(env.Head)) {
-		return nil
-	}
-	head := env.Head
-	return &head
+	_, head := unwrapBody(body)
+	return head
 }
 
 // displayNote is the visible marker appended to content derived from an

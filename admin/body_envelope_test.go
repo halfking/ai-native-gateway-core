@@ -288,22 +288,40 @@ func TestBuildSessionMessageMap_Envelope(t *testing.T) {
 // adaptation: digest-envelope rows contribute their original byte count
 // (bytes), malformed envelopes and non-envelope rows keep the legacy
 // LENGTH(...)/4 estimate, and summary-mode rows are counted separately.
+// The envelope test is jsonb_typeof(...)= 'object', matching the Go-side
+// detector (a null or scalar _gw_body_summary value is not an envelope).
 func TestCompressionStatsEstimatedOrigSQL(t *testing.T) {
 	sql := compressionStatsEstimatedOrigSQL
 	for _, want := range []string{
-		`rb.request_body ? '_gw_body_summary'`,
+		`jsonb_typeof(rb.request_body->'_gw_body_summary') = 'object'`,
 		`rb.request_body #>> '{_gw_body_summary,bytes}'`,
 		`'^[0-9]+$'`,
 		// legacy non-envelope estimate preserved, with the '' literal kept on
 		// the text side of the cast (a bare '' beside jsonb resolves to jsonb
 		// and errors at runtime on NULL-body rows).
 		`LENGTH(COALESCE(COALESCE(rb.request_body, rl.request_body)::text, ''))::numeric`,
-		// separate summary-mode row count
-		`SUM(CASE WHEN rb.request_body ? '_gw_body_summary' THEN 1 ELSE 0 END)`,
+		// separate summary-mode row count, same object-type envelope test
+		`SUM(CASE WHEN jsonb_typeof(rb.request_body->'_gw_body_summary') = 'object' THEN 1 ELSE 0 END)`,
 	} {
 		if !strings.Contains(sql, want) {
 			t.Fatalf("compressionStatsEstimatedOrigSQL missing %q\nSQL:\n%s", want, sql)
 		}
+	}
+}
+
+// TestBodyEnvelopeMirrorContract pins the admin-side bodyEnvelope mirror to
+// the exact envelope document the telemetry write path produces
+// (domains/hooks/observability/telemetry/body_summary.go — gwBodySummary is
+// unexported, so parity is pinned by this golden JSON instead of a compile
+// dependency). Field renames or shape drift on either side fail here or in
+// the telemetry-side tests; update both together if the envelope ever
+// versions up.
+func TestBodyEnvelopeMirrorContract(t *testing.T) {
+	env := bodyEnvelope{Mode: "digest", Bytes: 42, SHA256: "ab12", Head: `{"a":1}`, HeadTruncated: true}
+	got := mustEnvelopeJSON(t, env)
+	want := `{"_gw_body_summary":{"mode":"digest","bytes":42,"sha256":"ab12","head":"{\"a\":1}","head_truncated":true}}`
+	if got != want {
+		t.Fatalf("admin mirror envelope JSON drift:\ngot  %s\nwant %s", got, want)
 	}
 }
 
