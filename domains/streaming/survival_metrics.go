@@ -94,3 +94,34 @@ func recordSurvivalAttempt(a *AttemptResult) {
 		metrics.SurvivalAttemptsTotal.WithLabelValues(string(co.Kind), survivalProviderLabel(co.ProviderID)).Inc()
 	}
 }
+
+// Survival task-state labels for gateway_survival_state_transitions_total.
+// "running" is the attempt-executing state, "waiting_recovery" the doc 18 §8
+// recovery window; retry dispatches go through their action pseudo-state so
+// the series can replay the state machine.
+const (
+	survivalStateRunning  = "running"
+	survivalStateWaiting  = "waiting_recovery"
+	survivalStateRetryNow = "retry_now"
+)
+
+// survivalTerminalToState renders the to-state for a terminal decision: the
+// synthetic fail-closed reasons get their operational terminal state
+// (expired / cancelled), everything else uses the action name.
+func survivalTerminalToState(d TaskDecision) string {
+	switch d.Reason {
+	case "deadline_exceeded":
+		return "expired"
+	case "client_disconnected":
+		return "cancelled"
+	default:
+		return d.Action.String()
+	}
+}
+
+// recordSurvivalTransition emits one gateway_survival_state_transitions_total
+// increment. from/to are the state labels above plus terminal states; reason
+// is the TaskDecision.Reason (low-cardinality by construction).
+func recordSurvivalTransition(from, to, reason string) {
+	metrics.SurvivalStateTransitionsTotal.WithLabelValues(from, to, reason).Inc()
+}

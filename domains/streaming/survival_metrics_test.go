@@ -204,3 +204,145 @@ func TestSurvivalMetricsAttemptsTotalPerCandidate(t *testing.T) {
 		}
 	})
 }
+
+// survivalTransitionDeltas reads the deltas of the from/to/reason series a
+// scenario is expected to move, keyed "from>to|reason".
+func survivalTransitionDeltas(t *testing.T, before map[string]float64, keys [][3]string) map[string]float64 {
+	t.Helper()
+	out := make(map[string]float64, len(keys))
+	for _, k := range keys {
+		lbl := metrics.SurvivalStateTransitionsTotal.WithLabelValues(k[0], k[1], k[2])
+		after := survivalCounterDelta(t, lbl)
+		out[k[0]+">"+k[1]+"|"+k[2]] = after - before[k[0]+">"+k[1]+"|"+k[2]]
+	}
+	return out
+}
+
+func survivalTransitionsBefore(t *testing.T, keys [][3]string) map[string]float64 {
+	t.Helper()
+	out := make(map[string]float64, len(keys))
+	for _, k := range keys {
+		out[k[0]+">"+k[1]+"|"+k[2]] = survivalCounterDelta(t,
+			metrics.SurvivalStateTransitionsTotal.WithLabelValues(k[0], k[1], k[2]))
+	}
+	return out
+}
+
+// TestSurvivalMetricsStateTransitions pins gateway_survival_state_transitions_total:
+// the decision dispatch and the wait loop emit the task-state transitions the
+// dashboards replay the state machine from.
+func TestSurvivalMetricsStateTransitions(t *testing.T) {
+	keys := [][3]string{
+		{"running", "retry_now", "recoverable_candidate"},
+		{"running", "waiting_recovery", "wait_recovery_window"},
+		{"waiting_recovery", "running", "retry"},
+		{"running", "succeed", "success"},
+		{"running", "fail_terminal", "terminal_candidate"},
+		{"running", "expired", "deadline_exceeded"},
+		{"waiting_recovery", "cancelled", "client_disconnected"},
+	}
+
+	t.Run("retry-now then success walks running->retry_now->running->succeed", func(t *testing.T) {
+		h := newCoordHarness(&scriptedExecutor{
+			errs:    []error{transientFailure(), nil},
+			results: []*executors.ExecuteResult{nil, {}},
+		})
+		c := h.coordinator()
+		before := survivalTransitionsBefore(t, keys)
+
+		c.Run(context.Background(), h.sw, &executors.ExecParams{})
+
+		got := survivalTransitionDeltas(t, before, keys)
+		want := map[string]float64{
+			"running>retry_now|recoverable_candidate":        1,
+			"running>succeed|success":                        1,
+			"waiting_recovery>running|retry":                 0,
+			"running>waiting_recovery|wait_recovery_window":  0,
+			"running>fail_terminal|terminal_candidate":       0,
+			"running>expired|deadline_exceeded":              0,
+			"waiting_recovery>cancelled|client_disconnected": 0,
+		}
+		for k, w := range want {
+			if got[k] != w {
+				t.Fatalf("transition %s delta = %v, want %v (all: %v)", k, got[k], w, got)
+			}
+		}
+	})
+
+	t.Run("wait-recovery emits running->waiting_recovery and waiting->running on retry", func(t *testing.T) {
+		h := newCoordHarness(&scriptedExecutor{
+			errs:    []error{rateLimitFailure(), nil},
+			results: []*executors.ExecuteResult{nil, {}},
+		})
+		c := h.coordinator()
+		before := survivalTransitionsBefore(t, keys)
+
+		c.Run(context.Background(), h.sw, &executors.ExecParams{})
+
+		got := survivalTransitionDeltas(t, before, keys)
+		if got["running>waiting_recovery|wait_recovery_window"] != 1 {
+			t.Fatalf("entering the wait must emit running->waiting_recovery, got %v", got)
+		}
+		if got["waiting_recovery>running|retry"] != 1 {
+			t.Fatalf("leaving the wait for the next attempt must emit waiting_recovery->running, got %v", got)
+		}
+		if got["running>succeed|success"] != 1 {
+			t.Fatalf("final success must emit running->succeed, got %v", got)
+		}
+		if got["running>retry_now|recoverable_candidate"] != 0 {
+			t.Fatalf("wait-recovery must not emit retry_now, got %v", got)
+		}
+	})
+
+	t.Run("deadline while waiting emits running->expired", func(t *testing.T) {
+		h := newCoordHarness(&scriptedExecutor{errs: []error{rateLimitFailure(), rateLimitFailure()}})
+		c := h.coordinator()
+		c.Options.Deadline = 3 * time.Second
+		before := survivalTransitionsBefore(t, keys)
+
+		c.Run(context.Background(), h.sw, &executors.ExecParams{})
+
+		got := survivalTransitionDeltas(t, before, keys)
+		if got["running>expired|deadline_exceeded"] != 1 {
+			t.Fatalf("deadline must emit running->expired exactly once, got %v", got)
+		}
+	})
+
+	t.Run("client disconnect during wait emits waiting_recovery->cancelled", func(t *testing.T) {
+		h := newCoordHarness(&scriptedExecutor{errs: []error{rateLimitFailure()}})
+		c := h.coordinator()
+		ctx, cancel := context.WithCancel(context.Background())
+		c.Sleep = func(ctx context.Context, d time.Duration) error {
+			cancel()
+			return ctx.Err()
+		}
+		before := survivalTransitionsBefore(t, keys)
+
+		c.Run(ctx, h.sw, &executors.ExecParams{})
+
+		got := survivalTransitionDeltas(t, before, keys)
+		if got["waiting_recovery>cancelled|client_disconnected"] != 1 {
+			t.Fatalf("disconnect during wait must emit waiting_recovery->cancelled, got %v", got)
+		}
+		if got["waiting_recovery>running|retry"] != 0 {
+			t.Fatalf("a disconnecting wait must not emit the retry transition, got %v", got)
+		}
+	})
+
+	t.Run("terminal candidate emits running->fail_terminal", func(t *testing.T) {
+		termErr := &executors.ExecuteError{
+			LastKind: errorsx.KindContentFilter,
+			Attempts: []executors.AttemptRecord{{ProviderID: 1, CredentialID: 1, Kind: errorsx.KindContentFilter}},
+		}
+		h := newCoordHarness(&scriptedExecutor{errs: []error{termErr}})
+		c := h.coordinator()
+		before := survivalTransitionsBefore(t, keys)
+
+		c.Run(context.Background(), h.sw, &executors.ExecParams{})
+
+		got := survivalTransitionDeltas(t, before, keys)
+		if got["running>fail_terminal|terminal_candidate"] != 1 {
+			t.Fatalf("terminal decision must emit running->fail_terminal, got %v", got)
+		}
+	})
+}
