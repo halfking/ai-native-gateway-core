@@ -154,6 +154,68 @@ func TestAttemptCommitGateQueuedKeepaliveBoundedByBufferLimit(t *testing.T) {
 	}
 }
 
+// TestAttemptCommitGateFinishAttempt pins the attempt-end trailing-bytes
+// contract (A-P2-5 hardening on top of finishGateWriter): immediate/
+// committed attempts pass the partial frame through verbatim, an uncommitted
+// buffered attempt holds it in the attempt buffer (flushed on Commit,
+// dropped on Discard), and a discarded attempt refuses it.
+func TestAttemptCommitGateFinishAttempt(t *testing.T) {
+	// Immediate mode: verbatim passthrough + flush.
+	g, f := newGateForTest(GateModeImmediate)
+	if err := g.FinishAttempt("data: {\"partial\""); err != nil {
+		t.Fatalf("immediate finish: %v", err)
+	}
+	if got := f.buf.String(); got != "data: {\"partial\"" {
+		t.Fatalf("immediate finish wire = %q", got)
+	}
+
+	// Buffered, uncommitted: held in the attempt buffer, flushed by Commit.
+	g2, f2 := newGateForTest(GateModeBuffered)
+	meta := "event: message_start\ndata: {}\n\n"
+	if err := g2.WriteFrame(meta); err != nil {
+		t.Fatal(err)
+	}
+	if err := g2.FinishAttempt("data: {\"partial\""); err != nil {
+		t.Fatalf("buffered finish: %v", err)
+	}
+	if f2.buf.Len() != 0 {
+		t.Fatalf("partial frame leaked before commit: %q", f2.buf.String())
+	}
+	if err := g2.Commit(); err != nil {
+		t.Fatalf("commit: %v", err)
+	}
+	if got := f2.buf.String(); got != meta+"data: {\"partial\"" {
+		t.Fatalf("commit must flush metadata then partial in order, got %q", got)
+	}
+
+	// Buffered, uncommitted, then discarded: partial dies with the attempt.
+	g3, f3 := newGateForTest(GateModeBuffered)
+	if err := g3.FinishAttempt("data: {\"partial\""); err != nil {
+		t.Fatal(err)
+	}
+	if err := g3.Discard(); err != nil {
+		t.Fatalf("discard: %v", err)
+	}
+	if f3.buf.Len() != 0 {
+		t.Fatalf("discarded partial must not reach the wire: %q", f3.buf.String())
+	}
+	if err := g3.FinishAttempt("more bytes"); !errors.Is(err, ErrAttemptDiscarded) {
+		t.Fatalf("finish after discard = %v, want ErrAttemptDiscarded", err)
+	}
+
+	// Committed buffered attempt: verbatim passthrough like immediate.
+	g4, f4 := newGateForTest(GateModeBuffered)
+	if err := g4.WriteFrame("event: content_block_delta\ndata: {\"delta\":{\"type\":\"text_delta\",\"text\":\"x\"}}\n\n"); err != nil {
+		t.Fatal(err)
+	}
+	if err := g4.FinishAttempt("data: {\"partial\""); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasSuffix(f4.buf.String(), "data: {\"partial\"") {
+		t.Fatalf("committed finish wire = %q", f4.buf.String())
+	}
+}
+
 func TestAttemptCommitGateKeepalivePassthroughBeforeCommit(t *testing.T) {
 	g, f := newGateForTest(GateModeBuffered)
 	if err := g.WriteFrame(": keep-alive\n\n"); err != nil {
