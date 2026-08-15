@@ -1,15 +1,16 @@
 package executors
 
 import (
+	"context"
 	"encoding/json"
-	"fmt"
 	"log/slog"
-	"net/http"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"time"
 
 	"github.com/kaixuan/llm-gateway-go/hotconfig"
+	"github.com/kaixuan/llm-gateway-go/internal/liveactions"
 	"github.com/kaixuan/llm-gateway-go/provider"
 )
 
@@ -27,16 +28,6 @@ type NodeFailoverConfig struct {
 	NodeTimeoutSeconds          int
 	RetryCount                  int
 	SingleNodeRetryDelaySeconds int
-}
-
-type NodeJumpEvent struct {
-	Type         string `json:"type"`
-	FromCredID   int    `json:"from_credential_id"`
-	FromProvider int    `json:"from_provider_id"`
-	ToCredID     int    `json:"to_credential_id"`
-	ToProvider   int    `json:"to_provider_id"`
-	Reason       string `json:"reason"`
-	Attempt      int    `json:"attempt"`
 }
 
 type NodeTracker struct {
@@ -178,58 +169,48 @@ func LoadRetryKeywords(hotCfg *hotconfig.Config) (continueKeywords, retryKeyword
 	return continueKeywords, retryKeywords
 }
 
-func SendNodeJumpEvent(w http.ResponseWriter, fromCred, fromProv, toCred, toProv int, reason string, attempt int) {
-	flusher, ok := w.(http.Flusher)
-	if !ok {
+// emitNodeSwitch (2026-08-15, V3.3-OBS OBS-B1) 发射 node_switch 动作事件
+// （24 号 §2: from/to/reason/retry/retry_seq；retry=true 时前端打特别标）。
+//
+// 它取代了旧的 SendNodeJumpEvent / SendRetrySSE（docs/会话优化v3/25 §8 判定
+// 为死代码，仓库内零调用点）：那两个函数假设"执行器手里有客户端的
+// http.ResponseWriter"并直接向响应流写 node_jump/node_retry SSE 事件，但
+// 节点切换的调用点在候选循环深处，拿到的 w 与真正的 SSE 出口
+// （admin/live_stream_sse.go 单出口原则，ADR-V3-101）完全脱节，所以从未被
+// 接线。动作事件走独立旁路（internal/liveactions → Redis 回放队列 → SSE
+// request_lifecycle），不需要也不应该碰 ResponseWriter，因此删除死代码、
+// 由本发射器直接复活其调用语义（from/to/reason/attempt）。
+func (e *Executor) emitNodeSwitch(params *ExecParams, fromCred, toCred int, reason string, attempt int) {
+	if e == nil || params == nil {
 		return
 	}
-
-	event := NodeJumpEvent{
-		Type:         "node_jump",
-		FromCredID:   fromCred,
-		FromProvider: fromProv,
-		ToCredID:     toCred,
-		ToProvider:   toProv,
-		Reason:       reason,
-		Attempt:      attempt,
+	ctx := context.Background()
+	if params.R != nil {
+		ctx = params.R.Context()
 	}
-
-	data, err := json.Marshal(event)
-	if err != nil {
-		slog.Warn("failed to marshal node_jump event", "error", err)
-		return
-	}
-
-	fmt.Fprintf(w, "event: node_jump\ndata: %s\n\n", data)
-	flusher.Flush()
-
-	slog.Info("sent node_jump SSE event",
-		"from_credential", fromCred,
-		"from_provider", fromProv,
-		"to_credential", toCred,
-		"to_provider", toProv,
-		"reason", reason,
-		"attempt", attempt,
-	)
+	e.liveActions.Emit(ctx, liveactions.ActionEvent{
+		RequestID:    params.RequestID,
+		Action:       liveactions.ActionNodeSwitch,
+		Model:        params.ClientModel,
+		CredentialID: toCred,
+		Retry:        fromCred == toCred,
+		RetrySeq:     attempt,
+		Detail: map[string]string{
+			"from_credential_id": strconv.Itoa(fromCred),
+			"to_credential_id":   strconv.Itoa(toCred),
+			"reason":             reason,
+		},
+	})
 }
 
-func SendRetrySSE(w http.ResponseWriter, credID, provID int, attempt int, delayMs int) {
-	flusher, ok := w.(http.Flusher)
-	if !ok {
-		return
+// nextCandidateCredentialID returns the credential id of the candidate after
+// idx. 0 when idx is the last — the switch target is then the sync-retry /
+// model-fallback path rather than a sibling node (to_credential_id=0).
+func nextCandidateCredentialID(candidates []provider.Candidate, idx int) int {
+	if idx+1 < len(candidates) {
+		return candidates[idx+1].CredentialID
 	}
-
-	payload := map[string]interface{}{
-		"type":          "node_retry",
-		"credential_id": credID,
-		"provider_id":   provID,
-		"attempt":       attempt,
-		"delay_ms":      delayMs,
-	}
-
-	data, _ := json.Marshal(payload)
-	fmt.Fprintf(w, "event: node_retry\ndata: %s\n\n", data)
-	flusher.Flush()
+	return 0
 }
 
 func NodeTimeout(hotCfg *hotconfig.Config) time.Duration {

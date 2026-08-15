@@ -41,6 +41,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/errorsx"
 	"github.com/kaixuan/llm-gateway-go/i18n"
 	"github.com/kaixuan/llm-gateway-go/internal/ir"
+	"github.com/kaixuan/llm-gateway-go/internal/liveactions"
 	"github.com/kaixuan/llm-gateway-go/internal/modelpolicy"
 	"github.com/kaixuan/llm-gateway-go/internal/observability"
 	gwtrace "github.com/kaixuan/llm-gateway-go/internal/trace"
@@ -797,6 +798,12 @@ type ChatHandler struct {
 	// nil 禁用(降级为 NoopRecorder 等价)。调用方负责 best-effort 注入。
 	traceRecorder gwtrace.Recorder
 
+	// liveActions (2026-08-15, V3.3-OBS OBS-B1) 注入请求生命周期动作事件
+	// 发射器（arrive/route_resolved/first_byte 等，见 docs/会话优化v3/24 §2）。
+	// nil 安全（*liveactions.Emitter 的 Emit 对 nil receiver 是 no-op）；
+	// 旁路异步、满即丢，不阻塞请求热路径。
+	liveActions *liveactions.Emitter
+
 	// autoTitleGenerator (2026-06-22) automatically generates session titles
 	// after the first successful request. nil disables auto-title generation.
 	autoTitleGenerator interface {
@@ -974,6 +981,40 @@ func (h *ChatHandler) SetRotationHook(hook *session.RotationHook) {
 // 传 nil 等价于禁用(内部 trace.Recorder 接口自身为 nil-safe)。
 func (h *ChatHandler) SetTraceRecorder(rec gwtrace.Recorder) {
 	h.traceRecorder = rec
+}
+
+// SetLiveActions (2026-08-15, V3.3-OBS OBS-B1) 注入请求生命周期动作事件
+// 发射器。传 nil 等价于禁用（Emit 对 nil receiver 是 no-op）。
+func (h *ChatHandler) SetLiveActions(e *liveactions.Emitter) {
+	h.liveActions = e
+}
+
+// clientProtocolFromPath infers the inbound wire protocol from the URL path
+// for the arrive action event (the authoritative ir.DetectProtocol runs later,
+// after the body is parsed; arrive fires before that).
+func clientProtocolFromPath(path string) string {
+	switch {
+	case strings.Contains(path, "/v1/messages"):
+		return "anthropic-messages"
+	case strings.Contains(path, "/v1/responses"):
+		return "openai-responses"
+	default:
+		return "openai-completions"
+	}
+}
+
+// emitAction 是 liveactions 注入的薄包装（同 emitTrace 的做法）。
+// Detail 只允许放 id/模型名/错误 kind 等元数据 —— 正文、API key、系统
+// prompt 严禁进入（23 号 §2 安全红线）。
+func (h *ChatHandler) emitAction(ctx context.Context, requestID string, action liveactions.Action, detail map[string]string) {
+	if h == nil || h.liveActions == nil || requestID == "" {
+		return
+	}
+	h.liveActions.Emit(ctx, liveactions.ActionEvent{
+		RequestID: requestID,
+		Action:    action,
+		Detail:    detail,
+	})
 }
 
 // emitTrace 是 trace 注入的薄包装,避免在 6 处 hot path 中重复写
@@ -1542,6 +1583,13 @@ func (h *ChatHandler) serveHTTPInner(w http.ResponseWriter, r *http.Request) {
 				"client_request_id", clientRequestID,
 				"user_agent", r.Header.Get("User-Agent"),
 			))
+	// ── 2026-08-15 (V3.3-OBS OBS-B1): arrive 动作事件（S1，24 号 §2）──────
+	// 客户端请求到达网关。client_protocol 按路径推断；model(原始) 在 body
+	// 解析之后才可知，route_resolved 事件会带上解析结果，此处不重复。
+	h.emitAction(r.Context(), requestID, liveactions.ActionArrive, map[string]string{
+		"client_protocol": clientProtocolFromPath(r.URL.Path),
+		"method":          r.Method,
+	})
 	// ── Ensure every request has a gw_session_id (2026-06-26) ────────────
 	// Even pre-keyInfo failures (missing_key, invalid_key, auth_unavailable)
 	// emit a request_log row via the safety net. Without a session_id here
@@ -2767,6 +2815,31 @@ func (h *ChatHandler) serveWithExecutor(
 	h.emitTrace(r.Context(), requestID,
 		gwtrace.RouteResolve(clientModel, len(candidates)).
 			WithDetails("profile", clientID.Fingerprint.ClientProfile))
+	// ── 2026-08-15 (V3.3-OBS OBS-B1): route_resolved 动作事件（S3）────────
+	// 模型解析完成（含 auto 决策摘要：task_type/chosen/confidence）。
+	{
+		detail := map[string]string{
+			"candidates": strconv.Itoa(len(candidates)),
+		}
+		if logCtx != nil && logCtx.IsAutoRequest {
+			detail["auto"] = "true"
+			if logCtx.TaskType != "" {
+				detail["auto_task_type"] = logCtx.TaskType
+			}
+			if logCtx.AutoConfidence > 0 {
+				detail["auto_confidence"] = strconv.FormatFloat(logCtx.AutoConfidence, 'f', 2, 64)
+			}
+			if logCtx.AutoFallbackModels != nil {
+				detail["auto_fallbacks"] = strconv.Itoa(len(logCtx.AutoFallbackModels))
+			}
+		}
+		h.liveActions.Emit(r.Context(), liveactions.ActionEvent{
+			RequestID: requestID,
+			Action:    liveactions.ActionRouteResolved,
+			Model:     clientModel,
+			Detail:    detail,
+		})
+	}
 	if err != nil {
 		// Database or infrastructure error - do NOT disguise as no_candidate
 		slog.Error("failed to get candidates from provider", "error", err, "model", clientModel, "request_id", requestID)
@@ -2810,6 +2883,16 @@ func (h *ChatHandler) serveWithExecutor(
 			ErrorMessage: noCandReason,
 		})
 		logCtx.RoutingTracker = noCandTracker
+		// ── 2026-08-15 (V3.3-OBS OBS-B1): no_route 动作事件 ──────────────────
+		// 模型已知但当前无可用路由节点（24 号 §1 状态机的 no_route → rejected）。
+		h.liveActions.Emit(r.Context(), liveactions.ActionEvent{
+			RequestID: requestID,
+			Action:    liveactions.ActionNoRoute,
+			Model:     clientModel,
+			Detail: map[string]string{
+				"blocked_reason": noCandReason,
+			},
+		})
 		h.emitFailedDecisionLog(requestID, clientModel, keyInfo, clientID, 0, nil, nil, "no_candidate", nil, int(time.Since(startTime).Milliseconds()))
 		logCtx.failAndMark("no_candidate",
 			fmt.Sprintf("No available provider for model '%s'", clientModel), nil, nil)
@@ -3411,6 +3494,15 @@ func (h *ChatHandler) serveWithExecutor(
 			},
 			OnStreamStarted: func(ttfbMs int) {
 				h.emitTrace(r.Context(), requestID, gwtrace.StreamStart(ttfbMs))
+				// ── 2026-08-15 (V3.3-OBS OBS-B1): first_byte 动作事件（S8）──
+				h.liveActions.Emit(r.Context(), liveactions.ActionEvent{
+					RequestID: requestID,
+					Action:    liveactions.ActionFirstByte,
+					Model:     clientModel,
+					Detail: map[string]string{
+						"ttfb_ms": strconv.Itoa(ttfbMs),
+					},
+				})
 			},
 			OnStreamCompleted: func(outcome executors.StreamOutcome) {
 				h.emitTrace(r.Context(), requestID,

@@ -10,12 +10,19 @@ import (
 
 	"github.com/kaixuan/llm-gateway-go/domains/dispatch"
 	"github.com/kaixuan/llm-gateway-go/domains/streaming/executors"
+	"github.com/kaixuan/llm-gateway-go/internal/liveactions"
 )
 
 // gatewayDispatchPipeline holds the constructed pipeline so the admin
 // /api/admin/dispatch/queues handler can read live snapshots. nil when the
 // pipeline could not be built (e.g. routingExec absent).
 var gatewayDispatchPipeline *dispatch.Pipeline
+
+// gatewayLiveActionsEmitter (2026-08-15, V3.3-OBS OBS-B1) is the shared
+// request-lifecycle action-event emitter, constructed in main.go next to the
+// trace recorder and injected here into the dispatch pipeline
+// (model_enqueued / node_enqueued / node_switch / model_switch / no_route).
+var gatewayLiveActionsEmitter *liveactions.Emitter
 
 // wireDispatchPipeline builds the V2 dispatch pipeline from the executor,
 // starts its worker pools, injects it into the executor, and returns it. If
@@ -28,6 +35,9 @@ func wireDispatchPipeline(routingExec *executors.Executor) *dispatch.Pipeline {
 	}
 	allowModelChange := readBoolSettingValue("dispatch_v2.allow_model_change")
 	p := routingExec.NewDispatchPipeline(allowModelChange)
+	// V3.3-OBS OBS-B1 (2026-08-15): 动作事件发射器注入 dispatch pipeline。
+	// nil 安全（发射点全部 no-op），发射器本身旁路异步、满即丢。
+	p.SetLiveActions(gatewayLiveActionsEmitter)
 	p.Start()
 	routingExec.SetDispatchPipeline(p)
 	gatewayDispatchPipeline = p
