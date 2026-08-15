@@ -18,7 +18,9 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/kaixuan/llm-gateway-go/credentialfpslot"
 	"github.com/kaixuan/llm-gateway-go/discovery"
+	"github.com/kaixuan/llm-gateway-go/domains/credentialstate" //nolint:depguard // emergency-repair state recovery (2026-08-15)
 	"github.com/kaixuan/llm-gateway-go/domains/streaming/executors" //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/domains/ursm/v2"
 	"github.com/kaixuan/llm-gateway-go/domains/ursm/v2/api"
@@ -856,7 +858,11 @@ func (h *Handler) handleEmergencyRepair(w http.ResponseWriter, r *http.Request) 
 	defer cancel()
 
 	ursmTenantID := ""
-	if h.ursmV2 != nil && req.RawModel != "" {
+	// 2026-08-15: the tenant lookup no longer requires RawModel — the
+	// whole-credential path (RawModel == "") now also clears URSM v2 state
+	// per binding model (see resetInMemoryNodeState + the URSM loop below),
+	// so the tenant ID is always needed when URSM v2 is wired.
+	if h.ursmV2 != nil {
 		if err := h.db.QueryRow(ctx,
 			"SELECT COALESCE(tenant_id, '') FROM credentials WHERE id = $1",
 			req.CredentialID,
@@ -895,11 +901,13 @@ func (h *Handler) handleEmergencyRepair(w http.ResponseWriter, r *http.Request) 
 		// Now also: reset availability/circuit/failures + node_probe_state.
 		var currentDisabled bool
 		var availState string
+		var providerID int
 		err := h.db.QueryRow(ctx,
-			`SELECT COALESCE(manual_disabled, false), COALESCE(availability_state, 'ready')
+			`SELECT COALESCE(manual_disabled, false), COALESCE(availability_state, 'ready'),
+			        COALESCE(provider_id, 0)
 			 FROM credentials WHERE id = $1`,
 			req.CredentialID,
-		).Scan(&currentDisabled, &availState)
+		).Scan(&currentDisabled, &availState, &providerID)
 		if err != nil {
 			if err == pgx.ErrNoRows {
 				writeError(w, http.StatusNotFound, "credential not found")
@@ -1057,32 +1065,49 @@ func (h *Handler) handleEmergencyRepair(w http.ResponseWriter, r *http.Request) 
 		beforeAfter["node_probe_rows_updated"] = probeRows
 		beforeAfter["model_probe_rows_updated"] = modelProbeRows
 
+		// 2026-08-15: the DB transaction above only reaches the persistent
+		// layers. The request hot path also consults in-process / Redis state
+		// (circuit breaker, fpslot NodeState cooldown, legacy credentialstate
+		// cache) that would keep filtering this node out for up to 5 minutes
+		// after force_enable returned 200. Reset them now.
+		resetModels, memOutcome := h.resetInMemoryNodeState(ctx, req.CredentialID, providerID, req.RawModel, true)
+		for k, v := range memOutcome {
+			beforeAfter[k] = v
+		}
+
 		// URSM v2: clear manual_hold via ApplyAdmin, AND wipe any
 		// residual disabled/fail_streak/cool_until_ms via ClearState.
-		if h.ursmV2 != nil && req.RawModel != "" {
+		// 2026-08-15: when RawModel is empty (whole-credential repair) the
+		// per-model loop below covers every binding model instead of
+		// skipping URSM entirely.
+		if h.ursmV2 != nil {
 			disabled := false
-			adminAction := api.AdminAction{
-				Scope:          api.ScopeNode,
-				CredentialID:   req.CredentialID,
-				RawModel:       req.RawModel,
-				TenantID:       ursmTenantID,
-				ManualDisabled: &disabled,
-				Reason:         req.Reason,
-				Actor:          actor,
-				IssuedAtMs:     time.Now().UnixMilli(),
+			applied, cleared := 0, 0
+			for _, m := range resetModels {
+				adminAction := api.AdminAction{
+					Scope:          api.ScopeNode,
+					CredentialID:   req.CredentialID,
+					RawModel:       m,
+					TenantID:       ursmTenantID,
+					ManualDisabled: &disabled,
+					Reason:         req.Reason,
+					Actor:          actor,
+					IssuedAtMs:     time.Now().UnixMilli(),
+				}
+				if err := h.ursmV2.ApplyAdmin(ctx, adminAction); err != nil {
+					slog.Warn("emergency_repair: ursm.v2 apply_admin failed", "error", err, "cred", req.CredentialID, "model", m)
+				} else {
+					applied++
+				}
+				if err := h.ursmV2.ClearStateForTenant(ctx, ursmTenantID, req.CredentialID, m); err != nil {
+					slog.Warn("emergency_repair: ursm.v2 clear_state failed", "error", err, "cred", req.CredentialID, "model", m)
+				} else {
+					cleared++
+				}
 			}
-			if err := h.ursmV2.ApplyAdmin(ctx, adminAction); err != nil {
-				slog.Warn("emergency_repair: ursm.v2 apply_admin failed", "error", err, "cred", req.CredentialID)
-				beforeAfter["ursm_v2_admin_applied"] = false
-			} else {
-				beforeAfter["ursm_v2_admin_applied"] = true
-			}
-			if err := h.ursmV2.ClearStateForTenant(ctx, ursmTenantID, req.CredentialID, req.RawModel); err != nil {
-				slog.Warn("emergency_repair: ursm.v2 clear_state failed", "error", err, "cred", req.CredentialID)
-				beforeAfter["ursm_v2_cleared"] = false
-			} else {
-				beforeAfter["ursm_v2_cleared"] = true
-			}
+			beforeAfter["ursm_v2_admin_applied"] = len(resetModels) > 0 && applied == len(resetModels)
+			beforeAfter["ursm_v2_cleared"] = len(resetModels) > 0 && cleared == len(resetModels)
+			beforeAfter["ursm_v2_models_covered"] = len(resetModels)
 		}
 
 	case "force_disable":
@@ -1143,10 +1168,11 @@ func (h *Handler) handleEmergencyRepair(w http.ResponseWriter, r *http.Request) 
 		// unavailable_reason / unavailable_at / unavailable_recover_at,
 		// because v_routable_credential_models reads cmb-side columns.
 		var currentState *string
+		var providerID int
 		err := h.db.QueryRow(ctx,
-			"SELECT circuit_state FROM credentials WHERE id = $1",
+			"SELECT circuit_state, COALESCE(provider_id, 0) FROM credentials WHERE id = $1",
 			req.CredentialID,
-		).Scan(&currentState)
+		).Scan(&currentState, &providerID)
 		if err != nil {
 			if err == pgx.ErrNoRows {
 				writeError(w, http.StatusNotFound, "credential not found")
@@ -1202,6 +1228,15 @@ func (h *Handler) handleEmergencyRepair(w http.ResponseWriter, r *http.Request) 
 		beforeAfter["previous_circuit_state"] = previousState
 		beforeAfter["new_circuit_state"] = "closed"
 		beforeAfter["cmb_available"] = true
+
+		// 2026-08-15: the request hot path uses the IN-PROCESS breaker
+		// (domains/credential), not the DB column above. Reset it (and the
+		// fpslot cooldown, which is the other cooling-style gate) so
+		// clear_circuit is effective immediately.
+		_, memOutcome := h.resetInMemoryNodeState(ctx, req.CredentialID, providerID, req.RawModel, false)
+		for k, v := range memOutcome {
+			beforeAfter[k] = v
+		}
 
 		// Also clear cooling state in URSM v2 Redis
 		if h.ursmV2 != nil && req.RawModel != "" {
@@ -1313,6 +1348,92 @@ func (h *Handler) handleEmergencyRepair(w http.ResponseWriter, r *http.Request) 
 		"ursm_v2_admin_applied":   ursmAdmin,
 		"ursm_v2_cleared":         ursmCleared,
 	})
+}
+
+// resetInMemoryNodeState clears the state layers the emergency-repair DB
+// transaction cannot reach: the in-process credential circuit breaker, the
+// fpslot per-(credential, model) NodeState cooldown, and (optionally) the
+// legacy credentialstate cache. Without this, force_enable / clear_circuit
+// return HTTP 200 while the router still filters the node out until the
+// in-memory cooling windows expire (breaker cooling / fpslot 300s cooldown /
+// credentialstate Redis TTL up to 5 min) — the "上游可用但网关长期排除节点"
+// complaint (see docs/会话优化v3/29 §A1).
+//
+// It returns the model list it covered (rawModel if given, otherwise every
+// binding model of the credential) plus a outcome map for the audit trail.
+// Every step is best-effort: a failure is logged and reported, never fatal.
+func (h *Handler) resetInMemoryNodeState(ctx context.Context, credentialID, providerID int, rawModel string, includeCredState bool) ([]string, map[string]any) {
+	outcome := map[string]any{}
+
+	if h.circuitResetter != nil && providerID > 0 {
+		h.circuitResetter.Reset(providerID, credentialID)
+		outcome["in_memory_circuit_reset"] = true
+	}
+
+	models := make([]string, 0, 4)
+	if rawModel != "" {
+		models = append(models, rawModel)
+	} else {
+		rows, err := h.db.Query(ctx, `
+			SELECT pm.raw_model_name
+			FROM credential_model_bindings cmb
+			JOIN provider_models pm ON pm.id = cmb.provider_model_id
+			WHERE cmb.credential_id = $1
+		`, credentialID)
+		if err != nil {
+			slog.Warn("emergency_repair: enumerate binding models failed",
+				"error", err, "cred", credentialID)
+		} else {
+			for rows.Next() {
+				var m string
+				if err := rows.Scan(&m); err == nil {
+					models = append(models, m)
+				}
+			}
+			rows.Close()
+		}
+	}
+
+	if h.fpSlots != nil {
+		reset := 0
+		for _, m := range models {
+			// A zero NodeState is "usable": Disabled=false, no cooldown, empty
+			// sliding window — router.filterHealthyNodes re-admits the node.
+			if err := h.fpSlots.SetNodeState(ctx, &credentialfpslot.NodeState{
+				CredentialID: credentialID,
+				Model:        m,
+			}); err == nil {
+				reset++
+			} else {
+				slog.Warn("emergency_repair: reset fp node state failed",
+					"error", err, "cred", credentialID, "model", m)
+			}
+		}
+		if reset > 0 {
+			outcome["fp_node_state_models_reset"] = reset
+		}
+	}
+
+	if includeCredState && h.credStateRecoverer != nil {
+		now := time.Now()
+		for _, m := range models {
+			// Probe-success semantics: a non-nil LastSuccessAt makes
+			// UpdateFromProbe treat this as authoritative recovery evidence
+			// (clears ConsecutiveFails / LastError) and flips Available=true.
+			h.credStateRecoverer.UpdateFromProbe(ctx, &credentialstate.State{
+				CredentialID:  credentialID,
+				Model:         m,
+				Available:     true,
+				HealthStatus:  "healthy",
+				LastSuccessAt: &now,
+				LastUpdatedAt: now,
+				Source:        "manual",
+			})
+		}
+		outcome["cred_state_recovered_models"] = len(models)
+	}
+
+	return models, outcome
 }
 
 func (h *Handler) handleRoutingOverview(w http.ResponseWriter, r *http.Request) {

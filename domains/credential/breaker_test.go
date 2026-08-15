@@ -665,3 +665,35 @@ func TestUpstreamOverloadedIsNotQuarantined(t *testing.T) {
 		t.Fatalf("expected open after repeated overload failures, got %s", b.State())
 	}
 }
+
+// TestManagerResetSingleCredential locks the 2026-08-15 emergency-repair
+// contract: Manager.Reset(providerID, credentialID) must close exactly the
+// targeted breaker (admin force_enable / clear_circuit path) and leave other
+// credentials' breakers untouched.
+func TestManagerResetSingleCredential(t *testing.T) {
+	m := NewManager()
+
+	// Open two breakers.
+	for i := 0; i < 3; i++ {
+		m.RecordFailure(7, 100, errorsx.KindNetwork)
+		m.RecordFailure(7, 200, errorsx.KindNetwork)
+	}
+	if m.Get(7, 100).State() != StateOpen || m.Get(7, 200).State() != StateOpen {
+		t.Fatal("precondition: both breakers should be open")
+	}
+
+	m.Reset(7, 100)
+
+	if got := m.Get(7, 100).State(); got != StateClosed {
+		t.Fatalf("targeted breaker should be closed after Reset, got %s", got)
+	}
+	if got := m.Get(7, 200).State(); got != StateOpen {
+		t.Fatalf("unrelated breaker must stay open, got %s", got)
+	}
+	if !m.Allow(7, 100) {
+		t.Fatal("reset breaker should allow requests immediately")
+	}
+
+	// Resetting a never-created breaker is a no-op, not a panic.
+	m.Reset(42, 999)
+}
