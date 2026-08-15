@@ -1795,10 +1795,9 @@ func (c *Client) upsertRequestLogBodies(ctx context.Context, tx pgx.Tx, requestI
 	// captured by the initial or successful request-log write.
 	reqJSON := requestBodyJSON
 	respJSON := responseBodyJSON
-	// CO-5 (2026-08-15): under sessions_v2.enabled, downsample the persisted
-	// bodies to digest envelopes (sha256 + length + bounded head) unless the
-	// explicit sessions_v2.request_bodies_full override is set. sessions_v2
-	// disabled keeps the full-body behaviour unchanged.
+	// CO-5 compatibility: existing digest envelopes remain readable, but new
+	// request and response bodies retain their complete JSON payloads. This
+	// avoids discarding stream evidence before downstream audit consumers read it.
 	if requestBodiesSummaryEnabled() {
 		reqJSON = summarizeBodyJSON(reqJSON)
 		respJSON = summarizeBodyJSON(respJSON)

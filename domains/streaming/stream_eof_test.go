@@ -216,3 +216,30 @@ func TestStreamChatWithPendingCapture_UpstreamDoneNoSynthMetric(t *testing.T) {
 
 	assert.Equal(t, 0, counter.synth, "synth counter must stay 0 when upstream sends [DONE] naturally")
 }
+
+func TestStreamChatWithPendingCapture_SplitsDoneJoinedToJSON(t *testing.T) {
+	resp := &http.Response{
+		Body: io.NopCloser(strings.NewReader(
+			"data: {\"id\":\"chunk-1\",\"object\":\"chat.completion.chunk\",\"choices\":[{\"delta\":{\"reasoning_content\":\"planning\"},\"finish_reason\":null}]}[DONE].",
+		)),
+		Request: httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil),
+	}
+	writer := httptest.NewRecorder()
+
+	outcome := StreamChatWithPendingCapture(
+		writer,
+		resp,
+		"gpt-5.6-sol",
+		"gpt-5.6-sol",
+		NewNormalizer(),
+		nil,
+		false,
+		nil,
+		nil,
+	)
+
+	assert.False(t, outcome.Interrupted)
+	assert.NotContains(t, writer.Body.String(), "}[DONE].")
+	assert.Contains(t, writer.Body.String(), `"reasoning_content":"planning"`)
+	assert.True(t, strings.HasSuffix(writer.Body.String(), "data: [DONE]\n\n"))
+}
