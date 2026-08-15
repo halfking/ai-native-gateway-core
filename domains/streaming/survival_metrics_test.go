@@ -510,3 +510,24 @@ func TestSurvivalMetricsResumeSafetyBlocked(t *testing.T) {
 		t.Fatalf("deadline terminal must not count as resume_safety_blocked, delta = %v", d)
 	}
 }
+
+// TestSurvivalMetricsZeroOnFlagOffAttempt pins the flag-off red line: the
+// survival series are produced ONLY by the SurvivalCoordinator loop (the
+// survival-enabled branch); the flag-off execution primitives — here
+// ExecuteAttempt with a nil gate, the documented "survival disabled" call
+// shape — must leave every survival counter untouched.
+func TestSurvivalMetricsZeroOnFlagOffAttempt(t *testing.T) {
+	exec := &scriptedExecutor{errs: []error{rateLimitFailure()}}
+	beforeAttempts := survivalCounterDelta(t, metrics.SurvivalAttemptsTotal.WithLabelValues("rate_limit", "1"))
+	beforeRequests := survivalCounterDelta(t, metrics.SurvivalRequestsTotal.WithLabelValues("anthropic", "false", "completed"))
+
+	// The flag-off shape: no commit gate, no coordinator.
+	_ = ExecuteAttempt(context.Background(), exec, nil, &executors.ExecParams{})
+
+	if d := survivalCounterDelta(t, metrics.SurvivalAttemptsTotal.WithLabelValues("rate_limit", "1")) - beforeAttempts; d != 0 {
+		t.Fatalf("flag-off attempt must not emit survival attempts_total, delta = %v", d)
+	}
+	if d := survivalCounterDelta(t, metrics.SurvivalRequestsTotal.WithLabelValues("anthropic", "false", "completed")) - beforeRequests; d != 0 {
+		t.Fatalf("flag-off attempt must not emit survival requests_total, delta = %v", d)
+	}
+}
