@@ -1,11 +1,9 @@
-// wire.go renders the on-the-wire event envelope defined by
-// gateway-event-schema-v1.json (SM repo:
-// ai-session-manager/docs/全面优化v1/gateway-event-schema-v1.json; copied for
-// validation in testdata/).
+// wire.go renders the gateway-authoritative event envelope. Gateway and SM
+// share the handoff-required `type` discriminator for schema version 1.0.
 //
 // GW-1.2 (docs/全面优化v1/README.md): the durable outbox must emit events whose
 // envelope carries event_id (idempotency key), correlation_id,
-// schema_version:"1.0", occurred_at, event_type and payload at the top level.
+// schema_version:"1.0", occurred_at, type and payload at the top level.
 //
 // Storage compatibility: the outbox_events table keeps schema_version as INT
 // (1). WireSchemaVersion is the string the v1 schema requires on the wire; the
@@ -35,7 +33,7 @@ const WireSchemaVersion = "1.0"
 type wireEnvelope struct {
 	EventID       string `json:"event_id"`
 	SchemaVersion string `json:"schema_version"`
-	EventType     string `json:"event_type"`
+	EventType     string `json:"type"`
 	TenantID      string `json:"tenant_id"`
 
 	// SessionID is required by the v1 schema description for any event other
@@ -61,16 +59,16 @@ type wireEnvelope struct {
 // used as fallbacks so old outbox rows still dispatch with correlation info.
 func RenderWireEnvelope(env EventEnvelope) ([]byte, error) {
 	w := wireEnvelope{
-		EventID:       env.EventID,
-		SchemaVersion: WireSchemaVersion,
-		EventType:     env.EventType,
-		TenantID:      env.TenantID,
-		SessionID:     firstNonEmpty(env.SessionID, env.AggregateID, payloadString(env.Payload, "session_id")),
-		RequestID:     firstNonEmpty(env.RequestID, payloadString(env.Payload, "request_id")),
-		CorrelationID: firstNonEmpty(env.CorrelationID, payloadString(env.Payload, "correlation_id")),
-		SourceSystem:  env.SourceSystem,
-		OccurredAt:    env.OccurredAt,
-		Payload:       env.Payload,
+		EventID:          env.EventID,
+		SchemaVersion:    WireSchemaVersion,
+		EventType:        env.EventType,
+		TenantID:         env.TenantID,
+		SessionID:        firstNonEmpty(env.SessionID, env.AggregateID, payloadString(env.Payload, "session_id")),
+		RequestID:        firstNonEmpty(env.RequestID, payloadString(env.Payload, "request_id")),
+		CorrelationID:    firstNonEmpty(env.CorrelationID, payloadString(env.Payload, "correlation_id")),
+		SourceSystem:     env.SourceSystem,
+		OccurredAt:       env.OccurredAt,
+		Payload:          env.Payload,
 		AggregateID:      env.AggregateID,
 		AggregateVersion: env.AggregateVersion,
 	}
