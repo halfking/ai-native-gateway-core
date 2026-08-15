@@ -39,7 +39,11 @@ import (
 // The writer parameter accepts the V2Writer interface so unit tests can
 // inject a failing writer; production passes a *v2.SessionWriterV2,
 // which satisfies V2Writer.
-func PersistHook(writer V2Writer) func(entry *telemetry.RequestLogEntry) {
+//
+// Optional dims writers (e.g. *SessionDimWriter) run on the same gating and
+// maintain the V1 session_dim dimension table (task/project/owner/client) —
+// also best-effort, never blocking the primary INSERT.
+func PersistHook(writer V2Writer, dims ...DimWriter) func(entry *telemetry.RequestLogEntry) {
 	if writer == nil {
 		return func(*telemetry.RequestLogEntry) {}
 	}
@@ -83,6 +87,20 @@ func PersistHook(writer V2Writer) func(entry *telemetry.RequestLogEntry) {
 		timeoutMs := settings.GetPlatformInt("sessions_v2.write_timeout_ms", 500)
 		ctx, cancel := context.WithTimeout(context.Background(), time.Duration(timeoutMs)*time.Millisecond)
 		defer cancel()
+
+		// session_dim 维度维护（任务/项目/属主/客户端）：与 V2 写入同一
+		// 超时预算，独立 best-effort —— V2 写失败也不影响维度更新。
+		for _, dim := range dims {
+			if dim == nil {
+				continue
+			}
+			if err := dim.UpsertSessionDim(ctx, entry); err != nil {
+				slog.Warn("sessionv2mirror: session_dim upsert failed",
+					"request_id", entry.RequestID,
+					"session_id", *entry.GwSessionID,
+					"error", err)
+			}
+		}
 
 		if err := writer.Write(ctx, req); err != nil {
 			slog.Warn("sessionv2mirror: V2 shadow write failed",
