@@ -40,6 +40,10 @@ func (r ResponseType) String() string {
 type CandidateOutcome struct {
 	CandidateID  string
 	CredentialID string
+	// ProviderID is the upstream provider of the candidate (0 when the
+	// outcome was synthesized, e.g. no candidate was ever planned); the
+	// survival metrics use it as the provider label (SR-13).
+	ProviderID int
 	// Kind is the errorsx.ErrorKind of the failure; empty when the
 	// candidate succeeded (Success=true on the AttemptResult).
 	Kind       errorsx.ErrorKind

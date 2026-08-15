@@ -347,6 +347,39 @@ func (g *AttemptCommitGate) Commit() error {
 	return nil
 }
 
+// FinishAttempt writes the attempt's trailing partial frame (bytes after the
+// last blank-line terminator — GateWriter.Finish passes them here) and flushes.
+// Called once at attempt end, never by bridges.
+//
+// The partial bytes cannot be classified as a complete frame, so they follow
+// the attempt's commit state instead: immediate mode or a committed attempt
+// writes them through verbatim (line-protocol bytes must never be dropped or
+// duplicated); an uncommitted buffered attempt keeps them in the attempt-local
+// buffer under the unified caps — flushed on Commit, dropped on Discard; a
+// discarded attempt refuses them with ErrAttemptDiscarded so a dead attempt
+// can never emit trailing bytes.
+func (g *AttemptCommitGate) FinishAttempt(partial string) error {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if g.discarded {
+		return ErrAttemptDiscarded
+	}
+	if partial == "" {
+		if g.mode == GateModeImmediate || g.committed {
+			g.writer.Flush()
+		}
+		return nil
+	}
+	if g.mode == GateModeImmediate || g.committed {
+		if _, err := g.writer.Write([]byte(partial)); err != nil {
+			return err
+		}
+		g.writer.Flush()
+		return nil
+	}
+	return g.appendBufferedLocked(partial)
+}
+
 // Discard drops the attempt-local buffer without ever touching the client
 // connection. Only legal while the state is none/metadata (nothing was
 // committed); after the semantic commit it returns
