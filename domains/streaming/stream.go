@@ -2,6 +2,7 @@ package streaming
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -175,9 +176,7 @@ func runEmptyStreamGate(
 			return buffered, nil
 		}
 		normalizedLine, hasCombinedDone := splitCombinedDoneFrame(line)
-		if hasCombinedDone {
-			line = normalizedLine
-		}
+		line = normalizedLine
 		if onRawLine != nil {
 			onRawLine(line)
 		}
@@ -535,8 +534,9 @@ func StreamChatWithPendingCaptureAndDiagnostics(
 		outcome.ChunkCount = 0
 		return outcome
 	}
-	if normalizedLine, hasCombinedDone := splitCombinedDoneFrame(firstLine); hasCombinedDone {
-		firstLine = normalizedLine
+	normalizedFirstLine, hasCombinedDone := splitCombinedDoneFrame(firstLine)
+	firstLine = normalizedFirstLine
+	if hasCombinedDone {
 		reader = prependDoneFrame(reader)
 	}
 
@@ -844,8 +844,9 @@ func StreamChatWithPendingCaptureAndDiagnostics(
 		}
 
 		line := readResult.line
-		if normalizedLine, hasCombinedDone := splitCombinedDoneFrame(line); hasCombinedDone {
-			line = normalizedLine
+		normalizedLine, hasCombinedDone := splitCombinedDoneFrame(line)
+		line = normalizedLine
+		if hasCombinedDone {
 			reader = prependDoneFrame(reader)
 		}
 		logRawUpstreamFrame(diagnostics, auditFromDiagnostics(diagnostics, requestID, "openai-completions"), []byte(line))
@@ -964,31 +965,66 @@ func extractPayload(line string) string {
 	return strings.TrimSpace(payload)
 }
 
-// splitCombinedDoneFrame repairs a malformed OpenAI SSE line where an
-// otherwise complete JSON event is immediately followed by the [DONE]
-// sentinel. The two payloads are distinct SSE events, so JSON consumers must
-// never receive them as one string. A trailing period is accepted for the
-// observed provider variant. Only split when the prefix is independently valid
-// JSON; unexpected suffixes remain untouched.
+// splitCombinedDoneFrame extracts the first complete JSON value from a malformed
+// OpenAI SSE data line. Upstreams occasionally add transport bytes before or
+// after valid JSON; passing the whole payload to a JSON parser loses a valid
+// chunk. Only structural metadata is logged so prompts and model output are not
+// disclosed through logs.
+//
+// The second return value is true when the discarded suffix is an OpenAI DONE
+// marker, which callers requeue as a separate SSE frame.
 func splitCombinedDoneFrame(line string) (string, bool) {
 	trimmed := strings.TrimSpace(line)
 	if !strings.HasPrefix(trimmed, "data: ") {
 		return line, false
 	}
 	payload := strings.TrimSpace(strings.TrimPrefix(trimmed, "data: "))
-	marker := "[DONE]"
-	if strings.HasSuffix(payload, "[DONE].") {
-		marker = "[DONE]."
-	}
-	if !strings.HasSuffix(payload, marker) {
+	if payload == "" || payload == "[DONE]" {
 		return line, false
 	}
 
-	jsonPayload := strings.TrimSpace(strings.TrimSuffix(payload, marker))
-	if !json.Valid([]byte(jsonPayload)) {
+	jsonPayload, leading, trailing, ok := extractCompleteJSONValue(payload)
+	if !ok || (leading == "" && trailing == "") {
 		return line, false
 	}
-	return "data: " + jsonPayload + "\n", true
+
+	trailing = strings.TrimSpace(trailing)
+	hasCombinedDone := trailing == "[DONE]" || trailing == "[DONE]."
+	slog.Warn("stream JSON frame normalized",
+		"strategy", "extract_first_complete_json_value",
+		"leading_bytes_discarded", len(leading),
+		"trailing_bytes_discarded", len(trailing),
+		"trailing_kind", streamJSONTrailingKind(trailing),
+		"done_requeued", hasCombinedDone,
+	)
+	return "data: " + jsonPayload + "\n", hasCombinedDone
+}
+
+func extractCompleteJSONValue(payload string) (jsonPayload, leading, trailing string, ok bool) {
+	for i := 0; i < len(payload); i++ {
+		if payload[i] != '{' && payload[i] != '[' {
+			continue
+		}
+		decoder := json.NewDecoder(bytes.NewReader([]byte(payload[i:])))
+		var raw json.RawMessage
+		if err := decoder.Decode(&raw); err != nil || !json.Valid(raw) {
+			continue
+		}
+		end := i + int(decoder.InputOffset())
+		return string(raw), payload[:i], payload[end:], true
+	}
+	return "", "", "", false
+}
+
+func streamJSONTrailingKind(trailing string) string {
+	switch trailing {
+	case "":
+		return "none"
+	case "[DONE]", "[DONE].":
+		return "done_marker"
+	default:
+		return "non_json_suffix"
+	}
 }
 
 func prependDoneFrame(reader *bufio.Reader) *bufio.Reader {

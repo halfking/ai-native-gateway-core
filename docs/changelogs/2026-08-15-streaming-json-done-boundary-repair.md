@@ -10,6 +10,9 @@ invalid string and failed with a non-whitespace-character-after-JSON error.
 
 - Split only a complete JSON payload followed by `[DONE]` or `[DONE].` into
   separate `data:` frames.
+- Extract the first complete JSON object or array when transport bytes are
+  attached before or after it, logging the repair strategy and byte counts
+  without recording request or response content.
 - Preserve final unterminated SSE lines when `bufio.Reader` returns them with
   `io.EOF`.
 - Apply the same OpenAI frame repair before JSON parsing in the OpenAI to
