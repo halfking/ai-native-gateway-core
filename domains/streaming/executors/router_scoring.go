@@ -8,6 +8,7 @@ import (
 	"os"
 	"strconv"
 
+	"github.com/kaixuan/llm-gateway-go/modeliqdata"
 	"github.com/kaixuan/llm-gateway-go/provider"
 )
 
@@ -17,15 +18,29 @@ type LoadScoreWeights struct {
 	IdentityWeight    float64 // 单 identity 压力权重
 	LatencyWeight     float64 // 响应延迟权重
 	QualityWeight     float64 // 成功率权重
+	// CostWeight / IQWeight 是 M2 RT-2 的可选扩展维度，默认 0（关闭）：
+	// 关闭时 composite 与历史公式逐字节一致（OffIsByteIdentical 测试钉住）。
+	//   - CostWeight：shadow cost-optimized 策略的混合单价维度进入生效评分
+	//     （calculateCostPenalty，未知价格=最大惩罚，不是免费）。
+	//   - IQWeight：模型标准 IQ（AA Intelligence Index 0-100）进入生效评分
+	//     （calculateIQPenalty，未知 IQ=中性 0.5，fail-open）。
+	CostWeight float64 // 可选：混合单价（in+out per 1M）惩罚权重
+	IQWeight   float64 // 可选：标准 IQ 惩罚权重
 }
 
 // DefaultLoadScoreWeights 返回默认权重配置
+//
+// CostWeight/IQWeight（M2 RT-2）默认 0（关闭）：关闭时评分与历史公式完全一致。
+// 通过 env 开启：LLM_GATEWAY_ROUTING_W_COST / LLM_GATEWAY_ROUTING_W_IQ
+// （沿用本文件 W_HEADROOM/W_CAPACITY 的 env 惯例），非法值回落 0。
 func DefaultLoadScoreWeights() LoadScoreWeights {
 	return LoadScoreWeights{
 		ConcurrencyWeight: 0.4,
 		IdentityWeight:    0.1,
 		LatencyWeight:     0.3,
 		QualityWeight:     0.2,
+		CostWeight:        envFloat("LLM_GATEWAY_ROUTING_W_COST", 0),
+		IQWeight:          envFloat("LLM_GATEWAY_ROUTING_W_IQ", 0),
 	}
 }
 
@@ -67,6 +82,19 @@ func calculateLoadScore(c provider.Candidate, r *Router, ctx context.Context, we
 			headroomPenalty*headroomWeight + // 高 headroom → 低惩罚 → 更易被选中
 			capacityPenalty*capacityWeight
 
+	// M2 RT-2 (2026-08-15): optional cost/IQ dimensions from the shadow
+	// strategies enter the effective score. Guarded so the default (weights
+	// zero / off) hot path stays byte-identical to the pre-RT-2 composite.
+	var costPenalty, iqPenalty float64
+	if weights.CostWeight > 0 {
+		costPenalty = calculateCostPenalty(c)
+		composite += costPenalty * weights.CostWeight
+	}
+	if weights.IQWeight > 0 {
+		iqPenalty = calculateIQPenalty(c)
+		composite += iqPenalty * weights.IQWeight
+	}
+
 	if rand.Float64() < 0.1 {
 		slog.Info("LOAD_SCORE_V2",
 			"credential_id", c.CredentialID,
@@ -79,11 +107,68 @@ func calculateLoadScore(c provider.Candidate, r *Router, ctx context.Context, we
 			"headroom_penalty", headroomPenalty,
 			"capacity_weight", c.Weight,
 			"capacity_penalty", capacityPenalty,
+			"cost_penalty", costPenalty,
+			"iq_penalty", iqPenalty,
 			"composite", composite,
 		)
 	}
 
 	return composite
+}
+
+// calculateCostPenalty normalizes the shadow cost-optimized dimension — the
+// blended unit price (PriceInPer1M + PriceOutPer1M, USD per 1M tokens) — into
+// a 0..1 penalty for calculateLoadScore (M2 RT-2).
+//
+// Unknown-value semantics (README §5 R1, mirrors strategy_cost.go): an unknown
+// price is NOT free → max penalty 1.0, so unpriced candidates never outrank
+// cheap known ones when CostWeight is on. Known prices rise linearly with the
+// blended price and saturate at the soft cap (env LLM_GATEWAY_ROUTING_COST_CAP,
+// default $30/1M blended — roughly the premium-model frontier) so a single
+// expensive outlier cannot dominate the composite.
+func calculateCostPenalty(c provider.Candidate) float64 {
+	if c.PriceInPer1M == nil || c.PriceOutPer1M == nil {
+		return 1.0
+	}
+	cap := envFloat("LLM_GATEWAY_ROUTING_COST_CAP", 30)
+	if cap <= 0 {
+		cap = 30
+	}
+	blended := *c.PriceInPer1M + *c.PriceOutPer1M
+	if blended <= 0 {
+		return 0
+	}
+	p := blended / cap
+	if p > 1.0 {
+		p = 1.0
+	}
+	return p
+}
+
+// calculateIQPenalty turns the model's standard IQ (AA Intelligence Index,
+// 0-100 — the same reference table as autoroute's RT-1 gate) into a 0..1
+// penalty for calculateLoadScore (M2 RT-2): higher IQ → lower penalty.
+//
+// Unknown-value semantics: an unknown IQ is NEUTRAL 0.5 (fail-open, matching
+// RT-1's gate semantics) — an unknown model is neither rewarded nor punished,
+// so a stale reference table cannot empty/bias the pool. Resolution order:
+// StandardizedName first, then RawModel.
+func calculateIQPenalty(c provider.Candidate) float64 {
+	name := c.StandardizedName
+	if name == "" {
+		name = c.RawModel
+	}
+	iq, found, _ := modeliqdata.LookupStandardIQ(name)
+	if !found {
+		return 0.5
+	}
+	if iq < 0 {
+		iq = 0
+	}
+	if iq > 100 {
+		iq = 100
+	}
+	return 1.0 - iq/100.0
 }
 
 // capacityPenaltyForWeight turns a candidate's capacity weight (the credential's
