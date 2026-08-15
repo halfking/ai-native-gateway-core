@@ -34,14 +34,17 @@ type AttemptExecutor interface {
 func ExecuteAttempt(ctx context.Context, exec AttemptExecutor, gate *AttemptCommitGate, params *executors.ExecParams) *AttemptResult {
 	if params == nil {
 		return &AttemptResult{
-			Success:    false,
+			Success:     false,
 			CommitState: CommitStateNone,
-			SafeRetry:  false,
-			FinalError: fmt.Errorf("execute attempt: nil params"),
+			SafeRetry:   false,
+			FinalError:  fmt.Errorf("execute attempt: nil params"),
 		}
 	}
 	attemptParams := *params
 	attemptParams.SurvivalAttempt = true
+	if params.R != nil {
+		attemptParams.R = params.R.WithContext(ctx)
+	}
 
 	result, err := exec.Execute(&attemptParams)
 	state := commitStateOf(gate)
@@ -62,10 +65,10 @@ func ExecuteAttempt(ctx context.Context, exec AttemptExecutor, gate *AttemptComm
 	}
 
 	res := &AttemptResult{
-		Success:          false,
+		Success:           false,
 		CandidateOutcomes: foldCandidateOutcomes(err),
-		CommitState:      state,
-		FinalError:       err,
+		CommitState:       state,
+		FinalError:        err,
 	}
 	res.SafeRetry = !gateCommitted(gate) && state < CommitStateContent
 	return res

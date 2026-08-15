@@ -359,6 +359,70 @@ func (kv *KeyVerifier) callVerifyDB(ctx context.Context, rawKey string) (*KeyInf
 	return &info, nil
 }
 
+// VerifyByID re-validates the server-side authorization context of an API key
+// by its DB id — the durable recovery path (doc 18 §11.2: the snapshot keeps
+// only api_key_id; workers must re-verify instead of replaying credentials).
+// The predicate mirrors callVerifyDB: disabled / revoked / expired keys fail.
+// It does NOT update last_used_at (the key owner is not making a request).
+func (kv *KeyVerifier) VerifyByID(ctx context.Context, id int) (*KeyInfo, error) {
+	if !kv.Enabled() {
+		return nil, fmt.Errorf("key verifier not configured")
+	}
+	if id <= 0 {
+		return nil, fmt.Errorf("VerifyByID: invalid api key id %d", id)
+	}
+	var appID int64
+	var info KeyInfo
+	err := kv.dbPool.QueryRow(ctx, `
+		SELECT
+			ak.id,
+			ak.tenant_id,
+			ak.application_id,
+			app.code AS application_code,
+			COALESCE(ak.key_prefix, '') AS key_prefix,
+			app.default_client_profile,
+			ak.owner_user,
+			ak.rate_limit_rpm,
+			ak.rate_limit_concurrent,
+			ak.rate_limit_tpm,
+			COALESCE(ak.key_tier, 'default') AS key_tier,
+			ak.budget_usd::float8,
+			COALESCE(ak.status, 'active') AS status,
+			ak.key_alias,
+			app.customer_id
+		FROM api_keys ak
+		JOIN applications app ON app.id = ak.application_id
+		WHERE ak.id = $1
+		  AND ak.enabled = TRUE
+		  AND COALESCE(ak.status, 'active') NOT IN ('revoked', 'disabled')
+		  AND (ak.expires_at IS NULL OR ak.expires_at > now())
+	`, id).Scan(
+		&info.ID,
+		&info.TenantID,
+		&appID,
+		&info.ApplicationCode,
+		&info.KeyPrefix,
+		&info.DefaultClientProfile,
+		&info.OwnerUser,
+		&info.RateLimitRPM,
+		&info.RateLimitConcurrent,
+		&info.RateLimitTPM,
+		&info.KeyTier,
+		&info.BudgetUSD,
+		&info.Status,
+		&info.KeyAlias,
+		&info.CustomerID,
+	)
+	if err != nil {
+		if err == pgx.ErrNoRows {
+			return nil, &InvalidKeyError{Message: fmt.Sprintf("api key %d invalid, revoked or expired", id)}
+		}
+		return nil, err
+	}
+	info.ApplicationID = int(appID)
+	return &info, nil
+}
+
 // HashAPIKey hashes an API key using HMAC-SHA256 keyed with secretKey, returning
 // the hex digest. This is the canonical key_hash stored in api_keys and used by
 // the verifier for lookups. All writers (admin, self-check worker, etc.) MUST use
