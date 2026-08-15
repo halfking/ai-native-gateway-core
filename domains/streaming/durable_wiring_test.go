@@ -2,6 +2,7 @@ package streaming
 
 import (
 	"context"
+	"net/http"
 	"testing"
 
 	"github.com/pashagolub/pgxmock/v4"
@@ -48,15 +49,19 @@ func TestDurableCheckpointHookMapsStates(t *testing.T) {
 	require.NotNil(t, hook)
 
 	// Known state maps onto the durable checkpoint write.
+	expectBypassBegin(mock)
 	mock.ExpectExec("UPDATE durable_llm_tasks SET commit_state").
 		WithArgs("018f-task", "gateway/request-1", int64(1), durabletask.CommitContent, true).
 		WillReturnResult(pgxmock.NewResult("UPDATE", 1))
+	mock.ExpectCommit()
 	require.NoError(t, hook(CommitStateContent))
 
 	// Unknown states fail closed as content.
+	expectBypassBegin(mock)
 	mock.ExpectExec("UPDATE durable_llm_tasks SET commit_state").
 		WithArgs("018f-task", "gateway/request-1", int64(1), durabletask.CommitContent, true).
 		WillReturnResult(pgxmock.NewResult("UPDATE", 1))
+	mock.ExpectCommit()
 	require.NoError(t, hook(CommitState(99)))
 
 	require.NoError(t, mock.ExpectationsWereMet())
@@ -71,9 +76,11 @@ func TestDurableCheckpointHookFencedOffPropagates(t *testing.T) {
 		durabletask.ForegroundConfig{})
 	hook := durableCheckpointHook(context.Background(), fg)
 
+	expectBypassBegin(mock)
 	mock.ExpectExec("UPDATE durable_llm_tasks SET commit_state").
 		WithArgs(pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg()).
 		WillReturnResult(pgxmock.NewResult("UPDATE", 0))
+	mock.ExpectRollback()
 	require.ErrorIs(t, hook(CommitStateContent), durabletask.ErrLeaseLost)
 	require.NoError(t, mock.ExpectationsWereMet())
 }
@@ -93,4 +100,24 @@ func streamingTestKeyring(t *testing.T) *secret.Keyring {
 	kr, err := secret.NewKeyring(map[string][32]byte{"current": key}, "current")
 	require.NoError(t, err)
 	return kr
+}
+
+func TestBeginDurableSkipsSessionlessRequests(t *testing.T) {
+	// A sessionless durable task could never project into the PendingStore
+	// (ProjectCAS requires SessionID) — beginDurable must skip it entirely.
+	h := &ChatHandler{}
+	r, err := http.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+	require.NoError(t, err)
+	params := &executors.ExecParams{RequestID: "req-1", SessionID: "", BodyBytes: []byte(`{}`)}
+	require.Nil(t, h.beginDurable(r, params, ProtocolOpenAIChat, "tenant-a"))
+
+	// Without a store armed everything stays nil (feature off).
+	params.SessionID = "session-1"
+	require.Nil(t, h.beginDurable(r, params, ProtocolOpenAIChat, "tenant-a"))
+}
+
+// expectBypassBegin stubs the durable store's RLS-bypass transaction opening.
+func expectBypassBegin(mock pgxmock.PgxPoolIface) {
+	mock.ExpectBegin()
+	mock.ExpectExec("SELECT set_config").WillReturnResult(pgxmock.NewResult("SELECT", 1))
 }

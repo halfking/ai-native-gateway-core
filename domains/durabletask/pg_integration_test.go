@@ -154,6 +154,14 @@ func expireTask(t *testing.T, store *Store, lease Lease) {
 	require.NoError(t, err)
 }
 
+// expireLease simulates a crashed/disconnected holder by aging out its lease.
+func expireLease(t *testing.T, store *Store, lease Lease) {
+	t.Helper()
+	_, err := store.db.Exec(context.Background(),
+		`UPDATE durable_llm_tasks SET lease_until = now() - interval '1 minute' WHERE id=$1`, lease.TaskID)
+	require.NoError(t, err)
+}
+
 // TestPGConcurrentClaimFencing：任务租约到期后两个 worker 并发 claim，
 // SKIP LOCKED 保证只有一个赢；输家用旧 fencing token 续租/写终态必须
 // 全部 ErrLeaseLost，赢家的状态不被覆盖。
@@ -231,14 +239,24 @@ func TestPGSemanticCheckpointProtectedFromDeadlineReaper(t *testing.T) {
 	ctx := context.Background()
 
 	past := createTask(t, store, "018f-it-reap", time.Now().Add(2*time.Hour))
-	expireTask(t, store, past)
-	// 语义检查点：content 已提交。
+	// 语义检查点：content 已提交（lease 仍活跃）。
 	require.NoError(t, store.Checkpoint(ctx, past, CommitContent))
 
+	// 活跃 lease 的检查点任务两个 reaper 都不能碰（回归：live 前台任务
+	// 曾会被 unsafe reaper 直接终态化）。
 	items, err := store.ReapDeadlines(ctx, 100)
 	require.NoError(t, err)
 	require.Empty(t, items, "semantic-checkpointed task must not be reclaimed by the deadline reaper")
+	items, err = store.ReapUnsafeCheckpoints(ctx, 100)
+	require.NoError(t, err)
+	require.Empty(t, items, "live-lease checkpointed task must not be terminalized by the unsafe reaper")
 
+	// 断连/崩溃形态：deadline 过期 + lease 过期，仅 unsafe reaper 终态化。
+	expireTask(t, store, past)
+	expireLease(t, store, past)
+	items, err = store.ReapDeadlines(ctx, 100)
+	require.NoError(t, err)
+	require.Empty(t, items, "semantic-checkpointed task must not be reclaimed by the deadline reaper")
 	items, err = store.ReapUnsafeCheckpoints(ctx, 100)
 	require.NoError(t, err)
 	require.Len(t, items, 1)

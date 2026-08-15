@@ -113,7 +113,9 @@ func (h *ChatHandler) runSurvivalCoordinator(
 
 	// SR-W3 durable terminalization: map the coordinator verdict onto the
 	// fenced Complete/Fail transition (also enqueues the projection outbox).
-	h.finishDurable(frozenCtx, durable, res, params.RequestID)
+	// WithoutCancel: the client may have disconnected (that is often WHY the
+	// loop ended) — the durable task must still terminalize.
+	h.finishDurable(context.WithoutCancel(frozenCtx), durable, res, params.RequestID)
 	slog.Info("request_survival_finished",
 		"request_id", params.RequestID,
 		"succeed", res.Succeed,

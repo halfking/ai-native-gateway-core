@@ -54,6 +54,13 @@ func (h *ChatHandler) beginDurable(r *http.Request, params *executors.ExecParams
 	if h.durableStore == nil {
 		return nil
 	}
+	if params.SessionID == "" {
+		// The PendingStore projection is keyed by (session_id, request_id);
+		// a sessionless durable task could never project and the outbox row
+		// would retry forever. Durable recovery is session-scoped — skip.
+		slog.Debug("durable: skipping sessionless request", "request_id", params.RequestID)
+		return nil
+	}
 	if tenantID == "" {
 		tenantID = "default" // single-tenant legacy mode
 	}

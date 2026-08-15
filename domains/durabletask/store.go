@@ -411,9 +411,14 @@ func (s *Store) ReapDeadlines(ctx context.Context, limit int) ([]OutboxItem, err
 	return s.reap(ctx, limit, `deadline_at <= now() AND commit_state IN ('none','metadata')`, StatusExpired, ReasonSurvivalExpired)
 }
 
-// ReapUnsafeCheckpoints terminalizes semantic-checkpointed tasks so they can never be reclaimed.
+// ReapUnsafeCheckpoints terminalizes ABANDONED semantic-checkpointed tasks
+// (stale lease) so they can never be reclaimed. A live foreground holder
+// (active lease, renewing) is never touched — its own fenced writes own the
+// terminal transition.
 func (s *Store) ReapUnsafeCheckpoints(ctx context.Context, limit int) ([]OutboxItem, error) {
-	return s.reap(ctx, limit, `commit_state IN ('content','tool_call','terminal')`, StatusResumeSafetyBlocked, ReasonResumeSafetyBlocked)
+	return s.reap(ctx, limit,
+		`commit_state IN ('content','tool_call','terminal') AND (lease_until IS NULL OR lease_until < now())`,
+		StatusResumeSafetyBlocked, ReasonResumeSafetyBlocked)
 }
 
 func (s *Store) reap(ctx context.Context, limit int, predicate string, status Status, reason string) (items []OutboxItem, err error) {
