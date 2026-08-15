@@ -80,3 +80,41 @@ func TestMayRetryInterruptedStreamAllowsPreCommitResumable(t *testing.T) {
 		t.Fatal("pre-commit resumable interruption should still allow candidate failover")
 	}
 }
+
+func TestDispatchExecutionContext_StreamDetaches(t *testing.T) {
+	r := httptest.NewRequest("POST", "/v1/chat/completions", nil)
+	ctx, cancel := context.WithCancel(r.Context())
+	defer cancel()
+	r = r.WithContext(ctx)
+
+	clientCtx, cancelClient := context.WithCancel(r.Context())
+	defer cancelClient()
+
+	got, cancelDispatch := dispatchExecutionContext(&ExecParams{R: r.WithContext(clientCtx), IsStream: true})
+	defer cancelDispatch()
+
+	cancelClient()
+	if errors.Is(got.Err(), context.Canceled) {
+		t.Fatal("streaming dispatch wait must remain alive after client disconnect")
+	}
+}
+
+func TestDispatchExecutionContext_NonStreamDoesNotDetach(t *testing.T) {
+	r := httptest.NewRequest("POST", "/v1/messages", nil)
+	ctx, cancel := context.WithCancel(r.Context())
+	defer cancel()
+	r = r.WithContext(ctx)
+
+	clientCtx, cancelClient := context.WithCancel(r.Context())
+	defer cancelClient()
+
+	// non-stream request with a session id - must still inherit client ctx so
+	// the client disconnect is observable and downstream cancel propagates.
+	got, cancelDispatch := dispatchExecutionContext(&ExecParams{R: r.WithContext(clientCtx), IsStream: false, SessionID: "sess-1"})
+	defer cancelDispatch()
+
+	cancelClient()
+	if !errors.Is(got.Err(), context.Canceled) {
+		t.Fatalf("non-stream dispatch wait should inherit client cancel; got %v", got.Err())
+	}
+}
