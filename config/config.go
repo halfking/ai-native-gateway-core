@@ -493,6 +493,17 @@ func Load() *Config {
 		cfg.DefaultCred = 1
 	}
 
+	// License crypto (RSA / AES) — env tag is documentation only; read explicitly.
+	if v := os.Getenv("LLM_GATEWAY_LICENSE_PRIVATE_KEY"); v != "" {
+		cfg.LicensePrivateKey = v
+	}
+	if v := os.Getenv("LLM_GATEWAY_LICENSE_PUBLIC_KEY"); v != "" {
+		cfg.LicensePublicKey = v
+	}
+	if v := os.Getenv("LLM_GATEWAY_LICENSE_AES_KEY"); v != "" {
+		cfg.LicenseAESKey = v
+	}
+
 	// WeChat Agent ID parsing
 	if agentIDStr := os.Getenv("LLM_GATEWAY_WECHAT_AGENT_ID"); agentIDStr != "" {
 		if v, err := strconv.Atoi(agentIDStr); err == nil {
