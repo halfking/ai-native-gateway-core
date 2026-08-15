@@ -314,7 +314,7 @@ func (w *DurableRecoveryWorker) rescheduleWithError(ctx context.Context, task *d
 		TaskID: task.ID, LeaseOwner: task.LeaseOwner, FencingToken: task.FencingToken,
 		NextRetryAt: next, ErrorKind: "durable_recovery", Reason: reason, Attempt: task.AttemptCount,
 	}); err != nil && errors.Is(err, durable.ErrLeaseLost) {
-		metrics.SurvivalLeaseConflictsTotal.Inc()
+		w.noteLeaseLost()
 	}
 }
 
@@ -336,9 +336,9 @@ func (w *DurableRecoveryWorker) failTask(ctx context.Context, task *durable.Task
 	}
 	projection, err := w.store.CommitTerminal(ctx, durable.TerminalCommit{Task: task, Outcome: durable.StatusFailed, ReasonCode: reason, ErrorKind: "durable_recovery"})
 	if err != nil && errors.Is(err, durable.ErrLeaseLost) {
-		metrics.SurvivalLeaseConflictsTotal.Inc()
+		w.noteLeaseLost()
 	}
 	if projection != nil && !projection.Committed {
-		metrics.SurvivalLeaseConflictsTotal.Inc()
+		w.noteLeaseLost()
 	}
 }
