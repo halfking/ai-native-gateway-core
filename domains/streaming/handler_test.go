@@ -155,6 +155,12 @@ func TestSanitizeGwSessionHeader(t *testing.T) {
 		{name: "gs_ without trailing chars accepted", input: "gs_x", want: "gs_x"},
 		{name: "trailing whitespace trimmed", input: "  gw_abc  ", want: "gw_abc"},
 		{name: "gt_ with whitespace preserved on content", input: "  gt_gw_abc  ", want: "gt_gw_abc"},
+		// 2026-08-15 regression: the auto-title/auto-summary loopback used to
+		// set "gt:" / "gs:" (colon) prefixes, which the sanitizer silently
+		// dropped → the child row got a fresh gw_<uuid> and its parent_request_id
+		// link was unusable. Colon forms MUST be rejected by the contract.
+		{name: "title colon gt: rejected (bug class)", input: "gt:gw_abc", want: ""},
+		{name: "summary colon gs: rejected (bug class)", input: "gs:gw_abc", want: ""},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
