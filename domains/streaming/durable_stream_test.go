@@ -122,6 +122,45 @@ func TestDurableStreamBindingRenewalLoopStops(t *testing.T) {
 	b.Stop()
 }
 
+// TestDurableStreamBindingStopWaitsForRenewalExit proves that Stop returns
+// only after the renewal goroutine has actually exited, never on a premature
+// timeout. With the default 15s lease the renew interval is 7.5s; a fixed
+// grace shorter than that (the old 3s) would spuriously time out on nearly
+// every stop. Here Stop is observed to return promptly once the goroutine
+// exits and must not block for the full grace.
+func TestDurableStreamBindingStopWaitsForRenewalExit(t *testing.T) {
+	store := &fakeForegroundStore{}
+	b := newDurableStreamBinding(store,
+		&durable.Task{ID: "task-7", TenantID: "tenant-1", RequestID: "req-9",
+			SessionID: "sess-1", RequestHash: "hash-1", LeaseOwner: "gw-front", FencingToken: 1},
+		200*time.Millisecond)
+
+	b.mu.Lock()
+	stopCh := make(chan struct{})
+	doneCh := make(chan struct{})
+	b.stopRenew, b.renewDone = stopCh, doneCh
+	b.mu.Unlock()
+	// Simulate the renewal loop: exit only when Stop closes stopCh.
+	go func() {
+		defer close(doneCh)
+		<-stopCh
+	}()
+
+	stopStart := time.Now()
+	b.Stop()
+	elapsed := time.Since(stopStart)
+	// If the grace fired we would see ~6s; a correct wait returns in well
+	// under a second once the goroutine exits.
+	if elapsed > 2*time.Second {
+		t.Fatalf("Stop blocked for %v; renewal goroutine did not exit promptly (grace fired?)", elapsed)
+	}
+	select {
+	case <-doneCh:
+	default:
+		t.Fatal("renewal goroutine still running after Stop returned")
+	}
+}
+
 func TestDurableStreamBindingRenewalLeaseLossCountsBothMetricFamilies(t *testing.T) {
 	beforeSurvival := gatherMetricValue(t, "gateway_survival_lease_conflicts_total")
 	beforeDurable := gatherMetricValue(t, "durable_lease_lost_total")
