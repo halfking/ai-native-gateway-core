@@ -142,3 +142,96 @@ func TestUpdateRequestLog_BodiesSummaryModeWritesDigest(t *testing.T) {
 	require.NoError(t, err)
 	require.NoError(t, mockDB.ExpectationsWereMet())
 }
+
+// fullBodyMatcher asserts the persisted payload is exactly the expected
+// string (the verbatim full body / sentinel).
+type fullBodyMatcher struct {
+	want string
+}
+
+func (m fullBodyMatcher) Match(value interface{}) bool {
+	s, ok := value.(string)
+	return ok && s == m.want
+}
+
+// TestUpdateRequestLog_BodiesFullModeUnchanged (CO-5 regression pin): with
+// summary mode OFF (sessions_v2 not enabled — the default deployment), the
+// bodies write path must keep its exact current behaviour: full bodies are
+// persisted verbatim, missing bodies stay "null".
+func TestUpdateRequestLog_BodiesFullModeUnchanged(t *testing.T) {
+	longBody := longBodyForSummary("FULL-MODE-TAIL")
+	smallBody := `{"messages":[{"role":"user","content":"hi"}]}`
+
+	tests := []struct {
+		name             string
+		requestBody      *string
+		responseBody     *string
+		wantRequestBody  string
+		wantResponseBody string
+	}{
+		{
+			name:             "large bodies persisted verbatim",
+			requestBody:      &longBody,
+			responseBody:     &longBody,
+			wantRequestBody:  longBody,
+			wantResponseBody: longBody,
+		},
+		{
+			name:             "small bodies persisted verbatim",
+			requestBody:      &smallBody,
+			responseBody:     &smallBody,
+			wantRequestBody:  smallBody,
+			wantResponseBody: smallBody,
+		},
+		{
+			name:             "missing bodies stay null",
+			requestBody:      nil,
+			responseBody:     nil,
+			wantRequestBody:  "null",
+			wantResponseBody: "null",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			withBodiesSummaryMode(t, false)
+
+			mockDB, err := pgxmock.NewPool()
+			require.NoError(t, err)
+			defer mockDB.Close()
+
+			mockDB.ExpectBegin()
+			mockDB.ExpectExec(`UPDATE usage_ledger_hot`).
+				WithArgs("req-full-mode", pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg()).
+				WillReturnResult(pgxmock.NewResult("UPDATE", 1))
+			status := RequestStatusSuccess
+			requestLogArgs := requestLogUpdateArgs(RequestLogEntry{
+				Success:       true,
+				RequestStatus: &status,
+			})
+			mockDB.ExpectExec(`UPDATE request_logs_hot`).
+				WithArgs(requestLogArgs...).
+				WillReturnResult(pgxmock.NewResult("UPDATE", 1))
+			mockDB.ExpectExec(`INSERT INTO request_logs_bodies_hot`).
+				WithArgs(
+					pgxmock.AnyArg(),
+					fullBodyMatcher{want: tc.wantRequestBody},
+					fullBodyMatcher{want: tc.wantResponseBody},
+				).
+				WillReturnResult(pgxmock.NewResult("INSERT", 1))
+			mockDB.ExpectCommit()
+
+			client := &Client{requestLogDB: mockDB}
+			err = client.updateRequestLog(&RequestLogEntry{
+				RequestID:     "req-full-mode",
+				Op:            RequestLogUpdate,
+				Success:       true,
+				RequestStatus: &status,
+				RequestBody:   tc.requestBody,
+				ResponseBody:  tc.responseBody,
+			})
+			require.NoError(t, err)
+			require.NoError(t, mockDB.ExpectationsWereMet())
+		})
+	}
+}
