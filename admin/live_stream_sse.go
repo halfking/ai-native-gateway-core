@@ -487,8 +487,7 @@ type LiveStreamSSEHub struct {
 	// (internal/liveactions) is untouched; the hub only READS the bounded
 	// Redis LIST and fans filtered batches out to SSE clients.
 	actionMu          sync.Mutex
-	actionArmed       bool                 // set by the first poll after hub start
-	actionCursor      string               // unique key of the newest processed action entry
+	actionCursor      string               // unique key of the newest processed action entry ("" = 未消费)
 	actionTenantIndex map[string]string    // request_id → tenant (bounded ownership index)
 	actionTenantMiss  map[string]time.Time // negative cache for unresolved lookups
 	actionsDelivered  int64
