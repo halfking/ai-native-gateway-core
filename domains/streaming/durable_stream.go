@@ -47,6 +47,9 @@ type DurableStreamBinding struct {
 	lastRank  int
 	stopRenew chan struct{}
 	renewDone chan struct{}
+	// renewInterval is the ticker period of the renewal loop; Stop bounds its
+	// wait on it so it never times out before a pending tick can drain.
+	renewInterval time.Duration
 }
 
 func newDurableStreamBinding(store DurableForegroundStore, task *durable.Task, lease time.Duration) *DurableStreamBinding {
@@ -69,6 +72,12 @@ func (b *DurableStreamBinding) Start() {
 	b.mu.Unlock()
 
 	interval := b.lease / 2
+	if interval <= 0 {
+		interval = time.Second
+	}
+	b.mu.Lock()
+	b.renewInterval = interval
+	b.mu.Unlock()
 	go func() {
 		defer close(done)
 		ticker := time.NewTicker(interval)
@@ -104,6 +113,15 @@ func (b *DurableStreamBinding) Stop() {
 	b.mu.Lock()
 	stop, done := b.stopRenew, b.renewDone
 	b.stopRenew, b.renewDone = nil, nil
+	// Worst-case wait: a pending renewal tick may be mid-flight when we close
+	// stop. The loop's select can defer up to one full interval before seeing
+	// stop, then a RenewLease call can run up to its 5s timeout. Bound the
+	// wait on that sum so Stop returns promptly but never times out early
+	// (a short fixed grace < interval would spurious-timeout ~every stop).
+	grace := b.renewInterval + 6*time.Second
+	if grace < 3*time.Second {
+		grace = 3 * time.Second
+	}
 	b.mu.Unlock()
 	if stop == nil {
 		return
@@ -111,7 +129,8 @@ func (b *DurableStreamBinding) Stop() {
 	close(stop)
 	select {
 	case <-done:
-	case <-time.After(3 * time.Second):
+	case <-time.After(grace):
+		slog.Warn("durable foreground renewal stop grace exceeded", "task_id", b.task.ID)
 	}
 }
 
