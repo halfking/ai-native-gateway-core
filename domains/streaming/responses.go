@@ -442,7 +442,9 @@ func (h *ResponsesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			RequestID:      requestID,
 			ToolsRequested: responsesHasTools(&reqBody),
 		}
-		if h.chatHandler.maybeStartDurable(w, r, in, isStream) == durableHandled {
+		// These endpoints have no survival branch yet: streaming durable
+		// stays fail-closed (501) until their coordinator wiring lands.
+		if decision, _ := h.chatHandler.maybeStartDurable(w, r, in, isStream, false); decision == durableHandled {
 			return
 		}
 	}

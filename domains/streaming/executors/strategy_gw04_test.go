@@ -80,8 +80,8 @@ func TestContextAware_UnknownPenalty(t *testing.T) {
 	}{
 		{"big context", provider.Candidate{CredentialID: 1, ContextWindow: &bigCtx}},
 		{"small context", provider.Candidate{CredentialID: 2, ContextWindow: &smallCtx}},
-		{"unknown nil", provider.Candidate{CredentialID: 3}},                        // nil → MaxFloat64
-		{"zero", provider.Candidate{CredentialID: 4, ContextWindow: intPtr(0)}},     // <=0 → MaxFloat64
+		{"unknown nil", provider.Candidate{CredentialID: 3}},                    // nil → MaxFloat64
+		{"zero", provider.Candidate{CredentialID: 4, ContextWindow: intPtr(0)}}, // <=0 → MaxFloat64
 	}
 	scores := make([]float64, 4)
 	for i, tc := range cases {

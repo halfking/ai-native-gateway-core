@@ -92,8 +92,8 @@ func NewStrategyByName(name string, r *Router) (Strategy, error) {
 type shadowOutcome string
 
 const (
-	shadowAgreed    shadowOutcome = "agreed"     // shadow 最优候选 == 实际最优
-	shadowDisagreed shadowOutcome = "disagreed"  // 不同
+	shadowAgreed    shadowOutcome = "agreed"    // shadow 最优候选 == 实际最优
+	shadowDisagreed shadowOutcome = "disagreed" // 不同
 )
 
 // scoreWithShadow 对 bucket 用 actualOrder 给出的实际顺序，同时用 ShadowStrategy

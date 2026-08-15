@@ -698,7 +698,7 @@ type ChatHandler struct {
 	survivalOptions       SurvivalOptions
 	// SR-12 durable execution (doc 18 §11.2): nil store keeps the durable
 	// handoff inert; armed via SetDurableExecution from main.go.
-	durableStore         DurableHandlerStore
+	durableStore         DurableForegroundStore
 	durableTenantAllowed func(tenantID string) bool
 	durableExecOptions   DurableExecutionOptions
 	provider             providerResolver
@@ -2704,6 +2704,7 @@ func (h *ChatHandler) serveWithExecutor(
 	// are done; candidates are not resolved yet. A completed durable
 	// handshake diverts the request to the background worker (202);
 	// everything else falls through unchanged.
+	var durableStream *DurableStreamBinding
 	if h.durableStore != nil && DurableRequested(r, isStream) {
 		in := DurableSnapshotInput{
 			Protocol:       "openai-completions",
@@ -2720,9 +2721,13 @@ func (h *ChatHandler) serveWithExecutor(
 			RequestID:      requestID,
 			ToolsRequested: len(reqBody.Tools) > 0 || len(reqBody.ToolIDs) > 0,
 		}
-		if h.maybeStartDurable(w, r, in, isStream) == durableHandled {
+		// The chat endpoint hosts the survival branch, so streaming durable
+		// can run in the foreground (lease + write-ahead checkpoints).
+		decision, binding := h.maybeStartDurable(w, r, in, isStream, true)
+		if decision == durableHandled {
 			return
 		}
+		durableStream = binding
 	}
 
 	var (
@@ -3669,7 +3674,7 @@ func (h *ChatHandler) serveWithExecutor(
 	// in-connection behind a per-attempt buffered commit gate (ExecuteAttempt
 	// suppresses the executor's internal retry ladder). Flag-off requests
 	// never enter this branch — the loop below is byte-for-byte the legacy path.
-	if isStream && h.survivalTenantAllowed != nil && h.survivalTenantAllowed(tenantID) {
+	if isStream && (durableStream != nil || h.survivalTenantAllowed != nil && h.survivalTenantAllowed(tenantID)) {
 		// Session capture parity: the goal loop intercepts the stream
 		// writer per attempt; survival keeps ONE interceptor for the whole
 		// run — the buffered gate guarantees only client-visible
@@ -3684,8 +3689,22 @@ func (h *ChatHandler) serveWithExecutor(
 			})
 			defer base.(*interceptingStreamWriter).finish()
 		}
-		result, execErr = h.runSurvivalCoordinator(r, base, buildExecParams, tenantID)
+		result, execErr = h.runSurvivalCoordinator(r, base, buildExecParams, tenantID, durableStream)
 		goto goalRetryLoopDone
+	}
+
+	// A durable task exists but the survival branch did not take it (tenant
+	// no longer allowed since the cut point): the legacy loop must NOT
+	// execute un-checkpointed while the task sits claimable — settle the
+	// task fail-closed and surface the error instead.
+	if durableStream != nil {
+		durableStream.Stop()
+		slog.Error("durable stream escaped survival branch; failing closed",
+			"request_id", requestID, "task_id", durableStream.task.ID)
+		writeErrorJSON(w, http.StatusServiceUnavailable, requestID,
+			"durable request cannot run in-connection on this gateway",
+			"api_error", "durable_survival_unavailable")
+		return
 	}
 
 	for attempt := 0; attempt <= maxRetries; attempt++ {
