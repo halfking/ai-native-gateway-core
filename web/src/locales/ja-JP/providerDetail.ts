@@ -237,8 +237,16 @@ export default {
       available: "利用可能",
       source: "ソース",
       latencyP95: "レイテンシ P95",
-      successRate: "成功率"
+      successRate: "成功率",
+      standardIq: "標準インテリジェンス",
+      nodeIq: "ノードインテリジェンス"
     },
+    standardIqHint: "Artificial Analysis Intelligence Index によるベンチマークスコア",
+    standardIqLabel: "標準インテリジェンス", nodeIqLabel: "ノードインテリジェンス", nodeIqAvgLabel: "ノード平均",
+    iqAvg: "平均 {v}", iqSamples: "{n} 回のテスト", iqTestedAt: "最新 {t}", drawerSectionIq: "モデルインテリジェンス",
+    iqTestBtn: "テストを実行", iqTestBtnTitle: "このノードの簡易テストを実行", iqTestRunning: "テスト中...", iqTestFailed: "テストに失敗しました",
+    iqHistoryLoading: "履歴を読み込み中...", iqHistoryEmpty: "テスト記録はありません", iqHistoryDetails: "詳細を表示",
+    iqColTestedAt: "テスト日時", iqColScore: "スコア", iqColGrade: "評価", iqColAccuracy: "正確度", iqColTrigger: "トリガー",
     tableLoading: "読み込み中…",
     tableEmpty: "モデルがありません",
     source: {
