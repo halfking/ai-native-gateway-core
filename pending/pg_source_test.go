@@ -2,6 +2,8 @@ package pending
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"testing"
 	"time"
 
@@ -18,6 +20,11 @@ func testAADKeyring(t *testing.T) *secret.Keyring {
 		t.Fatalf("keyring: %v", err)
 	}
 	return kr
+}
+
+func resultSHA256(body string) string {
+	hash := sha256.Sum256([]byte(body))
+	return hex.EncodeToString(hash[:])
 }
 
 // TestPGSource_Get_CompletedDecrypts：durable 任务表 completed 行的
@@ -38,13 +45,13 @@ func TestPGSource_Get_CompletedDecrypts(t *testing.T) {
 	t.Cleanup(mock.Close)
 
 	now := time.Date(2026, 8, 15, 12, 0, 0, 0, time.UTC)
-	mock.ExpectQuery(`SELECT id, request_id, tenant_id, status, result_ciphertext, result_hash, content_type, completed_at, reason_code`).
+	mock.ExpectQuery(`SELECT id, request_id, tenant_id, status, result_ciphertext,\s*request_hash, result_hash, content_type, completed_at, reason_code,\s*fencing_token, result_version`).
 		WithArgs("sess-1", "req-1").
 		WillReturnRows(pgxmock.NewRows([]string{
-			"id", "request_id", "tenant_id", "status", "result_ciphertext", "result_hash",
-			"content_type", "completed_at", "reason_code",
-		}).AddRow("task-9", "req-1", "tenant-1", "completed", env, "reqhash-9",
-			"application/json", now, ""))
+			"id", "request_id", "tenant_id", "status", "result_ciphertext", "request_hash", "result_hash",
+			"content_type", "completed_at", "reason_code", "fencing_token", "result_version",
+		}).AddRow("task-9", "req-1", "tenant-1", "completed", env, "reqhash-9", resultSHA256(`{"result":"body"}`),
+			"application/json", now, "", int64(3), int64(1)))
 
 	src := NewPGSource(mock, kr)
 	r, found, err := src.Get(context.Background(), "sess-1", "req-1")
@@ -81,6 +88,7 @@ func TestPGSource_Get_NonTerminalStatus(t *testing.T) {
 		{"running", "", StatusInProgress, false},
 		{"retry_scheduled", "waiting_recovery", StatusInProgress, false},
 		{"failed", "survival_expired", StatusFailed, true},
+		{"resume_safety_blocked", "resume_safety_blocked", StatusFailed, true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.dbStatus, func(t *testing.T) {
@@ -89,13 +97,13 @@ func TestPGSource_Get_NonTerminalStatus(t *testing.T) {
 				t.Fatalf("pgxmock: %v", err)
 			}
 			t.Cleanup(mock.Close)
-			mock.ExpectQuery(`SELECT id, request_id, tenant_id, status, result_ciphertext, result_hash, content_type, completed_at, reason_code`).
+			mock.ExpectQuery(`SELECT id, request_id, tenant_id, status, result_ciphertext,\s*request_hash, result_hash, content_type, completed_at, reason_code,\s*fencing_token, result_version`).
 				WithArgs("sess-1", "req-1").
 				WillReturnRows(pgxmock.NewRows([]string{
-					"id", "request_id", "tenant_id", "status", "result_ciphertext", "result_hash",
-					"content_type", "completed_at", "reason_code",
-				}).AddRow("task-9", "req-1", "tenant-1", tc.dbStatus, nil, "reqhash-9",
-					"", nil, tc.reason))
+					"id", "request_id", "tenant_id", "status", "result_ciphertext", "request_hash", "result_hash",
+					"content_type", "completed_at", "reason_code", "fencing_token", "result_version",
+				}).AddRow("task-9", "req-1", "tenant-1", tc.dbStatus, nil, "reqhash-9", "",
+					"", nil, tc.reason, int64(3), nil))
 
 			src := NewPGSource(mock, kr)
 			r, found, err := src.Get(context.Background(), "sess-1", "req-1")
@@ -147,9 +155,11 @@ func TestPGSource_Get_FailClosed(t *testing.T) {
 		name       string
 		kr         *secret.Keyring
 		ciphertext string
+		resultHash string
 	}{
-		{"nil keyring", nil, env},
-		{"tampered ciphertext", kr, env[:len(env)-4] + "AAAA"},
+		{"nil keyring", nil, env, resultSHA256("body")},
+		{"tampered ciphertext", kr, env[:len(env)-4] + "AAAA", resultSHA256("body")},
+		{"result hash mismatch", kr, env, "wrong-hash"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -161,10 +171,10 @@ func TestPGSource_Get_FailClosed(t *testing.T) {
 			mock.ExpectQuery(`SELECT id, request_id, tenant_id, status`).
 				WithArgs("sess-1", "req-1").
 				WillReturnRows(pgxmock.NewRows([]string{
-					"id", "request_id", "tenant_id", "status", "result_ciphertext", "result_hash",
-					"content_type", "completed_at", "reason_code",
-				}).AddRow("task-9", "req-1", "tenant-1", "completed", tc.ciphertext, "reqhash-9",
-					"application/json", time.Now(), ""))
+					"id", "request_id", "tenant_id", "status", "result_ciphertext", "request_hash", "result_hash",
+					"content_type", "completed_at", "reason_code", "fencing_token", "result_version",
+				}).AddRow("task-9", "req-1", "tenant-1", "completed", tc.ciphertext, "reqhash-9", tc.resultHash,
+					"application/json", time.Now(), "", int64(3), int64(1)))
 
 			src := NewPGSource(mock, tc.kr)
 			r, found, err := src.Get(context.Background(), "sess-1", "req-1")
@@ -189,13 +199,13 @@ func TestPGSource_GetLatest(t *testing.T) {
 		t.Fatalf("pgxmock: %v", err)
 	}
 	t.Cleanup(mock.Close)
-	mock.ExpectQuery(`SELECT id, request_id, tenant_id, status, result_ciphertext, result_hash, content_type, completed_at, reason_code`).
+	mock.ExpectQuery(`SELECT id, request_id, tenant_id, status, result_ciphertext,\s*request_hash, result_hash, content_type, completed_at, reason_code,\s*fencing_token, result_version`).
 		WithArgs("sess-1").
 		WillReturnRows(pgxmock.NewRows([]string{
-			"id", "request_id", "tenant_id", "status", "result_ciphertext", "result_hash",
-			"content_type", "completed_at", "reason_code",
-		}).AddRow("task-7", "req-1", "tenant-1", "completed", env, "reqhash-7",
-			"application/json", time.Now(), ""))
+			"id", "request_id", "tenant_id", "status", "result_ciphertext", "request_hash", "result_hash",
+			"content_type", "completed_at", "reason_code", "fencing_token", "result_version",
+		}).AddRow("task-7", "req-1", "tenant-1", "completed", env, "reqhash-7", resultSHA256("latest-body"),
+			"application/json", time.Now(), "", int64(4), int64(2)))
 
 	src := NewPGSource(mock, kr)
 	r, rid, found, err := src.GetLatest(context.Background(), "sess-1")
