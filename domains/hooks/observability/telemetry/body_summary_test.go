@@ -235,3 +235,52 @@ func TestUpdateRequestLog_BodiesFullModeUnchanged(t *testing.T) {
 		})
 	}
 }
+
+// TestInsertRequestLog_BodiesSummaryModeWritesDigest (CO-5): the initial
+// request-log INSERT path (in_progress write) must also downsample bodies
+// under summary mode — otherwise the first write would persist the full
+// body and the digest envelope could never shrink the row.
+func TestInsertRequestLog_BodiesSummaryModeWritesDigest(t *testing.T) {
+	withBodiesSummaryMode(t, true)
+
+	requestBody := longBodyForSummary("INSERT-REQ-TAIL")
+	responseBody := longBodyForSummary("INSERT-RESP-TAIL")
+
+	mockDB, err := pgxmock.NewPool()
+	require.NoError(t, err)
+	defer mockDB.Close()
+
+	mockDB.ExpectBegin()
+	usageInsertArgs := make([]interface{}, 18)
+	for index := range usageInsertArgs {
+		usageInsertArgs[index] = pgxmock.AnyArg()
+	}
+	mockDB.ExpectExec(`INSERT INTO usage_ledger_hot`).
+		WithArgs(usageInsertArgs...).
+		WillReturnResult(pgxmock.NewResult("INSERT", 1))
+	requestInsertArgs := make([]interface{}, 100)
+	for index := range requestInsertArgs {
+		requestInsertArgs[index] = pgxmock.AnyArg()
+	}
+	mockDB.ExpectExec(`INSERT INTO request_logs_hot`).
+		WithArgs(requestInsertArgs...).
+		WillReturnResult(pgxmock.NewResult("INSERT", 1))
+	mockDB.ExpectExec(`INSERT INTO request_logs_bodies_hot`).
+		WithArgs(
+			pgxmock.AnyArg(),
+			bodySummaryMatcher{rawBody: requestBody},
+			bodySummaryMatcher{rawBody: responseBody},
+		).
+		WillReturnResult(pgxmock.NewResult("INSERT", 1))
+	mockDB.ExpectCommit()
+
+	client := &Client{requestLogDB: mockDB}
+	err = client.insertRequestLog(&RequestLogEntry{
+		RequestID:    "req-summary-insert",
+		Op:           RequestLogInsert,
+		RequestBody:  &requestBody,
+		ResponseBody: &responseBody,
+	})
+	require.NoError(t, err)
+	require.NoError(t, mockDB.ExpectationsWereMet())
+}
