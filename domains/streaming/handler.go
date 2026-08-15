@@ -167,16 +167,24 @@ func (w *interceptingStreamWriter) writeFrame(frame []byte) {
 }
 
 func startPreStreamKeepalive(w http.ResponseWriter, interval time.Duration, requestID string) (*preStreamKeepalive, bool) {
-	flusher, ok := w.(http.Flusher)
-	if !ok {
+	if _, ok := w.(http.Flusher); !ok {
 		return nil, false
 	}
 	if interval <= 0 {
 		interval = 15 * time.Second
 	}
+	// 2026-08-15 (A-P2-6): the keepalive loop is one of several producers on
+	// this connection — the bridges write the same ResponseWriter once the
+	// stream starts. Wrap the connection in a serializedResponseWriter so
+	// keepalive comments and stream frames can never interleave; the handler
+	// reassigns its local writer to psk.Writer() so later writes join the
+	// same channel. The survival path (survival_wiring.go) installs its own
+	// SerializedStreamWriter after stopping this loop, so the two never
+	// overlap on one connection.
+	sw := NewSerializedResponseWriter(w)
 	psk := &preStreamKeepalive{
-		w:       w,
-		flusher: flusher,
+		w:       sw,
+		flusher: sw,
 		stopCh:  make(chan struct{}),
 		doneCh:  make(chan struct{}),
 	}
@@ -271,6 +279,12 @@ func (p *preStreamKeepalive) resume() {
 	}
 	p.paused.Store(false)
 }
+
+// Writer returns the serialized connection view (the serializedResponseWriter
+// this keepalive installed). The handler reassigns its local ResponseWriter
+// to it so bridge writes share the keepalive's serialized channel instead of
+// racing the keepalive loop on the raw connection (doc 20 A-P2-6).
+func (p *preStreamKeepalive) Writer() http.ResponseWriter { return p.w }
 
 func (p *preStreamKeepalive) stop() {
 	if p == nil {
@@ -3267,6 +3281,13 @@ func (h *ChatHandler) serveWithExecutor(
 			if psk, ok := startPreStreamKeepalive(w, cfg.keepaliveInterval, requestID); ok {
 				preStream = psk
 				preStreamPrepared = true
+				// 2026-08-15 (A-P2-6): every later body write on this
+				// connection (bridges, interceptor chain, prewarmed error
+				// envelopes, survival coordinator) goes through the
+				// keepalive's serialized channel so keepalive comments and
+				// stream frames can never interleave mid-frame. Headers and
+				// status still delegate to the original ResponseWriter.
+				w = psk.Writer()
 			}
 		}
 	}
