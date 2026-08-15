@@ -696,11 +696,16 @@ type ChatHandler struct {
 	// inert; armed via SetRequestSurvival from main.go.
 	survivalTenantAllowed func(tenantID string) bool
 	survivalOptions       SurvivalOptions
-	provider              providerResolver
-	sticky                *executors.StickyCache
-	keyVerifier           *authentication.KeyVerifier
-	rateLimiter           ratelimit.RPMLimiter
-	telemetryClient       *telemetry.Client
+	// SR-12 durable execution (doc 18 §11.2): nil store keeps the durable
+	// handoff inert; armed via SetDurableExecution from main.go.
+	durableStore         DurableHandlerStore
+	durableTenantAllowed func(tenantID string) bool
+	durableExecOptions   DurableExecutionOptions
+	provider             providerResolver
+	sticky               *executors.StickyCache
+	keyVerifier          *authentication.KeyVerifier
+	rateLimiter          ratelimit.RPMLimiter
+	telemetryClient      *telemetry.Client
 	// profileEmitter (2026-07-15) 把请求/会话事件投到 clientprofile 画像聚合。
 	// nil 禁用画像聚合；调用方负责 graceful 注入（main.go SetupClientProfileIntegration）。
 	profileEmitter interface {
@@ -2692,6 +2697,32 @@ func (h *ChatHandler) serveWithExecutor(
 	tenantID := ""
 	if keyInfo != nil {
 		tenantID = keyInfo.TenantID
+	}
+
+	// ── SR-12 durable snapshot cut point (doc 18 §11.2) ────────────────
+	// Auth, session ownership, tool_ids expansion and body normalization
+	// are done; candidates are not resolved yet. A completed durable
+	// handshake diverts the request to the background worker (202);
+	// everything else falls through unchanged.
+	if h.durableStore != nil && DurableRequested(r, isStream) {
+		in := DurableSnapshotInput{
+			Protocol:       "openai-completions",
+			Endpoint:       "/v1/chat/completions",
+			TenantID:       tenantID,
+			ApplicationID:  appIDValue(keyInfo),
+			APIKeyID:       apiKeyIDValue(keyInfo),
+			SessionID:      sessionID,
+			SessionSource:  deriveSessionSource(bodyBytes, r),
+			ClientModel:    clientModel,
+			Body:           bodyBytes,
+			IdentityHash:   clientID.IdentityHash,
+			ClientProfile:  clientID.Fingerprint.ClientProfile,
+			RequestID:      requestID,
+			ToolsRequested: len(reqBody.Tools) > 0 || len(reqBody.ToolIDs) > 0,
+		}
+		if h.maybeStartDurable(w, r, in, isStream) == durableHandled {
+			return
+		}
 	}
 
 	var (

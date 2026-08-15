@@ -464,6 +464,29 @@ func (h *MessagesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if keyInfo != nil {
 		tenantID = keyInfo.TenantID
 	}
+
+	// ── SR-12 durable snapshot cut point (doc 18 §11.2) ────────────────
+	if h.chatHandler.durableStore != nil && DurableRequested(r, isStream) {
+		in := DurableSnapshotInput{
+			Protocol:       "anthropic-messages",
+			Endpoint:       "/v1/messages",
+			TenantID:       tenantID,
+			ApplicationID:  appIDValue(keyInfo),
+			APIKeyID:       apiKeyIDValue(keyInfo),
+			SessionID:      sessionID,
+			SessionSource:  deriveSessionSource(bodyBytes, r),
+			ClientModel:    clientModel,
+			Body:           bodyBytes,
+			IdentityHash:   clientID.IdentityHash,
+			ClientProfile:  clientID.Fingerprint.ClientProfile,
+			RequestID:      requestID,
+			ToolsRequested: len(reqBody.Tools) > 0,
+		}
+		if h.chatHandler.maybeStartDurable(w, r, in, isStream) == durableHandled {
+			return
+		}
+	}
+
 	candidates, policy, _, candErr := resolveCandidatesForRequest(r.Context(), h.chatHandler.provider, clientModel, clientID.Fingerprint.ClientProfile, tenantID, bodyBytes)
 	if candErr != nil {
 		// Database or infrastructure error - do NOT disguise as no_candidate

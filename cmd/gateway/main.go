@@ -83,6 +83,7 @@ import (
 	ursmv2api "github.com/kaixuan/llm-gateway-go/domains/ursm/v2/api" //nolint:depguard // URSM v2 ModeOff constant (Task 8)
 	ursmcache "github.com/kaixuan/llm-gateway-go/domains/ursm/v2/cache"
 	"github.com/kaixuan/llm-gateway-go/domains/ursm/v2/persist" //nolint:depguard // URSM v2 persist writer
+	"github.com/kaixuan/llm-gateway-go/durable"
 	"github.com/kaixuan/llm-gateway-go/eventbus"
 	"github.com/kaixuan/llm-gateway-go/fault"
 	"github.com/kaixuan/llm-gateway-go/hotconfig"
@@ -91,8 +92,8 @@ import (
 	"github.com/kaixuan/llm-gateway-go/internal/collector"
 	"github.com/kaixuan/llm-gateway-go/internal/handlers"
 	"github.com/kaixuan/llm-gateway-go/internal/ir" //nolint:depguard // 诊断组件：语义分析器
-	"github.com/kaixuan/llm-gateway-go/internal/logging"
 	"github.com/kaixuan/llm-gateway-go/internal/liveactions"
+	"github.com/kaixuan/llm-gateway-go/internal/logging"
 	"github.com/kaixuan/llm-gateway-go/internal/modelpolicy"
 	"github.com/kaixuan/llm-gateway-go/internal/observability"
 	"github.com/kaixuan/llm-gateway-go/internal/outbox"
@@ -2069,6 +2070,9 @@ func main() {
 	var discoverySvc *discovery.Service
 	var fernetKey []byte
 	var keyring *secret.Keyring
+	// SR-12: durable recovery worker (nil unless the durable flag + store
+	// prerequisites armed it); stopped before the DB pool closes.
+	var durableWorker *streaming.DurableRecoveryWorker
 	if dbConn != nil && dbConn.Enabled() {
 		modelsHandler.SetDB(dbConn.Pool())
 
@@ -2079,12 +2083,46 @@ func main() {
 			slog.Warn("fernet key unavailable", "error", ferr)
 			fernetKey = nil
 		}
-		if cfg.CredentialEncryptionKey != "" {
+		// KEYRING_JSON alone is a valid durable keyring source (KeyringFromEnv
+		// reads it first); the credential-encryption key is only a fallback.
+		if cfg.CredentialEncryptionKey != "" || strings.TrimSpace(os.Getenv("KEYRING_JSON")) != "" {
 			if kr, kErr := secret.KeyringFromEnv(cfg.SecretKey, cfg.CredentialEncryptionKey); kErr != nil {
 				slog.Warn("AES-GCM keyring init failed, falling back to Fernet only", "error", kErr)
 			} else {
 				keyring = kr
 				slog.Info("AES-GCM keyring initialized")
+			}
+		}
+
+		// ── SR-12 durable execution wiring (doc 18 §11.2/§11.3, §19.1) ──
+		// Only armed when the durable flag is on AND both the task store
+		// prerequisites (DB pool + keyring) exist; otherwise fail closed —
+		// the handler never sees a durable store and no 202 path exists.
+		if cfg.RequestSurvivalDurableEnabled {
+			switch {
+			case keyring == nil:
+				slog.Warn("durable requested but keyring unavailable; durable creation disabled (fail closed)")
+			default:
+				durableStore := durable.NewStore(dbConn.Pool(), keyring)
+				chatHandler.SetDurableExecution(durableStore, cfg.RequestSurvivalEnabledForTenant, streaming.DurableExecutionOptions{
+					Deadline: time.Duration(cfg.RequestSurvivalDurableDeadlineSeconds) * time.Second,
+				})
+				// The pending cache gains the PG 回源 source (doc 18 §12.1):
+				// Redis projection loss must not lose task state/results.
+				pendingStore = pending.NewStoreWithFallback(fpSlotRedis, time.Duration(cfg.PendingTTLSeconds)*time.Second, pending.NewPGSource(dbConn.Pool(), keyring))
+				if routingExec != nil {
+					routingExec.PendingStore = pendingStore
+				}
+				durableWorker = streaming.NewDurableRecoveryWorker(durableStore, pendingStore,
+					streaming.NewDurableAttemptRunner(routingExec, providerClient, keyVerifier),
+					streaming.DurableWorkerOptions{
+						Lease: time.Duration(cfg.RequestSurvivalWorkerLeaseSecs) * time.Second,
+					})
+				durableWorker.Start(context.Background())
+				slog.Info("durable_recovery_worker_started",
+					"durable_deadline_sec", cfg.RequestSurvivalDurableDeadlineSeconds,
+					"worker_lease_sec", cfg.RequestSurvivalWorkerLeaseSecs,
+				)
 			}
 		}
 
@@ -5367,6 +5405,13 @@ func main() {
 		// Stop accepting quota tasks and drain the bounded OmniFree worker queue
 		// before the shared database pool is closed.
 		chatHandler.ShutdownOmniFree()
+
+		// Stop the durable recovery worker (bounded grace; in-flight
+		// detached attempts release their leases and get re-claimed) before
+		// the shared database pool is closed.
+		if durableWorker != nil {
+			durableWorker.Stop()
+		}
 
 		// 2026-07-22: 停止 URSM v2 persist writer（如果已启动）
 		if persistWriterStop != nil {
