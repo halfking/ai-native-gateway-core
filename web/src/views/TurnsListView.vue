@@ -201,6 +201,12 @@ function resetAndLoad() {
   load(true)
 }
 
+function onPresetChange(e: Event) {
+  const value = (e.target as HTMLSelectElement).value
+  timePreset.value = value
+  applyTimePreset(value)
+}
+
 // 时间预设：all 清空起止时间；h1/h24/d3/d7 设置起始时间为 now-hours，结束留空
 function applyTimePreset(value: string) {
   const preset = timePresets.find(p => p.value === value)
@@ -292,11 +298,7 @@ onMounted(() => {
         >
           <el-option v-for="v in filterOptions.models" :key="v" :label="v" :value="v" />
         </el-select>
-        <select
-          :value="timePreset"
-          class="filter-input filter-preset"
-          @change="timePreset = ($event.target as HTMLSelectElement).value; applyTimePreset(timePreset)"
-        >
+        <select :value="timePreset" class="filter-input filter-preset" @change="onPresetChange">
           <option v-for="p in timePresets" :key="p.value" :value="p.value">{{ p.label }}</option>
           <option v-if="timePreset === 'custom'" value="custom">自定义时间段</option>
         </select>
