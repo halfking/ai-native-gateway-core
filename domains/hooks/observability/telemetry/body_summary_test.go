@@ -134,12 +134,12 @@ func TestUpdateRequestLog_BodiesSummaryModeWritesDigest(t *testing.T) {
 
 	client := &Client{requestLogDB: mockDB}
 	err = client.updateRequestLog(&RequestLogEntry{
-		RequestID:    "req-summary-update",
-		Op:           RequestLogUpdate,
-		Success:      true,
+		RequestID:     "req-summary-update",
+		Op:            RequestLogUpdate,
+		Success:       true,
 		RequestStatus: &status,
-		RequestBody:  &requestBody,
-		ResponseBody: &responseBody,
+		RequestBody:   &requestBody,
+		ResponseBody:  &responseBody,
 	})
 	require.NoError(t, err)
 	require.NoError(t, mockDB.ExpectationsWereMet())
@@ -368,6 +368,70 @@ func TestRequestBodiesSummaryEnabled_FlagCombination(t *testing.T) {
 			withSessionsV2Settings(t, overrides)
 
 			require.Equal(t, tc.wantSummaryOn, requestBodiesSummaryEnabled())
+		})
+	}
+}
+
+// TestUpdateRequestLog_BodiesSummaryModeKeepsEmptySemantics (CO-5): summary
+// mode must not alter the no-payload semantics of the bodies table — a nil
+// body stays "null" (SQL NULL) and an empty/invalid body stays "{}" — and a
+// small body is still downsampled uniformly (mode is row-uniform, no mixed
+// full/digest rows depending on size).
+func TestUpdateRequestLog_BodiesSummaryModeKeepsEmptySemantics(t *testing.T) {
+	smallBody := `{"ok":true}`
+
+	tests := []struct {
+		name            string
+		requestBody     *string
+		wantRequestBody interface{} // string sentinel or bodySummaryMatcher
+	}{
+		{name: "nil body stays null sentinel", requestBody: nil, wantRequestBody: fullBodyMatcher{want: "null"}},
+		// Pre-existing pipeline semantics: sanitizeJSONField drops an empty
+		// body to nil before the bodies write, so it persists as "null".
+		{name: "empty body dropped to null by sanitize", requestBody: strptr(""), wantRequestBody: fullBodyMatcher{want: "null"}},
+		{name: "small body still downsampled", requestBody: &smallBody, wantRequestBody: bodySummaryMatcher{rawBody: smallBody}},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			withBodiesSummaryMode(t, true)
+
+			mockDB, err := pgxmock.NewPool()
+			require.NoError(t, err)
+			defer mockDB.Close()
+
+			mockDB.ExpectBegin()
+			mockDB.ExpectExec(`UPDATE usage_ledger_hot`).
+				WithArgs("req-empty-semantics", pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg()).
+				WillReturnResult(pgxmock.NewResult("UPDATE", 1))
+			status := RequestStatusSuccess
+			requestLogArgs := requestLogUpdateArgs(RequestLogEntry{
+				Success:       true,
+				RequestStatus: &status,
+			})
+			mockDB.ExpectExec(`UPDATE request_logs_hot`).
+				WithArgs(requestLogArgs...).
+				WillReturnResult(pgxmock.NewResult("UPDATE", 1))
+			mockDB.ExpectExec(`INSERT INTO request_logs_bodies_hot`).
+				WithArgs(
+					pgxmock.AnyArg(),
+					tc.wantRequestBody,
+					fullBodyMatcher{want: "null"},
+				).
+				WillReturnResult(pgxmock.NewResult("INSERT", 1))
+			mockDB.ExpectCommit()
+
+			client := &Client{requestLogDB: mockDB}
+			err = client.updateRequestLog(&RequestLogEntry{
+				RequestID:     "req-empty-semantics",
+				Op:            RequestLogUpdate,
+				Success:       true,
+				RequestStatus: &status,
+				RequestBody:   tc.requestBody,
+				ResponseBody:  nil,
+			})
+			require.NoError(t, err)
+			require.NoError(t, mockDB.ExpectationsWereMet())
 		})
 	}
 }
