@@ -92,6 +92,7 @@ import (
 	"github.com/kaixuan/llm-gateway-go/internal/handlers"
 	"github.com/kaixuan/llm-gateway-go/internal/ir" //nolint:depguard // 诊断组件：语义分析器
 	"github.com/kaixuan/llm-gateway-go/internal/logging"
+	"github.com/kaixuan/llm-gateway-go/internal/liveactions"
 	"github.com/kaixuan/llm-gateway-go/internal/modelpolicy"
 	"github.com/kaixuan/llm-gateway-go/internal/observability"
 	"github.com/kaixuan/llm-gateway-go/internal/outbox"
@@ -1623,6 +1624,17 @@ func main() {
 		slog.Info("request_trace_recorder: enabled",
 			"redis_connected", redisClientForCache != nil,
 			"recorder_type", fmt.Sprintf("%T", traceRec))
+		// ── 2026-08-15 (V3.3-OBS OBS-B1): 请求生命周期动作事件发射器 ──────
+		// docs/会话优化v3/24 §2/§4。Redis 不可用时写侧静默降级（计数）；
+		// 发射旁路异步、满即丢，热路径零阻塞。gatewayLiveActionsEmitter
+		// 供 main_dispatch.go 注入 dispatch pipeline（model_enqueued /
+		// node_enqueued / node_switch / model_switch / no_route）。
+		gatewayLiveActionsEmitter = liveactions.NewEmitter(redisClientForCache.Client(), 0)
+		defer gatewayLiveActionsEmitter.Close()
+		chatHandler.SetLiveActions(gatewayLiveActionsEmitter)
+		routingExec.SetLiveActions(gatewayLiveActionsEmitter)
+		slog.Info("live_actions_emitter: wired",
+			"redis_connected", redisClientForCache != nil && redisClientForCache.Client() != nil)
 		// 2026-06-26: configurable recent-session reuse window. Default
 		// is 5m (session.LastSystemSessionTTL). Operators can shorten it
 		// to reduce the chance of two unrelated clients being merged.
@@ -1781,7 +1793,7 @@ func main() {
 
 		// V3.2 BE-A4: the hub emits node status from a cached DB projection.
 		// Refreshing outside the SSE goroutine keeps the 2s fan-out tick cheap.
-		liveNodeStatusCache, stopLiveNodeStatusRefresh := startLiveNodeStatusRefresh(dbConn.Pool(), 2*time.Second)
+		liveNodeStatusCache, stopLiveNodeStatusRefresh := startLiveNodeStatusRefresh(dbConn.Pool(), 2*time.Second, fpSlots)
 		defer stopLiveNodeStatusRefresh()
 		liveStreamHub.SetNodeStatusProvider(liveNodeStatusCache.get)
 
@@ -2980,6 +2992,11 @@ func main() {
 				probeQueue = bg.NewProbeQueue(dbConn.Pool())
 				if probeStreamHub != nil {
 					probeQueue.SetProbeSink(probeStreamHub)
+					// OBS-BE5 (2026-08-15): enriched transitions (origin +
+					// backoff next hop) take precedence over the legacy sink,
+					// so each enqueue/claim/re-arm reaches the 自检 tab SSE
+					// exactly once. Scheduling semantics stay untouched.
+					probeQueue.SetProbeTaskDetailSink(probeStreamHub)
 				}
 				probeQueueWorker = bg.NewProbeQueueWorker(bg.ProbeQueueWorkerConfig{
 					Queue:        probeQueue,

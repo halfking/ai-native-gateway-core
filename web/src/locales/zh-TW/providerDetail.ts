@@ -237,8 +237,16 @@ export default {
       available: "可用",
       source: "來源",
       latencyP95: "延遲 P95",
-      successRate: "成功率"
+      successRate: "成功率",
+      standardIq: "標準智力",
+      nodeIq: "節點智力"
     },
+    standardIqHint: "評測站點（Artificial Analysis Intelligence Index）提供的模型基準智力",
+    standardIqLabel: "標準智力", nodeIqLabel: "節點智力", nodeIqAvgLabel: "節點平均",
+    iqAvg: "平均 {v}", iqSamples: "{n} 次測試", iqTestedAt: "最近 {t}", drawerSectionIq: "模型智力",
+    iqTestBtn: "立即測試", iqTestBtnTitle: "對此節點執行一次精簡智力測試", iqTestRunning: "測試中...", iqTestFailed: "測試失敗",
+    iqHistoryLoading: "載入歷史...", iqHistoryEmpty: "暫無測試記錄", iqHistoryDetails: "檢視詳細記錄",
+    iqColTestedAt: "測試時間", iqColScore: "智力", iqColGrade: "等級", iqColAccuracy: "準確率", iqColTrigger: "觸發方式",
     tableLoading: "載入中…",
     tableEmpty: "暫無模型",
     source: {

@@ -33,6 +33,7 @@ export default {
     keyApplications: "طلب المفتاح",
     auditLogs: "سجلات التدقيق",
     requestLogs: "سجلات الطلبات",
+    dispatchWaterfall: "شلال قائمة الانتظار",
     turns: "قائمة الدورات",
     requestTrace: "تتبع الطلبات",
     sessions: "قائمة الجلسات",

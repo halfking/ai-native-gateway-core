@@ -90,11 +90,38 @@ type LiveStreamEnvelope struct {
 // to the frontend queue-perspective panel. It mirrors dispatch's Tier-1
 // (model) and Tier-2 (credential) queue depths plus the dispatch gate state.
 // Kept as a local struct to avoid an admin → dispatch import cycle.
+//
+// Pipeline + SourceVersion (V3.3-OBS OBS-BE3, 2026-08-15) promote the §4
+// contract (docs/会话优化v3/13 号) pipeline layer from TARGET to CURRENT.
+// Both are optional (omitempty): absent when dispatch is disabled or the
+// collector is unwired. When present, Depth/InFlight of 0 is a real zero;
+// waitingMsP50/P95 are absent (not 0) when the ring window has no sample.
 type LiveQueueSnapshot struct {
-	Enabled     bool                    `json:"enabled"`
-	Wired       bool                    `json:"wired"`
-	Models      []LiveQueueLaneSnapshot `json:"models"`
-	Credentials []LiveQueueLaneSnapshot `json:"credentials"`
+	Enabled       bool                    `json:"enabled"`
+	Wired         bool                    `json:"wired"`
+	SourceVersion int64                   `json:"sourceVersion,omitempty"`
+	Pipeline      *LiveQueuePipelineStats `json:"pipeline,omitempty"`
+	Models        []LiveQueueLaneSnapshot `json:"models"`
+	Credentials   []LiveQueueLaneSnapshot `json:"credentials"`
+}
+
+// LiveQueuePipelineStats is the aggregate pipeline-layer view of one
+// queue_snapshot tick (V3.3-OBS OBS-BE3):
+//
+//   - depth:        requests admitted to the pipeline but not yet forwarded
+//     (Σ Tier-1 model queue depth + Σ Tier-2 credential queue depth)
+//   - waitingMsP50/P95: nearest-rank p50/p95 of T0→T6 total queue wait over
+//     the most recent ≤200 completed requests (ring window);
+//     omitted when no valid sample exists
+//   - inFlight:     requests past governor admission currently being forwarded
+//   - degraded:     any forwarder governor disabled (un-paced) or an overflow
+//     (queue full / pace timeout) since the previous tick
+type LiveQueuePipelineStats struct {
+	Depth        int64  `json:"depth"`
+	WaitingMsP50 *int64 `json:"waitingMsP50,omitempty"`
+	WaitingMsP95 *int64 `json:"waitingMsP95,omitempty"`
+	InFlight     int64  `json:"inFlight"`
+	Degraded     bool   `json:"degraded"`
 }
 
 // LiveQueueLaneSnapshot is one queue lane (a model queue or a credential queue).
@@ -121,6 +148,27 @@ type LiveNodeStatus struct {
 	InFlight          int64  `json:"in_flight,omitempty"`
 	LastLatencyMs     *int   `json:"last_latency_ms,omitempty"`
 	LastError         string `json:"last_error,omitempty"`
+
+	// OBS-BE4 (V3.3-OBS, 2026-08-15): disable-kind / cooldown projection,
+	// sourced at snapshot time from the credentials row and the
+	// credentialfpslot per-(credential, model) NodeState. All fields are
+	// optional (omitempty): older clients ignore them, healthy nodes omit
+	// them, and no state is stored here (ADR-V3-103 — projection only).
+	//
+	//   - FPDisabled:      any bound model is currently inside an fpslot
+	//                      cooldown (Disabled && now < DisabledUntil)
+	//   - FPDisabledUntil: the DisabledUntil of the most recent disable
+	//                      (max LastDisabledAt across bound models)
+	//   - DisableKind:     "manual" (manual_disabled) | "system"
+	//                      (availability/quota/circuit degraded) | "" (ok)
+	//   - SystemRecoverAt: earliest of DB availability_recover_at /
+	//                      quota_recover_at / cooling_until
+	//   - LastErrorAt:     most recent fpslot failure across bound models
+	FPDisabled      *bool      `json:"fp_disabled,omitempty"`
+	FPDisabledUntil *time.Time `json:"fp_disabled_until,omitempty"`
+	DisableKind     string     `json:"disable_kind,omitempty"`
+	SystemRecoverAt *time.Time `json:"system_recover_at,omitempty"`
+	LastErrorAt     *time.Time `json:"last_error_at,omitempty"`
 }
 
 // LiveIncidentUpdate is the wire shape of a route incident update

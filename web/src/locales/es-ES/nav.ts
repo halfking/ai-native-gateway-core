@@ -33,6 +33,7 @@ export default {
     keyApplications: "Solicitudes de claves",
     auditLogs: "Registros de auditoría",
     requestLogs: "Registros de solicitudes",
+    dispatchWaterfall: "Cascada de colas",
     turns: "Lista de turnos",
     requestTrace: "Trazado de solicitudes",
     sessions: "Sesiones",

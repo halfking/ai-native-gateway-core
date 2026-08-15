@@ -10,6 +10,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -33,6 +35,7 @@ import (
 	ursmv2api "github.com/kaixuan/llm-gateway-go/domains/ursm/v2/api"
 	"github.com/kaixuan/llm-gateway-go/errorsx"
 	"github.com/kaixuan/llm-gateway-go/internal/irconv"
+	"github.com/kaixuan/llm-gateway-go/internal/liveactions"
 	"github.com/kaixuan/llm-gateway-go/internal/runctx"
 	gwtrace "github.com/kaixuan/llm-gateway-go/internal/trace"
 	"github.com/kaixuan/llm-gateway-go/pending"
@@ -523,6 +526,13 @@ type Executor struct {
 	// traceRecorder (2026-07-17) 注入请求链路追踪器,记录 upstream_request /
 	// stream_start 事件。nil 时降级为 NoopRecorder 等价。
 	traceRecorder gwtrace.Recorder
+
+	// liveActions (2026-08-15, V3.3-OBS OBS-B1) 请求生命周期动作事件发射器
+	// （credential_selected / upstream_request / reply / node_switch /
+	// model_switch / no_route，docs/会话优化v3/24 §2）。nil 安全（Emit 对
+	// nil receiver 是 no-op）；旁路异步，热路径零阻塞。安全红线：Detail 只
+	// 放 id/模型名/错误 kind，严禁正文 / API key / 系统 prompt。
+	liveActions *liveactions.Emitter
 	// XMLCoerceNonStream post-processes a non-stream chat response body to
 	// turn XML-style tool calls into structured tool_calls. Wired from
 	// main.go (relay.coerceXMLToolCallsInChatResponse) so the routing
@@ -1328,6 +1338,14 @@ func (e *Executor) SetTraceRecorder(rec gwtrace.Recorder) {
 	}
 }
 
+// SetLiveActions (2026-08-15, V3.3-OBS OBS-B1) 注入请求生命周期动作事件
+// 发射器。传 nil 等价于禁用（Emit 对 nil receiver 是 no-op）。
+func (e *Executor) SetLiveActions(em *liveactions.Emitter) {
+	if e != nil {
+		e.liveActions = em
+	}
+}
+
 // DEPRECATED: isURSMv2Authoritative 将被 StateBackend 接口替代。
 // 2026-07-24 Phase 1: 此方法已被 selectStateBackend() 统一入口替代。
 // 每次调用都会触发 10ms 的 Ready() 检查，在热路径中造成不必要的开销。
@@ -1922,6 +1940,31 @@ func (e *Executor) Execute(params *ExecParams) (result *ExecuteResult, err error
 				outcome = "acquired"
 			}
 			credentialfpslot.RecordClientTokenRequest(params.TenantID, holder, outcome)
+			// ── 2026-08-15 (V3.3-OBS OBS-B1): reply 动作事件（S9，终态）────
+			// 只在最外层 Execute 帧发射（clientTokenMetricsOwner 与
+			// sync-retry / fallback 的递归 Execute 共享同一 request_id，
+			// 内层帧不再重复发射）。成功/失败均发射，失败带 error_kind。
+			if e.liveActions != nil && params.RequestID != "" {
+				ev := liveactions.ActionEvent{
+					RequestID: params.RequestID,
+					Action:    liveactions.ActionReply,
+					Model:     params.ClientModel,
+				}
+				if err == nil && result != nil {
+					ev.Detail = map[string]string{
+						"status":     "success",
+						"latency_ms": strconv.FormatInt(int64(result.LatencyMs), 10),
+					}
+				} else {
+					kind := classifyExecError(err)
+					if execErr, ok := err.(*ExecuteError); ok && execErr.LastKind != "" {
+						kind = execErr.LastKind
+					}
+					ev.ErrorKind = string(kind)
+					ev.Detail = map[string]string{"status": "failure"}
+				}
+				e.liveActions.Emit(context.Background(), ev)
+			}
 		}()
 	}
 	if params.R != nil && strings.TrimSpace(params.TenantID) != "" {
@@ -2069,6 +2112,24 @@ func (e *Executor) Execute(params *ExecParams) (result *ExecuteResult, err error
 		params.RequestID,
 	)
 
+	// ── 2026-08-15 (V3.3-OBS OBS-B1): credential_selected 动作事件（S5）────
+	// Router.PlanCandidates 输出即路由选定的凭据序（best-first），发射首个
+	// 候选 + weight/tier（24 号 §2）。
+	if len(candidates) > 0 {
+		top := candidates[0]
+		e.liveActions.Emit(params.R.Context(), liveactions.ActionEvent{
+			RequestID:    params.RequestID,
+			Action:       liveactions.ActionCredentialSelected,
+			Model:        params.ClientModel,
+			CredentialID: top.CredentialID,
+			Detail: map[string]string{
+				"weight":     strconv.Itoa(top.Weight),
+				"tier":       strconv.Itoa(top.Tier),
+				"candidates": strconv.Itoa(len(candidates)),
+			},
+		})
+	}
+
 	trace := &Trace{
 		PlannedCandidates: make([]TraceCandidate, 0, len(params.Candidates)),
 		BlockedCandidates: []TraceCandidate{},
@@ -2117,6 +2178,23 @@ func (e *Executor) Execute(params *ExecParams) (result *ExecuteResult, err error
 			"client_model", params.ClientModel,
 			"reasons", reasonCounts,
 		)
+		// ── 2026-08-15 (V3.3-OBS OBS-B1): no_route 动作事件 ──────────────────
+		// Router 过滤后无可用候选。blocked_reasons 摘要（reason:count）。
+		{
+			reasons := make([]string, 0, len(reasonCounts))
+			for r, n := range reasonCounts {
+				reasons = append(reasons, fmt.Sprintf("%s:%d", r, n))
+			}
+			sort.Strings(reasons)
+			e.liveActions.Emit(params.R.Context(), liveactions.ActionEvent{
+				RequestID: params.RequestID,
+				Action:    liveactions.ActionNoRoute,
+				Model:     params.ClientModel,
+				Detail: map[string]string{
+					"blocked_reasons": strings.Join(reasons, ","),
+				},
+			})
+		}
 		// 2026-07-14: previously the no-candidates path stopped here with
 		// only a failed request_logs row to show for it. The realtime
 		// dashboard would render the failure tile but no follow-up probe
@@ -2486,6 +2564,22 @@ func (e *Executor) Execute(params *ExecParams) (result *ExecuteResult, err error
 		tried++
 
 		nodeTracker.Record(cand)
+
+		// ── 2026-08-15 (V3.3-OBS OBS-B1): upstream_request 动作事件（S7）──
+		// 每个候选开始转发时发射；attempt=tried，tried>1 即同请求内的重试。
+		e.liveActions.Emit(params.R.Context(), liveactions.ActionEvent{
+			RequestID:    params.RequestID,
+			Action:       liveactions.ActionUpstreamRequest,
+			Model:        params.ClientModel,
+			CredentialID: cand.CredentialID,
+			Retry:        tried > 1,
+			RetrySeq:     tried,
+			Detail: map[string]string{
+				"attempt":     strconv.Itoa(tried),
+				"provider_id": strconv.Itoa(cand.ProviderID),
+				"raw_model":   candidateRawModel(cand),
+			},
+		})
 
 		// Reset the stream capture for this candidate so textContent, chunk
 		// count, checksum, and the done/interrupted flags from a prior
@@ -3161,6 +3255,8 @@ func (e *Executor) Execute(params *ExecParams) (result *ExecuteResult, err error
 					msg := fmt.Sprintf("正在切换节点 (%d/%d)...", nodeTracker.Attempts(), len(candidates))
 					params.OnNodeJump(msg)
 				}
+				// V3.3-OBS OBS-B1 (2026-08-15): node_switch（流中断可恢复切换）。
+				e.emitNodeSwitch(params, cand.CredentialID, nextCandidateCredentialID(candidates, candidateIndex), string(kind), nodeTracker.Attempts())
 				continue
 			} else {
 				// Stream is not resumable (too many chunks sent) - return error.
@@ -3205,6 +3301,8 @@ func (e *Executor) Execute(params *ExecParams) (result *ExecuteResult, err error
 			msg := fmt.Sprintf("正在切换节点 (%d/%d)...", nodeTracker.Attempts(), len(candidates))
 			params.OnNodeJump(msg)
 		}
+		// V3.3-OBS OBS-B1 (2026-08-15): node_switch（候选失败切换下一节点）。
+		e.emitNodeSwitch(params, cand.CredentialID, nextCandidateCredentialID(candidates, candidateIndex), string(classifyExecError(execErr)), nodeTracker.Attempts())
 		lastErr = execErr
 		// Prefer the typed Kind from *upstreampkg.Error if available, to
 		// avoid re-classifying from the error text (which embeds the
@@ -3707,6 +3805,18 @@ func (e *Executor) Execute(params *ExecParams) (result *ExecuteResult, err error
 				"fallback_candidates", len(fbCandidates),
 				"elapsed_ms", time.Since(tTotal).Milliseconds(),
 			)
+			// V3.3-OBS OBS-B1 (2026-08-15): model_switch 动作事件（24 号 §2：
+			// from/to/reason；跨 provider 模型回退，不产生新 request_id）。
+			e.liveActions.Emit(params.R.Context(), liveactions.ActionEvent{
+				RequestID: params.RequestID,
+				Action:    liveactions.ActionModelSwitch,
+				Model:     fbModel,
+				Detail: map[string]string{
+					"from_model": params.ClientModel,
+					"to_model":   fbModel,
+					"reason":     "no_node_cross_provider",
+				},
+			})
 			subParams := *params
 			subParams.Candidates = fbCandidates
 			subParams.InFallback = true

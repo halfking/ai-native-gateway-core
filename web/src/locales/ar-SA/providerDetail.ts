@@ -237,8 +237,16 @@ export default {
       available: "متاح",
       source: "المصدر",
       latencyP95: "الكمون P95",
-      successRate: "معدل النجاح"
+      successRate: "معدل النجاح",
+      standardIq: "الذكاء المعياري",
+      nodeIq: "ذكاء العقدة"
     },
+    standardIqHint: "درجة مرجعية من Artificial Analysis Intelligence Index",
+    standardIqLabel: "الذكاء المعياري", nodeIqLabel: "ذكاء العقدة", nodeIqAvgLabel: "متوسط العقدة",
+    iqAvg: "المتوسط {v}", iqSamples: "{n} اختبارات", iqTestedAt: "الأحدث {t}", drawerSectionIq: "ذكاء النموذج",
+    iqTestBtn: "تشغيل الاختبار", iqTestBtnTitle: "تشغيل اختبار مختصر لهذه العقدة", iqTestRunning: "جارٍ الاختبار...", iqTestFailed: "فشل الاختبار",
+    iqHistoryLoading: "جارٍ تحميل السجل...", iqHistoryEmpty: "لا توجد سجلات اختبار", iqHistoryDetails: "عرض التفاصيل",
+    iqColTestedAt: "وقت الاختبار", iqColScore: "النتيجة", iqColGrade: "الدرجة", iqColAccuracy: "الدقة", iqColTrigger: "المشغّل",
     tableLoading: "جاري التحميل…",
     tableEmpty: "لا توجد نماذج",
     source: {

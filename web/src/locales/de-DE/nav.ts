@@ -33,6 +33,7 @@ export default {
     keyApplications: "Schlüssel-Anträge",
     auditLogs: "Audit-Logs",
     requestLogs: "Anfrage-Logs",
+    dispatchWaterfall: "Warteschlangen-Wasserfall",
     turns: "Turns-Liste",
     requestTrace: "Anfrage-Verfolgung",
     sessions: "Sitzungen",

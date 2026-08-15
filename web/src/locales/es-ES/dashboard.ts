@@ -152,6 +152,7 @@ v2: {
   viewFailedRequests: "Ver solicitudes fallidas",
   liveStream: {
     title: "Flujo de solicitudes en tiempo real",
+    groupByQueue: "Por cola de procesamiento",
     controlsAria: "Controles del flujo de solicitudes en tiempo real",
     connected: "Conectado",
     disconnected: "Reconectando...",
