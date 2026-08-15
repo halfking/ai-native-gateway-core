@@ -5,6 +5,21 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased] - 2026-08-16 (Handoff Explicit Client Confirmation)
+
+### Added
+
+- **显式 handoff 客户端确认协议**：202 提案接口返回 `handoff_id`、
+  `confirmation_token`（服务端 SHA-256 哈希，不回传明文）与
+  `confirmation_expires_at`（5 分钟 TTL）。
+- **新增 `POST /v1/handoffs/confirm` 端点**（幂等键保护）：原子写入
+  `handoff_log`、递增 `handoff_count` 并启动冷却；tenant / API key / token /
+  过期 / target 不匹配或冲突重放均被拒绝且不计入，无重复计数、无半态。
+- **新增表 `handoff_pending_confirmations`**（migration 361）：保存待确认
+  handoff 行（哈希 token、tenant、target、过期时间）；后台 trimmer 清理过期
+  待确认行防止表无限增长。
+- 详见 `docs/changelogs/2026-08-16-handoff-explicit-confirmation.md`。
+
 ## [Unreleased] - 2026-08-15 (Status Badge Theme Tokens)
 
 ### Fixed
