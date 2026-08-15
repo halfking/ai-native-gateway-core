@@ -243,7 +243,7 @@ func TestStore_ReapUnsafeCheckpointed(t *testing.T) {
 	store, mock := newMockStore(t)
 	mock.ExpectBegin()
 	mock.ExpectQuery(`FOR UPDATE SKIP LOCKED`).
-		WithArgs(anyArgs(1)...).
+		WithArgs(anyArgs(2)...).
 		WillReturnRows(pgxmock.NewRows([]string{"id", "status"}).AddRow("task-2", "running"))
 	mock.ExpectQuery(`UPDATE durable_llm_tasks`).
 		WithArgs(anyArgs(3)...).
@@ -277,6 +277,31 @@ func TestStore_ReapUnsafeCheckpointed(t *testing.T) {
 	}
 	if blocked[0].CommitState != CommitStateToolCall {
 		t.Fatalf("commit state = %s", blocked[0].CommitState)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("expectations: %v", err)
+	}
+}
+
+// TestStore_ReapUnsafeCheckpointed_LiveLeaseGuard（doc 28 §1 回归）：
+// lease 仍活跃（前台持有者续租中）的语义检查点任务不得进入 safety reap
+// 扫描结果——谓词携带 lease_until < now 护栏，活跃任务零行返回。
+func TestStore_ReapUnsafeCheckpointed_LiveLeaseGuard(t *testing.T) {
+	store, mock := newMockStore(t)
+	mock.ExpectBegin()
+	// 谓词必须包含 lease 护栏参数（$2 = now）——通过两个参数匹配钉住。
+	mock.ExpectQuery(`lease_until IS NULL OR lease_until < \$2`).
+		WithArgs(anyArgs(2)...).
+		WillReturnRows(pgxmock.NewRows([]string{"id", "status"}))
+	mock.ExpectCommit()
+
+	now := time.Now()
+	blocked, err := store.ReapUnsafeCheckpointed(context.Background(), 16, now)
+	if err != nil {
+		t.Fatalf("ReapUnsafeCheckpointed: %v", err)
+	}
+	if len(blocked) != 0 {
+		t.Fatalf("live-lease checkpointed tasks must not be reaped, got %+v", blocked)
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Fatalf("expectations: %v", err)
