@@ -20,7 +20,8 @@
 - `pnpm exec vue-tsc --noEmit`
 - `pnpm build`
 - staged `scripts/pre-commit-check.sh`
-- Chromium daylight/night、desktop/mobile 本地浏览器验证。
+- 待补：具备认证后端会话的 Chromium daylight/night、desktop/mobile 浏览器验证。
+  本地 `browser-use` session RPC 超时，Playwright Chromium 安装不可用，未将其视为通过。
 
 ## Rollback
 
