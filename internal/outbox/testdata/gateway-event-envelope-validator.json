@@ -1,0 +1,9 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Gateway Outbox Event Envelope Validator",
+  "description": "Test-only wrapper combining gateway-event-schema-v1.json's EventEnvelope definition (envelope-level required fields, event_id pattern, schema_version const) with its root oneOf (payload-per-event_type). The upstream schema's root only enforces the payload branch, so this composition is needed to validate a complete wire envelope. The upstream document is registered by its $id via AddResource in wire_schema_test.go.",
+  "allOf": [
+    { "$ref": "https://platform.example.com/schemas/gateway-events-v1.json#/definitions/EventEnvelope" },
+    { "$ref": "https://platform.example.com/schemas/gateway-events-v1.json" }
+  ]
+}
