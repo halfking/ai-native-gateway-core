@@ -34,24 +34,30 @@ func outboxClaimColumns() []string {
 }
 
 func expectOutboxClaim(mock pgxmock.PgxPoolIface, item OutboxItem) {
+	expectBypassBegin(mock)
 	mock.ExpectQuery("WITH picked AS").
 		WithArgs(100, "outbox-1", pgxmock.AnyArg()).
 		WillReturnRows(pgxmock.NewRows(outboxClaimColumns()).AddRow(
 			item.ID, item.TaskID, item.TenantID, item.RequestID, item.SessionID, string(item.Status),
 			item.FencingToken, item.ResultVersion, item.ResultHash, item.AttemptCount, item.CreatedAt,
 			item.ReasonCode, item.RequestHash, item.ResultCiphertext, item.ContentType))
+	mock.ExpectCommit()
 }
 
 func expectDelivered(mock pgxmock.PgxPoolIface, id int64) {
+	expectBypassBegin(mock)
 	mock.ExpectExec("UPDATE durable_pending_outbox SET status='delivered'").
 		WithArgs(id, "outbox-1").
 		WillReturnResult(pgxmock.NewResult("UPDATE", 1))
+	mock.ExpectCommit()
 }
 
 func expectOutboxFailed(mock pgxmock.PgxPoolIface, id int64) {
+	expectBypassBegin(mock)
 	mock.ExpectExec("UPDATE durable_pending_outbox SET status='failed'").
 		WithArgs(id, "outbox-1", pgxmock.AnyArg(), pgxmock.AnyArg()).
 		WillReturnResult(pgxmock.NewResult("UPDATE", 1))
+	mock.ExpectCommit()
 }
 
 func TestOutboxDeliverCompletedResult(t *testing.T) {

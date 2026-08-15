@@ -54,7 +54,7 @@ func expectClaim(t *testing.T, mock pgxmock.PgxPoolIface, snapshot DurableReques
 	rows := pgxmock.NewRows(claimColumns()).AddRow(task.TaskID, task.TenantID, task.RequestID,
 		task.SessionID, task.RequestHash, ciphertext, SnapshotVersionV1, "current",
 		task.AttemptCount, task.DeadlineAt, string(CommitNone), int64(2), StatusRetryScheduled)
-	mock.ExpectBegin()
+	expectBypassBegin(mock)
 	mock.ExpectQuery("WITH picked AS").
 		WithArgs(10, owner, pgxmock.AnyArg()).
 		WillReturnRows(rows)
@@ -75,7 +75,7 @@ func TestWorkerRunCycleReschedulesNoopExecution(t *testing.T) {
 
 	_ = expectClaim(t, mock, snapshot, kr, "worker-1")
 	// Reschedule transaction: UPDATE ... RETURNING then event insert.
-	mock.ExpectBegin()
+	expectBypassBegin(mock)
 	mock.ExpectQuery("UPDATE durable_llm_tasks SET status").
 		WithArgs(snapshot.TaskID, "worker-1", int64(2), StatusWaitingRecovery,
 			"", ReasonRecoveryExecutorUnavailable, pgxmock.AnyArg()).
@@ -105,7 +105,7 @@ func TestWorkerRunCycleDiscardsOutcomeWhenFencedOff(t *testing.T) {
 	_ = expectClaim(t, mock, snapshot, kr, "worker-1")
 	// Reschedule UPDATE matches zero rows → ErrLeaseLost; worker must
 	// swallow it without further store calls.
-	mock.ExpectBegin()
+	expectBypassBegin(mock)
 	mock.ExpectQuery("UPDATE durable_llm_tasks SET status").
 		WithArgs(pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(),
 			pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg()).
@@ -129,9 +129,11 @@ func TestWorkerRenewLossCancelsExecutionAndDiscardsOutcome(t *testing.T) {
 
 	_ = expectClaim(t, mock, snapshot, kr, "worker-1")
 	// First renew tick loses the fence (0 rows updated).
+	expectBypassBegin(mock)
 	mock.ExpectExec("UPDATE durable_llm_tasks SET lease_until").
 		WithArgs(pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg()).
 		WillReturnResult(pgxmock.NewResult("UPDATE", 0))
+	mock.ExpectRollback()
 
 	executor := ExecutorFunc(func(ctx context.Context, task ClaimedTask, snap DurableRequestSnapshotV1) Execution {
 		<-ctx.Done() // blocked until renew loss cancels the attempt
@@ -155,7 +157,7 @@ func TestWorkerFailClosedOnUndecryptableSnapshot(t *testing.T) {
 
 	// Claim a row whose ciphertext is garbage: decryption must fail closed
 	// and the worker must terminalize the task as permanent_failed.
-	mock.ExpectBegin()
+	expectBypassBegin(mock)
 	mock.ExpectQuery("WITH picked AS").
 		WithArgs(10, "worker-1", pgxmock.AnyArg()).
 		WillReturnRows(pgxmock.NewRows(claimColumns()).
@@ -168,7 +170,7 @@ func TestWorkerFailClosedOnUndecryptableSnapshot(t *testing.T) {
 		WillReturnResult(pgxmock.NewResult("INSERT", 1))
 	mock.ExpectCommit()
 	// Fail transaction: UPDATE ... RETURNING then event insert then outbox.
-	mock.ExpectBegin()
+	expectBypassBegin(mock)
 	mock.ExpectQuery("UPDATE durable_llm_tasks SET status").
 		WithArgs(pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(), pgxmock.AnyArg(),
 			pgxmock.AnyArg(), pgxmock.AnyArg()).
@@ -201,7 +203,7 @@ func TestWorkerRunReapersForwardsOutboxItems(t *testing.T) {
 	reapedColumns := []string{"id", "tenant_id", "request_id", "session_id",
 		"attempt_count", "fencing_token", "result_version", "from_status"}
 	for _, reason := range []string{ReasonSurvivalExpired, ReasonResumeSafetyBlocked} {
-		mock.ExpectBegin()
+		expectBypassBegin(mock)
 		mock.ExpectQuery("WITH picked AS").
 			WithArgs(100, pgxmock.AnyArg(), reason).
 			WillReturnRows(pgxmock.NewRows(reapedColumns).
@@ -233,17 +235,21 @@ func TestRefreshActiveGaugePublishesAndResets(t *testing.T) {
 	defer mock.Close()
 	kr := testKeyring(t)
 
+	expectBypassBegin(mock)
 	mock.ExpectQuery("SELECT tenant_id,count").
 		WillReturnRows(pgxmock.NewRows([]string{"tenant_id", "count"}).
 			AddRow("tenant-a", int64(3)).AddRow("tenant-b", int64(1)))
+	mock.ExpectCommit()
 	worker := NewRecoveryWorker(NewStore(mock, kr), kr, nil, WorkerConfig{Owner: "worker-1"})
 	worker.RefreshActiveGauge(context.Background())
 	require.Equal(t, float64(3), gaugeTenantValue(t, "tenant-a"))
 	require.Equal(t, float64(1), gaugeTenantValue(t, "tenant-b"))
 
 	// tenant-a drains: its series must reset to zero, not freeze at 3.
+	expectBypassBegin(mock)
 	mock.ExpectQuery("SELECT tenant_id,count").
 		WillReturnRows(pgxmock.NewRows([]string{"tenant_id", "count"}).AddRow("tenant-b", int64(1)))
+	mock.ExpectCommit()
 	worker.RefreshActiveGauge(context.Background())
 	require.Equal(t, float64(0), gaugeTenantValue(t, "tenant-a"))
 	require.Equal(t, float64(1), gaugeTenantValue(t, "tenant-b"))
