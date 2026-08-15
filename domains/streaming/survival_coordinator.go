@@ -88,6 +88,12 @@ type SurvivalCoordinator struct {
 	// (resume-blocked) and therefore needs a well-formed stream ending
 	// rather than a bare error frame.
 	Terminal func(decision TaskDecision, committed bool)
+	// DurableCheckpoint persists the durable write-ahead checkpoint before
+	// any buffered or semantic bytes become client-visible (SR-W3: the
+	// BeforeSemanticCommit hook of every per-attempt gate). Returning an
+	// error aborts the flush — the attempt is fenced off. Nil keeps the
+	// gates purely in-memory.
+	DurableCheckpoint func(state CommitState) error
 }
 
 func (c *SurvivalCoordinator) now() time.Time {
@@ -142,7 +148,10 @@ func (c *SurvivalCoordinator) Run(ctx context.Context, sw *SerializedStreamWrite
 	var recoveryStart time.Time
 
 	for {
-		gate := NewAttemptCommitGate(c.Protocol, sw, GateOptions{Mode: GateModeBuffered})
+		gate := NewAttemptCommitGate(c.Protocol, sw, GateOptions{
+			Mode:                 GateModeBuffered,
+			BeforeSemanticCommit: c.DurableCheckpoint,
+		})
 
 		gw := NewGateWriterWithResponse(gate, params.W)
 		attemptParams := *params
