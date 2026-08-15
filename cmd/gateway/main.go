@@ -4199,6 +4199,11 @@ func main() {
 		_ = json.NewEncoder(w).Encode(s)
 	})
 
+	// GW-0.2 (docs/全面优化v1): GET /api/v2/capabilities 返回网关当前能力
+	// 清单（current/partial/planned 如实标注，见 capabilities.go）。匿名
+	// 可读：不含 provider/credential 等敏感数据，供跨服务能力发现使用。
+	mux.Handle("/api/v2/capabilities", NewCapabilitiesHandler(Version(), cfg.Listen))
+
 	// NET-008 fix: /metrics 必须 admin 鉴权（暴露所有 prometheus 注册
 	// 指标含 provider / credential 等敏感标签）。使用
 	// LLM_GATEWAY_ADMIN_API_KEY 静态 token（与 AdminTokenMiddleware 配合）。
