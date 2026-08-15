@@ -990,12 +990,16 @@ func (h *ResponsesHandler) writeNonStreamResponse(w http.ResponseWriter, body []
 		return nil
 	}
 
-	if isEmptyUpstreamChatResponse(body) {
+	format, empty := classifyNonStreamUpstreamResponse(body)
+	if empty {
 		writeResponsesError(w, http.StatusBadGateway, "模型未返回任何内容", "api_error", "empty_upstream_response")
 		return nil
 	}
 
-	respBody := convertChatResponseToResponses(body, clientModel, requestID)
+	respBody := body
+	if format != nonStreamResponseResponses {
+		respBody = convertChatResponseToResponses(body, clientModel, requestID)
+	}
 
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("X-Request-Id", requestID)
