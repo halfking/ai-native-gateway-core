@@ -1,0 +1,9 @@
+{
+  "id": "T-28",
+  "name": "url-mode-url-provider-passthrough",
+  "model": "gpt-4o-mini",
+  "endpoint": "/v1/chat/completions",
+  "provider": "openai",
+  "format": "openai-image-gateway-url",
+  "notes": "MM-4 URL 模式直通：附件以网关 URL 引用传入，目标供应商（openai，矩阵 SupportsHTTPSURL=true）URL 直通不取回。前置条件：MULTIMODAL_E2E_GATEWAY_ATTACHMENT_URL 指向已存储附件的完整公开 URL（未设置时 runner 自动 SKIP）。通过标准：HTTP 200 + 非空 content（与 T-02 外部 URL 用例同口径）。executor 级行为已由 Go e2e TestExecuteAttachmentURLMode_URLProviderPassthroughNoFetch 钉住。"
+}
