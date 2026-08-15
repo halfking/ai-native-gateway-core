@@ -26,3 +26,16 @@ func TestHandoffPendingTrimmerNilPoolAndLifecycle(t *testing.T) {
 	trimmer.Stop()
 	trimmer.Stop()
 }
+
+// TestHandoffPendingTrimmer_RetentionFloor guards the safety floor: a TTL
+// below 1 day (or an unset key) must never produce a zero/negative retention
+// that would wipe handoff_pending_confirmations in a single batch.
+func TestHandoffPendingTrimmer_RetentionFloor(t *testing.T) {
+	got := pendingConfirmationRetention()
+	if got < 24*time.Hour {
+		t.Fatalf("pendingConfirmationRetention = %v, want >= 24h (must never wipe the table)", got)
+	}
+	if got != 14*24*time.Hour {
+		t.Fatalf("pendingConfirmationRetention = %v, want 14d default", got)
+	}
+}
