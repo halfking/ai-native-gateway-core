@@ -339,6 +339,10 @@ do_deploy() {
   log "[2/9] 前端 + 后端串行构建"
   local tmpbin="/tmp/__seamless_${TARGET}_binary"
   if [[ "$SKIP_FRONTEND" == "false" ]]; then
+    if [[ ! -d web/node_modules ]]; then
+      log "web/node_modules 缺失，按 package-lock.json 安装依赖"
+      (cd web && npm ci)
+    fi
     (cd web && npm run build 2>&1 | tail -5)
     ok "web/dist 已生成"
   else

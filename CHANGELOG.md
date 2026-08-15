@@ -5,6 +5,22 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased] - 2026-08-16 (Auto Loopback Parent Correlation Repair)
+
+### Fixed
+
+- **auto 回环分支 session 前缀**：auto-title / auto-summary 的
+  `X-Gw-Session-Id` 由 `gt:` / `gs:`（冒号）更正为 `gt_` / `gs_`。
+  `sanitizeGwSessionHeader` 只接受 `gw_/gt_/gs_`，冒号形式被静默丢弃，
+  子请求因此拿到全新 `gw_<uuid>`，分支命名空间与运维 SQL 检索失效。
+- **最终 upsert 丢失父子关联**：`emitTelemetry` 成功路径补上
+  `applyParentCorrelationFields`，此前 `ON CONFLICT DO UPDATE` 用 NULL 覆盖了
+  初始写入的 `parent_request_id` / `origin_actor`，导致 auto 子请求落库恒为
+  NULL、live stream 的 `child_request` 帧从不发射。
+- **回归门禁**：新增冒号前缀必须被拒绝的 sanitizer 用例；更正
+  auto-summary 测试中锁定缺陷行为的 `gs:` 断言。
+- 详见 `docs/changelogs/2026-08-16-auto-loopback-parent-correlation.md`。
+
 ## [Unreleased] - 2026-08-16 (Handoff Explicit Client Confirmation)
 
 ### Added
