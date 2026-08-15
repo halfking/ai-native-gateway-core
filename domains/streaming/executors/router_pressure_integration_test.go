@@ -71,10 +71,10 @@ func TestRouterApplyPressurePenalty(t *testing.T) {
 	router.PressureAwareEnabled = true
 
 	tests := []struct {
-		name            string
-		candidates      []provider.Candidate
-		fpPressures     []float64
-		limiterPressures []float64
+		name               string
+		candidates         []provider.Candidate
+		fpPressures        []float64
+		limiterPressures   []float64
 		expectWeightChange bool
 	}{
 		{
@@ -82,8 +82,8 @@ func TestRouterApplyPressurePenalty(t *testing.T) {
 			candidates: []provider.Candidate{
 				{CredentialID: 1, Weight: 100},
 			},
-			fpPressures:      []float64{0.0},
-			limiterPressures: []float64{0.0},
+			fpPressures:        []float64{0.0},
+			limiterPressures:   []float64{0.0},
 			expectWeightChange: false,
 		},
 		{
@@ -91,8 +91,8 @@ func TestRouterApplyPressurePenalty(t *testing.T) {
 			candidates: []provider.Candidate{
 				{CredentialID: 2, Weight: 100},
 			},
-			fpPressures:      []float64{0.4},
-			limiterPressures: []float64{0.3},
+			fpPressures:        []float64{0.4},
+			limiterPressures:   []float64{0.3},
 			expectWeightChange: false,
 		},
 		{
@@ -100,8 +100,8 @@ func TestRouterApplyPressurePenalty(t *testing.T) {
 			candidates: []provider.Candidate{
 				{CredentialID: 3, Weight: 100},
 			},
-			fpPressures:      []float64{0.65},
-			limiterPressures: []float64{0.0},
+			fpPressures:        []float64{0.65},
+			limiterPressures:   []float64{0.0},
 			expectWeightChange: true,
 		},
 		{
@@ -109,8 +109,8 @@ func TestRouterApplyPressurePenalty(t *testing.T) {
 			candidates: []provider.Candidate{
 				{CredentialID: 4, Weight: 100},
 			},
-			fpPressures:      []float64{0.9},
-			limiterPressures: []float64{0.0},
+			fpPressures:        []float64{0.9},
+			limiterPressures:   []float64{0.0},
 			expectWeightChange: true,
 		},
 	}

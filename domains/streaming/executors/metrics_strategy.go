@@ -3,6 +3,7 @@
 // 仅观测，不影响线上路由。labels 刻意低基数：
 //   - strategy: p2c|cost-optimized|cache-optimized|context-aware|headroom
 //   - outcome: agreed|disagreed
+//
 // 不使用 model/tenant_id/credential_id/request_id 等高基数维度（GW-00 门禁）。
 package executors
 

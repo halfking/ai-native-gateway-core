@@ -48,11 +48,15 @@ func survivalClientProtocol(r *http.Request) ClientProtocol {
 // request and returns the executor-shaped outcome so the shared
 // post-loop handling (telemetry, traces, session bookkeeping) runs
 // unchanged. buildExecParams is the same factory the goal-retry loop uses.
+// A non-nil durable binding switches the loop into the doc 18 §11.3
+// foreground mode: write-ahead commit checkpoints, lease renewal and the
+// terminal settlement matrix (durable_stream.go).
 func (h *ChatHandler) runSurvivalCoordinator(
 	r *http.Request,
 	w http.ResponseWriter,
 	buildExecParams func(streamWriter http.ResponseWriter) *executors.ExecParams,
 	tenantID string,
+	durable *DurableStreamBinding,
 ) (*executors.ExecuteResult, error) {
 	protocol := survivalClientProtocol(r)
 
@@ -72,7 +76,17 @@ func (h *ChatHandler) runSurvivalCoordinator(
 		params.OnStreamReady()
 	}
 
-	sw := NewSerializedStreamWriter(w)
+	// Durable foreground: tee the committed wire bytes for the completed
+	// terminal body, then start the lease renewal loop.
+	var capture *durableWireCapture
+	baseWriter := w
+	if durable != nil {
+		capture = newDurableWireCapture(w, 0)
+		baseWriter = capture
+		durable.Start()
+	}
+
+	sw := NewSerializedStreamWriter(baseWriter)
 	coordinator := &SurvivalCoordinator{
 		Exec:     h.executor,
 		Protocol: protocol,
@@ -86,6 +100,13 @@ func (h *ChatHandler) runSurvivalCoordinator(
 				params.Candidates = cands
 			}
 		},
+		// NOTE: the coordinator's durable Reschedule seam stays unwired
+		// here: store.Reschedule clears the lease while the coordinator
+		// keeps executing in-connection after the wait — wiring it would
+		// fork ownership between the foreground and the worker. Crash
+		// during a wait is covered by frontend lease expiry instead
+		// (ClaimRunnable re-claims expired running tasks).
+		BeforeSemanticCommit: durableBeforeSemanticCommit(durable),
 		Terminal: func(decision TaskDecision, committed bool) {
 			renderSurvivalTerminal(sw, protocol, decision, committed)
 		},
@@ -99,6 +120,14 @@ func (h *ChatHandler) runSurvivalCoordinator(
 		"decision", res.Decision.Action.String(),
 		"reason", res.Decision.Reason,
 	)
+	if durable != nil {
+		var body []byte
+		contentType := ""
+		if capture != nil {
+			body, contentType = capture.result()
+		}
+		settleDurableStream(frozenCtx, durable, res, body, contentType, frozenCtx.Err() != nil)
+	}
 	if res.Succeed {
 		return res.FinalAttempt.ExecResult, nil
 	}
@@ -110,6 +139,17 @@ func (h *ChatHandler) runSurvivalCoordinator(
 		err = fmt.Errorf("request survival ended: %s (%s)", res.Decision.Action, res.Decision.Reason)
 	}
 	return nil, err
+}
+
+// durableBeforeSemanticCommit adapts the binding into the coordinator's
+// write-ahead seam; nil binding → nil hook (plain survival, no durable
+// checkpoints). The binding uses its own detached context internally, so a
+// disconnecting client cannot cancel the write-ahead.
+func durableBeforeSemanticCommit(durable *DurableStreamBinding) func(context.Context, CommitState) error {
+	if durable == nil {
+		return nil
+	}
+	return func(_ context.Context, state CommitState) error { return durable.Checkpoint(state) }
 }
 
 // renderSurvivalTerminal writes the final protocol frame(s) for a task the

@@ -13,7 +13,7 @@ import (
 // (PriceInPer1M + PriceOutPer1M, the shadow cost-optimized strategy input)
 // and the model's standard IQ (AA Intelligence Index via modeliqdata).
 func rt2Candidates() []provider.Candidate {
-	cheapIn, cheapOut := 1.0, 2.0     // blended 3
+	cheapIn, cheapOut := 1.0, 2.0           // blended 3
 	expensiveIn, expensiveOut := 10.0, 20.0 // blended 30
 	return []provider.Candidate{
 		{CredentialID: 1, ProviderID: 1, RawModel: "claude-opus-4-8",
