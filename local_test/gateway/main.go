@@ -111,21 +111,21 @@ func (g *RealProviderGateway) loadFromEnv() {
 	// Default credentials (from boss's spec)
 	defaults := []CredentialRecord{
 		// Minimax
-		{CanonicalName: "minimax-m2", Provider: "minimax", APIKey: "sk-cp-bT8Qagnkbdo5xFil3rddP5GA7s31eSCd5ZrAvRroVu-M6fhZr21DHDmLx5h4SV-9Rd6dG40SdVp3XbUNLEGGIlYZuw3g33w1bmt5l99ESMyOS_gf-Ba1hvY", BaseURL: "https://api.minimaxi.com/v1"},
-		{CanonicalName: "minimax-m3", Provider: "minimax", APIKey: "sk-cp-bT8Qagnkbdo5xFil3rddP5GA7s31eSCd5ZrAvRroVu-M6fhZr21DHDmLx5h4SV-9Rd6dG40SdVp3XbUNLEGGIlYZuw3g33w1bmt5l99ESMyOS_gf-Ba1hvY", BaseURL: "https://api.minimaxi.com/v1"},
+		{CanonicalName: "minimax-m2", Provider: "minimax", APIKey: os.Getenv("MINIMAX_API_KEY"), BaseURL: "https://api.minimaxi.com/v1"},
+		{CanonicalName: "minimax-m3", Provider: "minimax", APIKey: os.Getenv("MINIMAX_API_KEY"), BaseURL: "https://api.minimaxi.com/v1"},
 		// 智谱
-		{CanonicalName: "glm-4.7", Provider: "zhipu", APIKey: "9f7fa0edca07455e80c7431b059182b3.2hJa8SexdbT4hu1p", BaseURL: "https://open.bigmodel.cn/api/coding/paas/v4"},
-		{CanonicalName: "glm-5.1", Provider: "zhipu", APIKey: "9f7fa0edca07455e80c7431b059182b3.2hJa8SexdbT4hu1p", BaseURL: "https://open.bigmodel.cn/api/coding/paas/v4"},
+		{CanonicalName: "glm-4.7", Provider: "zhipu", APIKey: os.Getenv("ZHIPU_API_KEY"), BaseURL: "https://open.bigmodel.cn/api/coding/paas/v4"},
+		{CanonicalName: "glm-5.1", Provider: "zhipu", APIKey: os.Getenv("ZHIPU_API_KEY"), BaseURL: "https://open.bigmodel.cn/api/coding/paas/v4"},
 		// NVIDIA NIM
-		{CanonicalName: "minimax-m2", Provider: "nvidia", APIKey: "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", BaseURL: "https://integrate.api.nvidia.com/v1"},
-		{CanonicalName: "minimax-m3", Provider: "nvidia", APIKey: "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", BaseURL: "https://integrate.api.nvidia.com/v1"},
-		{CanonicalName: "glm-5.1", Provider: "nvidia", APIKey: "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", BaseURL: "https://integrate.api.nvidia.com/v1"},
+		{CanonicalName: "minimax-m2", Provider: "nvidia", APIKey: os.Getenv("NVIDIA_API_KEY"), BaseURL: "https://integrate.api.nvidia.com/v1"},
+		{CanonicalName: "minimax-m3", Provider: "nvidia", APIKey: os.Getenv("NVIDIA_API_KEY"), BaseURL: "https://integrate.api.nvidia.com/v1"},
+		{CanonicalName: "glm-5.1", Provider: "nvidia", APIKey: os.Getenv("NVIDIA_API_KEY"), BaseURL: "https://integrate.api.nvidia.com/v1"},
 		// 自有 kaixuan
-		{CanonicalName: "minimax-m2", Provider: "kaixuan", APIKey: "sk-1vH6C2I9pywyvUXaUXj4vdMZbeYVE5VB0fBYVgqA97JrltE9", BaseURL: "https://llm.kxpms.cn/v1"},
-		{CanonicalName: "minimax-m3", Provider: "kaixuan", APIKey: "sk-1vH6C2I9pywyvUXaUXj4vdMZbeYVE5VB0fBYVgqA97JrltE9", BaseURL: "https://llm.kxpms.cn/v1"},
-		{CanonicalName: "glm-5.1", Provider: "kaixuan", APIKey: "sk-1vH6C2I9pywyvUXaUXj4vdMZbeYVE5VB0fBYVgqA97JrltE9", BaseURL: "https://llm.kxpms.cn/v1"},
-		{CanonicalName: "deepseek-v4", Provider: "kaixuan", APIKey: "sk-1vH6C2I9pywyvUXaUXj4vdMZbeYVE5VB0fBYVgqA97JrltE9", BaseURL: "https://llm.kxpms.cn/v1"},
-		{CanonicalName: "mimo-v2.5", Provider: "kaixuan", APIKey: "sk-1vH6C2I9pywyvUXaUXj4vdMZbeYVE5VB0fBYVgqA97JrltE9", BaseURL: "https://llm.kxpms.cn/v1"},
+		{CanonicalName: "minimax-m2", Provider: "kaixuan", APIKey: os.Getenv("LLM_GATEWAY_API_KEY"), BaseURL: "https://llm.kxpms.cn/v1"},
+		{CanonicalName: "minimax-m3", Provider: "kaixuan", APIKey: os.Getenv("LLM_GATEWAY_API_KEY"), BaseURL: "https://llm.kxpms.cn/v1"},
+		{CanonicalName: "glm-5.1", Provider: "kaixuan", APIKey: os.Getenv("LLM_GATEWAY_API_KEY"), BaseURL: "https://llm.kxpms.cn/v1"},
+		{CanonicalName: "deepseek-v4", Provider: "kaixuan", APIKey: os.Getenv("LLM_GATEWAY_API_KEY"), BaseURL: "https://llm.kxpms.cn/v1"},
+		{CanonicalName: "mimo-v2.5", Provider: "kaixuan", APIKey: os.Getenv("LLM_GATEWAY_API_KEY"), BaseURL: "https://llm.kxpms.cn/v1"},
 	}
 
 	for _, cred := range defaults {

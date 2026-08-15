@@ -64,7 +64,7 @@ Node版本: 16+
   Header: Authorization: Bearer sk-{YOUR_API_KEY}
   
 测试密钥:
-  示例: sk-1vH6C2I9pywyvUXaUXj4vdMZbeYVE5VB0fBYVgqA97JrltE9
+  示例: __API_KEY_1__
 ```
 
 ### Admin API端点

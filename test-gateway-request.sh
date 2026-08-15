@@ -6,7 +6,7 @@ set -e
 
 # 配置
 GATEWAY_URL="http://llmgo.kxpms.cn"
-API_KEY="sk-1vH6C2I9pywyvUXaUXj4vdMZbeYVE5VB0fBYVgqA97JrltE9"
+API_KEY="${LLM_GATEWAY_API_KEY:?export LLM_GATEWAY_API_KEY first (envs SSOT / env-injector)}"
 REQUEST_ID="test-$(date +%s)"
 
 echo "========================================="

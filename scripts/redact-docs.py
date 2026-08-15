@@ -30,23 +30,41 @@ def p(cat, val):
 
 
 # === Define all sensitive values (longest first for safe replacement) ===
+#
+# 2026-08-15: real credentials are NO LONGER hardcoded in this repo copy.
+# They are loaded at runtime from (either or both, values never committed):
+#   1. ~/.llm-gateway/docs-sensitive.json  — "mappings" placeholder→value entries
+#      (written by previous runs; superset of everything redacted so far)
+#   2. ~/.llm-gateway/redact-values.json   — {"<category>": ["value", ...]}
+# Synthesized/test fixtures and non-secret infra metadata stay inline below.
 
-# API Keys
-p("api_key", "sk-1vH6C2I9pywyvUXaUXj4vdMZbeYVE5VB0fBYVgqA97JrltE9")
-p("api_key", "sk-k40DVd9aqFGumYcEkfkQvSgdv06uepSNDK0BqHwtwS3RzTgY")
-p("api_key", "sk-1R7IBh2THq1Id2BDWOWHstpFu2oG09Qd1kgYn9hasxFcKZw7")
+def _load_runtime_values():
+    loaded = []
+    try:
+        with open(MAPPING_FILE, "r", encoding="utf-8") as f:
+            for info in json.load(f).get("mappings", {}).values():
+                if info.get("category") == "api_key" or info["category"].endswith(("pwd", "_key")):
+                    loaded.append((info["category"], info["value"]))
+    except (OSError, ValueError):
+        pass
+    extra = os.path.expanduser("~/.llm-gateway/redact-values.json")
+    try:
+        with open(extra, "r", encoding="utf-8") as f:
+            for cat, vals in json.load(f).items():
+                for v in vals:
+                    loaded.append((cat, v))
+    except (OSError, ValueError):
+        pass
+    return loaded
+
+for _cat, _val in _load_runtime_values():
+    p(_cat, _val)
+
+# Synthetic / documentation fixtures (safe to keep in repo)
 p("api_key", "sk-e2e-1781897808-B-3322")
 p("api_key", "sk-probe-AAAA-BBBB-CCCC-DDDD")
 p("api_key", "sk-plain-text-leak-test")
 p("api_key", "sk-test")
-p("api_key", "834a588e-dcfe-4daf-90c0-e65435c6e6ba")
-
-# Passwords
-p("ssh_pwd", "Kaixuan2026&#*9527")
-p("admin_pwd", "Veritrans&9527")
-p("db_pwd", "4Q92cFTaYY8Z3AO07XTBBH-1g7kceaxg")
-p("db_pwd", "llm_gateway_2024")
-p("db_pwd", "kxpass")
 
 # Public IPs
 p("pub_ip", "14.103.112.184")

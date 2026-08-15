@@ -22,7 +22,7 @@ set -uo pipefail
 cd "$(dirname "$0")/.."   # 项目根
 
 GATEWAY="http://localhost:8082"
-KEYS="sk-stress-test-01-hash-0000000000000000000000000000000000000001,sk-stress-test-02-hash-0000000000000000000000000000000000000002,sk-stress-test-03-hash-0000000000000000000000000000000000000003"
+KEYS="${MULTIDIM_STRESS_KEYS:?comma-separated stress-test keys required}"
 MODELS="loadtest-mini-alpha,loadtest-mini-beta,loadtest-standard-alpha,loadtest-standard-beta,loadtest-pro-alpha"
 RESULTS_DIR="/tmp/multidim-results"
 mkdir -p "$RESULTS_DIR"
@@ -193,7 +193,7 @@ set_group_state C rate_limited
 echo "  --- wave 1: verify cooling state error messages ---"
 for i in {1..5}; do
   curl -sS -X POST "$GATEWAY/v1/chat/completions" \
-    -H "Authorization: Bearer sk-stress-test-01-hash-0000000000000000000000000000000000000001" \
+    -H "Authorization: Bearer ${KEYS%%,*}" \
     -H "Content-Type: application/json" \
     -d '{"model":"loadtest-mini-alpha","messages":[{"role":"user","content":"test"}],"max_tokens":10}' 2>&1
   echo ""

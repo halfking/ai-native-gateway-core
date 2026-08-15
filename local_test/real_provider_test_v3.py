@@ -37,19 +37,19 @@ PROVIDERS = [
     Provider(
         name="minimax",
         base_url="https://api.minimaxi.com/v1",
-        api_key="sk-cp-bT8Qagnkbdo5xFil3rddP5GA7s31eSCd5ZrAvRroVu-M6fhZr21DHDmLx5h4SV-9Rd6dG40SdVp3XbUNLEGGIlYZuw3g33w1bmt5l99ESMyOS_gf-Ba1hvY",
+        api_key=os.environ.get("MINIMAX_API_KEY", ""),
         supported_canonical=["minimax-m2", "minimax-m3"],
     ),
     Provider(
         name="zhipu",
         base_url="https://open.bigmodel.cn/api/coding/paas/v4",
-        api_key="9f7fa0edca07455e80c7431b059182b3.2hJa8SexdbT4hu1p",
+        api_key=os.environ.get("ZHIPU_API_KEY", ""),
         supported_canonical=["glm-4.7", "glm-5.1"],
     ),
     Provider(
         name="nvidia",
         base_url="https://integrate.api.nvidia.com/v1",
-        api_key="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",
+        api_key=os.environ.get("NVIDIA_API_KEY", ""),
         supported_canonical=[
             "minimax-m2",
             "minimax-m3",
@@ -59,7 +59,7 @@ PROVIDERS = [
     Provider(
         name="kaixuan",
         base_url="https://llm.kxpms.cn/v1",
-        api_key="sk-1vH6C2I9pywyvUXaUXj4vdMZbeYVE5VB0fBYVgqA97JrltE9",
+        api_key=os.environ.get("LLM_GATEWAY_API_KEY", ""),
         supported_canonical=[
             "minimax-m2",
             "minimax-m3",
@@ -71,7 +71,7 @@ PROVIDERS = [
     Provider(
         name="evol",
         base_url="https://mg-new.evolai.cn/openclaw-proxy/v1",
-        api_key="mg-aZXHIREnemGhonu_hvo5PbuyElTvYT1u779JwoJo6bU",
+        api_key=os.environ.get("EVOL_API_KEY", ""),
         # evol supports all these models but uses "积分不足" errors for high-value ones
         # We'll skip evol in this test since credits are exhausted
         supported_canonical=[],
