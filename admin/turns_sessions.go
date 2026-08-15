@@ -21,7 +21,7 @@
 //       &project_id=...    按会话所属项目（ss.gw_project_id）过滤
 //       &task_id=...       按会话任务（sd.task_id）过滤
 //       &search=...        标题 / topic / 摘要 模糊匹配
-//       &tags=...          按 user_tags（逗号分隔，AND 语义）过滤
+//       &tags=...          按 user_tags（逗号分隔，任一命中即保留，&& 数组重叠语义）过滤
 //       &client=...        按客户端（sd.client_id / sd.application_code / s.client_type）过滤
 //       &owner_user=...    按会话属主用户（sd.owner_user）过滤
 //
