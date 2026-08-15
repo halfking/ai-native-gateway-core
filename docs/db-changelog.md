@@ -846,3 +846,9 @@
 | Migration | File | SHA-256 | Status |
 |-----------|------|---------|--------|
 | 516 | `516_durable_llm_tasks.sql` | `ab38d456e680ed2dfdc778a867a6137ad40a1ffa9bca76a13e3c524cc1955608` | applied+verified |
+
+## 2026-08-16 — handoff confirmation migration relocation
+
+| Migration | File | Status |
+|-----------|------|--------|
+| 517 | `517_handoff_pending_confirmations.sql` | pending deployment verification |
