@@ -1,8 +1,8 @@
 {
-  "version": "archive/sr-w3-foreground-ref-e66a1755-20260815-1553",
+  "version": "archive/sr-w3-foreground-ref-3ce6a23c-20260815-1554",
   "git_tag": "archive/sr",
-  "git_sha": "e66a1755",
-  "build_seq": 1553,
+  "git_sha": "3ce6a23c",
+  "build_seq": 1554,
   "build_date": "20260815",
   "module": "llm-gateway-go"
 }
