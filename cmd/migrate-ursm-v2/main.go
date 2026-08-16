@@ -78,6 +78,7 @@ import (
 	"time"
 
 	_ "github.com/jackc/pgx/v5/stdlib"
+	"github.com/kaixuan/llm-gateway-go/domains/ursm/v2/store"
 	"github.com/redis/go-redis/v9"
 )
 
@@ -129,7 +130,7 @@ func main() {
 		redisURL       = flag.String("redis", redisURLFromEnv(), "Redis URL")
 		pgDSN          = flag.String("pg", envOr("LLM_GATEWAY_DATABASE_URL", envOr("DATABASE_URL", "")), "Postgres DSN")
 		keyPrefix      = flag.String("key-prefix", defaultRedisKeyPrefix, "URSM v2 Redis key prefix (must match gateway config)")
-			tenantID       = flag.String("tenant-id", "", "Optional: restrict migration to one tenant_id (empty = all)")
+		tenantID       = flag.String("tenant-id", "", "Optional: restrict migration to one tenant_id (empty = all)")
 		batchSize      = flag.Int("batch-size", 500, "Rows per batch (HSET pipelining)")
 	)
 	flag.Parse()
@@ -298,7 +299,18 @@ func main() {
 		written += end - start
 		fmt.Printf("  ✓ wrote %d / %d\n", written, len(toWrite))
 	}
-	fmt.Printf("\n✅ Wrote %d URSM v2 nodes to Redis (prefix=%s)\n", written, *keyPrefix)
+	coverageKeys := make([]string, 0, len(nodes))
+	for _, n := range nodes {
+		coverageKeys = append(coverageKeys, n.NodeKey)
+	}
+	coverageManifestKey := store.CoverageKey(*keyPrefix)
+	if *tenantID != "" {
+		coverageManifestKey += ":tenant:" + *tenantID
+	}
+	if err := replaceCoverageManifest(ctx, rdb, coverageManifestKey, coverageKeys); err != nil {
+		log.Fatalf("replace coverage manifest: %v", err)
+	}
+	fmt.Printf("\n✅ Wrote %d URSM v2 nodes and %d expected coverage keys to Redis (manifest=%s)\n", written, len(coverageKeys), coverageManifestKey)
 	if skipCount > 0 {
 		fmt.Printf("   ⚠  Skipped %d pre-existing keys (CAS guard)\n", skipCount)
 	}
@@ -310,26 +322,53 @@ func main() {
 	fmt.Println("  5. cutover: URSM_V2_MODE=authoritative + remove URSM_V2_SHADOW_DOUBLE_WRITE")
 }
 
-// readProbeRows reads node_probe_state, optionally filtered by tenant.
-//
-// Tenant filtering requires a join with the credentialstate schema. If
-// tenant-id is 0 we read every row. If non-zero we restrict to
-// credentials that belong to that tenant in api_keys.
-//
-// Note: The legacy schema does NOT store tenant_id on node_probe_state —
-// we join through credentials. If the credential has been hard-deleted,
-// it silently disappears from the migration.
+func replaceCoverageManifest(ctx context.Context, rdb *redis.Client, key string, members []string) error {
+	pendingKey := key + ":pending"
+	if err := rdb.Set(ctx, pendingKey, time.Now().UTC().Format(time.RFC3339Nano), 0).Err(); err != nil {
+		return err
+	}
+	defer func() { _ = rdb.Del(context.Background(), pendingKey).Err() }()
+	tmp := key + ":staging"
+	if err := rdb.Del(ctx, tmp).Err(); err != nil {
+		return err
+	}
+	args := make([]any, 0, len(members))
+	for _, member := range members {
+		args = append(args, member)
+	}
+	if len(args) > 0 {
+		if err := rdb.SAdd(ctx, tmp, args...).Err(); err != nil {
+			return err
+		}
+	}
+	stored, err := rdb.SMembers(ctx, tmp).Result()
+	if err != nil {
+		return err
+	}
+	if len(stored) != len(members) {
+		return fmt.Errorf("coverage manifest count mismatch: expected=%d got=%d", len(members), len(stored))
+	}
+	seen := make(map[string]struct{}, len(stored))
+	for _, member := range stored {
+		seen[member] = struct{}{}
+	}
+	for _, member := range members {
+		if _, ok := seen[member]; !ok {
+			return fmt.Errorf("coverage manifest missing member: %s", member)
+		}
+	}
+	return rdb.Rename(ctx, tmp, key).Err()
+}
+
+// readProbeRows reads node_probe_state with the owning credential tenant.
+// An empty tenant ID selects every live credential; otherwise the filter and
+// the emitted Redis namespace use exactly the supplied tenant string.
 func readProbeRows(ctx context.Context, db *sql.DB, tenantID string) ([]probeRow, error) {
-	// node_probe_state carries no tenant_id, so we left-join credentials
-	// to recover it. Rows whose credential was hard-deleted keep an empty
-	// TenantID and fall through to the "default" namespace in mapRow —
-	// match the legacy behaviour where they silently disappeared when
-	// filtered against the tenant flag.
-	const baseQ = `SELECT COALESCE(c.tenant_id, ''), nps.credential_id, nps.raw_model_name,
+	const baseQ = `SELECT c.tenant_id, nps.credential_id, nps.raw_model_name,
 		                      nps.consecutive_failures, nps.consecutive_successes,
 		                      nps.last_attempt_at, nps.paused, nps.last_direct_ok, nps.last_err_code
 		                 FROM public.node_probe_state nps
-		                 LEFT JOIN public.credentials c ON c.id = nps.credential_id`
+		                 JOIN public.credentials c ON c.id = nps.credential_id`
 	var q string
 	var args []any
 	if tenantID != "" {
@@ -364,11 +403,7 @@ func readProbeRows(ctx context.Context, db *sql.DB, tenantID string) ([]probeRow
 // last_ok_ms, last_err). Drift between here and the Lua = state drift.
 func mapRow(r probeRow, prefix string) mappedNode {
 	nowMs := time.Now().UnixMilli()
-	tenant := r.TenantID
-	if tenant == "" {
-		tenant = "default"
-	}
-	key := fmt.Sprintf("%snode:%s:%d:%s", prefix, tenant, r.CredentialID, r.RawModel)
+	key := store.NodeKeyForTenant(prefix, r.TenantID, int(r.CredentialID), r.RawModel)
 	fields := map[string]string{
 		"generation":      "1",
 		"source_priority": "10", // Request priority
