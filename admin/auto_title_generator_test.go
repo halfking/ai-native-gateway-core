@@ -484,6 +484,54 @@ func TestCallAutoTitleLLM_NoRetryOn400(t *testing.T) {
 
 // TestIsTransientAutoTitleErr (2026-08-06) — directly unit-tests the
 // retry classifier without standing up a fake server.
+func TestAutoTitleFirstTurnGuard(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		hasPrior bool
+		want     bool
+	}{
+		{name: "first turn is eligible", hasPrior: false, want: true},
+		{name: "continuing session is not eligible", hasPrior: true, want: false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			gen := &AutoTitleGenerator{
+				firstTurnCheck: func(_, _, _ string) bool { return !tc.hasPrior },
+			}
+			if got := gen.isFirstSuccessfulUserTurn("gw_session", "tenant-a", "request-current"); got != tc.want {
+				t.Fatalf("isFirstSuccessfulUserTurn() = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+func TestExtractMessagesForTitle_ToolMessagesDoNotConsumeSemanticBudget(t *testing.T) {
+	messages := make([]map[string]string, 0, 12)
+	for i := 0; i < 10; i++ {
+		messages = append(messages, map[string]string{
+			"role":    "tool",
+			"content": fmt.Sprintf("large tool output %d", i),
+		})
+	}
+	messages = append(messages,
+		map[string]string{"role": "user", "content": "请为现有会话补充标题连续性测试"},
+		map[string]string{"role": "assistant", "content": "我会检查首轮判定和工具消息过滤。"},
+	)
+	body, err := json.Marshal(map[string]any{"messages": messages})
+	if err != nil {
+		t.Fatalf("marshal body: %v", err)
+	}
+
+	got := extractMessagesForTitle(string(body))
+	if strings.Contains(got, "large tool output") {
+		t.Fatalf("tool output leaked into corpus: %s", got)
+	}
+	if !strings.Contains(got, "请为现有会话补充标题连续性测试") {
+		t.Fatalf("user message was excluded by tool traffic: %s", got)
+	}
+	if !strings.Contains(got, "我会检查首轮判定和工具消息过滤") {
+		t.Fatalf("assistant message was excluded by tool traffic: %s", got)
+	}
+}
+
 func TestIsTransientAutoTitleErr(t *testing.T) {
 	tests := []struct {
 		name   string

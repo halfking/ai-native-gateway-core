@@ -242,6 +242,30 @@ func (h *Handler) upsertSessionTitle(ctx context.Context, taskID, scopedSessionI
 	return err
 }
 
+// resolveSessionTitleTaskID chooses the real task scope from user-facing
+// requests so summary refreshes update the same title row as request logs.
+// Legacy sessions without a task retain the historical "auto" scope.
+func (h *Handler) resolveSessionTitleTaskID(ctx context.Context, sessionID, tenantID string) (string, error) {
+	if h == nil || h.db == nil {
+		return "", fmt.Errorf("database not configured")
+	}
+	var taskID string
+	err := h.db.QueryRow(ctx, `
+		SELECT COALESCE(NULLIF(TRIM(gw_task_id), ''), 'auto')
+		FROM request_logs_with_current_month
+		WHERE gw_session_id = $1
+		  AND tenant_id = $2
+		  AND success = TRUE
+		  AND COALESCE(is_auto_request, FALSE) = FALSE
+		ORDER BY ts DESC, id DESC
+		LIMIT 1
+	`, sessionID, tenantID).Scan(&taskID)
+	if err != nil {
+		return "", err
+	}
+	return taskID, nil
+}
+
 func (h *Handler) loadSessionTitlesBatch(ctx context.Context, keys [][2]string) map[string]string {
 	out := make(map[string]string, len(keys))
 	if h.db == nil || len(keys) == 0 {

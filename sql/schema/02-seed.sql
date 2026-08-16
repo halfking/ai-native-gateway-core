@@ -998,17 +998,16 @@ INSERT INTO public.work_type_config VALUES ('meeting_summary', '会议纪要', '
 INSERT INTO public.work_type_config VALUES ('compliance_audit', '合规审计', '企业', 'reasoning', 'smart', '{compliance,audit}', '{合规,审计,风控,政策}', NULL, true, 22, NULL, '2026-06-14 19:11:16.200703+00', NULL) ON CONFLICT DO NOTHING;
 INSERT INTO public.work_type_config VALUES ('session_title', '会话标题生成', '企业', 'creative', 'cost_first', '{session,title,admin,gateway}', '{标题,会话,总结,主题}', NULL, true, 23, NULL, '2026-06-18 18:23:51.006312+00', '你是会话标题生成助手。根据下方完整多轮会话日志，用中文生成一个简短准确的标题（不超过18字），概括用户目标与会话结果。只输出标题纯文本：不要引号、编号、解释、XML/HTML 标签、thinking/redacted 标记或英文占位符。') ON CONFLICT DO NOTHING;
 INSERT INTO public.work_type_config VALUES ('session_summary', '会话日志总结', '企业', 'creative', 'cost_first', '{session,summary,admin,gateway}', '{总结,摘要,会话,日志}', NULL, true, 24, NULL, '2026-06-18 18:23:51.006312+00', '你是会话日志分析助手。请严格输出 JSON，格式如下：
-{"summary":"一段连贯的中文摘要（80-200字），说明会话目标、关键步骤、最终结果","key_points":["要点1","要点2","要点3"]}
+{"title":"简短准确的中文会话标题（12-20字）","summary":"一段连贯的中文摘要（80-200字），说明会话目标、关键步骤、最终结果","key_points":["要点1","要点2","要点3"],"user_intent":"用户核心目标"}
 要求：
+- title 概括用户当前目标与已取得的结果，不要使用引号或解释
 - summary 必须是完整句子，涵盖：做了什么、怎么做的、结果如何
 - key_points 提取 3-5 个关键事实或决策点，每条 15-40 字
 - 不要输出 JSON 以外的任何文本
 - 如果语料中包含错误信息，务必在总结中提及') ON CONFLICT DO NOTHING;
 INSERT INTO public.work_type_model_route VALUES (1, 'session_title', 'minimax-m2.7', 1.00, 0.0000, true) ON CONFLICT DO NOTHING;
 INSERT INTO public.work_type_model_route VALUES (2, 'session_title', 'glm-5.1', 0.95, 0.0000, true) ON CONFLICT DO NOTHING;
-INSERT INTO public.work_type_model_route VALUES (3, 'session_title', 'minimax-m3', 0.90, 0.0000, true) ON CONFLICT DO NOTHING;
-INSERT INTO public.work_type_model_route VALUES (4, 'session_title', 'deepseek-chat', 0.85, 0.0000, true) ON CONFLICT DO NOTHING;
+INSERT INTO public.work_type_model_route VALUES (3, 'session_title', 'deepseek-v4-flash', 0.90, 0.0000, true) ON CONFLICT DO NOTHING;
 INSERT INTO public.work_type_model_route VALUES (5, 'session_summary', 'minimax-m2.7', 1.00, 0.0000, true) ON CONFLICT DO NOTHING;
 INSERT INTO public.work_type_model_route VALUES (6, 'session_summary', 'glm-5.1', 0.95, 0.0000, true) ON CONFLICT DO NOTHING;
-INSERT INTO public.work_type_model_route VALUES (7, 'session_summary', 'minimax-m3', 0.90, 0.0000, true) ON CONFLICT DO NOTHING;
-INSERT INTO public.work_type_model_route VALUES (8, 'session_summary', 'deepseek-chat', 0.85, 0.0000, true) ON CONFLICT DO NOTHING;
+INSERT INTO public.work_type_model_route VALUES (7, 'session_summary', 'deepseek-v4-flash', 0.90, 0.0000, true) ON CONFLICT DO NOTHING;
