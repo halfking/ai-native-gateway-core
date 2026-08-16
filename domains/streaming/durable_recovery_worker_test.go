@@ -25,6 +25,7 @@ type workerFakeStore struct {
 	leaseErr                                              error
 	commitErr                                             error
 	lastOutcome                                           durable.Status
+	lastReschedule                                        durable.RescheduleParams
 }
 
 func (f *workerFakeStore) ClaimRunnable(context.Context, durable.ClaimOptions) ([]*durable.Task, error) {
@@ -44,7 +45,8 @@ func (f *workerFakeStore) LoadSnapshot(context.Context, string) (*durable.Snapsh
 func (f *workerFakeStore) RenewLease(context.Context, string, string, int64, time.Time) error {
 	return f.leaseErr
 }
-func (f *workerFakeStore) Reschedule(context.Context, durable.RescheduleParams) error {
+func (f *workerFakeStore) Reschedule(_ context.Context, params durable.RescheduleParams) error {
+	f.lastReschedule = params
 	f.rescheduleCalls++
 	return nil
 }
@@ -80,7 +82,7 @@ func (r workerFakeRunner) Run(context.Context, *durable.Task, *durable.Snapshot)
 }
 
 func runnableTask() *durable.Task {
-	return &durable.Task{ID: "task-1", TenantID: "tenant-a", RequestID: "req-1", SessionID: "sess-1", Status: durable.StatusRetryScheduled, CommitState: durable.CommitStateNone, LeaseOwner: "worker", FencingToken: 1, ExpiresAt: time.Now().Add(time.Hour)}
+	return &durable.Task{ID: "task-1", TenantID: "tenant-a", RequestID: "req-1", SessionID: "sess-1", Status: durable.StatusRetryScheduled, CommitState: durable.CommitStateNone, LeaseOwner: "worker", FencingToken: 1, AttemptCount: 1, ExpiresAt: time.Now().Add(time.Hour)}
 }
 func successAttempt() *DurableAttempt {
 	return &DurableAttempt{Result: &AttemptResult{Success: true}, Body: []byte("ok"), ContentType: "application/json", Attempt: 1}
@@ -102,6 +104,64 @@ func TestDurableRecoveryWorkerRunOnceReschedulesRecoverable(t *testing.T) {
 	worker.runOnce(context.Background())
 	if store.rescheduleCalls != 1 || store.commitCalls != 0 {
 		t.Fatalf("commit=%d reschedule=%d", store.commitCalls, store.rescheduleCalls)
+	}
+}
+
+func TestDurableRecoveryWorkerSchedulesFirstRetryAfterTwoSeconds(t *testing.T) {
+	now := time.Date(2026, 8, 16, 12, 0, 0, 0, time.UTC)
+	result := &AttemptResult{Success: false, CandidateOutcomes: []CandidateOutcome{{Kind: errorsx.KindTransient}}}
+	store := &workerFakeStore{task: runnableTask(), snapshot: &durable.Snapshot{TaskID: "task-1"}}
+	worker := NewDurableRecoveryWorker(store, nil, workerFakeRunner{attempt: &DurableAttempt{Result: result, Attempt: 1}}, DurableWorkerOptions{Owner: "worker"})
+	worker.now = func() time.Time { return now }
+
+	worker.runOnce(context.Background())
+
+	if got, want := store.lastReschedule.NextRetryAt, now.Add(2*time.Second); !got.Equal(want) {
+		t.Fatalf("next retry = %s, want %s", got, want)
+	}
+}
+
+func TestDurableRecoveryWorkerDoublesRetryBackoff(t *testing.T) {
+	now := time.Date(2026, 8, 16, 12, 0, 0, 0, time.UTC)
+	result := &AttemptResult{Success: false, CandidateOutcomes: []CandidateOutcome{{Kind: errorsx.KindTransient}}}
+	task := runnableTask()
+	task.AttemptCount = 4
+	store := &workerFakeStore{task: task, snapshot: &durable.Snapshot{TaskID: "task-1"}}
+	worker := NewDurableRecoveryWorker(store, nil, workerFakeRunner{attempt: &DurableAttempt{Result: result, Attempt: 4}}, DurableWorkerOptions{Owner: "worker"})
+	worker.now = func() time.Time { return now }
+
+	worker.runOnce(context.Background())
+
+	if got, want := store.lastReschedule.NextRetryAt, now.Add(16*time.Second); !got.Equal(want) {
+		t.Fatalf("next retry = %s, want %s", got, want)
+	}
+}
+
+func TestDurableRecoveryWorkerCapsSuggestedRetryAtTwoMinutes(t *testing.T) {
+	now := time.Date(2026, 8, 16, 12, 0, 0, 0, time.UTC)
+	result := &AttemptResult{Success: false, CandidateOutcomes: []CandidateOutcome{{Kind: errorsx.KindTransient, RetryAfter: 10 * time.Minute}}}
+	store := &workerFakeStore{task: runnableTask(), snapshot: &durable.Snapshot{TaskID: "task-1"}}
+	worker := NewDurableRecoveryWorker(store, nil, workerFakeRunner{attempt: &DurableAttempt{Result: result, Attempt: 1}}, DurableWorkerOptions{Owner: "worker"})
+	worker.now = func() time.Time { return now }
+
+	worker.runOnce(context.Background())
+
+	if got, want := store.lastReschedule.NextRetryAt, now.Add(2*time.Minute); !got.Equal(want) {
+		t.Fatalf("next retry = %s, want %s", got, want)
+	}
+}
+
+func TestDurableRecoveryWorkerTerminalizesAfterOneHundredRetries(t *testing.T) {
+	result := &AttemptResult{Success: false, CandidateOutcomes: []CandidateOutcome{{Kind: errorsx.KindTransient}}}
+	task := runnableTask()
+	task.AttemptCount = 101
+	store := &workerFakeStore{task: task, snapshot: &durable.Snapshot{TaskID: "task-1"}}
+	worker := NewDurableRecoveryWorker(store, nil, workerFakeRunner{attempt: &DurableAttempt{Result: result, Attempt: 101}}, DurableWorkerOptions{Owner: "worker"})
+
+	worker.runOnce(context.Background())
+
+	if store.rescheduleCalls != 0 || store.commitCalls != 1 || store.lastOutcome != durable.StatusFailed {
+		t.Fatalf("reschedule=%d commit=%d outcome=%s, want terminal failed", store.rescheduleCalls, store.commitCalls, store.lastOutcome)
 	}
 }
 

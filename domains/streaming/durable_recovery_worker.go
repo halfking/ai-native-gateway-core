@@ -52,9 +52,13 @@ type DurableWorkerOptions struct {
 	// StopGrace bounds how long Stop waits for an in-flight attempt that
 	// ignores cancellation. 0 → 10s.
 	StopGrace time.Duration
-	// RetryFloor is the minimum reschedule backoff (prevents tight retry
-	// loops when a decision carries no RetryAfter). 0 → 5s.
-	RetryFloor time.Duration
+	// MaxRetries bounds retries after the initial execution. 0 → 100.
+	MaxRetries int
+	// RetryBase is the initial retry delay. 0 → 2s.
+	RetryBase time.Duration
+	// RetryMax bounds both exponential and upstream-suggested retry delays.
+	// 0 → 120s.
+	RetryMax time.Duration
 }
 
 func (o DurableWorkerOptions) withDefaults() DurableWorkerOptions {
@@ -76,8 +80,14 @@ func (o DurableWorkerOptions) withDefaults() DurableWorkerOptions {
 	if o.StopGrace <= 0 {
 		o.StopGrace = 10 * time.Second
 	}
-	if o.RetryFloor <= 0 {
-		o.RetryFloor = 5 * time.Second
+	if o.MaxRetries <= 0 {
+		o.MaxRetries = 100
+	}
+	if o.RetryBase <= 0 {
+		o.RetryBase = 2 * time.Second
+	}
+	if o.RetryMax <= 0 {
+		o.RetryMax = 120 * time.Second
 	}
 	return o
 }
@@ -285,11 +295,11 @@ attemptFinished:
 		return
 	}
 	if decision.Action == TaskActionRetryNow || decision.Action == TaskActionWaitRecovery {
-		backoff := decision.NextRetryAfter
-		if backoff < w.opts.RetryFloor {
-			backoff = w.opts.RetryFloor
+		if !w.canRetry(task) {
+			w.failTask(ctx, task, fmt.Errorf("durable task exhausted retry budget (attempt=%d, max_retries=%d)", task.AttemptCount, w.opts.MaxRetries))
+			return
 		}
-		next := w.clock().Add(backoff)
+		next := w.clock().Add(w.retryDelay(task.AttemptCount, decision.NextRetryAfter))
 		if err := w.store.Reschedule(ctx, durable.RescheduleParams{TaskID: task.ID, LeaseOwner: task.LeaseOwner, FencingToken: task.FencingToken, NextRetryAt: next, ErrorKind: attempt.ErrorKind, Reason: decision.Reason, Attempt: attempt.Attempt}); err != nil && errors.Is(err, durable.ErrLeaseLost) {
 			w.noteLeaseLost()
 		}
@@ -306,17 +316,45 @@ func (w *DurableRecoveryWorker) noteLeaseLost() {
 	metrics.DurableLeaseLostTotal.Inc()
 }
 
-// rescheduleWithError releases the claim with a floored backoff and a stable
-// reason code. Used for errors whose recoverability is unknown (snapshot load,
-// runner infrastructure): the deadline reaper provides the safe terminal.
+// rescheduleWithError releases the claim with the normal bounded backoff and a
+// stable reason code. Used for errors whose recoverability is unknown (snapshot
+// load, runner infrastructure); the same retry budget still applies.
 func (w *DurableRecoveryWorker) rescheduleWithError(ctx context.Context, task *durable.Task, reason string) {
-	next := w.clock().Add(w.opts.RetryFloor)
+	if !w.canRetry(task) {
+		w.failTask(ctx, task, fmt.Errorf("durable task exhausted retry budget (attempt=%d, max_retries=%d)", task.AttemptCount, w.opts.MaxRetries))
+		return
+	}
+	next := w.clock().Add(w.retryDelay(task.AttemptCount, 0))
 	if err := w.store.Reschedule(ctx, durable.RescheduleParams{
 		TaskID: task.ID, LeaseOwner: task.LeaseOwner, FencingToken: task.FencingToken,
 		NextRetryAt: next, ErrorKind: "durable_recovery", Reason: reason, Attempt: task.AttemptCount,
 	}); err != nil && errors.Is(err, durable.ErrLeaseLost) {
 		w.noteLeaseLost()
 	}
+}
+
+func (w *DurableRecoveryWorker) canRetry(task *durable.Task) bool {
+	return task.AttemptCount < w.opts.MaxRetries+1
+}
+
+func (w *DurableRecoveryWorker) retryDelay(attempt int, suggested time.Duration) time.Duration {
+	if attempt < 1 {
+		attempt = 1
+	}
+	delay := w.opts.RetryBase
+	for retry := 1; retry < attempt && delay < w.opts.RetryMax; retry++ {
+		delay *= 2
+		if delay > w.opts.RetryMax {
+			delay = w.opts.RetryMax
+		}
+	}
+	if suggested > delay {
+		delay = suggested
+	}
+	if delay > w.opts.RetryMax {
+		return w.opts.RetryMax
+	}
+	return delay
 }
 
 // waitAttemptDone waits at most grace for a cancelled attempt to finish. A

@@ -36,7 +36,7 @@ func TestRequestSurvivalNormalizeFillsDefaults(t *testing.T) {
 		t.Fatalf("worker count/lease = %d/%d, want 4/60", cfg.RequestSurvivalWorkerCount, cfg.RequestSurvivalWorkerLeaseSecs)
 	}
 	if cfg.RequestSurvivalMaxAttempts != 100 || cfg.RequestSurvivalMaxActiveTasksPerTenant != 100 {
-		t.Fatalf("max attempts/tasks = %d/%d, want 100/100", cfg.RequestSurvivalMaxAttempts, cfg.RequestSurvivalMaxActiveTasksPerTenant)
+		t.Fatalf("max retries/tasks = %d/%d, want 100/100", cfg.RequestSurvivalMaxAttempts, cfg.RequestSurvivalMaxActiveTasksPerTenant)
 	}
 	if cfg.RequestSurvivalStatusIntervalSeconds != 60 {
 		t.Fatalf("status interval = %d, want 60", cfg.RequestSurvivalStatusIntervalSeconds)
