@@ -20,15 +20,14 @@ import ModelPicker from '../components/ModelPicker.vue'
 const { t } = useI18n()
 
 
-// Per-layer cap. Two layers (primary/secondary) × 5 models = 10 routes max
+// Per-layer cap. Three tiers (primary/secondary/fallback) × 5 models = 15 routes max
 // per work type, which is well below the historical 3-row hard limit but
 // generous enough for operators to build a real priority sequence.
 const MAX_ROUTES_PER_LAYER = 5
 
-// Tiers exposed in the UI. The DB also has 'fallback' (reserved for future
-// tertiary routes / emergency degradations), but the editor only manages
-// the two primary layers operators interact with day-to-day.
-const EDITABLE_TIERS: ModelRouteTier[] = ['primary', 'secondary']
+// Keep all configured tiers editable. The backend replaces the complete route
+// set on save, so omitting a tier would delete routes that were not rendered.
+const EDITABLE_TIERS: ModelRouteTier[] = ['primary', 'secondary', 'fallback']
 
 const route = useRoute()
 const router = useRouter()
@@ -194,8 +193,8 @@ const testErrors = ref<Record<string, string>>({})
 const testingModel = ref<string | null>(null)
 const testingAll = ref(false)
 
-// Drag state — one shared "from" index per tier so two layers can be
-// re-ordered independently without colliding.
+// Drag state — one shared "from" index per tier so all three layers can be
+// re-ordered independently without cross-layer bookkeeping.
 const dragState = ref<{ tier: ModelRouteTier | null; index: number | null }>({
   tier: null,
   index: null,
@@ -256,10 +255,12 @@ function removeRouteRow(tier: ModelRouteTier, index: number) {
 }
 
 function totalRouteCount(): number {
-  return (
-    routesDraft.value.primary.length +
-    routesDraft.value.secondary.length
-  )
+  return EDITABLE_TIERS.reduce((total, tier) => total + routesDraft.value[tier].length, 0)
+}
+
+function tierTextKey(tier: ModelRouteTier, kind: 'add' | 'empty'): string {
+  const suffix = tier[0].toUpperCase() + tier.slice(1)
+  return `workTypes.layers.${kind}${suffix}`
 }
 
 function syncDetailForm(wt: WorkTypeConfig) {
@@ -289,9 +290,6 @@ async function loadSettings() {
       routesDraft.value = {
         primary: grouped.primary.map(r => ({ ...r })),
         secondary: grouped.secondary.map(r => ({ ...r })),
-        // Defensive: if someone wrote a fallback row via API directly,
-        // surface it in the secondary layer's bucket so the operator can
-        // see and move it. This shouldn't normally happen.
         fallback: grouped.fallback.map(r => ({ ...r })),
       }
       testResults.value = {}
@@ -391,12 +389,9 @@ async function toggleEnabled() {
   }
 }
 
-// saveRoutes flattens the two-tier draft back into a single ordered
-// ModelRoute[] payload. Within each tier, list order is the priority
-// (top = highest) and we materialise that ordering into `weight` so the
-// DB's ORDER BY weight DESC reproduces the operator's drag-and-drop
-// intent across a page reload. We also drop half-filled rows that have
-// no canonical_name yet.
+// saveRoutes flattens all three tier drafts back into a single ordered
+// ModelRoute[] payload. Within each tier, list order is the priority (top =
+// highest) and we materialise that ordering into `weight`.
 async function saveRoutes() {
   if (!detailKey.value) return
   const payload: ModelRoute[] = []
@@ -748,11 +743,11 @@ watch(activeTab, (tab) => {
                   class="btn btn-ghost btn-sm"
                   :disabled="routesDraft[tier].length >= MAX_ROUTES_PER_LAYER"
                   @click="addRouteRow(tier)"
-                >{{ t(`workTypes.layers.add${tier === 'primary' ? 'Primary' : 'Secondary'}`) }}</button>
+                >{{ t(tierTextKey(tier, 'add')) }}</button>
               </header>
 
               <div v-if="!routesDraft[tier].length" class="layer-empty">
-                {{ t(`workTypes.layers.empty${tier === 'primary' ? 'Primary' : 'Secondary'}`) }}
+                {{ t(tierTextKey(tier, 'empty')) }}
               </div>
 
               <ol class="route-cards">
