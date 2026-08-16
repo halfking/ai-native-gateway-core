@@ -171,6 +171,38 @@ func TestSanitizeGwSessionHeader(t *testing.T) {
 	}
 }
 
+// TestIsBranchSessionID (OBS-DV2 #4) — guards the predicate that decides
+// whether an already-sanitized session id is an auto-title/auto-summary branch
+// rather than a user main session. Branch ids MUST stay gt_/gs_ (matching the
+// loopback callers) so the chat handler can preserve them verbatim instead of
+// auto-creating a fresh gw_<uuid> and so they are never written to the
+// no-session lastSystemSession resume pointer.
+func TestIsBranchSessionID(t *testing.T) {
+	tests := []struct {
+		name      string
+		sessionID string
+		want      bool
+	}{
+		{name: "empty is not branch", sessionID: "", want: false},
+		{name: "main gw_ is not branch", sessionID: "gw_abc-123", want: false},
+		{name: "title branch gt_ recognized", sessionID: "gt_gw_abc-123", want: true},
+		{name: "summary branch gs_ recognized", sessionID: "gs_gw_abc-123", want: true},
+		{name: "gt_ bare recognized", sessionID: "gt_x", want: true},
+		{name: "gs_ bare recognized", sessionID: "gs_x", want: true},
+		{name: "gt: colon is NOT branch (rejected upstream)", sessionID: "gt:gw_abc", want: false},
+		{name: "gs: colon is NOT branch (rejected upstream)", sessionID: "gs:gw_abc", want: false},
+		{name: "other prefix not branch", sessionID: "sess_abc", want: false},
+		{name: "uppercase GT_ is NOT branch (case-sensitive)", sessionID: "GT_gw_abc", want: false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := isBranchSessionID(tc.sessionID); got != tc.want {
+				t.Fatalf("isBranchSessionID(%q) = %v, want %v", tc.sessionID, got, tc.want)
+			}
+		})
+	}
+}
+
 // TestResolveEndUser (2026-08-06) — guards the end-user resolver that
 // closes the "no user info at all" gap (dc767386f... incident). The
 // priority chain must be:
