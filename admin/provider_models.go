@@ -32,7 +32,11 @@ func (h *Handler) getProviderModels(w http.ResponseWriter, r *http.Request, prov
 		       mc.standard_iq::float8,
 		       niq.overall_score::float8, niq.avg_score::float8,
 		       COALESCE(niq.sample_count, 0), niq.tested_at,
-		       COALESCE(NULLIF(mc.canonical_name,''), mo.standardized_name)
+		       COALESCE(NULLIF(mc.canonical_name,''), mo.standardized_name),
+		       -- 522: 凭据×模型级上下文窗口。effective 为三级覆盖链结果，override
+		       -- 即本 binding 上手工/发现的覆盖值（NULL=未覆盖，回落到标准目录）。
+		       COALESCE(mo.context_window_override, mc.context_window_override, mc.context_window) AS context_window,
+		       mo.context_window_override
 		FROM model_offers mo
 		JOIN credentials c ON c.id = mo.credential_id
 		LEFT JOIN models_canonical mc ON mc.id = mo.canonical_id
@@ -79,6 +83,10 @@ func (h *Handler) getProviderModels(w http.ResponseWriter, r *http.Request, prov
 		NodeIQAvg           *float64   `json:"node_iq_avg"`
 		NodeIQSampleCount   int        `json:"node_iq_sample_count"`
 		NodeIQTestedAt      *time.Time `json:"node_iq_tested_at"`
+		// 522: 凭据×模型级上下文窗口。ContextWindow 为生效值（三级覆盖链），
+		// ContextWindowOverride 为本 binding 的覆盖值（nil=未覆盖）。
+		ContextWindow         *int `json:"context_window"`
+		ContextWindowOverride *int `json:"context_window_override"`
 	}
 
 	var offers []modelOffer
@@ -96,6 +104,7 @@ func (h *Handler) getProviderModels(w http.ResponseWriter, r *http.Request, prov
 			&o.NodeIQ, &o.NodeIQAvg,
 			&o.NodeIQSampleCount, &o.NodeIQTestedAt,
 			&o.CanonicalName,
+			&o.ContextWindow, &o.ContextWindowOverride,
 		); err != nil {
 			slog.Warn("getProviderModels scan failed", "error", err)
 			continue
@@ -243,7 +252,9 @@ func (h *Handler) queryProviderModels(w http.ResponseWriter, r *http.Request, pr
 		       mc.standard_iq::float8,
 		       niq.overall_score::float8, niq.avg_score::float8,
 		       COALESCE(niq.sample_count, 0), niq.tested_at,
-		       COALESCE(NULLIF(mc.canonical_name,''), mo.standardized_name)
+		       COALESCE(NULLIF(mc.canonical_name,''), mo.standardized_name),
+		       COALESCE(mo.context_window_override, mc.context_window_override, mc.context_window) AS context_window,
+		       mo.context_window_override
 		FROM model_offers mo
 		JOIN credentials c ON c.id = mo.credential_id
 		LEFT JOIN models_canonical mc ON mc.id = mo.canonical_id
@@ -287,6 +298,8 @@ func (h *Handler) queryProviderModels(w http.ResponseWriter, r *http.Request, pr
 		NodeIQAvg           *float64   `json:"node_iq_avg"`
 		NodeIQSampleCount   int        `json:"node_iq_sample_count"`
 		NodeIQTestedAt      *time.Time `json:"node_iq_tested_at"`
+		ContextWindow         *int `json:"context_window"`
+		ContextWindowOverride *int `json:"context_window_override"`
 	}
 
 	offers := make([]modelOffer, 0)
@@ -304,6 +317,7 @@ func (h *Handler) queryProviderModels(w http.ResponseWriter, r *http.Request, pr
 			&o.NodeIQ, &o.NodeIQAvg,
 			&o.NodeIQSampleCount, &o.NodeIQTestedAt,
 			&o.CanonicalName,
+			&o.ContextWindow, &o.ContextWindowOverride,
 		); err != nil {
 			slog.Warn("queryProviderModels scan failed", "error", err)
 			continue

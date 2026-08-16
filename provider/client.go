@@ -140,11 +140,14 @@ type Candidate struct {
 	CompositeScore       float64  `json:"composite_score"`
 	Currency             string   `json:"currency"`
 	BillingMode          string   `json:"billing_mode"`
-	// ContextWindow is the upstream model's context window in tokens, read
-	// from models_canonical.context_window. Used by the Q1/Q2/Q3 client-side
-	// context trim path (transformation.CompressMessagesIfNeeded). nil means
-	// "unknown" — in which case the trim path is a no-op.
-	ContextWindow *int   `json:"context_window,omitempty"`
+	// ContextWindow is the upstream model's context window in tokens. Precedence
+	// (migration 522): credential×model override (credential_model_bindings
+	// .context_window_override) > canonical override (models_canonical
+	// .context_window_override) > canonical base (models_canonical.context_window).
+	// Used by the Q1/Q2/Q3 client-side context trim path
+	// (transformation.CompressMessagesIfNeeded). nil means "unknown" — in which
+	// case the trim path is a no-op.
+	ContextWindow *int `json:"context_window,omitempty"`
 	APIKey        string `json:"-"`
 	// APIKeys holds additional decrypted keys for multi-key rotation (beyond the
 	// primary APIKey). nil/empty for single-key credentials. Index 0 in the
@@ -1115,7 +1118,8 @@ func (c *Client) loadCandidatesByModalityDB(ctx context.Context, clientModel, te
 			COALESCE(mo.currency, 'USD') AS currency,
 			COALESCE(mo.billing_mode, 'per_token') AS billing_mode,
 			mo.raw_model_name,
-			COALESCE(mc.context_window_override, mc.context_window) AS context_window,
+			-- 522: 优先级 凭据×模型级覆盖 > 标准模型级覆盖 > 标准目录默认值。
+			COALESCE(mo.context_window_override, mc.context_window_override, mc.context_window) AS context_window,
 			-- 2026-06-19 quality fix mode (017_quality_fix_mode.sql).
 			-- Read from providers so the routing executor can pass the
 			-- per-provider mode through to the relay stream reader and

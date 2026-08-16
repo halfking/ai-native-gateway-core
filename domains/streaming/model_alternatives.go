@@ -186,20 +186,25 @@ WITH policy AS (
     LIMIT 1
 ),
 routable AS (
-    -- Distinct canonical models with >= 1 routable binding. DISTINCT because a
-    -- model routable via several credentials must still be offered once.
-    SELECT DISTINCT mc.id AS canonical_id,
+    -- Distinct canonical models with >= 1 routable binding. GROUP BY because a
+    -- model routable via several credentials must still be offered once, and
+    -- 522 lets each (credential×model) binding carry its own context-window
+    -- override; the advertised window is the most generous routable binding so
+    -- the picker does not under-sell a model that one credential widened.
+    SELECT mc.id AS canonical_id,
            mc.canonical_name,
            mc.display_name,
            mc.family,
-           COALESCE(mc.context_window_override, mc.context_window) AS context_window
+           MAX(COALESCE(cmb.context_window_override, mc.context_window_override, mc.context_window)) AS context_window
     FROM v_routable_credential_models v
     JOIN provider_models pm ON pm.id = v.provider_model_id
+    JOIN credential_model_bindings cmb ON cmb.credential_id = v.credential_id AND cmb.provider_model_id = v.provider_model_id
     JOIN models_canonical mc ON mc.id = pm.canonical_id
     WHERE v.is_routable = TRUE
       AND (v.tenant_id = $2 OR v.tenant_id = 'default')
       AND COALESCE(mc.status, 'active') = 'active'
       AND mc.canonical_name <> $1
+    GROUP BY mc.id, mc.canonical_name, mc.display_name, mc.family
 ),
 task_models AS (
     -- Empty when $3 is '' (unknown task type), which collapses tier 1.
