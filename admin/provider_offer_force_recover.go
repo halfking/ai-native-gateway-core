@@ -208,7 +208,7 @@ func (h *Handler) updateModelOffer(w http.ResponseWriter, r *http.Request, provi
 				    context_window_source = 'catalog',
 				    context_window_updated_at = now(),
 				    updated_at = now()
-				WHERE id = $2
+				WHERE id = $1
 			`, offerID); err != nil {
 				writeError(w, http.StatusInternalServerError, "clear context_window failed: "+err.Error())
 				return
