@@ -94,7 +94,7 @@ func TestSettlementClaimUsesIndependentLease(t *testing.T) {
 	rows := pgxmock.NewRows([]string{"task_id", "tenant_id", "request_id", "session_id", "request_hash", "source_lease_owner", "source_fencing_token", "outcome", "result_ciphertext", "encryption_key_id", "content_type", "reason_code", "error_kind", "attempt", "result_hash", "claim_fencing_token", "attempts"}).AddRow("task-1", "tenant-1", "req-1", "sess-1", "hash-1", "worker-1", int64(3), "failed", "malformed-ciphertext", "key-1", "", "retry", "", 1, "", int64(7), 0)
 	mock.ExpectBegin()
 	mock.ExpectQuery(`FROM durable_task_settlement_intents.*FOR UPDATE SKIP LOCKED`).WithArgs(8, now).WillReturnRows(rows)
-	mock.ExpectQuery(`UPDATE durable_task_settlement_intents SET claim_owner`).WithArgs("task-1", "outbox-1", now.Add(time.Minute), int64(8), now).WillReturnRows(pgxmock.NewRows([]string{"claim_fencing_token", "attempts"}).AddRow(int64(8), 1))
+	mock.ExpectQuery(`UPDATE durable_task_settlement_intents`).WithArgs("task-1", "outbox-1", now.Add(time.Minute), int64(8), now, int64(7)).WillReturnRows(pgxmock.NewRows([]string{"claim_fencing_token", "attempts"}).AddRow(int64(8), 1))
 	mock.ExpectCommit()
 	got, err := store.ClaimSettlementIntents(context.Background(), "outbox-1", time.Minute, 8, now)
 	if err != nil {
@@ -114,7 +114,7 @@ func TestSettlementClaimTargetsOnlyRequestedTask(t *testing.T) {
 	rows := pgxmock.NewRows([]string{"task_id", "tenant_id", "request_id", "session_id", "request_hash", "source_lease_owner", "source_fencing_token", "outcome", "result_ciphertext", "encryption_key_id", "content_type", "reason_code", "error_kind", "attempt", "result_hash", "claim_fencing_token", "attempts"}).AddRow("task-2", "tenant-1", "req-2", "sess-2", "hash-2", "worker-2", int64(4), "failed", nil, nil, "", "retry", "", 1, "", int64(1), 0)
 	mock.ExpectBegin()
 	mock.ExpectQuery(`task_id=\$3.*FOR UPDATE SKIP LOCKED`).WithArgs(1, now, "task-2").WillReturnRows(rows)
-	mock.ExpectQuery(`UPDATE durable_task_settlement_intents SET claim_owner`).WithArgs("task-2", "front-2", now.Add(time.Minute), int64(2), now).WillReturnRows(pgxmock.NewRows([]string{"claim_fencing_token", "attempts"}).AddRow(int64(2), 1))
+	mock.ExpectQuery(`UPDATE durable_task_settlement_intents`).WithArgs("task-2", "front-2", now.Add(time.Minute), int64(2), now, int64(1)).WillReturnRows(pgxmock.NewRows([]string{"claim_fencing_token", "attempts"}).AddRow(int64(2), 1))
 	mock.ExpectCommit()
 	claim, err := store.ClaimSettlementIntent(context.Background(), "task-2", "front-2", time.Minute, now)
 	if err != nil {
