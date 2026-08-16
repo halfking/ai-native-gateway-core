@@ -8,7 +8,7 @@ CREATE TABLE public.handoff_pending_confirmations (
     api_key_id bigint NOT NULL,
     previous_session_id character varying(255) NOT NULL,
     token_hash character(64) NOT NULL,
-    status character varying(16) DEFAULT 'pending'::character varying NOT NULL,
+    status character varying(32) DEFAULT 'pending'::character varying NOT NULL,
     expires_at timestamp with time zone NOT NULL,
     confirmed_at timestamp with time zone,
     new_session_id character varying(255),
@@ -35,6 +35,6 @@ CREATE TABLE public.handoff_pending_confirmations (
     created_at timestamp with time zone DEFAULT now() NOT NULL,
     updated_at timestamp with time zone DEFAULT now() NOT NULL,
     CONSTRAINT handoff_pending_confirmations_pkey PRIMARY KEY (id),
-    CONSTRAINT handoff_pending_confirmations_status_check CHECK (((status)::text = ANY ((ARRAY['pending'::character varying, 'confirmed'::character varying, 'expired'::character varying])::text[]))),
+    CONSTRAINT handoff_pending_confirmations_status_check CHECK (((status)::text = ANY ((ARRAY['pending'::character varying, 'confirmed'::character varying, 'accounting_confirmed'::character varying, 'restored'::character varying, 'manual_required'::character varying, 'expired'::character varying])::text[]))),
     CONSTRAINT handoff_pending_confirmations_log_fk FOREIGN KEY (handoff_log_id) REFERENCES public.handoff_logs(id) ON DELETE SET NULL
 );
