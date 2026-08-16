@@ -83,6 +83,78 @@ func TestParseVendorModelsBody_EmptyOpenAIShapedFallsThrough(t *testing.T) {
 	}
 }
 
+func TestParseVendorModelsBody_CompatibleVendorShapes(t *testing.T) {
+	tests := []struct {
+		name string
+		body string
+		want []string
+	}{
+		{
+			name: "data string array",
+			body: `{"object":"list","data":["glm-5.2","minimax-m3"]}`,
+			want: []string{"glm-5.2", "minimax-m3"},
+		},
+		{
+			name: "nested result models",
+			body: `{"success":true,"result":{"models":[{"model_id":"glm-5.2"},{"model_name":"minimax-m3"}]}}`,
+			want: []string{"glm-5.2", "minimax-m3"},
+		},
+		{
+			name: "nested data items",
+			body: `{"data":{"items":[{"id":"glm-5.2"},{"model":"minimax-m3"}]}}`,
+			want: []string{"glm-5.2", "minimax-m3"},
+		},
+		{
+			name: "gemini name prefix",
+			body: `{"models":[{"name":"models/gemini-2.5-pro"}]}`,
+			want: []string{"gemini-2.5-pro"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := parseVendorModelsBody([]byte(tt.body))
+			if err != nil {
+				t.Fatalf("parseVendorModelsBody() error = %v", err)
+			}
+			if len(got) != len(tt.want) {
+				t.Fatalf("parseVendorModelsBody() = %v, want %v", got, tt.want)
+			}
+			for i := range tt.want {
+				if got[i] != tt.want[i] {
+					t.Fatalf("parseVendorModelsBody() = %v, want %v", got, tt.want)
+				}
+			}
+		})
+	}
+}
+
+func TestParseVendorModelsBody_DoesNotTreatErrorEnvelopeAsModels(t *testing.T) {
+	body := []byte(`{"error":{"code":"invalid_request","message":"model glm-5.2 is unavailable"}}`)
+	if got, err := parseVendorModelsBody(body); err == nil {
+		t.Fatalf("parseVendorModelsBody() = %v, want error", got)
+	}
+}
+
+func TestDoChatProbe_ReturnsErrorBodyForClassification(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusTooManyRequests)
+		_, _ = w.Write([]byte(`{"error":{"message":"quota exceeded"}}`))
+	}))
+	t.Cleanup(srv.Close)
+
+	result, err := doChatProbe(context.Background(), srv.URL, "test-key", "glm-5.2")
+	if err != nil {
+		t.Fatalf("doChatProbe() error = %v", err)
+	}
+	if result.statusCode != http.StatusTooManyRequests {
+		t.Fatalf("statusCode = %d, want %d", result.statusCode, http.StatusTooManyRequests)
+	}
+	if !strings.Contains(result.errorMessage, "quota exceeded") {
+		t.Fatalf("errorMessage = %q, want upstream reason", result.errorMessage)
+	}
+}
+
 // ── extractManifestModels — manifest JSON fallback ─────────────────────────
 
 func TestExtractManifestModels_WrappedObject(t *testing.T) {

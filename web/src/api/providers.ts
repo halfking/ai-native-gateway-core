@@ -540,12 +540,13 @@ export function updateModelOffer(
   }>('PATCH', `/api/providers/${providerId}/models/${offerId}`, body)
 }
 
-export function startCredentialCheck(providerId: number, credId: number) {
-  return req<{ task_id: number; status: string }>('POST', `/api/providers/${providerId}/credentials/${credId}/check`)
+export function startCredentialCheck(providerId: number, credId: number, model?: string) {
+  const query = model ? `?model=${encodeURIComponent(model)}` : ''
+  return req<{ task_id: number; status: string }>('POST', `/api/providers/${providerId}/credentials/${credId}/check${query}`)
 }
 
-export async function checkCredential(providerId: number, credId: number) {
-  const { task_id } = await startCredentialCheck(providerId, credId)
+export async function checkCredential(providerId: number, credId: number, model?: string) {
+  const { task_id } = await startCredentialCheck(providerId, credId, model)
   const task = await pollTask(task_id)
   assertTaskMatches(task, providerId, credId)
   if (task.status === 'failed') {

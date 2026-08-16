@@ -523,7 +523,7 @@ async function checkModelAcrossCredentials() {
         // Phase 1 passed: Model exists in offers
         // Phase 2: Dynamic check - run checkCredential for health check
         try {
-          const result = await checkCredential(props.providerId, cred.id)
+          const result = await checkCredential(props.providerId, cred.id, modelName)
 
           // Analyze Phase 1: models_ok (ability to fetch model list)
           let phase1Status: 'ok' | 'warning' | 'error'
