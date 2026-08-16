@@ -11,6 +11,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/kaixuan/llm-gateway-go/autoroute"
 	"github.com/kaixuan/llm-gateway-go/domains/attachments"                   //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/domains/authentication"                //nolint:depguard // historical violation, B1 routing.go CQRS will fix
 	"github.com/kaixuan/llm-gateway-go/domains/hooks/audit"                   //nolint:depguard // historical violation, B1 routing.go CQRS will fix
@@ -77,6 +78,7 @@ type RequestLogContext struct {
 	AutoProfile    string
 	AutoDecision   []byte // serialised autoRouteDecision JSON
 	AutoConfidence float64
+	AutoSignals    autoroute.ClassificationSignals
 
 	// D5: model-level fallback list. The canonical model names from the
 	// auto-route CandidatesTop3, EXCLUDING the already-chosen winner. Used by
@@ -708,6 +710,7 @@ func (c *RequestLogContext) SetAutoDecision(wire *autoRouteDecision) {
 	c.TaskType = wire.TaskType
 	c.AutoProfile = wire.Profile
 	c.AutoConfidence = wire.Confidence
+	c.AutoSignals = wire.signals
 	// D5: extract the ordered, canonical fallback sequence. The process-local
 	// tier plan is preferred because the wire CandidatesTop3 is an audit view
 	// and may omit lower tiers; the wire list remains the compatibility fallback.

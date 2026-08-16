@@ -23,6 +23,10 @@ type RouteFunc func(ctx context.Context, qr *QueuedRequest) ([]CredentialRef, er
 // resolved == requested. The executor implements this via autoroute.
 type ModelResolveFunc func(ctx context.Context, requested string, tried []string) (resolved string, alternatives []string, err error)
 
+// ModelRecommendFunc returns failure-time model alternatives in recommendation
+// order. Production implements this with autoroute.Decider/Index.RecommendV2.
+type ModelRecommendFunc func(ctx context.Context, qr *QueuedRequest, tried []string) (alternatives []string, err error)
+
 // ForwardFunc performs one upstream forward attempt for (qr, cred) and returns
 // the outcome. BytesSent MUST be accurate (first-byte boundary) so the mover
 // can decide retry-vs-terminal. The executor implements this via the extracted
@@ -31,22 +35,27 @@ type ForwardFunc func(ctx context.Context, qr *QueuedRequest, cred CredentialRef
 
 // Deps bundles the callbacks the executor supplies to the pipeline.
 type Deps struct {
-	RouteFunc        RouteFunc
-	ModelResolveFunc ModelResolveFunc
-	ForwardFunc      ForwardFunc
+	RouteFunc          RouteFunc
+	ModelResolveFunc   ModelResolveFunc
+	ModelRecommendFunc ModelRecommendFunc
+	ForwardFunc        ForwardFunc
 	// AllowModelChange enables model-failover when all credentials under the
-	// current model are exhausted (the Tier-1 escape hatch).
-	AllowModelChange bool
+	// current model are exhausted. AllowModelChangeFunc, when non-nil, is read
+	// at failover time so admin settings apply without rebuilding the Pipeline.
+	AllowModelChange     bool
+	AllowModelChangeFunc func() bool
 	// HotCfg is read once at construction; live reload re-reads via Reload.
 	HotCfg *atomic.Value // *Config; may be nil → DefaultConfig
 }
 
 // Pipeline is the multi-tier dispatch core. Construct once, Start, then Submit.
 type Pipeline struct {
-	routeFunc        RouteFunc
-	modelResolveFunc ModelResolveFunc
-	forwardFunc      ForwardFunc
-	allowModelChange bool
+	routeFunc            RouteFunc
+	modelResolveFunc     ModelResolveFunc
+	modelRecommendFunc   ModelRecommendFunc
+	forwardFunc          ForwardFunc
+	allowModelChange     bool
+	allowModelChangeFunc func() bool
 
 	cfg atomic.Value // *Config
 
@@ -92,13 +101,15 @@ func (p *Pipeline) SetLiveActions(e *liveactions.Emitter) {
 // NewPipeline constructs a pipeline. Call Start before Submit.
 func NewPipeline(deps Deps) *Pipeline {
 	p := &Pipeline{
-		routeFunc:        deps.RouteFunc,
-		modelResolveFunc: deps.ModelResolveFunc,
-		forwardFunc:      deps.ForwardFunc,
-		allowModelChange: deps.AllowModelChange,
-		models:           make(map[string]*modelQueue),
-		forwarders:       make(map[int]*credForwarder),
-		stopCh:           make(chan struct{}),
+		routeFunc:            deps.RouteFunc,
+		modelResolveFunc:     deps.ModelResolveFunc,
+		modelRecommendFunc:   deps.ModelRecommendFunc,
+		forwardFunc:          deps.ForwardFunc,
+		allowModelChange:     deps.AllowModelChange,
+		allowModelChangeFunc: deps.AllowModelChangeFunc,
+		models:               make(map[string]*modelQueue),
+		forwarders:           make(map[int]*credForwarder),
+		stopCh:               make(chan struct{}),
 	}
 	cfg := DefaultConfig()
 	if deps.HotCfg != nil {
@@ -108,6 +119,16 @@ func NewPipeline(deps Deps) *Pipeline {
 	}
 	p.cfg.Store(&cfg)
 	return p
+}
+
+func (p *Pipeline) modelChangeEnabled() bool {
+	if p == nil {
+		return false
+	}
+	if p.allowModelChangeFunc != nil {
+		return p.allowModelChangeFunc()
+	}
+	return p.allowModelChange
 }
 
 // Reload swaps the live config (hot-reload). Worker/forwarder counts do not

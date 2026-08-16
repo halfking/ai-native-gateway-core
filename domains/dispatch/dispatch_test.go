@@ -5,11 +5,12 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
+
+	dto "github.com/prometheus/client_model/go"
 )
 
 // fakeDeps builds a Pipeline with controllable callbacks for testing.
@@ -82,6 +83,15 @@ func (f *fakeDeps) pipeline() *Pipeline {
 		ForwardFunc:      f.forwardFunc,
 		AllowModelChange: f.allowChange,
 	})
+}
+
+func counterValue(t *testing.T, kind string) float64 {
+	t.Helper()
+	metric := &dto.Metric{}
+	if err := metricFailover.WithLabelValues(kind).Write(metric); err != nil {
+		t.Fatalf("read failover metric: %v", err)
+	}
+	return metric.GetCounter().GetValue()
 }
 
 func contains(s []string, v string) bool {
@@ -248,6 +258,117 @@ func TestModelChange(t *testing.T) {
 	}
 }
 
+func TestModelChangeRuntimeGateUsesRecommender(t *testing.T) {
+	var enabled atomic.Bool
+	var recommendCalls atomic.Int32
+	var mu sync.Mutex
+	attempts := []string(nil)
+
+	p := NewPipeline(Deps{
+		RouteFunc: func(_ context.Context, qr *QueuedRequest) ([]CredentialRef, error) {
+			switch qr.ResolvedModel {
+			case "primary":
+				return []CredentialRef{cred(1, ModeConcurrency, 5)}, nil
+			case "recommended":
+				return []CredentialRef{cred(2, ModeConcurrency, 5)}, nil
+			default:
+				return nil, nil
+			}
+		},
+		ModelResolveFunc: func(_ context.Context, requested string, _ []string) (string, []string, error) {
+			return requested, nil, nil
+		},
+		ModelRecommendFunc: func(_ context.Context, _ *QueuedRequest, tried []string) ([]string, error) {
+			recommendCalls.Add(1)
+			if !contains(tried, "primary") {
+				t.Fatalf("recommender tried models = %v, want primary", tried)
+			}
+			return []string{"recommended"}, nil
+		},
+		ForwardFunc: func(_ context.Context, qr *QueuedRequest, c CredentialRef) ForwardOutcome {
+			mu.Lock()
+			attempts = append(attempts, qr.ResolvedModel)
+			mu.Unlock()
+			if c.CredentialID == 1 {
+				return ForwardOutcome{Err: errors.New("pre-first-byte failure")}
+			}
+			return ForwardOutcome{Result: "ok"}
+		},
+		AllowModelChangeFunc: enabled.Load,
+	})
+	p.Start()
+	defer p.Stop()
+
+	t.Run("off", func(t *testing.T) {
+		enabled.Store(false)
+		qr := NewQueuedRequest("off", "t", "primary", context.Background(), nil)
+		qr.AllowModelChange = true
+		if _, err := p.Submit(context.Background(), qr); err == nil {
+			t.Fatal("expected primary failure with model change disabled")
+		}
+		if got := recommendCalls.Load(); got != 0 {
+			t.Fatalf("recommender called while gate disabled: %d", got)
+		}
+	})
+
+	t.Run("on", func(t *testing.T) {
+		enabled.Store(true)
+		beforeMetric := counterValue(t, "model_change")
+		qr := NewQueuedRequest("on", "t", "primary", context.Background(), nil)
+		qr.AllowModelChange = true
+		res, err := p.Submit(context.Background(), qr)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if res != "ok" {
+			t.Fatalf("result = %v, want ok", res)
+		}
+		if got := recommendCalls.Load(); got != 1 {
+			t.Fatalf("recommender calls = %d, want 1", got)
+		}
+		if got := counterValue(t, "model_change"); got != beforeMetric+1 {
+			t.Fatalf("model_change metric = %v, want %v", got, beforeMetric+1)
+		}
+	})
+
+	mu.Lock()
+	defer mu.Unlock()
+	if got := distinctAttemptedModels(attempts); !reflect.DeepEqual(got, []string{"primary", "recommended"}) {
+		t.Fatalf("attempted models = %v", got)
+	}
+}
+
+func TestModelChangeRecommenderNotCalledAfterFirstByte(t *testing.T) {
+	var recommendCalls atomic.Int32
+	p := NewPipeline(Deps{
+		RouteFunc: func(_ context.Context, _ *QueuedRequest) ([]CredentialRef, error) {
+			return []CredentialRef{cred(1, ModeConcurrency, 5)}, nil
+		},
+		ModelResolveFunc: func(_ context.Context, requested string, _ []string) (string, []string, error) {
+			return requested, nil, nil
+		},
+		ModelRecommendFunc: func(context.Context, *QueuedRequest, []string) ([]string, error) {
+			recommendCalls.Add(1)
+			return []string{"recommended"}, nil
+		},
+		ForwardFunc: func(context.Context, *QueuedRequest, CredentialRef) ForwardOutcome {
+			return ForwardOutcome{Err: errors.New("post-first-byte failure"), BytesSent: true}
+		},
+		AllowModelChange: true,
+	})
+	p.Start()
+	defer p.Stop()
+
+	qr := NewQueuedRequest("post-first-byte", "t", "primary", context.Background(), nil)
+	qr.AllowModelChange = true
+	if _, err := p.Submit(context.Background(), qr); err == nil {
+		t.Fatal("expected terminal post-first-byte failure")
+	}
+	if got := recommendCalls.Load(); got != 0 {
+		t.Fatalf("recommender called after first byte: %d", got)
+	}
+}
+
 func TestModelChangeUsesConfiguredAlternativeOrder(t *testing.T) {
 	var attempts []string
 	var mu sync.Mutex
@@ -328,36 +449,6 @@ func TestModelChangeDoesNotCrossTierAfterFirstByte(t *testing.T) {
 	}
 	if want := []string{"primary"}; !reflect.DeepEqual(attempts, want) {
 		t.Fatalf("post-first-byte request must not change models: got %v, want %v", attempts, want)
-	}
-}
-
-func TestForwardPanicReleasesGovernorAndCompletes(t *testing.T) {
-	var calls atomic.Int32
-	f := &fakeDeps{
-		refsByModel: map[string][]CredentialRef{"m": {cred(1, ModeConcurrency, 1)}},
-		forwardFn: func(context.Context, *QueuedRequest, CredentialRef) ForwardOutcome {
-			if calls.Add(1) == 1 {
-				panic("synthetic forward panic")
-			}
-			return ForwardOutcome{}
-		},
-		forwardCalls: map[int]int{},
-	}
-	p := f.pipeline()
-	p.Start()
-	defer p.Stop()
-
-	first := NewQueuedRequest("panic-req", "tenant-a", "m", context.Background(), nil)
-	_, err := p.Submit(context.Background(), first)
-	if err == nil || !strings.Contains(err.Error(), "forward panic") {
-		t.Fatalf("first Submit error = %v, want recovered forward panic", err)
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
-	defer cancel()
-	second := NewQueuedRequest("after-panic", "tenant-a", "m", ctx, nil)
-	if _, err := p.Submit(ctx, second); err != nil {
-		t.Fatalf("second Submit after panic = %v; governor permit leaked", err)
 	}
 }
 

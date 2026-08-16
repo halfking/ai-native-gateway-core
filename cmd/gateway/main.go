@@ -3685,6 +3685,9 @@ func main() {
 			// v2.1: Score() also reads profile weights from tuningStore.
 			autoroute.SetTuningStore(tuningStore)
 			chatHandler.SetAutoRoute(decider)
+			if routingExec != nil {
+				routingExec.SetDispatchModelRecommender(decider)
+			}
 			// /v1/embeddings model=auto resolution (22 章 §22.2).
 			// Shares the same index as chat; AutoOnEmbeddings flag gates it.
 			// NOTE: embeddingsHandler may be nil if auth is disabled.
