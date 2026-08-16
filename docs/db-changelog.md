@@ -881,3 +881,21 @@
 |-----------|------|---------|--------|
 | 522 | `522_request_state_transitions_tenant_contract.sql` | `5d0b1080fe54e650c0ccbc3e4dea94da0b0d8323271dcc4e0c466518708da658` | applied+verified |
 
+## 2026-08-17 — migration 488/489 historical identity mismatch blocks 524
+
+252 read-only ledger evidence is authoritative:
+
+| Migration | Remote description / file | Remote SHA-256 | Status |
+|-----------|---------------------------|----------------|--------|
+| 488 | `488_credential_probe_queue_startup_backfill.sql` | `3cc42e0e4186a76ab16ab3af0debfabc53c09591b7f80d40ab10bae752554074` | applied on 252; historical pre-renumber source unavailable locally |
+| 489 | `489_credential_probe_queue_runtime_columns.sql` | `bf1a3e85254eb5e27f985dce1bac281369b9d4179d1d538ab7eccb802d5dc769` | applied on 252; historical pre-renumber source unavailable locally |
+| 490 | `490_credential_probe_queue_runtime_columns.sql` | `cfda9da5259662fdc34249bf345ec33480ea0e70aa4541a912614b3d84688971` | applied on 252 and source-verified |
+
+The current repository instead uses 488 for `request_logs_hot_add_model` and 489/490 for the post-renumber probe queue files. Exhaustive local Git/ref/worktree/252 artifact search did not recover the byte-identical 488 source. Do not relabel 489 as 488, rewrite the remote checksum ledger, or run ordinary deployment through this mismatch.
+
+## 2026-08-17 — migration 524 deployment remains pending
+
+| Migration | File | SHA-256 | Status |
+|-----------|------|---------|--------|
+| 524 | `524_cmb_notify_trigger_context_window.sql` | `58fad10ea0543022d49d469f829f25e0f7dece765c7e7bdbe8d6e94298ab840d` | standard deployment blocked by the unresolved 488/489 historical identity mismatch; this session made no SQL or ledger write. Read-only inspection found the widened trigger predicate present on 252, but no 524 `schema_migrations` or checksum-ledger row, so it is not marked applied+verified |
+
