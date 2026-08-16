@@ -54,7 +54,10 @@ wanted = {
     "OPS_CENTER_AGENT_DISABLED": "0",
     "OPS_COLLECT_URL": "https://llm.kxpms.cn",
 }
-lines = path.read_text().splitlines() if path.exists() else []
+# 2026-08-17: 显式指定 encoding='utf-8'。Python 3.6 的 pathlib.Path.read_text()
+# 默认走 locale.getpreferredencoding()，在 245 (LANG=C) 上是 ASCII；env 文件若含
+# 中文注释/破折号等 UTF-8 字节，read_text() 会抛 UnicodeDecodeError。
+lines = path.read_text(encoding='utf-8').splitlines() if path.exists() else []
 out, touched = [], set()
 for ln in lines:
     if (ln.startswith("LLM_GATEWAY_CENTER_URL=") or
@@ -75,7 +78,7 @@ if missing:
     for k in sorted(missing):
         out.append(f"{k}={wanted[k]}")
 path.parent.mkdir(parents=True, exist_ok=True)
-path.write_text("\n".join(out).rstrip() + "\n")
+path.write_text("\n".join(out).rstrip() + "\n", encoding='utf-8')
 print("updated", path, "region=", region)
 PY
 }
@@ -113,7 +116,9 @@ wanted = {
     'OPS_CENTER_AGENT_DISABLED': '0',
     'OPS_COLLECT_URL': 'https://llm.kxpms.cn',
 }
-lines = env_path.read_text().splitlines() if env_path.exists() else []
+# 2026-08-17: 显式 encoding='utf-8'，避免 Python 3.6 + LANG=C 默认 ASCII 抛
+# UnicodeDecodeError（见上文同源 fix 注释）。
+lines = env_path.read_text(encoding='utf-8').splitlines() if env_path.exists() else []
 out, touched = [], set()
 for ln in lines:
     if (ln.startswith('LLM_GATEWAY_CENTER_URL=') or
@@ -134,7 +139,7 @@ if missing:
     for k in sorted(missing):
         out.append(f'{k}={wanted[k]}')
 env_path.parent.mkdir(parents=True, exist_ok=True)
-env_path.write_text('\\n'.join(out).rstrip() + '\\n')
+env_path.write_text('\\n'.join(out).rstrip() + '\\n', encoding='utf-8')
 print('backup:', bak)
 print('region:', region)
 PY"

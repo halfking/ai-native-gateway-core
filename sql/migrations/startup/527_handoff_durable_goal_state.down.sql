@@ -13,6 +13,12 @@ restored_at = NULL;
 DROP INDEX IF EXISTS idx_handoff_pending_restore;
 ALTER TABLE handoff_pending_confirmations
     DROP CONSTRAINT IF EXISTS handoff_pending_confirmations_status_check;
+-- Roll non-{pending,confirmed,expired} rows back before shrinking the column.
+UPDATE handoff_pending_confirmations
+SET status = 'confirmed'
+WHERE status NOT IN ('pending', 'confirmed', 'expired');
+ALTER TABLE handoff_pending_confirmations
+    ALTER COLUMN status TYPE VARCHAR(16);
 ALTER TABLE handoff_pending_confirmations
     ADD CONSTRAINT handoff_pending_confirmations_status_check
     CHECK (status IN ('pending', 'confirmed', 'expired'));
