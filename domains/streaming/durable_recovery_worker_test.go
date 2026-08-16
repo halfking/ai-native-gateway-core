@@ -121,6 +121,20 @@ func TestDurableRecoveryWorkerSchedulesFirstRetryAfterTwoSeconds(t *testing.T) {
 	}
 }
 
+func TestDurableRecoveryWorkerPreservesAuthoritativeRetryAfter(t *testing.T) {
+	now := time.Date(2026, 8, 16, 12, 0, 0, 0, time.UTC)
+	result := &AttemptResult{Success: false, CandidateOutcomes: []CandidateOutcome{{Kind: errorsx.KindRateLimit, RetryAfter: 10 * time.Minute}}}
+	store := &workerFakeStore{task: runnableTask(), snapshot: &durable.Snapshot{TaskID: "task-1"}}
+	worker := NewDurableRecoveryWorker(store, nil, workerFakeRunner{attempt: &DurableAttempt{Result: result, Attempt: 1}}, DurableWorkerOptions{Owner: "worker", RetryMax: 2 * time.Minute})
+	worker.now = func() time.Time { return now }
+
+	worker.runOnce(context.Background())
+
+	if got, want := store.lastReschedule.NextRetryAt, now.Add(10*time.Minute); !got.Equal(want) {
+		t.Fatalf("next retry = %s, want authoritative retry time %s", got, want)
+	}
+}
+
 func TestDurableRecoveryWorkerDoublesRetryBackoff(t *testing.T) {
 	now := time.Date(2026, 8, 16, 12, 0, 0, 0, time.UTC)
 	result := &AttemptResult{Success: false, CandidateOutcomes: []CandidateOutcome{{Kind: errorsx.KindTransient}}}
@@ -137,7 +151,7 @@ func TestDurableRecoveryWorkerDoublesRetryBackoff(t *testing.T) {
 	}
 }
 
-func TestDurableRecoveryWorkerCapsSuggestedRetryAtTwoMinutes(t *testing.T) {
+func TestDurableRecoveryWorkerPreservesSuggestedRetryAfter(t *testing.T) {
 	now := time.Date(2026, 8, 16, 12, 0, 0, 0, time.UTC)
 	result := &AttemptResult{Success: false, CandidateOutcomes: []CandidateOutcome{{Kind: errorsx.KindTransient, RetryAfter: 10 * time.Minute}}}
 	store := &workerFakeStore{task: runnableTask(), snapshot: &durable.Snapshot{TaskID: "task-1"}}
@@ -146,7 +160,7 @@ func TestDurableRecoveryWorkerCapsSuggestedRetryAtTwoMinutes(t *testing.T) {
 
 	worker.runOnce(context.Background())
 
-	if got, want := store.lastReschedule.NextRetryAt, now.Add(2*time.Minute); !got.Equal(want) {
+	if got, want := store.lastReschedule.NextRetryAt, now.Add(10*time.Minute); !got.Equal(want) {
 		t.Fatalf("next retry = %s, want %s", got, want)
 	}
 }

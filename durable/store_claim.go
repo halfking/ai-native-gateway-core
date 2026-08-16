@@ -81,7 +81,7 @@ const claimSelectSQL = `
 	WHERE commit_state IN ('none', 'metadata')
 	  AND status IN ('waiting_recovery', 'retry_scheduled', 'running')
 	  AND (status <> 'running' OR lease_until < $2)
-	  AND next_retry_at IS NOT NULL AND next_retry_at <= $2 + INTERVAL '5 seconds'
+	  AND next_retry_at IS NOT NULL AND next_retry_at <= $2
 	  AND deadline_at > $2
 	  AND (lease_until IS NULL OR lease_until < $2)
 	ORDER BY next_retry_at

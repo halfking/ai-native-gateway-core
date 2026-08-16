@@ -338,6 +338,9 @@ func (w *DurableRecoveryWorker) canRetry(task *durable.Task) bool {
 }
 
 func (w *DurableRecoveryWorker) retryDelay(attempt int, suggested time.Duration) time.Duration {
+	if suggested > 0 {
+		return suggested
+	}
 	if attempt < 1 {
 		attempt = 1
 	}
@@ -347,12 +350,6 @@ func (w *DurableRecoveryWorker) retryDelay(attempt int, suggested time.Duration)
 		if delay > w.opts.RetryMax {
 			delay = w.opts.RetryMax
 		}
-	}
-	if suggested > delay {
-		delay = suggested
-	}
-	if delay > w.opts.RetryMax {
-		return w.opts.RetryMax
 	}
 	return delay
 }
