@@ -102,10 +102,10 @@ type autoRouteDecision struct {
 	EmbeddingShadowSimilarity *float64             `json:"embedding_shadow_similarity,omitempty"`
 	CandidatesTop3            []autoRouteCandidate `json:"candidates_top3"`
 
-	// failoverModels is process-local only. The stable wire/audit schema must
-	// remain capped to CandidatesTop3, while dispatch needs the complete tier
-	// sequence to recover before the first byte.
+	// Process-local inputs for pre-first-byte dispatch recovery. They are not
+	// serialized into the response header or audit JSON.
 	failoverModels []string
+	signals        autoroute.ClassificationSignals
 }
 
 // autoRouteCandidate is one row of the top-N audit list.
@@ -385,6 +385,7 @@ func (h *ChatHandler) maybeResolveAuto(reqBody *chatRequestBody, rawBody []byte,
 	wire := decisionToWire(decision)
 	if wire != nil {
 		wire.failoverModels = append([]string(nil), decision.TierFailoverModels...)
+		wire.signals = sigs
 	}
 
 	// Record the selection for the feedback loop. IDs and numbers only — no

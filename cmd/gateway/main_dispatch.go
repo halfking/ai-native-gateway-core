@@ -33,8 +33,7 @@ func wireDispatchPipeline(routingExec *executors.Executor) *dispatch.Pipeline {
 		slog.Warn("dispatch: routingExec nil, V2 pipeline not wired")
 		return nil
 	}
-	allowModelChange := readBoolSettingValue("dispatch_v2.allow_model_change")
-	p := routingExec.NewDispatchPipeline(allowModelChange)
+	p := routingExec.NewDispatchPipeline()
 	// V3.3-OBS OBS-B1 (2026-08-15): 动作事件发射器注入 dispatch pipeline。
 	// nil 安全（发射点全部 no-op），发射器本身旁路异步、满即丢。
 	p.SetLiveActions(gatewayLiveActionsEmitter)
@@ -42,7 +41,7 @@ func wireDispatchPipeline(routingExec *executors.Executor) *dispatch.Pipeline {
 	routingExec.SetDispatchPipeline(p)
 	gatewayDispatchPipeline = p
 	slog.Info("dispatch_v2 pipeline wired",
-		"allow_model_change", allowModelChange,
+		"allow_model_change", dispatch.IsModelChangeEnabled(),
 		"enabled", dispatch.IsDispatchEnabled())
 	return p
 }

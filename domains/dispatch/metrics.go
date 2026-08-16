@@ -56,7 +56,7 @@ var (
 	metricFailover = promauto.NewCounterVec(prometheus.CounterOpts{
 		Name: "dispatch_failover_total",
 		Help: "Failover transitions by kind.",
-	}, []string{"kind"}) // kind: cred_retry|cred_switch|model_switch
+	}, []string{"kind"}) // kind: cred_retry|cred_switch|model_change
 
 	metricStatsDrop = promauto.NewCounter(prometheus.CounterOpts{
 		Name: "dispatch_stats_drop_total",
