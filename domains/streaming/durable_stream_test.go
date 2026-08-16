@@ -26,6 +26,8 @@ type fakeForegroundStore struct {
 	terminals      []durable.TerminalCommit
 	renewErr       error
 	checkErr       error
+	rescheduleErr  error
+	rescheduleCalls int
 	intents        []durable.TerminalCommit
 	intentErr      error
 	intentFailures int
@@ -46,6 +48,18 @@ func (f *fakeForegroundStore) RenewLease(_ context.Context, taskID, owner string
 		return f.renewErr
 	}
 	f.renews = append(f.renews, durableRenewCall{taskID, owner, token})
+	return nil
+}
+
+// Reschedule shadows fakeDurableHandlerStore.Reschedule so a test can inject
+// rescheduleErr without altering the handler fake. releaseDurableBeforeSurvival
+// and the foreground post-survival path both go through here.
+func (f *fakeForegroundStore) Reschedule(_ context.Context, p durable.RescheduleParams) error {
+	f.rescheduleCalls++
+	if f.rescheduleErr != nil {
+		return f.rescheduleErr
+	}
+	f.resched = append(f.resched, p)
 	return nil
 }
 
@@ -371,6 +385,53 @@ func TestSettleDurableStreamStopsOnLeaseLoss(t *testing.T) {
 	}
 	if store.intentCalls != 1 {
 		t.Fatalf("lease loss settlement intent calls = %d, want 1", store.intentCalls)
+	}
+}
+
+// TestSettleDurableStreamRecordsStageFailureOnPersistExhaustion pins the
+// observability contract for the documented "stuck-task worst case": when
+// PersistSettlementIntent keeps returning a non-lease-loss error after the
+// 3 in-attempt retries, the foreground handler must surface a
+// durable_settlement_stage_failures_total tick so an alert can catch the
+// task before the safety reaper / deadline reaper own it on lease expiry.
+// The task must remain in `running` (no terminal written) — re-execution
+// safety depends on the safety reaper, never on a foreground fall-back
+// write that could replay terminal bytes.
+func TestSettleDurableStreamRecordsStageFailureOnPersistExhaustion(t *testing.T) {
+	before := gatherMetricValue(t, "durable_settlement_stage_failures_total")
+	store := &fakeForegroundStore{intentFailures: 10} // > retrySettlement budget
+	b := newStreamBinding(store)
+	settleDurableStream(context.Background(), b,
+		SurvivalResult{Succeed: true, Decision: TaskDecision{Action: TaskActionSucceed, Reason: "success"}},
+		[]byte("data: hi\n\n"), "text/event-stream", false)
+	if len(store.terminals) != 0 {
+		t.Fatalf("persist exhaustion must not finalize terminal, got %+v", store.terminals)
+	}
+	if store.intentCalls != len(settlementRetryDelays) {
+		t.Fatalf("settlement intent calls = %d, want %d", store.intentCalls, len(settlementRetryDelays))
+	}
+	if got := gatherMetricValue(t, "durable_settlement_stage_failures_total"); got < before+1 {
+		t.Fatalf("stage failure metric not incremented: before=%v after=%v", before, got)
+	}
+}
+
+// TestSettleDurableStreamRecordsStageFailureOnRescheduleExhaustion pins the
+// equivalent contract for the release_to_worker stage: a foreground
+// Reschedule write failure must surface a stage metric so the stuck-task
+// window is observable. The handler must not invent a fallback write path;
+// the safety reaper / lease expiry is the documented recovery.
+func TestSettleDurableStreamRecordsStageFailureOnRescheduleExhaustion(t *testing.T) {
+	before := gatherMetricValue(t, "durable_settlement_stage_failures_total")
+	store := &fakeForegroundStore{rescheduleErr: errors.New("reschedule store unavailable")}
+	b := newStreamBinding(store)
+	settleDurableStream(context.Background(), b,
+		SurvivalResult{Decision: TaskDecision{Action: TaskActionFailClosed, Reason: "client_disconnected"}},
+		nil, "", true)
+	if store.rescheduleCalls != 1 {
+		t.Fatalf("reschedule attempts = %d, want 1 (only the foreground attempt)", store.rescheduleCalls)
+	}
+	if got := gatherMetricValue(t, "durable_settlement_stage_failures_total"); got < before+1 {
+		t.Fatalf("stage failure metric not incremented: before=%v after=%v", before, got)
 	}
 }
 
