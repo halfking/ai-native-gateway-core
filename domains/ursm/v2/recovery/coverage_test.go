@@ -51,7 +51,7 @@ func TestValidateCoverageRejectsPendingMigration(t *testing.T) {
 	}
 }
 
-
+func TestValidateCoverageRejectsLegacyOnlyKey(t *testing.T) {
 	m := New(newMini(t), "ursm:v2:")
 	ctx := context.Background()
 	if err := m.rdb.SAdd(ctx, "ursm:v2:meta:coverage", "ursm:v2:node:7:model").Err(); err != nil {
