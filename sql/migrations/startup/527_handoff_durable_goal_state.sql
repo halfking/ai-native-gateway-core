@@ -4,6 +4,10 @@ BEGIN;
 ALTER TABLE handoff_pending_confirmations
     DROP CONSTRAINT IF EXISTS handoff_pending_confirmations_status_check;
 
+-- Widen status to fit 'accounting_confirmed' (20 chars). Existing type was VARCHAR(16).
+ALTER TABLE handoff_pending_confirmations
+    ALTER COLUMN status TYPE VARCHAR(32);
+
 ALTER TABLE handoff_pending_confirmations
     ADD COLUMN IF NOT EXISTS goal_state JSONB,
     ADD COLUMN IF NOT EXISTS goal_state_version INTEGER,
