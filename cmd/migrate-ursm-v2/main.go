@@ -85,6 +85,7 @@ import (
 // Defined locally so the migration doesn't break when the table
 // schema evolves (we project only the columns we need).
 type probeRow struct {
+	TenantID             string
 	CredentialID         int64
 	RawModel             string
 	ConsecutiveFailures  int
@@ -359,7 +360,11 @@ func readProbeRows(ctx context.Context, db *sql.DB, tenantID int64) ([]probeRow,
 // last_ok_ms, last_err). Drift between here and the Lua = state drift.
 func mapRow(r probeRow, prefix string) mappedNode {
 	nowMs := time.Now().UnixMilli()
-	key := fmt.Sprintf("%snode:%d:%s", prefix, r.CredentialID, r.RawModel)
+	tenant := r.TenantID
+	if tenant == "" {
+		tenant = "default"
+	}
+	key := fmt.Sprintf("%snode:%s:%d:%s", prefix, tenant, r.CredentialID, r.RawModel)
 	fields := map[string]string{
 		"generation":      "1",
 		"source_priority": "10", // Request priority
