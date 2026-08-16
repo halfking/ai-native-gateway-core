@@ -379,7 +379,14 @@ func (c *durableWireCapture) WriteHeader(status int) {
 func (c *durableWireCapture) Write(p []byte) (int, error) {
 	n, err := c.w.Write(p)
 	c.mu.Lock()
-	if !c.overflowed {
+	if err != nil {
+		// A failed downstream write means bytes may not have reached the
+		// client — persisting them as the durable pollable body would lie
+		// about reachability. Mark the capture as overflowed so the
+		// settlement path records durable_result_unavailable instead.
+		c.overflowed = true
+		c.buf = nil
+	} else if !c.overflowed {
 		if len(c.buf)+n > c.limit {
 			c.overflowed = true
 			c.buf = nil

@@ -157,10 +157,26 @@ func (s *Store) claimSettlementIntents(ctx context.Context, taskID, owner string
 			c.ResultCiphertext = ct.String
 		}
 		c.ClaimOwner, c.ClaimUntil = owner, now.Add(lease)
+		prevClaimFence := c.ClaimFencingToken
 		c.ClaimFencingToken++
-		if err := tx.QueryRow(ctx, `UPDATE durable_task_settlement_intents SET claim_owner=$2, claim_until=$3, claim_fencing_token=$4, attempts=attempts+1, updated_at=$5 WHERE task_id=$1 RETURNING claim_fencing_token, attempts`, c.TaskID, owner, c.ClaimUntil, c.ClaimFencingToken, now).Scan(&c.ClaimFencingToken, &c.Attempts); err != nil {
+		var nextFence int64
+		var attempts int
+		err := tx.QueryRow(ctx, `
+			UPDATE durable_task_settlement_intents
+			SET claim_owner=$2, claim_until=$3, claim_fencing_token=$4,
+			    attempts=attempts+1, updated_at=$5
+			WHERE task_id=$1 AND claim_fencing_token=$6
+			RETURNING claim_fencing_token, attempts`,
+			c.TaskID, owner, c.ClaimUntil, c.ClaimFencingToken, now, prevClaimFence,
+		).Scan(&nextFence, &attempts)
+		if err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				return nil, fmt.Errorf("durable: settlement claim fenced off (task_id=%s, prev_token=%d)", c.TaskID, prevClaimFence)
+			}
 			return nil, err
 		}
+		c.ClaimFencingToken = nextFence
+		c.Attempts = attempts
 		out = append(out, &c)
 	}
 	if err := rows.Err(); err != nil {
