@@ -61,6 +61,29 @@ func TestIntentRedisFallbackOnMemoryMiss(t *testing.T) {
 	}
 }
 
+func TestIntentIncrementHitFallsBackToRedis(t *testing.T) {
+	mr := miniredis.RunT(t)
+	rdb := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	store := ursmcache.NewIntentStore(rdb, 100, time.Minute)
+	ctx := context.Background()
+	if err := store.Set(ctx, "sess-hit", ursmcache.Intent{
+		TaskType: "code", WorkType: "code_gen", ChosenModel: "m", HitCount: 4,
+	}, time.Minute); err != nil {
+		t.Fatalf("seed Redis intent: %v", err)
+	}
+
+	c := NewSessionIntentCache(time.Minute)
+	c.SetRedisStore(store)
+	got, ok := c.IncrementHit("sess-hit")
+	if !ok || got.HitCount != 5 || got.WorkType != "code_gen" {
+		t.Fatalf("Redis fallback increment: %+v ok=%v", got, ok)
+	}
+	redisIntent, ok := store.Get(ctx, "sess-hit")
+	if !ok || redisIntent.HitCount != 5 {
+		t.Fatalf("Redis hit count not refreshed: %+v ok=%v", redisIntent, ok)
+	}
+}
+
 func TestIntentNilRedisStoreDegraded(t *testing.T) {
 	c := NewSessionIntentCache(time.Minute)
 	c.Put("s", CachedIntent{TaskType: TaskChat, ChosenModel: "m", CredentialID: 1})
