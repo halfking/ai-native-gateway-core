@@ -2,6 +2,7 @@ package streaming
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -54,6 +55,12 @@ type DurableStreamBinding struct {
 	// renewInterval is the ticker period of the renewal loop; Stop bounds its
 	// wait on it so it never times out before a pending tick can drain.
 	renewInterval time.Duration
+}
+
+var settlementRetryDelays = [...]time.Duration{
+	50 * time.Millisecond,
+	100 * time.Millisecond,
+	200 * time.Millisecond,
 }
 
 func newDurableStreamBinding(store DurableForegroundStore, task *durable.Task, lease time.Duration) *DurableStreamBinding {
@@ -204,7 +211,9 @@ func (b *DurableStreamBinding) FailTerminal(ctx context.Context, reason, kind st
 }
 
 func (b *DurableStreamBinding) settleTerminal(ctx context.Context, c durable.TerminalCommit) error {
-	if err := b.store.PersistSettlementIntent(ctx, c); err != nil {
+	if err := retrySettlement(ctx, func() error {
+		return b.store.PersistSettlementIntent(ctx, c)
+	}); err != nil {
 		return err
 	}
 	claim, err := b.store.ClaimSettlementIntent(ctx, b.task.ID, b.task.LeaseOwner, b.lease, time.Now())
@@ -303,6 +312,29 @@ func settleDurableStream(_ context.Context, b *DurableStreamBinding, res Surviva
 			logSettleError("fail_terminal", b, err)
 		}
 	}
+}
+
+func retrySettlement(ctx context.Context, write func() error) error {
+	var err error
+	for attempt, delay := range settlementRetryDelays {
+		err = write()
+		if err == nil || errors.Is(err, durable.ErrLeaseLost) {
+			return err
+		}
+		if attempt == len(settlementRetryDelays)-1 {
+			break
+		}
+		timer := time.NewTimer(delay)
+		select {
+		case <-ctx.Done():
+			if !timer.Stop() {
+				<-timer.C
+			}
+			return fmt.Errorf("durable settlement failed after %d attempts: %w", attempt+1, err)
+		case <-timer.C:
+		}
+	}
+	return fmt.Errorf("durable settlement failed after %d attempts: %w", len(settlementRetryDelays), err)
 }
 
 func logSettleError(stage string, b *DurableStreamBinding, err error) {

@@ -87,8 +87,12 @@ func (h *ChatHandler) runSurvivalCoordinator(
 	}
 
 	sw := NewSerializedStreamWriter(baseWriter)
+	attemptExec := h.survivalAttemptExec
+	if attemptExec == nil {
+		attemptExec = h.executor
+	}
 	coordinator := &SurvivalCoordinator{
-		Exec:     h.executor,
+		Exec:     attemptExec,
 		Protocol: protocol,
 		Options:  h.survivalOptions,
 		Refresh: func(ctx context.Context) {
