@@ -455,9 +455,37 @@ func TestClassifyErrorWithBody_ToolCallIdMismatch(t *testing.T) {
 	}
 }
 
+func TestClassifyErrorWithBody_InvalidRequestFormat(t *testing.T) {
+	bodies := []string{
+		`{"error":{"code":"1214","message":"messages 参数非法。请检查文档。"}}`,
+		`{"error":{"code":"invalid_request_format","message":"messages malformed"}}`,
+	}
+	for _, body := range bodies {
+		if got := ClassifyErrorWithBody(400, []byte(body)); got != KindClientBug {
+			t.Fatalf("ClassifyErrorWithBody(400, %q) = %q, want %q", body, got, KindClientBug)
+		}
+		if got := ClassifyResponseBody(400, []byte(body)); got != KindClientBug {
+			t.Fatalf("ClassifyResponseBody(400, %q) = %q, want %q", body, got, KindClientBug)
+		}
+	}
+}
+
+func TestClassifyErrorWithBody_ContentFilterOnRelay500(t *testing.T) {
+	body := []byte(`{"error":{"message":"sensitive_words_detected (request id: req-1)","type":"new_api_error","code":"sensitive_words_detected"}}`)
+	if got := ClassifyErrorWithBody(500, body); got != KindContentFilter {
+		t.Fatalf("ClassifyErrorWithBody(500, sensitive_words_detected) = %q, want %q", got, KindContentFilter)
+	}
+	if got := ClassifyResponseBody(500, body); got != KindContentFilter {
+		t.Fatalf("ClassifyResponseBody(500, sensitive_words_detected) = %q, want %q", got, KindContentFilter)
+	}
+}
+
 func TestIsClientBug(t *testing.T) {
 	if !IsClientBug(KindToolCallIdMismatch) {
 		t.Error("KindToolCallIdMismatch must be flagged as a client bug")
+	}
+	if !IsClientBug(KindClientBug) {
+		t.Error("KindClientBug must be flagged as a client bug")
 	}
 	// 2026-07-03: Bug #10 fix - KindModelNotFound is no longer a client bug.
 	// model_not_found is a provider-side issue (model removed/renamed upstream)

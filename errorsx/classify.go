@@ -501,6 +501,19 @@ var toolCallIdMismatchRe = regexp.MustCompile(
 		`item[_ ]?reference.*(matching|each|call[_ ]?id)|previous[_ ]?response[_ ]?id|replayable[_ ]?tool[_ ]?call[_ ]?context)`,
 )
 
+// invalidRequestFormatRe matches provider validation errors caused by the
+// request shape, not by the credential.  Zhipu's coding endpoint returns
+// code 1214 for malformed `messages` histories; similar OpenAI-compatible
+// relays use the explicit invalid_request_format label.  These errors must
+// not be retried across the same provider or cool the credential.
+var invalidRequestFormatRe = regexp.MustCompile(
+	`(?i)(invalid[_ -]?request[_ -]?format|` +
+		`["']code["']\s*:\s*["']?1214["']?|` +
+		`messages.{0,40}(invalid|illegal|malformed)|` +
+		`(invalid|illegal|malformed).{0,40}messages|` +
+		`messages[[:space:]]*(参数非法|格式错误|无效))`,
+)
+
 // contentFilterRe matches upstream error bodies that signal a
 // content-moderation / safety-policy rejection. Scoped to avoid false
 // positives on legitimate "sensitive" tokens (e.g. "case-sensitive"):
@@ -513,6 +526,7 @@ var toolCallIdMismatchRe = regexp.MustCompile(
 //   - CJK equivalents for domestic providers.
 var contentFilterRe = regexp.MustCompile(
 	`(?i)(new_sensitive|` +
+		`sensitive[_ -]?words?[_ -]?detected|` +
 		`content[_ -]?(filter|policy|moderation)|` +
 		`policy[_ -]?violation|` +
 		`sensitive[_ ]?\(?\d{2,5}\)?|` +
@@ -593,6 +607,13 @@ func ClassifyError(err error, resp *http.Response) ErrorKind {
 		if toolCallIdMismatchRe.MatchString(msg) {
 			return KindToolCallIdMismatch
 		}
+		if invalidRequestFormatRe.MatchString(msg) {
+			return KindClientBug
+		}
+		if contentFilterRe.MatchString(msg) {
+			return KindContentFilter
+		}
+
 		// 2026-08-08 P0 fix (defense in depth): budget_exceeded / balance
 		// insufficient / account-low can also appear in the wrapped
 		// error.Error() string when an upstream.Error is re-wrapped via
@@ -723,7 +744,7 @@ func ClassifyErrorWithBody(status int, body []byte) ErrorKind {
 		// "new_sensitive (1026)", OpenAI "content_filter", etc). Gate on
 		// the typical moderation status codes so a 200 body that happens
 		// to contain "sensitive" (e.g. a benign word) is not mis-flagged.
-		if (status == 400 || status == 403 || status == 422 || status == 451) &&
+		if (status == 400 || status == 403 || status == 422 || status == 451 || status >= 500) &&
 			contentFilterRe.Match(body) {
 			return KindContentFilter
 		}
@@ -733,6 +754,9 @@ func ClassifyErrorWithBody(status int, body []byte) ErrorKind {
 		}
 		if toolCallIdMismatchRe.Match(body) {
 			return KindToolCallIdMismatch
+		}
+		if (status == 400 || status == 422) && invalidRequestFormatRe.Match(body) {
+			return KindClientBug
 		}
 		// 2026-07-16 P0 fix: budget_exceeded / balance insufficient on 429.
 		// These are permanent quota exhaustion (KindQuotaPermanent), not
@@ -946,7 +970,10 @@ func ClassifyResponseBody(status int, body []byte) ErrorKind {
 		if toolCallIdMismatchRe.Match(body) {
 			return KindToolCallIdMismatch
 		}
-		if (status == 400 || status == 403 || status == 422 || status == 451) &&
+		if (status == 400 || status == 422) && invalidRequestFormatRe.Match(body) {
+			return KindClientBug
+		}
+		if (status == 400 || status == 403 || status == 422 || status == 451 || status >= 500) &&
 			contentFilterRe.Match(body) {
 			return KindContentFilter
 		}
@@ -1048,7 +1075,7 @@ func IsClientBug(kind ErrorKind) bool {
 	// upstream), not a client bug. It should trigger binding unavailability
 	// via the dedicated mnf branch in executor.go, not skip state writes.
 	switch kind {
-	case KindToolCallIdMismatch, KindUnsupportedFeature, KindCanceled:
+	case KindClientBug, KindToolCallIdMismatch, KindUnsupportedFeature, KindCanceled:
 		return true
 	default:
 		return false
