@@ -3,6 +3,7 @@ package streaming
 import (
 	"context"
 	"errors"
+	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
@@ -447,6 +448,22 @@ func TestSurvivalCoordinatorCheckpointFailureFailsClosed(t *testing.T) {
 		t.Fatal("no semantic bytes may reach the wire after a failed checkpoint")
 	}
 }
+
+func TestDurableWireCaptureDiscardsBodyOnWriteError(t *testing.T) {
+	failed := newDurableWireCapture(errorResponseWriter{}, 64)
+	if _, err := failed.Write([]byte("data: incomplete\n\n")); err == nil {
+		t.Fatal("write error must propagate")
+	}
+	if body, _ := failed.result(); body != nil {
+		t.Fatalf("failed write must not produce durable body, got %q", body)
+	}
+}
+
+type errorResponseWriter struct{}
+
+func (errorResponseWriter) Header() http.Header       { return make(http.Header) }
+func (errorResponseWriter) Write([]byte) (int, error) { return 0, errors.New("client disconnected") }
+func (errorResponseWriter) WriteHeader(int)           {}
 
 func TestDurableWireCaptureTeesAndOverflows(t *testing.T) {
 	inner := httptest.NewRecorder()
