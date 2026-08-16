@@ -183,10 +183,16 @@ func TestDurableRecoveryWorkerStopIsIdempotent(t *testing.T) {
 func TestDurableRecoveryWorkerStopGraceExceededIncrementsMetric(t *testing.T) {
 	store := &workerFakeStore{task: runnableTask(), snapshot: &durable.Snapshot{TaskID: "task-1"}}
 	before := gatherMetricValue(t, "durable_recovery_stop_grace_exceeded_total")
-	worker := NewDurableRecoveryWorker(store, nil, blockingRunner{release: make(chan struct{})},
+	started := make(chan struct{})
+	release := make(chan struct{})
+	worker := NewDurableRecoveryWorker(store, nil, blockingRunner{started: started, release: release},
 		DurableWorkerOptions{Owner: "worker", Lease: time.Hour, StopGrace: 30 * time.Millisecond})
 	worker.Start(context.Background())
-	time.Sleep(50 * time.Millisecond) // let the first runOnce enter runTask
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("runner did not start")
+	}
 	stopped := make(chan struct{})
 	go func() { worker.Stop(); close(stopped) }()
 	select {
@@ -197,6 +203,7 @@ func TestDurableRecoveryWorkerStopGraceExceededIncrementsMetric(t *testing.T) {
 	if got := gatherMetricValue(t, "durable_recovery_stop_grace_exceeded_total"); got <= before {
 		t.Fatalf("durable_recovery_stop_grace_exceeded_total = %v, want > %v", got, before)
 	}
+	close(release)
 }
 
 // 审计修正（P1-1）：快照加载失败可能是瞬态 DB/keyring 问题，不得永久
@@ -221,6 +228,19 @@ func TestDurableRecoveryWorkerRunnerErrorReschedules(t *testing.T) {
 	}
 }
 
+func TestDurableRecoveryWorkerRunnerErrorTerminalizesAfterOneHundredRetries(t *testing.T) {
+	task := runnableTask()
+	task.AttemptCount = 101
+	store := &workerFakeStore{task: task, snapshot: &durable.Snapshot{TaskID: "task-1"}}
+	worker := NewDurableRecoveryWorker(store, nil, workerFakeRunner{err: errors.New("rebuild failed")}, DurableWorkerOptions{Owner: "worker"})
+
+	worker.runOnce(context.Background())
+
+	if store.rescheduleCalls != 0 || store.commitCalls != 1 || store.lastOutcome != durable.StatusFailed {
+		t.Fatalf("reschedule=%d commit=%d outcome=%s, want terminal failed", store.rescheduleCalls, store.commitCalls, store.lastOutcome)
+	}
+}
+
 // 任务级永久判定（AggregateTaskOutcome FailTerminal）仍必须形成 failed 终态。
 func TestDurableRecoveryWorkerTerminalDecisionFails(t *testing.T) {
 	result := &AttemptResult{Success: false, CandidateOutcomes: []CandidateOutcome{{Kind: errorsx.KindContextLength}}}
@@ -236,15 +256,15 @@ func TestDurableRecoveryWorkerTerminalDecisionFails(t *testing.T) {
 func TestDurableRecoveryWorkerStopBoundedWhenRunnerIgnoresCancel(t *testing.T) {
 	store := &workerFakeStore{task: runnableTask(), snapshot: &durable.Snapshot{TaskID: "task-1"}}
 	release := make(chan struct{})
-	worker := NewDurableRecoveryWorker(store, nil, blockingRunner{release: release}, DurableWorkerOptions{Owner: "worker", Lease: time.Hour})
 	started := make(chan struct{})
+	worker := NewDurableRecoveryWorker(store, nil, blockingRunner{started: started, release: release}, DurableWorkerOptions{Owner: "worker", Lease: time.Hour, StopGrace: 30 * time.Millisecond})
 	worker.Start(context.Background())
-	go func() {
-		close(started)
-	}()
-	<-started
-	// runOnce 在 Start 的首圈内同步执行；给调度器一点时间进入 runTask。
-	time.Sleep(50 * time.Millisecond)
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		close(release)
+		t.Fatal("runner did not start")
+	}
 	done := make(chan struct{})
 	go func() { worker.Stop(); close(done) }()
 	select {
@@ -257,10 +277,14 @@ func TestDurableRecoveryWorkerStopBoundedWhenRunnerIgnoresCancel(t *testing.T) {
 }
 
 type blockingRunner struct {
+	started chan struct{}
 	release chan struct{}
 }
 
 func (r blockingRunner) Run(ctx context.Context, _ *durable.Task, _ *durable.Snapshot) (*DurableAttempt, error) {
+	if r.started != nil {
+		close(r.started)
+	}
 	<-r.release
 	return successAttempt(), nil
 }
