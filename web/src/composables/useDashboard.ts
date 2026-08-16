@@ -224,12 +224,21 @@ export function useDashboard(options: UseDashboardOptions = {}) {
 
   let refreshTimer: number | undefined
 
+  function isPageVisible() {
+    return typeof document === 'undefined' || !document.hidden
+  }
+
+  function onVisibilityChange() {
+    if (isPageVisible()) void loadAll()
+  }
+
   function startAutoRefresh() {
     if (refreshTimer) {
       clearInterval(refreshTimer)
     }
     if (autoRefresh) {
       refreshTimer = window.setInterval(() => {
+        if (!isPageVisible()) return
         void loadAll()
       }, refreshInterval)
     }
@@ -249,10 +258,16 @@ export function useDashboard(options: UseDashboardOptions = {}) {
   onMounted(() => {
     void loadAll()
     startAutoRefresh()
+    if (typeof document !== 'undefined') {
+      document.addEventListener('visibilitychange', onVisibilityChange)
+    }
   })
 
   onUnmounted(() => {
     stopAutoRefresh()
+    if (typeof document !== 'undefined') {
+      document.removeEventListener('visibilitychange', onVisibilityChange)
+    }
   })
 
   // ════════════════════════════════════════════════════════════
