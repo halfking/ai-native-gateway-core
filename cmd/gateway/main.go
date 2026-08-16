@@ -2120,7 +2120,7 @@ func main() {
 						Lease:      time.Duration(cfg.RequestSurvivalWorkerLeaseSecs) * time.Second,
 						MaxRetries: cfg.RequestSurvivalMaxAttempts,
 						RetryBase:  time.Duration(cfg.RequestSurvivalRetryBaseSeconds) * time.Second,
-						RetryMax:   min(time.Duration(cfg.RequestSurvivalRetryMaxSeconds)*time.Second, 120*time.Second),
+						RetryMax:   time.Duration(cfg.RequestSurvivalRetryMaxSeconds) * time.Second,
 					})
 				durableWorker.Start(context.Background())
 				slog.Info("durable_recovery_worker_started",

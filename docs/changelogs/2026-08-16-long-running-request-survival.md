@@ -2,7 +2,7 @@
 
 ## 做了什么
 
-为既有 `durable_llm_tasks` 队列补齐长请求的持久化重试边界。任务以 `attempt_count` 记录执行次数，初次执行后最多允许 100 次重试；重试采用 2 秒指数退避，所有调度延迟均不超过 120 秒。
+为既有 `durable_llm_tasks` 队列补齐长请求的持久化重试边界。任务以 `attempt_count` 记录执行次数，初次执行后最多允许 100 次重试；没有上游恢复时间时，重试采用 2 秒指数退避并按配置上限收敛。
 
 ## 改动清单
 
@@ -11,16 +11,16 @@
 | `domains/streaming/durable_recovery_worker.go` | modify | 执行账本、重试上限和退避计算 |
 | `domains/streaming/durable_recovery_worker_test.go` | modify | 覆盖首次、指数、上游封顶和终态边界 |
 | `domains/streaming/durable_scenario_test.go` | modify | 使用新的 retry base 选项 |
-| `durable/store_claim.go` | modify | claim 增加 5 秒 scheduled-time 容差 |
-| `durable/store_claim_test.go` | modify | 固定 claim SQL 容差契约 |
-| `cmd/gateway/main.go` | modify | 将现有 survival 配置传给 durable worker，并对 worker 上限收敛为 120 秒 |
+| `durable/store_claim.go` | modify | 仅领取已到达 `next_retry_at` 的任务 |
+| `durable/store_claim_test.go` | modify | 固定严格到期领取契约 |
+| `cmd/gateway/main.go` | modify | 将现有 survival 配置传给 durable worker |
 | `CHANGELOG.md` | modify | 登记本次队列语义 |
 
 ## 为什么这样做
 
 近期生产日志的主要可恢复失败包括 `rate_limit_exceeded` 1192 次、`db_empty` 1049 次、`compaction: no candidate` 262 次、session mirror write timeout 173 次，以及 node timeout 配置类型不匹配 1458 次。使用现有 durable 队列可以在 worker 重启或客户端传输断开后保留调度状态，而不是在请求上下文内休眠。
 
-`attempt_count=1` 表示初次执行；`attempt_count=101` 表示初次执行加 100 次重试，若仍失败则提交 failed 终态。`next_retry_at` 是唯一调度时间权威，worker 的 5 秒轮询和 SQL 的 5 秒领取窗口接受非毫秒级精度。
+`attempt_count=1` 表示初次执行；`attempt_count=101` 表示初次执行加 100 次重试，若仍失败则提交 failed 终态。`next_retry_at` 是唯一调度时间权威；worker 轮询只能造成正常的延后执行，不会提前领取任务。
 
 ## 验证结果
 

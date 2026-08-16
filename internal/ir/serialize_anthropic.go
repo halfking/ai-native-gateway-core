@@ -385,14 +385,7 @@ func serializeAnthropicMessage(msg Message, targetProvider string, modelName str
 		toolResult := map[string]any{
 			"type": "tool_result",
 		}
-		if msg.ToolCallID != "" {
-			// Provider-specific field name mapping: some providers (e.g., MiniMax)
-			// use "tool_call_id" while standard Anthropic uses "tool_use_id".
-			// Use the mapping table to ensure compatibility without breaking other providers.
-			// For relay providers (e.g., NVIDIA), also consider the model name.
-			fieldName := GetProviderFieldConfig(targetProvider, modelName).ToolResultIDField
-			toolResult[fieldName] = msg.ToolCallID
-		}
+		toolUseID := msg.ToolCallID
 		// Extract content from text blocks. Also handle tool_result blocks nested
 		// inside the message content (e.g. when the IR was produced by parsing an
 		// OpenAI/Anthropic-style tool_result block that was placed in a user-role
@@ -405,12 +398,19 @@ func serializeAnthropicMessage(msg Message, targetProvider string, modelName str
 				continue
 			}
 			if block.Type == "tool_result" && block.ToolResult != nil {
+				if toolUseID == "" {
+					toolUseID = block.ToolResult.ToolUseID
+				}
 				for _, cb := range block.ToolResult.Content {
 					if cb.Type == "text" {
 						textParts = append(textParts, cb.Text)
 					}
 				}
 			}
+		}
+		if toolUseID != "" {
+			fieldName := GetProviderFieldConfig(targetProvider, modelName).ToolResultIDField
+			toolResult[fieldName] = toolUseID
 		}
 		toolResult["content"] = joinTextPartsAnthropic(textParts)
 		out["content"] = []map[string]any{toolResult}
