@@ -326,7 +326,11 @@ func (w *Writer) WriteOnError(ctx context.Context, credentialID int, rawModel st
 		return nil
 
 	default:
-		// Unknown error kinds: log but don't write state to avoid false negatives
+		// Unknown error kinds: do not write state to avoid false negatives.
+		// We intentionally do not log here either — credential.WriteOnError is
+		// on the request hot path, and any unknown kind will already surface
+		// from the upstream response in the caller's logs/metrics. Adding a
+		// log here would multiply noise during incidents without adding signal.
 		return nil
 	}
 }
