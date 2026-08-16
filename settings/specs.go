@@ -37,6 +37,8 @@ func PlatformSpecs() []*Spec {
 	out = append(out, SessionsV2CompressionPlatformSpecs()...)
 	// 2026-08-11: V2 多层队列调度（模型/凭据队列 + 并发模式削峰 + 分层故障转移）。
 	out = append(out, DispatchSpecs()...)
+	// 2026-08-17: per-credential, per-client quota enforcement (FP-slot + concurrency).
+	out = append(out, CredentialClientQuotaSpecs()...)
 	return out
 }
 

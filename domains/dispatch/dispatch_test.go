@@ -195,6 +195,9 @@ func TestFailoverSwitch(t *testing.T) {
 	if !qr.hasTriedCredential(1) {
 		t.Fatalf("cred1 should be marked tried")
 	}
+	if got := f.forwardCalls[1]; got != MaxNodeFailures {
+		t.Fatalf("cred1 calls = %d, want %d before node switch", got, MaxNodeFailures)
+	}
 }
 
 // TestPostFirstByteNoSwitch: a failure after bytes were sent must NOT switch.

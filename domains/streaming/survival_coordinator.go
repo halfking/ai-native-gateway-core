@@ -29,23 +29,33 @@ import (
 // SurvivalOptions bounds the coordinator loop (doc 18 §5.1 interactive
 // deadline, §8.4 retry delay, §8.5 storm prevention).
 type SurvivalOptions struct {
-	// Deadline is the total in-connection budget. 0 → 30 minutes.
+	// Deadline is the total in-connection budget. 0 → 24 hours.
 	Deadline time.Duration
 	// RetryBase is the first backoff step. 0 → 2s.
 	RetryBase time.Duration
-	// RetryMax caps the backoff growth. 0 → 300s.
+	// RetryMax caps the backoff growth. 0 or values above 120s → 120s.
 	RetryMax time.Duration
+	// MaxRetries is the retry budget after the initial attempt. 0 → 100.
+	MaxRetries int
+	// KeepaliveInterval controls connection heartbeats while waiting. 0 → 15s.
+	KeepaliveInterval time.Duration
 }
 
 func (o SurvivalOptions) withDefaults() SurvivalOptions {
 	if o.Deadline <= 0 {
-		o.Deadline = 30 * time.Minute
+		o.Deadline = 24 * time.Hour
 	}
 	if o.RetryBase <= 0 {
 		o.RetryBase = 2 * time.Second
 	}
-	if o.RetryMax <= 0 {
-		o.RetryMax = 300 * time.Second
+	if o.RetryMax <= 0 || o.RetryMax > 2*time.Minute {
+		o.RetryMax = 2 * time.Minute
+	}
+	if o.MaxRetries <= 0 || o.MaxRetries > executors.DefaultUpstreamAttemptLimit {
+		o.MaxRetries = executors.DefaultUpstreamAttemptLimit
+	}
+	if o.KeepaliveInterval <= 0 {
+		o.KeepaliveInterval = 15 * time.Second
 	}
 	return o
 }
@@ -126,10 +136,35 @@ func (c *SurvivalCoordinator) keepalive(sw *SerializedStreamWriter) {
 		return
 	}
 	if sw != nil {
-		if _, err := sw.Write([]byte(": gw-survival-keepalive\n\n")); err == nil {
+		frame := ": gw-survival-keepalive\n\n"
+		if c.Protocol == ProtocolAnthropic {
+			frame = "event: ping\ndata: {\"type\":\"ping\"}\n\n"
+		}
+		if _, err := sw.Write([]byte(frame)); err == nil {
 			sw.Flush()
 		} else {
 			recordSurvivalKeepaliveWriteError(c.Protocol)
+		}
+	}
+}
+
+func (c *SurvivalCoordinator) waitWithKeepalive(ctx context.Context, sw *SerializedStreamWriter, wait, interval time.Duration) error {
+	c.keepalive(sw)
+	if c.Sleep != nil || wait <= interval {
+		return c.sleep(ctx, wait)
+	}
+	timer := time.NewTimer(wait)
+	ticker := time.NewTicker(interval)
+	defer timer.Stop()
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-timer.C:
+			return nil
+		case <-ticker.C:
+			c.keepalive(sw)
 		}
 	}
 }
@@ -139,6 +174,9 @@ func (c *SurvivalCoordinator) keepalive(sw *SerializedStreamWriter) {
 // writer over the real connection; the caller owns its construction.
 func (c *SurvivalCoordinator) Run(ctx context.Context, sw *SerializedStreamWriter, params *executors.ExecParams) SurvivalResult {
 	opts := c.Options.withDefaults()
+	if params.UpstreamAttempts == nil {
+		params.UpstreamAttempts = executors.NewUpstreamAttemptBudget(opts.MaxRetries)
+	}
 	deadline := c.now().Add(opts.Deadline)
 	backoff := opts.RetryBase
 
@@ -180,6 +218,19 @@ func (c *SurvivalCoordinator) Run(ctx context.Context, sw *SerializedStreamWrite
 			return res
 
 		case TaskActionRetryNow, TaskActionWaitRecovery:
+			if params.UpstreamAttempts != nil && params.UpstreamAttempts.Exhausted() {
+				res.Decision = TaskDecision{Action: TaskActionFailClosed, Reason: "attempt_limit_exceeded"}
+				c.renderTerminal(res.Decision, gate)
+				recordSurvivalRequestTerminal(c.Protocol, res.Decision)
+				return res
+			}
+			if res.Attempts-1 >= opts.MaxRetries {
+				res.Decision = TaskDecision{Action: TaskActionFailClosed, Reason: "retry_limit_exceeded"}
+				c.renderTerminal(res.Decision, gate)
+				recordSurvivalTransition(survivalStateRunning, survivalTerminalToState(res.Decision), res.Decision.Reason)
+				recordSurvivalRequestTerminal(c.Protocol, res.Decision)
+				return res
+			}
 			// Uncommitted by construction (the aggregator upgrades
 			// committed+recoverable to ResumeBlocked); Discard defensively
 			// and treat any surprise as terminal.
@@ -219,8 +270,7 @@ func (c *SurvivalCoordinator) Run(ctx context.Context, sw *SerializedStreamWrite
 				}
 			}
 			recordSurvivalTransition(survivalStateRunning, waitState, res.Decision.Reason)
-			c.keepalive(sw)
-			if err := c.sleep(ctx, wait); err != nil {
+			if err := c.waitWithKeepalive(ctx, sw, wait, opts.KeepaliveInterval); err != nil {
 				res.Decision = TaskDecision{Action: TaskActionFailClosed, Reason: "client_disconnected"}
 				recordSurvivalTransition(waitState, survivalTerminalToState(res.Decision), res.Decision.Reason)
 				recordSurvivalRequestTerminal(c.Protocol, res.Decision)
