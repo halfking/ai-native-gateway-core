@@ -1,4 +1,4 @@
--- Migration 523 down: restore the cmb NOTIFY trigger to pre-523 form
+-- Migration 524 down: restore the cmb NOTIFY trigger to pre-524 form
 -- (drop context_window_override from the WHEN clause).
 --
 -- Drops the widened trigger and recreates the original predicate so

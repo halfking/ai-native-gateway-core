@@ -141,7 +141,7 @@ type Candidate struct {
 	Currency             string   `json:"currency"`
 	BillingMode          string   `json:"billing_mode"`
 	// ContextWindow is the upstream model's context window in tokens. Precedence
-	// (migration 522): credential×model override (credential_model_bindings
+	// (migration 523): credential×model override (credential_model_bindings
 	// .context_window_override) > canonical override (models_canonical
 	// .context_window_override) > canonical base (models_canonical.context_window).
 	// Used by the Q1/Q2/Q3 client-side context trim path

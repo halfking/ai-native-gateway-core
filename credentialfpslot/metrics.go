@@ -5,6 +5,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/kaixuan/llm-gateway-go/internal/clienttype"
 	"github.com/prometheus/client_golang/prometheus"
 )
 
@@ -278,12 +279,6 @@ func splitClientToken(holder string) (clientType, userKey string) {
 	return normalizeMetricClientType(parts[1]), parts[0]
 }
 
-func normalizeMetricClientType(clientType string) string {
-	switch clientType {
-	case "cursor", "claude-code", "opencode", "zcode", "codex", "roocode",
-		"vscode", "copilot", "windsurf", "zed", "jetbrains", "unknown":
-		return clientType
-	default:
-		return "unknown"
-	}
+func normalizeMetricClientType(clientTypeValue string) string {
+	return clienttype.Normalize(clientTypeValue)
 }

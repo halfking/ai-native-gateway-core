@@ -30,7 +30,9 @@ package dispatch
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"log/slog"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -49,10 +51,22 @@ type StateTransition struct {
 	Metadata       map[string]any // 决策原因/候选列表/retry_seq/reason_class 等
 }
 
-// stateTransitionExecer 是 logger 对 DB 的最小依赖（pgxpool.Pool 天然满足）。
-// 抽成接口是为了在测试里注入失败/成功 mock（OBS-BE7 测试基建）。
-type stateTransitionExecer interface {
+type stateTransitionTx interface {
 	Exec(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error)
+	Commit(ctx context.Context) error
+	Rollback(ctx context.Context) error
+}
+
+type stateTransitionDB interface {
+	Begin(ctx context.Context) (stateTransitionTx, error)
+}
+
+type stateTransitionPool struct {
+	pool *pgxpool.Pool
+}
+
+func (p stateTransitionPool) Begin(ctx context.Context) (stateTransitionTx, error) {
+	return p.pool.Begin(ctx)
 }
 
 // pendingTransition 是缓冲/重试队列中的待写条目。
@@ -68,7 +82,7 @@ type pendingTransition struct {
 // StateTransitionLogger 异步批量写状态变更历史。
 // 零值不可用；用 NewStateTransitionLogger 构造。
 type StateTransitionLogger struct {
-	db stateTransitionExecer // nil 时所有 Log* 变为 no-op
+	db stateTransitionDB // nil 时所有 Log* 变为 no-op
 
 	mu  sync.Mutex
 	buf []pendingTransition
@@ -101,7 +115,7 @@ type StateTransitionLogger struct {
 // （优雅降级：DB 不可用不影响 relay）。
 func NewStateTransitionLogger(db *pgxpool.Pool) *StateTransitionLogger {
 	l := &StateTransitionLogger{
-		db:               db,
+		db:               nil,
 		buf:              make([]pendingTransition, 0, 64),
 		now:              time.Now,
 		flushInterval:    2 * time.Second,
@@ -117,6 +131,7 @@ func NewStateTransitionLogger(db *pgxpool.Pool) *StateTransitionLogger {
 		doneCleanup:      make(chan struct{}),
 	}
 	if db != nil {
+		l.db = stateTransitionPool{pool: db}
 		go l.run()
 		go l.runCleanup()
 	}
@@ -159,7 +174,7 @@ func (l *StateTransitionLogger) LogError(requestID, tenantID, fromState string, 
 // add 追加到缓冲；满 batchSize 触发同步 flush（仍旁路：调用方是 relay 的
 // 异步钩子，不在请求关键路径上）。
 func (l *StateTransitionLogger) add(t StateTransition) {
-	if l == nil || l.db == nil || t.RequestID == "" {
+	if l == nil || l.db == nil || t.RequestID == "" || strings.TrimSpace(t.TenantID) == "" {
 		return
 	}
 	p := pendingTransition{t: t, seq: l.nextSeq.Add(1)}
@@ -191,24 +206,15 @@ func (l *StateTransitionLogger) Flush() {
 }
 
 // writeBatch 逐行 INSERT（幂等：ON CONFLICT (request_id, seq) DO NOTHING）。
-// 返回写失败的行。不用显式事务：每行独立幂等，失败粒度更细，重试更精准。
+// 每行使用独立事务，把 tenant GUC 与 INSERT 固定在同一物理连接上；失败粒度
+// 仍保持逐行，便于精准重试。
 func (l *StateTransitionLogger) writeBatch(ctx context.Context, batch []pendingTransition) []pendingTransition {
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 
 	var failed []pendingTransition
 	for _, p := range batch {
-		var metaJSON []byte
-		if p.t.Metadata != nil {
-			metaJSON, _ = json.Marshal(p.t.Metadata)
-		}
-		if _, err := l.db.Exec(ctx, `
-			INSERT INTO request_state_transitions
-			  (request_id, tenant_id, transition_type, from_state, to_state, metadata, seq)
-			VALUES ($1, $2, $3, $4, $5, $6, $7)
-			ON CONFLICT (request_id, seq) DO NOTHING`,
-			p.t.RequestID, p.t.TenantID, p.t.TransitionType,
-			nullStr(p.t.FromState), nullStr(p.t.ToState), metaJSON, p.seq); err != nil {
+		if err := l.insertTransition(ctx, p); err != nil {
 			slog.Warn("state_transition: insert failed (queued for retry)",
 				"request_id", p.t.RequestID, "tenant_id", p.t.TenantID,
 				"type", p.t.TransitionType, "seq", p.seq, "error", err)
@@ -287,17 +293,7 @@ func (l *StateTransitionLogger) processRetriesDue(now time.Time) {
 
 	var stillFailed []pendingTransition
 	for _, p := range due {
-		var metaJSON []byte
-		if p.t.Metadata != nil {
-			metaJSON, _ = json.Marshal(p.t.Metadata)
-		}
-		if _, err := l.db.Exec(ctx, `
-			INSERT INTO request_state_transitions
-			  (request_id, tenant_id, transition_type, from_state, to_state, metadata, seq)
-			VALUES ($1, $2, $3, $4, $5, $6, $7)
-			ON CONFLICT (request_id, seq) DO NOTHING`,
-			p.t.RequestID, p.t.TenantID, p.t.TransitionType,
-			nullStr(p.t.FromState), nullStr(p.t.ToState), metaJSON, p.seq); err == nil {
+		if err := l.insertTransition(ctx, p); err == nil {
 			slog.Info("state_transition: retry replay succeeded",
 				"request_id", p.t.RequestID, "type", p.t.TransitionType,
 				"seq", p.seq, "attempts", p.attempts)
@@ -308,6 +304,41 @@ func (l *StateTransitionLogger) processRetriesDue(now time.Time) {
 	if len(stillFailed) > 0 {
 		l.enqueueRetry(stillFailed, now)
 	}
+}
+
+func (l *StateTransitionLogger) insertTransition(ctx context.Context, p pendingTransition) error {
+	if strings.TrimSpace(p.t.TenantID) == "" {
+		return fmt.Errorf("empty tenant_id")
+	}
+	var metaJSON []byte
+	if p.t.Metadata != nil {
+		var err error
+		metaJSON, err = json.Marshal(p.t.Metadata)
+		if err != nil {
+			return fmt.Errorf("marshal transition metadata: %w", err)
+		}
+	}
+	tx, err := l.db.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("begin transition tx: %w", err)
+	}
+	defer tx.Rollback(ctx)
+	if _, err := tx.Exec(ctx, "SELECT set_config('app.current_tenant', $1, true)", p.t.TenantID); err != nil {
+		return fmt.Errorf("set transition tenant: %w", err)
+	}
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO request_state_transitions
+		  (request_id, tenant_id, transition_type, from_state, to_state, metadata, seq)
+		VALUES ($1, $2, $3, $4, $5, $6, $7)
+		ON CONFLICT (request_id, seq) DO NOTHING`,
+		p.t.RequestID, p.t.TenantID, p.t.TransitionType,
+		nullStr(p.t.FromState), nullStr(p.t.ToState), metaJSON, p.seq); err != nil {
+		return fmt.Errorf("insert transition: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("commit transition: %w", err)
+	}
+	return nil
 }
 
 // retryQueueLen 返回重试队列当前长度（测试/诊断用）。
@@ -384,10 +415,21 @@ func (l *StateTransitionLogger) CleanupOldTransitions(ctx context.Context) (int6
 	if l == nil || l.db == nil {
 		return 0, nil
 	}
-	tag, err := l.db.Exec(ctx, `
+	tx, err := l.db.Begin(ctx)
+	if err != nil {
+		return 0, err
+	}
+	defer tx.Rollback(ctx)
+	if _, err := tx.Exec(ctx, "SELECT set_config('app.bypass_rls', 'true', true)"); err != nil {
+		return 0, err
+	}
+	tag, err := tx.Exec(ctx, `
 		DELETE FROM request_state_transitions
 		WHERE created_at < NOW() - $1::interval`, l.retention.String())
 	if err != nil {
+		return 0, err
+	}
+	if err := tx.Commit(ctx); err != nil {
 		return 0, err
 	}
 	return tag.RowsAffected(), nil

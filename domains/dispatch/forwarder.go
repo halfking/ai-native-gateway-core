@@ -2,6 +2,8 @@ package dispatch
 
 import (
 	"context"
+	"fmt"
+	"log/slog"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -163,32 +165,41 @@ func (cf *credForwarder) acquire(qr *QueuedRequest) bool {
 // attempt forwards one request after governor admission.
 func (cf *credForwarder) attempt(qr *QueuedRequest) {
 	defer cf.wg.Done()
+	mode := cf.cred.ConcurrencyMode
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			slog.Error("dispatch forward panic recovered",
+				"request_id", qr.ID,
+				"credential_id", cf.cred.CredentialID,
+				"panic", recovered)
+			cf.pipe.complete(qr, ForwardOutcome{Err: fmt.Errorf("forward panic: %v", recovered)})
+		}
+	}()
 	// Use the credential's CONFIGURED mode for all metric labels so labels are
 	// consistent across queue-depth / dequeued / in-flight. Do NOT use
 	// cf.gov.Mode(): a concurrency credential with limit 0 degrades to a
 	// noopGovernor whose Mode() returns "disabled", which would mismatch the
 	// "concurrency" label used on the queue-depth gauge for the same credential.
-	mode := cf.cred.ConcurrencyMode
 	metricDequeued.WithLabelValues(itoa(cf.cred.CredentialID), mode).Inc()
 	metricInFlight.WithLabelValues(itoa(cf.cred.CredentialID), mode).Inc()
+	var releaseOnce sync.Once
+	releaseResources := func() {
+		releaseOnce.Do(func() {
+			cf.gov.Release(qr)
+			metricInFlight.WithLabelValues(itoa(cf.cred.CredentialID), mode).Dec()
+		})
+	}
+	defer releaseResources()
 
 	// V3.1: Record T7 timestamp (forward start to upstream)
 	qr.SetT7_ForwardStart()
 
 	out := cf.pipe.forwardFunc(ctxOf(qr), qr, cf.cred)
+	releaseResources()
 
-	// Release the governor slot + in-flight gauge BEFORE branching. A
-	// blocking routeFailover (full failoverCh under a failure burst) must
-	// NOT hold a concurrency slot — otherwise the credential's effective
-	// concurrency collapses exactly when failures spike (concurrency mode:
-	// DeepSeek/智谱/Kimi). Rate modes (rpm/tpm) Release is a no-op.
-	cf.gov.Release(qr)
-	metricInFlight.WithLabelValues(itoa(cf.cred.CredentialID), mode).Dec()
+	// V3.1: Record T8 timestamp (response start - first byte received).
+	// This is an approximation; the actual HTTP client would be more precise.
 
-	// V3.1: Record T8 timestamp (response start - first byte received)
-	// Note: This is an approximation. Ideally T8 should be set by the actual
-	// HTTP client when the first response byte arrives, but we set it here
-	// after forwardFunc returns for simplicity.
 	if out.Err == nil || out.BytesSent {
 		qr.SetT8_ResponseStart()
 	}

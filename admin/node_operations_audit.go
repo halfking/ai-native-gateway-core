@@ -11,12 +11,13 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 // nodeOperationAuditLogger 异步审计节点操作。
 type nodeOperationAuditLogger struct {
-	db *pgxpool.Pool
+	db txBeginner
 }
 
 // newNodeOperationAuditLogger 创建审计 logger。
@@ -43,11 +44,7 @@ func (a *nodeOperationAuditLogger) auditTestNow(providerID int, operatorID, stat
 		// request_id 用 provider:test-now:{timestamp} 格式（无真实请求上下文）
 		requestID := generateTestNowRequestID(providerID)
 
-		_, err := a.db.Exec(ctx, `
-				INSERT INTO request_state_transitions (request_id, tenant_id, transition_type, from_state, to_state, metadata)
-				VALUES ($1, $2, $3, $4, $5, $6)`,
-			requestID, "default", "state", "admin_trigger", "test_completed", metadataJSON)
-
+		err := a.insertTransition(ctx, requestID, "admin_trigger", "test_completed", metadataJSON)
 		if err != nil {
 			slog.Warn("audit test-now failed (non-blocking)",
 				"provider_id", providerID,
@@ -82,11 +79,7 @@ func (a *nodeOperationAuditLogger) auditNodeToggle(providerID int, enabled bool,
 			toState = "enabled"
 		}
 
-		_, err := a.db.Exec(ctx, `
-				INSERT INTO request_state_transitions (request_id, tenant_id, transition_type, from_state, to_state, metadata)
-				VALUES ($1, $2, $3, $4, $5, $6)`,
-			requestID, "default", "state", fromState, toState, metadataJSON)
-
+		err := a.insertTransition(ctx, requestID, fromState, toState, metadataJSON)
 		if err != nil {
 			slog.Warn("audit node toggle failed (non-blocking)",
 				"provider_id", providerID,
@@ -97,6 +90,19 @@ func (a *nodeOperationAuditLogger) auditNodeToggle(providerID int, enabled bool,
 }
 
 // generateTestNowRequestID 生成 test-now 的伪 request_id。
+func (a *nodeOperationAuditLogger) insertTransition(ctx context.Context, requestID, fromState, toState string, metadataJSON []byte) error {
+	return withTx(ctx, a.db, pgx.TxOptions{}, func(tx pgx.Tx) error {
+		if err := setLocalTenantGUC(ctx, tx, "default"); err != nil {
+			return err
+		}
+		_, err := tx.Exec(ctx, `
+			INSERT INTO request_state_transitions (request_id, tenant_id, transition_type, from_state, to_state, metadata)
+			VALUES ($1, $2, $3, $4, $5, $6)`,
+			requestID, "default", "state", fromState, toState, metadataJSON)
+		return err
+	})
+}
+
 func generateTestNowRequestID(providerID int) string {
 	return fmt.Sprintf("provider:%d:test-now:%d", providerID, time.Now().UnixNano())
 }
