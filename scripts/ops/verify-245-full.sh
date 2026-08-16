@@ -64,7 +64,7 @@ else:
 st, raw = req("GET", base+"/api/system/version")
 if st == 200:
     ver = json.loads(raw)
-    ok(f"version build_seq={ver.get('"'"'build_seq'"'"')} sha={ver.get('"'"'git_sha'"'"')}")
+    ok(f"version build_seq={ver.get('build_seq')} sha={ver.get('git_sha')}")
 else:
     fail(f"version HTTP {st}")
 
@@ -107,11 +107,11 @@ if st == 200:
         elif r.get("missing"):
             warn(f"region {want} not registered")
         elif r.get("online_instances",0) > 0:
-            ok(f"region {want} online={r.get('"'"'online_instances'"'"')}")
+            ok(f"region {want} online={r.get('online_instances')}")
         else:
             warn(f"region {want} present but offline")
     tables = ov.get("data_plane_tables") or {}
-    ok(f"data_plane: instances={tables.get('"'"'gateway_instances'"'"',0)} heartbeats={tables.get('"'"'instance_heartbeats'"'"',0)} blocklist_tables_ok")
+    ok(f"data_plane: instances={tables.get('gateway_instances',0)} heartbeats={tables.get('instance_heartbeats',0)} blocklist_tables_ok")
 else:
     fail(f"ops/overview HTTP {st}")
 
@@ -160,7 +160,7 @@ else:
 if env.get("OPS_NODE_REGION") == "245":
     ok("OPS_NODE_REGION=245")
 else:
-    warn(f"OPS_NODE_REGION={env.get('"'"'OPS_NODE_REGION'"'"')}")
+    warn(f"OPS_NODE_REGION={env.get('OPS_NODE_REGION')}")
 if env.get("OPS_COLLECT_LICENSE_KEY"):
     ok("OPS_COLLECT_LICENSE_KEY set")
 else:
@@ -181,7 +181,7 @@ if DB:
             fail(f"table {tbl} query failed")
     out, rc = psql("SELECT region,status,COUNT(*)::int FROM gateway_instances GROUP BY 1,2 ORDER BY 1,2")
     if rc == 0:
-        ok(f"gateway_instances by region: {out or '"'"'(empty)'"'"'}")
+        ok(f"gateway_instances by region: {out or '(empty)'}")
 
 print(f"\n=== RESULT pass={PASS} fail={FAIL} warn={WARN} ===")
 sys.exit(1 if FAIL else 0)
