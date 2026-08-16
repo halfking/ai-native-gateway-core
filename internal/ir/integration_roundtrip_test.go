@@ -177,6 +177,15 @@ func geminiFixtureFunctionDecl() string {
 	}`
 }
 
+// geminiFixtureFunctionResponse — Gemini native structured function response.
+func geminiFixtureFunctionResponse() string {
+	return `{
+		"contents":[{"role":"function","parts":[{
+			"functionResponse":{"name":"lookup","response":{"value":7,"unknown":{"keep":true}}}
+		}]}]
+	}`
+}
+
 // openaiFixtureToolChoiceAll — every tool_choice variant in one fixture
 // (used for the §7.2 "all tool_choice" assertion).
 func openaiFixtureToolChoiceAll() []struct {
@@ -455,6 +464,20 @@ func TestIntegrationRoundtrip_Gemini_SameProtocol(t *testing.T) {
 		require.NotNil(t, ir2.ToolChoice)
 		assert.Equal(t, ir1.ToolChoice.Type, ir2.ToolChoice.Type,
 			"toolChoice.type stable across Gemini round-trip")
+	})
+
+	t.Run("structured-function-response", func(t *testing.T) {
+		ir1, err := ParseGemini([]byte(geminiFixtureFunctionResponse()))
+		require.NoError(t, err, "parse 1")
+		out, err := SerializeGemini(ir1)
+		require.NoError(t, err, "serialize")
+		ir2, err := ParseGemini(out)
+		require.NoError(t, err, "parse 2 (round-trip)")
+
+		first := requireGeminiToolResult(t, ir1, "gemini_call_lookup")
+		second := requireGeminiToolResult(t, ir2, "gemini_call_lookup")
+		assert.JSONEq(t, string(first.GeminiResponse), string(second.GeminiResponse),
+			"structured function response stable across Gemini round-trip")
 	})
 }
 

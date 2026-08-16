@@ -2,6 +2,7 @@ package ir
 
 import (
 	"encoding/json"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -206,6 +207,99 @@ func TestParseGemini_FunctionResponse(t *testing.T) {
 	block := msg.Content[0]
 	if block.Type != "tool_result" {
 		t.Errorf("Block type = %q, want tool_result", block.Type)
+	}
+}
+
+func TestGeminiFunctionResponseStructuredRoundTrip(t *testing.T) {
+	tests := []struct {
+		name            string
+		response        string
+		responsePresent bool
+	}{
+		{
+			name:     "object with nested unknown fields",
+			response: `{"temperature":25,"nested":{"unknown":[1,true]}}`,
+		},
+		{name: "array", response: `[1,{"unknown":true}]`},
+		{name: "string", response: `"ok"`},
+		{name: "number", response: `42.5`},
+		{name: "boolean", response: `true`},
+		{name: "explicit null", response: `null`},
+		{name: "empty object", response: `{}`},
+		{name: "omitted response", responsePresent: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			functionResponse := `{"name":"get_weather"`
+			if tt.responsePresent || tt.response != "" {
+				functionResponse += `,"response":` + tt.response
+			}
+			functionResponse += `}`
+			original := []byte(`{"contents":[{"role":"function","parts":[{"functionResponse":` + functionResponse + `}]}]}`)
+
+			ir, err := ParseGemini(original)
+			if err != nil {
+				t.Fatalf("Parse: %v", err)
+			}
+			result := requireGeminiToolResult(t, ir, "gemini_call_get_weather")
+			if tt.responsePresent || tt.response != "" {
+				if result.GeminiResponse == nil {
+					t.Fatal("GeminiResponse missing")
+				}
+				if got := string(result.GeminiResponse); got != tt.response {
+					t.Errorf("GeminiResponse = %s, want %s", got, tt.response)
+				}
+				if len(result.Content) != 1 || result.Content[0].Text != tt.response {
+					t.Errorf("legacy content = %#v, want text %q", result.Content, tt.response)
+				}
+			} else if result.GeminiResponse != nil {
+				t.Errorf("GeminiResponse = %s, want nil for omitted response", result.GeminiResponse)
+			}
+
+			out, err := SerializeGemini(ir)
+			if err != nil {
+				t.Fatalf("Serialize: %v", err)
+			}
+			gotResponse, responsePresent := geminiFunctionResponseFromBody(t, out)
+			if !responsePresent {
+				t.Fatal("functionResponse.response missing")
+			}
+
+			if tt.responsePresent || tt.response != "" {
+				var wantResponse any
+				if err := json.Unmarshal([]byte(tt.response), &wantResponse); err != nil {
+					t.Fatalf("unmarshal wanted response: %v", err)
+				}
+				if !reflect.DeepEqual(gotResponse, wantResponse) {
+					t.Errorf("response = %#v, want %#v", gotResponse, wantResponse)
+				}
+			} else if !reflect.DeepEqual(gotResponse, map[string]any{"result": ""}) {
+				t.Errorf("response = %#v, want legacy empty result wrapper", gotResponse)
+			}
+		})
+	}
+}
+
+func TestSerializeGemini_FunctionResponseLegacyTextFallback(t *testing.T) {
+	ir := &InternalRequest{Messages: []Message{{
+		Role: "tool",
+		Content: []ContentBlock{{Type: "tool_result", ToolResult: &ToolResult{
+			ToolUseID: "gemini_call_lookup",
+			Content:   []ContentBlock{{Type: "text", Text: "legacy result"}},
+		}}},
+	}}}
+
+	out, err := SerializeGemini(ir)
+	if err != nil {
+		t.Fatalf("Serialize: %v", err)
+	}
+	gotResponse, responsePresent := geminiFunctionResponseFromBody(t, out)
+	if !responsePresent {
+		t.Fatal("functionResponse.response missing")
+	}
+	if !reflect.DeepEqual(gotResponse, map[string]any{"result": "legacy result"}) {
+		t.Errorf("response = %#v, want legacy result wrapper", gotResponse)
 	}
 }
 
@@ -490,6 +584,51 @@ func TestSerializeGemini_ResponseMimeType(t *testing.T) {
 
 // Helper
 func ptrFloat(f float64) *float64 { return &f }
+
+func requireGeminiToolResult(t *testing.T, ir *InternalRequest, wantToolUseID string) *ToolResult {
+	t.Helper()
+	if len(ir.Messages) != 1 || len(ir.Messages[0].Content) != 1 {
+		t.Fatalf("messages/content = %#v, want one tool result", ir.Messages)
+	}
+	block := ir.Messages[0].Content[0]
+	if block.Type != "tool_result" || block.ToolResult == nil {
+		t.Fatalf("block = %#v, want tool_result", block)
+	}
+	if block.ToolResult.ToolUseID != wantToolUseID {
+		t.Errorf("tool use ID = %q, want %q", block.ToolResult.ToolUseID, wantToolUseID)
+	}
+	return block.ToolResult
+}
+
+func geminiFunctionResponseFromBody(t *testing.T, body []byte) (any, bool) {
+	t.Helper()
+	var out struct {
+		Contents []struct {
+			Parts []struct {
+				FunctionResponse json.RawMessage `json:"functionResponse"`
+			} `json:"parts"`
+		} `json:"contents"`
+	}
+	if err := json.Unmarshal(body, &out); err != nil {
+		t.Fatalf("unmarshal Gemini request: %v", err)
+	}
+	if len(out.Contents) != 1 || len(out.Contents[0].Parts) != 1 {
+		t.Fatalf("contents/parts = %#v, want one functionResponse", out.Contents)
+	}
+	var response map[string]json.RawMessage
+	if err := json.Unmarshal(out.Contents[0].Parts[0].FunctionResponse, &response); err != nil {
+		t.Fatalf("unmarshal functionResponse: %v", err)
+	}
+	raw, ok := response["response"]
+	if !ok {
+		return nil, false
+	}
+	var value any
+	if err := json.Unmarshal(raw, &value); err != nil {
+		t.Fatalf("unmarshal functionResponse.response: %v", err)
+	}
+	return value, true
+}
 
 // Sanity check: verify the type discriminator string
 func TestGeminiProtocolConstant(t *testing.T) {

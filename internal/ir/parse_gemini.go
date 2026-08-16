@@ -230,14 +230,18 @@ func parseGeminiContents(raw json.RawMessage) ([]Message, error) {
 					Response json.RawMessage `json:"response"`
 				}
 				if err := json.Unmarshal(p.FunctionResponse, &fr); err == nil && fr.Name != "" {
-					msg.Content = append(msg.Content, ContentBlock{
-						Type: "tool_result",
-						ToolResult: &ToolResult{
-							ToolUseID: "gemini_call_" + fr.Name,
-							Content: []ContentBlock{
-								{Type: "text", Text: string(fr.Response)},
-							},
+					result := &ToolResult{
+						ToolUseID: "gemini_call_" + fr.Name,
+						Content: []ContentBlock{
+							{Type: "text", Text: string(fr.Response)},
 						},
+					}
+					if fr.Response != nil {
+						result.GeminiResponse = append(json.RawMessage(nil), fr.Response...)
+					}
+					msg.Content = append(msg.Content, ContentBlock{
+						Type:       "tool_result",
+						ToolResult: result,
 					})
 				}
 				continue

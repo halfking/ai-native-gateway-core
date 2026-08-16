@@ -375,6 +375,9 @@ type ToolResult struct {
 	ToolUseID string         `json:"tool_use_id"`
 	Content   []ContentBlock `json:"content"` // Can be multi-modal
 	IsError   bool           `json:"is_error,omitempty"`
+	// GeminiResponse preserves a native Gemini functionResponse.response value.
+	// Nil means response was absent; []byte("null") means it was explicitly null.
+	GeminiResponse json.RawMessage `json:"-"`
 }
 
 // ToolDefinition is a callable tool schema.
