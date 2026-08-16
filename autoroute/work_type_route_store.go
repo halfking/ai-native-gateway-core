@@ -6,17 +6,15 @@ package autoroute
 // Problem solved: the admin panel writes task→model mappings to
 // work_type_model_route, but DecideV2 never read that table — only
 // OverrideStore (routing_overrides pin/ban). This store closes the gap
-// by loading work_type_model_route rows and applying a composite-score
-// boost to candidates whose CanonicalName matches a configured route.
+// by loading work_type_model_route rows and applying strict configured tier
+// eligibility after candidates have passed health and availability scoring.
+// Tier semantics:
+//   - primary tier is considered before secondary and fallback
+//   - secondary is considered only if no primary candidate meets min_score
+//   - fallback is considered only if neither higher tier has an eligible candidate
 //
-// Boost logic:
-//   - primary tier  → composite *= 1.30  (+30 %)
-//   - secondary tier→ composite *= 1.15  (+15 %)
-//   - fallback tier → no boost
-//
-// After boost the scored list is re-sorted by composite DESC so that
-// admin-preferred models float to the top while still respecting
-// channel-quality scoring for health/availability safety.
+// Candidates within an eligible tier retain their existing composite ordering,
+// preserving cost, pressure, health, and channel-quality selection.
 //
 // Concurrency: same atomic.Pointer snapshot pattern as OverrideStore.
 // Reload is called on a 1-min ticker (bg worker).
@@ -42,11 +40,14 @@ type WorkTypeRoute struct {
 	Tier             string // "primary" | "secondary" | "fallback"
 }
 
-// wtRouteSnapshot is the immutable point-in-time view indexed by L1 task type.
+// wtRouteSnapshot is the immutable point-in-time view indexed by both the
+// legacy L1 task type and the exact enabled work type key.
 type wtRouteSnapshot struct {
-	byTaskType map[string][]WorkTypeRoute
-	LoadedAt   time.Time
-	Version    uint64
+	byTaskType    map[string][]WorkTypeRoute
+	byWorkTypeKey map[string][]WorkTypeRoute
+	workTypeL1    map[string]string
+	LoadedAt      time.Time
+	Version       uint64
 }
 
 // WorkTypeRouteStore loads and exposes work_type_model_route rows.
@@ -65,7 +66,11 @@ func NewWorkTypeRouteStore(pool *pgxpool.Pool) *WorkTypeRouteStore {
 func (s *WorkTypeRouteStore) current() *wtRouteSnapshot {
 	snap := s.snapshot.Load()
 	if snap == nil {
-		return &wtRouteSnapshot{byTaskType: map[string][]WorkTypeRoute{}}
+		return &wtRouteSnapshot{
+			byTaskType:    map[string][]WorkTypeRoute{},
+			byWorkTypeKey: map[string][]WorkTypeRoute{},
+			workTypeL1:    map[string]string{},
+		}
 	}
 	return snap
 }
@@ -76,9 +81,40 @@ func (s *WorkTypeRouteStore) current() *wtRouteSnapshot {
 func (s *WorkTypeRouteStore) Reload(ctx context.Context) error {
 	if s == nil || s.pool == nil {
 		if s != nil {
-			s.snapshot.Store(&wtRouteSnapshot{byTaskType: map[string][]WorkTypeRoute{}})
+			s.snapshot.Store(&wtRouteSnapshot{
+				byTaskType:    map[string][]WorkTypeRoute{},
+				byWorkTypeKey: map[string][]WorkTypeRoute{},
+				workTypeL1:    map[string]string{},
+			})
 		}
 		return nil
+	}
+
+	configRows, err := s.pool.Query(ctx, `
+		SELECT key, l1_task_type
+		FROM work_type_config
+		WHERE enabled = TRUE
+	`)
+	if err != nil {
+		return err
+	}
+	defer configRows.Close()
+
+	snap := &wtRouteSnapshot{
+		byTaskType:    make(map[string][]WorkTypeRoute),
+		byWorkTypeKey: make(map[string][]WorkTypeRoute),
+		workTypeL1:    make(map[string]string),
+		LoadedAt:      time.Now(),
+	}
+	for configRows.Next() {
+		var key, l1TaskType string
+		if err := configRows.Scan(&key, &l1TaskType); err != nil {
+			return err
+		}
+		snap.workTypeL1[key] = l1TaskType
+	}
+	if err := configRows.Err(); err != nil {
+		return err
 	}
 
 	rows, err := s.pool.Query(ctx, `
@@ -98,16 +134,14 @@ func (s *WorkTypeRouteStore) Reload(ctx context.Context) error {
 	}
 	defer rows.Close()
 
-	snap := &wtRouteSnapshot{
-		byTaskType: make(map[string][]WorkTypeRoute),
-		LoadedAt:   time.Now(),
-	}
 	for rows.Next() {
 		var r WorkTypeRoute
 		if err := rows.Scan(&r.WorkTypeKey, &r.L1TaskType, &r.CanonicalName,
 			&r.Weight, &r.MinScore, &r.TaskQualityScore, &r.Tier); err != nil {
 			return err
 		}
+		snap.workTypeL1[r.WorkTypeKey] = r.L1TaskType
+		snap.byWorkTypeKey[r.WorkTypeKey] = append(snap.byWorkTypeKey[r.WorkTypeKey], r)
 		snap.byTaskType[r.L1TaskType] = append(snap.byTaskType[r.L1TaskType], r)
 	}
 	if err := rows.Err(); err != nil {
@@ -138,7 +172,40 @@ func (s *WorkTypeRouteStore) HasRoutes(taskType string) bool {
 	return s != nil && len(s.current().byTaskType[taskType]) > 0
 }
 
-// Version returns the monotonically increasing version of the active snapshot.
+// ResolveWorkType validates an enabled work type key and returns its L1 task type.
+func (s *WorkTypeRouteStore) ResolveWorkType(key string) (string, bool) {
+	if s == nil {
+		return "", false
+	}
+	key = strings.TrimSpace(key)
+	l1, ok := s.current().workTypeL1[key]
+	if !ok || !isSupportedTaskType(l1) {
+		return "", false
+	}
+	return l1, true
+}
+
+// RoutesForWorkType returns the exact configured routes for an enabled key.
+func (s *WorkTypeRouteStore) RoutesForWorkType(key string) ([]WorkTypeRoute, bool) {
+	if s == nil {
+		return nil, false
+	}
+	key = strings.TrimSpace(key)
+	if _, ok := s.ResolveWorkType(key); !ok {
+		return nil, false
+	}
+	return s.current().byWorkTypeKey[key], true
+}
+
+func isSupportedTaskType(task string) bool {
+	for _, supported := range AllTaskTypes {
+		if string(supported) == task {
+			return true
+		}
+	}
+	return false
+}
+
 // A zero value means no successful reload has completed.
 func (s *WorkTypeRouteStore) Version() uint64 {
 	if s == nil {
@@ -176,8 +243,176 @@ func normalizeCanonicalName(name string) string {
 	return strings.ToLower(strings.TrimSpace(name))
 }
 
+// ApplyTierPolicy applies strict configured tier semantics to scored candidates.
+// Candidates in the highest configured tier that are available and meet their
+// min_score remain eligible; lower tiers are considered only when that tier has
+// no eligible candidate. If no configured candidate is eligible, the original
+// score-ranked set is returned so stale configuration cannot make routing fail.
+func (s *WorkTypeRouteStore) ApplyTierPolicy(scored []ScoredCandidate, taskType string) []ScoredCandidate {
+	return s.applyTierPolicy(scored, taskType, nil)
+}
+
+// ApplyTierPolicyWithPins keeps explicit pin candidates available for the
+// override layer while applying tier policy to the remaining candidates.
+func (s *WorkTypeRouteStore) ApplyTierPolicyWithPins(scored []ScoredCandidate, taskType string, pinned []string) []ScoredCandidate {
+	return s.applyTierPolicy(scored, taskType, pinned)
+}
+
+// ApplyTierPolicyWithWorkType uses the exact work type routes when workType is
+// valid; otherwise it preserves the legacy L1 aggregate behavior.
+func (s *WorkTypeRouteStore) ApplyTierPolicyWithWorkType(scored []ScoredCandidate, taskType, workType string, pinned []string) []ScoredCandidate {
+	return s.applyTierPolicyWithRoutes(scored, s.routesForPolicy(taskType, workType), pinned)
+}
+
+func (s *WorkTypeRouteStore) routesForPolicy(taskType, workType string) []WorkTypeRoute {
+	if s == nil {
+		return nil
+	}
+	if routes, ok := s.RoutesForWorkType(workType); ok && len(routes) > 0 {
+		return routes
+	}
+	return s.current().byTaskType[taskType]
+}
+
+func (s *WorkTypeRouteStore) applyTierPolicy(scored []ScoredCandidate, taskType string, pinned []string) []ScoredCandidate {
+	return s.applyTierPolicyWithRoutes(scored, s.routesForPolicy(taskType, ""), pinned)
+}
+
+func (s *WorkTypeRouteStore) applyTierPolicyWithRoutes(scored []ScoredCandidate, routes []WorkTypeRoute, pinned []string) []ScoredCandidate {
+	if len(routes) == 0 {
+		return scored
+	}
+
+	pinnedModels := make(map[string]struct{}, len(pinned))
+	for _, name := range pinned {
+		pinnedModels[normalizeCanonicalName(name)] = struct{}{}
+	}
+
+	eligibleTierByModel := eligibleTierByModel(scored, routes, pinnedModels)
+	activeRank := activeTierRank(eligibleTierByModel)
+	if activeRank == 4 {
+		return scored
+	}
+
+	filtered := make([]ScoredCandidate, 0, len(scored))
+	for i := range scored {
+		name := normalizeCanonicalName(scored[i].Candidate.CanonicalName)
+		if _, isPinned := pinnedModels[name]; isPinned {
+			filtered = append(filtered, scored[i])
+			continue
+		}
+		rank, ok := eligibleTierByModel[name]
+		if !ok || rank != activeRank {
+			continue
+		}
+		scored[i].Breakdown.RouteTier = routeTierName(activeRank)
+		filtered = append(filtered, scored[i])
+	}
+	return filtered
+}
+
+// TierFailoverModels returns an ordered model-level recovery plan for the
+// configured L1 tier pool. It begins at the active eligible tier and includes
+// each lower tier in turn, retaining the scorer's order within a tier. It does
+// not invent a plan when no configured candidate is eligible, so stale admin
+// configuration cannot constrain the normal fallback behavior.
+func (s *WorkTypeRouteStore) TierFailoverModels(scored []ScoredCandidate, taskType string) []string {
+	return s.tierFailoverModelsWithRoutes(scored, s.routesForPolicy(taskType, ""))
+}
+
+// TierFailoverModelsWithWorkType uses exact work type routes when available.
+func (s *WorkTypeRouteStore) TierFailoverModelsWithWorkType(scored []ScoredCandidate, taskType, workType string) []string {
+	return s.tierFailoverModelsWithRoutes(scored, s.routesForPolicy(taskType, workType))
+}
+
+func (s *WorkTypeRouteStore) tierFailoverModelsWithRoutes(scored []ScoredCandidate, routes []WorkTypeRoute) []string {
+	if s == nil || len(scored) == 0 {
+		return nil
+	}
+	if len(routes) == 0 {
+		return nil
+	}
+
+	eligibleTierByModel := eligibleTierByModel(scored, routes, nil)
+	activeRank := activeTierRank(eligibleTierByModel)
+	if activeRank == 4 {
+		return nil
+	}
+
+	models := make([]string, 0, len(eligibleTierByModel))
+	seen := make(map[string]struct{}, len(eligibleTierByModel))
+	for rank := activeRank; rank <= 2; rank++ {
+		for _, candidate := range scored {
+			name := normalizeCanonicalName(candidate.Candidate.CanonicalName)
+			candidateRank, eligible := eligibleTierByModel[name]
+			if !eligible || candidateRank != rank {
+				continue
+			}
+			if _, duplicate := seen[name]; duplicate {
+				continue
+			}
+			seen[name] = struct{}{}
+			models = append(models, candidate.Candidate.CanonicalName)
+		}
+	}
+	return models
+}
+
+func eligibleTierByModel(scored []ScoredCandidate, routes []WorkTypeRoute, excluded map[string]struct{}) map[string]int {
+	eligible := make(map[string]int, len(scored))
+	for i := range scored {
+		name := normalizeCanonicalName(scored[i].Candidate.CanonicalName)
+		if _, skip := excluded[name]; skip {
+			continue
+		}
+		for _, route := range routes {
+			if normalizeCanonicalName(route.CanonicalName) != name ||
+				(route.MinScore > 0 && scored[i].Breakdown.Composite < route.MinScore) {
+				continue
+			}
+			rank := routeTierRank(route.Tier)
+			if rank > 2 {
+				continue
+			}
+			if previous, ok := eligible[name]; !ok || rank < previous {
+				eligible[name] = rank
+			}
+		}
+	}
+	return eligible
+}
+
+func activeTierRank(eligible map[string]int) int {
+	activeRank := 4
+	for _, rank := range eligible {
+		if rank < activeRank {
+			activeRank = rank
+		}
+	}
+	return activeRank
+}
+
+func routeTierRank(tier string) int {
+	switch strings.ToLower(strings.TrimSpace(tier)) {
+	case "primary":
+		return 0
+	case "secondary":
+		return 1
+	case "fallback":
+		return 2
+	default:
+		return 3
+	}
+}
+
+func routeTierName(rank int) string {
+	return []string{"primary", "secondary", "fallback"}[rank]
+}
+
 // ApplyBoost modifies scored candidates in-place. It is idempotent for a
-// candidate slice: the same route marker is never multiplied twice.
+// candidate slice: the same route marker is never multiplied twice. V2
+// runtime selection applies ApplyTierPolicy separately before this legacy
+// preference multiplier.
 func (s *WorkTypeRouteStore) ApplyBoost(scored []ScoredCandidate, taskType string) []ScoredCandidate {
 	if s == nil || len(scored) == 0 {
 		return scored

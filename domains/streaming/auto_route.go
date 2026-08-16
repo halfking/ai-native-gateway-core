@@ -101,6 +101,11 @@ type autoRouteDecision struct {
 	EmbeddingShadowTask       string               `json:"embedding_shadow_task,omitempty"`
 	EmbeddingShadowSimilarity *float64             `json:"embedding_shadow_similarity,omitempty"`
 	CandidatesTop3            []autoRouteCandidate `json:"candidates_top3"`
+
+	// failoverModels is process-local only. The stable wire/audit schema must
+	// remain capped to CandidatesTop3, while dispatch needs the complete tier
+	// sequence to recover before the first byte.
+	failoverModels []string
 }
 
 // autoRouteCandidate is one row of the top-N audit list.
@@ -120,6 +125,7 @@ type autoRouteCandidate struct {
 	ContextFit     float64 `json:"context_fit"`
 	ChannelQuality float64 `json:"channel_quality,omitempty"` // 0-100，越高越可靠
 	Reliability    float64 `json:"reliability,omitempty"`     // 0-100，由 success_rate+p95_latency 推导
+	RouteTier      string  `json:"route_tier,omitempty"`
 }
 
 // extractSignalsForAuto builds the ClassificationSignals from the
@@ -337,6 +343,13 @@ func (h *ChatHandler) maybeResolveAuto(reqBody *chatRequestBody, rawBody []byte,
 		reqCtx = autoroute.WithRequestID(reqCtx, rid)
 	}
 
+	if workType := strings.TrimSpace(r.Header.Get(autoWorkTypeHeader)); workType != "" {
+		if l1, ok := h.decider.ResolveWorkType(workType); ok {
+			taskHint = l1
+			reqCtx = autoroute.WithWorkType(reqCtx, workType)
+		}
+	}
+
 	decision, err := h.decider.DecideWithFeatureFlags(reqCtx, sigs, apiKeyID, headerProfile, taskHint, sessionID)
 	if err != nil {
 		// 2026-07-01 P1: surface the real failure instead of masking it.
@@ -370,6 +383,9 @@ func (h *ChatHandler) maybeResolveAuto(reqBody *chatRequestBody, rawBody []byte,
 	reqBody.Model = decision.ChosenModel
 	rewritten := rewriteBodyWithModel(rawBody, decision.ChosenModel)
 	wire := decisionToWire(decision)
+	if wire != nil {
+		wire.failoverModels = append([]string(nil), decision.TierFailoverModels...)
+	}
 
 	// Record the selection for the feedback loop. IDs and numbers only — no
 	// prompt or conversation content (see telemetry.AutoSelection). Best-effort,
@@ -483,6 +499,7 @@ func decisionToWire(d *autoroute.Decision) *autoRouteDecision {
 			ContextFit:     c.Breakdown.ContextFit,
 			ChannelQuality: c.Breakdown.ChannelQuality,
 			Reliability:    c.Breakdown.Reliability,
+			RouteTier:      c.Breakdown.RouteTier,
 		})
 	}
 	return wire

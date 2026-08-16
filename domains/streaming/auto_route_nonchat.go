@@ -16,6 +16,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"net/http"
+	"strings"
 
 	"github.com/kaixuan/llm-gateway-go/autoroute"
 )
@@ -140,7 +141,14 @@ func (h *MessagesHandler) maybeResolveAutoForMessages(reqBody *messagesRequestBo
 	if sessionID == "" {
 		sessionID = r.Header.Get("X-Session-Id")
 	}
-	decision, err := decider.DecideWithFeatureFlags(r.Context(), sigs, apiKeyID, headerProfile, taskHint, sessionID)
+	reqCtx := r.Context()
+	if workType := strings.TrimSpace(r.Header.Get(autoWorkTypeHeader)); workType != "" {
+		if l1, ok := decider.ResolveWorkType(workType); ok {
+			taskHint = l1
+			reqCtx = autoroute.WithWorkType(reqCtx, workType)
+		}
+	}
+	decision, err := decider.DecideWithFeatureFlags(reqCtx, sigs, apiKeyID, headerProfile, taskHint, sessionID)
 	if err != nil {
 		return nil, nil, true // caller emits 502 auto_route_decider_failed
 	}
@@ -169,7 +177,14 @@ func (h *ResponsesHandler) maybeResolveAutoForResponses(reqBody *responsesReques
 	if sessionID == "" {
 		sessionID = r.Header.Get("X-Session-Id")
 	}
-	decision, err := decider.DecideWithFeatureFlags(r.Context(), sigs, apiKeyID, headerProfile, taskHint, sessionID)
+	reqCtx := r.Context()
+	if workType := strings.TrimSpace(r.Header.Get(autoWorkTypeHeader)); workType != "" {
+		if l1, ok := decider.ResolveWorkType(workType); ok {
+			taskHint = l1
+			reqCtx = autoroute.WithWorkType(reqCtx, workType)
+		}
+	}
+	decision, err := decider.DecideWithFeatureFlags(reqCtx, sigs, apiKeyID, headerProfile, taskHint, sessionID)
 	if err != nil {
 		return nil, nil, true
 	}

@@ -51,6 +51,13 @@ type Decision struct {
 	// The first element is the winner. Used for audit and admin UI.
 	CandidatesTopN []ScoredCandidate
 
+	// TierFailoverModels is the in-process, canonical model sequence for
+	// pre-first-byte dispatch recovery. It starts with the selected model,
+	// retains score ordering within a tier, and lists lower configured tiers only
+	// after the active tier. It is intentionally separate from CandidatesTopN:
+	// the latter is a capped audit view and must not hide viable fallbacks.
+	TierFailoverModels []string
+
 	// EnabledFeatures records which routing sub-features were active when
 	// this decision was produced. Used for auditability and wire/header propagation.
 	EnabledFeatures []string
@@ -110,7 +117,7 @@ type Decider struct {
 	tuningStore         *TuningStore         // optional dynamic params (v2.1)
 	overrideStore       *OverrideStore       // optional admin ban/pin overrides (P7.6)
 	defaultRoutingStore *DefaultRoutingStore // optional explicit default routing (M2)
-	workTypeRouteStore  *WorkTypeRouteStore  // optional work_type_model_route boost (V2 bridge)
+	workTypeRouteStore  *WorkTypeRouteStore  // optional work_type_model_route strict tiers (V2 bridge)
 
 	// DefaultProfile is used when no header AND no sticky entry exists.
 	DefaultProfile Profile
@@ -161,8 +168,18 @@ func NewDecider(classifier Classifier, fallback Classifier, index IndexAccessor,
 	}
 }
 
-// SetIntentCache overrides the default session intent cache. Pass nil
-// to disable session-level caching entirely (every request reclassifies).
+// ResolveWorkType validates a concrete work type key against the active route snapshot.
+func (d *Decider) ResolveWorkType(key string) (TaskType, bool) {
+	if d == nil || d.workTypeRouteStore == nil {
+		return "", false
+	}
+	l1, ok := d.workTypeRouteStore.ResolveWorkType(key)
+	if !ok {
+		return "", false
+	}
+	return TaskType(l1), true
+}
+
 func (d *Decider) SetIntentCache(c *SessionIntentCache) {
 	d.intentCache = c
 }
@@ -254,6 +271,14 @@ func (d *Decider) Decide(ctx context.Context, sigs ClassificationSignals, apiKey
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	requestedWorkType := workTypeFromContext(ctx)
+	if requestedWorkType != "" {
+		if l1, ok := d.ResolveWorkType(requestedWorkType); ok {
+			taskHint = l1
+		} else {
+			requestedWorkType = ""
+		}
+	}
 	// Step 0: check session intent cache (skip if no sessionID or cache disabled)
 	if sessionID != "" && d.intentCache != nil {
 		// 2026-07-27 concurrency fix: use IncrementHit so the read-modify-write
@@ -262,7 +287,9 @@ func (d *Decider) Decide(ctx context.Context, sigs ClassificationSignals, apiKey
 		// same session (same count read, last Put wins → hits undercounted,
 		// drift threshold fires late).
 		if cached, ok := d.intentCache.IncrementHit(sessionID); ok {
-			if !shouldReclassify(cached.TaskType, sigs, cached.HitCount) {
+			if cached.WorkType != requestedWorkType {
+				d.intentCache.Invalidate(sessionID)
+			} else if !shouldReclassify(cached.TaskType, sigs, cached.HitCount) {
 				decision := &Decision{
 					ChosenModel:        cached.ChosenModel,
 					ChosenCredentialID: cached.CredentialID,
@@ -297,7 +324,25 @@ func (d *Decider) Decide(ctx context.Context, sigs ClassificationSignals, apiKey
 	}
 
 	// Step 3: score candidates
-	recommended := d.index.Recommend(cls.Primary, sigs, profile, d.TopN)
+	task := string(cls.Primary)
+	prof := string(profile)
+	resultTopN := d.TopN
+	if resultTopN <= 0 {
+		resultTopN = 3
+	}
+	candidateTopN := resultTopN
+	if d.workTypeRouteStore != nil &&
+		(d.workTypeRouteStore.HasRoutes(task) || requestedWorkType != "") {
+		if poolSize := len(d.index.Snapshot()); poolSize > candidateTopN {
+			candidateTopN = poolSize
+		}
+	}
+	if d.overrideStore != nil && len(d.overrideStore.GetPins(task, prof)) > 0 {
+		if poolSize := len(d.index.Snapshot()); poolSize > candidateTopN {
+			candidateTopN = poolSize
+		}
+	}
+	recommended := d.index.Recommend(cls.Primary, sigs, profile, candidateTopN)
 
 	// Step 3a (M2): explicit default routing.
 	routingSource := "implicit_tag"
@@ -319,13 +364,23 @@ func (d *Decider) Decide(ctx context.Context, sigs ClassificationSignals, apiKey
 	}
 
 	if d.overrideStore != nil {
-		task := string(cls.Primary)
-		prof := string(profile)
-		filtered := d.overrideStore.FilterBanned(recommended, task, prof)
-		recommended = d.overrideStore.PromotePins(filtered, task, prof)
-		if len(recommended) > 0 && len(filtered) > 0 && recommended[0].Candidate.CanonicalName != filtered[0].Candidate.CanonicalName {
-			routingSource = "override_pin"
-		}
+		recommended = d.overrideStore.FilterBanned(recommended, task, prof)
+	}
+	if d.workTypeRouteStore != nil {
+		recommended = d.workTypeRouteStore.ApplyTierPolicyWithWorkType(recommended, task, requestedWorkType, nil)
+	}
+	beforePinWinner := ""
+	if len(recommended) > 0 {
+		beforePinWinner = recommended[0].Candidate.CanonicalName
+	}
+	if d.overrideStore != nil {
+		recommended = d.overrideStore.PromotePins(recommended, task, prof)
+	}
+	if len(recommended) > 0 && recommended[0].Candidate.CanonicalName != beforePinWinner {
+		routingSource = "override_pin"
+	}
+	if len(recommended) > resultTopN {
+		recommended = recommended[:resultTopN]
 	}
 
 	if len(recommended) == 0 {
@@ -353,6 +408,7 @@ func (d *Decider) Decide(ctx context.Context, sigs ClassificationSignals, apiKey
 	if sessionID != "" && d.intentCache != nil {
 		d.intentCache.Put(sessionID, CachedIntent{
 			TaskType:     decision.TaskType,
+			WorkType:     requestedWorkType,
 			ChosenModel:  decision.ChosenModel,
 			CredentialID: decision.ChosenCredentialID,
 			Profile:      decision.Profile,
