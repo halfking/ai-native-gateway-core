@@ -20,17 +20,18 @@ import (
 // fakeForegroundStore extends the handler fake with the foreground surface.
 type fakeForegroundStore struct {
 	fakeDurableHandlerStore
-	renews      []durableRenewCall
-	checks      []durable.CheckpointParams
-	terminals   []durable.TerminalCommit
-	renewErr    error
-	checkErr    error
-	terminalErr error
-	intents     []durable.TerminalCommit
-	intentErr   error
-	claims      []*durable.ClaimedSettlement
-	finalizeErr error
-	retried     []durable.ClaimedSettlement
+	renews         []durableRenewCall
+	checks         []durable.CheckpointParams
+	terminals      []durable.TerminalCommit
+	renewErr       error
+	checkErr       error
+	intents        []durable.TerminalCommit
+	intentErr      error
+	intentFailures int
+	intentCalls    int
+	claims         []*durable.ClaimedSettlement
+	finalizeErr    error
+	retried        []durable.ClaimedSettlement
 }
 
 type durableRenewCall struct {
@@ -56,14 +57,16 @@ func (f *fakeForegroundStore) CheckpointCommitState(_ context.Context, p durable
 }
 
 func (f *fakeForegroundStore) CommitTerminal(_ context.Context, c durable.TerminalCommit) (*durable.TerminalProjection, error) {
-	if f.terminalErr != nil {
-		return nil, f.terminalErr
-	}
 	f.terminals = append(f.terminals, c)
 	return &durable.TerminalProjection{Committed: true}, nil
 }
 
 func (f *fakeForegroundStore) PersistSettlementIntent(_ context.Context, c durable.TerminalCommit) error {
+	f.intentCalls++
+	if f.intentFailures > 0 {
+		f.intentFailures--
+		return errors.New("temporary settlement intent failure")
+	}
 	if f.intentErr != nil {
 		return f.intentErr
 	}
@@ -340,6 +343,34 @@ func TestSettleDurableStreamMatrix(t *testing.T) {
 			t.Fatalf("terminals = %+v, want failed/terminal_candidate", store.terminals)
 		}
 	})
+}
+
+func TestSettleDurableStreamRetriesTransientTerminalFailure(t *testing.T) {
+	store := &fakeForegroundStore{intentFailures: 2}
+	b := newStreamBinding(store)
+	settleDurableStream(context.Background(), b,
+		SurvivalResult{Succeed: true, Decision: TaskDecision{Action: TaskActionSucceed, Reason: "success"}},
+		[]byte("data: hi\n\n"), "text/event-stream", false)
+	if len(store.terminals) != 1 {
+		t.Fatalf("terminals = %d, want 1 after transient failures", len(store.terminals))
+	}
+	if store.intentCalls != 3 {
+		t.Fatalf("settlement intent calls = %d, want 3", store.intentCalls)
+	}
+}
+
+func TestSettleDurableStreamStopsOnLeaseLoss(t *testing.T) {
+	store := &fakeForegroundStore{intentErr: durable.ErrLeaseLost}
+	b := newStreamBinding(store)
+	settleDurableStream(context.Background(), b,
+		SurvivalResult{Succeed: true, Decision: TaskDecision{Action: TaskActionSucceed, Reason: "success"}},
+		[]byte("data: hi\n\n"), "text/event-stream", false)
+	if len(store.terminals) != 0 {
+		t.Fatalf("lease loss must not finalize terminal, got %+v", store.terminals)
+	}
+	if store.intentCalls != 1 {
+		t.Fatalf("lease loss settlement intent calls = %d, want 1", store.intentCalls)
+	}
 }
 
 // frameWritingExecutor writes protocol frames through the attempt writer

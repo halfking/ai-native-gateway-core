@@ -707,6 +707,17 @@ type providerResolver interface {
 	ModelKnown(ctx context.Context, model string) bool
 }
 
+// requestKeyVerifier is the authorization surface used by request handlers.
+// *authentication.KeyVerifier is the production implementation; the interface
+// keeps endpoint-level recovery tests on the same authentication contract.
+type requestKeyVerifier interface {
+	Enabled() bool
+	Verify(ctx context.Context, rawKey string) (*authentication.KeyInfo, error)
+	VerifyByID(ctx context.Context, id int) (*authentication.KeyInfo, error)
+	CheckBudget(ctx context.Context, keyID int) error
+	LookupKeyMeta(ctx context.Context, rawKey string) (*authentication.KeyLookupMeta, error)
+}
+
 // ChatHandler handles chat completions with circuit breaker and concurrency control.
 type ChatHandler struct {
 	circuit    *credential.Manager
@@ -729,7 +740,8 @@ type ChatHandler struct {
 	durableExecOptions   DurableExecutionOptions
 	provider             providerResolver
 	sticky               *executors.StickyCache
-	keyVerifier          *authentication.KeyVerifier
+	keyVerifier          requestKeyVerifier
+	survivalAttemptExec  AttemptExecutor
 	rateLimiter          ratelimit.RPMLimiter
 	telemetryClient      *telemetry.Client
 	// profileEmitter (2026-07-15) 把请求/会话事件投到 clientprofile 画像聚合。
@@ -1204,7 +1216,12 @@ func (h *ChatHandler) AuthKeyVerifier() *authentication.KeyVerifier {
 	if h == nil {
 		return nil
 	}
-	return h.keyVerifier
+	verifier, _ := h.keyVerifier.(*authentication.KeyVerifier)
+	return verifier
+}
+
+func (h *ChatHandler) setRequestKeyVerifierForTest(verifier requestKeyVerifier) {
+	h.keyVerifier = verifier
 }
 
 func (h *ChatHandler) SetTelemetry(tc *telemetry.Client) {

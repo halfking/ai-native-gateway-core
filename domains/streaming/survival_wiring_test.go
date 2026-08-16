@@ -68,6 +68,32 @@ func TestRenderSurvivalTerminalFramesPerProtocol(t *testing.T) {
 	}
 }
 
+func TestRenderSurvivalTerminalNativeSSEIsExactlyOneTerminal(t *testing.T) {
+	cases := []struct {
+		name     string
+		protocol ClientProtocol
+		terminal string
+	}{
+		{"messages", ProtocolAnthropic, "event: error\n"},
+		{"responses", ProtocolOpenAIResponses, "event: response.failed\n"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			f := &trackingFlusher{}
+			sw := NewSerializedStreamWriter(f)
+			renderSurvivalTerminal(sw, tc.protocol,
+				TaskDecision{Action: TaskActionFailTerminal, Reason: "deadline_exceeded"}, false)
+			out := f.buf.String()
+			if strings.Count(out, tc.terminal) != 1 {
+				t.Fatalf("terminal marker count = %d, want 1: %q", strings.Count(out, tc.terminal), out)
+			}
+			if strings.Contains(out, "data: {") && strings.Contains(out, "data: [DONE]") {
+				t.Fatal("native endpoint terminal must not append OpenAI chat JSON or DONE")
+			}
+		})
+	}
+}
+
 func TestRenderSurvivalTerminalEscapesReasonJSON(t *testing.T) {
 	f := &trackingFlusher{}
 	sw := NewSerializedStreamWriter(f)
