@@ -44,7 +44,6 @@ import (
 	"github.com/kaixuan/llm-gateway-go/internal/liveactions"
 	"github.com/kaixuan/llm-gateway-go/internal/modelpolicy"
 	"github.com/kaixuan/llm-gateway-go/internal/observability"
-	"github.com/kaixuan/llm-gateway-go/internal/streamretry" //nolint:depguard // trusted tenant propagation to outer retry wrapper
 	gwtrace "github.com/kaixuan/llm-gateway-go/internal/trace"
 	"github.com/kaixuan/llm-gateway-go/maas"
 	"github.com/kaixuan/llm-gateway-go/metrics"
@@ -1973,7 +1972,6 @@ func (h *ChatHandler) serveWithExecutor(
 		}
 		keyInfo = ki
 		logCtx.SetKey(ki)
-		streamretry.SetAuthenticatedTenant(r.Context(), ki.TenantID)
 
 		// Round 38 (2026-06-16) — emit multi-tenant OTel span
 		// attributes per docs/multi-tenant-otel-design.md §3.1.
@@ -3555,10 +3553,9 @@ func (h *ChatHandler) serveWithExecutor(
 
 	// Retry loop
 	dispatchModelAlternatives := []string(nil)
-	dispatchAllowModelChange := false
-	if logCtx != nil && logCtx.IsAutoRequest && len(logCtx.AutoFallbackModels) > 0 && dispatchAllowModelChangeEnabled() {
+	dispatchAllowModelChange := logCtx != nil && logCtx.IsAutoRequest && dispatchAllowModelChangeEnabled()
+	if dispatchAllowModelChange {
 		dispatchModelAlternatives = append([]string(nil), logCtx.AutoFallbackModels...)
-		dispatchAllowModelChange = true
 	}
 	dispatchAllowProviderChange := hasMultipleProviders(candidates)
 	dispatchModelAlternativesConsumed := dispatchAllowModelChange
@@ -3673,6 +3670,10 @@ func (h *ChatHandler) serveWithExecutor(
 			Policy:                      policy,
 			DispatchModelAlternatives:   append([]string(nil), dispatchModelAlternatives...),
 			DispatchAllowModelChange:    dispatchAllowModelChange,
+			DispatchAutoTask:            autoTaskFromLogContext(logCtx),
+			DispatchAutoProfile:         autoProfileFromLogContext(logCtx),
+			DispatchAutoWorkType:        autoWorkTypeFromLogContext(logCtx),
+			DispatchAutoSignals:         autoSignalsFromLogContext(logCtx),
 			DispatchAllowProviderChange: dispatchAllowProviderChange,
 			PinCredentialID:             parsePinCredentialHeader(r),
 			DispatchRequestModality:     requestModality,

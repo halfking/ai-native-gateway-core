@@ -62,24 +62,29 @@ func syncRateLimitGateFromSettings() {
 // Runtime changes go through the admin settings PUT handler which calls
 // dispatch.SetDispatchEnabled directly. Errors are non-fatal (keep default ON).
 func syncDispatchGateFromSettings() {
+	syncDispatchBoolSetting(dispatch.DispatchGateKey, dispatch.SetDispatchEnabled)
+	syncDispatchBoolSetting(dispatch.ModelChangeGateKey, dispatch.SetModelChangeEnabled)
+}
+
+func syncDispatchBoolSetting(key string, apply func(bool)) {
 	if settings.Global == nil {
 		return
 	}
-	sp := settings.Global.Spec(dispatch.DispatchGateKey)
+	sp := settings.Global.Spec(key)
 	if sp == nil {
-		return // Spec not registered — keep package default (enabled).
+		return
 	}
-	v, _, err := settings.Global.EffectiveValue(sp.Scope, dispatch.DispatchGateKey, "")
+	v, _, err := settings.Global.EffectiveValue(sp.Scope, key, "")
 	if err != nil || len(v) == 0 {
 		return
 	}
 	var b bool
 	if err := json.Unmarshal(v, &b); err != nil {
-		slog.Debug("dispatch_v2.enabled: failed to unmarshal", "raw", string(v))
+		slog.Debug(key+": failed to unmarshal", "raw", string(v))
 		return
 	}
-	dispatch.SetDispatchEnabled(b)
-	slog.Info("dispatch_v2.enabled initialised", "enabled", b)
+	apply(b)
+	slog.Info(key+" initialised", "enabled", b)
 }
 
 // applyLogSettingsToLogging 从 settings_kv 读取 log.* 配置并应用到已初始化的

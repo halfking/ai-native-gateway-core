@@ -153,7 +153,12 @@ func (h *MessagesHandler) maybeResolveAutoForMessages(reqBody *messagesRequestBo
 		return nil, nil, true // caller emits 502 auto_route_decider_failed
 	}
 	reqBody.Model = decision.ChosenModel
-	return rewriteBodyWithModel(rawBody, decision.ChosenModel), decisionToWire(decision), false
+	wire := decisionToWire(decision)
+	if wire != nil {
+		wire.failoverModels = append([]string(nil), decision.TierFailoverModels...)
+		wire.signals = sigs
+	}
+	return rewriteBodyWithModel(rawBody, decision.ChosenModel), wire, false
 }
 
 // maybeResolveAutoForResponses is the /v1/responses counterpart.
@@ -189,5 +194,10 @@ func (h *ResponsesHandler) maybeResolveAutoForResponses(reqBody *responsesReques
 		return nil, nil, true
 	}
 	reqBody.Model = decision.ChosenModel
-	return rewriteBodyWithModel(rawBody, decision.ChosenModel), decisionToWire(decision), false
+	wire := decisionToWire(decision)
+	if wire != nil {
+		wire.failoverModels = append([]string(nil), decision.TierFailoverModels...)
+		wire.signals = sigs
+	}
+	return rewriteBodyWithModel(rawBody, decision.ChosenModel), wire, false
 }

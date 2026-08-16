@@ -17,6 +17,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/kaixuan/llm-gateway-go/autoroute"
 	"github.com/kaixuan/llm-gateway-go/credentialfpslot"
 	"github.com/kaixuan/llm-gateway-go/db"
 	"github.com/kaixuan/llm-gateway-go/domains/attachments"     //nolint:depguard // MM-1 outbound attachment URL rewrite
@@ -501,6 +502,12 @@ type RequestLogEmitter interface {
 	EmitRequestLogUpdate(entry *telemetry.RequestLogEntry)
 }
 
+// DispatchModelRecommender is the narrow autoroute contract required by the
+// dispatch failure path.
+type DispatchModelRecommender interface {
+	RecommendModelAlternatives(context.Context, autoroute.ModelAlternativeRequest) ([]string, error)
+}
+
 type Executor struct {
 	Router     *Router
 	Circuit    *credential.Manager
@@ -523,7 +530,8 @@ type Executor struct {
 	// dispatchPipeline (V2, 479): when non-nil AND dispatch_v2 gate is on,
 	// Execute routes through the multi-tier dispatch pipeline instead of the
 	// synchronous candidate loop. See executor_dispatch.go.
-	dispatchPipeline *dispatch.Pipeline
+	dispatchPipeline         *dispatch.Pipeline
+	dispatchModelRecommender DispatchModelRecommender
 	// traceRecorder (2026-07-17) 注入请求链路追踪器,记录 upstream_request /
 	// stream_start 事件。nil 时降级为 NoopRecorder 等价。
 	traceRecorder gwtrace.Recorder
@@ -1237,6 +1245,10 @@ type ExecParams struct {
 	// DispatchAllowModelChange is true.
 	DispatchModelAlternatives []string
 	DispatchAllowModelChange  bool
+	DispatchAutoTask          string
+	DispatchAutoProfile       string
+	DispatchAutoWorkType      string
+	DispatchAutoSignals       autoroute.ClassificationSignals
 	// DispatchRequestModality is the modality detected by the handler when it
 	// resolved the initial candidates. Dispatch V2 reuses it when lazily resolving
 	// candidates for an alternate model.
