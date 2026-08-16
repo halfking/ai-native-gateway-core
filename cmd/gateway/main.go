@@ -563,6 +563,7 @@ func main() {
 	var pendingStore *pending.Store
 	var redisClientForCache *session.RedisClient
 	var routingExec *executors.Executor
+	var routingRouter *executors.Router
 	var stateManager *credentialstate.Manager // 2026-06-30: credential×model state manager
 	var lastSystemSession *session.LastSystemSessionIndex
 	var sessionPref *session.SessionPreference
@@ -621,11 +622,16 @@ func main() {
 			Config: ursmV2Cfg,
 		})
 		// Shadow and canary cannot reject a route before their own guarded
-		// planning branches, so they may open immediately. Authoritative stays
-		// closed until the migration below has established live node state.
+		// planning branches, so they may open immediately. Authoritative starts
+		// closed even if a prior shadow instance left meta:ready=1; the coverage
+		// manifest below is the only path that can open its gate.
 		if ursmV2Cfg.Mode == ursmv2api.ModeShadow || ursmV2Cfg.Mode == ursmv2api.ModeCanary {
 			if err := ursmV2Mgr.SetReady(context.Background(), true); err != nil {
 				slog.Warn("ursm.v2: ready set failed", "error", err)
+			}
+		} else if ursmV2Cfg.Mode == ursmv2api.ModeAuthoritative {
+			if err := ursmV2Mgr.SetReady(context.Background(), false); err != nil {
+				slog.Error("ursm.v2: authoritative startup could not close ready gate", "error", err)
 			}
 		}
 		slog.Info("ursm.v2 manager constructed",
@@ -637,41 +643,53 @@ func main() {
 		slog.Info("ursm.v2 manager disabled (no redis client)")
 	}
 
-	// 启动 FpSlots NodeState 一次性迁移 (URSM v2 过渡, Task 5)。
-	// 仅 mode != off 时执行; 幂等(已迁移 key generation>=1)。旧 key 保留 7d TTL。
-	if redisClientForCache != nil && ursmV2Mgr != nil && ursmV2Mgr.Mode() != ursmv2api.ModeOff {
-		go func(mgr *ursmv2.Manager) {
-			ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
-			defer cancel()
-			n, err := ursmcache.MigrateFpSlotsNodeStates(ctx, redisClientForCache.Client())
-			if err != nil {
-				slog.Warn("fpslots node-state migration failed", "error", err)
-				return
-			}
-			if n > 0 {
-				slog.Info("fpslots node states migrated to ursm:v2", "count", n)
-			}
-			if mgr.Mode() == ursmv2api.ModeAuthoritative {
-				if count, err := mgr.WarmupFromExistingKeys(ctx); err != nil {
-					slog.Warn("ursm.v2: authoritative gate remains closed after warmup", "error", err)
-				} else {
-					slog.Info("ursm.v2: authoritative gate opened after warmup", "node_count", count)
-				}
-			}
-		}(ursmV2Mgr)
+	// Authoritative cutover must be recoverable by systemmonitor. Refuse the
+	// process before it listens rather than silently serving a full cutover
+	// without automatic gate close/reopen support.
+	if ursmV2Cfg.Mode == ursmv2api.ModeAuthoritative && os.Getenv("LLM_GATEWAY_SYSTEM_MONITOR_ENABLED") != "true" {
+		slog.Error("ursm.v2: authoritative mode requires LLM_GATEWAY_SYSTEM_MONITOR_ENABLED=true")
+		return
 	}
 
-	// URSM v2 persist writer (T15+L6): snapshot v2 Redis state to DB periodically
-	// 2026-07-22: Only run in canary/full modes. Shadow mode never calls RecordRequest,
-	// so Redis will be empty and persist writer just wastes CPU logging "collect empty".
+	// Startup migration is asynchronous only for non-authoritative compatibility
+	// modes. A full cutover verifies coverage synchronously before the server can
+	// begin accepting traffic.
+	if redisClientForCache != nil && ursmV2Mgr != nil && ursmV2Mgr.Mode() != ursmv2api.ModeOff {
+		if ursmV2Mgr.Mode() == ursmv2api.ModeAuthoritative {
+			ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+			count, err := ursmV2Mgr.WarmupFromCoverage(ctx)
+			cancel()
+			if err != nil {
+				slog.Error("ursm.v2: authoritative startup refused; coverage validation failed", "error", err)
+				return
+			}
+			slog.Info("ursm.v2: authoritative gate opened after coverage validation", "node_count", count)
+		} else {
+			go func() {
+				ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+				defer cancel()
+				n, err := ursmcache.MigrateFpSlotsNodeStates(ctx, redisClientForCache.Client())
+				if err != nil {
+					slog.Warn("fpslots node-state migration failed", "error", err)
+					return
+				}
+				if n > 0 {
+					slog.Info("fpslots node states migrated to ursm:v2", "count", n)
+				}
+			}()
+		}
+	}
+
+	// URSM v2 persist writer snapshots live v2 state for audit. Off mode
+	// never scans a leftover namespace; shadow starts persistence only when
+	// its outcome double-write is enabled.
 	var persistWriterStop context.CancelFunc
 	if ursmV2Mgr != nil && dbConn != nil && dbConn.Enabled() {
-		v2Cfg := ursmv2.LoadFromEnv()
-
-		// Skip persist writer in shadow mode (no data to persist)
-		if v2Cfg.Mode != "shadow" {
-			persistWriter := persist.New(redisClientForCache.Client(), v2Cfg.RedisKeyPrefix, dbConn.Pool())
-			persistInterval := time.Duration(v2Cfg.PersistIntervalSec) * time.Second
+		persistEnabled := ursmV2Cfg.Mode != ursmv2api.ModeOff &&
+			(ursmV2Cfg.Mode != ursmv2api.ModeShadow || ursmV2Cfg.ShadowDoubleWrite)
+		if persistEnabled {
+			persistWriter := persist.New(redisClientForCache.Client(), ursmV2Cfg.RedisKeyPrefix, dbConn.Pool())
+			persistInterval := time.Duration(ursmV2Cfg.PersistIntervalSec) * time.Second
 			if persistInterval == 0 {
 				persistInterval = 60 * time.Second // default 1 minute
 			}
@@ -710,7 +728,8 @@ func main() {
 			}()
 			slog.Info("ursm.v2: persist writer started", "interval_sec", persistInterval.Seconds())
 		} else {
-			slog.Info("ursm.v2: persist writer disabled in shadow mode")
+			slog.Info("ursm.v2: persist writer disabled", "mode", ursmV2Cfg.Mode,
+				"shadow_double_write", ursmV2Cfg.ShadowDoubleWrite)
 		}
 	}
 
@@ -892,6 +911,7 @@ func main() {
 		// nil(redis 不可用) 时 SetRedisStore 退化为纯内存/DB 旧行为。
 		stickyCache.SetRedisStore(stickyStore)
 		router := executors.NewRouter(stickyCache, lim)
+		routingRouter = router
 
 		// Connect FpSlots to Router for load-aware P2C selection
 		router.FpSlots = fpSlots
@@ -5427,6 +5447,10 @@ func main() {
 			durableWorker.Stop()
 		}
 
+		// Stop Router-owned shadow comparisons before closing URSM Redis.
+		if routingRouter != nil {
+			routingRouter.StopShadowWorker()
+		}
 		// 2026-07-22: 停止 URSM v2 persist writer（如果已启动）
 		if persistWriterStop != nil {
 			persistWriterStop()

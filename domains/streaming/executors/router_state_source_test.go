@@ -120,9 +120,12 @@ func TestPlanCandidates_AuthoritativeFilterError_RecordsFallback(t *testing.T) {
 	r := NewRouter(nil, nil)
 	r.URSMv2 = mgr
 
-	_ = r.PlanCandidatesWithContext(
+	got := r.PlanCandidatesWithContext(
 		context.Background(), candidateSet(), nil, &provider.Policy{}, nil, "t", "m", "req-2",
 	)
+	if len(got) != 0 {
+		t.Fatalf("strict authoritative error path returned unfiltered candidates: %+v", got)
+	}
 
 	snap := statesource.Snapshot()
 	if got := snap[statesource.StateSourceFallback]; got != 1 {
@@ -146,9 +149,12 @@ func TestPlanCandidates_AuthoritativeNotReady_RecordsFallback(t *testing.T) {
 	r := NewRouter(nil, nil)
 	r.URSMv2 = mgr
 
-	_ = r.PlanCandidatesWithContext(
+	got := r.PlanCandidatesWithContext(
 		context.Background(), candidateSet(), nil, &provider.Policy{}, nil, "t", "m", "req-3",
 	)
+	if len(got) != 0 {
+		t.Fatalf("strict authoritative not-ready path returned candidates: %+v", got)
+	}
 
 	snap := statesource.Snapshot()
 	if got := snap[statesource.StateSourceFallback]; got != 1 {

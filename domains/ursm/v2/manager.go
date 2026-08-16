@@ -208,8 +208,24 @@ func (m *Manager) WarmupFromExistingKeys(ctx context.Context) (int, error) {
 	return m.recovery.WarmupFromExistingKeys(ctx)
 }
 
-// RestoreIfClosed is the convenience wrapper for the
-// fallback→healthy transition path: opens the gate iff it is
+// WarmupFromCoverage validates every expected tenant-aware migration key before
+// opening the authoritative gate. It is for first cutover, not incident recovery.
+func (m *Manager) WarmupFromCoverage(ctx context.Context) (int, error) {
+	if m == nil {
+		return 0, nil
+	}
+	return m.recovery.WarmupFromCoverage(ctx)
+}
+
+// ValidateCoverage reports whether every key in the cutover migration manifest
+// exists with the minimum runtime fields required by the v2 read path.
+func (m *Manager) ValidateCoverage(ctx context.Context) (int, error) {
+	if m == nil {
+		return 0, nil
+	}
+	return m.recovery.ValidateCoverage(ctx)
+}
+
 // currently closed, returning the observed key count for audit.
 //
 // See recovery.Manager.RestoreIfClosed for the full contract.

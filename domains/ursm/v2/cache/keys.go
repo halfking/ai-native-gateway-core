@@ -1,6 +1,10 @@
 package cache
 
-import "fmt"
+import (
+	"fmt"
+
+	"github.com/kaixuan/llm-gateway-go/domains/ursm/v2/store"
+)
 
 // keyf 是包内 fmt.Sprintf 别名,集中 key 构造便于审计。
 func keyf(format string, args ...any) string {
@@ -12,10 +16,7 @@ func keyf(format string, args ...any) string {
 //
 //	{prefix}node:{cid}:{raw}  (prefix 默认 "ursm:v2:")
 func nodeMirrorKeyForTenant(tenant string, credID int, raw string) string {
-	if tenant == "" {
-		return nodeMirrorKey(credID, raw)
-	}
-	return keyf("ursm:v2:node:%s:%d:%s", tenant, credID, raw)
+	return store.NodeKeyForTenant("ursm:v2:", tenant, credID, raw)
 }
 
 func nodeMirrorKey(credID int, raw string) string {
